@@ -1,296 +1,1060 @@
-//! Taylor series expansion.
+//! Taylor / Laurent series expansion.
 //!
-//! This module implements [`series`], which computes the Taylor/Maclaurin
-//! series of an expression around a point.
+//! [`series`] computes the truncated expansion of an expression around a
+//! point (Maclaurin when the point is `0`, asymptotic when the point is
+//! `±∞` via [`series_at_infinity`]).
 //!
 //! # Algorithm
 //!
-//! The Taylor series of `f(x)` around `x = a` to order `n` is:
+//! Expansion is performed by a **truncated Laurent-series arithmetic engine**
+//! that walks the expression DAG bottom-up (explicit post-order, no
+//! recursion) and combines the series of the children:
 //!
-//! ```text
-//! f(a) + f'(a)(x-a) + f''(a)(x-a)²/2! + ... + f^(n-1)(a)(x-a)^(n-1)/(n-1)!
-//! ```
+//! * `Add` / `Mul` / integer `Pow` — exact truncated arithmetic (poles are
+//!   represented by a negative leading exponent, so `sin x / x` needs no
+//!   special handling).
+//! * `exp`, `sin`, `cos`, `sinh`, `cosh`, `ln`, `atan`, `atanh`, `asin`,
+//!   `asinh`, `tan`, `tanh`, `erf`, `LambertW`, `(1+u)^α` — composed from
+//!   closed-form Maclaurin coefficients (Bernoulli numbers for `tan`/`tanh`,
+//!   central binomials for `asin`, `(−n)^{n−1}/n!` for `W`) rather than
+//!   repeated differentiation, so high orders stay fast.
+//! * Any other `var`-dependent sub-expression falls back to Taylor
+//!   coefficients by differentiation, evaluated at the expansion point.
 //!
-//! This is computed by repeated differentiation (via `diff`) and
-//! substitution (via `subs`), both of which are already implemented.
+//! Fractional powers of a series with a zero constant term (Puiseux
+//! expansions such as `√x·sin x`) and logarithmic singularities are
+//! rejected — the caller then keeps an unevaluated `Series` node instead of
+//! producing a wrong polynomial.
 //!
 //! # Design
 //!
-//! The result is returned as a plain expression (polynomial in `(x - a)`).
-//! No `O(x^n)` term is appended — the truncation order is implicit in
-//! the `order` parameter.
+//! The result is a plain expression (polynomial in `(x − a)`, possibly with
+//! negative powers).  No `O(·)` term is appended — the truncation order is
+//! implicit in the `order` parameter: all terms with exponent `< order` are
+//! present and exact.
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
+use num_traits::{One, ToPrimitive, Zero};
+use rustc_hash::FxHashMap;
 
 use crate::base::arena::Arena;
+use crate::base::bernoulli::bernoulli;
+use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::walk;
+use crate::transforms::{eval, subs};
 
-/// Compute the Taylor series of `expr` in `var` around `point` to the
-/// given `order` (number of terms).
+type Rat = Ratio<BigInt>;
+
+/// Maximum number of sub-expressions expanded by differentiation before the
+/// engine gives up on per-node fallbacks (the root is always tried).
+const MAX_FALLBACK_NODES: usize = 4;
+
+/// Maximum integer exponent expanded by repeated multiplication.
+const MAX_INT_POWER: i64 = 64;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Public entry points
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Compute the series of `expr` in `var` around `point` with all terms of
+/// exponent `< order` (in `var − point`).
 ///
-/// Returns the truncated polynomial:
-/// `f(a) + f'(a)(x-a) + f''(a)(x-a)²/2! + ...`
+/// For `point = 0` this is the Maclaurin series; for `point = ±∞` an
+/// asymptotic expansion in `1/var` (see [`series_at_infinity`]).  Poles at
+/// the expansion point produce negative powers (Laurent series).
 ///
-/// If `point` is zero, this is a Maclaurin series and the result is a
-/// polynomial in `var`.
+/// Returns `Err` when no Laurent expansion exists (fractional-power or
+/// logarithmic singularity, essential singularity, or an unsupported
+/// sub-expression whose derivatives are singular at the point).
 pub(crate) fn series(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
     point: ExprId,
     order: u32,
-) -> Result<ExprId, crate::base::errors::SymplexError> {
+) -> Result<ExprId, SymplexError> {
     if order == 0 {
         return Ok(arena.zero);
     }
-
-    // Fast path: known Maclaurin series coefficients
-    if point == arena.zero
-        && let Some(result) = try_known_maclaurin(arena, expr, var, order as usize)
-    {
-        return Ok(result);
+    match arena.node(point) {
+        ExprNode::Infinity => return series_at_infinity(arena, expr, var, order, false),
+        ExprNode::NegInfinity => return series_at_infinity(arena, expr, var, order, true),
+        _ => {}
     }
-
-    let mut terms: Vec<ExprId> = Vec::with_capacity(order as usize);
-    let mut current_deriv = expr;
-    let mut factorial: Ratio<BigInt> = Ratio::from_integer(BigInt::from(1));
-
-    for k in 0..order {
-        // Evaluate the k-th derivative at the point.
-        let value_at_point = {
-            let subst = crate::transforms::subs::subs(arena, current_deriv, var, point);
-            // Evaluate special values (e.g., cos(0) → 1, sin(0) → 0).
-            crate::transforms::eval::eval(arena, subst)
-        };
-
-        // Check for poles: if the value at the point is infinite or NaN,
-        // we cannot form a Taylor series. Return the original expression.
-        if value_at_point == arena.infinity
-            || value_at_point == arena.neg_infinity
-            || value_at_point == arena.nan
-            || value_at_point == arena.complex_infinity
-        {
-            return Err(crate::base::errors::SymplexError::ComputationFailed {
-                operation: "series",
-                reason: "pole detected at expansion point".into(),
-            });
-        }
-
-        // Compute the term: value_at_point * (x - a)^k / k!
-        if !arena.is_zero_structural(value_at_point) {
-            let term = if k == 0 {
-                value_at_point
-            } else {
-                // Build (x - a)^k
-                let x_minus_a = if arena.is_zero_structural(point) {
-                    var
-                } else {
-                    arena.sub(var, point)
-                };
-
-                let power = if k == 1 {
-                    x_minus_a
-                } else {
-                    let k_id = arena.int(k as i64);
-                    arena.pow(x_minus_a, k_id)
-                };
-
-                // Build coefficient: 1/k!
-                let coeff_nid =
-                    arena.intern_num(Ratio::from_integer(BigInt::from(1)) / factorial.clone());
-                let coeff = arena.intern(crate::base::node::ExprNode::Num(coeff_nid));
-
-                // term = value_at_point * coeff * power
-                arena.mul(&[value_at_point, coeff, power])
-            };
-            terms.push(term);
-        }
-
-        // Compute next derivative for the next iteration.
-        if k + 1 < order {
-            current_deriv = crate::transforms::diff::diff(arena, current_deriv, var);
-            factorial *= Ratio::from_integer(BigInt::from(k as i64 + 1));
-        }
+    if !matches!(arena.node(var), ExprNode::Symbol(_)) {
+        return Err(SymplexError::InvalidArgument {
+            operation: "series",
+            reason: "expansion variable must be a symbol".into(),
+        });
     }
-
-    if terms.is_empty() {
-        Ok(arena.zero)
-    } else if terms.len() == 1 {
-        Ok(terms[0])
+    let at_zero = arena.is_zero_structural(point);
+    // Shift so that the expansion point becomes 0:  f(x) = f(a + t).
+    let shifted = if at_zero {
+        expr
     } else {
-        Ok(arena.add(&terms))
+        let t_plus_a = arena.add(&[var, point]);
+        subs::subs(arena, expr, var, t_plus_a)
+    };
+    let ts = expand_maclaurin(arena, shifted, var, order as i64, false)?;
+    let poly = ts.to_expr(arena, var, order as i64);
+    if at_zero {
+        Ok(poly)
+    } else {
+        let x_minus_a = arena.sub(var, point);
+        let back = subs::subs(arena, poly, var, x_minus_a);
+        Ok(eval::eval(arena, back))
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Known-coefficient fast paths
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Try to build a Maclaurin series using known coefficients.
-/// Returns None if the expression isn't a recognized elementary function.
-fn try_known_maclaurin(
+/// Asymptotic expansion of `expr` as `var → +∞` (or `−∞` when `negative`),
+/// with all terms of exponent `< order` in `1/var`.
+///
+/// Substitutes `var = ±1/t`, expands at `t = 0`, and substitutes back.
+pub(crate) fn series_at_infinity(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
-    order: usize,
-) -> Option<ExprId> {
-    match arena.node(expr).clone() {
-        // sin(x): coefficients (-1)^k / (2k+1)! for odd terms
-        ExprNode::Sin(inner) if inner == var => {
-            let mut terms = Vec::new();
-            for k in 0..order {
-                let n = 2 * k + 1;
-                if n >= order {
-                    break;
-                }
-                let sign: i64 = if k % 2 == 0 { 1 } else { -1 };
-                let factorial = factorial_value(n as u64);
-                let coeff = Ratio::new(BigInt::from(sign), factorial);
-                let coeff_id = {
-                    let nid = arena.intern_num(coeff);
-                    arena.intern(ExprNode::Num(nid))
-                };
-                let power = arena.int(n as i64);
-                let var_pow = arena.pow(var, power);
-                let term = arena.mul(&[coeff_id, var_pow]);
-                terms.push(term);
-            }
-            if terms.is_empty() {
-                return Some(arena.zero);
-            }
-            Some(arena.add(&terms))
-        }
-        // cos(x): coefficients (-1)^k / (2k)! for even terms
-        ExprNode::Cos(inner) if inner == var => {
-            let mut terms = Vec::new();
-            for k in 0..order {
-                let n = 2 * k;
-                if n >= order {
-                    break;
-                }
-                let sign: i64 = if k % 2 == 0 { 1 } else { -1 };
-                let factorial = factorial_value(n as u64);
-                let coeff = Ratio::new(BigInt::from(sign), factorial);
-                let coeff_id = {
-                    let nid = arena.intern_num(coeff);
-                    arena.intern(ExprNode::Num(nid))
-                };
-                if n == 0 {
-                    terms.push(coeff_id);
-                } else {
-                    let power = arena.int(n as i64);
-                    let var_pow = arena.pow(var, power);
-                    let term = arena.mul(&[coeff_id, var_pow]);
-                    terms.push(term);
-                }
-            }
-            if terms.is_empty() {
-                return Some(arena.zero);
-            }
-            Some(arena.add(&terms))
-        }
-        // exp(x): coefficients 1/k!
-        ExprNode::Exp(inner) if inner == var => {
-            let mut terms = Vec::new();
-            for k in 0..order {
-                let factorial = factorial_value(k as u64);
-                let coeff = Ratio::new(BigInt::from(1), factorial);
-                let coeff_id = {
-                    let nid = arena.intern_num(coeff);
-                    arena.intern(ExprNode::Num(nid))
-                };
-                if k == 0 {
-                    terms.push(coeff_id);
-                } else {
-                    let power = arena.int(k as i64);
-                    let var_pow = arena.pow(var, power);
-                    let term = arena.mul(&[coeff_id, var_pow]);
-                    terms.push(term);
-                }
-            }
-            Some(arena.add(&terms))
-        }
-        _ => None,
+    order: u32,
+    negative: bool,
+) -> Result<ExprId, SymplexError> {
+    if order == 0 {
+        return Ok(arena.zero);
     }
+    let t = arena.symbol("_t");
+    let one = arena.one;
+    let inv_t = arena.div(one, t);
+    let inv_t = if negative { arena.neg(inv_t) } else { inv_t };
+    let in_t = subs::subs(arena, expr, var, inv_t);
+    // t = 1/x → 0⁺ only, so fractional powers of t^(even) are single-valued.
+    let ts = expand_maclaurin(arena, in_t, t, order as i64, true)?;
+    let poly = ts.to_expr(arena, t, order as i64);
+    let inv_x = arena.div(one, var);
+    let inv_x = if negative { arena.neg(inv_x) } else { inv_x };
+    let back = subs::subs(arena, poly, t, inv_x);
+    Ok(eval::eval(arena, back))
 }
 
-/// Compute n! as BigInt.
-fn factorial_value(n: u64) -> BigInt {
-    let mut result = BigInt::from(1);
-    for i in 2..=n {
-        result *= BigInt::from(i);
-    }
-    result
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Laurent series
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Compute a Laurent series expansion of `expr` in `var` around `point`
-/// to the given `order` (number of terms in the regular part).
+/// Compute a Laurent series expansion of `expr` in `var` around `point`.
 ///
-/// A Laurent series extends a Taylor series to allow negative powers of
-/// `(x - a)`, i.e. poles. The result includes terms from `(x-a)^{-m}`
-/// up to `(x-a)^{order-1}` where `m` is the detected pole order.
-///
-/// # Algorithm
-///
-/// 1. First try a regular Taylor series — if it succeeds, return it
-///    (no pole, Laurent = Taylor).
-/// 2. Otherwise, multiply `expr` by `(x - a)^k` for `k = 1, 2, …, 5`
-///    until the Taylor series of the modified expression succeeds.
-/// 3. Divide the resulting Taylor series back by `(x - a)^k` to recover
-///    the Laurent series with negative-power terms.
-///
-/// Returns `Ok(series)` on success, `Err` if the expansion cannot be
-/// computed (e.g. essential singularity, or pole order > 5).
+/// Kept for API compatibility: the main [`series`] engine already produces
+/// Laurent expansions.  As a last resort this multiplies by `(x − a)^k`,
+/// `k = 1..=5`, and divides back.
 pub(crate) fn laurent_series(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
     point: ExprId,
     order: u32,
-) -> Result<ExprId, crate::base::errors::SymplexError> {
-    // First try regular Taylor — if it works, there is no pole.
+) -> Result<ExprId, SymplexError> {
     if let Ok(ts) = series(arena, expr, var, point, order) {
         return Ok(ts);
     }
-
-    // Build (var - point) once; reuse for each attempt.
     let x_minus_a = if arena.is_zero_structural(point) {
         var
     } else {
         arena.sub(var, point)
     };
-
-    // Try multiplying by (x - a)^k for k = 1..=5 until the pole is
-    // cancelled and a Taylor series succeeds.
     for k in 1u32..=5 {
         let k_id = arena.int(k as i64);
         let multiplier = arena.pow(x_minus_a, k_id);
         let modified = arena.mul(&[expr, multiplier]);
-
-        // We request order + k terms so that after dividing back by
-        // (x-a)^k we still have `order` terms in the regular part.
         if let Ok(ts) = series(arena, modified, var, point, order + k) {
-            // Divide back by (x - a)^k to restore the negative powers.
             let neg_k = arena.int(-(k as i64));
             let divisor = arena.pow(x_minus_a, neg_k);
             let result = arena.mul(&[ts, divisor]);
-
-            // Expand so that the product distributes across the sum,
-            // giving explicit negative-power terms.
             let result = crate::transforms::expand::expand(arena, result);
-            let result = crate::transforms::eval::eval(arena, result);
-            return Ok(result);
+            return Ok(eval::eval(arena, result));
+        }
+    }
+    Err(SymplexError::ComputationFailed {
+        operation: "laurent_series",
+        reason: "could not determine pole order (tried up to order 5)".into(),
+    })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Truncated Laurent series
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `Σ_{i} coeffs[i] · x^(shift + i)`, exact for all exponents `< known`.
+///
+/// Invariant: `coeffs.len() == (known − shift) as usize`.
+#[derive(Clone, Debug)]
+pub(crate) struct TSeries {
+    shift: i64,
+    known: i64,
+    coeffs: Vec<ExprId>,
+}
+
+impl TSeries {
+    /// Exponent bound: coefficients are exact for all exponents `< known`.
+    pub(crate) fn known(&self) -> i64 {
+        self.known
+    }
+
+    /// Lowest stored exponent (negative for Laurent series).
+    pub(crate) fn shift(&self) -> i64 {
+        self.shift
+    }
+
+    /// Coefficient of `x^e`, zero outside the stored range (public alias of
+    /// [`coeff_at`](Self::coeff_at) for other modules).
+    pub(crate) fn coefficient(&self, arena: &Arena, e: i64) -> ExprId {
+        self.coeff_at(arena, e)
+    }
+
+    fn zero(arena: &Arena, known: i64) -> Self {
+        TSeries {
+            shift: 0,
+            known,
+            coeffs: vec![arena.zero; known.max(0) as usize],
         }
     }
 
-    Err(crate::base::errors::SymplexError::ComputationFailed {
-        operation: "laurent_series",
-        reason: "could not determine pole order (tried up to order 5)".into(),
+    fn constant(arena: &Arena, c: ExprId, known: i64) -> Self {
+        let mut s = Self::zero(arena, known);
+        if known > 0 {
+            s.coeffs[0] = c;
+        }
+        s
+    }
+
+    fn var(arena: &Arena, known: i64) -> Self {
+        let mut s = Self::zero(arena, known);
+        if known > 1 {
+            s.coeffs[1] = arena.one;
+        }
+        s
+    }
+
+    /// Coefficient of `x^e` (zero outside the stored range).
+    fn coeff_at(&self, arena: &Arena, e: i64) -> ExprId {
+        if e < self.shift || e >= self.known {
+            arena.zero
+        } else {
+            self.coeffs[(e - self.shift) as usize]
+        }
+    }
+
+    /// Exponent of the first structurally non-zero coefficient.
+    fn leading_exponent(&self, arena: &Arena) -> Option<i64> {
+        self.coeffs
+            .iter()
+            .position(|&c| !arena.is_zero_structural(c))
+            .map(|i| self.shift + i as i64)
+    }
+
+    /// Drop leading structural zeros so that `shift` is the true valuation.
+    fn normalized(mut self, arena: &Arena) -> Self {
+        let lead = self
+            .coeffs
+            .iter()
+            .position(|&c| !arena.is_zero_structural(c))
+            .unwrap_or(self.coeffs.len());
+        if lead > 0 {
+            self.coeffs.drain(0..lead);
+            self.shift += lead as i64;
+        }
+        self
+    }
+
+    /// Restrict to exponents `< n`.
+    fn truncate_known(mut self, n: i64) -> Self {
+        if n < self.known {
+            let keep = (n - self.shift).max(0) as usize;
+            self.coeffs.truncate(keep);
+            self.known = n;
+            if self.coeffs.is_empty() {
+                self.shift = n;
+            }
+        }
+        self
+    }
+
+    fn add(arena: &mut Arena, a: &TSeries, b: &TSeries) -> TSeries {
+        let shift = a.shift.min(b.shift);
+        let known = a.known.min(b.known);
+        let mut coeffs = Vec::with_capacity((known - shift).max(0) as usize);
+        for e in shift..known {
+            let ca = a.coeff_at(arena, e);
+            let cb = b.coeff_at(arena, e);
+            let s = arena.add(&[ca, cb]);
+            coeffs.push(eval::eval(arena, s));
+        }
+        TSeries {
+            shift,
+            known,
+            coeffs,
+        }
+    }
+
+    fn scale(arena: &mut Arena, a: &TSeries, c: ExprId) -> TSeries {
+        let coeffs = a
+            .coeffs
+            .iter()
+            .map(|&x| {
+                let p = arena.mul(&[c, x]);
+                eval::eval(arena, p)
+            })
+            .collect();
+        TSeries {
+            shift: a.shift,
+            known: a.known,
+            coeffs,
+        }
+    }
+
+    fn neg(arena: &mut Arena, a: &TSeries) -> TSeries {
+        let m1 = arena.neg_one;
+        Self::scale(arena, a, m1)
+    }
+
+    fn mul(arena: &mut Arena, a: &TSeries, b: &TSeries) -> TSeries {
+        let a = a.clone().normalized(arena);
+        let b = b.clone().normalized(arena);
+        let shift = a.shift + b.shift;
+        let known = (a.known + b.shift).min(b.known + a.shift);
+        let len = (known - shift).max(0) as usize;
+        let mut coeffs = Vec::with_capacity(len);
+        for idx in 0..len {
+            let mut terms = Vec::new();
+            for (i, &ca) in a.coeffs.iter().enumerate() {
+                if i > idx {
+                    break;
+                }
+                let j = idx - i;
+                if j >= b.coeffs.len() {
+                    continue;
+                }
+                let cb = b.coeffs[j];
+                if arena.is_zero_structural(ca) || arena.is_zero_structural(cb) {
+                    continue;
+                }
+                terms.push(arena.mul(&[ca, cb]));
+            }
+            let s = match terms.len() {
+                0 => arena.zero,
+                1 => terms[0],
+                _ => arena.add(&terms),
+            };
+            coeffs.push(eval::eval(arena, s));
+        }
+        TSeries {
+            shift,
+            known,
+            coeffs,
+        }
+    }
+
+    /// `1/a`.  Returns `None` if `a` is zero to the known precision.
+    fn inverse(arena: &mut Arena, a: &TSeries) -> Option<TSeries> {
+        let a = a.clone().normalized(arena);
+        let v = a.leading_exponent(arena)?;
+        let c0 = a.coeffs[0];
+        let rel_known = a.known - v; // relative precision of 1 + w
+        // w_i = a_{v+i}/c0 for i ≥ 1
+        let inv_c0 = {
+            let m1 = arena.neg_one;
+            let p = arena.pow(c0, m1);
+            eval::eval(arena, p)
+        };
+        let mut w: Vec<ExprId> = Vec::with_capacity(rel_known.max(0) as usize);
+        w.push(arena.one);
+        for i in 1..rel_known {
+            let ai = a.coeff_at(arena, v + i);
+            let p = arena.mul(&[ai, inv_c0]);
+            w.push(eval::eval(arena, p));
+        }
+        // b_0 = 1, b_n = −Σ_{i=1}^{n} w_i b_{n−i}
+        let mut b: Vec<ExprId> = Vec::with_capacity(w.len());
+        b.push(arena.one);
+        for n in 1..w.len() {
+            let mut terms = Vec::new();
+            for i in 1..=n {
+                if arena.is_zero_structural(w[i]) || arena.is_zero_structural(b[n - i]) {
+                    continue;
+                }
+                terms.push(arena.mul(&[w[i], b[n - i]]));
+            }
+            let s = match terms.len() {
+                0 => arena.zero,
+                1 => terms[0],
+                _ => arena.add(&terms),
+            };
+            let ns = arena.neg(s);
+            b.push(eval::eval(arena, ns));
+        }
+        let coeffs = b
+            .iter()
+            .map(|&x| {
+                let p = arena.mul(&[inv_c0, x]);
+                eval::eval(arena, p)
+            })
+            .collect();
+        Some(TSeries {
+            shift: -v,
+            known: -v + rel_known,
+            coeffs,
+        })
+    }
+
+    /// `a^n` for integer `n`.
+    fn pow_int(arena: &mut Arena, a: &TSeries, n: i64) -> Option<TSeries> {
+        if n == 0 {
+            return Some(Self::constant(arena, arena.one, a.known.max(1)));
+        }
+        if n.abs() > MAX_INT_POWER {
+            return None;
+        }
+        let base = if n < 0 {
+            Self::inverse(arena, a)?
+        } else {
+            a.clone()
+        };
+        let mut acc = base.clone();
+        for _ in 1..n.abs() {
+            acc = Self::mul(arena, &acc, &base);
+        }
+        Some(acc)
+    }
+
+    /// Remove the constant term, returning `(u0, w)` with `w = a − u0` (valuation ≥ 1).
+    fn split_constant(&self, arena: &Arena) -> (ExprId, TSeries) {
+        let u0 = self.coeff_at(arena, 0);
+        let mut w = self.clone();
+        if 0 >= w.shift && 0 < w.known {
+            w.coeffs[(-w.shift) as usize] = arena.zero;
+        }
+        (u0, w.normalized(arena))
+    }
+
+    /// `Σ_n f_n · w^n` for a series `w` with valuation ≥ 1.
+    fn compose(arena: &mut Arena, f: &dyn Fn(&mut Arena, usize) -> ExprId, w: &TSeries) -> TSeries {
+        let known = w.known;
+        let mut acc = Self::constant(arena, arena.zero, known);
+        let f0 = f(arena, 0);
+        acc.coeffs[0] = f0;
+        if w.coeffs.iter().all(|&c| arena.is_zero_structural(c)) {
+            return acc;
+        }
+        let mut p = w.clone().normalized(arena);
+        let mut n = 1usize;
+        loop {
+            if p.shift >= known || p.coeffs.is_empty() {
+                break;
+            }
+            let fn_ = f(arena, n);
+            if !arena.is_zero_structural(fn_) {
+                let term = Self::scale(arena, &p, fn_);
+                acc = Self::add(arena, &acc, &term);
+            }
+            n += 1;
+            if n > known as usize + 1 {
+                break;
+            }
+            p = Self::mul(arena, &p, w).normalized(arena);
+        }
+        acc
+    }
+
+    /// Build the expression `Σ coeffs[i] x^(shift+i)` for exponents `< order`.
+    fn to_expr(&self, arena: &mut Arena, var: ExprId, order: i64) -> ExprId {
+        let mut terms = Vec::new();
+        for (i, &c) in self.coeffs.iter().enumerate() {
+            let e = self.shift + i as i64;
+            if e >= order {
+                break;
+            }
+            if arena.is_zero_structural(c) {
+                continue;
+            }
+            let term = if e == 0 {
+                c
+            } else if e == 1 {
+                arena.mul(&[c, var])
+            } else {
+                let ee = arena.int(e);
+                let xp = arena.pow(var, ee);
+                arena.mul(&[c, xp])
+            };
+            terms.push(term);
+        }
+        let s = match terms.len() {
+            0 => arena.zero,
+            1 => terms[0],
+            _ => arena.add(&terms),
+        };
+        eval::eval(arena, s)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Closed-form Maclaurin coefficients
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn rat_expr(arena: &mut Arena, r: Rat) -> ExprId {
+    let nid = arena.intern_num(r);
+    arena.intern(ExprNode::Num(nid))
+}
+
+fn rat_i(n: i64) -> Rat {
+    Ratio::from_integer(BigInt::from(n))
+}
+
+fn factorial_big(n: u64) -> BigInt {
+    let mut acc = BigInt::one();
+    for i in 2..=n {
+        acc *= BigInt::from(i);
+    }
+    acc
+}
+
+fn central_binomial(n: u64) -> BigInt {
+    let mut acc = BigInt::one();
+    for i in 0..n {
+        acc = acc * BigInt::from(2 * n - i) / BigInt::from(i + 1);
+    }
+    acc
+}
+
+fn pow_rat_i(r: &Rat, n: i64) -> Rat {
+    let mut acc = Rat::one();
+    let base = if n < 0 { Rat::one() / r } else { r.clone() };
+    for _ in 0..n.unsigned_abs() {
+        acc *= &base;
+    }
+    acc
+}
+
+/// Elementary functions with closed-form Maclaurin coefficients.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FnKind {
+    Exp,
+    Sin,
+    Cos,
+    Sinh,
+    Cosh,
+    /// `ln(1 + u)`
+    Ln1p,
+    Atan,
+    Atanh,
+    Asin,
+    Asinh,
+    Tan,
+    Tanh,
+    Erf,
+    LambertW,
+}
+
+impl FnKind {
+    /// The `n`-th Maclaurin coefficient of the function, as an exact rational
+    /// where possible (`erf` carries a `2/√π` factor and is built as an
+    /// expression).
+    pub(crate) fn coefficient(self, arena: &mut Arena, n: usize) -> ExprId {
+        let r = self.rational_coefficient(n);
+        match self {
+            FnKind::Erf => {
+                if r.is_zero() {
+                    return arena.zero;
+                }
+                // (2/√π) · (−1)^m / (m! (2m+1))
+                let re = rat_expr(arena, r);
+                let two = arena.int(2);
+                let pi = arena.pi;
+                let sp = arena.sqrt(pi);
+                let f = arena.div(two, sp);
+                let v = arena.mul(&[re, f]);
+                eval::eval(arena, v)
+            }
+            _ => rat_expr(arena, r),
+        }
+    }
+
+    /// Rational part of the `n`-th coefficient.
+    pub(crate) fn rational_coefficient(self, n: usize) -> Rat {
+        let odd = n % 2 == 1;
+        let m = n / 2;
+        let sign_m = if m.is_multiple_of(2) {
+            Rat::one()
+        } else {
+            -Rat::one()
+        };
+        match self {
+            FnKind::Exp => Rat::new(BigInt::one(), factorial_big(n as u64)),
+            FnKind::Sin => {
+                if odd {
+                    sign_m / Rat::from_integer(factorial_big(n as u64))
+                } else {
+                    Rat::zero()
+                }
+            }
+            FnKind::Cos => {
+                if odd {
+                    Rat::zero()
+                } else {
+                    sign_m / Rat::from_integer(factorial_big(n as u64))
+                }
+            }
+            FnKind::Sinh => {
+                if odd {
+                    Rat::new(BigInt::one(), factorial_big(n as u64))
+                } else {
+                    Rat::zero()
+                }
+            }
+            FnKind::Cosh => {
+                if odd {
+                    Rat::zero()
+                } else {
+                    Rat::new(BigInt::one(), factorial_big(n as u64))
+                }
+            }
+            FnKind::Ln1p => {
+                if n == 0 {
+                    Rat::zero()
+                } else {
+                    let s = if n % 2 == 1 { Rat::one() } else { -Rat::one() };
+                    s / rat_i(n as i64)
+                }
+            }
+            FnKind::Atan => {
+                if odd {
+                    sign_m / rat_i(n as i64)
+                } else {
+                    Rat::zero()
+                }
+            }
+            FnKind::Atanh => {
+                if odd {
+                    Rat::one() / rat_i(n as i64)
+                } else {
+                    Rat::zero()
+                }
+            }
+            FnKind::Asin | FnKind::Asinh => {
+                if !odd {
+                    return Rat::zero();
+                }
+                // C(2m,m) / (4^m (2m+1))
+                let c = Rat::from_integer(central_binomial(m as u64));
+                let d = pow_rat_i(&rat_i(4), m as i64) * rat_i(n as i64);
+                let v = c / d;
+                if self == FnKind::Asinh { sign_m * v } else { v }
+            }
+            FnKind::Tan | FnKind::Tanh => {
+                // tan x = Σ_{m≥1} (−1)^{m−1} 2^{2m}(2^{2m}−1) B_{2m} x^{2m−1}/(2m)!
+                // tanh x = Σ_{m≥1} 2^{2m}(2^{2m}−1) B_{2m} x^{2m−1}/(2m)!
+                if !odd {
+                    return Rat::zero();
+                }
+                let mm = m + 1; // n = 2mm − 1
+                let two_pow = pow_rat_i(&rat_i(2), 2 * mm as i64);
+                let b = bernoulli(2 * mm);
+                let v = &two_pow * (&two_pow - Rat::one()) * b
+                    / Rat::from_integer(factorial_big(2 * mm as u64));
+                if self == FnKind::Tan {
+                    if (mm - 1).is_multiple_of(2) { v } else { -v }
+                } else {
+                    v
+                }
+            }
+            FnKind::Erf => {
+                if !odd {
+                    return Rat::zero();
+                }
+                sign_m / (Rat::from_integer(factorial_big(m as u64)) * rat_i(n as i64))
+            }
+            FnKind::LambertW => {
+                if n == 0 {
+                    return Rat::zero();
+                }
+                // (−n)^{n−1} / n!
+                let base = rat_i(-(n as i64));
+                pow_rat_i(&base, n as i64 - 1) / Rat::from_integer(factorial_big(n as u64))
+            }
+        }
+    }
+}
+
+/// Generalised binomial coefficient `C(α, n)` for a symbolic or rational `α`.
+fn gen_binomial_expr(arena: &mut Arena, alpha: ExprId, n: usize) -> ExprId {
+    if n == 0 {
+        return arena.one;
+    }
+    if let Some(a) = arena.as_num(alpha).cloned() {
+        let mut acc = Rat::one();
+        for i in 0..n {
+            acc = acc * (&a - rat_i(i as i64)) / rat_i(i as i64 + 1);
+        }
+        return rat_expr(arena, acc);
+    }
+    let mut factors = Vec::with_capacity(n + 1);
+    for i in 0..n {
+        let ie = arena.int(-(i as i64));
+        factors.push(arena.add(&[alpha, ie]));
+    }
+    let inv_fact = rat_expr(arena, Rat::new(BigInt::one(), factorial_big(n as u64)));
+    factors.push(inv_fact);
+    let p = arena.mul(&factors);
+    eval::eval(arena, p)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The engine
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Expand `expr` around `var = 0` with all exponents `< order` exact.
+///
+/// `one_sided` marks expansions where the variable only approaches `0`
+/// from above (used for `x → ±∞` via `t = 1/x`); this permits
+/// `(t^v)^α = t^{vα}` for every integer `vα`, which is not valid two-sided
+/// (`√(x²) = |x|`).
+pub(crate) fn expand_maclaurin(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    order: i64,
+    one_sided: bool,
+) -> Result<TSeries, SymplexError> {
+    let mut working = order;
+    for _attempt in 0..3 {
+        let ts = expand_with_precision(arena, expr, var, working, one_sided)?;
+        if ts.known >= order {
+            return Ok(ts.truncate_known(order));
+        }
+        // Precision was lost through poles; increase and retry.
+        working += order - ts.known + 1;
+    }
+    Err(SymplexError::ComputationFailed {
+        operation: "series",
+        reason: "could not reach the requested order (deep pole)".into(),
+    })
+}
+
+fn expand_with_precision(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    n: i64,
+    one_sided: bool,
+) -> Result<TSeries, SymplexError> {
+    let order_ids = walk::post_order_ids(arena, expr);
+    let mut cache: FxHashMap<ExprId, Option<TSeries>> = FxHashMap::default();
+    let mut fallbacks_used = 0usize;
+    for id in order_ids {
+        if cache.contains_key(&id) {
+            continue;
+        }
+        let ts = if !walk::contains(arena, id, var) {
+            Some(TSeries::constant(arena, id, n))
+        } else if id == var {
+            Some(TSeries::var(arena, n))
+        } else {
+            let structural = structural_series(arena, id, var, one_sided, &cache);
+            match structural {
+                Some(s) => Some(s),
+                None => {
+                    if id == expr || fallbacks_used < MAX_FALLBACK_NODES {
+                        fallbacks_used += 1;
+                        taylor_by_differentiation(arena, id, var, n)
+                    } else {
+                        None
+                    }
+                }
+            }
+        };
+        cache.insert(id, ts);
+    }
+    match cache.remove(&expr).flatten() {
+        Some(ts) => Ok(ts),
+        None => Err(SymplexError::ComputationFailed {
+            operation: "series",
+            reason: "no Laurent expansion at this point (singularity or unsupported function)"
+                .into(),
+        }),
+    }
+}
+
+fn child(cache: &FxHashMap<ExprId, Option<TSeries>>, id: ExprId) -> Option<TSeries> {
+    cache.get(&id).cloned().flatten()
+}
+
+/// Combine children's series according to the node type.
+fn structural_series(
+    arena: &mut Arena,
+    id: ExprId,
+    var: ExprId,
+    one_sided: bool,
+    cache: &FxHashMap<ExprId, Option<TSeries>>,
+) -> Option<TSeries> {
+    let node = arena.node(id).clone();
+    match node {
+        ExprNode::Add(ref ch) => {
+            let mut acc: Option<TSeries> = None;
+            for &c in ch.iter() {
+                let s = child(cache, c)?;
+                acc = Some(match acc {
+                    None => s,
+                    Some(a) => TSeries::add(arena, &a, &s),
+                });
+            }
+            acc
+        }
+        ExprNode::Mul(ref ch) => {
+            let mut acc: Option<TSeries> = None;
+            for &c in ch.iter() {
+                let s = child(cache, c)?;
+                acc = Some(match acc {
+                    None => s,
+                    Some(a) => TSeries::mul(arena, &a, &s),
+                });
+            }
+            acc
+        }
+        ExprNode::Neg(inner) => {
+            let s = child(cache, inner)?;
+            Some(TSeries::neg(arena, &s))
+        }
+        ExprNode::Pow(base, exp) => {
+            let b = child(cache, base)?;
+            if !walk::contains(arena, exp, var) {
+                let e = arena.as_num(exp).cloned()?;
+                if e.is_integer() {
+                    let ei = e.to_integer().to_i64()?;
+                    return TSeries::pow_int(arena, &b, ei);
+                }
+                // Rational exponent: Puiseux expansions are refused.
+                return pow_rational(arena, &b, exp, one_sided);
+            }
+            // b^e with var-dependent exponent: exp(e · ln b).
+            let e = child(cache, exp)?;
+            let lnb = apply_ln(arena, &b)?;
+            let prod = TSeries::mul(arena, &e, &lnb);
+            apply_fn(arena, FnKind::Exp, &prod)
+        }
+        ExprNode::Exp(a) => apply_fn(arena, FnKind::Exp, &child(cache, a)?),
+        ExprNode::Sin(a) => apply_fn(arena, FnKind::Sin, &child(cache, a)?),
+        ExprNode::Cos(a) => apply_fn(arena, FnKind::Cos, &child(cache, a)?),
+        ExprNode::Sinh(a) => apply_fn(arena, FnKind::Sinh, &child(cache, a)?),
+        ExprNode::Cosh(a) => apply_fn(arena, FnKind::Cosh, &child(cache, a)?),
+        ExprNode::Tan(a) => apply_fn(arena, FnKind::Tan, &child(cache, a)?),
+        ExprNode::Tanh(a) => apply_fn(arena, FnKind::Tanh, &child(cache, a)?),
+        ExprNode::Atan(a) => apply_fn(arena, FnKind::Atan, &child(cache, a)?),
+        ExprNode::Atanh(a) => apply_fn(arena, FnKind::Atanh, &child(cache, a)?),
+        ExprNode::Asin(a) => apply_fn(arena, FnKind::Asin, &child(cache, a)?),
+        ExprNode::Asinh(a) => apply_fn(arena, FnKind::Asinh, &child(cache, a)?),
+        ExprNode::Erf(a) => apply_fn(arena, FnKind::Erf, &child(cache, a)?),
+        ExprNode::LambertW(a) => apply_fn(arena, FnKind::LambertW, &child(cache, a)?),
+        ExprNode::Ln(a) => apply_ln(arena, &child(cache, a)?),
+        _ => None,
+    }
+}
+
+fn is_zero_const(arena: &mut Arena, c: ExprId) -> bool {
+    let v = eval::eval(arena, c);
+    arena.is_zero_structural(v) || arena.as_num(v).is_some_and(|r| r.is_zero())
+}
+
+/// `f(a)` for an elementary `f` with known Maclaurin series.
+fn apply_fn(arena: &mut Arena, kind: FnKind, a: &TSeries) -> Option<TSeries> {
+    let a = a.clone().normalized(arena);
+    if a.shift < 0 && a.leading_exponent(arena).is_some_and(|v| v < 0) {
+        return None; // essential singularity
+    }
+    let (u0, w) = a.split_constant(arena);
+    let u0_zero = is_zero_const(arena, u0);
+    let compose = |arena: &mut Arena, k: FnKind, w: &TSeries| -> TSeries {
+        TSeries::compose(
+            arena,
+            &move |ar: &mut Arena, i: usize| k.coefficient(ar, i),
+            w,
+        )
+    };
+    match kind {
+        FnKind::Exp => {
+            let s = compose(arena, FnKind::Exp, &w);
+            if u0_zero {
+                Some(s)
+            } else {
+                let e = arena.exp(u0);
+                let e = eval::eval(arena, e);
+                Some(TSeries::scale(arena, &s, e))
+            }
+        }
+        FnKind::Sin | FnKind::Cos => {
+            let sw = compose(arena, FnKind::Sin, &w);
+            let cw = compose(arena, FnKind::Cos, &w);
+            if u0_zero {
+                return Some(if kind == FnKind::Sin { sw } else { cw });
+            }
+            let su = arena.sin(u0);
+            let su = eval::eval(arena, su);
+            let cu = arena.cos(u0);
+            let cu = eval::eval(arena, cu);
+            let (t1, t2) = if kind == FnKind::Sin {
+                // sin(u0 + w) = sin u0 cos w + cos u0 sin w
+                (
+                    TSeries::scale(arena, &cw, su),
+                    TSeries::scale(arena, &sw, cu),
+                )
+            } else {
+                // cos(u0 + w) = cos u0 cos w − sin u0 sin w
+                let nsu = arena.neg(su);
+                (
+                    TSeries::scale(arena, &cw, cu),
+                    TSeries::scale(arena, &sw, nsu),
+                )
+            };
+            Some(TSeries::add(arena, &t1, &t2))
+        }
+        FnKind::Sinh | FnKind::Cosh => {
+            let sw = compose(arena, FnKind::Sinh, &w);
+            let cw = compose(arena, FnKind::Cosh, &w);
+            if u0_zero {
+                return Some(if kind == FnKind::Sinh { sw } else { cw });
+            }
+            let su = arena.sinh(u0);
+            let su = eval::eval(arena, su);
+            let cu = arena.cosh(u0);
+            let cu = eval::eval(arena, cu);
+            let (t1, t2) = if kind == FnKind::Sinh {
+                (
+                    TSeries::scale(arena, &cw, su),
+                    TSeries::scale(arena, &sw, cu),
+                )
+            } else {
+                (
+                    TSeries::scale(arena, &cw, cu),
+                    TSeries::scale(arena, &sw, su),
+                )
+            };
+            Some(TSeries::add(arena, &t1, &t2))
+        }
+        FnKind::Ln1p => unreachable!("ln is handled by apply_ln"),
+        _ => {
+            if !u0_zero {
+                return None; // fallback: differentiate
+            }
+            Some(compose(arena, kind, &w))
+        }
+    }
+}
+
+/// `ln(a)` — requires a non-zero constant term.
+fn apply_ln(arena: &mut Arena, a: &TSeries) -> Option<TSeries> {
+    let a = a.clone().normalized(arena);
+    if a.leading_exponent(arena)? != 0 {
+        return None; // logarithmic singularity
+    }
+    let (u0, w) = a.split_constant(arena);
+    // ln(u0 + w) = ln u0 + ln(1 + w/u0)
+    let inv_u0 = {
+        let m1 = arena.neg_one;
+        let p = arena.pow(u0, m1);
+        eval::eval(arena, p)
+    };
+    let w_over = TSeries::scale(arena, &w, inv_u0);
+    let mut s = TSeries::compose(
+        arena,
+        &|ar: &mut Arena, i: usize| FnKind::Ln1p.coefficient(ar, i),
+        &w_over,
+    );
+    let ln_u0 = arena.ln(u0);
+    let ln_u0 = eval::eval(arena, ln_u0);
+    if !arena.is_zero_structural(ln_u0) && !s.coeffs.is_empty() && s.shift <= 0 {
+        let idx = (-s.shift) as usize;
+        let c = arena.add(&[s.coeffs[idx], ln_u0]);
+        s.coeffs[idx] = eval::eval(arena, c);
+    }
+    Some(s)
+}
+
+/// `a^α` for a var-free non-integer exponent: `u0^α · Σ C(α,n) (w/u0)^n`.
+///
+/// A non-zero valuation `v` is accepted only when `vα` is an integer and the
+/// result is single-valued: always for one-sided expansions, otherwise only
+/// when `v / denom(α)` is even (so that no `|x|` appears).
+fn pow_rational(arena: &mut Arena, a: &TSeries, alpha: ExprId, one_sided: bool) -> Option<TSeries> {
+    let mut a = a.clone().normalized(arena);
+    let v = a.leading_exponent(arena)?;
+    let mut outer_shift = 0i64;
+    if v != 0 {
+        let ar = arena.as_num(alpha).cloned()?;
+        let va = &ar * rat_i(v);
+        if !va.is_integer() {
+            return None; // genuine Puiseux series
+        }
+        if !one_sided {
+            let q = ar.denom().to_i64()?;
+            if (v / q) % 2 != 0 {
+                return None; // would introduce |x|
+            }
+        }
+        outer_shift = va.to_integer().to_i64()?;
+        a.shift -= v;
+        a.known -= v;
+    }
+    let (u0, w) = a.split_constant(arena);
+    let inv_u0 = {
+        let m1 = arena.neg_one;
+        let p = arena.pow(u0, m1);
+        eval::eval(arena, p)
+    };
+    let w_over = TSeries::scale(arena, &w, inv_u0);
+    let s = TSeries::compose(
+        arena,
+        &move |ar: &mut Arena, i: usize| gen_binomial_expr(ar, alpha, i),
+        &w_over,
+    );
+    let u0a = arena.pow(u0, alpha);
+    let u0a = eval::eval(arena, u0a);
+    let mut r = TSeries::scale(arena, &s, u0a);
+    r.shift += outer_shift;
+    r.known += outer_shift;
+    Some(r)
+}
+
+/// Taylor coefficients by repeated differentiation at `0`.
+fn taylor_by_differentiation(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    n: i64,
+) -> Option<TSeries> {
+    let zero = arena.zero;
+    let mut coeffs = Vec::with_capacity(n.max(0) as usize);
+    let mut current = expr;
+    let mut factorial = Rat::one();
+    for k in 0..n {
+        let at0 = subs::subs(arena, current, var, zero);
+        let value = eval::eval(arena, at0);
+        if value == arena.infinity
+            || value == arena.neg_infinity
+            || value == arena.nan
+            || value == arena.complex_infinity
+            || walk::has_unevaluated(arena, value)
+        {
+            return None;
+        }
+        let coeff = if k == 0 {
+            value
+        } else {
+            let inv = rat_expr(arena, Rat::one() / &factorial);
+            let p = arena.mul(&[value, inv]);
+            eval::eval(arena, p)
+        };
+        coeffs.push(coeff);
+        if k + 1 < n {
+            current = crate::transforms::diff::diff(arena, current, var);
+            factorial *= rat_i(k + 1);
+        }
+    }
+    Some(TSeries {
+        shift: 0,
+        known: n,
+        coeffs,
     })
 }
 
@@ -311,6 +1075,22 @@ mod tests {
         a.display(id).to_string()
     }
 
+    /// Compare a series numerically against the target function at a small point.
+    fn check_close(a: &mut Arena, series: ExprId, target: ExprId, x: ExprId, at: f64, tol: f64) {
+        let nid = a.intern_num(Ratio::from_float(at).unwrap());
+        let pt = a.intern(ExprNode::Num(nid));
+        let s = subs::subs(a, series, x, pt);
+        let t = subs::subs(a, target, x, pt);
+        let sv = crate::transforms::evalf::eval_const_f64(a, s).unwrap();
+        let tv = crate::transforms::evalf::eval_const_f64(a, t).unwrap();
+        assert!(
+            (sv - tv).abs() < tol,
+            "series {} vs target {} at {at}: {sv} vs {tv}",
+            display(a, series),
+            display(a, target)
+        );
+    }
+
     #[test]
     fn series_constant() {
         let mut a = Arena::new();
@@ -326,53 +1106,19 @@ mod tests {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
         let zero = a.zero;
-        // series(x, x, 0, 3) = 0 + 1*x + 0 = x
         let result = series(&mut a, x, x, zero, 3).unwrap();
         assert_eq!(display(&a, result), "x");
     }
 
     #[test]
-    fn series_x_squared_around_zero() {
+    fn series_polynomial_is_exact() {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
-        let two = a.int(2);
-        let x2 = a.pow(x, two);
+        let three = a.int(3);
+        let x3 = a.pow(x, three);
         let zero = a.zero;
-        // series(x^2, x, 0, 3) = 0 + 0*x + 2/2! * x^2 = x^2
-        let result = series(&mut a, x2, x, zero, 3).unwrap();
-        assert_eq!(display(&a, result), "x^2");
-    }
-
-    #[test]
-    fn series_exp_x_around_zero_order_4() {
-        let mut a = Arena::new();
-        let x = sym(&mut a, "x");
-        let expr = a.exp(x);
-        let zero = a.zero;
-        // series(exp(x), x, 0, 4) = 1 + x + x^2/2 + x^3/6
-        let result = series(&mut a, expr, x, zero, 4).unwrap();
-        let expanded = crate::transforms::expand::expand(&mut a, result);
-        let evaled = crate::transforms::eval::eval(&mut a, expanded);
-        let s = display(&a, evaled);
-        assert!(s.contains("1"), "should have constant term 1: {s}");
-        assert!(s.contains("x"), "should have x term: {s}");
-        assert!(s.contains("x^2"), "should have x^2 term: {s}");
-        assert!(s.contains("x^3"), "should have x^3 term: {s}");
-    }
-
-    #[test]
-    fn series_sin_x_around_zero_order_4() {
-        let mut a = Arena::new();
-        let x = sym(&mut a, "x");
-        let expr = a.sin(x);
-        let zero = a.zero;
-        // series(sin(x), x, 0, 4) = x - x^3/6
-        let result = series(&mut a, expr, x, zero, 4).unwrap();
-        let expanded = crate::transforms::expand::expand(&mut a, result);
-        let evaled = crate::transforms::eval::eval(&mut a, expanded);
-        let s = display(&a, evaled);
-        assert!(s.contains("x"), "should have x term: {s}");
-        assert!(s.contains("x^3"), "should have x^3 term: {s}");
+        let result = series(&mut a, x3, x, zero, 5).unwrap();
+        assert_eq!(display(&a, result), "x^3");
     }
 
     #[test]
@@ -385,50 +1131,169 @@ mod tests {
     }
 
     #[test]
-    fn series_polynomial_is_exact() {
+    fn series_exp_sin_cos_fast_paths() {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
-        let three = a.int(3);
-        let x3 = a.pow(x, three);
         let zero = a.zero;
-        // series(x^3, x, 0, 5) should give exactly x^3
-        // (higher-order terms are zero)
-        let result = series(&mut a, x3, x, zero, 5).unwrap();
-        let s = display(&a, result);
-        assert!(s.contains("x^3"), "should recover x^3: {s}");
+        let e = a.exp(x);
+        let s = series(&mut a, e, x, zero, 5).unwrap();
+        assert_eq!(display(&a, s), "1/24*x^4 + 1/6*x^3 + 1/2*x^2 + x + 1");
+        let sn = a.sin(x);
+        let s = series(&mut a, sn, x, zero, 6).unwrap();
+        assert_eq!(display(&a, s), "1/120*x^5 - 1/6*x^3 + x");
+        let c = a.cos(x);
+        let s = series(&mut a, c, x, zero, 5).unwrap();
+        assert_eq!(display(&a, s), "1/24*x^4 - 1/2*x^2 + 1");
     }
 
     #[test]
-    fn series_sin_fast_path() {
+    fn series_composition_sin_x_squared() {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
-        let sin_x = a.sin(x);
         let zero = a.zero;
-        // sin(x) Maclaurin order 6: x - x³/6 + x⁵/120
-        let result = series(&mut a, sin_x, x, zero, 6).unwrap();
-        let s = a.display(result).to_string();
-        assert!(s.contains("x"), "should contain x: {s}");
+        let two = a.int(2);
+        let x2 = a.pow(x, two);
+        let f = a.sin(x2);
+        let s = series(&mut a, f, x, zero, 8).unwrap();
+        assert_eq!(display(&a, s), "-1/6*x^6 + x^2");
     }
 
     #[test]
-    fn series_cos_fast_path() {
+    fn series_sin_over_x_is_laurent_free() {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
-        let cos_x = a.cos(x);
         let zero = a.zero;
-        let result = series(&mut a, cos_x, x, zero, 5).unwrap();
-        let s = a.display(result).to_string();
-        assert!(s.contains("1"), "cos series starts with 1: {s}");
+        let sn = a.sin(x);
+        let f = a.div(sn, x);
+        let s = series(&mut a, f, x, zero, 5).unwrap();
+        assert_eq!(display(&a, s), "1/120*x^4 - 1/6*x^2 + 1");
     }
 
     #[test]
-    fn series_exp_fast_path() {
+    fn series_pole_gives_laurent() {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
-        let exp_x = a.exp(x);
         let zero = a.zero;
-        let result = series(&mut a, exp_x, x, zero, 5).unwrap();
-        let s = a.display(result).to_string();
-        assert!(s.contains("1") && s.contains("x"), "exp series: {s}");
+        let one = a.one;
+        // 1/(x(1−x)) = 1/x + 1 + x + x² + …
+        let omx = a.sub(one, x);
+        let den = a.mul(&[x, omx]);
+        let f = a.div(one, den);
+        let s = series(&mut a, f, x, zero, 3).unwrap();
+        assert_eq!(display(&a, s), "x^2 + x + 1/x + 1");
+    }
+
+    #[test]
+    fn series_tan_asin_erf_lambertw() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let zero = a.zero;
+        let t = a.tan(x);
+        let s = series(&mut a, t, x, zero, 8).unwrap();
+        assert_eq!(display(&a, s), "17/315*x^7 + 2/15*x^5 + 1/3*x^3 + x");
+        let th = a.tanh(x);
+        let s = series(&mut a, th, x, zero, 6).unwrap();
+        assert_eq!(display(&a, s), "2/15*x^5 - 1/3*x^3 + x");
+        let asn = a.asin(x);
+        let s = series(&mut a, asn, x, zero, 6).unwrap();
+        assert_eq!(display(&a, s), "3/40*x^5 + 1/6*x^3 + x");
+        let w = a.lambertw(x);
+        let s = series(&mut a, w, x, zero, 5).unwrap();
+        assert_eq!(display(&a, s), "-8/3*x^4 + 3/2*x^3 - x^2 + x");
+        let e = a.erf(x);
+        let s = series(&mut a, e, x, zero, 4).unwrap();
+        check_close(&mut a, s, e, x, 0.1, 1e-5);
+    }
+
+    #[test]
+    fn series_ln_and_binomial() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let zero = a.zero;
+        let one = a.one;
+        let opx = a.add(&[one, x]);
+        let l = a.ln(opx);
+        let s = series(&mut a, l, x, zero, 4).unwrap();
+        assert_eq!(display(&a, s), "1/3*x^3 - 1/2*x^2 + x");
+        let half = a.rational(1, 2);
+        let sq = a.pow(opx, half);
+        let s = series(&mut a, sq, x, zero, 4).unwrap();
+        assert_eq!(display(&a, s), "1/16*x^3 - 1/8*x^2 + 1/2*x + 1");
+        // ln(2 + x) = ln 2 + x/2 − x²/8 + …
+        let two = a.int(2);
+        let tpx = a.add(&[two, x]);
+        let l2 = a.ln(tpx);
+        let s = series(&mut a, l2, x, zero, 3).unwrap();
+        check_close(&mut a, s, l2, x, 0.01, 1e-6);
+    }
+
+    #[test]
+    fn series_around_nonzero_point() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let one = a.one;
+        let e = a.exp(x);
+        let s = series(&mut a, e, x, one, 4).unwrap();
+        check_close(&mut a, s, e, x, 1.01, 1e-8);
+    }
+
+    #[test]
+    fn puiseux_is_rejected() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let zero = a.zero;
+        let sq = a.sqrt(x);
+        let sn = a.sin(x);
+        let f = a.mul(&[sq, sn]);
+        assert!(series(&mut a, f, x, zero, 5).is_err());
+        let l = a.ln(x);
+        assert!(series(&mut a, l, x, zero, 5).is_err());
+    }
+
+    #[test]
+    fn series_at_infinity_rational() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let one = a.one;
+        let xp1 = a.add(&[x, one]);
+        let f = a.div(x, xp1);
+        let s = series_at_infinity(&mut a, f, x, 3, false).unwrap();
+        assert_eq!(display(&a, s), "x^(-2) - 1/x + 1");
+        // sqrt(x²+1) − x  ~  1/(2x) − 1/(8x³)
+        let two = a.int(2);
+        let x2 = a.pow(x, two);
+        let x2p1 = a.add(&[x2, one]);
+        let root = a.sqrt(x2p1);
+        let g = a.sub(root, x);
+        let s = series_at_infinity(&mut a, g, x, 4, false).unwrap();
+        assert_eq!(display(&a, s), "-1/8*x^(-3) + 1/2*1/x");
+    }
+
+    #[test]
+    fn exp_pow_with_variable_exponent() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let zero = a.zero;
+        let one = a.one;
+        // (1+x)^x = 1 + x² − x³/2 + …
+        let opx = a.add(&[one, x]);
+        let f = a.pow(opx, x);
+        let s = series(&mut a, f, x, zero, 4).unwrap();
+        assert_eq!(display(&a, s), "-1/2*x^3 + x^2 + 1");
+    }
+
+    #[test]
+    fn tan_coefficients_match_bernoulli_formula() {
+        // 1, 1/3, 2/15, 17/315, 62/2835
+        let expected = [(1, 1), (3, 1), (5, 2), (7, 17), (9, 62)];
+        let denoms = [1i64, 3, 15, 315, 2835];
+        for (i, (n, num)) in expected.iter().enumerate() {
+            let c = FnKind::Tan.rational_coefficient(*n as usize);
+            assert_eq!(
+                c,
+                Rat::new(BigInt::from(*num), BigInt::from(denoms[i])),
+                "n={n}"
+            );
+        }
     }
 }

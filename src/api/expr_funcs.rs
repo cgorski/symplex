@@ -386,10 +386,13 @@ impl Expr<Numeric> {
         items[0].wrap(id)
     }
 
-    /// Symbolic summation: `Sum(body, var=lower..upper)`.
+    /// Symbolic summation: `Sum(body, var=lower..upper)` (unevaluated node).
     ///
-    /// When evaluated (`.eval()`), if `lower` and `upper` are concrete integers,
-    /// the sum is computed by substituting each integer value for `var` in `body`.
+    /// Construction is cheap and does nothing.  `.eval()` runs the symbolic
+    /// summation engine (see [`summation`](Self::summation)): small concrete
+    /// ranges are enumerated exactly, symbolic and infinite bounds get closed
+    /// forms where known.  Use [`summation`](Self::summation) to evaluate
+    /// directly without building the node.
     pub fn symbolic_sum(body: &Ex, var: &Ex, lower: &Ex, upper: &Ex) -> Ex {
         let var_id = body.checked_id(var);
         let lower_id = body.checked_id(lower);
@@ -405,10 +408,12 @@ impl Expr<Numeric> {
         body.wrap(id)
     }
 
-    /// Symbolic product: `Product(body, var=lower..upper)`.
+    /// Symbolic product: `Product(body, var=lower..upper)` (unevaluated node).
     ///
     /// When evaluated (`.eval()`), if `lower` and `upper` are concrete integers,
-    /// the product is computed by substituting each integer value for `var` in `body`.
+    /// the product is computed by substituting each integer value for `var` in
+    /// `body`.  Use [`product_over`](Self::product_over) for closed forms with
+    /// symbolic or infinite bounds.
     pub fn symbolic_product(body: &Ex, var: &Ex, lower: &Ex, upper: &Ex) -> Ex {
         let var_id = body.checked_id(var);
         let lower_id = body.checked_id(lower);
@@ -424,13 +429,18 @@ impl Expr<Numeric> {
         body.wrap(id)
     }
 
-    /// Test whether the infinite series `Σ_{k=1}^{∞} self(var)` converges.
+    /// Test whether the infinite series `Σ_{k=1}^{∞} self(var)` converges
+    /// (absolutely or conditionally).
     ///
     /// Returns `Some(true)` if the series converges, `Some(false)` if it
-    /// diverges, or `None` if the test is inconclusive.
+    /// diverges, or `None` if the tests are inconclusive — never a guess.
     ///
-    /// Applies several tests in sequence: divergence test, p-series test,
-    /// and geometric series test.
+    /// Tests applied: divergence test, rational-function degree test,
+    /// exact Stirling growth analysis for hypergeometric-type terms (this
+    /// subsumes the ratio, root, p-series and alternating-series tests),
+    /// direct comparison for bounded factors (`sin`, `cos`), and the
+    /// integral test for log-exp terms such as `1/(k ln² k)`.  See also
+    /// [`is_absolutely_convergent`](Self::is_absolutely_convergent).
     ///
     /// # Examples
     ///
@@ -440,8 +450,11 @@ impl Expr<Numeric> {
     /// let ctx = Context::new();
     /// let k = ctx.symbol("k");
     /// // 1/k² converges (p-series with p=2)
-    /// let body = k.powi(-2);
-    /// assert_eq!(body.is_convergent(&k), Some(true));
+    /// assert_eq!(k.powi(-2).is_convergent(&k), Some(true));
+    /// // k!/k^k converges (ratio test, limit 1/e)
+    /// assert_eq!((k.factorial() / k.pow(&k)).is_convergent(&k), Some(true));
+    /// // k/(k+1) diverges (terms do not tend to zero)
+    /// assert_eq!((&k / &(&k + 1)).is_convergent(&k), Some(false));
     /// ```
     #[must_use]
     pub fn is_convergent(&self, var: &Ex) -> Option<bool> {
@@ -4218,11 +4231,9 @@ impl Expr<Numeric> {
     /// Compute the formal power series of this expression about `point`.
     ///
     /// Returns a [`FormalPowerSeries`](crate::calculus::formal_series::FormalPowerSeries)
-    /// that provides access to individual coefficients and truncation.
-    ///
-    /// For known elementary functions (exp, sin, cos, sinh, cosh, ln(1+x),
-    /// atan, (1+x)^α, 1/(1-x)), returns a closed-form coefficient formula.
-    /// For other functions, falls back to computing Taylor coefficients.
+    /// with exact, lazily computed coefficients (`Ex`-valued), a closed-form
+    /// general term for elementary functions, truncation, and series
+    /// arithmetic (`add`, `mul`, `compose`, `inverse`, `reversion`, …).
     ///
     /// # Examples
     ///
@@ -4231,16 +4242,16 @@ impl Expr<Numeric> {
     ///
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
-    /// let zero = ctx.int(0);
-    /// let series = x.exp().fps(&x, &zero);
+    /// let series = x.exp().fps(&x, &ctx.int(0));
     /// assert!(series.has_closed_form());
+    /// assert_eq!(series.coefficient(3).to_string(), "1/6");
     /// ```
     #[must_use]
     pub fn fps(&self, var: &Ex, point: &Ex) -> crate::calculus::formal_series::FormalPowerSeries {
         let var_id = self.checked_id(var);
         let point_id = self.checked_id(point);
-        let mut inner = self.inner.write();
-        crate::calculus::formal_series::fps(&mut inner.arena, self.raw_id(), var_id, point_id)
+        let _span = debug_span!("fps", expr = ?self.raw_id()).entered();
+        crate::calculus::formal_series::fps(&self.context(), self.raw_id(), var_id, point_id)
     }
 
     /// Compute the formal power series about 0 (Maclaurin series).
@@ -4256,23 +4267,30 @@ impl Expr<Numeric> {
     /// let x = ctx.symbol("x");
     /// let series = x.sin().fps_maclaurin(&x);
     /// assert!(series.has_closed_form());
+    /// assert_eq!(series.truncate(6).to_string(), "1/120*x^5 - 1/6*x^3 + x");
     /// ```
     #[must_use]
     pub fn fps_maclaurin(&self, var: &Ex) -> crate::calculus::formal_series::FormalPowerSeries {
         let var_id = self.checked_id(var);
-        let mut inner = self.inner.write();
-        let zero = inner.arena.zero;
-        crate::calculus::formal_series::fps(&mut inner.arena, self.raw_id(), var_id, zero)
+        let zero = self.inner.read().arena.zero;
+        crate::calculus::formal_series::fps(&self.context(), self.raw_id(), var_id, zero)
     }
 
     // ── Finite differences ─────────────────────────────────────────
 
-    /// Replace derivatives in this expression with finite difference
-    /// approximations.
+    /// Finite-difference approximation of the `order`-th derivative of this
+    /// expression with respect to `var`, on the stencil `points`, evaluated
+    /// at `var` itself:
     ///
-    /// When encountering `Derivative(f, x)`, replaces it with the central
-    /// difference formula `(f(x + h/2) - f(x - h/2)) / h` where `h` is
-    /// the symbol `_h`.
+    /// ```text
+    /// d^order self / d var^order  ≈  Σᵢ wᵢ · self(var → points[i])
+    /// ```
+    ///
+    /// The weights `wᵢ` are exact rationals (or exact expressions in `h`)
+    /// from Fornberg's algorithm.  Formal `Derivative(f, var)` nodes inside
+    /// `self` are replaced first, each by the finite difference of its own
+    /// order on the same stencil; `order = 0` then simply performs that
+    /// replacement.
     ///
     /// # Examples
     ///
@@ -4281,23 +4299,19 @@ impl Expr<Numeric> {
     ///
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
-    /// let expr = x.powi(2).formal_diff(&x);
-    /// let finite = expr.differentiate_finite(&x);
-    /// let s = format!("{finite}");
-    /// assert!(s.contains("_h"), "should contain step size: {s}");
+    /// let h = ctx.symbol("h");
+    /// let stencil = [&x - &h, x.clone(), &x + &h];
+    /// // central difference of x³ is exact up to the h² term: 3x² + h²
+    /// let d = x.powi(3).differentiate_finite(&x, &stencil, 1).expand();
+    /// assert_eq!(d.to_string(), "h^2 + 3*x^2");
+    ///
+    /// // replace a formal derivative node
+    /// let d = x.sin().formal_diff(&x).differentiate_finite(&x, &stencil, 0);
+    /// assert!(!d.to_string().contains("Derivative"));
     /// ```
     #[must_use = "returns a new expression; does not modify in place"]
-    pub fn differentiate_finite(&self, var: &Ex) -> Ex {
-        let var_id = self.checked_id(var);
-        let id = {
-            let mut guard = self.inner.write();
-            crate::calculus::finite_diff::differentiate_finite(
-                &mut guard.arena,
-                self.raw_id(),
-                var_id,
-            )
-        };
-        self.wrap(id)
+    pub fn differentiate_finite(&self, var: &Ex, points: &[Ex], order: usize) -> Ex {
+        crate::calculus::finite_diff::differentiate_finite(self, var, points, order)
     }
 
     /// Factorize this integer expression into prime factors.

@@ -390,7 +390,11 @@ fn compute_degree_bound(
 /// of expressions that are polynomial in `k`.
 ///
 /// Returns `None` if `f` is not recognised as hypergeometric.
-fn hypergeometric_ratio(arena: &mut Arena, f: ExprId, k: ExprId) -> Option<(ExprId, ExprId)> {
+pub(crate) fn hypergeometric_ratio(
+    arena: &mut Arena,
+    f: ExprId,
+    k: ExprId,
+) -> Option<(ExprId, ExprId)> {
     // If f doesn't depend on k it is a constant term; ratio = 1.
     if !walk::free_symbols(arena, f).contains(&k) {
         return Some((arena.one, arena.one));
@@ -486,12 +490,14 @@ fn hypergeometric_ratio(arena: &mut Arena, f: ExprId, k: ExprId) -> Option<(Expr
                 let r = r.clone();
                 if r.is_integer() {
                     let n_val: i64 = r.to_integer().to_i64()?;
-                    if n_val > 0 && n_val <= 20 {
-                        // (base(k))^n: ratio = (base(k+1)/base(k))^n
+                    if n_val != 0 && n_val.abs() <= 20 {
+                        // (base(k))^n: ratio = (base(k+1)/base(k))^n; for
+                        // negative n the two parts swap.
                         if let Some((bp, bq)) = hypergeometric_ratio(arena, base, k) {
-                            let exp_copy = exp;
-                            let numer = arena.pow(bp, exp_copy);
-                            let denom = arena.pow(bq, exp_copy);
+                            let abs_exp = arena.int(n_val.abs());
+                            let (top, bottom) = if n_val > 0 { (bp, bq) } else { (bq, bp) };
+                            let numer = arena.pow(top, abs_exp);
+                            let denom = arena.pow(bottom, abs_exp);
                             return Some((numer, denom));
                         }
                     }
@@ -564,6 +570,40 @@ fn try_ratio_by_substitution(arena: &mut Arena, f: ExprId, k: ExprId) -> Option<
     let _ = polybridge::expr_to_poly(arena, denom, k)?;
 
     Some((numer, denom))
+}
+
+/// Decide whether `term` is a hypergeometric term in `k` and, if so, return
+/// the ratio `term(k+1)/term(k)` as a rational function of `k`.
+///
+/// The ratio may contain symbolic parameters other than `k` (e.g. the `n`
+/// in `C(n, k)`), but both its numerator and denominator must be polynomial
+/// in `k`.  Returns `None` for terms such as `1/k!`-free `sin(k)` or `k^k`.
+#[must_use]
+pub(crate) fn is_hypergeometric(arena: &mut Arena, term: ExprId, k: ExprId) -> Option<ExprId> {
+    if !matches!(arena.node(k), ExprNode::Symbol(_)) {
+        return None;
+    }
+    let (numer, denom) = hypergeometric_ratio(arena, term, k)?;
+    let numer = eval::eval(arena, numer);
+    let denom = eval::eval(arena, denom);
+    let numer_x = arena.expand_expr(numer);
+    let denom_x = arena.expand_expr(denom);
+    // Both parts must be polynomial in k (symbolic coefficients allowed).
+    crate::calculus::summation::sym_poly_in(arena, numer_x, k)?;
+    crate::calculus::summation::sym_poly_in(arena, denom_x, k)?;
+    if arena.is_zero_structural(denom_x) {
+        return None;
+    }
+    let ratio = arena.div(numer_x, denom_x);
+    // Cancel common polynomial factors when everything is rational in k.
+    let ratio = if polybridge::expr_to_poly(arena, numer_x, k).is_some()
+        && polybridge::expr_to_poly(arena, denom_x, k).is_some()
+    {
+        polybridge::cancel(arena, ratio, k)
+    } else {
+        ratio
+    };
+    Some(eval::eval(arena, ratio))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
