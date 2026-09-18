@@ -40,6 +40,12 @@ pub(crate) fn solve_inequality(
 ) -> Result<ExprId, SymplexError> {
     tracing::debug!("solve_inequality: rel={:?}", rel);
 
+    // ── Absolute-value fast path: c·|a·x + b| + d rel 0 → interval / union
+    //    (also handles symbolic endpoints). ──
+    if let Some(set) = try_solve_abs_inequality(arena, expr, var, rel) {
+        return Ok(set);
+    }
+
     // ── Sturm fast path: if the expression is polynomial, use Sturm
     //    chains to detect the no-real-roots case without solving. ──
     if let Some(poly) = crate::poly::polybridge::expr_to_poly(arena, expr, var) {
@@ -171,15 +177,215 @@ pub(crate) fn solve_inequality(
     }
 }
 
-/// Solve `expr = 0`, returning solutions as a `FiniteSet` `ExprId`.
+/// Solve `expr = 0`, returning the solution set as an `ExprId`.
+///
+/// - Identity `0 = 0` → `UniversalSet`
+/// - Contradiction / no roots found → `EmptySet`
+/// - Otherwise a `FiniteSet` of the roots
 pub(crate) fn solveset(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
-    let solutions = crate::transforms::solve::solve(arena, expr, var);
-    let root_ids: Vec<ExprId> = solutions.into_iter().map(|s| s.value).collect();
-    if root_ids.is_empty() {
-        arena.empty_set
-    } else {
-        arena.finite_set(&root_ids)
+    use crate::transforms::solve::SolveOutcome;
+    match crate::transforms::solve::solve_classified(arena, expr, var) {
+        SolveOutcome::Identity => arena.universal_set,
+        SolveOutcome::NoSolution(_) => arena.empty_set,
+        SolveOutcome::Solutions(solutions) => {
+            let root_ids: Vec<ExprId> = solutions.into_iter().map(|s| s.value).collect();
+            if root_ids.is_empty() {
+                arena.empty_set
+            } else {
+                arena.finite_set(&root_ids)
+            }
+        }
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Absolute-value inequalities: c·|f(x)| + d  rel  0  with f linear in x
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Try to solve `expr rel 0` when `expr` has the shape `c·|a·x + b| + d`
+/// (a single absolute-value term plus var-free terms).
+///
+/// Rewrites to `|f| rel' k` and returns the interval / union directly,
+/// which also works for **symbolic** `a`, `b`, `k` where numeric root
+/// sorting would fail:
+///
+/// - `|f| < k`  → `-k < f < k`  → one interval in `x`
+/// - `|f| > k`  → `f < -k ∪ f > k` → union of two rays
+///
+/// Returns `None` if the expression does not have this shape or the sign
+/// of the leading coefficient `a` cannot be determined.
+fn try_solve_abs_inequality(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    rel: Relation,
+) -> Option<ExprId> {
+    use crate::base::node::ExprNode;
+
+    let terms: Vec<ExprId> = match arena.node(expr).clone() {
+        ExprNode::Add(children) => children.to_vec(),
+        _ => vec![expr],
+    };
+
+    // Locate the single |f(x)| term and its (var-free) coefficient.
+    let mut abs_inner: Option<ExprId> = None;
+    let mut abs_coeff: Option<ExprId> = None;
+    let mut rest: Vec<ExprId> = Vec::new();
+    for &t in &terms {
+        if !crate::base::walk::contains(arena, t, var) {
+            rest.push(t);
+            continue;
+        }
+        let (inner, coeff) = match arena.node(t).clone() {
+            ExprNode::Abs(inner) => (inner, arena.one),
+            ExprNode::Neg(n) => match arena.node(n).clone() {
+                ExprNode::Abs(inner) => (inner, arena.neg_one),
+                _ => return None,
+            },
+            ExprNode::Mul(children) => {
+                let mut inner = None;
+                let mut consts = Vec::new();
+                for &c in &children {
+                    if !crate::base::walk::contains(arena, c, var) {
+                        consts.push(c);
+                    } else if let ExprNode::Abs(i) = arena.node(c).clone()
+                        && inner.is_none()
+                    {
+                        inner = Some(i);
+                    } else {
+                        return None;
+                    }
+                }
+                let coeff = match consts.len() {
+                    0 => arena.one,
+                    1 => consts[0],
+                    _ => arena.mul(&consts),
+                };
+                (inner?, coeff)
+            }
+            _ => return None,
+        };
+        if abs_inner.is_some() {
+            return None; // two abs terms
+        }
+        abs_inner = Some(inner);
+        abs_coeff = Some(coeff);
+    }
+    let inner = abs_inner?;
+    let coeff = abs_coeff?;
+
+    // f = a·x + b must be linear in x.
+    let coeffs = crate::transforms::solve::symbolic_poly_coeffs(arena, inner, var)?;
+    if coeffs.len() != 2 {
+        return None;
+    }
+    let a = coeffs[1];
+    let b = coeffs[0];
+
+    // c·|f| + d rel 0  ⇔  |f| rel'  (-d/c)   (flip if c < 0)
+    let d = match rest.len() {
+        0 => arena.zero,
+        1 => rest[0],
+        _ => arena.add(&rest),
+    };
+    let c_sign = sign_of(arena, coeff)?;
+    let neg_d = arena.neg(d);
+    let k = arena.div(neg_d, coeff);
+    let k = crate::transforms::eval::eval(arena, k);
+    let rel = if c_sign < 0 { flip(rel) } else { rel };
+
+    // If k is a known negative number, |f| < k is empty and |f| > k is ℝ.
+    if let Some(kv) = arena.as_num(k).cloned() {
+        use num_traits::Signed;
+        if kv.is_negative() {
+            return Some(match rel {
+                Relation::Lt | Relation::Le => arena.empty_set,
+                Relation::Gt | Relation::Ge => {
+                    arena.interval(arena.neg_infinity, arena.infinity, INTERVAL_BOTH_OPEN)
+                }
+            });
+        }
+    }
+
+    // Endpoints in x: f = ±k  ⇒  x = (±k - b)/a
+    let a_sign = sign_of(arena, a)?;
+    let k_minus_b = arena.sub(k, b);
+    let neg_k = arena.neg(k);
+    let neg_k_minus_b = arena.sub(neg_k, b);
+    let x_hi = arena.div(k_minus_b, a);
+    let x_lo = arena.div(neg_k_minus_b, a);
+    let x_hi = crate::transforms::eval::eval(arena, x_hi);
+    let x_lo = crate::transforms::eval::eval(arena, x_lo);
+    let (lo, hi) = if a_sign > 0 {
+        (x_lo, x_hi)
+    } else {
+        (x_hi, x_lo)
+    };
+
+    Some(match rel {
+        Relation::Lt => arena.interval(lo, hi, INTERVAL_BOTH_OPEN),
+        Relation::Le => arena.interval(lo, hi, INTERVAL_BOTH_CLOSED),
+        Relation::Gt => {
+            let left = arena.interval(arena.neg_infinity, lo, INTERVAL_BOTH_OPEN);
+            let right = arena.interval(hi, arena.infinity, INTERVAL_BOTH_OPEN);
+            arena.set_union(&[left, right])
+        }
+        Relation::Ge => {
+            let left = arena.interval(arena.neg_infinity, lo, INTERVAL_LEFT_OPEN);
+            let right = arena.interval(hi, arena.infinity, INTERVAL_RIGHT_OPEN);
+            arena.set_union(&[left, right])
+        }
+    })
+}
+
+/// Reverse a relation (used when dividing by a negative coefficient).
+fn flip(rel: Relation) -> Relation {
+    match rel {
+        Relation::Gt => Relation::Lt,
+        Relation::Ge => Relation::Le,
+        Relation::Lt => Relation::Gt,
+        Relation::Le => Relation::Ge,
+    }
+}
+
+/// Sign of a var-free expression: `Some(1)`, `Some(-1)`, or `None` if
+/// unknown (symbolic without a determinable sign, or zero).
+fn sign_of(arena: &mut Arena, e: ExprId) -> Option<i8> {
+    use num_traits::Signed;
+    let ev = crate::transforms::eval::eval(arena, e);
+    if let Some(r) = arena.as_num(ev) {
+        return if r.is_positive() {
+            Some(1)
+        } else if r.is_negative() {
+            Some(-1)
+        } else {
+            None
+        };
+    }
+    if let Some(v) = try_evalf_f64(arena, ev) {
+        if v > 0.0 {
+            return Some(1);
+        }
+        if v < 0.0 {
+            return Some(-1);
+        }
+        return None;
+    }
+    // Symbolic: consult stored symbol assumptions for a bare symbol.
+    if let crate::base::node::ExprNode::Symbol(sid) = arena.node(ev) {
+        let a = arena.symbol_assumptions(*sid);
+        if a.known_true
+            .contains(crate::base::assumptions::Props::POSITIVE)
+        {
+            return Some(1);
+        }
+        if a.known_true
+            .contains(crate::base::assumptions::Props::NEGATIVE)
+        {
+            return Some(-1);
+        }
+    }
+    None
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

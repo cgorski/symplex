@@ -12,8 +12,16 @@
 //!   → characteristic equation `r² + b*r + c = 0`, solution based on roots
 //! - **Homogeneous coefficient:** `y' = f(y/x)` — substitution `v = y/x`
 //! - **nth-order reducible:** `F(y, y', y'') = 0` (no `x`) — substitution `p = y'`
+//! - **nth-order linear constant-coefficient:** `Σ a_k y^(k) = g(x)` for any
+//!   order via the characteristic polynomial (repeated roots → `x^k e^{rx}`,
+//!   complex pairs → `e^{ax}(cos bx, sin bx)`), with undetermined coefficients
+//!   for `poly × exp × {sin, cos}` forcing (resonance handled)
+//! - **Clairaut:** `y = x·y' + f(y')` → `y = C·x + f(C)`
+//! - **Riccati:** `y' = q₀ + q₁·y + q₂·y²` given a particular solution
+//!   ([`solve_riccati`])
 //! - **Constant-coefficient systems:** `ẋ = A·x` → `x(t) = exp(A·t)·c`
-//!   via eigendecomposition (exact) or matrix exponential series (fallback)
+//!   via eigendecomposition (exact) or matrix exponential series (fallback),
+//!   with initial values via [`solve_ode_system_ivp`]
 //! - **Non-homogeneous systems:** `ẋ = A·x + b(t)` → variation of parameters
 
 use crate::api::expr::Ex;
@@ -75,8 +83,19 @@ pub fn dsolve(
         return Some(result);
     }
 
+    // Type 1e: nth-order linear constant-coefficient (any order ≥ 2),
+    // forcing = poly × exp × {sin, cos} via undetermined coefficients.
+    if let Some(result) = try_nth_order_linear_const_coeff(arena, expr, func, var, func_sym) {
+        return Some(result);
+    }
+
     // Type 1d: Variation of parameters: y'' + p·y' + q·y = g(x) (fallback)
     if let Some(result) = try_variation_of_parameters(arena, expr, func, var, func_sym, var_sym) {
+        return Some(result);
+    }
+
+    // Type 1f: Clairaut: y = x·y' + f(y')
+    if let Some(result) = try_clairaut(arena, expr, func, var, func_sym, var_sym) {
         return Some(result);
     }
 
@@ -1058,7 +1077,7 @@ fn try_first_order_linear_general(
         return None;
     }
 
-    let mu = arena.exp(int_px);
+    let mu = exp_of_log_sum(arena, int_px);
 
     // Solution: y = (1/μ) · [∫ Q(x)·μ dx + C1]
     let neg_one = arena.int(-1);
@@ -1404,7 +1423,7 @@ fn try_integrating_factor_ode(
         if !contains_sym(arena, ratio_cancelled, func_sym) {
             let int_ratio = crate::transforms::integrate::integrate(arena, ratio_cancelled, var);
             if !matches!(arena.node(int_ratio), ExprNode::Integral(_, _)) {
-                let mu = arena.exp(int_ratio);
+                let mu = exp_of_log_sum(arena, int_ratio);
 
                 // New M' = μ·M,  N' = μ·N
                 let new_m = arena.mul(&[mu, m_expr]);
@@ -1434,7 +1453,7 @@ fn try_integrating_factor_ode(
         if !contains_sym(arena, ratio_cancelled, var_sym) {
             let int_ratio = crate::transforms::integrate::integrate(arena, ratio_cancelled, func);
             if !matches!(arena.node(int_ratio), ExprNode::Integral(_, _)) {
-                let mu = arena.exp(int_ratio);
+                let mu = exp_of_log_sum(arena, int_ratio);
 
                 let new_m = arena.mul(&[mu, m_expr]);
                 let new_n = arena.mul(&[mu, n_expr]);
@@ -1557,10 +1576,21 @@ fn try_homogeneous_coefficient(
         return None;
     }
 
-    // Verify homogeneity: f(v) should equal the original RHS when v = y/x.
-    // Spot-check: RHS(x, y) should equal f(y/x).  We rely on the algebraic
-    // structure being correct — the substitution x=1 is valid precisely when
-    // the function is homogeneous of degree 0.
+    // Verify homogeneity of degree 0: RHS(x, v·x) must reduce to f(v) —
+    // i.e. be free of x after cancellation.  Without this check any
+    // polynomial RHS (e.g. y² + x², degree 2) would be misclassified.
+    {
+        let vx = arena.mul(&[v, var]);
+        let probe = crate::transforms::subs::subs(arena, rhs, func, vx);
+        let probe = crate::transforms::eval::eval(arena, probe);
+        let probe = crate::transforms::expand::expand(arena, probe);
+        let probe = crate::transforms::eval::eval(arena, probe);
+        let probe = arena.cancel_expr(probe, var);
+        let probe = crate::transforms::eval::eval(arena, probe);
+        if contains_sym(arena, probe, var_sym) {
+            return None;
+        }
+    }
 
     // Now we have:  v + x*v' = f(v)  →  dv/(f(v) - v) = dx/x
     // Integrate:  ∫ dv/(f(v) - v) = ln|x| + C1
@@ -1715,17 +1745,63 @@ fn try_nth_order_reducible(
 }
 
 fn contains_sym(arena: &Arena, expr: ExprId, sym: SymbolId) -> bool {
-    match arena.node(expr).clone() {
-        ExprNode::Symbol(s) => s == sym,
-        other => {
-            for &child in other.children().iter() {
-                if contains_sym(arena, child, sym) {
+    let mut stack = vec![expr];
+    while let Some(id) = stack.pop() {
+        match arena.node(id) {
+            ExprNode::Symbol(s) => {
+                if *s == sym {
                     return true;
                 }
             }
-            false
+            other => other.for_each_child(|c| stack.push(c)),
         }
     }
+    false
+}
+
+/// `exp(Σ cᵢ·ln(fᵢ))` → `Π fᵢ^{cᵢ}` for integrating factors.
+///
+/// Integrating factors are only needed up to a constant factor, so
+/// `ln|f|` is treated as `ln f` (the sign is absorbed into the constant
+/// of integration).  Terms that are not logarithms stay inside `exp`.
+fn exp_of_log_sum(arena: &mut Arena, integral: ExprId) -> ExprId {
+    let terms: Vec<ExprId> = match arena.node(integral).clone() {
+        ExprNode::Add(c) => c.to_vec(),
+        _ => vec![integral],
+    };
+    let mut factors: Vec<ExprId> = Vec::new();
+    let mut leftover: Vec<ExprId> = Vec::new();
+    for t in terms {
+        let (coeff, term) = arena.as_coeff_term(t);
+        let inner = match arena.node(term).clone() {
+            ExprNode::Ln(inner) => Some(inner),
+            _ => None,
+        };
+        match inner {
+            Some(inner) => {
+                let base = match arena.node(inner).clone() {
+                    ExprNode::Abs(a) => a,
+                    _ => inner,
+                };
+                if coeff.is_one() {
+                    factors.push(base);
+                } else {
+                    let c_id = ode_ratio_to_expr(arena, &coeff);
+                    factors.push(arena.pow(base, c_id));
+                }
+            }
+            None => leftover.push(t),
+        }
+    }
+    if factors.is_empty() {
+        return arena.exp(integral);
+    }
+    if !leftover.is_empty() {
+        let rest = arena.add(&leftover);
+        factors.push(arena.exp(rest));
+    }
+    let prod = arena.mul(&factors);
+    crate::transforms::eval::eval(arena, prod)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2554,6 +2630,674 @@ fn extract_fundamental_solutions(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// nth-order linear constant-coefficient ODEs: Σ a_k y^(k) = g(x)
+// ═══════════════════════════════════════════════════════════════════════════
+
+type Rat = num_rational::Ratio<num_bigint::BigInt>;
+
+/// Highest derivative order recognised by the nth-order solver.
+const MAX_ODE_ORDER: usize = 12;
+
+/// A linear constant-coefficient ODE `Σ a_k·y^(k) + g(x) = 0`.
+struct LinearCcOde {
+    /// `a_0 … a_n` (ascending derivative order), `a_n ≠ 0`.
+    coeffs: Vec<Rat>,
+    /// The forcing terms `g(x)` as they appear in the zero-form expression.
+    forcing: Vec<ExprId>,
+}
+
+/// Derivative chain `[y, y', y'', …]` up to [`MAX_ODE_ORDER`].
+fn derivative_chain(arena: &mut Arena, func: ExprId, var: ExprId) -> Vec<ExprId> {
+    let mut chain = vec![func];
+    for k in 1..=MAX_ODE_ORDER {
+        let d = arena.intern(ExprNode::Derivative(chain[k - 1], var));
+        chain.push(d);
+    }
+    chain
+}
+
+/// Recognise `Σ a_k·y^(k) + g(x) = 0` with rational `a_k`.
+fn extract_linear_cc(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+    func_sym: SymbolId,
+) -> Option<LinearCcOde> {
+    use num_traits::Zero;
+    let chain = derivative_chain(arena, func, var);
+    let children: Vec<ExprId> = match arena.node(expr).clone() {
+        ExprNode::Add(c) => c.to_vec(),
+        _ => vec![expr],
+    };
+    let mut coeffs = vec![Rat::zero(); MAX_ODE_ORDER + 1];
+    let mut forcing = Vec::new();
+    for child in children {
+        let (coeff, term) = arena.as_coeff_term(child);
+        if let Some(k) = chain.iter().position(|&d| d == term) {
+            coeffs[k] += coeff;
+        } else if !contains_sym(arena, child, func_sym) {
+            forcing.push(child);
+        } else {
+            return None;
+        }
+    }
+    while coeffs.len() > 1 && coeffs.last().is_some_and(|c| c.is_zero()) {
+        coeffs.pop();
+    }
+    if coeffs.len() < 2 {
+        return None; // no derivative at all
+    }
+    Some(LinearCcOde { coeffs, forcing })
+}
+
+/// Gaussian rational `re + im·i` — exact arithmetic for the complex
+/// exponential shift used by undetermined coefficients.
+#[derive(Clone, Debug, PartialEq)]
+struct CQ {
+    re: Rat,
+    im: Rat,
+}
+
+impl CQ {
+    fn new(re: Rat, im: Rat) -> Self {
+        Self { re, im }
+    }
+    fn real(re: Rat) -> Self {
+        Self {
+            re,
+            im: num_traits::Zero::zero(),
+        }
+    }
+    fn is_zero(&self) -> bool {
+        num_traits::Zero::is_zero(&self.re) && num_traits::Zero::is_zero(&self.im)
+    }
+    fn add(&self, o: &CQ) -> CQ {
+        CQ::new(&self.re + &o.re, &self.im + &o.im)
+    }
+    fn sub(&self, o: &CQ) -> CQ {
+        CQ::new(&self.re - &o.re, &self.im - &o.im)
+    }
+    fn mul(&self, o: &CQ) -> CQ {
+        CQ::new(
+            &self.re * &o.re - &self.im * &o.im,
+            &self.re * &o.im + &self.im * &o.re,
+        )
+    }
+    fn div(&self, o: &CQ) -> CQ {
+        let denom = &o.re * &o.re + &o.im * &o.im;
+        let num = self.mul(&CQ::new(o.re.clone(), -o.im.clone()));
+        CQ::new(num.re / &denom, num.im / &denom)
+    }
+    fn scale(&self, r: &Rat) -> CQ {
+        CQ::new(&self.re * r, &self.im * r)
+    }
+}
+
+/// Evaluate `p^(j)(λ) / j!` for a rational polynomial `p` (ascending
+/// coefficients) at a Gaussian rational `λ`.
+fn shifted_coefficient(p: &[Rat], j: usize, lambda: &CQ) -> CQ {
+    // p^(j)(λ)/j! = Σ_{k≥j} C(k, j) a_k λ^{k-j}
+    let mut acc = CQ::real(num_traits::Zero::zero());
+    let mut lambda_pow = CQ::real(num_traits::One::one());
+    for (k, a_k) in p.iter().enumerate().skip(j) {
+        let binom = binomial_rat(k, j);
+        let term = lambda_pow.scale(&(a_k * binom));
+        acc = acc.add(&term);
+        lambda_pow = lambda_pow.mul(lambda);
+    }
+    acc
+}
+
+fn binomial_rat(n: usize, k: usize) -> Rat {
+    let mut r = Rat::from_integer(1.into());
+    for i in 0..k {
+        r *= Rat::from_integer(((n - i) as i64).into());
+        r /= Rat::from_integer(((i + 1) as i64).into());
+    }
+    r
+}
+
+/// Trigonometric flavour of a forcing term.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum TrigKind {
+    None,
+    Cos,
+    Sin,
+}
+
+/// One forcing term `c·x^d·e^{ax}·{1 | cos(bx) | sin(bx)}`.
+struct ForcingTerm {
+    coeff: Rat,
+    degree: usize,
+    a: Rat,
+    b: Rat,
+    kind: TrigKind,
+}
+
+/// Parse a single additive forcing term (free of `y`).
+fn parse_forcing_term(arena: &mut Arena, term: ExprId, var: ExprId) -> Option<ForcingTerm> {
+    use num_traits::{Signed, Zero};
+    let (mut coeff, t) = arena.as_coeff_term(term);
+    let factors: Vec<ExprId> = if t == arena.one {
+        Vec::new()
+    } else {
+        match arena.node(t).clone() {
+            ExprNode::Mul(c) => c.to_vec(),
+            _ => vec![t],
+        }
+    };
+    let mut degree = 0usize;
+    let mut a = Rat::zero();
+    let mut b = Rat::zero();
+    let mut kind = TrigKind::None;
+    let mut seen_exp = false;
+    for f in factors {
+        if f == var {
+            degree += 1;
+            continue;
+        }
+        match arena.node(f).clone() {
+            ExprNode::Pow(base, exp) if base == var => {
+                let n = arena.as_num(exp)?.clone();
+                if !n.is_integer() || n.is_negative() {
+                    return None;
+                }
+                degree += usize::try_from(n.to_integer()).ok()?;
+            }
+            ExprNode::Exp(inner) => {
+                if seen_exp {
+                    return None;
+                }
+                let (rate, c) = extract_linear_numeric(arena, inner, var)?;
+                if !c.is_zero() {
+                    return None;
+                }
+                seen_exp = true;
+                a = rate;
+            }
+            ExprNode::Sin(inner) => {
+                if kind != TrigKind::None {
+                    return None;
+                }
+                let (freq, c) = extract_linear_numeric(arena, inner, var)?;
+                if !c.is_zero() || freq.is_zero() {
+                    return None;
+                }
+                kind = TrigKind::Sin;
+                if freq.is_negative() {
+                    coeff = -coeff;
+                    b = -freq;
+                } else {
+                    b = freq;
+                }
+            }
+            ExprNode::Cos(inner) => {
+                if kind != TrigKind::None {
+                    return None;
+                }
+                let (freq, c) = extract_linear_numeric(arena, inner, var)?;
+                if !c.is_zero() || freq.is_zero() {
+                    return None;
+                }
+                kind = TrigKind::Cos;
+                b = freq.abs();
+            }
+            _ => {
+                if let Some(r) = arena.as_num(f) {
+                    coeff *= r.clone();
+                } else {
+                    return None;
+                }
+            }
+        }
+    }
+    Some(ForcingTerm {
+        coeff,
+        degree,
+        a,
+        b,
+        kind,
+    })
+}
+
+/// Build `Σ c_k·x^k` from rational coefficients.
+fn rat_poly_expr(arena: &mut Arena, coeffs: &[Rat], var: ExprId) -> ExprId {
+    build_polynomial_expr(arena, coeffs, var)
+}
+
+/// Particular solution of `Σ a_k y^(k) = q(x)·e^{ax}·{1|cos bx|sin bx}` via the
+/// complex exponential shift: with `λ = a + bi`, `y_p = Re/Im(w(x)·e^{λx})`
+/// where `w` solves the triangular system `Σ_j (p^(j)(λ)/j!)·w^(j) = q`.
+/// Resonance (λ a root of multiplicity `s`) is handled by the extra
+/// factor `x^s` implicit in the degree of `w`.
+fn particular_for_group(
+    arena: &mut Arena,
+    p: &[Rat],
+    q: &[Rat],
+    a: &Rat,
+    b: &Rat,
+    kind: TrigKind,
+    var: ExprId,
+) -> Option<ExprId> {
+    use num_traits::Zero;
+    let lambda = CQ::new(a.clone(), b.clone());
+    let n = p.len() - 1;
+    // c_j = p^(j)(λ)/j!
+    let c: Vec<CQ> = (0..=n)
+        .map(|j| shifted_coefficient(p, j, &lambda))
+        .collect();
+    let s = c.iter().position(|cj| !cj.is_zero())?;
+    let d = q.len().checked_sub(1)?;
+    let m = d + s;
+    let mut w = vec![CQ::real(Rat::zero()); m + 1];
+    // Solve from the top degree down: for k = d..0,
+    //   Σ_{j≥s} c_j·(k+j)!/k!·w_{k+j} = q_k
+    for k in (0..=d).rev() {
+        let mut rhs = CQ::real(q[k].clone());
+        for j in (s + 1)..=n {
+            if k + j > m {
+                continue;
+            }
+            let fact = falling_factorial_rat(k + j, j);
+            rhs = rhs.sub(&c[j].mul(&w[k + j]).scale(&fact));
+        }
+        let lead = c[s].scale(&falling_factorial_rat(k + s, s));
+        w[k + s] = rhs.div(&lead);
+    }
+    let wr: Vec<Rat> = w.iter().map(|z| z.re.clone()).collect();
+    let wi: Vec<Rat> = w.iter().map(|z| z.im.clone()).collect();
+    let wr_x = rat_poly_expr(arena, &wr, var);
+    let wi_x = rat_poly_expr(arena, &wi, var);
+    let exp_ax = if a.is_zero() {
+        arena.one
+    } else {
+        let a_id = ode_ratio_to_expr(arena, a);
+        let ax = arena.mul(&[a_id, var]);
+        arena.exp(ax)
+    };
+    let body = match kind {
+        TrigKind::None => wr_x,
+        TrigKind::Cos | TrigKind::Sin => {
+            let b_id = ode_ratio_to_expr(arena, b);
+            let bx = arena.mul(&[b_id, var]);
+            let cos_bx = arena.cos(bx);
+            let sin_bx = arena.sin(bx);
+            if kind == TrigKind::Cos {
+                // Re(w e^{ibx}) = wr cos - wi sin
+                let t1 = arena.mul(&[wr_x, cos_bx]);
+                let t2 = arena.mul(&[wi_x, sin_bx]);
+                arena.sub(t1, t2)
+            } else {
+                // Im(w e^{ibx}) = wr sin + wi cos
+                let t1 = arena.mul(&[wr_x, sin_bx]);
+                let t2 = arena.mul(&[wi_x, cos_bx]);
+                arena.add(&[t1, t2])
+            }
+        }
+    };
+    let y_p = arena.mul(&[exp_ax, body]);
+    let y_p = crate::transforms::expand::expand(arena, y_p);
+    Some(crate::transforms::eval::eval(arena, y_p))
+}
+
+/// `n·(n-1)·…·(n-j+1)` as a rational.
+fn falling_factorial_rat(n: usize, j: usize) -> Rat {
+    let mut r = Rat::from_integer(1.into());
+    for i in 0..j {
+        r *= Rat::from_integer(((n - i) as i64).into());
+    }
+    r
+}
+
+/// Fundamental solutions of `Σ a_k y^(k) = 0` from the square-free
+/// factorisation of the characteristic polynomial: `x^j e^{rx}` for a
+/// real root of multiplicity `> j`, and `x^j e^{αx} cos(βx)`,
+/// `x^j e^{αx} sin(βx)` for a complex pair `α ± βi`.
+fn homogeneous_basis_cc(arena: &mut Arena, coeffs: &[Rat], var: ExprId) -> Option<Vec<ExprId>> {
+    let p = crate::poly::Poly::from_coeffs(coeffs.to_vec());
+    let r_sym = arena.symbol("__r_cc");
+    let mut basis: Vec<ExprId> = Vec::new();
+    for (factor, mult) in p.squarefree_factors() {
+        let f_expr = crate::poly::polybridge::poly_to_expr(arena, &factor, r_sym);
+        let roots = crate::transforms::solve::solve(arena, f_expr, r_sym);
+        if roots.is_empty() {
+            return None;
+        }
+        let i_unit = arena.i_unit;
+        let mut used = vec![false; roots.len()];
+        for i in 0..roots.len() {
+            if used[i] {
+                continue;
+            }
+            used[i] = true;
+            let root = roots[i].value;
+            let is_complex = crate::base::walk::contains(arena, root, i_unit);
+            if !is_complex {
+                for j in 0..mult {
+                    basis.push(mode_real(arena, root, j, var));
+                }
+                continue;
+            }
+            let (re, im) = arena.as_real_imag_expr(root);
+            let re = crate::transforms::eval::eval(arena, re);
+            let im = crate::transforms::eval::eval(arena, im);
+            if arena.is_zero_structural(im) {
+                for j in 0..mult {
+                    basis.push(mode_real(arena, re, j, var));
+                }
+                continue;
+            }
+            // Mark the conjugate partner as consumed.
+            let neg_im = arena.neg(im);
+            let neg_im = crate::transforms::eval::eval(arena, neg_im);
+            for (k, other) in roots.iter().enumerate() {
+                if used[k] {
+                    continue;
+                }
+                let (re2, im2) = arena.as_real_imag_expr(other.value);
+                let re2 = crate::transforms::eval::eval(arena, re2);
+                let im2 = crate::transforms::eval::eval(arena, im2);
+                if re2 == re && im2 == neg_im {
+                    used[k] = true;
+                    break;
+                }
+            }
+            let beta = if arena
+                .as_num(im)
+                .is_some_and(num_traits::Signed::is_negative)
+            {
+                neg_im
+            } else {
+                im
+            };
+            for j in 0..mult {
+                let (c, s) = mode_complex(arena, re, beta, j, var);
+                basis.push(c);
+                basis.push(s);
+            }
+        }
+    }
+    Some(basis)
+}
+
+/// `x^j·e^{r·x}` (with `e^{0}` folded away).
+fn mode_real(arena: &mut Arena, r: ExprId, j: usize, var: ExprId) -> ExprId {
+    let x_pow = match j {
+        0 => arena.one,
+        1 => var,
+        _ => {
+            let e = arena.int(j as i64);
+            arena.pow(var, e)
+        }
+    };
+    if arena.is_zero_structural(r) {
+        return x_pow;
+    }
+    let rx = arena.mul(&[r, var]);
+    let exp_rx = arena.exp(rx);
+    let m = arena.mul(&[x_pow, exp_rx]);
+    crate::transforms::eval::eval(arena, m)
+}
+
+/// `(x^j e^{αx} cos βx, x^j e^{αx} sin βx)`.
+fn mode_complex(
+    arena: &mut Arena,
+    alpha: ExprId,
+    beta: ExprId,
+    j: usize,
+    var: ExprId,
+) -> (ExprId, ExprId) {
+    let envelope = mode_real(arena, alpha, j, var);
+    let bx = arena.mul(&[beta, var]);
+    let cos_bx = arena.cos(bx);
+    let sin_bx = arena.sin(bx);
+    let c = arena.mul(&[envelope, cos_bx]);
+    let s = arena.mul(&[envelope, sin_bx]);
+    (
+        crate::transforms::eval::eval(arena, c),
+        crate::transforms::eval::eval(arena, s),
+    )
+}
+
+/// Solve `Σ a_k y^(k) + g(x) = 0` of any order `≥ 2` with rational
+/// coefficients, where `g` is a sum of `poly·exp·{sin|cos}` terms (or
+/// empty).  Homogeneous part via the characteristic polynomial (repeated
+/// and complex roots handled), particular part via undetermined
+/// coefficients with resonance handling.
+fn try_nth_order_linear_const_coeff(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+    func_sym: SymbolId,
+) -> Option<OdeResult> {
+    use num_traits::Zero;
+    let ode = extract_linear_cc(arena, expr, func, var, func_sym)?;
+    let n = ode.coeffs.len() - 1;
+    if n < 2 {
+        return None;
+    }
+    tracing::debug!(order = n, "ode: nth-order linear constant-coefficient");
+
+    // Forcing: L[y] = -g(x).  Parse and group by (a, b, kind).
+    let mut groups: Vec<((Rat, Rat, TrigKind), Vec<Rat>)> = Vec::new();
+    for &term in &ode.forcing {
+        let ft = parse_forcing_term(arena, term, var)?;
+        let key = (ft.a.clone(), ft.b.clone(), ft.kind);
+        let entry = match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some(e) => e,
+            None => {
+                groups.push((key, Vec::new()));
+                groups.last_mut()?
+            }
+        };
+        if entry.1.len() <= ft.degree {
+            entry.1.resize(ft.degree + 1, Rat::zero());
+        }
+        entry.1[ft.degree] -= ft.coeff; // move to the right-hand side
+    }
+
+    let basis = homogeneous_basis_cc(arena, &ode.coeffs, var)?;
+    if basis.len() != n {
+        return None;
+    }
+    let mut constants = Vec::with_capacity(n);
+    let mut terms = Vec::with_capacity(n + groups.len());
+    for (i, &b) in basis.iter().enumerate() {
+        let c = arena.symbol(&format!("C{}", i + 1));
+        constants.push(c);
+        terms.push(arena.mul(&[c, b]));
+    }
+    for ((a, b, kind), q) in &groups {
+        if q.iter().all(Zero::is_zero) {
+            continue;
+        }
+        let y_p = particular_for_group(arena, &ode.coeffs, q, a, b, *kind, var)?;
+        terms.push(y_p);
+    }
+    let solution = arena.add(&terms);
+    let solution = crate::transforms::eval::eval(arena, solution);
+    Some(OdeResult {
+        solution,
+        constants,
+    })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Clairaut: y = x·y' + f(y')
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Recognise the Clairaut form `y = x·y' + f(y')` and return `f(p)` with
+/// `p` standing for `y'`.
+fn clairaut_f(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+    func_sym: SymbolId,
+    var_sym: SymbolId,
+    p: ExprId,
+) -> Option<ExprId> {
+    let dy_dx = arena.intern(ExprNode::Derivative(func, var));
+    let d2y_dx2 = arena.intern(ExprNode::Derivative(dy_dx, var));
+    if !expr_contains(arena, expr, dy_dx) || expr_contains(arena, expr, d2y_dx2) {
+        return None;
+    }
+    let g = crate::transforms::subs::subs(arena, expr, dy_dx, p);
+    // Linear in y with a constant coefficient.
+    let coeffs = crate::transforms::solve::symbolic_poly_coeffs(arena, g, func)?;
+    if coeffs.len() != 2 {
+        return None;
+    }
+    let c_y = coeffs[1];
+    let c_0 = coeffs[0];
+    let p_sym = match arena.node(p) {
+        ExprNode::Symbol(s) => *s,
+        _ => return None,
+    };
+    if contains_sym(arena, c_y, var_sym) || contains_sym(arena, c_y, p_sym) {
+        return None;
+    }
+    // g / c_y = y + c_0/c_y  must equal  y - x·p - f(p)  ⇒  f = -c_0/c_y - x·p
+    let ratio = arena.div(c_0, c_y);
+    let neg_ratio = arena.neg(ratio);
+    let xp = arena.mul(&[var, p]);
+    let f = arena.sub(neg_ratio, xp);
+    let f = crate::transforms::eval::eval(arena, f);
+    let f = crate::transforms::expand::expand(arena, f);
+    let f = crate::transforms::eval::eval(arena, f);
+    if contains_sym(arena, f, var_sym) || contains_sym(arena, f, func_sym) {
+        return None;
+    }
+    Some(f)
+}
+
+/// Solve a Clairaut equation `y = x·y' + f(y')`: the general solution is
+/// the family of lines `y = C·x + f(C)`.  (The singular envelope solution
+/// is not returned.)
+fn try_clairaut(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+    func_sym: SymbolId,
+    var_sym: SymbolId,
+) -> Option<OdeResult> {
+    let p = arena.symbol("__clairaut_p");
+    let f = clairaut_f(arena, expr, func, var, func_sym, var_sym, p)?;
+    tracing::debug!("ode: Clairaut form recognised");
+    let c1 = arena.symbol("C1");
+    let f_c = crate::transforms::subs::subs(arena, f, p, c1);
+    let cx = arena.mul(&[c1, var]);
+    let solution = arena.add(&[cx, f_c]);
+    let solution = crate::transforms::eval::eval(arena, solution);
+    Some(OdeResult {
+        solution,
+        constants: vec![c1],
+    })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Riccati: y' = q0(x) + q1(x)·y + q2(x)·y²
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Extract `(q0, q1, q2)` from a Riccati equation in zero form,
+/// `c·y' - (q0 + q1·y + q2·y²) = 0` with `c` a nonzero constant.
+/// Requires `q2 ≠ 0` and `q0 ≠ 0` (otherwise the equation is Bernoulli /
+/// linear) and coefficients free of `y` and `y'`.
+fn riccati_coeffs(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+) -> Option<(ExprId, ExprId, ExprId)> {
+    let dy_dx = arena.intern(ExprNode::Derivative(func, var));
+    let d2y_dx2 = arena.intern(ExprNode::Derivative(dy_dx, var));
+    if expr_contains(arena, expr, d2y_dx2) {
+        return None;
+    }
+    let (rest, c) = extract_m_n(arena, expr, func, var)?;
+    if crate::base::walk::contains(arena, c, func) || crate::base::walk::contains(arena, c, var) {
+        return None;
+    }
+    if crate::base::walk::contains(arena, rest, dy_dx) {
+        return None;
+    }
+    // y' = -rest/c
+    let neg_rest = arena.neg(rest);
+    let rhs = arena.div(neg_rest, c);
+    let rhs = crate::transforms::eval::eval(arena, rhs);
+    let coeffs = crate::transforms::solve::symbolic_poly_coeffs(arena, rhs, func)?;
+    if coeffs.len() != 3 {
+        return None;
+    }
+    let (q0, q1, q2) = (coeffs[0], coeffs[1], coeffs[2]);
+    if arena.is_zero_structural(q0) || arena.is_zero_structural(q2) {
+        return None;
+    }
+    Some((q0, q1, q2))
+}
+
+/// Solve a Riccati equation `y' = q0(x) + q1(x)·y + q2(x)·y²` given a known
+/// particular solution `y_p(x)`.
+///
+/// The substitution `y = y_p + 1/v` turns the equation into the linear
+/// ODE `v' + (q1 + 2·q2·y_p)·v = -q2`, which is solved with [`dsolve`];
+/// the result is `y = y_p + 1/v`.
+///
+/// Returns `None` if `expr` is not of Riccati form, if `particular` does
+/// not satisfy it, or if the linear equation for `v` cannot be solved.
+pub fn solve_riccati(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+    particular: ExprId,
+) -> Option<OdeResult> {
+    let (q0, q1, q2) = riccati_coeffs(arena, expr, func, var)?;
+    // Verify the particular solution.
+    if !checkodesol(arena, expr, particular, func, var) {
+        // Try the derivative form directly: y_p' - (q0 + q1 y_p + q2 y_p²).
+        let yp_prime = crate::transforms::diff::diff(arena, particular, var);
+        let yp2 = arena.mul(&[particular, particular]);
+        let t1 = arena.mul(&[q1, particular]);
+        let t2 = arena.mul(&[q2, yp2]);
+        let rhs = arena.add(&[q0, t1, t2]);
+        let residual = arena.sub(yp_prime, rhs);
+        let residual = crate::transforms::eval::eval(arena, residual);
+        let residual = crate::transforms::expand::expand(arena, residual);
+        let residual = crate::transforms::eval::eval(arena, residual);
+        if !arena.is_zero_structural(residual) {
+            return None;
+        }
+    }
+    let _ = q0;
+    let v = arena.symbol("__riccati_v");
+    let dv = arena.intern(ExprNode::Derivative(v, var));
+    // v' + (q1 + 2 q2 y_p) v + q2 = 0
+    let two = arena.int(2);
+    let two_q2_yp = arena.mul(&[two, q2, particular]);
+    let coeff = arena.add(&[q1, two_q2_yp]);
+    let coeff = crate::transforms::eval::eval(arena, coeff);
+    let coeff_v = arena.mul(&[coeff, v]);
+    let lin = arena.add(&[dv, coeff_v, q2]);
+    let lin = crate::transforms::eval::eval(arena, lin);
+    let v_res = dsolve(arena, lin, v, var)?;
+    if crate::base::walk::contains(arena, v_res.solution, v) {
+        return None; // implicit
+    }
+    let neg_one = arena.neg_one;
+    let inv_v = arena.pow(v_res.solution, neg_one);
+    let solution = arena.add(&[particular, inv_v]);
+    let solution = crate::transforms::eval::eval(arena, solution);
+    Some(OdeResult {
+        solution,
+        constants: v_res.constants,
+    })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // ODE classification
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2584,6 +3328,17 @@ pub enum OdeType {
     HomogeneousCoefficient,
     /// F(y, y', y'') = 0 (no explicit x) — reducible via p = y'
     NthOrderReducible,
+    /// Σ a_k·y^(k) = g(x) with constant coefficients, order ≥ 3
+    /// (orders 1 and 2 use the dedicated variants above)
+    NthOrderLinearConstCoeff,
+    /// M(x,y) + N(x,y)·y' = 0, non-exact but with an integrating factor
+    /// μ(x) or μ(y)
+    IntegratingFactor,
+    /// y = x·y' + f(y') — Clairaut equation
+    Clairaut,
+    /// y' = q₀(x) + q₁(x)·y + q₂(x)·y² — Riccati equation (needs a
+    /// particular solution; see [`solve_riccati`])
+    Riccati,
     /// Unrecognized ODE type
     Unknown,
 }
@@ -2605,13 +3360,24 @@ pub fn classify_ode(arena: &mut Arena, expr: ExprId, func: ExprId, var: ExprId) 
     // Check for second-order: look for Derivative(Derivative(func, var), var)
     let dy_dx = arena.intern(ExprNode::Derivative(func, var));
     let d2y_dx2 = arena.intern(ExprNode::Derivative(dy_dx, var));
+    let d3y_dx3 = arena.intern(ExprNode::Derivative(d2y_dx2, var));
+
+    // Order ≥ 3 with constant coefficients.
+    if expr_contains(arena, expr, d3y_dx3) {
+        if let Some(ode) = extract_linear_cc(arena, expr, func, var, func_sym)
+            && ode.coeffs.len() >= 4
+        {
+            return OdeType::NthOrderLinearConstCoeff;
+        }
+        return OdeType::Unknown;
+    }
 
     if expr_contains(arena, expr, d2y_dx2) {
         // Try to verify it matches a*y'' + b*y' + c*y [+ f(x)] = 0 pattern
         if let ExprNode::Add(ref children) = arena.node(expr).clone() {
             let mut all_const_coeff = true;
             let mut has_y2 = false;
-            let mut has_forcing = false;
+            let mut forcing: Vec<ExprId> = Vec::new();
             for &child in children {
                 let (_coeff, term) = arena.as_coeff_term(child);
                 if term == d2y_dx2 {
@@ -2622,17 +3388,29 @@ pub fn classify_ode(arena: &mut Arena, expr: ExprId, func: ExprId, var: ExprId) 
                     // OK — y term with constant coefficient
                 } else if !contains_sym(arena, child, func_sym) {
                     // Term free of y — nonhomogeneous forcing term
-                    has_forcing = true;
+                    forcing.push(child);
                 } else {
                     all_const_coeff = false;
                     break;
                 }
             }
             if has_y2 && all_const_coeff {
-                if has_forcing {
+                if forcing.is_empty() {
+                    return OdeType::SecondOrderLinearCCHomogeneous;
+                }
+                // Undetermined coefficients apply to poly × exp × {sin, cos}
+                // forcing; anything else needs variation of parameters.
+                let all_uc = forcing
+                    .iter()
+                    .all(|&t| parse_forcing_term(arena, t, var).is_some());
+                if all_uc {
                     return OdeType::SecondOrderLinearCCNonHomogeneous;
                 }
-                return OdeType::SecondOrderLinearCCHomogeneous;
+                if try_variation_of_parameters(arena, expr, func, var, func_sym, var_sym).is_some()
+                {
+                    return OdeType::VariationOfParameters;
+                }
+                return OdeType::Unknown;
             }
         }
         // Check for Euler-Cauchy: a·x²·y'' + b·x·y' + c·y = 0
@@ -2709,6 +3487,14 @@ pub fn classify_ode(arena: &mut Arena, expr: ExprId, func: ExprId, var: ExprId) 
             }
         }
 
+        // Check for Clairaut: y = x·y' + f(y')  (y' appears nonlinearly)
+        {
+            let p = arena.symbol("__clairaut_p_cls");
+            if clairaut_f(arena, expr, func, var, func_sym, var_sym, p).is_some() {
+                return OdeType::Clairaut;
+            }
+        }
+
         // Check for Bernoulli: y' + P(x)·y = Q(x)·y^n (n ≠ 0, 1)
         if let ExprNode::Add(ref bn_children) = arena.node(expr).clone() {
             let mut bn_has_dy = false;
@@ -2757,13 +3543,15 @@ pub fn classify_ode(arena: &mut Arena, expr: ExprId, func: ExprId, var: ExprId) 
                 };
                 // RHS must depend on both x and y
                 if contains_sym(arena, hc_rhs, func_sym) && contains_sym(arena, hc_rhs, var_sym) {
-                    // Use x→1 trick: for degree-0 homogeneous f(x,y),
-                    // f(1, v) should be free of x.
+                    // Degree-0 homogeneity: f(x, v·x) must be free of x after
+                    // cancellation.
                     let v_cls = arena.symbol("__v_cls");
-                    let sub = crate::transforms::subs::subs(arena, hc_rhs, func, v_cls);
-                    let sub = crate::transforms::subs::subs(arena, sub, var, arena.one);
+                    let vx = arena.mul(&[v_cls, var]);
+                    let sub = crate::transforms::subs::subs(arena, hc_rhs, func, vx);
                     let sub = crate::transforms::eval::eval(arena, sub);
                     let sub = crate::transforms::expand::expand(arena, sub);
+                    let sub = crate::transforms::eval::eval(arena, sub);
+                    let sub = arena.cancel_expr(sub, var);
                     let sub = crate::transforms::eval::eval(arena, sub);
                     if !contains_sym(arena, sub, var_sym) {
                         return OdeType::HomogeneousCoefficient;
@@ -2808,6 +3596,18 @@ pub fn classify_ode(arena: &mut Arena, expr: ExprId, func: ExprId, var: ExprId) 
                     return OdeType::FullSeparable;
                 }
             }
+        }
+
+        // Non-exact with an integrating factor μ(x) or μ(y).
+        if try_integrating_factor_ode(arena, expr, func, var, func_sym, var_sym).is_some() {
+            return OdeType::IntegratingFactor;
+        }
+
+        // Riccati: y' = q0 + q1·y + q2·y² with q0, q2 ≠ 0 (checked last: a
+        // separable or otherwise directly solvable Riccati keeps the more
+        // specific class above).
+        if riccati_coeffs(arena, expr, func, var).is_some() {
+            return OdeType::Riccati;
         }
 
         return OdeType::Unknown;
@@ -2874,18 +3674,25 @@ pub fn checkodesol(
     func: ExprId,
     var: ExprId,
 ) -> bool {
-    // Build derivative nodes
-    let dy_dx = arena.intern(ExprNode::Derivative(func, var));
-    let d2y_dx2 = arena.intern(ExprNode::Derivative(dy_dx, var));
+    // Derivative nodes y, y', y'', … up to the highest order present.
+    let chain = derivative_chain(arena, func, var);
+    let max_order = (1..chain.len())
+        .rev()
+        .find(|&k| expr_contains(arena, ode_expr, chain[k]))
+        .unwrap_or(0);
 
-    // Compute derivatives of the solution
-    let sol_d1 = crate::transforms::diff::diff(arena, solution, var);
-    let sol_d2 = crate::transforms::diff::diff(arena, sol_d1, var);
+    // Derivatives of the solution.
+    let mut sol_derivs = vec![solution];
+    for k in 1..=max_order {
+        let d = crate::transforms::diff::diff(arena, sol_derivs[k - 1], var);
+        sol_derivs.push(d);
+    }
 
-    // Substitute second derivative first (more specific), then first, then func
-    let mut result = crate::transforms::subs::subs(arena, ode_expr, d2y_dx2, sol_d2);
-    result = crate::transforms::subs::subs(arena, result, dy_dx, sol_d1);
-    result = crate::transforms::subs::subs(arena, result, func, solution);
+    // Substitute the highest derivative first (more specific), down to func.
+    let mut result = ode_expr;
+    for k in (0..=max_order).rev() {
+        result = crate::transforms::subs::subs(arena, result, chain[k], sol_derivs[k]);
+    }
 
     // Evaluate and simplify
     result = crate::transforms::eval::eval(arena, result);
@@ -2899,8 +3706,17 @@ pub fn checkodesol(
     // Try another round of expand + eval for stubborn expressions
     result = crate::transforms::expand::expand(arena, result);
     result = crate::transforms::eval::eval(arena, result);
+    if result == arena.zero {
+        return true;
+    }
 
-    result == arena.zero
+    // Last resort: the full simplifier.
+    let simplified = crate::simplify::simplify_engine::unified_simplify(
+        arena,
+        result,
+        &crate::simplify::simplify_engine::SimplifyOpts::default(),
+    );
+    arena.is_zero_structural(simplified.expr)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2969,6 +3785,95 @@ pub fn solve_ode_system(a_matrix: &Matrix, t_var: &Ex) -> Option<Vec<Ex>> {
 
     // Fallback: truncated matrix exponential series
     Some(solve_ode_system_series(a_matrix, t_var, n))
+}
+
+/// Solve the initial-value problem `dx/dt = A·x`, `x(0) = x0`.
+///
+/// Computes the general solution with [`solve_ode_system`], evaluates it
+/// at `t = 0`, and determines the constants `C1, …, Cn` from the linear
+/// system `x(0) = x0` via [`linsolve`](crate::api::expr_solve_ext::linsolve).
+///
+/// # Errors
+///
+/// - [`SymplexError::InvalidArgument`](crate::base::errors::SymplexError::InvalidArgument) if `A` is not square or `x0` has
+///   the wrong length.
+/// - [`SymplexError::ComputationFailed`](crate::base::errors::SymplexError::ComputationFailed) if the general solution cannot be
+///   found or the constants cannot be determined.
+/// - [`SymplexError::NoSolution`](crate::base::errors::SymplexError::NoSolution) if the initial data is contradictory.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+/// let ctx = Context::new();
+/// let t = ctx.symbol("t");
+/// // x' = y, y' = -x  with x(0) = 1, y(0) = 0  →  x = cos t, y = -sin t
+/// let a = matrix![ctx, [0, 1], [-1, 0]];
+/// let sol = symplex::ode::solve_ode_system_ivp(&a, &t, &[ctx.int(1), ctx.int(0)]).unwrap();
+/// assert_eq!(format!("{}", sol[0].simplify()), "cos(t)");
+/// assert_eq!(format!("{}", sol[1].simplify()), "-sin(t)");
+/// ```
+pub fn solve_ode_system_ivp(
+    a_matrix: &Matrix,
+    t_var: &Ex,
+    x0: &[Ex],
+) -> Result<Vec<Ex>, crate::base::errors::SymplexError> {
+    use crate::base::errors::SymplexError;
+    let n = a_matrix.nrows();
+    if !a_matrix.is_square() || n == 0 {
+        return Err(SymplexError::InvalidArgument {
+            operation: "solve_ode_system_ivp",
+            reason: "coefficient matrix must be square and non-empty".into(),
+        });
+    }
+    if x0.len() != n {
+        return Err(SymplexError::InvalidArgument {
+            operation: "solve_ode_system_ivp",
+            reason: format!("expected {n} initial values, got {}", x0.len()),
+        });
+    }
+    let general =
+        solve_ode_system(a_matrix, t_var).ok_or_else(|| SymplexError::ComputationFailed {
+            operation: "solve_ode_system_ivp",
+            reason: "could not solve the homogeneous system".into(),
+        })?;
+    let ctx = t_var.context();
+    let constants: Vec<Ex> = (1..=n).map(|i| ctx.symbol(&format!("C{i}"))).collect();
+    let zero = ctx.int(0);
+    let eqs: Vec<Ex> = general
+        .iter()
+        .zip(x0)
+        .map(|(g, v)| (g.subs(t_var, &zero).eval() - v).eval())
+        .collect();
+    let sol = crate::api::expr_solve_ext::linsolve(&eqs, &constants).map_err(|e| {
+        SymplexError::ComputationFailed {
+            operation: "solve_ode_system_ivp",
+            reason: format!("could not fit initial values: {e}"),
+        }
+    })?;
+    let pairs = match sol {
+        crate::api::expr_solve_ext::LinearSolution::Inconsistent => {
+            return Err(SymplexError::NoSolution {
+                operation: "solve_ode_system_ivp",
+                reason: "initial values are inconsistent with the general solution".into(),
+            });
+        }
+        crate::api::expr_solve_ext::LinearSolution::Unique(p) => p,
+        crate::api::expr_solve_ext::LinearSolution::Parametric { solution, free } => solution
+            .into_iter()
+            .filter(|(c, _)| !free.contains(c))
+            .collect(),
+    };
+    Ok(general
+        .iter()
+        .map(|g| {
+            let mut e = g.clone();
+            for (c, v) in &pairs {
+                e = e.subs(c, v);
+            }
+            e.eval().simplify()
+        })
+        .collect())
 }
 
 /// Solve a non-homogeneous system `dx/dt = A·x + b(t)`.

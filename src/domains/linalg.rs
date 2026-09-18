@@ -1,9 +1,15 @@
 //! Linear system solving via Gaussian elimination.
 //!
-//! Implements [`solve_linear_system`], which solves a system of linear
-//! equations over exact rationals (`Ratio<BigInt>`).
+//! Two solvers live here:
 //!
-//! # Algorithm
+//! - [`solve_linear_system`] — fast path over exact rationals
+//!   (`Ratio<BigInt>`), unique solutions only.
+//! - [`linsolve_symbolic`] — symbolic reduced row-echelon form over
+//!   expressions.  Handles symbolic coefficients, under- and
+//!   over-determined systems, reports free variables and inconsistency.
+//!   This is the backend of the public `linsolve` API.
+//!
+//! # Algorithm (rational fast path)
 //!
 //! 1. Extract the coefficient matrix from the linear expressions.
 //! 2. Augment with the constant terms (negated).
@@ -14,7 +20,9 @@ use num_bigint::BigInt;
 use num_rational::Ratio;
 use num_traits::{One, Zero};
 
+use crate::api::expr::{Ex, SimplifyOpts};
 use crate::base::arena::Arena;
+use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode};
 
 /// Result of solving a linear system.
@@ -22,6 +30,352 @@ use crate::base::node::{ExprId, ExprNode};
 pub(crate) struct LinearSolution {
     /// Pairs of (variable, value) for each solved variable.
     pub pairs: Vec<(ExprId, ExprId)>,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Symbolic RREF solver
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of the symbolic RREF solver.
+#[derive(Debug, Clone)]
+pub(crate) struct SymbolicLinearResult {
+    /// One value per unknown, in input order.  Free unknowns map to
+    /// themselves; pivot unknowns are expressed in terms of the free ones.
+    pub values: Vec<Ex>,
+    /// Indices (into the unknowns) of the free variables.
+    pub free: Vec<usize>,
+    /// `true` if a row `0 = c` with `c ≠ 0` was found.
+    pub inconsistent: bool,
+}
+
+/// Decompose `eq` (an expression equal to zero) into a linear row over
+/// `vars`: returns `(coefficients, rhs)` with `Σ coeffᵢ·varᵢ = rhs`.
+///
+/// Returns `None` if `eq` is not linear in the unknowns (a term contains
+/// two unknowns, a power of an unknown, or an unknown inside a function).
+pub(crate) fn extract_linear_row(
+    arena: &mut Arena,
+    eq: ExprId,
+    vars: &[ExprId],
+) -> Option<(Vec<ExprId>, ExprId)> {
+    let expanded = crate::transforms::expand::expand(arena, eq);
+    let expanded = crate::transforms::eval::eval(arena, expanded);
+    let terms: Vec<ExprId> = match arena.node(expanded).clone() {
+        ExprNode::Add(children) => children.to_vec(),
+        _ => vec![expanded],
+    };
+
+    let mut coeff_parts: Vec<Vec<ExprId>> = vec![Vec::new(); vars.len()];
+    let mut const_parts: Vec<ExprId> = Vec::new();
+
+    for term in terms {
+        let mut which: Option<usize> = None;
+        for (i, &v) in vars.iter().enumerate() {
+            if crate::base::walk::contains(arena, term, v) {
+                if which.is_some() {
+                    return None; // two unknowns in one term → nonlinear
+                }
+                which = Some(i);
+            }
+        }
+        match which {
+            None => const_parts.push(term),
+            Some(i) => {
+                let coeffs = crate::transforms::solve::symbolic_poly_coeffs(arena, term, vars[i])?;
+                // Must be exactly c·var (degree 1, zero constant part).
+                if coeffs.len() != 2 || !arena.is_zero_structural(coeffs[0]) {
+                    return None;
+                }
+                coeff_parts[i].push(coeffs[1]);
+            }
+        }
+    }
+
+    let mut coeffs = Vec::with_capacity(vars.len());
+    for parts in coeff_parts {
+        let c = match parts.len() {
+            0 => arena.zero,
+            1 => parts[0],
+            _ => arena.add(&parts),
+        };
+        coeffs.push(crate::transforms::eval::eval(arena, c));
+    }
+    let constant = match const_parts.len() {
+        0 => arena.zero,
+        1 => const_parts[0],
+        _ => arena.add(&const_parts),
+    };
+    let rhs = arena.neg(constant);
+    let rhs = crate::transforms::eval::eval(arena, rhs);
+    Some((coeffs, rhs))
+}
+
+/// Final clean-up of a solved value: simplify, and combine over a common
+/// denominator when that is shorter.
+fn tidy(e: &Ex) -> Ex {
+    let s = e.eval().simplify();
+    // Combine over a common denominator and expand the numerator so that
+    // cancellations like -a*b + b*(a+1) → b are found.
+    let (num, den) = s.together().as_numer_denom();
+    let num = num.expand().eval();
+    let t = if den.is_one_structural() {
+        num
+    } else {
+        (&num / &den).eval()
+    };
+    // Prefer the single-fraction form unless it is clearly larger
+    // (`count_ops` is DAG-based, so a shared denominator makes the split
+    // form look deceptively small; allow one extra node for the fraction).
+    if t.count_ops() <= s.count_ops() + 1 {
+        t
+    } else {
+        s
+    }
+}
+
+/// Light-weight normalisation used between elimination steps.
+fn normalize(e: &Ex) -> Ex {
+    let e1 = e.eval();
+    if e1.is_zero_structural() || is_number(&e1) {
+        return e1;
+    }
+    let e2 = e1.simplify_with(&SimplifyOpts::single_pass());
+    if e2.count_ops() <= e1.count_ops() {
+        e2
+    } else {
+        e1
+    }
+}
+
+/// `true` if `e` is a numeric literal.
+fn is_number(e: &Ex) -> bool {
+    e.inner.read().arena.as_num(e.raw_id()).is_some()
+}
+
+/// `true` if `e` is a **nonzero** numeric literal.
+fn is_nonzero_number(e: &Ex) -> bool {
+    e.inner
+        .read()
+        .arena
+        .as_num(e.raw_id())
+        .is_some_and(|r| !r.is_zero())
+}
+
+/// Decide whether an (already normalised) entry is zero.
+///
+/// Structural zero → `true`; numeric literal → by value; symbolic → a
+/// full `simplify` pass is tried, then the assumption system.
+fn entry_is_zero(e: &Ex) -> bool {
+    if e.is_zero_structural() {
+        return true;
+    }
+    if is_number(e) {
+        return false;
+    }
+    let s = e.simplify();
+    if s.is_zero_structural() {
+        return true;
+    }
+    // Purely numeric (no free symbols) but not folded: decide numerically.
+    if s.free_symbols().is_empty()
+        && let Ok((re, im)) = s.eval_complex64()
+    {
+        return re.hypot(im) < 1e-12;
+    }
+    false
+}
+
+/// Symbolic reduced-row-echelon solve of `rows · x = rhs`.
+///
+/// `rows[i]` holds the coefficients of equation `i`; `rhs[i]` its
+/// right-hand side.  `n_vars` is the number of unknowns; `unknowns` are the
+/// symbols the free variables should be expressed with.
+///
+/// Pivot choice prefers nonzero numeric literals; a symbolic pivot is used
+/// only when no numeric one is available and is then **assumed nonzero**
+/// (generic solution).
+pub(crate) fn rref_solve(
+    rows: Vec<Vec<Ex>>,
+    rhs: Vec<Ex>,
+    unknowns: &[Ex],
+) -> Result<SymbolicLinearResult, SymplexError> {
+    let n_vars = unknowns.len();
+    let m = rows.len();
+    if m == 0 || n_vars == 0 {
+        return Err(SymplexError::InvalidArgument {
+            operation: "linsolve",
+            reason: "need at least one equation and one unknown".into(),
+        });
+    }
+    // Augmented matrix.
+    let mut mat: Vec<Vec<Ex>> = rows
+        .into_iter()
+        .zip(rhs)
+        .map(|(mut r, b)| {
+            r.push(b);
+            r
+        })
+        .collect();
+    let ncols = n_vars + 1;
+    for r in &mat {
+        if r.len() != ncols {
+            return Err(SymplexError::InvalidArgument {
+                operation: "linsolve",
+                reason: "row length does not match number of unknowns".into(),
+            });
+        }
+    }
+
+    let mut pivots: Vec<usize> = Vec::new();
+    let mut pivot_row = 0usize;
+
+    for col in 0..n_vars {
+        if pivot_row >= m {
+            break;
+        }
+        // Candidate pivots: prefer numeric nonzero, then simplest symbolic.
+        let mut numeric: Option<usize> = None;
+        let mut symbolic: Option<(usize, usize)> = None; // (row, ops)
+        for (r, row) in mat.iter_mut().enumerate().skip(pivot_row) {
+            let e = normalize(&row[col]);
+            row[col] = e.clone();
+            if is_nonzero_number(&e) {
+                numeric = Some(r);
+                break;
+            }
+            if !entry_is_zero(&e) {
+                let ops = e.count_ops();
+                if symbolic.is_none_or(|(_, o)| ops < o) {
+                    symbolic = Some((r, ops));
+                }
+            } else {
+                row[col] = e.context().zero();
+            }
+        }
+        let found = match (numeric, symbolic) {
+            (Some(r), _) => r,
+            (None, Some((r, _))) => r,
+            (None, None) => continue,
+        };
+        if found != pivot_row {
+            mat.swap(pivot_row, found);
+        }
+        // Scale pivot row.
+        let pv = mat[pivot_row][col].clone();
+        for (j, entry) in mat[pivot_row].iter_mut().enumerate() {
+            if j == col {
+                *entry = pv.context().one();
+            } else {
+                let v = &*entry / &pv;
+                *entry = normalize(&v);
+            }
+        }
+        // Eliminate in all other rows.
+        let pivot_vals = mat[pivot_row].clone();
+        for (i, row) in mat.iter_mut().enumerate() {
+            if i == pivot_row {
+                continue;
+            }
+            let factor = normalize(&row[col]);
+            if entry_is_zero(&factor) {
+                row[col] = factor.context().zero();
+                continue;
+            }
+            for (j, entry) in row.iter_mut().enumerate() {
+                if j == col {
+                    *entry = factor.context().zero();
+                } else {
+                    let t = &factor * &pivot_vals[j];
+                    let v = &*entry - &t;
+                    *entry = normalize(&v);
+                }
+            }
+        }
+        pivots.push(col);
+        pivot_row += 1;
+    }
+
+    // Inconsistency check: rows with zero coefficients but nonzero rhs.
+    for r in &mat {
+        let all_zero = r[..n_vars].iter().all(entry_is_zero);
+        if all_zero && !entry_is_zero(&r[n_vars]) {
+            return Ok(SymbolicLinearResult {
+                values: Vec::new(),
+                free: Vec::new(),
+                inconsistent: true,
+            });
+        }
+    }
+
+    let pivot_set: std::collections::HashSet<usize> = pivots.iter().copied().collect();
+    let free: Vec<usize> = (0..n_vars).filter(|c| !pivot_set.contains(c)).collect();
+
+    let mut values: Vec<Ex> = unknowns.to_vec();
+    for (r, &pc) in pivots.iter().enumerate() {
+        let mut v = mat[r][n_vars].clone();
+        for &f in &free {
+            if !entry_is_zero(&mat[r][f]) {
+                let t = &mat[r][f] * &unknowns[f];
+                v = &v - &t;
+            }
+        }
+        values[pc] = tidy(&v);
+    }
+
+    Ok(SymbolicLinearResult {
+        values,
+        free,
+        inconsistent: false,
+    })
+}
+
+/// Solve the linear system `eqs = 0` for `vars` symbolically.
+///
+/// See [`rref_solve`] for the pivoting policy.  Returns
+/// [`SymplexError::InvalidArgument`] if an equation is not linear in the
+/// unknowns or the input is empty.
+pub(crate) fn linsolve_symbolic(
+    eqs: &[Ex],
+    vars: &[Ex],
+) -> Result<SymbolicLinearResult, SymplexError> {
+    if eqs.is_empty() || vars.is_empty() {
+        return Err(SymplexError::InvalidArgument {
+            operation: "linsolve",
+            reason: "need at least one equation and one unknown".into(),
+        });
+    }
+    let first = &eqs[0];
+    let var_ids: Vec<ExprId> = vars.iter().map(|v| first.checked_id(v)).collect();
+    let eq_ids: Vec<ExprId> = eqs.iter().map(|e| first.checked_id(e)).collect();
+
+    let mut rows: Vec<Vec<ExprId>> = Vec::with_capacity(eqs.len());
+    let mut rhs: Vec<ExprId> = Vec::with_capacity(eqs.len());
+    {
+        let mut guard = first.inner.write();
+        let arena = &mut guard.arena;
+        for (k, &eq) in eq_ids.iter().enumerate() {
+            match extract_linear_row(arena, eq, &var_ids) {
+                Some((coeffs, b)) => {
+                    rows.push(coeffs);
+                    rhs.push(b);
+                }
+                None => {
+                    let shown = arena.display(eq).to_string();
+                    drop(guard);
+                    return Err(SymplexError::InvalidArgument {
+                        operation: "linsolve",
+                        reason: format!("equation {k} is not linear in the unknowns: {shown}"),
+                    });
+                }
+            }
+        }
+    }
+    let rows: Vec<Vec<Ex>> = rows
+        .into_iter()
+        .map(|r| r.into_iter().map(|id| first.wrap(id)).collect())
+        .collect();
+    let rhs: Vec<Ex> = rhs.into_iter().map(|id| first.wrap(id)).collect();
+    rref_solve(rows, rhs, vars)
 }
 
 /// Solve a system of linear equations.

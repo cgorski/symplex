@@ -141,30 +141,28 @@ fn solve_non_polynomial_returns_empty() {
 
 #[test]
 fn solve_constant_nonzero_no_solutions() {
-    // 5 = 0 → no solutions
+    // 5 = 0 → no solutions (0.2: reported as Err(NoSolution); solve_or_empty gives [])
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let five = ctx.int(5);
-    let roots = five.solve(&x).unwrap();
     assert!(
-        roots.is_empty(),
-        "expected no solutions for constant 5, got {} root(s)",
-        roots.len()
+        matches!(five.solve(&x), Err(SymplexError::NoSolution { .. })),
+        "expected NoSolution for constant 5"
     );
+    assert!(five.solve_or_empty(&x).is_empty());
 }
 
 #[test]
 fn solve_constant_zero_no_solutions() {
-    // 0 = 0 → infinite solutions, returns empty
+    // 0 = 0 → infinite solutions (0.2: Err(InfiniteSolutions); solve_or_empty gives [])
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let zero = ctx.int(0);
-    let roots = zero.solve(&x).unwrap();
     assert!(
-        roots.is_empty(),
-        "expected empty for 0=0 (infinite solutions), got {} root(s)",
-        roots.len()
+        matches!(zero.solve(&x), Err(SymplexError::InfiniteSolutions { .. })),
+        "expected InfiniteSolutions for 0 = 0"
     );
+    assert!(zero.solve_or_empty(&x).is_empty());
 }
 
 #[test]
