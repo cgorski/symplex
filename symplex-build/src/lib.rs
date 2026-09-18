@@ -527,9 +527,12 @@ struct GenerateConfig {
 /// a = 0.25
 ///
 /// [generate]
-/// functions = ["fk", "jacobian"]
+/// functions = ["fk", "jacobian"]   # also: "fk_matrix" (full 4×4 transform)
 /// output = "robot_math.rs"
 /// ```
+///
+/// Numeric DH parameters are converted to exact rationals with
+/// [`Context::from_f64_approx`] (`0.3` → `3/10`).
 pub fn from_toml(path: impl AsRef<Path>) -> Result<CodeGen, Box<dyn std::error::Error>> {
     let content = fs::read_to_string(path.as_ref())?;
     let config: RobotConfig = toml::from_str(&content)?;
@@ -588,6 +591,10 @@ pub fn from_toml(path: impl AsRef<Path>) -> Result<CodeGen, Box<dyn std::error::
                 let j = symplex::matrix::jacobian(&[&x, &y], &theta_refs);
                 codegen = codegen.add_matrix_fn("jacobian", &j, &theta_names);
             }
+            "fk_matrix" => {
+                let t = symplex::robotics::fk_chain(&dh_params);
+                codegen = codegen.add_matrix_fn("fk_matrix", &t, &theta_names);
+            }
             other => {
                 return Err(format!("unknown generate function: {other}").into());
             }
@@ -599,19 +606,17 @@ pub fn from_toml(path: impl AsRef<Path>) -> Result<CodeGen, Box<dyn std::error::
 
 /// Convert an `f64` DH parameter to an exact symplex expression.
 ///
-/// Integers become `ctx.int()`.  Other values are rounded to the nearest
-/// millionth and stored as a reduced rational (`0.3` → `3/10`), which is
-/// what a human-written robot spec almost always means.
+/// Uses [`Context::from_f64_approx`] with a denominator bound of one
+/// million, so the value becomes the reduced rational a human-written robot
+/// spec almost always means (`0.3` → `3/10`, `0.25` → `1/4`, `2.0` → `2`)
+/// rather than the exact binary expansion of the float.
+///
+/// # Panics
+///
+/// Panics on `NaN`: a DH table with a NaN entry is a configuration error.
 fn float_to_expr(ctx: &Context, v: f64) -> Ex {
-    if v == 0.0 {
-        ctx.int(0)
-    } else if v == (v as i64) as f64 {
-        ctx.int(v as i64)
-    } else {
-        let scale = 1_000_000i64;
-        let p = (v * scale as f64).round() as i64;
-        ctx.rational(p, scale)
-    }
+    ctx.from_f64_approx(v, 1_000_000)
+        .unwrap_or_else(|e| panic!("symplex-build: invalid DH parameter {v}: {e}"))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -729,6 +734,34 @@ impl RobotArmBuilder {
         self
     }
 
+    /// Generate the full 4×4 homogeneous forward-kinematics transform as a
+    /// matrix function `name(theta…) -> [f64; 16]` (row-major), via
+    /// [`symplex::robotics::fk_chain`].
+    ///
+    /// The position functions from [`generate_fk`](Self::generate_fk) are
+    /// the last column of this matrix; the upper-left 3×3 block is the
+    /// end-effector rotation.
+    pub fn generate_fk_matrix(mut self, name: &str) -> Self {
+        let (thetas, d_vals, a_vals, alpha_vals) = self.build_dh();
+        let dh: Vec<(&Ex, &Ex, &Ex, &Ex)> = thetas
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                (
+                    t as &Ex,
+                    &d_vals[i] as &Ex,
+                    &a_vals[i] as &Ex,
+                    &alpha_vals[i] as &Ex,
+                )
+            })
+            .collect();
+        let owned_names = self.theta_names_owned();
+        let theta_names: Vec<&str> = owned_names.iter().map(|s| s.as_str()).collect();
+        let t = symplex::robotics::fk_chain(&dh);
+        self.codegen = self.codegen.add_matrix_fn(name, &t, &theta_names);
+        self
+    }
+
     /// Generate the Jacobian matrix function.
     pub fn generate_jacobian(mut self, name: &str) -> Self {
         let (thetas, d_vals, a_vals, alpha_vals) = self.build_dh();
@@ -838,6 +871,67 @@ mod tests {
         assert_eq!(format!("{}", float_to_expr(&ctx, -3.0)), "-3");
         assert_eq!(format!("{}", float_to_expr(&ctx, 0.3)), "3/10");
         assert_eq!(format!("{}", float_to_expr(&ctx, 0.25)), "1/4");
+        assert_eq!(format!("{}", float_to_expr(&ctx, 0.1 + 0.2)), "3/10");
+        assert_eq!(format!("{}", float_to_expr(&ctx, 1.0 / 3.0)), "1/3");
+        assert_eq!(format!("{}", float_to_expr(&ctx, 0.123456)), "1929/15625");
+    }
+
+    #[test]
+    fn robot_arm_generates_fk_matrix() {
+        let code = robot_arm(&[("q1", 0.0, 0.3, 0.0), ("q2", 0.1, 0.25, 0.0)])
+            .generate_fk_matrix("fk_t")
+            .into_codegen()
+            .generate()
+            .unwrap();
+        assert!(code.contains("fn fk_t("), "{code}");
+        assert!(
+            code.contains("q1: f64") && code.contains("q2: f64"),
+            "{code}"
+        );
+        // 4×4 homogeneous transform → flat array of 16.
+        assert!(code.contains("[f64; 16]"), "expected 4×4 matrix:\n{code}");
+        // Exact rationals survive into the generated constants (no 0.30000000000000004).
+        assert!(!code.contains("0.30000000000000004"), "{code}");
+    }
+
+    #[test]
+    fn fk_matrix_last_column_matches_fk_position() {
+        // The generated position functions must agree with the last column
+        // of the full transform, so both entry points are consistent.
+        let ctx = Context::new();
+        let (q1, q2) = (ctx.symbol("q1"), ctx.symbol("q2"));
+        let zero = ctx.int(0);
+        let (l1, l2) = (float_to_expr(&ctx, 0.3), float_to_expr(&ctx, 0.25));
+        let dh = [(&q1, &zero, &l1, &zero), (&q2, &zero, &l2, &zero)];
+        let t = symplex::robotics::fk_chain(&dh);
+        let (x, y, z) = symplex::robotics::fk_position(&dh);
+        assert_eq!(t.get(0, 3).eval(), x);
+        assert_eq!(t.get(1, 3).eval(), y);
+        assert_eq!(t.get(2, 3).eval(), z);
+    }
+
+    #[test]
+    fn from_toml_accepts_fk_matrix() {
+        let dir = std::env::temp_dir().join(format!("symplex_build_fkm_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("robot.toml");
+        fs::write(
+            &path,
+            r#"
+[robot]
+name = "one_link"
+[[joints]]
+theta = "q"
+a = 0.5
+[generate]
+functions = ["fk_matrix"]
+"#,
+        )
+        .unwrap();
+        let code = from_toml(&path).unwrap().generate().unwrap();
+        assert!(code.contains("fn fk_matrix("), "{code}");
+        assert!(code.contains("[f64; 16]"), "{code}");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
