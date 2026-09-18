@@ -188,6 +188,38 @@ fn jordan_form_reconstructs_defective_3x3() {
 }
 
 #[test]
+fn eigenvals_4x4_repeated_and_jordan_reconstruct() {
+    let ctx = Context::new();
+    let a = matrix![ctx, [2, 1, 0, 0], [0, 2, 0, 0], [0, 0, 2, 0], [0, 0, 0, 3]];
+    let mut ev = a.eigenvals_with_multiplicity().unwrap();
+    ev.sort_by_key(|(v, _)| v.to_string());
+    assert_eq!(ev, vec![(ctx.int(2), 3), (ctx.int(3), 1)]);
+    assert_eq!(a.is_diagonalizable(), Some(false));
+    let (p, j) = a.jordan_form().unwrap();
+    assert_eq!((&(&p * &j) * &p.inv().unwrap()).eval(), a);
+    // exactly one superdiagonal 1: J₂(2) ⊕ J₁(2) ⊕ J₁(3)
+    let ones = (0..3)
+        .filter(|&i| j.get(i, i + 1).is_one_structural())
+        .count();
+    assert_eq!(ones, 1, "{j}");
+}
+
+#[test]
+fn jordan_form_single_nilpotent_block_4x4() {
+    let ctx = Context::new();
+    let n = matrix![ctx, [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1], [0, 0, 0, 0]];
+    assert_eq!(n.is_nilpotent(), Some(true));
+    let (p, j) = n.jordan_form().unwrap();
+    assert_eq!(j, n, "already in Jordan form: one J₄(0) block");
+    assert_eq!((&(&p * &j) * &p.inv().unwrap()).eval(), n);
+    // e^{Nt} = I + Nt + N²t²/2 + N³t³/6
+    let t = ctx.symbol("t");
+    let e = n.matrix_exp_t(&t).unwrap();
+    assert_eq!(e[(0, 3)], &t.powi(3) / 6);
+    assert!(e[(3, 0)].is_zero_structural());
+}
+
+#[test]
 fn jordan_form_two_nilpotent_blocks() {
     let ctx = Context::new();
     let n = matrix![ctx, [0, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1], [0, 0, 0, 0]];

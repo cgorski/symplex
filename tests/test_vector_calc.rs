@@ -85,7 +85,7 @@ fn curl_of_position_is_zero() {
     assert!(c.get(1, 0).eval().simplify().is_zero_structural());
     assert!(c.get(2, 0).eval().simplify().is_zero_structural());
     // Also verify via is_conservative
-    assert!(is_conservative(&field, &[&x, &y, &z]));
+    assert_eq!(is_conservative(&field, &[&x, &y, &z]), Some(true));
 }
 
 #[test]
@@ -153,7 +153,7 @@ fn conservative_gradient_field() {
     // Any gradient field is conservative: F = ∇(x²+y²+z²) = [2x,2y,2z]
     let f = expr!(ctx, x ^ 2 + y ^ 2 + z ^ 2);
     let field = gradient(&f, &[&x, &y, &z]);
-    assert!(is_conservative(&field, &[&x, &y, &z]));
+    assert_eq!(is_conservative(&field, &[&x, &y, &z]), Some(true));
 }
 
 #[test]
@@ -162,7 +162,7 @@ fn divergence_free_field() {
     symplex::syms!(ctx; x, y, z);
     // F = [y*z, x*z, x*y] is solenoidal (div = 0)
     let field = Matrix::col_vector(vec![&y * &z, &x * &z, &x * &y]);
-    assert!(is_solenoidal(&field, &[&x, &y, &z]));
+    assert_eq!(is_solenoidal(&field, &[&x, &y, &z]), Some(true));
 }
 
 #[test]
@@ -171,7 +171,7 @@ fn non_conservative_rotation_field() {
     symplex::syms!(ctx; x, y, z);
     // F = [-y, x, 0] has nonzero curl, so not conservative
     let field = Matrix::col_vector(vec![-&y, x.clone(), ctx.int(0)]);
-    assert!(!is_conservative(&field, &[&x, &y, &z]));
+    assert_eq!(is_conservative(&field, &[&x, &y, &z]), Some(false));
 }
 
 #[test]
@@ -180,7 +180,7 @@ fn non_solenoidal_position_field() {
     symplex::syms!(ctx; x, y, z);
     // F = [x, y, z], div = 3, not solenoidal
     let field = Matrix::col_vector(vec![x.clone(), y.clone(), z.clone()]);
-    assert!(!is_solenoidal(&field, &[&x, &y, &z]));
+    assert_eq!(is_solenoidal(&field, &[&x, &y, &z]), Some(false));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -23,12 +23,12 @@ fn cartesian_functions_unchanged_and_curl_grad_zero() {
     );
     let c = curl(&g, &[&x, &y, &z]).simplify();
     assert_eq!(c.is_zero(), Some(true));
-    assert!(is_conservative(&g, &[&x, &y, &z]));
-    assert!(is_irrotational(&g, &[&x, &y, &z]));
+    assert_eq!(is_conservative(&g, &[&x, &y, &z]), Some(true));
+    assert_eq!(is_irrotational(&g, &[&x, &y, &z]), Some(true));
     // div(curl F) = 0
     let field = Matrix::col_vector(vec![&y * &z, &x * &z.powi(2), &x.exp() * &y]);
     let cf = curl(&field, &[&x, &y, &z]);
-    assert!(is_solenoidal(&cf, &[&x, &y, &z]));
+    assert_eq!(is_solenoidal(&cf, &[&x, &y, &z]), Some(true));
     assert_eq!(
         divergence(&cf, &[&x, &y, &z]).expand().simplify(),
         ctx.int(0)

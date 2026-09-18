@@ -176,6 +176,59 @@ fn has_radical(e: &Ex) -> bool {
     false
 }
 
+/// Rewrite `sin(−c)` → `−sin(c)` and `cos(−c)` → `cos(c)` for *numeric*
+/// literals `c > 0`.  The canonicaliser applies these parity rules to
+/// symbolic negations (`sin(−x)`) but not to negative number literals, so
+/// `½e^{i} + ½e^{−i}` would otherwise stay `½cos(1) + ½cos(−1) + …`.
+fn fix_trig_parity(e: &Ex) -> Ex {
+    use crate::base::node::ExprNode;
+    use num_traits::Signed;
+    // Pass 1 (read lock): find sin/cos nodes with a negative numeric argument.
+    let targets: Vec<(
+        crate::base::node::ExprId,
+        bool,
+        num_rational::Ratio<num_bigint::BigInt>,
+    )> = {
+        let inner = e.inner.read();
+        let arena = &inner.arena;
+        let mut out = Vec::new();
+        let mut stack = vec![e.raw_id()];
+        let mut seen = rustc_hash::FxHashSet::default();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let (is_sin, arg) = match arena.node(id) {
+                ExprNode::Sin(a) => (true, *a),
+                ExprNode::Cos(a) => (false, *a),
+                _ => {
+                    stack.extend(arena.node(id).children());
+                    continue;
+                }
+            };
+            if let Some(r) = arena.as_num(arg)
+                && r.is_negative()
+            {
+                out.push((id, is_sin, r.clone()));
+            }
+        }
+        out
+    };
+    if targets.is_empty() {
+        return e.clone();
+    }
+    // Pass 2 (no lock held): build the replacements, then substitute by id.
+    let ctx = e.context();
+    let map: rustc_hash::FxHashMap<_, Ex> = targets
+        .into_iter()
+        .map(|(id, is_sin, r)| {
+            let pos = ctx.from_ratio(-r);
+            (id, if is_sin { -pos.sin() } else { pos.cos() })
+        })
+        .collect();
+    e.replace(|v| map.get(&v.id()).cloned())
+}
+
 /// Does `e` contain a `RootOf` node?
 fn has_root_of(e: &Ex) -> bool {
     use crate::base::node::ExprNode;
@@ -2089,9 +2142,10 @@ impl Matrix {
     /// let ctx = Context::new();
     /// let m = matrix![ctx, [0, 1], [-1, 0]];
     /// let e = m.matrix_exp().unwrap();
-    /// // e^A = [[cos 1, sin 1], [−sin 1, cos 1]]  (entries may be in exponential form)
-    /// let (re, im) = e[(0, 1)].eval_complex64().unwrap();
-    /// assert!((re - 1f64.sin()).abs() < 1e-12 && im.abs() < 1e-12);
+    /// // e^A = [[cos 1, sin 1], [−sin 1, cos 1]]: complex-conjugate eigenvalue
+    /// // pairs are rewritten with Euler's formula, so the entries are real trig.
+    /// assert_eq!(e[(0, 0)], ctx.one().cos());
+    /// assert_eq!(e[(0, 1)], ctx.one().sin());
     /// ```
     pub fn matrix_exp(&self) -> Result<Matrix, SymplexError> {
         self.matrix_exp_impl(None)
@@ -2209,7 +2263,10 @@ impl Matrix {
             // `½e^{iωt} + ½e^{−iωt}` into `cos(ωt)` (valid for any complex
             // argument, so no realness assumption is needed).
             if s.contains(&i_unit) {
-                s.rewrite_as_trig().expand().simplify()
+                fix_trig_parity(&s.rewrite_as_trig())
+                    .expand()
+                    .eval()
+                    .simplify()
             } else {
                 s
             }

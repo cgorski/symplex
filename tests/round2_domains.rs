@@ -1959,8 +1959,9 @@ fn vector_is_conservative_gradient_field() {
     // F = grad(x²+y²+z²) = [2x, 2y, 2z] — conservative
     let f = &x.powi(2) + &y.powi(2) + &z.powi(2);
     let field = gradient(&f, &[&x, &y, &z]);
-    assert!(
+    assert_eq!(
         is_conservative(&field, &[&x, &y, &z]),
+        Some(true),
         "gradient field should be conservative"
     );
 }
@@ -1973,8 +1974,9 @@ fn vector_is_solenoidal_constant_field() {
     let z = ctx.symbol("z");
     // Constant field has zero divergence
     let field = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
-    assert!(
+    assert_eq!(
         is_solenoidal(&field, &[&x, &y, &z]),
+        Some(true),
         "constant field should be solenoidal"
     );
 }

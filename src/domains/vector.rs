@@ -29,7 +29,7 @@
 
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
-use crate::domains::matrix::Matrix;
+use crate::domains::matrix::{Matrix, all3, ex_is_zero};
 
 pub use crate::domains::matrix_decomp::hessian;
 
@@ -309,27 +309,43 @@ pub fn directional_derivative(f: &Ex, vars: &[&Ex], direction: &Matrix) -> Ex {
 // Field classification & potentials
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Is the 3-D vector field conservative (curl-free)?
+/// Is the 3-D vector field conservative (curl-free)?  Three-valued.
 ///
-/// Returns `false` for anything that is not a `3×1` field with three
-/// variables, or if any curl component does not simplify to zero.
-pub fn is_conservative(field: &Matrix, vars: &[&Ex]) -> bool {
+/// Returns `Some(false)` for anything that is not a `3×1` field with three
+/// variables or if a curl component is provably non-zero, `Some(true)` if
+/// every component simplifies to zero, and `None` if some component's
+/// value cannot be decided symbolically.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::vector::{gradient, is_conservative};
+///
+/// let ctx = Context::new();
+/// let (x, y, z) = (ctx.symbol("x"), ctx.symbol("y"), ctx.symbol("z"));
+/// let f = gradient(&(&(&x * &y) + &z.powi(2)), &[&x, &y, &z]);
+/// assert_eq!(is_conservative(&f, &[&x, &y, &z]), Some(true));
+/// let rot = Matrix::col_vector(vec![-&y, x.clone(), ctx.int(0)]);
+/// assert_eq!(is_conservative(&rot, &[&x, &y, &z]), Some(false));
+/// ```
+pub fn is_conservative(field: &Matrix, vars: &[&Ex]) -> Option<bool> {
     if field.nrows() != 3 || vars.len() != 3 || field.ncols() != 1 {
-        return false;
+        return Some(false);
     }
     let c = curl(field, vars);
-    (0..3).all(|i| c.get(i, 0).eval().simplify().is_zero_structural())
+    all3(c.iter().map(ex_is_zero))
 }
 
 /// Alias of [`is_conservative`] (irrotational ⇔ curl-free).
-pub fn is_irrotational(field: &Matrix, vars: &[&Ex]) -> bool {
+pub fn is_irrotational(field: &Matrix, vars: &[&Ex]) -> Option<bool> {
     is_conservative(field, vars)
 }
 
-/// Is the vector field solenoidal (divergence-free)?
-pub fn is_solenoidal(field: &Matrix, vars: &[&Ex]) -> bool {
-    let div = divergence(field, vars);
-    div.eval().simplify().is_zero_structural()
+/// Is the vector field solenoidal (divergence-free)?  Three-valued, like
+/// [`is_conservative`].
+pub fn is_solenoidal(field: &Matrix, vars: &[&Ex]) -> Option<bool> {
+    ex_is_zero(&divergence(field, vars))
 }
 
 /// Scalar potential `φ` with `∇φ = F` for a conservative Cartesian field.
@@ -534,9 +550,13 @@ mod tests {
         assert_eq!(laplacian(&f, &[&x, &y, &z]), &y * 2 + &z * 6);
         let field = Matrix::col_vector(vec![x.clone(), y.clone(), z.clone()]);
         assert_eq!(divergence(&field, &[&x, &y, &z]), ctx.int(3));
-        assert!(is_conservative(&field, &[&x, &y, &z]));
-        assert!(is_irrotational(&field, &[&x, &y, &z]));
-        assert!(!is_solenoidal(&field, &[&x, &y, &z]));
+        assert_eq!(is_conservative(&field, &[&x, &y, &z]), Some(true));
+        assert_eq!(is_irrotational(&field, &[&x, &y, &z]), Some(true));
+        assert_eq!(is_solenoidal(&field, &[&x, &y, &z]), Some(false));
+        // Undecidable: curl component `a` with no sign information.
+        let a = ctx.symbol("a");
+        let unknown = Matrix::col_vector(vec![ctx.int(0), ctx.int(0), &a * &x]);
+        assert_eq!(is_conservative(&unknown, &[&x, &y, &z]), None);
     }
 
     #[test]
