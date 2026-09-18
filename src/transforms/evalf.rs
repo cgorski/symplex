@@ -16,6 +16,17 @@
 //! precision to absorb rounding errors from intermediate computations.
 //! If a sub-expression cannot be evaluated (e.g., it contains free
 //! symbols), the function returns an error.
+//!
+//! # Definite integrals
+//!
+//! An unevaluated `DefiniteIntegral(body, var, lo, hi)` node is evaluated
+//! by compiling `body` to an `f64` function and running the adaptive
+//! Gauss–Kronrod quadrature from [`crate::calculus::definite`].  That
+//! delivers double precision at best, so requests for more than
+//! [`QUADRATURE_MAX_DIGITS`] digits are refused with
+//! [`SymplexError::NotImplemented`] rather than padded with digits that
+//! carry no information.  `Ex::eval_f64` (16 digits) is served; a 30-digit
+//! `eval_decimal` is not.
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -36,6 +47,11 @@ use tracing::debug;
 
 /// A complex number represented as (real_part, imaginary_part).
 type Complex = (BigFloat, BigFloat);
+
+/// Largest number of decimal digits for which an expression containing a
+/// `DefiniteIntegral` is evaluated (by `f64` quadrature) instead of
+/// refused.  `Ex::eval_f64` requests exactly this many.
+pub(crate) const QUADRATURE_MAX_DIGITS: u32 = 16;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Public entry point
@@ -88,6 +104,16 @@ pub(crate) fn evalf(arena: &Arena, expr: ExprId, digits: u32) -> Result<String, 
                 name: (*name).to_owned(),
             });
         }
+    }
+
+    // Definite integrals are evaluated by `f64` quadrature; refuse rather
+    // than print digits that are not there.
+    if digits > QUADRATURE_MAX_DIGITS && contains_definite_integral(arena, expr) {
+        return Err(SymplexError::NotImplemented(format!(
+            "arbitrary-precision evaluation of a definite integral is not implemented \
+             ({digits} digits requested, at most {QUADRATURE_MAX_DIGITS} available from \
+             f64 Gauss–Kronrod quadrature); use eval_f64 or integrate_definite"
+        )));
     }
 
     let rm = RoundingMode::ToEven;
@@ -1033,6 +1059,48 @@ fn eval_node(
             reason: "cannot evaluate unevaluated integral".into(),
         }),
 
+        // ── DefiniteIntegral: f64 Gauss–Kronrod quadrature ───────────────
+        // The body is compiled to a stack-VM function of the integration
+        // variable (no arena mutation), the bounds come from the cache
+        // (±∞ allowed), and the adaptive G7/K15 rule integrates it.  The
+        // result is an `f64` widened to the working precision — see the
+        // module docs for the precision contract.
+        ExprNode::DefiniteIntegral(body_id, var_id, lo_id, hi_id) => {
+            debug!("evalf: DefiniteIntegral — f64 Gauss–Kronrod quadrature");
+            let var_name = match arena.node(*var_id) {
+                ExprNode::Symbol(sid) => arena.symbol_name(*sid).to_string(),
+                _ => {
+                    return Err(SymplexError::Unevaluable {
+                        reason: "integration variable of a definite integral must be a symbol"
+                            .into(),
+                    });
+                }
+            };
+            let a = definite_bound_f64(arena, cache, *lo_id, rm, cc)?;
+            let b = definite_bound_f64(arena, cache, *hi_id, rm, cc)?;
+            let func = crate::output::lambdify::compile_raw(arena, *body_id, &[&var_name])
+                .map_err(|e| SymplexError::Unevaluable {
+                    reason: format!(
+                        "definite integral body cannot be compiled for quadrature: {e}"
+                    ),
+                })?;
+            let f = |t: f64| func(&[t]);
+            let opts = crate::calculus::definite::QuadOpts::default();
+            let (value, err) = crate::calculus::definite::quadrature(&f, a, b, &opts)?;
+            let tol = opts.abs_tol.max(opts.rel_tol * value.abs());
+            if err > 1e3 * tol {
+                return Err(SymplexError::ComputationFailed {
+                    operation: "evalf",
+                    reason: format!(
+                        "quadrature of the definite integral did not converge: estimate {value} \
+                         with error {err:e} (integral may diverge)"
+                    ),
+                });
+            }
+            debug!(value, err, "evalf: DefiniteIntegral evaluated");
+            Ok((BigFloat::from_f64(value, prec), BigFloat::new(prec)))
+        }
+
         ExprNode::Sum(body_id, var_id, lo_id, hi_id) => {
             debug!("evalf: Sum — attempting finite evaluation");
             let lo_val = get_cached(cache, *lo_id)?;
@@ -1315,6 +1383,51 @@ fn eval_node(
         ExprNode::ConditionSet(_, _) => Err(SymplexError::Unevaluable {
             reason: "cannot numerically evaluate ConditionSet".into(),
         }),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Definite-integral helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Does the tree contain a `DefiniteIntegral` node?
+fn contains_definite_integral(arena: &Arena, root: ExprId) -> bool {
+    let mut stack = vec![root];
+    let mut seen = rustc_hash::FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let node = arena.node(id);
+        if matches!(node, ExprNode::DefiniteIntegral(..)) {
+            return true;
+        }
+        node.for_each_child(|c| stack.push(c));
+    }
+    false
+}
+
+/// An integration bound as `f64`: `±∞` nodes directly, anything else from
+/// the evaluated cache (must be real).
+fn definite_bound_f64(
+    arena: &Arena,
+    cache: &FxHashMap<ExprId, Complex>,
+    id: ExprId,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<f64, SymplexError> {
+    match arena.node(id) {
+        ExprNode::Infinity => Ok(f64::INFINITY),
+        ExprNode::NegInfinity => Ok(f64::NEG_INFINITY),
+        _ => {
+            let v = get_cached(cache, id)?;
+            if !v.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "integration bounds of a definite integral must be real".into(),
+                });
+            }
+            bigfloat_to_f64(&v.0, rm, cc)
+        }
     }
 }
 

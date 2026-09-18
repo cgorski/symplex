@@ -9,7 +9,8 @@
 //! 3. **Pow**, **Mul**, **Add** — ordered by the sort keys of their children.
 //! 4. **Functions** (Sin, Cos, …, Apply) — distinguished by a sub-rank byte,
 //!    then ordered by the sort key of their argument(s).
-//! 5. **Derivative**, **Integral** — ordered by body then variable.
+//! 5. **Derivative**, **Integral**, **DefiniteIntegral** — ordered by body,
+//!    then variable (then bounds).
 //! 6. **Constants** (Pi, E, ImaginaryUnit) — each gets a unique sub-rank.
 //! 7. **Specials** (Infinity, NegInfinity, ComplexInfinity, NaN, Neg) — highest
 //!    rank, each with a unique sub-rank.
@@ -90,6 +91,9 @@ const RANK_MAX: u8 = 132;
 
 /// Rank byte for formal integral nodes.
 const RANK_INTEGRAL: u8 = 140;
+
+/// Rank byte for formal definite integral nodes.
+const RANK_DEFINITE_INTEGRAL: u8 = 142;
 
 /// Rank byte for symbolic summation.
 const RANK_SUM: u8 = 150;
@@ -341,6 +345,7 @@ impl fmt::Debug for SortKey {
 /// | 130  | `Min`                                              |
 /// | 132  | `Max`                                              |
 /// | 140  | `Integral`                                         |
+/// | 142  | `DefiniteIntegral`                                 |
 /// | 150  | `Sum`                                              |
 /// | 152  | `Product_`                                         |
 /// | 170  | `Pi`, `E`, `ImaginaryUnit`, `EulerGamma`, `Catalan`, `GoldenRatio` |
@@ -398,6 +403,14 @@ pub fn compute_sort_key(
             key.push(RANK_INTEGRAL);
             key.extend(get_key(*body).as_bytes());
             key.extend(get_key(*var).as_bytes());
+        }
+
+        ExprNode::DefiniteIntegral(body, var, lo, hi) => {
+            key.push(RANK_DEFINITE_INTEGRAL);
+            key.extend(get_key(*body).as_bytes());
+            key.extend(get_key(*var).as_bytes());
+            key.extend(get_key(*lo).as_bytes());
+            key.extend(get_key(*hi).as_bytes());
         }
 
         // -- unary functions -------------------------------------------------

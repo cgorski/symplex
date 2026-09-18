@@ -201,7 +201,10 @@ fn convert_node(
             None
         }
 
-        ExprNode::Apply(_, _) | ExprNode::Derivative(_, _) | ExprNode::Integral(_, _) => None,
+        ExprNode::Apply(_, _)
+        | ExprNode::Derivative(_, _)
+        | ExprNode::Integral(_, _)
+        | ExprNode::DefiniteIntegral(_, _, _, _) => None,
 
         // Min/Max/Sum/Product are not polynomial.
         ExprNode::Min(_)

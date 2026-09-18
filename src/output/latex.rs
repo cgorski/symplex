@@ -801,6 +801,18 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
             stack.push(LatexItem::Lit(r"\int "));
         }
 
+        // ── DefiniteIntegral: \int_{lo}^{hi} body \, dvar ────────────
+        ExprNode::DefiniteIntegral(body, var, lo, hi) => {
+            stack.push(LatexItem::Expr(var));
+            stack.push(LatexItem::Lit(r"\, d"));
+            stack.push(LatexItem::Expr(body));
+            stack.push(LatexItem::Lit("} "));
+            stack.push(LatexItem::Expr(hi));
+            stack.push(LatexItem::Lit("}^{"));
+            stack.push(LatexItem::Expr(lo));
+            stack.push(LatexItem::Lit(r"\int_{"));
+        }
+
         // ── Limit: \lim_{var \to point} body ──────────────────────
         ExprNode::Limit(body, var, point) => {
             stack.push(LatexItem::Expr(body));
@@ -1425,6 +1437,14 @@ mod tests {
             assert!(latex.ends_with(r"\, dx"), "got: {latex}");
         }
         assert!(!latex.is_empty());
+    }
+
+    #[test]
+    fn latex_definite_integral() {
+        let ctx = crate::api::context::Context::new();
+        let x = ctx.symbol("x");
+        let node = x.sin().definite_integral_node(&x, &ctx.int(0), &ctx.pi());
+        assert_eq!(node.to_latex(), r"\int_{0}^{\pi} \sin\left(x\right)\, dx");
     }
 
     // ── Compound expressions ───────────────────────────────────────

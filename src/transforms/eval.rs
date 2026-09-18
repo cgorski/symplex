@@ -1107,6 +1107,20 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 }
             }
 
+            // ── DefiniteIntegral: rebuild with evaluated children ────────
+            // `eval` stays cheap: only the constructor's structural folds
+            // (`lo == hi`, constant integrand, reversed numeric bounds) are
+            // applied.  Actual integration is `definite::integrate_definite`.
+            ExprNode::DefiniteIntegral(body, int_var, lo, hi) => {
+                let nbody = cache.get(&body).copied().unwrap_or(body);
+                let nvar = cache.get(&int_var).copied().unwrap_or(int_var);
+                let nlo = cache.get(&lo).copied().unwrap_or(lo);
+                let nhi = cache.get(&hi).copied().unwrap_or(hi);
+                // Always go through the constructor so that directly
+                // interned nodes pick up the structural folds too.
+                arena.definite_integral(nbody, nvar, nlo, nhi)
+            }
+
             // Everything else: unchanged.
             // ── RootSum: try to expand by solving the polynomial ───
             ExprNode::RootSum(poly, body, sumvar) => {

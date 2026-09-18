@@ -610,6 +610,9 @@ impl<'a> CEmitter<'a> {
             }
             ExprNode::Derivative(_, _) => return Err(self.unsupported("Derivative")),
             ExprNode::Integral(_, _) => return Err(self.unsupported("Integral")),
+            ExprNode::DefiniteIntegral(_, _, _, _) => {
+                return Err(self.unsupported("DefiniteIntegral"));
+            }
             ExprNode::Sum(_, _, _, _) => return Err(self.unsupported("Sum")),
             ExprNode::Product_(_, _, _, _) => return Err(self.unsupported("Product")),
             ExprNode::Limit(_, _, _) => return Err(self.unsupported("Limit")),

@@ -18,9 +18,15 @@ impl Expr<Numeric> {
     /// integrals when no elementary antiderivative exists.
     ///
     /// If the integral is divergent or cannot be evaluated the result is an
-    /// **unevaluated** integral node — never a wrong finite number.  Use
+    /// **unevaluated** definite-integral node `Integral(f, x, lo, hi)`
+    /// (see [`definite_integral_node`](Self::definite_integral_node)) —
+    /// never a wrong finite number.  Use
     /// [`try_integrate_definite`](Self::try_integrate_definite) to
     /// distinguish "diverges" from "could not compute".
+    ///
+    /// If `self` is, or contains, such a node, the inner integrals are
+    /// evaluated first (innermost out), so nested integrals can be built up
+    /// with repeated calls.
     ///
     /// # Examples
     ///
@@ -42,9 +48,16 @@ impl Expr<Numeric> {
     /// let v = (-x.powi(2)).exp().integrate_definite(&x, &ctx.neg_infinity(), &ctx.infinity());
     /// assert_eq!(format!("{v}"), "sqrt(pi)");
     ///
-    /// // ∫₋₁¹ x⁻² dx diverges: the result stays unevaluated.
+    /// // ∫₋₁¹ x⁻² dx diverges: the result stays unevaluated, bounds intact.
     /// let v = x.powi(-2).integrate_definite(&x, &ctx.int(-1), &ctx.int(1));
     /// assert!(v.has_unevaluated());
+    /// assert!(v.is_definite_integral());
+    /// assert_eq!(format!("{v}"), "Integral(x^(-2), x, -1, 1)");
+    ///
+    /// // ∫₀¹ xˣ dx has no closed form; the node still has a numeric value.
+    /// let v = x.pow(&x).integrate_definite(&x, &ctx.int(0), &ctx.int(1));
+    /// assert!(v.is_definite_integral());
+    /// assert!((v.eval_f64().unwrap() - 0.7834305107).abs() < 1e-8);
     /// ```
     #[must_use = "returns the definite integral value"]
     pub fn integrate_definite(&self, var: &Ex, lo: &Ex, hi: &Ex) -> Ex {
@@ -79,7 +92,8 @@ impl Expr<Numeric> {
     ///
     /// * [`SymplexError::Divergent`] — the integral was proven to diverge,
     /// * [`SymplexError::ComputationFailed`] — no closed form could be
-    ///   established,
+    ///   established, or the result still contains an unevaluated form
+    ///   (a `DefiniteIntegral`, `Integral`, `Limit`, … node),
     /// * [`SymplexError::InvalidArgument`] — `var` is not a symbol.
     ///
     /// # Examples
@@ -114,6 +128,130 @@ impl Expr<Numeric> {
             });
         }
         Ok(self.wrap(id))
+    }
+
+    /// Build the formal, unevaluated definite integral `∫_lo^hi self dvar`
+    /// **without** attempting to evaluate it.
+    ///
+    /// Useful for display, LaTeX, and formal manipulation (differentiation
+    /// by the Leibniz rule, substitution into the bounds, numeric
+    /// evaluation by quadrature).  Only the cheap structural folds are
+    /// applied: `lo == hi` gives `0`, an integrand free of `var` over a
+    /// finite interval gives `self · (hi − lo)`, and numeric bounds with
+    /// `lo > hi` are reordered with a sign flip.  To evaluate the node
+    /// later, call [`eval_integrals`](Self::eval_integrals) on it (or on any
+    /// expression containing it).
+    ///
+    /// The integration variable is bound inside the integrand: it is not
+    /// reported by [`free_symbols`](Self::free_symbols) and is not touched
+    /// by [`subs`](Self::subs); the bounds are in the enclosing scope.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let t = ctx.symbol("t");
+    ///
+    /// let node = x.sin().definite_integral_node(&x, &ctx.int(0), &t);
+    /// assert!(node.is_definite_integral());
+    /// assert!(node.has_unevaluated());
+    /// assert_eq!(format!("{node}"), "Integral(sin(x), x, 0, t)");
+    /// assert_eq!(node.to_latex(), r"\int_{0}^{t} \sin\left(x\right)\, dx");
+    ///
+    /// // Only `t` is free; `x` is bound.
+    /// assert_eq!(node.free_symbols().len(), 1);
+    ///
+    /// // Leibniz rule: d/dt ∫₀ᵗ sin(x) dx = sin(t).
+    /// assert_eq!(format!("{}", node.diff(&t)), "sin(t)");
+    ///
+    /// // Evaluating recovers the closed form 1 − cos(t).
+    /// let v = node.eval_integrals();
+    /// assert_eq!(format!("{v}"), "-cos(t) + 1");
+    /// ```
+    #[must_use = "returns the formal definite integral node"]
+    pub fn definite_integral_node(&self, var: &Ex, lo: &Ex, hi: &Ex) -> Ex {
+        let var_id = self.checked_id(var);
+        let lo_id = self.checked_id(lo);
+        let hi_id = self.checked_id(hi);
+        let mut inner = self.inner.write();
+        let id = inner
+            .arena
+            .definite_integral(self.raw_id(), var_id, lo_id, hi_id);
+        drop(inner);
+        self.wrap(id)
+    }
+
+    /// Is this expression an unevaluated definite integral node
+    /// (`Integral(f, x, lo, hi)`)?
+    ///
+    /// Only the root node is inspected; use
+    /// [`has_unevaluated`](Self::has_unevaluated) to search the whole tree.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// // No closed form → the node comes back.
+    /// let v = x.pow(&x).integrate_definite(&x, &ctx.int(0), &ctx.int(1));
+    /// assert!(v.is_definite_integral());
+    /// // Closed form → a number.
+    /// let v = x.integrate_definite(&x, &ctx.int(0), &ctx.int(1));
+    /// assert!(!v.is_definite_integral());
+    /// ```
+    #[must_use]
+    pub fn is_definite_integral(&self) -> bool {
+        let inner = self.inner.read();
+        matches!(
+            inner.arena.node(self.raw_id()),
+            ExprNode::DefiniteIntegral(..)
+        )
+    }
+
+    /// Evaluate every formal definite-integral node in this expression,
+    /// innermost first.
+    ///
+    /// This is the "doit" operation for `Integral(f, x, lo, hi)` nodes (the
+    /// analogue of [`eval_derivatives`](Self::eval_derivatives) for
+    /// `Derivative`): each node is run through the definite integrator and
+    /// replaced by its closed form.  Nodes that still cannot be evaluated —
+    /// no closed form, or a proven divergence — are left in place, so the
+    /// result is never a wrong finite number; check with
+    /// [`has_unevaluated`](Self::has_unevaluated).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let t = ctx.symbol("t");
+    ///
+    /// // d/dt ∫₀¹ sin(t·x) dx = ∫₀¹ x·cos(t·x) dx, then evaluate it.
+    /// let node = (&t * &x).sin().definite_integral_node(&x, &ctx.int(0), &ctx.int(1));
+    /// let d = node.diff(&t);
+    /// assert!(d.is_definite_integral());
+    /// let v = d.eval_integrals();
+    /// assert!(!v.has_unevaluated(), "{v}");
+    ///
+    /// // No closed form: the node is returned unchanged.
+    /// let n = x.pow(&x).definite_integral_node(&x, &ctx.int(0), &ctx.int(1));
+    /// assert!(n.eval_integrals().is_definite_integral());
+    /// ```
+    #[must_use = "returns the expression with definite integrals evaluated"]
+    pub fn eval_integrals(&self) -> Ex {
+        let _span = debug_span!("eval_integrals", expr = ?self.raw_id()).entered();
+        let id = {
+            let mut inner = self.inner.write();
+            definite::evaluate_inner_definite(&mut inner.arena, self.raw_id())
+        };
+        self.wrap(id)
     }
 
     /// Numerically integrate `self` over `[lo, hi]` with adaptive

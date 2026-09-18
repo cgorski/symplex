@@ -1451,6 +1451,55 @@ impl Arena {
         self.intern(ExprNode::Piecewise(collected))
     }
 
+    // ── Formal calculus nodes ───────────────────────────────────────────────
+
+    /// Creates a formal `DefiniteIntegral` node: `∫_lo^hi body dvar`.
+    ///
+    /// This constructor never attempts integration — that is the job of
+    /// [`definite::integrate_definite`](crate::calculus::definite::integrate_definite).
+    /// It applies only the cheap, always-valid folds:
+    ///
+    /// - `lo == hi` (structurally) → `0`
+    /// - `body == 0` → `0`
+    /// - `body` free of `var` with finite bounds → `body · (hi − lo)`
+    /// - numeric bounds with `lo > hi` → `−∫_hi^lo body dvar`
+    ///
+    /// A constant integrand over an infinite interval is left as a node:
+    /// whether it diverges depends on the sign of the constant, which is
+    /// decided by the definite integrator.
+    pub fn definite_integral(
+        &mut self,
+        body: ExprId,
+        var: ExprId,
+        lo: ExprId,
+        hi: ExprId,
+    ) -> ExprId {
+        if lo == hi || self.is_zero_structural(body) {
+            return self.zero;
+        }
+        let infinite = |a: &Arena, id: ExprId| {
+            matches!(
+                a.node(id),
+                ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity
+            )
+        };
+        if matches!(self.node(var), ExprNode::Symbol(_))
+            && !infinite(self, lo)
+            && !infinite(self, hi)
+            && !crate::base::walk::contains(self, body, var)
+        {
+            let width = self.sub(hi, lo);
+            return self.mul(&[body, width]);
+        }
+        if let (Some(rl), Some(rh)) = (self.as_num(lo), self.as_num(hi))
+            && rl > rh
+        {
+            let flipped = self.intern(ExprNode::DefiniteIntegral(body, var, hi, lo));
+            return self.neg(flipped);
+        }
+        self.intern(ExprNode::DefiniteIntegral(body, var, lo, hi))
+    }
+
     // ── Combinatorial functions (Apply-based) ──────────────────────
 
     /// Creates a `factorial2` (double factorial) node: `n!!`.

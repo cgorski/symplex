@@ -517,13 +517,16 @@ impl<'a> Parser<'a> {
     ) -> Result<ExprId, ParseError> {
         match name_lower {
             "series" => Ok(arena.intern(ExprNode::Series(arg, arg2, arg3, arg4))),
+            // `Integral(f, x, a, b)` — the Display form of a definite integral;
+            // the constructor applies only the cheap folds.
+            "integral" => Ok(arena.definite_integral(arg, arg2, arg3, arg4)),
             // SymPy-style `Sum(f, k, a, b)` / `Product(f, k, a, b)`.
             "sum" | "product" => {
                 self.make_sum_product(arena, name, name_lower, arg, arg2, arg3, arg4)
             }
             _ => Err(ParseError {
                 message: format!(
-                    "unknown 4-argument function '{}'. Supported: Series, Sum, Product",
+                    "unknown 4-argument function '{}'. Supported: Series, Sum, Product, Integral",
                     name
                 ),
                 position: self.lexer.pos,
@@ -576,6 +579,8 @@ impl<'a> Parser<'a> {
             }
             "rootof" => Ok(arena.intern(ExprNode::RootOf(arg, arg2))),
             "conditionset" => Ok(arena.intern(ExprNode::ConditionSet(arg, arg2))),
+            // `Integral(f, x)` — the Display form of an indefinite integral.
+            "integral" => Ok(arena.intern(ExprNode::Integral(arg, arg2))),
             "atan2" => Ok(arena.atan2(arg, arg2)),
             "polygamma" => Ok(arena.polygamma(arg, arg2)),
             "kroneckerdelta" | "kronecker_delta" => Ok(arena.kronecker_delta(arg, arg2)),
@@ -592,7 +597,7 @@ impl<'a> Parser<'a> {
                 message: format!(
                     "unknown 2-argument function '{}'. Supported: log, atan2, polygamma, \
                      binomial, beta, besselj, bessely, besseli, besselk, min, max, \
-                     KroneckerDelta, RootOf, ConditionSet",
+                     KroneckerDelta, RootOf, ConditionSet, Integral",
                     name
                 ),
                 position: self.lexer.pos,
@@ -691,7 +696,7 @@ impl<'a> Parser<'a> {
                      Si, Ci, Ei, li, zeta, polygamma, binomial, beta, besselj, bessely, besseli, \
                      besselk, min, max, KroneckerDelta, Limit, RootOf, ConditionSet, \
                      LaplaceTransform, InverseLaplaceTransform, Residue, DSolve, Series, Sum, \
-                     Product",
+                     Product, Integral",
                     name
                 ),
                 position: self.lexer.pos,

@@ -12,9 +12,15 @@
 //! wrong results.  Use the future `.alg_subs()` for algebraic
 //! substitution with documented caveats.
 //!
-//! **No recursive tree walks.**  All traversals use an explicit stack
-//! ([`crate::base::walk::walk_and_rebuild`]).  Stack overflow is impossible
-//! regardless of expression depth.
+//! **No recursive tree walks.**  All traversals are bottom-up over an
+//! explicit post-order ([`crate::base::walk::post_order_ids`]) with a
+//! rebuilt-children cache.  Stack overflow is impossible regardless of
+//! expression depth.
+//!
+//! **Binders.**  The integration variable of a `DefiniteIntegral(body, var,
+//! lo, hi)` is bound inside `body`: substituting for `var` rewrites the
+//! bounds but leaves the body alone (`∫₀ˣ x² dx` with `x ↦ 3` is
+//! `∫₀³ x² dx`, not `∫₀³ 9 dx`).
 
 use rustc_hash::FxHashMap;
 
@@ -49,9 +55,8 @@ pub(crate) fn subs(arena: &mut Arena, expr: ExprId, old: ExprId, new: ExprId) ->
         return expr;
     }
 
-    crate::base::walk::walk_and_rebuild(arena, expr, &|_arena, id| {
-        if id == old { Some(new) } else { None }
-    })
+    let map: FxHashMap<ExprId, ExprId> = std::iter::once((old, new)).collect();
+    subs_scoped(arena, expr, &map)
 }
 
 /// Simultaneous substitution of multiple `(old, new)` pairs.
@@ -79,7 +84,56 @@ pub(crate) fn subs_map(
         return expr;
     }
 
-    crate::base::walk::walk_and_rebuild(arena, expr, &|_arena, id| map.get(&id).copied())
+    subs_scoped(arena, expr, &map)
+}
+
+/// Bottom-up substitution that respects `DefiniteIntegral` binders.
+///
+/// This is [`walk_and_rebuild`](crate::base::walk::walk_and_rebuild) with
+/// one extra rule: a binder whose variable is a substitution target does
+/// **not** take its body from the rebuilt-children cache.  The bounds are
+/// substituted normally; the body is re-substituted with the shadowed key
+/// removed (or left untouched when that was the only key).  The nested call
+/// recurses over the *set of keys* — each level drops one — never over the
+/// expression tree, so its depth is bounded by `map.len()`.
+fn subs_scoped(arena: &mut Arena, expr: ExprId, map: &FxHashMap<ExprId, ExprId>) -> ExprId {
+    let post_order = crate::base::walk::post_order_ids(arena, expr);
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+
+    for &id in &post_order {
+        if let Some(&new) = map.get(&id) {
+            cache.insert(id, new);
+            continue;
+        }
+        let binder = match arena.node(id) {
+            ExprNode::DefiniteIntegral(body, var, lo, hi) if map.contains_key(var) => {
+                Some((*body, *var, *lo, *hi))
+            }
+            _ => None,
+        };
+        let rebuilt = if let Some((body, var, lo, hi)) = binder {
+            let nlo = cache.get(&lo).copied().unwrap_or(lo);
+            let nhi = cache.get(&hi).copied().unwrap_or(hi);
+            let nbody = if map.len() == 1 {
+                body
+            } else {
+                let inner: FxHashMap<ExprId, ExprId> = map
+                    .iter()
+                    .filter(|(k, _)| **k != var)
+                    .map(|(k, v)| (*k, *v))
+                    .collect();
+                subs_scoped(arena, body, &inner)
+            };
+            arena.definite_integral(nbody, var, nlo, nhi)
+        } else if arena.node(id).is_atom() {
+            id
+        } else {
+            crate::base::walk::rebuild_with_cache(arena, id, &cache)
+        };
+        cache.insert(id, rebuilt);
+    }
+
+    cache.get(&expr).copied().unwrap_or(expr)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

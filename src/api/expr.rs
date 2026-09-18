@@ -132,7 +132,8 @@ pub enum ExprType {
     Integral,
     /// A set expression (interval, finite set, union, intersection, complement).
     Set,
-    /// A formal/unevaluated computation (Limit, Series, LaplaceTransform, etc.)
+    /// A formal/unevaluated computation (DefiniteIntegral, Limit, Series,
+    /// LaplaceTransform, etc.)
     ///
     /// Every expression of this type also reports
     /// [`has_unevaluated`](Expr::has_unevaluated).  `RootOf`/`RootSum` are
@@ -511,7 +512,8 @@ impl<S: Sort> Expr<S> {
                     ExprType::Function
                 }
             }
-            crate::base::node::ExprNode::Limit(..)
+            crate::base::node::ExprNode::DefiniteIntegral(..)
+            | crate::base::node::ExprNode::Limit(..)
             | crate::base::node::ExprNode::Series(..)
             | crate::base::node::ExprNode::LaplaceTransform(..)
             | crate::base::node::ExprNode::InverseLaplaceTransform(..)

@@ -230,6 +230,30 @@ pub(crate) fn compile(
     Ok(CompiledFn::from_program(program))
 }
 
+/// Compile a single expression **without** the `eval()` / CSE pre-passes.
+///
+/// Works on an immutable arena, so it can be used from contexts that only
+/// hold `&Arena` (numeric evaluation of a `DefiniteIntegral` body inside
+/// `evalf`).  The caller is expected to have constant-folded `expr`
+/// already; nothing is interned.
+pub(crate) fn compile_raw(
+    arena: &Arena,
+    expr: ExprId,
+    var_names: &[&str],
+) -> Result<CompiledFn, SymplexError> {
+    check_params(var_names)?;
+    let mut em = Emitter::new(arena, var_names, FxHashMap::default());
+    em.lower(expr)?;
+    em.emit(Instruction::StoreOut(0));
+    let code = em.finish()?;
+    Ok(CompiledFn::from_program(Program {
+        code,
+        arity: var_names.len(),
+        n_locals: 0,
+        n_outputs: 1,
+    }))
+}
+
 /// Compile several expressions into one [`CompiledFnVec`] with a shared CSE pass.
 pub(crate) fn compile_many(
     arena: &mut Arena,
@@ -960,6 +984,9 @@ impl<'a> Emitter<'a> {
 
             ExprNode::Derivative(_, _) => return Err(self.unsupported("Derivative")),
             ExprNode::Integral(_, _) => return Err(self.unsupported("Integral")),
+            ExprNode::DefiniteIntegral(_, _, _, _) => {
+                return Err(self.unsupported("DefiniteIntegral"));
+            }
             ExprNode::Sum(_, _, _, _) => return Err(self.unsupported("Sum")),
             ExprNode::Product_(_, _, _, _) => return Err(self.unsupported("Product")),
             ExprNode::Limit(_, _, _) => return Err(self.unsupported("Limit")),
