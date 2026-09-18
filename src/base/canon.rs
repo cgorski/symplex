@@ -21,7 +21,10 @@
 //! 3. Combine like bases: `x * x → x²`, `x² * x³ → x⁵`.
 //! 4. Numeric coefficient placed first if ≠ 1.
 //! 5. Remaining factors sorted by [`SortKey`](crate::base::sort_key::SortKey).
-//! 6. Zero propagation: any zero factor ⟹ result is `0` (unless ∞ involved ⟹ `NaN`).
+//! 6. Zero propagation: any zero factor ⟹ result is `0`, except that
+//!    `0 × (±∞ | zoo | nan) ⟹ NaN` regardless of argument order.  Function
+//!    applications of unknown finiteness (`Γ(zoo)`, `exp(-∞)`) count as
+//!    finite here because construction never evaluates them.
 //! 7. `NaN` propagation.
 //!
 //! ## Pow
@@ -191,7 +194,7 @@ pub(crate) fn canon_add(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     };
     #[cfg(debug_assertions)]
     {
-        let errors = verify_canonical(arena, result);
+        let errors = verify_canonical_shallow(arena, result);
         if !errors.is_empty() {
             tracing::debug!("canon_add: non-canonical result: {:?}", errors);
         }
@@ -203,19 +206,46 @@ pub(crate) fn canon_add(arena: &mut Arena, args: &[ExprId]) -> ExprId {
 // Mul
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Check whether `id` is an `Add` node with at least one infinity child.
-fn is_add_with_infinity(arena: &Arena, id: ExprId) -> bool {
-    if let ExprNode::Add(ref children) = arena.node(id).clone() {
-        for &child in children {
-            match arena.node(child) {
-                ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity => {
-                    return true;
-                }
-                _ => {}
+/// Result of `0 × (all other factors)` inside [`canon_mul`].
+///
+/// The rule is independent of argument order:
+///
+/// * `0 × (±∞ | zoo | nan) → nan`, also when the special value is hidden
+///   inside a nested `Mul`, `Neg`, or (non-canonical) `Add` among the
+///   factors that have not been processed yet, or among the bases already
+///   collected;
+/// * otherwise `0 × anything → 0`.  This includes function applications of
+///   unknown finiteness such as `Γ(zoo)` or `exp(-∞)`: construction never
+///   evaluates functions, so they are treated as finite here.
+///
+/// `saw_infinity` reports whether an infinity was already consumed from the
+/// factor list before the coefficient became zero.
+fn zero_times_rest<'a>(
+    arena: &Arena,
+    saw_infinity: bool,
+    remaining: impl IntoIterator<Item = &'a ExprId>,
+) -> ExprId {
+    if saw_infinity {
+        return arena.nan;
+    }
+    let mut stack: SmallVec<[ExprId; 16]> = remaining.into_iter().copied().collect();
+    while let Some(id) = stack.pop() {
+        match arena.node(id) {
+            ExprNode::NaN
+            | ExprNode::Infinity
+            | ExprNode::NegInfinity
+            | ExprNode::ComplexInfinity => {
+                tracing::debug!("canon_mul: 0 * ∞ → NaN");
+                return arena.nan;
             }
+            ExprNode::Mul(children) | ExprNode::Add(children) => {
+                stack.extend_from_slice(children);
+            }
+            ExprNode::Neg(inner) => stack.push(*inner),
+            _ => {}
         }
     }
-    false
+    arena.zero
 }
 
 /// Build a canonical `Mul` node from the given factors.
@@ -290,19 +320,10 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
                 let val = arena.num(nid).clone();
                 coeff *= val;
                 if coeff.is_zero() {
-                    // 0 * anything: check for infinity → NaN.
-                    if saw_infinity {
-                        return arena.nan;
-                    }
-                    // 0 * Add(…∞…) → NaN: infinity hidden inside a sum
-                    if bases.keys().any(|&id| is_add_with_infinity(arena, id))
-                        || stack.iter().any(|&id| is_add_with_infinity(arena, id))
-                    {
-                        tracing::debug!("canon_mul: 0 * Add(…∞…) → NaN");
-                        return arena.nan;
-                    }
-                    // Short-circuit: the rest doesn't matter.
-                    return arena.zero;
+                    // 0 × rest: `nan` if any infinity/NaN is involved
+                    // (already seen, still on the stack, or hidden in a
+                    // collected base), otherwise `0`.
+                    return zero_times_rest(arena, saw_infinity, stack.iter().chain(bases.keys()));
                 }
             }
 
@@ -322,15 +343,7 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
 
     // If coefficient became zero during processing.
     if coeff.is_zero() {
-        if saw_infinity {
-            return arena.nan;
-        }
-        // 0 * Add(…∞…) → NaN: infinity hidden inside a sum
-        if bases.keys().any(|&id| is_add_with_infinity(arena, id)) {
-            tracing::debug!("canon_mul: 0 * Add(…∞…) → NaN");
-            return arena.nan;
-        }
-        return arena.zero;
+        return zero_times_rest(arena, saw_infinity, bases.keys());
     }
 
     // Build the combined factors.
@@ -440,6 +453,8 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     // can produce `Mul([1, -1, √2])` (two Num children) instead of
     // `Mul([-1, √2])`.
     let mut result_args: SmallVec<[ExprId; 6]> = SmallVec::new();
+    // Set when `canon_pow` hands back a product (see below).
+    let mut has_nested_mul = false;
 
     for (base, exp) in factors {
         if exp == arena.one {
@@ -448,6 +463,11 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
             if let Some(val) = arena.as_num(base) {
                 coeff *= val.clone();
                 continue;
+            }
+            // Exponents that sum to 1 on a `Pow(Mul(…), e)` base expose the
+            // product itself: `√(-ω²)·√(-ω²) → -ω²`.
+            if matches!(arena.node(base), ExprNode::Mul(_)) {
+                has_nested_mul = true;
             }
             result_args.push(base);
         } else if arena.is_zero_structural(exp) {
@@ -464,24 +484,40 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
                 coeff *= val.clone();
                 continue;
             }
+            if matches!(arena.node(pow_id), ExprNode::Mul(_)) {
+                has_nested_mul = true;
+            }
             result_args.push(pow_id);
         }
     }
 
+    // A factor can turn out to be a *product*: `canon_pow` performs radical
+    // extraction after exponent grouping (`√6·√3 → 18^(1/2) → 3·√2`),
+    // handles negative bases (`(-4)^(1/2) → 2·i`), distributes integer
+    // powers over a `Mul` base after exponents combined
+    // (`(x·y)^(1/2)·(x·y)^(3/2) → x²·y²`), and a `Mul` base whose exponents
+    // sum to 1 is exposed directly.  Its children must be merged with the
+    // other factors (they may share bases or carry a numeric coefficient),
+    // so re-canonicalise the whole product once.  The recursive call sees
+    // only flat, already-canonical factors and therefore terminates.
+    if has_nested_mul && !coeff.is_zero() {
+        tracing::trace!("canon_mul: canon_pow produced a Mul factor; re-flattening");
+        let mut all: SmallVec<[ExprId; 8]> = SmallVec::new();
+        if !coeff.is_one() {
+            let nid = arena.intern_num(coeff);
+            all.push(arena.intern(ExprNode::Num(nid)));
+        }
+        all.extend(result_args);
+        if saw_infinity {
+            // Sign was already folded into `coeff` when `-∞` was consumed.
+            all.push(arena.infinity);
+        }
+        return canon_mul(arena, &all);
+    }
+
     // Re-check for zero after absorbing numeric factors.
     if coeff.is_zero() {
-        if saw_infinity {
-            return arena.nan;
-        }
-        // 0 * Add(…∞…) → NaN: infinity hidden inside a sum
-        if result_args
-            .iter()
-            .any(|&id| is_add_with_infinity(arena, id))
-        {
-            tracing::debug!("canon_mul: 0 * Add(…∞…) → NaN");
-            return arena.nan;
-        }
-        return arena.zero;
+        return zero_times_rest(arena, saw_infinity, result_args.iter());
     }
 
     // Now prepend the numeric coefficient (if not 1, or if there are
@@ -550,9 +586,9 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
         _ => arena.intern(ExprNode::Mul(result_args)),
     };
     debug_assert!(
-        verify_canonical(arena, result).is_empty(),
+        verify_canonical_shallow(arena, result).is_empty(),
         "canon_mul produced non-canonical result: {:?}",
-        verify_canonical(arena, result)
+        verify_canonical_shallow(arena, result)
     );
     result
 }
@@ -888,7 +924,7 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
     let result = arena.intern(ExprNode::Pow(base, exp));
     #[cfg(debug_assertions)]
     {
-        let errors = verify_canonical(arena, result);
+        let errors = verify_canonical_shallow(arena, result);
         if !errors.is_empty() {
             tracing::debug!("canon_pow: non-canonical result: {:?}", errors);
         }
@@ -1048,7 +1084,7 @@ pub(crate) fn canon_neg(arena: &mut Arena, expr: ExprId) -> ExprId {
     };
     #[cfg(debug_assertions)]
     {
-        let errors = verify_canonical(arena, result);
+        let errors = verify_canonical_shallow(arena, result);
         if !errors.is_empty() {
             tracing::debug!("canon_neg: non-canonical result: {:?}", errors);
         }
@@ -1255,13 +1291,36 @@ pub(crate) fn canon_set_intersection(arena: &mut Arena, sets: &[ExprId]) -> Expr
 /// Returns a list of violations found. An empty list means the
 /// expression is properly canonical.
 ///
+/// Every node reachable from `id` is checked once (the walk is over the
+/// hash-consed DAG with a visited set, using an explicit stack), so the
+/// cost is proportional to the DAG, not the unfolded tree.
+///
 /// This is intended for use in `debug_assert!` and property-based tests.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn verify_canonical(arena: &mut Arena, id: ExprId) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut visited: FxHashSet<ExprId> = FxHashSet::default();
+    let mut stack: Vec<ExprId> = vec![id];
+    while let Some(cur) = stack.pop() {
+        if !visited.insert(cur) {
+            continue;
+        }
+        verify_node(arena, cur, &mut errors);
+        arena.node(cur).for_each_child(|c| stack.push(c));
+    }
+    errors
+}
+
+/// Check the canonical-form invariants of the node `id` itself (not its
+/// descendants).  Constructors call this in debug builds on the node they
+/// just built: the children were verified when *they* were built.
+pub(crate) fn verify_canonical_shallow(arena: &mut Arena, id: ExprId) -> Vec<String> {
     let mut errors = Vec::new();
     verify_node(arena, id, &mut errors);
     errors
 }
 
+/// The per-node invariants behind [`verify_canonical`]; does not recurse.
 fn verify_node(arena: &mut Arena, id: ExprId, errors: &mut Vec<String>) {
     match arena.node(id).clone() {
         ExprNode::Add(ref children) => {
@@ -1308,10 +1367,6 @@ fn verify_node(arena: &mut Arena, id: ExprId, errors: &mut Vec<String>) {
                     }
                 }
             }
-            // Recurse into children
-            for &child in children {
-                verify_node(arena, child, errors);
-            }
         }
         ExprNode::Mul(ref children) => {
             // 1. Must have >= 2 children
@@ -1348,10 +1403,6 @@ fn verify_node(arena: &mut Arena, id: ExprId, errors: &mut Vec<String>) {
                     "Mul has {num_count} Num children (should be at most 1)"
                 ));
             }
-            // Recurse
-            for &child in children {
-                verify_node(arena, child, errors);
-            }
         }
         ExprNode::Neg(inner) => {
             // 1. No double negation
@@ -1366,7 +1417,6 @@ fn verify_node(arena: &mut Arena, id: ExprId, errors: &mut Vec<String>) {
             if matches!(arena.node(inner), ExprNode::Num(_)) {
                 errors.push("Neg(Num) should be folded into negative Num".to_string());
             }
-            verify_node(arena, inner, errors);
         }
         ExprNode::Pow(base, exp) => {
             // 1. exp should not be 0 (should be 1)
@@ -1381,8 +1431,6 @@ fn verify_node(arena: &mut Arena, id: ExprId, errors: &mut Vec<String>) {
             if base == arena.one {
                 errors.push("Pow(1, x) should be 1".to_string());
             }
-            verify_node(arena, base, errors);
-            verify_node(arena, exp, errors);
         }
         ExprNode::And(ref children) | ExprNode::Or(ref children) => {
             let label = if matches!(arena.node(id), ExprNode::And(_)) {
@@ -1413,17 +1461,9 @@ fn verify_node(arena: &mut Arena, id: ExprId, errors: &mut Vec<String>) {
                     ));
                 }
             }
-            // Recurse into children
-            for &child in children {
-                verify_node(arena, child, errors);
-            }
         }
-        // Atoms and functions: recurse into children
-        _ => {
-            for &child in arena.node(id).children().iter() {
-                verify_node(arena, child, errors);
-            }
-        }
+        // Atoms and functions carry no ordering invariants of their own.
+        _ => {}
     }
 }
 

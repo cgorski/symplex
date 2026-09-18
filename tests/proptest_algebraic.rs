@@ -139,13 +139,20 @@ proptest! {
         prop_assert_eq!(format!("{result}"), format!("{a}"));
     }
 
-    /// Multiplication by zero: a * 0 == 0
+    /// Multiplication by zero: a * 0 == 0 for finite values.
+    /// For infinite values (e.g. `0^(-1) = zoo`), `a * 0` is correctly NaN
+    /// (indeterminate form), not 0 — and it must not depend on operand order.
     #[test]
     fn mul_zero(a in arb_expr(2)) {
         let ctx = shared_ctx().clone();
         let zero = ctx.int(0);
         let result = &a * &zero;
-        prop_assert_eq!(format!("{result}"), "0");
+        let s = format!("{result}");
+        prop_assert!(
+            s == "0" || s == "nan",
+            "a * 0 should be 0 (finite) or nan (infinite), got {}", s
+        );
+        prop_assert_eq!(format!("{}", &zero * &a), s);
     }
 
     /// Self-subtraction: a - a == 0 for finite values.

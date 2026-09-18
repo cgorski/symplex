@@ -503,8 +503,9 @@ fn evalf_pi_50_digits() {
 fn evalf_e_15_digits() {
     let ctx = Context::new();
     let result = ctx.e().eval_decimal(15).unwrap();
+    // e = 2.718281828459045…; the 15th digit rounds up.
     assert!(
-        result.starts_with("2.71828182845904"),
+        result.starts_with("2.71828182845905"),
         "e to 15 digits: {result}"
     );
 }
@@ -541,7 +542,7 @@ fn evalf_exp_one_is_e() {
     let ctx = Context::new();
     let expr = ctx.int(1).exp();
     let result = expr.eval_decimal(15).unwrap();
-    assert!(result.starts_with("2.71828182845904"), "exp(1): {result}");
+    assert!(result.starts_with("2.71828182845905"), "exp(1): {result}");
 }
 
 #[test]

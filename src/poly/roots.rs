@@ -103,8 +103,19 @@ fn cauchy_bound(poly: &Poly, prec: usize) -> BigFloat {
 
 /// Generate initial root approximations distributed on a circle.
 ///
-/// Uses the classic Aberth initialization: `z_k = center + radius * exp(2πi(k + 1/4)/n)`
-/// where `center = -a_{n-1} / (n * a_n)` and `radius` is the Cauchy bound.
+/// Uses the classic Aberth initialization
+/// `z_k = center + radius · exp(i(2πk/n + θ))` where
+/// `center = -a_{n-1} / (n · a_n)` and `radius` is the Cauchy bound.
+///
+/// The phase offset `θ = π/(2n) + 0.4` is deliberately *not* a rational
+/// multiple of `π/n`: the textbook choice `θ = π/(2n)` places the guesses
+/// mirror-symmetrically about the imaginary axis for odd `n`, and the
+/// Aberth iteration preserves that symmetry for polynomials with real
+/// coefficients that are odd or even functions (`x³ + x`).  The paired
+/// guesses can then never split to the distinct self-symmetric roots `0`
+/// and `i`, and the iteration stalls without ever converging.  The
+/// irrational-looking offset breaks every such symmetry (this is the
+/// same trick MPSolve uses).
 fn initial_guesses(poly: &Poly, n: usize, prec: usize, cc: &mut Consts) -> Vec<Complex> {
     let rm = RoundingMode::None;
     let radius = cauchy_bound(poly, prec);
@@ -126,13 +137,14 @@ fn initial_guesses(poly: &Poly, n: usize, prec: usize, cc: &mut Consts) -> Vec<C
     let two_pi = cc.pi(prec, rm).mul(&BigFloat::from_i32(2, prec), prec, rm);
     let n_bf = BigFloat::from_i64(n as i64, prec);
     let quarter = BigFloat::from_f64(0.25, prec);
+    let offset = BigFloat::from_f64(0.4, prec);
 
     (0..n)
         .map(|k| {
-            // angle = 2π * (k + 1/4) / n
+            // angle = 2π * (k + 1/4) / n + 0.4
             let k_bf = BigFloat::from_i64(k as i64, prec);
             let frac = k_bf.add(&quarter, prec, rm).div(&n_bf, prec, rm);
-            let angle = two_pi.mul(&frac, prec, rm);
+            let angle = two_pi.mul(&frac, prec, rm).add(&offset, prec, rm);
 
             let cos_a = angle.cos(prec, rm, cc);
             let sin_a = angle.sin(prec, rm, cc);
@@ -161,20 +173,73 @@ fn initial_guesses(poly: &Poly, n: usize, prec: usize, cc: &mut Consts) -> Vec<C
 /// A vector of `n` complex roots as `(BigFloat, BigFloat)` pairs, sorted
 /// by real part (then imaginary part for ties).
 pub(crate) fn aberth_roots(poly: &Poly, prec: usize, max_iter: usize) -> Vec<Complex> {
-    let n = match poly.degree() {
-        Some(d) if d >= 1 => d,
-        _ => return vec![],
-    };
-
-    // Normalize to monic
-    let monic = poly.make_monic();
-    let deriv = monic.derivative();
+    if poly.degree().is_none_or(|d| d == 0) {
+        return vec![];
+    }
 
     let rm = RoundingMode::None;
     let wp = prec + 64; // working precision with guard bits
+
+    // Roots at exactly zero are read off the coefficients: `x^k · q(x)` with
+    // `q(0) ≠ 0`.  They are returned as exact zeros and the iteration only
+    // sees `q`, whose roots are all nonzero.
+    let zero_mult = poly.coeffs().iter().take_while(|c| c.is_zero()).count();
+    let mut roots: Vec<Complex> = (0..zero_mult).map(|_| c_zero(wp)).collect();
+    let reduced = if zero_mult > 0 {
+        Poly::from_coeffs(poly.coeffs()[zero_mult..].to_vec())
+    } else {
+        poly.clone()
+    };
+    let n = match reduced.degree() {
+        Some(d) if d >= 1 => d,
+        _ => return roots,
+    };
+
+    // Normalize to monic
+    let monic = reduced.make_monic();
+    let deriv = monic.derivative();
+
     let mut cc = Consts::new().expect("Consts::new");
 
-    let mut roots = initial_guesses(&monic, n, wp, &mut cc);
+    let mut nonzero = aberth_iterate(&monic, &deriv, n, wp, prec, max_iter, rm, &mut cc);
+    roots.append(&mut nonzero);
+
+    // Sort by (real part, imaginary part) for stable indexing
+    roots.sort_by(|a, b| {
+        let re_cmp = a.0.cmp(&b.0).unwrap_or(0);
+        if re_cmp < 0 {
+            std::cmp::Ordering::Less
+        } else if re_cmp > 0 {
+            std::cmp::Ordering::Greater
+        } else {
+            let im_cmp = a.1.cmp(&b.1).unwrap_or(0);
+            if im_cmp < 0 {
+                std::cmp::Ordering::Less
+            } else if im_cmp > 0 {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        }
+    });
+
+    roots
+}
+
+/// The Aberth–Ehrlich iteration proper, for a monic polynomial of degree
+/// `n ≥ 1` with `p(0) ≠ 0`.  Returns the `n` (unsorted) roots.
+#[allow(clippy::too_many_arguments)]
+fn aberth_iterate(
+    monic: &Poly,
+    deriv: &Poly,
+    n: usize,
+    wp: usize,
+    prec: usize,
+    max_iter: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Vec<Complex> {
+    let mut roots = initial_guesses(monic, n, wp, cc);
 
     // Convergence threshold: ~10^{-30} (good enough for f64 output)
     let threshold = BigFloat::from_f64(1e-30, wp);
@@ -250,25 +315,6 @@ pub(crate) fn aberth_roots(poly: &Poly, prec: usize, max_iter: usize) -> Vec<Com
         }
     }
 
-    // Sort by (real part, imaginary part) for stable indexing
-    roots.sort_by(|a, b| {
-        let re_cmp = a.0.cmp(&b.0).unwrap_or(0);
-        if re_cmp < 0 {
-            std::cmp::Ordering::Less
-        } else if re_cmp > 0 {
-            std::cmp::Ordering::Greater
-        } else {
-            let im_cmp = a.1.cmp(&b.1).unwrap_or(0);
-            if im_cmp < 0 {
-                std::cmp::Ordering::Less
-            } else if im_cmp > 0 {
-                std::cmp::Ordering::Greater
-            } else {
-                std::cmp::Ordering::Equal
-            }
-        }
-    });
-
     roots
 }
 
@@ -295,6 +341,44 @@ pub(crate) fn rootof_eval_f64(poly: &Poly, index: usize) -> Option<(f64, f64)> {
     Some((re_f64, im_f64))
 }
 
+/// Relative size below which a computed imaginary part is treated as a
+/// *candidate* for being numerical noise on a real root.  The decision
+/// itself is made exactly (see [`is_real_root_near`]); this only avoids
+/// building a Sturm chain for clearly complex roots.
+const REAL_AXIS_NOISE: f64 = 1e-6;
+
+/// Does the square-free polynomial `part` have a real root within a tiny
+/// interval around `z.0`?  Decided exactly with a Sturm count over
+/// `[re − ε, re + ε]`, `ε = 2⁻³⁰ · max(1, |re|)`, on exact rationals.
+///
+/// Returns `false` immediately when `|im|` is not small relative to the
+/// root, so the chain is only built when a root actually looks real.  The
+/// chain is built lazily and cached in `sturm` across calls.
+fn is_real_root_near(
+    part: &Poly,
+    z: (f64, f64),
+    sturm: &mut Option<super::sturm::SturmChain>,
+) -> bool {
+    let (re, im) = z;
+    if !re.is_finite() || !im.is_finite() {
+        return false;
+    }
+    let scale = re.abs().max(1.0);
+    if im.abs() > REAL_AXIS_NOISE * scale {
+        return false;
+    }
+    let Some(center) = crate::base::numeric::f64_to_ratio_exact(re) else {
+        return false;
+    };
+    let Some(eps) = crate::base::numeric::f64_to_ratio_exact(scale * 2f64.powi(-30)) else {
+        return false;
+    };
+    let chain = sturm.get_or_insert_with(|| super::sturm::SturmChain::new(part));
+    let lo = &center - &eps;
+    let hi = &center + &eps;
+    chain.count_roots_in_closed(&lo, &hi) >= 1
+}
+
 /// Convert a `BigFloat` to `f64` (best-effort).
 fn bigfloat_to_f64(bf: &BigFloat) -> f64 {
     // Try direct conversion via the Display trait
@@ -311,6 +395,14 @@ fn bigfloat_to_f64(bf: &BigFloat) -> f64 {
 /// `prec_bits` is the working precision handed to [`aberth_roots`]
 /// (at least 128 is recommended for full `f64` accuracy).
 ///
+/// Real roots are returned with `im == 0.0` *exactly*.  A root whose
+/// computed imaginary part is at the noise floor is snapped onto the real
+/// axis only after an exact check: the square-free part must have a real
+/// root in a tiny rational interval around the computed real part (Sturm
+/// count).  Genuinely complex roots with a small imaginary part therefore
+/// keep it, and the number of returned real roots always agrees with
+/// [`SturmChain::count_real_roots`](super::sturm::SturmChain::count_real_roots).
+///
 /// Roots are sorted by real part, then imaginary part.  Constants and the
 /// zero polynomial produce an empty vector.
 pub(crate) fn nroots_f64(poly: &Poly, prec_bits: usize) -> Vec<(f64, f64)> {
@@ -325,8 +417,12 @@ pub(crate) fn nroots_f64(poly: &Poly, prec_bits: usize) -> Vec<(f64, f64)> {
         }
         let max_iter = 100 + 20 * part.degree().unwrap_or(0);
         let roots = aberth_roots(&part, prec_bits, max_iter);
+        let mut sturm: Option<super::sturm::SturmChain> = None;
         for (re, im) in roots {
-            let pair = (bigfloat_to_f64(&re), bigfloat_to_f64(&im));
+            let mut pair = (bigfloat_to_f64(&re), bigfloat_to_f64(&im));
+            if pair.1 != 0.0 && is_real_root_near(&part, pair, &mut sturm) {
+                pair.1 = 0.0;
+            }
             for _ in 0..mult {
                 out.push(pair);
             }

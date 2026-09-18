@@ -527,11 +527,31 @@ impl Arena {
     }
 
     /// Set assumptions for a symbol.
+    ///
+    /// The set is normalised with
+    /// [`Assumptions::normalize_declared`](crate::base::assumptions::Assumptions::normalize_declared)
+    /// (a symbol declared with a sign is finite, hence real, unless its
+    /// finiteness was declared explicitly).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the assumptions are self-contradictory (e.g. `positive`
+    /// together with `negative`).  This is a programming error in the
+    /// caller, like mixing expressions from two contexts.
     pub(crate) fn set_symbol_assumptions(
         &mut self,
         id: SymbolId,
         a: crate::base::assumptions::Assumptions,
     ) {
+        let mut a = a;
+        a.normalize_declared();
+        assert!(
+            !a.is_contradictory(),
+            "contradictory assumptions declared on symbol `{}`: {a} \
+             (properties {} are both asserted and denied)",
+            self.symbols.name(id),
+            a.known_true & a.known_false
+        );
         self.symbols.set_assumptions(id, a);
     }
 

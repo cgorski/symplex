@@ -371,7 +371,7 @@ fn extended_real_assumption() {
     let ef = ctx.symbol_with("f", &[Assumption::ExtendedReal, Assumption::Finite]);
     assert_eq!(ef.query(Props::REAL), Some(true));
     assert_eq!(ctx.infinity().query(Props::EXTENDED_REAL), Some(true));
-    assert_eq!(ctx.infinity().query(Props::REAL), None);
+    assert_eq!(ctx.infinity().query(Props::REAL), Some(false));
     let ne = ctx.symbol_with("g", &[Assumption::NotExtendedReal]);
     assert_eq!(ne.query(Props::REAL), Some(false));
     assert_eq!(ne.query(Props::POSITIVE), Some(false));

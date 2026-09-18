@@ -680,31 +680,116 @@ pub(crate) fn contains(arena: &Arena, haystack: ExprId, needle: ExprId) -> bool 
     false
 }
 
-/// Collect the [`ExprId`] of every free symbol that appears in the
-/// expression tree.  Each symbol appears at most once.
+/// Collect the [`ExprId`] of every symbol that appears anywhere in the
+/// expression tree, ignoring binders.  Each symbol appears at most once.
 ///
 /// Uses an explicit stack — never recurses.
-// Used for structural queries.
-pub(crate) fn free_symbols(arena: &Arena, root: ExprId) -> Vec<ExprId> {
+pub(crate) fn all_symbols(arena: &Arena, root: ExprId) -> Vec<ExprId> {
     let mut result = Vec::new();
     let mut visited: FxHashSet<ExprId> = FxHashSet::default();
-    let mut seen_syms: FxHashSet<SymbolId> = FxHashSet::default();
     let mut stack: Vec<ExprId> = vec![root];
 
     while let Some(id) = stack.pop() {
-        if visited.contains(&id) {
+        if !visited.insert(id) {
             continue;
         }
-        visited.insert(id);
-
-        if let ExprNode::Symbol(sid) = arena.node(id)
-            && !seen_syms.contains(sid)
-        {
-            seen_syms.insert(*sid);
+        if matches!(arena.node(id), ExprNode::Symbol(_)) {
             result.push(id);
         }
-
         arena.node(id).for_each_child(|c| stack.push(c));
+    }
+
+    result
+}
+
+/// Collect the [`ExprId`] of every *free* symbol that appears in the
+/// expression tree.  Each symbol appears at most once.
+///
+/// Binders hide their variable inside the sub-expression they scope over
+/// (the variable remains free in the other operands):
+///
+/// | Node                          | Bound in                                 |
+/// |-------------------------------|------------------------------------------|
+/// | `Sum(body, var, lo, hi)`      | `body` (not `lo`, `hi`)                  |
+/// | `Product_(body, var, lo, hi)` | `body` (not `lo`, `hi`)                  |
+/// | `RootSum(poly, body, var)`    | `body` (`poly` is a polynomial in `var`) |
+/// | `ConditionSet(var, cond)`     | `cond`                                   |
+/// | `RootOf(poly, idx)`           | `poly`, when it has exactly one symbol   |
+///
+/// `Integral`, `Derivative`, `Limit`, `Series`, … do **not** bind: their
+/// variable is a genuine free symbol of the (anti)derivative / limit form.
+///
+/// Because the arena is a hash-consed DAG, the same node can occur both
+/// under a binder and outside it (`x + Σ_{x=0}^{3} x`), so visited-ness is
+/// tracked per *(node, scope)* pair rather than per node.
+///
+/// Uses an explicit stack — never recurses.
+pub(crate) fn free_symbols(arena: &Arena, root: ExprId) -> Vec<ExprId> {
+    // Scope 0 is the empty scope; every other scope is a sorted list of
+    // bound symbol ids.  Scopes are interned so that `(node, scope)` is a
+    // cheap hashable key.
+    let mut scopes: Vec<SmallVec<[ExprId; 4]>> = vec![SmallVec::new()];
+    let mut result = Vec::new();
+    let mut visited: FxHashSet<(ExprId, u32)> = FxHashSet::default();
+    let mut seen_syms: FxHashSet<SymbolId> = FxHashSet::default();
+    let mut stack: Vec<(ExprId, u32)> = vec![(root, 0)];
+
+    // Return the scope `scopes[sc] ∪ {var}` (interned).
+    fn extend_scope(scopes: &mut Vec<SmallVec<[ExprId; 4]>>, sc: u32, var: ExprId) -> u32 {
+        if scopes[sc as usize].contains(&var) {
+            return sc;
+        }
+        let mut new_scope = scopes[sc as usize].clone();
+        new_scope.push(var);
+        new_scope.sort_unstable();
+        if let Some(pos) = scopes.iter().position(|s| *s == new_scope) {
+            return pos as u32;
+        }
+        scopes.push(new_scope);
+        (scopes.len() - 1) as u32
+    }
+
+    while let Some((id, sc)) = stack.pop() {
+        if !visited.insert((id, sc)) {
+            continue;
+        }
+
+        match arena.node(id) {
+            ExprNode::Symbol(sid) => {
+                if !scopes[sc as usize].contains(&id) && seen_syms.insert(*sid) {
+                    result.push(id);
+                }
+            }
+            ExprNode::Sum(body, var, lo, hi) | ExprNode::Product_(body, var, lo, hi) => {
+                stack.push((*lo, sc));
+                stack.push((*hi, sc));
+                let inner = extend_scope(&mut scopes, sc, *var);
+                stack.push((*body, inner));
+            }
+            ExprNode::RootSum(poly, body, var) => {
+                let inner = extend_scope(&mut scopes, sc, *var);
+                stack.push((*poly, inner));
+                stack.push((*body, inner));
+            }
+            ExprNode::ConditionSet(var, cond) => {
+                let inner = extend_scope(&mut scopes, sc, *var);
+                stack.push((*cond, inner));
+            }
+            ExprNode::RootOf(poly, idx) => {
+                stack.push((*idx, sc));
+                // The polynomial's variable is bound.  It is only
+                // well-defined when the polynomial is univariate; anything
+                // else is reported conservatively (all symbols free).
+                let poly_syms = all_symbols(arena, *poly);
+                let inner = if let [var] = poly_syms[..] {
+                    extend_scope(&mut scopes, sc, var)
+                } else {
+                    sc
+                };
+                stack.push((*poly, inner));
+            }
+            node => node.for_each_child(|c| stack.push((c, sc))),
+        }
     }
 
     result
@@ -924,6 +1009,113 @@ mod tests {
         let a = Arena::new();
         let syms = free_symbols(&a, a.pi);
         assert!(syms.is_empty(), "pi has no free symbols");
+    }
+
+    #[test]
+    fn free_symbols_sum_binds_index_but_not_bounds() {
+        let mut a = Arena::new();
+        let k = sym(&mut a, "k");
+        let n = sym(&mut a, "n");
+        let body = a.sin(k);
+        let s = a.intern(ExprNode::Sum(body, k, a.one, n));
+        assert_eq!(free_symbols(&a, s), vec![n]);
+        let p = a.intern(ExprNode::Product_(body, k, a.one, n));
+        assert_eq!(free_symbols(&a, p), vec![n]);
+        // The index variable in a bound is the *outer* k.
+        let s2 = a.intern(ExprNode::Sum(body, k, a.one, k));
+        assert_eq!(free_symbols(&a, s2), vec![k]);
+    }
+
+    #[test]
+    fn free_symbols_same_node_bound_and_free() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let three = a.int(3);
+        let s = a.intern(ExprNode::Sum(x, x, a.zero, three));
+        assert!(free_symbols(&a, s).is_empty());
+        // x + Σ_{x=0}^{3} x : the first x is free even though the same
+        // arena node is bound inside the sum.
+        let e = a.add(&[x, s]);
+        assert_eq!(free_symbols(&a, e), vec![x]);
+        let e2 = a.add(&[s, x]);
+        assert_eq!(free_symbols(&a, e2), vec![x]);
+    }
+
+    #[test]
+    fn free_symbols_rootof_and_rootsum_bind_polynomial_variable() {
+        let mut a = Arena::new();
+        let lam = sym(&mut a, "lambda");
+        let three = a.int(3);
+        let l3 = a.pow(lam, three);
+        let neg_lam = a.neg(lam);
+        let poly = a.add(&[l3, neg_lam, a.neg_one]);
+        let root = a.intern(ExprNode::RootOf(poly, a.zero));
+        assert!(free_symbols(&a, root).is_empty(), "RootOf is a constant");
+        // Root index is not scoped.
+        let n = sym(&mut a, "n");
+        let root_n = a.intern(ExprNode::RootOf(poly, n));
+        assert_eq!(free_symbols(&a, root_n), vec![n]);
+        // RootSum(poly(t), body(t, x), t): only x is free.
+        let t = sym(&mut a, "t");
+        let x = sym(&mut a, "x");
+        let t3 = a.pow(t, three);
+        let poly_t = a.add(&[t3, t, a.one]);
+        let tx = a.mul(&[t, x]);
+        let body = a.ln(tx);
+        let rs = a.intern(ExprNode::RootSum(poly_t, body, t));
+        assert_eq!(free_symbols(&a, rs), vec![x]);
+    }
+
+    #[test]
+    fn free_symbols_rootof_multivariate_polynomial_is_conservative() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let p = sym(&mut a, "p");
+        let five = a.int(5);
+        let x5 = a.pow(x, five);
+        let px = a.mul(&[p, x]);
+        let poly = a.add(&[x5, px, a.one]);
+        let root = a.intern(ExprNode::RootOf(poly, a.zero));
+        let mut syms = free_symbols(&a, root);
+        syms.sort_unstable();
+        let mut expected = vec![x, p];
+        expected.sort_unstable();
+        assert_eq!(syms, expected);
+    }
+
+    #[test]
+    fn free_symbols_condition_set_binds_variable() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let y = sym(&mut a, "y");
+        let sx = a.sin(x);
+        let cond = a.gt(sx, y);
+        let cs = a.intern(ExprNode::ConditionSet(x, cond));
+        assert_eq!(free_symbols(&a, cs), vec![y]);
+    }
+
+    #[test]
+    fn free_symbols_integral_and_derivative_do_not_bind() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let sx = a.sin(x);
+        let integral = a.intern(ExprNode::Integral(sx, x));
+        assert_eq!(free_symbols(&a, integral), vec![x]);
+        let deriv = a.intern(ExprNode::Derivative(sx, x));
+        assert_eq!(free_symbols(&a, deriv), vec![x]);
+    }
+
+    #[test]
+    fn free_symbols_nested_binders() {
+        let mut a = Arena::new();
+        let i = sym(&mut a, "i");
+        let j = sym(&mut a, "j");
+        let n = sym(&mut a, "n");
+        let ij = a.mul(&[i, j]);
+        let inner = a.intern(ExprNode::Sum(ij, j, a.one, i));
+        assert_eq!(free_symbols(&a, inner), vec![i]);
+        let outer = a.intern(ExprNode::Sum(inner, i, a.one, n));
+        assert_eq!(free_symbols(&a, outer), vec![n]);
     }
 
     // ── has_unevaluated ────────────────────────────────────────────────

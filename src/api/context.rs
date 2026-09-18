@@ -326,7 +326,7 @@ impl Context {
     /// let ctx = Context::new();
     /// let phi = ctx.golden_ratio();
     /// assert_eq!(format!("{phi}"), "GoldenRatio");
-    /// assert!(phi.eval_decimal(30).unwrap().starts_with("1.61803398874989484820458683436"));
+    /// assert!(phi.eval_decimal(30).unwrap().starts_with("1.61803398874989484820458683437"));
     /// assert_eq!(phi.is_rational(), Some(false));
     /// ```
     pub fn golden_ratio(&self) -> crate::api::expr::Ex {
