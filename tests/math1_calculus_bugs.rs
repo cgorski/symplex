@@ -361,12 +361,15 @@ fn diff_abs_x_squared_plus_1() {
     let df = f.diff(&x);
 
     // Verify numerically: at x=2, derivative should be 4
-    if let Ok(val) = df.subs(&x, &ctx.int(2)).eval().eval_f64() {
-        assert!(
-            (val - 4.0).abs() < 1e-8,
-            "d/dx |x^2+1| at x=2 should be 4, got {val}"
-        );
-    }
+    let val = df
+        .subs(&x, &ctx.int(2))
+        .eval()
+        .eval_f64()
+        .expect("df.subs(&x, &ctx.int(2)).eval().eval_f64() must evaluate");
+    assert!(
+        (val - 4.0).abs() < 1e-8,
+        "d/dx |x^2+1| at x=2 should be 4, got {val}"
+    );
 }
 
 // ── 1e. Quotient rule ────────────────────────────────────────────────────
@@ -685,13 +688,12 @@ fn limit_exp_minus_1_over_x_at_0() {
     let x = ctx.symbol("x");
     let expr = &(&x.exp() - 1) / &x;
     let result = expr.try_limit(&x, &ctx.int(0));
-    if let Ok(r) = result {
-        let val = r.eval_f64().expect("limit should be numeric");
-        assert!(
-            (val - 1.0).abs() < 1e-8,
-            "lim(x→0) (exp(x)-1)/x should be 1, got {val}"
-        );
-    }
+    let r = result.expect("result must evaluate");
+    let val = r.eval_f64().expect("limit should be numeric");
+    assert!(
+        (val - 1.0).abs() < 1e-8,
+        "lim(x→0) (exp(x)-1)/x should be 1, got {val}"
+    );
 }
 
 #[test]
@@ -701,13 +703,12 @@ fn limit_1_minus_cos_over_x2_at_0() {
     let x = ctx.symbol("x");
     let expr = &(&ctx.int(1) - &x.cos()) / &x.powi(2);
     let result = expr.try_limit(&x, &ctx.int(0));
-    if let Ok(r) = result {
-        let val = r.eval_f64().expect("limit should be numeric");
-        assert!(
-            (val - 0.5).abs() < 1e-8,
-            "lim(x→0) (1-cos(x))/x² should be 1/2, got {val}"
-        );
-    }
+    let r = result.expect("result must evaluate");
+    let val = r.eval_f64().expect("limit should be numeric");
+    assert!(
+        (val - 0.5).abs() < 1e-8,
+        "lim(x→0) (1-cos(x))/x² should be 1/2, got {val}"
+    );
 }
 
 #[test]
@@ -717,13 +718,12 @@ fn limit_tan_x_over_x_at_0() {
     let x = ctx.symbol("x");
     let expr = &x.tan() / &x;
     let result = expr.try_limit(&x, &ctx.int(0));
-    if let Ok(r) = result {
-        let val = r.eval_f64().expect("limit should be numeric");
-        assert!(
-            (val - 1.0).abs() < 1e-8,
-            "lim(x→0) tan(x)/x should be 1, got {val}"
-        );
-    }
+    let r = result.expect("result must evaluate");
+    let val = r.eval_f64().expect("limit should be numeric");
+    assert!(
+        (val - 1.0).abs() < 1e-8,
+        "lim(x→0) tan(x)/x should be 1, got {val}"
+    );
 }
 
 #[test]
@@ -734,10 +734,9 @@ fn limit_x_ln_x_at_0_from_right() {
     let x = ctx.symbol("x");
     let expr = &x * &x.ln();
     let result = expr.try_limit(&x, &ctx.int(0));
-    if let Ok(r) = result {
-        let val = r.eval_f64().expect("limit should be numeric");
-        assert!(val.abs() < 1e-8, "lim(x→0+) x*ln(x) should be 0, got {val}");
-    }
+    let r = result.expect("result must evaluate");
+    let val = r.eval_f64().expect("limit should be numeric");
+    assert!(val.abs() < 1e-8, "lim(x→0+) x*ln(x) should be 0, got {val}");
 }
 
 #[test]
@@ -757,9 +756,8 @@ fn limit_x_exp_neg_x_at_infinity() {
     let x = ctx.symbol("x");
     let expr = &x * &(-&x).exp();
     let result = expr.try_limit(&x, &ctx.infinity());
-    if let Ok(r) = result {
-        assert_eq!(format!("{r}"), "0", "lim(x→∞) x·exp(-x) should be 0");
-    }
+    let r = result.expect("result must evaluate");
+    assert_eq!(format!("{r}"), "0", "lim(x→∞) x·exp(-x) should be 0");
 }
 
 #[test]
@@ -770,17 +768,14 @@ fn limit_1_plus_1_over_x_to_x_at_infinity() {
     let base = &ctx.int(1) + &(&ctx.int(1) / &x);
     let expr = base.pow(&x);
     let result = expr.try_limit(&x, &ctx.infinity());
-    if let Ok(r) = result {
-        let s = format!("{r}");
-        if s == "E" {
-            // Perfect
-        } else if let Ok(v) = r.eval_f64() {
-            assert!(
-                (v - std::f64::consts::E).abs() < 0.01,
-                "lim(x→∞) (1+1/x)^x should be e ≈ 2.71828, got {v}"
-            );
-        }
-    }
+    let r = result.expect("result must evaluate");
+    // The limit is exactly e; whatever symbolic form comes back must
+    // evaluate to it in double precision (not merely "within 1%").
+    let v = r.eval_f64().expect("limit must be a number");
+    assert!(
+        (v - std::f64::consts::E).abs() < 1e-12,
+        "lim(x→∞) (1+1/x)^x should be e, got {r} = {v}"
+    );
 }
 
 #[test]
@@ -792,13 +787,12 @@ fn limit_lhopital_0_over_0() {
     let numer = &x.exp() - &ctx.int(1) - &x;
     let expr = &numer / &x.powi(2);
     let result = expr.try_limit(&x, &ctx.int(0));
-    if let Ok(r) = result {
-        let val = r.eval_f64().expect("limit should be numeric");
-        assert!(
-            (val - 0.5).abs() < 1e-8,
-            "lim(x→0) (e^x-1-x)/x² should be 1/2, got {val}"
-        );
-    }
+    let r = result.expect("result must evaluate");
+    let val = r.eval_f64().expect("limit should be numeric");
+    assert!(
+        (val - 0.5).abs() < 1e-8,
+        "lim(x→0) (e^x-1-x)/x² should be 1/2, got {val}"
+    );
 }
 
 #[test]
@@ -808,9 +802,8 @@ fn limit_lhopital_inf_over_inf() {
     let x = ctx.symbol("x");
     let expr = &x / &x.exp();
     let result = expr.try_limit(&x, &ctx.infinity());
-    if let Ok(r) = result {
-        assert_eq!(format!("{r}"), "0", "lim(x→∞) x/exp(x) should be 0");
-    }
+    let r = result.expect("result must evaluate");
+    assert_eq!(format!("{r}"), "0", "lim(x→∞) x/exp(x) should be 0");
 }
 
 #[test]
@@ -822,13 +815,12 @@ fn limit_polynomial_ratio_same_degree() {
     let denom = expr!(ctx, x ^ 2 + 1);
     let expr = &numer / &denom;
     let result = expr.try_limit(&x, &ctx.infinity());
-    if let Ok(r) = result {
-        let val = r.eval_f64().expect("limit should be numeric");
-        assert!(
-            (val - 3.0).abs() < 1e-8,
-            "lim(x→∞) (3x²+2x+1)/(x²+1) should be 3, got {val}"
-        );
-    }
+    let r = result.expect("result must evaluate");
+    let val = r.eval_f64().expect("limit should be numeric");
+    assert!(
+        (val - 3.0).abs() < 1e-8,
+        "lim(x→∞) (3x²+2x+1)/(x²+1) should be 3, got {val}"
+    );
 }
 
 #[test]
@@ -838,14 +830,13 @@ fn limit_polynomial_ratio_higher_degree_numerator() {
     let x = ctx.symbol("x");
     let expr = &x.powi(3) / &(&x.powi(2) + 1);
     let result = expr.try_limit(&x, &ctx.infinity());
-    if let Ok(r) = result {
-        let s = format!("{r}");
-        // Should be +∞ or ∞
-        assert!(
-            s.contains("∞") || s.contains("oo") || s.contains("Inf") || s.contains("inf"),
-            "lim(x→∞) x³/(x²+1) should be ∞, got: {s}"
-        );
-    }
+    let r = result.expect("result must evaluate");
+    let s = format!("{r}");
+    // Should be +∞ or ∞
+    assert!(
+        s.contains("∞") || s.contains("oo") || s.contains("Inf") || s.contains("inf"),
+        "lim(x→∞) x³/(x²+1) should be ∞, got: {s}"
+    );
 }
 
 #[test]
@@ -987,24 +978,23 @@ fn series_ln_1_plus_x() {
     let x = ctx.symbol("x");
     let f = (&x + 1).ln();
     let series = f.try_maclaurin(&x, 6);
-    if let Ok(s) = series {
-        let expanded = s.expand().eval();
+    let s = series.expect("series must evaluate");
+    let expanded = s.expand().eval();
 
-        // At x = 1/2: ln(3/2) ≈ 0.4055
-        let val = eval_series_at(&expanded, &x, 1, 2);
-        let exact = 1.5_f64.ln();
-        assert!(
-            (val - exact).abs() < 0.01,
-            "ln(1+x) series at x=0.5: got {val}, expected {exact}"
-        );
+    // At x = 1/2: ln(3/2) ≈ 0.4055
+    let val = eval_series_at(&expanded, &x, 1, 2);
+    let exact = 1.5_f64.ln();
+    assert!(
+        (val - exact).abs() < 0.01,
+        "ln(1+x) series at x=0.5: got {val}, expected {exact}"
+    );
 
-        // At x = 0: ln(1) = 0
-        let val0 = eval_series_at(&expanded, &x, 0, 1);
-        assert!(
-            val0.abs() < 1e-12,
-            "ln(1+x) series at x=0 should be 0, got {val0}"
-        );
-    }
+    // At x = 0: ln(1) = 0
+    let val0 = eval_series_at(&expanded, &x, 0, 1);
+    assert!(
+        val0.abs() < 1e-12,
+        "ln(1+x) series at x=0 should be 0, got {val0}"
+    );
 }
 
 // ── 4e. Series convergence: error should decrease with more terms ────────
@@ -1018,14 +1008,17 @@ fn series_convergence_exp() {
     for order in [3u32, 5, 7, 9] {
         let series = x.exp().maclaurin(&x, order);
         let expanded = series.expand().eval();
-        if let Ok(val) = expanded.subs(&x, &ctx.rational(1, 2)).eval().eval_f64() {
-            let err = (val - exact).abs();
-            assert!(
-                err < prev_err,
-                "exp series error should decrease: order {order} err={err} >= prev_err={prev_err}"
-            );
-            prev_err = err;
-        }
+        let val = expanded
+            .subs(&x, &ctx.rational(1, 2))
+            .eval()
+            .eval_f64()
+            .expect("expanded.subs(&x, &ctx.rational(1, 2)).eval().eval_f64() must evaluate");
+        let err = (val - exact).abs();
+        assert!(
+            err < prev_err,
+            "exp series error should decrease: order {order} err={err} >= prev_err={prev_err}"
+        );
+        prev_err = err;
     }
 }
 
@@ -1038,14 +1031,17 @@ fn series_convergence_sin() {
     for order in [3u32, 5, 7, 9] {
         let series = x.sin().maclaurin(&x, order);
         let expanded = series.expand().eval();
-        if let Ok(val) = expanded.subs(&x, &ctx.rational(1, 2)).eval().eval_f64() {
-            let err = (val - exact).abs();
-            assert!(
-                err < prev_err,
-                "sin series error should decrease: order {order} err={err} >= prev_err={prev_err}"
-            );
-            prev_err = err;
-        }
+        let val = expanded
+            .subs(&x, &ctx.rational(1, 2))
+            .eval()
+            .eval_f64()
+            .expect("expanded.subs(&x, &ctx.rational(1, 2)).eval().eval_f64() must evaluate");
+        let err = (val - exact).abs();
+        assert!(
+            err < prev_err,
+            "sin series error should decrease: order {order} err={err} >= prev_err={prev_err}"
+        );
+        prev_err = err;
     }
 }
 
@@ -1058,17 +1054,16 @@ fn series_geometric() {
     let x = ctx.symbol("x");
     let f = &ctx.int(1) / &(&ctx.int(1) - &x);
     let series = f.try_maclaurin(&x, 5);
-    if let Ok(s) = series {
-        let expanded = s.expand().eval();
+    let s = series.expect("series must evaluate");
+    let expanded = s.expand().eval();
 
-        // At x = 0.1: 1/(1-0.1) = 1/0.9 ≈ 1.1111
-        let val = eval_series_at(&expanded, &x, 1, 10);
-        let exact = 1.0 / 0.9;
-        assert!(
-            (val - exact).abs() < 0.001,
-            "geometric series at x=0.1: got {val}, expected {exact}"
-        );
-    }
+    // At x = 0.1: 1/(1-0.1) = 1/0.9 ≈ 1.1111
+    let val = eval_series_at(&expanded, &x, 1, 10);
+    let exact = 1.0 / 0.9;
+    assert!(
+        (val - exact).abs() < 0.001,
+        "geometric series at x=0.1: got {val}, expected {exact}"
+    );
 }
 
 // ── 4g. Series of arctan(x) ─────────────────────────────────────────────
@@ -1079,17 +1074,16 @@ fn series_arctan() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let series = x.atan().try_maclaurin(&x, 7);
-    if let Ok(s) = series {
-        let expanded = s.expand().eval();
+    let s = series.expect("series must evaluate");
+    let expanded = s.expand().eval();
 
-        // At x = 0.5: arctan(0.5) ≈ 0.4636
-        let val = eval_series_at(&expanded, &x, 1, 2);
-        let exact = 0.5_f64.atan();
-        assert!(
-            (val - exact).abs() < 0.01,
-            "arctan series at x=0.5: got {val}, expected {exact}"
-        );
-    }
+    // At x = 0.5: arctan(0.5) ≈ 0.4636
+    let val = eval_series_at(&expanded, &x, 1, 2);
+    let exact = 0.5_f64.atan();
+    assert!(
+        (val - exact).abs() < 0.01,
+        "arctan series at x=0.5: got {val}, expected {exact}"
+    );
 }
 
 // ── 4h. Taylor series around non-zero point ──────────────────────────────
@@ -1469,12 +1463,15 @@ fn integrate_sin_squared_plus_cos_squared() {
     // Whatever the form, d/dx of the result should be 1 (or sin²+cos²)
     let deriv = result.diff(&x);
     // Evaluate at x = 1
-    if let Ok(val) = deriv.subs(&x, &ctx.int(1)).eval().eval_f64() {
-        assert!(
-            (val - 1.0).abs() < 1e-8,
-            "d/dx ∫(sin²x+cos²x)dx should be 1, got {val}"
-        );
-    }
+    let val = deriv
+        .subs(&x, &ctx.int(1))
+        .eval()
+        .eval_f64()
+        .expect("deriv.subs(&x, &ctx.int(1)).eval().eval_f64() must evaluate");
+    assert!(
+        (val - 1.0).abs() < 1e-8,
+        "d/dx ∫(sin²x+cos²x)dx should be 1, got {val}"
+    );
 }
 
 #[test]
@@ -1484,13 +1481,12 @@ fn limit_squeeze_theorem_x_sin_1_over_x() {
     let x = ctx.symbol("x");
     let expr = &x * &(&ctx.int(1) / &x).sin();
     let result = expr.try_limit(&x, &ctx.int(0));
-    if let Ok(r) = result {
-        let val = r.eval_f64().expect("limit should evaluate");
-        assert!(
-            val.abs() < 1e-8,
-            "lim(x→0) x·sin(1/x) should be 0, got {val}"
-        );
-    }
+    let r = result.expect("result must evaluate");
+    let val = r.eval_f64().expect("limit should evaluate");
+    assert!(
+        val.abs() < 1e-8,
+        "lim(x→0) x·sin(1/x) should be 0, got {val}"
+    );
 }
 
 #[test]
@@ -1910,12 +1906,14 @@ fn definite_integral_x_exp_neg_x_0_to_inf() {
     let x = ctx.symbol("x");
     let integrand = &x * &(-&x).exp();
     let result = integrand.integrate_definite(&x, &ctx.int(0), &ctx.infinity());
-    if let Ok(val) = result.eval().eval_f64() {
-        assert!(
-            (val - 1.0).abs() < 1e-8,
-            "∫₀^∞ x·exp(-x) dx should be 1 (Gamma(2)), got {val}"
-        );
-    }
+    let val = result
+        .eval()
+        .eval_f64()
+        .expect("result.eval().eval_f64() must evaluate");
+    assert!(
+        (val - 1.0).abs() < 1e-8,
+        "∫₀^∞ x·exp(-x) dx should be 1 (Gamma(2)), got {val}"
+    );
 }
 
 #[test]
@@ -2098,13 +2096,12 @@ fn limit_x_squared_sin_1_over_x_at_0() {
     let x = ctx.symbol("x");
     let expr = &x.powi(2) * &(&ctx.int(1) / &x).sin();
     let result = expr.try_limit(&x, &ctx.int(0));
-    if let Ok(r) = result {
-        let val = r.eval_f64().expect("limit should evaluate");
-        assert!(
-            val.abs() < 1e-8,
-            "lim(x→0) x²·sin(1/x) should be 0, got {val}"
-        );
-    }
+    let r = result.expect("result must evaluate");
+    let val = r.eval_f64().expect("limit should evaluate");
+    assert!(
+        val.abs() < 1e-8,
+        "lim(x→0) x²·sin(1/x) should be 0, got {val}"
+    );
 }
 
 #[test]
@@ -2114,13 +2111,12 @@ fn limit_sin_3x_over_x_at_0() {
     let x = ctx.symbol("x");
     let expr = &(&x * 3).sin() / &x;
     let result = expr.try_limit(&x, &ctx.int(0));
-    if let Ok(r) = result {
-        let val = r.eval_f64().expect("limit should evaluate");
-        assert!(
-            (val - 3.0).abs() < 1e-8,
-            "lim(x→0) sin(3x)/x should be 3, got {val}"
-        );
-    }
+    let r = result.expect("result must evaluate");
+    let val = r.eval_f64().expect("limit should evaluate");
+    assert!(
+        (val - 3.0).abs() < 1e-8,
+        "lim(x→0) sin(3x)/x should be 3, got {val}"
+    );
 }
 
 #[test]
@@ -2130,13 +2126,12 @@ fn limit_sin_ax_over_sin_bx_at_0() {
     let x = ctx.symbol("x");
     let expr = &(&x * 2).sin() / &(&x * 3).sin();
     let result = expr.try_limit(&x, &ctx.int(0));
-    if let Ok(r) = result {
-        let val = r.eval_f64().expect("limit should evaluate");
-        assert!(
-            (val - 2.0 / 3.0).abs() < 1e-8,
-            "lim(x→0) sin(2x)/sin(3x) should be 2/3, got {val}"
-        );
-    }
+    let r = result.expect("result must evaluate");
+    let val = r.eval_f64().expect("limit should evaluate");
+    assert!(
+        (val - 2.0 / 3.0).abs() < 1e-8,
+        "lim(x→0) sin(2x)/sin(3x) should be 2/3, got {val}"
+    );
 }
 
 #[test]
@@ -2146,9 +2141,8 @@ fn limit_ln_x_over_x_at_infinity() {
     let x = ctx.symbol("x");
     let expr = &x.ln() / &x;
     let result = expr.try_limit(&x, &ctx.infinity());
-    if let Ok(r) = result {
-        assert_eq!(format!("{r}"), "0", "lim(x→∞) ln(x)/x should be 0");
-    }
+    let r = result.expect("result must evaluate");
+    assert_eq!(format!("{r}"), "0", "lim(x→∞) ln(x)/x should be 0");
 }
 
 #[test]
@@ -2168,13 +2162,12 @@ fn limit_x_to_the_1_over_x_at_infinity() {
     let x = ctx.symbol("x");
     let expr = x.pow(&(&ctx.int(1) / &x));
     let result = expr.try_limit(&x, &ctx.infinity());
-    if let Ok(r) = result {
-        let val = r.eval_f64().expect("limit should evaluate");
-        assert!(
-            (val - 1.0).abs() < 1e-8,
-            "lim(x→∞) x^(1/x) should be 1, got {val}"
-        );
-    }
+    let r = result.expect("result must evaluate");
+    let val = r.eval_f64().expect("limit should evaluate");
+    assert!(
+        (val - 1.0).abs() < 1e-8,
+        "lim(x→∞) x^(1/x) should be 1, got {val}"
+    );
 }
 
 #[test]
@@ -2188,13 +2181,12 @@ fn limit_x_to_the_2_over_x_at_infinity() {
     let x = ctx.symbol("x");
     let expr = x.pow(&(&ctx.int(2) / &x));
     let result = expr.try_limit(&x, &ctx.infinity());
-    if let Ok(r) = result {
-        let val = r.eval_f64().expect("limit should evaluate");
-        assert!(
-            (val - 1.0).abs() < 1e-8,
-            "lim(x→∞) x^(2/x) should be 1, got {val}"
-        );
-    }
+    let r = result.expect("result must evaluate");
+    let val = r.eval_f64().expect("limit should evaluate");
+    assert!(
+        (val - 1.0).abs() < 1e-8,
+        "lim(x→∞) x^(2/x) should be 1, got {val}"
+    );
 }
 
 #[test]
@@ -2209,13 +2201,12 @@ fn limit_2x_to_the_1_over_x_at_infinity() {
     let base = &ctx.int(2) * &x;
     let expr = base.pow(&(&ctx.int(1) / &x));
     let result = expr.try_limit(&x, &ctx.infinity());
-    if let Ok(r) = result {
-        let val = r.eval_f64().expect("limit should evaluate");
-        assert!(
-            (val - 1.0).abs() < 1e-8,
-            "lim(x→∞) (2x)^(1/x) should be 1, got {val}"
-        );
-    }
+    let r = result.expect("result must evaluate");
+    let val = r.eval_f64().expect("limit should evaluate");
+    assert!(
+        (val - 1.0).abs() < 1e-8,
+        "lim(x→∞) (2x)^(1/x) should be 1, got {val}"
+    );
 }
 
 #[test]
@@ -2227,16 +2218,15 @@ fn limit_1_plus_1_over_x_to_x_still_works() {
     let base = &ctx.int(1) + &(&ctx.int(1) / &x);
     let expr = base.pow(&x);
     let result = expr.try_limit(&x, &ctx.infinity());
-    if let Ok(r) = result {
-        let s = format!("{r}");
-        if s == "E" {
-            // Perfect — correctly returns e
-        } else if let Ok(v) = r.eval_f64() {
-            assert!(
-                (v - std::f64::consts::E).abs() < 0.01,
-                "lim(x→∞) (1+1/x)^x should be e ≈ 2.71828, got {v}"
-            );
-        }
+    let r = result.expect("result must evaluate");
+    let s = format!("{r}");
+    if s == "E" {
+        // Perfect — correctly returns e
+    } else if let Ok(v) = r.eval_f64() {
+        assert!(
+            (v - std::f64::consts::E).abs() < 0.01,
+            "lim(x→∞) (1+1/x)^x should be e ≈ 2.71828, got {v}"
+        );
     }
 }
 
@@ -2248,14 +2238,13 @@ fn limit_1_plus_2_over_x_to_x() {
     let base = &ctx.int(1) + &(&ctx.int(2) / &x);
     let expr = base.pow(&x);
     let result = expr.try_limit(&x, &ctx.infinity());
-    if let Ok(r) = result {
-        let val = r.eval_f64().expect("limit should evaluate");
-        let expected = std::f64::consts::E * std::f64::consts::E;
-        assert!(
-            (val - expected).abs() < 0.01,
-            "lim(x→∞) (1+2/x)^x should be e² ≈ {expected}, got {val}"
-        );
-    }
+    let r = result.expect("result must evaluate");
+    let val = r.eval_f64().expect("limit should evaluate");
+    let expected = std::f64::consts::E * std::f64::consts::E;
+    assert!(
+        (val - expected).abs() < 1e-12,
+        "lim(x→∞) (1+2/x)^x should be e² ≈ {expected}, got {r} = {val}"
+    );
 }
 
 #[test]
@@ -2265,9 +2254,8 @@ fn limit_exp_neg_x_at_infinity() {
     let x = ctx.symbol("x");
     let expr = (-&x).exp();
     let result = expr.try_limit(&x, &ctx.infinity());
-    if let Ok(r) = result {
-        assert_eq!(format!("{r}"), "0", "lim(x→∞) exp(-x) should be 0");
-    }
+    let r = result.expect("result must evaluate");
+    assert_eq!(format!("{r}"), "0", "lim(x→∞) exp(-x) should be 0");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2281,15 +2269,14 @@ fn series_tan_first_terms() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let series = x.tan().try_maclaurin(&x, 6);
-    if let Ok(s) = series {
-        let expanded = s.expand().eval();
-        let val = eval_series_at(&expanded, &x, 1, 5); // x=0.2
-        let exact = 0.2_f64.tan();
-        assert!(
-            (val - exact).abs() < 1e-5,
-            "tan(x) series at x=0.2: got {val}, expected {exact}"
-        );
-    }
+    let s = series.expect("series must evaluate");
+    let expanded = s.expand().eval();
+    let val = eval_series_at(&expanded, &x, 1, 5); // x=0.2
+    let exact = 0.2_f64.tan();
+    assert!(
+        (val - exact).abs() < 1e-5,
+        "tan(x) series at x=0.2: got {val}, expected {exact}"
+    );
 }
 
 #[test]
@@ -2299,18 +2286,17 @@ fn series_arctan_first_terms() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let series = x.atan().try_maclaurin(&x, 8);
-    if let Ok(s) = series {
-        let expanded = s.expand().eval();
-        let val = eval_series_at(&expanded, &x, 1, 2);
-        let exact = 0.5_f64.atan();
-        // Order 8 includes terms up to x^7; next term is x^9/9 ≈ 2e-4 at x=0.5,
-        // so truncation error of ~2e-4 is expected.
-        assert!(
-            (val - exact).abs() < 5e-4,
-            "arctan(x) series at x=0.5: got {val}, expected {exact}, err={}",
-            (val - exact).abs()
-        );
-    }
+    let s = series.expect("series must evaluate");
+    let expanded = s.expand().eval();
+    let val = eval_series_at(&expanded, &x, 1, 2);
+    let exact = 0.5_f64.atan();
+    // Order 8 includes terms up to x^7; next term is x^9/9 ≈ 2e-4 at x=0.5,
+    // so truncation error of ~2e-4 is expected.
+    assert!(
+        (val - exact).abs() < 5e-4,
+        "arctan(x) series at x=0.5: got {val}, expected {exact}, err={}",
+        (val - exact).abs()
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2432,12 +2418,15 @@ fn diff_of_trig_identity_gives_zero() {
     let df = f.diff(&x);
     // Should simplify to 0, or at least evaluate to 0
     for &pt_val in &[1i64, 2, 3] {
-        if let Ok(val) = df.subs_i64(&x, pt_val).eval().eval_f64() {
-            assert!(
-                val.abs() < 1e-10,
-                "d/dx(sin²x+cos²x) should be 0, got {val} at x={pt_val}"
-            );
-        }
+        let val = df
+            .subs_i64(&x, pt_val)
+            .eval()
+            .eval_f64()
+            .expect("df.subs_i64(&x, pt_val).eval().eval_f64() must evaluate");
+        assert!(
+            val.abs() < 1e-10,
+            "d/dx(sin²x+cos²x) should be 0, got {val} at x={pt_val}"
+        );
     }
 }
 
@@ -2450,12 +2439,15 @@ fn diff_of_exp_ln_is_one() {
     let df = f.diff(&x);
     // Should simplify to 1
     for &pt_val in &[1i64, 2, 3] {
-        if let Ok(val) = df.subs_i64(&x, pt_val).eval().eval_f64() {
-            assert!(
-                (val - 1.0).abs() < 1e-10,
-                "d/dx(exp(ln(x))) should be 1, got {val} at x={pt_val}"
-            );
-        }
+        let val = df
+            .subs_i64(&x, pt_val)
+            .eval()
+            .eval_f64()
+            .expect("df.subs_i64(&x, pt_val).eval().eval_f64() must evaluate");
+        assert!(
+            (val - 1.0).abs() < 1e-10,
+            "d/dx(exp(ln(x))) should be 1, got {val} at x={pt_val}"
+        );
     }
 }
 
@@ -2467,12 +2459,15 @@ fn diff_of_ln_exp_is_one() {
     let f = x.exp().ln();
     let df = f.diff(&x);
     for &pt_val in &[1i64, 2, 3] {
-        if let Ok(val) = df.subs_i64(&x, pt_val).eval().eval_f64() {
-            assert!(
-                (val - 1.0).abs() < 1e-10,
-                "d/dx(ln(exp(x))) should be 1, got {val} at x={pt_val}"
-            );
-        }
+        let val = df
+            .subs_i64(&x, pt_val)
+            .eval()
+            .eval_f64()
+            .expect("df.subs_i64(&x, pt_val).eval().eval_f64() must evaluate");
+        assert!(
+            (val - 1.0).abs() < 1e-10,
+            "d/dx(ln(exp(x))) should be 1, got {val} at x={pt_val}"
+        );
     }
 }
 
@@ -2537,12 +2532,15 @@ fn diff_of_x_over_x_simplifies_to_zero() {
     let df = f.diff(&x);
     // The derivative should evaluate to 0 at any nonzero point
     for &pt_val in &[1i64, 2, 3, -1, -2] {
-        if let Ok(val) = df.subs_i64(&x, pt_val).eval().eval_f64() {
-            assert!(
-                val.abs() < 1e-10,
-                "d/dx(x/x) should be 0, got {val} at x={pt_val}"
-            );
-        }
+        let val = df
+            .subs_i64(&x, pt_val)
+            .eval()
+            .eval_f64()
+            .expect("df.subs_i64(&x, pt_val).eval().eval_f64() must evaluate");
+        assert!(
+            val.abs() < 1e-10,
+            "d/dx(x/x) should be 0, got {val} at x={pt_val}"
+        );
     }
 }
 
@@ -2666,16 +2664,15 @@ fn series_1_over_1_plus_x_squared() {
     let x = ctx.symbol("x");
     let f = &ctx.int(1) / &(&x.powi(2) + 1);
     let series = f.try_maclaurin(&x, 5);
-    if let Ok(s) = series {
-        let expanded = s.expand().eval();
-        // At x = 0.3: 1/(1+0.09) = 1/1.09 ≈ 0.91743
-        let val = eval_series_at(&expanded, &x, 3, 10);
-        let exact = 1.0 / (1.0 + 0.09);
-        assert!(
-            (val - exact).abs() < 0.01,
-            "1/(1+x²) series at x=0.3: got {val}, expected {exact}"
-        );
-    }
+    let s = series.expect("series must evaluate");
+    let expanded = s.expand().eval();
+    // At x = 0.3: 1/(1+0.09) = 1/1.09 ≈ 0.91743
+    let val = eval_series_at(&expanded, &x, 3, 10);
+    let exact = 1.0 / (1.0 + 0.09);
+    assert!(
+        (val - exact).abs() < 0.01,
+        "1/(1+x²) series at x=0.3: got {val}, expected {exact}"
+    );
 }
 
 #[test]
@@ -2685,16 +2682,15 @@ fn series_sqrt_1_plus_x() {
     let x = ctx.symbol("x");
     let f = (&x + 1).sqrt();
     let series = f.try_maclaurin(&x, 5);
-    if let Ok(s) = series {
-        let expanded = s.expand().eval();
-        // At x = 0.5: √1.5 ≈ 1.22474
-        let val = eval_series_at(&expanded, &x, 1, 2);
-        let exact = 1.5_f64.sqrt();
-        assert!(
-            (val - exact).abs() < 0.01,
-            "√(1+x) series at x=0.5: got {val}, expected {exact}"
-        );
-    }
+    let s = series.expect("series must evaluate");
+    let expanded = s.expand().eval();
+    // At x = 0.5: √1.5 ≈ 1.22474
+    let val = eval_series_at(&expanded, &x, 1, 2);
+    let exact = 1.5_f64.sqrt();
+    assert!(
+        (val - exact).abs() < 0.01,
+        "√(1+x) series at x=0.5: got {val}, expected {exact}"
+    );
 }
 
 #[test]
@@ -2704,16 +2700,15 @@ fn series_exp_of_negative_x_squared() {
     let x = ctx.symbol("x");
     let f = (-&x.powi(2)).exp();
     let series = f.try_maclaurin(&x, 6);
-    if let Ok(s) = series {
-        let expanded = s.expand().eval();
-        // At x = 0.5: exp(-0.25) ≈ 0.7788
-        let val = eval_series_at(&expanded, &x, 1, 2);
-        let exact = (-0.25_f64).exp();
-        assert!(
-            (val - exact).abs() < 0.01,
-            "exp(-x²) series at x=0.5: got {val}, expected {exact}"
-        );
-    }
+    let s = series.expect("series must evaluate");
+    let expanded = s.expand().eval();
+    // At x = 0.5: exp(-0.25) ≈ 0.7788
+    let val = eval_series_at(&expanded, &x, 1, 2);
+    let exact = (-0.25_f64).exp();
+    assert!(
+        (val - exact).abs() < 0.01,
+        "exp(-x²) series at x=0.5: got {val}, expected {exact}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2821,9 +2816,8 @@ fn limit_x_squared_over_exp_x_at_infinity() {
     let x = ctx.symbol("x");
     let expr = &x.powi(2) / &x.exp();
     let result = expr.try_limit(&x, &ctx.infinity());
-    if let Ok(r) = result {
-        assert_eq!(format!("{r}"), "0", "lim(x→∞) x²/exp(x) should be 0");
-    }
+    let r = result.expect("result must evaluate");
+    assert_eq!(format!("{r}"), "0", "lim(x→∞) x²/exp(x) should be 0");
 }
 
 #[test]
@@ -2833,9 +2827,8 @@ fn limit_x_cubed_over_exp_x_at_infinity() {
     let x = ctx.symbol("x");
     let expr = &x.powi(3) / &x.exp();
     let result = expr.try_limit(&x, &ctx.infinity());
-    if let Ok(r) = result {
-        assert_eq!(format!("{r}"), "0", "lim(x→∞) x³/exp(x) should be 0");
-    }
+    let r = result.expect("result must evaluate");
+    assert_eq!(format!("{r}"), "0", "lim(x→∞) x³/exp(x) should be 0");
 }
 
 #[test]
@@ -2845,13 +2838,12 @@ fn limit_exp_x_over_x_n_at_infinity() {
     let x = ctx.symbol("x");
     let expr = &x.exp() / &x.powi(10);
     let result = expr.try_limit(&x, &ctx.infinity());
-    if let Ok(r) = result {
-        let s = format!("{r}");
-        assert!(
-            s.contains("∞") || s.contains("oo") || s.contains("Inf"),
-            "lim(x→∞) exp(x)/x^10 should be ∞, got: {s}"
-        );
-    }
+    let r = result.expect("result must evaluate");
+    let s = format!("{r}");
+    assert!(
+        s.contains("∞") || s.contains("oo") || s.contains("Inf"),
+        "lim(x→∞) exp(x)/x^10 should be ∞, got: {s}"
+    );
 }
 
 #[test]
@@ -2860,13 +2852,12 @@ fn limit_at_neg_infinity_polynomial() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.powi(3).try_limit(&x, &ctx.neg_infinity());
-    if let Ok(r) = result {
-        let s = format!("{r}");
-        assert!(
-            s.contains("-∞") || s.contains("-oo") || s.contains("-Inf") || s.contains("NegInf"),
-            "lim(x→-∞) x³ should be -∞, got: {s}"
-        );
-    }
+    let r = result.expect("result must evaluate");
+    let s = format!("{r}");
+    assert!(
+        s.contains("-∞") || s.contains("-oo") || s.contains("-Inf") || s.contains("NegInf"),
+        "lim(x→-∞) x³ should be -∞, got: {s}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3122,13 +3113,12 @@ fn limit_x_squared_to_the_1_over_x_at_infinity() {
     let x = ctx.symbol("x");
     let expr = x.powi(2).pow(&(&ctx.int(1) / &x));
     let result = expr.try_limit(&x, &ctx.infinity());
-    if let Ok(r) = result {
-        let val = r.eval_f64().expect("limit should evaluate");
-        assert!(
-            (val - 1.0).abs() < 1e-8,
-            "lim(x→∞) (x²)^(1/x) should be 1, got {val}"
-        );
-    }
+    let r = result.expect("result must evaluate");
+    let val = r.eval_f64().expect("limit should evaluate");
+    assert!(
+        (val - 1.0).abs() < 1e-8,
+        "lim(x→∞) (x²)^(1/x) should be 1, got {val}"
+    );
 }
 
 #[test]
@@ -3145,15 +3135,14 @@ fn limit_exp_x_to_the_1_over_x_at_infinity() {
     let x = ctx.symbol("x");
     let expr = x.exp().pow(&(&ctx.int(1) / &x));
     let result = expr.try_limit(&x, &ctx.infinity());
-    if let Ok(r) = result {
-        // The correct answer is e ≈ 2.71828
-        if let Ok(val) = r.eval_f64() {
-            let e = std::f64::consts::E;
-            assert!(
-                (val - e).abs() < 1e-6,
-                "lim(x→∞) exp(x)^(1/x) should be e ≈ {e}, got {val}  (symbolic: {r})"
-            );
-        }
+    let r = result.expect("result must evaluate");
+    // The correct answer is e ≈ 2.71828
+    if let Ok(val) = r.eval_f64() {
+        let e = std::f64::consts::E;
+        assert!(
+            (val - e).abs() < 1e-6,
+            "lim(x→∞) exp(x)^(1/x) should be e ≈ {e}, got {val}  (symbolic: {r})"
+        );
     }
 }
 
@@ -3166,14 +3155,13 @@ fn limit_1_plus_1_over_x_to_2x() {
     let base = &ctx.int(1) + &(&ctx.int(1) / &x);
     let expr = base.pow(&(&ctx.int(2) * &x));
     let result = expr.try_limit(&x, &ctx.infinity());
-    if let Ok(r) = result {
-        let val = r.eval_f64().expect("limit should evaluate");
-        let expected = std::f64::consts::E.powi(2);
-        assert!(
-            (val - expected).abs() < 0.01,
-            "lim(x→∞) (1+1/x)^(2x) should be e² ≈ {expected}, got {val}"
-        );
-    }
+    let r = result.expect("result must evaluate");
+    let val = r.eval_f64().expect("limit should evaluate");
+    let expected = std::f64::consts::E.powi(2);
+    assert!(
+        (val - expected).abs() < 1e-12,
+        "lim(x→∞) (1+1/x)^(2x) should be e² ≈ {expected}, got {r} = {val}"
+    );
 }
 
 #[test]
@@ -3185,13 +3173,12 @@ fn limit_x_plus_1_over_x_to_the_x_at_infinity() {
     let base = &(&x + 1) / &x;
     let expr = base.pow(&x);
     let result = expr.try_limit(&x, &ctx.infinity());
-    if let Ok(r) = result {
-        let val = r.eval_f64().expect("limit should evaluate");
-        assert!(
-            (val - std::f64::consts::E).abs() < 0.01,
-            "lim(x→∞) ((x+1)/x)^x should be e, got {val}"
-        );
-    }
+    let r = result.expect("result must evaluate");
+    let val = r.eval_f64().expect("limit should evaluate");
+    assert!(
+        (val - std::f64::consts::E).abs() < 1e-12,
+        "lim(x→∞) ((x+1)/x)^x should be e, got {r} = {val}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3394,9 +3381,8 @@ fn limit_exp_x_at_neg_infinity() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.exp().try_limit(&x, &ctx.neg_infinity());
-    if let Ok(r) = result {
-        assert_eq!(format!("{r}"), "0", "lim(x→-∞) exp(x) should be 0");
-    }
+    let r = result.expect("result must evaluate");
+    assert_eq!(format!("{r}"), "0", "lim(x→-∞) exp(x) should be 0");
 }
 
 #[test]
@@ -3406,13 +3392,12 @@ fn limit_1_over_1_plus_exp_neg_x_at_infinity() {
     let x = ctx.symbol("x");
     let expr = &ctx.int(1) / &(&ctx.int(1) + &(-&x).exp());
     let result = expr.try_limit(&x, &ctx.infinity());
-    if let Ok(r) = result {
-        let val = r.eval_f64().expect("limit should evaluate");
-        assert!(
-            (val - 1.0).abs() < 1e-8,
-            "lim(x→∞) sigmoid should be 1, got {val}"
-        );
-    }
+    let r = result.expect("result must evaluate");
+    let val = r.eval_f64().expect("limit should evaluate");
+    assert!(
+        (val - 1.0).abs() < 1e-8,
+        "lim(x→∞) sigmoid should be 1, got {val}"
+    );
 }
 
 #[test]
@@ -3422,10 +3407,9 @@ fn limit_1_over_1_plus_exp_neg_x_at_neg_infinity() {
     let x = ctx.symbol("x");
     let expr = &ctx.int(1) / &(&ctx.int(1) + &(-&x).exp());
     let result = expr.try_limit(&x, &ctx.neg_infinity());
-    if let Ok(r) = result {
-        let val = r.eval_f64().expect("limit should evaluate");
-        assert!(val.abs() < 1e-8, "lim(x→-∞) sigmoid should be 0, got {val}");
-    }
+    let r = result.expect("result must evaluate");
+    let val = r.eval_f64().expect("limit should evaluate");
+    assert!(val.abs() < 1e-8, "lim(x→-∞) sigmoid should be 0, got {val}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3516,13 +3500,12 @@ fn limit_x_to_the_1_over_ln_x_at_infinity() {
     let x = ctx.symbol("x");
     let expr = x.pow(&(&ctx.int(1) / &x.ln()));
     let result = expr.try_limit(&x, &ctx.infinity());
-    if let Ok(r) = result {
-        let val = r.eval_f64().expect("limit should evaluate");
-        assert!(
-            (val - std::f64::consts::E).abs() < 1e-6,
-            "lim(x→∞) x^(1/ln(x)) should be e, got {val}"
-        );
-    }
+    let r = result.expect("result must evaluate");
+    let val = r.eval_f64().expect("limit should evaluate");
+    assert!(
+        (val - std::f64::consts::E).abs() < 1e-6,
+        "lim(x→∞) x^(1/ln(x)) should be e, got {val}"
+    );
 }
 
 #[test]

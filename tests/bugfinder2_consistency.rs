@@ -835,23 +835,19 @@ fn check_compile_consistency(f: &Ex, x: &Ex, points: &[i64], tol: f64, label: &s
     for &pt in points {
         let compiled_val = compiled(&[pt as f64]);
         let subs_val = f.subs_i64(x, pt).eval_f64();
-        if let Ok(sv) = subs_val {
-            if sv.is_nan() && compiled_val.is_nan() {
-                continue;
-            }
-            if sv.is_infinite()
-                && compiled_val.is_infinite()
-                && sv.signum() == compiled_val.signum()
-            {
-                continue;
-            }
-            let diff = (compiled_val - sv).abs();
-            let scale = sv.abs().max(compiled_val.abs()).max(1.0);
-            assert!(
-                diff / scale < tol,
-                "{label} at x={pt}: compile={compiled_val}, eval={sv}, diff={diff}"
-            );
+        let sv = subs_val.expect("subs_val must evaluate");
+        if sv.is_nan() && compiled_val.is_nan() {
+            continue;
         }
+        if sv.is_infinite() && compiled_val.is_infinite() && sv.signum() == compiled_val.signum() {
+            continue;
+        }
+        let diff = (compiled_val - sv).abs();
+        let scale = sv.abs().max(compiled_val.abs()).max(1.0);
+        assert!(
+            diff / scale < tol,
+            "{label} at x={pt}: compile={compiled_val}, eval={sv}, diff={diff}"
+        );
     }
 }
 
@@ -954,17 +950,16 @@ fn compile_consistency_two_vars() {
     let y = ctx.symbol("y");
     let f = &x.powi(2) + &y.powi(2);
     let compiled = f.compile(&["x", "y"]);
-    if let Ok(compiled) = compiled {
-        for &xv in &[-2.0, 0.0, 1.0, 3.0] {
-            for &yv in &[-1.0, 0.0, 2.0, 4.0] {
-                let compiled_val = compiled(&[xv, yv]);
-                let expected = xv * xv + yv * yv;
-                let diff = (compiled_val - expected).abs();
-                assert!(
-                    diff < 1e-10,
-                    "compile(x²+y²) at ({xv},{yv}): {compiled_val} vs {expected}"
-                );
-            }
+    let compiled = compiled.expect("compiled must evaluate");
+    for &xv in &[-2.0, 0.0, 1.0, 3.0] {
+        for &yv in &[-1.0, 0.0, 2.0, 4.0] {
+            let compiled_val = compiled(&[xv, yv]);
+            let expected = xv * xv + yv * yv;
+            let diff = (compiled_val - expected).abs();
+            assert!(
+                diff < 1e-10,
+                "compile(x²+y²) at ({xv},{yv}): {compiled_val} vs {expected}"
+            );
         }
     }
 }
@@ -1229,12 +1224,11 @@ fn solve_roots_are_zeros() {
         let roots = p.solve_or_empty(&x);
         for root in &roots {
             let val = p.subs(&x, root);
-            if let Ok(f) = val.eval_f64() {
-                assert!(
-                    f.abs() < 1e-8,
-                    "root {root} of {label} gives f={f}, not zero"
-                );
-            }
+            let f = val.eval_f64().expect("val.eval_f64() must evaluate");
+            assert!(
+                f.abs() < 1e-8,
+                "root {root} of {label} gives f={f}, not zero"
+            );
         }
     }
 }
@@ -1251,25 +1245,23 @@ fn series_approximation_accuracy() {
     // At x=1, sin(1) ≈ 0.84147...
     let series_val = sin_series.subs_i64(&x, 1).eval_f64();
     let exact = 1.0f64.sin();
-    if let Ok(sv) = series_val {
-        let diff = (sv - exact).abs();
-        assert!(
-            diff < 0.001,
-            "sin Maclaurin order 7 at x=1: series={sv}, exact={exact}, diff={diff}"
-        );
-    }
+    let sv = series_val.expect("series_val must evaluate");
+    let diff = (sv - exact).abs();
+    assert!(
+        diff < 0.001,
+        "sin Maclaurin order 7 at x=1: series={sv}, exact={exact}, diff={diff}"
+    );
 
     // exp(x) Maclaurin, order 10
     let exp_series = x.exp().series(&x, &zero, 10).expand();
     let series_val = exp_series.subs_i64(&x, 1).eval_f64();
     let exact = 1.0f64.exp();
-    if let Ok(sv) = series_val {
-        let diff = (sv - exact).abs();
-        assert!(
-            diff < 0.001,
-            "exp Maclaurin order 10 at x=1: series={sv}, exact={exact}, diff={diff}"
-        );
-    }
+    let sv = series_val.expect("series_val must evaluate");
+    let diff = (sv - exact).abs();
+    assert!(
+        diff < 0.001,
+        "exp Maclaurin order 10 at x=1: series={sv}, exact={exact}, diff={diff}"
+    );
 }
 
 /// series of a polynomial should be exact
@@ -1405,27 +1397,23 @@ fn eval_special_values() {
 
     // sin(0) = 0
     let v = ctx.int(0).sin().eval_f64();
-    if let Ok(v) = v {
-        assert!(v.abs() < 1e-15, "sin(0) = {v}");
-    }
+    let v = v.expect("v must evaluate");
+    assert!(v.abs() < 1e-15, "sin(0) = {v}");
 
     // cos(0) = 1
     let v = ctx.int(0).cos().eval_f64();
-    if let Ok(v) = v {
-        assert!((v - 1.0).abs() < 1e-15, "cos(0) = {v}");
-    }
+    let v = v.expect("v must evaluate");
+    assert!((v - 1.0).abs() < 1e-15, "cos(0) = {v}");
 
     // exp(0) = 1
     let v = ctx.int(0).exp().eval_f64();
-    if let Ok(v) = v {
-        assert!((v - 1.0).abs() < 1e-15, "exp(0) = {v}");
-    }
+    let v = v.expect("v must evaluate");
+    assert!((v - 1.0).abs() < 1e-15, "exp(0) = {v}");
 
     // ln(1) = 0
     let v = ctx.int(1).ln().eval_f64();
-    if let Ok(v) = v {
-        assert!(v.abs() < 1e-15, "ln(1) = {v}");
-    }
+    let v = v.expect("v must evaluate");
+    assert!(v.abs() < 1e-15, "ln(1) = {v}");
 }
 
 /// Verify sin²(x) + cos²(x) simplifies to 1
@@ -1751,12 +1739,11 @@ fn compile_constant_expression() {
     let pi = ctx.pi();
     let e = pi.powi(2);
     let compiled = e.compile(&[]);
-    if let Ok(f) = compiled {
-        let val = f(&[]);
-        let expected = std::f64::consts::PI.powi(2);
-        let diff = (val - expected).abs();
-        assert!(diff < 1e-10, "compile(π²): {val} vs {expected}");
-    }
+    let f = compiled.expect("compiled must evaluate");
+    let val = f(&[]);
+    let expected = std::f64::consts::PI.powi(2);
+    let diff = (val - expected).abs();
+    assert!(diff < 1e-10, "compile(π²): {val} vs {expected}");
 }
 
 /// Compile should handle expressions with e (Euler's number)
@@ -1767,12 +1754,11 @@ fn compile_eulers_number() {
     let e_const = ctx.e();
     let f = &x * &e_const;
     let compiled = f.compile(&["x"]);
-    if let Ok(compiled) = compiled {
-        let val = compiled(&[1.0]);
-        let expected = std::f64::consts::E;
-        let diff = (val - expected).abs();
-        assert!(diff < 1e-10, "compile(x*e) at x=1: {val} vs {expected}");
-    }
+    let compiled = compiled.expect("compiled must evaluate");
+    let val = compiled(&[1.0]);
+    let expected = std::f64::consts::E;
+    let diff = (val - expected).abs();
+    assert!(diff < 1e-10, "compile(x*e) at x=1: {val} vs {expected}");
 }
 
 /// Eval consistency: expand should not change f64 evaluation
@@ -1918,17 +1904,16 @@ fn codegen_for_derivative() {
 
     // Also verify compiled derivative matches
     let compiled = df.compile(&["x"]);
-    if let Ok(c) = compiled {
-        for &pt in &[0.0, 1.0, 2.0, -1.0] {
-            let cv = c(&[pt]);
-            let ev = df.subs_i64(&x, pt as i64).eval_f64();
-            if let Ok(ev) = ev {
-                let diff = (cv - ev).abs();
-                assert!(
-                    diff < 1e-8,
-                    "codegen vs eval for df at x={pt}: {cv} vs {ev}"
-                );
-            }
+    let c = compiled.expect("compiled must evaluate");
+    for &pt in &[0.0, 1.0, 2.0, -1.0] {
+        let cv = c(&[pt]);
+        let ev = df.subs_i64(&x, pt as i64).eval_f64();
+        if let Ok(ev) = ev {
+            let diff = (cv - ev).abs();
+            assert!(
+                diff < 1e-8,
+                "codegen vs eval for df at x={pt}: {cv} vs {ev}"
+            );
         }
     }
 }
@@ -2072,13 +2057,12 @@ fn compile_zero_args_for_constant() {
     let ctx = Context::new();
     let c = ctx.int(42);
     let compiled = c.compile(&[]);
-    if let Ok(f) = compiled {
-        let val = f(&[]);
-        assert!(
-            (val - 42.0).abs() < 1e-10,
-            "compile(42) with no args: {val}"
-        );
-    }
+    let f = compiled.expect("compiled must evaluate");
+    let val = f(&[]);
+    assert!(
+        (val - 42.0).abs() < 1e-10,
+        "compile(42) with no args: {val}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2433,17 +2417,16 @@ fn compile_vs_eval_pi_expression() {
     let x = ctx.symbol("x");
     let f = (&x * &ctx.pi()).sin();
     let compiled = f.compile(&["x"]);
-    if let Ok(c) = compiled {
-        for &pt in &[0i64, 1, 2] {
-            let cv = c(&[pt as f64]);
-            let ev = f.subs_i64(&x, pt).eval_f64();
-            if let Ok(ev) = ev {
-                let diff = (cv - ev).abs();
-                assert!(
-                    diff < 1e-10,
-                    "compile vs eval sin(πx) at x={pt}: compile={cv}, eval={ev}"
-                );
-            }
+    let c = compiled.expect("compiled must evaluate");
+    for &pt in &[0i64, 1, 2] {
+        let cv = c(&[pt as f64]);
+        let ev = f.subs_i64(&x, pt).eval_f64();
+        if let Ok(ev) = ev {
+            let diff = (cv - ev).abs();
+            assert!(
+                diff < 1e-10,
+                "compile vs eval sin(πx) at x={pt}: compile={cv}, eval={ev}"
+            );
         }
     }
 }
@@ -2697,12 +2680,10 @@ fn euler_identity_numerical() {
     let pi = ctx.pi();
     let sin_pi = pi.sin().eval_f64();
     let cos_pi = pi.cos().eval_f64();
-    if let Ok(s) = sin_pi {
-        assert!(s.abs() < 1e-10, "sin(π) should be 0, got {s}");
-    }
-    if let Ok(c) = cos_pi {
-        assert!((c + 1.0).abs() < 1e-10, "cos(π) should be -1, got {c}");
-    }
+    let s = sin_pi.expect("sin_pi must evaluate");
+    assert!(s.abs() < 1e-10, "sin(π) should be 0, got {s}");
+    let c = cos_pi.expect("cos_pi must evaluate");
+    assert!((c + 1.0).abs() < 1e-10, "cos(π) should be -1, got {c}");
 }
 
 /// Verify ln(exp(1)) = 1
@@ -2711,9 +2692,8 @@ fn ln_e_is_one() {
     let ctx = Context::new();
     let e = ctx.e();
     let result = e.ln().eval_f64();
-    if let Ok(v) = result {
-        assert!((v - 1.0).abs() < 1e-10, "ln(e) should be 1, got {v}");
-    }
+    let v = result.expect("result must evaluate");
+    assert!((v - 1.0).abs() < 1e-10, "ln(e) should be 1, got {v}");
 }
 
 /// Verify exp(ln(5)) = 5
@@ -2722,9 +2702,8 @@ fn exp_ln_roundtrip_numerical() {
     let ctx = Context::new();
     let five = ctx.int(5);
     let result = five.ln().exp().eval_f64();
-    if let Ok(v) = result {
-        assert!((v - 5.0).abs() < 1e-10, "exp(ln(5)) should be 5, got {v}");
-    }
+    let v = result.expect("result must evaluate");
+    assert!((v - 5.0).abs() < 1e-10, "exp(ln(5)) should be 5, got {v}");
 }
 
 /// Verify that two different integration paths give the same result
@@ -2851,16 +2830,15 @@ fn compile_of_derivative() {
     let f = &x.powi(4) + &x.sin();
     let df = f.diff(&x); // 4x^3 + cos(x)
     let compiled = df.compile(&["x"]);
-    if let Ok(c) = compiled {
-        for &pt in &[-2.0, -1.0, 0.0, 1.0, 2.0, 3.0] {
-            let cv = c(&[pt]);
-            let expected = 4.0 * pt.powi(3) + pt.cos();
-            let diff = (cv - expected).abs();
-            assert!(
-                diff < 1e-8,
-                "compile(d/dx(x⁴+sin(x))) at x={pt}: {cv} vs {expected}"
-            );
-        }
+    let c = compiled.expect("compiled must evaluate");
+    for &pt in &[-2.0, -1.0, 0.0, 1.0, 2.0, 3.0] {
+        let cv = c(&[pt]);
+        let expected = 4.0 * pt.powi(3) + pt.cos();
+        let diff = (cv - expected).abs();
+        assert!(
+            diff < 1e-8,
+            "compile(d/dx(x⁴+sin(x))) at x={pt}: {cv} vs {expected}"
+        );
     }
 }
 
@@ -2873,13 +2851,12 @@ fn compile_of_integral() {
     let anti = f.integrate(&x); // x^3/3
     if !anti.has_unevaluated() {
         let compiled = anti.compile(&["x"]);
-        if let Ok(c) = compiled {
-            for &pt in &[1.0, 2.0, 3.0, 4.0] {
-                let cv = c(&[pt]);
-                let expected = pt.powi(3) / 3.0;
-                let diff = (cv - expected).abs();
-                assert!(diff < 1e-8, "compile(∫x²dx) at x={pt}: {cv} vs {expected}");
-            }
+        let c = compiled.expect("compiled must evaluate");
+        for &pt in &[1.0, 2.0, 3.0, 4.0] {
+            let cv = c(&[pt]);
+            let expected = pt.powi(3) / 3.0;
+            let diff = (cv - expected).abs();
+            assert!(diff < 1e-8, "compile(∫x²dx) at x={pt}: {cv} vs {expected}");
         }
     }
 }
@@ -2940,14 +2917,12 @@ fn eval_f64_rational_exact() {
     let ctx = Context::new();
     let r = ctx.rational(1, 3);
     let v = r.eval_f64();
-    if let Ok(v) = v {
-        assert!((v - 1.0 / 3.0).abs() < 1e-15, "1/3 eval_f64: {v}");
-    }
+    let v = v.expect("v must evaluate");
+    assert!((v - 1.0 / 3.0).abs() < 1e-15, "1/3 eval_f64: {v}");
     let r2 = ctx.rational(22, 7);
     let v2 = r2.eval_f64();
-    if let Ok(v) = v2 {
-        assert!((v - 22.0 / 7.0).abs() < 1e-15, "22/7 eval_f64: {v}");
-    }
+    let v = v2.expect("v2 must evaluate");
+    assert!((v - 22.0 / 7.0).abs() < 1e-15, "22/7 eval_f64: {v}");
 }
 
 /// Verify that diff(x^n, x) = n*x^(n-1) structurally for small n
@@ -3160,12 +3135,11 @@ fn simplify_trig_self_cancel() {
     // At points where sin(x) != 0, value should be 1
     for &pt in &[-3, -2, -1, 1, 2, 3] {
         let v = simplified.subs_i64(&x, pt).eval_f64();
-        if let Ok(v) = v {
-            assert!(
-                (v - 1.0).abs() < 1e-10,
-                "sin(x)/sin(x) simplified to {simplified}, value at x={pt}: {v}"
-            );
-        }
+        let v = v.expect("v must evaluate");
+        assert!(
+            (v - 1.0).abs() < 1e-10,
+            "sin(x)/sin(x) simplified to {simplified}, value at x={pt}: {v}"
+        );
     }
 }
 
@@ -3178,12 +3152,11 @@ fn simplify_exp_self_cancel() {
     let simplified = e.simplify();
     for &pt in INT_POINTS {
         let v = simplified.subs_i64(&x, pt).eval_f64();
-        if let Ok(v) = v {
-            assert!(
-                (v - 1.0).abs() < 1e-10,
-                "exp(x)/exp(x) simplified to {simplified}, value at x={pt}: {v}"
-            );
-        }
+        let v = v.expect("v must evaluate");
+        assert!(
+            (v - 1.0).abs() < 1e-10,
+            "exp(x)/exp(x) simplified to {simplified}, value at x={pt}: {v}"
+        );
     }
 }
 
@@ -3370,12 +3343,11 @@ fn expand_three_binomials() {
     );
     // At x=0: (1)(2)(3)=6
     let v = expanded.subs_i64(&x, 0).eval_f64();
-    if let Ok(v) = v {
-        assert!(
-            (v - 6.0).abs() < 1e-10,
-            "(0+1)(0+2)(0+3) should be 6, got {v}"
-        );
-    }
+    let v = v.expect("v must evaluate");
+    assert!(
+        (v - 6.0).abs() < 1e-10,
+        "(0+1)(0+2)(0+3) should be 6, got {v}"
+    );
 }
 
 // ── Numerical edge cases ────────────────────────────────────────────────
@@ -3388,45 +3360,38 @@ fn eval_at_zero_edge_cases() {
 
     // sin(0) = 0
     let v = x.sin().subs_i64(&x, 0).eval_f64();
-    if let Ok(v) = v {
-        assert!(v.abs() < 1e-15, "sin(0) = {v}");
-    }
+    let v = v.expect("v must evaluate");
+    assert!(v.abs() < 1e-15, "sin(0) = {v}");
 
     // cos(0) = 1
     let v = x.cos().subs_i64(&x, 0).eval_f64();
-    if let Ok(v) = v {
-        assert!((v - 1.0).abs() < 1e-15, "cos(0) = {v}");
-    }
+    let v = v.expect("v must evaluate");
+    assert!((v - 1.0).abs() < 1e-15, "cos(0) = {v}");
 
     // exp(0) = 1
     let v = x.exp().subs_i64(&x, 0).eval_f64();
-    if let Ok(v) = v {
-        assert!((v - 1.0).abs() < 1e-15, "exp(0) = {v}");
-    }
+    let v = v.expect("v must evaluate");
+    assert!((v - 1.0).abs() < 1e-15, "exp(0) = {v}");
 
     // sinh(0) = 0
     let v = x.sinh().subs_i64(&x, 0).eval_f64();
-    if let Ok(v) = v {
-        assert!(v.abs() < 1e-15, "sinh(0) = {v}");
-    }
+    let v = v.expect("v must evaluate");
+    assert!(v.abs() < 1e-15, "sinh(0) = {v}");
 
     // cosh(0) = 1
     let v = x.cosh().subs_i64(&x, 0).eval_f64();
-    if let Ok(v) = v {
-        assert!((v - 1.0).abs() < 1e-15, "cosh(0) = {v}");
-    }
+    let v = v.expect("v must evaluate");
+    assert!((v - 1.0).abs() < 1e-15, "cosh(0) = {v}");
 
     // tanh(0) = 0
     let v = x.tanh().subs_i64(&x, 0).eval_f64();
-    if let Ok(v) = v {
-        assert!(v.abs() < 1e-15, "tanh(0) = {v}");
-    }
+    let v = v.expect("v must evaluate");
+    assert!(v.abs() < 1e-15, "tanh(0) = {v}");
 
     // atan(0) = 0
     let v = x.atan().subs_i64(&x, 0).eval_f64();
-    if let Ok(v) = v {
-        assert!(v.abs() < 1e-15, "atan(0) = {v}");
-    }
+    let v = v.expect("v must evaluate");
+    assert!(v.abs() < 1e-15, "atan(0) = {v}");
 }
 
 /// Large integer arithmetic: expand((x+1)^10) and check at x=1 → 2^10 = 1024
@@ -3437,12 +3402,11 @@ fn expand_large_power_numerical() {
     let e = (&x + 1).powi(10);
     let expanded = e.expand();
     let v = expanded.subs_i64(&x, 1).eval_f64();
-    if let Ok(v) = v {
-        assert!(
-            (v - 1024.0).abs() < 1e-6,
-            "expand((x+1)^10) at x=1 should be 1024, got {v}"
-        );
-    }
+    let v = v.expect("v must evaluate");
+    assert!(
+        (v - 1024.0).abs() < 1e-6,
+        "expand((x+1)^10) at x=1 should be 1024, got {v}"
+    );
     // Also check the unexpanded form gives the same
     let v_orig = e.subs_i64(&x, 1).eval_f64();
     if let (Ok(vo), Ok(ve)) = (v_orig, expanded.subs_i64(&x, 1).eval_f64()) {
@@ -3461,18 +3425,17 @@ fn compile_vs_eval_nested_functions() {
     // sin(exp(x)) + cos(ln(x+2))
     let f = &x.exp().sin() + &(&x + 2).ln().cos();
     let compiled = f.compile(&["x"]);
-    if let Ok(c) = compiled {
-        for &pt in &[0i64, 1, 2, 3] {
-            let cv = c(&[pt as f64]);
-            let ev = f.subs_i64(&x, pt).eval_f64();
-            if let Ok(ev) = ev {
-                let diff = (cv - ev).abs();
-                let scale = cv.abs().max(ev.abs()).max(1.0);
-                assert!(
-                    diff / scale < 1e-10,
-                    "compile vs eval nested at x={pt}: compile={cv}, eval={ev}"
-                );
-            }
+    let c = compiled.expect("compiled must evaluate");
+    for &pt in &[0i64, 1, 2, 3] {
+        let cv = c(&[pt as f64]);
+        let ev = f.subs_i64(&x, pt).eval_f64();
+        if let Ok(ev) = ev {
+            let diff = (cv - ev).abs();
+            let scale = cv.abs().max(ev.abs()).max(1.0);
+            assert!(
+                diff / scale < 1e-10,
+                "compile vs eval nested at x={pt}: compile={cv}, eval={ev}"
+            );
         }
     }
 }
@@ -3493,17 +3456,16 @@ fn compile_rational_function() {
     let x = ctx.symbol("x");
     let f = &(&x.powi(2) + 1) / &(&x.powi(2) - 4);
     let compiled = f.compile(&["x"]);
-    if let Ok(c) = compiled {
-        // Avoid x=±2 where denominator is 0
-        for &pt in &[-3.0, -1.0, 0.0, 1.0, 3.0, 4.0] {
-            let cv = c(&[pt]);
-            let expected = (pt * pt + 1.0) / (pt * pt - 4.0);
-            let diff = (cv - expected).abs();
-            assert!(
-                diff < 1e-10,
-                "compile (x²+1)/(x²-4) at x={pt}: {cv} vs {expected}"
-            );
-        }
+    let c = compiled.expect("compiled must evaluate");
+    // Avoid x=±2 where denominator is 0
+    for &pt in &[-3.0, -1.0, 0.0, 1.0, 3.0, 4.0] {
+        let cv = c(&[pt]);
+        let expected = (pt * pt + 1.0) / (pt * pt - 4.0);
+        let diff = (cv - expected).abs();
+        assert!(
+            diff < 1e-10,
+            "compile (x²+1)/(x²-4) at x={pt}: {cv} vs {expected}"
+        );
     }
 }
 
@@ -3781,13 +3743,12 @@ fn subs_into_derivative() {
     for &pt in INT_POINTS {
         let symbolic = df.subs_i64(&x, pt).eval_f64();
         let numerical = 3.0 * (pt as f64).powi(2) + (pt as f64).cos();
-        if let Ok(sv) = symbolic {
-            let diff = (sv - numerical).abs();
-            assert!(
-                diff < 1e-10,
-                "d/dx(x³+sin(x)) at x={pt}: symbolic={sv}, numerical={numerical}"
-            );
-        }
+        let sv = symbolic.expect("symbolic must evaluate");
+        let diff = (sv - numerical).abs();
+        assert!(
+            diff < 1e-10,
+            "d/dx(x³+sin(x)) at x={pt}: symbolic={sv}, numerical={numerical}"
+        );
     }
 }
 
@@ -3884,9 +3845,8 @@ fn solve_substitute_verify_quartic() {
     let roots = p.solve_or_empty(&x);
     for root in &roots {
         let val = p.subs(&x, root).eval_f64();
-        if let Ok(v) = val {
-            assert!(v.abs() < 1e-8, "root {root} of x⁴-5x²+4 gives {v}, not 0");
-        }
+        let v = val.expect("val must evaluate");
+        assert!(v.abs() < 1e-8, "root {root} of x⁴-5x²+4 gives {v}, not 0");
     }
 }
 
@@ -3982,12 +3942,11 @@ fn simplify_pythagorean_powers() {
         let simplified = e.simplify();
         for &pt in &[1, 2, 3] {
             let v = simplified.subs_i64(&x, pt).eval_f64();
-            if let Ok(v) = v {
-                assert!(
-                    (v - 1.0).abs() < 1e-10,
-                    "(sin²+cos²)^{n} simplified to {simplified}, value at x={pt}: {v}"
-                );
-            }
+            let v = v.expect("v must evaluate");
+            assert!(
+                (v - 1.0).abs() < 1e-10,
+                "(sin²+cos²)^{n} simplified to {simplified}, value at x={pt}: {v}"
+            );
         }
     }
 }
@@ -3999,16 +3958,15 @@ fn compile_abs_times_sign() {
     let x = ctx.symbol("x");
     let f = &x.abs() * &x.sign();
     let compiled = f.compile(&["x"]);
-    if let Ok(c) = compiled {
-        for &pt in &[-3.0, -1.0, 1.0, 2.0, 5.0] {
-            let cv = c(&[pt]);
-            // abs(x) * sign(x) = x
-            let diff = (cv - pt).abs();
-            assert!(
-                diff < 1e-10,
-                "compile(|x|·sign(x)) at x={pt}: {cv} (expected {pt})"
-            );
-        }
+    let c = compiled.expect("compiled must evaluate");
+    for &pt in &[-3.0, -1.0, 1.0, 2.0, 5.0] {
+        let cv = c(&[pt]);
+        // abs(x) * sign(x) = x
+        let diff = (cv - pt).abs();
+        assert!(
+            diff < 1e-10,
+            "compile(|x|·sign(x)) at x={pt}: {cv} (expected {pt})"
+        );
     }
 }
 
@@ -4021,10 +3979,9 @@ fn eval_negative_exponent() {
     for &pt in &[-3, -2, -1, 1, 2, 3] {
         let v = f.subs_i64(&x, pt).eval_f64();
         let expected = (pt as f64).powi(-3);
-        if let Ok(v) = v {
-            let diff = (v - expected).abs();
-            assert!(diff < 1e-10, "x^(-3) at x={pt}: {v} vs {expected}");
-        }
+        let v = v.expect("v must evaluate");
+        let diff = (v - expected).abs();
+        assert!(diff < 1e-10, "x^(-3) at x={pt}: {v} vs {expected}");
     }
 }
 
@@ -4081,9 +4038,8 @@ fn hyperbolic_identity() {
     let e = &x.cosh().powi(2) - &x.sinh().powi(2);
     for &pt in &[-2, -1, 0, 1, 2] {
         let v = e.subs_i64(&x, pt).eval_f64();
-        if let Ok(v) = v {
-            assert!((v - 1.0).abs() < 1e-10, "cosh²(x)-sinh²(x) at x={pt}: {v}");
-        }
+        let v = v.expect("v must evaluate");
+        assert!((v - 1.0).abs() < 1e-10, "cosh²(x)-sinh²(x) at x={pt}: {v}");
     }
 }
 
@@ -4096,12 +4052,11 @@ fn simplify_hyperbolic_identity() {
     let simplified = e.simplify();
     for &pt in &[-2, -1, 0, 1, 2] {
         let v = simplified.subs_i64(&x, pt).eval_f64();
-        if let Ok(v) = v {
-            assert!(
-                (v - 1.0).abs() < 1e-10,
-                "simplify(cosh²-sinh²) at x={pt}: {v}"
-            );
-        }
+        let v = v.expect("v must evaluate");
+        assert!(
+            (v - 1.0).abs() < 1e-10,
+            "simplify(cosh²-sinh²) at x={pt}: {v}"
+        );
     }
 }
 
@@ -4288,13 +4243,12 @@ fn eval_f64_pi_accuracy() {
     let ctx = Context::new();
     let pi = ctx.pi();
     let v = pi.eval_f64();
-    if let Ok(v) = v {
-        assert!(
-            (v - std::f64::consts::PI).abs() < 1e-15,
-            "eval_f64(π) = {v}, expected {}",
-            std::f64::consts::PI
-        );
-    }
+    let v = v.expect("v must evaluate");
+    assert!(
+        (v - std::f64::consts::PI).abs() < 1e-15,
+        "eval_f64(π) = {v}, expected {}",
+        std::f64::consts::PI
+    );
 }
 
 /// eval_f64 of e should be close to std::f64::consts::E
@@ -4303,13 +4257,12 @@ fn eval_f64_e_accuracy() {
     let ctx = Context::new();
     let e = ctx.e();
     let v = e.eval_f64();
-    if let Ok(v) = v {
-        assert!(
-            (v - std::f64::consts::E).abs() < 1e-15,
-            "eval_f64(e) = {v}, expected {}",
-            std::f64::consts::E
-        );
-    }
+    let v = v.expect("v must evaluate");
+    assert!(
+        (v - std::f64::consts::E).abs() < 1e-15,
+        "eval_f64(e) = {v}, expected {}",
+        std::f64::consts::E
+    );
 }
 
 /// eval_f64 of sin(π/4) should be √2/2
@@ -4319,12 +4272,11 @@ fn eval_f64_sin_pi_over_4() {
     let val = (&ctx.pi() / 4).sin();
     let v = val.eval_f64();
     let expected = std::f64::consts::FRAC_1_SQRT_2;
-    if let Ok(v) = v {
-        assert!(
-            (v - expected).abs() < 1e-10,
-            "sin(π/4) = {v}, expected {expected}"
-        );
-    }
+    let v = v.expect("v must evaluate");
+    assert!(
+        (v - expected).abs() < 1e-10,
+        "sin(π/4) = {v}, expected {expected}"
+    );
 }
 
 /// Substituting a complex expression into another and evaluating
@@ -4340,12 +4292,11 @@ fn eval_nested_substitution() {
     // g(x) = x^2 + sin^2(x)
     let v = g.subs_i64(&x, 1).eval_f64();
     let expected = 1.0 + 1.0f64.sin().powi(2);
-    if let Ok(v) = v {
-        assert!(
-            (v - expected).abs() < 1e-10,
-            "x²+sin²(x) at x=1: {v} vs {expected}"
-        );
-    }
+    let v = v.expect("v must evaluate");
+    assert!(
+        (v - expected).abs() < 1e-10,
+        "x²+sin²(x) at x=1: {v} vs {expected}"
+    );
 }
 
 /// Verify that eval_f64 of a large rational is accurate
@@ -4354,9 +4305,8 @@ fn eval_f64_large_rational() {
     let ctx = Context::new();
     let r = ctx.rational(355, 113); // Famous approximation to π
     let v = r.eval_f64();
-    if let Ok(v) = v {
-        assert!((v - 355.0 / 113.0).abs() < 1e-15, "355/113 eval_f64: {v}");
-    }
+    let v = v.expect("v must evaluate");
+    assert!((v - 355.0 / 113.0).abs() < 1e-15, "355/113 eval_f64: {v}");
 }
 
 /// Verify that 0/x simplifies or evaluates to 0
@@ -4416,10 +4366,9 @@ fn compile_sign() {
     let x = ctx.symbol("x");
     let f = x.sign();
     let compiled = f.compile(&["x"]);
-    if let Ok(c) = compiled {
-        assert!((c(&[5.0]) - 1.0).abs() < 1e-10, "sign(5) should be 1");
-        assert!((c(&[-3.0]) - (-1.0)).abs() < 1e-10, "sign(-3) should be -1");
-    }
+    let c = compiled.expect("compiled must evaluate");
+    assert!((c(&[5.0]) - 1.0).abs() < 1e-10, "sign(5) should be 1");
+    assert!((c(&[-3.0]) - (-1.0)).abs() < 1e-10, "sign(-3) should be -1");
 }
 
 /// Compile of floor function
@@ -4429,13 +4378,12 @@ fn compile_floor() {
     let x = ctx.symbol("x");
     let f = x.floor();
     let compiled = f.compile(&["x"]);
-    if let Ok(c) = compiled {
-        assert!((c(&[2.7]) - 2.0).abs() < 1e-10, "floor(2.7) should be 2");
-        assert!(
-            (c(&[-1.3]) - (-2.0)).abs() < 1e-10,
-            "floor(-1.3) should be -2"
-        );
-    }
+    let c = compiled.expect("compiled must evaluate");
+    assert!((c(&[2.7]) - 2.0).abs() < 1e-10, "floor(2.7) should be 2");
+    assert!(
+        (c(&[-1.3]) - (-2.0)).abs() < 1e-10,
+        "floor(-1.3) should be -2"
+    );
 }
 
 /// Compile of ceiling function
@@ -4445,13 +4393,12 @@ fn compile_ceiling() {
     let x = ctx.symbol("x");
     let f = x.ceiling();
     let compiled = f.compile(&["x"]);
-    if let Ok(c) = compiled {
-        assert!((c(&[2.1]) - 3.0).abs() < 1e-10, "ceil(2.1) should be 3");
-        assert!(
-            (c(&[-1.7]) - (-1.0)).abs() < 1e-10,
-            "ceil(-1.7) should be -1"
-        );
-    }
+    let c = compiled.expect("compiled must evaluate");
+    assert!((c(&[2.1]) - 3.0).abs() < 1e-10, "ceil(2.1) should be 3");
+    assert!(
+        (c(&[-1.7]) - (-1.0)).abs() < 1e-10,
+        "ceil(-1.7) should be -1"
+    );
 }
 
 /// Compile of a 3-variable expression: x*y + y*z + z*x
@@ -4463,14 +4410,13 @@ fn compile_three_vars_symmetric() {
     let z = ctx.symbol("z");
     let f = &(&x * &y) + &(&y * &z) + &(&z * &x);
     let compiled = f.compile(&["x", "y", "z"]);
-    if let Ok(c) = compiled {
-        let v = c(&[2.0, 3.0, 5.0]);
-        let expected = 2.0 * 3.0 + 3.0 * 5.0 + 5.0 * 2.0; // 6+15+10=31
-        assert!(
-            (v - expected).abs() < 1e-10,
-            "compile(xy+yz+zx) at (2,3,5): {v} vs {expected}"
-        );
-    }
+    let c = compiled.expect("compiled must evaluate");
+    let v = c(&[2.0, 3.0, 5.0]);
+    let expected = 2.0 * 3.0 + 3.0 * 5.0 + 5.0 * 2.0; // 6+15+10=31
+    assert!(
+        (v - expected).abs() < 1e-10,
+        "compile(xy+yz+zx) at (2,3,5): {v} vs {expected}"
+    );
 }
 
 // ── Deep structural identity checks ─────────────────────────────────────
@@ -4508,21 +4454,19 @@ fn expand_product_of_linears() {
     // At each root, value should be 0
     for root in 1..=4i64 {
         let v = expanded.subs_i64(&x, root).eval_f64();
-        if let Ok(v) = v {
-            assert!(
-                v.abs() < 1e-10,
-                "expanded product should be 0 at x={root}, got {v}"
-            );
-        }
+        let v = v.expect("v must evaluate");
+        assert!(
+            v.abs() < 1e-10,
+            "expanded product should be 0 at x={root}, got {v}"
+        );
     }
     // At x=5: (4)(3)(2)(1) = 24
     let v = expanded.subs_i64(&x, 5).eval_f64();
-    if let Ok(v) = v {
-        assert!(
-            (v - 24.0).abs() < 1e-10,
-            "expanded product at x=5 should be 24, got {v}"
-        );
-    }
+    let v = v.expect("v must evaluate");
+    assert!(
+        (v - 24.0).abs() < 1e-10,
+        "expanded product at x=5 should be 24, got {v}"
+    );
 }
 
 /// Verify that factor of a product of distinct linears recovers the factors
@@ -4536,12 +4480,11 @@ fn factor_finds_roots() {
     // The factored form, when evaluated at roots, should give 0
     for root in [1i64, -3] {
         let v = factored.subs_i64(&x, root).eval_f64();
-        if let Ok(v) = v {
-            assert!(
-                v.abs() < 1e-10,
-                "factored form should be 0 at x={root}, got {v}"
-            );
-        }
+        let v = v.expect("v must evaluate");
+        assert!(
+            v.abs() < 1e-10,
+            "factored form should be 0 at x={root}, got {v}"
+        );
     }
 }
 
@@ -4706,9 +4649,8 @@ fn one_to_any_power() {
     for n in [-3, -2, -1, 0, 1, 2, 3, 10] {
         let e = ctx.int(1).powi(n);
         let v = e.eval_f64();
-        if let Ok(v) = v {
-            assert!((v - 1.0).abs() < 1e-15, "1^{n} should be 1, got {v}");
-        }
+        let v = v.expect("v must evaluate");
+        assert!((v - 1.0).abs() < 1e-15, "1^{n} should be 1, got {v}");
     }
 }
 
@@ -4719,9 +4661,8 @@ fn zero_to_positive_power() {
     for n in [1, 2, 3, 5, 10] {
         let e = ctx.int(0).powi(n);
         let v = e.eval_f64();
-        if let Ok(v) = v {
-            assert!(v.abs() < 1e-15, "0^{n} should be 0, got {v}");
-        }
+        let v = v.expect("v must evaluate");
+        assert!(v.abs() < 1e-15, "0^{n} should be 0, got {v}");
     }
 }
 
@@ -4850,16 +4791,15 @@ fn workflow_build_diff_simplify_compile_eval() {
     let df = f.diff(&x); // 3x² - 2
     let df_simplified = df.simplify();
     let compiled = df_simplified.compile(&["x"]);
-    if let Ok(c) = compiled {
-        for &pt in &[-2.0, -1.0, 0.0, 1.0, 2.0, 3.0] {
-            let cv = c(&[pt]);
-            let expected = 3.0 * pt.powi(2) - 2.0;
-            let diff = (cv - expected).abs();
-            assert!(
-                diff < 1e-10,
-                "workflow at x={pt}: compile={cv}, expected={expected}"
-            );
-        }
+    let c = compiled.expect("compiled must evaluate");
+    for &pt in &[-2.0, -1.0, 0.0, 1.0, 2.0, 3.0] {
+        let cv = c(&[pt]);
+        let expected = 3.0 * pt.powi(2) - 2.0;
+        let diff = (cv - expected).abs();
+        assert!(
+            diff < 1e-10,
+            "workflow at x={pt}: compile={cv}, expected={expected}"
+        );
     }
 }
 

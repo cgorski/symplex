@@ -2,8 +2,9 @@
 //!
 //! This test answers the question with REAL wall-clock numbers, not theory.
 //!
-//! Run with:
-//!   cd symplex && cargo test --test perf_analysis --release -- --nocapture 2>&1
+//! This is a **benchmark, not a test** (prints timings, asserts nothing,
+//! ~40 s in a debug build) and is therefore `#[ignore]`d by default.  Run with:
+//!   cd symplex && cargo test --test perf_analysis --release -- --ignored --nocapture 2>&1
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -72,6 +73,7 @@ fn ratio_str(a: Duration, b: Duration) -> String {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
+#[ignore = "benchmark: prints wall-clock timings only (~40 s in debug); run with --ignored --nocapture --release"]
 fn perf_analysis_all() {
     println!();
     println!("══════════════════════════════════════════════════════════════════════════");

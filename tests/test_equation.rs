@@ -324,13 +324,14 @@ fn solve_2_pow_x_eq_5_general() {
     let roots = expr.solve_or_empty(&x);
     assert!(!roots.is_empty(), "2^x = 5 should have a solution");
     // Verify numerically: x ≈ 2.32193
-    if let Ok(v) = roots[0].eval_f64() {
-        let expected = 5.0_f64.ln() / 2.0_f64.ln();
-        assert!(
-            (v - expected).abs() < 1e-8,
-            "2^x = 5: root should be ≈ {expected:.6}, got {v:.6}"
-        );
-    }
+    let v = roots[0]
+        .eval_f64()
+        .expect("roots[0].eval_f64() must evaluate");
+    let expected = 5.0_f64.ln() / 2.0_f64.ln();
+    assert!(
+        (v - expected).abs() < 1e-8,
+        "2^x = 5: root should be ≈ {expected:.6}, got {v:.6}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -347,12 +348,13 @@ fn solve_asin_x_eq_value() {
     let roots = expr.solve_or_empty(&x);
     assert!(!roots.is_empty(), "asin(x) = π/6 should have a solution");
     // sin(π/6) = 1/2
-    if let Ok(v) = roots[0].eval_f64() {
-        assert!(
-            (v - 0.5).abs() < 1e-8,
-            "asin(x) = π/6: root should be 0.5, got {v}"
-        );
-    }
+    let v = roots[0]
+        .eval_f64()
+        .expect("roots[0].eval_f64() must evaluate");
+    assert!(
+        (v - 0.5).abs() < 1e-8,
+        "asin(x) = π/6: root should be 0.5, got {v}"
+    );
 }
 
 #[test]
@@ -364,12 +366,13 @@ fn solve_atan_x_eq_value() {
     let expr = &x.atan() - &pi_over_4;
     let roots = expr.solve_or_empty(&x);
     assert!(!roots.is_empty(), "atan(x) = π/4 should have a solution");
-    if let Ok(v) = roots[0].eval_f64() {
-        assert!(
-            (v - 1.0).abs() < 1e-8,
-            "atan(x) = π/4: root should be 1.0, got {v}"
-        );
-    }
+    let v = roots[0]
+        .eval_f64()
+        .expect("roots[0].eval_f64() must evaluate");
+    assert!(
+        (v - 1.0).abs() < 1e-8,
+        "atan(x) = π/4: root should be 1.0, got {v}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

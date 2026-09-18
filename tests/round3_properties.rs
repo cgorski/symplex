@@ -2125,12 +2125,13 @@ fn prop5_hard_solve_double_root() {
 
     // All returned roots should be 3 (or very close to 3)
     for root in &roots {
-        if let Ok(v) = root.eval_f64() {
-            assert!(
-                approx(v, 3.0, 1e-9),
-                "double root of (x-3)² should be 3, got {v}"
-            );
-        }
+        let v = root
+            .eval_f64()
+            .unwrap_or_else(|e| panic!("root {root} of (x-3)² must be numeric: {e}"));
+        assert!(
+            approx(v, 3.0, 1e-9),
+            "double root of (x-3)² should be 3, got {v}"
+        );
     }
 }
 
@@ -2290,13 +2291,18 @@ fn prop7_hard_integrate_diff_recovers_function() {
         let points: &[(i64, i64)] = &[(3, 10), (7, 10), (14, 10), (21, 10)];
         for &(p, q) in points {
             let pt = ctx.rational(p, q);
-            if let Ok(v) = diff_of_diff.subs(&x, &pt).eval().eval_f64() {
-                assert!(
-                    v.abs() < 1e-9,
-                    "BUG: integrate(diff({label})) differs from {label} by non-constant: \
-                     d/dx(f - ∫f'dx) = {v} at x={p}/{q}"
-                );
-            }
+            let v = diff_of_diff
+                .subs(&x, &pt)
+                .eval()
+                .eval_f64()
+                .unwrap_or_else(|e| {
+                    panic!("{label}: d/dx(f - ∫f'dx) not numeric at x={p}/{q}: {e}")
+                });
+            assert!(
+                v.abs() < 1e-9,
+                "BUG: integrate(diff({label})) differs from {label} by non-constant: \
+                 d/dx(f - ∫f'dx) = {v} at x={p}/{q}"
+            );
         }
     }
 }

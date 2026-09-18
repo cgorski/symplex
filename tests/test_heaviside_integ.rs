@@ -16,15 +16,13 @@ fn heaviside_positive_coeff_ftc() {
 
     // At x=2 (where 2*2-1=3>0, H=1): deriv should be 1
     let val = deriv.subs_i64(&x, 2).eval().eval_f64();
-    if let Ok(v) = val {
-        assert!((v - 1.0).abs() < 1e-8, "FTC check at x=2: got {}", v);
-    }
+    let v = val.expect("val must evaluate");
+    assert!((v - 1.0).abs() < 1e-8, "FTC check at x=2: got {}", v);
 
     // At x=-1 (where 2*(-1)-1=-3<0, H=0): deriv should be 0
     let val = deriv.subs_i64(&x, -1).eval().eval_f64();
-    if let Ok(v) = val {
-        assert!(v.abs() < 1e-8, "FTC check at x=-1: got {}", v);
-    }
+    let v = val.expect("val must evaluate");
+    assert!(v.abs() < 1e-8, "FTC check at x=-1: got {}", v);
 }
 
 #[test]
@@ -41,15 +39,13 @@ fn heaviside_negative_coeff_ftc() {
 
     // At x=0 (where -2*0+3=3>0, H=1): deriv should be 1
     let val = deriv.subs_i64(&x, 0).eval().eval_f64();
-    if let Ok(v) = val {
-        assert!((v - 1.0).abs() < 1e-8, "FTC check at x=0: got {}", v);
-    }
+    let v = val.expect("val must evaluate");
+    assert!((v - 1.0).abs() < 1e-8, "FTC check at x=0: got {}", v);
 
     // At x=5 (where -2*5+3=-7<0, H=0): deriv should be 0
     let val = deriv.subs_i64(&x, 5).eval().eval_f64();
-    if let Ok(v) = val {
-        assert!(v.abs() < 1e-8, "FTC check at x=5: got {}", v);
-    }
+    let v = val.expect("val must evaluate");
+    assert!(v.abs() < 1e-8, "FTC check at x=5: got {}", v);
 }
 
 #[test]
@@ -142,9 +138,8 @@ fn heaviside_evaluates_to_one_for_positive_arg() {
     // H(5) should evaluate to 1
     let h = ctx.int(5).heaviside();
     let result = h.eval().eval_f64();
-    if let Ok(v) = result {
-        assert!((v - 1.0).abs() < 1e-10, "H(5) should be 1, got {}", v);
-    }
+    let v = result.expect("result must evaluate");
+    assert!((v - 1.0).abs() < 1e-10, "H(5) should be 1, got {}", v);
 }
 
 #[test]
@@ -153,7 +148,6 @@ fn heaviside_evaluates_to_zero_for_negative_arg() {
     // H(-3) should evaluate to 0
     let h = ctx.int(-3).heaviside();
     let result = h.eval().eval_f64();
-    if let Ok(v) = result {
-        assert!(v.abs() < 1e-10, "H(-3) should be 0, got {}", v);
-    }
+    let v = result.expect("result must evaluate");
+    assert!(v.abs() < 1e-10, "H(-3) should be 0, got {}", v);
 }

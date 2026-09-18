@@ -5,28 +5,13 @@
 //!
 //! # Bugs Found
 //!
-//! ## BUG-1: Stack overflow on deeply-nested function calls (~250 deep)
+//! ## BUG-1 (FIXED): Stack overflow on deeply-nested function calls (~250 deep)
 //!
-//! **Severity:** crash (SIGABRT — unrecoverable)
-//!
-//! The parser's nesting-depth guard (`self.depth > 256`) is checked only at the
-//! entry of `parse_expr`.  However, each function-call nesting layer actually
-//! pushes **≥3 stack frames** on the call stack:
-//!
-//!   `parse_expr` → `parse_prefix` → `parse_function_call` → `parse_expr` → …
-//!
-//! At ~250 layers of `sin(sin(…sin(x)…))`, the **logical** depth counter is
-//! only ~250 (below the 256 cap), but the **physical** call-stack depth is
-//! ~750+ frames.  This exceeds the default thread stack size and triggers an
-//! unrecoverable `SIGABRT` (stack overflow), killing the entire process.
-//!
-//! **Repro:** `d_deeply_nested_sin_250` (marked `#[ignore]` — it aborts)
-//!
-//! **Suggested fix:** either (a) lower the logical depth cap to ~128 so the
-//! physical stack is never exhausted, or (b) count depth increments inside
-//! `parse_prefix` and `parse_function_call` as well, or (c) switch the parser
-//! to an iterative (explicit-stack) design like the display formatter already
-//! uses.
+//! Historically the parser's nesting-depth guard was checked only at the
+//! entry of `parse_expr`, while each function-call layer pushed ≥3 physical
+//! stack frames, so `sin(sin(…sin(x)…))` 250 deep aborted with SIGABRT.
+//! `d_deeply_nested_sin_250` now runs as a regular regression guard (it used
+//! to be `#[ignore]`d) and passes: the input parses or is rejected cleanly.
 
 use proptest::prelude::*;
 use symplex::parse::parse;
@@ -852,20 +837,28 @@ fn c_huge_integer_in_expression() {
 
 #[test]
 fn c_identifier_pi() {
-    let result = try_parse("pi");
-    assert!(result.is_ok());
+    let ctx = Context::new();
+    let e = parse(&ctx, "pi").expect("pi parses");
+    assert_eq!(e, ctx.pi());
+    assert!((e.eval_f64().unwrap() - std::f64::consts::PI).abs() < 1e-15);
 }
 
 #[test]
 fn c_identifier_e() {
-    let result = try_parse("E");
-    assert!(result.is_ok());
+    let ctx = Context::new();
+    let e = parse(&ctx, "E").expect("E parses");
+    assert_eq!(e, ctx.e());
+    assert!((e.eval_f64().unwrap() - std::f64::consts::E).abs() < 1e-15);
 }
 
 #[test]
 fn c_identifier_i_unit() {
-    let result = try_parse("I");
-    assert!(result.is_ok());
+    let ctx = Context::new();
+    let e = parse(&ctx, "I").expect("I parses");
+    assert_eq!(e, ctx.i_unit());
+    assert_eq!(e.eval_complex64().unwrap(), (0.0, 1.0));
+    assert!(e.powi(2).eval().is_one_structural() || format!("{}", e.powi(2).eval()) == "-1");
+    assert_eq!(format!("{}", e.powi(2).eval()), "-1");
 }
 
 #[test]
@@ -1064,20 +1057,27 @@ fn d_deeply_nested_mixed_functions_50() {
 
 /// BUG-1: 250 layers of `sin(…)` causes a **stack overflow** (SIGABRT).
 ///
-/// The parser's logical depth counter only reaches ~250 (below the 256 cap),
-/// but the physical call-stack depth is ≥750 frames, exceeding the default
-/// thread stack size.  This is an unrecoverable abort — not a catchable panic —
-/// so the test is `#[ignore]`d to avoid killing the whole test runner.
-///
-/// Run it explicitly with: `cargo test -- --ignored d_deeply_nested_sin_250`
+/// Regression guard for BUG-1 (fixed): 250 nested calls must parse or be
+/// rejected cleanly — never abort the process with a stack overflow.
 #[test]
 fn d_deeply_nested_sin_250() {
     let mut s = String::from("x");
     for _ in 0..250 {
         s = format!("sin({s})");
     }
-    // If the bug is fixed this should return Ok or Err, never abort.
-    assert_parse_no_panic(&s);
+    let ctx = Context::new();
+    match parse(&ctx, &s) {
+        Ok(e) => {
+            // 250 nested sines evaluated at x = 0 are exactly 0.
+            let x = ctx.symbol("x");
+            assert!(e.subs_i64(&x, 0).eval().is_zero_structural());
+        }
+        Err(err) => assert!(
+            format!("{err}").to_lowercase().contains("deep")
+                || format!("{err}").to_lowercase().contains("nest"),
+            "a rejection must mention the nesting limit: {err}"
+        ),
+    }
 }
 
 /// Regression boundary for BUG-1: 100-deep nesting works fine.
@@ -1471,19 +1471,23 @@ fn f_double_negative() {
 
 #[test]
 fn f_negative_in_power() {
-    // -x^2 should be -(x^2) not (-x)^2
+    // -x^2 should be -(x^2) not (-x)^2: at x = 3 the value is -9, not 9.
     let ctx = Context::new();
-    let result = parse(&ctx, "-x^2");
-    assert!(result.is_ok());
-    let displayed = format!("{}", result.unwrap());
-    // The display should reflect correct precedence
-    // Reparse for stability
-    let result2 = parse(&ctx, &displayed);
-    assert!(
-        result2.is_ok(),
-        "Reparsing '{}' failed: {}",
-        displayed,
-        result2.unwrap_err()
+    let x = ctx.symbol("x");
+    let parsed = parse(&ctx, "-x^2").expect("-x^2 parses");
+    assert_eq!(
+        parsed.subs_i64(&x, 3).eval(),
+        ctx.int(-9),
+        "-x^2 parsed as {parsed}"
+    );
+    // Display must preserve the precedence and round-trip to the same value.
+    let displayed = format!("{parsed}");
+    let reparsed =
+        parse(&ctx, &displayed).unwrap_or_else(|e| panic!("Reparsing '{displayed}' failed: {e}"));
+    assert_eq!(
+        reparsed.subs_i64(&x, 3).eval(),
+        ctx.int(-9),
+        "'{displayed}' reparsed as {reparsed}"
     );
 }
 
@@ -1494,10 +1498,12 @@ fn f_negative_base_in_power() {
 
 #[test]
 fn f_exponent_of_exponent() {
-    // x^2^3 should be x^(2^3) = x^8 (right-assoc)
+    // x^2^3 should be x^(2^3) = x^8 (right-assoc), so at x = 2: 256 (not 64).
     let ctx = Context::new();
-    let result = parse(&ctx, "x^2^3");
-    assert!(result.is_ok());
+    let x = ctx.symbol("x");
+    let parsed = parse(&ctx, "x^2^3").expect("x^2^3 parses");
+    assert_eq!(parsed, x.powi(8), "x^2^3 parsed as {parsed}");
+    assert_eq!(parsed.subs_i64(&x, 2).eval(), ctx.int(256));
 }
 
 #[test]
@@ -1545,26 +1551,25 @@ fn f_mixed_implicit_explicit_mul() {
 #[test]
 fn f_pi_in_expression() {
     let ctx = Context::new();
-    let result = parse(&ctx, "2*pi");
-    assert!(result.is_ok());
-    let result2 = parse(&ctx, "pi*x");
-    assert!(result2.is_ok());
-    let result3 = parse(&ctx, "sin(pi)");
-    assert!(result3.is_ok());
+    let x = ctx.symbol("x");
+    assert_eq!(parse(&ctx, "2*pi").unwrap(), &ctx.int(2) * &ctx.pi());
+    assert_eq!(parse(&ctx, "pi*x").unwrap(), &ctx.pi() * &x);
+    assert!(parse(&ctx, "sin(pi)").unwrap().eval().is_zero_structural());
 }
 
 #[test]
 fn f_e_in_expression() {
     let ctx = Context::new();
-    let result = parse(&ctx, "E^x");
-    assert!(result.is_ok());
-    let result2 = parse(&ctx, "E^(I*pi)");
-    assert!(result2.is_ok());
+    let x = ctx.symbol("x");
+    // E^x is canonicalised to exp(x); E^(i*pi) evaluates to -1.
+    assert_eq!(parse(&ctx, "E^x").unwrap(), x.exp());
+    assert_eq!(parse(&ctx, "E^(I*pi)").unwrap().eval(), ctx.int(-1));
 }
 
 #[test]
 fn f_complex_euler_formula() {
     let ctx = Context::new();
-    let result = parse(&ctx, "E^(I*pi) + 1");
-    assert!(result.is_ok());
+    // Euler's identity: e^(i*pi) + 1 = 0.
+    let e = parse(&ctx, "E^(I*pi) + 1").expect("parses");
+    assert!(e.eval().is_zero_structural(), "e^(i pi) + 1 = {}", e.eval());
 }

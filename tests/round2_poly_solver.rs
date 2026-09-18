@@ -408,15 +408,14 @@ fn solve_system_ex_no_solution() {
 
     let result = solve_system_ex(&[eq1, eq2], &[x.clone(), y.clone()]);
     // An `Err` is also acceptable for an inconsistent system.
-    if let Ok(sols) = result {
-        assert!(
-            sols.is_empty(),
-            "inconsistent system should yield no solutions, got {:?}",
-            sols.iter()
-                .map(|s| s.iter().map(|v| format!("{v}")).collect::<Vec<_>>())
-                .collect::<Vec<_>>()
-        );
-    }
+    let sols = result.expect("result must evaluate");
+    assert!(
+        sols.is_empty(),
+        "inconsistent system should yield no solutions, got {:?}",
+        sols.iter()
+            .map(|s| s.iter().map(|v| format!("{v}")).collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -699,19 +698,23 @@ fn solve_quartic_no_rational_roots() {
         !roots.is_empty(),
         "x⁴-2 should have roots (via Ferrari), got empty"
     );
-    // Verify the ones we can evaluate
+    // All four roots (two real, two imaginary) must satisfy x⁴ = 2.
+    assert_eq!(roots.len(), 4, "x⁴-2 has 4 roots, got {roots:?}");
+    let mut real = 0;
     for r in &roots {
-        if let Ok(val) = r.eval_f64() {
-            let residual = val.powi(4) - 2.0;
-            assert!(
-                residual.abs() < 1e-6,
-                "root {} (approx {}) doesn't satisfy x⁴-2: residual={}",
-                r,
-                val,
-                residual
-            );
+        let (re, im) = r.eval_complex64().expect("root must be numeric");
+        // (re + i im)^4 via two squarings
+        let (a, b) = (re * re - im * im, 2.0 * re * im);
+        let (p4re, p4im) = (a * a - b * b, 2.0 * a * b);
+        assert!(
+            (p4re - 2.0).abs() < 1e-9 && p4im.abs() < 1e-9,
+            "root {r} ≈ ({re}, {im}i) doesn't satisfy x⁴ = 2: got ({p4re}, {p4im}i)"
+        );
+        if im.abs() < 1e-12 {
+            real += 1;
         }
     }
+    assert_eq!(real, 2, "exactly two real roots ±2^(1/4)");
 }
 
 #[test]
@@ -1000,16 +1003,15 @@ fn algebraic_solve_produces_radicals() {
 
     // Verify each root: r² - 3 ≈ 0
     for r in &roots {
-        if let Ok(val) = r.eval_f64() {
-            let residual = val * val - 3.0;
-            assert!(
-                residual.abs() < 1e-10,
-                "root {} (approx {}) of x²-3: residual = {}",
-                r,
-                val,
-                residual
-            );
-        }
+        let val = r.eval_f64().expect("r.eval_f64() must evaluate");
+        let residual = val * val - 3.0;
+        assert!(
+            residual.abs() < 1e-10,
+            "root {} (approx {}) of x²-3: residual = {}",
+            r,
+            val,
+            residual
+        );
     }
 }
 

@@ -59,13 +59,12 @@ fn piecewise_sin_ax() {
 
     // Verify numeric evaluation at a=2, x=1 matches the generic branch
     let val = result.subs(&a, &ctx.int(2)).subs(&x, &ctx.int(1));
-    if let Ok(v) = val.eval_f64() {
-        let expected = -(2.0_f64).cos() / 2.0;
-        assert!(
-            (v - expected).abs() < 1e-10,
-            "∫sin(2x)dx at x=1: got {v}, expected {expected}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    let expected = -(2.0_f64).cos() / 2.0;
+    assert!(
+        (v - expected).abs() < 1e-10,
+        "∫sin(2x)dx at x=1: got {v}, expected {expected}"
+    );
 }
 
 /// ∫ exp(a·x) dx should be Piecewise with Ne(a, 0).
@@ -90,13 +89,12 @@ fn piecewise_exp_ax() {
 
     // Verify numeric evaluation at a=3, x=1 matches the generic branch
     let val = result.subs(&a, &ctx.int(3)).subs(&x, &ctx.int(1));
-    if let Ok(v) = val.eval_f64() {
-        let expected = (3.0_f64).exp() / 3.0;
-        assert!(
-            (v - expected).abs() < 1e-6,
-            "∫exp(3x)dx at x=1: got {v}, expected {expected}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    let expected = (3.0_f64).exp() / 3.0;
+    assert!(
+        (v - expected).abs() < 1e-6,
+        "∫exp(3x)dx at x=1: got {v}, expected {expected}"
+    );
 }
 
 /// ∫ x^n dx should be Piecewise with Ne(n, -1).
@@ -120,13 +118,12 @@ fn piecewise_x_to_n() {
 
     // Verify numeric evaluation at n=2, x=3: x^3/3 = 9
     let val = result.subs(&n, &ctx.int(2)).subs(&x, &ctx.int(3));
-    if let Ok(v) = val.eval_f64() {
-        let expected = 27.0 / 3.0; // 3^3 / 3 = 9
-        assert!(
-            (v - expected).abs() < 1e-10,
-            "∫x^2 dx at x=3: got {v}, expected {expected}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    let expected = 27.0 / 3.0; // 3^3 / 3 = 9
+    assert!(
+        (v - expected).abs() < 1e-10,
+        "∫x^2 dx at x=3: got {v}, expected {expected}"
+    );
 }
 
 /// ∫ sin(2·x) dx should NOT have Piecewise (no free params).
@@ -147,13 +144,12 @@ fn no_piecewise_for_numeric() {
 
     // Verify numerically: -cos(2)/2
     let val = result.subs(&x, &ctx.int(1));
-    if let Ok(v) = val.eval_f64() {
-        let expected = -(2.0_f64).cos() / 2.0;
-        assert!(
-            (v - expected).abs() < 1e-10,
-            "∫sin(2x)dx at x=1: got {v}, expected {expected}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    let expected = -(2.0_f64).cos() / 2.0;
+    assert!(
+        (v - expected).abs() < 1e-10,
+        "∫sin(2x)dx at x=1: got {v}, expected {expected}"
+    );
 }
 
 /// ∫ 1/(a·x+b) dx should be Piecewise with Ne(a, 0).
@@ -185,13 +181,12 @@ fn piecewise_1_over_ax_plus_b() {
         .subs(&a, &ctx.int(2))
         .subs(&b, &ctx.int(1))
         .subs(&x, &ctx.int(1));
-    if let Ok(v) = val.eval_f64() {
-        let expected = (3.0_f64).ln() / 2.0;
-        assert!(
-            (v - expected).abs() < 1e-10,
-            "∫1/(2x+1)dx at x=1: got {v}, expected {expected}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    let expected = (3.0_f64).ln() / 2.0;
+    assert!(
+        (v - expected).abs() < 1e-10,
+        "∫1/(2x+1)dx at x=1: got {v}, expected {expected}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

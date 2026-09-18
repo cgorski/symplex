@@ -1,7 +1,13 @@
 //! Performance measurement for simplification strategies.
 //!
-//! Run with:
-//!   cd symplex && cargo test --test simplify_perf_test --release -- --nocapture 2>&1
+//! These are **benchmarks, not tests**: they print timings and assert
+//! nothing, and in a debug build they take ~75 s in total.  They are
+//! therefore `#[ignore]`d by default.  Run with:
+//!   cd symplex && cargo test --test simplify_perf_test --release -- --ignored --nocapture 2>&1
+//!
+//! The one non-ignored test (`perf_inputs_simplify_correctly`) checks the
+//! *values* the benchmarks compute, so a regression in the simplifier on
+//! these inputs is still caught by the regular suite.
 
 use std::time::{Duration, Instant};
 use symplex::prelude::*;
@@ -43,6 +49,7 @@ fn section(title: &str) {
 // ── 1. Simple polynomial: x³ + 2x + 1 ─────────────────────────────────
 
 #[test]
+#[ignore = "benchmark: prints timings only (~10-30 s in debug); run with --ignored --nocapture --release"]
 fn perf_simple_polynomial() {
     section("1. Simple polynomial: x³ + 2x + 1");
 
@@ -83,6 +90,7 @@ fn perf_simple_polynomial() {
 // ── 2. Trig expression: sin²(x) + cos²(x) ────────────────────────────
 
 #[test]
+#[ignore = "benchmark: prints timings only (~10-30 s in debug); run with --ignored --nocapture --release"]
 fn perf_trig_identity() {
     section("2. Trig identity: sin²(x) + cos²(x)");
 
@@ -121,6 +129,7 @@ fn perf_trig_identity() {
 // ── 3. Large polynomial: 20-term polynomial ────────────────────────────
 
 #[test]
+#[ignore = "benchmark: prints timings only (~10-30 s in debug); run with --ignored --nocapture --release"]
 fn perf_large_polynomial() {
     section("3. Large polynomial (20 terms)");
 
@@ -170,6 +179,7 @@ fn perf_large_polynomial() {
 // ── 4. Already-simple expression: just `x` ─────────────────────────────
 
 #[test]
+#[ignore = "benchmark: prints timings only (~10-30 s in debug); run with --ignored --nocapture --release"]
 fn perf_already_simple() {
     section("4. Already simple: x (no-op case for tight loops)");
 
@@ -226,6 +236,7 @@ fn perf_already_simple() {
 // ── 5. Deep expression: sin(sin(sin(...x...))) ────────────────────────
 
 #[test]
+#[ignore = "benchmark: prints timings only (~10-30 s in debug); run with --ignored --nocapture --release"]
 fn perf_deep_nesting() {
     section("5. Deep nesting: sin(sin(sin(... x ...)))  depth=10");
 
@@ -294,6 +305,7 @@ fn perf_deep_nesting() {
 // ── 6. fu() cost on non-trig expressions ──────────────────────────────
 
 #[test]
+#[ignore = "benchmark: prints timings only (~10-30 s in debug); run with --ignored --nocapture --release"]
 fn perf_fu_bailout_on_non_trig() {
     section("6. fu() bail-out cost on non-trig expressions");
     println!("  Measuring: does fu()/has_trig check add measurable overhead");
@@ -361,6 +373,7 @@ fn perf_fu_bailout_on_non_trig() {
 // ── 7. Consolidated approach simulation ────────────────────────────────
 
 #[test]
+#[ignore = "benchmark: prints timings only (~10-30 s in debug); run with --ignored --nocapture --release"]
 fn perf_consolidated_approach() {
     section("7. Consolidated approach: simplify() = smart_simplify always");
     println!("  Simulating: .simplify() always runs smart_simplify (12+ strategies)");
@@ -430,6 +443,7 @@ fn perf_consolidated_approach() {
 // ── 8. Summary & Recommendation ───────────────────────────────────────
 
 #[test]
+#[ignore = "benchmark: prints timings only (~10-30 s in debug); run with --ignored --nocapture --release"]
 fn perf_summary() {
     section("8. Summary — absolute cost of smart_simplify on atoms");
     println!("  The critical question: is smart_simplify too expensive for");
@@ -503,4 +517,33 @@ fn perf_summary() {
         );
         println!("     Keep .simplify() as pattern-rules-only for hot paths.");
     }
+}
+
+// ── Correctness smoke test for the benchmark inputs (runs by default) ──
+
+#[test]
+fn perf_inputs_simplify_correctly() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    // 2. sin² + cos² = 1
+    assert_eq!((x.sin().powi(2) + x.cos().powi(2)).simplify(), ctx.int(1));
+    // 4. atoms are fixed points
+    assert_eq!(x.simplify(), x);
+    assert_eq!(ctx.int(5).simplify(), ctx.int(5));
+    // 5. deep nesting is a fixed point and keeps its value
+    let mut nested = x.clone();
+    for _ in 0..10 {
+        nested = nested.sin();
+    }
+    let simplified = nested.simplify();
+    let at_half = |e: &Ex| e.subs(&x, &ctx.rational(1, 2)).eval_f64().unwrap();
+    assert!((at_half(&simplified) - at_half(&nested)).abs() < 1e-14);
+    let mut want = 0.5f64;
+    for _ in 0..10 {
+        want = want.sin();
+    }
+    assert!((at_half(&nested) - want).abs() < 1e-14);
+    // 1./3. polynomial inputs: (x+1)^2 - (x^2 + 2x + 1) = 0
+    let p = (&x + 1).powi(2) - (x.powi(2) + &x * 2 + 1);
+    assert!(p.simplify().is_zero_structural(), "{}", p.simplify());
 }

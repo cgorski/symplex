@@ -723,13 +723,12 @@ fn series_exp_maclaurin_order_5() {
 
     // At x = 1/2: 1 + 0.5 + 0.125 + 0.02083... + 0.00260... ≈ 1.6484
     let val = expanded.subs(&x, &ctx.rational(1, 2)).eval();
-    if let Ok(v) = val.eval_f64() {
-        let expected_trunc = 1.0 + 0.5 + 0.125 + 1.0 / 48.0 + 1.0 / 384.0;
-        assert!(
-            (v - expected_trunc).abs() < 0.001,
-            "exp(x) series at x=0.5 should be ≈{expected_trunc}, got: {v}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    let expected_trunc = 1.0 + 0.5 + 0.125 + 1.0 / 48.0 + 1.0 / 384.0;
+    assert!(
+        (v - expected_trunc).abs() < 0.001,
+        "exp(x) series at x=0.5 should be ≈{expected_trunc}, got: {v}"
+    );
 }
 
 #[test]
@@ -744,13 +743,12 @@ fn series_sin_maclaurin_order_7() {
     // At x = 1: sin(1) ≈ 0.8415
     // Truncated: 1 - 1/6 + 1/120 - 1/5040 ≈ 0.84147
     let val = expanded.subs(&x, &ctx.int(1)).eval();
-    if let Ok(v) = val.eval_f64() {
-        let expected = 1.0 - 1.0 / 6.0 + 1.0 / 120.0 - 1.0 / 5040.0;
-        assert!(
-            (v - expected).abs() < 0.001,
-            "sin(x) series at x=1 should be ≈{expected}, got: {v}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    let expected = 1.0 - 1.0 / 6.0 + 1.0 / 120.0 - 1.0 / 5040.0;
+    assert!(
+        (v - expected).abs() < 0.001,
+        "sin(x) series at x=1 should be ≈{expected}, got: {v}"
+    );
 }
 
 #[test]
@@ -765,13 +763,12 @@ fn series_cos_maclaurin_order_6() {
     // At x = 1: cos(1) ≈ 0.5403
     // Truncated: 1 - 1/2 + 1/24 - 1/720 ≈ 0.5403
     let val = expanded.subs(&x, &ctx.int(1)).eval();
-    if let Ok(v) = val.eval_f64() {
-        let expected = 1.0 - 0.5 + 1.0 / 24.0 - 1.0 / 720.0;
-        assert!(
-            (v - expected).abs() < 0.001,
-            "cos(x) series at x=1 should be ≈{expected}, got: {v}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    let expected = 1.0 - 0.5 + 1.0 / 24.0 - 1.0 / 720.0;
+    assert!(
+        (v - expected).abs() < 0.001,
+        "cos(x) series at x=1 should be ≈{expected}, got: {v}"
+    );
 }
 
 #[test]
@@ -841,22 +838,24 @@ fn series_at_nonzero_point_exp() {
 
     // At x=1: should give exactly exp(1) = e
     let val_at_1 = expanded.subs(&x, &ctx.int(1)).eval();
-    if let Ok(v) = val_at_1.eval_f64() {
-        assert!(
-            (v - std::f64::consts::E).abs() < 1e-6,
-            "exp(x) series around 1 at x=1 should be e ≈ 2.71828, got: {v}"
-        );
-    }
+    let v = val_at_1
+        .eval_f64()
+        .expect("val_at_1.eval_f64() must evaluate");
+    assert!(
+        (v - std::f64::consts::E).abs() < 1e-6,
+        "exp(x) series around 1 at x=1 should be e ≈ 2.71828, got: {v}"
+    );
 
     // At x=1.1: should be close to exp(1.1) ≈ 3.00417
     let val_near = expanded.subs(&x, &ctx.rational(11, 10)).eval();
-    if let Ok(v) = val_near.eval_f64() {
-        let expected = 1.1_f64.exp();
-        assert!(
-            (v - expected).abs() < 0.01,
-            "exp(x) series around 1 at x=1.1 should be ≈{expected}, got: {v}"
-        );
-    }
+    let v = val_near
+        .eval_f64()
+        .expect("val_near.eval_f64() must evaluate");
+    let expected = 1.1_f64.exp();
+    assert!(
+        (v - expected).abs() < 0.01,
+        "exp(x) series around 1 at x=1.1 should be ≈{expected}, got: {v}"
+    );
 }
 
 #[test]
@@ -971,12 +970,11 @@ fn laplace_of_1() {
     let result = ctx.int(1).laplace(&t, &s);
     // L{1} = 1/s  →  at s=2: 0.5
     let val = result.subs(&s, &ctx.int(2)).eval();
-    if let Ok(v) = val.eval_f64() {
-        assert!(
-            (v - 0.5).abs() < 1e-8,
-            "L{{1}} at s=2 should be 0.5, got: {v}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    assert!(
+        (v - 0.5).abs() < 1e-8,
+        "L{{1}} at s=2 should be 0.5, got: {v}"
+    );
 }
 
 #[test]
@@ -988,12 +986,11 @@ fn laplace_of_t() {
     let result = t.laplace(&t, &s);
     // L{t} = 1/s²  →  at s=2: 0.25
     let val = result.subs(&s, &ctx.int(2)).eval();
-    if let Ok(v) = val.eval_f64() {
-        assert!(
-            (v - 0.25).abs() < 1e-8,
-            "L{{t}} at s=2 should be 0.25, got: {v}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    assert!(
+        (v - 0.25).abs() < 1e-8,
+        "L{{t}} at s=2 should be 0.25, got: {v}"
+    );
 }
 
 #[test]
@@ -1011,12 +1008,11 @@ fn laplace_of_t_squared() {
     );
     // At s=2: 2/8 = 0.25
     let val = result.subs(&s, &ctx.int(2)).eval();
-    if let Ok(v) = val.eval_f64() {
-        assert!(
-            (v - 0.25).abs() < 1e-8,
-            "L{{t²}} at s=2 should be 0.25, got: {v}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    assert!(
+        (v - 0.25).abs() < 1e-8,
+        "L{{t²}} at s=2 should be 0.25, got: {v}"
+    );
 }
 
 #[test]
@@ -1034,12 +1030,11 @@ fn laplace_of_t_cubed() {
     );
     // At s=1: 6/1 = 6
     let val = result.subs(&s, &ctx.int(1)).eval();
-    if let Ok(v) = val.eval_f64() {
-        assert!(
-            (v - 6.0).abs() < 1e-8,
-            "L{{t³}} at s=1 should be 6, got: {v}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    assert!(
+        (v - 6.0).abs() < 1e-8,
+        "L{{t³}} at s=1 should be 6, got: {v}"
+    );
 }
 
 #[test]
@@ -1052,12 +1047,11 @@ fn laplace_of_exp() {
     let result = (&t * 3).exp().laplace(&t, &s);
     // At s=5: 1/(5-3) = 0.5
     let val = result.subs(&s, &ctx.int(5)).eval();
-    if let Ok(v) = val.eval_f64() {
-        assert!(
-            (v - 0.5).abs() < 1e-8,
-            "L{{exp(3t)}} at s=5 should be 0.5, got: {v}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    assert!(
+        (v - 0.5).abs() < 1e-8,
+        "L{{exp(3t)}} at s=5 should be 0.5, got: {v}"
+    );
 }
 
 #[test]
@@ -1070,12 +1064,11 @@ fn laplace_of_sin() {
     let result = (&t * 2).sin().laplace(&t, &s);
     // At s=0: 2/4 = 0.5
     let val = result.subs(&s, &ctx.int(0)).eval();
-    if let Ok(v) = val.eval_f64() {
-        assert!(
-            (v - 0.5).abs() < 1e-8,
-            "L{{sin(2t)}} at s=0 should be 0.5, got: {v}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    assert!(
+        (v - 0.5).abs() < 1e-8,
+        "L{{sin(2t)}} at s=0 should be 0.5, got: {v}"
+    );
 }
 
 #[test]
@@ -1088,17 +1081,15 @@ fn laplace_of_cos() {
     let result = (&t * 3).cos().laplace(&t, &s);
     // At s=3: 3/(9+9) = 1/6
     let val = result.subs(&s, &ctx.int(3)).eval();
-    if let Ok(v) = val.eval_f64() {
-        assert!(
-            (v - 1.0 / 6.0).abs() < 1e-8,
-            "L{{cos(3t)}} at s=3 should be 1/6, got: {v}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    assert!(
+        (v - 1.0 / 6.0).abs() < 1e-8,
+        "L{{cos(3t)}} at s=3 should be 1/6, got: {v}"
+    );
     // At s=0: 0/9 = 0
     let val0 = result.subs(&s, &ctx.int(0)).eval();
-    if let Ok(v) = val0.eval_f64() {
-        assert!(v.abs() < 1e-8, "L{{cos(3t)}} at s=0 should be 0, got: {v}");
-    }
+    let v = val0.eval_f64().expect("val0.eval_f64() must evaluate");
+    assert!(v.abs() < 1e-8, "L{{cos(3t)}} at s=0 should be 0, got: {v}");
 }
 
 #[test]
@@ -1111,12 +1102,11 @@ fn laplace_of_sinh() {
     let result = (&t * 2).sinh().laplace(&t, &s);
     // At s=3: 2/(9-4) = 2/5 = 0.4
     let val = result.subs(&s, &ctx.int(3)).eval();
-    if let Ok(v) = val.eval_f64() {
-        assert!(
-            (v - 0.4).abs() < 1e-8,
-            "L{{sinh(2t)}} at s=3 should be 0.4, got: {v}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    assert!(
+        (v - 0.4).abs() < 1e-8,
+        "L{{sinh(2t)}} at s=3 should be 0.4, got: {v}"
+    );
 }
 
 #[test]
@@ -1129,12 +1119,11 @@ fn laplace_of_cosh() {
     let result = (&t * 2).cosh().laplace(&t, &s);
     // At s=3: 3/(9-4) = 3/5 = 0.6
     let val = result.subs(&s, &ctx.int(3)).eval();
-    if let Ok(v) = val.eval_f64() {
-        assert!(
-            (v - 0.6).abs() < 1e-8,
-            "L{{cosh(2t)}} at s=3 should be 0.6, got: {v}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    assert!(
+        (v - 0.6).abs() < 1e-8,
+        "L{{cosh(2t)}} at s=3 should be 0.6, got: {v}"
+    );
 }
 
 #[test]
@@ -1148,12 +1137,11 @@ fn laplace_linearity() {
     let result = combined.laplace(&t, &s);
     // At s=2: 3/(2-1) + 2/4 = 3 + 0.5 = 3.5
     let val = result.subs(&s, &ctx.int(2)).eval();
-    if let Ok(v) = val.eval_f64() {
-        assert!(
-            (v - 3.5).abs() < 1e-6,
-            "L{{3·exp(t) + 2·t}} at s=2 should be 3.5, got: {v}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    assert!(
+        (v - 3.5).abs() < 1e-6,
+        "L{{3·exp(t) + 2·t}} at s=2 should be 3.5, got: {v}"
+    );
 }
 
 #[test]
@@ -1171,12 +1159,15 @@ fn inverse_laplace_1_over_s() {
         !result.has_unevaluated(),
         "L⁻¹{{1/s}} should not be unevaluated: {d}"
     );
-    if let Ok(v) = result.subs(&t, &ctx.int(1)).eval().eval_f64() {
-        assert!(
-            (v - 1.0).abs() < 1e-8,
-            "L⁻¹{{1/s}} should be 1, got: {v} (display: {d})"
-        );
-    }
+    let v = result
+        .subs(&t, &ctx.int(1))
+        .eval()
+        .eval_f64()
+        .expect("result.subs(&t, &ctx.int(1)).eval().eval_f64() must evaluate");
+    assert!(
+        (v - 1.0).abs() < 1e-8,
+        "L⁻¹{{1/s}} should be 1, got: {v} (display: {d})"
+    );
 }
 
 #[test]
@@ -1195,12 +1186,15 @@ fn inverse_laplace_1_over_s_squared() {
         "L⁻¹{{1/s²}} should not be unevaluated: {d}"
     );
     // At t=5: should be 5
-    if let Ok(v) = result.subs(&t, &ctx.int(5)).eval().eval_f64() {
-        assert!(
-            (v - 5.0).abs() < 1e-8,
-            "L⁻¹{{1/s²}} at t=5 should be 5, got: {v} (display: {d})"
-        );
-    }
+    let v = result
+        .subs(&t, &ctx.int(5))
+        .eval()
+        .eval_f64()
+        .expect("result.subs(&t, &ctx.int(5)).eval().eval_f64() must evaluate");
+    assert!(
+        (v - 5.0).abs() < 1e-8,
+        "L⁻¹{{1/s²}} at t=5 should be 5, got: {v} (display: {d})"
+    );
 }
 
 #[test]
@@ -1219,13 +1213,16 @@ fn inverse_laplace_1_over_s_minus_a() {
         "L⁻¹{{1/(s-2)}} should not be unevaluated: {d}"
     );
     // At t=1: exp(2) ≈ 7.389
-    if let Ok(v) = result.subs(&t, &ctx.int(1)).eval().eval_f64() {
-        let expected = 2.0_f64.exp();
-        assert!(
-            (v - expected).abs() < 1e-4,
-            "L⁻¹{{1/(s-2)}} at t=1 should be exp(2) ≈ {expected}, got: {v}"
-        );
-    }
+    let v = result
+        .subs(&t, &ctx.int(1))
+        .eval()
+        .eval_f64()
+        .expect("result.subs(&t, &ctx.int(1)).eval().eval_f64() must evaluate");
+    let expected = 2.0_f64.exp();
+    assert!(
+        (v - expected).abs() < 1e-4,
+        "L⁻¹{{1/(s-2)}} at t=1 should be exp(2) ≈ {expected}, got: {v}"
+    );
 }
 
 #[test]
@@ -1276,12 +1273,15 @@ fn inverse_laplace_s_over_s2_plus_omega2() {
         "L⁻¹{{s/(s²+4)}} should not be unevaluated: {d}"
     );
     // At t=0: cos(0) = 1
-    if let Ok(v) = result.subs(&t, &ctx.int(0)).eval().eval_f64() {
-        assert!(
-            (v - 1.0).abs() < 1e-6,
-            "L⁻¹{{s/(s²+4)}} at t=0 should be 1, got: {v}"
-        );
-    }
+    let v = result
+        .subs(&t, &ctx.int(0))
+        .eval()
+        .eval_f64()
+        .expect("result.subs(&t, &ctx.int(0)).eval().eval_f64() must evaluate");
+    assert!(
+        (v - 1.0).abs() < 1e-6,
+        "L⁻¹{{s/(s²+4)}} at t=0 should be 1, got: {v}"
+    );
 }
 
 #[test]
@@ -1370,12 +1370,11 @@ fn z_transform_constant() {
     let result = ctx.int(1).z_transform(&n, &z).expect("Z{1} should succeed");
     // At z=2: 2/(2-1) = 2
     let val = result.subs(&z, &ctx.int(2)).eval();
-    if let Ok(v) = val.eval_f64() {
-        assert!(
-            (v - 2.0).abs() < 1e-8,
-            "Z{{1}} at z=2 should be 2, got: {v}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    assert!(
+        (v - 2.0).abs() < 1e-8,
+        "Z{{1}} at z=2 should be 2, got: {v}"
+    );
 }
 
 #[test]
@@ -1392,12 +1391,11 @@ fn z_transform_a_to_n() {
         .expect("Z{(1/2)^n} should succeed");
     // At z=2: 2/(2-0.5) = 2/1.5 = 4/3
     let val = result.subs(&z, &ctx.int(2)).eval();
-    if let Ok(v) = val.eval_f64() {
-        assert!(
-            (v - 4.0 / 3.0).abs() < 1e-6,
-            "Z{{(1/2)^n}} at z=2 should be 4/3, got: {v}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    assert!(
+        (v - 4.0 / 3.0).abs() < 1e-6,
+        "Z{{(1/2)^n}} at z=2 should be 4/3, got: {v}"
+    );
 }
 
 #[test]
@@ -1410,20 +1408,18 @@ fn z_transform_n() {
     let result = n.z_transform(&n, &z).expect("Z{n} should succeed");
     // At z=2: 2/(2-1)² = 2
     let val = result.subs(&z, &ctx.int(2)).eval();
-    if let Ok(v) = val.eval_f64() {
-        assert!(
-            (v - 2.0).abs() < 1e-8,
-            "Z{{n}} at z=2 should be 2, got: {v}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    assert!(
+        (v - 2.0).abs() < 1e-8,
+        "Z{{n}} at z=2 should be 2, got: {v}"
+    );
     // At z=3: 3/(3-1)² = 3/4 = 0.75
     let val3 = result.subs(&z, &ctx.int(3)).eval();
-    if let Ok(v) = val3.eval_f64() {
-        assert!(
-            (v - 0.75).abs() < 1e-8,
-            "Z{{n}} at z=3 should be 0.75, got: {v}"
-        );
-    }
+    let v = val3.eval_f64().expect("val3.eval_f64() must evaluate");
+    assert!(
+        (v - 0.75).abs() < 1e-8,
+        "Z{{n}} at z=3 should be 0.75, got: {v}"
+    );
 }
 
 #[test]
@@ -1444,12 +1440,15 @@ fn z_transform_sin() {
             for k in 0..50 {
                 direct_sum += (k as f64).sin() * z_val.powi(-k);
             }
-            if let Ok(v) = r.subs(&z, &ctx.int(3)).eval().eval_f64() {
-                assert!(
-                    (v - direct_sum).abs() < 1e-4,
-                    "Z{{sin(n)}} at z=3: transform={v}, partial sum={direct_sum}"
-                );
-            }
+            let v = r
+                .subs(&z, &ctx.int(3))
+                .eval()
+                .eval_f64()
+                .expect("r.subs(&z, &ctx.int(3)).eval().eval_f64() must evaluate");
+            assert!(
+                (v - direct_sum).abs() < 1e-4,
+                "Z{{sin(n)}} at z=3: transform={v}, partial sum={direct_sum}"
+            );
         }
         Err(e) => {
             panic!("BUG: Z{{sin(n)}} should be computable: {e}");
@@ -1475,12 +1474,15 @@ fn z_transform_cos() {
             for k in 0..50 {
                 direct_sum += (k as f64).cos() * z_val.powi(-k);
             }
-            if let Ok(v) = r.subs(&z, &ctx.int(3)).eval().eval_f64() {
-                assert!(
-                    (v - direct_sum).abs() < 1e-4,
-                    "Z{{cos(n)}} at z=3: transform={v}, partial sum={direct_sum}"
-                );
-            }
+            let v = r
+                .subs(&z, &ctx.int(3))
+                .eval()
+                .eval_f64()
+                .expect("r.subs(&z, &ctx.int(3)).eval().eval_f64() must evaluate");
+            assert!(
+                (v - direct_sum).abs() < 1e-4,
+                "Z{{cos(n)}} at z=3: transform={v}, partial sum={direct_sum}"
+            );
         }
         Err(e) => {
             panic!("BUG: Z{{cos(n)}} should be computable: {e}");
@@ -1554,12 +1556,11 @@ fn inverse_z_transform_z_over_z_minus_a() {
 
     // At n=4: 3^4 = 81
     let val = result.subs(&n, &ctx.int(4)).eval();
-    if let Ok(v) = val.eval_f64() {
-        assert!(
-            (v - 81.0).abs() < 1e-6,
-            "Z⁻¹{{z/(z-3)}} at n=4 should be 81, got: {v}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    assert!(
+        (v - 81.0).abs() < 1e-6,
+        "Z⁻¹{{z/(z-3)}} at n=4 should be 81, got: {v}"
+    );
 }
 
 #[test]
@@ -1578,13 +1579,12 @@ fn z_transform_linearity() {
             // At z=4: 3·[4/(4-0.5)] + 2·[4/(4-1)] = 3·(8/7) + 2·(4/3)
             //       = 24/7 + 8/3 = 72/21 + 56/21 = 128/21
             let val = r.subs(&z, &ctx.int(4)).eval();
-            if let Ok(v) = val.eval_f64() {
-                let expected = 3.0 * (4.0 / 3.5) + 2.0 * (4.0 / 3.0);
-                assert!(
-                    (v - expected).abs() < 1e-4,
-                    "Z{{3·(1/2)^n + 2}} at z=4 should be ≈{expected}, got: {v}"
-                );
-            }
+            let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+            let expected = 3.0 * (4.0 / 3.5) + 2.0 * (4.0 / 3.0);
+            assert!(
+                (v - expected).abs() < 1e-4,
+                "Z{{3·(1/2)^n + 2}} at z=4 should be ≈{expected}, got: {v}"
+            );
         }
         Err(e) => {
             panic!("Z-transform of 3·(1/2)^n + 2 should succeed: {e}");
@@ -2109,13 +2109,16 @@ fn inverse_laplace_1_over_s_cubed() {
          when the expression is represented as s^(-3)."
     );
 
-    if let Ok(v) = result.subs(&t, &ctx.int(3)).eval().eval_f64() {
-        // t²/2 at t=3 → 4.5
-        assert!(
-            (v - 4.5).abs() < 1e-6,
-            "L⁻¹{{1/s³}} at t=3 should be 4.5, got: {v}"
-        );
-    }
+    let v = result
+        .subs(&t, &ctx.int(3))
+        .eval()
+        .eval_f64()
+        .expect("result.subs(&t, &ctx.int(3)).eval().eval_f64() must evaluate");
+    // t²/2 at t=3 → 4.5
+    assert!(
+        (v - 4.5).abs() < 1e-6,
+        "L⁻¹{{1/s³}} at t=3 should be 4.5, got: {v}"
+    );
 }
 
 #[test]
@@ -2135,14 +2138,17 @@ fn inverse_laplace_1_over_s_fourth() {
          Expected: t³/6."
     );
 
-    if let Ok(v) = result.subs(&t, &ctx.int(2)).eval().eval_f64() {
-        // t³/6 at t=2 → 8/6 ≈ 1.333
-        let expected = 8.0 / 6.0;
-        assert!(
-            (v - expected).abs() < 1e-6,
-            "L⁻¹{{1/s⁴}} at t=2 should be {expected}, got: {v}"
-        );
-    }
+    let v = result
+        .subs(&t, &ctx.int(2))
+        .eval()
+        .eval_f64()
+        .expect("result.subs(&t, &ctx.int(2)).eval().eval_f64() must evaluate");
+    // t³/6 at t=2 → 8/6 ≈ 1.333
+    let expected = 8.0 / 6.0;
+    assert!(
+        (v - expected).abs() < 1e-6,
+        "L⁻¹{{1/s⁴}} at t=2 should be {expected}, got: {v}"
+    );
 }
 
 #[test]
@@ -2162,12 +2168,15 @@ fn inverse_laplace_2_over_s_cubed() {
          Expected: t²."
     );
 
-    if let Ok(v) = result.subs(&t, &ctx.int(3)).eval().eval_f64() {
-        assert!(
-            (v - 9.0).abs() < 1e-6,
-            "L⁻¹{{2/s³}} at t=3 should be 9, got: {v}"
-        );
-    }
+    let v = result
+        .subs(&t, &ctx.int(3))
+        .eval()
+        .eval_f64()
+        .expect("result.subs(&t, &ctx.int(3)).eval().eval_f64() must evaluate");
+    assert!(
+        (v - 9.0).abs() < 1e-6,
+        "L⁻¹{{2/s³}} at t=3 should be 9, got: {v}"
+    );
 }
 
 #[test]
@@ -2190,13 +2199,16 @@ fn inverse_laplace_s_over_s2_minus_a2() {
          s²-a² (negative constant term) but this should give cosh."
     );
 
-    if let Ok(v) = result.subs(&t, &ctx.int(0)).eval().eval_f64() {
-        // cosh(0) = 1
-        assert!(
-            (v - 1.0).abs() < 1e-6,
-            "L⁻¹{{s/(s²-9)}} at t=0 should be 1 (cosh(0)), got: {v}"
-        );
-    }
+    let v = result
+        .subs(&t, &ctx.int(0))
+        .eval()
+        .eval_f64()
+        .expect("result.subs(&t, &ctx.int(0)).eval().eval_f64() must evaluate");
+    // cosh(0) = 1
+    assert!(
+        (v - 1.0).abs() < 1e-6,
+        "L⁻¹{{s/(s²-9)}} at t=0 should be 1 (cosh(0)), got: {v}"
+    );
 }
 
 #[test]
@@ -2217,13 +2229,16 @@ fn inverse_laplace_a_over_s2_minus_a2() {
          rejects negative constant term in denominator."
     );
 
-    if let Ok(v) = result.subs(&t, &ctx.int(0)).eval().eval_f64() {
-        // sinh(0) = 0
-        assert!(
-            v.abs() < 1e-6,
-            "L⁻¹{{3/(s²-9)}} at t=0 should be 0 (sinh(0)), got: {v}"
-        );
-    }
+    let v = result
+        .subs(&t, &ctx.int(0))
+        .eval()
+        .eval_f64()
+        .expect("result.subs(&t, &ctx.int(0)).eval().eval_f64() must evaluate");
+    // sinh(0) = 0
+    assert!(
+        v.abs() < 1e-6,
+        "L⁻¹{{3/(s²-9)}} at t=0 should be 0 (sinh(0)), got: {v}"
+    );
 }
 
 #[test]
@@ -2243,14 +2258,17 @@ fn inverse_laplace_repeated_root_s_minus_2_squared() {
          Expected: t·exp(2t)."
     );
 
-    if let Ok(v) = result.subs(&t, &ctx.int(1)).eval().eval_f64() {
-        // t·exp(2t) at t=1 → 1·e² ≈ 7.389
-        let expected = 2.0_f64.exp();
-        assert!(
-            (v - expected).abs() < 1e-3,
-            "L⁻¹{{1/(s-2)²}} at t=1 should be e² ≈ {expected}, got: {v}"
-        );
-    }
+    let v = result
+        .subs(&t, &ctx.int(1))
+        .eval()
+        .eval_f64()
+        .expect("result.subs(&t, &ctx.int(1)).eval().eval_f64() must evaluate");
+    // t·exp(2t) at t=1 → 1·e² ≈ 7.389
+    let expected = 2.0_f64.exp();
+    assert!(
+        (v - expected).abs() < 1e-3,
+        "L⁻¹{{1/(s-2)²}} at t=1 should be e² ≈ {expected}, got: {v}"
+    );
 }
 
 #[test]
@@ -2276,12 +2294,15 @@ fn laplace_roundtrip_t() {
          Expected: t"
     );
 
-    if let Ok(v) = roundtrip.subs(&t, &ctx.int(5)).eval().eval_f64() {
-        assert!(
-            (v - 5.0).abs() < 1e-6,
-            "Laplace roundtrip of t at t=5 should be 5, got: {v}"
-        );
-    }
+    let v = roundtrip
+        .subs(&t, &ctx.int(5))
+        .eval()
+        .eval_f64()
+        .expect("roundtrip.subs(&t, &ctx.int(5)).eval().eval_f64() must evaluate");
+    assert!(
+        (v - 5.0).abs() < 1e-6,
+        "Laplace roundtrip of t at t=5 should be 5, got: {v}"
+    );
 }
 
 #[test]
@@ -2305,12 +2326,15 @@ fn laplace_roundtrip_t_squared() {
          Expected: t²"
     );
 
-    if let Ok(v) = roundtrip.subs(&t, &ctx.int(3)).eval().eval_f64() {
-        assert!(
-            (v - 9.0).abs() < 1e-6,
-            "Laplace roundtrip of t² at t=3 should be 9, got: {v}"
-        );
-    }
+    let v = roundtrip
+        .subs(&t, &ctx.int(3))
+        .eval()
+        .eval_f64()
+        .expect("roundtrip.subs(&t, &ctx.int(3)).eval().eval_f64() must evaluate");
+    assert!(
+        (v - 9.0).abs() < 1e-6,
+        "Laplace roundtrip of t² at t=3 should be 9, got: {v}"
+    );
 }
 
 #[test]
@@ -2334,12 +2358,15 @@ fn laplace_roundtrip_t_cubed() {
          Expected: t³"
     );
 
-    if let Ok(v) = roundtrip.subs(&t, &ctx.int(2)).eval().eval_f64() {
-        assert!(
-            (v - 8.0).abs() < 1e-6,
-            "Laplace roundtrip of t³ at t=2 should be 8, got: {v}"
-        );
-    }
+    let v = roundtrip
+        .subs(&t, &ctx.int(2))
+        .eval()
+        .eval_f64()
+        .expect("roundtrip.subs(&t, &ctx.int(2)).eval().eval_f64() must evaluate");
+    assert!(
+        (v - 8.0).abs() < 1e-6,
+        "Laplace roundtrip of t³ at t=2 should be 8, got: {v}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2449,14 +2476,17 @@ fn series_exp_convergence_increases_with_order() {
     for order in [3, 5, 8, 12] {
         let s = x.exp().series(&x, &zero, order);
         let expanded = s.expand().eval();
-        if let Ok(v) = expanded.subs(&x, &ctx.int(1)).eval().eval_f64() {
-            let err = (v - target).abs();
-            assert!(
-                err < prev_err,
-                "Series order {order}: error {err} should be less than previous {prev_err}"
-            );
-            prev_err = err;
-        }
+        let v = expanded
+            .subs(&x, &ctx.int(1))
+            .eval()
+            .eval_f64()
+            .expect("expanded.subs(&x, &ctx.int(1)).eval().eval_f64() must evaluate");
+        let err = (v - target).abs();
+        assert!(
+            err < prev_err,
+            "Series order {order}: error {err} should be less than previous {prev_err}"
+        );
+        prev_err = err;
     }
 }
 
@@ -2473,13 +2503,12 @@ fn series_sin_at_nonzero_point() {
 
     // At x = π/4: should give sin(π/4) = √2/2 ≈ 0.7071
     let val = expanded.subs(&x, &quarter_pi).eval();
-    if let Ok(v) = val.eval_f64() {
-        let expected = std::f64::consts::FRAC_PI_4.sin();
-        assert!(
-            (v - expected).abs() < 1e-4,
-            "sin(x) series around π/4, at x=π/4: expected {expected}, got {v}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    let expected = std::f64::consts::FRAC_PI_4.sin();
+    assert!(
+        (v - expected).abs() < 1e-4,
+        "sin(x) series around π/4, at x=π/4: expected {expected}, got {v}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2567,12 +2596,15 @@ fn inverse_z_transform_z_over_z_minus_1_squared() {
     match result {
         Ok(r) => {
             // At n=5: should be 5
-            if let Ok(v) = r.subs(&n, &ctx.int(5)).eval().eval_f64() {
-                assert!(
-                    (v - 5.0).abs() < 1e-6,
-                    "Z⁻¹{{z/(z-1)²}} at n=5 should be 5 (= n), got: {v}"
-                );
-            }
+            let v = r
+                .subs(&n, &ctx.int(5))
+                .eval()
+                .eval_f64()
+                .expect("r.subs(&n, &ctx.int(5)).eval().eval_f64() must evaluate");
+            assert!(
+                (v - 5.0).abs() < 1e-6,
+                "Z⁻¹{{z/(z-1)²}} at n=5 should be 5 (= n), got: {v}"
+            );
         }
         Err(e) => {
             panic!("BUG: Z⁻¹{{z/(z-1)²}} should succeed (expected: n): {e}");
@@ -2594,12 +2626,15 @@ fn inverse_z_transform_z_over_z_minus_1() {
 
     // At n=0: should be 1, at n=10: should be 1
     for nv in [0, 1, 5, 10] {
-        if let Ok(v) = result.subs(&n, &ctx.int(nv)).eval().eval_f64() {
-            assert!(
-                (v - 1.0).abs() < 1e-6,
-                "Z⁻¹{{z/(z-1)}} at n={nv} should be 1, got: {v}"
-            );
-        }
+        let v = result
+            .subs(&n, &ctx.int(nv))
+            .eval()
+            .eval_f64()
+            .expect("result.subs(&n, &ctx.int(nv)).eval().eval_f64() must evaluate");
+        assert!(
+            (v - 1.0).abs() < 1e-6,
+            "Z⁻¹{{z/(z-1)}} at n={nv} should be 1, got: {v}"
+        );
     }
 }
 
@@ -2652,12 +2687,15 @@ fn laplace_t_times_exp() {
     );
 
     // At s=4: 1/(4-2)² = 1/4 = 0.25
-    if let Ok(v) = result.subs(&s, &ctx.int(4)).eval().eval_f64() {
-        assert!(
-            (v - 0.25).abs() < 1e-6,
-            "L{{t·exp(2t)}} at s=4 should be 0.25, got: {v}"
-        );
-    }
+    let v = result
+        .subs(&s, &ctx.int(4))
+        .eval()
+        .eval_f64()
+        .expect("result.subs(&s, &ctx.int(4)).eval().eval_f64() must evaluate");
+    assert!(
+        (v - 0.25).abs() < 1e-6,
+        "L{{t·exp(2t)}} at s=4 should be 0.25, got: {v}"
+    );
 }
 
 #[test]
@@ -2677,12 +2715,15 @@ fn laplace_exp_sin() {
     );
 
     // At s=3: 2/((3-1)²+4) = 2/(4+4) = 2/8 = 0.25
-    if let Ok(v) = result.subs(&s, &ctx.int(3)).eval().eval_f64() {
-        assert!(
-            (v - 0.25).abs() < 1e-6,
-            "L{{exp(t)·sin(2t)}} at s=3 should be 0.25, got: {v}"
-        );
-    }
+    let v = result
+        .subs(&s, &ctx.int(3))
+        .eval()
+        .eval_f64()
+        .expect("result.subs(&s, &ctx.int(3)).eval().eval_f64() must evaluate");
+    assert!(
+        (v - 0.25).abs() < 1e-6,
+        "L{{exp(t)·sin(2t)}} at s=3 should be 0.25, got: {v}"
+    );
 }
 
 #[test]
@@ -2702,13 +2743,16 @@ fn laplace_exp_cos() {
     );
 
     // At s=1: (1+1)/((1+1)²+9) = 2/(4+9) = 2/13 ≈ 0.1538
-    if let Ok(v) = result.subs(&s, &ctx.int(1)).eval().eval_f64() {
-        let expected = 2.0 / 13.0;
-        assert!(
-            (v - expected).abs() < 1e-6,
-            "L{{exp(-t)·cos(3t)}} at s=1 should be {expected}, got: {v}"
-        );
-    }
+    let v = result
+        .subs(&s, &ctx.int(1))
+        .eval()
+        .eval_f64()
+        .expect("result.subs(&s, &ctx.int(1)).eval().eval_f64() must evaluate");
+    let expected = 2.0 / 13.0;
+    assert!(
+        (v - expected).abs() < 1e-6,
+        "L{{exp(-t)·cos(3t)}} at s=1 should be {expected}, got: {v}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2734,13 +2778,16 @@ fn inverse_laplace_shifted_sin() {
          Expected: (1/2)·exp(t)·sin(2t)"
     );
 
-    if let Ok(v) = result.subs(&t, &ctx.int(0)).eval().eval_f64() {
-        // At t=0: (1/2)·exp(0)·sin(0) = 0
-        assert!(
-            v.abs() < 1e-6,
-            "L⁻¹{{1/(s²-2s+5)}} at t=0 should be 0, got: {v}"
-        );
-    }
+    let v = result
+        .subs(&t, &ctx.int(0))
+        .eval()
+        .eval_f64()
+        .expect("result.subs(&t, &ctx.int(0)).eval().eval_f64() must evaluate");
+    // At t=0: (1/2)·exp(0)·sin(0) = 0
+    assert!(
+        v.abs() < 1e-6,
+        "L⁻¹{{1/(s²-2s+5)}} at t=0 should be 0, got: {v}"
+    );
 }
 
 #[test]
@@ -2762,13 +2809,16 @@ fn inverse_laplace_shifted_cos() {
          Expected: exp(t)·cos(2t)"
     );
 
-    if let Ok(v) = result.subs(&t, &ctx.int(0)).eval().eval_f64() {
-        // At t=0: exp(0)·cos(0) = 1
-        assert!(
-            (v - 1.0).abs() < 1e-6,
-            "L⁻¹{{(s-1)/(s²-2s+5)}} at t=0 should be 1, got: {v}"
-        );
-    }
+    let v = result
+        .subs(&t, &ctx.int(0))
+        .eval()
+        .eval_f64()
+        .expect("result.subs(&t, &ctx.int(0)).eval().eval_f64() must evaluate");
+    // At t=0: exp(0)·cos(0) = 1
+    assert!(
+        (v - 1.0).abs() < 1e-6,
+        "L⁻¹{{(s-1)/(s²-2s+5)}} at t=0 should be 1, got: {v}"
+    );
 }
 
 #[test]
@@ -2788,13 +2838,16 @@ fn inverse_laplace_n_over_s_power_n_roundtrip() {
          Expected: t⁴"
     );
 
-    if let Ok(v) = result.subs(&t, &ctx.int(2)).eval().eval_f64() {
-        // t⁴ at t=2 → 16
-        assert!(
-            (v - 16.0).abs() < 1e-6,
-            "L⁻¹{{24/s⁵}} at t=2 should be 16 (=2⁴), got: {v}"
-        );
-    }
+    let v = result
+        .subs(&t, &ctx.int(2))
+        .eval()
+        .eval_f64()
+        .expect("result.subs(&t, &ctx.int(2)).eval().eval_f64() must evaluate");
+    // t⁴ at t=2 → 16
+    assert!(
+        (v - 16.0).abs() < 1e-6,
+        "L⁻¹{{24/s⁵}} at t=2 should be 16 (=2⁴), got: {v}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2894,13 +2947,12 @@ fn series_1_over_1_minus_x_coefficients_exact() {
     let expanded = s.expand().eval();
 
     let val = expanded.subs(&x, &ctx.rational(1, 10)).eval();
-    if let Ok(v) = val.eval_f64() {
-        let expected = 1.0 + 0.1 + 0.01 + 0.001 + 0.0001;
-        assert!(
-            (v - expected).abs() < 1e-10,
-            "1/(1-x) 5-term series at x=0.1 should be exactly {expected}, got: {v}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    let expected = 1.0 + 0.1 + 0.01 + 0.001 + 0.0001;
+    assert!(
+        (v - expected).abs() < 1e-10,
+        "1/(1-x) 5-term series at x=0.1 should be exactly {expected}, got: {v}"
+    );
 }
 
 #[test]
@@ -2915,13 +2967,12 @@ fn series_exp_x_coefficient_check() {
     let expanded = s.expand().eval();
 
     let val = expanded.subs(&x, &ctx.int(1)).eval();
-    if let Ok(v) = val.eval_f64() {
-        let expected = 1.0 + 1.0 + 0.5 + 1.0 / 6.0 + 1.0 / 24.0;
-        assert!(
-            (v - expected).abs() < 1e-10,
-            "exp(x) 5-term series at x=1: expected {expected}, got {v}"
-        );
-    }
+    let v = val.eval_f64().expect("val.eval_f64() must evaluate");
+    let expected = 1.0 + 1.0 + 0.5 + 1.0 / 6.0 + 1.0 / 24.0;
+    assert!(
+        (v - expected).abs() < 1e-10,
+        "exp(x) 5-term series at x=1: expected {expected}, got {v}"
+    );
 }
 
 #[test]
@@ -3118,12 +3169,15 @@ fn z_transform_2_to_n_partial_sum_check() {
         partial_sum += 2.0_f64.powi(k) * z_val.powi(-k);
     }
 
-    if let Ok(v) = result.subs(&z, &ctx.int(5)).eval().eval_f64() {
-        assert!(
-            (v - partial_sum).abs() < 1e-6,
-            "Z{{2^n}} at z=5: closed form={v}, partial sum={partial_sum}"
-        );
-    }
+    let v = result
+        .subs(&z, &ctx.int(5))
+        .eval()
+        .eval_f64()
+        .expect("result.subs(&z, &ctx.int(5)).eval().eval_f64() must evaluate");
+    assert!(
+        (v - partial_sum).abs() < 1e-6,
+        "Z{{2^n}} at z=5: closed form={v}, partial sum={partial_sum}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
