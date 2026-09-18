@@ -11,46 +11,11 @@ use symplex::prelude::*;
 use v02_oracle_common::*;
 
 /// Library bugs surfaced by this file (strict xfail — see common module).
-/// All four are in the rational/irrational inequality solver behind
-/// `reduce_inequalities` / `solve_gt` & co.
-const KNOWN_BUGS: &[KnownBug] = &[
-    (
-        "inequalities",
-        "reduce",
-        "reciprocal_gt",
-        // BUG: reduce_inequalities([1/x > 2], x) returns EmptySet; the
-        // solution set is (0, 1/2) (SymPy: (0 < x) & (x < 1/2)).
-        "reduce_inequalities(1/x > 2) returns EmptySet instead of (0, 1/2)",
-    ),
-    (
-        "inequalities",
-        "reduce",
-        "rational_ge",
-        // BUG: (x-1)/(x+1) >= 0 returns [1, oo) — the branch (-oo, -1) where
-        // numerator and denominator are both negative is dropped.
-        "reduce_inequalities((x-1)/(x+1) >= 0) drops (-oo, -1)",
-    ),
-    (
-        "inequalities",
-        "reduce",
-        "rational_lt",
-        // BUG: x/(x-2) < 1 returns (-oo, oo); the answer is (-oo, 2)
-        // (for x > 2 the quotient exceeds 1).
-        "reduce_inequalities(x/(x-2) < 1) returns all reals instead of (-oo, 2)",
-    ),
-    (
-        "inequalities",
-        "reduce",
-        "sqrt_lt",
-        // BUG: sqrt(x) < 2 returns (-oo, 4); the domain x >= 0 is ignored, so
-        // negative x (where sqrt is not real) are reported as solutions.
-        "reduce_inequalities(sqrt(x) < 2) returns (-oo, 4) instead of [0, 4)",
-    ),
-];
+const KNOWN_BUGS: &[KnownBug] = &[];
 
-/// Reproducer for the `1/x > 2` bug above.
+/// Regression: `reduce_inequalities([1/x > 2], x)` used to return
+/// `EmptySet` (the pole of `1/x` was not a sign-change point).
 #[test]
-#[ignore = "BUG: reduce_inequalities([1/x > 2], x) returns EmptySet; the answer is (0, 1/2)"]
 fn bug_reduce_inequalities_reciprocal() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -60,9 +25,9 @@ fn bug_reduce_inequalities_reciprocal() {
     assert_eq!(sol.contains(&ctx.int(1)), Some(false), "got {sol}");
 }
 
-/// Reproducer: rational inequality loses the branch where both signs flip.
+/// Regression: rational inequality used to lose the branch where both
+/// numerator and denominator are negative.
 #[test]
-#[ignore = "BUG: solve_ge((x-1)/(x+1)) returns (1, oo) ∪ {1}; the answer is (-oo, -1) ∪ [1, oo)"]
 fn bug_rational_inequality_drops_negative_branch() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -71,9 +36,8 @@ fn bug_rational_inequality_drops_negative_branch() {
     assert_eq!(sol.contains(&ctx.int(0)), Some(false), "got {sol}");
 }
 
-/// Reproducer: `x/(x-2) < 1` is not true for all reals.
+/// Regression: `x/(x-2) < 1` used to be reported as true for all reals.
 #[test]
-#[ignore = "BUG: solve_lt(x/(x-2) - 1) returns (-oo, oo); the answer is (-oo, 2)"]
 fn bug_rational_inequality_returns_all_reals() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -82,9 +46,8 @@ fn bug_rational_inequality_returns_all_reals() {
     assert_eq!(sol.contains(&ctx.int(0)), Some(true), "got {sol}");
 }
 
-/// Reproducer: `sqrt(x) < 2` must respect the domain of sqrt.
+/// Regression: `sqrt(x) < 2` must respect the domain of sqrt.
 #[test]
-#[ignore = "BUG: solve_lt(sqrt(x) - 2) returns (-oo, 4); the answer is [0, 4)"]
 fn bug_sqrt_inequality_ignores_domain() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
