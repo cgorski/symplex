@@ -51,8 +51,15 @@ type Rat = Ratio<BigInt>;
 /// engine gives up on per-node fallbacks (the root is always tried).
 const MAX_FALLBACK_NODES: usize = 4;
 
-/// Maximum integer exponent expanded by repeated multiplication.
+/// Maximum integer exponent expanded by repeated multiplication; larger
+/// exponents use the binomial series.
 const MAX_INT_POWER: i64 = 64;
+
+/// Minimum internal working precision of the engine.
+const MIN_WORKING_ORDER: i64 = 4;
+
+/// Number of precision-escalation rounds before giving up on a deep pole.
+const MAX_PRECISION_ATTEMPTS: usize = 3;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Public entry points
@@ -718,27 +725,44 @@ pub(crate) fn expand_maclaurin(
     order: i64,
     one_sided: bool,
 ) -> Result<TSeries, SymplexError> {
-    let mut working = order;
-    for _attempt in 0..3 {
-        let ts = expand_with_precision(arena, expr, var, working, one_sided)?;
-        if ts.known >= order {
-            return Ok(ts.truncate_known(order));
+    // Work with at least a few terms so that the valuation of every
+    // sub-expression is visible (at precision 1 the variable itself would
+    // truncate to nothing and `1/x` could not be expanded).
+    let mut working = order.max(MIN_WORKING_ORDER);
+    let mut last_err = None;
+    for _attempt in 0..MAX_PRECISION_ATTEMPTS {
+        let mut hidden_valuation = false;
+        match expand_with_precision(arena, expr, var, working, one_sided, &mut hidden_valuation) {
+            Ok(ts) if ts.known >= order => return Ok(ts.truncate_known(order)),
+            Ok(ts) => {
+                // Precision was lost through poles; increase and retry.
+                working += order - ts.known + 1;
+            }
+            Err(e) if hidden_valuation => {
+                // A sub-expression's leading term lay beyond the working
+                // window (e.g. `1/(x⁵ + x⁶)` at low order): widen and retry.
+                last_err = Some(e);
+                working = working * 2 + 4;
+            }
+            Err(e) => return Err(e),
         }
-        // Precision was lost through poles; increase and retry.
-        working += order - ts.known + 1;
     }
-    Err(SymplexError::ComputationFailed {
+    Err(last_err.unwrap_or(SymplexError::ComputationFailed {
         operation: "series",
         reason: "could not reach the requested order (deep pole)".into(),
-    })
+    }))
 }
 
+/// One pass of the engine at working precision `n`.  Sets `hidden_valuation`
+/// when some `var`-dependent sub-expression had *no* visible term at this
+/// precision, so a failure may be curable by widening the window.
 fn expand_with_precision(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
     n: i64,
     one_sided: bool,
+    hidden_valuation: &mut bool,
 ) -> Result<TSeries, SymplexError> {
     let order_ids = walk::post_order_ids(arena, expr);
     let mut cache: FxHashMap<ExprId, Option<TSeries>> = FxHashMap::default();
@@ -765,6 +789,12 @@ fn expand_with_precision(
                 }
             }
         };
+        if let Some(s) = &ts
+            && id != expr
+            && s.clone().normalized(arena).coeffs.is_empty()
+        {
+            *hidden_valuation = true;
+        }
         cache.insert(id, ts);
     }
     match cache.remove(&expr).flatten() {
@@ -823,7 +853,11 @@ fn structural_series(
                 let e = arena.as_num(exp).cloned()?;
                 if e.is_integer() {
                     let ei = e.to_integer().to_i64()?;
-                    return TSeries::pow_int(arena, &b, ei);
+                    if ei.abs() <= MAX_INT_POWER {
+                        return TSeries::pow_int(arena, &b, ei);
+                    }
+                    // Large integer exponents: binomial series with
+                    // closed-form coefficients instead of repeated products.
                 }
                 // Rational exponent: Puiseux expansions are refused.
                 return pow_rational(arena, &b, exp, one_sided);
@@ -988,7 +1022,7 @@ fn pow_rational(arena: &mut Arena, a: &TSeries, alpha: ExprId, one_sided: bool) 
         if !va.is_integer() {
             return None; // genuine Puiseux series
         }
-        if !one_sided {
+        if !one_sided && !ar.is_integer() {
             let q = ar.denom().to_i64()?;
             if (v / q) % 2 != 0 {
                 return None; // would introduce |x|
@@ -1282,6 +1316,80 @@ mod tests {
         let f = a.pow(opx, x);
         let s = series(&mut a, f, x, zero, 4).unwrap();
         assert_eq!(display(&a, s), "-1/2*x^3 + x^2 + 1");
+    }
+
+    #[test]
+    fn large_integer_powers_use_binomial_series() {
+        // Beyond MAX_INT_POWER repeated multiplication is replaced by the
+        // binomial series; the result must be exact and fast.
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let zero = a.zero;
+        let one = a.one;
+        let opx = a.add(&[one, x]);
+        let big = a.int(MAX_INT_POWER + 36); // 100
+        let f = a.pow(opx, big);
+        let start = std::time::Instant::now();
+        let s = series(&mut a, f, x, zero, 3).unwrap();
+        assert!(start.elapsed().as_secs_f64() < 1.0);
+        assert_eq!(display(&a, s), "4950*x^2 + 100*x + 1");
+        // negative: (1+x)^(-70) = 1 − 70x + 2485x²
+        let neg = a.int(-(MAX_INT_POWER + 6));
+        let f = a.pow(opx, neg);
+        let s = series(&mut a, f, x, zero, 3).unwrap();
+        assert_eq!(display(&a, s), "2485*x^2 - 70*x + 1");
+        // with a zero at the origin: (x + x²)^70 = x^70 + 70 x^71 + …
+        let two = a.int(2);
+        let x2 = a.pow(x, two);
+        let base = a.add(&[x, x2]);
+        let e70 = a.int(70);
+        let f = a.pow(base, e70);
+        let s = series(&mut a, f, x, zero, 72).unwrap();
+        assert_eq!(display(&a, s), "70*x^71 + x^70");
+        // odd valuation with a negative integer exponent is fine two-sided:
+        // (x + x²)^(-65) = x^(-65) (1 + x)^(-65) = x^(-65) − 65 x^(-64) + …
+        // (the pole of order 65 forces the precision-escalation retry)
+        let em65 = a.int(-65);
+        let f = a.pow(base, em65);
+        let ts = expand_maclaurin(&mut a, f, x, 1, false).unwrap();
+        assert_eq!(ts.shift(), -65);
+        assert!(ts.known() >= 1);
+        let c = ts.coefficient(&mut a, -65);
+        assert_eq!(display(&a, c), "1");
+        let c = ts.coefficient(&mut a, -64);
+        assert_eq!(display(&a, c), "-65");
+        let c = ts.coefficient(&mut a, -63);
+        assert_eq!(display(&a, c), "2145");
+    }
+
+    #[test]
+    fn low_order_requests_still_see_the_pole() {
+        // At order 1 the variable itself would be truncated away at the
+        // requested precision; the engine must widen its working window.
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let zero = a.zero;
+        let one = a.one;
+        let inv = a.div(one, x);
+        let s = series(&mut a, inv, x, zero, 1).unwrap();
+        assert_eq!(display(&a, s), "1/x");
+        // 1/(x⁵ + x⁶) = x⁻⁵ − x⁻⁴ + x⁻³ − …  (valuation 5 hidden at precision 4)
+        let five = a.int(5);
+        let six = a.int(6);
+        let x5 = a.pow(x, five);
+        let x6 = a.pow(x, six);
+        let d = a.add(&[x5, x6]);
+        let f = a.div(one, d);
+        let s = series(&mut a, f, x, zero, 1).unwrap();
+        assert_eq!(
+            display(&a, s),
+            "1/x + x^(-3) + x^(-5) - x^(-2) - x^(-4) - 1"
+        );
+        // A genuine failure is still reported after the bounded retries.
+        let l = a.ln(x);
+        let start = std::time::Instant::now();
+        assert!(series(&mut a, l, x, zero, 1).is_err());
+        assert!(start.elapsed().as_secs_f64() < 1.0);
     }
 
     #[test]
