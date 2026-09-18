@@ -15,8 +15,9 @@ recurrences, Berlekamp–Zassenhaus factoring, and a new `factorint`.  The
 guiding rule for every change below is *never silently wrong*: operations
 that used to guess now return `Err`, an unevaluated node, or `None`.
 
-Measured at release: 91 `ExprNode` variants, 10,177 `#[test]` functions
-(~138K lines of tests), ~163K lines in `src/`.
+Measured at release: 91 `ExprNode` variants, ~10,600 `#[test]` functions
+(~148K lines of tests), ~167K lines in `src/`, 520 doctests, and a
+1,400-fixture SymPy 1.14 oracle with zero numerical disagreements.
 
 ### Breaking
 
@@ -25,8 +26,9 @@ Measured at release: 91 `ExprNode` variants, 10,177 `#[test]` functions
 - `Ex::compile(&[&str])` returns `Result<CompiledFn, SymplexError>` instead of
   `Option`.  `CompiledFn` is `Clone + Send + Sync`, callable as a closure,
   and has `arity()` and `try_call()` (arity-checked).
-- `Ex::definite_integral` is replaced by `Ex::integrate_definite` (returns an
-  unevaluated `Integral` node when it cannot decide) and
+- `Ex::definite_integral` is replaced by `Ex::integrate_definite` (returns a
+  bounded, unevaluated `DefiniteIntegral` node — displayed
+  `Integral(f, x, a, b)` — when it cannot decide) and
   `Ex::try_integrate_definite` (`Err(Divergent)` / `Err(ComputationFailed)`).
   The old method could return a wrong finite number for `∫₋₁¹ dx/x²`.
 - `Ex::solve` semantics: identities (`x − x = 0`) return
@@ -119,6 +121,13 @@ Measured at release: 91 `ExprNode` variants, 10,177 `#[test]` functions
   derivative rules for Bessel functions and orthogonal polynomials.
 - The parser accepts the new names (`re`, `im`, `conjugate`/`conj`, `arg`,
   `si`, `ci`, `ei`, `li`, `zeta`, `polygamma`, `kronecker`, `zoo`).
+- `ExprNode::DefiniteIntegral(body, var, lo, hi)`: a bounded unevaluated
+  integral (`Integral(f, x, a, b)`, LaTeX `\int_a^b f\,dx`).  It round-trips
+  through Display/parse/JSON, binds its variable for `free_symbols`/`subs`,
+  differentiates by the Leibniz rule, evaluates numerically via Gauss–Kronrod
+  quadrature in `eval_f64`, and is resolved innermost-out by
+  `integrate_definite` / `Ex::eval_integrals`.  Also `Ex::definite_integral_node`,
+  `Ex::is_definite_integral`.
 
 **Numeric backends**
 
@@ -301,6 +310,61 @@ Measured at release: 91 `ExprNode` variants, 10,177 `#[test]` functions
 
 ### Fixed
 
+**Found by the new SymPy oracle and fixed before release**
+
+- Inequality solver: poles are now sign-change points, both-negative
+  branches are kept, and the natural domain is intersected in
+  (`1/x > 2` → `(0, 1/2)`, `(x−1)/(x+1) ≥ 0` → `(−∞,−1) ∪ [1,∞)`,
+  `√x < 2` → `[0, 4)`).  Undecidable cases return `ConditionSet`, never a
+  guess.
+- `solve_system_ex` returned non-solutions (Cardano emitted `cbrt` of a
+  negative radicand, evaluated on the principal branch) and `Ok([])` for
+  biquadratic eliminants (Ferrari `0/0`).  Every returned tuple is now
+  verified against all equations at 30 digits.
+- `rsolve_linear` hung on irrational cubic characteristic roots; roots are
+  now `RootOf` values and constant fitting is budgeted.
+- `series_at_infinity(atan x)` returned the garbage `atan(zoo)`; constant
+  terms are now limits, and unevaluable results are formal `Series` nodes.
+- `evalf` Bessel `J`/`Y` were wrong for `x ≳ 12` (doubled leading Hankel
+  term, sign error in the recurrence, premature series→asymptotic switch);
+  now 25+ digits at any `x`.
+- `eval()` of `Piecewise` selected a later `True` branch over an earlier
+  undecided one.
+- `0 · oo` / `0 · zoo` were order-dependent (`nan` vs `0`).
+- Debug-build panic (nested `Mul`) when multiplying numeric radicals such as
+  `(√6/3)·(√3/3)`.
+- Display of rational/negative bases: `(2/3)^x` printed as `2/3^x`.
+- `free_symbols` counted bound index variables of `Sum`/`Product`/`RootOf`/
+  `RootSum`/`ConditionSet`/`DefiniteIntegral` as free.
+- `eval_decimal` truncated instead of rounding the last digit.
+- `eval_f64` on compound expressions with free symbols reported a cache
+  miss instead of `FreeSymbol { name }`.
+- Assumption lattice: `oo` is positive, extended-real and infinite but not
+  real/finite; queries are order-independent; contradictory declarations
+  panic with a clear message.
+- `nroots` missed real roots of odd/even polynomials (mirror-symmetric Aberth
+  start points); real roots are snapped only after an exact Sturm count.
+- Expression construction was proportional to tree size (sort keys
+  concatenated whole subtrees); keys are now bounded and hashed, and the
+  debug canonical-form verifier is iterative (deep expressions no longer
+  overflow the stack).
+- `sqrt(<large integer>).eval()` trial-divided to `√n` (14 s); square factors
+  are now found via bounded `factorint`.  Radical normal form unified:
+  `√(1/2) = 1/√2 = √2/2`, `√(4/9) = 2/3`, `∛54 = 3∛2`.
+- `Context::rational(p, 0)` panicked; it now returns `zoo` (`nan` for
+  `0/0`).
+- `abs(3 + 4i)` folds to `5`.
+- Generated `no_std` code called `libm::abs` (does not exist); now `fabs`.
+  `symplex-build` emitted the `symplex_rt` runtime once per function.
+- `expr_type()` reported `RootOf` as unevaluated; `piecewise_simplify`
+  ignored assumption-decided conditions; `BoolEx::simplify` gained
+  consensus.
+- Parser: `binomial`, `beta`, `bessel{j,y,i,k}`, `cot/sec/csc/coth/sech/csch`,
+  `min`/`max`, `polygamma`, `Sum`/`Product`, `Integral(f, x[, a, b])`, `n!`.
+- `expr!(ctx, 2^10)` (purely numeric bodies) now compiles.
+
+**Other**
+
 - `∫₋₁¹ dx/x²` and other integrals across interior poles no longer return a
   finite value.
 - `fourier_series` coefficients for `|x|`, `sign(x)` and piecewise inputs.
@@ -328,8 +392,11 @@ Measured at release: 91 `ExprNode` variants, 10,177 `#[test]` functions
   build) / docs (`cargo doc -D warnings` + `mdbook build`) / MSRV `1.93.0` /
   every non-interactive example run.
 - GitHub Pages deployment of the mdBook.
-- `tests/v02_*` integration suites per area; SymPy oracle fixtures
-  (`tests/fixtures/*.json`).
+- `tests/v02_*` integration suites per area, one concept per test and
+  each under a few seconds; SymPy 1.14 oracle (`tests/fixtures/*.json`,
+  ~1,400 fixtures, one `#[test]` per subcategory, strict-xfail known-bug
+  tables); `tests/README.md` documents the layout and how to regenerate
+  fixtures.
 - Crate, `symplex-macros`, `symplex-build` and `symplex-wasm` at 0.2.0.
 
 ## [0.1.0]

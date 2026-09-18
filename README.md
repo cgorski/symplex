@@ -250,7 +250,7 @@ symplex::polysys::solve_system_ex(&[&x.powi(2) + &y.powi(2) - 1, &x - &y], &[x.c
 // Ok([[√2/2, √2/2], [-√2/2, -√2/2]])
 
 // Inequalities (sign-chart method), including absolute values
-expr!(ctx, x^2 - 4).solve_gt(&x);                     // (2, oo) ∪ (-oo, -2)
+expr!(ctx, x^2 - 4).solve_gt(&x);                     // (-oo, -2) ∪ (2, oo)
 (&(&x - 1).abs() - 2).solve_lt(&x);                   // (-1, 3)
 ```
 

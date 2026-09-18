@@ -143,7 +143,7 @@ use symplex::prelude::*;
 fn main() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    println!("{}", expr!(ctx, x^2 - 4).solve_gt(&x));         // (2, oo) ∪ (-oo, -2)
+    println!("{}", expr!(ctx, x^2 - 4).solve_gt(&x));         // (-oo, -2) ∪ (2, oo)
     println!("{}", (&(&x - 1).abs() - 2).solve_lt(&x));       // (-1, 3)
     println!("{}", (&x.abs() - 3).solve_ge(&x));              // (-oo, -3] ∪ [3, oo)
 }

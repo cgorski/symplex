@@ -158,7 +158,8 @@ Common unevaluated forms:
 | Node | Meaning |
 |------|---------|
 | `Derivative(f, x)` | Derivative that couldn't be computed |
-| `Integral(f, x)` | Antiderivative not found (also used for a definite integral that could not be decided — the bounds are currently not shown) |
+| `Integral(f, x)` | Antiderivative not found |
+| `Integral(f, x, a, b)` | Definite integral that could not be decided (`DefiniteIntegral` node; `eval_f64` evaluates it numerically) |
 | `Limit(f, x, a)` | Limit couldn't be determined (including a two-sided limit whose one-sided limits differ) |
 | `Series(f, x, a, n)` | Series expansion failed |
 | `Sum(f, k, a, b)` / `Product(f, k, a, b)` | No closed form for the sum / product |

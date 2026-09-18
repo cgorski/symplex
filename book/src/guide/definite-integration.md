@@ -4,7 +4,7 @@ New in 0.2. The 0.1 method `definite_integral` computed `F(b) − F(a)` from an 
 
 | Method | Returns | Use when |
 |--------|---------|----------|
-| `integrate_definite(&x, &a, &b)` | `Ex` — a closed form, or an unevaluated `Integral` node | Exploring; chaining |
+| `integrate_definite(&x, &a, &b)` | `Ex` — a closed form, or an unevaluated `DefiniteIntegral` node (`Integral(f, x, a, b)`) | Exploring; chaining |
 | `try_integrate_definite(&x, &a, &b)` | `Result<Ex>` — `Err(Divergent)`, `Err(ComputationFailed)`, `Err(InvalidArgument)` | Pipelines that must distinguish "diverges" from "don't know" |
 | `integrate_numeric(&x, &a, &b)` | `Result<f64>` | You want a number and accept floating point |
 
@@ -17,7 +17,7 @@ New in 0.2. The 0.1 method `definite_integral` computed `F(b) − F(a)` from an 
 5. Resolves `Abs`, `Sign`, `Heaviside`, `DiracDelta` and `Piecewise` integrands by splitting at their breakpoints.
 6. If no antiderivative exists, consults a table of ~30 classical improper integrals (Gaussian, Dirichlet, Fresnel, `xⁿe⁻ˣ`, `x/(eˣ−1)`, `ln x`, `1/(1+x⁴)`, …) whose entries may carry symbolic parameters guarded by assumptions.
 
-If none of this decides the integral, the result is an unevaluated `Integral` node — never a guessed finite number.
+If none of this decides the integral, the result is an unevaluated `DefiniteIntegral` node, displayed `Integral(f, x, a, b)` — never a guessed finite number.
 
 ```rust
 use symplex::prelude::*;
@@ -98,7 +98,7 @@ fn main() {
 }
 ```
 
-> **Known limitation.** There is no `DefiniteIntegral` node yet, so an undecided definite integral is represented by the indefinite `Integral(f, x)` node and the bounds are not shown when it is printed. Use `try_integrate_definite` when you need to know *why* it was undecided.
+An undecided definite integral keeps its bounds: the `DefiniteIntegral` node prints as `Integral(f, x, a, b)` (LaTeX `\int_a^b f\,dx`), round-trips through `parse`, binds `x` for `free_symbols`/`subs`, differentiates by the Leibniz rule, and `eval_f64()` evaluates it by quadrature. `Ex::eval_integrals()` re-attempts every formal definite integral inside an expression. Use `try_integrate_definite` when you need to know *why* it was undecided.
 
 ## Numeric quadrature
 

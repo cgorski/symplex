@@ -293,7 +293,7 @@ fn solving() {
     let gt = expr!(ctx, x ^ 2 - 4).solve_gt(&x);
     let lt = (&(&x - 1).abs() - 2).solve_lt(&x);
     println!("{gt}\n{lt}");
-    assert_eq!(gt.to_string(), "(2, oo) ∪ (-oo, -2)");
+    assert_eq!(gt.to_string(), "(-oo, -2) ∪ (2, oo)");
     assert_eq!(lt.to_string(), "(-1, 3)");
 }
 
