@@ -259,9 +259,23 @@ pub fn factor_squarefree_z(f: &[BigInt]) -> Vec<Vec<BigInt>> {
         return factors;
     }
 
+    // Not square-free?  Decompose first (Berlekamp–Zassenhaus needs a
+    // square-free image mod p) and expand multiplicities into repeats.
+    let fq = z_to_poly(&f);
+    if fq.is_squarefree() == Some(false) {
+        for (part, mult) in super::dense::square_free_decomposition(&fq) {
+            let sub = factor_squarefree_z(&poly_to_z(&part));
+            for _ in 0..mult {
+                factors.extend(sub.iter().cloned());
+            }
+        }
+        factors.sort_by(cmp_z);
+        return factors;
+    }
+
     // Cheap pre-pass: rational roots (linear factors) via the Rational Root
     // Theorem.  Capped internally, so this never dominates.
-    let (remaining, linear) = super::dense::extract_rational_roots(&z_to_poly(&f));
+    let (remaining, linear) = super::dense::extract_rational_roots(&fq);
     for l in linear {
         factors.push(poly_to_z(&l));
     }
@@ -1986,6 +2000,15 @@ mod tests {
         let f = z_mul(&a, &b);
         let fs = factor_squarefree_z(&f);
         assert_eq!(fs.len(), 2);
+        assert_eq!(product(&fs), f);
+    }
+
+    #[test]
+    fn factor_squarefree_z_handles_repeated_factors() {
+        // (x + 1)^2 (x^2 + 1) passed directly to the "square-free" entry point.
+        let f = product(&[zp(&[1, 1]), zp(&[1, 1]), zp(&[1, 0, 1])]);
+        let fs = factor_squarefree_z(&f);
+        assert_eq!(fs, vec![zp(&[1, 1]), zp(&[1, 1]), zp(&[1, 0, 1])]);
         assert_eq!(product(&fs), f);
     }
 
