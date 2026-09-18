@@ -699,6 +699,25 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
                 .collect();
             return canon_mul(arena, &distributed);
         }
+        // Above the threshold, still pull a numeric coefficient out:
+        // (c·m)^n → c^n · m^n never swells and keeps `(-x)^11` from being
+        // stuck as an opaque power (it must be `-x^11` for polynomial
+        // bucketing to see a monomial).
+        if children.len() >= 2
+            && let Some(&first) = children.first()
+            && matches!(arena.node(first), ExprNode::Num(_))
+            && n_i64 != i64::MAX
+        {
+            let coeff_pow = canon_pow(arena, first, exp);
+            let rest: SmallVec<[ExprId; 6]> = children[1..].iter().copied().collect();
+            let rest_id = if rest.len() == 1 {
+                rest[0]
+            } else {
+                canon_mul(arena, &rest)
+            };
+            let rest_pow = canon_pow(arena, rest_id, exp);
+            return canon_mul(arena, &[coeff_pow, rest_pow]);
+        }
     }
 
     // i^n reduction: i^0=1, i^1=i, i^2=-1, i^3=-i, then repeats with period 4.

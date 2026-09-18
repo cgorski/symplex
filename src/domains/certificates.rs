@@ -56,7 +56,7 @@ use std::fmt;
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::Zero;
+use num_traits::{One, Zero};
 
 use crate::api::context::Context;
 use crate::api::expr::Ex;
@@ -103,13 +103,17 @@ impl HandelmanTerm {
     }
 }
 
-/// A verified Handelman certificate: `goal = Σ weightₖ · productₖ` on the
-/// box, every `weightₖ > 0`.
+/// A verified Handelman certificate: `goal = square² · Σ weightₖ · productₖ`
+/// on the box, every `weightₖ > 0`.  The square factor is `1` unless the
+/// goal had even-multiplicity zeros inside the box (see
+/// [`prove_nonnegative_on_box`]).
 #[derive(Clone, Debug)]
 pub struct Certificate {
     goal: Poly,
     bounds: Vec<BoxBound>,
     terms: Vec<HandelmanTerm>,
+    /// `g` with `goal = g² · Σ λₖ productₖ`; `None` when `g = 1`.
+    square: Option<Poly>,
 }
 
 impl Certificate {
@@ -126,6 +130,14 @@ impl Certificate {
     /// The weighted products, in the order the search enumerated them.
     pub fn terms(&self) -> &[HandelmanTerm] {
         &self.terms
+    }
+
+    /// The square factor `g` in `goal = g² · Σ λₖ productₖ`, if any.  It
+    /// collects the even-multiplicity factors of the goal (`(x − 1)²·h`
+    /// gives `g = x − 1`), which is what lets a goal with interior zeros be
+    /// certified: `h` is strictly positive and gets the Handelman part.
+    pub fn square(&self) -> Option<&Poly> {
+        self.square.as_ref()
     }
 
     /// Largest total degree among the products.
@@ -187,6 +199,15 @@ impl Certificate {
             };
             acc = sum;
         }
+        if let Some(g) = &self.square {
+            let Ok(g2) = g.mul(g) else {
+                return false;
+            };
+            let Ok(prod) = acc.mul(&g2) else {
+                return false;
+            };
+            acc = prod;
+        }
         acc.equals(&self.goal)
     }
 
@@ -215,6 +236,9 @@ impl Certificate {
         let mut rhs = ctx.zero();
         for t in &self.terms {
             rhs += ctx.from_ratio(t.weight.clone()) * self.product_expr(t);
+        }
+        if let Some(g) = &self.square {
+            rhs = g.to_ex().powi(2) * rhs;
         }
         (self.goal.to_ex(), rhs)
     }
@@ -275,11 +299,23 @@ impl Certificate {
             hi_names.push(hi_name);
         }
         let goal = self.goal.to_ex().to_lean_with(opts)?;
+        let square_hint = match &self.square {
+            Some(g) => Some(format!("sq_nonneg ({})", g.to_ex().to_lean_with(opts)?)),
+            None => None,
+        };
 
         // Non-negativity of every product with non-zero weight, built from
-        // the bound hypotheses with `sub_nonneg.mpr` and `mul_nonneg`.
+        // the bound hypotheses with `sub_nonneg.mpr` and `mul_nonneg`; with
+        // a square factor each hint becomes `mul_nonneg (sq_nonneg g) (…)`.
         let mut hints: Vec<String> = Vec::new();
         let mut max_factors = 0usize;
+        if let Some(sq) = &square_hint
+            && self.terms.iter().any(|t| t.degree() == 0)
+        {
+            // The constant term of Σ λₖ Pₖ contributes λ₀·g².
+            hints.push(sq.clone());
+            max_factors = max_factors.max(2);
+        }
         for t in &self.terms {
             let mut factors: Vec<String> = Vec::new();
             for i in 0..n {
@@ -293,10 +329,15 @@ impl Certificate {
             let Some((first, rest)) = factors.split_first() else {
                 continue; // the constant term needs no hint
             };
-            max_factors = max_factors.max(factors.len());
             let mut acc = first.clone();
             for f in rest {
                 acc = format!("mul_nonneg ({acc}) ({f})");
+            }
+            if let Some(sq) = &square_hint {
+                acc = format!("mul_nonneg ({sq}) ({acc})");
+                max_factors = max_factors.max(factors.len() + 2);
+            } else {
+                max_factors = max_factors.max(factors.len());
             }
             if !hints.contains(&acc) {
                 hints.push(acc);
@@ -519,7 +560,6 @@ pub fn prove_nonnegative_on_box(
     if bounds.is_empty() {
         return Err(invalid("at least one bounded variable is required"));
     }
-    let ctx: Context = goal.context();
     let mut vars: Vec<&Ex> = Vec::with_capacity(bounds.len());
     let mut q_bounds: Vec<(Q, Q)> = Vec::with_capacity(bounds.len());
     let mut box_bounds: Vec<BoxBound> = Vec::with_capacity(bounds.len());
@@ -559,22 +599,94 @@ pub fn prove_nonnegative_on_box(
         return Ok(BoxOutcome::Refuted { point, value });
     }
 
-    // 2. Build the products and their coefficient vectors.
+    // 2. Plain Handelman search; on failure, split off the even-multiplicity
+    //    factors (`goal = g²·h`) and certify `h`, which has no interior
+    //    zeros of even order left.
+    match handelman_search(&goal_poly, &vars, &box_bounds, degree, None)? {
+        Ok(cert) => Ok(BoxOutcome::Proved(cert)),
+        Err(farkas) => {
+            if let Some((g, h)) = split_square_factor(&goal_poly, &vars)
+                && let Ok(cert) = handelman_search(&h, &vars, &box_bounds, degree, Some(&g))?
+            {
+                let cert = Certificate {
+                    goal: goal_poly.clone(),
+                    ..cert
+                };
+                if cert.verify() {
+                    return Ok(BoxOutcome::Proved(cert));
+                }
+            }
+            // A finer grid before giving up.
+            if let Some((point, value)) = find_counterexample(&goal_poly, &q_bounds, 32) {
+                return Ok(BoxOutcome::Refuted { point, value });
+            }
+            Ok(BoxOutcome::Unknown { farkas, degree })
+        }
+    }
+}
+
+/// `goal = g² · h` with `g` the product of the even-multiplicity factors
+/// (`f^(m div 2)` for each factor `f^m`) and `h` the remaining part
+/// (`content · Π f^(m mod 2)`), when the goal has at least one repeated
+/// factor.  Uses exact factoring over ℤ (univariate) or the multivariate
+/// factoring of `factor_list_all`.
+fn split_square_factor(goal: &Poly, vars: &[&Ex]) -> Option<(Poly, Poly)> {
+    let e = goal.to_ex();
+    let (content, factors) = if vars.len() == 1 {
+        e.factor_list(vars[0])
+    } else {
+        e.factor_list_all()
+    };
+    if factors.iter().all(|(_, m)| *m < 2) {
+        return None;
+    }
+    let ctx = goal.context();
+    let mut g = ctx.one();
+    let mut h = content;
+    for (f, m) in &factors {
+        if *m >= 2 {
+            g *= f.powi(i64::from(*m / 2));
+        }
+        if *m % 2 == 1 {
+            h *= f;
+        }
+    }
+    let g = Poly::new(&g, vars)?;
+    let h = Poly::new(&h, vars)?;
+    // Sanity: g²·h must reproduce the goal exactly.
+    let back = g.mul(&g).ok()?.mul(&h).ok()?;
+    if !back.equals(goal) {
+        return None;
+    }
+    Some((g, h))
+}
+
+/// The Handelman LP for `goal = Σ λₖ Pₖ` over `bounds` up to `degree`.
+/// `Ok(Ok(cert))` with a verified certificate (carrying `square`),
+/// `Ok(Err(farkas))` when no certificate of that degree exists.
+fn handelman_search(
+    goal_poly: &Poly,
+    vars: &[&Ex],
+    box_bounds: &[BoxBound],
+    degree: u32,
+    square: Option<&Poly>,
+) -> Result<Result<Certificate, Option<Vec<Q>>>, SymplexError> {
+    let ctx = goal_poly.context();
     let n = vars.len();
     let lower: Vec<Poly> = box_bounds
         .iter()
         .map(|b| {
-            Poly::new(&(&b.var - &b.lo), &vars).ok_or_else(|| invalid("internal: bound factor"))
+            Poly::new(&(&b.var - &b.lo), vars).ok_or_else(|| invalid("internal: bound factor"))
         })
         .collect::<Result<_, _>>()?;
     let upper: Vec<Poly> = box_bounds
         .iter()
         .map(|b| {
-            Poly::new(&(&b.hi - &b.var), &vars).ok_or_else(|| invalid("internal: bound factor"))
+            Poly::new(&(&b.hi - &b.var), vars).ok_or_else(|| invalid("internal: bound factor"))
         })
         .collect::<Result<_, _>>()?;
     let exponents = products_up_to(n, degree);
-    let one = Poly::one(&ctx, &vars)?;
+    let one = Poly::one(&ctx, vars)?;
     let mut products: Vec<Poly> = Vec::with_capacity(exponents.len());
     for (a, b) in &exponents {
         let mut acc = one.clone();
@@ -589,7 +701,7 @@ pub fn prove_nonnegative_on_box(
         products.push(acc);
     }
     let mut all: Vec<&Poly> = products.iter().collect();
-    all.push(&goal_poly);
+    all.push(goal_poly);
     let monos = Poly::monomial_basis(&all)?;
     let coeff_vec = |p: &Poly| -> Result<Vec<Q>, SymplexError> {
         monos
@@ -602,11 +714,10 @@ pub fn prove_nonnegative_on_box(
             .collect()
     };
     let columns: Vec<Vec<Q>> = products.iter().map(coeff_vec).collect::<Result<_, _>>()?;
-    let target = coeff_vec(&goal_poly)?;
+    let target = coeff_vec(goal_poly)?;
 
-    // 3. Exact LP: goal = Σ λₖ productₖ, λ ≥ 0.  Minimising Σ (1 + degₖ)·λₖ
-    // prefers sparse, low-degree certificates (shorter Lean proofs) over an
-    // arbitrary feasible vertex.
+    // Minimising Σ (1 + degₖ)·λₖ prefers sparse, low-degree certificates
+    // (shorter Lean proofs) over an arbitrary feasible vertex.
     match sparse_nonneg_combination(&columns, &target, &exponents)? {
         Feasibility::Feasible(lambda) => {
             let terms: Vec<HandelmanTerm> = exponents
@@ -619,10 +730,17 @@ pub fn prove_nonnegative_on_box(
                     weight: w.clone(),
                 })
                 .collect();
+            // With a square factor the certified polynomial is `square²·goal_poly`;
+            // the caller substitutes the original goal.
+            let certified = match square {
+                Some(g) => g.mul(g)?.mul(goal_poly)?,
+                None => goal_poly.clone(),
+            };
             let cert = Certificate {
-                goal: goal_poly,
-                bounds: box_bounds,
+                goal: certified,
+                bounds: box_bounds.to_vec(),
                 terms,
+                square: square.cloned(),
             };
             if !cert.verify() {
                 return Err(SymplexError::ComputationFailed {
@@ -632,15 +750,9 @@ pub fn prove_nonnegative_on_box(
                             .into(),
                 });
             }
-            Ok(BoxOutcome::Proved(cert))
+            Ok(Ok(cert))
         }
-        Feasibility::Infeasible { farkas } => {
-            // A finer grid before giving up.
-            if let Some((point, value)) = find_counterexample(&goal_poly, &q_bounds, 32) {
-                return Ok(BoxOutcome::Refuted { point, value });
-            }
-            Ok(BoxOutcome::Unknown { farkas, degree })
-        }
+        Feasibility::Infeasible { farkas } => Ok(Err(farkas)),
     }
 }
 
@@ -741,5 +853,536 @@ impl Ex {
         degree: u32,
     ) -> Result<BoxOutcome, SymplexError> {
         prove_nonnegative_on_box(self, bounds, degree)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Half-lines and the real line (univariate)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Which unbounded domain a [`HalfLineCertificate`] covers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Ray {
+    /// `x ≥ a`.
+    AtLeast,
+    /// `x ≤ a`.
+    AtMost,
+}
+
+/// A verified certificate that a univariate polynomial is non-negative on
+/// a half-line.
+///
+/// With `k = x − a` (or `k = a − x` for [`Ray::AtMost`]) the identity is
+///
+/// ```text
+/// (1 + k)^N · goal(x) = square(x)² · Σᵢ cᵢ kⁱ,      cᵢ ≥ 0,
+/// ```
+///
+/// which proves `goal ≥ 0` for `k ≥ 0`.  `N = 0` is the plain
+/// *shift-and-read-off-the-coefficients* certificate (the same sufficient
+/// condition `linarith` re-derives in Lean); `N > 0` is a Pólya multiplier,
+/// which by Pólya's theorem always exists when `goal` is strictly positive
+/// on the closed half-line and has positive leading coefficient.  The
+/// square factor collects even-multiplicity zeros, exactly as for the box
+/// certificates.
+#[derive(Clone, Debug)]
+pub struct HalfLineCertificate {
+    goal: Poly,
+    var: Ex,
+    endpoint: Ex,
+    ray: Ray,
+    polya_power: u32,
+    coefficients: Vec<Q>,
+    square: Option<Poly>,
+}
+
+impl HalfLineCertificate {
+    /// The polynomial that was proved non-negative.
+    pub fn goal(&self) -> &Poly {
+        &self.goal
+    }
+
+    /// The variable.
+    pub fn var(&self) -> &Ex {
+        &self.var
+    }
+
+    /// The finite endpoint `a`.
+    pub fn endpoint(&self) -> &Ex {
+        &self.endpoint
+    }
+
+    /// Whether the domain is `x ≥ a` or `x ≤ a`.
+    pub fn ray(&self) -> &Ray {
+        &self.ray
+    }
+
+    /// The Pólya exponent `N` (`0` for a pure shift certificate).
+    pub fn polya_power(&self) -> u32 {
+        self.polya_power
+    }
+
+    /// The non-negative coefficients `cᵢ` of `(1 + k)^N · goal / square²` in
+    /// powers of `k`, ascending.
+    pub fn coefficients(&self) -> &[Q] {
+        &self.coefficients
+    }
+
+    /// The square factor `g`, if any.
+    pub fn square(&self) -> Option<&Poly> {
+        self.square.as_ref()
+    }
+
+    /// `k` as an expression: `x − a` or `a − x`.
+    pub fn shift_expr(&self) -> Ex {
+        match self.ray {
+            Ray::AtLeast => &self.var - &self.endpoint,
+            Ray::AtMost => &self.endpoint - &self.var,
+        }
+    }
+
+    /// Recompute `(1 + k)^N · goal` and `square² · Σ cᵢ kⁱ` exactly and
+    /// compare them; also checks every `cᵢ ≥ 0`.
+    pub fn verify(&self) -> bool {
+        if self.coefficients.iter().any(|c| *c < Q::zero()) {
+            return false;
+        }
+        let ctx = self.goal.context();
+        let k = self.shift_expr();
+        let mut rhs = ctx.zero();
+        for (i, c) in self.coefficients.iter().enumerate() {
+            rhs += ctx.from_ratio(c.clone()) * k.powi(i as i64);
+        }
+        if let Some(g) = &self.square {
+            rhs = g.to_ex().powi(2) * rhs;
+        }
+        let lhs = (1 + &k).powi(i64::from(self.polya_power)) * self.goal.to_ex();
+        let vars = [&self.var];
+        match (Poly::new(&lhs, &vars), Poly::new(&rhs, &vars)) {
+            (Some(l), Some(r)) => l.equals(&r),
+            _ => false,
+        }
+    }
+
+    /// The identity as `(lhs, rhs)` expressions:
+    /// `((1 + k)^N · goal, square² · Σ cᵢ kⁱ)`.
+    pub fn identity(&self) -> (Ex, Ex) {
+        let ctx = self.goal.context();
+        let k = self.shift_expr();
+        let mut rhs = ctx.zero();
+        for (i, c) in self.coefficients.iter().enumerate() {
+            rhs += ctx.from_ratio(c.clone()) * k.powi(i as i64);
+        }
+        if let Some(g) = &self.square {
+            rhs = g.to_ex().powi(2) * rhs;
+        }
+        let lhs = if self.polya_power == 0 {
+            self.goal.to_ex()
+        } else {
+            (1 + &k).powi(i64::from(self.polya_power)) * self.goal.to_ex()
+        };
+        (lhs, rhs)
+    }
+
+    /// A Lean 4 / Mathlib theorem `0 ≤ goal` for `a ≤ x` (or `x ≤ a`).
+    ///
+    /// Shape for `N = 0`:
+    /// ```text
+    /// theorem name (x : ℝ) (h_x_lo : a ≤ x) : 0 ≤ goal := by
+    ///   have hk : 0 ≤ x - a := sub_nonneg.mpr h_x_lo
+    ///   nlinarith [pow_nonneg hk 2, pow_nonneg hk 3]
+    /// ```
+    /// and for a Pólya multiplier the product `(1 + (x - a)) ^ N * goal` is
+    /// shown non-negative the same way and divided out with
+    /// `nonneg_of_mul_nonneg_right`.  A square factor turns every hint into
+    /// `mul_nonneg (sq_nonneg g) (…)`.
+    pub fn to_lean(&self, theorem_name: &str) -> Result<String, SymplexError> {
+        self.to_lean_with(theorem_name, &LeanOpts::default())
+    }
+
+    /// [`to_lean`](Self::to_lean) with explicit rendering options.
+    pub fn to_lean_with(
+        &self,
+        theorem_name: &str,
+        opts: &LeanOpts,
+    ) -> Result<String, SymplexError> {
+        let real = &opts.real_type;
+        let v = lean_ident(&self.var.to_string());
+        let base = v.trim_matches(['«', '»']);
+        let a = self.endpoint.to_lean_with(opts)?;
+        let goal = self.goal.to_ex().to_lean_with(opts)?;
+        let (hyp_name, hyp, k) = match self.ray {
+            Ray::AtLeast => (
+                format!("h_{base}_lo"),
+                format!("{a} ≤ {v}"),
+                format!("{v} - {a}"),
+            ),
+            Ray::AtMost => (
+                format!("h_{base}_hi"),
+                format!("{v} ≤ {a}"),
+                format!("{a} - {v}"),
+            ),
+        };
+        let square_hint = match &self.square {
+            Some(g) => Some(format!("sq_nonneg ({})", g.to_ex().to_lean_with(opts)?)),
+            None => None,
+        };
+        // One hint per power of k that carries a positive coefficient.
+        let mut hints: Vec<String> = Vec::new();
+        for (i, c) in self.coefficients.iter().enumerate() {
+            if *c <= Q::zero() {
+                continue;
+            }
+            let h = match i {
+                0 => None,
+                1 => Some("hk".to_string()),
+                _ => Some(format!("pow_nonneg hk {i}")),
+            };
+            let h = match (&square_hint, h) {
+                (Some(sq), Some(h)) => format!("mul_nonneg ({sq}) ({h})"),
+                (Some(sq), None) => sq.clone(),
+                (None, Some(h)) => h,
+                (None, None) => continue,
+            };
+            hints.push(h);
+        }
+        let tactic_name = if square_hint.is_some() || self.coefficients.len() > 2 {
+            "nlinarith"
+        } else {
+            "linarith"
+        };
+        let hint_list = if hints.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", hints.join(", "))
+        };
+        let mut out = format!(
+            "theorem {} ({v} : {real}) ({hyp_name} : {hyp}) :\n    0 ≤ {goal} := by\n  have hk : 0 ≤ {k} := sub_nonneg.mpr {hyp_name}\n",
+            lean_ident(theorem_name),
+        );
+        if self.polya_power == 0 {
+            out.push_str(&format!("  {tactic_name}{hint_list}\n"));
+        } else {
+            let n = self.polya_power;
+            out.push_str(&format!(
+                "  have hpos : 0 < (1 + ({k})) ^ {n} := pow_pos (by linarith) {n}\n  have hprod : 0 ≤ (1 + ({k})) ^ {n} * ({goal}) := by nlinarith{hint_list}\n  exact nonneg_of_mul_nonneg_right hprod hpos\n"
+            ));
+        }
+        Ok(out)
+    }
+}
+
+impl fmt::Display for HalfLineCertificate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (lhs, rhs) = self.identity();
+        write!(f, "{lhs} = {rhs}")?;
+        match self.ray {
+            Ray::AtLeast => write!(f, ", {} ≥ {}", self.var, self.endpoint),
+            Ray::AtMost => write!(f, ", {} ≤ {}", self.var, self.endpoint),
+        }
+    }
+}
+
+/// Result of [`prove_nonnegative_on_halfline`].
+#[derive(Clone, Debug)]
+pub enum HalfLineOutcome {
+    /// A verified certificate.
+    Proved(HalfLineCertificate),
+    /// The goal is negative at `point` (on the half-line).
+    Refuted {
+        /// A point of the half-line where the goal is negative.
+        point: Q,
+        /// The (negative) value there.
+        value: Q,
+    },
+    /// The goal is non-negative on the half-line (decided exactly by Sturm's
+    /// theorem) but no certificate was found within the Pólya budget — this
+    /// happens when the goal has an interior zero that is not an
+    /// even-multiplicity factor over ℚ (e.g. an irreducible SOS such as
+    /// `x⁴ − 2x² + 2`… with an irrational double root).
+    Unknown {
+        /// The largest Pólya exponent tried.
+        max_polya_power: u32,
+    },
+}
+
+impl HalfLineOutcome {
+    /// The certificate, if proved.
+    pub fn certificate(&self) -> Option<&HalfLineCertificate> {
+        match self {
+            HalfLineOutcome::Proved(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// `true` for [`HalfLineOutcome::Proved`].
+    pub fn is_proved(&self) -> bool {
+        matches!(self, HalfLineOutcome::Proved(_))
+    }
+}
+
+/// Coefficients (ascending in `k`) of `p(x)` rewritten in `k` where
+/// `x = a + k` (`AtLeast`) or `x = a − k` (`AtMost`).
+fn shifted_coefficients(p: &Poly, var: &Ex, a: &Ex, ray: &Ray) -> Option<Vec<Q>> {
+    let ctx = p.context();
+    let k = ctx.symbol("__k");
+    let x_of_k = match ray {
+        Ray::AtLeast => a + &k,
+        Ray::AtMost => a - &k,
+    };
+    let q = p.to_ex().subs(var, &x_of_k);
+    let qp = Poly::new(&q, &[&k])?;
+    let coeffs = qp.all_coeffs()?; // highest first
+    let mut asc: Vec<Q> = coeffs
+        .iter()
+        .rev()
+        .map(|c| c.as_rational())
+        .collect::<Option<_>>()?;
+    while asc.len() > 1 && asc.last().is_some_and(Zero::is_zero) {
+        asc.pop();
+    }
+    Some(asc)
+}
+
+/// Multiply the coefficient list by `(1 + k)`.
+fn times_one_plus_k(c: &[Q]) -> Vec<Q> {
+    let mut out = vec![Q::zero(); c.len() + 1];
+    for (i, ci) in c.iter().enumerate() {
+        out[i] += ci;
+        out[i + 1] += ci;
+    }
+    out
+}
+
+/// Find a point of the half-line where `p < 0`, using the isolating
+/// intervals of the real roots and the Cauchy bound.
+fn halfline_counterexample(p: &Poly, var: &Ex, a: &Q, ray: &Ray) -> Option<(Q, Q)> {
+    let ctx = p.context();
+    let e = p.to_ex();
+    let eval =
+        |x: &Q| -> Option<Q> { e.subs(var, &ctx.from_ratio(x.clone())).eval().as_rational() };
+    let one = Q::one();
+    let inside = |x: &Q| match ray {
+        Ray::AtLeast => x >= a,
+        Ray::AtMost => x <= a,
+    };
+    // Candidate points: the endpoint, midpoints and outer points of the root
+    // isolating intervals, and a point beyond all roots.
+    let mut candidates: Vec<Q> = vec![a.clone()];
+    let iv = e.real_roots_isolate(var);
+    for (lo, hi) in &iv {
+        if let (Some(l), Some(h)) = (lo.as_rational(), hi.as_rational()) {
+            candidates.push((&l + &h) / Q::from_integer(BigInt::from(2)));
+            candidates.push(&l - &one);
+            candidates.push(&h + &one);
+            candidates.push((&l + a) / Q::from_integer(BigInt::from(2)));
+        }
+    }
+    let far = match ray {
+        Ray::AtLeast => a + Q::from_integer(BigInt::from(1000)),
+        Ray::AtMost => a - Q::from_integer(BigInt::from(1000)),
+    };
+    candidates.push(far);
+    for x in candidates {
+        if inside(&x)
+            && let Some(v) = eval(&x)
+            && v < Q::zero()
+        {
+            return Some((x, v));
+        }
+    }
+    None
+}
+
+/// Prove `goal ≥ 0` for `var ≥ a` ([`Ray::AtLeast`]) or `var ≤ a`
+/// ([`Ray::AtMost`]) with a [`HalfLineCertificate`], or refute it exactly.
+///
+/// The search: shift to `k ≥ 0`; if every coefficient of the shifted
+/// polynomial is non-negative that is the certificate (`N = 0`); otherwise
+/// multiply by `(1 + k)` up to `max_polya_power` times; if that fails, split
+/// off even-multiplicity factors (`goal = g²·h`) and retry on `h`.  A goal
+/// that is negative somewhere on the half-line is refuted with an exact
+/// point; a goal that is non-negative (by Sturm's theorem) but has no
+/// certificate of this form is reported as [`HalfLineOutcome::Unknown`].
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] if `a` is not a rational literal, or
+/// `goal` is not a univariate polynomial in `var` with rational
+/// coefficients.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::certificates::{prove_nonnegative_on_halfline, HalfLineOutcome, Ray};
+///
+/// let ctx = Context::new();
+/// let j = ctx.symbol("j");
+/// // (j − 1)(j − 3) ≥ 0 for j ≥ 3:  p(3 + k) = k² + 2k, all coefficients ≥ 0.
+/// let p = (&j - 1) * (&j - 3);
+/// let out = prove_nonnegative_on_halfline(&p, &j, &ctx.int(3), Ray::AtLeast, 10).unwrap();
+/// let cert = out.certificate().unwrap();
+/// assert_eq!(cert.polya_power(), 0);
+/// assert!(cert.verify());
+/// // For j ≥ 2 the claim is false (p(5/2) < 0).
+/// assert!(matches!(
+///     prove_nonnegative_on_halfline(&p, &j, &ctx.int(2), Ray::AtLeast, 10).unwrap(),
+///     HalfLineOutcome::Refuted { .. }
+/// ));
+/// ```
+pub fn prove_nonnegative_on_halfline(
+    goal: &Ex,
+    var: &Ex,
+    a: &Ex,
+    ray: Ray,
+    max_polya_power: u32,
+) -> Result<HalfLineOutcome, SymplexError> {
+    let bad = |reason: &str| SymplexError::InvalidArgument {
+        operation: "prove_nonnegative_on_halfline",
+        reason: reason.into(),
+    };
+    let a_ex = a.eval();
+    let a_q = a_ex
+        .as_rational()
+        .ok_or_else(|| bad("the endpoint must be a rational literal"))?;
+    let goal_poly =
+        Poly::new(goal, &[var]).ok_or_else(|| bad("goal must be a polynomial in the variable"))?;
+    if !goal_poly.has_rational_coeffs() {
+        return Err(bad("goal must have rational coefficients"));
+    }
+    let ctx: Context = goal.context();
+
+    // Exact decision first, so a false claim is refuted with a point and a
+    // true one never gets a spurious Unknown from a failed search.
+    let (lo, hi) = match ray {
+        Ray::AtLeast => (a_ex.clone(), ctx.infinity()),
+        Ray::AtMost => (ctx.neg_infinity(), a_ex.clone()),
+    };
+    if goal_poly.is_nonnegative_on(&lo, &hi) == Some(false)
+        && let Some((point, value)) = halfline_counterexample(&goal_poly, var, &a_q, &ray)
+    {
+        return Ok(HalfLineOutcome::Refuted { point, value });
+    }
+
+    let try_certify = |p: &Poly, square: Option<&Poly>| -> Option<HalfLineCertificate> {
+        let mut coeffs = shifted_coefficients(p, var, &a_ex, &ray)?;
+        for n in 0..=max_polya_power {
+            if coeffs.iter().all(|c| *c >= Q::zero()) {
+                let cert = HalfLineCertificate {
+                    goal: goal_poly.clone(),
+                    var: var.clone(),
+                    endpoint: a_ex.clone(),
+                    ray: ray.clone(),
+                    polya_power: n,
+                    coefficients: coeffs,
+                    square: square.cloned(),
+                };
+                return cert.verify().then_some(cert);
+            }
+            coeffs = times_one_plus_k(&coeffs);
+        }
+        None
+    };
+
+    if let Some(c) = try_certify(&goal_poly, None) {
+        return Ok(HalfLineOutcome::Proved(c));
+    }
+    if let Some((g, h)) = split_square_factor(&goal_poly, &[var])
+        && let Some(c) = try_certify(&h, Some(&g))
+    {
+        return Ok(HalfLineOutcome::Proved(c));
+    }
+    if let Some((point, value)) = halfline_counterexample(&goal_poly, var, &a_q, &ray) {
+        return Ok(HalfLineOutcome::Refuted { point, value });
+    }
+    Ok(HalfLineOutcome::Unknown { max_polya_power })
+}
+
+/// A verified proof that a univariate polynomial is non-negative on all of
+/// ℝ: a pair of half-line certificates meeting at `split`.
+#[derive(Clone, Debug)]
+pub struct RealLineCertificate {
+    /// Certificate for `x ≥ split`.
+    pub upper: HalfLineCertificate,
+    /// Certificate for `x ≤ split`.
+    pub lower: HalfLineCertificate,
+}
+
+impl RealLineCertificate {
+    /// Both halves re-verified.
+    pub fn verify(&self) -> bool {
+        self.upper.verify() && self.lower.verify() && self.upper.endpoint == self.lower.endpoint
+    }
+
+    /// A Lean theorem with no hypotheses, by cases on `le_total split x`.
+    pub fn to_lean(&self, theorem_name: &str) -> Result<String, SymplexError> {
+        self.to_lean_with(theorem_name, &LeanOpts::default())
+    }
+
+    /// [`to_lean`](Self::to_lean) with explicit rendering options.
+    pub fn to_lean_with(
+        &self,
+        theorem_name: &str,
+        opts: &LeanOpts,
+    ) -> Result<String, SymplexError> {
+        let up = self.upper.to_lean_with("_", opts)?;
+        let lo = self.lower.to_lean_with("_", opts)?;
+        // Take the tactic blocks (everything after the `:= by` line).
+        let body = |text: &str| -> String {
+            text.split_once(":= by\n")
+                .map(|(_, b)| b.to_string())
+                .unwrap_or_default()
+        };
+        let v = lean_ident(&self.upper.var.to_string());
+        let base = v.trim_matches(['«', '»']).to_string();
+        let a = self.upper.endpoint.to_lean_with(opts)?;
+        let goal = self.upper.goal.to_ex().to_lean_with(opts)?;
+        let indent = |b: String| -> String {
+            b.lines()
+                .map(|l| format!("  {l}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        Ok(format!(
+            "theorem {} ({v} : {}) : 0 ≤ {goal} := by\n  rcases le_total {a} {v} with h_{base}_lo | h_{base}_hi\n  · -- {a} ≤ {v}\n{}\n  · -- {v} ≤ {a}\n{}\n",
+            lean_ident(theorem_name),
+            opts.real_type,
+            indent(body(&up)),
+            indent(body(&lo)),
+        ))
+    }
+}
+
+/// Prove `goal ≥ 0` on all of ℝ (univariate) by splitting at `split` into
+/// two half-line certificates.
+///
+/// Returns `Ok(None)` when one side could not be certified (the goal is
+/// negative somewhere, or has a zero that is not an even-multiplicity
+/// rational factor).
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::certificates::prove_nonnegative_on_reals;
+///
+/// let ctx = Context::new();
+/// let x = ctx.symbol("x");
+/// let cert = prove_nonnegative_on_reals(&(&x.powi(2) - &x + 1), &x, &ctx.int(0), 10).unwrap().unwrap();
+/// assert!(cert.verify());
+/// assert!(cert.to_lean("pos_quadratic").unwrap().contains("rcases le_total"));
+/// ```
+pub fn prove_nonnegative_on_reals(
+    goal: &Ex,
+    var: &Ex,
+    split: &Ex,
+    max_polya_power: u32,
+) -> Result<Option<RealLineCertificate>, SymplexError> {
+    let upper = prove_nonnegative_on_halfline(goal, var, split, Ray::AtLeast, max_polya_power)?;
+    let lower = prove_nonnegative_on_halfline(goal, var, split, Ray::AtMost, max_polya_power)?;
+    match (upper, lower) {
+        (HalfLineOutcome::Proved(upper), HalfLineOutcome::Proved(lower)) => {
+            Ok(Some(RealLineCertificate { upper, lower }))
+        }
+        _ => Ok(None),
     }
 }

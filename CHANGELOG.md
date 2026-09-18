@@ -6,6 +6,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.3.3] - 2026-09-18
+
+### Added
+
+- `certificates::prove_nonnegative_on_halfline(goal, var, a, Ray::{AtLeast,
+  AtMost}, max_polya_power)`: exact certificates for univariate `goal ≥ 0`
+  on `x ≥ a` / `x ≤ a`.  With `k = x − a` the identity is
+  `(1 + k)^N · goal = g² · Σ cᵢ kⁱ` with `cᵢ ≥ 0`: `N = 0` is the
+  shift-and-read-off-coefficients certificate, `N > 0` a Pólya multiplier
+  (always exists for a strictly positive goal), and `g` collects
+  even-multiplicity zeros.  Outcomes: `Proved(HalfLineCertificate)`,
+  `Refuted { point, value }` (exact, found via root isolation), or
+  `Unknown { max_polya_power }`.  `HalfLineCertificate::{verify, identity,
+  coefficients, polya_power, square, to_lean}`.
+- `certificates::prove_nonnegative_on_reals(goal, var, split, max_polya)`
+  → `RealLineCertificate` (two half-lines; Lean proof by
+  `rcases le_total split x`).
+- Box certificates now handle interior even-multiplicity zeros: when the
+  plain Handelman search fails, the goal is factored as `g²·h` (exact
+  factoring over ℤ) and `h` is certified; `Certificate::square()` exposes
+  `g` and the Lean hints become `mul_nonneg (sq_nonneg g) (…)`.
+  `(x − 1/2)²·(1 − xy)` on the unit square is now `Proved`.
+- Every Lean theorem emitted by `examples/certificates_to_lean.rs`
+  (9 theorems: boxes, half-lines both directions, Pólya exponents 1 and
+  12, square factors, the real line) was compiled against Mathlib
+  (Lean 4.30.0) with no errors or warnings; the texts are pinned in
+  `tests/v03/v03_certificates.rs`.
+
+### Fixed
+
+- `(c·m)^n` with a numeric coefficient `c` and `|n| > 10` was left as an
+  opaque power by canonicalisation (the product-power distribution has a
+  swell guard at 10), so `(-x)^11` did not become `-x^11`,
+  `expand((2 - x)^11)` lost its leading term and `Poly::new` rejected the
+  result.  A numeric coefficient is now always pulled out (`(-x)^11 →
+  -x^11`, `(2x)^13 → 8192*x^13`); products of symbols keep the guard
+  (`(x*y)^12` stays as is) but the polynomial view now recognises such
+  powers as monomials (`Poly::new((x*y)^12 + 1)` works).
+
+### Infrastructure
+
+- `symplex` and `symplex-build` at 0.3.3; `symplex-macros` unchanged at
+  0.3.0.
+
 ## [0.3.2] - 2026-09-18
 
 ### Added

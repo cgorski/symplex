@@ -273,3 +273,42 @@ theorem quarter_bound (r f : ℝ) (h_r_lo : (0 : ℝ) ≤ r) (h_r_hi : r ≤ (1 
 ```
 
 This compiles against Mathlib (Lean 4.30.0) without errors or warnings; `cargo run --example certificates_to_lean out.lean` writes a file with several such theorems that you can check with `lake env lean out.lean` inside any Mathlib project. The `(r − ¼)²`-style case from the previous section comes back as `BoxOutcome::Unknown` at every degree — exactly the interior-zero limitation of Handelman's theorem — and a false claim such as `xy − ½ ≥ 0` on the unit square is `Refuted { point: (0, 0), value: -1/2 }`.
+
+## Half-lines, interior double zeros, and the whole real line
+
+Handelman needs a compact box and a goal that stays strictly positive inside it. Two extensions cover the cases that come up in practice:
+
+* **Half-lines** `x ≥ a` (or `x ≤ a`): with `k = x − a`, if every coefficient of `p(a + k)` is non-negative that is already a proof, and when it is not, a Pólya multiplier `(1 + k)^N` makes it so (guaranteed for a strictly positive goal). `prove_nonnegative_on_halfline` does both, refutes false claims with an exact point, and `prove_nonnegative_on_reals` glues two half-lines into a proof for all of ℝ.
+* **Even-multiplicity zeros** inside the domain: `goal = g²·h` is split off by exact factoring and `h` gets the certificate; in Lean every hint becomes `mul_nonneg (sq_nonneg g) (…)`. This works for boxes and half-lines alike.
+
+```rust
+use symplex::certificates::{prove_nonnegative_on_halfline, HalfLineOutcome, Ray};
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    let j = ctx.symbol("j");
+    // (j − 5)²·(j² + 1) ≥ 0 for j ≥ 3: the double zero at 5 is inside the half-line.
+    let goal = (&j - 5).powi(2) * (&j.powi(2) + 1);
+    match prove_nonnegative_on_halfline(&goal, &j, &ctx.int(3), Ray::AtLeast, 12).unwrap() {
+        HalfLineOutcome::Proved(cert) => {
+            println!("{cert}");
+            // j^4 - 10*j^3 + 26*j^2 - 10*j + 25 = (j - 5)^2*(6*j + (j - 3)^2 - 8), j ≥ 3
+            println!("Pólya exponent {}, square {}", cert.polya_power(), cert.square().unwrap());
+            // Pólya exponent 0, square Poly(j - 5, j)
+            print!("{}", cert.to_lean("square_inside").unwrap());
+        }
+        HalfLineOutcome::Refuted { point, value } => println!("false at {point}: {value}"),
+        HalfLineOutcome::Unknown { max_polya_power } => println!("no certificate up to N = {max_polya_power}"),
+    }
+}
+```
+
+```lean
+theorem square_inside (j : ℝ) (h_j_lo : (3 : ℝ) ≤ j) :
+    0 ≤ j ^ 4 - 10 * j ^ 3 + 26 * j ^ 2 - 10 * j + 25 := by
+  have hk : 0 ≤ j - (3 : ℝ) := sub_nonneg.mpr h_j_lo
+  nlinarith [sq_nonneg (j - 5), mul_nonneg (sq_nonneg (j - 5)) (hk), mul_nonneg (sq_nonneg (j - 5)) (pow_nonneg hk 2)]
+```
+
+When the shift alone is not enough — `j² − j + 1` on `j ≥ 0` has a negative coefficient — the certificate carries the multiplier: `(j + 1)·(j² − j + 1) = j³ + 1`, and the Lean proof shows `0 ≤ (1 + (j - 0)) ^ 1 * (j ^ 2 - j + 1)` with `nlinarith [pow_nonneg hk 3]` and divides by the positive factor with `nonneg_of_mul_nonneg_right`. A tight minimum costs a larger exponent (`4j² − 6j + 3` needs `N = 12`), which is Pólya's theorem being honest about how close to zero the goal gets.

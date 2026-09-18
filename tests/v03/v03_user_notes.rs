@@ -328,3 +328,35 @@ fn to_lean_of_a_certificate_is_usable_verbatim() {
     );
     assert_eq!(shifted.to_lean().unwrap(), "j ^ 2 + 2 * j");
 }
+
+// ── Powers of products beyond the canonicalisation threshold ─────────────
+
+#[test]
+fn numeric_coefficient_is_pulled_out_of_large_powers() {
+    // Canonicalisation distributes `(a·b)^n` only for |n| ≤ 10; a numeric
+    // coefficient must be pulled out regardless, or `(-x)^11` is stuck as an
+    // opaque power and `expand`/`Poly::new` miss the leading term.
+    let ctx = Context::new();
+    let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    assert_eq!(s(&(-&x).powi(11)), "-x^11");
+    assert_eq!(s(&(2 * &x).powi(13)), "8192*x^13");
+    assert_eq!(s(&(-&x).powi(12)), "x^12");
+    let e = (2 - &x).powi(11).expand();
+    assert!(s(&e).starts_with("-x^11 + 22*x^10"), "{e}");
+    assert_eq!(e.degree(&x), Some(11));
+    // Products of symbols are left alone (swell guard) but are still
+    // recognised as monomials by the polynomial view.
+    assert_eq!(s(&(&x * &y).powi(12)), "(x*y)^12");
+    let p = Poly::new(&((&x * &y).powi(12) + 1), &[&x, &y]).unwrap();
+    assert_eq!(p.to_string(), "Poly(x^12*y^12 + 1, x, y)");
+    let a = ctx.symbol("a");
+    let q = Poly::new(&(&a * &x * &y).powi(11), &[&x, &y]).unwrap();
+    assert_eq!(q.to_string(), "Poly(a^11*x^11*y^11, x, y)");
+    // Value preserved.
+    let at = |f: &Ex| {
+        f.subs_map(&[(&x, &ctx.rational(3, 2)), (&y, &ctx.int(-2))])
+            .eval()
+    };
+    let raw = (2 - &x).powi(11);
+    assert_eq!(at(&raw).as_rational(), at(&e).as_rational());
+}

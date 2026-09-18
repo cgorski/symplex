@@ -582,7 +582,7 @@ fn term_exponents_coeff(
 /// (`gen`, `gen^n`) or the coefficient list (generator-free), failing on
 /// anything else.
 fn accumulate_factor(
-    arena: &Arena,
+    arena: &mut Arena,
     factor: ExprId,
     gens: &[ExprId],
     exps: &mut [u32],
@@ -596,20 +596,43 @@ fn accumulate_factor(
         consts.push(factor);
         return Some(());
     }
-    match arena.node(factor) {
+    match arena.node(factor).clone() {
         ExprNode::Pow(base, exp) => {
-            let i = gens.iter().position(|g| g == base)?;
-            let n = arena.as_num(*exp)?;
+            let n = arena.as_num(exp)?.clone();
             if !n.is_integer() || n.is_negative() {
                 return None;
             }
             let d: u32 = n.to_integer().try_into().ok()?;
-            exps[i] = exps[i].checked_add(d)?;
-            Some(())
+            if let Some(i) = gens.iter().position(|&g| g == base) {
+                exps[i] = exps[i].checked_add(d)?;
+                return Some(());
+            }
+            // `(g₁·g₂·c)^d`: a power of a product distributes over its
+            // factors (canonicalisation only does this for small exponents).
+            if let ExprNode::Mul(children) = arena.node(base).clone() {
+                let mut inner_exps = vec![0u32; gens.len()];
+                let mut inner_consts: SmallVec<[ExprId; 4]> = SmallVec::new();
+                for &c in &children {
+                    accumulate_factor(arena, c, gens, &mut inner_exps, &mut inner_consts)?;
+                }
+                for (e, ie) in exps.iter_mut().zip(&inner_exps) {
+                    *e = e.checked_add(ie.checked_mul(d)?)?;
+                }
+                if !inner_consts.is_empty() {
+                    let c = if inner_consts.len() == 1 {
+                        inner_consts[0]
+                    } else {
+                        arena.mul(&inner_consts)
+                    };
+                    consts.push(arena.pow(c, exp));
+                }
+                return Some(());
+            }
+            None
         }
         ExprNode::Neg(inner) => {
             consts.push(arena.neg_one);
-            accumulate_factor(arena, *inner, gens, exps, consts)
+            accumulate_factor(arena, inner, gens, exps, consts)
         }
         _ => None,
     }
