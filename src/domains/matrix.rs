@@ -36,6 +36,8 @@
 use crate::api::context::Context;
 use crate::api::expr::{Ex, ExprType};
 use crate::base::errors::SymplexError;
+use num_bigint::BigInt;
+use num_rational::Ratio;
 use std::fmt;
 use tracing::{debug, trace, warn};
 
@@ -2850,6 +2852,511 @@ impl Matrix {
             }
         }
         Matrix::col_vector(entries)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Selection, deletion and numeric conversion (0.3 ergonomics)
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl Matrix {
+    /// Check that every index in `idx` is below `bound`, naming the axis
+    /// in the error.
+    fn check_indices(
+        operation: &'static str,
+        axis: &str,
+        idx: &[usize],
+        bound: usize,
+    ) -> Result<(), SymplexError> {
+        if idx.is_empty() {
+            return Err(invalid(
+                operation,
+                format!("{axis} selection must contain at least one index"),
+            ));
+        }
+        if let Some(&bad) = idx.iter().find(|&&k| k >= bound) {
+            return Err(invalid(
+                operation,
+                format!("{axis} index {bad} out of range for {bound} {axis}s"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The sub-matrix formed by the given rows and columns, in the order
+    /// listed.  Indices may be repeated or reordered.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if either list is empty or contains
+    /// an out-of-range index.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let m = matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]];
+    /// assert_eq!(m.extract(&[2, 0], &[0, 2, 2]).unwrap(), matrix![ctx, [7, 9, 9], [1, 3, 3]]);
+    /// assert!(m.extract(&[3], &[0]).is_err());
+    /// assert!(m.extract(&[], &[0]).is_err());
+    /// ```
+    pub fn extract(&self, rows: &[usize], cols: &[usize]) -> Result<Matrix, SymplexError> {
+        Self::check_indices("extract", "row", rows, self.nrows)?;
+        Self::check_indices("extract", "column", cols, self.ncols)?;
+        let data: Vec<Vec<Ex>> = rows
+            .iter()
+            .map(|&i| cols.iter().map(|&j| self.rows[i][j].clone()).collect())
+            .collect();
+        Ok(Matrix::from_rows_unchecked(data))
+    }
+
+    /// The rows with the given indices (all columns), in the order listed.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if `rows` is empty or contains an
+    /// out-of-range index.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let m = matrix![ctx, [1, 2], [3, 4], [5, 6]];
+    /// assert_eq!(m.select_rows(&[2, 0]).unwrap(), matrix![ctx, [5, 6], [1, 2]]);
+    /// ```
+    pub fn select_rows(&self, rows: &[usize]) -> Result<Matrix, SymplexError> {
+        Self::check_indices("select_rows", "row", rows, self.nrows)?;
+        let data: Vec<Vec<Ex>> = rows.iter().map(|&i| self.rows[i].clone()).collect();
+        Ok(Matrix::from_rows_unchecked(data))
+    }
+
+    /// The columns with the given indices (all rows), in the order listed.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if `cols` is empty or contains an
+    /// out-of-range index.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let m = matrix![ctx, [1, 2, 3], [4, 5, 6]];
+    /// assert_eq!(m.select_cols(&[2, 2]).unwrap(), matrix![ctx, [3, 3], [6, 6]]);
+    /// ```
+    pub fn select_cols(&self, cols: &[usize]) -> Result<Matrix, SymplexError> {
+        Self::check_indices("select_cols", "column", cols, self.ncols)?;
+        let data: Vec<Vec<Ex>> = self
+            .rows
+            .iter()
+            .map(|r| cols.iter().map(|&j| r[j].clone()).collect())
+            .collect();
+        Ok(Matrix::from_rows_unchecked(data))
+    }
+
+    /// The matrix with row `i` removed.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if `i` is out of range or the
+    /// matrix has a single row (the result would be empty).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let m = matrix![ctx, [1, 2], [3, 4], [5, 6]];
+    /// assert_eq!(m.delete_row(1).unwrap(), matrix![ctx, [1, 2], [5, 6]]);
+    /// assert!(matrix![ctx, [1, 2]].delete_row(0).is_err());
+    /// ```
+    pub fn delete_row(&self, i: usize) -> Result<Matrix, SymplexError> {
+        if i >= self.nrows {
+            return Err(invalid(
+                "delete_row",
+                format!("row index {i} out of range for {} rows", self.nrows),
+            ));
+        }
+        if self.nrows == 1 {
+            return Err(invalid(
+                "delete_row",
+                "cannot delete the only row of a matrix",
+            ));
+        }
+        let data: Vec<Vec<Ex>> = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|&(k, _)| k != i)
+            .map(|(_, r)| r.clone())
+            .collect();
+        Ok(Matrix::from_rows_unchecked(data))
+    }
+
+    /// The matrix with column `j` removed.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if `j` is out of range or the
+    /// matrix has a single column (the result would be empty).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let m = matrix![ctx, [1, 2, 3], [4, 5, 6]];
+    /// assert_eq!(m.delete_col(0).unwrap(), matrix![ctx, [2, 3], [5, 6]]);
+    /// assert!(matrix![ctx, [1], [2]].delete_col(0).is_err());
+    /// ```
+    pub fn delete_col(&self, j: usize) -> Result<Matrix, SymplexError> {
+        if j >= self.ncols {
+            return Err(invalid(
+                "delete_col",
+                format!("column index {j} out of range for {} columns", self.ncols),
+            ));
+        }
+        if self.ncols == 1 {
+            return Err(invalid(
+                "delete_col",
+                "cannot delete the only column of a matrix",
+            ));
+        }
+        let data: Vec<Vec<Ex>> = self
+            .rows
+            .iter()
+            .map(|r| {
+                r.iter()
+                    .enumerate()
+                    .filter(|&(k, _)| k != j)
+                    .map(|(_, e)| e.clone())
+                    .collect()
+            })
+            .collect();
+        Ok(Matrix::from_rows_unchecked(data))
+    }
+
+    /// Is every entry zero?  Three-valued: `Some(true)` when every entry
+    /// simplifies to zero, `Some(false)` when some entry is provably
+    /// non-zero, `None` when an entry cannot be decided (a free symbol
+    /// without assumptions).
+    ///
+    /// Same decision procedure as [`is_zero`](Self::is_zero); the longer
+    /// name reads unambiguously next to `Ex::is_zero`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// assert_eq!(matrix![ctx, [0, 0], [0, 0]].is_zero_matrix(), Some(true));
+    /// assert_eq!(matrix![ctx, [0, 1]].is_zero_matrix(), Some(false));
+    /// assert_eq!(Matrix::new(vec![vec![x.clone(), ctx.int(0)]]).unwrap().is_zero_matrix(), None);
+    /// // (x + 1)^2 - x^2 - 2x - 1 simplifies to zero.
+    /// let e = &(&x + 1).powi(2) - &(&x.powi(2) + &(&x * 2) + 1);
+    /// assert_eq!(Matrix::new(vec![vec![e]]).unwrap().is_zero_matrix(), Some(true));
+    /// ```
+    pub fn is_zero_matrix(&self) -> Option<bool> {
+        all3(self.iter().map(ex_is_zero))
+    }
+
+    /// Is every entry an integer literal?  Three-valued: `Some(true)` when
+    /// every entry is an integer literal, `Some(false)` when some entry is a
+    /// non-integer *numeric* literal (`1/2`), `None` when some entry is
+    /// symbolic (a symbol, `pi`, an unevaluated sum, …).
+    ///
+    /// Entries are inspected as they are — call [`eval`](Self::eval) first
+    /// to constant-fold `2 + 3` into `5`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// assert_eq!(matrix![ctx, [1, -2], [3, 0]].is_integer_matrix(), Some(true));
+    /// let half = Matrix::new(vec![vec![ctx.rational(1, 2)]]).unwrap();
+    /// assert_eq!(half.is_integer_matrix(), Some(false));
+    /// let sym = Matrix::new(vec![vec![ctx.symbol("x")]]).unwrap();
+    /// assert_eq!(sym.is_integer_matrix(), None);
+    /// ```
+    pub fn is_integer_matrix(&self) -> Option<bool> {
+        let mut unknown = false;
+        for e in self.iter() {
+            match e.as_rational() {
+                Some(r) if r.is_integer() => {}
+                Some(_) => return Some(false),
+                None => unknown = true,
+            }
+        }
+        if unknown { None } else { Some(true) }
+    }
+
+    /// The entries as exact rationals, row-major.
+    ///
+    /// Returns `None` if any entry is not a numeric literal.  Entries are
+    /// inspected as they are — call [`eval`](Self::eval) first to fold
+    /// constant expressions such as `1/2 + 1/3`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use num_bigint::BigInt;
+    /// use num_rational::Ratio;
+    ///
+    /// let ctx = Context::new();
+    /// let m = Matrix::new(vec![vec![ctx.rational(1, 2), ctx.int(3)]]).unwrap();
+    /// let rows = m.to_rational_rows().unwrap();
+    /// assert_eq!(rows[0][0], Ratio::new(BigInt::from(1), BigInt::from(2)));
+    /// assert_eq!(rows[0][1], Ratio::from_integer(BigInt::from(3)));
+    /// assert!(Matrix::new(vec![vec![ctx.symbol("x")]]).unwrap().to_rational_rows().is_none());
+    /// ```
+    pub fn to_rational_rows(&self) -> Option<Vec<Vec<Ratio<BigInt>>>> {
+        self.rows
+            .iter()
+            .map(|r| r.iter().map(Ex::as_rational).collect())
+            .collect()
+    }
+
+    /// The entries as big integers, row-major.
+    ///
+    /// Returns `None` if any entry is not an integer literal (a fraction,
+    /// a symbol, an unevaluated expression, …).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use num_bigint::BigInt;
+    ///
+    /// let ctx = Context::new();
+    /// let rows = matrix![ctx, [1, -2], [3, 4]].to_bigint_rows().unwrap();
+    /// assert_eq!(rows[0][1], BigInt::from(-2));
+    /// let half = Matrix::new(vec![vec![ctx.rational(1, 2)]]).unwrap();
+    /// assert!(half.to_bigint_rows().is_none());
+    /// ```
+    pub fn to_bigint_rows(&self) -> Option<Vec<Vec<BigInt>>> {
+        self.rows
+            .iter()
+            .map(|r| r.iter().map(Ex::as_bigint).collect())
+            .collect()
+    }
+
+    /// Create a matrix of exact rational literals.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] for empty or jagged input.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use num_bigint::BigInt;
+    /// use num_rational::Ratio;
+    ///
+    /// let ctx = Context::new();
+    /// let q = |n: i64, d: i64| Ratio::new(BigInt::from(n), BigInt::from(d));
+    /// let m = Matrix::from_ratio(&ctx, &[vec![q(1, 2), q(3, 1)]]).unwrap();
+    /// assert_eq!(m.get(0, 0), &ctx.rational(1, 2));
+    /// assert_eq!(m.to_rational_rows().unwrap(), vec![vec![q(1, 2), q(3, 1)]]);
+    /// ```
+    pub fn from_ratio(ctx: &Context, rows: &[Vec<Ratio<BigInt>>]) -> Result<Matrix, SymplexError> {
+        let data: Vec<Vec<Ex>> = rows
+            .iter()
+            .map(|r| r.iter().map(|q| ctx.from_ratio(q.clone())).collect())
+            .collect();
+        Matrix::new(data)
+    }
+
+    /// Create a matrix of integer literals from big integers.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] for empty or jagged input.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use num_bigint::BigInt;
+    ///
+    /// let ctx = Context::new();
+    /// let rows = vec![vec![BigInt::from(1), BigInt::from(2)], vec![BigInt::from(3), BigInt::from(4)]];
+    /// let m = Matrix::from_bigint(&ctx, &rows).unwrap();
+    /// assert_eq!(m, matrix![ctx, [1, 2], [3, 4]]);
+    /// ```
+    pub fn from_bigint(ctx: &Context, rows: &[Vec<BigInt>]) -> Result<Matrix, SymplexError> {
+        let data: Vec<Vec<Ex>> = rows
+            .iter()
+            .map(|r| r.iter().map(|n| ctx.from_bigint(n.clone())).collect())
+            .collect();
+        Matrix::new(data)
+    }
+
+    /// Create a matrix from `f64` values, converting each **exactly** to
+    /// the dyadic rational it represents (via [`Context::from_f64`]): `0.5`
+    /// becomes `1/2`, but `0.1` becomes `3602879701896397/36028797018963968`,
+    /// not `1/10`.  Use [`Context::from_f64_nice`] entry-wise if you want
+    /// the "human" rational reading of a float.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] for empty or jagged input or a
+    /// `NaN` entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let m = Matrix::from_f64_rows(&ctx, &[vec![0.5, -3.0], vec![0.25, 2.0]]).unwrap();
+    /// assert_eq!(m.get(0, 0), &ctx.rational(1, 2));
+    /// assert_eq!(m.get(1, 0), &ctx.rational(1, 4));
+    /// assert!(Matrix::from_f64_rows(&ctx, &[vec![f64::NAN]]).is_err());
+    /// ```
+    pub fn from_f64_rows(ctx: &Context, rows: &[Vec<f64>]) -> Result<Matrix, SymplexError> {
+        let mut data: Vec<Vec<Ex>> = Vec::with_capacity(rows.len());
+        for r in rows {
+            let mut out = Vec::with_capacity(r.len());
+            for &v in r {
+                out.push(ctx.from_f64(v).map_err(|e| reop(e, "from_f64_rows"))?);
+            }
+            data.push(out);
+        }
+        Matrix::new(data)
+    }
+
+    /// Simultaneous substitution of several `(old, new)` pairs in every
+    /// entry (see [`Ex::subs_map`]).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// let m = Matrix::new(vec![vec![x.clone(), y.clone()]]).unwrap();
+    /// // Swap x and y in one step — sequential `subs` would collapse both to y.
+    /// let swapped = m.subs_map(&[(&x, &y), (&y, &x)]);
+    /// assert_eq!(swapped, Matrix::new(vec![vec![y, x]]).unwrap());
+    /// ```
+    pub fn subs_map(&self, replacements: &[(&Ex, &Ex)]) -> Matrix {
+        self.map(|elem| elem.subs_map(replacements))
+    }
+
+    /// Number of structurally non-zero entries (entries that are not the
+    /// literal `0`).  Symbolic entries count as non-zero even if they
+    /// would simplify to zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// assert_eq!(matrix![ctx, [1, 0, 2], [0, 0, 3]].nnz(), 3);
+    /// assert_eq!(Matrix::identity(&ctx, 4).nnz(), 4);
+    /// ```
+    pub fn nnz(&self) -> usize {
+        self.iter().filter(|e| !e.is_zero_structural()).count()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Integer normal forms (delegating to `normalforms`)
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl Matrix {
+    /// Row-style Hermite normal form `H = U·A` of an integer matrix.
+    ///
+    /// See [`normalforms::hermite_normal_form`](crate::normalforms::hermite_normal_form)
+    /// for the exact normalisation and
+    /// [`normalforms::hermite_normal_form_with_transform`](crate::normalforms::hermite_normal_form_with_transform)
+    /// to obtain `U` as well.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if any entry is not an integer
+    /// literal.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let a = matrix![ctx, [2, 4, 4], [-6, 6, 12], [10, -4, -16]];
+    /// let h = a.hermite_normal_form().unwrap();
+    /// assert_eq!(h, matrix![ctx, [2, 4, 4], [0, 6, 0], [0, 0, 12]]);
+    /// ```
+    pub fn hermite_normal_form(&self) -> Result<Matrix, SymplexError> {
+        crate::domains::normalforms::hermite_normal_form(self)
+    }
+
+    /// Smith normal form `S = U·A·V` of an integer matrix: a diagonal
+    /// matrix `diag(d₁, …, dᵣ, 0, …)` with `dᵢ > 0` and `dᵢ | dᵢ₊₁`.
+    ///
+    /// See [`normalforms::smith_normal_form`](crate::normalforms::smith_normal_form)
+    /// and
+    /// [`normalforms::smith_normal_form_with_transforms`](crate::normalforms::smith_normal_form_with_transforms).
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if any entry is not an integer
+    /// literal.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let a = matrix![ctx, [2, 4, 4], [-6, 6, 12], [10, -4, -16]];
+    /// assert_eq!(a.smith_normal_form().unwrap(), matrix![ctx, [2, 0, 0], [0, 6, 0], [0, 0, 12]]);
+    /// ```
+    pub fn smith_normal_form(&self) -> Result<Matrix, SymplexError> {
+        crate::domains::normalforms::smith_normal_form(self)
+    }
+
+    /// A ℤ-basis of the integer kernel `{x ∈ ℤⁿ : A·x = 0}`, as column
+    /// vectors (empty when the kernel is trivial).
+    ///
+    /// See [`normalforms::integer_nullspace`](crate::normalforms::integer_nullspace).
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if any entry is not an integer
+    /// literal.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let a = matrix![ctx, [2, 4, 6]];
+    /// let basis = a.integer_nullspace().unwrap();
+    /// assert_eq!(basis.len(), 2);
+    /// for k in &basis {
+    ///     assert_eq!((&a * k).eval(), matrix![ctx, [0]]);
+    /// }
+    /// ```
+    pub fn integer_nullspace(&self) -> Result<Vec<Matrix>, SymplexError> {
+        crate::domains::normalforms::integer_nullspace(self)
     }
 }
 

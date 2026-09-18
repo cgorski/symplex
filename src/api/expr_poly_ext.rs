@@ -48,6 +48,104 @@ fn endpoint(arena: &Arena, id: ExprId) -> Option<Endpoint> {
     }
 }
 
+/// Sign of a rational: `+1`, `0` or `-1`.
+fn sign_of(r: &Ratio<BigInt>) -> i8 {
+    if r.is_positive() {
+        1
+    } else if r.is_negative() {
+        -1
+    } else {
+        0
+    }
+}
+
+/// Exact decision of `f ≥ 0` (or `f > 0` when `strict`) on the closed
+/// interval between the two endpoints.
+fn poly_sign_on_interval(f: &Poly, lo: &Endpoint, hi: &Endpoint, strict: bool) -> bool {
+    // Empty interval: vacuously true.
+    match (lo, hi) {
+        (Endpoint::PosInf, _) | (_, Endpoint::NegInf) => return true,
+        (Endpoint::Finite(a), Endpoint::Finite(b)) if a > b => return true,
+        _ => {}
+    }
+    if f.is_zero() {
+        return !strict;
+    }
+    let deg = f.degree().unwrap_or(0);
+    if deg == 0 {
+        let s = sign_of(&f.coeff(0));
+        return if strict { s > 0 } else { s >= 0 };
+    }
+
+    // Every real root lies strictly inside (-bound, bound), so the bound
+    // can stand in for an infinite endpoint.
+    let bound = crate::poly::sturm::cauchy_bound(f) + Ratio::one();
+    let a = match lo {
+        Endpoint::Finite(r) => r.clone(),
+        _ => -bound.clone(),
+    };
+    let b = match hi {
+        Endpoint::Finite(r) => r.clone(),
+        _ => bound,
+    };
+
+    // A single point.
+    if a == b {
+        let s = sign_of(&f.eval(&a));
+        return if strict { s > 0 } else { s >= 0 };
+    }
+
+    // 1. A root of odd multiplicity strictly inside (a, b) is a sign change.
+    let (_content, parts) = f.sqf_list();
+    let mut odd = Poly::from_int(1);
+    for (p, m) in &parts {
+        if m % 2 == 1 {
+            odd = &odd * p;
+        }
+    }
+    if odd.degree().unwrap_or(0) > 0 {
+        let chain = SturmChain::new(&odd);
+        let half_open = chain.count_roots_in(&a, &b); // roots in (a, b]
+        let at_b = usize::from(odd.eval(&b).is_zero());
+        if half_open.saturating_sub(at_b) > 0 {
+            return false;
+        }
+    }
+
+    // 2. The sign is now constant away from roots; read it off at one point.
+    let s = match (lo, hi) {
+        (_, Endpoint::PosInf) => f.leading_coeff().map_or(0, sign_of),
+        (Endpoint::NegInf, _) => {
+            let lc = f.leading_coeff().map_or(0, sign_of);
+            if deg.is_multiple_of(2) { lc } else { -lc }
+        }
+        _ => {
+            // d + 1 distinct interior points; at most d of them are roots.
+            let width = &b - &a;
+            let steps = Ratio::from_integer(BigInt::from(deg as i64 + 2));
+            let mut s = 0i8;
+            for k in 1..=(deg + 1) {
+                let t = &a + &width * Ratio::from_integer(BigInt::from(k as i64)) / &steps;
+                s = sign_of(&f.eval(&t));
+                if s != 0 {
+                    break;
+                }
+            }
+            s
+        }
+    };
+    if s <= 0 {
+        return false;
+    }
+    if !strict {
+        return true;
+    }
+
+    // 3. Strict positivity additionally forbids any root in the closed
+    //    interval (the bound endpoints are never roots).
+    SturmChain::new(f).count_roots_in_closed(&a, &b) == 0
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // impl Expr<Numeric> — polynomial algebra
 // ═══════════════════════════════════════════════════════════════════════════
@@ -490,7 +588,65 @@ impl Expr<Numeric> {
     /// Leading coefficient of `self` as a polynomial in `var`.
     ///
     /// Returns `None` for non-polynomial input; the zero polynomial has
-    /// leading coefficient `0`.
+    /// leading coefficient `0`.  Coefficients may be exact numbers or
+    /// arbitrary expressions free of `var`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, a) = (ctx.symbol("x"), ctx.symbol("a"));
+    /// let f = &x.powi(3) * 5 - &x + 2;
+    /// assert_eq!(format!("{}", f.leading_coeff(&x).unwrap()), "5");
+    /// let g = &a * &x.powi(2) + &x + 1;
+    /// assert_eq!(g.leading_coeff(&x).unwrap(), a);
+    /// assert!(x.sin().leading_coeff(&x).is_none());
+    /// ```
+    #[must_use]
+    pub fn leading_coeff(&self, var: &Ex) -> Option<Ex> {
+        let var_id = self.checked_id(var);
+        let id = {
+            let mut inner = self.inner.write();
+            match expr_to_poly(&inner.arena, self.raw_id(), var_id) {
+                Some(f) => {
+                    let lc = f.leading_coeff().cloned().unwrap_or_else(Ratio::zero);
+                    num_expr(&mut inner.arena, lc)
+                }
+                None => {
+                    let coeffs = crate::api::expr_funcs::symbolic_coeffs_of(
+                        &mut inner.arena,
+                        self.raw_id(),
+                        var_id,
+                    )?;
+                    match coeffs.last() {
+                        Some(&lc) => lc,
+                        None => inner.arena.zero,
+                    }
+                }
+            }
+        };
+        Some(self.wrap(id))
+    }
+
+    // ── Sign on an interval ───────────────────────────────────────────────
+
+    /// Is `self`, a univariate polynomial in `var` with rational
+    /// coefficients, `≥ 0` at every point of the closed interval `[lo, hi]`?
+    ///
+    /// The decision is exact: the square-free decomposition isolates the
+    /// roots of odd multiplicity (the only places where the sign changes), a
+    /// Sturm count checks that none lies strictly inside the interval, and
+    /// the constant sign on the rest of the interval is read off at one
+    /// point.  Endpoints must be exact rationals or `±∞`
+    /// ([`Context::infinity`](crate::api::context::Context::infinity),
+    /// [`Context::neg_infinity`](crate::api::context::Context::neg_infinity)).
+    /// An empty interval (`lo > hi`) is vacuously `Some(true)`; the zero
+    /// polynomial is `Some(true)`.
+    ///
+    /// Returns `None` for non-polynomial input, symbolic coefficients, or
+    /// endpoints that are neither rational nor infinite.
     ///
     /// # Examples
     ///
@@ -499,20 +655,60 @@ impl Expr<Numeric> {
     ///
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
-    /// let f = &x.powi(3) * 5 - &x + 2;
-    /// assert_eq!(format!("{}", f.leading_coeff(&x).unwrap()), "5");
-    /// assert!(x.sin().leading_coeff(&x).is_none());
+    /// let (ninf, inf) = (ctx.neg_infinity(), ctx.infinity());
+    /// // (x − 1)² ≥ 0 everywhere
+    /// let sq = &x.powi(2) - &x * 2 + 1;
+    /// assert_eq!(sq.poly_is_nonnegative_on(&x, &ninf, &inf), Some(true));
+    /// // x³ − x is ≥ 0 on [2, ∞) but not on [−2, ∞)
+    /// let f = &x.powi(3) - &x;
+    /// assert_eq!(f.poly_is_nonnegative_on(&x, &ctx.int(2), &inf), Some(true));
+    /// assert_eq!(f.poly_is_nonnegative_on(&x, &ctx.int(-2), &inf), Some(false));
+    /// assert_eq!(x.sin().poly_is_nonnegative_on(&x, &ninf, &inf), None);
     /// ```
     #[must_use]
-    pub fn leading_coeff(&self, var: &Ex) -> Option<Ex> {
+    pub fn poly_is_nonnegative_on(&self, var: &Ex, lo: &Ex, hi: &Ex) -> Option<bool> {
+        self.poly_sign_on(var, lo, hi, false)
+    }
+
+    /// Is `self`, a univariate polynomial in `var` with rational
+    /// coefficients, `> 0` at every point of the closed interval `[lo, hi]`?
+    ///
+    /// Same method and conventions as
+    /// [`poly_is_nonnegative_on`](Self::poly_is_nonnegative_on), but any
+    /// root in the closed interval (including a root at an endpoint or a
+    /// root of even multiplicity) makes the answer `Some(false)`, and the
+    /// zero polynomial is `Some(false)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let (ninf, inf) = (ctx.neg_infinity(), ctx.infinity());
+    /// assert_eq!((&x.powi(2) + 1).poly_is_positive_on(&x, &ninf, &inf), Some(true));
+    /// // (x − 1)² touches zero at x = 1
+    /// let sq = &x.powi(2) - &x * 2 + 1;
+    /// assert_eq!(sq.poly_is_positive_on(&x, &ninf, &inf), Some(false));
+    /// assert_eq!(sq.poly_is_positive_on(&x, &ctx.int(2), &inf), Some(true));
+    /// ```
+    #[must_use]
+    pub fn poly_is_positive_on(&self, var: &Ex, lo: &Ex, hi: &Ex) -> Option<bool> {
+        self.poly_sign_on(var, lo, hi, true)
+    }
+
+    /// Shared implementation of the interval sign tests.
+    fn poly_sign_on(&self, var: &Ex, lo: &Ex, hi: &Ex, strict: bool) -> Option<bool> {
         let var_id = self.checked_id(var);
-        let id = {
-            let mut inner = self.inner.write();
-            let f = expr_to_poly(&inner.arena, self.raw_id(), var_id)?;
-            let lc = f.leading_coeff().cloned().unwrap_or_else(Ratio::zero);
-            num_expr(&mut inner.arena, lc)
-        };
-        Some(self.wrap(id))
+        let lo_id = self.checked_id(lo);
+        let hi_id = self.checked_id(hi);
+        let inner = self.inner.read();
+        let f = expr_to_poly(&inner.arena, self.raw_id(), var_id)?;
+        let lo_e = endpoint(&inner.arena, lo_id)?;
+        let hi_e = endpoint(&inner.arena, hi_id)?;
+        drop(inner);
+        Some(poly_sign_on_interval(&f, &lo_e, &hi_e, strict))
     }
 
     /// Monic version of `self` (divide by the leading coefficient).

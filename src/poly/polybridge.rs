@@ -486,6 +486,136 @@ pub(crate) fn multipoly_to_expr(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Expression → sparse polynomial with symbolic coefficients
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// View `expr` as a polynomial in the generators `gens` whose coefficients
+/// are arbitrary generator-free expressions.
+///
+/// The expression is expanded, each resulting product term is split into
+/// an exponent vector over `gens` and a generator-free coefficient, and
+/// terms with equal exponent vectors are summed and evaluated.  Zero
+/// coefficients are dropped, so the zero polynomial yields an empty list.
+///
+/// Returns `None` if a generator occurs in a non-polynomial position
+/// (inside a function, under a non-integer or negative power, in an
+/// exponent, …).  The result is in ascending lexicographic order of the
+/// exponent vectors.
+pub(crate) fn symbolic_multipoly_terms(
+    arena: &mut Arena,
+    expr: ExprId,
+    gens: &[ExprId],
+) -> Option<Vec<(Vec<u32>, ExprId)>> {
+    let expanded = crate::transforms::expand::expand(arena, expr);
+    let terms: Vec<ExprId> = match arena.node(expanded) {
+        ExprNode::Add(children) => children.to_vec(),
+        _ => vec![expanded],
+    };
+    let mut buckets: std::collections::BTreeMap<Vec<u32>, Vec<ExprId>> =
+        std::collections::BTreeMap::new();
+    for term in terms {
+        let (exps, coeff) = term_exponents_coeff(arena, term, gens)?;
+        buckets.entry(exps).or_default().push(coeff);
+    }
+    let mut out = Vec::with_capacity(buckets.len());
+    for (exps, bucket) in buckets {
+        let c = if bucket.len() == 1 {
+            bucket[0]
+        } else {
+            arena.add(&bucket)
+        };
+        let c = crate::transforms::eval::eval(arena, c);
+        if !arena.is_zero_structural(c) {
+            out.push((exps, c));
+        }
+    }
+    Some(out)
+}
+
+/// Does `expr` contain any of `gens`?
+fn contains_any(arena: &Arena, expr: ExprId, gens: &[ExprId]) -> bool {
+    if gens.contains(&expr) {
+        return true;
+    }
+    let mut visited: rustc_hash::FxHashSet<ExprId> = rustc_hash::FxHashSet::default();
+    let mut stack: Vec<ExprId> = vec![expr];
+    while let Some(id) = stack.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        if gens.contains(&id) {
+            return true;
+        }
+        stack.extend(arena.node(id).children());
+    }
+    false
+}
+
+/// Split one product term into `(exponent vector over gens, coefficient)`.
+fn term_exponents_coeff(
+    arena: &mut Arena,
+    term: ExprId,
+    gens: &[ExprId],
+) -> Option<(Vec<u32>, ExprId)> {
+    let mut exps = vec![0u32; gens.len()];
+    if !contains_any(arena, term, gens) {
+        return Some((exps, term));
+    }
+    let mut consts: SmallVec<[ExprId; 4]> = SmallVec::new();
+    match arena.node(term).clone() {
+        ExprNode::Mul(children) => {
+            for &child in &children {
+                accumulate_factor(arena, child, gens, &mut exps, &mut consts)?;
+            }
+        }
+        _ => accumulate_factor(arena, term, gens, &mut exps, &mut consts)?,
+    }
+    let c = match consts.len() {
+        0 => arena.one,
+        1 => consts[0],
+        _ => arena.mul(&consts),
+    };
+    Some((exps, c))
+}
+
+/// Fold a single factor of a product term into the exponent vector
+/// (`gen`, `gen^n`) or the coefficient list (generator-free), failing on
+/// anything else.
+fn accumulate_factor(
+    arena: &Arena,
+    factor: ExprId,
+    gens: &[ExprId],
+    exps: &mut [u32],
+    consts: &mut SmallVec<[ExprId; 4]>,
+) -> Option<()> {
+    if let Some(i) = gens.iter().position(|&g| g == factor) {
+        exps[i] = exps[i].checked_add(1)?;
+        return Some(());
+    }
+    if !contains_any(arena, factor, gens) {
+        consts.push(factor);
+        return Some(());
+    }
+    match arena.node(factor) {
+        ExprNode::Pow(base, exp) => {
+            let i = gens.iter().position(|g| g == base)?;
+            let n = arena.as_num(*exp)?;
+            if !n.is_integer() || n.is_negative() {
+                return None;
+            }
+            let d: u32 = n.to_integer().try_into().ok()?;
+            exps[i] = exps[i].checked_add(d)?;
+            Some(())
+        }
+        ExprNode::Neg(inner) => {
+            consts.push(arena.neg_one);
+            accumulate_factor(arena, *inner, gens, exps, consts)
+        }
+        _ => None,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Numerator / Denominator decomposition
 // ═══════════════════════════════════════════════════════════════════════════
 

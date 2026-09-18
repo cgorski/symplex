@@ -11,6 +11,21 @@ use crate::api::expr::{BoolEx, Ex, Expr, Numeric, SetEx, SetValued};
 use crate::base::assumptions::{Assumption, Props};
 use crate::base::errors::SymplexError;
 
+/// Ascending coefficients of `expr` as a polynomial in `var`, allowing
+/// arbitrary `var`-free symbolic coefficients.  The zero polynomial is the
+/// empty list, matching the rational-coefficient path in `polybridge`.
+pub(crate) fn symbolic_coeffs_of(
+    arena: &mut crate::base::arena::Arena,
+    expr: crate::base::node::ExprId,
+    var: crate::base::node::ExprId,
+) -> Option<Vec<crate::base::node::ExprId>> {
+    let coeffs = crate::transforms::solve::symbolic_poly_coeffs(arena, expr, var)?;
+    if coeffs.len() == 1 && arena.is_zero_structural(coeffs[0]) {
+        return Some(vec![]);
+    }
+    Some(coeffs)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // impl Expr<Numeric> — Numeric-specific methods
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2441,9 +2456,9 @@ impl Expr<Numeric> {
 
     /// Rational simplification: combine fractions and cancel.
     ///
-    /// Equivalent to calling [`together`](Self::together) to combine
-    /// fractions over a common denominator, then [`cancel`](Self::cancel)
-    /// with each free symbol to remove common factors.
+    /// Combines every fraction over a common denominator and cancels the
+    /// common polynomial factors, in all variables at once.  Since 0.3 this
+    /// is the same normal form as [`ratsimp`](Self::ratsimp).
     ///
     /// # Examples
     ///
@@ -2455,19 +2470,52 @@ impl Expr<Numeric> {
     /// // 1/x + 1/x → 2/x after simplify_rational
     /// let expr = &x.powi(-1) + &x.powi(-1);
     /// let simplified = expr.simplify_rational();
-    /// let s = format!("{simplified}");
-    /// assert!(s.contains("2"), "simplify_rational should combine: {s}");
+    /// assert_eq!(simplified, ctx.int(2) / &x);
     /// ```
     #[must_use = "returns the simplified form; does not modify in place"]
     pub fn simplify_rational(&self) -> Ex {
-        let together = self.together();
-        // Try to cancel with each free symbol
-        let syms = together.free_symbols();
-        let mut result = together;
-        for sym in &syms {
-            result = result.cancel(sym);
-        }
-        result
+        self.ratsimp()
+    }
+
+    /// Rational-function normal form: a single fraction with common factors
+    /// cancelled and an integer-primitive numerator and denominator.
+    ///
+    /// The expression is read as `P/Q` with `P` and `Q` polynomials over
+    /// the free symbols and every maximal non-rational subexpression
+    /// (`sin(x)`, `π`, `√x`, … are treated as independent indeterminates,
+    /// exactly like SymPy's `cancel`).  `gcd(P, Q)` is divided out with a
+    /// heuristic multivariate GCD, denominators are cleared so that both
+    /// parts have integer coefficients with no common integer factor, and
+    /// the leading coefficient of `Q` is made positive.
+    ///
+    /// Expressions containing `±∞`, `NaN` or unevaluated nodes are
+    /// returned unchanged, as is anything that is already in normal form
+    /// (the returned handle is then structurally identical to `self`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// // (x² − y²)/(x − y) → x + y
+    /// let e = (&x.powi(2) - &y.powi(2)) / (&x - &y);
+    /// assert_eq!(e.ratsimp(), &x + &y);
+    /// // 1/x + 1/y → (x + y)/(x y)
+    /// let e = ctx.int(1) / &x + ctx.int(1) / &y;
+    /// assert_eq!(e.ratsimp(), (&x + &y) / (&x * &y));
+    /// // Opaque subexpressions are indeterminates: sin(x)²/sin(x) → sin(x)
+    /// assert_eq!((x.sin().powi(2) / x.sin()).ratsimp(), x.sin());
+    /// ```
+    #[must_use = "returns the normalised form; does not modify in place"]
+    pub fn ratsimp(&self) -> Ex {
+        let _span = debug_span!("ratsimp", expr = ?self.raw_id()).entered();
+        let id = {
+            let mut inner = self.inner.write();
+            crate::simplify::ratsimp::ratsimp(&mut inner.arena, self.raw_id())
+        };
+        self.wrap(id)
     }
 
     /// Partial fraction decomposition with respect to `var`.
@@ -2632,7 +2680,8 @@ impl Expr<Numeric> {
     ///
     /// Returns `Some(n)` if the expression is a polynomial of degree `n`
     /// in `var`, or `None` if it is not polynomial (e.g., contains `sin(x)`)
-    /// or is the zero polynomial.
+    /// or is the zero polynomial.  Coefficients may be exact numbers or
+    /// arbitrary expressions free of `var` (symbolic parameters).
     ///
     /// # Examples
     ///
@@ -2640,21 +2689,31 @@ impl Expr<Numeric> {
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
-    /// let x = ctx.symbol("x");
+    /// let (x, a) = (ctx.symbol("x"), ctx.symbol("a"));
     /// assert_eq!((&x.powi(3) + &x + 1).degree(&x), Some(3));
+    /// assert_eq!((&a * &x.powi(2) + &x * (&a + 1) + 3).degree(&x), Some(2));
     /// assert_eq!(x.sin().degree(&x), None);
     /// ```
     #[must_use]
     pub fn degree(&self, var: &Ex) -> Option<usize> {
         let var_id = self.checked_id(var);
-        let inner = self.inner.read();
-        inner.arena.degree_of(self.raw_id(), var_id)
+        let mut inner = self.inner.write();
+        if let Some(d) = inner.arena.degree_of(self.raw_id(), var_id) {
+            return Some(d);
+        }
+        let coeffs = symbolic_coeffs_of(&mut inner.arena, self.raw_id(), var_id)?;
+        if coeffs.is_empty() {
+            return None;
+        }
+        Some(coeffs.len() - 1)
     }
 
     /// Return the coefficients of this expression as a polynomial in `var`,
     /// in ascending degree order: `[a_0, a_1, a_2, ...]`.
     ///
     /// Returns `None` if the expression is not polynomial in `var`.
+    /// Coefficients may be exact numbers or arbitrary expressions free of
+    /// `var`; the zero polynomial yields an empty vector.
     ///
     /// # Examples
     ///
@@ -2662,18 +2721,27 @@ impl Expr<Numeric> {
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
-    /// let x = ctx.symbol("x");
+    /// let (x, a) = (ctx.symbol("x"), ctx.symbol("a"));
     /// // x^2 + 3*x + 5 → coefficients [5, 3, 1]
     /// let expr = &x.powi(2) + &x * 3 + 5;
     /// let cs = expr.coeffs(&x).unwrap();
     /// let strs: Vec<String> = cs.iter().map(|c| format!("{c}")).collect();
     /// assert_eq!(strs, vec!["5", "3", "1"]);
+    ///
+    /// // Symbolic parameters are collected too: a*x^2 + (a + 1)*x + 3
+    /// let expr = &a * &x.powi(2) + &x * (&a + 1) + 3;
+    /// let cs = expr.coeffs(&x).unwrap();
+    /// let strs: Vec<String> = cs.iter().map(|c| format!("{c}")).collect();
+    /// assert_eq!(strs, vec!["3", "a + 1", "a"]);
     /// ```
     #[must_use]
     pub fn coeffs(&self, var: &Ex) -> Option<Vec<Ex>> {
         let var_id = self.checked_id(var);
         let mut inner = self.inner.write();
-        let ids = inner.arena.coefficients_of(self.raw_id(), var_id)?;
+        let ids = match inner.arena.coefficients_of(self.raw_id(), var_id) {
+            Some(ids) => ids,
+            None => symbolic_coeffs_of(&mut inner.arena, self.raw_id(), var_id)?,
+        };
         drop(inner);
         Some(ids.into_iter().map(|id| self.wrap(id)).collect())
     }

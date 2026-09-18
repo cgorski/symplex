@@ -7,6 +7,7 @@ pub(crate) mod log_expand;
 pub(crate) mod nsimplify;
 pub(crate) mod powsimp;
 pub(crate) mod radsimp;
+pub(crate) mod ratsimp;
 pub(crate) mod refine;
 pub(crate) mod rewrite;
 pub(crate) mod simplify_engine;

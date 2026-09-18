@@ -481,6 +481,11 @@ fn try_solve_symbolic_poly(arena: &mut Arena, expr: ExprId, var: ExprId) -> Opti
 }
 
 /// Solve from ascending symbolic coefficients (see [`try_solve_symbolic_poly`]).
+///
+/// The linear root `-b/a` and the quadratic discriminant are put into
+/// rational normal form with `ratsimp`, so parametric coefficients that are
+/// themselves fractions (`(3r - 1)/(j + 1) - (r + 1)/(2j)`) yield a single
+/// cancelled fraction rather than a fraction of fractions.
 fn solve_symbolic_coeffs(arena: &mut Arena, coeffs: &[ExprId]) -> Option<Vec<Solution>> {
     let degree = coeffs.len().checked_sub(1)?;
     match degree {
@@ -491,6 +496,7 @@ fn solve_symbolic_coeffs(arena: &mut Arena, coeffs: &[ExprId]) -> Option<Vec<Sol
             let neg_b = arena.neg(b);
             let v = arena.div(neg_b, a);
             let v = crate::transforms::eval::eval(arena, v);
+            let v = crate::simplify::ratsimp::ratsimp(arena, v);
             Some(vec![Solution { value: v }])
         }
         2 => {
@@ -514,6 +520,7 @@ fn solve_symbolic_coeffs(arena: &mut Arena, coeffs: &[ExprId]) -> Option<Vec<Sol
             let four_ac = arena.mul(&[four, a, c]);
             let disc = arena.sub(b_sq, four_ac);
             let disc = crate::transforms::eval::eval(arena, disc);
+            let disc = crate::simplify::ratsimp::ratsimp(arena, disc);
             let sqrt_disc = arena.sqrt(disc);
             let neg_b = arena.neg(b);
             let two_a = arena.mul(&[two, a]);
@@ -2290,9 +2297,11 @@ pub(crate) fn try_solve_linear_symbolic(
         arena.add(&const_parts)
     };
 
-    // Solution: var = -constant / coeff
+    // Solution: var = -constant / coeff, as a single cancelled fraction
+    // when the coefficients are themselves fractions.
     let neg_const = arena.neg(constant);
     let solution = arena.div(neg_const, coeff);
+    let solution = crate::simplify::ratsimp::ratsimp(arena, solution);
 
     Some(vec![Solution { value: solution }])
 }

@@ -203,8 +203,6 @@ pub use api::expr_integrate_ext as integrate_api;
 pub use api::expr_ops;
 /// Polynomial-algebra methods on `Ex` (resultant, discriminant, division, numeric roots, …).
 pub use api::expr_poly_ext as poly_api;
-/// Public sparse polynomial view (`Poly`) over explicit generators.
-pub use api::poly_ex;
 /// Public rewrite-rule engine: `Rule`, `RuleSet`, `Bindings`, `RewriteOpts`, `Step`.
 pub use api::expr_rules_ext as rules;
 /// Summation, products, series and formal-power-series methods on `Ex`.
@@ -219,6 +217,8 @@ pub use api::expr_transforms_ext as transforms_api;
 pub use api::expr_view;
 /// Convenience macros for building expressions.
 pub use api::macros;
+/// Public sparse polynomial view (`Poly`) over explicit generators.
+pub use api::poly_ex;
 
 // output
 /// Code-generation options and compiled numeric functions.

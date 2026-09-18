@@ -3294,6 +3294,124 @@ pub fn harmonic(n: impl Into<BigInt>) -> Option<Ratio<BigInt>> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Multi-argument gcd / lcm and denominator clearing
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Greatest common divisor of a list of integers (always `≥ 0`).
+///
+/// The empty list has gcd `0`, matching `gcd(0, 0) = 0`; a single element
+/// gives its absolute value.  Stops early once the running gcd reaches `1`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::gcd_many;
+/// use num_bigint::BigInt;
+///
+/// let v: Vec<BigInt> = [12, 18, 30].iter().map(|&n| BigInt::from(n)).collect();
+/// assert_eq!(gcd_many(&v), BigInt::from(6));
+/// assert_eq!(gcd_many(&[]), BigInt::from(0));
+/// assert_eq!(gcd_many(&[BigInt::from(-8)]), BigInt::from(8));
+/// ```
+pub fn gcd_many(values: &[BigInt]) -> BigInt {
+    let mut g = BigInt::zero();
+    for v in values {
+        g = num_integer::Integer::gcd(&g, v);
+        if g.is_one() {
+            break;
+        }
+    }
+    g
+}
+
+/// Least common multiple of a list of integers (always `≥ 0`).
+///
+/// The empty list has lcm `1` (the empty product); any zero entry makes
+/// the result `0`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::lcm_many;
+/// use num_bigint::BigInt;
+///
+/// let v: Vec<BigInt> = [4, 6, 10].iter().map(|&n| BigInt::from(n)).collect();
+/// assert_eq!(lcm_many(&v), BigInt::from(60));
+/// assert_eq!(lcm_many(&[]), BigInt::from(1));
+/// assert_eq!(lcm_many(&[BigInt::from(3), BigInt::from(0)]), BigInt::from(0));
+/// ```
+pub fn lcm_many(values: &[BigInt]) -> BigInt {
+    let mut l = BigInt::one();
+    for v in values {
+        if v.is_zero() {
+            return BigInt::zero();
+        }
+        l = num_integer::Integer::lcm(&l, v);
+    }
+    l
+}
+
+/// [`gcd_many`] for any integer type convertible to [`BigInt`]
+/// (`i64`, `u64`, `i128`, `BigInt`, …).
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::igcd;
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(igcd(&[12i64, 18, 30]), BigInt::from(6));
+/// assert_eq!(igcd(&[-4i64, 6]), BigInt::from(2));
+/// assert_eq!(igcd::<i64>(&[]), BigInt::from(0));
+/// ```
+pub fn igcd<I: Into<BigInt> + Clone>(values: &[I]) -> BigInt {
+    let big: Vec<BigInt> = values.iter().cloned().map(Into::into).collect();
+    gcd_many(&big)
+}
+
+/// [`lcm_many`] for any integer type convertible to [`BigInt`].
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::ilcm;
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(ilcm(&[4i64, 6, 10]), BigInt::from(60));
+/// assert_eq!(ilcm::<i64>(&[]), BigInt::from(1));
+/// ```
+pub fn ilcm<I: Into<BigInt> + Clone>(values: &[I]) -> BigInt {
+    let big: Vec<BigInt> = values.iter().cloned().map(Into::into).collect();
+    lcm_many(&big)
+}
+
+/// Least common multiple of the denominators of a list of rationals — the
+/// factor that clears all denominators at once.
+///
+/// Multiplying every entry by the result yields integers.  The empty list
+/// gives `1`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::rational_lcm_of_denominators;
+/// use num_bigint::BigInt;
+/// use num_rational::Ratio;
+///
+/// let q = |n: i64, d: i64| Ratio::new(BigInt::from(n), BigInt::from(d));
+/// let v = [q(1, 2), q(2, 3), q(5, 4)];
+/// let l = rational_lcm_of_denominators(&v);
+/// assert_eq!(l, BigInt::from(12));
+/// for r in &v {
+///     assert!((r * Ratio::from_integer(l.clone())).is_integer());
+/// }
+/// ```
+pub fn rational_lcm_of_denominators(values: &[Ratio<BigInt>]) -> BigInt {
+    let denoms: Vec<BigInt> = values.iter().map(|r| r.denom().clone()).collect();
+    lcm_many(&denoms)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Unit tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -4324,5 +4442,57 @@ mod tests {
         assert_eq!(npartitions(5), Some(bi(7)));
         assert_eq!(partitions(4).count(), 5);
         let _: PartitionIter = partitions(3);
+    }
+
+    // ── gcd_many / lcm_many / denominators ────────────────────────────────────────
+
+    #[test]
+    fn gcd_many_basic_and_negatives() {
+        assert_eq!(gcd_many(&[bi(12), bi(18), bi(30)]), bi(6));
+        assert_eq!(gcd_many(&[bi(-12), bi(18)]), bi(6));
+        assert_eq!(gcd_many(&[bi(-7)]), bi(7));
+        assert_eq!(gcd_many(&[bi(0), bi(0)]), bi(0));
+        assert_eq!(gcd_many(&[bi(0), bi(5)]), bi(5));
+        assert_eq!(gcd_many(&[bi(7), bi(11), bi(13)]), bi(1));
+    }
+
+    #[test]
+    fn gcd_many_empty_is_zero() {
+        assert_eq!(gcd_many(&[]), bi(0));
+        assert_eq!(igcd::<i64>(&[]), bi(0));
+    }
+
+    #[test]
+    fn lcm_many_basic_and_zero() {
+        assert_eq!(lcm_many(&[bi(4), bi(6), bi(10)]), bi(60));
+        assert_eq!(lcm_many(&[bi(-4), bi(6)]), bi(12));
+        assert_eq!(lcm_many(&[bi(3), bi(0)]), bi(0));
+        assert_eq!(lcm_many(&[bi(9)]), bi(9));
+    }
+
+    #[test]
+    fn lcm_many_empty_is_one() {
+        assert_eq!(lcm_many(&[]), bi(1));
+        assert_eq!(ilcm::<i64>(&[]), bi(1));
+    }
+
+    #[test]
+    fn igcd_ilcm_accept_i64_slices() {
+        assert_eq!(igcd(&[12i64, 18, 30]), bi(6));
+        assert_eq!(ilcm(&[2i64, 3, 4]), bi(12));
+        assert_eq!(igcd(&[bi(100), bi(75)]), bi(25));
+    }
+
+    #[test]
+    fn rational_lcm_of_denominators_clears() {
+        let q = |n: i64, d: i64| Ratio::new(bi(n), bi(d));
+        let v = [q(1, 3), q(1, 7), q(5, 21), q(2, 1)];
+        let l = rational_lcm_of_denominators(&v);
+        assert_eq!(l, bi(21));
+        for r in &v {
+            assert!((r * Ratio::from_integer(l.clone())).is_integer());
+        }
+        assert_eq!(rational_lcm_of_denominators(&[]), bi(1));
+        assert_eq!(rational_lcm_of_denominators(&[q(4, 1)]), bi(1));
     }
 }

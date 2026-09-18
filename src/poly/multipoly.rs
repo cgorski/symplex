@@ -284,9 +284,86 @@ impl<O: MonomialOrd> MultiPoly<O> {
     }
 
     /// Look up the coefficient of a given exponent vector.
-    #[allow(dead_code)]
-    fn get_coeff(&self, exp: &[u32]) -> Option<&Ratio<BigInt>> {
+    ///
+    /// Returns `None` when the monomial is absent (its coefficient is zero)
+    /// or when `exp` has the wrong length.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::multipoly::MultiPoly;
+    /// use num_bigint::BigInt;
+    /// use num_rational::Ratio;
+    ///
+    /// let [x, y]: [MultiPoly; 2] = [MultiPoly::var(2, 0), MultiPoly::var(2, 1)];
+    /// let f = x.mul(&y).scale(&Ratio::from_integer(BigInt::from(3))).add(&x);
+    /// assert_eq!(f.coeff(&[1, 1]), Some(&Ratio::from_integer(BigInt::from(3))));
+    /// assert_eq!(f.coeff(&[0, 1]), None);
+    /// ```
+    pub fn coeff(&self, exp: &[u32]) -> Option<&Ratio<BigInt>> {
+        if exp.len() != self.num_vars {
+            return None;
+        }
         self.terms.get(&MonoKey::<O>::new(exp.to_vec()))
+    }
+
+    /// Build a polynomial from `(exponent_vector, coefficient)` pairs.
+    ///
+    /// Repeated monomials are summed and zero coefficients are dropped.
+    /// Returns `None` if any exponent vector does not have length
+    /// `num_vars`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::multipoly::MultiPoly;
+    /// use num_bigint::BigInt;
+    /// use num_rational::Ratio;
+    ///
+    /// let r = |n: i64| Ratio::from_integer(BigInt::from(n));
+    /// let f: MultiPoly = MultiPoly::from_terms(2, vec![(vec![1, 0], r(2)), (vec![1, 0], r(-2)), (vec![0, 1], r(5))]).unwrap();
+    /// assert_eq!(f.num_terms(), 1);
+    /// assert_eq!(f.coeff(&[0, 1]), Some(&r(5)));
+    /// assert!(MultiPoly::<symplex::multipoly::GrevLex>::from_terms(2, vec![(vec![1], r(1))]).is_none());
+    /// ```
+    pub fn from_terms(num_vars: usize, terms: Vec<(Vec<u32>, Ratio<BigInt>)>) -> Option<Self> {
+        let mut p = Self::zero(num_vars);
+        for (exp, c) in terms {
+            if exp.len() != num_vars {
+                return None;
+            }
+            p.insert_term(exp, c);
+        }
+        p.prune();
+        Some(p)
+    }
+
+    /// Apply `f` to every coefficient, dropping terms that become zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::multipoly::MultiPoly;
+    /// use num_bigint::BigInt;
+    /// use num_rational::Ratio;
+    ///
+    /// let x: MultiPoly = MultiPoly::var(1, 0);
+    /// let f = x.scale(&Ratio::from_integer(BigInt::from(6))) + 4;
+    /// let halved = f.map_coeffs(|c| c / Ratio::from_integer(BigInt::from(2)));
+    /// assert_eq!(halved, x.scale(&Ratio::from_integer(BigInt::from(3))) + 2);
+    /// ```
+    pub fn map_coeffs(&self, mut f: impl FnMut(&Ratio<BigInt>) -> Ratio<BigInt>) -> Self {
+        let mut terms = BTreeMap::new();
+        for (k, c) in &self.terms {
+            let nc = f(c);
+            if !nc.is_zero() {
+                terms.insert(k.clone(), nc);
+            }
+        }
+        MultiPoly {
+            num_vars: self.num_vars,
+            terms,
+        }
     }
 
     /// Remove any terms whose coefficient has become zero.
@@ -650,6 +727,312 @@ impl<O: MonomialOrd> MultiPoly<O> {
             return integer_poly;
         }
         integer_poly.scale(&Ratio::new(BigInt::one(), content))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Integer content, denominators, heuristic GCD
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Maximum number of evaluation points tried by the heuristic GCD before
+/// giving up.
+const HEUGCD_MAX_TRIES: usize = 6;
+
+/// Symmetric remainder of `c` modulo `m`: the representative of `c mod m`
+/// in `(-m/2, m/2]`.
+fn symmetric_mod(c: &BigInt, m: &BigInt) -> BigInt {
+    use num_integer::Integer;
+    let r = c.mod_floor(m);
+    if &r + &r > *m { r - m } else { r }
+}
+
+impl<O: MonomialOrd> MultiPoly<O> {
+    /// GCD of the numerators of all coefficients (non-negative).
+    ///
+    /// For a polynomial with integer coefficients this is the usual
+    /// integer content; denominators are ignored, so call
+    /// [`clear_denominators`](Self::clear_denominators) first for a
+    /// general rational polynomial.  The zero polynomial has content `0`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::multipoly::MultiPoly;
+    /// use num_bigint::BigInt;
+    ///
+    /// let x: MultiPoly = MultiPoly::var(1, 0);
+    /// let f = x.clone() * 6 + 9;
+    /// assert_eq!(f.integer_content(), BigInt::from(3));
+    /// assert_eq!(MultiPoly::<symplex::multipoly::GrevLex>::zero(1).integer_content(), BigInt::from(0));
+    /// ```
+    pub fn integer_content(&self) -> BigInt {
+        let mut g = BigInt::zero();
+        for (_, c) in self.terms() {
+            g = num_integer::gcd(g, c.numer().clone());
+            if g.is_one() {
+                break;
+            }
+        }
+        g
+    }
+
+    /// Multiply through by the least common multiple `d` of all coefficient
+    /// denominators, returning `(d, d · self)`; the second component has
+    /// integer coefficients.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::multipoly::MultiPoly;
+    /// use num_bigint::BigInt;
+    /// use num_rational::Ratio;
+    ///
+    /// let x: MultiPoly = MultiPoly::var(1, 0);
+    /// let f = x.scale(&Ratio::new(BigInt::from(1), BigInt::from(2))) + 1;   // x/2 + 1
+    /// let (d, g) = f.clear_denominators();
+    /// assert_eq!(d, BigInt::from(2));
+    /// assert_eq!(g, x + 2);
+    /// ```
+    pub fn clear_denominators(&self) -> (BigInt, Self) {
+        let mut d = BigInt::one();
+        for (_, c) in self.terms() {
+            d = num_integer::lcm(d, c.denom().clone());
+        }
+        if d.is_one() {
+            return (d, self.clone());
+        }
+        let scaled = self.scale(&Ratio::from_integer(d.clone()));
+        (d, scaled)
+    }
+
+    /// Largest absolute value of a coefficient numerator (the max-norm for
+    /// integer polynomials).  Zero for the zero polynomial.
+    fn max_norm(&self) -> BigInt {
+        let mut m = BigInt::zero();
+        for (_, c) in self.terms() {
+            let a = num_traits::Signed::abs(c.numer());
+            if a > m {
+                m = a;
+            }
+        }
+        m
+    }
+
+    /// `true` if the leading coefficient (under `O`) is negative.
+    fn leading_is_negative(&self) -> bool {
+        self.leading_coeff()
+            .is_some_and(num_traits::Signed::is_negative)
+    }
+
+    /// Integer-normalised form used by [`gcd`](Self::gcd): denominators
+    /// cleared and leading coefficient made positive.
+    fn normalized_over_z(&self) -> Self {
+        let (_, z) = self.clear_denominators();
+        if z.leading_is_negative() { z.neg() } else { z }
+    }
+
+    /// Greatest common divisor in ℤ[x₁, …, xₙ] of the inputs after clearing
+    /// denominators, computed with the heuristic GCD algorithm (GCDHEU).
+    ///
+    /// The result has integer coefficients, positive leading coefficient
+    /// (under `O`), and integer content equal to the GCD of the inputs'
+    /// integer contents.  For inputs with integer coefficients this is the
+    /// ordinary GCD over ℤ; over ℚ the GCD is only defined up to a nonzero
+    /// rational factor, and this normalisation picks one representative.
+    /// `gcd(0, 0) = 0`, `gcd(f, 0)` is the normalised `f`.
+    ///
+    /// The heuristic evaluates one variable at a large integer, recurses on
+    /// the remaining variables (integer GCD in the univariate case), and
+    /// reconstructs the candidate by symmetric ξ-adic expansion; the
+    /// candidate is verified by exact division of both inputs, so a wrong
+    /// answer is never returned.  If every evaluation point fails (which
+    /// does not happen for inputs of realistic size), the constant `1` is
+    /// returned, meaning "no common factor found".
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::multipoly::MultiPoly;
+    ///
+    /// let [x, y]: [MultiPoly; 2] = [MultiPoly::var(2, 0), MultiPoly::var(2, 1)];
+    /// let s = x.add(&y);                 // x + y
+    /// let d = x.sub(&y);                 // x − y
+    /// let f = s.mul(&d);                 // x² − y²
+    /// let g = s.mul(&s);                 // (x + y)²
+    /// assert_eq!(MultiPoly::gcd(&f, &g), s);
+    /// assert_eq!(MultiPoly::gcd(&x, &y), MultiPoly::from_int(2, 1));
+    /// ```
+    pub fn gcd(a: &Self, b: &Self) -> Self {
+        if a.num_vars != b.num_vars {
+            return Self::from_int(a.num_vars, 1);
+        }
+        match (a.is_zero(), b.is_zero()) {
+            (true, true) => return Self::zero(a.num_vars),
+            (true, false) => return b.normalized_over_z(),
+            (false, true) => return a.normalized_over_z(),
+            (false, false) => {}
+        }
+        let (_, az) = a.clear_denominators();
+        let (_, bz) = b.clear_denominators();
+        match Self::heugcd_z(&az, &bz, 0) {
+            Some(h) => {
+                if h.leading_is_negative() {
+                    h.neg()
+                } else {
+                    h
+                }
+            }
+            None => Self::from_int(a.num_vars, 1),
+        }
+    }
+
+    /// Least common multiple `a · b / gcd(a, b)` (integer-normalised like
+    /// [`gcd`](Self::gcd)); zero if either input is zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::multipoly::MultiPoly;
+    ///
+    /// let [x, y]: [MultiPoly; 2] = [MultiPoly::var(2, 0), MultiPoly::var(2, 1)];
+    /// let f = x.mul(&y);                 // xy
+    /// let g = y.mul(&y);                 // y²
+    /// assert_eq!(MultiPoly::lcm(&f, &g), x.mul(&y).mul(&y));
+    /// ```
+    pub fn lcm(a: &Self, b: &Self) -> Self {
+        if a.is_zero() || b.is_zero() {
+            return Self::zero(a.num_vars);
+        }
+        let g = Self::gcd(a, b);
+        let az = a.normalized_over_z();
+        let bz = b.normalized_over_z();
+        let prod = az.mul(&bz);
+        match prod.div_exact(&g) {
+            Some(l) => l,
+            None => prod,
+        }
+    }
+
+    /// Heuristic GCD over ℤ for nonzero integer-coefficient inputs with the
+    /// same number of variables.  Returns the full GCD (including integer
+    /// content), or `None` if every evaluation point failed.
+    fn heugcd_z(f: &Self, g: &Self, depth: usize) -> Option<Self> {
+        let nv = f.num_vars;
+        // Integer content.
+        let cf = f.integer_content();
+        let cg = g.integer_content();
+        if cf.is_zero() || cg.is_zero() {
+            return None;
+        }
+        let c = num_integer::gcd(cf.clone(), cg.clone());
+        let inv_cf = Ratio::new(BigInt::one(), cf);
+        let inv_cg = Ratio::new(BigInt::one(), cg);
+        let f = f.scale(&inv_cf);
+        let g = g.scale(&inv_cg);
+        let c_rat = Ratio::from_integer(c);
+
+        if nv == 0 {
+            // Both are ±1 after content removal.
+            return Some(Self::constant(0, c_rat));
+        }
+        // A primitive constant is ±1: the GCD is the content GCD.
+        if f.total_degree() == Some(0) || g.total_degree() == Some(0) {
+            return Some(Self::constant(nv, c_rat));
+        }
+        if f == g || f == g.neg() {
+            return Some(f.scale(&c_rat));
+        }
+        // Cheap exact-division shortcuts.
+        if g.div_exact(&f).is_some() {
+            return Some(f.scale(&c_rat));
+        }
+        if f.div_exact(&g).is_some() {
+            return Some(g.scale(&c_rat));
+        }
+        // Guard against pathological recursion depth (one level per variable).
+        if depth > nv + 1 {
+            return None;
+        }
+
+        let var = nv - 1;
+        let f_norm = f.max_norm();
+        let g_norm = g.max_norm();
+        let two = BigInt::from(2);
+        let mut xi: BigInt = &two * f_norm.min(g_norm) + BigInt::from(29);
+
+        for _ in 0..HEUGCD_MAX_TRIES {
+            if let Some(h) = Self::heugcd_attempt(&f, &g, var, &xi, depth) {
+                return Some(h.scale(&c_rat));
+            }
+            xi = Self::next_xi(&xi);
+        }
+        None
+    }
+
+    /// Next evaluation point: `73794 · ξ · ξ^(1/4) / 27011` (grows like
+    /// `ξ^1.25`, the schedule used by the classical implementations).
+    fn next_xi(xi: &BigInt) -> BigInt {
+        let root4 = xi.sqrt().sqrt().max(BigInt::from(2));
+        (BigInt::from(73794) * xi * root4) / BigInt::from(27011)
+    }
+
+    /// One evaluation/interpolation round of the heuristic GCD for primitive
+    /// inputs `f`, `g` in variable `var` at the point `xi`.  Returns the
+    /// verified GCD candidate or `None`.
+    fn heugcd_attempt(f: &Self, g: &Self, var: usize, xi: &BigInt, depth: usize) -> Option<Self> {
+        let xi_rat = Ratio::from_integer(xi.clone());
+        let ff = f.substitute(var, &xi_rat);
+        let gg = g.substitute(var, &xi_rat);
+        if ff.is_zero() || gg.is_zero() {
+            return None;
+        }
+        let h = Self::heugcd_z(&ff, &gg, depth + 1)?;
+        let h = Self::interpolate_xi(&h, xi, var);
+        if h.is_zero() {
+            return None;
+        }
+        // Make primitive (the content of the true GCD is 1 here).
+        let content = h.integer_content();
+        if content.is_zero() {
+            return None;
+        }
+        let h = h.scale(&Ratio::new(BigInt::one(), content));
+        if f.div_exact(&h).is_some() && g.div_exact(&h).is_some() {
+            Some(h)
+        } else {
+            None
+        }
+    }
+
+    /// Reconstruct a polynomial in variable `var` from its value `h` at
+    /// `xi` by symmetric ξ-adic expansion: `h = Σᵢ gᵢ · ξⁱ` with the
+    /// coefficients of each `gᵢ` in `(-ξ/2, ξ/2]`.
+    fn interpolate_xi(h: &Self, xi: &BigInt, var: usize) -> Self {
+        let nv = h.num_vars + 1;
+        let mut result = Self::zero(nv);
+        let mut rest = h.clone();
+        let mut i: u32 = 0;
+        let xi_rat = Ratio::from_integer(xi.clone());
+        while !rest.is_zero() {
+            // With exact integer arithmetic every digit step divides the
+            // remaining magnitude by ξ, so this terminates; the cap only
+            // guards against a non-integer `h` slipping through.
+            if i > 4096 || rest.terms().any(|(_, c)| !c.is_integer()) {
+                return Self::zero(nv);
+            }
+            let digit = rest.map_coeffs(|c| Ratio::from_integer(symmetric_mod(c.numer(), xi)));
+            for (exp, c) in digit.terms() {
+                let mut e = Vec::with_capacity(nv);
+                e.extend_from_slice(&exp[..var]);
+                e.push(i);
+                e.extend_from_slice(&exp[var..]);
+                result.insert_term(e, c.clone());
+            }
+            rest = rest.sub(&digit).map_coeffs(|c| c / &xi_rat);
+            i += 1;
+        }
+        result.prune();
+        result
     }
 }
 
@@ -1042,5 +1425,202 @@ mod tests {
         assert_eq!(c.num_terms(), 1);
         assert_eq!(c.total_degree(), Some(0));
         assert_eq!(c.eval(&[rat(0), rat(0)]), rat(42));
+    }
+
+    // ── heuristic GCD ──────────────────────────────────────────────────────────────
+
+    fn vars2() -> (MultiPoly<GrevLex>, MultiPoly<GrevLex>) {
+        (MultiPoly::var(2, 0), MultiPoly::var(2, 1))
+    }
+
+    fn pow(p: &MultiPoly<GrevLex>, n: u32) -> MultiPoly<GrevLex> {
+        let mut acc = MultiPoly::from_int(p.num_vars(), 1);
+        for _ in 0..n {
+            acc = acc.mul(p);
+        }
+        acc
+    }
+
+    #[test]
+    fn gcd_coprime_is_one() {
+        let (x, y) = vars2();
+        let f = x.mul(&x).add(&y); // x² + y
+        let g = x.add(&y).add(&MultiPoly::from_int(2, 1)); // x + y + 1
+        assert_eq!(MultiPoly::gcd(&f, &g), MultiPoly::from_int(2, 1));
+        assert_eq!(MultiPoly::gcd(&x, &y), MultiPoly::from_int(2, 1));
+    }
+
+    #[test]
+    fn gcd_shared_linear_factor() {
+        let (x, y) = vars2();
+        let s = x.add(&y);
+        let d = x.sub(&y);
+        let f = s.mul(&d); // x² − y²
+        let g = s.mul(&s); // (x + y)²
+        assert_eq!(MultiPoly::gcd(&f, &g), s);
+        // Negated input: sign is normalised away.
+        assert_eq!(MultiPoly::gcd(&f.neg(), &g), s);
+    }
+
+    #[test]
+    fn gcd_three_variables() {
+        let x: MultiPoly<GrevLex> = MultiPoly::var(3, 0);
+        let y: MultiPoly<GrevLex> = MultiPoly::var(3, 1);
+        let z: MultiPoly<GrevLex> = MultiPoly::var(3, 2);
+        // h = xy + z + 1, f = h·(x − z), g = h·(y² + x)
+        let h = x.mul(&y).add(&z).add(&MultiPoly::from_int(3, 1));
+        let f = h.mul(&x.sub(&z));
+        let g = h.mul(&y.mul(&y).add(&x));
+        assert_eq!(MultiPoly::gcd(&f, &g), h);
+        assert_eq!(MultiPoly::gcd(&g, &f), h);
+    }
+
+    #[test]
+    fn gcd_zero_handling() {
+        let (x, y) = vars2();
+        let f = x.mul(&y).scale(&rat(-4)); // −4xy
+        let z: MultiPoly<GrevLex> = MultiPoly::zero(2);
+        assert!(MultiPoly::gcd(&z, &z).is_zero());
+        // gcd(f, 0) is f with a positive leading coefficient.
+        assert_eq!(MultiPoly::gcd(&f, &z), x.mul(&y).scale(&rat(4)));
+        assert_eq!(MultiPoly::gcd(&z, &f), x.mul(&y).scale(&rat(4)));
+    }
+
+    #[test]
+    fn gcd_includes_integer_content() {
+        let (x, _y) = vars2();
+        let f = x.scale(&rat(6)); // 6x
+        let g = x.mul(&x).scale(&rat(4)); // 4x²
+        assert_eq!(MultiPoly::gcd(&f, &g), x.scale(&rat(2)));
+        // Constants.
+        let twelve: MultiPoly<GrevLex> = MultiPoly::from_int(2, 12);
+        assert_eq!(
+            MultiPoly::gcd(&twelve, &MultiPoly::from_int(2, 18)),
+            MultiPoly::from_int(2, 6)
+        );
+    }
+
+    #[test]
+    fn gcd_clears_rational_denominators() {
+        let (x, y) = vars2();
+        let s = x.add(&y);
+        let half = Ratio::new(BigInt::from(1), BigInt::from(2));
+        let third = Ratio::new(BigInt::from(1), BigInt::from(3));
+        let f = s.mul(&x).scale(&half); // (x + y)x / 2
+        let g = s.mul(&y).scale(&third); // (x + y)y / 3
+        let h = MultiPoly::gcd(&f, &g);
+        assert!(f.div_exact(&h).is_some() && g.div_exact(&h).is_some());
+        assert_eq!(h, s);
+    }
+
+    #[test]
+    fn gcd_large_coefficients() {
+        let (x, y) = vars2();
+        let big = |s: &str| Ratio::from_integer(s.parse::<BigInt>().unwrap());
+        // h = 123456789012345678901234567890·x + 987654321098765432109876543210·y + 1
+        let h = x
+            .scale(&big("123456789012345678901234567890"))
+            .add(&y.scale(&big("987654321098765432109876543210")))
+            .add(&MultiPoly::from_int(2, 1));
+        let f = h.mul(&x.add(&MultiPoly::from_int(2, 7)));
+        let g = h.mul(&y.sub(&x.scale(&big("5555555555555555555"))));
+        assert_eq!(MultiPoly::gcd(&f, &g), h);
+    }
+
+    #[test]
+    fn gcd_first_evaluation_point_fails_then_retry_succeeds() {
+        // gcd = (x + 1)⁸ has a coefficient 70, but the inputs have max-norms
+        // 28 and 112, so the first evaluation point ξ = 2·28 + 29 = 85 cannot
+        // represent 70 as a symmetric digit: the first attempt must fail and
+        // the next ξ must recover the answer.
+        let x: MultiPoly<GrevLex> = MultiPoly::var(1, 0);
+        let one = MultiPoly::from_int(1, 1);
+        let h = pow(&x.add(&one), 8);
+        let f = h.mul(&x.sub(&one)); // norm 28
+        let g = h.mul(&x.mul(&x).add(&one)); // norm 112
+        assert_eq!(f.max_norm(), BigInt::from(28));
+        assert_eq!(g.max_norm(), BigInt::from(112));
+        let xi0 = BigInt::from(85);
+        assert!(MultiPoly::heugcd_attempt(&f, &g, 0, &xi0, 0).is_none());
+        let xi1 = MultiPoly::<GrevLex>::next_xi(&xi0);
+        assert!(xi1 > BigInt::from(140), "next ξ = {xi1}");
+        assert_eq!(
+            MultiPoly::heugcd_attempt(&f, &g, 0, &xi1, 0),
+            Some(h.clone())
+        );
+        assert_eq!(MultiPoly::gcd(&f, &g), h);
+    }
+
+    #[test]
+    fn gcd_never_wrong_on_random_products() {
+        // Deterministic pseudo-random small polynomials: gcd(h·a, h·b) must
+        // be divisible by h and divide both products.
+        let (x, y) = vars2();
+        let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % 7) as i64 - 3
+        };
+        let mut rand_poly = || {
+            let mut p = MultiPoly::zero(2);
+            for ex in 0..3u32 {
+                for ey in 0..3u32 {
+                    let c = next();
+                    if c != 0 {
+                        p = p.add(&MultiPoly::monomial(rat(c), vec![ex, ey]));
+                    }
+                }
+            }
+            if p.is_zero() { x.add(&y) } else { p }
+        };
+        for _ in 0..12 {
+            let h = rand_poly();
+            let a = rand_poly();
+            let b = rand_poly();
+            let f = h.mul(&a);
+            let g = h.mul(&b);
+            let d = MultiPoly::gcd(&f, &g);
+            assert!(f.div_exact(&d).is_some(), "gcd does not divide f");
+            assert!(g.div_exact(&d).is_some(), "gcd does not divide g");
+            assert!(d.div_exact(&h).is_some(), "gcd {d} misses factor {h}");
+        }
+    }
+
+    #[test]
+    fn lcm_of_monomials() {
+        let (x, y) = vars2();
+        let f = x.mul(&y);
+        let g = y.mul(&y);
+        assert_eq!(MultiPoly::lcm(&f, &g), x.mul(&y).mul(&y));
+        assert!(MultiPoly::lcm(&f, &MultiPoly::zero(2)).is_zero());
+    }
+
+    #[test]
+    fn from_terms_and_map_coeffs() {
+        let p: MultiPoly<GrevLex> =
+            MultiPoly::from_terms(2, vec![(vec![1, 0], rat(2)), (vec![1, 0], rat(-2))]).unwrap();
+        assert!(p.is_zero());
+        let q: MultiPoly<GrevLex> = MultiPoly::from_terms(2, vec![(vec![2, 1], rat(3))]).unwrap();
+        assert_eq!(q.coeff(&[2, 1]), Some(&rat(3)));
+        assert_eq!(q.coeff(&[2]), None);
+        let doubled = q.map_coeffs(|c| c * rat(2));
+        assert_eq!(doubled.coeff(&[2, 1]), Some(&rat(6)));
+        let killed = q.map_coeffs(|_| rat(0));
+        assert!(killed.is_zero());
+    }
+
+    #[test]
+    fn integer_content_and_clear_denominators() {
+        let (x, y) = vars2();
+        let f = x.scale(&rat(6)).add(&y.scale(&rat(9)));
+        assert_eq!(f.integer_content(), BigInt::from(3));
+        let g = x
+            .scale(&Ratio::new(BigInt::from(1), BigInt::from(2)))
+            .add(&y.scale(&Ratio::new(BigInt::from(2), BigInt::from(3))));
+        let (d, gz) = g.clear_denominators();
+        assert_eq!(d, BigInt::from(6));
+        assert_eq!(gz, x.scale(&rat(3)).add(&y.scale(&rat(4))));
     }
 }
