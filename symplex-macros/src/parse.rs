@@ -190,6 +190,25 @@ impl MathExpr {
         }
     }
 
+    /// Returns `true` if this expression is built only from integer
+    /// literals and arithmetic (`+ - * / ^`, unary minus) — i.e. it would
+    /// lower to plain `i64` arithmetic and must be promoted to an `Ex`
+    /// (`2^10`, `2 + 3`, `-(2*3)`).
+    pub fn is_numeric_only(&self) -> bool {
+        match self {
+            MathExpr::Int(..) => true,
+            MathExpr::Neg(inner) => inner.is_numeric_only(),
+            MathExpr::BinOp { op, lhs, rhs } => {
+                matches!(
+                    op,
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow
+                ) && lhs.is_numeric_only()
+                    && rhs.is_numeric_only()
+            }
+            _ => false,
+        }
+    }
+
     /// Collect all unique wild identifiers in this expression.
     pub fn collect_wilds(&self) -> Vec<Ident> {
         let mut wilds = Vec::new();

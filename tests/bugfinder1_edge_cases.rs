@@ -1661,9 +1661,11 @@ fn serde_roundtrip_nan() {
 
 #[test]
 fn expr_macro_just_integer() {
-    let _ctx = Context::new();
+    // A purely numeric `expr!` is an `Ex` built through `ctx` (0.2 numfix).
+    let ctx = Context::new();
     let result = expr!(ctx, 0);
     assert_eq!(format!("{result}"), "0");
+    assert_eq!(result, ctx.int(0));
 }
 
 #[test]

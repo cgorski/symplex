@@ -77,7 +77,14 @@ use syn::Ident;
 #[proc_macro]
 pub fn expr(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as ExprMacroInput);
-    match generate_expr(&input.ctx, &input.expr) {
+    // A purely numeric expression (`2^10`, `-3`, `2 + 3`) must still be an
+    // `Ex`, not an `i64`.
+    let result = if input.expr.is_numeric_only() {
+        generate_expr_as_ex(&input.ctx, &input.expr)
+    } else {
+        generate_expr(&input.ctx, &input.expr)
+    };
+    match result {
         Ok(tokens) => tokens.into(),
         Err(e) => e.to_compile_error().into(),
     }
@@ -86,8 +93,12 @@ pub fn expr(input: TokenStream) -> TokenStream {
 /// Generate Rust code for an `expr!` invocation.
 ///
 /// Every identifier is emitted as `(&ident)`.  Integer literals stay
-/// as `i64`.  `^` becomes `.powi(n)` for integer RHS or `.pow(&rhs)`
-/// for expression RHS.  Known function names become method calls.
+/// as `i64` (the `Ex` operator impls accept them), except that in a
+/// binary operation whose operands are *both* numeric-only the left
+/// operand is promoted to an `Ex` so that `2^10` or `2 + 3` build an
+/// expression instead of `i64` arithmetic (`i64` has no `powi`).
+/// `^` becomes `.powi(n)` for integer RHS or `.pow(&rhs)` for expression
+/// RHS.  Known function names become method calls.
 fn generate_expr(ctx: &Ident, expr: &MathExpr) -> syn::Result<TokenStream2> {
     match expr {
         MathExpr::Int(n, _span) => Ok(quote! { #n }),
@@ -114,9 +125,25 @@ fn generate_expr(ctx: &Ident, expr: &MathExpr) -> syn::Result<TokenStream2> {
         }
 
         MathExpr::BinOp { op, lhs, rhs } => {
+            // `2 ^ 10`, `2 + 3`, `(2*3) - 1`: lift the left operand to an
+            // `Ex` so the arithmetic is symbolic (exact `i64` folding would
+            // otherwise happen in Rust, or fail to compile for `^`).
+            let numeric_binop = lhs.is_numeric_only()
+                && rhs.is_numeric_only()
+                && matches!(
+                    op,
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow
+                );
+            let gen_lhs = |ctx: &Ident, lhs: &MathExpr| -> syn::Result<TokenStream2> {
+                if numeric_binop {
+                    generate_expr_as_ex(ctx, lhs)
+                } else {
+                    generate_expr(ctx, lhs)
+                }
+            };
             match op {
                 BinOp::Pow => {
-                    let lhs_code = generate_expr(ctx, lhs)?;
+                    let lhs_code = gen_lhs(ctx, lhs)?;
                     // If RHS is an integer literal, use .powi(n).
                     // If RHS is Neg(Int), use .powi(-n).
                     if let Some(n) = rhs.as_int() {
@@ -160,7 +187,7 @@ fn generate_expr(ctx: &Ident, expr: &MathExpr) -> syn::Result<TokenStream2> {
                         let neg_p = -p;
                         return Ok(quote! { #ctx.rational(#neg_p, #q) });
                     }
-                    let lhs_code = generate_expr(ctx, lhs)?;
+                    let lhs_code = gen_lhs(ctx, lhs)?;
                     let rhs_code = generate_expr(ctx, rhs)?;
                     Ok(quote! { ((#lhs_code) / (#rhs_code)) })
                 }
@@ -205,7 +232,7 @@ fn generate_expr(ctx: &Ident, expr: &MathExpr) -> syn::Result<TokenStream2> {
                     Ok(quote! { (#lhs_code).or(&(#rhs_code)) })
                 }
                 _ => {
-                    let lhs_code = generate_expr(ctx, lhs)?;
+                    let lhs_code = gen_lhs(ctx, lhs)?;
                     let rhs_code = generate_expr(ctx, rhs)?;
                     let op_token = match op {
                         BinOp::Add => quote! { + },
