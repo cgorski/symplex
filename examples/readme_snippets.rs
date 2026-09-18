@@ -211,6 +211,94 @@ fn algebra() {
     assert_eq!(expr!(ctx, x ^ 4 + 1).is_irreducible(&x), Some(true));
 }
 
+fn polynomials() {
+    println!("\n--- Polynomials as Data and Rational Normal Forms ---");
+    let ctx = Context::new();
+    syms!(ctx; x, y, a, j, r);
+
+    // Polynomial introspection on Ex with symbolic (var-free) coefficients
+    let e = &a * &x.powi(2) + &x * (&a + 1) + 3;
+    assert_eq!(e.degree(&x), Some(2));
+    let cs: Vec<String> = e
+        .coeffs(&x)
+        .unwrap()
+        .iter()
+        .map(|c| c.to_string())
+        .collect();
+    println!("coeffs of {e} in x: {cs:?}");
+    assert_eq!(cs, ["3", "a + 1", "a"]);
+    assert_eq!(e.leading_coeff(&x).unwrap(), a);
+
+    // Poly: sparse terms over explicit generators, exact evaluation, calculus
+    let p = (&a * &x.powi(2) + &x * &y * 3 - &y + 1)
+        .as_poly(&[&x, &y])
+        .unwrap();
+    println!("{p}");
+    let terms: Vec<(Vec<u32>, String)> = p
+        .terms()
+        .into_iter()
+        .map(|(m, c)| (m, c.to_string()))
+        .collect();
+    println!("terms: {terms:?}");
+    assert_eq!(
+        terms,
+        [
+            (vec![2, 0], "a".to_string()),
+            (vec![1, 1], "3".to_string()),
+            (vec![0, 1], "-1".to_string()),
+            (vec![0, 0], "1".to_string()),
+        ]
+    );
+    assert_eq!(p.coeff_monomial(&[1, 1]).unwrap(), ctx.int(3));
+    assert_eq!(p.total_degree(), Some(2));
+    let at2 = p.eval_gen(&x, &ctx.int(2)).unwrap();
+    println!("p(x = 2) = {at2}");
+    assert_eq!(at2.to_string(), "Poly(4*a + 5*y + 1, y)");
+    let dp = p.derivative(&x).unwrap().to_ex();
+    assert_eq!(dp.to_string(), "2*a*x + 3*y");
+
+    // Rational normal form: nested fractions collapse to one cancelled fraction
+    let nested = (1 / (&x + 1 / &y) + 1 / (1 / &x + &y)).ratsimp();
+    println!("ratsimp: {nested}");
+    assert_eq!(nested.to_string(), "(x + y)/(x*y + 1)");
+    let sols = ((&r * 3 - 1) / (&j + 1) - (&r + 1) / (&j * 2))
+        .solve(&r)
+        .unwrap();
+    println!("solve: {}", sols[0]);
+    assert_eq!(sols[0].to_string(), "(3*j + 1)/(5*j - 1)");
+
+    // Exact sign of a rational-coefficient polynomial on an interval
+    assert_eq!(
+        (&x.powi(3) - &x).poly_is_nonnegative_on(&x, &ctx.int(2), &ctx.infinity()),
+        Some(true)
+    );
+    assert_eq!(
+        (&x.powi(2) - &x * 2 + 1).poly_is_positive_on(&x, &ctx.neg_infinity(), &ctx.infinity()),
+        Some(false)
+    );
+
+    // Linear certificates: (x + 1)² = λ₁·(x + 1) + λ₂·(x² − 1) as an exact linear system
+    let (h1, h2) = (
+        (&x + 1).as_poly(&[&x]).unwrap(),
+        (&x.powi(2) - 1).as_poly(&[&x]).unwrap(),
+    );
+    let goal = (&x + 1).powi(2).as_poly(&[&x]).unwrap();
+    let basis = Poly::monomial_basis(&[&h1, &h2, &goal]).unwrap();
+    assert_eq!(basis, vec![vec![2], vec![1], vec![0]]);
+    let m = Poly::coefficient_matrix(&[&h1, &h2], &basis).unwrap();
+    assert_eq!(m, matrix![ctx, [0, 1], [1, 0], [1, -1]]);
+    let b = Poly::coefficient_matrix(&[&goal], &basis).unwrap();
+    assert_eq!(b, matrix![ctx, [1], [2], [1]]);
+    match linsolve_matrix(&m, &b).unwrap() {
+        LinearSolution::Unique(pairs) => {
+            let lam: Vec<String> = pairs.iter().map(|(_, v)| v.to_string()).collect();
+            println!("(x + 1)² = {}·(x + 1) + {}·(x² − 1)", lam[0], lam[1]);
+            assert_eq!(lam, ["2", "1"]);
+        }
+        other => panic!("expected a unique certificate, got {other:?}"),
+    }
+}
+
 fn rule_engine() {
     println!("\n--- Simplification and the Rule Engine ---");
     let ctx = Context::new();
@@ -367,6 +455,8 @@ fn sets_and_logic() {
 
 fn linear_algebra() {
     println!("\n--- Linear Algebra ---");
+    use symplex::linprog::q;
+
     let ctx = Context::new();
     syms!(ctx; t, n);
     let m = matrix![ctx, [2, 1], [1, 2]];
@@ -393,15 +483,83 @@ fn linear_algebra() {
     let l = spd.cholesky().unwrap();
     assert_eq!(l.get(2, 0).to_string(), "-8");
     assert_eq!(spd.is_positive_definite(), Some(true));
-    let (q, r) = matrix![ctx, [1, 1, 0], [1, 0, 1], [0, 1, 1]].qr().unwrap();
-    assert_eq!(q.is_orthogonal(), Some(true));
-    println!("R = {r}");
+    let (qm, rm) = matrix![ctx, [1, 1, 0], [1, 0, 1], [0, 1, 1]].qr().unwrap();
+    assert_eq!(qm.is_orthogonal(), Some(true));
+    println!("R = {rm}");
 
     let cubic = matrix![ctx, [0, 1, 0], [0, 0, 1], [1, 1, 0]]
         .eigenvals()
         .unwrap();
     println!("{}", cubic[0]);
     assert!(cubic[0].to_string().starts_with("RootOf("));
+
+    // 0.3: index-list extraction, exact rationals in and out, three-valued structure tests
+    assert_eq!(m.extract(&[1, 0], &[0]).unwrap(), matrix![ctx, [1], [2]]);
+    let fr = Matrix::from_ratio(&ctx, &[vec![q(1, 2), q(3, 1)]]).unwrap();
+    println!("{fr}");
+    assert_eq!(fr.get(0, 0), &ctx.rational(1, 2));
+    assert_eq!((&m - &m.transpose()).is_zero_matrix(), Some(true));
+}
+
+fn exact_optimization() {
+    println!("\n--- Exact Optimization and Integer Lattices ---");
+    use symplex::linprog::{feasible_nonneg, q, qi};
+    use symplex::normalforms::hermite_normal_form_with_transform;
+    let ctx = Context::new();
+
+    // max 5x + 4y  s.t.  6x + 4y ≤ 24,  x + 2y ≤ 6,  x, y ≥ 0
+    let sol = LpProblem::maximize(vec![qi(5), qi(4)])
+        .le(vec![qi(6), qi(4)], qi(24))
+        .le(vec![qi(1), qi(2)], qi(6))
+        .solve()
+        .unwrap();
+    println!(
+        "status = {:?}, x = {:?}, objective = {:?}, duals = {:?}",
+        sol.status,
+        sol.x_ex(&ctx),
+        sol.objective,
+        sol.duals
+    );
+    assert_eq!(sol.status, LpStatus::Optimal);
+    assert_eq!(sol.x, vec![qi(3), q(3, 2)]);
+    assert_eq!(sol.objective, Some(qi(21)));
+    assert_eq!(sol.duals, vec![q(3, 4), q(1, 2)]);
+
+    // x + y ≤ 1 and x + y ≥ 2 cannot both hold — here is the proof
+    let bad = LpProblem::minimize(vec![qi(0), qi(0)])
+        .le(vec![qi(1), qi(1)], qi(1))
+        .ge(vec![qi(1), qi(1)], qi(2))
+        .solve()
+        .unwrap();
+    println!("status = {:?}, farkas = {:?}", bad.status, bad.farkas);
+    assert_eq!(bad.status, LpStatus::Infeasible);
+    assert_eq!(bad.farkas, Some(vec![qi(1), qi(-1)]));
+
+    // "Is there μ ≥ 0 with Aμ = b?", exactly
+    let mu = feasible_nonneg(
+        &[vec![q(1, 3), q(1, 7)], vec![qi(1), qi(-1)]],
+        &[qi(1), qi(0)],
+    )
+    .unwrap();
+    assert_eq!(mu, Some(vec![q(21, 10), q(21, 10)]));
+
+    // Integer normal forms: H = U·A (row style), S = U·A·V, ℤ-basis of the kernel
+    let a = matrix![ctx, [2, 4, 4], [-6, 6, 12], [10, -4, -16]];
+    let (h, u) = hermite_normal_form_with_transform(&a).unwrap();
+    println!("H = {h}");
+    assert_eq!(h, matrix![ctx, [2, 4, 4], [0, 6, 0], [0, 0, 12]]);
+    assert_eq!((&u * &a).eval(), h);
+    assert_eq!(u.det().unwrap(), ctx.int(-1));
+    assert_eq!(
+        a.smith_normal_form().unwrap(),
+        matrix![ctx, [2, 0, 0], [0, 6, 0], [0, 0, 12]]
+    );
+    let kernel = matrix![ctx, [2, 1, 1]].integer_nullspace().unwrap();
+    println!("integer kernel of [2 1 1]: {kernel:?}");
+    assert_eq!(
+        kernel,
+        vec![matrix![ctx, [1], [0], [-2]], matrix![ctx, [0], [1], [-1]]]
+    );
 }
 
 fn transforms() {
@@ -477,7 +635,70 @@ fn number_theory() {
     assert_eq!(stirling2(10, 4), Some(BigInt::from(34105)));
     assert_eq!(partition_count(100), Some(BigInt::from(190569292)));
     assert_eq!(crt_i64(&[2, 3, 2], &[3, 5, 7]), Some(23));
+    assert_eq!(igcd(&[12i64, 18, 30]), BigInt::from(6));
+    assert_eq!(ilcm(&[4i64, 6, 10]), BigInt::from(60));
     println!("number theory OK");
+}
+
+fn numerical_toolbox() {
+    println!("\n--- Numerical Toolbox ---");
+    use symplex::optimize::{DeOpts, brent_root, nelder_mead, poly_fit};
+
+    let ctx = Context::new();
+    syms!(ctx; x, y);
+
+    // Bracketed roots (Brent–Dekker), on a closure or on a compiled expression
+    let root = brent_root(|t| t * t - 2.0, 0.0, 2.0, &RootOpts::default()).unwrap();
+    println!("√2 ≈ {root}");
+    assert!((root - 2f64.sqrt()).abs() < 1e-12);
+    let dottie = (x.cos() - &x).find_root_bracket(&x, 0.0, 1.0).unwrap();
+    println!("cos x = x at {dottie}");
+    assert!((dottie - 0.739_085_133_215_160_6).abs() < 1e-12);
+
+    // Nelder–Mead: local minimum from a starting point
+    let bowl = nelder_mead(
+        |p| (p[0] - 1.0).powi(2) + (p[1] + 2.0).powi(2),
+        &[0.0, 0.0],
+        &MinimizeOpts::default(),
+    )
+    .unwrap();
+    assert!(bowl.converged);
+    assert!((bowl.x[0] - 1.0).abs() < 1e-6 && (bowl.x[1] + 2.0).abs() < 1e-6);
+    let rosen = (1 - &x).powi(2) + 100 * (&y - &x.powi(2)).powi(2);
+    let r = rosen.minimize_numeric(&[&x, &y], &[-1.2, 1.0]).unwrap();
+    println!(
+        "Rosenbrock: x = {:?}, f = {:e}, converged = {}",
+        r.x, r.fun, r.converged
+    );
+    assert!(r.converged);
+    assert!((r.x[0] - 1.0).abs() < 1e-6 && (r.x[1] - 1.0).abs() < 1e-6);
+    assert!(r.fun < 1e-12);
+
+    // Differential evolution: global minimum in a box, deterministic for a given seed
+    let himmelblau = (&x.powi(2) + &y - 11).powi(2) + (&x + &y.powi(2) - 7).powi(2);
+    let g = himmelblau
+        .minimize_global_numeric(&[&x, &y], &[(-5.0, 5.0), (-5.0, 5.0)], &DeOpts::default())
+        .unwrap();
+    println!("Himmelblau: x = {:?}, f = {:e}", g.x, g.fun);
+    assert!(g.fun < 1e-8);
+
+    // Brent scalar minimisation, and least-squares fits (f64 via Householder QR, or exact rational)
+    let (xm, fm) = (&x * x.ln()).minimize_scalar_numeric(&x, 0.1, 2.0).unwrap();
+    println!("x ln x: min at {xm} with value {fm}");
+    assert!((xm - (-1.0f64).exp()).abs() < 1e-6);
+    assert!((fm + (-1.0f64).exp()).abs() < 1e-12);
+    let c = poly_fit(&[0.0, 1.0, 2.0, 3.0], &[1.0, 3.0, 9.0, 19.0], 2).unwrap();
+    println!("poly_fit: {c:?}");
+    assert!((c[0] - 1.0).abs() < 1e-9 && c[1].abs() < 1e-9 && (c[2] - 2.0).abs() < 1e-9);
+    let pts = [
+        (ctx.int(0), ctx.int(1)),
+        (ctx.int(1), ctx.int(0)),
+        (ctx.int(2), ctx.int(4)),
+        (ctx.int(3), ctx.int(2)),
+    ];
+    let line = Ex::poly_fit_points(&ctx, &pts, &x, 1).unwrap();
+    println!("exact least-squares line: {line}");
+    assert_eq!(line.to_string(), "7/10*x + 7/10");
 }
 
 fn codegen() {
@@ -563,13 +784,16 @@ fn main() {
     summation();
     complex_analysis();
     algebra();
+    polynomials();
     rule_engine();
     solving();
     odes();
     sets_and_logic();
     linear_algebra();
+    exact_optimization();
     transforms();
     number_theory();
+    numerical_toolbox();
     codegen();
     units();
     api_model();

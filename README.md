@@ -6,8 +6,10 @@ Symbolic mathematics for Rust.
 [![docs.rs](https://docs.rs/symplex/badge.svg)](https://docs.rs/symplex)
 [![License](https://img.shields.io/crates/l/symplex.svg)](LICENSE-MIT)
 
-> **Pre-release.** The API is unstable; 0.2 contains breaking changes from 0.1
-> (see [Migrating from 0.1](#migrating-from-01)). Feedback welcome.
+> **Pre-release.** The API is unstable. 0.3 adds no signature-breaking changes
+> over 0.2, but a few results are normalised differently (see
+> [Migrating from 0.2](#migrating-from-02)); 0.2 contained breaking changes from
+> 0.1 (see [Migrating from 0.1](#migrating-from-01)). Feedback welcome.
 >
 > Contributing? See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture, conventions, and how to get started.
 > The full changelog is in [CHANGELOG.md](CHANGELOG.md); the user guide is
@@ -17,7 +19,7 @@ Symbolic mathematics for Rust.
 
 ## What This Is
 
-symplex is a symbolic computation library. It manipulates mathematical expressions exactly — using arbitrary-precision rational arithmetic, not floating-point — and can differentiate, integrate, sum, solve equations and systems, simplify, transform, and generate optimized Rust or C code from symbolic results.
+symplex is a symbolic computation library. It manipulates mathematical expressions exactly — using arbitrary-precision rational arithmetic, not floating-point — and can differentiate, integrate, sum, solve equations and systems, simplify, transform, view expressions as polynomials with symbolic coefficients, solve linear programs with exact certificates, compute integer matrix normal forms, and generate optimized Rust or C code from symbolic results.
 
 It is designed for Rust developers working in robotics, control systems, physics simulation, signal processing, or anywhere that symbolic math feeds into numerical code.
 
@@ -76,7 +78,8 @@ cargo add symplex
 - You need a mature CAS with decades of community validation — use [SymPy](https://www.sympy.org/). It has broader coverage, more special functions, and a much larger test corpus.
 - You need geometry, statistics, tensor algebra, or PDE solving — these are not available.
 - You need interactive notebook-style exploration — symplex is a library, not an application. (Though see `cargo run --example repl` for a basic REPL.)
-- You need results verified against extensive known-answer databases — symplex has ~10,000 tests including SymPy cross-validation fixtures, but SymPy has orders of magnitude more coverage.
+- You need results verified against extensive known-answer databases — symplex has ~11,000 tests including SymPy cross-validation fixtures, but SymPy has orders of magnitude more coverage.
+- You need large-scale or sparse numerical optimisation — the exact simplex is dense and `O(m·n)` big-rational operations per pivot (hundreds of rows, not hundreds of thousands), and the `f64` routines are the classic derivative-free methods, not a replacement for a dedicated optimisation library.
 
 ---
 
@@ -201,6 +204,47 @@ expr!(ctx, x^5 - x - 1).count_real_roots(&x);         // Some(1)
 expr!(ctx, x^4 + 1).is_irreducible(&x);               // Some(true)
 ```
 
+### Polynomials as Data and Rational Normal Forms
+
+`Poly` (0.3) views an expression as a sparse polynomial in an explicit list of generators. Coefficients are exact rationals *or* symbolic parameter expressions, terms come back in SymPy's lex-descending order, and nothing is approximated. `degree`/`coeffs`/`leading_coeff` on `Ex` accept symbolic coefficients too. `ratsimp` is a rational-function normal form — one cancelled fraction with integer-primitive numerator and denominator — and `solve` uses it for parametric linear and quadratic equations.
+
+```rust
+let ctx = Context::new();
+syms!(ctx; x, y, a, j, r);
+
+// Polynomial introspection on Ex with symbolic (var-free) coefficients
+let e = &a * &x.powi(2) + &x * (&a + 1) + 3;
+e.degree(&x);                                         // Some(2)
+e.coeffs(&x);                                         // Some([3, a + 1, a])   (ascending)
+e.leading_coeff(&x);                                  // Some(a)
+
+// Poly: sparse terms over explicit generators, exact evaluation, calculus
+let p = (&a * &x.powi(2) + &x * &y * 3 - &y + 1).as_poly(&[&x, &y]).unwrap();
+p.terms();                                            // [([2, 0], a), ([1, 1], 3), ([0, 1], -1), ([0, 0], 1)]
+p.coeff_monomial(&[1, 1]).unwrap();                   // 3
+p.total_degree();                                     // Some(2)
+p.eval_gen(&x, &ctx.int(2)).unwrap();                 // Poly(4*a + 5*y + 1, y)
+p.derivative(&x).unwrap().to_ex();                    // 2*a*x + 3*y
+
+// Rational normal form: nested fractions collapse to one cancelled fraction
+(1 / (&x + 1 / &y) + 1 / (1 / &x + &y)).ratsimp();   // (x + y)/(x*y + 1)
+((&r * 3 - 1) / (&j + 1) - (&r + 1) / (&j * 2)).solve(&r);   // Ok([(3*j + 1)/(5*j - 1)])
+
+// Exact sign of a rational-coefficient polynomial on an interval (square-free part + Sturm)
+(&x.powi(3) - &x).poly_is_nonnegative_on(&x, &ctx.int(2), &ctx.infinity());               // Some(true)
+(&x.powi(2) - &x * 2 + 1).poly_is_positive_on(&x, &ctx.neg_infinity(), &ctx.infinity());  // Some(false) — touches 0 at x = 1
+
+// Linear certificates: (x + 1)² = λ₁·(x + 1) + λ₂·(x² − 1) as an exact linear system
+let (h1, h2) = ((&x + 1).as_poly(&[&x]).unwrap(), (&x.powi(2) - 1).as_poly(&[&x]).unwrap());
+let goal = (&x + 1).powi(2).as_poly(&[&x]).unwrap();
+let basis = Poly::monomial_basis(&[&h1, &h2, &goal]).unwrap();    // [[2], [1], [0]]
+let m = Poly::coefficient_matrix(&[&h1, &h2], &basis).unwrap();   // [[0, 1], [1, 0], [1, -1]]
+let b = Poly::coefficient_matrix(&[&goal], &basis).unwrap();      // [[1], [2], [1]]
+linsolve_matrix(&m, &b);                              // Ok(Unique([(x1, 2), (x2, 1)]))
+```
+
+Also: `Poly::{from_terms, all_coeffs, degree_list, eval, add/sub/mul/pow/scale, content_and_primitive, monic, to_multipoly, nroots}`, and on `MultiPoly` a heuristic multivariate `gcd`/`lcm`, `integer_content`, `clear_denominators`.
+
 ### Simplification and the Rule Engine
 
 `simplify()` tries a dozen strategies and iterates to a fixpoint. The pattern-matching engine behind it is public in 0.2: build your own rules (symbols ending in `_` are wildcards, `rest__` absorbs the rest of a sum or product), rewrite with them, trace what fired, and interleave them with the built-in simplifier.
@@ -303,6 +347,8 @@ pp.or(&pp.not()).is_tautology();                      // Some(true)
 Symbolic matrices with exact decompositions. The eigen family needs no dummy variable in 0.2, structure tests are three-valued, and preconditions are `Result`s.
 
 ```rust
+use symplex::linprog::q;   // exact rational literal: q(1, 2) = 1/2
+
 let ctx = Context::new();
 syms!(ctx; t, n);
 let m = matrix![ctx, [2, 1], [1, 2]];
@@ -322,9 +368,55 @@ matrix![ctx, [1, 1, 0], [1, 0, 1], [0, 1, 1]].qr().unwrap();   // exact radicals
 
 // Irreducible characteristic polynomials give exact, evaluable RootOf eigenvalues
 matrix![ctx, [0, 1, 0], [0, 0, 1], [1, 1, 0]].eigenvals().unwrap();   // [RootOf(λ^3 - λ - 1, 0), …]
+
+// 0.3: index-list extraction, exact rationals in and out, three-valued structure tests
+m.extract(&[1, 0], &[0]).unwrap();                    // [[1], [2]]
+Matrix::from_ratio(&ctx, &[vec![q(1, 2), q(3, 1)]]).unwrap();   // [[1/2, 3]]
+(&m - &m.transpose()).is_zero_matrix();               // Some(true)   (m is symmetric)
 ```
 
-Also: LU, LDLᵀ, Gram–Schmidt, Jordan form, pseudo-inverse, Kronecker product, rank/nullspace/rowspace, norms, least squares, Hessian, Wronskian, quaternions, vector calculus in Cartesian/cylindrical/spherical coordinates, state-space ↔ transfer function.
+Also: LU, LDLᵀ, Gram–Schmidt, Jordan form, pseudo-inverse, Kronecker product, rank/nullspace/rowspace, norms, least squares, Hessian, Wronskian, quaternions, vector calculus in Cartesian/cylindrical/spherical coordinates, state-space ↔ transfer function; `select_rows`/`select_cols`/`delete_row`/`delete_col`, `from_bigint`/`from_f64_rows`, `to_rational_rows`/`to_bigint_rows`, `is_integer_matrix`, `subs_map`, `nnz`.
+
+### Exact Optimization and Integer Lattices
+
+Linear programs are solved over ℚ by a two-phase simplex with Bland's rule: optima, shadow prices and Farkas infeasibility certificates are exact, never "infeasible to within tolerance". Integer matrices get Hermite and Smith normal forms with unimodular transforms, and ℤ-bases of integer kernels.
+
+```rust
+use symplex::linprog::{feasible_nonneg, q, qi};
+use symplex::normalforms::hermite_normal_form_with_transform;
+let ctx = Context::new();
+
+// max 5x + 4y  s.t.  6x + 4y ≤ 24,  x + 2y ≤ 6,  x, y ≥ 0
+let sol = LpProblem::maximize(vec![qi(5), qi(4)])
+    .le(vec![qi(6), qi(4)], qi(24))
+    .le(vec![qi(1), qi(2)], qi(6))
+    .solve().unwrap();
+sol.status;                                           // Optimal
+sol.x;                                                // [3, 3/2]
+sol.objective;                                        // Some(21)
+sol.duals;                                            // [3/4, 1/2]   shadow prices: yᵀb = 21 = cᵀx*
+
+// x + y ≤ 1 and x + y ≥ 2 cannot both hold — here is the proof
+let bad = LpProblem::minimize(vec![qi(0), qi(0)])
+    .le(vec![qi(1), qi(1)], qi(1))
+    .ge(vec![qi(1), qi(1)], qi(2))
+    .solve().unwrap();
+bad.status;                                           // Infeasible
+bad.farkas;                                           // Some([1, -1])   Aᵀy = 0, yᵀb = −1 < 0
+
+// "Is there μ ≥ 0 with Aμ = b?", exactly (Farkas / Carathéodory searches)
+feasible_nonneg(&[vec![q(1, 3), q(1, 7)], vec![qi(1), qi(-1)]], &[qi(1), qi(0)]);   // Ok(Some([21/10, 21/10]))
+
+// Integer normal forms: H = U·A (row style), S = U·A·V, ℤ-basis of the kernel
+let a = matrix![ctx, [2, 4, 4], [-6, 6, 12], [10, -4, -16]];
+let (h, u) = hermite_normal_form_with_transform(&a).unwrap();
+h;                                                    // [[2, 4, 4], [0, 6, 0], [0, 0, 12]]
+(&u * &a).eval() == h;                                // true  (det U = −1)
+a.smith_normal_form().unwrap();                       // [[2, 0, 0], [0, 6, 0], [0, 0, 12]]
+matrix![ctx, [2, 1, 1]].integer_nullspace().unwrap(); // [(1, 0, −2)ᵀ, (0, 1, −1)ᵀ] — generates every integer solution
+```
+
+Also: `linprog` (SciPy-shaped), `linprog_matrix` (from `Matrix` data), per-variable bounds and free variables, `column_hermite_normal_form` (SymPy's convention), `smith_normal_form_with_transforms`, `is_unimodular`, `lattice_determinant`.
 
 ### Transforms
 
@@ -362,7 +454,41 @@ diophantine::sum_of_two_squares(65);                  // Some((4, 7))
 stirling2(10, 4);                                     // Some(34105)
 partition_count(100);                                 // Some(190569292)
 crt_i64(&[2, 3, 2], &[3, 5, 7]);                      // Some(23)
+igcd(&[12i64, 18, 30]);                               // 6    (gcd_many / lcm_many take BigInt slices)
+ilcm(&[4i64, 6, 10]);                                 // 60
 ```
+
+### Numerical Toolbox
+
+Deterministic, budgeted `f64` routines — bracketed roots, derivative-free minimisation, global search in a box, least-squares fits — usable on plain closures or directly on expressions (which are `compile`d first). Bad input is `Err(InvalidArgument)`, a non-finite value is `Err(ComputationFailed)`; nothing panics.
+
+```rust
+use symplex::optimize::{DeOpts, brent_root, nelder_mead, poly_fit};
+
+let ctx = Context::new();
+syms!(ctx; x, y);
+
+// Bracketed roots (Brent–Dekker), on a closure or on a compiled expression
+brent_root(|t| t * t - 2.0, 0.0, 2.0, &RootOpts::default()).unwrap();   // 1.41421356237…
+(x.cos() - &x).find_root_bracket(&x, 0.0, 1.0).unwrap();                 // 0.739085133215…
+
+// Nelder–Mead: local minimum from a starting point
+nelder_mead(|p| (p[0] - 1.0).powi(2) + (p[1] + 2.0).powi(2), &[0.0, 0.0], &MinimizeOpts::default()).unwrap();   // x ≈ [1, −2]
+let rosen = (1 - &x).powi(2) + 100 * (&y - &x.powi(2)).powi(2);
+let r = rosen.minimize_numeric(&[&x, &y], &[-1.2, 1.0]).unwrap();       // r.x ≈ [1, 1], r.fun ≈ 1e-18, r.converged
+
+// Differential evolution: global minimum in a box, deterministic for a given seed
+let himmelblau = (&x.powi(2) + &y - 11).powi(2) + (&x + &y.powi(2) - 7).powi(2);
+himmelblau.minimize_global_numeric(&[&x, &y], &[(-5.0, 5.0), (-5.0, 5.0)], &DeOpts::default()).unwrap();   // fun < 1e-8
+
+// Brent scalar minimisation, and least-squares fits (f64 via Householder QR, or exact rational)
+(&x * x.ln()).minimize_scalar_numeric(&x, 0.1, 2.0).unwrap();            // (0.36787944…, −0.36787944…) = (1/e, −1/e)
+poly_fit(&[0.0, 1.0, 2.0, 3.0], &[1.0, 3.0, 9.0, 19.0], 2).unwrap();     // ≈ [1, 0, 2]   (ascending: 1 + 2x²)
+let pts = [(ctx.int(0), ctx.int(1)), (ctx.int(1), ctx.int(0)), (ctx.int(2), ctx.int(4)), (ctx.int(3), ctx.int(2))];
+Ex::poly_fit_points(&ctx, &pts, &x, 1).unwrap();                          // 7/10*x + 7/10   (exact least-squares line)
+```
+
+Also: `bisect`, `newton_root`, `golden_section`, `minimize_scalar`, `poly_fit_exact`, `linear_fit`, `trapezoid`, `eval_poly`; `RootOpts`/`MinimizeOpts`/`DeOpts` for tolerances, budgets and seeds.
 
 ### Code Generation: Rust, C99 and Compiled Closures
 
@@ -469,7 +595,7 @@ Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`, 
 
 ## Comparison with SymPy
 
-| Feature | symplex 0.2 | SymPy |
+| Feature | symplex 0.3 | SymPy |
 |---------|-------------|-------|
 | Arithmetic | Exact `Ratio<BigInt>` | Exact (similar) |
 | Differentiation | Complete, incl. Bessel/orthogonal/polygamma | Complete |
@@ -481,6 +607,11 @@ Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`, 
 | General solutions | `solve_general` (periodic families) | `solveset` with `ImageSet` |
 | Linear systems | `linsolve` (unique / parametric / inconsistent, symbolic) | `linsolve` (similar) |
 | Polynomial systems | Gröbner + FGLM, algebraic solutions | Gröbner, more strategies |
+| Polynomial views | `Poly` over explicit generators with symbolic coefficients, lex terms, coefficient matrices | `Poly` with domains, factoring, gcd, resultants (broader) |
+| Rational simplification | `ratsimp`/`cancel`: heuristic multivariate GCD, opaque subexpressions as indeterminates | `cancel`, `ratsimp`, `together`, `apart` (similar; more GCD algorithms) |
+| Linear programming | Exact two-phase simplex; duals and Farkas certificates in the public result | `sympy.solvers.simplex` (`lpmin`/`lpmax`/`linprog`, exact; optimum and argmin only) |
+| Integer normal forms | Row and column HNF with transform, SNF with transforms, integer nullspace, lattice index | `hermite_normal_form`, `smith_normal_form` (no transforms returned) |
+| Numerical optimisation | Brent, bisection, Newton, Nelder–Mead, differential evolution, QR least squares, exact rational fits | Defers to SciPy / mpmath (`nsolve`, `findroot`); far broader via SciPy |
 | Series expansion | Taylor / Laurent / at ∞ / formal power series with general terms | + `O()` notation, Puiseux |
 | Limits | Gruntz with work budget, one-sided | Gruntz (more mature) |
 | Simplification | Multi-strategy fixpoint + public rule engine with AC matching, tracing | More strategies; `replace`/`Wild` patterns |
@@ -498,11 +629,11 @@ Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`, 
 | Dimensional analysis | Compile-time type checking | Runtime `physics.units` |
 | Thread safety | `Send + Sync`, no GIL | GIL-bound |
 | Expression type safety | `Ex` / `BoolEx` / `SetEx` at compile time | Runtime only |
-| Language | Rust (compiled, ~163K lines, 91 node types) | Python (interpreted) |
+| Language | Rust (compiled, ~174K lines, 92 node types) | Python (interpreted) |
 
 **Where SymPy is stronger:** geometry, statistics, tensor algebra, quantum mechanics, general Diophantine equations, PDE solving, hypergeometric/Meijer-G machinery, and 30 years of community contributions and testing.
 
-**Where symplex is different:** compile-time dimensional analysis, thread safety, Rust *and* C code generation with an embedded runtime, exact arithmetic without Python overhead, algebraic number field arithmetic with exact zero/sign testing, and construction-time radical simplification. Operations that can't complete return honest unevaluated forms or `Err` rather than guessing.
+**Where symplex is different:** compile-time dimensional analysis, thread safety, Rust *and* C code generation with an embedded runtime, exact arithmetic without Python overhead, algebraic number field arithmetic with exact zero/sign testing, construction-time radical simplification, and exact certificates — LP duals and Farkas vectors, unimodular HNF/SNF transforms, Sturm-verified polynomial signs — as first-class results. Operations that can't complete return honest unevaluated forms or `Err` rather than guessing.
 
 ---
 
@@ -527,6 +658,18 @@ The [CHANGELOG](CHANGELOG.md#breaking) lists every breaking change with its repl
 
 The book's [migration guide](book/src/reference/migrating-0.2.md) has worked examples.
 
+## Migrating from 0.2
+
+No signatures changed between 0.2 and 0.3. A few operations now return a *different but equivalent* form, which matters only if you compare printed output or match on structure:
+
+| 0.2 | 0.3 |
+|-----|-----|
+| `degree` / `coeffs` / `coeff` / `leading_coeff` returned `None` (and `is_polynomial` `false`) for symbolic coefficients (`a*x^2 + x`) | They succeed: `Some(2)`, `Some([0, 1, a])`, `Some(a)`, `true` |
+| `solve` on a linear or quadratic equation with parametric fractional coefficients returned a fraction of fractions | The root (and the quadratic discriminant) is `ratsimp`'d: `((3r−1)/(j+1) − (r+1)/(2j)).solve(&r)` → `(3*j + 1)/(5*j - 1)` |
+| `simplify_rational` = `together` + per-symbol `cancel`; could leave nested fractions uncancelled | `simplify_rational` is `ratsimp`: one fraction, all variables at once, integer-primitive numerator and denominator |
+
+Everything else in the [CHANGELOG](CHANGELOG.md#030---2026-09-18) is additive.
+
 ---
 
 ## Examples
@@ -538,6 +681,14 @@ Every example is self-contained and runs in a few seconds; CI runs all of them.
 cargo run --example quickstart              # Tour of core operations
 cargo run --example repl                    # Interactive expression evaluation
 cargo run --example readme_snippets         # Every code block in this README, executed
+```
+
+**New in 0.3:**
+```
+cargo run --example polynomials             # Poly views with symbolic coefficients, ratsimp, linear certificates, exact sign on an interval
+cargo run --example exact_lp                # Exact simplex: optima, shadow prices, Farkas certificates, feasible_nonneg, linprog_matrix
+cargo run --example integer_lattices        # Row/column HNF with transforms, Smith normal form, integer nullspace, unimodularity, lattice index
+cargo run --example numeric_optimization    # Brent/Newton roots, Nelder–Mead, differential evolution, polynomial fits (f64 and exact)
 ```
 
 **New in 0.2:**

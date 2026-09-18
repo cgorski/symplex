@@ -20,10 +20,13 @@ symplex is designed for Rust developers who need symbolic computation as part of
 |----------|-------------|
 | Calculus | Differentiation (all elementary and special functions), indefinite integration (15+ strategies incl. Risch + LRT log-to-real), definite and improper integration with divergence detection, adaptive Gauss–Kronrod quadrature, one-sided limits (Gruntz), Taylor/Laurent/asymptotic/formal power series, residues |
 | Summation | Faulhaber, Gosper, telescoping, binomial sums, p-series (`ζ(2m)` exact), power-series recognition, infinite products, convergence tests |
-| Algebra | Expansion, Berlekamp–Zassenhaus factoring over ℤ (any degree), multivariate factoring, resultants/discriminants, GCD, partial fractions, Gröbner bases, a public rewrite-rule engine with AC matching and tracing |
+| Algebra | Expansion, Berlekamp–Zassenhaus factoring over ℤ (any degree), multivariate factoring, resultants/discriminants, GCD, partial fractions, rational normal form (`ratsimp`), Gröbner bases, a public rewrite-rule engine with AC matching and tracing |
+| Polynomials | `Poly` view with exact rational or symbolic coefficients, monomial/coefficient access, exact evaluation, coefficient matrices for certificate searches, exact sign of a polynomial on an interval (Sturm) |
 | Solving | Polynomials through quartic by radicals, `RootOf`/`RootSum` beyond, transcendental via Lambert W, general periodic solutions, linear systems (unique/parametric/inconsistent), polynomial systems with algebraic solutions, damped Newton, inequalities, 16 ODE classes + initial-value problems, linear recurrences |
+| Linear programming | Exact simplex over ℚ with shadow prices and Farkas infeasibility certificates; `feasible_nonneg` for non-negative combinations |
 | Sets & logic | Interval algebra with a normal form, three-valued membership/subset queries, `reduce_inequalities`, NNF/CNF/DNF, DPLL satisfiability, truth tables |
-| Linear algebra | Determinant, inverse, eigenvalues (exact `RootOf` for irreducible cubics/quartics), Jordan form, matrix exponential/power/square root, QR, Cholesky, LDLᵀ, LU, Gram–Schmidt, structure tests, norms, least squares |
+| Linear algebra | Determinant, inverse, eigenvalues (exact `RootOf` for irreducible cubics/quartics), Jordan form, matrix exponential/power/square root, QR, Cholesky, LDLᵀ, LU, Gram–Schmidt, structure tests, norms, least squares; over ℤ: Hermite and Smith normal forms, integer kernels, lattice determinants |
+| Numerical optimisation | Brent/bisection/Newton root finding, Nelder–Mead, Brent and golden-section scalar minimisation, deterministic differential evolution, floating-point and exact least-squares polynomial fits, trapezoidal rule |
 | Transforms | Laplace (forward/inverse, initial/final value), Fourier (three conventions), Mellin (with fundamental strip), Z, Fourier series on arbitrary intervals |
 | Complex analysis | `re`/`im`/`conjugate`/`arg` honest about unknown realness, `as_real_imag`, polar form, complex infinity |
 | Number theory | Pollard–Brent rho + ECM factorization, BPSW primality, modular square roots, discrete logarithms, primitive roots, continued fractions, Pell and other Diophantine equations, CRT |
@@ -42,7 +45,7 @@ Being clear about limitations is important for evaluating whether this library f
 - **Group theory** is limited. There is no permutation group, symmetric group, or abstract algebra module.
 - **Hypergeometric / Meijer-G machinery** is absent; definite integration relies on antiderivatives, symmetry, and a table of ~30 classical improper integrals.
 - **Interactive notebooks** are not part of the library. symplex is a Rust library, not an application. A basic REPL is available as an example (`cargo run --example repl`), and `symplex-wasm` exposes a `Session` API for the browser.
-- **Test coverage**, while substantial (~10,000 tests including cross-validation against SymPy), is far less than what SymPy has accumulated over 30 years of development.
+- **Test coverage**, while substantial (~11,000 tests including cross-validation against SymPy), is far less than what SymPy has accumulated over 30 years of development.
 
 ## Design Principles
 
@@ -60,10 +63,10 @@ These choices are deliberate and pervasive:
 
 ## How to Read This Book
 
-- **[What's New in 0.2](./whats-new-0.2.md)** summarises the release for readers upgrading from 0.1.
+- **[What's New in 0.3](./whats-new-0.3.md)** tours the current release — polynomial views, exact linear programming, integer normal forms and numerical optimisation; **[What's New in 0.2](./whats-new-0.2.md)** summarises the previous release for readers upgrading from 0.1.
 - **[Getting Started](./getting-started/installation.md)** covers installation, creating your first expressions, and the key concepts you need to be productive.
 - **[Guide](./guide/calculus.md)** chapters are tutorial-style introductions to each domain. Every code block is a complete program you can paste into `main.rs` (blocks marked `ignore` are fragments).
-- **[Cookbook](./cookbook/pid-controller.md)** entries are worked solutions to real engineering and science problems, each backed by a runnable example in `examples/`.
+- **[Cookbook](./cookbook/pid-controller.md)** entries are worked solutions to real engineering and science problems, backed by runnable examples in `examples/`.
 - **[Reference](./reference/api-patterns.md)** documents the API conventions, error handling, the 0.1 → 0.2 migration, and a migration guide for SymPy users.
 
 For API documentation of individual functions and types, see [docs.rs/symplex](https://docs.rs/symplex).

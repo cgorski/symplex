@@ -9,8 +9,12 @@ run with `cargo test --test <file-stem>`.
 | Prefix | What it is |
 |---|---|
 | `v02_oracle_*.rs` | **SymPy oracle for the 0.2 API** (see below). One `#[test]` per fixture subcategory. |
-| `v02_oracle_common/mod.rs` | Shared oracle runner (statuses, tolerances, hang guard, strict xfail). Not a test target. |
+| `v02_oracle_common/mod.rs` | Shared oracle runner (statuses, tolerances, hang guard, strict xfail). Not a test target; the v03 consumers reuse it via `#[path]`. |
 | `v02_oracle_meta.rs` | Consistency checks on the fixture files (every subcategory has a consumer, ids/keys, size). |
+| `v03_oracle_poly.rs` | **SymPy oracle for the 0.3 API**: `Poly`/`as_poly` (`as_dict`, degrees, `LC`, `all_coeffs`, exact `eval`, `nroots`), symbolic-coefficient `degree`/`coeff`, `ratsimp` vs `cancel`, `poly_fit_exact`, Brent roots. |
+| `v03_oracle_linprog.rs` | 0.3 oracle: exact LP (`lpmax`/`lpmin`/infeasible/unbounded/`feasible_nonneg`) vs `sympy.solvers.simplex`. Objective compared exactly; the point is checked for feasibility/optimality (LP vertices are not unique). |
+| `v03_oracle_normalforms.rs` | 0.3 oracle: column/row HNF, Smith form, integer kernel, lattice determinant, `gcd_many`/`lcm_many`. Handles SymPy's dropped zero columns and derives the row form from SymPy's column form. |
+| `v03_oracle_meta.rs` | Consistency checks on `fixtures/v03_cross_validation.json` (consumers, `fixture_count`, unique keys, size). |
 | `test_sympy_cross_validation.rs` | Original 263-fixture SymPy oracle for the 0.1 surface (`fixtures/sympy_cross_validation.json`). |
 | `test_correctness_audit.rs` | Definite-integral / FTC / Gosper / series audit against `fixtures/new_capabilities.json`. |
 | `v02_*.rs` (non-oracle) | Feature tests written alongside the 0.2 API (matrices, sets, transforms, …). |
@@ -31,13 +35,14 @@ Reference values come from SymPy 1.14 in the venv at
 ```sh
 PY=/Users/chris.gorski/repos/math/symplex/.venv/bin/python
 $PY scripts/generate_v02_fixtures.py       # tests/fixtures/v02_cross_validation.json   (~45 s)
+$PY scripts/generate_v03_fixtures.py       # tests/fixtures/v03_cross_validation.json   (~3 s)
 $PY scripts/generate_sympy_fixtures.py     # tests/fixtures/sympy_cross_validation.json (~2 s)
 $PY scripts/generate_new_fixtures.py       # tests/fixtures/new_capabilities.json       (~2 s)
 $PY scripts/gen_new_fixtures.py            # tests/fixtures/new_features_cross_validation.json
 # each accepts --check: exit 1 if the committed file would change
 ```
 
-All four generators are deterministic (fixed seeds, `sort_keys=True`, no
+All five generators are deterministic (fixed seeds, `sort_keys=True`, no
 timestamps), so `--check` is a valid CI step.  Every SymPy computation runs
 under a per-fixture `SIGALRM` timeout; a fixture whose oracle computation
 times out / raises / returns an unevaluated object is **kept** with
@@ -68,7 +73,17 @@ Comparison rules of thumb used by the consumers:
 * sets / inequalities: membership at ~20 sample points;
 * boolean logic: full 16-row truth tables;
 * multi-valued results (`sqrt_mod`, `primitive_root`, `nroots`, eigenvalues):
-  verified by congruence / membership / sorted multiset, not by SymPy's choice.
+  verified by congruence / membership / sorted multiset, not by SymPy's choice;
+* exact results of the 0.3 API (rational coefficients, LP optima, integer
+  normal forms) are compared as `Ratio<BigInt>` / `BigInt` **equality**;
+  symbolic coefficients at 3 parameter points (`1e-9`).
+
+Oracle caveats found while building the v03 fixtures (worked around in
+`scripts/generate_v03_fixtures.py`): SymPy 1.14's `simplex.linprog`
+mishandles non-default `bounds` (a negative lower bound or a free variable
+is still forced `≥ 0`), so `lpmin`/`lpmax` with explicit relational
+constraints are the LP reference; `Poly.nroots` does not converge on
+repeated roots, so `all_roots(radicals=False)` is used there.
 
 ### Recording a library bug
 

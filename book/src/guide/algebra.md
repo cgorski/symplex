@@ -1,6 +1,6 @@
 # Algebra
 
-Expansion, factoring, rational functions, polynomial algebra, and simplification. The pattern-matching engine that powers `simplify` is covered in [The Rule Engine](./rule-engine.md).
+Expansion, factoring, rational functions, polynomial algebra, and simplification. The pattern-matching engine that powers `simplify` is covered in [The Rule Engine](./rule-engine.md); the `Poly` view of an expression as explicit `(monomial, coefficient)` data is in [Polynomials as Data](./polynomials.md).
 
 ## Expansion and collection
 
@@ -66,9 +66,37 @@ fn main() {
 }
 ```
 
+### Rational normal form: `ratsimp`
+
+New in 0.3, `ratsimp` is the canonical form for rational expressions in *all* variables at once: a single fraction `P/Q` with common polynomial factors cancelled (multivariate GCD), integer-primitive numerator and denominator, and a positive leading coefficient in `Q`. Non-rational subexpressions (`sin x`, `π`, `√x`) are treated as opaque indeterminates, exactly like SymPy's `cancel`. `simplify_rational` now produces the same normal form, and `solve` uses it for solutions with symbolic coefficients.
+
+```rust
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    symplex::syms!(ctx; x, y, a);
+
+    println!("{}", (ctx.int(1) / (&x + ctx.int(1) / &y) + ctx.int(1) / (&y + ctx.int(1) / &x)).ratsimp());
+    // (x + y)/(x*y + 1)
+    println!("{}", ((&x.powi(2) - &y.powi(2)) / (&x - &y)).ratsimp());   // x + y
+    println!("{}", (ctx.int(1) / &x + ctx.int(1) / (&x + 1)).ratsimp());  // (2*x + 1)/(x^2 + x)
+
+    // degree / coeffs / coeff / leading_coeff / is_polynomial accept parameter coefficients
+    let e = &a * &x.powi(2) + (&a + 1) * &x + 3;
+    println!("{:?}", e.degree(&x));                                        // Some(2)
+    println!("{:?}", e.coeffs(&x).map(|cs| cs.iter().map(|c| c.to_string()).collect::<Vec<_>>()));
+    // Some(["3", "a + 1", "a"])
+    println!("{}", e.leading_coeff(&x).unwrap());                          // a
+    println!("{}", e.is_polynomial(&x));                                   // true
+}
+```
+
+`(lhs - rhs).ratsimp()` is `0` exactly when two rational expressions agree — the cheapest way to check an identity. For the polynomial *data* behind these expressions (terms, coefficient matrices, exact evaluation, sign on an interval) see [Polynomials as Data](./polynomials.md).
+
 ## Polynomial algebra on `Ex`
 
-New in 0.2 (rational coefficients unless noted): `resultant`, `discriminant`, `sqf_list`, `square_free_part`, `is_squarefree`, `poly_div`/`poly_quo`/`poly_rem`, `poly_gcdex`, `poly_gcd`/`poly_lcm`, `decompose`, `content_primitive`, `leading_coeff`, `monic`, `poly_compose`, `poly_shift`, `poly_reverse`, `poly_interpolate`, `count_real_roots`, `real_roots_isolate`, `nroots`. All return `Option`/`Result` and give `None` for non-polynomial input.
+New in 0.2 (rational coefficients unless noted): `resultant`, `discriminant`, `sqf_list`, `square_free_part`, `is_squarefree`, `poly_div`/`poly_quo`/`poly_rem`, `poly_gcdex`, `poly_gcd`/`poly_lcm`, `decompose`, `content_primitive`, `leading_coeff`, `monic`, `poly_compose`, `poly_shift`, `poly_reverse`, `poly_interpolate`, `count_real_roots`, `real_roots_isolate`, `nroots`. All return `Option`/`Result` and give `None` for non-polynomial input. Since 0.3, `degree`, `coeffs`, `coeff`, `leading_coeff` and `is_polynomial` also accept symbolic (parameter) coefficients, and `poly_is_nonnegative_on` / `poly_is_positive_on` decide the sign of a polynomial on an interval exactly (see [Polynomials as Data](./polynomials.md#sign-of-a-polynomial-on-an-interval)).
 
 ```rust
 use symplex::prelude::*;

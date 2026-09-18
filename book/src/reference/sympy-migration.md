@@ -99,7 +99,9 @@ Before the translation table, a few structural differences to be aware of:
 | `div(f, g, x)`, `gcdex(f, g, x)` | `f.poly_div(&g, &x)`, `f.poly_gcdex(&g, &x)` |
 | `decompose(f, x)`, `interpolate(points, x)` | `f.decompose(&x)`, `Ex::poly_interpolate(&points, &x)` |
 | `Poly(f).nroots()`, `real_roots(f)`, `count_roots(f)` | `f.nroots(&x, digits)`, `f.real_roots_isolate(&x)`, `f.count_real_roots(&x)` |
-| `cancel(expr)` | `expr.cancel(&x)` |
+| `cancel(expr)` (all variables) / `ratsimp(expr)` | `expr.ratsimp()` — rational normal form, opaque non-rational subexpressions treated as indeterminates |
+| `cancel(expr, x)` | `expr.cancel(&x)` |
+| `fraction(together(expr))`, `fraction(cancel(expr))` | `expr.together().as_numer_denom()`, `expr.ratsimp().as_numer_denom()` |
 | `apart(expr, x)` | `expr.partial_fractions(&x)` |
 | `together(expr)` | `expr.together()` |
 | `collect(expr, x)` | `expr.collect(&x)` |
@@ -121,6 +123,29 @@ Before the translation table, a few structural differences to be aware of:
 | `expr.subs(x**2, u)` (algebraic) | `expr.subs_algebraic(&x.powi(2), &u)` |
 | `expr.replace(pattern, repl)` with `Wild` | `Rule::new(name, &lhs_with_a_, &rhs)` + `expr.rewrite(&RuleSet::from_rules(vec![rule]))` — see [The Rule Engine](../guide/rule-engine.md) |
 
+## Polynomials (`Poly`)
+
+See [Polynomials as Data](../guide/polynomials.md). Generators are explicit; anything else becomes a (possibly symbolic) coefficient.
+
+| SymPy | symplex |
+|-------|---------|
+| `Poly(e, x, y)` | `e.as_poly(&[&x, &y])` → `Option<Poly>` (also `Poly::new(&e, &[&x, &y])`) |
+| `Poly(e, x, y).as_dict()` / `.terms()` | `e.as_poly(&[&x, &y]).unwrap().terms()` → `Vec<(Vec<u32>, Ex)>`, lex-descending |
+| `p.monoms()`, `p.coeffs()` | `p.monoms()`, `p.coeffs()` |
+| `p.coeff_monomial(x*y)` | `p.coeff_monomial(&[1, 1])?` |
+| `p.LC()`, `p.LM()`, `p.LT()` | `p.leading_coeff()`, `p.leading_monomial()`, `p.leading_term()` |
+| `p.degree(x)`, `p.total_degree()`, `p.degree_list()` | `p.degree_in(&x)`, `p.total_degree()`, `p.degree_list()` |
+| `p.all_coeffs()` (univariate, highest first) | `p.all_coeffs()` → `Option<Vec<Ex>>` |
+| `degree(e, x)`, `Poly(e, x).coeffs()`, `e.coeff(x, 2)`, `LC(e, x)` | `e.degree(&x)`, `e.coeffs(&x)` (ascending), `e.coeff(&x, 2)`, `e.leading_coeff(&x)` — symbolic coefficients allowed since 0.3 |
+| `p.eval({x: 1, y: 2})`, `p.eval(x, 2)` | `p.eval(&[&one, &two])?`, `p.eval_gen(&x, &two)?` |
+| `p.as_expr()` | `p.to_ex()` |
+| `p + q`, `p * q`, `p ** 3`, `p.diff(x)` | `p.add(&q)?`, `p.mul(&q)?`, `p.pow(3)?`, `p.derivative(&x)?` |
+| `p.primitive()`, `p.monic()` | `p.content_and_primitive()`, `p.monic()` |
+| `Poly(e, x).nroots()` | `e.as_poly(&[&x]).unwrap().nroots(digits)?` (or `e.nroots(&x, digits)?`) |
+| `Interval(lo, hi).is_subset(solve_univariate_inequality(e >= 0, x))` | `e.poly_is_nonnegative_on(&x, &lo, &hi)` (and `poly_is_positive_on`) → `Option<bool>`, exact Sturm-based decision |
+| `groebner([f, g], x, y)` | `groebner::groebner_basis(&[f.to_multipoly()?, g.to_multipoly()?])`, back with `Poly::from_multipoly` |
+| `Matrix` of coefficients by hand | `Poly::monomial_basis(&polys)?`, `Poly::coefficient_matrix(&polys, &basis)?` |
+
 ## Solving
 
 | SymPy | symplex |
@@ -132,7 +157,13 @@ Before the translation table, a few structural differences to be aware of:
 | `solveset(f >= 0, x)` | `f.solve_ge(&x)` → `SetEx` |
 | `reduce_inequalities([x > 0, x <= 5], x)` | `reduce_inequalities(&[x.gt(&zero), x.le(&five)], &x)?` → `SetEx` |
 | `linsolve([eq1, eq2], [x, y])` | `linsolve(&[eq1, eq2], &[x, y])?` → `LinearSolution::{Unique, Parametric, Inconsistent}` |
-| `linsolve((A, b), x1, x2)` | `linsolve_matrix(&a, &b)?` |
+| `linsolve((A, b), x1, x2)` | `linsolve_matrix(&a, &b)?` (unknowns are named `x1, x2, …`; singular and inconsistent systems handled) |
+| `solve(a*x**2 + b*x + c, x)` (parametric) | `(a x² + b x + c).solve(&x)?` — results are `ratsimp`'d since 0.3 |
+| `sympy.solvers.simplex.lpmax(f, constraints)` / `lpmin` | `LpProblem::maximize(c).le(row, rhs)….solve()?` / `LpProblem::minimize` — exact over ℚ, see [Exact Linear Programming](../guide/exact-lp.md) |
+| `sympy.solvers.simplex.linprog(c, A, b, A_eq, b_eq, bounds)` | `linprog::linprog(&c, &a_ub, &b_ub, &a_eq, &b_eq, &bounds)?` |
+| `scipy.optimize.linprog(c, A_ub, b_ub, A_eq, b_eq)` | `linprog::linprog(…)` (exact) or `linprog_matrix(Objective::Minimize, &c, Some(&a_ub), Some(&b_ub), None, None)?` |
+| "is `b` a non-negative combination of these vectors?" | `linprog::feasible_nonneg(&rows, &b)?` → `Option<Vec<Q>>` |
+| dual values / infeasibility certificate | `LpSolution::duals`, `LpSolution::farkas` |
 | `solve([eq1, eq2], [x, y])` (polynomial) | `symplex::polysys::solve_system_ex(&[eq1, eq2], &[x, y])?` (algebraic solutions) |
 | `nsolve(f, x, x0)` | `f.solve_numeric(&x, x0, max_iter, tol)` |
 | `nsolve([f1, f2], [x, y], [x0, y0])` | `solve_numeric_system(&[f1, f2], &[x, y], &[x0, y0])?` |
@@ -158,6 +189,18 @@ Before the translation table, a few structural differences to be aware of:
 | `M.trace()` | `m.trace()?` |
 | `M.rank()` | `m.rank()` → `usize` |
 | `M.nullspace()` | `m.nullspace()` → `Vec<Matrix>` (also `rowspace`, `columnspace`, `left_nullspace`) |
+| integer kernel (no direct SymPy API) | `m.integer_nullspace()?` — a ℤ-basis, see [Integer Lattices](../guide/integer-lattices.md) |
+| `hermite_normal_form(M)` (`sympy.matrices.normalforms`, column style `H = A·V`) | `normalforms::column_hermite_normal_form(&m)?` (leading zero columns kept); row style `H = U·A` is `m.hermite_normal_form()?` / `hermite_normal_form_with_transform` |
+| `smith_normal_form(M)` | `m.smith_normal_form()?`, `normalforms::smith_normal_form_with_transforms(&m)?` → `(S, U, V)` |
+| `abs(M.det()) == 1` | `normalforms::is_unimodular(&m)?` |
+| `M.extract(rows, cols)` | `m.extract(&rows, &cols)?` |
+| `M[rows, :]`, `M[:, cols]` | `m.select_rows(&rows)?`, `m.select_cols(&cols)?` |
+| `M.row_del(i)`, `M.col_del(j)` | `m.delete_row(i)?`, `m.delete_col(j)?` (returns a new matrix) |
+| `M.is_zero_matrix` | `m.is_zero_matrix()` → `Option<bool>` |
+| `all(e.is_integer for e in M)` | `m.is_integer_matrix()` → `Option<bool>` |
+| `M.subs({x: y, y: x})` (simultaneous) | `m.subs_map(&[(&x, &y), (&y, &x)])` |
+| `Matrix(rows)` from `Rational`/`int`/`float` data | `Matrix::from_ratio(&ctx, &rows)?`, `Matrix::from_bigint`, `Matrix::from_f64_rows` (exact dyadic) |
+| `[[e for e in row] for row in M.tolist()]` as numbers | `m.to_rational_rows()`, `m.to_bigint_rows()` → `Option<Vec<Vec<_>>>` |
 | `M.diagonalize()` | `m.diagonalize()?` → `(P, D)` |
 | `M.is_diagonalizable()` | `m.is_diagonalizable()` → `Option<bool>` |
 | `M.jordan_form()` | `m.jordan_form()?` → `(P, J)` |
@@ -214,6 +257,8 @@ Before the translation table, a few structural differences to be aware of:
 | `mod_inverse(a, m)` | `symplex::ntheory::mod_inverse(a, m)` |
 | `crt([r1,r2], [m1,m2])` | `symplex::ntheory::crt_i64(&[r1,r2], &[m1,m2])` |
 | `pow(a, e, m)` (3-arg pow) | `symplex::ntheory::mod_pow(a, e, m)` |
+| `igcd(a, b, c)`, `ilcm(a, b, c)` | `symplex::ntheory::igcd(&[a, b, c])`, `ilcm(&[a, b, c])` (any integer type); `gcd_many(&[BigInt])`, `lcm_many` |
+| `ilcm(*[r.q for r in rationals])` | `symplex::ntheory::rational_lcm_of_denominators(&rationals)` |
 | `primerange(2, 50)` | `symplex::ntheory::primerange(2, 50)` / `primes_up_to(50)` |
 | `primepi(n)`, `prime(n)` | `symplex::ntheory::primepi(n)`, `prime(n)` |
 | `legendre_symbol(a, p)` | `symplex::ntheory::legendre_symbol(a, p)` |
@@ -299,6 +344,24 @@ Before the translation table, a few structural differences to be aware of:
 | `s.truncate(n)`, `s.an`, `s.bn` | `s.truncate(n)`, `s.coefficient_a(k)`, `s.coefficient_b(k)` |
 | Z-transform (not in SymPy core) | `f.z_transform(&n, &z)?`, `F.inverse_z_transform(&z, &n)?` |
 
+## Numerical Optimisation (SciPy / NumPy)
+
+SymPy defers to SciPy and NumPy here; symplex ships equivalents in `symplex::optimize` (see [Numerical Optimisation](../guide/numerical-optimization.md)). All are deterministic and return `Result`.
+
+| SciPy / NumPy | symplex |
+|---------------|---------|
+| `scipy.optimize.brentq(f, a, b)` | `optimize::brent_root(f, a, b, &RootOpts::default())?`; on an `Ex`: `e.find_root_bracket(&x, a, b)?` |
+| `scipy.optimize.bisect(f, a, b)` | `optimize::bisect(f, a, b, &opts)?` |
+| `scipy.optimize.newton(f, x0, fprime)` | `optimize::newton_root(f, df, x0, &opts)?` (derivative from `e.diff(&x).compile(..)`) |
+| `scipy.optimize.minimize(f, x0, method="Nelder-Mead")` | `optimize::nelder_mead(f, &x0, &MinimizeOpts::default())?`; on an `Ex`: `e.minimize_numeric(&[&x, &y], &x0)?` → `MinimizeResult { x, fun, iterations, evaluations, converged }` |
+| `scipy.optimize.minimize_scalar(f, bounds=(a, b), method="bounded")` | `optimize::minimize_scalar(f, a, b, &opts)?` (Brent), `golden_section`; on an `Ex`: `e.minimize_scalar_numeric(&x, a, b)?` |
+| `scipy.optimize.differential_evolution(f, bounds, seed=0)` | `optimize::differential_evolution(f, &bounds, &DeOpts { seed, .. })?`; on an `Ex`: `e.minimize_global_numeric(&vars, &bounds, &opts)?` |
+| `numpy.polyfit(x, y, deg)` (**highest degree first**) | `optimize::poly_fit(&xs, &ys, deg)?` (**ascending**: `[c₀, c₁, …]`); `eval_poly(&c, x)` evaluates |
+| `numpy.polyfit` with exact rationals (no NumPy equivalent) | `optimize::poly_fit_exact(&points, deg)?`, `Ex::poly_fit_points(&ctx, &points, &x, deg)?` → `Ex` |
+| `scipy.stats.linregress(x, y)` (slope, intercept) | `optimize::linear_fit(&xs, &ys)?` → `(slope, intercept)` |
+| `numpy.trapz(y, x)` / `scipy.integrate.trapezoid(y, x)` | `optimize::trapezoid(&ys, &xs)?` |
+| `scipy.optimize.fsolve(F, x0)` | `solve_numeric_system(&eqs, &vars, &x0)?` (damped Newton, symbolic Jacobian) |
+
 ## Dimensional Analysis
 
 SymPy does not have a built-in compile-time unit system. symplex provides one:
@@ -370,6 +433,10 @@ symplex supports 16 ODE classes: simple separable, full separable, first-order l
 - Optimized Rust *and* C99 code generation with CSE and an embedded special-function runtime (`to_rust_fn`, `to_c_fn`)
 - Compiled closures for fast numerical evaluation (`compile`, `compile_many`)
 - Exact `RootOf` eigenvalues for irreducible cubic/quartic characteristic polynomials
+- Exact linear programming over ℚ with shadow prices and Farkas certificates (`symplex::linprog`)
+- Exact sign of a polynomial on an interval (`poly_is_nonnegative_on`, Sturm-based)
+- Row-style Hermite normal form with its unimodular transform, integer kernels, lattice determinants
+- Deterministic numerical optimisation (`symplex::optimize`) in the same crate as the CAS
 - `Err(Divergent)` / `Err(NoSolution)` / `Err(InfiniteSolutions)` as first-class outcomes
 - `EvalConfig` for user-controllable computation limits
 - `build.rs` code generation pipeline for embedded targets

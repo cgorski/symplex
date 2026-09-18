@@ -35,6 +35,36 @@ fn main() {
 }
 ```
 
+### Symbolic coefficients are returned in rational normal form
+
+Since 0.3, when the coefficients of a linear or quadratic equation are themselves parameters, the solutions (and the quadratic discriminant) are passed through [`ratsimp`](./algebra.md#rational-normal-form-ratsimp). A parametric equation whose coefficients are fractions therefore comes back as **one cancelled fraction**, not a fraction of fractions. The values are the same as in 0.2; only the printed form changed.
+
+```rust
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    symplex::syms!(ctx; r, j, x, a, b, c);
+
+    // (3r − 1)/(j + 1) = (r + 1)/(2j), solved for r
+    let eqn = (&r * 3 - 1) / (&j + 1) - (&r + 1) / (&j * 2);
+    println!("{}", eqn.solve(&r).unwrap()[0]);              // (3*j + 1)/(5*j - 1)
+
+    for s in (&a * &x.powi(2) + &b * &x + &c).solve(&x).unwrap() {
+        println!("{s}");
+    }
+    // 1/2*1/a*(-b + sqrt(-4*a*c + b^2))
+    // 1/2*1/a*(-b - sqrt(-4*a*c + b^2))
+
+    // x²/a + 2x + a = 0: the discriminant 4 − 4 simplifies to 0 → one double root
+    for s in (&x.powi(2) / &a + &x * 2 + &a).solve(&x).unwrap() {
+        println!("{s}");                                      // -a
+    }
+    let lin = &a * &x / (&a + 1) - &b / (&a - 1);
+    println!("{}", lin.solve(&x).unwrap()[0]);              // (a*b + b)/(a^2 - a)
+}
+```
+
 ## General solutions
 
 `solve` returns principal branches. `solve_general` returns the complete solution families of periodic equations, expressed with a fresh integer-assumed parameter (`n`, or `n1`, `n2`, … if `n` is taken). `GeneralSolution::instance(k)` substitutes a concrete integer.

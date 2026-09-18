@@ -5,10 +5,16 @@
 //! integrate (indefinite, definite, improper, numeric), sum, take limits and
 //! series, solve equations, systems, ODEs and recurrences, simplify with a
 //! public rewrite-rule engine, work with sets and boolean logic, do exact
-//! linear algebra, apply Laplace/Fourier/Mellin/Z transforms, and generate
-//! optimized Rust or C99 code. See the [README](https://github.com/cgorski/symplex)
-//! and [The Symplex Book](https://cgorski.github.io/symplex/) for a guided tour,
-//! and `CHANGELOG.md` for the 0.1 → 0.2 breaking changes.
+//! linear algebra, view expressions as polynomials with symbolic
+//! coefficients ([`Poly`](prelude::Poly)), put rational functions into
+//! normal form (`ratsimp`), solve linear programs exactly with dual values
+//! and Farkas certificates, compute Hermite and Smith normal forms of
+//! integer matrices, run numerical root finding and minimisation, apply
+//! Laplace/Fourier/Mellin/Z transforms, and generate optimized Rust or C99
+//! code. See the [README](https://github.com/cgorski/symplex) and
+//! [The Symplex Book](https://cgorski.github.io/symplex/) for a guided tour,
+//! and `CHANGELOG.md` for the 0.1 → 0.2 breaking changes and the 0.2 → 0.3
+//! behaviour changes.
 //!
 //! Symplex is designed around seven principles:
 //!
@@ -72,13 +78,19 @@
 //!
 //! The [`prelude`] re-exports everything most programs need. Domain modules
 //! are re-exported at the crate root: [`ntheory`], [`diophantine`],
-//! [`combinatorics`], [`mod@matrix`], [`matrix_decomp`], [`vector`],
-//! [`quaternion`], [`control`], [`robotics`], [`dynamics`], [`polysys`],
+//! [`combinatorics`], [`mod@matrix`], [`matrix_decomp`], [`normalforms`],
+//! [`linprog`], [`optimize`], [`vector`], [`quaternion`], [`control`],
+//! [`robotics`], [`dynamics`], [`poly_ex`], [`multipoly`], [`polysys`],
 //! [`groebner`], [`factor_zassenhaus`], [`definite`], [`summation`],
 //! [`formal_series`], [`finite_diff`], [`fourier_transform`], [`mellin`],
 //! [`z_transform`], [`ode`], [`rsolve`], [`sets`], [`logic`], [`parse`],
 //! [`tree`], [`codegen`], [`lambdify`], [`units`], [`assumptions`],
 //! [`numeric`], [`errors`], [`config`].
+//!
+//! New in 0.3: [`poly_ex`] (the [`Poly`](prelude::Poly) view of an
+//! expression), [`linprog`] (exact simplex), [`normalforms`] (Hermite /
+//! Smith normal forms, integer kernels) and [`optimize`] (Brent,
+//! Nelder–Mead, differential evolution, least-squares fitting).
 
 #![warn(missing_docs)]
 
@@ -267,13 +279,16 @@ pub mod prelude {
     };
     pub use crate::api::expr_transforms_ext::{Direction, FourierConvention, FourierSeries};
     pub use crate::api::expr_view::ExprView;
+    pub use crate::api::poly_ex::Poly;
     pub use crate::base::assumptions::{Assumption, Assumptions, Props};
     pub use crate::base::config::EvalConfig;
     pub use crate::base::errors::SymplexError;
     pub use crate::calculus::definite::QuadOpts;
     pub use crate::calculus::formal_series::FormalPowerSeries;
     pub use crate::domains::control::{StateSpace, TransferFunction};
+    pub use crate::domains::linprog::{LpProblem, LpSolution, LpStatus};
     pub use crate::domains::matrix::Matrix;
+    pub use crate::domains::optimize::{MinimizeOpts, MinimizeResult, RootOpts};
     pub use crate::domains::quaternion::Quaternion;
     pub use crate::domains::robotics::EulerConvention;
     pub use crate::domains::vector::CoordinateSystem;

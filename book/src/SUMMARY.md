@@ -1,6 +1,7 @@
 # Summary
 
 [Introduction](./introduction.md)
+[What's New in 0.3](./whats-new-0.3.md)
 [What's New in 0.2](./whats-new-0.2.md)
 
 ---
@@ -20,10 +21,14 @@
 - [Summation and Series](./guide/summation.md)
 - [Complex Analysis and Special Functions](./guide/complex-analysis.md)
 - [Algebra](./guide/algebra.md)
+- [Polynomials as Data](./guide/polynomials.md)
 - [The Rule Engine](./guide/rule-engine.md)
 - [Solving Equations](./guide/solving.md)
+- [Exact Linear Programming](./guide/exact-lp.md)
+- [Numerical Optimisation](./guide/numerical-optimization.md)
 - [Sets and Logic](./guide/sets-and-logic.md)
 - [Matrices](./guide/matrices.md)
+- [Integer Lattices and Normal Forms](./guide/integer-lattices.md)
 - [Transforms](./guide/transforms.md)
 - [Number Theory and Combinatorics](./guide/number-theory.md)
 - [Code Generation](./guide/code-generation.md)
@@ -34,6 +39,7 @@
 # Cookbook
 
 - [PID Controller Design](./cookbook/pid-controller.md)
+- [Polynomial Inequality Certificates](./cookbook/polynomial-certificates.md)
 - [Gradient Descent](./cookbook/gradient-descent.md)
 - [RSA Encryption](./cookbook/rsa-encryption.md)
 - [Digital Filter Design](./cookbook/digital-filter.md)

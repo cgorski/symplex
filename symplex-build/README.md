@@ -10,8 +10,8 @@ Add to your firmware crate's `Cargo.toml`:
 
 ```toml
 [build-dependencies]
-symplex-build = "0.2"
-symplex = "0.2"
+symplex-build = "0.3"
+symplex = "0.3"
 ```
 
 Then in `build.rs`:
@@ -106,7 +106,7 @@ output = "robot_math.rs"
 
 - **Scalar functions**: `pub fn name(p1: f64, …) -> f64` with common subexpression elimination, `mul_add`, and `powi`.
 - **Matrix functions**: `pub fn name(p1: f64, …) -> [f64; rows*cols]` (row-major) with CSE shared across all entries.
-- **`no_std` math module**: with `.no_std(true)` (or `CodegenOptions::no_std()`), math calls go through a cfg-gated `mod math` emitted once at the top of the file. It covers every function the symplex 0.2 backend can emit — `sin`, `cos`, `tan`, `exp`, `ln`, `abs`, `sqrt`, `cbrt`, `asin`/`acos`/`atan`, `sinh`/`cosh`/`tanh`, `asinh`/`acosh`/`atanh`, `floor`, `ceil`, `signum`, `atan2`, `powf`, `powi`, `min`, `max`, `expm1`, `log1p`, `log2`, `exp2`, `fma`, `sin_cos` — with a `std` variant (inherent `f64`/`f32` methods) and a `libm` variant.
+- **`no_std` math module**: with `.no_std(true)` (or `CodegenOptions::no_std()`), math calls go through a cfg-gated `mod math` emitted once at the top of the file. It covers every function the symplex backend (0.2 and 0.3) can emit — `sin`, `cos`, `tan`, `exp`, `ln`, `abs`, `sqrt`, `cbrt`, `asin`/`acos`/`atan`, `sinh`/`cosh`/`tanh`, `asinh`/`acosh`/`atanh`, `floor`, `ceil`, `signum`, `atan2`, `powf`, `powi`, `min`, `max`, `expm1`, `log1p`, `log2`, `exp2`, `fma`, `sin_cos` — with a `std` variant (inherent `f64`/`f32` methods) and a `libm` variant.
 - **Companion tests**: `.with_tests(true).add_test_point(&[…])` appends a `#[cfg(test)] mod generated_tests` that evaluates every function at each point and asserts finite results.
 - **Options**: `.options(CodegenOptions { … })` for `f32` precision (`.precision_f32()`), `#[inline]` (`.inline(true)`), `use_mul_add`, `checked_domain`, `uom` type annotations, etc.
 

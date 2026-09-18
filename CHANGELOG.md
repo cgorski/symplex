@@ -6,6 +6,187 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.3.0] - 2026-09-18
+
+**Polynomials as data, exact certificates.**  This release makes the
+polynomial structure of an expression a first-class object (`Poly`: sparse
+terms over explicit generators with symbolic coefficients), gives rational
+functions a real normal form (`ratsimp`), and adds three exact
+certificate-producing domains: linear programming over ℚ with shadow prices
+and Farkas infeasibility vectors, Hermite/Smith normal forms of integer
+matrices with unimodular transforms and ℤ-bases of integer kernels, and
+Sturm-verified polynomial signs on intervals.  A deterministic `f64`
+optimisation toolbox (Brent, Nelder–Mead, differential evolution,
+least-squares fits) rounds out the numeric side.  There are no
+signature-breaking changes; the behaviour changes below alter the *form* of
+some results, never their value.
+
+Measured at release: 92 `ExprNode` variants (unchanged), ~11,000 `#[test]`
+functions (~154K lines of tests, 273 integration-test files), ~174K lines in
+`src/`, 608 doctests in the main crate, and a SymPy 1.14 oracle extended
+with 0.3 fixtures (`tests/fixtures/v03_cross_validation.json`).
+
+### Behaviour changes
+
+Not breaking — no signature changed — but results may print differently.
+
+- `Ex::{degree, coeffs, coeff, leading_coeff, is_polynomial}` accept
+  symbolic, variable-free coefficients: `(a·x² + x).degree(&x)` is `Some(2)`
+  and `coeffs` is `[0, 1, a]` where 0.2 returned `None`.  Rational-coefficient
+  results are byte-for-byte unchanged.
+- `Ex::solve` on linear and quadratic equations with parametric coefficients
+  puts the root (and the quadratic discriminant) into rational normal form:
+  `((3r−1)/(j+1) − (r+1)/(2j)).solve(&r)` is `(3*j + 1)/(5*j - 1)` instead of
+  a fraction of fractions.
+- `Ex::simplify_rational` is now `ratsimp` (one fraction over all variables
+  at once, integer-primitive numerator and denominator, positive leading
+  denominator coefficient) instead of `together` followed by a per-symbol
+  `cancel`.  Same value; nested fractions that 0.2 left uncancelled are
+  now cancelled.
+
+### Added
+
+**Polynomials**
+
+- `poly_ex::Poly` (also `prelude::Poly`) and `Ex::as_poly(&[&gens])`: an
+  expression as a sparse polynomial in explicit generators with exact
+  rational *or* symbolic coefficients; terms in SymPy's lex-descending
+  order.  `Poly::{new, from_terms, zero, one, constant, from_multipoly}`;
+  queries `gens`, `num_gens`, `is_zero/is_ground/is_univariate/is_linear/
+  is_homogeneous`, `has_rational_coeffs`, `num_terms`, `terms`, `monoms`,
+  `coeffs`, `coeff_monomial`, `total_degree`, `degree_in`, `degree_list`,
+  `leading_term/leading_coeff/leading_monomial`, `all_coeffs`, `equals`;
+  conversion `to_ex`, `to_multipoly`; evaluation `eval` (all generators)
+  and `eval_gen` (partial, generator removed); arithmetic `add`, `sub`,
+  `mul`, `neg`, `scale`, `pow`, `derivative`, `content_and_primitive`,
+  `monic`; `nroots`; `Poly::monomial_basis` and `Poly::coefficient_matrix`
+  for turning "goal = Σ λᵢ pᵢ" into an exact linear system; `Display` as
+  `Poly(expr, gens…)`.
+- `Ex::poly_is_nonnegative_on` / `poly_is_positive_on(var, lo, hi)`: exact
+  three-valued sign of a rational-coefficient polynomial on a closed
+  interval (square-free part isolates odd-multiplicity roots, Sturm count,
+  one sign sample); endpoints may be `±∞`.
+- `MultiPoly::{gcd, lcm}` (heuristic GCD, GCDHEU, verified by exact
+  division), `integer_content`, `clear_denominators`, `from_terms`,
+  `coeff`, `map_coeffs`.
+
+**Simplification**
+
+- `Ex::ratsimp`: rational-function normal form.  `P/Q` over the free
+  symbols with every maximal non-rational subexpression (`sin x`, `π`,
+  `√x`) treated as an independent indeterminate, `gcd(P, Q)` divided out,
+  denominators cleared to integer-primitive parts, leading coefficient of
+  `Q` positive.  Idempotent; expressions with `±∞`, `NaN` or unevaluated
+  nodes are returned unchanged.
+
+**Linear programming** (`symplex::linprog`)
+
+- `LpProblem` builder (`minimize`/`maximize`, `le`/`ge`/`eq` rows,
+  per-variable `bounds`, `free`) and `LpProblem::solve` → `LpSolution
+  { status, x, objective, duals, farkas }` with `LpStatus::{Optimal,
+  Infeasible, Unbounded}`; `LpSolution::{is_optimal, x_ex}`.  Two-phase
+  dense simplex over `Ratio<BigInt>`, Dantzig pivots switching to Bland's
+  rule at the first degenerate step (no cycling), pivot cap reported as
+  `ComputationFailed`.
+- Exact **shadow prices** (`duals`, one per constraint in insertion order,
+  `yᵢ = ∂ optimum / ∂ bᵢ`) and exact **Farkas certificates** (`farkas`,
+  `Aᵀy`-based inequality proving infeasibility; `None` only when the bounds
+  alone are contradictory).  Sign conventions documented in the module docs.
+- `linprog(c, A_ub, b_ub, A_eq, b_eq, bounds)` (SciPy-shaped),
+  `feasible_nonneg(A, b)` ("is there `x ≥ 0` with `Ax = b`?", exactly),
+  `linprog_matrix(Objective, &c, A_ub, b_ub, A_eq, b_eq)` on `Matrix` data
+  with numeric-literal entries, and the literal helpers `q(n, d)`, `qi(n)`.
+- `prelude` re-exports `LpProblem`, `LpSolution`, `LpStatus`.
+
+**Integer normal forms** (`symplex::normalforms`)
+
+- `hermite_normal_form` (row style, `H = U·A`, unique: positive pivots,
+  entries above pivots reduced into `[0, pivot)`, zero rows last),
+  `hermite_normal_form_with_transform` → `(H, U)`,
+  `column_hermite_normal_form` (`H = A·V`, SymPy / Cohen 2.4.5 convention,
+  leading zero columns kept).
+- `smith_normal_form` (`diag(d₁, …, dᵣ, 0, …)`, `dᵢ | dᵢ₊₁`) and
+  `smith_normal_form_with_transforms` → `(S, U, V)`.
+- `integer_nullspace` (a ℤ-basis of `{x ∈ ℤⁿ : Ax = 0}` — generates every
+  integer solution, unlike a scaled rational nullspace), `is_unimodular`,
+  `lattice_determinant` (index of the column lattice in `ℤᵐ`).
+- `Matrix::{hermite_normal_form, smith_normal_form, integer_nullspace}`
+  method forms.  Non-integer entries are `InvalidArgument`.
+
+**Matrices**
+
+- Selection: `extract(rows, cols)`, `select_rows`, `select_cols`,
+  `delete_row`, `delete_col` (index lists may repeat or reorder; empty or
+  out-of-range is `InvalidArgument`).
+- Three-valued structure: `is_zero_matrix`, `is_integer_matrix`.
+- Exact numeric conversion: `to_rational_rows`, `to_bigint_rows`,
+  `Matrix::from_ratio`, `Matrix::from_bigint`, `Matrix::from_f64_rows`
+  (exact dyadic; `NaN`/`∞` rejected).
+- `subs_map(&[(&from, &to)])` (simultaneous substitution in every entry),
+  `nnz`.
+
+**Number theory**
+
+- `ntheory::{gcd_many, lcm_many}` on `&[BigInt]` (empty list: `0` / `1`;
+  early exit at gcd 1; any zero makes the lcm 0), generic `igcd` / `ilcm`
+  for any `Into<BigInt>`, and `rational_lcm_of_denominators`.
+
+**Numerical optimisation** (`symplex::optimize`)
+
+- Root finding: `brent_root` (Brent–Dekker), `bisect`, `newton_root`, with
+  `RootOpts { xtol, rtol, max_iter }`.
+- Minimisation: `nelder_mead`, `minimize_scalar` (Brent), `golden_section`,
+  `differential_evolution` (DE/rand/1/bin, Latin-hypercube start,
+  Nelder–Mead polish, SplitMix64 seeded by `DeOpts::seed` — fully
+  deterministic), with `MinimizeOpts`, `DeOpts` and `MinimizeResult { x,
+  fun, iterations, evaluations, converged }`.  An exhausted budget is
+  reported through `converged = false`, never by discarding the best point.
+- Fitting and helpers: `poly_fit` (column-scaled Householder QR, ascending
+  coefficients), `poly_fit_exact` (rational normal equations),
+  `linear_fit`, `trapezoid`, `eval_poly`.
+- On `Ex`, compiling first: `find_root_bracket[_with]`,
+  `minimize_numeric[_with]`, `minimize_scalar_numeric`,
+  `minimize_global_numeric`, and `Ex::poly_fit_points` (exact least-squares
+  polynomial through rational points).  A stray free symbol is
+  `FreeSymbol`, not a silent `NaN`.
+- `prelude` re-exports `RootOpts`, `MinimizeOpts`, `MinimizeResult`.
+
+**Examples and tests**
+
+- New examples `polynomials`, `exact_lp`, `integer_lattices`,
+  `numeric_optimization`; `readme_snippets` mirrors the new README sections.
+- The crate docs list the new modules (`poly_ex`, `linprog`,
+  `normalforms`, `optimize`) in the module map.
+
+### Fixed
+
+- `simplify_rational` could not cancel common factors that only appear
+  after combining (`(x² − y²)/(x − y)` was returned unchanged) or
+  fractions nested inside fractions (`1/(x + 1/y) + 1/(1/x + y)` became
+  `(x + 1/x + y + 1/y)/((x + 1/y)*(1/x + y))`); it now returns `x + y` and
+  `(x + y)/(x*y + 1)`.
+- `solve` returned unsimplified nested fractions for linear and quadratic
+  equations whose coefficients are themselves parametric fractions
+  (`(1/2*1/j + 1/(j + 1))/(-1/2*1/j + 3/(j + 1))` for the example above).
+- `degree`/`coeffs`/`coeff`/`leading_coeff`/`is_polynomial` reported
+  "not a polynomial" (`None`/`false`) for polynomials with symbolic
+  parameter coefficients such as `a·x² + (a + 1)·x + 3`.
+
+### Infrastructure
+
+- `tests/v03_*` integration suites, one concept per test: `v03_poly_view`,
+  `v03_poly_symbolic_coeffs`, `v03_ratsimp`, `v03_linprog` (every `Optimal`
+  result checked against the full KKT conditions exactly, every
+  `Infeasible` result's Farkas vector verified), `v03_normalforms` (defining
+  invariants `H = U·A`, `|det U| = 1`, `S = U·A·V`, divisibility chain,
+  `A·k = 0` checked rather than pinned answers), `v03_matrix_ergonomics`,
+  `v03_optimize`.
+- SymPy 1.14 oracle extended to the 0.3 features (`Poly.terms`/`coeffs`,
+  `cancel`/`ratsimp`, `sympy.solvers.simplex`, `hermite_normal_form`,
+  `smith_normal_form`) via `tests/fixtures/v03_cross_validation.json`;
+  as before, comparisons are numeric or structural, never by printed form.
+- Crate, `symplex-macros`, `symplex-build` and `symplex-wasm` at 0.3.0.
+
 ## [0.2.0] - 2026-09-18
 
 A large release: complex analysis, definite/improper/numeric integration,
@@ -410,5 +591,6 @@ eigenvalues/Jordan form/matrix exponential, algebraic number fields ℚ(α),
 Rust code generation with CSE, compile-time dimensional analysis, and the
 `symplex-macros`, `symplex-build` and `symplex-wasm` companion crates.
 
+[0.3.0]: https://github.com/cgorski/symplex/releases/tag/v0.3.0
 [0.2.0]: https://github.com/cgorski/symplex/releases/tag/v0.2.0
 [0.1.0]: https://github.com/cgorski/symplex/releases/tag/v0.1.0

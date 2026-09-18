@@ -30,10 +30,11 @@ git clone https://github.com/cgorski/symplex
 cd symplex
 cargo build
 
-# Run the test suite (~10,000 tests; a few minutes in debug)
+# Run the test suite (~11,000 tests; a few minutes in debug)
 cargo test
 
-# Run the 0.2 feature suites only
+# Run the 0.3 / 0.2 feature suites only
+cargo test --test 'v03_*'
 cargo test --test 'v02_*'
 
 # Run the examples and the book (CI does both)
@@ -60,25 +61,28 @@ RUST_LOG=symplex=debug cargo run --example quickstart
 
 ## Architecture
 
-The source code (~163K lines at 0.2.0) is organized into 10 directories under
+The source code (~174K lines at 0.3.0) is organized into 10 directories under
 `src/`. Each directory is a layer in the dependency hierarchy — modules may
 depend on layers below them but should not reach upward.
 
 ```
 src/
-├── base/         Expression nodes (node.rs, 91 variants), arena (hash-consing), tree
+├── base/         Expression nodes (node.rs, 92 variants), arena (hash-consing), tree
 │                 traversal (walk.rs), canonicalization, assumptions, sort keys, compaction,
 │                 numeric.rs (exact f64 ↔ rational), bernoulli.rs, complex.rs, errors.rs
 ├── poly/         Dense/sparse/generic polynomials, factor_zassenhaus.rs (Berlekamp–Zassenhaus
 │                 over ℤ + Kronecker multivariate), Gröbner bases, polysys.rs, Sturm sequences,
-│                 root finding (roots.rs), algebraic number fields ℚ(α) (algebraic.rs), ratfn.rs
+│                 root finding (roots.rs), algebraic number fields ℚ(α) (algebraic.rs), ratfn.rs,
+│                 multipoly.rs (sparse multivariate; heuristic gcd/lcm, content, denominators),
+│                 polybridge.rs (Ex ↔ polynomial, incl. symbolic-coefficient term collection)
 ├── transforms/   diff, integrate (+ heurisch, trig_integ, apart), eval, evalf, expand, solve,
 │                 inequalities, pattern.rs (AC matcher), subs, sum_eval,
 │                 sets.rs (set-algebra normal form), logic.rs (boolean simplifier, DPLL,
 │                 piecewise), rsolve.rs (recurrences)
 ├── simplify/     simplify_engine (multi-strategy fixpoint + tracing), rewrite.rs, trig/hyp
 │                 (fu.rs, trigsimp, trig_expand, trig_combine), powsimp/radsimp (powdenest,
-│                 sqrtdenest), log_expand/log_combine, combsimp, nsimplify, refine, factor_terms
+│                 sqrtdenest), log_expand/log_combine, combsimp, nsimplify, refine, factor_terms,
+│                 ratsimp.rs (rational-function normal form over opaque indeterminates)
 ├── calculus/     definite.rs (definite/improper integration, GK15 quadrature), summation.rs,
 │                 gosper.rs, convergence.rs, series.rs, formal_series.rs, finite_diff.rs,
 │                 limit.rs + gruntz.rs, residue.rs, laplace.rs, fourier.rs (series),
@@ -89,10 +93,14 @@ src/
 │                 special-function runtime), rt_embed.rs (embedding `mod symplex_rt`)}
 ├── plotting/     Adaptive sampling, textplot, SVG, TikZ, data export, RK4
 ├── domains/      matrix.rs + matrix_decomp.rs (QR, Cholesky, LDL, Gram–Schmidt, structure
-│                 tests, norms, hessian, wronskian), linalg.rs (rref/linsolve), control,
-│                 dynamics, robotics, quaternion, vector (coordinate systems), ntheory
-│                 (rho/ECM, BPSW, sqrt_mod, dlog, continued fractions), diophantine,
-│                 combinatorics, separatevars
+│                 tests, norms, hessian, wronskian, 0.3 selection/conversion helpers),
+│                 linalg.rs (rref/linsolve), linprog.rs (exact two-phase simplex, duals,
+│                 Farkas certificates), normalforms.rs (Hermite/Smith normal forms, integer
+│                 nullspace, unimodularity, lattice index), optimize.rs (Brent/bisection/Newton,
+│                 Nelder–Mead, golden section, differential evolution, least-squares fits),
+│                 control, dynamics, robotics, quaternion, vector (coordinate systems), ntheory
+│                 (rho/ECM, BPSW, sqrt_mod, dlog, continued fractions, gcd_many/lcm_many),
+│                 diophantine, combinatorics, separatevars
 ├── units/        Compile-time dimensional analysis, quantity types, conversions, constants
 └── api/          context.rs, expr.rs (Expr<S>), expr_funcs.rs (most methods), expr_ops.rs
                   (operators, Scalar/ToEx, Context ingestion), eq.rs (Equation), macros.rs,
@@ -104,7 +112,9 @@ src/
                   expr_sets_ext.rs (SetEx/BoolEx algebra, reduce_inequalities, piecewise),
                   expr_rules_ext.rs (Rule/RuleSet/rewrite/simplify_traced + gap-fill simplifiers),
                   expr_transforms_ext.rs (directional limits, Fourier/Mellin, FourierSeries),
-                  expr_poly_ext.rs (resultant/discriminant/division/roots on Ex)
+                  expr_poly_ext.rs (resultant/discriminant/division/roots on Ex, and the 0.3
+                  interval sign tests poly_is_nonnegative_on / poly_is_positive_on),
+                  and the 0.3 file poly_ex.rs (the public `Poly` view and `Ex::as_poly`)
 ```
 
 Companion crates: `symplex-macros/` (proc macros), `symplex-build/` (build-time
@@ -129,7 +139,8 @@ base → poly → transforms → simplify → calculus
 | `ExprId` | `src/base/node.rs` | A `u32` index into the arena. This is how expressions are referenced internally. |
 | `Context` | `src/api/context.rs` | User-facing entry point. Owns an arena + assumption cache. |
 | `Expr<S>` / `Ex` | `src/api/expr.rs` | User-facing expression handle. Carries a context reference + ExprId. |
-| `Poly` | `src/poly/dense.rs` | Dense univariate polynomial over `Ratio<BigInt>`. Type alias for `GenPoly<Ratio<BigInt>>`. |
+| `Poly` (internal) | `src/poly/dense.rs` | Dense univariate polynomial over `Ratio<BigInt>`. Type alias for `GenPoly<Ratio<BigInt>>`; `pub(crate)`. |
+| `Poly` (public) | `src/api/poly_ex.rs` | User-facing sparse polynomial view of an `Ex` over explicit generators with symbolic coefficients (`prelude::Poly`). |
 | `GenPoly<C>` | `src/poly/generic.rs` | Generic univariate polynomial over any `Ring`/`Field` coefficient type. |
 | `RationalFn` | `src/poly/ratfn.rs` | Rational function `p(x)/q(x)` in ℚ(x). Implements `Field`, enabling `GenPoly<RationalFn>`. |
 | `AlgNum` | `src/poly/algebraic.rs` | Element of ℚ(α) = ℚ[t]/(m(t)). Implements `Ring` + `Field` with exact zero/sign testing. |
@@ -139,6 +150,8 @@ base → poly → transforms → simplify → calculus
 | `CompiledFn` | `src/output/lambdify.rs` | Stack-VM compiled numeric closure (`Clone + Send + Sync`). |
 | `LinearSolution` | `src/api/expr_solve_ext.rs` | `Unique` / `Parametric` / `Inconsistent` result of `linsolve`. |
 | `FormalPowerSeries` | `src/calculus/formal_series.rs` | Lazy exact power series over `Ex`. |
+| `LpProblem` / `LpSolution` | `src/domains/linprog.rs` | Exact LP builder and result (`status`, `x`, `objective`, `duals`, `farkas`). |
+| `RootOpts` / `MinimizeOpts` / `DeOpts` / `MinimizeResult` | `src/domains/optimize.rs` | Tolerances, budgets, seeds and results of the `f64` optimisation routines. |
 
 ### How Expressions Work
 
@@ -440,15 +453,16 @@ Follow the same steps as adding a new function (above), plus:
 
 ### Test Organization
 
-Tests are in `tests/` (integration tests, ~7,650 `#[test]` functions in 240
-files) and inline `#[cfg(test)]` modules (~2,500 unit tests). Total at 0.2.0:
-**10,177** tests plus ~520 doctests.
+Tests are in `tests/` (integration tests, ~8,450 `#[test]` functions in 273
+files) and inline `#[cfg(test)]` modules (~2,580 unit tests). Total at 0.3.0:
+**~11,000** tests plus ~610 doctests.
 
 | Category | Files | What they test |
 |----------|-------|----------------|
 | `test_known_answers.rs` | 256 tests | Exact symbolic results against textbook answers |
 | `test_sympy_cross_validation.rs` | 263 fixtures | Results compared against SymPy 1.14 (`tests/fixtures/sympy_cross_validation.json`) |
 | `test_correctness_audit.rs` | 108 fixtures | FTC verification, definite integrals (`tests/fixtures/new_capabilities.json`) |
+| `v03_<area>.rs` | 7 files, 400 tests | One suite per 0.3 feature: `poly_view`, `poly_symbolic_coeffs`, `ratsimp`, `linprog` (full KKT check of every optimum, Farkas vector verified), `normalforms` (defining invariants, not pinned answers), `matrix_ergonomics`, `optimize` |
 | `v02_<area>_<topic>.rs` | 40 files, 782 tests | One suite per 0.2 feature area: `backends_{c,codegen,compile,cse}`, `ergonomics_*`, `integration_{battery,definite,residue}`, `matrices_*`, `nodes_*`, `ntheory_*`, `sets_*`, `simplify_*`, `solving_*`, `summation_*`, `transforms_*` |
 | `proptest_*.rs`, `test_quality_props.rs`, `test_units_proptest.rs` | ~180 properties | Algebraic axioms, idempotence, value preservation, round-trips |
 | `test_cross_context.rs` | 17 tests | Cross-context safety guards |
@@ -458,7 +472,7 @@ files) and inline `#[cfg(test)]` modules (~2,500 unit tests). Total at 0.2.0:
 | `ui_tests.rs` + `tests/ui/*.rs` | trybuild | Compile-fail snapshots for the units type system (`Mass + Length` must not compile) |
 | `round*_*.rs`, `math*_bugs.rs`, `bugfinder*.rs` | many | Regression suites from bug-hunting rounds |
 
-Naming convention for new work: `tests/v02_<area>_<topic>.rs` (or the
+Naming convention for new work: `tests/v03_<area>[_<topic>].rs` (or the
 appropriate `test_*.rs`), one behaviour per test function, named for the
 mathematical fact it checks (`divergent_interior_pole_is_err`, not `test1`).
 
@@ -487,16 +501,20 @@ cargo test --benches
 
 ### SymPy oracle fixtures
 
-Three JSON fixture files under `tests/fixtures/` hold results computed by
-SymPy and are consumed by `test_sympy_cross_validation.rs`,
-`test_correctness_audit.rs` and the `v02_*` suites. Regenerate them with the
-scripts in `scripts/` inside a Python virtualenv with SymPy installed:
+JSON fixture files under `tests/fixtures/` hold results computed by SymPy
+and are consumed by `test_sympy_cross_validation.rs`,
+`test_correctness_audit.rs`, the `v02_oracle_*` suites and the 0.3 oracle
+(`v03_cross_validation.json`: `Poly`, `cancel`/`ratsimp`,
+`sympy.solvers.simplex`, Hermite/Smith normal forms). Regenerate them with
+the scripts in `scripts/` inside a Python virtualenv with SymPy installed:
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate && pip install sympy
 python3 scripts/generate_sympy_fixtures.py > tests/fixtures/sympy_cross_validation.json 2> fixture_generation.log
 python3 scripts/generate_new_fixtures.py    # new_capabilities.json
 python3 scripts/gen_new_fixtures.py          # new_features_cross_validation.json
+python3 scripts/generate_v02_fixtures.py    # v02_cross_validation.json
+python3 scripts/generate_v03_fixtures.py    # v03_cross_validation.json
 ```
 
 Each fixture records the SymPy version and generation time; a test compares

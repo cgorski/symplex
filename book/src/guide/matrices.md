@@ -35,7 +35,48 @@ fn main() {
 }
 ```
 
-Element-wise helpers: `map`, `map_indexed`, `subs`, `eval`, `expand`, `simplify`, `diff`, `integrate`, `col`, `row`, `diagonal`, `submatrix`, `set`, `iter`, `to_vec`, `vec` (column-major vectorisation), `hstack`/`vstack`, `kronecker`.
+Element-wise helpers: `map`, `map_indexed`, `subs`, `subs_map`, `eval`, `expand`, `simplify`, `diff`, `integrate`, `col`, `row`, `diagonal`, `submatrix`, `set`, `iter`, `to_vec`, `vec` (column-major vectorisation), `hstack`/`vstack`, `kronecker`.
+
+## Selecting sub-matrices and exact conversion
+
+New in 0.3: `extract(&rows, &cols)` (SymPy's `Matrix.extract`; indices may repeat or reorder), `select_rows`, `select_cols`, `delete_row`, `delete_col`; the three-valued structure tests `is_zero_matrix` and `is_integer_matrix`; `nnz` (structurally non-zero entries); and lossless conversions to and from the `num` types — `to_rational_rows`, `to_bigint_rows`, `Matrix::from_ratio`, `Matrix::from_bigint`, `Matrix::from_f64_rows` (each `f64` becomes the *exact* dyadic rational it represents) — which is how a `Matrix` is handed to the exact [LP solver](./exact-lp.md) and the [integer normal forms](./integer-lattices.md). (As elsewhere on this page, multi-row matrix output is compacted onto one line in the comments; a single-row matrix really does print as `[[…]]`.)
+
+```rust
+use symplex::prelude::*;
+use num_bigint::BigInt;
+use num_rational::Ratio;
+
+fn main() {
+    let ctx = Context::new();
+    let m = matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]];
+    println!("{}", m.extract(&[2, 0], &[0, 2]).unwrap());              // [[7, 9], [1, 3]]
+    println!("{}", m.select_rows(&[0, 2]).unwrap());                    // [[1, 2, 3], [7, 8, 9]]
+    println!("{}", m.select_cols(&[1]).unwrap());                       // [[2], [5], [8]]
+    println!("{}", m.delete_row(1).unwrap().delete_col(1).unwrap());     // [[1, 3], [7, 9]]
+    println!("{} {:?} {:?}", m.nnz(), m.is_zero_matrix(), m.is_integer_matrix());   // 9 Some(false) Some(true)
+    println!("{:?}", m.to_bigint_rows().unwrap()[2]);                    // [7, 8, 9]
+    println!("{}", m.extract(&[3], &[0]).unwrap_err());
+    // extract: invalid argument: row index 3 out of range for 3 rows
+
+    let f = Matrix::from_f64_rows(&ctx, &[vec![0.5, 0.1]]).unwrap();
+    println!("{f}");                          // [[1/2, 3602879701896397/36028797018963968]]
+    println!("{:?} {:?}", f.is_integer_matrix(), f.to_bigint_rows());   // Some(false) None
+    let q = |n: i64, d: i64| Ratio::new(BigInt::from(n), BigInt::from(d));
+    let r = Matrix::from_ratio(&ctx, &[vec![q(1, 2), q(3, 1)]]).unwrap();
+    println!("{r} {:?}", r.to_rational_rows().unwrap()[0]);
+    // [[1/2, 3]] [Ratio { numer: 1, denom: 2 }, Ratio { numer: 3, denom: 1 }]
+    println!("{}", Matrix::from_bigint(&ctx, &[vec![BigInt::from(1), BigInt::from(-2)]]).unwrap());   // [[1, -2]]
+
+    symplex::syms!(ctx; x, y);
+    let s = Matrix::new(vec![vec![x.clone(), y.clone()]]).unwrap();
+    println!("{}", s.subs_map(&[(&x, &y), (&y, &x)]));                 // [[y, x]]   (simultaneous)
+    println!("{:?} {:?} {}", s.is_zero_matrix(), s.is_integer_matrix(), s.nnz());   // None None 2
+    let z = Matrix::new(vec![vec![&(&x + 1).powi(2) - &(&x.powi(2) + &x * 2 + 1)]]).unwrap();
+    println!("{:?} {}", z.is_zero_matrix(), z.nnz());                   // Some(true) 1
+}
+```
+
+`is_zero_matrix` simplifies each entry, so it recognises `(x + 1)² − x² − 2x − 1` as zero; `nnz` is purely structural and counts that entry. `from_f64_rows` is deliberately exact — use `Context::from_f64_nice` entry-wise when you want `0.1` read as `1/10`.
 
 ## Eigenvalues, eigenvectors, Jordan form
 
@@ -180,6 +221,30 @@ fn main() {
 }
 ```
 
+## Integer normal forms
+
+For a matrix of integer literals, 0.3 adds `hermite_normal_form` (row style, `H = U·A`), `smith_normal_form` (`S = U·A·V`, invariant factors) and `integer_nullspace` (a ℤ-basis of the integer kernel) as methods, with the transform-returning and column-convention variants in `symplex::normalforms`. Non-integer entries are an `InvalidArgument` error, not a rounding.
+
+```rust
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    let a = matrix![ctx, [2, 4, 4], [-6, 6, 12], [10, -4, -16]];
+    println!("{}", a.hermite_normal_form().unwrap());     // [[2, 4, 4], [0, 6, 0], [0, 0, 12]]
+    println!("{}", a.smith_normal_form().unwrap());       // [[2, 0, 0], [0, 6, 0], [0, 0, 12]]
+    let ker: Vec<String> = matrix![ctx, [2, 1, 1]]
+        .integer_nullspace()
+        .unwrap()
+        .iter()
+        .map(|k| k.transpose().to_string())
+        .collect();
+    println!("{ker:?}");                                  // ["[[1, 0, -2]]", "[[0, 1, -1]]"]
+}
+```
+
+Conventions, the SymPy-compatible column HNF, unimodularity tests and lattice determinants are covered in [Integer Lattices and Normal Forms](./integer-lattices.md).
+
 ## Calculus helpers
 
 `matrix::jacobian(&funcs, &vars)`, `matrix_decomp::hessian(&f, &vars)`, `matrix_decomp::wronskian(&funcs, &x)`, and `Matrix::{diff, integrate}` element-wise.
@@ -204,4 +269,4 @@ fn main() {
 - **Vector calculus** (`symplex::vector`): `gradient`, `divergence`, `curl`, `laplacian`, and their `_in(&CoordinateSystem)` variants for cylindrical and spherical coordinates; `directional_derivative`, `line_integral_scalar`, `line_integral_vector`, `scalar_potential`; `is_conservative`/`is_irrotational`/`is_solenoidal` return `Option<bool>`.
 - **Control** (`symplex::control`): `StateSpace` (poles, stability, controllability, observability, ZOH discretisation, `to_transfer_function`) and `TransferFunction` (series/parallel/feedback algebra, Routh–Hurwitz, `to_state_space`).
 
-See `cargo run --example matrix_decompositions`, `matrix_algebra` and `control_system`.
+See `cargo run --example matrix_decompositions`, `matrix_algebra`, `control_system` and `integer_lattices`.
