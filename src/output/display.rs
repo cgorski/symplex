@@ -91,6 +91,17 @@ fn prec_of(node: &ExprNode) -> u8 {
         | ExprNode::Erfc(_)
         | ExprNode::LambertW(_)
         | ExprNode::Beta(_, _)
+        | ExprNode::Re(_)
+        | ExprNode::Im(_)
+        | ExprNode::Conjugate(_)
+        | ExprNode::Arg(_)
+        | ExprNode::Si(_)
+        | ExprNode::Ci(_)
+        | ExprNode::Ei(_)
+        | ExprNode::Li(_)
+        | ExprNode::Zeta(_)
+        | ExprNode::Polygamma(_, _)
+        | ExprNode::KroneckerDelta(_, _)
         | ExprNode::Floor(_)
         | ExprNode::Ceiling(_)
         | ExprNode::Min(_)
@@ -233,6 +244,9 @@ fn expand_expr(
         ExprNode::Pi => stack.push(WorkItem::Lit("pi")),
         ExprNode::E => stack.push(WorkItem::Lit("E")),
         ExprNode::ImaginaryUnit => stack.push(WorkItem::Lit("I")),
+        ExprNode::EulerGamma => stack.push(WorkItem::Lit("EulerGamma")),
+        ExprNode::Catalan => stack.push(WorkItem::Lit("Catalan")),
+        ExprNode::GoldenRatio => stack.push(WorkItem::Lit("GoldenRatio")),
         ExprNode::PhysicalConstant(name_id, _) => {
             stack.push(WorkItem::Owned(arena.symbol_name(name_id).to_owned()));
         }
@@ -476,6 +490,33 @@ fn expand_expr(
             stack.push(WorkItem::Lit(", "));
             stack.push(WorkItem::Expr(a, 0));
             stack.push(WorkItem::Lit("B("));
+        }
+
+        // ── Complex analysis ────────────────────────────────────────────
+        ExprNode::Re(x) => push_func("re", x, stack),
+        ExprNode::Im(x) => push_func("im", x, stack),
+        ExprNode::Conjugate(x) => push_func("conjugate", x, stack),
+        ExprNode::Arg(x) => push_func("arg", x, stack),
+
+        // ── Special functions (0.2) ──────────────────────────────────────
+        ExprNode::Si(x) => push_func("Si", x, stack),
+        ExprNode::Ci(x) => push_func("Ci", x, stack),
+        ExprNode::Ei(x) => push_func("Ei", x, stack),
+        ExprNode::Li(x) => push_func("li", x, stack),
+        ExprNode::Zeta(x) => push_func("zeta", x, stack),
+        ExprNode::Polygamma(n, x) => {
+            stack.push(WorkItem::Lit(")"));
+            stack.push(WorkItem::Expr(x, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(n, 0));
+            stack.push(WorkItem::Lit("polygamma("));
+        }
+        ExprNode::KroneckerDelta(i, j) => {
+            stack.push(WorkItem::Lit(")"));
+            stack.push(WorkItem::Expr(j, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(i, 0));
+            stack.push(WorkItem::Lit("KroneckerDelta("));
         }
         ExprNode::Floor(x) => push_func("floor", x, stack),
         ExprNode::Ceiling(x) => push_func("ceiling", x, stack),
@@ -1340,5 +1381,48 @@ mod tests {
         // Leading negative: "-x + 1" is acceptable
         let s = a.display(expr).to_string();
         assert!(!s.contains("+ -"), "should not have '+ -' pattern: {s}");
+    }
+
+    // ── 0.2 nodes ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn display_named_constants() {
+        let a = Arena::new();
+        assert_display!(a, a.euler_gamma, "EulerGamma");
+        assert_display!(a, a.catalan, "Catalan");
+        assert_display!(a, a.golden_ratio, "GoldenRatio");
+    }
+
+    #[test]
+    fn display_complex_and_special_nodes() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let n = a.symbol("n");
+        let cases = [
+            (a.intern(ExprNode::Re(x)), "re(x)"),
+            (a.intern(ExprNode::Im(x)), "im(x)"),
+            (a.intern(ExprNode::Conjugate(x)), "conjugate(x)"),
+            (a.intern(ExprNode::Arg(x)), "arg(x)"),
+            (a.intern(ExprNode::Si(x)), "Si(x)"),
+            (a.intern(ExprNode::Ci(x)), "Ci(x)"),
+            (a.intern(ExprNode::Ei(x)), "Ei(x)"),
+            (a.intern(ExprNode::Li(x)), "li(x)"),
+            (a.intern(ExprNode::Zeta(x)), "zeta(x)"),
+            (a.intern(ExprNode::Polygamma(n, x)), "polygamma(n, x)"),
+            (
+                a.intern(ExprNode::KroneckerDelta(n, x)),
+                "KroneckerDelta(n, x)",
+            ),
+        ];
+        for (id, expected) in cases {
+            assert_display!(a, id, expected);
+        }
+        // Function nodes behave as atoms w.r.t. precedence: no extra parens.
+        let re_x = a.intern(ExprNode::Re(x));
+        let two = a.int(2);
+        let prod = a.mul(&[two, re_x]);
+        assert_display!(a, prod, "2*re(x)");
+        let sq = a.pow(re_x, two);
+        assert_display!(a, sq, "re(x)^2");
     }
 }

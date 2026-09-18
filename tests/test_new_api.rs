@@ -160,18 +160,24 @@ fn rationalize_integer_denom() {
 // re() / im()
 // ═══════════════════════════════════════════════════════════════════════════
 
+// 0.2: bare symbols are no longer assumed real — `re`/`im` of an
+// unassumed symbol stay symbolic; with a `Real` assumption they fold.
 #[test]
 fn re_of_real() {
     let ctx = Context::new();
-    let x = ctx.symbol("x");
+    let x = ctx.symbol_with("x", &[Assumption::Real]);
     assert_eq!(format!("{}", x.re()), "x");
+    let z = ctx.symbol("z");
+    assert_eq!(format!("{}", z.re()), "re(z)");
 }
 
 #[test]
 fn im_of_real() {
     let ctx = Context::new();
-    let x = ctx.symbol("x");
+    let x = ctx.symbol_with("x", &[Assumption::Real]);
     assert_eq!(format!("{}", x.im()), "0");
+    let z = ctx.symbol("z");
+    assert_eq!(format!("{}", z.im()), "im(z)");
 }
 
 #[test]

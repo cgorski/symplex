@@ -339,7 +339,11 @@ impl<'a> Parser<'a> {
                     "e" | "E" => Ok(arena.e_const),
                     "I" | "i" => Ok(arena.i_unit),
                     "inf" | "oo" | "Inf" => Ok(arena.infinity),
+                    "zoo" => Ok(arena.complex_infinity),
                     "nan" => Ok(arena.nan),
+                    "EulerGamma" | "euler_gamma" => Ok(arena.euler_gamma),
+                    "Catalan" => Ok(arena.catalan),
+                    "GoldenRatio" | "golden_ratio" => Ok(arena.golden_ratio),
                     _ => Ok(arena.symbol(&name)),
                 }
             }
@@ -452,9 +456,13 @@ impl<'a> Parser<'a> {
                 "conditionset" => {
                     Ok(arena.intern(crate::base::node::ExprNode::ConditionSet(arg, arg2)))
                 }
+                "atan2" => Ok(arena.atan2(arg, arg2)),
+                "polygamma" => Ok(arena.polygamma(arg, arg2)),
+                "kroneckerdelta" | "kronecker_delta" => Ok(arena.kronecker_delta(arg, arg2)),
                 _ => Err(ParseError {
                     message: format!(
-                        "unknown 2-argument function '{}'. Supported: log, RootOf, ConditionSet",
+                        "unknown 2-argument function '{}'. Supported: log, atan2, polygamma, \
+                         KroneckerDelta, RootOf, ConditionSet",
                         name
                     ),
                     position: self.lexer.pos,
@@ -498,11 +506,23 @@ impl<'a> Parser<'a> {
             "factorial" => Ok(arena.intern(crate::base::node::ExprNode::Factorial(arg))),
             "digamma" => Ok(arena.intern(crate::base::node::ExprNode::Digamma(arg))),
             "loggamma" => Ok(arena.intern(crate::base::node::ExprNode::LogGamma(arg))),
+            // Complex analysis
+            "re" => Ok(arena.re(arg)),
+            "im" => Ok(arena.im(arg)),
+            "conjugate" | "conj" => Ok(arena.conjugate(arg)),
+            "arg" => Ok(arena.arg(arg)),
+            // Special functions (0.2)
+            "si" => Ok(arena.si(arg)),
+            "ci" => Ok(arena.ci(arg)),
+            "ei" => Ok(arena.ei(arg)),
+            "li" => Ok(arena.li(arg)),
+            "zeta" => Ok(arena.zeta(arg)),
             _ => Err(ParseError {
                 message: format!(
                     "unknown function '{}'. Supported: sin, cos, tan, exp, ln, log, sqrt, cbrt, abs, \
                      asin, acos, atan, sinh, cosh, tanh, asinh, acosh, atanh, sign, floor, ceil, \
                      gamma, erf, erfc, heaviside, diracdelta, lambertw, factorial, digamma, loggamma, \
+                     re, im, conjugate, arg, Si, Ci, Ei, li, zeta, polygamma, KroneckerDelta, \
                      Limit, RootOf, ConditionSet, LaplaceTransform, InverseLaplaceTransform, \
                      Residue, DSolve, Series",
                     name
@@ -1290,5 +1310,57 @@ mod tests {
         // Should simplify to 1 via full_simplify
         let simplified = result.simplify();
         assert_eq!(format!("{simplified}"), "1");
+    }
+
+    // ── 0.2 nodes ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_named_constants() {
+        let ctx = Context::new();
+        assert_eq!(parse(&ctx, "EulerGamma").unwrap(), ctx.euler_gamma());
+        assert_eq!(parse(&ctx, "Catalan").unwrap(), ctx.catalan());
+        assert_eq!(parse(&ctx, "GoldenRatio").unwrap(), ctx.golden_ratio());
+        assert_eq!(parse(&ctx, "zoo").unwrap(), ctx.complex_infinity());
+        assert_eq!(
+            parse_and_display("EulerGamma + Catalan"),
+            "EulerGamma + Catalan"
+        );
+    }
+
+    #[test]
+    fn parse_complex_functions() {
+        let ctx = Context::new();
+        let z = ctx.symbol("z");
+        assert_eq!(parse(&ctx, "re(z)").unwrap(), z.re());
+        assert_eq!(parse(&ctx, "im(z)").unwrap(), z.im());
+        assert_eq!(parse(&ctx, "conjugate(z)").unwrap(), z.conjugate());
+        assert_eq!(parse(&ctx, "conj(z)").unwrap(), z.conjugate());
+        assert_eq!(parse(&ctx, "arg(z)").unwrap(), z.arg());
+        assert_eq!(parse_and_display("Re(3 + 4*I)"), "3");
+        assert_eq!(parse_and_display("im(3 + 4*I)"), "4");
+    }
+
+    #[test]
+    fn parse_special_functions() {
+        let ctx = Context::new();
+        let x = ctx.symbol("x");
+        let n = ctx.symbol("n");
+        assert_eq!(parse(&ctx, "Si(x)").unwrap(), x.si());
+        assert_eq!(parse(&ctx, "Ci(x)").unwrap(), x.ci());
+        assert_eq!(parse(&ctx, "Ei(x)").unwrap(), x.ei());
+        assert_eq!(parse(&ctx, "li(x)").unwrap(), x.li());
+        assert_eq!(parse(&ctx, "zeta(x)").unwrap(), x.zeta());
+        assert_eq!(parse(&ctx, "polygamma(n, x)").unwrap(), x.polygamma(&n));
+        assert_eq!(
+            parse(&ctx, "KroneckerDelta(n, x)").unwrap(),
+            x.kronecker_delta(&n)
+        );
+        assert_eq!(
+            parse(&ctx, "kronecker_delta(n, x)").unwrap(),
+            x.kronecker_delta(&n)
+        );
+        assert_eq!(parse_and_display("zeta(2)"), "1/6*pi^2");
+        assert_eq!(parse_and_display("Si(0)"), "0");
+        assert_eq!(parse_and_display("atan2(1, 1)"), "atan2(1, 1)");
     }
 }

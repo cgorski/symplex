@@ -179,6 +179,9 @@ fn remap_node(
         ExprNode::Pi => ExprNode::Pi,
         ExprNode::E => ExprNode::E,
         ExprNode::ImaginaryUnit => ExprNode::ImaginaryUnit,
+        ExprNode::EulerGamma => ExprNode::EulerGamma,
+        ExprNode::Catalan => ExprNode::Catalan,
+        ExprNode::GoldenRatio => ExprNode::GoldenRatio,
 
         ExprNode::PhysicalConstant(old_sid, old_value_id) => {
             let name = src.symbol_name(*old_sid).to_owned();
@@ -228,6 +231,8 @@ fn remap_node(
         ExprNode::Integral(a, b) => ExprNode::Integral(m(a), m(b)),
         ExprNode::Atan2(a, b) => ExprNode::Atan2(m(a), m(b)),
         ExprNode::Beta(a, b) => ExprNode::Beta(m(a), m(b)),
+        ExprNode::Polygamma(a, b) => ExprNode::Polygamma(m(a), m(b)),
+        ExprNode::KroneckerDelta(a, b) => ExprNode::KroneckerDelta(m(a), m(b)),
         ExprNode::SetComplement(a, b) => ExprNode::SetComplement(m(a), m(b)),
 
         // ── Interval (binary + flags) ────────────────────────────────────
@@ -280,6 +285,15 @@ fn remap_node(
         ExprNode::LambertW(x) => ExprNode::LambertW(m(x)),
         ExprNode::Heaviside(x) => ExprNode::Heaviside(m(x)),
         ExprNode::DiracDelta(x) => ExprNode::DiracDelta(m(x)),
+        ExprNode::Re(x) => ExprNode::Re(m(x)),
+        ExprNode::Im(x) => ExprNode::Im(m(x)),
+        ExprNode::Conjugate(x) => ExprNode::Conjugate(m(x)),
+        ExprNode::Arg(x) => ExprNode::Arg(m(x)),
+        ExprNode::Si(x) => ExprNode::Si(m(x)),
+        ExprNode::Ci(x) => ExprNode::Ci(m(x)),
+        ExprNode::Ei(x) => ExprNode::Ei(m(x)),
+        ExprNode::Li(x) => ExprNode::Li(m(x)),
+        ExprNode::Zeta(x) => ExprNode::Zeta(m(x)),
 
         // ── Piecewise ────────────────────────────────────────────────────
         ExprNode::Piecewise(pairs) => {
@@ -459,5 +473,32 @@ mod tests {
             dst_count,
             src_count
         );
+    }
+
+    #[test]
+    fn transfer_new_constants_and_function_nodes() {
+        let mut src = Arena::new();
+        let z = src.symbol("z");
+        let n = src.symbol("n");
+        let re_z = src.intern(ExprNode::Re(z));
+        let conj_z = src.intern(ExprNode::Conjugate(z));
+        let pg = src.intern(ExprNode::Polygamma(n, z));
+        let kd = src.intern(ExprNode::KroneckerDelta(n, z));
+        let si = src.intern(ExprNode::Si(z));
+        let consts = src.add(&[src.euler_gamma, src.catalan, src.golden_ratio]);
+        let root = src.add(&[re_z, conj_z, pg, kd, si, consts]);
+
+        let mut dst = Arena::new();
+        let mut map = FxHashMap::default();
+        let new_root = transfer_subtree(&src, &mut dst, root, &mut map);
+
+        assert_eq!(
+            dst.display(new_root).to_string(),
+            src.display(root).to_string()
+        );
+        // Pre-interned constants map onto the destination's own singletons.
+        assert_eq!(map[&src.euler_gamma], dst.euler_gamma);
+        assert_eq!(map[&src.catalan], dst.catalan);
+        assert_eq!(map[&src.golden_ratio], dst.golden_ratio);
     }
 }

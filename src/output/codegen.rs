@@ -758,6 +758,10 @@ fn expr_to_rust_cse(
         }
         ExprNode::Pi => Ok(format!("{}::PI", prec.consts_mod())),
         ExprNode::E => Ok(format!("{}::E", prec.consts_mod())),
+        // Named constants without a `std::f64::consts` entry: emit literals.
+        ExprNode::EulerGamma => Ok(format!("0.5772156649015329{suffix}")),
+        ExprNode::Catalan => Ok(format!("0.915965594177219{suffix}")),
+        ExprNode::GoldenRatio => Ok(format!("1.618033988749895{suffix}")),
         ExprNode::PhysicalConstant(_, value_id) => {
             // Emit the exact numeric value as Rust code
             expr_to_rust_cse(arena, value_id, var_names, options, cse_constants)
@@ -991,8 +995,20 @@ fn expr_to_rust_cse(
         | ExprNode::Erf(_)
         | ExprNode::Erfc(_)
         | ExprNode::LambertW(_)
-        | ExprNode::Beta(_, _) => Err(SymplexError::NotImplemented(
-            "cannot generate Rust code for special functions (gamma, erf, beta, lambertw)"
+        | ExprNode::Beta(_, _)
+        | ExprNode::Re(_)
+        | ExprNode::Im(_)
+        | ExprNode::Conjugate(_)
+        | ExprNode::Arg(_)
+        | ExprNode::Si(_)
+        | ExprNode::Ci(_)
+        | ExprNode::Ei(_)
+        | ExprNode::Li(_)
+        | ExprNode::Zeta(_)
+        | ExprNode::Polygamma(_, _)
+        | ExprNode::KroneckerDelta(_, _) => Err(SymplexError::NotImplemented(
+            "cannot generate Rust code for special functions (gamma, erf, beta, lambertw, \
+             re/im/conjugate/arg, Si/Ci/Ei/li, zeta, polygamma, KroneckerDelta)"
                 .to_string(),
         )),
         ExprNode::Apply(_, _) => Err(SymplexError::NotImplemented(

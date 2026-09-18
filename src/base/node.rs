@@ -63,13 +63,35 @@ impl fmt::Debug for CtxId {
 
 /// The payload of a single node in the expression DAG.
 ///
-/// Variants fall into three broad categories:
+/// Variants fall into the following categories:
 ///
-/// * **Atoms** – leaves that carry no child expressions (`Num`, `Symbol`,
-///   mathematical constants, and special values).
-/// * **Operators** – internal nodes with one or more child `ExprId`s.
-/// * **Calculus forms** – `Derivative` and `Integral`, which record both the
-///   body expression and the variable of differentiation / integration.
+/// * **Atoms** – leaves that carry no child expressions: `Num`, `Symbol`,
+///   the mathematical constants (`Pi`, `E`, `ImaginaryUnit`, `EulerGamma`,
+///   `Catalan`, `GoldenRatio`, `PhysicalConstant`), the special values
+///   (`Infinity`, `NegInfinity`, `ComplexInfinity`, `NaN`), the boolean
+///   atoms (`BoolTrue`, `BoolFalse`) and the set atoms (`EmptySet`,
+///   `UniversalSet`).
+/// * **N-ary arithmetic** – `Add`, `Mul`, `Min`, `Max`.
+/// * **Binary arithmetic** – `Pow`.
+/// * **Elementary functions** – `Neg`, `Floor`, `Ceiling`, trigonometric,
+///   hyperbolic and their inverses, `Exp`, `Ln`, `Abs`, `Sign`,
+///   `Heaviside`, `DiracDelta`.
+/// * **Complex analysis** – `Re`, `Im`, `Conjugate`, `Arg`.
+/// * **Special functions** – `Gamma`, `LogGamma`, `Digamma`, `Polygamma`,
+///   `Erf`, `Erfc`, `LambertW`, `Beta`, `Si`, `Ci`, `Ei`, `Li`, `Zeta`,
+///   `KroneckerDelta`.
+/// * **Combinatorial** – `Factorial`, `Binomial`.
+/// * **Boolean / relational / logical** – `Gt`, `Ge`, `Eq_`, `Ne`, `And`,
+///   `Or`, `Not`, `Piecewise`.
+/// * **Function application** – `Apply` (user-defined or library functions
+///   identified by name).
+/// * **Calculus / formal (unevaluated) forms** – `Derivative`, `Integral`,
+///   `Sum`, `Product_`, `Limit`, `Series`, `LaplaceTransform`,
+///   `InverseLaplaceTransform`, `Residue`, `DSolve`, `ConditionSet`.
+/// * **Algebraic answers** – `RootOf`, `RootSum` (complete closed-form
+///   descriptions of polynomial roots; *not* unevaluated).
+/// * **Sets** – `Interval`, `FiniteSet`, `SetUnion`, `SetIntersection`,
+///   `SetComplement`.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum ExprNode {
     // -- atoms ---------------------------------------------------------------
@@ -89,6 +111,23 @@ pub enum ExprNode {
 
     /// The imaginary unit *i*, satisfying *i*² = −1.
     ImaginaryUnit,
+
+    /// The Euler–Mascheroni constant γ ≈ 0.57721 56649…
+    ///
+    /// Whether γ is rational or irrational is an open problem, so the
+    /// assumption system deliberately leaves those properties unknown.
+    EulerGamma,
+
+    /// Catalan's constant G = Σ (−1)ⁿ/(2n+1)² ≈ 0.91596 55941…
+    ///
+    /// Irrationality of G is unproven; only positivity, realness and
+    /// finiteness are asserted.
+    Catalan,
+
+    /// The golden ratio φ = (1 + √5)/2 ≈ 1.61803 39887…
+    ///
+    /// φ is algebraic (root of x² − x − 1) and irrational.
+    GoldenRatio,
 
     /// A named physical constant with a known exact value.
     /// Displays as name, evaluates to value. E.g., speed of light, Planck's constant.
@@ -192,6 +231,27 @@ pub enum ExprNode {
     /// Dirac delta distribution: δ(x) = 0 for x≠0, symbolic at x=0.
     DiracDelta(ExprId),
 
+    // -- complex analysis ----------------------------------------------------
+    /// Real part of a complex quantity: `re(z)`.
+    ///
+    /// Always real-valued. Only constructed when the real part cannot be
+    /// determined from the structure of `z` and the assumption system.
+    Re(ExprId),
+
+    /// Imaginary part of a complex quantity: `im(z)`, a real number such
+    /// that `z = re(z) + i·im(z)`.
+    Im(ExprId),
+
+    /// Complex conjugate: `conjugate(z)`.
+    ///
+    /// Distributes over `Add`/`Mul`/integer `Pow` and commutes with
+    /// real-analytic functions at construction; the node itself is only
+    /// produced for arguments whose realness is unknown.
+    Conjugate(ExprId),
+
+    /// Principal complex argument `arg(z) ∈ (−π, π]`.
+    Arg(ExprId),
+
     // -- special functions ---------------------------------------------------
     /// Gamma function: Γ(x) = ∫₀^∞ t^(x-1) e^(-t) dt.
     Gamma(ExprId),
@@ -213,6 +273,32 @@ pub enum ExprNode {
 
     /// Beta function: B(a,b) = Γ(a)Γ(b)/Γ(a+b).
     Beta(ExprId, ExprId),
+
+    /// Sine integral: Si(x) = ∫₀ˣ sin(t)/t dt.
+    Si(ExprId),
+
+    /// Cosine integral: Ci(x) = γ + ln(x) + ∫₀ˣ (cos(t) − 1)/t dt.
+    Ci(ExprId),
+
+    /// Exponential integral (Cauchy principal value):
+    /// Ei(x) = −∫_{−x}^{∞} e^{−t}/t dt = γ + ln|x| + Σ_{k≥1} xᵏ/(k·k!).
+    Ei(ExprId),
+
+    /// Logarithmic integral: li(x) = ∫₀ˣ dt/ln(t) = Ei(ln x).
+    Li(ExprId),
+
+    /// Riemann zeta function ζ(s).
+    Zeta(ExprId),
+
+    /// Polygamma function ψ⁽ⁿ⁾(x) = dⁿ⁺¹/dxⁿ⁺¹ ln Γ(x): `Polygamma(n, x)`.
+    ///
+    /// `Polygamma(0, x)` is canonicalised to [`Digamma`](ExprNode::Digamma).
+    Polygamma(ExprId, ExprId),
+
+    /// Kronecker delta δᵢⱼ = 1 if i = j, else 0: `KroneckerDelta(i, j)`.
+    ///
+    /// Arguments are stored in canonical (sorted) order since δ is symmetric.
+    KroneckerDelta(ExprId, ExprId),
 
     // -- combinatorial -------------------------------------------------------
     /// Factorial: `n!`
@@ -352,6 +438,9 @@ impl ExprNode {
             | ExprNode::Pi
             | ExprNode::E
             | ExprNode::ImaginaryUnit
+            | ExprNode::EulerGamma
+            | ExprNode::Catalan
+            | ExprNode::GoldenRatio
             | ExprNode::PhysicalConstant(_, _)
             | ExprNode::Infinity
             | ExprNode::NegInfinity
@@ -390,6 +479,8 @@ impl ExprNode {
             | ExprNode::Atan2(a, b)
             | ExprNode::Binomial(a, b)
             | ExprNode::Beta(a, b)
+            | ExprNode::Polygamma(a, b)
+            | ExprNode::KroneckerDelta(a, b)
             | ExprNode::Gt(a, b)
             | ExprNode::Ge(a, b)
             | ExprNode::Eq_(a, b)
@@ -444,12 +535,21 @@ impl ExprNode {
             | ExprNode::Sign(x)
             | ExprNode::Heaviside(x)
             | ExprNode::DiracDelta(x)
+            | ExprNode::Re(x)
+            | ExprNode::Im(x)
+            | ExprNode::Conjugate(x)
+            | ExprNode::Arg(x)
             | ExprNode::Gamma(x)
             | ExprNode::LogGamma(x)
             | ExprNode::Digamma(x)
             | ExprNode::Erf(x)
             | ExprNode::Erfc(x)
             | ExprNode::LambertW(x)
+            | ExprNode::Si(x)
+            | ExprNode::Ci(x)
+            | ExprNode::Ei(x)
+            | ExprNode::Li(x)
+            | ExprNode::Zeta(x)
             | ExprNode::Factorial(x)
             | ExprNode::Not(x) => smallvec![*x],
 
@@ -475,6 +575,9 @@ impl ExprNode {
             | ExprNode::Pi
             | ExprNode::E
             | ExprNode::ImaginaryUnit
+            | ExprNode::EulerGamma
+            | ExprNode::Catalan
+            | ExprNode::GoldenRatio
             | ExprNode::PhysicalConstant(_, _)
             | ExprNode::Infinity
             | ExprNode::NegInfinity
@@ -519,6 +622,8 @@ impl ExprNode {
             | ExprNode::Atan2(a, b)
             | ExprNode::Binomial(a, b)
             | ExprNode::Beta(a, b)
+            | ExprNode::Polygamma(a, b)
+            | ExprNode::KroneckerDelta(a, b)
             | ExprNode::Gt(a, b)
             | ExprNode::Ge(a, b)
             | ExprNode::Eq_(a, b)
@@ -581,12 +686,21 @@ impl ExprNode {
             | ExprNode::Sign(x)
             | ExprNode::Heaviside(x)
             | ExprNode::DiracDelta(x)
+            | ExprNode::Re(x)
+            | ExprNode::Im(x)
+            | ExprNode::Conjugate(x)
+            | ExprNode::Arg(x)
             | ExprNode::Gamma(x)
             | ExprNode::LogGamma(x)
             | ExprNode::Digamma(x)
             | ExprNode::Erf(x)
             | ExprNode::Erfc(x)
             | ExprNode::LambertW(x)
+            | ExprNode::Si(x)
+            | ExprNode::Ci(x)
+            | ExprNode::Ei(x)
+            | ExprNode::Li(x)
+            | ExprNode::Zeta(x)
             | ExprNode::Factorial(x)
             | ExprNode::Not(x) => f(*x),
 
@@ -608,6 +722,9 @@ impl ExprNode {
             | ExprNode::Pi
             | ExprNode::E
             | ExprNode::ImaginaryUnit
+            | ExprNode::EulerGamma
+            | ExprNode::Catalan
+            | ExprNode::GoldenRatio
             | ExprNode::PhysicalConstant(_, _)
             | ExprNode::Infinity
             | ExprNode::NegInfinity
@@ -629,6 +746,8 @@ impl ExprNode {
             | ExprNode::Atan2(..)
             | ExprNode::Binomial(..)
             | ExprNode::Beta(..)
+            | ExprNode::Polygamma(..)
+            | ExprNode::KroneckerDelta(..)
             | ExprNode::Gt(..)
             | ExprNode::Ge(..)
             | ExprNode::Eq_(..)
@@ -667,12 +786,21 @@ impl ExprNode {
             | ExprNode::Sign(_)
             | ExprNode::Heaviside(_)
             | ExprNode::DiracDelta(_)
+            | ExprNode::Re(_)
+            | ExprNode::Im(_)
+            | ExprNode::Conjugate(_)
+            | ExprNode::Arg(_)
             | ExprNode::Gamma(_)
             | ExprNode::LogGamma(_)
             | ExprNode::Digamma(_)
             | ExprNode::Erf(_)
             | ExprNode::Erfc(_)
             | ExprNode::LambertW(_)
+            | ExprNode::Si(_)
+            | ExprNode::Ci(_)
+            | ExprNode::Ei(_)
+            | ExprNode::Li(_)
+            | ExprNode::Zeta(_)
             | ExprNode::Factorial(_)
             | ExprNode::Not(_) => 1,
             ExprNode::Apply(_, args) => args.len(),
@@ -685,10 +813,13 @@ impl ExprNode {
     /// Atoms are: [`Num`](ExprNode::Num), [`Symbol`](ExprNode::Symbol),
     /// [`Pi`](ExprNode::Pi), [`E`](ExprNode::E),
     /// [`ImaginaryUnit`](ExprNode::ImaginaryUnit),
+    /// [`EulerGamma`](ExprNode::EulerGamma), [`Catalan`](ExprNode::Catalan),
+    /// [`GoldenRatio`](ExprNode::GoldenRatio),
+    /// [`PhysicalConstant`](ExprNode::PhysicalConstant),
     /// [`Infinity`](ExprNode::Infinity),
     /// [`NegInfinity`](ExprNode::NegInfinity),
-    /// [`ComplexInfinity`](ExprNode::ComplexInfinity), and
-    /// [`NaN`](ExprNode::NaN).
+    /// [`ComplexInfinity`](ExprNode::ComplexInfinity),
+    /// [`NaN`](ExprNode::NaN), the boolean atoms and the set atoms.
     pub fn is_atom(&self) -> bool {
         matches!(
             self,
@@ -697,6 +828,9 @@ impl ExprNode {
                 | ExprNode::Pi
                 | ExprNode::E
                 | ExprNode::ImaginaryUnit
+                | ExprNode::EulerGamma
+                | ExprNode::Catalan
+                | ExprNode::GoldenRatio
                 | ExprNode::PhysicalConstant(_, _)
                 | ExprNode::Infinity
                 | ExprNode::NegInfinity
@@ -732,6 +866,9 @@ impl fmt::Debug for ExprNode {
             ExprNode::Pi => write!(f, "Pi"),
             ExprNode::E => write!(f, "E"),
             ExprNode::ImaginaryUnit => write!(f, "ImaginaryUnit"),
+            ExprNode::EulerGamma => write!(f, "EulerGamma"),
+            ExprNode::Catalan => write!(f, "Catalan"),
+            ExprNode::GoldenRatio => write!(f, "GoldenRatio"),
             ExprNode::PhysicalConstant(name, val) => {
                 write!(f, "PhysicalConstant({name:?}, {val:?})")
             }
@@ -766,6 +903,10 @@ impl fmt::Debug for ExprNode {
             ExprNode::Sign(id) => write!(f, "Sign({id:?})"),
             ExprNode::Heaviside(x) => f.debug_tuple("Heaviside").field(x).finish(),
             ExprNode::DiracDelta(x) => f.debug_tuple("DiracDelta").field(x).finish(),
+            ExprNode::Re(x) => f.debug_tuple("Re").field(x).finish(),
+            ExprNode::Im(x) => f.debug_tuple("Im").field(x).finish(),
+            ExprNode::Conjugate(x) => f.debug_tuple("Conjugate").field(x).finish(),
+            ExprNode::Arg(x) => f.debug_tuple("Arg").field(x).finish(),
             ExprNode::Gamma(x) => f.debug_tuple("Gamma").field(x).finish(),
             ExprNode::LogGamma(x) => f.debug_tuple("LogGamma").field(x).finish(),
             ExprNode::Digamma(x) => f.debug_tuple("Digamma").field(x).finish(),
@@ -773,6 +914,15 @@ impl fmt::Debug for ExprNode {
             ExprNode::Erfc(x) => f.debug_tuple("Erfc").field(x).finish(),
             ExprNode::LambertW(x) => f.debug_tuple("LambertW").field(x).finish(),
             ExprNode::Beta(a, b) => f.debug_tuple("Beta").field(a).field(b).finish(),
+            ExprNode::Si(x) => f.debug_tuple("Si").field(x).finish(),
+            ExprNode::Ci(x) => f.debug_tuple("Ci").field(x).finish(),
+            ExprNode::Ei(x) => f.debug_tuple("Ei").field(x).finish(),
+            ExprNode::Li(x) => f.debug_tuple("Li").field(x).finish(),
+            ExprNode::Zeta(x) => f.debug_tuple("Zeta").field(x).finish(),
+            ExprNode::Polygamma(n, x) => f.debug_tuple("Polygamma").field(n).field(x).finish(),
+            ExprNode::KroneckerDelta(i, j) => {
+                f.debug_tuple("KroneckerDelta").field(i).field(j).finish()
+            }
             ExprNode::Factorial(id) => write!(f, "Factorial({id:?})"),
             ExprNode::Binomial(n, k) => write!(f, "Binomial({n:?}, {k:?})"),
             ExprNode::BoolTrue => write!(f, "BoolTrue"),
@@ -1015,5 +1165,74 @@ mod tests {
         assert_eq!(kids.len(), 2);
         assert_eq!(kids[0], ExprId(8));
         assert_eq!(kids[1], ExprId(9));
+    }
+
+    #[test]
+    fn named_constants_are_atoms() {
+        for node in [
+            ExprNode::EulerGamma,
+            ExprNode::Catalan,
+            ExprNode::GoldenRatio,
+        ] {
+            assert!(node.is_atom(), "{node:?} should be an atom");
+            assert!(node.children().is_empty());
+            assert_eq!(node.child_count(), 0);
+            let mut count = 0;
+            node.for_each_child(|_| count += 1);
+            assert_eq!(count, 0);
+        }
+        assert_eq!(format!("{:?}", ExprNode::EulerGamma), "EulerGamma");
+        assert_eq!(format!("{:?}", ExprNode::Catalan), "Catalan");
+        assert_eq!(format!("{:?}", ExprNode::GoldenRatio), "GoldenRatio");
+    }
+
+    #[test]
+    fn complex_and_special_unary_children() {
+        for node in [
+            ExprNode::Re(ExprId(3)),
+            ExprNode::Im(ExprId(3)),
+            ExprNode::Conjugate(ExprId(3)),
+            ExprNode::Arg(ExprId(3)),
+            ExprNode::Si(ExprId(3)),
+            ExprNode::Ci(ExprId(3)),
+            ExprNode::Ei(ExprId(3)),
+            ExprNode::Li(ExprId(3)),
+            ExprNode::Zeta(ExprId(3)),
+        ] {
+            assert!(!node.is_atom());
+            assert_eq!(node.child_count(), 1);
+            let kids = node.children();
+            assert_eq!(kids.len(), 1, "{node:?} should have exactly 1 child");
+            assert_eq!(kids[0], ExprId(3));
+            let mut seen = Vec::new();
+            node.for_each_child(|c| seen.push(c));
+            assert_eq!(seen, vec![ExprId(3)]);
+        }
+    }
+
+    #[test]
+    fn polygamma_and_kronecker_children() {
+        for node in [
+            ExprNode::Polygamma(ExprId(1), ExprId(2)),
+            ExprNode::KroneckerDelta(ExprId(1), ExprId(2)),
+        ] {
+            assert!(!node.is_atom());
+            assert_eq!(node.child_count(), 2);
+            let kids = node.children();
+            assert_eq!(kids.len(), 2);
+            assert_eq!(kids[0], ExprId(1));
+            assert_eq!(kids[1], ExprId(2));
+            let mut seen = Vec::new();
+            node.for_each_child(|c| seen.push(c));
+            assert_eq!(seen, vec![ExprId(1), ExprId(2)]);
+        }
+        assert_eq!(
+            format!("{:?}", ExprNode::Polygamma(ExprId(1), ExprId(2))),
+            "Polygamma(e1, e2)"
+        );
+        assert_eq!(
+            format!("{:?}", ExprNode::KroneckerDelta(ExprId(1), ExprId(2))),
+            "KroneckerDelta(e1, e2)"
+        );
     }
 }

@@ -177,6 +177,172 @@ fn eval_node(
 
         ExprNode::ImaginaryUnit => Ok((BigFloat::new(prec), BigFloat::from_i32(1, prec))),
 
+        // ── Named constants (arbitrary precision) ───────────────────────────
+        ExprNode::EulerGamma => {
+            debug!(prec, "evalf: EulerGamma via Brent–McMillan");
+            let g = arb_euler_gamma(prec, rm, cc)?;
+            Ok((g, BigFloat::new(prec)))
+        }
+        ExprNode::Catalan => {
+            debug!(prec, "evalf: Catalan via Ramanujan series");
+            let g = arb_catalan(prec, rm, cc)?;
+            Ok((g, BigFloat::new(prec)))
+        }
+        ExprNode::GoldenRatio => {
+            // φ = (1 + √5)/2, exactly via a single square root.
+            let wp = prec + 16;
+            let five = BigFloat::from_i32(5, wp);
+            let sqrt5 = five.sqrt(wp, rm);
+            let one = BigFloat::from_i32(1, wp);
+            let two = BigFloat::from_i32(2, wp);
+            let phi = one.add(&sqrt5, wp, rm).div(&two, prec, rm);
+            Ok((phi, BigFloat::new(prec)))
+        }
+
+        // ── Complex analysis ────────────────────────────────────────────
+        ExprNode::Re(inner) => {
+            let val = get_cached(cache, *inner)?;
+            Ok((val.0.clone(), BigFloat::new(prec)))
+        }
+        ExprNode::Im(inner) => {
+            let val = get_cached(cache, *inner)?;
+            Ok((val.1.clone(), BigFloat::new(prec)))
+        }
+        ExprNode::Conjugate(inner) => {
+            let val = get_cached(cache, *inner)?;
+            Ok((val.0.clone(), val.1.neg()))
+        }
+        ExprNode::Arg(inner) => {
+            let val = get_cached(cache, *inner)?;
+            if val.0.is_zero() && val.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "arg(0) is undefined".into(),
+                });
+            }
+            Ok((atan2_bf(&val.1, &val.0, prec, rm, cc), BigFloat::new(prec)))
+        }
+
+        // ── Special functions (0.2) ──────────────────────────────────────
+        ExprNode::Si(inner) => {
+            let val = get_cached(cache, *inner)?;
+            if !val.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "Si of complex argument not yet supported in evalf".into(),
+                });
+            }
+            debug!(prec, "evalf: Si via series/asymptotic");
+            let (si, _ci) = arb_si_ci(&val.0, true, prec, rm, cc)?;
+            Ok((si, BigFloat::new(prec)))
+        }
+        ExprNode::Ci(inner) => {
+            let val = get_cached(cache, *inner)?;
+            if !val.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "Ci of complex argument not yet supported in evalf".into(),
+                });
+            }
+            if val.0.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "Ci(0) is -∞".into(),
+                });
+            }
+            debug!(prec, "evalf: Ci via series/asymptotic");
+            let x_abs = val.0.abs();
+            let (_si, ci) = arb_si_ci(&x_abs, false, prec, rm, cc)?;
+            if val.0.is_negative() {
+                // Ci(-x) = Ci(x) + iπ (principal branch of the logarithm).
+                Ok((ci, cc.pi(prec, rm).clone()))
+            } else {
+                Ok((ci, BigFloat::new(prec)))
+            }
+        }
+        ExprNode::Ei(inner) => {
+            let val = get_cached(cache, *inner)?;
+            if !val.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "Ei of complex argument not yet supported in evalf".into(),
+                });
+            }
+            if val.0.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "Ei(0) is -∞".into(),
+                });
+            }
+            debug!(prec, "evalf: Ei via series/asymptotic");
+            let r = arb_ei(&val.0, prec, rm, cc)?;
+            Ok((r, BigFloat::new(prec)))
+        }
+        ExprNode::Li(inner) => {
+            let val = get_cached(cache, *inner)?;
+            if !val.1.is_zero() || val.0.is_negative() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "li of complex or negative argument not yet supported in evalf".into(),
+                });
+            }
+            if val.0.is_zero() {
+                return Ok(c_zero(prec));
+            }
+            let wp = prec + 32;
+            let ln_x = val.0.ln(wp, rm, cc);
+            if ln_x.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "li(1) is -∞".into(),
+                });
+            }
+            debug!(prec, "evalf: li via Ei(ln x)");
+            let r = arb_ei(&ln_x, prec, rm, cc)?;
+            Ok((r, BigFloat::new(prec)))
+        }
+        ExprNode::Zeta(inner) => {
+            let val = get_cached(cache, *inner)?;
+            if !val.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "zeta of complex argument not yet supported in evalf".into(),
+                });
+            }
+            debug!(prec, "evalf: zeta via Borwein / functional equation");
+            let r = arb_zeta(&val.0, prec, rm, cc)?;
+            Ok((r, BigFloat::new(prec)))
+        }
+        ExprNode::Polygamma(n_id, x_id) => {
+            let n_val = get_cached(cache, *n_id)?;
+            let x_val = get_cached(cache, *x_id)?;
+            if !n_val.1.is_zero() || !x_val.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "polygamma of complex arguments not yet supported in evalf".into(),
+                });
+            }
+            let n_f = bigfloat_to_f64(&n_val.0, rm, cc)?;
+            let n_round = n_f.round();
+            if (n_f - n_round).abs() > 1e-12 || !(0.0..=10_000.0).contains(&n_round) {
+                return Err(SymplexError::Unevaluable {
+                    reason: "polygamma order must be a non-negative integer".into(),
+                });
+            }
+            let n = n_round as u32;
+            if n == 0 {
+                let r = arb_digamma(&x_val.0, prec, rm, cc)?;
+                return Ok((r, BigFloat::new(prec)));
+            }
+            debug!(
+                prec,
+                n, "evalf: polygamma via recurrence + asymptotic series"
+            );
+            let r = arb_polygamma(n, &x_val.0, prec, rm, cc)?;
+            Ok((r, BigFloat::new(prec)))
+        }
+        ExprNode::KroneckerDelta(i_id, j_id) => {
+            let iv = get_cached(cache, *i_id)?;
+            let jv = get_cached(cache, *j_id)?;
+            let d_re = iv.0.sub(&jv.0, prec, rm);
+            let d_im = iv.1.sub(&jv.1, prec, rm);
+            if d_re.is_zero() && d_im.is_zero() {
+                Ok(c_one(prec))
+            } else {
+                Ok(c_zero(prec))
+            }
+        }
+
         ExprNode::PhysicalConstant(_, value_id) => {
             // Recursively evaluate the stored exact value to a float.
             eval_node_or_subtree(arena, *value_id, cache, prec, rm, cc)
@@ -424,9 +590,11 @@ fn eval_node(
                 }
             }
 
-            // Real non-negative base with real exponent: use real pow.
+            // Real positive base with real exponent: exp(e·ln b).
+            // (`BigFloat::pow` is avoided — it hangs on exactly
+            // representable results such as 4^(1/2); see `bf_pow`.)
             if b_is_real && e_is_real && b.0.is_positive() {
-                return Ok((b.0.pow(&e.0, prec, rm, cc), BigFloat::new(prec)));
+                return Ok((bf_pow(&b.0, &e.0, prec, rm, cc), BigFloat::new(prec)));
             }
 
             // General complex power: b^e = exp(e * ln(b)).
@@ -769,6 +937,63 @@ fn eval_node(
                     }
                     tracing::debug!(prec, "evalf: BesselY via series/asymptotic");
                     let result = arb_bessel_y(&order.0, &arg.0, prec, rm, cc)?;
+                    Ok((result, BigFloat::new(prec)))
+                }
+                "besseli" if args.len() == 2 => {
+                    let order = get_cached(cache, args[0])?;
+                    let arg = get_cached(cache, args[1])?;
+                    if !order.1.is_zero() || !arg.1.is_zero() {
+                        return Err(SymplexError::Unevaluable {
+                            reason: "Bessel of complex argument not yet supported in evalf".into(),
+                        });
+                    }
+                    tracing::debug!(prec, "evalf: BesselI via ascending series");
+                    let result = arb_bessel_i(&order.0, &arg.0, prec, rm, cc)?;
+                    Ok((result, BigFloat::new(prec)))
+                }
+                "besselk" if args.len() == 2 => {
+                    let order = get_cached(cache, args[0])?;
+                    let arg = get_cached(cache, args[1])?;
+                    if !order.1.is_zero() || !arg.1.is_zero() {
+                        return Err(SymplexError::Unevaluable {
+                            reason: "Bessel of complex argument not yet supported in evalf".into(),
+                        });
+                    }
+                    tracing::debug!(prec, "evalf: BesselK via series/asymptotic");
+                    let result = arb_bessel_k(&order.0, &arg.0, prec, rm, cc)?;
+                    Ok((result, BigFloat::new(prec)))
+                }
+                "legendre" | "chebyshev_t" | "chebyshev_u" | "hermite" | "laguerre"
+                    if args.len() == 2 =>
+                {
+                    let n_val = get_cached(cache, args[0])?;
+                    let x_val = get_cached(cache, args[1])?;
+                    if !n_val.1.is_zero() || !x_val.1.is_zero() {
+                        return Err(SymplexError::Unevaluable {
+                            reason: "orthogonal polynomial of complex arguments not supported"
+                                .into(),
+                        });
+                    }
+                    let n_f = bigfloat_to_f64(&n_val.0, rm, cc)?;
+                    let n_round = n_f.round();
+                    if (n_f - n_round).abs() > 1e-12 || !(0.0..=1.0e7).contains(&n_round) {
+                        return Err(SymplexError::Unevaluable {
+                            reason: format!("{name}: degree must be a non-negative integer"),
+                        });
+                    }
+                    tracing::debug!(
+                        prec,
+                        n = n_round,
+                        "evalf: orthogonal polynomial via recurrence"
+                    );
+                    let kind = match name {
+                        "legendre" => OrthoPoly::Legendre,
+                        "chebyshev_t" => OrthoPoly::ChebyshevT,
+                        "chebyshev_u" => OrthoPoly::ChebyshevU,
+                        "hermite" => OrthoPoly::Hermite,
+                        _ => OrthoPoly::Laguerre,
+                    };
+                    let result = arb_orthopoly(kind, n_round as u64, &x_val.0, prec, rm);
                     Ok((result, BigFloat::new(prec)))
                 }
                 _ => Err(SymplexError::Unevaluable {
@@ -2343,6 +2568,13 @@ fn arb_bessel_j(
     let order_int = order_f64.round() as i64;
     let is_int_order = (order_f64 - order_int as f64).abs() < 1e-12;
 
+    // Negative integer order: J_{-n}(x) = (-1)^n J_n(x).
+    if is_int_order && order_int < 0 {
+        let pos_order = BigFloat::from_i128((-order_int) as i128, wp);
+        let j = arb_bessel_j(&pos_order, x, prec, rm, cc)?;
+        return Ok(if order_int % 2 == 0 { j } else { j.neg() });
+    }
+
     // Threshold: use series for |x| < sqrt(wp), asymptotic for larger.
     let threshold = ((wp as f64) * 0.5).sqrt() + 5.0;
 
@@ -2455,6 +2687,13 @@ fn arb_bessel_y(
     let order_int = order_f64.round() as i64;
     let is_int_order = (order_f64 - order_int as f64).abs() < 1e-12;
 
+    // Negative integer order: Y_{-n}(x) = (-1)^n Y_n(x).
+    if is_int_order && order_int < 0 {
+        let pos_order = BigFloat::from_i128((-order_int) as i128, wp);
+        let y = arb_bessel_y(&pos_order, x, prec, rm, cc)?;
+        return Ok(if order_int % 2 == 0 { y } else { y.neg() });
+    }
+
     let threshold = ((wp as f64) * 0.5).sqrt() + 5.0;
 
     if x_f64 >= threshold {
@@ -2482,121 +2721,1110 @@ fn arb_bessel_y(
         return Ok(amplitude.mul(&term1.add(&term2, wp, rm), wp, rm));
     }
 
-    // ── Small |x|: Y_0 via logarithmic series ────────────────────
-    // For Y_0(x) specifically:
-    //   Y_0(x) = (2/π)[J_0(x)·(ln(x/2) + γ) + Σ_{k=1}^∞ (-1)^{k+1} H_k (x/2)^{2k} / (k!)²]
-    // where H_k = 1 + 1/2 + ... + 1/k (harmonic number) and γ = Euler-Mascheroni.
+    // ── Small |x|, integer order n ≥ 0: Neumann series (A&S 9.1.11) ─────
     //
-    // For general integer n > 0, use forward recurrence from Y_0 and Y_1.
-    // For simplicity in v1, compute Y_0 via the log series, Y_1 via similar,
-    // and recur for higher orders.
+    //   Y_n(x) = −(1/π)(x/2)^{−n} Σ_{k=0}^{n−1} (n−k−1)!/k! (x²/4)^k
+    //            + (2/π) ln(x/2) J_n(x)
+    //            − (1/π)(x/2)^n Σ_{k≥0} [ψ(k+1) + ψ(n+k+1)] (−x²/4)^k / (k!(n+k)!)
+    //
+    // with ψ(m+1) = −γ + H_m.  Computed directly for every n (no forward
+    // recurrence or Wronskian division, which is unstable near zeros of J).
+    // The log term and the series cancel to O(e^{x}) relative size, so a
+    // few extra guard bits are added.
 
-    if !is_int_order || order_int < 0 {
+    if !is_int_order {
         return Err(SymplexError::Unevaluable {
             reason: format!(
-                "BesselY for non-integer or negative order {order_f64} not yet implemented in small-|x| regime"
+                "BesselY for non-integer order {order_f64} not yet implemented in small-|x| regime"
             ),
         });
     }
+    let n = order_int as usize;
+    let wp = wp + cancellation_guard_bits(x_f64);
+    let mut xw = x.clone();
+    let _ = xw.set_precision(wp, rm);
 
     let pi = cc.pi(wp, rm).clone();
+    let one = BigFloat::from_i32(1, wp);
     let two = BigFloat::from_i32(2, wp);
-    let two_over_pi = two.div(&pi, wp, rm);
-
-    let x_half = x.div(&two, wp, rm);
+    let inv_pi = one.div(&pi, wp, rm);
+    let x_half = xw.div(&two, wp, rm);
+    let x_half_sq = x_half.mul(&x_half, wp, rm);
     let ln_x_half = x_half.ln(wp, rm, cc);
-
-    // Euler-Mascheroni constant γ at working precision via Brent-McMillan B1.
     let euler_gamma = arb_euler_gamma(wp, rm, cc)?;
+    let n_bf = BigFloat::from_i128(n as i128, wp);
+    let j_n = arb_bessel_j(&n_bf, &xw, wp, rm, cc)?;
 
-    // Compute J_0(x) for the Y_0 formula.
-    let order_zero = BigFloat::new(wp); // 0
-    let j0 = arb_bessel_j(&order_zero, x, wp, rm, cc)?;
-
-    // Y_0(x) = (2/π)[J_0(x)·(ln(x/2) + γ) + series_correction]
-    let ln_plus_gamma = ln_x_half.add(&euler_gamma, wp, rm);
-    let main_term = j0.mul(&ln_plus_gamma, wp, rm);
-
-    // Series correction: Σ_{k=1}^N (-1)^{k+1} · H_k · (x/2)^{2k} / (k!)²
-    let neg_x_half_sq = x_half.mul(&x_half, wp, rm).neg();
-    let mut series_sum = BigFloat::new(wp);
-    let mut x_power = neg_x_half_sq.clone(); // (-x²/4)^1 for k=1
-    let mut factorial_sq = BigFloat::from_i32(1, wp); // (1!)²
-    let mut harmonic = BigFloat::from_i32(1, wp); // H_1 = 1
-
-    let max_terms = (wp as f64 * 0.8) as usize + 40;
-    for k in 1..=max_terms {
-        if k > 1 {
-            // Update: x_power *= -x²/4, factorial_sq *= k², harmonic += 1/k
-            x_power = x_power.mul(&neg_x_half_sq, wp, rm);
-            let k_bf = BigFloat::from_i32(k as i32, wp);
-            let k_sq = k_bf.mul(&k_bf, wp, rm);
-            factorial_sq = factorial_sq.mul(&k_sq, wp, rm);
-            harmonic = harmonic.add(&BigFloat::from_i32(1, wp).div(&k_bf, wp, rm), wp, rm);
+    // Finite sum: −(1/π)(x/2)^{−n} Σ_{k<n} (n−k−1)!/k! (x²/4)^k
+    let mut finite = BigFloat::new(wp);
+    if n > 0 {
+        let mut f = Ratio::<BigInt>::from_integer(BigInt::from(1)); // (n−1)!
+        for i in 2..n {
+            f *= Ratio::from_integer(BigInt::from(i as u64));
         }
+        let mut pow = one.clone();
+        for k in 0..n {
+            if k > 0 {
+                f /= Ratio::from_integer(BigInt::from(((n - k) * k) as u64));
+                pow = pow.mul(&x_half_sq, wp, rm);
+            }
+            let coeff = ratio_to_bigfloat(&f, wp, rm);
+            finite = finite.add(&coeff.mul(&pow, wp, rm), wp, rm);
+        }
+        let x_half_pow_neg_n = one.div(&x_half.powi(n, wp, rm), wp, rm);
+        finite = inv_pi
+            .mul(&x_half_pow_neg_n, wp, rm)
+            .mul(&finite, wp, rm)
+            .neg();
+    }
 
-        // term = (-1)^{k+1} · H_k · (x/2)^{2k} / (k!)²
-        // Note: x_power already carries the (-1)^k sign from neg_x_half_sq.
-        // So (-1)^{k+1} · (-x²/4)^k = (-1)^{k+1} · (-1)^k · (x²/4)^k = -(x²/4)^k...
-        // Actually: x_power = (-x²/4)^k = (-1)^k · (x/2)^{2k}
-        // We want (-1)^{k+1} · (x/2)^{2k} = -(-1)^k · (x/2)^{2k} = -x_power
-        let signed_power = x_power.neg();
-        let term = signed_power
-            .mul(&harmonic, wp, rm)
-            .div(&factorial_sq, wp, rm);
+    // Log term: (2/π) ln(x/2) J_n(x)
+    let log_term = two
+        .mul(&inv_pi, wp, rm)
+        .mul(&ln_x_half, wp, rm)
+        .mul(&j_n, wp, rm);
 
-        if let (Some(t_exp), Some(s_exp)) = (term.exponent(), series_sum.exponent())
-            && s_exp != 0
+    // Series: −(1/π)(x/2)^n Σ_k [ψ(k+1) + ψ(n+k+1)] (−x²/4)^k / (k!(n+k)!)
+    let mut h_k = BigFloat::new(wp);
+    let mut h_nk = BigFloat::new(wp);
+    for m in 1..=n {
+        h_nk = h_nk.add(
+            &one.div(&BigFloat::from_i128(m as i128, wp), wp, rm),
+            wp,
+            rm,
+        );
+    }
+    let mut n_fact = Ratio::<BigInt>::from_integer(BigInt::from(1));
+    for i in 2..=n {
+        n_fact *= Ratio::from_integer(BigInt::from(i as u64));
+    }
+    let mut inv_fact = one.div(&ratio_to_bigfloat(&n_fact, wp, rm), wp, rm);
+    let neg_x_half_sq = x_half_sq.neg();
+    let mut pow = one.clone();
+    let mut series = BigFloat::new(wp);
+    let two_gamma = euler_gamma.mul(&two, wp, rm);
+    let max_terms = (x_f64.abs() * 2.0) as usize + wp + 40;
+    for k in 0..=max_terms {
+        if k > 0 {
+            let k_bf = BigFloat::from_i128(k as i128, wp);
+            let nk_bf = BigFloat::from_i128((n + k) as i128, wp);
+            h_k = h_k.add(&one.div(&k_bf, wp, rm), wp, rm);
+            h_nk = h_nk.add(&one.div(&nk_bf, wp, rm), wp, rm);
+            inv_fact = inv_fact.div(&k_bf.mul(&nk_bf, wp, rm), wp, rm);
+            pow = pow.mul(&neg_x_half_sq, wp, rm);
+        }
+        let psi_sum = h_k.add(&h_nk, wp, rm).sub(&two_gamma, wp, rm);
+        let term = psi_sum.mul(&pow, wp, rm).mul(&inv_fact, wp, rm);
+        series = series.add(&term, wp, rm);
+        if k > 2
+            && let (Some(t_exp), Some(s_exp)) = (term.exponent(), series.exponent())
             && (s_exp as i64 - t_exp as i64) > wp as i64
         {
-            tracing::trace!(k, "arb_bessel_y: Y_0 series converged");
+            tracing::trace!(k, "arb_bessel_y: Neumann series converged");
             break;
         }
+    }
+    let series_term = inv_pi
+        .mul(&x_half.powi(n, wp, rm), wp, rm)
+        .mul(&series, wp, rm)
+        .neg();
 
-        series_sum = series_sum.add(&term, wp, rm);
+    let y = finite.add(&log_term, wp, rm).add(&series_term, wp, rm);
+    Ok(round_to(y, prec, rm))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Catalan's constant
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Catalan's constant `G` at `prec` bits via Ramanujan's formula
+///
+/// ```text
+/// G = (π/8)·ln(2 + √3) + (3/8)·Σ_{n≥0} 1 / ((2n+1)² · C(2n, n))
+/// ```
+///
+/// The series gains ~2 bits per term (`1/C(2n,n) ~ 4^{-n}`), so about
+/// `prec/2` terms are needed; every term is positive (no cancellation).
+fn arb_catalan(prec: usize, rm: RoundingMode, cc: &mut Consts) -> Result<BigFloat, SymplexError> {
+    let wp = prec + 32;
+    let one = BigFloat::from_i32(1, wp);
+    let two = BigFloat::from_i32(2, wp);
+    let three = BigFloat::from_i32(3, wp);
+    let eight = BigFloat::from_i32(8, wp);
+
+    // (π/8)·ln(2 + √3)
+    let sqrt3 = three.sqrt(wp, rm);
+    let ln_term = two.add(&sqrt3, wp, rm).ln(wp, rm, cc);
+    let pi = cc.pi(wp, rm).clone();
+    let first = pi.div(&eight, wp, rm).mul(&ln_term, wp, rm);
+
+    // Σ b_n / (2n+1)² with b_n = 1/C(2n,n), b_{n+1} = b_n·(n+1)/(2(2n+1)).
+    let mut b = one.clone();
+    let mut sum = BigFloat::new(wp);
+    let max_terms = wp / 2 + 64;
+    for n in 0..max_terms {
+        let two_n_plus_1 = BigFloat::from_i128(2 * n as i128 + 1, wp);
+        let denom = two_n_plus_1.mul(&two_n_plus_1, wp, rm);
+        let term = b.div(&denom, wp, rm);
+        sum = sum.add(&term, wp, rm);
+        if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent())
+            && (s_exp as i64 - t_exp as i64) > wp as i64
+        {
+            break;
+        }
+        let n_plus_1 = BigFloat::from_i128(n as i128 + 1, wp);
+        let two_2n_plus_1 = two.mul(&two_n_plus_1, wp, rm);
+        b = b.mul(&n_plus_1, wp, rm).div(&two_2n_plus_1, wp, rm);
+    }
+    let second = three.div(&eight, wp, rm).mul(&sum, wp, rm);
+    let mut g = first.add(&second, wp, rm);
+    g.set_precision(prec, rm)
+        .map_err(|e| SymplexError::ComputationFailed {
+            operation: "catalan",
+            reason: format!("precision adjustment failed: {e:?}"),
+        })?;
+    Ok(g)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Trigonometric / exponential / logarithmic integrals
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Number of guard bits needed to absorb the cancellation in an
+/// alternating power series whose largest term is `~e^{|x|}`.
+fn cancellation_guard_bits(x_abs: f64) -> usize {
+    (x_abs * std::f64::consts::LOG2_E).ceil() as usize + 32
+}
+
+/// Auxiliary functions `f(x)`, `g(x)` of the asymptotic expansions
+///
+/// ```text
+/// Si(x) = π/2 − f(x) cos x − g(x) sin x,   Ci(x) = f(x) sin x − g(x) cos x
+/// f(x) ~ (1/x) Σ (−1)^k (2k)!/x^{2k},   g(x) ~ (1/x²) Σ (−1)^k (2k+1)!/x^{2k}
+/// ```
+///
+/// for `x > 0`.  Uses optimal truncation (stop when terms grow); the
+/// caller guarantees `x` is large enough that the smallest term is below
+/// the working precision.
+fn si_ci_asymptotic_fg(x: &BigFloat, wp: usize, rm: RoundingMode) -> (BigFloat, BigFloat) {
+    let one = BigFloat::from_i32(1, wp);
+    let inv_x = one.div(x, wp, rm);
+    let inv_x2 = inv_x.mul(&inv_x, wp, rm);
+
+    let mut f_sum = BigFloat::new(wp);
+    let mut g_sum = BigFloat::new(wp);
+    // t_f = (2k)!/x^{2k}, t_g = (2k+1)!/x^{2k}
+    let mut t_f = one.clone();
+    let mut t_g = one.clone();
+    let mut prev_f: Option<BigFloat> = None;
+    let max_terms = wp * 2 + 100;
+    for k in 0..max_terms {
+        if k > 0 {
+            // (2k)! / (2k-2)! = (2k-1)(2k);  (2k+1)!/(2k-1)! = (2k)(2k+1)
+            let a = BigFloat::from_i128((2 * k as i128 - 1) * (2 * k as i128), wp);
+            let b = BigFloat::from_i128((2 * k as i128) * (2 * k as i128 + 1), wp);
+            t_f = t_f.mul(&a, wp, rm).mul(&inv_x2, wp, rm);
+            t_g = t_g.mul(&b, wp, rm).mul(&inv_x2, wp, rm);
+        }
+        // Optimal truncation: stop once terms start growing.
+        if let Some(ref p) = prev_f
+            && t_f.abs().cmp(p).is_some_and(|c| c > 0)
+        {
+            break;
+        }
+        if k % 2 == 0 {
+            f_sum = f_sum.add(&t_f, wp, rm);
+            g_sum = g_sum.add(&t_g, wp, rm);
+        } else {
+            f_sum = f_sum.sub(&t_f, wp, rm);
+            g_sum = g_sum.sub(&t_g, wp, rm);
+        }
+        if let (Some(t_exp), Some(s_exp)) = (t_f.exponent(), f_sum.exponent())
+            && (s_exp as i64 - t_exp as i64) > wp as i64
+        {
+            break;
+        }
+        prev_f = Some(t_f.abs());
+    }
+    (f_sum.mul(&inv_x, wp, rm), g_sum.mul(&inv_x2, wp, rm))
+}
+
+/// Sine and cosine integrals for real `x`.
+///
+/// * `want_si == true`: returns `(Si(x), 0)` — valid for all real `x`
+///   (`Si` is odd).
+/// * `want_si == false`: returns `(0, Ci(x))` — requires `x > 0`.
+///
+/// Power series for moderate `|x|` (with guard bits for the `e^{|x|}`
+/// cancellation) and the Hankel-type asymptotic expansion when
+/// `|x| > wp·ln 2` (where its optimal-truncation error `~e^{−x}` is below
+/// the working precision).
+fn arb_si_ci(
+    x: &BigFloat,
+    want_si: bool,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<(BigFloat, BigFloat), SymplexError> {
+    if x.is_nan() || x.is_inf_pos() || x.is_inf_neg() {
+        return Err(SymplexError::Unevaluable {
+            reason: "Si/Ci of special float value".into(),
+        });
+    }
+    let x_f64 = bigfloat_to_f64(x, rm, cc)?;
+    let x_abs = x_f64.abs();
+    let base_wp = prec + 32;
+
+    if x.is_zero() {
+        return if want_si {
+            Ok((BigFloat::new(prec), BigFloat::new(prec)))
+        } else {
+            Err(SymplexError::Unevaluable {
+                reason: "Ci(0) is -∞".into(),
+            })
+        };
+    }
+    if !want_si && x.is_negative() {
+        return Err(SymplexError::Unevaluable {
+            reason: "Ci requires a positive argument here".into(),
+        });
     }
 
-    let y0 = two_over_pi.mul(&main_term.add(&series_sum, wp, rm), wp, rm);
-
-    // If order is 0, we're done.
-    if order_int == 0 {
-        return Ok(y0);
+    let switch = (base_wp as f64) * std::f64::consts::LN_2;
+    if x_abs > switch {
+        // ── Asymptotic expansion ──
+        let wp = base_wp;
+        let ax = x.abs();
+        let (f, g) = si_ci_asymptotic_fg(&ax, wp, rm);
+        let sin_x = ax.sin(wp, rm, cc);
+        let cos_x = ax.cos(wp, rm, cc);
+        let pi = cc.pi(wp, rm).clone();
+        let two = BigFloat::from_i32(2, wp);
+        let half_pi = pi.div(&two, wp, rm);
+        let mut si =
+            half_pi
+                .sub(&f.mul(&cos_x, wp, rm), wp, rm)
+                .sub(&g.mul(&sin_x, wp, rm), wp, rm);
+        if x.is_negative() {
+            si = si.neg();
+        }
+        let ci = f.mul(&sin_x, wp, rm).sub(&g.mul(&cos_x, wp, rm), wp, rm);
+        return Ok((round_to(si, prec, rm), round_to(ci, prec, rm)));
     }
 
-    // For order > 0, use forward recurrence: Y_{n+1}(x) = (2n/x)·Y_n(x) - Y_{n-1}(x)
-    // Start from Y_0 and Y_1.
-    // Compute Y_1 via J_1 and a similar log series... for simplicity, use
-    // the forward recurrence starting from Y_0 and the asymptotic-derived Y_1
-    // or compute Y_1 from the relation Y_1 = (2/π)[J_1·(ln(x/2)+γ) - 1/x + ...]
-    // For v1, compute Y_1 from the finite-difference derivative of J:
-    //   Y_1(x) ≈ (2/(πx)) - Y_0 derivative... this is complex.
-    // Simplest: use the cross-product Wronskian: J_0·Y_1 - J_1·Y_0 = 2/(πx)
-    //   → Y_1 = (2/(πx) + J_1·Y_0) / J_0
+    // ── Power series ──
+    let wp = base_wp + cancellation_guard_bits(x_abs);
+    let mut xw = x.clone();
+    let _ = xw.set_precision(wp, rm);
+    let x2 = xw.mul(&xw, wp, rm);
+    let max_terms = (x_abs * 1.5) as usize + wp + 40;
 
-    let one_bf = BigFloat::from_i32(1, wp);
-    let j1 = arb_bessel_j(&one_bf, x, wp, rm, cc)?;
-    let two_over_pi_x = two_over_pi.div(x, wp, rm);
-    // Y_1 = (2/(πx) + J_1·Y_0) / J_0
-    let y1 = two_over_pi_x
-        .add(&j1.mul(&y0, wp, rm), wp, rm)
-        .div(&j0, wp, rm);
+    let si = if want_si {
+        // Si(x) = Σ (−1)^k t_k/(2k+1),  t_k = x^{2k+1}/(2k+1)!
+        let mut t = xw.clone();
+        let mut sum = BigFloat::new(wp);
+        for k in 0..max_terms {
+            if k > 0 {
+                let d = BigFloat::from_i128((2 * k as i128) * (2 * k as i128 + 1), wp);
+                t = t.mul(&x2, wp, rm).div(&d, wp, rm);
+            }
+            let term = t.div(&BigFloat::from_i128(2 * k as i128 + 1, wp), wp, rm);
+            if k % 2 == 0 {
+                sum = sum.add(&term, wp, rm);
+            } else {
+                sum = sum.sub(&term, wp, rm);
+            }
+            if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent())
+                && (s_exp as i64 - t_exp as i64) > wp as i64
+            {
+                break;
+            }
+        }
+        round_to(sum, prec, rm)
+    } else {
+        BigFloat::new(prec)
+    };
 
-    if order_int == 1 {
-        return Ok(y1);
+    let ci = if want_si {
+        BigFloat::new(prec)
+    } else {
+        // Ci(x) = γ + ln x + Σ_{k≥1} (−1)^k u_k/(2k),  u_k = x^{2k}/(2k)!
+        let gamma = arb_euler_gamma(wp, rm, cc)?;
+        let ln_x = xw.ln(wp, rm, cc);
+        let mut sum = BigFloat::new(wp);
+        let mut u = BigFloat::from_i32(1, wp);
+        for k in 1..max_terms {
+            let d = BigFloat::from_i128((2 * k as i128 - 1) * (2 * k as i128), wp);
+            u = u.mul(&x2, wp, rm).div(&d, wp, rm);
+            let term = u.div(&BigFloat::from_i128(2 * k as i128, wp), wp, rm);
+            if k % 2 == 0 {
+                sum = sum.add(&term, wp, rm);
+            } else {
+                sum = sum.sub(&term, wp, rm);
+            }
+            if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent())
+                && (s_exp as i64 - t_exp as i64) > wp as i64
+            {
+                break;
+            }
+        }
+        let ci = gamma.add(&ln_x, wp, rm).add(&sum, wp, rm);
+        round_to(ci, prec, rm)
+    };
+
+    Ok((si, ci))
+}
+
+/// Exponential integral `Ei(x)` for real `x ≠ 0`.
+///
+/// * `|x| ≤ wp·ln 2`: `Ei(x) = γ + ln|x| + Σ_{k≥1} xᵏ/(k·k!)`, with guard
+///   bits for the alternating cancellation when `x < 0`;
+/// * otherwise the asymptotic expansion `Ei(x) ~ (eˣ/x) Σ k!/xᵏ` with
+///   optimal truncation (relative error `~e^{−|x|}`).
+fn arb_ei(
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if x.is_nan() || x.is_inf_pos() || x.is_inf_neg() || x.is_zero() {
+        return Err(SymplexError::Unevaluable {
+            reason: "Ei of zero or special float value".into(),
+        });
+    }
+    let x_f64 = bigfloat_to_f64(x, rm, cc)?;
+    let x_abs = x_f64.abs();
+    let base_wp = prec + 32;
+    let switch = (base_wp as f64) * std::f64::consts::LN_2;
+
+    if x_abs > switch {
+        // ── Asymptotic: Ei(x) ~ (e^x / x) Σ_{k≥0} k! / x^k ──
+        let wp = base_wp;
+        let one = BigFloat::from_i32(1, wp);
+        let inv_x = one.div(x, wp, rm);
+        let mut term = one.clone();
+        let mut sum = BigFloat::new(wp);
+        let mut prev: Option<BigFloat> = None;
+        let max_terms = wp * 2 + 100;
+        for k in 0..max_terms {
+            if k > 0 {
+                term = term
+                    .mul(&BigFloat::from_i128(k as i128, wp), wp, rm)
+                    .mul(&inv_x, wp, rm);
+            }
+            if let Some(ref p) = prev
+                && term.abs().cmp(p).is_some_and(|c| c > 0)
+            {
+                break;
+            }
+            sum = sum.add(&term, wp, rm);
+            if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent())
+                && (s_exp as i64 - t_exp as i64) > wp as i64
+            {
+                break;
+            }
+            prev = Some(term.abs());
+        }
+        let ex = x.exp(wp, rm, cc);
+        let r = ex.mul(&inv_x, wp, rm).mul(&sum, wp, rm);
+        return Ok(round_to(r, prec, rm));
     }
 
-    // Forward recurrence for n >= 2.
-    let mut y_prev = y0;
-    let mut y_curr = y1;
-    for n in 1..order_int {
-        let n_bf = BigFloat::from_i32(n as i32, wp);
-        let two_n_over_x = two.mul(&n_bf, wp, rm).div(x, wp, rm);
-        let y_next = two_n_over_x.mul(&y_curr, wp, rm).sub(&y_prev, wp, rm);
-        y_prev = y_curr;
-        y_curr = y_next;
+    // ── Power series ──
+    let wp = if x.is_negative() {
+        base_wp + cancellation_guard_bits(x_abs)
+    } else {
+        base_wp
+    };
+    let mut xw = x.clone();
+    let _ = xw.set_precision(wp, rm);
+    let gamma = arb_euler_gamma(wp, rm, cc)?;
+    let ln_abs_x = xw.abs().ln(wp, rm, cc);
+    let mut v = BigFloat::from_i32(1, wp); // x^k/k!
+    let mut sum = BigFloat::new(wp);
+    let max_terms = (x_abs * 3.0) as usize + wp + 40;
+    for k in 1..max_terms {
+        let k_bf = BigFloat::from_i128(k as i128, wp);
+        v = v.mul(&xw, wp, rm).div(&k_bf, wp, rm);
+        let term = v.div(&k_bf, wp, rm);
+        sum = sum.add(&term, wp, rm);
+        if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent())
+            && (s_exp as i64 - t_exp as i64) > wp as i64
+            && (k as f64) > x_abs
+        {
+            break;
+        }
+    }
+    let r = gamma.add(&ln_abs_x, wp, rm).add(&sum, wp, rm);
+    Ok(round_to(r, prec, rm))
+}
+
+/// Round a `BigFloat` down to `prec` bits (no-op on failure).
+fn round_to(mut v: BigFloat, prec: usize, rm: RoundingMode) -> BigFloat {
+    let _ = v.set_precision(prec, rm);
+    v
+}
+
+/// `b^e` for real `b > 0` (or integer `e`), computed as `powi` for integer
+/// exponents and `exp(e·ln b)` otherwise.
+///
+/// This deliberately avoids [`BigFloat::pow`], whose correct-rounding loop
+/// never terminates when the exact result is representable in binary
+/// (e.g. `4^{1/2} = 2`), which is exactly what happens for the integer
+/// bases used in series like Borwein's `ζ` algorithm.
+fn bf_pow(b: &BigFloat, e: &BigFloat, wp: usize, rm: RoundingMode, cc: &mut Consts) -> BigFloat {
+    if e.is_zero() {
+        return BigFloat::from_i32(1, wp);
+    }
+    if e.is_int()
+        && let Ok(ef) = bigfloat_to_f64(e, rm, cc)
+        && ef.abs() < 1.0e9
+    {
+        let n = ef.abs() as usize;
+        let p = b.powi(n, wp, rm);
+        return if ef < 0.0 {
+            BigFloat::from_i32(1, wp).div(&p, wp, rm)
+        } else {
+            p
+        };
+    }
+    let ln_b = b.ln(wp + 32, rm, cc);
+    ln_b.mul(e, wp + 32, rm).exp(wp, rm, cc)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Riemann zeta function
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `ζ(s)` for real `s ≠ 1`.
+///
+/// * `s > 0`: Borwein's algorithm (P. Borwein, *An efficient algorithm for
+///   the Riemann zeta function*, 1991, Algorithm 2) — an accelerated
+///   alternating series with error `≤ 3/(3+√8)ⁿ`, so `n ≈ 0.39·wp` terms.
+/// * `s < 0`: functional equation
+///   `ζ(s) = 2ˢ π^{s−1} sin(πs/2) Γ(1−s) ζ(1−s)`; trivial zeros at the
+///   negative even integers are returned exactly.
+/// * `s = 0`: `−1/2`.
+fn arb_zeta(
+    s: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if s.is_nan() || s.is_inf_neg() {
+        return Err(SymplexError::Unevaluable {
+            reason: "zeta of special float value".into(),
+        });
+    }
+    if s.is_inf_pos() {
+        return Ok(BigFloat::from_i32(1, prec));
+    }
+    if s.is_zero() {
+        return Ok(BigFloat::from_f64(-0.5, prec));
+    }
+    let s_f64 = bigfloat_to_f64(s, rm, cc)?;
+    if (s_f64 - 1.0).abs() < 1e-300 {
+        return Err(SymplexError::Unevaluable {
+            reason: "zeta(1) is a pole".into(),
+        });
+    }
+    let wp = prec + 32;
+
+    if s.is_negative() {
+        // Trivial zeros.
+        let s_round = s_f64.round();
+        if (s_f64 - s_round).abs() < 1e-14 && (s_round as i64) % 2 == 0 {
+            let mut sw = s.clone();
+            let _ = sw.set_precision(wp, rm);
+            let diff = sw.sub(&BigFloat::from_f64(s_round, wp), wp, rm);
+            if diff.is_zero() {
+                return Ok(BigFloat::new(prec));
+            }
+        }
+        // ζ(s) = 2^s π^{s−1} sin(π s/2) Γ(1−s) ζ(1−s)
+        let mut sw = s.clone();
+        let _ = sw.set_precision(wp, rm);
+        let one = BigFloat::from_i32(1, wp);
+        let two = BigFloat::from_i32(2, wp);
+        let pi = cc.pi(wp, rm).clone();
+        let one_minus_s = one.sub(&sw, wp, rm);
+        let two_pow_s = bf_pow(&two, &sw, wp, rm, cc);
+        let s_minus_1 = sw.sub(&one, wp, rm);
+        let pi_pow = bf_pow(&pi, &s_minus_1, wp, rm, cc);
+        let half_pi_s = pi.mul(&sw, wp, rm).div(&two, wp, rm);
+        let sin_term = half_pi_s.sin(wp, rm, cc);
+        let gamma_term = arb_gamma_real(&one_minus_s, wp, rm, cc)?;
+        let zeta_term = arb_zeta_borwein(&one_minus_s, wp, rm, cc)?;
+        let r = two_pow_s
+            .mul(&pi_pow, wp, rm)
+            .mul(&sin_term, wp, rm)
+            .mul(&gamma_term, wp, rm)
+            .mul(&zeta_term, wp, rm);
+        return Ok(round_to(r, prec, rm));
     }
 
-    Ok(y_curr)
+    let r = arb_zeta_borwein(s, wp, rm, cc)?;
+    Ok(round_to(r, prec, rm))
+}
+
+/// Borwein's Algorithm 2 for `ζ(s)`, real `s > 0`, `s ≠ 1`.
+///
+/// ```text
+/// d_k = n Σ_{i=0}^{k} (n+i−1)! 4ⁱ / ((n−i)! (2i)!)
+/// ζ(s) = − 1/(d_n (1 − 2^{1−s})) · Σ_{k=0}^{n−1} (−1)ᵏ (d_k − d_n)/(k+1)ˢ
+/// ```
+fn arb_zeta_borwein(
+    s: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    // n such that (3+√8)^{-n} < 2^{-wp}:  n > wp·ln2/ln(3+√8) ≈ 0.393·wp
+    let n = ((wp as f64) * std::f64::consts::LN_2 / (3.0 + 8f64.sqrt()).ln()).ceil() as usize + 4;
+
+    // Exact integer coefficients d_k via rational arithmetic.
+    let mut d: Vec<Ratio<BigInt>> = Vec::with_capacity(n + 1);
+    let mut acc = Ratio::<BigInt>::zero();
+    // term_i = n · (n+i−1)! · 4^i / ((n−i)! (2i)!)
+    // term_0 = n · (n−1)!/n! = 1
+    let mut term = Ratio::from_integer(BigInt::from(1));
+    for i in 0..=n {
+        if i > 0 {
+            // term_i / term_{i−1} = (n+i−1)·4·(n−i+1) / ((2i−1)(2i))
+            let numer = BigInt::from((n + i - 1) as u64)
+                * BigInt::from(4u64)
+                * BigInt::from((n - i + 1) as u64);
+            let denom = BigInt::from((2 * i - 1) as u64) * BigInt::from((2 * i) as u64);
+            term *= Ratio::new(numer, denom);
+        }
+        acc += &term;
+        d.push(acc.clone());
+    }
+    let d_n = ratio_to_bigfloat(&d[n], wp, rm);
+
+    // S = Σ_{k=0}^{n−1} (−1)^k (d_k − d_n) / (k+1)^s
+    let mut sum = BigFloat::new(wp);
+    let s_is_int = s.is_int();
+    let s_int = if s_is_int {
+        bigfloat_to_f64(s, rm, cc)?.round() as usize
+    } else {
+        0
+    };
+    for k in 0..n {
+        let coeff = ratio_to_bigfloat(&(&d[k] - &d[n]), wp, rm);
+        let kp1 = BigFloat::from_i128(k as i128 + 1, wp);
+        let kp1_pow_s = if s_is_int {
+            kp1.powi(s_int, wp, rm)
+        } else {
+            bf_pow(&kp1, s, wp, rm, cc)
+        };
+        let term = coeff.div(&kp1_pow_s, wp, rm);
+        if k % 2 == 0 {
+            sum = sum.add(&term, wp, rm);
+        } else {
+            sum = sum.sub(&term, wp, rm);
+        }
+    }
+
+    // 1 − 2^{1−s}
+    let one = BigFloat::from_i32(1, wp);
+    let two = BigFloat::from_i32(2, wp);
+    let one_minus_s = one.sub(s, wp, rm);
+    let two_pow = bf_pow(&two, &one_minus_s, wp, rm, cc);
+    let denom_factor = one.sub(&two_pow, wp, rm);
+    if denom_factor.is_zero() {
+        return Err(SymplexError::Unevaluable {
+            reason: "zeta(1) is a pole".into(),
+        });
+    }
+    let denom = d_n.mul(&denom_factor, wp, rm);
+    Ok(sum.div(&denom, wp, rm).neg())
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Polygamma
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `ψ⁽ⁿ⁾(x)` for integer `n ≥ 1` and real `x` (not a non-positive integer).
+///
+/// 1. Recurrence `ψ⁽ⁿ⁾(x) = ψ⁽ⁿ⁾(x+N) − (−1)ⁿ n! Σ_{k<N} 1/(x+k)^{n+1}`
+///    shifts the argument to `x + N ≥ max(wp/3, n) + 10`.
+/// 2. Asymptotic series (DLMF 5.15.8):
+///    `ψ⁽ⁿ⁾(x) ~ (−1)^{n+1} [ (n−1)!/xⁿ + n!/(2x^{n+1}) + Σ_{k≥1} B₂ₖ (2k+n−1)!/((2k)! x^{2k+n}) ]`
+///    with exact Bernoulli numbers, truncated when the terms fall below
+///    the working precision (or start to diverge).
+fn arb_polygamma(
+    n: u32,
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    _cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if x.is_nan() || x.is_inf_pos() || x.is_inf_neg() {
+        return Err(SymplexError::Unevaluable {
+            reason: "polygamma of special float value".into(),
+        });
+    }
+    let guard = 32;
+    let wp = prec + guard;
+    let n_us = n as usize;
+    let one = BigFloat::from_i32(1, wp);
+
+    // n! and (n−1)! as BigFloats.
+    let mut n_fact = Ratio::<BigInt>::from_integer(BigInt::from(1));
+    for i in 2..=n_us {
+        n_fact *= Ratio::from_integer(BigInt::from(i as u64));
+    }
+    let nm1_fact = &n_fact / Ratio::from_integer(BigInt::from(n_us as u64));
+    let n_fact_bf = ratio_to_bigfloat(&n_fact, wp, rm);
+    let nm1_fact_bf = ratio_to_bigfloat(&nm1_fact, wp, rm);
+    // (−1)^{n+1}
+    let outer_sign_neg = n_us.is_multiple_of(2);
+
+    // ── Step 1: shift x upward ──
+    let threshold_val = ((wp / 3).max(n_us) + 10) as i128;
+    let threshold = BigFloat::from_i128(threshold_val, wp);
+    let mut xw = x.clone();
+    let _ = xw.set_precision(wp, rm);
+    let mut shift_sum = BigFloat::new(wp); // Σ 1/(x+k)^{n+1}
+    let mut steps: usize = 0;
+    while xw.sub(&threshold, wp, rm).is_negative() {
+        if xw.is_zero() {
+            return Err(SymplexError::Unevaluable {
+                reason: "polygamma at non-positive integer pole".into(),
+            });
+        }
+        if let Some(x_exp) = xw.exponent()
+            && (x_exp as i64) < -(wp as i64 / 2)
+        {
+            return Err(SymplexError::Unevaluable {
+                reason: "polygamma at non-positive integer pole".into(),
+            });
+        }
+        let p = xw.powi(n_us + 1, wp, rm);
+        let inv = one.div(&p, wp, rm);
+        shift_sum = shift_sum.add(&inv, wp, rm);
+        xw = xw.add(&one, wp, rm);
+        steps += 1;
+        if steps > 10 * wp + 1_000_000 {
+            return Err(SymplexError::ComputationFailed {
+                operation: "polygamma",
+                reason: "argument shift did not terminate".into(),
+            });
+        }
+    }
+    // ψ⁽ⁿ⁾(x) = ψ⁽ⁿ⁾(x+N) + (−1)^{n+1} n! Σ 1/(x+k)^{n+1}
+    let shift_term = n_fact_bf.mul(&shift_sum, wp, rm);
+
+    // ── Step 2: asymptotic series at xw ──
+    // bracket = (n−1)!/x^n + n!/(2 x^{n+1}) + Σ B_{2k} (2k+n−1)!/((2k)! x^{2k+n})
+    let x_pow_n = xw.powi(n_us, wp, rm);
+    let x_pow_np1 = x_pow_n.mul(&xw, wp, rm);
+    let two = BigFloat::from_i32(2, wp);
+    let mut bracket = nm1_fact_bf.div(&x_pow_n, wp, rm);
+    bracket = bracket.add(&n_fact_bf.div(&two.mul(&x_pow_np1, wp, rm), wp, rm), wp, rm);
+
+    let x2 = xw.mul(&xw, wp, rm);
+    let mut x_pow = x_pow_n.mul(&x2, wp, rm); // x^{n+2} for k = 1
+    // (2k+n−1)!/(2k)! as a running rational: start k=1 → (n+1)!/2!
+    let mut ratio_fact = &n_fact * Ratio::from_integer(BigInt::from(n_us as u64 + 1))
+        / Ratio::from_integer(BigInt::from(2));
+    let mut prev_term_exp: Option<i32> = None;
+    let max_terms = wp / 2 + 20;
+    for k in 1..=max_terms {
+        if k > 1 {
+            // multiply by (2k+n−2)(2k+n−1) / ((2k−1)(2k))
+            let a =
+                BigInt::from((2 * k + n_us - 2) as u64) * BigInt::from((2 * k + n_us - 1) as u64);
+            let b = BigInt::from((2 * k - 1) as u64) * BigInt::from((2 * k) as u64);
+            ratio_fact *= Ratio::new(a, b);
+            x_pow = x_pow.mul(&x2, wp, rm);
+        }
+        let b2k = crate::base::bernoulli::bernoulli(2 * k);
+        let coeff = ratio_to_bigfloat(&(&b2k * &ratio_fact), wp, rm);
+        let term = coeff.div(&x_pow, wp, rm);
+        if let Some(t_exp) = term.exponent() {
+            if let Some(prev) = prev_term_exp
+                && t_exp > prev + 10
+            {
+                break; // diverging
+            }
+            prev_term_exp = Some(t_exp);
+            if let Some(b_exp) = bracket.exponent()
+                && (b_exp as i64 - t_exp as i64) > wp as i64
+            {
+                bracket = bracket.add(&term, wp, rm);
+                break;
+            }
+        }
+        bracket = bracket.add(&term, wp, rm);
+    }
+
+    let total = bracket.add(&shift_term, wp, rm);
+    let result = if outer_sign_neg { total.neg() } else { total };
+    Ok(round_to(result, prec, rm))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Modified Bessel functions
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Ascending series for `I_ν(x)` at working precision `wp`:
+/// `I_ν(x) = (x/2)^ν Σ_{k≥0} (x²/4)^k / (k! Γ(ν+k+1))`.
+///
+/// All terms are positive for `x > 0`, so no cancellation occurs; the
+/// number of terms is `O(|x| + wp)`.
+fn bessel_i_series(
+    order: &BigFloat,
+    x: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let two = BigFloat::from_i32(2, wp);
+    let x_half = x.div(&two, wp, rm);
+    let x_half_sq = x_half.mul(&x_half, wp, rm);
+    let order_f64 = bigfloat_to_f64(order, rm, cc)?;
+    let order_int = order_f64.round() as i64;
+    let is_int_order = (order_f64 - order_int as f64).abs() < 1e-12;
+
+    if x.is_zero() {
+        return if is_int_order && order_int == 0 {
+            Ok(BigFloat::from_i32(1, wp))
+        } else if order_f64 > 0.0 {
+            Ok(BigFloat::new(wp))
+        } else {
+            Err(SymplexError::Unevaluable {
+                reason: "BesselI at x=0 with negative order".into(),
+            })
+        };
+    }
+
+    // (x/2)^ν
+    let prefix = if is_int_order && order_int >= 0 {
+        x_half.powi(order_int as usize, wp, rm)
+    } else if is_int_order {
+        // Negative integer order: I_{-n} = I_n.
+        x_half.powi((-order_int) as usize, wp, rm)
+    } else {
+        if x.is_negative() {
+            return Err(SymplexError::Unevaluable {
+                reason: "BesselI of negative argument with non-integer order is complex".into(),
+            });
+        }
+        let ln_xh = x_half.ln(wp, rm, cc);
+        order.mul(&ln_xh, wp, rm).exp(wp, rm, cc)
+    };
+    let eff_order = if is_int_order && order_int < 0 {
+        BigFloat::from_i128((-order_int) as i128, wp)
+    } else {
+        order.clone()
+    };
+
+    // term_0 = 1/Γ(ν+1); term_{k+1} = term_k · (x²/4) / ((k+1)(ν+k+1))
+    let one = BigFloat::from_i32(1, wp);
+    let gamma_nu1 = arb_gamma_real(&eff_order.add(&one, wp, rm), wp, rm, cc)?;
+    let mut term = one.div(&gamma_nu1, wp, rm);
+    let mut sum = term.clone();
+    let x_f64 = bigfloat_to_f64(x, rm, cc)?.abs();
+    let max_terms = (x_f64 * 2.0) as usize + wp + 40;
+    for k in 1..=max_terms {
+        let k_bf = BigFloat::from_i128(k as i128, wp);
+        let nu_plus_k = eff_order.add(&k_bf, wp, rm);
+        let denom = k_bf.mul(&nu_plus_k, wp, rm);
+        term = term.mul(&x_half_sq, wp, rm).div(&denom, wp, rm);
+        sum = sum.add(&term, wp, rm);
+        if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent())
+            && (s_exp as i64 - t_exp as i64) > wp as i64
+        {
+            break;
+        }
+    }
+    Ok(prefix.mul(&sum, wp, rm))
+}
+
+/// Modified Bessel function of the first kind `I_ν(x)` (real `ν`, `x`).
+fn arb_bessel_i(
+    order: &BigFloat,
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let wp = prec + 32;
+    let r = bessel_i_series(order, x, wp, rm, cc)?;
+    Ok(round_to(r, prec, rm))
+}
+
+/// Asymptotic expansion for `K_ν(x)`, large `x > 0` (DLMF 10.40.2):
+/// `K_ν(x) ~ √(π/(2x)) e^{−x} Σ_k a_k(ν)/x^k`,
+/// `a_k(ν) = ∏_{j=1}^{k} (4ν² − (2j−1)²) / (k! 8^k)`.
+fn bessel_k_asymptotic(
+    order: &BigFloat,
+    x: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> BigFloat {
+    let one = BigFloat::from_i32(1, wp);
+    let four = BigFloat::from_i32(4, wp);
+    let eight = BigFloat::from_i32(8, wp);
+    let four_nu_sq = four.mul(&order.mul(order, wp, rm), wp, rm);
+    let inv_x = one.div(x, wp, rm);
+    let mut a_k = one.clone();
+    let mut sum = one.clone();
+    let mut prev: Option<BigFloat> = None;
+    let max_terms = wp * 2 + 100;
+    for k in 1..max_terms {
+        let two_km1 = BigFloat::from_i32((2 * k as i32) - 1, wp);
+        let numer = four_nu_sq.sub(&two_km1.mul(&two_km1, wp, rm), wp, rm);
+        let denom = eight.mul(&BigFloat::from_i32(k as i32, wp), wp, rm);
+        a_k = a_k
+            .mul(&numer, wp, rm)
+            .div(&denom, wp, rm)
+            .mul(&inv_x, wp, rm);
+        if let Some(ref p) = prev
+            && a_k.abs().cmp(p).is_some_and(|c| c > 0)
+        {
+            break;
+        }
+        sum = sum.add(&a_k, wp, rm);
+        if let (Some(t_exp), Some(s_exp)) = (a_k.exponent(), sum.exponent())
+            && (s_exp as i64 - t_exp as i64) > wp as i64
+        {
+            break;
+        }
+        prev = Some(a_k.abs());
+    }
+    let pi = cc.pi(wp, rm).clone();
+    let two = BigFloat::from_i32(2, wp);
+    let amp = pi.div(&two.mul(x, wp, rm), wp, rm).sqrt(wp, rm);
+    let e_neg_x = x.neg().exp(wp, rm, cc);
+    amp.mul(&e_neg_x, wp, rm).mul(&sum, wp, rm)
+}
+
+/// Modified Bessel function of the second kind `K_ν(x)`, `x > 0`.
+///
+/// * Large `x` (`2x > wp·ln 2`): asymptotic expansion.
+/// * Integer order `n` (A&S 9.6.11):
+///   `K_n(x) = ½(x/2)^{−n} Σ_{k<n} (n−k−1)!/k! (−x²/4)^k + (−1)^{n+1} ln(x/2) I_n(x)
+///           + (−1)^n ½ (x/2)^n Σ_{k≥0} [ψ(k+1) + ψ(n+k+1)] (x²/4)^k/(k!(n+k)!)`
+///   with `ψ(m+1) = −γ + H_m`.
+/// * Non-integer order: `K_ν = (π/2)(I_{−ν} − I_ν)/sin(νπ)`.
+///
+/// Both series formulas suffer `e^{x}`-scale cancellation (the result is
+/// `~e^{−x}`), which is absorbed by extra guard bits.
+fn arb_bessel_k(
+    order: &BigFloat,
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if x.is_zero() || x.is_negative() || x.is_nan() {
+        return Err(SymplexError::Unevaluable {
+            reason: "BesselK undefined at x ≤ 0".into(),
+        });
+    }
+    let base_wp = prec + 32;
+    let x_f64 = bigfloat_to_f64(x, rm, cc)?;
+    let order_f64 = bigfloat_to_f64(order, rm, cc)?;
+    let order_int = order_f64.round() as i64;
+    let is_int_order = (order_f64 - order_int as f64).abs() < 1e-12;
+    let order_abs = if is_int_order {
+        BigFloat::from_i128(order_int.unsigned_abs() as i128, base_wp)
+    } else {
+        order.abs()
+    };
+
+    // Large x: asymptotic (relative truncation error ~ e^{-2x}).
+    if 2.0 * x_f64 > (base_wp as f64) * std::f64::consts::LN_2 {
+        let r = bessel_k_asymptotic(&order_abs, x, base_wp, rm, cc);
+        return Ok(round_to(r, prec, rm));
+    }
+
+    // Series: guard against e^{x} cancellation (two exponentially large
+    // terms of opposite sign nearly cancel).
+    let wp = base_wp + 2 * cancellation_guard_bits(x_f64);
+    let mut xw = x.clone();
+    let _ = xw.set_precision(wp, rm);
+
+    if !is_int_order {
+        // K_ν = (π/2)(I_{−ν} − I_ν)/sin(νπ)
+        let neg_order = order.neg();
+        let i_neg = bessel_i_series(&neg_order, &xw, wp, rm, cc)?;
+        let i_pos = bessel_i_series(order, &xw, wp, rm, cc)?;
+        let pi = cc.pi(wp, rm).clone();
+        let two = BigFloat::from_i32(2, wp);
+        let sin_nu_pi = order.mul(&pi, wp, rm).sin(wp, rm, cc);
+        let r = pi
+            .div(&two, wp, rm)
+            .mul(&i_neg.sub(&i_pos, wp, rm), wp, rm)
+            .div(&sin_nu_pi, wp, rm);
+        return Ok(round_to(r, prec, rm));
+    }
+
+    let n = order_int.unsigned_abs() as usize;
+    let one = BigFloat::from_i32(1, wp);
+    let two = BigFloat::from_i32(2, wp);
+    let half = one.div(&two, wp, rm);
+    let x_half = xw.div(&two, wp, rm);
+    let x_half_sq = x_half.mul(&x_half, wp, rm);
+    let ln_x_half = x_half.ln(wp, rm, cc);
+    let gamma = arb_euler_gamma(wp, rm, cc)?;
+    let n_bf = BigFloat::from_i128(n as i128, wp);
+    let i_n = bessel_i_series(&n_bf, &xw, wp, rm, cc)?;
+
+    // Finite sum: ½ (x/2)^{-n} Σ_{k=0}^{n-1} (n−k−1)!/k! (−x²/4)^k
+    let mut finite = BigFloat::new(wp);
+    if n > 0 {
+        // f_k = (n−k−1)!/k! ; f_0 = (n−1)!
+        let mut f = Ratio::<BigInt>::from_integer(BigInt::from(1));
+        for i in 2..n {
+            f *= Ratio::from_integer(BigInt::from(i as u64));
+        }
+        let mut pow = one.clone(); // (−x²/4)^k
+        let neg_x_half_sq = x_half_sq.neg();
+        for k in 0..n {
+            if k > 0 {
+                // f_k = f_{k−1} / ((n−k) · k)
+                f /= Ratio::from_integer(BigInt::from(((n - k) * k) as u64));
+                pow = pow.mul(&neg_x_half_sq, wp, rm);
+            }
+            let coeff = ratio_to_bigfloat(&f, wp, rm);
+            finite = finite.add(&coeff.mul(&pow, wp, rm), wp, rm);
+        }
+        let x_half_pow_neg_n = one.div(&x_half.powi(n, wp, rm), wp, rm);
+        finite = half.mul(&x_half_pow_neg_n, wp, rm).mul(&finite, wp, rm);
+    }
+
+    // Log term: (−1)^{n+1} ln(x/2) I_n(x)
+    let log_term = ln_x_half.mul(&i_n, wp, rm);
+    let log_term = if n.is_multiple_of(2) {
+        log_term.neg()
+    } else {
+        log_term
+    };
+
+    // Infinite sum: (−1)^n ½ (x/2)^n Σ_k [ψ(k+1) + ψ(n+k+1)] (x²/4)^k/(k!(n+k)!)
+    // ψ(m+1) = −γ + H_m.
+    let mut h_k = BigFloat::new(wp); // H_0 = 0
+    let mut h_nk = BigFloat::new(wp); // H_n
+    for m in 1..=n {
+        h_nk = h_nk.add(
+            &one.div(&BigFloat::from_i128(m as i128, wp), wp, rm),
+            wp,
+            rm,
+        );
+    }
+    // 1/(k!(n+k)!) start: 1/n!
+    let mut n_fact = Ratio::<BigInt>::from_integer(BigInt::from(1));
+    for i in 2..=n {
+        n_fact *= Ratio::from_integer(BigInt::from(i as u64));
+    }
+    let mut inv_fact = one.div(&ratio_to_bigfloat(&n_fact, wp, rm), wp, rm);
+    let mut pow = one.clone();
+    let mut series = BigFloat::new(wp);
+    let two_gamma = gamma.mul(&two, wp, rm);
+    let max_terms = (x_f64 * 2.0) as usize + wp + 40;
+    for k in 0..=max_terms {
+        if k > 0 {
+            let k_bf = BigFloat::from_i128(k as i128, wp);
+            let nk_bf = BigFloat::from_i128((n + k) as i128, wp);
+            h_k = h_k.add(&one.div(&k_bf, wp, rm), wp, rm);
+            h_nk = h_nk.add(&one.div(&nk_bf, wp, rm), wp, rm);
+            inv_fact = inv_fact.div(&k_bf.mul(&nk_bf, wp, rm), wp, rm);
+            pow = pow.mul(&x_half_sq, wp, rm);
+        }
+        let psi_sum = h_k.add(&h_nk, wp, rm).sub(&two_gamma, wp, rm);
+        let term = psi_sum.mul(&pow, wp, rm).mul(&inv_fact, wp, rm);
+        series = series.add(&term, wp, rm);
+        if k > 2
+            && let (Some(t_exp), Some(s_exp)) = (term.exponent(), series.exponent())
+            && (s_exp as i64 - t_exp as i64) > wp as i64
+        {
+            break;
+        }
+    }
+    let series_term = half
+        .mul(&x_half.powi(n, wp, rm), wp, rm)
+        .mul(&series, wp, rm);
+    let series_term = if n.is_multiple_of(2) {
+        series_term
+    } else {
+        series_term.neg()
+    };
+
+    let r = finite.add(&log_term, wp, rm).add(&series_term, wp, rm);
+    Ok(round_to(r, prec, rm))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Orthogonal polynomials
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Families of classical orthogonal polynomials evaluated numerically.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OrthoPoly {
+    Legendre,
+    ChebyshevT,
+    ChebyshevU,
+    Hermite,
+    Laguerre,
+}
+
+/// Evaluate `P_n(x)` (or `T_n`, `U_n`, `H_n`, `L_n`) for any non-negative
+/// integer `n` via the three-term recurrence:
+///
+/// * Legendre: `(k+1) P_{k+1} = (2k+1) x P_k − k P_{k−1}`
+/// * Chebyshev T/U: `T_{k+1} = 2x T_k − T_{k−1}` (`T_1 = x`, `U_1 = 2x`)
+/// * Hermite (physicists'): `H_{k+1} = 2x H_k − 2k H_{k−1}`
+/// * Laguerre: `(k+1) L_{k+1} = (2k+1−x) L_k − k L_{k−1}`
+fn arb_orthopoly(kind: OrthoPoly, n: u64, x: &BigFloat, prec: usize, rm: RoundingMode) -> BigFloat {
+    let wp = prec + 32 + (n as f64).log2().ceil().max(0.0) as usize;
+    let one = BigFloat::from_i32(1, wp);
+    let two = BigFloat::from_i32(2, wp);
+    let mut xw = x.clone();
+    let _ = xw.set_precision(wp, rm);
+    if n == 0 {
+        return BigFloat::from_i32(1, prec);
+    }
+    let mut p_prev = one.clone();
+    let mut p_curr = match kind {
+        OrthoPoly::Legendre | OrthoPoly::ChebyshevT => xw.clone(),
+        OrthoPoly::ChebyshevU | OrthoPoly::Hermite => two.mul(&xw, wp, rm),
+        OrthoPoly::Laguerre => one.sub(&xw, wp, rm),
+    };
+    for k in 1..n {
+        let k_bf = BigFloat::from_i128(k as i128, wp);
+        let kp1 = BigFloat::from_i128(k as i128 + 1, wp);
+        let next = match kind {
+            OrthoPoly::Legendre => {
+                let two_k_plus_1 = BigFloat::from_i128(2 * k as i128 + 1, wp);
+                let a = two_k_plus_1.mul(&xw, wp, rm).mul(&p_curr, wp, rm);
+                let b = k_bf.mul(&p_prev, wp, rm);
+                a.sub(&b, wp, rm).div(&kp1, wp, rm)
+            }
+            OrthoPoly::ChebyshevT | OrthoPoly::ChebyshevU => two
+                .mul(&xw, wp, rm)
+                .mul(&p_curr, wp, rm)
+                .sub(&p_prev, wp, rm),
+            OrthoPoly::Hermite => {
+                let a = two.mul(&xw, wp, rm).mul(&p_curr, wp, rm);
+                let b = two.mul(&k_bf, wp, rm).mul(&p_prev, wp, rm);
+                a.sub(&b, wp, rm)
+            }
+            OrthoPoly::Laguerre => {
+                let two_k_plus_1 = BigFloat::from_i128(2 * k as i128 + 1, wp);
+                let a = two_k_plus_1.sub(&xw, wp, rm).mul(&p_curr, wp, rm);
+                let b = k_bf.mul(&p_prev, wp, rm);
+                a.sub(&b, wp, rm).div(&kp1, wp, rm)
+            }
+        };
+        p_prev = p_curr;
+        p_curr = next;
+    }
+    round_to(p_curr, prec, rm)
 }
 
 fn get_cached(cache: &FxHashMap<ExprId, Complex>, id: ExprId) -> Result<&Complex, SymplexError> {
@@ -2624,24 +3852,31 @@ fn ratio_to_bigfloat(r: &Ratio<BigInt>, prec: usize, rm: RoundingMode) -> BigFlo
     n_bf.div(&d_bf, prec, rm)
 }
 
-/// Convert a `BigInt` to a `BigFloat`.
+/// Convert a `BigInt` to a `BigFloat`, exactly up to the final rounding
+/// to `prec` bits.
 ///
-/// Uses i128 for values that fit, f64 for larger values (with some
-/// precision loss for very large integers — acceptable for MVP).
+/// Values that fit in `i128` are converted directly.  Larger integers are
+/// accumulated limb-by-limb (`acc = acc·2⁶⁴ + limb`) at a working
+/// precision wide enough to hold every bit, then rounded once.
 fn bigint_to_bigfloat(n: &BigInt, prec: usize) -> BigFloat {
-    // Try i128 first (covers most practical integers).
     if let Ok(v) = <BigInt as TryInto<i128>>::try_into(n.clone()) {
         return BigFloat::from_i128(v, prec);
     }
-    // Fallback: parse through f64 (loses precision for huge integers).
-    let s = n.to_string();
-    if let Ok(f) = s.parse::<f64>()
-        && f.is_finite()
-    {
-        return BigFloat::from_f64(f, prec);
+    let (sign, limbs) = n.to_u64_digits();
+    let wp = (limbs.len() * 64 + 64).max(prec);
+    let rm = RoundingMode::ToEven;
+    let base = BigFloat::from_u64(1u64 << 32, wp).powi(2, wp, rm); // 2^64
+    let mut acc = BigFloat::new(wp);
+    for &limb in limbs.iter().rev() {
+        acc = acc
+            .mul(&base, wp, rm)
+            .add(&BigFloat::from_u64(limb, wp), wp, rm);
     }
-    // Last resort.
-    BigFloat::from_i32(0, prec)
+    if sign == num_bigint::Sign::Minus {
+        acc = acc.neg();
+    }
+    let _ = acc.set_precision(prec, rm);
+    acc
 }
 
 /// Try to extract a small integer exponent (fits in i32) from an ExprId.
@@ -3363,5 +4598,178 @@ mod tests {
             (val - 0.08825696421567696).abs() < 1e-6,
             "Y_0(1) should be ~0.0883, got {result}"
         );
+    }
+
+    // ── 0.2: named constants ───────────────────────────────────────────────
+
+    #[test]
+    fn euler_gamma_and_catalan_high_precision() {
+        let a = Arena::new();
+        assert_evalf_starts_with(
+            &a,
+            a.euler_gamma,
+            60,
+            "0.57721566490153286060651209008240243104215933593992359880576",
+        );
+        assert_evalf_starts_with(
+            &a,
+            a.catalan,
+            60,
+            "0.91596559417721901505460351493238411077414937428167213426649",
+        );
+        assert_evalf_starts_with(
+            &a,
+            a.golden_ratio,
+            40,
+            "1.61803398874989484820458683436563811772",
+        );
+    }
+
+    #[test]
+    fn bigint_to_bigfloat_is_exact_for_huge_integers() {
+        // 2^200 + 1 is far beyond i128; its BigFloat must keep all bits.
+        let n = (BigInt::from(1) << 200) + BigInt::from(1);
+        let bf = bigint_to_bigfloat(&n, 256);
+        let two200 = BigFloat::from_i32(2, 256).powi(200, 256, RoundingMode::ToEven);
+        let diff = bf.sub(&two200, 256, RoundingMode::ToEven);
+        assert_eq!(diff, BigFloat::from_i32(1, 256));
+    }
+
+    #[test]
+    fn bf_pow_handles_exactly_representable_results() {
+        // BigFloat::pow would hang on 4^(1/2) = 2; bf_pow must not.
+        let mut cc = Consts::new().unwrap();
+        let rm = RoundingMode::ToEven;
+        let four = BigFloat::from_i32(4, 160);
+        let half = BigFloat::from_f64(0.5, 160);
+        let r = bf_pow(&four, &half, 160, rm, &mut cc);
+        let diff = r.sub(&BigFloat::from_i32(2, 160), 160, rm);
+        assert!(
+            diff.is_zero() || diff.exponent().is_none_or(|e| e < -140),
+            "4^0.5 = {r}"
+        );
+        // integer exponent path
+        let three = BigFloat::from_i32(3, 160);
+        let r = bf_pow(&three, &BigFloat::from_i32(5, 160), 160, rm, &mut cc);
+        assert_eq!(r, BigFloat::from_i32(243, 160));
+        let r = bf_pow(&three, &BigFloat::from_i32(-1, 160), 160, rm, &mut cc);
+        let back = r.mul(&three, 160, rm);
+        let d = back.sub(&BigFloat::from_i32(1, 160), 160, rm);
+        assert!(d.is_zero() || d.exponent().is_none_or(|e| e < -140));
+    }
+
+    // ── 0.2: special functions ──────────────────────────────────────────────
+
+    #[test]
+    fn si_ci_ei_li_at_one_and_two() {
+        let mut a = Arena::new();
+        let one = a.one;
+        let two = a.int(2);
+        let si = a.si(one);
+        assert_evalf_starts_with(&a, si, 20, "0.94608307036718301494");
+        let ci = a.ci(one);
+        assert_evalf_starts_with(&a, ci, 20, "0.33740392290096813466");
+        let ei = a.ei(one);
+        assert_evalf_starts_with(&a, ei, 20, "1.8951178163559367554");
+        let li = a.li(two);
+        assert_evalf_starts_with(&a, li, 20, "1.0451637801174927848");
+    }
+
+    #[test]
+    fn si_asymptotic_and_series_regimes_agree() {
+        // Evaluate Si(40) at two precisions: at low precision the asymptotic
+        // expansion is used (40 > 160·ln2 ≈ 111 is false …), so force the
+        // regimes by comparing against the same value at higher precision
+        // where the series is used.
+        let mut a = Arena::new();
+        let x = a.int(200);
+        let si = a.si(x);
+        let lo = evalf(&a, si, 12).unwrap(); // asymptotic (200 > 128·ln2)
+        let hi = evalf(&a, si, 120).unwrap(); // series (200 < 472·ln2)
+        assert!(hi.starts_with(&lo[..12]), "{lo} vs {hi}");
+    }
+
+    #[test]
+    fn zeta_borwein_and_functional_equation() {
+        let mut a = Arena::new();
+        let three = a.int(3);
+        let z3 = a.zeta(three);
+        assert_evalf_starts_with(&a, z3, 30, "1.20205690315959428539973816151");
+        let half = a.rational(1, 2);
+        let zh = a.zeta(half);
+        assert_evalf_starts_with(&a, zh, 20, "-1.4603545088095868128");
+        // ζ(−5/2) > 0 (ζ is positive on (−4, −2); ζ(−3) = 1/120).
+        let neg = a.rational(-5, 2);
+        let zn = a.zeta(neg);
+        assert_evalf_starts_with(&a, zn, 15, "0.00851692877785");
+        // ζ(−1/2) < 0
+        let neg_half = a.rational(-1, 2);
+        let znh = a.zeta(neg_half);
+        assert_evalf_starts_with(&a, znh, 15, "-0.20788622497735");
+    }
+
+    #[test]
+    fn polygamma_matches_trigamma_closed_forms() {
+        let mut a = Arena::new();
+        // Build the node structurally so the exact folding does not kick in.
+        let one = a.one;
+        let x = a.rational(7, 3);
+        let pg = a.intern(ExprNode::Polygamma(one, x));
+        assert_evalf_starts_with(&a, pg, 20, "0.53309712542709408179");
+        // ψ'(1/2) = π²/2 through the numerical path
+        let half = a.rational(1, 2);
+        let pg_half = a.intern(ExprNode::Polygamma(one, half));
+        assert_evalf_starts_with(&a, pg_half, 20, "4.9348022005446793094");
+    }
+
+    #[test]
+    fn bessel_i_k_reference() {
+        let mut a = Arena::new();
+        let zero = a.zero;
+        let one = a.one;
+        let i0 = a.besseli(zero, one);
+        assert_evalf_starts_with(&a, i0, 20, "1.2660658777520083355");
+        let k0 = a.besselk(zero, one);
+        assert_evalf_starts_with(&a, k0, 20, "0.42102443824070833333");
+        let k1 = a.besselk(one, one);
+        assert_evalf_starts_with(&a, k1, 20, "0.60190723019723457473");
+    }
+
+    #[test]
+    fn orthogonal_polynomials_large_degree() {
+        let mut a = Arena::new();
+        let n = a.int(100);
+        let third = a.rational(1, 3);
+        let t = a.chebyshev_t(n, third);
+        let s = evalf(&a, t, 15).unwrap();
+        let v: f64 = s.parse().unwrap();
+        let expected = (100.0 * (1.0f64 / 3.0).acos()).cos();
+        assert!((v - expected).abs() < 1e-12, "{v} vs {expected}");
+        let p = a.legendre(n, a.one);
+        assert_evalf_starts_with(&a, p, 10, "1");
+    }
+
+    #[test]
+    fn complex_nodes_evaluate_numerically() {
+        let mut a = Arena::new();
+        let z = a.symbol("z");
+        let re_z = a.intern(ExprNode::Re(z));
+        let arg_z = a.intern(ExprNode::Arg(z));
+        let conj_z = a.intern(ExprNode::Conjugate(z));
+        let three = a.int(3);
+        let four = a.int(4);
+        let four_i = a.mul(&[four, a.i_unit]);
+        let w = a.add(&[three, four_i]);
+        // Substitute structurally *without* refolding: intern the nodes
+        // directly on w.
+        let _ = re_z;
+        let re_w = a.intern(ExprNode::Re(w));
+        let arg_w = a.intern(ExprNode::Arg(w));
+        let conj_w = a.intern(ExprNode::Conjugate(w));
+        let _ = (arg_z, conj_z);
+        assert_eq!(evalf(&a, re_w, 10).unwrap(), "3");
+        assert_evalf_starts_with(&a, arg_w, 15, "0.92729521800161");
+        let s = evalf(&a, conj_w, 10).unwrap();
+        assert!(s.contains('3') && s.contains('4') && s.contains('-'), "{s}");
     }
 }

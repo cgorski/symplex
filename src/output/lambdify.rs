@@ -127,6 +127,9 @@ fn compile_recursive(
         }
         ExprNode::Pi => out.push(Instruction::PushConst(std::f64::consts::PI)),
         ExprNode::E => out.push(Instruction::PushConst(std::f64::consts::E)),
+        ExprNode::EulerGamma => out.push(Instruction::PushConst(0.577_215_664_901_532_9)),
+        ExprNode::Catalan => out.push(Instruction::PushConst(0.915_965_594_177_219)),
+        ExprNode::GoldenRatio => out.push(Instruction::PushConst(1.618_033_988_749_895)),
         ExprNode::ImaginaryUnit => return None, // Can't lambdify complex
         ExprNode::PhysicalConstant(_, value_id) => {
             // Recursively compile the stored exact value
@@ -377,7 +380,18 @@ fn compile_recursive(
         | ExprNode::Erf(_)
         | ExprNode::Erfc(_)
         | ExprNode::LambertW(_)
-        | ExprNode::Beta(_, _) => return None,
+        | ExprNode::Beta(_, _)
+        | ExprNode::Re(_)
+        | ExprNode::Im(_)
+        | ExprNode::Conjugate(_)
+        | ExprNode::Arg(_)
+        | ExprNode::Si(_)
+        | ExprNode::Ci(_)
+        | ExprNode::Ei(_)
+        | ExprNode::Li(_)
+        | ExprNode::Zeta(_)
+        | ExprNode::Polygamma(_, _)
+        | ExprNode::KroneckerDelta(_, _) => return None,
         ExprNode::Apply(_, _)
         | ExprNode::Derivative(_, _)
         | ExprNode::Integral(_, _)

@@ -427,6 +427,9 @@ impl<S: Sort> Expr<S> {
             crate::base::node::ExprNode::Pi
             | crate::base::node::ExprNode::E
             | crate::base::node::ExprNode::ImaginaryUnit
+            | crate::base::node::ExprNode::EulerGamma
+            | crate::base::node::ExprNode::Catalan
+            | crate::base::node::ExprNode::GoldenRatio
             | crate::base::node::ExprNode::PhysicalConstant(_, _)
             | crate::base::node::ExprNode::Infinity
             | crate::base::node::ExprNode::NegInfinity
@@ -470,7 +473,18 @@ impl<S: Sort> Expr<S> {
             | crate::base::node::ExprNode::Erf(_)
             | crate::base::node::ExprNode::Erfc(_)
             | crate::base::node::ExprNode::LambertW(_)
-            | crate::base::node::ExprNode::Beta(_, _) => ExprType::Function,
+            | crate::base::node::ExprNode::Beta(_, _)
+            | crate::base::node::ExprNode::Re(_)
+            | crate::base::node::ExprNode::Im(_)
+            | crate::base::node::ExprNode::Conjugate(_)
+            | crate::base::node::ExprNode::Arg(_)
+            | crate::base::node::ExprNode::Si(_)
+            | crate::base::node::ExprNode::Ci(_)
+            | crate::base::node::ExprNode::Ei(_)
+            | crate::base::node::ExprNode::Li(_)
+            | crate::base::node::ExprNode::Zeta(_)
+            | crate::base::node::ExprNode::Polygamma(_, _)
+            | crate::base::node::ExprNode::KroneckerDelta(_, _) => ExprType::Function,
             crate::base::node::ExprNode::BoolTrue | crate::base::node::ExprNode::BoolFalse => {
                 ExprType::Constant
             }

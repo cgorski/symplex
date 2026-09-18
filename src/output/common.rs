@@ -44,6 +44,9 @@ pub(crate) fn display_category(arena: &Arena, id: ExprId) -> DisplayCategory {
         | ExprNode::Pi
         | ExprNode::E
         | ExprNode::ImaginaryUnit
+        | ExprNode::EulerGamma
+        | ExprNode::Catalan
+        | ExprNode::GoldenRatio
         | ExprNode::PhysicalConstant(_, _)
         | ExprNode::BoolTrue
         | ExprNode::BoolFalse => DisplayCategory::Constant,
@@ -93,6 +96,9 @@ pub(crate) fn estimate_display_degree(arena: &Arena, id: ExprId) -> u32 {
         | ExprNode::Pi
         | ExprNode::E
         | ExprNode::ImaginaryUnit
+        | ExprNode::EulerGamma
+        | ExprNode::Catalan
+        | ExprNode::GoldenRatio
         | ExprNode::PhysicalConstant(_, _)
         | ExprNode::BoolTrue
         | ExprNode::BoolFalse

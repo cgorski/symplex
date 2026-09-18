@@ -74,9 +74,9 @@ pub(crate) const FN_LAGUERRE: &str = "laguerre";
 /// [`ExprId`] via hash-consing, which makes equality checks trivial pointer
 /// comparisons.
 ///
-/// A set of commonly used constants (0, 1, −1, π, e, i, ∞, −∞, NaN) are
-/// pre-interned at construction time and exposed as public fields for
-/// convenience.
+/// A set of commonly used constants (0, 1, −1, π, e, i, γ, G, φ, ∞, −∞,
+/// NaN) are pre-interned at construction time and exposed through accessor
+/// methods for convenience.
 pub struct Arena {
     // -- storage -------------------------------------------------------------
     /// Expression nodes indexed by [`ExprId`].
@@ -127,6 +127,15 @@ pub struct Arena {
 
     /// The imaginary unit *i*.
     pub(crate) i_unit: ExprId,
+
+    /// The Euler–Mascheroni constant γ.
+    pub(crate) euler_gamma: ExprId,
+
+    /// Catalan's constant G.
+    pub(crate) catalan: ExprId,
+
+    /// The golden ratio φ.
+    pub(crate) golden_ratio: ExprId,
 
     /// Positive infinity (+∞).
     pub(crate) infinity: ExprId,
@@ -195,6 +204,9 @@ impl Arena {
             pi: ExprId(0),
             e_const: ExprId(0),
             i_unit: ExprId(0),
+            euler_gamma: ExprId(0),
+            catalan: ExprId(0),
+            golden_ratio: ExprId(0),
             infinity: ExprId(0),
             neg_infinity: ExprId(0),
             nan: ExprId(0),
@@ -223,6 +235,9 @@ impl Arena {
         arena.pi = arena.intern(ExprNode::Pi);
         arena.e_const = arena.intern(ExprNode::E);
         arena.i_unit = arena.intern(ExprNode::ImaginaryUnit);
+        arena.euler_gamma = arena.intern(ExprNode::EulerGamma);
+        arena.catalan = arena.intern(ExprNode::Catalan);
+        arena.golden_ratio = arena.intern(ExprNode::GoldenRatio);
         arena.infinity = arena.intern(ExprNode::Infinity);
         arena.neg_infinity = arena.intern(ExprNode::NegInfinity);
         arena.nan = arena.intern(ExprNode::NaN);
@@ -277,6 +292,24 @@ impl Arena {
     #[inline]
     pub fn i_unit(&self) -> ExprId {
         self.i_unit
+    }
+
+    /// Returns the pre-interned [`ExprId`] for the Euler–Mascheroni constant γ.
+    #[inline]
+    pub fn euler_gamma(&self) -> ExprId {
+        self.euler_gamma
+    }
+
+    /// Returns the pre-interned [`ExprId`] for Catalan's constant G.
+    #[inline]
+    pub fn catalan(&self) -> ExprId {
+        self.catalan
+    }
+
+    /// Returns the pre-interned [`ExprId`] for the golden ratio φ.
+    #[inline]
+    pub fn golden_ratio(&self) -> ExprId {
+        self.golden_ratio
     }
 
     /// Returns the pre-interned [`ExprId`] for positive infinity (+∞).
@@ -1216,6 +1249,97 @@ impl Arena {
         self.intern(ExprNode::Beta(a, b))
     }
 
+    // ── Complex analysis ─────────────────────────────────────────────
+
+    /// Real part `re(z)`.
+    ///
+    /// Evaluates at construction whenever the real part is determinable
+    /// (numbers, constants, symbols assumed real, sums, real scalings,
+    /// fully decomposable products/powers, `exp`, `sin`, `cos`, …).
+    /// Otherwise returns an [`ExprNode::Re`] node.
+    /// See [`complex::re`](crate::base::complex::re).
+    pub fn re(&mut self, z: ExprId) -> ExprId {
+        crate::base::complex::re(self, z)
+    }
+
+    /// Imaginary part `im(z)` (real-valued; `z = re(z) + i·im(z)`).
+    /// See [`complex::im`](crate::base::complex::im).
+    pub fn im(&mut self, z: ExprId) -> ExprId {
+        crate::base::complex::im(self, z)
+    }
+
+    /// Complex conjugate `conjugate(z)`.
+    /// See [`complex::conjugate`](crate::base::complex::conjugate).
+    pub fn conjugate(&mut self, z: ExprId) -> ExprId {
+        crate::base::complex::conjugate(self, z)
+    }
+
+    /// Principal complex argument `arg(z) ∈ (−π, π]`.
+    /// See [`complex::arg`](crate::base::complex::arg).
+    pub fn arg(&mut self, z: ExprId) -> ExprId {
+        crate::base::complex::arg(self, z)
+    }
+
+    // ── Special functions (0.2) ───────────────────────────────────────
+
+    /// Sine integral `Si(x)`, folding exact values (`Si(0) = 0`,
+    /// `Si(∞) = π/2`, oddness `Si(−x) = −Si(x)`).
+    pub fn si(&mut self, x: ExprId) -> ExprId {
+        crate::transforms::eval::eval_si(self, x).unwrap_or_else(|| self.intern(ExprNode::Si(x)))
+    }
+
+    /// Cosine integral `Ci(x)`, folding exact values (`Ci(∞) = 0`).
+    pub fn ci(&mut self, x: ExprId) -> ExprId {
+        crate::transforms::eval::eval_ci(self, x).unwrap_or_else(|| self.intern(ExprNode::Ci(x)))
+    }
+
+    /// Exponential integral `Ei(x)`, folding exact values (`Ei(−∞) = 0`,
+    /// `Ei(∞) = ∞`, `Ei(0) = −∞`).
+    pub fn ei(&mut self, x: ExprId) -> ExprId {
+        crate::transforms::eval::eval_ei(self, x).unwrap_or_else(|| self.intern(ExprNode::Ei(x)))
+    }
+
+    /// Logarithmic integral `li(x)`, folding exact values (`li(0) = 0`,
+    /// `li(1) = −∞`, `li(∞) = ∞`, `li(e^y) = Ei(y)`).
+    pub fn li(&mut self, x: ExprId) -> ExprId {
+        crate::transforms::eval::eval_li(self, x).unwrap_or_else(|| self.intern(ExprNode::Li(x)))
+    }
+
+    /// Riemann zeta function `ζ(s)`, folding exact values:
+    /// `ζ(1) = z∞`, `ζ(0) = −1/2`, `ζ(−n) = −Bₙ₊₁/(n+1)`,
+    /// `ζ(2k) = (−1)^{k+1} B₂ₖ (2π)^{2k} / (2 (2k)!)`, `ζ(∞) = 1`.
+    pub fn zeta(&mut self, s: ExprId) -> ExprId {
+        crate::transforms::eval::eval_zeta(self, s)
+            .unwrap_or_else(|| self.intern(ExprNode::Zeta(s)))
+    }
+
+    /// Polygamma function `ψ⁽ⁿ⁾(x)`.
+    ///
+    /// `polygamma(0, x)` is canonicalised to [`Digamma`](ExprNode::Digamma);
+    /// `ψ⁽ⁿ⁾(1)` and `ψ⁽ⁿ⁾(1/2)` fold to multiples of `ζ(n+1)`; and
+    /// `ψ⁽ⁿ⁾(m)` / `ψ⁽ⁿ⁾(m + 1/2)` for small positive integers `m` are shifted
+    /// back to those base points via the recurrence
+    /// `ψ⁽ⁿ⁾(x+1) = ψ⁽ⁿ⁾(x) + (−1)ⁿ n!/xⁿ⁺¹`.
+    pub fn polygamma(&mut self, n: ExprId, x: ExprId) -> ExprId {
+        crate::transforms::eval::eval_polygamma(self, n, x)
+            .unwrap_or_else(|| self.intern(ExprNode::Polygamma(n, x)))
+    }
+
+    /// Kronecker delta `δᵢⱼ`.
+    ///
+    /// Identical arguments give `1`; two distinct numbers give `0`;
+    /// otherwise the node is stored with its arguments in canonical order.
+    pub fn kronecker_delta(&mut self, i: ExprId, j: ExprId) -> ExprId {
+        crate::transforms::eval::eval_kronecker_delta(self, i, j).unwrap_or_else(|| {
+            let (a, b) = if self.sort_key(i) <= self.sort_key(j) {
+                (i, j)
+            } else {
+                (j, i)
+            };
+            self.intern(ExprNode::KroneckerDelta(a, b))
+        })
+    }
+
     /// Creates a `Factorial` node: `n!`
     pub fn factorial(&mut self, expr: ExprId) -> ExprId {
         self.intern(ExprNode::Factorial(expr))
@@ -1734,6 +1858,9 @@ mod tests {
             a.pi,
             a.e_const,
             a.i_unit,
+            a.euler_gamma,
+            a.catalan,
+            a.golden_ratio,
             a.infinity,
             a.neg_infinity,
             a.nan,
@@ -1753,6 +1880,17 @@ mod tests {
         let x1 = a.symbol("x");
         let x2 = a.symbol("x");
         assert_eq!(x1, x2);
+    }
+
+    #[test]
+    fn named_constants_are_pre_interned() {
+        let mut a = Arena::new();
+        assert_eq!(a.intern(ExprNode::EulerGamma), a.euler_gamma());
+        assert_eq!(a.intern(ExprNode::Catalan), a.catalan());
+        assert_eq!(a.intern(ExprNode::GoldenRatio), a.golden_ratio());
+        assert!(matches!(a.node(a.euler_gamma()), ExprNode::EulerGamma));
+        assert!(matches!(a.node(a.catalan()), ExprNode::Catalan));
+        assert!(matches!(a.node(a.golden_ratio()), ExprNode::GoldenRatio));
     }
 
     #[test]

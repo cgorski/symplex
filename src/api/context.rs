@@ -277,6 +277,63 @@ impl Context {
         self.make_ex(id)
     }
 
+    /// The Euler–Mascheroni constant γ ≈ 0.5772156649…
+    ///
+    /// Evaluates to arbitrary precision (Brent–McMillan).  Its
+    /// (ir)rationality is unproven, so `is_rational()` returns `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let g = ctx.euler_gamma();
+    /// assert_eq!(format!("{g}"), "EulerGamma");
+    /// assert!(g.eval_decimal(30).unwrap().starts_with("0.57721566490153286060651209008"));
+    /// assert_eq!(g.is_positive(), Some(true));
+    /// assert_eq!(g.is_rational(), None);
+    /// ```
+    pub fn euler_gamma(&self) -> crate::api::expr::Ex {
+        let id = self.inner.read().arena.euler_gamma;
+        self.make_ex(id)
+    }
+
+    /// Catalan's constant G = Σ (−1)ⁿ/(2n+1)² ≈ 0.9159655942…
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let g = ctx.catalan();
+    /// assert_eq!(format!("{g}"), "Catalan");
+    /// assert!(g.eval_decimal(30).unwrap().starts_with("0.91596559417721901505460351493"));
+    /// ```
+    pub fn catalan(&self) -> crate::api::expr::Ex {
+        let id = self.inner.read().arena.catalan;
+        self.make_ex(id)
+    }
+
+    /// The golden ratio φ = (1 + √5)/2 ≈ 1.6180339887…
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let phi = ctx.golden_ratio();
+    /// assert_eq!(format!("{phi}"), "GoldenRatio");
+    /// assert!(phi.eval_decimal(30).unwrap().starts_with("1.61803398874989484820458683436"));
+    /// assert_eq!(phi.is_rational(), Some(false));
+    /// ```
+    pub fn golden_ratio(&self) -> crate::api::expr::Ex {
+        let id = self.inner.read().arena.golden_ratio;
+        self.make_ex(id)
+    }
+
     /// Create a named physical constant with a known exact value.
     ///
     /// The constant displays as `name` but evaluates numerically to `value`.
@@ -311,6 +368,25 @@ impl Context {
         let inner = self.inner.read();
         let id = inner.arena.neg_infinity;
         drop(inner);
+        self.make_ex(id)
+    }
+
+    /// Complex infinity (`zoo`) — infinite magnitude, undefined direction.
+    ///
+    /// This is the value of `1/0`, `ζ(1)`, `Γ(0)`, …
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let zoo = ctx.complex_infinity();
+    /// assert_eq!(format!("{zoo}"), "zoo");
+    /// assert_eq!(ctx.int(1).zeta(), zoo);
+    /// ```
+    pub fn complex_infinity(&self) -> crate::api::expr::Ex {
+        let id = self.inner.read().arena.complex_infinity;
         self.make_ex(id)
     }
 

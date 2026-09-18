@@ -214,9 +214,64 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
             }
             ExprNode::Digamma(inner) => {
                 let ni = cache.get(&inner).copied().unwrap_or(inner);
-                // Digamma is hard to evaluate symbolically without Euler-Mascheroni constant.
-                // Leave unevaluated.
-                if ni == inner { id } else { arena.digamma(ni) }
+                if let Some(result) = eval_digamma(arena, ni) {
+                    result
+                } else if ni == inner {
+                    id
+                } else {
+                    arena.digamma(ni)
+                }
+            }
+
+            // ── Complex analysis: always re-run the canonical constructor so
+            //    that newly evaluated children (or assumptions) fold. ─────────
+            ExprNode::Re(inner) => {
+                let ni = cache.get(&inner).copied().unwrap_or(inner);
+                arena.re(ni)
+            }
+            ExprNode::Im(inner) => {
+                let ni = cache.get(&inner).copied().unwrap_or(inner);
+                arena.im(ni)
+            }
+            ExprNode::Conjugate(inner) => {
+                let ni = cache.get(&inner).copied().unwrap_or(inner);
+                arena.conjugate(ni)
+            }
+            ExprNode::Arg(inner) => {
+                let ni = cache.get(&inner).copied().unwrap_or(inner);
+                arena.arg(ni)
+            }
+
+            // ── Special functions (0.2): constructors fold exact values ───────
+            ExprNode::Si(inner) => {
+                let ni = cache.get(&inner).copied().unwrap_or(inner);
+                arena.si(ni)
+            }
+            ExprNode::Ci(inner) => {
+                let ni = cache.get(&inner).copied().unwrap_or(inner);
+                arena.ci(ni)
+            }
+            ExprNode::Ei(inner) => {
+                let ni = cache.get(&inner).copied().unwrap_or(inner);
+                arena.ei(ni)
+            }
+            ExprNode::Li(inner) => {
+                let ni = cache.get(&inner).copied().unwrap_or(inner);
+                arena.li(ni)
+            }
+            ExprNode::Zeta(inner) => {
+                let ni = cache.get(&inner).copied().unwrap_or(inner);
+                arena.zeta(ni)
+            }
+            ExprNode::Polygamma(n, x) => {
+                let nn = cache.get(&n).copied().unwrap_or(n);
+                let nx = cache.get(&x).copied().unwrap_or(x);
+                arena.polygamma(nn, nx)
+            }
+            ExprNode::KroneckerDelta(i, j) => {
+                let ni = cache.get(&i).copied().unwrap_or(i);
+                let nj = cache.get(&j).copied().unwrap_or(j);
+                arena.kronecker_delta(ni, nj)
             }
             ExprNode::Erf(inner) => {
                 let ni = cache.get(&inner).copied().unwrap_or(inner);
@@ -704,7 +759,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                         if let Some(n_num) = arena.as_num(new_args[0]).cloned() {
                             if n_num.is_integer() && !n_num.is_negative() {
                                 if let Some(n_int) = n_num.to_integer().to_u64() {
-                                    if n_int <= 20 {
+                                    if n_int <= arena.config.max_pow_exponent as u64 {
                                         let x = new_args[1];
                                         eval_legendre(arena, n_int as usize, x)
                                     } else {
@@ -726,7 +781,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                         if let Some(n_num) = arena.as_num(new_args[0]).cloned() {
                             if n_num.is_integer() && !n_num.is_negative() {
                                 if let Some(n_int) = n_num.to_integer().to_u64() {
-                                    if n_int <= 20 {
+                                    if n_int <= arena.config.max_pow_exponent as u64 {
                                         let x = new_args[1];
                                         eval_chebyshev_t(arena, n_int as usize, x)
                                     } else {
@@ -748,7 +803,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                         if let Some(n_num) = arena.as_num(new_args[0]).cloned() {
                             if n_num.is_integer() && !n_num.is_negative() {
                                 if let Some(n_int) = n_num.to_integer().to_u64() {
-                                    if n_int <= 20 {
+                                    if n_int <= arena.config.max_pow_exponent as u64 {
                                         let x = new_args[1];
                                         eval_chebyshev_u(arena, n_int as usize, x)
                                     } else {
@@ -770,7 +825,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                         if let Some(n_num) = arena.as_num(new_args[0]).cloned() {
                             if n_num.is_integer() && !n_num.is_negative() {
                                 if let Some(n_int) = n_num.to_integer().to_u64() {
-                                    if n_int <= 20 {
+                                    if n_int <= arena.config.max_pow_exponent as u64 {
                                         let x = new_args[1];
                                         eval_hermite(arena, n_int as usize, x)
                                     } else {
@@ -792,7 +847,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                         if let Some(n_num) = arena.as_num(new_args[0]).cloned() {
                             if n_num.is_integer() && !n_num.is_negative() {
                                 if let Some(n_int) = n_num.to_integer().to_u64() {
-                                    if n_int <= 20 {
+                                    if n_int <= arena.config.max_pow_exponent as u64 {
                                         let x = new_args[1];
                                         eval_laguerre(arena, n_int as usize, x)
                                     } else {
@@ -1421,6 +1476,318 @@ fn eval_binomial(arena: &mut Arena, n: ExprId, k: ExprId) -> Option<ExprId> {
     let ratio = num_rational::Ratio::from_integer(result);
     let nid = arena.intern_num(ratio);
     Some(arena.intern(ExprNode::Num(nid)))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Special functions (0.2): Si, Ci, Ei, li, ζ, ψ, ψ⁽ⁿ⁾, δᵢⱼ
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Split `x` into `(-1, y)` when `x = -y` in canonical form (negative
+/// numeric coefficient or `Neg`), returning `y`.  Unlike [`as_negated`]
+/// this also handles bare negative numbers and `-3*x`.
+fn as_negated_general(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
+    if let ExprNode::Neg(inner) = arena.node(x) {
+        return Some(*inner);
+    }
+    let (coeff, term) = arena.as_coeff_term(x);
+    if coeff.is_negative() {
+        Some(arena.make_coeff_term(-coeff, term))
+    } else {
+        None
+    }
+}
+
+/// Exact values of the sine integral.
+///
+/// * `Si(0) = 0`, `Si(∞) = π/2`, `Si(−∞) = −π/2`
+/// * odd: `Si(−x) = −Si(x)` (the argument is normalised to a positive
+///   leading coefficient)
+pub(crate) fn eval_si(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
+    if x == arena.zero {
+        return Some(arena.zero);
+    }
+    if x == arena.infinity {
+        let half = arena.rational(1, 2);
+        return Some(arena.mul(&[half, arena.pi]));
+    }
+    if x == arena.neg_infinity {
+        let neg_half = arena.rational(-1, 2);
+        return Some(arena.mul(&[neg_half, arena.pi]));
+    }
+    if x == arena.nan {
+        return Some(arena.nan);
+    }
+    if let Some(y) = as_negated_general(arena, x) {
+        let si_y = arena.si(y);
+        return Some(arena.neg(si_y));
+    }
+    None
+}
+
+/// Exact values of the cosine integral: `Ci(∞) = 0`, `Ci(0) = −∞`.
+///
+/// `Ci(−x) = Ci(x) + iπ` (for `x > 0`) is *not* applied automatically
+/// because it changes the real/complex character of the expression.
+pub(crate) fn eval_ci(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
+    if x == arena.infinity {
+        return Some(arena.zero);
+    }
+    if x == arena.zero {
+        return Some(arena.neg_infinity);
+    }
+    if x == arena.nan {
+        return Some(arena.nan);
+    }
+    None
+}
+
+/// Exact values of the exponential integral:
+/// `Ei(−∞) = 0`, `Ei(∞) = ∞`, `Ei(0) = −∞`.
+pub(crate) fn eval_ei(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
+    if x == arena.neg_infinity {
+        return Some(arena.zero);
+    }
+    if x == arena.infinity {
+        return Some(arena.infinity);
+    }
+    if x == arena.zero {
+        return Some(arena.neg_infinity);
+    }
+    if x == arena.nan {
+        return Some(arena.nan);
+    }
+    None
+}
+
+/// Exact values of the logarithmic integral:
+/// `li(0) = 0`, `li(1) = −∞`, `li(∞) = ∞`, `li(e) = Ei(1)`, `li(eʸ) = Ei(y)`.
+pub(crate) fn eval_li(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
+    if x == arena.zero {
+        return Some(arena.zero);
+    }
+    if x == arena.one {
+        return Some(arena.neg_infinity);
+    }
+    if x == arena.infinity {
+        return Some(arena.infinity);
+    }
+    if x == arena.nan {
+        return Some(arena.nan);
+    }
+    if x == arena.e_const {
+        return Some(arena.ei(arena.one));
+    }
+    if let ExprNode::Exp(y) = arena.node(x).clone() {
+        return Some(arena.ei(y));
+    }
+    None
+}
+
+/// Largest even argument for which `ζ(2k)` is expanded into an exact
+/// rational multiple of `π^{2k}`.
+const MAX_EXACT_ZETA_EVEN: i64 = 200;
+
+/// Exact values of the Riemann zeta function.
+///
+/// * `ζ(1) = z∞` (pole), `ζ(∞) = 1`, `ζ(0) = −1/2`
+/// * `ζ(−n) = −Bₙ₊₁/(n+1)` for positive integers `n` (so `ζ(−2k) = 0`)
+/// * `ζ(2k) = (−1)^{k+1} B₂ₖ (2π)^{2k} / (2·(2k)!)` = `π²/6, π⁴/90, …`
+/// * `ζ(2k+1)` for `k ≥ 1` stays symbolic.
+pub(crate) fn eval_zeta(arena: &mut Arena, s: ExprId) -> Option<ExprId> {
+    if s == arena.infinity {
+        return Some(arena.one);
+    }
+    if s == arena.nan {
+        return Some(arena.nan);
+    }
+    let r = arena.as_num(s)?.clone();
+    if !r.is_integer() {
+        return None;
+    }
+    let n: i64 = r.to_integer().try_into().ok()?;
+    if n == 1 {
+        return Some(arena.complex_infinity);
+    }
+    if n == 0 {
+        return Some(arena.rational(-1, 2));
+    }
+    if n < 0 {
+        // ζ(−n) = −B_{n+1}/(n+1)
+        let m = (-n) as usize;
+        if m.is_multiple_of(2) {
+            return Some(arena.zero);
+        }
+        let b = crate::base::bernoulli::bernoulli(m + 1);
+        let val = -b / Ratio::from_integer(BigInt::from(m as i64 + 1));
+        let nid = arena.intern_num(val);
+        return Some(arena.intern(ExprNode::Num(nid)));
+    }
+    if n % 2 == 0 && n <= MAX_EXACT_ZETA_EVEN {
+        // ζ(2k) = |B_{2k}| · 2^{2k−1} · π^{2k} / (2k)!
+        let two_k = n as usize;
+        let b = crate::base::bernoulli::bernoulli(two_k).abs();
+        let mut fact = BigInt::from(1);
+        for i in 2..=two_k {
+            fact *= BigInt::from(i as u64);
+        }
+        let pow2 = BigInt::from(1) << (two_k - 1);
+        let coeff = b * Ratio::from_integer(pow2) / Ratio::from_integer(fact);
+        let nid = arena.intern_num(coeff);
+        let coeff_id = arena.intern(ExprNode::Num(nid));
+        let exp_id = arena.int(n);
+        let pi_pow = arena.pow(arena.pi, exp_id);
+        return Some(arena.mul(&[coeff_id, pi_pow]));
+    }
+    None
+}
+
+/// Largest integer / half-integer shift handled exactly by the polygamma
+/// and digamma recurrences.
+const MAX_POLYGAMMA_SHIFT: i64 = 64;
+
+/// `n!` as a rational.
+fn factorial_ratio(n: usize) -> Ratio<BigInt> {
+    let mut f = BigInt::from(1);
+    for i in 2..=n {
+        f *= BigInt::from(i as u64);
+    }
+    Ratio::from_integer(f)
+}
+
+/// Exact values of the digamma function:
+/// `ψ(1) = −γ`, `ψ(m) = −γ + H_{m−1}`, `ψ(1/2) = −γ − 2 ln 2`,
+/// `ψ(m + 1/2) = ψ(1/2) + Σ_{k<m} 1/(k + 1/2)`, poles at non-positive integers.
+pub(crate) fn eval_digamma(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
+    let r = arena.as_num(x)?.clone();
+    let two = BigInt::from(2);
+    if r.is_integer() {
+        let m: i64 = r.to_integer().try_into().ok()?;
+        if m <= 0 {
+            return Some(arena.complex_infinity);
+        }
+        if m > MAX_POLYGAMMA_SHIFT {
+            return None;
+        }
+        // ψ(m) = −γ + H_{m−1}
+        let mut h = Ratio::<BigInt>::zero();
+        for k in 1..m {
+            h += Ratio::new(BigInt::from(1), BigInt::from(k));
+        }
+        let neg_gamma = arena.neg(arena.euler_gamma);
+        let nid = arena.intern_num(h);
+        let h_id = arena.intern(ExprNode::Num(nid));
+        return Some(arena.add(&[neg_gamma, h_id]));
+    }
+    if *r.denom() == two {
+        // x = m + 1/2 with m = floor(x)
+        let m: i64 = r.floor().to_integer().try_into().ok()?;
+        if !(0..=MAX_POLYGAMMA_SHIFT).contains(&m) {
+            return None;
+        }
+        // ψ(1/2) = −γ − 2 ln 2
+        let neg_gamma = arena.neg(arena.euler_gamma);
+        let two_id = arena.int(2);
+        let ln2 = arena.ln(two_id);
+        let neg_two = arena.int(-2);
+        let neg_two_ln2 = arena.mul(&[neg_two, ln2]);
+        // Σ_{k=0}^{m−1} 1/(k + 1/2) = Σ 2/(2k+1)
+        let mut h = Ratio::<BigInt>::zero();
+        for k in 0..m {
+            h += Ratio::new(BigInt::from(2), BigInt::from(2 * k + 1));
+        }
+        let nid = arena.intern_num(h);
+        let h_id = arena.intern(ExprNode::Num(nid));
+        return Some(arena.add(&[neg_gamma, neg_two_ln2, h_id]));
+    }
+    None
+}
+
+/// Exact values of the polygamma function `ψ⁽ⁿ⁾(x)`.
+///
+/// * `n = 0` → [`Digamma`](ExprNode::Digamma)
+/// * `ψ⁽ⁿ⁾(1) = (−1)^{n+1} n! ζ(n+1)`
+/// * `ψ⁽ⁿ⁾(1/2) = (−1)^{n+1} n! (2^{n+1} − 1) ζ(n+1)`
+/// * integer / half-integer arguments are shifted to those base points via
+///   `ψ⁽ⁿ⁾(x+1) = ψ⁽ⁿ⁾(x) + (−1)ⁿ n!/x^{n+1}`
+/// * poles at non-positive integers → `z∞`
+pub(crate) fn eval_polygamma(arena: &mut Arena, n: ExprId, x: ExprId) -> Option<ExprId> {
+    let nr = arena.as_num(n)?.clone();
+    if !nr.is_integer() || nr.is_negative() {
+        return None;
+    }
+    if nr.is_zero() {
+        return Some(arena.digamma(x));
+    }
+    let n_usize: usize = nr.to_integer().try_into().ok()?;
+    let xr = arena.as_num(x)?.clone();
+    let sign = if n_usize.is_multiple_of(2) { -1 } else { 1 }; // (−1)^{n+1}
+    let n_fact = factorial_ratio(n_usize);
+    let np1 = arena.int(n_usize as i64 + 1);
+    let zeta_np1 = arena.zeta(np1);
+
+    if xr.is_integer() {
+        let m: i64 = xr.to_integer().try_into().ok()?;
+        if m <= 0 {
+            return Some(arena.complex_infinity);
+        }
+        if m > MAX_POLYGAMMA_SHIFT {
+            return None;
+        }
+        // ψ⁽ⁿ⁾(m) = ψ⁽ⁿ⁾(1) + (−1)ⁿ n! Σ_{k=1}^{m−1} 1/k^{n+1}
+        let base_coeff = &n_fact * Ratio::from_integer(BigInt::from(sign));
+        let nid = arena.intern_num(base_coeff);
+        let base_coeff_id = arena.intern(ExprNode::Num(nid));
+        let base = arena.mul(&[base_coeff_id, zeta_np1]);
+        let mut shift = Ratio::<BigInt>::zero();
+        for k in 1..m {
+            let kp = BigInt::from(k).pow((n_usize + 1) as u32);
+            shift += Ratio::new(BigInt::from(1), kp);
+        }
+        let shift = shift * &n_fact * Ratio::from_integer(BigInt::from(-sign));
+        let nid = arena.intern_num(shift);
+        let shift_id = arena.intern(ExprNode::Num(nid));
+        return Some(arena.add(&[base, shift_id]));
+    }
+    if *xr.denom() == BigInt::from(2) {
+        let m: i64 = xr.floor().to_integer().try_into().ok()?;
+        if !(0..=MAX_POLYGAMMA_SHIFT).contains(&m) {
+            return None;
+        }
+        // ψ⁽ⁿ⁾(1/2) = (−1)^{n+1} n! (2^{n+1} − 1) ζ(n+1)
+        let two_pow = (BigInt::from(1) << (n_usize + 1)) - BigInt::from(1);
+        let base_coeff =
+            &n_fact * Ratio::from_integer(two_pow) * Ratio::from_integer(BigInt::from(sign));
+        let nid = arena.intern_num(base_coeff);
+        let base_coeff_id = arena.intern(ExprNode::Num(nid));
+        let base = arena.mul(&[base_coeff_id, zeta_np1]);
+        // shift: (−1)ⁿ n! Σ_{k=0}^{m−1} 1/(k+1/2)^{n+1} = (−1)ⁿ n! Σ 2^{n+1}/(2k+1)^{n+1}
+        let mut shift = Ratio::<BigInt>::zero();
+        for k in 0..m {
+            let denom = BigInt::from(2 * k + 1).pow((n_usize + 1) as u32);
+            let numer = BigInt::from(1) << (n_usize + 1);
+            shift += Ratio::new(numer, denom);
+        }
+        let shift = shift * &n_fact * Ratio::from_integer(BigInt::from(-sign));
+        let nid = arena.intern_num(shift);
+        let shift_id = arena.intern(ExprNode::Num(nid));
+        return Some(arena.add(&[base, shift_id]));
+    }
+    None
+}
+
+/// Exact values of the Kronecker delta: `δᵢᵢ = 1`; `δᵢⱼ = 0` whenever
+/// `i − j` canonicalises to a non-zero number.
+pub(crate) fn eval_kronecker_delta(arena: &mut Arena, i: ExprId, j: ExprId) -> Option<ExprId> {
+    if i == j {
+        return Some(arena.one);
+    }
+    let d = arena.sub(i, j);
+    let r = arena.as_num(d)?;
+    if r.is_zero() {
+        Some(arena.one)
+    } else {
+        Some(arena.zero)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2448,7 +2815,7 @@ fn eval_atan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 ///
 /// When both arguments are numeric rationals, returns an exact symbolic
 /// result.  Returns `None` when no simplification is possible.
-fn eval_atan2(arena: &mut Arena, y: ExprId, x: ExprId) -> Option<ExprId> {
+pub(crate) fn eval_atan2(arena: &mut Arena, y: ExprId, x: ExprId) -> Option<ExprId> {
     // Clone numeric values up-front so we can use arena mutably below.
     let y_val = arena.as_num(y).cloned();
     let x_val = arena.as_num(x).cloned();
@@ -3636,5 +4003,124 @@ mod tests {
         let result = eval(&mut arena, expr);
         let expected = arena.int(-2);
         assert_eq!(result, expected, "(-8)^(1/3) should be -2");
+    }
+
+    // ── 0.2 special functions ─────────────────────────────────────────────
+
+    #[test]
+    fn eval_zeta_table() {
+        let mut a = Arena::new();
+        let cases: [(i64, &str); 8] = [
+            (0, "-1/2"),
+            (-1, "-1/12"),
+            (-2, "0"),
+            (-3, "1/120"),
+            (-9, "-1/132"),
+            (2, "1/6*pi^2"),
+            (4, "1/90*pi^4"),
+            (14, "2/18243225*pi^14"),
+        ];
+        for (s, expected) in cases {
+            let sid = a.int(s);
+            let z = a.zeta(sid);
+            assert_eq!(display(&a, z), expected, "zeta({s})");
+        }
+        let one = a.one;
+        assert_eq!(a.zeta(one), a.complex_infinity);
+        let three = a.int(3);
+        let z3 = a.zeta(three);
+        assert!(matches!(a.node(z3), ExprNode::Zeta(_)));
+        // Huge even arguments are left symbolic (no gigantic rationals).
+        let big = a.int(400);
+        let zb = a.zeta(big);
+        assert!(matches!(a.node(zb), ExprNode::Zeta(_)));
+    }
+
+    #[test]
+    fn eval_si_ci_ei_li_special_points() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        assert_eq!(a.si(a.zero), a.zero);
+        let si_inf = a.si(a.infinity);
+        assert_eq!(display(&a, si_inf), "1/2*pi");
+        let neg_x = a.neg(x);
+        let si_neg = a.si(neg_x);
+        let si_x = a.si(x);
+        assert_eq!(si_neg, a.neg(si_x));
+        assert_eq!(a.ci(a.infinity), a.zero);
+        assert_eq!(a.ei(a.neg_infinity), a.zero);
+        assert_eq!(a.li(a.zero), a.zero);
+        assert_eq!(a.li(a.one), a.neg_infinity);
+        let ex = a.exp(x);
+        let li_ex = a.li(ex);
+        let ei_x = a.ei(x);
+        assert_eq!(li_ex, ei_x);
+        // eval() refolds after substitution
+        let si_x = a.si(x);
+        let sub = a.subs_structural(si_x, x, a.zero);
+        assert_eq!(sub, a.zero);
+    }
+
+    #[test]
+    fn eval_polygamma_and_digamma_values() {
+        let mut a = Arena::new();
+        let one = a.one;
+        let two = a.int(2);
+        let half = a.rational(1, 2);
+        // ψ'(1) = ζ(2)
+        let p11 = a.polygamma(one, one);
+        let z2 = a.zeta(two);
+        assert_eq!(p11, z2);
+        // ψ''(1/2) = −14 ζ(3)
+        let p2h = a.polygamma(two, half);
+        assert_eq!(display(&a, p2h), "-14*zeta(3)");
+        // ψ'(4) = π²/6 − 1 − 1/4 − 1/9 = π²/6 − 49/36
+        let four = a.int(4);
+        let p14 = a.polygamma(one, four);
+        assert_eq!(display(&a, p14), "1/6*pi^2 - 49/36");
+        // ψ(4) = −γ + 11/6
+        let d4 = a.digamma(four);
+        let d4e = eval(&mut a, d4);
+        assert_eq!(display(&a, d4e), "-EulerGamma + 11/6");
+        // order 0 → digamma node
+        let x = sym(&mut a, "x");
+        let p0 = a.polygamma(a.zero, x);
+        assert!(matches!(a.node(p0), ExprNode::Digamma(_)));
+        // non-integer order stays symbolic
+        let ph = a.polygamma(half, x);
+        assert!(matches!(a.node(ph), ExprNode::Polygamma(_, _)));
+    }
+
+    #[test]
+    fn eval_kronecker_delta_values() {
+        let mut a = Arena::new();
+        let i = sym(&mut a, "i");
+        let j = sym(&mut a, "j");
+        assert_eq!(a.kronecker_delta(i, i), a.one);
+        let two = a.int(2);
+        let three = a.int(3);
+        assert_eq!(a.kronecker_delta(two, three), a.zero);
+        assert_eq!(a.kronecker_delta(two, two), a.one);
+        let ip1 = a.add(&[i, a.one]);
+        assert_eq!(a.kronecker_delta(ip1, i), a.zero);
+        let d1 = a.kronecker_delta(i, j);
+        let d2 = a.kronecker_delta(j, i);
+        assert_eq!(d1, d2, "canonical argument order");
+        assert!(matches!(a.node(d1), ExprNode::KroneckerDelta(_, _)));
+    }
+
+    #[test]
+    fn eval_refolds_complex_nodes() {
+        let mut a = Arena::new();
+        let z = sym(&mut a, "z");
+        let re_z = a.re(z);
+        assert!(matches!(a.node(re_z), ExprNode::Re(_)));
+        let three = a.int(3);
+        let four = a.int(4);
+        let four_i = a.mul(&[a.i_unit, four]);
+        let w = a.add(&[three, four_i]);
+        let sub = a.subs_structural(re_z, z, w);
+        let folded = eval(&mut a, sub);
+        assert_eq!(folded, three);
     }
 }

@@ -486,69 +486,8 @@ impl Expr<Numeric> {
         self.clone()
     }
 
-    /// Decompose this expression into its real part.
-    ///
-    /// Assumes unadorned symbols are real. Returns the real component
-    /// of the expression when written as `re + im·i`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let i = ctx.i_unit();
-    /// let z = &ctx.int(3) + &(&ctx.int(4) * &i);
-    /// assert_eq!(format!("{}", z.re()), "3");
-    /// ```
-    #[must_use]
-    pub fn re(&self) -> Ex {
-        let (re, _im) = self.inner.write().arena.as_real_imag_expr(self.raw_id());
-        self.wrap(re)
-    }
-
-    /// Decompose this expression into its imaginary part.
-    ///
-    /// Assumes unadorned symbols are real. Returns the imaginary
-    /// coefficient (without the `i` factor) when the expression is
-    /// written as `re + im·i`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let i = ctx.i_unit();
-    /// let z = &ctx.int(3) + &(&ctx.int(4) * &i);
-    /// assert_eq!(format!("{}", z.im()), "4");
-    /// ```
-    #[must_use]
-    pub fn im(&self) -> Ex {
-        let (_re, im) = self.inner.write().arena.as_real_imag_expr(self.raw_id());
-        self.wrap(im)
-    }
-
-    /// Complex argument (phase angle): `arg(z) = atan2(im(z), re(z))`.
-    ///
-    /// Returns the angle in (-π, π] between the positive real axis and z.
-    /// Handles all four quadrants correctly.
-    #[must_use]
-    pub fn arg(&self) -> Ex {
-        let im = self.im();
-        let re = self.re();
-        im.atan2(&re)
-    }
-
-    /// Complex conjugate: `conjugate(a + bi) = a - bi`.
-    #[must_use]
-    pub fn conjugate(&self) -> Ex {
-        let re = self.re();
-        let im = self.im();
-        let i_id = self.inner.read().arena.i_unit();
-        let i_ex: Ex = self.wrap(i_id);
-        &re - &(&im * &i_ex)
-    }
+    // `re`, `im`, `conjugate`, `arg` and the other complex-analysis methods
+    // live in `expr_complex.rs`.
 
     // ── Special functions (native ExprNode variants) ───────────────
 
