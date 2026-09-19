@@ -363,6 +363,22 @@ theorem needs_lambda (r t j : ℝ) (hj : (0 : ℝ) ≤ j) (h0 : 0 ≤ -r + t) (h
 
 The proof shape is the one a person writes: one `have … := mul_nonneg …` per product the certificate uses (`h0J` is `j·h₀`; `h0K` would be `(j − j₀)·h₀`, `h0xh1` a pairwise product, `pJJ` the pure power `j²`), then `linarith only […]` over exactly those facts; with `λ ≠ 1`, `0 ≤ λ·g` is shown first and divided out with `nonneg_of_mul_nonneg_right`. An emptiness certificate concludes `False`. When the theorem statement is not yours to write — the goal lives inside a larger lemma — `cert.lean_steps(&PolyhedronLeanNames { hyps: &["e0", "e1"], param_nonneg: "hJ0", shift_nonneg: "hK0" }, &opts)` gives the same `have` lines, hint names and closing block with your hypothesis names, and `to_block("  ")` indents and re-flows them to Mathlib's width. If the proof's parameter is a cast natural, `LeanOpts::default().with_symbol_text("j", "(j : ℝ)")` renders it that way everywhere (0.5). To certify many goals against the same hypotheses, build a `PolyhedronProver` once and call `.prove(&goal)` per facet — or `.prove_poly(&poly)` when the goal is already an exact polynomial (a `MultiPoly` through `Poly::from_multipoly`, in any generator order), which skips the expression round trip (0.6.1). `cert.used_hyps()` names the hypotheses the identity really uses, so a generated lemma's signature can list exactly those instead of scanning the emitted text for names.
 
+### Assembling a whole proof: `lean::Block`
+
+A generator that stitches many certificates into one lemma — a `refine frame_lemma … ?_ ?_` followed by one bullet per facet, inside `rcases` case splits — should not concatenate strings with hand-counted spaces: Lean's tactic blocks are column-sensitive (the tactics of a `by` block must sit strictly right of the tactic that opened it, and a `· ` bullet moves that column by two), and a mis-indented line silently changes which block a tactic belongs to. `symplex::lean::{Block, Tactic, Proof, Decl}` (0.8) is a small structured model of exactly this: `Tactic::have(name, Some(ty), Proof::by(block))`, `Tactic::bullet(block)`, `Tactic::raw("linarith only […]")`, and `Block::render(indent)` places every line from its tactic column and wraps past it. `steps.block()` gives a certificate's closing steps as such a block, so a leaf is
+
+```rust,ignore
+use symplex::lean::{Block, Tactic};
+
+let mut leaf = Block::new(vec![Tactic::raw(format!("refine {call}\n  {}", vec!["?_"; facets.len()].join(" ")))]);
+for steps in &facet_steps {
+    leaf.push(Tactic::bullet(steps.block()));
+}
+lemma_body.push_str(&leaf.render("  "));
+```
+
+and the dispatcher's `rcases le_or_gt (0 : ℝ) (g) with h | h` with its two bullets is `Tactic::raw(…)` followed by two `Tactic::bullet(…)`, each bullet starting with `Tactic::have("e6", Some("(0 : ℝ) ≤ …"), Proof::term("h6"))`. `Decl { kind: DeclKind::Lemma, name, binders, statement, body, doc }` renders the header in Mathlib's style (binders packed, ` :` at the end of the binder lines, the statement on its own line, ` := by`). `lean::lean_ident` quotes a name with `«…»` when it is not a plain identifier. The renderer's output for the generator's leaf shape is pinned to text that compiled against Mathlib.
+
 Every shape the emitter produces (`λ = 1`, `λ` of degree 1 and 2, `j₀ > 0`, `j₀ = 0`, `j₀ < 0`, mixed `J`/`K` chains, pairwise products, emptiness with and without `λ`, pure parameter powers, no parameter at all) was compiled against Mathlib with the long-line linter on, and the emitted text is pinned to that compiled file in the test suite.
 
 `PolyhedronOutcome::Refuted` carries an exact point of the set where the goal is negative (for the emptiness question: a point *in* the set), found by sampling `j` and minimising the goal over the cell with the exact LP when everything is affine in the free variables. The staged search costs a few milliseconds per facet for a cell with a dozen `j`-dependent hypotheses in a release build, which is what makes it usable inside a tree builder that asks thousands of times.

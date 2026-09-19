@@ -44,7 +44,9 @@ use crate::base::errors::SymplexError;
 use crate::domains::certificates::serial::{q_from_str, q_to_str};
 use crate::domains::certificates::{Certificate, Outcome};
 use crate::domains::linprog::{LpProblem, LpStatus, Q};
-use crate::output::lean::{LeanOpts, MATHLIB_LINE_WIDTH, lean_ident, wrap_lean};
+use crate::output::lean::{
+    Block, LeanOpts, MATHLIB_LINE_WIDTH, Proof, Tactic, lean_ident, wrap_lean,
+};
 use crate::output::tree::ExprTree;
 use crate::poly::multipoly::{GrevLex, MultiPoly};
 
@@ -301,20 +303,57 @@ impl PolyhedronLeanSteps {
     /// All lines (`haves` then `closing`) with `indent` prepended and
     /// re-flowed to Mathlib's line width ([`MATHLIB_LINE_WIDTH`], indent
     /// included; `:= by` stays on its `have` line), as one string ending in
-    /// a newline.
+    /// a newline.  This is [`block`](Self::block) rendered at `indent`.
     pub fn to_block(&self, indent: &str) -> String {
         self.to_block_width(indent, MATHLIB_LINE_WIDTH)
     }
 
     /// [`to_block`](Self::to_block) with an explicit line width.
     pub fn to_block_width(&self, indent: &str, width: usize) -> String {
-        let mut out = String::new();
-        for l in self.haves.iter().chain(&self.closing) {
-            out.push_str(indent);
-            out.push_str(l);
-            out.push('\n');
+        self.block().render_width(indent, width)
+    }
+
+    /// The proof as a structured [`Block`]: one raw `have` tactic per
+    /// product, then the closing tactics — `linarith only […]`, or the
+    /// `have hg : … := by` block (whose `linarith` sits inside the `by`)
+    /// followed by `have hg' := …` and `linarith only [hg']`.  Splice it
+    /// into a larger [`Block`] (a bullet of a `refine … ?_` call, say) and
+    /// let the renderer place every line.
+    pub fn block(&self) -> Block {
+        let mut tactics: Vec<Tactic> = self.haves.iter().map(Tactic::raw).collect();
+        if self.lambda.is_some() && !self.proves_emptiness_shape() {
+            // `have hg : … := by` / `  linarith only […]` / `have hg' := …` / `linarith only [hg']`.
+            let mut lines = self.closing.iter();
+            if let (Some(hg), Some(inner), Some(hg2), Some(last)) =
+                (lines.next(), lines.next(), lines.next(), lines.next())
+            {
+                let ty = hg
+                    .strip_prefix("have hg : ")
+                    .and_then(|s| s.strip_suffix(" := by"))
+                    .unwrap_or(hg);
+                tactics.push(Tactic::have(
+                    "hg",
+                    Some(ty),
+                    Proof::by(Block::new(vec![Tactic::raw(inner.trim_start())])),
+                ));
+                tactics.push(Tactic::raw(hg2));
+                tactics.push(Tactic::raw(last));
+                for extra in lines {
+                    tactics.push(Tactic::raw(extra));
+                }
+                return Block::new(tactics);
+            }
         }
-        wrap_lean(&out, width)
+        for l in &self.closing {
+            tactics.push(Tactic::raw(l));
+        }
+        Block::new(tactics)
+    }
+
+    /// The closing block of an emptiness certificate is a single
+    /// `linarith only […]` even when `λ ≠ 1`.
+    fn proves_emptiness_shape(&self) -> bool {
+        self.closing.len() == 1
     }
 }
 

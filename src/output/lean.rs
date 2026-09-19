@@ -27,6 +27,8 @@ use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
 use crate::output::common::display_sort_key;
 
+pub use crate::output::lean_proof::{Block, Decl, DeclKind, Proof, Tactic};
+
 /// Options for [`Ex::to_lean`](crate::api::expr::Ex::to_lean).
 ///
 /// `#[non_exhaustive]`: new fields may be added in minor releases without
@@ -205,8 +207,17 @@ fn unsupported(what: impl std::fmt::Display) -> SymplexError {
     SymplexError::NotImplemented(format!("to_lean: no Mathlib rendering for {what}"))
 }
 
-/// A Lean identifier: plain when it is one already, otherwise `«…»`-quoted.
-pub(crate) fn lean_ident(name: &str) -> String {
+/// A Lean identifier: plain when it is one already (letters, digits, `_`,
+/// `'`, Greek letters, subscripts, not a keyword), otherwise `«…»`-quoted.
+///
+/// ```
+/// use symplex::lean::lean_ident;
+/// assert_eq!(lean_ident("h₁"), "h₁");
+/// assert_eq!(lean_ident("e3xe7"), "e3xe7");
+/// assert_eq!(lean_ident("a long name"), "«a long name»");
+/// assert_eq!(lean_ident("fun"), "«fun»");
+/// ```
+pub fn lean_ident(name: &str) -> String {
     let mut chars = name.chars();
     let ok_start = chars
         .next()

@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.8.0] - 2026-09-19
+
+### Added
+
+- **Structured Lean proofs: `lean::{Block, Tactic, Proof, Decl,
+  DeclKind}`.**  A small model of a tactic proof — `Tactic::have(name,
+  ty, Proof::term(…) | Proof::by(block))`, `Tactic::bullet(block)`,
+  `Tactic::raw(text)` — whose `Block::render(indent)` places every line
+  from its *tactic column* (a `· ` bullet moves it by two; a `by` block
+  sits two further in) and wraps long lines past it, so a generator that
+  stitches many certificates into one lemma no longer counts spaces or
+  risks a tactic silently joining the wrong block.  `Decl` renders a
+  `theorem`/`lemma`/`example` header in Mathlib's style (binders packed,
+  ` :` closing the binder lines, statement on its own line, ` := by`) with
+  an optional doc comment.  `PolyhedronLeanSteps::block()` returns a
+  certificate's closing steps as a `Block` (its `have hg : … := by` with
+  the `linarith` inside the `by`), and `to_block` is now that block
+  rendered — byte-identical to before.  The renderer's output for a
+  downstream generator's leaf shape (a `refine … ?_` call, bullets of
+  wrapped `have hg` certificates) is pinned to text that compiled against
+  Mathlib.
+- `lean::lean_ident` is public: a plain identifier when the name is one,
+  `«…»`-quoted otherwise.
+- `Tactic::introduced_names()`: the `have` names a tactic introduces,
+  recursively.
+
+### Infrastructure
+
+- `symplex` and `symplex-build` at 0.8.0; `symplex-macros` unchanged at
+  0.3.0.  Additive over 0.7.2.
+
 ## [0.7.2] - 2026-09-19
 
 ### Changed
