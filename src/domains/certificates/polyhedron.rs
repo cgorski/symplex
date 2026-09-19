@@ -46,6 +46,7 @@ use crate::domains::certificates::{Certificate, Outcome};
 use crate::domains::linprog::{LpProblem, LpStatus, Q};
 use crate::output::lean::{LeanOpts, MATHLIB_LINE_WIDTH, lean_ident, wrap_lean};
 use crate::output::tree::ExprTree;
+use crate::poly::multipoly::{GrevLex, MultiPoly};
 
 const OP: &str = "prove_nonnegative_on_polyhedron";
 
@@ -1095,6 +1096,8 @@ pub struct PolyhedronProver {
     ctx: Context,
     gens: Vec<Ex>,
     hyps: Vec<Poly>,
+    /// The hypotheses as exact arena-free polynomials, for refutation.
+    hyps_exact: Vec<Exact>,
     param: Option<(Param, Q)>,
     opts: PolyhedronOpts,
     stages: Vec<StageBasis>,
@@ -1202,10 +1205,18 @@ impl PolyhedronProver {
             None => (vec![one.clone()], vec![one.clone()]),
         };
 
+        let hyps_exact = hyp_polys
+            .iter()
+            .map(|h| {
+                h.to_multipoly()
+                    .ok_or_else(|| invalid("internal: non-rational hypothesis coefficient"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let mut prover = PolyhedronProver {
             ctx,
             gens,
             hyps: hyp_polys,
+            hyps_exact,
             param: param_info,
             opts: opts.clone(),
             stages: Vec::new(),
@@ -1450,20 +1461,40 @@ impl PolyhedronProver {
     }
 
     /// The search proper, for a goal over exactly the prover's generators.
+    ///
+    /// The cheapest stage runs first: most true goals are certified there,
+    /// and a certified goal cannot have a counterexample, so the exact
+    /// refutation (ten sampled parameter values, one small LP each) is
+    /// only paid by goals the first stage does not settle.  Outcomes are
+    /// exactly those of "refute first": a goal is refuted iff it is false,
+    /// and proved with the same certificate iff some stage finds one.
     fn prove_poly_aligned(&self, goal: &Poly) -> Result<PolyhedronOutcome, SymplexError> {
-        // 1. Exact refutation on sampled parameter values.
-        if let Some((point, param_value, value)) =
-            refute(&self.ctx, goal, &self.hyps, &self.gens, self.param.as_ref())
-        {
+        let mut tried = (0u32, 0u32, false);
+        let mut stages = self.stages.iter();
+        if let Some(first) = stages.next() {
+            tried = (first.degree, first.lambda_degree, first.pairwise);
+            if let Some(cert) = self.search_stage(goal, first)? {
+                return Ok(PolyhedronOutcome::Proved(cert));
+            }
+        }
+        // Exact refutation on sampled parameter values.
+        let goal_exact = goal
+            .to_multipoly()
+            .ok_or_else(|| invalid("internal: non-rational goal coefficient"))?;
+        if let Some((point, param_value, value)) = refute(
+            &goal_exact,
+            &self.hyps_exact,
+            &self.gens,
+            self.param.as_ref(),
+        ) {
             return Ok(Outcome::Refuted {
                 point,
                 param_value,
                 value,
             });
         }
-        // 2. Staged certificate search.
-        let mut tried = (0u32, 0u32, false);
-        for stage in &self.stages {
+        // The remaining stages, smallest basis first.
+        for stage in stages {
             tried = (
                 tried.0.max(stage.degree),
                 tried.1.max(stage.lambda_degree),
@@ -1681,17 +1712,25 @@ pub fn prove_polyhedron_empty(
 /// `(point, sampled parameter value, goal value)` of a counterexample.
 type Refutation = (Vec<(Ex, Q)>, Option<Q>, Q);
 
+/// A hypothesis or goal as an exact arena-free polynomial over the
+/// prover's generators (free variables, then the parameter).
+type Exact = MultiPoly<GrevLex>;
+
 /// Search for a point of the set where the goal is negative: sample the
 /// parameter, and when everything is affine in the free variables,
 /// minimise the goal over the polyhedron exactly (inside a large box so
-/// that an unbounded direction still yields a witness).
+/// that an unbounded direction still yields a witness).  Pure rational
+/// arithmetic on [`MultiPoly`]s; no expression arena is touched.
 fn refute(
-    ctx: &Context,
-    goal: &Poly,
-    hyps: &[Poly],
+    goal: &Exact,
+    hyps: &[Exact],
     gens: &[Ex],
     param: Option<&(Param, Q)>,
 ) -> Option<Refutation> {
+    let width = gens.len();
+    // The parameter, when present, is the last generator; the free
+    // variables are the others.
+    let n = if param.is_some() { width - 1 } else { width };
     let samples: Vec<Option<Q>> = match param {
         Some((_, lo)) => {
             let mut s: Vec<Q> = (0..=6)
@@ -1704,44 +1743,30 @@ fn refute(
         }
         None => vec![None],
     };
+    // Affine data `(constant, coefficients over the free variables)` of a
+    // polynomial at the sample, or `None` if it is not affine there.
+    let affine_at = |p: &Exact, jv: &Option<Q>| -> Option<(Q, Vec<Q>)> {
+        let at = match jv {
+            Some(v) => p.eval_var(n, v),
+            None => p.clone(),
+        };
+        let (coeffs, constant) = at.affine_form()?;
+        Some((constant, coeffs[..n].to_vec()))
+    };
     for jv in samples {
-        let (g, hs) = match (&jv, param) {
-            (Some(v), Some((p, _))) => {
-                let val = ctx.from_ratio(v.clone());
-                let g = goal.eval_gen(&p.var, &val).ok()?;
-                let hs: Vec<Poly> = hyps
-                    .iter()
-                    .map(|h| h.eval_gen(&p.var, &val))
-                    .collect::<Result<_, _>>()
-                    .ok()?;
-                (g, hs)
-            }
-            _ => (goal.clone(), hyps.to_vec()),
-        };
-        let free: Vec<Ex> = g.gens().to_vec();
-        let n = free.len();
-        if !g.is_linear() || hs.iter().any(|h| !h.is_linear()) {
+        let Some((g0, gc)) = affine_at(goal, &jv) else {
             continue;
-        }
-        // Affine data: p = const + Σ cᵢ xᵢ.
-        let affine = |p: &Poly| -> Option<(Q, Vec<Q>)> {
-            let mut c = vec![Q::zero(); n];
-            let mut k = Q::zero();
-            for (m, v) in p.terms() {
-                let v = v.as_rational()?;
-                match m.iter().position(|&e| e == 1) {
-                    Some(i) => c[i] = v,
-                    None => k = v,
-                }
-            }
-            Some((k, c))
         };
-        let (g0, gc) = affine(&g)?;
+        let Some(affine_hyps) = hyps
+            .iter()
+            .map(|h| affine_at(h, &jv))
+            .collect::<Option<Vec<_>>>()
+        else {
+            continue;
+        };
         if n == 0 {
             // Constant goal on a set whose hypotheses are constants too.
-            let feasible = hs
-                .iter()
-                .all(|h| affine(h).is_some_and(|(k, _)| !k.is_negative()));
+            let feasible = affine_hyps.iter().all(|(k, _)| !k.is_negative());
             if feasible && g0.is_negative() {
                 let point = match (&jv, param) {
                     (Some(v), Some((p, _))) => vec![(p.var.clone(), v.clone())],
@@ -1756,9 +1781,8 @@ fn refute(
         for i in 0..n {
             lp = lp.bounds(i, Some(-bound.clone()), Some(bound.clone()));
         }
-        for h in &hs {
-            let (k, c) = affine(h)?;
-            lp = lp.ge(c, -k);
+        for (k, c) in &affine_hyps {
+            lp = lp.ge(c.clone(), -k);
         }
         let sol = lp.solve().ok()?;
         if sol.status != LpStatus::Optimal {
@@ -1769,31 +1793,19 @@ fn refute(
             continue;
         }
         // Re-check by exact evaluation of the original polynomials.
-        let mut point: Vec<(Ex, Q)> = free.iter().cloned().zip(sol.x.iter().cloned()).collect();
-        if let (Some(v), Some((p, _))) = (&jv, param) {
-            point.push((p.var.clone(), v.clone()));
+        let mut values: Vec<Q> = sol.x.clone();
+        if let Some(v) = &jv {
+            values.push(v.clone());
         }
-        let ordered: Vec<Ex> = gens
-            .iter()
-            .map(|gname| {
-                point
-                    .iter()
-                    .find(|(v, _)| v == gname)
-                    .map(|(_, q)| ctx.from_ratio(q.clone()))
-                    .unwrap_or_else(|| ctx.zero())
-            })
-            .collect();
-        let refs: Vec<&Ex> = ordered.iter().collect();
-        let gv = goal.eval(&refs).ok()?.as_rational()?;
+        if values.len() != width {
+            continue;
+        }
+        let gv = goal.eval(&values);
         if !gv.is_negative() {
             continue;
         }
-        if hyps.iter().all(|h| {
-            h.eval(&refs)
-                .ok()
-                .and_then(|e| e.as_rational())
-                .is_some_and(|q| !q.is_negative())
-        }) {
+        if hyps.iter().all(|h| !h.eval(&values).is_negative()) {
+            let point: Vec<(Ex, Q)> = gens.iter().cloned().zip(values).collect();
             return Some((point, jv.clone(), gv));
         }
     }

@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.7.2] - 2026-09-19
+
+### Changed
+
+- `PolyhedronProver` runs its cheapest LP stage **before** the exact
+  refutation (ten sampled parameter values, one small LP each), so the
+  majority of goals — true ones certified at the first stage — never pay
+  for refutation; a certified goal has no counterexample, so outcomes are
+  exactly those of "refute first".  Refutation itself now evaluates the
+  goal and hypotheses through exact `MultiPoly` arithmetic instead of the
+  expression arena.  n = 5 floor generator: 25 s → 21 s, output identical
+  to the Mathlib-compiled 0.7.1 file (cumulative since 0.6.0: 103 s →
+  21 s).
+
 ## [0.7.1] - 2026-09-19
 
 ### Changed
