@@ -45,6 +45,18 @@ pub struct LeanOpts {
     /// a hand-written hypothesis would say.  Sums with several negated terms
     /// keep the canonical order.  Default `false`.
     pub prefer_subtraction: bool,
+    /// Combine the expression over a common denominator (`together`) before
+    /// rendering, so a rational function prints as one fraction
+    /// (`(-(8 * j) - 2) / (7 * j + 4)`) rather than as the sum of fractions
+    /// `expand` leaves behind (`-(8 * j / (7 * j + 4)) - 2 / (7 * j + 4)`).
+    /// Default `false`.
+    pub single_fraction: bool,
+    /// Render the named symbols as the given Lean text instead of their
+    /// names — e.g. `("j", "(j : ℝ)")` when the proof's `j` is a cast of a
+    /// natural.  The text is inserted verbatim as an atom, so it must be
+    /// self-delimiting (an identifier, a cast like `↑j`, or parenthesised).
+    /// Applied wherever the symbol occurs: goals, hypotheses, `λ`, hints.
+    pub symbol_text: Vec<(String, String)>,
 }
 
 impl Default for LeanOpts {
@@ -53,6 +65,8 @@ impl Default for LeanOpts {
             real_type: "ℝ".to_string(),
             ascribe_integers: false,
             prefer_subtraction: false,
+            single_fraction: false,
+            symbol_text: Vec::new(),
         }
     }
 }
@@ -91,6 +105,55 @@ impl LeanOpts {
     pub fn with_prefer_subtraction(mut self, on: bool) -> Self {
         self.prefer_subtraction = on;
         self
+    }
+
+    /// Set [`single_fraction`](Self::single_fraction).
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::lean::LeanOpts;
+    ///
+    /// let ctx = Context::new();
+    /// let j = ctx.symbol("j");
+    /// let e = ((-8 * &j - 2) / (7 * &j + 4)).expand();
+    /// assert_eq!(e.to_lean().unwrap(), "-(8 * j / (7 * j + 4)) - 2 / (7 * j + 4)");
+    /// let opts = LeanOpts::default().with_single_fraction(true);
+    /// assert_eq!(e.to_lean_with(&opts).unwrap(), "(-(8 * j) - 2) / (7 * j + 4)");
+    /// ```
+    #[must_use]
+    pub fn with_single_fraction(mut self, on: bool) -> Self {
+        self.single_fraction = on;
+        self
+    }
+
+    /// Add a [`symbol_text`](Self::symbol_text) entry: render the symbol
+    /// named `symbol` as `text`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::lean::LeanOpts;
+    ///
+    /// let ctx = Context::new();
+    /// let (j, r) = (ctx.symbol("J"), ctx.symbol("r"));
+    /// let opts = LeanOpts::default().with_symbol_text("J", "(j : ℝ)");
+    /// assert_eq!((2 * &j * &r + 1).to_lean_with(&opts).unwrap(), "2 * (j : ℝ) * r + 1");
+    /// assert_eq!(j.powi(2).to_lean_with(&opts).unwrap(), "(j : ℝ) ^ 2");
+    /// ```
+    #[must_use]
+    pub fn with_symbol_text(mut self, symbol: impl Into<String>, text: impl Into<String>) -> Self {
+        let symbol = symbol.into();
+        self.symbol_text.retain(|(s, _)| *s != symbol);
+        self.symbol_text.push((symbol, text.into()));
+        self
+    }
+
+    /// The Lean text for a symbol: its [`symbol_text`](Self::symbol_text)
+    /// override, or the name as a Lean identifier.
+    pub(crate) fn symbol(&self, name: &str) -> String {
+        self.symbol_text
+            .iter()
+            .find(|(s, _)| s == name)
+            .map_or_else(|| lean_ident(name), |(_, t)| t.clone())
     }
 }
 
@@ -272,7 +335,7 @@ pub(crate) fn render(arena: &Arena, expr: ExprId, opts: &LeanOpts) -> Result<Str
         let rendered = match node {
             // ── Atoms ──────────────────────────────────────────────────
             ExprNode::Num(nid) => ratio_literal(arena.num(*nid), opts, id == expr),
-            ExprNode::Symbol(sid) => Rendered::atom(lean_ident(arena.symbol_name(*sid))),
+            ExprNode::Symbol(sid) => Rendered::atom(opts.symbol(arena.symbol_name(*sid))),
             ExprNode::Pi => Rendered::atom("Real.pi"),
             ExprNode::E => Rendered {
                 text: "Real.exp 1".into(),
@@ -725,8 +788,12 @@ fn wrap_line(line: &str, width: usize, out: &mut String) {
                     if i > width {
                         break;
                     }
-                    // Keep `nlinarith [` / `linarith [` together.
-                    if current.get(i + 1) == Some(&'[') {
+                    // Keep `nlinarith [` / `linarith [` together, and never
+                    // start a continuation line with `:=` (`have h : … := by`
+                    // must keep its `:= by`).
+                    if current.get(i + 1) == Some(&'[')
+                        || (current.get(i + 1) == Some(&':') && current.get(i + 2) == Some(&'='))
+                    {
                         continue;
                     }
                     // Prefer breaking right after a comma (hint lists), then
@@ -807,6 +874,13 @@ impl<S: Sort> Expr<S> {
     /// assert_eq!((2 * &j + 1).to_lean_with(&opts).unwrap(), "(2 : ℝ) * j + (1 : ℝ)");
     /// ```
     pub fn to_lean_with(&self, opts: &LeanOpts) -> Result<String, SymplexError> {
+        if opts.single_fraction {
+            // `together` lives on numeric expressions; for a `Prop` (relation)
+            // the operands are combined by the relation renderer instead.
+            let id = self.inner.write().arena.together_expr(self.raw_id());
+            let inner = self.inner.read();
+            return render(&inner.arena, id, opts);
+        }
         let inner = self.inner.read();
         render(&inner.arena, self.raw_id(), opts)
     }

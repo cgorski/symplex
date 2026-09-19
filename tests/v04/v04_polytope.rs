@@ -84,6 +84,113 @@ fn three_dimensional_cells() {
 }
 
 #[test]
+fn volume_in_any_dimension() {
+    // Unit hypercubes and simplices in dimensions 1..=5: 1 and 1/n!.
+    let mut fact = qi(1);
+    for n in 1..=5usize {
+        fact *= qi(n as i64);
+        let mut cube = Vec::new();
+        let mut simplex = Vec::new();
+        for i in 0..n {
+            let mut e = vec![qi(0); n];
+            e[i] = qi(1);
+            cube.push((e.clone(), qi(0)));
+            simplex.push((e.clone(), qi(0)));
+            let mut f = vec![qi(0); n];
+            f[i] = qi(-1);
+            cube.push((f, qi(1)));
+        }
+        simplex.push((vec![qi(-1); n], qi(1)));
+        assert_eq!(
+            Polytope::from_rows(&cube).unwrap().volume().unwrap(),
+            qi(1),
+            "cube {n}"
+        );
+        assert_eq!(
+            Polytope::from_rows(&simplex).unwrap().volume().unwrap(),
+            qi(1) / &fact,
+            "simplex {n}"
+        );
+    }
+    // A 4-D cross-polytope |x₁| + … + |x₄| ≤ 1 has volume 2⁴/4! = 2/3.
+    let mut rows = Vec::new();
+    for signs in 0..16u32 {
+        let coeffs: Vec<_> = (0..4)
+            .map(|i| if signs & (1 << i) == 0 { qi(-1) } else { qi(1) })
+            .collect();
+        rows.push((coeffs, qi(1)));
+    }
+    assert_eq!(
+        Polytope::from_rows(&rows).unwrap().volume().unwrap(),
+        q(2, 3)
+    );
+    // Duplicate and scaled copies of a facet do not double count.
+    let tri = Polytope::from_rows(&[
+        (vec![qi(1), qi(0)], qi(0)),
+        (vec![qi(0), qi(1)], qi(0)),
+        (vec![qi(-1), qi(-1)], qi(1)),
+        (vec![qi(-2), qi(-2)], qi(2)),
+        (vec![qi(3), qi(0)], qi(0)),
+    ])
+    .unwrap();
+    assert_eq!(tri.volume().unwrap(), q(1, 2));
+}
+
+#[test]
+fn parametric_polytope_instantiates_exactly_and_caches() {
+    use symplex::polytope::ParametricPolytope;
+    let ctx = Context::new();
+    let (j, r, t) = (ctx.symbol("j"), ctx.symbol("r"), ctx.symbol("t"));
+    let hyps = [
+        r.clone(),
+        ctx.rational(1, 2) - &r,
+        t.clone(),
+        1 - &t,
+        (&j * 2 + 1) * &t - &j * &r - 1,
+    ];
+    let mut cell = ParametricPolytope::new(&hyps, &[r.clone(), t.clone()], &j).unwrap();
+    assert_eq!(cell.vars(), &[r.clone(), t.clone()]);
+    assert_eq!(cell.param(), &j);
+    // At j = 2: area ∫₀^{1/2} (1 − (2r + 1)/5) dr = 7/20; at j = 0: t ≥ 1 → segment, area 0.
+    assert_eq!(cell.volume_at(&qi(2)).unwrap(), q(7, 20));
+    assert_eq!(cell.volume_at(&qi(0)).unwrap(), qi(0));
+    assert!(!cell.is_empty_at(&qi(0)).unwrap());
+    assert_eq!(cell.vertices_at(&qi(2)).unwrap().len(), 4);
+    assert!(cell.contains_at(&qi(2), &[q(1, 4), q(1, 2)]).unwrap());
+    assert!(!cell.contains_at(&qi(2), &[q(1, 4), q(1, 4)]).unwrap());
+    // The cached instantiation equals a fresh one.
+    let fresh = cell.at(&qi(3)).unwrap();
+    assert_eq!(cell.polytope_at(&qi(3)).unwrap(), &fresh);
+    cell.clear_cache();
+    assert_eq!(
+        cell.volume_at(&q(5, 2)).unwrap(),
+        cell.at(&q(5, 2)).unwrap().volume().unwrap()
+    );
+    // The polytope at a sample feeds the certificate search unchanged.
+    let hyps_at_2 = cell
+        .at(&qi(2))
+        .unwrap()
+        .to_exprs(&[r.clone(), t.clone()])
+        .unwrap();
+    for g in &hyps_at_2 {
+        assert!(
+            prove_nonnegative_on_polyhedron(g, &hyps_at_2, None, &PolyhedronOpts::default())
+                .unwrap()
+                .is_proved()
+        );
+    }
+    // Errors: quadratic in the variables, symbolic coefficient, parameter among the variables.
+    assert!(ParametricPolytope::new(&[&r * &t], &[r.clone(), t.clone()], &j).is_err());
+    assert!(
+        ParametricPolytope::new(&[&r * ctx.symbol("a")], std::slice::from_ref(&r), &j).is_err()
+    );
+    assert!(
+        ParametricPolytope::new(std::slice::from_ref(&r), &[r.clone(), j.clone()], &j).is_err()
+    );
+    assert!(ParametricPolytope::new(&[], std::slice::from_ref(&r), &j).is_err());
+}
+
+#[test]
 fn unbounded_polyhedra_are_reported_not_mis_measured() {
     let wedge =
         Polytope::from_rows(&[(vec![qi(1), qi(0)], qi(0)), (vec![qi(-1), qi(1)], qi(0))]).unwrap();

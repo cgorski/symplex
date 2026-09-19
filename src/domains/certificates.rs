@@ -106,8 +106,8 @@ use crate::output::lean::{LeanOpts, MATHLIB_LINE_WIDTH, lean_ident, wrap_lean};
 mod polyhedron;
 pub use polyhedron::{
     PolyhedronCertificate, PolyhedronCertificateData, PolyhedronLeanNames, PolyhedronLeanSteps,
-    PolyhedronOpts, PolyhedronOutcome, PolyhedronTerm, prove_nonnegative_on_polyhedron,
-    prove_polyhedron_empty,
+    PolyhedronOpts, PolyhedronOutcome, PolyhedronProver, PolyhedronTerm,
+    prove_nonnegative_on_polyhedron, prove_polyhedron_empty,
 };
 
 /// Exact rationals as `"p/q"` strings for the serialisable certificate forms.

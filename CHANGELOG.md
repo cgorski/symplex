@@ -6,6 +6,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.5.0] - 2026-09-18
+
+### Breaking
+
+- `certificates::PolyhedronOutcome::Refuted` gained the field
+  `param_value: Option<Q>` (the sampled parameter value at which the
+  counterexample was found).  Patterns must add `..` or bind it.
+- `lean::LeanOpts` gained the fields `single_fraction` and `symbol_text`
+  (as announced in 0.4.0: use `..Default::default()` or the `with_*`
+  builders; literals naming every field break).
+
+### Added
+
+- **`certificates::PolyhedronProver`**: `PolyhedronProver::new(&hyps,
+  param, &opts)?` parses the hypotheses and builds every stage's product
+  basis once; `.prove(&goal)` / `.prove_empty()` then certify any number
+  of goals against them (accessors `hyps`, `gens`, `parameter`, `opts`).
+  `prove_nonnegative_on_polyhedron` and `prove_polyhedron_empty` are now
+  one-line wrappers over it.  A goal mentioning a symbol absent from the
+  hypotheses is an `InvalidArgument`.
+- `LeanOpts::symbol_text` (+ `with_symbol_text(name, text)`): render a
+  symbol as given Lean text everywhere it occurs — `("J", "(j : ℝ)")` for
+  a parameter that is a cast natural in the surrounding proof.  Applied
+  by `Ex::to_lean_with` and therefore by every certificate emitter
+  (goals, hypotheses, `λ`, `hg`); hypothesis *names* such as `e1J` are
+  untouched.  In a full theorem the binder keeps the plain identifier.
+- `LeanOpts::single_fraction` (+ `with_single_fraction`): combine over a
+  common denominator before rendering, so an `expand`ed rational function
+  prints as `(-(8 * j) - 2) / (7 * j + 4)` instead of
+  `-(8 * j / (7 * j + 4)) - 2 / (7 * j + 4)`.
+- `PolyhedronLeanSteps::to_block(indent)` now re-flows its lines to
+  Mathlib's width (indent included) and `to_block_width(indent, width)`
+  takes an explicit width; `lean::wrap_lean` never starts a continuation
+  line with `:=`, so `have hg : … := by` keeps its `:= by`.
+- **`polytope::ParametricPolytope`**: a family `{x : hₖ(j, x) ≥ 0}` with
+  half-spaces affine in `x` and polynomial in one parameter.  `at(&j)`
+  instantiates exactly; `polytope_at` / `vertices_at` / `volume_at` /
+  `is_empty_at` / `contains_at` cache per sample; `clear_cache`.
+- `Polytope::volume` works in **any dimension** (was `≤ 3`): exact facet
+  decomposition around the vertex centroid, recursing on each facet's
+  exact `(n − 1)`-dimensional H-representation; duplicate or rescaled
+  facets are counted once.  Verified on hypercubes and simplices up to
+  dimension 5 and the 4-D cross-polytope.
+- `QMatrix::ldl_psd()` (exact `L·D·Lᵀ` of a PSD matrix, `None` if not
+  PSD), `QMatrix::is_positive_semidefinite()`, `QMatrix::is_symmetric()`.
+
+### Infrastructure
+
+- `symplex` and `symplex-build` at 0.5.0; `symplex-macros` unchanged at
+  0.3.0.  The three new `lean_steps` skeleton shapes (cast parameter with
+  long names and a wrapped `have hg`, emptiness with `K` chains,
+  `prefer_subtraction`) compile against Mathlib.
+
 ## [0.4.0] - 2026-09-18
 
 ### Breaking

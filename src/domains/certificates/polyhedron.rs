@@ -164,8 +164,12 @@ pub enum PolyhedronOutcome {
     /// value)` pairs including the parameter) where the goal is negative.
     /// For the emptiness question this is a point *in* the polyhedron.
     Refuted {
-        /// The counterexample.
+        /// The counterexample, `(variable, value)` pairs in generator order
+        /// (free variables, then the parameter).
         point: Vec<(Ex, Q)>,
+        /// The sampled value of the parameter at which the counterexample
+        /// was found (`None` without a parameter).
+        param_value: Option<Q>,
         /// The (negative) value of the goal there.
         value: Q,
     },
@@ -268,16 +272,23 @@ pub struct PolyhedronLeanSteps {
 }
 
 impl PolyhedronLeanSteps {
-    /// All lines (`haves` then `closing`) with `indent` prepended, as one
-    /// string ending in a newline.
+    /// All lines (`haves` then `closing`) with `indent` prepended and
+    /// re-flowed to Mathlib's line width ([`MATHLIB_LINE_WIDTH`], indent
+    /// included; `:= by` stays on its `have` line), as one string ending in
+    /// a newline.
     pub fn to_block(&self, indent: &str) -> String {
+        self.to_block_width(indent, MATHLIB_LINE_WIDTH)
+    }
+
+    /// [`to_block`](Self::to_block) with an explicit line width.
+    pub fn to_block_width(&self, indent: &str, width: usize) -> String {
         let mut out = String::new();
         for l in self.haves.iter().chain(&self.closing) {
             out.push_str(indent);
             out.push_str(l);
             out.push('\n');
         }
-        out
+        wrap_lean(&out, width)
     }
 }
 
@@ -857,7 +868,9 @@ impl PolyhedronCertificate {
         let mut binders: Vec<String> = Vec::new();
         let mut prelude: Vec<String> = Vec::new();
         if let Some(p) = &self.param {
-            let v = lean_ident(&p.var.to_string());
+            // The binder list declares the plain identifier; every mention
+            // uses the caller's rendering (`symbol_text`), e.g. `(j : ℝ)`.
+            let v = opts.symbol(&p.var.to_string());
             let lo = p.lo.to_lean_with(opts)?;
             let hj_used = p.var_nonneg && mentions("hJ0");
             let hk_used = p.uses_shift() && mentions("hK0");
@@ -973,16 +986,477 @@ impl fmt::Display for PolyhedronCertificate {
 // Search
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// The basis of one LP stage: labelled product columns with their costs.
+struct StageBasis {
+    degree: u32,
+    lambda_degree: u32,
+    pairwise: bool,
+    labels: Vec<PolyhedronTerm>,
+    columns: Vec<Poly>,
+    cost: Vec<Q>,
+}
+
+/// A prover for a **fixed** hypothesis set and parameter: parses the
+/// hypotheses once, builds each stage's product basis once, and then
+/// certifies any number of goals (or the emptiness of the set) against
+/// them.  [`prove_nonnegative_on_polyhedron`] is
+/// `PolyhedronProver::new(hyps, param, opts)?.prove(goal)`.
+///
+/// The free variables are the symbols of the hypotheses other than the
+/// parameter, in name order; a goal may only use those (and the parameter).
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::certificates::{PolyhedronOpts, PolyhedronProver};
+///
+/// let ctx = Context::new();
+/// let (j, r, t) = (ctx.symbol("j"), ctx.symbol("r"), ctx.symbol("t"));
+/// let hyps = [r.clone(), ctx.rational(1, 2) - &r, t.clone(), 1 - &t, (&j * 2 + 1) * &t - &j * &r - 1];
+/// let prover = PolyhedronProver::new(&hyps, Some((&j, &ctx.int(2))), &PolyhedronOpts::default()).unwrap();
+/// // Every facet of the cell is a goal on the cell.
+/// for h in &hyps {
+///     assert!(prover.prove(h).unwrap().is_proved());
+/// }
+/// assert!(prover.prove(&((&j * 2 + 1) * &t * 4 - &j * &r * 4 - &r - 3)).unwrap().is_proved());
+/// assert!(!prover.prove_empty().unwrap().is_proved());   // the cell is not empty
+/// ```
+pub struct PolyhedronProver {
+    ctx: Context,
+    gens: Vec<Ex>,
+    hyps: Vec<Poly>,
+    param: Option<(Param, Q)>,
+    opts: PolyhedronOpts,
+    stages: Vec<StageBasis>,
+    one: Poly,
+    /// `jᵃ` and `(j − j₀)ᵃ` for `a = 0..=top`.
+    var_pows: Vec<Poly>,
+    shift_pows: Vec<Poly>,
+}
+
+impl PolyhedronProver {
+    /// Parse the hypotheses and build the bases of every stage of `opts`.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] for an empty hypothesis list, a
+    /// non-polynomial or parametric-coefficient hypothesis, a non-symbol
+    /// parameter or a non-literal `j₀`.
+    pub fn new(
+        hyps: &[Ex],
+        param: Option<(&Ex, &Ex)>,
+        opts: &PolyhedronOpts,
+    ) -> Result<Self, SymplexError> {
+        let Some(first) = hyps.first() else {
+            return Err(invalid("at least one hypothesis is required"));
+        };
+        let ctx = first.context();
+
+        let param_info = match param {
+            Some((var, lo)) => {
+                let lo = lo.eval();
+                let Some(lo_q) = lo.as_rational() else {
+                    return Err(invalid(format!(
+                        "the parameter bound must be a rational literal, got `{lo}`"
+                    )));
+                };
+                if var.free_symbols().len() != 1 || var.free_symbols()[0] != *var {
+                    return Err(invalid(format!(
+                        "the parameter must be a symbol, got `{var}`"
+                    )));
+                }
+                Some((
+                    Param {
+                        var: var.clone(),
+                        lo,
+                        var_nonneg: !lo_q.is_negative(),
+                        lo_zero: lo_q.is_zero(),
+                    },
+                    lo_q,
+                ))
+            }
+            None => None,
+        };
+
+        // Generators: free variables of the hypotheses (name order), then the parameter.
+        let mut names: Vec<(String, Ex)> = Vec::new();
+        for e in hyps {
+            for s in e.free_symbols() {
+                if param.is_some_and(|(v, _)| *v == s) {
+                    continue;
+                }
+                let n = s.to_string();
+                if !names.iter().any(|(m, _)| *m == n) {
+                    names.push((n, s));
+                }
+            }
+        }
+        names.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut gens: Vec<Ex> = names.into_iter().map(|(_, s)| s).collect();
+        if let Some((p, _)) = &param_info {
+            gens.push(p.var.clone());
+        }
+        if gens.is_empty() {
+            return Err(invalid("the hypotheses contain no variables"));
+        }
+        let gen_refs: Vec<&Ex> = gens.iter().collect();
+        let hyp_polys: Vec<Poly> = hyps
+            .iter()
+            .map(|h| to_poly(h, &gen_refs, "hypothesis"))
+            .collect::<Result<_, _>>()?;
+        let one = Poly::one(&ctx, &gen_refs)?;
+
+        // Parameter atom powers, high enough for every stage.
+        let top = opts
+            .stages()
+            .iter()
+            .map(|&(d, l, _)| (d + 1).max(l))
+            .max()
+            .unwrap_or(1) as usize;
+        let (var_pows, shift_pows) = match &param_info {
+            Some((p, _)) => {
+                let var =
+                    Poly::new(&p.var, &gen_refs).ok_or_else(|| invalid("internal: parameter"))?;
+                let shift = Poly::new(&(&p.var - &p.lo), &gen_refs)
+                    .ok_or_else(|| invalid("internal: parameter shift"))?;
+                let mut vp = vec![one.clone()];
+                let mut sp = vec![one.clone()];
+                for _ in 0..top {
+                    let lv = vp.last().cloned().unwrap_or_else(|| one.clone());
+                    let ls = sp.last().cloned().unwrap_or_else(|| one.clone());
+                    vp.push(lv.mul(&var)?);
+                    sp.push(ls.mul(&shift)?);
+                }
+                (vp, sp)
+            }
+            None => (vec![one.clone()], vec![one.clone()]),
+        };
+
+        let mut prover = PolyhedronProver {
+            ctx,
+            gens,
+            hyps: hyp_polys,
+            param: param_info,
+            opts: opts.clone(),
+            stages: Vec::new(),
+            one,
+            var_pows,
+            shift_pows,
+        };
+        for (degree, lambda_degree, pairwise) in opts.stages() {
+            let basis = prover.build_stage(degree, lambda_degree, pairwise)?;
+            prover.stages.push(basis);
+        }
+        Ok(prover)
+    }
+
+    /// The hypotheses as polynomials, in input order.
+    pub fn hyps(&self) -> &[Poly] {
+        &self.hyps
+    }
+
+    /// The generators: free variables (name order) then the parameter.
+    pub fn gens(&self) -> &[Ex] {
+        &self.gens
+    }
+
+    /// The parameter `(var, lo)`, if any.
+    pub fn parameter(&self) -> Option<(&Ex, &Ex)> {
+        self.param.as_ref().map(|(p, _)| (&p.var, &p.lo))
+    }
+
+    /// The search options.
+    pub fn opts(&self) -> &PolyhedronOpts {
+        &self.opts
+    }
+
+    /// The parameter multipliers `(a, b)` for `jᵃ (j − j₀)ᵇ` with `a + b ≤ max`.
+    fn multipliers(&self, max: u32) -> Vec<(u32, u32)> {
+        let Some((p, _)) = &self.param else {
+            return vec![(0, 0)];
+        };
+        let mut out = Vec::new();
+        for a in 0..=max {
+            if a > 0 && !p.var_nonneg {
+                break;
+            }
+            for b in 0..=(max - a) {
+                if b > 0 && !p.uses_shift() {
+                    break;
+                }
+                out.push((a, b));
+            }
+        }
+        out
+    }
+
+    fn mult_poly(&self, a: u32, b: u32) -> Result<Poly, SymplexError> {
+        self.var_pows[a as usize].mul(&self.shift_pows[b as usize])
+    }
+
+    fn build_stage(
+        &self,
+        degree: u32,
+        lambda_degree: u32,
+        pairwise: bool,
+    ) -> Result<StageBasis, SymplexError> {
+        let mut labels: Vec<PolyhedronTerm> = Vec::new();
+        let mut columns: Vec<Poly> = Vec::new();
+        let mut cost: Vec<Q> = Vec::new();
+        let mut push = |t: PolyhedronTerm, p: Poly, c: u32| {
+            labels.push(t);
+            columns.push(p);
+            cost.push(Q::from_integer(BigInt::from(c)));
+        };
+        for (k, h) in self.hyps.iter().enumerate() {
+            for (a, b) in self.multipliers(degree) {
+                push(
+                    PolyhedronTerm {
+                        hyps: vec![k],
+                        var_power: a,
+                        shift_power: b,
+                        weight: Q::zero(),
+                    },
+                    self.mult_poly(a, b)?.mul(h)?,
+                    1 + 2 * (a + b),
+                );
+            }
+        }
+        if self.param.is_some() {
+            for (a, b) in self.multipliers(degree + 1) {
+                if a + b == 0 {
+                    continue;
+                }
+                push(
+                    PolyhedronTerm {
+                        hyps: vec![],
+                        var_power: a,
+                        shift_power: b,
+                        weight: Q::zero(),
+                    },
+                    self.mult_poly(a, b)?,
+                    1 + 2 * (a + b),
+                );
+            }
+        }
+        push(
+            PolyhedronTerm {
+                hyps: vec![],
+                var_power: 0,
+                shift_power: 0,
+                weight: Q::zero(),
+            },
+            self.one.clone(),
+            1,
+        );
+        if pairwise {
+            for k in 0..self.hyps.len() {
+                for l in k..self.hyps.len() {
+                    let hh = self.hyps[k].mul(&self.hyps[l])?;
+                    for (a, b) in self.multipliers(1) {
+                        push(
+                            PolyhedronTerm {
+                                hyps: vec![k, l],
+                                var_power: a,
+                                shift_power: b,
+                                weight: Q::zero(),
+                            },
+                            self.mult_poly(a, b)?.mul(&hh)?,
+                            1 + 2 * (a + b),
+                        );
+                    }
+                }
+            }
+        }
+        Ok(StageBasis {
+            degree,
+            lambda_degree,
+            pairwise,
+            labels,
+            columns,
+            cost,
+        })
+    }
+
+    /// Parse a goal in this prover's generators.
+    fn goal_poly(&self, goal: &Ex) -> Result<Poly, SymplexError> {
+        let gen_refs: Vec<&Ex> = self.gens.iter().collect();
+        for s in goal.free_symbols() {
+            if !self.gens.contains(&s) {
+                return Err(invalid(format!(
+                    "goal `{goal}` mentions `{s}`, which is not a variable of the hypotheses"
+                )));
+            }
+        }
+        to_poly(goal, &gen_refs, "goal")
+    }
+
+    /// Prove `goal ≥ 0` on the set (for every admissible parameter value),
+    /// refute it with an exact point, or report `Unknown`.  See
+    /// [`prove_nonnegative_on_polyhedron`].
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if the goal is not a
+    /// rational-coefficient polynomial in the prover's variables.
+    pub fn prove(&self, goal: &Ex) -> Result<PolyhedronOutcome, SymplexError> {
+        let goal_poly = self.goal_poly(goal)?;
+        self.prove_poly(&goal_poly)
+    }
+
+    /// Prove that the set is empty for every admissible parameter value
+    /// (the goal `−1`), exhibit a point of it, or report `Unknown`.  See
+    /// [`prove_polyhedron_empty`].
+    ///
+    /// # Errors
+    ///
+    /// Only internal failures (the goal is a constant).
+    pub fn prove_empty(&self) -> Result<PolyhedronOutcome, SymplexError> {
+        let gen_refs: Vec<&Ex> = self.gens.iter().collect();
+        let minus_one = Poly::constant(&self.ctx, &gen_refs, &self.ctx.int(-1))?;
+        self.prove_poly(&minus_one)
+    }
+
+    fn prove_poly(&self, goal: &Poly) -> Result<PolyhedronOutcome, SymplexError> {
+        // 1. Exact refutation on sampled parameter values.
+        if let Some((point, param_value, value)) =
+            refute(&self.ctx, goal, &self.hyps, &self.gens, self.param.as_ref())
+        {
+            return Ok(PolyhedronOutcome::Refuted {
+                point,
+                param_value,
+                value,
+            });
+        }
+        // 2. Staged certificate search.
+        let mut tried = (0u32, 0u32, false);
+        for stage in &self.stages {
+            tried = (
+                tried.0.max(stage.degree),
+                tried.1.max(stage.lambda_degree),
+                tried.2 || stage.pairwise,
+            );
+            if let Some(cert) = self.search_stage(goal, stage)? {
+                return Ok(PolyhedronOutcome::Proved(cert));
+            }
+        }
+        Ok(PolyhedronOutcome::Unknown {
+            degree: tried.0,
+            lambda_degree: tried.1,
+            pairwise: tried.2,
+        })
+    }
+
+    /// One LP stage.  `Ok(Some(cert))` with a verified certificate,
+    /// `Ok(None)` when the LP is infeasible.
+    fn search_stage(
+        &self,
+        goal: &Poly,
+        stage: &StageBasis,
+    ) -> Result<Option<PolyhedronCertificate>, SymplexError> {
+        let n_basis = stage.columns.len();
+        let use_var = self.param.as_ref().is_some_and(|(p, _)| p.var_nonneg);
+        // λ columns: −atomᵃ·goal for a = 1..=lambda_degree.
+        let lambda_cols: Vec<Poly> = if self.param.is_some() {
+            (1..=stage.lambda_degree as usize)
+                .map(|a| {
+                    let atom = if use_var {
+                        &self.var_pows[a]
+                    } else {
+                        &self.shift_pows[a]
+                    };
+                    atom.mul(goal).map(|p| p.neg())
+                })
+                .collect::<Result<_, _>>()?
+        } else {
+            Vec::new()
+        };
+        let mut cost = stage.cost.clone();
+        for a in 1..=lambda_cols.len() {
+            cost.push(Q::from_integer(BigInt::from(1 + 20 * a as u32)));
+        }
+
+        // Monomial rows.
+        let mut all: Vec<&Poly> = stage.columns.iter().chain(&lambda_cols).collect();
+        all.push(goal);
+        let monos = Poly::monomial_basis(&all)?;
+        let coeff = |p: &Poly, m: &[u32]| -> Result<Q, SymplexError> {
+            p.coeff_monomial(m)?
+                .as_rational()
+                .ok_or_else(|| invalid("internal: non-rational coefficient"))
+        };
+        let mut lp = LpProblem::minimize(cost);
+        for m in &monos {
+            let mut row: Vec<Q> = Vec::with_capacity(n_basis + lambda_cols.len());
+            for c in stage.columns.iter().chain(&lambda_cols) {
+                row.push(coeff(c, m)?);
+            }
+            lp = lp.eq(row, coeff(goal, m)?);
+        }
+        let sol = lp.solve()?;
+        if sol.status != LpStatus::Optimal {
+            return Ok(None);
+        }
+        let terms: Vec<PolyhedronTerm> = stage
+            .labels
+            .iter()
+            .zip(&sol.x[..n_basis])
+            .filter(|(_, w)| w.is_positive())
+            .map(|(t, w)| PolyhedronTerm {
+                weight: w.clone(),
+                ..t.clone()
+            })
+            .collect();
+        let mut lambda: Vec<Q> = vec![Q::one()];
+        lambda.extend(sol.x[n_basis..].iter().cloned());
+        while lambda.len() > 1 && lambda.last().is_some_and(Zero::is_zero) {
+            lambda.pop();
+        }
+        let cert = PolyhedronCertificate {
+            goal: goal.clone(),
+            hyps: self.hyps.clone(),
+            param: self.param.as_ref().map(|(p, _)| p.clone()),
+            lambda,
+            terms,
+        };
+        if !cert.verify() {
+            return Err(SymplexError::ComputationFailed {
+                operation: OP,
+                reason:
+                    "the LP solution did not reproduce the identity under exact re-verification"
+                        .into(),
+            });
+        }
+        Ok(Some(cert))
+    }
+}
+
+/// Parse `e` as a rational-coefficient polynomial in `gens`.
+fn to_poly(e: &Ex, gens: &[&Ex], what: &str) -> Result<Poly, SymplexError> {
+    let p = Poly::try_new(e, gens).map_err(|err| match err {
+        SymplexError::InvalidArgument { reason, .. } => invalid(format!("{what} `{e}`: {reason}")),
+        other => other,
+    })?;
+    if !p.has_rational_coeffs() {
+        return Err(invalid(format!(
+            "{what} `{e}` must have rational coefficients"
+        )));
+    }
+    Ok(p)
+}
+
 /// Prove `goal ≥ 0` on `{x : hₖ(j, x) ≥ 0 ∀k}` for every real `j ≥ j₀`
 /// (`param = Some((j, j₀))`), or on the fixed polyhedron `{hₖ(x) ≥ 0}`
 /// (`param = None`), by the identity described in the
-/// [`certificates`](crate::certificates) module documentation; refute it with an exact point of the set
-/// where the goal is negative; or report `Unknown`.
+/// [`certificates`](crate::certificates) module documentation; refute it
+/// with an exact point of the set where the goal is negative; or report
+/// `Unknown`.  To certify many goals against the same hypotheses, build a
+/// [`PolyhedronProver`] once.
 ///
-/// The free variables are the symbols of `goal` and `hyps` other than the
-/// parameter, in name order.  All expressions must be polynomials with
-/// rational coefficients; `j₀` must be a rational literal.  Powers of `j`
-/// itself are only used when `j₀ ≥ 0`; powers of `j − j₀` always.
+/// The free variables are the symbols of `hyps` other than the parameter,
+/// in name order; the goal may only use those.  All expressions must be
+/// polynomials with rational coefficients; `j₀` must be a rational literal.
+/// Powers of `j` itself are only used when `j₀ ≥ 0`; powers of `j − j₀`
+/// always.
 ///
 /// Refutation samples the parameter at `j₀, j₀ + 1, …` and a few larger
 /// values and, when the hypotheses and the goal are affine in the free
@@ -992,7 +1466,8 @@ impl fmt::Display for PolyhedronCertificate {
 /// # Errors
 ///
 /// [`SymplexError::InvalidArgument`] for an empty hypothesis list, a
-/// non-polynomial or parametric-coefficient input, or a non-literal `j₀`.
+/// non-polynomial or parametric-coefficient input, a goal mentioning a
+/// symbol absent from the hypotheses, or a non-literal `j₀`.
 ///
 /// # Examples
 ///
@@ -1012,7 +1487,10 @@ impl fmt::Display for PolyhedronCertificate {
 ///
 /// // …while  j − 2·j·r ≥ 0  on the same set is false at r = 1/2 for every j > 0.
 /// match prove_nonnegative_on_polyhedron(&(&j - &j * &r * 2 - 1), &hyps, Some((&j, &ctx.int(1))), &PolyhedronOpts::default()).unwrap() {
-///     PolyhedronOutcome::Refuted { value, .. } => assert!(value < symplex::linprog::qi(0)),
+///     PolyhedronOutcome::Refuted { value, param_value, .. } => {
+///         assert!(value < symplex::linprog::qi(0));
+///         assert_eq!(param_value, Some(symplex::linprog::qi(1)));
+///     }
 ///     other => panic!("{other:?}"),
 /// }
 /// ```
@@ -1022,108 +1500,7 @@ pub fn prove_nonnegative_on_polyhedron(
     param: Option<(&Ex, &Ex)>,
     opts: &PolyhedronOpts,
 ) -> Result<PolyhedronOutcome, SymplexError> {
-    if hyps.is_empty() {
-        return Err(invalid("at least one hypothesis is required"));
-    }
-    let ctx = goal.context();
-
-    // Parameter.
-    let param_info = match param {
-        Some((var, lo)) => {
-            let lo = lo.eval();
-            let Some(lo_q) = lo.as_rational() else {
-                return Err(invalid(format!(
-                    "the parameter bound must be a rational literal, got `{lo}`"
-                )));
-            };
-            if var.free_symbols().len() != 1 || var.free_symbols()[0] != *var {
-                return Err(invalid(format!(
-                    "the parameter must be a symbol, got `{var}`"
-                )));
-            }
-            Some((
-                Param {
-                    var: var.clone(),
-                    lo,
-                    var_nonneg: !lo_q.is_negative(),
-                    lo_zero: lo_q.is_zero(),
-                },
-                lo_q,
-            ))
-        }
-        None => None,
-    };
-
-    // Generators: free variables (name order) then the parameter.
-    let mut names: Vec<(String, Ex)> = Vec::new();
-    for e in std::iter::once(goal).chain(hyps) {
-        for s in e.free_symbols() {
-            if param.is_some_and(|(v, _)| *v == s) {
-                continue;
-            }
-            let n = s.to_string();
-            if !names.iter().any(|(m, _)| *m == n) {
-                names.push((n, s));
-            }
-        }
-    }
-    names.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut gens: Vec<Ex> = names.into_iter().map(|(_, s)| s).collect();
-    if let Some((p, _)) = &param_info {
-        gens.push(p.var.clone());
-    }
-    if gens.is_empty() {
-        return Err(invalid("goal and hypotheses contain no variables"));
-    }
-    let gen_refs: Vec<&Ex> = gens.iter().collect();
-    let to_poly = |e: &Ex, what: &str| -> Result<Poly, SymplexError> {
-        let p = Poly::new(e, &gen_refs)
-            .ok_or_else(|| invalid(format!("{what} `{e}` is not a polynomial in the variables")))?;
-        if !p.has_rational_coeffs() {
-            return Err(invalid(format!(
-                "{what} `{e}` must have rational coefficients"
-            )));
-        }
-        Ok(p)
-    };
-    let goal_poly = to_poly(goal, "goal")?;
-    let hyp_polys: Vec<Poly> = hyps
-        .iter()
-        .map(|h| to_poly(h, "hypothesis"))
-        .collect::<Result<_, _>>()?;
-
-    // 1. Exact refutation on sampled parameter values.
-    if let Some((point, value)) = refute(&ctx, &goal_poly, &hyp_polys, &gens, param_info.as_ref()) {
-        return Ok(PolyhedronOutcome::Refuted { point, value });
-    }
-
-    // 2. Staged certificate search.
-    let stages = opts.stages();
-    let mut tried = (0u32, 0u32, false);
-    for (degree, lambda_degree, pairwise) in stages {
-        tried = (
-            tried.0.max(degree),
-            tried.1.max(lambda_degree),
-            tried.2 || pairwise,
-        );
-        if let Some(cert) = search_stage(
-            &ctx,
-            &goal_poly,
-            &hyp_polys,
-            &gens,
-            param_info.as_ref().map(|(p, _)| p),
-            degree,
-            lambda_degree,
-            pairwise,
-        )? {
-            return Ok(PolyhedronOutcome::Proved(cert));
-        }
-    }
-    Ok(PolyhedronOutcome::Unknown {
-        degree: tried.0,
-        lambda_degree: tried.1,
-        pairwise: tried.2,
-    })
+    PolyhedronProver::new(hyps, param, opts)?.prove(goal)
 }
 
 /// Prove that `{x : hₖ(j, x) ≥ 0 ∀k}` is empty for every `j ≥ j₀`
@@ -1148,215 +1525,15 @@ pub fn prove_polyhedron_empty(
     param: Option<(&Ex, &Ex)>,
     opts: &PolyhedronOpts,
 ) -> Result<PolyhedronOutcome, SymplexError> {
-    let Some(first) = hyps.first() else {
-        return Err(invalid("at least one hypothesis is required"));
-    };
-    let minus_one = first.context().int(-1);
-    prove_nonnegative_on_polyhedron(&minus_one, hyps, param, opts)
-}
-
-/// One LP stage.  `Ok(Some(cert))` with a verified certificate, `Ok(None)`
-/// when the LP is infeasible.
-#[allow(clippy::too_many_arguments)]
-fn search_stage(
-    ctx: &Context,
-    goal: &Poly,
-    hyps: &[Poly],
-    gens: &[Ex],
-    param: Option<&Param>,
-    degree: u32,
-    lambda_degree: u32,
-    pairwise: bool,
-) -> Result<Option<PolyhedronCertificate>, SymplexError> {
-    let gen_refs: Vec<&Ex> = gens.iter().collect();
-    let one = Poly::one(ctx, &gen_refs)?;
-
-    // Parameter atoms and their powers.
-    let (var_pows, shift_pows, use_var, use_shift) = match param {
-        Some(p) => {
-            let var = Poly::new(&p.var, &gen_refs).ok_or_else(|| invalid("internal: parameter"))?;
-            let shift = Poly::new(&(&p.var - &p.lo), &gen_refs)
-                .ok_or_else(|| invalid("internal: parameter shift"))?;
-            let top = (degree + 1).max(lambda_degree) as usize;
-            let mut vp = vec![one.clone()];
-            let mut sp = vec![one.clone()];
-            for _ in 0..top {
-                let lv = vp.last().cloned().unwrap_or_else(|| one.clone());
-                let ls = sp.last().cloned().unwrap_or_else(|| one.clone());
-                vp.push(lv.mul(&var)?);
-                sp.push(ls.mul(&shift)?);
-            }
-            (vp, sp, p.var_nonneg, p.uses_shift())
-        }
-        None => (vec![one.clone()], vec![one.clone()], false, false),
-    };
-    let multipliers = |max: u32| -> Vec<(u32, u32)> {
-        let mut out = Vec::new();
-        if param.is_none() {
-            out.push((0, 0));
-            return out;
-        }
-        for a in 0..=max {
-            if a > 0 && !use_var {
-                break;
-            }
-            for b in 0..=(max - a) {
-                if b > 0 && !use_shift {
-                    break;
-                }
-                out.push((a, b));
-            }
-        }
-        out
-    };
-    let mult_poly = |a: u32, b: u32| -> Result<Poly, SymplexError> {
-        var_pows[a as usize].mul(&shift_pows[b as usize])
-    };
-
-    // Basis columns.
-    let mut labels: Vec<PolyhedronTerm> = Vec::new();
-    let mut columns: Vec<Poly> = Vec::new();
-    let mut cost: Vec<Q> = Vec::new();
-    let mut push = |t: PolyhedronTerm, p: Poly, c: u32| {
-        labels.push(t);
-        columns.push(p);
-        cost.push(Q::from_integer(BigInt::from(c)));
-    };
-    for (k, h) in hyps.iter().enumerate() {
-        for (a, b) in multipliers(degree) {
-            push(
-                PolyhedronTerm {
-                    hyps: vec![k],
-                    var_power: a,
-                    shift_power: b,
-                    weight: Q::zero(),
-                },
-                mult_poly(a, b)?.mul(h)?,
-                1 + 2 * (a + b),
-            );
-        }
-    }
-    if param.is_some() {
-        for (a, b) in multipliers(degree + 1) {
-            if a + b == 0 {
-                continue;
-            }
-            push(
-                PolyhedronTerm {
-                    hyps: vec![],
-                    var_power: a,
-                    shift_power: b,
-                    weight: Q::zero(),
-                },
-                mult_poly(a, b)?,
-                1 + 2 * (a + b),
-            );
-        }
-    }
-    push(
-        PolyhedronTerm {
-            hyps: vec![],
-            var_power: 0,
-            shift_power: 0,
-            weight: Q::zero(),
-        },
-        one.clone(),
-        1,
-    );
-    if pairwise {
-        for k in 0..hyps.len() {
-            for l in k..hyps.len() {
-                let hh = hyps[k].mul(&hyps[l])?;
-                for (a, b) in multipliers(1) {
-                    push(
-                        PolyhedronTerm {
-                            hyps: vec![k, l],
-                            var_power: a,
-                            shift_power: b,
-                            weight: Q::zero(),
-                        },
-                        mult_poly(a, b)?.mul(&hh)?,
-                        1 + 2 * (a + b),
-                    );
-                }
-            }
-        }
-    }
-    let n_basis = columns.len();
-    // λ columns: −atomᵃ·goal for a = 1..=lambda_degree.
-    let lambda_cols: Vec<Poly> = if param.is_some() {
-        (1..=lambda_degree as usize)
-            .map(|a| {
-                let atom = if use_var {
-                    &var_pows[a]
-                } else {
-                    &shift_pows[a]
-                };
-                atom.mul(goal).map(|p| p.neg())
-            })
-            .collect::<Result<_, _>>()?
-    } else {
-        Vec::new()
-    };
-    for a in 1..=lambda_cols.len() {
-        cost.push(Q::from_integer(BigInt::from(1 + 20 * a as u32)));
-    }
-
-    // Monomial rows.
-    let mut all: Vec<&Poly> = columns.iter().chain(&lambda_cols).collect();
-    all.push(goal);
-    let monos = Poly::monomial_basis(&all)?;
-    let coeff = |p: &Poly, m: &[u32]| -> Result<Q, SymplexError> {
-        p.coeff_monomial(m)?
-            .as_rational()
-            .ok_or_else(|| invalid("internal: non-rational coefficient"))
-    };
-    let mut lp = LpProblem::minimize(cost);
-    for m in &monos {
-        let mut row: Vec<Q> = Vec::with_capacity(n_basis + lambda_cols.len());
-        for c in columns.iter().chain(&lambda_cols) {
-            row.push(coeff(c, m)?);
-        }
-        lp = lp.eq(row, coeff(goal, m)?);
-    }
-    let sol = lp.solve()?;
-    if sol.status != LpStatus::Optimal {
-        return Ok(None);
-    }
-    let terms: Vec<PolyhedronTerm> = labels
-        .into_iter()
-        .zip(&sol.x[..n_basis])
-        .filter(|(_, w)| w.is_positive())
-        .map(|(mut t, w)| {
-            t.weight = w.clone();
-            t
-        })
-        .collect();
-    let mut lambda: Vec<Q> = vec![Q::one()];
-    lambda.extend(sol.x[n_basis..].iter().cloned());
-    while lambda.len() > 1 && lambda.last().is_some_and(Zero::is_zero) {
-        lambda.pop();
-    }
-    let cert = PolyhedronCertificate {
-        goal: goal.clone(),
-        hyps: hyps.to_vec(),
-        param: param.cloned(),
-        lambda,
-        terms,
-    };
-    if !cert.verify() {
-        return Err(SymplexError::ComputationFailed {
-            operation: OP,
-            reason: "the LP solution did not reproduce the identity under exact re-verification"
-                .into(),
-        });
-    }
-    Ok(Some(cert))
+    PolyhedronProver::new(hyps, param, opts)?.prove_empty()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Refutation
 // ═══════════════════════════════════════════════════════════════════════════
+
+/// `(point, sampled parameter value, goal value)` of a counterexample.
+type Refutation = (Vec<(Ex, Q)>, Option<Q>, Q);
 
 /// Search for a point of the set where the goal is negative: sample the
 /// parameter, and when everything is affine in the free variables,
@@ -1368,7 +1545,7 @@ fn refute(
     hyps: &[Poly],
     gens: &[Ex],
     param: Option<&(Param, Q)>,
-) -> Option<(Vec<(Ex, Q)>, Q)> {
+) -> Option<Refutation> {
     let samples: Vec<Option<Q>> = match param {
         Some((_, lo)) => {
             let mut s: Vec<Q> = (0..=6)
@@ -1424,7 +1601,7 @@ fn refute(
                     (Some(v), Some((p, _))) => vec![(p.var.clone(), v.clone())],
                     _ => Vec::new(),
                 };
-                return Some((point, g0));
+                return Some((point, jv.clone(), g0));
             }
             continue;
         }
@@ -1471,7 +1648,7 @@ fn refute(
                 .and_then(|e| e.as_rational())
                 .is_some_and(|q| !q.is_negative())
         }) {
-            return Some((point, gv));
+            return Some((point, jv.clone(), gv));
         }
     }
     None
@@ -1574,7 +1751,7 @@ mod tests {
         )
         .unwrap()
         {
-            PolyhedronOutcome::Refuted { point, value } => {
+            PolyhedronOutcome::Refuted { point, value, .. } => {
                 assert!(value.is_negative());
                 assert_eq!(point.len(), 3);
                 assert_eq!(point[2].0, j);

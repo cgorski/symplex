@@ -1609,6 +1609,79 @@ impl QMatrix {
             })
     }
 
+    /// `true` if `self` equals its transpose.
+    pub fn is_symmetric(&self) -> bool {
+        self.is_square()
+            && (0..self.nrows).all(|i| {
+                (0..i).all(|j| self.data[i * self.ncols + j] == self.data[j * self.ncols + i])
+            })
+    }
+
+    /// Exact `L·D·Lᵀ` factorisation of a symmetric **positive semidefinite**
+    /// matrix: `L` unit lower triangular, `D = diag(d)` with every `dₖ ≥ 0`.
+    /// Returns `None` if the matrix is not square, not symmetric, or not
+    /// PSD — this is an exact PSD test.  When a pivot `dₖ` is zero the
+    /// remaining entries of its column must vanish (as they do for a PSD
+    /// matrix), and `L`'s column is left zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::matrix::QMatrix;
+    /// use symplex::linprog::{q, qi};
+    ///
+    /// let a = QMatrix::from_i64(&[&[4, 2], &[2, 1]]).unwrap();       // rank 1, PSD
+    /// let (l, d) = a.ldl_psd().unwrap();
+    /// assert_eq!(d, vec![qi(4), qi(0)]);
+    /// assert_eq!(l[(1, 0)], q(1, 2));
+    /// assert!(QMatrix::from_i64(&[&[1, 2], &[2, 1]]).unwrap().ldl_psd().is_none());   // indefinite
+    /// ```
+    pub fn ldl_psd(&self) -> Option<(QMatrix, Vec<Q>)> {
+        if !self.is_symmetric() {
+            return None;
+        }
+        let n = self.nrows;
+        let mut l = QMatrix::identity(n);
+        let mut d: Vec<Q> = Vec::with_capacity(n);
+        for k in 0..n {
+            let mut dk = self.data[k * n + k].clone();
+            for (j, dj) in d.iter().enumerate() {
+                let ljk = &l.data[k * n + j];
+                if !ljk.is_zero() {
+                    dk -= ljk * ljk * dj;
+                }
+            }
+            if dk.is_negative() {
+                return None;
+            }
+            for i in (k + 1)..n {
+                let mut c = self.data[i * n + k].clone();
+                for (j, dj) in d.iter().enumerate() {
+                    let (lij, lkj) = (&l.data[i * n + j], &l.data[k * n + j]);
+                    if !lij.is_zero() && !lkj.is_zero() {
+                        c -= lij * dj * lkj;
+                    }
+                }
+                if dk.is_zero() {
+                    if !c.is_zero() {
+                        return None;
+                    }
+                    l.data[i * n + k] = Q::zero();
+                } else {
+                    l.data[i * n + k] = c / &dk;
+                }
+            }
+            d.push(dk);
+        }
+        Some((l, d))
+    }
+
+    /// Exact positive-semidefiniteness test (symmetric and every
+    /// `xᵀAx ≥ 0`), via [`ldl_psd`](Self::ldl_psd).
+    pub fn is_positive_semidefinite(&self) -> bool {
+        self.ldl_psd().is_some()
+    }
+
     /// Basis of the column space: the pivot columns of `self`.
     pub fn columnspace(&self) -> Vec<QMatrix> {
         let (_, pivots) = self.rref();
@@ -2116,6 +2189,36 @@ mod tests {
         );
         assert!(z(&[&[1, 2], &[2, 4]]).lattice_determinant().is_err());
         assert_eq!(z(&[&[4, 6], &[8, 10]]).content(), BigInt::from(2));
+    }
+
+    #[test]
+    fn ldl_psd_is_an_exact_psd_test() {
+        let psd = qm(&[&[4, 2, 0], &[2, 2, 1], &[0, 1, 1]]);
+        let (l, d) = psd.ldl_psd().unwrap();
+        assert!(d.iter().all(|v| !v.is_negative()));
+        let dm = QMatrix::diag(&d);
+        assert_eq!(&(&l * &dm) * &l.transpose(), psd);
+        assert!(psd.is_positive_semidefinite());
+        // Rank-deficient PSD: Gram matrix of (1, 1, 1).
+        let ones = qm(&[&[1, 1, 1], &[1, 1, 1], &[1, 1, 1]]);
+        let (l, d) = ones.ldl_psd().unwrap();
+        assert_eq!(d, vec![q(1, 1), Q::zero(), Q::zero()]);
+        assert_eq!(&(&l * &QMatrix::diag(&d)) * &l.transpose(), ones);
+        // Zero pivot with a nonzero column entry: not PSD.
+        assert!(qm(&[&[0, 1], &[1, 0]]).ldl_psd().is_none());
+        assert!(qm(&[&[1, 2], &[2, 1]]).ldl_psd().is_none());
+        assert!(qm(&[&[-1]]).ldl_psd().is_none());
+        assert!(qm(&[&[1, 2], &[3, 4]]).ldl_psd().is_none()); // not symmetric
+        assert!(qm(&[&[1, 2, 3]]).ldl_psd().is_none());
+        assert!(QMatrix::zeros(3, 3).is_positive_semidefinite());
+        // Random Gram matrices BᵀB are PSD; BᵀB − εI is not for ε above λ_min.
+        for seed in 1..=6u64 {
+            let b = random_z(3, 5, seed).to_qmatrix();
+            let g = &b.transpose() * &b;
+            assert!(g.is_positive_semidefinite(), "seed {seed}");
+            let big = &g - &QMatrix::identity(5).scale(&q(1000, 1));
+            assert!(!big.is_positive_semidefinite());
+        }
     }
 
     #[test]

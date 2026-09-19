@@ -303,7 +303,7 @@ fn main() {
 
 ## Polytopes from half-spaces
 
-`symplex::polytope::Polytope` (0.4) is a convex polyhedron `{x ∈ ℚⁿ : aᵢ·x + bᵢ ≥ 0}` with exact geometry built on the LP and on `QMatrix`: `is_empty` / `any_point` / `bounding_box` / `is_bounded` are LP calls; `vertices` solves every `n × n` sub-system exactly and keeps the points inside; `volume` (dimension ≤ 3) is a fan triangulation from the vertex centroid; `irredundant` drops half-spaces that touch no vertex; `split` cuts by a hyperplane; `from_exprs` / `to_exprs` translate to and from affine `Ex` hypotheses, so a cell can go straight into `prove_nonnegative_on_polyhedron`.
+`symplex::polytope::Polytope` (0.4) is a convex polyhedron `{x ∈ ℚⁿ : aᵢ·x + bᵢ ≥ 0}` with exact geometry built on the LP and on `QMatrix`: `is_empty` / `any_point` / `bounding_box` / `is_bounded` are LP calls; `vertices` solves every `n × n` sub-system exactly and keeps the points inside; `volume` (any dimension) is an exact facet decomposition around the vertex centroid; `irredundant` drops half-spaces that touch no vertex; `split` cuts by a hyperplane; `from_exprs` / `to_exprs` translate to and from affine `Ex` hypotheses, so a cell can go straight into `prove_nonnegative_on_polyhedron`.
 
 ```rust
 use symplex::prelude::*;
@@ -329,7 +329,7 @@ fn main() {
 }
 ```
 
-Everything is exact and every answer is a rational; the enumeration is `O(C(m, n))` linear solves, which is the right trade for the handful of cells a decision tree produces and the wrong one for large polyhedra.
+Everything is exact and every answer is a rational; the enumeration is `O(C(m, n))` linear solves and the volume recursion visits every face, which is the right trade for the handful of cells a decision tree produces (dimension ≤ 5) and the wrong one for large polyhedra. When the cell's facets depend on a parameter, `ParametricPolytope::new(&hyps, &vars, &j)` holds the family and `polytope_at` / `vertices_at` / `volume_at(&j_value)` instantiate it exactly with a per-sample cache (0.5).
 
 ## Performance
 

@@ -208,7 +208,7 @@ fn refutation_points_are_exact_and_inside_the_set() {
     )
     .unwrap()
     {
-        PolyhedronOutcome::Refuted { point, value } => {
+        PolyhedronOutcome::Refuted { point, value, .. } => {
             assert!(value.is_negative());
             // Re-evaluate everything at the point.
             let subs = |e: &Ex| {
@@ -232,7 +232,7 @@ fn refutation_points_are_exact_and_inside_the_set() {
     // The emptiness question on a non-empty cell returns a point of it.
     match prove_polyhedron_empty(&cell, Some((j, &ctx.int(2))), &PolyhedronOpts::default()).unwrap()
     {
-        PolyhedronOutcome::Refuted { point, value } => {
+        PolyhedronOutcome::Refuted { point, value, .. } => {
             assert_eq!(value, q(-1, 1));
             assert_eq!(point.len(), 3);
         }
@@ -393,6 +393,170 @@ fn certificates_cross_a_trust_boundary_as_json_and_are_reverified() {
     let mut d = hc.to_data();
     d.ray = "sideways".to_string();
     assert!(HalfLineCertificate::from_data(&other, &d).is_err());
+}
+
+#[test]
+fn prover_reuses_hypotheses_and_matches_the_one_shot_functions() {
+    use symplex::certificates::PolyhedronProver;
+    let f = Fixture::new();
+    let (ctx, j, r, t) = (&f.ctx, &f.j, &f.r, &f.t);
+    let half = ctx.rational(1, 2);
+    let hyps = [
+        r.clone(),
+        &half - r,
+        t.clone(),
+        1 - t,
+        (j * 2 + 1) * t - j * r - 1,
+    ];
+    let prover =
+        PolyhedronProver::new(&hyps, Some((j, &ctx.int(2))), &PolyhedronOpts::default()).unwrap();
+    assert_eq!(prover.hyps().len(), 5);
+    assert_eq!(prover.gens(), &[r.clone(), t.clone(), j.clone()]);
+    assert_eq!(prover.parameter(), Some((j, &ctx.int(2))));
+    for goal in hyps
+        .iter()
+        .chain([&((j * 2 + 1) * t * 4 - j * r * 4 - r - 3)])
+    {
+        let a = prover.prove(goal).unwrap();
+        let b = prove_nonnegative_on_polyhedron(
+            goal,
+            &hyps,
+            Some((j, &ctx.int(2))),
+            &PolyhedronOpts::default(),
+        )
+        .unwrap();
+        let (a, b) = (proved(a), proved(b));
+        assert_eq!(a.to_string(), b.to_string());
+        assert_eq!(a.to_lean("x").unwrap(), b.to_lean("x").unwrap());
+    }
+    // Emptiness through the prover, and a refutation naming the sample.
+    assert!(!prover.prove_empty().unwrap().is_proved());
+    match prover.prove(&(t - &half - r)).unwrap() {
+        PolyhedronOutcome::Refuted {
+            param_value, point, ..
+        } => {
+            assert_eq!(param_value, Some(q(2, 1)));
+            assert_eq!(
+                point.last().map(|(v, q)| (v.clone(), q.clone())),
+                Some((j.clone(), q(2, 1)))
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    // A goal with a foreign symbol is an error, not a silent extra variable.
+    let e = prover.prove(&ctx.symbol("u")).unwrap_err().to_string();
+    assert!(e.contains("not a variable of the hypotheses"), "{e}");
+}
+
+#[test]
+fn symbol_text_renders_the_parameter_as_a_cast_everywhere() {
+    let f = Fixture::new();
+    let (j, r, t) = (&f.j, &f.r, &f.t);
+    let hyps = [t - r, t + j.powi(2) * r - j.powi(2) - 1];
+    let c = f.prove(&(t - 1), &hyps, Some(0));
+    let opts = LeanOpts::default().with_symbol_text("j", "(j : ℝ)");
+    let steps = c
+        .lean_steps(
+            &PolyhedronLeanNames {
+                hyps: &["e0", "e1"],
+                param_nonneg: "hJ0",
+                shift_nonneg: "hK0",
+            },
+            &opts,
+        )
+        .unwrap();
+    assert_eq!(steps.lambda.as_deref(), Some("(j : ℝ) ^ 2 + 1"));
+    assert_eq!(
+        steps.closing[0],
+        "have hg : (0 : ℝ) ≤ ((j : ℝ) ^ 2 + 1) * (t - 1) := by"
+    );
+    // Hypothesis names containing `J` are untouched (no blanket replace).
+    assert_eq!(steps.haves[0], "have e0J := mul_nonneg hJ0 e0");
+    let lean = c.to_lean_with("cast", &opts).unwrap();
+    assert!(
+        lean.starts_with("theorem cast (r t j : ℝ) (hj : (0 : ℝ) ≤ (j : ℝ))"),
+        "{lean}"
+    );
+    assert!(
+        lean.contains("(h1 : 0 ≤ r * (j : ℝ) ^ 2 - (j : ℝ) ^ 2 + t - 1)"),
+        "{lean}"
+    );
+    assert!(
+        lean.contains("have hJ0 : (0 : ℝ) ≤ (j : ℝ) := by linarith"),
+        "{lean}"
+    );
+    // `single_fraction` puts a rational function over one denominator.
+    let e = ((-8 * j - 2) / (7 * j + 4)).expand();
+    assert_eq!(
+        e.to_lean().unwrap(),
+        "-(8 * j / (7 * j + 4)) - 2 / (7 * j + 4)"
+    );
+    assert_eq!(
+        e.to_lean_with(&LeanOpts::default().with_single_fraction(true))
+            .unwrap(),
+        "(-(8 * j) - 2) / (7 * j + 4)"
+    );
+    assert_eq!(
+        e.to_lean_with(
+            &LeanOpts::default()
+                .with_single_fraction(true)
+                .with_symbol_text("j", "(j : ℝ)")
+        )
+        .unwrap(),
+        "(-(8 * (j : ℝ)) - 2) / (7 * (j : ℝ) + 4)"
+    );
+}
+
+#[test]
+fn to_block_wraps_to_the_mathlib_width_and_keeps_by_on_the_have_line() {
+    let f = Fixture::new();
+    let (j, r, t) = (&f.j, &f.r, &f.t);
+    // λ = 1 + j² is forced; a long parameter rendering and long hypothesis
+    // names push `have hg : … := by` past 100 columns.
+    let hyps = [t - r, t + j.powi(2) * r - j.powi(2) - 1];
+    let c = f.prove(&(t - 1), &hyps, Some(0));
+    let names = PolyhedronLeanNames {
+        hyps: &[
+            "e_first_hypothesis_of_the_leaf",
+            "e_second_hypothesis_of_the_leaf",
+        ],
+        param_nonneg: "hJ0_nonneg_parameter",
+        shift_nonneg: "hK0",
+    };
+    let opts = LeanOpts::default().with_symbol_text(
+        "j",
+        "((j_parameter_of_the_ladder_frame_index_variable : ℕ) : ℝ)",
+    );
+    let steps = c.lean_steps(&names, &opts).unwrap();
+    assert!(
+        steps.closing[0].chars().count() + 4 > 100,
+        "{}",
+        steps.closing[0]
+    );
+    let block = steps.to_block("    ");
+    assert!(block.lines().all(|l| l.chars().count() <= 100), "{block}");
+    for l in block.lines() {
+        assert!(
+            !l.trim_start().starts_with(":="),
+            "continuation line starts with :=\n{block}"
+        );
+    }
+    // The wrapped `have hg` statement ends with `:= by` on its last line,
+    // and the `linarith only […]` that proves it follows, deeper indented.
+    let lines: Vec<&str> = block.lines().collect();
+    let idx = lines.iter().position(|l| l.contains("have hg :")).unwrap();
+    assert!(lines[idx].starts_with("    have hg :"));
+    let end = (idx..lines.len())
+        .find(|&i| lines[i].ends_with(":= by"))
+        .unwrap();
+    assert!(
+        lines[end + 1].starts_with("      linarith only ["),
+        "{block}"
+    );
+    assert_eq!(
+        steps.to_block_width("", 10_000).lines().count(),
+        steps.haves.len() + steps.closing.len()
+    );
 }
 
 struct Lcg(u64);

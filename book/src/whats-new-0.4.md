@@ -20,7 +20,7 @@ The Lean export writes the proof a person would: `have h0K := mul_nonneg hK0 h0`
 
 ## Exact polytopes
 
-`symplex::polytope::Polytope` is a convex polyhedron in ℚⁿ from half-spaces: exact `vertices` (via `QMatrix::solve`), `volume` (dimension ≤ 3), `contains`, `is_empty` / `any_point` / `bounding_box` / `is_bounded` (exact LP), `irredundant`, `split` by a hyperplane, and `from_exprs` / `to_exprs` to move between affine `Ex` hypotheses and half-space data — so a cell can be measured, cut and handed to the certificate search.
+`symplex::polytope::Polytope` is a convex polyhedron in ℚⁿ from half-spaces: exact `vertices` (via `QMatrix::solve`), `volume` (dimension ≤ 3 in 0.4, any dimension since 0.5), `contains`, `is_empty` / `any_point` / `bounding_box` / `is_bounded` (exact LP), `irredundant`, `split` by a hyperplane, and `from_exprs` / `to_exprs` to move between affine `Ex` hypotheses and half-space data — so a cell can be measured, cut and handed to the certificate search.
 
 → [Exact Linear Programming: polytopes](./guide/exact-lp.md#polytopes-from-half-spaces)
 

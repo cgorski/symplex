@@ -3,8 +3,8 @@
 //! A [`Polytope`] is an intersection of half-spaces `aᵢ·x + bᵢ ≥ 0` with
 //! rational data.  Everything here is exact: vertices come from solving
 //! `n × n` systems with [`QMatrix`], emptiness and boundedness from the
-//! exact LP, volumes (dimension ≤ 3) from a fan triangulation over the
-//! vertex centroid.  The type is meant for the geometric bookkeeping
+//! exact LP, volumes (any dimension) from an exact facet decomposition
+//! around the vertex centroid.  The type is meant for the geometric bookkeeping
 //! around certificate searches — which cells a decision tree produces,
 //! where to cut them, whether two descriptions coincide — not for large
 //! polyhedra: [`vertices`](Polytope::vertices) is `O(C(m, n))` linear solves.
@@ -459,76 +459,122 @@ impl Polytope {
         Ok(centroid(&verts, self.dim))
     }
 
-    /// Exact `n`-dimensional volume for `n ≤ 3` (length, area, volume).
-    /// Zero for an empty or lower-dimensional polytope.
+    /// Exact `n`-dimensional volume (length, area, volume, …) of a bounded
+    /// polytope in any dimension.  Zero for an empty or lower-dimensional
+    /// polytope.
+    ///
+    /// Computed by the facet decomposition `vol(P) = (1/n) Σ_F dist(o, F) ·
+    /// vol(F)` around the vertex centroid `o`, recursing on each facet's
+    /// exact `(n − 1)`-dimensional H-representation (obtained by eliminating
+    /// one coordinate); the `‖a_F‖` factors cancel, so every intermediate
+    /// value is rational.  Cost grows like the number of faces, which is
+    /// fine for the cells of a decision tree in dimension `≤ 5` and the
+    /// wrong tool for large polyhedra.
     ///
     /// # Errors
     ///
-    /// [`SymplexError::InvalidArgument`] if the polytope is unbounded or
-    /// `n > 3`; [`SymplexError::NotImplemented`] is not used.
+    /// [`SymplexError::InvalidArgument`] if the polyhedron is unbounded.
+    ///
+    /// ```
+    /// use symplex::polytope::Polytope;
+    /// use symplex::linprog::{q, qi};
+    ///
+    /// // The 4-simplex x ≥ 0, Σx ≤ 1 has volume 1/4! = 1/24.
+    /// let mut rows: Vec<(Vec<_>, _)> = (0..4).map(|i| { let mut e = vec![qi(0); 4]; e[i] = qi(1); (e, qi(0)) }).collect();
+    /// rows.push((vec![qi(-1); 4], qi(1)));
+    /// assert_eq!(Polytope::from_rows(&rows).unwrap().volume().unwrap(), q(1, 24));
+    /// ```
     pub fn volume(&self) -> Result<Q, SymplexError> {
         const OP: &str = "Polytope::volume";
-        if self.dim > 3 {
-            return Err(invalid(
-                OP,
-                format!("volume is implemented for dimension ≤ 3, got {}", self.dim),
-            ));
-        }
         if !self.is_bounded()? {
             return Err(invalid(OP, "the polyhedron is unbounded"));
         }
-        let verts = self.vertices()?;
-        let Some(o) = centroid(&verts, self.dim) else {
-            return Ok(Q::zero());
-        };
-        match self.dim {
-            1 => {
-                let lo = verts.iter().map(|v| &v[0]).min().cloned();
-                let hi = verts.iter().map(|v| &v[0]).max().cloned();
-                Ok(match (lo, hi) {
-                    (Some(l), Some(h)) => h - l,
-                    _ => Q::zero(),
-                })
-            }
-            2 => Ok(polygon_area(&verts, &o)),
-            _ => {
-                // Sum of pyramids over the facets from the interior point o.
-                let mut total = Q::zero();
-                for h in &self.halfspaces {
-                    let face: Vec<Vec<Q>> = verts
-                        .iter()
-                        .filter(|v| h.value(v).is_zero())
-                        .cloned()
-                        .collect();
-                    if face.len() < 3 {
-                        continue;
-                    }
-                    let Some(fc) = centroid(&face, 3) else {
-                        continue;
-                    };
-                    // Order the face's vertices cyclically in the plane of
-                    // the face (project along the largest normal component).
-                    let drop = (0..3)
-                        .max_by(|&i, &j| h.coeffs[i].abs().cmp(&h.coeffs[j].abs()))
-                        .unwrap_or(2);
-                    let keep: Vec<usize> = (0..3).filter(|&i| i != drop).collect();
-                    let planar: Vec<Vec<Q>> = face
-                        .iter()
-                        .map(|v| vec![v[keep[0]].clone(), v[keep[1]].clone()])
-                        .collect();
-                    let pc = vec![fc[keep[0]].clone(), fc[keep[1]].clone()];
-                    let order = cyclic_order(&planar, &pc);
-                    let k = order.len();
-                    for i in 0..k {
-                        let a = &face[order[i]];
-                        let b = &face[order[(i + 1) % k]];
-                        total += tetra_volume(&o, &fc, a, b);
-                    }
-                }
-                Ok(total)
-            }
-        }
+        Ok(self.volume_bounded())
     }
+
+    /// Volume of a polytope already known to be bounded (recursive core).
+    fn volume_bounded(&self) -> Q {
+        let n = self.dim;
+        let verts = match self.vertices() {
+            Ok(v) => v,
+            Err(_) => return Q::zero(),
+        };
+        if verts.len() < n + 1 {
+            return Q::zero(); // empty or lower-dimensional
+        }
+        if n == 1 {
+            let lo = verts.iter().map(|v| &v[0]).min().cloned();
+            let hi = verts.iter().map(|v| &v[0]).max().cloned();
+            return match (lo, hi) {
+                (Some(l), Some(h)) => h - l,
+                _ => Q::zero(),
+            };
+        }
+        let Some(o) = centroid(&verts, n) else {
+            return Q::zero();
+        };
+        // Distinct facet hyperplanes (a half-space listed twice, or scaled,
+        // must be counted once).
+        let mut seen: Vec<HalfSpace> = Vec::new();
+        let mut total = Q::zero();
+        for h in &self.halfspaces {
+            let Some(norm) = normalized(h) else {
+                continue; // a·x + b ≥ 0 with a = 0: not a facet
+            };
+            if seen.contains(&norm) {
+                continue;
+            }
+            seen.push(norm);
+            // Vertices on this hyperplane: fewer than n means no facet.
+            let on: usize = verts.iter().filter(|v| h.value(v).is_zero()).count();
+            if on < n {
+                continue;
+            }
+            // Eliminate coordinate k with the largest |a_k| ≠ 0:
+            //   x_k = −(b + Σ_{i≠k} a_i x_i) / a_k.
+            let Some(k) = (0..n)
+                .filter(|&i| !h.coeffs[i].is_zero())
+                .max_by(|&i, &j| h.coeffs[i].abs().cmp(&h.coeffs[j].abs()))
+            else {
+                continue;
+            };
+            let ak = &h.coeffs[k];
+            let mut facet_rows: Vec<HalfSpace> = Vec::new();
+            for g in &self.halfspaces {
+                // g(x) with x_k substituted: coefficients over the n−1 kept coordinates.
+                let gk = &g.coeffs[k];
+                let mut coeffs: Vec<Q> = Vec::with_capacity(n - 1);
+                for i in (0..n).filter(|&i| i != k) {
+                    coeffs.push(&g.coeffs[i] - gk * &h.coeffs[i] / ak);
+                }
+                let constant = &g.constant - gk * &h.constant / ak;
+                if coeffs.iter().all(Zero::is_zero) {
+                    continue; // constant constraint (the facet's own hyperplane, or a redundant one)
+                }
+                facet_rows.push(HalfSpace { coeffs, constant });
+            }
+            let Ok(facet) = Polytope::new(facet_rows) else {
+                continue;
+            };
+            let facet_vol = facet.volume_bounded();
+            if facet_vol.is_zero() {
+                continue;
+            }
+            // dist(o, F) · vol_{n−1}(F) = (a·o + b)/‖a‖ · vol(proj) · ‖a‖/|a_k|.
+            total += h.value(&o) / ak.abs() * facet_vol;
+        }
+        total / Q::from_integer(BigInt::from(n))
+    }
+}
+
+/// `h` scaled so that its first non-zero coefficient is `1` (identifies a
+/// hyperplane up to positive scaling); `None` for a trivial half-space.
+fn normalized(h: &HalfSpace) -> Option<HalfSpace> {
+    let first = h.coeffs.iter().find(|c| !c.is_zero())?;
+    Some(HalfSpace {
+        coeffs: h.coeffs.iter().map(|c| c / first).collect(),
+        constant: &h.constant / first,
+    })
 }
 
 fn centroid(points: &[Vec<Q>], dim: usize) -> Option<Vec<Q>> {
@@ -543,63 +589,201 @@ fn centroid(points: &[Vec<Q>], dim: usize) -> Option<Vec<Q>> {
     )
 }
 
-/// Indices of `pts` in counter-clockwise order around `center` (exact:
-/// half-plane first, then cross product).
-fn cyclic_order(pts: &[Vec<Q>], center: &[Q]) -> Vec<usize> {
-    let mut idx: Vec<usize> = (0..pts.len()).collect();
-    let rel = |i: usize| (&pts[i][0] - &center[0], &pts[i][1] - &center[1]);
-    let half = |(dx, dy): &(Q, Q)| -> u8 {
-        if dy.is_positive() || (dy.is_zero() && !dx.is_negative()) {
-            0
-        } else {
-            1
+// ═══════════════════════════════════════════════════════════════════════════
+// Parametric polytopes
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A family of polytopes `{x : hₖ(j, x) ≥ 0}` whose half-spaces are affine
+/// in `x` with coefficients polynomial in one parameter `j`.
+///
+/// [`at`](Self::at) instantiates the family exactly at a rational `j`;
+/// [`polytope_at`](Self::polytope_at) / [`vertices_at`](Self::vertices_at) /
+/// [`volume_at`](Self::volume_at) do the same with a per-value cache, for
+/// tree builders that revisit the same samples.
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::polytope::ParametricPolytope;
+/// use symplex::linprog::{q, qi};
+///
+/// let ctx = Context::new();
+/// let (j, r, t) = (ctx.symbol("j"), ctx.symbol("r"), ctx.symbol("t"));
+/// // 0 ≤ r ≤ 1/2, 0 ≤ t ≤ 1, (2j + 1)·t ≥ j·r + 1
+/// let hyps = [r.clone(), ctx.rational(1, 2) - &r, t.clone(), 1 - &t, (&j * 2 + 1) * &t - &j * &r - 1];
+/// let mut cell = ParametricPolytope::new(&hyps, &[r, t], &j).unwrap();
+/// assert_eq!(cell.volume_at(&qi(2)).unwrap(), q(7, 20));   // ∫₀^{1/2} (1 − (2r + 1)/5) dr
+/// assert_eq!(cell.vertices_at(&qi(2)).unwrap().len(), 4);
+/// assert!(cell.at(&qi(100)).unwrap().contains(&[q(1, 4), q(3, 4)]));
+/// ```
+#[derive(Clone, Debug)]
+pub struct ParametricPolytope {
+    hyps: Vec<Poly>,
+    vars: Vec<Ex>,
+    param: Ex,
+    cache: std::collections::BTreeMap<Q, Instance>,
+}
+
+/// A cached instantiation: the polytope and, once computed, its vertices.
+type Instance = (Polytope, Option<Vec<Vec<Q>>>);
+
+impl ParametricPolytope {
+    /// Build from hypotheses `hₖ(j, x) ≥ 0`, each affine in `vars` with
+    /// coefficients polynomial (rational) in `param`.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if a hypothesis is not a polynomial
+    /// in the variables and the parameter, is not affine in the variables,
+    /// or has a symbolic coefficient; or if the lists are empty.
+    pub fn new(hyps: &[Ex], vars: &[Ex], param: &Ex) -> Result<Self, SymplexError> {
+        const OP: &str = "ParametricPolytope::new";
+        if hyps.is_empty() {
+            return Err(invalid(OP, "at least one hypothesis is required"));
         }
-    };
-    idx.sort_by(|&i, &j| {
-        let (a, b) = (rel(i), rel(j));
-        half(&a).cmp(&half(&b)).then_with(|| {
-            // cross(a, b) > 0  ⇔  a comes before b (counter-clockwise).
-            let cross = &a.0 * &b.1 - &a.1 * &b.0;
-            if cross.is_positive() {
-                std::cmp::Ordering::Less
-            } else if cross.is_negative() {
-                std::cmp::Ordering::Greater
-            } else {
-                std::cmp::Ordering::Equal
+        if vars.is_empty() {
+            return Err(invalid(OP, "at least one variable is required"));
+        }
+        if vars.contains(param) {
+            return Err(invalid(
+                OP,
+                "the parameter must not be one of the variables",
+            ));
+        }
+        let mut gens: Vec<&Ex> = vars.iter().collect();
+        gens.push(param);
+        let n = vars.len();
+        let mut polys = Vec::with_capacity(hyps.len());
+        for h in hyps {
+            let p = Poly::try_new(h, &gens).map_err(|e| match e {
+                SymplexError::InvalidArgument { reason, .. } => invalid(OP, reason),
+                other => other,
+            })?;
+            if !p.has_rational_coeffs() {
+                return Err(invalid(OP, format!("`{h}` has a symbolic coefficient")));
             }
+            if p.terms_iter().any(|(m, _)| m[..n].iter().sum::<u32>() > 1) {
+                return Err(invalid(OP, format!("`{h}` is not affine in the variables")));
+            }
+            polys.push(p);
+        }
+        Ok(ParametricPolytope {
+            hyps: polys,
+            vars: vars.to_vec(),
+            param: param.clone(),
+            cache: std::collections::BTreeMap::new(),
         })
-    });
-    idx
-}
-
-/// Area of the convex polygon with the given vertices (any order) via a
-/// fan around the interior point `o`.
-fn polygon_area(verts: &[Vec<Q>], o: &[Q]) -> Q {
-    let order = cyclic_order(verts, o);
-    let k = order.len();
-    if k < 3 {
-        return Q::zero();
     }
-    let mut twice = Q::zero();
-    for i in 0..k {
-        let a = &verts[order[i]];
-        let b = &verts[order[(i + 1) % k]];
-        let (ax, ay) = (&a[0] - &o[0], &a[1] - &o[1]);
-        let (bx, by) = (&b[0] - &o[0], &b[1] - &o[1]);
-        twice += (&ax * &by - &ay * &bx).abs();
-    }
-    twice / Q::from_integer(BigInt::from(2))
-}
 
-/// `|det(a − o, b − o, c − o)| / 6`.
-fn tetra_volume(o: &[Q], a: &[Q], b: &[Q], c: &[Q]) -> Q {
-    let d = |p: &[Q], i: usize| &p[i] - &o[i];
-    let (a0, a1, a2) = (d(a, 0), d(a, 1), d(a, 2));
-    let (b0, b1, b2) = (d(b, 0), d(b, 1), d(b, 2));
-    let (c0, c1, c2) = (d(c, 0), d(c, 1), d(c, 2));
-    let det = &a0 * (&b1 * &c2 - &b2 * &c1) - &a1 * (&b0 * &c2 - &b2 * &c0)
-        + &a2 * (&b0 * &c1 - &b1 * &c0);
-    det.abs() / Q::from_integer(BigInt::from(6))
+    /// The variables, in order.
+    pub fn vars(&self) -> &[Ex] {
+        &self.vars
+    }
+
+    /// The parameter.
+    pub fn param(&self) -> &Ex {
+        &self.param
+    }
+
+    /// The hypotheses as polynomials in `(vars…, param)`.
+    pub fn hyps(&self) -> &[Poly] {
+        &self.hyps
+    }
+
+    /// The polytope at `param = value`, exactly (no cache).
+    ///
+    /// # Errors
+    ///
+    /// Only internal failures (the substitution of a rational is always
+    /// affine in the variables).
+    pub fn at(&self, value: &Q) -> Result<Polytope, SymplexError> {
+        let ctx = self.param.context();
+        let val = ctx.from_ratio(value.clone());
+        let n = self.vars.len();
+        let mut rows = Vec::with_capacity(self.hyps.len());
+        for h in &self.hyps {
+            let p = h.eval_gen(&self.param, &val)?;
+            let mut coeffs = vec![Q::zero(); n];
+            let mut constant = Q::zero();
+            for (m, c) in p.terms_iter() {
+                let c = c.as_rational().ok_or_else(|| {
+                    invalid(
+                        "ParametricPolytope::at",
+                        "internal: non-rational coefficient",
+                    )
+                })?;
+                match m.iter().position(|&e| e == 1) {
+                    Some(i) => coeffs[i] = c,
+                    None => constant = c,
+                }
+            }
+            rows.push(HalfSpace { coeffs, constant });
+        }
+        Polytope::new(rows)
+    }
+
+    fn entry(&mut self, value: &Q) -> Result<&mut Instance, SymplexError> {
+        if !self.cache.contains_key(value) {
+            let p = self.at(value)?;
+            self.cache.insert(value.clone(), (p, None));
+        }
+        self.cache
+            .get_mut(value)
+            .ok_or_else(|| invalid("ParametricPolytope::at", "internal: cache"))
+    }
+
+    /// The polytope at `param = value`, cached.
+    ///
+    /// # Errors
+    ///
+    /// As [`at`](Self::at).
+    pub fn polytope_at(&mut self, value: &Q) -> Result<&Polytope, SymplexError> {
+        Ok(&self.entry(value)?.0)
+    }
+
+    /// The vertices at `param = value`, cached.
+    ///
+    /// # Errors
+    ///
+    /// As [`at`](Self::at).
+    pub fn vertices_at(&mut self, value: &Q) -> Result<&[Vec<Q>], SymplexError> {
+        let e = self.entry(value)?;
+        if e.1.is_none() {
+            e.1 = Some(e.0.vertices()?);
+        }
+        Ok(e.1.as_deref().unwrap_or(&[]))
+    }
+
+    /// The volume at `param = value` (uses the cached polytope).
+    ///
+    /// # Errors
+    ///
+    /// As [`Polytope::volume`].
+    pub fn volume_at(&mut self, value: &Q) -> Result<Q, SymplexError> {
+        self.polytope_at(value)?.volume()
+    }
+
+    /// Is the polytope at `param = value` empty?
+    ///
+    /// # Errors
+    ///
+    /// As [`Polytope::is_empty`].
+    pub fn is_empty_at(&mut self, value: &Q) -> Result<bool, SymplexError> {
+        self.polytope_at(value)?.is_empty()
+    }
+
+    /// Does the polytope at `param = value` contain `x`?
+    ///
+    /// # Errors
+    ///
+    /// As [`at`](Self::at).
+    pub fn contains_at(&mut self, value: &Q, x: &[Q]) -> Result<bool, SymplexError> {
+        Ok(self.polytope_at(value)?.contains(x))
+    }
+
+    /// Forget every cached instantiation.
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
 }
 
 #[cfg(test)]

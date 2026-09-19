@@ -102,7 +102,7 @@ fn main() {
     )
     .unwrap()
     {
-        PolyhedronOutcome::Refuted { point, value } => {
+        PolyhedronOutcome::Refuted { point, value, .. } => {
             let shown: Vec<String> = point.iter().map(|(v, q)| format!("{v} = {q}")).collect();
             println!("refuted: goal = {value} at {}", shown.join(", "));
         }
