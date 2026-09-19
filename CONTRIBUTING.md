@@ -121,7 +121,10 @@ src/
 │                 nullspace, unimodularity, lattice index), certificates.rs (Handelman box and
 │                 univariate half-line certificates) + certificates/polyhedron.rs (0.4:
 │                 parametric polyhedron certificates with a λ(j) goal multiplier, staged LP,
-│                 Lean export in the mul_nonneg / linarith-only shape), polytope.rs (0.4: exact
+│                 Lean export in the mul_nonneg / linarith-only shape) + certificates/sos.rs
+│                 (0.6: sums of squares — dense f64 primal–dual SDP, exact rounding/projection,
+│                 rational LDLᵀ, LLL-based facial reduction; Lean via ring + positivity),
+│                 polytope.rs (0.4: exact
 │                 polyhedra from half-spaces: vertices via QMatrix, LP-based emptiness and
 │                 bounds, volume ≤ 3-D), optimize.rs (Brent/bisection/Newton,
 │                 Nelder–Mead, golden section, differential evolution, least-squares fits),
@@ -491,7 +494,7 @@ former top-level file is a module of its group, so a test is addressed as
 
 | Binary (`--test …`) | Sources | What they test |
 |---------------------|---------|----------------|
-| `v04` | `tests/v04/v04_<area>.rs` | One suite per 0.4 feature: `polyhedron` (parametric polyhedron certificates; emitted Lean pinned to the Mathlib-compiled `tests/fixtures/polyhedron_certificates.lean`), `polytope` |
+| `v04` | `tests/v04/v04_<area>.rs` | One suite per 0.4–0.6 feature: `polyhedron` (parametric polyhedron certificates; emitted Lean pinned to the Mathlib-compiled `tests/fixtures/polyhedron_certificates.lean`), `polytope`, `sos` (pinned to `tests/fixtures/sos_certificates.lean`) |
 | `v03` | `tests/v03/v03_<area>.rs` (7 modules, ~400 tests) | One suite per 0.3 feature: `poly_view`, `poly_symbolic_coeffs`, `ratsimp`, `linprog` (full KKT check of every optimum, Farkas vector verified), `normalforms` (defining invariants, not pinned answers), `matrix_ergonomics`, `optimize` |
 | `v03_oracle` | `tests/v03_oracle/v03_oracle_*.rs` | SymPy oracle for the 0.3 API (`tests/fixtures/v03_cross_validation.json`) |
 | `v02` | `tests/v02/v02_<area>_<topic>.rs` (62 modules, ~1,050 tests) | One suite per 0.2 feature area: `backends_{c,codegen,compile,cse}`, `basefix_*`, `ergonomics_*`, `integration_{battery,definite,residue}`, `matrices_*`, `nodes_*`, `ntheory_*`, `numfix_*`, `sets_*`, `simplify_*`, `solvefix_*`, `solving_*`, `summation_*`, `transforms_*` |

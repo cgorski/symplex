@@ -470,7 +470,20 @@ out.certificate().unwrap().to_lean("needs_lambda").unwrap();
 //   linarith only [hg']
 ```
 
-Also: `prove_polyhedron_empty` (the same identity with goal `−1`: a cell is empty for every `j`), `prove_nonnegative_on_halfline` / `prove_nonnegative_on_reals` (univariate, Pólya multipliers and square factors), `lean_steps` / `lean_hints` for dropping a proof into an existing skeleton, `LeanOpts::prefer_subtraction`, and `symplex::polytope::Polytope` for the exact geometry of the cells (vertices, volume, cuts, redundancy).
+```rust
+// 0.6: sums of squares — non-negativity on all of ℝⁿ, interior zeros included.  The Gram SDP is
+// solved by a built-in interior-point method, rounded, projected and checked exactly (rational LDLᵀ).
+use symplex::certificates::{prove_sos, SosOpts};
+syms!(ctx; x, y, z);
+let amgm = x.powi(4) + y.powi(4) + z.powi(4) - &x * &y * &z * 4 + 1;
+let cert = prove_sos(&amgm, &[x.clone(), y.clone(), z.clone()], &SosOpts::default()).unwrap();
+cert.certificate().unwrap().to_string();
+// x^4 + y^4 + z^4 - 4*x*y*z + 1 = (-1/3*x^2 - 1/3*y^2 - 1/3*z^2 + 1)^2 + 2/3*(-y*z + x)^2 + 2/3*(-x*z + y)^2
+//   + 2/3*(-x*y + z)^2 + 2/3*(-x^2 + y^2)^2 + 8/9*(-1/2*x^2 - 1/2*y^2 + z^2)^2
+cert.certificate().unwrap().to_lean("amgm3").unwrap();   // have h : … := by ring;  rw [h];  positivity
+```
+
+Also: `prove_polyhedron_empty` (the same identity with goal `−1`: a cell is empty for every `j`), `PolyhedronProver` (parse the hypotheses once, prove many goals), `prove_nonnegative_on_halfline` / `prove_nonnegative_on_reals` (univariate, Pólya multipliers and square factors), `lean_steps` / `lean_hints` for dropping a proof into an existing skeleton, `LeanOpts::{prefer_subtraction, single_fraction, symbol_text}`, every certificate round-trips through JSON with re-verification, and `symplex::polytope::{Polytope, ParametricPolytope}` for the exact geometry of the cells (vertices, volume in any dimension, cuts, redundancy).
 
 ### Transforms
 

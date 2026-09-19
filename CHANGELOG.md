@@ -6,6 +6,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.6.0] - 2026-09-18
+
+### Added
+
+- **Sums-of-squares certificates** (`certificates::prove_sos(goal, &vars,
+  &SosOpts)`, `is_sos`): prove `g ≥ 0` on all of ℝⁿ by an exact
+  decomposition `g = Σₖ dₖ·pₖ²` with rational `dₖ > 0` and
+  rational-coefficient `pₖ` — the class of goals the box, half-line and
+  polyhedron certificates could not reach (`(x − 1)² + (y − 1)²`, the
+  AM–GM form `x⁴ + y⁴ + z⁴ + 1 − 4xyz`, …).  Outcomes
+  `Proved(SosCertificate)` / `Refuted { point, value }` (exact rational
+  point, found by a grid and a rationalised numerical minimiser) /
+  `Unknown { reason }` (Motzkin's polynomial, odd degree, or a search that
+  did not converge — never a wrong `Proved`).
+  - The pipeline is Peyrl–Parrilo made exact: the Gram SDP `g = mᵀQm`,
+    `Q ⪰ 0` is solved numerically by a small dense primal–dual
+    interior-point method (HKM direction, Mehrotra predictor–corrector,
+    exact-to-the-boundary steps; no external solver) whose zero objective
+    makes it converge to the analytic centre; the solution is rounded,
+    projected back onto the coefficient constraints exactly (rational
+    least-norm correction) and tested for positive semidefiniteness with
+    the rational `QMatrix::ldl_psd`, whose factorisation *is* the
+    decomposition.
+  - Goals with real zeros have only singular Gram matrices; the search then
+    performs **facial reduction**: the numerical kernel is made exact
+    either directly (rational kernel) or through its integer relations
+    (LLL on the kernel lattice, with Newton-refined zeros of the goal
+    providing a double-precision kernel), the problem is restricted to the
+    face `Q = B Q' Bᵀ` and re-solved, up to three times.  Sums of two or
+    three random squares with irrational common zeros are recovered
+    exactly (119 of 120 random cases through degree 6 in two and three
+    variables).
+  - `SosCertificate::{goal, vars, basis, gram, squares, rank, identity,
+    verify, lean_hints, to_lean, to_lean_with, to_data, from_data,
+    to_json, from_json}` (`from_*` re-verify), `Display` as
+    `goal = d₁·(p₁)² + …`.
+  - Lean export: `have h : goal = d₁ * (p₁) ^ 2 + … := by ring` then
+    `rw [h]; positivity` — two deterministic steps, no search.  Eight
+    shapes (squares with a common zero, positive definite quadratics and
+    quartics, a perfect square, a product of squares, univariate, three
+    variables, AM–GM) compile against Mathlib (Lean 4.30.0) with
+    `linter.style.longLine` on; the emitted text is pinned to that file
+    (`tests/fixtures/sos_certificates.lean`).
+- `lean::wrap_lean` never breaks between `^` and its exponent.
+- `Poly::new` docs point to `try_new` for the failure reason.
+
+### Infrastructure
+
+- `symplex` and `symplex-build` at 0.6.0; `symplex-macros` unchanged at
+  0.3.0.  Additive over 0.5.0.
+
 ## [0.5.0] - 2026-09-18
 
 ### Breaking

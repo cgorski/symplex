@@ -30,6 +30,16 @@
 //! or as bare proof steps for an existing skeleton
 //! ([`PolyhedronCertificate::lean_steps`]).
 //!
+//! # Sums of squares
+//!
+//! [`prove_sos`] proves `g ≥ 0` on all of ℝⁿ by an exact decomposition
+//! `g = Σ dₖ pₖ²` ([`SosCertificate`]): the Gram semidefinite program is
+//! solved by a built-in interior-point method, rounded, projected back onto
+//! the coefficient constraints exactly and checked with a rational `L·D·Lᵀ`;
+//! goals with real zeros are handled by numerically guided exact facial
+//! reduction.  This is the class the hypothesis-based certificates cannot
+//! reach (`(x − 1)² + (y − 1)²`, `x⁴ + y⁴ + z⁴ + 1 − 4xyz`).
+//!
 //! # Boxes
 //!
 //! [`prove_nonnegative_on_box`] searches for a **Handelman certificate**: a
@@ -104,11 +114,13 @@ use crate::domains::linprog::{Feasibility, LpProblem, LpStatus, nonneg_combinati
 use crate::output::lean::{LeanOpts, MATHLIB_LINE_WIDTH, lean_ident, wrap_lean};
 
 mod polyhedron;
+mod sos;
 pub use polyhedron::{
     PolyhedronCertificate, PolyhedronCertificateData, PolyhedronLeanNames, PolyhedronLeanSteps,
     PolyhedronOpts, PolyhedronOutcome, PolyhedronProver, PolyhedronTerm,
     prove_nonnegative_on_polyhedron, prove_polyhedron_empty,
 };
+pub use sos::{SosCertificate, SosCertificateData, SosOpts, SosOutcome, is_sos, prove_sos};
 
 /// Exact rationals as `"p/q"` strings for the serialisable certificate forms.
 pub(crate) mod serial {

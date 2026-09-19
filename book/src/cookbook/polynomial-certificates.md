@@ -368,3 +368,44 @@ Every shape the emitter produces (`λ = 1`, `λ` of degree 1 and 2, `j₀ > 0`, 
 `PolyhedronOutcome::Refuted` carries an exact point of the set where the goal is negative (for the emptiness question: a point *in* the set), found by sampling `j` and minimising the goal over the cell with the exact LP when everything is affine in the free variables. The staged search costs a few milliseconds per facet for a cell with a dozen `j`-dependent hypotheses in a release build, which is what makes it usable inside a tree builder that asks thousands of times.
 
 See `cargo run --example polyhedron_certificates` and, for the exact geometry of the cells themselves (vertices, volume, cuts), [`symplex::polytope`](../guide/exact-lp.md#polytopes-from-half-spaces).
+
+## Sums of squares: interior zeros without a square factor
+
+Everything above multiplies non-negative *hypotheses*. A polynomial that is non-negative on all of ℝⁿ with no hypotheses at all — `(x − 1)² + (y − 1)²`, or `x⁴ + y⁴ + z⁴ + 1 − 4xyz` — needs a different certificate: a **sum of squares** `g = Σ dₖ·pₖ²`. `prove_sos` (0.6) finds one exactly:
+
+```rust
+use symplex::prelude::*;
+use symplex::certificates::{prove_sos, SosOpts, SosOutcome};
+
+fn main() {
+    let ctx = Context::new();
+    let (x, y, z) = (ctx.symbol("x"), ctx.symbol("y"), ctx.symbol("z"));
+    let amgm = x.powi(4) + y.powi(4) + z.powi(4) - &x * &y * &z * 4 + 1;
+    match prove_sos(&amgm, &[x.clone(), y.clone(), z.clone()], &SosOpts::default()).unwrap() {
+        SosOutcome::Proved(c) => {
+            println!("{c}");
+            // x^4 + y^4 + z^4 - 4*x*y*z + 1 = (-1/3*x^2 - 1/3*y^2 - 1/3*z^2 + 1)^2 + 2/3*(-y*z + x)^2
+            //   + 2/3*(-x*z + y)^2 + 2/3*(-x*y + z)^2 + 2/3*(-x^2 + y^2)^2 + 8/9*(-1/2*x^2 - 1/2*y^2 + z^2)^2
+            print!("{}", c.to_lean("amgm3").unwrap());
+        }
+        SosOutcome::Refuted { point, value } => println!("negative: {value} at {point:?}"),
+        SosOutcome::Unknown { reason } => println!("no decomposition found: {reason}"),
+    }
+}
+```
+
+```lean
+theorem amgm3 (x y z : ℝ) : 0 ≤ x ^ 4 + y ^ 4 + z ^ 4 - 4 * x * y * z + 1 := by
+  have h : x ^ 4 + y ^ 4 + z ^ 4 - 4 * x * y * z + 1 = (-(x ^ 2 / 3) - y ^ 2 / 3 - z ^ 2 / 3 + 1) ^
+    2 + (2 / 3 : ℝ) * (-(x * y) + z) ^ 2 + (2 / 3 : ℝ) * (-(x * z) + y) ^ 2 + (2 / 3 : ℝ) *
+    (-(y * z) + x) ^ 2 + (8 / 9 : ℝ) * (-(x ^ 2 / 2) - y ^ 2 / 2 + z ^ 2) ^ 2 + (2 / 3 : ℝ) *
+    (-x ^ 2 + y ^ 2) ^ 2 := by ring
+  rw [h]
+  positivity
+```
+
+The search is the Peyrl–Parrilo pipeline made exact: write `g = mᵀ Q m` over the monomials of half the degree, solve the semidefinite program for `Q` numerically (a small dense interior-point method is built in — no external solver), round the solution to rationals, project it back onto the coefficient constraints exactly, and test positive semidefiniteness with the rational `L·D·Lᵀ` of `QMatrix::ldl_psd` — whose factorisation is the decomposition. The Lean proof is two deterministic steps: `ring` checks the identity, `positivity` closes a sum of non-negative terms.
+
+A goal with real zeros — every certificate the tree builder cares about touches zero somewhere — has only *singular* Gram matrices, which rounding cannot hit. `prove_sos` then does facial reduction: it reads the kernel off the numerical solution, makes it exact (directly when the kernel is rational, otherwise through its integer relations, found by LLL after Newton-refining the zeros of the goal to double precision), restricts the search to that face and solves again. Sums of two random squares whose common zeros are irrational algebraic points come back as exactly those two squares.
+
+What it cannot do, it says so: `Refuted` carries an exact point where the goal is negative; Motzkin's polynomial `x⁴y² + x²y⁴ − 3x²y² + 1` (non-negative but not a sum of squares) is `Unknown`, never `Proved`. Certificates round-trip through JSON with re-verification like the others, and `lean_hints` gives the `sq_nonneg (pₖ)` terms for an `nlinarith` skeleton of your own.

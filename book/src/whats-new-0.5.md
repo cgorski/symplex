@@ -26,4 +26,4 @@ let empty = prover.prove_empty()?;
 
 ## Exact PSD test
 
-`QMatrix::ldl_psd()` returns the rational `L·D·Lᵀ` of a positive-semidefinite matrix (and `None` otherwise), the building block of the sums-of-squares certificates that come next.
+`QMatrix::ldl_psd()` returns the rational `L·D·Lᵀ` of a positive-semidefinite matrix (and `None` otherwise), the building block of the sums-of-squares certificates in 0.6.

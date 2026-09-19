@@ -581,6 +581,26 @@ fn certified_inequalities() {
     assert!(lean.contains("have h0J := mul_nonneg hJ0 h0\n"));
     assert!(lean.contains("have hg' := nonneg_of_mul_nonneg_right hg (by linarith only [hJ0])\n"));
     assert!(lean.ends_with("  linarith only [hg']\n"));
+
+    // 0.6: sums of squares.
+    use symplex::certificates::{SosOpts, prove_sos};
+    let z = ctx.symbol("z");
+    let amgm = x.powi(4) + y.powi(4) + z.powi(4) - &x * &y * &z * 4 + 1;
+    let out = prove_sos(
+        &amgm,
+        &[x.clone(), y.clone(), z.clone()],
+        &SosOpts::default(),
+    )
+    .unwrap();
+    let sos = out.certificate().expect("AM-GM is a sum of squares");
+    assert!(sos.verify());
+    println!("{sos}");
+    assert!(
+        sos.to_string()
+            .starts_with("x^4 + y^4 + z^4 - 4*x*y*z + 1 = ")
+    );
+    let lean = sos.to_lean("amgm3").unwrap();
+    assert!(lean.contains(":= by ring\n") && lean.ends_with("  rw [h]\n  positivity\n"));
 }
 
 fn exact_optimization() {

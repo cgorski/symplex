@@ -186,8 +186,8 @@ pub use output::tree;
 pub use plotting::data_export;
 
 // domains
-/// Exact, machine-checkable non-negativity certificates on boxes (Handelman),
-/// half-lines and parametric polyhedra, with Lean export.
+/// Exact, machine-checkable non-negativity certificates: Handelman (boxes),
+/// half-lines, parametric polyhedra and sums of squares, with Lean export.
 pub use domains::certificates;
 /// Combinatorics: Stirling numbers, multinomial coefficients, partition counting.
 pub use domains::combinatorics;

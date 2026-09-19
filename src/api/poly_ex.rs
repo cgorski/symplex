@@ -201,7 +201,10 @@ impl Poly {
     /// non-symbols, or when a generator occurs in a non-polynomial position:
     /// inside a function (`sin(x)`), under a negative or non-integer power
     /// (`x⁻¹`, `√x`), or in an exponent (`2^x`, `x^a`).  Other symbols may
-    /// appear anywhere — they become part of the coefficients.
+    /// appear anywhere — they become part of the coefficients.  When the
+    /// `None` is a surprise, [`try_new`](Self::try_new) returns the same
+    /// result with the reason (`… occurs under a negative power (a rational
+    /// function) in …`), which is worth a debugging round.
     ///
     /// # Examples
     ///

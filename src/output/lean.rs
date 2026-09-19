@@ -788,11 +788,17 @@ fn wrap_line(line: &str, width: usize, out: &mut String) {
                     if i > width {
                         break;
                     }
-                    // Keep `nlinarith [` / `linarith [` together, and never
-                    // start a continuation line with `:=` (`have h : … := by`
-                    // must keep its `:= by`).
+                    // Keep `nlinarith [` / `linarith [` together; never start
+                    // a continuation line with `:=` nor separate `:=` from its
+                    // `by` (`have h : … := by` keeps its `:= by`); never break
+                    // between `^` and its exponent.
+                    let prev2 = i >= 2 && current[i - 2] == ':' && current[i - 1] == '=';
+                    let around_caret =
+                        (i >= 1 && current[i - 1] == '^') || current.get(i + 1) == Some(&'^');
                     if current.get(i + 1) == Some(&'[')
                         || (current.get(i + 1) == Some(&':') && current.get(i + 2) == Some(&'='))
+                        || prev2
+                        || around_caret
                     {
                         continue;
                     }
