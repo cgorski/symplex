@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.8.2] - 2026-09-19
+
+### Changed
+
+- `prove_sos` prunes its Gram basis by the **Newton polytope**: a monomial
+  is kept only if its doubled exponent lies in the convex hull of the
+  goal's support (one small exact LP per candidate), which is exactly the
+  set of monomials that can occur in a sum-of-squares decomposition
+  (Reznick) — so nothing provable is lost, and sparse goals fit the
+  `max_basis` budget: `x⁸ + y⁸ + 1` needs 6 basis monomials instead of 45.
+  Dense goals are unchanged (the eight pinned Mathlib shapes are
+  byte-identical; the 120-case random stress is still 119 proved, the
+  same one unknown).
+
 ## [0.8.1] - 2026-09-19
 
 ### Changed

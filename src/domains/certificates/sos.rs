@@ -41,7 +41,7 @@ use crate::base::errors::SymplexError;
 use crate::domains::certificates::serial::{q_from_str, q_to_str};
 use crate::domains::certificates::{Certificate, Outcome};
 use crate::domains::exact_matrix::QMatrix;
-use crate::domains::linprog::Q;
+use crate::domains::linprog::{LpProblem, LpStatus, Q};
 use crate::output::lean::{LeanOpts, MATHLIB_LINE_WIDTH, lean_ident, wrap_lean};
 use crate::output::tree::ExprTree;
 
@@ -782,6 +782,44 @@ fn monomials_up_to(nvars: usize, deg: u32) -> Vec<Vec<u32>> {
     rec(0, deg, &mut cur, &mut out);
     out.sort_by_key(|m| (m.iter().sum::<u32>(), m.clone()));
     out
+}
+
+/// Monomials of degree `≤ half` whose doubled exponent vector lies in the
+/// Newton polytope of `goal` (the convex hull of its exponent vectors) — the
+/// only monomials that can appear in a sum-of-squares decomposition.  Each
+/// candidate is one small exact LP: `2e = Σ λᵢ vᵢ`, `Σ λᵢ = 1`, `λ ≥ 0`
+/// over the goal's support `vᵢ`.  Falls back to the plain degree bound if
+/// an LP fails (never drops a monomial on an error).
+fn newton_pruned_basis(goal: &Poly, nvars: usize, half: u32) -> Vec<Vec<u32>> {
+    let all = monomials_up_to(nvars, half);
+    let support: Vec<Vec<u32>> = goal.terms_iter().map(|(m, _)| m.to_vec()).collect();
+    if support.len() <= 1 {
+        return all;
+    }
+    let in_hull = |e: &[u32]| -> Option<bool> {
+        let k = support.len();
+        // Variables λ₀..λ_{k−1} ≥ 0 (default bounds); rows: one per
+        // coordinate plus Σλ = 1.
+        let mut lp = LpProblem::minimize(vec![Q::zero(); k]);
+        for (c, &target) in e.iter().enumerate() {
+            let row: Vec<Q> = support
+                .iter()
+                .map(|v| Q::from_integer(BigInt::from(v[c])))
+                .collect();
+            lp = lp.eq(row, Q::from_integer(BigInt::from(2 * target)));
+        }
+        lp = lp.eq(vec![Q::one(); k], Q::one());
+        Some(lp.solve().ok()?.status == LpStatus::Optimal)
+    };
+    let mut kept = Vec::with_capacity(all.len());
+    for m in &all {
+        match in_hull(m) {
+            Some(true) => kept.push(m.clone()),
+            Some(false) => {}
+            None => return all,
+        }
+    }
+    kept
 }
 
 /// The SDP `A(Q) = b, Q ⪰ 0` for `goal = mᵀ Q m` over the monomial basis.
@@ -1969,10 +2007,11 @@ pub fn prove_sos(goal: &Ex, vars: &[Ex], opts: &SosOpts) -> Result<SosOutcome, S
         };
     }
 
-    // 2. Gram basis: monomials of degree ≤ deg/2 (Newton-polytope pruning:
-    //    only exponents e with 2e in the goal's Newton polytope could appear;
-    //    we keep the simple degree bound, which is exact for full-degree goals).
-    let basis = monomials_up_to(vars.len(), deg / 2);
+    // 2. Gram basis: monomials of degree ≤ deg/2 whose doubled exponent lies
+    //    in the goal's Newton polytope — a monomial outside it cannot occur
+    //    in any square of the decomposition (Reznick), so pruning loses no
+    //    certificate and keeps sparse goals within `max_basis`.
+    let basis = newton_pruned_basis(&goal_poly, vars.len(), deg / 2);
     if basis.len() > opts.max_basis {
         return Err(invalid(format!(
             "the Gram basis has {} monomials, above max_basis = {}",
@@ -2183,11 +2222,30 @@ mod tests {
         assert!(prove_sos(&x, &[], &SosOpts::default()).is_err());
         assert!(prove_sos(&x.sin(), std::slice::from_ref(&x), &SosOpts::default()).is_err());
         assert!(prove_sos(&(&x + &y), std::slice::from_ref(&x), &SosOpts::default()).is_err());
-        let small = SosOpts {
-            max_basis: 2,
-            ..Default::default()
-        };
+        // Newton-polytope pruning: x² + y² needs only the basis {x, y}
+        // (the constant is outside the hull of {(2,0), (0,2)}), so a
+        // budget of 2 succeeds and a budget of 1 is refused.
+        let two = SosOpts::default().with_max_basis(2);
+        assert!(
+            prove_sos(&(x.powi(2) + y.powi(2)), &[x.clone(), y.clone()], &two)
+                .unwrap()
+                .is_proved()
+        );
+        let small = SosOpts::default().with_max_basis(1);
         assert!(prove_sos(&(x.powi(2) + y.powi(2)), &[x.clone(), y.clone()], &small).is_err());
+        // A sparse degree-8 goal: x⁸ + y⁸ + 1 has 45 monomials of degree ≤ 4
+        // but only the 6 with doubled exponents in the hull of
+        // {(8,0), (0,8), (0,0)} — the axes' even powers — survive, so it
+        // fits a small budget and is certified.
+        let sparse = prove_sos(
+            &(x.powi(8) + y.powi(8) + 1),
+            &[x.clone(), y.clone()],
+            &SosOpts::default().with_max_basis(15),
+        )
+        .unwrap();
+        let c = sparse.certificate().expect("sum of even powers");
+        assert!(c.basis().len() <= 15, "{}", c.basis().len());
+        assert!(c.verify());
         let zero = sos(&ctx.zero(), std::slice::from_ref(&x));
         assert_eq!(zero.rank(), 0);
         let c = sos(&ctx.int(3), std::slice::from_ref(&x));
