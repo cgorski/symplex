@@ -2,7 +2,8 @@
 //!
 //! A [`Polytope`] is an intersection of half-spaces `aᵢ·x + bᵢ ≥ 0` with
 //! rational data.  Everything here is exact: vertices come from solving
-//! `n × n` systems with [`QMatrix`], emptiness and boundedness from the
+//! `n × n` systems with the fraction-free kernel behind
+//! [`QMatrix`](crate::matrix::QMatrix), emptiness and boundedness from the
 //! exact LP, volumes (any dimension) from an exact facet decomposition
 //! around the vertex centroid.  The type is meant for the geometric bookkeeping
 //! around certificate searches — which cells a decision tree produces,
@@ -31,14 +32,18 @@
 //! assert_eq!(left.volume().unwrap() + right.volume().unwrap(), q(1, 2));
 //! ```
 
+use std::sync::OnceLock;
+
 use num_bigint::BigInt;
-use num_traits::{Signed, Zero};
+use num_integer::Integer;
+use num_traits::{One, Signed, Zero};
 
 use crate::api::expr::Ex;
 use crate::api::poly_ex::Poly;
 use crate::base::errors::SymplexError;
-use crate::domains::exact_matrix::QMatrix;
+use crate::domains::exact_matrix::fraction_free_gauss_jordan;
 use crate::domains::linprog::{LpProblem, LpStatus, Q};
+use crate::poly::multipoly::{GrevLex, MultiPoly};
 
 fn invalid(operation: &'static str, reason: impl Into<String>) -> SymplexError {
     SymplexError::InvalidArgument {
@@ -68,9 +73,36 @@ impl HalfSpace {
             .fold(self.constant.clone(), |acc, (a, xi)| acc + a * xi)
     }
 
+    /// The sign of `a·x + b` at `x`, without computing the reduced value:
+    /// numerators and denominators are accumulated separately and never
+    /// reduced (no gcd), and only the numerator's sign is read at the end.
+    /// This is several times cheaper than [`value`](Self::value) for the
+    /// containment tests that dominate vertex-based geometry.
+    pub fn value_sign(&self, x: &[Q]) -> std::cmp::Ordering {
+        // acc = num / den with den > 0 throughout (Ratio denominators are
+        // positive, and products of positives stay positive).
+        let mut num = self.constant.numer().clone();
+        let mut den = self.constant.denom().clone();
+        for (a, xi) in self.coeffs.iter().zip(x) {
+            if a.is_zero() || xi.is_zero() {
+                continue;
+            }
+            let tn = a.numer() * xi.numer();
+            let td = a.denom() * xi.denom();
+            num = num * &td + tn * &den;
+            den *= td;
+        }
+        num.sign().cmp(&num_bigint::Sign::NoSign)
+    }
+
     /// `true` if `a·x + b ≥ 0`.
     pub fn contains(&self, x: &[Q]) -> bool {
-        !self.value(x).is_negative()
+        self.value_sign(x) != std::cmp::Ordering::Less
+    }
+
+    /// `true` if `x` lies on the hyperplane `a·x + b = 0`.
+    pub fn is_tight(&self, x: &[Q]) -> bool {
+        self.value_sign(x) == std::cmp::Ordering::Equal
     }
 
     /// The opposite half-space `−a·x − b ≥ 0` (the closed complement's
@@ -81,13 +113,126 @@ impl HalfSpace {
             constant: -&self.constant,
         }
     }
+
+    /// `true` if no coefficient is non-zero: the half-space is all of
+    /// space (`b ≥ 0`) or empty (`b < 0`) and bounds nothing.
+    pub fn is_trivial(&self) -> bool {
+        self.coeffs.iter().all(Zero::is_zero)
+    }
+
+    /// The **hyperplane** `a·x + b = 0` in canonical form: scaled so that the
+    /// first non-zero coefficient is `1`.  Two half-spaces have equal
+    /// `normalized()` forms exactly when they share a hyperplane — the
+    /// half-space itself, its [`flipped`](Self::flipped) opposite and every
+    /// rescaling all map to the same value, which makes it the key for
+    /// de-duplicating candidate cuts.  A trivial half-space is returned
+    /// unchanged.
+    ///
+    /// ```
+    /// use symplex::polytope::HalfSpace;
+    /// use symplex::linprog::qi;
+    ///
+    /// let h = HalfSpace { coeffs: vec![qi(-2), qi(4)], constant: qi(6) };
+    /// let n = h.normalized();
+    /// assert_eq!((n.coeffs, n.constant), (vec![qi(1), qi(-2)], qi(-3)));
+    /// assert_eq!(h.flipped().normalized(), h.normalized());
+    /// assert!(h.same_hyperplane(&HalfSpace { coeffs: vec![qi(1), qi(-2)], constant: qi(-3) }));
+    /// ```
+    pub fn normalized(&self) -> HalfSpace {
+        match self.coeffs.iter().find(|c| !c.is_zero()) {
+            None => self.clone(),
+            Some(lead) => HalfSpace {
+                coeffs: self.coeffs.iter().map(|c| c / lead).collect(),
+                constant: &self.constant / lead,
+            },
+        }
+    }
+
+    /// Do the two half-spaces bound the same hyperplane (equal up to a
+    /// non-zero rescaling, including a sign change)?
+    pub fn same_hyperplane(&self, other: &HalfSpace) -> bool {
+        self.coeffs.len() == other.coeffs.len() && self.normalized() == other.normalized()
+    }
 }
 
 /// A convex polyhedron `{x ∈ ℚⁿ : aᵢ·x + bᵢ ≥ 0 ∀i}`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Equality and `Debug` see only the half-spaces; the vertex list is
+/// computed once on demand and cached (a clone carries the cache along).
+#[derive(Clone)]
 pub struct Polytope {
     dim: usize,
     halfspaces: Vec<HalfSpace>,
+    vertex_cache: OnceLock<Vec<Vec<Q>>>,
+}
+
+impl PartialEq for Polytope {
+    fn eq(&self, other: &Self) -> bool {
+        self.dim == other.dim && self.halfspaces == other.halfspaces
+    }
+}
+
+impl Eq for Polytope {}
+
+impl std::fmt::Debug for Polytope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Polytope")
+            .field("dim", &self.dim)
+            .field("halfspaces", &self.halfspaces)
+            .finish()
+    }
+}
+
+/// A half-space with integer data, `a·x + b ≥ 0` scaled by the least
+/// common multiple of its denominators (a positive factor, so the sign of
+/// `a·x + b` at any point is unchanged).
+struct IntHalfSpace {
+    a: Vec<BigInt>,
+    b: BigInt,
+}
+
+impl IntHalfSpace {
+    fn new(h: &HalfSpace) -> Self {
+        let s = h
+            .coeffs
+            .iter()
+            .chain(std::iter::once(&h.constant))
+            .fold(BigInt::one(), |l, q| l.lcm(q.denom()));
+        let scale = |q: &Q| q.numer() * (&s / q.denom());
+        IntHalfSpace {
+            a: h.coeffs.iter().map(scale).collect(),
+            b: scale(&h.constant),
+        }
+    }
+
+    /// `a·X + b·D`, the sign of `a·x + b` at the point `x = X / D` (`D > 0`).
+    fn value_at(&self, x: &[BigInt], d: &BigInt) -> BigInt {
+        self.a
+            .iter()
+            .zip(x)
+            .fold(&self.b * d, |acc, (a, xi)| acc + a * xi)
+    }
+
+    /// The hyperplane `a·x + b = 0` as a primitive integer vector with a
+    /// positive leading coefficient, or `None` if `a = 0`.
+    fn hyperplane_key(&self) -> Option<Vec<BigInt>> {
+        let lead = self.a.iter().find(|c| !c.is_zero())?;
+        let mut g = self
+            .a
+            .iter()
+            .chain(std::iter::once(&self.b))
+            .fold(BigInt::zero(), |g, c| g.gcd(c));
+        if lead.is_negative() {
+            g = -g;
+        }
+        Some(
+            self.a
+                .iter()
+                .chain(std::iter::once(&self.b))
+                .map(|c| c / &g)
+                .collect(),
+        )
+    }
 }
 
 impl Polytope {
@@ -124,7 +269,11 @@ impl Polytope {
                 ),
             ));
         }
-        Ok(Polytope { dim, halfspaces })
+        Ok(Polytope {
+            dim,
+            halfspaces,
+            vertex_cache: OnceLock::new(),
+        })
     }
 
     /// Build from `(coeffs, constant)` rows meaning `coeffs·x + constant ≥ 0`.
@@ -286,6 +435,7 @@ impl Polytope {
         Ok(Polytope {
             dim: self.dim,
             halfspaces: hs,
+            vertex_cache: OnceLock::new(),
         })
     }
 
@@ -364,51 +514,207 @@ impl Polytope {
     /// Is the polytope bounded (a polytope proper)?  The empty set counts
     /// as bounded.
     ///
+    /// A description that bounds every coordinate on both sides by an
+    /// axis-parallel half-space (`±xᵢ + b ≥ 0`) — the cells of a decision
+    /// tree over a box, for instance — is recognised without any LP;
+    /// otherwise `2n + 1` exact LPs decide.
+    ///
     /// # Errors
     ///
     /// As [`is_empty`](Self::is_empty).
     pub fn is_bounded(&self) -> Result<bool, SymplexError> {
+        if self.has_box_rows() {
+            return Ok(true);
+        }
         Ok(match self.bounding_box()? {
             None => true,
             Some(b) => b.iter().all(|(lo, hi)| lo.is_some() && hi.is_some()),
         })
     }
 
+    /// Does the H-representation contain, for every coordinate, a lower and
+    /// an upper axis-parallel bound?  A sufficient condition for boundedness.
+    fn has_box_rows(&self) -> bool {
+        let mut lo = vec![false; self.dim];
+        let mut hi = vec![false; self.dim];
+        for h in &self.halfspaces {
+            let mut nonzero = h.coeffs.iter().enumerate().filter(|(_, c)| !c.is_zero());
+            if let (Some((i, c)), None) = (nonzero.next(), nonzero.next()) {
+                if c.is_positive() {
+                    lo[i] = true;
+                } else {
+                    hi[i] = true;
+                }
+            }
+        }
+        lo.iter().all(|&b| b) && hi.iter().all(|&b| b)
+    }
+
+    /// The largest `t ≤ 1` such that some `x` satisfies every non-trivial
+    /// half-space with slack `a·x + b ≥ t`, with that `x`; `None` if the
+    /// polytope is empty.  `t > 0` exactly when the polytope is
+    /// full-dimensional (has an interior point); `t = 0` means every point
+    /// lies on some bounding hyperplane.  One exact LP.
+    fn max_slack(&self) -> Result<Option<(Q, Vec<Q>)>, SymplexError> {
+        let n = self.dim;
+        // Variables: x₀..x_{n−1} free, then t ∈ [0, 1]; maximise t.
+        let mut c = vec![Q::zero(); n + 1];
+        c[n] = Q::one();
+        let mut lp = LpProblem::maximize(c);
+        for i in 0..n {
+            lp = lp.free(i);
+        }
+        lp = lp.bounds(n, Some(Q::zero()), Some(Q::one()));
+        for h in &self.halfspaces {
+            if h.is_trivial() {
+                if h.constant.is_negative() {
+                    return Ok(None);
+                }
+                continue;
+            }
+            let mut row = h.coeffs.clone();
+            row.push(-Q::one());
+            lp = lp.ge(row, -&h.constant);
+        }
+        let sol = lp.solve()?;
+        Ok(match sol.status {
+            LpStatus::Optimal => {
+                let mut x = sol.x;
+                let t = x.pop().unwrap_or_else(Q::zero);
+                Some((t, x))
+            }
+            _ => None,
+        })
+    }
+
+    /// Is the polytope full-dimensional, i.e. does it have an interior
+    /// point (a point with strictly positive slack in every non-trivial
+    /// half-space)?  Exact, one LP — far cheaper than testing
+    /// [`volume`](Self::volume) `> 0`, and also defined for unbounded
+    /// polyhedra.  The empty polytope is not full-dimensional.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::ComputationFailed`] if the LP exceeds its pivot cap.
+    ///
+    /// ```
+    /// use symplex::polytope::Polytope;
+    /// use symplex::linprog::qi;
+    ///
+    /// // The unit square, and the square cut down to its diagonal x = y.
+    /// let square = Polytope::from_rows(&[
+    ///     (vec![qi(1), qi(0)], qi(0)), (vec![qi(-1), qi(0)], qi(1)),
+    ///     (vec![qi(0), qi(1)], qi(0)), (vec![qi(0), qi(-1)], qi(1)),
+    /// ]).unwrap();
+    /// assert!(square.is_full_dimensional().unwrap());
+    /// let diagonal = square
+    ///     .with_halfspace(&[qi(1), qi(-1)], qi(0))
+    ///     .with_halfspace(&[qi(-1), qi(1)], qi(0));
+    /// assert!(!diagonal.is_full_dimensional().unwrap());
+    /// assert!(!diagonal.is_empty().unwrap());
+    /// ```
+    pub fn is_full_dimensional(&self) -> Result<bool, SymplexError> {
+        Ok(self.max_slack()?.is_some_and(|(t, _)| t.is_positive()))
+    }
+
+    /// A point strictly inside the polytope (positive slack in every
+    /// non-trivial half-space), or `None` if the polytope is empty or not
+    /// full-dimensional.  The point maximises the smallest slack, capped
+    /// at `1`; one exact LP.
+    ///
+    /// # Errors
+    ///
+    /// As [`is_full_dimensional`](Self::is_full_dimensional).
+    pub fn interior_point(&self) -> Result<Option<Vec<Q>>, SymplexError> {
+        Ok(self
+            .max_slack()?
+            .filter(|(t, _)| t.is_positive())
+            .map(|(_, x)| x))
+    }
+
     /// The vertices (0-dimensional faces), exactly, in no particular order.
     ///
-    /// Every choice of `n` half-spaces whose hyperplanes meet in a single
-    /// point is solved with [`QMatrix::solve`]; the point is kept if it lies
-    /// in the polytope.  Degenerate vertices (more than `n` tight
-    /// hyperplanes) appear once.  An unbounded polyhedron still has its
-    /// vertices enumerated; use [`is_bounded`](Self::is_bounded) to tell.
+    /// Every choice of `n` *distinct* bounding hyperplanes that meet in a
+    /// single point is solved by fraction-free elimination on the integer
+    /// form of the half-spaces, which yields the point as `X / D` with
+    /// integer `X` and `D > 0`; it is kept if `aᵢ·X + bᵢ·D ≥ 0` for every
+    /// half-space — integer arithmetic throughout, no rational reductions
+    /// until the accepted vertices are returned.  Degenerate vertices (more
+    /// than `n` tight hyperplanes) appear once.  An unbounded polyhedron
+    /// still has its vertices enumerated; use [`is_bounded`](Self::is_bounded)
+    /// to tell.  The result is cached on the polytope.
     ///
     /// # Errors
     ///
     /// Only propagates internal failures; an empty polytope gives an empty
     /// list.
     pub fn vertices(&self) -> Result<Vec<Vec<Q>>, SymplexError> {
+        Ok(self
+            .vertex_cache
+            .get_or_init(|| self.compute_vertices())
+            .clone())
+    }
+
+    fn compute_vertices(&self) -> Vec<Vec<Q>> {
         let n = self.dim;
-        let m = self.halfspaces.len();
-        if m < n {
-            return Ok(Vec::new());
+        let rows: Vec<IntHalfSpace> = self.halfspaces.iter().map(IntHalfSpace::new).collect();
+        // Distinct non-trivial hyperplanes (a duplicate or rescaled
+        // half-space, or the flip of one, meets the others in the same points).
+        let mut planes: Vec<usize> = Vec::new();
+        let mut keys: Vec<Vec<BigInt>> = Vec::new();
+        for (i, r) in rows.iter().enumerate() {
+            if let Some(key) = r.hyperplane_key()
+                && !keys.contains(&key)
+            {
+                keys.push(key);
+                planes.push(i);
+            }
         }
-        let mut found: Vec<Vec<Q>> = Vec::new();
+        let m = planes.len();
+        if m < n {
+            return Vec::new();
+        }
+        // Accepted vertices in canonical integer form `(X, D)`, `D > 0`,
+        // `gcd(X₀, …, X_{n−1}, D) = 1`, which makes equality a plain compare.
+        let mut found: Vec<(Vec<BigInt>, BigInt)> = Vec::new();
+        let width = n + 1;
+        let mut aug: Vec<BigInt> = Vec::with_capacity(n * width);
         let mut idx: Vec<usize> = (0..n).collect();
         loop {
-            // Solve the n×n system  aᵢ·x = −bᵢ  for the chosen half-spaces.
-            let a = QMatrix::from_fn(n, n, |r, c| self.halfspaces[idx[r]].coeffs[c].clone());
-            let b = QMatrix::from_fn(n, 1, |r, _| -&self.halfspaces[idx[r]].constant);
-            if let Ok(x) = a.solve(&b) {
-                let point: Vec<Q> = x.col(0);
-                if self.contains(&point) && !found.contains(&point) {
-                    found.push(point);
+            // Augmented system  [ aᵢ | −bᵢ ]  for the chosen hyperplanes.
+            aug.clear();
+            for &pi in &idx {
+                let r = &rows[planes[pi]];
+                aug.extend(r.a.iter().cloned());
+                aug.push(-&r.b);
+            }
+            let (pivots, d) = fraction_free_gauss_jordan(&mut aug, n, width, n);
+            if pivots.len() == n && !d.is_zero() {
+                // Every row is d · (eᵢ | xᵢ): the solution is X / d.
+                let negative = d.is_negative();
+                let dd = if negative { -&d } else { d.clone() };
+                let x: Vec<BigInt> = (0..n)
+                    .map(|i| {
+                        let v = &aug[i * width + n];
+                        if negative { -v } else { v.clone() }
+                    })
+                    .collect();
+                if rows.iter().all(|r| !r.value_at(&x, &dd).is_negative()) {
+                    let g = x.iter().fold(dd.clone(), |g, xi| g.gcd(xi));
+                    let canon = (x.iter().map(|xi| xi / &g).collect::<Vec<_>>(), &dd / &g);
+                    if !found.contains(&canon) {
+                        found.push(canon);
+                    }
                 }
             }
             // Next n-combination of 0..m.
             let mut k = n;
             loop {
                 if k == 0 {
-                    return Ok(found);
+                    return found
+                        .into_iter()
+                        .map(|(x, d)| x.into_iter().map(|xi| Q::new(xi, d.clone())).collect())
+                        .collect();
                 }
                 k -= 1;
                 if idx[k] < m - n + k {
@@ -492,79 +798,96 @@ impl Polytope {
         Ok(self.volume_bounded())
     }
 
-    /// Volume of a polytope already known to be bounded (recursive core).
+    /// Volume of a polytope already known to be bounded: one vertex
+    /// enumeration, then the facet recursion on the known vertices.
     fn volume_bounded(&self) -> Q {
-        let n = self.dim;
-        let verts = match self.vertices() {
-            Ok(v) => v,
-            Err(_) => return Q::zero(),
-        };
-        if verts.len() < n + 1 {
-            return Q::zero(); // empty or lower-dimensional
+        match self.vertices() {
+            Ok(verts) => volume_from_vertices(&self.halfspaces, self.dim, &verts),
+            Err(_) => Q::zero(),
         }
-        if n == 1 {
-            let lo = verts.iter().map(|v| &v[0]).min().cloned();
-            let hi = verts.iter().map(|v| &v[0]).max().cloned();
-            return match (lo, hi) {
-                (Some(l), Some(h)) => h - l,
-                _ => Q::zero(),
-            };
-        }
-        let Some(o) = centroid(&verts, n) else {
-            return Q::zero();
-        };
-        // Distinct facet hyperplanes (a half-space listed twice, or scaled,
-        // must be counted once).
-        let mut seen: Vec<HalfSpace> = Vec::new();
-        let mut total = Q::zero();
-        for h in &self.halfspaces {
-            let Some(norm) = normalized(h) else {
-                continue; // a·x + b ≥ 0 with a = 0: not a facet
-            };
-            if seen.contains(&norm) {
-                continue;
-            }
-            seen.push(norm);
-            // Vertices on this hyperplane: fewer than n means no facet.
-            let on: usize = verts.iter().filter(|v| h.value(v).is_zero()).count();
-            if on < n {
-                continue;
-            }
-            // Eliminate coordinate k with the largest |a_k| ≠ 0:
-            //   x_k = −(b + Σ_{i≠k} a_i x_i) / a_k.
-            let Some(k) = (0..n)
-                .filter(|&i| !h.coeffs[i].is_zero())
-                .max_by(|&i, &j| h.coeffs[i].abs().cmp(&h.coeffs[j].abs()))
-            else {
-                continue;
-            };
-            let ak = &h.coeffs[k];
-            let mut facet_rows: Vec<HalfSpace> = Vec::new();
-            for g in &self.halfspaces {
-                // g(x) with x_k substituted: coefficients over the n−1 kept coordinates.
-                let gk = &g.coeffs[k];
-                let mut coeffs: Vec<Q> = Vec::with_capacity(n - 1);
-                for i in (0..n).filter(|&i| i != k) {
-                    coeffs.push(&g.coeffs[i] - gk * &h.coeffs[i] / ak);
-                }
-                let constant = &g.constant - gk * &h.constant / ak;
-                if coeffs.iter().all(Zero::is_zero) {
-                    continue; // constant constraint (the facet's own hyperplane, or a redundant one)
-                }
-                facet_rows.push(HalfSpace { coeffs, constant });
-            }
-            let Ok(facet) = Polytope::new(facet_rows) else {
-                continue;
-            };
-            let facet_vol = facet.volume_bounded();
-            if facet_vol.is_zero() {
-                continue;
-            }
-            // dist(o, F) · vol_{n−1}(F) = (a·o + b)/‖a‖ · vol(proj) · ‖a‖/|a_k|.
-            total += h.value(&o) / ak.abs() * facet_vol;
-        }
-        total / Q::from_integer(BigInt::from(n))
     }
+}
+
+/// `vol_n` of the polytope with H-representation `halfspaces` and vertex
+/// set `verts`, by the facet decomposition around the vertex centroid.  A
+/// facet's vertices are exactly the vertices on its hyperplane, so the
+/// recursion never enumerates vertices again: each facet is projected
+/// along the coordinate with the largest coefficient and handed its
+/// projected vertices together with its projected H-representation.
+fn volume_from_vertices(halfspaces: &[HalfSpace], n: usize, verts: &[Vec<Q>]) -> Q {
+    if verts.len() < n + 1 {
+        return Q::zero(); // empty or lower-dimensional
+    }
+    if n == 1 {
+        let lo = verts.iter().map(|v| &v[0]).min().cloned();
+        let hi = verts.iter().map(|v| &v[0]).max().cloned();
+        return match (lo, hi) {
+            (Some(l), Some(h)) => h - l,
+            _ => Q::zero(),
+        };
+    }
+    let Some(o) = centroid(verts, n) else {
+        return Q::zero();
+    };
+    // Distinct facet hyperplanes (a half-space listed twice, or scaled,
+    // must be counted once).
+    let mut seen: Vec<HalfSpace> = Vec::new();
+    let mut total = Q::zero();
+    for h in halfspaces {
+        let Some(norm) = normalized(h) else {
+            continue; // a·x + b ≥ 0 with a = 0: not a facet
+        };
+        if seen.contains(&norm) {
+            continue;
+        }
+        seen.push(norm);
+        // Eliminate coordinate k with the largest |a_k| ≠ 0:
+        //   x_k = −(b + Σ_{i≠k} a_i x_i) / a_k.
+        let Some(k) = (0..n)
+            .filter(|&i| !h.coeffs[i].is_zero())
+            .max_by(|&i, &j| h.coeffs[i].abs().cmp(&h.coeffs[j].abs()))
+        else {
+            continue;
+        };
+        // The facet's vertices: those on the hyperplane, with x_k dropped.
+        // Fewer than n of them means the face is not a facet.
+        let on: Vec<Vec<Q>> = verts
+            .iter()
+            .filter(|v| h.is_tight(v))
+            .map(|v| {
+                v.iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != k)
+                    .map(|(_, x)| x.clone())
+                    .collect()
+            })
+            .collect();
+        if on.len() < n {
+            continue;
+        }
+        let ak = &h.coeffs[k];
+        let mut facet_rows: Vec<HalfSpace> = Vec::new();
+        for g in halfspaces {
+            // g(x) with x_k substituted: coefficients over the n−1 kept coordinates.
+            let gk = &g.coeffs[k];
+            let mut coeffs: Vec<Q> = Vec::with_capacity(n - 1);
+            for i in (0..n).filter(|&i| i != k) {
+                coeffs.push(&g.coeffs[i] - gk * &h.coeffs[i] / ak);
+            }
+            let constant = &g.constant - gk * &h.constant / ak;
+            if coeffs.iter().all(Zero::is_zero) {
+                continue; // constant constraint (the facet's own hyperplane, or a redundant one)
+            }
+            facet_rows.push(HalfSpace { coeffs, constant });
+        }
+        let facet_vol = volume_from_vertices(&facet_rows, n - 1, &on);
+        if facet_vol.is_zero() {
+            continue;
+        }
+        // dist(o, F) · vol_{n−1}(F) = (a·o + b)/‖a‖ · vol(proj) · ‖a‖/|a_k|.
+        total += h.value(&o) / ak.abs() * facet_vol;
+    }
+    total / Q::from_integer(BigInt::from(n))
 }
 
 /// `h` scaled so that its first non-zero coefficient is `1` (identifies a
@@ -618,6 +941,9 @@ fn centroid(points: &[Vec<Q>], dim: usize) -> Option<Vec<Q>> {
 #[derive(Clone, Debug)]
 pub struct ParametricPolytope {
     hyps: Vec<Poly>,
+    /// The hypotheses as exact arena-free polynomials in `(vars…, param)`,
+    /// so that instantiating a sample is pure rational arithmetic.
+    exact: Vec<MultiPoly<GrevLex>>,
     vars: Vec<Ex>,
     param: Ex,
     cache: std::collections::BTreeMap<Q, Instance>,
@@ -666,8 +992,16 @@ impl ParametricPolytope {
             }
             polys.push(p);
         }
+        let exact = polys
+            .iter()
+            .map(|p| {
+                p.to_multipoly()
+                    .ok_or_else(|| invalid(OP, "internal: non-rational coefficient"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(ParametricPolytope {
             hyps: polys,
+            exact,
             vars: vars.to_vec(),
             param: param.clone(),
             cache: std::collections::BTreeMap::new(),
@@ -689,33 +1023,24 @@ impl ParametricPolytope {
         &self.hyps
     }
 
-    /// The polytope at `param = value`, exactly (no cache).
+    /// The polytope at `param = value`, exactly (no cache).  Pure rational
+    /// arithmetic on the stored polynomials — no expression arena is
+    /// touched, so sampling a family densely is cheap.
     ///
     /// # Errors
     ///
     /// Only internal failures (the substitution of a rational is always
     /// affine in the variables).
     pub fn at(&self, value: &Q) -> Result<Polytope, SymplexError> {
-        let ctx = self.param.context();
-        let val = ctx.from_ratio(value.clone());
         let n = self.vars.len();
-        let mut rows = Vec::with_capacity(self.hyps.len());
-        for h in &self.hyps {
-            let p = h.eval_gen(&self.param, &val)?;
-            let mut coeffs = vec![Q::zero(); n];
-            let mut constant = Q::zero();
-            for (m, c) in p.terms_iter() {
-                let c = c.as_rational().ok_or_else(|| {
-                    invalid(
-                        "ParametricPolytope::at",
-                        "internal: non-rational coefficient",
-                    )
-                })?;
-                match m.iter().position(|&e| e == 1) {
-                    Some(i) => coeffs[i] = c,
-                    None => constant = c,
-                }
-            }
+        let mut rows = Vec::with_capacity(self.exact.len());
+        for h in &self.exact {
+            // `substitute` drops the parameter (the last variable), leaving
+            // exactly the `n` coordinates in order.
+            let (coeffs, constant) = h
+                .substitute(n, value)
+                .affine_form()
+                .ok_or_else(|| invalid("ParametricPolytope::at", "internal: not affine"))?;
             rows.push(HalfSpace { coeffs, constant });
         }
         Polytope::new(rows)

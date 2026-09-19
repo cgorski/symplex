@@ -691,3 +691,42 @@ fn lean_output_respects_mathlib_line_width() {
         "{odd}"
     );
 }
+
+/// A bullet's tactics sit two columns right of the `·`, so a continuation
+/// line of a `· have … := by tac` (or of an application argument) must be
+/// measured from the tactic column, not from the leading spaces: at the
+/// same column Lean either swallows the following tactic into the inner
+/// `by` block (`expected '{' or indented tactic sequence`) or rejects the
+/// argument (`unknown tactic`).  Both shapes below were compiled against
+/// Mathlib: the `+2`-past-the-bullet output passes, the old `+2`-past-the-
+/// indent output fails.
+#[test]
+fn wrap_lean_continues_bullets_past_the_tactic_column() {
+    use symplex::lean::wrap_lean;
+    // `have … := by nlinarith […]` wrapped right after `by`.
+    let long = "  · have h : (0 : ℝ) ≤ x * y := by nlinarith [hx, hy]\n    exact h\n";
+    let wrapped = wrap_lean(long, 38);
+    assert_eq!(
+        wrapped,
+        "  · have h : (0 : ℝ) ≤ x * y := by\n      nlinarith [hx, hy]\n    exact h\n"
+    );
+    // An application argument on the continuation line.
+    let app = "  · have h := mul_nonneg hx hy\n    exact h\n";
+    assert_eq!(
+        wrap_lean(app, 28),
+        "  · have h := mul_nonneg hx\n      hy\n    exact h\n"
+    );
+    // Nested bullets: the tactic column is past every `· `; `. ` counts too.
+    let nested = "  · · exact foo bar baz\n";
+    assert_eq!(wrap_lean(nested, 20), "  · · exact foo bar\n        baz\n");
+    assert_eq!(
+        wrap_lean("  . exact foo bar baz\n", 18),
+        "  . exact foo bar\n      baz\n"
+    );
+    // Never breaks inside the bullet prefix itself, and plain lines are
+    // unchanged: still two past their own indentation.
+    assert_eq!(
+        wrap_lean("    exact foo bar baz\n", 18),
+        "    exact foo bar\n      baz\n"
+    );
+}

@@ -75,6 +75,21 @@ Rust supports (including `wasm32-unknown-unknown`), prefer
 `default-features = false`, and extend `deny.toml` deliberately if a new
 licence appears.
 
+### Feature flags: one crate, no knobs
+
+`symplex` deliberately has **no Cargo features** (only `symplex-wasm` carries
+one, for its panic hook).  Do not introduce feature gates for granularity's
+sake — `serde`, `certificates`, `sos`, `codegen`, … stay unconditional.
+Feature matrices multiply the CI surface, break `--all-features`-free
+docs.rs builds and doctests in subtle ways, and, above all, make later
+features harder to add (every new module has to decide which gates it lives
+behind and which combinations it must compile in).  Compile time and binary
+size are not a concern at this stage; capability is.  If a flag ever *does*
+appear and starts to constrain a design, removing it is the right call, not
+working around it.  Revisit only if a concrete downstream (embedded /
+`no_std` consumer of generated code, a size-limited wasm build) asks with
+numbers.
+
 ---
 
 ## Architecture
@@ -743,6 +758,19 @@ same name, and a purely numeric `expr!(ctx, 2^10)` does not compile (the
 literals are `i64`); build constants with `ctx.int`/`ctx.rational` instead.
 
 Declaration macros use semicolons. Expression macros use commas.
+
+**The context argument is deliberate and stays.**  `expr!(x^2 + 1)` *could*
+recover the context from `x` (`Ex::context()` is cheap), but then the
+macro's meaning would depend on the shape of its input: `expr!(2^10)` has
+no operand to take a context from, `expr!(x + y)` with `x` and `y` from
+different contexts would fail only at run time inside the expansion, and a
+reader could no longer tell which arena a literal is interned into.  We
+prefer one explicit rule ("the first argument is where the literals live")
+over an implicit one that is right most of the time.  The same reasoning
+rules out a global or thread-local default context (the units context is the
+single documented exception).  Ergonomics improvements to `expr!` must be
+explicit in the same way — for example splicing an arbitrary Rust expression
+with visible delimiters rather than guessing at identifiers.
 
 ---
 

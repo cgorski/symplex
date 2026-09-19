@@ -449,6 +449,33 @@ impl Poly {
     }
 }
 
+impl<O: crate::poly::multipoly::MonomialOrd> MultiPoly<O> {
+    /// This exact polynomial as an expression over the symbols `gens`
+    /// (variable `i` ↦ `gens[i]`): the bridge from the arena-free
+    /// [`MultiPoly`] arithmetic to `Ex` for rendering (`to_lean`), for
+    /// the certificate provers, or for anything else symbolic.
+    ///
+    /// # Errors
+    ///
+    /// As [`Poly::from_multipoly`]: `gens` must have one distinct symbol
+    /// per variable.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::multipoly::MultiPoly;
+    /// use symplex::linprog::qi;
+    ///
+    /// let ctx = Context::new();
+    /// let (j, r) = (ctx.symbol("j"), ctx.symbol("r"));
+    /// let mp: MultiPoly = MultiPoly::var(2, 0).mul(&MultiPoly::var(2, 1)).scale(&qi(2)) + 1;
+    /// assert_eq!(mp.to_ex(&ctx, &[&j, &r])?.to_lean()?, "2 * j * r + 1");
+    /// # Ok::<(), SymplexError>(())
+    /// ```
+    pub fn to_ex(&self, ctx: &Context, gens: &[&Ex]) -> Result<Ex, SymplexError> {
+        Ok(Poly::from_multipoly(ctx, gens, &self.convert_order())?.to_ex())
+    }
+}
+
 // ── Queries ────────────────────────────────────────────────────────────────
 
 impl Poly {

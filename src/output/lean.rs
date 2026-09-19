@@ -727,11 +727,17 @@ pub const MATHLIB_LINE_WIDTH: usize = 100;
 /// only at spaces, preferring a space right after a comma (so a
 /// `nlinarith [a, b, c]` hint list breaks between hints) and otherwise the
 /// shallowest bracket depth (so a `theorem` signature breaks between
-/// binders).  Continuation lines are indented four
-/// columns past a `theorem`/`lemma`/`example` line and two past anything
-/// else, which is more than the enclosing block in every case Lean's
-/// indentation-sensitive parser cares about.  Lines that cannot be split
-/// (a single token longer than `width`) are left as they are.
+/// binders).  Continuation lines are indented four columns past a
+/// `theorem`/`lemma`/`example` line and two past the line's *tactic
+/// column* — the first token after the indentation and any `· `/`. `
+/// bullets — which is strictly more than the enclosing block in every case
+/// Lean's indentation-sensitive parser cares about: an application argument
+/// on a continuation line must sit right of the tactic (`checkColGt`), and
+/// a `by` block whose first tactic lands on a continuation line must not
+/// share a column with the tactics that follow the `have` (a bullet's
+/// tactics sit two columns right of the `·`, so a plain "+2" would swallow
+/// them into the inner block).  Lines that cannot be split (a single token
+/// longer than `width`) are left as they are.
 ///
 /// The certificate emitters ([`Certificate::to_lean`](crate::certificates::Certificate::to_lean)
 /// and friends) apply this at [`MATHLIB_LINE_WIDTH`]; [`Ex::to_lean`](crate::api::expr::Ex::to_lean)
@@ -759,15 +765,29 @@ pub fn wrap_lean(text: &str, width: usize) -> String {
     out
 }
 
+/// Column of the first token of the line's tactic (or term): past the
+/// leading spaces and past any `· ` / `. ` bullets, each of which opens a
+/// block whose tactics sit two columns further right.
+fn tactic_column(line: &[char]) -> usize {
+    let mut col = line.iter().take_while(|c| **c == ' ').count();
+    while (line.get(col) == Some(&'·') || line.get(col) == Some(&'.'))
+        && line.get(col + 1) == Some(&' ')
+    {
+        col += 2;
+        col += line[col..].iter().take_while(|c| **c == ' ').count();
+    }
+    col
+}
+
 fn wrap_line(line: &str, width: usize, out: &mut String) {
-    let indent = line.chars().take_while(|c| *c == ' ').count();
-    let trimmed = &line[indent..];
-    let is_decl = trimmed.starts_with("theorem ")
-        || trimmed.starts_with("lemma ")
-        || trimmed.starts_with("example ");
-    let cont_indent = indent + if is_decl { 4 } else { 2 };
     let mut current: Vec<char> = line.chars().collect();
-    let mut current_indent = indent;
+    let tactic_col = tactic_column(&current);
+    let head: String = current[tactic_col..].iter().collect();
+    let is_decl =
+        head.starts_with("theorem ") || head.starts_with("lemma ") || head.starts_with("example ");
+    let cont_indent = tactic_col + if is_decl { 4 } else { 2 };
+    // No break inside the indentation or the bullets themselves.
+    let mut current_indent = tactic_col;
     loop {
         if current.len() <= width {
             out.extend(current.iter());

@@ -530,6 +530,41 @@ impl PolyhedronCertificate {
         self.terms.iter().any(|t| t.hyps.len() == 2)
     }
 
+    /// Indices (into [`hyps`](Self::hyps)) of the hypotheses that occur in
+    /// some term, ascending and without repetition — the hypotheses a Lean
+    /// proof of this certificate actually needs, so that a generated lemma
+    /// can list exactly those in its signature.  Hypotheses of the
+    /// polyhedron that the identity does not use are absent.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::certificates::{prove_nonnegative_on_polyhedron, PolyhedronOpts, PolyhedronOutcome};
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// // x ≥ 0, y ≥ 0, 1 − x ≥ 0, 1 − y ≥ 0 ⊢ x + 2 ≥ 0 uses only the first.
+    /// let hyps = [x.clone(), y.clone(), 1 - &x, 1 - &y];
+    /// let PolyhedronOutcome::Proved(c) =
+    ///     prove_nonnegative_on_polyhedron(&(&x + 2), &hyps, None, &PolyhedronOpts::default())?
+    /// else { panic!() };
+    /// assert_eq!(c.used_hyps(), vec![0]);
+    /// # Ok::<(), SymplexError>(())
+    /// ```
+    pub fn used_hyps(&self) -> Vec<usize> {
+        let mut used = vec![false; self.hyps.len()];
+        for t in &self.terms {
+            for &k in &t.hyps {
+                if let Some(u) = used.get_mut(k) {
+                    *u = true;
+                }
+            }
+        }
+        used.iter()
+            .enumerate()
+            .filter_map(|(k, &u)| u.then_some(k))
+            .collect()
+    }
+
     /// The product `jᵃ (j − j₀)ᵇ · Π hₖ` of one term, in factored form.
     pub fn product_expr(&self, term: &PolyhedronTerm) -> Ex {
         let ctx = self.goal.context();
@@ -839,16 +874,9 @@ impl PolyhedronCertificate {
             .collect();
         // Hypotheses the certificate does not use get a leading underscore
         // so Mathlib's unused-variable linter stays quiet.
-        let mut used = vec![false; self.hyps.len()];
-        for t in &self.terms {
-            for &k in &t.hyps {
-                if let Some(u) = used.get_mut(k) {
-                    *u = true;
-                }
-            }
-        }
+        let used = self.used_hyps();
         let hyp_names: Vec<String> = (0..self.hyps.len())
-            .map(|k| format!("{}h{k}", if used[k] { "" } else { "_" }))
+            .map(|k| format!("{}h{k}", if used.contains(&k) { "" } else { "_" }))
             .collect();
         let hyp_refs: Vec<&str> = hyp_names.iter().map(String::as_str).collect();
         let steps = self.lean_steps(
@@ -1303,6 +1331,68 @@ impl PolyhedronProver {
         self.prove_poly(&goal_poly)
     }
 
+    /// [`prove`](Self::prove) for a goal that is already a [`Poly`] — the
+    /// entry point for tools that keep their polynomials exact
+    /// (`MultiPoly` → [`Poly::from_multipoly`]) and want to skip the
+    /// expression round trip.  The goal's generators may be any subset of
+    /// the prover's ([`gens`](Self::gens)) in any order; a coefficient must
+    /// be rational.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if a generator of the goal is not a
+    /// variable of the hypotheses, or a coefficient is symbolic.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::certificates::{PolyhedronOpts, PolyhedronOutcome, PolyhedronProver};
+    /// use symplex::multipoly::MultiPoly;
+    /// use symplex::poly_ex::Poly;
+    ///
+    /// let ctx = Context::new();
+    /// let (j, r) = (ctx.symbol("j"), ctx.symbol("r"));
+    /// // r ≥ 0 and j·(1 − r) ≥ 0 for j ≥ 1; goal j − j·r ≥ 0.
+    /// let prover = PolyhedronProver::new(&[r.clone(), &j * (1 - &r)], Some((&j, &ctx.int(1))), &PolyhedronOpts::default())?;
+    /// let [mj, mr]: [MultiPoly; 2] = [MultiPoly::var(2, 0), MultiPoly::var(2, 1)];   // (j, r) order
+    /// let goal = Poly::from_multipoly(&ctx, &[&j, &r], &mj.sub(&mj.mul(&mr)))?;
+    /// assert!(matches!(prover.prove_poly(&goal)?, PolyhedronOutcome::Proved(_)));
+    /// # Ok::<(), SymplexError>(())
+    /// ```
+    pub fn prove_poly(&self, goal: &Poly) -> Result<PolyhedronOutcome, SymplexError> {
+        if goal.gens() == self.gens.as_slice() {
+            return self.prove_poly_aligned(goal);
+        }
+        // Re-map the exponent vectors onto the prover's generator order.
+        let positions: Vec<usize> = goal
+            .gens()
+            .iter()
+            .map(|g| {
+                self.gens.iter().position(|s| s == g).ok_or_else(|| {
+                    invalid(format!(
+                        "goal mentions `{g}`, which is not a variable of the hypotheses"
+                    ))
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        let width = self.gens.len();
+        let terms: Vec<(Vec<u32>, Ex)> = goal
+            .terms_iter()
+            .map(|(m, c)| {
+                let mut e = vec![0u32; width];
+                for (k, &pos) in positions.iter().enumerate() {
+                    e[pos] = m.get(k).copied().unwrap_or(0);
+                }
+                (e, c.clone())
+            })
+            .collect();
+        let gen_refs: Vec<&Ex> = self.gens.iter().collect();
+        let aligned = Poly::from_terms(&self.ctx, &gen_refs, terms)?;
+        if !aligned.has_rational_coeffs() {
+            return Err(invalid("the goal has a symbolic coefficient"));
+        }
+        self.prove_poly_aligned(&aligned)
+    }
+
     /// Prove that the set is empty for every admissible parameter value
     /// (the goal `−1`), exhibit a point of it, or report `Unknown`.  See
     /// [`prove_polyhedron_empty`].
@@ -1313,10 +1403,11 @@ impl PolyhedronProver {
     pub fn prove_empty(&self) -> Result<PolyhedronOutcome, SymplexError> {
         let gen_refs: Vec<&Ex> = self.gens.iter().collect();
         let minus_one = Poly::constant(&self.ctx, &gen_refs, &self.ctx.int(-1))?;
-        self.prove_poly(&minus_one)
+        self.prove_poly_aligned(&minus_one)
     }
 
-    fn prove_poly(&self, goal: &Poly) -> Result<PolyhedronOutcome, SymplexError> {
+    /// The search proper, for a goal over exactly the prover's generators.
+    fn prove_poly_aligned(&self, goal: &Poly) -> Result<PolyhedronOutcome, SymplexError> {
         // 1. Exact refutation on sampled parameter values.
         if let Some((point, param_value, value)) =
             refute(&self.ctx, goal, &self.hyps, &self.gens, self.param.as_ref())

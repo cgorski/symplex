@@ -305,7 +305,7 @@ pub mod prelude {
     pub use crate::calculus::definite::QuadOpts;
     pub use crate::calculus::formal_series::FormalPowerSeries;
     pub use crate::domains::control::{StateSpace, TransferFunction};
-    pub use crate::domains::linprog::{Feasibility, LpProblem, LpSolution, LpStatus};
+    pub use crate::domains::linprog::{Feasibility, LpProblem, LpSolution, LpStatus, Q};
     pub use crate::domains::matrix::{Matrix, QMatrix, ZMatrix};
     pub use crate::domains::optimize::{MinimizeOpts, MinimizeResult, RootOpts};
     pub use crate::domains::quaternion::Quaternion;
@@ -313,6 +313,7 @@ pub mod prelude {
     pub use crate::domains::vector::CoordinateSystem;
     pub use crate::output::codegen::{CodegenOptions, MathBackend, Precision};
     pub use crate::output::lambdify::{CompiledFn, CompiledFnVec};
+    pub use crate::poly::multipoly::MultiPoly;
     pub use crate::transforms::expand::ExpandOpts;
     pub use symplex_macros::{dim, eq, expr, matrix, rule};
 

@@ -453,6 +453,65 @@ impl<O: MonomialOrd> MultiPoly<O> {
         self.terms.iter().map(|(k, v)| (k.exponents.as_slice(), v))
     }
 
+    /// The value of a constant polynomial (`Some(0)` for the zero
+    /// polynomial), or `None` when some variable occurs.
+    ///
+    /// ```
+    /// use symplex::multipoly::MultiPoly;
+    /// use symplex::linprog::qi;
+    ///
+    /// let x: MultiPoly = MultiPoly::var(2, 0);
+    /// assert_eq!(MultiPoly::<symplex::multipoly::GrevLex>::zero(2).as_constant(), Some(qi(0)));
+    /// assert_eq!(MultiPoly::<symplex::multipoly::GrevLex>::from_int(2, 7).as_constant(), Some(qi(7)));
+    /// assert_eq!(x.as_constant(), None);
+    /// ```
+    pub fn as_constant(&self) -> Option<Ratio<BigInt>> {
+        match self.terms.len() {
+            0 => Some(Ratio::from_integer(BigInt::from(0))),
+            1 => self
+                .terms
+                .iter()
+                .next()
+                .filter(|(k, _)| k.exponents.iter().all(|&e| e == 0))
+                .map(|(_, c)| c.clone()),
+            _ => None,
+        }
+    }
+
+    /// The polynomial as an affine form `a₀x₀ + … + a_{n−1}x_{n−1} + c`,
+    /// or `None` if its total degree exceeds one.  The zero polynomial is
+    /// `(0, …, 0; 0)`.
+    ///
+    /// This is the bridge from a polynomial that is affine in its variables
+    /// (a half-space `p ≥ 0`, say) to explicit coefficients.
+    ///
+    /// ```
+    /// use symplex::multipoly::MultiPoly;
+    /// use symplex::linprog::qi;
+    ///
+    /// let [x, y]: [MultiPoly; 2] = [MultiPoly::var(2, 0), MultiPoly::var(2, 1)];
+    /// let p = x.scale(&qi(3)).sub(&y).add(&MultiPoly::from_int(2, 5));
+    /// assert_eq!(p.affine_form(), Some((vec![qi(3), qi(-1)], qi(5))));
+    /// assert_eq!(x.mul(&y).affine_form(), None);
+    /// ```
+    pub fn affine_form(&self) -> Option<(Vec<Ratio<BigInt>>, Ratio<BigInt>)> {
+        let zero = Ratio::from_integer(BigInt::from(0));
+        let mut coeffs = vec![zero.clone(); self.num_vars];
+        let mut constant = zero;
+        for (key, c) in &self.terms {
+            let degree: u32 = key.exponents.iter().sum();
+            match degree {
+                0 => constant = c.clone(),
+                1 => {
+                    let i = key.exponents.iter().position(|&e| e == 1)?;
+                    coeffs[i] = c.clone();
+                }
+                _ => return None,
+            }
+        }
+        Some((coeffs, constant))
+    }
+
     /// Convert this polynomial to a different monomial ordering.
     pub fn convert_order<B: MonomialOrd>(&self) -> MultiPoly<B> {
         let mut new_terms = BTreeMap::new();
@@ -538,12 +597,54 @@ impl<O: MonomialOrd> MultiPoly<O> {
         result
     }
 
+    /// Substitute a value for one variable, **keeping** the number of
+    /// variables (the variable simply no longer occurs), so that the
+    /// remaining variables keep their indices.  This is the operation for
+    /// instantiating a parameter: `p(j, x, y)` at `j = 3` is `p(3, x, y)`
+    /// as a polynomial in the same three slots.  Use
+    /// [`substitute`](Self::substitute) to also drop the variable.
+    ///
+    /// ```
+    /// use symplex::multipoly::MultiPoly;
+    /// use symplex::linprog::qi;
+    ///
+    /// let [j, x]: [MultiPoly; 2] = [MultiPoly::var(2, 0), MultiPoly::var(2, 1)];
+    /// let p = j.mul(&x).add(&j.mul(&j));           // j·x + j²
+    /// let at3 = p.eval_var(0, &qi(3));
+    /// assert_eq!(at3.num_vars(), 2);
+    /// assert_eq!(at3.affine_form(), Some((vec![qi(0), qi(3)], qi(9))));
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if `var_index >= num_vars`.
+    pub fn eval_var(&self, var_index: usize, value: &Ratio<BigInt>) -> MultiPoly<O> {
+        assert!(
+            var_index < self.num_vars,
+            "eval_var: var_index {var_index} out of range for {} variables",
+            self.num_vars
+        );
+        let mut result = Self::zero(self.num_vars);
+        for (key, coeff) in &self.terms {
+            let e_i = key.exponents[var_index];
+            let new_coeff = coeff * pow_ratio(value, e_i);
+            if new_coeff.is_zero() {
+                continue;
+            }
+            let mut new_exp = key.exponents.clone();
+            new_exp[var_index] = 0;
+            result.insert_term(new_exp, new_coeff);
+        }
+        result.prune();
+        result
+    }
+
     /// Substitute a value for one variable, reducing the number of
     /// variables by one.
     ///
     /// The resulting polynomial lives in a ring with `num_vars - 1`
     /// variables. Variable indices above `var_index` are shifted down
-    /// by one.
+    /// by one.  See [`eval_var`](Self::eval_var) to keep the indices.
     ///
     /// # Panics
     ///

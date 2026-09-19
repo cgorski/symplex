@@ -806,7 +806,7 @@ impl<T: ExactScalar> ExactMatrix<T> {
 ///
 /// Returns the pivot columns (their count is the rank of the first
 /// `pivot_limit` columns) and `d`.
-fn fraction_free_gauss_jordan(
+pub(crate) fn fraction_free_gauss_jordan(
     a: &mut [BigInt],
     nrows: usize,
     ncols: usize,

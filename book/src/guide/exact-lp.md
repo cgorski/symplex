@@ -329,7 +329,7 @@ fn main() {
 }
 ```
 
-Everything is exact and every answer is a rational; the enumeration is `O(C(m, n))` linear solves and the volume recursion visits every face, which is the right trade for the handful of cells a decision tree produces (dimension ≤ 5) and the wrong one for large polyhedra. When the cell's facets depend on a parameter, `ParametricPolytope::new(&hyps, &vars, &j)` holds the family and `polytope_at` / `vertices_at` / `volume_at(&j_value)` instantiate it exactly with a per-sample cache (0.5).
+Everything is exact and every answer is a rational; the enumeration is `O(C(m, n))` linear solves and the volume recursion visits every face, which is the right trade for the handful of cells a decision tree produces (dimension ≤ 5) and the wrong one for large polyhedra. Since 0.6.1 the enumeration runs in integer arithmetic (half-spaces scaled once, distinct hyperplanes only, containment as the sign of `a·X + b·D`), the vertex list is cached on the polytope, and `volume` hands each facet its own vertices instead of re-enumerating — about 10× on the vertex work. Ask `is_full_dimensional()` (one LP) rather than `volume() > 0` when that is the question, and `interior_point()` for a point with positive slack everywhere; `HalfSpace::normalized()` is the key that identifies a candidate cut with its flip and rescalings. When the cell's facets depend on a parameter, `ParametricPolytope::new(&hyps, &vars, &j)` holds the family and `polytope_at` / `vertices_at` / `volume_at(&j_value)` instantiate it exactly with a per-sample cache (0.5).
 
 ## Performance
 

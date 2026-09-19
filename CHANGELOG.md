@@ -6,6 +6,75 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.6.1] - 2026-09-19
+
+### Added
+
+- `PolyhedronCertificate::used_hyps()`: the indices of the hypotheses the
+  identity actually uses, so a generated lemma can list exactly those in
+  its signature (previously recoverable only by scanning the emitted Lean
+  for hypothesis names).
+- `PolyhedronProver::prove_poly(&Poly)`: prove a goal that is already an
+  exact polynomial, skipping the expression round trip; its generators may
+  be any subset of the prover's in any order (a tool's `(j, r, t)` against
+  the prover's sorted `(r, t, j)`).
+- `MultiPoly::{as_constant, affine_form, eval_var, to_ex}`: the value of a
+  constant polynomial; a degree-≤ 1 polynomial as `(coefficients,
+  constant)`; substitution of a value for one variable that **keeps** the
+  variable count (unlike `substitute`, which drops the variable and shifts
+  the indices — the natural operation for instantiating a parameter); and
+  the bridge to an `Ex` over named symbols.  `MultiPoly` and the rational
+  type `Q` are re-exported from the prelude.
+- `Polytope::is_full_dimensional()` and `Polytope::interior_point()`: one
+  exact LP (the largest common slack), instead of testing `volume() > 0`;
+  defined for unbounded polyhedra too.  `HalfSpace::{value_sign, is_tight,
+  is_trivial, normalized, same_hyperplane}` — gcd-free sign tests and the
+  canonical hyperplane key that identifies a cut with its flip and its
+  rescalings.
+
+### Changed
+
+- **`Polytope::vertices` is 10× faster and cached.**  The enumeration runs
+  in integer arithmetic throughout: half-spaces are scaled to integers
+  once, only *distinct* hyperplanes are combined, each `n × n` system is
+  solved by the fraction-free kernel (which yields the point as `X / D`
+  directly) and containment is the sign of `a·X + b·D` — no rational
+  reduction until the accepted vertices are returned.  The vertex list is
+  cached on the polytope (`Clone` carries it; `PartialEq`/`Debug` ignore
+  it).  `Polytope::volume` enumerates vertices once and hands each facet
+  its own vertices (those on its hyperplane, projected) instead of
+  re-enumerating at every level of the recursion; `is_bounded` recognises a
+  description with axis-parallel bounds on every coordinate without LPs.
+  `HalfSpace::contains` / `Polytope::contains` use the gcd-free sign test.
+  Profiled on a downstream decision-tree generator (three free
+  coordinates, 49 leaves): 103 s → 34 s with byte-identical output; the
+  remaining time is the certificate LPs.
+- `ParametricPolytope::at` instantiates through exact `MultiPoly`
+  arithmetic rather than the expression arena (identical results; verified
+  against the symbolic route on random families).
+
+### Fixed
+
+- `lean::wrap_lean` measures its continuation indent from the line's
+  *tactic column* (past `· ` / `. ` bullets), not from the leading spaces.
+  A bullet's tactics sit two columns right of the `·`, so the old `+2`
+  put a wrapped `· have … := by tac` continuation at the same column as
+  the following tactic — Lean then swallowed that tactic into the inner
+  `by` block (`expected '{' or indented tactic sequence`), or rejected a
+  wrapped application argument (`unknown tactic`).  Both shapes were
+  compiled against Mathlib before and after; plain (non-bullet) lines and
+  the pinned certificate fixtures are unchanged.
+
+### Infrastructure
+
+- `symplex` and `symplex-build` at 0.6.1; `symplex-macros` unchanged at
+  0.3.0.  Additive over 0.6.0 (`cargo semver-checks`: no semver update
+  required).  End-to-end check: a downstream Lean generator built against
+  this tree reproduces its 0.6.0 output byte-for-byte apart from the
+  `wrap_lean` bullet fix, and the generated file compiles against Mathlib.
+- `CONTRIBUTING.md`: no Cargo feature flags by design; the explicit
+  context argument of `expr!` and friends is deliberate.
+
 ## [0.6.0] - 2026-09-18
 
 ### Added

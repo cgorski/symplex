@@ -13,7 +13,7 @@ use symplex::certificates::{
     prove_nonnegative_on_polyhedron, prove_polyhedron_empty,
 };
 use symplex::lean::LeanOpts;
-use symplex::linprog::q;
+use symplex::linprog::{q, qi};
 use symplex::prelude::*;
 
 const COMPILED: &str = include_str!("../fixtures/polyhedron_certificates.lean");
@@ -445,6 +445,65 @@ fn prover_reuses_hypotheses_and_matches_the_one_shot_functions() {
     }
     // A goal with a foreign symbol is an error, not a silent extra variable.
     let e = prover.prove(&ctx.symbol("u")).unwrap_err().to_string();
+    assert!(e.contains("not a variable of the hypotheses"), "{e}");
+}
+
+/// `prove_poly` takes an exact polynomial directly.  Its generators may be
+/// a permutation (a tool's `(j, r, t)` order against the prover's sorted
+/// `(r, t, j)`) or a subset of the prover's; the certificate, its Lean and
+/// `used_hyps` are identical to the expression route.  A `MultiPoly` goal
+/// reaches it through `Poly::from_multipoly` without ever being an `Ex`.
+#[test]
+fn prove_poly_accepts_permuted_and_partial_generators() {
+    use symplex::certificates::PolyhedronProver;
+    use symplex::poly_ex::Poly;
+    let f = Fixture::new();
+    let (ctx, j, r, t) = (&f.ctx, &f.j, &f.r, &f.t);
+    let hyps = [
+        r.clone(),
+        ctx.rational(1, 2) - r,
+        t.clone(),
+        1 - t,
+        (j * 2 + 1) * t - j * r - 1,
+    ];
+    let prover =
+        PolyhedronProver::new(&hyps, Some((j, &ctx.int(2))), &PolyhedronOpts::default()).unwrap();
+    let goal = (j * 2 + 1) * t * 4 - j * r * 4 - r - 3;
+    let via_ex = proved(prover.prove(&goal).unwrap());
+    // (j, r, t): the tool's order, parameter first.
+    let permuted = Poly::new(&goal, &[j, r, t]).unwrap();
+    let via_poly = proved(prover.prove_poly(&permuted).unwrap());
+    assert_eq!(via_poly.to_string(), via_ex.to_string());
+    assert_eq!(via_poly.to_lean("x").unwrap(), via_ex.to_lean("x").unwrap());
+    assert_eq!(via_poly.used_hyps(), via_ex.used_hyps());
+    // A subset of the generators: `1 − t + r` (from `r ≥ 0`, `1 − t ≥ 0`)
+    // does not mention `j`, and is given in `(t, r)` order.
+    let partial = Poly::new(&(1 - t + r), &[t, r]).unwrap();
+    let a = proved(prover.prove_poly(&partial).unwrap());
+    let b = proved(prover.prove(&(1 - t + r)).unwrap());
+    assert_eq!(a.to_string(), b.to_string());
+    assert_eq!(a.used_hyps(), vec![0, 3]);
+    // And a false goal is refuted the same way through both routes.
+    let bad = Poly::new(&(t - r), &[t, r]).unwrap();
+    assert!(matches!(
+        prover.prove_poly(&bad).unwrap(),
+        PolyhedronOutcome::Refuted { .. }
+    ));
+    // Straight from a MultiPoly in (j, r, t) order.
+    let [mj, mr, mt]: [MultiPoly; 3] = [
+        MultiPoly::var(3, 0),
+        MultiPoly::var(3, 1),
+        MultiPoly::var(3, 2),
+    ];
+    let two_j_plus_1 = mj.scale(&qi(2)) + 1;
+    let mp = two_j_plus_1.mul(&mt).scale(&qi(4)) - mj.mul(&mr).scale(&qi(4)) - mr.clone() - 3;
+    let from_mp = Poly::from_multipoly(ctx, &[j, r, t], &mp).unwrap();
+    assert_eq!(from_mp.to_ex().expand(), goal.expand());
+    let c = proved(prover.prove_poly(&from_mp).unwrap());
+    assert_eq!(c.to_string(), via_ex.to_string());
+    // Foreign generator: an error.
+    let foreign = Poly::new(&ctx.symbol("u"), &[&ctx.symbol("u")]).unwrap();
+    let e = prover.prove_poly(&foreign).unwrap_err().to_string();
     assert!(e.contains("not a variable of the hypotheses"), "{e}");
 }
 
