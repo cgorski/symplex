@@ -186,7 +186,8 @@ pub use output::tree;
 pub use plotting::data_export;
 
 // domains
-/// Exact, machine-checkable non-negativity certificates on boxes (Handelman), with Lean export.
+/// Exact, machine-checkable non-negativity certificates on boxes (Handelman),
+/// half-lines and parametric polyhedra, with Lean export.
 pub use domains::certificates;
 /// Combinatorics: Stirling numbers, multinomial coefficients, partition counting.
 pub use domains::combinatorics;
@@ -208,6 +209,9 @@ pub use domains::normalforms;
 pub use domains::ntheory;
 /// Numerical optimisation and root bracketing (Brent, Nelder–Mead, polynomial fitting).
 pub use domains::optimize;
+/// Exact convex polyhedra in ℚⁿ from half-spaces: vertices, volume,
+/// containment, cutting.
+pub use domains::polytope;
 /// Symbolic quaternion algebra for attitude representation.
 pub use domains::quaternion;
 /// Robotics kinematics: DH parameters, forward kinematics, rotations.

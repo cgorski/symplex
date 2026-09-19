@@ -1,5 +1,36 @@
 //! Exact, machine-checkable certificates that a polynomial is non-negative
-//! on a box.
+//! on a box, on a half-line, or on a polyhedron whose facets depend on a
+//! parameter — each exportable as a Lean 4 / Mathlib proof.
+//!
+//! # Parametric polyhedra
+//!
+//! [`prove_nonnegative_on_polyhedron`] takes hypotheses `h₁, …, hₘ ∈
+//! ℚ[j, x]`, a goal `g ∈ ℚ[j, x]` and a parameter bound `j ≥ j₀`, and
+//! searches for the identity
+//!
+//! ```text
+//! λ(j) · g  =  Σₖ Σ_{a,b} μ_{k,a,b} · jᵃ (j − j₀)ᵇ · hₖ
+//!            + Σ_{k≤l} Σ_{a+b≤1} μ_{k,l,a,b} · jᵃ (j − j₀)ᵇ · hₖ hₗ      (optional)
+//!            + Σ_{a+b≥1} μ_{a,b} · jᵃ (j − j₀)ᵇ  +  μ₀ ,
+//! λ(j) = 1 + Σ_{a≥1} νₐ jᵃ ,        all μ, ν ≥ 0 .
+//! ```
+//!
+//! Every term on the right is non-negative wherever the hypotheses hold
+//! and `j ≥ j₀` (powers of `j` itself are only used when `j₀ ≥ 0`), and
+//! `λ(j) > 0`, so the identity proves `g ≥ 0` for **every** admissible
+//! `j`.  The polynomial multiplier `λ` on the goal is what makes the
+//! parametric case work: the Farkas multipliers of `j`-dependent facets
+//! are rational functions of `j`, and clearing their denominators puts a
+//! polynomial in front of `g`.  With the goal `−1`
+//! ([`prove_polyhedron_empty`]) the same identity proves the polyhedron
+//! **empty** for every `j ≥ j₀`.  The search is a sequence of exact LPs
+//! staged from the smallest basis upwards ([`PolyhedronOpts`]); every
+//! [`PolyhedronCertificate`] is re-verified with exact polynomial
+//! arithmetic, exports as a theorem ([`PolyhedronCertificate::to_lean`])
+//! or as bare proof steps for an existing skeleton
+//! ([`PolyhedronCertificate::lean_steps`]).
+//!
+//! # Boxes
 //!
 //! [`prove_nonnegative_on_box`] searches for a **Handelman certificate**: a
 //! representation
@@ -28,6 +59,13 @@
 //! theorem whose proof is `nlinarith` fed with exactly the products that
 //! appear with non-zero weight (so it is a linear-arithmetic check, not a
 //! search).
+//!
+//! # Half-lines
+//!
+//! [`prove_nonnegative_on_halfline`] and [`prove_nonnegative_on_reals`]
+//! handle univariate goals on `x ≥ a` / `x ≤ a` / all of ℝ with a shift,
+//! a Pólya multiplier `(1 + k)ᴺ` and square factors for interior double
+//! zeros ([`HalfLineCertificate`], [`RealLineCertificate`]).
 //!
 //! # Example
 //!
@@ -64,6 +102,73 @@ use crate::api::poly_ex::Poly;
 use crate::base::errors::SymplexError;
 use crate::domains::linprog::{Feasibility, LpProblem, LpStatus, nonneg_combination};
 use crate::output::lean::{LeanOpts, MATHLIB_LINE_WIDTH, lean_ident, wrap_lean};
+
+mod polyhedron;
+pub use polyhedron::{
+    PolyhedronCertificate, PolyhedronCertificateData, PolyhedronLeanNames, PolyhedronLeanSteps,
+    PolyhedronOpts, PolyhedronOutcome, PolyhedronTerm, prove_nonnegative_on_polyhedron,
+    prove_polyhedron_empty,
+};
+
+/// Exact rationals as `"p/q"` strings for the serialisable certificate forms.
+pub(crate) mod serial {
+    use super::{BigInt, Q, SymplexError};
+
+    pub(crate) fn q_to_str(q: &Q) -> String {
+        format!("{}/{}", q.numer(), q.denom())
+    }
+
+    pub(crate) fn q_from_str(s: &str, operation: &'static str) -> Result<Q, SymplexError> {
+        let bad = || SymplexError::InvalidArgument {
+            operation,
+            reason: format!("malformed rational `{s}` (expected `p/q`)"),
+        };
+        let (n, d) = s.split_once('/').unwrap_or((s, "1"));
+        let n: BigInt = n.trim().parse().map_err(|_| bad())?;
+        let d: BigInt = d.trim().parse().map_err(|_| bad())?;
+        if d == BigInt::from(0) {
+            return Err(bad());
+        }
+        Ok(Q::new(n, d))
+    }
+}
+
+/// Serialisable form of a box [`Certificate`] (see [`Certificate::to_json`]).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CertificateData {
+    /// The goal (a polynomial in the box variables).
+    pub goal: crate::output::tree::ExprTree,
+    /// The box as `(variable, lo, hi)` trees.
+    pub bounds: Vec<(
+        crate::output::tree::ExprTree,
+        crate::output::tree::ExprTree,
+        crate::output::tree::ExprTree,
+    )>,
+    /// Terms as `(lower powers, upper powers, weight "p/q")`.
+    pub terms: Vec<(Vec<u32>, Vec<u32>, String)>,
+    /// The square factor `g`, if any.
+    pub square: Option<crate::output::tree::ExprTree>,
+}
+
+/// Serialisable form of a [`HalfLineCertificate`] (see
+/// [`HalfLineCertificate::to_json`]).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct HalfLineCertificateData {
+    /// The goal.
+    pub goal: crate::output::tree::ExprTree,
+    /// The variable.
+    pub var: crate::output::tree::ExprTree,
+    /// The endpoint `a`.
+    pub endpoint: crate::output::tree::ExprTree,
+    /// `"at_least"` (`x ≥ a`) or `"at_most"` (`x ≤ a`).
+    pub ray: String,
+    /// The Pólya power `N`.
+    pub polya_power: u32,
+    /// Coefficients of `(1 + k)ᴺ·goal / g²` in ascending powers of `k`, as `"p/q"`.
+    pub coefficients: Vec<String>,
+    /// The square factor `g`, if any.
+    pub square: Option<crate::output::tree::ExprTree>,
+}
 
 type Q = Ratio<BigInt>;
 
@@ -361,6 +466,143 @@ impl Certificate {
             format!("  nlinarith [{}]", hints.join(", "))
         };
         Ok(wrap_lean(&format!("{sig}{tactic}\n"), MATHLIB_LINE_WIDTH))
+    }
+}
+
+impl Certificate {
+    /// The certificate as plain data for serialisation with serde.
+    pub fn to_data(&self) -> CertificateData {
+        CertificateData {
+            goal: self.goal.to_ex().to_tree(),
+            bounds: self
+                .bounds
+                .iter()
+                .map(|b| (b.var.to_tree(), b.lo.to_tree(), b.hi.to_tree()))
+                .collect(),
+            terms: self
+                .terms
+                .iter()
+                .map(|t| {
+                    (
+                        t.lower_powers.clone(),
+                        t.upper_powers.clone(),
+                        serial::q_to_str(&t.weight),
+                    )
+                })
+                .collect(),
+            square: self.square.as_ref().map(|g| g.to_ex().to_tree()),
+        }
+    }
+
+    /// Rebuild from data in `ctx` and **re-verify**; data that does not
+    /// verify is rejected.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] for malformed data or a failed
+    /// verification.
+    pub fn from_data(ctx: &Context, data: &CertificateData) -> Result<Self, SymplexError> {
+        const OP: &str = "Certificate::from_data";
+        let bad = |reason: String| SymplexError::InvalidArgument {
+            operation: OP,
+            reason,
+        };
+        let bounds: Vec<BoxBound> = data
+            .bounds
+            .iter()
+            .map(|(v, lo, hi)| BoxBound {
+                var: ctx.from_tree(v),
+                lo: ctx.from_tree(lo),
+                hi: ctx.from_tree(hi),
+            })
+            .collect();
+        if bounds.is_empty() {
+            return Err(bad(
+                "a certificate needs at least one bounded variable".into()
+            ));
+        }
+        let gens: Vec<&Ex> = bounds.iter().map(|b| &b.var).collect();
+        let goal_ex = ctx.from_tree(&data.goal);
+        let goal = Poly::new(&goal_ex, &gens).ok_or_else(|| {
+            bad(format!(
+                "goal `{goal_ex}` is not a polynomial in the box variables"
+            ))
+        })?;
+        let square = match &data.square {
+            Some(t) => {
+                let e = ctx.from_tree(t);
+                Some(
+                    Poly::new(&e, &gens)
+                        .ok_or_else(|| bad(format!("square factor `{e}` is not a polynomial")))?,
+                )
+            }
+            None => None,
+        };
+        let mut terms = Vec::with_capacity(data.terms.len());
+        for (lo, hi, w) in &data.terms {
+            if lo.len() != bounds.len() || hi.len() != bounds.len() {
+                return Err(bad(
+                    "a term's power vectors must have one entry per variable".into(),
+                ));
+            }
+            terms.push(HandelmanTerm {
+                lower_powers: lo.clone(),
+                upper_powers: hi.clone(),
+                weight: serial::q_from_str(w, OP)?,
+            });
+        }
+        let cert = Certificate {
+            goal,
+            bounds,
+            terms,
+            square,
+        };
+        if !cert.verify() {
+            return Err(bad("the certificate data does not verify".into()));
+        }
+        Ok(cert)
+    }
+
+    /// JSON form of [`to_data`](Self::to_data), for crossing a trust
+    /// boundary: [`from_json`](Self::from_json) re-verifies before
+    /// accepting.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::certificates::{Certificate, prove_nonnegative_on_box};
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let out = prove_nonnegative_on_box(&(&x * (1 - &x)), &[(x.clone(), ctx.int(0), ctx.int(1))], 2).unwrap();
+    /// let json = out.certificate().unwrap().to_json().unwrap();
+    /// let back = Certificate::from_json(&Context::new(), &json).unwrap();
+    /// assert!(back.verify());
+    /// assert_eq!(back.to_string(), out.certificate().unwrap().to_string());
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::ComputationFailed`] if serialisation fails.
+    pub fn to_json(&self) -> Result<String, SymplexError> {
+        serde_json::to_string(&self.to_data()).map_err(|e| SymplexError::ComputationFailed {
+            operation: "Certificate::to_json",
+            reason: e.to_string(),
+        })
+    }
+
+    /// Parse [`to_json`](Self::to_json) output in `ctx` and re-verify it.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] for malformed JSON or data that
+    /// does not verify.
+    pub fn from_json(ctx: &Context, json: &str) -> Result<Self, SymplexError> {
+        let data: CertificateData =
+            serde_json::from_str(json).map_err(|e| SymplexError::InvalidArgument {
+                operation: "Certificate::from_json",
+                reason: format!("malformed JSON: {e}"),
+            })?;
+        Self::from_data(ctx, &data)
     }
 }
 
@@ -941,6 +1183,118 @@ impl HalfLineCertificate {
         }
     }
 
+    /// The certificate as plain data for serialisation with serde.
+    pub fn to_data(&self) -> HalfLineCertificateData {
+        HalfLineCertificateData {
+            goal: self.goal.to_ex().to_tree(),
+            var: self.var.to_tree(),
+            endpoint: self.endpoint.to_tree(),
+            ray: match self.ray {
+                Ray::AtLeast => "at_least".to_string(),
+                Ray::AtMost => "at_most".to_string(),
+            },
+            polya_power: self.polya_power,
+            coefficients: self.coefficients.iter().map(serial::q_to_str).collect(),
+            square: self.square.as_ref().map(|g| g.to_ex().to_tree()),
+        }
+    }
+
+    /// Rebuild from data in `ctx` and **re-verify**; data that does not
+    /// verify is rejected.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] for malformed data or a failed
+    /// verification.
+    pub fn from_data(ctx: &Context, data: &HalfLineCertificateData) -> Result<Self, SymplexError> {
+        const OP: &str = "HalfLineCertificate::from_data";
+        let bad = |reason: String| SymplexError::InvalidArgument {
+            operation: OP,
+            reason,
+        };
+        let var = ctx.from_tree(&data.var);
+        let goal_ex = ctx.from_tree(&data.goal);
+        let goal = Poly::new(&goal_ex, &[&var])
+            .ok_or_else(|| bad(format!("goal `{goal_ex}` is not a polynomial in `{var}`")))?;
+        let square = match &data.square {
+            Some(t) => {
+                let e = ctx.from_tree(t);
+                Some(
+                    Poly::new(&e, &[&var])
+                        .ok_or_else(|| bad(format!("square factor `{e}` is not a polynomial")))?,
+                )
+            }
+            None => None,
+        };
+        let ray = match data.ray.as_str() {
+            "at_least" => Ray::AtLeast,
+            "at_most" => Ray::AtMost,
+            other => {
+                return Err(bad(format!(
+                    "unknown ray `{other}` (expected `at_least` or `at_most`)"
+                )));
+            }
+        };
+        let cert = HalfLineCertificate {
+            goal,
+            var,
+            endpoint: ctx.from_tree(&data.endpoint).eval(),
+            ray,
+            polya_power: data.polya_power,
+            coefficients: data
+                .coefficients
+                .iter()
+                .map(|s| serial::q_from_str(s, OP))
+                .collect::<Result<_, _>>()?,
+            square,
+        };
+        if !cert.verify() {
+            return Err(bad("the certificate data does not verify".into()));
+        }
+        Ok(cert)
+    }
+
+    /// JSON form of [`to_data`](Self::to_data); [`from_json`](Self::from_json)
+    /// re-verifies before accepting.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::certificates::{HalfLineCertificate, Ray, prove_nonnegative_on_halfline};
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let out = prove_nonnegative_on_halfline(&(&x.powi(2) - &x + 1), &x, &ctx.int(0), Ray::AtLeast, 4).unwrap();
+    /// let json = out.certificate().unwrap().to_json().unwrap();
+    /// let back = HalfLineCertificate::from_json(&Context::new(), &json).unwrap();
+    /// assert_eq!(back.polya_power(), out.certificate().unwrap().polya_power());
+    /// assert!(back.verify());
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::ComputationFailed`] if serialisation fails.
+    pub fn to_json(&self) -> Result<String, SymplexError> {
+        serde_json::to_string(&self.to_data()).map_err(|e| SymplexError::ComputationFailed {
+            operation: "HalfLineCertificate::to_json",
+            reason: e.to_string(),
+        })
+    }
+
+    /// Parse [`to_json`](Self::to_json) output in `ctx` and re-verify it.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] for malformed JSON or data that
+    /// does not verify.
+    pub fn from_json(ctx: &Context, json: &str) -> Result<Self, SymplexError> {
+        let data: HalfLineCertificateData =
+            serde_json::from_str(json).map_err(|e| SymplexError::InvalidArgument {
+                operation: "HalfLineCertificate::from_json",
+                reason: format!("malformed JSON: {e}"),
+            })?;
+        Self::from_data(ctx, &data)
+    }
+
     /// Recompute `(1 + k)^N · goal` and `square² · Σ cᵢ kⁱ` exactly and
     /// compare them; also checks every `cᵢ ≥ 0`.
     pub fn verify(&self) -> bool {
@@ -984,6 +1338,60 @@ impl HalfLineCertificate {
         (lhs, rhs)
     }
 
+    /// The hint terms of the Lean proof, for an existing proof skeleton:
+    /// one entry per power of `k = x − a` (or `a − x`) with a positive
+    /// coefficient, given the caller's name `hk` of the hypothesis
+    /// `0 ≤ k` — `hk` itself for the first power, `pow_nonneg hk n` above,
+    /// each wrapped in `mul_nonneg (sq_nonneg g) (…)` when the certificate
+    /// has a square factor.  The constant term needs no hint.
+    ///
+    /// With a Pólya power `N > 0` the identity proves
+    /// `0 ≤ (1 + k) ^ N * goal`; the caller then divides by
+    /// `pow_pos (by linarith) N` as [`to_lean`](Self::to_lean) does.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::certificates::{prove_nonnegative_on_halfline, Ray};
+    /// use symplex::lean::LeanOpts;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// // x² − 2x + 3 = (x − 1)² + 2 on x ≥ 1: coefficients [2, 0, 1] in k = x − 1.
+    /// let out = prove_nonnegative_on_halfline(&(&x.powi(2) - &x * 2 + 3), &x, &ctx.int(1), Ray::AtLeast, 0).unwrap();
+    /// let cert = out.certificate().unwrap();
+    /// assert_eq!(cert.lean_hints("hk", &LeanOpts::default()).unwrap(), vec!["pow_nonneg hk 2"]);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::NotImplemented`] if the square factor cannot be
+    /// rendered.
+    pub fn lean_hints(&self, hk: &str, opts: &LeanOpts) -> Result<Vec<String>, SymplexError> {
+        let square_hint = match &self.square {
+            Some(g) => Some(format!("sq_nonneg ({})", g.to_ex().to_lean_with(opts)?)),
+            None => None,
+        };
+        let mut hints: Vec<String> = Vec::new();
+        for (i, c) in self.coefficients.iter().enumerate() {
+            if *c <= Q::zero() {
+                continue;
+            }
+            let h = match i {
+                0 => None,
+                1 => Some(hk.to_string()),
+                _ => Some(format!("pow_nonneg {hk} {i}")),
+            };
+            let h = match (&square_hint, h) {
+                (Some(sq), Some(h)) => format!("mul_nonneg ({sq}) ({h})"),
+                (Some(sq), None) => sq.clone(),
+                (None, Some(h)) => h,
+                (None, None) => continue,
+            };
+            hints.push(h);
+        }
+        Ok(hints)
+    }
+
     /// A Lean 4 / Mathlib theorem `0 ≤ goal` for `a ≤ x` (or `x ≤ a`).
     ///
     /// Shape for `N = 0`:
@@ -1023,30 +1431,10 @@ impl HalfLineCertificate {
                 format!("{a} - {v}"),
             ),
         };
-        let square_hint = match &self.square {
-            Some(g) => Some(format!("sq_nonneg ({})", g.to_ex().to_lean_with(opts)?)),
-            None => None,
-        };
+        let square_hint = self.square.is_some();
         // One hint per power of k that carries a positive coefficient.
-        let mut hints: Vec<String> = Vec::new();
-        for (i, c) in self.coefficients.iter().enumerate() {
-            if *c <= Q::zero() {
-                continue;
-            }
-            let h = match i {
-                0 => None,
-                1 => Some("hk".to_string()),
-                _ => Some(format!("pow_nonneg hk {i}")),
-            };
-            let h = match (&square_hint, h) {
-                (Some(sq), Some(h)) => format!("mul_nonneg ({sq}) ({h})"),
-                (Some(sq), None) => sq.clone(),
-                (None, Some(h)) => h,
-                (None, None) => continue,
-            };
-            hints.push(h);
-        }
-        let tactic_name = if square_hint.is_some() || self.coefficients.len() > 2 {
+        let hints = self.lean_hints("hk", opts)?;
+        let tactic_name = if square_hint || self.coefficients.len() > 2 {
             "nlinarith"
         } else {
             "linarith"

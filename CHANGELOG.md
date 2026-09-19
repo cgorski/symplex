@@ -6,6 +6,102 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.4.0] - 2026-09-18
+
+### Breaking
+
+- `Ex::roots_count_real` (the 0.3 alias) is removed; call
+  `count_real_roots_in` on `Ex` or `Poly`.
+- `lean::LeanOpts` gained the field `prefer_subtraction`.  Struct literals
+  must add `..Default::default()` (`LeanOpts { real_type: "ℚ".into(),
+  ..Default::default() }`) or use the new builders
+  `with_real_type` / `with_ascribe_integers` / `with_prefer_subtraction`.
+  Further fields may be added in minor releases.
+
+### Added
+
+- **Certificates on a parametric polyhedron**
+  (`certificates::prove_nonnegative_on_polyhedron(goal, hyps, Some((&j,
+  &j0)), &PolyhedronOpts)` and `prove_polyhedron_empty`): prove `g ≥ 0`
+  on `{hₖ(j, x) ≥ 0}` for every real `j ≥ j₀` — or that the set is empty
+  — by the exact identity `λ(j)·g = Σ μ·jᵃ(j − j₀)ᵇ·hₖ + Σ μ·jᵃ(j − j₀)ᵇ
+  + μ₀` (optionally `+ Σ μ·hₖhₗ`), `λ(j) = 1 + Σ νₐ jᵃ`, all `μ, ν ≥ 0`.
+  The polynomial multiplier `λ` on the goal is what makes `j`-dependent
+  facets certifiable (their Farkas multipliers are rational functions of
+  `j`).  Outcomes `Proved(PolyhedronCertificate)` / `Refuted { point,
+  value }` (an exact point of the set, found by sampling `j` and
+  minimising an affine goal with the exact LP) / `Unknown { degree,
+  lambda_degree, pairwise }`.  The search is **staged** (degree-1
+  multipliers with `λ = 1` first, then higher degrees, pairwise products
+  last; `PolyhedronOpts::single` for one LP) and every certificate is
+  re-verified with exact polynomial arithmetic.  `param = None` gives a
+  plain Farkas / pairwise certificate on a fixed polyhedron.
+  - `PolyhedronCertificate::{goal, hyps, parameter, terms, lambda,
+    lambda_coeffs, lambda_is_one, degree, uses_pairwise,
+    proves_emptiness, product_expr, identity, verify}`, `Display` with
+    the hypotheses abbreviated `hₖ`.
+  - Lean export in the shape a hand-written proof uses: `to_lean(name)`
+    emits a theorem with `hj : j₀ ≤ j`, `h0 : 0 ≤ h₀`, …, derives `hJ0`
+    / `hK0` when needed, one `have … := mul_nonneg …` per product
+    (`h0K`, `h0JK`, `h0xh1`, `pJJ`), and closes with `linarith only […]`
+    — through `have hg : 0 ≤ λ * g` and `nonneg_of_mul_nonneg_right`
+    when `λ ≠ 1`; emptiness certificates conclude `False`.
+    `lean_steps(&PolyhedronLeanNames { hyps, param_nonneg, shift_nonneg },
+    &opts)` returns the same `have` lines, hint names and closing block
+    (`PolyhedronLeanSteps`, `to_block(indent)`) for an existing proof
+    skeleton.  Fifteen shapes (λ = 1; λ of degree 1 and 2 on `j` or on
+    `j − j₀`; `j₀ > 0`, `j₀ = 0`, `j₀ < 0`; mixed `J`/`K` chains; pairwise
+    products with and without a parameter; emptiness with and without `λ`;
+    pure parameter powers `pJJ`, `pJK`, `pKK`; no parameter) compile
+    against Mathlib (Lean 4.30.0) with
+    `linter.style.longLine` on; the emitted text is pinned to that compiled
+    file (`tests/fixtures/polyhedron_certificates.lean`).
+- **`symplex::polytope`**: exact convex polyhedra in ℚⁿ from half-spaces
+  `a·x + b ≥ 0`.  `Polytope::{new, from_rows, from_exprs, to_exprs,
+  halfspaces, contains, with_halfspace, split, is_empty, any_point,
+  bounding_box, is_bounded, vertices, irredundant, vertex_centroid,
+  volume}` (vertices by `QMatrix::solve` over `n`-subsets, emptiness and
+  bounds by the exact LP, volume for `n ≤ 3`); `HalfSpace::{value,
+  contains, flipped}`.  Meant for the geometry around certificate
+  searches (cells of a decision tree, cuts, containment), not for large
+  polyhedra.
+- `Poly::try_new(expr, gens) -> Result<Poly, SymplexError>`: `Poly::new`
+  with the reason for failure — which generator sits inside a function,
+  under a negative power (a rational function), under a fractional or
+  symbolic power, or in an exponent.
+- `Poly::terms_iter()` (borrowed `(&[u32], &Ex)` pairs, no allocation) and
+  `Poly::coeffs_rational() -> Option<Vec<Ratio<BigInt>>>`.
+- `LeanOpts::prefer_subtraction`: a sum with exactly one negated term is
+  printed as a subtraction with that term last (`(1 / 2 : ℝ) - r` instead
+  of `-r + (1 / 2 : ℝ)`), so generated hypotheses match hand-written ones
+  syntactically; `with_real_type` / `with_ascribe_integers` /
+  `with_prefer_subtraction` builders.
+- `HalfLineCertificate::lean_hints(hk, &opts)`: the hint list of the Lean
+  proof (`hk`, `pow_nonneg hk n`, `mul_nonneg (sq_nonneg g) (…)`) for a
+  caller's proof skeleton, with the caller's name for `0 ≤ k`.
+- Certificates cross trust boundaries: `Certificate`,
+  `HalfLineCertificate` and `PolyhedronCertificate` have `to_data()` /
+  `from_data(&ctx, &data)` (plain serde-derived structs
+  `CertificateData`, `HalfLineCertificateData`,
+  `PolyhedronCertificateData` built from `ExprTree`s and `"p/q"`
+  rationals) and `to_json()` / `from_json(&ctx, json)`.  `from_*`
+  **re-verifies** the identity with exact polynomial arithmetic and
+  rejects data that does not hold, so a checker can accept a certificate
+  produced elsewhere without trusting the producer.
+- `linsolve` docs state explicitly that an over-determined but consistent
+  system is `Unique` (with an example), a contradictory one
+  `Inconsistent`.
+- `examples/polyhedron_certificates.rs`; test group `tests/v04.rs`
+  (`v04_polyhedron`, `v04_polytope`); book: "What's New in 0.4",
+  "Migrating from 0.3 to 0.4", a parametric-polyhedra section in the
+  certificates cookbook and a polytope section in the LP guide.
+
+### Infrastructure
+
+- `symplex` and `symplex-build` at 0.4.0; `symplex-macros` unchanged at
+  0.3.0.  `cargo-semver-checks --release-type minor` against 0.3.5 reports
+  exactly the two breaking changes listed above.
+
 ## [0.3.5] - 2026-09-18
 
 ### Added

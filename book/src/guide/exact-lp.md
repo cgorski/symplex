@@ -301,6 +301,36 @@ fn main() {
 }
 ```
 
+## Polytopes from half-spaces
+
+`symplex::polytope::Polytope` (0.4) is a convex polyhedron `{x ∈ ℚⁿ : aᵢ·x + bᵢ ≥ 0}` with exact geometry built on the LP and on `QMatrix`: `is_empty` / `any_point` / `bounding_box` / `is_bounded` are LP calls; `vertices` solves every `n × n` sub-system exactly and keeps the points inside; `volume` (dimension ≤ 3) is a fan triangulation from the vertex centroid; `irredundant` drops half-spaces that touch no vertex; `split` cuts by a hyperplane; `from_exprs` / `to_exprs` translate to and from affine `Ex` hypotheses, so a cell can go straight into `prove_nonnegative_on_polyhedron`.
+
+```rust
+use symplex::prelude::*;
+use symplex::polytope::Polytope;
+use symplex::linprog::{q, qi};
+
+fn main() {
+    let ctx = Context::new();
+    let (r, t) = (ctx.symbol("r"), ctx.symbol("t"));
+    // The unit box cut by t ≥ r and r + t ≤ 3/2.
+    let cell = Polytope::from_exprs(
+        &[r.clone(), 1 - &r, t.clone(), 1 - &t, &t - &r, ctx.rational(3, 2) - &r - &t],
+        &[r.clone(), t.clone()],
+    )
+    .unwrap();
+    let v: Vec<String> = cell.vertices().unwrap().iter().map(|p| format!("({}, {})", p[0], p[1])).collect();
+    println!("{}", v.join(", "));                                 // (0, 0), (0, 1), (1/2, 1), (3/4, 3/4)
+    println!("{}", cell.volume().unwrap());                       // 7/16
+    println!("{}", cell.irredundant().unwrap().num_halfspaces()); // 5  (1 - r is implied)
+    let (left, right) = cell.split(&[qi(-1), qi(0)], q(1, 2));    // cut at r = 1/2
+    println!("{} {}", left.volume().unwrap(), right.volume().unwrap());   // 3/8 1/16
+    println!("{}", cell.contains(&[q(1, 4), q(1, 2)]));            // true
+}
+```
+
+Everything is exact and every answer is a rational; the enumeration is `O(C(m, n))` linear solves, which is the right trade for the handful of cells a decision tree produces and the wrong one for large polyhedra.
+
 ## Performance
 
 Since 0.3.5 the tableau uses **integer pivoting**: each constraint row is scaled once to clear its denominators, and every pivot then follows Bareiss's fraction-free rule, so all entries stay integers sharing one common denominator (the current pivot, `±det B`). Nothing in the inner loop computes a gcd; the ratio test and every sign test are integer comparisons. Results are identical to the rational tableau — same pivots, same optimum, same duals — because the same Dantzig/Bland choices are made on the same rational values, only represented differently.

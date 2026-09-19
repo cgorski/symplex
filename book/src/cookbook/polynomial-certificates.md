@@ -317,3 +317,54 @@ theorem square_inside (j : ℝ) (h_j_lo : (3 : ℝ) ≤ j) :
 ```
 
 When the shift alone is not enough — `j² − j + 1` on `j ≥ 0` has a negative coefficient — the certificate carries the multiplier: `(j + 1)·(j² − j + 1) = j³ + 1`, and the Lean proof shows `0 ≤ (1 + (j - 0)) ^ 1 * (j ^ 2 - j + 1)` with `nlinarith [pow_nonneg hk 3]` and divides by the positive factor with `nonneg_of_mul_nonneg_right`. A tight minimum costs a larger exponent (`4j² − 6j + 3` needs `N = 12`), which is Pólya's theorem being honest about how close to zero the goal gets.
+
+## Parametric polyhedra: a multiplier on the goal
+
+A decision procedure over a polytope whose facets move with a real parameter `j ≥ j₀` has to show, cell by cell, that a goal holds on the cell for *every* `j` — or that the cell is empty for every `j`. The certificate is again an exact identity with non-negative weights, but with one twist: the Farkas multipliers of `j`-dependent facets are rational functions of `j`, so a polynomial identity only exists after the goal is multiplied by a polynomial `λ(j)`:
+
+```text
+λ(j)·g = Σ μ · jᵃ (j − j₀)ᵇ · hₖ + Σ μ · jᵃ (j − j₀)ᵇ + μ₀   (+ Σ μ · hₖ hₗ),   λ(j) = 1 + Σ νₐ jᵃ,  μ, ν ≥ 0.
+```
+
+`prove_nonnegative_on_polyhedron` (0.4) runs the search staged — degree-1 multipliers with `λ = 1` first, then higher degrees, pairwise products last — and returns the first certificate, re-verified by polynomial arithmetic. `prove_polyhedron_empty` is the same call with the goal `−1`.
+
+```rust
+use symplex::prelude::*;
+use symplex::certificates::{PolyhedronOpts, PolyhedronOutcome, prove_nonnegative_on_polyhedron};
+
+fn main() {
+    let ctx = Context::new();
+    let (j, r, t) = (ctx.symbol("j"), ctx.symbol("r"), ctx.symbol("t"));
+    // On { t ≥ r,  t + j·r ≥ j + 1 } the goal t − 1 ≥ 0 holds for every j ≥ 0,
+    // but its multipliers are 1/(1 + j) and j/(1 + j): λ(j) = 1 + j is needed.
+    let hyps = [&t - &r, &t + &j * &r - &j - 1];
+    match prove_nonnegative_on_polyhedron(&(&t - 1), &hyps, Some((&j, &ctx.int(0))), &PolyhedronOpts::default()).unwrap() {
+        PolyhedronOutcome::Proved(c) => {
+            println!("{c}");
+            // (j + 1)*(t - 1) = j*h0 + h1; h0 = -r + t, h1 = j*r - j + t - 1; j ≥ 0
+            print!("{}", c.to_lean("needs_lambda").unwrap());
+        }
+        PolyhedronOutcome::Refuted { point, value } => println!("false: {value} at {point:?}"),
+        PolyhedronOutcome::Unknown { .. } => println!("no certificate at the configured degrees"),
+    }
+}
+```
+
+```lean
+theorem needs_lambda (r t j : ℝ) (hj : (0 : ℝ) ≤ j) (h0 : 0 ≤ -r + t) (h1 : 0 ≤ j * r - j + t - 1) :
+    0 ≤ t - 1 := by
+  have hJ0 : (0 : ℝ) ≤ j := by linarith
+  have h0J := mul_nonneg hJ0 h0
+  have hg : (0 : ℝ) ≤ (j + 1) * (t - 1) := by
+    linarith only [h0J, h1]
+  have hg' := nonneg_of_mul_nonneg_right hg (by linarith only [hJ0])
+  linarith only [hg']
+```
+
+The proof shape is the one a person writes: one `have … := mul_nonneg …` per product the certificate uses (`h0J` is `j·h₀`; `h0K` would be `(j − j₀)·h₀`, `h0xh1` a pairwise product, `pJJ` the pure power `j²`), then `linarith only […]` over exactly those facts; with `λ ≠ 1`, `0 ≤ λ·g` is shown first and divided out with `nonneg_of_mul_nonneg_right`. An emptiness certificate concludes `False`. When the theorem statement is not yours to write — the goal lives inside a larger lemma — `cert.lean_steps(&PolyhedronLeanNames { hyps: &["e0", "e1"], param_nonneg: "hJ0", shift_nonneg: "hK0" }, &LeanOpts::default())` gives the same `have` lines, hint names and closing block with your hypothesis names, and `to_block("  ")` indents them.
+
+Every shape the emitter produces (`λ = 1`, `λ` of degree 1 and 2, `j₀ > 0`, `j₀ = 0`, `j₀ < 0`, mixed `J`/`K` chains, pairwise products, emptiness with and without `λ`, pure parameter powers, no parameter at all) was compiled against Mathlib with the long-line linter on, and the emitted text is pinned to that compiled file in the test suite.
+
+`PolyhedronOutcome::Refuted` carries an exact point of the set where the goal is negative (for the emptiness question: a point *in* the set), found by sampling `j` and minimising the goal over the cell with the exact LP when everything is affine in the free variables. The staged search costs a few milliseconds per facet for a cell with a dozen `j`-dependent hypotheses in a release build, which is what makes it usable inside a tree builder that asks thousands of times.
+
+See `cargo run --example polyhedron_certificates` and, for the exact geometry of the cells themselves (vertices, volume, cuts), [`symplex::polytope`](../guide/exact-lp.md#polytopes-from-half-spaces).

@@ -11,6 +11,7 @@ pub mod matrix_decomp;
 pub mod normalforms;
 pub mod ntheory;
 pub mod optimize;
+pub mod polytope;
 pub mod quaternion;
 pub mod robotics;
 pub(crate) mod separatevars;

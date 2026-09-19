@@ -251,14 +251,15 @@ fn poly_shift_gives_the_descartes_style_certificate() {
 }
 
 #[test]
-fn roots_count_real_is_still_available_as_an_alias() {
+fn count_real_roots_in_replaces_the_removed_alias() {
+    // 0.4 removed `roots_count_real` (the 0.3 alias); the name is
+    // `count_real_roots_in` on `Ex` and on `Poly`.
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let f = &x.powi(3) - &x;
-    assert_eq!(
-        f.roots_count_real(&x, &ctx.int(0), &ctx.int(5)),
-        f.count_real_roots_in(&x, &ctx.int(0), &ctx.int(5))
-    );
+    assert_eq!(f.count_real_roots_in(&x, &ctx.int(0), &ctx.int(5)), Some(2));
+    let p = Poly::new(&f, &[&x]).unwrap();
+    assert_eq!(p.count_real_roots_in(&ctx.int(0), &ctx.int(5)), Some(2));
 }
 
 // ── Note 5: Lean 4 output ────────────────────────────────────────────────
@@ -292,9 +293,10 @@ fn to_lean_matches_mathlib_spacing_and_typing() {
         "0 < j ^ 2 - 1"
     );
     // Options.
+    // 0.4: `LeanOpts` gained a field, so literals need `..Default::default()`.
     let opts = LeanOpts {
         real_type: "ℚ".into(),
-        ascribe_integers: false,
+        ..Default::default()
     };
     assert_eq!(
         ctx.rational(1, 2).to_lean_with(&opts).unwrap(),

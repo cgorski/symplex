@@ -1,6 +1,7 @@
 # Summary
 
 [Introduction](./introduction.md)
+[What's New in 0.4](./whats-new-0.4.md)
 [What's New in 0.3](./whats-new-0.3.md)
 [What's New in 0.2](./whats-new-0.2.md)
 
@@ -52,5 +53,6 @@
 
 - [API Patterns](./reference/api-patterns.md)
 - [Error Handling](./reference/error-handling.md)
+- [Migrating from 0.3 to 0.4](./reference/migrating-0.4.md)
 - [Migrating from 0.1 to 0.2](./reference/migrating-0.2.md)
 - [Migrating from SymPy](./reference/sympy-migration.md)

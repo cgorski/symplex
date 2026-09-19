@@ -455,7 +455,22 @@ prove_nonnegative_on_box(&(&x * &y - ctx.rational(1, 2)), &square, 2).unwrap();
                                                       // Refuted { point: [0, 0], value: -1/2 }
 ((&x - 1) / (2 * &x)).to_lean().unwrap();             // "(x - 1) / (2 * x)"
 x.sqrt().gt(&ctx.int(0)).to_lean().unwrap();          // "0 < Real.sqrt x"
+
+// 0.4: a polyhedron whose facets depend on a parameter j ≥ j₀.  On { t ≥ r, t + j·r ≥ j + 1 }
+// the goal t − 1 ≥ 0 needs the multiplier λ(j) = 1 + j: (j + 1)(t − 1) = j·h₀ + h₁.
+use symplex::certificates::{prove_nonnegative_on_polyhedron, PolyhedronOpts};
+syms!(ctx; j, r, t);
+let hyps = [&t - &r, &t + &j * &r - &j - 1];
+let out = prove_nonnegative_on_polyhedron(&(&t - 1), &hyps, Some((&j, &ctx.int(0))), &PolyhedronOpts::default()).unwrap();
+out.certificate().unwrap().to_string();               // (j + 1)*(t - 1) = j*h0 + h1; h0 = -r + t, h1 = j*r - j + t - 1; j ≥ 0
+out.certificate().unwrap().to_lean("needs_lambda").unwrap();
+//   … have h0J := mul_nonneg hJ0 h0
+//   have hg : (0 : ℝ) ≤ (j + 1) * (t - 1) := by linarith only [h0J, h1]
+//   have hg' := nonneg_of_mul_nonneg_right hg (by linarith only [hJ0])
+//   linarith only [hg']
 ```
+
+Also: `prove_polyhedron_empty` (the same identity with goal `−1`: a cell is empty for every `j`), `prove_nonnegative_on_halfline` / `prove_nonnegative_on_reals` (univariate, Pólya multipliers and square factors), `lean_steps` / `lean_hints` for dropping a proof into an existing skeleton, `LeanOpts::prefer_subtraction`, and `symplex::polytope::Polytope` for the exact geometry of the cells (vertices, volume, cuts, redundancy).
 
 ### Transforms
 

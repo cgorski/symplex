@@ -532,6 +532,73 @@ pub(crate) fn symbolic_multipoly_terms(
     Some(out)
 }
 
+/// Why `expr` is not a polynomial in `gens`, for error messages: the first
+/// generator found inside a function, under a negative or non-integer
+/// power, or in an exponent.  `None` if no such position exists (the
+/// expression *is* polynomial in `gens`).
+pub(crate) fn non_polynomial_reason(
+    arena: &Arena,
+    expr: ExprId,
+    gens: &[ExprId],
+) -> Option<String> {
+    let mut visited: rustc_hash::FxHashSet<ExprId> = rustc_hash::FxHashSet::default();
+    let mut stack: Vec<ExprId> = vec![expr];
+    while let Some(id) = stack.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        let node = arena.node(id).clone();
+        match node {
+            ExprNode::Add(_)
+            | ExprNode::Mul(_)
+            | ExprNode::Neg(_)
+            | ExprNode::Symbol(_)
+            | ExprNode::Num(_) => {
+                stack.extend(node.children());
+            }
+            ExprNode::Pow(base, exp) => {
+                let shown = |g: ExprId| arena.display(g).to_string();
+                if let Some(&g) = gens.iter().find(|&&g| contains_any(arena, exp, &[g])) {
+                    return Some(format!(
+                        "generator `{}` occurs in the exponent of `{}`",
+                        shown(g),
+                        arena.display(id)
+                    ));
+                }
+                if let Some(&g) = gens.iter().find(|&&g| contains_any(arena, base, &[g])) {
+                    let ok = arena
+                        .as_num(exp)
+                        .is_some_and(|n| n.is_integer() && !n.is_negative());
+                    if !ok {
+                        let kind = match arena.as_num(exp) {
+                            Some(n) if n.is_integer() => "a negative power (a rational function)",
+                            Some(_) => "a fractional power (an algebraic function)",
+                            None => "a symbolic power",
+                        };
+                        return Some(format!(
+                            "generator `{}` occurs under {kind} in `{}`",
+                            shown(g),
+                            arena.display(id)
+                        ));
+                    }
+                }
+                stack.push(base);
+            }
+            other => {
+                if let Some(&g) = gens.iter().find(|&&g| contains_any(arena, id, &[g])) {
+                    return Some(format!(
+                        "generator `{}` occurs inside the function `{}`",
+                        arena.display(g),
+                        arena.display(id)
+                    ));
+                }
+                stack.extend(other.children());
+            }
+        }
+    }
+    None
+}
+
 /// Does `expr` contain any of `gens`?
 fn contains_any(arena: &Arena, expr: ExprId, gens: &[ExprId]) -> bool {
     if gens.contains(&expr) {

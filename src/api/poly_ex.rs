@@ -222,17 +222,64 @@ impl Poly {
     /// ```
     #[must_use]
     pub fn new(expr: &Ex, gens: &[&Ex]) -> Option<Poly> {
+        Self::try_new(expr, gens).ok()
+    }
+
+    /// [`new`](Self::new) with the reason for failure.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` naming the problem: empty, duplicated or
+    /// non-symbol generators, or the first generator found in a
+    /// non-polynomial position — inside a function, under a negative power
+    /// (a rational function), under a fractional or symbolic power, or in an
+    /// exponent.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::poly_ex::Poly;
+    ///
+    /// let ctx = Context::new();
+    /// let (j, r) = (ctx.symbol("j"), ctx.symbol("r"));
+    /// assert!(Poly::try_new(&(&j * &r + 1), &[&j]).is_ok());
+    /// let e = Poly::try_new(&(&r / (&j + 1)), &[&j]).unwrap_err().to_string();
+    /// assert!(e.contains("negative power (a rational function)"), "{e}");
+    /// let e = Poly::try_new(&j.sin(), &[&j]).unwrap_err().to_string();
+    /// assert!(e.contains("inside the function `sin(j)`"), "{e}");
+    /// let e = Poly::try_new(&j, &[]).unwrap_err().to_string();
+    /// assert!(e.contains("at least one generator"), "{e}");
+    /// ```
+    pub fn try_new(expr: &Ex, gens: &[&Ex]) -> Result<Poly, SymplexError> {
+        const OP: &str = "Poly::new";
         if gens.is_empty() {
-            return None;
+            return Err(invalid(OP, "at least one generator is required"));
         }
         let ctx = expr.context();
-        let gens = validate_gens(&ctx, gens, "Poly::new").ok()?;
+        let gens = validate_gens(&ctx, gens, OP)?;
         let gen_ids: Vec<ExprId> = gens.iter().map(Ex::raw_id).collect();
         let ids = ctx.with_arena_mut(|arena| {
             let raw = polybridge::symbolic_multipoly_terms(arena, expr.raw_id(), &gen_ids)?;
             Some(normalize_terms(arena, raw))
-        })?;
-        Some(Self::from_normalized(&ctx, gens, ids))
+        });
+        match ids {
+            Some(ids) => Ok(Self::from_normalized(&ctx, gens, ids)),
+            None => {
+                let reason = ctx.with_arena_mut(|arena| {
+                    let expanded = crate::transforms::expand::expand(arena, expr.raw_id());
+                    polybridge::non_polynomial_reason(arena, expanded, &gen_ids).or_else(|| {
+                        polybridge::non_polynomial_reason(arena, expr.raw_id(), &gen_ids)
+                    })
+                });
+                Err(invalid(
+                    OP,
+                    reason.unwrap_or_else(|| {
+                        format!("`{expr}` is not a polynomial in the generators")
+                    }),
+                ))
+            }
+        }
     }
 
     /// Build a polynomial directly from `(exponent vector, coefficient)`
@@ -491,6 +538,48 @@ impl Poly {
             .rev()
             .map(|(e, c)| (e.clone(), c.clone()))
             .collect()
+    }
+
+    /// Borrowing iterator over `(exponent vector, coefficient)` pairs in
+    /// descending lexicographic order — [`terms`](Self::terms) without the
+    /// allocation, for code that evaluates many polynomials in a loop.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::poly_ex::Poly;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// let p = Poly::new(&(&x * &y * 3 + &y.powi(2)), &[&x, &y]).unwrap();
+    /// let degrees: Vec<u32> = p.terms_iter().map(|(m, _)| m.iter().sum()).collect();
+    /// assert_eq!(degrees, vec![2, 2]);
+    /// assert_eq!(p.terms_iter().next().unwrap().1, &ctx.int(3));
+    /// ```
+    pub fn terms_iter(&self) -> impl Iterator<Item = (&[u32], &Ex)> + '_ {
+        self.terms.iter().rev().map(|(e, c)| (e.as_slice(), c))
+    }
+
+    /// The coefficients as exact rationals, in the order of
+    /// [`terms`](Self::terms); `None` if any coefficient is symbolic.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::poly_ex::Poly;
+    /// use symplex::linprog::q;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, a) = (ctx.symbol("x"), ctx.symbol("a"));
+    /// let p = Poly::new(&(&x.powi(2) / 2 - &x * 3), &[&x]).unwrap();
+    /// assert_eq!(p.coeffs_rational(), Some(vec![q(1, 2), q(-3, 1)]));
+    /// assert!(Poly::new(&(&a * &x), &[&x]).unwrap().coeffs_rational().is_none());
+    /// ```
+    #[must_use]
+    pub fn coeffs_rational(&self) -> Option<Vec<Ratio<BigInt>>> {
+        self.terms.values().rev().map(Ex::as_rational).collect()
     }
 
     /// Exponent vectors in descending lexicographic order.

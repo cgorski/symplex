@@ -938,16 +938,6 @@ impl Expr<Numeric> {
         Some(chain.count_roots_in_closed(&lo_r, &hi_r))
     }
 
-    /// Former name of [`count_real_roots_in`](Self::count_real_roots_in).
-    ///
-    /// Kept (without a deprecation warning, so `-D warnings` builds are not
-    /// broken by a patch release) for 0.3 source compatibility; it is removed
-    /// in 0.4 — new code should call `count_real_roots_in`.
-    #[must_use]
-    pub fn roots_count_real(&self, var: &Ex, lo: &Ex, hi: &Ex) -> Option<usize> {
-        self.count_real_roots_in(var, lo, hi)
-    }
-
     /// Isolating intervals for the distinct real roots of `self` in `var`.
     ///
     /// Each returned `(lo, hi)` pair has exact rational endpoints, contains

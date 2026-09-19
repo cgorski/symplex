@@ -28,6 +28,9 @@ use crate::base::walk;
 use crate::output::common::display_sort_key;
 
 /// Options for [`Ex::to_lean`](crate::api::expr::Ex::to_lean).
+///
+/// New fields may be added in minor releases; construct with
+/// `LeanOpts { …, ..Default::default() }` or the `with_*` builders.
 #[derive(Clone, Debug)]
 pub struct LeanOpts {
     /// The carrier type used in numeral ascriptions and casts (default `ℝ`).
@@ -36,6 +39,12 @@ pub struct LeanOpts {
     /// rationals and bare top-level numbers.  Useful when the surrounding
     /// context cannot infer the type.
     pub ascribe_integers: bool,
+    /// Print a sum with exactly one negated term as a subtraction with the
+    /// negated term last (`1 / 2 - r`, `j * t + 1 - r`) instead of in
+    /// canonical order (`-r + (1 / 2 : ℝ)`), so generated text matches what
+    /// a hand-written hypothesis would say.  Sums with several negated terms
+    /// keep the canonical order.  Default `false`.
+    pub prefer_subtraction: bool,
 }
 
 impl Default for LeanOpts {
@@ -43,7 +52,45 @@ impl Default for LeanOpts {
         LeanOpts {
             real_type: "ℝ".to_string(),
             ascribe_integers: false,
+            prefer_subtraction: false,
         }
+    }
+}
+
+impl LeanOpts {
+    /// Set [`real_type`](Self::real_type).
+    #[must_use]
+    pub fn with_real_type(mut self, real_type: impl Into<String>) -> Self {
+        self.real_type = real_type.into();
+        self
+    }
+
+    /// Set [`ascribe_integers`](Self::ascribe_integers).
+    #[must_use]
+    pub fn with_ascribe_integers(mut self, on: bool) -> Self {
+        self.ascribe_integers = on;
+        self
+    }
+
+    /// Set [`prefer_subtraction`](Self::prefer_subtraction).
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::lean::LeanOpts;
+    ///
+    /// let ctx = Context::new();
+    /// let r = ctx.symbol("r");
+    /// let e = ctx.rational(1, 2) - &r;
+    /// assert_eq!(e.to_lean().unwrap(), "-r + (1 / 2 : ℝ)");
+    /// let opts = LeanOpts::default().with_prefer_subtraction(true);
+    /// assert_eq!(e.to_lean_with(&opts).unwrap(), "(1 / 2 : ℝ) - r");
+    /// // Two negated terms: canonical order is kept.
+    /// assert_eq!((1 - &r - ctx.symbol("t")).to_lean_with(&opts).unwrap(), "-r - t + 1");
+    /// ```
+    #[must_use]
+    pub fn with_prefer_subtraction(mut self, on: bool) -> Self {
+        self.prefer_subtraction = on;
+        self
     }
 }
 
@@ -243,6 +290,19 @@ pub(crate) fn render(arena: &Arena, expr: ExprId, opts: &LeanOpts) -> Result<Str
                 // functions, then constants) so `x + 1`, not `1 + x`.
                 let mut ordered: Vec<ExprId> = children.to_vec();
                 ordered.sort_by_key(|a| display_sort_key(arena, *a));
+                // `prefer_subtraction`: a single negated term goes last.
+                if opts.prefer_subtraction && ordered.len() > 1 {
+                    let mut negated: Vec<usize> = Vec::new();
+                    for (i, c) in ordered.iter().enumerate() {
+                        if negated_view(arena, *c, opts, &cache)?.0 {
+                            negated.push(i);
+                        }
+                    }
+                    if let [only] = negated[..] {
+                        let moved = ordered.remove(only);
+                        ordered.push(moved);
+                    }
+                }
                 let mut text = String::new();
                 for (i, c) in ordered.iter().enumerate() {
                     let (negative, body) = negated_view(arena, *c, opts, &cache)?;

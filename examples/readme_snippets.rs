@@ -559,6 +559,28 @@ fn certified_inequalities() {
         x.sqrt().gt(&ctx.int(0)).to_lean().unwrap(),
         "0 < Real.sqrt x"
     );
+
+    // 0.4: a polyhedron whose facets depend on a parameter j ≥ j₀.
+    use symplex::certificates::{PolyhedronOpts, prove_nonnegative_on_polyhedron};
+    syms!(ctx; j, r, t);
+    let hyps = [&t - &r, &t + &j * &r - &j - 1];
+    let out = prove_nonnegative_on_polyhedron(
+        &(&t - 1),
+        &hyps,
+        Some((&j, &ctx.int(0))),
+        &PolyhedronOpts::default(),
+    )
+    .unwrap();
+    let cert = out.certificate().unwrap();
+    assert_eq!(
+        cert.to_string(),
+        "(j + 1)*(t - 1) = j*h0 + h1; h0 = -r + t, h1 = j*r - j + t - 1; j ≥ 0"
+    );
+    let lean = cert.to_lean("needs_lambda").unwrap();
+    print!("{lean}");
+    assert!(lean.contains("have h0J := mul_nonneg hJ0 h0\n"));
+    assert!(lean.contains("have hg' := nonneg_of_mul_nonneg_right hg (by linarith only [hJ0])\n"));
+    assert!(lean.ends_with("  linarith only [hg']\n"));
 }
 
 fn exact_optimization() {

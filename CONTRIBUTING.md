@@ -118,7 +118,12 @@ src/
 │                 with the numeric fast path), linprog.rs (exact two-phase simplex on an
 │                 integer-pivoting tableau, duals, Farkas certificates), normalforms.rs
 │                 (Matrix wrappers over ZMatrix: Hermite/Smith normal forms, integer
-│                 nullspace, unimodularity, lattice index), optimize.rs (Brent/bisection/Newton,
+│                 nullspace, unimodularity, lattice index), certificates.rs (Handelman box and
+│                 univariate half-line certificates) + certificates/polyhedron.rs (0.4:
+│                 parametric polyhedron certificates with a λ(j) goal multiplier, staged LP,
+│                 Lean export in the mul_nonneg / linarith-only shape), polytope.rs (0.4: exact
+│                 polyhedra from half-spaces: vertices via QMatrix, LP-based emptiness and
+│                 bounds, volume ≤ 3-D), optimize.rs (Brent/bisection/Newton,
 │                 Nelder–Mead, golden section, differential evolution, least-squares fits),
 │                 control, dynamics, robotics, quaternion, vector (coordinate systems), ntheory
 │                 (rho/ECM, BPSW, sqrt_mod, dlog, continued fractions, gcd_many/lcm_many),
@@ -486,6 +491,7 @@ former top-level file is a module of its group, so a test is addressed as
 
 | Binary (`--test …`) | Sources | What they test |
 |---------------------|---------|----------------|
+| `v04` | `tests/v04/v04_<area>.rs` | One suite per 0.4 feature: `polyhedron` (parametric polyhedron certificates; emitted Lean pinned to the Mathlib-compiled `tests/fixtures/polyhedron_certificates.lean`), `polytope` |
 | `v03` | `tests/v03/v03_<area>.rs` (7 modules, ~400 tests) | One suite per 0.3 feature: `poly_view`, `poly_symbolic_coeffs`, `ratsimp`, `linprog` (full KKT check of every optimum, Farkas vector verified), `normalforms` (defining invariants, not pinned answers), `matrix_ergonomics`, `optimize` |
 | `v03_oracle` | `tests/v03_oracle/v03_oracle_*.rs` | SymPy oracle for the 0.3 API (`tests/fixtures/v03_cross_validation.json`) |
 | `v02` | `tests/v02/v02_<area>_<topic>.rs` (62 modules, ~1,050 tests) | One suite per 0.2 feature area: `backends_{c,codegen,compile,cse}`, `basefix_*`, `ergonomics_*`, `integration_{battery,definite,residue}`, `matrices_*`, `nodes_*`, `ntheory_*`, `numfix_*`, `sets_*`, `simplify_*`, `solvefix_*`, `solving_*`, `summation_*`, `transforms_*` |

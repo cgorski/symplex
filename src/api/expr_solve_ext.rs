@@ -161,6 +161,14 @@ impl LinearSolution {
 /// // Under-determined: x + y = 1
 /// let sol = linsolve(&[&x + &y - 1], &[x.clone(), y.clone()]).unwrap();
 /// assert!(matches!(sol, symplex::polysys::LinearSolution::Parametric { .. }));
+///
+/// // Over-determined but consistent (three equations, two unknowns): `Unique`,
+/// // not an error.  A contradictory third equation gives `Inconsistent`.
+/// use symplex::polysys::LinearSolution;
+/// let sol = linsolve(&[&x - 1, &y - 2, &x + &y - 3], &[x.clone(), y.clone()]).unwrap();
+/// assert!(matches!(sol, LinearSolution::Unique(_)));
+/// let sol = linsolve(&[&x - 1, &y - 2, &x + &y - 4], &[x.clone(), y.clone()]).unwrap();
+/// assert!(matches!(sol, LinearSolution::Inconsistent));
 /// ```
 pub fn linsolve<E: ZeroForm>(eqs: &[E], vars: &[Ex]) -> Result<LinearSolution, SymplexError> {
     let zero_forms: Vec<Ex> = eqs.iter().map(ZeroForm::to_zero_form).collect();
