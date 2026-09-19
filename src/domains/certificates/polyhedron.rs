@@ -1526,7 +1526,19 @@ impl PolyhedronProver {
             }
             lp = lp.eq(row, coeff(goal, m)?);
         }
+        let started = std::time::Instant::now();
         let sol = lp.solve()?;
+        tracing::debug!(
+            target: "symplex::certificates::polyhedron",
+            degree = stage.degree,
+            lambda_degree = stage.lambda_degree,
+            pairwise = stage.pairwise,
+            rows = monos.len(),
+            cols = n_basis + lambda_cols.len(),
+            status = ?sol.status,
+            micros = started.elapsed().as_micros() as u64,
+            "polyhedron stage LP"
+        );
         if sol.status != LpStatus::Optimal {
             return Ok(None);
         }

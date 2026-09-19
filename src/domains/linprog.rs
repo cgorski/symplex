@@ -26,9 +26,11 @@
 //!
 //! # Algorithm and cost
 //!
-//! Two-phase dense simplex.  Pivots follow Dantzig's rule until the first
-//! degenerate (zero-length) step, after which Bland's rule is used for the
-//! rest of the solve, so cycling is impossible.  Every `≤`/`≥` row gets a
+//! Two-phase dense simplex.  Pivots follow Dantzig's rule; after twelve
+//! consecutive degenerate (zero-length) steps Bland's rule takes over until
+//! the next improving step, so cycling is impossible while the highly
+//! degenerate certificate LPs are not condemned to Bland's slow walk from
+//! their first zero pivot.  Every `≤`/`≥` row gets a
 //! slack, every row gets an artificial (their columns double as `B⁻¹`, from
 //! which the duals are read), free variables are split `x = x⁺ − x⁻`, finite
 //! lower bounds are shifted away and a finite *upper* bound on a variable
@@ -627,28 +629,360 @@ fn standardize(p: &LpProblem) -> Standardized {
 /// identity, at any time they hold `d·B⁻¹`, and the duals of the scaled
 /// system are `y'ᵢ = c_{a'ᵢ} − obj[a'ᵢ]/(d·obj_scale)`; the duals of the
 /// caller's rows are `yᵢ = sᵢ · y'ᵢ`.
-struct Tableau {
+///
+/// **Hybrid arithmetic.**  The tableau is generic over its cell type
+/// ([`Cell`]): it first runs on `i64` cells with `i128` intermediates, and
+/// the first value that does not fit an `i64` aborts that attempt, after
+/// which the whole problem is solved again on `BigInt` cells.  Every
+/// decision (entering column, ratio test, tie-break) is a sign test or an
+/// exact comparison of products, so the two runs take the same pivot path
+/// and produce the same answer; the small-integer run merely never touches
+/// the heap.  Certificate LPs (small polynomial coefficients) essentially
+/// always stay in `i64`.
+struct Tableau<T: Cell> {
     /// Row-major `m × width` integer tableau.
-    rows: Vec<BigInt>,
+    rows: Vec<T>,
     width: usize,
-    obj: Vec<BigInt>,
+    obj: Vec<T>,
     /// Common denominator of `rows` (sign may be negative after an
     /// artificial is driven out on a negative pivot).
-    d: BigInt,
+    d: T,
     /// Positive integer clearing the denominators of the installed costs.
-    obj_scale: BigInt,
+    obj_scale: T,
     /// Positive integer each constraint row was multiplied by.
-    row_scale: Vec<BigInt>,
+    row_scale: Vec<T>,
     basis: Vec<usize>,
     m: usize,
     /// Number of genuine (non-artificial) columns.
     n: usize,
     pivots_done: usize,
     max_pivots: usize,
-    /// Switches to Bland's rule permanently after the first degenerate
-    /// pivot (a zero-length step), which is the only situation in which
-    /// Dantzig's rule could cycle.
-    bland: bool,
+    /// Number of consecutive degenerate pivots (zero-length steps) so far.
+    /// Dantzig's rule can only cycle through degenerate pivots, so after
+    /// [`STALL_LIMIT`] of them in a row the entering rule switches to
+    /// Bland's (which cannot cycle) until the next improving pivot resets
+    /// the count.  Permanent Bland after the *first* degenerate pivot —
+    /// the previous policy — made the highly degenerate certificate LPs
+    /// (many zero right-hand sides) take tens of thousands of pivots.
+    stall: usize,
+}
+
+/// Consecutive degenerate pivots tolerated under Dantzig's rule before
+/// Bland's rule takes over for the rest of the stall.
+const STALL_LIMIT: usize = 12;
+
+/// A tableau cell: an integer type with the handful of exact operations
+/// the fraction-free simplex needs.  Fallible operations return `None`
+/// when the result does not fit; the `BigInt` implementation never fails.
+trait Cell: Clone + PartialEq + Eq + Ord + fmt::Debug {
+    fn cell_zero() -> Self;
+    fn cell_one() -> Self;
+    fn from_big(v: &BigInt) -> Option<Self>;
+    fn to_big(&self) -> BigInt;
+    fn is_zero(&self) -> bool;
+    fn is_negative(&self) -> bool;
+    /// `Ordering` of `self` against zero.
+    fn signum(&self) -> std::cmp::Ordering;
+    fn neg(&self) -> Option<Self>;
+    fn mul(&self, o: &Self) -> Option<Self>;
+    /// `(v · p − f · pr) / d`, the fraction-free pivot update; the division
+    /// is exact.
+    fn pivot_update(v: &Self, p: &Self, f: &Self, pr: &Self, d: &Self) -> Option<Self>;
+    /// `(v · p) / d` (exact) — the update of a row with a zero pivot-column entry.
+    fn rescale(v: &Self, p: &Self, d: &Self) -> Option<Self>;
+    /// `self − f · r`, checked.
+    fn sub_mul(&self, f: &Self, r: &Self) -> Option<Self>;
+    /// `a · b` compared with `c · d`, exactly.
+    fn cmp_products(a: &Self, b: &Self, c: &Self, d: &Self) -> std::cmp::Ordering;
+}
+
+impl Cell for BigInt {
+    fn cell_zero() -> Self {
+        <BigInt as Zero>::zero()
+    }
+    fn cell_one() -> Self {
+        <BigInt as One>::one()
+    }
+    fn from_big(v: &BigInt) -> Option<Self> {
+        Some(v.clone())
+    }
+    fn to_big(&self) -> BigInt {
+        self.clone()
+    }
+    fn is_zero(&self) -> bool {
+        Zero::is_zero(self)
+    }
+    fn is_negative(&self) -> bool {
+        Signed::is_negative(self)
+    }
+    fn signum(&self) -> std::cmp::Ordering {
+        match self.sign() {
+            num_bigint::Sign::Minus => std::cmp::Ordering::Less,
+            num_bigint::Sign::NoSign => std::cmp::Ordering::Equal,
+            num_bigint::Sign::Plus => std::cmp::Ordering::Greater,
+        }
+    }
+    fn neg(&self) -> Option<Self> {
+        Some(-self)
+    }
+    fn mul(&self, o: &Self) -> Option<Self> {
+        Some(self * o)
+    }
+    fn pivot_update(v: &Self, p: &Self, f: &Self, pr: &Self, d: &Self) -> Option<Self> {
+        let t = if Zero::is_zero(pr) {
+            v * p
+        } else if Zero::is_zero(v) {
+            -(f * pr)
+        } else {
+            v * p - f * pr
+        };
+        debug_assert!(
+            Zero::is_zero(&(&t % d)),
+            "integer pivoting: inexact division"
+        );
+        Some(t / d)
+    }
+    fn rescale(v: &Self, p: &Self, d: &Self) -> Option<Self> {
+        let t = v * p;
+        debug_assert!(
+            Zero::is_zero(&(&t % d)),
+            "integer pivoting: inexact division"
+        );
+        Some(t / d)
+    }
+    fn sub_mul(&self, f: &Self, r: &Self) -> Option<Self> {
+        Some(self - f * r)
+    }
+    fn cmp_products(a: &Self, b: &Self, c: &Self, d: &Self) -> std::cmp::Ordering {
+        (a * b).cmp(&(c * d))
+    }
+}
+
+impl Cell for i64 {
+    fn cell_zero() -> Self {
+        0
+    }
+    fn cell_one() -> Self {
+        1
+    }
+    fn from_big(v: &BigInt) -> Option<Self> {
+        i64::try_from(v).ok()
+    }
+    fn to_big(&self) -> BigInt {
+        BigInt::from(*self)
+    }
+    fn is_zero(&self) -> bool {
+        *self == 0
+    }
+    fn is_negative(&self) -> bool {
+        *self < 0
+    }
+    fn signum(&self) -> std::cmp::Ordering {
+        self.cmp(&0)
+    }
+    fn neg(&self) -> Option<Self> {
+        self.checked_neg()
+    }
+    fn mul(&self, o: &Self) -> Option<Self> {
+        self.checked_mul(*o)
+    }
+    fn pivot_update(v: &Self, p: &Self, f: &Self, pr: &Self, d: &Self) -> Option<Self> {
+        // Two i64 products and their difference always fit an i128.
+        let t = i128::from(*v) * i128::from(*p) - i128::from(*f) * i128::from(*pr);
+        debug_assert!(
+            t % i128::from(*d) == 0,
+            "integer pivoting: inexact division"
+        );
+        i64::try_from(t / i128::from(*d)).ok()
+    }
+    fn rescale(v: &Self, p: &Self, d: &Self) -> Option<Self> {
+        let t = i128::from(*v) * i128::from(*p);
+        debug_assert!(
+            t % i128::from(*d) == 0,
+            "integer pivoting: inexact division"
+        );
+        i64::try_from(t / i128::from(*d)).ok()
+    }
+    fn sub_mul(&self, f: &Self, r: &Self) -> Option<Self> {
+        i64::try_from(i128::from(*self) - i128::from(*f) * i128::from(*r)).ok()
+    }
+    fn cmp_products(a: &Self, b: &Self, c: &Self, d: &Self) -> std::cmp::Ordering {
+        (i128::from(*a) * i128::from(*b)).cmp(&(i128::from(*c) * i128::from(*d)))
+    }
+}
+
+/// A signed 256-bit integer as `(hi, lo)` in two's complement, just enough
+/// for the exact intermediates of `i128` cells: products of two `i128`s,
+/// their differences, exact division by an `i128`, and comparison.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct I256 {
+    hi: i128,
+    lo: u128,
+}
+
+impl I256 {
+    fn from_i128(v: i128) -> Self {
+        I256 {
+            hi: if v < 0 { -1 } else { 0 },
+            lo: v as u128,
+        }
+    }
+
+    /// Exact `a · b`.
+    fn mul(a: i128, b: i128) -> Self {
+        let neg = (a < 0) != (b < 0);
+        let (ua, ub) = (a.unsigned_abs(), b.unsigned_abs());
+        // 128×128 → 256 by 64-bit limbs.
+        let (a0, a1) = (ua as u64 as u128, ua >> 64);
+        let (b0, b1) = (ub as u64 as u128, ub >> 64);
+        let p00 = a0 * b0;
+        let p01 = a0 * b1;
+        let p10 = a1 * b0;
+        let p11 = a1 * b1;
+        let mid = (p00 >> 64) + (p01 as u64 as u128) + (p10 as u64 as u128);
+        let lo = (p00 as u64 as u128) | (mid << 64);
+        let hi = p11 + (p01 >> 64) + (p10 >> 64) + (mid >> 64);
+        let mag = I256 { hi: hi as i128, lo };
+        if neg { mag.neg() } else { mag }
+    }
+
+    fn neg(self) -> Self {
+        let lo = (!self.lo).wrapping_add(1);
+        let hi = (!self.hi).wrapping_add(u128::from(lo == 0) as i128);
+        I256 { hi, lo }
+    }
+
+    fn sub(self, o: Self) -> Self {
+        let (lo, borrow) = self.lo.overflowing_sub(o.lo);
+        let hi = self.hi.wrapping_sub(o.hi).wrapping_sub(i128::from(borrow));
+        I256 { hi, lo }
+    }
+
+    fn is_negative(self) -> bool {
+        self.hi < 0
+    }
+
+    /// The value as an `i128`, if it fits.
+    fn to_i128(self) -> Option<i128> {
+        let lo = self.lo as i128;
+        let fits = (self.hi == 0 && lo >= 0) || (self.hi == -1 && lo < 0);
+        fits.then_some(lo)
+    }
+
+    /// Exact division of a non-negative `self` by a positive `d` (the
+    /// remainder is known to be zero); `None` if the quotient does not fit
+    /// a `u128`.
+    ///
+    /// Jebelean's exact division: write `d = 2^k · d'` with `d'` odd, shift
+    /// the dividend right by `k` (exact), and multiply its low 128 bits by
+    /// the inverse of `d'` modulo `2^128` — which is the quotient whenever
+    /// the quotient fits, i.e. whenever the shifted high half is below
+    /// `d'`.  A handful of wrapping multiplications instead of a long
+    /// division.
+    fn div_exact_unsigned(self, d: u128) -> Option<u128> {
+        debug_assert!(!self.is_negative());
+        let hi = self.hi as u128;
+        if hi == 0 {
+            return Some(self.lo / d);
+        }
+        let k = d.trailing_zeros();
+        let d_odd = d >> k;
+        let lo = if k == 0 {
+            self.lo
+        } else {
+            (self.lo >> k) | (hi << (128 - k))
+        };
+        let hi = hi >> k;
+        if hi >= d_odd {
+            return None;
+        }
+        Some(lo.wrapping_mul(inverse_mod_2_128(d_odd)))
+    }
+
+    /// Exact `self / d` for any signs, `None` if the quotient does not fit
+    /// an `i128`.
+    fn div_exact(self, d: i128) -> Option<i128> {
+        let neg = self.is_negative() != (d < 0);
+        let mag = if self.is_negative() { self.neg() } else { self };
+        let q = mag.div_exact_unsigned(d.unsigned_abs())?;
+        if neg {
+            // −2^127 is representable; q up to 2^127 is allowed then.
+            if q > (1u128 << 127) {
+                return None;
+            }
+            Some((q as i128).wrapping_neg())
+        } else {
+            i128::try_from(q).ok()
+        }
+    }
+}
+
+/// The inverse of an odd `d` modulo `2^128`, by Newton's iteration
+/// `x ← x·(2 − d·x)`, which doubles the number of correct low bits each
+/// step (an odd `d` is its own inverse modulo 8, so three bits to start).
+fn inverse_mod_2_128(d: u128) -> u128 {
+    debug_assert!(d & 1 == 1);
+    let mut x = d;
+    for _ in 0..6 {
+        x = x.wrapping_mul(2u128.wrapping_sub(d.wrapping_mul(x)));
+    }
+    debug_assert_eq!(d.wrapping_mul(x), 1);
+    x
+}
+
+impl PartialOrd for I256 {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for I256 {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.hi.cmp(&other.hi).then(self.lo.cmp(&other.lo))
+    }
+}
+
+impl Cell for i128 {
+    fn cell_zero() -> Self {
+        0
+    }
+    fn cell_one() -> Self {
+        1
+    }
+    fn from_big(v: &BigInt) -> Option<Self> {
+        i128::try_from(v).ok()
+    }
+    fn to_big(&self) -> BigInt {
+        BigInt::from(*self)
+    }
+    fn is_zero(&self) -> bool {
+        *self == 0
+    }
+    fn is_negative(&self) -> bool {
+        *self < 0
+    }
+    fn signum(&self) -> std::cmp::Ordering {
+        self.cmp(&0)
+    }
+    fn neg(&self) -> Option<Self> {
+        self.checked_neg()
+    }
+    fn mul(&self, o: &Self) -> Option<Self> {
+        self.checked_mul(*o)
+    }
+    fn pivot_update(v: &Self, p: &Self, f: &Self, pr: &Self, d: &Self) -> Option<Self> {
+        let t = I256::mul(*v, *p).sub(I256::mul(*f, *pr));
+        t.div_exact(*d)
+    }
+    fn rescale(v: &Self, p: &Self, d: &Self) -> Option<Self> {
+        I256::mul(*v, *p).div_exact(*d)
+    }
+    fn sub_mul(&self, f: &Self, r: &Self) -> Option<Self> {
+        I256::from_i128(*self).sub(I256::mul(*f, *r)).to_i128()
+    }
+    fn cmp_products(a: &Self, b: &Self, c: &Self, d: &Self) -> std::cmp::Ordering {
+        I256::mul(*a, *b).cmp(&I256::mul(*c, *d))
+    }
 }
 
 enum Step {
@@ -656,13 +990,27 @@ enum Step {
     Unbounded,
 }
 
-/// Least common multiple of the denominators of `values`.
-fn denominator_lcm<'a>(values: impl Iterator<Item = &'a Q>) -> BigInt {
-    values.fold(BigInt::one(), |l, q| l.lcm(q.denom()))
+/// Why a tableau run stopped early: a value did not fit the cell type
+/// (retry with a wider one), or the pivot cap was hit.
+enum Halt {
+    Overflow,
+    Error(SymplexError),
 }
 
-impl Tableau {
-    fn new(std: &Standard) -> Self {
+impl From<SymplexError> for Halt {
+    fn from(e: SymplexError) -> Self {
+        Halt::Error(e)
+    }
+}
+
+/// Least common multiple of the denominators of `values`.
+fn denominator_lcm<'a>(values: impl Iterator<Item = &'a Q>) -> BigInt {
+    values.fold(<BigInt as One>::one(), |l, q| l.lcm(q.denom()))
+}
+
+impl<T: Cell> Tableau<T> {
+    /// Build the initial tableau; `None` if an entry does not fit `T`.
+    fn new(std: &Standard) -> Option<Self> {
         let m = std.a.len();
         let n = std.c.len();
         let width = n + m + 1;
@@ -670,33 +1018,35 @@ impl Tableau {
         let mut row_scale = Vec::with_capacity(m);
         for i in 0..m {
             let s = denominator_lcm(std.a[i].iter().chain(std::iter::once(&std.b[i])));
-            let scaled = |q: &Q| q.numer() * (&s / q.denom());
-            rows.extend(std.a[i].iter().map(scaled));
-            rows.extend((0..m).map(|k| {
-                if k == i {
-                    BigInt::one()
+            let scaled = |q: &Q| T::from_big(&(q.numer() * (&s / q.denom())));
+            for q in &std.a[i] {
+                rows.push(scaled(q)?);
+            }
+            for k in 0..m {
+                rows.push(if k == i {
+                    T::cell_one()
                 } else {
-                    BigInt::zero()
-                }
-            }));
-            rows.push(scaled(&std.b[i]));
-            row_scale.push(s);
+                    T::cell_zero()
+                });
+            }
+            rows.push(scaled(&std.b[i])?);
+            row_scale.push(T::from_big(&s)?);
         }
         let basis: Vec<usize> = (0..m).map(|i| n + i).collect();
-        Tableau {
+        Some(Tableau {
             rows,
             width,
-            obj: vec![BigInt::zero(); width],
-            d: BigInt::one(),
-            obj_scale: BigInt::one(),
+            obj: vec![T::cell_zero(); width],
+            d: T::cell_one(),
+            obj_scale: T::cell_one(),
             row_scale,
             basis,
             m,
             n,
             pivots_done: 0,
             max_pivots: 10_000 + 50 * (m + n),
-            bland: false,
-        }
+            stall: 0,
+        })
     }
 
     #[inline]
@@ -705,16 +1055,16 @@ impl Tableau {
     }
 
     #[inline]
-    fn row(&self, i: usize) -> &[BigInt] {
+    fn row(&self, i: usize) -> &[T] {
         &self.rows[i * self.width..(i + 1) * self.width]
     }
 
     /// Sign of the rational value `z / d`.
     #[inline]
-    fn sign_of(&self, z: &BigInt) -> std::cmp::Ordering {
+    fn sign_of(&self, z: &T) -> std::cmp::Ordering {
         use std::cmp::Ordering::*;
-        match (z.sign(), self.d.sign()) {
-            (num_bigint::Sign::NoSign, _) => Equal,
+        match (z.signum(), self.d.signum()) {
+            (Equal, _) => Equal,
             (a, b) if a == b => Greater,
             _ => Less,
         }
@@ -722,95 +1072,92 @@ impl Tableau {
 
     /// Rational value of a tableau entry.
     #[inline]
-    fn value(&self, z: &BigInt) -> Q {
-        Ratio::new(z.clone(), self.d.clone())
+    fn value(&self, z: &T) -> Q {
+        Ratio::new(z.to_big(), self.d.to_big())
     }
 
     /// Install a new objective (`costs` over all `n + m` columns) and price
     /// out the current basis so that `obj` holds true reduced costs (times
-    /// `d · obj_scale`).
-    fn set_objective(&mut self, costs: &[Q]) {
+    /// `d · obj_scale`).  `None` on overflow.
+    fn set_objective(&mut self, costs: &[Q]) -> Option<()> {
         let width = self.width;
         let s = denominator_lcm(costs.iter());
-        let int_cost = |q: &Q| q.numer() * (&s / q.denom());
-        let mut obj = vec![BigInt::zero(); width];
+        let int_cost = |q: &Q| T::from_big(&(q.numer() * (&s / q.denom())));
+        let mut obj = vec![T::cell_zero(); width];
         for (o, c) in obj.iter_mut().zip(costs) {
-            if !c.is_zero() {
-                *o = int_cost(c) * &self.d;
+            if !Zero::is_zero(c) {
+                *o = int_cost(c)?.mul(&self.d)?;
             }
         }
         for (i, &k) in self.basis.iter().enumerate() {
-            let f = int_cost(&costs[k]);
+            let f = int_cost(&costs[k])?;
             if f.is_zero() {
                 continue;
             }
             let row = self.row(i);
             for (o, r) in obj.iter_mut().zip(row) {
                 if !r.is_zero() {
-                    *o -= &f * r;
+                    *o = o.sub_mul(&f, r)?;
                 }
             }
         }
         self.obj = obj;
-        self.obj_scale = s;
+        self.obj_scale = T::from_big(&s)?;
+        Some(())
     }
 
     /// Fraction-free pivot on `(r, s)`: every other row `i` (and the
     /// objective row) becomes `(row_i·p − row_i[s]·row_r) / d`, the pivot
-    /// row is unchanged, and `d ← p`.
-    fn pivot(&mut self, r: usize, s: usize) {
+    /// row is unchanged, and `d ← p`.  `None` on overflow (the tableau is
+    /// then unusable; the caller restarts with wider cells).
+    fn pivot(&mut self, r: usize, s: usize) -> Option<()> {
         let w = self.width;
-        let prow: Vec<BigInt> = self.rows[r * w..(r + 1) * w]
+        let prow: Vec<T> = self.rows[r * w..(r + 1) * w]
             .iter_mut()
-            .map(std::mem::take)
+            .map(|v| std::mem::replace(v, T::cell_zero()))
             .collect();
         let p = prow[s].clone();
         let d = std::mem::replace(&mut self.d, p.clone());
-        let update_row = |row: &mut [BigInt]| {
-            let f = std::mem::take(&mut row[s]);
+        let update_row = |row: &mut [T]| -> Option<()> {
+            let f = std::mem::replace(&mut row[s], T::cell_zero());
             if f.is_zero() {
                 for v in row.iter_mut() {
                     if !v.is_zero() {
-                        let t = &*v * &p;
-                        debug_assert!((&t % &d).is_zero(), "integer pivoting: inexact division");
-                        *v = t / &d;
+                        *v = T::rescale(v, &p, &d)?;
                     }
                 }
-                return;
+                return Some(());
             }
             for (j, (v, pr)) in row.iter_mut().zip(prow.iter()).enumerate() {
                 if j == s {
                     continue;
                 }
-                let t = if pr.is_zero() {
-                    &*v * &p
-                } else if v.is_zero() {
-                    -(&f * pr)
-                } else {
-                    &*v * &p - &f * pr
-                };
-                debug_assert!((&t % &d).is_zero(), "integer pivoting: inexact division");
-                *v = t / &d;
+                if v.is_zero() && pr.is_zero() {
+                    continue;
+                }
+                *v = T::pivot_update(v, &p, &f, pr, &d)?;
             }
+            Some(())
         };
         for i in 0..self.m {
             if i == r {
                 continue;
             }
-            update_row(&mut self.rows[i * w..(i + 1) * w]);
+            update_row(&mut self.rows[i * w..(i + 1) * w])?;
         }
-        update_row(&mut self.obj);
+        update_row(&mut self.obj)?;
         self.rows[r * w..(r + 1) * w]
             .iter_mut()
             .zip(prow)
             .for_each(|(slot, v)| *slot = v);
         self.basis[r] = s;
         self.pivots_done += 1;
+        Some(())
     }
 
     /// Run the simplex method on the current objective, considering only
     /// columns `< limit` as candidates to enter the basis.
-    fn run(&mut self, limit: usize) -> Result<Step, SymplexError> {
+    fn run(&mut self, limit: usize) -> Result<Step, Halt> {
         use std::cmp::Ordering;
         loop {
             if self.pivots_done >= self.max_pivots {
@@ -821,7 +1168,8 @@ impl Tableau {
                          what the solver handles",
                         self.max_pivots
                     ),
-                ));
+                )
+                .into());
             }
             // Entering column: Dantzig (most negative reduced cost, lowest
             // index on ties) or Bland (lowest index with negative cost).
@@ -832,25 +1180,25 @@ impl Tableau {
             // the *unscaled* artificial, so Dantzig's choice is exactly the
             // one a `Ratio` tableau of the caller's system would make.
             let neg = self.d.is_negative();
-            let oriented = |z: &BigInt, j: usize| {
-                let v = if neg { -z } else { z.clone() };
+            let oriented = |z: &T, j: usize| -> Option<T> {
+                let v = if neg { z.neg()? } else { z.clone() };
                 if j >= self.n {
-                    v * &self.row_scale[j - self.n]
+                    v.mul(&self.row_scale[j - self.n])
                 } else {
-                    v
+                    Some(v)
                 }
             };
-            let mut entering: Option<(usize, BigInt)> = None;
+            let mut entering: Option<(usize, T)> = None;
             for j in 0..limit {
                 if self.sign_of(&self.obj[j]) != Ordering::Less {
                     continue;
                 }
-                let v = oriented(&self.obj[j], j);
+                let v = oriented(&self.obj[j], j).ok_or(Halt::Overflow)?;
                 match &entering {
                     Some((_, best)) if v >= *best => {}
                     _ => entering = Some((j, v)),
                 }
-                if self.bland {
+                if self.stall >= STALL_LIMIT {
                     break;
                 }
             }
@@ -873,7 +1221,7 @@ impl Tableau {
                     Some(l) => {
                         let (ri, rl) = (&self.row(i)[rhs], &self.row(l)[rhs]);
                         let al = &self.row(l)[s];
-                        match (ri * al).cmp(&(rl * a)) {
+                        match T::cmp_products(ri, al, rl, a) {
                             Ordering::Less => true,
                             Ordering::Equal => self.basis[i] < self.basis[l],
                             Ordering::Greater => false,
@@ -888,9 +1236,11 @@ impl Tableau {
                 return Ok(Step::Unbounded);
             };
             if self.row(r)[rhs].is_zero() {
-                self.bland = true;
+                self.stall += 1;
+            } else {
+                self.stall = 0;
             }
-            self.pivot(r, s);
+            self.pivot(r, s).ok_or(Halt::Overflow)?;
         }
     }
 
@@ -908,21 +1258,25 @@ impl Tableau {
 
     /// `−(current objective value)` — the last entry of the objective row.
     fn neg_objective(&self) -> Q {
-        Ratio::new(self.obj[self.rhs_col()].clone(), &self.d * &self.obj_scale)
+        Ratio::new(
+            self.obj[self.rhs_col()].to_big(),
+            self.d.to_big() * self.obj_scale.to_big(),
+        )
     }
 
     /// Pivot artificial variables out of the basis wherever possible.
     /// Rows whose genuine part is entirely zero are redundant; their
     /// artificial stays basic at level zero and never moves again.
-    fn drive_out_artificials(&mut self) {
+    fn drive_out_artificials(&mut self) -> Option<()> {
         for r in 0..self.m {
             if self.basis[r] < self.n {
                 continue;
             }
             if let Some(s) = (0..self.n).find(|&j| !self.row(r)[j].is_zero()) {
-                self.pivot(r, s);
+                self.pivot(r, s)?;
             }
         }
+        Some(())
     }
 
     /// Phase-1 cost vector over all `n + m` columns: `0` for genuine
@@ -931,7 +1285,7 @@ impl Tableau {
     fn phase1_costs(&self) -> Vec<Q> {
         let mut costs = vec![Q::zero(); self.n + self.m];
         for (c, s) in costs[self.n..].iter_mut().zip(&self.row_scale) {
-            *c = Ratio::new(BigInt::one(), s.clone());
+            *c = Ratio::new(<BigInt as One>::one(), s.to_big());
         }
         costs
     }
@@ -940,12 +1294,12 @@ impl Tableau {
     /// reduced cost of a'ᵢ)`, where the artificial's cost is `1/sᵢ` in
     /// phase 1 and `0` in phase 2.
     fn duals(&self, phase1: bool) -> Vec<Q> {
-        let denom = &self.d * &self.obj_scale;
+        let denom = self.d.to_big() * self.obj_scale.to_big();
         (0..self.m)
             .map(|i| {
-                let s = &self.row_scale[i];
-                let reduced = Ratio::new(self.obj[self.n + i].clone(), denom.clone());
-                let scaled_reduced = reduced * Ratio::from_integer(s.clone());
+                let s = self.row_scale[i].to_big();
+                let reduced = Ratio::new(self.obj[self.n + i].to_big(), denom.clone());
+                let scaled_reduced = reduced * Ratio::from_integer(s);
                 if phase1 {
                     Q::one() - scaled_reduced
                 } else {
@@ -965,18 +1319,41 @@ fn solve_lp(p: &LpProblem) -> Result<LpSolution, SymplexError> {
         Standardized::Ready(s) => s,
         Standardized::BoundsInfeasible => return Ok(LpSolution::infeasible(None)),
     };
-    let mut t = Tableau::new(&sf);
+    // Fixed-width cells first (i64, then i128 with exact 256-bit
+    // intermediates); the same algorithm on BigInt cells if a value
+    // outgrows them.  Fraction-free entries are minors of the scaled
+    // system, so a 20-row tableau typically peaks around 70–100 bits.
+    match solve_standard::<i64>(p, &sf) {
+        Ok(sol) => return Ok(sol),
+        Err(Halt::Error(e)) => return Err(e),
+        Err(Halt::Overflow) => {}
+    }
+    match solve_standard::<i128>(p, &sf) {
+        Ok(sol) => return Ok(sol),
+        Err(Halt::Error(e)) => return Err(e),
+        Err(Halt::Overflow) => {}
+    }
+    tracing::debug!(target: "symplex::linprog", rows = sf.a.len(), cols = sf.c.len(), "i128 tableau overflowed; solving on BigInt");
+    match solve_standard::<BigInt>(p, &sf) {
+        Ok(sol) => Ok(sol),
+        Err(Halt::Error(e)) => Err(e),
+        Err(Halt::Overflow) => Err(failed("linprog", "internal: BigInt tableau overflowed")),
+    }
+}
+
+fn solve_standard<T: Cell>(p: &LpProblem, sf: &Standard) -> Result<LpSolution, Halt> {
+    let mut t = Tableau::<T>::new(sf).ok_or(Halt::Overflow)?;
     let m = t.m;
     let n = t.n;
 
     // Phase 1: minimise the sum of the artificials.
     let phase1 = t.phase1_costs();
-    t.set_objective(&phase1);
+    t.set_objective(&phase1).ok_or(Halt::Overflow)?;
     match t.run(n + m)? {
         Step::Optimal => {}
         Step::Unbounded => {
             // Cannot happen: the phase-1 objective is bounded below by 0.
-            return Err(failed("linprog", "phase 1 reported unbounded"));
+            return Err(failed("linprog", "phase 1 reported unbounded").into());
         }
     }
     let infeasibility = -t.neg_objective();
@@ -991,15 +1368,26 @@ fn solve_lp(p: &LpProblem) -> Result<LpSolution, SymplexError> {
     }
 
     // Phase 2.
-    t.drive_out_artificials();
+    t.drive_out_artificials().ok_or(Halt::Overflow)?;
     let mut phase2 = vec![Q::zero(); n + m];
     phase2[..n].clone_from_slice(&sf.c);
-    t.set_objective(&phase2);
+    t.set_objective(&phase2).ok_or(Halt::Overflow)?;
     match t.run(n)? {
         Step::Optimal => {}
         Step::Unbounded => return Ok(LpSolution::unbounded()),
     }
 
+    if tracing::enabled!(target: "symplex::linprog::growth", tracing::Level::TRACE) {
+        let bits = t
+            .rows
+            .iter()
+            .chain(t.obj.iter())
+            .chain(std::iter::once(&t.d))
+            .map(|c| c.to_big().bits())
+            .max()
+            .unwrap_or(0);
+        tracing::trace!(target: "symplex::linprog::growth", rows = t.m, cols = t.n, pivots = t.pivots_done, max_bits = bits, "final tableau");
+    }
     let z = t.solution();
     let x: Vec<Q> = sf
         .var_map
@@ -1562,35 +1950,162 @@ mod tests {
         let Standardized::Ready(sf) = standardize(&p) else {
             panic!("bounds are fine");
         };
-        let mut t = Tableau::new(&sf);
-        let (m, n) = (t.m, t.n);
-        let phase1 = t.phase1_costs();
-        t.set_objective(&phase1);
-        assert!(matches!(t.run(n + m).unwrap(), Step::Optimal));
-        assert!(t.neg_objective().is_zero(), "feasible");
-        assert!(t.basis[0] >= n, "artificial of row 0 still basic");
-        assert!(t.d.is_positive());
-        t.drive_out_artificials();
-        assert!(t.basis[0] < n, "artificial driven out");
-        assert!(
-            t.d.is_negative(),
-            "pivot on a negative entry flips the common denominator (d = {})",
-            t.d
-        );
-        let pivots_before = t.pivots_done;
-        let mut phase2 = vec![Q::zero(); n + m];
-        phase2[..n].clone_from_slice(&sf.c);
-        t.set_objective(&phase2);
-        assert!(matches!(t.run(n).unwrap(), Step::Optimal));
-        assert!(t.pivots_done > pivots_before, "phase 2 pivoted with d < 0");
-        let z = t.solution();
-        assert!(z.iter().all(|v| !v.is_negative()), "z = {z:?}");
+        // The same white-box walk on both cell types: the hybrid design's
+        // promise is that they take the same path.
+        fn walk<T: Cell>(sf: &Standard) -> (Vec<Q>, usize) {
+            let mut t = Tableau::<T>::new(sf).expect("fits");
+            let (m, n) = (t.m, t.n);
+            let phase1 = t.phase1_costs();
+            t.set_objective(&phase1).expect("fits");
+            assert!(matches!(t.run(n + m).ok().unwrap(), Step::Optimal));
+            assert!(t.neg_objective().is_zero(), "feasible");
+            assert!(t.basis[0] >= n, "artificial of row 0 still basic");
+            assert_eq!(t.d.signum(), std::cmp::Ordering::Greater);
+            t.drive_out_artificials().expect("fits");
+            assert!(t.basis[0] < n, "artificial driven out");
+            assert!(
+                t.d.is_negative(),
+                "pivot on a negative entry flips the common denominator (d = {:?})",
+                t.d
+            );
+            let pivots_before = t.pivots_done;
+            let mut phase2 = vec![Q::zero(); n + m];
+            phase2[..n].clone_from_slice(&sf.c);
+            t.set_objective(&phase2).expect("fits");
+            assert!(matches!(t.run(n).ok().unwrap(), Step::Optimal));
+            assert!(t.pivots_done > pivots_before, "phase 2 pivoted with d < 0");
+            let z = t.solution();
+            assert!(z.iter().all(|v| !v.is_negative()), "z = {z:?}");
+            (z, t.pivots_done)
+        }
+        assert_eq!(walk::<i64>(&sf), walk::<BigInt>(&sf));
         // Cross-check the end-to-end driver on the same problem.
         let sol = p.solve().unwrap();
         assert_eq!(sol.status, LpStatus::Optimal);
         assert_eq!(sol.x, vec![qi(0), qi(0), qi(0)]);
         assert_eq!(sol.objective, Some(qi(0)));
         assert_eq!(sol.duals[1], qi(0));
+    }
+
+    /// The 256-bit intermediates of the `i128` cells agree with `BigInt`
+    /// on random operands spanning the whole range, including the exact
+    /// division's fit/no-fit boundary.
+    #[test]
+    fn i256_intermediates_match_bigint() {
+        let mut state: u128 = 0x9E37_79B9_7F4A_7C15_F39C_C060_5CED_C834;
+        let mut next = |bits: u32| -> i128 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let mask = if bits >= 128 {
+                u128::MAX
+            } else {
+                (1u128 << bits) - 1
+            };
+            let v = (state & mask) as i128;
+            if state & (1 << 5) != 0 { -v } else { v }
+        };
+        for _ in 0..3000 {
+            let (a, b, c, d) = (next(120), next(120), next(120), next(120));
+            let big = |x: i128| BigInt::from(x);
+            // Products and comparisons.
+            let ab = I256::mul(a, b);
+            let cd = I256::mul(c, d);
+            assert_eq!(
+                ab.cmp(&cd),
+                (big(a) * big(b)).cmp(&(big(c) * big(d))),
+                "{a} {b} {c} {d}"
+            );
+            assert_eq!(
+                <i128 as Cell>::cmp_products(&a, &b, &c, &d),
+                (big(a) * big(b)).cmp(&(big(c) * big(d)))
+            );
+            // Exact division: v = d₀·k (both ≤ 60 bits, so v fits), then
+            // (v·b)/d₀ = k·b exactly; it fits an i128 for a 64-bit b and
+            // usually not for a 120-bit one.
+            let d0 = next(60);
+            if d0 != 0 {
+                let k = next(60);
+                let v = d0 * k;
+                let b2 = if k & 1 == 0 { next(64) } else { b };
+                let exp = big(k) * big(b2);
+                assert_eq!(
+                    <i128 as Cell>::rescale(&v, &b2, &d0),
+                    i128::try_from(&exp).ok(),
+                    "{v} {b2} {d0}"
+                );
+                // The general update (v·p − f·pr)/d with f·pr also a multiple of d₀.
+                let f = d0 * next(30);
+                let pr = next(64);
+                let exp2 = big(k) * big(b2) - big(f) / big(d0) * big(pr);
+                assert_eq!(
+                    <i128 as Cell>::pivot_update(&v, &b2, &f, &pr, &d0),
+                    i128::try_from(&exp2).ok(),
+                    "{v} {b2} {f} {pr} {d0}"
+                );
+            }
+            let diff = ab.sub(cd);
+            let exp = big(a) * big(b) - big(c) * big(d);
+            assert_eq!(diff.to_i128(), i128::try_from(&exp).ok(), "{exp}");
+            assert_eq!(diff.is_negative(), Signed::is_negative(&exp));
+        }
+        // Exact quotients that fill the whole i128 range.
+        for &(x, d) in &[
+            (i128::MAX, 1i128),
+            (i128::MIN, 1),
+            (i128::MIN, -1),
+            (i128::MAX, i128::MAX),
+            (1 << 100, 1 << 40),
+        ] {
+            let prod = I256::mul(x, d);
+            let got = prod.div_exact(d);
+            let expected =
+                i128::try_from(&(BigInt::from(x) * BigInt::from(d) / BigInt::from(d))).ok();
+            assert_eq!(got, expected, "{x} · {d} / {d}");
+        }
+        // A quotient one past the range is reported as not fitting.
+        let over = I256::mul(i128::MAX, 4).sub(I256::from_i128(0));
+        assert_eq!(over.div_exact(2), None);
+        assert_eq!(I256::mul(i128::MAX, 4).div_exact(4), Some(i128::MAX));
+    }
+
+    /// White-box: an LP whose tableau entries outgrow `i64` must fall
+    /// back to `BigInt` cells and give the same answer the `BigInt` run
+    /// gives on its own; small problems must stay in `i64`.
+    #[test]
+    fn hybrid_arithmetic_falls_back_to_bigint_on_overflow() {
+        // Coefficients around 2^40: a single fraction-free pivot multiplies
+        // two of them, so the i64 attempt overflows immediately.
+        let big = |k: i64| qi(k) * qi(1 << 40);
+        let p = LpProblem::minimize(vec![qi(1), qi(1), qi(1)])
+            .ge(vec![big(3), big(1), big(2)], big(7))
+            .ge(vec![big(1), big(5), big(1)], big(11))
+            .le(vec![big(2), big(1), big(3)], big(40));
+        let Standardized::Ready(sf) = standardize(&p) else {
+            panic!("bounds are fine");
+        };
+        assert!(
+            matches!(solve_standard::<i64>(&p, &sf), Err(Halt::Overflow)),
+            "the i64 attempt must report overflow, not a wrong answer"
+        );
+        let sol = p.solve().unwrap();
+        let via_big = solve_standard::<BigInt>(&p, &sf).ok().unwrap();
+        assert_eq!(sol.status, LpStatus::Optimal);
+        assert_eq!(sol.x, via_big.x);
+        assert_eq!(sol.objective, via_big.objective);
+        assert_eq!(sol.duals, via_big.duals);
+        // The optimum is exact: 3x + y + 2z ≥ 7, x + 5y + z ≥ 11 (scaled),
+        // minimise x + y + z.
+        let obj = sol.objective.unwrap();
+        assert!(obj.is_positive());
+        // A small LP never leaves the i64 path.
+        let small = LpProblem::minimize(vec![qi(1), qi(2)])
+            .ge(vec![qi(1), qi(1)], qi(1))
+            .le(vec![qi(3), qi(1)], qi(6));
+        let Standardized::Ready(sf2) = standardize(&small) else {
+            panic!("bounds are fine");
+        };
+        assert!(solve_standard::<i64>(&small, &sf2).is_ok());
     }
 
     #[test]

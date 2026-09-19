@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.7.1] - 2026-09-19
+
+### Changed
+
+- **Hybrid arithmetic in the exact simplex.**  The fraction-free tableau
+  is generic over its cell type and runs on `i64` cells first, then `i128`
+  cells with exact 256-bit intermediates (a hand-rolled 128×128→256
+  multiply, Jebelean exact division by the modular inverse, 256-bit
+  comparison), and only on the first value that does not fit does it
+  solve the problem again on `BigInt` cells.  Every decision is a sign
+  test or an exact comparison of products, so all three take the same
+  pivot path and give the same answer — verified byte-for-byte on 4,000
+  random LPs and on the pinned Mathlib fixtures.  Measured on a
+  downstream generator: the entries of its final tableaux have median
+  67 bits and p90 99, so `i64` alone fit 38% of its 18,000 LPs and `i128`
+  fits 99%; certificate LP time 8.3 s → 2.3 s, the whole run 33 s → 25 s.
+- **Anti-cycling policy.**  Bland's rule used to take over permanently
+  after the *first* degenerate pivot; the certificate LPs are degenerate
+  from the start (zero right-hand sides), so they walked Bland's slow
+  path throughout.  Dantzig's rule now stays in force until twelve
+  consecutive degenerate pivots, then Bland's rule runs until the next
+  improving pivot — still provably finite.  Handelman degree 8 on a
+  2-variable box: 34,763 pivots / 92 s → 3,683 pivots / 11 s.  Optimal
+  objectives and statuses are unchanged on the 4,000-LP check; 24 of them
+  now report a different (equally optimal) vertex or a different (equally
+  valid) Farkas vector, and one facet of the n = 5 floor generator's
+  output uses a different hypothesis set — the generated file compiles
+  against Mathlib.
+- `PolyhedronProver` emits a `tracing::debug!` event per stage LP
+  (`symplex::certificates::polyhedron`: degree, rows, cols, status,
+  microseconds); `linprog` reports fallbacks to `BigInt` at `debug` and
+  final tableau growth at `trace` under `symplex::linprog::growth`.
+
 ## [0.7.0] - 2026-09-19
 
 ### Breaking
