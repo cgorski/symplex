@@ -85,11 +85,11 @@ fn main() {
     println!("Controllable: {}", sys.is_controllable());
     println!("Observable:   {}", sys.is_observable());
 
-    let ctrb = sys.controllability_matrix();
+    let ctrb = sys.controllability_matrix().unwrap();
     println!("Controllability matrix: {ctrb}");
     println!("  rank = {}", ctrb.rank());
 
-    let obsv = sys.observability_matrix();
+    let obsv = sys.observability_matrix().unwrap();
     println!("Observability matrix: {obsv}");
     println!("  rank = {}", obsv.rank());
 
@@ -203,7 +203,7 @@ fn main() {
     );
 
     match sys.ackermann(&desired_poles) {
-        Some(k) => {
+        Ok(k) => {
             println!("Feedback gain K = {k}");
 
             // Verify: eigenvalues of (A - BK) should be the desired poles
@@ -215,8 +215,8 @@ fn main() {
                 cl_poles.iter().map(|p| format!("{p}")).collect::<Vec<_>>()
             );
         }
-        None => {
-            println!("Ackermann failed (system not controllable or singular)");
+        Err(e) => {
+            println!("Ackermann failed: {e}");
         }
     }
 
@@ -228,11 +228,11 @@ fn main() {
     println!("\nDesired poles: {p1}, {p2}");
 
     match sys.ackermann(&[p1, p2]) {
-        Some(k) => {
+        Ok(k) => {
             println!("Feedback gain K = {k}");
         }
-        None => {
-            println!("Ackermann failed for complex poles");
+        Err(e) => {
+            println!("Ackermann failed for complex poles: {e}");
         }
     }
 
@@ -247,7 +247,7 @@ fn main() {
     let dt = ctx.rational(1, 100); // 0.01 s
     println!("Sample time: dt = {dt} s");
 
-    let discrete = sys.discretize_zoh(&dt, 4);
+    let discrete = sys.discretize_zoh(&dt, 4).unwrap();
     println!("\nDiscrete-time system (4th-order Taylor approx):");
     println!(
         "  States: {}, Inputs: {}, Outputs: {}",

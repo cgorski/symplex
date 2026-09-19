@@ -32,7 +32,7 @@ fn total_time_derivative_constant() {
     let qdd = ctx.symbol("qdd");
 
     let c = ctx.int(5);
-    let result = total_time_derivative(&c, &[(&q, &qd)], &[&qdd]);
+    let result = total_time_derivative(&c, &[(&q, &qd)], &[&qdd]).unwrap();
     let val = result.eval().eval_f64().unwrap();
     assert_near(val, 0.0, 1e-12, "d/dt(5) should be 0");
 }
@@ -45,7 +45,7 @@ fn total_time_derivative_linear_q() {
     let qd = ctx.symbol("qd");
     let qdd = ctx.symbol("qdd");
 
-    let result = total_time_derivative(&q, &[(&q, &qd)], &[&qdd]);
+    let result = total_time_derivative(&q, &[(&q, &qd)], &[&qdd]).unwrap();
     // Substitute qd = 7 and check
     let val = result.subs(&qd, &ctx.int(7)).eval().eval_f64().unwrap();
     assert_near(val, 7.0, 1e-12, "d/dt(q) should be qd");
@@ -60,7 +60,7 @@ fn total_time_derivative_q_squared() {
     let qdd = ctx.symbol("qdd");
 
     let q_sq = q.powi(2);
-    let result = total_time_derivative(&q_sq, &[(&q, &qd)], &[&qdd]);
+    let result = total_time_derivative(&q_sq, &[(&q, &qd)], &[&qdd]).unwrap();
     // Substitute q=3, qd=2: expect 2*3*2 = 12
     let val = result
         .subs(&q, &ctx.int(3))
@@ -82,7 +82,7 @@ fn total_time_derivative_kinetic_energy() {
 
     let half = ctx.rational(1, 2);
     let ke = &half * &m * &qd.powi(2);
-    let result = total_time_derivative(&ke, &[(&q, &qd)], &[&qdd]);
+    let result = total_time_derivative(&ke, &[(&q, &qd)], &[&qdd]).unwrap();
 
     // Substitute m=2, qd=3, qdd=5: expect 2*3*5 = 30
     let val = result
@@ -113,7 +113,7 @@ fn euler_lagrange_free_particle() {
     let ke = &half * &m * &qd.powi(2);
     let pe = ctx.int(0);
 
-    let eqs = euler_lagrange(&ke, &pe, &[(&q, &qd)], &[&qdd]);
+    let eqs = euler_lagrange(&ke, &pe, &[(&q, &qd)], &[&qdd]).unwrap();
     assert_eq!(eqs.len(), 1);
 
     // Substitute m=3, qdd=4: expect τ = 3*4 = 12
@@ -143,7 +143,7 @@ fn euler_lagrange_spring() {
     let ke = &half * &m * &qd.powi(2);
     let pe = &half * &k * &q.powi(2);
 
-    let eqs = euler_lagrange(&ke, &pe, &[(&q, &qd)], &[&qdd]);
+    let eqs = euler_lagrange(&ke, &pe, &[(&q, &qd)], &[&qdd]).unwrap();
     assert_eq!(eqs.len(), 1);
 
     // At m=2, k=5, q=3, qdd=4, qd=0: expect 2*4 + 5*3 = 8+15 = 23
@@ -175,7 +175,7 @@ fn euler_lagrange_pendulum() {
     let ke = &half * &m_sym * &l_sym.powi(2) * &qd.powi(2);
     let pe = -(&m_sym * &g_sym * &l_sym * &q.cos());
 
-    let eqs = euler_lagrange(&ke, &pe, &[(&q, &qd)], &[&qdd]);
+    let eqs = euler_lagrange(&ke, &pe, &[(&q, &qd)], &[&qdd]).unwrap();
     assert_eq!(eqs.len(), 1);
 
     // Numeric check: q=0.5, qd=0.1, qdd=0, m=1, L=1, g=9.8
@@ -210,7 +210,7 @@ fn mass_matrix_single_dof() {
 
     let half = ctx.rational(1, 2);
     let ke = &half * &m * &qd.powi(2);
-    let mm = mass_matrix(&ke, &[&qd]);
+    let mm = mass_matrix(&ke, &[&qd]).unwrap();
 
     assert_eq!(mm.shape(), (1, 1));
 
@@ -242,7 +242,7 @@ fn mass_matrix_two_dof() {
     let ke = &half * &m1 * &q1d.powi(2)
         + &half * &m2 * &(&q1d.powi(2) + &q2d.powi(2) + &(2 * &q1d * &q2d * &q2.cos()));
 
-    let mm = mass_matrix(&ke, &[&q1d, &q2d]);
+    let mm = mass_matrix(&ke, &[&q1d, &q2d]).unwrap();
     assert_eq!(mm.shape(), (2, 2));
 
     // M[0,0] = m1 + m2
@@ -348,8 +348,8 @@ fn coriolis_matrix_constant_mass() {
 
     let half = ctx.rational(1, 2);
     let ke = &half * &m * &qd.powi(2);
-    let mm = mass_matrix(&ke, &[&qd]);
-    let c = coriolis_matrix(&mm, &[&q], &[&qd]);
+    let mm = mass_matrix(&ke, &[&qd]).unwrap();
+    let c = coriolis_matrix(&mm, &[&q], &[&qd]).unwrap();
 
     assert_eq!(c.shape(), (1, 1));
 
@@ -389,8 +389,8 @@ fn coriolis_matrix_two_dof() {
     let ke = &half * &m1 * &q1d.powi(2)
         + &half * &m2 * &(&q1d.powi(2) + &q2d.powi(2) + &(2 * &q1d * &q2d * &q2.cos()));
 
-    let mm = mass_matrix(&ke, &[&q1d, &q2d]);
-    let c = coriolis_matrix(&mm, &[&q1, &q2], &[&q1d, &q2d]);
+    let mm = mass_matrix(&ke, &[&q1d, &q2d]).unwrap();
+    let c = coriolis_matrix(&mm, &[&q1, &q2], &[&q1d, &q2d]).unwrap();
 
     assert_eq!(c.shape(), (2, 2));
 
@@ -425,8 +425,8 @@ fn christoffel_symbols_constant_mass() {
 
     let half = ctx.rational(1, 2);
     let ke = &half * &m * &qd.powi(2);
-    let mm = mass_matrix(&ke, &[&qd]);
-    let cs = christoffel_symbols(&mm, &[&q]);
+    let mm = mass_matrix(&ke, &[&qd]).unwrap();
+    let cs = christoffel_symbols(&mm, &[&q]).unwrap();
 
     assert_eq!(cs.len(), 1);
     assert_eq!(cs[0].len(), 1);
@@ -453,7 +453,7 @@ fn manipulator_equation_free_particle() {
     let ke = &half * &m * &qd.powi(2);
     let pe = ctx.int(0);
 
-    let (mass, coriolis, grav) = manipulator_equation(&ke, &pe, &[&q], &[&qd]);
+    let (mass, coriolis, grav) = manipulator_equation(&ke, &pe, &[&q], &[&qd]).unwrap();
 
     assert_eq!(mass.shape(), (1, 1));
     assert_eq!(coriolis.shape(), (1, 1));
@@ -498,7 +498,7 @@ fn manipulator_equation_spring_pendulum() {
     let ke = &half * &m * &qd.powi(2);
     let pe = &half * &k * &q.powi(2);
 
-    let (mass, _coriolis, grav) = manipulator_equation(&ke, &pe, &[&q], &[&qd]);
+    let (mass, _coriolis, grav) = manipulator_equation(&ke, &pe, &[&q], &[&qd]).unwrap();
 
     // M[0,0] = m
     let m_val = mass
@@ -543,10 +543,10 @@ fn euler_lagrange_matches_manipulator_equation() {
     let pe = -(&m_sym * &g_sym * &l_sym * &q.cos());
 
     // Euler-Lagrange
-    let eqs = euler_lagrange(&ke, &pe, &[(&q, &qd)], &[&qdd]);
+    let eqs = euler_lagrange(&ke, &pe, &[(&q, &qd)], &[&qdd]).unwrap();
 
     // Manipulator equation
-    let (mass, coriolis, grav) = manipulator_equation(&ke, &pe, &[&q], &[&qd]);
+    let (mass, coriolis, grav) = manipulator_equation(&ke, &pe, &[&q], &[&qd]).unwrap();
 
     // M·q̈ + C·q̇ + g for 1-DOF: M[0,0]·qdd + C[0,0]·qd + g[0]
     let manip_result = &(mass.get(0, 0) * &qdd) + &(&(coriolis.get(0, 0) * &qd) + &grav[0]);
@@ -601,7 +601,7 @@ fn total_time_derivative_of_velocity() {
     let qd = ctx.symbol("qd");
     let qdd = ctx.symbol("qdd");
 
-    let result = total_time_derivative(&qd, &[(&q, &qd)], &[&qdd]);
+    let result = total_time_derivative(&qd, &[(&q, &qd)], &[&qdd]).unwrap();
     // Should be qdd; substitute qdd=42, expect 42
     let val = result
         .subs(&qdd, &ctx.int(42))
@@ -622,7 +622,7 @@ fn total_time_derivative_mixed() {
     let qdd = ctx.symbol("qdd");
 
     let expr = &q * &qd;
-    let result = total_time_derivative(&expr, &[(&q, &qd)], &[&qdd]);
+    let result = total_time_derivative(&expr, &[(&q, &qd)], &[&qdd]).unwrap();
 
     // At q=2, qd=3, qdd=5: expect 3² + 2·5 = 9 + 10 = 19
     let val = result
@@ -649,7 +649,7 @@ fn mass_matrix_is_symmetric() {
     let ke = &half * &m1 * &q1d.powi(2)
         + &half * &m2 * &(&q1d.powi(2) + &q2d.powi(2) + &(2 * &q1d * &q2d * &q2.cos()));
 
-    let mm = mass_matrix(&ke, &[&q1d, &q2d]);
+    let mm = mass_matrix(&ke, &[&q1d, &q2d]).unwrap();
 
     // Evaluate M[0,1] and M[1,0] at specific point
     let pi_over_4 = &ctx.pi() / 4;

@@ -80,13 +80,26 @@ pub fn dh_matrix(theta: &Ex, d: &Ex, a: &Ex, alpha: &Ex) -> Matrix {
     let r32 = zero;
     let r33 = one;
 
-    Matrix::new(vec![
+    Matrix::from_rows_unchecked(vec![
         vec![r00, r01, r02, r03],
         vec![r10, r11, r12, r13],
         vec![r20, r21, r22, r23],
         vec![r30, r31, r32, r33],
     ])
-    .unwrap()
+}
+
+/// Product of two `n×n` matrices built in this module (3×3 rotations, 4×4
+/// homogeneous transforms).  Both factors are literals of the same fixed
+/// size, so unlike [`Matrix::matmul`] there is no shape to check.
+fn mul_square(a: &Matrix, b: &Matrix) -> Matrix {
+    let n = a.nrows();
+    Matrix::from_fn(n, n, |i, j| {
+        let mut acc = a.get(i, 0) * b.get(0, j);
+        for k in 1..n {
+            acc += a.get(i, k) * b.get(k, j);
+        }
+        acc
+    })
 }
 
 /// Chain-multiply a sequence of DH transformation matrices to compute
@@ -122,10 +135,7 @@ pub fn fk_chain(dh_params: &[(&Ex, &Ex, &Ex, &Ex)]) -> Matrix {
     };
     let mut result = Matrix::identity(&ctx, 4);
     for &(theta, d, a, alpha) in dh_params {
-        let ti = dh_matrix(theta, d, a, alpha);
-        result = result
-            .matmul(&ti)
-            .expect("matmul: dimension mismatch in FK chain");
+        result = mul_square(&result, &dh_matrix(theta, d, a, alpha));
     }
     result
 }
@@ -179,24 +189,7 @@ pub fn fk_position(dh_params: &[(&Ex, &Ex, &Ex, &Ex)]) -> (Ex, Ex, Ex) {
 /// ```
 pub fn fk_rotation(dh_params: &[(&Ex, &Ex, &Ex, &Ex)]) -> Matrix {
     let t = fk_chain(dh_params);
-    Matrix::new(vec![
-        vec![
-            t.get(0, 0).clone(),
-            t.get(0, 1).clone(),
-            t.get(0, 2).clone(),
-        ],
-        vec![
-            t.get(1, 0).clone(),
-            t.get(1, 1).clone(),
-            t.get(1, 2).clone(),
-        ],
-        vec![
-            t.get(2, 0).clone(),
-            t.get(2, 1).clone(),
-            t.get(2, 2).clone(),
-        ],
-    ])
-    .unwrap()
+    Matrix::from_fn(3, 3, |i, j| t.get(i, j).clone())
 }
 
 /// Rotation matrix about the x-axis by angle θ.
@@ -211,12 +204,11 @@ pub fn rot_x(theta: &Ex) -> Matrix {
     let one = theta.context().int(1);
     let c = theta.cos();
     let s = theta.sin();
-    Matrix::new(vec![
+    Matrix::from_rows_unchecked(vec![
         vec![one, zero.clone(), zero.clone()],
         vec![zero.clone(), c.clone(), -&s],
         vec![zero, s, c],
     ])
-    .unwrap()
 }
 
 /// Rotation matrix about the y-axis by angle θ.
@@ -231,12 +223,11 @@ pub fn rot_y(theta: &Ex) -> Matrix {
     let one = theta.context().int(1);
     let c = theta.cos();
     let s = theta.sin();
-    Matrix::new(vec![
+    Matrix::from_rows_unchecked(vec![
         vec![c.clone(), zero.clone(), s.clone()],
         vec![zero.clone(), one, zero.clone()],
         vec![-&s, zero, c],
     ])
-    .unwrap()
 }
 
 /// Rotation matrix about the z-axis by angle θ.
@@ -251,12 +242,11 @@ pub fn rot_z(theta: &Ex) -> Matrix {
     let one = theta.context().int(1);
     let c = theta.cos();
     let s = theta.sin();
-    Matrix::new(vec![
+    Matrix::from_rows_unchecked(vec![
         vec![c.clone(), -&s, zero.clone()],
         vec![s, c, zero.clone()],
         vec![zero.clone(), zero, one],
     ])
-    .unwrap()
 }
 
 /// Skew-symmetric matrix from a 3-vector [a, b, c].
@@ -269,12 +259,11 @@ pub fn rot_z(theta: &Ex) -> Matrix {
 /// ```
 pub fn skew3(a: &Ex, b: &Ex, c: &Ex) -> Matrix {
     let zero = a.context().int(0);
-    Matrix::new(vec![
+    Matrix::from_rows_unchecked(vec![
         vec![zero.clone(), -c, b.clone()],
         vec![c.clone(), zero.clone(), -a],
         vec![-b, a.clone(), zero],
     ])
-    .unwrap()
 }
 
 /// Build a 4×4 homogeneous transformation matrix from a 3×3 rotation
@@ -284,11 +273,24 @@ pub fn skew3(a: &Ex, b: &Ex, c: &Ex) -> Matrix {
 /// T = | R  p |
 ///     | 0  1 |
 /// ```
-pub fn homogeneous(rotation: &Matrix, position: &[Ex; 3]) -> Matrix {
-    assert_eq!(rotation.shape(), (3, 3), "rotation must be 3×3");
+///
+/// # Errors
+///
+/// Returns [`SymplexError::InvalidArgument`] if `rotation` is not 3×3.
+pub fn homogeneous(rotation: &Matrix, position: &[Ex; 3]) -> Result<Matrix, SymplexError> {
+    if rotation.shape() != (3, 3) {
+        return Err(SymplexError::InvalidArgument {
+            operation: "robotics::homogeneous",
+            reason: format!(
+                "rotation must be 3×3, got {}×{}",
+                rotation.nrows(),
+                rotation.ncols()
+            ),
+        });
+    }
     let zero = position[0].context().int(0);
     let one = position[0].context().int(1);
-    Matrix::new(vec![
+    Ok(Matrix::from_rows_unchecked(vec![
         vec![
             rotation.get(0, 0).clone(),
             rotation.get(0, 1).clone(),
@@ -308,8 +310,7 @@ pub fn homogeneous(rotation: &Matrix, position: &[Ex; 3]) -> Matrix {
             position[2].clone(),
         ],
         vec![zero.clone(), zero.clone(), zero, one],
-    ])
-    .unwrap()
+    ]))
 }
 
 /// Pure translation as a 4×4 homogeneous transformation matrix.
@@ -321,13 +322,12 @@ pub fn homogeneous(rotation: &Matrix, position: &[Ex; 3]) -> Matrix {
 pub fn translation(x: &Ex, y: &Ex, z: &Ex) -> Matrix {
     let zero = x.context().int(0);
     let one = x.context().int(1);
-    Matrix::new(vec![
+    Matrix::from_rows_unchecked(vec![
         vec![one.clone(), zero.clone(), zero.clone(), x.clone()],
         vec![zero.clone(), one.clone(), zero.clone(), y.clone()],
         vec![zero.clone(), zero.clone(), one, z.clone()],
         vec![zero.clone(), zero.clone(), zero, x.context().int(1)],
     ])
-    .unwrap()
 }
 
 /// Euler angle convention for rotation composition.
@@ -347,24 +347,10 @@ pub enum EulerConvention {
 /// Rotation matrix from Euler angles with specified convention.
 pub fn rot_euler(phi: &Ex, theta: &Ex, psi: &Ex, convention: EulerConvention) -> Matrix {
     match convention {
-        EulerConvention::ZYX => {
-            // R = Rz(phi) * Ry(theta) * Rx(psi)
-            rot_z(phi)
-                .matmul(&rot_y(theta))
-                .expect("matmul: dimension mismatch")
-                .matmul(&rot_x(psi))
-                .expect("matmul: dimension mismatch")
-        }
-        EulerConvention::ZXZ => rot_z(phi)
-            .matmul(&rot_x(theta))
-            .expect("matmul: dimension mismatch")
-            .matmul(&rot_z(psi))
-            .expect("matmul: dimension mismatch"),
-        EulerConvention::XYZ => rot_x(phi)
-            .matmul(&rot_y(theta))
-            .expect("matmul: dimension mismatch")
-            .matmul(&rot_z(psi))
-            .expect("matmul: dimension mismatch"),
+        // R = Rz(phi) * Ry(theta) * Rx(psi)
+        EulerConvention::ZYX => mul_square(&mul_square(&rot_z(phi), &rot_y(theta)), &rot_x(psi)),
+        EulerConvention::ZXZ => mul_square(&mul_square(&rot_z(phi), &rot_x(theta)), &rot_z(psi)),
+        EulerConvention::XYZ => mul_square(&mul_square(&rot_x(phi), &rot_y(theta)), &rot_z(psi)),
     }
 }
 

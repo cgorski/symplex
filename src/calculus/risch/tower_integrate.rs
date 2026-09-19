@@ -102,10 +102,9 @@ pub fn tower_hermite_reduce(
         "tower_hermite_reduce: denominator must be nonzero"
     );
 
-    // Make d monic.
+    // Make d monic; lc(d) is the last coefficient (d is nonzero, so it exists).
     let d_monic = d.make_monic();
-    let lc = d.leading_coeff().unwrap();
-    let inv_lc = Field::inv(lc);
+    let inv_lc = Field::inv(&d.coeff(d.coeffs().len() - 1));
     let a_scaled = a.scale(&inv_lc);
 
     // Euclidean division: a_scaled = q * d_monic + a_proper
@@ -266,7 +265,7 @@ pub fn tower_logarithmic_part(
     // Handle trivial case: D is linear in θ.
     if d.degree() == Some(1) {
         let a_val = a.coeff(0);
-        let d_lc = d.leading_coeff().unwrap().clone();
+        let d_lc = d.coeff(1);
         let coeff = Field::div(&a_val, &d_lc);
         if Ring::is_zero(&coeff) {
             return TowerLogPartResult {
@@ -274,10 +273,12 @@ pub fn tower_logarithmic_part(
                 is_non_elementary: false,
             };
         }
-        if coeff.is_constant_rational() {
+        // A coefficient in ℚ gives an elementary log term; anything
+        // depending on x makes the integral non-elementary.
+        if let Some(c) = coeff.to_rational() {
             return TowerLogPartResult {
                 terms: vec![TowerLogTerm::Constant {
-                    coeff: coeff.to_rational().unwrap(),
+                    coeff: c,
                     argument: d.make_monic(),
                 }],
                 is_non_elementary: false,
@@ -322,8 +323,7 @@ pub fn tower_logarithmic_part(
 
             if Ring::is_zero(&root) {
                 // Zero root — no contribution.
-            } else if root.is_constant_rational() {
-                let c = root.to_rational().unwrap();
+            } else if let Some(c) = root.to_rational() {
                 // v(θ) = gcd(D, A − c·D')
                 let c_rf = RationalFn::from_rational(c.clone());
                 let a_minus_c_dprime = a.sub(&d_prime.scale(&c_rf));

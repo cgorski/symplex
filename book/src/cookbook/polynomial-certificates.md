@@ -258,8 +258,8 @@ fn main() {
             assert!(cert.verify());
             print!("{}", cert.to_lean("quarter_bound").unwrap());
         }
-        BoxOutcome::Refuted { point, value } => println!("false: goal = {value} at {point:?}"),
-        BoxOutcome::Unknown { degree, .. } => println!("no certificate of degree {degree}"),
+        BoxOutcome::Refuted { point, value, .. } => println!("false: goal = {value} at {point:?}"),
+        BoxOutcome::Unknown(u) => println!("no certificate of degree {}", u.degree),
     }
 }
 ```
@@ -276,7 +276,7 @@ theorem quarter_bound (r f : ℝ) (h_r_lo : (0 : ℝ) ≤ r) (h_r_hi : r ≤ (1 
     mul_nonneg (sub_nonneg.mpr h_r_lo) (sub_nonneg.mpr h_f_lo)]
 ```
 
-This compiles against Mathlib (Lean 4.30.0) without errors or warnings — including with `linter.style.longLine` on, since every emitter wraps at 100 columns (`lean::wrap_lean`); `cargo run --example certificates_to_lean out.lean` writes a file with several such theorems that you can check with `lake env lean out.lean` inside any Mathlib project. The `(r − ¼)²`-style case from the previous section comes back as `BoxOutcome::Unknown` at every degree — exactly the interior-zero limitation of Handelman's theorem — and a false claim such as `xy − ½ ≥ 0` on the unit square is `Refuted { point: (0, 0), value: -1/2 }`.
+This compiles against Mathlib (Lean 4.30.0) without errors or warnings — including with `linter.style.longLine` on, since every emitter wraps at 100 columns (`lean::wrap_lean`); `cargo run --example certificates_to_lean out.lean` writes a file with several such theorems that you can check with `lake env lean out.lean` inside any Mathlib project. The `(r − ¼)²`-style case from the previous section comes back as `BoxOutcome::Unknown` at every degree — exactly the interior-zero limitation of Handelman's theorem — and a false claim such as `xy − ½ ≥ 0` on the unit square is `Refuted { point: [(x, 0), (y, 0)], value: -1/2, .. }`.
 
 ## Half-lines, interior double zeros, and the whole real line
 
@@ -302,8 +302,8 @@ fn main() {
             // Pólya exponent 0, square Poly(j - 5, j)
             print!("{}", cert.to_lean("square_inside").unwrap());
         }
-        HalfLineOutcome::Refuted { point, value } => println!("false at {point}: {value}"),
-        HalfLineOutcome::Unknown { max_polya_power } => println!("no certificate up to N = {max_polya_power}"),
+        HalfLineOutcome::Refuted { point, value, .. } => println!("false at {}: {value}", point[0].1),
+        HalfLineOutcome::Unknown(u) => println!("no certificate up to N = {}", u.max_polya_power),
     }
 }
 ```
@@ -344,8 +344,8 @@ fn main() {
             // (j + 1)*(t - 1) = j*h0 + h1; h0 = -r + t, h1 = j*r - j + t - 1; j ≥ 0
             print!("{}", c.to_lean("needs_lambda").unwrap());
         }
-        PolyhedronOutcome::Refuted { point, value } => println!("false: {value} at {point:?}"),
-        PolyhedronOutcome::Unknown { .. } => println!("no certificate at the configured degrees"),
+        PolyhedronOutcome::Refuted { point, value, .. } => println!("false: {value} at {point:?}"),
+        PolyhedronOutcome::Unknown(u) => println!("no certificate: {u}"),
     }
 }
 ```
@@ -388,8 +388,8 @@ fn main() {
             //   + 2/3*(-x*z + y)^2 + 2/3*(-x*y + z)^2 + 2/3*(-x^2 + y^2)^2 + 8/9*(-1/2*x^2 - 1/2*y^2 + z^2)^2
             print!("{}", c.to_lean("amgm3").unwrap());
         }
-        SosOutcome::Refuted { point, value } => println!("negative: {value} at {point:?}"),
-        SosOutcome::Unknown { reason } => println!("no decomposition found: {reason}"),
+        SosOutcome::Refuted { point, value, .. } => println!("negative: {value} at {point:?}"),
+        SosOutcome::Unknown(u) => println!("no decomposition found: {u}"),
     }
 }
 ```

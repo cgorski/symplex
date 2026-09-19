@@ -171,7 +171,9 @@ fn initial_guesses(poly: &Poly, n: usize, prec: usize, cc: &mut Consts) -> Vec<C
 /// # Returns
 ///
 /// A vector of `n` complex roots as `(BigFloat, BigFloat)` pairs, sorted
-/// by real part (then imaginary part for ties).
+/// by real part (then imaginary part for ties).  Should astro-float fail to
+/// allocate its constant caches, only the exact zero roots are returned;
+/// callers already treat a short vector as "fewer roots than expected".
 pub(crate) fn aberth_roots(poly: &Poly, prec: usize, max_iter: usize) -> Vec<Complex> {
     if poly.degree().is_none_or(|d| d == 0) {
         return vec![];
@@ -199,7 +201,13 @@ pub(crate) fn aberth_roots(poly: &Poly, prec: usize, max_iter: usize) -> Vec<Com
     let monic = reduced.make_monic();
     let deriv = monic.derivative();
 
-    let mut cc = Consts::new().expect("Consts::new");
+    let mut cc = match Consts::new() {
+        Ok(cc) => cc,
+        Err(e) => {
+            tracing::warn!(error = ?e, "aberth_roots: astro-float constants init failed");
+            return roots;
+        }
+    };
 
     let mut nonzero = aberth_iterate(&monic, &deriv, n, wp, prec, max_iter, rm, &mut cc);
     roots.append(&mut nonzero);

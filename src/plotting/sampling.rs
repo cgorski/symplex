@@ -150,8 +150,8 @@ pub(crate) fn sample_compiled(
             refined.push(samples[i + 1]);
         }
         // Push the last point
-        if samples.len() >= 2 {
-            refined.push(*samples.last().unwrap());
+        if let Some(&last) = samples.last() {
+            refined.push(last);
         }
     } else {
         refined = samples;

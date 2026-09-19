@@ -3779,7 +3779,7 @@ pub fn solve_ode_system(a_matrix: &Matrix, t_var: &Ex) -> Option<Vec<Ex>> {
     }
 
     // Fallback: truncated matrix exponential series
-    Some(solve_ode_system_series(a_matrix, t_var, n))
+    solve_ode_system_series(a_matrix, t_var, n)
 }
 
 /// Solve the initial-value problem `dx/dt = A·x`, `x(0) = x0`.
@@ -3908,17 +3908,13 @@ pub fn solve_ode_system_nonhomogeneous(
     let neg_one = ctx.int(-1);
     let neg_a = a_matrix.scale(&neg_one);
     let neg_at = neg_a.scale(t_var);
-    let exp_neg_at = neg_at.matrix_exp().unwrap_or_else(|_| {
-        neg_at
-            .exp_series(12)
-            .expect("exp_series: matrix must be square")
-    });
+    let exp_neg_at = neg_at
+        .matrix_exp()
+        .or_else(|_| neg_at.exp_series(12))
+        .ok()?;
 
     let b_col = Matrix::col_vector(b_vec.to_vec());
-    let integrand_matrix = exp_neg_at
-        .matmul(&b_col)
-        .expect("matmul: dimension mismatch")
-        .eval();
+    let integrand_matrix = exp_neg_at.matmul(&b_col).ok()?.eval();
 
     // Integrate each component w.r.t. t
     let mut integrated = Vec::with_capacity(n);
@@ -3929,14 +3925,8 @@ pub fn solve_ode_system_nonhomogeneous(
 
     // Multiply by exp(At)
     let at = a_matrix.scale(t_var);
-    let exp_at = at.matrix_exp().unwrap_or_else(|_| {
-        at.exp_series(12)
-            .expect("exp_series: matrix must be square")
-    });
-    let particular = exp_at
-        .matmul(&integrated_col)
-        .expect("matmul: dimension mismatch")
-        .eval();
+    let exp_at = at.matrix_exp().or_else(|_| at.exp_series(12)).ok()?;
+    let particular = exp_at.matmul(&integrated_col).ok()?.eval();
 
     // Combine: x = x_h + x_p
     let mut solution = Vec::with_capacity(n);
@@ -3998,16 +3988,16 @@ fn solve_ode_system_diagonal(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Vec<Ex>
 }
 
 /// Fallback: approximate solution via truncated matrix exponential series.
-fn solve_ode_system_series(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Vec<Ex> {
+///
+/// `None` only if `a_matrix` is not `n×n` (the callers check this first).
+fn solve_ode_system_series(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Option<Vec<Ex>> {
     let ctx = t_var.context();
     let m = a_matrix.scale(t_var);
-    let exp_m = m
-        .matrix_exp()
-        .unwrap_or_else(|_| m.exp_series(12).expect("exp_series: matrix must be square"));
+    let exp_m = m.matrix_exp().or_else(|_| m.exp_series(12)).ok()?;
     let constants: Vec<Ex> = (1..=n).map(|i| ctx.symbol(&format!("C{i}"))).collect();
     let c_vec = Matrix::col_vector(constants);
-    let result = exp_m.matmul(&c_vec).expect("matmul: dimension mismatch");
-    (0..n).map(|i| result.get(i, 0).eval()).collect()
+    let result = exp_m.matmul(&c_vec).ok()?;
+    Some((0..n).map(|i| result.get(i, 0).eval()).collect())
 }
 
 /// Eigenvalue-based exact solver for constant-coefficient systems.
@@ -4079,11 +4069,7 @@ fn solve_ode_system_eigen(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Option<Vec
 
             // Eigenvector via null(A − λI)
             let ev_identity = identity.scale(ev);
-            let a_shifted = a_matrix
-                .sub(&ev_identity)
-                .expect("sub: shape mismatch")
-                .eval()
-                .simplify();
+            let a_shifted = a_matrix.sub(&ev_identity).ok()?.eval().simplify();
             let null_basis = a_shifted.nullspace();
             if null_basis.is_empty() {
                 return None;
@@ -4133,13 +4119,9 @@ fn solve_ode_system_eigen(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Option<Vec
                 solution[row] = &solution[row] + &contrib;
             }
         } else {
-            // ── Real eigenvalue ───────────────────────────────────────
+            // ── Real eigenvalue ──────────────────────────────────────────────────
             let ev_identity = identity.scale(ev);
-            let a_shifted = a_matrix
-                .sub(&ev_identity)
-                .expect("sub: shape mismatch")
-                .eval()
-                .simplify();
+            let a_shifted = a_matrix.sub(&ev_identity).ok()?.eval().simplify();
             let null_basis = a_shifted.nullspace();
             if null_basis.is_empty() {
                 return None;

@@ -67,8 +67,9 @@ pub struct HermiteResult {
 pub fn hermite_reduce(a: &Poly, d: &Poly) -> HermiteResult {
     assert!(!d.is_zero(), "hermite_reduce: denominator must be nonzero");
 
-    // Make d monic for consistent GCD computations.
-    let d_lc = d.leading_coeff().unwrap().clone();
+    // Make d monic for consistent GCD computations (lc(d) is the last
+    // coefficient; d is nonzero, so it exists).
+    let d_lc = d.coeff(d.coeffs().len() - 1);
     let d_monic = d.make_monic();
     // Scale a by 1/lc(d) to compensate.
     let inv_lc = Ratio::one() / &d_lc;

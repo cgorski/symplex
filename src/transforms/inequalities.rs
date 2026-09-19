@@ -1021,7 +1021,9 @@ fn sample_satisfies(
             "cannot decide the sign of {} at a sample point",
             arena.display(branch.resolved)
         ))),
-        s => Ok(rel.accepts(s.ordering().expect("real sign"))),
+        ValueSign::Neg => Ok(rel.accepts(std::cmp::Ordering::Less)),
+        ValueSign::Zero => Ok(rel.accepts(std::cmp::Ordering::Equal)),
+        ValueSign::Pos => Ok(rel.accepts(std::cmp::Ordering::Greater)),
     }
 }
 
@@ -1044,7 +1046,9 @@ fn point_satisfies(
             "cannot decide the sign of the expression at {}",
             arena.display(c.id)
         ))),
-        s => Ok(rel.accepts(s.ordering().expect("real sign"))),
+        ValueSign::Neg => Ok(rel.accepts(std::cmp::Ordering::Less)),
+        ValueSign::Zero => Ok(rel.accepts(std::cmp::Ordering::Equal)),
+        ValueSign::Pos => Ok(rel.accepts(std::cmp::Ordering::Greater)),
     }
 }
 

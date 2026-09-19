@@ -82,6 +82,8 @@ macro_rules! const_assert_dim {
     ($computed:expr, $expected:expr, $msg:literal) => {
         const _: () = {
             if !($computed).eq($expected) {
+                // Inside a `const` block: fires only during const evaluation,
+                // i.e. as a compile error, never at runtime.
                 panic!($msg);
             }
         };

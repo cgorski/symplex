@@ -140,12 +140,23 @@ impl StateSpace {
 
     /// Characteristic polynomial: det(sI - A).
     ///
-    /// Returns a polynomial expression in the given variable `s`.
+    /// Returns a polynomial expression in the given variable `s`.  The
+    /// determinant is undefined when `A` is not square (a model built as a
+    /// struct literal, bypassing [`StateSpace::new`]); such a model yields
+    /// NaN — use [`try_char_poly`](Self::try_char_poly) for the error.
     pub fn char_poly(&self, s: &Ex) -> Ex {
+        self.try_char_poly(s).unwrap_or_else(|_| self.ctx().nan())
+    }
+
+    /// Characteristic polynomial `det(sI − A)` in the variable `s`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `A` is not square.
+    pub fn try_char_poly(&self, s: &Ex) -> Result<Ex, SymplexError> {
         let n = self.num_states();
         let si = Matrix::identity(&self.ctx(), n).scale(s);
-        let si_minus_a = si.sub(&self.a).expect("sub: shapes must match");
-        si_minus_a.det().expect("det: matrix must be square")
+        si.sub(&self.a)?.det()
     }
 
     /// Transfer function `G(s) = C (sI − A)⁻¹ B + D` of a single-input,
@@ -202,46 +213,62 @@ impl StateSpace {
     ///
     /// For an n-state, m-input system, this is an n×(n·m) matrix.
     /// The system is controllable if and only if this matrix has rank n.
-    pub fn controllability_matrix(&self) -> Matrix {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the shapes of `A` and `B` are inconsistent (a
+    /// model built as a struct literal, bypassing [`StateSpace::new`]).
+    pub fn controllability_matrix(&self) -> Result<Matrix, SymplexError> {
         let n = self.num_states();
         let mut cols: Vec<Matrix> = vec![self.b.clone()];
-        let mut ab = self.a.matmul(&self.b).expect("matmul: dimension mismatch");
+        let mut ab = self.a.matmul(&self.b)?;
         for _ in 1..n {
             cols.push(ab.clone());
-            ab = self.a.matmul(&ab).expect("matmul: dimension mismatch");
+            ab = self.a.matmul(&ab)?;
         }
         let refs: Vec<&Matrix> = cols.iter().collect();
-        Matrix::hstack(&refs).expect("hstack: row count mismatch")
+        Matrix::hstack(&refs)
     }
 
     /// Observability matrix: \[C; CA; CA²; ...; CAⁿ⁻¹\].
     ///
     /// For an n-state, p-output system, this is an (n·p)×n matrix.
     /// The system is observable if and only if this matrix has rank n.
-    pub fn observability_matrix(&self) -> Matrix {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the shapes of `A` and `C` are inconsistent (a
+    /// model built as a struct literal, bypassing [`StateSpace::new`]).
+    pub fn observability_matrix(&self) -> Result<Matrix, SymplexError> {
         let n = self.num_states();
         let mut rows: Vec<Matrix> = vec![self.c.clone()];
-        let mut ca = self.c.matmul(&self.a).expect("matmul: dimension mismatch");
+        let mut ca = self.c.matmul(&self.a)?;
         for _ in 1..n {
             rows.push(ca.clone());
-            ca = ca.matmul(&self.a).expect("matmul: dimension mismatch");
+            ca = ca.matmul(&self.a)?;
         }
         let refs: Vec<&Matrix> = rows.iter().collect();
-        Matrix::vstack(&refs).expect("vstack: column count mismatch")
+        Matrix::vstack(&refs)
     }
 
     /// Check controllability: rank(controllability_matrix) == n.
     ///
-    /// Returns `true` if the system is fully state controllable.
+    /// Returns `true` if the system is fully state controllable.  A model
+    /// with inconsistent shapes is not a valid system and is reported as
+    /// not controllable.
     pub fn is_controllable(&self) -> bool {
-        self.controllability_matrix().rank() == self.num_states()
+        self.controllability_matrix()
+            .is_ok_and(|m| m.rank() == self.num_states())
     }
 
     /// Check observability: rank(observability_matrix) == n.
     ///
-    /// Returns `true` if the system is fully observable.
+    /// Returns `true` if the system is fully observable.  A model with
+    /// inconsistent shapes is not a valid system and is reported as not
+    /// observable.
     pub fn is_observable(&self) -> bool {
-        self.observability_matrix().rank() == self.num_states()
+        self.observability_matrix()
+            .is_ok_and(|m| m.rank() == self.num_states())
     }
 
     /// Check stability: all eigenvalues have negative real part.
@@ -283,12 +310,15 @@ impl StateSpace {
     /// The discrete-time B matrix is computed as:
     ///   Bᵈ = (I·dt + A·dt²/2! + A²·dt³/3! + ...)B
     /// which avoids requiring A to be invertible.
-    pub fn discretize_zoh(&self, dt: &Ex, order: usize) -> StateSpace {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the shapes of `A` and `B` are inconsistent (a
+    /// model built as a struct literal, bypassing [`StateSpace::new`]).
+    pub fn discretize_zoh(&self, dt: &Ex, order: usize) -> Result<StateSpace, SymplexError> {
         let n = self.num_states();
         let a_dt = self.a.scale(dt);
-        let exp_a_dt = a_dt
-            .exp_series(order)
-            .expect("exp_series: matrix must be square");
+        let exp_a_dt = a_dt.exp_series(order)?;
 
         // Bᵈ = (I·dt + A·dt²/2! + A²·dt³/3! + ...)B
         let ctx = self.ctx();
@@ -296,16 +326,23 @@ impl StateSpace {
         let mut b_sum = ident.scale(dt);
         let mut a_power = Matrix::identity(&ctx, n);
         for k in 2..=order {
-            a_power = a_power.matmul(&self.a).expect("matmul: dimension mismatch");
+            a_power = a_power.matmul(&self.a)?;
             let factorial: i64 = (1..=k as i64).product();
             let coeff = self.ctx().rational(1, factorial);
             let dt_power = dt.powi(k as i64);
             let term = a_power.scale(&(&coeff * &dt_power));
-            b_sum = b_sum.add(&term).expect("add: shape mismatch");
+            b_sum = b_sum.add(&term)?;
         }
-        let b_d = b_sum.matmul(&self.b).expect("matmul: dimension mismatch");
+        let b_d = b_sum.matmul(&self.b)?;
 
-        StateSpace::new(exp_a_dt, b_d, self.c.clone(), self.d.clone())
+        // Discretisation preserves every shape, so the result is as
+        // well-formed as `self`.
+        Ok(StateSpace {
+            a: exp_a_dt,
+            b: b_d,
+            c: self.c.clone(),
+            d: self.d.clone(),
+        })
     }
 
     // ── Advanced control: Riccati & pole placement ─────────────────────
@@ -315,32 +352,25 @@ impl StateSpace {
     /// Returns the residual matrix: AᵀP + PA − PBR⁻¹BᵀP + Q
     /// which should equal zero when P is the solution.
     ///
-    /// Returns `None` if R is singular.
-    pub fn riccati_residual(&self, p: &Matrix, q: &Matrix, r: &Matrix) -> Option<Matrix> {
+    /// # Errors
+    ///
+    /// Returns an error if `R` is singular, or if `P` is not n×n, `Q` is not
+    /// n×n or `R` is not m×m.
+    pub fn riccati_residual(
+        &self,
+        p: &Matrix,
+        q: &Matrix,
+        r: &Matrix,
+    ) -> Result<Matrix, SymplexError> {
         let at = self.a.transpose();
-        let r_inv = r.inv().ok()?;
+        let r_inv = r.inv()?;
         let bt = self.b.transpose();
 
-        let term1 = at.matmul(p).expect("matmul: dimension mismatch"); // AᵀP
-        let term2 = p.matmul(&self.a).expect("matmul: dimension mismatch"); // PA
-        let term3 = p
-            .matmul(&self.b)
-            .expect("matmul: dimension mismatch") // PBR⁻¹BᵀP
-            .matmul(&r_inv)
-            .expect("matmul: dimension mismatch")
-            .matmul(&bt)
-            .expect("matmul: dimension mismatch")
-            .matmul(p)
-            .expect("matmul: dimension mismatch");
+        let term1 = at.matmul(p)?; // AᵀP
+        let term2 = p.matmul(&self.a)?; // PA
+        let term3 = p.matmul(&self.b)?.matmul(&r_inv)?.matmul(&bt)?.matmul(p)?; // PBR⁻¹BᵀP
 
-        let residual = term1
-            .add(&term2)
-            .expect("add: shape mismatch")
-            .sub(&term3)
-            .expect("sub: shape mismatch")
-            .add(q)
-            .expect("add: shape mismatch");
-        Some(residual)
+        term1.add(&term2)?.sub(&term3)?.add(q)
     }
 
     /// Pole placement via Ackermann's formula (single-input systems only).
@@ -351,27 +381,37 @@ impl StateSpace {
     /// Only works for single-input (m=1) controllable systems.
     /// The number of desired poles must equal the number of states.
     ///
-    /// Returns `None` if the system is not single-input, not controllable,
-    /// or the controllability matrix is singular.
-    pub fn ackermann(&self, desired_poles: &[Ex]) -> Option<Matrix> {
+    /// # Errors
+    ///
+    /// Returns [`SymplexError::InvalidArgument`] if the system is not
+    /// single-input or the number of desired poles is not `n`, and
+    /// [`SymplexError::ComputationFailed`] if the system is not controllable.
+    pub fn ackermann(&self, desired_poles: &[Ex]) -> Result<Matrix, SymplexError> {
         if self.num_inputs() != 1 {
-            return None;
+            return Err(SymplexError::InvalidArgument {
+                operation: "StateSpace::ackermann",
+                reason: format!(
+                    "requires a single-input system, got {} inputs",
+                    self.num_inputs()
+                ),
+            });
         }
-        if !self.is_controllable() {
-            return None;
-        }
-
         let n = self.num_states();
-        assert_eq!(
-            desired_poles.len(),
-            n,
-            "ackermann: need {} desired poles, got {}",
-            n,
-            desired_poles.len()
-        );
+        if desired_poles.len() != n {
+            return Err(SymplexError::InvalidArgument {
+                operation: "StateSpace::ackermann",
+                reason: format!("need {n} desired poles, got {}", desired_poles.len()),
+            });
+        }
 
-        let ctrb = self.controllability_matrix();
-        let ctrb_inv = ctrb.inv().ok()?;
+        let ctrb = self.controllability_matrix()?;
+        if ctrb.rank() != n {
+            return Err(SymplexError::ComputationFailed {
+                operation: "StateSpace::ackermann",
+                reason: "system is not controllable".into(),
+            });
+        }
+        let ctrb_inv = ctrb.inv()?;
 
         // Build the desired characteristic polynomial:
         // p(s) = (s − p₁)(s − p₂)···(s − pₙ)
@@ -393,20 +433,17 @@ impl StateSpace {
         let mut p_a = Matrix::zeros(&self.ctx(), n, n);
         for (i, coeff) in poly_coeffs.iter().enumerate() {
             let power = (poly_coeffs.len() - 1 - i) as u32;
-            let a_power = self.a.powi(power).expect("powi: matrix must be square");
-            p_a = p_a.add(&a_power.scale(coeff)).expect("add: shape mismatch");
+            let a_power = self.a.powi(power)?;
+            p_a = p_a.add(&a_power.scale(coeff))?;
         }
 
         // K = eₙᵀ · C⁻¹ · p(A)
         // where eₙᵀ is the last standard basis row vector,
         // so eₙᵀ · C⁻¹ is the last row of C⁻¹.
         let last_row: Vec<Ex> = (0..n).map(|j| ctrb_inv.get(n - 1, j).clone()).collect();
-        let last_row_mat = Matrix::new(vec![last_row]).unwrap(); // 1×n
+        let last_row_mat = Matrix::new(vec![last_row])?; // 1×n
 
-        let k = last_row_mat
-            .matmul(&p_a)
-            .expect("matmul: dimension mismatch"); // 1×n
-        Some(k)
+        last_row_mat.matmul(&p_a) // 1×n
     }
 }
 

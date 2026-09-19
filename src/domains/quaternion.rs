@@ -315,12 +315,11 @@ impl Quaternion {
         let r21 = &two * &(&yz + &wx);
         let r22 = &one - &(&two * &(&xx + &yy));
 
-        Matrix::new(vec![
+        Matrix::from_rows_unchecked(vec![
             vec![r00, r01, r02],
             vec![r10, r11, r12],
             vec![r20, r21, r22],
         ])
-        .expect("3×3 literal is always a valid matrix")
     }
 
     /// Recover a unit quaternion from a 3×3 rotation matrix (Shepperd's

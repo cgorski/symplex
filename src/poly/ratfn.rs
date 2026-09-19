@@ -125,8 +125,8 @@ impl RationalFn {
 
         // Cancel common factors.
         let g = Poly::gcd(&self.numer, &self.denom);
-        if let Some(g_deg) = g.degree()
-            && (g_deg > 0 || !One::is_one(g.leading_coeff().unwrap()))
+        if let Some(g_lc) = g.leading_coeff()
+            && (g.degree() > Some(0) || !One::is_one(g_lc))
         {
             self.numer = self.numer.div_rem(&g).0;
             self.denom = self.denom.div_rem(&g).0;

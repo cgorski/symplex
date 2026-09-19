@@ -240,10 +240,10 @@ impl<C: Ring> GenPoly<C> {
 
     /// Evaluate the polynomial at a point using Horner's method.
     pub fn eval(&self, x: &C) -> C {
-        if self.is_zero() {
+        let Some(lc) = self.coeffs.last() else {
             return C::zero();
-        }
-        let mut result = self.coeffs.last().unwrap().clone();
+        };
+        let mut result = lc.clone();
         for c in self.coeffs.iter().rev().skip(1) {
             result = Ring::add(&Ring::mul(&result, x), c);
         }
@@ -271,10 +271,10 @@ impl<C: Ring> GenPoly<C> {
     /// Evaluated with Horner's rule in the polynomial ring, so the cost is
     /// `deg(self)` polynomial multiplications by `g`.
     pub fn compose(&self, g: &Self) -> Self {
-        if self.is_zero() {
+        let Some(lc) = self.coeffs.last() else {
             return Self::zero();
-        }
-        let mut result = Self::constant(self.coeffs.last().unwrap().clone());
+        };
+        let mut result = Self::constant(lc.clone());
         for c in self.coeffs.iter().rev().skip(1) {
             result = result.mul(g).add(&Self::constant(c.clone()));
         }
@@ -431,11 +431,8 @@ impl<C: Field> GenPoly<C> {
     pub fn div_rem(&self, divisor: &Self) -> (Self, Self) {
         assert!(!divisor.is_zero(), "division by zero polynomial");
 
-        let d_deg = match divisor.degree() {
-            Some(d) => d,
-            None => panic!("division by zero polynomial"),
-        };
-        let d_lc = divisor.leading_coeff().unwrap();
+        let d_deg = divisor.coeffs.len() - 1;
+        let d_lc = &divisor.coeffs[d_deg];
 
         let mut rem = self.clone();
 
@@ -450,8 +447,10 @@ impl<C: Field> GenPoly<C> {
             if r_deg < d_deg {
                 break;
             }
-            let r_lc = rem.leading_coeff().unwrap().clone();
-            let coeff = Field::div(&r_lc, d_lc);
+            let Some(r_lc) = rem.leading_coeff() else {
+                break;
+            };
+            let coeff = Field::div(r_lc, d_lc);
             let shift = r_deg - d_deg;
             quot_coeffs[shift] = coeff.clone();
 
@@ -487,10 +486,9 @@ impl<C: Field> GenPoly<C> {
     ///
     /// Returns the zero polynomial unchanged.
     pub fn make_monic(&self) -> Self {
-        if self.is_zero() {
+        let Some(lc) = self.leading_coeff() else {
             return Self::zero();
-        }
-        let lc = self.leading_coeff().unwrap();
+        };
         if lc.is_one() {
             return self.clone();
         }
@@ -585,10 +583,9 @@ impl<C: Field> GenPoly<C> {
     /// Returns `(s, t, g)` where `s*a + t*b = g` and `g = gcd(a, b)` (monic).
     pub fn extended_gcd(a: &Self, b: &Self) -> (Self, Self, Self) {
         if b.is_zero() {
-            if a.is_zero() {
+            let Some(lc) = a.leading_coeff() else {
                 return (Self::one(), Self::zero(), Self::zero());
-            }
-            let lc = a.leading_coeff().unwrap();
+            };
             let inv_lc = Field::inv(lc);
             let s = Self::constant(inv_lc.clone());
             return (s, Self::zero(), a.make_monic());
@@ -612,9 +609,8 @@ impl<C: Field> GenPoly<C> {
             t_curr = t_next;
         }
 
-        // Normalize to monic GCD.
-        if !r_prev.is_zero() {
-            let lc = r_prev.leading_coeff().unwrap();
+        // Normalize to monic GCD (the zero GCD, from a = b = 0, stays as is).
+        if let Some(lc) = r_prev.leading_coeff() {
             let inv_lc = Field::inv(lc);
             r_prev = r_prev.scale(&inv_lc);
             s_prev = s_prev.scale(&inv_lc);
@@ -764,7 +760,10 @@ impl<C: Field> GenPoly<C> {
         } else {
             Ring::neg(&C::one())
         };
-        let lc_b = b.leading_coeff().unwrap().clone();
+        // b is non-zero (checked above), so its leading coefficient exists.
+        let Some(lc_b) = b.leading_coeff() else {
+            return C::zero();
+        };
         let factor = lc_b.pow_usize(m - s);
 
         Ring::mul(&Ring::mul(&sign, &factor), &Self::resultant(b, &r))

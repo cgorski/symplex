@@ -6,7 +6,7 @@
 //! emitted proof changed and should be re-checked, not just re-pinned.
 
 use symplex::certificates::{
-    BoxOutcome, Certificate, is_nonnegative_on_box, prove_nonnegative_on_box,
+    BoxCertificate, BoxOutcome, BoxUnknown, is_nonnegative_on_box, prove_nonnegative_on_box,
 };
 use symplex::linprog::Feasibility;
 use symplex::num_bigint::BigInt;
@@ -21,7 +21,7 @@ fn q(n: i64, d: i64) -> Q {
     Q::new(BigInt::from(n), BigInt::from(d))
 }
 
-fn proved(out: Result<BoxOutcome, SymplexError>) -> Certificate {
+fn proved(out: Result<BoxOutcome, SymplexError>) -> BoxCertificate {
     match out {
         Ok(BoxOutcome::Proved(c)) => c,
         other => panic!("expected a certificate, got {other:?}"),
@@ -30,7 +30,7 @@ fn proved(out: Result<BoxOutcome, SymplexError>) -> Certificate {
 
 /// Evaluate the certificate identity at random rational points of the box
 /// and check the products are individually non-negative there.
-fn check_identity_numerically(cert: &Certificate) {
+fn check_identity_numerically(cert: &BoxCertificate) {
     let ctx = cert.goal().context();
     let (lhs, rhs) = cert.identity();
     let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
@@ -90,7 +90,7 @@ fn quarter_bound_has_a_degree_two_certificate() {
     // Degree 1 is not enough for a quadratic goal.
     assert!(matches!(
         prove_nonnegative_on_box(&goal, &bounds, 1),
-        Ok(BoxOutcome::Unknown { degree: 1, .. })
+        Ok(BoxOutcome::Unknown(BoxUnknown { degree: 1, .. }))
     ));
 }
 
@@ -124,9 +124,10 @@ fn cubic_with_roots_outside_the_box() {
     check_identity_numerically(&cert);
     // Same goal on [2, 10] is false (negative on (2, 3)).
     match prove_nonnegative_on_box(&goal, &[(x.clone(), ctx.int(2), ctx.int(10))], 3).unwrap() {
-        BoxOutcome::Refuted { point, value } => {
+        BoxOutcome::Refuted { point, value, .. } => {
             assert!(value < Q::zero());
-            assert!(point[0] > q(2, 1) && point[0] < q(3, 1), "{point:?}");
+            assert_eq!(point[0].0, x);
+            assert!(point[0].1 > q(2, 1) && point[0].1 < q(3, 1), "{point:?}");
         }
         other => panic!("{other:?}"),
     }
@@ -177,9 +178,10 @@ fn false_inequalities_are_refuted_with_exact_points() {
     let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
     let bounds = unit_square(&ctx, &x, &y);
     match prove_nonnegative_on_box(&(&x * &y - ctx.rational(1, 2)), &bounds, 2).unwrap() {
-        BoxOutcome::Refuted { point, value } => {
+        BoxOutcome::Refuted { point, value, .. } => {
             assert_eq!(point.len(), 2);
-            let v = &point[0] * &point[1] - q(1, 2);
+            assert_eq!((&point[0].0, &point[1].0), (&x, &y));
+            let v = &point[0].1 * &point[1].1 - q(1, 2);
             assert_eq!(v, value);
             assert!(value < Q::zero());
         }
@@ -208,7 +210,7 @@ fn interior_zero_has_no_handelman_certificate() {
     ];
     for d in 1..=3 {
         match prove_nonnegative_on_box(&goal, &bounds, d).unwrap() {
-            BoxOutcome::Unknown { degree, farkas } => {
+            BoxOutcome::Unknown(BoxUnknown { degree, farkas, .. }) => {
                 assert_eq!(degree, d);
                 assert!(
                     farkas.is_some(),
@@ -404,7 +406,7 @@ fn box_certificate_splits_off_a_square_factor() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 use symplex::certificates::{
-    HalfLineCertificate, HalfLineOutcome, Ray, prove_nonnegative_on_halfline,
+    HalfLineCertificate, HalfLineOutcome, HalfLineUnknown, Ray, prove_nonnegative_on_halfline,
     prove_nonnegative_on_reals,
 };
 
@@ -509,7 +511,10 @@ fn halfline_polya_multiplier_when_shift_alone_fails() {
     assert!(cert.verify());
     assert!(matches!(
         prove_nonnegative_on_halfline(&tight, &j, &ctx.int(0), Ray::AtLeast, 5).unwrap(),
-        HalfLineOutcome::Unknown { max_polya_power: 5 }
+        HalfLineOutcome::Unknown(HalfLineUnknown {
+            max_polya_power: 5,
+            ..
+        })
     ));
 }
 
@@ -588,7 +593,9 @@ fn halfline_refutation_and_errors() {
     let ctx = Context::new();
     let (j, a) = (ctx.symbol("j"), ctx.symbol("a"));
     match prove_nonnegative_on_halfline(&(&j - 4), &j, &ctx.int(3), Ray::AtLeast, 10).unwrap() {
-        HalfLineOutcome::Refuted { point, value } => {
+        HalfLineOutcome::Refuted { point, value, .. } => {
+            assert_eq!(point.len(), 1);
+            let point = point[0].1.clone();
             assert!(point >= q(3, 1));
             assert!(value < Q::zero());
             assert_eq!(&point - q(4, 1), value);
@@ -598,9 +605,10 @@ fn halfline_refutation_and_errors() {
     // Sign change strictly inside the half-line.
     let p = (&j - 1) * (&j - 3);
     match prove_nonnegative_on_halfline(&p, &j, &ctx.int(2), Ray::AtLeast, 10).unwrap() {
-        HalfLineOutcome::Refuted { point, value } => {
+        HalfLineOutcome::Refuted { point, value, .. } => {
             // p(2) = −1 already refutes it; any point of [2, 3) would do.
-            assert!(point >= q(2, 1) && point < q(3, 1), "{point}");
+            let point = &point[0].1;
+            assert!(*point >= q(2, 1) && *point < q(3, 1), "{point}");
             assert!(value < Q::zero());
         }
         other => panic!("{other:?}"),

@@ -172,24 +172,14 @@ fn select_pair<O: MonomialOrd>(
 ) -> Option<(usize, usize)> {
     pairs
         .iter()
-        .filter(|&&(i, j)| {
-            i < basis.len()
-                && j < basis.len()
-                && basis[i].leading_monomial().is_some()
-                && basis[j].leading_monomial().is_some()
+        .filter_map(|&(i, j)| {
+            // Pairs whose members are out of range or zero are skipped.
+            let lm_i = basis.get(i)?.leading_monomial()?;
+            let lm_j = basis.get(j)?.leading_monomial()?;
+            Some(((i, j), monomial_lcm(lm_i, lm_j)))
         })
-        .min_by(|&&(i1, j1), &&(i2, j2)| {
-            let lcm1 = monomial_lcm(
-                basis[i1].leading_monomial().unwrap(),
-                basis[j1].leading_monomial().unwrap(),
-            );
-            let lcm2 = monomial_lcm(
-                basis[i2].leading_monomial().unwrap(),
-                basis[j2].leading_monomial().unwrap(),
-            );
-            O::cmp_exponents(&lcm1, &lcm2)
-        })
-        .copied()
+        .min_by(|(_, lcm1), (_, lcm2)| O::cmp_exponents(lcm1, lcm2))
+        .map(|(pair, _)| pair)
 }
 
 /// Pre-reduce a set of polynomials: reduce each against predecessors, repeat until stable.
@@ -755,25 +745,23 @@ impl IncrementalEchelon {
             }
         }
 
-        // Check if v reduced to zero
-        let is_zero = v.iter().all(|c| c.is_zero());
+        // v reduced to zero: dependent, nf = Σ trail[i] * v_i.
+        // Otherwise its first non-zero entry is the pivot of a new echelon row.
+        match v.iter().position(|c| !c.is_zero()) {
+            None => EchelonResult::Dependent(trail),
+            Some(pivot_col) => {
+                // Independent: this is the m-th independent vector
 
-        if is_zero {
-            // Dependent: nf = Σ trail[i] * v_i
-            EchelonResult::Dependent(trail)
-        } else {
-            // Independent: this is the m-th independent vector
-            let pivot_col = v.iter().position(|c| !c.is_zero()).unwrap();
+                // The echelon row = nf - Σ trail[i] * v_i = v_remaining
+                // Express it as: echelon_row = (-trail[0])*v_0 + ... + (-trail[m-1])*v_{m-1} + 1*v_m
+                // where v_m is this new independent vector (nf itself)
+                let mut coeff: Vec<Ratio<BigInt>> = trail.iter().map(|t| -t.clone()).collect();
+                coeff.push(Ratio::one()); // coefficient for v_m = this vector
 
-            // The echelon row = nf - Σ trail[i] * v_i = v_remaining
-            // Express it as: echelon_row = (-trail[0])*v_0 + ... + (-trail[m-1])*v_{m-1} + 1*v_m
-            // where v_m is this new independent vector (nf itself)
-            let mut coeff: Vec<Ratio<BigInt>> = trail.iter().map(|t| -t.clone()).collect();
-            coeff.push(Ratio::one()); // coefficient for v_m = this vector
-
-            self.rows.push((pivot_col, v, coeff));
-            self.num_independent += 1;
-            EchelonResult::Independent
+                self.rows.push((pivot_col, v, coeff));
+                self.num_independent += 1;
+                EchelonResult::Independent
+            }
         }
     }
 }

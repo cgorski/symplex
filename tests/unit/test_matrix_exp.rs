@@ -315,7 +315,7 @@ fn discretize_zoh_simple() {
     let ss = StateSpace::new(a, b, c, d);
 
     let dt = ctx.rational(1, 10); // dt = 0.1
-    let ss_d = ss.discretize_zoh(&dt, 10);
+    let ss_d = ss.discretize_zoh(&dt, 10).unwrap();
 
     assert_eq!(ss_d.num_states(), 2);
     assert_eq!(ss_d.num_inputs(), 1);
@@ -344,7 +344,7 @@ fn discretize_zoh_integrator() {
     let ss = StateSpace::new(a, b, c, d);
 
     let dt = ctx.rational(1, 10); // dt = 0.1
-    let ss_d = ss.discretize_zoh(&dt, 10);
+    let ss_d = ss.discretize_zoh(&dt, 10).unwrap();
 
     let dt_val = 0.1_f64;
 

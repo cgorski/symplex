@@ -284,6 +284,76 @@ fail returns `Result`, `Option`, or an unevaluated form. Never use `.unwrap()`,
 `.expect()`, `unreachable!()` or `panic!()` in library code (tests are fine);
 `debug_assert!` is acceptable for internal invariants.
 
+**The rule is enforced** by `tests/unit/test_no_panics.rs`, a ratchet over
+`src/` that fails when a file gains a panicking construct beyond its
+allowlisted count — and when an allowlisted file *loses* one without the
+allowlist being tightened.  The allowlist is the two logic errors above plus
+the compile-time `const_assert_dim!` macro.
+
+#### How to not panic — the practical policy
+
+The three concerns — correctness, performance and honest types — rarely
+conflict; when they do, this is the order and the reasoning:
+
+1. **Errors are `SymplexError`, and that is fine.**  It is a 72-byte enum, so
+   `Result<Ex, SymplexError>` is 72 bytes against 16 for `Ex`.  Profiling the
+   heaviest downstream workload (a certificate search with millions of exact
+   operations) shows no measurable time in error plumbing: the cost is in
+   `BigInt` arithmetic and the allocations behind it, not in moving a
+   `Result`.  Do **not** `Box` errors or invent a second error type for speed;
+   do not thread `Result` through *inner loops* either — validate once at the
+   boundary (shapes, indices, generator lists), then run the loop on data
+   that is known good.
+
+2. **Validate at construction, then rely on the invariant — without a panic
+   path.**  `StateSpace::new` checks that `A` is `n×n` and `B` is `n×m`; the
+   `matmul`s downstream can therefore not fail, but writing
+   `.expect("dimension mismatch")` still leaves a panic in the binary and a
+   reviewer who has to re-derive the invariant.  Instead, keep the `Result`
+   flowing (the method returns `Result` anyway), or, where the API is
+   infallible by contract, use a fallback that is *correct*, not merely
+   unreachable — `unwrap_or_else(|_| Matrix::zeros(n, m))` is wrong;
+   `map_err(|e| internal("state_space", e))?` is right.  Name the invariant in
+   a one-line comment where it is established, not where it is used.
+
+3. **`Option` for absence, `Result` for failure, unevaluated form for
+   "nothing to do".**  `leading_coeff()` returns `None` for the zero
+   polynomial; code that has just checked `!p.is_zero()` should still match
+   (`let Some(lc) = p.leading_coeff() else { return p.clone() }`) rather than
+   `unwrap()` — the `else` branch documents what the zero case means for that
+   algorithm, which is information the `unwrap` throws away.
+
+4. **Indexing is the one place `panic` is idiomatic**, and we follow `std`:
+   a plain accessor may panic on an out-of-range index exactly like `Vec`
+   (`Matrix::get(i, j)`, `MultiPoly::var(n, i)` with `i ≥ n`) **only if** a
+   `try_`/`checked_` sibling returning `Option` exists and the panic is
+   documented under `# Panics`.  Anything that is not an index — a shape, a
+   degree, a generator list, a parameter that fails to parse — is a `Result`.
+   `assert!` on a caller-supplied *shape* is a bug, not a precondition.
+
+5. **Internal invariants: `debug_assert!`, never `assert!`/`unreachable!`.**
+   Release builds must degrade gracefully (return `ComputationFailed` with
+   the invariant's name, or the unevaluated form), because a violated
+   invariant deep in a simplifier must not take down a CAS server or a
+   proof-generation pipeline.  `SymplexError::ComputationFailed { operation,
+   reason }` is the right variant; put the invariant in `reason`.
+
+6. **Locks and overflow.**  `Mutex::lock().unwrap()` is a panic on poisoning;
+   use `parking_lot` (already a dependency; no poisoning) or
+   `unwrap_or_else(PoisonError::into_inner)`.  `u32::try_from(len)` on arena
+   indices propagates as `ComputationFailed` ("arena overflow"); it will
+   never fire, but the code that would be *wrong* if it did should not exist.
+
+7. **Type-level guarantees beat runtime checks when they are free.**  The
+   `Sort` phantom on `Expr<S>` (an `Ex` cannot be used where a `BoolEx` is
+   needed), sealed `ExactScalar`, and `#[non_exhaustive]` on option structs
+   and outcome enums are all zero-cost and remove whole classes of failure.
+   Reach for them before adding a runtime check; do not reach for typestate
+   or const generics where a `Result` says the same thing more simply.
+
+When touching a function that violates these, fix it in the smallest
+correct way (usually `?` or `let … else`), and tighten the ratchet.
+
 ---
 
 ## The API Model

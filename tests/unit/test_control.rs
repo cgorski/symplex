@@ -435,7 +435,7 @@ fn controllability_matrix_size() {
     let d = Matrix::new(vec![vec![ctx.int(0), ctx.int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
-    let cm = ss.controllability_matrix();
+    let cm = ss.controllability_matrix().unwrap();
     assert_eq!(cm.nrows(), 3, "Controllability matrix should have 3 rows");
     assert_eq!(
         cm.ncols(),
@@ -466,7 +466,7 @@ fn observability_matrix_size() {
     let d = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
-    let om = ss.observability_matrix();
+    let om = ss.observability_matrix().unwrap();
     assert_eq!(om.nrows(), 4, "Observability matrix should have 2*2=4 rows");
     assert_eq!(om.ncols(), 2, "Observability matrix should have 2 cols");
 }

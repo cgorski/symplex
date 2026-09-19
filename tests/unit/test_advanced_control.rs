@@ -315,7 +315,7 @@ fn ackermann_simple() {
 }
 
 #[test]
-fn ackermann_not_controllable_returns_none() {
+fn ackermann_not_controllable_returns_err() {
     let ctx = Context::new();
     // A = [[1, 0], [0, 2]], B = [[1], [0]]
     // Controllability matrix C = [[1, 1], [0, 0]] → rank 1, not controllable
@@ -331,13 +331,33 @@ fn ackermann_not_controllable_returns_none() {
 
     let desired_poles = vec![ctx.int(-1), ctx.int(-2)];
     assert!(
-        ss.ackermann(&desired_poles).is_none(),
-        "Ackermann should return None for uncontrollable system"
+        ss.ackermann(&desired_poles).is_err(),
+        "Ackermann should fail for an uncontrollable system"
     );
 }
 
 #[test]
-fn ackermann_multi_input_returns_none() {
+fn ackermann_wrong_pole_count_returns_err() {
+    let ctx = Context::new();
+    let a = Matrix::new(vec![
+        vec![ctx.int(0), ctx.int(1)],
+        vec![ctx.int(0), ctx.int(0)],
+    ])
+    .unwrap();
+    let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
+    let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
+    let ss = StateSpace::new(a, b, c, d);
+
+    let err = ss.ackermann(&[ctx.int(-1)]).unwrap_err();
+    assert!(
+        matches!(err, SymplexError::InvalidArgument { .. }),
+        "one pole for a 2-state system must be rejected, got {err}"
+    );
+}
+
+#[test]
+fn ackermann_multi_input_returns_err() {
     let ctx = Context::new();
     // A = [[0, 1], [0, 0]], B = [[1, 0], [0, 1]] (2 inputs)
     let a = Matrix::new(vec![
@@ -356,7 +376,7 @@ fn ackermann_multi_input_returns_none() {
 
     let desired_poles = vec![ctx.int(-1), ctx.int(-2)];
     assert!(
-        ss.ackermann(&desired_poles).is_none(),
-        "Ackermann should return None for multi-input system"
+        ss.ackermann(&desired_poles).is_err(),
+        "Ackermann should fail for a multi-input system"
     );
 }

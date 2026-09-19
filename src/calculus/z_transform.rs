@@ -1107,11 +1107,10 @@ fn try_extended_inverse(
             // `(z − a)^{−m}` with monic linear base: a pole of order m at a.
             // (Written without an `if let` match guard: those are unstable on
             // the 1.93 MSRV.)
-            ExprNode::Pow(base, e)
-                if pole.is_none() && negative_integer_exponent(arena, e).is_some() =>
-            {
+            ExprNode::Pow(base, e) if pole.is_none() => {
                 let Some(neg_m) = negative_integer_exponent(arena, e) else {
-                    unreachable!("checked by the match guard");
+                    others.push(k);
+                    continue;
                 };
                 match linear_in(arena, base, z_var) {
                     Some((c1, c0)) if c1 == one => {

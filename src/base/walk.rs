@@ -40,14 +40,15 @@ pub(crate) fn post_order_ids(arena: &Arena, root: ExprId) -> Vec<ExprId> {
     let mut stack: Vec<(ExprId, bool)> = vec![(root, false)];
 
     while let Some((id, children_pushed)) = stack.last_mut() {
-        if visited.contains(id) {
+        let id = *id;
+        if visited.contains(&id) {
             stack.pop();
             continue;
         }
 
         if !*children_pushed {
             *children_pushed = true;
-            let node = arena.node(*id);
+            let node = arena.node(id);
             let mut child_buf: SmallVec<[ExprId; 6]> = SmallVec::new();
             node.for_each_child(|c| child_buf.push(c));
             // Push children in reverse so they're processed left-to-right.
@@ -57,10 +58,7 @@ pub(crate) fn post_order_ids(arena: &Arena, root: ExprId) -> Vec<ExprId> {
                 }
             }
         } else {
-            let id = stack
-                .pop()
-                .expect("stack is non-empty: guarded by while-let on stack.last_mut()")
-                .0;
+            stack.pop();
             visited.insert(id);
             result.push(id);
         }

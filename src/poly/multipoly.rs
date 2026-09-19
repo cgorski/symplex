@@ -799,11 +799,10 @@ impl<O: MonomialOrd> MultiPoly<O> {
 impl<O: MonomialOrd> MultiPoly<O> {
     /// Make monic: divide all coefficients by the leading coefficient.
     pub fn monic(&self) -> Self {
-        if self.is_zero() {
+        let Some(lc) = self.leading_coeff() else {
             return self.clone();
-        }
-        let lc = self.leading_coeff().unwrap().clone();
-        self.scale(&(Ratio::one() / lc))
+        };
+        self.scale(&(Ratio::one() / lc.clone()))
     }
 
     /// Primitive part over ℚ: clear denominators, then divide by GCD of integer coefficients.
@@ -1152,21 +1151,19 @@ impl<O: MonomialOrd> MultiPoly<O> {
         let mut remainder = MultiPoly::zero(self.num_vars);
         let mut p = self.clone();
 
-        while !p.is_zero() {
+        while let Some((lt_exp, lt_coeff)) = p.leading_term() {
             let mut divided = false;
-            let (lt_exp, lt_coeff) = p.leading_term().unwrap();
             let lt_exp = lt_exp.to_vec();
             let lt_coeff = lt_coeff.clone();
 
             for divisor in divisors {
-                if divisor.is_zero() {
+                // A zero divisor has no leading term and cannot divide anything.
+                let Some((div_lt_exp, div_lt_coeff)) = divisor.leading_term() else {
                     continue;
-                }
-                let (div_lt_exp, div_lt_coeff) = divisor.leading_term().unwrap();
+                };
 
-                if monomial_divides(div_lt_exp, &lt_exp) {
+                if let Some(quot_exp) = monomial_div(div_lt_exp, &lt_exp) {
                     // Can divide: subtract (lt/div_lt) * divisor from p
-                    let quot_exp = monomial_div(div_lt_exp, &lt_exp).unwrap();
                     let quot_coeff = &lt_coeff / div_lt_coeff;
 
                     // p -= quot_monomial * divisor
@@ -1258,18 +1255,17 @@ impl<O: MonomialOrd> MultiPoly<O> {
 /// Compute the S-polynomial of f and g.
 pub fn s_polynomial<O: MonomialOrd>(f: &MultiPoly<O>, g: &MultiPoly<O>) -> MultiPoly<O> {
     assert_eq!(f.num_vars(), g.num_vars());
-    if f.is_zero() || g.is_zero() {
+    // S(f, 0) = S(0, g) = 0: a zero operand has no leading term.
+    let (Some((lm_f, lc_f)), Some((lm_g, lc_g))) = (f.leading_term(), g.leading_term()) else {
         return MultiPoly::zero(f.num_vars());
-    }
-
-    let (lm_f, lc_f) = f.leading_term().unwrap();
-    let (lm_g, lc_g) = g.leading_term().unwrap();
+    };
 
     let lcm = monomial_lcm(lm_f, lm_g);
 
-    // LCM/LT(f) * f - LCM/LT(g) * g
-    let quot_f = monomial_div(lm_f, &lcm).unwrap();
-    let quot_g = monomial_div(lm_g, &lcm).unwrap();
+    // LCM/LT(f) * f - LCM/LT(g) * g.  Each leading monomial divides the lcm
+    // component-wise (lcm = max), so the quotients are plain differences.
+    let quot_f: Vec<u32> = lcm.iter().zip(lm_f).map(|(&l, &e)| l - e).collect();
+    let quot_g: Vec<u32> = lcm.iter().zip(lm_g).map(|(&l, &e)| l - e).collect();
 
     let coeff_f = Ratio::one() / lc_f;
     let coeff_g = Ratio::one() / lc_g;

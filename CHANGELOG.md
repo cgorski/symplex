@@ -6,6 +6,76 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.7.0] - 2026-09-19
+
+### Breaking
+
+- **One `certificates::Outcome<C, U>` for every prover.**  `BoxOutcome`,
+  `HalfLineOutcome`, `PolyhedronOutcome` and `SosOutcome` are now type
+  aliases of it (`Proved(C)` / `Refuted { point, value, param_value }` /
+  `Unknown(U)`), so `PolyhedronOutcome::Proved(c)` still reads as before.
+  What changes: `Refuted.point` is `Vec<(Ex, Q)>` everywhere (was
+  `Vec<Q>` for boxes and `Q` for half-lines) and the variant is
+  `#[non_exhaustive]` — patterns need `..`; the `Unknown` payloads are the
+  structs `BoxUnknown { farkas, degree }`, `HalfLineUnknown {
+  max_polya_power }`, `PolyhedronUnknown { degree, lambda_degree, pairwise
+  }`, `SosUnknown { reason }` (all `#[non_exhaustive]`, all `Display`) —
+  patterns become `Unknown(u)`.
+- The Handelman box certificate struct `certificates::Certificate` is
+  renamed **`BoxCertificate`** (`CertificateData` → `BoxCertificateData`);
+  `certificates::Certificate` is now the **trait** (`goal`, `verify`,
+  `to_lean`, `to_lean_with`, `to_json`, `from_json`) implemented by all
+  five certificate types.  Inherent methods are unchanged.
+- `lean::LeanOpts`, `certificates::PolyhedronOpts` and
+  `certificates::SosOpts` are `#[non_exhaustive]`: struct literals
+  (including `..Default::default()`) no longer compile outside the crate;
+  use `::default()` with the `with_*` builders or assign fields on a `mut`
+  default.  Adding an option is no longer a breaking change.
+- Functions that could panic on their arguments now return `Result`
+  (found by the panic audit below): `StateSpace::{controllability_matrix,
+  observability_matrix, discretize_zoh}` (were infallible),
+  `StateSpace::{riccati_residual, ackermann}` (were `Option`),
+  `robotics::homogeneous`, and `dynamics::{total_time_derivative,
+  euler_lagrange, mass_matrix, christoffel_symbols, coriolis_matrix,
+  manipulator_equation}`.  `StateSpace::char_poly` and
+  `matrix_decomp::wronskian` return NaN instead of panicking on an
+  ill-shaped model / empty list (new `try_char_poly`, `try_wronskian`
+  return the error); `is_controllable` / `is_observable` are `false` for an
+  ill-shaped model; `ode::solve_ode_system{,_nonhomogeneous}` return `None`
+  where they could panic.
+
+See `book/src/reference/migrating-0.7.md` for the one-line fix to each.
+
+### Added
+
+- `Outcome::{is_refuted, is_unknown, into_certificate, refutation, unknown,
+  map_certificate}`; `Display` for outcomes.
+- `RealLineCertificate::{goal, to_data, from_data, to_json, from_json}`,
+  `RealLineCertificateData`, and `Display`.
+- Builders `PolyhedronOpts::{with_max_degree, with_max_lambda_degree,
+  with_pairwise, with_staged}` and `SosOpts::{with_max_basis,
+  with_max_iterations, with_rounding_digits, with_max_facial_reductions}`.
+- **No-panic policy and ratchet.**  `CONTRIBUTING.md` spells out the
+  practical policy (validate at the boundary, `Result` for failure, `Option`
+  for absence, `debug_assert!` for invariants, `std`-style `try_` siblings
+  for indexing; error plumbing measured at zero cost);
+  `tests/unit/test_no_panics.rs` counts `unwrap`/`expect`/`panic!`/
+  `unreachable!` in library code and fails on any increase — or on an
+  allowlist that is no longer tight.  108 sites removed; the allowlist is
+  the two documented logic errors, the arena's `u32` index conversion and
+  the compile-time `const_assert_dim!`.
+
+### Fixed
+
+- `matrix_decomp::wronskian` panicked when the derivatives exceeded the
+  expression budget (reachable from user input); it now returns NaN and
+  `try_wronskian` reports the error.
+
+### Infrastructure
+
+- `symplex` and `symplex-build` at 0.7.0; `symplex-macros` unchanged at
+  0.3.0.  Pinned Mathlib-compiled fixtures byte-identical to 0.6.1.
+
 ## [0.6.1] - 2026-09-19
 
 ### Added

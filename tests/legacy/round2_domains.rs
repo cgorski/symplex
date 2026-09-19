@@ -2290,7 +2290,7 @@ fn control_state_space_discretize() {
     let ss = StateSpace::new(a, b, c, d);
 
     let dt = ctx.rational(1, 10); // dt = 0.1
-    let sd = ss.discretize_zoh(&dt, 10);
+    let sd = ss.discretize_zoh(&dt, 10).unwrap();
     // Discrete system should have same number of states
     assert_eq!(sd.num_states(), 2);
     assert_eq!(sd.num_inputs(), 1);
@@ -2569,7 +2569,7 @@ fn robotics_homogeneous_from_identity_rotation() {
     let ctx = Context::new();
     let r = Matrix::identity(&ctx, 3);
     let pos = [ctx.int(1), ctx.int(2), ctx.int(3)];
-    let t = homogeneous(&r, &pos);
+    let t = homogeneous(&r, &pos).unwrap();
     assert_eq!(t.shape(), (4, 4));
     // Check translation column
     assert_close(t.get(0, 3).eval_f64().unwrap(), 1.0, 1e-12, "T[0,3] = 1");

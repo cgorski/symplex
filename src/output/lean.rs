@@ -29,9 +29,12 @@ use crate::output::common::display_sort_key;
 
 /// Options for [`Ex::to_lean`](crate::api::expr::Ex::to_lean).
 ///
-/// New fields may be added in minor releases; construct with
-/// `LeanOpts { …, ..Default::default() }` or the `with_*` builders.
+/// `#[non_exhaustive]`: new fields may be added in minor releases without
+/// breaking anyone.  Construct with [`LeanOpts::default()`] and the
+/// `with_*` builders (or assign fields on a `mut` default); a struct
+/// literal is not possible outside this crate.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct LeanOpts {
     /// The carrier type used in numeral ascriptions and casts (default `ℝ`).
     pub real_type: String,
@@ -896,7 +899,7 @@ impl<S: Sort> Expr<S> {
     ///
     /// let ctx = Context::new();
     /// let j = ctx.symbol("j");
-    /// let opts = LeanOpts { ascribe_integers: true, ..LeanOpts::default() };
+    /// let opts = LeanOpts::default().with_ascribe_integers(true);
     /// assert_eq!((2 * &j + 1).to_lean_with(&opts).unwrap(), "(2 : ℝ) * j + (1 : ℝ)");
     /// ```
     pub fn to_lean_with(&self, opts: &LeanOpts) -> Result<String, SymplexError> {

@@ -119,55 +119,48 @@ fn combine_mul_ln(
     new: &[ExprId],
     force: bool,
 ) -> ExprId {
-    // Scan for Ln factors.
-    let mut ln_index: Option<usize> = None;
+    // Scan for Ln factors, remembering the first as (index, argument).
+    let mut ln_factor: Option<(usize, ExprId)> = None;
     let mut ln_count: usize = 0;
 
     for (i, &child) in new.iter().enumerate() {
-        if matches!(arena.node(child), ExprNode::Ln(_)) {
+        if let ExprNode::Ln(inner) = *arena.node(child) {
             ln_count += 1;
             if ln_count == 1 {
-                ln_index = Some(i);
+                ln_factor = Some((i, inner));
             }
         }
     }
 
-    if ln_count == 1 && new.len() >= 2 {
-        let idx = ln_index.expect("ln_index is Some when ln_count == 1");
-        let ln_arg = match *arena.node(new[idx]) {
-            ExprNode::Ln(inner) => inner,
-            _ => unreachable!(),
-        };
+    let (idx, ln_arg) = match ln_factor {
+        Some(f) if ln_count == 1 && new.len() >= 2 => f,
+        _ => return if new == original { id } else { arena.mul(new) },
+    };
 
-        // Build the coefficient from all non-Ln factors.
-        let coeff_factors: smallvec::SmallVec<[ExprId; 6]> = new
-            .iter()
-            .enumerate()
-            .filter(|&(i, _)| i != idx)
-            .map(|(_, &c)| c)
-            .collect();
+    // Build the coefficient from all non-Ln factors.
+    let coeff_factors: smallvec::SmallVec<[ExprId; 6]> = new
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| i != idx)
+        .map(|(_, &c)| c)
+        .collect();
 
-        let coeff = if coeff_factors.len() == 1 {
-            coeff_factors[0]
-        } else {
-            arena.mul(&coeff_factors)
-        };
-
-        // Guard: n·ln(a) = ln(a^n) needs a > 0 and n real.
-        let guard_ok = force
-            || (assumptions.query(arena, ln_arg, Props::POSITIVE) == Some(true)
-                && assumptions.query(arena, coeff, Props::REAL) == Some(true));
-        if !guard_ok {
-            return if new == original { id } else { arena.mul(new) };
-        }
-
-        let powered = arena.pow(ln_arg, coeff);
-        arena.ln(powered)
-    } else if new == original {
-        id
+    let coeff = if coeff_factors.len() == 1 {
+        coeff_factors[0]
     } else {
-        arena.mul(new)
+        arena.mul(&coeff_factors)
+    };
+
+    // Guard: n·ln(a) = ln(a^n) needs a > 0 and n real.
+    let guard_ok = force
+        || (assumptions.query(arena, ln_arg, Props::POSITIVE) == Some(true)
+            && assumptions.query(arena, coeff, Props::REAL) == Some(true));
+    if !guard_ok {
+        return if new == original { id } else { arena.mul(new) };
     }
+
+    let powered = arena.pow(ln_arg, coeff);
+    arena.ln(powered)
 }
 
 /// Scan the children of an `Add` node for `Ln(…)` terms and combine them

@@ -88,13 +88,14 @@ fn main() {
                 lean.push_str(&cert.to_lean(name).unwrap());
                 lean.push('\n');
             }
-            BoxOutcome::Refuted { point, value } => {
-                let pt: Vec<String> = point.iter().map(ToString::to_string).collect();
+            BoxOutcome::Refuted { point, value, .. } => {
+                let pt: Vec<String> = point.iter().map(|(v, q)| format!("{v} = {q}")).collect();
                 println!("    REFUTED: goal = {value} at ({})", pt.join(", "));
             }
-            BoxOutcome::Unknown { degree, .. } => {
+            BoxOutcome::Unknown(u) => {
                 println!(
-                    "    UNKNOWN at degree {degree} (the goal has a zero inside the box, so no Handelman certificate exists)"
+                    "    UNKNOWN at degree {} (the goal has a zero inside the box, so no Handelman certificate exists)",
+                    u.degree
                 );
             }
         }
@@ -139,11 +140,11 @@ fn main() {
                 lean.push_str(&c.to_lean(name).unwrap());
                 lean.push('\n');
             }
-            HalfLineOutcome::Refuted { point, value } => {
-                println!("    REFUTED: goal = {value} at {j} = {point}");
+            HalfLineOutcome::Refuted { point, value, .. } => {
+                println!("    REFUTED: goal = {value} at {j} = {}", point[0].1);
             }
-            HalfLineOutcome::Unknown { max_polya_power } => {
-                println!("    UNKNOWN within Pólya exponent {max_polya_power}");
+            HalfLineOutcome::Unknown(u) => {
+                println!("    UNKNOWN within Pólya exponent {}", u.max_polya_power);
             }
         }
         println!();

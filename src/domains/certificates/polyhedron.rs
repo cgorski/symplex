@@ -42,6 +42,7 @@ use crate::api::expr::Ex;
 use crate::api::poly_ex::Poly;
 use crate::base::errors::SymplexError;
 use crate::domains::certificates::serial::{q_from_str, q_to_str};
+use crate::domains::certificates::{Certificate, Outcome};
 use crate::domains::linprog::{LpProblem, LpStatus, Q};
 use crate::output::lean::{LeanOpts, MATHLIB_LINE_WIDTH, lean_ident, wrap_lean};
 use crate::output::tree::ExprTree;
@@ -67,7 +68,12 @@ fn invalid(reason: impl Into<String>) -> SymplexError {
 /// `staged = true` the stages run from the smallest basis upwards and the
 /// first success is returned; with `staged = false` a single LP at the
 /// maxima is solved.
+///
+/// `#[non_exhaustive]`: build it with [`Default`] and the `with_*`
+/// builders (or assign fields on a `mut` default), so that a future option
+/// is not a breaking change.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PolyhedronOpts {
     /// Largest total degree `a + b` of the parameter multipliers on
     /// hypothesis terms (pure parameter terms go one degree higher).
@@ -106,6 +112,34 @@ impl PolyhedronOpts {
             pairwise: false,
             staged: false,
         }
+    }
+
+    /// Set [`max_degree`](Self::max_degree).
+    #[must_use]
+    pub fn with_max_degree(mut self, max_degree: u32) -> Self {
+        self.max_degree = max_degree;
+        self
+    }
+
+    /// Set [`max_lambda_degree`](Self::max_lambda_degree).
+    #[must_use]
+    pub fn with_max_lambda_degree(mut self, max_lambda_degree: u32) -> Self {
+        self.max_lambda_degree = max_lambda_degree;
+        self
+    }
+
+    /// Set [`pairwise`](Self::pairwise).
+    #[must_use]
+    pub fn with_pairwise(mut self, pairwise: bool) -> Self {
+        self.pairwise = pairwise;
+        self
+    }
+
+    /// Set [`staged`](Self::staged).
+    #[must_use]
+    pub fn with_staged(mut self, staged: bool) -> Self {
+        self.staged = staged;
+        self
     }
 
     /// The `(degree, lambda_degree, pairwise)` stages this configuration
@@ -154,49 +188,40 @@ impl PolyhedronTerm {
     }
 }
 
-/// Result of [`prove_nonnegative_on_polyhedron`].
-#[derive(Clone, Debug)]
-pub enum PolyhedronOutcome {
-    /// A verified certificate: the goal is non-negative on the set for
-    /// every admissible parameter value.
-    Proved(PolyhedronCertificate),
-    /// A point of the set (exact rational coordinates, as `(variable,
-    /// value)` pairs including the parameter) where the goal is negative.
-    /// For the emptiness question this is a point *in* the polyhedron.
-    Refuted {
-        /// The counterexample, `(variable, value)` pairs in generator order
-        /// (free variables, then the parameter).
-        point: Vec<(Ex, Q)>,
-        /// The sampled value of the parameter at which the counterexample
-        /// was found (`None` without a parameter).
-        param_value: Option<Q>,
-        /// The (negative) value of the goal there.
-        value: Q,
-    },
-    /// No certificate was found up to the configured limits and no
-    /// counterexample was found either.
-    Unknown {
-        /// The largest multiplier degree that was tried.
-        degree: u32,
-        /// The largest `λ` degree that was tried.
-        lambda_degree: u32,
-        /// Whether pairwise products were tried.
-        pairwise: bool,
-    },
+/// Result of [`prove_nonnegative_on_polyhedron`]: an [`Outcome`] with a
+/// [`PolyhedronCertificate`] or a [`PolyhedronUnknown`].  A refutation's
+/// `point` lists the free variables then the parameter, and `param_value`
+/// is the sampled parameter value; for the emptiness question the point
+/// lies *in* the polyhedron.
+pub type PolyhedronOutcome = Outcome<PolyhedronCertificate, PolyhedronUnknown>;
+
+/// Why [`prove_nonnegative_on_polyhedron`] could not decide: no
+/// certificate up to these limits, and no counterexample on the sampled
+/// parameter values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PolyhedronUnknown {
+    /// The largest multiplier degree that was tried.
+    pub degree: u32,
+    /// The largest `λ` degree that was tried.
+    pub lambda_degree: u32,
+    /// Whether pairwise products were tried.
+    pub pairwise: bool,
 }
 
-impl PolyhedronOutcome {
-    /// The certificate, if proved.
-    pub fn certificate(&self) -> Option<&PolyhedronCertificate> {
-        match self {
-            PolyhedronOutcome::Proved(c) => Some(c),
-            _ => None,
-        }
-    }
-
-    /// `true` for [`PolyhedronOutcome::Proved`].
-    pub fn is_proved(&self) -> bool {
-        matches!(self, PolyhedronOutcome::Proved(_))
+impl fmt::Display for PolyhedronUnknown {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "no certificate up to multiplier degree {}, λ degree {}{}",
+            self.degree,
+            self.lambda_degree,
+            if self.pairwise {
+                ", with pairwise products"
+            } else {
+                ""
+            }
+        )
     }
 }
 
@@ -954,6 +979,24 @@ fn push_have(
     }
 }
 
+impl Certificate for PolyhedronCertificate {
+    fn goal(&self) -> &Poly {
+        PolyhedronCertificate::goal(self)
+    }
+    fn verify(&self) -> bool {
+        PolyhedronCertificate::verify(self)
+    }
+    fn to_lean_with(&self, theorem_name: &str, opts: &LeanOpts) -> Result<String, SymplexError> {
+        PolyhedronCertificate::to_lean_with(self, theorem_name, opts)
+    }
+    fn to_json(&self) -> Result<String, SymplexError> {
+        PolyhedronCertificate::to_json(self)
+    }
+    fn from_json(ctx: &Context, json: &str) -> Result<Self, SymplexError> {
+        PolyhedronCertificate::from_json(ctx, json)
+    }
+}
+
 impl fmt::Display for PolyhedronCertificate {
     /// `λ*(goal) = w₁*j*h0 + w₂*(j - j₀)*h1 + …; h0 = …, h1 = …; j ≥ j₀` — the
     /// hypotheses are abbreviated `hₖ` so the identity stays readable.
@@ -1412,7 +1455,7 @@ impl PolyhedronProver {
         if let Some((point, param_value, value)) =
             refute(&self.ctx, goal, &self.hyps, &self.gens, self.param.as_ref())
         {
-            return Ok(PolyhedronOutcome::Refuted {
+            return Ok(Outcome::Refuted {
                 point,
                 param_value,
                 value,
@@ -1430,11 +1473,11 @@ impl PolyhedronProver {
                 return Ok(PolyhedronOutcome::Proved(cert));
             }
         }
-        Ok(PolyhedronOutcome::Unknown {
+        Ok(Outcome::Unknown(PolyhedronUnknown {
             degree: tried.0,
             lambda_degree: tried.1,
             pairwise: tried.2,
-        })
+        }))
     }
 
     /// One LP stage.  `Ok(Some(cert))` with a verified certificate,
@@ -1816,11 +1859,11 @@ mod tests {
         .unwrap();
         assert!(matches!(
             none,
-            PolyhedronOutcome::Unknown {
+            Outcome::Unknown(PolyhedronUnknown {
                 lambda_degree: 0,
                 degree: 3,
                 pairwise: true
-            }
+            })
         ));
     }
 
@@ -1913,7 +1956,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(matches!(no_pairs, PolyhedronOutcome::Unknown { .. }));
+        assert!(matches!(no_pairs, Outcome::Unknown(_)));
         let _ = ctx;
     }
 

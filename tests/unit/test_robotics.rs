@@ -967,7 +967,7 @@ fn homogeneous_identity() {
     let zero = ctx.int(0);
     let i3 = symplex::matrix::Matrix::identity(&ctx, 3);
     let pos = [zero.clone(), zero.clone(), zero.clone()];
-    let h = symplex::robotics::homogeneous(&i3, &pos);
+    let h = symplex::robotics::homogeneous(&i3, &pos).unwrap();
     assert_eq!(h.shape(), (4, 4));
     for i in 0..4 {
         for j in 0..4 {
@@ -989,7 +989,7 @@ fn homogeneous_translation() {
     let py = ctx.rational(5, 1);
     let pz = ctx.rational(6, 1);
     let pos = [px.clone(), py.clone(), pz.clone()];
-    let h = symplex::robotics::homogeneous(&i3, &pos);
+    let h = symplex::robotics::homogeneous(&i3, &pos).unwrap();
     // Last column should be [4, 5, 6, 1]
     let expected_col = [4.0, 5.0, 6.0, 1.0];
     for (i, &exp_val) in expected_col.iter().enumerate() {
@@ -999,6 +999,14 @@ fn homogeneous_translation() {
             "homogeneous last col [{i}] = {val}, expected {exp_val}",
         );
     }
+}
+
+#[test]
+fn homogeneous_rejects_non_3x3_rotation() {
+    let ctx = Context::new();
+    let i2 = symplex::matrix::Matrix::identity(&ctx, 2);
+    let pos = [ctx.int(0), ctx.int(0), ctx.int(0)];
+    assert!(symplex::robotics::homogeneous(&i2, &pos).is_err());
 }
 
 #[test]

@@ -39,12 +39,12 @@ fn main() {
     println!("V = {pe}");
 
     // Euler-Lagrange equations: d/dt(∂L/∂q̇) - ∂L/∂q = τ
-    let eqs = euler_lagrange(&ke, &pe, &[(&q, &qd)], &[&qdd]);
+    let eqs = euler_lagrange(&ke, &pe, &[(&q, &qd)], &[&qdd]).unwrap();
     println!("\nEquation of motion:");
     println!("  τ = {}", eqs[0]);
 
     // Mass matrix: M_ij = ∂²T / ∂q̇ᵢ∂q̇ⱼ
-    let mm = mass_matrix(&ke, &[&qd]);
+    let mm = mass_matrix(&ke, &[&qd]).unwrap();
     println!("\nMass matrix: {}", mm.get(0, 0));
 
     // Gravity vector: gᵢ = ∂V/∂qᵢ
@@ -117,14 +117,15 @@ fn main() {
         &pe_double,
         &[(&q1, &qd1), (&q2, &qd2)],
         &[&qdd1, &qdd2],
-    );
+    )
+    .unwrap();
     println!("\nEquation of motion (joint 1):");
     println!("  τ₁ = {}", eqs_double[0]);
     println!("\nEquation of motion (joint 2):");
     println!("  τ₂ = {}", eqs_double[1]);
 
     // ── Mass matrix (2×2) ──────────────────────────────────────────
-    let mm_double = mass_matrix(&ke_double, &[&qd1, &qd2]);
+    let mm_double = mass_matrix(&ke_double, &[&qd1, &qd2]).unwrap();
     println!("\nMass matrix M(q):");
     println!("  M[0,0] = {}", mm_double.get(0, 0));
     println!("  M[0,1] = {}", mm_double.get(0, 1));
@@ -147,7 +148,7 @@ fn main() {
     println!("  g₂ = {}", gv_double[1]);
 
     // ── Coriolis matrix ────────────────────────────────────────────
-    let coriolis = coriolis_matrix(&mm_double, &[&q1, &q2], &[&qd1, &qd2]);
+    let coriolis = coriolis_matrix(&mm_double, &[&q1, &q2], &[&qd1, &qd2]).unwrap();
     println!("\nCoriolis matrix C(q, q̇):");
     println!("  C[0,0] = {}", coriolis.get(0, 0));
     println!("  C[0,1] = {}", coriolis.get(0, 1));
@@ -156,14 +157,14 @@ fn main() {
 
     // ── Full manipulator equation via convenience function ─────────
     let (mass, cor, grav) =
-        manipulator_equation(&ke_double, &pe_double, &[&q1, &q2], &[&qd1, &qd2]);
+        manipulator_equation(&ke_double, &pe_double, &[&q1, &q2], &[&qd1, &qd2]).unwrap();
     println!("\nFull manipulator equation: M(q)q̈ + C(q,q̇)q̇ + g(q) = τ");
     println!("  M shape: {:?}", mass.shape());
     println!("  C shape: {:?}", cor.shape());
     println!("  g length: {}", grav.len());
 
     // ── Christoffel symbols ────────────────────────────────────────
-    let christoffel = christoffel_symbols(&mm_double, &[&q1, &q2]);
+    let christoffel = christoffel_symbols(&mm_double, &[&q1, &q2]).unwrap();
     println!("\nChristoffel symbols (Γ_ijk):");
     for (i, plane) in christoffel.iter().enumerate().take(2) {
         for (j, row) in plane.iter().enumerate().take(2) {
@@ -262,7 +263,7 @@ fn main() {
     // ── Total time derivative ──────────────────────────────────────
     println!("\n--- Total Time Derivative ---");
     // d/dt(q1) = qd1
-    let dt_q1 = total_time_derivative(&q1, &[(&q1, &qd1), (&q2, &qd2)], &[&qdd1, &qdd2]);
+    let dt_q1 = total_time_derivative(&q1, &[(&q1, &qd1), (&q2, &qd2)], &[&qdd1, &qdd2]).unwrap();
     let dt_q1_val = dt_q1.subs(&qd1, &ctx.int(7)).subs(&qd2, &ctx.int(0)).eval();
     println!("d/dt(q1) = {dt_q1}");
     println!("  at qd1=7: {dt_q1_val}");

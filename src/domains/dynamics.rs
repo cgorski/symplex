@@ -13,6 +13,29 @@
 use crate::domains::matrix::Matrix;
 use crate::prelude::*;
 
+fn invalid(operation: &'static str, reason: String) -> SymplexError {
+    SymplexError::InvalidArgument { operation, reason }
+}
+
+/// `coords` and `accels` must pair up one-to-one.
+fn check_coords_accels(
+    operation: &'static str,
+    coords: &[(&Ex, &Ex)],
+    accels: &[&Ex],
+) -> Result<(), SymplexError> {
+    if coords.len() != accels.len() {
+        return Err(invalid(
+            operation,
+            format!(
+                "coords and accels must have the same length, got {} and {}",
+                coords.len(),
+                accels.len()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Compute the total time derivative of an expression.
 ///
 /// Given an expression that depends on generalized coordinates q(t) and
@@ -28,9 +51,9 @@ use crate::prelude::*;
 /// - `coords`: Pairs of (qᵢ, q̇ᵢ) — generalized coordinates and their velocities
 /// - `accels`: The acceleration variables q̈ᵢ corresponding to each q̇ᵢ
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `coords.len() != accels.len()`.
+/// Returns [`SymplexError::InvalidArgument`] if `coords.len() != accels.len()`.
 ///
 /// # Examples
 ///
@@ -44,33 +67,31 @@ use crate::prelude::*;
 /// let qdd = ctx.symbol("qdd");
 ///
 /// // d/dt(q) = qd
-/// let result = total_time_derivative(&q, &[(&q, &qd)], &[&qdd]);
+/// let result = total_time_derivative(&q, &[(&q, &qd)], &[&qdd]).unwrap();
 /// let val = result.subs(&qd, &ctx.int(7)).eval().eval_f64().unwrap();
 /// assert!((val - 7.0).abs() < 1e-12);
 /// ```
-pub fn total_time_derivative(expr: &Ex, coords: &[(&Ex, &Ex)], accels: &[&Ex]) -> Ex {
-    assert_eq!(
-        coords.len(),
-        accels.len(),
-        "coords and accels must have the same length, got {} and {}",
-        coords.len(),
-        accels.len()
-    );
+pub fn total_time_derivative(
+    expr: &Ex,
+    coords: &[(&Ex, &Ex)],
+    accels: &[&Ex],
+) -> Result<Ex, SymplexError> {
+    check_coords_accels("dynamics::total_time_derivative", coords, accels)?;
 
     // d/dt f = Σᵢ (∂f/∂qᵢ)·q̇ᵢ + Σᵢ (∂f/∂q̇ᵢ)·q̈ᵢ
     let mut result = expr.context().int(0);
 
-    for (i, (qi, qi_dot)) in coords.iter().enumerate() {
+    for ((qi, qi_dot), accel) in coords.iter().zip(accels) {
         // ∂f/∂qᵢ · q̇ᵢ
         let df_dqi = expr.diff(qi);
         result = &result + &(&df_dqi * *qi_dot);
 
         // ∂f/∂q̇ᵢ · q̈ᵢ
         let df_dqi_dot = expr.diff(qi_dot);
-        result = &result + &(&df_dqi_dot * accels[i]);
+        result = &result + &(&df_dqi_dot * *accel);
     }
 
-    result
+    Ok(result)
 }
 
 /// Compute the Euler-Lagrange equations of motion.
@@ -90,9 +111,9 @@ pub fn total_time_derivative(expr: &Ex, coords: &[(&Ex, &Ex)], accels: &[&Ex]) -
 /// - `coords`: Pairs of (qᵢ, q̇ᵢ) — generalized coordinates and their velocities
 /// - `accels`: The acceleration variables q̈ᵢ corresponding to each q̇ᵢ
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `coords.len() != accels.len()`.
+/// Returns [`SymplexError::InvalidArgument`] if `coords.len() != accels.len()`.
 ///
 /// # Examples
 ///
@@ -110,7 +131,7 @@ pub fn total_time_derivative(expr: &Ex, coords: &[(&Ex, &Ex)], accels: &[&Ex]) -
 /// let half = ctx.rational(1, 2);
 /// let ke = &half * &m * &qd.powi(2);
 /// let pe = ctx.int(0);
-/// let eqs = euler_lagrange(&ke, &pe, &[(&q, &qd)], &[&qdd]);
+/// let eqs = euler_lagrange(&ke, &pe, &[(&q, &qd)], &[&qdd]).unwrap();
 /// // Should give m·q̈
 /// assert_eq!(eqs.len(), 1);
 /// ```
@@ -119,14 +140,8 @@ pub fn euler_lagrange(
     potential_energy: &Ex,
     coords: &[(&Ex, &Ex)],
     accels: &[&Ex],
-) -> Vec<Ex> {
-    assert_eq!(
-        coords.len(),
-        accels.len(),
-        "coords and accels must have the same length, got {} and {}",
-        coords.len(),
-        accels.len()
-    );
+) -> Result<Vec<Ex>, SymplexError> {
+    check_coords_accels("dynamics::euler_lagrange", coords, accels)?;
 
     let lagrangian = kinetic_energy - potential_energy;
     let mut equations = Vec::with_capacity(coords.len());
@@ -136,7 +151,7 @@ pub fn euler_lagrange(
         let dl_dqi_dot = lagrangian.diff(qi_dot);
 
         // d/dt(∂L/∂q̇ᵢ)
-        let dt_dl_dqi_dot = total_time_derivative(&dl_dqi_dot, coords, accels);
+        let dt_dl_dqi_dot = total_time_derivative(&dl_dqi_dot, coords, accels)?;
 
         // ∂L/∂qᵢ
         let dl_dqi = lagrangian.diff(_qi);
@@ -146,7 +161,7 @@ pub fn euler_lagrange(
         equations.push(eq_i.eval());
     }
 
-    equations
+    Ok(equations)
 }
 
 /// Extract the mass (inertia) matrix M(q) from kinetic energy.
@@ -161,6 +176,10 @@ pub fn euler_lagrange(
 /// - `kinetic_energy`: T(q, q̇), the kinetic energy expression
 /// - `qdot_vars`: The velocity variables [q̇₁, q̇₂, ...]
 ///
+/// # Errors
+///
+/// Returns [`SymplexError::InvalidArgument`] if `qdot_vars` is empty.
+///
 /// # Examples
 ///
 /// ```
@@ -174,10 +193,16 @@ pub fn euler_lagrange(
 /// // T = ½m·q̇²  →  M = [[m]]
 /// let half = ctx.rational(1, 2);
 /// let ke = &half * &m * &qd.powi(2);
-/// let mm = mass_matrix(&ke, &[&qd]);
+/// let mm = mass_matrix(&ke, &[&qd]).unwrap();
 /// assert_eq!(mm.shape(), (1, 1));
 /// ```
-pub fn mass_matrix(kinetic_energy: &Ex, qdot_vars: &[&Ex]) -> Matrix {
+pub fn mass_matrix(kinetic_energy: &Ex, qdot_vars: &[&Ex]) -> Result<Matrix, SymplexError> {
+    if qdot_vars.is_empty() {
+        return Err(invalid(
+            "dynamics::mass_matrix",
+            "need at least one velocity variable".into(),
+        ));
+    }
     let n = qdot_vars.len();
     let mut rows = Vec::with_capacity(n);
     for i in 0..n {
@@ -189,7 +214,8 @@ pub fn mass_matrix(kinetic_energy: &Ex, qdot_vars: &[&Ex]) -> Matrix {
         }
         rows.push(row);
     }
-    Matrix::new(rows).unwrap().eval()
+    // n ≥ 1 rows of n entries each.
+    Ok(Matrix::from_rows_unchecked(rows).eval())
 }
 
 /// Compute Christoffel symbols of the first kind from the mass matrix.
@@ -204,9 +230,10 @@ pub fn mass_matrix(kinetic_energy: &Ex, qdot_vars: &[&Ex]) -> Matrix {
 /// - `mass_mat`: The mass matrix M(q), an n×n [`Matrix`]
 /// - `q_vars`: The generalized coordinate variables [q₁, q₂, ...]
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `mass_mat` is not square, or its dimension doesn't match `q_vars.len()`.
+/// Returns [`SymplexError::InvalidArgument`] if `mass_mat` is not
+/// `n×n` for `n = q_vars.len()` (in particular if `q_vars` is empty).
 ///
 /// # Examples
 ///
@@ -221,21 +248,26 @@ pub fn mass_matrix(kinetic_energy: &Ex, qdot_vars: &[&Ex]) -> Matrix {
 ///
 /// let half = ctx.rational(1, 2);
 /// let ke = &half * &m * &qd.powi(2);
-/// let mm = mass_matrix(&ke, &[&qd]);
-/// let cs = christoffel_symbols(&mm, &[&q]);
+/// let mm = mass_matrix(&ke, &[&qd]).unwrap();
+/// let cs = christoffel_symbols(&mm, &[&q]).unwrap();
 /// assert_eq!(cs.len(), 1);
 /// assert_eq!(cs[0].len(), 1);
 /// assert_eq!(cs[0][0].len(), 1);
 /// ```
-pub fn christoffel_symbols(mass_mat: &Matrix, q_vars: &[&Ex]) -> Vec<Vec<Vec<Ex>>> {
+pub fn christoffel_symbols(
+    mass_mat: &Matrix,
+    q_vars: &[&Ex],
+) -> Result<Vec<Vec<Vec<Ex>>>, SymplexError> {
     let n = q_vars.len();
-    assert_eq!(
-        mass_mat.shape(),
-        (n, n),
-        "Mass matrix shape {:?} does not match {} coordinates",
-        mass_mat.shape(),
-        n
-    );
+    if n == 0 || mass_mat.shape() != (n, n) {
+        return Err(invalid(
+            "dynamics::christoffel_symbols",
+            format!(
+                "mass matrix shape {:?} does not match {n} coordinates",
+                mass_mat.shape()
+            ),
+        ));
+    }
 
     let half = q_vars[0].context().rational(1, 2);
 
@@ -258,7 +290,7 @@ pub fn christoffel_symbols(mass_mat: &Matrix, q_vars: &[&Ex]) -> Vec<Vec<Vec<Ex>
         result.push(plane);
     }
 
-    result
+    Ok(result)
 }
 
 /// Compute the Coriolis matrix C(q, q̇).
@@ -274,9 +306,11 @@ pub fn christoffel_symbols(mass_mat: &Matrix, q_vars: &[&Ex]) -> Vec<Vec<Vec<Ex>
 /// - `q_vars`: Generalized coordinate variables [q₁, q₂, ...]
 /// - `qdot_vars`: Generalized velocity variables [q̇₁, q̇₂, ...]
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if dimensions are inconsistent.
+/// Returns [`SymplexError::InvalidArgument`] if `q_vars` and `qdot_vars`
+/// differ in length, or if `mass_mat` is not `n×n` for `n = q_vars.len()`
+/// (in particular if `q_vars` is empty).
 ///
 /// # Examples
 ///
@@ -291,19 +325,28 @@ pub fn christoffel_symbols(mass_mat: &Matrix, q_vars: &[&Ex]) -> Vec<Vec<Vec<Ex>
 ///
 /// let half = ctx.rational(1, 2);
 /// let ke = &half * &m * &qd.powi(2);
-/// let mm = mass_matrix(&ke, &[&qd]);
-/// let c = coriolis_matrix(&mm, &[&q], &[&qd]);
+/// let mm = mass_matrix(&ke, &[&qd]).unwrap();
+/// let c = coriolis_matrix(&mm, &[&q], &[&qd]).unwrap();
 /// assert_eq!(c.shape(), (1, 1));
 /// ```
-pub fn coriolis_matrix(mass_mat: &Matrix, q_vars: &[&Ex], qdot_vars: &[&Ex]) -> Matrix {
+pub fn coriolis_matrix(
+    mass_mat: &Matrix,
+    q_vars: &[&Ex],
+    qdot_vars: &[&Ex],
+) -> Result<Matrix, SymplexError> {
     let n = q_vars.len();
-    assert_eq!(
-        qdot_vars.len(),
-        n,
-        "q_vars and qdot_vars must have the same length"
-    );
+    if qdot_vars.len() != n {
+        return Err(invalid(
+            "dynamics::coriolis_matrix",
+            format!(
+                "q_vars and qdot_vars must have the same length, got {n} and {}",
+                qdot_vars.len()
+            ),
+        ));
+    }
 
-    let christoffel = christoffel_symbols(mass_mat, q_vars);
+    // Also rejects an empty `q_vars`, so `christoffel` is n×n×n with n ≥ 1.
+    let christoffel = christoffel_symbols(mass_mat, q_vars)?;
 
     let mut rows = Vec::with_capacity(n);
     for christoffel_i in christoffel.iter().take(n) {
@@ -319,7 +362,7 @@ pub fn coriolis_matrix(mass_mat: &Matrix, q_vars: &[&Ex], qdot_vars: &[&Ex]) -> 
         rows.push(row);
     }
 
-    Matrix::new(rows).unwrap().eval()
+    Ok(Matrix::from_rows_unchecked(rows).eval())
 }
 
 /// Compute the gravity vector g(q) = ∂V/∂q.
@@ -378,6 +421,11 @@ pub fn gravity_vector(potential_energy: &Ex, q_vars: &[&Ex]) -> Vec<Ex> {
 /// - `C`: n×n Coriolis matrix
 /// - `g`: n-element gravity vector
 ///
+/// # Errors
+///
+/// Returns [`SymplexError::InvalidArgument`] if `q_vars` and `qdot_vars`
+/// differ in length or are empty.
+///
 /// # Examples
 ///
 /// ```
@@ -392,7 +440,7 @@ pub fn gravity_vector(potential_energy: &Ex, q_vars: &[&Ex]) -> Vec<Ex> {
 /// let half = ctx.rational(1, 2);
 /// let ke = &half * &m_val * &qd.powi(2);
 /// let pe = ctx.int(0);
-/// let (mass, coriolis, grav) = manipulator_equation(&ke, &pe, &[&q], &[&qd]);
+/// let (mass, coriolis, grav) = manipulator_equation(&ke, &pe, &[&q], &[&qd]).unwrap();
 /// assert_eq!(mass.shape(), (1, 1));
 /// assert_eq!(coriolis.shape(), (1, 1));
 /// assert_eq!(grav.len(), 1);
@@ -402,13 +450,13 @@ pub fn manipulator_equation(
     potential_energy: &Ex,
     q_vars: &[&Ex],
     qdot_vars: &[&Ex],
-) -> (Matrix, Matrix, Vec<Ex>) {
-    let m = mass_matrix(kinetic_energy, qdot_vars);
-    let c = coriolis_matrix(&m, q_vars, qdot_vars);
+) -> Result<(Matrix, Matrix, Vec<Ex>), SymplexError> {
+    let m = mass_matrix(kinetic_energy, qdot_vars)?;
+    let c = coriolis_matrix(&m, q_vars, qdot_vars)?;
     let g = gravity_vector(potential_energy, q_vars);
-    (
+    Ok((
         m.eval(),
         c.eval(),
         g.into_iter().map(|e| e.eval()).collect(),
-    )
+    ))
 }

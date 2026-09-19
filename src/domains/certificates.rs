@@ -63,9 +63,9 @@
 //! that degree exists.  Before a certificate is returned it is
 //! **re-verified** by recomputing `Σ λₖ·productₖ` with exact polynomial
 //! arithmetic and checking structural equality with `goal` — so a
-//! [`Certificate`] can be trusted without trusting the LP solver.
+//! [`BoxCertificate`] can be trusted without trusting the LP solver.
 //!
-//! [`Certificate::to_lean`] renders the result as a Lean 4 / Mathlib
+//! [`BoxCertificate::to_lean`] renders the result as a Lean 4 / Mathlib
 //! theorem whose proof is `nlinarith` fed with exactly the products that
 //! appear with non-zero weight (so it is a linear-arithmetic check, not a
 //! search).
@@ -76,6 +76,16 @@
 //! handle univariate goals on `x ≥ a` / `x ≤ a` / all of ℝ with a shift,
 //! a Pólya multiplier `(1 + k)ᴺ` and square factors for interior double
 //! zeros ([`HalfLineCertificate`], [`RealLineCertificate`]).
+//!
+//! # Outcomes and the `BoxCertificate` trait
+//!
+//! Every prover returns an [`Outcome`]`<C, U>` — `Proved(C)` with a
+//! re-verified certificate, `Refuted { point, value, .. }` with an exact
+//! counterexample, or `Unknown(U)` with a method-specific account of the
+//! search — under the aliases [`BoxOutcome`], [`HalfLineOutcome`],
+//! [`PolyhedronOutcome`] and [`SosOutcome`].  All certificate types
+//! implement the [`Certificate`] trait (`goal`, `verify`, `to_lean`,
+//! `to_json` / `from_json`) so generic code can treat them alike.
 //!
 //! # Example
 //!
@@ -113,14 +123,18 @@ use crate::base::errors::SymplexError;
 use crate::domains::linprog::{Feasibility, LpProblem, LpStatus, nonneg_combination};
 use crate::output::lean::{LeanOpts, MATHLIB_LINE_WIDTH, lean_ident, wrap_lean};
 
+mod outcome;
 mod polyhedron;
 mod sos;
+pub use outcome::{Certificate, Outcome};
 pub use polyhedron::{
     PolyhedronCertificate, PolyhedronCertificateData, PolyhedronLeanNames, PolyhedronLeanSteps,
-    PolyhedronOpts, PolyhedronOutcome, PolyhedronProver, PolyhedronTerm,
+    PolyhedronOpts, PolyhedronOutcome, PolyhedronProver, PolyhedronTerm, PolyhedronUnknown,
     prove_nonnegative_on_polyhedron, prove_polyhedron_empty,
 };
-pub use sos::{SosCertificate, SosCertificateData, SosOpts, SosOutcome, is_sos, prove_sos};
+pub use sos::{
+    SosCertificate, SosCertificateData, SosOpts, SosOutcome, SosUnknown, is_sos, prove_sos,
+};
 
 /// Exact rationals as `"p/q"` strings for the serialisable certificate forms.
 pub(crate) mod serial {
@@ -145,9 +159,9 @@ pub(crate) mod serial {
     }
 }
 
-/// Serialisable form of a box [`Certificate`] (see [`Certificate::to_json`]).
+/// Serialisable form of a [`BoxCertificate`] (see [`BoxCertificate::to_json`]).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct CertificateData {
+pub struct BoxCertificateData {
     /// The goal (a polynomial in the box variables).
     pub goal: crate::output::tree::ExprTree,
     /// The box as `(variable, lo, hi)` trees.
@@ -225,7 +239,7 @@ impl HandelmanTerm {
 /// goal had even-multiplicity zeros inside the box (see
 /// [`prove_nonnegative_on_box`]).
 #[derive(Clone, Debug)]
-pub struct Certificate {
+pub struct BoxCertificate {
     goal: Poly,
     bounds: Vec<BoxBound>,
     terms: Vec<HandelmanTerm>,
@@ -233,7 +247,7 @@ pub struct Certificate {
     square: Option<Poly>,
 }
 
-impl Certificate {
+impl BoxCertificate {
     /// The polynomial that was proved non-negative.
     pub fn goal(&self) -> &Poly {
         &self.goal
@@ -481,10 +495,10 @@ impl Certificate {
     }
 }
 
-impl Certificate {
+impl BoxCertificate {
     /// The certificate as plain data for serialisation with serde.
-    pub fn to_data(&self) -> CertificateData {
-        CertificateData {
+    pub fn to_data(&self) -> BoxCertificateData {
+        BoxCertificateData {
             goal: self.goal.to_ex().to_tree(),
             bounds: self
                 .bounds
@@ -513,8 +527,8 @@ impl Certificate {
     ///
     /// [`SymplexError::InvalidArgument`] for malformed data or a failed
     /// verification.
-    pub fn from_data(ctx: &Context, data: &CertificateData) -> Result<Self, SymplexError> {
-        const OP: &str = "Certificate::from_data";
+    pub fn from_data(ctx: &Context, data: &BoxCertificateData) -> Result<Self, SymplexError> {
+        const OP: &str = "BoxCertificate::from_data";
         let bad = |reason: String| SymplexError::InvalidArgument {
             operation: OP,
             reason,
@@ -563,7 +577,7 @@ impl Certificate {
                 weight: serial::q_from_str(w, OP)?,
             });
         }
-        let cert = Certificate {
+        let cert = BoxCertificate {
             goal,
             bounds,
             terms,
@@ -581,13 +595,13 @@ impl Certificate {
     ///
     /// ```
     /// use symplex::prelude::*;
-    /// use symplex::certificates::{Certificate, prove_nonnegative_on_box};
+    /// use symplex::certificates::{BoxCertificate, prove_nonnegative_on_box};
     ///
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
     /// let out = prove_nonnegative_on_box(&(&x * (1 - &x)), &[(x.clone(), ctx.int(0), ctx.int(1))], 2).unwrap();
     /// let json = out.certificate().unwrap().to_json().unwrap();
-    /// let back = Certificate::from_json(&Context::new(), &json).unwrap();
+    /// let back = BoxCertificate::from_json(&Context::new(), &json).unwrap();
     /// assert!(back.verify());
     /// assert_eq!(back.to_string(), out.certificate().unwrap().to_string());
     /// ```
@@ -597,7 +611,7 @@ impl Certificate {
     /// [`SymplexError::ComputationFailed`] if serialisation fails.
     pub fn to_json(&self) -> Result<String, SymplexError> {
         serde_json::to_string(&self.to_data()).map_err(|e| SymplexError::ComputationFailed {
-            operation: "Certificate::to_json",
+            operation: "BoxCertificate::to_json",
             reason: e.to_string(),
         })
     }
@@ -609,16 +623,16 @@ impl Certificate {
     /// [`SymplexError::InvalidArgument`] for malformed JSON or data that
     /// does not verify.
     pub fn from_json(ctx: &Context, json: &str) -> Result<Self, SymplexError> {
-        let data: CertificateData =
+        let data: BoxCertificateData =
             serde_json::from_str(json).map_err(|e| SymplexError::InvalidArgument {
-                operation: "Certificate::from_json",
+                operation: "BoxCertificate::from_json",
                 reason: format!("malformed JSON: {e}"),
             })?;
         Self::from_data(ctx, &data)
     }
 }
 
-impl fmt::Display for Certificate {
+impl fmt::Display for BoxCertificate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (lhs, rhs) = self.identity();
         write!(f, "{lhs} = {rhs}")?;
@@ -629,45 +643,38 @@ impl fmt::Display for Certificate {
     }
 }
 
-/// Result of [`prove_nonnegative_on_box`].
-#[derive(Clone, Debug)]
-pub enum BoxOutcome {
-    /// A verified certificate: the goal is non-negative on the box.
-    Proved(Certificate),
-    /// The goal is negative at this point of the box (exact rational
-    /// coordinates, in variable order) — the inequality is false.
-    Refuted {
-        /// A point of the box where the goal is negative.
-        point: Vec<Q>,
-        /// The (negative) value of the goal there.
-        value: Q,
-    },
-    /// No certificate of the requested degree exists and no counterexample
-    /// was found on the sampled grid.  Try a higher `degree`; if the goal
-    /// has a zero in the interior of the box, Handelman certificates may
-    /// not exist at any degree.
-    Unknown {
-        /// The Farkas vector (one entry per monomial of the coefficient
-        /// system) proving that no certificate of this degree exists.
-        farkas: Option<Vec<Q>>,
-        /// The degree that was searched.
-        degree: u32,
-    },
+/// Result of [`prove_nonnegative_on_box`]: an [`Outcome`] with a
+/// [`BoxCertificate`] or a [`BoxUnknown`].
+pub type BoxOutcome = Outcome<BoxCertificate, BoxUnknown>;
+
+/// Why [`prove_nonnegative_on_box`] could not decide: no certificate of
+/// the requested degree exists and no counterexample was found on the
+/// sampled grid.  Try a higher `degree`; if the goal has a zero in the
+/// interior of the box, Handelman certificates may not exist at any degree.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct BoxUnknown {
+    /// The Farkas vector (one entry per monomial of the coefficient
+    /// system) proving that no certificate of this degree exists.
+    pub farkas: Option<Vec<Q>>,
+    /// The degree that was searched.
+    pub degree: u32,
 }
 
-impl BoxOutcome {
-    /// The certificate, if proved.
-    pub fn certificate(&self) -> Option<&Certificate> {
-        match self {
-            BoxOutcome::Proved(c) => Some(c),
-            _ => None,
+impl fmt::Display for BoxUnknown {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "no Handelman certificate of degree ≤ {}", self.degree)?;
+        if self.farkas.is_some() {
+            write!(f, " (Farkas vector available)")?;
         }
+        Ok(())
     }
+}
 
-    /// `true` for [`BoxOutcome::Proved`].
-    pub fn is_proved(&self) -> bool {
-        matches!(self, BoxOutcome::Proved(_))
-    }
+/// `(variable, value)` pairs for a counterexample, in the prover's
+/// variable order.
+fn refutation_point(vars: &[&Ex], values: Vec<Q>) -> Vec<(Ex, Q)> {
+    vars.iter().map(|v| (*v).clone()).zip(values).collect()
 }
 
 /// Enumerate exponent vectors `(a₁..aₙ, b₁..bₙ)` with total degree ≤ `degree`.
@@ -850,7 +857,11 @@ pub fn prove_nonnegative_on_box(
 
     // 1. Cheap exact refutation on a grid.
     if let Some((point, value)) = find_counterexample(&goal_poly, &q_bounds, 8) {
-        return Ok(BoxOutcome::Refuted { point, value });
+        return Ok(Outcome::Refuted {
+            point: refutation_point(&vars, point),
+            value,
+            param_value: None,
+        });
     }
 
     // 2. Plain Handelman search; on failure, split off the even-multiplicity
@@ -862,7 +873,7 @@ pub fn prove_nonnegative_on_box(
             if let Some((g, h)) = split_square_factor(&goal_poly, &vars)
                 && let Ok(cert) = handelman_search(&h, &vars, &box_bounds, degree, Some(&g))?
             {
-                let cert = Certificate {
+                let cert = BoxCertificate {
                     goal: goal_poly.clone(),
                     ..cert
                 };
@@ -872,9 +883,13 @@ pub fn prove_nonnegative_on_box(
             }
             // A finer grid before giving up.
             if let Some((point, value)) = find_counterexample(&goal_poly, &q_bounds, 32) {
-                return Ok(BoxOutcome::Refuted { point, value });
+                return Ok(Outcome::Refuted {
+                    point: refutation_point(&vars, point),
+                    value,
+                    param_value: None,
+                });
             }
-            Ok(BoxOutcome::Unknown { farkas, degree })
+            Ok(Outcome::Unknown(BoxUnknown { farkas, degree }))
         }
     }
 }
@@ -924,7 +939,7 @@ fn handelman_search(
     box_bounds: &[BoxBound],
     degree: u32,
     square: Option<&Poly>,
-) -> Result<Result<Certificate, Option<Vec<Q>>>, SymplexError> {
+) -> Result<Result<BoxCertificate, Option<Vec<Q>>>, SymplexError> {
     let ctx = goal_poly.context();
     let n = vars.len();
     let lower: Vec<Poly> = box_bounds
@@ -990,7 +1005,7 @@ fn handelman_search(
                 Some(g) => g.mul(g)?.mul(goal_poly)?,
                 None => goal_poly.clone(),
             };
-            let cert = Certificate {
+            let cert = BoxCertificate {
                 goal: certified,
                 bounds: box_bounds.to_vec(),
                 terms,
@@ -1027,9 +1042,9 @@ fn handelman_search(
 pub fn is_nonnegative_on_box(goal: &Ex, bounds: &[(Ex, Ex, Ex)], max_degree: u32) -> Option<bool> {
     for d in 1..=max_degree.max(1) {
         match prove_nonnegative_on_box(goal, bounds, d) {
-            Ok(BoxOutcome::Proved(_)) => return Some(true),
-            Ok(BoxOutcome::Refuted { .. }) => return Some(false),
-            Ok(BoxOutcome::Unknown { .. }) => continue,
+            Ok(Outcome::Proved(_)) => return Some(true),
+            Ok(Outcome::Refuted { .. }) => return Some(false),
+            Ok(Outcome::Unknown(_)) => continue,
             Err(_) => return None,
         }
     }
@@ -1483,41 +1498,30 @@ impl fmt::Display for HalfLineCertificate {
     }
 }
 
-/// Result of [`prove_nonnegative_on_halfline`].
-#[derive(Clone, Debug)]
-pub enum HalfLineOutcome {
-    /// A verified certificate.
-    Proved(HalfLineCertificate),
-    /// The goal is negative at `point` (on the half-line).
-    Refuted {
-        /// A point of the half-line where the goal is negative.
-        point: Q,
-        /// The (negative) value there.
-        value: Q,
-    },
-    /// The goal is non-negative on the half-line (decided exactly by Sturm's
-    /// theorem) but no certificate was found within the Pólya budget — this
-    /// happens when the goal has an interior zero that is not an
-    /// even-multiplicity factor over ℚ (e.g. an irreducible SOS such as
-    /// `x⁴ − 2x² + 2`… with an irrational double root).
-    Unknown {
-        /// The largest Pólya exponent tried.
-        max_polya_power: u32,
-    },
+/// Result of [`prove_nonnegative_on_halfline`]: an [`Outcome`] with a
+/// [`HalfLineCertificate`] or a [`HalfLineUnknown`].  A refutation's
+/// `point` has the single entry `(var, value)`.
+pub type HalfLineOutcome = Outcome<HalfLineCertificate, HalfLineUnknown>;
+
+/// Why [`prove_nonnegative_on_halfline`] could not decide: the goal is
+/// non-negative on the half-line (decided exactly by Sturm's theorem) but
+/// no certificate was found within the Pólya budget — this happens when
+/// the goal has an interior zero that is not an even-multiplicity factor
+/// over ℚ (an irreducible sum of squares with an irrational double root).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HalfLineUnknown {
+    /// The largest Pólya exponent tried.
+    pub max_polya_power: u32,
 }
 
-impl HalfLineOutcome {
-    /// The certificate, if proved.
-    pub fn certificate(&self) -> Option<&HalfLineCertificate> {
-        match self {
-            HalfLineOutcome::Proved(c) => Some(c),
-            _ => None,
-        }
-    }
-
-    /// `true` for [`HalfLineOutcome::Proved`].
-    pub fn is_proved(&self) -> bool {
-        matches!(self, HalfLineOutcome::Proved(_))
+impl fmt::Display for HalfLineUnknown {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "non-negative by Sturm's theorem, but no certificate up to Pólya power {}",
+            self.max_polya_power
+        )
     }
 }
 
@@ -1662,7 +1666,11 @@ pub fn prove_nonnegative_on_halfline(
     if goal_poly.is_nonnegative_on(&lo, &hi) == Some(false)
         && let Some((point, value)) = halfline_counterexample(&goal_poly, var, &a_q, &ray)
     {
-        return Ok(HalfLineOutcome::Refuted { point, value });
+        return Ok(Outcome::Refuted {
+            point: vec![(var.clone(), point)],
+            value,
+            param_value: None,
+        });
     }
 
     let try_certify = |p: &Poly, square: Option<&Poly>| -> Option<HalfLineCertificate> {
@@ -1694,9 +1702,13 @@ pub fn prove_nonnegative_on_halfline(
         return Ok(HalfLineOutcome::Proved(c));
     }
     if let Some((point, value)) = halfline_counterexample(&goal_poly, var, &a_q, &ray) {
-        return Ok(HalfLineOutcome::Refuted { point, value });
+        return Ok(Outcome::Refuted {
+            point: vec![(var.clone(), point)],
+            value,
+            param_value: None,
+        });
     }
-    Ok(HalfLineOutcome::Unknown { max_polya_power })
+    Ok(Outcome::Unknown(HalfLineUnknown { max_polya_power }))
 }
 
 /// A verified proof that a univariate polynomial is non-negative on all of
@@ -1709,10 +1721,78 @@ pub struct RealLineCertificate {
     pub lower: HalfLineCertificate,
 }
 
+/// Serialisable form of a [`RealLineCertificate`]: its two halves.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RealLineCertificateData {
+    /// The `x ≥ split` half.
+    pub upper: HalfLineCertificateData,
+    /// The `x ≤ split` half.
+    pub lower: HalfLineCertificateData,
+}
+
 impl RealLineCertificate {
+    /// The goal (shared by both halves).
+    pub fn goal(&self) -> &Poly {
+        &self.upper.goal
+    }
+
     /// Both halves re-verified.
     pub fn verify(&self) -> bool {
         self.upper.verify() && self.lower.verify() && self.upper.endpoint == self.lower.endpoint
+    }
+
+    /// The serialisable form.
+    pub fn to_data(&self) -> RealLineCertificateData {
+        RealLineCertificateData {
+            upper: self.upper.to_data(),
+            lower: self.lower.to_data(),
+        }
+    }
+
+    /// Rebuild from the serialisable form into `ctx`, re-verifying.
+    ///
+    /// # Errors
+    ///
+    /// As [`HalfLineCertificate::from_data`]; also if the halves do not
+    /// meet at the same point.
+    pub fn from_data(ctx: &Context, data: &RealLineCertificateData) -> Result<Self, SymplexError> {
+        let cert = RealLineCertificate {
+            upper: HalfLineCertificate::from_data(ctx, &data.upper)?,
+            lower: HalfLineCertificate::from_data(ctx, &data.lower)?,
+        };
+        if !cert.verify() {
+            return Err(SymplexError::InvalidArgument {
+                operation: "RealLineCertificate::from_data",
+                reason: "the two halves do not verify as one certificate".into(),
+            });
+        }
+        Ok(cert)
+    }
+
+    /// The certificate as JSON.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::ComputationFailed`] if serialisation fails.
+    pub fn to_json(&self) -> Result<String, SymplexError> {
+        serde_json::to_string_pretty(&self.to_data()).map_err(|e| SymplexError::ComputationFailed {
+            operation: "RealLineCertificate::to_json",
+            reason: e.to_string(),
+        })
+    }
+
+    /// Parse [`to_json`](Self::to_json) output into `ctx`, re-verifying.
+    ///
+    /// # Errors
+    ///
+    /// As [`from_data`](Self::from_data); `InvalidArgument` for malformed JSON.
+    pub fn from_json(ctx: &Context, json: &str) -> Result<Self, SymplexError> {
+        let data: RealLineCertificateData =
+            serde_json::from_str(json).map_err(|e| SymplexError::InvalidArgument {
+                operation: "RealLineCertificate::from_json",
+                reason: e.to_string(),
+            })?;
+        Self::from_data(ctx, &data)
     }
 
     /// A Lean theorem with no hypotheses, by cases on `le_total split x`.
@@ -1752,6 +1832,68 @@ impl RealLineCertificate {
             indent(body(&lo)),
         );
         Ok(wrap_lean(&text, MATHLIB_LINE_WIDTH))
+    }
+}
+
+impl fmt::Display for RealLineCertificate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}; {}", self.upper, self.lower)
+    }
+}
+
+// ── The `Certificate` trait, delegating to the inherent methods ────────────
+
+impl Certificate for BoxCertificate {
+    fn goal(&self) -> &Poly {
+        BoxCertificate::goal(self)
+    }
+    fn verify(&self) -> bool {
+        BoxCertificate::verify(self)
+    }
+    fn to_lean_with(&self, theorem_name: &str, opts: &LeanOpts) -> Result<String, SymplexError> {
+        BoxCertificate::to_lean_with(self, theorem_name, opts)
+    }
+    fn to_json(&self) -> Result<String, SymplexError> {
+        BoxCertificate::to_json(self)
+    }
+    fn from_json(ctx: &Context, json: &str) -> Result<Self, SymplexError> {
+        BoxCertificate::from_json(ctx, json)
+    }
+}
+
+impl Certificate for HalfLineCertificate {
+    fn goal(&self) -> &Poly {
+        HalfLineCertificate::goal(self)
+    }
+    fn verify(&self) -> bool {
+        HalfLineCertificate::verify(self)
+    }
+    fn to_lean_with(&self, theorem_name: &str, opts: &LeanOpts) -> Result<String, SymplexError> {
+        HalfLineCertificate::to_lean_with(self, theorem_name, opts)
+    }
+    fn to_json(&self) -> Result<String, SymplexError> {
+        HalfLineCertificate::to_json(self)
+    }
+    fn from_json(ctx: &Context, json: &str) -> Result<Self, SymplexError> {
+        HalfLineCertificate::from_json(ctx, json)
+    }
+}
+
+impl Certificate for RealLineCertificate {
+    fn goal(&self) -> &Poly {
+        RealLineCertificate::goal(self)
+    }
+    fn verify(&self) -> bool {
+        RealLineCertificate::verify(self)
+    }
+    fn to_lean_with(&self, theorem_name: &str, opts: &LeanOpts) -> Result<String, SymplexError> {
+        RealLineCertificate::to_lean_with(self, theorem_name, opts)
+    }
+    fn to_json(&self) -> Result<String, SymplexError> {
+        RealLineCertificate::to_json(self)
+    }
+    fn from_json(ctx: &Context, json: &str) -> Result<Self, SymplexError> {
+        RealLineCertificate::from_json(ctx, json)
     }
 }
 

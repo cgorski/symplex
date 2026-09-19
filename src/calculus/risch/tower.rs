@@ -367,7 +367,7 @@ fn find_integer_multiples(
     //
     // Simpler approach: find the minimum ratio and divide all by it.
     // This gives multipliers ≥ 1.  Then check they're all integers.
-    let min_ratio = ratios.iter().min().cloned().unwrap();
+    let min_ratio = ratios.iter().min().cloned()?;
     let int_multiples: Vec<num_rational::Ratio<num_bigint::BigInt>> =
         ratios.iter().map(|r| r / &min_ratio).collect();
 

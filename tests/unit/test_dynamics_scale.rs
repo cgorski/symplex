@@ -179,7 +179,7 @@ fn experiment_3dof_planar_arm_dynamics() {
     println!("\nStep 5: Computing mass matrix M(q) via ∂²T/∂q̇ᵢ∂q̇ⱼ...");
     let t0 = Instant::now();
 
-    let mm = mass_matrix(&ke_expanded, &[&qd1, &qd2, &qd3]);
+    let mm = mass_matrix(&ke_expanded, &[&qd1, &qd2, &qd3]).unwrap();
 
     let mm_time = t0.elapsed();
     println!("  Mass matrix computed in {:?}", mm_time);
@@ -205,7 +205,7 @@ fn experiment_3dof_planar_arm_dynamics() {
 
     let coords: [(&Ex, &Ex); 3] = [(&q1, &qd1), (&q2, &qd2), (&q3, &qd3)];
     let accels: [&Ex; 3] = [&qdd1, &qdd2, &qdd3];
-    let eqs = euler_lagrange(&ke_expanded, &pe, &coords, &accels);
+    let eqs = euler_lagrange(&ke_expanded, &pe, &coords, &accels).unwrap();
 
     let el_time = t0.elapsed();
     println!("  Euler-Lagrange computed in {:?}", el_time);
@@ -334,7 +334,7 @@ fn experiment_3dof_planar_arm_dynamics() {
     println!("\nStep 9: Computing full manipulator equation M, C, g...");
     let t0 = Instant::now();
     let (mm2, coriolis, grav) =
-        manipulator_equation(&ke_expanded, &pe, &[&q1, &q2, &q3], &[&qd1, &qd2, &qd3]);
+        manipulator_equation(&ke_expanded, &pe, &[&q1, &q2, &q3], &[&qd1, &qd2, &qd3]).unwrap();
     let manip_time = t0.elapsed();
     println!("  manipulator_equation() completed in {:?}", manip_time);
     assert_eq!(mm2.shape(), (3, 3));
@@ -709,7 +709,7 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
 
     // Mass matrix for the 3-joint spatial arm
     let t0_mm6 = Instant::now();
-    let mm_6 = mass_matrix(&ke_6_expanded, &[&qd1, &qd2, &qd3]);
+    let mm_6 = mass_matrix(&ke_6_expanded, &[&qd1, &qd2, &qd3]).unwrap();
     let mm6_time = t0_mm6.elapsed();
     println!("  mass_matrix() for spatial 3-DOF in {:?}", mm6_time);
     assert_eq!(mm_6.shape(), (3, 3));

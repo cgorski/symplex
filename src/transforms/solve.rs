@@ -1685,7 +1685,7 @@ fn solve_rational_roots(arena: &mut Arena, var: ExprId, poly: &Poly) -> Vec<Solu
     }
 
     let a0 = int_poly.coeff(0).to_integer(); // constant term
-    let an = int_poly.leading_coeff().unwrap().to_integer(); // leading coeff
+    let an = int_poly.coeff(degree).to_integer(); // leading coeff
 
     if a0.is_zero() {
         // x = 0 is a root.  Factor out x and recurse.

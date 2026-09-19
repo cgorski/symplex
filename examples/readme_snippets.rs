@@ -545,7 +545,7 @@ fn certified_inequalities() {
     );
 
     match prove_nonnegative_on_box(&(&x * &y - ctx.rational(1, 2)), &square, 2).unwrap() {
-        BoxOutcome::Refuted { point, value } => {
+        BoxOutcome::Refuted { point, value, .. } => {
             println!("refuted at {point:?}: {value}");
             assert_eq!(value.to_string(), "-1/2");
         }

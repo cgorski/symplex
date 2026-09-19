@@ -79,7 +79,7 @@ pub fn logarithmic_part(a: &Poly, d: &Poly) -> LogPartResult {
     // A is a constant.
     if d.degree() == Some(1) {
         let a_val = a.coeff(0);
-        let d_lc = d.leading_coeff().unwrap().clone();
+        let d_lc = d.coeff(1);
         let coeff = a_val / d_lc;
         if coeff.is_zero() {
             return LogPartResult { terms: vec![] };

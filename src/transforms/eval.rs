@@ -1984,7 +1984,7 @@ fn eval_bernoulli(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         let result = -sum / Ratio::from_integer(BigInt::from(m + 1));
         b_vals.push(result);
     }
-    let ratio = b_vals.into_iter().last().unwrap();
+    let ratio = b_vals.pop()?;
     let nid = arena.intern_num(ratio);
     Some(arena.intern(ExprNode::Num(nid)))
 }
@@ -2078,15 +2078,15 @@ fn eval_bell(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     let mut row = vec![BigInt::from(1)]; // B(0) = 1, start of row 1
     for _ in 1..n {
         let mut new_row = Vec::with_capacity(row.len() + 1);
-        new_row.push(row.last().unwrap().clone()); // first element = last of prev row
+        new_row.push(row.last()?.clone()); // first element = last of prev row
         for j in 1..=row.len() {
             let val = &new_row[j - 1] + &row[j - 1];
             new_row.push(val);
         }
         row = new_row;
     }
-    // B(n) = last element of the nth row = row.last()
-    let result = row.last().unwrap().clone();
+    // B(n) = last element of the nth row
+    let result = row.pop()?;
     let ratio = Ratio::from_integer(result);
     let nid = arena.intern_num(ratio);
     Some(arena.intern(ExprNode::Num(nid)))
@@ -2128,7 +2128,7 @@ fn eval_euler_number(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         }
         e_vals.push(-sum);
     }
-    let result = e_vals.last().unwrap().clone();
+    let result = e_vals.pop()?;
     let ratio = Ratio::from_integer(result);
     let nid = arena.intern_num(ratio);
     Some(arena.intern(ExprNode::Num(nid)))

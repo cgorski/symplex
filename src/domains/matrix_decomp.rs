@@ -742,9 +742,9 @@ pub fn hessian(f: &Ex, vars: &[&Ex]) -> Matrix {
 /// Row `i` holds the `i`-th derivatives.  A non-zero Wronskian proves
 /// linear independence of the functions.
 ///
-/// # Panics
-///
-/// Panics if `funcs` is empty.
+/// Returns NaN when the determinant cannot be formed: `funcs` is empty, or
+/// the derivatives exceed [`EXPRESSION_BUDGET`](crate::matrix::EXPRESSION_BUDGET).
+/// Use [`try_wronskian`] to get the error instead.
 ///
 /// # Examples
 ///
@@ -762,7 +762,33 @@ pub fn hessian(f: &Ex, vars: &[&Ex]) -> Matrix {
 /// assert_eq!(w2.simplify(), x.powi(2));
 /// ```
 pub fn wronskian(funcs: &[&Ex], var: &Ex) -> Ex {
-    assert!(!funcs.is_empty(), "wronskian: funcs must be non-empty");
+    try_wronskian(funcs, var).unwrap_or_else(|_| var.context().nan())
+}
+
+/// Wronskian `W(f₁, …, fₙ)(x)` of a list of functions; see [`wronskian`].
+///
+/// # Errors
+///
+/// - [`SymplexError::InvalidArgument`] if `funcs` is empty.
+/// - [`SymplexError::ComputationFailed`] if the derivatives exceed
+///   [`EXPRESSION_BUDGET`](crate::matrix::EXPRESSION_BUDGET).
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::matrix_decomp::try_wronskian;
+///
+/// let ctx = Context::new();
+/// let x = ctx.symbol("x");
+/// let w = try_wronskian(&[&x.exp(), &(&x * 2).exp()], &x).unwrap();
+/// assert_eq!(w.simplify(), (&x * 3).exp());
+/// assert!(try_wronskian(&[], &x).is_err());
+/// ```
+pub fn try_wronskian(funcs: &[&Ex], var: &Ex) -> Result<Ex, SymplexError> {
+    if funcs.is_empty() {
+        return Err(invalid("wronskian", "funcs must be non-empty"));
+    }
     let n = funcs.len();
     let mut rows: Vec<Vec<Ex>> = Vec::with_capacity(n);
     let mut current: Vec<Ex> = funcs.iter().map(|f| (*f).clone()).collect();
@@ -772,9 +798,8 @@ pub fn wronskian(funcs: &[&Ex], var: &Ex) -> Ex {
         }
         rows.push(current.clone());
     }
-    let m = Matrix::new(rows).expect("wronskian: n×n with n ≥ 1 is always valid");
-    m.det()
-        .expect("wronskian: matrix is square by construction")
+    // n rows of n entries, n ≥ 1.
+    Matrix::from_rows_unchecked(rows).det()
 }
 
 #[cfg(test)]

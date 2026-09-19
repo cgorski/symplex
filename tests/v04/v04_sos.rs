@@ -125,7 +125,7 @@ fn refutations_and_honest_unknowns() {
     )
     .unwrap()
     {
-        SosOutcome::Refuted { point, value } => {
+        SosOutcome::Refuted { point, value, .. } => {
             assert!(value.is_negative());
             let mut e = x.powi(4) + y.powi(4) - 4 * &x * &y + 1;
             for (v, q) in &point {
@@ -143,7 +143,7 @@ fn refutations_and_honest_unknowns() {
     // Motzkin: non-negative on ℝ² but not a sum of squares — Unknown, never Proved.
     let motzkin = x.powi(4) * y.powi(2) + x.powi(2) * y.powi(4) - 3 * x.powi(2) * y.powi(2) + 1;
     match prove_sos(&motzkin, &xy, &SosOpts::default()).unwrap() {
-        SosOutcome::Unknown { reason } => assert!(!reason.is_empty()),
+        SosOutcome::Unknown(u) => assert!(!u.reason.is_empty()),
         other => panic!("Motzkin must not be certified: {other:?}"),
     }
     // Errors.

@@ -39,6 +39,7 @@ use crate::api::expr::Ex;
 use crate::api::poly_ex::Poly;
 use crate::base::errors::SymplexError;
 use crate::domains::certificates::serial::{q_from_str, q_to_str};
+use crate::domains::certificates::{Certificate, Outcome};
 use crate::domains::exact_matrix::QMatrix;
 use crate::domains::linprog::Q;
 use crate::output::lean::{LeanOpts, MATHLIB_LINE_WIDTH, lean_ident, wrap_lean};
@@ -58,7 +59,12 @@ fn invalid(reason: impl Into<String>) -> SymplexError {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Search limits for [`prove_sos`].
+///
+/// `#[non_exhaustive]`: build it with [`Default`] and the `with_*`
+/// builders (or assign fields on a `mut` default), so that a future option
+/// is not a breaking change.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct SosOpts {
     /// Largest Gram matrix (number of monomials) the search will set up.
     pub max_basis: usize,
@@ -84,39 +90,54 @@ impl Default for SosOpts {
     }
 }
 
-/// Result of [`prove_sos`].
-#[derive(Clone, Debug)]
-pub enum SosOutcome {
-    /// A verified sum-of-squares decomposition.
-    Proved(SosCertificate),
-    /// The goal is negative at this point (exact rational coordinates in
-    /// variable order).
-    Refuted {
-        /// The counterexample.
-        point: Vec<(Ex, Q)>,
-        /// The (negative) value there.
-        value: Q,
-    },
-    /// No decomposition was found: the goal may be non-negative without
-    /// being a sum of squares, or the numerical search did not converge.
-    Unknown {
-        /// Why the search stopped, for diagnostics.
-        reason: String,
-    },
-}
-
-impl SosOutcome {
-    /// The certificate, if proved.
-    pub fn certificate(&self) -> Option<&SosCertificate> {
-        match self {
-            SosOutcome::Proved(c) => Some(c),
-            _ => None,
-        }
+impl SosOpts {
+    /// Set [`max_basis`](Self::max_basis).
+    #[must_use]
+    pub fn with_max_basis(mut self, max_basis: usize) -> Self {
+        self.max_basis = max_basis;
+        self
     }
 
-    /// `true` for [`SosOutcome::Proved`].
-    pub fn is_proved(&self) -> bool {
-        matches!(self, SosOutcome::Proved(_))
+    /// Set [`max_iterations`](Self::max_iterations).
+    #[must_use]
+    pub fn with_max_iterations(mut self, max_iterations: usize) -> Self {
+        self.max_iterations = max_iterations;
+        self
+    }
+
+    /// Set [`rounding_digits`](Self::rounding_digits).
+    #[must_use]
+    pub fn with_rounding_digits(mut self, rounding_digits: Vec<u32>) -> Self {
+        self.rounding_digits = rounding_digits;
+        self
+    }
+
+    /// Set [`max_facial_reductions`](Self::max_facial_reductions).
+    #[must_use]
+    pub fn with_max_facial_reductions(mut self, max_facial_reductions: usize) -> Self {
+        self.max_facial_reductions = max_facial_reductions;
+        self
+    }
+}
+
+/// Result of [`prove_sos`]: an [`Outcome`] with an [`SosCertificate`] or
+/// an [`SosUnknown`].  A refutation's `point` lists the variables in the
+/// order given to `prove_sos`.
+pub type SosOutcome = Outcome<SosCertificate, SosUnknown>;
+
+/// Why [`prove_sos`] could not decide: the goal may be non-negative
+/// without being a sum of squares (Motzkin), or the numerical search did
+/// not converge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SosUnknown {
+    /// Why the search stopped, for diagnostics.
+    pub reason: String,
+}
+
+impl fmt::Display for SosUnknown {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.reason)
     }
 }
 
@@ -454,6 +475,24 @@ fn paren_unless_atomic(text: &str) -> String {
         text.to_string()
     } else {
         format!("({text})")
+    }
+}
+
+impl Certificate for SosCertificate {
+    fn goal(&self) -> &Poly {
+        SosCertificate::goal(self)
+    }
+    fn verify(&self) -> bool {
+        SosCertificate::verify(self)
+    }
+    fn to_lean_with(&self, theorem_name: &str, opts: &LeanOpts) -> Result<String, SymplexError> {
+        SosCertificate::to_lean_with(self, theorem_name, opts)
+    }
+    fn to_json(&self) -> Result<String, SymplexError> {
+        SosCertificate::to_json(self)
+    }
+    fn from_json(ctx: &Context, json: &str) -> Result<Self, SymplexError> {
+        SosCertificate::from_json(ctx, json)
     }
 }
 
@@ -1895,14 +1934,18 @@ pub fn prove_sos(goal: &Ex, vars: &[Ex], opts: &SosOpts) -> Result<SosOutcome, S
     // 1. Cheap refutation.
     if let Some((point, value)) = refute(&goal_poly) {
         let point = vars.iter().cloned().zip(point).collect();
-        return Ok(SosOutcome::Refuted { point, value });
+        return Ok(Outcome::Refuted {
+            point,
+            value,
+            param_value: None,
+        });
     }
     if deg % 2 == 1 {
-        return Ok(SosOutcome::Unknown {
+        return Ok(Outcome::Unknown(SosUnknown {
             reason:
                 "the goal has odd degree, so it is not a sum of squares (and not bounded below)"
                     .into(),
-        });
+        }));
     }
     if let Some(c) = goal_poly
         .coeff_monomial(&vec![0u32; vars.len()])
@@ -1912,9 +1955,10 @@ pub fn prove_sos(goal: &Ex, vars: &[Ex], opts: &SosOpts) -> Result<SosOutcome, S
     {
         // A constant.
         return if c.is_negative() {
-            Ok(SosOutcome::Refuted {
+            Ok(Outcome::Refuted {
                 point: vars.iter().map(|v| (v.clone(), Q::zero())).collect(),
                 value: c,
+                param_value: None,
             })
         } else {
             let basis = vec![vec![0u32; vars.len()]];
@@ -1943,9 +1987,9 @@ pub fn prove_sos(goal: &Ex, vars: &[Ex], opts: &SosOpts) -> Result<SosOutcome, S
     let mut current = problem;
     for _round in 0..=opts.max_facial_reductions {
         let Some(x) = current.solve_numeric(opts.max_iterations) else {
-            return Ok(SosOutcome::Unknown {
-                reason: "the interior-point method did not converge (no sum-of-squares decomposition of this degree, or a numerically hard one)".into(),
-            });
+            return Ok(Outcome::Unknown(SosUnknown {
+            reason: "the interior-point method did not converge (no sum-of-squares decomposition of this degree, or a numerically hard one)".into(),
+            }));
         };
         for &digits in &opts.rounding_digits {
             if let Some(q_small) = current.round_and_project(&x, digits) {
@@ -1968,9 +2012,9 @@ pub fn prove_sos(goal: &Ex, vars: &[Ex], opts: &SosOpts) -> Result<SosOutcome, S
         // restricted coefficient system is exactly consistent.
         let cands = rational_face_candidates(&x, current.n, &goal_poly, &basis);
         if cands.is_empty() {
-            return Ok(SosOutcome::Unknown {
-                reason: "rounding the interior-point solution did not give an exact PSD Gram matrix, and no rational face was found to reduce to".into(),
-            });
+            return Ok(Outcome::Unknown(SosUnknown {
+            reason: "rounding the interior-point solution did not give an exact PSD Gram matrix, and no rational face was found to reduce to".into(),
+            }));
         }
         let mut restricted: Option<(QMatrix, SosProblem)> = None;
         for k in (1..=cands.len()).rev() {
@@ -1984,9 +2028,9 @@ pub fn prove_sos(goal: &Ex, vars: &[Ex], opts: &SosOpts) -> Result<SosOutcome, S
             }
         }
         let Some((b_small, next)) = restricted else {
-            return Ok(SosOutcome::Unknown {
-                reason: "the numerically detected face is not consistent with the coefficient constraints".into(),
-            });
+            return Ok(Outcome::Unknown(SosUnknown {
+            reason: "the numerically detected face is not consistent with the coefficient constraints".into(),
+            }));
         };
         face = Some(match &face {
             Some(b) => b * &b_small,
@@ -1994,12 +2038,12 @@ pub fn prove_sos(goal: &Ex, vars: &[Ex], opts: &SosOpts) -> Result<SosOutcome, S
         });
         current = next;
     }
-    Ok(SosOutcome::Unknown {
+    Ok(Outcome::Unknown(SosUnknown {
         reason: format!(
             "no exact decomposition after {} rounds of facial reduction",
             opts.max_facial_reductions
         ),
-    })
+    }))
 }
 
 /// Convenience: `Some(true)` with a verified SOS certificate, `Some(false)`
@@ -2016,8 +2060,8 @@ pub fn prove_sos(goal: &Ex, vars: &[Ex], opts: &SosOpts) -> Result<SosOutcome, S
 /// ```
 pub fn is_sos(goal: &Ex, vars: &[Ex]) -> Option<bool> {
     match prove_sos(goal, vars, &SosOpts::default()) {
-        Ok(SosOutcome::Proved(_)) => Some(true),
-        Ok(SosOutcome::Refuted { .. }) => Some(false),
+        Ok(Outcome::Proved(_)) => Some(true),
+        Ok(Outcome::Refuted { .. }) => Some(false),
         _ => None,
     }
 }
@@ -2108,7 +2152,7 @@ mod tests {
     fn refuted_and_unknown() {
         let (_ctx, x, y) = setup();
         match prove_sos(&(&x * &y), &[x.clone(), y.clone()], &SosOpts::default()).unwrap() {
-            SosOutcome::Refuted { value, point } => {
+            SosOutcome::Refuted { value, point, .. } => {
                 assert!(value.is_negative());
                 assert_eq!(point.len(), 2);
             }
@@ -2127,7 +2171,7 @@ mod tests {
         // Motzkin: non-negative, not SOS.
         let m = x.powi(4) * y.powi(2) + x.powi(2) * y.powi(4) - 3 * x.powi(2) * y.powi(2) + 1;
         match prove_sos(&m, &[x.clone(), y.clone()], &SosOpts::default()).unwrap() {
-            SosOutcome::Unknown { .. } => {}
+            SosOutcome::Unknown(_) => {}
             other => panic!("Motzkin should be Unknown, got {other:?}"),
         }
         assert_eq!(is_sos(&m, &[x.clone(), y.clone()]), None);

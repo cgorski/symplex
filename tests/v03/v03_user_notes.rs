@@ -293,11 +293,9 @@ fn to_lean_matches_mathlib_spacing_and_typing() {
         "0 < j ^ 2 - 1"
     );
     // Options.
-    // 0.4: `LeanOpts` gained a field, so literals need `..Default::default()`.
-    let opts = LeanOpts {
-        real_type: "ℚ".into(),
-        ..Default::default()
-    };
+    // 0.7: `LeanOpts` is `#[non_exhaustive]`, so options are set through the
+    // builders (a struct literal no longer compiles outside the crate).
+    let opts = LeanOpts::default().with_real_type("ℚ");
     assert_eq!(
         ctx.rational(1, 2).to_lean_with(&opts).unwrap(),
         "(1 / 2 : ℚ)"

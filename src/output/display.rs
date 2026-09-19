@@ -292,18 +292,15 @@ fn expand_expr(
                         stack.push(WorkItem::Expr(inner, PREC_UNARY));
                         stack.push(WorkItem::Lit(" - "));
                     }
-                } else if is_neg_one_mul(arena, arg) {
+                } else if is_neg_one_mul(arena, arg)
+                    && let ExprNode::Mul(children) = child_node
+                {
                     // Mul([-1, rest...]) → display as " - rest..."
                     // We extract the non-(-1) factors and push them
                     // directly to avoid the double-negation bug that
                     // occurs when mul_without_neg_one can't intern a
                     // new Mul node for the 3+-factor case.
-                    let rest: SmallVec<[ExprId; 6]> =
-                        if let ExprNode::Mul(children) = arena.node(arg) {
-                            SmallVec::from_slice(&children[1..])
-                        } else {
-                            unreachable!("is_neg_one_mul confirmed Mul")
-                        };
+                    let rest: SmallVec<[ExprId; 6]> = SmallVec::from_slice(&children[1..]);
                     if i == 0 {
                         // Leading negative: "-rest..."
                         if rest.len() == 1 {

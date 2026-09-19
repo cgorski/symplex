@@ -182,6 +182,8 @@ mod test_new_api;
 mod test_new_math;
 #[path = "unit/test_new_rules.rs"]
 mod test_new_rules;
+#[path = "unit/test_no_panics.rs"]
+mod test_no_panics;
 #[path = "unit/test_ntheory.rs"]
 mod test_ntheory;
 #[path = "unit/test_numerical_validation.rs"]

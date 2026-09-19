@@ -452,7 +452,7 @@ cert.to_lean("one_minus_xy").unwrap();
 //   nlinarith [sub_nonneg.mpr h_y_hi, mul_nonneg (sub_nonneg.mpr h_x_hi) (sub_nonneg.mpr h_y_lo)]
 
 prove_nonnegative_on_box(&(&x * &y - ctx.rational(1, 2)), &square, 2).unwrap();
-                                                      // Refuted { point: [0, 0], value: -1/2 }
+                                                      // Refuted { point: [(x, 0), (y, 0)], value: -1/2, .. }
 ((&x - 1) / (2 * &x)).to_lean().unwrap();             // "(x - 1) / (2 * x)"
 x.sqrt().gt(&ctx.int(0)).to_lean().unwrap();          // "0 < Real.sqrt x"
 

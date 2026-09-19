@@ -10,7 +10,7 @@
 use num_traits::Signed;
 use symplex::certificates::{
     PolyhedronCertificate, PolyhedronLeanNames, PolyhedronOpts, PolyhedronOutcome,
-    prove_nonnegative_on_polyhedron, prove_polyhedron_empty,
+    PolyhedronUnknown, prove_nonnegative_on_polyhedron, prove_polyhedron_empty,
 };
 use symplex::lean::LeanOpts;
 use symplex::linprog::{q, qi};
@@ -163,19 +163,17 @@ fn lambda_is_required_and_minimal() {
         &(t - 1),
         &hyps,
         Some((j, &f.ctx.int(0))),
-        &PolyhedronOpts {
-            max_lambda_degree: 0,
-            ..Default::default()
-        },
+        &PolyhedronOpts::default().with_max_lambda_degree(0),
     )
     .unwrap();
     assert!(matches!(
         out,
-        PolyhedronOutcome::Unknown {
+        PolyhedronOutcome::Unknown(PolyhedronUnknown {
             degree: 3,
             lambda_degree: 0,
-            pairwise: true
-        }
+            pairwise: true,
+            ..
+        })
     ));
     // A single-stage search at the right size finds it too.
     let single = prove_nonnegative_on_polyhedron(
@@ -332,7 +330,7 @@ fn lean_steps_slot_into_an_existing_skeleton() {
 #[test]
 fn certificates_cross_a_trust_boundary_as_json_and_are_reverified() {
     use symplex::certificates::{
-        Certificate, HalfLineCertificate, Ray, prove_nonnegative_on_box,
+        BoxCertificate, HalfLineCertificate, Ray, prove_nonnegative_on_box,
         prove_nonnegative_on_halfline,
     };
     let f = Fixture::new();
@@ -371,12 +369,12 @@ fn certificates_cross_a_trust_boundary_as_json_and_are_reverified() {
     .unwrap();
     let bc = out.certificate().expect("box certificate");
     assert!(bc.square().is_some());
-    let back = Certificate::from_json(&other, &bc.to_json().unwrap()).unwrap();
+    let back = BoxCertificate::from_json(&other, &bc.to_json().unwrap()).unwrap();
     assert_eq!(back.to_string(), bc.to_string());
     assert!(back.square().is_some());
     let mut d = bc.to_data();
     d.terms[0].2 = "3/1".to_string();
-    assert!(Certificate::from_data(&other, &d).is_err());
+    assert!(BoxCertificate::from_data(&other, &d).is_err());
 
     // Half-line certificate with a Pólya power.
     let out =

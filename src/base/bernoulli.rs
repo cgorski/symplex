@@ -8,7 +8,7 @@
 use num_bigint::BigInt;
 use num_rational::Ratio;
 use num_traits::{One, Zero};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 /// Global cache of Bernoulli numbers as exact rationals.
 /// Lazily computed on demand via the standard recurrence.
@@ -24,7 +24,7 @@ static BERNOULLI_CACHE: Mutex<Vec<Ratio<BigInt>>> = Mutex::new(Vec::new());
 /// Thread-safe via `Mutex`.
 #[must_use]
 pub(crate) fn bernoulli(n: usize) -> Ratio<BigInt> {
-    let mut cache = BERNOULLI_CACHE.lock().unwrap();
+    let mut cache = BERNOULLI_CACHE.lock();
 
     // Extend cache if needed.
     while cache.len() <= n {

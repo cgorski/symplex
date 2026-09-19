@@ -17,6 +17,7 @@
 //!    preserving structural sharing across multiple roots.
 
 use rustc_hash::FxHashMap;
+use smallvec::SmallVec;
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
@@ -132,11 +133,26 @@ fn transfer_node(
     src: &Arena,
     dst: &mut Arena,
     old_id: ExprId,
-    map: &FxHashMap<ExprId, ExprId>,
+    map: &mut FxHashMap<ExprId, ExprId>,
 ) -> ExprId {
     let node = src.node(old_id).clone();
     let new_node = remap_node(src, dst, &node, map);
     dst.intern(new_node)
+}
+
+/// Destination id of `old`, transferring its subtree on demand if it has not
+/// been mapped yet (e.g. a `PhysicalConstant` value, which is not a declared
+/// child and so is not visited by the reachability walk).
+fn remap_id(
+    src: &Arena,
+    dst: &mut Arena,
+    old: ExprId,
+    map: &mut FxHashMap<ExprId, ExprId>,
+) -> ExprId {
+    match map.get(&old) {
+        Some(&new) => new,
+        None => transfer_subtree(src, dst, old, map),
+    }
 }
 
 /// Remap a node's children from old [`ExprId`]s to new [`ExprId`]s.
@@ -149,13 +165,17 @@ fn remap_node(
     src: &Arena,
     dst: &mut Arena,
     node: &ExprNode,
-    map: &FxHashMap<ExprId, ExprId>,
+    map: &mut FxHashMap<ExprId, ExprId>,
 ) -> ExprNode {
-    // Helper: look up a remapped child ID.  All children should have been
-    // transferred already (post-order guarantee), so unwrap is safe.
-    let m = |old: &ExprId| -> ExprId {
-        *map.get(old)
-            .expect("compact bug: child not yet transferred — post-order invariant violated")
+    // Look up a remapped child ID.  Post-order guarantees every declared
+    // child was transferred before its parent; a miss is an invariant
+    // violation, recovered by transferring the child's subtree on the spot.
+    let mut m = |old: &ExprId| -> ExprId {
+        debug_assert!(
+            map.contains_key(old),
+            "compact: child not yet transferred — post-order invariant violated"
+        );
+        remap_id(src, dst, *old, map)
     };
 
     match node {
@@ -186,15 +206,7 @@ fn remap_node(
         ExprNode::PhysicalConstant(old_sid, old_value_id) => {
             let name = src.symbol_name(*old_sid).to_owned();
             let new_sid = dst.symbols.intern(&name);
-            // The value_id is not a declared child of this atom, so it may
-            // not have been visited during the reachability walk.  If it IS
-            // in the map (referenced elsewhere), use the mapped id.
-            // Otherwise, transfer its subtree directly (typically a Num).
-            let new_value_id = if let Some(&mapped) = map.get(old_value_id) {
-                mapped
-            } else {
-                transfer_node(src, dst, *old_value_id, map)
-            };
+            let new_value_id = remap_id(src, dst, *old_value_id, map);
             ExprNode::PhysicalConstant(new_sid, new_value_id)
         }
 
@@ -208,16 +220,16 @@ fn remap_node(
         ExprNode::UniversalSet => ExprNode::UniversalSet,
 
         // ── N-ary nodes ──────────────────────────────────────────────────
-        ExprNode::Add(children) => ExprNode::Add(children.iter().map(&m).collect()),
-        ExprNode::Mul(children) => ExprNode::Mul(children.iter().map(&m).collect()),
-        ExprNode::And(children) => ExprNode::And(children.iter().map(&m).collect()),
-        ExprNode::Or(children) => ExprNode::Or(children.iter().map(&m).collect()),
-        ExprNode::Min(children) => ExprNode::Min(children.iter().map(&m).collect()),
-        ExprNode::Max(children) => ExprNode::Max(children.iter().map(&m).collect()),
-        ExprNode::FiniteSet(children) => ExprNode::FiniteSet(children.iter().map(&m).collect()),
-        ExprNode::SetUnion(children) => ExprNode::SetUnion(children.iter().map(&m).collect()),
+        ExprNode::Add(children) => ExprNode::Add(children.iter().map(&mut m).collect()),
+        ExprNode::Mul(children) => ExprNode::Mul(children.iter().map(&mut m).collect()),
+        ExprNode::And(children) => ExprNode::And(children.iter().map(&mut m).collect()),
+        ExprNode::Or(children) => ExprNode::Or(children.iter().map(&mut m).collect()),
+        ExprNode::Min(children) => ExprNode::Min(children.iter().map(&mut m).collect()),
+        ExprNode::Max(children) => ExprNode::Max(children.iter().map(&mut m).collect()),
+        ExprNode::FiniteSet(children) => ExprNode::FiniteSet(children.iter().map(&mut m).collect()),
+        ExprNode::SetUnion(children) => ExprNode::SetUnion(children.iter().map(&mut m).collect()),
         ExprNode::SetIntersection(children) => {
-            ExprNode::SetIntersection(children.iter().map(&m).collect())
+            ExprNode::SetIntersection(children.iter().map(&mut m).collect())
         }
 
         // ── Binary nodes ─────────────────────────────────────────────────
@@ -305,9 +317,10 @@ fn remap_node(
 
         // ── Apply (symbol name + args) ───────────────────────────────────
         ExprNode::Apply(old_sid, args) => {
+            let new_args: SmallVec<[ExprId; 2]> = args.iter().map(&mut m).collect();
             let name = src.symbol_name(*old_sid).to_owned();
             let new_sid = dst.symbols.intern(&name);
-            ExprNode::Apply(new_sid, args.iter().map(m).collect())
+            ExprNode::Apply(new_sid, new_args)
         }
     }
 }
