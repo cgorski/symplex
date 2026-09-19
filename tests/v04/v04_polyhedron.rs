@@ -505,6 +505,314 @@ fn prove_poly_accepts_permuted_and_partial_generators() {
     assert!(e.contains("not a variable of the hypotheses"), "{e}");
 }
 
+/// A goal polynomial may carry generators that occur in none of its terms
+/// — a tool's polynomial ring has the parameter `j` on every row, whether
+/// or not the row mentions it — even when the prover does not know them.
+/// Only a generator that *occurs* may be foreign (0.9.1).
+#[test]
+fn prove_poly_ignores_generators_that_occur_in_no_term() {
+    use symplex::certificates::PolyhedronProver;
+    use symplex::poly_ex::Poly;
+    let f = Fixture::new();
+    let (ctx, j, r, t) = (&f.ctx, &f.j, &f.r, &f.t);
+    // No parameter: the prover's generators are (r, t) only.
+    let hyps = [r.clone(), 1 - r, t - r];
+    let prover = PolyhedronProver::new(&hyps, None, &PolyhedronOpts::default()).unwrap();
+    assert_eq!(prover.gens(), &[r.clone(), t.clone()]);
+    let goal = t * 2 - r;
+    let via_ex = proved(prover.prove(&goal).unwrap());
+    // The same goal over (j, r, t): `j` has exponent 0 in every term.
+    let spare = Poly::new(&goal, &[j, r, t]).unwrap();
+    assert_eq!(spare.gens().len(), 3);
+    let via_poly = proved(prover.prove_poly(&spare).unwrap());
+    assert_eq!(via_poly.to_string(), via_ex.to_string());
+    assert_eq!(via_poly.to_lean("x").unwrap(), via_ex.to_lean("x").unwrap());
+    assert_eq!(via_poly.used_hyps(), via_ex.used_hyps());
+    assert_eq!(via_poly.goal().gens(), prover.gens());
+    // Spare generators in any position, and several of them.
+    let u = ctx.symbol("u");
+    let spare2 = Poly::new(&goal, &[t, &u, r, j]).unwrap();
+    let c = proved(prover.prove_poly(&spare2).unwrap());
+    assert_eq!(c.to_string(), via_ex.to_string());
+    // A false goal is refuted through the spare ring too.
+    let bad = Poly::new(&(r - t), &[j, r, t]).unwrap();
+    assert!(matches!(
+        prover.prove_poly(&bad).unwrap(),
+        PolyhedronOutcome::Refuted { .. }
+    ));
+    // A constant goal over entirely foreign generators is fine (nothing occurs).
+    let one = Poly::new(&ctx.int(1), &[j, &u]).unwrap();
+    assert!(prover.prove_poly(&one).unwrap().is_proved());
+    // But a foreign generator that occurs is still an error.
+    let used = Poly::new(&(t * 2 - r + j), &[j, r, t]).unwrap();
+    let e = prover.prove_poly(&used).unwrap_err();
+    assert!(matches!(e, SymplexError::InvalidArgument { .. }), "{e}");
+    assert!(
+        e.to_string().contains("not a variable of the hypotheses"),
+        "{e}"
+    );
+    // With a parameter the prover knows `j`; a spare `u` is still ignored.
+    let cell = [
+        r.clone(),
+        ctx.rational(1, 2) - r,
+        t.clone(),
+        1 - t,
+        (j * 2 + 1) * t - j * r - 1,
+    ];
+    let pj =
+        PolyhedronProver::new(&cell, Some((j, &ctx.int(2))), &PolyhedronOpts::default()).unwrap();
+    let g = (j * 2 + 1) * t * 4 - j * r * 4 - r - 3;
+    let a = proved(pj.prove(&g).unwrap());
+    let b = proved(
+        pj.prove_poly(&Poly::new(&g, &[&u, j, r, t]).unwrap())
+            .unwrap(),
+    );
+    assert_eq!(a.to_string(), b.to_string());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Budgets (0.9.1)
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn budget_hit(out: &PolyhedronOutcome) -> Option<symplex::certificates::BudgetHit> {
+    match out {
+        PolyhedronOutcome::Unknown(u) => u.budget_exhausted,
+        _ => None,
+    }
+}
+
+#[test]
+fn pivot_budget_stops_the_search_quickly_and_names_the_limit() {
+    use std::time::{Duration, Instant};
+    use symplex::certificates::BudgetHit;
+    let f = Fixture::new();
+    let (ctx, j, r, t) = (&f.ctx, &f.j, &f.r, &f.t);
+    let half = ctx.rational(1, 2);
+    let cell = [
+        r.clone(),
+        &half - r,
+        t.clone(),
+        1 - t,
+        (j * 2 + 1) * t - j * r - 1,
+    ];
+    let goal = (j * 2 + 1) * t * 4 - j * r * 4 - r - 3;
+    let needs_lambda = [t - r, t + j * r - j - 1];
+    let cases: [(&Ex, &[Ex], i64); 2] = [(&goal, &cell, 2), (&(t - 1), &needs_lambda, 0)];
+    for (goal, hyps, j0) in cases {
+        let param = Some((j, &ctx.int(j0)));
+        let free = proved(
+            prove_nonnegative_on_polyhedron(goal, hyps, param, &PolyhedronOpts::default()).unwrap(),
+        );
+        // Three pivots do not get through the first stage LP.
+        let started = Instant::now();
+        let out = prove_nonnegative_on_polyhedron(
+            goal,
+            hyps,
+            param,
+            &PolyhedronOpts::default().with_max_pivots(3),
+        )
+        .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(budget_hit(&out), Some(BudgetHit::MaxPivots), "{out:?}");
+        let PolyhedronOutcome::Unknown(u) = &out else {
+            panic!("{out:?}");
+        };
+        assert!(
+            u.to_string().ends_with("; budget exhausted: max_pivots"),
+            "{u}"
+        );
+        // The first stage is the one that was interrupted.
+        assert_eq!((u.degree, u.lambda_degree, u.pairwise), (1, 0, false));
+        // A budget the search fits inside gives exactly the unbudgeted certificate.
+        let roomy = proved(
+            prove_nonnegative_on_polyhedron(
+                goal,
+                hyps,
+                param,
+                &PolyhedronOpts::default()
+                    .with_max_pivots(1_000_000)
+                    .with_time_limit(Duration::from_secs(600)),
+            )
+            .unwrap(),
+        );
+        assert_eq!(roomy.to_string(), free.to_string());
+        assert_eq!(roomy.to_lean("x").unwrap(), free.to_lean("x").unwrap());
+        // Monotone in the cap: exhausted up to some cap, then always the
+        // same certificate.
+        let mut finished = false;
+        for cap in (0..400).step_by(7) {
+            let out = prove_nonnegative_on_polyhedron(
+                goal,
+                hyps,
+                param,
+                &PolyhedronOpts::default().with_max_pivots(cap),
+            )
+            .unwrap();
+            match out {
+                PolyhedronOutcome::Unknown(u) => {
+                    assert_eq!(u.budget_exhausted, Some(BudgetHit::MaxPivots));
+                    assert!(
+                        !finished,
+                        "exhausted at {cap} after finishing at a smaller cap"
+                    );
+                }
+                PolyhedronOutcome::Proved(c) => {
+                    finished = true;
+                    assert_eq!(c.to_string(), free.to_string());
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(finished, "400 pivots suffice for these goals");
+    }
+}
+
+#[test]
+fn zero_time_limit_fires_at_the_first_check_and_a_prover_is_reusable() {
+    use std::time::{Duration, Instant};
+    use symplex::certificates::{BudgetHit, PolyhedronProver};
+    let f = Fixture::new();
+    let (ctx, j, r, t) = (&f.ctx, &f.j, &f.r, &f.t);
+    let half = ctx.rational(1, 2);
+    let cell = [
+        r.clone(),
+        &half - r,
+        t.clone(),
+        1 - t,
+        (j * 2 + 1) * t - j * r - 1,
+    ];
+    let goal = (j * 2 + 1) * t * 4 - j * r * 4 - r - 3;
+    let param = Some((j, &ctx.int(2)));
+    let out = prove_nonnegative_on_polyhedron(
+        &goal,
+        &cell,
+        param,
+        &PolyhedronOpts::default().with_time_limit(Duration::ZERO),
+    )
+    .unwrap();
+    assert_eq!(budget_hit(&out), Some(BudgetHit::Deadline), "{out:?}");
+    assert!(
+        out.to_string().ends_with("; budget exhausted: deadline"),
+        "{out}"
+    );
+    // An absolute deadline in the past, too — and `prove_empty` as well.
+    let past = Instant::now() - Duration::from_millis(1);
+    let prover_past =
+        PolyhedronProver::new(&cell, param, &PolyhedronOpts::default().with_deadline(past))
+            .unwrap();
+    assert_eq!(
+        budget_hit(&prover_past.prove(&goal).unwrap()),
+        Some(BudgetHit::Deadline)
+    );
+    assert_eq!(
+        budget_hit(&prover_past.prove_empty().unwrap()),
+        Some(BudgetHit::Deadline)
+    );
+    assert_eq!(
+        budget_hit(
+            &prover_past
+                .prove_poly(&Poly::new(&goal, &[r, t, j]).unwrap())
+                .unwrap()
+        ),
+        Some(BudgetHit::Deadline)
+    );
+    // The earlier of `deadline` and `time_limit` applies.
+    let both = PolyhedronOpts::default()
+        .with_deadline(past)
+        .with_time_limit(Duration::from_secs(600));
+    assert_eq!(
+        budget_hit(&prove_nonnegative_on_polyhedron(&goal, &cell, param, &both).unwrap()),
+        Some(BudgetHit::Deadline)
+    );
+    // A time limit is per call: a prover built once proves goal after goal,
+    // each with a fresh allowance, and every certificate is the unbudgeted one.
+    let prover = PolyhedronProver::new(
+        &cell,
+        param,
+        &PolyhedronOpts::default().with_time_limit(Duration::from_secs(120)),
+    )
+    .unwrap();
+    let plain = PolyhedronProver::new(&cell, param, &PolyhedronOpts::default()).unwrap();
+    for g in cell.iter().chain([&goal]) {
+        let a = proved(prover.prove(g).unwrap());
+        let b = proved(plain.prove(g).unwrap());
+        assert_eq!(a.to_string(), b.to_string());
+    }
+    assert!(!prover.prove_empty().unwrap().is_proved());
+    // Refutations are unchanged under a roomy budget.
+    assert!(prover.prove(&(t - &half - r)).unwrap().is_refuted());
+    // The options record the budget.
+    assert_eq!(prover.opts().time_limit, Some(Duration::from_secs(120)));
+    assert_eq!(prover.opts().deadline, None);
+    assert_eq!(prover.opts().max_pivots, None);
+    assert_eq!(PolyhedronOpts::single(2, 1).max_pivots, None);
+    let _ = j;
+}
+
+/// A refuted goal under a pivot cap: exhausted, then (once the cap covers
+/// the first stage *and* the sample LPs) refuted with the same point.
+#[test]
+fn refutation_lps_share_the_pivot_budget() {
+    use symplex::certificates::BudgetHit;
+    let f = Fixture::new();
+    let (ctx, j, r, t) = (&f.ctx, &f.j, &f.r, &f.t);
+    let half = ctx.rational(1, 2);
+    let cell = [
+        r.clone(),
+        &half - r,
+        t.clone(),
+        1 - t,
+        (j * 2 + 1) * t - j * r - 1,
+    ];
+    let bad = t - &half - r;
+    let param = Some((j, &ctx.int(2)));
+    let free =
+        prove_nonnegative_on_polyhedron(&bad, &cell, param, &PolyhedronOpts::default()).unwrap();
+    let PolyhedronOutcome::Refuted {
+        point,
+        value,
+        param_value,
+        ..
+    } = &free
+    else {
+        panic!("{free:?}");
+    };
+    let mut finished = false;
+    for cap in 0..300usize {
+        let out = prove_nonnegative_on_polyhedron(
+            &bad,
+            &cell,
+            param,
+            &PolyhedronOpts::default().with_max_pivots(cap),
+        )
+        .unwrap();
+        match out {
+            PolyhedronOutcome::Unknown(u) => {
+                assert_eq!(u.budget_exhausted, Some(BudgetHit::MaxPivots));
+                assert!(
+                    !finished,
+                    "exhausted at {cap} after refuting at a smaller cap"
+                );
+            }
+            PolyhedronOutcome::Refuted {
+                point: p,
+                value: v,
+                param_value: pv,
+                ..
+            } => {
+                finished = true;
+                assert_eq!((&p, &v, &pv), (point, value, param_value));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(finished);
+}
+
 #[test]
 fn symbol_text_renders_the_parameter_as_a_cast_everywhere() {
     let f = Fixture::new();

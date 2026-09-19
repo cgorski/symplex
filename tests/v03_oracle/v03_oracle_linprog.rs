@@ -227,6 +227,7 @@ fn status_name(s: &LpStatus) -> &'static str {
         LpStatus::Optimal => "optimal",
         LpStatus::Infeasible => "infeasible",
         LpStatus::Unbounded => "unbounded",
+        LpStatus::BudgetExhausted => "budget exhausted",
     }
 }
 
@@ -408,6 +409,8 @@ fn compare_solution(ctx: &Context, lp: &Lp, fx: &Fixture, sol: &LpSolution) -> S
             }
             Status::Pass
         }
+        // The oracle LPs run without a budget.
+        LpStatus::BudgetExhausted => Status::Fail("budget exhausted without a budget".into()),
     }
 }
 

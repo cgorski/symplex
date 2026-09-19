@@ -7,12 +7,14 @@
 //! has its Farkas inequality verified; every `Unbounded` result is shown to
 //! be feasible and to improve without limit as a box bound grows.
 
+use std::time::{Duration, Instant};
+
 use num_bigint::BigInt;
 use num_rational::Ratio;
 use num_traits::{Signed, Zero};
 use proptest::prelude::*;
 use symplex::linprog::{
-    Feasibility, LpProblem, LpSolution, LpStatus, Objective, Q, feasible_nonneg,
+    Budget, Feasibility, LpProblem, LpSolution, LpStatus, Objective, Q, feasible_nonneg,
     feasible_nonneg_certified, linprog, linprog_matrix, nonneg_combination, q, qi,
 };
 use symplex::matrix::Matrix;
@@ -113,6 +115,7 @@ impl Spec {
             LpStatus::Optimal => self.check_optimal(&sol),
             LpStatus::Infeasible => self.check_farkas(sol.farkas.as_deref().expect("certificate")),
             LpStatus::Unbounded => self.check_unbounded(),
+            LpStatus::BudgetExhausted => panic!("no budget was set"),
         }
         sol
     }
@@ -1214,6 +1217,184 @@ fn display_summarises_every_status() {
         .solve()
         .unwrap();
     assert_eq!(unb.to_string(), "Unbounded");
+    let out = LpProblem::maximize(vec![qi(1), qi(1)])
+        .le(vec![qi(1), qi(-1)], qi(1))
+        .with_budget(Budget::within(Duration::ZERO))
+        .solve()
+        .unwrap();
+    assert_eq!(out.to_string(), "Budget exhausted");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Budgets (0.9.1)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A problem that needs at least two pivots (two `≥` rows, both
+/// artificials must leave the basis in phase 1).
+fn two_pivot_problem() -> LpProblem {
+    LpProblem::minimize(vec![qi(1), qi(1)])
+        .ge(vec![qi(1), qi(2)], qi(1))
+        .ge(vec![qi(3), qi(1)], qi(1))
+}
+
+#[test]
+fn budget_max_pivots_stops_a_solve_that_needs_more() {
+    let p = two_pivot_problem();
+    let sol = p
+        .clone()
+        .with_budget(Budget::max_pivots(1))
+        .solve()
+        .unwrap();
+    assert_eq!(sol.status, LpStatus::BudgetExhausted);
+    assert!(sol.x.is_empty());
+    assert_eq!(sol.objective, None);
+    assert!(sol.duals.is_empty());
+    assert_eq!(sol.farkas, None);
+    assert!(!sol.is_optimal());
+    // Zero pivots allowed: still an answer, not an error.
+    let sol = p
+        .clone()
+        .with_budget(Budget::max_pivots(0))
+        .solve()
+        .unwrap();
+    assert_eq!(sol.status, LpStatus::BudgetExhausted);
+    // A budget the solve fits inside changes nothing.
+    let free = p.solve().unwrap();
+    let roomy = p
+        .clone()
+        .with_budget(Budget::max_pivots(1_000))
+        .solve()
+        .unwrap();
+    assert_eq!(roomy.status, LpStatus::Optimal);
+    assert_eq!(roomy.x, free.x);
+    assert_eq!(roomy.x, vec![q(1, 5), q(2, 5)]);
+    assert_eq!(roomy.objective, free.objective);
+    assert_eq!(roomy.duals, free.duals);
+}
+
+#[test]
+fn budget_deadline_is_absolute_and_checked_before_the_first_pivot() {
+    let p = two_pivot_problem();
+    let started = Instant::now();
+    let sol = p
+        .clone()
+        .with_budget(Budget::within(Duration::ZERO))
+        .solve()
+        .unwrap();
+    assert_eq!(sol.status, LpStatus::BudgetExhausted);
+    assert!(started.elapsed() < Duration::from_secs(1));
+    let sol = p
+        .clone()
+        .with_budget(Budget::deadline(Instant::now() - Duration::from_millis(1)))
+        .solve()
+        .unwrap();
+    assert_eq!(sol.status, LpStatus::BudgetExhausted);
+    // A deadline comfortably in the future is never hit by a small LP.
+    let sol = p
+        .with_budget(Budget::within(Duration::from_secs(60)))
+        .solve()
+        .unwrap();
+    assert_eq!(sol.status, LpStatus::Optimal);
+    assert_eq!(sol.x, vec![q(1, 5), q(2, 5)]);
+}
+
+#[test]
+fn budget_builders_combine_and_default_is_unlimited() {
+    let b = Budget::default();
+    assert_eq!(b.deadline, None);
+    assert_eq!(b.max_pivots, None);
+    assert_eq!(*two_pivot_problem().budget(), Budget::default());
+    let at = Instant::now() + Duration::from_secs(30);
+    let b = Budget::deadline(at).with_max_pivots(7);
+    assert_eq!(b.deadline, Some(at));
+    assert_eq!(b.max_pivots, Some(7));
+    let b = Budget::max_pivots(7).with_deadline(at);
+    assert_eq!((b.deadline, b.max_pivots), (Some(at), Some(7)));
+    let p = two_pivot_problem().with_budget(b.clone());
+    assert_eq!(p.budget(), &b);
+    assert_eq!(p.solve().unwrap().status, LpStatus::Optimal);
+    // The cap binds even when the deadline is generous.
+    let sol = two_pivot_problem()
+        .with_budget(Budget::within(Duration::from_secs(60)).with_max_pivots(1))
+        .solve()
+        .unwrap();
+    assert_eq!(sol.status, LpStatus::BudgetExhausted);
+    // Malformed input is still an error under a budget.
+    assert!(
+        LpProblem::minimize(vec![qi(1)])
+            .le(vec![qi(1), qi(2)], qi(1))
+            .with_budget(Budget::max_pivots(0))
+            .solve()
+            .is_err()
+    );
+    // Contradictory bounds are decided before any pivot: no budget needed.
+    let sol = LpProblem::minimize(vec![qi(1)])
+        .bounds(0, Some(qi(2)), Some(qi(1)))
+        .with_budget(Budget::max_pivots(0))
+        .solve()
+        .unwrap();
+    assert_eq!(sol.status, LpStatus::Infeasible);
+}
+
+/// The budget is shared by the whole solve: an `i64` attempt that
+/// overflows into `BigInt` does not get its pivots back.
+#[test]
+fn budget_pivots_count_across_the_cell_type_fallback() {
+    let big = |k: i64| qi(k) * qi(1 << 40);
+    let p = LpProblem::minimize(vec![qi(1), qi(1), qi(1)])
+        .ge(vec![big(3), big(1), big(2)], big(7))
+        .ge(vec![big(1), big(5), big(1)], big(11))
+        .le(vec![big(2), big(1), big(3)], big(40));
+    let free = p.solve().unwrap();
+    assert_eq!(free.status, LpStatus::Optimal);
+    // Find the smallest cap that lets the solve finish; every smaller cap
+    // is exhausted, and the answer under the smallest sufficient cap is the
+    // unbudgeted one.
+    let mut needed = None;
+    for cap in 0..200usize {
+        let sol = p
+            .clone()
+            .with_budget(Budget::max_pivots(cap))
+            .solve()
+            .unwrap();
+        match sol.status {
+            LpStatus::BudgetExhausted => assert!(needed.is_none()),
+            LpStatus::Optimal => {
+                assert_eq!(sol.x, free.x);
+                assert_eq!(sol.objective, free.objective);
+                needed.get_or_insert(cap);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    let needed = needed.expect("a cap under 200 suffices");
+    // The i64 attempt performs at least one pivot before it overflows, so
+    // the shared count exceeds what the BigInt run alone would need: the
+    // cap must cover both, hence strictly more than the pivots of a
+    // problem of this shape with small coefficients.
+    let small = LpProblem::minimize(vec![qi(1), qi(1), qi(1)])
+        .ge(vec![qi(3), qi(1), qi(2)], qi(7))
+        .ge(vec![qi(1), qi(5), qi(1)], qi(11))
+        .le(vec![qi(2), qi(1), qi(3)], qi(40));
+    let mut small_needed = None;
+    for cap in 0..200usize {
+        if small
+            .clone()
+            .with_budget(Budget::max_pivots(cap))
+            .solve()
+            .unwrap()
+            .status
+            == LpStatus::Optimal
+        {
+            small_needed = Some(cap);
+            break;
+        }
+    }
+    let small_needed = small_needed.expect("a cap under 200 suffices");
+    assert!(
+        needed > small_needed,
+        "shared budget: {needed} pivots for the overflowing problem vs {small_needed} for the small one"
+    );
 }
 
 #[test]
@@ -1408,7 +1589,40 @@ proptest! {
             LpStatus::Optimal => prop_assert!(s.is_feasible(&sol.x)),
             LpStatus::Infeasible => prop_assert!(sol.farkas.is_some()),
             LpStatus::Unbounded => prop_assert!(sol.x.is_empty()),
+            LpStatus::BudgetExhausted => prop_assert!(false, "no budget was set"),
         }
+    }
+
+    /// A budget never changes an answer that fits inside it: with a pivot
+    /// cap at least the number of pivots the solve needs, the result is the
+    /// unbudgeted one; below it, `BudgetExhausted` and nothing else.
+    #[test]
+    fn prop_budget_is_monotone_and_never_alters_an_answer(
+        nvars in 1usize..=3,
+        nrows in 1usize..=3,
+        maximize in any::<bool>(),
+        data in prop::collection::vec(-5i64..=5, 40),
+        rels in prop::collection::vec(0u8..3, 4),
+        free_mask in 0u8..16,
+    ) {
+        let s = random_spec(nvars, nrows, maximize, &data, &rels, free_mask);
+        let free = s.solve();
+        let mut finished = false;
+        for cap in 0..64usize {
+            let sol = s.build().with_budget(Budget::max_pivots(cap)).solve().expect("well-formed LP");
+            if sol.status == LpStatus::BudgetExhausted {
+                prop_assert!(!finished, "exhausted at cap {cap} after finishing at a smaller one");
+                prop_assert!(sol.x.is_empty() && sol.objective.is_none() && sol.duals.is_empty() && sol.farkas.is_none());
+            } else {
+                finished = true;
+                prop_assert_eq!(&sol.status, &free.status);
+                prop_assert_eq!(&sol.x, &free.x);
+                prop_assert_eq!(&sol.objective, &free.objective);
+                prop_assert_eq!(&sol.duals, &free.duals);
+                prop_assert_eq!(&sol.farkas, &free.farkas);
+            }
+        }
+        prop_assert!(finished, "a 3×3 LP needs fewer than 64 pivots");
     }
 
     /// The optimum is at least as good as any random feasible point found

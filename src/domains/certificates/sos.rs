@@ -30,6 +30,7 @@
 //! rational point.
 
 use std::fmt;
+use std::time::{Duration, Instant};
 
 use num_bigint::BigInt;
 use num_traits::{One, Signed, ToPrimitive, Zero};
@@ -60,6 +61,13 @@ fn invalid(reason: impl Into<String>) -> SymplexError {
 
 /// Search limits for [`prove_sos`].
 ///
+/// **Budget.**  A call may be bounded by a deadline
+/// ([`with_deadline`](Self::with_deadline), absolute, or
+/// [`with_time_limit`](Self::with_time_limit), measured from the start of
+/// the call).  The interior-point loop checks it between iterations and
+/// the facial-reduction loop between rounds; when it passes the answer is
+/// `Unknown` with a reason starting `budget exhausted: deadline`.
+///
 /// `#[non_exhaustive]`: build it with [`Default`] and the `with_*`
 /// builders (or assign fields on a `mut` default), so that a future option
 /// is not a breaking change.
@@ -74,18 +82,25 @@ pub struct SosOpts {
     pub rounding_digits: Vec<u32>,
     /// Rounds of numerically guided facial reduction.
     pub max_facial_reductions: usize,
+    /// Absolute deadline for each [`prove_sos`] call.
+    pub deadline: Option<Instant>,
+    /// Time allowed for each [`prove_sos`] call, measured from its start.
+    /// When both this and `deadline` are set the earlier one applies.
+    pub time_limit: Option<Duration>,
 }
 
 impl Default for SosOpts {
     /// `max_basis = 60`, `max_iterations = 80`, digits `[1, 2, 3, 5, 7, 9,
     /// 12]` (coarse first, for small rationals in the certificate),
-    /// `max_facial_reductions = 3`.
+    /// `max_facial_reductions = 3`, no deadline.
     fn default() -> Self {
         SosOpts {
             max_basis: 60,
             max_iterations: 80,
             rounding_digits: vec![1, 2, 3, 5, 7, 9, 12],
             max_facial_reductions: 3,
+            deadline: None,
+            time_limit: None,
         }
     }
 }
@@ -117,6 +132,43 @@ impl SosOpts {
     pub fn with_max_facial_reductions(mut self, max_facial_reductions: usize) -> Self {
         self.max_facial_reductions = max_facial_reductions;
         self
+    }
+
+    /// Set [`deadline`](Self::deadline): every call stops at this instant.
+    #[must_use]
+    pub fn with_deadline(mut self, deadline: Instant) -> Self {
+        self.deadline = Some(deadline);
+        self
+    }
+
+    /// Set [`time_limit`](Self::time_limit): every call gets this long
+    /// from the moment it starts.
+    #[must_use]
+    pub fn with_time_limit(mut self, time_limit: Duration) -> Self {
+        self.time_limit = Some(time_limit);
+        self
+    }
+
+    /// The deadline of a call starting now: the earlier of `deadline` and
+    /// now + `time_limit` (a limit too large to represent is no limit).
+    fn deadline_from_now(&self) -> Option<Instant> {
+        let from_limit = self.time_limit.and_then(|t| Instant::now().checked_add(t));
+        match (self.deadline, from_limit) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+}
+
+/// The deadline passed (the interior-point loop or a facial-reduction
+/// round was cut short).
+struct DeadlinePassed;
+
+/// `Err(DeadlinePassed)` once `deadline` is in the past.
+fn check_deadline(deadline: Option<Instant>) -> Result<(), DeadlinePassed> {
+    match deadline {
+        Some(d) if Instant::now() >= d => Err(DeadlinePassed),
+        _ => Ok(()),
     }
 }
 
@@ -946,8 +998,13 @@ impl SosProblem {
     /// Primal–dual interior-point method (HKM direction, Mehrotra
     /// predictor–corrector) for the feasibility SDP with zero objective.
     /// Returns the primal iterate `X` (row-major), or `None` if the method
-    /// did not converge (infeasible or ill-posed).
-    fn solve_numeric(&self, max_iterations: usize) -> Option<Vec<f64>> {
+    /// did not converge (infeasible or ill-posed); `Err` if `deadline`
+    /// passed between two iterations.
+    fn solve_numeric(
+        &self,
+        max_iterations: usize,
+        deadline: Option<Instant>,
+    ) -> Result<Option<Vec<f64>>, DeadlinePassed> {
         let n = self.n;
         let m = self.constraints.len();
         let mats: Vec<Vec<f64>> = self.constraints.iter().map(|c| c.matrix_f64(n)).collect();
@@ -998,6 +1055,7 @@ impl SosProblem {
         let mut stall = 0usize;
 
         for _it in 0..max_iterations {
+            check_deadline(deadline)?;
             // Residuals.
             let rp: Vec<f64> = (0..m).map(|k| b[k] - inner(&mats[k], &x)).collect();
             let mut rd = vec![0.0; n * n]; // −(Aᵀy + Z)  (C = 0)
@@ -1028,7 +1086,7 @@ impl SosProblem {
             // rank-deficient face; pushing it further only lets Z⁻¹ blow up.
             let xscale = (0..n).map(|i| x[i * n + i]).fold(0.0, f64::max).max(1.0);
             if rp_norm <= 1e-9 * bnorm && rd_norm <= 1e-9 && mu <= 1e-9 * xscale {
-                return Some(x);
+                return Ok(Some(x));
             }
 
             // Schur complement M_kl = ⟨A_k, X A_l Z⁻¹⟩ (shared by both solves).
@@ -1135,7 +1193,7 @@ impl SosProblem {
         }
         // Not fully converged: return the best iterate if it is nearly
         // feasible (the exact rounding step is the real test).
-        best.and_then(|(merit, xb)| if merit < 1e-5 { Some(xb) } else { None })
+        Ok(best.and_then(|(merit, xb)| if merit < 1e-5 { Some(xb) } else { None }))
     }
 
     /// Round `x` to `10^{-digits}` and project exactly onto `A(Q) = b`
@@ -2022,13 +2080,30 @@ pub fn prove_sos(goal: &Ex, vars: &[Ex], opts: &SosOpts) -> Result<SosOutcome, S
     let problem = SosProblem::new(&goal_poly, &basis)?;
 
     // 3. Solve, reduce, round.
+    let deadline = opts.deadline_from_now();
     let mut face: Option<QMatrix> = None; // B with Q = B Q' Bᵀ
     let mut current = problem;
-    for _round in 0..=opts.max_facial_reductions {
-        let Some(x) = current.solve_numeric(opts.max_iterations) else {
-            return Ok(Outcome::Unknown(SosUnknown {
-            reason: "the interior-point method did not converge (no sum-of-squares decomposition of this degree, or a numerically hard one)".into(),
-            }));
+    for round in 0..=opts.max_facial_reductions {
+        let out_of_time = |where_: &str| {
+            Ok(Outcome::Unknown(SosUnknown {
+                reason: format!(
+                    "budget exhausted: deadline passed {where_} (facial-reduction round {round} of \
+                     {})",
+                    opts.max_facial_reductions
+                ),
+            }))
+        };
+        if check_deadline(deadline).is_err() {
+            return out_of_time("before the SDP solve");
+        }
+        let x = match current.solve_numeric(opts.max_iterations, deadline) {
+            Ok(Some(x)) => x,
+            Ok(None) => {
+                return Ok(Outcome::Unknown(SosUnknown {
+                    reason: "the interior-point method did not converge (no sum-of-squares decomposition of this degree, or a numerically hard one)".into(),
+                }));
+            }
+            Err(DeadlinePassed) => return out_of_time("inside the interior-point loop"),
         };
         for &digits in &opts.rounding_digits {
             if let Some(q_small) = current.round_and_project(&x, digits) {

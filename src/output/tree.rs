@@ -1264,6 +1264,360 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// srepr and DOT (0.9.1)
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl ExprTree {
+    /// The constructor head and the ordered children of this node.
+    ///
+    /// `None` children marks an atom (printed as the bare head); `Some`
+    /// marks a compound node (printed as `head(child, …)`, even with zero
+    /// children).  Heads follow SymPy's `srepr` where SymPy has the node
+    /// (`Integer`, `Rational`, `Symbol('x')`, `Add`, `Mul`, `Pow`, `sin`,
+    /// `log`, `StrictGreaterThan`, `Interval`, …) and the symplex name
+    /// otherwise (`Neg`, `DefiniteIntegral`, `Series`, `RootSum`).
+    fn head_and_children(&self) -> (String, Option<Vec<&ExprTree>>) {
+        type Parts<'t> = (String, Option<Vec<&'t ExprTree>>);
+        fn one<'t>(head: &str, a: &'t ExprTree) -> Parts<'t> {
+            (head.to_string(), Some(vec![a]))
+        }
+        fn two<'t>(head: &str, a: &'t ExprTree, b: &'t ExprTree) -> Parts<'t> {
+            (head.to_string(), Some(vec![a, b]))
+        }
+        fn many<'t>(head: &str, items: &'t [ExprTree]) -> Parts<'t> {
+            (head.to_string(), Some(items.iter().collect()))
+        }
+        fn atom<'t>(head: &str) -> Parts<'t> {
+            (head.to_string(), None)
+        }
+        match self {
+            ExprTree::Num { numer, denom } => {
+                if denom == "1" {
+                    atom(&format!("Integer({numer})"))
+                } else {
+                    atom(&format!("Rational({numer}, {denom})"))
+                }
+            }
+            ExprTree::Symbol { name } => atom(&format!("Symbol('{name}')")),
+            ExprTree::Pi => atom("pi"),
+            ExprTree::E => atom("E"),
+            ExprTree::ImaginaryUnit => atom("I"),
+            ExprTree::EulerGamma => atom("EulerGamma"),
+            ExprTree::Catalan => atom("Catalan"),
+            ExprTree::GoldenRatio => atom("GoldenRatio"),
+            ExprTree::PhysicalConstant { name, value } => {
+                one(&format!("PhysicalConstant('{name}')"), value)
+            }
+            ExprTree::Infinity => atom("oo"),
+            ExprTree::NegInfinity => atom("-oo"),
+            ExprTree::ComplexInfinity => atom("zoo"),
+            ExprTree::NaN => atom("nan"),
+            ExprTree::Add { terms } => many("Add", terms),
+            ExprTree::Mul { factors } => many("Mul", factors),
+            ExprTree::Pow { base, exp } => two("Pow", base, exp),
+            ExprTree::Neg { inner } => one("Neg", inner),
+            ExprTree::Sin { arg } => one("sin", arg),
+            ExprTree::Cos { arg } => one("cos", arg),
+            ExprTree::Tan { arg } => one("tan", arg),
+            ExprTree::Exp { arg } => one("exp", arg),
+            ExprTree::Ln { arg } => one("log", arg),
+            ExprTree::Sqrt { arg } => one("sqrt", arg),
+            ExprTree::Abs { arg } => one("Abs", arg),
+            ExprTree::Asin { arg } => one("asin", arg),
+            ExprTree::Acos { arg } => one("acos", arg),
+            ExprTree::Atan { arg } => one("atan", arg),
+            ExprTree::Atan2 { y, x } => two("atan2", y, x),
+            ExprTree::Sinh { arg } => one("sinh", arg),
+            ExprTree::Cosh { arg } => one("cosh", arg),
+            ExprTree::Tanh { arg } => one("tanh", arg),
+            ExprTree::Asinh { arg } => one("asinh", arg),
+            ExprTree::Acosh { arg } => one("acosh", arg),
+            ExprTree::Atanh { arg } => one("atanh", arg),
+            ExprTree::Sign { arg } => one("sign", arg),
+            ExprTree::Heaviside { arg } => one("Heaviside", arg),
+            ExprTree::DiracDelta { arg } => one("DiracDelta", arg),
+            ExprTree::Gamma { arg } => one("gamma", arg),
+            ExprTree::LogGamma { arg } => one("loggamma", arg),
+            ExprTree::Digamma { arg } => one("digamma", arg),
+            ExprTree::Erf { arg } => one("erf", arg),
+            ExprTree::Erfc { arg } => one("erfc", arg),
+            ExprTree::LambertW { arg } => one("LambertW", arg),
+            ExprTree::Beta { a, b } => two("beta", a, b),
+            ExprTree::Re { arg } => one("re", arg),
+            ExprTree::Im { arg } => one("im", arg),
+            ExprTree::Conjugate { arg } => one("conjugate", arg),
+            ExprTree::Arg { arg } => one("arg", arg),
+            ExprTree::Si { arg } => one("Si", arg),
+            ExprTree::Ci { arg } => one("Ci", arg),
+            ExprTree::Ei { arg } => one("Ei", arg),
+            ExprTree::Li { arg } => one("li", arg),
+            ExprTree::Zeta { arg } => one("zeta", arg),
+            ExprTree::Polygamma { n, arg } => two("polygamma", n, arg),
+            ExprTree::KroneckerDelta { i, j } => two("KroneckerDelta", i, j),
+            ExprTree::Floor { arg } => one("floor", arg),
+            ExprTree::Ceiling { arg } => one("ceiling", arg),
+            ExprTree::Min { args } => many("Min", args),
+            ExprTree::Max { args } => many("Max", args),
+            ExprTree::BoolTrue => atom("true"),
+            ExprTree::BoolFalse => atom("false"),
+            ExprTree::Gt { lhs, rhs } => two("StrictGreaterThan", lhs, rhs),
+            ExprTree::Ge { lhs, rhs } => two("GreaterThan", lhs, rhs),
+            ExprTree::Eq_ { lhs, rhs } => two("Equality", lhs, rhs),
+            ExprTree::Ne { lhs, rhs } => two("Unequality", lhs, rhs),
+            ExprTree::And { args } => many("And", args),
+            ExprTree::Or { args } => many("Or", args),
+            ExprTree::Not { arg } => one("Not", arg),
+            ExprTree::Piecewise { pieces } => (
+                "Piecewise".to_string(),
+                Some(pieces.iter().flat_map(|(v, c)| [v, c]).collect()),
+            ),
+            ExprTree::Apply { name, args } => many(name, args),
+            ExprTree::Derivative { body, var } => two("Derivative", body, var),
+            ExprTree::Integral { body, var } => two("Integral", body, var),
+            ExprTree::DefiniteIntegral {
+                body,
+                var,
+                lower,
+                upper,
+            } => (
+                "DefiniteIntegral".to_string(),
+                Some(vec![body, var, lower, upper]),
+            ),
+            ExprTree::Sum {
+                body,
+                var,
+                lower,
+                upper,
+            } => ("Sum".to_string(), Some(vec![body, var, lower, upper])),
+            ExprTree::Product_ {
+                body,
+                var,
+                lower,
+                upper,
+            } => ("Product".to_string(), Some(vec![body, var, lower, upper])),
+            ExprTree::EmptySet => atom("EmptySet"),
+            ExprTree::UniversalSet => atom("UniversalSet"),
+            ExprTree::Interval { start, end, .. } => two("Interval", start, end),
+            ExprTree::FiniteSet { elements } => many("FiniteSet", elements),
+            ExprTree::SetUnion { sets } => many("Union", sets),
+            ExprTree::SetIntersection { sets } => many("Intersection", sets),
+            ExprTree::SetComplement { set, universe } => two("Complement", set, universe),
+            ExprTree::Limit { body, var, point } => {
+                ("Limit".to_string(), Some(vec![body, var, point]))
+            }
+            ExprTree::Series {
+                body,
+                var,
+                point,
+                order,
+            } => ("Series".to_string(), Some(vec![body, var, point, order])),
+            ExprTree::LaplaceTransform { body, t, s } => {
+                ("LaplaceTransform".to_string(), Some(vec![body, t, s]))
+            }
+            ExprTree::InverseLaplaceTransform { body, s, t } => (
+                "InverseLaplaceTransform".to_string(),
+                Some(vec![body, s, t]),
+            ),
+            ExprTree::Residue { body, var, point } => {
+                ("Residue".to_string(), Some(vec![body, var, point]))
+            }
+            ExprTree::RootOf { poly, index } => two("RootOf", poly, index),
+            ExprTree::DSolve { expr, func, var } => {
+                ("DSolve".to_string(), Some(vec![expr, func, var]))
+            }
+            ExprTree::RootSum { poly, body, sumvar } => {
+                ("RootSum".to_string(), Some(vec![poly, body, sumvar]))
+            }
+            ExprTree::ConditionSet { var, condition } => two("ConditionSet", var, condition),
+        }
+    }
+
+    /// Extra literal arguments printed after the children in `to_srepr`
+    /// (the open/closed flags of an `Interval`).
+    fn srepr_trailing(&self) -> Option<String> {
+        match self {
+            ExprTree::Interval { flags, .. } => {
+                Some(format!(", {}, {}", flags & 0x01 != 0, flags & 0x02 != 0))
+            }
+            _ => None,
+        }
+    }
+
+    /// SymPy-`srepr`-style constructor form of this tree — unambiguous and
+    /// total (every variant prints).  See [`Ex::to_srepr`](crate::api::expr::Ex::to_srepr).
+    ///
+    /// ```
+    /// use symplex::tree::ExprTree;
+    ///
+    /// let t = ExprTree::Pow {
+    ///     base: Box::new(ExprTree::Symbol { name: "x".into() }),
+    ///     exp: Box::new(ExprTree::Num { numer: "1".into(), denom: "2".into() }),
+    /// };
+    /// assert_eq!(t.to_srepr(), "Pow(Symbol('x'), Rational(1, 2))");
+    /// ```
+    #[must_use]
+    pub fn to_srepr(&self) -> String {
+        enum Item<'t> {
+            Text(String),
+            Node(&'t ExprTree),
+        }
+        let mut out = String::new();
+        let mut stack: Vec<Item<'_>> = vec![Item::Node(self)];
+        while let Some(item) = stack.pop() {
+            match item {
+                Item::Text(s) => out.push_str(&s),
+                Item::Node(node) => {
+                    let (head, children) = node.head_and_children();
+                    out.push_str(&head);
+                    let Some(children) = children else { continue };
+                    out.push('(');
+                    // Pushed in reverse so that popping yields left-to-right.
+                    let mut close = String::new();
+                    if let Some(trailing) = node.srepr_trailing() {
+                        close.push_str(&trailing);
+                    }
+                    close.push(')');
+                    stack.push(Item::Text(close));
+                    let pairwise = matches!(node, ExprTree::Piecewise { .. });
+                    for (i, child) in children.iter().enumerate().rev() {
+                        if pairwise {
+                            // `Piecewise((v1, c1), (v2, c2))`
+                            if i % 2 == 1 {
+                                stack.push(Item::Text(")".into()));
+                                stack.push(Item::Node(child));
+                                stack.push(Item::Text(", ".into()));
+                            } else {
+                                stack.push(Item::Node(child));
+                                stack.push(Item::Text(if i == 0 { "(" } else { ", (" }.into()));
+                            }
+                        } else {
+                            stack.push(Item::Node(child));
+                            if i > 0 {
+                                stack.push(Item::Text(", ".into()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Graphviz `digraph` of this tree (SymPy: `dotprint`).  See
+    /// [`Ex::to_dot`](crate::api::expr::Ex::to_dot).
+    ///
+    /// Node ids are assigned in pre-order (`n0` is the root, children
+    /// left to right), so the output is deterministic; labels are the
+    /// node kind with its value for atoms (`Symbol('x')`, `Integer(2)`).
+    #[must_use]
+    pub fn to_dot(&self) -> String {
+        let mut nodes: Vec<String> = Vec::new();
+        let mut edges: Vec<String> = Vec::new();
+        // (node, parent id); pre-order with children pushed in reverse.
+        let mut stack: Vec<(&ExprTree, Option<usize>)> = vec![(self, None)];
+        while let Some((node, parent)) = stack.pop() {
+            let id = nodes.len();
+            let (head, children) = node.head_and_children();
+            let label = match node {
+                ExprTree::Interval { flags, .. } => format!(
+                    "Interval('{}{}')",
+                    if flags & 0x01 != 0 { '(' } else { '[' },
+                    if flags & 0x02 != 0 { ')' } else { ']' }
+                ),
+                _ => head,
+            };
+            nodes.push(format!(
+                "    n{id} [label=\"{}\"];",
+                label.replace('\\', "\\\\").replace('"', "\\\"")
+            ));
+            if let Some(p) = parent {
+                edges.push(format!("    n{p} -> n{id};"));
+            }
+            if let Some(children) = children {
+                for child in children.into_iter().rev() {
+                    stack.push((child, Some(id)));
+                }
+            }
+        }
+        let mut out = String::from("digraph {\n    ordering=out;\n    rankdir=TD;\n");
+        for n in &nodes {
+            out.push_str(n);
+            out.push('\n');
+        }
+        for e in &edges {
+            out.push_str(e);
+            out.push('\n');
+        }
+        out.push_str("}\n");
+        out
+    }
+}
+
+impl<S: crate::api::expr::Sort> crate::api::expr::Expr<S> {
+    /// SymPy-`srepr`-style constructor form: an unambiguous, parseable-by-eye
+    /// rendering of the exact tree, derived from [`to_tree`](Self::to_tree)
+    /// so it is total (SymPy: `srepr(expr)`).
+    ///
+    /// Atoms print as `Integer(2)`, `Rational(1, 2)`, `Symbol('x')`, `pi`,
+    /// `E`, `I`, `oo`; compound nodes as `Head(child, …)` with SymPy's
+    /// heads where they exist (`Add`, `Mul`, `Pow`, `sin`, `log`, `Abs`,
+    /// `StrictGreaterThan`, `Interval(a, b, false, true)`, …) and symplex's
+    /// otherwise (`Neg`, `DefiniteIntegral(f, x, a, b)`).  Library and
+    /// user functions print as `name(args)`.  Children appear in the
+    /// arena's canonical order (numbers first in a sum), not display order:
+    /// this is the exact tree, as `to_tree`/`to_json` see it.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// assert_eq!((2 * &x + 1).to_srepr(), "Add(Integer(1), Mul(Integer(2), Symbol('x')))");
+    /// assert_eq!((&x / 2).to_srepr(), "Mul(Rational(1, 2), Symbol('x'))");
+    /// assert_eq!(x.sin().powi(2).to_srepr(), "Pow(sin(Symbol('x')), Integer(2))");
+    /// assert_eq!(x.gt(&ctx.int(0)).to_srepr(), "StrictGreaterThan(Symbol('x'), Integer(0))");
+    /// ```
+    #[must_use = "returns the rendered string; does not modify in place"]
+    pub fn to_srepr(&self) -> String {
+        self.to_tree().to_srepr()
+    }
+
+    /// Graphviz DOT source for the expression tree (SymPy: `dotprint`).
+    ///
+    /// One node per tree position (labelled with the node kind and, for
+    /// atoms, the value), one edge per child, ids `n0`, `n1`, … assigned
+    /// in pre-order so the output is deterministic.  Render with
+    /// `dot -Tsvg`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// assert_eq!(
+    ///     (2 * &x + 1).to_dot(),
+    ///     "digraph {\n\
+    ///     \x20   ordering=out;\n\
+    ///     \x20   rankdir=TD;\n\
+    ///     \x20   n0 [label=\"Add\"];\n\
+    ///     \x20   n1 [label=\"Integer(1)\"];\n\
+    ///     \x20   n2 [label=\"Mul\"];\n\
+    ///     \x20   n3 [label=\"Integer(2)\"];\n\
+    ///     \x20   n4 [label=\"Symbol('x')\"];\n\
+    ///     \x20   n0 -> n1;\n\
+    ///     \x20   n0 -> n2;\n\
+    ///     \x20   n2 -> n3;\n\
+    ///     \x20   n2 -> n4;\n\
+    ///     }\n"
+    /// );
+    /// ```
+    #[must_use = "returns the rendered string; does not modify in place"]
+    pub fn to_dot(&self) -> String {
+        self.to_tree().to_dot()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 

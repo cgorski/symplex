@@ -53,6 +53,8 @@ use num_rational::Ratio;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use rustc_hash::FxHashMap;
 
+use crate::api::context::Context;
+use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 
 // Combinatorial sequences live in `combinatorics`; re-export the classical
@@ -3409,6 +3411,1216 @@ pub fn ilcm<I: Into<BigInt> + Clone>(values: &[I]) -> BigInt {
 pub fn rational_lcm_of_denominators(values: &[Ratio<BigInt>]) -> BigInt {
     let denoms: Vec<BigInt> = values.iter().map(|r| r.denom().clone()).collect();
     lcm_many(&denoms)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Higher power residues and polynomial congruences (0.9.1)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Every solution `x ∈ [0, m)` of `xⁿ ≡ a (mod m)` (SymPy `nthroot_mod`).
+///
+/// Returns `None` when the congruence has no solution (and for `n < 1` or
+/// `m < 1`); otherwise `Some(roots)` sorted ascending — every root when
+/// `all_roots` is `true`, only the smallest one otherwise.
+///
+/// The modulus is factored.  Modulo each prime `p` the roots are found
+/// with Johnston's generalised `q`-th root algorithm: the congruence is
+/// first reduced to `x^d ≡ a′` with `d = gcd(n, p − 1)` (a Euclidean
+/// reduction of `gcd(xⁿ − a, x^{p−1} − 1)`), then a primitive root and
+/// discrete logarithms *inside the `q`-Sylow subgroups for the primes
+/// `q | d`* produce one root, and multiplication by the `d`-th roots of
+/// unity produces the rest.  `p` may therefore be large as long as the
+/// prime factors of `gcd(n, p − 1)` are moderate (baby-step giant-step of
+/// size `√q`).  Roots are lifted to `pᵏ` by Hensel's lemma (uniquely when
+/// `p ∤ n·x`, exhaustively otherwise) and combined with the Chinese
+/// Remainder Theorem.  `n = 2` defers to [`sqrt_mod_all`].
+///
+/// Root sets with more than `u64::MAX` elements cannot be enumerated and
+/// such calls return `None`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::nthroot_mod;
+/// use num_bigint::BigInt;
+///
+/// let b = |v: i64| BigInt::from(v);
+/// // SymPy: nthroot_mod(11, 4, 19, True) == [8, 11]
+/// assert_eq!(nthroot_mod(11, 4, 19, true), Some(vec![b(8), b(11)]));
+/// assert_eq!(nthroot_mod(11, 4, 19, false), Some(vec![b(8)]));
+/// // SymPy: nthroot_mod(68, 3, 109, True) == [23, 32, 54]
+/// assert_eq!(nthroot_mod(68, 3, 109, true), Some(vec![b(23), b(32), b(54)]));
+/// // 2 is not a cube modulo 7
+/// assert_eq!(nthroot_mod(2, 3, 7, true), None);
+/// // composite modulus: x⁴ ≡ 16 (mod 35)
+/// assert_eq!(
+///     nthroot_mod(16, 4, 35, true),
+///     Some([2, 9, 12, 16, 19, 23, 26, 33].iter().map(|&v| b(v)).collect())
+/// );
+/// ```
+pub fn nthroot_mod(
+    a: impl Into<BigInt>,
+    n: impl Into<BigInt>,
+    m: impl Into<BigInt>,
+    all_roots: bool,
+) -> Option<Vec<BigInt>> {
+    let n: BigInt = n.into();
+    let m: BigInt = m.into();
+    if n < BigInt::one() || m < BigInt::one() {
+        return None;
+    }
+    let a: BigInt = a.into().mod_floor(&m);
+    if m.is_one() {
+        return Some(vec![BigInt::zero()]);
+    }
+    if n.is_one() {
+        return Some(vec![a]);
+    }
+    let roots = if n == BigInt::from(2) {
+        sqrt_mod_all(a, m)
+    } else {
+        let mut per_prime_power = Vec::new();
+        for (p, k) in factorint(m.clone()) {
+            let roots = nthroot_mod_prime_power(&a, &n, &p, k);
+            if roots.is_empty() {
+                return None;
+            }
+            per_prime_power.push((p.pow(k), roots));
+        }
+        crt_combine_roots(per_prime_power)
+    };
+    if roots.is_empty() {
+        return None;
+    }
+    if all_roots {
+        Some(roots)
+    } else {
+        roots.into_iter().next().map(|r| vec![r])
+    }
+}
+
+/// Combine per-prime-power root lists (`(pᵏ, roots mod pᵏ)`) into the
+/// sorted list of roots modulo the product, by CRT over every combination.
+fn crt_combine_roots(per_prime_power: Vec<(BigInt, Vec<BigInt>)>) -> Vec<BigInt> {
+    let mut combined: Vec<(BigInt, BigInt)> = vec![(BigInt::zero(), BigInt::one())];
+    for (pk, roots) in per_prime_power {
+        let mut next = Vec::with_capacity(combined.len() * roots.len());
+        for (res, modulus) in &combined {
+            for r in &roots {
+                if let Some(x) = crt(&[res.clone(), r.clone()], &[modulus.clone(), pk.clone()]) {
+                    next.push((x, modulus * &pk));
+                }
+            }
+        }
+        combined = next;
+    }
+    let mut out: Vec<BigInt> = combined.into_iter().map(|(x, _)| x).collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Does `xⁿ ≡ a (mod pᵏ)` have a solution?  (`p` prime, `k ≥ 1`, any
+/// `n ≥ 1`.)  Generalised Euler criterion for odd `p`; the `a ≡ 1
+/// (mod 2^{min(ν₂(n)+2, k)})` test for `p = 2`.
+fn is_nthpow_residue_prime_power(a: &BigInt, n: &BigInt, p: &BigInt, k: u32) -> bool {
+    let pk = p.pow(k);
+    let mut a = a.mod_floor(&pk);
+    if a.is_zero() {
+        return true;
+    }
+    let mut k = k;
+    if (&a % p).is_zero() {
+        // a = p^μ · a′ with p ∤ a′: need n | μ, then solve mod p^{k−μ}.
+        let mut mu = 0u32;
+        while (&a % p).is_zero() {
+            a /= p;
+            mu += 1;
+        }
+        if !(BigInt::from(mu) % n).is_zero() {
+            return false;
+        }
+        // μ < k because a ≢ 0 (mod pᵏ).
+        k = k.saturating_sub(mu).max(1);
+    }
+    if *p != BigInt::from(2) {
+        let phi = p.pow(k - 1) * (p - BigInt::one());
+        let e = &phi / phi.gcd(n);
+        return a.modpow(&e, &p.pow(k)).is_one();
+    }
+    if n.is_odd() {
+        return true;
+    }
+    let v = n.trailing_zeros().unwrap_or(0);
+    let c = (v + 2).min(u64::from(k));
+    a.mod_floor(&(BigInt::one() << c)).is_one()
+}
+
+/// Sorted roots of `xⁿ ≡ a (mod pᵏ)` for prime `p` and `n ≥ 3`.
+fn nthroot_mod_prime_power(a: &BigInt, n: &BigInt, p: &BigInt, k: u32) -> Vec<BigInt> {
+    let pk = p.pow(k);
+    let a = a.mod_floor(&pk);
+    if !is_nthpow_residue_prime_power(&a, n, p, k) {
+        return vec![];
+    }
+    let a_mod_p = a.mod_floor(p);
+    let base_roots = if a_mod_p.is_zero() {
+        vec![BigInt::zero()]
+    } else {
+        nthroot_mod_prime(&a_mod_p, n, p)
+    };
+    if k == 1 {
+        return base_roots;
+    }
+    let n_minus_1 = n - BigInt::one();
+    hensel_lift_all(
+        base_roots,
+        p,
+        k,
+        |x, modulus| (x.modpow(n, modulus) - &a).mod_floor(modulus),
+        |x, modulus| (n * x.modpow(&n_minus_1, modulus)).mod_floor(modulus),
+    )
+}
+
+/// Lift roots of `f` modulo `p` to roots modulo `pᵏ` (Hensel).
+///
+/// `f(x, m)` must return `f(x) mod m` and `df(x, m)` the derivative
+/// `f′(x) mod m`.  When `f′(x) ≢ 0 (mod p)` the lift is unique; otherwise
+/// either every one of the `p` candidates `x + v·pˢ` is a root modulo
+/// `pˢ⁺¹` or none is.  Returns the sorted, deduplicated roots.
+fn hensel_lift_all(
+    base_roots: Vec<BigInt>,
+    p: &BigInt,
+    k: u32,
+    f: impl Fn(&BigInt, &BigInt) -> BigInt,
+    df: impl Fn(&BigInt, &BigInt) -> BigInt,
+) -> Vec<BigInt> {
+    let mut stack: Vec<(BigInt, u32)> = base_roots.into_iter().map(|x| (x, 1)).collect();
+    let mut out = Vec::new();
+    while let Some((x, s)) = stack.pop() {
+        if s >= k {
+            out.push(x);
+            continue;
+        }
+        let ps = p.pow(s);
+        let next = &ps * p;
+        // f(x + v·pˢ) ≡ f(x) + v·pˢ·f′(x)  (mod pˢ⁺¹); f(x) ≡ 0 (mod pˢ) by invariant.
+        let alpha = df(&x, p);
+        let beta = (-(f(&x, &next) / &ps)).mod_floor(p);
+        if alpha.is_zero() {
+            if beta.is_zero() {
+                let Some(count) = p.to_u64() else {
+                    continue;
+                };
+                let mut y = x;
+                for _ in 0..count {
+                    stack.push((y.clone(), s + 1));
+                    y += &ps;
+                }
+            }
+        } else if let Some(inv) = mod_inverse(alpha, p.clone()) {
+            let v = (inv * beta).mod_floor(p);
+            stack.push((x + v * &ps, s + 1));
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Primes below this bound have their `n`-th roots enumerated directly:
+/// `p` machine-word exponentiations beat the primitive-root machinery.
+const NTHROOT_BRUTE_FORCE_LIMIT: u64 = 1 << 10;
+
+/// Sorted roots of `xⁿ ≡ a (mod p)` for prime `p`, `p ∤ a`, `n ≥ 1`.
+fn nthroot_mod_prime(a: &BigInt, n: &BigInt, p: &BigInt) -> Vec<BigInt> {
+    if *p == BigInt::from(2) {
+        // a ≡ 1 and xⁿ ≡ 1 (mod 2) ⇔ x ≡ 1.
+        return vec![BigInt::one()];
+    }
+    let pm1 = p - BigInt::one();
+    if let (Some(pu), Some(au)) = (p.to_u64(), a.to_u64())
+        && pu < NTHROOT_BRUTE_FORCE_LIMIT
+    {
+        // x^n ≡ x^{n mod (p−1)} for p ∤ x (Fermat); n ≥ 1 so exponent 0 means p − 1.
+        let mut e = n.mod_floor(&pm1).to_u64().unwrap_or(0);
+        if e == 0 {
+            e = pu - 1;
+        }
+        return (1..pu)
+            .filter(|&x| mod_pow_u64(x, e, pu) == au)
+            .map(BigInt::from)
+            .collect();
+    }
+    let d = n.gcd(&pm1);
+    if !a.modpow(&(&pm1 / &d), p).is_one() {
+        return vec![];
+    }
+    // gcd(xⁿ − a, x^{p−1} − 1) by Euclid on the exponents: the pair
+    // (x^{pa} − ca, x^{pb} − cb) becomes (x^{pb} − cb, x^{pa mod pb} − cb^{−q}·ca).
+    let (mut pa, mut pb) = (n.clone(), pm1.clone());
+    let (mut ca, mut cb) = (a.clone(), BigInt::one());
+    if pa < pb {
+        std::mem::swap(&mut pa, &mut pb);
+        std::mem::swap(&mut ca, &mut cb);
+    }
+    while !pb.is_zero() {
+        let (q, r) = pa.div_rem(&pb);
+        let Some(cb_inv) = mod_inverse(cb.clone(), p.clone()) else {
+            return vec![];
+        };
+        let c = (cb_inv.modpow(&q, p) * &ca).mod_floor(p);
+        pa = pb;
+        pb = r;
+        ca = cb;
+        cb = c;
+    }
+    // Now the roots are those of x^{pa} ≡ ca with pa = gcd(n, p − 1).
+    if pa.is_one() {
+        return vec![ca];
+    }
+    if pa == BigInt::from(2) {
+        return sqrt_mod_all(ca, p.clone());
+    }
+    nthroot_mod_prime_divisor(&ca, &pa, p)
+}
+
+/// Sorted roots of `x^q ≡ s (mod p)` when `q | p − 1` and a root exists
+/// (A. M. Johnston, "A generalized qth root algorithm", SODA 1999).
+fn nthroot_mod_prime_divisor(s: &BigInt, q: &BigInt, p: &BigInt) -> Vec<BigInt> {
+    let Some(g) = primitive_root(p.clone()) else {
+        return vec![];
+    };
+    let pm1 = p - BigInt::one();
+    let mut r = s.clone();
+    for (qx, ex) in factorint(q.clone()) {
+        // f = (p − 1) with every factor qx removed; z ≡ 0 (mod f), z ≡ −1 (mod qx).
+        let mut f = &pm1 / qx.pow(ex);
+        while (&f % &qx).is_zero() {
+            f /= &qx;
+        }
+        let Some(neg_f_inv) = mod_inverse(-&f, qx.clone()) else {
+            return vec![];
+        };
+        let z = &f * neg_f_inv;
+        let x = (&z + BigInt::one()) / &qx;
+        // t = log_h(r^f) inside the subgroup generated by h = g^{f·qx}.
+        let h = g.modpow(&(&f * &qx), p);
+        let Some(mut t) = discrete_log(h, r.modpow(&f, p), p.clone()) else {
+            return vec![];
+        };
+        for _ in 0..ex {
+            // (r^x · g^{−z·t})^{qx} = r
+            let zt = (&z * &t).mod_floor(&pm1);
+            let g_pow = g.modpow(&(&pm1 - &zt), p);
+            r = (r.modpow(&x, p) * g_pow).mod_floor(p);
+            t /= &qx;
+        }
+    }
+    // All q roots: r · ζ^i with ζ = g^{(p−1)/q} a primitive q-th root of unity.
+    let Some(count) = q.to_u64() else {
+        return vec![];
+    };
+    let zeta = g.modpow(&(&pm1 / q), p);
+    let mut out = Vec::with_capacity(count as usize);
+    let mut cur = r;
+    for _ in 0..count {
+        out.push(cur.clone());
+        cur = (&cur * &zeta).mod_floor(p);
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The quadratic residues modulo `n`: the sorted distinct values of
+/// `x² mod n` for `0 ≤ x < n` (SymPy `quadratic_residues`).  Includes `0`.
+///
+/// Brute force over `x ≤ n/2`; `n` must fit in `u64` (the result has
+/// `Θ(n)` entries anyway) and `n < 1` gives an empty vector.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::quadratic_residues;
+/// use num_bigint::BigInt;
+///
+/// let to_i = |v: Vec<BigInt>| -> Vec<i64> { v.iter().map(|t| t.try_into().unwrap()).collect() };
+/// assert_eq!(to_i(quadratic_residues(7)), vec![0, 1, 2, 4]);   // SymPy: [0, 1, 2, 4]
+/// assert_eq!(to_i(quadratic_residues(8)), vec![0, 1, 4]);      // SymPy: [0, 1, 4]
+/// assert_eq!(to_i(quadratic_residues(1)), vec![0]);
+/// ```
+pub fn quadratic_residues(n: impl Into<BigInt>) -> Vec<BigInt> {
+    let n: BigInt = n.into();
+    if n < BigInt::one() {
+        return vec![];
+    }
+    let Some(nu) = n.to_u64() else {
+        return vec![];
+    };
+    let mut squares: Vec<u64> = (0..=nu / 2).map(|x| mod_mul_u64(x, x, nu)).collect();
+    squares.sort_unstable();
+    squares.dedup();
+    squares.into_iter().map(BigInt::from).collect()
+}
+
+/// Does `xⁿ ≡ a (mod m)` have a solution?  (SymPy `is_nthpow_residue`.)
+///
+/// `false` for `m < 1` or `n < 0`.  `n = 0` asks whether `a ≡ 1`;
+/// everything is a residue modulo `1` (SymPy returns `False` for
+/// `n = 0, m = 1`, which this function does not reproduce).  `n = 2` is
+/// [`is_quad_residue`]; for `n ≥ 3` the criterion is applied to every
+/// prime-power factor of `m` (generalised Euler criterion for odd primes;
+/// `a ≡ 1 (mod 2^{min(ν₂(n)+2, k)})` for `2ᵏ`), so no root is ever
+/// enumerated and `m` may be large.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::is_nthpow_residue;
+///
+/// assert!(!is_nthpow_residue(2, 3, 7));   // SymPy: False
+/// assert!(is_nthpow_residue(2, 4, 7));    // SymPy: True   (2 ≡ 3⁴ mod 7)
+/// assert!(is_nthpow_residue(16, 4, 17));  // SymPy: True
+/// assert!(!is_nthpow_residue(2, 2, 15));  // SymPy: False
+/// assert!(is_nthpow_residue(0, 2, 15));   // SymPy: True
+/// assert!(is_nthpow_residue(17, 4, 32));  // SymPy: True
+/// assert!(!is_nthpow_residue(9, 4, 16));  // SymPy: False
+/// ```
+pub fn is_nthpow_residue(a: impl Into<BigInt>, n: impl Into<BigInt>, m: impl Into<BigInt>) -> bool {
+    let n: BigInt = n.into();
+    let m: BigInt = m.into();
+    if m < BigInt::one() || n.is_negative() {
+        return false;
+    }
+    if m.is_one() {
+        return true;
+    }
+    let a: BigInt = a.into().mod_floor(&m);
+    if n.is_zero() {
+        return a.is_one();
+    }
+    if a.is_zero() || n.is_one() {
+        return true;
+    }
+    if n == BigInt::from(2) {
+        return is_quad_residue(a, m);
+    }
+    factorint(m)
+        .iter()
+        .all(|(p, k)| is_nthpow_residue_prime_power(&a, &n, p, *k))
+}
+
+/// Roots in `[0, m)` of an integer polynomial modulo `m` (SymPy
+/// `polynomial_congruence`).
+///
+/// `coeffs` are listed **highest degree first**, like SymPy's
+/// `Poly.all_coeffs()` and [`Poly::all_coeffs`](crate::prelude::Poly::all_coeffs):
+/// `x² − 1` is `&[1, 0, −1]`.  Returns the sorted roots; an empty vector
+/// when there are none or `m < 1`.  Modulo `1` everything is a root and
+/// `[0]` is returned.
+///
+/// Linear and quadratic congruences are solved directly (the latter
+/// through [`sqrt_mod_all`] of the discriminant modulo `4am`), the monic
+/// binomial `xⁿ − a` through [`nthroot_mod`]; both work for any modulus
+/// that can be factored.  Any other polynomial is solved modulo each
+/// prime factor `p` of `m` — brute force for `p ≤ 2¹⁶`, otherwise
+/// `gcd(f, xᵖ − x)` followed by Cantor–Zassenhaus splitting, which needs
+/// `p < 2⁶³` — lifted to the prime power by Hensel's lemma and combined
+/// with the Chinese Remainder Theorem.  **Limit:** in that general case a
+/// prime factor `p ≥ 2⁶³` of `m` is not supported and yields an empty
+/// vector.  If the polynomial vanishes identically modulo some prime
+/// `p | m`, all `p` residues are roots and are enumerated.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::polynomial_congruence;
+/// use num_bigint::BigInt;
+///
+/// let c = |v: &[i64]| -> Vec<BigInt> { v.iter().map(|&t| BigInt::from(t)).collect() };
+/// let to_i = |v: Vec<BigInt>| -> Vec<i64> { v.iter().map(|t| t.try_into().unwrap()).collect() };
+///
+/// // x² − 1 ≡ 0 (mod 8)                       SymPy: [1, 3, 5, 7]
+/// assert_eq!(to_i(polynomial_congruence(&c(&[1, 0, -1]), 8)), vec![1, 3, 5, 7]);
+/// // x⁶ − 2x⁵ − 35 ≡ 0 (mod 6125)             SymPy: [3257]
+/// assert_eq!(to_i(polynomial_congruence(&c(&[1, -2, 0, 0, 0, 0, -35]), 6125)), vec![3257]);
+/// // 6x⁵ + 10x⁴ + 5x³ + x² + x + 1 (mod 7)     SymPy: [2, 6]
+/// assert_eq!(to_i(polynomial_congruence(&c(&[6, 10, 5, 1, 1, 1]), 7)), vec![2, 6]);
+/// // x² + 1 has no root modulo 7
+/// assert!(polynomial_congruence(&c(&[1, 0, 1]), 7).is_empty());
+/// ```
+pub fn polynomial_congruence(coeffs: &[BigInt], m: impl Into<BigInt>) -> Vec<BigInt> {
+    let m: BigInt = m.into();
+    if m < BigInt::one() {
+        return vec![];
+    }
+    if m.is_one() {
+        return vec![BigInt::zero()];
+    }
+    let reduced: Vec<BigInt> = coeffs.iter().map(|c| c.mod_floor(&m)).collect();
+    let first_nonzero = reduced
+        .iter()
+        .position(|c| !c.is_zero())
+        .unwrap_or(reduced.len());
+    let c = &reduced[first_nonzero..];
+    match c {
+        [] => all_residues(&m),
+        [_] => vec![],
+        [a, b] => linear_congruence(a, &-b, &m),
+        [a, b, cc] => quadratic_congruence(a, b, cc, &m),
+        [lead, middle @ .., last] => {
+            if lead.is_one() && middle.iter().all(Zero::is_zero) {
+                let degree = BigInt::from(c.len() - 1);
+                return nthroot_mod(-last, degree, m, true).unwrap_or_default();
+            }
+            polynomial_congruence_general(c, &m)
+        }
+    }
+}
+
+/// `[0, m)` as `BigInt`s (empty when `m` does not fit in `u64`).
+fn all_residues(m: &BigInt) -> Vec<BigInt> {
+    match m.to_u64() {
+        Some(count) => (0..count).map(BigInt::from).collect(),
+        None => vec![],
+    }
+}
+
+/// Sorted solutions of `a·x ≡ b (mod m)`, `m ≥ 1`.
+fn linear_congruence(a: &BigInt, b: &BigInt, m: &BigInt) -> Vec<BigInt> {
+    let a = a.mod_floor(m);
+    let b = b.mod_floor(m);
+    if a.is_zero() {
+        return if b.is_zero() { all_residues(m) } else { vec![] };
+    }
+    let (g, x, _) = extended_gcd_big(&a, m);
+    if !(&b % &g).is_zero() {
+        return vec![];
+    }
+    let step = m / &g;
+    let x0 = (x * (&b / &g)).mod_floor(&step);
+    let Some(count) = g.to_u64() else {
+        return vec![];
+    };
+    (0..count).map(|t| &x0 + BigInt::from(t) * &step).collect()
+}
+
+/// Sorted solutions of `a·x² + b·x + c ≡ 0 (mod m)`, `m ≥ 2`, `a ≢ 0`.
+///
+/// Multiplying by `4a`: `(2ax + b)² ≡ b² − 4ac (mod 4am)`; every root `i`
+/// of that congruence with `i ≡ b (mod 2a)` gives `x = (i − b)/(2a)`.
+fn quadratic_congruence(a: &BigInt, b: &BigInt, c: &BigInt, m: &BigInt) -> Vec<BigInt> {
+    let two_a = a * 2;
+    let disc = b * b - &two_a * 2 * c;
+    let modulus = &two_a * 2 * m;
+    let mut out: Vec<BigInt> = sqrt_mod_all(disc, modulus)
+        .into_iter()
+        .filter_map(|i| {
+            let (q, r) = (i - b).div_mod_floor(&two_a);
+            r.is_zero().then(|| q.mod_floor(m))
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// General case of [`polynomial_congruence`]: roots modulo each prime,
+/// Hensel lifting, CRT.  `c` is non-empty with a non-zero leading
+/// coefficient (highest degree first).
+fn polynomial_congruence_general(c: &[BigInt], m: &BigInt) -> Vec<BigInt> {
+    let degree = c.len() - 1;
+    let derivative: Vec<BigInt> = c[..degree]
+        .iter()
+        .enumerate()
+        .map(|(i, ci)| ci * BigInt::from(degree - i))
+        .collect();
+    let mut per_prime_power = Vec::new();
+    for (p, k) in factorint(m.clone()) {
+        let base = poly_roots_mod_prime(c, &p);
+        if base.is_empty() {
+            return vec![];
+        }
+        let roots = if k == 1 {
+            base
+        } else {
+            hensel_lift_all(
+                base,
+                &p,
+                k,
+                |x, modulus| poly_eval_mod(c, x, modulus),
+                |x, modulus| poly_eval_mod(&derivative, x, modulus),
+            )
+        };
+        if roots.is_empty() {
+            return vec![];
+        }
+        per_prime_power.push((p.pow(k), roots));
+    }
+    crt_combine_roots(per_prime_power)
+}
+
+/// Horner evaluation of `c` (highest degree first) at `x` modulo `m`.
+fn poly_eval_mod(c: &[BigInt], x: &BigInt, m: &BigInt) -> BigInt {
+    let mut acc = BigInt::zero();
+    for ci in c {
+        acc = (acc * x + ci).mod_floor(m);
+    }
+    acc
+}
+
+/// Threshold below which roots modulo `p` are found by brute force.
+const BRUTE_FORCE_ROOT_LIMIT: u64 = 1 << 16;
+
+/// Sorted roots of `c` (highest degree first, non-zero leading
+/// coefficient over ℤ) modulo the prime `p`.  Empty for `p ≥ 2⁶³`.
+fn poly_roots_mod_prime(c: &[BigInt], p: &BigInt) -> Vec<BigInt> {
+    let Some(pu) = p.to_u64() else {
+        return vec![];
+    };
+    if pu >= 1 << 63 {
+        return vec![];
+    }
+    let cu: Vec<u64> = c
+        .iter()
+        .map(|x| x.mod_floor(p).to_u64().unwrap_or(0))
+        .collect();
+    if pu <= BRUTE_FORCE_ROOT_LIMIT {
+        return (0..pu)
+            .filter(|&x| {
+                cu.iter()
+                    .fold(0u64, |acc, &ci| (mod_mul_u64(acc, x, pu) + ci) % pu)
+                    == 0
+            })
+            .map(BigInt::from)
+            .collect();
+    }
+    let mut f: FpPoly = cu.iter().rev().copied().collect();
+    fpp_trim(&mut f);
+    if f.is_empty() {
+        // Vanishes identically modulo p: every residue is a root.
+        return (0..pu).map(BigInt::from).collect();
+    }
+    fpp_roots(&f, pu).into_iter().map(BigInt::from).collect()
+}
+
+// ── Dense polynomials over 𝔽ₚ (p < 2⁶³) for root finding ─────────────────
+
+/// Coefficients low-to-high, no trailing zeros; the empty vector is `0`.
+type FpPoly = Vec<u64>;
+
+fn fpp_trim(v: &mut FpPoly) {
+    while v.last().is_some_and(|c| *c == 0) {
+        v.pop();
+    }
+}
+
+/// Remainder of `a` modulo the monic polynomial `m`.
+fn fpp_rem(a: &[u64], m: &[u64], p: u64) -> FpPoly {
+    let Some(dm) = m.len().checked_sub(1) else {
+        return vec![];
+    };
+    let mut r = a.to_vec();
+    fpp_trim(&mut r);
+    while r.len() > dm {
+        let lc = r[r.len() - 1];
+        let shift = r.len() - 1 - dm;
+        if lc != 0 {
+            for (i, &mi) in m.iter().enumerate() {
+                let sub = mod_mul_u64(lc, mi, p);
+                r[shift + i] = (r[shift + i] + p - sub) % p;
+            }
+        }
+        r.pop();
+        fpp_trim(&mut r);
+    }
+    r
+}
+
+/// Quotient of `a` by the monic polynomial `m` (the remainder is dropped).
+fn fpp_div(a: &[u64], m: &[u64], p: u64) -> FpPoly {
+    let Some(dm) = m.len().checked_sub(1) else {
+        return vec![];
+    };
+    let mut r = a.to_vec();
+    fpp_trim(&mut r);
+    if r.len() <= dm {
+        return vec![];
+    }
+    let mut q = vec![0u64; r.len() - dm];
+    while r.len() > dm {
+        let lc = r[r.len() - 1];
+        let shift = r.len() - 1 - dm;
+        q[shift] = lc;
+        if lc != 0 {
+            for (i, &mi) in m.iter().enumerate() {
+                let sub = mod_mul_u64(lc, mi, p);
+                r[shift + i] = (r[shift + i] + p - sub) % p;
+            }
+        }
+        r.pop();
+    }
+    fpp_trim(&mut q);
+    q
+}
+
+fn fpp_mulmod(a: &[u64], b: &[u64], m: &[u64], p: u64) -> FpPoly {
+    if a.is_empty() || b.is_empty() {
+        return vec![];
+    }
+    let mut prod = vec![0u64; a.len() + b.len() - 1];
+    for (i, &ai) in a.iter().enumerate() {
+        if ai == 0 {
+            continue;
+        }
+        for (j, &bj) in b.iter().enumerate() {
+            prod[i + j] = mod_add_u64(prod[i + j], mod_mul_u64(ai, bj, p), p);
+        }
+    }
+    fpp_rem(&prod, m, p)
+}
+
+/// `base^e mod m` for a monic `m` of degree `≥ 1`.
+fn fpp_powmod(base: &[u64], mut e: u64, m: &[u64], p: u64) -> FpPoly {
+    let mut result = vec![1u64];
+    let mut b = fpp_rem(base, m, p);
+    while e > 0 {
+        if e & 1 == 1 {
+            result = fpp_mulmod(&result, &b, m, p);
+        }
+        e >>= 1;
+        if e > 0 {
+            b = fpp_mulmod(&b, &b, m, p);
+        }
+    }
+    result
+}
+
+fn fpp_monic(a: &[u64], p: u64) -> FpPoly {
+    let mut a = a.to_vec();
+    fpp_trim(&mut a);
+    let Some(&lc) = a.last() else {
+        return vec![];
+    };
+    let inv = mod_pow_u64(lc, p - 2, p);
+    a.iter().map(|&c| mod_mul_u64(c, inv, p)).collect()
+}
+
+/// Monic gcd.
+fn fpp_gcd(a: &[u64], b: &[u64], p: u64) -> FpPoly {
+    let mut a = fpp_monic(a, p);
+    let mut b = b.to_vec();
+    fpp_trim(&mut b);
+    while !b.is_empty() {
+        let bm = fpp_monic(&b, p);
+        let r = fpp_rem(&a, &bm, p);
+        a = bm;
+        b = r;
+    }
+    a
+}
+
+/// Sorted roots in 𝔽ₚ of the non-zero polynomial `f`, `p` an odd prime
+/// below `2⁶³`: `g = gcd(f, xᵖ − x)` is the product of `(x − r)` over the
+/// distinct roots; `g` is then split with random `gcd(g, (x + a)^{(p−1)/2} − 1)`
+/// (Cantor–Zassenhaus equal-degree factorisation, all factors linear).
+fn fpp_roots(f: &[u64], p: u64) -> Vec<u64> {
+    let f = fpp_monic(f, p);
+    if f.len() <= 1 {
+        return vec![];
+    }
+    let mut xp_minus_x = fpp_powmod(&[0, 1], p, &f, p);
+    if xp_minus_x.len() < 2 {
+        xp_minus_x.resize(2, 0);
+    }
+    xp_minus_x[1] = (xp_minus_x[1] + p - 1) % p;
+    fpp_trim(&mut xp_minus_x);
+    let g = fpp_gcd(&f, &xp_minus_x, p);
+    let mut out = Vec::new();
+    let mut rng = XorShift::new(p ^ 0x9E37_79B9_7F4A_7C15);
+    let mut stack = vec![g];
+    let mut attempts = 0u32;
+    while let Some(g) = stack.pop() {
+        let deg = g.len().saturating_sub(1);
+        if deg == 0 {
+            continue;
+        }
+        if deg == 1 {
+            out.push((p - g[0]) % p);
+            continue;
+        }
+        // Split g with a random (x + a)^{(p−1)/2} − 1.
+        loop {
+            attempts += 1;
+            if attempts > 4096 {
+                // Probability 2^{−4096}; give up rather than loop forever.
+                return out;
+            }
+            let a = rng.next_u64() % p;
+            let mut pw = fpp_powmod(&[a, 1], (p - 1) / 2, &g, p);
+            if pw.is_empty() {
+                pw.push(0);
+            }
+            pw[0] = (pw[0] + p - 1) % p;
+            fpp_trim(&mut pw);
+            let h = fpp_gcd(&g, &pw, p);
+            let dh = h.len().saturating_sub(1);
+            if dh > 0 && dh < deg {
+                let q = fpp_div(&g, &h, p);
+                stack.push(h);
+                stack.push(q);
+                break;
+            }
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Arithmetic functions (0.9.1)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The multiplicity of `p` in `n`: the largest `k` with `pᵏ | n`
+/// (SymPy `multiplicity`).  Works on absolute values; returns `0` when
+/// `|p| ≤ 1` or `n = 0` (SymPy raises there — the multiplicity of `0` is
+/// infinite and `±1` divides everything).
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::multiplicity;
+///
+/// assert_eq!(multiplicity(2, 40), 3);        // SymPy: 3
+/// assert_eq!(multiplicity(3, 81), 4);        // SymPy: 4
+/// assert_eq!(multiplicity(6, 72), 2);        // SymPy: 2
+/// assert_eq!(multiplicity(5, 7), 0);         // SymPy: 0
+/// assert_eq!(multiplicity(10, 1_000_000), 6);
+/// assert_eq!(multiplicity(2, 0), 0);         // undefined → 0
+/// ```
+pub fn multiplicity(p: impl Into<BigInt>, n: impl Into<BigInt>) -> u32 {
+    let p: BigInt = p.into().abs();
+    let mut n: BigInt = n.into().abs();
+    if p <= BigInt::one() || n.is_zero() {
+        return 0;
+    }
+    let mut k = 0u32;
+    while (&n % &p).is_zero() {
+        n /= &p;
+        k += 1;
+    }
+    k
+}
+
+/// `ν(n)`: the number of *distinct* prime factors of `|n|` (SymPy
+/// `primenu`).  `0` for `n ∈ {−1, 0, 1}`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::primenu;
+///
+/// assert_eq!(primenu(1), 0);      // SymPy: 0
+/// assert_eq!(primenu(30), 3);     // SymPy: 3  (2·3·5)
+/// assert_eq!(primenu(72), 2);     // SymPy: 2  (2³·3²)
+/// assert_eq!(primenu(1024), 1);   // SymPy: 1
+/// ```
+pub fn primenu(n: impl Into<BigInt>) -> u32 {
+    let n: BigInt = n.into();
+    u32::try_from(factorint(n).len()).unwrap_or(u32::MAX)
+}
+
+/// `Ω(n)`: the number of prime factors of `|n|` counted with multiplicity
+/// (SymPy `primeomega`).  `0` for `n ∈ {−1, 0, 1}`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::primeomega;
+///
+/// assert_eq!(primeomega(1), 0);       // SymPy: 0
+/// assert_eq!(primeomega(30), 3);      // SymPy: 3
+/// assert_eq!(primeomega(72), 5);      // SymPy: 5  (2³·3²)
+/// assert_eq!(primeomega(1024), 10);   // SymPy: 10
+/// ```
+pub fn primeomega(n: impl Into<BigInt>) -> u32 {
+    let n: BigInt = n.into();
+    factorint(n).iter().map(|(_, e)| *e).sum()
+}
+
+/// Balanced product of a list of integers (empty product is `1`).
+fn product_tree(mut values: Vec<BigInt>) -> BigInt {
+    if values.is_empty() {
+        return BigInt::one();
+    }
+    while values.len() > 1 {
+        let mut next = Vec::with_capacity(values.len().div_ceil(2));
+        let mut it = values.into_iter();
+        while let Some(a) = it.next() {
+            match it.next() {
+                Some(b) => next.push(a * b),
+                None => next.push(a),
+            }
+        }
+        values = next;
+    }
+    values.into_iter().next().unwrap_or_else(BigInt::one)
+}
+
+/// The product of the first `n` primes, `pₙ#` (SymPy `primorial(n)`,
+/// i.e. `nth=True`).  `primorial(0) = 1` (SymPy rejects `n < 1`).
+///
+/// Sieves up to the Rosser–Schoenfeld bound for `n ≤ 10⁷` and walks
+/// [`nextprime`] beyond that (correct, but slow — the result has millions
+/// of digits anyway).
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::primorial;
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(primorial(0), BigInt::from(1));
+/// assert_eq!(primorial(1), BigInt::from(2));         // SymPy: 2
+/// assert_eq!(primorial(5), BigInt::from(2310));      // SymPy: 2310 = 2·3·5·7·11
+/// assert_eq!(primorial(10), BigInt::from(6469693230u64));   // SymPy: 6469693230
+/// assert_eq!(primorial(20).to_string(), "557940830126698960967415390");
+/// ```
+pub fn primorial(n: u64) -> BigInt {
+    if n == 0 {
+        return BigInt::one();
+    }
+    if n <= 10_000_000 {
+        let bound = if n < 6 {
+            12
+        } else {
+            let nf = n as f64;
+            (nf * (nf.ln() + nf.ln().ln())).ceil() as u64 + 10
+        };
+        let sieve = BitSieve::new(bound);
+        let mut primes = Vec::with_capacity(n as usize);
+        let mut k = 2u64;
+        while k <= bound && (primes.len() as u64) < n {
+            if sieve.is_prime(k) {
+                primes.push(BigInt::from(k));
+            }
+            k += if k == 2 { 1 } else { 2 };
+        }
+        if primes.len() as u64 == n {
+            return product_tree(primes);
+        }
+    }
+    let mut primes = Vec::new();
+    let mut p = BigInt::from(2);
+    for _ in 0..n {
+        primes.push(p.clone());
+        p = nextprime(p);
+    }
+    product_tree(primes)
+}
+
+/// The product of all primes `≤ n` (SymPy `primorial(n, nth=False)`).
+/// `1` for `n < 2`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::primorial_up_to;
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(primorial_up_to(1), BigInt::from(1));       // SymPy: 1
+/// assert_eq!(primorial_up_to(5), BigInt::from(30));      // SymPy: 30
+/// assert_eq!(primorial_up_to(10), BigInt::from(210));    // SymPy: 210
+/// assert_eq!(primorial_up_to(100).to_string(), "2305567963945518424753102147331756070");
+/// ```
+pub fn primorial_up_to(n: impl Into<BigInt>) -> BigInt {
+    let n: BigInt = n.into();
+    if n < BigInt::from(2) {
+        return BigInt::one();
+    }
+    product_tree(primerange(2, n + BigInt::one()))
+}
+
+/// Is `n` a Carmichael number (SymPy `is_carmichael`)?  Korselt's
+/// criterion: `n` is composite, odd, square-free, and `(p − 1) | (n − 1)`
+/// for every prime `p | n`.  The smallest is `561 = 3·11·17`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::is_carmichael;
+///
+/// assert!(is_carmichael(561));     // SymPy: True
+/// assert!(is_carmichael(1105));    // SymPy: True
+/// assert!(is_carmichael(41041));   // SymPy: True
+/// assert!(!is_carmichael(7));      // prime
+/// assert!(!is_carmichael(15));     // SymPy: False
+/// assert!(!is_carmichael(1));
+/// ```
+pub fn is_carmichael(n: impl Into<BigInt>) -> bool {
+    let n: BigInt = n.into();
+    if n < BigInt::from(3) || n.is_even() {
+        return false;
+    }
+    let factors = factorint(n.clone());
+    if factors.len() < 2 {
+        return false;
+    }
+    let n_minus_1 = &n - BigInt::one();
+    factors
+        .iter()
+        .all(|(p, e)| *e == 1 && (&n_minus_1 % (p - BigInt::one())).is_zero())
+}
+
+/// Are `a` and `b` an amicable pair (SymPy `is_amicable`)?  That is,
+/// `a ≠ b`, both positive, and each is the sum of the proper divisors of
+/// the other: `σ(a) − a = b` and `σ(b) − b = a`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::is_amicable;
+///
+/// assert!(is_amicable(220, 284));     // SymPy: True
+/// assert!(is_amicable(1184, 1210));   // SymPy: True
+/// assert!(is_amicable(2620, 2924));   // SymPy: True
+/// assert!(!is_amicable(220, 285));    // SymPy: False
+/// assert!(!is_amicable(6, 6));        // perfect, not amicable (SymPy: False)
+/// ```
+pub fn is_amicable(a: impl Into<BigInt>, b: impl Into<BigInt>) -> bool {
+    let a: BigInt = a.into();
+    let b: BigInt = b.into();
+    if !a.is_positive() || !b.is_positive() || a == b {
+        return false;
+    }
+    let sum = &a + &b;
+    divisor_sigma(a, 1) == sum && divisor_sigma(b, 1) == sum
+}
+
+/// Row `n` of Pascal's triangle, `[C(n,0), C(n,1), …, C(n,n)]` (SymPy
+/// `binomial_coefficients_list`).
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::binomial_coefficients_list;
+/// use num_bigint::BigInt;
+///
+/// let to_i = |v: Vec<BigInt>| -> Vec<i64> { v.iter().map(|t| t.try_into().unwrap()).collect() };
+/// assert_eq!(to_i(binomial_coefficients_list(0)), vec![1]);
+/// assert_eq!(to_i(binomial_coefficients_list(4)), vec![1, 4, 6, 4, 1]);   // SymPy: [1, 4, 6, 4, 1]
+/// assert_eq!(to_i(binomial_coefficients_list(6)), vec![1, 6, 15, 20, 15, 6, 1]);
+/// ```
+pub fn binomial_coefficients_list(n: u32) -> Vec<BigInt> {
+    let n = u64::from(n);
+    let mut row = Vec::new();
+    let mut c = BigInt::one();
+    row.push(c.clone());
+    for k in 0..n {
+        c = c * BigInt::from(n - k) / BigInt::from(k + 1);
+        row.push(c.clone());
+    }
+    row
+}
+
+/// The binomial coefficients of `(x + y)ⁿ` keyed by exponent pair (SymPy
+/// `binomial_coefficients`, which returns the dictionary
+/// `{(k₁, k₂): C(n, k₁)}` with `k₁ + k₂ = n`).  Returned as pairs sorted
+/// by `k₁`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::binomial_coefficients;
+/// use num_bigint::BigInt;
+///
+/// // SymPy: binomial_coefficients(4) == {(0, 4): 1, (1, 3): 4, (2, 2): 6, (3, 1): 4, (4, 0): 1}
+/// let c = binomial_coefficients(4);
+/// assert_eq!(c.len(), 5);
+/// assert_eq!(c[2], ((2, 2), BigInt::from(6)));
+/// assert!(c.iter().all(|((k1, k2), _)| k1 + k2 == 4));
+/// ```
+pub fn binomial_coefficients(n: u32) -> Vec<((u32, u32), BigInt)> {
+    binomial_coefficients_list(n)
+        .into_iter()
+        .enumerate()
+        .map(|(k, c)| {
+            let k1 = u32::try_from(k).unwrap_or(u32::MAX);
+            ((k1, n - k1), c)
+        })
+        .collect()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Continued fraction reduction (0.9.1)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The rational number with the finite simple continued fraction
+/// `[a₀; a₁, …, aₙ]` (SymPy `continued_fraction_reduce` on a plain list).
+///
+/// Evaluated from the tail: `x ← aₙ`, then `x ← aᵢ + 1/x`.  Returns
+/// `None` for the empty list and when an intermediate value is `0`
+/// (`[1; 0]` would be `1 + 1/0`; SymPy returns `zoo` there).
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::continued_fraction_reduce;
+/// use num_bigint::BigInt;
+/// use num_rational::Ratio;
+///
+/// let cf = |v: &[i64]| -> Vec<BigInt> { v.iter().map(|&t| BigInt::from(t)).collect() };
+/// let q = |p: i64, d: i64| Ratio::new(BigInt::from(p), BigInt::from(d));
+/// assert_eq!(continued_fraction_reduce(&cf(&[4, 2, 6, 7])), Some(q(415, 93)));   // SymPy: 415/93
+/// assert_eq!(continued_fraction_reduce(&cf(&[3, 7, 15, 1])), Some(q(355, 113))); // SymPy: 355/113
+/// assert_eq!(continued_fraction_reduce(&cf(&[-3, 1, 2])), Some(q(-7, 3)));       // SymPy: -7/3
+/// assert_eq!(continued_fraction_reduce(&cf(&[1, 0])), None);
+/// assert_eq!(continued_fraction_reduce(&[]), None);
+/// ```
+pub fn continued_fraction_reduce(terms: &[BigInt]) -> Option<Ratio<BigInt>> {
+    let (last, init) = terms.split_last()?;
+    let mut x = Ratio::from_integer(last.clone());
+    for a in init.iter().rev() {
+        if x.is_zero() {
+            return None;
+        }
+        x = Ratio::from_integer(a.clone()) + x.recip();
+    }
+    Some(x)
+}
+
+/// The quadratic irrational with the periodic continued fraction
+/// `[pre₀; pre₁, …, (period₀, …, periodₖ) repeating]` (SymPy
+/// `continued_fraction_reduce([a₀, …, [b₀, …]])`), returned as the integer
+/// triple `(p, q, d)` meaning **`(p + √d) / q`**.
+///
+/// `d > 0` is not a perfect square, `q ≠ 0` **may be negative** (that is
+/// how a negative radical coefficient is encoded: `(80 − √30)/52` is
+/// `(−80 + √30)/(−52)`, i.e. `(-80, -52, 30)`), and the triple is
+/// reduced: no integer `g > 1` divides `p` and `q` with `g² | d`.
+/// [`continued_fraction_reduce_periodic_ex`] builds the same value as a
+/// symbolic `Ex`.
+///
+/// The purely periodic tail `y = [b₀; …, bₖ, y]` satisfies
+/// `k·y² + (k′ − h)·y − h′ = 0` for its last two convergents `h/k`,
+/// `h′/k′`; the pre-period is then applied as the Möbius map
+/// `x = (P·y + P′)/(Q·y + Q′)` and the denominator rationalised.
+///
+/// Returns `None` when `period` is empty (use
+/// [`continued_fraction_reduce`]) or contains a non-positive term.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::continued_fraction_reduce_periodic;
+/// use num_bigint::BigInt;
+///
+/// let cf = |v: &[i64]| -> Vec<BigInt> { v.iter().map(|&t| BigInt::from(t)).collect() };
+/// let triple = |p: i64, q: i64, d: i64| Some((BigInt::from(p), BigInt::from(q), BigInt::from(d)));
+/// // √2 = [1; (2)]                       SymPy: sqrt(2)
+/// assert_eq!(continued_fraction_reduce_periodic(&cf(&[1]), &cf(&[2])), triple(0, 1, 2));
+/// // golden ratio [(1)]                  SymPy: (1 + sqrt(5))/2
+/// assert_eq!(continued_fraction_reduce_periodic(&[], &cf(&[1])), triple(1, 2, 5));
+/// // √7 = [2; (1, 1, 1, 4)]              SymPy: sqrt(7)
+/// assert_eq!(continued_fraction_reduce_periodic(&cf(&[2]), &cf(&[1, 1, 1, 4])), triple(0, 1, 7));
+/// // [1; 2, 3, (4, 5)]                   SymPy: (80 - sqrt(30))/52
+/// assert_eq!(continued_fraction_reduce_periodic(&cf(&[1, 2, 3]), &cf(&[4, 5])), triple(-80, -52, 30));
+/// assert_eq!(continued_fraction_reduce_periodic(&cf(&[1]), &[]), None);
+/// ```
+pub fn continued_fraction_reduce_periodic(
+    pre: &[BigInt],
+    period: &[BigInt],
+) -> Option<(BigInt, BigInt, BigInt)> {
+    if period.is_empty() || period.iter().any(|b| !b.is_positive()) {
+        return None;
+    }
+    // Last two convergents h/k, h′/k′ of the period (h′/k′ = 1/0 for a
+    // one-term period): y = (h·y + h′)/(k·y + k′).
+    let (h, h_prev, k, k_prev) = convergent_pair(period);
+    // k·y² + (k′ − h)·y − h′ = 0, positive root y = (s + √D)/t.
+    let s = &h - &k_prev;
+    let disc = &s * &s + BigInt::from(4) * &k * &h_prev;
+    let t: BigInt = &k * 2;
+    if is_square_big(&disc) || t.is_zero() {
+        return None;
+    }
+    // x = (P·y + P′)/(Q·y + Q′) with y = (s + √D)/t:
+    //   numerator   (P·s + P′·t) + P·√D = A + B√D
+    //   denominator (Q·s + Q′·t) + Q·√D = C + E√D
+    let (pp, pp_prev, qq, qq_prev) = convergent_pair(pre);
+    let a = &pp * &s + &pp_prev * &t;
+    let b = pp;
+    let c = &qq * &s + &qq_prev * &t;
+    let e = qq;
+    // Rationalise: (A + B√D)(C − E√D) / (C² − E²D).
+    let mut alpha = &a * &c - &b * &e * &disc;
+    let mut beta = &b * &c - &a * &e;
+    let mut gamma = &c * &c - &e * &e * &disc;
+    if gamma.is_zero() || beta.is_zero() {
+        return None;
+    }
+    // Fold β into the radical: (α + β√D)/γ = (±α + √(β²D))/(±γ).
+    if beta.is_negative() {
+        alpha = -alpha;
+        gamma = -gamma;
+        beta = -beta;
+    }
+    let mut d = &beta * &beta * &disc;
+    // Reduce: strip every prime g with g | α, g | γ, g² | d.
+    let g = alpha.gcd(&gamma);
+    for (prime, _) in factorint(g) {
+        let square = &prime * &prime;
+        while (&alpha % &prime).is_zero() && (&gamma % &prime).is_zero() && (&d % &square).is_zero()
+        {
+            alpha /= &prime;
+            gamma /= &prime;
+            d /= &square;
+        }
+    }
+    Some((alpha, gamma, d))
+}
+
+/// `(hₙ, hₙ₋₁, kₙ, kₙ₋₁)` — the last two convergent numerators and
+/// denominators of `terms`, starting from `h₋₁/k₋₁ = 1/0`,
+/// `h₋₂/k₋₂ = 0/1`.  For the empty list this is `(1, 0, 0, 1)`.
+fn convergent_pair(terms: &[BigInt]) -> (BigInt, BigInt, BigInt, BigInt) {
+    let (mut h_prev, mut h) = (BigInt::zero(), BigInt::one());
+    let (mut k_prev, mut k) = (BigInt::one(), BigInt::zero());
+    for a in terms {
+        let h_next = a * &h + &h_prev;
+        let k_next = a * &k + &k_prev;
+        h_prev = std::mem::replace(&mut h, h_next);
+        k_prev = std::mem::replace(&mut k, k_next);
+    }
+    (h, h_prev, k, k_prev)
+}
+
+/// [`continued_fraction_reduce_periodic`] as a symbolic expression
+/// `(p + √d)/q` in `ctx`, which canonicalises it (`√8/2` becomes `√2`).
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::ntheory::continued_fraction_reduce_periodic_ex;
+/// use num_bigint::BigInt;
+///
+/// let ctx = Context::new();
+/// let cf = |v: &[i64]| -> Vec<BigInt> { v.iter().map(|&t| BigInt::from(t)).collect() };
+/// let sqrt2 = continued_fraction_reduce_periodic_ex(&ctx, &cf(&[1]), &cf(&[2])).unwrap();
+/// assert_eq!(sqrt2, ctx.int(2).sqrt());
+/// let phi = continued_fraction_reduce_periodic_ex(&ctx, &[], &cf(&[1])).unwrap();
+/// assert!((phi.eval_f64().unwrap() - 1.618033988749895).abs() < 1e-12);
+/// ```
+pub fn continued_fraction_reduce_periodic_ex(
+    ctx: &Context,
+    pre: &[BigInt],
+    period: &[BigInt],
+) -> Option<Ex> {
+    let (p, q, d) = continued_fraction_reduce_periodic(pre, period)?;
+    let radical = ctx.from_bigint(d).sqrt();
+    Some((ctx.from_bigint(p) + radical) / ctx.from_bigint(q))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

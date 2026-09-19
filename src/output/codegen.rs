@@ -11,6 +11,8 @@ use rustc_hash::FxHashMap;
 
 /// C99 code generation.
 pub(crate) mod codegen_c;
+/// Python (`math`), NumPy and Julia code generation (0.9.1).
+pub(crate) mod codegen_py;
 /// Shared `f64` special-function runtime (also embedded into generated code).
 pub(crate) mod numeric_rt;
 /// Extraction of runtime sections for embedding into generated Rust code.

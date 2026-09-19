@@ -11,6 +11,14 @@
 //! - Atoms: integer literals, symbol names
 //! - Constants: `pi`, `e`, `I`, `inf`, `nan`
 //!
+//! Three entry points share this grammar (SymPy: `sympify`, `parse_expr`):
+//!
+//! | Function | Result | Extra syntax |
+//! |----------|--------|--------------|
+//! | [`parse`] / [`Context::parse`] | [`Ex`] | juxtaposition of numbers, symbols and parentheses is multiplication (`2x`, `2 x`, `x y`, `2(x+1)`, `(x+1)(x-1)`, `2pi`) |
+//! | [`parse_bool`] / [`Context::parse_bool`] | [`BoolEx`] | relations `<` `<=` `>` `>=` `==` `!=`, connectives `&`/`&&`/`and`, `\|`/`\|\|`/`or`, prefix `~`/`!`/`not`, `True`/`False`, and the function forms `Eq(a, b)`, `Ne`, `Lt`, `Le`, `Gt`, `Ge`, `And(…)`, `Or(…)`, `Not(a)` |
+//! | [`parse_implicit`] / [`Context::parse_implicit`] | [`Ex`] | function application without parentheses (`sin x`, `2 sin x`, `sin 2x`) and `f(x)` as a product for unknown `f` (`x(x+1)`) |
+//!
 //! # Examples
 //!
 //! ```
@@ -28,7 +36,7 @@ use num_rational::Ratio;
 use smallvec::SmallVec;
 
 use crate::api::context::Context;
-use crate::api::expr::Ex;
+use crate::api::expr::{BoolEx, Ex};
 use crate::base::arena::{
     Arena, FN_AIRYAI, FN_AIRYAIPRIME, FN_AIRYBI, FN_AIRYBIPRIME, FN_ASSOC_LAGUERRE,
     FN_ASSOC_LEGENDRE, FN_CHI, FN_DIRICHLET_ETA, FN_ELLIPTIC_E, FN_ELLIPTIC_F, FN_ELLIPTIC_K,
@@ -66,8 +74,108 @@ impl std::error::Error for ParseError {}
 ///
 /// Returns `ParseError` if the string is not a valid expression.
 pub fn parse(ctx: &Context, input: &str) -> Result<Ex, ParseError> {
-    let mut parser = Parser::new(input);
-    let id = ctx.with_arena_mut(|arena| {
+    let id = parse_with_mode(ctx, input, Mode::STRICT)?;
+    // Construct an Ex from the ExprId. Ex fields are pub(crate), so this
+    // works from within the crate without needing to expose make_ex.
+    Ok(Ex::from_raw_parts(ctx.id, Arc::clone(&ctx.inner), id))
+}
+
+/// Parse a relation or Boolean combination of relations into a [`BoolEx`].
+///
+/// The numeric grammar of [`parse`] is extended with the comparison
+/// operators `<`, `<=`, `>`, `>=`, `==`, `!=`, the connectives `&`/`&&`/`and`
+/// and `|`/`||`/`or`, the prefix negation `~`/`!`/`not`, the constants
+/// `True`/`False`, and the function forms `Eq(a, b)`, `Ne`, `Lt`, `Le`,
+/// `Gt`, `Ge`, `And(a, b, …)`, `Or(…)`, `Not(a)`.  Precedence, loosest
+/// first: `or` < `and` < comparisons < `+ -` < `* /` < `^`; `not` is a
+/// prefix operator that applies to the following relation (`not x > 0` is
+/// `not (x > 0)`), and comparisons do not chain (`a < b < c` is an error —
+/// write `a < b & b < c`).  This is mathematical precedence, unlike
+/// SymPy's `sympify("x > 0 & x < 1")`, where Python binds `&` tighter than
+/// `>`.
+///
+/// # Errors
+///
+/// [`ParseError`] if the string is not well formed, or if it parses to a
+/// numeric expression rather than a relation.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+///
+/// let ctx = Context::new();
+/// let p = symplex::parse::parse_bool(&ctx, "x > 0 & x < 1").unwrap();
+/// assert_eq!(p.to_string(), "x > 0 & 1 > x");
+/// assert!(symplex::parse::parse_bool(&ctx, "x + 1").is_err());
+/// ```
+pub fn parse_bool(ctx: &Context, input: &str) -> Result<BoolEx, ParseError> {
+    let id = parse_with_mode(ctx, input, Mode::RELATIONS)?;
+    Ok(BoolEx::from_raw_parts(ctx.id, Arc::clone(&ctx.inner), id))
+}
+
+/// Parse with implicit multiplication *and* implicit function application
+/// (SymPy: `parse_expr(s, transformations=implicit_multiplication_application)`).
+///
+/// [`parse`] already reads `2x`, `2 x`, `x y`, `2(x+1)` and `(x+1)(x-1)` as
+/// products.  This variant additionally accepts
+///
+/// - `sin x`, `2 sin x`, `sin 2x`, `sin x^2`: a textbook function name
+///   (trigonometric, hyperbolic and inverse trigonometric functions, `exp`,
+///   `ln`/`log`, `sqrt`, `cbrt`, `abs`, `floor`, `ceil`, `sign`, `gamma`,
+///   `erf`, `erfc`, `factorial`) applied without parentheses to the
+///   juxtaposed product that follows it, up to the next `+`, `-`,
+///   comparison, closing parenthesis, or function name;
+/// - `x(x+1)`, `f(x) g(x)`: an identifier that is *not* a known function,
+///   followed by `(`, is a symbol times the parenthesised group.
+///
+/// Ambiguities are resolved as follows:
+///
+/// | Input | Reading | Note |
+/// |-------|---------|------|
+/// | `x y z` | `x*y*z` | juxtaposition is left-associative |
+/// | `2 sin x` | `2*sin(x)` | a coefficient stays outside |
+/// | `sin 2x` | `sin(2*x)` | the argument is the whole following product |
+/// | `sin x^2` | `sin(x^2)` | `^` binds tighter than application |
+/// | `sin x cos y` | `sin(x)*cos(y)` | the argument stops at the next function name (SymPy reads `sin(x*cos(y))`) |
+/// | `sin x + 1` | `sin(x) + 1` | `+` ends the argument |
+/// | `sin x/2` | `sin(x/2)` | `/` is part of the product |
+/// | `f(x)` | `f*x` | `f` is not a known function |
+///
+/// Short names that double as common variables (`re`, `im`, `arg`, `li`,
+/// `zeta`, …) are *not* applied implicitly; write them with parentheses.
+/// The one-letter display aliases `C(n, k)`, `B(a, b)`, `W(x)` are
+/// ordinary symbols here (use `binomial`, `beta`, `lambertw`).  A textbook
+/// function name that is not followed by an operand is an error
+/// (`sin + 1`).
+///
+/// # Errors
+///
+/// [`ParseError`] if the string is not well formed.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+///
+/// let ctx = Context::new();
+/// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+/// let e = symplex::parse::parse_implicit(&ctx, "2x + 3(y-1)").unwrap();
+/// assert_eq!(e, 2 * &x + 3 * (&y - 1));
+/// let s = symplex::parse::parse_implicit(&ctx, "2 sin x cos y").unwrap();
+/// assert_eq!(s, 2 * &x.sin() * &y.cos());
+/// ```
+pub fn parse_implicit(ctx: &Context, input: &str) -> Result<Ex, ParseError> {
+    let id = parse_with_mode(ctx, input, Mode::IMPLICIT)?;
+    Ok(Ex::from_raw_parts(ctx.id, Arc::clone(&ctx.inner), id))
+}
+
+/// Run the parser in `mode` and return the interned root.
+///
+/// In [`Mode::RELATIONS`] the root must be a Boolean node.
+fn parse_with_mode(ctx: &Context, input: &str, mode: Mode) -> Result<ExprId, ParseError> {
+    let mut parser = Parser::new(input, mode);
+    ctx.with_arena_mut(|arena| {
         let result = parser.parse_expr(arena, 0)?;
         // After parsing the expression, ensure we consumed everything.
         if parser.current != Token::Eof {
@@ -76,11 +184,315 @@ pub fn parse(ctx: &Context, input: &str) -> Result<Ex, ParseError> {
                 position: parser.lexer.pos,
             });
         }
+        if mode.relations && !is_bool_node(arena, result) {
+            return Err(ParseError {
+                message: format!(
+                    "expected a relation or Boolean expression, got the numeric expression '{}'",
+                    arena.display(result)
+                ),
+                position: parser.lexer.pos,
+            });
+        }
         Ok(result)
-    })?;
-    // Construct an Ex from the ExprId. Ex fields are pub(crate), so this
-    // works from within the crate without needing to expose make_ex.
-    Ok(Ex::from_raw_parts(ctx.id, Arc::clone(&ctx.inner), id))
+    })
+}
+
+impl Context {
+    /// Parse a relation or Boolean combination of relations in this context
+    /// (SymPy: `sympify("x > 0")`).
+    ///
+    /// See [`parse::parse_bool`](crate::parse::parse_bool) for the grammar:
+    /// comparisons `<` `<=` `>` `>=` `==` `!=` bind tighter than `&`/`and`,
+    /// which binds tighter than `|`/`or`; `~`/`!`/`not` is prefix.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::ComputationFailed`](crate::base::errors::SymplexError::ComputationFailed)
+    /// with the parser's message if the string is not a well-formed relation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let p = ctx.parse_bool("x > 0 & x < 1").unwrap();
+    /// assert_eq!(p.to_string(), "x > 0 & 1 > x");
+    /// assert_eq!(p.to_lean().unwrap(), "0 < x ∧ x < 1");
+    /// assert_eq!(ctx.parse_bool("not x == 1 or y >= 2").unwrap().to_string(), "!(x == 1) | y >= 2");
+    /// ```
+    pub fn parse_bool(
+        &self,
+        input: &str,
+    ) -> Result<crate::api::expr::BoolEx, crate::base::errors::SymplexError> {
+        parse_bool(self, input).map_err(|e| crate::base::errors::SymplexError::ComputationFailed {
+            operation: "parse_bool",
+            reason: e.to_string(),
+        })
+    }
+
+    /// Parse with implicit multiplication and implicit function application
+    /// (SymPy: `parse_expr(s, transformations=implicit_multiplication_application)`).
+    ///
+    /// See [`parse::parse_implicit`](crate::parse::parse_implicit) for the
+    /// rules and the ambiguities they resolve (`2 sin x` is `2*sin(x)`,
+    /// `sin 2x` is `sin(2*x)`, `sin x cos y` is `sin(x)*cos(y)`).
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::ComputationFailed`](crate::base::errors::SymplexError::ComputationFailed)
+    /// with the parser's message if the string is not well formed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// assert_eq!(ctx.parse_implicit("2x + 3(y-1)").unwrap(), 2 * &x + 3 * (&y - 1));
+    /// assert_eq!(ctx.parse_implicit("sin 2x").unwrap(), (2 * &x).sin());
+    /// ```
+    pub fn parse_implicit(
+        &self,
+        input: &str,
+    ) -> Result<crate::api::expr::Ex, crate::base::errors::SymplexError> {
+        parse_implicit(self, input).map_err(|e| {
+            crate::base::errors::SymplexError::ComputationFailed {
+                operation: "parse_implicit",
+                reason: e.to_string(),
+            }
+        })
+    }
+}
+
+/// Which syntax extensions the parser accepts.
+#[derive(Clone, Copy)]
+struct Mode {
+    /// Comparison operators, Boolean connectives and `True`/`False`.
+    relations: bool,
+    /// Function application without parentheses; unknown `f(…)` is a product.
+    implicit_app: bool,
+}
+
+impl Mode {
+    const STRICT: Mode = Mode {
+        relations: false,
+        implicit_app: false,
+    };
+    const RELATIONS: Mode = Mode {
+        relations: true,
+        implicit_app: false,
+    };
+    const IMPLICIT: Mode = Mode {
+        relations: false,
+        implicit_app: true,
+    };
+}
+
+/// Is `id` a Boolean-sorted node (a relation, connective or truth value)?
+fn is_bool_node(arena: &Arena, id: ExprId) -> bool {
+    matches!(
+        arena.node(id),
+        ExprNode::BoolTrue
+            | ExprNode::BoolFalse
+            | ExprNode::Gt(_, _)
+            | ExprNode::Ge(_, _)
+            | ExprNode::Eq_(_, _)
+            | ExprNode::Ne(_, _)
+            | ExprNode::And(_)
+            | ExprNode::Or(_)
+            | ExprNode::Not(_)
+    )
+}
+
+/// Every function name the call tables (`call_1` … `call_4`, `min`/`max`,
+/// `Sum`/`Product`) accept, lower-cased.  Used by [`parse_implicit`] to tell
+/// `sin(x)` (a call) from `f(x)` (a product).
+const KNOWN_FUNCTIONS: &[&str] = &[
+    // call_1
+    "sin",
+    "cos",
+    "tan",
+    "exp",
+    "ln",
+    "log",
+    "sqrt",
+    "cbrt",
+    "abs",
+    "asin",
+    "arcsin",
+    "acos",
+    "arccos",
+    "atan",
+    "arctan",
+    "sinh",
+    "cosh",
+    "tanh",
+    "asinh",
+    "arcsinh",
+    "acosh",
+    "arccosh",
+    "atanh",
+    "arctanh",
+    "sign",
+    "sgn",
+    "floor",
+    "ceil",
+    "ceiling",
+    "gamma",
+    "erf",
+    "erfc",
+    "heaviside",
+    "diracdelta",
+    "dirac_delta",
+    "lambertw",
+    "w",
+    "factorial",
+    "digamma",
+    "loggamma",
+    "cot",
+    "sec",
+    "csc",
+    "coth",
+    "sech",
+    "csch",
+    "acot",
+    "arccot",
+    "re",
+    "im",
+    "conjugate",
+    "conj",
+    "arg",
+    "si",
+    "ci",
+    "ei",
+    "li",
+    "zeta",
+    "erfi",
+    "erfinv",
+    "erfcinv",
+    "e1",
+    "shi",
+    "chi",
+    "fresnels",
+    "fresnelc",
+    "dirichlet_eta",
+    "airyai",
+    "airybi",
+    "airyaiprime",
+    "airybiprime",
+    "elliptic_k",
+    "elliptic_e",
+    // call_2
+    "rootof",
+    "conditionset",
+    "integral",
+    "atan2",
+    "polygamma",
+    "kroneckerdelta",
+    "kronecker_delta",
+    "binomial",
+    "c",
+    "beta",
+    "b",
+    "besselj",
+    "bessely",
+    "besseli",
+    "besselk",
+    "expint",
+    "lowergamma",
+    "uppergamma",
+    "polylog",
+    "elliptic_f",
+    "elliptic_pi",
+    // call_3
+    "limit",
+    "laplacetransform",
+    "inverselaplacetransform",
+    "residue",
+    "dsolve",
+    "gegenbauer",
+    "assoc_legendre",
+    "assoc_laguerre",
+    // call_4
+    "series",
+    "jacobi",
+    // variadic / binder forms
+    "min",
+    "max",
+    "sum",
+    "product",
+];
+
+fn is_known_function(name_lower: &str) -> bool {
+    KNOWN_FUNCTIONS.contains(&name_lower)
+}
+
+/// Textbook one-argument functions that [`parse_implicit`] applies without
+/// parentheses (`sin x`).  Deliberately excludes short names that are also
+/// common variables (`re`, `im`, `arg`, `li`, `w`, `zeta`, `chi`, …).
+fn is_implicit_unary_function(name_lower: &str) -> bool {
+    matches!(
+        name_lower,
+        "sin"
+            | "cos"
+            | "tan"
+            | "cot"
+            | "sec"
+            | "csc"
+            | "sinh"
+            | "cosh"
+            | "tanh"
+            | "coth"
+            | "sech"
+            | "csch"
+            | "asin"
+            | "acos"
+            | "atan"
+            | "acot"
+            | "arcsin"
+            | "arccos"
+            | "arctan"
+            | "arccot"
+            | "asinh"
+            | "acosh"
+            | "atanh"
+            | "arcsinh"
+            | "arccosh"
+            | "arctanh"
+            | "exp"
+            | "ln"
+            | "log"
+            | "sqrt"
+            | "cbrt"
+            | "abs"
+            | "floor"
+            | "ceil"
+            | "ceiling"
+            | "sign"
+            | "sgn"
+            | "gamma"
+            | "erf"
+            | "erfc"
+            | "factorial"
+    )
+}
+
+/// The named constants (`pi`, `e`, `I`, `inf`, …), or `None` for a symbol.
+fn constant_of(arena: &Arena, name: &str) -> Option<ExprId> {
+    Some(match name {
+        "pi" | "Pi" | "PI" => arena.pi,
+        "e" | "E" => arena.e_const,
+        "I" | "i" => arena.i_unit,
+        "inf" | "oo" | "Inf" => arena.infinity,
+        "zoo" => arena.complex_infinity,
+        "nan" => arena.nan,
+        "EulerGamma" | "euler_gamma" => arena.euler_gamma,
+        "Catalan" => arena.catalan,
+        "GoldenRatio" | "golden_ratio" => arena.golden_ratio,
+        _ => return None,
+    })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -100,12 +512,30 @@ enum Token {
     LParen,
     RParen,
     Comma,
-    /// Postfix factorial `!`.
+    /// Postfix factorial `!` (prefix logical negation in [`Mode::RELATIONS`]).
     Bang,
     /// `=` (only inside `Sum(body, k=lo..hi)` / `Product(…)`).
     Eq,
     /// `..` range separator (only inside `Sum` / `Product`).
     DotDot,
+    /// `<`
+    Lt,
+    /// `<=`
+    Le,
+    /// `>`
+    Gt,
+    /// `>=`
+    Ge,
+    /// `==`
+    EqEq,
+    /// `!=`
+    Ne,
+    /// `&` or `&&`
+    Amp,
+    /// `|` or `||`
+    Pipe,
+    /// `~` (prefix logical negation)
+    Tilde,
     Eof,
 }
 
@@ -123,6 +553,11 @@ impl<'a> Lexer<'a> {
         while self.pos < self.input.len() && self.input.as_bytes()[self.pos].is_ascii_whitespace() {
             self.pos += 1;
         }
+    }
+
+    /// Is the byte at the current position `b`?
+    fn peek_is(&self, b: u8) -> bool {
+        self.input.as_bytes().get(self.pos) == Some(&b)
     }
 
     fn next_token(&mut self) -> Result<Token, ParseError> {
@@ -173,11 +608,57 @@ impl<'a> Lexer<'a> {
             }
             b'!' => {
                 self.pos += 1;
-                Ok(Token::Bang)
+                if self.peek_is(b'=') {
+                    self.pos += 1;
+                    Ok(Token::Ne)
+                } else {
+                    Ok(Token::Bang)
+                }
             }
             b'=' => {
                 self.pos += 1;
-                Ok(Token::Eq)
+                if self.peek_is(b'=') {
+                    self.pos += 1;
+                    Ok(Token::EqEq)
+                } else {
+                    Ok(Token::Eq)
+                }
+            }
+            b'<' => {
+                self.pos += 1;
+                if self.peek_is(b'=') {
+                    self.pos += 1;
+                    Ok(Token::Le)
+                } else {
+                    Ok(Token::Lt)
+                }
+            }
+            b'>' => {
+                self.pos += 1;
+                if self.peek_is(b'=') {
+                    self.pos += 1;
+                    Ok(Token::Ge)
+                } else {
+                    Ok(Token::Gt)
+                }
+            }
+            b'&' => {
+                self.pos += 1;
+                if self.peek_is(b'&') {
+                    self.pos += 1;
+                }
+                Ok(Token::Amp)
+            }
+            b'|' => {
+                self.pos += 1;
+                if self.peek_is(b'|') {
+                    self.pos += 1;
+                }
+                Ok(Token::Pipe)
+            }
+            b'~' => {
+                self.pos += 1;
+                Ok(Token::Tilde)
             }
             b'.' if self.pos + 1 < self.input.len()
                 && self.input.as_bytes()[self.pos + 1] == b'.' =>
@@ -254,20 +735,217 @@ impl<'a> Lexer<'a> {
 // Pratt parser
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Binding powers `(left, right)` of the infix tiers, loosest first.  Only
+// the relative order matters; the Boolean tiers are reachable only in
+// `Mode::RELATIONS`.
+const BP_OR: (u8, u8) = (1, 2);
+const BP_AND: (u8, u8) = (3, 4);
+const BP_REL: (u8, u8) = (5, 6);
+const BP_ADD: (u8, u8) = (7, 8);
+const BP_MUL: (u8, u8) = (9, 10);
+/// Operand of prefix `-`: tighter than `*` and `/` but looser than `^`, so
+/// that `-x^2` parses as `-(x^2)`.
+const BP_NEG: u8 = 11;
+/// `^` is right-associative: the right binding power is below the left.
+const BP_POW: (u8, u8) = (14, 13);
+/// Operand of prefix `not`/`~`/`!`: one relation, not a whole conjunction
+/// (`not x > 0 & y > 0` is `(not x > 0) & (y > 0)`).
+const BP_NOT: u8 = BP_REL.0;
+
+/// An infix operator recognised by the Pratt loop.
+#[derive(Clone, Copy)]
+enum Infix {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Pow,
+    Rel(RelOp),
+    And,
+    Or,
+}
+
+#[derive(Clone, Copy)]
+enum RelOp {
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Eq,
+    Ne,
+}
+
+impl RelOp {
+    fn of(token: &Token) -> Option<RelOp> {
+        Some(match token {
+            Token::Lt => RelOp::Lt,
+            Token::Le => RelOp::Le,
+            Token::Gt => RelOp::Gt,
+            Token::Ge => RelOp::Ge,
+            Token::EqEq => RelOp::Eq,
+            Token::Ne => RelOp::Ne,
+            _ => return None,
+        })
+    }
+
+    fn text(self) -> &'static str {
+        match self {
+            RelOp::Lt => "<",
+            RelOp::Le => "<=",
+            RelOp::Gt => ">",
+            RelOp::Ge => ">=",
+            RelOp::Eq => "==",
+            RelOp::Ne => "!=",
+        }
+    }
+}
+
+/// Can `token` begin an operand (the argument of `sin x`)?
+fn starts_operand(token: &Token) -> bool {
+    matches!(
+        token,
+        Token::Int(_) | Token::Rational(_) | Token::Ident(_) | Token::LParen
+    )
+}
+
 struct Parser<'a> {
     lexer: Lexer<'a>,
     current: Token,
     depth: usize,
+    mode: Mode,
+    /// Inside the parenthesis-free argument of `sin x`: a following
+    /// function name ends the argument instead of multiplying into it.
+    app_arg: bool,
 }
 
 impl<'a> Parser<'a> {
-    fn new(input: &'a str) -> Self {
+    fn new(input: &'a str, mode: Mode) -> Self {
         let mut lexer = Lexer::new(input);
         let current = lexer.next_token().unwrap_or(Token::Eof);
         Parser {
             lexer,
             current,
             depth: 0,
+            mode,
+            app_arg: false,
+        }
+    }
+
+    fn error(&self, message: String) -> ParseError {
+        ParseError {
+            message,
+            position: self.lexer.pos,
+        }
+    }
+
+    /// Run `f` outside any `sin x` argument (inside parentheses or a call).
+    fn outside_app_arg<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, ParseError>,
+    ) -> Result<T, ParseError> {
+        let saved = std::mem::replace(&mut self.app_arg, false);
+        let result = f(self);
+        self.app_arg = saved;
+        result
+    }
+
+    /// The operand of `+`, `-`, `*`, `/`, `^` or a comparison must be numeric.
+    fn numeric_operands(
+        &self,
+        arena: &Arena,
+        op: &str,
+        lhs: ExprId,
+        rhs: ExprId,
+    ) -> Result<(), ParseError> {
+        for id in [lhs, rhs] {
+            if is_bool_node(arena, id) {
+                return Err(self.error(format!(
+                    "'{op}' needs numeric operands, but '{}' is a Boolean expression",
+                    arena.display(id)
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// The operand of `&`, `|` or `not` must be a relation or truth value.
+    fn boolean_operand(&self, arena: &Arena, op: &str, id: ExprId) -> Result<(), ParseError> {
+        if is_bool_node(arena, id) {
+            Ok(())
+        } else {
+            Err(self.error(format!(
+                "'{op}' needs Boolean operands (relations), but '{}' is numeric",
+                arena.display(id)
+            )))
+        }
+    }
+
+    /// Combine `lhs op rhs` into a node, checking the operand sorts.
+    fn combine(
+        &self,
+        arena: &mut Arena,
+        op: Infix,
+        lhs: ExprId,
+        rhs: ExprId,
+    ) -> Result<ExprId, ParseError> {
+        match op {
+            Infix::Add => {
+                self.numeric_operands(arena, "+", lhs, rhs)?;
+                Ok(arena.add(&[lhs, rhs]))
+            }
+            Infix::Sub => {
+                self.numeric_operands(arena, "-", lhs, rhs)?;
+                Ok(arena.sub(lhs, rhs))
+            }
+            Infix::Mul => {
+                self.numeric_operands(arena, "*", lhs, rhs)?;
+                Ok(arena.mul(&[lhs, rhs]))
+            }
+            Infix::Div => {
+                self.numeric_operands(arena, "/", lhs, rhs)?;
+                Ok(arena.div(lhs, rhs))
+            }
+            Infix::Pow => {
+                self.numeric_operands(arena, "^", lhs, rhs)?;
+                Ok(arena.pow(lhs, rhs))
+            }
+            Infix::Rel(rel) => {
+                self.numeric_operands(arena, rel.text(), lhs, rhs)?;
+                if RelOp::of(&self.current).is_some() {
+                    return Err(self.error(
+                        "chained comparisons are not supported; write 'a < b & b < c'".into(),
+                    ));
+                }
+                Ok(match rel {
+                    RelOp::Lt => arena.gt(rhs, lhs),
+                    RelOp::Le => arena.ge(rhs, lhs),
+                    RelOp::Gt => arena.gt(lhs, rhs),
+                    RelOp::Ge => arena.ge(lhs, rhs),
+                    RelOp::Eq => arena.eq_(lhs, rhs),
+                    RelOp::Ne => arena.ne_(lhs, rhs),
+                })
+            }
+            Infix::And => {
+                self.boolean_operand(arena, "&", lhs)?;
+                self.boolean_operand(arena, "&", rhs)?;
+                // Flatten `a & b & c` into one n-ary node, as `Ex::and` does.
+                let mut items: SmallVec<[ExprId; 4]> = match arena.node(lhs) {
+                    ExprNode::And(children) => children.iter().copied().collect(),
+                    _ => SmallVec::from_slice(&[lhs]),
+                };
+                items.push(rhs);
+                Ok(arena.and(&items))
+            }
+            Infix::Or => {
+                self.boolean_operand(arena, "|", lhs)?;
+                self.boolean_operand(arena, "|", rhs)?;
+                let mut items: SmallVec<[ExprId; 4]> = match arena.node(lhs) {
+                    ExprNode::Or(children) => children.iter().copied().collect(),
+                    _ => SmallVec::from_slice(&[lhs]),
+                };
+                items.push(rhs);
+                Ok(arena.or(&items))
+            }
         }
     }
 
@@ -311,16 +989,36 @@ impl<'a> Parser<'a> {
                 lhs = arena.intern(ExprNode::Factorial(lhs));
                 continue;
             }
-            let (op, l_bp, r_bp, implicit) = match &self.current {
-                Token::Plus => ('+', 1, 2, false),
-                Token::Minus => ('-', 1, 2, false),
-                Token::Star => ('*', 3, 4, false),
-                Token::Slash => ('/', 3, 4, false),
-                Token::Caret => ('^', 8, 7, false), // right-associative
+            let relations = self.mode.relations;
+            let (op, (l_bp, r_bp), implicit) = match &self.current {
+                Token::Plus => (Infix::Add, BP_ADD, false),
+                Token::Minus => (Infix::Sub, BP_ADD, false),
+                Token::Star => (Infix::Mul, BP_MUL, false),
+                Token::Slash => (Infix::Div, BP_MUL, false),
+                Token::Caret => (Infix::Pow, BP_POW, false),
+                Token::Lt | Token::Le | Token::Gt | Token::Ge | Token::EqEq | Token::Ne
+                    if relations =>
+                {
+                    match RelOp::of(&self.current) {
+                        Some(rel) => (Infix::Rel(rel), BP_REL, false),
+                        None => break,
+                    }
+                }
+                Token::Amp if relations => (Infix::And, BP_AND, false),
+                Token::Pipe if relations => (Infix::Or, BP_OR, false),
+                Token::Ident(name) if relations && name == "and" => (Infix::And, BP_AND, false),
+                Token::Ident(name) if relations && name == "or" => (Infix::Or, BP_OR, false),
+                // `sin x cos y`: the argument of `sin` ends at the next
+                // function name (which then multiplies `sin x` as a whole).
+                Token::Ident(name)
+                    if self.app_arg && is_implicit_unary_function(&name.to_ascii_lowercase()) =>
+                {
+                    break;
+                }
                 // Implicit multiplication: number, identifier, or '(' immediately
                 // following a complete left-hand expression.
                 Token::Int(_) | Token::Rational(_) | Token::Ident(_) | Token::LParen => {
-                    ('*', 3, 4, true)
+                    (Infix::Mul, BP_MUL, true)
                 }
                 _ => break,
             };
@@ -333,15 +1031,7 @@ impl<'a> Parser<'a> {
                 self.advance()?;
             }
             let rhs = self.parse_expr(arena, r_bp)?;
-
-            lhs = match op {
-                '+' => arena.add(&[lhs, rhs]),
-                '-' => arena.sub(lhs, rhs),
-                '*' => arena.mul(&[lhs, rhs]),
-                '/' => arena.div(lhs, rhs),
-                '^' => arena.pow(lhs, rhs),
-                _ => unreachable!(),
-            };
+            lhs = self.combine(arena, op, lhs, rhs)?;
         }
 
         self.depth -= 1;
@@ -362,34 +1052,61 @@ impl<'a> Parser<'a> {
             }
             Token::Ident(name) => {
                 self.advance()?;
-                // Check for function call: ident followed by '('
-                if self.current == Token::LParen {
-                    return self.parse_function_call(arena, &name);
+                let name_lower = name.to_ascii_lowercase();
+                // Check for function call: ident followed by '('.  With
+                // implicit application, an identifier that is not a known
+                // function (`x(x+1)`, `f(x)`) is a symbol and the '(' starts
+                // an implicitly multiplied group; the one-letter display
+                // aliases `C`, `B`, `W` count as symbols there too.
+                let is_call = !self.mode.implicit_app
+                    || (is_known_function(&name_lower) && name_lower.len() > 1);
+                if self.current == Token::LParen && is_call {
+                    return self.outside_app_arg(|p| p.parse_function_call(arena, &name));
                 }
-                // Known constants
-                match name.as_str() {
-                    "pi" | "Pi" | "PI" => Ok(arena.pi),
-                    "e" | "E" => Ok(arena.e_const),
-                    "I" | "i" => Ok(arena.i_unit),
-                    "inf" | "oo" | "Inf" => Ok(arena.infinity),
-                    "zoo" => Ok(arena.complex_infinity),
-                    "nan" => Ok(arena.nan),
-                    "EulerGamma" | "euler_gamma" => Ok(arena.euler_gamma),
-                    "Catalan" => Ok(arena.catalan),
-                    "GoldenRatio" | "golden_ratio" => Ok(arena.golden_ratio),
-                    _ => Ok(arena.symbol(&name)),
+                if self.mode.relations {
+                    match name.as_str() {
+                        "True" | "true" => return Ok(arena.bool_true()),
+                        "False" | "false" => return Ok(arena.bool_false()),
+                        "not" => return self.parse_not(arena),
+                        _ => {}
+                    }
+                }
+                if self.mode.implicit_app && is_implicit_unary_function(&name_lower) {
+                    // `sin x`, `sin 2x`, `sin x^2`: the argument is the
+                    // following juxtaposed product.
+                    if !starts_operand(&self.current) {
+                        return Err(self.error(format!(
+                            "function '{name}' needs an argument (write '{name}(x)' or '{name} x')"
+                        )));
+                    }
+                    let saved = std::mem::replace(&mut self.app_arg, true);
+                    let arg = self.parse_expr(arena, BP_MUL.0);
+                    self.app_arg = saved;
+                    return self.call_1(arena, &name, &name_lower, arg?);
+                }
+                match constant_of(arena, &name) {
+                    Some(c) => Ok(c),
+                    None => Ok(arena.symbol(&name)),
                 }
             }
             Token::Minus => {
                 self.advance()?;
-                // Unary minus binding power — tighter than +/- and *//
-                // but looser than ^, so that -x^2 parses as -(x^2).
-                let operand = self.parse_expr(arena, 5)?;
+                let operand = self.parse_expr(arena, BP_NEG)?;
+                if is_bool_node(arena, operand) {
+                    return Err(self.error(format!(
+                        "'-' needs a numeric operand, but '{}' is a Boolean expression",
+                        arena.display(operand)
+                    )));
+                }
                 Ok(arena.neg(operand))
+            }
+            Token::Tilde | Token::Bang if self.mode.relations => {
+                self.advance()?;
+                self.parse_not(arena)
             }
             Token::LParen => {
                 self.advance()?;
-                let inner = self.parse_expr(arena, 0)?;
+                let inner = self.outside_app_arg(|p| p.parse_expr(arena, 0))?;
                 self.expect(&Token::RParen)?;
                 Ok(inner)
             }
@@ -398,6 +1115,14 @@ impl<'a> Parser<'a> {
                 position: self.lexer.pos,
             }),
         }
+    }
+
+    /// Prefix `not`/`~`/`!` (the keyword or symbol already consumed): the
+    /// operand is one relation.
+    fn parse_not(&mut self, arena: &mut Arena) -> Result<ExprId, ParseError> {
+        let operand = self.parse_expr(arena, BP_NOT)?;
+        self.boolean_operand(arena, "not", operand)?;
+        Ok(arena.not(operand))
     }
 
     /// Largest number of arguments accepted by any function.
@@ -449,6 +1174,14 @@ impl<'a> Parser<'a> {
         }
         self.expect(&Token::RParen)?;
 
+        // SymPy's function forms of the relations and connectives
+        // (`Eq(x, 1)`, `And(a, b, c)`, `Not(a)`), only when parsing a relation.
+        if self.mode.relations
+            && let Some(result) = self.call_boolean(arena, name, &name_lower, &args)?
+        {
+            return Ok(result);
+        }
+
         // Variadic functions.
         if matches!(name_lower.as_str(), "min" | "max") {
             if args.len() < 2 {
@@ -477,6 +1210,67 @@ impl<'a> Parser<'a> {
                 ),
                 position: self.lexer.pos,
             }),
+        }
+    }
+
+    /// `Eq`/`Ne`/`Lt`/`Le`/`Gt`/`Ge(a, b)`, `And`/`Or(a, b, …)`, `Not(a)`
+    /// (SymPy spellings; `Mode::RELATIONS` only).  `Ok(None)` for any other
+    /// name.
+    fn call_boolean(
+        &self,
+        arena: &mut Arena,
+        name: &str,
+        name_lower: &str,
+        args: &[ExprId],
+    ) -> Result<Option<ExprId>, ParseError> {
+        let rel = match name_lower {
+            "eq" => Some(RelOp::Eq),
+            "ne" => Some(RelOp::Ne),
+            "lt" => Some(RelOp::Lt),
+            "le" => Some(RelOp::Le),
+            "gt" => Some(RelOp::Gt),
+            "ge" => Some(RelOp::Ge),
+            _ => None,
+        };
+        if let Some(rel) = rel {
+            let [lhs, rhs] = args else {
+                return Err(self.error(format!(
+                    "'{name}' takes exactly 2 arguments, got {}",
+                    args.len()
+                )));
+            };
+            self.numeric_operands(arena, rel.text(), *lhs, *rhs)?;
+            return Ok(Some(match rel {
+                RelOp::Lt => arena.gt(*rhs, *lhs),
+                RelOp::Le => arena.ge(*rhs, *lhs),
+                RelOp::Gt => arena.gt(*lhs, *rhs),
+                RelOp::Ge => arena.ge(*lhs, *rhs),
+                RelOp::Eq => arena.eq_(*lhs, *rhs),
+                RelOp::Ne => arena.ne_(*lhs, *rhs),
+            }));
+        }
+        match name_lower {
+            "and" | "or" => {
+                for &a in args {
+                    self.boolean_operand(arena, name, a)?;
+                }
+                Ok(Some(if name_lower == "and" {
+                    arena.and(args)
+                } else {
+                    arena.or(args)
+                }))
+            }
+            "not" => {
+                let [a] = args else {
+                    return Err(self.error(format!(
+                        "'{name}' takes exactly 1 argument, got {}",
+                        args.len()
+                    )));
+                };
+                self.boolean_operand(arena, name, *a)?;
+                Ok(Some(arena.not(*a)))
+            }
+            _ => Ok(None),
         }
     }
 
@@ -1580,5 +2374,224 @@ mod tests {
         assert_eq!(parse_and_display("zeta(2)"), "1/6*pi^2");
         assert_eq!(parse_and_display("Si(0)"), "0");
         assert_eq!(parse_and_display("atan2(1, 1)"), "atan2(1, 1)");
+    }
+
+    // ── 0.9.1: relations, connectives, implicit application ───────────────
+
+    #[test]
+    fn parse_bool_relations_and_connectives() {
+        let ctx = Context::new();
+        let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+        let zero = ctx.int(0);
+        let one = ctx.int(1);
+        assert_eq!(parse_bool(&ctx, "x > 0").unwrap(), x.gt(&zero));
+        assert_eq!(parse_bool(&ctx, "x >= 0").unwrap(), x.ge(&zero));
+        assert_eq!(parse_bool(&ctx, "x < 1").unwrap(), x.lt(&one));
+        assert_eq!(parse_bool(&ctx, "x <= 1").unwrap(), x.le(&one));
+        assert_eq!(parse_bool(&ctx, "x == 1").unwrap(), x.eq_expr(&one));
+        assert_eq!(parse_bool(&ctx, "x != 1").unwrap(), x.ne_expr(&one));
+        assert_eq!(
+            parse_bool(&ctx, "x > 0 & x < 1").unwrap(),
+            x.gt(&zero).and(&x.lt(&one))
+        );
+        assert_eq!(
+            parse_bool(&ctx, "x > 0 && x < 1").unwrap(),
+            parse_bool(&ctx, "x > 0 and x < 1").unwrap()
+        );
+        assert_eq!(
+            parse_bool(&ctx, "x > 0 | y > 0").unwrap(),
+            x.gt(&zero).or(&y.gt(&zero))
+        );
+        assert_eq!(
+            parse_bool(&ctx, "x > 0 || y > 0").unwrap(),
+            parse_bool(&ctx, "x > 0 or y > 0").unwrap()
+        );
+        assert_eq!(parse_bool(&ctx, "~(x > 0)").unwrap(), x.gt(&zero).not());
+        assert_eq!(parse_bool(&ctx, "!(x > 0)").unwrap(), x.gt(&zero).not());
+        assert_eq!(parse_bool(&ctx, "not x > 0").unwrap(), x.gt(&zero).not());
+        assert_eq!(parse_bool(&ctx, "True").unwrap().to_string(), "True");
+        assert_eq!(parse_bool(&ctx, "false").unwrap().to_string(), "False");
+    }
+
+    #[test]
+    fn parse_bool_precedence() {
+        let ctx = Context::new();
+        let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+        let zero = ctx.int(0);
+        let one = ctx.int(1);
+        // `and` binds tighter than `or`; comparisons tighter than both.
+        assert_eq!(
+            parse_bool(&ctx, "x > 0 & x < 1 | y == 0").unwrap(),
+            x.gt(&zero).and(&x.lt(&one)).or(&y.eq_expr(&zero))
+        );
+        assert_eq!(
+            parse_bool(&ctx, "x > 0 | x < 1 & y == 0").unwrap(),
+            x.gt(&zero).or(&x.lt(&one).and(&y.eq_expr(&zero)))
+        );
+        // Arithmetic binds tighter than comparisons.
+        assert_eq!(
+            parse_bool(&ctx, "x + 1 > 2*y").unwrap(),
+            (&x + 1).gt(&(2 * &y))
+        );
+        // `not` takes one relation, not the whole conjunction.
+        assert_eq!(
+            parse_bool(&ctx, "not x > 0 & y > 0").unwrap(),
+            x.gt(&zero).not().and(&y.gt(&zero))
+        );
+        // `a & b & c` is one n-ary node.
+        assert_eq!(
+            parse_bool(&ctx, "x > 0 & y > 0 & x < 1")
+                .unwrap()
+                .to_string(),
+            "x > 0 & y > 0 & 1 > x"
+        );
+        // Parentheses regroup.
+        assert_eq!(
+            parse_bool(&ctx, "(x > 0 | y > 0) & x < 1").unwrap(),
+            x.gt(&zero).or(&y.gt(&zero)).and(&x.lt(&one))
+        );
+    }
+
+    #[test]
+    fn parse_bool_function_forms() {
+        let ctx = Context::new();
+        let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+        let one = ctx.int(1);
+        assert_eq!(parse_bool(&ctx, "Eq(x, 1)").unwrap(), x.eq_expr(&one));
+        assert_eq!(parse_bool(&ctx, "Ne(x, 1)").unwrap(), x.ne_expr(&one));
+        assert_eq!(parse_bool(&ctx, "Lt(x, 1)").unwrap(), x.lt(&one));
+        assert_eq!(parse_bool(&ctx, "Le(x, 1)").unwrap(), x.le(&one));
+        assert_eq!(parse_bool(&ctx, "Gt(x, 1)").unwrap(), x.gt(&one));
+        assert_eq!(parse_bool(&ctx, "Ge(x, 1)").unwrap(), x.ge(&one));
+        assert_eq!(
+            parse_bool(&ctx, "And(x > 1, y > 1)").unwrap(),
+            x.gt(&one).and(&y.gt(&one))
+        );
+        assert_eq!(
+            parse_bool(&ctx, "Or(x > 1, y > 1)").unwrap(),
+            x.gt(&one).or(&y.gt(&one))
+        );
+        assert_eq!(parse_bool(&ctx, "Not(x > 1)").unwrap(), x.gt(&one).not());
+    }
+
+    #[test]
+    fn parse_bool_errors() {
+        let ctx = Context::new();
+        // A numeric expression is not a relation.
+        assert!(parse_bool(&ctx, "x + 1").is_err());
+        // Chained comparisons.
+        assert!(parse_bool(&ctx, "0 < x < 1").is_err());
+        // Sort errors.
+        assert!(parse_bool(&ctx, "(x > 0) + 1").is_err());
+        assert!(parse_bool(&ctx, "x & y").is_err());
+        assert!(parse_bool(&ctx, "not x").is_err());
+        assert!(parse_bool(&ctx, "(x > 0) > 1").is_err());
+        assert!(parse_bool(&ctx, "-(x > 0)").is_err());
+        // Trailing garbage.
+        assert!(parse_bool(&ctx, "x > 0 &").is_err());
+    }
+
+    #[test]
+    fn parse_strict_rejects_relations_and_keeps_keywords_as_symbols() {
+        let ctx = Context::new();
+        assert!(parse(&ctx, "x > 0").is_err());
+        assert!(parse(&ctx, "x & y").is_err());
+        assert!(parse(&ctx, "~x").is_err());
+        assert!(parse(&ctx, "x != 1").is_err());
+        // In the numeric grammar `and`, `True` are ordinary identifiers.
+        assert_eq!(parse(&ctx, "and").unwrap(), ctx.symbol("and"));
+        assert_eq!(parse(&ctx, "True").unwrap(), ctx.symbol("True"));
+        // `Sum(body, k=lo..hi)` still uses a single `=`.
+        assert!(parse(&ctx, "Sum(k, k=1..3)").is_ok());
+    }
+
+    #[test]
+    fn parse_implicit_application() {
+        let ctx = Context::new();
+        let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+        assert_eq!(parse_implicit(&ctx, "sin x").unwrap(), x.sin());
+        assert_eq!(parse_implicit(&ctx, "2 sin x").unwrap(), 2 * &x.sin());
+        assert_eq!(parse_implicit(&ctx, "sin 2x").unwrap(), (2 * &x).sin());
+        assert_eq!(parse_implicit(&ctx, "sin x^2").unwrap(), x.powi(2).sin());
+        assert_eq!(
+            parse_implicit(&ctx, "sin x cos y").unwrap(),
+            &x.sin() * &y.cos()
+        );
+        assert_eq!(parse_implicit(&ctx, "sin x + 1").unwrap(), &x.sin() + 1);
+        assert_eq!(parse_implicit(&ctx, "sin x/2").unwrap(), (&x / 2).sin());
+        assert_eq!(parse_implicit(&ctx, "sin x y").unwrap(), (&x * &y).sin());
+        assert_eq!(parse_implicit(&ctx, "exp (x) y").unwrap(), &x.exp() * &y);
+        assert_eq!(parse_implicit(&ctx, "sqrt 2").unwrap(), ctx.int(2).sqrt());
+        assert_eq!(parse_implicit(&ctx, "ln x^2").unwrap(), x.powi(2).ln());
+        // Parenthesised calls still work and reset the argument scope.
+        assert_eq!(
+            parse_implicit(&ctx, "sin(x cos y)").unwrap(),
+            (&x * &y.cos()).sin()
+        );
+    }
+
+    #[test]
+    fn parse_implicit_products() {
+        let ctx = Context::new();
+        let (x, y, z) = (ctx.symbol("x"), ctx.symbol("y"), ctx.symbol("z"));
+        assert_eq!(
+            parse_implicit(&ctx, "2x + 3(y-1)").unwrap(),
+            2 * &x + 3 * (&y - 1)
+        );
+        assert_eq!(parse_implicit(&ctx, "x y z").unwrap(), &x * &y * &z);
+        assert_eq!(parse_implicit(&ctx, "x(x+1)").unwrap(), &x * (&x + 1));
+        assert_eq!(
+            parse_implicit(&ctx, "(x+1)(x-1)").unwrap(),
+            (&x + 1) * (&x - 1)
+        );
+        // Unknown `f(x)` is a product; constants multiply groups too; the
+        // one-letter aliases `C`/`B`/`W` are ordinary symbols here.
+        let f = ctx.symbol("f");
+        assert_eq!(parse_implicit(&ctx, "f(x)").unwrap(), &f * &x);
+        let c = ctx.symbol("c");
+        assert_eq!(parse_implicit(&ctx, "c(x+1)").unwrap(), &c * (&x + 1));
+        assert_eq!(
+            parse_implicit(&ctx, "binomial(x, 2)").unwrap(),
+            parse(&ctx, "C(x, 2)").unwrap()
+        );
+        assert_eq!(parse_implicit(&ctx, "pi(x)").unwrap(), ctx.pi() * &x);
+        assert_eq!(parse_implicit(&ctx, "2 pi x").unwrap(), 2 * ctx.pi() * &x);
+    }
+
+    #[test]
+    fn parse_implicit_errors_and_limits() {
+        let ctx = Context::new();
+        // A textbook function name without an argument.
+        assert!(parse_implicit(&ctx, "sin + 1").is_err());
+        assert!(parse_implicit(&ctx, "sin").is_err());
+        // Ambiguous short names need parentheses: `re x` is `re*x`.
+        let (re, x) = (ctx.symbol("re"), ctx.symbol("x"));
+        assert_eq!(parse_implicit(&ctx, "re x").unwrap(), &re * &x);
+        assert_eq!(parse_implicit(&ctx, "re(x)").unwrap(), x.re());
+        // Relations are not part of the implicit grammar.
+        assert!(parse_implicit(&ctx, "x > 0").is_err());
+    }
+
+    #[test]
+    fn known_functions_table_matches_call_tables() {
+        // Every name in `KNOWN_FUNCTIONS` is accepted by some call table.
+        let ctx = Context::new();
+        for name in KNOWN_FUNCTIONS {
+            let ok = [
+                format!("{name}(x)"),
+                format!("{name}(x, y)"),
+                format!("{name}(x, y, z)"),
+                format!("{name}(x, y, z, w)"),
+            ]
+            .iter()
+            .any(|s| parse(&ctx, s).is_ok());
+            assert!(ok, "`{name}` is listed but no arity parses");
+        }
+        for name in KNOWN_FUNCTIONS {
+            assert!(
+                !is_implicit_unary_function(name) || parse(&ctx, &format!("{name}(x)")).is_ok(),
+                "`{name}` is applied implicitly but is not a unary function"
+            );
+        }
     }
 }

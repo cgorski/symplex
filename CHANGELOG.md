@@ -6,6 +6,76 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.10.0] - 2026-09-19
+
+### Breaking
+
+- `linprog::LpStatus` gained the variant **`BudgetExhausted`** (an LP
+  stopped by a [`Budget`](#budget) — deadline or pivot cap — reports it as
+  a status, not an error); exhaustive matches need an arm.
+- `lean::Tactic` gained the variant **`Apply { head, args }`**
+  (`Tactic::apply(head, args)`: an application whose argument list the
+  renderer wraps, never splitting an argument); exhaustive matches need an
+  arm.
+- `lean::Decl` gained the field **`preamble: Vec<String>`** (lines such
+  as `set_option maxHeartbeats 400000 in` and a comment emitted before
+  the doc comment); 0.8 struct literals need the field — or use the new
+  `Decl::new(kind, name, statement, body)` with `with_binders`,
+  `with_doc`, `with_preamble`.
+
+### Added
+
+- **A budget on a single prover call** (a downstream generator's request:
+  a deep cell at the degree-3 pairwise stage could run for minutes with
+  nothing able to stop it).  `linprog::Budget { deadline, max_pivots }`
+  (`#[non_exhaustive]`; `Budget::within(Duration)`, `::deadline(Instant)`,
+  `::max_pivots(n)`), `LpProblem::with_budget`; the deadline is checked at
+  every pivot and the pivot count spans all stages and the `i64 → i128 →
+  BigInt` fallback chain.  `PolyhedronOpts::{with_time_limit(Duration),
+  with_deadline(Instant), with_max_pivots(n)}` — a time limit is converted
+  to a deadline when each `prove`/`prove_empty` starts, so one prover can
+  be reused with a fresh per-call budget; on exhaustion the outcome is
+  `Unknown(PolyhedronUnknown { budget_exhausted: Some(BudgetHit::Deadline
+  | MaxPivots), .. })` and its `Display` says so.  `SosOpts::{with_time_limit,
+  with_deadline}` for the interior-point and facial-reduction loops.
+  Measured: a 50 ms limit returns at 50.0 ms; without a budget every pivot
+  path is byte-identical (4,000-LP check).
+- `PolyhedronProver::prove_poly` accepts a goal whose generator list has
+  **unused** extra generators (exponent 0 in every term — a parameter
+  carried on a row where it does not occur); only a foreign generator
+  that actually occurs is an `InvalidArgument`.
+- **Number theory** (`ntheory`): `nthroot_mod` for **any** modulus
+  (Johnston's generalised root algorithm per prime, Hensel lifting, CRT),
+  `quadratic_residues`, `is_nthpow_residue`, `polynomial_congruence`
+  (roots of an integer polynomial mod `m`), `multiplicity`, `primenu`,
+  `primeomega`, `primorial` / `primorial_up_to`,
+  `continued_fraction_reduce` (+ `_periodic`, `_periodic_ex` → the
+  quadratic surd), `is_carmichael`, `is_amicable`,
+  `binomial_coefficients` / `_list`.
+- **Discrete transforms** (`discrete`, exact over `Ratio<BigInt>`):
+  `convolution` (linear, `_cyclic`, `_subset`, `_ex` over `Ex`), `ntt` /
+  `intt` / `convolution_ntt` (number-theoretic transform for a prime with
+  `len | p − 1`), `fwht` / `ifwht`, `mobius_transform` /
+  `inverse_mobius_transform` (+ superset variants).  No floating-point
+  FFT, by design.
+- **Parsing**: `Context::parse_bool` (relations `< <= > >= == !=`,
+  `and`/`&`, `or`/`|`, `not`/`~`, `True`/`False`, SymPy's `Eq(…)`/`And(…)`
+  forms) and `Context::parse_implicit` (`sin x`, `2 sin x`, `sin 2x`,
+  `x(x + 1)`; the ambiguity rules are in the docs).
+- **Interchange and code generation**: `Ex::to_mathml` (Presentation
+  MathML mirroring the LaTeX printer's parenthesisation; byte-identical to
+  SymPy's on the checked cases), `Ex::to_srepr` and `Ex::to_dot`
+  (SymPy `srepr` / `dotprint`, total, derived from `ExprTree`),
+  `Ex::{to_python, to_numpy, to_julia}` and `{to_python_fn, to_numpy_fn,
+  to_julia_fn}` (one table-driven printer with shared CSE; generated
+  Python is executed against `eval_f64` in the tests; functions a target
+  lacks are `NotImplemented`, never a guess).
+
+### Infrastructure
+
+- `symplex` and `symplex-build` at 0.10.0; `symplex-macros` unchanged at
+  0.3.2.  `tests/v09/` complete (`ntheory_discrete`, `output`).
+
 ## [0.9.0] - 2026-09-19
 
 A **comprehensiveness** release: the first pass over the gaps a SymPy user

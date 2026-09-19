@@ -178,3 +178,104 @@ The [`symplex-build`](https://github.com/cgorski/symplex/tree/main/symplex-build
 ## Other outputs
 
 `to_latex()`, `pretty()`/`pretty_ascii()`, `to_json()`/`Context::from_json`, and plotting (`textplot`, `to_svg`, `to_tikz`, `plot_data`, `eval_table` — all `Result` in 0.2). See `cargo run --example latex_output`.
+
+## More targets and interchange (0.9.1)
+
+### Python, NumPy and Julia
+
+`to_python()` prints a Python 3 expression over the `math` module (SymPy: `pycode`); `to_numpy()` the vectorised `numpy.` form (SymPy: `NumPyPrinter`); `to_julia()` base Julia (SymPy: `julia_code`). The `*_fn(name, &args)` twins wrap the expression in a function definition with CSE temporaries `t0`, `t1`, … and report a symbol that is not a parameter as `Err(FreeSymbol)`. Numbers stay exact (`2`, `(1/2)`), integer powers are `x**2`/`x^2`, `x^(1/2)` is `math.sqrt(x)`, relations and connectives print as `x > 0 and 1 > x` / `numpy.logical_and(numpy.greater(x, 0), …)` / `x > 0 && 1 > x`, and piecewise as `(v if c else …)`, `numpy.select([…], […], default=numpy.nan)`, `(c ? v : …)`. Anything the target cannot express — Bessel functions, `digamma`, `LambertW`, unevaluated integrals, sets, `I`; for NumPy also `gamma`/`erf`/`factorial` (SciPy territory); for Julia `gamma`/`erf` (SpecialFunctions.jl) — is `Err(NotImplemented)`, never a silently wrong formula. The expression forms print every symbol by name; the caller supplies `import math` / `import numpy`.
+
+```rust
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    symplex::syms!(ctx; x, y);
+    let g = &x.sin().powi(2) + &x.exp();
+    assert_eq!(g.to_python().unwrap(), "math.sin(x)**2 + math.exp(x)");
+    assert_eq!(g.to_numpy().unwrap(), "numpy.sin(x)**2 + numpy.exp(x)");
+    assert_eq!(g.to_julia().unwrap(), "sin(x)^2 + exp(x)");
+
+    let f = &x.sin().powi(2) + &x.sin() * &y;
+    println!("{}", f.to_python_fn("f", &["x", "y"]).unwrap());
+    // def f(x, y):
+    //     t0 = math.sin(x)
+    //     return t0**2 + t0*y
+
+    let pw = Ex::piecewise(&[(&x.powi(2), &x.lt(&ctx.int(0))), (&x.sqrt(), &x.ge(&ctx.int(0)))]);
+    assert_eq!(pw.to_python().unwrap(), "(x**2 if 0 > x else (math.sqrt(x) if x >= 0 else math.nan))");
+    assert!(matches!(x.bessel_j(&ctx.int(0)).to_python(), Err(SymplexError::NotImplemented(_))));
+}
+```
+
+### Presentation MathML
+
+`to_mathml()` (on `Ex` and `BoolEx`; SymPy: `mathml(expr, printer='presentation')`) returns a `<math xmlns="http://www.w3.org/1998/Math/MathML">…</math>` element that browsers and MathJax render directly. Layout follows `to_latex`: `<mfrac>` for quotients and negative powers, `<msqrt>`/`<mroot>` for roots, `<msup>` for powers (`sin(x)^2` as `<msup><mi>sin</mi><mn>2</mn></msup>`), `<mi>sin</mi><mo>&#x2061;</mo>` (invisible apply) for function application, `<mo>&#x2062;</mo>` (invisible times) between factors, Greek symbol names as character references (`alpha` → `<mi>&#x3B1;</mi>`), `x_1` as `<msub>`, and explicit `<mo>(</mo>…<mo>)</mo>` wherever LaTeX would emit `\left(…\right)` — no `<mfenced>`. Every character reference is numeric, so the output is well-formed XML without a DTD. `Series`, `DSolve`, `RootOf` and `RootSum` have no standard presentation and return `Err(NotImplemented)`.
+
+```rust
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    symplex::syms!(ctx; x);
+    assert_eq!(
+        (&x.powi(2) + 1).to_mathml().unwrap(),
+        "<math xmlns=\"http://www.w3.org/1998/Math/MathML\">\
+         <mrow><msup><mi>x</mi><mn>2</mn></msup><mo>+</mo><mn>1</mn></mrow></math>"
+    );
+    println!("{}", (&x.sin() / 2 + &x.sqrt()).to_mathml().unwrap());
+    println!("{}", x.gt(&ctx.int(0)).and(&x.lt(&ctx.int(1))).to_mathml().unwrap());
+}
+```
+
+### `srepr` and DOT
+
+`to_srepr()` (SymPy: `srepr`) is the unambiguous constructor form of the exact tree — `Add(Integer(1), Mul(Integer(2), Symbol('x')))`, `Pow(sin(Symbol('x')), Integer(2))`, `StrictGreaterThan(Symbol('x'), Integer(0))`, `Interval(a, b, false, true)` — derived from `to_tree()`, so it is total (every node kind prints) and shows the arena's canonical child order rather than display order. `to_dot()` (SymPy: `dotprint`) is a Graphviz `digraph` with one node per tree position (labelled with the node kind, plus the value for atoms), one edge per child, and ids `n0`, `n1`, … assigned in pre-order, so the output is deterministic; render it with `dot -Tsvg`.
+
+```rust
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    symplex::syms!(ctx; x);
+    assert_eq!((2 * &x + 1).to_srepr(), "Add(Integer(1), Mul(Integer(2), Symbol('x')))");
+    println!("{}", (2 * &x + 1).to_dot());
+    // digraph {
+    //     ordering=out;
+    //     rankdir=TD;
+    //     n0 [label="Add"];
+    //     n1 [label="Integer(1)"];
+    //     n2 [label="Mul"];
+    //     n3 [label="Integer(2)"];
+    //     n4 [label="Symbol('x')"];
+    //     n0 -> n1;
+    //     n0 -> n2;
+    //     n2 -> n3;
+    //     n2 -> n4;
+    // }
+}
+```
+
+### Parsing relations and implicit application
+
+`Context::parse` already reads juxtaposition as multiplication (`2x`, `2 x`, `x y`, `2(x+1)`, `(x+1)(x-1)`, `2pi`) and is otherwise strict: no relations, and an identifier followed by `(` must be a known function. Two new entry points extend it without changing what `parse` accepts:
+
+- `Context::parse_bool("x > 0 & x < 1") -> Result<BoolEx>` (SymPy: `sympify("x > 0")`) adds `<`, `<=`, `>`, `>=`, `==`, `!=`, the connectives `&`/`&&`/`and`, `|`/`||`/`or`, the prefix negation `~`/`!`/`not`, `True`/`False`, and SymPy's function forms `Eq(a, b)`, `Ne`, `Lt`, `Le`, `Gt`, `Ge`, `And(…)`, `Or(…)`, `Not(a)`. Precedence is mathematical, loosest first: `or` < `and` < comparisons < `+ -` < `* /` < `^`; `not` applies to the following relation; comparisons do not chain (`0 < x < 1` is an error — write `0 < x & x < 1`). Note that Python's `sympify("x > 0 & x < 1")` fails because `&` binds tighter than `>` there. A numeric expression (`x + 1`) or a sort error (`(x > 0) + 1`, `x & y`) is `Err`.
+- `Context::parse_implicit("2 sin x") -> Result<Ex>` (SymPy: `parse_expr(s, transformations=implicit_multiplication_application)`) additionally applies textbook function names without parentheses and treats an unknown `f(…)` as a product. The argument of `sin x` is the juxtaposed product that follows, up to the next `+`, `-`, comparison, closing parenthesis or function name: `2 sin x` is `2*sin(x)`, `sin 2x` is `sin(2*x)`, `sin x^2` is `sin(x^2)`, `sin x/2` is `sin(x/2)`, `sin x + 1` is `sin(x) + 1`, and `sin x cos y` is `sin(x)*cos(y)` (SymPy reads `sin(x*cos(y))`). Only the textbook names (trigonometric/hyperbolic and inverses, `exp`, `ln`/`log`, `sqrt`, `cbrt`, `abs`, `floor`, `ceil`, `sign`, `gamma`, `erf`, `erfc`, `factorial`) are applied implicitly; short names that double as variables (`re`, `im`, `arg`, `li`, `zeta`, …) need parentheses, and the one-letter display aliases `C`/`B`/`W` are ordinary symbols (write `binomial`, `beta`, `lambertw`). `x(x+1)` and `f(x)` are `x*(x+1)` and `f*x`.
+
+```rust
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    symplex::syms!(ctx; x, y);
+    let p = ctx.parse_bool("x > 0 & x < 1").unwrap();
+    assert_eq!(p, x.gt(&ctx.int(0)).and(&x.lt(&ctx.int(1))));
+    assert_eq!(p.to_string(), "x > 0 & 1 > x");
+    assert_eq!(p.to_lean().unwrap(), "0 < x ∧ x < 1");
+
+    assert_eq!(ctx.parse_implicit("2x + 3(y-1)").unwrap(), 2 * &x + 3 * (&y - 1));
+    assert_eq!(ctx.parse_implicit("2 sin x cos y").unwrap(), 2 * &x.sin() * &y.cos());
+    assert!(ctx.parse("x > 0").is_err());
+}
+```

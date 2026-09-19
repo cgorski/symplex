@@ -33,6 +33,7 @@
 //! existing skeleton with the caller's hypothesis names.
 
 use std::fmt;
+use std::time::{Duration, Instant};
 
 use num_bigint::BigInt;
 use num_traits::{One, Signed, Zero};
@@ -43,7 +44,7 @@ use crate::api::poly_ex::Poly;
 use crate::base::errors::SymplexError;
 use crate::domains::certificates::serial::{q_from_str, q_to_str};
 use crate::domains::certificates::{Certificate, Outcome};
-use crate::domains::linprog::{LpProblem, LpStatus, Q};
+use crate::domains::linprog::{Budget, BudgetHit, LpProblem, LpSolution, LpStatus, Q};
 use crate::output::lean::{
     Block, LeanOpts, MATHLIB_LINE_WIDTH, Proof, Tactic, lean_ident, wrap_lean,
 };
@@ -72,6 +73,17 @@ fn invalid(reason: impl Into<String>) -> SymplexError {
 /// first success is returned; with `staged = false` a single LP at the
 /// maxima is solved.
 ///
+/// **Budget.**  One `prove*` call may be bounded by a deadline
+/// ([`with_deadline`](Self::with_deadline), absolute, or
+/// [`with_time_limit`](Self::with_time_limit), converted to a deadline when
+/// the call starts — so a prover built once gets a fresh allowance per
+/// goal) and/or a cap on the total number of simplex pivots across every
+/// LP of the call ([`with_max_pivots`](Self::with_max_pivots)).  The stage
+/// LPs and the refutation's sample LPs each run under what is left.  When
+/// the budget runs out the answer is `Unknown` with
+/// [`PolyhedronUnknown::budget_exhausted`] set; a budget never changes a
+/// `Proved` or `Refuted` answer that fits inside it.
+///
 /// `#[non_exhaustive]`: build it with [`Default`] and the `with_*`
 /// builders (or assign fields on a `mut` default), so that a future option
 /// is not a breaking change.
@@ -90,30 +102,41 @@ pub struct PolyhedronOpts {
     pub pairwise: bool,
     /// Try small bases first and escalate on failure.
     pub staged: bool,
+    /// Absolute deadline for each `prove*` call.
+    pub deadline: Option<Instant>,
+    /// Time allowed for each `prove*` call, measured from its start.  When
+    /// both this and `deadline` are set the earlier one applies.
+    pub time_limit: Option<Duration>,
+    /// Total simplex pivots allowed across every LP of one `prove*` call.
+    pub max_pivots: Option<usize>,
 }
 
 impl Default for PolyhedronOpts {
     /// `max_degree = 3`, `max_lambda_degree = 3`, `pairwise = true`,
-    /// `staged = true`.
+    /// `staged = true`, no budget.
     fn default() -> Self {
         PolyhedronOpts {
             max_degree: 3,
             max_lambda_degree: 3,
             pairwise: true,
             staged: true,
+            deadline: None,
+            time_limit: None,
+            max_pivots: None,
         }
     }
 }
 
 impl PolyhedronOpts {
     /// One stage only: degree-`degree` multipliers, `λ` of degree
-    /// `lambda_degree`, no pairwise products, not staged.
+    /// `lambda_degree`, no pairwise products, not staged, no budget.
     pub fn single(degree: u32, lambda_degree: u32) -> Self {
         PolyhedronOpts {
             max_degree: degree,
             max_lambda_degree: lambda_degree,
             pairwise: false,
             staged: false,
+            ..Default::default()
         }
     }
 
@@ -142,6 +165,30 @@ impl PolyhedronOpts {
     #[must_use]
     pub fn with_staged(mut self, staged: bool) -> Self {
         self.staged = staged;
+        self
+    }
+
+    /// Set [`deadline`](Self::deadline): every `prove*` call stops at this
+    /// instant.
+    #[must_use]
+    pub fn with_deadline(mut self, deadline: Instant) -> Self {
+        self.deadline = Some(deadline);
+        self
+    }
+
+    /// Set [`time_limit`](Self::time_limit): every `prove*` call gets this
+    /// long from the moment it starts.
+    #[must_use]
+    pub fn with_time_limit(mut self, time_limit: Duration) -> Self {
+        self.time_limit = Some(time_limit);
+        self
+    }
+
+    /// Set [`max_pivots`](Self::max_pivots): the total simplex pivots of
+    /// one `prove*` call, over all of its stage and refutation LPs.
+    #[must_use]
+    pub fn with_max_pivots(mut self, max_pivots: usize) -> Self {
+        self.max_pivots = Some(max_pivots);
         self
     }
 
@@ -200,7 +247,9 @@ pub type PolyhedronOutcome = Outcome<PolyhedronCertificate, PolyhedronUnknown>;
 
 /// Why [`prove_nonnegative_on_polyhedron`] could not decide: no
 /// certificate up to these limits, and no counterexample on the sampled
-/// parameter values.
+/// parameter values — or the call's budget ran out first
+/// (`budget_exhausted`), in which case the limits are those of the stage
+/// that was interrupted and the stages after it were not tried.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct PolyhedronUnknown {
@@ -210,6 +259,9 @@ pub struct PolyhedronUnknown {
     pub lambda_degree: u32,
     /// Whether pairwise products were tried.
     pub pairwise: bool,
+    /// Which limit of the call's budget ran out, if the search was cut
+    /// short by it (see [`PolyhedronOpts::with_time_limit`]).
+    pub budget_exhausted: Option<BudgetHit>,
 }
 
 impl fmt::Display for PolyhedronUnknown {
@@ -224,7 +276,11 @@ impl fmt::Display for PolyhedronUnknown {
             } else {
                 ""
             }
-        )
+        )?;
+        if let Some(hit) = &self.budget_exhausted {
+            write!(f, "; budget exhausted: {hit}")?;
+        }
+        Ok(())
     }
 }
 
@@ -1107,6 +1163,63 @@ struct StageBasis {
     cost: Vec<Q>,
 }
 
+/// The budget of one `prove*` call, shared by every LP it runs: the
+/// deadline (absolute, or the time limit converted when the call started)
+/// and the pivots spent so far against the pivot cap.
+struct Meter {
+    deadline: Option<Instant>,
+    max_pivots: Option<usize>,
+    spent: usize,
+}
+
+/// Why a stage stopped without an answer: the budget ran out, or an LP
+/// failed.
+enum Stop {
+    Budget(BudgetHit),
+    Error(SymplexError),
+}
+
+impl From<SymplexError> for Stop {
+    fn from(e: SymplexError) -> Self {
+        Stop::Error(e)
+    }
+}
+
+impl Meter {
+    /// Start the clock for one call under `opts`.
+    fn start(opts: &PolyhedronOpts) -> Self {
+        // A time limit too large to represent as an instant is no limit.
+        let from_limit = opts.time_limit.and_then(|t| Instant::now().checked_add(t));
+        let deadline = match (opts.deadline, from_limit) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        Meter {
+            deadline,
+            max_pivots: opts.max_pivots,
+            spent: 0,
+        }
+    }
+
+    /// What is left for the next LP.
+    fn remaining(&self) -> Budget {
+        Budget {
+            deadline: self.deadline,
+            max_pivots: self.max_pivots.map(|m| m.saturating_sub(self.spent)),
+        }
+    }
+
+    /// Solve `lp` under the remaining budget and charge its pivots.
+    fn solve(&mut self, lp: LpProblem) -> Result<LpSolution, Stop> {
+        let report = lp.with_budget(self.remaining()).solve_report()?;
+        self.spent += report.pivots;
+        match report.budget_hit {
+            Some(hit) => Err(Stop::Budget(hit)),
+            None => Ok(report.solution),
+        }
+    }
+}
+
 /// A prover for a **fixed** hypothesis set and parameter: parses the
 /// hypotheses once, builds each stage's product basis once, and then
 /// certifies any number of goals (or the emptiness of the set) against
@@ -1428,13 +1541,16 @@ impl PolyhedronProver {
     /// entry point for tools that keep their polynomials exact
     /// (`MultiPoly` → [`Poly::from_multipoly`]) and want to skip the
     /// expression round trip.  The goal's generators may be any subset of
-    /// the prover's ([`gens`](Self::gens)) in any order; a coefficient must
-    /// be rational.
+    /// the prover's ([`gens`](Self::gens)) in any order, and generators
+    /// that occur in no term of the goal are ignored (a polynomial ring
+    /// with a spare variable — a parameter that happens not to appear in
+    /// this goal — is accepted); a coefficient must be rational.
     ///
     /// # Errors
     ///
-    /// [`SymplexError::InvalidArgument`] if a generator of the goal is not a
-    /// variable of the hypotheses, or a coefficient is symbolic.
+    /// [`SymplexError::InvalidArgument`] if a generator that *occurs* in
+    /// the goal is not a variable of the hypotheses, or a coefficient is
+    /// symbolic.
     ///
     /// ```
     /// use symplex::prelude::*;
@@ -1455,16 +1571,30 @@ impl PolyhedronProver {
         if goal.gens() == self.gens.as_slice() {
             return self.prove_poly_aligned(goal);
         }
-        // Re-map the exponent vectors onto the prover's generator order.
-        let positions: Vec<usize> = goal
+        // Re-map the exponent vectors onto the prover's generator order.  A
+        // generator with exponent 0 in every term is not a variable of the
+        // goal at all and is dropped (`None`), whether or not the prover
+        // knows it; only a generator that occurs may be foreign.
+        let positions: Vec<Option<usize>> = goal
             .gens()
             .iter()
-            .map(|g| {
-                self.gens.iter().position(|s| s == g).ok_or_else(|| {
-                    invalid(format!(
-                        "goal mentions `{g}`, which is not a variable of the hypotheses"
-                    ))
-                })
+            .enumerate()
+            .map(|(k, g)| {
+                let occurs = goal
+                    .terms_iter()
+                    .any(|(m, _)| m.get(k).is_some_and(|&e| e > 0));
+                if !occurs {
+                    return Ok(None);
+                }
+                self.gens
+                    .iter()
+                    .position(|s| s == g)
+                    .map(Some)
+                    .ok_or_else(|| {
+                        invalid(format!(
+                            "goal mentions `{g}`, which is not a variable of the hypotheses"
+                        ))
+                    })
             })
             .collect::<Result<_, _>>()?;
         let width = self.gens.len();
@@ -1472,8 +1602,10 @@ impl PolyhedronProver {
             .terms_iter()
             .map(|(m, c)| {
                 let mut e = vec![0u32; width];
-                for (k, &pos) in positions.iter().enumerate() {
-                    e[pos] = m.get(k).copied().unwrap_or(0);
+                for (k, pos) in positions.iter().enumerate() {
+                    if let Some(pos) = pos {
+                        e[*pos] = m.get(k).copied().unwrap_or(0);
+                    }
                 }
                 (e, c.clone())
             })
@@ -1507,30 +1639,51 @@ impl PolyhedronProver {
     /// only paid by goals the first stage does not settle.  Outcomes are
     /// exactly those of "refute first": a goal is refuted iff it is false,
     /// and proved with the same certificate iff some stage finds one.
+    ///
+    /// Every LP runs under what is left of the call's budget
+    /// ([`Meter`]); when it runs out the answer is `Unknown` with
+    /// `budget_exhausted` set and the limits of the interrupted stage.
     fn prove_poly_aligned(&self, goal: &Poly) -> Result<PolyhedronOutcome, SymplexError> {
+        let mut meter = Meter::start(&self.opts);
         let mut tried = (0u32, 0u32, false);
+        let out_of_budget = |tried: (u32, u32, bool), hit: BudgetHit| {
+            Ok(Outcome::Unknown(PolyhedronUnknown {
+                degree: tried.0,
+                lambda_degree: tried.1,
+                pairwise: tried.2,
+                budget_exhausted: Some(hit),
+            }))
+        };
         let mut stages = self.stages.iter();
         if let Some(first) = stages.next() {
             tried = (first.degree, first.lambda_degree, first.pairwise);
-            if let Some(cert) = self.search_stage(goal, first)? {
-                return Ok(PolyhedronOutcome::Proved(cert));
+            match self.search_stage(goal, first, &mut meter) {
+                Ok(Some(cert)) => return Ok(PolyhedronOutcome::Proved(cert)),
+                Ok(None) => {}
+                Err(Stop::Budget(hit)) => return out_of_budget(tried, hit),
+                Err(Stop::Error(e)) => return Err(e),
             }
         }
         // Exact refutation on sampled parameter values.
         let goal_exact = goal
             .to_multipoly()
             .ok_or_else(|| invalid("internal: non-rational goal coefficient"))?;
-        if let Some((point, param_value, value)) = refute(
+        match refute(
             &goal_exact,
             &self.hyps_exact,
             &self.gens,
             self.param.as_ref(),
+            &mut meter,
         ) {
-            return Ok(Outcome::Refuted {
-                point,
-                param_value,
-                value,
-            });
+            Ok(Some((point, param_value, value))) => {
+                return Ok(Outcome::Refuted {
+                    point,
+                    param_value,
+                    value,
+                });
+            }
+            Ok(None) => {}
+            Err(hit) => return out_of_budget(tried, hit),
         }
         // The remaining stages, smallest basis first.
         for stage in stages {
@@ -1539,24 +1692,30 @@ impl PolyhedronProver {
                 tried.1.max(stage.lambda_degree),
                 tried.2 || stage.pairwise,
             );
-            if let Some(cert) = self.search_stage(goal, stage)? {
-                return Ok(PolyhedronOutcome::Proved(cert));
+            match self.search_stage(goal, stage, &mut meter) {
+                Ok(Some(cert)) => return Ok(PolyhedronOutcome::Proved(cert)),
+                Ok(None) => {}
+                Err(Stop::Budget(hit)) => return out_of_budget(tried, hit),
+                Err(Stop::Error(e)) => return Err(e),
             }
         }
         Ok(Outcome::Unknown(PolyhedronUnknown {
             degree: tried.0,
             lambda_degree: tried.1,
             pairwise: tried.2,
+            budget_exhausted: None,
         }))
     }
 
     /// One LP stage.  `Ok(Some(cert))` with a verified certificate,
-    /// `Ok(None)` when the LP is infeasible.
+    /// `Ok(None)` when the LP is infeasible, `Err(Stop::Budget)` when the
+    /// call's budget ran out inside the LP.
     fn search_stage(
         &self,
         goal: &Poly,
         stage: &StageBasis,
-    ) -> Result<Option<PolyhedronCertificate>, SymplexError> {
+        meter: &mut Meter,
+    ) -> Result<Option<PolyhedronCertificate>, Stop> {
         let n_basis = stage.columns.len();
         let use_var = self.param.as_ref().is_some_and(|(p, _)| p.var_nonneg);
         // λ columns: −atomᵃ·goal for a = 1..=lambda_degree.
@@ -1596,8 +1755,8 @@ impl PolyhedronProver {
             }
             lp = lp.eq(row, coeff(goal, m)?);
         }
-        let started = std::time::Instant::now();
-        let sol = lp.solve()?;
+        let started = Instant::now();
+        let sol = meter.solve(lp)?;
         tracing::debug!(
             target: "symplex::certificates::polyhedron",
             degree = stage.degree,
@@ -1606,6 +1765,7 @@ impl PolyhedronProver {
             rows = monos.len(),
             cols = n_basis + lambda_cols.len(),
             status = ?sol.status,
+            pivots_total = meter.spent,
             micros = started.elapsed().as_micros() as u64,
             "polyhedron stage LP"
         );
@@ -1640,7 +1800,8 @@ impl PolyhedronProver {
                 reason:
                     "the LP solution did not reproduce the identity under exact re-verification"
                         .into(),
-            });
+            }
+            .into());
         }
         Ok(Some(cert))
     }
@@ -1760,12 +1921,16 @@ type Exact = MultiPoly<GrevLex>;
 /// minimise the goal over the polyhedron exactly (inside a large box so
 /// that an unbounded direction still yields a witness).  Pure rational
 /// arithmetic on [`MultiPoly`]s; no expression arena is touched.
+///
+/// `Ok(None)` when no sample refutes the goal (an LP error ends the
+/// search the same way); `Err(hit)` when the call's budget ran out.
 fn refute(
     goal: &Exact,
     hyps: &[Exact],
     gens: &[Ex],
     param: Option<&(Param, Q)>,
-) -> Option<Refutation> {
+    meter: &mut Meter,
+) -> Result<Option<Refutation>, BudgetHit> {
     let width = gens.len();
     // The parameter, when present, is the last generator; the free
     // variables are the others.
@@ -1811,7 +1976,7 @@ fn refute(
                     (Some(v), Some((p, _))) => vec![(p.var.clone(), v.clone())],
                     _ => Vec::new(),
                 };
-                return Some((point, jv.clone(), g0));
+                return Ok(Some((point, jv.clone(), g0)));
             }
             continue;
         }
@@ -1823,11 +1988,18 @@ fn refute(
         for (k, c) in &affine_hyps {
             lp = lp.ge(c.clone(), -k);
         }
-        let sol = lp.solve().ok()?;
+        let sol = match meter.solve(lp) {
+            Ok(sol) => sol,
+            Err(Stop::Budget(hit)) => return Err(hit),
+            Err(Stop::Error(_)) => return Ok(None),
+        };
         if sol.status != LpStatus::Optimal {
             continue;
         }
-        let value = sol.objective? + &g0;
+        let Some(objective) = sol.objective else {
+            return Ok(None);
+        };
+        let value = objective + &g0;
         if !value.is_negative() {
             continue;
         }
@@ -1845,10 +2017,10 @@ fn refute(
         }
         if hyps.iter().all(|h| !h.eval(&values).is_negative()) {
             let point: Vec<(Ex, Q)> = gens.iter().cloned().zip(values).collect();
-            return Some((point, jv.clone(), gv));
+            return Ok(Some((point, jv.clone(), gv)));
         }
     }
-    None
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -1925,7 +2097,8 @@ mod tests {
             Outcome::Unknown(PolyhedronUnknown {
                 lambda_degree: 0,
                 degree: 3,
-                pairwise: true
+                pairwise: true,
+                budget_exhausted: None,
             })
         ));
     }
@@ -1963,6 +2136,86 @@ mod tests {
             PolyhedronOutcome::Refuted { value, .. } => assert_eq!(value, q(-1, 1)),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// White-box: the refutation's sample LPs run under the call's budget
+    /// — with nothing left they report the hit instead of a point, and
+    /// with an unlimited meter they find the same point as before.
+    #[test]
+    fn refutation_respects_the_meter() {
+        let (ctx, j, r, t) = setup();
+        let hyps = [
+            r.clone(),
+            ctx.rational(1, 2) - &r,
+            t.clone(),
+            1 - &t,
+            (&j * 2 + 1) * &t - &j * &r - 1,
+        ];
+        let prover =
+            PolyhedronProver::new(&hyps, Some((&j, &ctx.int(2))), &PolyhedronOpts::default())
+                .unwrap();
+        let goal = prover
+            .goal_poly(&(&t - ctx.rational(1, 2) - &r))
+            .unwrap()
+            .to_multipoly()
+            .unwrap();
+        let mut free = Meter::start(&PolyhedronOpts::default());
+        let found = refute(
+            &goal,
+            &prover.hyps_exact,
+            &prover.gens,
+            prover.param.as_ref(),
+            &mut free,
+        );
+        assert!(matches!(found, Ok(Some((_, Some(_), ref v))) if v.is_negative()));
+        assert!(free.spent > 0, "the sample LPs pivot");
+        let mut none_left = Meter::start(&PolyhedronOpts::default().with_max_pivots(0));
+        assert!(matches!(
+            refute(
+                &goal,
+                &prover.hyps_exact,
+                &prover.gens,
+                prover.param.as_ref(),
+                &mut none_left,
+            ),
+            Err(BudgetHit::MaxPivots)
+        ));
+        let mut late = Meter::start(
+            &PolyhedronOpts::default().with_deadline(Instant::now() - Duration::from_millis(1)),
+        );
+        assert!(matches!(
+            refute(
+                &goal,
+                &prover.hyps_exact,
+                &prover.gens,
+                prover.param.as_ref(),
+                &mut late,
+            ),
+            Err(BudgetHit::Deadline)
+        ));
+        // Exactly the pivots the free run spent are enough; one fewer is not.
+        let mut exact = Meter::start(&PolyhedronOpts::default().with_max_pivots(free.spent));
+        assert!(matches!(
+            refute(
+                &goal,
+                &prover.hyps_exact,
+                &prover.gens,
+                prover.param.as_ref(),
+                &mut exact,
+            ),
+            Ok(Some(_))
+        ));
+        let mut short = Meter::start(&PolyhedronOpts::default().with_max_pivots(free.spent - 1));
+        assert!(matches!(
+            refute(
+                &goal,
+                &prover.hyps_exact,
+                &prover.gens,
+                prover.param.as_ref(),
+                &mut short,
+            ),
+            Err(BudgetHit::MaxPivots)
+        ));
     }
 
     #[test]

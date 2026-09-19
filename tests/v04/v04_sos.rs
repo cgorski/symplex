@@ -151,6 +151,80 @@ fn refutations_and_honest_unknowns() {
     assert!(prove_sos(&(&x + &y), std::slice::from_ref(&x), &SosOpts::default()).is_err());
 }
 
+/// A deadline (0.9.1): checked between interior-point iterations and
+/// between facial-reduction rounds.  A zero time limit fires at the first
+/// check; a roomy one changes nothing; the cheap answers that come before
+/// the SDP (refutation, odd degree, constants) are unaffected.
+#[test]
+fn deadline_cuts_the_sdp_short_and_never_changes_an_answer_that_fits() {
+    use std::time::{Duration, Instant};
+    let ctx = Context::new();
+    let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    let xy = [x.clone(), y.clone()];
+    let pd = x.powi(2) - &x * &y + y.powi(2) + 1;
+    let two_squares = ((&x - 1).powi(2) + (&y - 1).powi(2)).expand();
+    for goal in [&pd, &two_squares] {
+        let free = sos(goal, &xy);
+        let started = Instant::now();
+        let out = prove_sos(
+            goal,
+            &xy,
+            &SosOpts::default().with_time_limit(Duration::ZERO),
+        )
+        .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        match &out {
+            SosOutcome::Unknown(u) => {
+                assert!(u.reason.starts_with("budget exhausted: deadline"), "{u}");
+                assert!(
+                    out.to_string()
+                        .starts_with("unknown: budget exhausted: deadline")
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        let past = Instant::now() - Duration::from_millis(1);
+        assert!(matches!(
+            prove_sos(goal, &xy, &SosOpts::default().with_deadline(past)).unwrap(),
+            SosOutcome::Unknown(u) if u.reason.starts_with("budget exhausted: deadline")
+        ));
+        // The earlier of the two limits applies.
+        let both = SosOpts::default()
+            .with_deadline(past)
+            .with_time_limit(Duration::from_secs(600));
+        assert!(prove_sos(goal, &xy, &both).unwrap().is_unknown());
+        // Roomy: the same certificate as without a budget.
+        let roomy = proved(
+            prove_sos(
+                goal,
+                &xy,
+                &SosOpts::default().with_time_limit(Duration::from_secs(600)),
+            )
+            .unwrap(),
+        );
+        assert_eq!(roomy.to_string(), free.to_string());
+        assert_eq!(roomy.to_lean("s").unwrap(), free.to_lean("s").unwrap());
+    }
+    // Decided before the SDP: unaffected by a zero limit.
+    let zero = SosOpts::default().with_time_limit(Duration::ZERO);
+    assert!(
+        prove_sos(&(x.powi(4) + y.powi(4) - 4 * &x * &y + 1), &xy, &zero)
+            .unwrap()
+            .is_refuted()
+    );
+    assert!(prove_sos(&ctx.int(3), &xy, &zero).unwrap().is_proved());
+    // Odd degree: refuted by the cheap search (negative at x = −2).
+    assert!(
+        prove_sos(&(x.powi(3) - &x + 1), std::slice::from_ref(&x), &zero)
+            .unwrap()
+            .is_refuted()
+    );
+    // The options record the budget; the default has none.
+    assert_eq!(SosOpts::default().deadline, None);
+    assert_eq!(SosOpts::default().time_limit, None);
+    assert_eq!(zero.time_limit, Some(Duration::ZERO));
+}
+
 #[test]
 fn random_sums_of_squares_are_recovered_and_negatives_never_proved() {
     struct Lcg(u64);

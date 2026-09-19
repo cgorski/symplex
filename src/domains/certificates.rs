@@ -126,6 +126,9 @@ use crate::output::lean::{LeanOpts, MATHLIB_LINE_WIDTH, lean_ident, wrap_lean};
 mod outcome;
 mod polyhedron;
 mod sos;
+/// Which limit of a prover's budget ran out (see
+/// [`PolyhedronUnknown::budget_exhausted`]); defined by the LP layer.
+pub use crate::domains::linprog::BudgetHit;
 pub use outcome::{Certificate, Outcome};
 pub use polyhedron::{
     PolyhedronCertificate, PolyhedronCertificateData, PolyhedronLeanNames, PolyhedronLeanSteps,
@@ -776,7 +779,9 @@ fn sparse_nonneg_combination(
     match sol.status {
         LpStatus::Optimal => Ok(Feasibility::Feasible(sol.x)),
         LpStatus::Infeasible => Ok(Feasibility::Infeasible { farkas: sol.farkas }),
-        LpStatus::Unbounded => nonneg_combination(columns, target),
+        // No budget is set on this LP, so `BudgetExhausted` cannot occur;
+        // the plain feasibility question is the right fallback either way.
+        LpStatus::Unbounded | LpStatus::BudgetExhausted => nonneg_combination(columns, target),
     }
 }
 

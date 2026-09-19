@@ -37,6 +37,27 @@
 //!      \x20   nlinarith [e, sq_nonneg x]\n"
 //! );
 //! ```
+//!
+//! An application with many arguments — `refine lemma a b ?_ ?_ …` — is a
+//! [`Tactic::apply`]: its arguments are atoms that are packed greedily onto
+//! the head's line and continuation lines two columns past the tactic
+//! column, never split inside an argument.
+//!
+//! ```
+//! use symplex::lean::{Block, Tactic};
+//!
+//! let args: Vec<String> = ["(20 * (j : ℝ) + 10)", "ρ", "hx"]
+//!     .into_iter()
+//!     .map(String::from)
+//!     .chain(std::iter::repeat_n("?_".to_string(), 6))
+//!     .collect();
+//! let leaf = Block::new(vec![Tactic::apply("refine leaf_lemma", args)]);
+//! assert_eq!(
+//!     leaf.render_width("  ", 42),
+//!     "  refine leaf_lemma (20 * (j : ℝ) + 10) ρ\n\
+//!      \x20   hx ?_ ?_ ?_ ?_ ?_ ?_\n"
+//! );
+//! ```
 
 use std::fmt;
 
@@ -64,6 +85,17 @@ pub enum Tactic {
     /// `· block` — a focused goal; the block's tactics sit two columns
     /// right of the bullet.
     Bullet(Block),
+    /// `head arg₁ arg₂ …` — an application whose arguments are atoms
+    /// (`?_`, a name, a `(…)`-wrapped term).  The renderer packs the
+    /// arguments greedily onto the head's line and onto continuation lines
+    /// indented two columns past the tactic column, and never breaks
+    /// inside an argument.
+    Apply {
+        /// The applied tactic and function, e.g. `refine leaf_lemma`.
+        head: String,
+        /// The arguments, each already parenthesised where needed.
+        args: Vec<String>,
+    },
     /// Any other tactic, verbatim (`linarith only [a, b]`, `rcases … with
     /// h | h`, `refine f ?_ ?_`, `exact h`, `positivity`).  May span
     /// several lines; each line is placed at the tactic column, later lines
@@ -107,6 +139,15 @@ impl Tactic {
         Tactic::Bullet(block)
     }
 
+    /// `head arg₁ arg₂ …` with the arguments laid out by the renderer
+    /// (see [`Tactic::Apply`]).
+    pub fn apply(head: impl Into<String>, args: Vec<String>) -> Self {
+        Tactic::Apply {
+            head: head.into(),
+            args,
+        }
+    }
+
     /// A verbatim tactic.
     pub fn raw(text: impl Into<String>) -> Self {
         Tactic::Raw(text.into())
@@ -135,7 +176,7 @@ impl Tactic {
                     t.collect_names(out);
                 }
             }
-            Tactic::Raw(_) => {}
+            Tactic::Apply { .. } | Tactic::Raw(_) => {}
         }
     }
 }
@@ -168,20 +209,23 @@ impl Block {
     /// [`render`](Self::render) with an explicit line width.
     pub fn render_width(&self, indent: &str, width: usize) -> String {
         let mut out = String::new();
-        self.write_lines(indent, &mut out);
+        self.write_lines(indent, width, &mut out);
         wrap_lean(&out, width)
     }
 
-    /// The logical lines (unwrapped), each prefixed by its indentation.
-    fn write_lines(&self, indent: &str, out: &mut String) {
+    /// The logical lines, each prefixed by its indentation.  Only
+    /// [`Tactic::Apply`] is laid out to `width` here (its arguments are
+    /// atoms the generic wrapper must not split); everything else is
+    /// wrapped afterwards by [`wrap_lean`].
+    fn write_lines(&self, indent: &str, width: usize, out: &mut String) {
         for t in &self.tactics {
-            t.write_lines(indent, out);
+            t.write_lines(indent, width, out);
         }
     }
 }
 
 impl Tactic {
-    fn write_lines(&self, indent: &str, out: &mut String) {
+    fn write_lines(&self, indent: &str, width: usize, out: &mut String) {
         match self {
             Tactic::Have { name, ty, proof } => {
                 let head = match ty {
@@ -201,7 +245,7 @@ impl Tactic {
                         out.push_str(&head);
                         out.push_str(" := by\n");
                         let inner = format!("{indent}  ");
-                        block.write_lines(&inner, out);
+                        block.write_lines(&inner, width, out);
                     }
                 }
             }
@@ -210,7 +254,7 @@ impl Tactic {
                 // block is at the bullet's column + 2.
                 let inner = format!("{indent}  ");
                 let mut body = String::new();
-                block.write_lines(&inner, &mut body);
+                block.write_lines(&inner, width, &mut body);
                 if body.is_empty() {
                     out.push_str(indent);
                     out.push_str("· skip\n");
@@ -221,6 +265,32 @@ impl Tactic {
                 out.push_str(indent);
                 out.push_str("· ");
                 out.push_str(first_rest);
+            }
+            Tactic::Apply { head, args } => {
+                // Greedy packing: an argument goes on the current line if it
+                // fits, otherwise it opens a continuation line two columns
+                // past the tactic column (the indentation given here).  A
+                // continuation line is opened *with* its first argument, so
+                // an atom wider than the line is emitted whole, never split.
+                let cont = format!("{indent}  ");
+                let cont_len = cont.chars().count();
+                let mut line = format!("{indent}{head}");
+                let mut used = line.chars().count();
+                for arg in args {
+                    let len = arg.chars().count();
+                    if used + 1 + len > width {
+                        out.push_str(&line);
+                        out.push('\n');
+                        line = format!("{cont}{arg}");
+                        used = cont_len + len;
+                    } else {
+                        line.push(' ');
+                        line.push_str(arg);
+                        used += 1 + len;
+                    }
+                }
+                out.push_str(&line);
+                out.push('\n');
             }
             Tactic::Raw(text) => {
                 for (i, line) in text.lines().enumerate() {
@@ -250,22 +320,29 @@ impl fmt::Display for Block {
 
 /// A `theorem` / `lemma` / `example` declaration with a tactic proof.
 ///
+/// Build it with [`Decl::new`] and the `with_*` builders, or as a struct
+/// literal; [`render`](Self::render) emits the `preamble` lines verbatim,
+/// then the doc comment, the header and the body.
+///
 /// ```
 /// use symplex::lean::{Block, Decl, DeclKind, Tactic};
 ///
-/// let d = Decl {
-///     kind: DeclKind::Lemma,
-///     name: "leaf_0".into(),
-///     binders: vec!["(j : ℕ)".into(), "(hj : 1 ≤ j)".into(), "(r t : ℝ)".into(),
-///                   "(e0 : (0 : ℝ) ≤ r)".into()],
-///     statement: "0 ≤ r + (j : ℝ)".into(),
-///     body: Block::new(vec![Tactic::raw("have hJ : (0 : ℝ) ≤ (j : ℝ) := by positivity"),
-///                           Tactic::raw("linarith only [e0, hJ]")]),
-///     doc: Some("Leaf 0: an example.".into()),
-/// };
+/// let d = Decl::new(
+///     DeclKind::Lemma,
+///     "leaf_0",
+///     "0 ≤ r + (j : ℝ)",
+///     Block::new(vec![Tactic::raw("have hJ : (0 : ℝ) ≤ (j : ℝ) := by positivity"),
+///                     Tactic::raw("linarith only [e0, hJ]")]),
+/// )
+/// .with_binders(vec!["(j : ℕ)".into(), "(hj : 1 ≤ j)".into(), "(r t : ℝ)".into(),
+///                    "(e0 : (0 : ℝ) ≤ r)".into()])
+/// .with_doc("Leaf 0: an example.")
+/// .with_preamble(vec!["-- generated".into(), "set_option maxHeartbeats 400000 in".into()]);
 /// assert_eq!(
 ///     d.render(),
-///     "/-- Leaf 0: an example. -/\n\
+///     "-- generated\n\
+///      set_option maxHeartbeats 400000 in\n\
+///      /-- Leaf 0: an example. -/\n\
 ///      lemma leaf_0 (j : ℕ) (hj : 1 ≤ j) (r t : ℝ) (e0 : (0 : ℝ) ≤ r) :\n\
 ///      \x20   0 ≤ r + (j : ℝ) := by\n\
 ///      \x20 have hJ : (0 : ℝ) ≤ (j : ℝ) := by positivity\n\
@@ -287,6 +364,10 @@ pub struct Decl {
     pub body: Block,
     /// An optional doc comment (`/-- … -/`), without the delimiters.
     pub doc: Option<String>,
+    /// Lines emitted verbatim (one per entry, unwrapped) before the doc
+    /// comment: `set_option maxHeartbeats 400000 in`, an `open … in`, a
+    /// `-- comment`.
+    pub preamble: Vec<String>,
 }
 
 /// The kind of a [`Decl`].
@@ -301,8 +382,48 @@ pub enum DeclKind {
 }
 
 impl Decl {
+    /// A declaration with no binders, doc comment or preamble.
+    pub fn new(
+        kind: DeclKind,
+        name: impl Into<String>,
+        statement: impl Into<String>,
+        body: Block,
+    ) -> Self {
+        Decl {
+            kind,
+            name: name.into(),
+            binders: Vec::new(),
+            statement: statement.into(),
+            body,
+            doc: None,
+            preamble: Vec::new(),
+        }
+    }
+
+    /// Set [`binders`](Self::binders).
+    #[must_use]
+    pub fn with_binders(mut self, binders: Vec<String>) -> Self {
+        self.binders = binders;
+        self
+    }
+
+    /// Set [`doc`](Self::doc).
+    #[must_use]
+    pub fn with_doc(mut self, doc: impl Into<String>) -> Self {
+        self.doc = Some(doc.into());
+        self
+    }
+
+    /// Set [`preamble`](Self::preamble).
+    #[must_use]
+    pub fn with_preamble(mut self, preamble: Vec<String>) -> Self {
+        self.preamble = preamble;
+        self
+    }
+
     /// The declaration as Lean source, wrapped to Mathlib's width: the
-    /// header packs binders greedily onto the first line and continuation
+    /// preamble lines verbatim, then the doc comment, then the header,
+    /// which packs binders greedily onto the first line and continuation
     /// lines indented four columns, ends the binder list with ` :`, puts the
     /// statement on its own line and closes with ` := by`; the body follows
     /// at two columns.
@@ -313,6 +434,10 @@ impl Decl {
     /// [`render`](Self::render) with an explicit width.
     pub fn render_width(&self, width: usize) -> String {
         let mut out = String::new();
+        for line in &self.preamble {
+            out.push_str(line);
+            out.push('\n');
+        }
         if let Some(doc) = &self.doc {
             out.push_str("/-- ");
             out.push_str(doc);
@@ -437,6 +562,116 @@ mod tests {
              \x20   linarith only [hg']\n\
              \x20 · linarith only [e6, e9, e11, e15]\n"
         );
+    }
+
+    /// A `refine` with many `?_` placeholders: the head and as many
+    /// arguments as fit on the first line, the rest packed onto
+    /// continuation lines two columns past the tactic column, no argument
+    /// ever split, and the result a fixed point of `wrap_lean`.
+    #[test]
+    fn apply_packs_atoms_greedily_and_is_stable_under_wrapping() {
+        let fixed = [
+            "(20 * (j : ℝ) + 10)",
+            "ρ",
+            "r",
+            "t",
+            "u",
+            "T₅",
+            "hD",
+            "hρ",
+            "hx",
+        ];
+        let args: Vec<String> = fixed
+            .iter()
+            .map(|s| s.to_string())
+            .chain(std::iter::repeat_n("?_".to_string(), 28))
+            .collect();
+        let tactic = Tactic::apply("refine leafG346_single_poly", args.clone());
+        assert!(tactic.introduced_names().is_empty());
+        let text = Block::new(vec![tactic.clone()]).render("  ");
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(
+            lines[0].starts_with(
+                "  refine leafG346_single_poly (20 * (j : ℝ) + 10) ρ r t u T₅ hD hρ hx ?_"
+            ),
+            "{text}"
+        );
+        assert!(lines.len() >= 2, "{text}");
+        for l in &lines[1..] {
+            assert!(l.starts_with("    ?_") && !l.starts_with("     "), "{l:?}");
+        }
+        assert!(lines.iter().all(|l| l.chars().count() <= 100), "{text}");
+        // Greedy: every line but the last would overflow with one more `?_`.
+        for l in &lines[..lines.len() - 1] {
+            assert!(l.chars().count() + 3 > 100, "not greedy: {l:?}");
+        }
+        // Nothing lost, nothing split.
+        let tokens: Vec<&str> = text.split_whitespace().collect();
+        assert_eq!(tokens.iter().filter(|t| **t == "?_").count(), 28);
+        let mut expected = vec!["refine", "leafG346_single_poly"];
+        expected.extend(args.iter().flat_map(|a| a.split_whitespace()));
+        assert_eq!(tokens, expected);
+        assert_eq!(wrap_lean(&text, MATHLIB_LINE_WIDTH), text, "idempotent");
+        // Inside a bullet the tactic column moves by two and so does the
+        // continuation indent.
+        let bulleted = Block::new(vec![Tactic::bullet(Block::new(vec![tactic]))]).render("  ");
+        let bl: Vec<&str> = bulleted.lines().collect();
+        assert!(
+            bl[0].starts_with("  · refine leafG346_single_poly"),
+            "{bulleted}"
+        );
+        assert!(
+            bl[1].starts_with("      ?_") && !bl[1].starts_with("       "),
+            "{bulleted}"
+        );
+        assert!(bl.iter().all(|l| l.chars().count() <= 100), "{bulleted}");
+        assert_eq!(wrap_lean(&bulleted, MATHLIB_LINE_WIDTH), bulleted);
+        // A head that fills the line pushes the first argument down; a
+        // continuation line always carries its argument whole.
+        let narrow = Block::new(vec![Tactic::apply(
+            "refine long_lemma_name",
+            vec!["(a + b)".into(), "?_".into()],
+        )])
+        .render_width("", 24);
+        assert_eq!(narrow, "refine long_lemma_name\n  (a + b) ?_\n");
+        assert_eq!(
+            Block::new(vec![Tactic::apply("exact h", vec![])]).render("  "),
+            "  exact h\n"
+        );
+    }
+
+    #[test]
+    fn decl_builders_and_preamble() {
+        let d = Decl::new(
+            DeclKind::Theorem,
+            "t",
+            "0 ≤ x",
+            Block::new(vec![Tactic::raw("exact hx")]),
+        );
+        assert_eq!(d.render(), "theorem t :\n    0 ≤ x := by\n  exact hx\n");
+        let d = d
+            .with_binders(vec!["(x : ℝ)".into(), "(hx : 0 ≤ x)".into()])
+            .with_doc("Trivial.")
+            .with_preamble(vec![
+                "set_option maxHeartbeats 400000 in".into(),
+                "-- a comment longer than any width would allow if it were wrapped, which it is not".into(),
+            ]);
+        let text = d.render_width(40);
+        assert!(text.starts_with(
+            "set_option maxHeartbeats 400000 in\n-- a comment longer than any width would allow if it were wrapped, which it is not\n/-- Trivial. -/\ntheorem t (x : ℝ) (hx : 0 ≤ x) :\n"
+        ), "{text}");
+        assert!(text.ends_with("    0 ≤ x := by\n  exact hx\n"), "{text}");
+        // The struct literal still works with the new field.
+        let lit = Decl {
+            kind: DeclKind::Example,
+            name: String::new(),
+            binders: vec![],
+            statement: "True".into(),
+            body: Block::new(vec![Tactic::raw("trivial")]),
+            doc: None,
+            preamble: vec![],
+        };
+        assert_eq!(lit.render(), "example :\n    True := by\n  trivial\n");
     }
 
     #[test]

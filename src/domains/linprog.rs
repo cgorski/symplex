@@ -79,6 +79,15 @@
 //! certificate is `None` only when infeasibility is caused by the bounds
 //! alone (`lⱼ > uⱼ`).
 //!
+//! # Budgets
+//!
+//! A solve can be bounded by a [`Budget`] — an absolute deadline and/or a
+//! cap on the number of pivots ([`LpProblem::with_budget`]).  The budget is
+//! checked at every pivot; when it runs out the solve stops and reports
+//! [`LpStatus::BudgetExhausted`] (an answer, not an error), with no point,
+//! objective or certificate.  Without a budget the solver behaves exactly
+//! as before.
+//!
 //! # Examples
 //!
 //! ```
@@ -98,6 +107,7 @@
 //! ```
 
 use std::fmt;
+use std::time::{Duration, Instant};
 
 use num_bigint::BigInt;
 use num_integer::Integer;
@@ -183,6 +193,106 @@ struct Constraint {
     relation: Relation,
 }
 
+/// A limit on one solve: an absolute deadline and/or a cap on the number
+/// of pivots.  Both default to "none".
+///
+/// The budget is checked at every pivot (the deadline before the entering
+/// column is chosen, the pivot cap before the pivot is performed), and it
+/// is shared by the `i64 → i128 → BigInt` attempts of one solve: pivots
+/// begun by an attempt that overflowed its cell type still count, and the
+/// deadline is absolute.  When it runs out, [`LpProblem::solve`] returns
+/// [`LpStatus::BudgetExhausted`].
+///
+/// `#[non_exhaustive]`: build it with the constructors and `with_*`
+/// builders.
+///
+/// ```
+/// use std::time::Duration;
+/// use symplex::linprog::{Budget, LpProblem, LpStatus, qi};
+///
+/// // min x + y  s.t.  x + 2y ≥ 1,  3x + y ≥ 1  needs two pivots: one is not enough.
+/// let p = LpProblem::minimize(vec![qi(1), qi(1)])
+///     .ge(vec![qi(1), qi(2)], qi(1))
+///     .ge(vec![qi(3), qi(1)], qi(1));
+/// let sol = p.clone().with_budget(Budget::max_pivots(1)).solve().unwrap();
+/// assert_eq!(sol.status, LpStatus::BudgetExhausted);
+/// assert!(sol.x.is_empty() && sol.objective.is_none());
+/// // A generous budget changes nothing.
+/// let sol = p.with_budget(Budget::within(Duration::from_secs(60)).with_max_pivots(1000)).solve().unwrap();
+/// assert_eq!(sol.status, LpStatus::Optimal);
+/// ```
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Budget {
+    /// Stop once this instant has passed.
+    pub deadline: Option<Instant>,
+    /// Stop before performing this many pivots (across both phases and all
+    /// cell-type attempts).
+    pub max_pivots: Option<usize>,
+}
+
+impl Budget {
+    /// A budget with only an absolute deadline.
+    pub fn deadline(at: Instant) -> Self {
+        Budget {
+            deadline: Some(at),
+            max_pivots: None,
+        }
+    }
+
+    /// A budget with only a pivot cap.
+    pub fn max_pivots(n: usize) -> Self {
+        Budget {
+            deadline: None,
+            max_pivots: Some(n),
+        }
+    }
+
+    /// A budget whose deadline is `duration` from now.  A duration too
+    /// large to represent as an instant means no deadline.
+    pub fn within(duration: Duration) -> Self {
+        Budget {
+            deadline: Instant::now().checked_add(duration),
+            max_pivots: None,
+        }
+    }
+
+    /// Set (or replace) the deadline.
+    #[must_use]
+    pub fn with_deadline(mut self, at: Instant) -> Self {
+        self.deadline = Some(at);
+        self
+    }
+
+    /// Set (or replace) the pivot cap.
+    #[must_use]
+    pub fn with_max_pivots(mut self, n: usize) -> Self {
+        self.max_pivots = Some(n);
+        self
+    }
+}
+
+/// Which limit of a [`Budget`] ran out.
+///
+/// `#[non_exhaustive]`: match with a `_` arm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum BudgetHit {
+    /// The deadline passed.
+    Deadline,
+    /// The pivot cap was reached.
+    MaxPivots,
+}
+
+impl fmt::Display for BudgetHit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            BudgetHit::Deadline => "deadline",
+            BudgetHit::MaxPivots => "max_pivots",
+        })
+    }
+}
+
 /// A linear program in builder form.  See the [module docs](self) for
 /// the problem shape and the meaning of the results.
 ///
@@ -215,6 +325,7 @@ pub struct LpProblem {
     /// First out-of-range variable index passed to `bounds`, reported by
     /// `solve`.
     bad_var: Option<usize>,
+    budget: Budget,
 }
 
 impl LpProblem {
@@ -226,6 +337,7 @@ impl LpProblem {
             constraints: Vec::new(),
             bounds: vec![(Some(Q::zero()), None); n],
             bad_var: None,
+            budget: Budget::default(),
         }
     }
 
@@ -288,11 +400,27 @@ impl LpProblem {
         self.constraints.len()
     }
 
+    /// Bound the solve by a [`Budget`] (deadline and/or pivot cap).  When
+    /// it runs out, [`solve`](Self::solve) returns
+    /// [`LpStatus::BudgetExhausted`].  The default budget is unlimited.
+    #[must_use]
+    pub fn with_budget(mut self, budget: Budget) -> Self {
+        self.budget = budget;
+        self
+    }
+
+    /// The budget the solve runs under (unlimited unless
+    /// [`with_budget`](Self::with_budget) was called).
+    pub fn budget(&self) -> &Budget {
+        &self.budget
+    }
+
     /// Solve the program exactly.
     ///
     /// The returned [`LpSolution`] reports [`LpStatus::Optimal`],
-    /// [`LpStatus::Infeasible`] (with a Farkas certificate) or
-    /// [`LpStatus::Unbounded`]; none of these is an error.
+    /// [`LpStatus::Infeasible`] (with a Farkas certificate),
+    /// [`LpStatus::Unbounded`] or — only under a [`Budget`] —
+    /// [`LpStatus::BudgetExhausted`]; none of these is an error.
     ///
     /// # Errors
     ///
@@ -303,6 +431,13 @@ impl LpProblem {
     ///   (`10 000 + 50·(m + n)`) is exceeded — not expected in practice,
     ///   since Bland's rule rules out cycling.
     pub fn solve(&self) -> Result<LpSolution, SymplexError> {
+        self.solve_report().map(|r| r.solution)
+    }
+
+    /// [`solve`](Self::solve) with the bookkeeping the certificate provers
+    /// need to share one budget across many LPs: the pivots spent and, on
+    /// [`LpStatus::BudgetExhausted`], which limit ran out.
+    pub(crate) fn solve_report(&self) -> Result<SolveReport, SymplexError> {
         self.validate()?;
         solve_lp(self)
     }
@@ -350,6 +485,19 @@ pub enum LpStatus {
     Infeasible,
     /// The objective can be improved without limit over the feasible set.
     Unbounded,
+    /// The [`Budget`] set with [`LpProblem::with_budget`] ran out before
+    /// the solve finished: nothing is known about the problem, and `x`,
+    /// `objective`, `duals` and `farkas` are empty.
+    BudgetExhausted,
+}
+
+/// [`LpSolution`] plus the bookkeeping shared-budget callers need.
+pub(crate) struct SolveReport {
+    pub(crate) solution: LpSolution,
+    /// Pivots begun, across both phases and every cell-type attempt.
+    pub(crate) pivots: usize,
+    /// Which limit ran out, when `solution.status` is `BudgetExhausted`.
+    pub(crate) budget_hit: Option<BudgetHit>,
 }
 
 /// Result of [`LpProblem::solve`] / [`linprog`].
@@ -405,6 +553,16 @@ impl LpSolution {
     fn unbounded() -> Self {
         LpSolution {
             status: LpStatus::Unbounded,
+            x: Vec::new(),
+            objective: None,
+            duals: Vec::new(),
+            farkas: None,
+        }
+    }
+
+    fn budget_exhausted() -> Self {
+        LpSolution {
+            status: LpStatus::BudgetExhausted,
             x: Vec::new(),
             objective: None,
             duals: Vec::new(),
@@ -639,7 +797,7 @@ fn standardize(p: &LpProblem) -> Standardized {
 /// and produce the same answer; the small-integer run merely never touches
 /// the heap.  Certificate LPs (small polynomial coefficients) essentially
 /// always stay in `i64`.
-struct Tableau<T: Cell> {
+struct Tableau<'a, T: Cell> {
     /// Row-major `m × width` integer tableau.
     rows: Vec<T>,
     width: usize,
@@ -657,6 +815,13 @@ struct Tableau<T: Cell> {
     n: usize,
     pivots_done: usize,
     max_pivots: usize,
+    /// The caller's [`Budget`], checked at every pivot.
+    budget: &'a Budget,
+    /// Pivots *begun* by this and every earlier cell-type attempt of the
+    /// same solve — what `budget.max_pivots` is measured against.  A pivot
+    /// that overflows its cell type half-way is charged too: the work was
+    /// done, and the wider retry will do it again.
+    spent: &'a mut usize,
     /// Number of consecutive degenerate pivots (zero-length steps) so far.
     /// Dantzig's rule can only cycle through degenerate pivots, so after
     /// [`STALL_LIMIT`] of them in a row the entering rule switches to
@@ -991,9 +1156,11 @@ enum Step {
 }
 
 /// Why a tableau run stopped early: a value did not fit the cell type
-/// (retry with a wider one), or the pivot cap was hit.
+/// (retry with a wider one), the caller's budget ran out, or the pivot
+/// cap was hit.
 enum Halt {
     Overflow,
+    Budget(BudgetHit),
     Error(SymplexError),
 }
 
@@ -1008,9 +1175,9 @@ fn denominator_lcm<'a>(values: impl Iterator<Item = &'a Q>) -> BigInt {
     values.fold(<BigInt as One>::one(), |l, q| l.lcm(q.denom()))
 }
 
-impl<T: Cell> Tableau<T> {
+impl<'a, T: Cell> Tableau<'a, T> {
     /// Build the initial tableau; `None` if an entry does not fit `T`.
-    fn new(std: &Standard) -> Option<Self> {
+    fn new(std: &Standard, budget: &'a Budget, spent: &'a mut usize) -> Option<Self> {
         let m = std.a.len();
         let n = std.c.len();
         let width = n + m + 1;
@@ -1045,8 +1212,33 @@ impl<T: Cell> Tableau<T> {
             n,
             pivots_done: 0,
             max_pivots: 10_000 + 50 * (m + n),
+            budget,
+            spent,
             stall: 0,
         })
+    }
+
+    /// `Err(Halt::Budget(Deadline))` once the budget's deadline has passed.
+    #[inline]
+    fn check_deadline(&self) -> Result<(), Halt> {
+        if let Some(deadline) = self.budget.deadline
+            && Instant::now() >= deadline
+        {
+            return Err(Halt::Budget(BudgetHit::Deadline));
+        }
+        Ok(())
+    }
+
+    /// `Err(Halt::Budget(MaxPivots))` if another pivot would exceed the
+    /// budget's pivot cap.
+    #[inline]
+    fn check_pivot_budget(&self) -> Result<(), Halt> {
+        if let Some(cap) = self.budget.max_pivots
+            && *self.spent >= cap
+        {
+            return Err(Halt::Budget(BudgetHit::MaxPivots));
+        }
+        Ok(())
     }
 
     #[inline]
@@ -1111,6 +1303,7 @@ impl<T: Cell> Tableau<T> {
     /// row is unchanged, and `d ← p`.  `None` on overflow (the tableau is
     /// then unusable; the caller restarts with wider cells).
     fn pivot(&mut self, r: usize, s: usize) -> Option<()> {
+        *self.spent += 1;
         let w = self.width;
         let prow: Vec<T> = self.rows[r * w..(r + 1) * w]
             .iter_mut()
@@ -1160,6 +1353,7 @@ impl<T: Cell> Tableau<T> {
     fn run(&mut self, limit: usize) -> Result<Step, Halt> {
         use std::cmp::Ordering;
         loop {
+            self.check_deadline()?;
             if self.pivots_done >= self.max_pivots {
                 return Err(failed(
                     "linprog",
@@ -1235,6 +1429,7 @@ impl<T: Cell> Tableau<T> {
             let Some(r) = leaving else {
                 return Ok(Step::Unbounded);
             };
+            self.check_pivot_budget()?;
             if self.row(r)[rhs].is_zero() {
                 self.stall += 1;
             } else {
@@ -1266,17 +1461,20 @@ impl<T: Cell> Tableau<T> {
 
     /// Pivot artificial variables out of the basis wherever possible.
     /// Rows whose genuine part is entirely zero are redundant; their
-    /// artificial stays basic at level zero and never moves again.
-    fn drive_out_artificials(&mut self) -> Option<()> {
+    /// artificial stays basic at level zero and never moves again.  These
+    /// pivots are charged to the budget like any other.
+    fn drive_out_artificials(&mut self) -> Result<(), Halt> {
         for r in 0..self.m {
             if self.basis[r] < self.n {
                 continue;
             }
             if let Some(s) = (0..self.n).find(|&j| !self.row(r)[j].is_zero()) {
-                self.pivot(r, s)?;
+                self.check_deadline()?;
+                self.check_pivot_budget()?;
+                self.pivot(r, s).ok_or(Halt::Overflow)?;
             }
         }
-        Some(())
+        Ok(())
     }
 
     /// Phase-1 cost vector over all `n + m` columns: `0` for genuine
@@ -1314,35 +1512,63 @@ impl<T: Cell> Tableau<T> {
 // Driver
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn solve_lp(p: &LpProblem) -> Result<LpSolution, SymplexError> {
+fn solve_lp(p: &LpProblem) -> Result<SolveReport, SymplexError> {
     let sf = match standardize(p) {
         Standardized::Ready(s) => s,
-        Standardized::BoundsInfeasible => return Ok(LpSolution::infeasible(None)),
+        Standardized::BoundsInfeasible => {
+            return Ok(SolveReport {
+                solution: LpSolution::infeasible(None),
+                pivots: 0,
+                budget_hit: None,
+            });
+        }
     };
+    // One pivot counter for every attempt, so that the budget's pivot cap
+    // is a cap on the whole solve.
+    let mut spent = 0usize;
+    // `Some` when the attempt settled the problem (or failed for good);
+    // `None` when it overflowed and the next cell type should try.
+    let settle =
+        |r: Result<LpSolution, Halt>, spent: usize| -> Option<Result<SolveReport, SymplexError>> {
+            match r {
+                Ok(solution) => Some(Ok(SolveReport {
+                    solution,
+                    pivots: spent,
+                    budget_hit: None,
+                })),
+                Err(Halt::Budget(hit)) => Some(Ok(SolveReport {
+                    solution: LpSolution::budget_exhausted(),
+                    pivots: spent,
+                    budget_hit: Some(hit),
+                })),
+                Err(Halt::Error(e)) => Some(Err(e)),
+                Err(Halt::Overflow) => None,
+            }
+        };
     // Fixed-width cells first (i64, then i128 with exact 256-bit
     // intermediates); the same algorithm on BigInt cells if a value
     // outgrows them.  Fraction-free entries are minors of the scaled
     // system, so a 20-row tableau typically peaks around 70–100 bits.
-    match solve_standard::<i64>(p, &sf) {
-        Ok(sol) => return Ok(sol),
-        Err(Halt::Error(e)) => return Err(e),
-        Err(Halt::Overflow) => {}
+    let r = solve_standard::<i64>(p, &sf, &mut spent);
+    if let Some(done) = settle(r, spent) {
+        return done;
     }
-    match solve_standard::<i128>(p, &sf) {
-        Ok(sol) => return Ok(sol),
-        Err(Halt::Error(e)) => return Err(e),
-        Err(Halt::Overflow) => {}
+    let r = solve_standard::<i128>(p, &sf, &mut spent);
+    if let Some(done) = settle(r, spent) {
+        return done;
     }
     tracing::debug!(target: "symplex::linprog", rows = sf.a.len(), cols = sf.c.len(), "i128 tableau overflowed; solving on BigInt");
-    match solve_standard::<BigInt>(p, &sf) {
-        Ok(sol) => Ok(sol),
-        Err(Halt::Error(e)) => Err(e),
-        Err(Halt::Overflow) => Err(failed("linprog", "internal: BigInt tableau overflowed")),
-    }
+    let r = solve_standard::<BigInt>(p, &sf, &mut spent);
+    settle(r, spent)
+        .unwrap_or_else(|| Err(failed("linprog", "internal: BigInt tableau overflowed")))
 }
 
-fn solve_standard<T: Cell>(p: &LpProblem, sf: &Standard) -> Result<LpSolution, Halt> {
-    let mut t = Tableau::<T>::new(sf).ok_or(Halt::Overflow)?;
+fn solve_standard<T: Cell>(
+    p: &LpProblem,
+    sf: &Standard,
+    spent: &mut usize,
+) -> Result<LpSolution, Halt> {
+    let mut t = Tableau::<T>::new(sf, &p.budget, spent).ok_or(Halt::Overflow)?;
     let m = t.m;
     let n = t.n;
 
@@ -1368,7 +1594,7 @@ fn solve_standard<T: Cell>(p: &LpProblem, sf: &Standard) -> Result<LpSolution, H
     }
 
     // Phase 2.
-    t.drive_out_artificials().ok_or(Halt::Overflow)?;
+    t.drive_out_artificials()?;
     let mut phase2 = vec![Q::zero(); n + m];
     phase2[..n].clone_from_slice(&sf.c);
     t.set_objective(&phase2).ok_or(Halt::Overflow)?;
@@ -1550,6 +1776,7 @@ impl fmt::Display for LpSolution {
                 None => write!(f, "Infeasible: contradictory bounds"),
             },
             LpStatus::Unbounded => write!(f, "Unbounded"),
+            LpStatus::BudgetExhausted => write!(f, "Budget exhausted"),
         }
     }
 }
@@ -1634,6 +1861,10 @@ pub fn feasible_nonneg(a_eq: &[Vec<Q>], b_eq: &[Q]) -> Result<Option<Vec<Q>>, Sy
         LpStatus::Infeasible => None,
         // A zero objective cannot be unbounded.
         LpStatus::Unbounded => None,
+        // No budget is set here; an unanswered question must not read as "no".
+        LpStatus::BudgetExhausted => {
+            return Err(failed("feasible_nonneg", "budget exhausted"));
+        }
     })
 }
 
@@ -1682,6 +1913,10 @@ pub fn feasible_nonneg_certified(a_eq: &[Vec<Q>], b_eq: &[Q]) -> Result<Feasibil
         LpStatus::Infeasible => Feasibility::Infeasible { farkas: sol.farkas },
         // A zero objective cannot be unbounded.
         LpStatus::Unbounded => Feasibility::Infeasible { farkas: None },
+        // No budget is set here; an unanswered question must not read as "no".
+        LpStatus::BudgetExhausted => {
+            return Err(failed("feasible_nonneg_certified", "budget exhausted"));
+        }
     })
 }
 
@@ -1953,7 +2188,9 @@ mod tests {
         // The same white-box walk on both cell types: the hybrid design's
         // promise is that they take the same path.
         fn walk<T: Cell>(sf: &Standard) -> (Vec<Q>, usize) {
-            let mut t = Tableau::<T>::new(sf).expect("fits");
+            let budget = Budget::default();
+            let mut spent = 0;
+            let mut t = Tableau::<T>::new(sf, &budget, &mut spent).expect("fits");
             let (m, n) = (t.m, t.n);
             let phase1 = t.phase1_costs();
             t.set_objective(&phase1).expect("fits");
@@ -1961,7 +2198,7 @@ mod tests {
             assert!(t.neg_objective().is_zero(), "feasible");
             assert!(t.basis[0] >= n, "artificial of row 0 still basic");
             assert_eq!(t.d.signum(), std::cmp::Ordering::Greater);
-            t.drive_out_artificials().expect("fits");
+            assert!(t.drive_out_artificials().is_ok(), "fits");
             assert!(t.basis[0] < n, "artificial driven out");
             assert!(
                 t.d.is_negative(),
@@ -2085,11 +2322,11 @@ mod tests {
             panic!("bounds are fine");
         };
         assert!(
-            matches!(solve_standard::<i64>(&p, &sf), Err(Halt::Overflow)),
+            matches!(solve_standard::<i64>(&p, &sf, &mut 0), Err(Halt::Overflow)),
             "the i64 attempt must report overflow, not a wrong answer"
         );
         let sol = p.solve().unwrap();
-        let via_big = solve_standard::<BigInt>(&p, &sf).ok().unwrap();
+        let via_big = solve_standard::<BigInt>(&p, &sf, &mut 0).ok().unwrap();
         assert_eq!(sol.status, LpStatus::Optimal);
         assert_eq!(sol.x, via_big.x);
         assert_eq!(sol.objective, via_big.objective);
@@ -2105,7 +2342,71 @@ mod tests {
         let Standardized::Ready(sf2) = standardize(&small) else {
             panic!("bounds are fine");
         };
-        assert!(solve_standard::<i64>(&small, &sf2).is_ok());
+        assert!(solve_standard::<i64>(&small, &sf2, &mut 0).is_ok());
+    }
+
+    /// The pivot cap is a cap on the whole solve: an `i64` attempt that
+    /// overflows has spent its pivots, and the `BigInt` retry inherits the
+    /// count instead of starting afresh.
+    #[test]
+    fn budget_pivots_are_shared_across_cell_type_attempts() {
+        let big = |k: i64| qi(k) * qi(1 << 40);
+        let p = LpProblem::minimize(vec![qi(1), qi(1), qi(1)])
+            .ge(vec![big(3), big(1), big(2)], big(7))
+            .ge(vec![big(1), big(5), big(1)], big(11))
+            .le(vec![big(2), big(1), big(3)], big(40));
+        let full = p.solve_report().unwrap();
+        assert_eq!(full.solution.status, LpStatus::Optimal);
+        assert!(full.pivots >= 2, "pivots = {}", full.pivots);
+        let Standardized::Ready(sf) = standardize(&p) else {
+            panic!("bounds are fine");
+        };
+        // How many pivots the i64 attempt manages before it overflows.
+        let mut wasted = 0usize;
+        assert!(matches!(
+            solve_standard::<i64>(&p, &sf, &mut wasted),
+            Err(Halt::Overflow)
+        ));
+        // Pivots spent in the overflowed attempt count: a budget that
+        // covers the BigInt run on its own but not both is exhausted.
+        let capped = p
+            .clone()
+            .with_budget(Budget::max_pivots(full.pivots - wasted))
+            .solve_report()
+            .unwrap();
+        assert_eq!(capped.solution.status, LpStatus::BudgetExhausted);
+        assert_eq!(capped.budget_hit, Some(BudgetHit::MaxPivots));
+        assert!(capped.solution.x.is_empty() && capped.solution.objective.is_none());
+        // Exactly the total is enough.
+        let exact = p
+            .with_budget(Budget::max_pivots(full.pivots))
+            .solve_report()
+            .unwrap();
+        assert_eq!(exact.solution.status, LpStatus::Optimal);
+        assert_eq!(exact.solution.x, full.solution.x);
+        assert_eq!(exact.pivots, full.pivots);
+    }
+
+    #[test]
+    fn budget_deadline_in_the_past_stops_before_the_first_pivot() {
+        let p = LpProblem::maximize(vec![qi(3), qi(2)])
+            .le(vec![qi(1), qi(1)], qi(4))
+            .le(vec![qi(1), qi(3)], qi(6));
+        let past = Instant::now() - Duration::from_secs(1);
+        let r = p
+            .clone()
+            .with_budget(Budget::deadline(past))
+            .solve_report()
+            .unwrap();
+        assert_eq!(r.solution.status, LpStatus::BudgetExhausted);
+        assert_eq!(r.budget_hit, Some(BudgetHit::Deadline));
+        assert_eq!(r.pivots, 0);
+        assert_eq!(r.solution.to_string(), "Budget exhausted");
+        let r = p
+            .with_budget(Budget::within(Duration::ZERO))
+            .solve_report()
+            .unwrap();
+        assert_eq!(r.budget_hit, Some(BudgetHit::Deadline));
     }
 
     #[test]
