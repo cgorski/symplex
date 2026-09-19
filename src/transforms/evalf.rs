@@ -1045,6 +1045,10 @@ fn eval_node(
                     let result = arb_orthopoly(kind, n_round as u64, &x_val.0, prec, rm);
                     Ok((result, BigFloat::new(prec)))
                 }
+                // ── More special functions (0.9) ──
+                n if crate::transforms::eval::is_special_09(n) => {
+                    eval_special_09(n, args, cache, prec, rm, cc)
+                }
                 _ => Err(SymplexError::Unevaluable {
                     reason: format!("cannot evaluate function '{name}'"),
                 }),
@@ -4033,6 +4037,1948 @@ fn arb_orthopoly(kind: OrthoPoly, n: u64, x: &BigFloat, prec: usize, rm: Roundin
         p_curr = next;
     }
     round_to(p_curr, prec, rm)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// More special functions (0.9)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// All routines take real arguments and return real results at `prec` bits;
+// complex arguments and points outside the real domain of a function are
+// refused with `Unevaluable`.  Working precision is `prec + 32` plus
+// problem-dependent guard bits wherever an alternating series or a
+// difference of nearly equal quantities loses digits.
+
+fn unevaluable(reason: impl Into<String>) -> SymplexError {
+    SymplexError::Unevaluable {
+        reason: reason.into(),
+    }
+}
+
+/// The cached values of `args`, all required to be real.
+fn real_args(
+    name: &str,
+    args: &[ExprId],
+    cache: &FxHashMap<ExprId, Complex>,
+) -> Result<Vec<BigFloat>, SymplexError> {
+    let mut out = Vec::with_capacity(args.len());
+    for &a in args {
+        let v = get_cached(cache, a)?;
+        if !v.1.is_zero() {
+            return Err(unevaluable(format!(
+                "{name} of complex argument not yet supported in evalf"
+            )));
+        }
+        out.push(v.0.clone());
+    }
+    Ok(out)
+}
+
+/// `|a| < 2^{-bits} |b|` — has the series term `a` become negligible
+/// against the accumulated sum `b`?
+fn negligible(a: &BigFloat, b: &BigFloat, bits: usize) -> bool {
+    if a.is_zero() {
+        return true;
+    }
+    match (a.exponent(), b.exponent()) {
+        (Some(ae), Some(be)) => (be as i64 - ae as i64) > bits as i64,
+        _ => false,
+    }
+}
+
+/// `a > b`?
+fn bf_gt(a: &BigFloat, b: &BigFloat) -> bool {
+    a.cmp(b).is_some_and(|c| c > 0)
+}
+
+/// `a < b`?
+fn bf_lt(a: &BigFloat, b: &BigFloat) -> bool {
+    a.cmp(b).is_some_and(|c| c < 0)
+}
+
+/// Nearest integer to a `BigFloat`, if it is one (to within `1e-12`) and
+/// fits in an `i64`.
+fn bf_as_int(x: &BigFloat, rm: RoundingMode, cc: &mut Consts) -> Result<Option<i64>, SymplexError> {
+    let f = bigfloat_to_f64(x, rm, cc)?;
+    let r = f.round();
+    if (f - r).abs() < 1e-12 && r.abs() < 9.0e15 {
+        Ok(Some(r as i64))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Dispatch for the 0.9 special functions inside `eval_node`.
+fn eval_special_09(
+    name: &str,
+    args: &[ExprId],
+    cache: &FxHashMap<ExprId, Complex>,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<Complex, SymplexError> {
+    use crate::base::arena::{
+        FN_AIRYAI, FN_AIRYAIPRIME, FN_AIRYBI, FN_AIRYBIPRIME, FN_ASSOC_LAGUERRE, FN_ASSOC_LEGENDRE,
+        FN_CHI, FN_DIRICHLET_ETA, FN_ELLIPTIC_E, FN_ELLIPTIC_F, FN_ELLIPTIC_K, FN_ELLIPTIC_PI,
+        FN_ERFCINV, FN_ERFI, FN_ERFINV, FN_EXPINT, FN_FRESNELC, FN_FRESNELS, FN_GEGENBAUER,
+        FN_JACOBI, FN_LOWERGAMMA, FN_POLYLOG, FN_SHI, FN_UPPERGAMMA,
+    };
+    let v = real_args(name, args, cache)?;
+    let real = |r: BigFloat| Ok((r, BigFloat::new(prec)));
+    debug!(prec, name, "evalf: special function (0.9)");
+    match (name, v.len()) {
+        (FN_ERFI, 1) => real(arb_erfi(&v[0], prec, rm, cc)?),
+        (FN_ERFINV, 1) => real(arb_erfinv(&v[0], prec, rm, cc)?),
+        (FN_ERFCINV, 1) => real(arb_erfcinv(&v[0], prec, rm, cc)?),
+        (FN_EXPINT, 2) => real(arb_expint(&v[0], &v[1], prec, rm, cc)?),
+        (FN_SHI, 1) => real(arb_shi_chi(&v[0], true, prec, rm, cc)?),
+        (FN_CHI, 1) => {
+            if v[0].is_zero() {
+                return Err(unevaluable("Chi(0) is -∞"));
+            }
+            let chi = arb_shi_chi(&v[0].abs(), false, prec, rm, cc)?;
+            if v[0].is_negative() {
+                // Chi(−x) = Chi(x) + iπ
+                Ok((chi, cc.pi(prec, rm).clone()))
+            } else {
+                real(chi)
+            }
+        }
+        (FN_FRESNELS, 1) => real(arb_fresnel(&v[0], true, prec, rm, cc)?),
+        (FN_FRESNELC, 1) => real(arb_fresnel(&v[0], false, prec, rm, cc)?),
+        (FN_LOWERGAMMA, 2) => real(arb_lowergamma(&v[0], &v[1], prec, rm, cc)?),
+        (FN_UPPERGAMMA, 2) => real(arb_uppergamma(&v[0], &v[1], prec, rm, cc)?),
+        (FN_POLYLOG, 2) => real(arb_polylog(&v[0], &v[1], prec, rm, cc)?),
+        (FN_DIRICHLET_ETA, 1) => real(arb_dirichlet_eta(&v[0], prec, rm, cc)?),
+        (FN_AIRYAI, 1) => real(arb_airy(&v[0], AiryKind::Ai, prec, rm, cc)?),
+        (FN_AIRYBI, 1) => real(arb_airy(&v[0], AiryKind::Bi, prec, rm, cc)?),
+        (FN_AIRYAIPRIME, 1) => real(arb_airy(&v[0], AiryKind::AiPrime, prec, rm, cc)?),
+        (FN_AIRYBIPRIME, 1) => real(arb_airy(&v[0], AiryKind::BiPrime, prec, rm, cc)?),
+        (FN_ELLIPTIC_K, 1) => real(arb_elliptic_k(&v[0], prec, rm, cc)?),
+        (FN_ELLIPTIC_E, 1) => real(arb_elliptic_e(&v[0], prec, rm, cc)?),
+        (FN_ELLIPTIC_F, 2) => real(arb_elliptic_f(&v[0], &v[1], prec, rm, cc)?),
+        (FN_ELLIPTIC_PI, 2) => real(arb_elliptic_pi(&v[0], &v[1], prec, rm, cc)?),
+        (FN_GEGENBAUER, 3) => real(arb_gegenbauer(&v[0], &v[1], &v[2], prec, rm, cc)?),
+        (FN_JACOBI, 4) => real(arb_jacobi(&v[0], &v[1], &v[2], &v[3], prec, rm, cc)?),
+        (FN_ASSOC_LEGENDRE, 3) => real(arb_assoc_legendre(&v[0], &v[1], &v[2], prec, rm, cc)?),
+        (FN_ASSOC_LAGUERRE, 3) => real(arb_assoc_laguerre(&v[0], &v[1], &v[2], prec, rm, cc)?),
+        _ => Err(unevaluable(format!(
+            "{name} called with {} argument(s)",
+            v.len()
+        ))),
+    }
+}
+
+// ── Error-function family ──────────────────────────────────────────────────────
+
+/// `erfi(x) = (2/√π) Σ x^{2n+1}/(n!(2n+1))` (all terms of one sign, so no
+/// cancellation) for `x² ≤ wp·ln 2`, otherwise the asymptotic expansion
+/// `erfi(x) ~ e^{x²}/(x√π) Σ (2k−1)!!/(2x²)^k` (optimal truncation error
+/// `~e^{−x²}` relative to the leading term).
+fn arb_erfi(
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if x.is_zero() {
+        return Ok(BigFloat::new(prec));
+    }
+    if x.is_nan() || x.is_inf() {
+        return Err(unevaluable("erfi of special float value"));
+    }
+    let wp = prec + 32;
+    let x_f = bigfloat_to_f64(x, rm, cc)?;
+    let ax = x_f.abs();
+    let two = BigFloat::from_i32(2, wp);
+    let sqrt_pi = cc.pi(wp, rm).clone().sqrt(wp, rm);
+    let x_sq = x.mul(x, wp, rm);
+
+    if ax * ax > (wp as f64) * std::f64::consts::LN_2 + 4.0 {
+        let two_x_sq = x_sq.mul(&two, wp, rm);
+        let mut sum = BigFloat::from_i32(1, wp);
+        let mut term = BigFloat::from_i32(1, wp);
+        let mut prev: Option<BigFloat> = None;
+        for k in 1..(wp * 2 + 100) {
+            let f = BigFloat::from_i128(2 * k as i128 - 1, wp);
+            term = term.mul(&f, wp, rm).div(&two_x_sq, wp, rm);
+            if let Some(ref p) = prev
+                && bf_gt(&term, p)
+            {
+                break;
+            }
+            sum = sum.add(&term, wp, rm);
+            if negligible(&term, &sum, wp) {
+                break;
+            }
+            prev = Some(term.clone());
+        }
+        let e = x_sq.exp(wp, rm, cc);
+        let denom = x.abs().mul(&sqrt_pi, wp, rm);
+        let r = e.mul(&sum, wp, rm).div(&denom, wp, rm);
+        let r = if x.is_negative() { r.neg() } else { r };
+        return Ok(round_to(r, prec, rm));
+    }
+
+    let mut prod = x.clone();
+    let _ = prod.set_precision(wp, rm);
+    let mut sum = prod.clone();
+    let max_terms = (3.0 * ax * ax) as usize + wp + 60;
+    for n in 1..=max_terms {
+        let n_bf = BigFloat::from_i128(n as i128, wp);
+        prod = prod.mul(&x_sq, wp, rm).div(&n_bf, wp, rm);
+        let d = BigFloat::from_i128(2 * n as i128 + 1, wp);
+        let term = prod.div(&d, wp, rm);
+        sum = sum.add(&term, wp, rm);
+        if negligible(&term, &sum, wp) {
+            break;
+        }
+    }
+    let r = sum.mul(&two, wp, rm).div(&sqrt_pi, wp, rm);
+    Ok(round_to(r, prec, rm))
+}
+
+/// `erfc(x)` with *relative* precision `prec` for `x > 0` (absolute
+/// precision, via `1 − erf`, for `x ≤ 1/2`): the working precision is
+/// raised by `x² log₂ e` bits to survive the cancellation in `1 − erf(x)`.
+fn arb_erfc(
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let x_f = bigfloat_to_f64(x, rm, cc)?;
+    let extra = if x_f > 0.5 {
+        (x_f * x_f * std::f64::consts::LOG2_E).ceil() as usize + 8
+    } else {
+        0
+    };
+    let wp = prec + 32 + extra;
+    let mut xw = x.clone();
+    let _ = xw.set_precision(wp, rm);
+    let erf = arb_erf(&xw, wp, rm, cc)?;
+    let one = BigFloat::from_i32(1, wp);
+    Ok(round_to(one.sub(&erf, wp, rm), prec, rm))
+}
+
+/// Halley iteration for `erf(x) = y` (`solve_erfc == false`) or
+/// `erfc(x) = y` (`solve_erfc == true`) from the starting point `x0`.
+///
+/// With `g = f/f'`, the Halley step for both equations is
+/// `x ← x − g / (1 + x g)` (since `f'' = −2x f'`).
+fn erf_inverse_halley(
+    y: &BigFloat,
+    x0: f64,
+    solve_erfc: bool,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let wp = prec + 32;
+    let mut yw = y.clone();
+    let _ = yw.set_precision(wp, rm);
+    let half_sqrt_pi = cc
+        .pi(wp, rm)
+        .clone()
+        .sqrt(wp, rm)
+        .div(&BigFloat::from_i32(2, wp), wp, rm);
+    let one = BigFloat::from_i32(1, wp);
+    let mut x = BigFloat::from_f64(x0, wp);
+    for _ in 0..200 {
+        let f = if solve_erfc {
+            arb_erfc(&x, wp, rm, cc)?.sub(&yw, wp, rm)
+        } else {
+            arb_erf(&x, wp, rm, cc)?.sub(&yw, wp, rm)
+        };
+        // f' = ±(2/√π) e^{−x²}  ⇒  g = f/f' = ±f (√π/2) e^{x²}
+        let x_sq = x.mul(&x, wp, rm);
+        let g = f
+            .mul(&half_sqrt_pi, wp, rm)
+            .mul(&x_sq.exp(wp, rm, cc), wp, rm);
+        let g = if solve_erfc { g.neg() } else { g };
+        let denom = one.add(&x.mul(&g, wp, rm), wp, rm);
+        let delta = if denom.is_zero() {
+            g.clone()
+        } else {
+            g.div(&denom, wp, rm)
+        };
+        x = x.sub(&delta, wp, rm);
+        if negligible(&delta, &x, wp) {
+            break;
+        }
+    }
+    Ok(round_to(x, prec, rm))
+}
+
+/// `erfinv(y)` for `|y| < 1`: Winitzki's closed-form approximation refined
+/// by `f64` Newton steps, then Halley iteration on `erf` (`|y| ≤ 1/2`) or
+/// on `erfc(x) = 1 − |y|` (`|y| > 1/2`, where `erf` alone would lose the
+/// digits of `1 − y`).
+fn arb_erfinv(
+    y: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if y.is_zero() {
+        return Ok(BigFloat::new(prec));
+    }
+    let wp = prec + 32;
+    let one = BigFloat::from_i32(1, wp);
+    let ay = y.abs();
+    let one_minus_ay = one.sub(&ay, wp, rm);
+    if one_minus_ay.is_zero() || one_minus_ay.is_negative() {
+        return Err(unevaluable("erfinv: argument must satisfy |y| < 1"));
+    }
+    let y_f = bigfloat_to_f64(y, rm, cc)?;
+    let r = if y_f.abs() > 0.5 {
+        arb_erfcinv_small(&one_minus_ay, prec, rm, cc)?
+    } else {
+        // Winitzki (a = 0.147), |relative error| < 2·10⁻³.
+        let a = 0.147_f64;
+        let l = (1.0 - y_f * y_f).ln();
+        let t = 2.0 / (std::f64::consts::PI * a) + l / 2.0;
+        let mut x0 = ((t * t - l / a).sqrt() - t).sqrt().copysign(y_f);
+        for _ in 0..3 {
+            let f = erf_f64(x0) - y_f;
+            x0 -= f * (std::f64::consts::PI.sqrt() / 2.0) * (x0 * x0).exp();
+        }
+        erf_inverse_halley(y, x0, false, prec, rm, cc)?
+    };
+    Ok(if y.is_negative() && !r.is_negative() && y_f.abs() > 0.5 {
+        r.neg()
+    } else {
+        r
+    })
+}
+
+/// `erfcinv(u)` for `0 < u ≤ 1/2`, Halley iteration on `erfc`.  The initial
+/// guess inverts the leading asymptotic `erfc(x) ≈ e^{−x²}/(x√π)`, which
+/// also covers `u` far below the `f64` range.
+fn arb_erfcinv_small(
+    u: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let wp = prec + 32;
+    // L = −ln u  (computed in BigFloat so tiny u is fine)
+    let l = u.ln(wp, rm, cc).neg();
+    let l_f = bigfloat_to_f64(&l, rm, cc)?;
+    let mut x0 = l_f.max(0.5).sqrt();
+    for _ in 0..4 {
+        // x² = L − ln(x√π)
+        let v = l_f - (x0 * std::f64::consts::PI.sqrt()).ln();
+        x0 = v.max(0.25).sqrt();
+    }
+    let u_f = bigfloat_to_f64(u, rm, cc)?;
+    if u_f > 1e-300 {
+        for _ in 0..3 {
+            let f = (1.0 - erf_f64(x0)) - u_f;
+            x0 += f * (std::f64::consts::PI.sqrt() / 2.0) * (x0 * x0).exp();
+        }
+    }
+    erf_inverse_halley(u, x0, true, prec, rm, cc)
+}
+
+/// `erfcinv(u)` for `0 < u < 2`: `erfcinv(u) = −erfcinv(2 − u)` maps to
+/// `u ≤ 1`, then `erfinv(1 − u)` for `u ≥ 1/2` and the `erfc` Halley
+/// iteration for smaller `u`.
+fn arb_erfcinv(
+    u: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let wp = prec + 32;
+    let one = BigFloat::from_i32(1, wp);
+    let two = BigFloat::from_i32(2, wp);
+    if u.is_zero() || u.is_negative() || !bf_lt(u, &two) {
+        return Err(unevaluable("erfcinv: argument must satisfy 0 < u < 2"));
+    }
+    if bf_gt(u, &one) {
+        let v = two.sub(u, wp, rm);
+        return Ok(arb_erfcinv(&v, prec, rm, cc)?.neg());
+    }
+    let u_f = bigfloat_to_f64(u, rm, cc)?;
+    if u_f >= 0.5 {
+        let y = one.sub(u, wp, rm);
+        return arb_erfinv(&y, prec, rm, cc);
+    }
+    arb_erfcinv_small(u, prec, rm, cc)
+}
+
+// ── Incomplete gamma / exponential integrals ───────────────────────────────────
+
+/// Legendre's continued fraction for `Γ(s, x)`, `x > 0` (modified Lentz):
+///
+/// ```text
+/// Γ(s, x) = e^{−x} x^s / (x + 1 − s − 1·(1−s)/(x + 3 − s − 2·(2−s)/(x + 5 − s − …)))
+/// ```
+///
+/// Converges for every `x > 0` and every real `s`; it is the method of
+/// choice for `x ≥ max(1, s + 1)`.
+fn uppergamma_cf(
+    s: &BigFloat,
+    x: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let one = BigFloat::from_i32(1, wp);
+    let two = BigFloat::from_i32(2, wp);
+    // "tiny" replaces exact zeros in Lentz's algorithm.
+    let mut tiny = BigFloat::from_i32(1, wp);
+    tiny.set_exponent(-(4 * wp as i32));
+    let mut b = x.add(&one, wp, rm).sub(s, wp, rm);
+    let mut c = one.div(&tiny, wp, rm);
+    let mut d = if b.is_zero() {
+        one.div(&tiny, wp, rm)
+    } else {
+        one.div(&b, wp, rm)
+    };
+    let mut h = d.clone();
+    let max_iter = 40 * wp + 2000;
+    let mut converged = false;
+    for i in 1..=max_iter {
+        let i_bf = BigFloat::from_i128(i as i128, wp);
+        // a_i = −i (i − s)
+        let an = i_bf.mul(&i_bf.sub(s, wp, rm), wp, rm).neg();
+        b = b.add(&two, wp, rm);
+        d = an.mul(&d, wp, rm).add(&b, wp, rm);
+        if d.is_zero() {
+            d = tiny.clone();
+        }
+        c = b.add(&an.div(&c, wp, rm), wp, rm);
+        if c.is_zero() {
+            c = tiny.clone();
+        }
+        d = one.div(&d, wp, rm);
+        let del = d.mul(&c, wp, rm);
+        h = h.mul(&del, wp, rm);
+        let dev = del.sub(&one, wp, rm);
+        if negligible(&dev, &one, wp) {
+            converged = true;
+            break;
+        }
+    }
+    if !converged {
+        return Err(SymplexError::ComputationFailed {
+            operation: "evalf",
+            reason: "continued fraction for the incomplete gamma function did not converge".into(),
+        });
+    }
+    let e_neg_x = x.neg().exp(wp, rm, cc);
+    let x_pow_s = bf_pow(x, s, wp, rm, cc);
+    Ok(e_neg_x.mul(&x_pow_s, wp, rm).mul(&h, wp, rm))
+}
+
+/// Series for `γ(s, x) = x^s e^{−x} Σ_{k≥0} x^k / (s (s+1) … (s+k))`,
+/// `s > 0`, `x ≥ 0` (all terms positive).
+fn lowergamma_series(
+    s: &BigFloat,
+    x: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if x.is_zero() {
+        return Ok(BigFloat::new(wp));
+    }
+    let one = BigFloat::from_i32(1, wp);
+    let x_f = bigfloat_to_f64(x, rm, cc)?;
+    let mut term = one.div(s, wp, rm);
+    let mut sum = term.clone();
+    let max_terms = (2.0 * x_f) as usize + wp + 50;
+    for k in 1..=max_terms {
+        let s_plus_k = s.add(&BigFloat::from_i128(k as i128, wp), wp, rm);
+        term = term.mul(x, wp, rm).div(&s_plus_k, wp, rm);
+        sum = sum.add(&term, wp, rm);
+        if negligible(&term, &sum, wp) {
+            break;
+        }
+    }
+    let e_neg_x = x.neg().exp(wp, rm, cc);
+    let x_pow_s = bf_pow(x, s, wp, rm, cc);
+    Ok(x_pow_s.mul(&e_neg_x, wp, rm).mul(&sum, wp, rm))
+}
+
+/// `Γ(s, x)` at working precision `wp` for real `s`, `x > 0`.
+///
+/// * `x ≥ max(1, s+1)`: continued fraction.
+/// * `s > 0`, smaller `x`: `Γ(s) − γ(s, x)` (series), with guard bits for
+///   the cancellation when `Γ(s, x) ≪ Γ(s)`.
+/// * `s = 0`, `x < 1`: `Γ(0, x) = E₁(x) = −Ei(−x)`.
+/// * `s < 0`, `x < 1`: shift `s` into `(0, 1]` (or to `0` for integers) by
+///   `Γ(s, x) = (Γ(s+1, x) − x^s e^{−x}) / s`, downward from the base value.
+fn uppergamma_wp(
+    s: &BigFloat,
+    x: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let s_f = bigfloat_to_f64(s, rm, cc)?;
+    let x_f = bigfloat_to_f64(x, rm, cc)?;
+    if x_f >= (s_f + 1.0).max(1.0) {
+        return uppergamma_cf(s, x, wp, rm, cc);
+    }
+    if s_f > 0.0 {
+        // Γ(s, x)/Γ(s) is not tiny here (x < s + 1), so a fixed guard suffices.
+        let wp2 = wp + 32 + cancellation_guard_bits(x_f);
+        let mut sw = s.clone();
+        let _ = sw.set_precision(wp2, rm);
+        let mut xw = x.clone();
+        let _ = xw.set_precision(wp2, rm);
+        let g = arb_gamma_real(&sw, wp2, rm, cc)?;
+        let lower = lowergamma_series(&sw, &xw, wp2, rm, cc)?;
+        return Ok(round_to(g.sub(&lower, wp2, rm), wp, rm));
+    }
+    // s ≤ 0, x < 1.  Each downward step `Γ(s−1) = (Γ(s) − x^{s−1}e^{−x})/(s−1)`
+    // may cancel a few bits; reserve 16 per step.
+    let s_int = bf_as_int(s, rm, cc)?;
+    let steps = match s_int {
+        Some(k) => (-k) as usize,
+        None => (-s_f).ceil() as usize,
+    };
+    let wp2 = wp + 16 * steps + 32;
+    let mut sw = s.clone();
+    let _ = sw.set_precision(wp2, rm);
+    let mut xw = x.clone();
+    let _ = xw.set_precision(wp2, rm);
+    let e_neg_x = xw.neg().exp(wp2, rm, cc);
+    // Base point: Γ(0, x) = E₁(x) = −Ei(−x) for integer s; otherwise
+    // Γ(s₀, x) = Γ(s₀) − γ(s₀, x) with s₀ = s + steps ∈ (0, 1).
+    let (mut cur_s, mut val) = match s_int {
+        Some(_) => (BigFloat::new(wp2), arb_ei(&xw.neg(), wp2, rm, cc)?.neg()),
+        None => {
+            let s0 = sw.add(&BigFloat::from_i128(steps as i128, wp2), wp2, rm);
+            let g = arb_gamma_real(&s0, wp2, rm, cc)?;
+            let lower = lowergamma_series(&s0, &xw, wp2, rm, cc)?;
+            (s0, g.sub(&lower, wp2, rm))
+        }
+    };
+    let one = BigFloat::from_i32(1, wp2);
+    for _ in 0..steps {
+        let next_s = cur_s.sub(&one, wp2, rm);
+        let x_pow = bf_pow(&xw, &next_s, wp2, rm, cc);
+        let t = x_pow.mul(&e_neg_x, wp2, rm);
+        val = val.sub(&t, wp2, rm).div(&next_s, wp2, rm);
+        cur_s = next_s;
+    }
+    Ok(round_to(val, wp, rm))
+}
+
+/// Upper incomplete gamma `Γ(s, x)` for real `s`, `x ≥ 0`.
+fn arb_uppergamma(
+    s: &BigFloat,
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if x.is_nan() || s.is_nan() || x.is_inf_neg() || s.is_inf() {
+        return Err(unevaluable("uppergamma of special float value"));
+    }
+    if x.is_inf_pos() {
+        return Ok(BigFloat::new(prec));
+    }
+    if x.is_negative() {
+        return Err(unevaluable(
+            "uppergamma of negative argument not yet supported in evalf",
+        ));
+    }
+    let wp = prec + 32;
+    if x.is_zero() {
+        if !s.is_positive() {
+            return Err(unevaluable("uppergamma(s, 0) diverges for s ≤ 0"));
+        }
+        return Ok(round_to(arb_gamma_real(s, wp, rm, cc)?, prec, rm));
+    }
+    let r = uppergamma_wp(s, x, wp, rm, cc)?;
+    Ok(round_to(r, prec, rm))
+}
+
+/// Lower incomplete gamma `γ(s, x)` for real `s > 0`, `x ≥ 0`.
+fn arb_lowergamma(
+    s: &BigFloat,
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if x.is_nan() || s.is_nan() || s.is_inf() || x.is_inf_neg() {
+        return Err(unevaluable("lowergamma of special float value"));
+    }
+    if !s.is_positive() {
+        return Err(unevaluable(
+            "lowergamma requires s > 0 for numerical evaluation",
+        ));
+    }
+    if x.is_negative() {
+        return Err(unevaluable(
+            "lowergamma of negative argument not yet supported in evalf",
+        ));
+    }
+    let wp = prec + 32;
+    if x.is_inf_pos() {
+        return Ok(round_to(arb_gamma_real(s, wp, rm, cc)?, prec, rm));
+    }
+    let s_f = bigfloat_to_f64(s, rm, cc)?;
+    let x_f = bigfloat_to_f64(x, rm, cc)?;
+    if x_f < s_f + 1.0 {
+        let r = lowergamma_series(s, x, wp, rm, cc)?;
+        return Ok(round_to(r, prec, rm));
+    }
+    // γ = Γ(s) − Γ(s, x); Γ(s, x) ≤ Γ(s) here so the difference is benign.
+    let g = arb_gamma_real(s, wp, rm, cc)?;
+    let upper = uppergamma_cf(s, x, wp, rm, cc)?;
+    Ok(round_to(g.sub(&upper, wp, rm), prec, rm))
+}
+
+/// Generalised exponential integral `E_n(x) = x^{n−1} Γ(1−n, x)` for real
+/// `n` and `x > 0` (`E_n(0) = 1/(n−1)` for `n > 1`).
+fn arb_expint(
+    n: &BigFloat,
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if x.is_nan() || n.is_nan() || n.is_inf() {
+        return Err(unevaluable("expint of special float value"));
+    }
+    if x.is_inf_pos() {
+        return Ok(BigFloat::new(prec));
+    }
+    let wp = prec + 32;
+    let one = BigFloat::from_i32(1, wp);
+    if x.is_zero() {
+        let n_minus_1 = n.sub(&one, wp, rm);
+        if !n_minus_1.is_positive() {
+            return Err(unevaluable("expint(n, 0) diverges for n ≤ 1"));
+        }
+        return Ok(round_to(one.div(&n_minus_1, wp, rm), prec, rm));
+    }
+    if x.is_negative() {
+        return Err(unevaluable(
+            "expint of negative argument is complex; not yet supported in evalf",
+        ));
+    }
+    let s = one.sub(n, wp, rm);
+    let g = uppergamma_wp(&s, x, wp, rm, cc)?;
+    let x_pow = bf_pow(x, &n.sub(&one, wp, rm), wp, rm, cc);
+    Ok(round_to(x_pow.mul(&g, wp, rm), prec, rm))
+}
+
+/// `Shi(x)` (`want_shi`) or `Chi(x)` for `x > 0` (`Shi` is odd and is
+/// returned for any real `x`).
+///
+/// * `|x| ≤ 40`: `Shi(x) = Σ x^{2k+1}/((2k+1)(2k+1)!)`,
+///   `Chi(x) = γ + ln x + Σ_{k≥1} x^{2k}/((2k)(2k)!)` — all terms positive.
+/// * larger `|x|`: `Shi = (Ei(x) − Ei(−x))/2`, `Chi = (Ei(x) + Ei(−x))/2`.
+fn arb_shi_chi(
+    x: &BigFloat,
+    want_shi: bool,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if x.is_nan() || x.is_inf() {
+        return Err(unevaluable("Shi/Chi of special float value"));
+    }
+    if x.is_zero() {
+        return if want_shi {
+            Ok(BigFloat::new(prec))
+        } else {
+            Err(unevaluable("Chi(0) is -∞"))
+        };
+    }
+    let wp = prec + 32;
+    let ax = x.abs();
+    let x_f = bigfloat_to_f64(&ax, rm, cc)?;
+    let r = if x_f > 40.0 {
+        let ei_pos = arb_ei(&ax, wp, rm, cc)?;
+        let ei_neg = arb_ei(&ax.neg(), wp, rm, cc)?;
+        let two = BigFloat::from_i32(2, wp);
+        if want_shi {
+            ei_pos.sub(&ei_neg, wp, rm).div(&two, wp, rm)
+        } else {
+            ei_pos.add(&ei_neg, wp, rm).div(&two, wp, rm)
+        }
+    } else {
+        let mut xw = ax.clone();
+        let _ = xw.set_precision(wp, rm);
+        let x2 = xw.mul(&xw, wp, rm);
+        let max_terms = (x_f * 1.5) as usize + wp + 40;
+        if want_shi {
+            // t_k = x^{2k+1}/(2k+1)!
+            let mut t = xw.clone();
+            let mut sum = BigFloat::new(wp);
+            for k in 0..max_terms {
+                if k > 0 {
+                    let d = BigFloat::from_i128((2 * k as i128) * (2 * k as i128 + 1), wp);
+                    t = t.mul(&x2, wp, rm).div(&d, wp, rm);
+                }
+                let term = t.div(&BigFloat::from_i128(2 * k as i128 + 1, wp), wp, rm);
+                sum = sum.add(&term, wp, rm);
+                if negligible(&term, &sum, wp) {
+                    break;
+                }
+            }
+            sum
+        } else {
+            let gamma = arb_euler_gamma(wp, rm, cc)?;
+            let ln_x = xw.ln(wp, rm, cc);
+            let mut u = BigFloat::from_i32(1, wp); // x^{2k}/(2k)!
+            let mut sum = BigFloat::new(wp);
+            for k in 1..max_terms {
+                let d = BigFloat::from_i128((2 * k as i128 - 1) * (2 * k as i128), wp);
+                u = u.mul(&x2, wp, rm).div(&d, wp, rm);
+                let term = u.div(&BigFloat::from_i128(2 * k as i128, wp), wp, rm);
+                sum = sum.add(&term, wp, rm);
+                if negligible(&term, &sum, wp) {
+                    break;
+                }
+            }
+            gamma.add(&ln_x, wp, rm).add(&sum, wp, rm)
+        }
+    };
+    let r = if want_shi && x.is_negative() {
+        r.neg()
+    } else {
+        r
+    };
+    Ok(round_to(r, prec, rm))
+}
+
+/// Fresnel integrals `S(x)` (`want_s`) and `C(x)` for real `x` (both odd).
+///
+/// * `πx²/2 ≤ wp·ln 2`: Maclaurin series
+///   `S = Σ (−1)^k (π/2)^{2k+1} x^{4k+3}/((2k+1)!(4k+3))`,
+///   `C = Σ (−1)^k (π/2)^{2k} x^{4k+1}/((2k)!(4k+1))`, with guard bits for
+///   the `e^{πx²/2}` cancellation.
+/// * beyond: DLMF 7.12 auxiliary functions
+///   `S = 1/2 − f cos(πx²/2) − g sin(πx²/2)`, `C = 1/2 + f sin(πx²/2) − g cos(πx²/2)`,
+///   `f ~ (1/πx) Σ (−1)^m (4m−1)!!/(πx²)^{2m}`, `g ~ (1/πx) Σ (−1)^m (4m+1)!!/(πx²)^{2m+1}`
+///   (optimal truncation error `~e^{−πx²/2}`).
+fn arb_fresnel(
+    x: &BigFloat,
+    want_s: bool,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if x.is_nan() || x.is_inf() {
+        return Err(unevaluable("Fresnel integral of special float value"));
+    }
+    if x.is_zero() {
+        return Ok(BigFloat::new(prec));
+    }
+    let base_wp = prec + 32;
+    let ax = x.abs();
+    let x_f = bigfloat_to_f64(&ax, rm, cc)?;
+    let arg_f = std::f64::consts::FRAC_PI_2 * x_f * x_f;
+
+    let r = if arg_f > (base_wp as f64) * std::f64::consts::LN_2 {
+        let wp = base_wp;
+        let mut xw = ax.clone();
+        let _ = xw.set_precision(wp, rm);
+        let one = BigFloat::from_i32(1, wp);
+        let pi = cc.pi(wp, rm).clone();
+        let pi_x2 = pi.mul(&xw, wp, rm).mul(&xw, wp, rm);
+        let inv = one.div(&pi_x2, wp, rm); // 1/(πx²)
+        let inv2 = inv.mul(&inv, wp, rm);
+        // f-series: (4m−1)!!/(πx²)^{2m}; g-series: (4m+1)!!/(πx²)^{2m+1}
+        let mut tf = one.clone();
+        let mut tg = inv.clone();
+        let mut f_sum = BigFloat::new(wp);
+        let mut g_sum = BigFloat::new(wp);
+        let mut prev: Option<BigFloat> = None;
+        for m in 0..(wp * 2 + 100) {
+            if m > 0 {
+                // (4m−1)!!/(4m−5)!! = (4m−3)(4m−1); (4m+1)!!/(4m−3)!! = (4m−1)(4m+1)
+                let a = BigFloat::from_i128((4 * m as i128 - 3) * (4 * m as i128 - 1), wp);
+                let b = BigFloat::from_i128((4 * m as i128 - 1) * (4 * m as i128 + 1), wp);
+                tf = tf.mul(&a, wp, rm).mul(&inv2, wp, rm);
+                tg = tg.mul(&b, wp, rm).mul(&inv2, wp, rm);
+            }
+            if let Some(ref p) = prev
+                && bf_gt(&tf, p)
+            {
+                break;
+            }
+            if m % 2 == 0 {
+                f_sum = f_sum.add(&tf, wp, rm);
+                g_sum = g_sum.add(&tg, wp, rm);
+            } else {
+                f_sum = f_sum.sub(&tf, wp, rm);
+                g_sum = g_sum.sub(&tg, wp, rm);
+            }
+            if negligible(&tf, &one, wp) {
+                break;
+            }
+            prev = Some(tf.clone());
+        }
+        let pi_x = pi.mul(&xw, wp, rm);
+        let f = f_sum.div(&pi_x, wp, rm);
+        let g = g_sum.div(&pi_x, wp, rm);
+        let two = BigFloat::from_i32(2, wp);
+        let theta = pi_x2.div(&two, wp, rm);
+        let s = theta.sin(wp, rm, cc);
+        let c = theta.cos(wp, rm, cc);
+        let half = one.div(&two, wp, rm);
+        if want_s {
+            half.sub(&f.mul(&c, wp, rm), wp, rm)
+                .sub(&g.mul(&s, wp, rm), wp, rm)
+        } else {
+            half.add(&f.mul(&s, wp, rm), wp, rm)
+                .sub(&g.mul(&c, wp, rm), wp, rm)
+        }
+    } else {
+        let wp = base_wp + (arg_f * std::f64::consts::LOG2_E).ceil() as usize + 16;
+        let mut xw = ax.clone();
+        let _ = xw.set_precision(wp, rm);
+        let pi = cc.pi(wp, rm).clone();
+        let two = BigFloat::from_i32(2, wp);
+        let half_pi = pi.div(&two, wp, rm);
+        let x2 = xw.mul(&xw, wp, rm);
+        // u = (π/2) x²;  terms: S_k = (−1)^k u^{2k+1} x /((2k+1)! (4k+3)),
+        //                          C_k = (−1)^k u^{2k} x /((2k)! (4k+1))
+        let u = half_pi.mul(&x2, wp, rm);
+        let u2 = u.mul(&u, wp, rm);
+        let mut t = if want_s {
+            u.mul(&xw, wp, rm)
+        } else {
+            xw.clone()
+        };
+        let mut sum = BigFloat::new(wp);
+        let max_terms = (arg_f * 2.0) as usize + wp + 40;
+        for k in 0..max_terms {
+            if k > 0 {
+                let d = if want_s {
+                    BigFloat::from_i128((2 * k as i128) * (2 * k as i128 + 1), wp)
+                } else {
+                    BigFloat::from_i128((2 * k as i128 - 1) * (2 * k as i128), wp)
+                };
+                t = t.mul(&u2, wp, rm).div(&d, wp, rm);
+            }
+            let div = BigFloat::from_i128(4 * k as i128 + if want_s { 3 } else { 1 }, wp);
+            let term = t.div(&div, wp, rm);
+            if k % 2 == 0 {
+                sum = sum.add(&term, wp, rm);
+            } else {
+                sum = sum.sub(&term, wp, rm);
+            }
+            if negligible(&term, &sum, wp) {
+                break;
+            }
+        }
+        sum
+    };
+    let r = if x.is_negative() { r.neg() } else { r };
+    Ok(round_to(r, prec, rm))
+}
+
+// ── Polylogarithm / Dirichlet eta ───────────────────────────────────────────────
+
+/// `ζ(m)` for an integer `m ≤ 0`, exactly: `ζ(0) = −1/2`,
+/// `ζ(−k) = −B_{k+1}/(k+1)`.
+fn zeta_nonpositive_int(m: i64, wp: usize, rm: RoundingMode) -> BigFloat {
+    if m == 0 {
+        return BigFloat::from_f64(-0.5, wp);
+    }
+    let k = (-m) as usize;
+    let b = crate::base::bernoulli::bernoulli(k + 1);
+    if b.is_zero() {
+        return BigFloat::new(wp);
+    }
+    let v = -b / Ratio::from_integer(BigInt::from(k as i64 + 1));
+    ratio_to_bigfloat(&v, wp, rm)
+}
+
+/// `k^s` for integer `k ≥ 1`.
+fn int_pow_s(
+    k: usize,
+    s: &BigFloat,
+    s_int: Option<i64>,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> BigFloat {
+    let kb = BigFloat::from_i128(k as i128, wp);
+    match s_int {
+        Some(n) if n >= 0 => kb.powi(n as usize, wp, rm),
+        Some(n) => BigFloat::from_i32(1, wp).div(&kb.powi((-n) as usize, wp, rm), wp, rm),
+        None => bf_pow(&kb, s, wp, rm, cc),
+    }
+}
+
+/// Direct series `Li_s(z) = Σ_{k≥1} z^k/k^s` for `|z| < 1` (used up to
+/// [`polylog_series_limit`]); about `wp·ln 2 / (−ln|z|)` terms.
+fn polylog_series(
+    s: &BigFloat,
+    s_int: Option<i64>,
+    z: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> BigFloat {
+    let z_f = bigfloat_to_f64(z, rm, cc).unwrap_or(0.5).abs();
+    let max_terms = if z_f > 0.0 && z_f < 1.0 {
+        ((wp as f64) * std::f64::consts::LN_2 / (-z_f.ln())).ceil() as usize + 20
+    } else {
+        wp * 2 + 60
+    };
+    let mut zk = z.clone();
+    let mut sum = BigFloat::new(wp);
+    for k in 1..max_terms {
+        if k > 1 {
+            zk = zk.mul(z, wp, rm);
+        }
+        let term = zk.div(&int_pow_s(k, s, s_int, wp, rm, cc), wp, rm);
+        sum = sum.add(&term, wp, rm);
+        if negligible(&term, &sum, wp) {
+            break;
+        }
+    }
+    sum
+}
+
+/// `Li_{−n}(z)` for integer `n ≥ 0` and any real `z ≠ 1`:
+/// `Σ_{k=0}^{n} k! S(n+1, k+1) (z/(1−z))^{k+1}`.
+fn polylog_nonpositive(
+    n: usize,
+    z: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+) -> Result<BigFloat, SymplexError> {
+    let one = BigFloat::from_i32(1, wp);
+    let one_minus_z = one.sub(z, wp, rm);
+    if one_minus_z.is_zero() {
+        return Err(unevaluable("polylog(s, 1) diverges for s ≤ 1"));
+    }
+    let w = z.div(&one_minus_z, wp, rm);
+    let mut k_fact = BigInt::from(1);
+    let mut w_pow = w.clone();
+    let mut sum = BigFloat::new(wp);
+    for k in 0..=n {
+        if k > 0 {
+            k_fact *= BigInt::from(k as u64);
+            w_pow = w_pow.mul(&w, wp, rm);
+        }
+        let s2 = crate::domains::combinatorics::stirling2(n as u64 + 1, k as u64 + 1)
+            .ok_or_else(|| unevaluable("polylog: Stirling number overflow"))?;
+        let c = ratio_to_bigfloat(&Ratio::from_integer(&k_fact * s2), wp, rm);
+        sum = sum.add(&c.mul(&w_pow, wp, rm), wp, rm);
+    }
+    Ok(sum)
+}
+
+/// `Li_s(z)` for `1/2 < z < 1` via the expansion in `μ = ln z` (`|μ| < 2π`):
+///
+/// * integer `s = n ≥ 1`:
+///   `Li_n(e^μ) = μ^{n−1}/(n−1)! (H_{n−1} − ln(−μ)) + Σ_{k≥0, k≠n−1} ζ(n−k) μ^k/k!`
+/// * non-integer `s`: `Li_s(e^μ) = Γ(1−s)(−μ)^{s−1} + Σ_{k≥0} ζ(s−k) μ^k/k!`
+fn polylog_near_one(
+    s: &BigFloat,
+    s_int: Option<i64>,
+    z: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let one = BigFloat::from_i32(1, wp);
+    let mu = z.ln(wp, rm, cc); // negative
+    let neg_mu = mu.neg();
+    let max_terms = wp * 2 + 100;
+    let mut sum = BigFloat::new(wp);
+    let mut mu_pow_over_fact = one.clone(); // μ^k/k!
+    match s_int {
+        Some(n) if n >= 1 => {
+            let n = n as usize;
+            for k in 0..max_terms {
+                if k > 0 {
+                    mu_pow_over_fact = mu_pow_over_fact.mul(&mu, wp, rm).div(
+                        &BigFloat::from_i128(k as i128, wp),
+                        wp,
+                        rm,
+                    );
+                }
+                if k + 1 == n {
+                    // μ^{n−1}/(n−1)! (H_{n−1} − ln(−μ))
+                    let mut h = BigFloat::new(wp);
+                    for j in 1..n {
+                        h = h.add(
+                            &one.div(&BigFloat::from_i128(j as i128, wp), wp, rm),
+                            wp,
+                            rm,
+                        );
+                    }
+                    let ln_neg_mu = neg_mu.ln(wp, rm, cc);
+                    let t = mu_pow_over_fact.mul(&h.sub(&ln_neg_mu, wp, rm), wp, rm);
+                    sum = sum.add(&t, wp, rm);
+                    continue;
+                }
+                let arg = n as i64 - k as i64;
+                let zeta = if arg <= 0 {
+                    zeta_nonpositive_int(arg, wp, rm)
+                } else {
+                    arb_zeta(&BigFloat::from_i128(arg as i128, wp), wp, rm, cc)?
+                };
+                let term = zeta.mul(&mu_pow_over_fact, wp, rm);
+                sum = sum.add(&term, wp, rm);
+                if k > n && negligible(&mu_pow_over_fact, &one, wp + 8) {
+                    break;
+                }
+            }
+            Ok(sum)
+        }
+        _ => {
+            let one_minus_s = one.sub(s, wp, rm);
+            let g = arb_gamma_real(&one_minus_s, wp, rm, cc)?;
+            let s_minus_1 = s.sub(&one, wp, rm);
+            let lead = g.mul(&bf_pow(&neg_mu, &s_minus_1, wp, rm, cc), wp, rm);
+            for k in 0..max_terms {
+                if k > 0 {
+                    mu_pow_over_fact = mu_pow_over_fact.mul(&mu, wp, rm).div(
+                        &BigFloat::from_i128(k as i128, wp),
+                        wp,
+                        rm,
+                    );
+                }
+                let arg = s.sub(&BigFloat::from_i128(k as i128, wp), wp, rm);
+                let zeta = arb_zeta(&arg, wp, rm, cc)?;
+                let term = zeta.mul(&mu_pow_over_fact, wp, rm);
+                sum = sum.add(&term, wp, rm);
+                if k > 2 && negligible(&mu_pow_over_fact, &one, wp + 8) {
+                    break;
+                }
+            }
+            Ok(lead.add(&sum, wp, rm))
+        }
+    }
+}
+
+/// Largest `|z|` for which the direct series is used.  For integer `s` the
+/// `μ`-expansion is cheap (Bernoulli numbers), so it takes over at `1/2`;
+/// for non-integer `s` every term of that expansion costs a `ζ` evaluation,
+/// and the direct series stays cheaper until `|z|` is very close to `1`.
+fn polylog_series_limit(s_int: Option<i64>, wp: usize) -> BigFloat {
+    if s_int.is_some() {
+        BigFloat::from_f64(0.5, wp)
+    } else {
+        BigFloat::from_f64(0.95, wp)
+    }
+}
+
+/// `Li_s(z)` for `0 < |z| < 1`.
+fn polylog_unit_interval(
+    s: &BigFloat,
+    s_int: Option<i64>,
+    z: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let limit = polylog_series_limit(s_int, wp);
+    let az = z.abs();
+    if !bf_gt(&az, &limit) {
+        return Ok(polylog_series(s, s_int, z, wp, rm, cc));
+    }
+    if z.is_negative() {
+        // Li_s(−x) = 2^{1−s} Li_s(x²) − Li_s(x)
+        let one = BigFloat::from_i32(1, wp);
+        let x2 = az.mul(&az, wp, rm);
+        let a = polylog_unit_interval(s, s_int, &x2, wp, rm, cc)?;
+        let b = polylog_near_one(s, s_int, &az, wp, rm, cc)?;
+        let two = BigFloat::from_i32(2, wp);
+        let one_minus_s = one.sub(s, wp, rm);
+        let scale = bf_pow(&two, &one_minus_s, wp, rm, cc);
+        return Ok(scale.mul(&a, wp, rm).sub(&b, wp, rm));
+    }
+    polylog_near_one(s, s_int, z, wp, rm, cc)
+}
+
+/// Polylogarithm `Li_s(z)` for real `s` and real `−1 ≤ z ≤ 1` (any real
+/// `z ≠ 1` when `s` is a non-positive integer, where `Li_s` is rational).
+fn arb_polylog(
+    s: &BigFloat,
+    z: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if s.is_nan() || z.is_nan() || s.is_inf() || z.is_inf() {
+        return Err(unevaluable("polylog of special float value"));
+    }
+    if z.is_zero() {
+        return Ok(BigFloat::new(prec));
+    }
+    let wp = prec + 32;
+    let one = BigFloat::from_i32(1, wp);
+    let s_int = bf_as_int(s, rm, cc)?;
+    if let Some(n) = s_int
+        && n <= 0
+    {
+        let r = polylog_nonpositive((-n) as usize, z, wp, rm)?;
+        return Ok(round_to(r, prec, rm));
+    }
+    let az = z.abs();
+    if bf_gt(&az, &one) {
+        return Err(unevaluable(
+            "polylog outside the unit disc not yet supported in evalf",
+        ));
+    }
+    if az.sub(&one, wp, rm).is_zero() {
+        // z = ±1
+        if !bf_gt(s, &one) {
+            return Err(unevaluable("polylog(s, ±1) diverges for s ≤ 1"));
+        }
+        let zeta = arb_zeta(s, wp, rm, cc)?;
+        if z.is_negative() {
+            // Li_s(−1) = −η(s) = −(1 − 2^{1−s}) ζ(s)
+            let two = BigFloat::from_i32(2, wp);
+            let one_minus_s = one.sub(s, wp, rm);
+            let coeff = one.sub(&bf_pow(&two, &one_minus_s, wp, rm, cc), wp, rm);
+            return Ok(round_to(coeff.mul(&zeta, wp, rm).neg(), prec, rm));
+        }
+        return Ok(round_to(zeta, prec, rm));
+    }
+    let r = polylog_unit_interval(s, s_int, z, wp, rm, cc)?;
+    Ok(round_to(r, prec, rm))
+}
+
+/// Dirichlet eta `η(s) = (1 − 2^{1−s}) ζ(s)`, with `η(1) = ln 2`.
+fn arb_dirichlet_eta(
+    s: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if s.is_nan() || s.is_inf_neg() {
+        return Err(unevaluable("dirichlet_eta of special float value"));
+    }
+    if s.is_inf_pos() {
+        return Ok(BigFloat::from_i32(1, prec));
+    }
+    let wp = prec + 32;
+    let one = BigFloat::from_i32(1, wp);
+    let two = BigFloat::from_i32(2, wp);
+    let one_minus_s = one.sub(s, wp, rm);
+    if one_minus_s.is_zero() {
+        return Ok(round_to(two.ln(wp, rm, cc), prec, rm));
+    }
+    let coeff = one.sub(&bf_pow(&two, &one_minus_s, wp, rm, cc), wp, rm);
+    let zeta = arb_zeta(s, wp, rm, cc)?;
+    Ok(round_to(coeff.mul(&zeta, wp, rm), prec, rm))
+}
+
+// ── Airy functions ─────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AiryKind {
+    Ai,
+    Bi,
+    AiPrime,
+    BiPrime,
+}
+
+/// Airy functions for real `x`.
+///
+/// * `|x|^{3/2} ≤ (3/4)·wp·ln 2`: Maclaurin series (DLMF 9.4.1–9.4.4)
+///   `Ai = c₁ f − c₂ g`, `Bi = √3 (c₁ f + c₂ g)` with
+///   `f = Σ x^{3k}/∏_{j≤k}(3j−1)(3j)`, `g = Σ x^{3k+1}/∏_{j≤k}(3j)(3j+1)`,
+///   `c₁ = 3^{−2/3}/Γ(2/3)`, `c₂ = 3^{−1/3}/Γ(1/3)`; the working precision
+///   carries `(4/3)|x|^{3/2} log₂ e` guard bits for the cancellation.
+/// * beyond, with `ζ = (2/3)|x|^{3/2}`: the asymptotic expansions
+///   DLMF 9.7.5–9.7.12 (`u_k`, `v_k = −(6k+1)/(6k−1) u_k`), whose optimal
+///   truncation error is `~e^{−2ζ}`.
+fn arb_airy(
+    x: &BigFloat,
+    kind: AiryKind,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if x.is_nan() || x.is_inf() {
+        return Err(unevaluable("Airy function of special float value"));
+    }
+    let base_wp = prec + 32;
+    let x_f = bigfloat_to_f64(x, rm, cc)?;
+    let ax_f = x_f.abs();
+    let zeta_f = 2.0 / 3.0 * ax_f.powf(1.5);
+
+    if 2.0 * zeta_f > (base_wp as f64) * std::f64::consts::LN_2 {
+        return Ok(round_to(
+            airy_asymptotic(x, kind, base_wp, rm, cc),
+            prec,
+            rm,
+        ));
+    }
+
+    let wp = base_wp + (2.0 * zeta_f * std::f64::consts::LOG2_E).ceil() as usize + 16;
+    let mut xw = x.clone();
+    let _ = xw.set_precision(wp, rm);
+    let one = BigFloat::from_i32(1, wp);
+    let three = BigFloat::from_i32(3, wp);
+    let third = one.div(&three, wp, rm);
+    let two_thirds = third.mul(&BigFloat::from_i32(2, wp), wp, rm);
+    let g13 = arb_gamma_real(&third, wp, rm, cc)?;
+    let g23 = arb_gamma_real(&two_thirds, wp, rm, cc)?;
+    let c1 = one.div(
+        &bf_pow(&three, &two_thirds, wp, rm, cc).mul(&g23, wp, rm),
+        wp,
+        rm,
+    );
+    let c2 = one.div(
+        &bf_pow(&three, &third, wp, rm, cc).mul(&g13, wp, rm),
+        wp,
+        rm,
+    );
+
+    // Series with term recurrences; the derivatives use
+    // f'_k = 3k f_k / x, g'_k = (3k+1) g_k / x (k = 0 handled directly).
+    let x3 = xw.mul(&xw, wp, rm).mul(&xw, wp, rm);
+    let derivative = matches!(kind, AiryKind::AiPrime | AiryKind::BiPrime);
+    let (mut f_sum, mut g_sum) = if derivative {
+        (BigFloat::new(wp), one.clone()) // f'(0) = 0, g'(0) = 1
+    } else {
+        (one.clone(), xw.clone()) // f(0) = 1, g_0 = x
+    };
+    let mut fk = one.clone(); // x^{3k}/∏(3j−1)(3j)
+    let mut gk = xw.clone(); // x^{3k+1}/∏(3j)(3j+1)
+    let max_terms = (ax_f * 2.0) as usize + wp + 40;
+    for k in 1..=max_terms {
+        let k3 = 3 * k as i128;
+        fk = fk
+            .mul(&x3, wp, rm)
+            .div(&BigFloat::from_i128((k3 - 1) * k3, wp), wp, rm);
+        gk = gk
+            .mul(&x3, wp, rm)
+            .div(&BigFloat::from_i128(k3 * (k3 + 1), wp), wp, rm);
+        let (tf, tg) = if derivative {
+            // 3k x^{3k−1}/∏ = (3k/x) f_k ;  (3k+1) x^{3k}/∏ = ((3k+1)/x) g_k
+            (
+                fk.mul(&BigFloat::from_i128(k3, wp), wp, rm)
+                    .div(&xw, wp, rm),
+                gk.mul(&BigFloat::from_i128(k3 + 1, wp), wp, rm)
+                    .div(&xw, wp, rm),
+            )
+        } else {
+            (fk.clone(), gk.clone())
+        };
+        f_sum = f_sum.add(&tf, wp, rm);
+        g_sum = g_sum.add(&tg, wp, rm);
+        if negligible(&tf, &one, wp + 4) && negligible(&tg, &one, wp + 4) {
+            break;
+        }
+    }
+    let a = c1.mul(&f_sum, wp, rm);
+    let b = c2.mul(&g_sum, wp, rm);
+    let r = match kind {
+        AiryKind::Ai | AiryKind::AiPrime => a.sub(&b, wp, rm),
+        AiryKind::Bi | AiryKind::BiPrime => three.sqrt(wp, rm).mul(&a.add(&b, wp, rm), wp, rm),
+    };
+    Ok(round_to(r, prec, rm))
+}
+
+/// Asymptotic expansions of the Airy functions for large `|x|`
+/// (see [`arb_airy`]).  Returns the value at working precision `wp`.
+fn airy_asymptotic(
+    x: &BigFloat,
+    kind: AiryKind,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> BigFloat {
+    let one = BigFloat::from_i32(1, wp);
+    let two = BigFloat::from_i32(2, wp);
+    let ax = x.abs();
+    let sqrt_ax = ax.sqrt(wp, rm);
+    let x_quarter = sqrt_ax.sqrt(wp, rm); // |x|^{1/4}
+    let zeta = two
+        .mul(&ax, wp, rm)
+        .mul(&sqrt_ax, wp, rm)
+        .div(&BigFloat::from_i32(3, wp), wp, rm);
+    let inv_zeta = one.div(&zeta, wp, rm);
+    let sqrt_pi = cc.pi(wp, rm).clone().sqrt(wp, rm);
+    let derivative = matches!(kind, AiryKind::AiPrime | AiryKind::BiPrime);
+
+    // Coefficients c_k = u_k (or v_k) / ζ^k, u_k = u_{k−1}(6k−5)(6k−3)(6k−1)/(216 k (2k−1)),
+    // v_k = −(6k+1)/(6k−1) u_k.  Optimal truncation: stop when |c_k| grows.
+    let mut coeffs: Vec<BigFloat> = Vec::new();
+    let mut u = one.clone();
+    let mut zeta_pow = one.clone();
+    let mut prev: Option<BigFloat> = None;
+    for k in 0..(wp * 2 + 100) {
+        if k > 0 {
+            let k_i = k as i128;
+            let num = BigFloat::from_i128((6 * k_i - 5) * (6 * k_i - 3) * (6 * k_i - 1), wp);
+            let den = BigFloat::from_i128(216 * k_i * (2 * k_i - 1), wp);
+            u = u.mul(&num, wp, rm).div(&den, wp, rm);
+            zeta_pow = zeta_pow.mul(&inv_zeta, wp, rm);
+        }
+        let mut c = u.mul(&zeta_pow, wp, rm);
+        if derivative {
+            let k_i = k as i128;
+            let ratio = BigFloat::from_i128(6 * k_i + 1, wp).div(
+                &BigFloat::from_i128(6 * k_i - 1, wp),
+                wp,
+                rm,
+            );
+            c = c.mul(&ratio, wp, rm).neg();
+        }
+        if let Some(ref p) = prev
+            && bf_gt(&c.abs(), p)
+        {
+            break;
+        }
+        let done = negligible(&c, &one, wp);
+        prev = Some(c.abs());
+        coeffs.push(c);
+        if done {
+            break;
+        }
+    }
+
+    if !x.is_negative() {
+        // Ai ~ e^{−ζ}/(2√π x^{1/4}) Σ (−1)^k u_k/ζ^k,   Bi ~ e^{ζ}/(√π x^{1/4}) Σ u_k/ζ^k
+        // Ai' ~ −x^{1/4} e^{−ζ}/(2√π) Σ (−1)^k v_k/ζ^k, Bi' ~ x^{1/4} e^{ζ}/√π Σ v_k/ζ^k
+        let mut sum = BigFloat::new(wp);
+        let alternate = matches!(kind, AiryKind::Ai | AiryKind::AiPrime);
+        for (k, c) in coeffs.iter().enumerate() {
+            if alternate && k % 2 == 1 {
+                sum = sum.sub(c, wp, rm);
+            } else {
+                sum = sum.add(c, wp, rm);
+            }
+        }
+        let amp = match kind {
+            AiryKind::Ai => zeta.neg().exp(wp, rm, cc).div(
+                &two.mul(&sqrt_pi, wp, rm).mul(&x_quarter, wp, rm),
+                wp,
+                rm,
+            ),
+            AiryKind::Bi => zeta
+                .exp(wp, rm, cc)
+                .div(&sqrt_pi.mul(&x_quarter, wp, rm), wp, rm),
+            AiryKind::AiPrime => x_quarter
+                .mul(&zeta.neg().exp(wp, rm, cc), wp, rm)
+                .div(&two.mul(&sqrt_pi, wp, rm), wp, rm)
+                .neg(),
+            AiryKind::BiPrime => x_quarter
+                .mul(&zeta.exp(wp, rm, cc), wp, rm)
+                .div(&sqrt_pi, wp, rm),
+        };
+        return amp.mul(&sum, wp, rm);
+    }
+
+    // x < 0: with θ = ζ + π/4, P = Σ (−1)^k c_{2k}, Q = Σ (−1)^k c_{2k+1}:
+    // Ai  ~ (sinθ P − cosθ Q)/(√π x^{1/4}),  Bi  ~ (cosθ P + sinθ Q)/(√π x^{1/4})
+    // Ai' ~ −x^{1/4}(cosθ P + sinθ Q)/√π,  Bi' ~  x^{1/4}(sinθ P − cosθ Q)/√π
+    let mut p = BigFloat::new(wp);
+    let mut q = BigFloat::new(wp);
+    for (k, c) in coeffs.iter().enumerate() {
+        let sign_neg = (k / 2) % 2 == 1;
+        let target = if k % 2 == 0 { &mut p } else { &mut q };
+        *target = if sign_neg {
+            target.sub(c, wp, rm)
+        } else {
+            target.add(c, wp, rm)
+        };
+    }
+    let pi = cc.pi(wp, rm).clone();
+    let theta = zeta.add(&pi.div(&BigFloat::from_i32(4, wp), wp, rm), wp, rm);
+    let s = theta.sin(wp, rm, cc);
+    let c = theta.cos(wp, rm, cc);
+    let sp_minus_cq = s.mul(&p, wp, rm).sub(&c.mul(&q, wp, rm), wp, rm);
+    let cp_plus_sq = c.mul(&p, wp, rm).add(&s.mul(&q, wp, rm), wp, rm);
+    match kind {
+        AiryKind::Ai => sp_minus_cq.div(&sqrt_pi.mul(&x_quarter, wp, rm), wp, rm),
+        AiryKind::Bi => cp_plus_sq.div(&sqrt_pi.mul(&x_quarter, wp, rm), wp, rm),
+        AiryKind::AiPrime => x_quarter
+            .mul(&cp_plus_sq, wp, rm)
+            .div(&sqrt_pi, wp, rm)
+            .neg(),
+        AiryKind::BiPrime => x_quarter.mul(&sp_minus_cq, wp, rm).div(&sqrt_pi, wp, rm),
+    }
+}
+
+// ── Elliptic integrals (Carlson symmetric forms) ────────────────────────────────
+
+/// Are `a`, `b`, `c` (and `d`) equal to within `2^{−bits}` relative?
+fn all_close(vals: &[&BigFloat], bits: usize, wp: usize, rm: RoundingMode) -> bool {
+    let first = vals[0];
+    vals[1..]
+        .iter()
+        .all(|v| negligible(&v.sub(first, wp, rm), first, bits))
+}
+
+/// Convergence threshold for the Carlson duplication iterations: the
+/// remainder of `R_F`, `R_D`, `R_J` at arguments within relative spread `δ`
+/// of their mean is `O(δ²)` (the Taylor expansions have no linear term), so
+/// a spread of `2^{−wp/2}` already gives `wp` correct bits — and stopping
+/// there avoids stalling on rounding noise in the last bits.
+fn carlson_bits(wp: usize) -> usize {
+    wp / 2 + 8
+}
+
+/// Carlson `R_C(x, y) = R_F(x, y, y)`, `x ≥ 0`, `y > 0`.
+///
+/// With `w = (y − x)/y`, `R_C = y^{−1/2} arcsin(√w)/√w = y^{−1/2} Σ_k C(2k,k) w^k / (4^k (2k+1))`
+/// (the series is analytic through `w = 0`, covering `x > y` as well).
+/// The series is used for `|w| < 1/10`: the closed forms
+/// `arccos(√(x/y))/√(y−x)` / `arccosh(√(x/y))/√(x−y)` lose relative
+/// precision like `1/w` there, which the `R_J` duplication (where
+/// `y − x` shrinks quadratically) would amplify into a first-order error.
+fn carlson_rc(
+    x: &BigFloat,
+    y: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> BigFloat {
+    let one = BigFloat::from_i32(1, wp);
+    let diff = y.sub(x, wp, rm);
+    let inv_sqrt_y = one.div(&y.sqrt(wp, rm), wp, rm);
+    if diff.is_zero() {
+        return inv_sqrt_y;
+    }
+    let w = diff.div(y, wp, rm);
+    let w_f = bigfloat_to_f64(&w, rm, cc).unwrap_or(1.0);
+    if w_f.abs() < 0.1 {
+        // c_k = c_{k−1} (2k−1)² / ((2k)(2k+1)):  1, 1/6, 3/40, 5/112, …
+        let mut sum = one.clone();
+        let mut c = one.clone();
+        let mut wk = one.clone();
+        for k in 1..(wp * 2 + 100) {
+            let k_i = k as i128;
+            let num = BigFloat::from_i128((2 * k_i - 1) * (2 * k_i - 1), wp);
+            let den = BigFloat::from_i128(2 * k_i * (2 * k_i + 1), wp);
+            c = c.mul(&num, wp, rm).div(&den, wp, rm);
+            wk = wk.mul(&w, wp, rm);
+            let term = c.mul(&wk, wp, rm);
+            sum = sum.add(&term, wp, rm);
+            if negligible(&term, &sum, wp) {
+                break;
+            }
+        }
+        return inv_sqrt_y.mul(&sum, wp, rm);
+    }
+    let ratio = x.div(y, wp, rm).sqrt(wp, rm); // √(x/y)
+    if diff.is_positive() {
+        // y > x: arccos(√(x/y)) / √(y − x)
+        ratio.acos(wp, rm, cc).div(&diff.sqrt(wp, rm), wp, rm)
+    } else {
+        // x > y: arccosh(√(x/y)) / √(x − y)
+        ratio
+            .acosh(wp, rm, cc)
+            .div(&diff.neg().sqrt(wp, rm), wp, rm)
+    }
+}
+
+/// Carlson `R_F(x, y, z)` (`x, y, z ≥ 0`, at most one zero) by the
+/// duplication theorem iterated until the arguments coincide to working
+/// precision, where `R_F(μ, μ, μ) = μ^{−1/2}`.
+fn carlson_rf(
+    x: &BigFloat,
+    y: &BigFloat,
+    z: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+) -> Result<BigFloat, SymplexError> {
+    let four = BigFloat::from_i32(4, wp);
+    let (mut x, mut y, mut z) = (x.clone(), y.clone(), z.clone());
+    for _ in 0..(wp * 2 + 200) {
+        if all_close(&[&x, &y, &z], carlson_bits(wp), wp, rm) {
+            // R_F(μ, μ, μ) = μ^{−1/2}, μ = (x + y + z)/3
+            let one = BigFloat::from_i32(1, wp);
+            let mu = x
+                .add(&y, wp, rm)
+                .add(&z, wp, rm)
+                .div(&BigFloat::from_i32(3, wp), wp, rm);
+            return Ok(one.div(&mu.sqrt(wp, rm), wp, rm));
+        }
+        let (sx, sy, sz) = (x.sqrt(wp, rm), y.sqrt(wp, rm), z.sqrt(wp, rm));
+        let lambda =
+            sx.mul(&sy, wp, rm)
+                .add(&sy.mul(&sz, wp, rm), wp, rm)
+                .add(&sz.mul(&sx, wp, rm), wp, rm);
+        x = x.add(&lambda, wp, rm).div(&four, wp, rm);
+        y = y.add(&lambda, wp, rm).div(&four, wp, rm);
+        z = z.add(&lambda, wp, rm).div(&four, wp, rm);
+    }
+    Err(SymplexError::ComputationFailed {
+        operation: "evalf",
+        reason: "Carlson R_F did not converge".into(),
+    })
+}
+
+/// Carlson `R_D(x, y, z) = R_J(x, y, z, z)` (`z > 0`) by duplication:
+/// `R_D(x,y,z) = R_D(x',y',z')/4 + 3/(√z (z + λ))`, `R_D(μ,μ,μ) = μ^{−3/2}`.
+fn carlson_rd(
+    x: &BigFloat,
+    y: &BigFloat,
+    z: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+) -> Result<BigFloat, SymplexError> {
+    let one = BigFloat::from_i32(1, wp);
+    let three = BigFloat::from_i32(3, wp);
+    let four = BigFloat::from_i32(4, wp);
+    let (mut x, mut y, mut z) = (x.clone(), y.clone(), z.clone());
+    let mut acc = BigFloat::new(wp);
+    let mut scale = one.clone(); // 4^{−k}
+    for _ in 0..(wp * 2 + 200) {
+        if all_close(&[&x, &y, &z], carlson_bits(wp), wp, rm) {
+            // R_D(μ, μ, μ) = μ^{−3/2}, μ = (x + y + 3z)/5
+            let mu = x.add(&y, wp, rm).add(&three.mul(&z, wp, rm), wp, rm).div(
+                &BigFloat::from_i32(5, wp),
+                wp,
+                rm,
+            );
+            let tail = one.div(&mu.mul(&mu.sqrt(wp, rm), wp, rm), wp, rm);
+            return Ok(acc.add(&scale.mul(&tail, wp, rm), wp, rm));
+        }
+        let (sx, sy, sz) = (x.sqrt(wp, rm), y.sqrt(wp, rm), z.sqrt(wp, rm));
+        let lambda =
+            sx.mul(&sy, wp, rm)
+                .add(&sy.mul(&sz, wp, rm), wp, rm)
+                .add(&sz.mul(&sx, wp, rm), wp, rm);
+        let term = three.div(&sz.mul(&z.add(&lambda, wp, rm), wp, rm), wp, rm);
+        acc = acc.add(&scale.mul(&term, wp, rm), wp, rm);
+        scale = scale.div(&four, wp, rm);
+        x = x.add(&lambda, wp, rm).div(&four, wp, rm);
+        y = y.add(&lambda, wp, rm).div(&four, wp, rm);
+        z = z.add(&lambda, wp, rm).div(&four, wp, rm);
+    }
+    Err(SymplexError::ComputationFailed {
+        operation: "evalf",
+        reason: "Carlson R_D did not converge".into(),
+    })
+}
+
+/// Carlson `R_J(x, y, z, p)` for `p > 0` by duplication:
+/// `R_J = R_J(x',y',z',p')/4 + 3 R_C(α², β²)` with
+/// `α = p(√x + √y + √z) + √x√y√z`, `β = √p (p + λ)`, `R_J(μ,μ,μ,μ) = μ^{−3/2}`.
+fn carlson_rj(
+    x: &BigFloat,
+    y: &BigFloat,
+    z: &BigFloat,
+    p: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if !p.is_positive() {
+        return Err(unevaluable(
+            "elliptic_pi: the characteristic n must satisfy n < 1 for a real value",
+        ));
+    }
+    let one = BigFloat::from_i32(1, wp);
+    let three = BigFloat::from_i32(3, wp);
+    let four = BigFloat::from_i32(4, wp);
+    let (mut x, mut y, mut z, mut p) = (x.clone(), y.clone(), z.clone(), p.clone());
+    let mut acc = BigFloat::new(wp);
+    let mut scale = one.clone();
+    for _ in 0..(wp * 2 + 200) {
+        if all_close(&[&x, &y, &z, &p], carlson_bits(wp), wp, rm) {
+            // R_J(μ, μ, μ, μ) = μ^{−3/2}, μ = (x + y + z + 2p)/5
+            let two_p = p.mul(&BigFloat::from_i32(2, wp), wp, rm);
+            let mu = x.add(&y, wp, rm).add(&z, wp, rm).add(&two_p, wp, rm).div(
+                &BigFloat::from_i32(5, wp),
+                wp,
+                rm,
+            );
+            let tail = one.div(&mu.mul(&mu.sqrt(wp, rm), wp, rm), wp, rm);
+            return Ok(acc.add(&scale.mul(&tail, wp, rm), wp, rm));
+        }
+        let (sx, sy, sz, sp) = (
+            x.sqrt(wp, rm),
+            y.sqrt(wp, rm),
+            z.sqrt(wp, rm),
+            p.sqrt(wp, rm),
+        );
+        let lambda =
+            sx.mul(&sy, wp, rm)
+                .add(&sy.mul(&sz, wp, rm), wp, rm)
+                .add(&sz.mul(&sx, wp, rm), wp, rm);
+        let alpha = p.mul(&sx.add(&sy, wp, rm).add(&sz, wp, rm), wp, rm).add(
+            &sx.mul(&sy, wp, rm).mul(&sz, wp, rm),
+            wp,
+            rm,
+        );
+        let beta = sp.mul(&p.add(&lambda, wp, rm), wp, rm);
+        let rc = carlson_rc(
+            &alpha.mul(&alpha, wp, rm),
+            &beta.mul(&beta, wp, rm),
+            wp,
+            rm,
+            cc,
+        );
+        acc = acc.add(&scale.mul(&three.mul(&rc, wp, rm), wp, rm), wp, rm);
+        scale = scale.div(&four, wp, rm);
+        x = x.add(&lambda, wp, rm).div(&four, wp, rm);
+        y = y.add(&lambda, wp, rm).div(&four, wp, rm);
+        z = z.add(&lambda, wp, rm).div(&four, wp, rm);
+        p = p.add(&lambda, wp, rm).div(&four, wp, rm);
+    }
+    Err(SymplexError::ComputationFailed {
+        operation: "evalf",
+        reason: "Carlson R_J did not converge".into(),
+    })
+}
+
+/// `1 − m` with a domain check (`m < 1` required for a real `K`, `E`, `Π`).
+fn one_minus_m(
+    m: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    what: &str,
+) -> Result<BigFloat, SymplexError> {
+    let one = BigFloat::from_i32(1, wp);
+    let v = one.sub(m, wp, rm);
+    if v.is_negative() {
+        return Err(unevaluable(format!(
+            "{what}: parameter m must satisfy m ≤ 1 for a real value"
+        )));
+    }
+    Ok(v)
+}
+
+/// Complete elliptic integral of the first kind `K(m) = R_F(0, 1−m, 1)`.
+fn arb_elliptic_k(
+    m: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if m.is_nan() || m.is_inf() {
+        return Err(unevaluable("elliptic_k of special float value"));
+    }
+    let wp = prec + 32;
+    let y = one_minus_m(m, wp, rm, "elliptic_k")?;
+    if y.is_zero() {
+        return Err(unevaluable("elliptic_k(1) is infinite"));
+    }
+    let _ = cc;
+    let r = carlson_rf(&BigFloat::new(wp), &y, &BigFloat::from_i32(1, wp), wp, rm)?;
+    Ok(round_to(r, prec, rm))
+}
+
+/// Complete elliptic integral of the second kind
+/// `E(m) = R_F(0, 1−m, 1) − (m/3) R_D(0, 1−m, 1)`.
+fn arb_elliptic_e(
+    m: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if m.is_nan() || m.is_inf() {
+        return Err(unevaluable("elliptic_e of special float value"));
+    }
+    let wp = prec + 32;
+    let one = BigFloat::from_i32(1, wp);
+    let y = one_minus_m(m, wp, rm, "elliptic_e")?;
+    if y.is_zero() {
+        return Ok(BigFloat::from_i32(1, prec));
+    }
+    let _ = cc;
+    let zero = BigFloat::new(wp);
+    let rf = carlson_rf(&zero, &y, &one, wp, rm)?;
+    let rd = carlson_rd(&zero, &y, &one, wp, rm)?;
+    let three = BigFloat::from_i32(3, wp);
+    let r = rf.sub(&m.mul(&rd, wp, rm).div(&three, wp, rm), wp, rm);
+    Ok(round_to(r, prec, rm))
+}
+
+/// Incomplete elliptic integral of the first kind
+/// `F(φ | m) = sinφ · R_F(cos²φ, 1 − m sin²φ, 1)` for `|φ| ≤ π/2`, extended
+/// by `F(φ + kπ | m) = F(φ | m) + 2k K(m)`.
+fn arb_elliptic_f(
+    phi: &BigFloat,
+    m: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if phi.is_nan() || phi.is_inf() || m.is_nan() || m.is_inf() {
+        return Err(unevaluable("elliptic_f of special float value"));
+    }
+    if phi.is_zero() {
+        return Ok(BigFloat::new(prec));
+    }
+    let wp = prec + 32;
+    let one = BigFloat::from_i32(1, wp);
+    let pi = cc.pi(wp, rm).clone();
+    // Reduce φ to [−π/2, π/2]: φ = φ₀ + kπ.
+    let k_bf = phi
+        .div(&pi, wp, rm)
+        .add(&BigFloat::from_f64(0.5, wp), wp, rm)
+        .floor();
+    let phi0 = phi.sub(&k_bf.mul(&pi, wp, rm), wp, rm);
+    let s = phi0.sin(wp, rm, cc);
+    let c = phi0.cos(wp, rm, cc);
+    let s2 = s.mul(&s, wp, rm);
+    let c2 = c.mul(&c, wp, rm);
+    let y = one.sub(&m.mul(&s2, wp, rm), wp, rm);
+    if !y.is_positive() {
+        return Err(unevaluable(
+            "elliptic_f: 1 − m sin²φ must be positive for a real value",
+        ));
+    }
+    let mut r = s.mul(&carlson_rf(&c2, &y, &one, wp, rm)?, wp, rm);
+    if !k_bf.is_zero() {
+        let k = arb_elliptic_k(m, wp, rm, cc)?;
+        let two = BigFloat::from_i32(2, wp);
+        r = r.add(&two.mul(&k_bf, wp, rm).mul(&k, wp, rm), wp, rm);
+    }
+    Ok(round_to(r, prec, rm))
+}
+
+/// Complete elliptic integral of the third kind
+/// `Π(n | m) = R_F(0, 1−m, 1) + (n/3) R_J(0, 1−m, 1, 1−n)` for `n < 1`, `m < 1`.
+fn arb_elliptic_pi(
+    n: &BigFloat,
+    m: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if n.is_nan() || n.is_inf() || m.is_nan() || m.is_inf() {
+        return Err(unevaluable("elliptic_pi of special float value"));
+    }
+    let wp = prec + 32;
+    let one = BigFloat::from_i32(1, wp);
+    let zero = BigFloat::new(wp);
+    let y = one_minus_m(m, wp, rm, "elliptic_pi")?;
+    if y.is_zero() {
+        return Err(unevaluable("elliptic_pi(n, 1) is infinite"));
+    }
+    let p = one.sub(n, wp, rm);
+    let rf = carlson_rf(&zero, &y, &one, wp, rm)?;
+    if n.is_zero() {
+        return Ok(round_to(rf, prec, rm));
+    }
+    let rj = carlson_rj(&zero, &y, &one, &p, wp, rm, cc)?;
+    let three = BigFloat::from_i32(3, wp);
+    let r = rf.add(&n.mul(&rj, wp, rm).div(&three, wp, rm), wp, rm);
+    Ok(round_to(r, prec, rm))
+}
+
+// ── Orthogonal polynomials with parameters ───────────────────────────────────────
+
+/// The degree of an orthogonal polynomial as a non-negative integer.
+fn poly_degree(
+    n: &BigFloat,
+    what: &str,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<u64, SymplexError> {
+    match bf_as_int(n, rm, cc)? {
+        Some(d) if (0..=10_000_000).contains(&d) => Ok(d as u64),
+        _ => Err(unevaluable(format!(
+            "{what}: degree must be a non-negative integer"
+        ))),
+    }
+}
+
+/// Gegenbauer `C_n^{(a)}(x)`: `(k+1) C_{k+1} = 2(k+a) x C_k − (k+2a−1) C_{k−1}`.
+fn arb_gegenbauer(
+    n: &BigFloat,
+    a: &BigFloat,
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let deg = poly_degree(n, "gegenbauer", rm, cc)?;
+    let wp = prec + 32 + (deg as f64).log2().ceil().max(0.0) as usize;
+    let one = BigFloat::from_i32(1, wp);
+    let two = BigFloat::from_i32(2, wp);
+    if deg == 0 {
+        return Ok(BigFloat::from_i32(1, prec));
+    }
+    let mut prev = one.clone();
+    let mut curr = two.mul(a, wp, rm).mul(x, wp, rm);
+    for k in 1..deg {
+        let k_bf = BigFloat::from_i128(k as i128, wp);
+        let t1 = two
+            .mul(&k_bf.add(a, wp, rm), wp, rm)
+            .mul(x, wp, rm)
+            .mul(&curr, wp, rm);
+        let coeff = k_bf.add(&two.mul(a, wp, rm), wp, rm).sub(&one, wp, rm);
+        let t2 = coeff.mul(&prev, wp, rm);
+        let next = t1
+            .sub(&t2, wp, rm)
+            .div(&BigFloat::from_i128(k as i128 + 1, wp), wp, rm);
+        prev = curr;
+        curr = next;
+    }
+    Ok(round_to(curr, prec, rm))
+}
+
+/// Jacobi `P_n^{(a,b)}(x)` via the explicit sum
+/// `Σ_s C(n+a, n−s) C(n+b, s) ((x−1)/2)^s ((x+1)/2)^{n−s}`.
+fn arb_jacobi(
+    n: &BigFloat,
+    a: &BigFloat,
+    b: &BigFloat,
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let deg = poly_degree(n, "jacobi", rm, cc)? as usize;
+    if deg > 100_000 {
+        return Err(unevaluable("jacobi: degree too large for evalf"));
+    }
+    let wp = prec + 32 + 2 * deg;
+    let one = BigFloat::from_i32(1, wp);
+    let two = BigFloat::from_i32(2, wp);
+    if deg == 0 {
+        return Ok(BigFloat::from_i32(1, prec));
+    }
+    let lo = x.sub(&one, wp, rm).div(&two, wp, rm);
+    let hi = x.add(&one, wp, rm).div(&two, wp, rm);
+    // binomial-like coefficients ∏_{j=lo}^{hi}(p + j) / len!
+    let shifted = |p: &BigFloat, lo_j: usize, hi_j: usize| -> BigFloat {
+        let mut acc = one.clone();
+        for j in lo_j..=hi_j {
+            acc = acc.mul(&p.add(&BigFloat::from_i128(j as i128, wp), wp, rm), wp, rm);
+        }
+        acc
+    };
+    let mut sum = BigFloat::new(wp);
+    for s in 0..=deg {
+        let pa = shifted(a, s + 1, deg);
+        let pb = shifted(b, deg - s + 1, deg);
+        let denom = ratio_to_bigfloat(&(factorial_bigint(deg - s) * factorial_bigint(s)), wp, rm);
+        let term = pa
+            .mul(&pb, wp, rm)
+            .div(&denom, wp, rm)
+            .mul(&lo.powi(s, wp, rm), wp, rm)
+            .mul(&hi.powi(deg - s, wp, rm), wp, rm);
+        sum = sum.add(&term, wp, rm);
+    }
+    Ok(round_to(sum, prec, rm))
+}
+
+/// `n!` as a rational.
+fn factorial_bigint(n: usize) -> Ratio<BigInt> {
+    let mut f = BigInt::from(1);
+    for i in 2..=n {
+        f *= BigInt::from(i as u64);
+    }
+    Ratio::from_integer(f)
+}
+
+/// Associated Legendre `P_n^m(x)` (Condon–Shortley phase) for integer
+/// `n ≥ 0`, integer `m`, real `x` (`|x| ≤ 1` when `m` is odd).
+fn arb_assoc_legendre(
+    n: &BigFloat,
+    m: &BigFloat,
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let deg = poly_degree(n, "assoc_legendre", rm, cc)? as i64;
+    let order = bf_as_int(m, rm, cc)?
+        .ok_or_else(|| unevaluable("assoc_legendre: order must be an integer"))?;
+    if order.abs() > deg {
+        return Ok(BigFloat::new(prec));
+    }
+    let wp = prec + 32 + 2 * (deg as f64).log2().ceil().max(0.0) as usize;
+    let one = BigFloat::from_i32(1, wp);
+    let mu = order.unsigned_abs() as usize;
+    let x2 = x.mul(x, wp, rm);
+    let one_minus_x2 = one.sub(&x2, wp, rm);
+    // (1 − x²)^{μ/2}
+    let root_pow = if mu.is_multiple_of(2) {
+        one_minus_x2.powi(mu / 2, wp, rm)
+    } else {
+        if one_minus_x2.is_negative() {
+            return Err(unevaluable(
+                "assoc_legendre with odd order is complex for |x| > 1",
+            ));
+        }
+        one_minus_x2
+            .sqrt(wp, rm)
+            .mul(&one_minus_x2.powi(mu / 2, wp, rm), wp, rm)
+    };
+    // P_μ^μ = (−1)^μ (2μ−1)!! (1−x²)^{μ/2}
+    let mut dfact = BigInt::from(1);
+    for j in 1..=mu {
+        dfact *= BigInt::from((2 * j - 1) as u64);
+    }
+    if mu % 2 == 1 {
+        dfact = -dfact;
+    }
+    let mut prev = ratio_to_bigfloat(&Ratio::from_integer(dfact), wp, rm).mul(&root_pow, wp, rm);
+    let deg_u = deg as usize;
+    let mut curr = if deg_u > mu {
+        BigFloat::from_i128(2 * mu as i128 + 1, wp)
+            .mul(x, wp, rm)
+            .mul(&prev, wp, rm)
+    } else {
+        prev.clone()
+    };
+    for k in (mu + 1)..deg_u {
+        let t1 = BigFloat::from_i128(2 * k as i128 + 1, wp)
+            .mul(x, wp, rm)
+            .mul(&curr, wp, rm);
+        let t2 = BigFloat::from_i128((k + mu) as i128, wp).mul(&prev, wp, rm);
+        let next = t1
+            .sub(&t2, wp, rm)
+            .div(&BigFloat::from_i128((k - mu + 1) as i128, wp), wp, rm);
+        prev = curr;
+        curr = next;
+    }
+    if order < 0 {
+        // P_n^{−μ} = (−1)^μ (n−μ)!/(n+μ)! P_n^μ
+        let mut ratio = factorial_bigint(deg_u - mu) / factorial_bigint(deg_u + mu);
+        if mu % 2 == 1 {
+            ratio = -ratio;
+        }
+        curr = curr.mul(&ratio_to_bigfloat(&ratio, wp, rm), wp, rm);
+    }
+    Ok(round_to(curr, prec, rm))
+}
+
+/// Generalised Laguerre `L_n^{(a)}(x)`:
+/// `(k+1) L_{k+1} = (2k+1+a−x) L_k − (k+a) L_{k−1}`.
+fn arb_assoc_laguerre(
+    n: &BigFloat,
+    a: &BigFloat,
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let deg = poly_degree(n, "assoc_laguerre", rm, cc)?;
+    let wp = prec + 32 + (deg as f64).log2().ceil().max(0.0) as usize;
+    let one = BigFloat::from_i32(1, wp);
+    if deg == 0 {
+        return Ok(BigFloat::from_i32(1, prec));
+    }
+    let mut prev = one.clone();
+    let mut curr = one.add(a, wp, rm).sub(x, wp, rm);
+    for k in 1..deg {
+        let k_bf = BigFloat::from_i128(k as i128, wp);
+        let coeff = BigFloat::from_i128(2 * k as i128 + 1, wp)
+            .add(a, wp, rm)
+            .sub(x, wp, rm);
+        let t1 = coeff.mul(&curr, wp, rm);
+        let t2 = k_bf.add(a, wp, rm).mul(&prev, wp, rm);
+        let next = t1
+            .sub(&t2, wp, rm)
+            .div(&BigFloat::from_i128(k as i128 + 1, wp), wp, rm);
+        prev = curr;
+        curr = next;
+    }
+    Ok(round_to(curr, prec, rm))
 }
 
 fn get_cached(cache: &FxHashMap<ExprId, Complex>, id: ExprId) -> Result<&Complex, SymplexError> {

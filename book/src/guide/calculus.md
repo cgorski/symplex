@@ -132,6 +132,72 @@ fn main() {
 }
 ```
 
+## Analysing a function (0.9)
+
+The `calculus.util` family from SymPy lives directly on `Ex`. Every method works over the reals, takes the variable explicitly, and describes domains and results with `SetEx` (intervals, finite sets, unions) so they compose with the sets API.
+
+| Method | SymPy | Returns |
+|--------|-------|---------|
+| `singularities(&x, domain)` | `singularities` | `SetEx` of points where the expression is undefined |
+| `stationary_points(&x, domain)` | `stationary_points` | `SetEx` of real zeros of the derivative |
+| `maximum(&x, &domain)` / `minimum` | `maximum` / `minimum` | supremum / infimum as an `Ex` (`oo` allowed) |
+| `is_increasing`, `is_decreasing`, `is_strictly_increasing`, `is_strictly_decreasing`, `is_monotonic` | same | `Option<bool>` |
+| `is_convex(&x, &domain)` | `is_convex` | `Option<bool>` |
+| `periodicity(&x)` | `periodicity` | `Option<Ex>` (`Some(0)` for a constant) |
+| `function_range(&x, &domain)` | `function_range` | `SetEx`, the image |
+
+```rust
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    symplex::syms!(ctx; x);
+    let reals = ctx.reals();
+
+    // Where is it undefined?  `None` means the whole real line.
+    let f = 1 / (&x.powi(2) - 1);
+    println!("{}", f.singularities(&x, None).unwrap());               // {-1, 1}
+    println!("{}", x.ln().singularities(&x, None).unwrap());          // {0}
+
+    // Critical points, extrema and the image on an interval.
+    let g = &x.powi(3) - &x * 3;
+    let dom = ctx.interval(&ctx.int(-2), &ctx.int(2), false, false);  // [-2, 2]
+    println!("{}", g.stationary_points(&x, None).unwrap());           // {-1, 1}
+    println!("{}", g.maximum(&x, &dom).unwrap());                     // 2
+    println!("{}", g.minimum(&x, &dom).unwrap());                     // -2
+    println!("{}", g.function_range(&x, &dom).unwrap());              // [-2, 2]
+
+    // Open and infinite endpoints are handled with one-sided limits, so the
+    // supremum need not be attained and the range tracks open ends.
+    let tail = ctx.interval(&ctx.int(1), &ctx.infinity(), false, true); // [1, oo)
+    println!("{}", (1 / &x).minimum(&x, &tail).unwrap());             // 0
+    println!("{}", (1 / &x).function_range(&x, &tail).unwrap());      // (0, 1]
+    println!("{}", x.powi(2).maximum(&x, &reals).unwrap());           // oo
+    println!("{}", x.exp().function_range(&x, &reals).unwrap());      // (0, oo)
+
+    // Monotonicity and convexity are three-valued: `None` is "undecided".
+    let half = ctx.interval(&ctx.int(0), &ctx.infinity(), false, true);
+    println!("{:?}", x.powi(3).is_increasing(&x, &reals));            // Some(true)
+    println!("{:?}", x.powi(3).is_strictly_increasing(&x, &reals));   // Some(true)
+    println!("{:?}", x.powi(2).is_increasing(&x, &reals));            // Some(false)
+    println!("{:?}", x.powi(2).is_increasing(&x, &half));             // Some(true)
+    println!("{:?}", x.powi(2).is_convex(&x, &reals));                // Some(true)
+    println!("{:?}", x.powi(3).is_convex(&x, &reals));                // Some(false)
+
+    // Fundamental periods.
+    println!("{}", (&(&x * 2).sin() + &(&x * 3).cos()).periodicity(&x).unwrap()); // 2*pi
+    println!("{}", x.tan().periodicity(&x).unwrap());                 // pi
+    println!("{:?}", x.powi(2).periodicity(&x));                      // None
+}
+```
+
+A few things to know:
+
+- **Exact first.** Extremum candidates (stationary points, closed endpoints, endpoint limits) are compared with `equals` and the sign of their difference; the only numeric step orders two candidates that are already *proven* distinct. Polynomial and rational derivatives are decided by Sturm sequences (`Poly::is_nonnegative_on`); other derivatives go through the assumption system and the inequality solver, and anything undecided is `None` or `Err(NotImplemented)` — never a guess.
+- **Periodic families.** Zeros of `sin`, `cos`, `tan` are enumerated inside a bounded domain (`tan(x).singularities(&x, Some(&[0, 10]))` is `{pi/2, 3*pi/2, 5*pi/2}`); on an unbounded domain the infinite family is returned as a condition set such as `ConditionSet(x, cos(x) == 0)` rather than truncated to the principal branches.
+- **Continuity is required** by `maximum`, `minimum` and `function_range`: singularities inside the domain, or discontinuous / opaque nodes (`floor`, `sign`, `Piecewise`, unknown functions), give `Err(NotImplemented)`. `abs` kinks are fine and are included among the candidates.
+- **Deliberate differences from SymPy.** `is_strictly_increasing(x³, ℝ)` is `Some(true)` (SymPy tests `ℝ ⊆ {f' > 0}` and answers `None`); `is_monotonic` is the three-valued *or* of increasing and decreasing (SymPy asks whether `f'` has no zeros, so `x³` is `False` there); `periodicity(sin(x)²)` is the fundamental period `pi` (SymPy: `2*pi`).
+
 ## Where to go next
 
 - [Definite Integration and Quadrature](./definite-integration.md) — `integrate_definite`, improper integrals, divergence detection, Gauss–Kronrod.

@@ -18,7 +18,10 @@
 //!   - `a + b` → the irreducible factor of `res_y(m_a(y), m_b(t − y))`
 //!     vanishing at the numerical value of `a + b`;
 //!   - `a · b` → likewise with `res_y(m_a(y), y^{deg m_b} m_b(t / y))`;
-//!   - `−a` → `m_a(−t)`.
+//!   - `−a` → `m_a(−t)`;
+//!   - `a^{p/q}` for algebraic `a` → the factor of `m_a(t^q)` vanishing at
+//!     the real value (`a > 0` when `q > 1`), reversed for `p < 0`, then
+//!     folded `|p|` times with the product rule.
 //!
 //!   Resultants are computed by evaluation/interpolation over
 //!   [`GenPoly`]; the factor selection uses `factor_over_z` plus a numerical
@@ -142,6 +145,8 @@ fn cauchy_bound(p: &Poly) -> Ratio<BigInt> {
 /// - Rational `r` → `t - r`
 /// - `n^{p/q}` → `t^q - n^p` (for positive integer `n`, integer `p`, positive `q`)
 /// - `ImaginaryUnit` → `t² + 1`
+/// - `GoldenRatio` → `t² − t − 1`
+/// - `a^{p/q}` for algebraic `a` → see [`minpoly_pow`]
 /// - `a + b` → resultant composition
 /// - `a · b` → resultant composition
 /// - `-a` → `m_a(-t)`
@@ -172,6 +177,11 @@ pub fn minimal_polynomial(
             Some(Poly::from_coeffs(vec![rat(1, 1), rat(0, 1), rat(1, 1)]))
         }
 
+        ExprNode::GoldenRatio => {
+            // φ = (1 + √5)/2 → t² − t − 1
+            Some(Poly::from_coeffs(vec![rat(-1, 1), rat(-1, 1), rat(1, 1)]))
+        }
+
         // Negation: min_poly(-a) = m_a(-t)
         ExprNode::Neg(inner) => {
             let mp = minimal_polynomial(arena, inner)?;
@@ -200,8 +210,13 @@ pub fn minimal_polynomial(
                 // the root n^{p/q}.
                 return pick_irreducible_factor(&mp, base_r, exp_r);
             }
-            // General symbolic power — try recursion on base/exp if possible.
-            // For now, only handle the numeric-base rational-exp case above.
+            // Algebraic (non-numeric) base with a rational exponent:
+            // `(1 + √2)⁻¹`, `(3 + 2√2)^{1/2}`, …
+            if arena.as_num(base).is_none()
+                && let Some(exp_r) = arena.as_num(exp).cloned()
+            {
+                return minpoly_pow(arena, base, &exp_r);
+            }
             None
         }
 
@@ -369,6 +384,72 @@ fn minpoly_mul(
         Some(expr_b),
         false, // multiplication
     )
+}
+
+/// Minimal polynomial of `base^{p/q}` for an algebraic `base` that is not
+/// itself a number.
+///
+/// `base^{1/q}` is a root of `m_base(t^q)`; the irreducible factor that
+/// vanishes at the real value is selected numerically, which is only
+/// reliable for a positive real base, so `q > 1` requires `base > 0`.
+/// Integer powers then fold with [`minpoly_mul`]; a negative exponent
+/// starts from the reciprocal, whose minimal polynomial is `m` with its
+/// coefficients reversed.  Returns `None` when the base is not algebraic,
+/// is zero under a negative exponent, or the exponent does not fit `i64`.
+fn minpoly_pow(
+    arena: &mut crate::base::arena::Arena,
+    base: crate::base::node::ExprId,
+    exp: &Ratio<BigInt>,
+) -> Option<Poly> {
+    let p: i64 = exp.numer().try_into().ok()?;
+    let q: usize = exp.denom().try_into().ok()?;
+    let mp_base = minimal_polynomial(arena, base)?;
+
+    // α = base^{1/q} and its minimal polynomial.
+    let (mut mp, mut alpha) = if q == 1 {
+        (mp_base, base)
+    } else {
+        if !crate::transforms::evalf::eval_const_f64(arena, base).is_some_and(|v| v > 0.0) {
+            return None;
+        }
+        let deg = mp_base.degree()?;
+        let mut coeffs = vec![Ratio::zero(); deg * q + 1];
+        for (i, c) in mp_base.coeffs().iter().enumerate() {
+            coeffs[i * q] = c.clone();
+        }
+        let one_over_q = {
+            let nid = arena.intern_num(Ratio::new(BigInt::one(), BigInt::from(q)));
+            arena.intern(crate::base::node::ExprNode::Num(nid))
+        };
+        let root = arena.pow(base, one_over_q);
+        let mp =
+            pick_factor_by_numerical_eval(&Poly::from_coeffs(coeffs), arena, root, None, false)?;
+        (mp, root)
+    };
+
+    if p == 0 {
+        return Some(Poly::from_coeffs(vec![rat(-1, 1), rat(1, 1)]));
+    }
+    if p < 0 {
+        // 1/α: reverse the coefficients (α ≠ 0 ⇔ constant term ≠ 0).
+        if mp.coeff(0).is_zero() {
+            return None;
+        }
+        let reversed: Vec<Ratio<BigInt>> = mp.coeffs().iter().rev().cloned().collect();
+        mp = Poly::from_coeffs(reversed).make_monic();
+        let minus_one = arena.int(-1);
+        alpha = arena.pow(alpha, minus_one);
+    }
+
+    // α^n by folding α · α · … with the running product for factor selection.
+    let n = p.unsigned_abs();
+    let mut acc = mp.clone();
+    let mut acc_expr = alpha;
+    for _ in 1..n {
+        acc = minpoly_mul(&acc, &mp, arena, acc_expr, alpha)?;
+        acc_expr = arena.mul(&[acc_expr, alpha]);
+    }
+    Some(acc)
 }
 
 /// Compute minimal polynomial of `r · α` where `r ∈ ℚ` and `α` has

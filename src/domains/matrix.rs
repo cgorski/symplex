@@ -2,9 +2,11 @@
 //!
 //! Provides [`Matrix`], a dense matrix of symbolic expressions with
 //! exact arithmetic: construction, arithmetic operators, determinant
-//! (Bareiss / Berkowitz), inverse, linear solving, characteristic
-//! polynomial, eigenvalues/eigenvectors, diagonalization, Jordan form,
-//! matrix exponential, LU/RREF, subspaces and code generation.
+//! (Bareiss / Berkowitz) and permanent, inverse and pseudo-inverse (any
+//! rank), linear solving, characteristic polynomial, eigenvalues /
+//! eigenvectors, singular values, diagonalization, Jordan and Hessenberg
+//! forms, matrix exponential, LU/RREF, rank factorisation, subspaces and
+//! code generation.
 //!
 //! Additional decompositions (QR, LDLᵀ, Gram–Schmidt), structure tests
 //! (`is_symmetric`, `is_positive_definite`, …) and norms live in
@@ -50,8 +52,12 @@ use tracing::{debug, trace, warn};
 
 // Re-export codegen option types so users can access them from the public
 // `symplex::matrix` module (the `codegen` module itself is pub(crate)).
-pub use crate::domains::exact_matrix::{ExactMatrix, ExactScalar, QMatrix, ZMatrix};
+pub use crate::domains::exact_matrix::{
+    ExactMatrix, ExactScalar, LLL_DEFAULT_DELTA, QMatrix, ZMatrix,
+};
 pub use crate::output::codegen::{CodegenOptions, MathBackend, Precision};
+
+use crate::domains::exact_matrix::PERMANENT_MAX_DIM;
 
 /// A dense matrix of symbolic expressions.
 ///
@@ -633,6 +639,91 @@ impl Matrix {
         }
         Ok(Matrix { rows, nrows, ncols })
     }
+
+    /// Companion matrix of the monic polynomial
+    /// `xⁿ + c_{n−1}xⁿ⁻¹ + … + c₁x + c₀`, whose non-leading coefficients
+    /// are given in **ascending** order `[c₀, c₁, …, c_{n−1}]` (the same
+    /// order as [`char_poly_coeffs`](Self::char_poly_coeffs)).  SymPy:
+    /// `Matrix.companion(Poly)`.
+    ///
+    /// The result is `n × n` with ones on the sub-diagonal and `−cᵢ` in
+    /// row `i` of the last column, so `det(xI − C)` is the given
+    /// polynomial (and [`char_poly`](Self::char_poly), which is
+    /// `det(C − xI)`, is `(−1)ⁿ` times it).
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if `coeffs` is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// // x³ + 2x² + 3x + 4
+    /// let c = Matrix::companion(&[ctx.int(4), ctx.int(3), ctx.int(2)]).unwrap();
+    /// assert_eq!(c, matrix![ctx, [0, 0, -4], [1, 0, -3], [0, 1, -2]]);
+    /// let x = ctx.symbol("x");
+    /// let p = &x.powi(3) + &x.powi(2) * 2 + &x * 3 + 4;
+    /// assert_eq!(-c.char_poly(&x).unwrap(), p);   // det(C − xI) = −p for odd n
+    /// ```
+    pub fn companion(coeffs: &[Ex]) -> Result<Matrix, SymplexError> {
+        let Some(first) = coeffs.first() else {
+            return Err(invalid(
+                "companion",
+                "need at least one coefficient (a monic polynomial of degree ≥ 1)",
+            ));
+        };
+        let n = coeffs.len();
+        let ctx = first.context();
+        let zero = ctx.zero();
+        let one = ctx.one();
+        let mut rows: Vec<Vec<Ex>> = vec![vec![zero; n]; n];
+        for (i, c) in coeffs.iter().enumerate() {
+            rows[i][n - 1] = -c;
+            if i + 1 < n {
+                rows[i + 1][i] = one.clone();
+            }
+        }
+        Ok(Matrix::from_rows_unchecked(rows))
+    }
+
+    /// Jordan block `J_size(λ)`: `λ` on the diagonal, ones on the
+    /// super-diagonal, zeros elsewhere.  SymPy:
+    /// `Matrix.jordan_block(size, eigenvalue)`.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if `size == 0`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let j = Matrix::jordan_block(&ctx.int(2), 3).unwrap();
+    /// assert_eq!(j, matrix![ctx, [2, 1, 0], [0, 2, 1], [0, 0, 2]]);
+    /// assert!(Matrix::jordan_block(&ctx.int(2), 0).is_err());
+    /// ```
+    pub fn jordan_block(eigenvalue: &Ex, size: usize) -> Result<Matrix, SymplexError> {
+        if size == 0 {
+            return Err(invalid("jordan_block", "size must be positive"));
+        }
+        let ctx = eigenvalue.context();
+        let zero = ctx.zero();
+        let one = ctx.one();
+        Ok(Matrix::from_fn(size, size, |i, j| {
+            if i == j {
+                eigenvalue.clone()
+            } else if j == i + 1 {
+                one.clone()
+            } else {
+                zero.clone()
+            }
+        }))
+    }
 }
 
 impl TryFrom<Vec<Vec<Ex>>> for Matrix {
@@ -1152,6 +1243,86 @@ impl Matrix {
                 if n % 2 == 1 { -c0 } else { c0 }
             }
         })
+    }
+
+    /// Permanent `per(A) = Σ_σ ∏ᵢ a_{i,σ(i)}` — the determinant without the
+    /// signs.  SymPy: `Matrix.per()`.
+    ///
+    /// Rational matrices use Ryser's inclusion–exclusion formula on
+    /// [`QMatrix`] (`O(2ⁿ·n)`, exact); symbolic matrices use a
+    /// subset-dynamic-programming Laplace expansion (`O(2ⁿ·n)` expression
+    /// operations) and return the expanded polynomial in the entries.
+    /// Either way the cost is **exponential** in `n`: matrices larger than
+    /// 20×20 are rejected, and symbolic intermediate results are subject to
+    /// [`EXPRESSION_BUDGET`].
+    ///
+    /// # Errors
+    ///
+    /// - [`SymplexError::InvalidArgument`] if the matrix is not square.
+    /// - [`SymplexError::ComputationFailed`] if `n > 20` or the symbolic
+    ///   result exceeds [`EXPRESSION_BUDGET`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// assert_eq!(matrix![ctx, [1, 2], [3, 4]].permanent().unwrap(), ctx.int(10));
+    /// assert_eq!(matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]].permanent().unwrap(), ctx.int(450));
+    /// let (a, b, c, d) = (ctx.symbol("a"), ctx.symbol("b"), ctx.symbol("c"), ctx.symbol("d"));
+    /// let m = Matrix::new(vec![vec![a.clone(), b.clone()], vec![c.clone(), d.clone()]]).unwrap();
+    /// assert_eq!(m.permanent().unwrap(), &a * &d + &b * &c);
+    /// assert!(matrix![ctx, [1, 2, 3]].permanent().is_err());
+    /// ```
+    pub fn permanent(&self) -> Result<Ex, SymplexError> {
+        self.require_square("permanent")?;
+        let n = self.nrows;
+        if n > PERMANENT_MAX_DIM {
+            return Err(failed(
+                "permanent",
+                format!(
+                    "needs 2^{n} terms for a {n}×{n} matrix; the limit is \
+                     {PERMANENT_MAX_DIM}×{PERMANENT_MAX_DIM}"
+                ),
+            ));
+        }
+        if let Some(q) = self.as_qmatrix() {
+            let p = q.permanent().map_err(|e| reop(e, "permanent"))?;
+            return Ok(self.ctx().from_ratio(p));
+        }
+        self.check_budget("permanent")?;
+        // f(S) = permanent of rows 0..|S| restricted to the column set S:
+        // f(S) = Σ_{j∈S} a_{|S|−1, j} · f(S ∖ {j}), f(∅) = 1.
+        let zero = self.ctx_zero();
+        let size = 1usize << n;
+        let mut memo: Vec<Ex> = vec![zero.clone(); size];
+        memo[0] = self.ctx_one();
+        for s in 1..size {
+            let row = s.count_ones() as usize - 1;
+            let mut acc: Option<Ex> = None;
+            for j in 0..n {
+                if (s >> j) & 1 == 0 {
+                    continue;
+                }
+                let a = &self.rows[row][j];
+                let sub = &memo[s & !(1 << j)];
+                if a.is_zero_structural() || sub.is_zero_structural() {
+                    continue;
+                }
+                let term = a * sub;
+                acc = Some(match acc {
+                    None => term,
+                    Some(x) => x + term,
+                });
+            }
+            let val = acc.unwrap_or_else(|| zero.clone());
+            budget_check(std::iter::once(&val), "permanent")?;
+            memo[s] = val;
+        }
+        let result = memo[size - 1].expand();
+        budget_check(std::iter::once(&result), "permanent")?;
+        Ok(result)
     }
 
     /// Berkowitz's division-free characteristic polynomial.
@@ -2256,24 +2427,404 @@ impl Matrix {
         }))
     }
 
-    // ── Pseudo-inverse ─────────────────────────────────────────────────
+    // ── Pseudo-inverse, rank factorisation, singular values, Hessenberg ──
 
-    /// Moore–Penrose pseudo-inverse via `A⁺ = (AᵀA)⁻¹Aᵀ`.
+    /// Moore–Penrose pseudo-inverse `A⁺` (`n × m` for an `m × n` matrix),
+    /// for **any** rank.  SymPy: `Matrix.pinv()`.
     ///
-    /// Valid for full-column-rank matrices.
+    /// * Full column rank: `A⁺ = (AᵀA)⁻¹Aᵀ`.
+    /// * Rank-deficient: via the full-rank factorisation `A = C·F` of
+    ///   [`rank_decomposition`](Self::rank_decomposition),
+    ///   `A⁺ = Fᵀ (F Fᵀ)⁻¹ (Cᵀ C)⁻¹ Cᵀ`; the zero matrix maps to the zero
+    ///   `n × m` matrix.
+    ///
+    /// Rational matrices are computed exactly on [`QMatrix`].  For symbolic
+    /// matrices the rank is the *structural* rank of [`rref`](Self::rref)
+    /// (symbolic pivots are treated as non-zero) and entries are treated
+    /// as real (`Aᵀ`, not `Aᴴ`).
     ///
     /// # Errors
     ///
-    /// Returns [`SymplexError::ComputationFailed`] if `AᵀA` is singular
-    /// (the matrix does not have full column rank).
+    /// [`SymplexError::ComputationFailed`] if a symbolic `AᵀA` is singular
+    /// although the structural pivot search found full column rank
+    /// (simplify the entries first), or on expression swell beyond
+    /// [`EXPRESSION_BUDGET`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// // Rank 1: A⁺ = (1/25)·Aᵀ
+    /// let a = matrix![ctx, [1, 2], [2, 4]];
+    /// let p = a.pinv().unwrap();
+    /// assert_eq!(p, a.transpose().scale(&ctx.rational(1, 25)));
+    /// assert_eq!(&(&a * &p) * &a, a);            // A A⁺ A = A
+    /// // Full column rank: the classical formula
+    /// let b = matrix![ctx, [1, 0], [0, 1], [1, 1]];
+    /// assert_eq!(&b.pinv().unwrap() * &b, Matrix::identity(&ctx, 2));
+    /// ```
     pub fn pinv(&self) -> Result<Matrix, SymplexError> {
+        let ctx = self.ctx();
+        if let Some(q) = self.as_qmatrix() {
+            return q
+                .pinv()
+                .map(|p| p.to_matrix(&ctx))
+                .map_err(|e| reop(e, "pinv"));
+        }
+        self.check_budget("pinv")?;
+        let inv_err = |what: &'static str| {
+            move |e: SymplexError| match e {
+                SymplexError::ComputationFailed { reason, .. }
+                    if reason.starts_with("expression swell") =>
+                {
+                    failed("pinv", reason)
+                }
+                _ => failed(
+                    "pinv",
+                    format!(
+                        "{what} is singular: the columns are linearly dependent in a way the \
+                         structural pivot search did not detect; simplify the entries first"
+                    ),
+                ),
+            }
+        };
+        let (r, pivots) = self.rref();
+        if pivots.is_empty() {
+            return Ok(Matrix::zeros(&ctx, self.ncols, self.nrows));
+        }
         let at = self.transpose();
-        let ata = at.matmul(self)?;
-        let ata_inv = ata
-            .inv()
-            .map_err(|_| failed("pinv", "AᵀA is singular (A does not have full column rank)"))?;
-        ata_inv.matmul(&at)
+        if pivots.len() == self.ncols {
+            let ata = at.matmul(self)?;
+            let ata_inv = ata.inv().map_err(inv_err("AᵀA"))?;
+            return ata_inv.matmul(&at);
+        }
+        let c = self.select_cols(&pivots)?;
+        let f = r.select_rows(&(0..pivots.len()).collect::<Vec<_>>())?;
+        let ft = f.transpose();
+        let ct = c.transpose();
+        let fft_inv = f.matmul(&ft)?.inv().map_err(inv_err("FFᵀ"))?;
+        let ctc_inv = ct.matmul(&c)?.inv().map_err(inv_err("CᵀC"))?;
+        let result = ft.matmul(&fft_inv)?.matmul(&ctc_inv)?.matmul(&ct)?;
+        result.check_budget("pinv")?;
+        Ok(result)
     }
+
+    /// Full-rank factorisation `A = C·F`: `C` (`m × r`) is made of the
+    /// pivot columns of `A`, `F` (`r × n`) of the nonzero rows of
+    /// [`rref`](Self::rref), with `r = rank A`.  SymPy:
+    /// `Matrix.rank_decomposition()`.
+    ///
+    /// Rational matrices route through [`QMatrix`]; for symbolic matrices
+    /// the rank is the structural rank of `rref` (symbolic pivots are
+    /// treated as non-zero).
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::ComputationFailed`] for the (structurally) zero
+    /// matrix: rank 0 would make `C` and `F` empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let a = matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]];
+    /// let (c, f) = a.rank_decomposition().unwrap();
+    /// assert_eq!(c, matrix![ctx, [1, 2], [4, 5], [7, 8]]);
+    /// assert_eq!(f, matrix![ctx, [1, 0, -1], [0, 1, 2]]);
+    /// assert_eq!(&c * &f, a);
+    /// ```
+    pub fn rank_decomposition(&self) -> Result<(Matrix, Matrix), SymplexError> {
+        let ctx = self.ctx();
+        if let Some(q) = self.as_qmatrix() {
+            let (c, f) = q
+                .rank_decomposition()
+                .map_err(|e| reop(e, "rank_decomposition"))?;
+            return Ok((c.to_matrix(&ctx), f.to_matrix(&ctx)));
+        }
+        let (r, pivots) = self.rref();
+        if pivots.is_empty() {
+            return Err(failed(
+                "rank_decomposition",
+                "matrix is zero (rank 0); the factors C (m×0) and F (0×n) would be empty",
+            ));
+        }
+        let c = self.select_cols(&pivots)?;
+        let f = r.select_rows(&(0..pivots.len()).collect::<Vec<_>>())?;
+        Ok((c, f))
+    }
+
+    /// Singular values: the square roots of the eigenvalues of `AᵀA`,
+    /// `ncols` of them, sorted in descending order when they can be
+    /// compared numerically.  SymPy: `Matrix.singular_values()`.
+    ///
+    /// The eigenvalues come from [`eigenvals`](Self::eigenvals) of the
+    /// smaller Gram matrix (`AᵀA` or `AAᵀ`; their nonzero eigenvalues
+    /// coincide, and the list is padded with zeros to `ncols` entries).
+    /// The result is therefore exact — rationals, radicals, or `RootOf`
+    /// values — exactly when `eigenvals` can solve the characteristic
+    /// polynomial of the Gram matrix: always for rational matrices
+    /// (radicals when its factors have degree ≤ 2 or a compact radical
+    /// form, `RootOf` otherwise), and for symbolic matrices whose Gram
+    /// matrix is at most 2×2 or has a factorable characteristic
+    /// polynomial.  Entries are treated as real (`Aᵀ`, not `Aᴴ`).
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::ComputationFailed`] if `eigenvals` cannot find every
+    /// eigenvalue of the Gram matrix.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// assert_eq!(matrix![ctx, [2, 0], [0, 3]].singular_values().unwrap(), vec![ctx.int(3), ctx.int(2)]);
+    /// // SymPy: Matrix([[1, 2], [3, 4]]).singular_values()
+    /// //   == [sqrt(sqrt(221) + 15), sqrt(15 - sqrt(221))]
+    /// let sv = matrix![ctx, [1, 2], [3, 4]].singular_values().unwrap();
+    /// let s221 = ctx.int(221).sqrt();
+    /// assert_eq!(sv[0], (&s221 + 15).sqrt());
+    /// assert_eq!(sv[1], (-&s221 + 15).sqrt());
+    /// // 2×3: two nonzero singular values, padded with a zero
+    /// let sv = matrix![ctx, [3, 0, 0], [0, 4, 0]].singular_values().unwrap();
+    /// assert_eq!(sv, vec![ctx.int(4), ctx.int(3), ctx.int(0)]);
+    /// ```
+    pub fn singular_values(&self) -> Result<Vec<Ex>, SymplexError> {
+        let ctx = self.ctx();
+        let (m, n) = self.shape();
+        let gram = if let Some(q) = self.as_qmatrix() {
+            let qt = q.transpose();
+            let g = if m >= n { qt.matmul(&q) } else { q.matmul(&qt) };
+            g.map_err(|e| reop(e, "singular_values"))?.to_matrix(&ctx)
+        } else {
+            let at = self.transpose();
+            if m >= n {
+                at.matmul(self)?
+            } else {
+                self.matmul(&at)?
+            }
+        };
+        let dim = gram.nrows;
+        // A structurally diagonal Gram matrix (orthogonal columns) has its
+        // eigenvalues on the diagonal; skip the characteristic polynomial,
+        // whose quadratic-formula roots would hide `a²` inside `√((a²−b²)²)`.
+        let eig = if gram.is_diagonal() == Some(true) {
+            gram.diagonal()
+        } else {
+            gram.eigenvals().map_err(|e| reop(e, "singular_values"))?
+        };
+        if eig.len() < dim {
+            return Err(failed(
+                "singular_values",
+                format!(
+                    "found only {} of the {dim} eigenvalues of the Gram matrix AᵀA",
+                    eig.len()
+                ),
+            ));
+        }
+        let mut vals: Vec<Ex> = eig.iter().map(|l| l.sqrt().eval()).collect();
+        vals.resize_with(vals.len().max(n), || ctx.zero());
+        sort_descending_numeric(&mut vals);
+        Ok(vals)
+    }
+
+    /// Condition number in the 2-norm, `σ_max / σ_min`, from
+    /// [`singular_values`](Self::singular_values).  SymPy:
+    /// `Matrix.condition_number()`.
+    ///
+    /// When the singular values cannot be ordered numerically (symbolic
+    /// entries) the result is `Max(σ₁, …) / Min(σ₁, …)`.
+    ///
+    /// # Errors
+    ///
+    /// - [`SymplexError::ComputationFailed`] with reason `"matrix is
+    ///   singular …"` if the smallest singular value is provably zero
+    ///   (SymPy returns `zoo` here).
+    /// - Anything [`singular_values`](Self::singular_values) returns.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// assert_eq!(matrix![ctx, [2, 0], [0, 3]].condition_number().unwrap(), ctx.rational(3, 2));
+    /// // SymPy: sqrt(sqrt(221) + 15)/sqrt(15 - sqrt(221)) ≈ 14.933
+    /// let k = matrix![ctx, [1, 2], [3, 4]].condition_number().unwrap().eval_f64().unwrap();
+    /// assert!((k - 14.933034373659268).abs() < 1e-9);
+    /// assert!(matrix![ctx, [1, 2], [2, 4]].condition_number().is_err());
+    /// ```
+    pub fn condition_number(&self) -> Result<Ex, SymplexError> {
+        let sv = self
+            .singular_values()
+            .map_err(|e| reop(e, "condition_number"))?;
+        let ctx = self.ctx();
+        let numeric = sv.iter().all(|v| v.eval_f64().is_ok());
+        let (max, min) = match (sv.first(), sv.last()) {
+            (Some(first), Some(last)) if numeric => (first.clone(), last.clone()),
+            _ => (
+                Ex::max_of(&ctx, sv.iter().cloned()),
+                Ex::min_of(&ctx, sv.iter().cloned()),
+            ),
+        };
+        if ex_is_zero(&min) == Some(true) {
+            return Err(failed(
+                "condition_number",
+                "matrix is singular (smallest singular value is 0), condition number is infinite",
+            ));
+        }
+        Ok(&max / &min)
+    }
+
+    /// Upper Hessenberg form by Gaussian similarity transforms: `(H, P)`
+    /// with `H = P⁻¹ A P` and `h_ij = 0` for `i > j + 1`.  SymPy:
+    /// `Matrix.upper_hessenberg_decomposition()` (Householder reflections,
+    /// hence radicals; this variant uses eliminations and stays in the
+    /// field of the entries).
+    ///
+    /// Column `k` is cleared below the sub-diagonal with the first usable
+    /// entry as pivot — moved into row `k + 1` by a symmetric row/column
+    /// swap when needed — followed by `row_j −= f·row_{k+1}` and the
+    /// compensating `col_{k+1} += f·col_j`.  Rational matrices run exactly
+    /// on [`QMatrix`].  For symbolic matrices a pivot is chosen among the
+    /// entries that are provably non-zero, falling back to one whose value
+    /// cannot be decided — such a pivot is *assumed* non-zero, so the
+    /// identity `A·P = P·H` holds generically (wherever those pivots do
+    /// not vanish), exactly as for [`lu`](Self::lu) and
+    /// [`rref`](Self::rref).  Symbolic entries are simplified as they are
+    /// produced.
+    ///
+    /// # Errors
+    ///
+    /// - [`SymplexError::InvalidArgument`] if the matrix is not square.
+    /// - [`SymplexError::ComputationFailed`] on expression swell beyond
+    ///   [`EXPRESSION_BUDGET`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let a = matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 10]];
+    /// let (h, p) = a.hessenberg().unwrap();
+    /// assert!(h[(2, 0)].is_zero_structural());
+    /// assert_eq!(&a * &p, &p * &h);
+    /// // One elimination with f = 7/4: row₂ −= f·row₁, col₁ += f·col₂.
+    /// assert_eq!(p, Matrix::new(vec![
+    ///     vec![ctx.int(1), ctx.int(0), ctx.int(0)],
+    ///     vec![ctx.int(0), ctx.int(1), ctx.int(0)],
+    ///     vec![ctx.int(0), ctx.rational(7, 4), ctx.int(1)],
+    /// ]).unwrap());
+    /// assert_eq!(h[(2, 1)], ctx.rational(-13, 8));
+    /// ```
+    pub fn hessenberg(&self) -> Result<(Matrix, Matrix), SymplexError> {
+        self.require_square("hessenberg")?;
+        let ctx = self.ctx();
+        if let Some(q) = self.as_qmatrix() {
+            let (h, p) = q.hessenberg().map_err(|e| reop(e, "hessenberg"))?;
+            return Ok((h.to_matrix(&ctx), p.to_matrix(&ctx)));
+        }
+        self.check_budget("hessenberg")?;
+        let n = self.nrows;
+        let zero = self.ctx_zero();
+        let one = self.ctx_one();
+        let mut h: Vec<Vec<Ex>> = self.rows.clone();
+        let mut p: Vec<Vec<Ex>> = (0..n)
+            .map(|i| {
+                (0..n)
+                    .map(|j| if i == j { one.clone() } else { zero.clone() })
+                    .collect()
+            })
+            .collect();
+        let tidy = |e: Ex| {
+            if e.is_constant() {
+                e.eval()
+            } else {
+                e.simplify()
+            }
+        };
+
+        for k in 0..n.saturating_sub(2) {
+            // Prefer a provably non-zero pivot; accept an undecidable one.
+            let mut pivot = None;
+            let mut fallback = None;
+            for (i, row) in h.iter().enumerate().skip(k + 1) {
+                match ex_is_zero(&row[k]) {
+                    Some(false) => {
+                        pivot = Some(i);
+                        break;
+                    }
+                    None if fallback.is_none() => fallback = Some(i),
+                    _ => {}
+                }
+            }
+            let Some(piv) = pivot.or(fallback) else {
+                for row in h.iter_mut().skip(k + 1) {
+                    row[k] = zero.clone();
+                }
+                continue;
+            };
+            if piv != k + 1 {
+                h.swap(k + 1, piv);
+                for row in h.iter_mut() {
+                    row.swap(k + 1, piv);
+                }
+                for row in p.iter_mut() {
+                    row.swap(k + 1, piv);
+                }
+            }
+            let pv = h[k + 1][k].clone();
+            for j in (k + 2)..n {
+                if ex_is_zero(&h[j][k]) == Some(true) {
+                    h[j][k] = zero.clone();
+                    continue;
+                }
+                let f = tidy(&h[j][k] / &pv);
+                let pivot_row = h[k + 1].clone();
+                for (c, pr) in pivot_row.iter().enumerate() {
+                    if c == k {
+                        h[j][c] = zero.clone();
+                    } else if !pr.is_zero_structural() {
+                        let v = tidy(&h[j][c] - &(&f * pr));
+                        h[j][c] = v;
+                    }
+                }
+                for r in 0..n {
+                    if !h[r][j].is_zero_structural() {
+                        let v = tidy(&h[r][k + 1] + &(&f * &h[r][j]));
+                        h[r][k + 1] = v;
+                    }
+                    if !p[r][j].is_zero_structural() {
+                        let v = tidy(&p[r][k + 1] + &(&f * &p[r][j]));
+                        p[r][k + 1] = v;
+                    }
+                }
+            }
+            budget_check(h.iter().flatten().chain(p.iter().flatten()), "hessenberg")?;
+        }
+        Ok((
+            Matrix::from_rows_unchecked(h),
+            Matrix::from_rows_unchecked(p),
+        ))
+    }
+}
+
+/// Sort `vals` in descending numeric order if *every* entry evaluates to
+/// an `f64`; otherwise leave the order unchanged (a partial comparator
+/// would not be a total order).
+fn sort_descending_numeric(vals: &mut [Ex]) {
+    let keys: Option<Vec<f64>> = vals.iter().map(|v| v.eval_f64().ok()).collect();
+    let Some(keys) = keys else { return };
+    let mut order: Vec<usize> = (0..vals.len()).collect();
+    order.sort_by(|&a, &b| keys[b].total_cmp(&keys[a]));
+    let sorted: Vec<Ex> = order.iter().map(|&i| vals[i].clone()).collect();
+    vals.clone_from_slice(&sorted);
 }
 
 /// Recursive cofactor expansion (used for the hard-coded 3×3 path).
@@ -3031,6 +3582,242 @@ impl Matrix {
         Ok(Matrix::from_rows_unchecked(data))
     }
 
+    /// The matrix with row `i` removed.  SymPy name for
+    /// [`delete_row`](Self::delete_row).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`delete_row`](Self::delete_row).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let m = matrix![ctx, [1, 2], [3, 4], [5, 6]];
+    /// assert_eq!(m.row_del(0).unwrap(), matrix![ctx, [3, 4], [5, 6]]);
+    /// assert!(m.row_del(3).is_err());
+    /// ```
+    pub fn row_del(&self, i: usize) -> Result<Matrix, SymplexError> {
+        self.delete_row(i).map_err(|e| reop(e, "row_del"))
+    }
+
+    /// The matrix with column `j` removed.  SymPy name for
+    /// [`delete_col`](Self::delete_col).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`delete_col`](Self::delete_col).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let m = matrix![ctx, [1, 2, 3], [4, 5, 6]];
+    /// assert_eq!(m.col_del(2).unwrap(), matrix![ctx, [1, 2], [4, 5]]);
+    /// assert!(m.col_del(3).is_err());
+    /// ```
+    pub fn col_del(&self, j: usize) -> Result<Matrix, SymplexError> {
+        self.delete_col(j).map_err(|e| reop(e, "col_del"))
+    }
+
+    /// Insert the rows of `rows` before row `pos` (`pos == nrows` appends).
+    /// SymPy: `Matrix.row_insert(pos, other)`.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if `pos > nrows` or `rows` has a
+    /// different number of columns.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let m = matrix![ctx, [1, 2], [3, 4]];
+    /// let r = matrix![ctx, [5, 6]];
+    /// assert_eq!(m.row_insert(1, &r).unwrap(), matrix![ctx, [1, 2], [5, 6], [3, 4]]);
+    /// assert_eq!(m.row_insert(2, &r).unwrap(), matrix![ctx, [1, 2], [3, 4], [5, 6]]);
+    /// assert!(m.row_insert(3, &r).is_err());
+    /// assert!(m.row_insert(0, &matrix![ctx, [5, 6, 7]]).is_err());
+    /// ```
+    pub fn row_insert(&self, pos: usize, rows: &Matrix) -> Result<Matrix, SymplexError> {
+        if pos > self.nrows {
+            return Err(invalid(
+                "row_insert",
+                format!(
+                    "position {pos} out of range for {} rows (use {} to append)",
+                    self.nrows, self.nrows
+                ),
+            ));
+        }
+        if rows.ncols != self.ncols {
+            return Err(invalid(
+                "row_insert",
+                format!(
+                    "inserted rows have {} columns, expected {}",
+                    rows.ncols, self.ncols
+                ),
+            ));
+        }
+        let mut data: Vec<Vec<Ex>> = Vec::with_capacity(self.nrows + rows.nrows);
+        data.extend(self.rows[..pos].iter().cloned());
+        data.extend(rows.rows.iter().cloned());
+        data.extend(self.rows[pos..].iter().cloned());
+        Ok(Matrix {
+            rows: data,
+            nrows: self.nrows + rows.nrows,
+            ncols: self.ncols,
+        })
+    }
+
+    /// Insert the columns of `cols` before column `pos` (`pos == ncols`
+    /// appends).  SymPy: `Matrix.col_insert(pos, other)`.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if `pos > ncols` or `cols` has a
+    /// different number of rows.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let m = matrix![ctx, [1, 2], [3, 4]];
+    /// let c = matrix![ctx, [5], [6]];
+    /// assert_eq!(m.col_insert(1, &c).unwrap(), matrix![ctx, [1, 5, 2], [3, 6, 4]]);
+    /// assert!(m.col_insert(0, &matrix![ctx, [5]]).is_err());
+    /// ```
+    pub fn col_insert(&self, pos: usize, cols: &Matrix) -> Result<Matrix, SymplexError> {
+        if pos > self.ncols {
+            return Err(invalid(
+                "col_insert",
+                format!(
+                    "position {pos} out of range for {} columns (use {} to append)",
+                    self.ncols, self.ncols
+                ),
+            ));
+        }
+        if cols.nrows != self.nrows {
+            return Err(invalid(
+                "col_insert",
+                format!(
+                    "inserted columns have {} rows, expected {}",
+                    cols.nrows, self.nrows
+                ),
+            ));
+        }
+        let ncols = self.ncols + cols.ncols;
+        let data: Vec<Vec<Ex>> = self
+            .rows
+            .iter()
+            .zip(&cols.rows)
+            .map(|(r, c)| {
+                let mut row = Vec::with_capacity(ncols);
+                row.extend(r[..pos].iter().cloned());
+                row.extend(c.iter().cloned());
+                row.extend(r[pos..].iter().cloned());
+                row
+            })
+            .collect();
+        Ok(Matrix {
+            rows: data,
+            nrows: self.nrows,
+            ncols,
+        })
+    }
+
+    /// Check that `perm` is a permutation of `0..bound`.
+    fn check_permutation(
+        operation: &'static str,
+        axis: &str,
+        perm: &[usize],
+        bound: usize,
+    ) -> Result<(), SymplexError> {
+        if perm.len() != bound {
+            return Err(invalid(
+                operation,
+                format!(
+                    "permutation has {} entries, expected one per {axis} ({bound})",
+                    perm.len()
+                ),
+            ));
+        }
+        let mut seen = vec![false; bound];
+        for &k in perm {
+            if k >= bound {
+                return Err(invalid(
+                    operation,
+                    format!("{axis} index {k} out of range for {bound} {axis}s"),
+                ));
+            }
+            if seen[k] {
+                return Err(invalid(
+                    operation,
+                    format!("{axis} index {k} appears twice; not a permutation"),
+                ));
+            }
+            seen[k] = true;
+        }
+        Ok(())
+    }
+
+    /// Reorder the rows: row `i` of the result is row `perm[i]` of `self`.
+    /// SymPy: `Matrix.permute_rows(perm)` for a permutation given in array
+    /// form.
+    ///
+    /// Unlike [`select_rows`](Self::select_rows), `perm` must be a genuine
+    /// permutation of `0..nrows`.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if `perm` is not a permutation of
+    /// `0..nrows` (wrong length, out-of-range or repeated index).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let m = matrix![ctx, [1], [2], [3]];
+    /// assert_eq!(m.permute_rows(&[2, 0, 1]).unwrap(), matrix![ctx, [3], [1], [2]]);
+    /// assert!(m.permute_rows(&[0, 0, 1]).is_err());
+    /// ```
+    pub fn permute_rows(&self, perm: &[usize]) -> Result<Matrix, SymplexError> {
+        Self::check_permutation("permute_rows", "row", perm, self.nrows)?;
+        self.select_rows(perm).map_err(|e| reop(e, "permute_rows"))
+    }
+
+    /// Reorder the columns: column `j` of the result is column `perm[j]`
+    /// of `self`.  SymPy: `Matrix.permute_cols(perm)`.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if `perm` is not a permutation of
+    /// `0..ncols`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let m = matrix![ctx, [1, 2, 3]];
+    /// assert_eq!(m.permute_cols(&[2, 0, 1]).unwrap(), matrix![ctx, [3, 1, 2]]);
+    /// assert!(m.permute_cols(&[0, 1]).is_err());
+    /// ```
+    pub fn permute_cols(&self, perm: &[usize]) -> Result<Matrix, SymplexError> {
+        Self::check_permutation("permute_cols", "column", perm, self.ncols)?;
+        self.select_cols(perm).map_err(|e| reop(e, "permute_cols"))
+    }
+
     /// Is every entry an integer literal?  Three-valued: `Some(true)` when
     /// every entry is an integer literal, `Some(false)` when some entry is a
     /// non-integer *numeric* literal (`1/2`), `None` when some entry is
@@ -3318,6 +4105,66 @@ impl Matrix {
     /// ```
     pub fn integer_nullspace(&self) -> Result<Vec<Matrix>, SymplexError> {
         crate::domains::normalforms::integer_nullspace(self)
+    }
+
+    /// Inverse modulo `m` of an integer matrix: entries in `[0, m)` with
+    /// `A·A⁻¹ ≡ I (mod m)`, computed as `adj(A)·det(A)⁻¹ mod m` (see
+    /// [`ZMatrix::inv_mod`]).  SymPy: `Matrix.inv_mod(m)`.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if the matrix is not square, an
+    /// entry is not an integer literal, `m < 2`, or `gcd(det A, m) ≠ 1`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let a = matrix![ctx, [1, 2], [3, 4]];
+    /// assert_eq!(a.inv_mod(5).unwrap(), matrix![ctx, [3, 1], [4, 2]]);
+    /// assert!(a.inv_mod(2).is_err());   // det = −2
+    /// ```
+    pub fn inv_mod(&self, m: u64) -> Result<Matrix, SymplexError> {
+        let z = ZMatrix::try_from(self).map_err(|e| reop(e, "inv_mod"))?;
+        let r = z
+            .inv_mod(&BigInt::from(m))
+            .map_err(|e| reop(e, "inv_mod"))?;
+        Ok(r.to_matrix(&self.ctx()))
+    }
+
+    /// LLL-reduced basis of the lattice spanned by the rows of an integer
+    /// matrix, Lovász parameter `δ = num/den`.  See [`ZMatrix::lll`] for
+    /// the guarantees and
+    /// [`normalforms::lll_with_transform`](crate::normalforms::lll_with_transform)
+    /// for the unimodular transform.  SymPy: `Matrix.lll(delta)`.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if an entry is not an integer
+    /// literal, `δ ∉ (1/4, 1)`, or the rows are linearly dependent.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let b = matrix![ctx, [1, 1, 1], [-1, 0, 2], [3, 5, 6]];
+    /// assert_eq!(b.lll((3, 4)).unwrap(), matrix![ctx, [0, 1, 0], [1, 0, 1], [-1, 0, 2]]);
+    /// ```
+    pub fn lll(&self, delta: (i64, i64)) -> Result<Matrix, SymplexError> {
+        crate::domains::normalforms::lll(self, delta)
+    }
+
+    /// [`lll`](Self::lll) with the standard `δ = 3/4`.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`lll`](Self::lll).
+    pub fn lll_default(&self) -> Result<Matrix, SymplexError> {
+        crate::domains::normalforms::lll(self, LLL_DEFAULT_DELTA)
     }
 }
 

@@ -290,6 +290,16 @@ impl Spec {
             LpStatus::Optimal,
             "unbounded LP must be feasible"
         );
+        // Box around a point known to be feasible: the feasible region need
+        // not meet a fixed ±50 box (one random case forces x₃ ≥ 52), so the
+        // small box is the feasibility LP's own vertex, rounded outwards.
+        let reach: i64 = feas
+            .x
+            .iter()
+            .map(|v| (v.abs().ceil().to_integer()).try_into().unwrap_or(i64::MAX))
+            .max()
+            .unwrap_or(0);
+        let base = reach.max(50);
         let boxed = |m: i64| {
             let mut s = self.clone();
             for (lo, hi) in s.bounds.iter_mut() {
@@ -309,7 +319,7 @@ impl Spec {
             s.check_optimal(&sol);
             sol.objective.unwrap()
         };
-        let (small, large) = (boxed(50), boxed(5_000));
+        let (small, large) = (boxed(base), boxed(base.saturating_mul(100)));
         if self.maximize {
             assert!(
                 large > small,

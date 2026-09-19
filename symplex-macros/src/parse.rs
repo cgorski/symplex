@@ -158,6 +158,22 @@ pub const KNOWN_FUNCTIONS: &[&str] = &[
     "beta",
     // Wave O: atan2 (binary)
     "atan2",
+    // 0.9: more special functions (1-arg)
+    "erfi",
+    "erfinv",
+    "erfcinv",
+    "e1",
+    "shi",
+    "chi",
+    "fresnels",
+    "fresnelc",
+    "dirichlet_eta",
+    "airyai",
+    "airybi",
+    "airyaiprime",
+    "airybiprime",
+    "elliptic_k",
+    "elliptic_e",
 ];
 
 /// Returns `true` if `name` is a known built-in function.

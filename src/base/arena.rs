@@ -63,6 +63,36 @@ pub(crate) const FN_CHEBYSHEV_U: &str = "chebyshev_u";
 pub(crate) const FN_HERMITE: &str = "hermite";
 pub(crate) const FN_LAGUERRE: &str = "laguerre";
 
+// ── More special functions (0.9) ───────────────────────────────────────
+// Error-function family and integrals.
+pub(crate) const FN_ERFI: &str = "erfi";
+pub(crate) const FN_ERFINV: &str = "erfinv";
+pub(crate) const FN_ERFCINV: &str = "erfcinv";
+pub(crate) const FN_EXPINT: &str = "expint";
+pub(crate) const FN_SHI: &str = "Shi";
+pub(crate) const FN_CHI: &str = "Chi";
+pub(crate) const FN_FRESNELS: &str = "fresnels";
+pub(crate) const FN_FRESNELC: &str = "fresnelc";
+pub(crate) const FN_LOWERGAMMA: &str = "lowergamma";
+pub(crate) const FN_UPPERGAMMA: &str = "uppergamma";
+pub(crate) const FN_POLYLOG: &str = "polylog";
+pub(crate) const FN_DIRICHLET_ETA: &str = "dirichlet_eta";
+// Airy functions.
+pub(crate) const FN_AIRYAI: &str = "airyai";
+pub(crate) const FN_AIRYBI: &str = "airybi";
+pub(crate) const FN_AIRYAIPRIME: &str = "airyaiprime";
+pub(crate) const FN_AIRYBIPRIME: &str = "airybiprime";
+// Elliptic integrals (parameter `m = k²` convention, as in SymPy).
+pub(crate) const FN_ELLIPTIC_K: &str = "elliptic_k";
+pub(crate) const FN_ELLIPTIC_E: &str = "elliptic_e";
+pub(crate) const FN_ELLIPTIC_F: &str = "elliptic_f";
+pub(crate) const FN_ELLIPTIC_PI: &str = "elliptic_pi";
+// Orthogonal polynomials with parameters.
+pub(crate) const FN_GEGENBAUER: &str = "gegenbauer";
+pub(crate) const FN_JACOBI: &str = "jacobi";
+pub(crate) const FN_ASSOC_LEGENDRE: &str = "assoc_legendre";
+pub(crate) const FN_ASSOC_LAGUERRE: &str = "assoc_laguerre";
+
 // ---------------------------------------------------------------------------
 // Arena
 // ---------------------------------------------------------------------------

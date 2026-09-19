@@ -317,6 +317,40 @@ fn generate_expr(ctx: &Ident, expr: &MathExpr) -> syn::Result<TokenStream2> {
                 return Ok(quote! { (#a).max_with(&(#b)) });
             }
 
+            // 0.9 special functions with parameters, in SymPy's argument
+            // order `f(params…, x)`; the `Ex` method lives on `x` and takes
+            // the parameters after it: `expint(n, x)` → `x.expint(&n)`.
+            if let Some((method, nparams)) = match name.as_str() {
+                "expint" => Some(("expint", 1)),
+                "lowergamma" => Some(("lowergamma", 1)),
+                "uppergamma" => Some(("uppergamma", 1)),
+                "polylog" => Some(("polylog", 1)),
+                "elliptic_f" => Some(("elliptic_f", 1)),
+                "elliptic_pi" => Some(("elliptic_pi", 1)),
+                "gegenbauer" => Some(("gegenbauer", 2)),
+                "assoc_legendre" => Some(("assoc_legendre", 2)),
+                "assoc_laguerre" => Some(("assoc_laguerre", 2)),
+                "jacobi" => Some(("jacobi", 3)),
+                _ => None,
+            } {
+                if args.len() != nparams + 1 {
+                    return Err(syn::Error::new(
+                        *span,
+                        format!(
+                            "{name}() takes exactly {} arguments in expr!()",
+                            nparams + 1
+                        ),
+                    ));
+                }
+                let x = generate_expr_as_ex(ctx, &args[nparams])?;
+                let params = args[..nparams]
+                    .iter()
+                    .map(|a| generate_expr_as_ex(ctx, a))
+                    .collect::<syn::Result<Vec<_>>>()?;
+                let method = format_ident!("{method}");
+                return Ok(quote! { (#x).#method(#(&(#params)),*) });
+            }
+
             if !is_known_function(name)
                 && ![
                     "log",
@@ -330,6 +364,16 @@ fn generate_expr(ctx: &Ident, expr: &MathExpr) -> syn::Result<TokenStream2> {
                     "beta",
                     "min",
                     "max",
+                    "expint",
+                    "lowergamma",
+                    "uppergamma",
+                    "polylog",
+                    "elliptic_f",
+                    "elliptic_pi",
+                    "gegenbauer",
+                    "assoc_legendre",
+                    "assoc_laguerre",
+                    "jacobi",
                 ]
                 .contains(&name.as_str())
             {
@@ -407,7 +451,20 @@ fn generate_expr(ctx: &Ident, expr: &MathExpr) -> syn::Result<TokenStream2> {
                 "digamma" => quote! { digamma },
                 "erf" => quote! { erf },
                 "erfc" => quote! { erfc },
-                _ => unreachable!(),
+                // 0.9: more special functions (1-arg); the method name is
+                // the SymPy name in lower case.
+                "erfi" | "erfinv" | "erfcinv" | "e1" | "shi" | "chi" | "fresnels" | "fresnelc"
+                | "dirichlet_eta" | "airyai" | "airybi" | "airyaiprime" | "airybiprime"
+                | "elliptic_k" | "elliptic_e" => {
+                    let m = format_ident!("{}", name.as_str());
+                    quote! { #m }
+                }
+                other => {
+                    return Err(syn::Error::new(
+                        *span,
+                        format!("function '{other}' is not supported in expr!()"),
+                    ));
+                }
             };
             Ok(quote! { (#arg_code).#method() })
         }

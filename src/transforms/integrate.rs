@@ -34,7 +34,7 @@ use num_traits::One;
 use num_traits::Signed;
 use num_traits::Zero;
 
-use crate::base::arena::Arena;
+use crate::base::arena::{Arena, FN_CHI, FN_ERFI, FN_SHI};
 use crate::base::node::{ExprId, ExprNode, SymbolId};
 
 /// Integrate `expr` with respect to `var`.
@@ -2036,7 +2036,12 @@ fn integrate_node(
                     let four_a = arena.mul(&[four, a_expr]);
                     let b_sq_over_4a = arena.div(b_sq, four_a);
                     let exp_arg = arena.sub(c_expr, b_sq_over_4a);
-                    let exp_factor = arena.exp(exp_arg);
+                    let exp_arg = arena.eval_expr(exp_arg);
+                    let exp_factor = if arena.is_zero_structural(exp_arg) {
+                        arena.int(1)
+                    } else {
+                        arena.exp(exp_arg)
+                    };
 
                     // erf_arg = (-2a·x - b) / (2·√(-a))
                     // Note: -2a is positive since a < 0
@@ -2055,6 +2060,46 @@ fn integrate_node(
                     let erf_term = arena.erf(erf_arg);
 
                     return arena.mul(&[front, exp_factor, erf_term]);
+                }
+                if a_coeff.is_positive() {
+                    // ∫ exp(a·x²+b·x+c) dx, a > 0:
+                    //   √π/(2√a) · exp(c − b²/(4a)) · erfi((2a·x+b)/(2√a))   (0.9)
+                    let a_expr = rational_to_expr(arena, a_coeff);
+                    let sqrt_a = arena.sqrt(a_expr);
+                    let two = arena.int(2);
+                    let pi_id = arena.pi;
+                    let sqrt_pi = arena.sqrt(pi_id);
+                    let two_sqrt_a = arena.mul(&[two, sqrt_a]);
+                    let front = arena.div(sqrt_pi, two_sqrt_a);
+
+                    let b_expr = rational_to_expr(arena, b_coeff);
+                    let c_expr = rational_to_expr(arena, c_coeff);
+                    let b_sq = arena.mul(&[b_expr, b_expr]);
+                    let four = arena.int(4);
+                    let four_a = arena.mul(&[four, a_expr]);
+                    let b_sq_over_4a = arena.div(b_sq, four_a);
+                    let exp_arg = arena.sub(c_expr, b_sq_over_4a);
+                    let exp_arg = arena.eval_expr(exp_arg);
+                    let exp_factor = if arena.is_zero_structural(exp_arg) {
+                        arena.int(1)
+                    } else {
+                        arena.exp(exp_arg)
+                    };
+
+                    let two_a = {
+                        let two_r =
+                            num_rational::Ratio::<num_bigint::BigInt>::from_integer(2.into());
+                        let val = two_r * a_coeff;
+                        rational_to_expr(arena, &val)
+                    };
+                    let two_ax = arena.mul(&[two_a, var]);
+                    let numer = arena.add(&[two_ax, b_expr]);
+                    let sqrt_a2 = arena.sqrt(a_expr);
+                    let denom = arena.mul(&[two, sqrt_a2]);
+                    let erfi_arg = arena.div(numer, denom);
+                    let erfi_term = special_apply(arena, FN_ERFI, erfi_arg);
+
+                    return arena.mul(&[front, exp_factor, erfi_term]);
                 }
             }
 
@@ -3817,6 +3862,9 @@ fn try_special_function_integral(
     let sf_result = match arena.node(func_factor).clone() {
         ExprNode::Sin(inner) if inner == var => Some(arena.si(var)),
         ExprNode::Cos(inner) if inner == var => Some(arena.ci(var)),
+        // sinh(x)/x → Shi(x), cosh(x)/x → Chi(x)  (0.9 special functions)
+        ExprNode::Sinh(inner) if inner == var => Some(special_apply(arena, FN_SHI, var)),
+        ExprNode::Cosh(inner) if inner == var => Some(special_apply(arena, FN_CHI, var)),
         ExprNode::Exp(inner) if inner == var => Some(arena.ei(var)),
         ExprNode::Exp(inner) => {
             // exp(-x)/x → -Ei(-x)
@@ -3834,6 +3882,12 @@ fn try_special_function_integral(
     };
 
     sf_result.map(|r| wrap_with_constants(arena, r, constants))
+}
+
+/// The `Apply` node of a named special function with one argument.
+fn special_apply(arena: &mut Arena, name: &str, arg: ExprId) -> ExprId {
+    let sid = arena.symbols.intern(name);
+    arena.intern(ExprNode::Apply(sid, std::iter::once(arg).collect()))
 }
 
 /// Check if `expr` is `Pow(var, -1)`.

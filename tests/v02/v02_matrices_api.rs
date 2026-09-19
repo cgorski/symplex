@@ -476,7 +476,10 @@ fn math_failures_are_computation_failed() {
     assert!(is_cf(singular.inv()));
     assert!(is_cf(singular.lu()));
     assert!(is_cf(singular.solve(&matrix![ctx, [1], [1]])));
-    assert!(is_cf(singular.pinv()));
+    // 0.9: the pseudo-inverse is defined for every matrix; a rank-deficient
+    // one goes through the full-rank factorisation (SymPy: `(1/25)*[[1,2],[2,4]]`).
+    let pinv = singular.pinv().unwrap();
+    assert_eq!(pinv, matrix![ctx, [1 / 25, 2 / 25], [2 / 25, 4 / 25]]);
     assert!(is_cf(matrix![ctx, [1, 1], [0, 1]].diagonalize()));
     assert!(is_cf(matrix![ctx, [1, 2], [2, 1]].cholesky()));
     assert!(is_cf(matrix![ctx, [1, 2], [2, 4]].qr()));

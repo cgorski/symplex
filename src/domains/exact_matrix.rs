@@ -55,7 +55,7 @@ use crate::api::context::Context;
 use crate::base::errors::SymplexError;
 use crate::domains::linprog::Q;
 use crate::domains::matrix::Matrix;
-use crate::domains::ntheory::gcdex;
+use crate::domains::ntheory::{gcdex, mod_inverse};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Scalar trait
@@ -790,6 +790,98 @@ impl<T: ExactScalar> ExactMatrix<T> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Permanent (0.9)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Largest dimension accepted by [`ExactMatrix::permanent`] and
+/// [`Matrix::permanent`]: Ryser's formula sums `2ⁿ` terms, so a 20×20
+/// permanent is about a million products and anything larger would run for
+/// minutes to years.
+pub(crate) const PERMANENT_MAX_DIM: usize = 20;
+
+impl<T: ExactScalar> ExactMatrix<T> {
+    /// Permanent `per(A) = Σ_σ ∏ᵢ a_{i,σ(i)}` (the determinant without the
+    /// signs), by Ryser's inclusion–exclusion formula walked in Gray-code
+    /// order: `O(2ⁿ · n)` ring operations and `O(n)` memory.  SymPy:
+    /// `Matrix.per()`.
+    ///
+    /// The cost is exponential in `n`; matrices larger than 20×20 are
+    /// rejected rather than left to run for an unbounded time.
+    ///
+    /// # Errors
+    ///
+    /// - [`SymplexError::InvalidArgument`] if the matrix is not square.
+    /// - [`SymplexError::ComputationFailed`] if `n > 20`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::matrix::ZMatrix;
+    /// use symplex::num_bigint::BigInt;
+    ///
+    /// let m = ZMatrix::from_i64(&[&[1, 2], &[3, 4]]).unwrap();
+    /// assert_eq!(m.permanent().unwrap(), BigInt::from(10)); // 1·4 + 2·3
+    /// let m3 = ZMatrix::from_i64(&[&[1, 2, 3], &[4, 5, 6], &[7, 8, 9]]).unwrap();
+    /// assert_eq!(m3.permanent().unwrap(), BigInt::from(450));
+    /// ```
+    pub fn permanent(&self) -> Result<T, SymplexError> {
+        self.require_square("permanent")?;
+        let n = self.nrows;
+        if n > PERMANENT_MAX_DIM {
+            return Err(failed(
+                "permanent",
+                format!(
+                    "Ryser's formula needs 2^{n} terms for a {n}×{n} matrix; the limit is \
+                     {PERMANENT_MAX_DIM}×{PERMANENT_MAX_DIM}"
+                ),
+            ));
+        }
+        Ok(ryser_permanent(&self.data, n))
+    }
+}
+
+/// Ryser's formula `per(A) = (−1)ⁿ Σ_{S⊆[n]} (−1)^{|S|} ∏ᵢ Σ_{j∈S} a_ij`
+/// over the non-empty subsets in Gray-code order, so that each step
+/// updates the `n` row sums by a single addition or subtraction.
+/// `data` is a row-major `n × n` buffer with `1 ≤ n ≤ 63`.
+fn ryser_permanent<T: ExactScalar>(data: &[T], n: usize) -> T {
+    let mut row_sums = vec![T::zero(); n];
+    let mut total = T::zero();
+    let mut size = 0usize; // |S|
+    for k in 1u64..(1u64 << n) {
+        // gray(k) and gray(k − 1) differ exactly in bit `trailing_zeros(k)`.
+        let bit = k.trailing_zeros() as usize;
+        let added = ((k ^ (k >> 1)) >> bit) & 1 == 1;
+        for (i, sum) in row_sums.iter_mut().enumerate() {
+            let a = &data[i * n + bit];
+            if a.is_zero() {
+                continue;
+            }
+            *sum = if added {
+                sum.add_ref(a)
+            } else {
+                sum.sub_ref(a)
+            };
+        }
+        if added {
+            size += 1;
+        } else {
+            size -= 1;
+        }
+        if row_sums.iter().any(Zero::is_zero) {
+            continue;
+        }
+        let prod = row_sums.iter().fold(T::one(), |acc, r| acc.mul_ref(r));
+        total = if size % 2 == 1 {
+            total.sub_ref(&prod)
+        } else {
+            total.add_ref(&prod)
+        };
+    }
+    if n % 2 == 1 { -total } else { total }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Fraction-free Gauss–Jordan kernel (shared by ℤ rank and every ℚ operation)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1356,6 +1448,301 @@ impl ZMatrix {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ℤ-specific operations (0.9): modular inverse, LLL lattice reduction
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Lovász parameter of [`ZMatrix::lll_default`]: `δ = 3/4`.
+pub const LLL_DEFAULT_DELTA: (i64, i64) = (3, 4);
+
+impl ZMatrix {
+    /// Inverse modulo `m`: the integer matrix `B` with entries in `[0, m)`
+    /// and `A·B ≡ I (mod m)`, computed as `adj(A) · det(A)⁻¹ mod m`.  SymPy:
+    /// `Matrix.inv_mod(m)`.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if the matrix is not square, `m < 2`,
+    /// or `gcd(det A, m) ≠ 1` (which includes every singular matrix).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::matrix::ZMatrix;
+    /// use symplex::num_bigint::BigInt;
+    ///
+    /// let a = ZMatrix::from_i64(&[&[1, 2], &[3, 4]]).unwrap();
+    /// let b = a.inv_mod(&BigInt::from(5)).unwrap();
+    /// assert_eq!(b, ZMatrix::from_i64(&[&[3, 1], &[4, 2]]).unwrap());
+    /// // det = −2 shares the factor 2 with the modulus 4.
+    /// assert!(a.inv_mod(&BigInt::from(4)).is_err());
+    /// ```
+    pub fn inv_mod(&self, m: &BigInt) -> Result<ZMatrix, SymplexError> {
+        self.require_square("inv_mod")?;
+        if *m < BigInt::from(2) {
+            return Err(invalid(
+                "inv_mod",
+                format!("modulus must be at least 2, got {m}"),
+            ));
+        }
+        let det = bareiss_det(self.data.clone(), self.nrows);
+        let Some(det_inv) = mod_inverse(det.mod_floor(m), m.clone()) else {
+            return Err(invalid(
+                "inv_mod",
+                format!("determinant {det} is not invertible modulo {m} (gcd ≠ 1)"),
+            ));
+        };
+        // det ≠ 0 here (gcd(0, m) = m ≥ 2), so the rational inverse exists and
+        // adj(A) = det(A) · A⁻¹ is integral.
+        let inv = self.to_qmatrix().inv().map_err(|e| match e {
+            SymplexError::ComputationFailed { reason, .. } => failed("inv_mod", reason),
+            other => other,
+        })?;
+        let mut data = Vec::with_capacity(self.data.len());
+        for q in inv.iter() {
+            let adj = q * &det;
+            if !adj.is_integer() {
+                return Err(failed(
+                    "inv_mod",
+                    "internal invariant violated: adjugate entry is not an integer",
+                ));
+            }
+            data.push((adj.numer() * &det_inv).mod_floor(m));
+        }
+        Ok(ZMatrix {
+            data,
+            nrows: self.nrows,
+            ncols: self.ncols,
+        })
+    }
+
+    /// LLL-reduced basis of the lattice spanned by the rows, with the
+    /// standard Lovász parameter `δ = 3/4`.  See [`lll`](Self::lll).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`lll`](Self::lll).
+    pub fn lll_default(&self) -> Result<ZMatrix, SymplexError> {
+        self.lll(LLL_DEFAULT_DELTA)
+    }
+
+    /// Lenstra–Lenstra–Lovász reduction of the lattice basis formed by the
+    /// **rows**, with Lovász parameter `δ = num/den`.  SymPy:
+    /// `Matrix.lll(delta)`.
+    ///
+    /// The Gram–Schmidt data is kept as exact rationals, so the result is
+    /// exactly LLL-reduced: with `μ_ij = ⟨b_i, b*_j⟩ / ⟨b*_j, b*_j⟩`,
+    /// every `|μ_ij| ≤ 1/2` (size condition) and
+    /// `‖b*_k‖² ≥ (δ − μ²_{k,k−1}) ‖b*_{k−1}‖²` (Lovász condition).  The
+    /// reduced rows span the same lattice as the input (they differ by a
+    /// unimodular transform, see
+    /// [`lll_with_transform`](Self::lll_with_transform)), and the first row
+    /// is within a factor `2^{(n−1)/2}` of a shortest lattice vector.  The
+    /// reduction order and rounding follow SymPy's `DomainMatrix.lll`, so
+    /// the output coincides with SymPy's for the same input.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if `δ` is not in the open interval
+    /// `(1/4, 1)`, or the rows are linearly dependent (this includes having
+    /// more rows than columns).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::matrix::ZMatrix;
+    ///
+    /// let b = ZMatrix::from_i64(&[&[1, 1, 1], &[-1, 0, 2], &[3, 5, 6]]).unwrap();
+    /// let r = b.lll((3, 4)).unwrap();
+    /// assert_eq!(r, ZMatrix::from_i64(&[&[0, 1, 0], &[1, 0, 1], &[-1, 0, 2]]).unwrap());
+    /// // Same lattice: identical Hermite normal forms.
+    /// assert_eq!(r.hermite_normal_form(), b.hermite_normal_form());
+    /// assert!(b.lll((1, 4)).is_err());
+    /// ```
+    pub fn lll(&self, delta: (i64, i64)) -> Result<ZMatrix, SymplexError> {
+        self.lll_impl(delta, false).map(|(y, _)| y)
+    }
+
+    /// LLL reduction together with the unimodular transform: `(R, T)` with
+    /// `R = T·A` (`det T = ±1`).  SymPy: `Matrix.lll_transform(delta)`.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`lll`](Self::lll).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::matrix::ZMatrix;
+    ///
+    /// let b = ZMatrix::from_i64(&[&[1, 1, 1], &[-1, 0, 2], &[3, 5, 6]]).unwrap();
+    /// let (r, t) = b.lll_with_transform((3, 4)).unwrap();
+    /// assert_eq!(&t * &b, r);
+    /// assert!(t.is_unimodular());
+    /// ```
+    pub fn lll_with_transform(
+        &self,
+        delta: (i64, i64),
+    ) -> Result<(ZMatrix, ZMatrix), SymplexError> {
+        let (y, t) = self.lll_impl(delta, true)?;
+        let t = t.ok_or_else(|| {
+            failed(
+                "lll_with_transform",
+                "internal invariant violated: transform was not tracked",
+            )
+        })?;
+        Ok((y, t))
+    }
+
+    /// LLL core (SymPy's `_ddm_lll`): exact rational Gram–Schmidt with the
+    /// incremental `μ` / `‖b*‖²` updates on a swap.
+    fn lll_impl(
+        &self,
+        delta: (i64, i64),
+        track: bool,
+    ) -> Result<(ZMatrix, Option<ZMatrix>), SymplexError> {
+        let (num, den) = delta;
+        if den == 0 {
+            return Err(invalid("lll", "delta denominator must be non-zero"));
+        }
+        let delta = Ratio::new(BigInt::from(num), BigInt::from(den));
+        let quarter = Ratio::new(BigInt::from(1), BigInt::from(4));
+        if delta <= quarter || delta >= Q::one() {
+            return Err(invalid(
+                "lll",
+                format!("delta must lie in the open interval (1/4, 1), got {delta}"),
+            ));
+        }
+        let (m, n) = (self.nrows, self.ncols);
+        let dependent = || invalid("lll", "rows must be linearly independent (a lattice basis)");
+        if m > n {
+            return Err(dependent());
+        }
+
+        let mut y: Vec<Vec<BigInt>> = self.to_rows();
+        let mut t: Option<Vec<Vec<BigInt>>> = track.then(|| {
+            (0..m)
+                .map(|i| {
+                    (0..m)
+                        .map(|j| {
+                            if i == j {
+                                BigInt::one()
+                            } else {
+                                BigInt::zero()
+                            }
+                        })
+                        .collect()
+                })
+                .collect()
+        });
+
+        // Gram–Schmidt: b*_i = b_i − Σ_{j<i} μ_ij b*_j,  g_star[i] = ‖b*_i‖².
+        let mut mu: Vec<Vec<Q>> = vec![vec![Q::zero(); m]; m];
+        let mut g_star: Vec<Q> = vec![Q::zero(); m];
+        let mut y_star: Vec<Vec<Q>> = Vec::with_capacity(m);
+        for i in 0..m {
+            let mut yi: Vec<Q> = y[i]
+                .iter()
+                .map(|v| Ratio::from_integer(v.clone()))
+                .collect();
+            for j in 0..i {
+                if g_star[j].is_zero() {
+                    return Err(dependent());
+                }
+                let dot = y[i]
+                    .iter()
+                    .zip(&y_star[j])
+                    .fold(Q::zero(), |acc, (a, b)| acc + b * a);
+                let mu_ij = dot / &g_star[j];
+                for (v, s) in yi.iter_mut().zip(&y_star[j]) {
+                    *v -= &mu_ij * s;
+                }
+                mu[i][j] = mu_ij;
+            }
+            g_star[i] = yi.iter().fold(Q::zero(), |acc, v| acc + v * v);
+            if g_star[i].is_zero() {
+                return Err(dependent());
+            }
+            y_star.push(yi);
+        }
+
+        let half = Ratio::new(BigInt::from(1), BigInt::from(2));
+        // Size-reduce row k against row l: b_k ← b_k − ⌊μ_kl + ½⌋ b_l.
+        let reduce_row = |y: &mut [Vec<BigInt>],
+                          mu: &mut [Vec<Q>],
+                          t: &mut Option<Vec<Vec<BigInt>>>,
+                          k: usize,
+                          l: usize| {
+            let r = (&mu[k][l] + &half).floor().to_integer();
+            if r.is_zero() {
+                return;
+            }
+            let yl = y[l].clone();
+            for (a, b) in y[k].iter_mut().zip(&yl) {
+                *a -= &r * b;
+            }
+            let mul: Vec<Q> = mu[l][..l].to_vec();
+            let rq = Ratio::from_integer(r.clone());
+            for (a, b) in mu[k].iter_mut().zip(&mul) {
+                *a -= &rq * b;
+            }
+            mu[k][l] -= &rq;
+            if let Some(t) = t {
+                let tl = t[l].clone();
+                for (a, b) in t[k].iter_mut().zip(&tl) {
+                    *a -= &r * b;
+                }
+            }
+        };
+
+        let mut k = 1usize;
+        while k < m {
+            if mu[k][k - 1].abs() > half {
+                reduce_row(&mut y, &mut mu, &mut t, k, k - 1);
+            }
+            let lovasz = g_star[k] >= (&delta - &mu[k][k - 1] * &mu[k][k - 1]) * &g_star[k - 1];
+            if lovasz {
+                for l in (0..k.saturating_sub(1)).rev() {
+                    if mu[k][l].abs() > half {
+                        reduce_row(&mut y, &mut mu, &mut t, k, l);
+                    }
+                }
+                k += 1;
+            } else {
+                let nu = mu[k][k - 1].clone();
+                let alpha = &g_star[k] + &nu * &nu * &g_star[k - 1];
+                if alpha.is_zero() {
+                    return Err(dependent());
+                }
+                let beta = &g_star[k - 1] / &alpha;
+                mu[k][k - 1] = &nu * &beta;
+                g_star[k] = &g_star[k] * &beta;
+                g_star[k - 1] = alpha;
+                y.swap(k, k - 1);
+                if let Some(t) = &mut t {
+                    t.swap(k, k - 1);
+                }
+                let (lo, hi) = mu.split_at_mut(k);
+                lo[k - 1][..k - 1].swap_with_slice(&mut hi[0][..k - 1]);
+                let mu_kk1 = mu[k][k - 1].clone();
+                for row in mu.iter_mut().skip(k + 1) {
+                    let xi = row[k].clone();
+                    row[k] = &row[k - 1] - &nu * &xi;
+                    row[k - 1] = &mu_kk1 * &row[k] + &xi;
+                }
+                k = (k - 1).max(1);
+            }
+        }
+
+        let reduced = ZMatrix::new(y)?;
+        let transform = match t {
+            Some(rows) => Some(ZMatrix::new(rows)?),
+            None => None,
+        };
+        Ok((reduced, transform))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // ℚ-specific operations
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1697,6 +2084,177 @@ impl QMatrix {
         (0..pivots.len())
             .map(|i| QMatrix::row_vector(r.row(i).to_vec()))
             .collect()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ℚ-specific operations (0.9): rank factorisation, pseudo-inverse, Hessenberg
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl QMatrix {
+    /// `(C, F)` of the full-rank factorisation `A = C·F`, or `None` for the
+    /// zero matrix (rank 0, whose factors would be empty).
+    fn rank_factors(&self) -> Option<(QMatrix, QMatrix)> {
+        let (r, pivots) = self.rref();
+        let rank = pivots.len();
+        if rank == 0 {
+            return None;
+        }
+        let c = QMatrix::from_fn(self.nrows, rank, |i, k| {
+            self.data[i * self.ncols + pivots[k]].clone()
+        });
+        let f = r.submatrix(0..rank, 0..self.ncols).ok()?;
+        Some((c, f))
+    }
+
+    /// Full-rank factorisation `A = C·F`: `C` (`m × r`) holds the pivot
+    /// columns of `A`, `F` (`r × n`) the nonzero rows of `rref(A)`, where
+    /// `r = rank A`.  SymPy: `Matrix.rank_decomposition()`.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::ComputationFailed`] for the zero matrix (rank 0; the
+    /// factors would have an empty dimension).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::matrix::QMatrix;
+    ///
+    /// let a = QMatrix::from_i64(&[&[1, 2, 3], &[4, 5, 6], &[7, 8, 9]]).unwrap();
+    /// let (c, f) = a.rank_decomposition().unwrap();
+    /// assert_eq!(c, QMatrix::from_i64(&[&[1, 2], &[4, 5], &[7, 8]]).unwrap());
+    /// assert_eq!(f, QMatrix::from_i64(&[&[1, 0, -1], &[0, 1, 2]]).unwrap());
+    /// assert_eq!(&c * &f, a);
+    /// ```
+    pub fn rank_decomposition(&self) -> Result<(QMatrix, QMatrix), SymplexError> {
+        self.rank_factors().ok_or_else(|| {
+            failed(
+                "rank_decomposition",
+                "matrix is zero (rank 0); the factors C (m×0) and F (0×n) would be empty",
+            )
+        })
+    }
+
+    /// Moore–Penrose pseudo-inverse `A⁺` (`n × m`), exact for any rank.
+    /// SymPy: `Matrix.pinv()`.
+    ///
+    /// Uses the full-rank factorisation `A = C·F` of
+    /// [`rank_decomposition`](Self::rank_decomposition):
+    /// `A⁺ = Fᵀ (F Fᵀ)⁻¹ (Cᵀ C)⁻¹ Cᵀ`.  The zero matrix maps to the zero
+    /// `n × m` matrix.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::ComputationFailed`] only if an internal invariant is
+    /// violated (`CᵀC` and `FFᵀ` are invertible by construction).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::matrix::QMatrix;
+    /// use symplex::linprog::q;
+    ///
+    /// let a = QMatrix::from_i64(&[&[1, 2], &[2, 4]]).unwrap();   // rank 1
+    /// let p = a.pinv().unwrap();
+    /// assert_eq!(p[(0, 0)], q(1, 25));
+    /// assert_eq!(p[(1, 1)], q(4, 25));
+    /// assert_eq!(&(&a * &p) * &a, a);    // A A⁺ A = A
+    /// ```
+    pub fn pinv(&self) -> Result<QMatrix, SymplexError> {
+        let Some((c, f)) = self.rank_factors() else {
+            return Ok(QMatrix::zeros(self.ncols, self.nrows));
+        };
+        let internal = |e: SymplexError| match e {
+            SymplexError::ComputationFailed { reason, .. }
+            | SymplexError::InvalidArgument { reason, .. } => failed(
+                "pinv",
+                format!("internal invariant violated in the rank factorisation: {reason}"),
+            ),
+            other => other,
+        };
+        let ft = f.transpose();
+        let ct = c.transpose();
+        let fft_inv = f.matmul(&ft).and_then(|m| m.inv()).map_err(internal)?;
+        let ctc_inv = ct.matmul(&c).and_then(|m| m.inv()).map_err(internal)?;
+        ft.matmul(&fft_inv)
+            .and_then(|m| m.matmul(&ctc_inv))
+            .and_then(|m| m.matmul(&ct))
+            .map_err(internal)
+    }
+
+    /// Upper Hessenberg form by Gaussian similarity transforms: `(H, P)`
+    /// with `H = P⁻¹ A P` and `h_ij = 0` for `i > j + 1`.  SymPy:
+    /// `Matrix.upper_hessenberg_decomposition()` (which uses Householder
+    /// reflections and therefore radicals; this variant stays in ℚ).
+    ///
+    /// Column `k` is cleared below the sub-diagonal with the first nonzero
+    /// candidate as pivot (a symmetric row/column swap when it is not
+    /// already in row `k + 1`), followed by the row operations
+    /// `row_j −= f·row_{k+1}` and the compensating column operations
+    /// `col_{k+1} += f·col_j`.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if the matrix is not square.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::matrix::QMatrix;
+    /// use symplex::linprog::q;
+    ///
+    /// let a = QMatrix::from_i64(&[&[1, 2, 3], &[4, 5, 6], &[7, 8, 10]]).unwrap();
+    /// let (h, p) = a.hessenberg().unwrap();
+    /// assert_eq!(h[(2, 0)], q(0, 1));
+    /// assert_eq!(&a * &p, &p * &h);          // A P = P H
+    /// assert_eq!(p.inv().unwrap() * &a * &p, h);
+    /// ```
+    pub fn hessenberg(&self) -> Result<(QMatrix, QMatrix), SymplexError> {
+        self.require_square("hessenberg")?;
+        let n = self.nrows;
+        let mut h = self.clone();
+        let mut p = QMatrix::identity(n);
+        let swap_cols = |m: &mut QMatrix, a: usize, b: usize| {
+            for i in 0..n {
+                m.data.swap(i * n + a, i * n + b);
+            }
+        };
+        for k in 0..n.saturating_sub(2) {
+            let Some(piv) = ((k + 1)..n).find(|&i| !h.data[i * n + k].is_zero()) else {
+                continue;
+            };
+            if piv != k + 1 {
+                h.swap_rows(k + 1, piv);
+                swap_cols(&mut h, k + 1, piv);
+                swap_cols(&mut p, k + 1, piv);
+            }
+            let pv = h.data[(k + 1) * n + k].clone();
+            for j in (k + 2)..n {
+                let f = &h.data[j * n + k] / &pv;
+                if f.is_zero() {
+                    continue;
+                }
+                // row_j −= f · row_{k+1}  (entry (j, k) becomes exactly zero)
+                let pivot_row: Vec<Q> = h.data[(k + 1) * n..(k + 2) * n].to_vec();
+                for (c, pr) in pivot_row.iter().enumerate() {
+                    if c == k {
+                        h.data[j * n + c] = Q::zero();
+                    } else if !pr.is_zero() {
+                        let t = pr * &f;
+                        h.data[j * n + c] -= t;
+                    }
+                }
+                // col_{k+1} += f · col_j  (in H and in P)
+                for r in 0..n {
+                    let t = &h.data[r * n + j] * &f;
+                    h.data[r * n + k + 1] += t;
+                    let t = &p.data[r * n + j] * &f;
+                    p.data[r * n + k + 1] += t;
+                }
+            }
+        }
+        Ok((h, p))
     }
 }
 

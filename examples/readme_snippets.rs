@@ -866,7 +866,8 @@ fn api_model() {
     println!("\n--- The API Model ---");
     let ctx = Context::new();
     syms!(ctx; x);
-    let hard_expr = x.powi(2).exp();
+    // exp(x²) integrates to erfi since 0.9; exp(exp(x)) has no closed form.
+    let hard_expr = x.exp().exp();
     let anti = hard_expr.integrate(&x);
     if anti.has_unevaluated() {
         println!("integration produced formal result: {anti}");

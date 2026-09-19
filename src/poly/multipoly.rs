@@ -84,6 +84,22 @@ impl MonomialOrd for GrLex {
     }
 }
 
+/// A monomial order chosen at run time — the value-level counterpart of
+/// the zero-sized order types [`Lex`] and [`GrevLex`], for APIs that take
+/// the order as an argument (`Ex::groebner`, `Ex::reduce_modulo`).
+///
+/// `Lex` orders by the first variable first (elimination / triangular
+/// bases); `GrevLex` orders by total degree, then reverse lexicographically
+/// (the default for Gröbner computation, usually much faster).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum MonomialOrder {
+    /// Pure lexicographic order ([`Lex`]).
+    Lex,
+    /// Graded reverse lexicographic order ([`GrevLex`]).
+    GrevLex,
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // MonoKey — exponent vector with ordering
 // ═══════════════════════════════════════════════════════════════════════════

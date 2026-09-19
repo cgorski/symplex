@@ -17,13 +17,14 @@
 //!   [`Matrix::norm_p`] (vectors), plus
 //!   [`norm_frobenius`](Matrix::norm_frobenius) in the core module.
 //! * **Functions of diagonalizable matrices:**
-//!   [`Matrix::matrix_pow_symbolic`], [`Matrix::matrix_sqrt`].
-//! * **Calculus:** [`hessian`], [`wronskian`].
+//!   [`Matrix::matrix_pow_symbolic`], [`Matrix::matrix_sqrt`],
+//!   [`Matrix::matrix_log`] (any Jordan form with non-zero eigenvalues).
+//! * **Calculus:** [`hessian`], [`wronskian`], [`Matrix::casoratian`].
 
 use crate::api::expr::{Ex, ExprType};
 use crate::base::errors::SymplexError;
 use crate::domains::matrix::{
-    Matrix, all3, budget_check, ex_is_nonnegative, ex_is_positive, ex_is_zero,
+    Matrix, all3, budget_check, ex_is_nonnegative, ex_is_positive, ex_is_zero, reop,
 };
 
 /// Orthogonal basis vectors and the upper-triangular coefficient matrix
@@ -703,6 +704,154 @@ impl Matrix {
         let sd = d.map_indexed(|i, j, e| if i == j { e.sqrt() } else { e.clone() });
         let p_inv = p.inv()?;
         Ok(p.matmul(&sd)?.matmul(&p_inv)?.simplify())
+    }
+
+    /// Principal matrix logarithm `log A` via the Jordan decomposition
+    /// `A = P·J·P⁻¹`: `log A = P·log(J)·P⁻¹`.  SymPy: `Matrix.log()`.
+    ///
+    /// For a Jordan block `J_k(λ) = λI + N`,
+    /// `log J = ln(λ)·I + Σ_{d=1}^{k−1} (−1)^{d+1} Nᵈ / (d·λᵈ)`, i.e. the
+    /// entry `d` places above the diagonal is `(−1)^{d+1} / (d·λᵈ)`.  For
+    /// diagonalizable matrices this is `P·diag(ln λᵢ)·P⁻¹`.  Each
+    /// eigenvalue uses the principal branch of `ln`, so `matrix_exp` of
+    /// the result reproduces `A` but `matrix_log(matrix_exp(A))` need not
+    /// reproduce `A` when eigenvalues of `A` have imaginary part outside
+    /// `(−π, π]`.  Entries are simplified.
+    ///
+    /// # Errors
+    ///
+    /// - [`SymplexError::InvalidArgument`] if the matrix is not square.
+    /// - [`SymplexError::ComputationFailed`] if the matrix is singular
+    ///   (an eigenvalue is provably zero: the logarithm does not exist),
+    ///   or the Jordan form cannot be computed (see
+    ///   [`jordan_form`](Matrix::jordan_form)).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// // SymPy: Matrix([[2, 0], [0, 3]]).log() == [[log(2), 0], [0, log(3)]]
+    /// let l = matrix![ctx, [2, 0], [0, 3]].matrix_log().unwrap();
+    /// assert_eq!(l, Matrix::diag(&[ctx.int(2).ln(), ctx.int(3).ln()]));
+    /// // Defective: log [[1, 1], [0, 1]] = [[0, 1], [0, 0]]
+    /// let n = matrix![ctx, [1, 1], [0, 1]];
+    /// assert_eq!(n.matrix_log().unwrap(), matrix![ctx, [0, 1], [0, 0]]);
+    /// assert!(matrix![ctx, [1, 2], [2, 4]].matrix_log().is_err());   // singular
+    /// ```
+    pub fn matrix_log(&self) -> Result<Matrix, SymplexError> {
+        if !self.is_square() {
+            return Err(invalid(
+                "matrix_log",
+                format!(
+                    "requires a square matrix, got {}×{}",
+                    self.nrows(),
+                    self.ncols()
+                ),
+            ));
+        }
+        let n = self.nrows();
+        let ctx = self.context();
+        let (p, j) = self.jordan_form().map_err(|e| match e {
+            SymplexError::ComputationFailed { reason, .. }
+                if reason.starts_with("expression swell") =>
+            {
+                failed("matrix_log", reason)
+            }
+            e => failed("matrix_log", format!("Jordan form unavailable ({e})")),
+        })?;
+
+        let zero = ctx.zero();
+        let mut log_j: Vec<Vec<Ex>> = vec![vec![zero; n]; n];
+        let mut col = 0;
+        while col < n {
+            let lambda = j[(col, col)].clone();
+            let mut block_size = 1;
+            while col + block_size < n
+                && j[(col + block_size - 1, col + block_size)].is_one_structural()
+                && j[(col + block_size, col + block_size)] == lambda
+            {
+                block_size += 1;
+            }
+            if ex_is_zero(&lambda) == Some(true) {
+                return Err(failed(
+                    "matrix_log",
+                    "matrix is singular (eigenvalue 0); the logarithm does not exist",
+                ));
+            }
+            let ln_lambda = lambda.ln();
+            for i in 0..block_size {
+                log_j[col + i][col + i] = ln_lambda.clone();
+                for d in 1..(block_size - i) {
+                    // (−1)^{d+1} / (d · λ^d)
+                    let sign = if d % 2 == 1 { 1 } else { -1 };
+                    let coef = ctx.rational(sign, d as i64);
+                    log_j[col + i][col + i + d] = &coef / &lambda.powi(d as i64);
+                }
+            }
+            col += block_size;
+        }
+        let log_j = Matrix::new(log_j)?;
+        let p_inv = p.inv().map_err(|e| match e {
+            SymplexError::ComputationFailed { reason, .. }
+                if reason.starts_with("expression swell") =>
+            {
+                failed("matrix_log", reason)
+            }
+            _ => failed(
+                "matrix_log",
+                "eigenvector matrix is singular (internal inconsistency)",
+            ),
+        })?;
+        let result = p.matmul(&log_j)?.matmul(&p_inv)?;
+        budget_check(result.iter(), "matrix_log")?;
+        Ok(result.simplify())
+    }
+
+    /// Casoratian (discrete Wronskian) of the sequences `f₁(n), …, fₖ(n)`:
+    /// `det[ fⱼ(n + i) ]` for `i, j = 0..k`.  A non-zero Casoratian
+    /// proves the sequences linearly independent.  SymPy:
+    /// `casoratian(seqs, n, zero=False)`; SymPy's default `zero=True`
+    /// evaluates at `n = 0`, i.e. `Matrix::casoratian(seqs, n)?.subs(n, 0)`.
+    ///
+    /// # Errors
+    ///
+    /// - [`SymplexError::InvalidArgument`] if `seqs` is empty.
+    /// - [`SymplexError::ComputationFailed`] if the determinant exceeds
+    ///   [`EXPRESSION_BUDGET`](crate::matrix::EXPRESSION_BUDGET).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let n = ctx.symbol("n");
+    /// // SymPy: casoratian([2**n, 3**n], n, zero=False) == 6**n, and == 1 at n = 0
+    /// let w = Matrix::casoratian(&[ctx.int(2).pow(&n), ctx.int(3).pow(&n)], &n).unwrap();
+    /// assert_eq!(w.simplify(), ctx.int(6).pow(&n));
+    /// assert_eq!(w.subs(&n, &ctx.int(0)).eval(), ctx.int(1));
+    /// // SymPy: casoratian([1, n, n**2], n) == 2
+    /// let w2 = Matrix::casoratian(&[ctx.one(), n.clone(), n.powi(2)], &n).unwrap();
+    /// assert_eq!(w2.expand(), ctx.int(2));
+    /// ```
+    pub fn casoratian(seqs: &[Ex], n: &Ex) -> Result<Ex, SymplexError> {
+        if seqs.is_empty() {
+            return Err(invalid("casoratian", "seqs must be non-empty"));
+        }
+        let k = seqs.len();
+        let ctx = n.context();
+        let rows: Vec<Vec<Ex>> = (0..k)
+            .map(|i| {
+                let shifted = n + &ctx.int(i as i64);
+                seqs.iter().map(|f| f.subs(n, &shifted)).collect()
+            })
+            .collect();
+        // k rows of k entries, k ≥ 1.
+        Matrix::from_rows_unchecked(rows)
+            .det()
+            .map_err(|e| reop(e, "casoratian"))
     }
 }
 

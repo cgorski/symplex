@@ -6,6 +6,80 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.9.0] - 2026-09-19
+
+A **comprehensiveness** release: the first pass over the gaps a SymPy user
+hits in the first hour, taken from a module-by-module survey against
+SymPy 1.14 (reference values from that SymPy are cited in the tests).
+Additive over 0.8.2.
+
+### Added
+
+- **Algebraic numbers and polynomial algebra on `Ex`**
+  (`api::expr_algebraic_ext`): `minimal_polynomial(&var)` (`√2 + √3` →
+  `x⁴ − 10x² + 1`; `∛2`, `(1 + √2)⁻¹`, `√(3 + 2√2)`, the golden ratio),
+  `gcd_all` / `lcm_all` (multivariate over ℚ, no variable named),
+  `Ex::groebner(&polys, &vars, order)` and `reduce_modulo` with
+  `MonomialOrder::{Lex, GrevLex}` (in the prelude), `real_roots(&var)` /
+  `root_of(&var, k)` (rational roots exact, the others as ordered
+  `RootOf` nodes), `factor_mod(&var, p)` (factorisation over GF(p), odd
+  prime `p`), and `resultant_symbolic` / `discriminant_symbolic` for
+  polynomials whose other coefficients are symbolic (Sylvester
+  determinant: `disc(ax² + bx + c) = b² − 4ac`).
+- **24 special functions**, each with constructor, exact special values,
+  derivative, arbitrary-precision `evalf` (verified at 40 digits against
+  mpmath on every branch), `Display`, LaTeX and `parse` support:
+  `erfi`, `erfinv`, `erfcinv`, `expint(n, x)` / `E1`, `Shi`, `Chi`,
+  `fresnels`, `fresnelc`, `lowergamma`, `uppergamma`, `polylog` (with
+  `Li₂(½)` and the `s ≤ 0` rational values), `dirichlet_eta`, `airyai`,
+  `airybi`, `airyaiprime`, `airybiprime`, `elliptic_k`, `elliptic_e`,
+  `elliptic_f`, `elliptic_pi` (Carlson forms), `gegenbauer`, `jacobi`,
+  `assoc_legendre`, `assoc_laguerre` (polynomial expansion for integer
+  degree).  `integrate` now reaches `∫e^{ax²+bx+c}` for `a > 0` (`erfi`),
+  `∫sinh(x)/x = Shi(x)` and `∫cosh(x)/x = Chi(x)`.  `expr!` accepts all
+  of them (multi-argument ones in SymPy's `f(params…, x)` order).  Lean
+  rendering of these is `NotImplemented` (no Mathlib spelling); codegen
+  likewise.
+- **Function analysis on `Ex`** (`api::expr_calculus_util_ext`, SymPy's
+  `calculus.util`): `singularities`, `stationary_points`, `maximum` /
+  `minimum` on a union of intervals (stationary points, endpoints,
+  one-sided limits; `±∞` allowed), `is_increasing` / `is_decreasing` /
+  `is_strictly_*` / `is_monotonic` / `is_convex` (exact Sturm route for
+  polynomial and rational derivatives; three-valued, never a guess),
+  `periodicity` (`sin(2x) + cos(3x)` → `2π`), `function_range`.
+- **Matrices**: `singular_values`, `condition_number`, `rank_decomposition`
+  (`A = C·F`), `hessenberg` (`(H, P)` by Gaussian similarity, exact over
+  ℚ), `companion`, `jordan_block`, `permanent` (Ryser / subset DP),
+  `row_insert` / `col_insert` / `row_del` / `col_del` / `permute_rows` /
+  `permute_cols`, `inv_mod`, `matrix_log` (Jordan form, defective blocks
+  included), `casoratian`; `ZMatrix::{lll, lll_default,
+  lll_with_transform}` with exact rational Gram–Schmidt
+  (`normalforms::lll`), `QMatrix::{rank_decomposition, pinv, hessenberg}`,
+  `ExactMatrix::permanent`.
+
+### Changed
+
+- `Matrix::pinv` is defined for **every** matrix: a rank-deficient input
+  goes through the full-rank factorisation `Fᵀ(FFᵀ)⁻¹(CᵀC)⁻¹Cᵀ` (SymPy:
+  `[[1,2],[2,4]].pinv() = (1/25)·[[1,2],[2,4]]`) instead of returning
+  `ComputationFailed`.
+- `∫e^{x²}` and friends are no longer unevaluated `Integral` nodes (see
+  `erfi` above).
+
+### Fixed
+
+- A random-LP property test boxed the variables at a fixed `±50`, which
+  one seed showed can exclude the whole feasible region (`x₃ ≥ 52`); the
+  box is now placed around a feasible vertex.  The solver's verdicts were
+  correct.
+
+### Infrastructure
+
+- `symplex` and `symplex-build` at 0.9.0; `symplex-macros` at 0.3.2
+  (new function names for `expr!`; the unreachable arm is a compile
+  error).  New test group `tests/v09/` (algebraic, calculus_util, matrix,
+  special; `ntheory_discrete` and `output` reserved for the next pass).
+
 ## [0.8.2] - 2026-09-19
 
 ### Changed

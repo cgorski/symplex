@@ -449,6 +449,16 @@ pub(crate) fn render(arena: &Arena, expr: ExprId, opts: &LeanOpts) -> Result<Str
             },
             ExprNode::Piecewise(pairs) => render_piecewise(pairs, &cache)?,
 
+            // Library special functions (Bessel, orthogonal polynomials,
+            // erfi, polylog, elliptic integrals, …) have no Mathlib spelling;
+            // name the function in the error rather than the node kind.
+            ExprNode::Apply(sid, _) => {
+                return Err(unsupported(format!(
+                    "the special function `{}`",
+                    arena.symbol_name(*sid)
+                )));
+            }
+
             other => return Err(unsupported(format!("`{}`", describe(other)))),
         };
         cache.insert(id, rendered);

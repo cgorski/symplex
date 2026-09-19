@@ -89,8 +89,9 @@ pub const MAX_RECOMBINATION_SUBSETS: usize = 400_000;
 const MAX_PRIMES_EXAMINED: usize = 600;
 
 /// Largest prime allowed for the `u64` finite-field arithmetic
-/// (products of two residues must fit in `u64`).
-const MAX_PRIME: u64 = 1 << 31;
+/// (products of two residues must fit in `u64`).  [`factor_mod_p`] accepts
+/// odd primes strictly below this bound.
+pub const MAX_PRIME: u64 = 1 << 31;
 
 /// Largest univariate degree the Kronecker substitution in
 /// [`factor_multivariate`] is allowed to produce.

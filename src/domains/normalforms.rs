@@ -340,3 +340,67 @@ pub fn lattice_determinant(m: &Matrix) -> Result<BigInt, SymplexError> {
     let z = integer_matrix(m, "lattice_determinant")?;
     z.lattice_determinant()
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Public API: LLL lattice reduction (0.9)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// LLL-reduced basis of the lattice spanned by the **rows** of the integer
+/// matrix `A`, with Lovász parameter `δ = num/den` (the standard choice
+/// is `(3, 4)`).  SymPy: `Matrix.lll(delta)`.
+///
+/// The Gram–Schmidt data is exact (rational), so the result satisfies the
+/// size condition `|μ_ij| ≤ 1/2` and the Lovász condition
+/// `‖b*_k‖² ≥ (δ − μ²_{k,k−1})‖b*_{k−1}‖²` exactly, and spans the same
+/// lattice as `A` (same [`hermite_normal_form`]).  See [`ZMatrix::lll`]
+/// for the algorithm.
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] if any entry is not an integer
+/// literal, `δ` is not in the open interval `(1/4, 1)`, or the rows are
+/// linearly dependent.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::normalforms::{hermite_normal_form, lll};
+///
+/// let ctx = Context::new();
+/// let b = matrix![ctx, [1, 1, 1], [-1, 0, 2], [3, 5, 6]];
+/// let r = lll(&b, (3, 4)).unwrap();
+/// // SymPy 1.14: Matrix([[1,1,1],[-1,0,2],[3,5,6]]).lll() == [[0,1,0],[1,0,1],[-1,0,2]]
+/// assert_eq!(r, matrix![ctx, [0, 1, 0], [1, 0, 1], [-1, 0, 2]]);
+/// assert_eq!(hermite_normal_form(&r).unwrap(), hermite_normal_form(&b).unwrap());
+/// ```
+pub fn lll(m: &Matrix, delta: (i64, i64)) -> Result<Matrix, SymplexError> {
+    let z = integer_matrix(m, "lll")?;
+    Ok(z.lll(delta)?.to_matrix(&m.context()))
+}
+
+/// LLL reduction with its unimodular transform: `(R, T)` with `R = T·A`
+/// and `det T = ±1`.  SymPy: `Matrix.lll_transform(delta)`.
+///
+/// # Errors
+///
+/// Same as [`lll`].
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::normalforms::{is_unimodular, lll_with_transform};
+///
+/// let ctx = Context::new();
+/// let b = matrix![ctx, [1, 1, 1], [-1, 0, 2], [3, 5, 6]];
+/// let (r, t) = lll_with_transform(&b, (3, 4)).unwrap();
+/// assert_eq!((&t * &b).eval(), r);
+/// assert!(is_unimodular(&t).unwrap());
+/// ```
+pub fn lll_with_transform(m: &Matrix, delta: (i64, i64)) -> Result<(Matrix, Matrix), SymplexError> {
+    let z = integer_matrix(m, "lll_with_transform")?;
+    let (r, t) = z.lll_with_transform(delta)?;
+    let ctx = m.context();
+    Ok((r.to_matrix(&ctx), t.to_matrix(&ctx)))
+}

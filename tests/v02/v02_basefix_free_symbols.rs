@@ -85,8 +85,9 @@ fn symbol_free_outside_and_bound_inside_same_expression() {
 fn integral_and_derivative_variables_stay_free() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    // exp(x^2) has no elementary antiderivative → formal Integral.
-    let i = x.powi(2).exp().integrate(&x);
+    // exp(exp(x)) has no elementary or special-function antiderivative in
+    // the tables → formal Integral.  (exp(x²) integrates to erfi since 0.9.)
+    let i = x.exp().exp().integrate(&x);
     assert!(i.has_unevaluated(), "{i}");
     assert_eq!(i.free_symbols(), vec![x.clone()], "{i}");
     assert!(!i.is_constant());

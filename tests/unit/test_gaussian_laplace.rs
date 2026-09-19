@@ -168,17 +168,20 @@ fn integrate_exp_full_quadratic_ftc() {
 }
 
 #[test]
-fn integrate_exp_pos_x2_stays_unevaluated() {
-    // ∫ exp(x²) dx has a > 0 — should remain unevaluated (no erfi support)
+fn integrate_exp_pos_x2_gives_erfi() {
+    // ∫ exp(x²) dx has a > 0: √π/2 · erfi(x) since 0.9 (it stayed
+    // unevaluated before `erfi` existed).  Never the real `erf`.
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = x.powi(2).exp();
     let anti = integrand.integrate(&x);
     let s = format!("{anti}");
-    // Positive leading coefficient: must NOT produce erf
+    assert!(s.contains("erfi"), "positive a produces erfi: {s}");
+    assert!(!s.contains("erf("), "positive a must not produce erf: {s}");
+    assert!(!anti.has_unevaluated(), "{s}");
     assert!(
-        !s.contains("erf") && !s.contains("Erf"),
-        "positive a should not produce erf: {s}"
+        (anti.diff(&x) - &integrand).simplify().is_zero_structural(),
+        "{s}"
     );
 }
 

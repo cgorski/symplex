@@ -29,7 +29,12 @@ use smallvec::SmallVec;
 
 use crate::api::context::Context;
 use crate::api::expr::Ex;
-use crate::base::arena::Arena;
+use crate::base::arena::{
+    Arena, FN_AIRYAI, FN_AIRYAIPRIME, FN_AIRYBI, FN_AIRYBIPRIME, FN_ASSOC_LAGUERRE,
+    FN_ASSOC_LEGENDRE, FN_CHI, FN_DIRICHLET_ETA, FN_ELLIPTIC_E, FN_ELLIPTIC_F, FN_ELLIPTIC_K,
+    FN_ELLIPTIC_PI, FN_ERFCINV, FN_ERFI, FN_ERFINV, FN_EXPINT, FN_FRESNELC, FN_FRESNELS,
+    FN_GEGENBAUER, FN_JACOBI, FN_LOWERGAMMA, FN_POLYLOG, FN_SHI, FN_UPPERGAMMA,
+};
 use crate::base::node::{ExprId, ExprNode};
 
 /// Error returned when parsing fails.
@@ -524,9 +529,11 @@ impl<'a> Parser<'a> {
             "sum" | "product" => {
                 self.make_sum_product(arena, name, name_lower, arg, arg2, arg3, arg4)
             }
+            "jacobi" => Ok(apply_named(arena, FN_JACOBI, &[arg, arg2, arg3, arg4])),
             _ => Err(ParseError {
                 message: format!(
-                    "unknown 4-argument function '{}'. Supported: Series, Sum, Product, Integral",
+                    "unknown 4-argument function '{}'. Supported: Series, Sum, Product, Integral, \
+                     jacobi",
                     name
                 ),
                 position: self.lexer.pos,
@@ -551,10 +558,15 @@ impl<'a> Parser<'a> {
             }
             "residue" => Ok(arena.intern(ExprNode::Residue(arg, arg2, arg3))),
             "dsolve" => Ok(arena.intern(ExprNode::DSolve(arg, arg2, arg3))),
+            // Orthogonal polynomials with a parameter: (n, param, x).
+            "gegenbauer" => Ok(apply_named(arena, FN_GEGENBAUER, &[arg, arg2, arg3])),
+            "assoc_legendre" => Ok(apply_named(arena, FN_ASSOC_LEGENDRE, &[arg, arg2, arg3])),
+            "assoc_laguerre" => Ok(apply_named(arena, FN_ASSOC_LAGUERRE, &[arg, arg2, arg3])),
             _ => Err(ParseError {
                 message: format!(
                     "unknown 3-argument function '{}'. Supported: Limit, LaplaceTransform, \
-                     InverseLaplaceTransform, Residue, DSolve, min, max",
+                     InverseLaplaceTransform, Residue, DSolve, min, max, gegenbauer, \
+                     assoc_legendre, assoc_laguerre",
                     name
                 ),
                 position: self.lexer.pos,
@@ -593,11 +605,19 @@ impl<'a> Parser<'a> {
             "bessely" => Ok(arena.bessely(arg, arg2)),
             "besseli" => Ok(arena.besseli(arg, arg2)),
             "besselk" => Ok(arena.besselk(arg, arg2)),
+            // More special functions (0.9): parameter first, as in SymPy.
+            "expint" => Ok(apply_named(arena, FN_EXPINT, &[arg, arg2])),
+            "lowergamma" => Ok(apply_named(arena, FN_LOWERGAMMA, &[arg, arg2])),
+            "uppergamma" => Ok(apply_named(arena, FN_UPPERGAMMA, &[arg, arg2])),
+            "polylog" => Ok(apply_named(arena, FN_POLYLOG, &[arg, arg2])),
+            "elliptic_f" => Ok(apply_named(arena, FN_ELLIPTIC_F, &[arg, arg2])),
+            "elliptic_pi" => Ok(apply_named(arena, FN_ELLIPTIC_PI, &[arg, arg2])),
             _ => Err(ParseError {
                 message: format!(
                     "unknown 2-argument function '{}'. Supported: log, atan2, polygamma, \
-                     binomial, beta, besselj, bessely, besseli, besselk, min, max, \
-                     KroneckerDelta, RootOf, ConditionSet, Integral",
+                     binomial, beta, besselj, bessely, besseli, besselk, expint, lowergamma, \
+                     uppergamma, polylog, elliptic_f, elliptic_pi, min, max, KroneckerDelta, \
+                     RootOf, ConditionSet, Integral",
                     name
                 ),
                 position: self.lexer.pos,
@@ -687,6 +707,22 @@ impl<'a> Parser<'a> {
             "ei" => Ok(arena.ei(arg)),
             "li" => Ok(arena.li(arg)),
             "zeta" => Ok(arena.zeta(arg)),
+            // More special functions (0.9)
+            "erfi" => Ok(apply_named(arena, FN_ERFI, &[arg])),
+            "erfinv" => Ok(apply_named(arena, FN_ERFINV, &[arg])),
+            "erfcinv" => Ok(apply_named(arena, FN_ERFCINV, &[arg])),
+            "e1" => Ok(apply_named(arena, FN_EXPINT, &[arena.one, arg])),
+            "shi" => Ok(apply_named(arena, FN_SHI, &[arg])),
+            "chi" => Ok(apply_named(arena, FN_CHI, &[arg])),
+            "fresnels" => Ok(apply_named(arena, FN_FRESNELS, &[arg])),
+            "fresnelc" => Ok(apply_named(arena, FN_FRESNELC, &[arg])),
+            "dirichlet_eta" => Ok(apply_named(arena, FN_DIRICHLET_ETA, &[arg])),
+            "airyai" => Ok(apply_named(arena, FN_AIRYAI, &[arg])),
+            "airybi" => Ok(apply_named(arena, FN_AIRYBI, &[arg])),
+            "airyaiprime" => Ok(apply_named(arena, FN_AIRYAIPRIME, &[arg])),
+            "airybiprime" => Ok(apply_named(arena, FN_AIRYBIPRIME, &[arg])),
+            "elliptic_k" => Ok(apply_named(arena, FN_ELLIPTIC_K, &[arg])),
+            "elliptic_e" => Ok(apply_named(arena, FN_ELLIPTIC_E, &[arg])),
             _ => Err(ParseError {
                 message: format!(
                     "unknown function '{}'. Supported: sin, cos, tan, cot, sec, csc, exp, ln, log, \
@@ -694,15 +730,25 @@ impl<'a> Parser<'a> {
                      asinh, acosh, atanh, sign, floor, ceil, gamma, erf, erfc, heaviside, \
                      diracdelta, lambertw, factorial, digamma, loggamma, re, im, conjugate, arg, \
                      Si, Ci, Ei, li, zeta, polygamma, binomial, beta, besselj, bessely, besseli, \
-                     besselk, min, max, KroneckerDelta, Limit, RootOf, ConditionSet, \
-                     LaplaceTransform, InverseLaplaceTransform, Residue, DSolve, Series, Sum, \
-                     Product, Integral",
+                     besselk, erfi, erfinv, erfcinv, E1, expint, Shi, Chi, fresnels, fresnelc, \
+                     lowergamma, uppergamma, polylog, dirichlet_eta, airyai, airybi, \
+                     airyaiprime, airybiprime, elliptic_k, elliptic_e, elliptic_f, elliptic_pi, \
+                     gegenbauer, jacobi, assoc_legendre, assoc_laguerre, min, max, \
+                     KroneckerDelta, Limit, RootOf, ConditionSet, LaplaceTransform, \
+                     InverseLaplaceTransform, Residue, DSolve, Series, Sum, Product, Integral",
                     name
                 ),
                 position: self.lexer.pos,
             }),
         }
     }
+}
+
+/// Intern a library `Apply(name, args)` node (the 0.9 special functions,
+/// which have no dedicated `Arena` constructors).
+fn apply_named(arena: &mut Arena, name: &str, args: &[ExprId]) -> ExprId {
+    let sid = arena.symbols.intern(name);
+    arena.intern(ExprNode::Apply(sid, args.iter().copied().collect()))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

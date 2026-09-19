@@ -943,6 +943,415 @@ fn num_value(arena: &Arena, expr: ExprId) -> Option<f64> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Function analysis (0.9): continuity scan and periodicity
+//
+// Arena-level helpers behind `Ex::singularities`, `Ex::maximum`,
+// `Ex::function_range` and `Ex::periodicity`
+// (`src/api/expr_calculus_util_ext.rs`).
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// What a structural walk of an expression says about its continuity in
+/// one variable.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ContinuityScan {
+    /// Sub-expressions `g` such that the expression is undefined wherever
+    /// `g = 0` (SymPy's `singularities` rule set): bases of negative
+    /// powers, arguments of `ln`, `cos(g)` for `tan(g)`, and `g ∓ 1` for
+    /// `atanh(g)`.  Deduplicated; only sources depending on the variable.
+    pub singular: Vec<ExprId>,
+    /// Sub-expressions `g` such that the expression is continuous but not
+    /// differentiable where `g = 0` (`|g|`).
+    pub kinks: Vec<ExprId>,
+    /// Name of the first node kind that makes the expression discontinuous
+    /// (`floor`, `sign`, `Piecewise`, …), has poles the scan does not
+    /// enumerate (`Gamma`, `zeta`, …), or cannot be looked into at all
+    /// (unknown functions, formal integrals / limits, `RootOf`).
+    pub opaque: Option<&'static str>,
+}
+
+/// Scan `expr` for the singular / kink sources and opaque nodes of
+/// [`ContinuityScan`], with respect to `var`.
+///
+/// Explicit post-order walk (no recursion).  Only nodes that depend on
+/// `var` contribute.
+pub(crate) fn continuity_scan(arena: &mut Arena, expr: ExprId, var: ExprId) -> ContinuityScan {
+    let mut scan = ContinuityScan::default();
+    let mut assumptions = crate::base::assumptions::AssumptionCache::new();
+
+    for id in walk::post_order_ids(arena, expr) {
+        let node = arena.node(id).clone();
+        let depends = |arena: &Arena, child: ExprId| walk::contains(arena, child, var);
+        match node {
+            ExprNode::Pow(base, exp) => {
+                if !depends(arena, base) || depends(arena, exp) {
+                    continue;
+                }
+                let negative = match arena.as_num(exp) {
+                    Some(r) => {
+                        use num_traits::Signed;
+                        r.is_negative()
+                    }
+                    None => {
+                        assumptions.query(arena, exp, crate::base::assumptions::Props::NEGATIVE)
+                            == Some(true)
+                    }
+                };
+                if negative {
+                    push_unique(&mut scan.singular, base);
+                }
+            }
+            ExprNode::Ln(g) if depends(arena, g) => push_unique(&mut scan.singular, g),
+            ExprNode::Tan(g) if depends(arena, g) => {
+                let cos_g = arena.cos(g);
+                push_unique(&mut scan.singular, cos_g);
+            }
+            ExprNode::Atanh(g) if depends(arena, g) => {
+                let one = arena.one();
+                let minus = arena.sub(g, one);
+                let plus = arena.add(&[g, one]);
+                push_unique(&mut scan.singular, minus);
+                push_unique(&mut scan.singular, plus);
+            }
+            ExprNode::Abs(g) if depends(arena, g) => push_unique(&mut scan.kinks, g),
+            _ => {
+                if scan.opaque.is_none()
+                    && let Some(name) = opaque_node_name(&node)
+                    && node.children().iter().any(|&c| depends(arena, c))
+                {
+                    scan.opaque = Some(name);
+                }
+            }
+        }
+    }
+    scan
+}
+
+fn push_unique(list: &mut Vec<ExprId>, id: ExprId) {
+    if !list.contains(&id) {
+        list.push(id);
+    }
+}
+
+/// Node kinds that the extremum / range analysis refuses to look through:
+/// discontinuous functions, functions with poles outside the
+/// [`ContinuityScan::singular`] rule set, and formal or unknown nodes.
+fn opaque_node_name(node: &ExprNode) -> Option<&'static str> {
+    Some(match node {
+        ExprNode::Floor(_) => "floor",
+        ExprNode::Ceiling(_) => "ceiling",
+        ExprNode::Sign(_) => "sign",
+        ExprNode::Heaviside(_) => "Heaviside",
+        ExprNode::DiracDelta(_) => "DiracDelta",
+        ExprNode::Piecewise(_) => "Piecewise",
+        ExprNode::Min(_) => "min",
+        ExprNode::Max(_) => "max",
+        ExprNode::Re(_) => "re",
+        ExprNode::Im(_) => "im",
+        ExprNode::Conjugate(_) => "conjugate",
+        ExprNode::Arg(_) => "arg",
+        ExprNode::Atan2(..) => "atan2",
+        ExprNode::Gamma(_) => "Gamma",
+        ExprNode::LogGamma(_) => "loggamma",
+        ExprNode::Digamma(_) => "digamma",
+        ExprNode::Polygamma(..) => "polygamma",
+        ExprNode::Zeta(_) => "zeta",
+        ExprNode::Beta(..) => "Beta",
+        ExprNode::Factorial(_) => "factorial",
+        ExprNode::Binomial(..) => "binomial",
+        ExprNode::KroneckerDelta(..) => "KroneckerDelta",
+        ExprNode::LambertW(_) => "LambertW",
+        ExprNode::Apply(..) => "an unknown function",
+        ExprNode::Derivative(..) => "Derivative",
+        ExprNode::Integral(..) => "Integral",
+        ExprNode::DefiniteIntegral(..) => "DefiniteIntegral",
+        ExprNode::Sum(..) => "Sum",
+        ExprNode::Product_(..) => "Product",
+        ExprNode::Limit(..) => "Limit",
+        ExprNode::Series(..) => "Series",
+        ExprNode::LaplaceTransform(..) => "LaplaceTransform",
+        ExprNode::InverseLaplaceTransform(..) => "InverseLaplaceTransform",
+        ExprNode::Residue(..) => "Residue",
+        ExprNode::RootOf(..) => "RootOf",
+        ExprNode::RootSum(..) => "RootSum",
+        ExprNode::DSolve(..) => "DSolve",
+        ExprNode::Gt(..)
+        | ExprNode::Ge(..)
+        | ExprNode::Eq_(..)
+        | ExprNode::Ne(..)
+        | ExprNode::And(_)
+        | ExprNode::Or(_)
+        | ExprNode::Not(_) => "a boolean",
+        ExprNode::ConditionSet(..)
+        | ExprNode::Interval(..)
+        | ExprNode::FiniteSet(_)
+        | ExprNode::SetUnion(_)
+        | ExprNode::SetIntersection(_)
+        | ExprNode::SetComplement(..) => "a set",
+        _ => return None,
+    })
+}
+
+/// Does `expr` contain `sin`, `cos` or `tan` of something depending on
+/// `var`?  Decides whether the zeros of `expr` may form periodic
+/// families (so `solve_general` rather than `solve` should be used).
+pub(crate) fn has_trig_of(arena: &Arena, expr: ExprId, var: ExprId) -> bool {
+    walk::post_order_ids(arena, expr)
+        .into_iter()
+        .any(|id| match arena.node(id) {
+            ExprNode::Sin(g) | ExprNode::Cos(g) | ExprNode::Tan(g) => {
+                walk::contains(arena, *g, var)
+            }
+            _ => false,
+        })
+}
+
+// ── periodicity ────────────────────────────────────────────────────────────
+
+/// Fundamental period of `expr` in `var` (SymPy's `periodicity`).
+///
+/// * `Some(0)` when `expr` does not depend on `var`;
+/// * `Some(p)` for `sin`/`cos`/`tan` of a linear argument `a·var + b`
+///   (`2π/|a|`, `2π/|a|`, `π/|a|`), for sums, products, powers and
+///   compositions of periodic pieces (lcm of the periods, which requires
+///   pairwise rational ratios), with the half-period refinement for
+///   products `sin(g)ᵖ·cos(g)ᵠ` whose exponent sum `p + q` is even
+///   (`sin·cos`, `cos/sin`, `sin²` → `π/|a|`) and for `|sin g|`, `|cos g|`;
+/// * `None` when some piece depending on `var` is not recognised as
+///   periodic (a bare `var`, `sin(x²)`, `sin(√2·x) + sin(x)`, formal
+///   nodes, …).
+///
+/// Explicit post-order walk with a per-node memo; no recursion.
+pub(crate) fn periodicity(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<ExprId> {
+    if !walk::contains(arena, expr, var) {
+        return Some(arena.zero());
+    }
+    let mut memo: rustc_hash::FxHashMap<ExprId, Option<ExprId>> = rustc_hash::FxHashMap::default();
+    for id in walk::post_order_ids(arena, expr) {
+        if memo.contains_key(&id) {
+            continue;
+        }
+        let period = if walk::contains(arena, id, var) {
+            node_period(arena, id, var, &memo)
+        } else {
+            Some(arena.zero())
+        };
+        memo.insert(id, period);
+    }
+    memo.get(&expr).copied().flatten()
+}
+
+/// Period of one node (which depends on `var`) from the periods of its
+/// children.
+fn node_period(
+    arena: &mut Arena,
+    id: ExprId,
+    var: ExprId,
+    memo: &rustc_hash::FxHashMap<ExprId, Option<ExprId>>,
+) -> Option<ExprId> {
+    let node = arena.node(id).clone();
+    match &node {
+        // The variable itself is not periodic.
+        ExprNode::Symbol(_) => None,
+
+        ExprNode::Sin(g) | ExprNode::Cos(g) | ExprNode::Tan(g) => {
+            if let Some(p) = trig_power_period(arena, id, var) {
+                return Some(p);
+            }
+            // Composition `sin(h(x))` with `h` periodic.
+            memo.get(g).copied().flatten()
+        }
+
+        // |sin g| and |cos g| have half the period of sin g / cos g.
+        ExprNode::Abs(g) => {
+            if let ExprNode::Sin(h) | ExprNode::Cos(h) = arena.node(*g).clone()
+                && let Some((a, _)) = linear_coeffs_exact(arena, h, var)
+            {
+                return Some(pi_over_abs(arena, a, 1));
+            }
+            memo.get(g).copied().flatten()
+        }
+
+        ExprNode::Pow(_, exp) => {
+            if !walk::contains(arena, *exp, var)
+                && let Some(p) = trig_power_period(arena, id, var)
+            {
+                return Some(p);
+            }
+            lcm_of_children(arena, &node, memo)
+        }
+
+        ExprNode::Mul(children) => {
+            let children = children.clone();
+            mul_period(arena, &children, var, memo)
+        }
+
+        // Binders, formal nodes, piecewise, booleans and sets: not analysed.
+        ExprNode::Integral(..)
+        | ExprNode::DefiniteIntegral(..)
+        | ExprNode::Sum(..)
+        | ExprNode::Product_(..)
+        | ExprNode::Limit(..)
+        | ExprNode::Series(..)
+        | ExprNode::LaplaceTransform(..)
+        | ExprNode::InverseLaplaceTransform(..)
+        | ExprNode::Residue(..)
+        | ExprNode::RootOf(..)
+        | ExprNode::RootSum(..)
+        | ExprNode::DSolve(..)
+        | ExprNode::Piecewise(_)
+        | ExprNode::Gt(..)
+        | ExprNode::Ge(..)
+        | ExprNode::Eq_(..)
+        | ExprNode::Ne(..)
+        | ExprNode::And(_)
+        | ExprNode::Or(_)
+        | ExprNode::Not(_)
+        | ExprNode::ConditionSet(..)
+        | ExprNode::Interval(..)
+        | ExprNode::FiniteSet(_)
+        | ExprNode::SetUnion(_)
+        | ExprNode::SetIntersection(_)
+        | ExprNode::SetComplement(..) => None,
+
+        // Any other function of periodic arguments is periodic with the
+        // lcm of their periods (`Add`, `Neg`, `exp`, `ln`, `sinh`, …).
+        _ => lcm_of_children(arena, &node, memo),
+    }
+}
+
+/// lcm of the children's periods; `None` if any child is not periodic.
+fn lcm_of_children(
+    arena: &mut Arena,
+    node: &ExprNode,
+    memo: &rustc_hash::FxHashMap<ExprId, Option<ExprId>>,
+) -> Option<ExprId> {
+    let mut acc = arena.zero();
+    for c in node.children() {
+        let p = memo.get(&c).copied().flatten()?;
+        acc = lcm_periods(arena, acc, p)?;
+    }
+    Some(acc)
+}
+
+/// Which trigonometric function a factor is built from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TrigKind {
+    SinCos,
+    Tan,
+}
+
+/// View `factor` as `trig(g)^k` with an integer `k` (`k = 1` for a bare
+/// `sin`/`cos`/`tan`).
+fn as_trig_power(arena: &Arena, factor: ExprId) -> Option<(ExprId, TrigKind, i64)> {
+    let (base, k) = match arena.node(factor) {
+        ExprNode::Pow(base, exp) => {
+            let r = arena.as_num(*exp)?;
+            if !r.is_integer() {
+                return None;
+            }
+            use num_traits::ToPrimitive;
+            (*base, r.to_integer().to_i64()?)
+        }
+        _ => (factor, 1),
+    };
+    match arena.node(base) {
+        ExprNode::Sin(g) | ExprNode::Cos(g) => Some((*g, TrigKind::SinCos, k)),
+        ExprNode::Tan(g) => Some((*g, TrigKind::Tan, k)),
+        _ => None,
+    }
+}
+
+/// Period of a single `trig(a·var + b)^k` factor: `π/|a|` for `tan` and
+/// for even powers of `sin`/`cos`, `2π/|a|` otherwise.  `None` if the
+/// factor is not of that shape.
+fn trig_power_period(arena: &mut Arena, factor: ExprId, var: ExprId) -> Option<ExprId> {
+    let (g, kind, k) = as_trig_power(arena, factor)?;
+    let (a, _) = linear_coeffs_exact(arena, g, var)?;
+    let halves = kind == TrigKind::Tan || k % 2 == 0;
+    Some(pi_over_abs(arena, a, if halves { 1 } else { 2 }))
+}
+
+/// Period of a product: trigonometric factors sharing the same linear
+/// argument are grouped so that `sin(g)ᵖ·cos(g)ᵠ·tan(g)ʳ` gets period
+/// `π/|a|` when `p + q` is even (both `sin` and `cos` flip sign under a
+/// half-period shift, `tan` does not); everything else contributes its own
+/// period.  The result is the lcm of all contributions.
+fn mul_period(
+    arena: &mut Arena,
+    children: &[ExprId],
+    var: ExprId,
+    memo: &rustc_hash::FxHashMap<ExprId, Option<ExprId>>,
+) -> Option<ExprId> {
+    // (inner argument g, coefficient a, exponent sum of sin/cos factors)
+    let mut groups: Vec<(ExprId, ExprId, i64)> = Vec::new();
+    let mut acc = arena.zero();
+    for &c in children {
+        if !walk::contains(arena, c, var) {
+            continue;
+        }
+        if let Some((g, kind, k)) = as_trig_power(arena, c)
+            && let Some((a, _)) = linear_coeffs_exact(arena, g, var)
+        {
+            let weight = if kind == TrigKind::Tan { 0 } else { k };
+            match groups.iter_mut().find(|(gg, _, _)| *gg == g) {
+                Some(entry) => entry.2 += weight,
+                None => groups.push((g, a, weight)),
+            }
+            continue;
+        }
+        let p = memo.get(&c).copied().flatten()?;
+        acc = lcm_periods(arena, acc, p)?;
+    }
+    for (_, a, sum) in groups {
+        let p = pi_over_abs(arena, a, if sum % 2 == 0 { 1 } else { 2 });
+        acc = lcm_periods(arena, acc, p)?;
+    }
+    Some(acc)
+}
+
+/// `k·π/|a|`, evaluated.  `|a|` is resolved through the assumption system
+/// when the sign of `a` is known (`|π| = π`, `|−3| = 3`).
+fn pi_over_abs(arena: &mut Arena, a: ExprId, k: i64) -> ExprId {
+    let k = arena.int(k);
+    let pi = arena.pi();
+    let num = arena.mul(&[k, pi]);
+    let mut assumptions = crate::base::assumptions::AssumptionCache::new();
+    let den = if assumptions.query(arena, a, crate::base::assumptions::Props::POSITIVE)
+        == Some(true)
+    {
+        a
+    } else if assumptions.query(arena, a, crate::base::assumptions::Props::NEGATIVE) == Some(true) {
+        arena.neg(a)
+    } else {
+        arena.abs(a)
+    };
+    let q = arena.div(num, den);
+    eval::eval(arena, q)
+}
+
+/// Least common multiple of two periods (`0` is the identity).  Requires
+/// the ratio `a/b` to evaluate to a rational `m/n`; then `lcm = n·a`.
+/// `None` when the ratio is irrational or cannot be decided.
+fn lcm_periods(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<ExprId> {
+    if arena.is_zero_structural(a) {
+        return Some(b);
+    }
+    if arena.is_zero_structural(b) || a == b {
+        return Some(a);
+    }
+    let ratio = arena.div(a, b);
+    let ratio = eval::eval(arena, ratio);
+    let r = arena.as_num(ratio)?.clone();
+    use num_traits::Signed;
+    if !r.is_positive() {
+        return None;
+    }
+    let n = arena.big_int(r.denom().clone());
+    let l = arena.mul(&[a, n]);
+    Some(eval::eval(arena, l))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 

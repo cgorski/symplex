@@ -53,10 +53,14 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 use rustc_hash::FxHashMap;
 
 use crate::base::arena::{
-    Arena, FN_BELL, FN_BERNOULLI, FN_BESSELI, FN_BESSELJ, FN_BESSELK, FN_BESSELY, FN_CATALAN,
-    FN_CHEBYSHEV_T, FN_CHEBYSHEV_U, FN_EULER_NUMBER, FN_FACTORIAL2, FN_FALLING_FACTORIAL,
-    FN_FIBONACCI, FN_HARMONIC, FN_HERMITE, FN_LAGUERRE, FN_LEGENDRE, FN_LUCAS, FN_PARTITION_COUNT,
-    FN_RISING_FACTORIAL, FN_STIRLING1, FN_STIRLING2, FN_SUBFACTORIAL,
+    Arena, FN_AIRYAI, FN_AIRYAIPRIME, FN_AIRYBI, FN_AIRYBIPRIME, FN_ASSOC_LAGUERRE,
+    FN_ASSOC_LEGENDRE, FN_BELL, FN_BERNOULLI, FN_BESSELI, FN_BESSELJ, FN_BESSELK, FN_BESSELY,
+    FN_CATALAN, FN_CHEBYSHEV_T, FN_CHEBYSHEV_U, FN_CHI, FN_DIRICHLET_ETA, FN_ELLIPTIC_E,
+    FN_ELLIPTIC_F, FN_ELLIPTIC_K, FN_ELLIPTIC_PI, FN_ERFCINV, FN_ERFI, FN_ERFINV, FN_EULER_NUMBER,
+    FN_EXPINT, FN_FACTORIAL2, FN_FALLING_FACTORIAL, FN_FIBONACCI, FN_FRESNELC, FN_FRESNELS,
+    FN_GEGENBAUER, FN_HARMONIC, FN_HERMITE, FN_JACOBI, FN_LAGUERRE, FN_LEGENDRE, FN_LOWERGAMMA,
+    FN_LUCAS, FN_PARTITION_COUNT, FN_POLYLOG, FN_RISING_FACTORIAL, FN_SHI, FN_STIRLING1,
+    FN_STIRLING2, FN_SUBFACTORIAL, FN_UPPERGAMMA,
 };
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
@@ -873,6 +877,17 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                             id
                         } else {
                             arena.laguerre(new_args[0], new_args[1])
+                        }
+                    }
+
+                    // ── More special functions (0.9) ────────────────
+                    n if is_special_09(n) => {
+                        if let Some(result) = eval_special_09(arena, n, &new_args) {
+                            result
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.intern(ExprNode::Apply(name_sid, new_args))
                         }
                     }
 
@@ -3225,6 +3240,802 @@ fn eval_laguerre(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
     }
 
     l_curr
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// More special functions (0.9): exact values
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Is `name` one of the 0.9 `Apply`-based special functions handled by
+/// [`eval_special_09`] (and numerically by `evalf`)?
+pub(crate) fn is_special_09(name: &str) -> bool {
+    matches!(
+        name,
+        FN_ERFI
+            | FN_ERFINV
+            | FN_ERFCINV
+            | FN_EXPINT
+            | FN_SHI
+            | FN_CHI
+            | FN_FRESNELS
+            | FN_FRESNELC
+            | FN_LOWERGAMMA
+            | FN_UPPERGAMMA
+            | FN_POLYLOG
+            | FN_DIRICHLET_ETA
+            | FN_AIRYAI
+            | FN_AIRYBI
+            | FN_AIRYAIPRIME
+            | FN_AIRYBIPRIME
+            | FN_ELLIPTIC_K
+            | FN_ELLIPTIC_E
+            | FN_ELLIPTIC_F
+            | FN_ELLIPTIC_PI
+            | FN_GEGENBAUER
+            | FN_JACOBI
+            | FN_ASSOC_LEGENDRE
+            | FN_ASSOC_LAGUERRE
+    )
+}
+
+/// Intern `name(args)` as a library `Apply` node (no folding).
+pub(crate) fn apply_named(arena: &mut Arena, name: &str, args: &[ExprId]) -> ExprId {
+    let sid = arena.symbols.intern(name);
+    arena.intern(ExprNode::Apply(sid, args.iter().copied().collect()))
+}
+
+/// Largest integer / half-integer parameter for which the incomplete gamma
+/// functions, `polylog(−n, z)` and the parametrised orthogonal polynomials
+/// are expanded into closed forms.
+const MAX_SPECIAL_EXPANSION: i64 = 64;
+
+/// `id` as a small integer in `[lo, hi]`.
+fn as_int_in(arena: &Arena, id: ExprId, lo: i64, hi: i64) -> Option<i64> {
+    let r = arena.as_num(id)?;
+    if !r.is_integer() {
+        return None;
+    }
+    let n: i64 = r.to_integer().try_into().ok()?;
+    (lo..=hi).contains(&n).then_some(n)
+}
+
+/// `id` as a rational number.
+fn as_ratio(arena: &Arena, id: ExprId) -> Option<Ratio<BigInt>> {
+    arena.as_num(id).cloned()
+}
+
+/// `π/2`.
+fn half_pi(arena: &mut Arena) -> ExprId {
+    let half = arena.rational(1, 2);
+    arena.mul(&[half, arena.pi])
+}
+
+/// Exact values of the 0.9 special functions; `None` leaves the node as is.
+fn eval_special_09(arena: &mut Arena, name: &str, args: &[ExprId]) -> Option<ExprId> {
+    match (name, args.len()) {
+        (FN_ERFI, 1) => eval_erfi(arena, args[0]),
+        (FN_ERFINV, 1) => eval_erfinv(arena, args[0]),
+        (FN_ERFCINV, 1) => eval_erfcinv(arena, args[0]),
+        (FN_EXPINT, 2) => eval_expint(arena, args[0], args[1]),
+        (FN_SHI, 1) => eval_shi(arena, args[0]),
+        (FN_CHI, 1) => eval_chi(arena, args[0]),
+        (FN_FRESNELS, 1) => eval_fresnel(arena, FN_FRESNELS, args[0]),
+        (FN_FRESNELC, 1) => eval_fresnel(arena, FN_FRESNELC, args[0]),
+        (FN_LOWERGAMMA, 2) => eval_lowergamma(arena, args[0], args[1]),
+        (FN_UPPERGAMMA, 2) => eval_uppergamma(arena, args[0], args[1]),
+        (FN_POLYLOG, 2) => eval_polylog(arena, args[0], args[1]),
+        (FN_DIRICHLET_ETA, 1) => eval_dirichlet_eta(arena, args[0]),
+        (FN_AIRYAI | FN_AIRYBI | FN_AIRYAIPRIME | FN_AIRYBIPRIME, 1) => {
+            eval_airy(arena, name, args[0])
+        }
+        (FN_ELLIPTIC_K, 1) => eval_elliptic_k(arena, args[0]),
+        (FN_ELLIPTIC_E, 1) => eval_elliptic_e(arena, args[0]),
+        (FN_ELLIPTIC_F, 2) => eval_elliptic_f(arena, args[0], args[1]),
+        (FN_ELLIPTIC_PI, 2) => eval_elliptic_pi(arena, args[0], args[1]),
+        (FN_GEGENBAUER, 3) => eval_gegenbauer(arena, args[0], args[1], args[2]),
+        (FN_JACOBI, 4) => eval_jacobi(arena, args[0], args[1], args[2], args[3]),
+        (FN_ASSOC_LEGENDRE, 3) => eval_assoc_legendre(arena, args[0], args[1], args[2]),
+        (FN_ASSOC_LAGUERRE, 3) => eval_assoc_laguerre(arena, args[0], args[1], args[2]),
+        _ => None,
+    }
+}
+
+/// `erfi(0) = 0`, `erfi(±∞) = ±∞`, odd.
+fn eval_erfi(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
+    if x == arena.zero {
+        return Some(arena.zero);
+    }
+    if x == arena.infinity {
+        return Some(arena.infinity);
+    }
+    if x == arena.neg_infinity {
+        return Some(arena.neg_infinity);
+    }
+    if let Some(y) = as_negated_general(arena, x) {
+        let e = apply_named(arena, FN_ERFI, &[y]);
+        return Some(arena.neg(e));
+    }
+    None
+}
+
+/// `erfinv(0) = 0`, `erfinv(±1) = ±∞`, odd.
+fn eval_erfinv(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
+    if x == arena.zero {
+        return Some(arena.zero);
+    }
+    if x == arena.one {
+        return Some(arena.infinity);
+    }
+    if x == arena.neg_one {
+        return Some(arena.neg_infinity);
+    }
+    if let Some(y) = as_negated_general(arena, x) {
+        let e = apply_named(arena, FN_ERFINV, &[y]);
+        return Some(arena.neg(e));
+    }
+    None
+}
+
+/// `erfcinv(1) = 0`, `erfcinv(0) = ∞`, `erfcinv(2) = −∞`.
+fn eval_erfcinv(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
+    if x == arena.one {
+        return Some(arena.zero);
+    }
+    if x == arena.zero {
+        return Some(arena.infinity);
+    }
+    if as_int_in(arena, x, 2, 2).is_some() {
+        return Some(arena.neg_infinity);
+    }
+    None
+}
+
+/// `E_n(∞) = 0`, `E_n(0) = 1/(n−1)` for `n > 1`, `E_0(x) = e^{−x}/x`.
+fn eval_expint(arena: &mut Arena, n: ExprId, x: ExprId) -> Option<ExprId> {
+    if x == arena.infinity {
+        return Some(arena.zero);
+    }
+    if n == arena.zero {
+        let neg_x = arena.neg(x);
+        let e = arena.exp(neg_x);
+        return Some(arena.div(e, x));
+    }
+    if x == arena.zero
+        && let Some(r) = as_ratio(arena, n)
+        && r > Ratio::one()
+    {
+        let v = (r - Ratio::one()).recip();
+        let nid = arena.intern_num(v);
+        return Some(arena.intern(ExprNode::Num(nid)));
+    }
+    None
+}
+
+/// `Shi(0) = 0`, `Shi(±∞) = ±∞`, odd.
+fn eval_shi(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
+    if x == arena.zero {
+        return Some(arena.zero);
+    }
+    if x == arena.infinity {
+        return Some(arena.infinity);
+    }
+    if x == arena.neg_infinity {
+        return Some(arena.neg_infinity);
+    }
+    if let Some(y) = as_negated_general(arena, x) {
+        let e = apply_named(arena, FN_SHI, &[y]);
+        return Some(arena.neg(e));
+    }
+    None
+}
+
+/// `Chi(0) = −∞`, `Chi(∞) = ∞`.
+fn eval_chi(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
+    if x == arena.zero {
+        return Some(arena.neg_infinity);
+    }
+    if x == arena.infinity {
+        return Some(arena.infinity);
+    }
+    None
+}
+
+/// Fresnel `S`/`C`: `0 ↦ 0`, `±∞ ↦ ±1/2`, odd.
+fn eval_fresnel(arena: &mut Arena, name: &str, x: ExprId) -> Option<ExprId> {
+    if x == arena.zero {
+        return Some(arena.zero);
+    }
+    if x == arena.infinity {
+        return Some(arena.rational(1, 2));
+    }
+    if x == arena.neg_infinity {
+        return Some(arena.rational(-1, 2));
+    }
+    if let Some(y) = as_negated_general(arena, x) {
+        let e = apply_named(arena, name, &[y]);
+        return Some(arena.neg(e));
+    }
+    None
+}
+
+/// `Γ(s, x)` for `s = base + k` (`k ∈ ℤ`) from the base value `Γ(base, x)`
+/// via `Γ(s+1, x) = s Γ(s, x) + x^s e^{−x}`, upward or downward.
+fn shift_uppergamma(
+    arena: &mut Arena,
+    base: Ratio<BigInt>,
+    base_val: ExprId,
+    k: i64,
+    x: ExprId,
+) -> ExprId {
+    let neg_x = arena.neg(x);
+    let e_neg_x = arena.exp(neg_x);
+    let mut s = base;
+    let mut val = base_val;
+    if k >= 0 {
+        for _ in 0..k {
+            // Γ(s+1) = s Γ(s) + x^s e^{-x}
+            let s_id = arena.intern_num(s.clone());
+            let s_id = arena.intern(ExprNode::Num(s_id));
+            let x_pow = arena.pow(x, s_id);
+            let a = arena.mul(&[s_id, val]);
+            let b = arena.mul(&[x_pow, e_neg_x]);
+            val = arena.add(&[a, b]);
+            s += Ratio::one();
+        }
+    } else {
+        for _ in 0..(-k) {
+            // Γ(s−1) = (Γ(s) − x^{s−1} e^{-x}) / (s−1)
+            s -= Ratio::one();
+            let s_id = arena.intern_num(s.clone());
+            let s_id = arena.intern(ExprNode::Num(s_id));
+            let x_pow = arena.pow(x, s_id);
+            let b = arena.mul(&[x_pow, e_neg_x]);
+            let numer = arena.sub(val, b);
+            val = arena.div(numer, s_id);
+        }
+    }
+    let expanded = crate::transforms::expand::expand(arena, val);
+    eval(arena, expanded)
+}
+
+/// Closed form of `Γ(s, x)` for integer or half-integer `s` with
+/// `|s| ≤ MAX_SPECIAL_EXPANSION`: bases `Γ(1, x) = e^{−x}`,
+/// `Γ(0, x) = E₁(x)`, `Γ(1/2, x) = √π erfc(√x)`.
+fn uppergamma_closed(arena: &mut Arena, s: &Ratio<BigInt>, x: ExprId) -> Option<ExprId> {
+    let two = BigInt::from(2);
+    let bound = Ratio::from_integer(BigInt::from(MAX_SPECIAL_EXPANSION));
+    if s.abs() > bound {
+        return None;
+    }
+    let neg_x = arena.neg(x);
+    let e_neg_x = arena.exp(neg_x);
+    if s.is_integer() {
+        let n: i64 = s.to_integer().try_into().ok()?;
+        if n >= 1 {
+            // Γ(n, x) = (n−1)! e^{−x} Σ_{k<n} x^k/k!
+            let mut terms: Vec<ExprId> = Vec::with_capacity(n as usize);
+            let mut inv_fact = Ratio::<BigInt>::one();
+            for k in 0..n {
+                if k > 0 {
+                    inv_fact /= Ratio::from_integer(BigInt::from(k));
+                }
+                let c = arena.intern_num(inv_fact.clone());
+                let c = arena.intern(ExprNode::Num(c));
+                let k_id = arena.int(k);
+                let xk = arena.pow(x, k_id);
+                terms.push(arena.mul(&[c, xk]));
+            }
+            let sum = arena.add(&terms);
+            let fact = factorial_ratio((n - 1) as usize);
+            let f = arena.intern_num(fact);
+            let f = arena.intern(ExprNode::Num(f));
+            let v = arena.mul(&[f, e_neg_x, sum]);
+            let v = crate::transforms::expand::expand(arena, v);
+            return Some(eval(arena, v));
+        }
+        // n ≤ 0: shift down from Γ(0, x) = E₁(x).
+        let e1 = apply_named(arena, FN_EXPINT, &[arena.one, x]);
+        return Some(shift_uppergamma(arena, Ratio::zero(), e1, n, x));
+    }
+    if s.denom() == &two {
+        // s = 1/2 + k
+        let half = Ratio::new(BigInt::one(), two);
+        let k: i64 = (s - &half).to_integer().try_into().ok()?;
+        let sqrt_pi = arena.sqrt(arena.pi);
+        let sqrt_x = arena.sqrt(x);
+        let erfc = arena.erfc(sqrt_x);
+        let base = arena.mul(&[sqrt_pi, erfc]);
+        return Some(shift_uppergamma(arena, half, base, k, x));
+    }
+    None
+}
+
+/// `γ(s, 0) = 0`, `γ(s, ∞) = Γ(s)`, closed forms for integer / half-integer `s > 0`.
+fn eval_lowergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
+    if x == arena.zero {
+        return Some(arena.zero);
+    }
+    if x == arena.infinity {
+        return Some(arena.gamma(s));
+    }
+    let r = as_ratio(arena, s)?;
+    if !r.is_positive() {
+        return None;
+    }
+    let upper = uppergamma_closed(arena, &r, x)?;
+    let gamma_s = eval_gamma(arena, s).unwrap_or_else(|| arena.gamma(s));
+    let v = arena.sub(gamma_s, upper);
+    let v = crate::transforms::expand::expand(arena, v);
+    Some(eval(arena, v))
+}
+
+/// `Γ(s, 0) = Γ(s)`, `Γ(s, ∞) = 0`, closed forms for integer / half-integer `s`.
+fn eval_uppergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
+    if x == arena.infinity {
+        return Some(arena.zero);
+    }
+    if x == arena.zero {
+        return Some(arena.gamma(s));
+    }
+    let r = as_ratio(arena, s)?;
+    uppergamma_closed(arena, &r, x)
+}
+
+/// Exact polylogarithm values (see [`Ex::polylog`](crate::expr::Ex::polylog)).
+fn eval_polylog(arena: &mut Arena, s: ExprId, z: ExprId) -> Option<ExprId> {
+    if z == arena.zero {
+        return Some(arena.zero);
+    }
+    if z == arena.one {
+        return Some(arena.zeta(s));
+    }
+    if z == arena.neg_one {
+        let eta = eval_dirichlet_eta(arena, s)
+            .unwrap_or_else(|| apply_named(arena, FN_DIRICHLET_ETA, &[s]));
+        return Some(arena.neg(eta));
+    }
+    if s == arena.one {
+        let one_minus_z = arena.sub(arena.one, z);
+        let l = arena.ln(one_minus_z);
+        return Some(arena.neg(l));
+    }
+    if s == arena.zero {
+        let one_minus_z = arena.sub(arena.one, z);
+        return Some(arena.div(z, one_minus_z));
+    }
+    // Li₂(1/2) = π²/12 − ln²2/2
+    if as_int_in(arena, s, 2, 2).is_some()
+        && let Some(r) = as_ratio(arena, z)
+        && r == Ratio::new(BigInt::one(), BigInt::from(2))
+    {
+        let two = arena.int(2);
+        let pi2 = arena.pow(arena.pi, two);
+        let c12 = arena.rational(1, 12);
+        let a = arena.mul(&[c12, pi2]);
+        let ln2 = arena.ln(two);
+        let ln2_sq = arena.pow(ln2, two);
+        let half = arena.rational(1, 2);
+        let b = arena.mul(&[half, ln2_sq]);
+        return Some(arena.sub(a, b));
+    }
+    // Li_{−n}(z) = [Σ_{k=0}^{n} k! S(n+1, k+1) z^{k+1} (1−z)^{n−k}] / (1−z)^{n+1}
+    if let Some(neg_n) = as_int_in(arena, s, -MAX_SPECIAL_EXPANSION, -1) {
+        let n = (-neg_n) as usize;
+        let one_minus_z = arena.sub(arena.one, z);
+        let mut terms: Vec<ExprId> = Vec::with_capacity(n + 1);
+        let mut k_fact = BigInt::one();
+        for k in 0..=n {
+            if k > 0 {
+                k_fact *= BigInt::from(k as u64);
+            }
+            let s2 = crate::domains::combinatorics::stirling2(n as u64 + 1, k as u64 + 1)?;
+            let coeff = Ratio::from_integer(&k_fact * s2);
+            let c = arena.intern_num(coeff);
+            let c = arena.intern(ExprNode::Num(c));
+            let e1 = arena.int(k as i64 + 1);
+            let zk = arena.pow(z, e1);
+            let e2 = arena.int((n - k) as i64);
+            let wk = arena.pow(one_minus_z, e2);
+            terms.push(arena.mul(&[c, zk, wk]));
+        }
+        let numer = arena.add(&terms);
+        let numer = crate::transforms::expand::expand(arena, numer);
+        let numer = eval(arena, numer);
+        let e = arena.int(n as i64 + 1);
+        let denom = arena.pow(one_minus_z, e);
+        return Some(arena.div(numer, denom));
+    }
+    None
+}
+
+/// `η(1) = ln 2`, `η(∞) = 1`, and `η(s) = (1 − 2^{1−s}) ζ(s)` whenever `ζ(s)`
+/// itself folds (integer `s`).
+fn eval_dirichlet_eta(arena: &mut Arena, s: ExprId) -> Option<ExprId> {
+    if s == arena.one {
+        let two = arena.int(2);
+        return Some(arena.ln(two));
+    }
+    if s == arena.infinity {
+        return Some(arena.one);
+    }
+    let r = as_ratio(arena, s)?;
+    if !r.is_integer() {
+        return None;
+    }
+    let zeta = eval_zeta(arena, s)?;
+    if matches!(arena.node(zeta), ExprNode::Zeta(_)) {
+        return None;
+    }
+    // 1 − 2^{1−s} as an exact rational.
+    let n: i64 = r.to_integer().try_into().ok()?;
+    let e = 1 - n;
+    let two_pow = if e >= 0 {
+        Ratio::from_integer(BigInt::one() << (e as usize))
+    } else {
+        Ratio::new(BigInt::one(), BigInt::one() << ((-e) as usize))
+    };
+    let coeff = Ratio::one() - two_pow;
+    let c = arena.intern_num(coeff);
+    let c = arena.intern(ExprNode::Num(c));
+    Some(arena.mul(&[c, zeta]))
+}
+
+/// Airy functions at `0` and `±∞`.
+fn eval_airy(arena: &mut Arena, name: &str, x: ExprId) -> Option<ExprId> {
+    if x == arena.zero {
+        let three = arena.int(3);
+        let third = arena.rational(1, 3);
+        let two_thirds = arena.rational(2, 3);
+        let g13 = arena.gamma(third);
+        let g23 = arena.gamma(two_thirds);
+        return Some(match name {
+            FN_AIRYAI => {
+                // 3^{-2/3} / Γ(2/3)
+                let e = arena.rational(-2, 3);
+                let p = arena.pow(three, e);
+                arena.div(p, g23)
+            }
+            FN_AIRYBI => {
+                // 3^{-1/6} / Γ(2/3)
+                let e = arena.rational(-1, 6);
+                let p = arena.pow(three, e);
+                arena.div(p, g23)
+            }
+            FN_AIRYAIPRIME => {
+                // -3^{-1/3} / Γ(1/3)
+                let e = arena.rational(-1, 3);
+                let p = arena.pow(three, e);
+                let q = arena.div(p, g13);
+                arena.neg(q)
+            }
+            _ => {
+                // 3^{1/6} / Γ(1/3)
+                let e = arena.rational(1, 6);
+                let p = arena.pow(three, e);
+                arena.div(p, g13)
+            }
+        });
+    }
+    if x == arena.infinity {
+        return Some(match name {
+            FN_AIRYAI | FN_AIRYAIPRIME => arena.zero,
+            _ => arena.infinity,
+        });
+    }
+    if x == arena.neg_infinity {
+        return Some(arena.zero);
+    }
+    None
+}
+
+/// `K(0) = π/2`, `K(1) = z∞`, `K(1/2) = Γ(1/4)²/(4√π)`, `K(±∞) = 0`.
+fn eval_elliptic_k(arena: &mut Arena, m: ExprId) -> Option<ExprId> {
+    if m == arena.zero {
+        return Some(half_pi(arena));
+    }
+    if m == arena.one {
+        return Some(arena.complex_infinity);
+    }
+    if m == arena.infinity || m == arena.neg_infinity {
+        return Some(arena.zero);
+    }
+    if let Some(r) = as_ratio(arena, m)
+        && r == Ratio::new(BigInt::one(), BigInt::from(2))
+    {
+        let quarter = arena.rational(1, 4);
+        let g = arena.gamma(quarter);
+        let two = arena.int(2);
+        let g2 = arena.pow(g, two);
+        let sqrt_pi = arena.sqrt(arena.pi);
+        let four = arena.int(4);
+        let denom = arena.mul(&[four, sqrt_pi]);
+        return Some(arena.div(g2, denom));
+    }
+    None
+}
+
+/// `E(0) = π/2`, `E(1) = 1`.
+fn eval_elliptic_e(arena: &mut Arena, m: ExprId) -> Option<ExprId> {
+    if m == arena.zero {
+        return Some(half_pi(arena));
+    }
+    if m == arena.one {
+        return Some(arena.one);
+    }
+    None
+}
+
+/// `F(0 | m) = 0`, `F(φ | 0) = φ`, `F(π/2 | m) = K(m)`, odd in `φ`.
+fn eval_elliptic_f(arena: &mut Arena, phi: ExprId, m: ExprId) -> Option<ExprId> {
+    if phi == arena.zero {
+        return Some(arena.zero);
+    }
+    if m == arena.zero {
+        return Some(phi);
+    }
+    if let Some(r) = as_pi_multiple(arena, phi)
+        && r == Ratio::new(BigInt::one(), BigInt::from(2))
+    {
+        return Some(
+            eval_elliptic_k(arena, m).unwrap_or_else(|| apply_named(arena, FN_ELLIPTIC_K, &[m])),
+        );
+    }
+    if let Some(y) = as_negated_general(arena, phi) {
+        let e = apply_named(arena, FN_ELLIPTIC_F, &[y, m]);
+        return Some(arena.neg(e));
+    }
+    None
+}
+
+/// `Π(0 | m) = K(m)`, `Π(n | 0) = π/(2√(1−n))`, `Π(n | n) = E(n)/(1−n)`, `Π(1 | m) = z∞`.
+fn eval_elliptic_pi(arena: &mut Arena, n: ExprId, m: ExprId) -> Option<ExprId> {
+    if n == arena.zero {
+        return Some(
+            eval_elliptic_k(arena, m).unwrap_or_else(|| apply_named(arena, FN_ELLIPTIC_K, &[m])),
+        );
+    }
+    if n == arena.one {
+        return Some(arena.complex_infinity);
+    }
+    if m == arena.zero {
+        let one_minus_n = arena.sub(arena.one, n);
+        let root = arena.sqrt(one_minus_n);
+        let two = arena.int(2);
+        let denom = arena.mul(&[two, root]);
+        return Some(arena.div(arena.pi, denom));
+    }
+    if n == m {
+        let e =
+            eval_elliptic_e(arena, n).unwrap_or_else(|| apply_named(arena, FN_ELLIPTIC_E, &[n]));
+        let one_minus_n = arena.sub(arena.one, n);
+        return Some(arena.div(e, one_minus_n));
+    }
+    None
+}
+
+/// Degree parameter of an orthogonal polynomial: a non-negative integer no
+/// larger than the configured power-expansion limit.
+fn as_poly_degree(arena: &Arena, n: ExprId) -> Option<usize> {
+    let r = arena.as_num(n)?;
+    if !r.is_integer() || r.is_negative() {
+        return None;
+    }
+    let d = r.to_integer().to_u64()?;
+    (d <= arena.config.max_pow_exponent as u64).then_some(d as usize)
+}
+
+/// Expand and fold one recurrence step.
+fn expand_eval(arena: &mut Arena, e: ExprId) -> ExprId {
+    let e = crate::transforms::expand::expand(arena, e);
+    eval(arena, e)
+}
+
+/// Gegenbauer `C_n^{(a)}(x)`: explicit polynomial for integer `n ≥ 0` via
+/// `(k+1) C_{k+1} = 2(k+a) x C_k − (k+2a−1) C_{k−1}`; `C_n^{(1/2)} = P_n`,
+/// `C_n^{(1)} = U_n`.
+fn eval_gegenbauer(arena: &mut Arena, n: ExprId, a: ExprId, x: ExprId) -> Option<ExprId> {
+    if let Some(deg) = as_poly_degree(arena, n) {
+        if deg == 0 {
+            return Some(arena.one);
+        }
+        let two = arena.int(2);
+        let c1 = arena.mul(&[two, a, x]);
+        if deg == 1 {
+            return Some(expand_eval(arena, c1));
+        }
+        let mut prev = arena.one;
+        let mut curr = expand_eval(arena, c1);
+        for k in 1..deg {
+            let k_id = arena.int(k as i64);
+            let k_plus_a = arena.add(&[k_id, a]);
+            let t1 = arena.mul(&[two, k_plus_a, x, curr]);
+            let two_a = arena.mul(&[two, a]);
+            let km1 = arena.int(k as i64 - 1);
+            let coeff = arena.add(&[km1, two_a]);
+            let t2 = arena.mul(&[coeff, prev]);
+            let numer = arena.sub(t1, t2);
+            let kp1 = arena.int(k as i64 + 1);
+            let next = arena.div(numer, kp1);
+            let next = expand_eval(arena, next);
+            prev = curr;
+            curr = next;
+        }
+        return Some(curr);
+    }
+    if let Some(r) = as_ratio(arena, a) {
+        if r == Ratio::new(BigInt::one(), BigInt::from(2)) {
+            return Some(arena.legendre(n, x));
+        }
+        if r.is_one() {
+            return Some(arena.chebyshev_u(n, x));
+        }
+    }
+    None
+}
+
+/// `∏_{j=lo}^{hi} (p + j)` as an expression (`1` when empty).
+fn shifted_product(arena: &mut Arena, p: ExprId, lo: usize, hi: usize) -> ExprId {
+    let mut factors: Vec<ExprId> = Vec::new();
+    for j in lo..=hi {
+        let j_id = arena.int(j as i64);
+        factors.push(arena.add(&[p, j_id]));
+    }
+    if factors.is_empty() {
+        arena.one
+    } else {
+        arena.mul(&factors)
+    }
+}
+
+/// Jacobi `P_n^{(a,b)}(x)` for integer `n ≥ 0`:
+/// `Σ_{s=0}^{n} C(n+a, n−s) C(n+b, s) ((x−1)/2)^s ((x+1)/2)^{n−s}` with the
+/// binomials written as polynomials in `a`, `b`; `P_n^{(0,0)} = P_n`.
+fn eval_jacobi(arena: &mut Arena, n: ExprId, a: ExprId, b: ExprId, x: ExprId) -> Option<ExprId> {
+    if let Some(deg) = as_poly_degree(arena, n) {
+        if deg == 0 {
+            return Some(arena.one);
+        }
+        let half = arena.rational(1, 2);
+        let x_minus_1 = arena.sub(x, arena.one);
+        let x_plus_1 = arena.add(&[x, arena.one]);
+        let lo = arena.mul(&[half, x_minus_1]);
+        let hi = arena.mul(&[half, x_plus_1]);
+        let mut terms: Vec<ExprId> = Vec::with_capacity(deg + 1);
+        for s in 0..=deg {
+            // C(n+a, n−s) = ∏_{j=s+1}^{n} (a+j) / (n−s)!
+            let pa = shifted_product(arena, a, s + 1, deg);
+            // C(n+b, s) = ∏_{j=n−s+1}^{n} (b+j) / s!
+            let pb = shifted_product(arena, b, deg - s + 1, deg);
+            let denom = factorial_ratio(deg - s) * factorial_ratio(s);
+            let c = arena.intern_num(denom.recip());
+            let c = arena.intern(ExprNode::Num(c));
+            let s_id = arena.int(s as i64);
+            let lo_pow = arena.pow(lo, s_id);
+            let ns_id = arena.int((deg - s) as i64);
+            let hi_pow = arena.pow(hi, ns_id);
+            terms.push(arena.mul(&[c, pa, pb, lo_pow, hi_pow]));
+        }
+        let sum = arena.add(&terms);
+        return Some(expand_eval(arena, sum));
+    }
+    if a == arena.zero && b == arena.zero {
+        return Some(arena.legendre(n, x));
+    }
+    None
+}
+
+/// Associated Legendre `P_n^m(x)` (Condon–Shortley phase) for integer
+/// `n ≥ 0`, integer `m`: zero for `|m| > n`, `P_n^0 = P_n`,
+/// `P_n^{−m} = (−1)^m (n−m)!/(n+m)! P_n^m`, and for `m > 0`
+/// `P_m^m = (−1)^m (2m−1)!! (1−x²)^{m/2}`, `P_{m+1}^m = (2m+1) x P_m^m`,
+/// `(k−m+1) P_{k+1}^m = (2k+1) x P_k^m − (k+m) P_{k−1}^m`.
+fn eval_assoc_legendre(arena: &mut Arena, n: ExprId, m: ExprId, x: ExprId) -> Option<ExprId> {
+    let deg = match as_poly_degree(arena, n) {
+        Some(d) => d,
+        None => {
+            return (m == arena.zero).then(|| arena.legendre(n, x));
+        }
+    };
+    let order = as_int_in(arena, m, -(deg as i64), deg as i64);
+    let order = match order {
+        Some(o) => o,
+        None => {
+            // Integer |m| > n ↦ 0; non-integer m stays symbolic.
+            let r = as_ratio(arena, m)?;
+            return r.is_integer().then_some(arena.zero);
+        }
+    };
+    if order == 0 {
+        return Some(eval_legendre(arena, deg, x));
+    }
+    let mu = order.unsigned_abs() as usize;
+    // (1 − x²)^{μ/2}
+    let two = arena.int(2);
+    let x2 = arena.pow(x, two);
+    let one_minus_x2 = arena.sub(arena.one, x2);
+    let half_mu = arena.rational(mu as i64, 2);
+    let root_pow = arena.pow(one_minus_x2, half_mu);
+    // (−1)^μ (2μ−1)!!
+    let mut dfact = BigInt::one();
+    for j in 1..=mu {
+        dfact *= BigInt::from((2 * j - 1) as u64);
+    }
+    if mu % 2 == 1 {
+        dfact = -dfact;
+    }
+    let c = arena.intern_num(Ratio::from_integer(dfact));
+    let c = arena.intern(ExprNode::Num(c));
+    let mut prev = arena.mul(&[c, root_pow]); // P_μ^μ
+    let mut curr = if deg > mu {
+        let two_mu_p1 = arena.int(2 * mu as i64 + 1);
+        let p = arena.mul(&[two_mu_p1, x, prev]);
+        expand_eval(arena, p)
+    } else {
+        prev
+    };
+    for k in (mu + 1)..deg {
+        let two_k_p1 = arena.int(2 * k as i64 + 1);
+        let t1 = arena.mul(&[two_k_p1, x, curr]);
+        let k_plus_mu = arena.int((k + mu) as i64);
+        let t2 = arena.mul(&[k_plus_mu, prev]);
+        let numer = arena.sub(t1, t2);
+        let denom = arena.int((k - mu + 1) as i64);
+        let next = arena.div(numer, denom);
+        let next = expand_eval(arena, next);
+        prev = curr;
+        curr = next;
+    }
+    let value = expand_eval(arena, curr);
+    if order < 0 {
+        // P_n^{−μ} = (−1)^μ (n−μ)!/(n+μ)! P_n^μ
+        let mut ratio = factorial_ratio(deg - mu) / factorial_ratio(deg + mu);
+        if mu % 2 == 1 {
+            ratio = -ratio;
+        }
+        let c = arena.intern_num(ratio);
+        let c = arena.intern(ExprNode::Num(c));
+        let v = arena.mul(&[c, value]);
+        return Some(expand_eval(arena, v));
+    }
+    Some(value)
+}
+
+/// Generalised Laguerre `L_n^{(a)}(x)` for integer `n ≥ 0` via
+/// `(k+1) L_{k+1} = (2k+1+a−x) L_k − (k+a) L_{k−1}`; `L_n^{(0)} = L_n`.
+fn eval_assoc_laguerre(arena: &mut Arena, n: ExprId, a: ExprId, x: ExprId) -> Option<ExprId> {
+    if let Some(deg) = as_poly_degree(arena, n) {
+        if deg == 0 {
+            return Some(arena.one);
+        }
+        let one_plus_a = arena.add(&[arena.one, a]);
+        let l1 = arena.sub(one_plus_a, x);
+        let l1 = expand_eval(arena, l1);
+        if deg == 1 {
+            return Some(l1);
+        }
+        let mut prev = arena.one;
+        let mut curr = l1;
+        for k in 1..deg {
+            let two_k_p1 = arena.int(2 * k as i64 + 1);
+            let coeff = arena.add(&[two_k_p1, a]);
+            let coeff = arena.sub(coeff, x);
+            let t1 = arena.mul(&[coeff, curr]);
+            let k_id = arena.int(k as i64);
+            let k_plus_a = arena.add(&[k_id, a]);
+            let t2 = arena.mul(&[k_plus_a, prev]);
+            let numer = arena.sub(t1, t2);
+            let kp1 = arena.int(k as i64 + 1);
+            let next = arena.div(numer, kp1);
+            let next = expand_eval(arena, next);
+            prev = curr;
+            curr = next;
+        }
+        return Some(curr);
+    }
+    if a == arena.zero {
+        return Some(arena.laguerre(n, x));
+    }
+    None
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

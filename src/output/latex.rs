@@ -417,6 +417,116 @@ fn push_latex_func(name: &'static str, arg: ExprId, stack: &mut Vec<LatexItem>) 
     stack.push(LatexItem::Owned(format!("{}\\left(", name)));
 }
 
+/// Push `head\left(args[0], args[1], …\right)` (reverse order).
+fn push_latex_call(head: &str, args: &[ExprId], stack: &mut Vec<LatexItem>) {
+    stack.push(LatexItem::Lit(r"\right)"));
+    for (i, &arg) in args.iter().enumerate().rev() {
+        stack.push(LatexItem::Expr(arg));
+        if i > 0 {
+            stack.push(LatexItem::Lit(", "));
+        }
+    }
+    stack.push(LatexItem::Owned(format!("{head}\\left(")));
+}
+
+/// LaTeX for the 0.9 `Apply`-based special functions, following SymPy's
+/// printer: `\operatorname{erfi}`, `\operatorname{E}_{n}`, `S`/`C`,
+/// `\gamma`/`\Gamma`, `\operatorname{Li}_{s}`, `\eta`, `\operatorname{Ai}`,
+/// `K`/`E`/`F\left(\phi\middle| m\right)`/`\Pi`, `C_{n}^{\left(a\right)}`, …
+///
+/// Returns `false` (pushing nothing) for any other name.
+fn push_special_09_latex(name: &str, args: &[ExprId], stack: &mut Vec<LatexItem>) -> bool {
+    use crate::base::arena::{
+        FN_AIRYAI, FN_AIRYAIPRIME, FN_AIRYBI, FN_AIRYBIPRIME, FN_ASSOC_LAGUERRE, FN_ASSOC_LEGENDRE,
+        FN_CHI, FN_DIRICHLET_ETA, FN_ELLIPTIC_E, FN_ELLIPTIC_F, FN_ELLIPTIC_K, FN_ELLIPTIC_PI,
+        FN_ERFCINV, FN_ERFI, FN_ERFINV, FN_EXPINT, FN_FRESNELC, FN_FRESNELS, FN_GEGENBAUER,
+        FN_JACOBI, FN_LOWERGAMMA, FN_POLYLOG, FN_SHI, FN_UPPERGAMMA,
+    };
+    // Plain `head(args)` renderings.
+    let head: Option<&str> = match (name, args.len()) {
+        (FN_ERFI, 1) => Some(r"\operatorname{erfi}"),
+        (FN_ERFINV, 1) => Some(r"\operatorname{erf}^{-1}"),
+        (FN_ERFCINV, 1) => Some(r"\operatorname{erfc}^{-1}"),
+        (FN_SHI, 1) => Some(r"\operatorname{Shi}"),
+        (FN_CHI, 1) => Some(r"\operatorname{Chi}"),
+        (FN_FRESNELS, 1) => Some("S"),
+        (FN_FRESNELC, 1) => Some("C"),
+        (FN_LOWERGAMMA, 2) => Some(r"\gamma"),
+        (FN_UPPERGAMMA, 2) => Some(r"\Gamma"),
+        (FN_DIRICHLET_ETA, 1) => Some(r"\eta"),
+        (FN_AIRYAI, 1) => Some(r"\operatorname{Ai}"),
+        (FN_AIRYBI, 1) => Some(r"\operatorname{Bi}"),
+        (FN_AIRYAIPRIME, 1) => Some(r"\operatorname{Ai}^\prime"),
+        (FN_AIRYBIPRIME, 1) => Some(r"\operatorname{Bi}^\prime"),
+        (FN_ELLIPTIC_K, 1) => Some("K"),
+        (FN_ELLIPTIC_E, 1) => Some("E"),
+        _ => None,
+    };
+    if let Some(head) = head {
+        push_latex_call(head, args, stack);
+        return true;
+    }
+    match (name, args.len()) {
+        // head_{param}\left(x\right)
+        (FN_EXPINT, 2) | (FN_POLYLOG, 2) => {
+            let head = if name == FN_EXPINT {
+                r"\operatorname{E}_{"
+            } else {
+                r"\operatorname{Li}_{"
+            };
+            stack.push(LatexItem::Lit(r"\right)"));
+            stack.push(LatexItem::Expr(args[1]));
+            stack.push(LatexItem::Lit(r"}\left("));
+            stack.push(LatexItem::Expr(args[0]));
+            stack.push(LatexItem::Lit(head));
+            true
+        }
+        // F\left(\phi\middle| m\right), \Pi\left(n\middle| m\right)
+        (FN_ELLIPTIC_F, 2) | (FN_ELLIPTIC_PI, 2) => {
+            stack.push(LatexItem::Lit(r"\right)"));
+            stack.push(LatexItem::Expr(args[1]));
+            stack.push(LatexItem::Lit(r"\middle| "));
+            stack.push(LatexItem::Expr(args[0]));
+            stack.push(LatexItem::Lit(if name == FN_ELLIPTIC_F {
+                r"F\left("
+            } else {
+                r"\Pi\left("
+            }));
+            true
+        }
+        // C_{n}^{\left(a\right)}\left(x\right), P_{n}^{\left(m\right)}, L_{n}^{\left(a\right)}
+        (FN_GEGENBAUER, 3) | (FN_ASSOC_LEGENDRE, 3) | (FN_ASSOC_LAGUERRE, 3) => {
+            let letter = match name {
+                FN_GEGENBAUER => r"C_{",
+                FN_ASSOC_LEGENDRE => r"P_{",
+                _ => r"L_{",
+            };
+            stack.push(LatexItem::Lit(r"\right)"));
+            stack.push(LatexItem::Expr(args[2]));
+            stack.push(LatexItem::Lit(r"\right)}\left("));
+            stack.push(LatexItem::Expr(args[1]));
+            stack.push(LatexItem::Lit(r"}^{\left("));
+            stack.push(LatexItem::Expr(args[0]));
+            stack.push(LatexItem::Lit(letter));
+            true
+        }
+        // P_{n}^{\left(a,b\right)}\left(x\right)
+        (FN_JACOBI, 4) => {
+            stack.push(LatexItem::Lit(r"\right)"));
+            stack.push(LatexItem::Expr(args[3]));
+            stack.push(LatexItem::Lit(r"\right)}\left("));
+            stack.push(LatexItem::Expr(args[2]));
+            stack.push(LatexItem::Lit(","));
+            stack.push(LatexItem::Expr(args[1]));
+            stack.push(LatexItem::Lit(r"}^{\left("));
+            stack.push(LatexItem::Expr(args[0]));
+            stack.push(LatexItem::Lit(r"P_{"));
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Expand a single expression node into LaTeX work items on the stack.
 ///
 /// Items are pushed in **reverse** display order so that popping
@@ -905,6 +1015,9 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
         ExprNode::Apply(sym_id, ref args) => {
             let name = arena.symbol_name(sym_id).to_owned();
             let args = args.clone();
+            if push_special_09_latex(&name, &args, stack) {
+                return;
+            }
             stack.push(LatexItem::Lit(r"\right)"));
             for (i, &arg) in args.iter().enumerate().rev() {
                 stack.push(LatexItem::Expr(arg));

@@ -317,7 +317,7 @@ pub mod prelude {
     pub use crate::domains::vector::CoordinateSystem;
     pub use crate::output::codegen::{CodegenOptions, MathBackend, Precision};
     pub use crate::output::lambdify::{CompiledFn, CompiledFnVec};
-    pub use crate::poly::multipoly::MultiPoly;
+    pub use crate::poly::multipoly::{MonomialOrder, MultiPoly};
     pub use crate::transforms::expand::ExpandOpts;
     pub use symplex_macros::{dim, eq, expr, matrix, rule};
 

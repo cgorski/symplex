@@ -716,6 +716,9 @@ fn diff_node(
             if let Some(result) = diff_known_apply(arena, func_sym, &args_clone, cache) {
                 return result;
             }
+            if let Some(result) = diff_special_09(arena, id, func_sym, &args_clone, cache) {
+                return result;
+            }
 
             let mut terms: SmallVec<[ExprId; 4]> = SmallVec::new();
 
@@ -997,6 +1000,340 @@ fn diff_known_apply(
     };
 
     Some(arena.mul(&[outer, dx]))
+}
+
+/// Intern `name(args)` as a library `Apply` node.
+fn apply_named(arena: &mut Arena, name: &str, args: &[ExprId]) -> ExprId {
+    let sid = arena.symbols.intern(name);
+    arena.intern(ExprNode::Apply(sid, args.iter().copied().collect()))
+}
+
+/// `2/√π`.
+fn two_over_sqrt_pi(arena: &mut Arena) -> ExprId {
+    let two = arena.int(2);
+    let sqrt_pi = arena.sqrt(arena.pi);
+    arena.div(two, sqrt_pi)
+}
+
+/// `π f² / 2`.
+fn half_pi_sq(arena: &mut Arena, f: ExprId) -> ExprId {
+    let two = arena.int(2);
+    let f2 = arena.pow(f, two);
+    let half = arena.rational(1, 2);
+    arena.mul(&[half, arena.pi, f2])
+}
+
+/// Derivative rules for the 0.9 special functions (chain rule applied):
+///
+/// * `erfi' = 2e^{x²}/√π`, `erfinv' = (√π/2) e^{erfinv²}`, `erfcinv' = −(√π/2) e^{erfcinv²}`
+/// * `E_n' = −E_{n−1}`, `Shi' = sinh x / x`, `Chi' = cosh x / x`
+/// * `S' = sin(πx²/2)`, `C' = cos(πx²/2)`
+/// * `∂ₓ γ(s, x) = x^{s−1} e^{−x}`, `∂ₓ Γ(s, x) = −x^{s−1} e^{−x}`
+/// * `Li_s' = Li_{s−1}(z)/z`, `η'` formal
+/// * `Ai' = airyaiprime`, `Ai'' = x Ai`, likewise for `Bi`
+/// * `K' = (E − (1−m)K)/(2m(1−m))`, `E' = (E − K)/(2m)`
+/// * `∂_φ F(φ|m) = 1/√(1 − m sin²φ)`; `∂_m F` formal
+/// * `∂_n Π`, `∂_m Π` in terms of `K`, `E`, `Π`
+/// * `C_n^{(a)}' = 2a C_{n−1}^{(a+1)}`, `P_n^{(a,b)}' = (n+a+b+1)/2 P_{n−1}^{(a+1,b+1)}`,
+///   `P_n^{m}' = (n x P_n^m − (n+m) P_{n−1}^m)/(x²−1)`, `L_n^{(a)}' = −L_{n−1}^{(a+1)}`
+///
+/// Parameters (order, degree, `s`, …) must be constant with respect to the
+/// variable; otherwise a formal `Derivative` is produced.  Returns `None`
+/// for functions outside this family.
+fn diff_special_09(
+    arena: &mut Arena,
+    id: ExprId,
+    func_sym: SymbolId,
+    args: &[ExprId],
+    cache: &FxHashMap<ExprId, ExprId>,
+) -> Option<ExprId> {
+    use crate::base::arena::{
+        FN_AIRYAI, FN_AIRYAIPRIME, FN_AIRYBI, FN_AIRYBIPRIME, FN_ASSOC_LAGUERRE, FN_ASSOC_LEGENDRE,
+        FN_CHI, FN_DIRICHLET_ETA, FN_ELLIPTIC_E, FN_ELLIPTIC_F, FN_ELLIPTIC_K, FN_ELLIPTIC_PI,
+        FN_ERFCINV, FN_ERFI, FN_ERFINV, FN_EXPINT, FN_FRESNELC, FN_FRESNELS, FN_GEGENBAUER,
+        FN_JACOBI, FN_LOWERGAMMA, FN_POLYLOG, FN_SHI, FN_UPPERGAMMA,
+    };
+
+    let name = arena.symbol_name(func_sym).to_owned();
+    let name = name.as_str();
+
+    // Formal derivative of the whole node: used when a parameter depends on
+    // the variable (or the rule is unknown, e.g. η).
+    let formal = |arena: &mut Arena, arg: ExprId| -> ExprId {
+        let partial = arena.intern(ExprNode::Derivative(id, arg));
+        let d = get_deriv(cache, arg, arena);
+        arena.mul(&[partial, d])
+    };
+
+    // ── Unary functions of x ──
+    let unary_rule = |arena: &mut Arena, f: ExprId| -> Option<ExprId> {
+        Some(match name {
+            FN_ERFI => {
+                let two = arena.int(2);
+                let f2 = arena.pow(f, two);
+                let e = arena.exp(f2);
+                let c = two_over_sqrt_pi(arena);
+                arena.mul(&[c, e])
+            }
+            FN_ERFINV | FN_ERFCINV => {
+                let two = arena.int(2);
+                let w = apply_named(arena, name, &[f]);
+                let w2 = arena.pow(w, two);
+                let e = arena.exp(w2);
+                let sqrt_pi = arena.sqrt(arena.pi);
+                let half = arena.rational(if name == FN_ERFINV { 1 } else { -1 }, 2);
+                arena.mul(&[half, sqrt_pi, e])
+            }
+            FN_SHI => {
+                let s = arena.sinh(f);
+                arena.div(s, f)
+            }
+            FN_CHI => {
+                let c = arena.cosh(f);
+                arena.div(c, f)
+            }
+            FN_FRESNELS => {
+                let a = half_pi_sq(arena, f);
+                arena.sin(a)
+            }
+            FN_FRESNELC => {
+                let a = half_pi_sq(arena, f);
+                arena.cos(a)
+            }
+            FN_AIRYAI => apply_named(arena, FN_AIRYAIPRIME, &[f]),
+            FN_AIRYBI => apply_named(arena, FN_AIRYBIPRIME, &[f]),
+            FN_AIRYAIPRIME => {
+                let ai = apply_named(arena, FN_AIRYAI, &[f]);
+                arena.mul(&[f, ai])
+            }
+            FN_AIRYBIPRIME => {
+                let bi = apply_named(arena, FN_AIRYBI, &[f]);
+                arena.mul(&[f, bi])
+            }
+            FN_ELLIPTIC_K => {
+                // (E − (1−m)K) / (2m(1−m))
+                let k = apply_named(arena, FN_ELLIPTIC_K, &[f]);
+                let e = apply_named(arena, FN_ELLIPTIC_E, &[f]);
+                let one_minus_m = arena.sub(arena.one, f);
+                let t = arena.mul(&[one_minus_m, k]);
+                let numer = arena.sub(e, t);
+                let two = arena.int(2);
+                let denom = arena.mul(&[two, f, one_minus_m]);
+                arena.div(numer, denom)
+            }
+            FN_ELLIPTIC_E => {
+                // (E − K) / (2m)
+                let k = apply_named(arena, FN_ELLIPTIC_K, &[f]);
+                let e = apply_named(arena, FN_ELLIPTIC_E, &[f]);
+                let numer = arena.sub(e, k);
+                let two = arena.int(2);
+                let denom = arena.mul(&[two, f]);
+                arena.div(numer, denom)
+            }
+            _ => return None,
+        })
+    };
+
+    match (name, args.len()) {
+        (
+            FN_ERFI | FN_ERFINV | FN_ERFCINV | FN_SHI | FN_CHI | FN_FRESNELS | FN_FRESNELC
+            | FN_AIRYAI | FN_AIRYBI | FN_AIRYAIPRIME | FN_AIRYBIPRIME | FN_ELLIPTIC_K
+            | FN_ELLIPTIC_E,
+            1,
+        ) => {
+            let f = args[0];
+            let df = get_deriv(cache, f, arena);
+            if arena.is_zero_structural(df) {
+                return Some(arena.zero);
+            }
+            let outer = unary_rule(arena, f)?;
+            Some(arena.mul(&[outer, df]))
+        }
+        (FN_DIRICHLET_ETA, 1) => {
+            let df = get_deriv(cache, args[0], arena);
+            if arena.is_zero_structural(df) {
+                return Some(arena.zero);
+            }
+            Some(formal(arena, args[0]))
+        }
+        // ── (parameter, x) functions ──
+        (FN_EXPINT | FN_LOWERGAMMA | FN_UPPERGAMMA | FN_POLYLOG, 2) => {
+            let (p, f) = (args[0], args[1]);
+            let dp = get_deriv(cache, p, arena);
+            let df = get_deriv(cache, f, arena);
+            if !arena.is_zero_structural(dp) {
+                // Parameter derivatives have no elementary form.
+                let mut terms: SmallVec<[ExprId; 2]> = SmallVec::new();
+                terms.push(formal(arena, p));
+                if !arena.is_zero_structural(df) {
+                    terms.push(formal(arena, f));
+                }
+                return Some(arena.add(&terms));
+            }
+            if arena.is_zero_structural(df) {
+                return Some(arena.zero);
+            }
+            let p_minus_1 = arena.sub(p, arena.one);
+            let outer = match name {
+                FN_EXPINT => {
+                    let e = apply_named(arena, FN_EXPINT, &[p_minus_1, f]);
+                    arena.neg(e)
+                }
+                FN_LOWERGAMMA | FN_UPPERGAMMA => {
+                    let x_pow = arena.pow(f, p_minus_1);
+                    let neg_f = arena.neg(f);
+                    let e = arena.exp(neg_f);
+                    let v = arena.mul(&[x_pow, e]);
+                    if name == FN_LOWERGAMMA {
+                        v
+                    } else {
+                        arena.neg(v)
+                    }
+                }
+                _ => {
+                    let li = apply_named(arena, FN_POLYLOG, &[p_minus_1, f]);
+                    arena.div(li, f)
+                }
+            };
+            Some(arena.mul(&[outer, df]))
+        }
+        (FN_ELLIPTIC_F, 2) => {
+            let (phi, m) = (args[0], args[1]);
+            let dphi = get_deriv(cache, phi, arena);
+            let dm = get_deriv(cache, m, arena);
+            let mut terms: SmallVec<[ExprId; 2]> = SmallVec::new();
+            if !arena.is_zero_structural(dphi) {
+                // 1/√(1 − m sin²φ)
+                let s = arena.sin(phi);
+                let two = arena.int(2);
+                let s2 = arena.pow(s, two);
+                let ms2 = arena.mul(&[m, s2]);
+                let inner = arena.sub(arena.one, ms2);
+                let root = arena.sqrt(inner);
+                let outer = arena.div(arena.one, root);
+                terms.push(arena.mul(&[outer, dphi]));
+            }
+            if !arena.is_zero_structural(dm) {
+                terms.push(formal(arena, m));
+            }
+            Some(match terms.len() {
+                0 => arena.zero,
+                1 => terms[0],
+                _ => arena.add(&terms),
+            })
+        }
+        (FN_ELLIPTIC_PI, 2) => {
+            let (n, m) = (args[0], args[1]);
+            let dn = get_deriv(cache, n, arena);
+            let dm = get_deriv(cache, m, arena);
+            if arena.is_zero_structural(dn) && arena.is_zero_structural(dm) {
+                return Some(arena.zero);
+            }
+            let k = apply_named(arena, FN_ELLIPTIC_K, &[m]);
+            let e = apply_named(arena, FN_ELLIPTIC_E, &[m]);
+            let pi_nm = apply_named(arena, FN_ELLIPTIC_PI, &[n, m]);
+            let two = arena.int(2);
+            let m_minus_n = arena.sub(m, n);
+            let mut terms: SmallVec<[ExprId; 2]> = SmallVec::new();
+            if !arena.is_zero_structural(dn) {
+                // (E + (m−n)K/n + (n²−m)Π/n) / (2(m−n)(n−1))
+                let t1 = arena.mul(&[m_minus_n, k]);
+                let t1 = arena.div(t1, n);
+                let n2 = arena.pow(n, two);
+                let n2_minus_m = arena.sub(n2, m);
+                let t2 = arena.mul(&[n2_minus_m, pi_nm]);
+                let t2 = arena.div(t2, n);
+                let numer = arena.add(&[e, t1, t2]);
+                let n_minus_1 = arena.sub(n, arena.one);
+                let denom = arena.mul(&[two, m_minus_n, n_minus_1]);
+                let outer = arena.div(numer, denom);
+                terms.push(arena.mul(&[outer, dn]));
+            }
+            if !arena.is_zero_structural(dm) {
+                // (E/(m−1) + Π) / (2(n−m))
+                let m_minus_1 = arena.sub(m, arena.one);
+                let t = arena.div(e, m_minus_1);
+                let numer = arena.add(&[t, pi_nm]);
+                let n_minus_m = arena.sub(n, m);
+                let denom = arena.mul(&[two, n_minus_m]);
+                let outer = arena.div(numer, denom);
+                terms.push(arena.mul(&[outer, dm]));
+            }
+            Some(if terms.len() == 1 {
+                terms[0]
+            } else {
+                arena.add(&terms)
+            })
+        }
+        // ── Orthogonal polynomials with parameters: (n, params…, x) ──
+        (FN_GEGENBAUER | FN_ASSOC_LEGENDRE | FN_ASSOC_LAGUERRE, 3) | (FN_JACOBI, 4) => {
+            let x = args[args.len() - 1];
+            let params = &args[..args.len() - 1];
+            for &p in params {
+                let dp = get_deriv(cache, p, arena);
+                if !arena.is_zero_structural(dp) {
+                    // Parameter depends on the variable: formal derivative.
+                    let mut terms: SmallVec<[ExprId; 4]> = SmallVec::new();
+                    for &a in args {
+                        let da = get_deriv(cache, a, arena);
+                        if !arena.is_zero_structural(da) {
+                            terms.push(formal(arena, a));
+                        }
+                    }
+                    return Some(arena.add(&terms));
+                }
+            }
+            let dx = get_deriv(cache, x, arena);
+            if arena.is_zero_structural(dx) {
+                return Some(arena.zero);
+            }
+            let n = params[0];
+            let n_minus_1 = arena.sub(n, arena.one);
+            let outer = match name {
+                FN_GEGENBAUER => {
+                    // 2a C_{n−1}^{(a+1)}
+                    let a = params[1];
+                    let a_plus_1 = arena.add(&[a, arena.one]);
+                    let c = apply_named(arena, FN_GEGENBAUER, &[n_minus_1, a_plus_1, x]);
+                    let two = arena.int(2);
+                    arena.mul(&[two, a, c])
+                }
+                FN_JACOBI => {
+                    // (n + a + b + 1)/2 · P_{n−1}^{(a+1, b+1)}
+                    let (a, b) = (params[1], params[2]);
+                    let a_plus_1 = arena.add(&[a, arena.one]);
+                    let b_plus_1 = arena.add(&[b, arena.one]);
+                    let p = apply_named(arena, FN_JACOBI, &[n_minus_1, a_plus_1, b_plus_1, x]);
+                    let s = arena.add(&[n, a, b, arena.one]);
+                    let half = arena.rational(1, 2);
+                    arena.mul(&[half, s, p])
+                }
+                FN_ASSOC_LEGENDRE => {
+                    // (n x P_n^m − (n+m) P_{n−1}^m) / (x² − 1)
+                    let m = params[1];
+                    let pn = apply_named(arena, FN_ASSOC_LEGENDRE, &[n, m, x]);
+                    let pn1 = apply_named(arena, FN_ASSOC_LEGENDRE, &[n_minus_1, m, x]);
+                    let t1 = arena.mul(&[n, x, pn]);
+                    let n_plus_m = arena.add(&[n, m]);
+                    let t2 = arena.mul(&[n_plus_m, pn1]);
+                    let numer = arena.sub(t1, t2);
+                    let two = arena.int(2);
+                    let x2 = arena.pow(x, two);
+                    let denom = arena.sub(x2, arena.one);
+                    arena.div(numer, denom)
+                }
+                _ => {
+                    // −L_{n−1}^{(a+1)}
+                    let a = params[1];
+                    let a_plus_1 = arena.add(&[a, arena.one]);
+                    let l = apply_named(arena, FN_ASSOC_LAGUERRE, &[n_minus_1, a_plus_1, x]);
+                    arena.neg(l)
+                }
+            };
+            Some(arena.mul(&[outer, dx]))
+        }
+        _ => None,
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

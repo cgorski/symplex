@@ -4321,6 +4321,355 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
+    // ── More special functions (0.9) ───────────────────────────────────
+
+    /// Build a library `Apply(name, args)` node.  Every id in `args` must
+    /// already have been validated with `checked_id` (or be `self`).
+    fn special_apply(&self, name: &str, args: &[crate::base::node::ExprId]) -> Ex {
+        let id = {
+            let mut guard = self.inner.write();
+            let sid = guard.arena.symbols.intern(name);
+            guard.arena.intern(crate::base::node::ExprNode::Apply(
+                sid,
+                args.iter().copied().collect(),
+            ))
+        };
+        self.wrap(id)
+    }
+
+    /// Imaginary error function `erfi(self) = −i·erf(i·self) = (2/√π) ∫₀ˣ e^{t²} dt`.
+    ///
+    /// Exact: `erfi(0) = 0`, odd; `d/dx erfi(x) = 2e^{x²}/√π`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// assert_eq!(format!("{}", x.erfi()), "erfi(x)");
+    /// assert_eq!(format!("{}", ctx.int(0).erfi().eval()), "0");
+    /// assert!((ctx.rational(7, 10).erfi().eval_f64().unwrap() - 0.94028293383350736168).abs() < 1e-14);
+    /// ```
+    #[must_use]
+    pub fn erfi(&self) -> Ex {
+        self.special_apply(crate::base::arena::FN_ERFI, &[self.raw_id()])
+    }
+
+    /// Inverse error function `erfinv(self)`: `erf(erfinv(y)) = y` for `|y| < 1`.
+    ///
+    /// Exact: `erfinv(0) = 0`, `erfinv(±1) = ±∞`, odd;
+    /// `d/dy erfinv(y) = (√π/2) e^{erfinv(y)²}`.
+    #[must_use]
+    pub fn erfinv(&self) -> Ex {
+        self.special_apply(crate::base::arena::FN_ERFINV, &[self.raw_id()])
+    }
+
+    /// Inverse complementary error function `erfcinv(self) = erfinv(1 − self)`.
+    ///
+    /// Exact: `erfcinv(1) = 0`, `erfcinv(0) = ∞`, `erfcinv(2) = −∞`.
+    #[must_use]
+    pub fn erfcinv(&self) -> Ex {
+        self.special_apply(crate::base::arena::FN_ERFCINV, &[self.raw_id()])
+    }
+
+    /// Generalised exponential integral `E_n(self) = ∫₁^∞ e^{−self·t} t^{−n} dt`
+    /// (SymPy `expint(n, x)`; the order comes first in the display).
+    ///
+    /// Exact: `E_n(0) = 1/(n−1)` for `n > 1`, `E_0(x) = e^{−x}/x`,
+    /// `E_n(∞) = 0`; `d/dx E_n(x) = −E_{n−1}(x)`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// assert_eq!(format!("{}", x.expint(&ctx.int(2))), "expint(2, x)");
+    /// assert_eq!(format!("{}", ctx.int(0).expint(&ctx.int(3)).eval()), "1/2");
+    /// ```
+    #[must_use]
+    pub fn expint(&self, n: &Ex) -> Ex {
+        let n_id = self.checked_id(n);
+        self.special_apply(crate::base::arena::FN_EXPINT, &[n_id, self.raw_id()])
+    }
+
+    /// Exponential integral `E₁(self) = expint(1, self) = ∫_self^∞ e^{−t}/t dt`.
+    ///
+    /// For `x > 0`, `E₁(x) = −Ei(−x)`.
+    #[must_use]
+    pub fn e1(&self) -> Ex {
+        let one = self.inner.read().arena.one;
+        self.special_apply(crate::base::arena::FN_EXPINT, &[one, self.raw_id()])
+    }
+
+    /// Hyperbolic sine integral `Shi(self) = ∫₀ˣ sinh(t)/t dt`.
+    ///
+    /// Exact: `Shi(0) = 0`, odd; `d/dx Shi(x) = sinh(x)/x`.
+    #[must_use]
+    pub fn shi(&self) -> Ex {
+        self.special_apply(crate::base::arena::FN_SHI, &[self.raw_id()])
+    }
+
+    /// Hyperbolic cosine integral `Chi(self) = γ + ln x + ∫₀ˣ (cosh(t) − 1)/t dt`.
+    ///
+    /// Exact: `Chi(0) = −∞`; `d/dx Chi(x) = cosh(x)/x`.
+    #[must_use]
+    pub fn chi(&self) -> Ex {
+        self.special_apply(crate::base::arena::FN_CHI, &[self.raw_id()])
+    }
+
+    /// Fresnel sine integral `S(self) = ∫₀ˣ sin(πt²/2) dt`.
+    ///
+    /// Exact: `S(0) = 0`, `S(±∞) = ±1/2`, odd; `d/dx S(x) = sin(πx²/2)`.
+    #[must_use]
+    pub fn fresnels(&self) -> Ex {
+        self.special_apply(crate::base::arena::FN_FRESNELS, &[self.raw_id()])
+    }
+
+    /// Fresnel cosine integral `C(self) = ∫₀ˣ cos(πt²/2) dt`.
+    ///
+    /// Exact: `C(0) = 0`, `C(±∞) = ±1/2`, odd; `d/dx C(x) = cos(πx²/2)`.
+    #[must_use]
+    pub fn fresnelc(&self) -> Ex {
+        self.special_apply(crate::base::arena::FN_FRESNELC, &[self.raw_id()])
+    }
+
+    /// Lower incomplete gamma function `γ(s, self) = ∫₀ˣ t^{s−1} e^{−t} dt`
+    /// (SymPy `lowergamma(s, x)`).
+    ///
+    /// Exact: `γ(s, 0) = 0`, `γ(s, ∞) = Γ(s)`, `γ(1, x) = 1 − e^{−x}`,
+    /// `γ(1/2, x) = √π erf(√x)`, and closed forms for small integer and
+    /// half-integer `s`; `∂/∂x γ(s, x) = x^{s−1} e^{−x}`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// assert_eq!(x.lowergamma(&ctx.int(1)).eval(), 1 - (-&x).exp());
+    /// assert_eq!(format!("{}", x.uppergamma(&ctx.int(1)).eval()), "exp(-x)");
+    /// ```
+    #[must_use]
+    pub fn lowergamma(&self, s: &Ex) -> Ex {
+        let s_id = self.checked_id(s);
+        self.special_apply(crate::base::arena::FN_LOWERGAMMA, &[s_id, self.raw_id()])
+    }
+
+    /// Upper incomplete gamma function `Γ(s, self) = ∫_x^∞ t^{s−1} e^{−t} dt`
+    /// (SymPy `uppergamma(s, x)`).
+    ///
+    /// Exact: `Γ(s, 0) = Γ(s)`, `Γ(s, ∞) = 0`, `Γ(1, x) = e^{−x}`,
+    /// `Γ(0, x) = E₁(x)`, `Γ(1/2, x) = √π erfc(√x)`, and closed forms for
+    /// small integer and half-integer `s`; `∂/∂x Γ(s, x) = −x^{s−1} e^{−x}`.
+    #[must_use]
+    pub fn uppergamma(&self, s: &Ex) -> Ex {
+        let s_id = self.checked_id(s);
+        self.special_apply(crate::base::arena::FN_UPPERGAMMA, &[s_id, self.raw_id()])
+    }
+
+    /// Polylogarithm `Li_s(self) = Σ_{k≥1} self^k / k^s` (SymPy `polylog(s, z)`).
+    ///
+    /// Exact: `Li_s(0) = 0`, `Li_s(1) = ζ(s)`, `Li_s(−1) = −η(s)`,
+    /// `Li_1(z) = −ln(1 − z)`, `Li_0(z) = z/(1 − z)`, `Li_{−n}(z)` rational,
+    /// `Li_2(1/2) = π²/12 − ln²2/2`; `d/dz Li_s(z) = Li_{s−1}(z)/z`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let z = ctx.symbol("z");
+    /// assert_eq!(format!("{}", z.polylog(&ctx.int(2))), "polylog(2, z)");
+    /// assert_eq!(format!("{}", ctx.int(1).polylog(&ctx.int(2)).eval()), "1/6*pi^2");
+    /// assert_eq!(z.polylog(&ctx.int(-1)).eval(), &z / (1 - &z).powi(2));
+    /// ```
+    #[must_use]
+    pub fn polylog(&self, s: &Ex) -> Ex {
+        let s_id = self.checked_id(s);
+        self.special_apply(crate::base::arena::FN_POLYLOG, &[s_id, self.raw_id()])
+    }
+
+    /// Dirichlet eta function `η(self) = Σ (−1)^{k+1}/k^s = (1 − 2^{1−s}) ζ(s)`.
+    ///
+    /// Exact: `η(1) = ln 2`, `η(0) = 1/2`, and `η(s)` rewrites through `ζ(s)`
+    /// whenever `s` is an integer (so `η(2) = π²/12`).
+    #[must_use]
+    pub fn dirichlet_eta(&self) -> Ex {
+        self.special_apply(crate::base::arena::FN_DIRICHLET_ETA, &[self.raw_id()])
+    }
+
+    /// Airy function of the first kind `Ai(self)`.
+    ///
+    /// Exact: `Ai(0) = 1/(3^{2/3} Γ(2/3))`, `Ai(±∞) = 0`; `Ai' = airyaiprime`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// assert_eq!(format!("{}", x.airyai().diff(&x)), "airyaiprime(x)");
+    /// assert_eq!(format!("{}", x.airyaiprime().diff(&x)), "x*airyai(x)");
+    /// ```
+    #[must_use]
+    pub fn airyai(&self) -> Ex {
+        self.special_apply(crate::base::arena::FN_AIRYAI, &[self.raw_id()])
+    }
+
+    /// Airy function of the second kind `Bi(self)`.
+    ///
+    /// Exact: `Bi(0) = 1/(3^{1/6} Γ(2/3))`, `Bi(−∞) = 0`, `Bi(∞) = ∞`.
+    #[must_use]
+    pub fn airybi(&self) -> Ex {
+        self.special_apply(crate::base::arena::FN_AIRYBI, &[self.raw_id()])
+    }
+
+    /// Derivative of the Airy function of the first kind `Ai′(self)`.
+    ///
+    /// Exact: `Ai′(0) = −1/(3^{1/3} Γ(1/3))`; `d/dx Ai′(x) = x·Ai(x)`.
+    #[must_use]
+    pub fn airyaiprime(&self) -> Ex {
+        self.special_apply(crate::base::arena::FN_AIRYAIPRIME, &[self.raw_id()])
+    }
+
+    /// Derivative of the Airy function of the second kind `Bi′(self)`.
+    ///
+    /// Exact: `Bi′(0) = 3^{1/6}/Γ(1/3)`; `d/dx Bi′(x) = x·Bi(x)`.
+    #[must_use]
+    pub fn airybiprime(&self) -> Ex {
+        self.special_apply(crate::base::arena::FN_AIRYBIPRIME, &[self.raw_id()])
+    }
+
+    /// Complete elliptic integral of the first kind
+    /// `K(m) = ∫₀^{π/2} dθ / √(1 − m sin²θ)` with `self = m = k²`.
+    ///
+    /// Exact: `K(0) = π/2`, `K(1) = z∞`;
+    /// `d/dm K = (E(m) − (1 − m)K(m)) / (2m(1 − m))`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// assert_eq!(format!("{}", ctx.int(0).elliptic_k().eval()), "1/2*pi");
+    /// // K(1/2) = Γ(1/4)² / (4√π)
+    /// assert!((ctx.rational(1, 2).elliptic_k().eval_f64().unwrap() - 1.8540746773013719184).abs() < 1e-14);
+    /// ```
+    #[must_use]
+    pub fn elliptic_k(&self) -> Ex {
+        self.special_apply(crate::base::arena::FN_ELLIPTIC_K, &[self.raw_id()])
+    }
+
+    /// Complete elliptic integral of the second kind
+    /// `E(m) = ∫₀^{π/2} √(1 − m sin²θ) dθ` with `self = m = k²`.
+    ///
+    /// Exact: `E(0) = π/2`, `E(1) = 1`; `d/dm E = (E(m) − K(m)) / (2m)`.
+    #[must_use]
+    pub fn elliptic_e(&self) -> Ex {
+        self.special_apply(crate::base::arena::FN_ELLIPTIC_E, &[self.raw_id()])
+    }
+
+    /// Incomplete elliptic integral of the first kind
+    /// `F(φ | m) = ∫₀^φ dθ / √(1 − m sin²θ)` with `self = φ`.
+    ///
+    /// Exact: `F(0 | m) = 0`, `F(φ | 0) = φ`, `F(π/2 | m) = K(m)`;
+    /// `∂/∂φ F = 1/√(1 − m sin²φ)` (the `m`-derivative stays formal).
+    #[must_use]
+    pub fn elliptic_f(&self, m: &Ex) -> Ex {
+        let m_id = self.checked_id(m);
+        self.special_apply(crate::base::arena::FN_ELLIPTIC_F, &[self.raw_id(), m_id])
+    }
+
+    /// Complete elliptic integral of the third kind
+    /// `Π(n | m) = ∫₀^{π/2} dθ / ((1 − n sin²θ) √(1 − m sin²θ))` with `self = n`.
+    ///
+    /// Exact: `Π(0 | m) = K(m)`, `Π(n | 0) = π/(2√(1 − n))`, `Π(n | n) = E(n)/(1 − n)`,
+    /// `Π(1 | m) = z∞`; both partial derivatives have closed forms in `K`, `E`, `Π`.
+    #[must_use]
+    pub fn elliptic_pi(&self, m: &Ex) -> Ex {
+        let m_id = self.checked_id(m);
+        self.special_apply(crate::base::arena::FN_ELLIPTIC_PI, &[self.raw_id(), m_id])
+    }
+
+    /// Gegenbauer (ultraspherical) polynomial `C_n^{(a)}(self)`.
+    ///
+    /// Expands to an explicit polynomial under `eval` for integer `n ≥ 0`;
+    /// `C_n^{(1/2)} = P_n`, `C_n^{(1)} = U_n`; `d/dx C_n^{(a)} = 2a C_{n−1}^{(a+1)}`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, a) = (ctx.symbol("x"), ctx.symbol("a"));
+    /// assert_eq!(format!("{}", x.gegenbauer(&ctx.int(2), &a).eval()), "2*a^2*x^2 + 2*a*x^2 - a");
+    /// ```
+    #[must_use]
+    pub fn gegenbauer(&self, n: &Ex, a: &Ex) -> Ex {
+        let n_id = self.checked_id(n);
+        let a_id = self.checked_id(a);
+        self.special_apply(
+            crate::base::arena::FN_GEGENBAUER,
+            &[n_id, a_id, self.raw_id()],
+        )
+    }
+
+    /// Jacobi polynomial `P_n^{(a, b)}(self)`.
+    ///
+    /// Expands to an explicit polynomial under `eval` for integer `n ≥ 0`;
+    /// `P_n^{(0,0)} = P_n`; `d/dx P_n^{(a,b)} = (n + a + b + 1)/2 · P_{n−1}^{(a+1, b+1)}`.
+    #[must_use]
+    pub fn jacobi(&self, n: &Ex, a: &Ex, b: &Ex) -> Ex {
+        let n_id = self.checked_id(n);
+        let a_id = self.checked_id(a);
+        let b_id = self.checked_id(b);
+        self.special_apply(
+            crate::base::arena::FN_JACOBI,
+            &[n_id, a_id, b_id, self.raw_id()],
+        )
+    }
+
+    /// Associated Legendre function `P_n^m(self)` (Condon–Shortley phase,
+    /// as in SymPy: `P_1^1(x) = −√(1 − x²)`).
+    ///
+    /// Expands under `eval` for integer `n ≥ 0` and integer `m` (zero when
+    /// `|m| > n`); `P_n^0 = P_n`;
+    /// `d/dx P_n^m = (n x P_n^m − (n + m) P_{n−1}^m) / (x² − 1)`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// assert_eq!(format!("{}", x.assoc_legendre(&ctx.int(2), &ctx.int(2)).eval()), "-3*x^2 + 3");
+    /// ```
+    #[must_use]
+    pub fn assoc_legendre(&self, n: &Ex, m: &Ex) -> Ex {
+        let n_id = self.checked_id(n);
+        let m_id = self.checked_id(m);
+        self.special_apply(
+            crate::base::arena::FN_ASSOC_LEGENDRE,
+            &[n_id, m_id, self.raw_id()],
+        )
+    }
+
+    /// Generalised (associated) Laguerre polynomial `L_n^{(a)}(self)`.
+    ///
+    /// Expands under `eval` for integer `n ≥ 0`; `L_n^{(0)} = L_n`;
+    /// `d/dx L_n^{(a)} = −L_{n−1}^{(a+1)}`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, a) = (ctx.symbol("x"), ctx.symbol("a"));
+    /// assert_eq!(format!("{}", x.assoc_laguerre(&ctx.int(1), &a).eval()), "a - x + 1");
+    /// ```
+    #[must_use]
+    pub fn assoc_laguerre(&self, n: &Ex, a: &Ex) -> Ex {
+        let n_id = self.checked_id(n);
+        let a_id = self.checked_id(a);
+        self.special_apply(
+            crate::base::arena::FN_ASSOC_LAGUERRE,
+            &[n_id, a_id, self.raw_id()],
+        )
+    }
+
     // ── Formal power series ────────────────────────────────────────
 
     /// Compute the formal power series of this expression about `point`.

@@ -130,7 +130,9 @@ fn main() {
 | `qr()` | `(Q, R)` with exact radicals | — |
 | `matrix_decomp::gram_schmidt(&vectors, normalize)` | orthogonal (or orthonormal) basis | linearly independent input |
 | `rref()` | `(R, pivot_columns)` | — |
-| `pinv()` | Moore–Penrose pseudo-inverse | — |
+| `pinv()` | Moore–Penrose pseudo-inverse (any rank, 0.9) | — |
+| `rank_decomposition()` (0.9) | `(C, F)` with `A = C·F`, `rank A` columns/rows | non-zero |
+| `hessenberg()` (0.9) | `(H, P)` with `H = P⁻¹AP` upper Hessenberg, no radicals | square |
 
 ```rust
 use symplex::prelude::*;
@@ -333,3 +335,125 @@ fn main() {
 - **Control** (`symplex::control`): `StateSpace` (poles, stability, controllability, observability, ZOH discretisation, `to_transfer_function`) and `TransferFunction` (series/parallel/feedback algebra, Routh–Hurwitz, `to_state_space`).
 
 See `cargo run --example matrix_decompositions`, `matrix_algebra`, `exact_matrices`, `control_system` and `integer_lattices`.
+
+## More decompositions and utilities (0.9)
+
+0.9 fills in the remaining everyday SymPy matrix methods. As elsewhere, rational input is routed through `QMatrix`/`ZMatrix` and is exact; symbolic input follows the same *structural* pivoting rules as `rref` and `lu` (a symbolic pivot whose value cannot be decided is assumed non-zero, so the result holds generically).
+
+### Singular values and condition number
+
+`singular_values()` returns the `ncols` square roots of the eigenvalues of `AᵀA` (computed from the smaller Gram matrix `AᵀA` or `AAᵀ` and padded with zeros), sorted in descending order whenever the values can be compared numerically. The result is exact whenever `eigenvals` can solve the Gram matrix's characteristic polynomial — always for rational matrices, as radicals when the irreducible factors have degree ≤ 2 (or a compact radical form) and as `RootOf` values otherwise. `condition_number()` is `σ_max/σ_min` in the 2-norm; a singular matrix is a `ComputationFailed` error whose reason mentions "singular" (SymPy returns `zoo`).
+
+```rust
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    let m = matrix![ctx, [1, 2], [3, 4]];
+    println!("{:?}", m.singular_values().unwrap());
+    // [Ex(sqrt(sqrt(221) + 15)), Ex(sqrt(-sqrt(221) + 15))]   SymPy: [sqrt(sqrt(221) + 15), sqrt(15 - sqrt(221))]
+    println!("{}", m.condition_number().unwrap().eval_f64().unwrap());   // 14.93303437365925
+    println!("{:?}", matrix![ctx, [3, 0, 0], [0, 4, 0]].singular_values().unwrap());   // [Ex(4), Ex(3), Ex(0)]
+    println!("{}", matrix![ctx, [2, 0], [0, 3]].condition_number().unwrap());        // 3/2
+    assert!(matrix![ctx, [1, 2], [2, 4]].condition_number().is_err());
+}
+```
+
+### Pseudo-inverse for any rank, rank factorisation
+
+`pinv()` no longer requires full column rank. It uses the full-rank factorisation `A = C·F` returned by `rank_decomposition()` — `C` holds the pivot columns of `A`, `F` the non-zero rows of `rref(A)` — and `A⁺ = Fᵀ(FFᵀ)⁻¹(CᵀC)⁻¹Cᵀ`; full-column-rank matrices still take the classical `(AᵀA)⁻¹Aᵀ`, and the zero matrix maps to the zero matrix of the transposed shape. `rank_decomposition` itself is an error only for the zero matrix (rank 0 has no non-empty factors).
+
+```rust
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    let a = matrix![ctx, [1, 2], [2, 4]];                    // rank 1
+    println!("{}", a.pinv().unwrap());                       // [[1/25, 2/25], [2/25, 4/25]]
+    let (c, f) = matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]].rank_decomposition().unwrap();
+    println!("{c} {f}");                                     // [[1, 2], [4, 5], [7, 8]]  [[1, 0, -1], [0, 1, 2]]
+    symplex::syms!(ctx; x);
+    let s = Matrix::new(vec![vec![x.clone(), x.clone()], vec![x.clone(), x.clone()]]).unwrap();
+    println!("{}", s.pinv().unwrap());                       // [[1/(4x), 1/(4x)], [1/(4x), 1/(4x)]]
+}
+```
+
+### Hessenberg form
+
+`hessenberg()` returns `(H, P)` with `H = P⁻¹AP` upper Hessenberg (`h_ij = 0` for `i > j + 1`), computed by Gaussian similarity transforms — row eliminations paired with the compensating column operations, with a symmetric row/column swap when the sub-diagonal entry is zero. Unlike SymPy's Householder-based `upper_hessenberg_decomposition` the result stays in the field of the entries: exact rationals for rational input, no radicals.
+
+```rust
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    let a = matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 10]];
+    let (h, p) = a.hessenberg().unwrap();
+    println!("{h}");             // [[1, 29/4, 3], [4, 31/2, 6], [0, -13/8, -1/2]]
+    println!("{p}");             // [[1, 0, 0], [0, 1, 0], [0, 7/4, 1]]
+    assert_eq!(&a * &p, &p * &h);
+    assert_eq!(h.char_poly(&ctx.symbol("λ")).unwrap(), a.char_poly(&ctx.symbol("λ")).unwrap());
+}
+```
+
+### Constructors and small utilities
+
+| Method | SymPy | Notes |
+|--------|-------|-------|
+| `Matrix::companion(&[c₀, …, c_{n−1}])` | `Matrix.companion(Poly)` | monic `xⁿ + c_{n−1}xⁿ⁻¹ + … + c₀`, coefficients **ascending**; ones on the sub-diagonal, `−cᵢ` in the last column |
+| `Matrix::jordan_block(&λ, size)` | `Matrix.jordan_block(size, λ)` | `Err` for `size == 0` |
+| `permanent()` | `Matrix.per()` | Ryser on `QMatrix` for rational input, subset DP for symbolic; **exponential**, `n ≤ 20` |
+| `row_insert(pos, &rows)`, `col_insert(pos, &cols)` | `row_insert`, `col_insert` | `pos == nrows/ncols` appends; `Err` on bad position or shape |
+| `permute_rows(&perm)`, `permute_cols(&perm)` | `permute_rows`, `permute_cols` | result row `i` is input row `perm[i]`; `perm` must be a genuine permutation |
+| `row_del(i)`, `col_del(j)` | `row_del`, `col_del` | SymPy names for `delete_row` / `delete_col` |
+| `Matrix::casoratian(&seqs, &n)` | `casoratian(seqs, n, zero=False)` | `det[fⱼ(n+i)]`; SymPy's default `zero=True` is `.subs(&n, &ctx.int(0))` |
+| `inv_mod(m)` | `Matrix.inv_mod(m)` | integer matrices, `adj(A)·det(A)⁻¹ mod m`; `Err` unless `gcd(det A, m) = 1` |
+| `matrix_log()` | `Matrix.log()` | via the Jordan form: `P·log(J)·P⁻¹`, `log J_k(λ) = ln λ·I + Σ (−1)^{d+1}N^d/(dλ^d)`; `Err` for singular matrices |
+
+```rust
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    symplex::syms!(ctx; x, n);
+    let c = Matrix::companion(&[ctx.int(4), ctx.int(3), ctx.int(2)]).unwrap();   // x³ + 2x² + 3x + 4
+    println!("{c}");                                          // [[0, 0, -4], [1, 0, -3], [0, 1, -2]]
+    println!("{}", -c.char_poly(&x).unwrap());               // x^3 + 2*x^2 + 3*x + 4  (char_poly is det(C − xI))
+    println!("{}", Matrix::jordan_block(&ctx.int(2), 3).unwrap());   // [[2, 1, 0], [0, 2, 1], [0, 0, 2]]
+
+    let m = matrix![ctx, [1, 2], [3, 4]];
+    println!("{}", m.permanent().unwrap());                                   // 10
+    println!("{}", matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]].permanent().unwrap());   // 450
+    println!("{}", m.row_insert(1, &matrix![ctx, [5, 6]]).unwrap());         // [[1, 2], [5, 6], [3, 4]]
+    println!("{}", m.col_insert(1, &matrix![ctx, [5], [6]]).unwrap());       // [[1, 5, 2], [3, 6, 4]]
+    println!("{}", matrix![ctx, [1], [2], [3]].permute_rows(&[2, 0, 1]).unwrap().transpose());   // [[3, 1, 2]]
+    println!("{}", m.inv_mod(5).unwrap());                                    // [[3, 1], [4, 2]]
+
+    let w = Matrix::casoratian(&[ctx.int(2).pow(&n), ctx.int(3).pow(&n)], &n).unwrap();
+    println!("{}", w.simplify());                                             // 6^n
+    println!("{}", matrix![ctx, [2, 0], [0, 3]].matrix_log().unwrap());      // [[ln(2), 0], [0, ln(3)]]
+    println!("{}", matrix![ctx, [1, 1], [0, 1]].matrix_log().unwrap());      // [[0, 1], [0, 0]]
+}
+```
+
+### LLL lattice reduction
+
+`ZMatrix::lll(delta)` (and `lll_default()` with `δ = 3/4`, `lll_with_transform` for the unimodular `T` with `T·A = R`) reduces the lattice basis formed by the **rows**, with exact rational Gram–Schmidt data. The output satisfies the size condition `|μ_ij| ≤ 1/2` and the Lovász condition `‖b*_k‖² ≥ (δ − μ²_{k,k−1})‖b*_{k−1}‖²` exactly, spans the same lattice (same Hermite normal form), and — because the reduction order and rounding follow SymPy's `DomainMatrix.lll` — coincides with SymPy's output. `δ` must lie in `(1/4, 1)` and the rows must be linearly independent (a lattice basis); anything else is an `InvalidArgument` error. The same is available on `Matrix` for integer literals (`Matrix::lll`, `Matrix::lll_default`, `normalforms::lll`, `normalforms::lll_with_transform`).
+
+```rust
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    let b = ZMatrix::from_i64(&[&[1, 1, 1], &[-1, 0, 2], &[3, 5, 6]]).unwrap();
+    let r = b.lll_default().unwrap();
+    println!("{r:?}");                          // ZMatrix(3×3, [[0, 1, 0], [1, 0, 1], [-1, 0, 2]])  (= SymPy's .lll())
+    assert_eq!(r.hermite_normal_form(), b.hermite_normal_form());   // same lattice
+    let (r2, t) = b.lll_with_transform((3, 4)).unwrap();
+    assert_eq!(&t * &b, r2);
+    assert!(t.is_unimodular());
+    println!("{}", matrix![ctx, [1, 0, 0, 1345], [0, 1, 0, 35], [0, 0, 1, 154]].lll_default().unwrap());
+    // [[0, 9, -2, 7], [1, 1, -9, -6], [1, -3, -8, 8]]
+    assert!(ZMatrix::from_i64(&[&[1, 2], &[2, 4]]).unwrap().lll_default().is_err());   // dependent rows
+}
+```

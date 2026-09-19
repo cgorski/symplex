@@ -319,3 +319,142 @@ fn main() {
 `symplex::polysys::solve_system_ex` (see [Solving Equations](./solving.md#polynomial-systems)) does the whole pipeline — Gröbner basis, triangularisation, algebraic back-substitution — when what you want is the solution set rather than the basis.
 
 See `cargo run --example polynomials` for the complete program these snippets are drawn from.
+
+## Algebraic numbers and polynomial algebra (0.9)
+
+0.9 adds a layer of `Ex` methods over the exact engines above, so the common polynomial-algebra questions no longer need a detour through `Poly`/`MultiPoly`. Every method takes and returns `Ex`; the ones that answer a *query* return `Option` (`None` when the input is not of the required shape), the ones that validate caller-supplied structure return `Result`.
+
+### Minimal polynomials
+
+`minimal_polynomial(&var)` (SymPy `minimal_polynomial`) returns the minimal polynomial over ℚ of an algebraic constant built from rationals, radicals, `i`, `φ`, sums, products, integer powers and reciprocals. The result is integer-primitive with a positive leading coefficient, exactly as SymPy prints it; `None` means the number was not recognised as algebraic (`π`, `e`, free symbols, transcendental functions).
+
+```rust
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+
+    let a = ctx.int(2).sqrt() + ctx.int(3).sqrt();
+    println!("{}", a.minimal_polynomial(&x).unwrap());          // x^4 - 10*x^2 + 1
+    let cbrt2 = ctx.int(2).pow(&ctx.rational(1, 3));
+    println!("{}", cbrt2.minimal_polynomial(&x).unwrap());      // x^3 - 2
+    println!("{}", ctx.rational(3, 4).minimal_polynomial(&x).unwrap());   // 4*x - 3
+    let b = ctx.int(1) / (ctx.int(1) + ctx.int(2).sqrt());
+    println!("{}", b.minimal_polynomial(&x).unwrap());          // x^2 + 2*x - 1
+    assert!(ctx.pi().minimal_polynomial(&x).is_none());
+}
+```
+
+### Multivariate gcd and lcm without naming variables
+
+`gcd_all` / `lcm_all` (SymPy `gcd(f, g)` / `lcm(f, g)`) treat both inputs as polynomials over ℚ in *all* of their free symbols. The result follows `MultiPoly::gcd`'s normalisation: integer coefficients, positive leading coefficient (grevlex), integer content equal to the gcd of the inputs' contents — for polynomials over ℤ that is the ordinary gcd over ℤ, `gcd(2x, 4x) = 2x`. Non-polynomial input (`sin x`, `1/x`, `π·x`) gives `None`.
+
+```rust
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    symplex::syms!(ctx; x, y, z);
+
+    let f = &x.powi(2) - &y.powi(2);
+    println!("{}", f.gcd_all(&(&x - &y)).unwrap());              // x - y
+    println!("{}", f.lcm_all(&(&x - &y)).unwrap());              // x^2 - y^2
+    println!("{}", (&x * &y * &z + &x * &y).gcd_all(&(&x * &z + &x)).unwrap());   // x*z + x
+    println!("{}", (&x * 2).gcd_all(&(&x * 4)).unwrap());        // 2*x
+    assert!(x.sin().gcd_all(&x).is_none());
+}
+```
+
+### Gröbner bases and normal forms from `Ex`
+
+`Ex::groebner(&polys, &vars, order)` computes the reduced (monic) Gröbner basis in the given variables under `MonomialOrder::Lex` or `MonomialOrder::GrevLex` (`symplex::multipoly::MonomialOrder`); `reduce_modulo(&basis, &vars, order)` is the remainder of multivariate division — the unique normal form when `basis` is a Gröbner basis for that order, so it is zero exactly for members of the ideal. Variables must be distinct symbols and every polynomial must have rational coefficients; anything else is an `InvalidArgument` error naming the offending input.
+
+```rust
+use symplex::multipoly::MonomialOrder;
+use symplex::prelude::*;
+
+fn main() -> Result<(), SymplexError> {
+    let ctx = Context::new();
+    symplex::syms!(ctx; x, y);
+    let vars = [x.clone(), y.clone()];
+
+    let gens = [&x.powi(2) + &y.powi(2) - 1, &x - &y];
+    let lex = Ex::groebner(&gens, &vars, MonomialOrder::Lex)?;
+    for g in &lex {
+        println!("{g}");
+    }
+    // x - y
+    // y^2 - 1/2
+    let grevlex = Ex::groebner(&gens, &vars, MonomialOrder::GrevLex)?;   // [y^2 - 1/2, x - y]
+
+    println!("{}", x.powi(3).reduce_modulo(&lex, &vars, MonomialOrder::Lex)?);   // 1/2*y
+    let member = (&x.powi(2) - &y.powi(2)).reduce_modulo(&grevlex, &vars, MonomialOrder::GrevLex)?;
+    assert!(member.is_zero_structural());
+    Ok(())
+}
+```
+
+### Exact real roots
+
+`real_roots(&var)` lists the distinct real roots of a rational-coefficient polynomial in increasing order (decided exactly with Sturm sequences): rational roots as numbers, every other root as the `RootOf(g, k)` node that `solve` already uses for degree ≥ 5, where `g` is the irreducible factor over ℤ and `k` its index among `g`'s complex roots. `RootOf` evaluates numerically (`eval_f64`, `eval_decimal`) and prints as such; `root_of(&var, k)` is the `k`-th real root (0-based). Unlike SymPy's `real_roots`, a repeated root is listed once (as in `count_real_roots`).
+
+```rust
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+
+    let roots = (&x.powi(3) - &x * 2).real_roots(&x).unwrap();
+    for r in &roots {
+        println!("{r}  ≈ {}", r.eval_f64().unwrap());
+    }
+    // RootOf(x^2 - 2, 0)  ≈ -1.41421356…
+    // 0  ≈ 0
+    // RootOf(x^2 - 2, 1)  ≈ 1.41421356…
+    let largest = (&x.powi(3) - &x * 2).root_of(&x, 2).unwrap();   // RootOf(x^2 - 2, 1)
+    assert_eq!(largest, roots[2]);
+    assert_eq!((&x.powi(2) + 1).real_roots(&x), Some(vec![]));     // no real roots
+}
+```
+
+### Factoring modulo a prime
+
+`factor_mod(&var, p)` (SymPy `factor_list(f, modulus=p)`) factors a rational-coefficient polynomial over `GF(p)` into `(lc, [(monic irreducible factor, multiplicity)])` with coefficients in `[0, p)`. A composite `p` is an `InvalidArgument` error, as is a coefficient whose denominator is divisible by `p`; the finite-field arithmetic supports odd primes below 2³¹.
+
+```rust
+use symplex::prelude::*;
+
+fn main() -> Result<(), SymplexError> {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+
+    let (lc, factors) = (&x.powi(2) + 1).factor_mod(&x, 5)?;
+    println!("{lc}: {:?}", factors.iter().map(|(f, m)| format!("({f})^{m}")).collect::<Vec<_>>());
+    // 1: ["(x + 2)^1", "(x + 3)^1"]
+    let (_, factors) = (&x.powi(2) + 1).factor_mod(&x, 3)?;     // irreducible mod 3
+    assert_eq!(factors.len(), 1);
+    assert!((&x.powi(2) + 1).factor_mod(&x, 6).is_err());
+    Ok(())
+}
+```
+
+### Resultants and discriminants with symbolic coefficients
+
+`resultant` and `discriminant` (0.2) require every coefficient to be rational. `resultant_symbolic` and `discriminant_symbolic` accept parameter coefficients: they build the Sylvester matrix over `Ex` entries, take its determinant with `Matrix::det`, and expand, so the answer is a polynomial in the parameters. `discriminant_symbolic` is division-free (the leading coefficient is eliminated with one row operation before the determinant).
+
+```rust
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    symplex::syms!(ctx; x, a, b, c, p, q);
+
+    let quad = &a * &x.powi(2) + &b * &x + &c;
+    println!("{}", quad.discriminant_symbolic(&x).unwrap());          // -4*a*c + b^2
+    let cubic = &x.powi(3) + &p * &x + &q;
+    println!("{}", cubic.discriminant_symbolic(&x).unwrap());         // -4*p^3 - 27*q^2
+    println!("{}", (&x - &a).resultant_symbolic(&(&x - &b), &x).unwrap());   // a - b
+}
+```

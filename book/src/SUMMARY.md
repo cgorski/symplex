@@ -1,6 +1,7 @@
 # Summary
 
 [Introduction](./introduction.md)
+[What's New in 0.9](./whats-new-0.9.md)
 [What's New in 0.7](./whats-new-0.7.md)
 [What's New in 0.6](./whats-new-0.6.md)
 [What's New in 0.5](./whats-new-0.5.md)
