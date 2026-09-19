@@ -66,8 +66,8 @@ use syn::Ident;
 ///
 /// let ctx = Context::new();
 /// syms!(ctx; x, y);
-/// let e = expr!(x^2 + 2*x + 1);
-/// let f = expr!(sin(x)^2 + cos(x)^2);
+/// let e = expr!(ctx, x^2 + 2*x + 1);
+/// let f = expr!(ctx, sin(x)^2 + cos(x)^2);
 /// ```
 ///
 /// # Limitations
@@ -1056,8 +1056,9 @@ impl RuleCodeGen {
 /// use symplex::prelude::*;
 /// use symplex::matrix;
 ///
-/// let x = symplex::var("x");
-/// let m = matrix![[x, 1], [0, x]];
+/// let ctx = Context::new();
+/// let x = ctx.symbol("x");
+/// let m = matrix![ctx, [x, 1], [0, x]];
 /// ```
 #[proc_macro]
 pub fn matrix(input: TokenStream) -> TokenStream {
@@ -1078,9 +1079,15 @@ fn generate_matrix(ctx: &Ident, input: &MatrixMacroInput) -> syn::Result<TokenSt
         }
         row_codes.push(quote! { vec![#(#cell_codes),*] });
     }
+    // The parser has checked the shape (non-empty, rectangular), so the
+    // literal is valid by construction: build it without a fallible call.
+    let nrows = input.rows.len();
+    let ncols = input.rows[0].len();
     Ok(quote! {
-        ::symplex::matrix::Matrix::new(vec![#(#row_codes),*])
-            .expect("matrix! macro: invalid literal data")
+        {
+            let __rows: ::std::vec::Vec<::std::vec::Vec<::symplex::expr::Ex>> = vec![#(#row_codes),*];
+            ::symplex::matrix::Matrix::from_fn(#nrows, #ncols, |__i, __j| __rows[__i][__j].clone())
+        }
     })
 }
 
@@ -1096,8 +1103,9 @@ fn generate_matrix(ctx: &Ident, input: &MatrixMacroInput) -> syn::Result<TokenSt
 /// use symplex::prelude::*;
 /// use symplex::eq;
 ///
-/// let x = symplex::var("x");
-/// let equation = eq!(x^2 + x = 6);
+/// let ctx = Context::new();
+/// let x = ctx.symbol("x");
+/// let equation = eq!(ctx, x^2 + x = 6);
 /// ```
 #[proc_macro]
 pub fn eq(input: TokenStream) -> TokenStream {

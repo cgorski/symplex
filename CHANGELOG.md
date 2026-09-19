@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.8.1] - 2026-09-19
+
+### Changed
+
+- **`symplex-macros` 0.3.1.**  `syn` is now depended on with an explicit,
+  minimal feature set (`parsing`, `printing`, `proc-macro`, `derive`,
+  `full`; `default-features = false`): `full` — which the `rule!` macro's
+  `if <closure>` condition needs — was previously enabled only
+  transitively through `tracing-attributes`, and `extra-traits` /
+  `clone-impls` were unused.  `matrix!` rejects an empty literal at
+  compile time (a ragged one already was) and its expansion no longer
+  contains an `.expect(...)`: the shape is checked by the parser, so the
+  matrix is built infallibly.  The doc examples of `expr!`, `matrix!` and
+  `eq!` show the actual `ctx,` first argument.  Two new `trybuild`
+  snapshots (`tests/ui/matrix_{empty,ragged}.rs`).
+
 ## [0.8.0] - 2026-09-19
 
 ### Added

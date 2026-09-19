@@ -824,8 +824,12 @@ They all take an explicit first argument:
 | `sym!` | `sym!(ctx; t, Positive)` | Context (semicolon separator) |
 
 Note that `expr!` requires every identifier to be a local `Ex` variable of the
-same name, and a purely numeric `expr!(ctx, 2^10)` does not compile (the
-literals are `i64`); build constants with `ctx.int`/`ctx.rational` instead.
+same name.  `matrix!` checks its shape at compile time (non-empty,
+rectangular) and expands to an infallible construction; the `trybuild`
+snapshots in `tests/ui/` pin the error messages.  `symplex-macros` depends
+on `syn` with an explicit minimal feature set (`rule!`'s `if <closure>`
+condition needs `full`); keep it explicit rather than relying on feature
+unification with other proc-macro crates in the graph.
 
 Declaration macros use semicolons. Expression macros use commas.
 

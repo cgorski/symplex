@@ -576,7 +576,14 @@ impl Parse for MatrixMacroInput {
             }
         }
 
-        // Validate: all rows must have the same length
+        // Validate at compile time: at least one row, and all rows of the
+        // same length, so the expansion can build the matrix infallibly.
+        if rows.is_empty() {
+            return Err(syn::Error::new(
+                Span::call_site(),
+                "matrix! needs at least one row: `matrix![ctx, [a, b], [c, d]]`",
+            ));
+        }
         if let Some(first_len) = rows.first().map(|r| r.len()) {
             for (i, row) in rows.iter().enumerate() {
                 if row.len() != first_len {

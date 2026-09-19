@@ -1,0 +1,7 @@
+error: matrix! row 1 has 1 columns, but row 0 has 2 columns
+ --> tests/ui/matrix_ragged.rs:3:14
+  |
+3 |     let _m = symplex::matrix![ctx, [1, 2], [3]];
+  |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `symplex::matrix` (in Nightly builds, run with -Z macro-backtrace for more info)
