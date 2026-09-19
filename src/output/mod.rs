@@ -6,6 +6,7 @@ pub mod lambdify;
 pub(crate) mod latex;
 pub mod lean;
 pub mod lean_proof;
+pub mod mathml;
 pub mod parse;
 pub(crate) mod pretty;
 pub mod tree;

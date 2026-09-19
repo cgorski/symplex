@@ -176,6 +176,8 @@ pub use transforms::sets;
 // output
 /// Lean 4 / Mathlib rendering (`Ex::to_lean`, `LeanOpts`).
 pub use output::lean;
+/// Presentation MathML rendering.
+pub use output::mathml;
 /// Runtime expression parser — convert strings to symbolic expressions.
 pub use output::parse;
 /// Serializable expression tree for interchange (JSON, etc.).
@@ -195,6 +197,8 @@ pub use domains::combinatorics;
 pub use domains::control;
 /// Diophantine equations.
 pub use domains::diophantine;
+/// Discrete transforms on exact sequences (convolution, NTT, Walsh–Hadamard, Möbius).
+pub use domains::discrete;
 /// Lagrangian dynamics: equations of motion, mass matrix, Coriolis, gravity.
 pub use domains::dynamics;
 /// Exact linear programming over ℚ (two-phase simplex, duals, Farkas certificates).

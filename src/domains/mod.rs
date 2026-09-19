@@ -2,6 +2,7 @@ pub mod certificates;
 pub mod combinatorics;
 pub mod control;
 pub mod diophantine;
+pub mod discrete;
 pub mod dynamics;
 pub(crate) mod exact_matrix;
 pub(crate) mod linalg;

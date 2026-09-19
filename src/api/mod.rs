@@ -1,5 +1,7 @@
 pub mod context;
 pub mod eq;
+pub mod expr_algebraic_ext;
+pub mod expr_calculus_util_ext;
 pub mod expr;
 pub mod expr_complex;
 pub(crate) mod expr_funcs;
