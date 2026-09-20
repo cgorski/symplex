@@ -16,4 +16,5 @@ pub mod polytope;
 pub mod quaternion;
 pub mod robotics;
 pub(crate) mod separatevars;
+pub mod stats;
 pub mod vector;

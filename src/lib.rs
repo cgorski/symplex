@@ -220,6 +220,8 @@ pub use domains::polytope;
 pub use domains::quaternion;
 /// Robotics kinematics: DH parameters, forward kinematics, rotations.
 pub use domains::robotics;
+/// Symbolic probability and statistics: random variables, exact moments, probabilities, densities.
+pub use domains::stats;
 /// Vector calculus: gradient, divergence, curl, laplacian.
 pub use domains::vector;
 
