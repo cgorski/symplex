@@ -6,6 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.10.1] - 2026-09-19
+
+### Added
+
+- **`Polytope::clip(&h) -> Clip`** (a downstream generator's request):
+  the vertex sets of `P ∩ {h ≥ 0}` and `P ∩ {h ≤ 0}` from the cached
+  vertices and their **tight sets**, without re-enumerating — crossings
+  are computed on the edges, and adjacency is decided by the exact rank
+  of the shared tight normals, which is correct for degenerate vertices
+  too (verified against full enumeration on random 2–4-D cells including
+  cubes cut through vertices, a pyramid with a degenerate apex and the
+  4-D cross-polytope).  `Clip::{pos, neg, on}`, `pos_is_full_dimensional`
+  / `neg_is_full_dimensional` (exact rank, no LP), and
+  `pos_polytope` / `neg_polytope` returning the halves with their vertex
+  cache **pre-filled** so a following `volume()` enumerates nothing.
+  Also `Polytope::vertices_with_tight()` (`TightVertex = (point, tight
+  indices)`) and `is_full_dimensional_from_vertices()`.  Per-candidate cut
+  geometry in the generator: 0.372 s → 0.034 s (11×), identical output.
+
+### Changed
+
+- **The exact simplex is faster again, with unchanged pivot paths.**
+  Profiling the certificate pipeline showed arithmetic *width*, not pivot
+  count, was the cost: 97% of certificate LPs outgrow `i64` and the 4% that
+  outgrew `i128` (peaks of 130–190 bits) took half the simplex time on
+  `BigInt`.  Now: Jebelean exact division for `i64` cells (inverse
+  computed once per pivot, verified by one exact multiply), hoisted
+  divisor inverses for `i128`, a new **256-bit fixed-width cell** (`W256`,
+  4×64-bit limbs with 512-bit intermediates) in the chain `i64 → i128 →
+  W256 → BigInt`, heap-free scaling of small rationals, and lazily built
+  stage bases in `PolyhedronProver` (651 ms → 45 ms per prover; only the
+  stages a goal reaches are built).  Certificate pipeline on the n = 5
+  floor generator: 3.83 s → 1.66 s; `poly_cert_bench` 2.3–7.4 ms → 0.3–0.5
+  ms per goal.  Byte-identical on 4,000 random LPs and on the generator's
+  Mathlib-compiled output.  A warm-started (dual simplex) design was
+  measured and set aside: it could only serve the `λ = 1` stages and
+  would land on different degenerate-optimal vertices, changing
+  certificates.
+- `tracing::debug!` events `linprog attempt` (cell type, overflow, µs),
+  `stage basis built`, `refutation`, `certificate re-verified`, and
+  `build_micros` on `polyhedron stage LP`.
+
 ## [0.10.0] - 2026-09-19
 
 ### Breaking

@@ -2,7 +2,7 @@
 //! half-spaces (vertices, volume, containment, cutting) and the bridge to
 //! the certificate search.
 
-use num_traits::Signed;
+use num_traits::{Signed, Zero};
 use symplex::certificates::{PolyhedronOpts, prove_nonnegative_on_polyhedron};
 use symplex::linprog::{q, qi};
 use symplex::polytope::{HalfSpace, Polytope};
@@ -343,6 +343,520 @@ impl Lcg {
     /// Uniform in `lo..hi`.
     fn range(&mut self, lo: i64, hi: i64) -> i64 {
         lo + (self.next() % (hi - lo) as u64) as i64
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// `Polytope::clip`: incremental cutting of the cached vertex structure
+// ───────────────────────────────────────────────────────────────────────────
+
+fn sorted_dedup(pts: &[Vec<Q>]) -> Vec<Vec<Q>> {
+    let mut v = pts.to_vec();
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// The unit cube `[0, 1]ⁿ`.
+fn unit_cube(n: usize) -> Polytope {
+    let mut rows = Vec::new();
+    for i in 0..n {
+        let mut e = vec![qi(0); n];
+        e[i] = qi(1);
+        rows.push((e.clone(), qi(0)));
+        let mut f = vec![qi(0); n];
+        f[i] = qi(-1);
+        rows.push((f, qi(1)));
+    }
+    Polytope::from_rows(&rows).unwrap()
+}
+
+/// A random half-space with small integer coefficients (never trivial) and
+/// a half-integer constant.
+fn random_halfspace(lcg: &mut Lcg, n: usize) -> HalfSpace {
+    loop {
+        let coeffs: Vec<Q> = (0..n).map(|_| qi(lcg.range(-3, 4))).collect();
+        if coeffs.iter().any(|c| !c.is_zero()) {
+            return HalfSpace {
+                coeffs,
+                constant: q(lcg.range(-6, 7), 2),
+            };
+        }
+    }
+}
+
+/// Counters for the non-vacuity checks of the randomized clip tests.
+#[derive(Default, Debug)]
+struct ClipStats {
+    clips: usize,
+    /// Clips where the hyperplane crosses the interior (both pieces full-dimensional).
+    proper: usize,
+    /// Clips with an original vertex on the hyperplane.
+    through_vertex: usize,
+    /// Clips leaving one side without vertices.
+    one_sided: usize,
+    /// Clips whose parent has a degenerate vertex (more than `n` tight half-spaces).
+    degenerate_parent: usize,
+}
+
+/// The correctness reference: `clip(h).pos` / `.neg` as sets equal the
+/// full enumerations of `P ∩ {h ≥ 0}` / `P ∩ {h ≤ 0}`; `on` is their
+/// intersection and lies on the hyperplane; the pre-filled pieces report
+/// the same vertices, volume and dimension as the enumerated ones; and a
+/// second clip of a pre-filled piece (which exercises the tight sets the
+/// clip wrote into the cache) again matches the enumeration.
+fn check_clip(cell: &Polytope, h: &HalfSpace, next: &HalfSpace, stats: &mut ClipStats) {
+    let n = cell.dim();
+    let clip = cell.clip(h).unwrap();
+    let pos_ref = cell.with_halfspace(&h.coeffs, h.constant.clone());
+    let flipped = h.flipped();
+    let neg_ref = cell.with_halfspace(&flipped.coeffs, flipped.constant.clone());
+    let (pos_set, neg_set) = (sorted_dedup(&clip.pos), sorted_dedup(&clip.neg));
+    assert_eq!(
+        pos_set,
+        sorted_dedup(&pos_ref.vertices().unwrap()),
+        "pos of {cell:?} by {h:?}"
+    );
+    assert_eq!(
+        neg_set,
+        sorted_dedup(&neg_ref.vertices().unwrap()),
+        "neg of {cell:?} by {h:?}"
+    );
+    // No duplicates are produced: the clip is exact, not "sorted afterwards".
+    assert_eq!(clip.pos.len(), pos_set.len(), "duplicate in pos: {clip:?}");
+    assert_eq!(clip.neg.len(), neg_set.len(), "duplicate in neg: {clip:?}");
+    let on_set = sorted_dedup(&clip.on);
+    let both: Vec<Vec<Q>> = pos_set
+        .iter()
+        .filter(|v| neg_set.contains(v))
+        .cloned()
+        .collect();
+    assert_eq!(on_set, both, "on ≠ pos ∩ neg for {cell:?} by {h:?}");
+    assert!(clip.on.iter().all(|v| h.is_tight(v)));
+    assert_eq!(clip.on.len(), on_set.len());
+    // The pre-filled pieces.
+    let pos = clip.pos_polytope(cell, h).unwrap();
+    let neg = clip.neg_polytope(cell, h).unwrap();
+    assert_eq!(pos, pos_ref);
+    assert_eq!(neg, neg_ref);
+    assert_eq!(sorted_dedup(&pos.vertices().unwrap()), pos_set);
+    assert_eq!(sorted_dedup(&neg.vertices().unwrap()), neg_set);
+    assert_eq!(
+        pos.volume().unwrap(),
+        pos_ref.volume().unwrap(),
+        "volume of {pos:?}"
+    );
+    assert_eq!(
+        neg.volume().unwrap(),
+        neg_ref.volume().unwrap(),
+        "volume of {neg:?}"
+    );
+    assert_eq!(
+        pos.volume().unwrap() + neg.volume().unwrap(),
+        cell.volume().unwrap()
+    );
+    // Dimension from the vertices agrees with the LP (bounded cells).
+    let (pf, nf) = (
+        pos_ref.is_full_dimensional().unwrap(),
+        neg_ref.is_full_dimensional().unwrap(),
+    );
+    assert_eq!(
+        clip.pos_is_full_dimensional(),
+        pf,
+        "pos dim of {cell:?} by {h:?}"
+    );
+    assert_eq!(
+        clip.neg_is_full_dimensional(),
+        nf,
+        "neg dim of {cell:?} by {h:?}"
+    );
+    assert_eq!(pos.is_full_dimensional_from_vertices().unwrap(), pf);
+    assert_eq!(neg.is_full_dimensional_from_vertices().unwrap(), nf);
+    // Tight sets written into the pieces are the real ones (index-for-index).
+    for piece in [&pos, &neg] {
+        for (v, tight) in piece.vertices_with_tight().unwrap() {
+            let expected: Vec<usize> = piece
+                .halfspaces()
+                .iter()
+                .enumerate()
+                .filter(|(_, g)| !g.is_trivial() && g.is_tight(&v))
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(tight, expected, "tight set of {v:?} in {piece:?}");
+            assert!(tight.len() >= n);
+        }
+    }
+    // A second clip of the pre-filled piece matches its enumeration too.
+    let second = pos.clip(next).unwrap();
+    let second_ref = pos.with_halfspace(&next.coeffs, next.constant.clone());
+    assert_eq!(
+        sorted_dedup(&second.pos),
+        sorted_dedup(&second_ref.vertices().unwrap()),
+        "second clip of {pos:?} by {next:?}"
+    );
+    let second_neg = neg.clip(next).unwrap();
+    let second_neg_ref = neg.with_halfspace(&next.flipped().coeffs, -&next.constant);
+    assert_eq!(
+        sorted_dedup(&second_neg.neg),
+        sorted_dedup(&second_neg_ref.vertices().unwrap()),
+        "second clip of {neg:?} by {next:?}"
+    );
+    // Statistics.
+    stats.clips += 1;
+    if pf && nf {
+        stats.proper += 1;
+    }
+    if cell.vertices().unwrap().iter().any(|v| h.is_tight(v)) {
+        stats.through_vertex += 1;
+    }
+    if clip.pos.is_empty() || clip.neg.is_empty() {
+        stats.one_sided += 1;
+    }
+    if cell
+        .vertices_with_tight()
+        .unwrap()
+        .iter()
+        .any(|(_, t)| t.len() > n)
+    {
+        stats.degenerate_parent += 1;
+    }
+}
+
+/// Random bounded cells (the unit cube with up to three random cuts) in
+/// dimension `n`, cut by random planes, planes through a vertex, and
+/// planes that miss the cell.
+fn random_cells_clip(n: usize, cells: usize, cuts: usize, seed: u64) -> ClipStats {
+    let mut lcg = Lcg(seed);
+    let mut stats = ClipStats::default();
+    for _ in 0..cells {
+        let mut cell = unit_cube(n);
+        for _ in 0..lcg.range(0, 4) {
+            let g = random_halfspace(&mut lcg, n);
+            cell = cell.with_halfspace(&g.coeffs, g.constant.clone());
+        }
+        let verts = cell.vertices().unwrap();
+        let through = |h: &mut HalfSpace, p: &[Q]| {
+            h.constant = -h
+                .coeffs
+                .iter()
+                .zip(p)
+                .fold(Q::zero(), |acc, (a, x)| acc + a * x);
+        };
+        for _ in 0..cuts {
+            let mut h = random_halfspace(&mut lcg, n);
+            let next = random_halfspace(&mut lcg, n);
+            match lcg.range(0, 5) {
+                // Through a random vertex of the cell.
+                0 if !verts.is_empty() => {
+                    let v = verts[lcg.range(0, verts.len() as i64) as usize].clone();
+                    through(&mut h, &v);
+                }
+                // Missing the cell entirely.
+                1 => h.constant = qi(100),
+                // Through the vertex centroid (interior when the cell is full-dimensional).
+                2 | 3 if !verts.is_empty() => {
+                    let c = cell.vertex_centroid().unwrap().unwrap();
+                    through(&mut h, &c);
+                }
+                // Through a random point of the cube's interior (quarter grid).
+                4 => {
+                    let p: Vec<Q> = (0..n).map(|_| q(lcg.range(1, 4), 4)).collect();
+                    through(&mut h, &p);
+                }
+                _ => {}
+            }
+            check_clip(&cell, &h, &next, &mut stats);
+        }
+    }
+    stats
+}
+
+#[test]
+fn clip_matches_enumeration_on_random_2d_cells() {
+    let s = random_cells_clip(2, 30, 5, 0xC11B_0002);
+    assert!(
+        s.proper >= 40 && s.through_vertex >= 15 && s.one_sided >= 15 && s.degenerate_parent >= 10,
+        "{s:?}"
+    );
+}
+
+#[test]
+fn clip_matches_enumeration_on_random_3d_cells() {
+    let s = random_cells_clip(3, 12, 4, 0xC11B_0003);
+    assert!(
+        s.proper >= 12 && s.through_vertex >= 5 && s.one_sided >= 5 && s.degenerate_parent >= 4,
+        "{s:?}"
+    );
+}
+
+#[test]
+fn clip_matches_enumeration_on_random_4d_cells() {
+    let s = random_cells_clip(4, 6, 3, 0xC11B_0004);
+    assert!(
+        s.proper >= 5 && s.through_vertex >= 2 && s.one_sided >= 2,
+        "{s:?}"
+    );
+}
+
+/// Degenerate parents: a cube cut by planes through its vertices (vertices
+/// with four tight planes), a pyramid whose apex has four tight planes, and
+/// the 4-D cross-polytope (every vertex has eight).  Cuts through vertices,
+/// along edges and across.
+#[test]
+fn clip_handles_degenerate_vertices_exactly() {
+    let mut stats = ClipStats::default();
+    let mut lcg = Lcg(0xDE6E_0001);
+    // Cube with the corner planes x + y + z ≤ 2 (through three vertices) and
+    // x + y ≥ z (through four vertices), then x − y ≤ 0 (through two).
+    let cube = unit_cube(3)
+        .with_halfspace(&[qi(-1), qi(-1), qi(-1)], qi(2))
+        .with_halfspace(&[qi(1), qi(1), qi(-1)], qi(0));
+    assert!(
+        cube.vertices_with_tight()
+            .unwrap()
+            .iter()
+            .any(|(_, t)| t.len() > 3)
+    );
+    // Square pyramid |x|, |y| ≤ 1 − z, z ≥ 0: apex (0, 0, 1) with four tight planes.
+    let pyramid = Polytope::from_rows(&[
+        (vec![qi(1), qi(0), qi(-1)], qi(1)),  // x ≥ −(1 − z)
+        (vec![qi(-1), qi(0), qi(-1)], qi(1)), // x ≤ 1 − z
+        (vec![qi(0), qi(1), qi(-1)], qi(1)),
+        (vec![qi(0), qi(-1), qi(-1)], qi(1)),
+        (vec![qi(0), qi(0), qi(1)], qi(0)),
+    ])
+    .unwrap();
+    let apex = pyramid.vertices_with_tight().unwrap();
+    assert_eq!(apex.len(), 5);
+    assert_eq!(apex.iter().filter(|(_, t)| t.len() == 4).count(), 1);
+    let mut cross = Vec::new();
+    for signs in 0..16u32 {
+        let coeffs: Vec<_> = (0..4)
+            .map(|i| if signs & (1 << i) == 0 { qi(-1) } else { qi(1) })
+            .collect();
+        cross.push((coeffs, qi(1)));
+    }
+    let cross = Polytope::from_rows(&cross).unwrap();
+    assert!(
+        cross
+            .vertices_with_tight()
+            .unwrap()
+            .iter()
+            .all(|(_, t)| t.len() == 8)
+    );
+    let hs = |c: &[i64], k: Q| HalfSpace {
+        coeffs: c.iter().map(|&a| qi(a)).collect(),
+        constant: k,
+    };
+    let n3 = hs(&[1, 1, 1], qi(-1));
+    // Cube: through the degenerate vertex (1,1,0) along edges; across; through two vertices.
+    for h in [
+        hs(&[1, -1, 0], qi(0)),
+        hs(&[0, 0, 1], q(-1, 2)),
+        hs(&[1, 1, 0], qi(-2)),
+        hs(&[1, 0, 0], qi(-1)),
+        hs(&[-1, -1, -1], qi(2)),
+        hs(&[2, -1, 1], q(-1, 2)),
+    ] {
+        check_clip(&cube, &h, &n3, &mut stats);
+    }
+    // Pyramid: through the apex, through the apex and a base vertex, across, along the base.
+    for h in [
+        hs(&[1, 0, 0], qi(0)),
+        hs(&[1, 1, 0], qi(0)),
+        hs(&[0, 0, -1], q(1, 2)),
+        hs(&[0, 0, 1], qi(0)),
+        hs(&[1, 2, 3], q(-1, 2)),
+        hs(&[1, 0, 1], qi(-1)),
+    ] {
+        check_clip(&pyramid, &h, &n3, &mut stats);
+    }
+    // Cross-polytope: coordinate planes (through six vertices), across, missing.
+    let n4 = hs(&[1, 2, 0, -1], q(1, 3));
+    for h in [
+        hs(&[1, 0, 0, 0], qi(0)),
+        hs(&[1, 1, 0, 0], qi(0)),
+        hs(&[1, 1, 1, 1], q(-1, 2)),
+        hs(&[1, 0, 0, 0], qi(-1)),
+        hs(&[3, -1, 2, 1], q(1, 4)),
+        hs(&[1, 1, 1, 1], qi(5)),
+    ] {
+        check_clip(&cross, &h, &n4, &mut stats);
+    }
+    // Random cuts of the three degenerate parents.
+    for _ in 0..6 {
+        let h = random_halfspace(&mut lcg, 3);
+        check_clip(&cube, &h, &random_halfspace(&mut lcg, 3), &mut stats);
+        let h = random_halfspace(&mut lcg, 3);
+        check_clip(&pyramid, &h, &random_halfspace(&mut lcg, 3), &mut stats);
+    }
+    for _ in 0..3 {
+        let h = random_halfspace(&mut lcg, 4);
+        check_clip(&cross, &h, &random_halfspace(&mut lcg, 4), &mut stats);
+    }
+    assert_eq!(stats.degenerate_parent, stats.clips, "{stats:?}");
+    assert!(
+        stats.through_vertex >= 12 && stats.proper >= 12 && stats.one_sided >= 2,
+        "{stats:?}"
+    );
+}
+
+/// Lower-dimensional parents and duplicate descriptions: a face of the cube
+/// (every vertex has both `z ≥ 0` and `z ≤ 0` tight), a segment given as a
+/// diagonal of the square, and a triangle with a duplicated, rescaled facet.
+#[test]
+fn clip_on_lower_dimensional_and_duplicate_descriptions() {
+    let mut stats = ClipStats::default();
+    let face = unit_cube(3).with_halfspace(&[qi(0), qi(0), qi(-1)], qi(0));
+    let diagonal = unit_cube(2)
+        .with_halfspace(&[qi(1), qi(-1)], qi(0))
+        .with_halfspace(&[qi(-1), qi(1)], qi(0));
+    let tri = Polytope::from_rows(&[
+        (vec![qi(1), qi(0)], qi(0)),
+        (vec![qi(0), qi(1)], qi(0)),
+        (vec![qi(-1), qi(-1)], qi(1)),
+        (vec![qi(-2), qi(-2)], qi(2)),
+        (vec![qi(3), qi(0)], qi(0)),
+    ])
+    .unwrap();
+    let h3 = HalfSpace {
+        coeffs: vec![qi(1), qi(1), qi(0)],
+        constant: qi(-1),
+    };
+    let h3b = HalfSpace {
+        coeffs: vec![qi(2), qi(-1), qi(1)],
+        constant: q(-1, 3),
+    };
+    check_clip(&face, &h3, &h3b, &mut stats);
+    check_clip(&face, &h3b, &h3, &mut stats);
+    let h2 = HalfSpace {
+        coeffs: vec![qi(1), qi(1)],
+        constant: qi(-1),
+    };
+    let h2b = HalfSpace {
+        coeffs: vec![qi(-1), qi(0)],
+        constant: q(1, 3),
+    };
+    check_clip(&diagonal, &h2, &h2b, &mut stats);
+    check_clip(&diagonal, &h2b, &h2, &mut stats);
+    check_clip(&tri, &h2, &h2b, &mut stats);
+    check_clip(&tri, &h2b, &h2, &mut stats);
+    // The diagonal cut at its midpoint: one crossing, the two halves.
+    let clip = diagonal.clip(&h2).unwrap();
+    assert_eq!(clip.on, vec![vec![q(1, 2), q(1, 2)]]);
+    assert_eq!((clip.pos.len(), clip.neg.len()), (2, 2));
+    assert!(!clip.pos_is_full_dimensional() && !clip.neg_is_full_dimensional());
+    assert_eq!(stats.clips, 6);
+}
+
+/// Trivial cuts (`a = 0`), cuts along an edge, and the error paths.
+#[test]
+fn clip_trivial_cuts_edges_and_errors() {
+    let square = unit_cube(2);
+    let all: Vec<Vec<Q>> = sorted_dedup(&square.vertices().unwrap());
+    // 0·x + 1 ≥ 0 is all of space: pos = everything, neg = nothing.
+    let clip = square
+        .clip(&HalfSpace {
+            coeffs: vec![qi(0), qi(0)],
+            constant: qi(1),
+        })
+        .unwrap();
+    assert_eq!(sorted_dedup(&clip.pos), all);
+    assert!(clip.neg.is_empty() && clip.on.is_empty());
+    assert!(clip.pos_is_full_dimensional() && !clip.neg_is_full_dimensional());
+    // 0 ≥ 0: every vertex is on the hyperplane-less cut; tight sets stay unchanged.
+    let zero = HalfSpace {
+        coeffs: vec![qi(0), qi(0)],
+        constant: qi(0),
+    };
+    let clip = square.clip(&zero).unwrap();
+    assert_eq!(sorted_dedup(&clip.pos), all);
+    assert_eq!(sorted_dedup(&clip.neg), all);
+    assert_eq!(sorted_dedup(&clip.on), all);
+    let with_zero = clip.pos_polytope(&square, &zero).unwrap();
+    assert!(
+        with_zero
+            .vertices_with_tight()
+            .unwrap()
+            .iter()
+            .all(|(_, t)| t.len() == 2)
+    );
+    assert_eq!(with_zero.volume().unwrap(), qi(1));
+    // Along an edge (x = 0): no crossing, two vertices on the plane, one side is the edge.
+    let edge = HalfSpace {
+        coeffs: vec![qi(-1), qi(0)],
+        constant: qi(0),
+    };
+    let clip = square.clip(&edge).unwrap();
+    assert_eq!(clip.on.len(), 2);
+    assert_eq!(sorted_dedup(&clip.pos), sorted_dedup(&clip.on));
+    assert_eq!(sorted_dedup(&clip.neg), all);
+    assert!(!clip.pos_is_full_dimensional() && clip.neg_is_full_dimensional());
+    assert_eq!(
+        clip.pos_polytope(&square, &edge).unwrap().volume().unwrap(),
+        qi(0)
+    );
+    // A polyhedron without vertices clips to nothing.
+    let empty = square.with_halfspace(&[qi(1), qi(0)], qi(-2));
+    let clip = empty.clip(&edge).unwrap();
+    assert!(clip.pos.is_empty() && clip.neg.is_empty() && clip.on.is_empty());
+    // Errors: dimension mismatch; a piece built from the wrong parent.
+    assert!(
+        square
+            .clip(&HalfSpace {
+                coeffs: vec![qi(1)],
+                constant: qi(0)
+            })
+            .is_err()
+    );
+    let clip = square.clip(&edge).unwrap();
+    let other = unit_cube(2).with_halfspace(&[qi(1), qi(1)], qi(-1));
+    assert!(clip.pos_polytope(&other, &edge).is_err());
+    let cube = unit_cube(3);
+    assert!(clip.pos_polytope(&cube, &edge).is_err());
+    let never_enumerated = unit_cube(2);
+    assert!(clip.pos_polytope(&never_enumerated, &edge).is_err());
+    assert!(clip.pos_polytope(&square, &edge).is_ok());
+}
+
+/// `vertices_with_tight` lists exactly the non-trivial half-spaces through
+/// each vertex, and `is_full_dimensional_from_vertices` agrees with the LP
+/// on bounded cells (including faces and empty ones).
+#[test]
+fn tight_sets_and_vertex_based_dimension() {
+    let cube = unit_cube(3).with_halfspace(&[qi(0), qi(0), qi(0)], qi(0)); // plus a trivial row
+    let tv = cube.vertices_with_tight().unwrap();
+    assert_eq!(tv.len(), 8);
+    for (v, t) in &tv {
+        assert_eq!(t.len(), 3);
+        assert!(!t.contains(&6), "a trivial row is never tight");
+        assert!(t.iter().all(|&i| cube.halfspaces()[i].is_tight(v)));
+        assert!(t.windows(2).all(|w| w[0] < w[1]));
+    }
+    assert_eq!(
+        cube.vertices().unwrap(),
+        tv.iter().map(|(v, _)| v.clone()).collect::<Vec<_>>()
+    );
+    assert!(cube.is_full_dimensional_from_vertices().unwrap());
+    let mut lcg = Lcg(0x7164_7000);
+    for _ in 0..30 {
+        let mut poly = unit_cube(3);
+        for _ in 0..lcg.range(1, 4) {
+            let g = random_halfspace(&mut lcg, 3);
+            poly = poly.with_halfspace(&g.coeffs, g.constant.clone());
+        }
+        if lcg.range(0, 3) == 0 {
+            // Force a face or a lower-dimensional piece.
+            let g = random_halfspace(&mut lcg, 3);
+            poly = poly
+                .with_halfspace(&g.coeffs, g.constant.clone())
+                .with_halfspace(&g.flipped().coeffs, -&g.constant);
+        }
+        assert_eq!(
+            poly.is_full_dimensional_from_vertices().unwrap(),
+            poly.is_full_dimensional().unwrap(),
+            "{poly:?}"
+        );
     }
 }
 

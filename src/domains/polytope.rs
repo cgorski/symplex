@@ -155,15 +155,21 @@ impl HalfSpace {
     }
 }
 
+/// A vertex with its tight set: the point and the ascending indices (into
+/// [`Polytope::halfspaces`]) of the non-trivial half-spaces whose
+/// hyperplane passes through it.  See [`Polytope::vertices_with_tight`].
+pub type TightVertex = (Vec<Q>, Vec<usize>);
+
 /// A convex polyhedron `{x ∈ ℚⁿ : aᵢ·x + bᵢ ≥ 0 ∀i}`.
 ///
-/// Equality and `Debug` see only the half-spaces; the vertex list is
-/// computed once on demand and cached (a clone carries the cache along).
+/// Equality and `Debug` see only the half-spaces; the vertex list (with
+/// each vertex's tight set) is computed once on demand and cached (a clone
+/// carries the cache along).
 #[derive(Clone)]
 pub struct Polytope {
     dim: usize,
     halfspaces: Vec<HalfSpace>,
-    vertex_cache: OnceLock<Vec<Vec<Q>>>,
+    vertex_cache: OnceLock<Vec<TightVertex>>,
 }
 
 impl PartialEq for Polytope {
@@ -452,6 +458,156 @@ impl Polytope {
         (pos, neg)
     }
 
+    /// Cut by the hyperplane of `h` **incrementally**: the vertex sets of
+    /// both closed pieces `P ∩ {h ≥ 0}` and `P ∩ {h ≤ 0}`, derived from
+    /// this polytope's (cached) vertices and their tight sets instead of two
+    /// fresh enumerations.  The vertices of a piece are the vertices of `P`
+    /// on its side of the hyperplane plus the points where the hyperplane
+    /// crosses an edge of `P`; each crossing is
+    /// `vᵢ + h(vᵢ)/(h(vᵢ) − h(vⱼ)) · (vⱼ − vᵢ)`, exactly.
+    ///
+    /// Two vertices are joined by an edge exactly when the normals of their
+    /// common tight half-spaces have rank `n − 1`; the affine hull of an
+    /// edge is the solution set of the constraints tight along it, and a
+    /// constraint is tight along a segment iff it is tight at both ends.
+    /// For two *simple* vertices (exactly `n` tight half-spaces each, hence
+    /// `n` independent ones) that is the same as sharing `n − 1` of them and
+    /// costs a merge of two index lists; when either vertex is degenerate
+    /// (more than `n` tight half-spaces: a pyramid's apex, a cube cut by a
+    /// plane through a vertex, duplicate or lower-dimensional descriptions)
+    /// the rank of the shared normals is computed exactly, so degeneracy
+    /// never produces a spurious or missing crossing.  As a set, `pos`
+    /// equals `self.with_halfspace(&h.coeffs, h.constant).vertices()` and
+    /// `neg` the same for the flipped half-space; vertices with `h = 0` and
+    /// the crossings appear in both (and in [`Clip::on`]).
+    ///
+    /// Use [`Clip::pos_polytope`] / [`Clip::neg_polytope`] for the pieces as
+    /// polytopes with their vertex cache already filled, and
+    /// [`Clip::pos_is_full_dimensional`] / [`Clip::neg_is_full_dimensional`]
+    /// for the dimension test without an LP.  A polyhedron without vertices
+    /// (empty, or unbounded with no vertex) yields three empty lists.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if `h.coeffs.len() != dim`.
+    ///
+    /// ```
+    /// use symplex::polytope::{HalfSpace, Polytope};
+    /// use symplex::linprog::{q, qi};
+    ///
+    /// // The unit square cut by x + y = 1: a diagonal through two vertices.
+    /// let square = Polytope::from_rows(&[
+    ///     (vec![qi(1), qi(0)], qi(0)), (vec![qi(-1), qi(0)], qi(1)),
+    ///     (vec![qi(0), qi(1)], qi(0)), (vec![qi(0), qi(-1)], qi(1)),
+    /// ]).unwrap();
+    /// let h = HalfSpace { coeffs: vec![qi(1), qi(1)], constant: qi(-1) };
+    /// let clip = square.clip(&h).unwrap();
+    /// assert_eq!((clip.pos.len(), clip.neg.len(), clip.on.len()), (3, 3, 2));
+    /// assert!(clip.pos_is_full_dimensional() && clip.neg_is_full_dimensional());
+    /// let pos = clip.pos_polytope(&square, &h).unwrap();   // no enumeration
+    /// assert_eq!(pos.volume().unwrap(), q(1, 2));
+    ///
+    /// // Cut at x = 1/2: two crossings, both pieces have four vertices.
+    /// let cut = HalfSpace { coeffs: vec![qi(-1), qi(0)], constant: q(1, 2) };
+    /// let clip = square.clip(&cut).unwrap();
+    /// assert_eq!((clip.pos.len(), clip.neg.len(), clip.on.len()), (4, 4, 2));
+    /// assert!(clip.on.contains(&vec![q(1, 2), qi(0)]) && clip.on.contains(&vec![q(1, 2), qi(1)]));
+    /// ```
+    pub fn clip(&self, h: &HalfSpace) -> Result<Clip, SymplexError> {
+        const OP: &str = "Polytope::clip";
+        let n = self.dim;
+        if h.coeffs.len() != n {
+            return Err(invalid(
+                OP,
+                format!(
+                    "{} coefficients for a {}-dimensional polytope",
+                    h.coeffs.len(),
+                    n
+                ),
+            ));
+        }
+        let m = self.halfspaces.len();
+        let verts = self.cached_vertices();
+        // Tight indices come from the enumeration over `self.halfspaces`
+        // (or a `Clip` built from this very polytope), so they are `< m`.
+        if verts.iter().any(|(_, t)| t.iter().any(|&i| i >= m)) {
+            return Err(SymplexError::ComputationFailed {
+                operation: OP,
+                reason: "vertex cache refers to a half-space outside the description".into(),
+            });
+        }
+        // A trivial `h` (a = 0) has no hyperplane: it is never tight, and
+        // every vertex is on the same side.
+        let h_index = (!h.is_trivial()).then_some(m);
+        let values: Vec<Q> = verts.iter().map(|(v, _)| h.value(v)).collect();
+        let mut clip = Clip {
+            pos: Vec::new(),
+            neg: Vec::new(),
+            on: Vec::new(),
+            dim: n,
+            parent_rows: m,
+            parent_vertices: verts.len(),
+            pos_tight: Vec::new(),
+            neg_tight: Vec::new(),
+        };
+        let mut plus: Vec<usize> = Vec::new();
+        let mut minus: Vec<usize> = Vec::new();
+        let zero = Q::zero();
+        for (i, ((v, t), val)) in verts.iter().zip(&values).enumerate() {
+            match val.cmp(&zero) {
+                std::cmp::Ordering::Greater => {
+                    plus.push(i);
+                    clip.pos.push(v.clone());
+                    clip.pos_tight.push(t.clone());
+                }
+                std::cmp::Ordering::Less => {
+                    minus.push(i);
+                    clip.neg.push(v.clone());
+                    clip.neg_tight.push(t.clone());
+                }
+                std::cmp::Ordering::Equal => {
+                    let mut t = t.clone();
+                    t.extend(h_index);
+                    clip.on.push(v.clone());
+                    clip.pos.push(v.clone());
+                    clip.pos_tight.push(t.clone());
+                    clip.neg.push(v.clone());
+                    clip.neg_tight.push(t);
+                }
+            }
+        }
+        let mut shared: Vec<usize> = Vec::new();
+        for &i in &plus {
+            let (vi, ti) = &verts[i];
+            for &j in &minus {
+                let (vj, tj) = &verts[j];
+                intersect_sorted(ti, tj, &mut shared);
+                if shared.len() + 1 < n {
+                    continue;
+                }
+                let adjacent = if ti.len() == n && tj.len() == n {
+                    shared.len() + 1 == n
+                } else {
+                    normals_rank(&self.halfspaces, &shared, n) + 1 == n
+                };
+                if !adjacent {
+                    continue;
+                }
+                // h(vᵢ) > 0 > h(vⱼ): the crossing is at t = h(vᵢ)/(h(vᵢ) − h(vⱼ)) ∈ (0, 1).
+                let t = &values[i] / (&values[i] - &values[j]);
+                let x: Vec<Q> = vi.iter().zip(vj).map(|(a, b)| a + &t * (b - a)).collect();
+                let mut tight = shared.clone();
+                tight.extend(h_index);
+                clip.on.push(x.clone());
+                clip.pos.push(x.clone());
+                clip.pos_tight.push(tight.clone());
+                clip.neg.push(x);
+                clip.neg_tight.push(tight);
+            }
+        }
+        Ok(clip)
+    }
+
     /// Exact LP `min c·x` over the polytope (variables free).  `Ok(None)`
     /// if the polytope is empty or the objective is unbounded below.
     fn minimize(&self, c: &[Q]) -> Result<Option<(Q, Vec<Q>)>, SymplexError> {
@@ -650,14 +806,69 @@ impl Polytope {
     /// list.
     pub fn vertices(&self) -> Result<Vec<Vec<Q>>, SymplexError> {
         Ok(self
-            .vertex_cache
-            .get_or_init(|| self.compute_vertices())
-            .clone())
+            .cached_vertices()
+            .iter()
+            .map(|(v, _)| v.clone())
+            .collect())
     }
 
-    fn compute_vertices(&self) -> Vec<Vec<Q>> {
+    /// The vertices together with their **tight sets**: for each vertex,
+    /// the ascending indices (into [`halfspaces`](Self::halfspaces)) of the
+    /// non-trivial half-spaces whose hyperplane passes through it.  A vertex
+    /// has at least `n` of them and exactly `n` when it is *simple*; two
+    /// vertices are joined by an edge exactly when the normals of their
+    /// common tight half-spaces have rank `n − 1`.  Same cache and same
+    /// order as [`vertices`](Self::vertices).
+    ///
+    /// # Errors
+    ///
+    /// As [`vertices`](Self::vertices).
+    ///
+    /// ```
+    /// use symplex::polytope::Polytope;
+    /// use symplex::linprog::qi;
+    ///
+    /// // The triangle x ≥ 0, y ≥ 0, 1 − x − y ≥ 0: every vertex is simple.
+    /// let tri = Polytope::from_rows(&[
+    ///     (vec![qi(1), qi(0)], qi(0)),
+    ///     (vec![qi(0), qi(1)], qi(0)),
+    ///     (vec![qi(-1), qi(-1)], qi(1)),
+    /// ]).unwrap();
+    /// let mut tight: Vec<Vec<usize>> = tri.vertices_with_tight().unwrap().into_iter().map(|(_, t)| t).collect();
+    /// tight.sort();
+    /// assert_eq!(tight, vec![vec![0, 1], vec![0, 2], vec![1, 2]]);
+    /// ```
+    pub fn vertices_with_tight(&self) -> Result<Vec<TightVertex>, SymplexError> {
+        Ok(self.cached_vertices().to_vec())
+    }
+
+    /// Does the convex hull of the vertices have dimension `n`?  For a
+    /// **bounded** polytope this is
+    /// [`is_full_dimensional`](Self::is_full_dimensional) computed by one
+    /// exact rank on the cached vertices instead of an LP.  The vertices of
+    /// an unbounded polyhedron do not determine its dimension (a wedge has
+    /// a single vertex), so for those use the LP form.
+    ///
+    /// # Errors
+    ///
+    /// As [`vertices`](Self::vertices).
+    pub fn is_full_dimensional_from_vertices(&self) -> Result<bool, SymplexError> {
+        let verts = self.cached_vertices();
+        Ok(affine_rank(verts.iter().map(|(v, _)| v.as_slice()), self.dim) == self.dim)
+    }
+
+    fn cached_vertices(&self) -> &[TightVertex] {
+        self.vertex_cache.get_or_init(|| self.compute_vertices())
+    }
+
+    fn compute_vertices(&self) -> Vec<TightVertex> {
         let n = self.dim;
         let rows: Vec<IntHalfSpace> = self.halfspaces.iter().map(IntHalfSpace::new).collect();
+        // A trivial row (`a = 0`) has no hyperplane and is never tight.
+        let nontrivial: Vec<bool> = rows
+            .iter()
+            .map(|r| r.a.iter().any(|c| !c.is_zero()))
+            .collect();
         // Distinct non-trivial hyperplanes (a duplicate or rescaled
         // half-space, or the flip of one, meets the others in the same points).
         let mut planes: Vec<usize> = Vec::new();
@@ -675,8 +886,11 @@ impl Polytope {
             return Vec::new();
         }
         // Accepted vertices in canonical integer form `(X, D)`, `D > 0`,
-        // `gcd(X₀, …, X_{n−1}, D) = 1`, which makes equality a plain compare.
+        // `gcd(X₀, …, X_{n−1}, D) = 1`, which makes equality a plain compare;
+        // `tight_sets[k]` belongs to `found[k]`.
         let mut found: Vec<(Vec<BigInt>, BigInt)> = Vec::new();
+        let mut tight_sets: Vec<Vec<usize>> = Vec::new();
+        let mut tight: Vec<usize> = Vec::new();
         let width = n + 1;
         let mut aug: Vec<BigInt> = Vec::with_capacity(n * width);
         let mut idx: Vec<usize> = (0..n).collect();
@@ -699,11 +913,26 @@ impl Polytope {
                         if negative { -v } else { v.clone() }
                     })
                     .collect();
-                if rows.iter().all(|r| !r.value_at(&x, &dd).is_negative()) {
+                // Containment, recording the tight rows on the way (the sign
+                // of `aᵢ·X + bᵢ·D` is the sign of `aᵢ·x + bᵢ`).
+                tight.clear();
+                let mut inside = true;
+                for (i, r) in rows.iter().enumerate() {
+                    let v = r.value_at(&x, &dd);
+                    if v.is_negative() {
+                        inside = false;
+                        break;
+                    }
+                    if nontrivial[i] && v.is_zero() {
+                        tight.push(i);
+                    }
+                }
+                if inside {
                     let g = x.iter().fold(dd.clone(), |g, xi| g.gcd(xi));
                     let canon = (x.iter().map(|xi| xi / &g).collect::<Vec<_>>(), &dd / &g);
                     if !found.contains(&canon) {
                         found.push(canon);
+                        tight_sets.push(tight.clone());
                     }
                 }
             }
@@ -713,7 +942,10 @@ impl Polytope {
                 if k == 0 {
                     return found
                         .into_iter()
-                        .map(|(x, d)| x.into_iter().map(|xi| Q::new(xi, d.clone())).collect())
+                        .zip(tight_sets)
+                        .map(|((x, d), t)| {
+                            (x.into_iter().map(|xi| Q::new(xi, d.clone())).collect(), t)
+                        })
                         .collect();
                 }
                 k -= 1;
@@ -806,6 +1038,173 @@ impl Polytope {
             Err(_) => Q::zero(),
         }
     }
+
+    /// `self` with one more half-space and a vertex cache supplied by the
+    /// caller (a [`Clip`] taken from `self`).
+    fn with_halfspace_and_vertices(&self, h: HalfSpace, verts: Vec<TightVertex>) -> Polytope {
+        let mut hs = self.halfspaces.clone();
+        hs.push(h);
+        Polytope {
+            dim: self.dim,
+            halfspaces: hs,
+            vertex_cache: OnceLock::from(verts),
+        }
+    }
+}
+
+/// The result of [`Polytope::clip`]: the vertex sets of the two closed
+/// pieces of a polytope cut by a hyperplane, in no particular order.
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub struct Clip {
+    /// Vertices of `P ∩ {h ≥ 0}`.
+    pub pos: Vec<Vec<Q>>,
+    /// Vertices of `P ∩ {h ≤ 0}`.
+    pub neg: Vec<Vec<Q>>,
+    /// Vertices on the hyperplane `h = 0` — the edge crossings and the
+    /// original vertices with `h = 0` — which belong to both pieces.
+    pub on: Vec<Vec<Q>>,
+    dim: usize,
+    /// Half-space count of the parent; the cut gets index `parent_rows` in
+    /// the pieces' descriptions.
+    parent_rows: usize,
+    /// Vertex count of the parent, to recognise the parent when a piece is built.
+    parent_vertices: usize,
+    /// Tight sets of `pos` / `neg` in the pieces' descriptions.
+    pos_tight: Vec<Vec<usize>>,
+    neg_tight: Vec<Vec<usize>>,
+}
+
+impl Clip {
+    /// Does `P ∩ {h ≥ 0}` have dimension `n`?  One exact rank on the
+    /// vertex set, no LP; exact for a bounded parent (see
+    /// [`Polytope::is_full_dimensional_from_vertices`]).
+    pub fn pos_is_full_dimensional(&self) -> bool {
+        affine_rank(self.pos.iter().map(Vec::as_slice), self.dim) == self.dim
+    }
+
+    /// Does `P ∩ {h ≤ 0}` have dimension `n`?  As
+    /// [`pos_is_full_dimensional`](Self::pos_is_full_dimensional).
+    pub fn neg_is_full_dimensional(&self) -> bool {
+        affine_rank(self.neg.iter().map(Vec::as_slice), self.dim) == self.dim
+    }
+
+    /// The piece `P ∩ {h ≥ 0}` as a polytope (`parent` with `h` appended)
+    /// whose vertex cache is already filled from the clip, so a following
+    /// [`volume`](Polytope::volume), [`vertices`](Polytope::vertices) or
+    /// [`clip`](Polytope::clip) does no enumeration.  `parent` and `h` must
+    /// be the polytope and half-space the clip was taken from; only their
+    /// shapes can be checked here.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if `parent` or `h` does not have
+    /// the shape of the clip's inputs (dimension, number of half-spaces,
+    /// number of vertices).
+    pub fn pos_polytope(&self, parent: &Polytope, h: &HalfSpace) -> Result<Polytope, SymplexError> {
+        self.check_inputs("Clip::pos_polytope", parent, h)?;
+        let verts = self
+            .pos
+            .iter()
+            .cloned()
+            .zip(self.pos_tight.iter().cloned())
+            .collect();
+        Ok(parent.with_halfspace_and_vertices(h.clone(), verts))
+    }
+
+    /// The piece `P ∩ {h ≤ 0}` as a polytope (`parent` with the flipped
+    /// half-space appended), with its vertex cache filled; otherwise as
+    /// [`pos_polytope`](Self::pos_polytope).
+    ///
+    /// # Errors
+    ///
+    /// As [`pos_polytope`](Self::pos_polytope).
+    pub fn neg_polytope(&self, parent: &Polytope, h: &HalfSpace) -> Result<Polytope, SymplexError> {
+        self.check_inputs("Clip::neg_polytope", parent, h)?;
+        let verts = self
+            .neg
+            .iter()
+            .cloned()
+            .zip(self.neg_tight.iter().cloned())
+            .collect();
+        Ok(parent.with_halfspace_and_vertices(h.flipped(), verts))
+    }
+
+    fn check_inputs(
+        &self,
+        op: &'static str,
+        parent: &Polytope,
+        h: &HalfSpace,
+    ) -> Result<(), SymplexError> {
+        if parent.dim != self.dim || h.coeffs.len() != self.dim {
+            return Err(invalid(
+                op,
+                "the polytope or half-space has another dimension than the clip",
+            ));
+        }
+        if parent.halfspaces.len() != self.parent_rows
+            || parent.vertex_cache.get().map(Vec::len) != Some(self.parent_vertices)
+        {
+            return Err(invalid(
+                op,
+                "the polytope is not the one the clip was taken from",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// `out` = the elements common to the ascending lists `a` and `b`.
+fn intersect_sorted(a: &[usize], b: &[usize], out: &mut Vec<usize>) {
+    out.clear();
+    let (mut i, mut j) = (0, 0);
+    while let (Some(&x), Some(&y)) = (a.get(i), b.get(j)) {
+        match x.cmp(&y) {
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+            std::cmp::Ordering::Equal => {
+                out.push(x);
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+}
+
+/// Append `row` scaled by the lcm of its denominators (a positive factor,
+/// so the rank of a matrix of such rows is the rank of the rational one).
+fn push_integer_row(out: &mut Vec<BigInt>, row: &[Q]) {
+    let l = row.iter().fold(BigInt::one(), |l, q| l.lcm(q.denom()));
+    out.extend(row.iter().map(|q| q.numer() * (&l / q.denom())));
+}
+
+/// Dimension of the affine hull of `points` in `ℚⁿ` (the rank of the
+/// differences to the first point); `0` for fewer than two points.
+fn affine_rank<'a>(mut points: impl Iterator<Item = &'a [Q]>, n: usize) -> usize {
+    let Some(first) = points.next() else {
+        return 0;
+    };
+    let mut a: Vec<BigInt> = Vec::new();
+    let mut rows = 0;
+    for p in points {
+        let diff: Vec<Q> = p.iter().zip(first).map(|(x, y)| x - y).collect();
+        push_integer_row(&mut a, &diff);
+        rows += 1;
+    }
+    if rows == 0 {
+        return 0;
+    }
+    fraction_free_gauss_jordan(&mut a, rows, n, n).0.len()
+}
+
+/// Rank of the normals of the half-spaces `idx` (indices into `halfspaces`,
+/// all in range).
+fn normals_rank(halfspaces: &[HalfSpace], idx: &[usize], n: usize) -> usize {
+    let mut a: Vec<BigInt> = Vec::with_capacity(idx.len() * n);
+    for &i in idx {
+        push_integer_row(&mut a, &halfspaces[i].coeffs);
+    }
+    fraction_free_gauss_jordan(&mut a, idx.len(), n, n).0.len()
 }
 
 /// `vol_n` of the polytope with H-representation `halfspaces` and vertex

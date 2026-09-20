@@ -33,6 +33,7 @@
 //! existing skeleton with the caller's hypothesis names.
 
 use std::fmt;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use num_bigint::BigInt;
@@ -1163,6 +1164,19 @@ struct StageBasis {
     cost: Vec<Q>,
 }
 
+/// One stage of a prover: its shape, and its basis once some goal has
+/// needed it.  Most goals are settled by the first stage, so the larger
+/// bases (the pairwise one in particular: `½·m²` polynomial products) are
+/// built only when a goal actually gets that far.  The basis is a pure
+/// function of the prover, so building it late — or twice, on two threads
+/// racing for the cell — yields the same columns in the same order.
+struct Stage {
+    degree: u32,
+    lambda_degree: u32,
+    pairwise: bool,
+    basis: OnceLock<StageBasis>,
+}
+
 /// The budget of one `prove*` call, shared by every LP it runs: the
 /// deadline (absolute, or the time limit converted when the call started)
 /// and the pivots spent so far against the pivot cap.
@@ -1221,9 +1235,10 @@ impl Meter {
 }
 
 /// A prover for a **fixed** hypothesis set and parameter: parses the
-/// hypotheses once, builds each stage's product basis once, and then
-/// certifies any number of goals (or the emptiness of the set) against
-/// them.  [`prove_nonnegative_on_polyhedron`] is
+/// hypotheses once, builds each stage's product basis once (on the first
+/// goal that reaches the stage), and then certifies any number of goals
+/// (or the emptiness of the set) against them.
+/// [`prove_nonnegative_on_polyhedron`] is
 /// `PolyhedronProver::new(hyps, param, opts)?.prove(goal)`.
 ///
 /// The free variables are the symbols of the hypotheses other than the
@@ -1252,7 +1267,7 @@ pub struct PolyhedronProver {
     hyps_exact: Vec<Exact>,
     param: Option<(Param, Q)>,
     opts: PolyhedronOpts,
-    stages: Vec<StageBasis>,
+    stages: Vec<Stage>,
     one: Poly,
     /// `jᵃ` and `(j − j₀)ᵃ` for `a = 0..=top`.
     var_pows: Vec<Poly>,
@@ -1260,7 +1275,8 @@ pub struct PolyhedronProver {
 }
 
 impl PolyhedronProver {
-    /// Parse the hypotheses and build the bases of every stage of `opts`.
+    /// Parse the hypotheses and set up the stages of `opts` (their product
+    /// bases are built when a goal first needs them).
     ///
     /// # Errors
     ///
@@ -1364,23 +1380,49 @@ impl PolyhedronProver {
                     .ok_or_else(|| invalid("internal: non-rational hypothesis coefficient"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let mut prover = PolyhedronProver {
+        let stages = opts
+            .stages()
+            .into_iter()
+            .map(|(degree, lambda_degree, pairwise)| Stage {
+                degree,
+                lambda_degree,
+                pairwise,
+                basis: OnceLock::new(),
+            })
+            .collect();
+        Ok(PolyhedronProver {
             ctx,
             gens,
             hyps: hyp_polys,
             hyps_exact,
             param: param_info,
             opts: opts.clone(),
-            stages: Vec::new(),
+            stages,
             one,
             var_pows,
             shift_pows,
-        };
-        for (degree, lambda_degree, pairwise) in opts.stages() {
-            let basis = prover.build_stage(degree, lambda_degree, pairwise)?;
-            prover.stages.push(basis);
+        })
+    }
+
+    /// The basis of `stage`, built on first use.
+    fn stage_basis<'s>(&'s self, stage: &'s Stage) -> Result<&'s StageBasis, SymplexError> {
+        if let Some(basis) = stage.basis.get() {
+            return Ok(basis);
         }
-        Ok(prover)
+        let started = Instant::now();
+        let built = self.build_stage(stage.degree, stage.lambda_degree, stage.pairwise)?;
+        tracing::debug!(
+            target: "symplex::certificates::polyhedron",
+            degree = stage.degree,
+            lambda_degree = stage.lambda_degree,
+            pairwise = stage.pairwise,
+            hyps = self.hyps.len(),
+            cols = built.columns.len(),
+            micros = started.elapsed().as_micros() as u64,
+            "polyhedron stage basis built"
+        );
+        // Another thread may have won the race; its basis is identical.
+        Ok(stage.basis.get_or_init(|| built))
     }
 
     /// The hypotheses as polynomials, in input order.
@@ -1668,13 +1710,22 @@ impl PolyhedronProver {
         let goal_exact = goal
             .to_multipoly()
             .ok_or_else(|| invalid("internal: non-rational goal coefficient"))?;
-        match refute(
+        let started = Instant::now();
+        let refutation = refute(
             &goal_exact,
             &self.hyps_exact,
             &self.gens,
             self.param.as_ref(),
             &mut meter,
-        ) {
+        );
+        tracing::debug!(
+            target: "symplex::certificates::polyhedron",
+            refuted = matches!(refutation, Ok(Some(_))),
+            pivots_total = meter.spent,
+            micros = started.elapsed().as_micros() as u64,
+            "polyhedron refutation"
+        );
+        match refutation {
             Ok(Some((point, param_value, value))) => {
                 return Ok(Outcome::Refuted {
                     point,
@@ -1713,10 +1764,12 @@ impl PolyhedronProver {
     fn search_stage(
         &self,
         goal: &Poly,
-        stage: &StageBasis,
+        stage: &Stage,
         meter: &mut Meter,
     ) -> Result<Option<PolyhedronCertificate>, Stop> {
+        let stage = self.stage_basis(stage)?;
         let n_basis = stage.columns.len();
+        let started = Instant::now();
         let use_var = self.param.as_ref().is_some_and(|(p, _)| p.var_nonneg);
         // λ columns: −atomᵃ·goal for a = 1..=lambda_degree.
         let lambda_cols: Vec<Poly> = if self.param.is_some() {
@@ -1755,8 +1808,10 @@ impl PolyhedronProver {
             }
             lp = lp.eq(row, coeff(goal, m)?);
         }
-        let started = Instant::now();
+        let built = started.elapsed();
         let sol = meter.solve(lp)?;
+        // Where a stage's time goes: assembling the LP (λ columns, monomial
+        // rows, coefficient lookups) against solving it.
         tracing::debug!(
             target: "symplex::certificates::polyhedron",
             degree = stage.degree,
@@ -1766,7 +1821,8 @@ impl PolyhedronProver {
             cols = n_basis + lambda_cols.len(),
             status = ?sol.status,
             pivots_total = meter.spent,
-            micros = started.elapsed().as_micros() as u64,
+            build_micros = built.as_micros() as u64,
+            micros = started.elapsed().saturating_sub(built).as_micros() as u64,
             "polyhedron stage LP"
         );
         if sol.status != LpStatus::Optimal {
@@ -1794,7 +1850,16 @@ impl PolyhedronProver {
             lambda,
             terms,
         };
-        if !cert.verify() {
+        let verifying = Instant::now();
+        let verified = cert.verify();
+        tracing::debug!(
+            target: "symplex::certificates::polyhedron",
+            terms = cert.terms.len(),
+            verified,
+            micros = verifying.elapsed().as_micros() as u64,
+            "polyhedron certificate re-verified"
+        );
+        if !verified {
             return Err(SymplexError::ComputationFailed {
                 operation: OP,
                 reason:

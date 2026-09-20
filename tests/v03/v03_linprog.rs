@@ -1478,6 +1478,60 @@ fn nonneg_combination_is_cone_membership_by_columns() {
     assert!(nonneg_combination(&[vec![qi(1)]], &[qi(1), qi(2)]).is_err());
 }
 
+/// The hybrid arithmetic (`i64 → i128 → 256-bit → BigInt` cells) is
+/// invisible from outside: the same LP with every row, right-hand side and
+/// cost scaled by `2^k` has the same feasible set, hence the same optimal
+/// point and duals and a `2^k`-fold objective, for `k` that lands the
+/// fraction-free tableau (minors of the scaled data, up to four-fold
+/// products here) in each cell type.  Every run passes the exact KKT
+/// check and the wide-coefficient runs stay fast.
+#[test]
+fn scaled_data_lands_in_every_cell_type_and_agrees() {
+    let base = |scale: &Q| {
+        let s = |k: i64| qi(k) * scale;
+        Spec::min(vec![s(3), s(1), s(4), s(2)])
+            .ge(vec![s(3), s(1), s(2), s(1)], s(7))
+            .ge(vec![s(1), s(5), s(1), s(2)], s(11))
+            .le(vec![s(2), s(1), s(3), s(4)], s(40))
+            .eq(vec![s(1), s(-1), s(1), s(0)], s(1))
+    };
+    let reference = base(&qi(1)).solve_checked();
+    assert_eq!(reference.status, LpStatus::Optimal);
+    // Roughly: 2^0 stays in i64, 2^20 needs i128, 2^50 the 256-bit cells,
+    // 2^100 BigInt.
+    for bits in [0u32, 20, 50, 100] {
+        let scale = Ratio::from_integer(BigInt::from(1) << bits);
+        let t0 = Instant::now();
+        let sol = base(&scale).solve_checked();
+        assert!(
+            t0.elapsed() < Duration::from_secs(2),
+            "2^{bits}: {:?}",
+            t0.elapsed()
+        );
+        assert_eq!(sol.status, LpStatus::Optimal, "2^{bits}");
+        assert_eq!(sol.x, reference.x, "2^{bits}: the optimum is scale-free");
+        assert_eq!(
+            sol.objective,
+            reference.objective.as_ref().map(|v| v * &scale),
+            "2^{bits}"
+        );
+        assert_eq!(
+            sol.duals, reference.duals,
+            "2^{bits}: shadow prices are scale-free"
+        );
+    }
+    // With fractions too (row scaling by denominators is part of the
+    // conversion), at a scale only BigInt can hold.
+    let scale = Ratio::new(BigInt::from(1) << 300u32, BigInt::from(7));
+    let sol = base(&scale).solve_checked();
+    assert_eq!(sol.x, reference.x);
+    assert_eq!(
+        sol.objective,
+        reference.objective.as_ref().map(|v| v * &scale)
+    );
+    assert_eq!(sol.duals, reference.duals);
+}
+
 #[test]
 fn larger_transportation_problem_is_fast_and_integral() {
     // 4 sources × 5 sinks, balanced: 20 variables, 9 equalities.

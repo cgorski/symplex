@@ -1013,6 +1013,56 @@ fn random_constructed_identities_are_recovered_and_false_goals_never_proved() {
     }
 }
 
+/// A prover builds each stage's basis on the first goal that reaches it,
+/// so it can be shared by reference across threads: the certificates are
+/// the same as a sequential run's, byte for byte, whichever thread first
+/// materialised a stage (the basis is a pure function of the hypotheses).
+/// Goals here are chosen so that some settle in the first stage, some
+/// need `λ`, and one is false, exercising three stages and the refutation.
+#[test]
+fn shared_prover_across_threads_matches_sequential_certificates() {
+    use symplex::certificates::PolyhedronProver;
+    let f = Fixture::new();
+    let (ctx, j, r, t) = (&f.ctx, &f.j, &f.r, &f.t);
+    let half = ctx.rational(1, 2);
+    let mut hyps = vec![r.clone(), &half - r, t.clone(), 1 - t];
+    for k in 1..=4i64 {
+        hyps.push((j * k + 1) * t - j * r - ctx.rational(k, 2 * k + 1));
+    }
+    let mut goals: Vec<Ex> = hyps.clone();
+    for k in 1..=4i64 {
+        goals.push((j * k + 1) * t * 3 - j * r * 3 - ctx.rational(3 * k, 2 * k + 1) + &half - r);
+    }
+    goals.push(t - &half - r); // false on the cell
+    goals.push(j * t - j * r); // needs the parameter multiplier
+    let prover =
+        PolyhedronProver::new(&hyps, Some((j, &ctx.int(1))), &PolyhedronOpts::default()).unwrap();
+    let render = |out: PolyhedronOutcome| match out {
+        PolyhedronOutcome::Proved(c) => format!("proved {}", c.to_lean("g").unwrap()),
+        PolyhedronOutcome::Refuted { value, .. } => format!("refuted {value}"),
+        PolyhedronOutcome::Unknown(u) => format!("unknown {u}"),
+    };
+    // Sequential, on a fresh prover (every stage built by this thread).
+    let sequential: Vec<String> = goals
+        .iter()
+        .map(|g| render(prover.prove(g).unwrap()))
+        .collect();
+    assert!(sequential.iter().any(|s| s.starts_with("proved")));
+    assert!(sequential.iter().any(|s| s.starts_with("refuted")));
+    // Concurrent, on a second prover shared by reference: the threads race
+    // to build the stages.
+    let shared =
+        PolyhedronProver::new(&hyps, Some((j, &ctx.int(1))), &PolyhedronOpts::default()).unwrap();
+    let concurrent: Vec<String> = std::thread::scope(|scope| {
+        let handles: Vec<_> = goals
+            .iter()
+            .map(|g| scope.spawn(|| render(shared.prove(g).unwrap())))
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    assert_eq!(concurrent, sequential);
+}
+
 #[test]
 fn many_hypotheses_certify_quickly_with_staging() {
     // A 2-D cell with ten j-dependent facets: every facet of the cell is

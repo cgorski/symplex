@@ -198,10 +198,10 @@ struct Constraint {
 ///
 /// The budget is checked at every pivot (the deadline before the entering
 /// column is chosen, the pivot cap before the pivot is performed), and it
-/// is shared by the `i64 → i128 → BigInt` attempts of one solve: pivots
-/// begun by an attempt that overflowed its cell type still count, and the
-/// deadline is absolute.  When it runs out, [`LpProblem::solve`] returns
-/// [`LpStatus::BudgetExhausted`].
+/// is shared by the `i64 → i128 → 256-bit → BigInt` attempts of one
+/// solve: pivots begun by an attempt that overflowed its cell type still
+/// count, and the deadline is absolute.  When it runs out,
+/// [`LpProblem::solve`] returns [`LpStatus::BudgetExhausted`].
 ///
 /// `#[non_exhaustive]`: build it with the constructors and `with_*`
 /// builders.
@@ -676,7 +676,9 @@ fn standardize(p: &LpProblem) -> Standardized {
         match vm {
             VarMap::Shifted { col, lo } => {
                 c[*col] = cj.clone();
-                constant += &cj * lo;
+                if !lo.is_zero() {
+                    constant += &cj * lo;
+                }
             }
             VarMap::Mirrored { col, hi } => {
                 c[*col] = -cj.clone();
@@ -704,7 +706,12 @@ fn standardize(p: &LpProblem) -> Standardized {
             match vm {
                 VarMap::Shifted { col, lo } => {
                     a[i][*col] = aij.clone();
-                    rhs -= aij * lo;
+                    // The default bound `lo = 0` is by far the most common;
+                    // a rational product and difference per entry would
+                    // otherwise dominate the conversion.
+                    if !lo.is_zero() {
+                        rhs -= aij * lo;
+                    }
                 }
                 VarMap::Mirrored { col, hi } => {
                     a[i][*col] = -aij.clone();
@@ -790,13 +797,17 @@ fn standardize(p: &LpProblem) -> Standardized {
 ///
 /// **Hybrid arithmetic.**  The tableau is generic over its cell type
 /// ([`Cell`]): it first runs on `i64` cells with `i128` intermediates, and
-/// the first value that does not fit an `i64` aborts that attempt, after
-/// which the whole problem is solved again on `BigInt` cells.  Every
-/// decision (entering column, ratio test, tie-break) is a sign test or an
-/// exact comparison of products, so the two runs take the same pivot path
-/// and produce the same answer; the small-integer run merely never touches
-/// the heap.  Certificate LPs (small polynomial coefficients) essentially
-/// always stay in `i64`.
+/// the first value that does not fit aborts that attempt, after which the
+/// whole problem is solved again on the next wider cells (`i128`, then
+/// 256-bit limbs, then `BigInt`).  Every decision (entering column, ratio
+/// test, tie-break) is a sign test or an exact comparison of products, so
+/// all runs take the same pivot path and produce the same answer; the
+/// fixed-width runs merely never touch the heap.  The exact divisions of
+/// the fraction-free update are done by multiplication with the inverse of
+/// the pivot's odd part modulo the word size, checked by one multiplication
+/// (Jebelean); there is no long division anywhere in the pivot loop.
+/// Certificate LPs (small polynomial coefficients, 16–20 rows) peak
+/// between 60 and 200 bits, so they finish on `i128` or the 256-bit cells.
 struct Tableau<'a, T: Cell> {
     /// Row-major `m × width` integer tableau.
     rows: Vec<T>,
@@ -840,9 +851,18 @@ const STALL_LIMIT: usize = 12;
 /// the fraction-free simplex needs.  Fallible operations return `None`
 /// when the result does not fit; the `BigInt` implementation never fails.
 trait Cell: Clone + PartialEq + Eq + Ord + fmt::Debug {
+    /// The outgoing common denominator `d` of one pivot, prepared once for
+    /// the `O(m·n)` exact divisions of that pivot (for the fixed-width
+    /// cells: its odd part's inverse modulo the word size, so that each
+    /// division is a wrapping multiplication instead of a long division).
+    type Divisor;
+    fn divisor(d: &Self) -> Self::Divisor;
     fn cell_zero() -> Self;
     fn cell_one() -> Self;
     fn from_big(v: &BigInt) -> Option<Self>;
+    /// `n / d` as a cell (`None` if it does not fit) — the entries of the
+    /// initial tableau, `numer · (s / denom)`, for a row scale `s`.
+    fn from_ratio_scaled(q: &Q, s: &BigInt) -> Option<Self>;
     fn to_big(&self) -> BigInt;
     fn is_zero(&self) -> bool;
     fn is_negative(&self) -> bool;
@@ -852,9 +872,9 @@ trait Cell: Clone + PartialEq + Eq + Ord + fmt::Debug {
     fn mul(&self, o: &Self) -> Option<Self>;
     /// `(v · p − f · pr) / d`, the fraction-free pivot update; the division
     /// is exact.
-    fn pivot_update(v: &Self, p: &Self, f: &Self, pr: &Self, d: &Self) -> Option<Self>;
+    fn pivot_update(v: &Self, p: &Self, f: &Self, pr: &Self, d: &Self::Divisor) -> Option<Self>;
     /// `(v · p) / d` (exact) — the update of a row with a zero pivot-column entry.
-    fn rescale(v: &Self, p: &Self, d: &Self) -> Option<Self>;
+    fn rescale(v: &Self, p: &Self, d: &Self::Divisor) -> Option<Self>;
     /// `self − f · r`, checked.
     fn sub_mul(&self, f: &Self, r: &Self) -> Option<Self>;
     /// `a · b` compared with `c · d`, exactly.
@@ -862,6 +882,10 @@ trait Cell: Clone + PartialEq + Eq + Ord + fmt::Debug {
 }
 
 impl Cell for BigInt {
+    type Divisor = BigInt;
+    fn divisor(d: &Self) -> BigInt {
+        d.clone()
+    }
     fn cell_zero() -> Self {
         <BigInt as Zero>::zero()
     }
@@ -870,6 +894,9 @@ impl Cell for BigInt {
     }
     fn from_big(v: &BigInt) -> Option<Self> {
         Some(v.clone())
+    }
+    fn from_ratio_scaled(q: &Q, s: &BigInt) -> Option<Self> {
+        Some(q.numer() * (s / q.denom()))
     }
     fn to_big(&self) -> BigInt {
         self.clone()
@@ -893,7 +920,7 @@ impl Cell for BigInt {
     fn mul(&self, o: &Self) -> Option<Self> {
         Some(self * o)
     }
-    fn pivot_update(v: &Self, p: &Self, f: &Self, pr: &Self, d: &Self) -> Option<Self> {
+    fn pivot_update(v: &Self, p: &Self, f: &Self, pr: &Self, d: &BigInt) -> Option<Self> {
         let t = if Zero::is_zero(pr) {
             v * p
         } else if Zero::is_zero(v) {
@@ -907,7 +934,7 @@ impl Cell for BigInt {
         );
         Some(t / d)
     }
-    fn rescale(v: &Self, p: &Self, d: &Self) -> Option<Self> {
+    fn rescale(v: &Self, p: &Self, d: &BigInt) -> Option<Self> {
         let t = v * p;
         debug_assert!(
             Zero::is_zero(&(&t % d)),
@@ -923,7 +950,81 @@ impl Cell for BigInt {
     }
 }
 
+/// The outgoing denominator of an `i64` pivot, prepared for exact division
+/// of the 128-bit intermediates: `d = 2^shift · d_odd`, with `inv` the
+/// inverse of `d_odd` modulo `2^64` (two's complement; the sign of `d` rides
+/// along, since an odd negative number is odd as a `u64` too).
+#[derive(Clone, Copy, Debug)]
+struct Div64 {
+    d: i64,
+    shift: u32,
+    inv: u64,
+}
+
+impl Div64 {
+    fn new(d: i64) -> Self {
+        debug_assert!(d != 0, "pivot on a zero entry");
+        let shift = d.trailing_zeros();
+        // `d >> shift` is odd; `i64::MIN >> 63 == -1`, also odd.
+        let d_odd = (d >> shift) as u64;
+        Div64 {
+            d,
+            shift,
+            inv: inverse_mod_2_64(d_odd),
+        }
+    }
+
+    /// Exact `t / d` (`t` is a multiple of `d`), or `None` when the
+    /// quotient does not fit an `i64`.
+    ///
+    /// Jebelean's exact division: `t / d = (t >> shift) · inv (mod 2^64)`,
+    /// so the low 64 bits of the shifted dividend times `inv` are the
+    /// quotient modulo `2^64` — which *is* the quotient whenever the
+    /// quotient is an `i64`.  One widening multiplication checks that: if
+    /// the true quotient does not fit, the candidate differs from it by a
+    /// non-zero multiple of `2^64`, so `candidate · d ≠ t` (the product is
+    /// exact in an `i128`, so this cannot be fooled by wrapping).  Two
+    /// multiplications in place of a 128-bit long division (`__divti3`,
+    /// which otherwise dominates the pivot loop), with the identical value.
+    #[inline]
+    fn div_exact(&self, t: i128) -> Option<i64> {
+        debug_assert!(
+            t % i128::from(self.d) == 0,
+            "integer pivoting: inexact division"
+        );
+        let q = ((t >> self.shift) as u64).wrapping_mul(self.inv) as i64;
+        (i128::from(q) * i128::from(self.d) == t).then_some(q)
+    }
+}
+
+/// The inverse of an odd `d` modulo `2^64` (see [`inverse_mod_2_128`]):
+/// three correct bits to start, doubled five times.
+fn inverse_mod_2_64(d: u64) -> u64 {
+    debug_assert!(d & 1 == 1);
+    let mut x = d;
+    for _ in 0..5 {
+        x = x.wrapping_mul(2u64.wrapping_sub(d.wrapping_mul(x)));
+    }
+    debug_assert_eq!(d.wrapping_mul(x), 1);
+    x
+}
+
+/// `numer · (s / denom)` of a small rational without touching the heap:
+/// `None` if `numer`, `denom` or `s` does not fit an `i64` (the caller then
+/// takes the `BigInt` route).  `denom` divides `s`.
+#[inline]
+fn ratio_scaled_i128(q: &Q, s: &BigInt) -> Option<i128> {
+    let numer = i64::try_from(q.numer()).ok()?;
+    let denom = i64::try_from(q.denom()).ok()?;
+    let s = i64::try_from(s).ok()?;
+    Some(i128::from(numer) * i128::from(s / denom))
+}
+
 impl Cell for i64 {
+    type Divisor = Div64;
+    fn divisor(d: &Self) -> Div64 {
+        Div64::new(*d)
+    }
     fn cell_zero() -> Self {
         0
     }
@@ -932,6 +1033,12 @@ impl Cell for i64 {
     }
     fn from_big(v: &BigInt) -> Option<Self> {
         i64::try_from(v).ok()
+    }
+    fn from_ratio_scaled(q: &Q, s: &BigInt) -> Option<Self> {
+        match ratio_scaled_i128(q, s) {
+            Some(v) => i64::try_from(v).ok(),
+            None => i64::try_from(q.numer() * (s / q.denom())).ok(),
+        }
     }
     fn to_big(&self) -> BigInt {
         BigInt::from(*self)
@@ -951,22 +1058,13 @@ impl Cell for i64 {
     fn mul(&self, o: &Self) -> Option<Self> {
         self.checked_mul(*o)
     }
-    fn pivot_update(v: &Self, p: &Self, f: &Self, pr: &Self, d: &Self) -> Option<Self> {
+    fn pivot_update(v: &Self, p: &Self, f: &Self, pr: &Self, d: &Div64) -> Option<Self> {
         // Two i64 products and their difference always fit an i128.
         let t = i128::from(*v) * i128::from(*p) - i128::from(*f) * i128::from(*pr);
-        debug_assert!(
-            t % i128::from(*d) == 0,
-            "integer pivoting: inexact division"
-        );
-        i64::try_from(t / i128::from(*d)).ok()
+        d.div_exact(t)
     }
-    fn rescale(v: &Self, p: &Self, d: &Self) -> Option<Self> {
-        let t = i128::from(*v) * i128::from(*p);
-        debug_assert!(
-            t % i128::from(*d) == 0,
-            "integer pivoting: inexact division"
-        );
-        i64::try_from(t / i128::from(*d)).ok()
+    fn rescale(v: &Self, p: &Self, d: &Div64) -> Option<Self> {
+        d.div_exact(i128::from(*v) * i128::from(*p))
     }
     fn sub_mul(&self, f: &Self, r: &Self) -> Option<Self> {
         i64::try_from(i128::from(*self) - i128::from(*f) * i128::from(*r)).ok()
@@ -1043,33 +1141,30 @@ impl I256 {
     /// the inverse of `d'` modulo `2^128` — which is the quotient whenever
     /// the quotient fits, i.e. whenever the shifted high half is below
     /// `d'`.  A handful of wrapping multiplications instead of a long
-    /// division.
-    fn div_exact_unsigned(self, d: u128) -> Option<u128> {
+    /// division (there is no hardware `u128` division either, so the
+    /// small-dividend case takes the same route).
+    fn div_exact_unsigned(self, d: &Div128) -> Option<u128> {
         debug_assert!(!self.is_negative());
         let hi = self.hi as u128;
-        if hi == 0 {
-            return Some(self.lo / d);
-        }
-        let k = d.trailing_zeros();
-        let d_odd = d >> k;
+        let k = d.shift;
         let lo = if k == 0 {
             self.lo
         } else {
             (self.lo >> k) | (hi << (128 - k))
         };
         let hi = hi >> k;
-        if hi >= d_odd {
+        if hi >= d.odd {
             return None;
         }
-        Some(lo.wrapping_mul(inverse_mod_2_128(d_odd)))
+        Some(lo.wrapping_mul(d.inv))
     }
 
     /// Exact `self / d` for any signs, `None` if the quotient does not fit
     /// an `i128`.
-    fn div_exact(self, d: i128) -> Option<i128> {
-        let neg = self.is_negative() != (d < 0);
+    fn div_exact_by(self, d: &Div128) -> Option<i128> {
+        let neg = self.is_negative() != (d.d < 0);
         let mag = if self.is_negative() { self.neg() } else { self };
-        let q = mag.div_exact_unsigned(d.unsigned_abs())?;
+        let q = mag.div_exact_unsigned(d)?;
         if neg {
             // −2^127 is representable; q up to 2^127 is allowed then.
             if q > (1u128 << 127) {
@@ -1078,6 +1173,38 @@ impl I256 {
             Some((q as i128).wrapping_neg())
         } else {
             i128::try_from(q).ok()
+        }
+    }
+
+    /// [`div_exact_by`](Self::div_exact_by) with the divisor prepared on
+    /// the spot.
+    #[cfg(test)]
+    fn div_exact(self, d: i128) -> Option<i128> {
+        self.div_exact_by(&Div128::new(d))
+    }
+}
+
+/// The outgoing denominator of an `i128` pivot: `|d| = 2^shift · odd`, with
+/// `inv` the inverse of `odd` modulo `2^128`, computed once per pivot.
+#[derive(Clone, Copy, Debug)]
+struct Div128 {
+    d: i128,
+    shift: u32,
+    odd: u128,
+    inv: u128,
+}
+
+impl Div128 {
+    fn new(d: i128) -> Self {
+        debug_assert!(d != 0, "pivot on a zero entry");
+        let abs = d.unsigned_abs();
+        let shift = abs.trailing_zeros();
+        let odd = abs >> shift;
+        Div128 {
+            d,
+            shift,
+            odd,
+            inv: inverse_mod_2_128(odd),
         }
     }
 }
@@ -1108,6 +1235,10 @@ impl Ord for I256 {
 }
 
 impl Cell for i128 {
+    type Divisor = Div128;
+    fn divisor(d: &Self) -> Div128 {
+        Div128::new(*d)
+    }
     fn cell_zero() -> Self {
         0
     }
@@ -1116,6 +1247,12 @@ impl Cell for i128 {
     }
     fn from_big(v: &BigInt) -> Option<Self> {
         i128::try_from(v).ok()
+    }
+    fn from_ratio_scaled(q: &Q, s: &BigInt) -> Option<Self> {
+        match ratio_scaled_i128(q, s) {
+            Some(v) => Some(v),
+            None => i128::try_from(q.numer() * (s / q.denom())).ok(),
+        }
     }
     fn to_big(&self) -> BigInt {
         BigInt::from(*self)
@@ -1135,18 +1272,354 @@ impl Cell for i128 {
     fn mul(&self, o: &Self) -> Option<Self> {
         self.checked_mul(*o)
     }
-    fn pivot_update(v: &Self, p: &Self, f: &Self, pr: &Self, d: &Self) -> Option<Self> {
+    fn pivot_update(v: &Self, p: &Self, f: &Self, pr: &Self, d: &Div128) -> Option<Self> {
         let t = I256::mul(*v, *p).sub(I256::mul(*f, *pr));
-        t.div_exact(*d)
+        t.div_exact_by(d)
     }
-    fn rescale(v: &Self, p: &Self, d: &Self) -> Option<Self> {
-        I256::mul(*v, *p).div_exact(*d)
+    fn rescale(v: &Self, p: &Self, d: &Div128) -> Option<Self> {
+        I256::mul(*v, *p).div_exact_by(d)
     }
     fn sub_mul(&self, f: &Self, r: &Self) -> Option<Self> {
         I256::from_i128(*self).sub(I256::mul(*f, *r)).to_i128()
     }
     fn cmp_products(a: &Self, b: &Self, c: &Self, d: &Self) -> std::cmp::Ordering {
         I256::mul(*a, *b).cmp(&I256::mul(*c, *d))
+    }
+}
+
+// ── 256-bit cells ───────────────────────────────────────────────────────────
+//
+// Fraction-free entries are minors of the scaled system, so a 20-row
+// certificate LP with three-digit coefficients peaks around 130–200 bits:
+// past `i128`, but far from needing heap integers.  `W256` is a signed
+// 256-bit two's-complement integer in four little-endian `u64` limbs, with
+// exact 512-bit intermediates (`W512`), so that such problems stay on the
+// stack; the arithmetic is the plain schoolbook kind on limbs.
+
+/// Unsigned little-endian limb arithmetic shared by [`W256`] and [`W512`].
+/// All operations wrap (two's complement) unless they report a carry.
+mod limbs {
+    use std::cmp::Ordering;
+
+    #[inline]
+    pub(super) fn sub<const N: usize>(a: &[u64; N], b: &[u64; N]) -> ([u64; N], bool) {
+        let mut out = [0u64; N];
+        let mut borrow = false;
+        for i in 0..N {
+            let (s, b1) = a[i].overflowing_sub(b[i]);
+            let (s, b2) = s.overflowing_sub(u64::from(borrow));
+            out[i] = s;
+            borrow = b1 || b2;
+        }
+        (out, borrow)
+    }
+
+    /// Two's-complement negation (wrapping; the minimum maps to itself).
+    #[inline]
+    pub(super) fn neg<const N: usize>(a: &[u64; N]) -> [u64; N] {
+        sub(&[0u64; N], a).0
+    }
+
+    #[inline]
+    pub(super) fn is_negative<const N: usize>(a: &[u64; N]) -> bool {
+        a[N - 1] >> 63 == 1
+    }
+
+    /// Signed comparison of two's-complement values.
+    #[inline]
+    pub(super) fn cmp_signed<const N: usize>(a: &[u64; N], b: &[u64; N]) -> Ordering {
+        match (is_negative(a), is_negative(b)) {
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            // Same sign: unsigned order agrees with signed order.
+            _ => a.iter().rev().cmp(b.iter().rev()),
+        }
+    }
+
+    /// Low `N` limbs of `a · b` (wrapping multiplication).
+    #[inline]
+    pub(super) fn mul_low<const N: usize>(a: &[u64; N], b: &[u64; N]) -> [u64; N] {
+        let mut out = [0u64; N];
+        for i in 0..N {
+            let mut carry = 0u128;
+            for j in 0..N - i {
+                let t = u128::from(a[i]) * u128::from(b[j]) + u128::from(out[i + j]) + carry;
+                out[i + j] = t as u64;
+                carry = t >> 64;
+            }
+        }
+        out
+    }
+
+    /// Full unsigned product of two four-limb values.
+    #[inline]
+    pub(super) fn mul_4x4(a: &[u64; 4], b: &[u64; 4]) -> [u64; 8] {
+        let mut out = [0u64; 8];
+        for i in 0..4 {
+            let mut carry = 0u128;
+            for j in 0..4 {
+                let t = u128::from(a[i]) * u128::from(b[j]) + u128::from(out[i + j]) + carry;
+                out[i + j] = t as u64;
+                carry = t >> 64;
+            }
+            out[i + 4] = carry as u64;
+        }
+        out
+    }
+
+    /// Arithmetic shift right by `k < 64·N` bits.
+    #[inline]
+    pub(super) fn shr_signed<const N: usize>(a: &[u64; N], k: u32) -> [u64; N] {
+        let fill = if is_negative(a) { u64::MAX } else { 0 };
+        let limbs = (k / 64) as usize;
+        let bits = k % 64;
+        let mut out = [fill; N];
+        for i in 0..N - limbs {
+            let lo = a[i + limbs] >> bits;
+            let hi = if bits == 0 {
+                0
+            } else if i + limbs + 1 < N {
+                a[i + limbs + 1] << (64 - bits)
+            } else {
+                fill << (64 - bits)
+            };
+            out[i] = lo | hi;
+        }
+        out
+    }
+
+    #[inline]
+    pub(super) fn trailing_zeros<const N: usize>(a: &[u64; N]) -> u32 {
+        let mut n = 0;
+        for limb in a {
+            if *limb == 0 {
+                n += 64;
+            } else {
+                return n + limb.trailing_zeros();
+            }
+        }
+        n
+    }
+}
+
+/// Signed 256-bit integer (two's complement, little-endian `u64` limbs).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct W256([u64; 4]);
+
+/// Signed 512-bit integer: the exact intermediates of [`W256`] cells.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct W512([u64; 8]);
+
+impl W256 {
+    const ZERO: W256 = W256([0; 4]);
+    const ONE: W256 = W256([1, 0, 0, 0]);
+
+    fn from_i128(v: i128) -> Self {
+        let fill = if v < 0 { u64::MAX } else { 0 };
+        let u = v as u128;
+        W256([u as u64, (u >> 64) as u64, fill, fill])
+    }
+
+    /// `None` if `|v| ≥ 2^255` (the minimum itself is not accepted — it is
+    /// merely reported as not fitting, which only widens the cells).
+    fn from_big(v: &BigInt) -> Option<Self> {
+        let mut mag = [0u64; 4];
+        for (i, digit) in v.iter_u64_digits().enumerate() {
+            *mag.get_mut(i)? = digit;
+        }
+        if mag[3] >> 63 == 1 {
+            return None;
+        }
+        Some(W256(if Signed::is_negative(v) {
+            limbs::neg(&mag)
+        } else {
+            mag
+        }))
+    }
+
+    #[inline]
+    fn is_zero(&self) -> bool {
+        self.0 == [0; 4]
+    }
+
+    #[inline]
+    fn is_negative(&self) -> bool {
+        limbs::is_negative(&self.0)
+    }
+
+    /// Exact signed product, as 512 bits.
+    #[inline]
+    fn mul_full(a: &W256, b: &W256) -> W512 {
+        let neg = a.is_negative() != b.is_negative();
+        let ua = if a.is_negative() {
+            limbs::neg(&a.0)
+        } else {
+            a.0
+        };
+        let ub = if b.is_negative() {
+            limbs::neg(&b.0)
+        } else {
+            b.0
+        };
+        let prod = limbs::mul_4x4(&ua, &ub);
+        W512(if neg { limbs::neg(&prod) } else { prod })
+    }
+
+    /// Sign-extend to 512 bits.
+    #[inline]
+    fn widen(&self) -> W512 {
+        let fill = if self.is_negative() { u64::MAX } else { 0 };
+        let a = &self.0;
+        W512([a[0], a[1], a[2], a[3], fill, fill, fill, fill])
+    }
+}
+
+impl PartialOrd for W256 {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for W256 {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        limbs::cmp_signed(&self.0, &other.0)
+    }
+}
+
+impl W512 {
+    #[inline]
+    fn sub(&self, o: &W512) -> W512 {
+        W512(limbs::sub(&self.0, &o.0).0)
+    }
+
+    /// The value as a [`W256`], `None` if it does not fit (the high half
+    /// must be the sign extension of the low half).
+    #[inline]
+    fn narrow(&self) -> Option<W256> {
+        let a = &self.0;
+        let fill = if a[3] >> 63 == 1 { u64::MAX } else { 0 };
+        (a[4] == fill && a[5] == fill && a[6] == fill && a[7] == fill)
+            .then(|| W256([a[0], a[1], a[2], a[3]]))
+    }
+
+    #[inline]
+    fn cmp(&self, o: &W512) -> std::cmp::Ordering {
+        limbs::cmp_signed(&self.0, &o.0)
+    }
+}
+
+/// The outgoing denominator of a [`W256`] pivot: `d = 2^shift · d_odd` with
+/// `inv` the inverse of `d_odd` modulo `2^256` (see [`Div64`]).
+#[derive(Clone, Copy, Debug)]
+struct Div256 {
+    d: W256,
+    shift: u32,
+    inv: W256,
+}
+
+impl Div256 {
+    fn new(d: W256) -> Self {
+        debug_assert!(!d.is_zero(), "pivot on a zero entry");
+        let shift = limbs::trailing_zeros(&d.0);
+        let d_odd = limbs::shr_signed(&d.0, shift);
+        // Newton's iteration doubles the correct low bits: 3 → 6 → … → 384.
+        let mut x = d_odd;
+        for _ in 0..7 {
+            let dx = limbs::mul_low(&d_odd, &x);
+            let two_minus = limbs::sub(&[2, 0, 0, 0], &dx).0;
+            x = limbs::mul_low(&x, &two_minus);
+        }
+        debug_assert_eq!(limbs::mul_low(&d_odd, &x), [1, 0, 0, 0]);
+        Div256 {
+            d,
+            shift,
+            inv: W256(x),
+        }
+    }
+
+    /// Exact `t / d`, `None` if the quotient does not fit 256 bits — the
+    /// same modular-inverse-plus-checking-multiplication scheme as
+    /// [`Div64::div_exact`], on limbs.
+    #[inline]
+    fn div_exact(&self, t: &W512) -> Option<W256> {
+        let shifted = limbs::shr_signed(&t.0, self.shift);
+        let low = [shifted[0], shifted[1], shifted[2], shifted[3]];
+        let q = W256(limbs::mul_low(&low, &self.inv.0));
+        (W256::mul_full(&q, &self.d) == *t).then_some(q)
+    }
+}
+
+impl Cell for W256 {
+    type Divisor = Div256;
+    fn divisor(d: &Self) -> Div256 {
+        Div256::new(*d)
+    }
+    fn cell_zero() -> Self {
+        W256::ZERO
+    }
+    fn cell_one() -> Self {
+        W256::ONE
+    }
+    fn from_big(v: &BigInt) -> Option<Self> {
+        W256::from_big(v)
+    }
+    fn from_ratio_scaled(q: &Q, s: &BigInt) -> Option<Self> {
+        match ratio_scaled_i128(q, s) {
+            Some(v) => Some(W256::from_i128(v)),
+            None => W256::from_big(&(q.numer() * (s / q.denom()))),
+        }
+    }
+    fn to_big(&self) -> BigInt {
+        let neg = self.is_negative();
+        let mag = if neg { limbs::neg(&self.0) } else { self.0 };
+        let mut bytes = [0u8; 32];
+        for (i, limb) in mag.iter().enumerate() {
+            bytes[8 * i..8 * i + 8].copy_from_slice(&limb.to_le_bytes());
+        }
+        BigInt::from_bytes_le(
+            if neg {
+                num_bigint::Sign::Minus
+            } else {
+                num_bigint::Sign::Plus
+            },
+            &bytes,
+        )
+    }
+    fn is_zero(&self) -> bool {
+        W256::is_zero(self)
+    }
+    fn is_negative(&self) -> bool {
+        W256::is_negative(self)
+    }
+    fn signum(&self) -> std::cmp::Ordering {
+        if self.is_zero() {
+            std::cmp::Ordering::Equal
+        } else if self.is_negative() {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Greater
+        }
+    }
+    fn neg(&self) -> Option<Self> {
+        let n = W256(limbs::neg(&self.0));
+        // Only the minimum is its own negation.
+        (n.is_negative() != self.is_negative() || self.is_zero()).then_some(n)
+    }
+    fn mul(&self, o: &Self) -> Option<Self> {
+        W256::mul_full(self, o).narrow()
+    }
+    fn pivot_update(v: &Self, p: &Self, f: &Self, pr: &Self, d: &Div256) -> Option<Self> {
+        let t = W256::mul_full(v, p).sub(&W256::mul_full(f, pr));
+        d.div_exact(&t)
+    }
+    fn rescale(v: &Self, p: &Self, d: &Div256) -> Option<Self> {
+        d.div_exact(&W256::mul_full(v, p))
+    }
+    fn sub_mul(&self, f: &Self, r: &Self) -> Option<Self> {
+        self.widen().sub(&W256::mul_full(f, r)).narrow()
+    }
+    fn cmp_products(a: &Self, b: &Self, c: &Self, d: &Self) -> std::cmp::Ordering {
+        W256::mul_full(a, b).cmp(&W256::mul_full(c, d))
     }
 }
 
@@ -1170,9 +1643,14 @@ impl From<SymplexError> for Halt {
     }
 }
 
-/// Least common multiple of the denominators of `values`.
+/// Least common multiple of the denominators of `values`.  Unit
+/// denominators (the common case: integer data) are skipped, so a row of
+/// integers costs no big-integer arithmetic at all.
 fn denominator_lcm<'a>(values: impl Iterator<Item = &'a Q>) -> BigInt {
-    values.fold(<BigInt as One>::one(), |l, q| l.lcm(q.denom()))
+    values
+        .map(Ratio::denom)
+        .filter(|d| !d.is_one())
+        .fold(<BigInt as One>::one(), |l, d| l.lcm(d))
 }
 
 impl<'a, T: Cell> Tableau<'a, T> {
@@ -1185,7 +1663,13 @@ impl<'a, T: Cell> Tableau<'a, T> {
         let mut row_scale = Vec::with_capacity(m);
         for i in 0..m {
             let s = denominator_lcm(std.a[i].iter().chain(std::iter::once(&std.b[i])));
-            let scaled = |q: &Q| T::from_big(&(q.numer() * (&s / q.denom())));
+            let scaled = |q: &Q| {
+                if Zero::is_zero(q) {
+                    Some(T::cell_zero())
+                } else {
+                    T::from_ratio_scaled(q, &s)
+                }
+            };
             for q in &std.a[i] {
                 rows.push(scaled(q)?);
             }
@@ -1274,7 +1758,7 @@ impl<'a, T: Cell> Tableau<'a, T> {
     fn set_objective(&mut self, costs: &[Q]) -> Option<()> {
         let width = self.width;
         let s = denominator_lcm(costs.iter());
-        let int_cost = |q: &Q| T::from_big(&(q.numer() * (&s / q.denom())));
+        let int_cost = |q: &Q| T::from_ratio_scaled(q, &s);
         let mut obj = vec![T::cell_zero(); width];
         for (o, c) in obj.iter_mut().zip(costs) {
             if !Zero::is_zero(c) {
@@ -1310,7 +1794,7 @@ impl<'a, T: Cell> Tableau<'a, T> {
             .map(|v| std::mem::replace(v, T::cell_zero()))
             .collect();
         let p = prow[s].clone();
-        let d = std::mem::replace(&mut self.d, p.clone());
+        let d = T::divisor(&std::mem::replace(&mut self.d, p.clone()));
         let update_row = |row: &mut [T]| -> Option<()> {
             let f = std::mem::replace(&mut row[s], T::cell_zero());
             if f.is_zero() {
@@ -1513,6 +1997,8 @@ impl<'a, T: Cell> Tableau<'a, T> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn solve_lp(p: &LpProblem) -> Result<SolveReport, SymplexError> {
+    let prof = tracing::enabled!(target: "symplex::linprog::prof", tracing::Level::DEBUG);
+    let started = Instant::now();
     let sf = match standardize(p) {
         Standardized::Ready(s) => s,
         Standardized::BoundsInfeasible => {
@@ -1545,20 +2031,45 @@ fn solve_lp(p: &LpProblem) -> Result<SolveReport, SymplexError> {
                 Err(Halt::Overflow) => None,
             }
         };
-    // Fixed-width cells first (i64, then i128 with exact 256-bit
-    // intermediates); the same algorithm on BigInt cells if a value
-    // outgrows them.  Fraction-free entries are minors of the scaled
-    // system, so a 20-row tableau typically peaks around 70–100 bits.
+    // Per-attempt timing, for profiling the certificate provers
+    // (`RUST_LOG=symplex::linprog::prof=debug`).
+    let attempt = |cell: &'static str, r: &Result<LpSolution, Halt>, spent: usize| {
+        if prof {
+            tracing::debug!(
+                target: "symplex::linprog::prof",
+                cell,
+                rows = sf.a.len(),
+                cols = sf.c.len(),
+                overflowed = matches!(r, Err(Halt::Overflow)),
+                spent,
+                micros = started.elapsed().as_micros() as u64,
+                "linprog attempt"
+            );
+        }
+    };
+    // Fixed-width cells first (i64, then i128 and 256-bit limbs, each with
+    // exact double-width intermediates); the same algorithm on BigInt
+    // cells if a value outgrows them all.  Fraction-free entries are minors
+    // of the scaled system: a 16-row certificate LP typically peaks around
+    // 70–120 bits, a 20-row one around 130–190.
     let r = solve_standard::<i64>(p, &sf, &mut spent);
+    attempt("i64", &r, spent);
     if let Some(done) = settle(r, spent) {
         return done;
     }
     let r = solve_standard::<i128>(p, &sf, &mut spent);
+    attempt("i128", &r, spent);
     if let Some(done) = settle(r, spent) {
         return done;
     }
-    tracing::debug!(target: "symplex::linprog", rows = sf.a.len(), cols = sf.c.len(), "i128 tableau overflowed; solving on BigInt");
+    let r = solve_standard::<W256>(p, &sf, &mut spent);
+    attempt("W256", &r, spent);
+    if let Some(done) = settle(r, spent) {
+        return done;
+    }
+    tracing::debug!(target: "symplex::linprog", rows = sf.a.len(), cols = sf.c.len(), "256-bit tableau overflowed; solving on BigInt");
     let r = solve_standard::<BigInt>(p, &sf, &mut spent);
+    attempt("BigInt", &r, spent);
     settle(r, spent)
         .unwrap_or_else(|| Err(failed("linprog", "internal: BigInt tableau overflowed")))
 }
@@ -2224,6 +2735,201 @@ mod tests {
         assert_eq!(sol.duals[1], qi(0));
     }
 
+    /// The `i64` cells' exact division (modular inverse plus one checking
+    /// multiplication) agrees with the long division it replaced on random
+    /// operands and on the edges of the range: quotients of exactly
+    /// `i64::MIN`/`i64::MAX`, one past them, even and negative divisors.
+    #[test]
+    fn i64_exact_division_matches_bigint() {
+        let check = |t: i128, d: i64| {
+            let want = i64::try_from(t / i128::from(d)).ok();
+            let got = Div64::new(d).div_exact(t);
+            assert_eq!(got, want, "{t} / {d}");
+        };
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = |bits: u32| -> i64 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let v = (state & ((1u64 << bits) - 1)) as i64;
+            if state & (1 << 5) != 0 { -v } else { v }
+        };
+        for _ in 0..20_000 {
+            let d = next(40);
+            if d == 0 {
+                continue;
+            }
+            // Quotients that fit (≤ 62 bits) and quotients that do not.
+            let q_small = next(62);
+            check(i128::from(q_small) * i128::from(d), d);
+            let q_big = i128::from(next(62)) * 4 + i128::from(i64::MAX);
+            check(q_big * i128::from(d), d);
+            // The general update `v·p − f·pr` with both products multiples of d.
+            let (v, p, f, pr) = (next(20) * d, next(32), next(20) * d, next(32));
+            let dv = Div64::new(d);
+            let t = i128::from(v) * i128::from(p) - i128::from(f) * i128::from(pr);
+            assert_eq!(
+                <i64 as Cell>::pivot_update(&v, &p, &f, &pr, &dv),
+                i64::try_from(t / i128::from(d)).ok()
+            );
+            assert_eq!(
+                <i64 as Cell>::rescale(&v, &p, &dv),
+                i64::try_from(i128::from(v) * i128::from(p) / i128::from(d)).ok()
+            );
+        }
+        for &d in &[
+            1i64,
+            -1,
+            2,
+            -2,
+            6,
+            -6,
+            1 << 40,
+            -(1 << 40),
+            i64::MAX,
+            i64::MIN,
+            3,
+            -3,
+        ] {
+            for &q in &[
+                0i64,
+                1,
+                -1,
+                i64::MAX,
+                i64::MIN,
+                i64::MAX - 1,
+                i64::MIN + 1,
+                12345,
+            ] {
+                check(i128::from(q) * i128::from(d), d);
+            }
+            // One past the range in both directions.
+            check((i128::from(i64::MAX) + 1) * i128::from(d), d);
+            check((i128::from(i64::MIN) - 1) * i128::from(d), d);
+            // Odd part of |d| is inverted correctly (d·inv ≡ 1 mod 2^64).
+            let dv = Div64::new(d);
+            assert_eq!(
+                ((d >> dv.shift) as u64).wrapping_mul(dv.inv),
+                1,
+                "inverse of the odd part of {d}"
+            );
+        }
+    }
+
+    /// Every [`Cell`] operation of the 256-bit cells agrees with `BigInt`
+    /// on random operands up to the full width, including the fit/no-fit
+    /// boundaries of the checked operations and the exact division.
+    #[test]
+    fn w256_cells_match_bigint() {
+        let mut state: u128 = 0x243F_6A88_85A3_08D3_1319_8A2E_0370_7344;
+        let mut word = || -> u64 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state as u64
+        };
+        // A random BigInt of at most `bits` bits, either sign.
+        let mut rand_big = |bits: u32| -> BigInt {
+            let mut v = BigInt::from(0);
+            let mut left = bits;
+            while left > 0 {
+                let take = left.min(64);
+                let w = word() & (u64::MAX >> (64 - take));
+                v = (v << take) + BigInt::from(w);
+                left -= take;
+            }
+            if word() & 1 == 1 { -v } else { v }
+        };
+        let min256: BigInt = -(BigInt::from(1) << 255u32);
+        let fits256 = |v: &BigInt| v.bits() <= 255 && *v != min256;
+        let to_opt = |v: &BigInt| -> Option<BigInt> { fits256(v).then(|| v.clone()) };
+        for round in 0..4000 {
+            // Sizes chosen so that products and quotients straddle 256 bits.
+            let bits = [60, 120, 127, 128, 200, 250, 254, 255][round % 8];
+            let (a, b, c, d) = (
+                rand_big(bits),
+                rand_big(bits),
+                rand_big(bits),
+                rand_big(255 - bits.min(254)),
+            );
+            let (wa, wb, wc, wd) = (
+                W256::from_big(&a).expect("fits"),
+                W256::from_big(&b).expect("fits"),
+                W256::from_big(&c).expect("fits"),
+                W256::from_big(&d).expect("fits"),
+            );
+            assert_eq!(wa.to_big(), a);
+            assert_eq!(<W256 as Cell>::signum(&wa), a.cmp(&BigInt::from(0)));
+            assert_eq!(wa.cmp(&wb), a.cmp(&b), "{a} vs {b}");
+            assert_eq!(<W256 as Cell>::neg(&wa).map(|v| v.to_big()), to_opt(&-&a));
+            assert_eq!(
+                <W256 as Cell>::mul(&wa, &wb).map(|v| v.to_big()),
+                to_opt(&(&a * &b)),
+                "{a} · {b}"
+            );
+            assert_eq!(
+                <W256 as Cell>::cmp_products(&wa, &wb, &wc, &wd),
+                (&a * &b).cmp(&(&c * &d))
+            );
+            assert_eq!(
+                <W256 as Cell>::sub_mul(&wa, &wb, &wc).map(|v| v.to_big()),
+                to_opt(&(&a - &b * &c))
+            );
+            // Exact division: (v·p − f·pr)/d with v and f multiples of d.
+            if !Zero::is_zero(&d) {
+                let dv = <W256 as Cell>::divisor(&wd);
+                let k = rand_big(bits.min(250));
+                let v = &k * &d;
+                if let Some(wv) = W256::from_big(&v) {
+                    let want = &k * &b;
+                    assert_eq!(
+                        <W256 as Cell>::rescale(&wv, &wb, &dv).map(|q| q.to_big()),
+                        to_opt(&want),
+                        "({v} · {b}) / {d}"
+                    );
+                    let f = &rand_big(20) * &d;
+                    let wf = W256::from_big(&f).expect("fits");
+                    let want2 = &k * &b - (&f / &d) * &c;
+                    assert_eq!(
+                        <W256 as Cell>::pivot_update(&wv, &wb, &wf, &wc, &dv).map(|q| q.to_big()),
+                        to_opt(&want2),
+                        "({v} · {b} − {f} · {c}) / {d}"
+                    );
+                }
+            }
+        }
+        // Edges: the minimum is rejected on input and by negation, and
+        // values just inside the range round-trip.
+        let two255: BigInt = BigInt::from(1) << 255u32;
+        assert!(W256::from_big(&two255).is_none());
+        assert!(W256::from_big(&-&two255).is_none());
+        let max = &two255 - 1;
+        let wmax = W256::from_big(&max).expect("fits");
+        assert_eq!(wmax.to_big(), max);
+        assert_eq!(W256::from_big(&(-&max)).map(|v| v.to_big()), Some(-&max));
+        assert_eq!(<W256 as Cell>::neg(&wmax).map(|v| v.to_big()), Some(-&max));
+        // The minimum can arise as an exact quotient and is then handled.
+        let dv = <W256 as Cell>::divisor(&W256::from_i128(-1));
+        let wmin =
+            <W256 as Cell>::pivot_update(&wmax, &W256::ONE, &W256::from_i128(-1), &W256::ONE, &dv)
+                .expect("(max − (−1)·1) / −1 = −(max + 1) = min");
+        assert_eq!(wmin.to_big(), -&two255);
+        assert!(<W256 as Cell>::neg(&wmin).is_none());
+        assert_eq!(<W256 as Cell>::signum(&wmin), std::cmp::Ordering::Less);
+        // Row-scaled entries take the small path and the big path alike.
+        assert_eq!(
+            <W256 as Cell>::from_ratio_scaled(&q(5, 3), &BigInt::from(6)).map(|v| v.to_big()),
+            Some(BigInt::from(10))
+        );
+        let huge = Ratio::new(&two255 / 2, BigInt::from(3)); // 2^254 / 3
+        assert_eq!(
+            <W256 as Cell>::from_ratio_scaled(&huge, &BigInt::from(3)).map(|v| v.to_big()),
+            Some(&two255 / 2)
+        );
+        // … and 2^254 · 2 = 2^255 does not fit.
+        assert!(<W256 as Cell>::from_ratio_scaled(&huge, &BigInt::from(6)).is_none());
+    }
+
     /// The 256-bit intermediates of the `i128` cells agree with `BigInt`
     /// on random operands spanning the whole range, including the exact
     /// division's fit/no-fit boundary.
@@ -2266,8 +2972,9 @@ mod tests {
                 let v = d0 * k;
                 let b2 = if k & 1 == 0 { next(64) } else { b };
                 let exp = big(k) * big(b2);
+                let dv = <i128 as Cell>::divisor(&d0);
                 assert_eq!(
-                    <i128 as Cell>::rescale(&v, &b2, &d0),
+                    <i128 as Cell>::rescale(&v, &b2, &dv),
                     i128::try_from(&exp).ok(),
                     "{v} {b2} {d0}"
                 );
@@ -2276,7 +2983,7 @@ mod tests {
                 let pr = next(64);
                 let exp2 = big(k) * big(b2) - big(f) / big(d0) * big(pr);
                 assert_eq!(
-                    <i128 as Cell>::pivot_update(&v, &b2, &f, &pr, &d0),
+                    <i128 as Cell>::pivot_update(&v, &b2, &f, &pr, &dv),
                     i128::try_from(&exp2).ok(),
                     "{v} {b2} {f} {pr} {d0}"
                 );
@@ -2343,6 +3050,40 @@ mod tests {
             panic!("bounds are fine");
         };
         assert!(solve_standard::<i64>(&small, &sf2, &mut 0).is_ok());
+    }
+
+    /// White-box: entries beyond `i128` but within 256 bits are solved on
+    /// the 256-bit cells, with the answer of the `BigInt` run.
+    #[test]
+    fn hybrid_arithmetic_uses_256_bit_cells_before_bigint() {
+        // Coefficients around 2^70: one pivot multiplies two of them
+        // (2^140), so i64 and i128 overflow; three rows keep the minors
+        // under 2^230.
+        let big = |k: i64| qi(k) * Ratio::from_integer(BigInt::from(1u128 << 70));
+        let p = LpProblem::minimize(vec![qi(1), qi(1), qi(1)])
+            .ge(vec![big(3), big(1), big(2)], big(7))
+            .ge(vec![big(1), big(5), big(1)], big(11))
+            .le(vec![big(2), big(1), big(3)], big(40));
+        let Standardized::Ready(sf) = standardize(&p) else {
+            panic!("bounds are fine");
+        };
+        assert!(matches!(
+            solve_standard::<i64>(&p, &sf, &mut 0),
+            Err(Halt::Overflow)
+        ));
+        assert!(matches!(
+            solve_standard::<i128>(&p, &sf, &mut 0),
+            Err(Halt::Overflow)
+        ));
+        let via_w256 = solve_standard::<W256>(&p, &sf, &mut 0).ok().unwrap();
+        let via_big = solve_standard::<BigInt>(&p, &sf, &mut 0).ok().unwrap();
+        assert_eq!(via_w256.status, LpStatus::Optimal);
+        assert_eq!(via_w256.x, via_big.x);
+        assert_eq!(via_w256.objective, via_big.objective);
+        assert_eq!(via_w256.duals, via_big.duals);
+        let sol = p.solve().unwrap();
+        assert_eq!(sol.x, via_big.x);
+        assert_eq!(sol.duals, via_big.duals);
     }
 
     /// The pivot cap is a cap on the whole solve: an `i64` attempt that
