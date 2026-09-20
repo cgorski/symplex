@@ -515,6 +515,36 @@ fn linear_algebra() {
         s,
         ZMatrix::from_i64(&[&[2, 0, 0], &[0, 6, 0], &[0, 0, 12]]).unwrap()
     );
+
+    // 0.9: singular values, rank-deficient pinv, rank decomposition, permanent, inv_mod, exact LLL
+    let sv = matrix![ctx, [1, 2], [3, 4]].singular_values().unwrap();
+    println!(
+        "singular values: {:?}",
+        sv.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+    );
+    let pinv = matrix![ctx, [1, 2], [2, 4]].pinv().unwrap();
+    println!("pinv of a rank-1 matrix:\n{pinv}");
+    assert_eq!(pinv, matrix![ctx, [1 / 25, 2 / 25], [2 / 25, 4 / 25]]);
+    let (c, f) = matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        .rank_decomposition()
+        .unwrap();
+    assert_eq!(
+        c.matmul(&f).unwrap().eval(),
+        matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]]
+    );
+    println!(
+        "permanent = {}",
+        matrix![ctx, [1, 2], [3, 4]].permanent().unwrap()
+    );
+    println!(
+        "inv_mod 5 = {}",
+        matrix![ctx, [1, 2], [3, 4]].inv_mod(5).unwrap()
+    );
+    let reduced = ZMatrix::from_i64(&[&[1, 1, 1], &[-1, 0, 2], &[3, 5, 6]])
+        .unwrap()
+        .lll_default()
+        .unwrap();
+    println!("LLL = {reduced:?}");
 }
 
 fn certified_inequalities() {
@@ -739,6 +769,23 @@ fn number_theory() {
     assert_eq!(crt_i64(&[2, 3, 2], &[3, 5, 7]), Some(23));
     assert_eq!(igcd(&[12i64, 18, 30]), BigInt::from(6));
     assert_eq!(ilcm(&[4i64, 6, 10]), BigInt::from(60));
+    // 0.10
+    use symplex::linprog::qi;
+    println!(
+        "nthroot_mod(11, 4, 19) = {:?}",
+        nthroot_mod(11, 4, 19, true)
+    );
+    let roots = polynomial_congruence(&[1, 0, -3, 5].map(BigInt::from), 1000003);
+    println!("x³ − 3x + 5 ≡ 0 mod 1000003: {roots:?}");
+    println!("is_carmichael(561) = {}", is_carmichael(561));
+    let conv = symplex::discrete::convolution(&[qi(1), qi(2), qi(3)], &[qi(4), qi(5), qi(6)]);
+    println!(
+        "convolution = {:?}",
+        conv.iter().map(|q| q.to_string()).collect::<Vec<_>>()
+    );
+    let ntt =
+        symplex::discrete::ntt(&[1, 2, 3, 4].map(BigInt::from), BigInt::from(998244353)).unwrap();
+    println!("ntt = {ntt:?}");
     println!("number theory OK");
 }
 
@@ -862,6 +909,167 @@ fn units() {
     assert_eq!(velocity.inner().to_string(), "g*t");
 }
 
+fn algebraic_numbers_and_analysis() {
+    println!("\n--- Algebraic Numbers, Gröbner Bases and Function Analysis (0.9) ---");
+    let ctx = Context::new();
+    syms!(ctx; x, y, a, b, c);
+    let alpha = ctx.int(2).sqrt() + ctx.int(3).sqrt();
+    let mp = alpha.minimal_polynomial(&x).unwrap();
+    println!("minpoly(√2 + √3) = {mp}");
+    assert_eq!(mp, &x.powi(4) - 10 * &x.powi(2) + 1);
+    let g = (&x.powi(2) - &y.powi(2)).gcd_all(&(&x - &y)).unwrap();
+    println!("gcd(x² − y², x − y) = {g}");
+    let basis = Ex::groebner(
+        &[&x.powi(2) + &y.powi(2) - 1, &x - &y],
+        &[x.clone(), y.clone()],
+        MonomialOrder::Lex,
+    )
+    .unwrap();
+    println!(
+        "groebner = {:?}",
+        basis.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+    );
+    let roots = (&x.powi(3) - 2 * &x).real_roots(&x).unwrap();
+    println!(
+        "real roots of x³ − 2x: {:?}",
+        roots.iter().map(|r| r.to_string()).collect::<Vec<_>>()
+    );
+    assert_eq!(roots.len(), 3);
+    let (_, factors) = (&x.powi(2) + 1).factor_mod(&x, 5).unwrap();
+    println!(
+        "x² + 1 mod 5 = {:?}",
+        factors
+            .iter()
+            .map(|(f, m)| format!("({f})^{m}"))
+            .collect::<Vec<_>>()
+    );
+    let disc = (&a * &x.powi(2) + &b * &x + &c)
+        .discriminant_symbolic(&x)
+        .unwrap();
+    println!("disc(ax² + bx + c) = {disc}");
+    assert_eq!(disc, (&b.powi(2) - 4 * &a * &c).expand());
+
+    // SymPy's calculus.util on Ex
+    let f = &x.powi(3) - 3 * &x;
+    let interval = ctx.interval(&ctx.int(-2), &ctx.int(2), false, false);
+    println!(
+        "stationary points: {}",
+        f.stationary_points(&x, None).unwrap()
+    );
+    println!("max on [-2, 2] = {}", f.maximum(&x, &interval).unwrap());
+    assert_eq!(f.maximum(&x, &interval).unwrap(), ctx.int(2));
+    println!(
+        "singularities(1/(x² − 1)) = {}",
+        (1 / (&x.powi(2) - 1)).singularities(&x, None).unwrap()
+    );
+    println!(
+        "x³ increasing on ℝ: {:?}",
+        x.powi(3).is_increasing(&x, &ctx.reals())
+    );
+    let period = ((2 * &x).sin() + (3 * &x).cos()).periodicity(&x).unwrap();
+    println!("periodicity(sin 2x + cos 3x) = {period}");
+    assert_eq!(period, 2 * ctx.pi());
+}
+
+fn more_special_functions() {
+    println!("\n--- More Special Functions (0.9) ---");
+    let ctx = Context::new();
+    syms!(ctx; x);
+    let anti = x.powi(2).exp().integrate(&x);
+    println!("∫ e^(x²) dx = {anti}");
+    assert!(!anti.has_unevaluated());
+    println!("∫ sinh(x)/x dx = {}", (x.sinh() / &x).integrate(&x));
+    println!(
+        "erfi(0.7) = {}",
+        x.erfi()
+            .subs(&x, &ctx.rational(7, 10))
+            .eval_decimal(15)
+            .unwrap()
+    );
+    println!(
+        "Li₂(1/2) = {}",
+        ctx.rational(1, 2).polylog(&ctx.int(2)).eval()
+    );
+    println!("K(0) = {}", ctx.int(0).elliptic_k().eval());
+    println!("d/dx Ai(x) = {}", x.airyai().diff(&x));
+    println!(
+        "P₂^1(x) = {}",
+        x.assoc_legendre(&ctx.int(2), &ctx.int(1)).eval()
+    );
+    let e = expr!(ctx, airyai(x) + polylog(2, x));
+    println!("{e}");
+}
+
+fn statistics() {
+    println!("\n--- Probability and Statistics (0.11) ---");
+    use symplex::stats::{self, Distribution, RandomVariable, Rng};
+    let ctx = Context::new();
+    let x = RandomVariable::new(&ctx, "X", Distribution::normal(ctx.int(0), ctx.int(1)));
+    let y = RandomVariable::new(&ctx, "Y", Distribution::exponential(ctx.int(3)));
+    let b = RandomVariable::new(
+        &ctx,
+        "B",
+        Distribution::binomial(ctx.int(5), ctx.rational(1, 3)),
+    );
+
+    let e = x.expectation(&(x.symbol().powi(2) + 3 * x.symbol()));
+    println!("E[X² + 3X] = {e}");
+    assert_eq!(e, ctx.int(1));
+    let p = y.probability(&y.symbol().gt(&ctx.int(1))).unwrap();
+    println!("P(Y > 1) = {p}");
+    let pb = b.probability(&b.symbol().gt(&ctx.int(2))).unwrap();
+    println!("P(B > 2) = {pb}");
+    assert_eq!(pb, ctx.rational(17, 81));
+    println!("skew(Y) = {}, kurt(B) = {}", y.skewness(), b.kurtosis());
+    println!("cdf_X(t) = {}", x.cdf(&ctx.symbol("t")));
+    println!("quantile_Y(p) = {}", y.quantile(&ctx.symbol("p")).unwrap());
+    println!(
+        "E[X | X > 0] = {}",
+        stats::conditional_expectation(&x, x.symbol(), &x.symbol().gt(&ctx.int(0))).unwrap()
+    );
+    println!(
+        "cov(X, 2X) = {}",
+        stats::covariance(&[&x], x.symbol(), &(2 * x.symbol())).unwrap()
+    );
+    let z = RandomVariable::new(&ctx, "Z", Distribution::normal(ctx.int(1), ctx.int(2)));
+    println!("X + Z ~ {}", stats::sum_distribution(&x, &z).unwrap());
+    println!(
+        "P(X < Z) = {}",
+        stats::probability(&[&x, &z], &x.symbol().lt(z.symbol())).unwrap()
+    );
+    println!("H(X) = {}", x.entropy());
+    let coin = Distribution::try_finite(vec![
+        (ctx.int(1), ctx.rational(2, 3)),
+        (ctx.int(0), ctx.rational(1, 3)),
+    ])
+    .unwrap();
+    let c = RandomVariable::new(&ctx, "C", coin);
+    println!("E[C] = {}, Var[C] = {}", c.mean(), c.variance());
+    let samples = y.sample(20_000, &mut Rng::new(1)).unwrap();
+    let mean = samples.iter().sum::<f64>() / samples.len() as f64;
+    println!("sample mean of Exp(3) ≈ {mean:.3}  (exact 1/3)");
+    assert!((mean - 1.0 / 3.0).abs() < 0.01);
+}
+
+fn parsing_and_interchange() {
+    println!("\n--- Parsing, Interchange and More Code Targets (0.10) ---");
+    let ctx = Context::new();
+    syms!(ctx; x);
+    let cond = ctx.parse_bool("x > 0 and x < 1").unwrap();
+    println!("{cond}  →  {}", cond.to_lean().unwrap());
+    let e = ctx.parse_implicit("2x + 3(x - 1)").unwrap();
+    println!("{e}  (= {})", e.expand());
+    assert_eq!(e.expand(), 5 * &x - 3);
+    let f = &x.powi(2) + 1;
+    println!("{}", f.to_mathml().unwrap());
+    println!("{}", (2 * &x + 1).to_srepr());
+    println!("{}", (x.sin().powi(2) + x.exp()).to_python().unwrap());
+    println!("{}", x.sin().to_numpy().unwrap());
+    println!("{}", (x.exp() + x.sin().powi(2)).to_julia().unwrap());
+    let dot = f.to_dot();
+    assert!(dot.starts_with("digraph"));
+}
+
 fn api_model() {
     println!("\n--- The API Model ---");
     let ctx = Context::new();
@@ -900,6 +1108,10 @@ fn main() {
     numerical_toolbox();
     codegen();
     units();
+    algebraic_numbers_and_analysis();
+    more_special_functions();
+    statistics();
+    parsing_and_interchange();
     api_model();
     println!("\n✓ Every README snippet ran.");
 }

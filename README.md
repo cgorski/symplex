@@ -6,22 +6,25 @@ Symbolic mathematics for Rust.
 [![docs.rs](https://docs.rs/symplex/badge.svg)](https://docs.rs/symplex)
 [![License](https://img.shields.io/crates/l/symplex.svg)](LICENSE-MIT)
 
-> **Pre-release.** The API is unstable. 0.3 adds no signature-breaking changes
-> over 0.2, but a few results are normalised differently (see
-> [Migrating from 0.2](#migrating-from-02)); 0.2 contained breaking changes from
-> 0.1 (see [Migrating from 0.1](#migrating-from-01)). Feedback welcome.
+> **Pre-release (0.11).** The API is stabilising but not stable: 0.7.0 reshaped the
+> certificate API and 0.10.0 added variants to three fresh enums/structs; every
+> breaking change has a one-line fix in the book's migration pages
+> ([0.6 → 0.7](book/src/reference/migrating-0.7.md), [0.3 → 0.4](book/src/reference/migrating-0.4.md),
+> [0.1 → 0.2](book/src/reference/migrating-0.2.md)) and is listed first in
+> [CHANGELOG.md](CHANGELOG.md). Option structs are `#[non_exhaustive]` so that adding
+> an option is never a break again. Feedback welcome.
 >
-> Contributing? See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture, conventions, and how to get started.
-> The full changelog is in [CHANGELOG.md](CHANGELOG.md); the user guide is
-> [The Symplex Book](book/src/SUMMARY.md).
+> Contributing? See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture, the no-panic
+> policy (enforced by a ratchet test), and conventions. The user guide is
+> [The Symplex Book](book/src/SUMMARY.md); "What's New" pages cover each release.
 
 ---
 
 ## What This Is
 
-symplex is a symbolic computation library. It manipulates mathematical expressions exactly — using arbitrary-precision rational arithmetic, not floating-point — and can differentiate, integrate, sum, solve equations and systems, simplify, transform, view expressions as polynomials with symbolic coefficients, solve linear programs with exact certificates, compute integer matrix normal forms, and generate optimized Rust or C code from symbolic results.
+symplex is a symbolic computation library — a computer algebra system for Rust with SymPy as the coverage reference. It manipulates mathematical expressions exactly (arbitrary-precision rational arithmetic, never floating point unless you ask) and can differentiate, integrate, sum, solve equations, systems, ODEs and recurrences, simplify, transform, factor, compute Gröbner bases and minimal polynomials, analyse functions, work with random variables and distributions exactly, do exact linear algebra, linear programming and polytope geometry, and generate Rust, C99, Python, NumPy or Julia code from symbolic results.
 
-It is designed for Rust developers working in robotics, control systems, physics simulation, signal processing, or anywhere that symbolic math feeds into numerical code.
+Two things set it apart from a port of SymPy: **exact certificates** — LP duals and Farkas vectors, Handelman / Pólya / sum-of-squares proofs of polynomial inequalities that are re-verified with exact arithmetic — and **Lean 4 / Mathlib export** of those proofs, so a Rust program can produce a theorem a proof assistant checks. It is designed for Rust developers in robotics, control, physics and signal processing, and for anyone generating machine-checked mathematics.
 
 ## Quick Example
 
@@ -72,14 +75,16 @@ cargo add symplex
 - You need compile-time dimensional analysis for physical quantities.
 - You need thread-safe symbolic computation without a GIL or global interpreter lock.
 - You want exact rational arithmetic (`1/3` stays as `1/3`, not `0.33333...`).
+- You want a *proof*, not a number: a certificate that an inequality holds on a region, exportable to Lean 4 / Mathlib and compiled there.
+- You need exact probability — `P(Binomial(5, 1/3) > 2) = 17/81`, `E[X | X > 0] = √(2/π)` — rather than Monte-Carlo estimates.
 
 ## When Not to Use This
 
 - You need a mature CAS with decades of community validation — use [SymPy](https://www.sympy.org/). It has broader coverage, more special functions, and a much larger test corpus.
-- You need geometry, statistics, tensor algebra, or PDE solving — these are not available.
+- You need geometry, tensor algebra, quantum mechanics, or PDE solving — these are not available (planar/space geometry is next on the roadmap; statistics arrived in 0.11).
 - You need interactive notebook-style exploration — symplex is a library, not an application. (Though see `cargo run --example repl` for a basic REPL.)
-- You need results verified against extensive known-answer databases — symplex has ~11,000 tests including SymPy cross-validation fixtures, but SymPy has orders of magnitude more coverage.
-- You need large-scale or sparse numerical optimisation — the exact simplex is dense and `O(m·n)` big-rational operations per pivot (hundreds of rows, not hundreds of thousands), and the `f64` routines are the classic derivative-free methods, not a replacement for a dedicated optimisation library.
+- You need results verified against extensive known-answer databases — symplex has ~11,400 tests including SymPy cross-validation fixtures and every 0.9+ test cites its SymPy reference value, but SymPy has orders of magnitude more coverage.
+- You need large-scale or sparse numerical optimisation — the exact simplex is dense (`O(m·n)` integer operations per pivot, in `i64`/`i128`/256-bit/`BigInt` as the numbers grow; hundreds of rows, not hundreds of thousands), and the `f64` routines are the classic derivative-free methods, not a replacement for a dedicated optimisation library.
 
 ---
 
@@ -156,6 +161,24 @@ s.general_term(&k);                                   // Some(sin(1/2*k*pi)/k!)
 s.reversion().unwrap().coefficients(6);               // asin: [0, 1, 0, 1/6, 0, 3/40]
 ```
 
+### Function Analysis
+
+SymPy's `calculus.util` on `Ex` (0.9): singularities, stationary points, extrema on an interval or union of intervals (one-sided limits at open or infinite endpoints, `±∞` allowed), monotonicity and convexity (exact for polynomial and rational derivatives via Sturm sequences; three-valued, never a guess), periodicity and the range of a function.
+
+```rust
+let ctx = Context::new();
+syms!(ctx; x);
+let f = &x.powi(3) - 3 * &x;
+let interval = ctx.interval(&ctx.int(-2), &ctx.int(2), false, false);
+f.stationary_points(&x, None).unwrap();                          // {-1, 1}
+f.maximum(&x, &interval).unwrap();                               // 2
+(1 / (&x.powi(2) - 1)).singularities(&x, None).unwrap();          // {-1, 1}
+x.powi(3).is_increasing(&x, &ctx.reals());                       // Some(true)
+((2 * &x).sin() + (3 * &x).cos()).periodicity(&x).unwrap();      // 2*pi
+```
+
+Also: `minimum`, `is_decreasing`, `is_strictly_increasing`/`_decreasing`, `is_monotonic`, `is_convex`, `function_range`.
+
 ### Complex Analysis and Special Functions
 
 `re`, `im`, `conjugate`, `arg` are honest about unknown realness: with no assumption on `z`, `z.re()` is the unevaluated `re(z)`.
@@ -183,7 +206,19 @@ ctx.infinity().si().eval();                           // 1/2*pi
 ctx.catalan().eval_decimal(30).unwrap();              // 0.915965594177219015054603514932
 ```
 
-Also: Gamma, log-gamma, erf/erfc, Beta, Lambert W, Bessel J/Y/I/K, Legendre/Chebyshev/Hermite/Laguerre polynomials, `Si`/`Ci`/`Ei`/`li`, Kronecker delta — all with arbitrary-precision evaluation.
+```rust
+// 0.9: 24 more special functions — exact values, derivative rules, arbitrary-precision evalf
+// (checked at 40 digits against mpmath), Display/LaTeX/parse, and integration results
+x.powi(2).exp().integrate(&x);                        // 1/2*sqrt(pi)*erfi(x)      (was unevaluated before 0.9)
+(x.sinh() / &x).integrate(&x);                        // Shi(x)
+ctx.rational(1, 2).polylog(&ctx.int(2)).eval();       // -1/2*ln(2)^2 + 1/12*pi^2   (Li₂(½))
+ctx.int(0).elliptic_k().eval();                       // 1/2*pi
+x.airyai().diff(&x);                                  // airyaiprime(x)
+x.assoc_legendre(&ctx.int(2), &ctx.int(1)).eval();    // -3*x*sqrt(-x^2 + 1)
+expr!(ctx, airyai(x) + polylog(2, x));                // the macro knows them too
+```
+
+Also: Gamma, log-gamma, `lowergamma`/`uppergamma`, erf/erfc/`erfi`/`erfinv`/`erfcinv`, Beta, Lambert W, Bessel J/Y/I/K, Airy Ai/Bi and derivatives, elliptic K/E/F/Π, `expint`/`E1`, `Shi`/`Chi`, Fresnel S/C, `polylog`/`dirichlet_eta`, Legendre/Chebyshev/Hermite/Laguerre and the associated/Gegenbauer/Jacobi families, `Si`/`Ci`/`Ei`/`li`, Kronecker delta — all with arbitrary-precision evaluation.
 
 ### Algebra and Factoring
 
@@ -202,6 +237,16 @@ expr!(ctx, (x^2 - 1) / (x - 1)).cancel(&x);           // x + 1
 expr!(ctx, x^3 - x).discriminant(&x);                 // Some(4)
 expr!(ctx, x^5 - x - 1).count_real_roots(&x);         // Some(1)
 expr!(ctx, x^4 + 1).is_irreducible(&x);               // Some(true)
+
+// 0.9: algebraic numbers, variable-free gcd, Gröbner bases, real roots as RootOf, GF(p), symbolic resultants
+syms!(ctx; a, b, c);
+(ctx.int(2).sqrt() + ctx.int(3).sqrt()).minimal_polynomial(&x).unwrap();   // x^4 - 10*x^2 + 1
+(&x.powi(2) - &y.powi(2)).gcd_all(&(&x - &y)).unwrap();                    // x - y
+Ex::groebner(&[&x.powi(2) + &y.powi(2) - 1, &x - &y], &[x.clone(), y.clone()], MonomialOrder::Lex).unwrap();
+                                                      // [x - y, y^2 - 1/2]
+(&x.powi(3) - 2 * &x).real_roots(&x).unwrap();        // [RootOf(x^2 - 2, 0), 0, RootOf(x^2 - 2, 1)]  (ascending)
+(&x.powi(2) + 1).factor_mod(&x, 5).unwrap();          // (1, [(x + 2, 1), (x + 3, 1)])
+(&a * &x.powi(2) + &b * &x + &c).discriminant_symbolic(&x).unwrap();       // -4*a*c + b^2
 ```
 
 ### Polynomials as Data and Rational Normal Forms
@@ -386,11 +431,22 @@ ZMatrix::from_i64(&[&[2, 4, 4], &[-6, 6, 12], &[10, -4, -16]]).unwrap().smith_no
 
 `Matrix::{rref, rank, nullspace, det, inv, solve}`, `linsolve`/`linsolve_matrix` and the normal forms route through `QMatrix`/`ZMatrix` automatically whenever every entry is a rational literal, so existing code gets the speed-up without changes.
 
-Also: LU, LDLᵀ, Gram–Schmidt, Jordan form, pseudo-inverse, Kronecker product, rank/nullspace/rowspace, norms, least squares, Hessian, Wronskian, quaternions, vector calculus in Cartesian/cylindrical/spherical coordinates, state-space ↔ transfer function; `select_rows`/`select_cols`/`delete_row`/`delete_col`, `from_bigint`/`from_f64_rows`, `to_rational_rows`/`to_bigint_rows`, `is_integer_matrix`, `subs_map`, `nnz`.
+```rust
+// 0.9: singular values and condition number, a pseudo-inverse defined for every matrix,
+// rank decomposition, Hessenberg form, permanent, companion / Jordan blocks, exact LLL
+matrix![ctx, [1, 2], [3, 4]].singular_values().unwrap();     // [sqrt(sqrt(221) + 15), sqrt(-sqrt(221) + 15)]
+matrix![ctx, [1, 2], [2, 4]].pinv().unwrap();                // [[1/25, 2/25], [2/25, 4/25]]  (rank-deficient)
+matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]].rank_decomposition().unwrap();   // (C, F) with A = C·F
+matrix![ctx, [1, 2], [3, 4]].permanent().unwrap();           // 10
+matrix![ctx, [1, 2], [3, 4]].inv_mod(5).unwrap();            // [[3, 1], [4, 2]]
+ZMatrix::from_i64(&[&[1, 1, 1], &[-1, 0, 2], &[3, 5, 6]]).unwrap().lll_default().unwrap();   // [[0, 1, 0], [1, 0, 1], [-1, 0, 2]]
+```
+
+Also: LU, LDLᵀ, Gram–Schmidt, Jordan form, `matrix_log`, Kronecker product, rank/nullspace/rowspace, norms, least squares, Hessian, Wronskian, Casoratian, `hessenberg`, `companion`, `jordan_block`, row/column insert/delete/permute, quaternions, vector calculus in Cartesian/cylindrical/spherical coordinates, state-space ↔ transfer function; `select_rows`/`select_cols`, `from_bigint`/`from_f64_rows`, `to_rational_rows`/`to_bigint_rows`, `is_integer_matrix`, `subs_map`, `nnz`.
 
 ### Exact Optimization and Integer Lattices
 
-Linear programs are solved over ℚ by a two-phase simplex with Bland's rule: optima, shadow prices and Farkas infeasibility certificates are exact, never "infeasible to within tolerance". Since 0.3.5 the tableau pivots on integers with a common denominator (no rational normalisation in the inner loop), which makes certificate-sized problems 5–30× faster. Integer matrices get Hermite and Smith normal forms with unimodular transforms, and ℤ-bases of integer kernels.
+Linear programs are solved over ℚ by a two-phase simplex: optima, shadow prices and Farkas infeasibility certificates are exact, never "infeasible to within tolerance". The tableau is fraction-free (integers with a common denominator) and runs on `i64`, then `i128`, then 256-bit, then `BigInt` cells as the numbers grow — the same pivot path in every width, so results are identical and small problems never touch the heap. Dantzig's rule is used until twelve consecutive degenerate pivots, then Bland's until the next improving step (finite, and not condemned to Bland's slow walk on the degenerate certificate LPs). A `Budget` (deadline and/or pivot cap, checked at every pivot) turns a runaway solve into `LpStatus::BudgetExhausted`. Integer matrices get Hermite and Smith normal forms with unimodular transforms, ℤ-bases of integer kernels, and exact LLL reduction.
 
 ```rust
 use symplex::linprog::{feasible_nonneg, q, qi};
@@ -483,7 +539,9 @@ cert.certificate().unwrap().to_string();
 cert.certificate().unwrap().to_lean("amgm3").unwrap();   // have h : … := by ring;  rw [h];  positivity
 ```
 
-Also: `prove_polyhedron_empty` (the same identity with goal `−1`: a cell is empty for every `j`), `PolyhedronProver` (parse the hypotheses once, prove many goals), `prove_nonnegative_on_halfline` / `prove_nonnegative_on_reals` (univariate, Pólya multipliers and square factors), `lean_steps` / `lean_hints` for dropping a proof into an existing skeleton, `LeanOpts::{prefer_subtraction, single_fraction, symbol_text}`, every certificate round-trips through JSON with re-verification, and `symplex::polytope::{Polytope, ParametricPolytope}` for the exact geometry of the cells (vertices, volume in any dimension, cuts, redundancy).
+Every prover returns one `Outcome<C, U>` — `Proved(certificate)`, `Refuted { point, value, .. }` with an exact counterexample, or `Unknown(what was tried)`, never a wrong `Proved` — and every certificate type implements the `Certificate` trait (`goal`, `verify`, `to_lean`, JSON round trip with re-verification). A prover call can be given a **budget** (`PolyhedronOpts::default().with_time_limit(Duration::from_secs(150))`, or `with_max_pivots`) and returns `Unknown` naming the limit rather than running on. For assembling many certificates into one lemma, `lean::{Block, Tactic, Decl}` is a small structured model of a tactic proof that renders `have`s, bullets and `by` blocks from their tactic column — no hand-counted indentation — and its output for a real generator's proof shape is pinned to text that compiled against Mathlib.
+
+Also: `prove_polyhedron_empty` (the same identity with goal `−1`: a cell is empty for every `j`), `PolyhedronProver` (parse the hypotheses once, prove many goals; `prove_poly` takes an exact `Poly` directly; `used_hyps` names the hypotheses a certificate needs), `prove_nonnegative_on_halfline` / `prove_nonnegative_on_reals` (univariate, Pólya multipliers and square factors), `lean_steps` / `block` / `lean_hints` for dropping a proof into an existing skeleton, `LeanOpts::{prefer_subtraction, single_fraction, symbol_text}`, and `symplex::polytope::{Polytope, ParametricPolytope}` for the exact geometry of the cells — vertices in integer arithmetic with tight sets, `clip` (both sides of a cut from the cached vertices, no re-enumeration), volume in any dimension, `is_full_dimensional` (one LP), redundancy.
 
 ### Transforms
 
@@ -509,6 +567,8 @@ Pollard–Brent rho + ECM factorization, BPSW primality, modular square roots an
 use symplex::ntheory::*;
 use symplex::diophantine;
 use symplex::combinatorics::*;
+use symplex::linprog::qi;
+use symplex::num_bigint::BigInt;
 
 isprime(561);                                         // false (Carmichael number)
 factorint(1_099_532_599_387u64);                      // [(1048583, 1), (1048589, 1)]  — ~1 ms
@@ -523,7 +583,16 @@ partition_count(100);                                 // Some(190569292)
 crt_i64(&[2, 3, 2], &[3, 5, 7]);                      // Some(23)
 igcd(&[12i64, 18, 30]);                               // 6    (gcd_many / lcm_many take BigInt slices)
 ilcm(&[4i64, 6, 10]);                                 // 60
+
+// 0.10: n-th roots and polynomial congruences for any modulus, and exact discrete transforms
+nthroot_mod(11, 4, 19, true);                         // Some([8, 11])
+polynomial_congruence(&[1, 0, -3, 5].map(BigInt::from), 1000003);   // [488045, 745229, 766732]  (x³ − 3x + 5 mod p)
+is_carmichael(561);                                   // true
+symplex::discrete::convolution(&[qi(1), qi(2), qi(3)], &[qi(4), qi(5), qi(6)]);       // [4, 13, 28, 27, 18]
+symplex::discrete::ntt(&[1, 2, 3, 4].map(BigInt::from), BigInt::from(998244353));    // number-theoretic transform
 ```
+
+Also: `quadratic_residues`, `is_nthpow_residue`, `multiplicity`, `primenu`/`primeomega`, `primorial`, `continued_fraction_reduce` (finite and periodic → quadratic surd), `is_amicable`, `binomial_coefficients`; `discrete::{convolution_cyclic, convolution_subset, intt, fwht, mobius_transform}`.
 
 ### Numerical Toolbox
 
@@ -586,9 +655,50 @@ let grad = Ex::compile_many(&[&f.diff(&x), &f.diff(&y)], &["x", "y"]).unwrap();
 grad.call_vec(&[0.5, 0.25]);
 
 f.to_latex();                                          // \sin^{2}\left(x\right) + 3\exp\left(2x + y\right)
+
+// 0.10: more targets and interchange formats
+(x.sin().powi(2) + x.exp()).to_python().unwrap();      // math.sin(x)**2 + math.exp(x)   (executable; tested against eval_f64)
+x.sin().to_numpy().unwrap();                           // numpy.sin(x)
+(x.exp() + x.sin().powi(2)).to_julia().unwrap();       // sin(x)^2 + exp(x)
+(&x.powi(2) + 1).to_mathml().unwrap();                 // <math xmlns=…><mrow><msup><mi>x</mi><mn>2</mn></msup><mo>+</mo><mn>1</mn></mrow></math>
+(2 * &x + 1).to_srepr();                               // Add(Integer(1), Mul(Integer(2), Symbol('x')))
+f.to_dot();                                            // Graphviz digraph of the expression tree
+
+// and the other direction: relations, Boolean connectives, implicit multiplication
+ctx.parse_bool("x > 0 and x < 1").unwrap().to_lean().unwrap();   // 0 < x ∧ x < 1
+ctx.parse_implicit("2x + 3(x - 1)").unwrap();          // 5*x - 3
 ```
 
 For `build.rs` pipelines and `no_std` targets see [`symplex-build`](symplex-build/README.md); for the browser see [`symplex-wasm`](symplex-wasm/README.md).
+
+### Probability and Statistics
+
+`symplex::stats` (0.11) is the counterpart of `sympy.stats`: a `RandomVariable` is a symbol with a `Distribution`, and mean, variance, moments, probabilities of events, density, CDF, moment generating function, quantile and entropy are computed *exactly* — closed-form moments for polynomial expectations, the family's CDF for probabilities, exact integration or summation over the support otherwise. Fourteen continuous families (Normal, Uniform, Exponential, Gamma, χ², Beta, Cauchy, Laplace, Logistic, LogNormal, Student t, Weibull, Pareto, Triangular), nine discrete ones (Bernoulli, Binomial, Poisson, Geometric, Negative Binomial, Hypergeometric, DiscreteUniform, Die, and explicit finite tables), independence algebra over several variables, and seeded sampling.
+
+```rust
+use symplex::stats::{self, Distribution, RandomVariable, Rng};
+let ctx = Context::new();
+let x = RandomVariable::new(&ctx, "X", Distribution::normal(ctx.int(0), ctx.int(1)));
+let y = RandomVariable::new(&ctx, "Y", Distribution::exponential(ctx.int(3)));
+let b = RandomVariable::new(&ctx, "B", Distribution::binomial(ctx.int(5), ctx.rational(1, 3)));
+
+x.expectation(&(x.symbol().powi(2) + 3 * x.symbol()));   // 1
+y.probability(&y.symbol().gt(&ctx.int(1))).unwrap();     // exp(-3)
+b.probability(&b.symbol().gt(&ctx.int(2))).unwrap();     // 17/81
+(y.skewness(), b.kurtosis());                            // (2, 27/10)
+x.cdf(&ctx.symbol("t"));                                 // 1/2*erf(1/2*t*sqrt(2)) + 1/2
+y.quantile(&ctx.symbol("p")).unwrap();                   // -1/3*ln(-p + 1)
+stats::conditional_expectation(&x, x.symbol(), &x.symbol().gt(&ctx.int(0))).unwrap();   // sqrt(2)*pi^(-1/2)
+stats::covariance(&[&x], x.symbol(), &(2 * x.symbol())).unwrap();                        // 2
+let z = RandomVariable::new(&ctx, "Z", Distribution::normal(ctx.int(1), ctx.int(2)));
+stats::sum_distribution(&x, &z).unwrap();                // Normal(1, sqrt(5))
+x.entropy();                                             // 1/2*ln(2*pi*E)
+let coin = Distribution::try_finite(vec![(ctx.int(1), ctx.rational(2, 3)), (ctx.int(0), ctx.rational(1, 3))]).unwrap();
+RandomVariable::new(&ctx, "C", coin).variance();         // 2/9
+y.sample(20_000, &mut Rng::new(1)).unwrap();             // reproducible f64 samples; mean ≈ 0.33
+```
+
+Also: `std`, `moment(n)`, `central_moment`, `median`, `mgf`, `characteristic_function`, `density`, `support`; `stats::{expectation, variance, correlation, probability}` over several independent variables (rectangles and `X < Y`), `conditional_probability`; every constructor has a `try_` twin validating numeric parameters. All test values come from SymPy 1.14.
 
 ### Compile-Time Dimensional Analysis
 
@@ -628,7 +738,11 @@ let velocity: Velocity = position.diff_wrt(&t_var);   // g·t [m/s]
 
 5. **No recursion.** All tree traversals use explicit stacks. Deep expressions don't blow the call stack.
 
-6. **Never silently wrong.** Numerical evaluation returns `Result`. Operations that can't produce a closed form return unevaluated symbolic nodes — `∫x^x dx` returns `Integral(x^x, x)`, not garbage. `∫₋₁¹ dx/x²` is `Err(Divergent)`, not `−2`. `re(z)` stays `re(z)` unless `z` is known to be real.
+6. **Never silently wrong.** Numerical evaluation returns `Result`. Operations that can't produce a closed form return unevaluated symbolic nodes — `∫x^x dx` returns `Integral(x^x, x)`, not garbage. `∫₋₁¹ dx/x²` is `Err(Divergent)`, not `−2`. `re(z)` stays `re(z)` unless `z` is known to be real. A certificate prover says `Unknown` with what it tried, never a wrong `Proved`.
+
+7. **No panics in library code.** Failure is a `Result`, absence an `Option`, invariants `debug_assert!`; the two documented exceptions (mixing contexts, an empty `Sum` of `Ex`) are logic errors like indexing out of bounds. A ratchet test over `src/` fails the build if a panicking construct is added — see CONTRIBUTING.md for the policy and why error plumbing costs nothing measurable.
+
+8. **One crate, no knobs.** There are no Cargo features to combine; every capability is always present. Compile time is not the constraint, capability is.
 
 ---
 
@@ -641,7 +755,7 @@ Every symbolic operation that might not produce a closed-form result has two ent
 | Give me math | `integrate(&x)` | `Ex` (always — may contain `Integral` nodes) | Interactive exploration, chaining |
 | Fail if you can't | `try_integrate(&x)` | `Result<Ex>` | Pipelines, codegen, safety-critical |
 
-`try_` twins exist for `diff`, `integrate`, `integrate_definite`, `limit`, `limit_left/right/dir`, `series`, `series_at_infinity`, `summation`, `product_over`, `laplace`, `inverse_laplace`, `residue`, `gosper_sum`, `solve_ode`, `solve_gt/ge/lt/le`. Check any expression for unevaluated forms:
+`try_` twins exist for `diff`, `integrate`, `integrate_definite`, `limit`, `limit_left/right/dir`, `series`, `series_at_infinity`, `summation`, `product_over`, `laplace`, `inverse_laplace`, `residue`, `gosper_sum`, `solve_ode`, `solve_gt/ge/lt/le`, `char_poly`, `wronskian`, and every `stats::Distribution` constructor. Check any expression for unevaluated forms:
 
 ```rust
 let anti = hard_expr.integrate(&x);
@@ -656,86 +770,77 @@ Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`, 
 
 **`Result` boundaries.** Crossing from symbols to numbers (`eval_f64`, `eval_decimal`, `compile`, `to_rust_fn`, `to_c_fn`, `integrate_numeric`) always returns `Result`. So do operations with structural preconditions (`Matrix::inv`, `cholesky`, `lu`, `minor`, `matmul`) and solvers whose failure is a mathematical fact: `solve` returns `Err(InfiniteSolutions)` for identities and `Err(NoSolution)` for contradictions, `try_integrate_definite` returns `Err(Divergent)`, `laplace_final_value` returns `Err(Divergent)` for unstable poles. Transform APIs without an unevaluated node (`fourier_transform`, `mellin_transform`, `z_transform`) are `Result`-only.
 
-**Three-valued queries.** `is_positive`, `equals`, `is_convergent`, `SetEx::contains`, `is_subset`, `Matrix::is_symmetric`, `is_diagonalizable`, `is_positive_definite`, `BoolEx::is_tautology`, `vector::is_conservative` … return `Option<bool>`: yes, no, or unknown. `degree`, `resultant`, `discriminant`, `hypergeometric_ratio` return `Option<T>`.
+**Three-valued queries.** `is_positive`, `equals`, `is_convergent`, `SetEx::contains`, `is_subset`, `Matrix::is_symmetric`, `is_diagonalizable`, `is_positive_definite`, `BoolEx::is_tautology`, `vector::is_conservative`, `is_increasing`, `is_convex` … return `Option<bool>`: yes, no, or unknown. `degree`, `resultant`, `discriminant`, `hypergeometric_ratio`, `minimal_polynomial`, `periodicity` return `Option<T>`.
+
+**Certificate outcomes.** The four inequality provers return `Outcome<C, U>`: `Proved(C)` (re-verified), `Refuted { point, value, .. }` (an exact point where the goal is negative) or `Unknown(U)` (what was tried, including a budget that ran out). `is_proved()`, `certificate()`, `refutation()`, `unknown()` and `map_certificate` are shared; `Refuted` and the `Unknown` payloads are `#[non_exhaustive]`.
+
+**Budgets.** Long-running exact algorithms accept a deadline and/or pivot cap (`linprog::Budget`, `PolyhedronOpts::with_time_limit`, `SosOpts::with_time_limit`); running out is a *status*, not an error.
 
 ---
 
 ## Comparison with SymPy
 
-| Feature | symplex 0.3 | SymPy |
-|---------|-------------|-------|
+| Feature | symplex 0.11 | SymPy 1.14 |
+|---------|--------------|------------|
 | Arithmetic | Exact `Ratio<BigInt>` | Exact (similar) |
-| Differentiation | Complete, incl. Bessel/orthogonal/polygamma | Complete |
-| Indefinite integration | 15+ strategies incl. Risch + LRT log-to-real | Risch + heurisch + Meijer G (broader) |
+| Differentiation | Complete, incl. Bessel/Airy/orthogonal/polygamma/erf family | Complete |
+| Indefinite integration | 15+ strategies incl. Risch + LRT log-to-real; results in `erf`/`erfi`/`Si`/`Shi`/`Ei`/… | Risch + heurisch + Meijer G (broader) |
 | Definite / improper integration | Singularity detection, ~30-entry improper table, divergence reported as `Err` | Meijer G-based; much broader table |
 | Numeric integration | Adaptive G7/K15 quadrature | via mpmath (more algorithms) |
 | Summation | Faulhaber, Gosper, telescoping, binomial, p-series, power-series recognition | + Zeilberger, hypergeometric closed forms (broader) |
-| Polynomial solving | Through quartic + `RootOf` | Through quartic + `CRootOf` |
+| Polynomial solving | Through quartic + `RootOf`; `real_roots` as ordered `RootOf`s | Through quartic + `CRootOf` |
 | General solutions | `solve_general` (periodic families) | `solveset` with `ImageSet` |
 | Linear systems | `linsolve` (unique / parametric / inconsistent, symbolic) | `linsolve` (similar) |
-| Polynomial systems | Gröbner + FGLM, algebraic solutions | Gröbner, more strategies |
-| Polynomial views | `Poly` over explicit generators with symbolic coefficients, lex terms, coefficient matrices | `Poly` with domains, factoring, gcd, resultants (broader) |
-| Rational simplification | `ratsimp`/`cancel`: heuristic multivariate GCD, opaque subexpressions as indeterminates | `cancel`, `ratsimp`, `together`, `apart` (similar; more GCD algorithms) |
-| Linear programming | Exact two-phase simplex; duals and Farkas certificates in the public result | `sympy.solvers.simplex` (`lpmin`/`lpmax`/`linprog`, exact; optimum and argmin only) |
-| Integer normal forms | Row and column HNF with transform, SNF with transforms, integer nullspace, lattice index | `hermite_normal_form`, `smith_normal_form` (no transforms returned) |
-| Numerical optimisation | Brent, bisection, Newton, Nelder–Mead, differential evolution, QR least squares, exact rational fits | Defers to SciPy / mpmath (`nsolve`, `findroot`); far broader via SciPy |
+| Polynomial systems | Gröbner + FGLM, algebraic solutions; `Ex::groebner`/`reduce_modulo` | Gröbner, more strategies |
+| Polynomial algebra | `Poly` with symbolic coefficients, `MultiPoly` over ℚ, resultants/discriminants (also with symbolic coefficients), `gcd_all`, `factor_mod` over GF(p), `minimal_polynomial` | `Poly` with domains, algebraic extensions, `primitive_element` (broader) |
+| Function analysis | `singularities`, `stationary_points`, `maximum`/`minimum`, monotonicity/convexity (exact via Sturm), `periodicity`, `function_range` | `calculus.util` (similar) |
+| Rational simplification | `ratsimp`/`cancel`: heuristic multivariate GCD | `cancel`, `ratsimp`, `together`, `apart` (similar) |
+| Linear programming | Exact simplex on hybrid `i64`/`i128`/256-bit/`BigInt` cells; duals, Farkas certificates, budgets | `sympy.solvers.simplex` (exact; optimum and argmin only) |
+| Polynomial inequalities | Handelman (boxes), Pólya (half-lines), parametric polyhedra with a goal multiplier, sums of squares (built-in SDP + exact rounding); all re-verified exactly; Lean export | — |
+| Integer normal forms | Row/column HNF with transform, SNF with transforms, integer nullspace, lattice index, exact LLL | `hermite_normal_form`, `smith_normal_form` (no transforms), `lll` |
+| Polytopes | Exact vertices (integer arithmetic, tight sets), `clip`, volume in any dimension, parametric families | — |
+| Numerical optimisation | Brent, bisection, Newton, Nelder–Mead, differential evolution, QR least squares, exact rational fits | Defers to SciPy / mpmath; far broader via SciPy |
 | Series expansion | Taylor / Laurent / at ∞ / formal power series with general terms | + `O()` notation, Puiseux |
 | Limits | Gruntz with work budget, one-sided | Gruntz (more mature) |
 | Simplification | Multi-strategy fixpoint + public rule engine with AC matching, tracing | More strategies; `replace`/`Wild` patterns |
-| Factoring | Berlekamp–Zassenhaus (any degree), multivariate via Kronecker | Zassenhaus + Wang (faster multivariate), algebraic extensions |
-| Matrices | Eigen/Jordan/exp/sqrt/pow, QR, Cholesky, LDL, LU, `RootOf` eigenvalues | More decompositions (SVD, Schur), sparse |
+| Factoring | Berlekamp–Zassenhaus (any degree), multivariate via Kronecker, GF(p) | Zassenhaus + Wang (faster multivariate), algebraic extensions |
+| Matrices | Eigen/Jordan/exp/log/sqrt/pow, QR, Cholesky, LDL, LU, Hessenberg, singular values, condition number, rank-deficient pseudo-inverse, permanent, `RootOf` eigenvalues; exact `QMatrix`/`ZMatrix` (Bareiss) | SVD, Schur, sparse, matrix expressions (broader) |
+| Statistics | 23 distribution families + finite tables; exact moments, probabilities, CDF/MGF/quantile/entropy; independence algebra, conditional expectation, sum closures; seeded sampling | `sympy.stats` (broader: joint/compound/stochastic processes, matrix distributions) |
 | ODE solving | 16 classes, IVPs, systems | More classes, hints, series solutions |
 | Recurrences | Linear constant-coefficient, first-order | `rsolve` (poly/rational/hyper) |
-| Transforms | Laplace, Fourier (3 conventions), Mellin (with strip), Z, Fourier series | Broader tables, Hankel, cosine/sine |
-| Sets & logic | Interval algebra, three-valued queries, NNF/CNF/DNF, DPLL | Richer set types (`ImageSet`, `ConditionSet`), `satisfiable` |
-| Number theory | rho/ECM, BPSW, sqrt_mod, dlog, Pell, two squares | Broader (quadratic forms, general Diophantine) |
+| Transforms | Laplace, Fourier (3 conventions), Mellin (with strip), Z, Fourier series; discrete: convolutions, NTT, Walsh–Hadamard, Möbius | Broader tables, Hankel, cosine/sine; `discrete` (+ float FFT) |
+| Sets & logic | Interval algebra, three-valued queries, NNF/CNF/DNF, DPLL; `parse_bool` | Richer set types (`ImageSet`, `ConditionSet`), `satisfiable` models |
+| Number theory | rho/ECM, BPSW, `sqrt_mod`, `nthroot_mod` (any modulus), `polynomial_congruence`, dlog, CRT, Pell, two/four squares, continued fractions, Carmichael/amicable | Broader (quadratic forms, general Diophantine) |
 | Combinatorics | Stirling, Bell, partitions, derangements, multinomial | Broader (permutation groups, etc.) |
-| Special functions | Γ, ψ⁽ⁿ⁾, erf, B, W, Bessel, Si/Ci/Ei/li, ζ, orthogonal polys | Many more (hypergeometric, elliptic, Meijer G) |
-| Algebraic numbers | `ℚ(α)` field with exact zero/sign testing | `AlgebraicNumber` + `ANP` |
-| Code generation | Rust and C99 with CSE, `fma`, embedded special-function runtime | Python / C / Fortran / Rust / Julia via `codegen` |
+| Special functions | Γ family (incl. incomplete), ψ⁽ⁿ⁾, erf/erfi/erfinv, B, W, Bessel, Airy, elliptic K/E/F/Π, `expint`, Si/Ci/Shi/Chi/Ei/li, Fresnel, polylog/η/ζ, classical + associated orthogonal polynomials — all arbitrary precision | Many more (hypergeometric, Meijer G, Mathieu, …) |
+| Algebraic numbers | `ℚ(α)` field with exact zero/sign testing; `minimal_polynomial` | `AlgebraicNumber` + `ANP`, `primitive_element` |
+| Code generation | Rust, C99, Python, NumPy, Julia with CSE and an embedded special-function runtime (Rust/C); compiled closures | Python / C / Fortran / Rust / Julia / Octave / JS via `codegen` |
+| Interchange | LaTeX, Unicode pretty-print, Presentation MathML, `srepr`, Graphviz DOT, JSON tree, Lean 4 | LaTeX, MathML, `srepr`, `dotprint`, pretty |
+| Parsing | Numeric expressions, relations and Boolean connectives, implicit multiplication | `sympify`/`parse_expr` (+ LaTeX, Mathematica) |
 | Dimensional analysis | Compile-time type checking | Runtime `physics.units` |
 | Thread safety | `Send + Sync`, no GIL | GIL-bound |
 | Expression type safety | `Ex` / `BoolEx` / `SetEx` at compile time | Runtime only |
-| Language | Rust (compiled, ~174K lines, 92 node types) | Python (interpreted) |
+| Failure model | No panics (ratchet-enforced); `Result`/`Option`/unevaluated forms; budgets are statuses | Exceptions |
+| Language | Rust (compiled, ~206K lines, 91 node types) | Python (interpreted) |
 
-**Where SymPy is stronger:** geometry, statistics, tensor algebra, quantum mechanics, general Diophantine equations, PDE solving, hypergeometric/Meijer-G machinery, and 30 years of community contributions and testing.
+**Where SymPy is stronger:** geometry, tensor algebra, quantum mechanics, general Diophantine equations, PDE solving, hypergeometric/Meijer-G machinery, stochastic processes and joint distributions beyond independence, and 30 years of community contributions and testing.
 
-**Where symplex is different:** compile-time dimensional analysis, thread safety, Rust *and* C code generation with an embedded runtime, exact arithmetic without Python overhead, algebraic number field arithmetic with exact zero/sign testing, construction-time radical simplification, and exact certificates — LP duals and Farkas vectors, unimodular HNF/SNF transforms, Sturm-verified polynomial signs — as first-class results. Operations that can't complete return honest unevaluated forms or `Err` rather than guessing.
+**Where symplex is different:** exact certificates as first-class results (LP duals and Farkas vectors, Handelman/Pólya/SOS proofs re-verified with exact arithmetic, Sturm-verified polynomial signs, unimodular HNF/SNF transforms) and their export to Lean 4 / Mathlib as theorems that compile; compile-time dimensional analysis; thread safety; Rust *and* C code generation with an embedded runtime; algebraic number field arithmetic with exact zero/sign testing; a library verified not to panic. Operations that can't complete return honest unevaluated forms, `Err`, or `Unknown` rather than guessing.
 
 ---
 
-## Migrating from 0.1
+## Migrating
 
-The [CHANGELOG](CHANGELOG.md#breaking) lists every breaking change with its replacement. The ones most likely to touch your code:
+Every breaking change has a one-line fix in the book:
 
-| 0.1 | 0.2 |
-|-----|-----|
-| `expr.compile(&["x"])` → `Option<…>` | `expr.compile(&["x"])?` → `Result<CompiledFn>` (`arity()`, `try_call()`) |
-| `expr.definite_integral(&x, &a, &b)` | `expr.integrate_definite(&x, &a, &b)` / `try_integrate_definite` (`Err(Divergent)`) |
-| `solve` returned `Ok(vec![])` for identities | `Err(InfiniteSolutions)` / `Err(NoSolution)`; roots are `eval`'d |
-| `m.eigenvals(&lam)`, `m.jordan_form(&lam)`, `m.matrix_exp(&t)` | `m.eigenvals()`, `m.jordan_form()`, `m.matrix_exp()` / `m.matrix_exp_t(&t)` |
-| `m.cholesky()` → `Option`, `m.lu()` → tuple | both `Result` |
-| `m.minor(i, j)` → sub-matrix | `m.minor(i, j)` → `Result<Ex>`; sub-matrix is `m.minor_matrix(i, j)` |
-| `m.is_symmetric()` → `bool` | `Option<bool>` (also `is_diagonalizable`, `vector::is_conservative`, …) |
-| `ctx.solve_system(…)` → `Vec` | `Result<LinearSolution>` (`Unique` / `Parametric` / `Inconsistent`) |
-| `z.re()` assumed `z` real | `re(z)` stays symbolic; declare `Assumption::Real` |
-| `has_unevaluated()` true for `RootOf` | `RootOf`/`RootSum` are answers, not unevaluated forms |
-| `expr.textplot(…)` → `String` | `Result<String>` (all plotting methods) |
-| `iter.sum::<Ex>()` on empty iterator → `0` | panics; use `ctx.sum(iter)` or `Option<Ex>` |
+| From → to | Page | The gist |
+|---|---|---|
+| 0.6 → 0.7 | [migrating-0.7](book/src/reference/migrating-0.7.md) | one `Outcome<C, U>` for every prover (patterns need `..`; `Unknown(u)`), the Handelman struct is `BoxCertificate` and `Certificate` is the trait, `LeanOpts`/`PolyhedronOpts`/`SosOpts` are `#[non_exhaustive]` (builders instead of literals), `control`/`robotics`/`dynamics` shape failures return `Result` |
+| 0.9 → 0.10 | [CHANGELOG](CHANGELOG.md) | `LpStatus::BudgetExhausted`, `Tactic::Apply`, `Decl.preamble` (use `Decl::new` + builders) |
+| 0.3 → 0.4 | [migrating-0.4](book/src/reference/migrating-0.4.md) | `roots_count_real` removed, `LeanOpts` gained a field |
+| 0.1 → 0.2 | [migrating-0.2](book/src/reference/migrating-0.2.md) | `Result` boundaries, three-valued queries, `integrate_definite`, eigen family without dummy variables |
 
-The book's [migration guide](book/src/reference/migrating-0.2.md) has worked examples.
-
-## Migrating from 0.2
-
-No signatures changed between 0.2 and 0.3. A few operations now return a *different but equivalent* form, which matters only if you compare printed output or match on structure:
-
-| 0.2 | 0.3 |
-|-----|-----|
-| `degree` / `coeffs` / `coeff` / `leading_coeff` returned `None` (and `is_polynomial` `false`) for symbolic coefficients (`a*x^2 + x`) | They succeed: `Some(2)`, `Some([0, 1, a])`, `Some(a)`, `true` |
-| `solve` on a linear or quadratic equation with parametric fractional coefficients returned a fraction of fractions | The root (and the quadratic discriminant) is `ratsimp`'d: `((3r−1)/(j+1) − (r+1)/(2j)).solve(&r)` → `(3*j + 1)/(5*j - 1)` |
-| `simplify_rational` = `together` + per-symbol `cancel`; could leave nested fractions uncancelled | `simplify_rational` is `ratsimp`: one fraction, all variables at once, integer-primitive numerator and denominator |
-
-Everything else in the [CHANGELOG](CHANGELOG.md#030---2026-09-18) is additive.
+0.2 → 0.3, 0.4 → 0.6, 0.7 → 0.9 and 0.10 → 0.11 were additive (`cargo semver-checks` clean).
 
 ---
 
@@ -750,10 +855,12 @@ cargo run --example repl                    # Interactive expression evaluation
 cargo run --example readme_snippets         # Every code block in this README, executed
 ```
 
-**New in 0.3:**
+**Certificates, Lean and exact geometry (0.3–0.10):**
 ```
+cargo run --example certificates_to_lean    # Handelman / half-line / SOS certificates exported as Mathlib theorems (writes a .lean file)
+cargo run --example polyhedron_certificates # Parametric polyhedra: λ(j) goal multiplier, staged exact LP, emptiness, lean_steps
+cargo run --example exact_matrices          # QMatrix / ZMatrix: fraction-free elimination, rank, nullspace, Smith form
 cargo run --example polynomials             # Poly views with symbolic coefficients, ratsimp, linear certificates, exact sign on an interval
-cargo run --example certificates_to_lean    # Handelman certificates on a box (exact LP, exactly re-verified) exported as Mathlib theorems
 cargo run --example exact_lp                # Exact simplex: optima, shadow prices, Farkas certificates, feasible_nonneg, linprog_matrix
 cargo run --example integer_lattices        # Row/column HNF with transforms, Smith normal form, integer nullspace, unimodularity, lattice index
 cargo run --example numeric_optimization    # Brent/Newton roots, Nelder–Mead, differential evolution, polynomial fits (f64 and exact)
@@ -831,7 +938,7 @@ Companion crates: [`symplex-build`](symplex-build/README.md) (build-time codegen
 
 ## Requirements
 
-Rust 1.93+ (Edition 2024). No optional features; pure Rust on every platform Rust targets, including `wasm32-unknown-unknown`.
+Rust 1.93+ (Edition 2024). No Cargo features by design; pure Rust on every platform Rust targets, including `wasm32-unknown-unknown`. ~11,400 tests (`cargo nextest run`), ~800 doctests; every emitted Lean shape is pinned to text compiled against Mathlib (Lean 4.30).
 
 ## License
 
