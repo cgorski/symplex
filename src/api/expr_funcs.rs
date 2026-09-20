@@ -4670,6 +4670,75 @@ impl Expr<Numeric> {
         )
     }
 
+    // ── Incomplete beta (0.12) ─────────────────────────────────────────
+
+    /// Generalised incomplete beta function
+    /// `B_{(x₁, x₂)}(a, b) = ∫_{x₁}^{x₂} t^{a−1} (1 − t)^{b−1} dt`.
+    ///
+    /// **Argument order.** `self` is the *upper* limit `x₂`; the node is
+    /// stored in SymPy's order `betainc(a, b, x1, x2)`, so
+    /// `x2.betainc(&a, &b, &x1)` displays as `betainc(a, b, x1, x2)`.  The
+    /// classical incomplete beta `B_x(a, b)` is `x.betainc(&a, &b, &zero)`.
+    ///
+    /// Exact: `betainc(a, b, x, x) = 0`, `betainc(a, b, 0, 1) = B(a, b)`, and
+    /// for positive integers `a`, `b` the integrand is a polynomial, so the
+    /// node expands to an explicit polynomial in `x₁`, `x₂`;
+    /// `∂/∂x₂ = x₂^{a−1}(1 − x₂)^{b−1}`, `∂/∂x₁ = −x₁^{a−1}(1 − x₁)^{b−1}`
+    /// (parameter derivatives stay formal).  Numerically evaluated for
+    /// `a, b > 0` and `0 ≤ x₁, x₂ ≤ 1`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (a, b, x) = (ctx.symbol("a"), ctx.symbol("b"), ctx.symbol("x"));
+    /// let f = x.betainc(&a, &b, &ctx.int(0));
+    /// assert_eq!(format!("{f}"), "betainc(a, b, 0, x)");
+    /// assert_eq!(format!("{}", x.betainc(&ctx.int(2), &ctx.int(3), &ctx.int(0)).eval()), "1/4*x^4 - 2/3*x^3 + 1/2*x^2");
+    /// ```
+    #[must_use]
+    pub fn betainc(&self, a: &Ex, b: &Ex, x1: &Ex) -> Ex {
+        let a_id = self.checked_id(a);
+        let b_id = self.checked_id(b);
+        let x1_id = self.checked_id(x1);
+        self.special_apply(
+            crate::base::arena::FN_BETAINC,
+            &[a_id, b_id, x1_id, self.raw_id()],
+        )
+    }
+
+    /// Regularised generalised incomplete beta function
+    /// `I_{(x₁, x₂)}(a, b) = B_{(x₁, x₂)}(a, b) / B(a, b)`.
+    ///
+    /// **Argument order.** As for [`betainc`](Self::betainc): `self` is the
+    /// upper limit `x₂` and the node is stored in SymPy's order
+    /// `betainc_regularized(a, b, x1, x2)`.  `x.betainc_regularized(&a, &b, &zero)`
+    /// is the Beta-distribution CDF `I_x(a, b)`.
+    ///
+    /// Exact: `I_{(x, x)} = 0`, `I_{(0, 1)}(a, b) = 1`, and the polynomial
+    /// expansion (divided by `B(a, b)`) for positive integers `a`, `b`;
+    /// `∂/∂x₂ = x₂^{a−1}(1 − x₂)^{b−1} / B(a, b)`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// // Beta(2, 3) CDF
+    /// let cdf = x.betainc_regularized(&ctx.int(2), &ctx.int(3), &ctx.int(0)).eval();
+    /// assert_eq!(format!("{cdf}"), "3*x^4 - 8*x^3 + 6*x^2");
+    /// ```
+    #[must_use]
+    pub fn betainc_regularized(&self, a: &Ex, b: &Ex, x1: &Ex) -> Ex {
+        let a_id = self.checked_id(a);
+        let b_id = self.checked_id(b);
+        let x1_id = self.checked_id(x1);
+        self.special_apply(
+            crate::base::arena::FN_BETAINC_REGULARIZED,
+            &[a_id, b_id, x1_id, self.raw_id()],
+        )
+    }
+
     // ── Formal power series ────────────────────────────────────────
 
     /// Compute the formal power series of this expression about `point`.

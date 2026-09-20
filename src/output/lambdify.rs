@@ -7,7 +7,8 @@
 //! and evaluate without touching the arena or taking any locks.
 //!
 //! Every numerically evaluable [`ExprNode`] is supported, including the
-//! special functions (Γ, ln Γ, ψ, erf/erfc, Lambert W, Beta, factorials,
+//! special functions (Γ, ln Γ, ψ, erf/erfc and their inverses erfinv/erfcinv,
+//! Lambert W, Beta, factorials,
 //! binomials), Bessel functions and orthogonal polynomials with integer
 //! order, integer sequences, piecewise expressions and boolean/relational
 //! nodes (represented as `0.0`/`1.0`).  The special-function algorithms live
@@ -475,6 +476,8 @@ impl Program {
                 Instruction::Digamma => un!(rt::digamma),
                 Instruction::Erf => un!(rt::erf),
                 Instruction::Erfc => un!(rt::erfc),
+                Instruction::Erfinv => un!(rt::erfinv),
+                Instruction::Erfcinv => un!(rt::erfcinv),
                 Instruction::LambertW => un!(rt::lambert_w0),
                 Instruction::Factorial => un!(rt::factorial),
                 Instruction::Binomial => bin!(rt::binomial),
@@ -576,6 +579,8 @@ enum Instruction {
     Digamma,
     Erf,
     Erfc,
+    Erfinv,
+    Erfcinv,
     LambertW,
     Factorial,
     /// `binomial(second, top)`.
@@ -1082,6 +1087,8 @@ impl<'a> Emitter<'a> {
             n if n == names::FN_LUCAS => Some(Instruction::Lucas),
             n if n == names::FN_HARMONIC => Some(Instruction::Harmonic),
             n if n == names::FN_FACTORIAL2 => Some(Instruction::Factorial2),
+            n if n == names::FN_ERFINV => Some(Instruction::Erfinv),
+            n if n == names::FN_ERFCINV => Some(Instruction::Erfcinv),
             _ => None,
         };
         if let Some(inst) = unary {
@@ -1345,6 +1352,16 @@ mod tests {
         let fib = a.fibonacci(x);
         let f = compile(&mut a, fib, &["x"]).unwrap();
         assert_eq!(f(&[20.0]), 6765.0);
+        // Named `Apply` inverses of erf/erfc (mpmath: erfinv(0.5), erfcinv(0.1)).
+        use crate::transforms::eval::apply_named;
+        let ei = apply_named(&mut a, crate::base::arena::FN_ERFINV, &[x]);
+        let f = compile(&mut a, ei, &["x"]).unwrap();
+        assert!(close(f(&[0.5]), 0.47693627620446987338, 1e-15));
+        assert_eq!(f(&[1.0]), f64::INFINITY);
+        assert!(f(&[1.5]).is_nan());
+        let eci = apply_named(&mut a, crate::base::arena::FN_ERFCINV, &[x]);
+        let f = compile(&mut a, eci, &["x"]).unwrap();
+        assert!(close(f(&[0.1]), 1.1630871536766740677, 1e-15));
     }
 
     #[test]

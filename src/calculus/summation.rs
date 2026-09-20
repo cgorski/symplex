@@ -22,16 +22,28 @@
 //! 6. **Polynomials in `k`** (any degree, symbolic coefficients allowed) via
 //!    Faulhaber's formula with exact Bernoulli numbers.
 //! 7. **Binomial identities** (`Σ C(n,k) = 2ⁿ`, `Σ k·C(n,k) = n·2ⁿ⁻¹`,
-//!    `Σ C(n,k)² = C(2n,n)`, `Σ C(n,k) xᵏ = (1+x)ⁿ`, …).
+//!    `Σ C(n,k)² = C(2n,n)`, `Σ C(n,k) xᵏ = (1+x)ⁿ`, …).  Geometric
+//!    exponents may carry a symbolic `k`-free offset, so the binomial
+//!    theorem `Σ C(n,k) pᵏ (1−p)ⁿ⁻ᵏ = 1` closes for symbolic `n` and `p`.
 //! 8. **Geometric / arithmetico-geometric** `Σ P(k)·rᵏ` with symbolic `r`
 //!    (a `Piecewise` covers `r = 1`).
-//! 9. **Gosper's algorithm** for hypergeometric terms.
+//! 9. **Gosper's algorithm** for hypergeometric terms (including
+//!    `C(k+c, k)`-type binomials with `k` in both arguments).
 //!
 //! For infinite upper bounds the engine additionally recognises p-series
 //! (`ζ(2m)` in closed form), alternating p-series (`η`, Dirichlet `β`),
-//! convergent geometric series, and a table of classical power series
+//! convergent geometric series, the negative-binomial series
+//! `Σ P(k)·C(k+c,k)·xᵏ` (`(1−x)^{−(c+1)}` for `P = 1`, any `c`), and a
+//! table of classical power series
 //! (`Σ xᵏ/k! = eˣ`, `Σ (−1)ᵏ x²ᵏ⁺¹/(2k+1)! = sin x`, `Σ xᵏ/k = −ln(1−x)`, …),
 //! and proves divergence where it can.
+//!
+//! **Symbolic ratios.**  Convergence of an infinite geometric-type series
+//! is decided only for a *numeric* ratio.  There is no `|r| < 1` assumption,
+//! so `Σ_{k≥0} rᵏ`, `Σ k (1−p)ᵏ⁻¹ p` or `Σ C(k+c,k) xᵏ` with a symbolic
+//! ratio stay unevaluated (SymPy returns a `Piecewise` over `Abs(r) < 1`
+//! instead).  Sums whose ratio is numeric but whose other parameters are
+//! symbolic (`Σ C(k+c,k) (1/3)ᵏ = (2/3)^{−c−1}`) do close.
 //!
 //! Values without an elementary closed form use the dedicated nodes:
 //! `Σ 1/k³ = ζ(3)` (`Zeta`), `Σ (−1)^k/(2k+1)² = G` (`Catalan`).
@@ -229,6 +241,49 @@ fn linear_in(arena: &Arena, e: ExprId, var: ExprId) -> Option<(Rat, Rat)> {
         Some(1) => Some((p.coeff(1), p.coeff(0))),
         _ => None,
     }
+}
+
+/// Extract `(a, b)` such that `e = a·var + b` with rational `a ≠ 0` and a
+/// `var`-free intercept `b` that may be symbolic (`n − k` → `(−1, n)`).
+fn linear_in_sym(arena: &mut Arena, e: ExprId, var: ExprId) -> Option<(Rat, ExprId)> {
+    if let Some((a, b)) = linear_in(arena, e, var) {
+        return Some((a, rat_expr(arena, b)));
+    }
+    let monomials = sym_poly_in(arena, e, var)?;
+    let mut slope: Option<Rat> = None;
+    let mut intercept = arena.zero;
+    for (deg, coeff) in monomials {
+        match deg {
+            0 => intercept = coeff,
+            1 => slope = Some(as_rat(arena, coeff)?),
+            _ => return None,
+        }
+    }
+    let a = slope?;
+    if a.is_zero() {
+        return None;
+    }
+    Some((a, intercept))
+}
+
+/// `base^b` for a `var`-free exponent (`1` when `b` is zero).
+fn pow_const(arena: &mut Arena, base: ExprId, b: ExprId) -> ExprId {
+    if let Some(r) = as_rat(arena, b) {
+        return pow_rat(arena, base, &r);
+    }
+    arena.pow(base, b)
+}
+
+/// `r·e` for a rational `r` and a `var`-free expression `e`.
+fn scale_const(arena: &mut Arena, e: ExprId, r: &Rat) -> ExprId {
+    if r.is_one() {
+        return e;
+    }
+    if let Some(v) = as_rat(arena, e) {
+        return rat_expr(arena, v * r);
+    }
+    let re = rat_expr(arena, r.clone());
+    arena.mul(&[re, e])
 }
 
 /// A "structural" zero test: expand + eval, and if that does not reach a
@@ -1445,18 +1500,18 @@ fn shape_factor(
                 if depends_on(arena, base, var) {
                     return None;
                 }
-                let (a, b) = linear_in(arena, exp, var)?;
+                let (a, b) = linear_in_sym(arena, exp, var)?;
                 let a = a * outer;
-                let b = b * outer;
-                shape_geometric(arena, base, &a, &b, shape, consts)
+                let b = scale_const(arena, b, outer);
+                shape_geometric(arena, base, &a, b, shape, consts)
             }
         }
         ExprNode::Exp(arg) => {
-            let (a, b) = linear_in(arena, arg, var)?;
+            let (a, b) = linear_in_sym(arena, arg, var)?;
             let e = arena.e_const;
             let a = a * outer;
-            let b = b * outer;
-            shape_geometric(arena, e, &a, &b, shape, consts)
+            let b = scale_const(arena, b, outer);
+            shape_geometric(arena, e, &a, b, shape, consts)
         }
         ExprNode::Factorial(arg) => {
             let e = outer.to_integer();
@@ -1521,17 +1576,17 @@ fn shape_factor(
     }
 }
 
-/// `base^(a·k + b)` with `base` free of `k`.
+/// `base^(a·k + b)` with `base` and `b` free of `k` (`b` may be symbolic).
 fn shape_geometric(
     arena: &mut Arena,
     base: ExprId,
     a: &Rat,
-    b: &Rat,
+    b: ExprId,
     shape: &mut TermShape,
     consts: &mut Vec<ExprId>,
 ) -> Option<()> {
     if a.is_zero() {
-        let c = pow_rat(arena, base, b);
+        let c = pow_const(arena, base, b);
         consts.push(c);
         return Some(());
     }
@@ -1548,23 +1603,23 @@ fn shape_geometric(
             } else {
                 shape.numeric_base *= rat_pow_i(&r, ai);
             }
-            if !b.is_zero() {
-                let c = pow_rat(arena, base, b);
+            if !arena.is_zero_structural(b) {
+                let c = pow_const(arena, base, b);
                 consts.push(c);
             }
             return Some(());
         }
         // Non-integer multiple of k (e.g. 2^(k/2)) — keep as symbolic base.
         shape.bases.push((base, a.clone()));
-        if !b.is_zero() {
-            let c = pow_rat(arena, base, b);
+        if !arena.is_zero_structural(b) {
+            let c = pow_const(arena, base, b);
             consts.push(c);
         }
         return Some(());
     }
     shape.bases.push((base, a.clone()));
-    if !b.is_zero() {
-        let c = pow_rat(arena, base, b);
+    if !arena.is_zero_structural(b) {
+        let c = pow_const(arena, base, b);
         consts.push(c);
     }
     Some(())
@@ -1627,6 +1682,38 @@ fn stirling_second_row(m: usize) -> Vec<Rat> {
     row
 }
 
+/// Split `k`-free factors into those of the form `b^n` (exponent
+/// structurally equal to `n`) and the rest, returning `(Π b, Π rest)`.
+///
+/// In the binomial identities `n` is the sum's upper bound, hence an
+/// integer, so `q^n` may be folded into the closed form's base without a
+/// branch-cut concern: `(1 + x)^n·q^n = ((1 + x)·q)^n`.  This is what turns
+/// `Σ C(n,k) p^k q^{n−k}` into `(p + q)^n` rather than `(1 + p/q)^n·q^n`.
+fn split_pow_n(arena: &mut Arena, factors: &[ExprId], n: ExprId) -> (ExprId, ExprId) {
+    let mut bases = Vec::new();
+    let mut rest = Vec::new();
+    for &f in factors {
+        match arena.node(f) {
+            ExprNode::Pow(b, e) if *e == n => bases.push(*b),
+            _ => rest.push(f),
+        }
+    }
+    let q = mul_all(arena, &bases);
+    let r = mul_all(arena, &rest);
+    (q, r)
+}
+
+/// `e·q` over a common denominator (identity when `q` is 1).
+fn scale_and_tidy(arena: &mut Arena, e: ExprId, q: ExprId) -> ExprId {
+    let m = if q == arena.one {
+        e
+    } else {
+        arena.mul(&[e, q])
+    };
+    let t = arena.together_expr(m);
+    eval::eval(arena, t)
+}
+
 /// `Σ_{k=0}^{n} P(k)·C(n,k)·x^k` for a polynomial `P` (symbolic `k`-free
 /// coefficients allowed) via the falling-factorial basis:
 /// `k^(j)·C(n,k) = n^(j)·C(n−j, k−j)`, so the sum is
@@ -1660,10 +1747,10 @@ fn binomial_poly_sum(
             ExprNode::Pow(base, exp)
                 if !depends_on(arena, base, var) && depends_on(arena, exp, var) =>
             {
-                let (a, b) = linear_in(arena, exp, var)?;
+                let (a, b) = linear_in_sym(arena, exp, var)?;
                 x_parts.push(pow_rat(arena, base, &a));
-                if !b.is_zero() {
-                    consts.push(pow_rat(arena, base, &b));
+                if !arena.is_zero_structural(b) {
+                    consts.push(pow_const(arena, base, b));
                 }
             }
             _ => {
@@ -1694,9 +1781,13 @@ fn binomial_poly_sum(
     if as_rat(arena, x) == Some(-Rat::one()) {
         return None; // (1+x)^{n−j} = 0^{n−j} needs a case split; leave to Gosper
     }
+    // Constant factors q^n are absorbed into x^j·(1+x)^{n−j} as (xq)^j·((1+x)q)^{n−j}.
+    let (q, rest) = split_pow_n(arena, &consts, n);
+    let mut consts = vec![rest];
     let one = arena.one;
     let one_plus_x = arena.add(&[one, x]);
-    let one_plus_x = eval::eval(arena, one_plus_x);
+    let one_plus_x = scale_and_tidy(arena, one_plus_x, q);
+    let x = scale_and_tidy(arena, x, q);
     // Falling-factorial coefficients s_j = Σ_m c_m S(m, j).
     let mut s: Vec<Vec<ExprId>> = vec![Vec::new(); deg + 1];
     for (m, c) in &monomials {
@@ -1762,6 +1853,12 @@ fn binomial_sum(
     let n_m1 = arena.sub(n, one);
     let n_p1 = arena.add(&[n, one]);
     let x = shape.geometric_base(arena); // includes sign alternation
+    // Constant factors q^n (e.g. the q^{n} of Σ C(n,k) p^k q^{n−k}) are folded
+    // into the closed form's base where the geometric identities allow it.
+    let const_factors = mul_factors(arena, shape.constant);
+    let (q, constant) = split_pow_n(arena, &const_factors, n);
+    let has_q = q != one;
+    let mut folded_q = false;
     let result = match (e, shape.lin_pows.as_slice(), x) {
         // Σ C(n,k) = 2^n
         (1, [], None) => arena.pow(two, n),
@@ -1796,19 +1893,29 @@ fn binomial_sum(
                 let ncond = arena.ne_(n, zero);
                 arena.piecewise(&[(one, cond), (zero, ncond)])
             } else {
-                let base = arena.add(&[one, x]);
+                // (1+x)^n·q^n = ((1+x)q)^n
+                folded_q = true;
+                let s = arena.add(&[one, x]);
+                let base = scale_and_tidy(arena, s, q);
                 arena.pow(base, n)
             }
         }
-        // Σ k C(n,k) x^k = n x (1+x)^(n−1)
+        // Σ k C(n,k) x^k = n x (1+x)^(n−1)   (·q^n = n·(xq)·((1+x)q)^(n−1))
         (1, [(b, p)], Some(x)) if b.is_zero() && p.is_one() => {
-            let base = arena.add(&[one, x]);
+            folded_q = true;
+            let s = arena.add(&[one, x]);
+            let base = scale_and_tidy(arena, s, q);
+            let xq = scale_and_tidy(arena, x, q);
             let t = arena.pow(base, n_m1);
-            arena.mul(&[n, x, t])
+            arena.mul(&[n, xq, t])
         }
         _ => return None,
     };
-    let total = arena.mul(&[shape.constant, result]);
+    let mut factors = vec![constant, result];
+    if has_q && !folded_q {
+        factors.push(arena.pow(q, n));
+    }
+    let total = arena.mul(&factors);
     Some(eval::eval(arena, total))
 }
 
@@ -1836,18 +1943,18 @@ fn geometric_split(arena: &mut Arena, body: ExprId, var: ExprId) -> Option<Geome
             ExprNode::Pow(base, exp)
                 if depends_on(arena, exp, var) && !depends_on(arena, base, var) =>
             {
-                let (a, b) = linear_in(arena, exp, var)?;
+                let (a, b) = linear_in_sym(arena, exp, var)?;
                 y_parts.push(pow_rat(arena, base, &a));
-                if !b.is_zero() {
-                    c_parts.push(pow_rat(arena, base, &b));
+                if !arena.is_zero_structural(b) {
+                    c_parts.push(pow_const(arena, base, b));
                 }
             }
             ExprNode::Exp(arg) => {
-                let (a, b) = linear_in(arena, arg, var)?;
+                let (a, b) = linear_in_sym(arena, arg, var)?;
                 let e = arena.e_const;
                 y_parts.push(pow_rat(arena, e, &a));
-                if !b.is_zero() {
-                    c_parts.push(pow_rat(arena, e, &b));
+                if !arena.is_zero_structural(b) {
+                    c_parts.push(pow_const(arena, e, b));
                 }
             }
             _ => p_parts.push(f),
@@ -2077,6 +2184,11 @@ fn infinite_sum(arena: &mut Arena, body: ExprId, var: ExprId, lo: ExprId) -> Sum
         return r;
     }
 
+    // 5. Negative-binomial series Σ P(k)·C(k+c, k)·xᵏ.
+    if let Some(r) = negative_binomial_series(arena, body, var, lo) {
+        return r;
+    }
+
     // 6. Gosper antidifference with an exactly computable tail limit.
     if let Some(r) = gosper_infinite(arena, body, var, lo) {
         return r;
@@ -2222,7 +2334,163 @@ fn p_series_infinite(arena: &mut Arena, shape: &TermShape, lo: ExprId) -> Option
     Some(SumOutcome::Closed(eval::eval(arena, total)))
 }
 
-// ── power-series table ──────────────────────────────────────────────────────
+// ── negative-binomial series ────────────────────────────────────────────────────
+
+/// `Σ_{k=lo}^{∞} P(k)·C(k+c, k)·xᵏ`, where the binomial coefficient may also
+/// be spelled `C(k+c, c)` and `c` is any `k`-free expression (numeric or
+/// symbolic — `r − 1` for the NegativeBinomial pmf `C(k+r−1, k) pʳ (1−p)ᵏ`).
+///
+/// The base identity is the generalised binomial series, valid for every
+/// `c` when `|x| < 1`:
+///
+/// ```text
+/// Σ_{k≥0} C(k+c, k) xᵏ = (1 − x)^{−(c+1)}          (SymPy: (1 - x)**(-c - 1))
+/// ```
+///
+/// A polynomial multiplier `P(k)` (symbolic coefficients allowed) is applied
+/// through the Euler operator `P(x·d/dx)` exactly as for arithmetico-
+/// geometric sums, so `Σ k·C(k+c,k) xᵏ = (c+1)·x·(1−x)^{−(c+2)}`; a lower
+/// bound `lo > 0` subtracts the skipped leading terms.
+///
+/// Convergence follows this module's geometric-series convention: `|x| < 1`
+/// is decided only for a numeric ratio.  A *symbolic* ratio (no `|x| < 1`
+/// assumption is available) leaves the sum unevaluated — SymPy returns a
+/// `Piecewise` over `Abs(x) < 1` instead.  `|x| ≥ 1` with a numeric `c ≥ 0`
+/// is reported as divergent.
+fn negative_binomial_series(
+    arena: &mut Arena,
+    body: ExprId,
+    var: ExprId,
+    lo: ExprId,
+) -> Option<SumOutcome> {
+    let lo_i = as_i64(arena, lo)?;
+    if !(0..=MAX_ENUMERATION_TERMS).contains(&lo_i) {
+        return None;
+    }
+    let mut consts = Vec::new();
+    let mut poly_factors = Vec::new();
+    let mut x_parts = Vec::new();
+    let mut shift: Option<ExprId> = None;
+    for f in mul_factors(arena, body) {
+        if !depends_on(arena, f, var) {
+            consts.push(f);
+            continue;
+        }
+        match arena.node(f).clone() {
+            ExprNode::Binomial(n, m) => {
+                if shift.is_some() {
+                    return None;
+                }
+                shift = Some(binomial_shift(arena, n, m, var)?);
+            }
+            ExprNode::Pow(base, exp)
+                if !depends_on(arena, base, var) && depends_on(arena, exp, var) =>
+            {
+                let (a, b) = linear_in_sym(arena, exp, var)?;
+                x_parts.push(pow_rat(arena, base, &a));
+                if !arena.is_zero_structural(b) {
+                    consts.push(pow_const(arena, base, b));
+                }
+            }
+            ExprNode::Exp(arg) => {
+                let (a, b) = linear_in_sym(arena, arg, var)?;
+                let e = arena.e_const;
+                x_parts.push(pow_rat(arena, e, &a));
+                if !arena.is_zero_structural(b) {
+                    consts.push(pow_const(arena, e, b));
+                }
+            }
+            _ => {
+                sym_poly_in(arena, f, var)?;
+                poly_factors.push(f);
+            }
+        }
+    }
+    let c = shift?;
+    if x_parts.is_empty() {
+        return None;
+    }
+    let x = mul_all(arena, &x_parts);
+    let x = eval::eval(arena, x);
+    match abs_less_than_one(arena, x) {
+        Some(true) => {}
+        Some(false) => {
+            // |C(k+c, k)| ≥ 1 for a numeric c ≥ 0, so the terms cannot tend
+            // to zero; for other `c` the question is left open.
+            let c_val = const_value(arena, c)?;
+            if c_val.is_negative() {
+                return None;
+            }
+            let sign = if const_sign(arena, x) == Some(true) {
+                // Leading coefficient of P (1 when there is no polynomial).
+                let lead = if poly_factors.is_empty() {
+                    arena.one
+                } else {
+                    let p_expr = mul_all(arena, &poly_factors);
+                    let poly = sym_poly_in(arena, p_expr, var)?;
+                    poly.last().map(|(_, c)| *c)?
+                };
+                let mut all = consts.clone();
+                all.push(lead);
+                let lc = mul_all(arena, &all);
+                const_sign(arena, lc)
+            } else {
+                None
+            };
+            return Some(SumOutcome::Divergent(infinity_of_sign(arena, sign)));
+        }
+        None => return Some(SumOutcome::Unevaluated),
+    }
+    // (1 − r)^{−(c+1)} in a placeholder r, then P(r d/dr) and r → x.
+    let r = arena.symbol("_r");
+    let one = arena.one;
+    let omr = arena.sub(one, r);
+    let c1 = arena.add(&[c, one]);
+    let neg_c1 = arena.neg(c1);
+    let neg_c1 = eval::eval(arena, neg_c1);
+    let s0 = arena.pow(omr, neg_c1);
+    let f = if poly_factors.is_empty() {
+        let at_x = subs::subs(arena, s0, r, x);
+        eval::eval(arena, at_x)
+    } else {
+        let p_expr = mul_all(arena, &poly_factors);
+        let poly = sym_poly_in(arena, p_expr, var)?;
+        apply_euler_operator(arena, &poly, s0, r, x)
+    };
+    tracing::debug!("summation: negative-binomial series");
+    consts.push(f);
+    let mut total = mul_all(arena, &consts);
+    if lo_i > 0 {
+        let mut skipped = Vec::with_capacity(lo_i as usize);
+        for k in 0..lo_i {
+            let ke = arena.int(k);
+            let t = subs::subs(arena, body, var, ke);
+            skipped.push(eval::eval(arena, t));
+        }
+        let s = add_all(arena, &skipped);
+        total = arena.sub(total, s);
+    }
+    Some(SumOutcome::Closed(eval::eval(arena, total)))
+}
+
+/// The `k`-free shift `c` of a binomial coefficient written as `C(k + c, k)`
+/// or `C(k + c, c)`; `None` for any other shape.
+fn binomial_shift(arena: &mut Arena, n: ExprId, m: ExprId, var: ExprId) -> Option<ExprId> {
+    if m == var {
+        let c = arena.sub(n, var);
+        let c = eval::eval(arena, c);
+        return (!depends_on(arena, c, var)).then_some(c);
+    }
+    if depends_on(arena, m, var) {
+        return None;
+    }
+    // C(n, m) with n − m = k.
+    let d = arena.sub(n, m);
+    let d = arena.sub(d, var);
+    is_zero_expr(arena, d).then_some(m)
+}
+
+// ── power-series table ────────────────────────────────────────────────────────────
 
 /// Convergence domain of a power series in `x`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3609,6 +3877,58 @@ mod tests {
         let s = closed(summation(&mut arena, body, k, one, inf));
         let expected = arena.sub(ex, one);
         assert_eq!(s, expected, "got {}", arena.display(s));
+    }
+
+    #[test]
+    fn negative_binomial_series_and_binomial_theorem() {
+        let mut arena = Arena::new();
+        let k = arena.symbol("k");
+        let c = arena.symbol("c");
+        let zero = arena.zero;
+        let inf = arena.infinity;
+        let third = arena.rational(1, 3);
+        let xk = arena.pow(third, k);
+        // Σ C(k+3,k)(1/3)^k = 81/16, Σ k·C(k+3,k)(1/3)^k = 81/8 (SymPy).
+        let three = arena.int(3);
+        let k3 = arena.add(&[k, three]);
+        let bin = arena.binomial(k3, k);
+        let body = arena.mul(&[bin, xk]);
+        let s = closed(summation(&mut arena, body, k, zero, inf));
+        assert_eq!(as_rat(&arena, s), Some(Rat::new(81.into(), 16.into())));
+        let body_k = arena.mul(&[k, bin, xk]);
+        let s = closed(summation(&mut arena, body_k, k, zero, inf));
+        assert_eq!(as_rat(&arena, s), Some(Rat::new(81.into(), 8.into())));
+        // Symbolic c with a numeric ratio closes to (2/3)^(-c-1); at c = 2 → 27/8.
+        let kc = arena.add(&[k, c]);
+        let binc = arena.binomial(kc, k);
+        let body = arena.mul(&[binc, xk]);
+        let s = closed(summation(&mut arena, body, k, zero, inf));
+        assert!(!walk::has_unevaluated(&arena, s), "{}", arena.display(s));
+        assert_eq!(eval_at(&mut arena, s, c, 2), Rat::new(27.into(), 8.into()));
+        // Symbolic ratio: no |x| < 1 assumption → unevaluated.
+        let x = arena.symbol("x");
+        let xs = arena.pow(x, k);
+        let body = arena.mul(&[bin, xs]);
+        assert_eq!(
+            summation(&mut arena, body, k, zero, inf),
+            SumOutcome::Unevaluated
+        );
+        // Binomial theorem with a symbolic exponent offset: Σ C(n,k) p^k (1−p)^(n−k) = 1.
+        let n = arena.symbol("n");
+        let p = arena.symbol("p");
+        let one = arena.one;
+        let q = arena.sub(one, p);
+        let nmk = arena.sub(n, k);
+        let qnk = arena.pow(q, nmk);
+        let pk = arena.pow(p, k);
+        let bn = arena.binomial(n, k);
+        let body = arena.mul(&[bn, pk, qnk]);
+        let s = closed(summation(&mut arena, body, k, zero, n));
+        assert_eq!(s, one, "got {}", arena.display(s));
+        let body = arena.mul(&[k, bn, pk, qnk]);
+        let s = closed(summation(&mut arena, body, k, zero, n));
+        let np = arena.mul(&[n, p]);
+        assert_eq!(s, np, "got {}", arena.display(s));
     }
 
     #[test]

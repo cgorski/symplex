@@ -320,6 +320,7 @@ fn generate_expr(ctx: &Ident, expr: &MathExpr) -> syn::Result<TokenStream2> {
             // 0.9 special functions with parameters, in SymPy's argument
             // order `f(params…, x)`; the `Ex` method lives on `x` and takes
             // the parameters after it: `expint(n, x)` → `x.expint(&n)`.
+            // Likewise `betainc(a, b, x1, x2)` → `x2.betainc(&a, &b, &x1)`.
             if let Some((method, nparams)) = match name.as_str() {
                 "expint" => Some(("expint", 1)),
                 "lowergamma" => Some(("lowergamma", 1)),
@@ -331,6 +332,8 @@ fn generate_expr(ctx: &Ident, expr: &MathExpr) -> syn::Result<TokenStream2> {
                 "assoc_legendre" => Some(("assoc_legendre", 2)),
                 "assoc_laguerre" => Some(("assoc_laguerre", 2)),
                 "jacobi" => Some(("jacobi", 3)),
+                "betainc" => Some(("betainc", 3)),
+                "betainc_regularized" => Some(("betainc_regularized", 3)),
                 _ => None,
             } {
                 if args.len() != nparams + 1 {
@@ -374,6 +377,8 @@ fn generate_expr(ctx: &Ident, expr: &MathExpr) -> syn::Result<TokenStream2> {
                     "assoc_legendre",
                     "assoc_laguerre",
                     "jacobi",
+                    "betainc",
+                    "betainc_regularized",
                 ]
                 .contains(&name.as_str())
             {

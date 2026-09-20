@@ -457,6 +457,14 @@ pub(crate) fn hypergeometric_ratio(
             Some((n_minus_k, k1))
         }
 
+        // binomial(n(k), m(k)) with n, m linear in k (integer slopes, k-free
+        // intercepts that may be symbolic): C(n, m) = n!/(m!·(n−m)!), and
+        // each factorial contributes the product for its shift, e.g.
+        // C(k+c, k) → (k+c+1)/(k+1),  C(2k, k) → (2k+1)(2k+2)/(k+1)².
+        ExprNode::Binomial(n, m) => {
+            binomial_ratio(arena, n, m, k).or_else(|| try_ratio_by_substitution(arena, f, k))
+        }
+
         // pow(base, k) where base is k-free → ratio = base
         ExprNode::Pow(base, exp) if exp == k => {
             if !walk::free_symbols(arena, base).contains(&k) {
@@ -571,6 +579,78 @@ pub(crate) fn hypergeometric_ratio(
 
         _ => try_ratio_by_substitution(arena, f, k),
     }
+}
+
+/// Largest factorial-argument shift expanded into an explicit product by
+/// [`factorial_shift_ratio`].
+const MAX_FACTORIAL_SHIFT: i64 = 8;
+
+/// `C(n(k+1), m(k+1)) / C(n(k), m(k))` for `n`, `m` linear in `k` with
+/// integer slopes; `None` when either argument has another shape.
+fn binomial_ratio(arena: &mut Arena, n: ExprId, m: ExprId, k: ExprId) -> Option<(ExprId, ExprId)> {
+    let sn = int_slope_in(arena, n, k)?;
+    let sm = int_slope_in(arena, m, k)?;
+    let nm = arena.sub(n, m);
+    let nm = eval::eval(arena, nm);
+    let snm = int_slope_in(arena, nm, k)?;
+    let (p1, q1) = factorial_shift_ratio(arena, n, sn)?;
+    let (p2, q2) = factorial_shift_ratio(arena, m, sm)?;
+    let (p3, q3) = factorial_shift_ratio(arena, nm, snm)?;
+    let numer = arena.mul(&[p1, q2, q3]);
+    let denom = arena.mul(&[q1, p2, p3]);
+    Some((numer, denom))
+}
+
+/// Integer slope `s` of an expression `e = s·k + t` whose intercept `t` is
+/// `k`-free (symbolic allowed); `Some(0)` when `e` does not involve `k`.
+fn int_slope_in(arena: &mut Arena, e: ExprId, k: ExprId) -> Option<i64> {
+    if !walk::contains(arena, e, k) {
+        return Some(0);
+    }
+    let monomials = crate::calculus::summation::sym_poly_in(arena, e, k)?;
+    let mut slope = 0i64;
+    for (deg, coeff) in monomials {
+        match deg {
+            0 => {}
+            1 => {
+                let r = arena.as_num(coeff)?;
+                if !r.is_integer() {
+                    return None;
+                }
+                slope = r.to_integer().to_i64()?;
+            }
+            _ => return None,
+        }
+    }
+    Some(slope)
+}
+
+/// `(a + s)! / a!` as a pair `(numer, denom)` of polynomials in `k` for an
+/// integer shift `s`: `(a+1)⋯(a+s)` for `s > 0`, `1 / (a(a−1)⋯(a+s+1))` for
+/// `s < 0`, `(1, 1)` for `s = 0`.
+fn factorial_shift_ratio(arena: &mut Arena, a: ExprId, s: i64) -> Option<(ExprId, ExprId)> {
+    if s.abs() > MAX_FACTORIAL_SHIFT {
+        return None;
+    }
+    let one = arena.one;
+    let mut factors = Vec::with_capacity(s.unsigned_abs() as usize);
+    if s > 0 {
+        for j in 1..=s {
+            let je = arena.int(j);
+            factors.push(arena.add(&[a, je]));
+        }
+    } else {
+        for j in 0..-s {
+            let je = arena.int(-j);
+            factors.push(arena.add(&[a, je]));
+        }
+    }
+    let prod = match factors.len() {
+        0 => one,
+        1 => factors[0],
+        _ => arena.mul(&factors),
+    };
+    Some(if s >= 0 { (prod, one) } else { (one, prod) })
 }
 
 /// Fallback: compute the ratio by direct substitution k → k+1, division,
@@ -1139,6 +1219,50 @@ mod tests {
         assert!(is_hypergeometric(&mut arena, h, k).is_none());
         // the summation index must be a symbol
         assert!(is_hypergeometric(&mut arena, kf, five).is_none());
+    }
+
+    #[test]
+    fn binomial_ratio_with_k_in_both_arguments() {
+        let mut arena = Arena::new();
+        let k = arena.symbol("k");
+        let c = arena.symbol("c");
+        // C(k+c, k): ratio (k+c+1)/(k+1); at c = 2, k = 3: 6/4 = 3/2.
+        let kc = arena.add(&[k, c]);
+        let b = arena.binomial(kc, k);
+        let r = is_hypergeometric(&mut arena, b, k).unwrap();
+        let two = arena.int(2);
+        let three = arena.int(3);
+        let at = subs::subs(&mut arena, r, c, two);
+        let at = subs::subs(&mut arena, at, k, three);
+        let at = eval::eval(&mut arena, at);
+        assert_eq!(display(&arena, at), "3/2");
+        // C(k+c, c) has the same ratio.
+        let b2 = arena.binomial(kc, c);
+        let r2 = is_hypergeometric(&mut arena, b2, k).unwrap();
+        let at = subs::subs(&mut arena, r2, c, two);
+        let at = subs::subs(&mut arena, at, k, three);
+        let at = eval::eval(&mut arena, at);
+        assert_eq!(display(&arena, at), "3/2");
+        // C(2k, k): ratio 2(2k+1)/(k+1); at k = 3: 14/4 = 7/2.
+        let two_k = arena.mul(&[two, k]);
+        let b3 = arena.binomial(two_k, k);
+        let r3 = is_hypergeometric(&mut arena, b3, k).unwrap();
+        let at = subs::subs(&mut arena, r3, k, three);
+        let at = eval::eval(&mut arena, at);
+        assert_eq!(display(&arena, at), "7/2");
+        // Σ_{k=0}^{n} C(k+2,k)(1/2)^k is Gosper-summable; SymPy gives 99/16 at n = 4.
+        let n = arena.symbol("n");
+        let k2 = arena.add(&[k, two]);
+        let bin = arena.binomial(k2, k);
+        let half = arena.rational(1, 2);
+        let hk = arena.pow(half, k);
+        let body = arena.mul(&[bin, hk]);
+        let zero = arena.zero;
+        let s = gosper_sum(&mut arena, body, k, zero, n).unwrap();
+        let four = arena.int(4);
+        let at = subs::subs(&mut arena, s, n, four);
+        let at = eval::eval(&mut arena, at);
+        assert_eq!(display(&arena, at), "99/16");
     }
 
     #[test]

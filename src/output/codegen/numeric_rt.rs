@@ -24,6 +24,7 @@
 //! | `lgamma` | ln Γ for 0.5 ≤ x < 20, Stirling for x ≥ 20, reflection | ≈ 1e-15 absolute; relative accuracy degrades near the zeros x = 1, 2 |
 //! | `digamma` | recurrence to x ≥ 10, asymptotic series through x⁻¹⁴ | ≈ 1e-15 absolute |
 //! | `erf`, `erfc` | W. J. Cody's rational Chebyshev approximations | ≈ 1e-16, `erfc` keeps relative accuracy for large x |
+//! | `erfinv`, `erfcinv` | Maclaurin / Winitzki start + Halley on `erf`/`erfc`, Newton on `ln erfc` via erfcx in the deep tail | ≤ 3e-16 (relative accuracy kept down to subnormal `erfcinv` arguments) |
 //! | `lambert_w0` | branch-point series + Halley iteration | ≈ 1e-15 (ill-conditioned near −1/e) |
 //! | `bessel_j/y` | power series, Miller backward recurrence, Hankel asymptotics | ≈ 1e-14 (absolute near zeros) |
 //! | `bessel_i` | power series / asymptotic expansion | ≈ 1e-14 |
@@ -320,6 +321,42 @@ pub fn erf(x: f64) -> f64 {
 pub fn erfc(x: f64) -> f64 {
     calerf(x, true)
 }
+/// Cody's asymptotic rational approximation for the scaled complementary
+/// error function on |x| > 4 (shared by `calerf` and `erfcx_large`).
+const ERFC_P: [f64; 6] = [
+    3.05326634961232344e-1,
+    3.60344899949804439e-1,
+    1.25781726111229246e-1,
+    1.60837851487422766e-2,
+    6.58749161529837803e-4,
+    1.63153871373020978e-2,
+];
+const ERFC_Q: [f64; 5] = [
+    2.56852019228982242e00,
+    1.87295284992346725e00,
+    5.27905102951428412e-1,
+    6.05183413124413191e-2,
+    2.33520497626869185e-3,
+];
+/// 1/√π.
+const INV_SQRT_PI: f64 = 5.6418958354775628695e-1;
+/// Scaled complementary error function erfcx(x) = e^{x²}·erfc(x) for x > 4.
+///
+/// Does not underflow (erfcx(x) ~ 1/(x√π)), which is what the deep tail of
+/// `erfcinv` needs where `erfc` itself is subnormal or zero.
+fn erfcx_large(x: f64) -> f64 {
+    let ysq = 1.0 / (x * x);
+    let mut xnum = ERFC_P[5] * ysq;
+    let mut xden = ysq;
+    let mut i = 0;
+    while i < 4 {
+        xnum = (xnum + ERFC_P[i]) * ysq;
+        xden = (xden + ERFC_Q[i]) * ysq;
+        i += 1;
+    }
+    let result = ysq * (xnum + ERFC_P[4]) / (xden + ERFC_Q[4]);
+    (INV_SQRT_PI - result) / x
+}
 /// Cody's CALERF: `complement == false` → erf, `true` → erfc.
 fn calerf(x: f64, complement: bool) -> f64 {
     const A: [f64; 5] = [
@@ -356,22 +393,6 @@ fn calerf(x: f64, complement: bool) -> f64 {
         3.43936767414372164e03,
         1.23033935480374942e03,
     ];
-    const P: [f64; 6] = [
-        3.05326634961232344e-1,
-        3.60344899949804439e-1,
-        1.25781726111229246e-1,
-        1.60837851487422766e-2,
-        6.58749161529837803e-4,
-        1.63153871373020978e-2,
-    ];
-    const Q: [f64; 5] = [
-        2.56852019228982242e00,
-        1.87295284992346725e00,
-        5.27905102951428412e-1,
-        6.05183413124413191e-2,
-        2.33520497626869185e-3,
-    ];
-    const SQRPI: f64 = 5.6418958354775628695e-1;
     const THRESH: f64 = 0.46875;
     const XSMALL: f64 = 1.11e-16;
     const XBIG: f64 = 26.543;
@@ -410,17 +431,7 @@ fn calerf(x: f64, complement: bool) -> f64 {
     } else {
         result = 0.0;
         if y < XBIG {
-            let ysq = 1.0 / (y * y);
-            let mut xnum = P[5] * ysq;
-            let mut xden = ysq;
-            let mut i = 0;
-            while i < 4 {
-                xnum = (xnum + P[i]) * ysq;
-                xden = (xden + Q[i]) * ysq;
-                i += 1;
-            }
-            result = ysq * (xnum + P[4]) / (xden + Q[4]);
-            result = (SQRPI - result) / y;
+            result = erfcx_large(y);
             let ysq = p_floor(y * 16.0) / 16.0;
             let del = (y - ysq) * (y + ysq);
             result *= p_exp(-ysq * ysq) * p_exp(-del);
@@ -435,6 +446,141 @@ fn calerf(x: f64, complement: bool) -> f64 {
     }
 }
 // @@end erf
+
+// @@begin erfinv
+/// √π/2.
+const HALF_SQRT_PI: f64 = 0.88622692545275801365;
+/// Maclaurin coefficients of erfinv: erfinv(x) = Σ ERFINV_SERIES[k]·w^{2k+1}
+/// with w = (√π/2)·x (OEIS A092676/A092677: 1, 1/3, 7/30, 127/630, …).
+const ERFINV_SERIES: [f64; 8] = [
+    1.0,
+    0.33333333333333333333,
+    0.23333333333333333333,
+    0.20158730158730158730,
+    0.19263668430335097002,
+    0.19532547699214365881,
+    0.20593586454697565891,
+    0.22320975741875211778,
+];
+/// Inverse error function: erf(erfinv(x)) = x for −1 < x < 1.
+///
+/// ±1 map to ±∞, |x| > 1 to NaN.  For |x| ≤ 1/2 an 8-term Maclaurin series
+/// (relative error ≤ 7e-7) is polished by Halley iterations on
+/// `erf(z) − x`; for |x| > 1/2 the problem is handed to the `erfc`-based
+/// tail solver with the *exact* complement 1 − |x| (Sterbenz), so that the
+/// accuracy near ±1 is set by `erfc`'s relative accuracy rather than by
+/// cancellation in `erf(z) − x`.  Relative error ≤ 3e-16 across the range.
+pub fn erfinv(x: f64) -> f64 {
+    if x.is_nan() || x < -1.0 || x > 1.0 {
+        return f64::NAN;
+    }
+    if x == 1.0 {
+        return f64::INFINITY;
+    }
+    if x == -1.0 {
+        return f64::NEG_INFINITY;
+    }
+    let a = p_abs(x);
+    if a <= 0.5 {
+        return erfinv_central(x);
+    }
+    let z = erfcinv_tail(1.0 - a);
+    if x < 0.0 { -z } else { z }
+}
+/// Inverse complementary error function: erfc(erfcinv(y)) = y for 0 < y < 2.
+///
+/// 0 maps to +∞, 2 to −∞, values outside [0, 2] to NaN.  Keeps full relative
+/// accuracy for tiny y (down to the smallest subnormal, erfcinv ≈ 27.2)
+/// by iterating on `ln erfc(z)` with the scaled function erfcx.
+pub fn erfcinv(y: f64) -> f64 {
+    if y.is_nan() || y < 0.0 || y > 2.0 {
+        return f64::NAN;
+    }
+    if y == 0.0 {
+        return f64::INFINITY;
+    }
+    if y == 2.0 {
+        return f64::NEG_INFINITY;
+    }
+    if y > 1.5 {
+        // 2 − y is exact for y ∈ [1, 2].
+        return -erfcinv_tail(2.0 - y);
+    }
+    if y >= 0.5 {
+        // 1 − y is exact for y ∈ [1/2, 3/2].
+        return erfinv_central(1.0 - y);
+    }
+    erfcinv_tail(y)
+}
+/// erfinv(x) for |x| ≤ 1/2: Maclaurin start, then Halley on erf(z) − x.
+fn erfinv_central(x: f64) -> f64 {
+    let w = HALF_SQRT_PI * x;
+    let w2 = w * w;
+    let mut p = ERFINV_SERIES[7];
+    let mut i = 7;
+    while i > 0 {
+        i -= 1;
+        p = ERFINV_SERIES[i] + p * w2;
+    }
+    let mut z = w * p;
+    // Halley: f = erf(z) − x, f' = (2/√π)e^{−z²}, f'' = −2z f'
+    //   z ← z − d / (1 + z·d)  with  d = f / f'.
+    let mut iter = 0;
+    while iter < 8 {
+        let f = erf(z) - x;
+        let d = f * HALF_SQRT_PI * p_exp(z * z);
+        let dz = d / (1.0 + z * d);
+        z -= dz;
+        if p_abs(dz) <= 2.0 * EPS * p_abs(z) {
+            break;
+        }
+        iter += 1;
+    }
+    z
+}
+/// erfcinv(y) for 0 < y < 1/2 (so z > 0.47).
+///
+/// Starts from Winitzki's closed-form approximation (relative error ≤ 2e-3)
+/// and refines with Halley on erfc(z) − y while z < 4; beyond that
+/// (y < erfc(4) ≈ 1.5e-8) Newton on ln erfc(z) − ln y using erfcx, which
+/// neither underflows nor cancels.
+fn erfcinv_tail(y: f64) -> f64 {
+    // Winitzki (2008): erfinv(x) ≈ sqrt(sqrt((2/(πa) + L/2)² − L/a) − (2/(πa) + L/2))
+    // with L = ln(1 − x²) = ln y + ln(2 − y), a = 0.147.
+    let l = p_ln(y) + p_ln(2.0 - y);
+    let t = 2.0 / (PI * 0.147) + 0.5 * l;
+    let mut z = p_sqrt(p_sqrt(t * t - l / 0.147) - t);
+    if y > 1.5e-8 {
+        // Halley on f = erfc(z) − y (f' = −(2/√π)e^{−z²}, f'' = −2z f').
+        let mut iter = 0;
+        while iter < 12 {
+            let f = erfc(z) - y;
+            let d = -f * HALF_SQRT_PI * p_exp(z * z);
+            let dz = d / (1.0 + z * d);
+            z -= dz;
+            if p_abs(dz) <= 2.0 * EPS * p_abs(z) {
+                break;
+            }
+            iter += 1;
+        }
+    } else {
+        // Newton on g = ln erfcx(z) − z² − ln y,  g' = −(2/√π)/erfcx(z).
+        let ln_y = p_ln(y);
+        let mut iter = 0;
+        while iter < 12 {
+            let ex = erfcx_large(z);
+            let g = p_ln(ex) - z * z - ln_y;
+            let dz = -g * ex * HALF_SQRT_PI;
+            z -= dz;
+            if p_abs(dz) <= 4.0 * EPS * p_abs(z) {
+                break;
+            }
+            iter += 1;
+        }
+    }
+    z
+}
+// @@end erfinv
 
 // @@begin lambert_w0
 /// Principal branch of the Lambert W function, W₀(x)·exp(W₀(x)) = x.
@@ -1396,6 +1542,99 @@ mod tests {
         assert_rel(erfc(20.0), 5.3958656116079009289e-176, 1e-15, "erfc(20)");
         assert_rel(erfc(-1.0), 1.8427007929497148693, 1e-15, "erfc(-1)");
         assert_eq!(erfc(30.0), 0.0);
+    }
+
+    #[test]
+    fn erfinv_known_values() {
+        // mpmath 1.3 (dps 60), evaluated at the exact double nearest each
+        // literal: erfinv(mpf(x)).
+        let cases: [(f64, f64); 15] = [
+            (0.1, 0.088855990494257691974),
+            (0.3, 0.27246271472675434502),
+            (0.46875, 0.44271885732435436322),
+            (0.47, 0.4440673114347423053),
+            (0.5, 0.47693627620446987338),
+            (0.6, 0.59511608144999482198),
+            (0.75, 0.81341984759761854169),
+            (0.9, 1.1630871536766741628),
+            (0.99, 1.8213863677184494559),
+            (0.999, 2.3267537655135244939),
+            (0.99999, 3.123413274341570864),
+            (1.0 - 1e-9, 4.3200053881053620459),
+            (1.0 - 1e-12, 5.0420318985726961301),
+            (1.0 - 1e-15, 5.6759157397447131788),
+            (1.0 - f64::EPSILON, 5.8050186831934533002),
+        ];
+        for &(x, want) in &cases {
+            assert_rel(erfinv(x), want, 1e-15, &format!("erfinv({x})"));
+            assert_rel(erfinv(-x), -want, 1e-15, &format!("erfinv(-{x})"));
+        }
+        // Tiny arguments: erfinv(x) ≈ (√π/2)x.
+        assert_rel(
+            erfinv(1e-300),
+            8.8622692545275803586e-301,
+            1e-15,
+            "erfinv(1e-300)",
+        );
+        assert_rel(
+            erfinv(1e-10),
+            8.8622692545275804594e-11,
+            1e-15,
+            "erfinv(1e-10)",
+        );
+        assert_eq!(erfinv(0.0), 0.0);
+        assert_eq!(erfinv(1.0), f64::INFINITY);
+        assert_eq!(erfinv(-1.0), f64::NEG_INFINITY);
+        assert!(erfinv(1.0000001).is_nan());
+        assert!(erfinv(-2.0).is_nan());
+        assert!(erfinv(f64::NAN).is_nan());
+        // Round trip through the runtime's own erf.
+        for &x in &[0.001, 0.25, 0.5, 0.7, 0.95, 0.9999, 1.0 - 1e-13] {
+            assert_rel(erf(erfinv(x)), x, 4e-16, &format!("erf(erfinv({x}))"));
+        }
+    }
+
+    #[test]
+    fn erfcinv_known_values() {
+        // mpmath 1.3 (dps 60): erfcinv(y) solved from erfc(z) = y at the
+        // exact double nearest each literal.
+        let cases: [(f64, f64); 11] = [
+            (0.5, 0.47693627620446987338),
+            (1.5, -0.47693627620446987338),
+            (0.1, 1.1630871536766740677),
+            (1.9, -1.1630871536766737823),
+            (0.999, 0.00088622715746655289169),
+            (1e-5, 3.1234132743408750177),
+            (1e-10, 4.5728249673894852748),
+            (1e-20, 6.6015806223551425656),
+            (1e-100, 15.065574702592645704),
+            (1e-300, 26.209469960516123886),
+            (1.9999999999, -4.5728249585449249378),
+        ];
+        for &(y, want) in &cases {
+            assert_rel(erfcinv(y), want, 1e-15, &format!("erfcinv({y})"));
+        }
+        // Subnormal arguments keep relative accuracy (erfc underflows here).
+        assert_rel(
+            erfcinv(2e-308),
+            26.545265807344898846,
+            1e-15,
+            "erfcinv(2e-308)",
+        );
+        assert_rel(
+            erfcinv(5e-324),
+            27.213293210812948815,
+            1e-15,
+            "erfcinv(5e-324)",
+        );
+        assert_eq!(erfcinv(1.0), 0.0);
+        assert_eq!(erfcinv(0.0), f64::INFINITY);
+        assert_eq!(erfcinv(2.0), f64::NEG_INFINITY);
+        assert!(erfcinv(-0.1).is_nan());
+        assert!(erfcinv(2.5).is_nan());
+        // erfcinv(y) = erfinv(1 − y) where 1 − y is exact.
+        assert_eq!(erfcinv(0.75), erfinv(0.25));
+        assert_eq!(erfcinv(0.5), erfinv(0.5));
     }
 
     #[test]

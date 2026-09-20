@@ -432,15 +432,16 @@ fn push_latex_call(head: &str, args: &[ExprId], stack: &mut Vec<LatexItem>) {
 /// LaTeX for the 0.9 `Apply`-based special functions, following SymPy's
 /// printer: `\operatorname{erfi}`, `\operatorname{E}_{n}`, `S`/`C`,
 /// `\gamma`/`\Gamma`, `\operatorname{Li}_{s}`, `\eta`, `\operatorname{Ai}`,
-/// `K`/`E`/`F\left(\phi\middle| m\right)`/`\Pi`, `C_{n}^{\left(a\right)}`, …
+/// `K`/`E`/`F\left(\phi\middle| m\right)`/`\Pi`, `C_{n}^{\left(a\right)}`,
+/// `\operatorname{B}_{(x_1, x_2)}`/`\operatorname{I}_{(x_1, x_2)}`, …
 ///
 /// Returns `false` (pushing nothing) for any other name.
 fn push_special_09_latex(name: &str, args: &[ExprId], stack: &mut Vec<LatexItem>) -> bool {
     use crate::base::arena::{
         FN_AIRYAI, FN_AIRYAIPRIME, FN_AIRYBI, FN_AIRYBIPRIME, FN_ASSOC_LAGUERRE, FN_ASSOC_LEGENDRE,
-        FN_CHI, FN_DIRICHLET_ETA, FN_ELLIPTIC_E, FN_ELLIPTIC_F, FN_ELLIPTIC_K, FN_ELLIPTIC_PI,
-        FN_ERFCINV, FN_ERFI, FN_ERFINV, FN_EXPINT, FN_FRESNELC, FN_FRESNELS, FN_GEGENBAUER,
-        FN_JACOBI, FN_LOWERGAMMA, FN_POLYLOG, FN_SHI, FN_UPPERGAMMA,
+        FN_BETAINC, FN_BETAINC_REGULARIZED, FN_CHI, FN_DIRICHLET_ETA, FN_ELLIPTIC_E, FN_ELLIPTIC_F,
+        FN_ELLIPTIC_K, FN_ELLIPTIC_PI, FN_ERFCINV, FN_ERFI, FN_ERFINV, FN_EXPINT, FN_FRESNELC,
+        FN_FRESNELS, FN_GEGENBAUER, FN_JACOBI, FN_LOWERGAMMA, FN_POLYLOG, FN_SHI, FN_UPPERGAMMA,
     };
     // Plain `head(args)` renderings.
     let head: Option<&str> = match (name, args.len()) {
@@ -521,6 +522,23 @@ fn push_special_09_latex(name: &str, args: &[ExprId], stack: &mut Vec<LatexItem>
             stack.push(LatexItem::Lit(r"}^{\left("));
             stack.push(LatexItem::Expr(args[0]));
             stack.push(LatexItem::Lit(r"P_{"));
+            true
+        }
+        // \operatorname{B}_{(x_1, x_2)}\left(a, b\right), \operatorname{I}_{(x_1, x_2)}\left(a, b\right)
+        (FN_BETAINC, 4) | (FN_BETAINC_REGULARIZED, 4) => {
+            stack.push(LatexItem::Lit(r"\right)"));
+            stack.push(LatexItem::Expr(args[1]));
+            stack.push(LatexItem::Lit(", "));
+            stack.push(LatexItem::Expr(args[0]));
+            stack.push(LatexItem::Lit(r")}\left("));
+            stack.push(LatexItem::Expr(args[3]));
+            stack.push(LatexItem::Lit(", "));
+            stack.push(LatexItem::Expr(args[2]));
+            stack.push(LatexItem::Lit(if name == FN_BETAINC {
+                r"\operatorname{B}_{("
+            } else {
+                r"\operatorname{I}_{("
+            }));
             true
         }
         _ => false,

@@ -358,8 +358,9 @@ fn binomial_display_numeric() {
 }
 
 #[test]
-fn binomial_k_greater_than_n_stays_unevaluated() {
-    // C(3, 5) — k > n — evaluator returns None, stays symbolic
+fn binomial_k_greater_than_n_is_zero() {
+    // C(3, 5) with 0 ≤ n < k is 0 (SymPy: binomial(3, 5) == 0).  Re-pinned
+    // in 0.12: the test used to assert the node stayed unevaluated.
     let ctx = Context::new();
     ctx.with_arena_mut(|arena| {
         let three = arena.int(3);
@@ -367,7 +368,7 @@ fn binomial_k_greater_than_n_stays_unevaluated() {
         let expr = arena.binomial(three, five);
         let result = arena.eval_expr(expr);
         let s = arena.display(result).to_string();
-        assert!(s.contains("C("), "C(3,5) should stay unevaluated: {s}");
+        assert_eq!(s, "0", "C(3,5) is 0: {s}");
     });
 }
 

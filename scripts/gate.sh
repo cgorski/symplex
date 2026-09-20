@@ -29,8 +29,15 @@ run_stage() {
     name="$1"; budget="$2"; shift 2
     log="$LOG_DIR/$name.log"
     start=$(date +%s)
-    timeout "$budget" "$@" > "$log" 2>&1
+    # `-k 5`: SIGKILL five seconds after SIGTERM; `--foreground` is NOT used so
+    # the whole process group (cargo, nextest, the test binaries) is signalled
+    # and a killed stage leaves no orphan holding the target-dir lock.
+    timeout -k 5 "$budget" "$@" > "$log" 2>&1
     rc=$?
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+        # Belt and braces: reap anything still running from this crate's tests.
+        pkill -f "$(pwd)/target/debug/deps/" 2>/dev/null
+    fi
     end=$(date +%s)
     summary=$(grep -E "^\s*(Summary|test result:)" "$log" | tail -1 | sed 's/^ *//')
     printf '%-14s rc=%-3s %4ss  %s\n' "$name" "$rc" "$((end - start))" "$summary"

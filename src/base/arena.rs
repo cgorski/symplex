@@ -92,6 +92,9 @@ pub(crate) const FN_GEGENBAUER: &str = "gegenbauer";
 pub(crate) const FN_JACOBI: &str = "jacobi";
 pub(crate) const FN_ASSOC_LEGENDRE: &str = "assoc_legendre";
 pub(crate) const FN_ASSOC_LAGUERRE: &str = "assoc_laguerre";
+// Generalised incomplete beta (0.12), SymPy argument order `(a, b, x1, x2)`.
+pub(crate) const FN_BETAINC: &str = "betainc";
+pub(crate) const FN_BETAINC_REGULARIZED: &str = "betainc_regularized";
 
 // ---------------------------------------------------------------------------
 // Arena

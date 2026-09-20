@@ -2153,6 +2153,8 @@ fn emit_rt_apply(
         n if n == names::FN_LUCAS => Some("lucas"),
         n if n == names::FN_HARMONIC => Some("harmonic"),
         n if n == names::FN_FACTORIAL2 => Some("factorial2"),
+        n if n == names::FN_ERFINV => Some("erfinv"),
+        n if n == names::FN_ERFCINV => Some("erfcinv"),
         _ => None,
     };
     if let Some(helper) = unary {

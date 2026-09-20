@@ -1031,6 +1031,8 @@ fn half_pi_sq(arena: &mut Arena, f: ExprId) -> ExprId {
 /// * `∂_n Π`, `∂_m Π` in terms of `K`, `E`, `Π`
 /// * `C_n^{(a)}' = 2a C_{n−1}^{(a+1)}`, `P_n^{(a,b)}' = (n+a+b+1)/2 P_{n−1}^{(a+1,b+1)}`,
 ///   `P_n^{m}' = (n x P_n^m − (n+m) P_{n−1}^m)/(x²−1)`, `L_n^{(a)}' = −L_{n−1}^{(a+1)}`
+/// * `∂_{x₂} B_{(x₁,x₂)}(a,b) = x₂^{a−1}(1−x₂)^{b−1}`, `∂_{x₁} = −x₁^{a−1}(1−x₁)^{b−1}`
+///   (divided by `B(a,b)` for the regularised form); `∂_a`, `∂_b` formal
 ///
 /// Parameters (order, degree, `s`, …) must be constant with respect to the
 /// variable; otherwise a formal `Derivative` is produced.  Returns `None`
@@ -1044,9 +1046,9 @@ fn diff_special_09(
 ) -> Option<ExprId> {
     use crate::base::arena::{
         FN_AIRYAI, FN_AIRYAIPRIME, FN_AIRYBI, FN_AIRYBIPRIME, FN_ASSOC_LAGUERRE, FN_ASSOC_LEGENDRE,
-        FN_CHI, FN_DIRICHLET_ETA, FN_ELLIPTIC_E, FN_ELLIPTIC_F, FN_ELLIPTIC_K, FN_ELLIPTIC_PI,
-        FN_ERFCINV, FN_ERFI, FN_ERFINV, FN_EXPINT, FN_FRESNELC, FN_FRESNELS, FN_GEGENBAUER,
-        FN_JACOBI, FN_LOWERGAMMA, FN_POLYLOG, FN_SHI, FN_UPPERGAMMA,
+        FN_BETAINC, FN_BETAINC_REGULARIZED, FN_CHI, FN_DIRICHLET_ETA, FN_ELLIPTIC_E, FN_ELLIPTIC_F,
+        FN_ELLIPTIC_K, FN_ELLIPTIC_PI, FN_ERFCINV, FN_ERFI, FN_ERFINV, FN_EXPINT, FN_FRESNELC,
+        FN_FRESNELS, FN_GEGENBAUER, FN_JACOBI, FN_LOWERGAMMA, FN_POLYLOG, FN_SHI, FN_UPPERGAMMA,
     };
 
     let name = arena.symbol_name(func_sym).to_owned();
@@ -1326,6 +1328,49 @@ fn diff_special_09(
                 }
             };
             Some(arena.mul(&[outer, dx]))
+        }
+        // ── Incomplete beta: (a, b, x1, x2) ──
+        (FN_BETAINC | FN_BETAINC_REGULARIZED, 4) => {
+            let (a, b, x1, x2) = (args[0], args[1], args[2], args[3]);
+            let dx1 = get_deriv(cache, x1, arena);
+            let dx2 = get_deriv(cache, x2, arena);
+            let mut terms: SmallVec<[ExprId; 4]> = SmallVec::new();
+            // Parameter derivatives have no elementary form.
+            for &p in &[a, b] {
+                let dp = get_deriv(cache, p, arena);
+                if !arena.is_zero_structural(dp) {
+                    terms.push(formal(arena, p));
+                }
+            }
+            // ∂/∂x₂ = x₂^{a−1}(1−x₂)^{b−1} [/ B(a,b)],  ∂/∂x₁ = −(same at x₁).
+            let integrand = |arena: &mut Arena, t: ExprId| -> ExprId {
+                let a_minus_1 = arena.sub(a, arena.one);
+                let b_minus_1 = arena.sub(b, arena.one);
+                let one_minus_t = arena.sub(arena.one, t);
+                let p1 = arena.pow(t, a_minus_1);
+                let p2 = arena.pow(one_minus_t, b_minus_1);
+                let v = arena.mul(&[p1, p2]);
+                if name == FN_BETAINC_REGULARIZED {
+                    let beta = arena.beta(a, b);
+                    arena.div(v, beta)
+                } else {
+                    v
+                }
+            };
+            if !arena.is_zero_structural(dx2) {
+                let f = integrand(arena, x2);
+                terms.push(arena.mul(&[f, dx2]));
+            }
+            if !arena.is_zero_structural(dx1) {
+                let f = integrand(arena, x1);
+                let neg_f = arena.neg(f);
+                terms.push(arena.mul(&[neg_f, dx1]));
+            }
+            Some(match terms.len() {
+                0 => arena.zero,
+                1 => terms[0],
+                _ => arena.add(&terms),
+            })
         }
         _ => None,
     }

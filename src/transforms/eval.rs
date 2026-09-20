@@ -55,12 +55,12 @@ use rustc_hash::FxHashMap;
 use crate::base::arena::{
     Arena, FN_AIRYAI, FN_AIRYAIPRIME, FN_AIRYBI, FN_AIRYBIPRIME, FN_ASSOC_LAGUERRE,
     FN_ASSOC_LEGENDRE, FN_BELL, FN_BERNOULLI, FN_BESSELI, FN_BESSELJ, FN_BESSELK, FN_BESSELY,
-    FN_CATALAN, FN_CHEBYSHEV_T, FN_CHEBYSHEV_U, FN_CHI, FN_DIRICHLET_ETA, FN_ELLIPTIC_E,
-    FN_ELLIPTIC_F, FN_ELLIPTIC_K, FN_ELLIPTIC_PI, FN_ERFCINV, FN_ERFI, FN_ERFINV, FN_EULER_NUMBER,
-    FN_EXPINT, FN_FACTORIAL2, FN_FALLING_FACTORIAL, FN_FIBONACCI, FN_FRESNELC, FN_FRESNELS,
-    FN_GEGENBAUER, FN_HARMONIC, FN_HERMITE, FN_JACOBI, FN_LAGUERRE, FN_LEGENDRE, FN_LOWERGAMMA,
-    FN_LUCAS, FN_PARTITION_COUNT, FN_POLYLOG, FN_RISING_FACTORIAL, FN_SHI, FN_STIRLING1,
-    FN_STIRLING2, FN_SUBFACTORIAL, FN_UPPERGAMMA,
+    FN_BETAINC, FN_BETAINC_REGULARIZED, FN_CATALAN, FN_CHEBYSHEV_T, FN_CHEBYSHEV_U, FN_CHI,
+    FN_DIRICHLET_ETA, FN_ELLIPTIC_E, FN_ELLIPTIC_F, FN_ELLIPTIC_K, FN_ELLIPTIC_PI, FN_ERFCINV,
+    FN_ERFI, FN_ERFINV, FN_EULER_NUMBER, FN_EXPINT, FN_FACTORIAL2, FN_FALLING_FACTORIAL,
+    FN_FIBONACCI, FN_FRESNELC, FN_FRESNELS, FN_GEGENBAUER, FN_HARMONIC, FN_HERMITE, FN_JACOBI,
+    FN_LAGUERRE, FN_LEGENDRE, FN_LOWERGAMMA, FN_LUCAS, FN_PARTITION_COUNT, FN_POLYLOG,
+    FN_RISING_FACTORIAL, FN_SHI, FN_STIRLING1, FN_STIRLING2, FN_SUBFACTORIAL, FN_UPPERGAMMA,
 };
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
@@ -1514,7 +1514,8 @@ fn eval_binomial(arena: &mut Arena, n: ExprId, k: ExprId) -> Option<ExprId> {
     let n_u64: u64 = nr.to_integer().try_into().ok()?;
     let k_u64: u64 = kr.to_integer().try_into().ok()?;
     if k_u64 > n_u64 {
-        return None;
+        // C(n, k) = 0 for 0 ≤ n < k (SymPy: `binomial(1, 2) == 0`).
+        return Some(arena.zero);
     }
     // C(n,k) = n! / (k! * (n-k)!)
     let mut result = num_bigint::BigInt::from(1);
@@ -3275,6 +3276,8 @@ pub(crate) fn is_special_09(name: &str) -> bool {
             | FN_JACOBI
             | FN_ASSOC_LEGENDRE
             | FN_ASSOC_LAGUERRE
+            | FN_BETAINC
+            | FN_BETAINC_REGULARIZED
     )
 }
 
@@ -3336,6 +3339,14 @@ fn eval_special_09(arena: &mut Arena, name: &str, args: &[ExprId]) -> Option<Exp
         (FN_JACOBI, 4) => eval_jacobi(arena, args[0], args[1], args[2], args[3]),
         (FN_ASSOC_LEGENDRE, 3) => eval_assoc_legendre(arena, args[0], args[1], args[2]),
         (FN_ASSOC_LAGUERRE, 3) => eval_assoc_laguerre(arena, args[0], args[1], args[2]),
+        (FN_BETAINC | FN_BETAINC_REGULARIZED, 4) => eval_betainc(
+            arena,
+            name == FN_BETAINC_REGULARIZED,
+            args[0],
+            args[1],
+            args[2],
+            args[3],
+        ),
         _ => None,
     }
 }
@@ -4108,6 +4119,89 @@ fn eval_assoc_laguerre(arena: &mut Arena, n: ExprId, a: ExprId, x: ExprId) -> Op
         return Some(arena.laguerre(n, x));
     }
     None
+}
+
+/// Largest positive integer parameter `a`, `b` for which
+/// `betainc(a, b, x1, x2)` is expanded into an explicit polynomial
+/// (degree `a + b − 1`, `b` monomials in each limit).
+const MAX_BETAINC_POLY_PARAM: i64 = 20;
+
+/// Exact values of the generalised incomplete beta functions
+/// `B_{(x1, x2)}(a, b) = ∫_{x1}^{x2} t^{a−1}(1−t)^{b−1} dt` and
+/// `I_{(x1, x2)}(a, b) = B_{(x1, x2)}(a, b) / B(a, b)` (`regularized`):
+///
+/// * `x1 = x2` → `0`;
+/// * `(x1, x2) = (0, 1)` → `B(a, b)` resp. `1` (the integral converges only
+///   for `a, b > 0`, so this is refused for parameters known to be `≤ 0`);
+/// * positive integers `a, b ≤ MAX_BETAINC_POLY_PARAM` → the integrand is
+///   the polynomial `Σ_k C(b−1, k) (−1)^k t^{a−1+k}`, so the value is
+///   `F(x2) − F(x1)` with `F(t) = Σ_k C(b−1, k) (−1)^k t^{a+k}/(a+k)`
+///   (divided by the exact rational `B(a, b)` when regularised), expanded
+///   and folded.  This is what makes the Beta-distribution CDF close for
+///   integer shape parameters.
+fn eval_betainc(
+    arena: &mut Arena,
+    regularized: bool,
+    a: ExprId,
+    b: ExprId,
+    x1: ExprId,
+    x2: ExprId,
+) -> Option<ExprId> {
+    if x1 == x2 {
+        return Some(arena.zero);
+    }
+    if x1 == arena.zero && x2 == arena.one {
+        if known_nonpositive(arena, a) || known_nonpositive(arena, b) {
+            return None;
+        }
+        return Some(if regularized {
+            arena.one
+        } else {
+            let beta = arena.beta(a, b);
+            eval_beta(arena, a, b).unwrap_or(beta)
+        });
+    }
+    let a_int = as_int_in(arena, a, 1, MAX_BETAINC_POLY_PARAM)?;
+    let b_int = as_int_in(arena, b, 1, MAX_BETAINC_POLY_PARAM)?;
+    // 1/B(a, b) = (a+b−1)! / ((a−1)! (b−1)!) — exact.
+    let scale = if regularized {
+        factorial_ratio((a_int + b_int - 1) as usize)
+            / (factorial_ratio((a_int - 1) as usize) * factorial_ratio((b_int - 1) as usize))
+    } else {
+        Ratio::one()
+    };
+    // Antiderivative coefficients c_k of t^{a+k}, k = 0..b−1.
+    let mut coeffs: Vec<Ratio<BigInt>> = Vec::with_capacity(b_int as usize);
+    let mut binom = BigInt::one();
+    for k in 0..b_int {
+        if k > 0 {
+            // C(b−1, k) = C(b−1, k−1) · (b−k) / k
+            binom = binom * BigInt::from(b_int - k) / BigInt::from(k);
+        }
+        let mut c = Ratio::new(binom.clone(), BigInt::from(a_int + k)) * &scale;
+        if k % 2 == 1 {
+            c = -c;
+        }
+        coeffs.push(c);
+    }
+    let antiderivative = |arena: &mut Arena, t: ExprId| -> ExprId {
+        if t == arena.zero {
+            return arena.zero;
+        }
+        let mut terms: Vec<ExprId> = Vec::with_capacity(coeffs.len());
+        for (k, c) in coeffs.iter().enumerate() {
+            let cid = arena.intern_num(c.clone());
+            let cid = arena.intern(ExprNode::Num(cid));
+            let e = arena.int(a_int + k as i64);
+            let p = arena.pow(t, e);
+            terms.push(arena.mul(&[cid, p]));
+        }
+        arena.add(&terms)
+    };
+    let upper = antiderivative(arena, x2);
+    let lower = antiderivative(arena, x1);
+    let v = arena.sub(upper, lower);
+    Some(expand_eval(arena, v))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -39,9 +39,10 @@ use crate::api::context::Context;
 use crate::api::expr::{BoolEx, Ex};
 use crate::base::arena::{
     Arena, FN_AIRYAI, FN_AIRYAIPRIME, FN_AIRYBI, FN_AIRYBIPRIME, FN_ASSOC_LAGUERRE,
-    FN_ASSOC_LEGENDRE, FN_CHI, FN_DIRICHLET_ETA, FN_ELLIPTIC_E, FN_ELLIPTIC_F, FN_ELLIPTIC_K,
-    FN_ELLIPTIC_PI, FN_ERFCINV, FN_ERFI, FN_ERFINV, FN_EXPINT, FN_FRESNELC, FN_FRESNELS,
-    FN_GEGENBAUER, FN_JACOBI, FN_LOWERGAMMA, FN_POLYLOG, FN_SHI, FN_UPPERGAMMA,
+    FN_ASSOC_LEGENDRE, FN_BETAINC, FN_BETAINC_REGULARIZED, FN_CHI, FN_DIRICHLET_ETA, FN_ELLIPTIC_E,
+    FN_ELLIPTIC_F, FN_ELLIPTIC_K, FN_ELLIPTIC_PI, FN_ERFCINV, FN_ERFI, FN_ERFINV, FN_EXPINT,
+    FN_FRESNELC, FN_FRESNELS, FN_GEGENBAUER, FN_JACOBI, FN_LOWERGAMMA, FN_POLYLOG, FN_SHI,
+    FN_UPPERGAMMA,
 };
 use crate::base::node::{ExprId, ExprNode};
 
@@ -418,6 +419,8 @@ const KNOWN_FUNCTIONS: &[&str] = &[
     // call_4
     "series",
     "jacobi",
+    "betainc",
+    "betainc_regularized",
     // variadic / binder forms
     "min",
     "max",
@@ -1324,10 +1327,17 @@ impl<'a> Parser<'a> {
                 self.make_sum_product(arena, name, name_lower, arg, arg2, arg3, arg4)
             }
             "jacobi" => Ok(apply_named(arena, FN_JACOBI, &[arg, arg2, arg3, arg4])),
+            // SymPy-style `betainc(a, b, x1, x2)` / `betainc_regularized(a, b, x1, x2)`.
+            "betainc" => Ok(apply_named(arena, FN_BETAINC, &[arg, arg2, arg3, arg4])),
+            "betainc_regularized" => Ok(apply_named(
+                arena,
+                FN_BETAINC_REGULARIZED,
+                &[arg, arg2, arg3, arg4],
+            )),
             _ => Err(ParseError {
                 message: format!(
                     "unknown 4-argument function '{}'. Supported: Series, Sum, Product, Integral, \
-                     jacobi",
+                     jacobi, betainc, betainc_regularized",
                     name
                 ),
                 position: self.lexer.pos,
@@ -1527,7 +1537,8 @@ impl<'a> Parser<'a> {
                      besselk, erfi, erfinv, erfcinv, E1, expint, Shi, Chi, fresnels, fresnelc, \
                      lowergamma, uppergamma, polylog, dirichlet_eta, airyai, airybi, \
                      airyaiprime, airybiprime, elliptic_k, elliptic_e, elliptic_f, elliptic_pi, \
-                     gegenbauer, jacobi, assoc_legendre, assoc_laguerre, min, max, \
+                     gegenbauer, jacobi, assoc_legendre, assoc_laguerre, betainc, \
+                     betainc_regularized, min, max, \
                      KroneckerDelta, Limit, RootOf, ConditionSet, LaplaceTransform, \
                      InverseLaplaceTransform, Residue, DSolve, Series, Sum, Product, Integral",
                     name

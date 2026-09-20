@@ -417,6 +417,15 @@ fn eval_node(
                     reason: "Binomial of complex arguments not yet supported in evalf".into(),
                 });
             }
+            // Integer `0 ≤ n < k`: C(n, k) = 0 (the Γ formula below would
+            // hit the pole of Γ(n − k + 1)).
+            if let (Some(n_i), Some(k_i)) =
+                (bf_as_int(&n_val.0, rm, cc)?, bf_as_int(&k_val.0, rm, cc)?)
+                && n_i >= 0
+                && k_i > n_i
+            {
+                return Ok((BigFloat::new(prec), BigFloat::new(prec)));
+            }
             // C(n, k) = Gamma(n+1) / (Gamma(k+1) * Gamma(n-k+1))
             let one_bf = BigFloat::from_i32(1, prec);
             let n_plus_1 = n_val.0.add(&one_bf, prec, rm);
@@ -4096,9 +4105,9 @@ fn eval_special_09(
 ) -> Result<Complex, SymplexError> {
     use crate::base::arena::{
         FN_AIRYAI, FN_AIRYAIPRIME, FN_AIRYBI, FN_AIRYBIPRIME, FN_ASSOC_LAGUERRE, FN_ASSOC_LEGENDRE,
-        FN_CHI, FN_DIRICHLET_ETA, FN_ELLIPTIC_E, FN_ELLIPTIC_F, FN_ELLIPTIC_K, FN_ELLIPTIC_PI,
-        FN_ERFCINV, FN_ERFI, FN_ERFINV, FN_EXPINT, FN_FRESNELC, FN_FRESNELS, FN_GEGENBAUER,
-        FN_JACOBI, FN_LOWERGAMMA, FN_POLYLOG, FN_SHI, FN_UPPERGAMMA,
+        FN_BETAINC, FN_BETAINC_REGULARIZED, FN_CHI, FN_DIRICHLET_ETA, FN_ELLIPTIC_E, FN_ELLIPTIC_F,
+        FN_ELLIPTIC_K, FN_ELLIPTIC_PI, FN_ERFCINV, FN_ERFI, FN_ERFINV, FN_EXPINT, FN_FRESNELC,
+        FN_FRESNELS, FN_GEGENBAUER, FN_JACOBI, FN_LOWERGAMMA, FN_POLYLOG, FN_SHI, FN_UPPERGAMMA,
     };
     let v = real_args(name, args, cache)?;
     let real = |r: BigFloat| Ok((r, BigFloat::new(prec)));
@@ -4139,6 +4148,16 @@ fn eval_special_09(
         (FN_JACOBI, 4) => real(arb_jacobi(&v[0], &v[1], &v[2], &v[3], prec, rm, cc)?),
         (FN_ASSOC_LEGENDRE, 3) => real(arb_assoc_legendre(&v[0], &v[1], &v[2], prec, rm, cc)?),
         (FN_ASSOC_LAGUERRE, 3) => real(arb_assoc_laguerre(&v[0], &v[1], &v[2], prec, rm, cc)?),
+        (FN_BETAINC | FN_BETAINC_REGULARIZED, 4) => real(arb_betainc(
+            &v[0],
+            &v[1],
+            &v[2],
+            &v[3],
+            name == FN_BETAINC_REGULARIZED,
+            prec,
+            rm,
+            cc,
+        )?),
         _ => Err(unevaluable(format!(
             "{name} called with {} argument(s)",
             v.len()
@@ -4889,6 +4908,280 @@ fn arb_fresnel(
     };
     let r = if x.is_negative() { r.neg() } else { r };
     Ok(round_to(r, prec, rm))
+}
+
+// ── Incomplete beta ───────────────────────────────────────────────────────────────
+
+/// `B(a, b) = Γ(a)Γ(b)/Γ(a+b)` at working precision `wp` for `a, b > 0`
+/// (all factors positive, so no cancellation).
+fn beta_wp(
+    a: &BigFloat,
+    b: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let ga = arb_gamma_real(a, wp, rm, cc)?;
+    let gb = arb_gamma_real(b, wp, rm, cc)?;
+    let a_plus_b = a.add(b, wp, rm);
+    let gab = arb_gamma_real(&a_plus_b, wp, rm, cc)?;
+    if gab.is_zero() {
+        return Err(unevaluable("betainc: Gamma(a + b) is zero"));
+    }
+    Ok(ga.mul(&gb, wp, rm).div(&gab, wp, rm))
+}
+
+/// The continued fraction of the regularised incomplete beta function
+/// (DLMF 8.17.22, Numerical Recipes `betacf`; modified Lentz):
+///
+/// ```text
+/// I_x(a, b) = x^a (1−x)^b / (a B(a, b)) · 1/(1 + d₁/(1 + d₂/(1 + …)))
+/// d_{2m}   =  m (b−m) x / ((a+2m−1)(a+2m))
+/// d_{2m+1} = −(a+m)(a+b+m) x / ((a+2m)(a+2m+1))
+/// ```
+///
+/// Returns the fraction `1/(1 + d₁/…)` only (the prefactor is applied by
+/// the caller).  Converges quickly for `x < (a+1)/(a+b+2)`.
+fn betainc_cf(
+    a: &BigFloat,
+    b: &BigFloat,
+    x: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let one = BigFloat::from_i32(1, wp);
+    // "tiny" replaces exact zeros in Lentz's algorithm.
+    let mut tiny = BigFloat::from_i32(1, wp);
+    tiny.set_exponent(-(4 * wp as i32));
+    let qab = a.add(b, wp, rm);
+    let qap = a.add(&one, wp, rm);
+    let qam = a.sub(&one, wp, rm);
+    let mut c = one.clone();
+    let mut d = one.sub(&qab.mul(x, wp, rm).div(&qap, wp, rm), wp, rm);
+    if d.is_zero() {
+        d = tiny.clone();
+    }
+    d = one.div(&d, wp, rm);
+    let mut h = d.clone();
+    // The number of steps grows like √(max(a, b)) before the linear
+    // convergence phase; budget generously.
+    let ab_f = bigfloat_to_f64(&qab, rm, cc)?;
+    let max_iter = 40 * wp + 2000 + (10.0 * ab_f.abs().sqrt()).ceil() as usize;
+    let mut converged = false;
+    // One Lentz step with partial numerator `aa`; returns `del = d·c`.
+    let step = |aa: &BigFloat, c: &mut BigFloat, d: &mut BigFloat| -> BigFloat {
+        *d = one.add(&aa.mul(d, wp, rm), wp, rm);
+        if d.is_zero() {
+            *d = tiny.clone();
+        }
+        *c = one.add(&aa.div(c, wp, rm), wp, rm);
+        if c.is_zero() {
+            *c = tiny.clone();
+        }
+        *d = one.div(d, wp, rm);
+        d.mul(c, wp, rm)
+    };
+    for m in 1..=max_iter {
+        let m_bf = BigFloat::from_i128(m as i128, wp);
+        let m2_bf = BigFloat::from_i128(2 * m as i128, wp);
+        // Even step: d_{2m} = m (b−m) x / ((a+2m−1)(a+2m)).
+        let num = m_bf.mul(&b.sub(&m_bf, wp, rm), wp, rm).mul(x, wp, rm);
+        let den = qam.add(&m2_bf, wp, rm).mul(&a.add(&m2_bf, wp, rm), wp, rm);
+        let aa = num.div(&den, wp, rm);
+        let del = step(&aa, &mut c, &mut d);
+        h = h.mul(&del, wp, rm);
+        // Odd step: d_{2m+1} = −(a+m)(a+b+m) x / ((a+2m)(a+2m+1)).
+        let num = a
+            .add(&m_bf, wp, rm)
+            .mul(&qab.add(&m_bf, wp, rm), wp, rm)
+            .mul(x, wp, rm)
+            .neg();
+        let den = a.add(&m2_bf, wp, rm).mul(&qap.add(&m2_bf, wp, rm), wp, rm);
+        let aa = num.div(&den, wp, rm);
+        let del = step(&aa, &mut c, &mut d);
+        h = h.mul(&del, wp, rm);
+        let dev = del.sub(&one, wp, rm);
+        if negligible(&dev, &one, wp) {
+            converged = true;
+            break;
+        }
+    }
+    if !converged {
+        return Err(SymplexError::ComputationFailed {
+            operation: "evalf",
+            reason: format!(
+                "continued fraction for the incomplete beta function did not converge in \
+                 {max_iter} steps"
+            ),
+        });
+    }
+    Ok(h)
+}
+
+/// `I_x(a, b)` for `x ≤ (a+1)/(a+b+2)` (`one_minus_x = 1 − x` is passed in
+/// so that it is exact): continued fraction times `x^a (1−x)^b / (a B(a, b))`.
+fn betainc_reg_direct(
+    a: &BigFloat,
+    b: &BigFloat,
+    x: &BigFloat,
+    one_minus_x: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let h = betainc_cf(a, b, x, wp, rm, cc)?;
+    let xa = bf_pow(x, a, wp, rm, cc);
+    let yb = bf_pow(one_minus_x, b, wp, rm, cc);
+    let beta = beta_wp(a, b, wp, rm, cc)?;
+    let denom = a.mul(&beta, wp, rm);
+    Ok(xa.mul(&yb, wp, rm).div(&denom, wp, rm).mul(&h, wp, rm))
+}
+
+/// The switch point `(a+1)/(a+b+2)` of the continued fraction: below it
+/// `I_x(a, b)` is computed directly, above it through `1 − I_{1−x}(b, a)`.
+fn betainc_switch_point(a: &BigFloat, b: &BigFloat, wp: usize, rm: RoundingMode) -> BigFloat {
+    let one = BigFloat::from_i32(1, wp);
+    let two = BigFloat::from_i32(2, wp);
+    let a_plus_1 = a.add(&one, wp, rm);
+    let a_plus_b_plus_2 = a.add(b, wp, rm).add(&two, wp, rm);
+    a_plus_1.div(&a_plus_b_plus_2, wp, rm)
+}
+
+/// Regularised incomplete beta `I_x(a, b)` at working precision `wp` for
+/// `a, b > 0` and `0 ≤ x ≤ 1`, via the continued fraction and the symmetry
+/// `I_x(a, b) = 1 − I_{1−x}(b, a)` for `x > (a+1)/(a+b+2)` (where the
+/// subtracted value is at most about `1/2`, so at most one bit is lost).
+fn betainc_reg_wp(
+    a: &BigFloat,
+    b: &BigFloat,
+    x: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if x.is_zero() {
+        return Ok(BigFloat::new(wp));
+    }
+    let one = BigFloat::from_i32(1, wp);
+    let one_minus_x = one.sub(x, wp, rm);
+    if one_minus_x.is_zero() {
+        return Ok(one);
+    }
+    if bf_gt(x, &betainc_switch_point(a, b, wp, rm)) {
+        let v = betainc_reg_direct(b, a, &one_minus_x, x, wp, rm, cc)?;
+        return Ok(one.sub(&v, wp, rm));
+    }
+    betainc_reg_direct(a, b, x, &one_minus_x, wp, rm, cc)
+}
+
+/// `I_{hi}(a, b) − I_{lo}(a, b)` for `0 ≤ lo < hi ≤ 1` at working precision
+/// `wp`, together with the number of bits lost to cancellation in the
+/// subtraction (`wp` when the difference vanished entirely).
+///
+/// When both limits lie above the switch point the difference is mirrored
+/// to `I_{1−lo}(b, a) − I_{1−hi}(b, a)`, so that no `1 − …` is formed and
+/// tiny upper-tail probabilities (both limits near `1`) keep their relative
+/// accuracy.
+fn betainc_reg_diff_wp(
+    a: &BigFloat,
+    b: &BigFloat,
+    lo: &BigFloat,
+    hi: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<(BigFloat, usize), SymplexError> {
+    let one = BigFloat::from_i32(1, wp);
+    let (p, q) = if bf_gt(lo, &betainc_switch_point(a, b, wp, rm)) {
+        let y_lo = one.sub(hi, wp, rm); // 1 − hi
+        let y_hi = one.sub(lo, wp, rm); // 1 − lo
+        let p = betainc_reg_direct(b, a, &y_hi, lo, wp, rm, cc)?;
+        let q = if y_lo.is_zero() {
+            BigFloat::new(wp)
+        } else {
+            betainc_reg_direct(b, a, &y_lo, hi, wp, rm, cc)?
+        };
+        (p, q)
+    } else {
+        let p = betainc_reg_wp(a, b, hi, wp, rm, cc)?;
+        let q = betainc_reg_wp(a, b, lo, wp, rm, cc)?;
+        (p, q)
+    };
+    let diff = p.sub(&q, wp, rm);
+    let lost = match (p.exponent(), q.exponent(), diff.exponent()) {
+        _ if q.is_zero() => 0,
+        _ if diff.is_zero() => wp,
+        (Some(ep), Some(eq), Some(ed)) => (ep.max(eq) as i64 - ed as i64).max(0) as usize,
+        _ => 0,
+    };
+    Ok((diff, lost))
+}
+
+/// Generalised incomplete beta `B_{(x1, x2)}(a, b) = ∫_{x1}^{x2} t^{a−1}(1−t)^{b−1} dt`
+/// (or `I_{(x1, x2)}(a, b) = B_{(x1, x2)}(a, b)/B(a, b)` when `regularized`)
+/// for real `a, b > 0` and `0 ≤ x1, x2 ≤ 1`.
+///
+/// Computed as `I_{x2}(a, b) − I_{x1}(a, b)`; when the two values nearly
+/// cancel (`x1 ≈ x2`) the working precision is raised by the number of
+/// bits lost and the difference recomputed.
+#[allow(clippy::too_many_arguments)]
+fn arb_betainc(
+    a: &BigFloat,
+    b: &BigFloat,
+    x1: &BigFloat,
+    x2: &BigFloat,
+    regularized: bool,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let name = if regularized {
+        "betainc_regularized"
+    } else {
+        "betainc"
+    };
+    if [a, b, x1, x2].iter().any(|v| v.is_nan() || v.is_inf()) {
+        return Err(unevaluable(format!("{name} of special float value")));
+    }
+    if !a.is_positive() || !b.is_positive() {
+        return Err(unevaluable(format!(
+            "{name} requires a, b > 0 for numerical evaluation"
+        )));
+    }
+    let one = BigFloat::from_i32(1, prec);
+    if [x1, x2].iter().any(|x| x.is_negative() || bf_gt(x, &one)) {
+        return Err(unevaluable(format!(
+            "{name}: the limits x1, x2 must lie in [0, 1] for numerical evaluation"
+        )));
+    }
+    // Orient the limits so that lo < hi; the sign is restored at the end.
+    let (lo, hi, negate) = match x1.cmp(x2) {
+        Some(c) if c < 0 => (x1, x2, false),
+        Some(c) if c > 0 => (x2, x1, true),
+        _ => return Ok(BigFloat::new(prec)),
+    };
+    let mut wp = prec + 32;
+    let mut diff;
+    let mut attempts = 0;
+    loop {
+        let (d, lost) = betainc_reg_diff_wp(a, b, lo, hi, wp, rm, cc)?;
+        diff = d;
+        attempts += 1;
+        // Stop once the guard bits cover the cancellation (16 to spare).
+        if lost + prec + 16 <= wp || attempts >= 3 {
+            break;
+        }
+        wp = prec + 32 + lost;
+    }
+    if !regularized {
+        let beta = beta_wp(a, b, wp, rm, cc)?;
+        diff = diff.mul(&beta, wp, rm);
+    }
+    if negate {
+        diff = diff.neg();
+    }
+    Ok(round_to(diff, prec, rm))
 }
 
 // ── Polylogarithm / Dirichlet eta ───────────────────────────────────────────────
