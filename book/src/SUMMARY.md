@@ -1,6 +1,7 @@
 # Summary
 
 [Introduction](./introduction.md)
+[What's New in 0.12](./whats-new-0.12.md)
 [What's New in 0.9 / 0.10](./whats-new-0.9.md)
 [What's New in 0.7](./whats-new-0.7.md)
 [What's New in 0.6](./whats-new-0.6.md)
@@ -58,6 +59,7 @@
 
 - [API Patterns](./reference/api-patterns.md)
 - [Error Handling](./reference/error-handling.md)
+- [Migrating from 0.11 to 0.12](./reference/migrating-0.12.md)
 - [Migrating from 0.6 to 0.7](./reference/migrating-0.7.md)
 - [Migrating from 0.3 to 0.4](./reference/migrating-0.4.md)
 - [Migrating from 0.1 to 0.2](./reference/migrating-0.2.md)

@@ -693,7 +693,7 @@ stats::covariance(&[&x], x.symbol(), &(2 * x.symbol())).unwrap();               
 let z = RandomVariable::new(&ctx, "Z", Distribution::normal(ctx.int(1), ctx.int(2)));
 stats::sum_distribution(&x, &z).unwrap();                // Normal(1, sqrt(5))
 x.entropy();                                             // 1/2*ln(2*pi*E)
-let coin = Distribution::try_finite(vec![(ctx.int(1), ctx.rational(2, 3)), (ctx.int(0), ctx.rational(1, 3))]).unwrap();
+let coin = Distribution::try_finite(&ctx, vec![(ctx.int(1), ctx.rational(2, 3)), (ctx.int(0), ctx.rational(1, 3))]).unwrap();
 RandomVariable::new(&ctx, "C", coin).variance();         // 2/9
 y.sample(20_000, &mut Rng::new(1)).unwrap();             // reproducible f64 samples; mean ≈ 0.33
 ```

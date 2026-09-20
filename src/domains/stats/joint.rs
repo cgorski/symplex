@@ -35,11 +35,13 @@ use crate::api::context::Context;
 use crate::api::expr::{BoolEx, Ex, Expr, Sort};
 use crate::api::poly_ex::Poly;
 use crate::base::errors::SymplexError;
-use crate::base::node::ExprNode;
 
-use super::continuous::ContinuousFamily;
-use super::discrete::DiscreteFamily;
-use super::rv::{Distribution, RandomVariable, Support};
+use super::continuous::{ChiSquared, Exponential, Gamma, Normal};
+use super::discrete::{Bernoulli, Binomial, NegativeBinomial, Poisson};
+use super::events::{Rel, flatten_relations};
+use super::family::Distribution;
+use super::rv::RandomVariable;
+use super::support::{Kind, Support, is_neg_inf};
 
 fn invalid(operation: &'static str, reason: impl Into<String>) -> SymplexError {
     SymplexError::invalid_argument(operation, reason)
@@ -54,7 +56,7 @@ fn check_vars(operation: &'static str, vars: &[&RandomVariable]) -> Result<Conte
             "at least one random variable is required",
         ));
     };
-    let ctx = first.context().clone();
+    let ctx = first.context();
     for (i, v) in vars.iter().enumerate() {
         if v.context().id != ctx.id {
             return Err(invalid(
@@ -322,287 +324,77 @@ pub fn sum_distribution(a: &RandomVariable, b: &RandomVariable) -> Option<Distri
     if a.symbol() == b.symbol() || a.context().id != b.context().id {
         return None;
     }
+    let ctx = a.context();
+    let (da, db) = (a.distribution(), b.distribution());
     // `Bernoulli(p)` is `Binomial(1, p)`: n + m trials with the same
     // success probability.
-    if let (Some((n, p)), Some((m, q))) =
-        (as_binomial(a.distribution()), as_binomial(b.distribution()))
+    if let (Some((n, p)), Some((m, q))) = (as_binomial(da), as_binomial(db))
         && p == q
     {
         return Some(Distribution::binomial((n + m).simplify(), p));
     }
-    match (a.distribution(), b.distribution()) {
-        // Sum of independent normals: means add, variances add.
-        (
-            Distribution::Continuous(ContinuousFamily::Normal { mean: m1, std: s1 }),
-            Distribution::Continuous(ContinuousFamily::Normal { mean: m2, std: s2 }),
-        ) => Some(Distribution::normal(
-            (m1 + m2).simplify(),
-            (s1.powi(2) + s2.powi(2)).sqrt().simplify(),
-        )),
-        // Superposition of Poisson processes: rates add.
-        (
-            Distribution::Discrete(DiscreteFamily::Poisson { rate: l1 }),
-            Distribution::Discrete(DiscreteFamily::Poisson { rate: l2 }),
-        ) => Some(Distribution::poisson((l1 + l2).simplify())),
-        // Failures before the r₁-th success, then before r₂ more.
-        (
-            Distribution::Discrete(DiscreteFamily::NegativeBinomial { r: r1, p }),
-            Distribution::Discrete(DiscreteFamily::NegativeBinomial { r: r2, p: q }),
-        ) if p == q => Some(Distribution::negative_binomial(
-            (r1 + r2).simplify(),
-            p.clone(),
-        )),
-        // Gamma with a common scale: shapes add (Exponential(λ) is
-        // Gamma(1, 1/λ); ChiSquared(k) is Gamma(k/2, 2)).
-        (Distribution::Continuous(f), Distribution::Continuous(g)) => {
-            let (k1, t1) = as_gamma(f)?;
-            let (k2, t2) = as_gamma(g)?;
-            if t1 != t2 {
-                return None;
-            }
-            let shape = (k1 + k2).simplify();
-            // Two chi-squareds stay a chi-squared.
-            if matches!(
-                (f, g),
-                (
-                    ContinuousFamily::ChiSquared { .. },
-                    ContinuousFamily::ChiSquared { .. }
-                )
-            ) {
-                return Some(Distribution::chi_squared(
-                    (shape * a.context().int(2)).simplify(),
-                ));
-            }
-            Some(Distribution::gamma(shape, t1))
-        }
-        _ => None,
+    // Sum of independent normals: means add, variances add.
+    if let (Some(x), Some(y)) = (da.downcast_ref::<Normal>(), db.downcast_ref::<Normal>()) {
+        return Some(Distribution::normal(
+            (&x.mean + &y.mean).simplify(),
+            (x.std.powi(2) + y.std.powi(2)).sqrt().simplify(),
+        ));
     }
+    // Superposition of Poisson processes: rates add.
+    if let (Some(x), Some(y)) = (da.downcast_ref::<Poisson>(), db.downcast_ref::<Poisson>()) {
+        return Some(Distribution::poisson((&x.rate + &y.rate).simplify()));
+    }
+    // Failures before the r₁-th success, then before r₂ more.
+    if let (Some(x), Some(y)) = (
+        da.downcast_ref::<NegativeBinomial>(),
+        db.downcast_ref::<NegativeBinomial>(),
+    ) && x.p == y.p
+    {
+        return Some(Distribution::negative_binomial(
+            (&x.r + &y.r).simplify(),
+            x.p.clone(),
+        ));
+    }
+    // Gamma with a common scale: shapes add (Exponential(λ) is
+    // Gamma(1, 1/λ); ChiSquared(k) is Gamma(k/2, 2)).
+    let (k1, t1) = as_gamma(da)?;
+    let (k2, t2) = as_gamma(db)?;
+    if t1 != t2 {
+        return None;
+    }
+    let shape = (k1 + k2).simplify();
+    // Two chi-squareds stay a chi-squared.
+    if da.downcast_ref::<ChiSquared>().is_some() && db.downcast_ref::<ChiSquared>().is_some() {
+        return Some(Distribution::chi_squared((shape * ctx.int(2)).simplify()));
+    }
+    Some(Distribution::gamma(shape, t1))
 }
 
-/// A continuous family as `Gamma(shape, scale)`, when it is one.
-fn as_gamma(f: &ContinuousFamily) -> Option<(Ex, Ex)> {
-    match f {
-        ContinuousFamily::Gamma { shape, scale } => Some((shape.clone(), scale.clone())),
-        ContinuousFamily::Exponential { rate } => {
-            let ctx = rate.context();
-            Some((ctx.one(), (ctx.one() / rate).simplify()))
-        }
-        ContinuousFamily::ChiSquared { dof } => {
-            let ctx = dof.context();
-            Some(((dof / ctx.int(2)).simplify(), ctx.int(2)))
-        }
-        _ => None,
+/// A distribution as `Gamma(shape, scale)`, when it is one.
+fn as_gamma(d: &Distribution) -> Option<(Ex, Ex)> {
+    if let Some(g) = d.downcast_ref::<Gamma>() {
+        return Some((g.shape.clone(), g.scale.clone()));
     }
+    if let Some(e) = d.downcast_ref::<Exponential>() {
+        let ctx = e.rate.context();
+        return Some((ctx.one(), (ctx.one() / &e.rate).simplify()));
+    }
+    if let Some(c) = d.downcast_ref::<ChiSquared>() {
+        let ctx = c.dof.context();
+        return Some(((&c.dof / ctx.int(2)).simplify(), ctx.int(2)));
+    }
+    None
 }
 
 /// `(n, p)` for a `Binomial(n, p)` or a `Bernoulli(p)` (`n = 1`).
 fn as_binomial(d: &Distribution) -> Option<(Ex, Ex)> {
-    match d {
-        Distribution::Discrete(DiscreteFamily::Binomial { n, p }) => Some((n.clone(), p.clone())),
-        Distribution::Discrete(DiscreteFamily::Bernoulli { p }) => {
-            Some((p.context().one(), p.clone()))
-        }
-        _ => None,
+    if let Some(b) = d.downcast_ref::<Binomial>() {
+        return Some((b.n.clone(), b.p.clone()));
     }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Events: relations, bounds
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// The kind of a relation node: `l > r`, `l ≥ r`, `l = r`.  Relations are
-/// stored canonically as `Gt`/`Ge` (`X < a` is `a > X`) and `Eq_`.
-#[derive(Clone, Copy)]
-enum Rel {
-    Gt,
-    Ge,
-    Eq,
-}
-
-/// One relation of an event, with the relation node itself as a `BoolEx`
-/// so that per-variable conjunctions can be rebuilt without re-encoding.
-struct Relation {
-    kind: Rel,
-    lhs: Ex,
-    rhs: Ex,
-    node: BoolEx,
-}
-
-/// Flatten an event — a relation or a (nested) conjunction of relations —
-/// into its relations; `None` for any other shape (`Or`, `Not`, …).
-fn flatten_relations(event: &BoolEx) -> Option<Vec<Relation>> {
-    let inner = event.inner.read();
-    let arena = &inner.arena;
-    let mut rels = Vec::new();
-    let mut stack = vec![event.raw_id()];
-    while let Some(id) = stack.pop() {
-        let (kind, l, r) = match arena.node(id) {
-            ExprNode::And(parts) => {
-                stack.extend(parts.iter().copied());
-                continue;
-            }
-            ExprNode::Gt(l, r) => (Rel::Gt, *l, *r),
-            ExprNode::Ge(l, r) => (Rel::Ge, *l, *r),
-            ExprNode::Eq_(l, r) => (Rel::Eq, *l, *r),
-            _ => return None,
-        };
-        rels.push(Relation {
-            kind,
-            lhs: event.wrap_as(l),
-            rhs: event.wrap_as(r),
-            node: event.wrap(id),
-        });
+    if let Some(b) = d.downcast_ref::<Bernoulli>() {
+        return Some((b.p.context().one(), b.p.clone()));
     }
-    Some(rels)
-}
-
-/// The set an event cuts out of one variable's line: `lo < X < hi` (each
-/// side optional, strict or not) or the point `X = a`.
-#[derive(Default)]
-struct Bounds {
-    lo: Option<Ex>,
-    hi: Option<Ex>,
-    lo_strict: bool,
-    hi_strict: bool,
-    point: Option<Ex>,
-}
-
-impl Bounds {
-    fn raise_lo(&mut self, a: Ex, strict: bool) {
-        self.lo = Some(match self.lo.take() {
-            Some(l0) => l0.max_with(&a),
-            None => a,
-        });
-        self.lo_strict |= strict;
-    }
-
-    fn lower_hi(&mut self, b: Ex, strict: bool) {
-        self.hi = Some(match self.hi.take() {
-            Some(h) => h.min_with(&b),
-            None => b,
-        });
-        self.hi_strict |= strict;
-    }
-}
-
-/// Decompose an event in the single variable `x` into [`Bounds`]: `X > a`
-/// → `lo = a` strict, `X ≤ b` → `hi = b`, `X = a` → `point`.  The same
-/// shapes `RandomVariable::probability` accepts.
-fn event_bounds(x: &RandomVariable, event: &BoolEx) -> Result<Bounds, SymplexError> {
-    let unsupported = || {
-        SymplexError::NotImplemented(format!(
-            "the event `{event}`: only relations `X < a`, `X ≤ a`, `X > a`, `X ≥ a`, `X = a` in \
-             the random variable and their conjunctions are supported"
-        ))
-    };
-    let rels = flatten_relations(event).ok_or_else(unsupported)?;
-    let sym = x.symbol();
-    let mut bounds = Bounds::default();
-    for rel in rels {
-        let (bound, x_on_left) = if rel.lhs == *sym && !rel.rhs.contains(sym) {
-            (rel.rhs, true)
-        } else if rel.rhs == *sym && !rel.lhs.contains(sym) {
-            (rel.lhs, false)
-        } else {
-            return Err(unsupported());
-        };
-        match (rel.kind, x_on_left) {
-            // X > a / X ≥ a
-            (Rel::Gt, true) => bounds.raise_lo(bound, true),
-            (Rel::Ge, true) => bounds.raise_lo(bound, false),
-            // a > X / a ≥ X
-            (Rel::Gt, false) => bounds.lower_hi(bound, true),
-            (Rel::Ge, false) => bounds.lower_hi(bound, false),
-            (Rel::Eq, _) => bounds.point = Some(bound),
-        }
-    }
-    Ok(bounds)
-}
-
-/// Combine two optional bounds with `f` (`max` for lower ends, `min` for
-/// upper ends); a missing side is unbounded.
-fn merge_bounds(a: Option<Ex>, b: Option<Ex>, f: impl Fn(&Ex, &Ex) -> Ex) -> Option<Ex> {
-    match (a, b) {
-        (Some(a), Some(b)) => Some(f(&a, &b)),
-        (Some(a), None) | (None, Some(a)) => Some(a),
-        (None, None) => None,
-    }
-}
-
-/// `E[g · 1_{lo < X < hi}]`: `g · density` integrated (summed) over the
-/// bounds clipped to the support — the numerator of a conditional
-/// expectation.  Mirrors the clipping in `RandomVariable::probability`.
-fn restricted_expectation(x: &RandomVariable, g: &Ex, bounds: &Bounds) -> Ex {
-    let ctx = x.context();
-    let (slo, shi) = match x.support() {
-        Support::Continuous { lo, hi } | Support::Discrete { lo, hi } => (lo, hi),
-        // A finite table: sum `g(v)·p(v)` over the listed values inside the
-        // bounds; an undecidable comparison keeps the value out (the
-        // caller's `probability` reports the same case as `NotImplemented`).
-        Support::Finite(values) => {
-            let t = x.symbol();
-            let inside = |v: &Ex| -> bool {
-                let above = bounds.lo.as_ref().is_none_or(|a| {
-                    let d = v - a;
-                    (if bounds.lo_strict {
-                        d.is_positive()
-                    } else {
-                        d.is_nonnegative()
-                    }) == Some(true)
-                });
-                let below = bounds.hi.as_ref().is_none_or(|b| {
-                    let d = b - v;
-                    (if bounds.hi_strict {
-                        d.is_positive()
-                    } else {
-                        d.is_nonnegative()
-                    }) == Some(true)
-                });
-                above && below
-            };
-            let mut acc = ctx.zero();
-            for v in values.iter().filter(|v| inside(v)) {
-                acc += g.subs(t, v).eval() * x.density(v).eval();
-            }
-            return acc.simplify();
-        }
-    };
-    let lo = merge_bounds(bounds.lo.clone(), slo, |a, s| a.max_with(s));
-    let hi = merge_bounds(bounds.hi.clone(), shi, |b, s| b.min_with(s));
-    let t = x.symbol();
-    let integrand = g * x.density(t);
-    match x.distribution() {
-        Distribution::Continuous(_) => {
-            // Strictness does not matter for a continuous variable.
-            let lo = lo.unwrap_or_else(|| ctx.neg_infinity());
-            let hi = hi.unwrap_or_else(|| ctx.infinity());
-            integrand.integrate_definite(t, &lo, &hi).simplify()
-        }
-        Distribution::Discrete(_) => {
-            // Integer bounds: a strict bound moves inwards by one; a
-            // non-integer bound rounds inwards.
-            let one = ctx.one();
-            let lo = lo.map(|a| {
-                let a = if bounds.lo_strict {
-                    a.floor() + &one
-                } else {
-                    a.ceiling()
-                };
-                a.simplify()
-            });
-            let hi = hi.map(|b| {
-                let b = if bounds.hi_strict {
-                    b.ceiling() - &one
-                } else {
-                    b.floor()
-                };
-                b.simplify()
-            });
-            let lo = lo.unwrap_or_else(|| ctx.neg_infinity());
-            let hi = hi.unwrap_or_else(|| ctx.infinity());
-            integrand.summation(t, &lo, &hi).simplify()
-        }
-    }
+    None
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -737,44 +529,51 @@ fn probability_less(lower: &RandomVariable, upper: &RandomVariable) -> Result<Ex
     };
     // Two normals: L − U ~ Normal(μ_L − μ_U, √(σ_L² + σ_U²)), so
     // P(L < U) = P(L − U < 0) — exact, no erf integral left over.
-    if let (
-        Distribution::Continuous(ContinuousFamily::Normal { mean: m1, std: s1 }),
-        Distribution::Continuous(ContinuousFamily::Normal { mean: m2, std: s2 }),
-    ) = (lower.distribution(), upper.distribution())
-    {
-        let diff = RandomVariable::new(
-            ctx,
-            "_stats_diff",
-            Distribution::normal(
-                (m1 - m2).simplify(),
-                (s1.powi(2) + s2.powi(2)).sqrt().simplify(),
-            ),
+    if let (Some(x), Some(y)) = (
+        lower.distribution().downcast_ref::<Normal>(),
+        upper.distribution().downcast_ref::<Normal>(),
+    ) {
+        let diff = Distribution::normal(
+            (&x.mean - &y.mean).simplify(),
+            (x.std.powi(2) + y.std.powi(2)).sqrt().simplify(),
         );
-        return diff.probability(&diff.symbol().lt(&ctx.zero()));
+        return diff.probability_of(&Support::from_pieces(
+            Kind::Continuous,
+            vec![super::support::Piece::Interval {
+                lo: ctx.neg_infinity(),
+                hi: ctx.zero(),
+                lo_open: true,
+                hi_open: true,
+            }],
+        ));
     }
-    let (Support::Continuous { lo: lo_l, hi: hi_l }, Support::Continuous { lo: lo_u, hi: hi_u }) =
-        (lower.support(), upper.support())
+    let (sl, su) = (lower.support(), upper.support());
+    let (Some((lo_l, hi_l, _, _)), Some((lo_u, hi_u, _, _))) = (sl.as_interval(), su.as_interval())
     else {
         return Err(not_implemented());
     };
+    if sl.kind() != Kind::Continuous || su.kind() != Kind::Continuous {
+        return Err(not_implemented());
+    }
     let t = lower.symbol();
-    let (Some(_), Some(cdf_upper)) = (lower.distribution().cdf(t), upper.distribution().cdf(t))
-    else {
+    let (Some(_), Some(cdf_upper)) = (
+        lower.distribution().family().cdf(t),
+        upper.distribution().family().cdf(t),
+    ) else {
         return Err(not_implemented());
     };
     // P(L < U) = ∫ f_L(t)·(1 − F_U(t)) dt.  The closed form of F_U is valid
     // on U's support only: below it `1 − F_U = 1`, which contributes
     // P(L < lo_U); above it the factor is 0.
     let mut total = ctx.zero();
-    if let Some(a) = &lo_u {
-        total += lower.probability(&t.lt(a))?;
+    if !is_neg_inf(lo_u) {
+        total += lower.probability(&t.lt(lo_u))?;
     }
-    let lo = merge_bounds(lo_l, lo_u, |a, b| a.max_with(b))
-        .map_or_else(|| ctx.neg_infinity(), |e| e.simplify());
-    let hi = merge_bounds(hi_l, hi_u, |a, b| a.min_with(b))
-        .map_or_else(|| ctx.infinity(), |e| e.simplify());
+    let both = Support::interval(lo_l.clone(), hi_l.clone())
+        .intersect(&Support::interval(lo_u.clone(), hi_u.clone()))
+        .ok_or_else(not_implemented)?;
     let integrand = lower.density(t) * (ctx.one() - cdf_upper);
-    total += integrand.integrate_definite(t, &lo, &hi);
+    total += lower.distribution().integrate_over(&integrand, t, &both);
     Ok(total.simplify())
 }
 
@@ -826,9 +625,9 @@ pub fn conditional_expectation(
 ) -> Result<Ex, SymplexError> {
     const OP: &str = "stats::conditional_expectation";
     let ctx = x.context();
-    check_context(OP, ctx, g)?;
-    check_context(OP, ctx, event)?;
-    let bounds = event_bounds(x, event)?;
+    check_context(OP, &ctx, g)?;
+    check_context(OP, &ctx, event)?;
+    let region = x.event_region(event)?;
     let p = x.probability(event)?;
     if p.is_zero() == Some(true) {
         return Err(invalid(
@@ -836,12 +635,7 @@ pub fn conditional_expectation(
             format!("the event `{event}` has probability zero"),
         ));
     }
-    if let Some(a) = &bounds.point {
-        // `X = a` with positive probability: the conditional law is the
-        // point mass at `a`.
-        return Ok(g.subs(x.symbol(), a).simplify());
-    }
-    let numerator = restricted_expectation(x, g, &bounds);
+    let numerator = x.distribution().expectation_over(g, x.symbol(), &region)?;
     Ok((numerator / p).simplify())
 }
 
@@ -878,8 +672,8 @@ pub fn conditional_probability(
 ) -> Result<Ex, SymplexError> {
     const OP: &str = "stats::conditional_probability";
     let ctx = x.context();
-    check_context(OP, ctx, event)?;
-    check_context(OP, ctx, given)?;
+    check_context(OP, &ctx, event)?;
+    check_context(OP, &ctx, given)?;
     let p_given = x.probability(given)?;
     if p_given.is_zero() == Some(true) {
         return Err(invalid(
@@ -921,7 +715,5 @@ pub fn conditional_probability(
 /// assert_eq!((h - expected).expand_log().simplify(), ctx.int(0));
 /// ```
 pub fn entropy(x: &RandomVariable) -> Ex {
-    let t = x.symbol();
-    let neg_log_density = (-x.density(t).ln().expand_log()).simplify();
-    x.expectation(&neg_log_density)
+    x.entropy()
 }

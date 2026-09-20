@@ -111,7 +111,7 @@ fn binomial_moments_closed_form() {
     assert_eq!(x.moment(3), ctx.rational(95, 9));
     assert_eq!(x.moment(4), ctx.rational(865, 27));
     assert_eq!(
-        x.distribution().raw_moment(3, &ctx),
+        x.distribution().family().raw_moment(3),
         Some(ctx.rational(95, 9)),
         "the family has a closed form (no summation)"
     );
@@ -292,7 +292,7 @@ fn geometric_moments_from_mgf() {
     assert_eq!(y.moment(3), ctx.int(292));
     assert_eq!(y.moment(4), ctx.int(4060));
     assert_eq!(
-        y.distribution().raw_moment(3, &ctx),
+        y.distribution().family().raw_moment(3),
         Some(ctx.int(292)),
         "closed route through the mgf"
     );
@@ -329,7 +329,14 @@ fn geometric_cdf_and_mgf() {
     let k = ctx.symbol("k");
     let t = ctx.symbol("t");
     assert_eq!(y.cdf(&ctx.int(3)).simplify(), ctx.rational(37, 64));
-    assert_eq!(y.cdf(&k), ctx.one() - ctx.rational(3, 4).pow(&k.floor()));
+    // 0.12: the whole-line cdf is clamped below the support (SymPy:
+    // cdf(Geometric(1/4))(k) = Piecewise((1 - (3/4)**floor(k), k >= 1), (0, True))).
+    assert_eq!(
+        y.distribution().family().cdf(&k),
+        Some(ctx.one() - ctx.rational(3, 4).pow(&k.floor()))
+    );
+    assert_eq!(y.cdf(&ctx.int(0)), ctx.int(0));
+    assert_eq!(y.cdf(&ctx.int(2)), ctx.rational(7, 16));
     assert_eq!(
         y.mgf(&t),
         ctx.rational(1, 4) * t.exp() / (ctx.one() - ctx.rational(3, 4) * t.exp())
@@ -495,10 +502,7 @@ fn hypergeometric_support_is_clipped_by_the_population() {
     let z = Distribution::hypergeometric(ctx.int(10), ctx.int(8), ctx.int(5));
     assert_eq!(
         z.support(),
-        Support::Discrete {
-            lo: Some(ctx.int(3)),
-            hi: Some(ctx.int(5)),
-        }
+        Support::integers(&ctx, Some(ctx.int(3)), Some(ctx.int(5)))
     );
     let zr = rv(&ctx, "Z", z);
     assert_eq!(
@@ -508,17 +512,11 @@ fn hypergeometric_support_is_clipped_by_the_population() {
     // Symbolic parameters keep max/min.
     let (big_n, m, n) = (ctx.symbol("N"), ctx.symbol("m"), ctx.symbol("n"));
     let sym = Distribution::hypergeometric(big_n.clone(), m.clone(), n.clone());
-    match sym.support() {
-        Support::Discrete {
-            lo: Some(lo),
-            hi: Some(hi),
-        } => {
-            assert_eq!(lo, ctx.zero().max_with(&(&n + &m - &big_n)).simplify());
-            assert_eq!(hi, n.min_with(&m).simplify());
-        }
-        other => panic!("unexpected support {other:?}"),
-    }
-    assert_eq!(sym.mean(&ctx), Some((&n * &m / &big_n).simplify()));
+    let support = sym.support();
+    let (lo, hi, _, _) = support.as_interval().expect("one integer range");
+    assert_eq!(*lo, ctx.zero().max_with(&(&n + &m - &big_n)).simplify());
+    assert_eq!(*hi, n.min_with(&m).simplify());
+    assert_eq!(sym.family().mean(), Some((&n * &m / &big_n).simplify()));
 }
 
 // ── DiscreteUniform(2, 7) and Die(6) ───────────────────────────────────
@@ -630,10 +628,7 @@ fn die_is_discrete_uniform_from_one() -> Result<(), SymplexError> {
     let d = rv(&ctx, "D", Distribution::die(ctx.int(6)));
     assert_eq!(
         d.support(),
-        Support::Discrete {
-            lo: Some(ctx.int(1)),
-            hi: Some(ctx.int(6)),
-        }
+        Support::integers(&ctx, Some(ctx.int(1)), Some(ctx.int(6)))
     );
     assert_eq!(d.distribution().name(), "DiscreteUniform");
     assert_eq!(format!("{d}"), "D ~ DiscreteUniform(1, 6)");
@@ -835,7 +830,7 @@ fn display_names_the_family_and_parameters() {
     for (d, text) in cases {
         assert_eq!(format!("{d}"), text);
         assert!(!d.is_continuous());
-        assert!(matches!(d.support(), Support::Discrete { .. }));
+        assert_eq!(d.support().kind(), symplex::stats::Kind::Discrete);
     }
 }
 
@@ -854,7 +849,7 @@ fn finite_table_distribution() {
         (ctx.int(2), ctx.rational(1, 4)),
         (ctx.rational(7, 2), ctx.rational(1, 2)),
     ];
-    let x = RandomVariable::new(&ctx, "X", Distribution::try_finite(table).unwrap());
+    let x = RandomVariable::new(&ctx, "X", Distribution::try_finite(&ctx, table).unwrap());
     assert_eq!(x.mean(), ctx.rational(19, 8));
     assert_eq!(x.variance(), ctx.rational(99, 64));
     assert_eq!(x.moment(3), ctx.rational(751, 32));
@@ -886,17 +881,23 @@ fn finite_table_distribution() {
     let f = samples.iter().filter(|v| (**v - 3.5).abs() < 1e-12).count() as f64 / 40_000.0;
     assert!((f - 0.5).abs() < 0.02, "{f}");
     // Constructor checks.
-    assert!(Distribution::try_finite(vec![]).is_err());
-    assert!(Distribution::try_finite(vec![(ctx.int(1), ctx.rational(1, 2))]).is_err());
+    assert!(Distribution::try_finite(&ctx, vec![]).is_err());
+    assert!(Distribution::try_finite(&ctx, vec![(ctx.int(1), ctx.rational(1, 2))]).is_err());
     assert!(
-        Distribution::try_finite(vec![(ctx.int(1), ctx.int(2)), (ctx.int(2), ctx.int(-1))])
-            .is_err()
+        Distribution::try_finite(
+            &ctx,
+            vec![(ctx.int(1), ctx.int(2)), (ctx.int(2), ctx.int(-1))]
+        )
+        .is_err()
     );
     assert!(
-        Distribution::try_finite(vec![
-            (ctx.int(1), ctx.rational(1, 2)),
-            (ctx.int(1), ctx.rational(1, 2))
-        ])
+        Distribution::try_finite(
+            &ctx,
+            vec![
+                (ctx.int(1), ctx.rational(1, 2)),
+                (ctx.int(1), ctx.rational(1, 2))
+            ]
+        )
         .is_err()
     );
     // A symbolic probability is accepted and carried through.
@@ -904,7 +905,8 @@ fn finite_table_distribution() {
     let coin = RandomVariable::new(
         &ctx,
         "C",
-        Distribution::try_finite(vec![(ctx.int(1), p.clone()), (ctx.int(0), 1 - &p)]).unwrap(),
+        Distribution::try_finite(&ctx, vec![(ctx.int(1), p.clone()), (ctx.int(0), 1 - &p)])
+            .unwrap(),
     );
     assert_eq!(coin.mean(), p);
 }

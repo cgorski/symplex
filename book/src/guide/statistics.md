@@ -39,11 +39,13 @@ fn main() -> Result<(), SymplexError> {
 | `quantile(&p)`, `median()` | `quantile(X)(p)`, `median(X)` | `Option<Ex>` — `None` when there is no closed inverse CDF |
 | `sample(n, &mut rng)` | `sample(X, size=n)` | `Result<Vec<f64>>` — inverse-transform sampling through the quantile |
 
-Events are `BoolEx` relations in the variable's symbol: `X < a`, `X ≤ a`, `X > a`, `X ≥ a`, `X = a` and conjunctions of these. The density is integrated over the part of the support where the condition holds, so `P(X > 1)` for `Exponential(3)` is `exp(-3)` and `P(0 < U < 1/4)` for `Uniform(0, 1)` is `1/4`.
+Events are `BoolEx` conditions in the variable's symbol: relations `X < a`, `X ≤ a`, `X > a`, `X ≥ a`, `X = a` with any (also symbolic) bound and their conjunctions, and — with numeric bounds — any boolean combination of relations in `X` (`X² < 1`, `|X| > 2`, `X < −1 ∨ X > 1`), which the crate's inequality solver turns into a set. The event's region is clipped to the support and measured through the closed-form CDF when the family has one, else by exact integration / summation, so `P(X > 1)` for `Exponential(3)` is `exp(-3)`, `P(0 < U < 1/4)` for `Uniform(0, 1)` is `1/4`, and `P(N² < 1)` for a standard normal is `erf(√2/2)`.
+
+`cdf(&x)` is the whole-line distribution function as SymPy prints it: a `Piecewise` that is `0` below the support and `1` above it (`Uniform(0,1).cdf(3) = 1`); the family's own closed form on the support is `distribution().family().cdf(&x)`.
 
 ## Continuous families
 
-Every family is a variant of `stats::ContinuousFamily` with a `Distribution::try_<name>(…)` constructor (validates numeric parameters) and a `Distribution::<name>(…)` twin (unchecked). Parameters follow SymPy's order and meaning.
+Every family is a struct (`stats::Normal`, `stats::Gamma`, …) implementing the `stats::Family` trait — support, density, and the closed forms it has — wrapped in a `Distribution` by a `Distribution::try_<name>(…)` constructor (validates numeric parameters) or its `Distribution::<name>(…)` twin (unchecked). Parameters follow SymPy's order and meaning. `Distribution::downcast_ref::<Normal>()` recovers the struct; `Distribution::from_family(my_family)` admits your own (implement `Family` with a support, a density and `eq_family` via `stats::same_family`, and every query below works).
 
 | Family | Constructor | Support | Closed forms |
 |--------|-------------|---------|--------------|
@@ -130,11 +132,11 @@ fn main() {
 }
 ```
 
-For `StudentT` and `Pareto` the family returns the closed form for a symbolic parameter (its validity — `n < ν`, `n < α` — is the caller's promise) and `None` when a numeric parameter says the moment does not exist, so `Distribution::student_t(ctx.int(2)).variance(&ctx)` is `None` and `RandomVariable::variance` falls through to the divergent integral.
+For `StudentT` and `Pareto` the family returns the closed form for a symbolic parameter (its validity — `n < ν`, `n < α` — is the caller's promise) and `None` when a numeric parameter says the moment does not exist, so `Distribution::student_t(ctx.int(2)).family().variance()` is `None` and `RandomVariable::variance` falls through to the divergent integral.
 
 ### Differential entropy
 
-`ContinuousFamily::entropy(&ctx)` gives the closed-form differential entropy `−∫ f ln f` for every family (`Normal`: `½ ln(2πeσ²)`, `Uniform`: `ln(b − a)`, `Exponential`: `1 − ln λ`, `Gamma`: `k + ln θ + ln Γ(k) + (1−k)ψ(k)`, …).
+`Distribution::entropy()` gives the differential entropy `−∫ f ln f` — a closed form for every continuous family (`Normal`: `½ ln(2πeσ²)`, `Uniform`: `ln(b − a)`, `Exponential`: `1 − ln λ`, `Gamma`: `k + ln θ + ln Γ(k) + (1−k)ψ(k)`, …), the expectation of `−ln f` otherwise.
 
 ```rust
 use symplex::prelude::*;
@@ -142,8 +144,7 @@ use symplex::stats::Distribution;
 
 fn main() {
     let ctx = Context::new();
-    let Distribution::Continuous(fam) = Distribution::uniform(ctx.int(2), ctx.int(5)) else { return };
-    println!("{}", fam.entropy(&ctx).unwrap());   // ln(3)
+    println!("{}", Distribution::uniform(ctx.int(2), ctx.int(5)).entropy());   // ln(3)
 }
 ```
 
@@ -165,18 +166,27 @@ fn main() -> Result<(), SymplexError> {
 }
 ```
 
-## Discrete families
+## Conditioning, transformations, mixtures
 
-Discrete families (`Binomial(n, p)`, …) live in `stats::DiscreteFamily` with the same shape: a pmf on an integer support, closed forms where they exist, and `summation` over the support otherwise. `probability` rounds non-integer bounds inwards and moves strict bounds by one, so `P(Y > 2)` and `P(Y ≥ 3)` agree. See the API docs for `DiscreteFamily` for the current list.
+Distributions compose. `x.given(&event)` is SymPy's `given(X, cond)`: the same symbol with the `Truncated` distribution `f / P(event)` on the event's region (`E[N | N > 0] = √(2/π)`, `E[B | B ≥ 2] = 325/131` for `Binomial(5, ⅓)`). `x.transform("Y", &g)` is the distribution of `g(X)`: an affine `aX + b` transports every closed form exactly (`2N + 1 ~ Normal(1, 2)`, with its mgf, quantile and moments); a strictly monotone `g` on the support (`eˣ`, `ln x`, `1/x`, …) and the even shapes `X²`, `|X|`, `X^{2k}` go through the change-of-variables formula (`N²` has the χ²(1) density `e^{−y/2}/√(2πy)`; `E[eᴺ] = √e` by LOTUS); a finite table or finite integer range has its values mapped and merged (`Die²`). `Distribution::mixture(&[(w₁, F₁), (w₂, F₂)])` is a finite mixture whose every query is the weighted sum of its components'. All of them sample: a truncation by the transported quantile (or rejection), a transformation by mapping inner samples, a mixture by choosing a component.
+
+```rust,ignore
+let n = RandomVariable::new(&ctx, "N", Distribution::normal(ctx.int(0), ctx.int(1)));
+let half = n.given(&n.symbol().gt(&ctx.int(0)))?;         // N | N > 0
+half.mean();                                             // √(2/π)
+let sq = n.transform("S", &n.symbol().powi(2))?;          // N² ~ χ²(1)
+sq.density(&y);                                          // e^{−y/2}/√(2πy)
+let m = Distribution::mixture(&[(ctx.rational(1, 4), a), (ctx.rational(3, 4), b)])?;
+```
 
 ## Discrete families and finite tables
 
 `Bernoulli(p)`, `Binomial(n, p)`, `Poisson(λ)`, `Geometric(p)` (support `1..`), `NegativeBinomial(r, p)` (failures before the `r`-th success), `Hypergeometric(N, m, n)`, `DiscreteUniform(a, b)` and `Die(sides)` — each with exact mean, variance, raw moments (Stirling-number and factorial-moment formulas, or derivatives of the moment generating function), pmf, cdf where it closes, and `mgf`. Probabilities of `X ≤ a`, `X > a`, `a ≤ X ≤ b` and `X = a` are exact rationals for rational parameters (`Binomial(5, 1/3)`: `P(Y > 2) = 17/81`).
 
-`Distribution::try_finite(vec![(value, probability), …])` is SymPy's `FiniteRV`: an explicit table whose values need not be integers. Moments are sums over the table, probabilities are decided by exact comparison of each value with the event's bounds, and `sample` draws by cumulative sums.
+`Distribution::try_finite(&ctx, vec![(value, probability), …])` is SymPy's `FiniteRV`: an explicit table whose values need not be integers. Moments are sums over the table, probabilities are decided by exact comparison of each value with the event's bounds, and `sample` draws by cumulative sums.
 
 ```rust,ignore
-let coin = Distribution::try_finite(vec![(ctx.int(1), ctx.rational(2, 3)), (ctx.int(0), ctx.rational(1, 3))])?;
+let coin = Distribution::try_finite(&ctx, vec![(ctx.int(1), ctx.rational(2, 3)), (ctx.int(0), ctx.rational(1, 3))])?;
 let c = RandomVariable::new(&ctx, "C", coin);
 c.mean();                                   // 2/3
 c.probability(&c.symbol().eq_expr(&ctx.int(1)))?;   // 2/3

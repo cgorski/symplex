@@ -511,10 +511,25 @@ fn conditional_expectation_on_a_null_event_is_an_error() {
 }
 
 #[test]
-fn conditional_expectation_of_unsupported_event_is_not_implemented() {
+fn conditional_expectation_on_a_non_linear_event_goes_through_the_set_machinery() {
+    // 0.12: `X² > 1` is reduced to (−∞, −1) ∪ (1, ∞) by the inequality
+    // solver.  E[X | X² > 1] = 0 by symmetry; E[X² | X² > 1] =
+    // 2∫₁^∞ x²φ / P(|X| > 1) ≈ 2.5251352761609812091 (SymPy 1.14 itself
+    // raises AttributeError on `E(X, X**2 > 1)`; the value is by quadrature
+    // in SymPy on the two half-lines).
     let (ctx, x, _) = standard_normals();
-    let r = stats::conditional_expectation(&x, x.symbol(), &x.symbol().powi(2).gt(&ctx.int(1)));
-    assert!(matches!(r, Err(SymplexError::NotImplemented(_))), "{r:?}");
+    let event = x.symbol().powi(2).gt(&ctx.int(1));
+    let r = stats::conditional_expectation(&x, x.symbol(), &event).unwrap();
+    assert_eq!(r, ctx.int(0));
+    let r2 = stats::conditional_expectation(&x, &x.symbol().powi(2), &event).unwrap();
+    assert!(
+        (r2.eval_f64().unwrap() - 2.5251352761609813).abs() < 1e-12,
+        "{r2}"
+    );
+    // Symbolic bounds with a non-linear shape are still honestly unsupported.
+    let a = ctx.symbol("a");
+    let r3 = stats::conditional_expectation(&x, x.symbol(), &x.symbol().powi(2).gt(&a));
+    assert!(matches!(r3, Err(SymplexError::NotImplemented(_))), "{r3:?}");
 }
 
 #[test]

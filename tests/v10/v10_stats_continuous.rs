@@ -16,7 +16,7 @@
 //! textbook closed form is cited and checked numerically to 1e-9.
 
 use symplex::prelude::*;
-use symplex::stats::{Distribution, RandomVariable, Rng, Support};
+use symplex::stats::{Distribution, RandomVariable, Rng};
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
@@ -26,6 +26,18 @@ fn assert_exact(actual: &Ex, expected: &Ex, label: &str) {
         Some(true),
         "{label}: got `{actual}`, expected `{expected}`"
     );
+}
+
+/// 0.12: `RandomVariable::cdf` is the whole-line, support-clamped
+/// `Piecewise` (as SymPy's `cdf(X)(x)`); the family's closed form on the
+/// support is what the textbook formulas below describe.
+fn assert_cdf_on_support(rv: &RandomVariable, v: &Ex, expected: &Ex, label: &str) {
+    let on_support = rv
+        .distribution()
+        .family()
+        .cdf(v)
+        .unwrap_or_else(|| panic!("{label}: no closed-form cdf"));
+    assert_exact(&on_support, expected, label);
 }
 
 fn assert_close(actual: &Ex, expected: f64, label: &str) {
@@ -44,13 +56,12 @@ fn assert_close(actual: &Ex, expected: f64, label: &str) {
 fn total_mass(rv: &RandomVariable) -> Ex {
     let ctx = rv.context();
     let x = rv.symbol();
-    let (lo, hi) = match rv.support() {
-        Support::Continuous { lo, hi } => (lo, hi),
-        other => panic!("continuous family with support {other:?}"),
-    };
-    let lo = lo.unwrap_or_else(|| ctx.neg_infinity());
-    let hi = hi.unwrap_or_else(|| ctx.infinity());
-    rv.density(x).integrate_definite(x, &lo, &hi).simplify()
+    let support = rv.support();
+    let (lo, hi, _, _) = support
+        .as_interval()
+        .unwrap_or_else(|| panic!("continuous family with support {support}"));
+    let _ = &ctx;
+    rv.density(x).integrate_definite(x, lo, hi).simplify()
 }
 
 /// `cdf(quantile(p)) = p` numerically at `p = 0.3`.
@@ -131,7 +142,7 @@ fn exponential_rate_3() {
     );
     assert_exact(&x.skewness(), &ctx.int(2), "skewness");
     assert_exact(&x.kurtosis(), &ctx.int(9), "kurtosis");
-    assert_exact(&x.cdf(&v), &(ctx.one() - (-3 * &v).exp()), "cdf");
+    assert_cdf_on_support(&x, &v, &(ctx.one() - (-3 * &v).exp()), "cdf");
     assert_exact(&x.mgf(&t), &(ctx.int(3) / (ctx.int(3) - &t)), "mgf");
     assert_exact(
         &x.quantile(&p).unwrap(),
@@ -173,7 +184,7 @@ fn uniform_0_1() {
     assert_exact(&u.moment(3), &ctx.rational(1, 4), "E[X³]");
     assert_exact(&u.skewness(), &ctx.zero(), "skewness");
     assert_exact(&u.kurtosis(), &ctx.rational(9, 5), "kurtosis");
-    assert_exact(&u.cdf(&v), &v, "cdf");
+    assert_cdf_on_support(&u, &v, &v, "cdf");
     assert_exact(&u.mgf(&t), &((t.exp() - 1) / &t), "mgf");
     assert_exact(&u.quantile(&p).unwrap(), &p, "quantile");
     assert_cdf_quantile_roundtrip(&u);
@@ -200,7 +211,7 @@ fn uniform_2_5() {
     assert_exact(&u.mean(), &ctx.rational(7, 2), "mean");
     assert_exact(&u.variance(), &ctx.rational(3, 4), "variance");
     assert_exact(&u.moment(3), &ctx.rational(203, 4), "E[X³]");
-    assert_exact(&u.cdf(&v), &(&v / 3 - ctx.rational(2, 3)), "cdf");
+    assert_cdf_on_support(&u, &v, &(&v / 3 - ctx.rational(2, 3)), "cdf");
     assert_exact(
         &u.mgf(&t),
         &(((5 * &t).exp() - (2 * &t).exp()) / (3 * &t)),
@@ -239,9 +250,9 @@ fn gamma_shape_3_scale_2() {
     assert_exact(&g.central_moment(2), &ctx.int(12), "E[(X − 6)²]");
     assert_exact(&g.skewness(), &(2 * ctx.int(3).sqrt() / 3), "skewness");
     assert_exact(&g.kurtosis(), &ctx.int(5), "kurtosis");
-    let cdf = g.cdf(&v);
-    assert_exact(
-        &cdf,
+    assert_cdf_on_support(
+        &g,
+        &v,
         &(ctx.one() - (v.powi(2) / 8 + &v / 2 + 1) * (-&v / 2).exp()),
         "cdf",
     );
@@ -302,11 +313,7 @@ fn chi_squared_4_dof() {
     assert_exact(&c.moment(3), &ctx.int(192), "E[X³]");
     assert_exact(&c.skewness(), &ctx.int(2).sqrt(), "skewness");
     assert_exact(&c.kurtosis(), &ctx.int(6), "kurtosis");
-    assert_exact(
-        &c.cdf(&v),
-        &(ctx.one() - (&v / 2 + 1) * (-&v / 2).exp()),
-        "cdf",
-    );
+    assert_cdf_on_support(&c, &v, &(ctx.one() - (&v / 2 + 1) * (-&v / 2).exp()), "cdf");
     let two_over_e = 2 * (-ctx.one()).exp();
     assert_exact(&c.cdf(&ctx.int(2)), &(ctx.one() - &two_over_e), "cdf(2)");
     assert_exact(&c.mgf(&t), &(ctx.one() - 2 * &t).powi(-2), "mgf");
@@ -347,15 +354,21 @@ fn beta_2_3() {
     assert_exact(&b.moment(4), &ctx.rational(1, 14), "E[X⁴]");
     assert_exact(&b.skewness(), &ctx.rational(2, 7), "skewness");
     assert_exact(&b.kurtosis(), &ctx.rational(33, 14), "kurtosis");
-    assert!(
-        b.distribution().cdf(&v).is_none(),
-        "no closed-form cdf on the family"
-    );
-    assert_exact(
-        &b.cdf(&v),
+    // 0.12: the regularised incomplete beta closes to the polynomial
+    // (SymPy: cdf(Beta(2,3))(x) = 3x⁴ − 8x³ + 6x² for x ≥ 0).
+    assert_cdf_on_support(
+        &b,
+        &v,
         &(3 * v.powi(4) - 8 * v.powi(3) + 6 * v.powi(2)),
-        "cdf by integration",
+        "cdf",
     );
+    // mpmath: betainc(2, 3, 0, 0.4, regularized=True) = 0.5248
+    assert_exact(
+        &b.cdf(&ctx.rational(2, 5)),
+        &ctx.rational(328, 625),
+        "cdf(2/5)",
+    );
+    assert_exact(&b.cdf(&ctx.int(3)), &ctx.one(), "cdf above the support");
     assert!(
         b.quantile(&ctx.rational(1, 2)).is_none(),
         "no closed quantile"
@@ -400,9 +413,9 @@ fn cauchy_1_2_has_cdf_and_quantile_but_no_moments() {
     let s = c.symbol().clone();
     let v = ctx.symbol("v");
     let p = ctx.symbol("p");
-    assert!(c.distribution().mean(&ctx).is_none());
-    assert!(c.distribution().variance(&ctx).is_none());
-    assert!(c.distribution().raw_moment(1, &ctx).is_none());
+    assert!(c.distribution().family().mean().is_none());
+    assert!(c.distribution().family().variance().is_none());
+    assert!(c.distribution().family().raw_moment(1).is_none());
     // The generic route hands back the divergent integral unevaluated…
     let mean = c.mean();
     assert!(
@@ -419,8 +432,9 @@ fn cauchy_1_2_has_cdf_and_quantile_but_no_moments() {
         integrand.try_integrate_definite(&s, &ctx.neg_infinity(), &ctx.infinity()),
         Err(SymplexError::Divergent { .. })
     ));
-    assert_exact(
-        &c.cdf(&v),
+    assert_cdf_on_support(
+        &c,
+        &v,
         &(ctx.rational(1, 2) + ((&v - 1) / 2).atan() / ctx.pi()),
         "cdf",
     );
@@ -525,8 +539,9 @@ fn logistic_1_2() {
         (m4 - m4_exact).abs() < 1e-6,
         "E[X⁴] quadrature {m4} vs {m4_exact}"
     );
-    assert_exact(
-        &l.cdf(&v),
+    assert_cdf_on_support(
+        &l,
+        &v,
         &(ctx.one() / ((ctx.rational(1, 2) - &v / 2).exp() + 1)),
         "cdf",
     );
@@ -576,8 +591,9 @@ fn log_normal_1_2() {
         "variance",
     );
     assert_exact(&l.moment(3), &ctx.int(21).exp(), "E[X³] = e^{3 + 18}");
-    assert_exact(
-        &l.cdf(&v),
+    assert_cdf_on_support(
+        &l,
+        &v,
         &(ctx.rational(1, 2) + (ctx.int(2).sqrt() * (v.ln() - 1) / 4).erf() / 2),
         "cdf",
     );
@@ -594,7 +610,10 @@ fn log_normal_1_2() {
         "median e^μ",
     );
     assert_cdf_quantile_roundtrip(&l);
-    assert!(l.distribution().mgf(&ctx.symbol("t")).is_none(), "no mgf");
+    assert!(
+        l.distribution().family().mgf(&ctx.symbol("t")).is_none(),
+        "no mgf"
+    );
     // The crate's exact integrator does not close ∫₀^∞ of this density, so
     // the generic `probability` stays an integral; the density does
     // integrate to 1 numerically.
@@ -630,13 +649,14 @@ fn student_t_5_dof() {
     assert_exact(&t5.moment(4), &ctx.int(25), "E[X⁴] = 3ν²/((ν−2)(ν−4))");
     assert_exact(&t5.kurtosis(), &ctx.int(9), "kurtosis 3(ν−2)/(ν−4)");
     assert!(
-        t5.distribution().raw_moment(6, &ctx).is_none(),
+        t5.distribution().family().raw_moment(6).is_none(),
         "E[X⁶] does not exist for ν = 5"
     );
-    assert!(
-        t5.distribution().cdf(&s).is_none(),
-        "no closed-form cdf on the family"
-    );
+    // 0.12: F(t) = 1 − ½ I_{ν/(t²+ν)}(ν/2, ½) for t ≥ 0 through the
+    // regularised incomplete beta.  SymPy: N(cdf(StudentT(5))(1), 20) =
+    // 0.81839126617543868720, N(cdf(StudentT(5))(-2), 20) = 0.050969739414929178123.
+    assert_close(&t5.cdf(&ctx.int(1)), 0.8183912661754387, "cdf(1)");
+    assert_close(&t5.cdf(&ctx.int(-2)), 0.05096973941492918, "cdf(-2)");
     assert!(
         t5.quantile(&ctx.rational(1, 2)).is_none(),
         "no closed quantile"
@@ -676,14 +696,17 @@ fn student_t_5_sixth_moment_stays_an_unevaluated_integral() {
 fn student_t_low_dof_has_no_mean_or_variance() {
     let ctx = Context::new();
     let t1 = Distribution::student_t(ctx.int(1));
-    assert!(t1.mean(&ctx).is_none(), "ν = 1 (Cauchy) has no mean");
+    assert!(t1.family().mean().is_none(), "ν = 1 (Cauchy) has no mean");
     let t2 = Distribution::student_t(ctx.int(2));
-    assert_eq!(t2.mean(&ctx), Some(ctx.zero()));
-    assert!(t2.variance(&ctx).is_none(), "ν = 2 has infinite variance");
+    assert_eq!(t2.family().mean(), Some(ctx.zero()));
+    assert!(
+        t2.family().variance().is_none(),
+        "ν = 2 has infinite variance"
+    );
     let nu = ctx.symbol_with("nu", &[Assumption::Positive]);
     let ts = Distribution::student_t(nu.clone());
     assert_exact(
-        &ts.variance(&ctx).unwrap(),
+        &ts.family().variance().unwrap(),
         &(&nu / (&nu - 2)),
         "symbolic ν/(ν − 2)",
     );
@@ -722,7 +745,7 @@ fn weibull_scale_2_shape_3() {
     );
     assert_exact(&w.moment(2), &(8 * &g23 / 3), "E[W²]");
     assert_exact(&w.moment(3), &ctx.int(8), "E[W³] = λ³ Γ(2) = 8");
-    assert_exact(&w.cdf(&v), &(ctx.one() - (-v.powi(3) / 8).exp()), "cdf");
+    assert_cdf_on_support(&w, &v, &(ctx.one() - (-v.powi(3) / 8).exp()), "cdf");
     assert_exact(
         &w.cdf(&ctx.one()),
         &(ctx.one() - (-ctx.rational(1, 8)).exp()),
@@ -741,7 +764,7 @@ fn weibull_scale_2_shape_3() {
     );
     assert_exact(&total_mass(&w), &ctx.one(), "∫ density");
     assert!(
-        w.distribution().mgf(&ctx.symbol("t")).is_none(),
+        w.distribution().family().mgf(&ctx.symbol("t")).is_none(),
         "no closed mgf"
     );
 }
@@ -768,11 +791,11 @@ fn pareto_xm_1_alpha_3() {
     assert_exact(&pa.variance(), &ctx.rational(3, 4), "variance");
     assert_exact(&pa.moment(2), &ctx.int(3), "E[X²]");
     assert!(
-        pa.distribution().raw_moment(3, &ctx).is_none(),
+        pa.distribution().family().raw_moment(3).is_none(),
         "E[X³] does not exist for α = 3"
     );
     assert!(pa.moment(3).has_unevaluated(), "E[X³] must not be a number");
-    assert_exact(&pa.cdf(&v), &(ctx.one() - v.powi(-3)), "cdf");
+    assert_cdf_on_support(&pa, &v, &(ctx.one() - v.powi(-3)), "cdf");
     assert_exact(&pa.cdf(&ctx.int(2)), &ctx.rational(7, 8), "cdf(2)");
     assert_exact(
         &pa.quantile(&p).unwrap(),
@@ -800,7 +823,7 @@ fn pareto_xm_1_alpha_3() {
     let alpha = ctx.symbol_with("alpha", &[Assumption::Positive]);
     let ps = Distribution::pareto(ctx.one(), alpha.clone());
     assert_exact(
-        &ps.raw_moment(2, &ctx).unwrap(),
+        &ps.family().raw_moment(2).unwrap(),
         &(&alpha / (&alpha - 2)),
         "α/(α − 2)",
     );
@@ -917,10 +940,7 @@ fn entropy_closed_forms_match_quadrature() {
         ),
     ];
     for (name, d) in via_quantile {
-        let Distribution::Continuous(fam) = &d else {
-            unreachable!()
-        };
-        let closed = fam.entropy(&ctx).unwrap().eval_f64().unwrap();
+        let closed = d.family().entropy().unwrap().eval_f64().unwrap();
         let dens = d.density(&v).compile(&["v"]).unwrap();
         let q = d.quantile(&u).unwrap().compile(&["u"]).unwrap();
         let numeric = midpoint(|p| -dens.call(&[q.call(&[p])]).ln(), 0.0, 1.0, 50_000);
@@ -960,10 +980,7 @@ fn entropy_closed_forms_match_quadrature() {
         ),
     ];
     for (name, d, lo, hi) in direct {
-        let Distribution::Continuous(fam) = &d else {
-            unreachable!()
-        };
-        let closed = fam.entropy(&ctx).unwrap().eval_f64().unwrap();
+        let closed = d.family().entropy().unwrap().eval_f64().unwrap();
         let dens = d.density(&v).compile(&["v"]).unwrap();
         let numeric = simpson(
             |x| {
@@ -984,10 +1001,7 @@ fn entropy_closed_forms_match_quadrature() {
     // LogNormal(1, 2): substitute x = e^y, so the integrand is the
     // Normal(1, 2) density times −ln f(e^y).
     let ln = Distribution::log_normal(ctx.int(1), ctx.int(2));
-    let Distribution::Continuous(fam) = &ln else {
-        unreachable!()
-    };
-    let closed = fam.entropy(&ctx).unwrap().eval_f64().unwrap();
+    let closed = ln.family().entropy().unwrap().eval_f64().unwrap();
     let dens = ln.density(&v).compile(&["v"]).unwrap();
     let phi = Distribution::normal(ctx.int(1), ctx.int(2))
         .density(&v)
@@ -1005,11 +1019,8 @@ fn entropy_closed_forms_match_quadrature() {
     );
     // The three headline forms, exactly.
     let normal = Distribution::normal(ctx.int(0), ctx.int(2));
-    let Distribution::Continuous(fam) = &normal else {
-        unreachable!()
-    };
     assert_exact(
-        &fam.entropy(&ctx).unwrap(),
+        &normal.family().entropy().unwrap(),
         &(ctx.rational(1, 2) * (8 * ctx.pi() * ctx.e()).ln()),
         "Normal(0, 2): ½ ln(2πe·4)",
     );
@@ -1131,12 +1142,11 @@ trait EntropyExt {
 }
 
 impl EntropyExt for RandomVariable {
-    /// `ContinuousFamily::entropy` reached through the variable
-    /// (`RandomVariable::entropy` is not exposed by `rv.rs` yet).
+    /// The family's closed-form entropy reached through the variable.
     fn entropy_closed_form(&self) -> Ex {
-        match self.distribution() {
-            Distribution::Continuous(f) => f.entropy(self.context()).expect("closed-form entropy"),
-            other => panic!("not continuous: {other}"),
-        }
+        self.distribution()
+            .family()
+            .entropy()
+            .expect("closed-form entropy")
     }
 }

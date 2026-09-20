@@ -1,37 +1,28 @@
-//! Continuous distribution families.  Each family stores its parameters as
-//! expressions and provides support, density, and whatever closed forms it
-//! has; the generic machinery in [`super::rv`] does the rest.
+//! Continuous distribution families.  Each is a struct with its parameters
+//! as expressions and an [`impl Family`](Family) holding its support,
+//! density and whatever closed forms it has — every formula a textbook
+//! identity, cited at the arm.  Where a closed form is absent the generic
+//! machinery in [`Distribution`] integrates the density instead.
 //!
-//! To add a family: a variant of [`ContinuousFamily`] with documented
-//! parameters, a constructor `Distribution::name(…)` that validates
-//! numeric parameters (`Result`), and arms in each `match` below.  Every
-//! closed form here is a textbook identity; cite it in the arm.
-//!
-//! Where a family returns `None` from a closed-form arm, the generic route
-//! in [`RandomVariable`](super::RandomVariable) integrates the density
-//! over the support instead; the per-arm docs say what that yields.
-
-use std::fmt;
+//! To add a family: a struct, `impl Family` (support, density, `eq_family`
+//! via [`same_family`], the closed forms), and a constructor pair
+//! `Distribution::try_name(…)` (validates numeric parameters) /
+//! `Distribution::name(…)` (unchecked).
 
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 
-use super::rv::{Distribution, Support};
+use super::family::{Distribution, Family, same_family};
+use super::support::Support;
 
 fn invalid(reason: impl Into<String>) -> SymplexError {
     SymplexError::invalid_argument("stats", reason)
 }
 
-/// Is a parameter known to be positive?  `None` for symbolic parameters
-/// whose sign is not decided by assumptions.
-fn known_positive(e: &Ex) -> Option<bool> {
-    e.is_positive()
-}
-
 /// Reject a numeric parameter that is not positive; accept symbolic ones.
-fn require_positive(e: &Ex, what: &str) -> Result<(), SymplexError> {
-    match known_positive(e) {
+pub(crate) fn require_positive(e: &Ex, what: &str) -> Result<(), SymplexError> {
+    match e.is_positive() {
         Some(false) => Err(invalid(format!("{what} must be positive, got `{e}`"))),
         _ => Ok(()),
     }
@@ -66,124 +57,1041 @@ fn raw_from_even_central(mean: &Ex, n: u32, ctx: &Context, central: impl Fn(u32)
     acc.simplify()
 }
 
-/// `ChiSquared(k)` is `Gamma(k/2, 2)`; its arms delegate to this.
-fn chi_squared_as_gamma(dof: &Ex) -> ContinuousFamily {
-    let ctx = dof.context();
-    ContinuousFamily::Gamma {
-        shape: dof / ctx.int(2),
-        scale: ctx.int(2),
+macro_rules! family_boilerplate {
+    ($ty:ident, $name:literal, [$($field:ident),+]) => {
+        fn name(&self) -> &str {
+            $name
+        }
+        fn context(&self) -> Context {
+            first_ctx!(self, $($field),+)
+        }
+        fn parameters(&self) -> Vec<(&'static str, Ex)> {
+            vec![$((stringify!($field), self.$field.clone())),+]
+        }
+        fn eq_family(&self, other: &dyn Family) -> bool {
+            same_family(self, other)
+        }
+    };
+}
+
+macro_rules! first_ctx {
+    ($self:ident, $first:ident $(, $rest:ident)*) => {
+        $self.$first.context()
+    };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Normal
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `Normal(μ, σ)`: density `e^{−(x−μ)²/(2σ²)} / (σ√(2π))` on ℝ.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Normal {
+    /// Mean `μ`.
+    pub mean: Ex,
+    /// Standard deviation `σ > 0`.
+    pub std: Ex,
+}
+
+impl Family for Normal {
+    family_boilerplate!(Normal, "Normal", [mean, std]);
+
+    fn support(&self) -> Support {
+        Support::reals(&self.context())
+    }
+
+    fn density(&self, x: &Ex) -> Ex {
+        let ctx = self.context();
+        let two = ctx.int(2);
+        let z = (x - &self.mean) / &self.std;
+        (-(z.powi(2)) / &two).exp() / (&self.std * (&two * ctx.pi()).sqrt())
+    }
+
+    fn mean(&self) -> Option<Ex> {
+        Some(self.mean.clone())
+    }
+
+    fn variance(&self) -> Option<Ex> {
+        Some(self.std.powi(2))
+    }
+
+    // E[Xⁿ] = Σ_{k=0}^{⌊n/2⌋} C(n, 2k) (2k−1)!! μⁿ⁻²ᵏ σ²ᵏ
+    fn raw_moment(&self, n: u32) -> Option<Ex> {
+        let ctx = self.context();
+        let mut acc = ctx.zero();
+        for k in 0..=n / 2 {
+            let binom = ctx.int(i64::from(n)).binomial(&ctx.int(i64::from(2 * k)));
+            // (2k − 1)!! = (2k)! / (2ᵏ k!)
+            let dfact = ctx.int(i64::from(2 * k)).factorial()
+                / (ctx.int(2).powi(i64::from(k)) * ctx.int(i64::from(k)).factorial());
+            acc += binom
+                * dfact
+                * self.mean.powi(i64::from(n - 2 * k))
+                * self.std.powi(i64::from(2 * k));
+        }
+        Some(acc.simplify())
+    }
+
+    // Φ((x−μ)/σ) = ½ + ½ erf((x−μ)/(σ√2))
+    fn cdf(&self, x: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let half = ctx.rational(1, 2);
+        let arg = (x - &self.mean) / (&self.std * ctx.int(2).sqrt());
+        Some(&half + &half * arg.erf())
+    }
+
+    // exp(μt + σ²t²/2)
+    fn mgf(&self, t: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        Some((&self.mean * t + self.std.powi(2) * t.powi(2) / ctx.int(2)).exp())
+    }
+
+    // μ + σ√2 · erfinv(2p − 1)
+    fn quantile(&self, p: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        Some(&self.mean + &self.std * ctx.int(2).sqrt() * (ctx.int(2) * p - 1).erfinv())
+    }
+
+    // ½ ln(2πeσ²)
+    fn entropy(&self) -> Option<Ex> {
+        let ctx = self.context();
+        Some(ctx.rational(1, 2) * (ctx.int(2) * ctx.pi() * ctx.e() * self.std.powi(2)).ln())
     }
 }
 
-/// The continuous families.
+// ═══════════════════════════════════════════════════════════════════════════
+// Uniform
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `Uniform(a, b)`: density `1/(b − a)` on `[a, b]`.
 #[derive(Clone, Debug, PartialEq)]
-#[non_exhaustive]
-pub enum ContinuousFamily {
-    /// `Normal(μ, σ)`: density `e^{−(x−μ)²/(2σ²)} / (σ√(2π))` on ℝ.
-    Normal {
-        /// Mean `μ`.
-        mean: Ex,
-        /// Standard deviation `σ > 0`.
-        std: Ex,
-    },
-    /// `Uniform(a, b)`: density `1/(b − a)` on `[a, b]`.
-    Uniform {
-        /// Lower end `a`.
-        lo: Ex,
-        /// Upper end `b > a`.
-        hi: Ex,
-    },
-    /// `Exponential(λ)`: density `λ e^{−λx}` on `[0, ∞)`.
-    Exponential {
-        /// Rate `λ > 0` (the mean is `1/λ`).
-        rate: Ex,
-    },
-    /// `Gamma(k, θ)`: density `x^{k−1} e^{−x/θ} / (Γ(k) θᵏ)` on `[0, ∞)`
-    /// (shape–scale parametrisation, SymPy's `Gamma(k, theta)`).
-    Gamma {
-        /// Shape `k > 0`.
-        shape: Ex,
-        /// Scale `θ > 0` (the rate is `1/θ`).
-        scale: Ex,
-    },
-    /// `ChiSquared(k)` = `Gamma(k/2, 2)`: density
-    /// `x^{k/2−1} e^{−x/2} / (2^{k/2} Γ(k/2))` on `[0, ∞)`.
-    ChiSquared {
-        /// Degrees of freedom `k > 0`.
-        dof: Ex,
-    },
-    /// `Beta(α, β)`: density `x^{α−1} (1−x)^{β−1} / B(α, β)` on `[0, 1]`.
-    Beta {
-        /// First shape `α > 0`.
-        alpha: Ex,
-        /// Second shape `β > 0`.
-        beta: Ex,
-    },
-    /// `Cauchy(x₀, γ)`: density `1 / (πγ (1 + ((x−x₀)/γ)²))` on ℝ.  No
-    /// moments of any order exist.
-    Cauchy {
-        /// Location `x₀` (the median).
-        location: Ex,
-        /// Scale `γ > 0` (half the interquartile range).
-        scale: Ex,
-    },
-    /// `Laplace(μ, b)`: density `e^{−|x−μ|/b} / (2b)` on ℝ.
-    Laplace {
-        /// Location `μ` (mean and median).
-        mean: Ex,
-        /// Scale `b > 0`.
-        scale: Ex,
-    },
-    /// `Logistic(μ, s)`: density `e^{−(x−μ)/s} / (s (1 + e^{−(x−μ)/s})²)`
-    /// on ℝ.
-    Logistic {
-        /// Location `μ` (mean and median).
-        mean: Ex,
-        /// Scale `s > 0`.
-        scale: Ex,
-    },
-    /// `LogNormal(μ, σ)`: `ln X ~ Normal(μ, σ)`; density
-    /// `e^{−(ln x − μ)²/(2σ²)} / (xσ√(2π))` on `(0, ∞)`.
-    LogNormal {
-        /// Mean `μ` of `ln X`.
-        mu: Ex,
-        /// Standard deviation `σ > 0` of `ln X`.
-        sigma: Ex,
-    },
-    /// `StudentT(ν)`: density
-    /// `Γ((ν+1)/2) / (√(νπ) Γ(ν/2)) · (1 + x²/ν)^{−(ν+1)/2}` on ℝ.
-    StudentT {
-        /// Degrees of freedom `ν > 0`.
-        dof: Ex,
-    },
-    /// `Weibull(λ, k)`: density `(k/λ) (x/λ)^{k−1} e^{−(x/λ)ᵏ}` on
-    /// `[0, ∞)`.  SymPy's `Weibull(alpha, beta)` has `alpha = λ` (scale)
-    /// and `beta = k` (shape).
-    Weibull {
-        /// Scale `λ > 0`.
-        scale: Ex,
-        /// Shape `k > 0`.
-        shape: Ex,
-    },
-    /// `Pareto(x_m, α)`: density `α x_mᵅ / x^{α+1}` on `[x_m, ∞)`.
-    Pareto {
-        /// Scale `x_m > 0` (the minimum).
-        scale: Ex,
-        /// Shape (tail index) `α > 0`.
-        shape: Ex,
-    },
-    /// `Triangular(a, b, c)`: density rising linearly from `0` at `a` to
-    /// `2/(b−a)` at the mode `c` and falling linearly to `0` at `b`, on
-    /// `[a, b]` with `a ≤ c ≤ b`.
-    Triangular {
-        /// Lower end `a`.
-        lo: Ex,
-        /// Upper end `b > a`.
-        hi: Ex,
-        /// Mode `c ∈ [a, b]`.
-        mode: Ex,
-    },
+pub struct Uniform {
+    /// Lower end `a`.
+    pub lo: Ex,
+    /// Upper end `b > a`.
+    pub hi: Ex,
 }
+
+impl Family for Uniform {
+    family_boilerplate!(Uniform, "Uniform", [lo, hi]);
+
+    fn support(&self) -> Support {
+        Support::interval(self.lo.clone(), self.hi.clone())
+    }
+
+    fn density(&self, _x: &Ex) -> Ex {
+        self.context().one() / (&self.hi - &self.lo)
+    }
+
+    fn mean(&self) -> Option<Ex> {
+        Some(((&self.lo + &self.hi) / self.context().int(2)).simplify())
+    }
+
+    // (b − a)² / 12
+    fn variance(&self) -> Option<Ex> {
+        Some(((&self.hi - &self.lo).powi(2) / self.context().int(12)).simplify())
+    }
+
+    // (bⁿ⁺¹ − aⁿ⁺¹) / ((n+1)(b − a))
+    fn raw_moment(&self, n: u32) -> Option<Ex> {
+        let n1 = i64::from(n) + 1;
+        Some(
+            ((self.hi.powi(n1) - self.lo.powi(n1))
+                / (self.context().int(n1) * (&self.hi - &self.lo)))
+                .simplify(),
+        )
+    }
+
+    fn cdf(&self, x: &Ex) -> Option<Ex> {
+        Some((x - &self.lo) / (&self.hi - &self.lo))
+    }
+
+    // (e^{bt} − e^{at}) / ((b−a) t)
+    fn mgf(&self, t: &Ex) -> Option<Ex> {
+        Some(((&self.hi * t).exp() - (&self.lo * t).exp()) / ((&self.hi - &self.lo) * t))
+    }
+
+    // a + p(b − a)
+    fn quantile(&self, p: &Ex) -> Option<Ex> {
+        Some(&self.lo + p * (&self.hi - &self.lo))
+    }
+
+    // ln(b − a)
+    fn entropy(&self) -> Option<Ex> {
+        Some((&self.hi - &self.lo).ln())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Exponential
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `Exponential(λ)`: density `λ e^{−λx}` on `[0, ∞)`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Exponential {
+    /// Rate `λ > 0` (the mean is `1/λ`).
+    pub rate: Ex,
+}
+
+impl Family for Exponential {
+    family_boilerplate!(Exponential, "Exponential", [rate]);
+
+    fn support(&self) -> Support {
+        Support::half_line(self.context().zero())
+    }
+
+    fn density(&self, x: &Ex) -> Ex {
+        &self.rate * (-(&self.rate * x)).exp()
+    }
+
+    fn mean(&self) -> Option<Ex> {
+        Some(self.context().one() / &self.rate)
+    }
+
+    fn variance(&self) -> Option<Ex> {
+        Some(self.context().one() / self.rate.powi(2))
+    }
+
+    // n! / λⁿ
+    fn raw_moment(&self, n: u32) -> Option<Ex> {
+        let ctx = self.context();
+        Some((ctx.int(i64::from(n)).factorial() / self.rate.powi(i64::from(n))).simplify())
+    }
+
+    // 1 − e^{−λx}
+    fn cdf(&self, x: &Ex) -> Option<Ex> {
+        Some(self.context().one() - (-(&self.rate * x)).exp())
+    }
+
+    // λ / (λ − t)
+    fn mgf(&self, t: &Ex) -> Option<Ex> {
+        Some(&self.rate / (&self.rate - t))
+    }
+
+    // −ln(1 − p) / λ
+    fn quantile(&self, p: &Ex) -> Option<Ex> {
+        Some(-(self.context().one() - p).ln() / &self.rate)
+    }
+
+    // 1 − ln λ
+    fn entropy(&self) -> Option<Ex> {
+        Some(self.context().one() - self.rate.ln())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Gamma and ChiSquared
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `Gamma(k, θ)`: density `x^{k−1} e^{−x/θ} / (Γ(k) θᵏ)` on `[0, ∞)`
+/// (shape–scale parametrisation, SymPy's `Gamma(k, theta)`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Gamma {
+    /// Shape `k > 0`.
+    pub shape: Ex,
+    /// Scale `θ > 0` (the rate is `1/θ`).
+    pub scale: Ex,
+}
+
+impl Family for Gamma {
+    family_boilerplate!(Gamma, "Gamma", [shape, scale]);
+
+    fn support(&self) -> Support {
+        Support::half_line(self.context().zero())
+    }
+
+    fn density(&self, x: &Ex) -> Ex {
+        x.pow(&(&self.shape - 1)) * (-(x / &self.scale)).exp()
+            / (self.shape.gamma() * self.scale.pow(&self.shape))
+    }
+
+    fn mean(&self) -> Option<Ex> {
+        Some((&self.shape * &self.scale).simplify())
+    }
+
+    fn variance(&self) -> Option<Ex> {
+        Some((&self.shape * self.scale.powi(2)).simplify())
+    }
+
+    // θⁿ Γ(k+n)/Γ(k) = θⁿ (k)ₙ
+    fn raw_moment(&self, n: u32) -> Option<Ex> {
+        let n_ex = self.context().int(i64::from(n));
+        Some((self.scale.powi(i64::from(n)) * self.shape.rising_factorial(&n_ex)).simplify())
+    }
+
+    // γ(k, x/θ) / Γ(k); `eval` closes the incomplete gamma for integer and
+    // half-integer `k`.
+    fn cdf(&self, x: &Ex) -> Option<Ex> {
+        Some(((x / &self.scale).lowergamma(&self.shape) / self.shape.gamma()).eval())
+    }
+
+    // (1 − θt)^{−k}
+    fn mgf(&self, t: &Ex) -> Option<Ex> {
+        Some((self.context().one() - &self.scale * t).pow(&(-&self.shape)))
+    }
+
+    // k + ln θ + ln Γ(k) + (1 − k) ψ(k)
+    fn entropy(&self) -> Option<Ex> {
+        let ctx = self.context();
+        Some(
+            &self.shape
+                + self.scale.ln()
+                + self.shape.gamma().ln()
+                + (ctx.one() - &self.shape) * self.shape.digamma(),
+        )
+    }
+}
+
+/// `ChiSquared(k)` = `Gamma(k/2, 2)`: density
+/// `x^{k/2−1} e^{−x/2} / (2^{k/2} Γ(k/2))` on `[0, ∞)`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChiSquared {
+    /// Degrees of freedom `k > 0`.
+    pub dof: Ex,
+}
+
+impl ChiSquared {
+    fn as_gamma(&self) -> Gamma {
+        let ctx = self.context();
+        Gamma {
+            shape: &self.dof / ctx.int(2),
+            scale: ctx.int(2),
+        }
+    }
+}
+
+impl Family for ChiSquared {
+    family_boilerplate!(ChiSquared, "ChiSquared", [dof]);
+
+    fn support(&self) -> Support {
+        Support::half_line(self.context().zero())
+    }
+
+    fn density(&self, x: &Ex) -> Ex {
+        self.as_gamma().density(x)
+    }
+
+    fn mean(&self) -> Option<Ex> {
+        Some(self.dof.clone())
+    }
+
+    fn variance(&self) -> Option<Ex> {
+        Some((self.context().int(2) * &self.dof).simplify())
+    }
+
+    fn raw_moment(&self, n: u32) -> Option<Ex> {
+        self.as_gamma().raw_moment(n)
+    }
+
+    fn cdf(&self, x: &Ex) -> Option<Ex> {
+        self.as_gamma().cdf(x)
+    }
+
+    fn mgf(&self, t: &Ex) -> Option<Ex> {
+        self.as_gamma().mgf(t)
+    }
+
+    fn entropy(&self) -> Option<Ex> {
+        self.as_gamma().entropy()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Beta
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `Beta(α, β)`: density `x^{α−1} (1−x)^{β−1} / B(α, β)` on `[0, 1]`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Beta {
+    /// First shape `α > 0`.
+    pub alpha: Ex,
+    /// Second shape `β > 0`.
+    pub beta: Ex,
+}
+
+impl Family for Beta {
+    family_boilerplate!(Beta, "Beta", [alpha, beta]);
+
+    fn support(&self) -> Support {
+        let ctx = self.context();
+        Support::interval(ctx.zero(), ctx.one())
+    }
+
+    fn density(&self, x: &Ex) -> Ex {
+        let ctx = self.context();
+        x.pow(&(&self.alpha - 1)) * (ctx.one() - x).pow(&(&self.beta - 1))
+            / self.alpha.beta(&self.beta)
+    }
+
+    fn mean(&self) -> Option<Ex> {
+        Some((&self.alpha / (&self.alpha + &self.beta)).simplify())
+    }
+
+    // αβ / ((α+β)² (α+β+1))
+    fn variance(&self) -> Option<Ex> {
+        let s = &self.alpha + &self.beta;
+        Some((&self.alpha * &self.beta / (s.powi(2) * (&s + 1))).simplify())
+    }
+
+    // (α)ₙ / (α+β)ₙ
+    fn raw_moment(&self, n: u32) -> Option<Ex> {
+        let n_ex = self.context().int(i64::from(n));
+        Some(
+            (self.alpha.rising_factorial(&n_ex)
+                / (&self.alpha + &self.beta).rising_factorial(&n_ex))
+            .simplify(),
+        )
+    }
+
+    // The regularised incomplete beta I_x(α, β) — `eval` closes it to a
+    // polynomial for integer α, β.
+    fn cdf(&self, x: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        Some(
+            x.betainc_regularized(&self.alpha, &self.beta, &ctx.zero())
+                .eval(),
+        )
+    }
+
+    // ln B(α, β) − (α−1) ψ(α) − (β−1) ψ(β) + (α+β−2) ψ(α+β)
+    fn entropy(&self) -> Option<Ex> {
+        let s = &self.alpha + &self.beta;
+        Some(
+            self.alpha.beta(&self.beta).ln()
+                - (&self.alpha - 1) * self.alpha.digamma()
+                - (&self.beta - 1) * self.beta.digamma()
+                + (&s - 2) * s.digamma(),
+        )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Cauchy, Laplace, Logistic
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `Cauchy(x₀, γ)`: density `1 / (πγ (1 + ((x−x₀)/γ)²))` on ℝ.  No
+/// moments of any order exist.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cauchy {
+    /// Location `x₀` (the median).
+    pub location: Ex,
+    /// Scale `γ > 0` (half the interquartile range).
+    pub scale: Ex,
+}
+
+impl Family for Cauchy {
+    family_boilerplate!(Cauchy, "Cauchy", [location, scale]);
+
+    fn support(&self) -> Support {
+        Support::reals(&self.context())
+    }
+
+    fn density(&self, x: &Ex) -> Ex {
+        let ctx = self.context();
+        ctx.one()
+            / (ctx.pi() * &self.scale * (ctx.one() + ((x - &self.location) / &self.scale).powi(2)))
+    }
+
+    // ½ + atan((x−x₀)/γ)/π
+    fn cdf(&self, x: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        Some(ctx.rational(1, 2) + ((x - &self.location) / &self.scale).atan() / ctx.pi())
+    }
+
+    // x₀ + γ tan(π(p − ½))
+    fn quantile(&self, p: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        Some(&self.location + &self.scale * (ctx.pi() * (p - ctx.rational(1, 2))).tan())
+    }
+
+    // ln(4πγ)
+    fn entropy(&self) -> Option<Ex> {
+        let ctx = self.context();
+        Some((ctx.int(4) * ctx.pi() * &self.scale).ln())
+    }
+}
+
+/// `Laplace(μ, b)`: density `e^{−|x−μ|/b} / (2b)` on ℝ.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Laplace {
+    /// Location `μ` (mean and median).
+    pub mean: Ex,
+    /// Scale `b > 0`.
+    pub scale: Ex,
+}
+
+impl Family for Laplace {
+    family_boilerplate!(Laplace, "Laplace", [mean, scale]);
+
+    fn support(&self) -> Support {
+        Support::reals(&self.context())
+    }
+
+    fn density(&self, x: &Ex) -> Ex {
+        (-((x - &self.mean).abs() / &self.scale)).exp() / (self.context().int(2) * &self.scale)
+    }
+
+    fn mean(&self) -> Option<Ex> {
+        Some(self.mean.clone())
+    }
+
+    fn variance(&self) -> Option<Ex> {
+        Some((self.context().int(2) * self.scale.powi(2)).simplify())
+    }
+
+    // Even central moments E[(X−μ)ᵏ] = k! bᵏ, odd ones 0.
+    fn raw_moment(&self, n: u32) -> Option<Ex> {
+        let ctx = self.context();
+        Some(raw_from_even_central(&self.mean, n, &ctx, |k| {
+            ctx.int(i64::from(k)).factorial() * self.scale.powi(i64::from(k))
+        }))
+    }
+
+    // ½ e^{(x−μ)/b} for x < μ, 1 − ½ e^{−(x−μ)/b} for x ≥ μ
+    fn cdf(&self, x: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let half = ctx.rational(1, 2);
+        let z = (x - &self.mean) / &self.scale;
+        let below = &half * z.exp();
+        let above = ctx.one() - &half * (-z).exp();
+        Some(Ex::piecewise(&[
+            (&below, &x.lt(&self.mean)),
+            (&above, &x.ge(&self.mean)),
+        ]))
+    }
+
+    // e^{μt} / (1 − b²t²)
+    fn mgf(&self, t: &Ex) -> Option<Ex> {
+        Some((&self.mean * t).exp() / (self.context().one() - self.scale.powi(2) * t.powi(2)))
+    }
+
+    // μ − b sign(p − ½) ln(1 − 2|p − ½|)
+    fn quantile(&self, p: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let d = p - ctx.rational(1, 2);
+        Some(&self.mean - &self.scale * d.sign() * (ctx.one() - ctx.int(2) * d.abs()).ln())
+    }
+
+    // 1 + ln(2b)
+    fn entropy(&self) -> Option<Ex> {
+        let ctx = self.context();
+        Some(ctx.one() + (ctx.int(2) * &self.scale).ln())
+    }
+}
+
+/// `Logistic(μ, s)`: density `e^{−(x−μ)/s} / (s (1 + e^{−(x−μ)/s})²)` on ℝ.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Logistic {
+    /// Location `μ` (mean and median).
+    pub mean: Ex,
+    /// Scale `s > 0`.
+    pub scale: Ex,
+}
+
+impl Family for Logistic {
+    family_boilerplate!(Logistic, "Logistic", [mean, scale]);
+
+    fn support(&self) -> Support {
+        Support::reals(&self.context())
+    }
+
+    fn density(&self, x: &Ex) -> Ex {
+        let ctx = self.context();
+        let e = (-((x - &self.mean) / &self.scale)).exp();
+        &e / (&self.scale * (ctx.one() + &e).powi(2))
+    }
+
+    fn mean(&self) -> Option<Ex> {
+        Some(self.mean.clone())
+    }
+
+    // s²π²/3
+    fn variance(&self) -> Option<Ex> {
+        let ctx = self.context();
+        Some((self.scale.powi(2) * ctx.pi().powi(2) / ctx.int(3)).simplify())
+    }
+
+    // Even central moments E[(X−μ)ᵏ] = (−1)^{k/2+1} (2ᵏ − 2) B_k (πs)ᵏ
+    // (from the standard logistic mgf πt/sin(πt)), odd ones 0.
+    fn raw_moment(&self, n: u32) -> Option<Ex> {
+        let ctx = self.context();
+        Some(raw_from_even_central(&self.mean, n, &ctx, |k| {
+            let sign = if (k / 2) % 2 == 1 { 1 } else { -1 };
+            let k_ex = ctx.int(i64::from(k));
+            ctx.int(sign)
+                * (ctx.int(2).powi(i64::from(k)) - 2)
+                * k_ex.bernoulli_number()
+                * (ctx.pi() * &self.scale).powi(i64::from(k))
+        }))
+    }
+
+    // 1 / (1 + e^{−(x−μ)/s})
+    fn cdf(&self, x: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        Some(ctx.one() / (ctx.one() + (-((x - &self.mean) / &self.scale)).exp()))
+    }
+
+    // e^{μt} B(1 − st, 1 + st)
+    fn mgf(&self, t: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let st = &self.scale * t;
+        Some((&self.mean * t).exp() * (ctx.one() - &st).beta(&(ctx.one() + &st)))
+    }
+
+    // μ + s ln(p/(1 − p))
+    fn quantile(&self, p: &Ex) -> Option<Ex> {
+        Some(&self.mean + &self.scale * (p / (self.context().one() - p)).ln())
+    }
+
+    // ln s + 2
+    fn entropy(&self) -> Option<Ex> {
+        Some(self.scale.ln() + 2)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LogNormal, StudentT, FDistribution
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `LogNormal(μ, σ)`: `ln X ~ Normal(μ, σ)`; density
+/// `e^{−(ln x − μ)²/(2σ²)} / (xσ√(2π))` on `(0, ∞)`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LogNormal {
+    /// Mean `μ` of `ln X`.
+    pub mu: Ex,
+    /// Standard deviation `σ > 0` of `ln X`.
+    pub sigma: Ex,
+}
+
+impl Family for LogNormal {
+    family_boilerplate!(LogNormal, "LogNormal", [mu, sigma]);
+
+    fn support(&self) -> Support {
+        Support::half_line(self.context().zero())
+    }
+
+    fn density(&self, x: &Ex) -> Ex {
+        let ctx = self.context();
+        let two = ctx.int(2);
+        (-((x.ln() - &self.mu).powi(2)) / (&two * self.sigma.powi(2))).exp()
+            / (x * &self.sigma * (&two * ctx.pi()).sqrt())
+    }
+
+    // e^{μ + σ²/2}
+    fn mean(&self) -> Option<Ex> {
+        Some((&self.mu + self.sigma.powi(2) / self.context().int(2)).exp())
+    }
+
+    // (e^{σ²} − 1) e^{2μ + σ²}
+    fn variance(&self) -> Option<Ex> {
+        let ctx = self.context();
+        let s2 = self.sigma.powi(2);
+        Some(((s2.exp() - 1) * (ctx.int(2) * &self.mu + &s2).exp()).simplify())
+    }
+
+    // e^{nμ + n²σ²/2}
+    fn raw_moment(&self, n: u32) -> Option<Ex> {
+        let ctx = self.context();
+        let n_ex = ctx.int(i64::from(n));
+        Some((&n_ex * &self.mu + n_ex.powi(2) * self.sigma.powi(2) / ctx.int(2)).exp())
+    }
+
+    // Φ((ln x − μ)/σ)
+    fn cdf(&self, x: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let half = ctx.rational(1, 2);
+        let arg = (x.ln() - &self.mu) / (&self.sigma * ctx.int(2).sqrt());
+        Some(&half + &half * arg.erf())
+    }
+
+    // exp(μ + σ√2 · erfinv(2p − 1))
+    fn quantile(&self, p: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        Some((&self.mu + &self.sigma * ctx.int(2).sqrt() * (ctx.int(2) * p - 1).erfinv()).exp())
+    }
+
+    // μ + ½ ln(2πeσ²)
+    fn entropy(&self) -> Option<Ex> {
+        let ctx = self.context();
+        Some(
+            &self.mu
+                + ctx.rational(1, 2) * (ctx.int(2) * ctx.pi() * ctx.e() * self.sigma.powi(2)).ln(),
+        )
+    }
+}
+
+/// `StudentT(ν)`: density
+/// `Γ((ν+1)/2) / (√(νπ) Γ(ν/2)) · (1 + x²/ν)^{−(ν+1)/2}` on ℝ.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StudentT {
+    /// Degrees of freedom `ν > 0`.
+    pub dof: Ex,
+}
+
+impl Family for StudentT {
+    family_boilerplate!(StudentT, "StudentT", [dof]);
+
+    fn support(&self) -> Support {
+        Support::reals(&self.context())
+    }
+
+    fn density(&self, x: &Ex) -> Ex {
+        let ctx = self.context();
+        let half = ctx.rational(1, 2);
+        let nu1 = (&self.dof + 1) * &half;
+        nu1.gamma() / ((&self.dof * ctx.pi()).sqrt() * (&self.dof * &half).gamma())
+            * (ctx.one() + x.powi(2) / &self.dof).pow(&(-nu1))
+    }
+
+    // 0 for ν > 1.
+    fn mean(&self) -> Option<Ex> {
+        exceeds(&self.dof, 1).then(|| self.context().zero())
+    }
+
+    // ν / (ν − 2) for ν > 2.
+    fn variance(&self) -> Option<Ex> {
+        exceeds(&self.dof, 2).then(|| (&self.dof / (&self.dof - 2)).simplify())
+    }
+
+    // Odd moments 0; E[X²ᵐ] = νᵐ Π_{i=1}^{m} (2i−1)/(ν−2i), for n < ν.
+    fn raw_moment(&self, n: u32) -> Option<Ex> {
+        if !exceeds(&self.dof, n) {
+            return None;
+        }
+        let ctx = self.context();
+        if n % 2 == 1 {
+            return Some(ctx.zero());
+        }
+        let m = n / 2;
+        let mut acc = self.dof.powi(i64::from(m));
+        for i in 1..=m {
+            acc *= ctx.int(i64::from(2 * i - 1)) / (&self.dof - i64::from(2 * i));
+        }
+        Some(acc.simplify())
+    }
+
+    // F(t) = 1 − ½ I_{ν/(t²+ν)}(ν/2, ½) for t ≥ 0 and ½ I_{ν/(t²+ν)}(ν/2, ½)
+    // for t < 0 (the regularised incomplete beta; DLMF 8.17 / Wikipedia
+    // "Student's t-distribution").
+    fn cdf(&self, x: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let half = ctx.rational(1, 2);
+        let z = &self.dof / (x.powi(2) + &self.dof);
+        let tail = &half * z.betainc_regularized(&(&self.dof * &half), &half, &ctx.zero());
+        let above = ctx.one() - &tail;
+        Some(Ex::piecewise(&[
+            (&tail, &x.lt(&ctx.zero())),
+            (&above, &x.ge(&ctx.zero())),
+        ]))
+    }
+
+    // (ν+1)/2 [ψ((ν+1)/2) − ψ(ν/2)] + ln(√ν B(ν/2, ½))
+    fn entropy(&self) -> Option<Ex> {
+        let ctx = self.context();
+        let half = ctx.rational(1, 2);
+        let a = (&self.dof + 1) * &half;
+        let b = &self.dof * &half;
+        Some(&a * (a.digamma() - b.digamma()) + (self.dof.sqrt() * b.beta(&half)).ln())
+    }
+}
+
+/// `FDistribution(d₁, d₂)`: density
+/// `√((d₁x)^{d₁} d₂^{d₂} / (d₁x + d₂)^{d₁+d₂}) / (x B(d₁/2, d₂/2))` on
+/// `(0, ∞)` (SymPy's `FDistribution(d1, d2)`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FDistribution {
+    /// Numerator degrees of freedom `d₁ > 0`.
+    pub d1: Ex,
+    /// Denominator degrees of freedom `d₂ > 0`.
+    pub d2: Ex,
+}
+
+impl Family for FDistribution {
+    family_boilerplate!(FDistribution, "FDistribution", [d1, d2]);
+
+    fn support(&self) -> Support {
+        Support::half_line(self.context().zero())
+    }
+
+    fn density(&self, x: &Ex) -> Ex {
+        let ctx = self.context();
+        let half = ctx.rational(1, 2);
+        let num = (&self.d1 * x).pow(&self.d1) * self.d2.pow(&self.d2)
+            / (&self.d1 * x + &self.d2).pow(&(&self.d1 + &self.d2));
+        num.sqrt() / (x * (&self.d1 * &half).beta(&(&self.d2 * &half)))
+    }
+
+    // d₂ / (d₂ − 2) for d₂ > 2.
+    fn mean(&self) -> Option<Ex> {
+        exceeds(&self.d2, 2).then(|| (&self.d2 / (&self.d2 - 2)).simplify())
+    }
+
+    // 2 d₂² (d₁ + d₂ − 2) / (d₁ (d₂ − 2)² (d₂ − 4)) for d₂ > 4.
+    fn variance(&self) -> Option<Ex> {
+        exceeds(&self.d2, 4).then(|| {
+            let ctx = self.context();
+            (ctx.int(2) * self.d2.powi(2) * (&self.d1 + &self.d2 - 2)
+                / (&self.d1 * (&self.d2 - 2).powi(2) * (&self.d2 - 4)))
+                .simplify()
+        })
+    }
+
+    // E[Xⁿ] = (d₂/d₁)ⁿ Γ(d₁/2 + n) Γ(d₂/2 − n) / (Γ(d₁/2) Γ(d₂/2)) for 2n < d₂.
+    fn raw_moment(&self, n: u32) -> Option<Ex> {
+        if !exceeds(&self.d2, 2 * n) {
+            return None;
+        }
+        let ctx = self.context();
+        let half = ctx.rational(1, 2);
+        let n_ex = ctx.int(i64::from(n));
+        let a = &self.d1 * &half;
+        let b = &self.d2 * &half;
+        Some(
+            ((&self.d2 / &self.d1).powi(i64::from(n))
+                * (&a + &n_ex).gamma()
+                * (&b - &n_ex).gamma()
+                / (a.gamma() * b.gamma()))
+            .simplify(),
+        )
+    }
+
+    // I_{d₁x/(d₁x + d₂)}(d₁/2, d₂/2)
+    fn cdf(&self, x: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let half = ctx.rational(1, 2);
+        let z = &self.d1 * x / (&self.d1 * x + &self.d2);
+        Some(z.betainc_regularized(&(&self.d1 * &half), &(&self.d2 * &half), &ctx.zero()))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Weibull, Pareto, Triangular
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `Weibull(λ, k)`: density `(k/λ) (x/λ)^{k−1} e^{−(x/λ)ᵏ}` on `[0, ∞)`.
+/// SymPy's `Weibull(alpha, beta)` has `alpha = λ` (scale) and `beta = k`
+/// (shape).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Weibull {
+    /// Scale `λ > 0`.
+    pub scale: Ex,
+    /// Shape `k > 0`.
+    pub shape: Ex,
+}
+
+impl Family for Weibull {
+    family_boilerplate!(Weibull, "Weibull", [scale, shape]);
+
+    fn support(&self) -> Support {
+        Support::half_line(self.context().zero())
+    }
+
+    fn density(&self, x: &Ex) -> Ex {
+        let z = x / &self.scale;
+        (&self.shape / &self.scale) * z.pow(&(&self.shape - 1)) * (-(z.pow(&self.shape))).exp()
+    }
+
+    // λ Γ(1 + 1/k)
+    fn mean(&self) -> Option<Ex> {
+        let ctx = self.context();
+        Some((&self.scale * (ctx.one() + ctx.one() / &self.shape).gamma()).simplify())
+    }
+
+    // λ² [Γ(1 + 2/k) − Γ(1 + 1/k)²]
+    fn variance(&self) -> Option<Ex> {
+        let ctx = self.context();
+        let g1 = (ctx.one() + ctx.one() / &self.shape).gamma();
+        let g2 = (ctx.one() + ctx.int(2) / &self.shape).gamma();
+        Some((self.scale.powi(2) * (g2 - g1.powi(2))).simplify())
+    }
+
+    // λⁿ Γ(1 + n/k)
+    fn raw_moment(&self, n: u32) -> Option<Ex> {
+        let ctx = self.context();
+        let n_ex = ctx.int(i64::from(n));
+        Some((self.scale.powi(i64::from(n)) * (ctx.one() + &n_ex / &self.shape).gamma()).simplify())
+    }
+
+    // 1 − e^{−(x/λ)ᵏ}
+    fn cdf(&self, x: &Ex) -> Option<Ex> {
+        Some(self.context().one() - (-((x / &self.scale).pow(&self.shape))).exp())
+    }
+
+    // λ (−ln(1 − p))^{1/k}
+    fn quantile(&self, p: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        Some(&self.scale * (-(ctx.one() - p).ln()).pow(&(ctx.one() / &self.shape)))
+    }
+
+    // γ(1 − 1/k) + ln(λ/k) + 1
+    fn entropy(&self) -> Option<Ex> {
+        let ctx = self.context();
+        Some(
+            ctx.euler_gamma() * (ctx.one() - ctx.one() / &self.shape)
+                + (&self.scale / &self.shape).ln()
+                + 1,
+        )
+    }
+}
+
+/// `Pareto(x_m, α)`: density `α x_mᵅ / x^{α+1}` on `[x_m, ∞)`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pareto {
+    /// Scale `x_m > 0` (the minimum).
+    pub scale: Ex,
+    /// Shape (tail index) `α > 0`.
+    pub shape: Ex,
+}
+
+impl Family for Pareto {
+    family_boilerplate!(Pareto, "Pareto", [scale, shape]);
+
+    fn support(&self) -> Support {
+        Support::half_line(self.scale.clone())
+    }
+
+    fn density(&self, x: &Ex) -> Ex {
+        &self.shape * self.scale.pow(&self.shape) / x.pow(&(&self.shape + 1))
+    }
+
+    // α x_m / (α − 1) for α > 1.
+    fn mean(&self) -> Option<Ex> {
+        exceeds(&self.shape, 1).then(|| (&self.shape * &self.scale / (&self.shape - 1)).simplify())
+    }
+
+    // x_m² α / ((α − 1)² (α − 2)) for α > 2.
+    fn variance(&self) -> Option<Ex> {
+        exceeds(&self.shape, 2).then(|| {
+            (self.scale.powi(2) * &self.shape / ((&self.shape - 1).powi(2) * (&self.shape - 2)))
+                .simplify()
+        })
+    }
+
+    // α x_mⁿ / (α − n) for n < α.
+    fn raw_moment(&self, n: u32) -> Option<Ex> {
+        let n_ex = self.context().int(i64::from(n));
+        exceeds(&self.shape, n).then(|| {
+            (&self.shape * self.scale.powi(i64::from(n)) / (&self.shape - &n_ex)).simplify()
+        })
+    }
+
+    // 1 − (x_m/x)^α
+    fn cdf(&self, x: &Ex) -> Option<Ex> {
+        Some(self.context().one() - (&self.scale / x).pow(&self.shape))
+    }
+
+    // x_m (1 − p)^{−1/α}
+    fn quantile(&self, p: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        Some(&self.scale * (ctx.one() - p).pow(&(-(ctx.one() / &self.shape))))
+    }
+
+    // ln(x_m/α) + 1/α + 1
+    fn entropy(&self) -> Option<Ex> {
+        let ctx = self.context();
+        Some((&self.scale / &self.shape).ln() + ctx.one() / &self.shape + 1)
+    }
+}
+
+/// `Triangular(a, b, c)`: density rising linearly from `0` at `a` to
+/// `2/(b−a)` at the mode `c` and falling linearly to `0` at `b`, on
+/// `[a, b]` with `a ≤ c ≤ b`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Triangular {
+    /// Lower end `a`.
+    pub lo: Ex,
+    /// Upper end `b > a`.
+    pub hi: Ex,
+    /// Mode `c ∈ [a, b]`.
+    pub mode: Ex,
+}
+
+impl Family for Triangular {
+    family_boilerplate!(Triangular, "Triangular", [lo, hi, mode]);
+
+    fn support(&self) -> Support {
+        Support::interval(self.lo.clone(), self.hi.clone())
+    }
+
+    // Wikipedia, "Triangular distribution": 2(x−a)/((b−a)(c−a)) on [a, c],
+    // 2(b−x)/((b−a)(b−c)) on (c, b].
+    fn density(&self, x: &Ex) -> Ex {
+        let ctx = self.context();
+        let two = ctx.int(2);
+        let width = &self.hi - &self.lo;
+        let rising = &two * (x - &self.lo) / (&width * (&self.mode - &self.lo));
+        let falling = &two * (&self.hi - x) / (&width * (&self.hi - &self.mode));
+        Ex::piecewise(&[(&rising, &x.le(&self.mode)), (&falling, &x.gt(&self.mode))])
+    }
+
+    fn mean(&self) -> Option<Ex> {
+        Some(((&self.lo + &self.hi + &self.mode) / self.context().int(3)).simplify())
+    }
+
+    // (a² + b² + c² − ab − ac − bc) / 18
+    fn variance(&self) -> Option<Ex> {
+        let (a, b, c) = (&self.lo, &self.hi, &self.mode);
+        Some(
+            ((a.powi(2) + b.powi(2) + c.powi(2) - a * b - a * c - b * c) / self.context().int(18))
+                .simplify(),
+        )
+    }
+
+    // 2 [aⁿ⁺²(b−c) − bⁿ⁺²(a−c) + cⁿ⁺²(a−b)] / ((n+1)(n+2)(a−b)(a−c)(b−c))
+    fn raw_moment(&self, n: u32) -> Option<Ex> {
+        let ctx = self.context();
+        let (a, b, c) = (&self.lo, &self.hi, &self.mode);
+        let e = i64::from(n) + 2;
+        let num = ctx.int(2) * (a.powi(e) * (b - c) - b.powi(e) * (a - c) + c.powi(e) * (a - b));
+        let den = ctx.int(e - 1) * ctx.int(e) * (a - b) * (a - c) * (b - c);
+        Some((num / den).simplify())
+    }
+
+    // (x−a)²/((b−a)(c−a)) on [a, c], 1 − (b−x)²/((b−a)(b−c)) on (c, b]
+    fn cdf(&self, x: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let width = &self.hi - &self.lo;
+        let rising = (x - &self.lo).powi(2) / (&width * (&self.mode - &self.lo));
+        let falling = ctx.one() - (&self.hi - x).powi(2) / (&width * (&self.hi - &self.mode));
+        Some(Ex::piecewise(&[
+            (&rising, &x.le(&self.mode)),
+            (&falling, &x.gt(&self.mode)),
+        ]))
+    }
+
+    // 2 [(b−c) e^{at} − (b−a) e^{ct} + (c−a) e^{bt}] / ((b−a)(c−a)(b−c) t²)
+    fn mgf(&self, t: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let (a, b, c) = (&self.lo, &self.hi, &self.mode);
+        let num = ctx.int(2)
+            * ((b - c) * (a * t).exp() - (b - a) * (c * t).exp() + (c - a) * (b * t).exp());
+        let den = (b - a) * (c - a) * (b - c) * t.powi(2);
+        Some(num / den)
+    }
+
+    // a + √(p(b−a)(c−a)) for p < (c−a)/(b−a), else b − √((1−p)(b−a)(b−c))
+    fn quantile(&self, p: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let width = &self.hi - &self.lo;
+        let threshold = (&self.mode - &self.lo) / &width;
+        let rising = &self.lo + (p * &width * (&self.mode - &self.lo)).sqrt();
+        let falling = &self.hi - ((ctx.one() - p) * &width * (&self.hi - &self.mode)).sqrt();
+        Some(Ex::piecewise(&[
+            (&rising, &p.lt(&threshold)),
+            (&falling, &p.ge(&threshold)),
+        ]))
+    }
+
+    // ½ + ln((b − a)/2)
+    fn entropy(&self) -> Option<Ex> {
+        let ctx = self.context();
+        Some(ctx.rational(1, 2) + ((&self.hi - &self.lo) / ctx.int(2)).ln())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Constructors
+// ═══════════════════════════════════════════════════════════════════════════
 
 impl Distribution {
     /// `Normal(μ, σ)` with mean `mean` and standard deviation `std`.
@@ -194,17 +1102,14 @@ impl Distribution {
     /// [`SymplexError::InvalidArgument`] if `std` is a number `≤ 0`.
     pub fn try_normal(mean: Ex, std: Ex) -> Result<Distribution, SymplexError> {
         require_positive(&std, "the standard deviation")?;
-        Ok(Distribution::Continuous(ContinuousFamily::Normal {
-            mean,
-            std,
-        }))
+        Ok(Distribution::normal(mean, std))
     }
 
     /// `Normal(μ, σ)`; a non-positive numeric `std` is a programming error
     /// and yields the distribution anyway (use [`try_normal`](Self::try_normal)
     /// to check).
     pub fn normal(mean: Ex, std: Ex) -> Distribution {
-        Distribution::Continuous(ContinuousFamily::Normal { mean, std })
+        Distribution::from_family(Normal { mean, std })
     }
 
     /// `Uniform(a, b)` on `[lo, hi]`.  SymPy: `Uniform('X', a, b)`.
@@ -223,16 +1128,13 @@ impl Distribution {
     /// ```
     pub fn try_uniform(lo: Ex, hi: Ex) -> Result<Distribution, SymplexError> {
         require_positive(&(&hi - &lo), "the width `b − a`")?;
-        Ok(Distribution::Continuous(ContinuousFamily::Uniform {
-            lo,
-            hi,
-        }))
+        Ok(Distribution::uniform(lo, hi))
     }
 
     /// `Uniform(a, b)` without parameter validation (see
     /// [`try_uniform`](Self::try_uniform)).
     pub fn uniform(lo: Ex, hi: Ex) -> Distribution {
-        Distribution::Continuous(ContinuousFamily::Uniform { lo, hi })
+        Distribution::from_family(Uniform { lo, hi })
     }
 
     /// `Exponential(λ)` with rate `rate`.  SymPy: `Exponential('X', rate)`.
@@ -242,15 +1144,13 @@ impl Distribution {
     /// [`SymplexError::InvalidArgument`] if `rate` is a number `≤ 0`.
     pub fn try_exponential(rate: Ex) -> Result<Distribution, SymplexError> {
         require_positive(&rate, "the rate")?;
-        Ok(Distribution::Continuous(ContinuousFamily::Exponential {
-            rate,
-        }))
+        Ok(Distribution::exponential(rate))
     }
 
     /// `Exponential(λ)` without parameter validation (see
     /// [`try_exponential`](Self::try_exponential)).
     pub fn exponential(rate: Ex) -> Distribution {
-        Distribution::Continuous(ContinuousFamily::Exponential { rate })
+        Distribution::from_family(Exponential { rate })
     }
 
     /// `Gamma(k, θ)` with shape `shape` and scale `scale`.  SymPy:
@@ -263,16 +1163,13 @@ impl Distribution {
     pub fn try_gamma(shape: Ex, scale: Ex) -> Result<Distribution, SymplexError> {
         require_positive(&shape, "the shape")?;
         require_positive(&scale, "the scale")?;
-        Ok(Distribution::Continuous(ContinuousFamily::Gamma {
-            shape,
-            scale,
-        }))
+        Ok(Distribution::gamma(shape, scale))
     }
 
     /// `Gamma(k, θ)` without parameter validation (see
     /// [`try_gamma`](Self::try_gamma)).
     pub fn gamma(shape: Ex, scale: Ex) -> Distribution {
-        Distribution::Continuous(ContinuousFamily::Gamma { shape, scale })
+        Distribution::from_family(Gamma { shape, scale })
     }
 
     /// `ChiSquared(k)` with `dof` degrees of freedom.  SymPy:
@@ -283,15 +1180,13 @@ impl Distribution {
     /// [`SymplexError::InvalidArgument`] if `dof` is a number `≤ 0`.
     pub fn try_chi_squared(dof: Ex) -> Result<Distribution, SymplexError> {
         require_positive(&dof, "the degrees of freedom")?;
-        Ok(Distribution::Continuous(ContinuousFamily::ChiSquared {
-            dof,
-        }))
+        Ok(Distribution::chi_squared(dof))
     }
 
     /// `ChiSquared(k)` without parameter validation (see
     /// [`try_chi_squared`](Self::try_chi_squared)).
     pub fn chi_squared(dof: Ex) -> Distribution {
-        Distribution::Continuous(ContinuousFamily::ChiSquared { dof })
+        Distribution::from_family(ChiSquared { dof })
     }
 
     /// `Beta(α, β)`.  SymPy: `Beta('X', alpha, beta)`.
@@ -303,16 +1198,13 @@ impl Distribution {
     pub fn try_beta(alpha: Ex, beta: Ex) -> Result<Distribution, SymplexError> {
         require_positive(&alpha, "the shape α")?;
         require_positive(&beta, "the shape β")?;
-        Ok(Distribution::Continuous(ContinuousFamily::Beta {
-            alpha,
-            beta,
-        }))
+        Ok(Distribution::beta(alpha, beta))
     }
 
     /// `Beta(α, β)` without parameter validation (see
     /// [`try_beta`](Self::try_beta)).
     pub fn beta(alpha: Ex, beta: Ex) -> Distribution {
-        Distribution::Continuous(ContinuousFamily::Beta { alpha, beta })
+        Distribution::from_family(Beta { alpha, beta })
     }
 
     /// `Cauchy(x₀, γ)` with location `location` and scale `scale`.  SymPy:
@@ -323,16 +1215,13 @@ impl Distribution {
     /// [`SymplexError::InvalidArgument`] if `scale` is a number `≤ 0`.
     pub fn try_cauchy(location: Ex, scale: Ex) -> Result<Distribution, SymplexError> {
         require_positive(&scale, "the scale")?;
-        Ok(Distribution::Continuous(ContinuousFamily::Cauchy {
-            location,
-            scale,
-        }))
+        Ok(Distribution::cauchy(location, scale))
     }
 
     /// `Cauchy(x₀, γ)` without parameter validation (see
     /// [`try_cauchy`](Self::try_cauchy)).
     pub fn cauchy(location: Ex, scale: Ex) -> Distribution {
-        Distribution::Continuous(ContinuousFamily::Cauchy { location, scale })
+        Distribution::from_family(Cauchy { location, scale })
     }
 
     /// `Laplace(μ, b)` with location `mean` and scale `scale`.  SymPy:
@@ -343,16 +1232,13 @@ impl Distribution {
     /// [`SymplexError::InvalidArgument`] if `scale` is a number `≤ 0`.
     pub fn try_laplace(mean: Ex, scale: Ex) -> Result<Distribution, SymplexError> {
         require_positive(&scale, "the scale")?;
-        Ok(Distribution::Continuous(ContinuousFamily::Laplace {
-            mean,
-            scale,
-        }))
+        Ok(Distribution::laplace(mean, scale))
     }
 
     /// `Laplace(μ, b)` without parameter validation (see
     /// [`try_laplace`](Self::try_laplace)).
     pub fn laplace(mean: Ex, scale: Ex) -> Distribution {
-        Distribution::Continuous(ContinuousFamily::Laplace { mean, scale })
+        Distribution::from_family(Laplace { mean, scale })
     }
 
     /// `Logistic(μ, s)` with location `mean` and scale `scale`.  SymPy:
@@ -363,16 +1249,13 @@ impl Distribution {
     /// [`SymplexError::InvalidArgument`] if `scale` is a number `≤ 0`.
     pub fn try_logistic(mean: Ex, scale: Ex) -> Result<Distribution, SymplexError> {
         require_positive(&scale, "the scale")?;
-        Ok(Distribution::Continuous(ContinuousFamily::Logistic {
-            mean,
-            scale,
-        }))
+        Ok(Distribution::logistic(mean, scale))
     }
 
     /// `Logistic(μ, s)` without parameter validation (see
     /// [`try_logistic`](Self::try_logistic)).
     pub fn logistic(mean: Ex, scale: Ex) -> Distribution {
-        Distribution::Continuous(ContinuousFamily::Logistic { mean, scale })
+        Distribution::from_family(Logistic { mean, scale })
     }
 
     /// `LogNormal(μ, σ)`: `ln X ~ Normal(mu, sigma)`.  SymPy:
@@ -383,16 +1266,13 @@ impl Distribution {
     /// [`SymplexError::InvalidArgument`] if `sigma` is a number `≤ 0`.
     pub fn try_log_normal(mu: Ex, sigma: Ex) -> Result<Distribution, SymplexError> {
         require_positive(&sigma, "the standard deviation of ln X")?;
-        Ok(Distribution::Continuous(ContinuousFamily::LogNormal {
-            mu,
-            sigma,
-        }))
+        Ok(Distribution::log_normal(mu, sigma))
     }
 
     /// `LogNormal(μ, σ)` without parameter validation (see
     /// [`try_log_normal`](Self::try_log_normal)).
     pub fn log_normal(mu: Ex, sigma: Ex) -> Distribution {
-        Distribution::Continuous(ContinuousFamily::LogNormal { mu, sigma })
+        Distribution::from_family(LogNormal { mu, sigma })
     }
 
     /// `StudentT(ν)` with `dof` degrees of freedom.  SymPy:
@@ -403,13 +1283,31 @@ impl Distribution {
     /// [`SymplexError::InvalidArgument`] if `dof` is a number `≤ 0`.
     pub fn try_student_t(dof: Ex) -> Result<Distribution, SymplexError> {
         require_positive(&dof, "the degrees of freedom")?;
-        Ok(Distribution::Continuous(ContinuousFamily::StudentT { dof }))
+        Ok(Distribution::student_t(dof))
     }
 
     /// `StudentT(ν)` without parameter validation (see
     /// [`try_student_t`](Self::try_student_t)).
     pub fn student_t(dof: Ex) -> Distribution {
-        Distribution::Continuous(ContinuousFamily::StudentT { dof })
+        Distribution::from_family(StudentT { dof })
+    }
+
+    /// `FDistribution(d₁, d₂)`.  SymPy: `FDistribution('X', d1, d2)`.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if either parameter is a number
+    /// `≤ 0`.
+    pub fn try_f_distribution(d1: Ex, d2: Ex) -> Result<Distribution, SymplexError> {
+        require_positive(&d1, "the numerator degrees of freedom")?;
+        require_positive(&d2, "the denominator degrees of freedom")?;
+        Ok(Distribution::f_distribution(d1, d2))
+    }
+
+    /// `FDistribution(d₁, d₂)` without parameter validation (see
+    /// [`try_f_distribution`](Self::try_f_distribution)).
+    pub fn f_distribution(d1: Ex, d2: Ex) -> Distribution {
+        Distribution::from_family(FDistribution { d1, d2 })
     }
 
     /// `Weibull(λ, k)` with scale `scale` and shape `shape`.  SymPy:
@@ -422,16 +1320,13 @@ impl Distribution {
     pub fn try_weibull(scale: Ex, shape: Ex) -> Result<Distribution, SymplexError> {
         require_positive(&scale, "the scale")?;
         require_positive(&shape, "the shape")?;
-        Ok(Distribution::Continuous(ContinuousFamily::Weibull {
-            scale,
-            shape,
-        }))
+        Ok(Distribution::weibull(scale, shape))
     }
 
     /// `Weibull(λ, k)` without parameter validation (see
     /// [`try_weibull`](Self::try_weibull)).
     pub fn weibull(scale: Ex, shape: Ex) -> Distribution {
-        Distribution::Continuous(ContinuousFamily::Weibull { scale, shape })
+        Distribution::from_family(Weibull { scale, shape })
     }
 
     /// `Pareto(x_m, α)` with minimum `scale` and tail index `shape`.
@@ -444,16 +1339,13 @@ impl Distribution {
     pub fn try_pareto(scale: Ex, shape: Ex) -> Result<Distribution, SymplexError> {
         require_positive(&scale, "the scale x_m")?;
         require_positive(&shape, "the shape α")?;
-        Ok(Distribution::Continuous(ContinuousFamily::Pareto {
-            scale,
-            shape,
-        }))
+        Ok(Distribution::pareto(scale, shape))
     }
 
     /// `Pareto(x_m, α)` without parameter validation (see
     /// [`try_pareto`](Self::try_pareto)).
     pub fn pareto(scale: Ex, shape: Ex) -> Distribution {
-        Distribution::Continuous(ContinuousFamily::Pareto { scale, shape })
+        Distribution::from_family(Pareto { scale, shape })
     }
 
     /// `Triangular(a, b, c)` on `[lo, hi]` with mode `mode`.  SymPy:
@@ -467,577 +1359,12 @@ impl Distribution {
         require_positive(&(&hi - &lo), "the width `b − a`")?;
         require_nonnegative(&(&mode - &lo), "`c − a` (the mode must lie in [a, b])")?;
         require_nonnegative(&(&hi - &mode), "`b − c` (the mode must lie in [a, b])")?;
-        Ok(Distribution::Continuous(ContinuousFamily::Triangular {
-            lo,
-            hi,
-            mode,
-        }))
+        Ok(Distribution::triangular(lo, hi, mode))
     }
 
     /// `Triangular(a, b, c)` without parameter validation (see
     /// [`try_triangular`](Self::try_triangular)).
     pub fn triangular(lo: Ex, hi: Ex, mode: Ex) -> Distribution {
-        Distribution::Continuous(ContinuousFamily::Triangular { lo, hi, mode })
-    }
-}
-
-impl ContinuousFamily {
-    /// The family's name.
-    pub fn name(&self) -> &'static str {
-        match self {
-            ContinuousFamily::Normal { .. } => "Normal",
-            ContinuousFamily::Uniform { .. } => "Uniform",
-            ContinuousFamily::Exponential { .. } => "Exponential",
-            ContinuousFamily::Gamma { .. } => "Gamma",
-            ContinuousFamily::ChiSquared { .. } => "ChiSquared",
-            ContinuousFamily::Beta { .. } => "Beta",
-            ContinuousFamily::Cauchy { .. } => "Cauchy",
-            ContinuousFamily::Laplace { .. } => "Laplace",
-            ContinuousFamily::Logistic { .. } => "Logistic",
-            ContinuousFamily::LogNormal { .. } => "LogNormal",
-            ContinuousFamily::StudentT { .. } => "StudentT",
-            ContinuousFamily::Weibull { .. } => "Weibull",
-            ContinuousFamily::Pareto { .. } => "Pareto",
-            ContinuousFamily::Triangular { .. } => "Triangular",
-        }
-    }
-
-    /// The support.
-    pub fn support(&self) -> Support {
-        let real_line = Support::Continuous { lo: None, hi: None };
-        let half_line = |ctx: &Context| Support::Continuous {
-            lo: Some(ctx.zero()),
-            hi: None,
-        };
-        match self {
-            ContinuousFamily::Normal { .. }
-            | ContinuousFamily::Cauchy { .. }
-            | ContinuousFamily::Laplace { .. }
-            | ContinuousFamily::Logistic { .. }
-            | ContinuousFamily::StudentT { .. } => real_line,
-            ContinuousFamily::Exponential { rate } => half_line(&rate.context()),
-            ContinuousFamily::Gamma { shape, .. } => half_line(&shape.context()),
-            ContinuousFamily::ChiSquared { dof } => half_line(&dof.context()),
-            ContinuousFamily::LogNormal { mu, .. } => half_line(&mu.context()),
-            ContinuousFamily::Weibull { scale, .. } => half_line(&scale.context()),
-            ContinuousFamily::Uniform { lo, hi } | ContinuousFamily::Triangular { lo, hi, .. } => {
-                Support::Continuous {
-                    lo: Some(lo.clone()),
-                    hi: Some(hi.clone()),
-                }
-            }
-            ContinuousFamily::Beta { alpha, .. } => {
-                let ctx = alpha.context();
-                Support::Continuous {
-                    lo: Some(ctx.zero()),
-                    hi: Some(ctx.one()),
-                }
-            }
-            ContinuousFamily::Pareto { scale, .. } => Support::Continuous {
-                lo: Some(scale.clone()),
-                hi: None,
-            },
-        }
-    }
-
-    /// The density as an expression in `x` (valid on the support).
-    pub fn density(&self, x: &Ex) -> Ex {
-        let ctx = x.context();
-        match self {
-            ContinuousFamily::Normal { mean, std } => {
-                let two = ctx.int(2);
-                let z = (x - mean) / std;
-                (-(z.powi(2)) / &two).exp() / (std * (&two * ctx.pi()).sqrt())
-            }
-            ContinuousFamily::Uniform { lo, hi } => ctx.one() / (hi - lo),
-            ContinuousFamily::Exponential { rate } => rate * (-(rate * x)).exp(),
-            ContinuousFamily::Gamma { shape, scale } => {
-                x.pow(&(shape - 1)) * (-(x / scale)).exp() / (shape.gamma() * scale.pow(shape))
-            }
-            ContinuousFamily::ChiSquared { dof } => chi_squared_as_gamma(dof).density(x),
-            ContinuousFamily::Beta { alpha, beta } => {
-                x.pow(&(alpha - 1)) * (ctx.one() - x).pow(&(beta - 1)) / alpha.beta(beta)
-            }
-            ContinuousFamily::Cauchy { location, scale } => {
-                ctx.one() / (ctx.pi() * scale * (ctx.one() + ((x - location) / scale).powi(2)))
-            }
-            ContinuousFamily::Laplace { mean, scale } => {
-                (-((x - mean).abs() / scale)).exp() / (ctx.int(2) * scale)
-            }
-            ContinuousFamily::Logistic { mean, scale } => {
-                let e = (-((x - mean) / scale)).exp();
-                &e / (scale * (ctx.one() + &e).powi(2))
-            }
-            ContinuousFamily::LogNormal { mu, sigma } => {
-                let two = ctx.int(2);
-                (-((x.ln() - mu).powi(2)) / (&two * sigma.powi(2))).exp()
-                    / (x * sigma * (&two * ctx.pi()).sqrt())
-            }
-            ContinuousFamily::StudentT { dof } => {
-                let half = ctx.rational(1, 2);
-                let nu1 = (dof + 1) * &half;
-                nu1.gamma() / ((dof * ctx.pi()).sqrt() * (dof * &half).gamma())
-                    * (ctx.one() + x.powi(2) / dof).pow(&(-nu1))
-            }
-            ContinuousFamily::Weibull { scale, shape } => {
-                let z = x / scale;
-                (shape / scale) * z.pow(&(shape - 1)) * (-(z.pow(shape))).exp()
-            }
-            ContinuousFamily::Pareto { scale, shape } => {
-                shape * scale.pow(shape) / x.pow(&(shape + 1))
-            }
-            // Wikipedia, "Triangular distribution": 2(x−a)/((b−a)(c−a)) on
-            // [a, c], 2(b−x)/((b−a)(b−c)) on (c, b].
-            ContinuousFamily::Triangular { lo, hi, mode } => {
-                let two = ctx.int(2);
-                let width = hi - lo;
-                let rising = &two * (x - lo) / (&width * (mode - lo));
-                let falling = &two * (hi - x) / (&width * (hi - mode));
-                Ex::piecewise(&[(&rising, &x.le(mode)), (&falling, &x.gt(mode))])
-            }
-        }
-    }
-
-    /// Closed-form mean.  `None` for `Cauchy` (no mean; the generic route
-    /// returns the divergent integral unevaluated), and for `StudentT` with
-    /// numeric `ν ≤ 1` / `Pareto` with numeric `α ≤ 1`, where it likewise
-    /// does not exist.
-    pub fn mean(&self, ctx: &Context) -> Option<Ex> {
-        match self {
-            ContinuousFamily::Normal { mean, .. } => Some(mean.clone()),
-            ContinuousFamily::Uniform { lo, hi } => Some(((lo + hi) / ctx.int(2)).simplify()),
-            ContinuousFamily::Exponential { rate } => Some(ctx.one() / rate),
-            ContinuousFamily::Gamma { shape, scale } => Some((shape * scale).simplify()),
-            ContinuousFamily::ChiSquared { dof } => Some(dof.clone()),
-            ContinuousFamily::Beta { alpha, beta } => Some((alpha / (alpha + beta)).simplify()),
-            ContinuousFamily::Cauchy { .. } => None,
-            ContinuousFamily::Laplace { mean, .. } | ContinuousFamily::Logistic { mean, .. } => {
-                Some(mean.clone())
-            }
-            // e^{μ + σ²/2}
-            ContinuousFamily::LogNormal { mu, sigma } => {
-                Some((mu + sigma.powi(2) / ctx.int(2)).exp())
-            }
-            // 0 for ν > 1.
-            ContinuousFamily::StudentT { dof } => exceeds(dof, 1).then(|| ctx.zero()),
-            // λ Γ(1 + 1/k)
-            ContinuousFamily::Weibull { scale, shape } => {
-                Some((scale * (ctx.one() + ctx.one() / shape).gamma()).simplify())
-            }
-            // α x_m / (α − 1) for α > 1.
-            ContinuousFamily::Pareto { scale, shape } => {
-                exceeds(shape, 1).then(|| (shape * scale / (shape - 1)).simplify())
-            }
-            ContinuousFamily::Triangular { lo, hi, mode } => {
-                Some(((lo + hi + mode) / ctx.int(3)).simplify())
-            }
-        }
-    }
-
-    /// Closed-form variance.  `None` for `Cauchy`, and for `StudentT` with
-    /// numeric `ν ≤ 2` / `Pareto` with numeric `α ≤ 2` (infinite variance).
-    pub fn variance(&self, ctx: &Context) -> Option<Ex> {
-        match self {
-            ContinuousFamily::Normal { std, .. } => Some(std.powi(2)),
-            // (b − a)² / 12
-            ContinuousFamily::Uniform { lo, hi } => {
-                Some(((hi - lo).powi(2) / ctx.int(12)).simplify())
-            }
-            ContinuousFamily::Exponential { rate } => Some(ctx.one() / rate.powi(2)),
-            ContinuousFamily::Gamma { shape, scale } => Some((shape * scale.powi(2)).simplify()),
-            ContinuousFamily::ChiSquared { dof } => Some((ctx.int(2) * dof).simplify()),
-            // αβ / ((α+β)² (α+β+1))
-            ContinuousFamily::Beta { alpha, beta } => {
-                let s = alpha + beta;
-                Some((alpha * beta / (s.powi(2) * (&s + 1))).simplify())
-            }
-            ContinuousFamily::Cauchy { .. } => None,
-            ContinuousFamily::Laplace { scale, .. } => {
-                Some((ctx.int(2) * scale.powi(2)).simplify())
-            }
-            // s²π²/3
-            ContinuousFamily::Logistic { scale, .. } => {
-                Some((scale.powi(2) * ctx.pi().powi(2) / ctx.int(3)).simplify())
-            }
-            // (e^{σ²} − 1) e^{2μ + σ²}
-            ContinuousFamily::LogNormal { mu, sigma } => {
-                let s2 = sigma.powi(2);
-                Some(((s2.exp() - 1) * (ctx.int(2) * mu + &s2).exp()).simplify())
-            }
-            // ν / (ν − 2) for ν > 2.
-            ContinuousFamily::StudentT { dof } => {
-                exceeds(dof, 2).then(|| (dof / (dof - 2)).simplify())
-            }
-            // λ² [Γ(1 + 2/k) − Γ(1 + 1/k)²]
-            ContinuousFamily::Weibull { scale, shape } => {
-                let g1 = (ctx.one() + ctx.one() / shape).gamma();
-                let g2 = (ctx.one() + ctx.int(2) / shape).gamma();
-                Some((scale.powi(2) * (g2 - g1.powi(2))).simplify())
-            }
-            // x_m² α / ((α − 1)² (α − 2)) for α > 2.
-            ContinuousFamily::Pareto { scale, shape } => exceeds(shape, 2)
-                .then(|| (scale.powi(2) * shape / ((shape - 1).powi(2) * (shape - 2))).simplify()),
-            // (a² + b² + c² − ab − ac − bc) / 18
-            ContinuousFamily::Triangular { lo, hi, mode } => Some(
-                ((lo.powi(2) + hi.powi(2) + mode.powi(2) - lo * hi - lo * mode - hi * mode)
-                    / ctx.int(18))
-                .simplify(),
-            ),
-        }
-    }
-
-    /// Closed-form raw moment `E[Xⁿ]`.  `None` for `Cauchy` (no moments),
-    /// and for `StudentT` / `Pareto` when a numeric parameter says the
-    /// moment does not exist (`n ≥ ν`, `n ≥ α`); the generic route then
-    /// returns the divergent integral unevaluated.
-    pub fn raw_moment(&self, n: u32, ctx: &Context) -> Option<Ex> {
-        let n_ex = ctx.int(i64::from(n));
-        match self {
-            // E[Xⁿ] = Σ_{k=0}^{⌊n/2⌋} C(n, 2k) (2k−1)!! μⁿ⁻²ᵏ σ²ᵏ
-            ContinuousFamily::Normal { mean, std } => {
-                let mut acc = ctx.zero();
-                for k in 0..=n / 2 {
-                    let binom = ctx.int(i64::from(n)).binomial(&ctx.int(i64::from(2 * k)));
-                    // (2k − 1)!! = (2k)! / (2ᵏ k!)
-                    let dfact = ctx.int(i64::from(2 * k)).factorial()
-                        / (ctx.int(2).powi(i64::from(k)) * ctx.int(i64::from(k)).factorial());
-                    acc += binom
-                        * dfact
-                        * mean.powi(i64::from(n - 2 * k))
-                        * std.powi(i64::from(2 * k));
-                }
-                Some(acc.simplify())
-            }
-            // (bⁿ⁺¹ − aⁿ⁺¹) / ((n+1)(b − a))
-            ContinuousFamily::Uniform { lo, hi } => {
-                let n1 = i64::from(n) + 1;
-                Some(((hi.powi(n1) - lo.powi(n1)) / (ctx.int(n1) * (hi - lo))).simplify())
-            }
-            // n! / λⁿ
-            ContinuousFamily::Exponential { rate } => {
-                Some((n_ex.factorial() / rate.powi(i64::from(n))).simplify())
-            }
-            // θⁿ Γ(k+n)/Γ(k) = θⁿ (k)ₙ
-            ContinuousFamily::Gamma { shape, scale } => {
-                Some((scale.powi(i64::from(n)) * shape.rising_factorial(&n_ex)).simplify())
-            }
-            ContinuousFamily::ChiSquared { dof } => chi_squared_as_gamma(dof).raw_moment(n, ctx),
-            // Π_{i<n} (α+i)/(α+β+i) = (α)ₙ / (α+β)ₙ
-            ContinuousFamily::Beta { alpha, beta } => Some(
-                (alpha.rising_factorial(&n_ex) / (alpha + beta).rising_factorial(&n_ex)).simplify(),
-            ),
-            ContinuousFamily::Cauchy { .. } => None,
-            // Even central moments E[(X−μ)ᵏ] = k! bᵏ, odd ones 0.
-            ContinuousFamily::Laplace { mean, scale } => {
-                Some(raw_from_even_central(mean, n, ctx, |k| {
-                    ctx.int(i64::from(k)).factorial() * scale.powi(i64::from(k))
-                }))
-            }
-            // Even central moments E[(X−μ)ᵏ] = (−1)^{k/2+1} (2ᵏ − 2) B_k (πs)ᵏ
-            // (from the standard logistic mgf πt/sin(πt)), odd ones 0.
-            ContinuousFamily::Logistic { mean, scale } => {
-                Some(raw_from_even_central(mean, n, ctx, |k| {
-                    let sign = if (k / 2) % 2 == 1 { 1 } else { -1 };
-                    let k_ex = ctx.int(i64::from(k));
-                    ctx.int(sign)
-                        * (ctx.int(2).powi(i64::from(k)) - 2)
-                        * k_ex.bernoulli_number()
-                        * (ctx.pi() * scale).powi(i64::from(k))
-                }))
-            }
-            // e^{nμ + n²σ²/2}
-            ContinuousFamily::LogNormal { mu, sigma } => {
-                Some((&n_ex * mu + n_ex.powi(2) * sigma.powi(2) / ctx.int(2)).exp())
-            }
-            // Odd moments 0; E[X²ᵐ] = νᵐ Π_{i=1}^{m} (2i−1)/(ν−2i), for n < ν.
-            ContinuousFamily::StudentT { dof } => {
-                if !exceeds(dof, n) {
-                    return None;
-                }
-                if n % 2 == 1 {
-                    return Some(ctx.zero());
-                }
-                let m = n / 2;
-                let mut acc = dof.powi(i64::from(m));
-                for i in 1..=m {
-                    acc *= ctx.int(i64::from(2 * i - 1)) / (dof - i64::from(2 * i));
-                }
-                Some(acc.simplify())
-            }
-            // λⁿ Γ(1 + n/k)
-            ContinuousFamily::Weibull { scale, shape } => {
-                Some((scale.powi(i64::from(n)) * (ctx.one() + &n_ex / shape).gamma()).simplify())
-            }
-            // α x_mⁿ / (α − n) for n < α.
-            ContinuousFamily::Pareto { scale, shape } => exceeds(shape, n)
-                .then(|| (shape * scale.powi(i64::from(n)) / (shape - &n_ex)).simplify()),
-            // 2 [aⁿ⁺²(b−c) − bⁿ⁺²(a−c) + cⁿ⁺²(a−b)] / ((n+1)(n+2)(a−b)(a−c)(b−c))
-            // (integrate xⁿ against the two linear pieces).
-            ContinuousFamily::Triangular { lo, hi, mode } => {
-                let e = i64::from(n) + 2;
-                let num = ctx.int(2)
-                    * (lo.powi(e) * (hi - mode) - hi.powi(e) * (lo - mode)
-                        + mode.powi(e) * (lo - hi));
-                let den = ctx.int(e - 1) * ctx.int(e) * (lo - hi) * (lo - mode) * (hi - mode);
-                Some((num / den).simplify())
-            }
-        }
-    }
-
-    /// Closed-form CDF in `x`.  `None` for `Beta` (the regularised
-    /// incomplete beta function is not in the crate; the generic route
-    /// integrates the density, which closes for integer `α`, `β`) and
-    /// `StudentT` (the generic route closes for odd integer `ν`).
-    pub fn cdf(&self, x: &Ex) -> Option<Ex> {
-        let ctx = x.context();
-        let half = ctx.rational(1, 2);
-        match self {
-            // Φ((x−μ)/σ) = ½ + ½ erf((x−μ)/(σ√2))
-            ContinuousFamily::Normal { mean, std } => {
-                let arg = (x - mean) / (std * ctx.int(2).sqrt());
-                Some(&half + &half * arg.erf())
-            }
-            ContinuousFamily::Uniform { lo, hi } => Some((x - lo) / (hi - lo)),
-            // 1 − e^{−λx}
-            ContinuousFamily::Exponential { rate } => Some(ctx.one() - (-(rate * x)).exp()),
-            // γ(k, x/θ) / Γ(k); `eval` closes the incomplete gamma for
-            // integer and half-integer `k`.
-            ContinuousFamily::Gamma { shape, scale } => {
-                Some(((x / scale).lowergamma(shape) / shape.gamma()).eval())
-            }
-            ContinuousFamily::ChiSquared { dof } => chi_squared_as_gamma(dof).cdf(x),
-            ContinuousFamily::Beta { .. } | ContinuousFamily::StudentT { .. } => None,
-            // ½ + atan((x−x₀)/γ)/π
-            ContinuousFamily::Cauchy { location, scale } => {
-                Some(&half + ((x - location) / scale).atan() / ctx.pi())
-            }
-            // ½ e^{(x−μ)/b} for x < μ, 1 − ½ e^{−(x−μ)/b} for x ≥ μ
-            ContinuousFamily::Laplace { mean, scale } => {
-                let z = (x - mean) / scale;
-                let below = &half * z.exp();
-                let above = ctx.one() - &half * (-z).exp();
-                Some(Ex::piecewise(&[
-                    (&below, &x.lt(mean)),
-                    (&above, &x.ge(mean)),
-                ]))
-            }
-            // 1 / (1 + e^{−(x−μ)/s})
-            ContinuousFamily::Logistic { mean, scale } => {
-                Some(ctx.one() / (ctx.one() + (-((x - mean) / scale)).exp()))
-            }
-            // Φ((ln x − μ)/σ)
-            ContinuousFamily::LogNormal { mu, sigma } => {
-                let arg = (x.ln() - mu) / (sigma * ctx.int(2).sqrt());
-                Some(&half + &half * arg.erf())
-            }
-            // 1 − e^{−(x/λ)ᵏ}
-            ContinuousFamily::Weibull { scale, shape } => {
-                Some(ctx.one() - (-((x / scale).pow(shape))).exp())
-            }
-            // 1 − (x_m/x)^α
-            ContinuousFamily::Pareto { scale, shape } => Some(ctx.one() - (scale / x).pow(shape)),
-            // (x−a)²/((b−a)(c−a)) on [a, c], 1 − (b−x)²/((b−a)(b−c)) on (c, b]
-            ContinuousFamily::Triangular { lo, hi, mode } => {
-                let width = hi - lo;
-                let rising = (x - lo).powi(2) / (&width * (mode - lo));
-                let falling = ctx.one() - (hi - x).powi(2) / (&width * (hi - mode));
-                Some(Ex::piecewise(&[
-                    (&rising, &x.le(mode)),
-                    (&falling, &x.gt(mode)),
-                ]))
-            }
-        }
-    }
-
-    /// Closed-form moment generating function in `t`.  `None` where none
-    /// exists in closed form: `Beta` (a ₁F₁), `Cauchy` (undefined),
-    /// `LogNormal` (divergent for `t > 0`), `StudentT` (undefined),
-    /// `Weibull` and `Pareto` (series / incomplete gamma only); the generic
-    /// route then returns `E[e^{tX}]` as an integral.
-    pub fn mgf(&self, t: &Ex) -> Option<Ex> {
-        let ctx = t.context();
-        match self {
-            // exp(μt + σ²t²/2)
-            ContinuousFamily::Normal { mean, std } => {
-                Some((mean * t + std.powi(2) * t.powi(2) / ctx.int(2)).exp())
-            }
-            // (e^{bt} − e^{at}) / ((b−a) t)
-            ContinuousFamily::Uniform { lo, hi } => {
-                Some(((hi * t).exp() - (lo * t).exp()) / ((hi - lo) * t))
-            }
-            // λ / (λ − t)
-            ContinuousFamily::Exponential { rate } => Some(rate / (rate - t)),
-            // (1 − θt)^{−k}
-            ContinuousFamily::Gamma { shape, scale } => {
-                Some((ctx.one() - scale * t).pow(&(-shape)))
-            }
-            ContinuousFamily::ChiSquared { dof } => chi_squared_as_gamma(dof).mgf(t),
-            ContinuousFamily::Beta { .. }
-            | ContinuousFamily::Cauchy { .. }
-            | ContinuousFamily::LogNormal { .. }
-            | ContinuousFamily::StudentT { .. }
-            | ContinuousFamily::Weibull { .. }
-            | ContinuousFamily::Pareto { .. } => None,
-            // e^{μt} / (1 − b²t²)
-            ContinuousFamily::Laplace { mean, scale } => {
-                Some((mean * t).exp() / (ctx.one() - scale.powi(2) * t.powi(2)))
-            }
-            // e^{μt} B(1 − st, 1 + st)
-            ContinuousFamily::Logistic { mean, scale } => {
-                let st = scale * t;
-                Some((mean * t).exp() * (ctx.one() - &st).beta(&(ctx.one() + &st)))
-            }
-            // 2 [(b−c) e^{at} − (b−a) e^{ct} + (c−a) e^{bt}] / ((b−a)(c−a)(b−c) t²)
-            ContinuousFamily::Triangular { lo, hi, mode } => {
-                let num = ctx.int(2)
-                    * ((hi - mode) * (lo * t).exp() - (hi - lo) * (mode * t).exp()
-                        + (mode - lo) * (hi * t).exp());
-                let den = (hi - lo) * (mode - lo) * (hi - mode) * t.powi(2);
-                Some(num / den)
-            }
-        }
-    }
-
-    /// Closed-form quantile function at `p`.  `None` for `Gamma`,
-    /// `ChiSquared`, `Beta` and `StudentT`, whose inverse CDFs have no
-    /// elementary form (so [`RandomVariable::sample`](super::RandomVariable::sample)
-    /// is not available for them).
-    pub fn quantile(&self, p: &Ex) -> Option<Ex> {
-        let ctx = p.context();
-        let half = ctx.rational(1, 2);
-        match self {
-            // μ + σ√2 · erfinv(2p − 1)
-            ContinuousFamily::Normal { mean, std } => {
-                Some(mean + std * ctx.int(2).sqrt() * (ctx.int(2) * p - 1).erfinv())
-            }
-            // a + p(b − a)
-            ContinuousFamily::Uniform { lo, hi } => Some(lo + p * (hi - lo)),
-            // −ln(1 − p) / λ
-            ContinuousFamily::Exponential { rate } => Some(-(ctx.one() - p).ln() / rate),
-            ContinuousFamily::Gamma { .. }
-            | ContinuousFamily::ChiSquared { .. }
-            | ContinuousFamily::Beta { .. }
-            | ContinuousFamily::StudentT { .. } => None,
-            // x₀ + γ tan(π(p − ½))
-            ContinuousFamily::Cauchy { location, scale } => {
-                Some(location + scale * (ctx.pi() * (p - &half)).tan())
-            }
-            // μ − b sign(p − ½) ln(1 − 2|p − ½|)
-            ContinuousFamily::Laplace { mean, scale } => {
-                let d = p - &half;
-                Some(mean - scale * d.sign() * (ctx.one() - ctx.int(2) * d.abs()).ln())
-            }
-            // μ + s ln(p/(1 − p))
-            ContinuousFamily::Logistic { mean, scale } => {
-                Some(mean + scale * (p / (ctx.one() - p)).ln())
-            }
-            // exp(μ + σ√2 · erfinv(2p − 1))
-            ContinuousFamily::LogNormal { mu, sigma } => {
-                Some((mu + sigma * ctx.int(2).sqrt() * (ctx.int(2) * p - 1).erfinv()).exp())
-            }
-            // λ (−ln(1 − p))^{1/k}
-            ContinuousFamily::Weibull { scale, shape } => {
-                Some(scale * (-(ctx.one() - p).ln()).pow(&(ctx.one() / shape)))
-            }
-            // x_m (1 − p)^{−1/α}
-            ContinuousFamily::Pareto { scale, shape } => {
-                Some(scale * (ctx.one() - p).pow(&(-(ctx.one() / shape))))
-            }
-            // a + √(p(b−a)(c−a)) for p < (c−a)/(b−a), else b − √((1−p)(b−a)(b−c))
-            ContinuousFamily::Triangular { lo, hi, mode } => {
-                let width = hi - lo;
-                let threshold = (mode - lo) / &width;
-                let rising = lo + (p * &width * (mode - lo)).sqrt();
-                let falling = hi - ((ctx.one() - p) * &width * (hi - mode)).sqrt();
-                Some(Ex::piecewise(&[
-                    (&rising, &p.lt(&threshold)),
-                    (&falling, &p.ge(&threshold)),
-                ]))
-            }
-        }
-    }
-
-    /// Closed-form differential entropy `−∫ f ln f` in nats (Wikipedia's
-    /// per-family tables; `ψ` is the digamma function, `γ` the
-    /// Euler–Mascheroni constant).  Every family has one.
-    pub fn entropy(&self, ctx: &Context) -> Option<Ex> {
-        let half = ctx.rational(1, 2);
-        let two_pi_e = ctx.int(2) * ctx.pi() * ctx.e();
-        match self {
-            // ½ ln(2πeσ²)
-            ContinuousFamily::Normal { std, .. } => Some(&half * (two_pi_e * std.powi(2)).ln()),
-            // ln(b − a)
-            ContinuousFamily::Uniform { lo, hi } => Some((hi - lo).ln()),
-            // 1 − ln λ
-            ContinuousFamily::Exponential { rate } => Some(ctx.one() - rate.ln()),
-            // k + ln θ + ln Γ(k) + (1 − k) ψ(k)
-            ContinuousFamily::Gamma { shape, scale } => Some(
-                shape + scale.ln() + shape.gamma().ln() + (ctx.one() - shape) * shape.digamma(),
-            ),
-            ContinuousFamily::ChiSquared { dof } => chi_squared_as_gamma(dof).entropy(ctx),
-            // ln B(α, β) − (α−1) ψ(α) − (β−1) ψ(β) + (α+β−2) ψ(α+β)
-            ContinuousFamily::Beta { alpha, beta } => {
-                let s = alpha + beta;
-                Some(
-                    alpha.beta(beta).ln()
-                        - (alpha - 1) * alpha.digamma()
-                        - (beta - 1) * beta.digamma()
-                        + (&s - 2) * s.digamma(),
-                )
-            }
-            // ln(4πγ)
-            ContinuousFamily::Cauchy { scale, .. } => Some((ctx.int(4) * ctx.pi() * scale).ln()),
-            // 1 + ln(2b)
-            ContinuousFamily::Laplace { scale, .. } => Some(ctx.one() + (ctx.int(2) * scale).ln()),
-            // ln s + 2
-            ContinuousFamily::Logistic { scale, .. } => Some(scale.ln() + 2),
-            // μ + ½ ln(2πeσ²)
-            ContinuousFamily::LogNormal { mu, sigma } => {
-                Some(mu + &half * (two_pi_e * sigma.powi(2)).ln())
-            }
-            // (ν+1)/2 [ψ((ν+1)/2) − ψ(ν/2)] + ln(√ν B(ν/2, ½))
-            ContinuousFamily::StudentT { dof } => {
-                let a = (dof + 1) * &half;
-                let b = dof * &half;
-                Some(&a * (a.digamma() - b.digamma()) + (dof.sqrt() * b.beta(&half)).ln())
-            }
-            // γ(1 − 1/k) + ln(λ/k) + 1
-            ContinuousFamily::Weibull { scale, shape } => {
-                Some(ctx.euler_gamma() * (ctx.one() - ctx.one() / shape) + (scale / shape).ln() + 1)
-            }
-            // ln(x_m/α) + 1/α + 1
-            ContinuousFamily::Pareto { scale, shape } => {
-                Some((scale / shape).ln() + ctx.one() / shape + 1)
-            }
-            // ½ + ln((b − a)/2)
-            ContinuousFamily::Triangular { lo, hi, .. } => {
-                Some(&half + ((hi - lo) / ctx.int(2)).ln())
-            }
-        }
-    }
-}
-
-impl fmt::Display for ContinuousFamily {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ContinuousFamily::Normal { mean, std } => write!(f, "Normal({mean}, {std})"),
-            ContinuousFamily::Uniform { lo, hi } => write!(f, "Uniform({lo}, {hi})"),
-            ContinuousFamily::Exponential { rate } => write!(f, "Exponential({rate})"),
-            ContinuousFamily::Gamma { shape, scale } => write!(f, "Gamma({shape}, {scale})"),
-            ContinuousFamily::ChiSquared { dof } => write!(f, "ChiSquared({dof})"),
-            ContinuousFamily::Beta { alpha, beta } => write!(f, "Beta({alpha}, {beta})"),
-            ContinuousFamily::Cauchy { location, scale } => {
-                write!(f, "Cauchy({location}, {scale})")
-            }
-            ContinuousFamily::Laplace { mean, scale } => write!(f, "Laplace({mean}, {scale})"),
-            ContinuousFamily::Logistic { mean, scale } => write!(f, "Logistic({mean}, {scale})"),
-            ContinuousFamily::LogNormal { mu, sigma } => write!(f, "LogNormal({mu}, {sigma})"),
-            ContinuousFamily::StudentT { dof } => write!(f, "StudentT({dof})"),
-            ContinuousFamily::Weibull { scale, shape } => write!(f, "Weibull({scale}, {shape})"),
-            ContinuousFamily::Pareto { scale, shape } => write!(f, "Pareto({scale}, {shape})"),
-            ContinuousFamily::Triangular { lo, hi, mode } => {
-                write!(f, "Triangular({lo}, {hi}, {mode})")
-            }
-        }
+        Distribution::from_family(Triangular { lo, hi, mode })
     }
 }

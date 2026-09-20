@@ -1038,10 +1038,13 @@ fn statistics() {
         stats::probability(&[&x, &z], &x.symbol().lt(z.symbol())).unwrap()
     );
     println!("H(X) = {}", x.entropy());
-    let coin = Distribution::try_finite(vec![
-        (ctx.int(1), ctx.rational(2, 3)),
-        (ctx.int(0), ctx.rational(1, 3)),
-    ])
+    let coin = Distribution::try_finite(
+        &ctx,
+        vec![
+            (ctx.int(1), ctx.rational(2, 3)),
+            (ctx.int(0), ctx.rational(1, 3)),
+        ],
+    )
     .unwrap();
     let c = RandomVariable::new(&ctx, "C", coin);
     println!("E[C] = {}, Var[C] = {}", c.mean(), c.variance());

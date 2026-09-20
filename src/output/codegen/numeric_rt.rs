@@ -450,7 +450,7 @@ fn calerf(x: f64, complement: bool) -> f64 {
 // @@begin erfinv
 /// √π/2.
 const HALF_SQRT_PI: f64 = 0.88622692545275801365;
-/// Maclaurin coefficients of erfinv: erfinv(x) = Σ ERFINV_SERIES[k]·w^{2k+1}
+/// Maclaurin coefficients of erfinv: `erfinv(x) = Σ ERFINV_SERIES[k]·w^{2k+1}`
 /// with w = (√π/2)·x (OEIS A092676/A092677: 1, 1/3, 7/30, 127/630, …).
 const ERFINV_SERIES: [f64; 8] = [
     1.0,

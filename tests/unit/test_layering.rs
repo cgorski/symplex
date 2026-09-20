@@ -61,8 +61,9 @@ const ALLOWLIST: &[(&str, usize)] = &[
     ("domains/certificates/polyhedron.rs", 1),
     ("domains/certificates/sos.rs", 1),
     ("domains/polytope.rs", 1),
+    ("domains/stats/family.rs", 1),
     ("domains/stats/joint.rs", 1),
-    ("domains/stats/rv.rs", 1),
+    ("domains/stats/wrappers.rs", 1),
     // Robotics renders SI quantities.
     ("domains/robotics.rs", 1),
     // Algebraic numbers evaluate, substitute and solve.

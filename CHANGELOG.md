@@ -6,6 +6,89 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.12.0] - 2026-09-20
+
+### Breaking (all in `symplex::stats`; see `book/src/reference/migrating-0.12.md`)
+
+- **`Distribution` is an opaque struct, not an enum.**  `ContinuousFamily`
+  and `DiscreteFamily` are gone; each family is a struct (`Normal`,
+  `Binomial`, `Finite`, …) implementing the new **`Family` trait**, and a
+  `Distribution` is a shared handle to one.  `Distribution::downcast_ref::<Normal>()`
+  recovers the struct; `Distribution::family()` exposes the closed forms
+  (`mean`, `variance`, `raw_moment`, `cdf`, `mgf`, `quantile`, `entropy`
+  as `Option<Ex>`, no `&ctx` argument), while `Distribution::{mean,
+  variance, moment, cdf, mgf, entropy, …}` return `Ex` through the generic
+  route when a closed form is missing.  `Distribution::from_family` admits
+  user-defined families.
+- **`Support` is a typed region**: a struct with a `Kind` (`Continuous` /
+  `Discrete`) and `Piece`s (`Interval { lo, hi, lo_open, hi_open }` with
+  `±∞` as expressions, `Point`), built with `Support::{reals, interval,
+  half_line, integers, points, from_pieces}` and read with `as_interval`,
+  `as_points`, `pieces`, `contains`, `intersect`, `to_set` / `from_set`.
+  The variants `Continuous { lo, hi }`, `Discrete { lo, hi }` and
+  `Finite(values)` no longer exist.
+- `Distribution::finite` / `try_finite` take the context first.
+- **`cdf` is clamped to the support** (SymPy's `cdf(X)(x)`): `0` below,
+  the closed form on it, `1` above — `Uniform(0, 1).cdf(3)` is `1` (was
+  `3`), `Geometric(p).cdf(k)` is a `Piecewise`.  The closed form on the
+  support is `distribution().family().cdf(&x)`.
+
+### Added
+
+- **Conditioning, transformations and mixtures of distributions.**
+  `RandomVariable::given(&event)` / `Distribution::truncated(&region)`
+  (SymPy `given`): `E[N | N > 0] = √(2/π)`, `E[B | B ≥ 2] = 325/131` for
+  `Binomial(5, ⅓)`, with the CDF and quantile transported when the inner
+  family has them.  `RandomVariable::transform(name, &g)` /
+  `Distribution::transformed(&x, &g)`: an affine `aX + b` transports every
+  closed form exactly (`Affine`: `2N + 1 ~ Normal(1, 2)` with its mgf,
+  quantile, moments, entropy); a strictly monotone `g` on the support
+  (`eˣ`, `1/x`, `e^{−x}`, …) and the even shapes `X²`, `|X|`, `X^{2k}` go
+  through the change-of-variables formula (`Transformed`: `N²` has the
+  χ²(1) density `e^{−y/2}/√(2πy)`; `E[eᴺ] = √e` by LOTUS); a finite table
+  or finite integer range has its values mapped and merged (`Die²`).
+  `Distribution::mixture(&[(w, F), …])` (`Mixture`): every query is the
+  weighted sum of the components'.  All sample (`Sampler`).
+- **Events through the set machinery**: with numeric bounds any boolean
+  combination of relations in the variable is accepted (`P(N² < 1)`,
+  `P(N < −1 ∨ N > 1)`, `E[X | X² > 1]`), through `reduce_inequalities`;
+  symbolic bounds keep the linear fast path (`P(X > a)`, `P(a < X < b)`).
+  `RandomVariable::event_region` exposes the region.
+- `FDistribution(d₁, d₂)` with mean, variance, raw moments and CDF.
+- `betainc(a, b, x₁, x₂)` and `betainc_regularized(a, b, x₁, x₂)` (SymPy's
+  4-argument form; methods `x2.betainc(&a, &b, &x1)`): exact polynomial
+  folds for integer `a, b` (`cdf(Beta(2, 3)) = 3x⁴ − 8x³ + 6x²`), `∂x₁`/`∂x₂`
+  derivatives, arbitrary-precision evaluation by Lentz's continued
+  fraction (50 digits against mpmath), LaTeX / parse / `expr!`.  The
+  `Beta` and `StudentT` CDFs are closed forms through it.
+- `erfinv` / `erfcinv` in the `f64` runtime (≤ 3·10⁻¹⁶ relative), in
+  `Ex::compile` and in Rust codegen — so `Normal` / `LogNormal` sample.
+- Summation closes `Σ C(k+c, k) xᵏ` (and with `k`, `k²` factors), the
+  binomial theorem with symbolic `n` **and** `p`, and finite hypergeometric
+  sums with `C(n(k), m(k))` through Gosper; `C(n, k) = 0` for `0 ≤ n < k`
+  in `eval` and `evalf`.  `NegativeBinomial` uses its true pmf.
+- `RandomVariable::try_new` reports a distribution from another context
+  as an error (`new` raises the crate's cross-context guard at
+  construction instead of deep inside a query).
+
+### Fixed
+
+- `P(X > 1 ∧ X ≥ 2)` for a discrete variable took the *strict* bound's
+  strictness with the *larger* bound (`17/81` for `Binomial(5, ⅓)`; correct
+  `131/243`).  `P(X = 3 ∧ X > 5)` ignored the inequality (`40/243`; correct
+  `0`).  `P(X = ½)`, `P(X = −1)` for integer-valued variables returned
+  `C(5, ½)`-style expressions and Γ poles instead of `0`.
+- Internal bound variables (`_t_cdf`, `_sample_p`, …) were interned by
+  fixed name and could collide with a user's symbol; they are now chosen
+  fresh against the expressions in play.
+
+### Infrastructure
+
+- `symplex` and `symplex-build` at 0.12.0; **`symplex-macros` at 0.3.3**
+  (`expr!` knows `betainc` / `betainc_regularized`).  New test group
+  `tests/v12/`.  Book: "What's New in 0.12", "Migrating from 0.11 to
+  0.12", the statistics guide rewritten for the trait design.
+
 ## [0.11.2] - 2026-09-20
 
 A **structure** release: the second pass of the review, consolidating the
