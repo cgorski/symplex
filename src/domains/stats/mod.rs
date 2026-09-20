@@ -59,8 +59,14 @@
 //! ([`Normal`], [`Binomial`], …); each has a `Distribution::name(…)`
 //! constructor and a `try_name` twin.
 
+pub mod agreement;
+pub mod aggregation;
 mod continuous;
+pub mod data;
 mod discrete;
+pub mod estimation;
+pub mod hypothesis;
+pub mod markov;
 mod events;
 mod family;
 mod joint;

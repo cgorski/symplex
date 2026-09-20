@@ -465,6 +465,115 @@ impl Distribution {
         self.quantile(&self.context().rational(1, 2))
     }
 
+    /// The quantile at `p ∈ (0, 1)` as an `f64`: the closed form evaluated
+    /// when the family has one, otherwise the root of `F(x) = p` by Brent's
+    /// method on the compiled distribution function over a bracket grown
+    /// from the support's ends (a discrete distribution returns the
+    /// smallest lattice point with `F(x) ≥ p`).  This is the numeric route
+    /// behind critical values and confidence limits of `Beta`, `StudentT`,
+    /// `ChiSquared` and `FDistribution`, whose inverse CDFs have no
+    /// elementary form.  Parameters must evaluate numerically.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::stats::Distribution;
+    ///
+    /// let ctx = Context::new();
+    /// // scipy: stats.t.ppf(0.975, 5) = 2.5705818366147395
+    /// let t5 = Distribution::student_t(ctx.int(5));
+    /// assert!((t5.quantile_f64(0.975)? - 2.570_581_836_614_739_5).abs() < 1e-9);
+    /// # Ok::<(), SymplexError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] for `p` outside `(0, 1)`;
+    /// [`SymplexError::Unevaluable`] for symbolic parameters;
+    /// [`SymplexError::ComputationFailed`] if no bracket is found.
+    pub fn quantile_f64(&self, p: f64) -> Result<f64, SymplexError> {
+        if !(p > 0.0 && p < 1.0) {
+            return Err(SymplexError::invalid_argument(
+                "quantile_f64",
+                format!("p must lie strictly between 0 and 1, got {p}"),
+            ));
+        }
+        let ctx = self.context();
+        if let Some(q) = self.0.quantile(&ctx.from_f64(p)?) {
+            return q.eval_f64();
+        }
+        let x = self.fresh_var("x", &[]);
+        let name = x.to_string();
+        let cdf = self.cdf(&x).compile(&[name.as_str()])?;
+        let support = self.support();
+        let (lo, hi) = match support.as_interval() {
+            Some((lo, hi, _, _)) => (
+                if is_neg_inf(lo) { f64::NEG_INFINITY } else { lo.eval_f64()? },
+                if is_pos_inf(hi) { f64::INFINITY } else { hi.eval_f64()? },
+            ),
+            None => {
+                // Points: walk the cumulative sums.
+                let values = support.as_points().ok_or_else(|| {
+                    SymplexError::computation_failed("quantile_f64", "unsupported support shape")
+                })?;
+                let mut pts: Vec<(f64, f64)> = values
+                    .iter()
+                    .map(|v| Ok((v.eval_f64()?, self.0.density(v).eval_f64()?)))
+                    .collect::<Result<_, SymplexError>>()?;
+                pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+                let mut acc = 0.0;
+                for (v, m) in pts {
+                    acc += m;
+                    if acc >= p - 1e-12 {
+                        return Ok(v);
+                    }
+                }
+                return Err(SymplexError::computation_failed(
+                    "quantile_f64",
+                    "the masses do not reach p",
+                ));
+            }
+        };
+        let g = |v: f64| cdf.call(&[v]) - p;
+        // Grow a bracket from a finite end (or from 0) until the sign changes.
+        let (mut a, mut b) = match (lo.is_finite(), hi.is_finite()) {
+            (true, true) => (lo, hi),
+            (true, false) => (lo, lo + 1.0),
+            (false, true) => (hi - 1.0, hi),
+            (false, false) => (-1.0, 1.0),
+        };
+        let mut step = 1.0;
+        for _ in 0..200 {
+            if g(a) <= 0.0 && g(b) >= 0.0 {
+                break;
+            }
+            step *= 2.0;
+            if g(a) > 0.0 && !lo.is_finite() {
+                a -= step;
+            }
+            if g(b) < 0.0 && !hi.is_finite() {
+                b += step;
+            }
+            if (lo.is_finite() && g(a) > 0.0) || (hi.is_finite() && g(b) < 0.0) {
+                // p lies outside what the CDF reaches on the support.
+                break;
+            }
+        }
+        let opts = crate::domains::optimize::RootOpts::default();
+        let root = crate::domains::optimize::brent_root(g, a, b, &opts)
+            .map_err(|e| SymplexError::computation_failed("quantile_f64", e.to_string()))?;
+        Ok(match support.kind() {
+            Kind::Continuous => root,
+            // Smallest lattice point at or above the crossing.
+            Kind::Discrete => {
+                let mut k = root.floor();
+                if cdf.call(&[k]) < p - 1e-12 {
+                    k += 1.0;
+                }
+                k
+            }
+        })
+    }
+
     /// Entropy in nats — differential (`−E[ln f(X)]`) for a continuous
     /// family, Shannon (`−Σ p ln p`) for a discrete one — the family's
     /// closed form when it has one, else the expectation of `−ln f` with
