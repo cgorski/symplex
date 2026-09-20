@@ -217,3 +217,10 @@ pub(crate) fn extract_negative_power(arena: &Arena, id: ExprId) -> Option<(ExprI
     }
     None
 }
+
+/// The variant name of a node for error messages (`"Sin"`, `"Integral"`,
+/// …), taken from its `Debug` rendering.
+pub(crate) fn describe(node: &crate::base::node::ExprNode) -> String {
+    let dbg = format!("{node:?}");
+    dbg.split(['(', ' ']).next().unwrap_or("node").to_string()
+}

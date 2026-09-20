@@ -1,6 +1,7 @@
 pub(crate) mod arena;
 pub mod assumptions;
 pub(crate) mod bernoulli;
+pub(crate) mod bigcomplex;
 pub(crate) mod canon;
 pub(crate) mod compact;
 pub(crate) mod complex;

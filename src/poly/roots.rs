@@ -22,7 +22,7 @@ use num_rational::Ratio;
 use num_traits::{One, Signed, Zero};
 
 use super::dense::Poly;
-use crate::transforms::evalf::{c_add, c_div, c_from_real, c_mul, c_one, c_sub, c_zero};
+use crate::base::bigcomplex::{c_add, c_div, c_from_real, c_mul, c_one, c_sub, c_zero};
 
 /// A complex number as `(real, imaginary)` pair of arbitrary-precision floats.
 type Complex = (BigFloat, BigFloat);

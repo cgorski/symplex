@@ -559,10 +559,7 @@ fn big_op(op: &str, var: &str, lo: &str, hi: &str, body: &str) -> String {
 }
 
 /// Describe a node kind for error messages.
-fn describe(node: &ExprNode) -> String {
-    let dbg = format!("{node:?}");
-    dbg.split(['(', ' ']).next().unwrap_or("node").to_string()
-}
+use crate::output::common::describe;
 
 /// Render `expr` as MathML markup (no `<math>` wrapper).  Iterative
 /// post-order: every child is rendered before its parent, and a child's

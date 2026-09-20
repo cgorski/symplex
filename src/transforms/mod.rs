@@ -12,5 +12,4 @@ pub mod rsolve;
 pub mod sets;
 pub(crate) mod solve;
 pub(crate) mod subs;
-pub(crate) mod sum_eval;
 pub(crate) mod trig_integ;

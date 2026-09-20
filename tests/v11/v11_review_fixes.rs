@@ -6,7 +6,7 @@
 use std::time::{Duration, Instant};
 
 use num_bigint::BigInt;
-use symplex::certificates::{SosOpts, SosOutcome, prove_sos};
+use symplex::certificates::{BudgetHit, SosOpts, SosOutcome, prove_sos};
 use symplex::discrete::{convolution_ntt, intt, ntt};
 use symplex::prelude::*;
 use symplex::syms;
@@ -37,10 +37,14 @@ fn sos_time_limit_covers_the_newton_pruning_stage() {
     .unwrap();
     let elapsed = t0.elapsed();
     match out {
-        SosOutcome::Unknown(u) => assert_eq!(
-            u.reason,
-            "budget exhausted: deadline passed during the Newton-polytope pruning"
-        ),
+        SosOutcome::Unknown(u) => {
+            assert_eq!(
+                u.reason,
+                "budget exhausted: deadline passed during the Newton-polytope pruning"
+            );
+            // 0.11.2: the budget leaf is typed, like `PolyhedronUnknown`'s.
+            assert_eq!(u.budget_exhausted, Some(BudgetHit::Deadline));
+        }
         other => panic!("expected Unknown(budget exhausted), got {other}"),
     }
     // Generous: the refutation grid (343 exact evaluations) runs first.
@@ -98,6 +102,60 @@ fn ntt_reports_the_missing_root_of_unity() {
     assert_eq!(ntt(&b(&[5]), 2).unwrap(), b(&[1]));
     // … but a length-2 one needs 2 | p − 1 = 1.
     assert!(ntt(&b(&[1, 1]), 2).is_err());
+}
+
+/// A non-budget `Unknown` has no budget leaf.
+#[test]
+fn sos_unknown_without_a_budget_hit_says_so() {
+    let ctx = Context::new();
+    syms!(ctx; x);
+    // Odd degree: not SOS, decided before any budget question arises.
+    let out = prove_sos(
+        &(x.powi(3) + 1),
+        std::slice::from_ref(&x),
+        &SosOpts::default(),
+    )
+    .unwrap();
+    match out {
+        SosOutcome::Unknown(u) => {
+            assert!(u.reason.contains("odd degree"), "{}", u.reason);
+            assert_eq!(u.budget_exhausted, None);
+        }
+        SosOutcome::Refuted { .. } => {} // also acceptable: the grid finds x = -3
+        other => panic!("{other}"),
+    }
+}
+
+/// The exact rational type and its literal constructors keep their
+/// `linprog::` paths (and the prelude's `Q`) after moving to `base`.
+#[test]
+fn q_alias_and_constructors_are_reachable_from_every_documented_path() {
+    use symplex::linprog::{Q as LinprogQ, q, qi};
+    let a: LinprogQ = q(2, 4);
+    let b: Q = qi(1) / qi(2);
+    assert_eq!(a, b);
+    let c: symplex::numeric::Q = symplex::numeric::q(1, 2);
+    assert_eq!(a, c);
+}
+
+/// The shared error constructors build exactly the variants the private
+/// per-module helpers used to.
+#[test]
+fn error_constructors_build_the_documented_variants() {
+    match SymplexError::invalid_argument("op", "why") {
+        SymplexError::InvalidArgument { operation, reason } => {
+            assert_eq!(operation, "op");
+            assert_eq!(reason, "why");
+        }
+        other => panic!("{other:?}"),
+    }
+    match SymplexError::computation_failed("op", String::from("why")) {
+        SymplexError::ComputationFailed { operation, reason } => {
+            assert_eq!(operation, "op");
+            assert_eq!(reason, "why");
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 /// Division by the zero polynomial is `None` at the public boundary (and,

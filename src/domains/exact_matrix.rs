@@ -53,7 +53,7 @@ use num_traits::{One, Signed, Zero};
 
 use crate::api::context::Context;
 use crate::base::errors::SymplexError;
-use crate::domains::linprog::Q;
+use crate::base::numeric::Q;
 use crate::domains::matrix::Matrix;
 use crate::domains::ntheory::{gcdex, mod_inverse};
 
@@ -168,17 +168,11 @@ pub type ZMatrix = ExactMatrix<BigInt>;
 pub type QMatrix = ExactMatrix<Q>;
 
 fn invalid(operation: &'static str, reason: impl Into<String>) -> SymplexError {
-    SymplexError::InvalidArgument {
-        operation,
-        reason: reason.into(),
-    }
+    SymplexError::invalid_argument(operation, reason)
 }
 
 fn failed(operation: &'static str, reason: impl Into<String>) -> SymplexError {
-    SymplexError::ComputationFailed {
-        operation,
-        reason: reason.into(),
-    }
+    SymplexError::computation_failed(operation, reason)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

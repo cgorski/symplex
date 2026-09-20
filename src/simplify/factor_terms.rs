@@ -438,7 +438,7 @@ pub(crate) fn collect_const(arena: &mut Arena, expr: ExprId) -> ExprId {
                 if g.is_one() {
                     rebuilt
                 } else {
-                    let g_id = num_expr(arena, g);
+                    let g_id = arena.num_ratio(g);
                     let g_pow = arena.pow(g_id, exp);
                     let inner_pow = arena.pow(inner, exp);
                     arena.mul(&[g_pow, inner_pow])
@@ -452,7 +452,7 @@ pub(crate) fn collect_const(arena: &mut Arena, expr: ExprId) -> ExprId {
                         let (g, inner) = numeric_factor_terms_pair(arena, c);
                         if !g.is_one() {
                             changed = true;
-                            new_children.push(num_expr(arena, g));
+                            new_children.push(arena.num_ratio(g));
                             new_children.push(inner);
                             continue;
                         }
@@ -611,12 +611,6 @@ fn collect_by_vars_term(arena: &mut Arena, term: ExprId, var: ExprId, rest: &[Ex
         let p = arena.pow(var, exp);
         arena.mul(&[new_coeff, p])
     }
-}
-
-/// Intern a rational number as an expression node.
-fn num_expr(arena: &mut Arena, r: Ratio<BigInt>) -> ExprId {
-    let nid = arena.intern_num(r);
-    arena.intern(ExprNode::Num(nid))
 }
 
 // ---------------------------------------------------------------------------

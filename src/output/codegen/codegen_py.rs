@@ -760,10 +760,7 @@ impl Emitter<'_> {
 }
 
 /// Short description of a node kind for error messages.
-fn describe(node: &ExprNode) -> String {
-    let dbg = format!("{node:?}");
-    dbg.split(['(', ' ']).next().unwrap_or("node").to_string()
-}
+use crate::output::common::describe;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Entry points

@@ -46,10 +46,7 @@ use crate::domains::linprog::{LpProblem, LpStatus, Q};
 use crate::poly::multipoly::{GrevLex, MultiPoly};
 
 fn invalid(operation: &'static str, reason: impl Into<String>) -> SymplexError {
-    SymplexError::InvalidArgument {
-        operation,
-        reason: reason.into(),
-    }
+    SymplexError::invalid_argument(operation, reason)
 }
 
 /// Per-coordinate `[min, max]` of a polytope; `None` = unbounded on that side.

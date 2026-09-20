@@ -32,17 +32,11 @@ use crate::domains::matrix::{
 type GramSchmidtParts = (Vec<Vec<Ex>>, Vec<Vec<Ex>>);
 
 fn invalid(operation: &'static str, reason: impl Into<String>) -> SymplexError {
-    SymplexError::InvalidArgument {
-        operation,
-        reason: reason.into(),
-    }
+    SymplexError::invalid_argument(operation, reason)
 }
 
 fn failed(operation: &'static str, reason: impl Into<String>) -> SymplexError {
-    SymplexError::ComputationFailed {
-        operation,
-        reason: reason.into(),
-    }
+    SymplexError::computation_failed(operation, reason)
 }
 
 /// Dot product of two equal-length column vectors given as `Vec<Ex>`.

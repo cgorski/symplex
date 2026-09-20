@@ -221,10 +221,7 @@ impl ValueSign {
 }
 
 fn failed(reason: String) -> SymplexError {
-    SymplexError::ComputationFailed {
-        operation: "solve_inequality",
-        reason,
-    }
+    SymplexError::computation_failed("solve_inequality", reason)
 }
 
 /// The general sign-chart solver (see the module docs).
@@ -333,7 +330,7 @@ fn sign_chart(
         let probes = probe_ratios(lo, hi)?;
         let mut decision: Option<bool> = None;
         for p_ratio in probes {
-            let p = ratio_to_expr(arena, &p_ratio);
+            let p = arena.num_ratio(p_ratio.clone());
             let branch = branch_for(&branches, &kink_points, &p_ratio);
             let here = sample_satisfies(arena, branch, var, p, rel)?;
             match decision {
@@ -925,7 +922,7 @@ fn sample_between(
     hi: Option<&Critical>,
 ) -> Result<ExprId, SymplexError> {
     let r = probe_ratios(lo, hi)?.swap_remove(0);
-    Ok(ratio_to_expr(arena, &r))
+    Ok(arena.num_ratio(r.clone()))
 }
 
 /// Rational probe points strictly inside the open interval between two
@@ -1148,11 +1145,6 @@ fn approx_real(arena: &mut Arena, e: ExprId) -> Option<Ratio<BigInt>> {
         return None;
     }
     Some(parsed.re)
-}
-
-fn ratio_to_expr(arena: &mut Arena, r: &Ratio<BigInt>) -> ExprId {
-    let nid = arena.intern_num(r.clone());
-    arena.intern(ExprNode::Num(nid))
 }
 
 // ── evalf output parsing ───────────────────────────────────────────────

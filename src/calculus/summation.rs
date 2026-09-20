@@ -4,7 +4,7 @@
 //! This module is the backend behind [`Ex::summation`](crate::api::expr::Ex::summation)
 //! and [`Ex::product_over`](crate::api::expr::Ex::product_over).  It works on
 //! `&mut Arena` + `ExprId` and is also used by `eval()` when it encounters a
-//! `Sum` node (via the thin shim in `transforms::sum_eval`).
+//! `Sum` node (via the thin shim in `calculus::sum_eval`).
 //!
 //! # Summation strategies
 //!

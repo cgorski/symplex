@@ -45,17 +45,11 @@ use crate::calculus::limit::Direction;
 
 /// The algorithm behind `operation` could not complete on this input.
 fn computation_failed(operation: &'static str, reason: impl Into<String>) -> SymplexError {
-    SymplexError::ComputationFailed {
-        operation,
-        reason: reason.into(),
-    }
+    SymplexError::computation_failed(operation, reason)
 }
 
 fn invalid(operation: &'static str, reason: impl Into<String>) -> SymplexError {
-    SymplexError::InvalidArgument {
-        operation,
-        reason: reason.into(),
-    }
+    SymplexError::invalid_argument(operation, reason)
 }
 
 fn require_symbol(operation: &'static str, var: &Ex) -> Result<(), SymplexError> {

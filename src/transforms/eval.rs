@@ -1031,7 +1031,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
 
                 // Try closed-form symbolic evaluation (Faulhaber, geometric, etc.)
                 if let Some(closed) =
-                    crate::transforms::sum_eval::eval_sum_symbolic(arena, nbody, nvar, nlo, nhi)
+                    crate::calculus::sum_eval::eval_sum_symbolic(arena, nbody, nvar, nlo, nhi)
                 {
                     let result = eval(arena, closed);
                     cache.insert(id, result);
@@ -1089,7 +1089,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 // Try closed-form symbolic evaluation first (Π k = n!, telescoping,
                 // Π a^f(k) = a^Σf, …), mirroring the `Sum` arm above.
                 if let Some(closed) =
-                    crate::transforms::sum_eval::eval_product_symbolic(arena, nbody, nvar, nlo, nhi)
+                    crate::calculus::sum_eval::eval_product_symbolic(arena, nbody, nvar, nlo, nhi)
                 {
                     let result = eval(arena, closed);
                     cache.insert(id, result);

@@ -31,16 +31,7 @@ pub use crate::poly::multipoly::MonomialOrder;
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn invalid(operation: &'static str, reason: impl Into<String>) -> SymplexError {
-    SymplexError::InvalidArgument {
-        operation,
-        reason: reason.into(),
-    }
-}
-
-/// Intern a rational number as an expression node.
-fn num_expr(arena: &mut Arena, r: Ratio<BigInt>) -> ExprId {
-    let nid = arena.intern_num(r);
-    arena.intern(ExprNode::Num(nid))
+    SymplexError::invalid_argument(operation, reason)
 }
 
 /// The polynomial with integer coefficients, no common integer factor and
@@ -616,7 +607,7 @@ impl Expr<Numeric> {
             roots
                 .into_iter()
                 .map(|root| match root {
-                    RealRoot::Rational(r) => num_expr(arena, r),
+                    RealRoot::Rational(r) => arena.num_ratio(r),
                     RealRoot::RootOf { factor, index } => {
                         let g_expr = *factor_ids[factor]
                             .get_or_insert_with(|| poly_to_expr(arena, &factors[factor], var_id));

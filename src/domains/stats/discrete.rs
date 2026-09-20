@@ -27,10 +27,7 @@ use super::rv::{Distribution, Support};
 type Rat = Ratio<BigInt>;
 
 fn invalid(reason: impl Into<String>) -> SymplexError {
-    SymplexError::InvalidArgument {
-        operation: "stats",
-        reason: reason.into(),
-    }
+    SymplexError::invalid_argument("stats", reason)
 }
 
 /// The exact value of a numeric parameter; `None` for a symbolic one.

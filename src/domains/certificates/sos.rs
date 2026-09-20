@@ -42,17 +42,16 @@ use crate::base::errors::SymplexError;
 use crate::domains::certificates::serial::{q_from_str, q_to_str};
 use crate::domains::certificates::{Certificate, Outcome};
 use crate::domains::exact_matrix::QMatrix;
-use crate::domains::linprog::{Budget, LpProblem, LpStatus, Q};
+use crate::domains::linprog::{
+    Budget, BudgetHit, LpProblem, LpStatus, Q, deadline_from, deadline_passed,
+};
 use crate::output::lean::{LeanOpts, MATHLIB_LINE_WIDTH, lean_ident, wrap_lean};
 use crate::output::tree::ExprTree;
 
 const OP: &str = "prove_sos";
 
 fn invalid(reason: impl Into<String>) -> SymplexError {
-    SymplexError::InvalidArgument {
-        operation: OP,
-        reason: reason.into(),
-    }
+    SymplexError::invalid_argument(OP, reason)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -152,11 +151,7 @@ impl SosOpts {
     /// The deadline of a call starting now: the earlier of `deadline` and
     /// now + `time_limit` (a limit too large to represent is no limit).
     fn deadline_from_now(&self) -> Option<Instant> {
-        let from_limit = self.time_limit.and_then(|t| Instant::now().checked_add(t));
-        match (self.deadline, from_limit) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        deadline_from(self.deadline, self.time_limit)
     }
 }
 
@@ -166,9 +161,10 @@ struct DeadlinePassed;
 
 /// `Err(DeadlinePassed)` once `deadline` is in the past.
 fn check_deadline(deadline: Option<Instant>) -> Result<(), DeadlinePassed> {
-    match deadline {
-        Some(d) if Instant::now() >= d => Err(DeadlinePassed),
-        _ => Ok(()),
+    if deadline_passed(deadline) {
+        Err(DeadlinePassed)
+    } else {
+        Ok(())
     }
 }
 
@@ -185,6 +181,27 @@ pub type SosOutcome = Outcome<SosCertificate, SosUnknown>;
 pub struct SosUnknown {
     /// Why the search stopped, for diagnostics.
     pub reason: String,
+    /// `Some(BudgetHit::Deadline)` when the call's time limit / deadline
+    /// ran out (the `reason` then starts `budget exhausted: deadline`);
+    /// `None` for every other cause.  Matches
+    /// `PolyhedronUnknown::budget_exhausted`.
+    pub budget_exhausted: Option<BudgetHit>,
+}
+
+impl SosUnknown {
+    fn new(reason: impl Into<String>) -> Self {
+        SosUnknown {
+            reason: reason.into(),
+            budget_exhausted: None,
+        }
+    }
+
+    fn deadline(reason: impl Into<String>) -> Self {
+        SosUnknown {
+            reason: reason.into(),
+            budget_exhausted: Some(BudgetHit::Deadline),
+        }
+    }
 }
 
 impl fmt::Display for SosUnknown {
@@ -2061,9 +2078,9 @@ pub fn prove_sos(goal: &Ex, vars: &[Ex], opts: &SosOpts) -> Result<SosOutcome, S
     }
     let deg = goal_poly.total_degree().unwrap_or(0);
     let budget_exhausted = |where_: &str| {
-        Ok(Outcome::Unknown(SosUnknown {
-            reason: format!("budget exhausted: deadline passed {where_}"),
-        }))
+        Ok(Outcome::Unknown(SosUnknown::deadline(format!(
+            "budget exhausted: deadline passed {where_}"
+        ))))
     };
     // 1. Cheap refutation (a bounded grid plus one descent; a
     //    counterexample is decisive, so this stage is not budget-bound).
@@ -2076,11 +2093,9 @@ pub fn prove_sos(goal: &Ex, vars: &[Ex], opts: &SosOpts) -> Result<SosOutcome, S
         });
     }
     if deg % 2 == 1 {
-        return Ok(Outcome::Unknown(SosUnknown {
-            reason:
-                "the goal has odd degree, so it is not a sum of squares (and not bounded below)"
-                    .into(),
-        }));
+        return Ok(Outcome::Unknown(SosUnknown::new(
+            "the goal has odd degree, so it is not a sum of squares (and not bounded below)",
+        )));
     }
     if let Some(c) = goal_poly
         .coeff_monomial(&vec![0u32; vars.len()])
@@ -2129,13 +2144,10 @@ pub fn prove_sos(goal: &Ex, vars: &[Ex], opts: &SosOpts) -> Result<SosOutcome, S
     let mut current = problem;
     for round in 0..=opts.max_facial_reductions {
         let out_of_time = |where_: &str| {
-            Ok(Outcome::Unknown(SosUnknown {
-                reason: format!(
-                    "budget exhausted: deadline passed {where_} (facial-reduction round {round} of \
-                     {})",
-                    opts.max_facial_reductions
-                ),
-            }))
+            Ok(Outcome::Unknown(SosUnknown::deadline(format!(
+                "budget exhausted: deadline passed {where_} (facial-reduction round {round} of {})",
+                opts.max_facial_reductions
+            ))))
         };
         if check_deadline(deadline).is_err() {
             return out_of_time("before the SDP solve");
@@ -2143,9 +2155,9 @@ pub fn prove_sos(goal: &Ex, vars: &[Ex], opts: &SosOpts) -> Result<SosOutcome, S
         let x = match current.solve_numeric(opts.max_iterations, deadline) {
             Ok(Some(x)) => x,
             Ok(None) => {
-                return Ok(Outcome::Unknown(SosUnknown {
-                    reason: "the interior-point method did not converge (no sum-of-squares decomposition of this degree, or a numerically hard one)".into(),
-                }));
+                return Ok(Outcome::Unknown(SosUnknown::new(
+                    "the interior-point method did not converge (no sum-of-squares decomposition of this degree, or a numerically hard one)",
+                )));
             }
             Err(DeadlinePassed) => return out_of_time("inside the interior-point loop"),
         };
@@ -2170,9 +2182,9 @@ pub fn prove_sos(goal: &Ex, vars: &[Ex], opts: &SosOpts) -> Result<SosOutcome, S
         // restricted coefficient system is exactly consistent.
         let cands = rational_face_candidates(&x, current.n, &goal_poly, &basis);
         if cands.is_empty() {
-            return Ok(Outcome::Unknown(SosUnknown {
-            reason: "rounding the interior-point solution did not give an exact PSD Gram matrix, and no rational face was found to reduce to".into(),
-            }));
+            return Ok(Outcome::Unknown(SosUnknown::new(
+                "rounding the interior-point solution did not give an exact PSD Gram matrix, and no rational face was found to reduce to",
+            )));
         }
         let mut restricted: Option<(QMatrix, SosProblem)> = None;
         for k in (1..=cands.len()).rev() {
@@ -2186,9 +2198,9 @@ pub fn prove_sos(goal: &Ex, vars: &[Ex], opts: &SosOpts) -> Result<SosOutcome, S
             }
         }
         let Some((b_small, next)) = restricted else {
-            return Ok(Outcome::Unknown(SosUnknown {
-            reason: "the numerically detected face is not consistent with the coefficient constraints".into(),
-            }));
+            return Ok(Outcome::Unknown(SosUnknown::new(
+                "the numerically detected face is not consistent with the coefficient constraints",
+            )));
         };
         face = Some(match &face {
             Some(b) => b * &b_small,
@@ -2196,12 +2208,10 @@ pub fn prove_sos(goal: &Ex, vars: &[Ex], opts: &SosOpts) -> Result<SosOutcome, S
         });
         current = next;
     }
-    Ok(Outcome::Unknown(SosUnknown {
-        reason: format!(
-            "no exact decomposition after {} rounds of facial reduction",
-            opts.max_facial_reductions
-        ),
-    }))
+    Ok(Outcome::Unknown(SosUnknown::new(format!(
+        "no exact decomposition after {} rounds of facial reduction",
+        opts.max_facial_reductions
+    ))))
 }
 
 /// Convenience: `Some(true)` with a verified SOS certificate, `Some(false)`

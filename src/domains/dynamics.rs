@@ -14,7 +14,7 @@ use crate::domains::matrix::Matrix;
 use crate::prelude::*;
 
 fn invalid(operation: &'static str, reason: String) -> SymplexError {
-    SymplexError::InvalidArgument { operation, reason }
+    SymplexError::invalid_argument(operation, reason)
 }
 
 /// `coords` and `accels` must pair up one-to-one.

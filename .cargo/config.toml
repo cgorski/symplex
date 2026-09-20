@@ -1,0 +1,10 @@
+# Repository-wide environment for `cargo test` / `cargo nextest`.
+#
+# Property tests: a single random case may not run longer than this (ms).
+# Without it a rare expensive draw in `simplify`/`integrate` stretches one
+# proptest to 30–200 s and shows up only as "1 slow" in a 55-second suite;
+# with it the case fails, is shrunk, and the offending expression is named.
+# Shrinking itself is capped so a failure reports within half a minute.
+[env]
+PROPTEST_TIMEOUT = "5000"
+PROPTEST_MAX_SHRINK_TIME = "30000"

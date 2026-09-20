@@ -24,12 +24,6 @@ use crate::poly::sturm::SturmChain;
 // Arena-level helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Intern a rational number as an expression node.
-fn num_expr(arena: &mut Arena, r: Ratio<BigInt>) -> ExprId {
-    let nid = arena.intern_num(r);
-    arena.intern(ExprNode::Num(nid))
-}
-
 /// Interpret an expression as an exact rational endpoint, accepting `±∞`
 /// as `None` for the corresponding side.  Returns `Err(())` for anything
 /// else (symbols, π, …).
@@ -260,7 +254,7 @@ impl Expr<Numeric> {
             let a = expr_to_poly(&inner.arena, self.raw_id(), var_id)?;
             let b = expr_to_poly(&inner.arena, other_id, var_id)?;
             let r = Poly::resultant(&a, &b);
-            num_expr(&mut inner.arena, r)
+            inner.arena.num_ratio(r)
         };
         Some(self.wrap(id))
     }
@@ -292,7 +286,7 @@ impl Expr<Numeric> {
             let mut inner = self.inner.write();
             let f = expr_to_poly(&inner.arena, self.raw_id(), var_id)?;
             let d = f.discriminant()?;
-            num_expr(&mut inner.arena, d)
+            inner.arena.num_ratio(d)
         };
         Some(self.wrap(id))
     }
@@ -329,7 +323,7 @@ impl Expr<Numeric> {
                 return None;
             }
             let (content, parts) = f.sqf_list();
-            let c = num_expr(&mut inner.arena, content);
+            let c = inner.arena.num_ratio(content);
             let parts: Vec<(ExprId, u32)> = parts
                 .iter()
                 .map(|(p, m)| (poly_to_expr(&mut inner.arena, p, var_id), *m))
@@ -572,7 +566,7 @@ impl Expr<Numeric> {
                         c = -c;
                         p = -&p;
                     }
-                    let c = num_expr(&mut inner.arena, c);
+                    let c = inner.arena.num_ratio(c);
                     let p = poly_to_expr(&mut inner.arena, &p, var_id);
                     Some((c, p))
                 }
@@ -615,7 +609,7 @@ impl Expr<Numeric> {
             match expr_to_poly(&inner.arena, self.raw_id(), var_id) {
                 Some(f) => {
                     let lc = f.leading_coeff().cloned().unwrap_or_else(Ratio::zero);
-                    num_expr(&mut inner.arena, lc)
+                    inner.arena.num_ratio(lc)
                 }
                 None => {
                     let coeffs = crate::api::expr_funcs::symbolic_coeffs_of(
@@ -980,8 +974,8 @@ impl Expr<Numeric> {
                     } else {
                         chain.refine_interval(&lo, &hi, &width)
                     };
-                    let lo_id = num_expr(&mut inner.arena, lo);
-                    let hi_id = num_expr(&mut inner.arena, hi);
+                    let lo_id = inner.arena.num_ratio(lo);
+                    let hi_id = inner.arena.num_ratio(hi);
                     (lo_id, hi_id)
                 })
                 .collect()

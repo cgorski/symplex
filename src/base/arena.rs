@@ -705,6 +705,14 @@ impl Arena {
         self.intern(ExprNode::Num(num_id))
     }
 
+    /// Creates (or retrieves) the numeric expression for an exact rational.
+    /// (The one place the solvers, integrators and polynomial bridges turn
+    /// a `Ratio<BigInt>` back into a node.)
+    pub fn num_ratio(&mut self, r: Ratio<BigInt>) -> ExprId {
+        let num_id = self.intern_num(r);
+        self.intern(ExprNode::Num(num_id))
+    }
+
     /// Creates (or retrieves) a rational expression `p/q`.
     ///
     /// The ratio is automatically reduced to lowest terms by `num_rational`.
@@ -1901,7 +1909,7 @@ impl Arena {
 
     /// Attempt closed-form evaluation of `Σ_{var=lower}^{upper} body`.
     ///
-    /// Delegates to [`sum_eval::eval_sum_symbolic`](crate::transforms::sum_eval::eval_sum_symbolic). Returns `Some(result)`
+    /// Delegates to [`sum_eval::eval_sum_symbolic`](crate::calculus::sum_eval::eval_sum_symbolic). Returns `Some(result)`
     /// if a closed form was found, `None` otherwise.
     pub(crate) fn eval_sum_symbolic_expr(
         &mut self,
@@ -1910,7 +1918,7 @@ impl Arena {
         lower: ExprId,
         upper: ExprId,
     ) -> Option<ExprId> {
-        crate::transforms::sum_eval::eval_sum_symbolic(self, body, var, lower, upper)
+        crate::calculus::sum_eval::eval_sum_symbolic(self, body, var, lower, upper)
     }
 
     // ── Convergence testing ────────────────────────────────────────

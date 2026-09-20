@@ -33,10 +33,7 @@ use crate::transforms::{diff, eval, subs};
 const MAX_PROBE_ORDER: usize = 6;
 
 fn failed(reason: impl Into<String>) -> SymplexError {
-    SymplexError::ComputationFailed {
-        operation: "residue",
-        reason: reason.into(),
-    }
+    SymplexError::computation_failed("residue", reason)
 }
 
 /// Compute the residue of `expr` at `var = point`.

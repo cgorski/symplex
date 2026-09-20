@@ -61,11 +61,11 @@ use num_traits::{One, Zero};
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn invalid(operation: &'static str, reason: String) -> SymplexError {
-    SymplexError::InvalidArgument { operation, reason }
+    SymplexError::invalid_argument(operation, reason)
 }
 
 fn failed(operation: &'static str, reason: String) -> SymplexError {
-    SymplexError::ComputationFailed { operation, reason }
+    SymplexError::computation_failed(operation, reason)
 }
 
 /// `NaN` objective values are treated as "worse than anything" so that a

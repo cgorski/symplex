@@ -46,7 +46,7 @@ use tracing::debug;
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// A complex number represented as (real_part, imaginary_part).
-type Complex = (BigFloat, BigFloat);
+use crate::base::bigcomplex::Complex;
 
 /// Largest number of decimal digits for which an expression containing a
 /// `DefiniteIntegral` is evaluated (by `f64` quadrature) instead of
@@ -651,7 +651,7 @@ fn eval_node(
         // ── Neg ────────────────────────────────────────────────────
         ExprNode::Neg(inner) => {
             let val = get_cached(cache, *inner)?;
-            Ok(c_neg(val, prec, rm))
+            Ok(c_neg(val))
         }
 
         // ── Trig ───────────────────────────────────────────────────
@@ -1558,65 +1558,12 @@ fn eval_node_or_subtree(
 // Complex arithmetic helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
-pub(crate) fn c_zero(prec: usize) -> Complex {
-    (BigFloat::new(prec), BigFloat::new(prec))
-}
-
-pub(crate) fn c_one(prec: usize) -> Complex {
-    (BigFloat::from_i32(1, prec), BigFloat::new(prec))
-}
-
-fn c_i(prec: usize) -> Complex {
-    (BigFloat::new(prec), BigFloat::from_i32(1, prec))
-}
-
-pub(crate) fn c_from_real(r: BigFloat, prec: usize) -> Complex {
-    (r, BigFloat::new(prec))
-}
-
-pub(crate) fn c_add(a: &Complex, b: &Complex, prec: usize, rm: RoundingMode) -> Complex {
-    (a.0.add(&b.0, prec, rm), a.1.add(&b.1, prec, rm))
-}
-
-pub(crate) fn c_sub(a: &Complex, b: &Complex, prec: usize, rm: RoundingMode) -> Complex {
-    (a.0.sub(&b.0, prec, rm), a.1.sub(&b.1, prec, rm))
-}
-
-pub(crate) fn c_mul(a: &Complex, b: &Complex, prec: usize, rm: RoundingMode) -> Complex {
-    // (a+bi)(c+di) = (ac-bd) + (ad+bc)i
-    let ac = a.0.mul(&b.0, prec, rm);
-    let bd = a.1.mul(&b.1, prec, rm);
-    let ad = a.0.mul(&b.1, prec, rm);
-    let bc = a.1.mul(&b.0, prec, rm);
-    (ac.sub(&bd, prec, rm), ad.add(&bc, prec, rm))
-}
-
-pub(crate) fn c_div(a: &Complex, b: &Complex, prec: usize, rm: RoundingMode) -> Complex {
-    // (a+bi)/(c+di) = ((ac+bd) + (bc-ad)i) / (c²+d²)
-    let ac = a.0.mul(&b.0, prec, rm);
-    let bd = a.1.mul(&b.1, prec, rm);
-    let bc = a.1.mul(&b.0, prec, rm);
-    let ad = a.0.mul(&b.1, prec, rm);
-    let denom =
-        b.0.mul(&b.0, prec, rm)
-            .add(&b.1.mul(&b.1, prec, rm), prec, rm);
-    let re = ac.add(&bd, prec, rm).div(&denom, prec, rm);
-    let im = bc.sub(&ad, prec, rm).div(&denom, prec, rm);
-    (re, im)
-}
-
-#[allow(unused_variables)]
-pub(crate) fn c_neg(a: &Complex, prec: usize, rm: RoundingMode) -> Complex {
-    (a.0.neg(), a.1.neg())
-}
-
-pub(crate) fn c_abs(a: &Complex, prec: usize, rm: RoundingMode) -> BigFloat {
-    // |z| = sqrt(re² + im²)
-    let re2 = a.0.mul(&a.0, prec, rm);
-    let im2 = a.1.mul(&a.1, prec, rm);
-    let sum = re2.add(&im2, prec, rm);
-    sum.sqrt(prec, rm)
-}
+// The field operations live in `base::bigcomplex` (shared with the root
+// finders and algebraic-number verification); the transcendental ones
+// below need this module's constant cache.
+pub(crate) use crate::base::bigcomplex::{
+    c_abs, c_add, c_div, c_from_real, c_i, c_mul, c_neg, c_one, c_powi, c_sub, c_zero,
+};
 
 fn c_exp(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
     // exp(a+bi) = exp(a)(cos(b) + i·sin(b))
@@ -1687,23 +1634,6 @@ fn c_pow(base: &Complex, exp: &Complex, prec: usize, rm: RoundingMode, cc: &mut 
     c_exp(&product, prec, rm, cc)
 }
 
-fn c_powi(base: &Complex, n: usize, prec: usize, rm: RoundingMode) -> Complex {
-    if n == 0 {
-        return c_one(prec);
-    }
-    let mut result = c_one(prec);
-    let mut b = base.clone();
-    let mut exp = n;
-    while exp > 0 {
-        if exp & 1 == 1 {
-            result = c_mul(&result, &b, prec, rm);
-        }
-        b = c_mul(&b, &b, prec, rm);
-        exp >>= 1;
-    }
-    result
-}
-
 fn c_sqrt(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
     if z.0.is_zero() && z.1.is_zero() {
         return c_zero(prec);
@@ -1727,7 +1657,7 @@ fn c_asin(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Comple
     let iz = c_mul(&i_unit, z, prec, rm);
     let sum = c_add(&iz, &sqrt_term, prec, rm);
     let ln_sum = c_ln(&sum, prec, rm, cc);
-    let neg_i = c_neg(&i_unit, prec, rm);
+    let neg_i = c_neg(&i_unit);
     c_mul(&neg_i, &ln_sum, prec, rm)
 }
 

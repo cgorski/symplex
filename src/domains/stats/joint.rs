@@ -42,10 +42,7 @@ use super::discrete::DiscreteFamily;
 use super::rv::{Distribution, RandomVariable, Support};
 
 fn invalid(operation: &'static str, reason: impl Into<String>) -> SymplexError {
-    SymplexError::InvalidArgument {
-        operation,
-        reason: reason.into(),
-    }
+    SymplexError::invalid_argument(operation, reason)
 }
 
 /// The variable list of a joint query: non-empty, one context, pairwise

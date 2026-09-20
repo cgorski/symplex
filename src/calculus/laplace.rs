@@ -268,12 +268,6 @@ fn factorial_bigint(n: u64) -> BigInt {
     result
 }
 
-/// Convert a `Ratio<BigInt>` to an `ExprId`.
-fn rational_to_expr(arena: &mut Arena, r: &Ratio<BigInt>) -> ExprId {
-    let nid = arena.intern_num(r.clone());
-    arena.intern(ExprNode::Num(nid))
-}
-
 // ─── Forward table rules ─────────────────────────────────────────────────
 
 fn try_table_forward(
@@ -305,10 +299,10 @@ fn try_table_forward(
                 let n_val = r.to_integer().try_into().ok()?;
                 let fact = factorial_bigint(n_val);
                 let fact_rat = Ratio::from_integer(fact);
-                let fact_id = rational_to_expr(arena, &fact_rat);
+                let fact_id = arena.num_ratio(fact_rat.clone());
 
                 let n_plus_1_rat = r + Ratio::one();
-                let n_plus_1_id = rational_to_expr(arena, &n_plus_1_rat);
+                let n_plus_1_id = arena.num_ratio(n_plus_1_rat.clone());
                 let s_pow = arena.pow(s, n_plus_1_id);
                 return Some(arena.div(fact_id, s_pow));
             }
@@ -329,8 +323,8 @@ fn try_table_forward(
                 let a_coeff = poly.coeff(1);
                 let b_coeff = poly.coeff(0);
                 if !a_coeff.is_zero() && !b_coeff.is_zero() {
-                    let a_id = rational_to_expr(arena, &a_coeff);
-                    let b_id = rational_to_expr(arena, &b_coeff);
+                    let a_id = arena.num_ratio(a_coeff.clone());
+                    let b_id = arena.num_ratio(b_coeff.clone());
                     let s_minus_a = arena.sub(s, a_id);
                     let exp_b = arena.exp(b_id);
                     return Some(arena.div(exp_b, s_minus_a));
@@ -1045,7 +1039,7 @@ fn try_tn_exp(
         // n! / (s - a)^(n+1)
         let fact = factorial_bigint(n_val);
         let fact_rat = Ratio::from_integer(fact);
-        let fact_id = rational_to_expr(arena, &fact_rat);
+        let fact_id = arena.num_ratio(fact_rat.clone());
 
         let s_minus_a = arena.sub(s, a);
         let n_plus_1 = arena.int(n_val as i64 + 1);
@@ -1334,7 +1328,7 @@ fn try_special_inverse(
                     arena.pow(t, m)
                 };
                 let f = factorial_bigint(nm1);
-                let f_id = rational_to_expr(arena, &Ratio::from_integer(f));
+                let f_id = arena.num_ratio(Ratio::from_integer(f).clone());
                 let den = arena.mul(&[kn, f_id]);
                 let num = arena.mul(&[tp, ex]);
                 return Ok(Some(arena.div(num, den)));
@@ -1504,17 +1498,17 @@ fn inverse_degree1(
     // If numerator doesn't contain s, it's a constant
     if !contains_var(arena, numer, s) {
         // L⁻¹{N / (c₁(s - a))} = (N/c₁) · exp(a·t)
-        let a_id = rational_to_expr(arena, &a_rat);
+        let a_id = arena.num_ratio(a_rat.clone());
         let at = arena.mul(&[a_id, t]);
         let exp_at = arena.exp(at);
 
         if a_rat.is_zero() {
             // L⁻¹{N / (c₁·s)} = N/c₁  (constant function)
-            let c1_id = rational_to_expr(arena, &c1);
+            let c1_id = arena.num_ratio(c1.clone());
             return Some(arena.div(numer, c1_id));
         }
 
-        let c1_id = rational_to_expr(arena, &c1);
+        let c1_id = arena.num_ratio(c1.clone());
         let coeff = arena.div(numer, c1_id);
         return Some(arena.mul(&[coeff, exp_at]));
     }
@@ -1527,17 +1521,17 @@ fn inverse_degree1(
 
     if numer_deg == 0 {
         let n0 = numer_poly.coeff(0);
-        let a_id = rational_to_expr(arena, &a_rat);
+        let a_id = arena.num_ratio(a_rat.clone());
         let at = arena.mul(&[a_id, t]);
         let exp_at = arena.exp(at);
 
         if a_rat.is_zero() {
             let result_rat = n0 / c1;
-            return Some(rational_to_expr(arena, &result_rat));
+            return Some(arena.num_ratio(result_rat.clone()));
         }
 
         let scale = n0 / c1;
-        let scale_id = rational_to_expr(arena, &scale);
+        let scale_id = arena.num_ratio(scale.clone());
         return Some(arena.mul(&[scale_id, exp_at]));
     }
 
@@ -1575,8 +1569,8 @@ fn inverse_degree2(
                 if nd == 0 {
                     // L⁻¹{k / (c₂·s²)} = (k/c₂)·t
                     let k = np.coeff(0);
-                    let k_id = rational_to_expr(arena, &k);
-                    let c2_id = rational_to_expr(arena, &c2);
+                    let k_id = arena.num_ratio(k.clone());
+                    let c2_id = arena.num_ratio(c2.clone());
                     let scale = arena.div(k_id, c2_id);
                     return Some(arena.mul(&[scale, t]));
                 }
@@ -1593,7 +1587,7 @@ fn inverse_degree2(
 
         // Try to find ω such that ω² = omega_sq
         let omega_id = {
-            let omega_sq_id = rational_to_expr(arena, &omega_sq);
+            let omega_sq_id = arena.num_ratio(omega_sq.clone());
             let raw_sqrt = arena.sqrt(omega_sq_id);
             crate::transforms::eval::eval(arena, raw_sqrt)
         };
@@ -1604,9 +1598,9 @@ fn inverse_degree2(
             // Numer is constant: L⁻¹{k / (s² + ω²)} = (k/ω) · sin(ωt)
             if nd == 0 {
                 let k = np.coeff(0);
-                let k_id = rational_to_expr(arena, &k);
+                let k_id = arena.num_ratio(k.clone());
 
-                let c2_id = rational_to_expr(arena, &c2);
+                let c2_id = arena.num_ratio(c2.clone());
 
                 let omega_t = arena.mul(&[omega_id, t]);
                 let sin_omega_t = arena.sin(omega_t);
@@ -1623,7 +1617,7 @@ fn inverse_degree2(
                 let a0 = np.coeff(0);
                 let a1 = np.coeff(1);
 
-                let c2_id = rational_to_expr(arena, &c2);
+                let c2_id = arena.num_ratio(c2.clone());
                 let omega_t = arena.mul(&[omega_id, t]);
                 let sin_omega_t = arena.sin(omega_t);
                 let cos_omega_t = arena.cos(omega_t);
@@ -1632,14 +1626,14 @@ fn inverse_degree2(
 
                 // cos term: (a₁/c₂) · cos(ωt)
                 if !a1.is_zero() {
-                    let a1_id = rational_to_expr(arena, &a1);
+                    let a1_id = arena.num_ratio(a1.clone());
                     let cos_coeff = arena.div(a1_id, c2_id);
                     terms.push(arena.mul(&[cos_coeff, cos_omega_t]));
                 }
 
                 // sin term: (a₀/(c₂·ω)) · sin(ωt)
                 if !a0.is_zero() {
-                    let a0_id = rational_to_expr(arena, &a0);
+                    let a0_id = arena.num_ratio(a0.clone());
                     let c2_omega = arena.mul(&[c2_id, omega_id]);
                     let sin_coeff = arena.div(a0_id, c2_omega);
                     terms.push(arena.mul(&[sin_coeff, sin_omega_t]));
@@ -1667,16 +1661,16 @@ fn inverse_degree2(
 
     if beta_sq.is_zero() {
         // Repeated root: denominator is c₂·(s - α)² where α = -b/2 (Bug 9)
-        let alpha_id = rational_to_expr(arena, &alpha);
+        let alpha_id = arena.num_ratio(alpha.clone());
 
         if let Some(np) = &numer_poly {
             let nd = np.degree().unwrap_or(0);
-            let c2_id = rational_to_expr(arena, &c2);
+            let c2_id = arena.num_ratio(c2.clone());
 
             if nd == 0 {
                 // L⁻¹{k / (c₂·(s-α)²)} = (k/c₂)·t·exp(α·t)
                 let k = np.coeff(0);
-                let k_id = rational_to_expr(arena, &k);
+                let k_id = arena.num_ratio(k.clone());
                 let scale = arena.div(k_id, c2_id);
                 if alpha.is_zero() {
                     return Some(arena.mul(&[scale, t]));
@@ -1700,14 +1694,14 @@ fn inverse_degree2(
 
                 // exp term: (a₁/c₂) · exp(α·t)
                 if !a1.is_zero() {
-                    let a1_id = rational_to_expr(arena, &a1);
+                    let a1_id = arena.num_ratio(a1.clone());
                     let exp_coeff = arena.div(a1_id, c2_id);
                     terms.push(arena.mul(&[exp_coeff, exp_alpha_t]));
                 }
 
                 // t·exp term: (d_const/c₂) · t · exp(α·t)
                 if !d_const.is_zero() {
-                    let d_id = rational_to_expr(arena, &d_const);
+                    let d_id = arena.num_ratio(d_const.clone());
                     let t_exp_coeff = arena.div(d_id, c2_id);
                     terms.push(arena.mul(&[t_exp_coeff, t, exp_alpha_t]));
                 }
@@ -1730,20 +1724,20 @@ fn inverse_degree2(
     // L⁻¹{ k / (c₂·((s-α)² - γ²)) } = (k/(c₂·γ)) · exp(α·t) · sinh(γ·t)
     if beta_sq.is_negative() {
         let gamma_sq = -&beta_sq;
-        let gamma_sq_id = rational_to_expr(arena, &gamma_sq);
+        let gamma_sq_id = arena.num_ratio(gamma_sq.clone());
         let gamma_id = {
             let raw = arena.sqrt(gamma_sq_id);
             crate::transforms::eval::eval(arena, raw)
         };
-        let alpha_id = rational_to_expr(arena, &alpha);
+        let alpha_id = arena.num_ratio(alpha.clone());
 
         if let Some(np) = &numer_poly {
             let nd = np.degree().unwrap_or(0);
-            let c2_id = rational_to_expr(arena, &c2);
+            let c2_id = arena.num_ratio(c2.clone());
 
             if nd == 0 {
                 let k = np.coeff(0);
-                let k_id = rational_to_expr(arena, &k);
+                let k_id = arena.num_ratio(k.clone());
 
                 let alpha_t = arena.mul(&[alpha_id, t]);
                 let exp_alpha_t = arena.exp(alpha_t);
@@ -1772,14 +1766,14 @@ fn inverse_degree2(
 
                 // cosh term: (a₁/c₂) · exp(α·t) · cosh(γ·t)
                 if !a1.is_zero() {
-                    let a1_id = rational_to_expr(arena, &a1);
+                    let a1_id = arena.num_ratio(a1.clone());
                     let cosh_coeff = arena.div(a1_id, c2_id);
                     terms.push(arena.mul(&[cosh_coeff, exp_alpha_t, cosh_gamma_t]));
                 }
 
                 // sinh term: (d_const/(c₂·γ)) · exp(α·t) · sinh(γ·t)
                 if !d_const.is_zero() {
-                    let d_id = rational_to_expr(arena, &d_const);
+                    let d_id = arena.num_ratio(d_const.clone());
                     let c2_gamma = arena.mul(&[c2_id, gamma_id]);
                     let sinh_coeff = arena.div(d_id, c2_gamma);
                     terms.push(arena.mul(&[sinh_coeff, exp_alpha_t, sinh_gamma_t]));
@@ -1799,16 +1793,16 @@ fn inverse_degree2(
     }
 
     // β = sqrt(β²)
-    let beta_sq_id = rational_to_expr(arena, &beta_sq);
+    let beta_sq_id = arena.num_ratio(beta_sq.clone());
     let beta_id = {
         let raw = arena.sqrt(beta_sq_id);
         crate::transforms::eval::eval(arena, raw)
     };
-    let alpha_id = rational_to_expr(arena, &alpha);
+    let alpha_id = arena.num_ratio(alpha.clone());
 
     if let Some(np) = &numer_poly {
         let nd = np.degree().unwrap_or(0);
-        let c2_id = rational_to_expr(arena, &c2);
+        let c2_id = arena.num_ratio(c2.clone());
 
         // Rewrite numer in terms of (s - α): N(s) = N(α) + N'(α)·(s - α)
         // For a₁·s + a₀ with substitution s = (s' + α):
@@ -1818,7 +1812,7 @@ fn inverse_degree2(
         if nd == 0 {
             // L⁻¹{k / (c₂·((s-α)² + β²))} = (k/(c₂·β)) · exp(α·t) · sin(β·t)
             let k = np.coeff(0);
-            let k_id = rational_to_expr(arena, &k);
+            let k_id = arena.num_ratio(k.clone());
 
             let alpha_t = arena.mul(&[alpha_id, t]);
             let exp_alpha_t = arena.exp(alpha_t);
@@ -1847,14 +1841,14 @@ fn inverse_degree2(
 
             // cos term: (a₁/c₂) · exp(α·t) · cos(β·t)
             if !a1.is_zero() {
-                let a1_id = rational_to_expr(arena, &a1);
+                let a1_id = arena.num_ratio(a1.clone());
                 let cos_coeff = arena.div(a1_id, c2_id);
                 terms.push(arena.mul(&[cos_coeff, exp_alpha_t, cos_beta_t]));
             }
 
             // sin term: (d_const/(c₂·β)) · exp(α·t) · sin(β·t)
             if !d_const.is_zero() {
-                let d_id = rational_to_expr(arena, &d_const);
+                let d_id = arena.num_ratio(d_const.clone());
                 let c2_beta = arena.mul(&[c2_id, beta_id]);
                 let sin_coeff = arena.div(d_id, c2_beta);
                 terms.push(arena.mul(&[sin_coeff, exp_alpha_t, sin_beta_t]));
@@ -1911,7 +1905,7 @@ fn inverse_power_form(
         }
 
         // L⁻¹{N / (s-a)^n} = N · t^(n-1) · exp(a·t) / (n-1)!
-        let a_id = rational_to_expr(arena, &a_rat);
+        let a_id = arena.num_ratio(a_rat.clone());
         let at = arena.mul(&[a_id, t]);
         let exp_at = arena.exp(at);
 
@@ -1930,7 +1924,7 @@ fn inverse_power_form(
         // (n-1)!
         let fact = factorial_bigint(n_val - 1);
         let fact_rat = Ratio::from_integer(fact);
-        let fact_id = rational_to_expr(arena, &fact_rat);
+        let fact_id = arena.num_ratio(fact_rat.clone());
 
         // result = numer * t^(n-1) * exp(at) / (n-1)!
         let numer_t = arena.mul(&[numer, t_pow]);

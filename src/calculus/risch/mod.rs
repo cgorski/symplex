@@ -309,7 +309,7 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
         } else if (-coeff.clone()).is_one() {
             terms.push(arena.neg(ln_arg));
         } else {
-            let coeff_id = rational_to_expr(arena, coeff);
+            let coeff_id = arena.num_ratio(coeff.clone());
             terms.push(arena.mul(&[coeff_id, ln_arg]));
         }
     }
@@ -551,12 +551,6 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
 // Helper: Ratio<BigInt> → ExprId
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Convert a `Ratio<BigInt>` to an arena expression.
-fn rational_to_expr(arena: &mut Arena, r: &Ratio<BigInt>) -> ExprId {
-    let nid = arena.intern_num(r.clone());
-    arena.intern(ExprNode::Num(nid))
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
@@ -574,18 +568,16 @@ mod tests {
     }
 
     #[test]
-    fn rational_to_expr_integer() {
+    fn from_ratio_integer() {
         let mut arena = Arena::new();
-        let r = Ratio::from_integer(BigInt::from(42));
-        let expr = rational_to_expr(&mut arena, &r);
+        let expr = arena.num_ratio(Ratio::from_integer(BigInt::from(42)));
         assert_eq!(display(&arena, expr), "42");
     }
 
     #[test]
-    fn rational_to_expr_fraction() {
+    fn from_ratio_fraction() {
         let mut arena = Arena::new();
-        let r = Ratio::new(BigInt::from(3), BigInt::from(4));
-        let expr = rational_to_expr(&mut arena, &r);
+        let expr = arena.num_ratio(Ratio::new(BigInt::from(3), BigInt::from(4)));
         assert_eq!(display(&arena, expr), "3/4");
     }
 

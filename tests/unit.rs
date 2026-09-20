@@ -138,6 +138,8 @@ mod test_known_answers;
 mod test_lambertw;
 #[path = "unit/test_laplace.rs"]
 mod test_laplace;
+#[path = "unit/test_layering.rs"]
+mod test_layering;
 #[path = "unit/test_limits.rs"]
 mod test_limits;
 #[path = "unit/test_limits_infinity.rs"]

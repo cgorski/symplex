@@ -21,6 +21,40 @@ use num_bigint::{BigInt, Sign};
 use num_rational::Ratio;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
+/// The exact rational number used by the exact linear algebra, linear
+/// programming, polytope and certificate modules (`Ratio<BigInt>`).
+/// Re-exported as `linprog::Q` and in the prelude.
+pub type Q = Ratio<BigInt>;
+
+/// The rational `n / d`.
+///
+/// # Panics
+///
+/// Panics if `d == 0` (a programming error, like a zero literal
+/// denominator).
+///
+/// # Examples
+///
+/// ```
+/// use symplex::linprog::q;
+/// assert_eq!(q(2, 4), q(1, 2));
+/// ```
+pub fn q(n: i64, d: i64) -> Q {
+    Ratio::new(BigInt::from(n), BigInt::from(d))
+}
+
+/// The integer `n` as a rational.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::linprog::{q, qi};
+/// assert_eq!(qi(3), q(6, 2));
+/// ```
+pub fn qi(n: i64) -> Q {
+    Ratio::from_integer(BigInt::from(n))
+}
+
 /// Convert a finite `f64` to the exact rational it represents.
 ///
 /// Returns `None` for NaN and ±∞.  Negative zero maps to `0`.

@@ -54,10 +54,7 @@ use crate::poly::polybridge;
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn invalid(operation: &'static str, reason: impl Into<String>) -> SymplexError {
-    SymplexError::InvalidArgument {
-        operation,
-        reason: reason.into(),
-    }
+    SymplexError::invalid_argument(operation, reason)
 }
 
 /// Wrap an arena id as an `Ex` of `ctx`.

@@ -358,7 +358,7 @@ fn try_root_based_apart(
             }
             let residue = numer_at_root / denom_deriv_at_root;
             if !residue.is_zero() {
-                let residue_id = rational_to_expr(arena, &residue);
+                let residue_id = arena.num_ratio(residue.clone());
                 let factor = arena.sub(var, sol.value);
                 let term = arena.div(residue_id, factor);
                 partial_terms.push(term);
@@ -598,7 +598,7 @@ fn try_log_to_real_numeric(
             }
             let residue = numer_at / denom_at;
             if !residue.is_zero() {
-                let res_expr = rational_to_expr(arena, &residue);
+                let res_expr = arena.num_ratio(residue.clone());
                 let factor = arena.sub(var, sol.value);
                 terms.push(arena.div(res_expr, factor));
             }
@@ -914,11 +914,6 @@ fn is_clean_expr(arena: &Arena, expr: ExprId) -> bool {
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════
-
-fn rational_to_expr(arena: &mut Arena, r: &Ratio<BigInt>) -> ExprId {
-    let nid = arena.intern_num(r.clone());
-    arena.intern(ExprNode::Num(nid))
-}
 
 /// Return `quotient_poly_expr + frac_expr`, skipping zero quotients.
 fn assemble_with_quotient_expr(

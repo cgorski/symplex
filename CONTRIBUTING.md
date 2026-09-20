@@ -102,21 +102,22 @@ depend on layers below them but should not reach upward.
 src/
 ├── base/         Expression nodes (node.rs, 92 variants), arena (hash-consing), tree
 │                 traversal (walk.rs), canonicalization, assumptions, sort keys, compaction,
-│                 numeric.rs (exact f64 ↔ rational), bernoulli.rs, complex.rs, errors.rs
+│                 numeric.rs (exact f64 ↔ rational, the exact rational `Q`), bigcomplex.rs (BigFloat
+│                 complex pairs), bernoulli.rs, complex.rs, errors.rs
 ├── poly/         Dense/sparse/generic polynomials, factor_zassenhaus.rs (Berlekamp–Zassenhaus
 │                 over ℤ + Kronecker multivariate), Gröbner bases, polysys.rs, Sturm sequences,
 │                 root finding (roots.rs), algebraic number fields ℚ(α) (algebraic.rs), ratfn.rs,
 │                 multipoly.rs (sparse multivariate; heuristic gcd/lcm, content, denominators),
 │                 polybridge.rs (Ex ↔ polynomial, incl. symbolic-coefficient term collection)
 ├── transforms/   diff, integrate (+ heurisch, trig_integ, apart), eval, evalf, expand, solve,
-│                 inequalities, pattern.rs (AC matcher), subs, sum_eval,
+│                 inequalities, pattern.rs (AC matcher), subs,
 │                 sets.rs (set-algebra normal form), logic.rs (boolean simplifier, DPLL,
 │                 piecewise), rsolve.rs (recurrences)
 ├── simplify/     simplify_engine (multi-strategy fixpoint + tracing), rewrite.rs, trig/hyp
 │                 (fu.rs, trigsimp, trig_expand, trig_combine), powsimp/radsimp (powdenest,
 │                 sqrtdenest), log_expand/log_combine, combsimp, nsimplify, refine, factor_terms,
 │                 ratsimp.rs (rational-function normal form over opaque indeterminates)
-├── calculus/     definite.rs (definite/improper integration, GK15 quadrature), summation.rs,
+├── calculus/     definite.rs (definite/improper integration, GK15 quadrature), summation.rs (+ the sum_eval shim eval() calls),
 │                 gosper.rs, convergence.rs, series.rs, formal_series.rs, finite_diff.rs,
 │                 limit.rs + gruntz.rs, residue.rs, laplace.rs, fourier.rs (series),
 │                 fourier_transform.rs, mellin.rs, z_transform.rs, ode.rs, risch/ (tower,
@@ -167,13 +168,39 @@ codegen for `no_std`), `symplex-wasm/` (wasm-bindgen bindings + `Session`),
 `fuzz/` (cargo-fuzz targets), `probes/` (developer diagnostics, not compiled by
 default), `book/` (mdBook), `benches/` (criterion).
 
-**Dependency flow** (each layer may only call downward):
+**Dependency flow.**  Two types are hubs that every layer may name: the
+`ExprId`-level core (`base::{node, arena, canon, …}`) and the handle types
+`api::{expr, context}` (`Ex`, `BoolEx`, `SetEx`, `Context`).  Between them
+the algorithm layers are ordered, and `output` sits *below* `domains`
+(certificates render Lean, matrices generate code, sampling compiles):
 
 ```
-base → poly → transforms → simplify → calculus
-                                         ↓
-                              output / plotting / domains → api / units
+  api::{expr, context}       handle types — named by every layer except plotting
+        ▲
+  base::{node, arena, …}     ExprId-level core; `Arena` is also a façade whose
+        │                    `expand()/integrate()/…` delegate to the layers below
+        ▼
+  poly → transforms → simplify → calculus       ExprId in, ExprId out
+        ▼
+  output                     printers, parser, codegen, lambdify (imports no domain)
+        ▼                                                     plotting (f64 leaf)
+  domains                    Ex-level algorithms; use output for Lean/codegen/compile
+        ▼
+  api::*_ext, api::poly_ex   the method surface; re-exports; `poly_ex` is used by
+        ▼                    certificates/polytope/stats (an upward edge, allowlisted)
+  units                      dimensional analysis over the api
 ```
+
+A file may depend on its own layer and anything below it in this order
+(`base → poly → transforms → simplify → calculus → output → plotting →
+domains → api → units`).  The upward edges that exist — the `Arena`
+façade, `eval` folding `Sum`/`Integral` through the summation and Risch
+engines, `polysys` falling back to the general solver, the certificate
+modules working on the public `Poly` view, … — are enumerated with their
+reasons in `tests/unit/test_layering.rs`, a ratchet that fails when a file
+gains a new upward target module (or when the allowlist is no longer
+tight).  Prefer moving code down a layer or routing through the façade to
+extending the allowlist.
 
 ### Key Types
 
@@ -188,7 +215,7 @@ base → poly → transforms → simplify → calculus
 | `Poly` (public) | `src/api/poly_ex.rs` | User-facing sparse polynomial view of an `Ex` over explicit generators with symbolic coefficients (`prelude::Poly`). |
 | `GenPoly<C>` | `src/poly/generic.rs` | Generic univariate polynomial over any `Ring`/`Field` coefficient type. |
 | `RationalFn` | `src/poly/ratfn.rs` | Rational function `p(x)/q(x)` in ℚ(x). Implements `Field`, enabling `GenPoly<RationalFn>`. |
-| `AlgNum` | `src/poly/algebraic.rs` | Element of ℚ(α) = ℚ[t]/(m(t)). Implements `Ring` + `Field` with exact zero/sign testing. |
+| `AlgExpr` (internal) | `src/poly/algebraic.rs` | Arena-free tree of an algebraic number (rationals, roots, field operations) used by `minimal_polynomial`: resultants eliminate the radicals, the candidate factor is verified at high precision. |
 | `MultiPoly` | `src/poly/multipoly.rs` | Sparse multivariate polynomial. |
 | `Matrix` | `src/domains/matrix.rs` | Symbolic matrix (Vec of Vec of Ex); decompositions in `matrix_decomp.rs`. |
 | `Rule` / `RuleSet` | `src/api/expr_rules_ext.rs` | Public rewrite rules over `Pattern` (`src/transforms/pattern.rs`). |
@@ -287,8 +314,11 @@ fail returns `Result`, `Option`, or an unevaluated form. Never use `.unwrap()`,
 **The rule is enforced** by `tests/unit/test_no_panics.rs`, a ratchet over
 `src/` that fails when a file gains a panicking construct beyond its
 allowlisted count — and when an allowlisted file *loses* one without the
-allowlist being tightened.  The allowlist is the two logic errors above plus
-the compile-time `const_assert_dim!` macro.
+allowlist being tightened.  The allowlist is the two logic errors above,
+the arena's `u32` index conversions and the compile-time
+`const_assert_dim!` macro.  The library region of a file ends at its
+`#[cfg(test)] mod` test module, not at a `#[cfg(test)]` attribute on a
+lone helper `fn` (0.11.1 found twelve panic sites hidden behind those).
 
 #### How to not panic — the practical policy
 
@@ -675,6 +705,21 @@ TRYBUILD=overwrite cargo +1.95.0 test --test ui_tests
   `assert_not_vacuous()` / `assert_skip_rate_below(rate)` so a test that
   skips everything fails instead of passing vacuously.
 - Use `timeout` when running long suites locally; CI has per-job limits.
+- **Run the gate one bounded stage at a time and read the log, never the
+  terminal.**  `scripts/gate.sh` runs each stage under `timeout`, writes
+  its full output to `$GATE_LOG_DIR/<stage>.log` and prints one summary
+  line, so a failing test is named by `grep FAILED` on a log that already
+  exists — re-running a twenty-minute stage to learn *which* test failed
+  is the one thing not to do.  When something is slow, run the smallest
+  unit that reproduces it (`cargo nextest run -E 'test(name)'`, `cargo test
+  --doc -- path::to::item`) with a 60 s cap and `--test-threads=1` so the
+  harness names the test in flight.
+- **The doctest stage is ~1 s of test time, or it is broken.**  Rustdoc
+  compiles all ~800 doctests into one merged binary; if *one* doc example
+  fails to compile there, it silently falls back to compiling every doctest
+  standalone (~3 s each, twenty minutes in all).  A single trivial doctest
+  reporting `finished in 3.6s` instead of `0.00s` is the signature; find
+  the broken example with `git diff -- src | grep '^[-+].*///'`.
 
 ### Test Helpers
 

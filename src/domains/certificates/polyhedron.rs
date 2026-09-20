@@ -45,7 +45,7 @@ use crate::api::poly_ex::Poly;
 use crate::base::errors::SymplexError;
 use crate::domains::certificates::serial::{q_from_str, q_to_str};
 use crate::domains::certificates::{Certificate, Outcome};
-use crate::domains::linprog::{Budget, BudgetHit, LpProblem, LpSolution, LpStatus, Q};
+use crate::domains::linprog::{BudgetHit, LpMeter, LpProblem, LpStatus, Q, Stop};
 use crate::output::lean::{
     Block, LeanOpts, MATHLIB_LINE_WIDTH, Proof, Tactic, lean_ident, wrap_lean,
 };
@@ -55,10 +55,7 @@ use crate::poly::multipoly::{GrevLex, MultiPoly};
 const OP: &str = "prove_nonnegative_on_polyhedron";
 
 fn invalid(reason: impl Into<String>) -> SymplexError {
-    SymplexError::InvalidArgument {
-        operation: OP,
-        reason: reason.into(),
-    }
+    SymplexError::invalid_argument(OP, reason)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1177,61 +1174,10 @@ struct Stage {
     basis: OnceLock<StageBasis>,
 }
 
-/// The budget of one `prove*` call, shared by every LP it runs: the
-/// deadline (absolute, or the time limit converted when the call started)
-/// and the pivots spent so far against the pivot cap.
-struct Meter {
-    deadline: Option<Instant>,
-    max_pivots: Option<usize>,
-    spent: usize,
-}
-
-/// Why a stage stopped without an answer: the budget ran out, or an LP
-/// failed.
-enum Stop {
-    Budget(BudgetHit),
-    Error(SymplexError),
-}
-
-impl From<SymplexError> for Stop {
-    fn from(e: SymplexError) -> Self {
-        Stop::Error(e)
-    }
-}
-
-impl Meter {
-    /// Start the clock for one call under `opts`.
-    fn start(opts: &PolyhedronOpts) -> Self {
-        // A time limit too large to represent as an instant is no limit.
-        let from_limit = opts.time_limit.and_then(|t| Instant::now().checked_add(t));
-        let deadline = match (opts.deadline, from_limit) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
-        Meter {
-            deadline,
-            max_pivots: opts.max_pivots,
-            spent: 0,
-        }
-    }
-
-    /// What is left for the next LP.
-    fn remaining(&self) -> Budget {
-        Budget {
-            deadline: self.deadline,
-            max_pivots: self.max_pivots.map(|m| m.saturating_sub(self.spent)),
-        }
-    }
-
-    /// Solve `lp` under the remaining budget and charge its pivots.
-    fn solve(&mut self, lp: LpProblem) -> Result<LpSolution, Stop> {
-        let report = lp.with_budget(self.remaining()).solve_report()?;
-        self.spent += report.pivots;
-        match report.budget_hit {
-            Some(hit) => Err(Stop::Budget(hit)),
-            None => Ok(report.solution),
-        }
-    }
+/// The budget of one `prove*` call: a [`linprog::LpMeter`](LpMeter)
+/// started from the options (deadline / time limit / pivot cap).
+fn meter_for(opts: &PolyhedronOpts) -> LpMeter {
+    LpMeter::start(opts.deadline, opts.time_limit, opts.max_pivots)
 }
 
 /// A prover for a **fixed** hypothesis set and parameter: parses the
@@ -1683,10 +1629,10 @@ impl PolyhedronProver {
     /// and proved with the same certificate iff some stage finds one.
     ///
     /// Every LP runs under what is left of the call's budget
-    /// ([`Meter`]); when it runs out the answer is `Unknown` with
+    /// ([`LpMeter`]); when it runs out the answer is `Unknown` with
     /// `budget_exhausted` set and the limits of the interrupted stage.
     fn prove_poly_aligned(&self, goal: &Poly) -> Result<PolyhedronOutcome, SymplexError> {
-        let mut meter = Meter::start(&self.opts);
+        let mut meter = meter_for(&self.opts);
         let mut tried = (0u32, 0u32, false);
         let out_of_budget = |tried: (u32, u32, bool), hit: BudgetHit| {
             Ok(Outcome::Unknown(PolyhedronUnknown {
@@ -1721,7 +1667,7 @@ impl PolyhedronProver {
         tracing::debug!(
             target: "symplex::certificates::polyhedron",
             refuted = matches!(refutation, Ok(Some(_))),
-            pivots_total = meter.spent,
+            pivots_total = meter.spent(),
             micros = started.elapsed().as_micros() as u64,
             "polyhedron refutation"
         );
@@ -1765,7 +1711,7 @@ impl PolyhedronProver {
         &self,
         goal: &Poly,
         stage: &Stage,
-        meter: &mut Meter,
+        meter: &mut LpMeter,
     ) -> Result<Option<PolyhedronCertificate>, Stop> {
         let stage = self.stage_basis(stage)?;
         let n_basis = stage.columns.len();
@@ -1820,7 +1766,7 @@ impl PolyhedronProver {
             rows = monos.len(),
             cols = n_basis + lambda_cols.len(),
             status = ?sol.status,
-            pivots_total = meter.spent,
+            pivots_total = meter.spent(),
             build_micros = built.as_micros() as u64,
             micros = started.elapsed().saturating_sub(built).as_micros() as u64,
             "polyhedron stage LP"
@@ -1994,7 +1940,7 @@ fn refute(
     hyps: &[Exact],
     gens: &[Ex],
     param: Option<&(Param, Q)>,
-    meter: &mut Meter,
+    meter: &mut LpMeter,
 ) -> Result<Option<Refutation>, BudgetHit> {
     let width = gens.len();
     // The parameter, when present, is the last generator; the free
@@ -2224,7 +2170,7 @@ mod tests {
             .unwrap()
             .to_multipoly()
             .unwrap();
-        let mut free = Meter::start(&PolyhedronOpts::default());
+        let mut free = meter_for(&PolyhedronOpts::default());
         let found = refute(
             &goal,
             &prover.hyps_exact,
@@ -2233,8 +2179,8 @@ mod tests {
             &mut free,
         );
         assert!(matches!(found, Ok(Some((_, Some(_), ref v))) if v.is_negative()));
-        assert!(free.spent > 0, "the sample LPs pivot");
-        let mut none_left = Meter::start(&PolyhedronOpts::default().with_max_pivots(0));
+        assert!(free.spent() > 0, "the sample LPs pivot");
+        let mut none_left = meter_for(&PolyhedronOpts::default().with_max_pivots(0));
         assert!(matches!(
             refute(
                 &goal,
@@ -2245,7 +2191,7 @@ mod tests {
             ),
             Err(BudgetHit::MaxPivots)
         ));
-        let mut late = Meter::start(
+        let mut late = meter_for(
             &PolyhedronOpts::default().with_deadline(Instant::now() - Duration::from_millis(1)),
         );
         assert!(matches!(
@@ -2259,7 +2205,7 @@ mod tests {
             Err(BudgetHit::Deadline)
         ));
         // Exactly the pivots the free run spent are enough; one fewer is not.
-        let mut exact = Meter::start(&PolyhedronOpts::default().with_max_pivots(free.spent));
+        let mut exact = meter_for(&PolyhedronOpts::default().with_max_pivots(free.spent()));
         assert!(matches!(
             refute(
                 &goal,
@@ -2270,7 +2216,7 @@ mod tests {
             ),
             Ok(Some(_))
         ));
-        let mut short = Meter::start(&PolyhedronOpts::default().with_max_pivots(free.spent - 1));
+        let mut short = meter_for(&PolyhedronOpts::default().with_max_pivots(free.spent() - 1));
         assert!(matches!(
             refute(
                 &goal,

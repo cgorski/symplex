@@ -119,50 +119,17 @@ use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 use crate::domains::matrix::Matrix;
 
-/// Exact rational number used throughout this module.
-pub type Q = Ratio<BigInt>;
-
-/// The rational `n / d`.
-///
-/// # Panics
-///
-/// Panics if `d == 0` (a programming error, like a zero literal
-/// denominator).
-///
-/// # Examples
-///
-/// ```
-/// use symplex::linprog::q;
-/// assert_eq!(q(2, 4), q(1, 2));
-/// ```
-pub fn q(n: i64, d: i64) -> Q {
-    Ratio::new(BigInt::from(n), BigInt::from(d))
-}
-
-/// The integer `n` as a rational.
-///
-/// # Examples
-///
-/// ```
-/// use symplex::linprog::{q, qi};
-/// assert_eq!(qi(3), q(6, 2));
-/// ```
-pub fn qi(n: i64) -> Q {
-    Ratio::from_integer(BigInt::from(n))
-}
+// The exact rational type and its literal constructors live in
+// `base::numeric` (shared with the exact matrices, polytopes and
+// certificates); they keep their `linprog::` paths.
+pub use crate::base::numeric::{Q, q, qi};
 
 fn invalid(operation: &'static str, reason: impl Into<String>) -> SymplexError {
-    SymplexError::InvalidArgument {
-        operation,
-        reason: reason.into(),
-    }
+    SymplexError::invalid_argument(operation, reason)
 }
 
 fn failed(operation: &'static str, reason: impl Into<String>) -> SymplexError {
-    SymplexError::ComputationFailed {
-        operation,
-        reason: reason.into(),
-    }
+    SymplexError::computation_failed(operation, reason)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -290,6 +257,89 @@ impl fmt::Display for BudgetHit {
             BudgetHit::Deadline => "deadline",
             BudgetHit::MaxPivots => "max_pivots",
         })
+    }
+}
+
+/// The deadline of a call starting now under an absolute `deadline`
+/// and/or a relative `time_limit`: the earlier of the two (a limit too
+/// large to represent as an instant is no limit).  The one rule every
+/// budgeted prover option set follows.
+pub(crate) fn deadline_from(
+    deadline: Option<Instant>,
+    time_limit: Option<Duration>,
+) -> Option<Instant> {
+    let from_limit = time_limit.and_then(|t| Instant::now().checked_add(t));
+    match (deadline, from_limit) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Has `deadline` passed?  (`None` never passes.)
+pub(crate) fn deadline_passed(deadline: Option<Instant>) -> bool {
+    deadline.is_some_and(|d| Instant::now() >= d)
+}
+
+/// Why a budgeted search stopped without an answer: its budget ran out,
+/// or an LP failed.
+pub(crate) enum Stop {
+    Budget(BudgetHit),
+    Error(SymplexError),
+}
+
+impl From<SymplexError> for Stop {
+    fn from(e: SymplexError) -> Self {
+        Stop::Error(e)
+    }
+}
+
+/// The budget of one prover call, shared by every LP it runs: the
+/// deadline and the pivots spent so far against the pivot cap.  Solving
+/// through the meter charges each LP's pivots to the running total, so a
+/// cap spans all the LPs of the call and the `i64 → i128 → W256 → BigInt`
+/// attempts inside each.
+pub(crate) struct LpMeter {
+    deadline: Option<Instant>,
+    max_pivots: Option<usize>,
+    spent: usize,
+}
+
+impl LpMeter {
+    /// Start the clock for one call: `deadline` is the earlier of the
+    /// absolute deadline and now + `time_limit` (see [`deadline_from`]).
+    pub(crate) fn start(
+        deadline: Option<Instant>,
+        time_limit: Option<Duration>,
+        max_pivots: Option<usize>,
+    ) -> Self {
+        LpMeter {
+            deadline: deadline_from(deadline, time_limit),
+            max_pivots,
+            spent: 0,
+        }
+    }
+
+    /// Pivots charged so far.
+    pub(crate) fn spent(&self) -> usize {
+        self.spent
+    }
+
+    /// What is left for the next LP.
+    pub(crate) fn remaining(&self) -> Budget {
+        Budget {
+            deadline: self.deadline,
+            max_pivots: self.max_pivots.map(|m| m.saturating_sub(self.spent)),
+        }
+    }
+
+    /// Solve `lp` under the remaining budget and charge its pivots.
+    pub(crate) fn solve(&mut self, lp: LpProblem) -> Result<LpSolution, Stop> {
+        let report = lp.with_budget(self.remaining()).solve_report()?;
+        self.spent += report.pivots;
+        match report.budget_hit {
+            Some(hit) => Err(Stop::Budget(hit)),
+            None => Ok(report.solution),
+        }
     }
 }
 
@@ -804,8 +854,11 @@ fn standardize(p: &LpProblem) -> Standardized {
 /// all runs take the same pivot path and produce the same answer; the
 /// fixed-width runs merely never touch the heap.  The exact divisions of
 /// the fraction-free update are done by multiplication with the inverse of
-/// the pivot's odd part modulo the word size, checked by one multiplication
-/// (Jebelean); there is no long division anywhere in the pivot loop.
+/// the pivot's odd part modulo the word size (Jebelean) — verified by one
+/// multiplication for `i64` and the 256-bit cells, and by the quotient's
+/// high-half bound for `i128` — so there is no long division anywhere in
+/// the fixed-width pivot loops; the `BigInt` cells divide and check the
+/// remainder.
 /// Certificate LPs (small polynomial coefficients, 16–20 rows) peak
 /// between 60 and 200 bits, so they finish on `i128` or the 256-bit cells.
 struct Tableau<'a, T: Cell> {
@@ -881,6 +934,18 @@ trait Cell: Clone + PartialEq + Eq + Ord + fmt::Debug {
     fn cmp_products(a: &Self, b: &Self, c: &Self, d: &Self) -> std::cmp::Ordering;
 }
 
+/// `t / d` when the division is exact, `None` otherwise.  The fraction-free
+/// update is exact by Sylvester's identity, so a remainder means the
+/// invariant was violated; the fixed-width cells verify their quotient by
+/// one multiplication (Jebelean), and `BigInt` — whose division computes
+/// the remainder anyway — checks it here, so that a violation surfaces as
+/// `ComputationFailed` in release builds instead of a truncated tableau.
+fn big_div_exact(t: BigInt, d: &BigInt) -> Option<BigInt> {
+    let (q, r) = t.div_rem(d);
+    debug_assert!(Zero::is_zero(&r), "integer pivoting: inexact division");
+    Zero::is_zero(&r).then_some(q)
+}
+
 impl Cell for BigInt {
     type Divisor = BigInt;
     fn divisor(d: &Self) -> BigInt {
@@ -928,19 +993,10 @@ impl Cell for BigInt {
         } else {
             v * p - f * pr
         };
-        debug_assert!(
-            Zero::is_zero(&(&t % d)),
-            "integer pivoting: inexact division"
-        );
-        Some(t / d)
+        big_div_exact(t, d)
     }
     fn rescale(v: &Self, p: &Self, d: &BigInt) -> Option<Self> {
-        let t = v * p;
-        debug_assert!(
-            Zero::is_zero(&(&t % d)),
-            "integer pivoting: inexact division"
-        );
-        Some(t / d)
+        big_div_exact(v * p, d)
     }
     fn sub_mul(&self, f: &Self, r: &Self) -> Option<Self> {
         Some(self - f * r)
@@ -1705,9 +1761,7 @@ impl<'a, T: Cell> Tableau<'a, T> {
     /// `Err(Halt::Budget(Deadline))` once the budget's deadline has passed.
     #[inline]
     fn check_deadline(&self) -> Result<(), Halt> {
-        if let Some(deadline) = self.budget.deadline
-            && Instant::now() >= deadline
-        {
+        if deadline_passed(self.budget.deadline) {
             return Err(Halt::Budget(BudgetHit::Deadline));
         }
         Ok(())
@@ -2070,8 +2124,12 @@ fn solve_lp(p: &LpProblem) -> Result<SolveReport, SymplexError> {
     tracing::debug!(target: "symplex::linprog", rows = sf.a.len(), cols = sf.c.len(), "256-bit tableau overflowed; solving on BigInt");
     let r = solve_standard::<BigInt>(p, &sf, &mut spent);
     attempt("BigInt", &r, spent);
-    settle(r, spent)
-        .unwrap_or_else(|| Err(failed("linprog", "internal: BigInt tableau overflowed")))
+    settle(r, spent).unwrap_or_else(|| {
+        Err(failed(
+            "linprog",
+            "internal: fraction-free update was not exact on BigInt cells",
+        ))
+    })
 }
 
 fn solve_standard<T: Cell>(

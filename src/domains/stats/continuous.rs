@@ -20,10 +20,7 @@ use crate::base::errors::SymplexError;
 use super::rv::{Distribution, Support};
 
 fn invalid(reason: impl Into<String>) -> SymplexError {
-    SymplexError::InvalidArgument {
-        operation: "stats",
-        reason: reason.into(),
-    }
+    SymplexError::invalid_argument("stats", reason)
 }
 
 /// Is a parameter known to be positive?  `None` for symbolic parameters

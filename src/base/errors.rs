@@ -102,3 +102,25 @@ pub enum SymplexError {
         reason: String,
     },
 }
+
+impl SymplexError {
+    /// [`InvalidArgument`](Self::InvalidArgument) for `operation`: a
+    /// caller-supplied value that fails validation (a shape, a parameter
+    /// out of range, a symbol that is not one of the variables).
+    pub fn invalid_argument(operation: &'static str, reason: impl Into<String>) -> Self {
+        SymplexError::InvalidArgument {
+            operation,
+            reason: reason.into(),
+        }
+    }
+
+    /// [`ComputationFailed`](Self::ComputationFailed) for `operation`: the
+    /// algorithm could not complete on valid input (a budget ran out, a
+    /// series did not converge, an internal invariant did not hold).
+    pub fn computation_failed(operation: &'static str, reason: impl Into<String>) -> Self {
+        SymplexError::ComputationFailed {
+            operation,
+            reason: reason.into(),
+        }
+    }
+}

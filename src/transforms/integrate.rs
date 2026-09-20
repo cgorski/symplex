@@ -214,7 +214,7 @@ fn try_standard_form_integral(
     let x_over_a = if a_sq_is_one {
         var
     } else {
-        let a_sq_id = rational_to_expr(arena, &a_squared);
+        let a_sq_id = arena.num_ratio(a_squared.clone());
         let nh = arena.rational(-1, 2);
         let a_inv = arena.pow(a_sq_id, nh); // (a²)^{-1/2} = 1/a
         arena.mul(&[var, a_inv])
@@ -224,7 +224,7 @@ fn try_standard_form_integral(
     let one_over_a = if a_sq_is_one {
         None
     } else {
-        let a_sq_id = rational_to_expr(arena, &a_squared);
+        let a_sq_id = arena.num_ratio(a_squared.clone());
         let nh = arena.rational(-1, 2);
         Some(arena.pow(a_sq_id, nh))
     };
@@ -429,7 +429,7 @@ fn try_complete_square_integral(
     let u_expr = if shift.is_zero() {
         var
     } else {
-        let shift_id = rational_to_expr(arena, &shift);
+        let shift_id = arena.num_ratio(shift.clone());
         arena.add(&[var, shift_id])
     };
 
@@ -437,7 +437,7 @@ fn try_complete_square_integral(
 
     if a_coeff.is_positive() {
         // a > 0
-        let a_id = rational_to_expr(arena, &a_coeff);
+        let a_id = arena.num_ratio(a_coeff.clone());
         let sqrt_a = arena.pow(a_id, half); // √a
         let inv_sqrt_a = {
             let neg_half_e = arena.rational(-1, 2);
@@ -446,7 +446,7 @@ fn try_complete_square_integral(
 
         if d.is_positive() {
             // a > 0, d > 0: (1/√a) · asinh(u·√a / √d)
-            let d_id = rational_to_expr(arena, &d);
+            let d_id = arena.num_ratio(d.clone());
             let sqrt_d = arena.pow(d_id, half);
             let u_sqrt_a = arena.mul(&[u_expr, sqrt_a]);
             let arg = arena.div(u_sqrt_a, sqrt_d);
@@ -455,7 +455,7 @@ fn try_complete_square_integral(
         } else if d.is_negative() {
             // a > 0, d < 0: (1/√a) · acosh(u·√a / √|d|)
             let abs_d = d.abs();
-            let abs_d_id = rational_to_expr(arena, &abs_d);
+            let abs_d_id = arena.num_ratio(abs_d.clone());
             let sqrt_abs_d = arena.pow(abs_d_id, half);
             let u_sqrt_a = arena.mul(&[u_expr, sqrt_a]);
             let arg = arena.div(u_sqrt_a, sqrt_abs_d);
@@ -470,13 +470,13 @@ fn try_complete_square_integral(
     } else if a_coeff.is_negative() && d.is_positive() {
         // a < 0, d > 0: (1/√|a|) · asin(u·√|a| / √d)
         let abs_a = a_coeff.abs();
-        let abs_a_id = rational_to_expr(arena, &abs_a);
+        let abs_a_id = arena.num_ratio(abs_a.clone());
         let sqrt_abs_a = arena.pow(abs_a_id, half);
         let inv_sqrt_abs_a = {
             let neg_half_e = arena.rational(-1, 2);
             arena.pow(abs_a_id, neg_half_e)
         };
-        let d_id = rational_to_expr(arena, &d);
+        let d_id = arena.num_ratio(d.clone());
         let sqrt_d = arena.pow(d_id, half);
         let u_sqrt_abs_a = arena.mul(&[u_expr, sqrt_abs_a]);
         let arg = arena.div(u_sqrt_abs_a, sqrt_d);
@@ -606,7 +606,7 @@ fn try_x_over_sqrt_quadratic(
     let sqrt_r = arena.pow(base, half);
 
     // First term: √R / a
-    let a_id = rational_to_expr(arena, &a_coeff);
+    let a_id = arena.num_ratio(a_coeff.clone());
     let first_term = arena.div(sqrt_r, a_id);
 
     if b_coeff.is_zero() {
@@ -629,7 +629,7 @@ fn try_x_over_sqrt_quadratic(
     // b/(2a)
     let two_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer(2.into());
     let b_over_2a = &b_coeff / &(&a_coeff * &two_r);
-    let b_over_2a_id = rational_to_expr(arena, &b_over_2a);
+    let b_over_2a_id = arena.num_ratio(b_over_2a.clone());
 
     // Result: √R/a − (b/(2a))·I_0
     let second_term = arena.mul(&[b_over_2a_id, i_0]);
@@ -700,7 +700,7 @@ fn try_trig_sub_sqrt_integral(
     let a_sq_expr = if a_sq_is_one {
         arena.one
     } else {
-        rational_to_expr(arena, &a_squared)
+        arena.num_ratio(a_squared.clone())
     };
 
     // x/a = x · (a²)^{-1/2}
@@ -832,7 +832,7 @@ fn try_linear_over_quadratic(
 
                 // First term: (a/(2c)) · ln|cx²+dx+e|
                 if !a_over_2c.is_zero() {
-                    let coeff_id = rational_to_expr(arena, &a_over_2c);
+                    let coeff_id = arena.num_ratio(a_over_2c.clone());
                     let abs_quad = arena.abs(pow_base);
                     let ln_quad = arena.ln(abs_quad);
                     terms.push(arena.mul(&[coeff_id, ln_quad]));
@@ -846,7 +846,7 @@ fn try_linear_over_quadratic(
                     if matches!(arena.node(inv_integral), ExprNode::Integral(_, _)) {
                         return None;
                     }
-                    let rem_id = rational_to_expr(arena, &remainder);
+                    let rem_id = arena.num_ratio(remainder.clone());
                     terms.push(arena.mul(&[rem_id, inv_integral]));
                 }
 
@@ -1299,7 +1299,7 @@ fn integrate_node(
                     && let (Some(m), Some(n)) = (arena.as_num(inner_exp), arena.as_num(pow_exp))
                 {
                     let combined = m.clone() * n.clone();
-                    let combined_id = rational_to_expr(arena, &combined);
+                    let combined_id = arena.num_ratio(combined.clone());
                     let flattened = arena.pow(inner_base, combined_id);
                     *d = flattened;
                 }
@@ -1606,7 +1606,7 @@ fn integrate_node(
                 let m = m.clone();
                 let n = n.clone();
                 let combined = &m * &n;
-                let combined_id = rational_to_expr(arena, &combined);
+                let combined_id = arena.num_ratio(combined.clone());
                 let flattened = arena.pow(inner_base, combined_id);
                 if flattened != expr {
                     return integrate_node(arena, flattened, var, var_sym, depth - 1);
@@ -1674,10 +1674,8 @@ fn integrate_node(
                 && n_val >= num_rational::Ratio::from_integer(3.into())
                 && n_val <= num_rational::Ratio::from_integer(12.into())
             {
-                let n_minus_2 = rational_to_expr(
-                    arena,
-                    &(&n_val - &num_rational::Ratio::from_integer(2.into())),
-                );
+                let n_minus_2 =
+                    arena.num_ratio(&n_val - &num_rational::Ratio::from_integer(2.into()));
                 let tan_pow = arena.pow(base, n_minus_2);
                 let cos_inner = arena.cos(inner);
                 let neg_two = arena.int(-2);
@@ -1747,10 +1745,10 @@ fn integrate_node(
                     let n_i64: i64 = n_val.to_integer().try_into().unwrap_or(0);
                     if n_i64 >= 2 {
                         let x_ln_n = arena.mul(&[var, expr]);
-                        let n_id = rational_to_expr(arena, &n_val);
+                        let n_id = arena.num_ratio(n_val.clone());
                         let n_minus_1 = {
                             let v = &n_val - &num_rational::Ratio::<num_bigint::BigInt>::one();
-                            rational_to_expr(arena, &v)
+                            arena.num_ratio(v.clone())
                         };
                         let ln_x = arena.ln(var);
                         let ln_nm1 = if n_i64 == 2 {
@@ -1777,7 +1775,7 @@ fn integrate_node(
                     // ∫ (ax+b)^n dx = (ax+b)^(n+1) / (a*(n+1))
                     let one = num_rational::Ratio::<num_bigint::BigInt>::one();
                     let n_plus_1 = &n + &one;
-                    let n_plus_1_id = rational_to_expr(arena, &n_plus_1);
+                    let n_plus_1_id = arena.num_ratio(n_plus_1.clone());
                     let base_pow = arena.pow(base, n_plus_1_id);
                     let denom = arena.mul(&[a_expr, n_plus_1_id]);
                     return arena.div(base_pow, denom);
@@ -2013,7 +2011,7 @@ fn integrate_node(
                 if a_coeff.is_negative() {
                     // neg_a = -a (positive)
                     let neg_a = -a_coeff.clone();
-                    let neg_a_expr = rational_to_expr(arena, &neg_a);
+                    let neg_a_expr = arena.num_ratio(neg_a.clone());
 
                     // sqrt(-a)
                     let sqrt_neg_a = arena.sqrt(neg_a_expr);
@@ -2027,9 +2025,9 @@ fn integrate_node(
                     let front = arena.div(sqrt_pi, two_sqrt_neg_a);
 
                     // exp_factor = exp(c - b²/(4a))
-                    let b_expr = rational_to_expr(arena, b_coeff);
-                    let a_expr = rational_to_expr(arena, a_coeff);
-                    let c_expr = rational_to_expr(arena, c_coeff);
+                    let b_expr = arena.num_ratio(b_coeff.clone());
+                    let a_expr = arena.num_ratio(a_coeff.clone());
+                    let c_expr = arena.num_ratio(c_coeff.clone());
 
                     let b_sq = arena.mul(&[b_expr, b_expr]);
                     let four = arena.int(4);
@@ -2049,7 +2047,7 @@ fn integrate_node(
                         let two_r =
                             num_rational::Ratio::<num_bigint::BigInt>::from_integer(2.into());
                         let val = -two_r * a_coeff;
-                        rational_to_expr(arena, &val)
+                        arena.num_ratio(val.clone())
                     };
                     let neg_2ax = arena.mul(&[neg_two_a, var]);
                     let erf_numer = arena.sub(neg_2ax, b_expr);
@@ -2064,7 +2062,7 @@ fn integrate_node(
                 if a_coeff.is_positive() {
                     // ∫ exp(a·x²+b·x+c) dx, a > 0:
                     //   √π/(2√a) · exp(c − b²/(4a)) · erfi((2a·x+b)/(2√a))   (0.9)
-                    let a_expr = rational_to_expr(arena, a_coeff);
+                    let a_expr = arena.num_ratio(a_coeff.clone());
                     let sqrt_a = arena.sqrt(a_expr);
                     let two = arena.int(2);
                     let pi_id = arena.pi;
@@ -2072,8 +2070,8 @@ fn integrate_node(
                     let two_sqrt_a = arena.mul(&[two, sqrt_a]);
                     let front = arena.div(sqrt_pi, two_sqrt_a);
 
-                    let b_expr = rational_to_expr(arena, b_coeff);
-                    let c_expr = rational_to_expr(arena, c_coeff);
+                    let b_expr = arena.num_ratio(b_coeff.clone());
+                    let c_expr = arena.num_ratio(c_coeff.clone());
                     let b_sq = arena.mul(&[b_expr, b_expr]);
                     let four = arena.int(4);
                     let four_a = arena.mul(&[four, a_expr]);
@@ -2090,7 +2088,7 @@ fn integrate_node(
                         let two_r =
                             num_rational::Ratio::<num_bigint::BigInt>::from_integer(2.into());
                         let val = two_r * a_coeff;
-                        rational_to_expr(arena, &val)
+                        arena.num_ratio(val.clone())
                     };
                     let two_ax = arena.mul(&[two_a, var]);
                     let numer = arena.add(&[two_ax, b_expr]);
@@ -2483,11 +2481,11 @@ fn symbolic_linear_coeff_of(
 ) -> Option<(ExprId, ExprId)> {
     // Fast path: try numeric first (covers the common numeric-coefficient case)
     if let Some(a) = linear_coeff_of(arena, expr, var, var_sym) {
-        let a_id = rational_to_expr(arena, &a);
+        let a_id = arena.num_ratio(a.clone());
         // Also extract constant term
         if let Some(poly) = crate::poly::polybridge::expr_to_poly(arena, expr, var) {
             let b = poly.coeff(0);
-            let b_id = rational_to_expr(arena, &b);
+            let b_id = arena.num_ratio(b.clone());
             return Some((a_id, b_id));
         }
         return Some((a_id, arena.zero));
@@ -2638,9 +2636,9 @@ fn symbolic_quadratic_coeffs(
     tracing::trace!("symbolic_quadratic_coeffs: attempting to extract quadratic coefficients");
     if let Some(poly) = crate::poly::polybridge::expr_to_poly(arena, expr, var) {
         if poly.degree()? == 2 {
-            let c = rational_to_expr(arena, &poly.coeff(2));
-            let d = rational_to_expr(arena, &poly.coeff(1));
-            let e = rational_to_expr(arena, &poly.coeff(0));
+            let c = arena.num_ratio(poly.coeff(2).clone());
+            let d = arena.num_ratio(poly.coeff(1).clone());
+            let e = arena.num_ratio(poly.coeff(0).clone());
             return Some((c, d, e));
         }
         return None;
@@ -2799,12 +2797,6 @@ fn symbolic_quadratic_coeffs(
     }
 
     Some((c_expr, d_expr, e_expr))
-}
-
-/// Convert a `Ratio<BigInt>` to an `ExprId`.
-fn rational_to_expr(arena: &mut Arena, r: &num_rational::Ratio<num_bigint::BigInt>) -> ExprId {
-    let nid = arena.intern_num(r.clone());
-    arena.intern(crate::base::node::ExprNode::Num(nid))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3052,7 +3044,7 @@ fn try_exp_rational_substitution(
     let mut sub = expr;
     for (node, k) in &exps {
         let power = k / &a; // integer
-        let power_id = rational_to_expr(arena, &power);
+        let power_id = arena.num_ratio(power.clone());
         let u_pow = arena.pow(u, power_id);
         sub = arena.subs_structural(sub, *node, u_pow);
     }
@@ -3060,7 +3052,7 @@ fn try_exp_rational_substitution(
         return None;
     }
     // Integrand in u: R(u)/(a u)
-    let a_id = rational_to_expr(arena, &a);
+    let a_id = arena.num_ratio(a.clone());
     let a_u = arena.mul(&[a_id, u]);
     let integrand_u = arena.div(sub, a_u);
     let integrand_u = clear_nested_fractions(arena, integrand_u, u);
@@ -3114,7 +3106,7 @@ fn try_radical_substitution(
     let mut sub = expr;
     for (node, r) in &radicals {
         let k = r * num_rational::Ratio::from_integer(num_bigint::BigInt::from(q));
-        let k_id = rational_to_expr(arena, &k);
+        let k_id = arena.num_ratio(k.clone());
         let s_pow = arena.pow(s, k_id);
         sub = arena.subs_structural(sub, *node, s_pow);
     }
@@ -3281,7 +3273,7 @@ fn try_poly_times_half_power(
             if crate::base::walk::has_unevaluated(arena, base_int) {
                 return None;
             }
-            let c_id = rational_to_expr(arena, &c);
+            let c_id = arena.num_ratio(c.clone());
             let c_term = arena.mul(&[c_id, base_int]);
             result = arena.add(&[result, c_term]);
         }
@@ -3436,7 +3428,7 @@ fn try_tan_sec_patterns(
     if n == two {
         // ∫ tan^m sec² = tan^{m+1}/(m+1)
         let m1 = &m + &Rat::one();
-        let m1_id = rational_to_expr(arena, &m1);
+        let m1_id = arena.num_ratio(m1.clone());
         let tan_g = arena.tan(g);
         let tp = arena.pow(tan_g, m1_id);
         let denom = arena.mul(&[m1_id, a_expr]);
@@ -3445,9 +3437,9 @@ fn try_tan_sec_patterns(
     if m == Rat::one() {
         // ∫ secⁿ tan = secⁿ/n = cos^{-n}/n
         let cos_g = arena.cos(g);
-        let neg_n = rational_to_expr(arena, &(-n.clone()));
+        let neg_n = arena.num_ratio(-n.clone());
         let sec_n = arena.pow(cos_g, neg_n);
-        let n_id = rational_to_expr(arena, &n);
+        let n_id = arena.num_ratio(n.clone());
         let denom = arena.mul(&[n_id, a_expr]);
         return Some(arena.div(sec_n, denom));
     }

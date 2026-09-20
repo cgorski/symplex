@@ -6,6 +6,73 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.11.2] - 2026-09-20
+
+A **structure** release: the second pass of the review, consolidating the
+plumbing the first pass left in place.  Additive over 0.11.1; byte-identical
+on the pinned fixtures, the 4,000-LP pivot-path check and the downstream
+generator's Mathlib-compiled output.
+
+### Added
+
+- `SosUnknown::budget_exhausted: Option<BudgetHit>` — the typed budget leaf
+  `PolyhedronUnknown` already had, so all four provers report a spent
+  budget the same way (`reason` still starts `budget exhausted: deadline`).
+- `SymplexError::invalid_argument(operation, reason)` and
+  `SymplexError::computation_failed(operation, reason)`: the two
+  constructors seventeen private per-module helpers were re-implementing.
+- `numeric::{Q, q, qi}`: the exact rational type and its literal
+  constructors now live in `base::numeric` and are re-exported from
+  `linprog` (their documented paths and the prelude's `Q` are unchanged).
+  The exact-matrix, polytope and certificate modules no longer import
+  `linprog` for a type alias.
+- `GenPoly::try_div_rem` (internal) observes a zero divisor.
+
+### Changed
+
+- **One deadline rule, one LP meter.**  `linprog::{deadline_from,
+  deadline_passed, LpMeter, Stop}` (crate-internal) replace the three
+  copies of "earlier of the absolute deadline and now + time limit" and
+  "has the deadline passed" in `linprog`, `polyhedron` and `sos`; the
+  polyhedron prover's per-call pivot meter is the shared `LpMeter`.
+- **`BigInt` tableau cells check their divisions.**  The fraction-free
+  update is exact by Sylvester's identity; the fixed-width cells verify
+  each quotient (Jebelean's multiplication, or the high-half bound for
+  `i128`) and now the `BigInt` cells — whose division computes the
+  remainder anyway — return `None` on a non-zero remainder, so a violated
+  invariant surfaces as `ComputationFailed` in release builds instead of a
+  truncated tableau.  Pivot paths are unchanged.
+- **Layering made honest and enforced.**  CONTRIBUTING's dependency
+  diagram now shows the two hubs (`base::{node, arena}` and
+  `api::{expr, context}`), the ordered algorithm layers, and `output`
+  *below* `domains`; `tests/unit/test_layering.rs` is a ratchet over the
+  upward `crate::<layer>` edges of every file (each allowlisted with its
+  reason) that fails when a file gains a new one.  Two moves that the
+  ratchet made obvious: the `Sum`/`Product` evaluation shim
+  (`sum_eval`) lives in `calculus` next to the engine it wraps, and the
+  arbitrary-precision complex field operations (`base::bigcomplex`) are
+  shared by `evalf`, the root finders and algebraic-number verification
+  instead of imported upward from `evalf`.
+- Dedup: `Arena::num_ratio` replaces eight identical
+  `rational_to_expr`/`num_expr` helpers; one `describe()` serves the
+  MathML and Python printers; the Rust printer's named constants come from
+  the shared numeric runtime.
+
+### Infrastructure
+
+- **`scripts/gate.sh`**: the release gate one bounded stage at a time,
+  every stage under `timeout` with its full output in a log and a one-line
+  summary, so a failing test is named by `grep` on a log that already
+  exists.  CONTRIBUTING: how to localise a slow test (smallest unit, 60 s
+  cap, `--test-threads=1`), and the signature of rustdoc's silent fallback
+  from the merged doctest binary (one broken doc example turns a 1-second
+  stage into twenty minutes of standalone compiles).
+- `.cargo/config.toml` caps every property-test case at 5 s
+  (`PROPTEST_TIMEOUT`) and shrinking at 30 s: a rare expensive draw fails
+  with its shrunk expression instead of stretching one test to minutes.
+- `symplex` and `symplex-build` at 0.11.2; `symplex-macros` unchanged at
+  0.3.2.
+
 ## [0.11.1] - 2026-09-20
 
 A **correctness** release: the first pass of a line-by-line review of the

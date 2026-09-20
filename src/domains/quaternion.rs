@@ -28,17 +28,11 @@ use crate::domains::matrix::{Matrix, all3, ex_is_positive, ex_is_zero, sqrt_rati
 pub use crate::domains::robotics::EulerConvention;
 
 fn invalid(operation: &'static str, reason: impl Into<String>) -> SymplexError {
-    SymplexError::InvalidArgument {
-        operation,
-        reason: reason.into(),
-    }
+    SymplexError::invalid_argument(operation, reason)
 }
 
 fn failed(operation: &'static str, reason: impl Into<String>) -> SymplexError {
-    SymplexError::ComputationFailed {
-        operation,
-        reason: reason.into(),
-    }
+    SymplexError::computation_failed(operation, reason)
 }
 
 /// A symbolic quaternion `q = w + x·i + y·j + z·k`.

@@ -878,10 +878,12 @@ fn expr_to_rust_cse(
         }
         ExprNode::Pi => Ok(format!("{}::PI", prec.consts_mod())),
         ExprNode::E => Ok(format!("{}::E", prec.consts_mod())),
-        // Named constants without a `std::f64::consts` entry: emit literals.
-        ExprNode::EulerGamma => Ok(format!("0.5772156649015329{suffix}")),
-        ExprNode::Catalan => Ok(format!("0.915965594177219{suffix}")),
-        ExprNode::GoldenRatio => Ok(format!("1.618033988749895{suffix}")),
+        // Named constants without a `std::f64::consts` entry: emit the
+        // runtime's literals (`Display` of an `f64` is its shortest exact
+        // round-trip form, so the text is unchanged).
+        ExprNode::EulerGamma => Ok(format!("{}{suffix}", numeric_rt::EULER_GAMMA_F64)),
+        ExprNode::Catalan => Ok(format!("{}{suffix}", numeric_rt::CATALAN_F64)),
+        ExprNode::GoldenRatio => Ok(format!("{}{suffix}", numeric_rt::GOLDEN_RATIO_F64)),
         ExprNode::PhysicalConstant(_, value_id) => {
             // Emit the exact numeric value as Rust code
             expr_to_rust_cse(arena, value_id, var_names, options, cse_constants)

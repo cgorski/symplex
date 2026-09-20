@@ -113,7 +113,6 @@
 use std::fmt;
 
 use num_bigint::BigInt;
-use num_rational::Ratio;
 use num_traits::{One, Zero};
 
 use crate::api::context::Context;
@@ -199,13 +198,10 @@ pub struct HalfLineCertificateData {
     pub square: Option<crate::output::tree::ExprTree>,
 }
 
-type Q = Ratio<BigInt>;
+use crate::base::numeric::Q;
 
 fn invalid(reason: impl Into<String>) -> SymplexError {
-    SymplexError::InvalidArgument {
-        operation: "prove_nonnegative_on_box",
-        reason: reason.into(),
-    }
+    SymplexError::invalid_argument("prove_nonnegative_on_box", reason)
 }
 
 /// One variable of the box: `lo ≤ var ≤ hi` with exact rational endpoints.

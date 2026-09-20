@@ -237,10 +237,7 @@ fn contains_node(arena: &Arena, root: ExprId, pred: impl Fn(&ExprNode) -> bool) 
 
 /// Error helper.
 fn failed(reason: impl Into<String>) -> SymplexError {
-    SymplexError::ComputationFailed {
-        operation: "integrate_definite",
-        reason: reason.into(),
-    }
+    SymplexError::computation_failed("integrate_definite", reason)
 }
 
 /// Error helper.

@@ -72,8 +72,8 @@ use super::dense::Poly;
 use super::generic::GenPoly;
 use super::sturm::SturmChain;
 use crate::base::arena::Arena;
+use crate::base::bigcomplex::{c_add, c_div, c_from_real, c_mul, c_one, c_zero};
 use crate::base::node::{ExprId, ExprNode};
-use crate::transforms::evalf::{c_add, c_div, c_from_real, c_mul, c_one, c_zero};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Sign determination helpers

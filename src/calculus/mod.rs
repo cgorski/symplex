@@ -14,5 +14,6 @@ pub mod ode;
 pub(crate) mod residue;
 pub mod risch;
 pub(crate) mod series;
+pub(crate) mod sum_eval;
 pub mod summation;
 pub mod z_transform;

@@ -618,7 +618,7 @@ fn try_solve_binomial_rational(arena: &mut Arena, poly: &Poly) -> Option<Vec<Sol
         return None;
     }
     let ratio = -b / a;
-    let c = rational_to_expr(arena, &ratio);
+    let c = arena.num_ratio(ratio.clone());
     Some(binomial_roots(arena, c, n))
 }
 
@@ -984,7 +984,7 @@ fn solve_linear(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
 
     // x = -b / a
     let value = -b / a;
-    let value_id = rational_to_expr(arena, &value);
+    let value_id = arena.num_ratio(value.clone());
 
     vec![Solution { value: value_id }]
 }
@@ -1011,26 +1011,26 @@ fn solve_quadratic(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
         // Double root: x = -b / (2a)
         let two_a = Ratio::from_integer(BigInt::from(2)) * &a;
         let value = -b / two_a;
-        let value_id = rational_to_expr(arena, &value);
+        let value_id = arena.num_ratio(value.clone());
         return vec![Solution { value: value_id }];
     }
 
     if discriminant.is_negative() {
         // Complex roots: x = (-b ± i√|Δ|) / (2a)
         let abs_disc = -discriminant;
-        let neg_b = rational_to_expr(arena, &(-&b));
-        let abs_disc_id = rational_to_expr(arena, &abs_disc);
+        let neg_b = arena.num_ratio((-&b).clone());
+        let abs_disc_id = arena.num_ratio(abs_disc.clone());
 
         // Check if |Δ| is a perfect square
         let sqrt_abs_disc = if let Some(s) = rational_sqrt(&abs_disc) {
-            rational_to_expr(arena, &s)
+            arena.num_ratio(s.clone())
         } else {
             arena.sqrt(abs_disc_id)
         };
 
         let i_sqrt = arena.mul(&[arena.i_unit, sqrt_abs_disc]);
         let two_a_val = Ratio::from_integer(BigInt::from(2)) * &a;
-        let two_a_id = rational_to_expr(arena, &two_a_val);
+        let two_a_id = arena.num_ratio(two_a_val.clone());
         let two_a_inv = {
             let neg_one = arena.neg_one;
             arena.pow(two_a_id, neg_one)
@@ -1056,8 +1056,8 @@ fn solve_quadratic(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
         let x1 = (-&b + &sqrt_disc) / &two_a;
         let x2 = (-&b - &sqrt_disc) / &two_a;
 
-        let x1_id = rational_to_expr(arena, &x1);
-        let x2_id = rational_to_expr(arena, &x2);
+        let x1_id = arena.num_ratio(x1.clone());
+        let x2_id = arena.num_ratio(x2.clone());
 
         if x1 == x2 {
             vec![Solution { value: x1_id }]
@@ -1069,14 +1069,14 @@ fn solve_quadratic(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
         // Express as (-b ± sqrt(discriminant)) / (2*a) symbolically.
         let neg_b = {
             let neg_b_val = -&b;
-            rational_to_expr(arena, &neg_b_val)
+            arena.num_ratio(neg_b_val.clone())
         };
         let sqrt_disc = {
-            let disc_id = rational_to_expr(arena, &discriminant);
+            let disc_id = arena.num_ratio(discriminant.clone());
             arena.sqrt(disc_id)
         };
         let two_a_val = Ratio::from_integer(BigInt::from(2)) * &a;
-        let two_a_id = rational_to_expr(arena, &two_a_val);
+        let two_a_id = arena.num_ratio(two_a_val.clone());
         let two_a_inv = {
             let neg_one = arena.neg_one;
             arena.pow(two_a_id, neg_one)
@@ -1135,10 +1135,10 @@ fn solve_cubic_cardano(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
         return roots;
     }
 
-    let a_id = rational_to_expr(arena, &a);
-    let b_id = rational_to_expr(arena, &b);
-    let c_id = rational_to_expr(arena, &c);
-    let d_id = rational_to_expr(arena, &d);
+    let a_id = arena.num_ratio(a.clone());
+    let b_id = arena.num_ratio(b.clone());
+    let c_id = arena.num_ratio(c.clone());
+    let d_id = arena.num_ratio(d.clone());
 
     let three = arena.int(3);
     let nine = arena.int(9);
@@ -1395,7 +1395,7 @@ fn solve_quartic_ferrari(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
         let s_roots = solve_quadratic(arena, &quad);
         let four_a = Ratio::from_integer(BigInt::from(4)) * &a;
         let shift_rat = &b / &four_a;
-        let shift = rational_to_expr(arena, &shift_rat);
+        let shift = arena.num_ratio(shift_rat.clone());
         let half = arena.rational(1, 2);
         let mut out: Vec<Solution> = Vec::new();
         for s in s_roots {
@@ -1413,11 +1413,11 @@ fn solve_quartic_ferrari(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
         return out;
     }
 
-    let a_id = rational_to_expr(arena, &a);
-    let b_id = rational_to_expr(arena, &b);
-    let c_id = rational_to_expr(arena, &c);
-    let d_id = rational_to_expr(arena, &d);
-    let e_id = rational_to_expr(arena, &e);
+    let a_id = arena.num_ratio(a.clone());
+    let b_id = arena.num_ratio(b.clone());
+    let c_id = arena.num_ratio(c.clone());
+    let d_id = arena.num_ratio(d.clone());
+    let e_id = arena.num_ratio(e.clone());
 
     let two = arena.int(2);
     let three = arena.int(3);
@@ -1499,7 +1499,7 @@ fn solve_quartic_ferrari(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
     // produces complex cube roots for real rational roots, yielding
     // unsimplifiable expressions like cbrt(±i·√(1/27)).
     let m = if let Some(m_rat) = find_preferred_resolvent_root(&resolvent_poly, &p_rat) {
-        rational_to_expr(arena, &m_rat)
+        arena.num_ratio(m_rat.clone())
     } else {
         let m_solutions = solve_cubic_cardano(arena, &resolvent_poly);
         if m_solutions.is_empty() {
@@ -1719,7 +1719,7 @@ fn solve_rational_roots(arena: &mut Arena, var: ExprId, poly: &Poly) -> Vec<Solu
 
                 if remaining.eval(&candidate).is_zero() {
                     // Found a root!
-                    let value_id = rational_to_expr(arena, &candidate);
+                    let value_id = arena.num_ratio(candidate.clone());
                     roots.push(Solution { value: value_id });
 
                     // Factor out (x - candidate) from remaining.
@@ -1772,12 +1772,6 @@ fn solve_rational_roots(arena: &mut Arena, var: ExprId, poly: &Poly) -> Vec<Solu
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════
-
-/// Convert a `Ratio<BigInt>` to an expression in the arena.
-fn rational_to_expr(arena: &mut Arena, r: &Ratio<BigInt>) -> ExprId {
-    let nid = arena.intern_num(r.clone());
-    arena.intern(ExprNode::Num(nid))
-}
 
 /// Try to compute the exact square root of a non-negative rational.
 ///
