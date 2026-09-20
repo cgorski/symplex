@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.11.0] - 2026-09-19
+
+### Added
+
+- **`symplex::stats` — symbolic probability and statistics** (the
+  counterpart of `sympy.stats`).  A `RandomVariable` is a symbol with a
+  `Distribution`; the queries are exact wherever the parameters are:
+  `mean`, `variance`, `std`, `moment(n)`, `central_moment`, `skewness`,
+  `kurtosis`, `expectation(&g)` (polynomial `g` through closed-form raw
+  moments — `E[X² + 3X] = 1` for a standard normal — else exact
+  integration / summation over the support), `probability(&event)` for
+  relations and their conjunctions (`P(Y > 2) = 17/81` for
+  `Binomial(5, 1/3)`; the closed-form CDF is used before integration),
+  `density`, `cdf`, `mgf`, `characteristic_function`, `quantile`,
+  `median`, `entropy`, and seeded `sample` (`stats::Rng`, SplitMix64;
+  inverse transform or cumulative sums).
+  - Continuous families (each with support, density, closed-form
+    moments where they exist, CDF, MGF, quantile and entropy, textbook
+    formulas cited): `Normal`, `Uniform`, `Exponential`, `Gamma`,
+    `ChiSquared`, `Beta`, `Cauchy` (moments honestly divergent),
+    `Laplace`, `Logistic`, `LogNormal`, `StudentT`, `Weibull`, `Pareto`,
+    `Triangular`.
+  - Discrete families: `Bernoulli`, `Binomial` (all raw moments via
+    Stirling numbers), `Poisson` (Touchard polynomials, CDF through the
+    upper incomplete gamma), `Geometric`, `NegativeBinomial`,
+    `Hypergeometric`, `DiscreteUniform`, `Die`, and **`Finite`** tables
+    with arbitrary (non-integer) values (SymPy `FiniteRV`).
+  - Several variables under independence: `stats::{expectation,
+    variance, covariance, correlation}` over polynomials in the symbols,
+    `stats::probability` on rectangles and on `X < Y` for two normals
+    (`1/2` exactly), `sum_distribution` (Normal, Binomial, Poisson,
+    NegativeBinomial, Gamma/Exponential/χ² closures),
+    `conditional_expectation` / `conditional_probability`
+    (`E[X | X > 0] = √(2/π)`), `entropy`.
+  - Every constructor has a `try_` twin validating numeric parameters;
+    `Support` and the family enums are `#[non_exhaustive]`.  All
+    reference values in `tests/v10/` come from SymPy 1.14 (~130 tests).
+- `Context::bool_true()` / `bool_false()` (SymPy `S.true`/`S.false`): the
+  catch-all branch of a `piecewise`.
+
+### Infrastructure
+
+- `symplex` and `symplex-build` at 0.11.0; `symplex-macros` unchanged at
+  0.3.2.  New test group `tests/v10/`.  Book: "Probability and
+  Statistics" guide page.
+
 ## [0.10.1] - 2026-09-19
 
 ### Added

@@ -36,6 +36,7 @@
 - [Integer Lattices and Normal Forms](./guide/integer-lattices.md)
 - [Transforms](./guide/transforms.md)
 - [Number Theory and Combinatorics](./guide/number-theory.md)
+- [Probability and Statistics](./guide/statistics.md)
 - [Code Generation](./guide/code-generation.md)
 - [Dimensional Analysis](./guide/units.md)
 

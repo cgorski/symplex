@@ -32,6 +32,10 @@ pub enum Support {
         /// Highest value (`None` = +∞).
         hi: Option<Ex>,
     },
+    /// A discrete variable on an explicit finite list of values (not
+    /// necessarily integers): a [`Finite`](super::DiscreteFamily::Finite)
+    /// table.
+    Finite(Vec<Ex>),
 }
 
 /// A probability distribution: one of the continuous or discrete
@@ -143,7 +147,7 @@ impl fmt::Display for Distribution {
 /// A random variable: a symbol with a distribution.  Expressions in the
 /// symbol are random quantities; the queries below evaluate them exactly.
 ///
-/// See the [module docs](self) for an overview and examples.
+/// See the [module docs](super) for an overview and examples.
 #[derive(Clone, Debug)]
 pub struct RandomVariable {
     ctx: Context,
@@ -260,6 +264,20 @@ impl RandomVariable {
                 let lo = lo.unwrap_or_else(|| self.ctx.neg_infinity());
                 dens.summation(&t, &lo, var)
             }
+            Support::Finite(values) => {
+                // Σ pᵢ · [vᵢ ≤ var], as a piecewise-free sum of indicator
+                // terms when `var` is symbolic: use Heaviside(var − vᵢ).
+                let mut acc = self.ctx.zero();
+                for v in &values {
+                    let p = self.dist.density(v);
+                    match (var - v).is_nonnegative() {
+                        Some(true) => acc += p,
+                        Some(false) => {}
+                        None => acc += p * (var - v).heaviside(),
+                    }
+                }
+                acc.simplify()
+            }
         }
     }
 
@@ -286,6 +304,20 @@ impl RandomVariable {
     /// closed form.  SymPy: `quantile(X)(p)`.
     pub fn quantile(&self, p: &Ex) -> Option<Ex> {
         self.dist.quantile(p)
+    }
+
+    /// Entropy: the differential entropy `−E[ln f(X)]` of a continuous
+    /// variable or the Shannon entropy `−Σ p ln p` of a discrete one — the
+    /// family's closed form when it has one (`Normal`: `½ ln(2πeσ²)`),
+    /// otherwise the generic expectation (see [`entropy`](super::entropy)).
+    /// SymPy: `entropy(X)`.
+    pub fn entropy(&self) -> Ex {
+        match &self.dist {
+            Distribution::Continuous(f) => {
+                f.entropy(&self.ctx).unwrap_or_else(|| super::entropy(self))
+            }
+            Distribution::Discrete(_) => super::entropy(self),
+        }
     }
 
     /// The median, when the quantile function has a closed form.  SymPy:
@@ -341,6 +373,10 @@ impl RandomVariable {
     /// (disjunctions, non-linear conditions in `X`).
     pub fn probability(&self, event: &BoolEx) -> Result<Ex, SymplexError> {
         let (lo, hi, lo_strict, hi_strict, point) = self.event_bounds(event)?;
+        let support = self.dist.support();
+        if let Support::Finite(values) = &support {
+            return self.probability_on_finite(values, lo, hi, lo_strict, hi_strict, point);
+        }
         if let Some(a) = point {
             return Ok(match self.dist {
                 Distribution::Continuous(_) => self.ctx.zero(),
@@ -349,11 +385,11 @@ impl RandomVariable {
         }
         let one = self.ctx.one();
         // Clip to the support.
-        let support = self.dist.support();
         let (slo, shi) = match &support {
             Support::Continuous { lo, hi } | Support::Discrete { lo, hi } => {
                 (lo.clone(), hi.clone())
             }
+            Support::Finite(_) => (None, None),
         };
         let lo = match (lo, &slo) {
             (Some(a), Some(s)) => Some(a.max_with(s)),
@@ -370,6 +406,11 @@ impl RandomVariable {
         Ok(match self.dist {
             Distribution::Continuous(_) => {
                 // Strictness does not matter for a continuous variable.
+                // The family's closed-form CDF first (`F(hi) − F(lo)`, with
+                // `F(±∞)` = 1 / 0 by definition), else exact integration.
+                if let Some(p) = self.probability_from_cdf(lo.as_ref(), hi.as_ref()) {
+                    return Ok(p);
+                }
                 let lo = lo.unwrap_or_else(|| self.ctx.neg_infinity());
                 let hi = hi.unwrap_or_else(|| self.ctx.infinity());
                 dens.integrate_definite(t, &lo, &hi).simplify()
@@ -400,9 +441,30 @@ impl RandomVariable {
         })
     }
 
-    /// Integrate or sum an expression in the symbol over the support.
+    /// `P(lo ≤ X ≤ hi)` through the family's closed-form CDF, when it has
+    /// one and the bounds do not already exceed the support (the caller has
+    /// clipped them).  `None` leaves the question to integration.
+    fn probability_from_cdf(&self, lo: Option<&Ex>, hi: Option<&Ex>) -> Option<Ex> {
+        let probe = self.ctx.symbol("_t_cdf");
+        // Only families with a closed form (a `None` here means "integrate").
+        self.dist.cdf(&probe)?;
+        let upper = match hi {
+            Some(h) => self.dist.cdf(h)?,
+            None => self.ctx.one(),
+        };
+        let lower = match lo {
+            Some(l) => self.dist.cdf(l)?,
+            None => self.ctx.zero(),
+        };
+        Some((upper - lower).simplify())
+    }
+
+    /// Integrate or sum an expression in the symbol over the support.  The
+    /// integrand is simplified first so that products such as
+    /// `eˣ · e^{−x²/2}` reach the integrator as one exponential.
     fn integrate_over_support(&self, integrand: &Ex) -> Ex {
         let t = &self.symbol;
+        let integrand = integrand.simplify();
         match self.dist.support() {
             Support::Continuous { lo, hi } => {
                 let lo = lo.unwrap_or_else(|| self.ctx.neg_infinity());
@@ -414,7 +476,73 @@ impl RandomVariable {
                 let hi = hi.unwrap_or_else(|| self.ctx.infinity());
                 integrand.summation(t, &lo, &hi).simplify()
             }
+            Support::Finite(values) => {
+                // The integrand already contains the pmf as a factor; on a
+                // finite table `Σᵢ integrand(vᵢ)` is exact and needs no
+                // summation engine — but `density(vᵢ)` inside the integrand
+                // is a `Piecewise`, so evaluate `g(vᵢ)·pᵢ` directly instead.
+                let mut acc = self.ctx.zero();
+                for v in &values {
+                    acc += integrand.subs(t, v).eval();
+                }
+                acc.simplify()
+            }
         }
+    }
+
+    /// `P(event)` on an explicit finite table: sum the probabilities of the
+    /// listed values that satisfy the bounds.  Bounds are compared exactly;
+    /// an undecidable comparison (symbolic values) is `NotImplemented`.
+    fn probability_on_finite(
+        &self,
+        values: &[Ex],
+        lo: Option<Ex>,
+        hi: Option<Ex>,
+        lo_strict: bool,
+        hi_strict: bool,
+        point: Option<Ex>,
+    ) -> Result<Ex, SymplexError> {
+        let undecided = |v: &Ex| {
+            SymplexError::NotImplemented(format!(
+                "probability on a finite table: cannot decide whether `{v}` satisfies the event"
+            ))
+        };
+        let mut acc = self.ctx.zero();
+        for v in values {
+            let keep = if let Some(a) = &point {
+                v.equals(a).ok_or_else(|| undecided(v))?
+            } else {
+                let above = match &lo {
+                    None => true,
+                    Some(a) => {
+                        let d = v - a;
+                        let ok = if lo_strict {
+                            d.is_positive()
+                        } else {
+                            d.is_nonnegative()
+                        };
+                        ok.ok_or_else(|| undecided(v))?
+                    }
+                };
+                let below = match &hi {
+                    None => true,
+                    Some(b) => {
+                        let d = b - v;
+                        let ok = if hi_strict {
+                            d.is_positive()
+                        } else {
+                            d.is_nonnegative()
+                        };
+                        ok.ok_or_else(|| undecided(v))?
+                    }
+                };
+                above && below
+            };
+            if keep {
+                acc += self.dist.density(v).eval();
+            }
+        }
+        Ok(acc.simplify())
     }
 
     /// Decompose an event into `(lo, hi, lo_strict, hi_strict, point)` on

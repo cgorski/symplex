@@ -99,6 +99,28 @@ impl Context {
         crate::api::expr::SetEx::from_raw_parts(self.id, Arc::clone(&self.inner), id)
     }
 
+    /// The Boolean constant `True` (SymPy `S.true`) — the catch-all
+    /// condition of a [`piecewise`](crate::api::expr::Ex::piecewise) and
+    /// the neutral element of `and`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let abs = Ex::piecewise(&[(&(-&x), &x.lt(&ctx.int(0))), (&x, &ctx.bool_true())]);
+    /// assert_eq!(abs.subs(&x, &ctx.int(-3)).eval(), ctx.int(3));
+    /// ```
+    pub fn bool_true(&self) -> crate::api::expr::BoolEx {
+        let id = self.inner.read().arena.bool_true();
+        crate::api::expr::BoolEx::from_raw_parts(self.id, Arc::clone(&self.inner), id)
+    }
+
+    /// The Boolean constant `False` (SymPy `S.false`).
+    pub fn bool_false(&self) -> crate::api::expr::BoolEx {
+        let id = self.inner.read().arena.bool_false();
+        crate::api::expr::BoolEx::from_raw_parts(self.id, Arc::clone(&self.inner), id)
+    }
+
     // ── Atom construction ──────────────────────────────────────────────
 
     /// Creates a symbolic variable.

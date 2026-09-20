@@ -100,6 +100,25 @@ impl RandomVariable {
                     })
                     .collect())
             }
+            (Distribution::Discrete(_), Support::Finite(values)) => {
+                // Cumulative sums over the listed values (which need not be
+                // integers); a symbolic probability is an error.
+                let mut cumulative = Vec::with_capacity(values.len());
+                let mut points = Vec::with_capacity(values.len());
+                let mut acc = 0.0;
+                for v in &values {
+                    acc += self.density(v).eval_f64()?;
+                    cumulative.push(acc);
+                    points.push(v.eval_f64()?);
+                }
+                Ok((0..n)
+                    .map(|_| {
+                        let u = rng.next_f64() * acc;
+                        let idx = cumulative.partition_point(|c| *c < u);
+                        points[idx.min(points.len().saturating_sub(1))]
+                    })
+                    .collect())
+            }
             _ => Err(SymplexError::NotImplemented(format!(
                 "sampling {}: no sampling route for an infinite discrete support",
                 self.distribution().name()

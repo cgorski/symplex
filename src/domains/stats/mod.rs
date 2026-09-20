@@ -44,10 +44,12 @@
 
 mod continuous;
 mod discrete;
+mod joint;
 mod rv;
 mod sample;
 
 pub use continuous::*;
 pub use discrete::*;
+pub use joint::*;
 pub use rv::{Distribution, RandomVariable, Support};
 pub use sample::Rng;
