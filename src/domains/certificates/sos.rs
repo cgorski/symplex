@@ -42,7 +42,7 @@ use crate::base::errors::SymplexError;
 use crate::domains::certificates::serial::{q_from_str, q_to_str};
 use crate::domains::certificates::{Certificate, Outcome};
 use crate::domains::exact_matrix::QMatrix;
-use crate::domains::linprog::{LpProblem, LpStatus, Q};
+use crate::domains::linprog::{Budget, LpProblem, LpStatus, Q};
 use crate::output::lean::{LeanOpts, MATHLIB_LINE_WIDTH, lean_ident, wrap_lean};
 use crate::output::tree::ExprTree;
 
@@ -841,14 +841,21 @@ fn monomials_up_to(nvars: usize, deg: u32) -> Vec<Vec<u32>> {
 /// only monomials that can appear in a sum-of-squares decomposition.  Each
 /// candidate is one small exact LP: `2e = Σ λᵢ vᵢ`, `Σ λᵢ = 1`, `λ ≥ 0`
 /// over the goal's support `vᵢ`.  Falls back to the plain degree bound if
-/// an LP fails (never drops a monomial on an error).
-fn newton_pruned_basis(goal: &Poly, nvars: usize, half: u32) -> Vec<Vec<u32>> {
+/// an LP fails (never drops a monomial on an error); a pass of the
+/// caller's `deadline` is reported as `Err(DeadlinePassed)` so the caller
+/// can answer `Unknown` without building the SDP.
+fn newton_pruned_basis(
+    goal: &Poly,
+    nvars: usize,
+    half: u32,
+    deadline: Option<Instant>,
+) -> Result<Vec<Vec<u32>>, DeadlinePassed> {
     let all = monomials_up_to(nvars, half);
     let support: Vec<Vec<u32>> = goal.terms_iter().map(|(m, _)| m.to_vec()).collect();
     if support.len() <= 1 {
-        return all;
+        return Ok(all);
     }
-    let in_hull = |e: &[u32]| -> Option<bool> {
+    let in_hull = |e: &[u32]| -> Result<Option<bool>, DeadlinePassed> {
         let k = support.len();
         // Variables λ₀..λ_{k−1} ≥ 0 (default bounds); rows: one per
         // coordinate plus Σλ = 1.
@@ -861,17 +868,25 @@ fn newton_pruned_basis(goal: &Poly, nvars: usize, half: u32) -> Vec<Vec<u32>> {
             lp = lp.eq(row, Q::from_integer(BigInt::from(2 * target)));
         }
         lp = lp.eq(vec![Q::one(); k], Q::one());
-        Some(lp.solve().ok()?.status == LpStatus::Optimal)
+        if let Some(at) = deadline {
+            lp = lp.with_budget(Budget::deadline(at));
+        }
+        Ok(match lp.solve().ok().map(|s| s.status) {
+            Some(LpStatus::Optimal) => Some(true),
+            Some(LpStatus::BudgetExhausted) => return Err(DeadlinePassed),
+            Some(_) => Some(false),
+            None => None,
+        })
     };
     let mut kept = Vec::with_capacity(all.len());
     for m in &all {
-        match in_hull(m) {
+        match in_hull(m)? {
             Some(true) => kept.push(m.clone()),
             Some(false) => {}
-            None => return all,
+            None => return Ok(all),
         }
     }
-    kept
+    Ok(kept)
 }
 
 /// The SDP `A(Q) = b, Q ⪰ 0` for `goal = mᵀ Q m` over the monomial basis.
@@ -1877,20 +1892,13 @@ fn value_at(goal: &Poly, point: &[Q]) -> Option<Q> {
 /// numerical minimisation from the best grid point, rationalised.
 fn refute(goal: &Poly) -> Option<(Vec<Q>, Q)> {
     let n = goal.gens().len();
-    let grid: Vec<Q> = [-3i64, -1, 0, 1, 3]
-        .iter()
-        .map(|&v| Q::from_integer(BigInt::from(v)))
-        .chain([
-            Q::new(BigInt::from(1), BigInt::from(2)),
-            Q::new(BigInt::from(-1), BigInt::from(2)),
-        ])
-        .collect();
-    let total = grid.len().checked_pow(n as u32)?;
+    let total = grid_size(n)?;
     if total > 50_000 {
         return None;
     }
     let mut idx = vec![0usize; n];
     let mut best: Option<(Vec<Q>, Q)> = None;
+    let grid = refutation_grid();
     loop {
         let point: Vec<Q> = idx.iter().map(|&k| grid[k].clone()).collect();
         if let Some(v) = value_at(goal, &point) {
@@ -1917,7 +1925,29 @@ fn refute(goal: &Poly) -> Option<(Vec<Q>, Q)> {
             break;
         }
     }
-    // Numerical descent from the best grid point (Nelder–Mead on f64).
+    refute_by_descent(goal, best)
+}
+
+/// The sample values of the refutation grid, per coordinate.
+fn refutation_grid() -> Vec<Q> {
+    [-3i64, -1, 0, 1, 3]
+        .iter()
+        .map(|&v| Q::from_integer(BigInt::from(v)))
+        .chain([
+            Q::new(BigInt::from(1), BigInt::from(2)),
+            Q::new(BigInt::from(-1), BigInt::from(2)),
+        ])
+        .collect()
+}
+
+/// Number of grid points in `n` variables, `None` on overflow.
+fn grid_size(n: usize) -> Option<usize> {
+    refutation_grid().len().checked_pow(u32::try_from(n).ok()?)
+}
+
+/// Numerical descent (Nelder–Mead on f64) from the best grid point, then
+/// an exact check of the rationalised minimiser.
+fn refute_by_descent(goal: &Poly, best: Option<(Vec<Q>, Q)>) -> Option<(Vec<Q>, Q)> {
     let (start, _) = best?;
     let ctx = goal.context();
     let f = |p: &[f64]| -> f64 {
@@ -2001,6 +2031,9 @@ fn refute(goal: &Poly) -> Option<(Vec<Q>, Q)> {
 /// }
 /// ```
 pub fn prove_sos(goal: &Ex, vars: &[Ex], opts: &SosOpts) -> Result<SosOutcome, SymplexError> {
+    // The time limit is measured from the start of the call: the deadline
+    // is fixed here, before parsing, refutation and the Newton-polytope LPs.
+    let deadline = opts.deadline_from_now();
     if vars.is_empty() {
         return Err(invalid("at least one variable is required"));
     }
@@ -2027,7 +2060,13 @@ pub fn prove_sos(goal: &Ex, vars: &[Ex], opts: &SosOpts) -> Result<SosOutcome, S
         )?));
     }
     let deg = goal_poly.total_degree().unwrap_or(0);
-    // 1. Cheap refutation.
+    let budget_exhausted = |where_: &str| {
+        Ok(Outcome::Unknown(SosUnknown {
+            reason: format!("budget exhausted: deadline passed {where_}"),
+        }))
+    };
+    // 1. Cheap refutation (a bounded grid plus one descent; a
+    //    counterexample is decisive, so this stage is not budget-bound).
     if let Some((point, value)) = refute(&goal_poly) {
         let point = vars.iter().cloned().zip(point).collect();
         return Ok(Outcome::Refuted {
@@ -2069,7 +2108,10 @@ pub fn prove_sos(goal: &Ex, vars: &[Ex], opts: &SosOpts) -> Result<SosOutcome, S
     //    in the goal's Newton polytope — a monomial outside it cannot occur
     //    in any square of the decomposition (Reznick), so pruning loses no
     //    certificate and keeps sparse goals within `max_basis`.
-    let basis = newton_pruned_basis(&goal_poly, vars.len(), deg / 2);
+    let basis = match newton_pruned_basis(&goal_poly, vars.len(), deg / 2, deadline) {
+        Ok(basis) => basis,
+        Err(DeadlinePassed) => return budget_exhausted("during the Newton-polytope pruning"),
+    };
     if basis.len() > opts.max_basis {
         return Err(invalid(format!(
             "the Gram basis has {} monomials, above max_basis = {}",
@@ -2077,10 +2119,12 @@ pub fn prove_sos(goal: &Ex, vars: &[Ex], opts: &SosOpts) -> Result<SosOutcome, S
             opts.max_basis
         )));
     }
+    if check_deadline(deadline).is_err() {
+        return budget_exhausted("before the SDP was assembled");
+    }
     let problem = SosProblem::new(&goal_poly, &basis)?;
 
     // 3. Solve, reduce, round.
-    let deadline = opts.deadline_from_now();
     let mut face: Option<QMatrix> = None; // B with Q = B Q' Bᵀ
     let mut current = problem;
     for round in 0..=opts.max_facial_reductions {

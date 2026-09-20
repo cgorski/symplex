@@ -25,7 +25,10 @@
 //! The subset search is exponential in the number of modular factors, so
 //! it is bounded by [`MAX_RECOMBINATION_SUBSETS`].  When the budget is
 //! exhausted the remaining (possibly reducible) cofactor is returned as a
-//! single factor and a `tracing::warn!` is emitted.
+//! single factor and a `tracing::warn!` is emitted.  Callers inside the
+//! crate that need to know whether every returned factor is certified
+//! irreducible use `factor_zassenhaus_checked`, which reports that as a
+//! flag; the public functions keep their signatures.
 //!
 //! # Examples
 //!
@@ -157,11 +160,23 @@ pub fn factor_zassenhaus(f: &Poly) -> Vec<(Poly, u32)> {
 /// ```
 #[must_use]
 pub fn factor_zassenhaus_with_content(f: &Poly) -> (Ratio<BigInt>, Vec<(Poly, u32)>) {
+    let (content, factors, _complete) = factor_zassenhaus_checked(f);
+    (content, factors)
+}
+
+/// [`factor_zassenhaus_with_content`] that also reports whether the
+/// factorization is *complete*: `true` when every returned factor is
+/// certified irreducible over ℤ, `false` when some factor may still be
+/// reducible because the recombination budget was exhausted, no usable
+/// prime was found, or the multiply-back verification failed and the
+/// input was returned unfactored.  The product identity
+/// `f = content · ∏ factorᵢ^multᵢ` holds in either case.
+pub(crate) fn factor_zassenhaus_checked(f: &Poly) -> (Ratio<BigInt>, Vec<(Poly, u32)>, bool) {
     if f.is_zero() {
-        return (Ratio::zero(), vec![]);
+        return (Ratio::zero(), vec![], true);
     }
     if f.is_constant() {
-        return (f.coeff(0), vec![]);
+        return (f.coeff(0), vec![], true);
     }
 
     let mut content = f.content();
@@ -172,9 +187,12 @@ pub fn factor_zassenhaus_with_content(f: &Poly) -> (Ratio<BigInt>, Vec<(Poly, u3
     }
 
     let mut all: Vec<(Poly, u32)> = Vec::new();
+    let mut complete = true;
     for (sf, mult) in super::dense::square_free_decomposition(&prim) {
         let coeffs = poly_to_z(&sf);
-        for g in factor_squarefree_z(&coeffs) {
+        let (factors, part_complete) = factor_squarefree_z_checked(&coeffs);
+        complete &= part_complete;
+        for g in factors {
             all.push((z_to_poly(&g), mult));
         }
     }
@@ -192,11 +210,12 @@ pub fn factor_zassenhaus_with_content(f: &Poly) -> (Ratio<BigInt>, Vec<(Poly, u3
         tracing::error!(
             "factor_zassenhaus: verification failed (product of factors ≠ input); returning unfactored"
         );
-        return (content, vec![(prim, 1)]);
+        let complete = prim.degree() == Some(1);
+        return (content, vec![(prim, 1)], complete);
     }
 
     all.sort_by(|a, b| cmp_poly(&a.0, &b.0));
-    (content, all)
+    (content, all, complete)
 }
 
 /// Factor a square-free primitive polynomial `f ∈ ℤ[x]` (coefficients in
@@ -229,13 +248,19 @@ pub fn factor_zassenhaus_with_content(f: &Poly) -> (Ratio<BigInt>, Vec<(Poly, u3
 /// ```
 #[must_use]
 pub fn factor_squarefree_z(f: &[BigInt]) -> Vec<Vec<BigInt>> {
+    factor_squarefree_z_checked(f).0
+}
+
+/// [`factor_squarefree_z`] that also reports whether every returned factor
+/// is certified irreducible (see [`factor_zassenhaus_checked`]).
+fn factor_squarefree_z_checked(f: &[BigInt]) -> (Vec<Vec<BigInt>>, bool) {
     let mut f = f.to_vec();
     z_normalize(&mut f);
     let Some(n) = z_degree(&f) else {
-        return vec![];
+        return (vec![], true);
     };
     if n == 0 {
-        return vec![];
+        return (vec![], true);
     }
     let mut f = z_primitive_part(&f);
     if f.last().is_some_and(|lc| lc.is_negative()) {
@@ -257,21 +282,23 @@ pub fn factor_squarefree_z(f: &[BigInt]) -> Vec<Vec<BigInt>> {
 
     if z_degree(&f).unwrap_or(0) == 0 {
         factors.sort_by(cmp_z);
-        return factors;
+        return (factors, true);
     }
 
     // Not square-free?  Decompose first (Berlekamp–Zassenhaus needs a
     // square-free image mod p) and expand multiplicities into repeats.
     let fq = z_to_poly(&f);
     if fq.is_squarefree() == Some(false) {
+        let mut complete = true;
         for (part, mult) in super::dense::square_free_decomposition(&fq) {
-            let sub = factor_squarefree_z(&poly_to_z(&part));
+            let (sub, sub_complete) = factor_squarefree_z_checked(&poly_to_z(&part));
+            complete &= sub_complete;
             for _ in 0..mult {
                 factors.extend(sub.iter().cloned());
             }
         }
         factors.sort_by(cmp_z);
-        return factors;
+        return (factors, complete);
     }
 
     // Cheap pre-pass: rational roots (linear factors) via the Rational Root
@@ -287,22 +314,27 @@ pub fn factor_squarefree_z(f: &[BigInt]) -> Vec<Vec<BigInt>> {
         }
     }
 
+    let mut complete = true;
     match z_degree(&remaining) {
         None | Some(0) => {}
         Some(1) => factors.push(remaining),
         Some(_) => match zassenhaus_core(&remaining) {
-            Some(fs) => factors.extend(fs),
+            Some((fs, core_complete)) => {
+                complete = core_complete;
+                factors.extend(fs);
+            }
             None => {
                 tracing::warn!(
                     "factor_squarefree_z: no usable prime found; returning cofactor unfactored"
                 );
+                complete = false;
                 factors.push(remaining);
             }
         },
     }
 
     factors.sort_by(cmp_z);
-    factors
+    (factors, complete)
 }
 
 /// Decide whether a non-constant polynomial with rational coefficients is
@@ -724,8 +756,11 @@ type FpPoly = Vec<u64>;
 /// Berlekamp–Zassenhaus on a square-free primitive `f` of degree ≥ 2 with
 /// positive leading coefficient and `f(0) ≠ 0`.
 ///
-/// Returns `None` if no usable prime could be found.
-fn zassenhaus_core(f: &ZPoly) -> Option<Vec<ZPoly>> {
+/// Returns the factors and whether each of them is certified irreducible
+/// (`false` once the recombination budget is exhausted and the Kronecker
+/// fallback leaves a cofactor of degree ≥ 2 unsplit); `None` if no usable
+/// prime could be found.
+fn zassenhaus_core(f: &ZPoly) -> Option<(Vec<ZPoly>, bool)> {
     let n = z_degree(f)?;
     let lc = f[n].clone();
 
@@ -750,7 +785,7 @@ fn zassenhaus_core(f: &ZPoly) -> Option<Vec<ZPoly>> {
         let monic = fp_monic(&fp, p);
         let factors = fp_factor_squarefree_monic(&monic, p);
         if factors.len() <= 1 {
-            return Some(vec![f.clone()]);
+            return Some((vec![f.clone()], true));
         }
 
         // Intersect the achievable degree set.
@@ -765,7 +800,7 @@ fn zassenhaus_core(f: &ZPoly) -> Option<Vec<ZPoly>> {
             .all(|(d, &ok)| !ok || d == 0 || d == n)
         {
             tracing::debug!("factor_zassenhaus: degree analysis proves irreducibility");
-            return Some(vec![f.clone()]);
+            return Some((vec![f.clone()], true));
         }
 
         let better = match &best {
@@ -806,8 +841,10 @@ fn zassenhaus_core(f: &ZPoly) -> Option<Vec<ZPoly>> {
     debug_assert_eq!(lifted.len(), r);
 
     // ── 4. Recombine ───────────────────────────────────────────────────
+    // ── 4. Recombine ──────────────────────────────────────────────────────────────────
     let (mut found, remainder, complete) = recombine(f, &pk, lifted, &degree_mask);
 
+    let mut certified = true;
     if let Some(rem) = remainder {
         if complete {
             found.push(rem);
@@ -816,19 +853,24 @@ fn zassenhaus_core(f: &ZPoly) -> Option<Vec<ZPoly>> {
                 degree = z_degree(&rem).unwrap_or(0),
                 "factor_zassenhaus: recombination budget exhausted; trying Kronecker fallback on cofactor"
             );
-            found.extend(kronecker_fallback(&rem));
+            let (pieces, pieces_certified) = kronecker_fallback(&rem);
+            certified = pieces_certified;
+            found.extend(pieces);
         }
     }
 
-    Some(found)
+    Some((found, certified))
 }
 
 /// Fallback used when the recombination budget is exhausted: Kronecker's
 /// method for factors of small degree.  Whatever cannot be split is
-/// returned as a single (possibly reducible) factor.
-fn kronecker_fallback(f: &ZPoly) -> Vec<ZPoly> {
+/// returned as a single (possibly reducible) factor; the flag is `true`
+/// only when every returned piece is certified irreducible, i.e. the
+/// unsplit remainder has degree at most one.
+fn kronecker_fallback(f: &ZPoly) -> (Vec<ZPoly>, bool) {
     let mut remaining = z_to_poly(f);
     let mut out: Vec<ZPoly> = Vec::new();
+    let mut certified = true;
     let max_trial = (remaining.degree().unwrap_or(0) / 2).min(super::MAX_KRONECKER_DEGREE);
     for trial_deg in 2..=max_trial {
         loop {
@@ -838,17 +880,23 @@ fn kronecker_fallback(f: &ZPoly) -> Vec<ZPoly> {
             }
             match super::dense::kronecker_find_factor(&remaining, trial_deg) {
                 Some((fac, quot)) => {
-                    out.extend(factor_squarefree_z(&poly_to_z(&fac)));
+                    let (sub, sub_certified) = factor_squarefree_z_checked(&poly_to_z(&fac));
+                    certified &= sub_certified;
+                    out.extend(sub);
                     remaining = quot;
                 }
                 None => break,
             }
         }
     }
-    if remaining.degree().unwrap_or(0) >= 1 {
+    let rem_deg = remaining.degree().unwrap_or(0);
+    if rem_deg >= 1 {
         out.push(poly_to_z(&super::dense::ensure_positive_lc(&remaining)));
     }
-    out
+    if rem_deg >= 2 {
+        certified = false;
+    }
+    (out, certified)
 }
 
 /// Mignotte-style bound `2ⁿ · ⌈‖f‖₂⌉ · |lc(f)|` on the coefficients of
@@ -1340,9 +1388,18 @@ fn fp_mul(a: &FpPoly, b: &FpPoly, p: u64) -> FpPoly {
     out
 }
 
-/// Euclidean division in `GF(p)[x]`.  `b` must be nonzero.
+/// Euclidean division in `GF(p)[x]`.  Every caller passes a nonzero `b`
+/// (a factor, a nonzero gcd remainder, a modulus); should the zero
+/// polynomial ever arrive, the result is `(0, a)` — the only pair that
+/// still satisfies `a = q·b + r` — rather than a panic.
 fn fp_div_rem(a: &FpPoly, b: &FpPoly, p: u64) -> (FpPoly, FpPoly) {
-    let db = fp_degree(b).expect("fp_div_rem: division by zero polynomial");
+    debug_assert!(
+        fp_degree(b).is_some(),
+        "fp_div_rem: division by zero polynomial"
+    );
+    let Some(db) = fp_degree(b) else {
+        return (vec![], a.clone());
+    };
     let Some(da) = fp_degree(a) else {
         return (vec![], vec![]);
     };

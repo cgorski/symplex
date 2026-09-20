@@ -425,11 +425,22 @@ impl<C: Field> GenPoly<C> {
     /// Euclidean division: `self = quotient * divisor + remainder`
     /// with `deg(remainder) < deg(divisor)`.
     ///
-    /// # Panics
-    ///
-    /// Panics if `divisor` is zero.
+    /// Division by the zero polynomial is undefined; every caller in the
+    /// crate has already checked its divisor, and the only pair that still
+    /// satisfies `self = q·divisor + r` — `(0, self)` — is returned rather
+    /// than a panic.  Use [`try_div_rem`](Self::try_div_rem) to observe the
+    /// zero divisor.
     pub fn div_rem(&self, divisor: &Self) -> (Self, Self) {
-        assert!(!divisor.is_zero(), "division by zero polynomial");
+        debug_assert!(!divisor.is_zero(), "division by zero polynomial");
+        self.try_div_rem(divisor)
+            .unwrap_or_else(|| (Self::zero(), self.clone()))
+    }
+
+    /// Euclidean division, `None` when `divisor` is the zero polynomial.
+    pub fn try_div_rem(&self, divisor: &Self) -> Option<(Self, Self)> {
+        if divisor.is_zero() {
+            return None;
+        }
 
         let d_deg = divisor.coeffs.len() - 1;
         let d_lc = &divisor.coeffs[d_deg];
@@ -469,7 +480,7 @@ impl<C: Field> GenPoly<C> {
             coeffs: quot_coeffs,
         };
         q.normalize();
-        (q, rem)
+        Some((q, rem))
     }
 
     /// Polynomial division (quotient only).

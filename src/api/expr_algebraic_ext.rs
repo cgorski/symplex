@@ -159,62 +159,44 @@ fn reduce_in_order(
     }
 }
 
-/// The distinct real roots of `f` (a non-constant polynomial in `var`) as
-/// arena expressions, ascending: rational roots exactly, the others as
-/// `RootOf(g, k)` where `g` is the irreducible factor over ℤ that vanishes
-/// there and `k` is the root's index in `g`'s complex roots sorted by
-/// (real part, imaginary part) — the convention `RootOf` is evaluated with.
-///
-/// Returns `None` if the exact root count of some factor disagrees with
-/// the numerical one (which would leave a `RootOf` index unverifiable).
-fn real_roots_ids(arena: &mut Arena, f: &Poly, var: ExprId) -> Option<Vec<ExprId>> {
-    /// One irreducible factor with everything needed to name its real roots.
-    struct Factor {
-        poly: Poly,
-        chain: SturmChain,
-        /// Rational root of a linear factor.
-        rational: Option<Ratio<BigInt>>,
-        /// `RootOf` indices of the real roots, ascending.
-        indices: Vec<usize>,
-        /// Number of real roots already emitted.
-        emitted: usize,
-        expr: Option<ExprId>,
-    }
+/// One distinct real root of a polynomial, before it is interned.
+enum RealRoot {
+    /// A rational root (of a linear factor).
+    Rational(Ratio<BigInt>),
+    /// `RootOf(g, k)`: the `k`-th root of the irreducible factor `g` in the
+    /// (re, im) order the `RootOf` evaluator uses.
+    RootOf { factor: usize, index: usize },
+}
 
-    let (_content, parts) = f.factor_over_z();
-    let mut factors: Vec<Factor> = Vec::with_capacity(parts.len());
+/// The distinct real roots of `f` (a non-constant polynomial with rational
+/// coefficients), ascending, together with the irreducible factors over ℤ
+/// that the `RootOf` entries refer to.  Rational roots are exact; every
+/// other root is named `RootOf(g, k)` with `k` from
+/// [`real_root_index`](crate::poly::roots::real_root_index), which
+/// verifies that the `k`-th computed root of `g` lies in the root's Sturm
+/// isolating interval and that the index is stable.
+///
+/// Returns `None` when the factorisation over ℤ is not certified complete
+/// (a `RootOf` must name an *irreducible* polynomial), when a root cannot
+/// be assigned to exactly one factor, or when its `RootOf` index cannot be
+/// verified.  These are internal limits, not a statement about `f`; the
+/// public wrapper folds them into its `None` alongside "not a polynomial"
+/// because its return type cannot distinguish the two in a patch release.
+fn real_roots_of(f: &Poly) -> Option<(Vec<Poly>, Vec<RealRoot>)> {
+    let (_content, parts, complete) = crate::poly::factor_zassenhaus::factor_zassenhaus_checked(f);
+    if !complete {
+        return None;
+    }
+    let mut factors: Vec<Poly> = Vec::with_capacity(parts.len());
+    let mut chains: Vec<SturmChain> = Vec::with_capacity(parts.len());
     let mut square_free = Poly::from_int(1);
     for (g, _mult) in &parts {
-        let deg = g.degree()?;
-        if deg == 0 {
+        if g.degree()? == 0 {
             continue;
         }
         square_free = &square_free * g;
-        let chain = SturmChain::new(g);
-        let real_count = chain.count_real_roots();
-        let rational = (deg == 1).then(|| -(g.coeff(0) / g.coeff(1)));
-        let mut indices = Vec::new();
-        if rational.is_none() && real_count > 0 {
-            // Real roots keep `im == 0.0` exactly in `nroots_f64`, and their
-            // number agrees with the Sturm count.
-            indices = crate::poly::roots::nroots_f64(g, 128)
-                .iter()
-                .enumerate()
-                .filter(|(_, (_, im))| *im == 0.0)
-                .map(|(i, _)| i)
-                .collect();
-            if indices.len() != real_count {
-                return None;
-            }
-        }
-        factors.push(Factor {
-            poly: g.clone(),
-            chain,
-            rational,
-            indices,
-            emitted: 0,
-            expr: None,
-        });
+        chains.push(SturmChain::new(g));
+        factors.push(g.clone());
     }
     if square_free.degree().unwrap_or(0) == 0 {
         return None;
@@ -224,34 +206,27 @@ fn real_roots_ids(arena: &mut Arena, f: &Poly, var: ExprId) -> Option<Vec<ExprId
     // pairwise disjoint and sorted, so walking them in order visits every
     // real root ascending; each one belongs to exactly one factor.
     let intervals = SturmChain::new(&square_free).isolate_all_real_roots();
-    let mut out: Vec<ExprId> = Vec::with_capacity(intervals.len());
+    let mut out: Vec<RealRoot> = Vec::with_capacity(intervals.len());
     for (lo, hi) in intervals {
-        let owner = factors.iter_mut().find(|fac| {
+        let owner = factors.iter().zip(&chains).position(|(g, chain)| {
             if lo == hi {
-                fac.poly.eval(&lo).is_zero()
+                g.eval(&lo).is_zero()
             } else {
-                fac.chain.count_roots_in(&lo, &hi) == 1
+                chain.count_roots_in(&lo, &hi) == 1
             }
         })?;
-        match &owner.rational {
-            Some(r) => out.push(num_expr(arena, r.clone())),
-            None => {
-                let k = *owner.indices.get(owner.emitted)?;
-                owner.emitted += 1;
-                let g_expr = match owner.expr {
-                    Some(e) => e,
-                    None => {
-                        let e = poly_to_expr(arena, &owner.poly, var);
-                        owner.expr = Some(e);
-                        e
-                    }
-                };
-                let idx = arena.int(k as i64);
-                out.push(arena.intern(ExprNode::RootOf(g_expr, idx)));
-            }
+        let g = &factors[owner];
+        if g.degree() == Some(1) {
+            out.push(RealRoot::Rational(-(g.coeff(0) / g.coeff(1))));
+        } else {
+            let index = crate::poly::roots::real_root_index(g, &lo, &hi)?;
+            out.push(RealRoot::RootOf {
+                factor: owner,
+                index,
+            });
         }
     }
-    Some(out)
+    Some((factors, out))
 }
 
 /// Determinant of the Sylvester matrix of two coefficient lists (highest
@@ -288,8 +263,16 @@ fn sylvester_resultant(ctx: &crate::api::context::Context, f: &[Ex], g: &[Ex]) -
         }
         rows.push(row);
     }
-    let det = crate::domains::matrix::Matrix::new(rows).ok()?.det().ok()?;
-    Some(det.expand())
+    // Invariant: `rows` is a non-empty square `size × size` matrix, so
+    // `Matrix::new` and `det` cannot fail.  Their `Err` is an internal
+    // error, not "not a polynomial"; the `Option` return of the public
+    // callers cannot express that in a patch release, so it is folded into
+    // `None` here (and asserted in debug builds).
+    let matrix = crate::domains::matrix::Matrix::new(rows);
+    debug_assert!(matrix.is_ok(), "Sylvester matrix is square by construction");
+    let det = matrix.ok()?.det();
+    debug_assert!(det.is_ok(), "determinant of a square matrix over Ex");
+    Some(det.ok()?.expand())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -312,6 +295,14 @@ impl Expr<Numeric> {
     /// recognised as algebraic — `π`, `e`, free symbols, transcendental
     /// functions.
     ///
+    /// The result is verified, never guessed: the irreducible factor of
+    /// each intermediate resultant is chosen by evaluating the number to
+    /// 320 bits and accepting the unique factor whose residual is
+    /// negligible, and the factorisation itself must be certified complete.
+    /// If either check fails the method returns `None` rather than a
+    /// polynomial that might be reducible or vanish at a different
+    /// conjugate.
+    ///
     /// # Examples
     ///
     /// ```
@@ -330,23 +321,31 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn minimal_polynomial(&self, var: &Ex) -> Option<Ex> {
+        use crate::poly::algebraic::{AlgExpr, minimal_polynomial_of};
         let var_id = self.checked_id(var);
+        // Detach the expression under a read lock; the computation itself
+        // (resultants, factoring, 320-bit evaluation) runs unlocked.
+        let alg = {
+            let inner = self.inner.read();
+            AlgExpr::from_arena(&inner.arena, self.raw_id())
+        };
+        let mp = alg.and_then(|a| minimal_polynomial_of(&a)).or_else(|| {
+            // A product or power the structural recursion does not
+            // recognise may become a plain sum once expanded; try that
+            // form once before giving up.
+            let expanded = self.expand();
+            if expanded == *self {
+                return None;
+            }
+            let alg = {
+                let inner = self.inner.read();
+                AlgExpr::from_arena(&inner.arena, expanded.raw_id())
+            }?;
+            minimal_polynomial_of(&alg)
+        })?;
         let id = {
             let mut inner = self.inner.write();
-            let arena = &mut inner.arena;
-            let mp =
-                crate::poly::algebraic::minimal_polynomial(arena, self.raw_id()).or_else(|| {
-                    // A product or power the structural recursion does not
-                    // recognise may become a plain sum once expanded; try
-                    // that form once before giving up.
-                    let expanded = crate::transforms::expand::expand(arena, self.raw_id());
-                    if expanded == self.raw_id() {
-                        None
-                    } else {
-                        crate::poly::algebraic::minimal_polynomial(arena, expanded)
-                    }
-                })?;
-            poly_to_expr(arena, &integer_primitive(&mp), var_id)
+            poly_to_expr(&mut inner.arena, &integer_primitive(&mp), var_id)
         };
         Some(self.wrap(id))
     }
@@ -414,14 +413,20 @@ impl Expr<Numeric> {
         op: fn(&MultiPoly<GrevLex>, &MultiPoly<GrevLex>) -> MultiPoly<GrevLex>,
     ) -> Option<Ex> {
         let other_id = self.checked_id(other);
-        let id = {
-            let mut inner = self.inner.write();
-            let arena = &mut inner.arena;
+        // Convert under a read lock, compute unlocked, intern under a write
+        // lock.
+        let (gens, a, b) = {
+            let inner = self.inner.read();
+            let arena = &inner.arena;
             let gens = shared_generators(arena, &[self.raw_id(), other_id]);
             let a = expr_to_multipoly(arena, self.raw_id(), &gens)?;
             let b = expr_to_multipoly(arena, other_id, &gens)?;
-            let result = op(&a, &b);
-            multipoly_to_expr(arena, &result, &gens)
+            (gens, a, b)
+        };
+        let result = op(&a, &b);
+        let id = {
+            let mut inner = self.inner.write();
+            multipoly_to_expr(&mut inner.arena, &result, &gens)
         };
         Some(self.wrap(id))
     }
@@ -472,11 +477,17 @@ impl Expr<Numeric> {
             .ok_or_else(|| invalid(OP, "at least one variable is required"))?;
         let var_ids = validate_vars(probe, vars, OP)?;
         let poly_ids: Vec<ExprId> = polys.iter().map(|p| probe.checked_id(p)).collect();
+        // Convert under a read lock, compute unlocked, intern under a write
+        // lock.
+        let mps = {
+            let inner = probe.inner.read();
+            to_multipolys(&inner.arena, &poly_ids, &var_ids, OP)?
+        };
+        let basis = groebner_in_order(&mps, order);
         let ids: Vec<ExprId> = {
             let mut inner = probe.inner.write();
             let arena = &mut inner.arena;
-            let mps = to_multipolys(arena, &poly_ids, &var_ids, OP)?;
-            groebner_in_order(&mps, order)
+            basis
                 .iter()
                 .map(|g| multipoly_to_expr(arena, g, &var_ids))
                 .collect()
@@ -523,13 +534,27 @@ impl Expr<Numeric> {
         const OP: &str = "reduce_modulo";
         let var_ids = validate_vars(self, vars, OP)?;
         let basis_ids: Vec<ExprId> = basis.iter().map(|b| self.checked_id(b)).collect();
+        // Convert under a read lock, compute unlocked, intern under a write
+        // lock.
+        let (f, divisors) = {
+            let inner = self.inner.read();
+            let arena = &inner.arena;
+            // `to_multipolys` returns one polynomial per input expression.
+            let Some(f) = to_multipolys(arena, &[self.raw_id()], &var_ids, OP)?
+                .into_iter()
+                .next()
+            else {
+                return Err(SymplexError::ComputationFailed {
+                    operation: OP,
+                    reason: "to_multipolys returned no polynomial for one input".into(),
+                });
+            };
+            (f, to_multipolys(arena, &basis_ids, &var_ids, OP)?)
+        };
+        let r = reduce_in_order(&f, &divisors, order);
         let id = {
             let mut inner = self.inner.write();
-            let arena = &mut inner.arena;
-            let f = to_multipolys(arena, &[self.raw_id()], &var_ids, OP)?.remove(0);
-            let divisors = to_multipolys(arena, &basis_ids, &var_ids, OP)?;
-            let r = reduce_in_order(&f, &divisors, order);
-            multipoly_to_expr(arena, &r, &var_ids)
+            multipoly_to_expr(&mut inner.arena, &r, &var_ids)
         };
         Ok(self.wrap(id))
     }
@@ -550,7 +575,13 @@ impl Expr<Numeric> {
     ///
     /// Returns `None` if `self` is not a polynomial in `var` with rational
     /// coefficients or is constant; a polynomial without real roots gives
-    /// `Some(vec![])`.
+    /// `Some(vec![])`.  `None` is also returned in the rare case that a
+    /// root cannot be *named* reliably — the factorisation over ℤ could
+    /// not be certified complete, or the `RootOf` index of a root is not
+    /// stable because another root of the same factor has the same real
+    /// part to within `2⁻⁶⁰` (the (re, im) order would then depend on
+    /// rounding).  Every `RootOf(g, k)` that is returned has been checked
+    /// to evaluate inside the root's exact isolating interval.
     ///
     /// # Examples
     ///
@@ -568,14 +599,32 @@ impl Expr<Numeric> {
     #[must_use]
     pub fn real_roots(&self, var: &Ex) -> Option<Vec<Ex>> {
         let var_id = self.checked_id(var);
-        let ids = {
+        // Convert under a read lock, compute unlocked, intern under a write
+        // lock.
+        let f = {
+            let inner = self.inner.read();
+            expr_to_poly(&inner.arena, self.raw_id(), var_id)?
+        };
+        if f.degree().unwrap_or(0) == 0 {
+            return None;
+        }
+        let (factors, roots) = real_roots_of(&f)?;
+        let ids: Vec<ExprId> = {
             let mut inner = self.inner.write();
             let arena = &mut inner.arena;
-            let f = expr_to_poly(arena, self.raw_id(), var_id)?;
-            if f.degree().unwrap_or(0) == 0 {
-                return None;
-            }
-            real_roots_ids(arena, &f, var_id)?
+            let mut factor_ids: Vec<Option<ExprId>> = vec![None; factors.len()];
+            roots
+                .into_iter()
+                .map(|root| match root {
+                    RealRoot::Rational(r) => num_expr(arena, r),
+                    RealRoot::RootOf { factor, index } => {
+                        let g_expr = *factor_ids[factor]
+                            .get_or_insert_with(|| poly_to_expr(arena, &factors[factor], var_id));
+                        let idx = arena.int(index as i64);
+                        arena.intern(ExprNode::RootOf(g_expr, idx))
+                    }
+                })
+                .collect()
         };
         Some(ids.into_iter().map(|id| self.wrap(id)).collect())
     }
@@ -657,31 +706,36 @@ impl Expr<Numeric> {
                 ),
             ));
         }
-        let (lc_id, factor_ids) = {
-            let mut inner = self.inner.write();
-            let arena = &mut inner.arena;
-            let f = expr_to_poly(arena, self.raw_id(), var_id).ok_or_else(|| {
+        // Convert under a read lock, compute unlocked, intern under a write
+        // lock.
+        let f = {
+            let inner = self.inner.read();
+            expr_to_poly(&inner.arena, self.raw_id(), var_id).ok_or_else(|| {
                 invalid(
                     OP,
                     "expression is not a polynomial in the given variable with rational coefficients",
                 )
+            })?
+        };
+        let pb = BigInt::from(p);
+        if f.coeffs().iter().any(|c| (c.denom() % &pb).is_zero()) {
+            return Err(invalid(
+                OP,
+                format!(
+                    "a coefficient has a denominator divisible by {p}, so it has no inverse mod {p}"
+                ),
+            ));
+        }
+        let (lc, factors) =
+            crate::poly::factor_zassenhaus::factor_mod_p(&f, p).ok_or_else(|| {
+                SymplexError::ComputationFailed {
+                    operation: OP,
+                    reason: "factor_mod_p rejected a valid modulus and polynomial".into(),
+                }
             })?;
-            let pb = BigInt::from(p);
-            if f.coeffs().iter().any(|c| (c.denom() % &pb).is_zero()) {
-                return Err(invalid(
-                    OP,
-                    format!(
-                        "a coefficient has a denominator divisible by {p}, so it has no inverse mod {p}"
-                    ),
-                ));
-            }
-            let (lc, factors) =
-                crate::poly::factor_zassenhaus::factor_mod_p(&f, p).ok_or_else(|| {
-                    SymplexError::ComputationFailed {
-                        operation: OP,
-                        reason: "factor_mod_p rejected a valid modulus and polynomial".into(),
-                    }
-                })?;
+        let (lc_id, factor_ids) = {
+            let mut inner = self.inner.write();
+            let arena = &mut inner.arena;
             let lc_id = arena.int(lc as i64);
             let factor_ids: Vec<(ExprId, u32)> = factors
                 .iter()
@@ -820,11 +874,18 @@ impl Expr<Numeric> {
         }
         // Drop row 0 and column 0.
         let minor: Vec<Vec<Ex>> = rows[1..].iter().map(|row| row[1..].to_vec()).collect();
-        let det = crate::domains::matrix::Matrix::new(minor)
-            .ok()?
-            .det()
-            .ok()?;
-        let det = det.expand();
+        // Invariant: `minor` is a square `(2n − 2) × (2n − 2)` matrix with
+        // `n ≥ 2`, so construction and `det` cannot fail; an `Err` would be
+        // an internal error, folded into `None` because the return type
+        // cannot carry it (see `sylvester_resultant`).
+        let matrix = crate::domains::matrix::Matrix::new(minor);
+        debug_assert!(
+            matrix.is_ok(),
+            "discriminant minor is square by construction"
+        );
+        let det = matrix.ok()?.det();
+        debug_assert!(det.is_ok(), "determinant of a square matrix over Ex");
+        let det = det.ok()?.expand();
         Some(if (n * (n - 1) / 2) % 2 == 1 {
             -det
         } else {

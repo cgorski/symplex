@@ -98,8 +98,10 @@ pub enum Tactic {
     },
     /// Any other tactic, verbatim (`linarith only [a, b]`, `rcases … with
     /// h | h`, `refine f ?_ ?_`, `exact h`, `positivity`).  May span
-    /// several lines; each line is placed at the tactic column, later lines
-    /// indented as given relative to the first.
+    /// several lines: the first is placed at the tactic column, each later
+    /// line two columns past it *plus* the line's own leading whitespace (so
+    /// a continuation indented by two in the text lands four columns past
+    /// the tactic column).  An empty string renders as `skip`.
     Raw(String),
 }
 
@@ -108,8 +110,38 @@ pub enum Tactic {
 pub enum Proof {
     /// A term, rendered after `:=` on the `have` line.
     Term(String),
-    /// A tactic block, rendered on the lines below `:= by`, two columns in.
+    /// A tactic block, rendered on the lines below `:= by`, two columns in
+    /// (`skip` when the block is empty, so the `by` still parses).
     By(Block),
+}
+
+/// One rendered line (indentation included, no trailing newline).
+struct Line {
+    text: String,
+    /// Laid out to the width already ([`Tactic::Apply`] packs its atoms
+    /// itself); [`wrap_lean`] must not re-split it inside an argument.
+    verbatim: bool,
+}
+
+impl Line {
+    fn wrap(text: String) -> Self {
+        Line {
+            text,
+            verbatim: false,
+        }
+    }
+
+    fn verbatim(text: String) -> Self {
+        Line {
+            text,
+            verbatim: true,
+        }
+    }
+}
+
+/// The `skip` placeholder for an empty block, so `by` / `·` still parse.
+fn skip_line(indent: &str) -> Line {
+    Line::wrap(format!("{indent}skip"))
 }
 
 impl Proof {
@@ -208,16 +240,25 @@ impl Block {
 
     /// [`render`](Self::render) with an explicit line width.
     pub fn render_width(&self, indent: &str, width: usize) -> String {
+        let mut lines = Vec::new();
+        self.write_lines(indent, width, &mut lines);
         let mut out = String::new();
-        self.write_lines(indent, width, &mut out);
-        wrap_lean(&out, width)
+        for line in lines {
+            if line.verbatim {
+                out.push_str(&line.text);
+            } else {
+                out.push_str(&wrap_lean(&line.text, width));
+            }
+            out.push('\n');
+        }
+        out
     }
 
     /// The logical lines, each prefixed by its indentation.  Only
     /// [`Tactic::Apply`] is laid out to `width` here (its arguments are
-    /// atoms the generic wrapper must not split); everything else is
-    /// wrapped afterwards by [`wrap_lean`].
-    fn write_lines(&self, indent: &str, width: usize, out: &mut String) {
+    /// atoms the generic wrapper must not split, so its lines are marked
+    /// verbatim); everything else is wrapped afterwards by [`wrap_lean`].
+    fn write_lines(&self, indent: &str, width: usize, out: &mut Vec<Line>) {
         for t in &self.tactics {
             t.write_lines(indent, width, out);
         }
@@ -225,7 +266,7 @@ impl Block {
 }
 
 impl Tactic {
-    fn write_lines(&self, indent: &str, width: usize, out: &mut String) {
+    fn write_lines(&self, indent: &str, width: usize, out: &mut Vec<Line>) {
         match self {
             Tactic::Have { name, ty, proof } => {
                 let head = match ty {
@@ -234,18 +275,18 @@ impl Tactic {
                 };
                 match proof {
                     Proof::Term(term) => {
-                        out.push_str(indent);
-                        out.push_str(&head);
-                        out.push_str(" := ");
-                        out.push_str(term);
-                        out.push('\n');
+                        out.push(Line::wrap(format!("{indent}{head} := {term}")));
                     }
                     Proof::By(block) => {
-                        out.push_str(indent);
-                        out.push_str(&head);
-                        out.push_str(" := by\n");
+                        out.push(Line::wrap(format!("{indent}{head} := by")));
                         let inner = format!("{indent}  ");
+                        let before = out.len();
                         block.write_lines(&inner, width, out);
+                        if out.len() == before {
+                            // `have h : T := by` with nothing below is a parse
+                            // error; `skip` keeps the block well-formed.
+                            out.push(skip_line(&inner));
+                        }
                     }
                 }
             }
@@ -253,25 +294,26 @@ impl Tactic {
                 // The first tactic shares the bullet's line; the rest of the
                 // block is at the bullet's column + 2.
                 let inner = format!("{indent}  ");
-                let mut body = String::new();
+                let mut body = Vec::new();
                 block.write_lines(&inner, width, &mut body);
-                if body.is_empty() {
-                    out.push_str(indent);
-                    out.push_str("· skip\n");
+                let Some(first) = body.first_mut() else {
+                    out.push(Line::wrap(format!("{indent}· skip")));
                     return;
+                };
+                // Replace the first line's leading `inner` with `indent· `
+                // (every line written at `inner` starts with it).
+                if let Some(rest) = first.text.strip_prefix(inner.as_str()) {
+                    first.text = format!("{indent}· {rest}");
                 }
-                // Replace the first line's leading `inner` with `indent· `.
-                let first_rest = &body[inner.len()..];
-                out.push_str(indent);
-                out.push_str("· ");
-                out.push_str(first_rest);
+                out.append(&mut body);
             }
             Tactic::Apply { head, args } => {
                 // Greedy packing: an argument goes on the current line if it
                 // fits, otherwise it opens a continuation line two columns
                 // past the tactic column (the indentation given here).  A
                 // continuation line is opened *with* its first argument, so
-                // an atom wider than the line is emitted whole, never split.
+                // an atom wider than the line is emitted whole, never split
+                // — which is why these lines bypass `wrap_lean`.
                 let cont = format!("{indent}  ");
                 let cont_len = cont.chars().count();
                 let mut line = format!("{indent}{head}");
@@ -279,8 +321,7 @@ impl Tactic {
                 for arg in args {
                     let len = arg.chars().count();
                     if used + 1 + len > width {
-                        out.push_str(&line);
-                        out.push('\n');
+                        out.push(Line::verbatim(line));
                         line = format!("{cont}{arg}");
                         used = cont_len + len;
                     } else {
@@ -289,23 +330,17 @@ impl Tactic {
                         used += 1 + len;
                     }
                 }
-                out.push_str(&line);
-                out.push('\n');
+                out.push(Line::verbatim(line));
             }
             Tactic::Raw(text) => {
                 for (i, line) in text.lines().enumerate() {
-                    out.push_str(indent);
-                    if i > 0 {
-                        // Continuation lines of a multi-line raw tactic keep
-                        // their relative indentation, two columns in.
-                        out.push_str("  ");
-                    }
-                    out.push_str(line);
-                    out.push('\n');
+                    // Continuation lines of a multi-line raw tactic keep
+                    // their relative indentation, two columns in.
+                    let cont = if i > 0 { "  " } else { "" };
+                    out.push(Line::wrap(format!("{indent}{cont}{line}")));
                 }
                 if text.is_empty() {
-                    out.push_str(indent);
-                    out.push_str("skip\n");
+                    out.push(skip_line(indent));
                 }
             }
         }
@@ -360,9 +395,12 @@ pub struct Decl {
     pub binders: Vec<String>,
     /// The proposition proved.
     pub statement: String,
-    /// The proof.
+    /// The proof (rendered as `skip` when empty, so the `by` still parses).
     pub body: Block,
-    /// An optional doc comment (`/-- … -/`), without the delimiters.
+    /// An optional doc comment (`/-- … -/`), without the delimiters.  A
+    /// `-/` or `/-` inside the text is escaped as `-\/` / `/\-` when
+    /// rendered (Lean's comment lexer would otherwise close the comment or
+    /// open a nested one; Markdown drops the backslash).
     pub doc: Option<String>,
     /// Lines emitted verbatim (one per entry, unwrapped) before the doc
     /// comment: `set_option maxHeartbeats 400000 in`, an `open … in`, a
@@ -440,7 +478,7 @@ impl Decl {
         }
         if let Some(doc) = &self.doc {
             out.push_str("/-- ");
-            out.push_str(doc);
+            out.push_str(&escape_doc_comment(doc));
             out.push_str(" -/\n");
         }
         let keyword = match self.kind {
@@ -460,9 +498,21 @@ impl Decl {
         header.push_str(&self.statement);
         header.push_str(" := by\n");
         out.push_str(&wrap_lean(&header, width));
-        out.push_str(&self.body.render_width("  ", width));
+        if self.body.is_empty() {
+            out.push_str("  skip\n");
+        } else {
+            out.push_str(&self.body.render_width("  ", width));
+        }
         out
     }
+}
+
+/// Neutralise the comment delimiters inside a `/-- … -/` body: `-/` would
+/// close it early and `/-` would open a nested comment that swallows the
+/// rest of the file.  A backslash breaks each pair (`-\/`, `/\-`) and is a
+/// Markdown escape, so rendered documentation shows the original text.
+fn escape_doc_comment(doc: &str) -> String {
+    doc.replace("-/", "-\\/").replace("/-", "/\\-")
 }
 
 impl fmt::Display for Decl {

@@ -3550,9 +3550,26 @@ fn uppergamma_closed(arena: &mut Arena, s: &Ratio<BigInt>, x: ExprId) -> Option<
     None
 }
 
+/// `s` is *known* to be non-positive at the arena level: a numeric `s ≤ 0`
+/// or `−∞`.  (Symbolic parameters stay `false` — assumptions are not
+/// visible here — so folds that hold for `s > 0` are kept for them, which
+/// the Gamma-distribution CDF `γ(k, 0)/Γ(k) = 0` relies on.)
+fn known_nonpositive(arena: &Arena, s: ExprId) -> bool {
+    if s == arena.neg_infinity {
+        return true;
+    }
+    arena.as_num(s).is_some_and(|r| !r.is_positive())
+}
+
 /// `γ(s, 0) = 0`, `γ(s, ∞) = Γ(s)`, closed forms for integer / half-integer `s > 0`.
+///
+/// `γ(s, 0) = 0` holds only for `s > 0` (`∫₀ˣ t^{s−1} e^{−t} dt` diverges at
+/// the lower end otherwise), so that fold is refused for `s` known to be `≤ 0`.
 fn eval_lowergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
     if x == arena.zero {
+        if known_nonpositive(arena, s) {
+            return None;
+        }
         return Some(arena.zero);
     }
     if x == arena.infinity {
@@ -3570,11 +3587,18 @@ fn eval_lowergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
 }
 
 /// `Γ(s, 0) = Γ(s)`, `Γ(s, ∞) = 0`, closed forms for integer / half-integer `s`.
+///
+/// `Γ(s, 0) = ∫₀^∞ t^{s−1} e^{−t} dt` diverges for `s ≤ 0` (`Γ(s)` there is
+/// the analytic continuation, not this integral), so the fold at `x = 0` is
+/// refused for `s` known to be non-positive.
 fn eval_uppergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
     if x == arena.infinity {
         return Some(arena.zero);
     }
     if x == arena.zero {
+        if known_nonpositive(arena, s) {
+            return None;
+        }
         return Some(arena.gamma(s));
     }
     let r = as_ratio(arena, s)?;
@@ -3648,8 +3672,10 @@ fn eval_polylog(arena: &mut Arena, s: ExprId, z: ExprId) -> Option<ExprId> {
     None
 }
 
-/// `η(1) = ln 2`, `η(∞) = 1`, and `η(s) = (1 − 2^{1−s}) ζ(s)` whenever `ζ(s)`
-/// itself folds (integer `s`).
+/// `η(1) = ln 2`, `η(∞) = 1`, `η(−2k) = 0`, and `η(s) = (1 − 2^{1−s}) ζ(s)`
+/// whenever `ζ(s)` itself folds (integer `s`); negative integers below
+/// `−MAX_SPECIAL_EXPANSION` are left alone (the factor `2^{1−s}` and the
+/// Bernoulli number behind `ζ(s)` both grow with `|s|`).
 fn eval_dirichlet_eta(arena: &mut Arena, s: ExprId) -> Option<ExprId> {
     if s == arena.one {
         let two = arena.int(2);
@@ -3662,12 +3688,16 @@ fn eval_dirichlet_eta(arena: &mut Arena, s: ExprId) -> Option<ExprId> {
     if !r.is_integer() {
         return None;
     }
+    let n: i64 = r.to_integer().try_into().ok()?;
+    if n < -MAX_SPECIAL_EXPANSION {
+        // Trivial zeros of ζ are the only cheap exact values out here.
+        return (n % 2 == 0).then_some(arena.zero);
+    }
     let zeta = eval_zeta(arena, s)?;
     if matches!(arena.node(zeta), ExprNode::Zeta(_)) {
         return None;
     }
     // 1 − 2^{1−s} as an exact rational.
-    let n: i64 = r.to_integer().try_into().ok()?;
     let e = 1 - n;
     let two_pow = if e >= 0 {
         Ratio::from_integer(BigInt::one() << (e as usize))
@@ -3824,17 +3854,40 @@ fn as_poly_degree(arena: &Arena, n: ExprId) -> Option<usize> {
     (d <= arena.config.max_pow_exponent as u64).then_some(d as usize)
 }
 
+/// Largest degree for which the parametrised orthogonal polynomials are
+/// expanded when a parameter (`a`, `b`) is not a plain number: every step
+/// then expands a multivariate polynomial in the parameters and `x`, whose
+/// size (and the cost of expanding it) grows quickly with the degree.
+/// Numeric parameters keep the `max_pow_exponent` bound of
+/// [`as_poly_degree`].
+const MAX_SYMBOLIC_PARAM_DEGREE: usize = 16;
+
+/// [`as_poly_degree`], further capped at [`MAX_SYMBOLIC_PARAM_DEGREE`]
+/// unless every parameter in `params` is numeric.
+fn as_param_poly_degree(arena: &Arena, n: ExprId, params: &[ExprId]) -> Option<usize> {
+    let deg = as_poly_degree(arena, n)?;
+    let numeric = params.iter().all(|&p| arena.as_num(p).is_some());
+    (numeric || deg <= MAX_SYMBOLIC_PARAM_DEGREE).then_some(deg)
+}
+
 /// Expand and fold one recurrence step.
 fn expand_eval(arena: &mut Arena, e: ExprId) -> ExprId {
     let e = crate::transforms::expand::expand(arena, e);
     eval(arena, e)
 }
 
+/// `p · q` distributed (both already expanded, so like terms are merged
+/// at every step instead of once at the end); not folded.
+fn expand_mul2(arena: &mut Arena, p: ExprId, q: ExprId) -> ExprId {
+    let m = arena.mul(&[p, q]);
+    crate::transforms::expand::expand(arena, m)
+}
+
 /// Gegenbauer `C_n^{(a)}(x)`: explicit polynomial for integer `n ≥ 0` via
 /// `(k+1) C_{k+1} = 2(k+a) x C_k − (k+2a−1) C_{k−1}`; `C_n^{(1/2)} = P_n`,
 /// `C_n^{(1)} = U_n`.
 fn eval_gegenbauer(arena: &mut Arena, n: ExprId, a: ExprId, x: ExprId) -> Option<ExprId> {
-    if let Some(deg) = as_poly_degree(arena, n) {
+    if let Some(deg) = as_param_poly_degree(arena, n, &[a]) {
         if deg == 0 {
             return Some(arena.one);
         }
@@ -3873,25 +3926,28 @@ fn eval_gegenbauer(arena: &mut Arena, n: ExprId, a: ExprId, x: ExprId) -> Option
     None
 }
 
-/// `∏_{j=lo}^{hi} (p + j)` as an expression (`1` when empty).
-fn shifted_product(arena: &mut Arena, p: ExprId, lo: usize, hi: usize) -> ExprId {
-    let mut factors: Vec<ExprId> = Vec::new();
-    for j in lo..=hi {
-        let j_id = arena.int(j as i64);
-        factors.push(arena.add(&[p, j_id]));
+/// `[1, p, p², …, p^n]` with every power expanded (each from the previous
+/// one, so intermediate like terms are merged).
+fn expanded_powers(arena: &mut Arena, p: ExprId, n: usize) -> Vec<ExprId> {
+    let mut pows: Vec<ExprId> = Vec::with_capacity(n + 1);
+    pows.push(arena.one);
+    for k in 1..=n {
+        let next = expand_mul2(arena, pows[k - 1], p);
+        pows.push(next);
     }
-    if factors.is_empty() {
-        arena.one
-    } else {
-        arena.mul(&factors)
-    }
+    pows
 }
 
 /// Jacobi `P_n^{(a,b)}(x)` for integer `n ≥ 0`:
 /// `Σ_{s=0}^{n} C(n+a, n−s) C(n+b, s) ((x−1)/2)^s ((x+1)/2)^{n−s}` with the
 /// binomials written as polynomials in `a`, `b`; `P_n^{(0,0)} = P_n`.
+///
+/// Every factor (`∏ (a+j)`, `∏ (b+j)`, the two powers) is expanded
+/// incrementally and the summands are multiplied out pairwise, so like
+/// terms are merged at each step; distributing the whole `2n`-factor
+/// product at once is exponential in `n`.
 fn eval_jacobi(arena: &mut Arena, n: ExprId, a: ExprId, b: ExprId, x: ExprId) -> Option<ExprId> {
-    if let Some(deg) = as_poly_degree(arena, n) {
+    if let Some(deg) = as_param_poly_degree(arena, n, &[a, b]) {
         if deg == 0 {
             return Some(arena.one);
         }
@@ -3899,24 +3955,40 @@ fn eval_jacobi(arena: &mut Arena, n: ExprId, a: ExprId, b: ExprId, x: ExprId) ->
         let x_minus_1 = arena.sub(x, arena.one);
         let x_plus_1 = arena.add(&[x, arena.one]);
         let lo = arena.mul(&[half, x_minus_1]);
+        let lo = expand_eval(arena, lo);
         let hi = arena.mul(&[half, x_plus_1]);
+        let hi = expand_eval(arena, hi);
+        let lo_pows = expanded_powers(arena, lo, deg);
+        let hi_pows = expanded_powers(arena, hi, deg);
+        // pa[s] = ∏_{j=s+1}^{n} (a+j)  (pa[n] = 1, pa[s] = pa[s+1]·(a+s+1))
+        let mut pa: Vec<ExprId> = vec![arena.one; deg + 1];
+        for s in (0..deg).rev() {
+            let j = arena.int(s as i64 + 1);
+            let factor = arena.add(&[a, j]);
+            pa[s] = expand_mul2(arena, pa[s + 1], factor);
+        }
+        // pb[s] = ∏_{j=n−s+1}^{n} (b+j)  (pb[0] = 1, pb[s] = pb[s−1]·(b+n−s+1))
+        let mut pb: Vec<ExprId> = vec![arena.one; deg + 1];
+        for s in 1..=deg {
+            let j = arena.int((deg - s) as i64 + 1);
+            let factor = arena.add(&[b, j]);
+            pb[s] = expand_mul2(arena, pb[s - 1], factor);
+        }
         let mut terms: Vec<ExprId> = Vec::with_capacity(deg + 1);
         for s in 0..=deg {
-            // C(n+a, n−s) = ∏_{j=s+1}^{n} (a+j) / (n−s)!
-            let pa = shifted_product(arena, a, s + 1, deg);
-            // C(n+b, s) = ∏_{j=n−s+1}^{n} (b+j) / s!
-            let pb = shifted_product(arena, b, deg - s + 1, deg);
+            // C(n+a, n−s) C(n+b, s) = pa[s] pb[s] / ((n−s)! s!)
             let denom = factorial_ratio(deg - s) * factorial_ratio(s);
             let c = arena.intern_num(denom.recip());
             let c = arena.intern(ExprNode::Num(c));
-            let s_id = arena.int(s as i64);
-            let lo_pow = arena.pow(lo, s_id);
-            let ns_id = arena.int((deg - s) as i64);
-            let hi_pow = arena.pow(hi, ns_id);
-            terms.push(arena.mul(&[c, pa, pb, lo_pow, hi_pow]));
+            let ab = arena.mul(&[c, pa[s]]);
+            let ab = expand_mul2(arena, ab, pb[s]);
+            // ((x−1)/2)^s ((x+1)/2)^{n−s}: `n+1` terms once merged.
+            let xp = expand_mul2(arena, lo_pows[s], hi_pows[deg - s]);
+            terms.push(expand_mul2(arena, ab, xp));
         }
+        // Every summand is already distributed; `add` merges like terms.
         let sum = arena.add(&terms);
-        return Some(expand_eval(arena, sum));
+        return Some(eval(arena, sum));
     }
     if a == arena.zero && b == arena.zero {
         return Some(arena.legendre(n, x));
@@ -4003,7 +4075,7 @@ fn eval_assoc_legendre(arena: &mut Arena, n: ExprId, m: ExprId, x: ExprId) -> Op
 /// Generalised Laguerre `L_n^{(a)}(x)` for integer `n ≥ 0` via
 /// `(k+1) L_{k+1} = (2k+1+a−x) L_k − (k+a) L_{k−1}`; `L_n^{(0)} = L_n`.
 fn eval_assoc_laguerre(arena: &mut Arena, n: ExprId, a: ExprId, x: ExprId) -> Option<ExprId> {
-    if let Some(deg) = as_poly_degree(arena, n) {
+    if let Some(deg) = as_param_poly_degree(arena, n, &[a]) {
         if deg == 0 {
             return Some(arena.one);
         }

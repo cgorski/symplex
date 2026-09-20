@@ -9,14 +9,26 @@
 //!   [`Ex::is_strictly_increasing`], [`Ex::is_strictly_decreasing`],
 //!   [`Ex::is_monotonic`] — sign of the derivative on a domain
 //! * [`Ex::is_convex`] — sign of the second derivative
-//! * [`Ex::periodicity`] — fundamental period of a trigonometric expression
+//! * [`Ex::periodicity`] — a period of a trigonometric expression
 //! * [`Ex::function_range`] — image of a continuous expression
 //!
 //! Every method works in the real domain.  Decisions are exact (Sturm
 //! sequences for polynomial derivatives, the inequality solver, the
-//! assumption system); a numeric `f64` comparison is used in one documented
-//! place only — to *order* two extremum candidates that are already proven
-//! distinct.
+//! assumption system, exact set operations).  Numeric `f64` evaluation is
+//! used in three documented places, none of which decides equality of two
+//! symbolic values: to *order* two extremum candidates that are already
+//! proven distinct ([`compare`]); to reject a constant solution as non-real
+//! when its 16-digit imaginary part is clearly non-zero
+//! ([`is_real_finite_point`]); and to *locate* the members of a periodic
+//! solution family `a + n·p` inside a bounded domain, where the index range
+//! is widened by one on each side and every candidate member is then
+//! checked exactly against the domain ([`enumerate_family`]).
+//!
+//! Failures of the algorithms ("the zeros of `f'` cannot be found exactly",
+//! "two candidates cannot be compared", …) are
+//! [`SymplexError::ComputationFailed`]; `InvalidArgument` is reserved for
+//! ill-formed input (a non-symbol variable, an empty or non-interval
+//! domain).
 
 use std::cmp::Ordering;
 
@@ -31,8 +43,12 @@ use crate::calculus::limit::Direction;
 // Error helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn not_implemented(op: &str, reason: impl std::fmt::Display) -> SymplexError {
-    SymplexError::NotImplemented(format!("{op}: {reason}"))
+/// The algorithm behind `operation` could not complete on this input.
+fn computation_failed(operation: &'static str, reason: impl Into<String>) -> SymplexError {
+    SymplexError::ComputationFailed {
+        operation,
+        reason: reason.into(),
+    }
 }
 
 fn invalid(operation: &'static str, reason: impl Into<String>) -> SymplexError {
@@ -54,6 +70,16 @@ fn require_symbol(operation: &'static str, var: &Ex) -> Result<(), SymplexError>
 /// enumerated inside a bounded domain.
 const MAX_FAMILY_MEMBERS: i64 = 10_000;
 
+/// Largest family index `|k|` for which the `f64` estimate of `k` in
+/// [`enumerate_family`] is trusted to be within one of the true value
+/// (a relative error of `1e-16` on `k` is then below `1e-7`).
+const MAX_FAMILY_INDEX: f64 = 1e9;
+
+/// Largest number of distinct `sign(h)` factors in a derivative that the
+/// stationary-point analysis resolves by case-splitting on their signs
+/// (`2^k` solver calls).
+const MAX_SIGN_FACTORS: usize = 4;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Zero sets
 // ═══════════════════════════════════════════════════════════════════════════
@@ -62,8 +88,11 @@ const MAX_FAMILY_MEMBERS: i64 = 10_000;
 ///
 /// Non-real roots are rejected by the assumption system (`I`, `√−2`), by
 /// structure (a constant mentioning `I` that is not proven real), and —
-/// for constants only — by a non-zero imaginary part of the 16-digit
-/// numeric value.  Infinite or undefined values are rejected.
+/// for constants only — numerically: a 16-digit imaginary part larger
+/// than `1e-12·(1 + |re|)` rejects the point.  (A constant whose imaginary
+/// part is non-zero but below that threshold is therefore kept; the
+/// threshold is a tolerance, not an exact decision.)  Infinite or
+/// undefined values are rejected.
 fn is_real_finite_point(p: &Ex) -> bool {
     let ctx = p.context();
     if *p == ctx.infinity()
@@ -117,18 +146,24 @@ fn condition_set(var: &Ex, cond: &BoolEx) -> SetEx {
 
 /// The members of the one-parameter family `member(n)` (linear in the
 /// integer parameter `n`) that lie in the bounded `domain`.
+///
+/// The range of indices is *estimated* in `f64` from the numeric values of
+/// the offset, the step and the domain bounds, widened by one on each
+/// side, and every candidate member is then tested exactly against the
+/// domain.  The widening covers the `f64` error only while the estimated
+/// index is below [`MAX_FAMILY_INDEX`]; larger indices are refused.
 fn enumerate_family(
     member: &Ex,
     param: &Ex,
     (lo, hi): (f64, f64),
     domain: &SetEx,
-    op: &str,
+    op: &'static str,
     out: &mut Vec<Ex>,
 ) -> Result<(), SymplexError> {
     let step = member.diff(param).eval();
     let offset = member.subs_i64(param, 0).eval();
     if step.contains(param) {
-        return Err(not_implemented(
+        return Err(computation_failed(
             op,
             format!("solution family `{member}` is not linear in `{param}`"),
         ));
@@ -138,7 +173,7 @@ fn enumerate_family(
         return Ok(());
     }
     let (Ok(step_f), Ok(offset_f)) = (step.eval_f64(), offset.eval_f64()) else {
-        return Err(not_implemented(
+        return Err(computation_failed(
             op,
             format!("cannot locate the members of the family `{member}` numerically"),
         ));
@@ -149,15 +184,24 @@ fn enumerate_family(
     }
     let (k1, k2) = ((lo - offset_f) / step_f, (hi - offset_f) / step_f);
     let (k_lo, k_hi) = (k1.min(k2), k1.max(k2));
-    // Bound the index range while still in `f64` so the casts below cannot
-    // saturate or overflow.
+    // Bound the index range while still in `f64`: the ±1 widening below
+    // only absorbs the rounding error of `k` while `|k|` is small, and the
+    // casts must not saturate.
     if !k_lo.is_finite()
         || !k_hi.is_finite()
-        || k_lo.abs() > 1e15
-        || k_hi.abs() > 1e15
-        || k_hi - k_lo > MAX_FAMILY_MEMBERS as f64
+        || k_lo.abs() > MAX_FAMILY_INDEX
+        || k_hi.abs() > MAX_FAMILY_INDEX
     {
-        return Err(not_implemented(
+        return Err(computation_failed(
+            op,
+            format!(
+                "the members of `{member}` in the domain have indices beyond \
+                 ±{MAX_FAMILY_INDEX:e}, where they cannot be located reliably"
+            ),
+        ));
+    }
+    if k_hi - k_lo > MAX_FAMILY_MEMBERS as f64 {
+        return Err(computation_failed(
             op,
             format!("more than {MAX_FAMILY_MEMBERS} members of `{member}` may lie in the domain"),
         ));
@@ -169,7 +213,7 @@ fn enumerate_family(
             Some(true) => out.push(point),
             Some(false) => {}
             None => {
-                return Err(not_implemented(
+                return Err(computation_failed(
                     op,
                     format!("cannot decide whether `{point}` lies in `{domain}`"),
                 ));
@@ -184,7 +228,12 @@ fn enumerate_family(
 /// Uses `solve` for non-periodic equations and `solve_general` when `g`
 /// contains `sin`/`cos`/`tan` of `var`; periodic families are enumerated
 /// on bounded domains and represented as `{var | g = 0}` otherwise.
-fn zeros_in_domain(g: &Ex, var: &Ex, domain: &SetEx, op: &str) -> Result<SetEx, SymplexError> {
+fn zeros_in_domain(
+    g: &Ex,
+    var: &Ex,
+    domain: &SetEx,
+    op: &'static str,
+) -> Result<SetEx, SymplexError> {
     let ctx = g.context();
     let var_id = g.checked_id(var);
     let periodic = {
@@ -217,7 +266,10 @@ fn zeros_in_domain(g: &Ex, var: &Ex, domain: &SetEx, op: &str) -> Result<SetEx, 
             points.extend(plain);
             if !parametric.is_empty() {
                 let Some(param) = parameters.first() else {
-                    return Err(not_implemented(op, "parametric solution without parameter"));
+                    return Err(computation_failed(
+                        op,
+                        "parametric solution without parameter",
+                    ));
                 };
                 match numeric_bounds(domain) {
                     Some(bounds) => {
@@ -234,7 +286,7 @@ fn zeros_in_domain(g: &Ex, var: &Ex, domain: &SetEx, op: &str) -> Result<SetEx, 
         // `g ≡ 0`: every point of the domain.
         Err(SymplexError::InfiniteSolutions { .. }) => return Ok(domain.clone()),
         Err(e) => {
-            return Err(not_implemented(
+            return Err(computation_failed(
                 op,
                 format!("the zeros of `{g}` cannot be found exactly ({e})"),
             ));
@@ -268,8 +320,8 @@ struct Candidate {
 /// [`Ex::equals`] and the sign of their difference (assumption system).
 /// When the two values are proven distinct but the sign of the difference
 /// is not decided symbolically, the 16-digit numeric value of the
-/// difference orders them — this is the only numeric step in the module,
-/// and it is never used to decide equality.
+/// difference orders them — it is never used to decide equality (see the
+/// module notes for the other numeric steps).
 fn compare(a: &Ex, b: &Ex) -> Option<Ordering> {
     let ctx = a.context();
     let (inf, ninf) = (ctx.infinity(), ctx.neg_infinity());
@@ -307,10 +359,13 @@ fn compare(a: &Ex, b: &Ex) -> Option<Ordering> {
 }
 
 /// Minimum and maximum of a non-empty candidate list.
-fn min_max(cands: Vec<Candidate>, op: &str) -> Result<(Candidate, Candidate), SymplexError> {
+fn min_max(
+    cands: Vec<Candidate>,
+    op: &'static str,
+) -> Result<(Candidate, Candidate), SymplexError> {
     let mut iter = cands.into_iter();
     let Some(first) = iter.next() else {
-        return Err(not_implemented(op, "no candidate values"));
+        return Err(computation_failed(op, "no candidate values"));
     };
     let mut lo = Candidate {
         value: first.value.clone(),
@@ -319,7 +374,7 @@ fn min_max(cands: Vec<Candidate>, op: &str) -> Result<(Candidate, Candidate), Sy
     let mut hi = first;
     for c in iter {
         let Some(ord) = compare(&c.value, &lo.value) else {
-            return Err(not_implemented(
+            return Err(computation_failed(
                 op,
                 format!(
                     "cannot compare the candidates `{}` and `{}`",
@@ -338,7 +393,7 @@ fn min_max(cands: Vec<Candidate>, op: &str) -> Result<(Candidate, Candidate), Sy
             Ordering::Greater => {}
         }
         let Some(ord) = compare(&c.value, &hi.value) else {
-            return Err(not_implemented(
+            return Err(computation_failed(
                 op,
                 format!(
                     "cannot compare the candidates `{}` and `{}`",
@@ -353,6 +408,159 @@ fn min_max(cands: Vec<Candidate>, op: &str) -> Result<(Candidate, Candidate), Sy
         }
     }
     Ok((lo, hi))
+}
+
+/// An exact point strictly inside the non-degenerate interval `(lo, hi)`
+/// (either bound may be infinite).
+fn interior_point(ctx: &crate::api::context::Context, lo: &Ex, hi: &Ex) -> Ex {
+    match (*lo == ctx.neg_infinity(), *hi == ctx.infinity()) {
+        (true, true) => ctx.zero(),
+        (true, false) => (hi - 1).eval(),
+        (false, true) => (lo + 1).eval(),
+        (false, false) => ((lo + hi) / 2).eval(),
+    }
+}
+
+/// Sign of the constant `value`: `Some(true)` positive, `Some(false)`
+/// negative, `None` zero or undecided.
+fn constant_sign(value: &Ex) -> Option<bool> {
+    if value.is_positive() == Some(true) {
+        Some(true)
+    } else if value.is_negative() == Some(true) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// The real zeros of the derivative `d` (of some function of `var`) in
+/// `domain`, resolving the `sign(h)` factors that differentiating `|h|`
+/// introduces — [`zeros_in_domain`] when there are none.
+///
+/// On each region where every `h` has a fixed sign, `d` equals the
+/// specialisation with the matching `±1` substituted; its zeros are kept
+/// where the assumed signs actually hold.  A specialisation that vanishes
+/// identically (`|x| + x` for `x < 0`) makes the whole region stationary
+/// and it is returned as a set of intervals.  Kinks `h = 0` at which `d`
+/// itself evaluates to zero (`|x|` at `0`, since `sign(0) = 0`) are
+/// included, as SymPy does.  At most [`MAX_SIGN_FACTORS`] distinct factors
+/// are resolved.
+fn stationary_set(
+    d: &Ex,
+    var: &Ex,
+    domain: &SetEx,
+    op: &'static str,
+) -> Result<SetEx, SymplexError> {
+    let signs = d.sign_factors(var);
+    if signs.is_empty() {
+        return zeros_in_domain(d, var, domain, op);
+    }
+    if signs.len() > MAX_SIGN_FACTORS {
+        return Err(computation_failed(
+            op,
+            format!(
+                "the derivative `{d}` has {} distinct sign(…) factors; at most \
+                 {MAX_SIGN_FACTORS} are resolved",
+                signs.len()
+            ),
+        ));
+    }
+    let ctx = d.context();
+    let (one, minus_one) = (ctx.one(), ctx.int(-1));
+    let mut result = ctx.empty_set();
+
+    // Kinks at which the derivative itself vanishes.
+    for (_, h) in &signs {
+        let kinks = zeros_in_domain(h, var, domain, op)?;
+        let Some(points) = kinks.as_finite_set() else {
+            return Err(computation_failed(
+                op,
+                format!("the kinks {kinks} of `|{h}|` cannot be enumerated"),
+            ));
+        };
+        let stationary: Vec<Ex> = points
+            .into_iter()
+            .filter(|p| d.subs(var, p).eval().is_zero_structural())
+            .collect();
+        if !stationary.is_empty() {
+            result = result.union(&ctx.finite_set(&stationary));
+        }
+    }
+
+    // Every sign pattern: bit `i` set means `sign(h_i) = +1`.
+    for mask in 0..(1usize << signs.len()) {
+        let mut spec = d.clone();
+        let mut pattern: Vec<(&Ex, bool)> = Vec::with_capacity(signs.len());
+        for (i, (s, h)) in signs.iter().enumerate() {
+            let positive = mask & (1 << i) != 0;
+            spec = spec.subs(s, if positive { &one } else { &minus_one });
+            pattern.push((h, positive));
+        }
+        let spec = spec.eval();
+        // The region where this pattern holds, as a set (built lazily).
+        let region = || -> Result<SetEx, SymplexError> {
+            let mut region = domain.clone();
+            for &(h, positive) in &pattern {
+                let side = if positive {
+                    h.solve_gt(var)
+                } else {
+                    h.solve_lt(var)
+                };
+                if side.has_unevaluated() {
+                    return Err(computation_failed(
+                        op,
+                        format!("cannot describe the region where `{h}` has a fixed sign"),
+                    ));
+                }
+                region = region.intersection(&side);
+            }
+            Ok(region.simplify())
+        };
+        if spec.is_zero_structural() {
+            // Stationary throughout the region.
+            result = result.union(&region()?);
+            continue;
+        }
+        let zeros = zeros_in_domain(&spec, var, domain, op)?;
+        match zeros.as_finite_set() {
+            Some(points) => {
+                let mut kept: Vec<Ex> = Vec::new();
+                for p in points {
+                    let mut holds = true;
+                    for &(h, positive) in &pattern {
+                        let value = h.subs(var, &p).eval();
+                        match constant_sign(&value) {
+                            Some(sign) if sign == positive => {}
+                            Some(_) => {
+                                holds = false;
+                                break;
+                            }
+                            None if value.is_zero_structural() => {
+                                // A kink: handled above.
+                                holds = false;
+                                break;
+                            }
+                            None => {
+                                return Err(computation_failed(
+                                    op,
+                                    format!("cannot decide the sign of `{h}` at `{var} = {p}`"),
+                                ));
+                            }
+                        }
+                    }
+                    if holds {
+                        kept.push(p);
+                    }
+                }
+                if !kept.is_empty() {
+                    result = result.union(&ctx.finite_set(&kept));
+                }
+            }
+            // A periodic family: restrict it to the region as a set.
+            None => result = result.union(&zeros.intersection(&region()?)),
+        }
+    }
+    Ok(result.simplify())
 }
 
 impl Ex {
@@ -372,7 +580,7 @@ impl Ex {
         op: &'static str,
     ) -> Result<(), SymplexError> {
         if let Some(name) = self.continuity_scan(var).opaque {
-            return Err(not_implemented(
+            return Err(computation_failed(
                 op,
                 format!("`{self}` contains {name} of `{var}`, which is not analysed"),
             ));
@@ -380,15 +588,28 @@ impl Ex {
         let sing = self.singularities(var, Some(domain))?;
         match sing.is_empty() {
             Some(true) => Ok(()),
-            Some(false) => Err(not_implemented(
+            Some(false) => Err(computation_failed(
                 op,
                 format!("`{self}` has singularities {sing} inside the domain"),
             )),
-            None => Err(not_implemented(
+            None => Err(computation_failed(
                 op,
                 format!("cannot decide whether the singularity set {sing} meets the domain"),
             )),
         }
+    }
+
+    /// The distinct `sign(h)` factors of `self` (a derivative) whose
+    /// argument `h` depends on `var`, as `(sign(h), h)` pairs.
+    fn sign_factors(&self, var: &Ex) -> Vec<(Ex, Ex)> {
+        let var_id = self.checked_id(var);
+        let ids = {
+            let inner = self.inner.read();
+            util::sign_nodes_of(&inner.arena, self.raw_id(), var_id)
+        };
+        ids.into_iter()
+            .map(|(s, h)| (self.wrap(s), self.wrap(h)))
+            .collect()
     }
 
     /// Value of `self` at `point`, or a one-sided limit when `limit` is
@@ -398,14 +619,14 @@ impl Ex {
         var: &Ex,
         point: &Ex,
         limit: Option<Direction>,
-        op: &str,
+        op: &'static str,
     ) -> Result<Candidate, SymplexError> {
         let ctx = self.context();
         let (value, attained) = match limit {
             None => (self.subs(var, point).eval(), true),
             Some(dir) => {
                 let v = self.try_limit_dir(var, point, dir).map_err(|e| {
-                    not_implemented(op, format!("limit at the endpoint `{point}` failed: {e}"))
+                    computation_failed(op, format!("limit at the endpoint `{point}` failed: {e}"))
                 })?;
                 (v, false)
             }
@@ -417,7 +638,7 @@ impl Ex {
             value == ctx.infinity() || value == ctx.neg_infinity() || is_real_finite_point(&value)
         };
         if value.has_unevaluated() || !real {
-            return Err(not_implemented(
+            return Err(computation_failed(
                 op,
                 format!("the value `{value}` at `{var} = {point}` is not a real number"),
             ));
@@ -444,26 +665,47 @@ impl Ex {
 
         // Interior critical points: stationary points and |g| kinks.
         let derivative = self.diff(var);
+        if derivative.has_unevaluated() {
+            return Err(computation_failed(
+                op,
+                format!("the derivative `{derivative}` could not be evaluated"),
+            ));
+        }
         if derivative.is_zero_structural() {
-            // Constant in `var`: one value, attained everywhere.
+            // Constant in `var`: one value, attained everywhere.  Simplified
+            // so that `sin²x + cos²x` reports `1`, not itself.
             return Ok(vec![Candidate {
-                value: self.eval(),
+                value: self.simplify(),
                 attained: true,
             }]);
         }
-        let mut interior: Vec<SetEx> = vec![self.stationary_points(var, Some(&part))?];
+        let mut interior: Vec<SetEx> = vec![stationary_set(&derivative, var, &part, op)?];
         for g in self.continuity_scan(var).kinks {
             interior.push(zeros_in_domain(&self.wrap(g), var, &part, op)?);
         }
         for set in interior {
-            let Some(points) = set.as_finite_set() else {
-                return Err(not_implemented(
+            if let Some(points) = set.as_finite_set() {
+                for p in points {
+                    cands.push(self.value_at(var, &p, None, op)?);
+                }
+            } else if let Some(pieces) = set.as_intervals() {
+                // A whole interval of stationary points: `self` is
+                // continuous with zero derivative on it, hence constant
+                // there, and one interior point carries the (attained)
+                // value.
+                for (a, b, _, _) in pieces {
+                    let p = if a == b {
+                        a
+                    } else {
+                        interior_point(&ctx, &a, &b)
+                    };
+                    cands.push(self.value_at(var, &p, None, op)?);
+                }
+            } else {
+                return Err(computation_failed(
                     op,
                     format!("the critical points {set} cannot be enumerated"),
                 ));
-            };
-            for p in points {
-                cands.push(self.value_at(var, &p, None, op)?);
             }
         }
 
@@ -596,11 +838,49 @@ fn continuous_at_closed_endpoints(f: &Ex, var: &Ex, parts: &[(Ex, Ex, bool, bool
     })
 }
 
+/// Does `f` have a singularity strictly inside `domain` that rules out
+/// monotonicity?  `Some(false)` when every interior singularity is
+/// removable (finite, equal one-sided limits), so the derivative-based
+/// analysis stays valid on the continuous extension; `Some(true)` when some
+/// one-sided limit at an interior singularity is infinite — a monotone
+/// function has finite one-sided limits at every interior point of its
+/// domain, so `f` is then neither non-decreasing nor non-increasing on the
+/// domain; `None` when the singularities cannot be enumerated or a limit
+/// is not decided (a finite jump, for instance, is compatible with
+/// monotonicity and is not decided here).
+fn interior_pole_breaks_monotonicity(f: &Ex, var: &Ex, domain: &SetEx) -> Option<bool> {
+    let ctx = f.context();
+    let interior = domain.interior()?;
+    let sing = f.singularities(var, Some(&interior)).ok()?;
+    if sing.is_empty() == Some(true) {
+        return Some(false);
+    }
+    let points = sing.as_finite_set()?;
+    let (inf, ninf) = (ctx.infinity(), ctx.neg_infinity());
+    for p in points {
+        let left = f.try_limit_dir(var, &p, Direction::Left).ok()?;
+        let right = f.try_limit_dir(var, &p, Direction::Right).ok()?;
+        if left == inf || left == ninf || right == inf || right == ninf {
+            return Some(true);
+        }
+        if !(is_real_finite_point(&left)
+            && is_real_finite_point(&right)
+            && left.equals(&right) == Some(true))
+        {
+            return None;
+        }
+    }
+    Some(false)
+}
+
 /// Three-valued decision "`f` is non-decreasing on `domain`" (`d = f'`;
 /// pass `f = -g` to decide that `g` is non-increasing) — with `strict`,
 /// "`f' ≥ 0` with only isolated zeros".
 ///
-/// Routes, in order: exact Sturm-sequence test for polynomial / rational
+/// A pole strictly inside the domain (`1/x` on `[−1, 1]`, `tan x` on
+/// `[0, π]`) refutes monotonicity outright, whatever the sign of `f'` on
+/// either side (see [`interior_pole_breaks_monotonicity`]).  Otherwise the
+/// routes, in order: exact Sturm-sequence test for polynomial / rational
 /// `f'`, the assumption system, then the inequality solver
 /// (`solve_ge` / `solve_gt`) with a subset test.  When `f'` fails only at
 /// closed endpoints where it is undefined (`√x` at `0`), the test is
@@ -623,6 +903,13 @@ fn monotone_on(f: &Ex, var: &Ex, domain: &SetEx, strict: bool) -> Option<bool> {
     }
     if d.is_zero_structural() {
         return Some(!strict || parts.iter().all(|(lo, hi, _, _)| lo == hi));
+    }
+    // The sign of `f'` on either side of an interior pole says nothing
+    // about monotonicity across it.
+    match interior_pole_breaks_monotonicity(f, var, domain) {
+        Some(true) => return Some(false),
+        Some(false) => {}
+        None => return None,
     }
     if let Some(answer) = rational_nonneg_on(&d, var, &parts, strict) {
         return Some(answer);
@@ -703,9 +990,14 @@ impl Ex {
     /// # Errors
     ///
     /// * `InvalidArgument` — `var` is not a symbol.
-    /// * `NotImplemented` — the zeros of some source cannot be found
-    ///   exactly, or the membership of a point in `domain` cannot be
-    ///   decided.
+    /// * `ComputationFailed` — the zeros of some source cannot be found
+    ///   exactly (the solver fails on `g = 0`), or, on the periodic-family
+    ///   path only, a family is not linear in its integer parameter, its
+    ///   members cannot be located numerically, more than 10 000 of them
+    ///   may lie in the domain, or the membership of a member in `domain`
+    ///   cannot be decided.  Plain (non-periodic) zeros whose membership in
+    ///   `domain` is undecided do **not** error: the result is then `Ok`
+    ///   with the intersection `{p, …} ∩ domain` left unevaluated.
     ///
     /// # Examples
     ///
@@ -756,11 +1048,22 @@ impl Ex {
     /// depend on `var` has derivative `0`, so every point of the domain is
     /// stationary and the domain itself is returned (as SymPy does).
     ///
+    /// The `sign(h)` factors that differentiating `|h|` introduces are
+    /// resolved by cases: on each region where every `h` has a fixed sign
+    /// the derivative is a plain expression whose zeros are found and kept
+    /// where the assumed signs hold (`|x − 1| + x²` → `{1/2}`).  A region
+    /// on which the derivative vanishes identically is returned whole
+    /// (`|x| + x` on `[−1, 2]` → `[−1, 0)`), and a kink at which the
+    /// derivative evaluates to zero counts as stationary (`|x|` → `{0}`,
+    /// since `sign(0) = 0`) — all as SymPy does.  At most four distinct
+    /// `sign` factors are resolved.
+    ///
     /// # Errors
     ///
     /// * `InvalidArgument` — `var` is not a symbol.
-    /// * `NotImplemented` — the derivative is a formal `Derivative`, or the
-    ///   zeros of the derivative cannot be found exactly.
+    /// * `ComputationFailed` — the derivative is a formal `Derivative`, the
+    ///   zeros of the derivative cannot be found exactly, or more than four
+    ///   `sign` factors would have to be resolved.
     ///
     /// # Examples
     ///
@@ -779,6 +1082,10 @@ impl Ex {
     /// let two_pi = ctx.interval(&ctx.int(0), &(&ctx.pi() * 2), false, false);
     /// let sp = x.sin().stationary_points(&x, Some(&two_pi)).unwrap();
     /// assert_eq!(sp.as_finite_set().unwrap().len(), 2);
+    /// // SymPy: stationary_points(Abs(x - 1) + x**2, x, Interval(-1, 2)) == {1/2}
+    /// let g = (&x - 1).abs() + x.powi(2);
+    /// let dom = ctx.interval(&ctx.int(-1), &ctx.int(2), false, false);
+    /// assert_eq!(g.stationary_points(&x, Some(&dom)).unwrap().to_string(), "{1/2}");
     /// ```
     pub fn stationary_points(
         &self,
@@ -798,7 +1105,7 @@ impl Ex {
         };
         let derivative = self.diff(var);
         if derivative.has_unevaluated() {
-            return Err(not_implemented(
+            return Err(computation_failed(
                 OP,
                 format!("the derivative `{derivative}` could not be evaluated"),
             ));
@@ -806,24 +1113,26 @@ impl Ex {
         if derivative.is_zero_structural() {
             return Ok(domain);
         }
-        zeros_in_domain(&derivative, var, &domain, OP)
+        stationary_set(&derivative, var, &domain, OP)
     }
 
     /// Supremum of `self` (continuous in `var`) over `domain`, a union of
     /// intervals — SymPy's `maximum`.
     ///
     /// The candidates are the values at the stationary points and `abs`
-    /// kinks inside the domain, at closed endpoints, and the one-sided
-    /// limits at open or infinite endpoints; `+∞` / `−∞` are legitimate
-    /// results.  Candidates are compared exactly (see the module notes for
-    /// the one numeric fallback).  The supremum need not be attained:
-    /// `maximum(x, (0, 1)) = 1`.
+    /// kinks inside the domain (see [`stationary_points`](Ex::stationary_points)
+    /// for how `|h|` is handled: `maximum(|x|, [−1, 2]) = 2`,
+    /// `minimum(|x − 1| + x², [−1, 2]) = 3/4`), at closed endpoints, and
+    /// the one-sided limits at open or infinite endpoints; `+∞` / `−∞` are
+    /// legitimate results.  Candidates are compared exactly (see the module
+    /// notes for the numeric fallbacks).  The supremum need not be
+    /// attained: `maximum(x, (0, 1)) = 1`.
     ///
     /// # Errors
     ///
     /// * `InvalidArgument` — `var` is not a symbol, or `domain` is empty
     ///   or not a union of intervals.
-    /// * `NotImplemented` — `self` has singularities inside the domain,
+    /// * `ComputationFailed` — `self` has singularities inside the domain,
     ///   contains a discontinuous or opaque node (`floor`, `sign`,
     ///   `Piecewise`, an unknown function, …), its stationary points
     ///   cannot be enumerated, an endpoint limit cannot be computed, or two
@@ -893,6 +1202,15 @@ impl Ex {
     /// discontinuous or opaque nodes (`floor`, `sign`, unknown functions)
     /// are always `None`.  The domain must be a union of intervals (`None`
     /// otherwise); the empty domain is vacuously `Some(true)`.
+    ///
+    /// A pole strictly inside the domain refutes monotonicity regardless of
+    /// the sign of `f'` on either side: `1/x` is not decreasing on
+    /// `[−1, 1]` (`f(−1) = −1 < 1 = f(1)`) and `tan x` is not increasing
+    /// on `[0, π]`, although `f' < 0` resp. `f' > 0` wherever it is
+    /// defined.  (SymPy tests the derivative alone and answers `True` for
+    /// `is_increasing(tan(x), Interval(0, pi))`.)  When the singularities
+    /// inside the domain cannot be enumerated (`tan x` on ℝ) the answer is
+    /// `None`.
     ///
     /// # Examples
     ///
@@ -1055,7 +1373,12 @@ impl Ex {
         monotone_on(&self.diff(var), var, domain, false)
     }
 
-    /// Fundamental period of `self` in `var` — SymPy's `periodicity`.
+    /// A period of `self` in `var` — SymPy's `periodicity`.  Like
+    /// SymPy's, the value is *a* period, not necessarily the fundamental
+    /// one: composite expressions get the lcm of the periods of their
+    /// pieces, and identities that shorten the period are not detected
+    /// (`sin²x·cos²x = sin²(2x)/4` gives `π`, whose fundamental period is
+    /// `π/2` — SymPy answers `π/2` here through its own simplification).
     ///
     /// * `Some(0)` when `self` does not depend on `var`.
     /// * `sin(a·x + b)`, `cos(a·x + b)` → `2π/|a|`; `tan(a·x + b)` →
@@ -1072,7 +1395,7 @@ impl Ex {
     /// The expression is simplified first (`sin²x + cos²x` → `1` →
     /// `Some(0)`); the original form is tried if the simplified one is not
     /// recognised.  Note that SymPy reports `2π` for `sin(x)²`; the
-    /// fundamental period `π` is returned here.
+    /// half-period rule gives `π` here.
     ///
     /// # Examples
     ///
@@ -1125,7 +1448,7 @@ impl Ex {
     ///
     /// * `InvalidArgument` — `var` is not a symbol, or `domain` is not a
     ///   union of intervals (the empty domain gives the empty set).
-    /// * `NotImplemented` — as for [`maximum`](Ex::maximum).
+    /// * `ComputationFailed` — as for [`maximum`](Ex::maximum).
     ///
     /// # Examples
     ///

@@ -860,8 +860,7 @@ fn expr_to_rust_cse(
             let sym_name = arena.symbols.name(sid);
             if var_names.contains(&sym_name) {
                 Ok(sym_name.to_string())
-            } else if sym_name.starts_with("__cse_") {
-                let idx_str = sym_name.strip_prefix("__cse_").unwrap();
+            } else if let Some(idx_str) = sym_name.strip_prefix("__cse_") {
                 let idx: usize = idx_str.parse().map_err(|_| {
                     SymplexError::NotImplemented(format!("invalid CSE variable name: {sym_name}"))
                 })?;
@@ -937,15 +936,11 @@ fn expr_to_rust_cse(
             // Build parts with subtraction detection
             let mut parts = Vec::new();
             for (i, &child) in live.iter().enumerate() {
-                let (is_neg, code) = if matches!(arena.node(child), ExprNode::Neg(_)) {
-                    if let ExprNode::Neg(inner) = arena.node(child).clone() {
-                        (
-                            true,
-                            expr_to_rust_cse(arena, inner, var_names, options, cse_constants)?,
-                        )
-                    } else {
-                        unreachable!()
-                    }
+                let (is_neg, code) = if let ExprNode::Neg(inner) = *arena.node(child) {
+                    (
+                        true,
+                        expr_to_rust_cse(arena, inner, var_names, options, cse_constants)?,
+                    )
                 } else if is_neg_one_mul_codegen(arena, child) {
                     (
                         true,
@@ -1281,11 +1276,8 @@ fn try_numopt(
         }
         if let (Some(ei), Some(ni)) = (exp_idx, neg_one_idx)
             && ei != ni
+            && let ExprNode::Exp(x) = *arena.node(children[ei])
         {
-            let x = match arena.node(children[ei]) {
-                ExprNode::Exp(x) => *x,
-                _ => unreachable!(),
-            };
             return Some(emit_exp_m1_in_add(
                 arena,
                 children,
@@ -1459,15 +1451,11 @@ fn emit_exp_m1_in_add(
     parts.push(exp_m1_code);
 
     for &child in &remaining {
-        let (is_neg, code) = if matches!(arena.node(child), ExprNode::Neg(_)) {
-            if let ExprNode::Neg(inner) = arena.node(child).clone() {
-                (
-                    true,
-                    expr_to_rust_cse(arena, inner, var_names, options, cse_constants)?,
-                )
-            } else {
-                unreachable!()
-            }
+        let (is_neg, code) = if let ExprNode::Neg(inner) = *arena.node(child) {
+            (
+                true,
+                expr_to_rust_cse(arena, inner, var_names, options, cse_constants)?,
+            )
         } else if is_neg_one_mul_codegen(arena, child) {
             (
                 true,
@@ -1498,7 +1486,7 @@ fn emit_numopt_call(
     options: &CodegenOptions,
 ) -> Result<String, SymplexError> {
     let call = match options.math_backend {
-        MathBackend::Std => format!("{arg_code}.{std_method}()"),
+        MathBackend::Std => format!("{}.{std_method}()", receiver(arg_code)),
         MathBackend::Libm => {
             let ft = options.precision.type_name();
             format!("libm::{libm_name}({arg_code} as f64) as {ft}")
@@ -1709,9 +1697,9 @@ fn emit_mul_without_neg_one(
             .iter()
             .map(|&c| expr_to_rust_cse(arena, c, var_names, options, cse_constants))
             .collect();
-        let rest = rest?;
-        if rest.len() == 1 {
-            Ok(rest.into_iter().next().unwrap())
+        let mut rest = rest?;
+        if let [only] = rest.as_mut_slice() {
+            Ok(std::mem::take(only))
         } else {
             Ok(format!("({})", rest.join(" * ")))
         }
@@ -1745,13 +1733,9 @@ fn emit_fma_chain(
     } else if non_fma_children.len() == 1 {
         let child = non_fma_children[0];
         // Preserve negation for single non-FMA child
-        if matches!(arena.node(child), ExprNode::Neg(_)) {
-            if let ExprNode::Neg(inner) = arena.node(child).clone() {
-                let code = expr_to_rust_cse(arena, inner, var_names, options, cse_constants)?;
-                format!("(-{code})")
-            } else {
-                unreachable!()
-            }
+        if let ExprNode::Neg(inner) = *arena.node(child) {
+            let code = expr_to_rust_cse(arena, inner, var_names, options, cse_constants)?;
+            format!("(-{code})")
         } else if is_neg_one_mul_codegen(arena, child) {
             let code = emit_mul_without_neg_one(arena, child, var_names, options, cse_constants)?;
             format!("(-{code})")
@@ -1762,15 +1746,11 @@ fn emit_fma_chain(
         // Build a parenthesized sum of non-FMA children with subtraction detection
         let mut parts = Vec::new();
         for (i, &child) in non_fma_children.iter().enumerate() {
-            let (is_neg, code) = if matches!(arena.node(child), ExprNode::Neg(_)) {
-                if let ExprNode::Neg(inner) = arena.node(child).clone() {
-                    (
-                        true,
-                        expr_to_rust_cse(arena, inner, var_names, options, cse_constants)?,
-                    )
-                } else {
-                    unreachable!()
-                }
+            let (is_neg, code) = if let ExprNode::Neg(inner) = *arena.node(child) {
+                (
+                    true,
+                    expr_to_rust_cse(arena, inner, var_names, options, cse_constants)?,
+                )
             } else if is_neg_one_mul_codegen(arena, child) {
                 (
                     true,
@@ -1821,7 +1801,7 @@ fn emit_fma_chain(
 /// Emit a single FMA (fused multiply-add) call: `a * b + c`.
 fn emit_fma_call(a: &str, b: &str, c: &str, options: &CodegenOptions) -> String {
     match options.math_backend {
-        MathBackend::Std => format!("{a}.mul_add({b}, {c})"),
+        MathBackend::Std => format!("{}.mul_add({b}, {c})", receiver(a)),
         MathBackend::Libm => {
             let ft = options.precision.type_name();
             format!("libm::fma({a} as f64, {b} as f64, {c} as f64) as {ft}")
@@ -1890,11 +1870,14 @@ fn emit_sin_cos_binding(
 ) -> Result<String, SymplexError> {
     let arg_code = expr_to_rust_cse(arena, arg, var_names, options, cse_constants)?;
     let call = match options.math_backend {
-        MathBackend::Std => format!("{arg_code}.sin_cos()"),
+        MathBackend::Std => format!("{}.sin_cos()", receiver(&arg_code)),
         MathBackend::CfgGated => format!("math::sin_cos({arg_code})"),
+        // `detect_sin_cos_pairs` is skipped for Libm (no sincos there); the
+        // callers never pair under that backend.
         MathBackend::Libm => {
-            // Libm: fall back to separate calls (handled by caller skipping pairing)
-            unreachable!("sin_cos pairing should not be used with Libm backend");
+            return Err(codegen_invariant(
+                "sin_cos pairing requested for the Libm backend",
+            ));
         }
     };
     Ok(format!(
@@ -1928,6 +1911,30 @@ fn strip_outer_parens(s: &str) -> &str {
 // Backend-aware emission helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Internal-invariant violation in the code generator (see the no-panics
+/// policy in CONTRIBUTING.md): names the invariant instead of panicking.
+fn codegen_invariant(reason: &str) -> SymplexError {
+    SymplexError::ComputationFailed {
+        operation: "codegen",
+        reason: format!("internal invariant violated: {reason}"),
+    }
+}
+
+/// `code` as the receiver of a method call.
+///
+/// Rust's method call binds tighter than unary minus, so `-2_f64.powf(x)`
+/// is `-(2_f64.powf(x))`; a rendering that starts with `-` (negative
+/// literals, `-(a * b)`) must be parenthesised before `.method()` is
+/// appended.  Everything else the printer produces is either an atom or
+/// already wrapped in `(…)`.
+fn receiver(code: &str) -> String {
+    if code.starts_with('-') {
+        format!("({code})")
+    } else {
+        code.to_string()
+    }
+}
+
 /// Emit a unary math function call, resolving the argument first.
 ///
 /// When the argument is a compile-time constant (numeric literal, π, or e),
@@ -1960,7 +1967,7 @@ fn emit_unary_call(
     options: &CodegenOptions,
 ) -> Result<String, SymplexError> {
     let call = match options.math_backend {
-        MathBackend::Std => format!("{arg_code}.{func}()"),
+        MathBackend::Std => format!("{}.{func}()", receiver(arg_code)),
         MathBackend::Libm => {
             let libm_fn = libm_function_name(func);
             format!(
@@ -2178,7 +2185,7 @@ fn emit_powi(base_code: &str, exp: i64, options: &CodegenOptions) -> Result<Stri
         return Ok(expanded);
     }
     Ok(match options.math_backend {
-        MathBackend::Std => format!("{base_code}.powi({exp})"),
+        MathBackend::Std => format!("{}.powi({exp})", receiver(base_code)),
         MathBackend::Libm => {
             let ft = options.precision.type_name();
             format!("libm::pow({base_code} as f64, {exp}_f64) as {ft}")
@@ -2209,7 +2216,7 @@ fn emit_powf(
     options: &CodegenOptions,
 ) -> Result<String, SymplexError> {
     Ok(match options.math_backend {
-        MathBackend::Std => format!("{base_code}.powf({exp_code})"),
+        MathBackend::Std => format!("{}.powf({exp_code})", receiver(base_code)),
         MathBackend::Libm => {
             let ft = options.precision.type_name();
             format!("libm::pow({base_code} as f64, {exp_code} as f64) as {ft}")
@@ -2225,7 +2232,7 @@ fn emit_atan2(
     options: &CodegenOptions,
 ) -> Result<String, SymplexError> {
     Ok(match options.math_backend {
-        MathBackend::Std => format!("{y_code}.atan2({x_code})"),
+        MathBackend::Std => format!("{}.atan2({x_code})", receiver(y_code)),
         MathBackend::Libm => {
             let ft = options.precision.type_name();
             format!("libm::atan2({y_code} as f64, {x_code} as f64) as {ft}")
@@ -2237,7 +2244,7 @@ fn emit_atan2(
 /// Emit a min call.
 fn emit_min(a_code: &str, b_code: &str, options: &CodegenOptions) -> String {
     match options.math_backend {
-        MathBackend::Std => format!("{a_code}.min({b_code})"),
+        MathBackend::Std => format!("{}.min({b_code})", receiver(a_code)),
         MathBackend::Libm => {
             let ft = options.precision.type_name();
             format!("libm::fmin({a_code} as f64, {b_code} as f64) as {ft}")
@@ -2249,7 +2256,7 @@ fn emit_min(a_code: &str, b_code: &str, options: &CodegenOptions) -> String {
 /// Emit a max call.
 fn emit_max(a_code: &str, b_code: &str, options: &CodegenOptions) -> String {
     match options.math_backend {
-        MathBackend::Std => format!("{a_code}.max({b_code})"),
+        MathBackend::Std => format!("{}.max({b_code})", receiver(a_code)),
         MathBackend::Libm => {
             let ft = options.precision.type_name();
             format!("libm::fmax({a_code} as f64, {b_code} as f64) as {ft}")

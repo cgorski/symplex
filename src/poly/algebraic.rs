@@ -24,8 +24,14 @@
 //!     folded `|p|` times with the product rule.
 //!
 //!   Resultants are computed by evaluation/interpolation over
-//!   [`GenPoly`]; the factor selection uses `factor_over_z` plus a numerical
-//!   evaluation to pick the factor that actually vanishes.
+//!   [`GenPoly`].  The factor selection factors the resultant over ℤ
+//!   (refusing a factorisation that is not certified complete), evaluates
+//!   the number to 320 bits and accepts the *unique* irreducible factor
+//!   whose residual there is negligible (below `2⁻¹²⁸` of the trivial
+//!   bound on `|g(α)|`); no factor, or more than one, gives `None` rather
+//!   than a guess.  The expression is first converted to the
+//!   arena-independent [`AlgExpr`] tree, so the computation itself needs
+//!   no arena access (and no arena lock).
 //! - [`exact_is_zero`] / [`exact_sign`] — given the minimal polynomial,
 //!   isolate the real root nearest to the `f64` value of the expression with
 //!   a [`SturmChain`] and decide zero-ness/sign from the isolating interval.
@@ -46,9 +52,10 @@
 //!   (`π`, `e`, free symbols, transcendental functions) yields `None`.
 //! - The resultant-based composition produces a polynomial that *has* `α`
 //!   as a root; the minimal polynomial is obtained by factoring and
-//!   selecting the right irreducible factor numerically, which relies on
-//!   roots of the resultant being separated by more than the `f64`
-//!   evaluation error.
+//!   selecting the irreducible factor that vanishes at a 320-bit value of
+//!   `α`.  Two distinct factors would both pass only if the resultant had
+//!   roots closer than about `10⁻³⁸` relative to its coefficient size; the
+//!   selection then reports `None` instead of choosing.
 //!
 //! # References
 //!
@@ -56,13 +63,17 @@
 //! - Bronstein, *Symbolic Integration I*, §1.2–1.4
 //! - SymPy `polys/numberfields/minpoly.py`
 
+use astro_float::{BigFloat, Consts, RoundingMode};
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::{One, Signed, Zero};
+use num_traits::{One, Signed, ToPrimitive, Zero};
 
 use super::dense::Poly;
 use super::generic::GenPoly;
 use super::sturm::SturmChain;
+use crate::base::arena::Arena;
+use crate::base::node::{ExprId, ExprNode};
+use crate::transforms::evalf::{c_add, c_div, c_from_real, c_mul, c_one, c_zero};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Sign determination helpers
@@ -129,21 +140,109 @@ fn cauchy_bound(p: &Poly) -> Ratio<BigInt> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Arena-free algebraic expressions
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// An algebraic-number expression detached from the arena — exactly the
+/// shapes [`minimal_polynomial`] recognises.  Built under a (read) lock
+/// with [`AlgExpr::from_arena`]; everything downstream is arena-free.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum AlgExpr {
+    /// A rational number.
+    Rat(Ratio<BigInt>),
+    /// The imaginary unit `i`.
+    I,
+    /// The golden ratio `φ = (1 + √5)/2`.
+    Phi,
+    /// `−a`.
+    Neg(Box<AlgExpr>),
+    /// `a₁ + a₂ + …` (at least two terms).
+    Add(Vec<AlgExpr>),
+    /// `a₁ · a₂ · …` (at least two factors).
+    Mul(Vec<AlgExpr>),
+    /// `base^exp` with a rational exponent.
+    Pow(Box<AlgExpr>, Ratio<BigInt>),
+}
+
+impl AlgExpr {
+    /// Detach the constant `expr` from the arena.
+    ///
+    /// `None` when some node is not one of the recognised shapes: `π`, `e`,
+    /// free symbols, transcendental functions, a power with a non-rational
+    /// exponent, or a power of a *negative or zero* rational base with a
+    /// fractional exponent (the numeric route below would not know which
+    /// branch the arena's evaluator takes).
+    pub(crate) fn from_arena(arena: &Arena, expr: ExprId) -> Option<AlgExpr> {
+        match arena.node(expr) {
+            ExprNode::Num(nid) => Some(AlgExpr::Rat(arena.num(*nid).clone())),
+            ExprNode::ImaginaryUnit => Some(AlgExpr::I),
+            ExprNode::GoldenRatio => Some(AlgExpr::Phi),
+            ExprNode::Neg(inner) => Some(AlgExpr::Neg(Box::new(Self::from_arena(arena, *inner)?))),
+            ExprNode::Pow(base, exp) => {
+                let exp_r = arena.as_num(*exp)?.clone();
+                if let Some(base_r) = arena.as_num(*base) {
+                    if !base_r.is_positive() && !exp_r.is_integer() {
+                        return None;
+                    }
+                    return Some(AlgExpr::Pow(Box::new(AlgExpr::Rat(base_r.clone())), exp_r));
+                }
+                Some(AlgExpr::Pow(
+                    Box::new(Self::from_arena(arena, *base)?),
+                    exp_r,
+                ))
+            }
+            ExprNode::Add(children) if children.len() >= 2 => Some(AlgExpr::Add(
+                children
+                    .iter()
+                    .map(|&c| Self::from_arena(arena, c))
+                    .collect::<Option<Vec<_>>>()?,
+            )),
+            ExprNode::Mul(children) if children.len() >= 2 => Some(AlgExpr::Mul(
+                children
+                    .iter()
+                    .map(|&c| Self::from_arena(arena, c))
+                    .collect::<Option<Vec<_>>>()?,
+            )),
+            // `π`, `e`, symbols, functions, …: not recognised as algebraic.
+            _ => None,
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Minimal polynomial computation
 // ═══════════════════════════════════════════════════════════════════════════
+
+/// Working precision in bits at which an algebraic number is evaluated to
+/// decide which irreducible factor of a resultant vanishes at it.
+const VERIFY_PREC_BITS: usize = 320;
+
+/// A factor `g` is accepted as vanishing at the 320-bit value `z` when
+/// `|g(z)| ≤ 2⁻¹²⁸ · (deg g + 1) · H(g) · max(1, |z|)^{deg g}` — i.e. its
+/// residual is at least `2¹²⁸` times below the trivial bound on `|g(z)|`.
+/// The true factor's residual is around `2⁻³²⁰` of that bound; a wrong
+/// factor would have to have a root within `~2⁻¹²⁸` of `z`.
+const VERIFY_TOLERANCE_BITS: i32 = 128;
+
+/// A complex number in arbitrary precision.
+type Complex = (BigFloat, BigFloat);
 
 /// Compute the minimal polynomial of an arena expression over ℚ.
 ///
 /// The expression must represent an algebraic number (no transcendental
 /// functions, no free symbols other than constants).
 ///
-/// Returns `None` if the expression is not recognized as algebraic.
+/// Returns `None` if the expression is not recognized as algebraic, or if
+/// the irreducible factor that vanishes at the number cannot be certified
+/// (see [`minimal_polynomial_of`]).
 ///
 /// # Algorithm
 ///
-/// Recursively decomposes the expression:
+/// The expression is detached into an [`AlgExpr`] (the only step that
+/// touches the arena) and handed to [`minimal_polynomial_of`], which
+/// decomposes it recursively:
 /// - Rational `r` → `t - r`
-/// - `n^{p/q}` → `t^q - n^p` (for positive integer `n`, integer `p`, positive `q`)
+/// - `n^{p/q}` → the factor of `t^q - n^p` vanishing at the real value
 /// - `ImaginaryUnit` → `t² + 1`
 /// - `GoldenRatio` → `t² − t − 1`
 /// - `a^{p/q}` for algebraic `a` → see [`minpoly_pow`]
@@ -154,178 +253,127 @@ fn cauchy_bound(p: &Poly) -> Ratio<BigInt> {
 /// # References
 ///
 /// - SymPy `polys/numberfields/minpoly.py::_minpoly_compose`
-pub fn minimal_polynomial(
-    arena: &mut crate::base::arena::Arena,
-    expr: crate::base::node::ExprId,
-) -> Option<Poly> {
-    use crate::base::node::ExprNode;
+pub fn minimal_polynomial(arena: &mut Arena, expr: ExprId) -> Option<Poly> {
+    let alg = AlgExpr::from_arena(arena, expr)?;
+    minimal_polynomial_of(&alg)
+}
 
-    let node = arena.node(expr).clone();
-    match node {
-        // Rational number r → t - r
-        ExprNode::Num(nid) => {
-            let r = arena.num(nid).clone();
-            // t - r = [-r, 1]
-            Some(Poly::from_coeffs(vec![-r, rat(1, 1)]))
+/// Minimal polynomial over ℚ of a detached algebraic expression.
+///
+/// Every resultant produced by the composition rules is factored over ℤ;
+/// the factorisation must be certified complete (every factor irreducible)
+/// and exactly one factor must vanish, to [`VERIFY_TOLERANCE_BITS`], at
+/// the [`VERIFY_PREC_BITS`]-bit value of the sub-expression.  Anything
+/// else — an incomplete factorisation, no vanishing factor, two of them,
+/// a fractional power of a number that is not real and positive — gives
+/// `None`: the function never returns a polynomial it has not verified.
+pub(crate) fn minimal_polynomial_of(alg: &AlgExpr) -> Option<Poly> {
+    let mut cc = Consts::new().ok()?;
+    let (mp, _value) = minpoly_of(alg, &mut cc)?;
+    Some(mp)
+}
+
+/// Minimal polynomial and high-precision value of `alg`.
+fn minpoly_of(alg: &AlgExpr, cc: &mut Consts) -> Option<(Poly, Complex)> {
+    let prec = VERIFY_PREC_BITS;
+    match alg {
+        // r → t − r
+        AlgExpr::Rat(r) => Some((
+            Poly::from_coeffs(vec![-r.clone(), rat(1, 1)]),
+            c_from_real(ratio_to_bigfloat(r, prec), prec),
+        )),
+
+        // i → t² + 1
+        AlgExpr::I => Some((
+            Poly::from_coeffs(vec![rat(1, 1), rat(0, 1), rat(1, 1)]),
+            (BigFloat::new(prec), BigFloat::from_i32(1, prec)),
+        )),
+
+        // φ = (1 + √5)/2 → t² − t − 1
+        AlgExpr::Phi => {
+            let rm = RoundingMode::None;
+            let sqrt5 = BigFloat::from_i32(5, prec).sqrt(prec, rm);
+            let phi = sqrt5.add(&BigFloat::from_i32(1, prec), prec, rm).div(
+                &BigFloat::from_i32(2, prec),
+                prec,
+                rm,
+            );
+            Some((
+                Poly::from_coeffs(vec![rat(-1, 1), rat(-1, 1), rat(1, 1)]),
+                c_from_real(phi, prec),
+            ))
         }
 
-        // Constants
-        ExprNode::Pi | ExprNode::E => None, // Transcendental — not algebraic.
-
-        ExprNode::ImaginaryUnit => {
-            // i → t² + 1
-            Some(Poly::from_coeffs(vec![rat(1, 1), rat(0, 1), rat(1, 1)]))
+        // −a → m_a(−t)
+        AlgExpr::Neg(inner) => {
+            let (mp, (re, im)) = minpoly_of(inner, cc)?;
+            Some((negate_variable(&mp), (re.neg(), im.neg())))
         }
 
-        ExprNode::GoldenRatio => {
-            // φ = (1 + √5)/2 → t² − t − 1
-            Some(Poly::from_coeffs(vec![rat(-1, 1), rat(-1, 1), rat(1, 1)]))
-        }
-
-        // Negation: min_poly(-a) = m_a(-t)
-        ExprNode::Neg(inner) => {
-            let mp = minimal_polynomial(arena, inner)?;
-            Some(negate_variable(&mp))
-        }
-
-        // Power: n^{p/q} where n is a positive integer
-        ExprNode::Pow(base, exp) => {
-            if let Some(base_r) = arena.as_num(base)
-                && let Some(exp_r) = arena.as_num(exp)
-                && base_r.is_positive()
-                && !exp_r.is_integer()
-            {
-                // n^{p/q}: minimal polynomial is t^q - n^p
-                let p_int = exp_r.numer().clone();
-                let q_int = exp_r.denom().clone();
-                let q_usize: usize = (&q_int).try_into().ok()?;
-                // n^p as a rational
-                let n_pow_p = rational_pow(base_r, &p_int)?;
-                // t^q - n^p = [-n^p, 0, 0, ..., 0, 1] with 1 at position q
-                let mut coeffs = vec![Ratio::zero(); q_usize + 1];
-                coeffs[0] = -n_pow_p;
-                coeffs[q_usize] = rat(1, 1);
-                let mp = Poly::from_coeffs(coeffs);
-                // Factor and pick the irreducible factor containing
-                // the root n^{p/q}.
-                return pick_irreducible_factor(&mp, base_r, exp_r);
+        // a + b + … → fold the resultant composition left to right.
+        AlgExpr::Add(terms) => {
+            let mut iter = terms.iter();
+            let (mut acc_mp, mut acc_val) = minpoly_of(iter.next()?, cc)?;
+            for term in iter {
+                let (mp, val) = minpoly_of(term, cc)?;
+                acc_val = c_add(&acc_val, &val, prec, RoundingMode::None);
+                acc_mp = minpoly_add(&acc_mp, &mp, &acc_val)?;
             }
-            // Algebraic (non-numeric) base with a rational exponent:
-            // `(1 + √2)⁻¹`, `(3 + 2√2)^{1/2}`, …
-            if arena.as_num(base).is_none()
-                && let Some(exp_r) = arena.as_num(exp).cloned()
-            {
-                return minpoly_pow(arena, base, &exp_r);
-            }
-            None
+            Some((acc_mp, acc_val))
         }
 
-        // Addition: min_poly(a + b) via resultant
-        ExprNode::Add(ref children) if children.len() == 2 => {
-            let mp_a = minimal_polynomial(arena, children[0])?;
-            let mp_b = minimal_polynomial(arena, children[1])?;
-            minpoly_add(&mp_a, &mp_b, arena, children[0], children[1])
-        }
-
-        // N-ary addition: fold pairwise
-        ExprNode::Add(ref children) if children.len() > 2 => {
-            // Fold left: min_poly(a + b + c) = min_poly(min_poly(a+b) composed with c)
-            let mut acc_expr = children[0];
-            let mut acc_mp = minimal_polynomial(arena, acc_expr)?;
-            for &child in &children[1..] {
-                let child_mp = minimal_polynomial(arena, child)?;
-                acc_mp = minpoly_add(&acc_mp, &child_mp, arena, acc_expr, child)?;
-                // Build the running sum expression so that factor selection
-                // evaluates the correct combined value (a+b, then a+b+c, etc.).
-                acc_expr = arena.add(&[acc_expr, child]);
-            }
-            Some(acc_mp)
-        }
-
-        // Multiplication: min_poly(a * b) via resultant
-        ExprNode::Mul(ref children) if children.len() == 2 => {
-            // Check if one factor is rational.
-            if let Some(r) = arena.as_num(children[0]).cloned() {
-                let mp_b = minimal_polynomial(arena, children[1])?;
-                return Some(minpoly_rational_mul(&mp_b, &r));
-            }
-            if let Some(r) = arena.as_num(children[1]).cloned() {
-                let mp_a = minimal_polynomial(arena, children[0])?;
-                return Some(minpoly_rational_mul(&mp_a, &r));
-            }
-            let mp_a = minimal_polynomial(arena, children[0])?;
-            let mp_b = minimal_polynomial(arena, children[1])?;
-            minpoly_mul(&mp_a, &mp_b, arena, children[0], children[1])
-        }
-
-        // N-ary multiplication: separate rationals and fold
-        ExprNode::Mul(ref children) if children.len() > 2 => {
-            let mut rational_coeff = rat(1, 1);
-            let mut symbolic: Vec<crate::base::node::ExprId> = Vec::new();
-            for &child in children.iter() {
-                if let Some(r) = arena.as_num(child) {
-                    rational_coeff *= r.clone();
-                } else {
-                    symbolic.push(child);
+        // a · b · … → rational factors exactly, the rest by resultants.
+        AlgExpr::Mul(factors) => {
+            let mut rational = rat(1, 1);
+            let mut symbolic: Vec<&AlgExpr> = Vec::new();
+            for f in factors {
+                match f {
+                    AlgExpr::Rat(r) => rational *= r,
+                    other => symbolic.push(other),
                 }
             }
-            if symbolic.is_empty() {
-                // Pure rational product.
-                return Some(Poly::from_coeffs(vec![-rational_coeff, rat(1, 1)]));
+            let rational_val = c_from_real(ratio_to_bigfloat(&rational, prec), prec);
+            let mut iter = symbolic.into_iter();
+            let Some(first) = iter.next() else {
+                // A pure rational product.
+                return Some((
+                    Poly::from_coeffs(vec![-rational.clone(), rat(1, 1)]),
+                    rational_val,
+                ));
+            };
+            let (mut acc_mp, mut acc_val) = minpoly_of(first, cc)?;
+            for f in iter {
+                let (mp, val) = minpoly_of(f, cc)?;
+                acc_val = c_mul(&acc_val, &val, prec, RoundingMode::None);
+                acc_mp = minpoly_mul(&acc_mp, &mp, &acc_val)?;
             }
-            // Compute min_poly for the symbolic product.
-            let mut acc_expr = symbolic[0];
-            let mut acc_mp = minimal_polynomial(arena, acc_expr)?;
-            for &child in &symbolic[1..] {
-                let child_mp = minimal_polynomial(arena, child)?;
-                acc_mp = minpoly_mul(&acc_mp, &child_mp, arena, acc_expr, child)?;
-                // Build the running product expression so that factor selection
-                // evaluates the correct combined value (a·b, then a·b·c, etc.).
-                acc_expr = arena.mul(&[acc_expr, child]);
+            if !rational.is_one() {
+                acc_mp = minpoly_rational_mul(&acc_mp, &rational);
+                acc_val = c_mul(&acc_val, &rational_val, prec, RoundingMode::None);
             }
-            // Scale by rational coefficient: if α has min_poly m(t),
-            // then r·α has min_poly m(t/r) (with appropriate scaling).
-            if !rational_coeff.is_one() {
-                acc_mp = minpoly_rational_mul(&acc_mp, &rational_coeff);
-            }
-            Some(acc_mp)
+            Some((acc_mp, acc_val))
         }
 
-        // Symbol or other — check if it's a known algebraic constant.
-        ExprNode::Symbol(_) => None, // Free symbol — not a known algebraic number.
-
-        _ => None, // Not recognized as algebraic.
+        AlgExpr::Pow(base, exp) => minpoly_pow(base, exp, cc),
     }
 }
 
-/// Compute minimal polynomial of `a + b` given minimal polynomials of `a` and `b`.
+/// Minimal polynomial of `a + b` from those of `a` and `b` and the value
+/// `value = a + b`.
 ///
-/// Uses the resultant: `min_poly(a+b)` divides `res_y(m_a(y), m_b(x-y))`.
-/// We compute the resultant, factor it, and pick the irreducible factor
-/// whose root is closest to the numerical value of `a + b`.
-fn minpoly_add(
-    mp_a: &Poly,
-    mp_b: &Poly,
-    arena: &mut crate::base::arena::Arena,
-    expr_a: crate::base::node::ExprId,
-    expr_b: crate::base::node::ExprId,
-) -> Option<Poly> {
+/// `min_poly(a + b)` divides `res_y(m_a(y), m_b(x − y))`; the resultant is
+/// computed by evaluation/interpolation, factored, and the factor that
+/// vanishes at `value` is selected ([`select_vanishing_factor`]).
+fn minpoly_add(mp_a: &Poly, mp_b: &Poly, value: &Complex) -> Option<Poly> {
     let deg_a = mp_a.degree()?;
     let deg_b = mp_b.degree()?;
 
-    // res_y(m_a(y), m_b(x - y)):
-    // Substitute y → x - y in m_b to get m_b(x - y),
-    // then compute res_y(m_a(y), m_b(x-y)).
-    //
-    // We use evaluation-interpolation: evaluate at x = 0, 1, 2, ..., deg_a*deg_b
-    // and interpolate.
+    // res_y(m_a(y), m_b(x - y)) by evaluation at x = 0, 1, …, deg_a·deg_b
+    // and interpolation.
     let result_degree = deg_a * deg_b;
-    let mut points: Vec<(i64, Ratio<BigInt>)> = Vec::new();
-
+    let mut points: Vec<(i64, Ratio<BigInt>)> = Vec::with_capacity(result_degree + 1);
     for k in 0..=result_degree {
         let x_val = rat(k as i64, 1);
-        // m_b(x_val - y) as a polynomial in y:
-        // m_b(t) = Σ b_i t^i → m_b(x-y) = Σ b_i (x-y)^i
         let mb_shifted = substitute_shift(mp_b, &x_val);
         let res = GenPoly::<Ratio<BigInt>>::resultant(mp_a, &mb_shifted);
         points.push((k as i64, res));
@@ -335,38 +383,22 @@ fn minpoly_add(
     if r_poly.is_zero() {
         return None;
     }
-
-    // Factor and pick the right irreducible factor.
-    pick_factor_by_numerical_eval(
-        &r_poly,
-        arena,
-        expr_a,
-        Some(expr_b),
-        true, // addition
-    )
+    select_vanishing_factor(&r_poly, value)
 }
 
-/// Compute minimal polynomial of `a * b` given minimal polynomials of `a` and `b`.
+/// Minimal polynomial of `a · b` from those of `a` and `b` and the value
+/// `value = a · b`.
 ///
-/// Uses the resultant: `min_poly(a*b)` divides `res_y(m_a(y), y^d · m_b(x/y))`
-/// where `d = deg(m_b)`.
-fn minpoly_mul(
-    mp_a: &Poly,
-    mp_b: &Poly,
-    arena: &mut crate::base::arena::Arena,
-    expr_a: crate::base::node::ExprId,
-    expr_b: crate::base::node::ExprId,
-) -> Option<Poly> {
+/// `min_poly(a · b)` divides `res_y(m_a(y), y^d · m_b(x / y))` with
+/// `d = deg m_b`.
+fn minpoly_mul(mp_a: &Poly, mp_b: &Poly, value: &Complex) -> Option<Poly> {
     let deg_a = mp_a.degree()?;
     let deg_b = mp_b.degree()?;
 
     let result_degree = deg_a * deg_b;
-    let mut points: Vec<(i64, Ratio<BigInt>)> = Vec::new();
-
+    let mut points: Vec<(i64, Ratio<BigInt>)> = Vec::with_capacity(result_degree + 1);
     for k in 0..=result_degree {
         let x_val = rat(k as i64, 1);
-        // y^deg_b · m_b(x/y) as a polynomial in y:
-        // If m_b(t) = Σ b_i t^i, then y^d · m_b(x/y) = Σ b_i x^i y^{d-i}
         let mb_scaled = reciprocal_scale(mp_b, &x_val);
         let res = GenPoly::<Ratio<BigInt>>::resultant(mp_a, &mb_scaled);
         points.push((k as i64, res));
@@ -376,59 +408,73 @@ fn minpoly_mul(
     if r_poly.is_zero() {
         return None;
     }
-
-    pick_factor_by_numerical_eval(
-        &r_poly,
-        arena,
-        expr_a,
-        Some(expr_b),
-        false, // multiplication
-    )
+    select_vanishing_factor(&r_poly, value)
 }
 
-/// Minimal polynomial of `base^{p/q}` for an algebraic `base` that is not
-/// itself a number.
+/// Minimal polynomial and value of `base^{p/q}`.
 ///
-/// `base^{1/q}` is a root of `m_base(t^q)`; the irreducible factor that
-/// vanishes at the real value is selected numerically, which is only
-/// reliable for a positive real base, so `q > 1` requires `base > 0`.
-/// Integer powers then fold with [`minpoly_mul`]; a negative exponent
-/// starts from the reciprocal, whose minimal polynomial is `m` with its
-/// coefficients reversed.  Returns `None` when the base is not algebraic,
-/// is zero under a negative exponent, or the exponent does not fit `i64`.
-fn minpoly_pow(
-    arena: &mut crate::base::arena::Arena,
-    base: crate::base::node::ExprId,
-    exp: &Ratio<BigInt>,
-) -> Option<Poly> {
+/// `base^{1/q}` is a root of `m_base(t^q)`; the factor vanishing at the
+/// real `q`-th root is selected, which requires `base` to be real and
+/// positive when `q > 1` (decided from its 320-bit value: the imaginary
+/// part must be at rounding level and the real part positive).  A negative
+/// exponent starts from the reciprocal, whose minimal polynomial is `m`
+/// with its coefficients reversed; integer powers then fold with
+/// [`minpoly_mul`].  Returns `None` when the base is not algebraic, is
+/// zero under a negative exponent, is not real-positive under a fractional
+/// exponent, or the exponent does not fit `i64`.
+fn minpoly_pow(base: &AlgExpr, exp: &Ratio<BigInt>, cc: &mut Consts) -> Option<(Poly, Complex)> {
+    let prec = VERIFY_PREC_BITS;
+    let rm = RoundingMode::None;
     let p: i64 = exp.numer().try_into().ok()?;
     let q: usize = exp.denom().try_into().ok()?;
-    let mp_base = minimal_polynomial(arena, base)?;
 
-    // α = base^{1/q} and its minimal polynomial.
+    // A rational base `r > 0`: `r^{p/q}` is a root of `t^q − r^p` directly.
+    if let AlgExpr::Rat(r) = base
+        && r.is_positive()
+    {
+        let r_pow_p = rational_pow(r, exp.numer())?;
+        if q == 1 {
+            return Some((
+                Poly::from_coeffs(vec![-r_pow_p.clone(), rat(1, 1)]),
+                c_from_real(ratio_to_bigfloat(&r_pow_p, prec), prec),
+            ));
+        }
+        let mut coeffs = vec![Ratio::zero(); q + 1];
+        coeffs[0] = -r_pow_p;
+        coeffs[q] = rat(1, 1);
+        let exp_bf = ratio_to_bigfloat(exp, prec);
+        let value = c_from_real(ratio_to_bigfloat(r, prec).pow(&exp_bf, prec, rm, cc), prec);
+        let mp = select_vanishing_factor(&Poly::from_coeffs(coeffs), &value)?;
+        return Some((mp, value));
+    }
+
+    let (mp_base, base_val) = minpoly_of(base, cc)?;
+
+    // α = base^{1/q} with its minimal polynomial and value.
     let (mut mp, mut alpha) = if q == 1 {
-        (mp_base, base)
+        (mp_base, base_val)
     } else {
-        if !crate::transforms::evalf::eval_const_f64(arena, base).is_some_and(|v| v > 0.0) {
+        if !is_real_positive(&base_val, prec) {
             return None;
         }
+        let root = base_val.0.pow(
+            &BigFloat::from_i32(1, prec).div(&BigFloat::from_i64(q as i64, prec), prec, rm),
+            prec,
+            rm,
+            cc,
+        );
+        let root = c_from_real(root, prec);
         let deg = mp_base.degree()?;
         let mut coeffs = vec![Ratio::zero(); deg * q + 1];
         for (i, c) in mp_base.coeffs().iter().enumerate() {
             coeffs[i * q] = c.clone();
         }
-        let one_over_q = {
-            let nid = arena.intern_num(Ratio::new(BigInt::one(), BigInt::from(q)));
-            arena.intern(crate::base::node::ExprNode::Num(nid))
-        };
-        let root = arena.pow(base, one_over_q);
-        let mp =
-            pick_factor_by_numerical_eval(&Poly::from_coeffs(coeffs), arena, root, None, false)?;
+        let mp = select_vanishing_factor(&Poly::from_coeffs(coeffs), &root)?;
         (mp, root)
     };
 
     if p == 0 {
-        return Some(Poly::from_coeffs(vec![rat(-1, 1), rat(1, 1)]));
+        return Some((Poly::from_coeffs(vec![rat(-1, 1), rat(1, 1)]), c_one(prec)));
     }
     if p < 0 {
         // 1/α: reverse the coefficients (α ≠ 0 ⇔ constant term ≠ 0).
@@ -437,19 +483,18 @@ fn minpoly_pow(
         }
         let reversed: Vec<Ratio<BigInt>> = mp.coeffs().iter().rev().cloned().collect();
         mp = Poly::from_coeffs(reversed).make_monic();
-        let minus_one = arena.int(-1);
-        alpha = arena.pow(alpha, minus_one);
+        alpha = c_div(&c_one(prec), &alpha, prec, rm);
     }
 
-    // α^n by folding α · α · … with the running product for factor selection.
+    // α^n by folding α · α · … with the running value for factor selection.
     let n = p.unsigned_abs();
     let mut acc = mp.clone();
-    let mut acc_expr = alpha;
+    let mut acc_val = alpha.clone();
     for _ in 1..n {
-        acc = minpoly_mul(&acc, &mp, arena, acc_expr, alpha)?;
-        acc_expr = arena.mul(&[acc_expr, alpha]);
+        acc_val = c_mul(&acc_val, &alpha, prec, rm);
+        acc = minpoly_mul(&acc, &mp, &acc_val)?;
     }
-    Some(acc)
+    Some((acc, acc_val))
 }
 
 /// Compute minimal polynomial of `r · α` where `r ∈ ℚ` and `α` has
@@ -475,6 +520,162 @@ fn minpoly_rational_mul(mp_alpha: &Poly, r: &Ratio<BigInt>) -> Poly {
     }
     let result = Poly::from_coeffs(coeffs);
     result.make_monic()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Factor selection by high-precision verification
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The irreducible factor of `r_poly` that vanishes at `value`, monic.
+///
+/// `r_poly` is factored over ℤ with the certified variant of the
+/// Zassenhaus routine; an incomplete factorisation (some factor possibly
+/// reducible) gives `None`.  A single factor is the answer outright — the
+/// number is a root of `r_poly` by construction.  Otherwise every factor is
+/// evaluated at `value` and the one whose residual is negligible (see
+/// [`VERIFY_TOLERANCE_BITS`]) is returned; `None` unless exactly one
+/// qualifies.
+fn select_vanishing_factor(r_poly: &Poly, value: &Complex) -> Option<Poly> {
+    let (_content, factors, complete) = super::factor_zassenhaus::factor_zassenhaus_checked(r_poly);
+    if !complete {
+        tracing::debug!(
+            degree = r_poly.degree().unwrap_or(0),
+            "minimal_polynomial: factorisation of the resultant is not certified complete"
+        );
+        return None;
+    }
+    if factors.is_empty() {
+        return None;
+    }
+    if factors.len() == 1 {
+        return Some(factors[0].0.make_monic());
+    }
+
+    let mut vanishing: Option<&Poly> = None;
+    for (g, _) in &factors {
+        if !vanishes_at(g, value) {
+            continue;
+        }
+        if vanishing.is_some() {
+            tracing::debug!(
+                "minimal_polynomial: two irreducible factors of the resultant vanish at the value"
+            );
+            return None;
+        }
+        vanishing = Some(g);
+    }
+    if vanishing.is_none() {
+        tracing::debug!(
+            "minimal_polynomial: no irreducible factor of the resultant vanishes at the value"
+        );
+    }
+    vanishing.map(Poly::make_monic)
+}
+
+/// Is `|g(z)|` below `2^-VERIFY_TOLERANCE_BITS` of the trivial bound
+/// `(deg g + 1) · H(g) · max(1, |z|)^{deg g}` on `|g(z)|`?
+fn vanishes_at(g: &Poly, z: &Complex) -> bool {
+    let prec = VERIFY_PREC_BITS;
+    let rm = RoundingMode::None;
+    let Some(deg) = g.degree() else {
+        return false;
+    };
+    // Horner evaluation in complex arithmetic.
+    let mut acc = c_zero(prec);
+    for c in g.coeffs().iter().rev() {
+        acc = c_mul(&acc, z, prec, rm);
+        acc = c_add(
+            &acc,
+            &c_from_real(ratio_to_bigfloat(c, prec), prec),
+            prec,
+            rm,
+        );
+    }
+    let residual = c_abs_upper(&acc, prec);
+
+    // Height and |z|, both as upper bounds.
+    let mut height = BigFloat::new(prec);
+    for c in g.coeffs() {
+        let a = ratio_to_bigfloat(c, prec).abs();
+        if a.cmp(&height).unwrap_or(0) > 0 {
+            height = a;
+        }
+    }
+    let one = BigFloat::from_i32(1, prec);
+    let z_abs = c_abs_upper(z, prec).max(&one);
+    let bound = z_abs.powi(deg, prec, rm).mul(&height, prec, rm).mul(
+        &BigFloat::from_i64(deg as i64 + 1, prec),
+        prec,
+        rm,
+    );
+    let tolerance = bound.mul(
+        &BigFloat::from_i32(2, prec)
+            .powi(VERIFY_TOLERANCE_BITS as usize, prec, rm)
+            .reciprocal(prec, rm),
+        prec,
+        rm,
+    );
+    !residual.is_nan() && residual.cmp(&tolerance).is_some_and(|c| c <= 0)
+}
+
+/// `|re| + |im|`, an upper bound on `|z|` that needs no square root.
+fn c_abs_upper(z: &Complex, prec: usize) -> BigFloat {
+    z.0.abs().add(&z.1.abs(), prec, RoundingMode::None)
+}
+
+/// Is `z` a positive real number, up to rounding noise at `prec` bits?
+/// The imaginary part must be zero or smaller than `2^{-prec/2}·|re|`.
+fn is_real_positive(z: &Complex, prec: usize) -> bool {
+    let (re, im) = z;
+    if re.is_nan() || im.is_nan() || !re.is_positive() {
+        return false;
+    }
+    if im.is_zero() {
+        return true;
+    }
+    let rm = RoundingMode::None;
+    let noise = re.abs().mul(
+        &BigFloat::from_i32(2, prec)
+            .powi(prec / 2, prec, rm)
+            .reciprocal(prec, rm),
+        prec,
+        rm,
+    );
+    im.abs().cmp(&noise).is_some_and(|c| c < 0)
+}
+
+/// Convert a `Ratio<BigInt>` to a `BigFloat` at `prec` bits (exactly up to
+/// the final rounding, whatever the size of numerator and denominator).
+fn ratio_to_bigfloat(r: &Ratio<BigInt>, prec: usize) -> BigFloat {
+    let n = bigint_to_bigfloat(r.numer(), prec);
+    if r.denom().is_one() {
+        return n;
+    }
+    let d = bigint_to_bigfloat(r.denom(), prec);
+    n.div(&d, prec, RoundingMode::None)
+}
+
+/// Convert a `BigInt` to a `BigFloat`: directly when it fits `i128`,
+/// otherwise limb by limb at a precision wide enough to hold every bit.
+fn bigint_to_bigfloat(n: &BigInt, prec: usize) -> BigFloat {
+    if let Some(v) = n.to_i128() {
+        return BigFloat::from_i128(v, prec);
+    }
+    let (sign, limbs) = n.to_u64_digits();
+    let wp = (limbs.len() * 64 + 64).max(prec);
+    let rm = RoundingMode::ToEven;
+    let base = BigFloat::from_u64(1u64 << 32, wp).powi(2, wp, rm); // 2^64
+    let mut acc = BigFloat::new(wp);
+    for &limb in limbs.iter().rev() {
+        acc = acc
+            .mul(&base, wp, rm)
+            .add(&BigFloat::from_u64(limb, wp), wp, rm);
+    }
+    if sign == num_bigint::Sign::Minus {
+        acc = acc.neg();
+    }
+    let _ = acc.set_precision(prec, rm);
+    acc
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -829,102 +1030,6 @@ fn reciprocal_scale(p: &Poly, x_val: &Ratio<BigInt>) -> Poly {
         coeffs[deg - i] = &b_i * &x_pow_i;
     }
     Poly::from_coeffs(coeffs)
-}
-
-/// Factor a resultant polynomial and pick the irreducible factor whose
-/// root matches the numerical value of the combined expression.
-fn pick_factor_by_numerical_eval(
-    r_poly: &Poly,
-    arena: &mut crate::base::arena::Arena,
-    expr_a: crate::base::node::ExprId,
-    expr_b: Option<crate::base::node::ExprId>,
-    is_addition: bool,
-) -> Option<Poly> {
-    let (_content, factors) = r_poly.factor_over_z();
-    if factors.is_empty() {
-        return None;
-    }
-    if factors.len() == 1 {
-        return Some(factors[0].0.make_monic());
-    }
-
-    // Compute the numerical value of the combined expression (a+b or a*b)
-    // using eval_const_f64, then evaluate each irreducible factor at that
-    // value and pick the one closest to zero — the vanishing factor is the
-    // minimal polynomial.
-    let target_f64 = if let Some(eb) = expr_b {
-        let combined = if is_addition {
-            arena.add(&[expr_a, eb])
-        } else {
-            arena.mul(&[expr_a, eb])
-        };
-        crate::transforms::evalf::eval_const_f64(arena, combined)
-    } else {
-        crate::transforms::evalf::eval_const_f64(arena, expr_a)
-    };
-
-    if let Some(target) = target_f64 {
-        let target_rat = f64_to_rational_approx(target);
-        let mut best_factor = &factors[0].0;
-        let mut best_val = factors[0].0.eval(&target_rat).abs();
-
-        for (factor, _) in &factors[1..] {
-            let val = factor.eval(&target_rat).abs();
-            if val < best_val {
-                best_factor = factor;
-                best_val = val;
-            }
-        }
-        Some(best_factor.make_monic())
-    } else {
-        // Numerical evaluation failed — fall back to smallest-degree heuristic.
-        tracing::debug!(
-            "pick_factor_by_numerical_eval: eval_const_f64 failed, using degree heuristic"
-        );
-        let mut best = &factors[0];
-        for factor in &factors[1..] {
-            if factor.0.degree().unwrap_or(usize::MAX) < best.0.degree().unwrap_or(usize::MAX) {
-                best = factor;
-            }
-        }
-        Some(best.0.make_monic())
-    }
-}
-
-/// Pick the irreducible factor of `mp` that contains the root `base^exp`.
-fn pick_irreducible_factor(
-    mp: &Poly,
-    base_r: &Ratio<BigInt>,
-    exp_r: &Ratio<BigInt>,
-) -> Option<Poly> {
-    let (_content, factors) = mp.factor_over_z();
-    if factors.is_empty() {
-        return None;
-    }
-    if factors.len() == 1 {
-        return Some(factors[0].0.make_monic());
-    }
-
-    // Evaluate each factor at the numerical value of base^exp.
-    let base_f64: f64 = base_r.numer().to_string().parse().ok()?;
-    let base_f64 = base_f64 / base_r.denom().to_string().parse::<f64>().ok()?;
-    let exp_f64: f64 = exp_r.numer().to_string().parse().ok()?;
-    let exp_f64 = exp_f64 / exp_r.denom().to_string().parse::<f64>().ok()?;
-    let target = base_f64.powf(exp_f64);
-    let target_rat = f64_to_rational_approx(target);
-
-    let mut best_factor = &factors[0].0;
-    let mut best_val = factors[0].0.eval(&target_rat).abs();
-
-    for (factor, _) in &factors[1..] {
-        let val = factor.eval(&target_rat).abs();
-        if val < best_val {
-            best_factor = factor;
-            best_val = val;
-        }
-    }
-
-    Some(best_factor.make_monic())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

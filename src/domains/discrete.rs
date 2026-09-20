@@ -43,15 +43,29 @@ use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 use crate::domains::ntheory::{isprime, mod_inverse, primitive_root};
 
-/// Zero-pad `a` to the next power of two (the empty sequence stays empty).
-fn pad_pow2<T: Clone + Zero>(a: &[T]) -> Vec<T> {
+/// The power of two at or above `len`.  A `Vec` holds at most `isize::MAX`
+/// bytes, so `len ≤ isize::MAX` and the next power of two always fits in
+/// `usize`; the fallback is unreachable and kept only so the arithmetic is
+/// total.
+fn pow2_at_least(len: usize) -> usize {
+    len.checked_next_power_of_two().unwrap_or(len)
+}
+
+/// Zero-pad `a` to at least `min_len` and then to a power of two (the
+/// empty sequence stays empty when `min_len` is 0).
+fn pad_pow2_to<T: Clone + Zero>(a: &[T], min_len: usize) -> Vec<T> {
     let mut v = a.to_vec();
-    if v.is_empty() {
+    let len = v.len().max(min_len);
+    if len == 0 {
         return v;
     }
-    let n = v.len().checked_next_power_of_two().unwrap_or(v.len());
-    v.resize(n, T::zero());
+    v.resize(pow2_at_least(len), T::zero());
     v
+}
+
+/// Zero-pad `a` to the next power of two (the empty sequence stays empty).
+fn pad_pow2<T: Clone + Zero>(a: &[T]) -> Vec<T> {
+    pad_pow2_to(a, 0)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -162,15 +176,9 @@ pub fn convolution_subset(a: &[Ratio<BigInt>], b: &[Ratio<BigInt>]) -> Vec<Ratio
     if a.is_empty() || b.is_empty() {
         return vec![];
     }
-    let n = a
-        .len()
-        .max(b.len())
-        .checked_next_power_of_two()
-        .unwrap_or(a.len().max(b.len()));
-    let mut a = a.to_vec();
-    a.resize(n, Ratio::zero());
-    let mut b = b.to_vec();
-    b.resize(n, Ratio::zero());
+    let n = pow2_at_least(a.len().max(b.len()));
+    let a = pad_pow2_to(a, n);
+    let b = pad_pow2_to(b, n);
     let mut out = vec![Ratio::zero(); n];
     for (mask, slot) in out.iter_mut().enumerate() {
         let mut acc = &a[0] * &b[mask];
@@ -228,43 +236,92 @@ pub fn convolution_ex(a: &[Ex], b: &[Ex]) -> Vec<Ex> {
 // Number-theoretic transform
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Shared forward/inverse NTT (iterative radix-2 Cooley–Tukey over `ℤ/pℤ`).
+/// Everything an NTT of one length over one prime needs, computed once:
+/// the validated prime, the power-of-two length `n` and the primitive
+/// `n`-th root of unity `ω = g^{(p−1)/n}` for the smallest primitive root
+/// `g` (the root SymPy uses).  A convolution builds one plan and runs
+/// three transforms on it instead of re-validating the prime and
+/// re-deriving the root each time.
+struct NttPlan {
+    prime: BigInt,
+    n: usize,
+    root: BigInt,
+}
+
+impl NttPlan {
+    /// A plan for sequences of length `len` (padded to a power of two).
+    fn new(prime: BigInt, len: usize, operation: &'static str) -> Result<Self, SymplexError> {
+        let invalid = |reason: String| SymplexError::InvalidArgument { operation, reason };
+        if !isprime(prime.clone()) {
+            return Err(invalid(format!("modulus {prime} is not prime")));
+        }
+        let n = pow2_at_least(len);
+        if n <= 1 {
+            // A length-0/1 transform is the identity; no root is needed.
+            return Ok(NttPlan {
+                prime,
+                n,
+                root: BigInt::one(),
+            });
+        }
+        let p_minus_1 = &prime - BigInt::one();
+        if !(&p_minus_1 % n).is_zero() {
+            return Err(invalid(format!(
+                "{prime} has no primitive {n}-th root of unity ({n} does not divide p − 1); \
+                 use a prime of the form m·2ᵏ + 1 with 2ᵏ ≥ {n}"
+            )));
+        }
+        // p is prime, so (ℤ/pℤ)× is cyclic and a generator exists.
+        let g = primitive_root(prime.clone()).ok_or_else(|| SymplexError::ComputationFailed {
+            operation,
+            reason: format!("no primitive root modulo the prime {prime}"),
+        })?;
+        let root = g.modpow(&(&p_minus_1 / n), &prime);
+        Ok(NttPlan { prime, n, root })
+    }
+
+    /// The root for the inverse transform, `ω⁻¹`.
+    fn inverse_root(&self, operation: &'static str) -> Result<BigInt, SymplexError> {
+        mod_inverse(self.root.clone(), self.prime.clone()).ok_or_else(|| {
+            SymplexError::ComputationFailed {
+                operation,
+                reason: "root of unity not invertible".to_string(),
+            }
+        })
+    }
+}
+
+/// One-shot transform: validate, plan and run.
 fn ntt_core(
     a: &[BigInt],
     prime: BigInt,
     inverse: bool,
     operation: &'static str,
 ) -> Result<Vec<BigInt>, SymplexError> {
-    let invalid = |reason: String| SymplexError::InvalidArgument { operation, reason };
-    if !isprime(prime.clone()) {
-        return Err(invalid(format!("modulus {prime} is not prime")));
-    }
-    let p = &prime;
+    let plan = NttPlan::new(prime, a.len(), operation)?;
+    ntt_with_plan(a, &plan, inverse, operation)
+}
+
+/// Forward/inverse NTT (iterative radix-2 Cooley–Tukey over `ℤ/pℤ`) on a
+/// prepared plan.  `a` is reduced modulo `p` and zero-padded to `plan.n`.
+fn ntt_with_plan(
+    a: &[BigInt],
+    plan: &NttPlan,
+    inverse: bool,
+    operation: &'static str,
+) -> Result<Vec<BigInt>, SymplexError> {
+    let p = &plan.prime;
     let mut v: Vec<BigInt> = a.iter().map(|x| x.mod_floor(p)).collect();
-    if v.len() <= 1 {
+    if plan.n <= 1 {
         return Ok(v);
     }
-    let n = v.len().checked_next_power_of_two().unwrap_or(v.len());
+    let n = plan.n;
     v.resize(n, BigInt::zero());
-    let p_minus_1 = p - BigInt::one();
-    if !(&p_minus_1 % n).is_zero() {
-        return Err(invalid(format!(
-            "{prime} has no primitive {n}-th root of unity ({n} does not divide p − 1); \
-             use a prime of the form m·2ᵏ + 1 with 2ᵏ ≥ {n}"
-        )));
-    }
-    // p is prime, so (ℤ/pℤ)× is cyclic and a generator exists.
-    let g = primitive_root(prime.clone()).ok_or_else(|| SymplexError::ComputationFailed {
-        operation,
-        reason: format!("no primitive root modulo the prime {prime}"),
-    })?;
-    let mut root = g.modpow(&(&p_minus_1 / n), p);
-    if inverse {
-        root = mod_inverse(root, prime.clone()).ok_or_else(|| SymplexError::ComputationFailed {
-            operation,
-            reason: "root of unity not invertible".to_string(),
-        })?;
-    }
+    let root = if inverse {
+        plan.inverse_root(operation)?
+    } else {
+        plan.root.clone()
+    };
     // Bit-reversal permutation.
     let bits = n.trailing_zeros();
     for i in 1..n {
@@ -295,7 +352,7 @@ fn ntt_core(
         h *= 2;
     }
     if inverse {
-        let inv_n = mod_inverse(BigInt::from(n), prime.clone()).ok_or_else(|| {
+        let inv_n = mod_inverse(BigInt::from(n), p.clone()).ok_or_else(|| {
             SymplexError::ComputationFailed {
                 operation,
                 reason: "transform length not invertible modulo p".to_string(),
@@ -395,20 +452,23 @@ pub fn convolution_ntt(
     b: &[BigInt],
     prime: impl Into<BigInt>,
 ) -> Result<Vec<BigInt>, SymplexError> {
+    const OP: &str = "convolution_ntt";
+    let prime: BigInt = prime.into();
     if a.is_empty() || b.is_empty() {
+        // Validate the modulus even for the trivial product, as `ntt` does.
+        NttPlan::new(prime, 0, OP)?;
         return Ok(vec![]);
     }
-    let prime: BigInt = prime.into();
     let len = a.len() + b.len() - 1;
-    let n = len.checked_next_power_of_two().unwrap_or(len);
-    let mut pa = a.to_vec();
-    pa.resize(n, BigInt::zero());
-    let mut pb = b.to_vec();
-    pb.resize(n, BigInt::zero());
-    let ta = ntt_core(&pa, prime.clone(), false, "convolution_ntt")?;
-    let tb = ntt_core(&pb, prime.clone(), false, "convolution_ntt")?;
-    let prod: Vec<BigInt> = ta.iter().zip(&tb).map(|(x, y)| (x * y) % &prime).collect();
-    let mut out = ntt_core(&prod, prime, true, "convolution_ntt")?;
+    let plan = NttPlan::new(prime, len, OP)?;
+    let ta = ntt_with_plan(a, &plan, false, OP)?;
+    let tb = ntt_with_plan(b, &plan, false, OP)?;
+    let prod: Vec<BigInt> = ta
+        .iter()
+        .zip(&tb)
+        .map(|(x, y)| (x * y) % &plan.prime)
+        .collect();
+    let mut out = ntt_with_plan(&prod, &plan, true, OP)?;
     out.truncate(len);
     Ok(out)
 }

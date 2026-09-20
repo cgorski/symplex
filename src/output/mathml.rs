@@ -209,6 +209,10 @@ fn unsupported(what: &str) -> SymplexError {
 }
 
 /// Rendered children, looked up by id.
+///
+/// An entry lives only until its last reader has been rendered (see
+/// [`cache_reads`]): keeping every node's markup alive would make the live
+/// text O(depth × size) — a chain of 5 000 nested `sin`s held a gigabyte.
 type Cache = FxHashMap<ExprId, String>;
 
 fn cached(cache: &Cache, id: ExprId) -> Result<String, SymplexError> {
@@ -216,6 +220,73 @@ fn cached(cache: &Cache, id: ExprId) -> Result<String, SymplexError> {
         .get(&id)
         .cloned()
         .ok_or_else(|| unsupported("an unrendered sub-expression"))
+}
+
+/// The cache entries the renderer of `id` reads, with multiplicity.
+///
+/// Mostly the direct children, but a few layouts reach *through* a child
+/// (and then do not read the child itself): a summand `-t` or `-c·t`
+/// contributes `t`'s factors ([`signed_term`]), a factor `b^(-n)` its base
+/// `b` ([`render_mul_parts`]), and `sin(x)^2` the trig argument `x`
+/// ([`render_pow`]).  Must stay in step with those functions: an entry
+/// dropped too early surfaces as an "unrendered sub-expression" error, one
+/// kept too long only costs memory — so over-approximate when in doubt.
+fn cache_reads(arena: &Arena, id: ExprId, out: &mut Vec<ExprId>) {
+    // The reads of `render_mul_parts` over `factors`.
+    let mul_parts = |factors: &[ExprId], out: &mut Vec<ExprId>| {
+        for &f in factors {
+            match negative_power(arena, f) {
+                Some((base, _)) => out.push(base),
+                None => out.push(f),
+            }
+        }
+    };
+    match arena.node(id) {
+        ExprNode::Add(children) => {
+            for &c in children.iter() {
+                match arena.node(c) {
+                    ExprNode::Num(_) => out.push(c),
+                    ExprNode::Neg(inner) => out.push(*inner),
+                    ExprNode::Mul(ch)
+                        if (is_neg_one_mul(arena, c) || is_neg_coeff_mul(arena, c))
+                            && arena.as_num(ch[0]).is_some() =>
+                    {
+                        mul_parts(&ch[1..], out);
+                    }
+                    _ => out.push(c),
+                }
+            }
+        }
+        ExprNode::Mul(children) => {
+            if let Some(&first) = children.first()
+                && arena.as_num(first).is_some()
+                && children.len() > 1
+            {
+                mul_parts(&children[1..], out);
+            } else {
+                mul_parts(children, out);
+            }
+        }
+        ExprNode::Pow(base, exp) => {
+            let root_or_reciprocal = arena.as_num(*exp).is_some_and(|r| {
+                (!r.is_integer() && !r.is_negative() && r.numer().is_one())
+                    || (r.is_integer() && r.is_negative())
+            });
+            if root_or_reciprocal {
+                out.push(*base);
+            } else {
+                out.push(*exp);
+                match trig_head(arena.node(*base)) {
+                    Some((_, arg)) => out.push(arg),
+                    None => out.push(*base),
+                }
+            }
+        }
+        // `LaplaceTransform`/`InverseLaplaceTransform` read only the body,
+        // `PhysicalConstant` nothing; listing every child is a harmless
+        // over-approximation.
+        other => other.for_each_child(|c| out.push(c)),
+    }
 }
 
 /// Is `id` a non-negative integer literal (a plain `<mn>`)?
@@ -494,10 +565,24 @@ fn describe(node: &ExprNode) -> String {
 }
 
 /// Render `expr` as MathML markup (no `<math>` wrapper).  Iterative
-/// post-order: every child is rendered before its parent.
+/// post-order: every child is rendered before its parent, and a child's
+/// markup is dropped from the cache once its last reader has consumed it
+/// (the arena is a hash-consed DAG, so a node may have several readers).
 pub(crate) fn render(arena: &Arena, expr: ExprId) -> Result<String, SymplexError> {
     let order = walk::post_order_ids(arena, expr);
     let mut cache: Cache = FxHashMap::default();
+
+    // Pending reads per node; the root is read once more by the final lookup.
+    let mut pending: FxHashMap<ExprId, usize> = FxHashMap::default();
+    let mut reads: Vec<ExprId> = Vec::new();
+    for &id in &order {
+        cache_reads(arena, id, &mut reads);
+        for &r in &reads {
+            *pending.entry(r).or_insert(0) += 1;
+        }
+        reads.clear();
+    }
+    *pending.entry(expr).or_insert(0) += 1;
 
     for &id in &order {
         let node = arena.node(id);
@@ -511,8 +596,9 @@ pub(crate) fn render(arena: &Arena, expr: ExprId) -> Result<String, SymplexError
             ExprNode::Symbol(sid) => symbol(arena.symbol_name(*sid)),
             ExprNode::PhysicalConstant(name_id, _) => symbol(arena.symbol_name(*name_id)),
             ExprNode::Pi => ident("pi"),
-            ExprNode::E => mi("e"),
-            ExprNode::ImaginaryUnit => mi("i"),
+            // `ⅇ` / `ⅈ` (SymPy: `&ExponentialE;` / `&ImaginaryI;`), numeric.
+            ExprNode::E => mi("&#x2147;"),
+            ExprNode::ImaginaryUnit => mi("&#x2148;"),
             ExprNode::EulerGamma => ident("gamma"),
             ExprNode::Catalan => mi("G"),
             ExprNode::GoldenRatio => ident("phi"),
@@ -716,10 +802,15 @@ pub(crate) fn render(arena: &Arena, expr: ExprId) -> Result<String, SymplexError
             ExprNode::Piecewise(pieces) => {
                 let mut rows = String::new();
                 for &(val, cond) in pieces.iter() {
+                    // A `True` guard is the default branch: "otherwise".
+                    let guard = if matches!(arena.node(cond), ExprNode::BoolTrue) {
+                        "<mtext>otherwise</mtext>".to_string()
+                    } else {
+                        format!("<mtext>if&#xA0;</mtext>{}", child(&cond)?)
+                    };
                     rows.push_str(&format!(
-                        "<mtr><mtd>{}</mtd><mtd><mtext>if&#xA0;</mtext>{}</mtd></mtr>",
-                        child(&val)?,
-                        child(&cond)?
+                        "<mtr><mtd>{}</mtd><mtd>{guard}</mtd></mtr>",
+                        child(&val)?
                     ));
                 }
                 mrow(&format!(
@@ -775,7 +866,19 @@ pub(crate) fn render(arena: &Arena, expr: ExprId) -> Result<String, SymplexError
                 return Err(unsupported(&format!("`{}`", describe(node))));
             }
         };
-        cache.insert(id, xml);
+        // Release the entries this node has just consumed.
+        cache_reads(arena, id, &mut reads);
+        for r in reads.drain(..) {
+            if let Some(n) = pending.get_mut(&r) {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    cache.remove(&r);
+                }
+            }
+        }
+        if pending.get(&id).is_some_and(|&n| n > 0) {
+            cache.insert(id, xml);
+        }
     }
 
     cached(&cache, expr)

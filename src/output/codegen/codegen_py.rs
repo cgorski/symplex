@@ -12,11 +12,17 @@
 //! Numbers are exact: integers print as integers, rationals as `(p/q)`
 //! (a float division in all three languages).  Sums are printed in display
 //! order with `-` for negated terms; `x^(-1)` factors become divisions.
+//! Rational powers with an odd denominator are *real* roots, as in the
+//! Rust and C back ends and `compile()`: `x^(1/3)` is `math.copysign(abs(x)**(1/3), x)`
+//! / `numpy.cbrt(x)` / `cbrt(x)`, and `x^(p/q)` is `copysign(abs(x)**(p/q), x)`
+//! for odd `p` or `abs(x)**(p/q)` for even `p` (a bare `x**(1/3)` is complex
+//! for negative `x` in Python).  `x!` is `math.gamma(x + 1)` in Python
+//! (`math.factorial` rejects non-integers).
 //! Nothing is emitted for a node the target cannot express (Bessel
 //! functions, `digamma`, `LambertW`, `zeta`, unevaluated integrals, sets,
 //! `I`) — those return [`SymplexError::NotImplemented`] instead of a guess.
-//! NumPy has no `gamma`/`erf`/`factorial`; they are refused too (SciPy
-//! would be needed).
+//! NumPy has no `gamma`/`erf`/`factorial` (SciPy would be needed) and base
+//! Julia has no `gamma` (SpecialFunctions.jl); they are refused too.
 //!
 //! The `*_fn` variants wrap the expression in a function definition with
 //! common subexpressions hoisted into `t0`, `t1`, … temporaries; symbols
@@ -120,7 +126,7 @@ impl Target {
             N::LogGamma(_) if self == Target::Python => "math.lgamma",
             N::Erf(_) if self == Target::Python => "math.erf",
             N::Erfc(_) if self == Target::Python => "math.erfc",
-            N::Factorial(_) if self == Target::Python => "math.factorial",
+            // `Factorial` is rendered as `math.gamma(x + 1)` (real argument).
             _ => return None,
         })
     }
@@ -248,6 +254,9 @@ impl Emitter<'_> {
     ) -> Result<Rendered, SymplexError> {
         let mut numer: Vec<String> = Vec::new();
         let mut denom: Vec<String> = Vec::new();
+        // The lone factor when the coefficient contributes nothing: it is
+        // returned as rendered, keeping its own precedence.
+        let mut single: Option<Rendered> = None;
         if let Some(c) = coeff {
             if !c.numer().is_one() {
                 numer.push(c.numer().to_string());
@@ -266,12 +275,13 @@ impl Emitter<'_> {
                 if pos.is_one() {
                     denom.push(base_r.at(PREC_MUL + 1));
                 } else {
-                    let e = self.number(&pos);
-                    denom.push(self.pow_text(&base_r, &e));
+                    denom.push(self.pow_rational(&base_r, &pos).at(PREC_MUL + 1));
                 }
                 continue;
             }
-            numer.push(self.cached(cache, f)?.at(PREC_MUL + 1));
+            let r = self.cached(cache, f)?;
+            numer.push(r.at(PREC_MUL + 1));
+            single = if numer.len() == 1 { Some(r) } else { None };
         }
         let numer_text = if numer.is_empty() {
             "1".to_string()
@@ -279,10 +289,10 @@ impl Emitter<'_> {
             numer.join("*")
         };
         if denom.is_empty() {
-            return Ok(if numer.len() <= 1 {
-                Rendered::atom(numer_text)
-            } else {
-                Rendered::new(numer_text, PREC_MUL)
+            return Ok(match single {
+                Some(r) => r,
+                None if numer.len() <= 1 => Rendered::atom(numer_text),
+                None => Rendered::new(numer_text, PREC_MUL),
             });
         }
         let denom_text = if denom.len() == 1 {
@@ -307,6 +317,59 @@ impl Emitter<'_> {
         )
     }
 
+    /// `b ^ r` for an exact rational exponent.
+    ///
+    /// `1/2` is `sqrt`; an odd denominator `q` is a *real* root, as in
+    /// `compile()` and the Rust/C back ends: `sign(b)·|b|^(p/q)` for odd
+    /// `p`, `|b|^(p/q)` for even `p` (`numpy.cbrt`/`cbrt` for `1/3`).  A
+    /// bare `b**(1/3)` would be complex for negative `b` in Python.
+    fn pow_rational(&self, b: &Rendered, r: &Ratio<BigInt>) -> Rendered {
+        let one = BigInt::one();
+        let two = BigInt::from(2);
+        if *r.numer() == one && *r.denom() == two {
+            let sqrt = match self.target {
+                Target::Python => "math.sqrt",
+                Target::NumPy => "numpy.sqrt",
+                Target::Julia => "sqrt",
+            };
+            return self.call(sqrt, &[b]);
+        }
+        if *r.numer() == one
+            && *r.denom() == BigInt::from(3)
+            && let Some(cbrt) = match self.target {
+                Target::Python => None,
+                Target::NumPy => Some("numpy.cbrt"),
+                Target::Julia => Some("cbrt"),
+            }
+        {
+            return self.call(cbrt, &[b]);
+        }
+        if r.is_integer() {
+            if *r.numer() == -one {
+                return Rendered::new(format!("1/{}", b.at(PREC_MUL + 1)), PREC_MUL);
+            }
+            return Rendered::new(self.pow_text(b, &self.number(r)), PREC_POW);
+        }
+        if (r.denom() % &two) != BigInt::from(0) {
+            let (abs, copysign) = match self.target {
+                Target::Python => ("abs", "math.copysign"),
+                Target::NumPy => ("numpy.abs", "numpy.copysign"),
+                Target::Julia => ("abs", "copysign"),
+            };
+            let mag = Rendered::new(
+                self.pow_text(&self.call(abs, &[b]), &self.number(r)),
+                PREC_POW,
+            );
+            let odd_numer = (r.numer() % &two) != BigInt::from(0);
+            return if odd_numer {
+                self.call(copysign, &[&mag, b])
+            } else {
+                mag
+            };
+        }
+        Rendered::new(self.pow_text(b, &self.number(r)), PREC_POW)
+    }
+
     fn render_pow(
         &self,
         base: ExprId,
@@ -315,30 +378,7 @@ impl Emitter<'_> {
     ) -> Result<Rendered, SymplexError> {
         let b = self.cached(cache, base)?;
         if let Some(r) = self.arena.as_num(exp) {
-            let one = BigInt::one();
-            if *r.numer() == one && *r.denom() == BigInt::from(2) {
-                let sqrt = match self.target {
-                    Target::Python => "math.sqrt",
-                    Target::NumPy => "numpy.sqrt",
-                    Target::Julia => "sqrt",
-                };
-                return Ok(self.call(sqrt, &[&b]));
-            }
-            if *r.numer() == one
-                && *r.denom() == BigInt::from(3)
-                && let Some(cbrt) = match self.target {
-                    Target::Python => None,
-                    Target::NumPy => Some("numpy.cbrt"),
-                    Target::Julia => Some("cbrt"),
-                }
-            {
-                return Ok(self.call(cbrt, &[&b]));
-            }
-            if r.is_integer() && *r.numer() == -one {
-                return Ok(Rendered::new(format!("1/{}", b.at(PREC_MUL + 1)), PREC_MUL));
-            }
-            let e = self.number(r);
-            return Ok(Rendered::new(self.pow_text(&b, &e), PREC_POW));
+            return Ok(self.pow_rational(&b, r));
         }
         let e = self.cached(cache, exp)?;
         Ok(Rendered::new(self.pow_text(&b, &e), PREC_POW))
@@ -594,13 +634,30 @@ impl Emitter<'_> {
                     };
                     self.call(name, &[&child(y)?, &child(x)?])
                 }
+                // `math.factorial` is integer-only (TypeError on floats since
+                // Python 3.10); the Rust/C back ends use Γ(x + 1) on reals too.
+                // NumPy and base Julia have no gamma: refused below.
+                ExprNode::Factorial(a) if self.target == Target::Python => {
+                    let r = child(a)?;
+                    Rendered::atom(format!("math.gamma({} + 1)", r.at(PREC_ADD)))
+                }
                 ExprNode::Min(args) | ExprNode::Max(args) => {
                     let is_min = matches!(node, ExprNode::Min(_));
                     let parts: Vec<Rendered> = args.iter().map(child).collect::<Result<_, _>>()?;
                     if parts.is_empty() {
-                        return Err(self.unsupported("an empty min/max"));
-                    }
-                    if self.target == Target::NumPy {
+                        // min ∅ = +∞, max ∅ = −∞ (as in the Rust and C back ends),
+                        // spelled like the `Infinity`/`NegInfinity` constants.
+                        let empty = if is_min {
+                            ExprNode::Infinity
+                        } else {
+                            ExprNode::NegInfinity
+                        };
+                        let text = self
+                            .target
+                            .constant(&empty)
+                            .ok_or_else(|| self.unsupported("an empty min/max"))?;
+                        Rendered::atom(text)
+                    } else if self.target == Target::NumPy {
                         let f = if is_min {
                             "numpy.minimum"
                         } else {
@@ -1000,14 +1057,17 @@ mod tests {
     fn python_functions() {
         assert_eq!(py("sin(x)^2 + exp(x)"), "math.sin(x)**2 + math.exp(x)");
         assert_eq!(py("sqrt(x)"), "math.sqrt(x)");
-        assert_eq!(py("cbrt(x)"), "x**(1/3)");
+        // 0.11.1: real cube root (`x**(1/3)` is complex for negative `x`).
+        assert_eq!(py("cbrt(x)"), "math.copysign(abs(x)**(1/3), x)");
         assert_eq!(py("abs(x)"), "abs(x)");
         assert_eq!(py("floor(x) + ceil(y)"), "math.floor(x) + math.ceil(y)");
         assert_eq!(py("gamma(x) + erf(x)"), "math.gamma(x) + math.erf(x)");
         assert_eq!(py("loggamma(x)"), "math.lgamma(x)");
         assert_eq!(py("atan2(y, x)"), "math.atan2(y, x)");
         assert_eq!(py("min(x, y)"), "min(x, y)");
-        assert_eq!(py("x!"), "math.factorial(x)");
+        // 0.11.1: `math.factorial` is integer-only; Γ(x + 1) matches Rust/C.
+        assert_eq!(py("x!"), "math.gamma(x + 1)");
+        assert_eq!(py("(x - y)!"), "math.gamma(x - y + 1)");
         assert_eq!(py("ln(x)"), "math.log(x)");
         assert_eq!(py("sign(x)"), "(0.0 if x == 0 else math.copysign(1, x))");
     }
@@ -1086,6 +1146,62 @@ mod tests {
         assert_eq!(x.gt(&zero).not().to_julia().unwrap(), "!(x > 0)");
         assert_eq!(pw.to_julia().unwrap(), "(x > 0 ? x : (0 >= x ? -x : NaN))");
         assert!(ctx.parse("gamma(x)").unwrap().to_julia().is_err());
+    }
+
+    #[test]
+    fn real_roots_match_compile_semantics() {
+        // Odd denominators are real roots: sign(x)·|x|^(p/q) for odd p,
+        // |x|^(p/q) for even p — the same rule as `compile()`, Rust and C.
+        assert_eq!(py("x^(3/5)"), "math.copysign(abs(x)**(3/5), x)");
+        assert_eq!(py("x^(2/5)"), "abs(x)**(2/5)");
+        assert_eq!(py("x^(-1/3)"), "math.copysign(abs(x)**(-1/3), x)");
+        assert_eq!(py("y*x^(-1/3)"), "y/math.copysign(abs(x)**(1/3), x)");
+        assert_eq!(py("y/sqrt(x)"), "y/math.sqrt(x)");
+        // Even denominators are left alone (complex for negative bases anyway).
+        assert_eq!(py("x^(3/2)"), "x**(3/2)");
+        assert_eq!(py("x^(1/4)"), "x**(1/4)");
+        assert_eq!(np("cbrt(x)"), "numpy.cbrt(x)");
+        assert_eq!(np("x^(3/5)"), "numpy.copysign(numpy.abs(x)**(3/5), x)");
+        assert_eq!(np("x^(2/5)"), "numpy.abs(x)**(2/5)");
+        assert_eq!(jl("cbrt(x)"), "cbrt(x)");
+        assert_eq!(jl("x^(3/5)"), "copysign(abs(x)^(3/5), x)");
+        assert_eq!(jl("x^(2/5)"), "abs(x)^(2/5)");
+    }
+
+    #[test]
+    fn empty_min_max_and_single_factor_products() {
+        use crate::base::arena::Arena;
+        use crate::base::node::ExprNode;
+        use crate::output::codegen::codegen_py::{Target, to_expr_code};
+        // `min_of`/`max_of` never build an empty node, so go through the arena.
+        let mut a = Arena::new();
+        let empty_min = a.intern(ExprNode::Min(smallvec::smallvec![]));
+        let empty_max = a.intern(ExprNode::Max(smallvec::smallvec![]));
+        assert_eq!(
+            to_expr_code(&a, empty_min, Target::Python).unwrap(),
+            "math.inf"
+        );
+        assert_eq!(
+            to_expr_code(&a, empty_max, Target::Python).unwrap(),
+            "(-math.inf)"
+        );
+        assert_eq!(
+            to_expr_code(&a, empty_min, Target::NumPy).unwrap(),
+            "numpy.inf"
+        );
+        assert_eq!(
+            to_expr_code(&a, empty_max, Target::Julia).unwrap(),
+            "(-Inf)"
+        );
+        // A one-factor product keeps the factor's precedence: `Mul([x^2])`
+        // as a power base must be `(x**2)**y`, not `x**2**y`.
+        let x = a.symbol("x");
+        let y = a.symbol("y");
+        let two = a.int(2);
+        let x2 = a.intern(ExprNode::Pow(x, two));
+        let one_factor = a.intern(ExprNode::Mul(smallvec::smallvec![x2]));
+        let p = a.intern(ExprNode::Pow(one_factor, y));
+        assert_eq!(to_expr_code(&a, p, Target::Python).unwrap(), "(x**2)**y");
     }
 
     #[test]

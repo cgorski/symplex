@@ -230,6 +230,18 @@ impl SubsSet {
         self.exprs.is_empty()
     }
 
+    /// One member of the set, standing for its growth class (the callers
+    /// have already returned on an empty set; the `Err` names the
+    /// invariant instead of unwrapping).
+    fn representative(&self) -> Result<ExprId, crate::base::errors::SymplexError> {
+        self.exprs.keys().next().copied().ok_or_else(|| {
+            crate::base::errors::SymplexError::ComputationFailed {
+                operation: "gruntz",
+                reason: "internal: MRV set unexpectedly empty".into(),
+            }
+        })
+    }
+
     fn len(&self) -> usize {
         self.exprs.len()
     }
@@ -783,8 +795,8 @@ fn mrv_max1(
         return Ok((s1.clone(), e1, e2));
     }
 
-    let a_rep = *s1.exprs.keys().next().unwrap();
-    let b_rep = *s2.exprs.keys().next().unwrap();
+    let a_rep = s1.representative()?;
+    let b_rep = s2.representative()?;
 
     // Same representative — union and unify dummies so e2 uses s1's dummies
     if a_rep == b_rep {
@@ -858,8 +870,8 @@ fn mrv_max3(
         return Ok((s1, e1));
     }
 
-    let a_rep = *s1.exprs.keys().next().unwrap();
-    let b_rep = *s2.exprs.keys().next().unwrap();
+    let a_rep = s1.representative()?;
+    let b_rep = s2.representative()?;
 
     tracing::debug!("gruntz::mrv_max3: comparing exp vs arg MRV");
     match compare(arena, a_rep, b_rep, x, depth + 1, budget)? {

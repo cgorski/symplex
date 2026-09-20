@@ -1,8 +1,12 @@
-//! Ratchet over `src/`: library code (everything before the first
-//! `#[cfg(test)]` line of each file) must not gain a panicking construct
+//! Ratchet over `src/`: library code (everything before the file's
+//! `#[cfg(test)] mod …` test module) must not gain a panicking construct
 //! beyond its allowlisted count, and an allowlisted file must not lose one
 //! without the allowlist being tightened.  See CONTRIBUTING.md, "No Panics
 //! Rule".
+//!
+//! A `#[cfg(test)]` attribute on a *single item* (a test-only helper `fn`
+//! in the middle of a file) does not end the library region: 0.11.1 found
+//! twelve panic sites hidden behind such attributes in three files.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -40,11 +44,34 @@ fn is_panic_site(line: &str) -> bool {
         .any(|m| line.starts_with(m))
 }
 
+/// The library region of a source file: every line before its
+/// `#[cfg(test)]` test *module* (`#[cfg(test)]` followed — possibly after
+/// further attributes — by a `mod` line).  A `#[cfg(test)]` on a lone `fn`
+/// keeps the region open.
+fn library_region(text: &str) -> impl Iterator<Item = &str> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut end = lines.len();
+    for (i, line) in lines.iter().enumerate() {
+        if !line.trim_start().starts_with("#[cfg(test)]") {
+            continue;
+        }
+        // Skip further attributes; the item decides.
+        let item = lines[i + 1..]
+            .iter()
+            .map(|l| l.trim_start())
+            .find(|l| !l.starts_with("#["));
+        if item.is_some_and(|l| l.starts_with("mod ") || l.starts_with("pub(crate) mod ")) {
+            end = i;
+            break;
+        }
+    }
+    lines.into_iter().take(end)
+}
+
 /// Number of panic sites in the library region of one source file.
 fn count_file(path: &Path) -> usize {
     let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    text.lines()
-        .take_while(|l| !l.trim_start().starts_with("#[cfg(test)]"))
+    library_region(&text)
         .filter(|l| is_panic_site(l.trim()))
         .count()
 }

@@ -156,11 +156,12 @@ fn maximum_minimum_on_intervals() {
     assert_eq!(s(&ctx.int(5).maximum(&x, &dom).unwrap()), "5");
 
     // Errors: singularity inside the domain, empty / non-interval domain,
-    // discontinuous function, limit that does not exist.
+    // discontinuous function, limit that does not exist.  (0.11.1: the
+    // algorithmic failures are `ComputationFailed`, not `NotImplemented`.)
     let across_zero = ctx.interval(&ctx.int(-1), &ctx.int(1), false, false);
     assert!(matches!(
         (1 / &x).maximum(&x, &across_zero),
-        Err(SymplexError::NotImplemented(_))
+        Err(SymplexError::ComputationFailed { .. })
     ));
     assert!(matches!(
         x.maximum(&x, &ctx.empty_set()),
@@ -173,11 +174,11 @@ fn maximum_minimum_on_intervals() {
     ));
     assert!(matches!(
         x.floor().maximum(&x, &dom),
-        Err(SymplexError::NotImplemented(_))
+        Err(SymplexError::ComputationFailed { .. })
     ));
     assert!(matches!(
         x.sin().maximum(&x, &ctx.reals()),
-        Err(SymplexError::NotImplemented(_))
+        Err(SymplexError::ComputationFailed { .. })
     ));
 }
 

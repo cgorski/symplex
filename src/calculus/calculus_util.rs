@@ -1091,6 +1091,23 @@ fn opaque_node_name(node: &ExprNode) -> Option<&'static str> {
     })
 }
 
+/// The distinct `sign(h)` nodes of `expr` whose argument `h` depends on
+/// `var`, as `(sign(h), h)` pairs in post-order.  These are the factors
+/// the derivative of `|h|` introduces; the extremum analysis resolves
+/// each to `±1` on the regions where `h` has a fixed sign.
+pub(crate) fn sign_nodes_of(arena: &Arena, expr: ExprId, var: ExprId) -> Vec<(ExprId, ExprId)> {
+    let mut out: Vec<(ExprId, ExprId)> = Vec::new();
+    for id in walk::post_order_ids(arena, expr) {
+        if let ExprNode::Sign(h) = arena.node(id)
+            && walk::contains(arena, *h, var)
+            && !out.iter().any(|(s, _)| *s == id)
+        {
+            out.push((id, *h));
+        }
+    }
+    out
+}
+
 /// Does `expr` contain `sin`, `cos` or `tan` of something depending on
 /// `var`?  Decides whether the zeros of `expr` may form periodic
 /// families (so `solve_general` rather than `solve` should be used).
@@ -1107,7 +1124,11 @@ pub(crate) fn has_trig_of(arena: &Arena, expr: ExprId, var: ExprId) -> bool {
 
 // ── periodicity ────────────────────────────────────────────────────────────
 
-/// Fundamental period of `expr` in `var` (SymPy's `periodicity`).
+/// A period of `expr` in `var` (SymPy's `periodicity`) — not necessarily
+/// the fundamental one: composite expressions get the lcm of the periods
+/// of their pieces, and identities that shorten the period are not
+/// detected (`sin²x·cos²x` → `π`, although the fundamental period is
+/// `π/2`).
 ///
 /// * `Some(0)` when `expr` does not depend on `var`;
 /// * `Some(p)` for `sin`/`cos`/`tan` of a linear argument `a·var + b`

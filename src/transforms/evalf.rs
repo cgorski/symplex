@@ -524,9 +524,7 @@ fn eval_node(
                 });
             }
             debug!(prec, "evalf: erfc via arbitrary-precision series");
-            let erf_val = arb_erf(&val.0, prec, rm, cc)?;
-            let one = BigFloat::from_i32(1, prec);
-            let result = one.sub(&erf_val, prec, rm);
+            let result = arb_erfc(&val.0, prec, rm, cc)?;
             Ok((result, BigFloat::new(prec)))
         }
 
@@ -1297,8 +1295,10 @@ fn eval_node(
 
             // ── Find all roots via Aberth's method ────────────────
             // Aberth handles both real and complex roots simultaneously
-            // with cubic convergence.
-            let roots = crate::poly::roots::aberth_roots(&poly, prec + 64, 200);
+            // with cubic convergence.  `rootof_roots` is the one definition
+            // of the (re, im) order a `RootOf` index refers to; `real_roots`
+            // derives its indices from the same call.
+            let roots = crate::poly::roots::rootof_roots(&poly, prec);
 
             if idx >= roots.len() {
                 return Err(SymplexError::Unevaluable {
@@ -2279,13 +2279,59 @@ fn arb_gamma_real(
 // Arbitrary-precision erf via Taylor series / asymptotic expansion
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Compute erf(x) at arbitrary precision for real x.
+/// `erfc(x)` for `x > 0` from the asymptotic expansion
+///
+/// ```text
+/// erfc(x) = exp(−x²)/(x√π) · Σ_{n≥0} (−1)^n (2n−1)!! / (2x²)^n
+/// ```
+///
+/// truncated at its smallest term (near `n ≈ x²`), so the *relative* error
+/// is `≈ e^{−x²}`: callers must ensure `x² ≳ wp·ln 2` when they need
+/// `erfc` itself to `wp` bits, or `2x² ≳ wp·ln 2` when they only need
+/// `erf = 1 − erfc` to `wp` bits (the absolute error is then `≈ e^{−2x²}`).
+fn erfc_asymptotic(ax: &BigFloat, wp: usize, rm: RoundingMode, cc: &mut Consts) -> BigFloat {
+    let x_sq = ax.mul(ax, wp, rm);
+    let two_x_sq = x_sq.mul(&BigFloat::from_i32(2, wp), wp, rm);
+
+    let mut sum = BigFloat::from_i32(1, wp);
+    let mut term = BigFloat::from_i32(1, wp);
+    let mut prev_abs: Option<BigFloat> = None;
+    // The terms shrink until `n ≈ x²`; past that they grow and the loop
+    // stops, so `wp + 40` is only reached when the terms are already tiny.
+    let max_terms = wp + 40;
+    for n in 1..=max_terms {
+        // term *= −(2n−1) / (2x²)
+        let factor = BigFloat::from_i128(2 * n as i128 - 1, wp);
+        term = term.mul(&factor, wp, rm).div(&two_x_sq, wp, rm).neg();
+        let t_abs = term.abs();
+        if let Some(ref p) = prev_abs
+            && bf_gt(&t_abs, p)
+        {
+            break; // past the smallest term: optimal truncation
+        }
+        sum = sum.add(&term, wp, rm);
+        if negligible(&term, &sum, wp) {
+            break;
+        }
+        prev_abs = Some(t_abs);
+    }
+
+    let exp_neg_x_sq = x_sq.neg().exp(wp, rm, cc);
+    let sqrt_pi = cc.pi(wp, rm).clone().sqrt(wp, rm);
+    let x_sqrt_pi = ax.mul(&sqrt_pi, wp, rm);
+    exp_neg_x_sq.mul(&sum, wp, rm).div(&x_sqrt_pi, wp, rm)
+}
+
+/// Compute erf(x) at arbitrary precision for real x.  The result carries
+/// `prec + 32` bits.
 ///
 /// For small-to-moderate |x|, uses the Taylor series:
 ///   erf(x) = (2/√π) Σ_{n=0}^{N} (-1)^n x^{2n+1} / (n! (2n+1))
+/// whose terms peak near `n ≈ x²` at `≈ e^{x²}` before the alternating sum
+/// cancels down to `|erf| < 1`, so the working precision carries
+/// `x² log₂ e` extra bits.
 ///
-/// For large |x|, uses the asymptotic expansion of erfc:
-///   erfc(x) = exp(-x²) / (x√π) · Σ_{n=0}^{N} (-1)^n (2n-1)!! / (2x²)^n
+/// For large |x| (`2x² ≳ wp·ln 2`), uses [`erfc_asymptotic`]:
 ///   erf(x) = sign(x) · (1 − erfc(|x|))
 fn arb_erf(
     x: &BigFloat,
@@ -2301,83 +2347,61 @@ fn arb_erf(
     let wp = prec + guard;
 
     let x_approx = bigfloat_to_f64(x, rm, cc)?;
-    // Threshold: for |x| beyond this, the asymptotic expansion converges
-    // faster than the Taylor series. Roughly √(wp * ln(2) / 2).
+    // Threshold: for |x| beyond this, the asymptotic expansion (absolute
+    // error ≈ e^{−2x²} for erf) is accurate to wp bits. Roughly √(wp·ln 2/2).
     let threshold = ((wp as f64) * 0.35).sqrt() + 2.0;
 
     if x_approx.abs() < threshold {
-        // ── Taylor series ──────────────────────────────────────────
+        // ── Taylor series ──────────────────────────────────────────────────────────
         // erf(x) = (2/√π) · Σ_{n=0}^{N} prod_n / (2n+1)
         // where prod_0 = x, prod_{n+1} = prod_n · (-x²) / (n+1)
-        let neg_x_sq = x.mul(x, wp, rm).neg();
-        let mut prod = x.clone(); // (-x²)^n · x / n!
-        let mut sum = x.clone(); // accumulator (first term = x)
+        let x_sq_f = x_approx * x_approx;
+        let cancel = (x_sq_f * std::f64::consts::LOG2_E).ceil() as usize + 8;
+        let wpt = wp + cancel;
+        let mut xw = x.clone();
+        let _ = xw.set_precision(wpt, rm);
+        let neg_x_sq = xw.mul(&xw, wpt, rm).neg();
+        let mut prod = xw.clone(); // (-x²)^n · x / n!
+        let mut sum = xw.clone(); // accumulator (first term = x)
 
-        let max_terms = (wp as f64 * 0.6) as usize + 60;
+        // |term_n| < 2^{−wpt} needs n ≈ 5x² at the threshold, fewer below it.
+        let max_terms = (6.0 * x_sq_f) as usize + wpt + 60;
+        let mut converged = false;
         for n in 1..=max_terms {
             // prod *= -x² / n
-            prod = prod.mul(&neg_x_sq, wp, rm);
-            prod = prod.div(&BigFloat::from_i32(n as i32, wp), wp, rm);
+            prod = prod.mul(&neg_x_sq, wpt, rm);
+            prod = prod.div(&BigFloat::from_i128(n as i128, wpt), wpt, rm);
 
             // term = prod / (2n+1)
-            let divisor = BigFloat::from_i32((2 * n + 1) as i32, wp);
-            let term = prod.div(&divisor, wp, rm);
+            let divisor = BigFloat::from_i128(2 * n as i128 + 1, wpt);
+            let term = prod.div(&divisor, wpt, rm);
 
-            // Convergence check
-            if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent())
-                && (s_exp as i64 - t_exp as i64) > wp as i64
-            {
+            if negligible(&term, &sum, wpt) {
+                converged = true;
                 break;
             }
-
-            sum = sum.add(&term, wp, rm);
+            sum = sum.add(&term, wpt, rm);
+        }
+        if !converged {
+            return Err(series_did_not_converge("erf", max_terms));
         }
 
         // Multiply by 2/√π
-        let two = BigFloat::from_i32(2, wp);
-        let pi_val = cc.pi(wp, rm).clone();
-        let sqrt_pi = pi_val.sqrt(wp, rm);
-        let two_over_sqrt_pi = two.div(&sqrt_pi, wp, rm);
+        let two = BigFloat::from_i32(2, wpt);
+        let pi_val = cc.pi(wpt, rm).clone();
+        let sqrt_pi = pi_val.sqrt(wpt, rm);
+        let two_over_sqrt_pi = two.div(&sqrt_pi, wpt, rm);
 
-        Ok(sum.mul(&two_over_sqrt_pi, wp, rm))
+        Ok(round_to(sum.mul(&two_over_sqrt_pi, wpt, rm), wp, rm))
     } else {
-        // ── Asymptotic expansion for large |x| ────────────────────
-        // erfc(x) = exp(-x²)/(x√π) · Σ_{n=0}^{N} (-1)^n (2n-1)!! / (2x²)^n
-        let is_neg = x.is_negative();
-        let ax = x.abs();
-        let x_sq = ax.mul(&ax, wp, rm);
-        let two_x_sq = x_sq.mul(&BigFloat::from_i32(2, wp), wp, rm);
-
-        let mut sum = BigFloat::from_i32(1, wp);
-        let mut term = BigFloat::from_i32(1, wp);
-        let max_terms = wp / 2 + 30;
-
-        for n in 1..=max_terms {
-            // term *= -(2n-1) / (2x²)
-            let factor = BigFloat::from_i32(2 * n as i32 - 1, wp);
-            term = term.mul(&factor, wp, rm);
-            term = term.div(&two_x_sq, wp, rm);
-            term = term.neg();
-
-            // Divergence check: if |term| starts growing, stop
-            if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent())
-                && t_exp > s_exp
-            {
-                break;
-            }
-
-            sum = sum.add(&term, wp, rm);
-        }
-
-        let exp_neg_x_sq = x_sq.neg().exp(wp, rm, cc);
-        let sqrt_pi = cc.pi(wp, rm).clone().sqrt(wp, rm);
-        let x_sqrt_pi = ax.mul(&sqrt_pi, wp, rm);
-        let erfc_val = exp_neg_x_sq.mul(&sum, wp, rm).div(&x_sqrt_pi, wp, rm);
-
+        // ── Asymptotic expansion for large |x| ────────────────────────────────────
+        let mut ax = x.abs();
+        let _ = ax.set_precision(wp, rm);
+        let erfc_val = erfc_asymptotic(&ax, wp, rm, cc);
         let one = BigFloat::from_i32(1, wp);
         let erf_val = one.sub(&erfc_val, wp, rm);
 
-        if is_neg {
+        if x.is_negative() {
             Ok(erf_val.neg())
         } else {
             Ok(erf_val)
@@ -3479,13 +3503,39 @@ fn arb_zeta(
     Ok(round_to(r, prec, rm))
 }
 
-/// Borwein's Algorithm 2 for `ζ(s)`, real `s > 0`, `s ≠ 1`.
+/// Borwein's Algorithm 2 for `ζ(s)`, real `s > 0`, `s ≠ 1`:
+/// `ζ(s) = η(s) / (1 − 2^{1−s})` with `η` from [`arb_eta_borwein`].
+fn arb_zeta_borwein(
+    s: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let eta = arb_eta_borwein(s, wp, rm, cc)?;
+    // 1 − 2^{1−s}
+    let one = BigFloat::from_i32(1, wp);
+    let two = BigFloat::from_i32(2, wp);
+    let one_minus_s = one.sub(s, wp, rm);
+    let two_pow = bf_pow(&two, &one_minus_s, wp, rm, cc);
+    let denom_factor = one.sub(&two_pow, wp, rm);
+    if denom_factor.is_zero() {
+        return Err(SymplexError::Unevaluable {
+            reason: "zeta(1) is a pole".into(),
+        });
+    }
+    Ok(eta.div(&denom_factor, wp, rm))
+}
+
+/// Borwein's accelerated alternating sum for the Dirichlet eta function
+/// `η(s) = Σ_{k≥0} (−1)ᵏ/(k+1)ˢ`, real `s > 0` (P. Borwein, *An efficient
+/// algorithm for the Riemann zeta function*, 1991, Algorithm 2; error
+/// `≤ 3/(3+√8)ⁿ`, so `n ≈ 0.39·wp` terms):
 ///
 /// ```text
 /// d_k = n Σ_{i=0}^{k} (n+i−1)! 4ⁱ / ((n−i)! (2i)!)
-/// ζ(s) = − 1/(d_n (1 − 2^{1−s})) · Σ_{k=0}^{n−1} (−1)ᵏ (d_k − d_n)/(k+1)ˢ
+/// η(s) = − 1/d_n · Σ_{k=0}^{n−1} (−1)ᵏ (d_k − d_n)/(k+1)ˢ
 /// ```
-fn arb_zeta_borwein(
+fn arb_eta_borwein(
     s: &BigFloat,
     wp: usize,
     rm: RoundingMode,
@@ -3538,19 +3588,7 @@ fn arb_zeta_borwein(
         }
     }
 
-    // 1 − 2^{1−s}
-    let one = BigFloat::from_i32(1, wp);
-    let two = BigFloat::from_i32(2, wp);
-    let one_minus_s = one.sub(s, wp, rm);
-    let two_pow = bf_pow(&two, &one_minus_s, wp, rm, cc);
-    let denom_factor = one.sub(&two_pow, wp, rm);
-    if denom_factor.is_zero() {
-        return Err(SymplexError::Unevaluable {
-            reason: "zeta(1) is a pole".into(),
-        });
-    }
-    let denom = d_n.mul(&denom_factor, wp, rm);
-    Ok(sum.div(&denom, wp, rm).neg())
+    Ok(sum.div(&d_n, wp, rm).neg())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -4055,6 +4093,15 @@ fn unevaluable(reason: impl Into<String>) -> SymplexError {
     }
 }
 
+/// A series exhausted its term budget without meeting the negligibility
+/// test; the partial sum is *not* returned.
+fn series_did_not_converge(operation: &'static str, max_terms: usize) -> SymplexError {
+    SymplexError::ComputationFailed {
+        operation,
+        reason: format!("series did not converge in {max_terms} terms"),
+    }
+}
+
 /// The cached values of `args`, all required to be real.
 fn real_args(
     name: &str,
@@ -4224,6 +4271,7 @@ fn arb_erfi(
     let _ = prod.set_precision(wp, rm);
     let mut sum = prod.clone();
     let max_terms = (3.0 * ax * ax) as usize + wp + 60;
+    let mut converged = false;
     for n in 1..=max_terms {
         let n_bf = BigFloat::from_i128(n as i128, wp);
         prod = prod.mul(&x_sq, wp, rm).div(&n_bf, wp, rm);
@@ -4231,34 +4279,48 @@ fn arb_erfi(
         let term = prod.div(&d, wp, rm);
         sum = sum.add(&term, wp, rm);
         if negligible(&term, &sum, wp) {
+            converged = true;
             break;
         }
+    }
+    if !converged {
+        return Err(series_did_not_converge("erfi", max_terms));
     }
     let r = sum.mul(&two, wp, rm).div(&sqrt_pi, wp, rm);
     Ok(round_to(r, prec, rm))
 }
 
 /// `erfc(x)` with *relative* precision `prec` for `x > 0` (absolute
-/// precision, via `1 − erf`, for `x ≤ 1/2`): the working precision is
-/// raised by `x² log₂ e` bits to survive the cancellation in `1 − erf(x)`.
+/// precision, via `1 − erf`, for `x ≤ 1/2`, where nothing cancels).
+///
+/// * `x² log₂ e ≥ wp + 8`: the asymptotic expansion alone (relative error
+///   `≈ e^{−x²}`) already delivers `wp` bits.
+/// * otherwise `1 − erf(x)` with `x² log₂ e + 8` extra bits to survive the
+///   cancellation (`erfc(x) ≈ e^{−x²}/(x√π)`).
 fn arb_erfc(
     x: &BigFloat,
     prec: usize,
     rm: RoundingMode,
     cc: &mut Consts,
 ) -> Result<BigFloat, SymplexError> {
+    let wp = prec + 32;
     let x_f = bigfloat_to_f64(x, rm, cc)?;
-    let extra = if x_f > 0.5 {
-        (x_f * x_f * std::f64::consts::LOG2_E).ceil() as usize + 8
-    } else {
-        0
-    };
-    let wp = prec + 32 + extra;
+    if x_f <= 0.5 {
+        let erf = arb_erf(x, prec, rm, cc)?;
+        let one = BigFloat::from_i32(1, wp);
+        return Ok(round_to(one.sub(&erf, wp, rm), prec, rm));
+    }
+    let x_sq_bits = (x_f * x_f * std::f64::consts::LOG2_E).ceil() as usize;
     let mut xw = x.clone();
-    let _ = xw.set_precision(wp, rm);
-    let erf = arb_erf(&xw, wp, rm, cc)?;
-    let one = BigFloat::from_i32(1, wp);
-    Ok(round_to(one.sub(&erf, wp, rm), prec, rm))
+    if x_sq_bits >= wp + 8 {
+        let _ = xw.set_precision(wp, rm);
+        return Ok(round_to(erfc_asymptotic(&xw, wp, rm, cc), prec, rm));
+    }
+    let wp2 = wp + x_sq_bits + 8;
+    let _ = xw.set_precision(wp2, rm);
+    let erf = arb_erf(&xw, wp2, rm, cc)?;
+    let one = BigFloat::from_i32(1, wp2);
+    Ok(round_to(one.sub(&erf, wp2, rm), prec, rm))
 }
 
 /// Halley iteration for `erf(x) = y` (`solve_erfc == false`) or
@@ -4490,13 +4552,18 @@ fn lowergamma_series(
     let mut term = one.div(s, wp, rm);
     let mut sum = term.clone();
     let max_terms = (2.0 * x_f) as usize + wp + 50;
+    let mut converged = false;
     for k in 1..=max_terms {
         let s_plus_k = s.add(&BigFloat::from_i128(k as i128, wp), wp, rm);
         term = term.mul(x, wp, rm).div(&s_plus_k, wp, rm);
         sum = sum.add(&term, wp, rm);
         if negligible(&term, &sum, wp) {
+            converged = true;
             break;
         }
+    }
+    if !converged {
+        return Err(series_did_not_converge("lowergamma", max_terms));
     }
     let e_neg_x = x.neg().exp(wp, rm, cc);
     let x_pow_s = bf_pow(x, s, wp, rm, cc);
@@ -4711,7 +4778,9 @@ fn arb_shi_chi(
         let _ = xw.set_precision(wp, rm);
         let x2 = xw.mul(&xw, wp, rm);
         let max_terms = (x_f * 1.5) as usize + wp + 40;
-        if want_shi {
+        let name = if want_shi { "Shi" } else { "Chi" };
+        let mut converged = false;
+        let series = if want_shi {
             // t_k = x^{2k+1}/(2k+1)!
             let mut t = xw.clone();
             let mut sum = BigFloat::new(wp);
@@ -4723,6 +4792,7 @@ fn arb_shi_chi(
                 let term = t.div(&BigFloat::from_i128(2 * k as i128 + 1, wp), wp, rm);
                 sum = sum.add(&term, wp, rm);
                 if negligible(&term, &sum, wp) {
+                    converged = true;
                     break;
                 }
             }
@@ -4738,11 +4808,16 @@ fn arb_shi_chi(
                 let term = u.div(&BigFloat::from_i128(2 * k as i128, wp), wp, rm);
                 sum = sum.add(&term, wp, rm);
                 if negligible(&term, &sum, wp) {
+                    converged = true;
                     break;
                 }
             }
             gamma.add(&ln_x, wp, rm).add(&sum, wp, rm)
+        };
+        if !converged {
+            return Err(series_did_not_converge(name, max_terms));
         }
+        series
     };
     let r = if want_shi && x.is_negative() {
         r.neg()
@@ -4854,6 +4929,7 @@ fn arb_fresnel(
         };
         let mut sum = BigFloat::new(wp);
         let max_terms = (arg_f * 2.0) as usize + wp + 40;
+        let mut converged = false;
         for k in 0..max_terms {
             if k > 0 {
                 let d = if want_s {
@@ -4871,8 +4947,13 @@ fn arb_fresnel(
                 sum = sum.sub(&term, wp, rm);
             }
             if negligible(&term, &sum, wp) {
+                converged = true;
                 break;
             }
+        }
+        if !converged {
+            let name = if want_s { "fresnels" } else { "fresnelc" };
+            return Err(series_did_not_converge(name, max_terms));
         }
         sum
     };
@@ -4914,8 +4995,36 @@ fn int_pow_s(
     }
 }
 
+/// Number of terms after which `|z|^k k^{−s}` has certainly fallen below
+/// `2^{−wp}·|z|` (the first term): about `wp·ln 2 / (−ln|z|)` for `s ≥ 0`;
+/// for `s < 0` the factor `k^{|s|}` first grows the terms (peak near
+/// `k = |s|/(−ln|z|)`), so the bound is found by doubling from there.
+fn polylog_series_terms(s_f: f64, z_f: f64, wp: usize) -> usize {
+    if !(z_f > 0.0 && z_f < 1.0) {
+        return wp * 2 + 60;
+    }
+    let a = -z_f.ln(); // > 0
+    let target = (wp as f64) * std::f64::consts::LN_2 + a;
+    let mut k = target / a;
+    let m = (-s_f).max(0.0);
+    if m > 0.0 {
+        // k·a − m·ln k increases for k > m/a.
+        k = k.max(m / a);
+        for _ in 0..200 {
+            if k * a - m * k.ln() >= target {
+                break;
+            }
+            k *= 2.0;
+        }
+    }
+    (k.ceil() as usize).saturating_add(20)
+}
+
 /// Direct series `Li_s(z) = Σ_{k≥1} z^k/k^s` for `|z| < 1` (used up to
-/// [`polylog_series_limit`]); about `wp·ln 2 / (−ln|z|)` terms.
+/// [`polylog_series_limit`]); see [`polylog_series_terms`] for the term
+/// bound.  For `z < 0` and `s < 0` the alternating terms can be far
+/// larger than the sum; the bits lost to that cancellation are measured
+/// and the sum recomputed once with that many guard bits.
 fn polylog_series(
     s: &BigFloat,
     s_int: Option<i64>,
@@ -4923,26 +5032,61 @@ fn polylog_series(
     wp: usize,
     rm: RoundingMode,
     cc: &mut Consts,
-) -> BigFloat {
+) -> Result<BigFloat, SymplexError> {
+    let (sum, lost) = polylog_series_raw(s, s_int, z, wp, rm, cc)?;
+    // A few bits (an alternating series with s ≥ 0 loses about one) are
+    // covered by the caller's guard bits.
+    if lost <= 4 {
+        return Ok(sum);
+    }
+    let wp2 = wp + lost + 8;
+    let mut sw = s.clone();
+    let _ = sw.set_precision(wp2, rm);
+    let mut zw = z.clone();
+    let _ = zw.set_precision(wp2, rm);
+    let (sum, _) = polylog_series_raw(&sw, s_int, &zw, wp2, rm, cc)?;
+    Ok(round_to(sum, wp, rm))
+}
+
+/// One pass of [`polylog_series`] at working precision `wp`; also returns
+/// the number of bits by which the largest term exceeded the final sum.
+fn polylog_series_raw(
+    s: &BigFloat,
+    s_int: Option<i64>,
+    z: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<(BigFloat, usize), SymplexError> {
     let z_f = bigfloat_to_f64(z, rm, cc).unwrap_or(0.5).abs();
-    let max_terms = if z_f > 0.0 && z_f < 1.0 {
-        ((wp as f64) * std::f64::consts::LN_2 / (-z_f.ln())).ceil() as usize + 20
-    } else {
-        wp * 2 + 60
-    };
+    let s_f = bigfloat_to_f64(s, rm, cc).unwrap_or(0.0);
+    let max_terms = polylog_series_terms(s_f, z_f, wp);
     let mut zk = z.clone();
     let mut sum = BigFloat::new(wp);
-    for k in 1..max_terms {
+    let mut max_exp: Option<i64> = None;
+    let mut converged = false;
+    for k in 1..=max_terms {
         if k > 1 {
             zk = zk.mul(z, wp, rm);
         }
         let term = zk.div(&int_pow_s(k, s, s_int, wp, rm, cc), wp, rm);
+        if let Some(e) = term.exponent() {
+            max_exp = Some(max_exp.map_or(e as i64, |m| m.max(e as i64)));
+        }
         sum = sum.add(&term, wp, rm);
         if negligible(&term, &sum, wp) {
+            converged = true;
             break;
         }
     }
-    sum
+    if !converged {
+        return Err(series_did_not_converge("polylog", max_terms));
+    }
+    let lost = match (max_exp, sum.exponent()) {
+        (Some(m), Some(se)) if m > se as i64 => (m - se as i64) as usize,
+        _ => 0,
+    };
+    Ok((sum, lost))
 }
 
 /// `Li_{−n}(z)` for integer `n ≥ 0` and any real `z ≠ 1`:
@@ -4991,9 +5135,15 @@ fn polylog_near_one(
     let one = BigFloat::from_i32(1, wp);
     let mu = z.ln(wp, rm, cc); // negative
     let neg_mu = mu.neg();
+    // The terms decay like (|μ|/2π)^k (|ζ(−m)| ~ m!/(2π)^m), |μ| < ln 2.
     let max_terms = wp * 2 + 100;
+    let not_converged = || series_did_not_converge("polylog", max_terms);
     let mut sum = BigFloat::new(wp);
     let mut mu_pow_over_fact = one.clone(); // μ^k/k!
+    // ζ vanishes at the negative even integers, so a single negligible
+    // term proves nothing: stop only after two in a row.
+    let mut small_run = 0u8;
+    let mut converged = false;
     match s_int {
         Some(n) if n >= 1 => {
             let n = n as usize;
@@ -5028,9 +5178,20 @@ fn polylog_near_one(
                 };
                 let term = zeta.mul(&mu_pow_over_fact, wp, rm);
                 sum = sum.add(&term, wp, rm);
-                if k > n && negligible(&mu_pow_over_fact, &one, wp + 8) {
-                    break;
+                if k >= n {
+                    if negligible(&term, &sum, wp) {
+                        small_run += 1;
+                        if small_run >= 2 {
+                            converged = true;
+                            break;
+                        }
+                    } else {
+                        small_run = 0;
+                    }
                 }
+            }
+            if !converged {
+                return Err(not_converged());
             }
             Ok(sum)
         }
@@ -5051,9 +5212,20 @@ fn polylog_near_one(
                 let zeta = arb_zeta(&arg, wp, rm, cc)?;
                 let term = zeta.mul(&mu_pow_over_fact, wp, rm);
                 sum = sum.add(&term, wp, rm);
-                if k > 2 && negligible(&mu_pow_over_fact, &one, wp + 8) {
-                    break;
+                if k >= 2 {
+                    if negligible(&term, &sum, wp) {
+                        small_run += 1;
+                        if small_run >= 2 {
+                            converged = true;
+                            break;
+                        }
+                    } else {
+                        small_run = 0;
+                    }
                 }
+            }
+            if !converged {
+                return Err(not_converged());
             }
             Ok(lead.add(&sum, wp, rm))
         }
@@ -5084,7 +5256,7 @@ fn polylog_unit_interval(
     let limit = polylog_series_limit(s_int, wp);
     let az = z.abs();
     if !bf_gt(&az, &limit) {
-        return Ok(polylog_series(s, s_int, z, wp, rm, cc));
+        return polylog_series(s, s_int, z, wp, rm, cc);
     }
     if z.is_negative() {
         // Li_s(−x) = 2^{1−s} Li_s(x²) − Li_s(x)
@@ -5132,24 +5304,43 @@ fn arb_polylog(
     }
     if az.sub(&one, wp, rm).is_zero() {
         // z = ±1
+        if z.is_negative() {
+            // Li_s(−1) = −η(s), entire in s.
+            let eta = arb_eta(s, wp, rm, cc)?;
+            return Ok(round_to(eta.neg(), prec, rm));
+        }
         if !bf_gt(s, &one) {
-            return Err(unevaluable("polylog(s, ±1) diverges for s ≤ 1"));
+            return Err(unevaluable("polylog(s, 1) diverges for s ≤ 1"));
         }
         let zeta = arb_zeta(s, wp, rm, cc)?;
-        if z.is_negative() {
-            // Li_s(−1) = −η(s) = −(1 − 2^{1−s}) ζ(s)
-            let two = BigFloat::from_i32(2, wp);
-            let one_minus_s = one.sub(s, wp, rm);
-            let coeff = one.sub(&bf_pow(&two, &one_minus_s, wp, rm, cc), wp, rm);
-            return Ok(round_to(coeff.mul(&zeta, wp, rm).neg(), prec, rm));
-        }
         return Ok(round_to(zeta, prec, rm));
     }
     let r = polylog_unit_interval(s, s_int, z, wp, rm, cc)?;
     Ok(round_to(r, prec, rm))
 }
 
-/// Dirichlet eta `η(s) = (1 − 2^{1−s}) ζ(s)`, with `η(1) = ln 2`.
+/// Dirichlet eta `η(s)` at working precision `wp` for real `s`: Borwein's
+/// alternating sum ([`arb_eta_borwein`]) for `s > 0` — `η` is entire, so
+/// nothing special happens near `s = 1` (`η(1) = ln 2`) — and
+/// `(1 − 2^{1−s}) ζ(s)` for `s ≤ 0`.
+fn arb_eta(
+    s: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if s.is_positive() {
+        return arb_eta_borwein(s, wp, rm, cc);
+    }
+    let one = BigFloat::from_i32(1, wp);
+    let two = BigFloat::from_i32(2, wp);
+    let one_minus_s = one.sub(s, wp, rm);
+    let coeff = one.sub(&bf_pow(&two, &one_minus_s, wp, rm, cc), wp, rm);
+    let zeta = arb_zeta(s, wp, rm, cc)?;
+    Ok(coeff.mul(&zeta, wp, rm))
+}
+
+/// Dirichlet eta `η(s)` (see [`arb_eta`]), with `η(+∞) = 1`.
 fn arb_dirichlet_eta(
     s: &BigFloat,
     prec: usize,
@@ -5163,15 +5354,9 @@ fn arb_dirichlet_eta(
         return Ok(BigFloat::from_i32(1, prec));
     }
     let wp = prec + 32;
-    let one = BigFloat::from_i32(1, wp);
-    let two = BigFloat::from_i32(2, wp);
-    let one_minus_s = one.sub(s, wp, rm);
-    if one_minus_s.is_zero() {
-        return Ok(round_to(two.ln(wp, rm, cc), prec, rm));
-    }
-    let coeff = one.sub(&bf_pow(&two, &one_minus_s, wp, rm, cc), wp, rm);
-    let zeta = arb_zeta(s, wp, rm, cc)?;
-    Ok(round_to(coeff.mul(&zeta, wp, rm), prec, rm))
+    let mut sw = s.clone();
+    let _ = sw.set_precision(wp, rm);
+    Ok(round_to(arb_eta(&sw, wp, rm, cc)?, prec, rm))
 }
 
 // ── Airy functions ─────────────────────────────────────────────────────────────
@@ -5248,7 +5433,13 @@ fn arb_airy(
     };
     let mut fk = one.clone(); // x^{3k}/∏(3j−1)(3j)
     let mut gk = xw.clone(); // x^{3k+1}/∏(3j)(3j+1)
-    let max_terms = (ax_f * 2.0) as usize + wp + 40;
+    // At x = 0 the k = 0 terms above are the exact values (every later
+    // term vanishes, and the derivative recurrences would divide by x).
+    let max_terms = if xw.is_zero() {
+        0
+    } else {
+        (ax_f * 2.0) as usize + wp + 40
+    };
     for k in 1..=max_terms {
         let k3 = 3 * k as i128;
         fk = fk
@@ -6967,5 +7158,143 @@ mod tests {
         assert_evalf_starts_with(&a, arg_w, 15, "0.92729521800161");
         let s = evalf(&a, conj_w, 10).unwrap();
         assert!(s.contains('3') && s.contains('4') && s.contains('-'), "{s}");
+    }
+
+    // ── 0.11.1 special-function fixes (direct numeric paths that `eval`
+    //    would otherwise fold away) ──────────────────────────────────────────
+
+    fn apply(a: &mut Arena, name: &str, args: &[ExprId]) -> ExprId {
+        let sid = a.symbols.intern(name);
+        a.intern(ExprNode::Apply(sid, args.iter().copied().collect()))
+    }
+
+    #[test]
+    fn erfc_node_large_argument_is_relative_precision() {
+        let mut a = Arena::new();
+        // mpmath 1.3: erfc(7) = 4.18382560777941439861401e-23
+        let seven = a.int(7);
+        let e7 = a.erfc(seven);
+        assert_evalf_starts_with(&a, e7, 16, "4.183825607779414e-23");
+        // mpmath 1.3: erfc(10) = 2.088487583762544757000786294957788611560818119321163727e-45
+        let ten = a.int(10);
+        let e10 = a.erfc(ten);
+        assert_evalf_starts_with(
+            &a,
+            e10,
+            50,
+            "2.0884875837625447570007862949577886115608181193212e-45",
+        );
+        // mpmath 1.3: erfc(30) = 2.564656203756111600033397e-393 (asymptotic branch)
+        let thirty = a.int(30);
+        let e30 = a.erfc(thirty);
+        assert_evalf_starts_with(&a, e30, 16, "2.564656203756112e-393");
+        // mpmath 1.3: erfc(-3) = 1.999977909503001414558627 (no cancellation)
+        let m3 = a.int(-3);
+        let em3 = a.erfc(m3);
+        assert_evalf_starts_with(&a, em3, 16, "1.999977909503001");
+    }
+
+    #[test]
+    fn erf_taylor_branch_carries_cancellation_guard_bits() {
+        let mut a = Arena::new();
+        // mpmath 1.3: erf(7.4) = 0.99999999999999999999999987516143536
+        let x = a.rational(74, 10);
+        let e = a.erf(x);
+        assert_evalf_starts_with(&a, e, 30, "0.999999999999999999999999875161");
+        // mpmath 1.3: erf(10) = 0.9999999999999999999999999999999999999999999979115124162
+        // (50 digits: the Taylor terms peak near e^{100} ≈ 2^{144})
+        let ten = a.int(10);
+        let e10 = a.erf(ten);
+        assert_evalf_starts_with(
+            &a,
+            e10,
+            50,
+            "0.99999999999999999999999999999999999999999999791151",
+        );
+        // mpmath 1.3: erf(3) = 0.999977909503001414558627223870417679620152293
+        let three = a.int(3);
+        let e3 = a.erf(three);
+        assert_evalf_starts_with(&a, e3, 40, "0.999977909503001414558627223870417679620");
+    }
+
+    #[test]
+    fn polylog_at_minus_one_is_minus_eta_for_all_s() {
+        use crate::base::arena::FN_POLYLOG;
+        let mut a = Arena::new();
+        let neg_one = a.neg_one;
+        // mpmath 1.3: polylog(1/2, -1) = -0.6048986434216303702472659142359555
+        let half = a.rational(1, 2);
+        let li = apply(&mut a, FN_POLYLOG, &[half, neg_one]);
+        assert_evalf_starts_with(&a, li, 30, "-0.60489864342163037024726591423");
+        // mpmath 1.3: polylog(1, -1) = -ln 2 = -0.69314718055994530941723212145817657
+        let one = a.one;
+        let li1 = apply(&mut a, FN_POLYLOG, &[one, neg_one]);
+        assert_evalf_starts_with(&a, li1, 30, "-0.69314718055994530941723212145");
+        // mpmath 1.3: polylog(-1/2, -1) = -0.38010481260968401677754215655180836
+        let neg_half = a.rational(-1, 2);
+        let lim = apply(&mut a, FN_POLYLOG, &[neg_half, neg_one]);
+        assert_evalf_starts_with(&a, lim, 30, "-0.38010481260968401677754215655");
+        // mpmath 1.3: polylog(3/2, -1) = -0.76514702462540794536726875860347818
+        let three_halves = a.rational(3, 2);
+        let li32 = apply(&mut a, FN_POLYLOG, &[three_halves, neg_one]);
+        assert_evalf_starts_with(&a, li32, 30, "-0.76514702462540794536726875860");
+        // z = +1 still diverges for s ≤ 1
+        let one_id = a.one;
+        let div = apply(&mut a, FN_POLYLOG, &[half, one_id]);
+        assert!(evalf(&a, div, 16).is_err());
+    }
+
+    #[test]
+    fn dirichlet_eta_near_one_uses_alternating_sum() {
+        use crate::base::arena::FN_DIRICHLET_ETA;
+        let mut a = Arena::new();
+        // mpmath 1.3: altzeta(1 + 1e-20) = 0.69314718055994530941883081049560088
+        let ten = a.int(10);
+        let e20 = a.int(-20);
+        let tiny = a.pow(ten, e20);
+        let s = a.add(&[a.one, tiny]);
+        let eta = apply(&mut a, FN_DIRICHLET_ETA, &[s]);
+        assert_evalf_starts_with(&a, eta, 30, "0.69314718055994530941883081049");
+        // mpmath 1.3: altzeta(1 - 1e-20) = 0.69314718055994530941563343242075226
+        let s2 = a.sub(a.one, tiny);
+        let eta2 = apply(&mut a, FN_DIRICHLET_ETA, &[s2]);
+        assert_evalf_starts_with(&a, eta2, 30, "0.69314718055994530941563343242");
+        // Exactly 1 through the numeric path: mpmath altzeta(1) = ln 2
+        let one = a.one;
+        let eta1 = apply(&mut a, FN_DIRICHLET_ETA, &[one]);
+        assert_evalf_starts_with(&a, eta1, 30, "0.69314718055994530941723212145");
+        // s ≤ 0 still goes through ζ: mpmath altzeta(-1/2) = 0.38010481260968401677754215655180836
+        let neg_half = a.rational(-1, 2);
+        let etam = apply(&mut a, FN_DIRICHLET_ETA, &[neg_half]);
+        assert_evalf_starts_with(&a, etam, 30, "0.38010481260968401677754215655");
+    }
+
+    #[test]
+    fn airy_derivatives_at_exact_zero() {
+        use crate::base::arena::{FN_AIRYAIPRIME, FN_AIRYBIPRIME};
+        let mut a = Arena::new();
+        let zero = a.zero;
+        // mpmath 1.3: airyai(0, derivative=1) = -0.25881940379280679840518356018920396
+        let aip = apply(&mut a, FN_AIRYAIPRIME, &[zero]);
+        assert_evalf_starts_with(&a, aip, 30, "-0.25881940379280679840518356018");
+        // mpmath 1.3: airybi(0, derivative=1) = 0.44828835735382635791482371039882839
+        let bip = apply(&mut a, FN_AIRYBIPRIME, &[zero]);
+        assert_evalf_starts_with(&a, bip, 30, "0.44828835735382635791482371039");
+    }
+
+    #[test]
+    fn polylog_series_bound_accounts_for_negative_order() {
+        // s ≥ 0: the classic wp·ln 2 / (−ln|z|) bound (+20).
+        let n = polylog_series_terms(2.0, 0.5, 100);
+        assert!((120..=122).contains(&n), "{n}");
+        // s < 0: |z|^k k^{|s|} peaks near k = |s|/(−ln|z|) before decaying.
+        let n = polylog_series_terms(-40.5, 0.5, 132);
+        let a = -(0.5f64).ln();
+        let k = (n - 20) as f64;
+        assert!(
+            k * a - 40.5 * k.ln() >= 132.0 * std::f64::consts::LN_2,
+            "{n}"
+        );
+        assert!(n > 200, "{n}");
     }
 }

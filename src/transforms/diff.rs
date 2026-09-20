@@ -29,6 +29,7 @@ use smallvec::SmallVec;
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode, SymbolId};
+use crate::transforms::eval::apply_named;
 
 /// Differentiate `expr` with respect to the symbol identified by `var`.
 ///
@@ -1000,12 +1001,6 @@ fn diff_known_apply(
     };
 
     Some(arena.mul(&[outer, dx]))
-}
-
-/// Intern `name(args)` as a library `Apply` node.
-fn apply_named(arena: &mut Arena, name: &str, args: &[ExprId]) -> ExprId {
-    let sid = arena.symbols.intern(name);
-    arena.intern(ExprNode::Apply(sid, args.iter().copied().collect()))
 }
 
 /// `2/√π`.

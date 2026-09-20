@@ -6,6 +6,122 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.11.1] - 2026-09-20
+
+A **correctness** release: the first pass of a line-by-line review of the
+0.9–0.11 modules.  Additive over 0.11.0 (no signature changes); every
+fix below was reproduced before it was made, and every new reference value
+is cited from SymPy 1.14 / mpmath 1.3.  Byte-identical on the pinned Lean
+fixtures, the 4,000-LP pivot-path check and a downstream generator's
+Mathlib-compiled output.
+
+### Fixed
+
+- **Function analysis** (`calculus.util` on `Ex`): `is_increasing` /
+  `is_decreasing` / `is_strictly_*` / `is_monotonic` / `is_convex` ignored
+  poles strictly inside the domain on the assumption and inequality-solver
+  routes — `(1/x).is_decreasing(&x, [−1, 1])` and `tan(x).is_increasing(&x,
+  [0, π])` were `Some(true)` for a `Real` symbol.  An interior singularity
+  with an infinite one-sided limit now refutes monotonicity (`Some(false)`;
+  a monotone function has finite one-sided limits), a removable one lets
+  the derivative analysis proceed, and an undecidable family is `None`.
+  The documented `abs` support in `maximum` / `minimum` / `function_range`
+  / `stationary_points` was unreachable (`|u|.maximum` errored on the zeros
+  of `sign(u)`); kinks are now candidates and `f′` is solved with each
+  `sign(gᵢ)` fixed to ±1 over all patterns (up to four factors), keeping a
+  solution only where the sign agrees — `|u|.maximum(&u, [−1, 2]) = 2`,
+  `(|u − 1| + u²).minimum = 3/4`, `function_range(|x|, [−1, 2]) = [0, 2]`,
+  `stationary_points(|x| + x) = [−1, 0)`, all as SymPy.  "Could not
+  decide" is reported as `ComputationFailed { operation, reason }` (was
+  `NotImplemented`, the missing-feature variant).  Docs: `periodicity`
+  returns *a* period (`sin²x·cos²x → π`), not necessarily the fundamental
+  one; the three numeric steps in the extremum search are named; the
+  `singularities` error contract is stated as it is.
+- **Algebraic numbers**: `minimal_polynomial` returned an unverified
+  factor — chosen by an `f64` evaluation, or the *smallest-degree* factor
+  when that failed, and possibly reducible when Zassenhaus' recombination
+  budget ran out.  The factorisation now reports completeness, the
+  candidate is verified at 320 bits against a 2⁻¹²⁸ residual bound, and
+  the result is `None` unless exactly one factor verifies.  `real_roots` /
+  `root_of` derived the `RootOf` index from an `f64` sort while the
+  evaluator uses a BigFloat sort; one shared definition
+  (`poly::roots::rootof_roots`) now serves both, and the emitted index is
+  checked against the Sturm isolating interval.  `minimal_polynomial`,
+  `gcd_all` / `lcm_all`, `groebner`, `reduce_modulo`, `real_roots` and
+  `factor_mod` no longer hold the arena write lock while they compute.
+- **Special functions**: `uppergamma(s, 0)` and `lowergamma(s, 0)` folded
+  to `Γ(s)` / `0` for numeric `s ≤ 0`, where the integrals diverge; they
+  stay unevaluated.  `jacobi`, `gegenbauer` and `assoc_laguerre` with
+  *symbolic* parameters expanded through a 1000-degree bound with a full
+  `expand` per step (`jacobi(14, a, b, x).eval()` > 60 s); the bound is 16
+  for symbolic parameters and the Jacobi sum is built incrementally
+  (`jacobi(14, a, b, x)` in 67 ms release; higher degrees stay
+  unevaluated).  `dirichlet_eta(n)` for large negative integers allocated
+  `|n|` bits (`η(−10⁶)` 100 s → instant).
+- **Arbitrary-precision evaluation**: `erf` / `erfc` used a Taylor series
+  with 32 guard bits where the terms peak near `e^{x²}` — `erfc(7)` at 16
+  digits was `−3.7·10⁻¹⁵` (mpmath `4.18·10⁻²³`), `erf(10)` at 50 digits
+  was `−7.7·10¹⁶`, and through the `Γ(½ + k, x)` fold
+  `uppergamma(1/2, 49).eval_f64()` was **negative**.  The Taylor branch
+  carries `x²·log₂e + 8` guard bits, the asymptotic series is used when it
+  applies, and the `Erfc` node evaluates through `arb_erfc`.
+  `polylog(s, z)` near `z = 1` tested the wrong term for convergence
+  (`polylog(2, 3/4)` wrong from digit ~150 of 200; now all 200 agree with
+  mpmath) and for `s < 0` could return a partial sum silently; every series
+  loop that can exhaust its term budget now returns `ComputationFailed`
+  instead of a partial sum.  `dirichlet_eta` and `polylog(s, −1)` go
+  through a native Borwein `η` (`η(1 + 10⁻²⁰)` no longer reports "zeta(1)
+  is a pole"; `Li_s(−1) = −η(s)` for all real `s`).  `airyaiprime` /
+  `airybiprime` at exactly `0` no longer divide by zero on the direct
+  numeric path.
+- **Code generation**: the Rust printer emitted a negative receiver before
+  a method call — `(−2)^x` → `-2_f64.powf(x)` (= `−(2ˣ)`), `exp(−xy)` →
+  `-(x * y).exp()`, `−2xy + z` → `-2_f64.mul_add(…)`, `min(−2, x)` →
+  `-2_f64.min(x)` — all silently wrong; every `Std` method emission now
+  parenthesises a receiver that starts with `-`.  The Python / NumPy /
+  Julia printers emitted `x**(1/3)` and `x**(3/5)`, which are complex (or
+  `NaN`) for negative `x` while Rust, C and `compile()` take the real root;
+  they now emit `math.copysign(abs(x)**(1/3), x)`, `numpy.cbrt(x)`,
+  `cbrt(x)` and the `copysign` idiom for odd denominators.  Python's
+  `Factorial` is `math.gamma(x + 1)` (`math.factorial` rejects floats),
+  empty `Min` / `Max` are `math.inf` / `-math.inf` like the other targets,
+  and a lone `Mul` factor keeps its precedence as a `Pow` base.
+- **Lean proofs** (`lean::{Block, Tactic, Decl}`): `Tactic::apply`'s
+  arguments could still be split inside by the width-wrapping pass;
+  Apply lines are now exempt.  An empty `by` block (in a `have` or a
+  `Decl` body) rendered no tactic — a parse error; it renders `skip`.  A
+  doc comment containing `-/` or `/-` is escaped.  The `Tactic::raw`
+  docstring describes the actual placement of continuation lines.
+- **MathML**: `to_mathml` kept every node's markup in its cache, so a
+  5,000-deep expression took 1.0 GB (20,000: 15.5 GB); cached strings are
+  released when their last reader has consumed them (14 MB / 137 MB).
+  `E` and `I` render as `ⅇ` / `ⅈ` (SymPy's entities) and a `Piecewise`
+  default branch as "otherwise".
+- **Sums of squares**: a `SosOpts` time limit was measured only *after*
+  the Newton-polytope pruning, whose one-LP-per-monomial stage ran
+  unbudgeted; the deadline is now fixed at the start of `prove_sos`, the
+  pruning LPs carry it, and exhaustion during pruning or before the SDP is
+  assembled is `Unknown` with a reason saying where.  (The cheap
+  refutation search stays unbudgeted: a counterexample is decisive.)
+- **NTT**: `ntt` / `intt` / `convolution_ntt` validated the prime and
+  re-derived the primitive root (three factorisations) once *per
+  transform*; a convolution now plans once.  `convolution_ntt` with an
+  empty operand validates its modulus like `ntt` does.
+- **No-panics ratchet**: `tests/unit/test_no_panics.rs` stopped scanning a
+  file at its first `#[cfg(test)]` *line*, so a test-only helper `fn` in
+  the middle of a file hid everything after it — twelve library panic
+  sites in `codegen.rs`, `gruntz.rs` and `factor_zassenhaus.rs`.  The
+  ratchet now stops only at the `#[cfg(test)] mod` and all twelve sites
+  are gone (non-panicking `let … else` paths and `ComputationFailed`
+  invariants).  `GenPoly::div_rem` no longer `assert!`s on a zero divisor
+  (`try_div_rem` observes it).
+
+### Infrastructure
+
+- `symplex` and `symplex-build` at 0.11.1; `symplex-macros` unchanged at
+  0.3.2.  New test group `tests/v11/` (one module per review track, 44
+  tests).  README refreshed for 0.11.
+
 ## [0.11.0] - 2026-09-19
 
 ### Added

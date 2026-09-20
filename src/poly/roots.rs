@@ -326,6 +326,97 @@ fn aberth_iterate(
     roots
 }
 
+// ── `RootOf` indexing ───────────────────────────────────────────────────────────────
+
+/// Binary precision (before the guard bits [`aberth_roots`] adds) at which
+/// a `RootOf` node is evaluated by the default numeric path: `evalf` at
+/// 16 digits, i.e. `eval_f64` / `eval_complex64`.
+pub(crate) const ROOTOF_DEFAULT_PREC: usize = 128;
+
+/// Every complex root of `poly` as the `RootOf` evaluator computes them:
+/// [`aberth_roots`] at `prec + 64` bits with 200 iterations, sorted by
+/// (real part, imaginary part).  `RootOf(poly, k)` *means* the `k`-th
+/// entry of this list; [`real_root_index`] derives `k` from the same
+/// call so that the constructor of a `RootOf` node and its evaluator can
+/// never disagree on the order.
+pub(crate) fn rootof_roots(poly: &Poly, prec: usize) -> Vec<Complex> {
+    aberth_roots(poly, prec + 64, 200)
+}
+
+/// Relative distance below which two computed real parts are treated as
+/// tied — their (re, im) order would then depend on rounding — and below
+/// which a computed imaginary part counts as noise on a real root.  Aberth
+/// stops at corrections around `10⁻³⁰`, so `2⁻⁶⁰ ≈ 10⁻¹⁸` is far above the
+/// noise and far below any separation the sort could meaningfully resolve.
+const ROOTOF_TIE_BITS: usize = 60;
+
+/// The index `k` for which `RootOf(g, k)` denotes the real root of the
+/// square-free polynomial `g` that lies in the (Sturm) isolating interval
+/// `[lo, hi]` — its position in [`rootof_roots`]`(g, ROOTOF_DEFAULT_PREC)`.
+///
+/// The root is verified, not assumed: exactly one computed root must have
+/// its real part in `[lo, hi]` and a negligible imaginary part, and no
+/// other root may have a real part within `2⁻⁶⁰` (relative) of it, since
+/// the (re, im) sort would then order the two by rounding noise and the
+/// index would not be stable across evaluation precisions.  `None` when
+/// any of these fails; the caller then has no reliable name for the root.
+pub(crate) fn real_root_index(g: &Poly, lo: &Ratio<BigInt>, hi: &Ratio<BigInt>) -> Option<usize> {
+    let roots = rootof_roots(g, ROOTOF_DEFAULT_PREC);
+    let wp = ROOTOF_DEFAULT_PREC + 128;
+    let rm = RoundingMode::None;
+    let one = BigFloat::from_i32(1, wp);
+    let tie = BigFloat::from_i32(2, wp)
+        .powi(ROOTOF_TIE_BITS, wp, rm)
+        .reciprocal(wp, rm);
+    // `[lo, hi]` widened by the rounding of its endpoints to `wp` bits.
+    let lo_bf = ratio_to_bigfloat(lo, wp);
+    let hi_bf = ratio_to_bigfloat(hi, wp);
+    let slack = hi_bf.abs().max(&lo_bf.abs()).max(&one).mul(
+        &BigFloat::from_i32(2, wp)
+            .powi(wp - 16, wp, rm)
+            .reciprocal(wp, rm),
+        wp,
+        rm,
+    );
+    let lo_bf = lo_bf.sub(&slack, wp, rm);
+    let hi_bf = hi_bf.add(&slack, wp, rm);
+
+    let mut found: Option<usize> = None;
+    for (k, (re, im)) in roots.iter().enumerate() {
+        if re.is_nan() || im.is_nan() {
+            return None;
+        }
+        if re.cmp(&lo_bf).unwrap_or(0) < 0 || re.cmp(&hi_bf).unwrap_or(0) > 0 {
+            continue;
+        }
+        let scale = re.abs().max(&one);
+        let noise = scale.mul(&tie, wp, rm);
+        if im.abs().cmp(&noise).unwrap_or(1) > 0 {
+            // A complex root whose real part happens to fall in the interval.
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        found = Some(k);
+    }
+    let k = found?;
+    let re_k = &roots[k].0;
+    let noise = re_k.abs().max(&one).mul(&tie, wp, rm);
+    let tied = roots
+        .iter()
+        .enumerate()
+        .any(|(j, (re, _))| j != k && re.sub(re_k, wp, rm).abs().cmp(&noise).unwrap_or(-1) <= 0);
+    if tied {
+        tracing::debug!(
+            index = k,
+            "real_root_index: another root shares the real part; RootOf index not stable"
+        );
+        return None;
+    }
+    Some(k)
+}
+
 /// Convenience: evaluate the `index`-th root of a polynomial as a complex
 /// `(f64, f64)` pair.
 ///
