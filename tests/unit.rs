@@ -122,6 +122,8 @@ mod test_heaviside_integ;
 mod test_hensel;
 #[path = "unit/test_heurisch.rs"]
 mod test_heurisch;
+#[path = "unit/test_homogeneous_tuples.rs"]
+mod test_homogeneous_tuples;
 #[path = "unit/test_inequalities.rs"]
 mod test_inequalities;
 #[path = "unit/test_integrate.rs"]

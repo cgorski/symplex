@@ -2378,7 +2378,7 @@ fn condition_at(
 
 /// Canonical interval shapes recognised by the table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Interval {
+enum IntervalShape {
     ZeroInf,
     FullLine,
     ZeroOne,
@@ -2389,7 +2389,7 @@ enum Interval {
     Other,
 }
 
-fn classify_interval(arena: &mut Arena, a: ExprId, b: ExprId) -> Interval {
+fn classify_interval(arena: &mut Arena, a: ExprId, b: ExprId) -> IntervalShape {
     let zero = arena.zero();
     let one = arena.one();
     let pi = arena.pi();
@@ -2402,29 +2402,29 @@ fn classify_interval(arena: &mut Arena, a: ExprId, b: ExprId) -> Interval {
         |arena: &mut Arena, p: ExprId, q: ExprId| cmp_points(arena, p, q) == Some(Ordering::Equal);
 
     if a == arena.neg_infinity() && b == arena.infinity() {
-        return Interval::FullLine;
+        return IntervalShape::FullLine;
     }
     if same(arena, a, zero) {
         if b == arena.infinity() {
-            return Interval::ZeroInf;
+            return IntervalShape::ZeroInf;
         }
         if same(arena, b, one) {
-            return Interval::ZeroOne;
+            return IntervalShape::ZeroOne;
         }
         if same(arena, b, half_pi) {
-            return Interval::ZeroHalfPi;
+            return IntervalShape::ZeroHalfPi;
         }
         if same(arena, b, pi) {
-            return Interval::ZeroPi;
+            return IntervalShape::ZeroPi;
         }
         if same(arena, b, two_pi) {
-            return Interval::ZeroTwoPi;
+            return IntervalShape::ZeroTwoPi;
         }
     }
     if same(arena, a, neg_pi) && same(arena, b, pi) {
-        return Interval::NegPiPi;
+        return IntervalShape::NegPiPi;
     }
-    Interval::Other
+    IntervalShape::Other
 }
 
 /// Split `f` into an `x`-free coefficient and `x`-dependent factors.
@@ -2712,7 +2712,7 @@ fn as_binomial_in_x(
 /// Match `f` against the known-value table for `∫ₐᵇ`.
 fn table_lookup(arena: &mut Arena, f: ExprId, x: ExprId, a: ExprId, b: ExprId) -> Option<ExprId> {
     let iv = classify_interval(arena, a, b);
-    if iv == Interval::Other {
+    if iv == IntervalShape::Other {
         return None;
     }
     let (coeff, dep) = factorize(arena, f, x);
@@ -2720,13 +2720,14 @@ fn table_lookup(arena: &mut Arena, f: ExprId, x: ExprId, a: ExprId, b: ExprId) -
         return None;
     }
     let v = match iv {
-        Interval::ZeroInf => table_zero_inf(arena, &dep, x),
-        Interval::FullLine => table_full_line(arena, &dep, x),
-        Interval::ZeroOne => table_zero_one(arena, &dep, x),
-        Interval::ZeroHalfPi | Interval::ZeroPi | Interval::ZeroTwoPi | Interval::NegPiPi => {
-            table_trig(arena, &dep, x, iv)
-        }
-        Interval::Other => None,
+        IntervalShape::ZeroInf => table_zero_inf(arena, &dep, x),
+        IntervalShape::FullLine => table_full_line(arena, &dep, x),
+        IntervalShape::ZeroOne => table_zero_one(arena, &dep, x),
+        IntervalShape::ZeroHalfPi
+        | IntervalShape::ZeroPi
+        | IntervalShape::ZeroTwoPi
+        | IntervalShape::NegPiPi => table_trig(arena, &dep, x, iv),
+        IntervalShape::Other => None,
     }?;
     Some(with_coeff(arena, &coeff, v))
 }
@@ -3538,7 +3539,7 @@ fn wallis(arena: &mut Arena, m: &Ratio<BigInt>, n: &Ratio<BigInt>) -> Option<Exp
 }
 
 /// Table for trigonometric intervals `[0, π/2]`, `[0, π]`, `[0, 2π]`, `[−π, π]`.
-fn table_trig(arena: &mut Arena, dep: &[ExprId], x: ExprId, iv: Interval) -> Option<ExprId> {
+fn table_trig(arena: &mut Arena, dep: &[ExprId], x: ExprId, iv: IntervalShape) -> Option<ExprId> {
     let s = parse_shape(arena, dep, x);
     if s.other
         || s.exp_arg.is_some()
@@ -3584,10 +3585,10 @@ fn table_trig(arena: &mut Arena, dep: &[ExprId], x: ExprId, iv: Interval) -> Opt
             // period the value equals the k = 1 value; over [0, π] as well,
             // except that odd powers of sin(kx) with even k cancel.  Only
             // integer powers are supported (sign changes otherwise).
-            if !both_int || iv == Interval::ZeroHalfPi {
+            if !both_int || iv == IntervalShape::ZeroHalfPi {
                 return None;
             }
-            if iv == Interval::ZeroPi && m_odd {
+            if iv == IntervalShape::ZeroPi && m_odd {
                 // ∫₀^π sinᵐ(kx) = (1/k) Σⱼ (−1)ʲ ∫₀^π sinᵐ: zero for even k,
                 // W_π/k for odd k.
                 if k % 2 == 0 {
@@ -3599,8 +3600,8 @@ fn table_trig(arena: &mut Arena, dep: &[ExprId], x: ExprId, iv: Interval) -> Opt
             }
         }
         return match iv {
-            Interval::ZeroHalfPi => wallis(arena, &m, &n),
-            Interval::ZeroPi => {
+            IntervalShape::ZeroHalfPi => wallis(arena, &m, &n),
+            IntervalShape::ZeroPi => {
                 // cos changes sign on (π/2, π): need integer n.
                 if !n.is_integer() {
                     return None;
@@ -3612,7 +3613,7 @@ fn table_trig(arena: &mut Arena, dep: &[ExprId], x: ExprId, iv: Interval) -> Opt
                 let two = arena.int(2);
                 Some(arena.mul(&[two, w]))
             }
-            Interval::ZeroTwoPi | Interval::NegPiPi => {
+            IntervalShape::ZeroTwoPi | IntervalShape::NegPiPi => {
                 if !both_int {
                     return None;
                 }
@@ -3648,7 +3649,7 @@ fn table_trig(arena: &mut Arena, dep: &[ExprId], x: ExprId, iv: Interval) -> Opt
         let pi = arena.pi();
         let same_kind = k1 == k2;
         return match iv {
-            Interval::ZeroTwoPi | Interval::NegPiPi => {
+            IntervalShape::ZeroTwoPi | IntervalShape::NegPiPi => {
                 if !same_kind {
                     return Some(arena.zero());
                 }
@@ -3661,7 +3662,7 @@ fn table_trig(arena: &mut Arena, dep: &[ExprId], x: ExprId, iv: Interval) -> Opt
                 }
                 Some(arena.zero())
             }
-            Interval::ZeroPi => {
+            IntervalShape::ZeroPi => {
                 if same_kind {
                     if mi.abs() == ni.abs() {
                         let half = arena.rational(1, 2);
@@ -3731,8 +3732,8 @@ fn table_trig(arena: &mut Arena, dep: &[ExprId], x: ExprId, iv: Interval) -> Opt
         let disc = arena.sub(a2, b2);
         let pi = arena.pi();
         let full = match iv {
-            Interval::ZeroTwoPi | Interval::NegPiPi => true,
-            Interval::ZeroPi if kind == Trig::Cos => false,
+            IntervalShape::ZeroTwoPi | IntervalShape::NegPiPi => true,
+            IntervalShape::ZeroPi if kind == Trig::Cos => false,
             _ => return None,
         };
         if m == Ratio::one() {
