@@ -404,7 +404,10 @@ impl<T: PartialOrd> Bounds<T> {
     /// (or a NaN side) is; an unbounded side never is.
     pub fn is_empty(&self) -> bool {
         match (&self.lower, &self.upper) {
-            (Some(lo), Some(hi)) => !(lo <= hi),
+            (Some(lo), Some(hi)) => !matches!(
+                lo.partial_cmp(hi),
+                Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+            ),
             _ => false,
         }
     }

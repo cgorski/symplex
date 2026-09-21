@@ -6,6 +6,140 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.15.0] - 2026-09-21
+
+Named endpoints everywhere.  A tuple whose positions share a type —
+`(f64, f64)`, `(&Q, &Q)`, `(Ex, Ex, bool, bool)` — lets a `(lower, upper)`
+become an `(upper, lower)`, a `(shape, scale)` a `(shape, rate)`, without a
+compiler word; this release replaces every such tuple on the public surface
+with a struct whose fields say what they are, at no runtime cost, and adds a
+ratchet so none come back.  It also gives the crate one interval
+vocabulary: `Interval<T>` carries its *kind* (`[a, b]`, `(a, b)`, `(a, b]`,
+`[a, b)`), so a root isolator can return `(lo, hi]` cells beside an exact
+`[r, r]` hit, a sequential test's continuation region is the open `(A, B)`
+it actually is, and the symbolic-set and distribution-support layers speak
+the same type.  No numeric result, LP pivot path or Lean certificate text
+changed (the 4,000-LP path baseline and the Mathlib-compiled certificate
+reference are byte-identical to 0.14.0).
+
+### Breaking
+
+New shared types (crate root and prelude): **`Interval<T> { lower, upper,
+kind }`** with `IntervalKind::{Closed, Open, LeftOpen, RightOpen}` and
+**`Bounds<T> { lower: Option<T>, upper: Option<T> }`** (a closed constraint
+side that may be absent — `Interval<Option<T>>` is *not* the way to spell
+an unbounded end, since `None < Some` makes its `contains` wrong).
+
+*Intervals and bounds (`(lower, upper)` → `Interval<f64>` unless noted):*
+
+- `stats`: `proportion_interval`, `credible_interval`,
+  `confidence_interval_mean`, `confidence_interval_mean_z`, `bootstrap_ci`,
+  `pearson_ci`, `KaplanMeier::confidence_interval`,
+  `Ols::{confidence_interval_mean_response, prediction_interval}` return
+  `Interval<f64>`; `Ols::conf_int` and `Logit::conf_int` return
+  `Vec<Interval<f64>>`; `RatioEstimate.ci` and the new `KappaCi.ci` (replacing
+  its `lower`/`upper` fields) are `Interval<f64>`; `min_max` returns
+  `Interval<Q>`; `wald_boundaries` and `Sprt::boundaries` return the **open**
+  continuation region `Interval::open(A, B)` (`contains(&llr)` is exactly
+  "continue"; previously a closed pair).
+- `optimize`: `differential_evolution` and `Ex::minimize_global_numeric`
+  take `bounds: &[Interval<f64>]` (closed; another kind is
+  `InvalidArgument`).
+- Root isolation: `Ex::real_roots_isolate` and `Poly::real_roots_isolate`
+  return `Vec<Interval<Ex>>` whose kinds are honest — `(lo, hi]` cells are
+  `LeftOpen`, an exact hit is `Interval::point(r)`; test `kind ==
+  IntervalKind::Closed` where you compared `lo == hi`.
+- `SetEx::as_intervals` returns `Option<Vec<Interval<Ex>>>` (points as
+  `Interval::point(p)`); `Context::interval(start, end, left_open,
+  right_open)` is `Context::interval(start, end, kind: IntervalKind)`;
+  `Interval<Ex>::to_set()` goes the other way.
+- `stats::Support`: `Piece::Interval { lo, hi, lo_open, hi_open }` is
+  `Piece::Interval(Interval<Ex>)`; `Support::as_interval` returns
+  `Option<&Interval<Ex>>`.  `Support::from_pieces` now normalises an infinite
+  end to open, as `Support::interval`/`integers` always did.
+- `linprog`: `LpProblem::bounds(var, lo, hi)` is `bounds(var, Bounds<Q>)`
+  (`Bounds::closed(lo, hi)`, `at_least`, `at_most`, `free`); `linprog(…,
+  bounds: &[Bounds<Q>])`.  `polytope::BoundingBox` is `Vec<Bounds<Q>>`.
+
+*Other pairs → structs:*
+
+- `optimize::{minimize_scalar, golden_section}` and
+  `Ex::minimize_scalar_numeric` return **`ScalarMinimum { x, value }`**;
+  `linear_fit` returns **`LinearFit { slope, intercept }`**.
+- `definite::quadrature` and `Ex::integrate_numeric_with` return
+  **`QuadResult { value, error }`** (prelude, beside `QuadOpts`).
+- `stats::information::marginals` returns **`Marginals { rows, cols }`**;
+  `stats::aggregation::wins_matrix` takes `&[PairwiseOutcome { winner,
+  loser }]`.
+- Conjugate priors take named parameters instead of a `(&Q, &Q)` pair:
+  `beta_binomial_posterior(ctx, alpha, beta, …)`,
+  `gamma_poisson_posterior(ctx, shape, scale, …)` (scale, i.e. `1/rate`),
+  `normal_known_variance_posterior(ctx, prior_mean, prior_sd, sigma, data)`.
+- `polytope::Polytope::split` returns **`Split { nonnegative, nonpositive }`**
+  (the former `.0`/`.1`, in that order).
+- `certificates`: `prove_nonnegative_on_box`, `is_nonnegative_on_box` and
+  `Ex::prove_nonnegative_on_box` take `&[BoxBound { var, lo, hi }]` (the
+  struct existed) instead of `&[(Ex, Ex, Ex)]`; the polyhedron parameter
+  `Option<(&Ex, &Ex)>` is `Option<&ParamBound { var, lower }>` in
+  `PolyhedronProver::new`, `prove_nonnegative_on_polyhedron`,
+  `prove_polyhedron_empty`, and `parameter()` returns
+  `Option<ParamBound>`; every certificate's `identity()` returns an
+  **`Equation`** (`lhs = rhs`) instead of `(Ex, Ex)`.
+- **Certificate JSON (wire format):** `BoxCertificateData.bounds` entries are
+  objects `{var, lo, hi}` (`BoxBoundTree`), its `terms` are
+  `{lower_powers, upper_powers, weight}` (`HandelmanTermData`);
+  `PolyhedronCertificateData.param` is `{var, lower}` (`ParamBoundTree`) and
+  its `terms` are `{hyps, var_power, shift_power, weight}`
+  (`PolyhedronTermData`).  Files written by 0.14 do not deserialise.
+
+### Added
+
+- **`Interval<T>`** (`src/base/interval.rs`): `closed/open/left_open/
+  right_open/point` constructors, `contains`, `is_empty`, `is_point`,
+  `is_ordered`, `width`, `map`, `as_ref`/`cloned`, `with_kind`, `reversed`
+  (what a decreasing map does to an interval), `into_pair`; `From<a..=b>`
+  (closed) and `From<a..b>` (`[a, b)`); `RangeBounds<T>` so it works with
+  `BTreeMap::range` and friends; `Display` prints `[a, b]`, `(a, b]`, …
+  `IntervalKind::{from_open_ends, lower_open, upper_open, with_lower_open,
+  with_upper_open, reversed}`.
+- **`Bounds<T>`**: `closed/at_least/at_most/free`, `is_bounded`, `contains`,
+  `is_empty`, `map`, `into_interval`, `From<Interval<T>>` (the closure),
+  `Display` (`[0, ∞)`).
+- `Interval<Ex>::to_set() -> SetEx`.
+
+### Deferred to 0.16.0 (allowlisted in the ratchet with that note)
+
+`poly_gcdex` / `ntheory::gcdex` / `GenPoly::extended_gcd` (which today
+disagree on the position of the gcd), the matrix decompositions
+(`qr`, `ldl`, `diagonalize`, `jordan_form`, `hessenberg`,
+`rank_decomposition`, `lu`, Hermite/Smith/LLL `*_with_transform`), LLL's
+`delta: (i64, i64)`, `linear_diophantine`, the continued-fraction pairs,
+robotics DH parameters and `fk_*`, `dynamics` coordinate pairs and
+`manipulator_equation`, `solve_ode_ivp` initial conditions.
+
+### Changed
+
+- **Policy and ratchet.** `CONTRIBUTING.md` §"Tuples versus structs" states
+  the rule and the conventions that stay (`(x, y)` points, `(re, im)`,
+  `(numer, denom)`, `(quotient, remainder)`, key → value pairs, `shape() ->
+  (rows, cols)`, symmetric pairs, enum tuple variants).
+  `tests/unit/test_homogeneous_tuples.rs` parses `src/` with `syn` and fails
+  when a file's public surface gains a tuple with a repeated element type
+  beyond its allowlisted count, or loses one without the allowlist being
+  tightened; each entry names its kept sites.
+- Root-isolation documentation now says one thing: cells are `(lo, hi]`,
+  exact hits are `[r, r]` (previously described four different ways).
+- `SetEx` and `Support` print intervals identically to `Interval`'s
+  `Display`.
+- `CONTRIBUTING.md` §"Timeouts and granularity": sub-agents run in parallel
+  only when spawned in one tool block.
+
+### Fixed
+
+- `Support::from_pieces` accepted a closed infinite end that `Support::
+  interval` would have opened; it now normalises, and `Truncated`'s
+  decreasing-map transform uses `Interval::reversed` instead of a hand swap.
+
 ## [0.14.0] - 2026-09-20
 
 The second chunk of statistics on data: the questionnaire itself
