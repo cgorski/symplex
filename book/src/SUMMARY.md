@@ -1,7 +1,7 @@
 # Summary
 
 [Introduction](./introduction.md)
-[What's New in 0.13](./whats-new-0.13.md)
+[What's New in 0.13 / 0.14](./whats-new-0.13.md)
 [What's New in 0.12](./whats-new-0.12.md)
 [What's New in 0.9 / 0.10](./whats-new-0.9.md)
 [What's New in 0.7](./whats-new-0.7.md)

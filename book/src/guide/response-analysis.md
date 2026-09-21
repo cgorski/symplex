@@ -194,3 +194,108 @@ for the textbook 3-state chain), `absorption_probabilities`,
 `trimmed_mean`, and the outlier screens `iqr_outliers` (Tukey's fences) and
 `mad_outliers` (modified z-scores) for response times.  `from_f64` converts
 floats *exactly* (every `f64` is a dyadic rational), `to_f64` rounds back.
+
+## Is the questionnaire itself reliable?
+
+When each item is meant to measure the same thing, `stats::reliability`
+asks whether they do — exactly.  With respondents as rows and items as
+columns of a `RatingTable`:
+
+| Question | Function |
+|---|---|
+| Internal consistency | `cronbach_alpha` (and `cronbach_alpha_complete` with list-wise deletion), `standardized_alpha`, `kr20` for right/wrong items, `guttman_lambda2`, `alpha_if_deleted` |
+| Split-half reliability | `split_half(&table, &SplitHalf::{OddEven, FirstLast, Custom})` with the Spearman–Brown prophecy (`spearman_brown`) |
+| Item quality | `item_difficulty`, `item_discrimination_index` (upper vs lower third), `point_biserial`, `item_total_correlation`, `corrected_item_total_correlation`, all bundled by `item_response_summary` |
+| Agreement inference | `cohen_kappa_ci` (Fleiss–Cohen–Everitt variance, exact), `kappa_test` (H₀: κ = 0), `cohen_kappa_maximum` (the κ the marginals allow), `cochrans_q` (many raters, binary items) |
+| Ordinal association | `goodman_kruskal_gamma`, `somers_d(x, y, Dependent::{Y, X, Symmetric})`, `kendall_tau_c`, `concordance_counts` |
+| Which cells drive a χ²? | `expected_counts`, `chi2_contributions`, `standardized_residuals`, `adjusted_residuals` (Haberman) |
+| Correlation inference | `pearson_test`, `pearson_ci` (Fisher's z), `compare_two_correlations` |
+
+Every coefficient that is a rational function of the scores is an exact
+rational (Cronbach's α, KR-20, γ, Somers' D, κ_max, both κ variances);
+the ones with roots are exact expressions.
+
+## Explaining accuracy or time by features
+
+`stats::regression` fits models to the data you have about respondents:
+
+```rust,ignore
+use symplex::stats::regression::{ols, logit, LogitOpts, Design};
+// Response time explained by two features, with an intercept — exactly.
+let fit = ols(&y, &rows, true)?;                     // or Design::new().intercept().column(&x1).column(&x2).fit(&y)?
+fit.coefficients;                                     // Vec<Q>, exact (XᵀX)⁻¹Xᵀy
+fit.r_squared; fit.adjusted_r_squared;                // exact rationals
+fit.standard_errors(&ctx)?;                           // exact expressions (√ of σ̂²(XᵀX)⁻¹)
+fit.coefficient_tests(&ctx)?;                         // TestResult per coefficient, p through StudentT
+fit.f_test(&ctx)?; fit.anova_table();                 // overall F, exact
+fit.conf_int(&ctx, 0.95)?; fit.prediction_interval(&ctx, &x_new, 0.95)?;
+fit.leverage(); fit.cooks_distance(); fit.durbin_watson(); vif(&rows)?;
+// Correct / incorrect explained by features: logistic regression (IRLS, f64).
+let lg = logit(&correct, &features, true, &LogitOpts::default())?;
+lg.coefficients; lg.odds_ratios(); lg.p_values; lg.pseudo_r_squared; lg.predict_proba(&x_new);
+```
+
+`ols`, `wls`, `simple_linear_regression` and `polyfit` are exact and match
+statsmodels `OLS` attribute for attribute; `logit` matches `Logit` to
+1e-6 and reports perfect separation as an error rather than as enormous
+coefficients.
+
+## Screening while the answers arrive
+
+`stats::sequential::Sprt::bernoulli(p0, p1, α, β)` is Wald's sequential
+probability ratio test: feed each gold-question outcome to `update`, and
+the moment the exact log-likelihood ratio (`log_likelihood_ratio(&ctx)`)
+crosses a boundary the decision is `AcceptH0` (the rater performs at the
+chance rate `p0`) or `AcceptH1` (at the competent rate `p1`); until then
+`Continue`.  `expected_sample_size_bernoulli` says how many questions that
+takes on average.
+
+## Comparing label distributions
+
+`stats::information` measures, exactly, how two raters' (or two
+populations') label distributions differ: `kl_divergence`,
+`js_divergence`, `total_variation`, `hellinger`, `bhattacharyya_distance`,
+`cross_entropy`; and from a joint table how much one variable tells about
+another: `mutual_information`, `conditional_entropy`,
+`normalized_mutual_information` (`Norm::{Arithmetic, Geometric, Min,
+Max}`), `joint_from_counts`.  Logs are kept as exact `ln` expressions
+over prime factors, so `H(½, ¼, ¼)` is exactly `3/2` bits.
+
+## Time to completion, time to attrition
+
+`stats::survival` handles right-censored durations — how long until a
+respondent finishes (or is still working when the study ends), how long a
+worker stays active:
+
+```rust,ignore
+use symplex::stats::survival::{KaplanMeier, Observation, CiMethod, log_rank_test};
+let obs = Observation::from_i64(&[3, 5, 6, 7, 8, 10, 12, 12], &[true, false, true, true, false, true, true, false]);
+let km = KaplanMeier::fit(&obs)?;
+km.survival_at(&q(6, 1));               // 35/48 — an exact step function
+km.variance_at(&q(6, 1));               // Greenwood, 1505/55296
+km.cumulative_hazard_at(&q(6, 1));      // Nelson–Aalen, 7/24
+km.median();                            // Some(10)
+km.confidence_interval(&q(7, 1), 0.95, CiMethod::LogLog)?;
+km.restricted_mean(&q(12, 1));          // 1279/144
+let r = log_rank_test(&ctx, &all_obs, &groups)?;   // exact χ² statistic 149059681/48496587 ≈ 3.0736, p ≈ 0.0796
+```
+
+The Kaplan–Meier steps, Greenwood variances and Nelson–Aalen hazards are
+exact rationals matching statsmodels' `SurvfuncRight`; the log-rank
+statistic is an exact rational matching scipy's `logrank` and statsmodels'
+`survdiff`.  `exponential_rate` is the censored MLE of a constant hazard,
+and `survival_function` / `hazard_function` give `S(t)` and `h(t)` of any
+`Distribution` as expressions.
+
+## Several measures at once, and extremes
+
+`stats::multivariate::MultivariateNormal` (symbolic mean vector and
+covariance `Matrix`) has an exact density, marginals, conditionals by the
+Schur complement, Mahalanobis distance and sampling; `covariance_matrix`
+and `correlation_matrix` summarise several columns of ratings at once
+(exact), and `pca` finds their principal components exactly
+(`pca_f64` for larger matrices).  `stats::order::{order_statistic,
+minimum_of, maximum_of}` give the distribution of the k-th smallest of `n`
+independent draws as a `Distribution` in its own right — the fastest of
+`n` responses, the worst of `n` ratings — exactly for both continuous
+families and finite tables.

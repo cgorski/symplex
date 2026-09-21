@@ -1,4 +1,16 @@
-# What's New in 0.13
+# What's New in 0.13 / 0.14
+
+**0.14** continues on data: `stats::reliability` (Cronbach's α, KR-20,
+split-half, item analysis, κ confidence intervals and tests, Cochran's Q,
+Somers' D / Goodman–Kruskal γ, χ² residuals, Pearson inference),
+`stats::regression` (exact OLS/WLS with the full inference table, logistic
+regression by IRLS), `stats::survival` (Kaplan–Meier with Greenwood
+variances, Nelson–Aalen, log-rank — exact), `stats::sequential` (Wald's
+SPRT for screening as answers arrive), `stats::information` (KL, JS,
+mutual information, exactly), `stats::multivariate` (multivariate normal,
+covariance/correlation matrices, PCA) and `stats::order` (order statistics
+as distributions).  See the guide's later sections.
+
 
 **Statistics on data.**  0.12 made distributions compose; 0.13 turns to
 the data people actually collect — many raters answering many items — and

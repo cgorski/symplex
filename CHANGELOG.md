@@ -6,6 +6,89 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.14.0] - 2026-09-20
+
+The second chunk of statistics on data: the questionnaire itself
+(reliability and item analysis), models (exact least squares, logistic
+regression), screening as answers arrive (SPRT), how label distributions
+differ (information measures), time to completion or attrition (survival
+analysis), and several measures at once (multivariate normal, PCA, order
+statistics).  Additive over 0.13.0; 160 new oracle-cited tests
+(`tests/v14/`).
+
+### Added
+
+- **`stats::reliability`** — exact `cronbach_alpha` / `cronbach_alpha_complete`,
+  `standardized_alpha`, `kr20`, `guttman_lambda2`, `alpha_if_deleted`,
+  `average_inter_item_correlation`, `split_half` / `split_half_correlation`
+  (`SplitHalf::{OddEven, FirstLast, Custom}`) with `spearman_brown`; item
+  analysis `total_scores`, `item_difficulty`, `item_discrimination_index`,
+  `point_biserial`, `item_total_correlation`,
+  `corrected_item_total_correlation`, `item_response_summary`
+  (`ItemSummary`); agreement inference `cohen_kappa_ci` (`KappaCi`,
+  Fleiss–Cohen–Everitt variance, exact), `kappa_test`,
+  `cohen_kappa_maximum`, `cochrans_q`; ordinal association
+  `goodman_kruskal_gamma`, `somers_d` (`Dependent::{Y, X, Symmetric}`),
+  `kendall_tau_c`, `concordance_counts`; contingency diagnostics
+  `expected_counts`, `chi2_contributions`, `standardized_residuals`,
+  `adjusted_residuals`; correlation inference `pearson_test`,
+  `pearson_t_statistic`, `pearson_ci`, `fisher_z`,
+  `compare_two_correlations`.
+- **`stats::regression`** — `ols(y, x, add_intercept)`, `wls`,
+  `simple_linear_regression`, `polyfit`, the `Design` builder; `Ols` with
+  exact `coefficients`, `fitted`, `residuals`, `ssr`/`ess`/`tss`,
+  `r_squared`, `adjusted_r_squared`, `mse_resid`, `cov_params`, and
+  `standard_errors`, `t_statistics`, `p_values`, `coefficient_tests`,
+  `f_statistic` / `f_test`, `anova_table`, `conf_int`, `predict`,
+  `confidence_interval_mean_response`, `prediction_interval`,
+  `hat_matrix`, `leverage`, `cooks_distance`, `durbin_watson`,
+  `log_likelihood` / `aic` / `bic`, `residual_standard_error`; `vif`;
+  `logit` (IRLS, `LogitOpts`) with `Logit { coefficients, standard_errors,
+  z_values, p_values, log_likelihood, null_log_likelihood,
+  pseudo_r_squared, deviance, iterations, converged, … }`,
+  `predict_proba`, `odds_ratios`, `conf_int`, `llr`, `aic`, `bic` —
+  perfect separation is an error; `r_squared_from_correlation`,
+  `slope_from_correlation`.
+- **`stats::survival`** — `Observation`, `KaplanMeier::fit` with an exact
+  life table (`LifeTableRow { time, at_risk, events, censored, survival,
+  variance, cumulative_hazard }`), `survival_at`, `variance_at`
+  (Greenwood), `cumulative_hazard_at` (Nelson–Aalen), `quantile` /
+  `median`, `confidence_interval` (`CiMethod::{Linear, LogLog}`),
+  `restricted_mean`; `log_rank_test` for `k` groups (exact rational
+  statistic, `χ²(k − 1)` p-value); `exponential_rate`, `mean_event_time`,
+  `survival_function`, `hazard_function`.
+- **`stats::sequential`** — Wald's SPRT: `Sprt::bernoulli`,
+  `Sprt::normal_mean`, `update` → `Decision::{Continue, AcceptH0,
+  AcceptH1}`, `observe`, exact `log_likelihood_ratio`, `boundaries` /
+  `wald_boundaries`, `operating_characteristic_bernoulli`,
+  `expected_sample_size_bernoulli`.
+- **`stats::information`** — exact `entropy` (`Base::{Nats, Bits}`),
+  `perplexity`, `probability_vector`, `kl_divergence`, `cross_entropy`,
+  `js_divergence`, `total_variation`, `bhattacharyya_coefficient` /
+  `_distance`, `hellinger`, `joint_from_counts`, `marginals`,
+  `joint_entropy`, `mutual_information` / `information_gain`,
+  `conditional_entropy` (`Given::{Row, Column}`),
+  `normalized_mutual_information` (`Norm::{Arithmetic, Geometric, Min,
+  Max}`).  Logarithms are kept canonical over prime factors, so
+  `H(½, ¼, ¼) = 3/2` bits exactly.
+- **`stats::multivariate`** — `MultivariateNormal { mean, cov }` with
+  `try_new`, `density`, `mahalanobis`, `entropy`, `marginal`,
+  `marginal_1d`, `conditional` (Schur complement, exact), `affine`,
+  `sample`; `covariance_matrix` / `correlation_matrix` from data; `pca`
+  (exact, through `Matrix::eigenvects`; `RootOf` eigenvalues where the
+  characteristic polynomial does not factor) and `pca_f64` (Jacobi).
+- **`stats::order`** — `OrderStatistic` as a `Family`: `order_statistic(dist,
+  n, k)`, `minimum_of`, `maximum_of` — density `k·C(n,k)·F^{k−1}(1−F)^{n−k}·f`,
+  CDF through `betainc_regularized`, exact `Finite` tables for finite
+  parents, sampling.
+
+### Infrastructure
+
+- `symplex` and `symplex-build` at 0.14.0; `symplex-macros` unchanged at
+  0.3.3.  New test group `tests/v14/`.  Book: the response-analysis guide
+  gains sections on reliability, regression, screening, information,
+  survival and multivariate analysis.
+
 ## [0.13.0] - 2026-09-20
 
 Statistics **on data**: the methods used to analyse many raters' answers

@@ -68,11 +68,18 @@ pub mod estimation;
 mod events;
 mod family;
 pub mod hypothesis;
+pub mod information;
 mod joint;
 pub mod markov;
+pub mod multivariate;
+pub mod order;
+pub mod regression;
+pub mod reliability;
 mod rv;
 mod sample;
+pub mod sequential;
 mod support;
+pub mod survival;
 mod wrappers;
 
 pub use continuous::*;

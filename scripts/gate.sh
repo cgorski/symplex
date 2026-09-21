@@ -19,6 +19,13 @@
 # standalone — which it does silently when *one* doc example fails to
 # compile.  Run `cargo test --doc -- <one doctest name>` and look for
 # `finished in 0.00s`: anything slower means the merged build is broken.
+#
+# Known environmental stall: right after a full rebuild (e.g. a version
+# bump) `cargo nextest` can sit for minutes between "Finished" and
+# "Starting" with no CPU — the host's security agent scanning the freshly
+# built test binaries on first execution.  `cargo nextest list` shows the
+# same wait; each binary's own `--list` takes milliseconds.  Rerun once the
+# binaries are warm; do not chase it in the code.
 
 set -u
 cd "$(dirname "$0")/.." || exit 2
