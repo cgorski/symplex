@@ -62,6 +62,8 @@
 pub mod aggregation;
 pub mod agreement;
 pub mod anova;
+#[allow(dead_code)] // 0.18 skeleton: every stats module switches to these helpers in the structure pass
+pub(crate) mod common;
 mod continuous;
 pub mod data;
 mod discrete;
