@@ -3,7 +3,7 @@
 
 use symplex::matrix::jacobian;
 use symplex::prelude::*;
-use symplex::robotics::fk_position;
+use symplex::robotics::{DhLink, fk_position};
 
 /// Build a 2-DOF planar robot Jacobian and verify no trivial constant temps.
 #[test]
@@ -15,8 +15,20 @@ fn codegen_2dof_no_trivial_temps() {
     let l2 = ctx.symbol("L2");
     let zero = ctx.int(0);
 
-    let dh: [(&Ex, &Ex, &Ex, &Ex); 2] =
-        [(&theta1, &zero, &l1, &zero), (&theta2, &zero, &l2, &zero)];
+    let dh: [DhLink<'_>; 2] = [
+        DhLink {
+            theta: &theta1,
+            d: &zero,
+            a: &l1,
+            alpha: &zero,
+        },
+        DhLink {
+            theta: &theta2,
+            d: &zero,
+            a: &l2,
+            alpha: &zero,
+        },
+    ];
 
     let (px, py, _pz) = fk_position(&dh);
     let jac = jacobian(&[&px, &py], &[&theta1, &theta2]);
@@ -51,10 +63,25 @@ fn codegen_3dof_no_trivial_temps() {
     let l3 = ctx.rational(1, 5);
     let zero = ctx.int(0);
 
-    let dh: [(&Ex, &Ex, &Ex, &Ex); 3] = [
-        (&theta1, &zero, &l1, &zero),
-        (&theta2, &zero, &l2, &zero),
-        (&theta3, &zero, &l3, &zero),
+    let dh: [DhLink<'_>; 3] = [
+        DhLink {
+            theta: &theta1,
+            d: &zero,
+            a: &l1,
+            alpha: &zero,
+        },
+        DhLink {
+            theta: &theta2,
+            d: &zero,
+            a: &l2,
+            alpha: &zero,
+        },
+        DhLink {
+            theta: &theta3,
+            d: &zero,
+            a: &l3,
+            alpha: &zero,
+        },
     ];
 
     let (px, py, _pz) = fk_position(&dh);
@@ -158,10 +185,25 @@ fn codegen_3dof_compiles() {
     let l3 = ctx.rational(1, 5);
     let zero = ctx.int(0);
 
-    let dh: [(&Ex, &Ex, &Ex, &Ex); 3] = [
-        (&theta1, &zero, &l1, &zero),
-        (&theta2, &zero, &l2, &zero),
-        (&theta3, &zero, &l3, &zero),
+    let dh: [DhLink<'_>; 3] = [
+        DhLink {
+            theta: &theta1,
+            d: &zero,
+            a: &l1,
+            alpha: &zero,
+        },
+        DhLink {
+            theta: &theta2,
+            d: &zero,
+            a: &l2,
+            alpha: &zero,
+        },
+        DhLink {
+            theta: &theta3,
+            d: &zero,
+            a: &l3,
+            alpha: &zero,
+        },
     ];
 
     let (px, py, _pz) = fk_position(&dh);

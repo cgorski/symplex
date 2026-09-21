@@ -109,8 +109,8 @@ fn main() {
     println!("{}", (&x.powi(3) - &x).discriminant(&x).unwrap());                    // 4
     let (q, r) = (&x.powi(3) + &x * 2 + 1).poly_div(&(&x.powi(2) + 1), &x).unwrap();
     println!("q = {q}, r = {r}");                                                   // q = x, r = x + 1
-    let (s, t, g) = (&x.powi(2) - 1).poly_gcdex(&(&x.powi(2) - &x * 2 + 1), &x).unwrap();
-    println!("{s}·f + {t}·g = {g}");                                                // 1/2·f + -1/2·g = x - 1
+    let e = (&x.powi(2) - 1).poly_gcdex(&(&x.powi(2) - &x * 2 + 1), &x).unwrap();   // ExtendedGcd { gcd, x, y }
+    println!("{}·f + {}·g = {}", e.x, e.y, e.gcd);                                   // 1/2·f + -1/2·g = x - 1
     let sq = ((&x - 1).powi(2) * (&x + 2).powi(3) * &x).expand();
     let (_, sqf) = sq.sqf_list(&x).unwrap();
     println!("{:?}", sqf.iter().map(|(f, m)| format!("({f})^{m}")).collect::<Vec<_>>());

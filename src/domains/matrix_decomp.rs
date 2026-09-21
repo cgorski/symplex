@@ -23,6 +23,7 @@
 
 use crate::api::expr::{Ex, ExprType};
 use crate::base::errors::SymplexError;
+use crate::domains::decompositions::{Diagonalization, JordanForm, Ldl, Qr};
 use crate::domains::matrix::{
     Matrix, all3, budget_check, ex_is_nonnegative, ex_is_positive, ex_is_zero, reop,
 };
@@ -188,8 +189,8 @@ fn gram_schmidt_cols(
 }
 
 impl Matrix {
-    /// QR decomposition via Gram–Schmidt: `A = Q·R` with `Q` (m×n) having
-    /// orthonormal columns and `R` (n×n) upper triangular.
+    /// QR decomposition via Gram–Schmidt: [`Qr`]`{ q, r }` with `A = Q·R`,
+    /// `Q` (m×n) having orthonormal columns and `R` (n×n) upper triangular.
     ///
     /// Works exactly with radicals (entries like `1/√2`).  Requires the
     /// columns of `A` to be linearly independent (`rank == ncols`).
@@ -207,12 +208,12 @@ impl Matrix {
     ///
     /// let ctx = Context::new();
     /// let a = matrix![ctx, [1, 1], [0, 1]];
-    /// let (q, r) = a.qr().unwrap();
+    /// let Qr { q, r } = a.qr().unwrap();
     /// assert_eq!((&q * &r).simplify(), a);
     /// assert_eq!((&q.transpose() * &q).simplify(), Matrix::identity(&ctx, 2));
     /// assert!(r[(1, 0)].is_zero_structural());
     /// ```
-    pub fn qr(&self) -> Result<(Matrix, Matrix), SymplexError> {
+    pub fn qr(&self) -> Result<Qr<Matrix>, SymplexError> {
         budget_check(self.iter(), "qr")?;
         if self.rank() < self.ncols() {
             return Err(failed(
@@ -230,7 +231,7 @@ impl Matrix {
         let q_refs: Vec<&Matrix> = q_mats.iter().collect();
         let q = Matrix::hstack(&q_refs)?;
         let r = Matrix::new(r_rows)?;
-        Ok((q, r))
+        Ok(Qr { q, r })
     }
 
     // ── Cholesky / LDLᵀ ────────────────────────────────────────────────
@@ -315,8 +316,8 @@ impl Matrix {
         Matrix::new(l)
     }
 
-    /// LDLᵀ decomposition `A = L·D·Lᵀ` for a symmetric matrix (`L` unit
-    /// lower triangular, `D` diagonal).
+    /// LDLᵀ decomposition [`Ldl`]`{ l, d }` with `A = L·D·Lᵀ` for a
+    /// symmetric matrix (`L` unit lower triangular, `D` diagonal).
     ///
     /// Unlike [`cholesky`](Self::cholesky) this needs no square roots and
     /// no sign information, so it works for symbolic symmetric matrices
@@ -336,11 +337,11 @@ impl Matrix {
     ///
     /// let ctx = Context::new();
     /// let a = matrix![ctx, [4, 2], [2, 3]];
-    /// let (l, d) = a.ldl().unwrap();
+    /// let Ldl { l, d } = a.ldl().unwrap();
     /// assert_eq!((&(&l * &d) * &l.transpose()).eval(), a);
     /// assert_eq!(d, matrix![ctx, [4, 0], [0, 2]]);
     /// ```
-    pub fn ldl(&self) -> Result<(Matrix, Matrix), SymplexError> {
+    pub fn ldl(&self) -> Result<Ldl<Matrix>, SymplexError> {
         if !self.is_square() {
             return Err(invalid(
                 "ldl",
@@ -385,7 +386,10 @@ impl Matrix {
                 l[i][j] = (&(self.get(i, j) - &acc) / &d[j]).simplify();
             }
         }
-        Ok((Matrix::new(l)?, Matrix::diag(&d)))
+        Ok(Ldl {
+            l: Matrix::new(l)?,
+            d: Matrix::diag(&d),
+        })
     }
 
     // ── Structure tests ────────────────────────────────────────────────
@@ -660,7 +664,7 @@ impl Matrix {
     /// assert_eq!(an[(1, 1)], ctx.int(3).pow(&n));
     /// ```
     pub fn matrix_pow_symbolic(&self, n: &Ex) -> Result<Matrix, SymplexError> {
-        let (p, d) = self.diagonalize().map_err(|e| {
+        let Diagonalization { p, d } = self.diagonalize().map_err(|e| {
             failed(
                 "matrix_pow_symbolic",
                 format!("requires a diagonalizable matrix: {e}"),
@@ -689,7 +693,7 @@ impl Matrix {
     /// assert_eq!((&s * &s).simplify(), a);
     /// ```
     pub fn matrix_sqrt(&self) -> Result<Matrix, SymplexError> {
-        let (p, d) = self.diagonalize().map_err(|e| {
+        let Diagonalization { p, d } = self.diagonalize().map_err(|e| {
             failed(
                 "matrix_sqrt",
                 format!("requires a diagonalizable matrix: {e}"),
@@ -747,7 +751,7 @@ impl Matrix {
         }
         let n = self.nrows();
         let ctx = self.context();
-        let (p, j) = self.jordan_form().map_err(|e| match e {
+        let JordanForm { p, j } = self.jordan_form().map_err(|e| match e {
             SymplexError::ComputationFailed { reason, .. }
                 if reason.starts_with("expression swell") =>
             {
@@ -959,7 +963,7 @@ mod tests {
     fn qr_reconstructs_and_is_orthonormal() {
         let ctx = Context::new();
         let a = ctxi(&ctx, &[&[1, 2], &[3, 4], &[5, 6]]);
-        let (q, r) = a.qr().unwrap();
+        let Qr { q, r } = a.qr().unwrap();
         assert_eq!(q.shape(), (3, 2));
         assert_eq!(r.shape(), (2, 2));
         assert_eq!((&q * &r).simplify(), a);
@@ -993,7 +997,7 @@ mod tests {
         let a = ctxi(&ctx, &[&[4, 12, -16], &[12, 37, -43], &[-16, -43, 98]]);
         let l = a.cholesky().unwrap();
         assert_eq!(l, ctxi(&ctx, &[&[2, 0, 0], &[6, 1, 0], &[-8, 5, 3]]));
-        let (l2, d) = a.ldl().unwrap();
+        let Ldl { l: l2, d } = a.ldl().unwrap();
         assert_eq!((&(&l2 * &d) * &l2.transpose()).eval(), a);
         assert_eq!(d.diagonal(), vec![ctx.int(4), ctx.int(1), ctx.int(9)]);
     }
@@ -1027,7 +1031,7 @@ mod tests {
         let ctx = Context::new();
         let (a, b, c) = (ctx.symbol("a"), ctx.symbol("b"), ctx.symbol("c"));
         let m = Matrix::new(vec![vec![a.clone(), b.clone()], vec![b.clone(), c.clone()]]).unwrap();
-        let (l, d) = m.ldl().unwrap();
+        let Ldl { l, d } = m.ldl().unwrap();
         let back = (&(&l * &d) * &l.transpose()).simplify();
         assert_eq!(back.equals(&m), Some(true));
         assert!(ctxi(&ctx, &[&[0, 1], &[1, 0]]).ldl().is_err());

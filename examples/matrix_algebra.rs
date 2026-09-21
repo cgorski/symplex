@@ -159,7 +159,7 @@ fn main() {
     let lu_mat = matrix![ctx, [2, 1, 1], [4, 3, 3], [8, 7, 9]];
     println!("M = {lu_mat}");
 
-    if let Ok((l, u, perm)) = lu_mat.lu() {
+    if let Ok(Lu { l, u, perm }) = lu_mat.lu() {
         println!("L = {l}");
         println!("U = {u}");
         println!("Permutation: {perm:?}");

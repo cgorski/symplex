@@ -18,6 +18,7 @@
 use std::collections::BTreeMap;
 
 use symplex::prelude::*;
+use symplex::robotics::DhLink;
 use wasm_bindgen::prelude::*;
 
 /// Initialize panic hook for better error messages in browser console.
@@ -522,9 +523,14 @@ fn compute_fk_impl(dh_json: &str) -> Result<String, String> {
     let config: DhConfig = serde_json::from_str(dh_json).map_err(|e| format!("JSON error: {e}"))?;
     let ctx = Context::new();
     let dh_params = build_dh(&ctx, &config)?;
-    let dh_refs: Vec<(&Ex, &Ex, &Ex, &Ex)> = dh_params
+    let dh_refs: Vec<DhLink<'_>> = dh_params
         .iter()
-        .map(|(t, d, a, al)| (t, d, a, al))
+        .map(|(t, d, a, al)| DhLink {
+            theta: t,
+            d,
+            a,
+            alpha: al,
+        })
         .collect();
     let fk = symplex::robotics::fk_chain(&dh_refs);
     Ok(matrix_latex_json(&fk))
@@ -534,9 +540,14 @@ fn compute_jacobian_impl(dh_json: &str) -> Result<String, String> {
     let config: DhConfig = serde_json::from_str(dh_json).map_err(|e| format!("JSON error: {e}"))?;
     let ctx = Context::new();
     let dh_params = build_dh(&ctx, &config)?;
-    let dh_refs: Vec<(&Ex, &Ex, &Ex, &Ex)> = dh_params
+    let dh_refs: Vec<DhLink<'_>> = dh_params
         .iter()
-        .map(|(t, d, a, al)| (t, d, a, al))
+        .map(|(t, d, a, al)| DhLink {
+            theta: t,
+            d,
+            a,
+            alpha: al,
+        })
         .collect();
     let (x, y, z) = symplex::robotics::fk_position(&dh_refs);
     let theta_vars: Vec<Ex> = config.joints.iter().map(|j| ctx.symbol(&j.theta)).collect();
@@ -549,9 +560,14 @@ fn generate_jacobian_code_impl(dh_json: &str) -> Result<String, String> {
     let config: DhConfig = serde_json::from_str(dh_json).map_err(|e| format!("JSON error: {e}"))?;
     let ctx = Context::new();
     let dh_params = build_dh(&ctx, &config)?;
-    let dh_refs: Vec<(&Ex, &Ex, &Ex, &Ex)> = dh_params
+    let dh_refs: Vec<DhLink<'_>> = dh_params
         .iter()
-        .map(|(t, d, a, al)| (t, d, a, al))
+        .map(|(t, d, a, al)| DhLink {
+            theta: t,
+            d,
+            a,
+            alpha: al,
+        })
         .collect();
     let (x, y, z) = symplex::robotics::fk_position(&dh_refs);
     let theta_vars: Vec<Ex> = config.joints.iter().map(|j| ctx.symbol(&j.theta)).collect();

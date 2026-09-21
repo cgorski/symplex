@@ -19,7 +19,7 @@ Then in `build.rs`:
 ```rust
 use symplex::matrix::jacobian;
 use symplex::prelude::*;
-use symplex::robotics::fk_position;
+use symplex::robotics::{DhLink, fk_position};
 use symplex_build::CodeGen;
 
 fn main() {
@@ -32,8 +32,8 @@ fn main() {
 
     // Forward kinematics and Jacobian, symbolically.
     let (x, y, _z) = fk_position(&[
-        (&theta1, &zero, &l1, &zero),
-        (&theta2, &zero, &l2, &zero),
+        DhLink { theta: &theta1, d: &zero, a: &l1, alpha: &zero },
+        DhLink { theta: &theta2, d: &zero, a: &l2, alpha: &zero },
     ]);
     let j = jacobian(&[&x, &y], &[&theta1, &theta2]);
 

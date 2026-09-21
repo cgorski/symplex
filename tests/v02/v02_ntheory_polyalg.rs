@@ -97,12 +97,12 @@ fn poly_gcdex_bezout_identity() {
     let (_ctx, x) = ctx_x();
     let f = (&x.powi(2) - 1) * (&x + 3);
     let g = (&x - 1) * (&x.powi(2) + 1);
-    let (s_, t, gcd) = f.expand().poly_gcdex(&g.expand(), &x).unwrap();
-    assert_eq!(s(&gcd), "x - 1");
-    let check = (&s_ * &f + &t * &g).expand();
+    let e = f.expand().poly_gcdex(&g.expand(), &x).unwrap();
+    assert_eq!(s(&e.gcd), "x - 1");
+    let check = (&e.x * &f + &e.y * &g).expand();
     assert_eq!(s(&check), "x - 1");
     // Coprime → gcd 1.
-    let (_, _, one) = (&x.powi(2) + 1).poly_gcdex(&(&x + 1), &x).unwrap();
+    let one = (&x.powi(2) + 1).poly_gcdex(&(&x + 1), &x).unwrap().gcd;
     assert_eq!(s(&one), "1");
 }
 

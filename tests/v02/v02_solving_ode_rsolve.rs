@@ -18,6 +18,11 @@ fn setup() -> (Context, Ex, Ex, Ex, Ex, Ex, Ex) {
     (ctx, x, y, dy, d2y, d3y, d4y)
 }
 
+/// `y^(order)(x) = value`.
+fn ic(order: usize, x: Ex, value: Ex) -> InitialCondition {
+    InitialCondition { order, x, value }
+}
+
 /// Numerically verify `sol` against the ODE at several points with the
 /// constants set to 1 (exact `check_ode_solution` is also tried first).
 fn assert_ode_solution(ode: &Ex, sol: &Ex, y: &Ex, x: &Ex, label: &str) {
@@ -71,7 +76,7 @@ fn ivp_first_order_exponential() {
     // y' = y, y(0) = 2 → 2 e^x
     let ode = &dy - &y;
     let sol = ode
-        .solve_ode_ivp(&y, &x, &[(0, ctx.int(0), ctx.int(2))])
+        .solve_ode_ivp(&y, &x, &[ic(0, ctx.int(0), ctx.int(2))])
         .unwrap();
     assert_eq!(format!("{sol}"), "2*exp(x)");
     assert_ode_solution(&ode, &sol, &y, &x, "y' = y");
@@ -86,14 +91,14 @@ fn ivp_harmonic_oscillator() {
         .solve_ode_ivp(
             &y,
             &x,
-            &[(0, ctx.int(0), ctx.int(0)), (1, ctx.int(0), ctx.int(1))],
+            &[ic(0, ctx.int(0), ctx.int(0)), ic(1, ctx.int(0), ctx.int(1))],
         )
         .unwrap();
     assert_eq!(format!("{}", sol.simplify()), "sin(x)");
     assert_ode_solution(&ode, &sol, &y, &x, "y'' + y = 0");
     // Only one condition: one constant remains.
     let partial = ode
-        .solve_ode_ivp(&y, &x, &[(0, ctx.int(0), ctx.int(0))])
+        .solve_ode_ivp(&y, &x, &[ic(0, ctx.int(0), ctx.int(0))])
         .unwrap();
     assert!(
         !partial.contains(&ctx.symbol("C1")) && partial.contains(&ctx.symbol("C2")),
@@ -107,7 +112,7 @@ fn ivp_gaussian() {
     // y' = -2xy, y(0) = 1 → e^{-x²}
     let ode = &dy + &(&x * &y * 2);
     let sol = ode
-        .solve_ode_ivp(&y, &x, &[(0, ctx.int(0), ctx.int(1))])
+        .solve_ode_ivp(&y, &x, &[ic(0, ctx.int(0), ctx.int(1))])
         .unwrap();
     assert_eq!(format!("{sol}"), "exp(-x^2)");
     assert_ode_solution(&ode, &sol, &y, &x, "y' = -2xy");
@@ -123,9 +128,9 @@ fn ivp_third_order_and_nonlinear_constant() {
             &y,
             &x,
             &[
-                (0, ctx.int(0), ctx.int(1)),
-                (1, ctx.int(0), ctx.int(1)),
-                (2, ctx.int(0), ctx.int(1)),
+                ic(0, ctx.int(0), ctx.int(1)),
+                ic(1, ctx.int(0), ctx.int(1)),
+                ic(2, ctx.int(0), ctx.int(1)),
             ],
         )
         .unwrap();
@@ -133,7 +138,7 @@ fn ivp_third_order_and_nonlinear_constant() {
     // y' = y², y(0) = 1 → 1/(1 - x): constant enters nonlinearly.
     let ode = &dy - &y.powi(2);
     let sol = ode
-        .solve_ode_ivp(&y, &x, &[(0, ctx.int(0), ctx.int(1))])
+        .solve_ode_ivp(&y, &x, &[ic(0, ctx.int(0), ctx.int(1))])
         .unwrap();
     assert_ode_solution(&ode, &sol, &y, &x, "y' = y^2");
     let v = sol.subs(&x, &ctx.rational(1, 2)).eval_f64().unwrap();
@@ -141,7 +146,7 @@ fn ivp_third_order_and_nonlinear_constant() {
     // Non-zero initial point: y' = y, y(1) = e → e^x
     let ode = &dy - &y;
     let e = ctx.int(1).exp();
-    let sol = ode.solve_ode_ivp(&y, &x, &[(0, ctx.int(1), e)]).unwrap();
+    let sol = ode.solve_ode_ivp(&y, &x, &[ic(0, ctx.int(1), e)]).unwrap();
     // `E*exp(x - 1)` is not folded to `exp(x)` by the simplifier; verify numerically.
     for xv in [0, 1, 2, 3] {
         let v = sol.subs_i64(&x, xv).eval_f64().unwrap();
@@ -158,7 +163,7 @@ fn ivp_contradictory_conditions() {
         .solve_ode_ivp(
             &y,
             &x,
-            &[(0, ctx.int(0), ctx.int(1)), (0, ctx.int(0), ctx.int(2))],
+            &[ic(0, ctx.int(0), ctx.int(1)), ic(0, ctx.int(0), ctx.int(2))],
         )
         .unwrap_err();
     assert!(matches!(err, SymplexError::NoSolution { .. }), "{err}");

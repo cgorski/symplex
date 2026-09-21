@@ -48,7 +48,7 @@
 use std::sync::OnceLock;
 
 use num_bigint::BigInt;
-use num_integer::{Integer, Roots};
+use num_integer::{ExtendedGcd, Integer, Roots};
 use num_rational::Ratio;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use rustc_hash::FxHashMap;
@@ -2064,7 +2064,12 @@ pub fn gcd(a: impl Into<BigInt>, b: impl Into<BigInt>) -> BigInt {
     num_integer::Integer::gcd(&a, &b)
 }
 
-/// Extended GCD: `(g, x, y)` with `a·x + b·y = g = gcd(a, b) ≥ 0`.
+/// Extended GCD: [`ExtendedGcd`]` { gcd, x, y }` with
+/// `a·x + b·y = gcd = gcd(a, b) ≥ 0`.
+///
+/// This is [`num_integer::Integer::extended_gcd`] on `BigInt` — the same
+/// iterative Euclidean algorithm and sign normalisation the crate always
+/// used — behind the `impl Into<BigInt>` convenience of this module.
 ///
 /// # Examples
 ///
@@ -2072,14 +2077,14 @@ pub fn gcd(a: impl Into<BigInt>, b: impl Into<BigInt>) -> BigInt {
 /// use symplex::ntheory::gcdex;
 /// use num_bigint::BigInt;
 ///
-/// let (g, x, y) = gcdex(240, 46);
-/// assert_eq!(g, BigInt::from(2));
-/// assert_eq!(BigInt::from(240) * x + BigInt::from(46) * y, g);
+/// let g = gcdex(240, 46);
+/// assert_eq!(g.gcd, BigInt::from(2));
+/// assert_eq!(BigInt::from(240) * &g.x + BigInt::from(46) * &g.y, g.gcd);
 /// ```
-pub fn gcdex(a: impl Into<BigInt>, b: impl Into<BigInt>) -> (BigInt, BigInt, BigInt) {
+pub fn gcdex(a: impl Into<BigInt>, b: impl Into<BigInt>) -> ExtendedGcd<BigInt> {
     let a: BigInt = a.into();
     let b: BigInt = b.into();
-    extended_gcd_big(&a, &b)
+    Integer::extended_gcd(&a, &b)
 }
 
 /// Least common multiple of two integers.
@@ -3009,11 +3014,27 @@ pub fn continued_fraction(r: &Ratio<BigInt>) -> Vec<BigInt> {
     out
 }
 
+/// A periodic continued fraction
+/// `[pre₀; pre₁, …, (period₀, …, periodₖ) repeating]` — the expansion of a
+/// quadratic irrational.
+///
+/// Produced by [`continued_fraction_periodic`] and consumed by
+/// [`continued_fraction_reduce_periodic`] /
+/// [`continued_fraction_reduce_periodic_ex`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PeriodicContinuedFraction {
+    /// The non-repeating head `[a₀; a₁, …]` (for `√d` this is `[⌊√d⌋]`).
+    pub pre_period: Vec<BigInt>,
+    /// The repeating block; empty when the value is rational.
+    pub period: Vec<BigInt>,
+}
+
 /// Periodic continued fraction of `√d` for a non-negative integer `d`:
-/// returns `(non_periodic, periodic)` so that
+/// returns `pre_period` and `period` so that
 /// `√d = [a₀; (a₁, …, aₖ) repeating]`.
 ///
-/// Perfect squares return `([√d], [])`.  Negative `d` returns `None`.
+/// Perfect squares return `pre_period = [√d]` with an empty `period`.
+/// Negative `d` returns `None`.
 ///
 /// # Examples
 ///
@@ -3022,21 +3043,24 @@ pub fn continued_fraction(r: &Ratio<BigInt>) -> Vec<BigInt> {
 /// use num_bigint::BigInt;
 ///
 /// let to_i = |v: Vec<BigInt>| -> Vec<i64> { v.iter().map(|t| t.try_into().unwrap()).collect() };
-/// let (head, period) = continued_fraction_periodic(2).unwrap();
-/// assert_eq!((to_i(head), to_i(period)), (vec![1], vec![2]));          // √2 = [1; 2̄]
-/// let (head, period) = continued_fraction_periodic(7).unwrap();
-/// assert_eq!((to_i(head), to_i(period)), (vec![2], vec![1, 1, 1, 4])); // √7 = [2; 1,1,1,4]
-/// let (head, period) = continued_fraction_periodic(9).unwrap();
-/// assert_eq!((to_i(head), to_i(period)), (vec![3], vec![]));
+/// let cf = continued_fraction_periodic(2).unwrap();
+/// assert_eq!((to_i(cf.pre_period), to_i(cf.period)), (vec![1], vec![2]));          // √2 = [1; 2̄]
+/// let cf = continued_fraction_periodic(7).unwrap();
+/// assert_eq!((to_i(cf.pre_period), to_i(cf.period)), (vec![2], vec![1, 1, 1, 4])); // √7 = [2; 1,1,1,4]
+/// let cf = continued_fraction_periodic(9).unwrap();
+/// assert_eq!((to_i(cf.pre_period), to_i(cf.period)), (vec![3], vec![]));
 /// ```
-pub fn continued_fraction_periodic(d: impl Into<BigInt>) -> Option<(Vec<BigInt>, Vec<BigInt>)> {
+pub fn continued_fraction_periodic(d: impl Into<BigInt>) -> Option<PeriodicContinuedFraction> {
     let d: BigInt = d.into();
     if d.is_negative() {
         return None;
     }
     let a0 = d.sqrt();
     if &a0 * &a0 == d {
-        return Some((vec![a0], vec![]));
+        return Some(PeriodicContinuedFraction {
+            pre_period: vec![a0],
+            period: vec![],
+        });
     }
     // Standard algorithm: m₀ = 0, d₀ = 1, a₀ = ⌊√d⌋;
     // mₖ₊₁ = dₖ aₖ − mₖ ; dₖ₊₁ = (d − mₖ₊₁²)/dₖ ; aₖ₊₁ = ⌊(a₀ + mₖ₊₁)/dₖ₊₁⌋
@@ -3055,7 +3079,10 @@ pub fn continued_fraction_periodic(d: impl Into<BigInt>) -> Option<(Vec<BigInt>,
             break;
         }
     }
-    Some((vec![a0], period))
+    Some(PeriodicContinuedFraction {
+        pre_period: vec![a0],
+        period,
+    })
 }
 
 /// Convergents `hₙ/kₙ` of a continued fraction `[a₀; a₁, a₂, …]`.
@@ -4490,14 +4517,34 @@ pub fn continued_fraction_reduce(terms: &[BigInt]) -> Option<Ratio<BigInt>> {
     Some(x)
 }
 
+/// The quadratic surd **`(p + √d) / q`** with integer `p`, `q` and `d`.
+///
+/// `d > 0` is not a perfect square and `q ≠ 0` **may be negative** — that
+/// is how a negative radical coefficient is encoded: `(80 − √30)/52` is
+/// `(−80 + √30)/(−52)`, i.e. `p = -80, q = -52, d = 30`.  The value is
+/// reduced: no integer `g > 1` divides `p` and `q` with `g² | d`.
+///
+/// Produced by [`continued_fraction_reduce_periodic`];
+/// [`continued_fraction_reduce_periodic_ex`] builds the same value as a
+/// symbolic `Ex`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct QuadraticSurd {
+    /// The integer part of the numerator `p`.
+    pub p: BigInt,
+    /// The denominator `q ≠ 0`; its sign carries the sign of the radical.
+    pub q: BigInt,
+    /// The radicand `d > 0`, not a perfect square.
+    pub d: BigInt,
+}
+
 /// The quadratic irrational with the periodic continued fraction
 /// `[pre₀; pre₁, …, (period₀, …, periodₖ) repeating]` (SymPy
-/// `continued_fraction_reduce([a₀, …, [b₀, …]])`), returned as the integer
-/// triple `(p, q, d)` meaning **`(p + √d) / q`**.
+/// `continued_fraction_reduce([a₀, …, [b₀, …]])`), returned as the
+/// [`QuadraticSurd`] `{ p, q, d }` meaning **`(p + √d) / q`**.
 ///
 /// `d > 0` is not a perfect square, `q ≠ 0` **may be negative** (that is
 /// how a negative radical coefficient is encoded: `(80 − √30)/52` is
-/// `(−80 + √30)/(−52)`, i.e. `(-80, -52, 30)`), and the triple is
+/// `(−80 + √30)/(−52)`, i.e. `p = -80, q = -52, d = 30`), and the surd is
 /// reduced: no integer `g > 1` divides `p` and `q` with `g² | d`.
 /// [`continued_fraction_reduce_periodic_ex`] builds the same value as a
 /// symbolic `Ex`.
@@ -4513,25 +4560,27 @@ pub fn continued_fraction_reduce(terms: &[BigInt]) -> Option<Ratio<BigInt>> {
 /// # Examples
 ///
 /// ```
-/// use symplex::ntheory::continued_fraction_reduce_periodic;
+/// use symplex::ntheory::{continued_fraction_reduce_periodic, QuadraticSurd};
 /// use num_bigint::BigInt;
 ///
 /// let cf = |v: &[i64]| -> Vec<BigInt> { v.iter().map(|&t| BigInt::from(t)).collect() };
-/// let triple = |p: i64, q: i64, d: i64| Some((BigInt::from(p), BigInt::from(q), BigInt::from(d)));
+/// let surd = |p: i64, q: i64, d: i64| {
+///     Some(QuadraticSurd { p: BigInt::from(p), q: BigInt::from(q), d: BigInt::from(d) })
+/// };
 /// // √2 = [1; (2)]                       SymPy: sqrt(2)
-/// assert_eq!(continued_fraction_reduce_periodic(&cf(&[1]), &cf(&[2])), triple(0, 1, 2));
+/// assert_eq!(continued_fraction_reduce_periodic(&cf(&[1]), &cf(&[2])), surd(0, 1, 2));
 /// // golden ratio [(1)]                  SymPy: (1 + sqrt(5))/2
-/// assert_eq!(continued_fraction_reduce_periodic(&[], &cf(&[1])), triple(1, 2, 5));
+/// assert_eq!(continued_fraction_reduce_periodic(&[], &cf(&[1])), surd(1, 2, 5));
 /// // √7 = [2; (1, 1, 1, 4)]              SymPy: sqrt(7)
-/// assert_eq!(continued_fraction_reduce_periodic(&cf(&[2]), &cf(&[1, 1, 1, 4])), triple(0, 1, 7));
+/// assert_eq!(continued_fraction_reduce_periodic(&cf(&[2]), &cf(&[1, 1, 1, 4])), surd(0, 1, 7));
 /// // [1; 2, 3, (4, 5)]                   SymPy: (80 - sqrt(30))/52
-/// assert_eq!(continued_fraction_reduce_periodic(&cf(&[1, 2, 3]), &cf(&[4, 5])), triple(-80, -52, 30));
+/// assert_eq!(continued_fraction_reduce_periodic(&cf(&[1, 2, 3]), &cf(&[4, 5])), surd(-80, -52, 30));
 /// assert_eq!(continued_fraction_reduce_periodic(&cf(&[1]), &[]), None);
 /// ```
 pub fn continued_fraction_reduce_periodic(
     pre: &[BigInt],
     period: &[BigInt],
-) -> Option<(BigInt, BigInt, BigInt)> {
+) -> Option<QuadraticSurd> {
     if period.is_empty() || period.iter().any(|b| !b.is_positive()) {
         return None;
     }
@@ -4578,7 +4627,11 @@ pub fn continued_fraction_reduce_periodic(
             d /= &square;
         }
     }
-    Some((alpha, gamma, d))
+    Some(QuadraticSurd {
+        p: alpha,
+        q: gamma,
+        d,
+    })
 }
 
 /// `(hₙ, hₙ₋₁, kₙ, kₙ₋₁)` — the last two convergent numerators and
@@ -4618,7 +4671,7 @@ pub fn continued_fraction_reduce_periodic_ex(
     pre: &[BigInt],
     period: &[BigInt],
 ) -> Option<Ex> {
-    let (p, q, d) = continued_fraction_reduce_periodic(pre, period)?;
+    let QuadraticSurd { p, q, d } = continued_fraction_reduce_periodic(pre, period)?;
     let radical = ctx.from_bigint(d).sqrt();
     Some((ctx.from_bigint(p) + radical) / ctx.from_bigint(q))
 }
@@ -5519,9 +5572,13 @@ mod tests {
     #[test]
     fn continued_fraction_periodic_known() {
         let cf = |d: i64| {
-            let (h, p) = continued_fraction_periodic(d).unwrap();
-            let hi: Vec<i64> = h.iter().map(|t| t.try_into().unwrap()).collect();
-            let pi: Vec<i64> = p.iter().map(|t| t.try_into().unwrap()).collect();
+            let cf = continued_fraction_periodic(d).unwrap();
+            let hi: Vec<i64> = cf
+                .pre_period
+                .iter()
+                .map(|t| t.try_into().unwrap())
+                .collect();
+            let pi: Vec<i64> = cf.period.iter().map(|t| t.try_into().unwrap()).collect();
             (hi, pi)
         };
         assert_eq!(cf(2), (vec![1], vec![2]));
@@ -5627,9 +5684,24 @@ mod tests {
     #[test]
     fn gcdex_bezout() {
         for (a, b) in [(240i64, 46i64), (0, 5), (5, 0), (-12, 18), (17, 31), (0, 0)] {
-            let (g, x, y) = gcdex(a, b);
-            assert_eq!(g, gcd(a, b));
-            assert_eq!(bi(a) * x + bi(b) * y, g);
+            let g = gcdex(a, b);
+            assert_eq!(g.gcd, gcd(a, b));
+            assert_eq!(bi(a) * &g.x + bi(b) * &g.y, g.gcd);
+        }
+    }
+
+    /// `gcdex` delegates to `num_integer`; the Bézout coefficients it
+    /// returns must be exactly those of the crate's own `extended_gcd_big`
+    /// (same recurrence, same `gcd ≥ 0` normalisation), including the
+    /// sign choices for negative and zero inputs.
+    #[test]
+    fn gcdex_matches_internal_extended_gcd() {
+        for a in -40i64..=40 {
+            for b in -40i64..=40 {
+                let g = gcdex(a, b);
+                let (g0, x0, y0) = extended_gcd_big(&bi(a), &bi(b));
+                assert_eq!((g.gcd, g.x, g.y), (g0, x0, y0), "gcdex({a}, {b})");
+            }
         }
     }
 

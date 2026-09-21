@@ -412,7 +412,7 @@ fn ode_initial_value_problems() {
             lhs = &lhs + &(c * &deriv);
         }
         let eq = &lhs - &rhs;
-        let mut ics: Vec<(usize, Ex, Ex)> = Vec::new();
+        let mut ics: Vec<InitialCondition> = Vec::new();
         for ic in fx
             .field("ics")
             .and_then(|v| v.as_array())
@@ -427,7 +427,11 @@ fn ode_initial_value_problems() {
             ) else {
                 return Status::NotImplemented("bad initial condition".into());
             };
-            ics.push((order, x0, val));
+            ics.push(InitialCondition {
+                order,
+                x: x0,
+                value: val,
+            });
         }
         match eq.solve_ode_ivp(&y, &x, &ics) {
             Ok(sol) => {

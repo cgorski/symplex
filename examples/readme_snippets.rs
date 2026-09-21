@@ -399,7 +399,18 @@ fn odes() {
         .solve_ode_ivp(
             &y,
             &x,
-            &[(0, ctx.int(0), ctx.int(0)), (1, ctx.int(0), ctx.int(1))],
+            &[
+                InitialCondition {
+                    order: 0,
+                    x: ctx.int(0),
+                    value: ctx.int(0),
+                },
+                InitialCondition {
+                    order: 1,
+                    x: ctx.int(0),
+                    value: ctx.int(1),
+                },
+            ],
         )
         .unwrap();
     println!("{}", ivp.simplify());
@@ -471,7 +482,7 @@ fn linear_algebra() {
     assert_eq!(ev, ["3", "1"]);
     let lam = ctx.symbol("λ");
     println!("char poly: {}", m.char_poly(&lam).unwrap());
-    let (_p, d) = m.diagonalize().unwrap();
+    let d = m.diagonalize().unwrap().d;
     assert_eq!(d.get(0, 0).to_string(), "3");
     let et = m.matrix_exp_t(&t).unwrap();
     println!("exp(tM) = {et}");
@@ -483,7 +494,7 @@ fn linear_algebra() {
     let l = spd.cholesky().unwrap();
     assert_eq!(l.get(2, 0).to_string(), "-8");
     assert_eq!(spd.is_positive_definite(), Some(true));
-    let (qm, rm) = matrix![ctx, [1, 1, 0], [1, 0, 1], [0, 1, 1]].qr().unwrap();
+    let Qr { q: qm, r: rm } = matrix![ctx, [1, 1, 0], [1, 0, 1], [0, 1, 1]].qr().unwrap();
     assert_eq!(qm.is_orthogonal(), Some(true));
     println!("R = {rm}");
 
@@ -525,7 +536,7 @@ fn linear_algebra() {
     let pinv = matrix![ctx, [1, 2], [2, 4]].pinv().unwrap();
     println!("pinv of a rank-1 matrix:\n{pinv}");
     assert_eq!(pinv, matrix![ctx, [1 / 25, 2 / 25], [2 / 25, 4 / 25]]);
-    let (c, f) = matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]]
+    let RankDecomposition { c, f } = matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]]
         .rank_decomposition()
         .unwrap();
     assert_eq!(
@@ -689,7 +700,7 @@ fn exact_optimization() {
 
     // Integer normal forms: H = U·A (row style), S = U·A·V, ℤ-basis of the kernel
     let a = matrix![ctx, [2, 4, 4], [-6, 6, 12], [10, -4, -16]];
-    let (h, u) = hermite_normal_form_with_transform(&a).unwrap();
+    let HermiteNormalForm { h, u } = hermite_normal_form_with_transform(&a).unwrap();
     println!("H = {h}");
     assert_eq!(h, matrix![ctx, [2, 4, 4], [0, 6, 0], [0, 0, 12]]);
     assert_eq!((&u * &a).eval(), h);
@@ -765,9 +776,9 @@ fn number_theory() {
     assert_eq!(sqrt_mod(2, 7), Some(BigInt::from(3)));
     assert_eq!(discrete_log(3, 13, 17), Some(BigInt::from(4)));
     assert_eq!(primepi(1_000_000), Some(78498));
-    let (head, period) = continued_fraction_periodic(23).unwrap();
-    assert_eq!(head, vec![BigInt::from(4)]);
-    assert_eq!(period.len(), 4);
+    let cf = continued_fraction_periodic(23).unwrap();
+    assert_eq!(cf.pre_period, vec![BigInt::from(4)]);
+    assert_eq!(cf.period.len(), 4);
     assert_eq!(
         diophantine::pell(61),
         Some((BigInt::from(1766319049u64), BigInt::from(226153980u64)))

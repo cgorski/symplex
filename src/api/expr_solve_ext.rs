@@ -689,11 +689,36 @@ pub fn solve_numeric_system_with(
 // ODE initial-value problems
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// One initial condition of an ODE initial-value problem:
+/// **`y^(order)(x) = value`**, i.e. the `order`-th derivative of the
+/// unknown function, evaluated at the point `x`, equals `value`.
+///
+/// `order = 0` is the plain `y(x) = value`.  Used by
+/// [`Ex::solve_ode_ivp`].
+///
+/// ```
+/// use symplex::prelude::*;
+///
+/// let ctx = Context::new();
+/// // y'(0) = 1
+/// let ic = InitialCondition { order: 1, x: ctx.int(0), value: ctx.int(1) };
+/// assert_eq!(ic.order, 1);
+/// ```
+#[derive(Clone, Debug, PartialEq)]
+pub struct InitialCondition {
+    /// Derivative order `k` of the condition `y^(k)(x) = value`.
+    pub order: usize,
+    /// The point at which the derivative is prescribed.
+    pub x: Ex,
+    /// The prescribed value of `y^(order)` at `x`.
+    pub value: Ex,
+}
+
 impl Ex {
     /// Solve the ODE `self = 0` for `func(var)` subject to initial
     /// conditions.
     ///
-    /// Each initial condition is `(k, x0, value)` meaning
+    /// Each [`InitialCondition`] `{ order: k, x: x0, value }` means
     /// `d^k func / d var^k (x0) = value` (`k = 0` is `func(x0) = value`).
     /// The general solution is found with [`solve_ode`](Ex::solve_ode),
     /// then the integration constants `C1, C2, …` are determined by
@@ -719,7 +744,14 @@ impl Ex {
     /// // y'' + y = 0, y(0) = 0, y'(0) = 1  →  y = sin(x)
     /// let ode = &y.formal_diff(&x).formal_diff(&x) + &y;
     /// let sol = ode
-    ///     .solve_ode_ivp(&y, &x, &[(0, ctx.int(0), ctx.int(0)), (1, ctx.int(0), ctx.int(1))])
+    ///     .solve_ode_ivp(
+    ///         &y,
+    ///         &x,
+    ///         &[
+    ///             InitialCondition { order: 0, x: ctx.int(0), value: ctx.int(0) },
+    ///             InitialCondition { order: 1, x: ctx.int(0), value: ctx.int(1) },
+    ///         ],
+    ///     )
     ///     .unwrap();
     /// assert_eq!(format!("{}", sol.simplify()), "sin(x)");
     /// ```
@@ -727,13 +759,13 @@ impl Ex {
         &self,
         func: &Ex,
         var: &Ex,
-        ics: &[(usize, Ex, Ex)],
+        ics: &[InitialCondition],
     ) -> Result<Ex, SymplexError> {
         let func_id = self.checked_id(func);
         let var_id = self.checked_id(var);
-        for (_, x0, v) in ics {
-            let _ = self.checked_id(x0);
-            let _ = self.checked_id(v);
+        for ic in ics {
+            let _ = self.checked_id(&ic.x);
+            let _ = self.checked_id(&ic.value);
         }
 
         let (general, constants): (Ex, Vec<Ex>) = {
@@ -842,12 +874,12 @@ impl Ex {
     }
 }
 
-/// Fit integration constants to initial conditions `(k, x0, value)`.
+/// Fit integration constants to initial conditions `y^(order)(x) = value`.
 pub(crate) fn apply_initial_conditions(
     general: &Ex,
     constants: &[Ex],
     var: &Ex,
-    ics: &[(usize, Ex, Ex)],
+    ics: &[InitialCondition],
     operation: &'static str,
 ) -> Result<Ex, SymplexError> {
     if ics.is_empty() || constants.is_empty() {
@@ -855,13 +887,13 @@ pub(crate) fn apply_initial_conditions(
     }
     // Build one equation per initial condition.
     let mut eqs: Vec<Ex> = Vec::with_capacity(ics.len());
-    for (k, x0, value) in ics {
+    for ic in ics {
         let mut d = general.clone();
-        for _ in 0..*k {
+        for _ in 0..ic.order {
             d = d.diff(var);
         }
-        let at = d.subs(var, x0).eval();
-        eqs.push((&at - value).eval());
+        let at = d.subs(var, &ic.x).eval();
+        eqs.push((&at - &ic.value).eval());
     }
     fit_constants(general, constants, &eqs, operation)
 }

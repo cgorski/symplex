@@ -244,7 +244,7 @@ fn decompose_poly_fraction(numer: &Poly, factors: &[(Poly, u32)]) -> Vec<(Poly, 
         .fold(Poly::from_int(1), |acc, (f, e)| &acc * &poly_pow(f, *e));
 
     // Extended GCD: s*d1 + t*d2 = 1 (since d1 and d2 are coprime).
-    let (s, t, _g) = Poly::extended_gcd(&d1, &d2);
+    let num_integer::ExtendedGcd { x: s, y: t, .. } = Poly::extended_gcd(&d1, &d2);
 
     // numer / (d1*d2) = (numer*t)/d1 + (numer*s)/d2
     // Reduce modulo the respective denominators.
@@ -1095,7 +1095,7 @@ pub(crate) fn hermite_reduce_factor(
     let f_prime = f.derivative();
 
     // Extended GCD:  s·f + t·f' = 1  (works because f is squarefree).
-    let (_s, t, g) = Poly::extended_gcd(f, &f_prime);
+    let num_integer::ExtendedGcd { gcd: g, y: t, .. } = Poly::extended_gcd(f, &f_prime);
     if g.degree().unwrap_or(0) != 0 {
         return None; // f is not squarefree
     }

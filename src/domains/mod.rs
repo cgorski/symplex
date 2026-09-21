@@ -1,6 +1,7 @@
 pub mod certificates;
 pub mod combinatorics;
 pub mod control;
+pub mod decompositions;
 pub mod diophantine;
 pub mod discrete;
 pub mod dynamics;

@@ -41,12 +41,12 @@ const ALLOWLIST: &[(&str, usize)] = &[
     // `as_ratio_parts`/`as_ratio_i128 -> (numer, denom)`; `eval_at(&[(&var, &value)])`.
     ("api/expr_ops.rs", 3),
     // `poly_div -> (quotient, remainder)` (num_integer `div_rem`); `content_primitive -> (content, primitive)`;
-    // `poly_interpolate(&[(x, y)])` points; `nroots -> (re, im)`; `poly_gcdex -> (s, t, g)` — 0.16: `ExtendedGcd`.
-    ("api/expr_poly_ext.rs", 5),
+    // `poly_interpolate(&[(x, y)])` points; `nroots -> (re, im)`.
+    ("api/expr_poly_ext.rs", 4),
     // `separate_vars_dict -> Vec<(var, factor)>` (SymPy `separatevars(dict=True)`).
     ("api/expr_rules_ext.rs", 1),
-    // `LinearSolution::pairs -> &[(var, value)]`; `solve_ode_ivp(&[(order, x0, y0)])` ×2 — 0.16: `InitialCondition`.
-    ("api/expr_solve_ext.rs", 3),
+    // `LinearSolution::pairs -> &[(var, value)]`.
+    ("api/expr_solve_ext.rs", 1),
     // `nroots -> (re, im)`.
     ("api/poly_ex.rs", 1),
     // Internal mirrors of the public conventions: `as_base_exp -> (base, exp)` (as `Pow(base, exp)`),
@@ -71,30 +71,21 @@ const ALLOWLIST: &[(&str, usize)] = &[
     // shape fields of a private analysis struct.
     ("calculus/summation.rs", 2),
     // `pell*/sum_of_two_squares -> (x, y)` (symmetric / `x² − Dy²`), `sum_of_four_squares` (symmetric),
-    // `pythagorean_triples -> (a, b, c)`; `linear_diophantine -> (x0, y0, dx, dy)` — 0.16: struct.
-    ("domains/diophantine.rs", 7),
-    // `coords: &[(&q, &q̇)]` ×2 — 0.16: `GeneralizedCoordinate`; `manipulator_equation -> (M, C, G)` — 0.16.
-    ("domains/dynamics.rs", 3),
-    // `shape -> (rows, cols)`; decompositions `(H, U)`, `(S, U, V)`, `(B, U)`, `(C, F)`, `(H, Q)` — 0.16: structs;
-    // `LLL_DEFAULT_DELTA`/`lll(delta: (numer, denom))` ×3 — 0.16: `Rational64`.
-    ("domains/exact_matrix.rs", 9),
-    // `shape -> (rows, cols)`; `subs_map(&[(&var, &value)])`; `diagonalize/jordan_form/rank_decomposition/
-    // hessenberg/lu -> (P, D)…` ×5 and `lll(delta)` — 0.16: structs / `Rational64`.
-    ("domains/matrix.rs", 8),
-    // `qr -> (Q, R)`, `ldl -> (L, D)` — 0.16: structs.
-    ("domains/matrix_decomp.rs", 2),
-    // `hermite_normal_form_with_transform`, `smith_normal_form_with_transforms`, `lll*` ×3 — 0.16.
-    ("domains/normalforms.rs", 5),
-    // `gcdex -> (g, x, y)` — 0.16: `ExtendedGcd`; `continued_fraction_periodic -> (pre, period)` and
-    // `continued_fraction_reduce_periodic -> (p, q, d)` — 0.16: structs; `binomial_coefficients` keys `(n, k)`.
-    ("domains/ntheory.rs", 4),
+    // `pythagorean_triples -> (a, b, c)`.
+    ("domains/diophantine.rs", 6),
+    // `shape -> (rows, cols)`.
+    ("domains/exact_matrix.rs", 1),
+    // `shape -> (rows, cols)`; `subs_map(&[(&var, &value)])`.
+    ("domains/matrix.rs", 2),
+    // `binomial_coefficients -> Vec<((n, k), C(n, k))>` — `(n, k)` keys.
+    ("domains/ntheory.rs", 1),
     // `poly_fit_exact(&[(x, y)])` and `poly_fit_points(&[(x, y)])` — points.
     ("domains/optimize.rs", 2),
     // `to_euler -> (φ, θ, ψ)` in the order the `EulerConvention` names.
     ("domains/quaternion.rs", 1),
     // `fk_position -> (x, y, z)`, `fk_position_typed -> (x, y, z)`, `inverse_kinematics_2dof -> (θ₁, θ₂)`
-    // by joint order; `DhParams` alias and `fk_chain/fk_position/fk_rotation(&[(θ, d, a, α)])` ×4 — 0.16: struct.
-    ("domains/robotics.rs", 7),
+    // by joint order.
+    ("domains/robotics.rs", 3),
     // `RatingTable::paired_ratings(j1, j2) -> (ratings of j1, ratings of j2)` — argument order.
     ("domains/stats/agreement.rs", 1),
     // `Finite.table: Vec<(value, probability)>` — a value → probability map (`HashMap::from([(k, v)])`).
@@ -117,8 +108,8 @@ const ALLOWLIST: &[(&str, usize)] = &[
     ("plotting/tikz_plot.rs", 1),
     // `lagrange_interpolate_points(&[(x, y)])`; `kronecker_find_factor -> (factor, cofactor)` (symmetric).
     ("poly/dense.rs", 2),
-    // `div_rem`/`try_div_rem -> (quotient, remainder)`; `extended_gcd -> (s, t, g)` — 0.16: `ExtendedGcd`.
-    ("poly/generic.rs", 3),
+    // `div_rem`/`try_div_rem -> (quotient, remainder)`.
+    ("poly/generic.rs", 2),
     // `as_numer_denom`, `fraction_parts -> (numer, denom)`.
     ("poly/polybridge.rs", 2),
     // `rootof_eval_f64`, `nroots_f64 -> (re, im)`.

@@ -28,8 +28,8 @@
 //!     let l2 = ctx.rational(1, 4);   // 0.25m
 //!
 //!     let (x, y, _z) = fk_position(&[
-//!         (&theta1, &zero, &l1, &zero),
-//!         (&theta2, &zero, &l2, &zero),
+//!         DhLink { theta: &theta1, d: &zero, a: &l1, alpha: &zero },
+//!         DhLink { theta: &theta2, d: &zero, a: &l2, alpha: &zero },
 //!     ]);
 //!
 //!     let j = jacobian(&[&x, &y], &[&theta1, &theta2]);
@@ -43,6 +43,7 @@
 
 use symplex::matrix::{CodegenOptions, MathBackend, Matrix, Precision};
 use symplex::prelude::*;
+use symplex::robotics::DhLink;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -640,16 +641,14 @@ pub fn from_toml(path: impl AsRef<Path>) -> Result<CodeGen, Box<dyn std::error::
         .map(|j| float_to_expr(&ctx, j.alpha))
         .collect();
 
-    let dh_params: Vec<(&Ex, &Ex, &Ex, &Ex)> = theta_vars
+    let dh_params: Vec<DhLink<'_>> = theta_vars
         .iter()
         .enumerate()
-        .map(|(i, theta)| {
-            (
-                theta as &Ex,
-                &d_vals[i] as &Ex,
-                &a_vals[i] as &Ex,
-                &alpha_vals[i] as &Ex,
-            )
+        .map(|(i, theta)| DhLink {
+            theta,
+            d: &d_vals[i],
+            a: &a_vals[i],
+            alpha: &alpha_vals[i],
         })
         .collect();
 
@@ -787,16 +786,14 @@ impl RobotArmBuilder {
     /// Generate forward kinematics position functions (`fk_x`, `fk_y`, `fk_z`).
     pub fn generate_fk(mut self, name: &str) -> Self {
         let (thetas, d_vals, a_vals, alpha_vals) = self.build_dh();
-        let dh: Vec<(&Ex, &Ex, &Ex, &Ex)> = thetas
+        let dh: Vec<DhLink<'_>> = thetas
             .iter()
             .enumerate()
-            .map(|(i, t)| {
-                (
-                    t as &Ex,
-                    &d_vals[i] as &Ex,
-                    &a_vals[i] as &Ex,
-                    &alpha_vals[i] as &Ex,
-                )
+            .map(|(i, t)| DhLink {
+                theta: t,
+                d: &d_vals[i],
+                a: &a_vals[i],
+                alpha: &alpha_vals[i],
             })
             .collect();
         let owned_names = self.theta_names_owned();
@@ -823,16 +820,14 @@ impl RobotArmBuilder {
     /// end-effector rotation.
     pub fn generate_fk_matrix(mut self, name: &str) -> Self {
         let (thetas, d_vals, a_vals, alpha_vals) = self.build_dh();
-        let dh: Vec<(&Ex, &Ex, &Ex, &Ex)> = thetas
+        let dh: Vec<DhLink<'_>> = thetas
             .iter()
             .enumerate()
-            .map(|(i, t)| {
-                (
-                    t as &Ex,
-                    &d_vals[i] as &Ex,
-                    &a_vals[i] as &Ex,
-                    &alpha_vals[i] as &Ex,
-                )
+            .map(|(i, t)| DhLink {
+                theta: t,
+                d: &d_vals[i],
+                a: &a_vals[i],
+                alpha: &alpha_vals[i],
             })
             .collect();
         let owned_names = self.theta_names_owned();
@@ -845,16 +840,14 @@ impl RobotArmBuilder {
     /// Generate the Jacobian matrix function.
     pub fn generate_jacobian(mut self, name: &str) -> Self {
         let (thetas, d_vals, a_vals, alpha_vals) = self.build_dh();
-        let dh: Vec<(&Ex, &Ex, &Ex, &Ex)> = thetas
+        let dh: Vec<DhLink<'_>> = thetas
             .iter()
             .enumerate()
-            .map(|(i, t)| {
-                (
-                    t as &Ex,
-                    &d_vals[i] as &Ex,
-                    &a_vals[i] as &Ex,
-                    &alpha_vals[i] as &Ex,
-                )
+            .map(|(i, t)| DhLink {
+                theta: t,
+                d: &d_vals[i],
+                a: &a_vals[i],
+                alpha: &alpha_vals[i],
             })
             .collect();
         let owned_names = self.theta_names_owned();
@@ -982,7 +975,20 @@ mod tests {
         let (q1, q2) = (ctx.symbol("q1"), ctx.symbol("q2"));
         let zero = ctx.int(0);
         let (l1, l2) = (float_to_expr(&ctx, 0.3), float_to_expr(&ctx, 0.25));
-        let dh = [(&q1, &zero, &l1, &zero), (&q2, &zero, &l2, &zero)];
+        let dh = [
+            DhLink {
+                theta: &q1,
+                d: &zero,
+                a: &l1,
+                alpha: &zero,
+            },
+            DhLink {
+                theta: &q2,
+                d: &zero,
+                a: &l2,
+                alpha: &zero,
+            },
+        ];
         let t = symplex::robotics::fk_chain(&dh);
         let (x, y, z) = symplex::robotics::fk_position(&dh);
         assert_eq!(t.get(0, 3).eval(), x);

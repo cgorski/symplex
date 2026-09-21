@@ -87,7 +87,7 @@ fn matrix_qr_decomposition() {
             Ok(m) => m,
             Err(s) => return s,
         };
-        let (q, r) = match m.qr() {
+        let Qr { q, r } = match m.qr() {
             Ok(v) => v,
             Err(e) => return Status::NotImplemented(format!("{e}")),
         };
@@ -165,7 +165,7 @@ fn matrix_jordan_form() {
             Ok(m) => m,
             Err(s) => return s,
         };
-        let (p, j) = match m.jordan_form() {
+        let JordanForm { p, j } = match m.jordan_form() {
             Ok(v) => v,
             Err(e) => return Status::NotImplemented(format!("{e}")),
         };

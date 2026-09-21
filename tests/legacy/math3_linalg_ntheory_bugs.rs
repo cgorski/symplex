@@ -507,7 +507,7 @@ fn cholesky_reconstruction() {
 fn lu_reconstruction() {
     let ctx = Context::new();
     let a = matrix![ctx, [2, 1, 1], [4, 3, 3], [8, 7, 9]];
-    if let Ok((l, u, perm)) = a.lu() {
+    if let Ok(Lu { l, u, perm }) = a.lu() {
         let lu = &l * &u;
         for (i, &pi) in perm.iter().enumerate().take(a.nrows()) {
             for j in 0..a.ncols() {

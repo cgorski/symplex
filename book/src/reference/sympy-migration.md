@@ -97,7 +97,7 @@ Before the translation table, a few structural differences to be aware of:
 | `factor_list(expr)` | `expr.factor_list(&x)` → `(content, Vec<(factor, mult)>)` |
 | `sqf_list(expr)` | `expr.sqf_list(&x)` |
 | `resultant(f, g, x)`, `discriminant(f, x)` | `f.resultant(&g, &x)`, `f.discriminant(&x)` → `Option<Ex>` |
-| `div(f, g, x)`, `gcdex(f, g, x)` | `f.poly_div(&g, &x)`, `f.poly_gcdex(&g, &x)` |
+| `div(f, g, x)`, `gcdex(f, g, x)` → `(s, t, h)` | `f.poly_div(&g, &x)`, `f.poly_gcdex(&g, &x)` → `ExtendedGcd { x: s, y: t, gcd: h }` |
 | `decompose(f, x)`, `interpolate(points, x)` | `f.decompose(&x)`, `Ex::poly_interpolate(&points, &x)` |
 | `Poly(f).nroots()`, `real_roots(f)`, `count_roots(f)` | `f.nroots(&x, digits)`, `f.real_roots_isolate(&x)`, `f.count_real_roots(&x)` |
 | `Poly(f).count_roots(inf, sup)` | `f.count_real_roots_in(&x, &lo, &hi)` / `p.count_real_roots_in(&lo, &hi)` on a `Poly` (endpoints rational or `±∞`) |
@@ -174,7 +174,7 @@ See [Polynomials as Data](../guide/polynomials.md). Generators are explicit; any
 | `nsolve(f, x, x0)` | `f.solve_numeric(&x, x0, max_iter, tol)` |
 | `nsolve([f1, f2], [x, y], [x0, y0])` | `solve_numeric_system(&[f1, f2], &[x, y], &[x0, y0])?` |
 | `dsolve(ode, y(x))` | `ode.solve_ode(&y, &x)` |
-| `dsolve(ode, y(x), ics={y(0): 0, y(x).diff(x).subs(x, 0): 1})` | `ode.solve_ode_ivp(&y, &x, &[(0, x0, v0), (1, x0, v1)])?` |
+| `dsolve(ode, y(x), ics={y(0): 0, y(x).diff(x).subs(x, 0): 1})` | `ode.solve_ode_ivp(&y, &x, &[InitialCondition { order: 0, x: x0, value: v0 }, InitialCondition { order: 1, x: x0, value: v1 }])?` |
 | `rsolve(a(n+2) - a(n+1) - a(n), a(n), {a(0): 0, a(1): 1})` | `rsolve::rsolve_linear(&[c0, c1, c2], forcing, &n, &[a0, a1])?` |
 
 ## Linear Algebra
@@ -197,7 +197,7 @@ See [Polynomials as Data](../guide/polynomials.md). Generators are explicit; any
 | `M.nullspace()` | `m.nullspace()` → `Vec<Matrix>` (also `rowspace`, `columnspace`, `left_nullspace`) |
 | integer kernel (no direct SymPy API) | `m.integer_nullspace()?` — a ℤ-basis, see [Integer Lattices](../guide/integer-lattices.md) |
 | `hermite_normal_form(M)` (`sympy.matrices.normalforms`, column style `H = A·V`) | `normalforms::column_hermite_normal_form(&m)?` (leading zero columns kept); row style `H = U·A` is `m.hermite_normal_form()?` / `hermite_normal_form_with_transform` |
-| `smith_normal_form(M)` | `m.smith_normal_form()?`, `normalforms::smith_normal_form_with_transforms(&m)?` → `(S, U, V)` |
+| `smith_normal_form(M)` | `m.smith_normal_form()?`, `normalforms::smith_normal_form_with_transforms(&m)?` → `SmithNormalForm { s, u, v }` |
 | `abs(M.det()) == 1` | `normalforms::is_unimodular(&m)?` |
 | `M.extract(rows, cols)` | `m.extract(&rows, &cols)?` |
 | `M[rows, :]`, `M[:, cols]` | `m.select_rows(&rows)?`, `m.select_cols(&cols)?` |
@@ -207,16 +207,16 @@ See [Polynomials as Data](../guide/polynomials.md). Generators are explicit; any
 | `M.subs({x: y, y: x})` (simultaneous) | `m.subs_map(&[(&x, &y), (&y, &x)])` |
 | `Matrix(rows)` from `Rational`/`int`/`float` data | `Matrix::from_ratio(&ctx, &rows)?`, `Matrix::from_bigint`, `Matrix::from_f64_rows` (exact dyadic) |
 | `[[e for e in row] for row in M.tolist()]` as numbers | `m.to_rational_rows()`, `m.to_bigint_rows()` → `Option<Vec<Vec<_>>>` |
-| `M.diagonalize()` | `m.diagonalize()?` → `(P, D)` |
+| `M.diagonalize()` | `m.diagonalize()?` → `Diagonalization { p, d }` |
 | `M.is_diagonalizable()` | `m.is_diagonalizable()` → `Option<bool>` |
-| `M.jordan_form()` | `m.jordan_form()?` → `(P, J)` |
+| `M.jordan_form()` | `m.jordan_form()?` → `JordanForm { p, j }` |
 | `M.exp()` | `m.matrix_exp()?`; `(t*M).exp()` → `m.matrix_exp_t(&t)?` |
 | `M**n` (symbolic n) | `m.matrix_pow_symbolic(&n)?` |
 | `M.sqrt()` / `M**Rational(1,2)` | `m.matrix_sqrt()?` |
-| `M.LUdecomposition()` | `m.lu()?` → `(L, U, permutation)` |
+| `M.LUdecomposition()` | `m.lu()?` → `Lu { l, u, perm }` |
 | `M.cholesky()` | `m.cholesky()?` |
-| `M.LDLdecomposition()` | `m.ldl()?` |
-| `M.QRdecomposition()` | `m.qr()?` |
+| `M.LDLdecomposition()` | `m.ldl()?` → `Ldl { l, d }` |
+| `M.QRdecomposition()` | `m.qr()?` → `Qr { q, r }` |
 | `GramSchmidt(vecs, True)` | `matrix_decomp::gram_schmidt(&vecs, true)?` |
 | `M.is_symmetric()`, `M.is_positive_definite` | `m.is_symmetric()`, `m.is_positive_definite()` → `Option<bool>` |
 | `M.norm()`, `M.norm(1)`, `M.norm(oo)` | `m.norm_frobenius()`, `m.norm_1()`, `m.norm_inf()` |
@@ -275,10 +275,10 @@ See [Polynomials as Data](../guide/polynomials.md). Generators are explicit; any
 | `sqrt_mod(a, p)`, `sqrt_mod(a, p, all_roots=True)` | `symplex::ntheory::sqrt_mod(a, p)`, `sqrt_mod_all(a, p)` |
 | `discrete_log(n, a, b)` | `symplex::ntheory::discrete_log(b, a, n)` (base, target, modulus) |
 | `primitive_root(p)`, `n_order(a, n)` | `symplex::ntheory::primitive_root(p)`, `n_order(a, n)` |
-| `continued_fraction(x)`, `continued_fraction_periodic(0, 1, d)` | `symplex::ntheory::continued_fraction(&ratio)`, `continued_fraction_periodic(d)` |
+| `continued_fraction(x)`, `continued_fraction_periodic(0, 1, d)` | `symplex::ntheory::continued_fraction(&ratio)`, `continued_fraction_periodic(d)` → `PeriodicContinuedFraction { pre_period, period }` |
 | `egyptian_fraction(r)` | `symplex::ntheory::egyptian_fraction(&r)` |
 | `diophantine(x**2 - 61*y**2 - 1)` | `symplex::diophantine::pell(61)`, `pell_solutions(61, k)` |
-| `diophantine(3*x + 5*y - 1)` | `symplex::diophantine::linear_diophantine(3, 5, 1)` |
+| `diophantine(3*x + 5*y - 1)` | `symplex::diophantine::linear_diophantine(3, 5, 1)` → `LinearDiophantine { x, y, x_step, y_step }` |
 | `sum_of_squares(n, 2)` | `symplex::diophantine::sum_of_two_squares(n)` |
 
 ## Combinatorics

@@ -186,24 +186,22 @@ fn main() {
         e
     };
     let zero = ctx.int(0);
+    // y^(order)(0) = value
+    let at0 = |order: usize, value: i64| InitialCondition {
+        order,
+        x: zero.clone(),
+        value: ctx.int(value),
+    };
 
     let ode = &d(2) + &yf; // y'' + y = 0
-    let sol = ode
-        .solve_ode_ivp(
-            &yf,
-            &x,
-            &[(0, zero.clone(), ctx.int(0)), (1, zero.clone(), ctx.int(1))],
-        )
-        .unwrap();
+    let sol = ode.solve_ode_ivp(&yf, &x, &[at0(0, 0), at0(1, 1)]).unwrap();
     println!(
         "y'' + y = 0, y(0)=0, y'(0)=1        → y = {}",
         sol.simplify()
     );
 
     let ode = &d(1) + &yf * 2; // y' + 2y = 0
-    let sol = ode
-        .solve_ode_ivp(&yf, &x, &[(0, zero.clone(), ctx.int(3))])
-        .unwrap();
+    let sol = ode.solve_ode_ivp(&yf, &x, &[at0(0, 3)]).unwrap();
     println!(
         "y' + 2y = 0, y(0)=3                  → y = {}",
         sol.simplify()
@@ -217,15 +215,7 @@ fn main() {
     println!("y''' − y' = 0  [{:?}]", ode3.classify_ode(&yf, &x));
     println!("   general: y = {}", ode3.solve_ode(&yf, &x));
     let sol = ode3
-        .solve_ode_ivp(
-            &yf,
-            &x,
-            &[
-                (0, zero.clone(), ctx.int(0)),
-                (1, zero.clone(), ctx.int(1)),
-                (2, zero.clone(), ctx.int(0)),
-            ],
-        )
+        .solve_ode_ivp(&yf, &x, &[at0(0, 0), at0(1, 1), at0(2, 0)])
         .unwrap();
     println!("   y(0)=0, y'(0)=1, y''(0)=0: y = {}", sol.simplify());
 

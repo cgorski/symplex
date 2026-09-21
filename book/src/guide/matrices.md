@@ -80,7 +80,7 @@ fn main() {
 
 ## Eigenvalues, eigenvectors, Jordan form
 
-In 0.2 the eigen family takes **no dummy variable**. `eigenvals` returns eigenvalues with repetition, `eigenvals_with_multiplicity` returns `(value, multiplicity)` pairs, `eigenvects` returns `(value, multiplicity, basis)`, `diagonalize` returns `(P, D)`, `jordan_form` returns `(P, J)`, and `is_diagonalizable` is `Option<bool>`. Use `char_poly(&λ)` / `char_poly_coeffs()` when you want the polynomial itself.
+In 0.2 the eigen family takes **no dummy variable**. `eigenvals` returns eigenvalues with repetition, `eigenvals_with_multiplicity` returns `(value, multiplicity)` pairs, `eigenvects` returns `(value, multiplicity, basis)`, `diagonalize` returns `Diagonalization { p, d }`, `jordan_form` returns `JordanForm { p, j }`, and `is_diagonalizable` is `Option<bool>`. Use `char_poly(&λ)` / `char_poly_coeffs()` when you want the polynomial itself.
 
 ```rust
 use symplex::prelude::*;
@@ -92,13 +92,13 @@ fn main() {
     for (val, mult, vecs) in s.eigenvects().unwrap() {
         println!("λ = {val} ×{mult}: {}", vecs[0].transpose());   // 3: [[1, 1]], 1: [[-1, 1]]
     }
-    let (p, d) = s.diagonalize().unwrap();
+    let Diagonalization { p, d } = s.diagonalize().unwrap();
     assert_eq!(p.matmul(&d).unwrap().matmul(&p.inv().unwrap()).unwrap().equals(&s), Some(true));
 
     let j = matrix![ctx, [5, 4, 2, 1], [0, 1, -1, -1], [-1, -1, 3, 0], [1, 1, -1, 2]];
     println!("{:?}", j.eigenvals_with_multiplicity().unwrap());   // [(4, 2), (2, 1), (1, 1)]
     println!("{:?}", j.is_diagonalizable());                      // Some(false)
-    let (_p, jordan) = j.jordan_form().unwrap();
+    let jordan = j.jordan_form().unwrap().j;
     println!("{jordan}");                                          // [[4,1,0,0],[0,4,0,0],[0,0,2,0],[0,0,0,1]]
 }
 ```
@@ -122,17 +122,21 @@ fn main() {
 
 ## Decompositions
 
+Every factorisation returns a named struct from `symplex::decompositions` (all in the prelude) rather than a tuple, so `qr.q`/`qr.r` or `let Qr { q, r } = …` say which factor is which; each struct documents the identity it satisfies.
+
 | Method | Returns | Preconditions (→ `Err`) |
 |--------|---------|-------------------------|
-| `lu()` | `(L, U, permutation)` | square |
+| `lu()` | `Lu { l, u, perm }` with `P·A = L·U` | square |
 | `cholesky()` | `L` with `L·Lᵀ = A` | symmetric, positive definite |
-| `ldl()` | `(L, D)` | symmetric |
-| `qr()` | `(Q, R)` with exact radicals | — |
+| `ldl()` | `Ldl { l, d }` with `A = L·D·Lᵀ` | symmetric |
+| `qr()` | `Qr { q, r }` with `A = Q·R`, exact radicals | — |
 | `matrix_decomp::gram_schmidt(&vectors, normalize)` | orthogonal (or orthonormal) basis | linearly independent input |
 | `rref()` | `(R, pivot_columns)` | — |
 | `pinv()` | Moore–Penrose pseudo-inverse (any rank, 0.9) | — |
-| `rank_decomposition()` (0.9) | `(C, F)` with `A = C·F`, `rank A` columns/rows | non-zero |
-| `hessenberg()` (0.9) | `(H, P)` with `H = P⁻¹AP` upper Hessenberg, no radicals | square |
+| `diagonalize()` | `Diagonalization { p, d }` with `A = P·D·P⁻¹` | square, diagonalizable |
+| `jordan_form()` | `JordanForm { p, j }` with `A = P·J·P⁻¹` | square |
+| `rank_decomposition()` (0.9) | `RankDecomposition { c, f }` with `A = C·F`, `rank A` columns/rows | non-zero |
+| `hessenberg()` (0.9) | `Hessenberg { h, p }` with `H = P⁻¹AP` upper Hessenberg, no radicals | square |
 
 ```rust
 use symplex::prelude::*;
@@ -144,12 +148,12 @@ fn main() {
     let l = spd.cholesky().unwrap();
     println!("{l}");                                             // [[2,0,0],[6,1,0],[-8,5,3]]
     assert_eq!(l.matmul(&l.transpose()).unwrap().equals(&spd), Some(true));
-    let (l, d) = spd.ldl().unwrap();
+    let Ldl { l, d } = spd.ldl().unwrap();
     println!("{l} {d}");
     assert!(matrix![ctx, [1, 2], [3, 4]].cholesky().is_err());  // not symmetric
 
     let m = matrix![ctx, [1, 1, 0], [1, 0, 1], [0, 1, 1]];
-    let (q, r) = m.qr().unwrap();
+    let Qr { q, r } = m.qr().unwrap();
     println!("{q}\n{r}");                                        // sqrt(1/2), sqrt(2/3), …
     assert_eq!(q.is_orthogonal(), Some(true));
     assert_eq!(q.matmul(&r).unwrap().simplify().equals(&m), Some(true));
@@ -159,7 +163,7 @@ fn main() {
     for b in gram_schmidt(&[v1, v2], true).unwrap() {
         println!("{}", b.transpose());
     }
-    let (lu_l, lu_u, perm) = matrix![ctx, [2, 1], [4, 3]].lu().unwrap();
+    let Lu { l: lu_l, u: lu_u, perm } = matrix![ctx, [2, 1], [4, 3]].lu().unwrap();
     println!("{lu_l} {lu_u} {perm:?}");
 }
 ```
@@ -252,7 +256,7 @@ fn main() {
 
     // ℤ: Bareiss determinant, Hermite and Smith forms, integer kernels.
     let z = ZMatrix::from_i64(&[&[2, 4, 4], &[-6, 6, 12], &[10, -4, -16]]).unwrap();
-    let (hnf, u) = z.hermite_normal_form_with_transform();
+    let HermiteNormalForm { h: hnf, u } = z.hermite_normal_form_with_transform();
     println!("{hnf:?} det U = {}", u.det().unwrap());
     // ZMatrix(3×3, [[2, 4, 4], [0, 6, 0], [0, 0, 12]]) det U = -1
     println!("{:?}", z.smith_normal_form().diagonal());     // [2, 6, 12]
@@ -370,7 +374,7 @@ fn main() {
     let ctx = Context::new();
     let a = matrix![ctx, [1, 2], [2, 4]];                    // rank 1
     println!("{}", a.pinv().unwrap());                       // [[1/25, 2/25], [2/25, 4/25]]
-    let (c, f) = matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]].rank_decomposition().unwrap();
+    let RankDecomposition { c, f } = matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]].rank_decomposition().unwrap();
     println!("{c} {f}");                                     // [[1, 2], [4, 5], [7, 8]]  [[1, 0, -1], [0, 1, 2]]
     symplex::syms!(ctx; x);
     let s = Matrix::new(vec![vec![x.clone(), x.clone()], vec![x.clone(), x.clone()]]).unwrap();
@@ -380,7 +384,7 @@ fn main() {
 
 ### Hessenberg form
 
-`hessenberg()` returns `(H, P)` with `H = P⁻¹AP` upper Hessenberg (`h_ij = 0` for `i > j + 1`), computed by Gaussian similarity transforms — row eliminations paired with the compensating column operations, with a symmetric row/column swap when the sub-diagonal entry is zero. Unlike SymPy's Householder-based `upper_hessenberg_decomposition` the result stays in the field of the entries: exact rationals for rational input, no radicals.
+`hessenberg()` returns `Hessenberg { h, p }` with `H = P⁻¹AP` upper Hessenberg (`h_ij = 0` for `i > j + 1`), computed by Gaussian similarity transforms — row eliminations paired with the compensating column operations, with a symmetric row/column swap when the sub-diagonal entry is zero. Unlike SymPy's Householder-based `upper_hessenberg_decomposition` the result stays in the field of the entries: exact rationals for rational input, no radicals.
 
 ```rust
 use symplex::prelude::*;
@@ -388,7 +392,7 @@ use symplex::prelude::*;
 fn main() {
     let ctx = Context::new();
     let a = matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 10]];
-    let (h, p) = a.hessenberg().unwrap();
+    let Hessenberg { h, p } = a.hessenberg().unwrap();
     println!("{h}");             // [[1, 29/4, 3], [4, 31/2, 6], [0, -13/8, -1/2]]
     println!("{p}");             // [[1, 0, 0], [0, 1, 0], [0, 7/4, 1]]
     assert_eq!(&a * &p, &p * &h);
@@ -438,10 +442,11 @@ fn main() {
 
 ### LLL lattice reduction
 
-`ZMatrix::lll(delta)` (and `lll_default()` with `δ = 3/4`, `lll_with_transform` for the unimodular `T` with `T·A = R`) reduces the lattice basis formed by the **rows**, with exact rational Gram–Schmidt data. The output satisfies the size condition `|μ_ij| ≤ 1/2` and the Lovász condition `‖b*_k‖² ≥ (δ − μ²_{k,k−1})‖b*_{k−1}‖²` exactly, spans the same lattice (same Hermite normal form), and — because the reduction order and rounding follow SymPy's `DomainMatrix.lll` — coincides with SymPy's output. `δ` must lie in `(1/4, 1)` and the rows must be linearly independent (a lattice basis); anything else is an `InvalidArgument` error. The same is available on `Matrix` for integer literals (`Matrix::lll`, `Matrix::lll_default`, `normalforms::lll`, `normalforms::lll_with_transform`).
+`ZMatrix::lll(delta)` (`delta` a `num_rational::Rational64`; `lll_default()` uses `δ = 3/4`, `lll_with_transform` also returns the unimodular `T` with `T·A = R` as `LllReduction { reduced, transform }`) reduces the lattice basis formed by the **rows**, with exact rational Gram–Schmidt data. The output satisfies the size condition `|μ_ij| ≤ 1/2` and the Lovász condition `‖b*_k‖² ≥ (δ − μ²_{k,k−1})‖b*_{k−1}‖²` exactly, spans the same lattice (same Hermite normal form), and — because the reduction order and rounding follow SymPy's `DomainMatrix.lll` — coincides with SymPy's output. `δ` must lie in `(1/4, 1)` and the rows must be linearly independent (a lattice basis); anything else is an `InvalidArgument` error. The same is available on `Matrix` for integer literals (`Matrix::lll`, `Matrix::lll_default`, `normalforms::lll`, `normalforms::lll_with_transform`).
 
 ```rust
 use symplex::prelude::*;
+use symplex::num_rational::Ratio;
 
 fn main() {
     let ctx = Context::new();
@@ -449,7 +454,7 @@ fn main() {
     let r = b.lll_default().unwrap();
     println!("{r:?}");                          // ZMatrix(3×3, [[0, 1, 0], [1, 0, 1], [-1, 0, 2]])  (= SymPy's .lll())
     assert_eq!(r.hermite_normal_form(), b.hermite_normal_form());   // same lattice
-    let (r2, t) = b.lll_with_transform((3, 4)).unwrap();
+    let LllReduction { reduced: r2, transform: t } = b.lll_with_transform(Ratio::new(3, 4)).unwrap();
     assert_eq!(&t * &b, r2);
     assert!(t.is_unimodular());
     println!("{}", matrix![ctx, [1, 0, 0, 1345], [0, 1, 0, 35], [0, 0, 1, 154]].lll_default().unwrap());

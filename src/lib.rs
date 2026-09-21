@@ -197,6 +197,8 @@ pub use domains::certificates;
 pub use domains::combinatorics;
 /// Control systems: state-space models, transfer functions, stability analysis.
 pub use domains::control;
+/// Named results of matrix decompositions (`Qr`, `Lu`, `HermiteNormalForm`, …) shared by `Matrix`, `ZMatrix` and `QMatrix`.
+pub use domains::decompositions;
 /// Diophantine equations.
 pub use domains::diophantine;
 /// Discrete transforms on exact sequences (convolution, NTT, Walsh–Hadamard, Möbius).
@@ -300,6 +302,7 @@ pub mod prelude {
         Bindings, RewriteOpts, RewriteStrategy, Rule, RuleSet, Step,
     };
     pub use crate::api::expr_sets_ext::reduce_inequalities;
+    pub use crate::api::expr_solve_ext::InitialCondition;
     pub use crate::api::expr_solve_ext::{
         GeneralSolution, LinearSolution, NewtonOpts, ZeroForm, linsolve, linsolve_matrix,
         solve_numeric_system, solve_numeric_system_with,
@@ -314,6 +317,10 @@ pub mod prelude {
     pub use crate::calculus::definite::{QuadOpts, QuadResult};
     pub use crate::calculus::formal_series::FormalPowerSeries;
     pub use crate::domains::control::{StateSpace, TransferFunction};
+    pub use crate::domains::decompositions::{
+        Diagonalization, HermiteNormalForm, Hessenberg, JordanForm, Ldl, LllReduction, Lu, Qr,
+        RankDecomposition, SmithNormalForm,
+    };
     pub use crate::domains::linprog::{Feasibility, LpProblem, LpSolution, LpStatus, Q};
     pub use crate::domains::matrix::{Matrix, QMatrix, ZMatrix};
     pub use crate::domains::optimize::{MinimizeOpts, MinimizeResult, RootOpts};

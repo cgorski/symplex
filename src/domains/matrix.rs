@@ -45,8 +45,11 @@
 use crate::api::context::Context;
 use crate::api::expr::{Ex, ExprType};
 use crate::base::errors::SymplexError;
+use crate::domains::decompositions::{
+    Diagonalization, Hessenberg, JordanForm, Lu, RankDecomposition,
+};
 use num_bigint::BigInt;
-use num_rational::Ratio;
+use num_rational::{Ratio, Rational64};
 use std::fmt;
 use tracing::{debug, trace, warn};
 
@@ -1986,11 +1989,11 @@ impl Matrix {
     ///
     /// let ctx = Context::new();
     /// let m = matrix![ctx, [2, 1], [0, 3]];
-    /// let (p, d) = m.diagonalize().unwrap();
+    /// let Diagonalization { p, d } = m.diagonalize().unwrap();
     /// let back = (&(&p * &d) * &p.inv().unwrap()).simplify();
     /// assert_eq!(back, m);
     /// ```
-    pub fn diagonalize(&self) -> Result<(Matrix, Matrix), SymplexError> {
+    pub fn diagonalize(&self) -> Result<Diagonalization<Matrix>, SymplexError> {
         self.require_square("diagonalize")?;
         self.check_budget("diagonalize")?;
         debug!(
@@ -2028,7 +2031,7 @@ impl Matrix {
         let p = Matrix::hstack(&p_cols)?;
         p.check_budget("diagonalize")?;
         let d = Matrix::diag(&diag_entries);
-        Ok((p, d))
+        Ok(Diagonalization { p, d })
     }
 
     /// Jordan normal form: `P` and block-diagonal `J` such that `A = P J P⁻¹`.
@@ -2053,10 +2056,10 @@ impl Matrix {
     /// let ctx = Context::new();
     /// // Defective: eigenvalue 2 with algebraic mult 2, geometric mult 1
     /// let m = matrix![ctx, [2, 1, 0, 0], [0, 2, 0, 0], [0, 0, 3, 0], [0, 0, 0, 4]];
-    /// let (p, j) = m.jordan_form().unwrap();
+    /// let JordanForm { p, j } = m.jordan_form().unwrap();
     /// assert_eq!((&(&p * &j) * &p.inv().unwrap()).simplify(), m);
     /// ```
-    pub fn jordan_form(&self) -> Result<(Matrix, Matrix), SymplexError> {
+    pub fn jordan_form(&self) -> Result<JordanForm<Matrix>, SymplexError> {
         self.require_square("jordan_form")?;
         self.check_budget("jordan_form")?;
         let n = self.nrows;
@@ -2069,7 +2072,8 @@ impl Matrix {
         let total_vecs: usize = eigvs.iter().map(|(_, _, v)| v.len()).sum();
         let all_match = eigvs.iter().all(|(_, m, v)| v.len() == *m);
         if all_match && total_vecs == n {
-            return self.diagonalize();
+            let Diagonalization { p, d } = self.diagonalize()?;
+            return Ok(JordanForm { p, j: d });
         }
 
         let total_alg: usize = eigvs.iter().map(|(_, m, _)| *m).sum();
@@ -2184,7 +2188,7 @@ impl Matrix {
         let col_refs: Vec<&Matrix> = basis_cols.iter().collect();
         let p = Matrix::hstack(&col_refs)?;
         p.check_budget("jordan_form")?;
-        Ok((p, j))
+        Ok(JordanForm { p, j })
     }
 
     /// Integer power of a square matrix via repeated squaring.
@@ -2334,7 +2338,7 @@ impl Matrix {
         let n = self.nrows;
         let ctx = self.ctx();
 
-        let (p, j) = self.jordan_form().map_err(|e| match e {
+        let JordanForm { p, j } = self.jordan_form().map_err(|e| match e {
             SymplexError::ComputationFailed { reason, .. }
                 if reason.starts_with("expression swell") =>
             {
@@ -2526,18 +2530,21 @@ impl Matrix {
     ///
     /// let ctx = Context::new();
     /// let a = matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]];
-    /// let (c, f) = a.rank_decomposition().unwrap();
+    /// let RankDecomposition { c, f } = a.rank_decomposition().unwrap();
     /// assert_eq!(c, matrix![ctx, [1, 2], [4, 5], [7, 8]]);
     /// assert_eq!(f, matrix![ctx, [1, 0, -1], [0, 1, 2]]);
     /// assert_eq!(&c * &f, a);
     /// ```
-    pub fn rank_decomposition(&self) -> Result<(Matrix, Matrix), SymplexError> {
+    pub fn rank_decomposition(&self) -> Result<RankDecomposition<Matrix>, SymplexError> {
         let ctx = self.ctx();
         if let Some(q) = self.as_qmatrix() {
-            let (c, f) = q
+            let RankDecomposition { c, f } = q
                 .rank_decomposition()
                 .map_err(|e| reop(e, "rank_decomposition"))?;
-            return Ok((c.to_matrix(&ctx), f.to_matrix(&ctx)));
+            return Ok(RankDecomposition {
+                c: c.to_matrix(&ctx),
+                f: f.to_matrix(&ctx),
+            });
         }
         let (r, pivots) = self.rref();
         if pivots.is_empty() {
@@ -2548,7 +2555,7 @@ impl Matrix {
         }
         let c = self.select_cols(&pivots)?;
         let f = r.select_rows(&(0..pivots.len()).collect::<Vec<_>>())?;
-        Ok((c, f))
+        Ok(RankDecomposition { c, f })
     }
 
     /// Singular values: the square roots of the eigenvalues of `AᵀA`,
@@ -2675,11 +2682,11 @@ impl Matrix {
         Ok(&max / &min)
     }
 
-    /// Upper Hessenberg form by Gaussian similarity transforms: `(H, P)`
-    /// with `H = P⁻¹ A P` and `h_ij = 0` for `i > j + 1`.  SymPy:
-    /// `Matrix.upper_hessenberg_decomposition()` (Householder reflections,
-    /// hence radicals; this variant uses eliminations and stays in the
-    /// field of the entries).
+    /// Upper Hessenberg form by Gaussian similarity transforms:
+    /// [`Hessenberg`]`{ h, p }` with `H = P⁻¹ A P` and `h_ij = 0` for
+    /// `i > j + 1`.  SymPy: `Matrix.upper_hessenberg_decomposition()`
+    /// (Householder reflections, hence radicals; this variant uses
+    /// eliminations and stays in the field of the entries).
     ///
     /// Column `k` is cleared below the sub-diagonal with the first usable
     /// entry as pivot — moved into row `k + 1` by a symmetric row/column
@@ -2706,7 +2713,7 @@ impl Matrix {
     ///
     /// let ctx = Context::new();
     /// let a = matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 10]];
-    /// let (h, p) = a.hessenberg().unwrap();
+    /// let Hessenberg { h, p } = a.hessenberg().unwrap();
     /// assert!(h[(2, 0)].is_zero_structural());
     /// assert_eq!(&a * &p, &p * &h);
     /// // One elimination with f = 7/4: row₂ −= f·row₁, col₁ += f·col₂.
@@ -2717,12 +2724,15 @@ impl Matrix {
     /// ]).unwrap());
     /// assert_eq!(h[(2, 1)], ctx.rational(-13, 8));
     /// ```
-    pub fn hessenberg(&self) -> Result<(Matrix, Matrix), SymplexError> {
+    pub fn hessenberg(&self) -> Result<Hessenberg<Matrix>, SymplexError> {
         self.require_square("hessenberg")?;
         let ctx = self.ctx();
         if let Some(q) = self.as_qmatrix() {
-            let (h, p) = q.hessenberg().map_err(|e| reop(e, "hessenberg"))?;
-            return Ok((h.to_matrix(&ctx), p.to_matrix(&ctx)));
+            let Hessenberg { h, p } = q.hessenberg().map_err(|e| reop(e, "hessenberg"))?;
+            return Ok(Hessenberg {
+                h: h.to_matrix(&ctx),
+                p: p.to_matrix(&ctx),
+            });
         }
         self.check_budget("hessenberg")?;
         let n = self.nrows;
@@ -2802,10 +2812,10 @@ impl Matrix {
             }
             budget_check(h.iter().flatten().chain(p.iter().flatten()), "hessenberg")?;
         }
-        Ok((
-            Matrix::from_rows_unchecked(h),
-            Matrix::from_rows_unchecked(p),
-        ))
+        Ok(Hessenberg {
+            h: Matrix::from_rows_unchecked(h),
+            p: Matrix::from_rows_unchecked(p),
+        })
     }
 }
 
@@ -3071,11 +3081,11 @@ impl Matrix {
 impl Matrix {
     /// LU decomposition with partial pivoting: `P·A = L·U`.
     ///
-    /// Returns `(L, U, perm)` where `L` is unit lower triangular, `U` is
-    /// upper triangular and `perm` is the row permutation (`perm[i]` is
-    /// the original index of row `i` of `P·A`).  Pivots are chosen as the
-    /// first structurally non-zero entry, so symbolic entries are treated
-    /// as non-zero.
+    /// Returns [`Lu`]`{ l, u, perm }` where `L` is unit lower triangular,
+    /// `U` is upper triangular and `perm` is the row permutation (`perm[i]`
+    /// is the original index of row `i` of `P·A`).  Pivots are chosen as
+    /// the first structurally non-zero entry, so symbolic entries are
+    /// treated as non-zero.
     ///
     /// # Errors
     ///
@@ -3089,13 +3099,13 @@ impl Matrix {
     ///
     /// let ctx = Context::new();
     /// let a = matrix![ctx, [4, 3], [6, 3]];
-    /// let (l, u, perm) = a.lu().unwrap();
+    /// let Lu { l, u, perm } = a.lu().unwrap();
     /// // Rebuild P·A from perm and compare with L·U
     /// let pa = Matrix::new(perm.iter().map(|&i| a.row(i).to_vec()).collect()).unwrap();
     /// assert_eq!((&l * &u).eval(), pa);
     /// assert!(matrix![ctx, [1, 2], [2, 4]].lu().is_err());
     /// ```
-    pub fn lu(&self) -> Result<(Matrix, Matrix, Vec<usize>), SymplexError> {
+    pub fn lu(&self) -> Result<Lu<Matrix>, SymplexError> {
         self.require_square("lu")?;
         let n = self.nrows;
 
@@ -3147,11 +3157,11 @@ impl Matrix {
             }
         }
 
-        Ok((
-            Matrix::from_rows_unchecked(l),
-            Matrix::from_rows_unchecked(u),
+        Ok(Lu {
+            l: Matrix::from_rows_unchecked(l),
+            u: Matrix::from_rows_unchecked(u),
             perm,
-        ))
+        })
     }
 
     /// Row-reduced echelon form via Gauss–Jordan elimination.
@@ -4129,8 +4139,8 @@ impl Matrix {
     }
 
     /// LLL-reduced basis of the lattice spanned by the rows of an integer
-    /// matrix, Lovász parameter `δ = num/den`.  See [`ZMatrix::lll`] for
-    /// the guarantees and
+    /// matrix, Lovász parameter `δ` (a [`Rational64`]).  See
+    /// [`ZMatrix::lll`] for the guarantees and
     /// [`normalforms::lll_with_transform`](crate::normalforms::lll_with_transform)
     /// for the unimodular transform.  SymPy: `Matrix.lll(delta)`.
     ///
@@ -4143,12 +4153,13 @@ impl Matrix {
     ///
     /// ```
     /// use symplex::prelude::*;
+    /// use symplex::num_rational::Ratio;
     ///
     /// let ctx = Context::new();
     /// let b = matrix![ctx, [1, 1, 1], [-1, 0, 2], [3, 5, 6]];
-    /// assert_eq!(b.lll((3, 4)).unwrap(), matrix![ctx, [0, 1, 0], [1, 0, 1], [-1, 0, 2]]);
+    /// assert_eq!(b.lll(Ratio::new(3, 4)).unwrap(), matrix![ctx, [0, 1, 0], [1, 0, 1], [-1, 0, 2]]);
     /// ```
-    pub fn lll(&self, delta: (i64, i64)) -> Result<Matrix, SymplexError> {
+    pub fn lll(&self, delta: Rational64) -> Result<Matrix, SymplexError> {
         crate::domains::normalforms::lll(self, delta)
     }
 
@@ -5462,7 +5473,7 @@ mod tests {
     fn diagonalize_upper_triangular() {
         let ctx = tctx();
         let m = Matrix::from_i64(&ctx, &[&[2, 1], &[0, 3]]).unwrap();
-        let (p, d) = m.diagonalize().unwrap();
+        let Diagonalization { p, d } = m.diagonalize().unwrap();
         assert_eq!(p.nrows(), 2);
         assert_eq!(d.nrows(), 2);
         let p_inv = p.inv().unwrap();
@@ -5494,7 +5505,7 @@ mod tests {
     fn jordan_form_diagonal() {
         let ctx = tctx();
         let m = Matrix::diag(&[ctx.int(1), ctx.int(2), ctx.int(3)]);
-        let (p, j) = m.jordan_form().unwrap();
+        let JordanForm { p, j } = m.jordan_form().unwrap();
         assert_eq!(j.nrows(), 3);
         let p_inv = p.inv().unwrap();
         let reconstructed = p.matmul(&j).unwrap().matmul(&p_inv).unwrap();
@@ -5505,7 +5516,7 @@ mod tests {
     fn jordan_form_defective_2x2() {
         let ctx = tctx();
         let m = Matrix::from_i64(&ctx, &[&[1, 1], &[0, 1]]).unwrap();
-        let (p, j) = m.jordan_form().unwrap();
+        let JordanForm { p, j } = m.jordan_form().unwrap();
         assert_eq!(j.nrows(), 2);
         assert!(j.get(0, 1).is_one_structural(), "J[0,1] should be 1");
         let reconstructed = p.matmul(&j).unwrap().matmul(&p.inv().unwrap()).unwrap();
@@ -5516,7 +5527,7 @@ mod tests {
     fn jordan_form_upper_triangular_distinct() {
         let ctx = tctx();
         let m = Matrix::from_i64(&ctx, &[&[2, 1], &[0, 3]]).unwrap();
-        let (p, j) = m.jordan_form().unwrap();
+        let JordanForm { p, j } = m.jordan_form().unwrap();
         assert_eq!(j.nrows(), 2);
         let reconstructed = p.matmul(&j).unwrap().matmul(&p.inv().unwrap()).unwrap();
         assert_zero_matrix(&(&reconstructed - &m), "P·J·P⁻¹ = M");
@@ -5599,7 +5610,7 @@ mod tests {
     fn lu_returns_result() {
         let ctx = tctx();
         let a = Matrix::from_i64(&ctx, &[&[4, 3], &[6, 3]]).unwrap();
-        let (l, u, perm) = a.lu().unwrap();
+        let Lu { l, u, perm } = a.lu().unwrap();
         assert_eq!(perm.len(), 2);
         let pa = Matrix::new(perm.iter().map(|&i| a.row(i).to_vec()).collect()).unwrap();
         assert_zero_matrix(&(&(&l * &u) - &pa), "L·U = P·A");

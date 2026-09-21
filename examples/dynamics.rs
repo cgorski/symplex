@@ -39,7 +39,13 @@ fn main() {
     println!("V = {pe}");
 
     // Euler-Lagrange equations: d/dt(∂L/∂q̇) - ∂L/∂q = τ
-    let eqs = euler_lagrange(&ke, &pe, &[(&q, &qd)], &[&qdd]).unwrap();
+    // Each generalized coordinate carries its own velocity and acceleration.
+    let coords = [GeneralizedCoordinate {
+        q: &q,
+        q_dot: &qd,
+        q_ddot: &qdd,
+    }];
+    let eqs = euler_lagrange(&ke, &pe, &coords);
     println!("\nEquation of motion:");
     println!("  τ = {}", eqs[0]);
 
@@ -112,13 +118,19 @@ fn main() {
     println!("  {pe_double}");
 
     // Euler-Lagrange equations
-    let eqs_double = euler_lagrange(
-        &ke_double,
-        &pe_double,
-        &[(&q1, &qd1), (&q2, &qd2)],
-        &[&qdd1, &qdd2],
-    )
-    .unwrap();
+    let coords_double = [
+        GeneralizedCoordinate {
+            q: &q1,
+            q_dot: &qd1,
+            q_ddot: &qdd1,
+        },
+        GeneralizedCoordinate {
+            q: &q2,
+            q_dot: &qd2,
+            q_ddot: &qdd2,
+        },
+    ];
+    let eqs_double = euler_lagrange(&ke_double, &pe_double, &coords_double);
     println!("\nEquation of motion (joint 1):");
     println!("  τ₁ = {}", eqs_double[0]);
     println!("\nEquation of motion (joint 2):");
@@ -156,12 +168,11 @@ fn main() {
     println!("  C[1,1] = {}", coriolis.get(1, 1));
 
     // ── Full manipulator equation via convenience function ─────────
-    let (mass, cor, grav) =
-        manipulator_equation(&ke_double, &pe_double, &[&q1, &q2], &[&qd1, &qd2]).unwrap();
-    println!("\nFull manipulator equation: M(q)q̈ + C(q,q̇)q̇ + g(q) = τ");
-    println!("  M shape: {:?}", mass.shape());
-    println!("  C shape: {:?}", cor.shape());
-    println!("  g length: {}", grav.len());
+    let manip = manipulator_equation(&ke_double, &pe_double, &[&q1, &q2], &[&qd1, &qd2]).unwrap();
+    println!("\nFull manipulator equation: M(q)q̈ + C(q,q̇)q̇ + G(q) = τ");
+    println!("  M shape: {:?}", manip.mass.shape());
+    println!("  C shape: {:?}", manip.coriolis.shape());
+    println!("  G length: {}", manip.gravity.len());
 
     // ── Christoffel symbols ────────────────────────────────────────
     let christoffel = christoffel_symbols(&mm_double, &[&q1, &q2]).unwrap();
@@ -263,7 +274,7 @@ fn main() {
     // ── Total time derivative ──────────────────────────────────────
     println!("\n--- Total Time Derivative ---");
     // d/dt(q1) = qd1
-    let dt_q1 = total_time_derivative(&q1, &[(&q1, &qd1), (&q2, &qd2)], &[&qdd1, &qdd2]).unwrap();
+    let dt_q1 = total_time_derivative(&q1, &coords_double);
     let dt_q1_val = dt_q1.subs(&qd1, &ctx.int(7)).subs(&qd2, &ctx.int(0)).eval();
     println!("d/dt(q1) = {dt_q1}");
     println!("  at qd1=7: {dt_q1_val}");

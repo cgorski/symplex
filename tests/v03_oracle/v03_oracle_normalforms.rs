@@ -252,7 +252,7 @@ fn normalforms_row_hnf_matches_derived_reference_and_is_unimodular() {
             }
         }
         // H = U·A with U unimodular.
-        let (h2, u) = match hermite_normal_form_with_transform(&m) {
+        let HermiteNormalForm { h: h2, u } = match hermite_normal_form_with_transform(&m) {
             Ok(v) => v,
             Err(e) => return Status::Fail(format!("with_transform: {e}")),
         };
@@ -351,7 +351,7 @@ fn normalforms_smith_invariant_factors() {
             return Status::Fail(format!("{} invariant factors for rank {rank}", nz.len()));
         }
         // S = U·A·V with unimodular U, V.
-        let (s2, u, v) = match smith_normal_form_with_transforms(&m) {
+        let SmithNormalForm { s: s2, u, v } = match smith_normal_form_with_transforms(&m) {
             Ok(t) => t,
             Err(e) => return Status::Fail(format!("with_transforms: {e}")),
         };

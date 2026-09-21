@@ -183,7 +183,7 @@ fn main() {
 
 Build the ODE as an expression in `y` and `y.formal_diff(&x)` (nested for higher orders) and call `solve_ode(&y, &x)`. `classify_ode` names the class; 0.2 supports 16: simple/full separable, first-order linear (constant/variable coefficient), exact, integrating factor, Bernoulli, Riccati, Euler–Cauchy, homogeneous-coefficient, second-order constant-coefficient (homogeneous/non-homogeneous), variation of parameters, reduction of order, **nth-order constant-coefficient**, and **Clairaut**.
 
-`solve_ode_ivp(&y, &x, &[(k, x0, value), …])` pins the constants with conditions `y^(k)(x0) = value`. `solve_riccati` takes a known particular solution. `ode::solve_ode_system_ivp(&A, &t, &x0)` solves `x' = A x` with initial state.
+`solve_ode_ivp(&y, &x, &[InitialCondition { order: k, x: x0, value }, …])` pins the constants with conditions `y^(k)(x0) = value`. `solve_riccati` takes a known particular solution. `ode::solve_ode_system_ivp(&A, &t, &x0)` solves `x' = A x` with initial state.
 
 ```rust
 use symplex::prelude::*;
@@ -199,7 +199,11 @@ fn main() {
     let ode = &d2 + &y;
     println!("{:?}", ode.classify_ode(&y, &x));              // SecondOrderLinearCCHomogeneous
     println!("{}", ode.solve_ode(&y, &x));                   // C1*cos(x) + C2*sin(x)
-    let sol = ode.solve_ode_ivp(&y, &x, &[(0, zero.clone(), ctx.int(0)), (1, zero.clone(), ctx.int(1))]).unwrap();
+    let ics = [
+        InitialCondition { order: 0, x: zero.clone(), value: ctx.int(0) },   // y(0) = 0
+        InitialCondition { order: 1, x: zero.clone(), value: ctx.int(1) },   // y'(0) = 1
+    ];
+    let sol = ode.solve_ode_ivp(&y, &x, &ics).unwrap();
     println!("{}", sol.simplify());                          // sin(x)
 
     let third = &d2.formal_diff(&x) - &d1;                   // y''' − y' = 0

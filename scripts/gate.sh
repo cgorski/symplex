@@ -70,6 +70,10 @@ for stage in $STAGES; do
             run_stage macros   120  sh -c 'cd symplex-macros && cargo test'
             run_stage build    120  sh -c 'cd symplex-build && cargo test'
             run_stage wasm     300  sh -c 'cd symplex-wasm && cargo build'
+            # CI also checks the 32-bit wasm target: `usize` is 32 bits there (0.13.0
+            # shipped `1 << 40` as a `usize` const and CI was red for three releases).
+            run_stage wasm32   600  cargo check --manifest-path symplex-wasm/Cargo.toml --target wasm32-unknown-unknown
+            run_stage fuzz     300  cargo check --manifest-path fuzz/Cargo.toml
             ;;
         examples)
             for e in certificates_to_lean readme_snippets polynomials exact_matrices polyhedron_certificates control_system dynamics; do

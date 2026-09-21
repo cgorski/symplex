@@ -36,9 +36,9 @@
 //! assert_eq!(a.inv().unwrap()[(0, 1)], q(-1, 5));
 //!
 //! let z = ZMatrix::from_i64(&[&[2, 4, 4], &[-6, 6, 12], &[10, -4, -16]]).unwrap();
-//! let (h, u) = z.hermite_normal_form_with_transform();
-//! assert_eq!(h, ZMatrix::from_i64(&[&[2, 4, 4], &[0, 6, 0], &[0, 0, 12]]).unwrap());
-//! assert_eq!(&u * &z, h);
+//! let hnf = z.hermite_normal_form_with_transform();
+//! assert_eq!(hnf.h, ZMatrix::from_i64(&[&[2, 4, 4], &[0, 6, 0], &[0, 0, 12]]).unwrap());
+//! assert_eq!(&hnf.u * &z, hnf.h);
 //! let s = z.smith_normal_form();
 //! assert_eq!(s.diagonal(), ZMatrix::from_i64(&[&[2, 6, 12]]).unwrap().row(0).to_vec());
 //! ```
@@ -48,12 +48,15 @@ use std::hash::Hash;
 
 use num_bigint::BigInt;
 use num_integer::Integer;
-use num_rational::Ratio;
+use num_rational::{Ratio, Rational64};
 use num_traits::{One, Signed, Zero};
 
 use crate::api::context::Context;
 use crate::base::errors::SymplexError;
 use crate::base::numeric::Q;
+use crate::domains::decompositions::{
+    HermiteNormalForm, Hessenberg, LllReduction, RankDecomposition, SmithNormalForm,
+};
 use crate::domains::matrix::Matrix;
 use crate::domains::ntheory::{gcdex, mod_inverse};
 
@@ -1152,7 +1155,7 @@ impl ZMatrix {
             u.sub_scaled_row(i, r, &quot);
             return;
         }
-        let (g, x, y) = gcdex(pivot.clone(), other.clone());
+        let num_integer::ExtendedGcd { gcd: g, x, y } = gcdex(pivot.clone(), other.clone());
         let p = -(&other / &g);
         let q = &pivot / &g;
         self.combine_rows(r, i, &x, &y, &p, &q);
@@ -1179,7 +1182,7 @@ impl ZMatrix {
             v.sub_scaled_col(j, t, &quot);
             return;
         }
-        let (g, x, y) = gcdex(pivot.clone(), other.clone());
+        let num_integer::ExtendedGcd { gcd: g, x, y } = gcdex(pivot.clone(), other.clone());
         let p = -(&other / &g);
         let q = &pivot / &g;
         self.combine_cols(t, j, &x, &y, &p, &q);
@@ -1249,11 +1252,11 @@ impl ZMatrix {
         self.row_hnf().0
     }
 
-    /// Row-style Hermite normal form with its transform: `(H, U)`,
-    /// `H = U·A`, `det U = ±1`.
-    pub fn hermite_normal_form_with_transform(&self) -> (ZMatrix, ZMatrix) {
+    /// Row-style Hermite normal form with its transform:
+    /// [`HermiteNormalForm`]`{ h, u }` with `H = U·A`, `det U = ±1`.
+    pub fn hermite_normal_form_with_transform(&self) -> HermiteNormalForm<ZMatrix> {
         let (h, u, _) = self.row_hnf();
-        (h, u)
+        HermiteNormalForm { h, u }
     }
 
     /// Column-style Hermite normal form `H = A·V` (Cohen's Algorithm 2.4.5,
@@ -1367,10 +1370,11 @@ impl ZMatrix {
         self.smith().0
     }
 
-    /// Smith normal form with transforms `(S, U, V)`, `S = U·A·V`,
-    /// `det U = det V = ±1`.
-    pub fn smith_normal_form_with_transforms(&self) -> (ZMatrix, ZMatrix, ZMatrix) {
-        self.smith()
+    /// Smith normal form with transforms [`SmithNormalForm`]`{ s, u, v }`,
+    /// `S = U·A·V`, `det U = det V = ±1`.
+    pub fn smith_normal_form_with_transforms(&self) -> SmithNormalForm<ZMatrix> {
+        let (s, u, v) = self.smith();
+        SmithNormalForm { s, u, v }
     }
 
     /// A ℤ-basis of the integer kernel `{x ∈ ℤⁿ : A·x = 0}`, as `n × 1`
@@ -1446,7 +1450,7 @@ impl ZMatrix {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Lovász parameter of [`ZMatrix::lll_default`]: `δ = 3/4`.
-pub const LLL_DEFAULT_DELTA: (i64, i64) = (3, 4);
+pub const LLL_DEFAULT_DELTA: Rational64 = Ratio::new_raw(3, 4);
 
 impl ZMatrix {
     /// Inverse modulo `m`: the integer matrix `B` with entries in `[0, m)`
@@ -1520,7 +1524,7 @@ impl ZMatrix {
     }
 
     /// Lenstra–Lenstra–Lovász reduction of the lattice basis formed by the
-    /// **rows**, with Lovász parameter `δ = num/den`.  SymPy:
+    /// **rows**, with Lovász parameter `δ` (a [`Rational64`]).  SymPy:
     /// `Matrix.lll(delta)`.
     ///
     /// The Gram–Schmidt data is kept as exact rationals, so the result is
@@ -1544,20 +1548,22 @@ impl ZMatrix {
     ///
     /// ```
     /// use symplex::matrix::ZMatrix;
+    /// use symplex::num_rational::Ratio;
     ///
     /// let b = ZMatrix::from_i64(&[&[1, 1, 1], &[-1, 0, 2], &[3, 5, 6]]).unwrap();
-    /// let r = b.lll((3, 4)).unwrap();
+    /// let r = b.lll(Ratio::new(3, 4)).unwrap();
     /// assert_eq!(r, ZMatrix::from_i64(&[&[0, 1, 0], &[1, 0, 1], &[-1, 0, 2]]).unwrap());
     /// // Same lattice: identical Hermite normal forms.
     /// assert_eq!(r.hermite_normal_form(), b.hermite_normal_form());
-    /// assert!(b.lll((1, 4)).is_err());
+    /// assert!(b.lll(Ratio::new(1, 4)).is_err());
     /// ```
-    pub fn lll(&self, delta: (i64, i64)) -> Result<ZMatrix, SymplexError> {
+    pub fn lll(&self, delta: Rational64) -> Result<ZMatrix, SymplexError> {
         self.lll_impl(delta, false).map(|(y, _)| y)
     }
 
-    /// LLL reduction together with the unimodular transform: `(R, T)` with
-    /// `R = T·A` (`det T = ±1`).  SymPy: `Matrix.lll_transform(delta)`.
+    /// LLL reduction together with the unimodular transform:
+    /// [`LllReduction`]`{ reduced, transform }` with `reduced = T·A`
+    /// (`det T = ±1`).  SymPy: `Matrix.lll_transform(delta)`.
     ///
     /// # Errors
     ///
@@ -1567,34 +1573,35 @@ impl ZMatrix {
     ///
     /// ```
     /// use symplex::matrix::ZMatrix;
+    /// use symplex::num_rational::Ratio;
     ///
     /// let b = ZMatrix::from_i64(&[&[1, 1, 1], &[-1, 0, 2], &[3, 5, 6]]).unwrap();
-    /// let (r, t) = b.lll_with_transform((3, 4)).unwrap();
-    /// assert_eq!(&t * &b, r);
-    /// assert!(t.is_unimodular());
+    /// let lll = b.lll_with_transform(Ratio::new(3, 4)).unwrap();
+    /// assert_eq!(&lll.transform * &b, lll.reduced);
+    /// assert!(lll.transform.is_unimodular());
     /// ```
     pub fn lll_with_transform(
         &self,
-        delta: (i64, i64),
-    ) -> Result<(ZMatrix, ZMatrix), SymplexError> {
-        let (y, t) = self.lll_impl(delta, true)?;
-        let t = t.ok_or_else(|| {
+        delta: Rational64,
+    ) -> Result<LllReduction<ZMatrix>, SymplexError> {
+        let (reduced, t) = self.lll_impl(delta, true)?;
+        let transform = t.ok_or_else(|| {
             failed(
                 "lll_with_transform",
                 "internal invariant violated: transform was not tracked",
             )
         })?;
-        Ok((y, t))
+        Ok(LllReduction { reduced, transform })
     }
 
     /// LLL core (SymPy's `_ddm_lll`): exact rational Gram–Schmidt with the
     /// incremental `μ` / `‖b*‖²` updates on a swap.
     fn lll_impl(
         &self,
-        delta: (i64, i64),
+        delta: Rational64,
         track: bool,
     ) -> Result<(ZMatrix, Option<ZMatrix>), SymplexError> {
-        let (num, den) = delta;
+        let (num, den) = (*delta.numer(), *delta.denom());
         if den == 0 {
             return Err(invalid("lll", "delta denominator must be non-zero"));
         }
@@ -2116,18 +2123,20 @@ impl QMatrix {
     /// use symplex::matrix::QMatrix;
     ///
     /// let a = QMatrix::from_i64(&[&[1, 2, 3], &[4, 5, 6], &[7, 8, 9]]).unwrap();
-    /// let (c, f) = a.rank_decomposition().unwrap();
-    /// assert_eq!(c, QMatrix::from_i64(&[&[1, 2], &[4, 5], &[7, 8]]).unwrap());
-    /// assert_eq!(f, QMatrix::from_i64(&[&[1, 0, -1], &[0, 1, 2]]).unwrap());
-    /// assert_eq!(&c * &f, a);
+    /// let rd = a.rank_decomposition().unwrap();
+    /// assert_eq!(rd.c, QMatrix::from_i64(&[&[1, 2], &[4, 5], &[7, 8]]).unwrap());
+    /// assert_eq!(rd.f, QMatrix::from_i64(&[&[1, 0, -1], &[0, 1, 2]]).unwrap());
+    /// assert_eq!(&rd.c * &rd.f, a);
     /// ```
-    pub fn rank_decomposition(&self) -> Result<(QMatrix, QMatrix), SymplexError> {
-        self.rank_factors().ok_or_else(|| {
-            failed(
-                "rank_decomposition",
-                "matrix is zero (rank 0); the factors C (m×0) and F (0×n) would be empty",
-            )
-        })
+    pub fn rank_decomposition(&self) -> Result<RankDecomposition<QMatrix>, SymplexError> {
+        self.rank_factors()
+            .map(|(c, f)| RankDecomposition { c, f })
+            .ok_or_else(|| {
+                failed(
+                    "rank_decomposition",
+                    "matrix is zero (rank 0); the factors C (m×0) and F (0×n) would be empty",
+                )
+            })
     }
 
     /// Moore–Penrose pseudo-inverse `A⁺` (`n × m`), exact for any rank.
@@ -2177,10 +2186,11 @@ impl QMatrix {
             .map_err(internal)
     }
 
-    /// Upper Hessenberg form by Gaussian similarity transforms: `(H, P)`
-    /// with `H = P⁻¹ A P` and `h_ij = 0` for `i > j + 1`.  SymPy:
-    /// `Matrix.upper_hessenberg_decomposition()` (which uses Householder
-    /// reflections and therefore radicals; this variant stays in ℚ).
+    /// Upper Hessenberg form by Gaussian similarity transforms:
+    /// [`Hessenberg`]`{ h, p }` with `H = P⁻¹ A P` and `h_ij = 0` for
+    /// `i > j + 1`.  SymPy: `Matrix.upper_hessenberg_decomposition()` (which
+    /// uses Householder reflections and therefore radicals; this variant
+    /// stays in ℚ).
     ///
     /// Column `k` is cleared below the sub-diagonal with the first nonzero
     /// candidate as pivot (a symmetric row/column swap when it is not
@@ -2195,16 +2205,17 @@ impl QMatrix {
     /// # Examples
     ///
     /// ```
+    /// use symplex::decompositions::Hessenberg;
     /// use symplex::matrix::QMatrix;
     /// use symplex::linprog::q;
     ///
     /// let a = QMatrix::from_i64(&[&[1, 2, 3], &[4, 5, 6], &[7, 8, 10]]).unwrap();
-    /// let (h, p) = a.hessenberg().unwrap();
+    /// let Hessenberg { h, p } = a.hessenberg().unwrap();
     /// assert_eq!(h[(2, 0)], q(0, 1));
     /// assert_eq!(&a * &p, &p * &h);          // A P = P H
     /// assert_eq!(p.inv().unwrap() * &a * &p, h);
     /// ```
-    pub fn hessenberg(&self) -> Result<(QMatrix, QMatrix), SymplexError> {
+    pub fn hessenberg(&self) -> Result<Hessenberg<QMatrix>, SymplexError> {
         self.require_square("hessenberg")?;
         let n = self.nrows;
         let mut h = self.clone();
@@ -2248,7 +2259,7 @@ impl QMatrix {
                 }
             }
         }
-        Ok((h, p))
+        Ok(Hessenberg { h, p })
     }
 }
 
@@ -2671,7 +2682,7 @@ mod tests {
     #[test]
     fn hnf_and_snf_match_normalforms_conventions() {
         let a = z(&[&[2, 4, 4], &[-6, 6, 12], &[10, -4, -16]]);
-        let (h, u) = a.hermite_normal_form_with_transform();
+        let HermiteNormalForm { h, u } = a.hermite_normal_form_with_transform();
         assert_eq!(h, z(&[&[2, 4, 4], &[0, 6, 0], &[0, 0, 12]]));
         assert_eq!(&u * &a, h);
         assert_eq!(u.det().unwrap().abs(), BigInt::one());
@@ -2679,7 +2690,7 @@ mod tests {
             a.smith_normal_form(),
             z(&[&[2, 0, 0], &[0, 6, 0], &[0, 0, 12]])
         );
-        let (s, u, v) = a.smith_normal_form_with_transforms();
+        let SmithNormalForm { s, u, v } = a.smith_normal_form_with_transforms();
         assert_eq!(&(&u * &a) * &v, s);
         assert!(u.is_unimodular() && v.is_unimodular());
 
@@ -2709,7 +2720,9 @@ mod tests {
             let a = random_z(4, 5, seed);
             let h = a.hermite_normal_form();
             assert_eq!(h.hermite_normal_form(), h);
-            let (_, u) = random_z(4, 4, seed + 7).hermite_normal_form_with_transform();
+            let u = random_z(4, 4, seed + 7)
+                .hermite_normal_form_with_transform()
+                .u;
             assert!(u.is_unimodular());
             assert_eq!((&u * &a).hermite_normal_form(), h);
         }

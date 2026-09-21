@@ -160,7 +160,7 @@ fn diagonalize_reconstructs_quadratic_radical_eigenvalues() {
     // (irrational but quadratic → closed-form radicals are kept).
     let m = matrix![ctx, [2, 2, 1], [1, 2, 1], [0, 0, 1]];
     assert_eq!(m.is_diagonalizable(), Some(true));
-    let (p, d) = m.diagonalize().unwrap();
+    let Diagonalization { p, d } = m.diagonalize().unwrap();
     assert_eq!(d.is_diagonal(), Some(true));
     assert!(d.iter().all(|e| !e.to_string().contains("RootOf")), "{d}");
     let two_root_two = &ctx.int(2) + &ctx.int(2).sqrt();
@@ -178,7 +178,7 @@ fn diagonalize_reconstructs_quadratic_radical_eigenvalues() {
 fn diagonalize_reconstructs_rational_eigenvalues() {
     let ctx = Context::new();
     let m = matrix![ctx, [4, 1, 2], [0, 3, 1], [0, 0, 5]];
-    let (p, d) = m.diagonalize().unwrap();
+    let Diagonalization { p, d } = m.diagonalize().unwrap();
     let mut diag: Vec<String> = d.diagonal().iter().map(|e| e.to_string()).collect();
     diag.sort();
     assert_eq!(diag, ["3", "4", "5"]);
@@ -193,7 +193,7 @@ fn jordan_form_reconstructs_defective_3x3() {
     let j3 = matrix![ctx, [5, 1, 0], [0, 5, 0], [0, 0, 7]];
     assert_eq!(j3.is_diagonalizable(), Some(false));
     assert!(j3.diagonalize().is_err());
-    let (p, j) = j3.jordan_form().unwrap();
+    let JordanForm { p, j } = j3.jordan_form().unwrap();
     assert_zero(&(&(&(&p * &j) * &p.inv().unwrap()) - &j3), "P J P⁻¹ = A");
     assert!(j.get(0, 1).is_one_structural() || j.get(1, 2).is_one_structural());
 }
@@ -206,7 +206,7 @@ fn eigenvals_4x4_repeated_and_jordan_reconstruct() {
     ev.sort_by_key(|(v, _)| v.to_string());
     assert_eq!(ev, vec![(ctx.int(2), 3), (ctx.int(3), 1)]);
     assert_eq!(a.is_diagonalizable(), Some(false));
-    let (p, j) = a.jordan_form().unwrap();
+    let JordanForm { p, j } = a.jordan_form().unwrap();
     assert_eq!((&(&p * &j) * &p.inv().unwrap()).eval(), a);
     // exactly one superdiagonal 1: J₂(2) ⊕ J₁(2) ⊕ J₁(3)
     let ones = (0..3)
@@ -220,7 +220,7 @@ fn jordan_form_single_nilpotent_block_4x4() {
     let ctx = Context::new();
     let n = matrix![ctx, [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1], [0, 0, 0, 0]];
     assert_eq!(n.is_nilpotent(), Some(true));
-    let (p, j) = n.jordan_form().unwrap();
+    let JordanForm { p, j } = n.jordan_form().unwrap();
     assert_eq!(j, n, "already in Jordan form: one J₄(0) block");
     assert_eq!((&(&p * &j) * &p.inv().unwrap()).eval(), n);
     // e^{Nt} = I + Nt + N²t²/2 + N³t³/6
@@ -234,7 +234,7 @@ fn jordan_form_single_nilpotent_block_4x4() {
 fn jordan_form_two_nilpotent_blocks() {
     let ctx = Context::new();
     let n = matrix![ctx, [0, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1], [0, 0, 0, 0]];
-    let (p, j) = n.jordan_form().unwrap();
+    let JordanForm { p, j } = n.jordan_form().unwrap();
     assert_eq!((&(&p * &j) * &p.inv().unwrap()).eval(), n);
     let ones = j.iter().filter(|e| e.is_one_structural()).count();
     assert_eq!(ones, 2, "two J₂(0) blocks: {j}");
@@ -257,7 +257,7 @@ fn cubic_eigenvalues_use_rootof_and_finish_fast() {
             "{s}"
         );
     }
-    let (p, d) = m.diagonalize().unwrap();
+    let Diagonalization { p, d } = m.diagonalize().unwrap();
     let back = &(&p * &d) * &p.inv().unwrap();
     for i in 0..3 {
         for j in 0..3 {

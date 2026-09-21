@@ -3,14 +3,19 @@
 //!
 //! # Denavit-Hartenberg Convention
 //!
-//! Each joint in a serial robot arm is described by four parameters:
-//! - θ (theta): joint angle (variable for revolute joints)
-//! - d: link offset along z-axis
-//! - a: link length along x-axis
-//! - α (alpha): link twist angle
+//! Each joint in a serial robot arm is described by four parameters, in the
+//! *standard* (distal) DH convention `Tᵢ = Rz(θᵢ)·Tz(dᵢ)·Tx(aᵢ)·Rx(αᵢ)`:
+//! - θ (theta): joint angle, rotation about zᵢ₋₁ (variable for revolute joints)
+//! - d: link offset, translation along zᵢ₋₁ (variable for prismatic joints)
+//! - a: link length, translation along xᵢ
+//! - α (alpha): link twist, rotation about xᵢ
 //!
-//! These produce a 4×4 homogeneous transformation matrix per joint.
-//! Chaining these matrices gives the forward kinematics.
+//! These produce a 4×4 homogeneous transformation matrix per joint
+//! ([`dh_matrix`]).  Chaining these matrices gives the forward kinematics
+//! ([`fk_chain`]).  A chain is a slice of [`DhLink`]s (symbolic `Ex`
+//! parameters) or, with compile-time dimension checking, of [`DhParams`]
+//! (`Angle`/`Length`); both name the four parameters so `d` and `a` — two
+//! lengths — cannot be transposed silently.
 
 use crate::domains::matrix::Matrix;
 use crate::poly::multipoly::{GrevLex, MultiPoly};
@@ -102,6 +107,44 @@ fn mul_square(a: &Matrix, b: &Matrix) -> Matrix {
     })
 }
 
+/// The four standard Denavit-Hartenberg parameters of one link, as symbolic
+/// expressions.
+///
+/// [`dh_matrix`] turns a link into its 4×4 transform
+/// `Rz(theta)·Tz(d)·Tx(a)·Rx(alpha)`; [`fk_chain`], [`fk_position`] and
+/// [`fk_rotation`] take a slice of links.  The fields are borrowed so that a
+/// chain can share one `zero` between links (as every planar arm does)
+/// without cloning, mirroring the dimension-typed [`DhParams`].
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::robotics::DhLink;
+///
+/// let ctx = Context::new();
+/// let theta = ctx.symbol("theta");
+/// let zero = ctx.int(0);
+/// let l = ctx.symbol("L");
+///
+/// // A planar revolute joint: only the angle and the link length are non-zero.
+/// let link = DhLink { theta: &theta, d: &zero, a: &l, alpha: &zero };
+/// assert_eq!(format!("{}", link.a), "L");
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DhLink<'a> {
+    /// θᵢ — joint angle: rotation about the previous z-axis zᵢ₋₁ (the joint
+    /// variable of a revolute joint).
+    pub theta: &'a Ex,
+    /// dᵢ — link offset: translation along the previous z-axis zᵢ₋₁ (the
+    /// joint variable of a prismatic joint).
+    pub d: &'a Ex,
+    /// aᵢ — link length: translation along the new x-axis xᵢ.
+    pub a: &'a Ex,
+    /// αᵢ — link twist: rotation about the new x-axis xᵢ.
+    pub alpha: &'a Ex,
+}
+
 /// Chain-multiply a sequence of DH transformation matrices to compute
 /// the total forward-kinematics transformation.
 ///
@@ -116,26 +159,26 @@ fn mul_square(a: &Matrix, b: &Matrix) -> Matrix {
 ///
 /// ```
 /// use symplex::prelude::*;
-/// use symplex::robotics::{dh_matrix, fk_chain};
+/// use symplex::robotics::{dh_matrix, fk_chain, DhLink};
 ///
 /// let ctx = Context::new();
 /// let theta1 = ctx.symbol("theta1");
 /// let zero = ctx.int(0);
 /// let l1 = ctx.symbol("L1");
 ///
-/// let params = [(&theta1, &zero, &l1, &zero)];
-/// let t = fk_chain(&params);
+/// let links = [DhLink { theta: &theta1, d: &zero, a: &l1, alpha: &zero }];
+/// let t = fk_chain(&links);
 /// assert_eq!(t.shape(), (4, 4));
 /// ```
-pub fn fk_chain(dh_params: &[(&Ex, &Ex, &Ex, &Ex)]) -> Matrix {
-    let ctx = if let Some(&(first, _, _, _)) = dh_params.first() {
-        first.context()
+pub fn fk_chain(links: &[DhLink<'_>]) -> Matrix {
+    let ctx = if let Some(first) = links.first() {
+        first.theta.context()
     } else {
         crate::api::context::Context::new()
     };
     let mut result = Matrix::identity(&ctx, 4);
-    for &(theta, d, a, alpha) in dh_params {
-        result = mul_square(&result, &dh_matrix(theta, d, a, alpha));
+    for link in links {
+        result = mul_square(&result, &dh_matrix(link.theta, link.d, link.a, link.alpha));
     }
     result
 }
@@ -150,18 +193,18 @@ pub fn fk_chain(dh_params: &[(&Ex, &Ex, &Ex, &Ex)]) -> Matrix {
 ///
 /// ```
 /// use symplex::prelude::*;
-/// use symplex::robotics::fk_position;
+/// use symplex::robotics::{fk_position, DhLink};
 ///
 /// let ctx = Context::new();
 /// let theta = ctx.symbol("theta");
 /// let zero = ctx.int(0);
 /// let l = ctx.symbol("L");
 ///
-/// let (x, y, z) = fk_position(&[(&theta, &zero, &l, &zero)]);
+/// let (x, y, z) = fk_position(&[DhLink { theta: &theta, d: &zero, a: &l, alpha: &zero }]);
 /// // x, y, z are symbolic expressions
 /// ```
-pub fn fk_position(dh_params: &[(&Ex, &Ex, &Ex, &Ex)]) -> (Ex, Ex, Ex) {
-    let t = fk_chain(dh_params);
+pub fn fk_position(links: &[DhLink<'_>]) -> (Ex, Ex, Ex) {
+    let t = fk_chain(links);
     let px = t.get(0, 3).clone().eval();
     let py = t.get(1, 3).clone().eval();
     let pz = t.get(2, 3).clone().eval();
@@ -177,18 +220,18 @@ pub fn fk_position(dh_params: &[(&Ex, &Ex, &Ex, &Ex)]) -> (Ex, Ex, Ex) {
 ///
 /// ```
 /// use symplex::prelude::*;
-/// use symplex::robotics::fk_rotation;
+/// use symplex::robotics::{fk_rotation, DhLink};
 ///
 /// let ctx = Context::new();
 /// let theta = ctx.symbol("theta");
 /// let zero = ctx.int(0);
 /// let l = ctx.symbol("L");
 ///
-/// let r = fk_rotation(&[(&theta, &zero, &l, &zero)]);
+/// let r = fk_rotation(&[DhLink { theta: &theta, d: &zero, a: &l, alpha: &zero }]);
 /// assert_eq!(r.shape(), (3, 3));
 /// ```
-pub fn fk_rotation(dh_params: &[(&Ex, &Ex, &Ex, &Ex)]) -> Matrix {
-    let t = fk_chain(dh_params);
+pub fn fk_rotation(links: &[DhLink<'_>]) -> Matrix {
+    let t = fk_chain(links);
     Matrix::from_fn(3, 3, |i, j| t.get(i, j).clone())
 }
 
@@ -471,11 +514,61 @@ pub fn inverse_kinematics_2dof(l1: f64, l2: f64, target_x: f64, target_y: f64) -
 // Dimension-typed robotics API
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Typed DH parameter tuple: (joint_angle, link_offset, link_length, link_twist).
+/// The four standard Denavit-Hartenberg parameters of one link, with
+/// compile-time dimensional checking: the two angles are [`Angle`], the two
+/// lengths are [`Length`].
 ///
-/// Provides compile-time dimensional checking: angles are `Angle`,
-/// lengths are `Length`. Swapping an angle and a length is a compile error.
-pub type DhParams<'a> = (&'a Angle, &'a Length, &'a Length, &'a Angle);
+/// Putting an angle in a length slot is a compile error, and the named
+/// fields keep the two lengths (`d`, `a`) and the two angles (`theta`,
+/// `alpha`) from being transposed.  The fields have the same meaning as on
+/// the symbolic [`DhLink`]; `DhLink::from(params)` erases the units.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::units::si::*;
+/// use symplex::robotics::{DhLink, DhParams};
+///
+/// let ctx = Context::new();
+/// let theta = Angle::symbol(&ctx, "theta");
+/// let l = Length::rational(&ctx, 3, 10);
+/// let zero_l = Length::zero(&ctx);
+/// let zero_a = Angle::zero(&ctx);
+///
+/// let params = DhParams { theta: &theta, d: &zero_l, a: &l, alpha: &zero_a };
+/// let link = DhLink::from(params);
+/// assert_eq!(format!("{}", link.a), "3/10");
+/// ```
+#[derive(Clone, Copy, Debug)]
+pub struct DhParams<'a> {
+    /// θᵢ — joint angle: rotation about the previous z-axis zᵢ₋₁ (the joint
+    /// variable of a revolute joint).
+    pub theta: &'a Angle,
+    /// dᵢ — link offset: translation along the previous z-axis zᵢ₋₁ (the
+    /// joint variable of a prismatic joint).
+    pub d: &'a Length,
+    /// aᵢ — link length: translation along the new x-axis xᵢ.
+    pub a: &'a Length,
+    /// αᵢ — link twist: rotation about the new x-axis xᵢ.
+    pub alpha: &'a Angle,
+}
+
+impl<'a> From<DhParams<'a>> for DhLink<'a> {
+    /// Erase the units: each field becomes its underlying `Ex`.
+    fn from(params: DhParams<'a>) -> Self {
+        DhLink {
+            theta: params.theta.inner(),
+            d: params.d.inner(),
+            a: params.a.inner(),
+            alpha: params.alpha.inner(),
+        }
+    }
+}
+
+fn untyped_links<'a>(dh_params: &[DhParams<'a>]) -> Vec<DhLink<'a>> {
+    dh_params.iter().map(|&p| DhLink::from(p)).collect()
+}
 
 /// Compute end-effector position from typed DH parameters.
 ///
@@ -487,7 +580,7 @@ pub type DhParams<'a> = (&'a Angle, &'a Length, &'a Length, &'a Angle);
 /// ```
 /// use symplex::prelude::*;
 /// use symplex::units::si::*;
-/// use symplex::robotics::fk_position_typed;
+/// use symplex::robotics::{fk_position_typed, DhParams};
 ///
 /// let ctx = Context::new();
 /// let theta1 = Angle::symbol(&ctx, "theta1");
@@ -496,7 +589,7 @@ pub type DhParams<'a> = (&'a Angle, &'a Length, &'a Length, &'a Angle);
 /// let zero_a = Angle::zero(&ctx);
 ///
 /// let (px, py, pz) = fk_position_typed(&[
-///     (&theta1, &zero_l, &l1, &zero_a),
+///     DhParams { theta: &theta1, d: &zero_l, a: &l1, alpha: &zero_a },
 /// ]);
 /// // px, py, pz are Length — guaranteed at compile time
 /// assert_eq!(format!("{}", px.inner()), "3/10*cos(theta1)");
@@ -504,12 +597,7 @@ pub type DhParams<'a> = (&'a Angle, &'a Length, &'a Length, &'a Angle);
 /// assert_eq!(format!("{}", pz.inner()), "0");
 /// ```
 pub fn fk_position_typed(dh_params: &[DhParams<'_>]) -> (Length, Length, Length) {
-    let untyped: Vec<(&Ex, &Ex, &Ex, &Ex)> = dh_params
-        .iter()
-        .map(|(theta, d, a, alpha)| (theta.inner(), d.inner(), a.inner(), alpha.inner()))
-        .collect();
-
-    let (px, py, pz) = fk_position(&untyped);
+    let (px, py, pz) = fk_position(&untyped_links(dh_params));
     (
         Length::from_ex(px),
         Length::from_ex(py),
@@ -519,20 +607,10 @@ pub fn fk_position_typed(dh_params: &[DhParams<'_>]) -> (Length, Length, Length)
 
 /// Compute the full 4×4 FK transformation matrix from typed DH parameters.
 pub fn fk_chain_typed(dh_params: &[DhParams<'_>]) -> Matrix {
-    let untyped: Vec<(&Ex, &Ex, &Ex, &Ex)> = dh_params
-        .iter()
-        .map(|(theta, d, a, alpha)| (theta.inner(), d.inner(), a.inner(), alpha.inner()))
-        .collect();
-
-    fk_chain(&untyped)
+    fk_chain(&untyped_links(dh_params))
 }
 
 /// Compute the 3×3 rotation matrix from typed DH parameters.
 pub fn fk_rotation_typed(dh_params: &[DhParams<'_>]) -> Matrix {
-    let untyped: Vec<(&Ex, &Ex, &Ex, &Ex)> = dh_params
-        .iter()
-        .map(|(theta, d, a, alpha)| (theta.inner(), d.inner(), a.inner(), alpha.inner()))
-        .collect();
-
-    fk_rotation(&untyped)
+    fk_rotation(&untyped_links(dh_params))
 }

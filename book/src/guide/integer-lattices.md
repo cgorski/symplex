@@ -8,7 +8,7 @@ Since 0.3.5 the algorithms live on [`ZMatrix`](./matrices.md#exact-matrices-over
 
 ## Hermite normal form (row style): `H = U·A`
 
-`hermite_normal_form(&a)` returns the row-style HNF: a row-echelon matrix with **positive pivots**, every entry **above** a pivot reduced into `[0, pivot)`, and zero rows at the bottom. There is a unimodular `U` (`det U = ±1`) with `H = U·A`; `hermite_normal_form_with_transform` returns `(H, U)`. Because this `H` is unique, the function is idempotent and `HNF(V·A) = HNF(A)` for every unimodular `V` — the rows of `H` are a canonical basis of the row lattice of `A`.
+`hermite_normal_form(&a)` returns the row-style HNF: a row-echelon matrix with **positive pivots**, every entry **above** a pivot reduced into `[0, pivot)`, and zero rows at the bottom. There is a unimodular `U` (`det U = ±1`) with `H = U·A`; `hermite_normal_form_with_transform` returns `HermiteNormalForm { h, u }`. Because this `H` is unique, the function is idempotent and `HNF(V·A) = HNF(A)` for every unimodular `V` — the rows of `H` are a canonical basis of the row lattice of `A`.
 
 ```rust
 use symplex::prelude::*;
@@ -19,7 +19,7 @@ fn main() {
     let a = matrix![ctx, [2, 4, 4], [-6, 6, 12], [10, -4, -16]];
     let h = hermite_normal_form(&a).unwrap();
     println!("{h}");
-    let (h2, u) = hermite_normal_form_with_transform(&a).unwrap();
+    let HermiteNormalForm { h: h2, u } = hermite_normal_form_with_transform(&a).unwrap();
     assert_eq!(h, h2);
     println!("{u}");
     println!("{}", (&u * &a).eval() == h);                     // true   — H = U·A, verified
@@ -110,7 +110,7 @@ Which convention you want depends on what the rows and columns *mean*: the row f
 
 ## Smith normal form: `S = U·A·V`
 
-`smith_normal_form` returns `diag(d₁, …, dᵣ, 0, …)` with `dᵢ > 0` and `dᵢ | dᵢ₊₁`. The `dᵢ` (the *invariant factors*) are unique: `d₁⋯dₖ` is the gcd of the `k×k` minors of `A`, and for a square nonsingular matrix `d₁⋯dₙ = |det A|`. `smith_normal_form_with_transforms` returns `(S, U, V)` with `S = U·A·V` and both transforms unimodular.
+`smith_normal_form` returns `diag(d₁, …, dᵣ, 0, …)` with `dᵢ > 0` and `dᵢ | dᵢ₊₁`. The `dᵢ` (the *invariant factors*) are unique: `d₁⋯dₖ` is the gcd of the `k×k` minors of `A`, and for a square nonsingular matrix `d₁⋯dₙ = |det A|`. `smith_normal_form_with_transforms` returns `SmithNormalForm { s, u, v }` with `S = U·A·V` and both transforms unimodular.
 
 ```rust
 use symplex::prelude::*;
@@ -120,7 +120,7 @@ fn main() {
     let ctx = Context::new();
     let m = matrix![ctx, [12, 6, 4], [3, 9, 6], [2, 16, 14]];
     println!("{}", smith_normal_form(&m).unwrap());
-    let (s, u, v) = smith_normal_form_with_transforms(&m).unwrap();
+    let SmithNormalForm { s, u, v } = smith_normal_form_with_transforms(&m).unwrap();
     println!("{}", (&(&u * &m) * &v).eval() == s);          // true
     println!("{} {}", u.det().unwrap(), v.det().unwrap());   // 1 1
     println!("{}", m.det().unwrap());                        // 300 = 1·10·30

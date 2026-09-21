@@ -1558,7 +1558,7 @@ mod tests {
         // verify s*a + t*b = gcd(a, b) (Bézout's identity)
         let a = Poly::from_coeffs(vec![ri(-1), ri(0), ri(0), ri(1)]); // x^3 - 1
         let b = Poly::from_coeffs(vec![ri(-1), ri(0), ri(1)]); // x^2 - 1
-        let (s, t, g) = Poly::extended_gcd(&a, &b);
+        let num_integer::ExtendedGcd { gcd: g, x: s, y: t } = Poly::extended_gcd(&a, &b);
 
         // Check that g divides both a and b
         assert!(a.rem(&g).is_zero(), "gcd should divide a");
@@ -1581,7 +1581,7 @@ mod tests {
         // For coprime polynomials, gcd should be 1 and s*a + t*b = 1
         let a = Poly::from_coeffs(vec![ri(1), ri(0), ri(1)]); // x^2 + 1
         let b = Poly::from_coeffs(vec![ri(1), ri(1)]); // x + 1
-        let (s, t, g) = Poly::extended_gcd(&a, &b);
+        let num_integer::ExtendedGcd { gcd: g, x: s, y: t } = Poly::extended_gcd(&a, &b);
 
         assert!(g.is_constant(), "gcd of coprime polys should be constant");
         assert_eq!(g.coeff(0), ri(1), "gcd should be 1");

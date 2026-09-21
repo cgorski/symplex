@@ -32,7 +32,14 @@ fn total_time_derivative_constant() {
     let qdd = ctx.symbol("qdd");
 
     let c = ctx.int(5);
-    let result = total_time_derivative(&c, &[(&q, &qd)], &[&qdd]).unwrap();
+    let result = total_time_derivative(
+        &c,
+        &[GeneralizedCoordinate {
+            q: &q,
+            q_dot: &qd,
+            q_ddot: &qdd,
+        }],
+    );
     let val = result.eval().eval_f64().unwrap();
     assert_near(val, 0.0, 1e-12, "d/dt(5) should be 0");
 }
@@ -45,7 +52,14 @@ fn total_time_derivative_linear_q() {
     let qd = ctx.symbol("qd");
     let qdd = ctx.symbol("qdd");
 
-    let result = total_time_derivative(&q, &[(&q, &qd)], &[&qdd]).unwrap();
+    let result = total_time_derivative(
+        &q,
+        &[GeneralizedCoordinate {
+            q: &q,
+            q_dot: &qd,
+            q_ddot: &qdd,
+        }],
+    );
     // Substitute qd = 7 and check
     let val = result.subs(&qd, &ctx.int(7)).eval().eval_f64().unwrap();
     assert_near(val, 7.0, 1e-12, "d/dt(q) should be qd");
@@ -60,7 +74,14 @@ fn total_time_derivative_q_squared() {
     let qdd = ctx.symbol("qdd");
 
     let q_sq = q.powi(2);
-    let result = total_time_derivative(&q_sq, &[(&q, &qd)], &[&qdd]).unwrap();
+    let result = total_time_derivative(
+        &q_sq,
+        &[GeneralizedCoordinate {
+            q: &q,
+            q_dot: &qd,
+            q_ddot: &qdd,
+        }],
+    );
     // Substitute q=3, qd=2: expect 2*3*2 = 12
     let val = result
         .subs(&q, &ctx.int(3))
@@ -82,7 +103,14 @@ fn total_time_derivative_kinetic_energy() {
 
     let half = ctx.rational(1, 2);
     let ke = &half * &m * &qd.powi(2);
-    let result = total_time_derivative(&ke, &[(&q, &qd)], &[&qdd]).unwrap();
+    let result = total_time_derivative(
+        &ke,
+        &[GeneralizedCoordinate {
+            q: &q,
+            q_dot: &qd,
+            q_ddot: &qdd,
+        }],
+    );
 
     // Substitute m=2, qd=3, qdd=5: expect 2*3*5 = 30
     let val = result
@@ -113,7 +141,15 @@ fn euler_lagrange_free_particle() {
     let ke = &half * &m * &qd.powi(2);
     let pe = ctx.int(0);
 
-    let eqs = euler_lagrange(&ke, &pe, &[(&q, &qd)], &[&qdd]).unwrap();
+    let eqs = euler_lagrange(
+        &ke,
+        &pe,
+        &[GeneralizedCoordinate {
+            q: &q,
+            q_dot: &qd,
+            q_ddot: &qdd,
+        }],
+    );
     assert_eq!(eqs.len(), 1);
 
     // Substitute m=3, qdd=4: expect τ = 3*4 = 12
@@ -143,7 +179,15 @@ fn euler_lagrange_spring() {
     let ke = &half * &m * &qd.powi(2);
     let pe = &half * &k * &q.powi(2);
 
-    let eqs = euler_lagrange(&ke, &pe, &[(&q, &qd)], &[&qdd]).unwrap();
+    let eqs = euler_lagrange(
+        &ke,
+        &pe,
+        &[GeneralizedCoordinate {
+            q: &q,
+            q_dot: &qd,
+            q_ddot: &qdd,
+        }],
+    );
     assert_eq!(eqs.len(), 1);
 
     // At m=2, k=5, q=3, qdd=4, qd=0: expect 2*4 + 5*3 = 8+15 = 23
@@ -175,7 +219,15 @@ fn euler_lagrange_pendulum() {
     let ke = &half * &m_sym * &l_sym.powi(2) * &qd.powi(2);
     let pe = -(&m_sym * &g_sym * &l_sym * &q.cos());
 
-    let eqs = euler_lagrange(&ke, &pe, &[(&q, &qd)], &[&qdd]).unwrap();
+    let eqs = euler_lagrange(
+        &ke,
+        &pe,
+        &[GeneralizedCoordinate {
+            q: &q,
+            q_dot: &qd,
+            q_ddot: &qdd,
+        }],
+    );
     assert_eq!(eqs.len(), 1);
 
     // Numeric check: q=0.5, qd=0.1, qdd=0, m=1, L=1, g=9.8
@@ -453,14 +505,15 @@ fn manipulator_equation_free_particle() {
     let ke = &half * &m * &qd.powi(2);
     let pe = ctx.int(0);
 
-    let (mass, coriolis, grav) = manipulator_equation(&ke, &pe, &[&q], &[&qd]).unwrap();
+    let eq = manipulator_equation(&ke, &pe, &[&q], &[&qd]).unwrap();
 
-    assert_eq!(mass.shape(), (1, 1));
-    assert_eq!(coriolis.shape(), (1, 1));
-    assert_eq!(grav.len(), 1);
+    assert_eq!(eq.mass.shape(), (1, 1));
+    assert_eq!(eq.coriolis.shape(), (1, 1));
+    assert_eq!(eq.gravity.len(), 1);
 
     // M[0,0] = m → 5
-    let m_val = mass
+    let m_val = eq
+        .mass
         .get(0, 0)
         .subs(&m, &ctx.int(5))
         .eval()
@@ -469,7 +522,8 @@ fn manipulator_equation_free_particle() {
     assert_near(m_val, 5.0, 1e-12, "M[0,0] = m = 5");
 
     // C[0,0] = 0
-    let c_val = coriolis
+    let c_val = eq
+        .coriolis
         .get(0, 0)
         .subs(&m, &ctx.int(5))
         .subs(&q, &ctx.int(1))
@@ -480,7 +534,7 @@ fn manipulator_equation_free_particle() {
     assert_near(c_val, 0.0, 1e-12, "C[0,0] = 0");
 
     // g[0] = 0
-    let g_val = grav[0].eval().eval_f64().unwrap();
+    let g_val = eq.gravity[0].eval().eval_f64().unwrap();
     assert_near(g_val, 0.0, 1e-12, "g[0] = 0");
 }
 
@@ -498,10 +552,11 @@ fn manipulator_equation_spring_pendulum() {
     let ke = &half * &m * &qd.powi(2);
     let pe = &half * &k * &q.powi(2);
 
-    let (mass, _coriolis, grav) = manipulator_equation(&ke, &pe, &[&q], &[&qd]).unwrap();
+    let eq = manipulator_equation(&ke, &pe, &[&q], &[&qd]).unwrap();
 
     // M[0,0] = m
-    let m_val = mass
+    let m_val = eq
+        .mass
         .get(0, 0)
         .subs(&m, &ctx.int(4))
         .eval()
@@ -511,7 +566,7 @@ fn manipulator_equation_spring_pendulum() {
 
     // g[0] = ∂V/∂q = k·q
     // At k=3, q=2: g = 6
-    let g_val = grav[0]
+    let g_val = eq.gravity[0]
         .subs(&k, &ctx.int(3))
         .subs(&q, &ctx.int(2))
         .eval()
@@ -543,13 +598,22 @@ fn euler_lagrange_matches_manipulator_equation() {
     let pe = -(&m_sym * &g_sym * &l_sym * &q.cos());
 
     // Euler-Lagrange
-    let eqs = euler_lagrange(&ke, &pe, &[(&q, &qd)], &[&qdd]).unwrap();
+    let eqs = euler_lagrange(
+        &ke,
+        &pe,
+        &[GeneralizedCoordinate {
+            q: &q,
+            q_dot: &qd,
+            q_ddot: &qdd,
+        }],
+    );
 
     // Manipulator equation
-    let (mass, coriolis, grav) = manipulator_equation(&ke, &pe, &[&q], &[&qd]).unwrap();
+    let eq = manipulator_equation(&ke, &pe, &[&q], &[&qd]).unwrap();
 
     // M·q̈ + C·q̇ + g for 1-DOF: M[0,0]·qdd + C[0,0]·qd + g[0]
-    let manip_result = &(mass.get(0, 0) * &qdd) + &(&(coriolis.get(0, 0) * &qd) + &grav[0]);
+    let manip_result =
+        &(eq.mass.get(0, 0) * &qdd) + &(&(eq.coriolis.get(0, 0) * &qd) + &eq.gravity[0]);
 
     // Evaluate both at specific values
     let m_val = ctx.int(2);
@@ -601,7 +665,14 @@ fn total_time_derivative_of_velocity() {
     let qd = ctx.symbol("qd");
     let qdd = ctx.symbol("qdd");
 
-    let result = total_time_derivative(&qd, &[(&q, &qd)], &[&qdd]).unwrap();
+    let result = total_time_derivative(
+        &qd,
+        &[GeneralizedCoordinate {
+            q: &q,
+            q_dot: &qd,
+            q_ddot: &qdd,
+        }],
+    );
     // Should be qdd; substitute qdd=42, expect 42
     let val = result
         .subs(&qdd, &ctx.int(42))
@@ -622,7 +693,14 @@ fn total_time_derivative_mixed() {
     let qdd = ctx.symbol("qdd");
 
     let expr = &q * &qd;
-    let result = total_time_derivative(&expr, &[(&q, &qd)], &[&qdd]).unwrap();
+    let result = total_time_derivative(
+        &expr,
+        &[GeneralizedCoordinate {
+            q: &q,
+            q_dot: &qd,
+            q_ddot: &qdd,
+        }],
+    );
 
     // At q=2, qd=3, qdd=5: expect 3² + 2·5 = 9 + 10 = 19
     let val = result

@@ -9,6 +9,7 @@
 //! undefined, e.g. the discriminant of a constant).
 
 use num_bigint::BigInt;
+use num_integer::ExtendedGcd;
 use num_rational::Ratio;
 use num_traits::{One, Signed, Zero};
 
@@ -460,8 +461,9 @@ impl Expr<Numeric> {
         self.poly_div(other, var).map(|(_, r)| r)
     }
 
-    /// Extended Euclidean algorithm: `(s, t, g)` with
-    /// `s · self + t · other = g = gcd(self, other)` and `g` monic.
+    /// Extended Euclidean algorithm: [`ExtendedGcd`]` { gcd, x, y }` with
+    /// `x · self + y · other = gcd = gcd(self, other)` and `gcd` monic
+    /// (SymPy `gcdex(f, g)` returns the same three values as `(s, t, h)`).
     ///
     /// Returns `None` if either expression is not polynomial in `var`.
     ///
@@ -474,26 +476,30 @@ impl Expr<Numeric> {
     /// let x = ctx.symbol("x");
     /// let f = &x.powi(2) - 1;
     /// let g = &x.powi(2) - &x * 2 + 1;   // (x − 1)²
-    /// let (s, t, gcd) = f.poly_gcdex(&g, &x).unwrap();
-    /// assert_eq!(format!("{gcd}"), "x - 1");
-    /// let check = (&s * &f + &t * &g).expand();
+    /// let e = f.poly_gcdex(&g, &x).unwrap();
+    /// assert_eq!(format!("{}", e.gcd), "x - 1");
+    /// let check = (&e.x * &f + &e.y * &g).expand();
     /// assert_eq!(format!("{check}"), "x - 1");
     /// ```
     #[must_use]
-    pub fn poly_gcdex(&self, other: &Ex, var: &Ex) -> Option<(Ex, Ex, Ex)> {
+    pub fn poly_gcdex(&self, other: &Ex, var: &Ex) -> Option<ExtendedGcd<Ex>> {
         let other_id = self.checked_id(other);
         let var_id = self.checked_id(var);
         let (s, t, g) = {
             let mut inner = self.inner.write();
             let a = expr_to_poly(&inner.arena, self.raw_id(), var_id)?;
             let b = expr_to_poly(&inner.arena, other_id, var_id)?;
-            let (s, t, g) = Poly::extended_gcd(&a, &b);
-            let s = poly_to_expr(&mut inner.arena, &s, var_id);
-            let t = poly_to_expr(&mut inner.arena, &t, var_id);
-            let g = poly_to_expr(&mut inner.arena, &g, var_id);
+            let ExtendedGcd { gcd, x, y } = Poly::extended_gcd(&a, &b);
+            let s = poly_to_expr(&mut inner.arena, &x, var_id);
+            let t = poly_to_expr(&mut inner.arena, &y, var_id);
+            let g = poly_to_expr(&mut inner.arena, &gcd, var_id);
             (s, t, g)
         };
-        Some((self.wrap(s), self.wrap(t), self.wrap(g)))
+        Some(ExtendedGcd {
+            gcd: self.wrap(g),
+            x: self.wrap(s),
+            y: self.wrap(t),
+        })
     }
 
     // ── Structure ──────────────────────────────────────────────────

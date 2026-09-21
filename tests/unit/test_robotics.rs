@@ -105,7 +105,12 @@ fn fk_chain_single_joint() {
     let l1 = ctx.symbol("L1");
 
     let single_dh = dh_matrix(&theta1, &zero, &l1, &zero);
-    let chain = fk_chain(&[(&theta1, &zero, &l1, &zero)]);
+    let chain = fk_chain(&[DhLink {
+        theta: &theta1,
+        d: &zero,
+        a: &l1,
+        alpha: &zero,
+    }]);
 
     // Substitute concrete values and compare numerically
     let theta_val = ctx.rational(3, 10); // 0.3
@@ -154,8 +159,18 @@ fn fk_chain_two_joint_planar() {
     let zero = ctx.int(0);
 
     let params = [
-        (&theta1, &zero, &l1_sym, &zero),
-        (&theta2, &zero, &l2_sym, &zero),
+        DhLink {
+            theta: &theta1,
+            d: &zero,
+            a: &l1_sym,
+            alpha: &zero,
+        },
+        DhLink {
+            theta: &theta2,
+            d: &zero,
+            a: &l2_sym,
+            alpha: &zero,
+        },
     ];
     let t = fk_chain(&params);
 
@@ -227,8 +242,18 @@ fn fk_position_two_joint() {
     let zero = ctx.int(0);
 
     let params = [
-        (&theta1, &zero, &l1_sym, &zero),
-        (&theta2, &zero, &l2_sym, &zero),
+        DhLink {
+            theta: &theta1,
+            d: &zero,
+            a: &l1_sym,
+            alpha: &zero,
+        },
+        DhLink {
+            theta: &theta2,
+            d: &zero,
+            a: &l2_sym,
+            alpha: &zero,
+        },
     ];
     let (x, y, z) = fk_position(&params);
 
@@ -299,8 +324,18 @@ fn fk_jacobian_two_joint() {
     let zero = ctx.int(0);
 
     let params = [
-        (&theta1, &zero, &l1_sym, &zero),
-        (&theta2, &zero, &l2_sym, &zero),
+        DhLink {
+            theta: &theta1,
+            d: &zero,
+            a: &l1_sym,
+            alpha: &zero,
+        },
+        DhLink {
+            theta: &theta2,
+            d: &zero,
+            a: &l2_sym,
+            alpha: &zero,
+        },
     ];
     let (x, y, z) = fk_position(&params);
 
@@ -391,9 +426,24 @@ fn fk_chain_three_joint() {
     let zero = ctx.int(0);
 
     let params = [
-        (&theta1, &zero, &l1_sym, &zero),
-        (&theta2, &zero, &l2_sym, &zero),
-        (&theta3, &zero, &l3_sym, &zero),
+        DhLink {
+            theta: &theta1,
+            d: &zero,
+            a: &l1_sym,
+            alpha: &zero,
+        },
+        DhLink {
+            theta: &theta2,
+            d: &zero,
+            a: &l2_sym,
+            alpha: &zero,
+        },
+        DhLink {
+            theta: &theta3,
+            d: &zero,
+            a: &l3_sym,
+            alpha: &zero,
+        },
     ];
     let t = fk_chain(&params);
 
@@ -568,7 +618,12 @@ fn fk_rotation_extraction() {
     let zero = ctx.int(0);
     let l = ctx.symbol("L");
 
-    let r = fk_rotation(&[(&theta, &zero, &l, &zero)]);
+    let r = fk_rotation(&[DhLink {
+        theta: &theta,
+        d: &zero,
+        a: &l,
+        alpha: &zero,
+    }]);
 
     // Shape must be 3×3
     assert_eq!(r.shape(), (3, 3));
@@ -671,8 +726,18 @@ fn fk_chain_two_joint_3d() {
     let alpha2 = ctx.int(0);
 
     let params = [
-        (&theta1, &zero, &a1, &alpha1),
-        (&theta2, &zero, &a2, &alpha2),
+        DhLink {
+            theta: &theta1,
+            d: &zero,
+            a: &a1,
+            alpha: &alpha1,
+        },
+        DhLink {
+            theta: &theta2,
+            d: &zero,
+            a: &a2,
+            alpha: &alpha2,
+        },
     ];
     let t = fk_chain(&params);
     assert_eq!(t.shape(), (4, 4));
@@ -750,8 +815,18 @@ fn fk_rotation_orthogonal_multi_joint() {
     let alpha2 = ctx.pi() / ctx.int(3); // 60 degrees
 
     let params = [
-        (&theta1, &zero, &a1, &alpha1),
-        (&theta2, &zero, &a2, &alpha2),
+        DhLink {
+            theta: &theta1,
+            d: &zero,
+            a: &a1,
+            alpha: &alpha1,
+        },
+        DhLink {
+            theta: &theta2,
+            d: &zero,
+            a: &a2,
+            alpha: &alpha2,
+        },
     ];
     let r = fk_rotation(&params);
     assert_eq!(r.shape(), (3, 3));

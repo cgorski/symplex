@@ -53,7 +53,8 @@ use symplex::ntheory::*;
 fn main() {
     let r = Ratio::new(BigInt::from(415), BigInt::from(93));
     println!("{:?}", continued_fraction(&r));                  // [4, 2, 6, 7]
-    println!("{:?}", continued_fraction_periodic(23));         // Some(([4], [1, 3, 1, 8]))  √23
+    let cf = continued_fraction_periodic(23).unwrap();         // √23 = [4; (1, 3, 1, 8)]
+    println!("{:?} {:?}", cf.pre_period, cf.period);           // [4] [1, 3, 1, 8]
     let terms: Vec<BigInt> = [3, 7, 15, 1].iter().map(|&k| BigInt::from(k)).collect();
     println!("{:?}", continued_fraction_convergents(&terms));  // 3, 22/7, 333/106, 355/113
     println!("{:?}", egyptian_fraction(&Ratio::new(BigInt::from(4), BigInt::from(13))));   // Some([4, 18, 468])
@@ -66,7 +67,8 @@ fn main() {
 use symplex::diophantine::*;
 
 fn main() {
-    println!("{:?}", linear_diophantine(3, 5, 1));       // Some((2, -1, 5, -3)): x = 2 + 5k, y = −1 − 3k
+    let sol = linear_diophantine(3, 5, 1).unwrap();      // x = 2 + 5k, y = −1 − 3k
+    println!("{} {} {} {}", sol.x, sol.y, sol.x_step, sol.y_step);   // 2 -1 5 -3
     println!("{:?}", pell(61));                          // Some((1766319049, 226153980))
     println!("{:?}", pell_solutions(2, 4));              // [(3, 2), (17, 12), (99, 70), (577, 408)]
     println!("{:?}", pell_negative(5));                  // x² − 5y² = −1
@@ -163,7 +165,7 @@ fn main() {
 
 ### Continued fraction reduction
 
-`continued_fraction_reduce` is the inverse of `continued_fraction`: a finite `[a₀; a₁, …]` back to a rational. The periodic form `(pre, period)` returned by `continued_fraction_periodic` is reduced by `continued_fraction_reduce_periodic` to the integer triple `(p, q, d)` meaning `(p + √d)/q` (`q` may be negative — that is how a negative radical coefficient is encoded); `continued_fraction_reduce_periodic_ex` builds the same value as an `Ex`, which canonicalises it.
+`continued_fraction_reduce` is the inverse of `continued_fraction`: a finite `[a₀; a₁, …]` back to a rational. The `PeriodicContinuedFraction { pre_period, period }` returned by `continued_fraction_periodic` is reduced by `continued_fraction_reduce_periodic` to a `QuadraticSurd { p, q, d }` meaning `(p + √d)/q` (`q` may be negative — that is how a negative radical coefficient is encoded); `continued_fraction_reduce_periodic_ex` builds the same value as an `Ex`, which canonicalises it.
 
 ```rust
 use num_bigint::BigInt;
@@ -174,10 +176,12 @@ fn main() {
     let cf: Vec<BigInt> = [4, 2, 6, 7].iter().map(|&t| BigInt::from(t)).collect();
     println!("{:?}", continued_fraction_reduce(&cf));                        // Some(415/93)
 
-    let (pre, period) = continued_fraction_periodic(23).unwrap();            // ([4], [1, 3, 1, 8])
-    println!("{:?}", continued_fraction_reduce_periodic(&pre, &period));     // Some((0, 1, 23))  = √23
+    let cf = continued_fraction_periodic(23).unwrap();                       // [4; (1, 3, 1, 8)]
+    let surd = continued_fraction_reduce_periodic(&cf.pre_period, &cf.period).unwrap();
+    println!("({} + √{})/{}", surd.p, surd.d, surd.q);                       // (0 + √23)/1  = √23
     let one: Vec<BigInt> = vec![BigInt::from(1)];
-    println!("{:?}", continued_fraction_reduce_periodic(&[], &one));         // Some((1, 2, 5))   = (1 + √5)/2
+    let phi = continued_fraction_reduce_periodic(&[], &one).unwrap();
+    println!("({} + √{})/{}", phi.p, phi.d, phi.q);                          // (1 + √5)/2
 
     let ctx = Context::new();
     let pre: Vec<BigInt> = [1, 2, 3].iter().map(|&t| BigInt::from(t)).collect();

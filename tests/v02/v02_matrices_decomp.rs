@@ -36,7 +36,7 @@ fn assert_close_matrix(a: &Matrix, b: &Matrix, tol: f64, label: &str) {
 fn qr_square_symbolic_reconstruction() {
     let ctx = Context::new();
     let a = mi(&ctx, &[&[1, 1, 0], &[1, 0, 1], &[0, 1, 1]]);
-    let (q, r) = a.qr().unwrap();
+    let Qr { q, r } = a.qr().unwrap();
     // Exact reconstruction after simplification
     assert_eq!((&q * &r).simplify(), a);
     assert_eq!((&q.transpose() * &q).simplify(), Matrix::identity(&ctx, 3));
@@ -60,7 +60,7 @@ fn qr_square_symbolic_reconstruction() {
 fn qr_rectangular_and_radicals() {
     let ctx = Context::new();
     let a = mi(&ctx, &[&[1, 2], &[3, 4], &[5, 6]]);
-    let (q, r) = a.qr().unwrap();
+    let Qr { q, r } = a.qr().unwrap();
     assert_eq!(q.shape(), (3, 2));
     assert_eq!(r.shape(), (2, 2));
     assert_eq!((&q * &r).simplify(), a);
@@ -69,7 +69,7 @@ fn qr_rectangular_and_radicals() {
     assert_eq!(r.get(0, 0).eval(), ctx.int(35).sqrt().eval());
     // Simple radical case: [[1, 1], [1, -1]] → Q = (1/√2)[[1, 1], [1, -1]], R = √2 I
     let h = mi(&ctx, &[&[1, 1], &[1, -1]]);
-    let (q, r) = h.qr().unwrap();
+    let Qr { q, r } = h.qr().unwrap();
     assert_eq!(q.get(0, 0).powi(2).simplify(), ctx.rational(1, 2));
     assert_eq!(r.get(0, 0).eval(), ctx.int(2).sqrt().eval());
     assert!(r.get(0, 1).is_zero_structural());
@@ -84,7 +84,7 @@ fn qr_symbolic_entries() {
         vec![ctx.int(0), ctx.int(1)],
     ])
     .unwrap();
-    let (q, r) = a.qr().unwrap();
+    let Qr { q, r } = a.qr().unwrap();
     assert_eq!(q.simplify(), Matrix::identity(&ctx, 2));
     assert_eq!(r.simplify(), a);
 }
@@ -160,19 +160,19 @@ fn cholesky_result_semantics() {
 fn ldl_symbolic_and_numeric() {
     let ctx = Context::new();
     let a = mi(&ctx, &[&[4, 12, -16], &[12, 37, -43], &[-16, -43, 98]]);
-    let (l, d) = a.ldl().unwrap();
+    let Ldl { l, d } = a.ldl().unwrap();
     assert_eq!(l.is_lower_triangular(), Some(true));
     assert_eq!(d.is_diagonal(), Some(true));
     assert_eq!((&(&l * &d) * &l.transpose()).eval(), a);
     // Indefinite works (no square roots needed)
     let ind = mi(&ctx, &[&[1, 2], &[2, 1]]);
-    let (l, d) = ind.ldl().unwrap();
+    let Ldl { l, d } = ind.ldl().unwrap();
     assert_eq!(d, mi(&ctx, &[&[1, 0], &[0, -3]]));
     assert_eq!((&(&l * &d) * &l.transpose()).eval(), ind);
     // Fully symbolic symmetric
     let (a, b, c) = (ctx.symbol("a"), ctx.symbol("b"), ctx.symbol("c"));
     let s = Matrix::new(vec![vec![a.clone(), b.clone()], vec![b.clone(), c.clone()]]).unwrap();
-    let (l, d) = s.ldl().unwrap();
+    let Ldl { l, d } = s.ldl().unwrap();
     assert_eq!(l.get(1, 0), &(&b / &a));
     let back = (&(&l * &d) * &l.transpose()).simplify();
     assert_eq!(back.equals(&s), Some(true));
@@ -182,7 +182,7 @@ fn ldl_symbolic_and_numeric() {
 fn lu_reconstruction_with_permutation() {
     let ctx = Context::new();
     let a = mi(&ctx, &[&[0, 2, 1], &[1, 1, 1], &[2, 1, 3]]);
-    let (l, u, perm) = a.lu().unwrap();
+    let Lu { l, u, perm } = a.lu().unwrap();
     assert_ne!(perm[0], 0, "first pivot needs a row swap");
     let pa = Matrix::new(perm.iter().map(|&i| a.row(i).to_vec()).collect()).unwrap();
     assert_eq!((&l * &u).eval(), pa);

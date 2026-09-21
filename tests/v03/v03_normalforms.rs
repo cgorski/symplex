@@ -76,7 +76,7 @@ fn assert_row_hnf_shape(h: &Matrix, label: &str) -> Vec<usize> {
 }
 
 fn assert_hnf_invariants(a: &Matrix, label: &str) -> Matrix {
-    let (h, u) = hermite_normal_form_with_transform(a).unwrap();
+    let HermiteNormalForm { h, u } = hermite_normal_form_with_transform(a).unwrap();
     assert_eq!(h.shape(), a.shape(), "{label}: shape");
     assert_eq!(u.shape(), (a.nrows(), a.nrows()), "{label}: U shape");
     assert_eq!((&u * a).eval(), h, "{label}: H = U·A");
@@ -136,7 +136,7 @@ fn assert_col_hnf_shape(h: &Matrix, label: &str) {
 }
 
 fn assert_snf_invariants(a: &Matrix, label: &str) -> Matrix {
-    let (s, u, v) = smith_normal_form_with_transforms(a).unwrap();
+    let SmithNormalForm { s, u, v } = smith_normal_form_with_transforms(a).unwrap();
     assert_eq!(s.shape(), a.shape(), "{label}: shape");
     assert_eq!((&(&u * a) * &v).eval(), s, "{label}: S = U·A·V");
     assert!(is_unimodular_det(&u), "{label}: |det U| = {}", det_abs(&u));
@@ -418,7 +418,7 @@ fn hnf_rows_span_same_lattice_as_input() {
     // matrix W (here W = U⁻¹, also integer because U is unimodular).
     let ctx = Context::new();
     let a = mi(&ctx, &[&[2, 4, 4], &[-6, 6, 12], &[10, -4, -16]]);
-    let (h, u) = hermite_normal_form_with_transform(&a).unwrap();
+    let HermiteNormalForm { h, u } = hermite_normal_form_with_transform(&a).unwrap();
     let u_inv = u.inv().unwrap().eval();
     assert!(u_inv.to_bigint_rows().is_some());
     assert_eq!((&u_inv * &h).eval(), a);
@@ -428,7 +428,7 @@ fn hnf_rows_span_same_lattice_as_input() {
 fn hnf_transform_not_required_to_be_identity_when_rank_deficient() {
     let ctx = Context::new();
     let a = mi(&ctx, &[&[1, 1], &[1, 1], &[1, 1]]);
-    let (h, u) = hermite_normal_form_with_transform(&a).unwrap();
+    let HermiteNormalForm { h, u } = hermite_normal_form_with_transform(&a).unwrap();
     assert_eq!(h, mi(&ctx, &[&[1, 1], &[0, 0], &[0, 0]]));
     assert_eq!((&u * &a).eval(), h);
     assert!(is_unimodular_det(&u));
@@ -846,7 +846,7 @@ proptest! {
     fn prop_hnf_6x6(flat in prop::collection::vec(-9i64..=9, 36)) {
         let ctx = Context::new();
         let a = matrix_from_flat(&ctx, &flat, 6, 6);
-        let (h, u) = hermite_normal_form_with_transform(&a).unwrap();
+        let HermiteNormalForm { h, u } = hermite_normal_form_with_transform(&a).unwrap();
         prop_assert_eq!((&u * &a).eval(), h.clone());
         prop_assert!(det_abs(&u).is_one());
         let pivots = assert_row_hnf_shape(&h, "prop 6x6");

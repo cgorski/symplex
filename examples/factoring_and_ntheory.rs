@@ -79,10 +79,13 @@ fn main() {
     );
     let (q, r) = (&x.powi(3) + &x * 2 + 1).poly_div(&f, &x).unwrap();
     println!("(x³+2x+1) ÷ (x²+1)    = quotient {q}, remainder {r}");
-    let (s, t, gcd) = (&x.powi(2) - 1)
+    let e = (&x.powi(2) - 1)
         .poly_gcdex(&(&x.powi(2) - &x * 2 + 1), &x)
         .unwrap();
-    println!("gcdex(x²−1, (x−1)²)   = s·f + t·g = gcd:  s = {s}, t = {t}, gcd = {gcd}");
+    println!(
+        "gcdex(x²−1, (x−1)²)   = s·f + t·g = gcd:  s = {}, t = {}, gcd = {}",
+        e.x, e.y, e.gcd
+    );
     let comp = (&x.powi(4) + &x.powi(2) * 2 + 1).decompose(&x);
     let parts: Vec<String> = comp.iter().map(|e| e.to_string()).collect();
     println!(
@@ -188,7 +191,7 @@ fn main() {
     println!("\n--- Continued fractions ---");
     let r = Ratio::new(BigInt::from(415), BigInt::from(93));
     println!("415/93 = {:?}", ntheory::continued_fraction(&r));
-    let (head, period) = ntheory::continued_fraction_periodic(23).unwrap();
+    let cf = ntheory::continued_fraction_periodic(23).unwrap();
     let fmt = |v: &[BigInt]| {
         v.iter()
             .map(|k| k.to_string())
@@ -197,9 +200,9 @@ fn main() {
     };
     println!(
         "√23    = [{}; ({})]   (period {})",
-        fmt(&head),
-        fmt(&period),
-        period.len()
+        fmt(&cf.pre_period),
+        fmt(&cf.period),
+        cf.period.len()
     );
     let pi_terms: Vec<BigInt> = [3, 7, 15, 1].iter().map(|&k| BigInt::from(k)).collect();
     let conv: Vec<String> = ntheory::continued_fraction_convergents(&pi_terms)
@@ -218,11 +221,18 @@ fn main() {
 
     // ── 7. Diophantine equations ────────────────────────────────────────
     println!("\n--- Diophantine ---");
-    let (x0, y0, dx, dy) = diophantine::linear_diophantine(3, 5, 1).unwrap();
+    let sol = diophantine::linear_diophantine(3, 5, 1).unwrap();
     println!(
-        "3x + 5y = 1: x = {x0} + {dx}k, y = {y0} {} {}k",
-        if dy < BigInt::from(0) { "−" } else { "+" },
-        dy.magnitude()
+        "3x + 5y = 1: x = {} + {}k, y = {} {} {}k",
+        sol.x,
+        sol.x_step,
+        sol.y,
+        if sol.y_step < BigInt::from(0) {
+            "−"
+        } else {
+            "+"
+        },
+        sol.y_step.magnitude()
     );
     let (px, py) = diophantine::pell(61).unwrap();
     println!("Pell x² − 61y² = 1: fundamental solution ({px}, {py})");

@@ -5,10 +5,10 @@
 
 use std::time::Instant;
 
-use symplex::dynamics::{euler_lagrange, manipulator_equation, mass_matrix};
+use symplex::dynamics::{GeneralizedCoordinate, euler_lagrange, manipulator_equation, mass_matrix};
 use symplex::matrix::{Matrix, jacobian};
 use symplex::prelude::*;
-use symplex::robotics::{dh_matrix, fk_chain, fk_position};
+use symplex::robotics::{DhLink, dh_matrix, fk_chain, fk_position};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
@@ -203,9 +203,24 @@ fn experiment_3dof_planar_arm_dynamics() {
     println!("\nStep 6: Computing Euler-Lagrange equations...");
     let t0 = Instant::now();
 
-    let coords: [(&Ex, &Ex); 3] = [(&q1, &qd1), (&q2, &qd2), (&q3, &qd3)];
-    let accels: [&Ex; 3] = [&qdd1, &qdd2, &qdd3];
-    let eqs = euler_lagrange(&ke_expanded, &pe, &coords, &accels).unwrap();
+    let coords: [GeneralizedCoordinate<'_>; 3] = [
+        GeneralizedCoordinate {
+            q: &q1,
+            q_dot: &qd1,
+            q_ddot: &qdd1,
+        },
+        GeneralizedCoordinate {
+            q: &q2,
+            q_dot: &qd2,
+            q_ddot: &qdd2,
+        },
+        GeneralizedCoordinate {
+            q: &q3,
+            q_dot: &qd3,
+            q_ddot: &qdd3,
+        },
+    ];
+    let eqs = euler_lagrange(&ke_expanded, &pe, &coords);
 
     let el_time = t0.elapsed();
     println!("  Euler-Lagrange computed in {:?}", el_time);
@@ -333,18 +348,18 @@ fn experiment_3dof_planar_arm_dynamics() {
     // ── Step 9: Full manipulator equation ────────────────────────────────
     println!("\nStep 9: Computing full manipulator equation M, C, g...");
     let t0 = Instant::now();
-    let (mm2, coriolis, grav) =
+    let manip =
         manipulator_equation(&ke_expanded, &pe, &[&q1, &q2, &q3], &[&qd1, &qd2, &qd3]).unwrap();
     let manip_time = t0.elapsed();
     println!("  manipulator_equation() completed in {:?}", manip_time);
-    assert_eq!(mm2.shape(), (3, 3));
-    assert_eq!(coriolis.shape(), (3, 3));
-    assert_eq!(grav.len(), 3);
+    assert_eq!(manip.mass.shape(), (3, 3));
+    assert_eq!(manip.coriolis.shape(), (3, 3));
+    assert_eq!(manip.gravity.len(), 3);
     println!(
         "  M total ops={}, C total ops={}, g total ops={}",
-        matrix_total_ops(&mm2),
-        matrix_total_ops(&coriolis),
-        grav.iter().map(|e| e.count_ops()).sum::<usize>()
+        matrix_total_ops(&manip.mass),
+        matrix_total_ops(&manip.coriolis),
+        manip.gravity.iter().map(|e| e.count_ops()).sum::<usize>()
     );
 
     // ── Summary ──────────────────────────────────────────────────────────
@@ -431,13 +446,43 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
     println!("\nStep 2: Computing FK chain T0_6 = T1·T2·T3·T4·T5·T6...");
     let t0_time = Instant::now();
 
-    let dh_params: [(&Ex, &Ex, &Ex, &Ex); 6] = [
-        (&q1, &zero, &zero, &half_pi),
-        (&q2, &zero, &a2, &zero),
-        (&q3, &zero, &zero, &half_pi),
-        (&q4, &d4, &zero, &neg_half_pi),
-        (&q5, &zero, &zero, &half_pi),
-        (&q6, &zero, &zero, &zero),
+    let dh_params: [DhLink<'_>; 6] = [
+        DhLink {
+            theta: &q1,
+            d: &zero,
+            a: &zero,
+            alpha: &half_pi,
+        },
+        DhLink {
+            theta: &q2,
+            d: &zero,
+            a: &a2,
+            alpha: &zero,
+        },
+        DhLink {
+            theta: &q3,
+            d: &zero,
+            a: &zero,
+            alpha: &half_pi,
+        },
+        DhLink {
+            theta: &q4,
+            d: &d4,
+            a: &zero,
+            alpha: &neg_half_pi,
+        },
+        DhLink {
+            theta: &q5,
+            d: &zero,
+            a: &zero,
+            alpha: &half_pi,
+        },
+        DhLink {
+            theta: &q6,
+            d: &zero,
+            a: &zero,
+            alpha: &zero,
+        },
     ];
     let fk_total = fk_chain(&dh_params);
     let fk_chain_time = t0_time.elapsed();
@@ -636,12 +681,45 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
     let m3 = ctx.symbol("m3");
 
     // Use the first 3 joints' FK positions for a simplified dynamics test
-    let dh_1 = [(&q1, &zero, &zero, &half_pi)];
-    let dh_2 = [(&q1, &zero, &zero, &half_pi), (&q2, &zero, &a2, &zero)];
+    let dh_1 = [DhLink {
+        theta: &q1,
+        d: &zero,
+        a: &zero,
+        alpha: &half_pi,
+    }];
+    let dh_2 = [
+        DhLink {
+            theta: &q1,
+            d: &zero,
+            a: &zero,
+            alpha: &half_pi,
+        },
+        DhLink {
+            theta: &q2,
+            d: &zero,
+            a: &a2,
+            alpha: &zero,
+        },
+    ];
     let dh_3 = [
-        (&q1, &zero, &zero, &half_pi),
-        (&q2, &zero, &a2, &zero),
-        (&q3, &zero, &zero, &half_pi),
+        DhLink {
+            theta: &q1,
+            d: &zero,
+            a: &zero,
+            alpha: &half_pi,
+        },
+        DhLink {
+            theta: &q2,
+            d: &zero,
+            a: &a2,
+            alpha: &zero,
+        },
+        DhLink {
+            theta: &q3,
+            d: &zero,
+            a: &zero,
+            alpha: &half_pi,
+        },
     ];
 
     let t0_dyn = Instant::now();

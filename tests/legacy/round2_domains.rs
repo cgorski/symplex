@@ -902,7 +902,7 @@ fn matrix_lu_2x2() {
         vec![ctx.int(6), ctx.int(3)],
     ])
     .unwrap();
-    let (l, u, perm) = m.lu().expect("LU should succeed for non-singular 2×2");
+    let Lu { l, u, perm } = m.lu().expect("LU should succeed for non-singular 2×2");
     // Verify P*A = L*U by reconstructing
     let lu = l.matmul(&u).unwrap();
     for (i, &orig_row) in perm.iter().enumerate().take(2) {
@@ -923,7 +923,7 @@ fn matrix_lu_3x3() {
         vec![ctx.int(8), ctx.int(7), ctx.int(9)],
     ])
     .unwrap();
-    let (l, u, perm) = m.lu().expect("LU should succeed");
+    let Lu { l, u, perm } = m.lu().expect("LU should succeed");
     let lu = l.matmul(&u).unwrap();
     for (i, &orig_row) in perm.iter().enumerate().take(3) {
         for j in 0..3 {
@@ -2302,8 +2302,8 @@ fn control_state_space_discretize() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 use symplex::robotics::{
-    EulerConvention, dh_matrix, fk_chain, fk_position, fk_rotation, homogeneous, rot_euler, rot_x,
-    rot_y, rot_z, skew3, translation,
+    DhLink, EulerConvention, dh_matrix, fk_chain, fk_position, fk_rotation, homogeneous, rot_euler,
+    rot_x, rot_y, rot_z, skew3, translation,
 };
 
 // ---------------------------------------------------------------------------
@@ -2360,7 +2360,12 @@ fn robotics_fk_chain_single_joint() {
     let zero = ctx.int(0);
     let l = ctx.symbol("L");
 
-    let params = [(&theta, &zero, &l, &zero)];
+    let params = [DhLink {
+        theta: &theta,
+        d: &zero,
+        a: &l,
+        alpha: &zero,
+    }];
     let t = fk_chain(&params);
     assert_eq!(t.shape(), (4, 4));
 }
@@ -2372,7 +2377,12 @@ fn robotics_fk_position_1dof_at_zero() {
     let l = ctx.int(1);
 
     // Single joint at θ=0, a=1
-    let (px, py, pz) = fk_position(&[(&zero, &zero, &l, &zero)]);
+    let (px, py, pz) = fk_position(&[DhLink {
+        theta: &zero,
+        d: &zero,
+        a: &l,
+        alpha: &zero,
+    }]);
     assert_close(px.eval_f64().unwrap(), 1.0, 1e-10, "fk x at θ=0");
     assert_close(py.eval_f64().unwrap(), 0.0, 1e-10, "fk y at θ=0");
     assert_close(pz.eval_f64().unwrap(), 0.0, 1e-10, "fk z at θ=0");
@@ -2386,7 +2396,12 @@ fn robotics_fk_position_1dof_at_90deg() {
     let zero = ctx.int(0);
     let l = ctx.int(1);
 
-    let (px, py, pz) = fk_position(&[(&half_pi, &zero, &l, &zero)]);
+    let (px, py, pz) = fk_position(&[DhLink {
+        theta: &half_pi,
+        d: &zero,
+        a: &l,
+        alpha: &zero,
+    }]);
     assert_close(px.eval_f64().unwrap(), 0.0, 1e-10, "fk x at θ=90°");
     assert_close(py.eval_f64().unwrap(), 1.0, 1e-10, "fk y at θ=90°");
     assert_close(pz.eval_f64().unwrap(), 0.0, 1e-10, "fk z at θ=90°");
@@ -2398,7 +2413,12 @@ fn robotics_fk_rotation_shape() {
     let zero = ctx.int(0);
     let l = ctx.symbol("L");
     let theta = ctx.symbol("theta");
-    let r = fk_rotation(&[(&theta, &zero, &l, &zero)]);
+    let r = fk_rotation(&[DhLink {
+        theta: &theta,
+        d: &zero,
+        a: &l,
+        alpha: &zero,
+    }]);
     assert_eq!(r.shape(), (3, 3));
 }
 
@@ -2610,7 +2630,7 @@ fn robotics_translation_matrix() {
 
 #[test]
 fn robotics_fk_position_typed() {
-    use symplex::robotics::fk_position_typed;
+    use symplex::robotics::{DhParams, fk_position_typed};
     use symplex::units::si::*;
 
     let ctx = Context::new();
@@ -2619,7 +2639,12 @@ fn robotics_fk_position_typed() {
     let zero_l = Length::zero(&ctx);
     let zero_a = Angle::zero(&ctx);
 
-    let (px, py, pz) = fk_position_typed(&[(&theta1, &zero_l, &l1, &zero_a)]);
+    let (px, py, pz) = fk_position_typed(&[DhParams {
+        theta: &theta1,
+        d: &zero_l,
+        a: &l1,
+        alpha: &zero_a,
+    }]);
     assert_close(px.eval_f64().unwrap(), 1.0, 1e-10, "typed fk px");
     assert_close(py.eval_f64().unwrap(), 0.0, 1e-10, "typed fk py");
     assert_close(pz.eval_f64().unwrap(), 0.0, 1e-10, "typed fk pz");
@@ -2639,7 +2664,20 @@ fn robotics_two_link_fk_position() {
     let l2 = ctx.int(1);
 
     // Joint 1 at 0°, Joint 2 at 90°
-    let (px, py, pz) = fk_position(&[(&zero, &zero, &l1, &zero), (&half_pi, &zero, &l2, &zero)]);
+    let (px, py, pz) = fk_position(&[
+        DhLink {
+            theta: &zero,
+            d: &zero,
+            a: &l1,
+            alpha: &zero,
+        },
+        DhLink {
+            theta: &half_pi,
+            d: &zero,
+            a: &l2,
+            alpha: &zero,
+        },
+    ]);
     // Link 1 extends along x by 1, Link 2 rotated 90° from that → adds 1 in y
     // But note: in planar case with no alpha, the second link extends along
     // the direction θ₁+θ₂ from the first joint coordinate system

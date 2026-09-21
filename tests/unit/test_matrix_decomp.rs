@@ -168,7 +168,7 @@ fn columnspace_rank_deficient() {
 fn lu_identity() {
     let ctx = Context::new();
     let m = Matrix::identity(&ctx, 3);
-    let (l, u, perm) = m.lu().expect("identity should have LU");
+    let Lu { l, u, perm } = m.lu().expect("identity should have LU");
     // L and U should both be identity for an identity input
     for (i, &p) in perm.iter().enumerate() {
         assert_eq!(p, i);
@@ -188,7 +188,7 @@ fn lu_2x2_verify_pa_eq_lu() {
         vec![ctx.int(4), ctx.int(7)],
     ])
     .unwrap();
-    let (l, u, perm) = a.lu().expect("non-singular 2x2 should have LU");
+    let Lu { l, u, perm } = a.lu().expect("non-singular 2x2 should have LU");
 
     // Reconstruct PA
     let pa = Matrix::new(

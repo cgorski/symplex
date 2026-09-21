@@ -12,9 +12,9 @@
 //!
 //! // 12x + 18y = 30 has solutions x = -5 + 3k, y = 5 - 2k  (up to the sign
 //! // convention of the particular solution)
-//! let (x0, y0, dx, dy) = linear_diophantine(12, 18, 30).unwrap();
-//! assert_eq!(BigInt::from(12) * &x0 + BigInt::from(18) * &y0, BigInt::from(30));
-//! assert_eq!(BigInt::from(12) * &dx + BigInt::from(18) * &dy, BigInt::from(0));
+//! let sol = linear_diophantine(12, 18, 30).unwrap();
+//! assert_eq!(BigInt::from(12) * &sol.x + BigInt::from(18) * &sol.y, BigInt::from(30));
+//! assert_eq!(BigInt::from(12) * &sol.x_step + BigInt::from(18) * &sol.y_step, BigInt::from(0));
 //!
 //! // Fundamental solution of x² − 61y² = 1
 //! let (x, y) = pell(61).unwrap();
@@ -26,7 +26,7 @@
 //! ```
 
 use num_bigint::BigInt;
-use num_integer::Integer;
+use num_integer::{ExtendedGcd, Integer};
 use num_traits::{One, Signed, Zero};
 
 use crate::domains::ntheory;
@@ -35,17 +35,35 @@ use crate::domains::ntheory;
 // Linear Diophantine equations
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// The solution family of a linear Diophantine equation `a·x + b·y = c`,
+/// as returned by [`linear_diophantine`].
+///
+/// `(x, y)` is one particular solution; the general solution is
+/// `(x + k·x_step, y + k·y_step)` for all `k ∈ ℤ`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct LinearDiophantine {
+    /// `x` of the particular solution.
+    pub x: BigInt,
+    /// `y` of the particular solution.
+    pub y: BigInt,
+    /// The change in `x` between consecutive solutions (`b / gcd(a, b)`).
+    pub x_step: BigInt,
+    /// The change in `y` between consecutive solutions (`−a / gcd(a, b)`).
+    pub y_step: BigInt,
+}
+
 /// Solve `a·x + b·y = c` over the integers.
 ///
-/// Returns `Some((x₀, y₀, dx, dy))` where `(x₀, y₀)` is a particular
-/// solution and the general solution is `x = x₀ + k·dx`, `y = y₀ + k·dy`
-/// for all `k ∈ ℤ`, with `dx = b/g`, `dy = −a/g`, `g = gcd(a, b)`.
+/// Returns `Some(`[`LinearDiophantine`]` { x, y, x_step, y_step })` where
+/// `(x, y)` is a particular solution and the general solution is
+/// `(x + k·x_step, y + k·y_step)` for all `k ∈ ℤ`, with `x_step = b/g`,
+/// `y_step = −a/g`, `g = gcd(a, b)`.
 /// Returns `None` if `g ∤ c` (no solution), or if `a = b = 0` and
 /// `c ≠ 0`.  When `a = b = c = 0` every pair is a solution; this is
-/// reported as `(0, 0, 0, 0)`.
+/// reported with all four fields zero.
 ///
-/// The particular solution is normalised so that `0 ≤ x₀ < |dx|` whenever
-/// `dx ≠ 0`.
+/// The particular solution is normalised so that `0 ≤ x < |x_step|`
+/// whenever `x_step ≠ 0`.
 ///
 /// # Examples
 ///
@@ -53,32 +71,32 @@ use crate::domains::ntheory;
 /// use symplex::diophantine::linear_diophantine;
 /// use num_bigint::BigInt;
 ///
-/// let (x0, y0, dx, dy) = linear_diophantine(3, 5, 1).unwrap();
-/// assert_eq!((x0, y0), (BigInt::from(2), BigInt::from(-1)));   // 3·2 − 5 = 1
-/// assert_eq!((dx, dy), (BigInt::from(5), BigInt::from(-3)));
-/// assert!(linear_diophantine(4, 6, 7).is_none());              // gcd 2 ∤ 7
+/// let sol = linear_diophantine(3, 5, 1).unwrap();
+/// assert_eq!((sol.x, sol.y), (BigInt::from(2), BigInt::from(-1)));       // 3·2 − 5 = 1
+/// assert_eq!((sol.x_step, sol.y_step), (BigInt::from(5), BigInt::from(-3)));
+/// assert!(linear_diophantine(4, 6, 7).is_none());                        // gcd 2 ∤ 7
 /// ```
 pub fn linear_diophantine(
     a: impl Into<BigInt>,
     b: impl Into<BigInt>,
     c: impl Into<BigInt>,
-) -> Option<(BigInt, BigInt, BigInt, BigInt)> {
+) -> Option<LinearDiophantine> {
     let a: BigInt = a.into();
     let b: BigInt = b.into();
     let c: BigInt = c.into();
     if a.is_zero() && b.is_zero() {
         return if c.is_zero() {
-            Some((
-                BigInt::zero(),
-                BigInt::zero(),
-                BigInt::zero(),
-                BigInt::zero(),
-            ))
+            Some(LinearDiophantine {
+                x: BigInt::zero(),
+                y: BigInt::zero(),
+                x_step: BigInt::zero(),
+                y_step: BigInt::zero(),
+            })
         } else {
             None
         };
     }
-    let (g, s, t) = ntheory::gcdex(a.clone(), b.clone());
+    let ExtendedGcd { gcd: g, x: s, y: t } = ntheory::gcdex(a.clone(), b.clone());
     let (q, r) = c.div_rem(&g);
     if !r.is_zero() {
         return None;
@@ -100,7 +118,12 @@ pub fn linear_diophantine(
         };
     }
     debug_assert_eq!(&a * &x0 + &b * &y0, c);
-    Some((x0, y0, dx, dy))
+    Some(LinearDiophantine {
+        x: x0,
+        y: y0,
+        x_step: dx,
+        y_step: dy,
+    })
 }
 
 /// Solve `Σ coeffsᵢ · xᵢ = c` over the integers for any number of
@@ -148,7 +171,11 @@ pub fn linear_diophantine_n(
     let mut g = coeffs[0].clone();
     let mut bezout: Vec<(BigInt, BigInt)> = Vec::with_capacity(coeffs.len());
     for a in &coeffs[1..] {
-        let (gi, s, t) = ntheory::gcdex(g.clone(), a.clone());
+        let ExtendedGcd {
+            gcd: gi,
+            x: s,
+            y: t,
+        } = ntheory::gcdex(g.clone(), a.clone());
         bezout.push((s, t));
         g = gi;
     }
@@ -291,14 +318,14 @@ pub fn pell_negative(d: impl Into<BigInt>) -> Option<(BigInt, BigInt)> {
     if &a0 * &a0 == d {
         return None;
     }
-    let (head, period) = ntheory::continued_fraction_periodic(d.clone())?;
-    if period.len() % 2 == 0 {
+    let cf = ntheory::continued_fraction_periodic(d.clone())?;
+    if cf.period.len() % 2 == 0 {
         return None;
     }
     // The convergent just before the end of the first period gives the
     // solution: walk convergents and test.
-    let mut terms = head;
-    terms.extend(period.iter().cloned());
+    let mut terms = cf.pre_period;
+    terms.extend(cf.period.iter().cloned());
     let neg_one = -BigInt::one();
     for c in ntheory::continued_fraction_convergents(&terms) {
         let (h, k) = (c.numer().clone(), c.denom().clone());
@@ -591,24 +618,37 @@ mod tests {
             (0, 5, -15),
             (5, 7, 0),
         ] {
-            let (x0, y0, dx, dy) = linear_diophantine(a, b, c).expect("solvable");
-            assert_eq!(bi(a) * &x0 + bi(b) * &y0, bi(c), "particular ({a},{b},{c})");
-            assert_eq!(bi(a) * &dx + bi(b) * &dy, bi(0), "direction ({a},{b},{c})");
+            let sol = linear_diophantine(a, b, c).expect("solvable");
+            assert_eq!(
+                bi(a) * &sol.x + bi(b) * &sol.y,
+                bi(c),
+                "particular ({a},{b},{c})"
+            );
+            assert_eq!(
+                bi(a) * &sol.x_step + bi(b) * &sol.y_step,
+                bi(0),
+                "direction ({a},{b},{c})"
+            );
             // Neighbouring solutions.
             for k in -3..=3i64 {
-                let x = &x0 + bi(k) * &dx;
-                let y = &y0 + bi(k) * &dy;
+                let x = &sol.x + bi(k) * &sol.x_step;
+                let y = &sol.y + bi(k) * &sol.y_step;
                 assert_eq!(bi(a) * x + bi(b) * y, bi(c));
             }
-            if !dx.is_zero() {
-                assert!(x0 >= bi(0) && x0 < dx.abs());
+            if !sol.x_step.is_zero() {
+                assert!(sol.x >= bi(0) && sol.x < sol.x_step.abs());
             }
         }
         assert!(linear_diophantine(4, 6, 7).is_none());
         assert!(linear_diophantine(0, 0, 1).is_none());
         assert_eq!(
             linear_diophantine(0, 0, 0),
-            Some((bi(0), bi(0), bi(0), bi(0)))
+            Some(LinearDiophantine {
+                x: bi(0),
+                y: bi(0),
+                x_step: bi(0),
+                y_step: bi(0),
+            })
         );
     }
 

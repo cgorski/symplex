@@ -146,7 +146,11 @@ pub fn tower_hermite_reduce(
         let lhs_coeff = neg_dstar_dminus_prime.div(&d_minus);
 
         // Extended GCD: s · lhs_coeff + t · D₋* = gcd
-        let (s, t, gcd_val) = GenPoly::extended_gcd(&lhs_coeff, &d_minus_star);
+        let num_integer::ExtendedGcd {
+            gcd: gcd_val,
+            x: s,
+            y: t,
+        } = GenPoly::extended_gcd(&lhs_coeff, &d_minus_star);
 
         // Scale to solve for a_curr: B = s · (a_curr / gcd), C = t · (a_curr / gcd)
         let (scale, rem) = a_curr.div_rem(&gcd_val);

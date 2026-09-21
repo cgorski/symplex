@@ -135,7 +135,11 @@ fn hermite_reduce_proper(a: &Poly, d: &Poly, poly_part: &Poly) -> HermiteResult 
         let lhs_coeff = neg_dstar_dminus_prime.div(&d_minus);
 
         // Extended GCD: find (s, t, g) such that s·lhs_coeff + t·D₋* = g.
-        let (s, t, gcd_val) = Poly::extended_gcd(&lhs_coeff, &d_minus_star);
+        let num_integer::ExtendedGcd {
+            gcd: gcd_val,
+            x: s,
+            y: t,
+        } = Poly::extended_gcd(&lhs_coeff, &d_minus_star);
 
         // Check that gcd divides a_curr (it should, by the theory).
         let (scale, rem) = a_curr.div_rem(&gcd_val);

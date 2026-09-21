@@ -41,20 +41,20 @@ fn main() {
         "L·Lᵀ == A: {:?}",
         l.matmul(&l.transpose()).unwrap().equals(&spd)
     );
-    let (l, d) = spd.ldl().unwrap();
+    let Ldl { l, d } = spd.ldl().unwrap();
     println!("LDLᵀ: L = {l}  D = {d}");
     // Preconditions are errors, not garbage.
     match matrix![ctx, [1, 2], [3, 4]].cholesky() {
         Err(e) => println!("cholesky of a non-symmetric matrix → Err: {e}"),
         Ok(m) => println!("unexpected {m}"),
     }
-    let (l, u, perm) = matrix![ctx, [2, 1], [4, 3]].lu().unwrap();
+    let Lu { l, u, perm } = matrix![ctx, [2, 1], [4, 3]].lu().unwrap();
     println!("LU of [[2,1],[4,3]]: L = {l}  U = {u}  permutation = {perm:?}");
 
     // ── 2. QR and Gram–Schmidt ──────────────────────────────────────────
     println!("\n--- QR / Gram–Schmidt (exact radicals) ---");
     let m = matrix![ctx, [1, 1, 0], [1, 0, 1], [0, 1, 1]];
-    let (q, r) = m.qr().unwrap();
+    let Qr { q, r } = m.qr().unwrap();
     println!("M = {m}");
     println!("Q = {q}");
     println!("R = {r}");
@@ -88,7 +88,7 @@ fn main() {
             vecs[0].transpose()
         );
     }
-    let (p, d) = s.diagonalize().unwrap();
+    let Diagonalization { p, d } = s.diagonalize().unwrap();
     println!("S = P·D·P⁻¹ with D = {d}");
     println!(
         "check: {:?}",
@@ -115,7 +115,7 @@ fn main() {
     println!("\nJ4 = {j}");
     println!("eigenvalues with multiplicity: {}", with_mult.join(", "));
     println!("diagonalizable: {:?}", j.is_diagonalizable());
-    let (_p, jordan) = j.jordan_form().unwrap();
+    let jordan = j.jordan_form().unwrap().j;
     println!("Jordan normal form = {jordan}");
 
     // ── 4. RootOf eigenvalues ───────────────────────────────────────────

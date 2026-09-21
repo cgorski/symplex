@@ -207,7 +207,7 @@ fn hessenberg_is_a_similarity_transform_over_q() {
         [9, 10, 12, 11],
         [13, 15, 14, 16]
     ];
-    let (h, p) = a.hessenberg().unwrap();
+    let Hessenberg { h, p } = a.hessenberg().unwrap();
     // Upper Hessenberg: zeros below the sub-diagonal.
     for i in 0..4 {
         for j in 0..4 {
@@ -234,12 +234,12 @@ fn hessenberg_is_a_similarity_transform_over_q() {
 fn hessenberg_needs_a_row_swap_when_the_subdiagonal_entry_is_zero() {
     let ctx = Context::new();
     let a = matrix![ctx, [1, 2, 3], [0, 4, 5], [6, 7, 8]];
-    let (h, p) = a.hessenberg().unwrap();
+    let Hessenberg { h, p } = a.hessenberg().unwrap();
     assert!(h[(2, 0)].is_zero_structural());
     assert_eq!(&a * &p, &p * &h);
     // Already Hessenberg → unchanged with P = I.
     let t = matrix![ctx, [1, 2, 3], [4, 5, 6], [0, 7, 8]];
-    let (h2, p2) = t.hessenberg().unwrap();
+    let Hessenberg { h: h2, p: p2 } = t.hessenberg().unwrap();
     assert_eq!(h2, t);
     assert_eq!(p2, Matrix::identity(&ctx, 3));
     assert!(matrix![ctx, [1, 2, 3]].hessenberg().is_err());
@@ -255,7 +255,7 @@ fn hessenberg_symbolic_holds_generically() {
         vec![b.clone(), ctx.int(1), c.clone()],
     ])
     .unwrap();
-    let (h, p) = m.hessenberg().unwrap();
+    let Hessenberg { h, p } = m.hessenberg().unwrap();
     assert!(h[(2, 0)].is_zero_structural());
     let lhs = (&m * &p).simplify();
     let rhs = (&p * &h).simplify();
@@ -272,12 +272,13 @@ fn rank_decomposition_matches_sympy() {
     //   == (Matrix([[1, 2], [4, 5], [7, 8]]), Matrix([[1, 0, -1], [0, 1, 2]]))
     let ctx = Context::new();
     let a = matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]];
-    let (c, f) = a.rank_decomposition().unwrap();
+    let RankDecomposition { c, f } = a.rank_decomposition().unwrap();
     assert_eq!(c, matrix![ctx, [1, 2], [4, 5], [7, 8]]);
     assert_eq!(f, matrix![ctx, [1, 0, -1], [0, 1, 2]]);
     assert_eq!(&c * &f, a);
     // SymPy: Matrix([[1, 2], [2, 4]]).rank_decomposition() == (Matrix([[1], [2]]), Matrix([[1, 2]]))
-    let (c2, f2) = matrix![ctx, [1, 2], [2, 4]].rank_decomposition().unwrap();
+    let RankDecomposition { c: c2, f: f2 } =
+        matrix![ctx, [1, 2], [2, 4]].rank_decomposition().unwrap();
     assert_eq!(c2, matrix![ctx, [1], [2]]);
     assert_eq!(f2, matrix![ctx, [1, 2]]);
     // Rank 0 has no representable factors.
@@ -288,7 +289,7 @@ fn rank_decomposition_matches_sympy() {
     // Symbolic path: rank 1 structurally.
     let x = ctx.symbol("x");
     let s = Matrix::new(vec![vec![x.clone(), &x * 2], vec![&x * 3, &x * 6]]).unwrap();
-    let (cs, fs) = s.rank_decomposition().unwrap();
+    let RankDecomposition { c: cs, f: fs } = s.rank_decomposition().unwrap();
     assert_eq!(cs.shape(), (2, 1));
     assert_eq!(fs, matrix![ctx, [1, 2]]);
     assert_eq!((&cs * &fs).simplify(), s);
@@ -336,7 +337,7 @@ fn jordan_block_matches_sympy() {
         matrix![ctx, [5]]
     );
     // A Jordan block is its own Jordan form.
-    let (_, jf) = j.jordan_form().unwrap();
+    let jf = j.jordan_form().unwrap().j;
     assert_eq!(jf, j);
     assert!(Matrix::jordan_block(&ctx.int(2), 0).is_err());
 }
@@ -637,12 +638,15 @@ fn lll_matches_sympy_and_is_exactly_reduced() {
         ZMatrix::from_i64(&[&[0, 1, 0], &[1, 0, 1], &[-1, 0, 2]]).unwrap(),
         "got {r:?}"
     );
-    assert_eq!(r, b.lll((3, 4)).unwrap());
+    assert_eq!(r, b.lll(Ratio::new(3, 4)).unwrap());
     // Same lattice (same row-HNF) and exactly LLL-reduced.
     assert_eq!(r.hermite_normal_form(), b.hermite_normal_form());
     assert_lll_reduced(&r, q(3, 4));
     // Transform: R = T·B with T unimodular.
-    let (r2, t) = b.lll_with_transform((3, 4)).unwrap();
+    let LllReduction {
+        reduced: r2,
+        transform: t,
+    } = b.lll_with_transform(Ratio::new(3, 4)).unwrap();
     assert_eq!(r2, r);
     assert_eq!(&t * &b, r);
     assert!(t.is_unimodular());
@@ -687,7 +691,7 @@ fn lll_larger_examples_match_sympy() {
     assert_eq!(r.hermite_normal_form(), b.hermite_normal_form());
     assert_lll_reduced(&r, q(3, 4));
     // A stricter δ is still exactly reduced for that δ.
-    let r99 = b.lll((99, 100)).unwrap();
+    let r99 = b.lll(Ratio::new(99, 100)).unwrap();
     assert_lll_reduced(&r99, q(99, 100));
     assert_eq!(r99.hermite_normal_form(), b.hermite_normal_form());
 }
@@ -695,7 +699,13 @@ fn lll_larger_examples_match_sympy() {
 #[test]
 fn lll_rejects_bad_delta_and_dependent_rows() {
     let b = ZMatrix::from_i64(&[&[1, 1, 1], &[-1, 0, 2], &[3, 5, 6]]).unwrap();
-    for bad in [(1, 4), (1, 1), (5, 4), (0, 1), (1, 0)] {
+    for bad in [
+        Ratio::new(1, 4),
+        Ratio::new(1, 1),
+        Ratio::new(5, 4),
+        Ratio::new(0, 1),
+        Ratio::new_raw(1, 0),
+    ] {
         assert!(
             matches!(b.lll(bad), Err(SymplexError::InvalidArgument { .. })),
             "delta {bad:?}"
@@ -721,8 +731,8 @@ fn lll_rejects_bad_delta_and_dependent_rows() {
         m.lll_default().unwrap(),
         matrix![ctx, [0, 1, 0], [1, 0, 1], [-1, 0, 2]]
     );
-    let (r, t) = symplex::normalforms::lll_with_transform(&m, (3, 4)).unwrap();
-    assert_eq!((&t * &m).eval(), r);
+    let lll = symplex::normalforms::lll_with_transform(&m, Ratio::new(3, 4)).unwrap();
+    assert_eq!((&lll.transform * &m).eval(), lll.reduced);
     let half = Matrix::new(vec![vec![ctx.rational(1, 2), ctx.int(1)]]).unwrap();
     assert!(matches!(
         half.lll_default(),

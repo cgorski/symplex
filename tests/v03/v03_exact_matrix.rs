@@ -482,10 +482,10 @@ fn normal_forms_on_zmatrix_and_matrix_agree() {
             ZMatrix::try_from(&normalforms::smith_normal_form(&m).unwrap()).unwrap(),
             z.smith_normal_form()
         );
-        let (h, u) = z.hermite_normal_form_with_transform();
+        let HermiteNormalForm { h, u } = z.hermite_normal_form_with_transform();
         assert_eq!(&u * &z, h);
         assert!(u.is_unimodular());
-        let (s, u, v) = z.smith_normal_form_with_transforms();
+        let SmithNormalForm { s, u, v } = z.smith_normal_form_with_transforms();
         assert_eq!(&(&u * &z) * &v, s);
         let diag = s.diagonal();
         for w in diag.windows(2) {

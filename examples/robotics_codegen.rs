@@ -42,22 +42,45 @@ fn main() {
 
     // ── 2. DH parameters ───────────────────────────────────────────
     //
-    // Standard DH convention: each joint is described by four params:
-    //   (theta, d, a, alpha)
+    // Standard DH convention: each joint is a `DhLink` with four named
+    // parameters: theta (joint angle), d (link offset), a (link length),
+    // alpha (link twist).
     //
     // For a planar arm, d = 0 and alpha = 0 for every joint.
     // Only theta (joint angle) and a (link length) vary.
 
     let zero = ctx.int(0);
-    let dh: [(&Ex, &Ex, &Ex, &Ex); 3] = [
-        (&theta1, &zero, &l1, &zero), // Joint 1
-        (&theta2, &zero, &l2, &zero), // Joint 2
-        (&theta3, &zero, &l3, &zero), // Joint 3
+    let dh: [DhLink<'_>; 3] = [
+        DhLink {
+            theta: &theta1,
+            d: &zero,
+            a: &l1,
+            alpha: &zero,
+        }, // Joint 1
+        DhLink {
+            theta: &theta2,
+            d: &zero,
+            a: &l2,
+            alpha: &zero,
+        }, // Joint 2
+        DhLink {
+            theta: &theta3,
+            d: &zero,
+            a: &l3,
+            alpha: &zero,
+        }, // Joint 3
     ];
 
     println!("\nDH parameters (theta, d, a, alpha):");
-    for (i, (th, d, a, al)) in dh.iter().enumerate() {
-        println!("  Joint {}: ({th}, {d}, {a}, {al})", i + 1);
+    for (i, link) in dh.iter().enumerate() {
+        println!(
+            "  Joint {}: ({}, {}, {}, {})",
+            i + 1,
+            link.theta,
+            link.d,
+            link.a,
+            link.alpha
+        );
     }
 
     // ── 3. Forward kinematics ──────────────────────────────────────

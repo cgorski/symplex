@@ -72,10 +72,14 @@ fn main() {
     // ── 4. Integer matrices ─────────────────────────────────────────────
     let z = ZMatrix::from_i64(&[&[2, 4, 4], &[-6, 6, 12], &[10, -4, -16]]).unwrap();
     println!("\nZ =\n{z}\ndet Z = {}", z.det().unwrap());
-    let (h, u) = z.hermite_normal_form_with_transform();
+    let HermiteNormalForm { h, u } = z.hermite_normal_form_with_transform();
     println!("row HNF H = U·Z:\nH =\n{h}\ndet U = {}", u.det().unwrap());
     assert_eq!(&u * &z, h);
-    let (sn, us, vs) = z.smith_normal_form_with_transforms();
+    let SmithNormalForm {
+        s: sn,
+        u: us,
+        v: vs,
+    } = z.smith_normal_form_with_transforms();
     println!("Smith form diag {:?}", sn.diagonal());
     assert_eq!(&(&us * &z) * &vs, sn);
     let k = ZMatrix::from_i64(&[&[2, 1, 1]]).unwrap();

@@ -373,9 +373,9 @@ fn digits_and_continued_fractions() {
     assert_eq!(cf, vec![3, 7, 16]);
     let conv = continued_fraction_convergents(&continued_fraction(&pi_approx));
     assert_eq!(conv.last().unwrap(), &pi_approx);
-    let (h, per) = continued_fraction_periodic(23).unwrap();
-    assert_eq!(h, vec![bi(4)]);
-    assert_eq!(per, vec![bi(1), bi(3), bi(1), bi(8)]);
+    let cf = continued_fraction_periodic(23).unwrap();
+    assert_eq!(cf.pre_period, vec![bi(4)]);
+    assert_eq!(cf.period, vec![bi(1), bi(3), bi(1), bi(8)]);
     let eg: Vec<i64> = egyptian_fraction(&Ratio::new(bi(2), bi(3)))
         .unwrap()
         .iter()
@@ -421,9 +421,9 @@ fn diophantine_pell_table() {
 
 #[test]
 fn diophantine_linear_and_squares() {
-    let (x0, y0, dx, dy) = linear_diophantine(1071, 462, 21).unwrap();
-    assert_eq!(bi(1071) * &x0 + bi(462) * &y0, bi(21));
-    assert_eq!(bi(1071) * &dx + bi(462) * &dy, bi(0));
+    let sol = linear_diophantine(1071, 462, 21).unwrap();
+    assert_eq!(bi(1071) * &sol.x + bi(462) * &sol.y, bi(21));
+    assert_eq!(bi(1071) * &sol.x_step + bi(462) * &sol.y_step, bi(0));
     assert!(linear_diophantine(1071, 462, 20).is_none());
     let sol = linear_diophantine_n(&[3, 5, 7, 11], 1).unwrap();
     let lhs: BigInt = [3i64, 5, 7, 11]
@@ -539,9 +539,9 @@ proptest! {
         prop_assume!(a != 0 || b != 0);
         let g: i64 = symplex::ntheory::gcd(a, b).try_into().unwrap();
         let c = g * k;
-        let (x0, y0, dx, dy) = linear_diophantine(a, b, c).unwrap();
-        let x = &x0 + bi(m) * &dx;
-        let y = &y0 + bi(m) * &dy;
+        let sol = linear_diophantine(a, b, c).unwrap();
+        let x = &sol.x + bi(m) * &sol.x_step;
+        let y = &sol.y + bi(m) * &sol.y_step;
         prop_assert_eq!(bi(a) * x + bi(b) * y, bi(c));
     }
 

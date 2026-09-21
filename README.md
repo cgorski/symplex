@@ -354,8 +354,10 @@ let y = ctx.symbol("y");
 let (d1, d2) = (y.formal_diff(&x), y.formal_diff(&x).formal_diff(&x));
 
 (&d2 + &y).solve_ode(&y, &x);                         // y = C1*sin(x) + C2*cos(x)
-(&d2 + &y).solve_ode_ivp(&y, &x, &[(0, ctx.int(0), ctx.int(0)), (1, ctx.int(0), ctx.int(1))]);
-                                                      // Ok(sin(x))
+(&d2 + &y).solve_ode_ivp(&y, &x, &[                   // y(0) = 0, y'(0) = 1
+    InitialCondition { order: 0, x: ctx.int(0), value: ctx.int(0) },
+    InitialCondition { order: 1, x: ctx.int(0), value: ctx.int(1) },
+]);                                                   // Ok(sin(x))
 (&d1 * &x - &y - &d1.powi(2)).classify_ode(&y, &x);   // Clairaut
 
 // a(n+2) = a(n+1) + a(n), a(0) = 0, a(1) = 1  →  Binet's formula
@@ -401,7 +403,7 @@ let m = matrix![ctx, [2, 1], [1, 2]];
 m.det().unwrap();                                     // 3
 m.eigenvals().unwrap();                               // [3, 1]
 m.char_poly(&ctx.symbol("λ")).unwrap();               // λ^2 - 4*λ + 3
-m.diagonalize().unwrap();                             // (P, D)
+m.diagonalize().unwrap();                             // Diagonalization { p, d } with A = P·D·P⁻¹
 m.matrix_exp_t(&t).unwrap();                          // [[e^(3t)/2 + e^t/2, …], …]
 m.matrix_pow_symbolic(&n).unwrap();                   // [[3^n/2 + 1/2, 3^n/2 - 1/2], …]
 m.matrix_sqrt().unwrap();
@@ -409,7 +411,7 @@ m.matrix_sqrt().unwrap();
 let spd = matrix![ctx, [4, 12, -16], [12, 37, -43], [-16, -43, 98]];
 spd.cholesky().unwrap();                              // [[2,0,0],[6,1,0],[-8,5,3]]
 spd.is_positive_definite();                           // Some(true)
-matrix![ctx, [1, 1, 0], [1, 0, 1], [0, 1, 1]].qr().unwrap();   // exact radicals
+matrix![ctx, [1, 1, 0], [1, 0, 1], [0, 1, 1]].qr().unwrap();   // Qr { q, r }, exact radicals
 
 // Irreducible characteristic polynomials give exact, evaluable RootOf eigenvalues
 matrix![ctx, [0, 1, 0], [0, 0, 1], [1, 1, 0]].eigenvals().unwrap();   // [RootOf(λ^3 - λ - 1, 0), …]
@@ -436,7 +438,7 @@ ZMatrix::from_i64(&[&[2, 4, 4], &[-6, 6, 12], &[10, -4, -16]]).unwrap().smith_no
 // rank decomposition, Hessenberg form, permanent, companion / Jordan blocks, exact LLL
 matrix![ctx, [1, 2], [3, 4]].singular_values().unwrap();     // [sqrt(sqrt(221) + 15), sqrt(-sqrt(221) + 15)]
 matrix![ctx, [1, 2], [2, 4]].pinv().unwrap();                // [[1/25, 2/25], [2/25, 4/25]]  (rank-deficient)
-matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]].rank_decomposition().unwrap();   // (C, F) with A = C·F
+matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]].rank_decomposition().unwrap();   // RankDecomposition { c, f } with A = C·F
 matrix![ctx, [1, 2], [3, 4]].permanent().unwrap();           // 10
 matrix![ctx, [1, 2], [3, 4]].inv_mod(5).unwrap();            // [[3, 1], [4, 2]]
 ZMatrix::from_i64(&[&[1, 1, 1], &[-1, 0, 2], &[3, 5, 6]]).unwrap().lll_default().unwrap();   // [[0, 1, 0], [1, 0, 1], [-1, 0, 2]]
@@ -476,7 +478,7 @@ feasible_nonneg(&[vec![q(1, 3), q(1, 7)], vec![qi(1), qi(-1)]], &[qi(1), qi(0)])
 
 // Integer normal forms: H = U·A (row style), S = U·A·V, ℤ-basis of the kernel
 let a = matrix![ctx, [2, 4, 4], [-6, 6, 12], [10, -4, -16]];
-let (h, u) = hermite_normal_form_with_transform(&a).unwrap();
+let HermiteNormalForm { h, u } = hermite_normal_form_with_transform(&a).unwrap();
 h;                                                    // [[2, 4, 4], [0, 6, 0], [0, 0, 12]]
 (&u * &a).eval() == h;                                // true  (det U = −1)
 a.smith_normal_form().unwrap();                       // [[2, 0, 0], [0, 6, 0], [0, 0, 12]]
@@ -579,7 +581,7 @@ factorint(1_099_532_599_387u64);                      // [(1048583, 1), (1048589
 sqrt_mod(2, 7);                                       // Some(3)
 discrete_log(3, 13, 17);                              // Some(4)
 primepi(1_000_000);                                   // Some(78498)
-continued_fraction_periodic(23);                      // Some(([4], [1, 3, 1, 8]))
+continued_fraction_periodic(23);                      // Some(PeriodicContinuedFraction { pre_period: [4], period: [1, 3, 1, 8] })
 diophantine::pell(61);                                // Some((1766319049, 226153980))
 diophantine::sum_of_two_squares(65);                  // Some((4, 7))
 stirling2(10, 4);                                     // Some(34105)

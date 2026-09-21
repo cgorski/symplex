@@ -730,7 +730,13 @@ fn continued_fraction_reduce_values() {
 
 #[test]
 fn continued_fraction_reduce_periodic_values() {
-    let triple = |p: i64, q: i64, d: i64| Some((BigInt::from(p), BigInt::from(q), BigInt::from(d)));
+    let triple = |p: i64, q: i64, d: i64| {
+        Some(QuadraticSurd {
+            p: b(p),
+            q: b(q),
+            d: b(d),
+        })
+    };
     // sympy: continued_fraction_reduce([1, [2]]) == sqrt(2)
     assert_eq!(
         continued_fraction_reduce_periodic(&bs(&[1]), &bs(&[2])),
@@ -805,10 +811,14 @@ fn continued_fraction_reduce_periodic_inverts_continued_fraction_periodic() {
         if is_square(d) {
             continue;
         }
-        let (pre, period) = continued_fraction_periodic(d).unwrap();
+        let cf = continued_fraction_periodic(d).unwrap();
         assert_eq!(
-            continued_fraction_reduce_periodic(&pre, &period),
-            Some((b(0), b(1), b(d))),
+            continued_fraction_reduce_periodic(&cf.pre_period, &cf.period),
+            Some(QuadraticSurd {
+                p: b(0),
+                q: b(1),
+                d: b(d)
+            }),
             "sqrt({d})"
         );
     }

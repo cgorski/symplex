@@ -363,7 +363,12 @@ fn diophantine_linear() {
         let solvable = fx.bool("solvable").unwrap_or(false);
         let g = fx.i64("gcd").map(BigInt::from).unwrap_or_else(|| a.gcd(&b));
         match diophantine::linear_diophantine(a.clone(), b.clone(), c.clone()) {
-            Some((x0, y0, dx, dy)) => {
+            Some(diophantine::LinearDiophantine {
+                x: x0,
+                y: y0,
+                x_step: dx,
+                y_step: dy,
+            }) => {
                 if !solvable {
                     return Status::Fail(format!(
                         "symplex solved {a}x+{b}y={c} (SymPy: no solution)"

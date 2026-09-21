@@ -26,7 +26,7 @@ fn main() {
     // ── 1. Row Hermite normal form ──────────────────────────────────────
     let a = matrix![ctx, [2, 4, 4], [-6, 6, 12], [10, -4, -16]];
     println!("A =\n{a}");
-    let (h, u) = hermite_normal_form_with_transform(&a).unwrap();
+    let HermiteNormalForm { h, u } = hermite_normal_form_with_transform(&a).unwrap();
     println!("row HNF H = U·A:\nH =\n{h}\nU =\n{u}");
     let back = (&u * &a).eval();
     assert_eq!(back, h);
@@ -53,7 +53,7 @@ fn main() {
 
     // ── 3. Smith normal form ────────────────────────────────────────────
     println!("\n--- Smith normal form ---");
-    let (s, us, vs) = smith_normal_form_with_transforms(&m).unwrap();
+    let SmithNormalForm { s, u: us, v: vs } = smith_normal_form_with_transforms(&m).unwrap();
     println!("S = U·M·V =\n{s}");
     println!("U =\n{us}\nV =\n{vs}");
     let back = (&(&us * &m) * &vs).eval();

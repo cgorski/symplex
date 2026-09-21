@@ -6,9 +6,12 @@
 //!     d/dt(∂L/∂q̇ᵢ) - ∂L/∂qᵢ = τᵢ
 //!
 //! which yields the manipulator equation:
-//!     M(q)q̈ + C(q, q̇)q̇ + g(q) = τ
+//!     M(q)q̈ + C(q, q̇)q̇ + G(q) = τ
 //!
-//! This module provides functions to extract M, C, and g symbolically.
+//! This module provides functions to extract M, C, and G symbolically.
+//! Each coordinate travels with its velocity and acceleration as a
+//! [`GeneralizedCoordinate`]; [`manipulator_equation`] returns the three
+//! terms as a [`ManipulatorEquation`].
 
 use crate::domains::matrix::Matrix;
 use crate::prelude::*;
@@ -17,23 +20,36 @@ fn invalid(operation: &'static str, reason: String) -> SymplexError {
     SymplexError::invalid_argument(operation, reason)
 }
 
-/// `coords` and `accels` must pair up one-to-one.
-fn check_coords_accels(
-    operation: &'static str,
-    coords: &[(&Ex, &Ex)],
-    accels: &[&Ex],
-) -> Result<(), SymplexError> {
-    if coords.len() != accels.len() {
-        return Err(invalid(
-            operation,
-            format!(
-                "coords and accels must have the same length, got {} and {}",
-                coords.len(),
-                accels.len()
-            ),
-        ));
-    }
-    Ok(())
+/// One generalized coordinate `qᵢ` together with its velocity `q̇ᵢ` and
+/// acceleration `q̈ᵢ`.
+///
+/// The Lagrangian formalism treats the three as *independent* symbols for
+/// partial differentiation; [`total_time_derivative`] reassembles `d/dt`
+/// from them by the chain rule.  Keeping them in one value rules out a
+/// transposed `(q̇, q)` pair or an acceleration list of the wrong length.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::dynamics::GeneralizedCoordinate;
+///
+/// let ctx = Context::new();
+/// let q = ctx.symbol("q");
+/// let qd = ctx.symbol("qd");
+/// let qdd = ctx.symbol("qdd");
+///
+/// let coord = GeneralizedCoordinate { q: &q, q_dot: &qd, q_ddot: &qdd };
+/// assert_eq!(format!("{}", coord.q_ddot), "qdd");
+/// ```
+#[derive(Clone, Copy, Debug)]
+pub struct GeneralizedCoordinate<'a> {
+    /// `qᵢ` — the coordinate (a joint angle, a displacement, …).
+    pub q: &'a Ex,
+    /// `q̇ᵢ` — its generalized velocity.
+    pub q_dot: &'a Ex,
+    /// `q̈ᵢ` — its generalized acceleration.
+    pub q_ddot: &'a Ex,
 }
 
 /// Compute the total time derivative of an expression.
@@ -48,18 +64,14 @@ fn check_coords_accels(
 ///
 /// # Parameters
 /// - `expr`: The expression to differentiate with respect to time
-/// - `coords`: Pairs of (qᵢ, q̇ᵢ) — generalized coordinates and their velocities
-/// - `accels`: The acceleration variables q̈ᵢ corresponding to each q̇ᵢ
-///
-/// # Errors
-///
-/// Returns [`SymplexError::InvalidArgument`] if `coords.len() != accels.len()`.
+/// - `coords`: The generalized coordinates, each with its velocity q̇ᵢ and
+///   acceleration q̈ᵢ
 ///
 /// # Examples
 ///
 /// ```
 /// use symplex::prelude::*;
-/// use symplex::dynamics::total_time_derivative;
+/// use symplex::dynamics::{total_time_derivative, GeneralizedCoordinate};
 ///
 /// let ctx = Context::new();
 /// let q = ctx.symbol("q");
@@ -67,31 +79,26 @@ fn check_coords_accels(
 /// let qdd = ctx.symbol("qdd");
 ///
 /// // d/dt(q) = qd
-/// let result = total_time_derivative(&q, &[(&q, &qd)], &[&qdd]).unwrap();
+/// let coords = [GeneralizedCoordinate { q: &q, q_dot: &qd, q_ddot: &qdd }];
+/// let result = total_time_derivative(&q, &coords);
 /// let val = result.subs(&qd, &ctx.int(7)).eval().eval_f64().unwrap();
 /// assert!((val - 7.0).abs() < 1e-12);
 /// ```
-pub fn total_time_derivative(
-    expr: &Ex,
-    coords: &[(&Ex, &Ex)],
-    accels: &[&Ex],
-) -> Result<Ex, SymplexError> {
-    check_coords_accels("dynamics::total_time_derivative", coords, accels)?;
-
+pub fn total_time_derivative(expr: &Ex, coords: &[GeneralizedCoordinate<'_>]) -> Ex {
     // d/dt f = Σᵢ (∂f/∂qᵢ)·q̇ᵢ + Σᵢ (∂f/∂q̇ᵢ)·q̈ᵢ
     let mut result = expr.context().int(0);
 
-    for ((qi, qi_dot), accel) in coords.iter().zip(accels) {
+    for coord in coords {
         // ∂f/∂qᵢ · q̇ᵢ
-        let df_dqi = expr.diff(qi);
-        result = &result + &(&df_dqi * *qi_dot);
+        let df_dqi = expr.diff(coord.q);
+        result = &result + &(&df_dqi * coord.q_dot);
 
         // ∂f/∂q̇ᵢ · q̈ᵢ
-        let df_dqi_dot = expr.diff(qi_dot);
-        result = &result + &(&df_dqi_dot * *accel);
+        let df_dqi_dot = expr.diff(coord.q_dot);
+        result = &result + &(&df_dqi_dot * coord.q_ddot);
     }
 
-    Ok(result)
+    result
 }
 
 /// Compute the Euler-Lagrange equations of motion.
@@ -108,18 +115,14 @@ pub fn total_time_derivative(
 /// # Parameters
 /// - `kinetic_energy`: T(q, q̇), the kinetic energy
 /// - `potential_energy`: V(q), the potential energy
-/// - `coords`: Pairs of (qᵢ, q̇ᵢ) — generalized coordinates and their velocities
-/// - `accels`: The acceleration variables q̈ᵢ corresponding to each q̇ᵢ
-///
-/// # Errors
-///
-/// Returns [`SymplexError::InvalidArgument`] if `coords.len() != accels.len()`.
+/// - `coords`: The generalized coordinates, each with its velocity q̇ᵢ and
+///   acceleration q̈ᵢ; one equation is returned per entry, in order
 ///
 /// # Examples
 ///
 /// ```
 /// use symplex::prelude::*;
-/// use symplex::dynamics::euler_lagrange;
+/// use symplex::dynamics::{euler_lagrange, GeneralizedCoordinate};
 ///
 /// let ctx = Context::new();
 /// let m = ctx.symbol("m");
@@ -131,37 +134,35 @@ pub fn total_time_derivative(
 /// let half = ctx.rational(1, 2);
 /// let ke = &half * &m * &qd.powi(2);
 /// let pe = ctx.int(0);
-/// let eqs = euler_lagrange(&ke, &pe, &[(&q, &qd)], &[&qdd]).unwrap();
+/// let coords = [GeneralizedCoordinate { q: &q, q_dot: &qd, q_ddot: &qdd }];
+/// let eqs = euler_lagrange(&ke, &pe, &coords);
 /// // Should give m·q̈
 /// assert_eq!(eqs.len(), 1);
 /// ```
 pub fn euler_lagrange(
     kinetic_energy: &Ex,
     potential_energy: &Ex,
-    coords: &[(&Ex, &Ex)],
-    accels: &[&Ex],
-) -> Result<Vec<Ex>, SymplexError> {
-    check_coords_accels("dynamics::euler_lagrange", coords, accels)?;
-
+    coords: &[GeneralizedCoordinate<'_>],
+) -> Vec<Ex> {
     let lagrangian = kinetic_energy - potential_energy;
     let mut equations = Vec::with_capacity(coords.len());
 
-    for (_qi, qi_dot) in coords.iter() {
+    for coord in coords {
         // ∂L/∂q̇ᵢ
-        let dl_dqi_dot = lagrangian.diff(qi_dot);
+        let dl_dqi_dot = lagrangian.diff(coord.q_dot);
 
         // d/dt(∂L/∂q̇ᵢ)
-        let dt_dl_dqi_dot = total_time_derivative(&dl_dqi_dot, coords, accels)?;
+        let dt_dl_dqi_dot = total_time_derivative(&dl_dqi_dot, coords);
 
         // ∂L/∂qᵢ
-        let dl_dqi = lagrangian.diff(_qi);
+        let dl_dqi = lagrangian.diff(coord.q);
 
         // Euler-Lagrange: d/dt(∂L/∂q̇ᵢ) - ∂L/∂qᵢ
         let eq_i = &dt_dl_dqi_dot - &dl_dqi;
         equations.push(eq_i.eval());
     }
 
-    Ok(equations)
+    equations
 }
 
 /// Extract the mass (inertia) matrix M(q) from kinetic energy.
@@ -398,12 +399,35 @@ pub fn gravity_vector(potential_energy: &Ex, q_vars: &[&Ex]) -> Vec<Ex> {
         .collect()
 }
 
-/// Compute the full manipulator equation components: M(q), C(q, q̇), g(q).
+/// The three terms of the manipulator equation
+///
+/// ```text
+/// M(q)·q̈ + C(q, q̇)·q̇ + G(q) = τ
+/// ```
+///
+/// as returned by [`manipulator_equation`], for `n` generalized coordinates.
+/// `G` is the gradient of the potential, so for the same energies the
+/// left-hand side evaluates to exactly what [`euler_lagrange`] returns.
+#[derive(Clone, Debug)]
+pub struct ManipulatorEquation {
+    /// `M(q)` — the `n×n` mass (inertia) matrix, `Mᵢⱼ = ∂²T/∂q̇ᵢ∂q̇ⱼ`
+    /// ([`mass_matrix`]).
+    pub mass: Matrix,
+    /// `C(q, q̇)` — the `n×n` Coriolis/centrifugal matrix built from the
+    /// Christoffel symbols of the first kind, `Cᵢⱼ = Σₖ Γᵢⱼₖ·q̇ₖ`; it
+    /// multiplies `q̇` ([`coriolis_matrix`]).
+    pub coriolis: Matrix,
+    /// `G(q)` — the `n` generalized gravity forces, `Gᵢ = ∂V/∂qᵢ`
+    /// ([`gravity_vector`]).
+    pub gravity: Vec<Ex>,
+}
+
+/// Compute the full manipulator equation components: M(q), C(q, q̇), G(q).
 ///
 /// Given kinetic energy T(q, q̇) and potential energy V(q), returns
 /// the mass matrix, Coriolis matrix, and gravity vector such that:
 ///
-/// M(q)q̈ + C(q, q̇)q̇ + g(q) = τ
+/// M(q)q̈ + C(q, q̇)q̇ + G(q) = τ
 ///
 /// This is a convenience function that calls [`mass_matrix`],
 /// [`coriolis_matrix`], and [`gravity_vector`].
@@ -416,10 +440,9 @@ pub fn gravity_vector(potential_energy: &Ex, q_vars: &[&Ex]) -> Vec<Ex> {
 ///
 /// # Returns
 ///
-/// A tuple `(M, C, g)` where:
-/// - `M`: n×n mass (inertia) matrix
-/// - `C`: n×n Coriolis matrix
-/// - `g`: n-element gravity vector
+/// A [`ManipulatorEquation`] holding the `n×n` [`mass`](ManipulatorEquation::mass)
+/// matrix, the `n×n` [`coriolis`](ManipulatorEquation::coriolis) matrix and the
+/// `n`-element [`gravity`](ManipulatorEquation::gravity) vector.
 ///
 /// # Errors
 ///
@@ -440,23 +463,23 @@ pub fn gravity_vector(potential_energy: &Ex, q_vars: &[&Ex]) -> Vec<Ex> {
 /// let half = ctx.rational(1, 2);
 /// let ke = &half * &m_val * &qd.powi(2);
 /// let pe = ctx.int(0);
-/// let (mass, coriolis, grav) = manipulator_equation(&ke, &pe, &[&q], &[&qd]).unwrap();
-/// assert_eq!(mass.shape(), (1, 1));
-/// assert_eq!(coriolis.shape(), (1, 1));
-/// assert_eq!(grav.len(), 1);
+/// let eq = manipulator_equation(&ke, &pe, &[&q], &[&qd]).unwrap();
+/// assert_eq!(eq.mass.shape(), (1, 1));
+/// assert_eq!(eq.coriolis.shape(), (1, 1));
+/// assert_eq!(eq.gravity.len(), 1);
 /// ```
 pub fn manipulator_equation(
     kinetic_energy: &Ex,
     potential_energy: &Ex,
     q_vars: &[&Ex],
     qdot_vars: &[&Ex],
-) -> Result<(Matrix, Matrix, Vec<Ex>), SymplexError> {
+) -> Result<ManipulatorEquation, SymplexError> {
     let m = mass_matrix(kinetic_energy, qdot_vars)?;
     let c = coriolis_matrix(&m, q_vars, qdot_vars)?;
     let g = gravity_vector(potential_energy, q_vars);
-    Ok((
-        m.eval(),
-        c.eval(),
-        g.into_iter().map(|e| e.eval()).collect(),
-    ))
+    Ok(ManipulatorEquation {
+        mass: m.eval(),
+        coriolis: c.eval(),
+        gravity: g.into_iter().map(|e| e.eval()).collect(),
+    })
 }

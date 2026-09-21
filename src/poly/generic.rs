@@ -25,6 +25,8 @@
 use std::fmt;
 use std::hash;
 
+use num_integer::ExtendedGcd;
+
 use super::traits::{BindingStrength, CoeffDisplay, Field, IntegralCoeff, Ring};
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -591,15 +593,26 @@ impl<C: Field> GenPoly<C> {
 
     /// Extended Euclidean algorithm.
     ///
-    /// Returns `(s, t, g)` where `s*a + t*b = g` and `g = gcd(a, b)` (monic).
-    pub fn extended_gcd(a: &Self, b: &Self) -> (Self, Self, Self) {
+    /// Returns [`ExtendedGcd`]` { gcd, x, y }` with `x·a + y·b = gcd` and
+    /// `gcd = gcd(a, b)` monic (the Bézout cofactors `s, t` of the
+    /// textbook `s·a + t·b = g` are `x` and `y`).  The zero gcd, from
+    /// `a = b = 0`, is returned as is with `x = 1`, `y = 0`.
+    pub fn extended_gcd(a: &Self, b: &Self) -> ExtendedGcd<Self> {
         if b.is_zero() {
             let Some(lc) = a.leading_coeff() else {
-                return (Self::one(), Self::zero(), Self::zero());
+                return ExtendedGcd {
+                    gcd: Self::zero(),
+                    x: Self::one(),
+                    y: Self::zero(),
+                };
             };
             let inv_lc = Field::inv(lc);
             let s = Self::constant(inv_lc.clone());
-            return (s, Self::zero(), a.make_monic());
+            return ExtendedGcd {
+                gcd: a.make_monic(),
+                x: s,
+                y: Self::zero(),
+            };
         }
 
         let (mut r_prev, mut r_curr) = (a.clone(), b.clone());
@@ -628,7 +641,11 @@ impl<C: Field> GenPoly<C> {
             t_prev = t_prev.scale(&inv_lc);
         }
 
-        (s_prev, t_prev, r_prev)
+        ExtendedGcd {
+            gcd: r_prev,
+            x: s_prev,
+            y: t_prev,
+        }
     }
 
     /// Square-free part: `p / gcd(p, p')`.
@@ -1351,7 +1368,7 @@ mod tests {
         // Verify: s*a + t*b = gcd(a, b)
         let a = p(&[-1, 0, 1]); // θ² - 1
         let b = p(&[1, -2, 1]); // (θ - 1)²
-        let (s, t, g) = P::extended_gcd(&a, &b);
+        let ExtendedGcd { gcd: g, x: s, y: t } = P::extended_gcd(&a, &b);
 
         // Check s*a + t*b = g
         let lhs = s.mul(&a).add(&t.mul(&b));
@@ -1362,7 +1379,7 @@ mod tests {
     fn extended_gcd_coprime() {
         let a = p(&[1, 1]); // θ + 1
         let b = p(&[2, 1]); // θ + 2
-        let (s, t, g) = P::extended_gcd(&a, &b);
+        let ExtendedGcd { gcd: g, x: s, y: t } = P::extended_gcd(&a, &b);
         assert_eq!(g.degree(), Some(0)); // gcd = 1
         let lhs = s.mul(&a).add(&t.mul(&b));
         assert_eq!(lhs, g);
@@ -1552,6 +1569,7 @@ mod tests {
         use crate::poly::ratfn::RationalFn;
         use crate::poly::traits::Ring;
         use num_bigint::BigInt;
+        use num_integer::ExtendedGcd;
         use num_rational::Ratio;
 
         type RF = RationalFn;
@@ -1704,7 +1722,7 @@ mod tests {
             // Verify s*a + t*b = gcd
             let a = rp(&[rf_int(-1), rf_int(0), rf_int(1)]); // θ² - 1
             let b = rp(&[rf_int(1), rf_int(-2), rf_int(1)]); // (θ - 1)²
-            let (s, t, g) = RP::extended_gcd(&a, &b);
+            let ExtendedGcd { gcd: g, x: s, y: t } = RP::extended_gcd(&a, &b);
             let lhs = s.mul(&a).add(&t.mul(&b));
             assert_eq!(lhs, g, "Bézout identity failed for GenPoly<RationalFn>");
         }

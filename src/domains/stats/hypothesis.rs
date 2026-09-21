@@ -2984,7 +2984,13 @@ fn smallest_n_with_power(
     target: f64,
     power: impl Fn(usize) -> Result<f64, SymplexError>,
 ) -> Result<usize, SymplexError> {
-    const CAP: usize = 1 << 40;
+    // 2^40 on 64-bit targets; on 32-bit ones (wasm32) the search stops at
+    // `usize::MAX / 2`, which no power calculation reaches either.
+    const CAP: usize = if usize::BITS >= 41 {
+        1 << 40
+    } else {
+        usize::MAX / 2
+    };
     let (mut lo, mut hi) = (start, start);
     while power(hi)? < target {
         lo = hi;

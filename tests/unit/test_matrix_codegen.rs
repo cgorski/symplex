@@ -125,7 +125,20 @@ fn matrix_codegen_simple_jacobian() {
     let l2 = ctx.symbol("L2");
     let zero = ctx.int(0);
 
-    let params = [(&theta1, &zero, &l1, &zero), (&theta2, &zero, &l2, &zero)];
+    let params = [
+        DhLink {
+            theta: &theta1,
+            d: &zero,
+            a: &l1,
+            alpha: &zero,
+        },
+        DhLink {
+            theta: &theta2,
+            d: &zero,
+            a: &l2,
+            alpha: &zero,
+        },
+    ];
     let (x, y, _z) = fk_position(&params);
 
     // 2×2 Jacobian of (x, y) w.r.t. (theta1, theta2)
@@ -200,7 +213,20 @@ fn matrix_codegen_numerical_correctness() {
     let l2 = ctx.symbol("L2");
     let zero = ctx.int(0);
 
-    let params = [(&theta1, &zero, &l1, &zero), (&theta2, &zero, &l2, &zero)];
+    let params = [
+        DhLink {
+            theta: &theta1,
+            d: &zero,
+            a: &l1,
+            alpha: &zero,
+        },
+        DhLink {
+            theta: &theta2,
+            d: &zero,
+            a: &l2,
+            alpha: &zero,
+        },
+    ];
     let (x, y, _z) = fk_position(&params);
 
     // 2×2 Jacobian of (x, y) w.r.t. (theta1, theta2)
@@ -275,9 +301,24 @@ fn matrix_codegen_3dof_robot() {
     let zero = ctx.int(0);
 
     let params = [
-        (&theta1, &zero, &l1, &zero),
-        (&theta2, &zero, &l2, &zero),
-        (&theta3, &zero, &l3, &zero),
+        DhLink {
+            theta: &theta1,
+            d: &zero,
+            a: &l1,
+            alpha: &zero,
+        },
+        DhLink {
+            theta: &theta2,
+            d: &zero,
+            a: &l2,
+            alpha: &zero,
+        },
+        DhLink {
+            theta: &theta3,
+            d: &zero,
+            a: &l3,
+            alpha: &zero,
+        },
     ];
     let (x, y, z) = fk_position(&params);
 
@@ -483,7 +524,20 @@ fn pipeline_dh_to_codegen_2dof() {
     let l2 = ctx.symbol("L2");
     let zero = ctx.int(0);
 
-    let dh = [(&theta1, &zero, &l1, &zero), (&theta2, &zero, &l2, &zero)];
+    let dh = [
+        DhLink {
+            theta: &theta1,
+            d: &zero,
+            a: &l1,
+            alpha: &zero,
+        },
+        DhLink {
+            theta: &theta2,
+            d: &zero,
+            a: &l2,
+            alpha: &zero,
+        },
+    ];
 
     // Step 2: Compute FK position
     let (x, y, _z) = fk_position(&dh);
@@ -552,9 +606,24 @@ fn pipeline_dh_to_codegen_3dof() {
     let zero = ctx.int(0);
 
     let dh = [
-        (&theta1, &zero, &l1, &zero),
-        (&theta2, &zero, &l2, &zero),
-        (&theta3, &zero, &l3, &zero),
+        DhLink {
+            theta: &theta1,
+            d: &zero,
+            a: &l1,
+            alpha: &zero,
+        },
+        DhLink {
+            theta: &theta2,
+            d: &zero,
+            a: &l2,
+            alpha: &zero,
+        },
+        DhLink {
+            theta: &theta3,
+            d: &zero,
+            a: &l3,
+            alpha: &zero,
+        },
     ];
 
     let (x, y, z) = fk_position(&dh);
@@ -588,7 +657,20 @@ fn pipeline_fk_codegen() {
     let l2 = ctx.symbol("L2");
     let zero = ctx.int(0);
 
-    let dh = [(&theta1, &zero, &l1, &zero), (&theta2, &zero, &l2, &zero)];
+    let dh = [
+        DhLink {
+            theta: &theta1,
+            d: &zero,
+            a: &l1,
+            alpha: &zero,
+        },
+        DhLink {
+            theta: &theta2,
+            d: &zero,
+            a: &l2,
+            alpha: &zero,
+        },
+    ];
 
     let (x, y, z) = fk_position(&dh);
 
@@ -978,7 +1060,20 @@ fn pipeline_dh_jacobian_numerical_at_zero() {
     let l2 = ctx.symbol("L2");
     let zero = ctx.int(0);
 
-    let dh = [(&theta1, &zero, &l1, &zero), (&theta2, &zero, &l2, &zero)];
+    let dh = [
+        DhLink {
+            theta: &theta1,
+            d: &zero,
+            a: &l1,
+            alpha: &zero,
+        },
+        DhLink {
+            theta: &theta2,
+            d: &zero,
+            a: &l2,
+            alpha: &zero,
+        },
+    ];
     let (x, y, _z) = fk_position(&dh);
 
     let j = jacobian(&[&x, &y], &[&theta1, &theta2]);

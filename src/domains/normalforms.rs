@@ -34,15 +34,17 @@
 //!
 //! let ctx = Context::new();
 //! let a = matrix![ctx, [2, 4, 4], [-6, 6, 12], [10, -4, -16]];
-//! let (h, u) = hermite_normal_form_with_transform(&a).unwrap();
-//! assert_eq!(h, matrix![ctx, [2, 4, 4], [0, 6, 0], [0, 0, 12]]);
-//! assert_eq!((&u * &a).eval(), h);
+//! let hnf = hermite_normal_form_with_transform(&a).unwrap();
+//! assert_eq!(hnf.h, matrix![ctx, [2, 4, 4], [0, 6, 0], [0, 0, 12]]);
+//! assert_eq!((&hnf.u * &a).eval(), hnf.h);
 //! assert_eq!(smith_normal_form(&a).unwrap(), matrix![ctx, [2, 0, 0], [0, 6, 0], [0, 0, 12]]);
 //! ```
 
 use num_bigint::BigInt;
+use num_rational::Rational64;
 
 use crate::base::errors::SymplexError;
+use crate::domains::decompositions::{HermiteNormalForm, LllReduction, SmithNormalForm};
 use crate::domains::exact_matrix::ZMatrix;
 use crate::domains::matrix::Matrix;
 
@@ -102,9 +104,9 @@ pub fn hermite_normal_form(m: &Matrix) -> Result<Matrix, SymplexError> {
     Ok(z.hermite_normal_form().to_matrix(&m.context()))
 }
 
-/// Row-style Hermite normal form together with its transform: `(H, U)`
-/// with `H = U·A` and `det U = ±1`.  See [`hermite_normal_form`] for the
-/// normalisation of `H`.
+/// Row-style Hermite normal form together with its transform:
+/// [`HermiteNormalForm`]`{ h, u }` with `H = U·A` and `det U = ±1`.  See
+/// [`hermite_normal_form`] for the normalisation of `H`.
 ///
 /// `U` is not unique when `A` is rank-deficient (any row of `U` mapping to
 /// a zero row of `H` can be adjusted by kernel vectors); the returned `U` is
@@ -122,16 +124,21 @@ pub fn hermite_normal_form(m: &Matrix) -> Result<Matrix, SymplexError> {
 ///
 /// let ctx = Context::new();
 /// let a = matrix![ctx, [3, 1], [1, 2]];
-/// let (h, u) = hermite_normal_form_with_transform(&a).unwrap();
+/// let HermiteNormalForm { h, u } = hermite_normal_form_with_transform(&a).unwrap();
 /// assert_eq!((&u * &a).eval(), h);
 /// assert_eq!(h, matrix![ctx, [1, 2], [0, 5]]);
 /// assert_eq!(u.det().unwrap().as_i64().unwrap().abs(), 1);
 /// ```
-pub fn hermite_normal_form_with_transform(m: &Matrix) -> Result<(Matrix, Matrix), SymplexError> {
+pub fn hermite_normal_form_with_transform(
+    m: &Matrix,
+) -> Result<HermiteNormalForm<Matrix>, SymplexError> {
     let z = integer_matrix(m, "hermite_normal_form_with_transform")?;
-    let (h, u) = z.hermite_normal_form_with_transform();
+    let HermiteNormalForm { h, u } = z.hermite_normal_form_with_transform();
     let ctx = m.context();
-    Ok((h.to_matrix(&ctx), u.to_matrix(&ctx)))
+    Ok(HermiteNormalForm {
+        h: h.to_matrix(&ctx),
+        u: u.to_matrix(&ctx),
+    })
 }
 
 /// Column-style Hermite normal form `H = A·V` (column operations), the
@@ -211,10 +218,10 @@ pub fn smith_normal_form(m: &Matrix) -> Result<Matrix, SymplexError> {
     Ok(z.smith_normal_form().to_matrix(&m.context()))
 }
 
-/// Smith normal form with transforms: `(S, U, V)` such that `S = U·A·V`,
-/// `det U = ±1`, `det V = ±1`.  See [`smith_normal_form`] for the form of
-/// `S`.  `U` and `V` are not unique; the returned pair is the one produced
-/// by the elimination.
+/// Smith normal form with transforms: [`SmithNormalForm`]`{ s, u, v }`
+/// such that `S = U·A·V`, `det U = ±1`, `det V = ±1`.  See
+/// [`smith_normal_form`] for the form of `S`.  `U` and `V` are not unique;
+/// the returned pair is the one produced by the elimination.
 ///
 /// # Errors
 ///
@@ -228,17 +235,21 @@ pub fn smith_normal_form(m: &Matrix) -> Result<Matrix, SymplexError> {
 ///
 /// let ctx = Context::new();
 /// let a = matrix![ctx, [2, 4, 4], [-6, 6, 12], [10, -4, -16]];
-/// let (s, u, v) = smith_normal_form_with_transforms(&a).unwrap();
+/// let SmithNormalForm { s, u, v } = smith_normal_form_with_transforms(&a).unwrap();
 /// assert_eq!(s, matrix![ctx, [2, 0, 0], [0, 6, 0], [0, 0, 12]]);
 /// assert_eq!((&(&u * &a) * &v).eval(), s);
 /// ```
 pub fn smith_normal_form_with_transforms(
     m: &Matrix,
-) -> Result<(Matrix, Matrix, Matrix), SymplexError> {
+) -> Result<SmithNormalForm<Matrix>, SymplexError> {
     let z = integer_matrix(m, "smith_normal_form_with_transforms")?;
-    let (s, u, v) = z.smith_normal_form_with_transforms();
+    let SmithNormalForm { s, u, v } = z.smith_normal_form_with_transforms();
     let ctx = m.context();
-    Ok((s.to_matrix(&ctx), u.to_matrix(&ctx), v.to_matrix(&ctx)))
+    Ok(SmithNormalForm {
+        s: s.to_matrix(&ctx),
+        u: u.to_matrix(&ctx),
+        v: v.to_matrix(&ctx),
+    })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -346,8 +357,9 @@ pub fn lattice_determinant(m: &Matrix) -> Result<BigInt, SymplexError> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// LLL-reduced basis of the lattice spanned by the **rows** of the integer
-/// matrix `A`, with Lovász parameter `δ = num/den` (the standard choice
-/// is `(3, 4)`).  SymPy: `Matrix.lll(delta)`.
+/// matrix `A`, with Lovász parameter `δ` (a [`Rational64`]; the standard
+/// choice is `3/4`, [`LLL_DEFAULT_DELTA`](crate::matrix::LLL_DEFAULT_DELTA)).
+/// SymPy: `Matrix.lll(delta)`.
 ///
 /// The Gram–Schmidt data is exact (rational), so the result satisfies the
 /// size condition `|μ_ij| ≤ 1/2` and the Lovász condition
@@ -366,21 +378,23 @@ pub fn lattice_determinant(m: &Matrix) -> Result<BigInt, SymplexError> {
 /// ```
 /// use symplex::prelude::*;
 /// use symplex::normalforms::{hermite_normal_form, lll};
+/// use symplex::num_rational::Ratio;
 ///
 /// let ctx = Context::new();
 /// let b = matrix![ctx, [1, 1, 1], [-1, 0, 2], [3, 5, 6]];
-/// let r = lll(&b, (3, 4)).unwrap();
+/// let r = lll(&b, Ratio::new(3, 4)).unwrap();
 /// // SymPy 1.14: Matrix([[1,1,1],[-1,0,2],[3,5,6]]).lll() == [[0,1,0],[1,0,1],[-1,0,2]]
 /// assert_eq!(r, matrix![ctx, [0, 1, 0], [1, 0, 1], [-1, 0, 2]]);
 /// assert_eq!(hermite_normal_form(&r).unwrap(), hermite_normal_form(&b).unwrap());
 /// ```
-pub fn lll(m: &Matrix, delta: (i64, i64)) -> Result<Matrix, SymplexError> {
+pub fn lll(m: &Matrix, delta: Rational64) -> Result<Matrix, SymplexError> {
     let z = integer_matrix(m, "lll")?;
     Ok(z.lll(delta)?.to_matrix(&m.context()))
 }
 
-/// LLL reduction with its unimodular transform: `(R, T)` with `R = T·A`
-/// and `det T = ±1`.  SymPy: `Matrix.lll_transform(delta)`.
+/// LLL reduction with its unimodular transform:
+/// [`LllReduction`]`{ reduced, transform }` with `reduced = T·A` and
+/// `det T = ±1`.  SymPy: `Matrix.lll_transform(delta)`.
 ///
 /// # Errors
 ///
@@ -391,16 +405,23 @@ pub fn lll(m: &Matrix, delta: (i64, i64)) -> Result<Matrix, SymplexError> {
 /// ```
 /// use symplex::prelude::*;
 /// use symplex::normalforms::{is_unimodular, lll_with_transform};
+/// use symplex::num_rational::Ratio;
 ///
 /// let ctx = Context::new();
 /// let b = matrix![ctx, [1, 1, 1], [-1, 0, 2], [3, 5, 6]];
-/// let (r, t) = lll_with_transform(&b, (3, 4)).unwrap();
-/// assert_eq!((&t * &b).eval(), r);
-/// assert!(is_unimodular(&t).unwrap());
+/// let lll = lll_with_transform(&b, Ratio::new(3, 4)).unwrap();
+/// assert_eq!((&lll.transform * &b).eval(), lll.reduced);
+/// assert!(is_unimodular(&lll.transform).unwrap());
 /// ```
-pub fn lll_with_transform(m: &Matrix, delta: (i64, i64)) -> Result<(Matrix, Matrix), SymplexError> {
+pub fn lll_with_transform(
+    m: &Matrix,
+    delta: Rational64,
+) -> Result<LllReduction<Matrix>, SymplexError> {
     let z = integer_matrix(m, "lll_with_transform")?;
-    let (r, t) = z.lll_with_transform(delta)?;
+    let LllReduction { reduced, transform } = z.lll_with_transform(delta)?;
     let ctx = m.context();
-    Ok((r.to_matrix(&ctx), t.to_matrix(&ctx)))
+    Ok(LllReduction {
+        reduced: reduced.to_matrix(&ctx),
+        transform: transform.to_matrix(&ctx),
+    })
 }
