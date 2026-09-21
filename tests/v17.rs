@@ -4,3 +4,9 @@
 
 #[path = "v17/v17_anova.rs"]
 mod v17_anova;
+#[path = "v17/v17_audit_a.rs"]
+mod v17_audit_a;
+#[path = "v17/v17_audit_b.rs"]
+mod v17_audit_b;
+#[path = "v17/v17_audit_c.rs"]
+mod v17_audit_c;
