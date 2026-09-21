@@ -400,7 +400,7 @@ fn correlation_bridges_recover_r_squared_and_slope() {
 fn polyfit_degree_one_returns_highest_power_first() {
     // numpy: polyfit(x, y, 1) = [1.1428571428571426, 0.7142857142857142]
     let (x, y) = d1();
-    assert_eq!(polyfit(&x, &y, 1).unwrap(), vec![q(8, 7), q(5, 7)]);
+    assert_eq!(polyfit(&x, &y, 1).unwrap(), vec![q(5, 7), q(8, 7)]); // ascending
     // Degree 0 is the mean.
     assert_eq!(polyfit(&x, &y, 0).unwrap(), vec![q(37, 7)]);
 }
@@ -1077,17 +1077,17 @@ fn polyfit_exact_for_degrees_one_to_three() {
     //        polyfit(x, y, 3) = [0.05555555555555559, 0.7619047619047639, 0.6111111111111055, 0.90476190476191]
     let x = from_i64(&[0, 1, 2, 3, 4, 5]);
     let y = from_i64(&[1, 2, 6, 11, 19, 30]);
-    assert_eq!(polyfit(&x, &y, 1).unwrap(), vec![q(201, 35), q(-20, 7)]);
+    assert_eq!(polyfit(&x, &y, 1).unwrap(), vec![q(-20, 7), q(201, 35)]); // ascending
     assert_eq!(
         polyfit(&x, &y, 2).unwrap(),
-        vec![q(33, 28), q(-3, 20), q(15, 14)]
+        vec![q(15, 14), q(-3, 20), q(33, 28)]
     );
     assert_eq!(
         polyfit(&x, &y, 3).unwrap(),
-        vec![q(1, 18), q(16, 21), q(11, 18), q(19, 21)]
+        vec![q(19, 21), q(11, 18), q(16, 21), q(1, 18)]
     );
     let c = polyfit(&x, &y, 2).unwrap();
-    close(data::to_f64(&c)[0], 1.178_571_428_571_429_3, 1e-14);
+    close(data::to_f64(&c)[2], 1.178_571_428_571_429_3, 1e-14);
 }
 
 #[test]
@@ -1095,7 +1095,7 @@ fn polyfit_interpolates_with_degree_plus_one_points_and_validates() {
     // numpy: polyfit([0, 1, 2], [1, 3, 9], 2) = [2.0, ~1e-15, 1.0]
     let x = from_i64(&[0, 1, 2]);
     let y = from_i64(&[1, 3, 9]);
-    assert_eq!(polyfit(&x, &y, 2).unwrap(), vec![qi(2), Q::zero(), qi(1)]);
+    assert_eq!(polyfit(&x, &y, 2).unwrap(), vec![qi(1), Q::zero(), qi(2)]);
     // Too few points for the degree.
     assert!(matches!(
         polyfit(&x, &y, 3),
@@ -1110,7 +1110,7 @@ fn polyfit_interpolates_with_degree_plus_one_points_and_validates() {
         polyfit(&xd, &yd, 2),
         Err(SymplexError::InvalidArgument { .. })
     ));
-    assert_eq!(polyfit(&xd, &yd, 1).unwrap(), vec![qi(2), q(-1, 2)]);
+    assert_eq!(polyfit(&xd, &yd, 1).unwrap(), vec![q(-1, 2), qi(2)]);
 }
 
 #[test]

@@ -32,6 +32,33 @@
 //! "ordered" is not even decidable.  [`Interval::is_ordered`] and
 //! [`Interval::is_empty`] answer the question when `T: PartialOrd`.
 //!
+//! # Corner cases, by endpoint type
+//!
+//! - **Points.** `Interval::point(a)` is the closed singleton `[a, a]`;
+//!   `(a, a)`, `(a, a]` and `[a, a)` are empty.  Root isolation returns
+//!   points for exact hits, so consumers test [`is_point`](Interval::is_point)
+//!   (structural equality — works for `Ex` endpoints) rather than
+//!   `lower == upper`.
+//! - **`f64`.**  A NaN endpoint makes the interval empty, unordered and
+//!   `contains` false for every `x`.  `±∞` are ordinary values to `contains`
+//!   and `width` (`[0, ∞]` contains `1e308` and has infinite width), but an
+//!   infinite endpoint is not a real number and should be open: use
+//!   [`Interval::<f64>::with_infinite_ends_open`] when endpoints come from
+//!   data, and [`Interval::<f64>::is_finite`] before handing one to a
+//!   routine that needs a compact box (`differential_evolution` rejects
+//!   non-finite bounds).  `[-0.0, 0.0]` is a point (`-0.0 == 0.0`).
+//! - **Integers and other discrete types.**  `(1, 2)` over the integers is
+//!   empty but `is_empty` says otherwise — it only compares endpoints;
+//!   `stats::Support::normalize_lattice` does the lattice-aware rewrite.
+//! - **`Ex`.**  No `PartialOrd`, so no `contains`/`is_empty`; `width` is the
+//!   symbolic difference, `is_point` is structural, and membership goes
+//!   through `Interval<Ex>::to_set().contains(&x) -> Option<bool>`.
+//! - **`Option<T>`.**  Do not; see above.
+//! - **Set operations.**  [`intersect`](Interval::intersect) and
+//!   [`hull`](Interval::hull) merge kinds correctly (open wins at a shared
+//!   endpoint of an intersection, closed wins for a hull); anything more
+//!   (unions, complements, symbolic endpoints) is `SetEx`.
+//!
 //! [`contains`]: Interval::contains
 //! [`is_empty`]: Interval::is_empty
 
@@ -255,9 +282,118 @@ impl<T: PartialOrd> Interval<T> {
         }
     }
 
-    /// Is this the singleton `[a, a]`?
+    /// Is every point of `other` in `self`?  (Empty `other` counts as
+    /// contained only when it is a degenerate interval at a point of `self`;
+    /// callers who care should test `is_empty` first.)
+    pub fn contains_interval(&self, other: &Interval<T>) -> bool {
+        let lower_ok = match self.lower.partial_cmp(&other.lower) {
+            Some(std::cmp::Ordering::Less) => true,
+            Some(std::cmp::Ordering::Equal) => !self.kind.lower_open() || other.kind.lower_open(),
+            _ => false,
+        };
+        let upper_ok = match other.upper.partial_cmp(&self.upper) {
+            Some(std::cmp::Ordering::Less) => true,
+            Some(std::cmp::Ordering::Equal) => !self.kind.upper_open() || other.kind.upper_open(),
+            _ => false,
+        };
+        lower_ok && upper_ok
+    }
+}
+
+impl<T: PartialOrd + Clone> Interval<T> {
+    /// The intersection `self ∩ other`, or `None` when it is empty.  At a
+    /// shared endpoint the open side wins (`[0, 2] ∩ (0, 3)` is `(0, 2]`);
+    /// when one interval's upper end meets the other's lower end the result
+    /// is the point only if both ends are closed.
+    pub fn intersect(&self, other: &Interval<T>) -> Option<Interval<T>> {
+        use std::cmp::Ordering::*;
+        let (lower, lower_open) = match self.lower.partial_cmp(&other.lower)? {
+            Greater => (self.lower.clone(), self.kind.lower_open()),
+            Less => (other.lower.clone(), other.kind.lower_open()),
+            Equal => (
+                self.lower.clone(),
+                self.kind.lower_open() || other.kind.lower_open(),
+            ),
+        };
+        let (upper, upper_open) = match self.upper.partial_cmp(&other.upper)? {
+            Less => (self.upper.clone(), self.kind.upper_open()),
+            Greater => (other.upper.clone(), other.kind.upper_open()),
+            Equal => (
+                self.upper.clone(),
+                self.kind.upper_open() || other.kind.upper_open(),
+            ),
+        };
+        let out = Interval {
+            lower,
+            upper,
+            kind: IntervalKind::from_open_ends(lower_open, upper_open),
+        };
+        (!out.is_empty()).then_some(out)
+    }
+
+    /// The smallest interval containing both (`[0, 1) ∪ (2, 3]` hulls to
+    /// `[0, 3]`).  At a shared endpoint the closed side wins.
+    pub fn hull(&self, other: &Interval<T>) -> Option<Interval<T>> {
+        use std::cmp::Ordering::*;
+        let (lower, lower_open) = match self.lower.partial_cmp(&other.lower)? {
+            Less => (self.lower.clone(), self.kind.lower_open()),
+            Greater => (other.lower.clone(), other.kind.lower_open()),
+            Equal => (
+                self.lower.clone(),
+                self.kind.lower_open() && other.kind.lower_open(),
+            ),
+        };
+        let (upper, upper_open) = match self.upper.partial_cmp(&other.upper)? {
+            Greater => (self.upper.clone(), self.kind.upper_open()),
+            Less => (other.upper.clone(), other.kind.upper_open()),
+            Equal => (
+                self.upper.clone(),
+                self.kind.upper_open() && other.kind.upper_open(),
+            ),
+        };
+        Some(Interval {
+            lower,
+            upper,
+            kind: IntervalKind::from_open_ends(lower_open, upper_open),
+        })
+    }
+
+    /// `x` moved to the nearest point of a *closed* interval
+    /// (`x.clamp(lower, upper)`); for another kind the nearest point does
+    /// not exist, so this uses the closure and says so in the name.
+    pub fn clamp_to_closure(&self, x: T) -> T {
+        if x < self.lower {
+            self.lower.clone()
+        } else if x > self.upper {
+            self.upper.clone()
+        } else {
+            x
+        }
+    }
+}
+
+impl<T: PartialEq> Interval<T> {
+    /// Is this the singleton `[a, a]`?  Structural equality of the
+    /// endpoints, so it works for `Interval<Ex>` too.
     pub fn is_point(&self) -> bool {
         self.kind == IntervalKind::Closed && self.lower == self.upper
+    }
+}
+
+impl Interval<f64> {
+    /// Are both endpoints finite (neither `±∞` nor NaN)?
+    pub fn is_finite(&self) -> bool {
+        self.lower.is_finite() && self.upper.is_finite()
+    }
+
+    /// `±∞` is not a real number, so an infinite endpoint cannot belong to
+    /// the interval: this opens any infinite end (`[0, ∞]` → `[0, ∞)`),
+    /// which is what `stats::Support` and the set layer do.  Finite ends are
+    /// untouched.
+    pub fn with_infinite_ends_open(self) -> Self {
+        let lower_open = self.kind.lower_open() || self.lower.is_infinite();
+        let upper_open = self.kind.upper_open() || self.upper.is_infinite();
+        self.with_kind(IntervalKind::from_open_ends(lower_open, upper_open))
     }
 }
 
@@ -516,6 +652,75 @@ mod tests {
             [(1, "a"), (2, "b"), (4, "d"), (5, "e")].into();
         let keys: Vec<i32> = map.range(iv).map(|(k, _)| *k).collect();
         assert_eq!(keys, [2, 4]);
+    }
+
+    #[test]
+    fn set_operations_merge_kinds() {
+        let a = Interval::closed(0, 2);
+        let b = Interval::open(0, 3);
+        // Open wins at a shared endpoint of an intersection.
+        assert_eq!(a.intersect(&b), Some(Interval::left_open(0, 2)));
+        assert_eq!(b.intersect(&a), Some(Interval::left_open(0, 2)));
+        // Touching ends: a point only if both are closed.
+        assert_eq!(
+            Interval::closed(0, 2).intersect(&Interval::closed(2, 5)),
+            Some(Interval::point(2))
+        );
+        assert_eq!(
+            Interval::right_open(0, 2).intersect(&Interval::closed(2, 5)),
+            None
+        );
+        assert_eq!(
+            Interval::closed(0, 1).intersect(&Interval::closed(2, 3)),
+            None
+        );
+        // Closed wins for a hull; gaps are filled.
+        assert_eq!(
+            Interval::right_open(0, 1).hull(&Interval::left_open(2, 3)),
+            Some(Interval::closed(0, 3))
+        );
+        assert_eq!(
+            Interval::open(0, 1).hull(&Interval::closed(0, 1)),
+            Some(Interval::closed(0, 1))
+        );
+        // NaN makes the comparison undefined.
+        assert_eq!(
+            Interval::closed(f64::NAN, 1.0).intersect(&Interval::closed(0.0, 1.0)),
+            None
+        );
+        // Containment respects openness at shared endpoints.
+        assert!(Interval::closed(0, 3).contains_interval(&Interval::open(0, 3)));
+        assert!(!Interval::open(0, 3).contains_interval(&Interval::closed(0, 3)));
+        assert!(Interval::left_open(0, 3).contains_interval(&Interval::open(0, 3)));
+        assert!(!Interval::closed(0, 3).contains_interval(&Interval::closed(0, 4)));
+        // Clamping to the closure.
+        assert_eq!(Interval::open(0.0, 1.0).clamp_to_closure(2.5), 1.0);
+        assert_eq!(Interval::open(0.0, 1.0).clamp_to_closure(-2.5), 0.0);
+        assert_eq!(Interval::open(0.0, 1.0).clamp_to_closure(0.25), 0.25);
+    }
+
+    #[test]
+    fn f64_corner_cases() {
+        let half_line = Interval::closed(0.0, f64::INFINITY);
+        assert!(half_line.contains(&1e308) && half_line.contains(&f64::INFINITY));
+        assert!(!half_line.is_finite() && Interval::closed(0.0, 1.0).is_finite());
+        assert_eq!(
+            half_line.with_infinite_ends_open(),
+            Interval::right_open(0.0, f64::INFINITY)
+        );
+        assert_eq!(
+            Interval::closed(f64::NEG_INFINITY, f64::INFINITY).with_infinite_ends_open(),
+            Interval::open(f64::NEG_INFINITY, f64::INFINITY)
+        );
+        assert_eq!(
+            Interval::closed(0.0, 1.0).with_infinite_ends_open(),
+            Interval::closed(0.0, 1.0)
+        );
+        assert!(Interval::closed(-0.0, 0.0).is_point());
+        let nan = Interval::closed(f64::NAN, 1.0);
+        assert!(nan.is_empty() && !nan.is_ordered() && !nan.contains(&0.5) && !nan.is_finite());
+        assert!(Interval::closed(0.0, 1.0).width() == 1.0);
+        assert!(half_line.width().is_infinite());
     }
 
     #[test]

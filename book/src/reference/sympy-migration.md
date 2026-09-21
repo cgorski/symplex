@@ -366,7 +366,7 @@ SymPy defers to SciPy and NumPy here; symplex ships equivalents in `symplex::opt
 | `scipy.optimize.minimize_scalar(f, bounds=(a, b), method="bounded")` | `optimize::minimize_scalar(f, a, b, &opts)?` (Brent), `golden_section`; on an `Ex`: `e.minimize_scalar_numeric(&x, a, b)?` → `ScalarMinimum { x, value }` |
 | `scipy.optimize.differential_evolution(f, bounds, seed=0)` | `optimize::differential_evolution(f, &bounds, &DeOpts { seed, .. })?` with `bounds: &[Interval<f64>]` (closed, `Interval::closed(lo, hi)`); on an `Ex`: `e.minimize_global_numeric(&vars, &bounds, &opts)?` |
 | `numpy.polyfit(x, y, deg)` (**highest degree first**) | `optimize::poly_fit(&xs, &ys, deg)?` (**ascending**: `[c₀, c₁, …]`); `eval_poly(&c, x)` evaluates |
-| `numpy.polyfit` with exact rationals (no NumPy equivalent) | `optimize::poly_fit_exact(&points, deg)?`, `Ex::poly_fit_points(&ctx, &points, &x, deg)?` → `Ex` |
+| `numpy.polyfit` with exact rationals (no NumPy equivalent) | `optimize::poly_fit_exact(&points, deg)?`, `stats::regression::polyfit(&x, &y, deg)?` (both **ascending**), `Ex::poly_fit_points(&ctx, &points, &x, deg)?` → `Ex` |
 | `scipy.stats.linregress(x, y)` (slope, intercept) | `optimize::linear_fit(&xs, &ys)?` → `LinearFit { slope, intercept }` |
 | `numpy.trapz(y, x)` / `scipy.integrate.trapezoid(y, x)` | `optimize::trapezoid(&ys, &xs)?` |
 | `scipy.optimize.fsolve(F, x0)` | `solve_numeric_system(&eqs, &vars, &x0)?` (damped Newton, symbolic Jacobian) |

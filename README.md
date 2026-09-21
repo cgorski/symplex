@@ -751,6 +751,8 @@ let velocity: Velocity = position.diff_wrt(&t_var);   // g·t [m/s]
 
 8. **One crate, no knobs.** There are no Cargo features to combine; every capability is always present. Compile time is not the constraint, capability is.
 
+9. **Named positions, not tuples.** Where two values share a type, the API says which is which: `Interval { lower, upper, kind }` rather than `(f64, f64)`, `Qr { q, r }` rather than `(Matrix, Matrix)`, `ExtendedGcd { gcd, x, y }` rather than `(BigInt, BigInt, BigInt)`, `DhLink { theta, d, a, alpha }`, `Bounds::at_least(0)` for an LP variable. Universal conventions stay tuples (`(x, y)` points, `(re, im)`, `(numer, denom)`, `(quotient, remainder)`, `shape() -> (rows, cols)`). Polynomial coefficient vectors are ascending (`c[i]` multiplies `x^i`) everywhere except `Poly::all_coeffs`, which is SymPy's highest-first by name. A ratchet test keeps new same-typed tuples off the public surface — see CONTRIBUTING.md, "Tuples versus structs".
+
 ---
 
 ## The API Model
@@ -783,11 +785,13 @@ Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`, 
 
 **Budgets.** Long-running exact algorithms accept a deadline and/or pivot cap (`linprog::Budget`, `PolyhedronOpts::with_time_limit`, `SosOpts::with_time_limit`); running out is a *status*, not an error.
 
+**Intervals.** `Interval<T>` (prelude) is the one interval type: two endpoints and an `IntervalKind` (`[a, b]`, `(a, b)`, `(a, b]`, `[a, b)`), with `contains`, `is_empty`, `intersect`, `hull`, `width`, `Display`, and `From<a..=b>`. Confidence and credible intervals are `Interval<f64>`; root isolation returns `(lo, hi]` cells beside exact `[r, r]` hits; `SetEx::as_intervals` and `stats::Support` pieces are `Interval<Ex>` (membership through the set layer, three-valued). `Bounds<T>` (`lower: Option<T>, upper: Option<T>`) is a closed constraint side that may be absent — LP variable bounds, bounding boxes. Oriented limits (`∫ₐᵇ`, `Σ`) stay separate `lower`, `upper` arguments because reversing them flips the sign.
+
 ---
 
 ## Comparison with SymPy
 
-| Feature | symplex 0.11 | SymPy 1.14 |
+| Feature | symplex 0.16 | SymPy 1.14 |
 |---------|--------------|------------|
 | Arithmetic | Exact `Ratio<BigInt>` | Exact (similar) |
 | Differentiation | Complete, incl. Bessel/Airy/orthogonal/polygamma/erf family | Complete |

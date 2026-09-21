@@ -1153,7 +1153,8 @@ pub fn proportion_interval(
     }
     let alpha = 1.0 - confidence;
     let (k, n) = (successes as f64, trials as f64);
-    let clip = |ci: Interval<f64>| ci.map(|v| v.clamp(0.0, 1.0));
+    let unit = Interval::closed(0.0, 1.0);
+    let clip = |ci: Interval<f64>| ci.map(|v| unit.clamp_to_closure(v));
     if method == IntervalMethod::ClopperPearson {
         let half = alpha / 2.0;
         let lo = if successes == 0 {

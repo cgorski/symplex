@@ -6,6 +6,114 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.16.0] - 2026-09-21
+
+The second half of "named endpoints everywhere": the algebra surfaces that
+0.15.0 deferred.  Matrix decompositions return structs that state their
+identity (`Qr { q, r }`: `A = Q·R`), the three extended-gcd routines that
+disagreed on where the gcd sat now share `num_integer::ExtendedGcd`,
+Denavit–Hartenberg links and generalised coordinates are structs, and
+`Interval<T>` gains the set operations and `f64` corner-case handling that
+a general interval type needs.  Also fixes the `wasm32` build (red in CI
+since 0.13.0) and one silent coefficient-order inconsistency.  No numeric
+result changed; the LP pivot-path and Lean-certificate baselines are
+byte-identical.
+
+### Breaking
+
+*Matrix decompositions* — new module **`decompositions`** (crate root and
+prelude) with generic result structs, each documenting the identity it
+satisfies:
+
+- `Matrix::qr -> Qr<Matrix> { q, r }` (`A = Q·R`), `ldl -> Ldl { l, d }`
+  (`A = L·D·Lᵀ`), `lu -> Lu { l, u, perm }` (`P·A = L·U`),
+  `diagonalize -> Diagonalization { p, d }` (`A = P·D·P⁻¹`),
+  `jordan_form -> JordanForm { p, j }`, `hessenberg -> Hessenberg { h, p }`
+  (`H = P⁻¹·A·P`), `rank_decomposition -> RankDecomposition { c, f }`
+  (`A = C·F`); `QMatrix::{rank_decomposition, hessenberg}` likewise.
+- `ZMatrix::hermite_normal_form_with_transform -> HermiteNormalForm { h, u }`
+  (`H = U·A`), `smith_normal_form_with_transforms -> SmithNormalForm { s, u,
+  v }` (`S = U·A·V`), `lll_with_transform -> LllReduction { reduced,
+  transform }`; the `normalforms::*` functions on `Matrix` likewise.
+- LLL's `delta: (i64, i64)` is `delta: num_rational::Rational64` in
+  `Matrix::lll`, `ZMatrix::lll`, `ZMatrix::lll_with_transform`,
+  `normalforms::{lll, lll_with_transform}`; `LLL_DEFAULT_DELTA` is
+  `Ratio::new_raw(3, 4)`.
+
+*Extended gcd* — one type, one field order:
+
+- `ntheory::gcdex -> num_integer::ExtendedGcd<BigInt> { gcd, x, y }`
+  (`a·x + b·y = gcd`; was `(g, x, y)`); it now delegates to
+  `Integer::extended_gcd`, verified identical on `[−40, 40]²`.
+- `GenPoly::extended_gcd -> ExtendedGcd<Self>` and
+  `Ex::poly_gcdex -> Option<ExtendedGcd<Ex>>` with `x = s`, `y = t`
+  (were `(s, t, g)` — the gcd *last*).
+
+*Number theory, ODEs:*
+
+- `diophantine::linear_diophantine -> Option<LinearDiophantine { x, y,
+  x_step, y_step }>` (general solution `(x + k·x_step, y + k·y_step)`).
+- `ntheory::continued_fraction_periodic -> Option<PeriodicContinuedFraction
+  { pre_period, period }>`; `continued_fraction_reduce_periodic ->
+  Option<QuadraticSurd { p, q, d }>` (the value `(p + √d)/q`).
+- `Ex::solve_ode_ivp(…, ics: &[InitialCondition { order, x, value }])`
+  (`y^{(order)}(x) = value`; was `&[(usize, Ex, Ex)]`).  `InitialCondition`
+  is in the prelude.
+
+*Robotics and dynamics:*
+
+- `robotics::DhParams<'a>` is a struct `{ theta, d, a, alpha }` of unit-typed
+  references (was a 4-tuple alias with two `Length`s adjacent);
+  `fk_chain`, `fk_position`, `fk_rotation` take `&[DhLink<'_> { theta, d, a,
+  alpha }]` of `&Ex` (was `&[(&Ex, &Ex, &Ex, &Ex)]`).  `From<DhParams> for
+  DhLink` erases the units.
+- `dynamics::total_time_derivative(expr, coords: &[GeneralizedCoordinate {
+  q, q_dot, q_ddot }]) -> Ex` and `euler_lagrange(t, v, coords) -> Vec<Ex>`:
+  the `(q, q̇)` pairs and the parallel `accels` slice are one struct per
+  coordinate, and the only error (`coords.len() != accels.len()`) is
+  unrepresentable, so both are **infallible** (no `Result`).
+- `dynamics::manipulator_equation -> ManipulatorEquation { mass, coriolis,
+  gravity }` (`M(q)·q̈ + C(q, q̇)·q̇ + G(q) = τ`; was `(M, C, G)`).
+
+*Coefficient order:*
+
+- `stats::regression::polyfit` returns coefficients **ascending**
+  (`c[i]` multiplies `xⁱ`), the convention of `optimize::poly_fit`,
+  `eval_poly`, `Ex::coeffs` and `control::from_coeffs`; it was the only
+  routine returning numpy's highest-first order, so `eval_poly(&polyfit(..))`
+  silently evaluated the reversed polynomial.  (`Poly::all_coeffs` stays
+  highest-first: it is SymPy's `all_coeffs` by name.)
+
+### Added
+
+- `Interval<T>`: `intersect` (open wins at a shared endpoint), `hull`
+  (closed wins), `contains_interval`, `clamp_to_closure`; `is_point` now
+  needs only `PartialEq`, so it works for `Interval<Ex>`.
+  `Interval<f64>::{is_finite, with_infinite_ends_open}` — `±∞` is not a
+  real number, so an infinite end should be open, as `stats::Support` and
+  the set layer already insist.  `Interval<Ex>::{contains, is_empty} ->
+  Option<bool>` through the set layer.  The module docs list the corner
+  cases per endpoint type (NaN, `±∞`, `-0.0`, discrete emptiness, `Ex`).
+- `IntervalKind::{with_lower_open, with_upper_open, reversed}`.
+
+### Fixed
+
+- **`wasm32` build** (CI red since 0.13.0): `smallest_n_with_power` used
+  `1 << 40` as a `usize` constant, which overflows on 32-bit targets; the
+  cap is now `usize::MAX / 2` there.  `scripts/gate.sh subcrates` now runs
+  the `wasm32-unknown-unknown` check and the fuzz-target check that CI runs.
+- `proportion_interval` clips through `Interval::clamp_to_closure` instead
+  of a hand `clamp`.
+
+### Changed
+
+- README: design principle 9 ("named positions, not tuples") and an
+  "Intervals" paragraph in the API model; the SymPy comparison column is
+  labelled 0.16.
+- The homogeneous-tuple ratchet flags *any repeated element type* in a
+  tuple (`(&Angle, &Length, &Length, &Angle)`), not only fully homogeneous
+  ones; its allowlist now holds only justified conventions.
+
 ## [0.15.0] - 2026-09-21
 
 Named endpoints everywhere.  A tuple whose positions share a type —

@@ -593,10 +593,12 @@ pub fn simple_linear_regression(x: &[Q], y: &[Q]) -> Result<Ols, SymplexError> {
     fit_least_squares(OP, y, &rows, None, true)
 }
 
-/// Exact polynomial least squares of `degree`: the coefficients of
-/// `c₀xᵈ + c₁xᵈ⁻¹ + … + c_d`, **highest power first** as `numpy.polyfit(x,
-/// y, degree)` returns them.  With `n = degree + 1` distinct abscissae this
-/// is the interpolating polynomial.
+/// Exact polynomial least squares of `degree`: the coefficients
+/// `[c₀, c₁, …, c_d]` of `c₀ + c₁x + … + c_d xᵈ`, **ascending** (index =
+/// power), the crate-wide convention shared with `optimize::poly_fit`,
+/// `optimize::eval_poly` and `Ex::coeffs` — `numpy.polyfit` returns the
+/// same numbers highest power first.  With `n = degree + 1` distinct
+/// abscissae this is the interpolating polynomial.
 ///
 /// # Errors
 ///
@@ -638,8 +640,7 @@ pub fn polyfit(x: &[Q], y: &[Q], degree: usize) -> Result<Vec<Q>, SymplexError> 
         })
         .collect();
     let design = QMatrix::new(rows).map_err(|e| invalid(OP, e.to_string()))?;
-    let (mut beta, _) = normal_equations(OP, &design, y, None)?;
-    beta.reverse();
+    let (beta, _) = normal_equations(OP, &design, y, None)?;
     Ok(beta)
 }
 

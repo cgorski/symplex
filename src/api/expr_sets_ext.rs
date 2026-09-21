@@ -530,6 +530,30 @@ impl Interval<Ex> {
             .context()
             .interval(&self.lower, &self.upper, self.kind)
     }
+
+    /// Is `x` in the interval?  `Ex` has no order, so this goes through the
+    /// set layer and is three-valued: `None` when the comparison with an
+    /// endpoint cannot be decided symbolically.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let iv = Interval::left_open(ctx.int(0), ctx.int(1)); // (0, 1]
+    /// assert_eq!(iv.contains(&ctx.rational(1, 2)), Some(true));
+    /// assert_eq!(iv.contains(&ctx.int(0)), Some(false));
+    /// assert_eq!(iv.contains(&ctx.int(1)), Some(true));
+    /// assert_eq!(iv.contains(&ctx.symbol("t")), None);
+    /// ```
+    pub fn contains(&self, x: &Ex) -> Option<bool> {
+        self.to_set().contains(x)
+    }
+
+    /// Is the interval known to be empty?  Three-valued like
+    /// [`contains`](Self::contains).
+    pub fn is_empty(&self) -> Option<bool> {
+        self.to_set().is_empty()
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
