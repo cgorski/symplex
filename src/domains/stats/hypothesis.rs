@@ -647,10 +647,10 @@ pub fn fisher_exact(
         Alternative::Greater => mass_where(&pmf, |i, _| i >= idx),
         Alternative::TwoSided => two_sided_mass(&pmf, idx),
     };
-    let odds = if b * c == 0 {
+    let odds = if b == 0 || c == 0 {
         ctx.infinity()
     } else {
-        ex(ctx, &(qu(a * d) / qu(b * c)))
+        ex(ctx, &(qu(a) * qu(d) / (qu(b) * qu(c))))
     };
     Ok(result(ctx, odds, p, None, alt))
 }
@@ -820,23 +820,26 @@ fn expected_counts(op: &'static str, table: &[Vec<Q>]) -> Result<Vec<Vec<Q>>, Sy
         .collect())
 }
 
-/// `Σ (|O − E| − shift)² / E` over a table and its expected counts.
+/// `Σ (max(|O − E| − shift, 0))² / E` over a table and its expected counts
+/// (the correction never moves an observed count past its expected one,
+/// as in scipy ≥ 1.7 and R's `chisq.test`).
 fn pearson_statistic(observed: &[Vec<Q>], expected: &[Vec<Q>], shift: &Q) -> Q {
     observed
         .iter()
         .zip(expected)
         .flat_map(|(o, e)| o.iter().zip(e))
         .fold(Q::zero(), |acc, (o, e)| {
-            let d = (o - e).abs() - shift;
+            let d = ((o - e).abs() - shift).max(Q::zero());
             acc + &d * &d / e
         })
 }
 
 /// Pearson's χ² test of independence on an `r × c` table of counts:
 /// `χ² = Σ (Oᵢⱼ − Eᵢⱼ)²/Eᵢⱼ` with `Eᵢⱼ = rowᵢ · colⱼ / N`, `df = (r−1)(c−1)`;
-/// with `correction` and `df = 1` Yates' `(|O − E| − ½)²` (exactly as
-/// scipy, without clamping).  The statistic and the expected counts are
-/// exact rationals; the p-value is `P(χ²_df ≥ χ²)`.
+/// with `correction` and `df = 1` Yates' `(max(|O − E| − ½, 0))²` (the
+/// correction is clamped to `|O − E|`, exactly as scipy ≥ 1.7 and R).  The
+/// statistic and the expected counts are exact rationals; the p-value is
+/// `P(χ²_df ≥ χ²)`.
 /// `scipy.stats.chi2_contingency(table, correction)`.
 ///
 /// ```
@@ -1086,9 +1089,9 @@ fn check_2x2_margins(op: &'static str, table: [[usize; 2]; 2]) -> Result<(), Sym
 pub fn phi_coefficient(ctx: &Context, table: [[usize; 2]; 2]) -> Result<Ex, SymplexError> {
     const OP: &str = "phi_coefficient";
     check_2x2_margins(OP, table)?;
-    let [[a, b], [c, d]] = table;
-    let num = qu(a * d) - qu(b * c);
-    let den = qu((a + b) * (c + d) * (a + c) * (b + d));
+    let [[a, b], [c, d]] = table.map(|row| row.map(qu));
+    let num = &a * &d - &b * &c;
+    let den = (&a + &b) * (&c + &d) * (&a + &c) * (&b + &d);
     Ok((ex(ctx, &num) / ex(ctx, &den).sqrt()).simplify())
 }
 
@@ -1131,7 +1134,7 @@ pub fn odds_ratio(table: [[usize; 2]; 2], confidence: f64) -> Result<RatioEstima
             "every cell must be positive for a finite odds ratio",
         ));
     }
-    let estimate = qu(a * d) / qu(b * c);
+    let estimate = qu(a) * qu(d) / (qu(b) * qu(c));
     let se = (1.0 / a as f64 + 1.0 / b as f64 + 1.0 / c as f64 + 1.0 / d as f64).sqrt();
     Ok(RatioEstimate {
         ci: log_wald_ci(&estimate, se, confidence),

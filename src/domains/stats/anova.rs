@@ -1244,26 +1244,76 @@ fn normal_range_cdf(w: f64, k: usize, rule: &GaussLegendre) -> f64 {
     k as f64 * rule.integrate(&f, -9.0, 9.0, panels)
 }
 
+/// `ln Γ(x) − [(x − ½) ln x − x + ½ ln 2π]`, the remainder of Stirling's
+/// formula: `lgamma` directly below `x = 10`, the asymptotic series above
+/// (its next term, `691/(360360 x¹¹)`, is below `2e-14` there).
+fn stirling_remainder(x: f64) -> f64 {
+    if x < 10.0 {
+        lgamma(x) - ((x - 0.5) * x.ln() - x + 0.5 * (2.0 * PI).ln())
+    } else {
+        let x2 = x * x;
+        // 1/(12x) − 1/(360x³) + 1/(1260x⁵) − 1/(1680x⁷) + 1/(1188x⁹)
+        (1.0 / 12.0
+            - (1.0 / 360.0 - (1.0 / 1260.0 - (1.0 / 1680.0 - 1.0 / (1188.0 * x2)) / x2) / x2) / x2)
+            / x
+    }
+}
+
+/// `ln(1 + u) − u`, without the cancellation of the two terms for small `u`
+/// (the alternating series `−u²/2 + u³/3 − …`).
+fn ln1p_minus_u(u: f64) -> f64 {
+    if u.abs() >= 0.25 {
+        return u.ln_1p() - u;
+    }
+    let mut term = u * u;
+    let mut sum = 0.0;
+    for n in 2..=40 {
+        let contribution = term / n as f64;
+        sum += if n % 2 == 0 {
+            -contribution
+        } else {
+            contribution
+        };
+        term *= u;
+        if contribution.abs() <= 1e-18 * sum.abs() {
+            break;
+        }
+    }
+    sum
+}
+
 /// The CDF of the studentized range `Q = range / s` for `k` groups and `ν`
 /// degrees of freedom, `∫₀^∞ f_ν(s) P(range ≤ q s) ds` with `f_ν` the density
 /// of `s = √(χ²_ν/ν)`.  Arguments are validated by the caller.
+///
+/// The density `C s^{ν−1} e^{−νs²/2}` is evaluated at `s = 1 + u` with the
+/// `O(ν)` terms of `ln C`, `(ν − 1) ln s` and `νs²/2` cancelled analytically
+/// (`x = ν/2`):
+///
+/// `ln f = ln 2 + ½ ln(x/2π) − R(x) + 2x·[ln(1+u) − u] − ln(1+u) − x u²`
+///
+/// with `R` the Stirling remainder of `ln Γ(x)`; this stays accurate for
+/// any `ν` (the direct form loses everything past `ν ≈ 10⁷`).  Integrating
+/// in `u` rather than `s` keeps the abscissae resolved when `σ = 1/√(2ν)`
+/// drops below the spacing of doubles near `1`.
 fn studentized_range_cdf_impl(q: f64, k: usize, nu: f64) -> f64 {
     if q <= 0.0 {
         return 0.0;
     }
     let rule = GaussLegendre::new(16);
-    // ln of the normalising constant ν^{ν/2} / (Γ(ν/2) 2^{ν/2 − 1}).
-    let log_c = 0.5 * nu * nu.ln() - lgamma(0.5 * nu) - (0.5 * nu - 1.0) * std::f64::consts::LN_2;
-    let density = |s: f64| (log_c + (nu - 1.0) * s.ln() - 0.5 * nu * s * s).exp();
-    let f = |s: f64| density(s) * normal_range_cdf(q * s, k, &rule);
-    // f_ν is concentrated around 1 with scale ≈ 1/√(2ν); the range factor
+    let x = 0.5 * nu;
+    let log_prefactor =
+        std::f64::consts::LN_2 + 0.5 * (x / (2.0 * PI)).ln() - stirling_remainder(x);
+    let log_density = |u: f64| log_prefactor + 2.0 * x * ln1p_minus_u(u) - u.ln_1p() - x * u * u;
+    let f = |u: f64| log_density(u).exp() * normal_range_cdf(q * (1.0 + u), k, &rule);
+    // f_ν is concentrated around s = 1 with scale ≈ 1/√(2ν); the range factor
     // varies in s on the scale 1/q.
     let sigma = 1.0 / (2.0 * nu).sqrt();
-    let s_lo = (1.0 - 12.0 * sigma).max(0.0);
-    let s_hi = 1.0 + 12.0 * sigma;
+    let u_lo = (-12.0 * sigma).max(-1.0);
+    let u_hi = 12.0 * sigma;
     let panel_width = (3.0 * sigma).min(3.0 / q);
-    let panels = ((s_hi - s_lo) / panel_width).ceil() as usize;
-    rule.integrate(&f, s_lo, s_hi, panels.clamp(1, 400))
+    let panels = ((u_hi - u_lo) / panel_width).ceil() as usize;
+    rule.integrate(&f, u_lo, u_hi, panels.clamp(1, 400))
         .clamp(0.0, 1.0)
 }
 

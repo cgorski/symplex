@@ -221,7 +221,10 @@ impl KaplanMeier {
 
     /// The `p`-quantile of the survival time: the smallest event time at
     /// which `S(t) ≤ 1 − p` (`None` when the curve never falls that far —
-    /// the last observation was censored above it).  `SurvfuncRight.quantile`.
+    /// the last observation was censored above it).  This is R's
+    /// `survfit` convention; `SurvfuncRight.quantile` uses the strict
+    /// `S(t) < 1 − p`, so the two differ only when the curve lands exactly
+    /// on `1 − p` (four events at `1, 2, 3, 4`: median `2` here, `3` there).
     pub fn quantile(&self, p: &Q) -> Option<Q> {
         let target = Q::one() - p;
         self.rows

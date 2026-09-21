@@ -398,6 +398,8 @@ fn bernoulli_increments(p: f64, p0: &Q, p1: &Q) -> Result<(f64, f64, f64), Sympl
 
 /// The non-zero root `h` of `p·(p₁/p₀)ʰ + (1−p)·((1−p₁)/(1−p₀))ʰ = 1`
 /// (Wald's fundamental identity), or `None` when `E_p[Z] = 0` (`h → 0`).
+/// The caller excludes `p ∈ {0, 1}`, where the only root is `h = 0` (the
+/// non-zero root has escaped to `±∞`).
 fn wald_h(p: f64, ls: f64, lf: f64, drift: f64) -> Result<Option<f64>, SymplexError> {
     if drift.abs() < 1e-13 {
         return Ok(None);
@@ -429,6 +431,22 @@ fn wald_h(p: f64, ls: f64, lf: f64, drift: f64) -> Result<Option<f64>, SymplexEr
     Ok(Some(0.5 * (lo + hi)))
 }
 
+/// Wald's `L(p)` from the increments, the drift and the boundaries `(a, b)`.
+fn wald_oc(p: f64, ls: f64, lf: f64, drift: f64, a: f64, b: f64) -> Result<f64, SymplexError> {
+    // Every trial has the same outcome, so `Λₙ = n·drift` marches to the
+    // boundary on the side of the drift (the non-zero root of Wald's
+    // identity has escaped to `±∞`, where the formula tends to 0 or 1).
+    if p <= 0.0 || p >= 1.0 {
+        return Ok(if drift < 0.0 { 1.0 } else { 0.0 });
+    }
+    match wald_h(p, ls, lf, drift)? {
+        // (eᴮʰ − 1)/(eᴮʰ − eᴬʰ), i.e. ((1−β)/α)ʰ = e^{Bh}, (β/(1−α))ʰ = e^{Ah}
+        Some(h) => Ok(((b * h).exp() - 1.0) / ((b * h).exp() - (a * h).exp())),
+        // h → 0: L = B / (B − A)
+        None => Ok(b / (b - a)),
+    }
+}
+
 /// Wald's approximation to the operating characteristic `L(p)` of the
 /// Bernoulli test — the probability of accepting `H₀` when the true
 /// success probability is `p`:
@@ -436,8 +454,11 @@ fn wald_h(p: f64, ls: f64, lf: f64, drift: f64) -> Result<Option<f64>, SymplexEr
 /// `L(p) ≈ (((1−β)/α)ʰ − 1) / (((1−β)/α)ʰ − (β/(1−α))ʰ)`
 ///
 /// with `h = h(p)` the non-zero root of `p(p₁/p₀)ʰ + (1−p)((1−p₁)/(1−p₀))ʰ = 1`
-/// (`h = 1` at `p₀`, giving `1 − α`; `h = −1` at `p₁`, giving `β`).  The
-/// approximation ignores the overshoot of the boundaries (Wald 1947, §3.4).
+/// (`h = 1` at `p₀`, giving `1 − α`; `h = −1` at `p₁`, giving `β`).  At
+/// `p = 0` and `p = 1` every trial has the same outcome and `L` is the
+/// limit `1` or `0` (accepting the hypothesis the constant sequence
+/// favours).  The approximation ignores the overshoot of the boundaries
+/// (Wald 1947, §3.4).
 ///
 /// # Errors
 ///
@@ -452,12 +473,7 @@ pub fn operating_characteristic_bernoulli(
 ) -> Result<f64, SymplexError> {
     let (ls, lf, drift) = bernoulli_increments(p, p0, p1)?;
     let (a, b) = wald_boundaries(alpha, beta)?.into_pair();
-    match wald_h(p, ls, lf, drift)? {
-        // (eᴮʰ − 1)/(eᴮʰ − eᴬʰ), i.e. ((1−β)/α)ʰ = e^{Bh}, (β/(1−α))ʰ = e^{Ah}
-        Some(h) => Ok(((b * h).exp() - 1.0) / ((b * h).exp() - (a * h).exp())),
-        // h → 0: L = B / (B − A)
-        None => Ok(b / (b - a)),
-    }
+    wald_oc(p, ls, lf, drift, a, b)
 }
 
 /// Wald's approximation to the expected number of observations of the
@@ -466,8 +482,10 @@ pub fn operating_characteristic_bernoulli(
 /// `E_p[N] ≈ (L(p)·A + (1 − L(p))·B) / E_p[Z]`,  `Z = ln(f₁(X)/f₀(X))`,
 ///
 /// with `L(p)` the [`operating_characteristic_bernoulli`]; when
-/// `E_p[Z] = 0` the limit `−A·B / E_p[Z²]` is used.  This is an
-/// **approximation**: it treats `Λ` as landing exactly on a boundary, so
+/// `E_p[Z] = 0` the limit `−A·B / E_p[Z²]` is used, and at `p = 0` or
+/// `p = 1` the formula reduces to the boundary over the constant
+/// increment (`B / ln(p₁/p₀)` for all successes when `p₁ > p₀`).  This is
+/// an **approximation**: it treats `Λ` as landing exactly on a boundary, so
 /// it underestimates the true expectation slightly (Wald 1947, §3.5;
 /// Wetherill & Glazebrook §2.4).
 ///
@@ -493,14 +511,10 @@ pub fn expected_sample_size_bernoulli(
 ) -> Result<f64, SymplexError> {
     let (ls, lf, drift) = bernoulli_increments(p, p0, p1)?;
     let (a, b) = wald_boundaries(alpha, beta)?.into_pair();
-    match wald_h(p, ls, lf, drift)? {
-        Some(h) => {
-            let l = ((b * h).exp() - 1.0) / ((b * h).exp() - (a * h).exp());
-            Ok((l * a + (1.0 - l) * b) / drift)
-        }
-        None => {
-            let second_moment = p * ls * ls + (1.0 - p) * lf * lf;
-            Ok(-a * b / second_moment)
-        }
+    if drift.abs() < 1e-13 {
+        let second_moment = p * ls * ls + (1.0 - p) * lf * lf;
+        return Ok(-a * b / second_moment);
     }
+    let l = wald_oc(p, ls, lf, drift, a, b)?;
+    Ok((l * a + (1.0 - l) * b) / drift)
 }

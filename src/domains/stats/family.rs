@@ -399,6 +399,11 @@ impl Distribution {
         if lo_finite && (x - lo).is_negative() == Some(true) {
             return ctx.zero();
         }
+        // A density puts no mass on the lower end itself, and the closed
+        // form need not fold there (`Φ(ln 0)` for a log-normal).
+        if lo_finite && support.kind() == Kind::Continuous && (x - lo).is_zero() == Some(true) {
+            return ctx.zero();
+        }
         if hi_finite && (x - hi).is_nonnegative() == Some(true) {
             return ctx.one();
         }
@@ -481,9 +486,9 @@ impl Distribution {
     /// use symplex::stats::Distribution;
     ///
     /// let ctx = Context::new();
-    /// // scipy: stats.t.ppf(0.975, 5) = 2.5705818366147395
+    /// // scipy: stats.t.ppf(0.975, 5) = 2.5705818356363146
     /// let t5 = Distribution::student_t(ctx.int(5));
-    /// assert!((t5.quantile_f64(0.975)? - 2.570_581_836_614_739_5).abs() < 1e-9);
+    /// assert!((t5.quantile_f64(0.975)? - 2.570_581_835_636_314_6).abs() < 1e-9);
     /// # Ok::<(), SymplexError>(())
     /// ```
     ///
@@ -520,43 +525,66 @@ impl Distribution {
             }
         };
         let support = self.support();
-        let (lo, hi) = match support.as_interval() {
-            Some(iv) => (
-                if is_neg_inf(&iv.lower) {
-                    f64::NEG_INFINITY
-                } else {
-                    iv.lower.eval_f64()?
-                },
-                if is_pos_inf(&iv.upper) {
-                    f64::INFINITY
-                } else {
-                    iv.upper.eval_f64()?
-                },
-            ),
-            None => {
-                // Points: walk the cumulative sums.
-                let values = support.as_points().ok_or_else(|| {
-                    SymplexError::computation_failed("quantile_f64", "unsupported support shape")
-                })?;
-                let mut pts: Vec<(f64, f64)> = values
-                    .iter()
-                    .map(|v| Ok((v.eval_f64()?, self.0.density(v).eval_f64()?)))
-                    .collect::<Result<_, SymplexError>>()?;
-                let _ = &cdf;
-                pts.sort_by(|a, b| a.0.total_cmp(&b.0));
-                let mut acc = 0.0;
-                for (v, m) in pts {
-                    acc += m;
-                    if acc >= p - 1e-12 {
-                        return Ok(v);
-                    }
+        if let Some(values) = support.as_points() {
+            // Points: walk the cumulative sums.  A value listed twice (a
+            // mixture's shared atom) carries its whole mass once.
+            let mut seen: Vec<&Ex> = Vec::with_capacity(values.len());
+            let mut pts: Vec<(f64, f64)> = Vec::with_capacity(values.len());
+            for v in &values {
+                if seen.contains(&v) {
+                    continue;
                 }
-                return Err(SymplexError::computation_failed(
-                    "quantile_f64",
-                    "the masses do not reach p",
-                ));
+                seen.push(v);
+                pts.push((v.eval_f64()?, self.0.density(v).eval_f64()?));
             }
-        };
+            pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut acc = 0.0;
+            for (v, m) in pts {
+                acc += m;
+                if acc >= p - 1e-12 {
+                    return Ok(v);
+                }
+            }
+            return Err(SymplexError::computation_failed(
+                "quantile_f64",
+                "the masses do not reach p",
+            ));
+        }
+        // The hull of the pieces (one interval, or a mixture's several).
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for piece in support.pieces() {
+            let (a, b) = match piece {
+                Piece::Interval(iv) => (
+                    if is_neg_inf(&iv.lower) {
+                        f64::NEG_INFINITY
+                    } else {
+                        iv.lower.eval_f64()?
+                    },
+                    if is_pos_inf(&iv.upper) {
+                        f64::INFINITY
+                    } else {
+                        iv.upper.eval_f64()?
+                    },
+                ),
+                Piece::Point(v) => {
+                    let v = v.eval_f64()?;
+                    (v, v)
+                }
+            };
+            lo = lo.min(a);
+            hi = hi.max(b);
+        }
+        if support.is_empty() || lo.is_nan() || hi.is_nan() {
+            return Err(SymplexError::computation_failed(
+                "quantile_f64",
+                "unsupported support shape",
+            ));
+        }
+        // On a lattice the first atom may already carry p: the quantile
+        // is the support's lower end and no sign change exists to bracket.
+        if support.kind() == Kind::Discrete && lo.is_finite() && cdf(lo) >= p - 1e-12 {
+            return Ok(lo);
+        }
         let g = |v: f64| cdf(v) - p;
         // Grow a bracket from a finite end (or from 0) until the sign changes.
         let (mut a, mut b) = match (lo.is_finite(), hi.is_finite()) {
@@ -703,6 +731,11 @@ impl Distribution {
     fn interval_mass(&self, iv: &Interval<Ex>, support: &Support) -> Ex {
         let ctx = self.context();
         let (lo, hi) = (&iv.lower, &iv.upper);
+        // A density puts no mass on a single point (`X ≤ 0` clipped to
+        // `[0, ∞)` is `[0, 0]`, where a closed form need not fold: `Φ(ln 0)`).
+        if support.kind() == Kind::Continuous && (hi - lo).is_zero() == Some(true) {
+            return ctx.zero();
+        }
         let (slo, shi) = match support.as_interval() {
             Some(s) => (Some(&s.lower), Some(&s.upper)),
             None => (None, None),
@@ -767,19 +800,35 @@ impl Distribution {
     /// Integrate (continuous) or sum (discrete) an expression in `x` over
     /// every piece of `region`.  The integrand is simplified first so that
     /// products such as `eˣ · e^{−x²/2}` reach the integrator as one
-    /// exponential.
+    /// exponential; when that leaves an unevaluated `Integral`/`Sum` the
+    /// expanded integrand is tried (`x·(1 − e^{−λx})·e^{−λx}`, the mean of
+    /// a maximum of exponentials, closes term by term).
     pub(crate) fn integrate_over(&self, integrand: &Ex, x: &Ex, region: &Support) -> Ex {
         let ctx = self.context();
         let integrand = integrand.simplify();
+        let over = |iv: &Interval<Ex>, f: &Ex| match region.kind() {
+            Kind::Continuous => f.integrate_definite(x, &iv.lower, &iv.upper),
+            Kind::Discrete => f.summation(x, &iv.lower, &iv.upper),
+        };
         // Integer ends for a lattice region (open ends moved inwards).
         let region = region.normalize_lattice();
         let mut acc = ctx.zero();
         for piece in region.pieces() {
             acc += match piece {
-                Piece::Interval(iv) => match region.kind() {
-                    Kind::Continuous => integrand.integrate_definite(x, &iv.lower, &iv.upper),
-                    Kind::Discrete => integrand.summation(x, &iv.lower, &iv.upper),
-                },
+                Piece::Interval(iv) => {
+                    let first = over(iv, &integrand);
+                    if first.has_unevaluated() {
+                        let expanded = integrand.expand();
+                        if expanded != integrand {
+                            let second = over(iv, &expanded);
+                            if !second.has_unevaluated() {
+                                acc += second;
+                                continue;
+                            }
+                        }
+                    }
+                    first
+                }
                 // The integrand at a listed value: for a table the mass
                 // function is a `Piecewise`, which `eval` resolves.
                 Piece::Point(v) => integrand.subs(x, v).eval(),

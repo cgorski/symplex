@@ -51,6 +51,29 @@ impl Truncated {
             .intersect(&self.region)
             .unwrap_or_else(|| self.inner.support())
     }
+
+    /// `P_inner(X < lo)` for the clipped support's lower end `lo`, through
+    /// the inner closed form: `0` at `−∞` and at the inner support's own
+    /// lower end (where the closed form need not fold — `Φ(ln 0)`), else
+    /// `F(lo)` for a density and `F(lo − 1)` on the integer lattice (the
+    /// atom at `lo` belongs to the truncated variable).
+    fn mass_below(&self, lo: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        if is_neg_inf(lo) {
+            return Some(ctx.zero());
+        }
+        let inner_support = self.inner.support();
+        if let Some(s) = inner_support.as_interval()
+            && !is_neg_inf(&s.lower)
+            && (lo - &s.lower).is_zero() == Some(true)
+        {
+            return Some(ctx.zero());
+        }
+        match self.inner.kind() {
+            Kind::Continuous => self.inner.family().cdf(lo),
+            Kind::Discrete => self.inner.family().cdf(&(lo - ctx.one())),
+        }
+    }
 }
 
 impl Family for Truncated {
@@ -80,32 +103,22 @@ impl Family for Truncated {
         self.inner.density(x) / &self.mass
     }
 
-    // (F(x) − F(lo)) / mass on a single interval [lo, hi].
+    // (F(x) − F(lo⁻)) / mass on a single interval [lo, hi].
     fn cdf(&self, x: &Ex) -> Option<Ex> {
         let clipped = self.clipped();
         let lo = &clipped.as_interval()?.lower;
         let probe = self.inner.fresh_var("t", &[x]);
         self.inner.family().cdf(&probe)?;
-        let ctx = self.context();
-        let f_lo = if is_neg_inf(lo) {
-            ctx.zero()
-        } else {
-            self.inner.family().cdf(lo)?
-        };
+        let f_lo = self.mass_below(lo)?;
         let f_x = self.inner.family().cdf(x)?;
         Some(((f_x - f_lo) / &self.mass).simplify())
     }
 
-    // Q(F(lo) + p·mass) when the inner family has both closed forms.
+    // Q(F(lo⁻) + p·mass) when the inner family has both closed forms.
     fn quantile(&self, p: &Ex) -> Option<Ex> {
         let clipped = self.clipped();
         let lo = &clipped.as_interval()?.lower;
-        let ctx = self.context();
-        let f_lo = if is_neg_inf(lo) {
-            ctx.zero()
-        } else {
-            self.inner.family().cdf(lo)?
-        };
+        let f_lo = self.mass_below(lo)?;
         self.inner.family().quantile(&(f_lo + p * &self.mass))
     }
 
@@ -334,8 +347,11 @@ impl Family for Affine {
             match self.inner.kind() {
                 // P(aX + b ≤ y) = P(X ≥ x) = 1 − F(x⁻)
                 Kind::Continuous => Some(ctx.one() - self.inner.family().cdf(&x)?),
-                // On the lattice: 1 − F(x − 1).
-                Kind::Discrete => Some(ctx.one() - self.inner.family().cdf(&(x - ctx.one()))?),
+                // On the lattice P(X ≥ x) = 1 − F(⌈x⌉ − 1): for an integer x
+                // that is F(x − 1), for a non-integer one F(⌊x⌋).
+                Kind::Discrete => {
+                    Some(ctx.one() - self.inner.family().cdf(&(x.ceiling() - ctx.one()))?)
+                }
             }
         }
     }
@@ -349,6 +365,12 @@ impl Family for Affine {
         let q = if self.increasing {
             self.inner.family().quantile(p)?
         } else {
+            // Reflecting a lattice quantile is off by one lattice step
+            // wherever F hits 1 − p exactly; leave that to the numeric
+            // route (`quantile_f64` searches the transported cdf).
+            if self.inner.kind() == Kind::Discrete {
+                return None;
+            }
             self.inner.family().quantile(&(self.context().one() - p))?
         };
         Some((&self.a * q + &self.b).simplify())
@@ -558,16 +580,22 @@ impl Family for Mixture {
 
     // The union of the components' supports, as given (they may overlap;
     // every query below sums per component, never integrates the union).
+    // A piece two components share is listed once: the generic routes
+    // that walk the pieces (`quantile_f64`, order statistics) read the
+    // mixture's own density at each, which already sums the components.
     fn support(&self) -> Support {
         let kind = self
             .components
             .first()
             .map_or(Kind::Continuous, |(_, d)| d.kind());
-        let pieces = self
-            .components
-            .iter()
-            .flat_map(|(_, d)| d.support().pieces().to_vec())
-            .collect();
+        let mut pieces: Vec<Piece> = Vec::new();
+        for (_, d) in &self.components {
+            for piece in d.support().pieces() {
+                if !pieces.contains(piece) {
+                    pieces.push(piece.clone());
+                }
+            }
+        }
         Support::from_pieces(kind, pieces)
     }
 
@@ -748,8 +776,9 @@ impl Distribution {
     ///
     /// [`SymplexError::InvalidArgument`] if `a` is zero or of unknown sign
     /// (a symbolic `a` needs a `Positive`/`Negative` assumption), or if
-    /// `X` is discrete on an infinite lattice and `a ≠ ±1` (the image is
-    /// no longer the integer lattice).
+    /// `X` is discrete on an integer lattice and `a ≠ ±1` or `b` is a
+    /// non-integer number (the image is no longer the integer lattice; a
+    /// finite range can be enumerated with [`transformed`](Self::transformed)).
     ///
     /// ```
     /// use symplex::prelude::*;
@@ -785,6 +814,11 @@ impl Distribution {
                     "an affine map of a lattice distribution must have slope ±1 (use `transformed` on a finite table)",
                 ));
             }
+            if b.is_integer() == Some(false) {
+                return Err(invalid(format!(
+                    "an affine map of a lattice distribution must have an integer intercept, got `{b}` (use `transformed` on a finite range)"
+                )));
+            }
         }
         Ok(Distribution::from_family(Affine {
             inner: self.clone(),
@@ -799,13 +833,17 @@ impl Distribution {
     /// (delegates to [`affine`](Self::affine)); a continuous `X` with a
     /// strictly monotone `g` on the support whose inverse `solve` finds
     /// (`eˣ`, `ln x`, `1/x` on a positive support, `x³`, …); `X²`, `|X|`
-    /// and even powers of a continuous `X` (two branches); and a finite
-    /// table, whose values are mapped and merged.  SymPy: `density(g(X))`.
+    /// and even powers of a continuous `X` (two branches on a support
+    /// symmetric about `0`, one on a support to one side of `0`); and a
+    /// finite table or finite integer range, whose values are mapped and
+    /// merged.  SymPy: `density(g(X))`.
     ///
     /// # Errors
     ///
     /// [`SymplexError::NotImplemented`] for other shapes (a non-monotone
-    /// `g` that is not an even power / absolute value, a lattice `X`).
+    /// `g` that is not an even power / absolute value, an even shape on a
+    /// support straddling `0` asymmetrically, an infinite lattice `X`
+    /// under a non-affine `g`).
     ///
     /// ```
     /// use symplex::prelude::*;
@@ -830,7 +868,17 @@ impl Distribution {
         {
             let a = poly.coeff_monomial(&[1]).unwrap_or_else(|_| ctx.zero());
             let b = poly.coeff_monomial(&[0]).unwrap_or_else(|_| ctx.zero());
-            return self.affine(a, b);
+            match self.affine(a, b) {
+                Ok(d) => return Ok(d),
+                // A lattice image that leaves the integers (slope ≠ ±1 or
+                // a fractional shift) is enumerated below when the range
+                // is finite; anything else is the affine route's error.
+                Err(e) => {
+                    if self.kind() != Kind::Discrete || self.enumerate_lattice().is_none() {
+                        return Err(e);
+                    }
+                }
+            }
         }
         // A finite table (or a finite integer range, enumerated): map the
         // values and merge equal images.
@@ -864,9 +912,10 @@ impl Distribution {
         })?;
         let (lo, hi) = (&iv.lower, &iv.upper);
         let y = super::family::fresh_symbol(&ctx, "y", &[g, x, lo, hi]);
-        // Two-branch even shapes: x², |x|, x^{2k} on any support (the
-        // branches are clipped to the support piece by piece).
+        // Even shapes: x², |x|, x^{2k}.  Both branches on a support
+        // symmetric about 0, the live one on a support to one side of 0.
         if let Some(branches) = even_branches(x, g, &y, &ctx) {
+            let branches = live_even_branches(branches, g, &support)?;
             let image = even_image(g, x, &support, &ctx);
             return Ok(Distribution::from_family(Transformed {
                 inner: self.clone(),
@@ -896,11 +945,16 @@ impl Distribution {
         let solutions = (g - &y).solve(x).map_err(|e| {
             not_implemented(format!("transforming by `{g}`: no inverse found ({e})"))
         })?;
-        let [h] = solutions.as_slice() else {
+        // A strictly monotone real map has one real inverse; `solve` also
+        // lists the complex roots of `x³ = y` (`ω·∛y`), which drop out.
+        let i = ctx.i_unit();
+        let real: Vec<&Ex> = solutions.iter().filter(|h| !h.contains(&i)).collect();
+        let [h] = real.as_slice() else {
             return Err(not_implemented(format!(
                 "transforming by `{g}`: the inverse is not a single branch"
             )));
         };
+        let h = *h;
         // The image's ends are one-sided limits of g at the support's ends
         // (finite ends included: `1/x` at 0⁺ is ∞).
         let glo = if is_neg_inf(lo) {
@@ -1012,8 +1066,53 @@ impl Distribution {
     }
 }
 
+/// The branches of an even shape that land inside `support` everywhere
+/// on the image — the density formula of the inner family is valid on its
+/// support only, so a branch that leaves it must not be summed.  Both on
+/// a support symmetric about `0`, the non-negative one when the support
+/// lies in `[0, ∞)`, the non-positive one when it lies in `(−∞, 0]`.
+///
+/// # Errors
+///
+/// [`SymplexError::NotImplemented`] when the support straddles `0`
+/// asymmetrically (`Uniform(−1, 3)²`: two branches on `[0, 1]`, one on
+/// `(1, 9]`).
+fn live_even_branches(
+    branches: Vec<Ex>,
+    g: &Ex,
+    support: &Support,
+) -> Result<Vec<Ex>, SymplexError> {
+    let refuse = || {
+        not_implemented(format!(
+            "transforming by `{g}`: the support {support} straddles 0 asymmetrically, so the \
+             two-branch change of variables holds on part of the image only"
+        ))
+    };
+    let Some(iv) = support.as_interval() else {
+        return Err(refuse());
+    };
+    let (lo, hi) = (&iv.lower, &iv.upper);
+    let (lo_inf, hi_inf) = (is_neg_inf(lo), is_pos_inf(hi));
+    // `even_branches` lists the non-negative branch first.
+    let [non_negative, non_positive] = branches.as_slice() else {
+        return Ok(branches);
+    };
+    if !lo_inf && lo.is_nonnegative() == Some(true) {
+        return Ok(vec![non_negative.clone()]);
+    }
+    if !hi_inf && (-hi).is_nonnegative() == Some(true) {
+        return Ok(vec![non_positive.clone()]);
+    }
+    let symmetric = (lo_inf && hi_inf) || (!lo_inf && !hi_inf && (lo + hi).is_zero() == Some(true));
+    if symmetric {
+        return Ok(branches);
+    }
+    Err(refuse())
+}
+
 /// The inverse branches of an even shape `x²`, `|x|`, `x^{2k}` (as
-/// expressions in `y`): `±√y`, `±y`, `±y^{1/(2k)}`.
+/// expressions in `y`): `±√y`, `±y`, `±y^{1/(2k)}`, the non-negative
+/// branch first.
 fn even_branches(x: &Ex, g: &Ex, y: &Ex, ctx: &Context) -> Option<Vec<Ex>> {
     if *g == x.abs() {
         return Some(vec![y.clone(), -y]);

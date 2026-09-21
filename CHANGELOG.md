@@ -6,6 +6,100 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.17.1] - 2026-09-21
+
+An independent verification pass over the whole of `symplex::stats`: 200 new
+tests on fresh data with every reference value from scipy, statsmodels,
+pingouin, `krippendorff` or `Fraction` arithmetic (`tests/v17/v17_audit_*.rs`),
+re-running the oracle behind ~200 quoted doc numbers, and probing every
+documented edge case.  Twenty bugs found and fixed; no API changed.
+
+### Fixed
+
+*Wrong values (highest severity first):*
+
+- **`Truncated` of a lattice family** (Die, Poisson, Geometric, Bernoulli
+  with a closed CDF) excluded the atom at the lower end: `die(6)` truncated
+  to `[3, ∞)` had `cdf(3) = 0`, `quantile(1/4) = 4`, and its **sampler never
+  drew a 3** (sample mean 5.49 vs 4.5); zero-truncated Poisson `cdf(2)` was
+  half its value.  `mass_below` now subtracts `F(lo − 1)`.
+- **`Transformed` by an even power** summed the `f_X(−√y)` branch even when
+  `−√y` lies outside the support: `exponential(2)` squared had
+  `P(Y < 1) = e² − e⁻² > 1`; `uniform(1, 3)²` had a doubled density.  One
+  branch on a one-sided support, both on a symmetric one, `NotImplemented`
+  for an asymmetric straddling support.
+- **Decreasing `Affine` of a lattice family**: `cdf` used `1 − F(x − 1)`
+  instead of `1 − F(⌈x⌉ − 1)` (`die(6).affine(−1, 7).cdf(7/2)` was `2/3`, not
+  `1/2`); the reflected `quantile` was off by one lattice step where `F`
+  hits `1 − p` exactly (now `None`, so the numeric route decides).
+- **`Support::intersect` of a `Finite` table** lattice-normalised the region
+  before testing listed values: `P(1 < X ≤ 5/2)` on `{1, 5/2, 3}` was `0`,
+  not `1/3`.  Points are now tested against the raw piece (openness
+  semantics unchanged).
+- **Yates' continuity correction** (`chi_square_independence(…, true)`)
+  shifted `|O − E|` by ½ even when `|O − E| < ½`, so `[[3, 3], [3, 4]]` gave
+  `13/144` where scipy ≥ 1.7 and R give `0`; the shift is now
+  `min(½, |O − E|)` and the doc no longer claims otherwise.
+- **`operating_characteristic_bernoulli` / `expected_sample_size_bernoulli`
+  at `p ∈ {0, 1}`** returned `NaN` (Wald's `h` root is at `±∞` there; the
+  bracketing loop overflowed).  Both now return the limits, continuous with
+  `p = 1 − 10⁻⁹`.
+- **`studentized_range_cdf` for huge `df`** lost accuracy from `df ≈ 10⁸`
+  (`1.2·10⁻⁷`) to garbage at `10¹⁵` (`1.0`) through catastrophic
+  cancellation of three `O(ν)` terms; they are now cancelled analytically.
+  Worst error over a 270-point scipy grid: `5·10⁻¹¹`.  Tukey p-values with
+  very large `N` were affected.
+- **Clopper–Pearson upper limit** at small `α` (`0.999` confidence) was off
+  by `4·10⁻¹²`: `P(X ≤ k)` was formed as `1 − P(X ≥ k+1)`; the lower tail is
+  now summed directly.
+- **`Triangular` with the mode at an endpoint** (`c = a` or `c = b`,
+  documented as allowed) divided by zero in the density, CDF, quantile and
+  MGF; degenerate-mode branches added, `raw_moment` falls back to exact
+  integration.
+- **`log_normal(0, 1).cdf(0)`** (and `P(X ≤ 0)`, and `Truncated` CDFs at the
+  support's own lower end) returned an unevaluable `erf(√2·ln 0)`; the
+  closed forms are no longer called *at* the lower end.
+- **`Mixture` quantiles**: two normals gave "unsupported support shape"
+  (`ℝ ∪ ℝ`); two tables sharing an atom double-counted it
+  (`quantile_f64(0.9) = 2`, want `3`).
+- **`quantile_f64` on a lattice with `F(lo) ≥ p`** (`poisson(2).quantile_f64
+  (0.1)`) failed Brent's sign test; returns `lo`.
+- **`data::to_f64`** returned `NaN` when numerator and denominator each
+  exceeded `f64::MAX` (`inf/inf`); uses `Ratio::to_f64`.
+- **`maximum_of(exponential(λ), 2).mean()`** stayed an unevaluated
+  `Integral`; `integrate_over` retries with the expanded integrand.
+
+*Panics in library code (the crate promises none):*
+
+- **`phi_coefficient`** and **`odds_ratio` / `fisher_exact`** multiplied
+  table margins in `usize` — overflow (debug panic, release wrap) from
+  margins around `2·10⁵` / cells around `5·10⁹`.  Products are now `Q`.
+
+*Validation and small fixes:*
+
+- `binomial(5, 1/3).affine(1, 1/2)` was accepted (support `ℤ + ½`); a
+  non-integer numeric intercept on a lattice family is `InvalidArgument`.
+- `die(6).transformed(x, 2x)` refused the affine route without trying the
+  finite enumeration; it now falls through.
+- `transformed(x, x³)` (documented as recognised) was refused because
+  `solve` listed the complex cube roots; branches containing `I` are dropped.
+- Doc citations corrected: `quantile_f64` quoted `t.ppf(0.975, 5)` with a
+  wrong 11th digit; `KaplanMeier::quantile` cited statsmodels' strict-`<`
+  quantile while implementing R's `≤` (now stated).
+
+### Known limits found (not changed)
+
+- `fisher_exact` enumerates the hypergeometric support with `BigInt`
+  binomials: cells in the `10⁶–10⁹` range do not error, they take minutes.
+- `kruskal_wallis`/`friedman`/`wilcoxon` tie terms and `kappa_from_confusion`
+  products are still `usize` — safe below ~2.6·10⁶ observations.
+- `Sprt` decisions are not sticky: `update` after `AcceptH1` may return
+  `Continue`.  `LifeTableRow.censored` records only censorings that
+  coincide with an event time.  `quantile_f64` on `NegativeBinomial` with a
+  rational `r` takes ~4 s (Brent on a symbolic `Sum`).  No samplers for
+  Gamma/Beta/χ²/t/F/Poisson/Geometric/NegBin.  "Clopper–Pearson contains
+  Wilson" is not an invariant at 99 %.
+
 ## [0.17.0] - 2026-09-21
 
 Factorial and repeated-measures ANOVA with post-hoc tests (`stats::anova`),

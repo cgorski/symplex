@@ -1006,6 +1006,31 @@ pub struct Triangular {
     pub mode: Ex,
 }
 
+impl Triangular {
+    /// Is the mode decidably at the lower end (`c = a`)?  The rising
+    /// piece is then a single point and its formula divides by `c − a = 0`.
+    fn mode_at_lo(&self) -> bool {
+        (&self.mode - &self.lo).is_zero() == Some(true)
+    }
+
+    /// Is the mode decidably at the upper end (`c = b`)?
+    fn mode_at_hi(&self) -> bool {
+        (&self.hi - &self.mode).is_zero() == Some(true)
+    }
+
+    /// `2(x−a)/((b−a)(c−a))` on `[a, c]` and `2(b−x)/((b−a)(b−c))` on
+    /// `(c, b]`: the piece that applies, or the `Piecewise` of both.
+    fn two_pieces(&self, x: &Ex, rising: Ex, falling: Ex) -> Ex {
+        if self.mode_at_lo() {
+            falling
+        } else if self.mode_at_hi() {
+            rising
+        } else {
+            Ex::piecewise(&[(&rising, &x.le(&self.mode)), (&falling, &x.gt(&self.mode))])
+        }
+    }
+}
+
 impl Family for Triangular {
     family_boilerplate!(Triangular, "Triangular", [lo, hi, mode]);
 
@@ -1021,7 +1046,7 @@ impl Family for Triangular {
         let width = &self.hi - &self.lo;
         let rising = &two * (x - &self.lo) / (&width * (&self.mode - &self.lo));
         let falling = &two * (&self.hi - x) / (&width * (&self.hi - &self.mode));
-        Ex::piecewise(&[(&rising, &x.le(&self.mode)), (&falling, &x.gt(&self.mode))])
+        self.two_pieces(x, rising, falling)
     }
 
     fn mean(&self) -> Option<Ex> {
@@ -1037,8 +1062,13 @@ impl Family for Triangular {
         )
     }
 
-    // 2 [aⁿ⁺²(b−c) − bⁿ⁺²(a−c) + cⁿ⁺²(a−b)] / ((n+1)(n+2)(a−b)(a−c)(b−c))
+    // 2 [aⁿ⁺²(b−c) − bⁿ⁺²(a−c) + cⁿ⁺²(a−b)] / ((n+1)(n+2)(a−b)(a−c)(b−c));
+    // 0/0 with the mode at an end, where the generic integration of the
+    // single linear piece is exact.
     fn raw_moment(&self, n: u32) -> Option<Ex> {
+        if self.mode_at_lo() || self.mode_at_hi() {
+            return None;
+        }
         let ctx = self.context();
         let (a, b, c) = (&self.lo, &self.hi, &self.mode);
         let e = i64::from(n) + 2;
@@ -1053,16 +1083,25 @@ impl Family for Triangular {
         let width = &self.hi - &self.lo;
         let rising = (x - &self.lo).powi(2) / (&width * (&self.mode - &self.lo));
         let falling = ctx.one() - (&self.hi - x).powi(2) / (&width * (&self.hi - &self.mode));
-        Some(Ex::piecewise(&[
-            (&rising, &x.le(&self.mode)),
-            (&falling, &x.gt(&self.mode)),
-        ]))
+        Some(self.two_pieces(x, rising, falling))
     }
 
-    // 2 [(b−c) e^{at} − (b−a) e^{ct} + (c−a) e^{bt}] / ((b−a)(c−a)(b−c) t²)
+    // 2 [(b−c) e^{at} − (b−a) e^{ct} + (c−a) e^{bt}] / ((b−a)(c−a)(b−c) t²);
+    // with the mode at an end the limit of that 0/0:
+    // c = a: 2 [e^{bt} − e^{at} − (b−a) t e^{at}] / ((b−a)² t²),
+    // c = b: 2 [(b−a) t e^{bt} − e^{bt} + e^{at}] / ((b−a)² t²).
     fn mgf(&self, t: &Ex) -> Option<Ex> {
         let ctx = self.context();
         let (a, b, c) = (&self.lo, &self.hi, &self.mode);
+        let width = b - a;
+        if self.mode_at_lo() {
+            let num = ctx.int(2) * ((b * t).exp() - (a * t).exp() - &width * t * (a * t).exp());
+            return Some(num / (width.powi(2) * t.powi(2)));
+        }
+        if self.mode_at_hi() {
+            let num = ctx.int(2) * (&width * t * (b * t).exp() - (b * t).exp() + (a * t).exp());
+            return Some(num / (width.powi(2) * t.powi(2)));
+        }
         let num = ctx.int(2)
             * ((b - c) * (a * t).exp() - (b - a) * (c * t).exp() + (c - a) * (b * t).exp());
         let den = (b - a) * (c - a) * (b - c) * t.powi(2);
@@ -1073,9 +1112,15 @@ impl Family for Triangular {
     fn quantile(&self, p: &Ex) -> Option<Ex> {
         let ctx = self.context();
         let width = &self.hi - &self.lo;
-        let threshold = (&self.mode - &self.lo) / &width;
         let rising = &self.lo + (p * &width * (&self.mode - &self.lo)).sqrt();
         let falling = &self.hi - ((ctx.one() - p) * &width * (&self.hi - &self.mode)).sqrt();
+        if self.mode_at_lo() {
+            return Some(falling);
+        }
+        if self.mode_at_hi() {
+            return Some(rising);
+        }
+        let threshold = (&self.mode - &self.lo) / &width;
         Some(Ex::piecewise(&[
             (&rising, &p.lt(&threshold)),
             (&falling, &p.ge(&threshold)),

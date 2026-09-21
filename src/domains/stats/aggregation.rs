@@ -1068,9 +1068,10 @@ pub enum IntervalMethod {
     Wald,
 }
 
-/// `P(X ≥ k)` for `X ~ Binomial(n, p)`, `0 < p < 1`, summed from
-/// log-binomial coefficients.
-fn binomial_upper_tail(n: usize, k: usize, p: f64) -> f64 {
+/// `P(X ≥ k)` (`upper`) or `P(X ≤ k)` for `X ~ Binomial(n, p)`, `0 < p < 1`,
+/// each summed directly from log-binomial coefficients (never as `1 −` the
+/// other tail, which would lose a small tail to cancellation).
+fn binomial_tail(n: usize, k: usize, p: f64, upper: bool) -> f64 {
     let (lp, lq) = (p.ln(), (1.0 - p).ln());
     let mut log_c = 0.0; // ln C(n, i), built up from i = 0
     let mut tail = 0.0;
@@ -1078,7 +1079,7 @@ fn binomial_upper_tail(n: usize, k: usize, p: f64) -> f64 {
         if i > 0 {
             log_c += ((n - i + 1) as f64).ln() - (i as f64).ln();
         }
-        if i >= k {
+        if if upper { i >= k } else { i <= k } {
             tail += (log_c + i as f64 * lp + (n - i) as f64 * lq).exp();
         }
     }
@@ -1161,16 +1162,13 @@ pub fn proportion_interval(
             0.0
         } else {
             // P(X ≥ k) grows with p.
-            bisect_unit(|p| binomial_upper_tail(trials, successes, p) - half, true)
+            bisect_unit(|p| binomial_tail(trials, successes, p, true) - half, true)
         };
         let hi = if successes == trials {
             1.0
         } else {
-            // P(X ≤ k) = 1 − P(X ≥ k + 1) falls with p.
-            bisect_unit(
-                |p| 1.0 - binomial_upper_tail(trials, successes + 1, p) - half,
-                false,
-            )
+            // P(X ≤ k) falls with p.
+            bisect_unit(|p| binomial_tail(trials, successes, p, false) - half, false)
         };
         return Ok(Interval::closed(lo, hi));
     }

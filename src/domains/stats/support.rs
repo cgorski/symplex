@@ -385,7 +385,9 @@ impl Support {
         };
         let mut out = Vec::new();
         for a in &me.pieces {
-            for b in &other.pieces {
+            // `normalize_lattice` maps pieces one to one, so `raw` is the
+            // same piece of `region` before any lattice rounding.
+            for (b, raw) in other.pieces.iter().zip(&region.pieces) {
                 match (a, b) {
                     (Piece::Interval(ia), Piece::Interval(ib)) => {
                         let (lo, lo_open) = max_lo(ia, ib);
@@ -400,10 +402,11 @@ impl Support {
                         }
                     }
                     (Piece::Point(v), Piece::Interval(_)) => {
-                        let single = Support::from_pieces(self.kind, vec![b.clone()]);
                         // A table value is a member by listing, so only the
-                        // interval test applies (no lattice test).
-                        let single = single.with_kind(Kind::Continuous);
+                        // interval test applies, against the region's ends
+                        // as given: the value need not be an integer, and
+                        // rounding `(1, 5/2]` to `[2, 2]` would drop `5/2`.
+                        let single = Support::from_pieces(Kind::Continuous, vec![raw.clone()]);
                         if single.contains(v)? {
                             out.push(Piece::Point(v.clone()));
                         }

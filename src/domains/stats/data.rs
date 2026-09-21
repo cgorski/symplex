@@ -571,10 +571,11 @@ pub fn from_f64(data: &[f64]) -> Result<Vec<Q>, SymplexError> {
         .collect()
 }
 
-/// The observations as `f64`s.
+/// The observations as `f64`s (correctly rounded even when the numerator or
+/// denominator alone exceeds `f64::MAX`).
 pub fn to_f64(data: &[Q]) -> Vec<f64> {
     data.iter()
-        .map(|x| x.numer().to_f64().unwrap_or(f64::NAN) / x.denom().to_f64().unwrap_or(f64::NAN))
+        .map(|x| x.to_f64().unwrap_or(f64::NAN))
         .collect()
 }
 
