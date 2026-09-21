@@ -831,6 +831,53 @@ Before opening a PR run at least `cargo fmt --all`, `cargo clippy --all-targets`
 - Constants: `SCREAMING_SNAKE_CASE` (`MAX_KRONECKER_DEGREE`)
 - Private fields: no prefix (just `id`, not `_id` or `m_id`)
 
+### Tuples versus structs
+
+A tuple whose positions have the *same type* — `(f64, f64)`, `(Matrix, Matrix)`,
+`(&Q, &Q)`, `(Ex, Ex, bool, bool)` — lets nothing but memory say which position
+is which.  `(lower, upper)` or `(upper, lower)`?  `(Q, R)` or `(R, Q)`?
+`(shape, scale)` or `(shape, rate)`?  Our own `gcdex` returned `(g, s, t)` in
+`ntheory` and `(s, t, g)` in `poly` until 0.15.  A struct with named fields
+costs nothing at runtime and makes the transposition impossible to write
+silently, so **on the public surface (function signatures, `pub` fields,
+`pub` type aliases) a repeated element type means a struct** — unless the
+tuple is one of these, which stay:
+
+- **universal conventions that are pattern-matched at every use**:
+  `(x, y)` points, `(re, im)`, `(numer, denom)`, `(quotient, remainder)`
+  (`num_integer::div_rem`), `(base, exp)`, `(var, value)` substitution pairs
+  and other key → value pairs (`Vec<(K, V)>` is the ordered-map idiom);
+- **ecosystem conventions**: `shape() -> (rows, cols)`;
+- **symmetric positions**: the two squares in `n = a² + b²`, a factor and its
+  cofactor;
+- **enum tuple variants** (`ExprNode::Pow(base, exp)`): always destructured
+  by a pattern that names each field at the site.
+
+The rule is not absolute — the goal is to remove a class of stupid mistake
+where a type does it for free, not to wrap every pair.  It is
+**enforced** by `tests/unit/test_homogeneous_tuples.rs`, a `syn`-based
+ratchet over `src/` that fails when a file's public surface gains a tuple
+with a repeated element type beyond its allowlisted count (and when an
+allowlisted file loses one without the allowlist being tightened).  Each
+allowlist entry names its kept sites and the convention that justifies them.
+
+The shared types this produced live in `src/base/interval.rs` and are in the
+prelude:
+
+| Need | Type |
+|---|---|
+| two finite endpoints, any of `[a, b]`, `(a, b)`, `(a, b]`, `[a, b)` | `Interval<T> { lower, upper, kind }` — a `Vec<Interval<Q>>` can mix kinds (a bisection that hits a root exactly yields `[r, r]` beside `(lo, hi]`) |
+| closed constraint side, either end possibly absent (LP variable bounds, bounding boxes) | `Bounds<T> { lower: Option<T>, upper: Option<T> }` — **not** `Interval<Option<T>>`, whose `contains` is wrong because `None < Some` |
+| symbolic endpoints, `±∞`, unions, set algebra | `SetEx` (`Context::interval`, `Interval<Ex>::to_set`) |
+| the support of a distribution | `stats::Support` (pieces are `Interval<Ex>` and points) |
+| oriented limits `∫ₐᵇ`, `Σₐᵇ`, a Fourier period | separate `lower`, `upper` arguments — reversal flips the sign, so it is not a set |
+
+Openness is *behavioural* in this crate — `P(X > 2)` and `P(X ≥ 2)` differ
+by a lattice point, `maximum` on an open end is a limit that is not
+attained, `to_condition` emits `>` or `>=` — so a conversion that drops or
+transposes it breaks things silently.  Carry the `kind`; for a decreasing
+map use `Interval::reversed` rather than swapping fields by hand.
+
 ### Error Handling
 
 | Context | Approach |
