@@ -6,6 +6,80 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.17.0] - 2026-09-21
+
+Factorial and repeated-measures ANOVA with post-hoc tests (`stats::anova`),
+complex `f64` values as `num_complex::Complex64` instead of `(re, im)`
+pairs, one `Extended<T>` for "a value or `±∞`", and two `simplify` fixes
+the new work exposed: a multiple-angle expansion that was exponential in
+`n`, and a Fu transform that produced a *wrong value* on a rotation-matrix
+entry.  LP pivot paths and Lean certificates are byte-identical.
+
+### Breaking
+
+- **Complex `f64` values are `Complex64`** (`num_complex`, re-exported at
+  the crate root and as `prelude::Complex64`): `Ex::eval_complex64 ->
+  Result<Complex64, _>`, `Ex::nroots` and `Poly::nroots -> Result<Vec<Complex64>,
+  _>` (were `(f64, f64)` pairs).  `.re`/`.im` replace `.0`/`.1`; you also
+  get `.norm()`, `.arg()` and arithmetic.  `Ex::polar -> Polar { modulus,
+  argument }` (was `(Ex, Ex)`).  `as_real_imag -> (Ex, Ex)` is unchanged
+  (symbolic parts).
+- New dependency `num-complex 0.4` (pure Rust, `MIT OR Apache-2.0`, part of
+  the `num` family already used; builds for `wasm32`).
+
+### Added
+
+- **`stats::anova`** — `anova_two_way` / `anova_two_way_with(ss_type)` on a
+  `TwoWayData` (`from_cells`, `from_i64`, `from_long(&[Observation { a, b,
+  y }])`): rows for factor A, factor B, interaction, residual and total
+  (`AnovaRow { source, ss, df, ms, f, p_value, eta_squared,
+  partial_eta_squared }`), exact sums of squares for balanced and
+  unbalanced designs with **Type I, II and III** (sum-to-zero contrasts)
+  sums of squares matching `statsmodels.anova_lm(typ=…)`;
+  `anova_repeated_measures(subjects_by_condition)` with exact
+  `F`, **Greenhouse–Geisser and Huynh–Feldt ε** (exact rationals from the
+  double-centred covariance), corrected p-values and **Mauchly's W** (exact,
+  with Box's χ² approximation); `studentized_range_cdf/sf/quantile`
+  (numerical, to `scipy.stats.studentized_range` at ~1e–14);
+  **`tukey_hsd`** (`PairwiseComparison { i, j, diff, se, statistic, p_adj,
+  ci: Interval<f64> }`) and `pairwise_t_tests` with `Adjustment::{Bonferroni,
+  Holm}`.  36 oracle-cited tests (`tests/v17/`); the book's statistics
+  chapter gained both examples.
+- **`Extended<T>`** (`base::extended`, crate root and prelude): `NegInf |
+  Finite(T) | PosInf` with the right `PartialOrd`/`Ord`, `is_finite`,
+  `finite`, `into_finite`, `map`, `as_ref`, `Neg`, `from_f64`, `Display`
+  (`-∞`/`∞`).  `Interval<Extended<T>>` is the honest spelling of an
+  unbounded interval (`Interval::right_open(Finite(0), PosInf).contains(&…)`
+  is correct where `Interval<Option<T>>` was not); `is_bounded()` on it.
+  Replaces the private `Endpoint`, `Bound` and `EndVal` enums.
+- `expr_complex::Polar { modulus, argument }`.
+
+### Fixed
+
+- **`simplify` returned a wrong value.**  Fu's TR10i (the inverse addition
+  formulas) picked two trig factors out of a *longer* product and dropped
+  the rest: `sin(c)·cos(a)·cos(b) + sin(a)·sin(b)` became `cos(a − b)`.  A
+  numeric Euler rotation's `RᵀR` entry simplified to `0.78`.  The transform
+  now requires the term to be exactly `coeff·trig·trig`.  (Latent since Fu
+  was added; it surfaced because the measure fix below made that candidate
+  win.)
+- **`simplify(sin(n·x))` was exponential in `n`.**  `expand_trig` expanded
+  `sin(nx)` by the addition formula recursively without collecting — `2ⁿ`
+  terms, a 143 KB expression for `sin(14x)` and minutes for `sin(20x)`; the
+  `simplify_idempotent` property test found it.  It now uses the De Moivre
+  closed form (`⌈n/2⌉` terms): `simplify(sin(20x))` takes 44 ms instead
+  of minutes.
+- Fu's `L` measure counted trig *nodes* in the shared-DAG arena rather than
+  *occurrences*, so `16cos⁷x − 24cos⁵x + 10cos³x − cos x` scored as one trig
+  function; it now counts with multiplicity (SymPy's definition) and Morrie's
+  law wins again.
+
+### Changed
+
+- `CONTRIBUTING.md`: `(re, im)` stays a convention for *symbolic* parts
+  only; `f64` complex values are `Complex64`.  The interval table lists
+  `Extended<T>`.
+
 ## [0.16.0] - 2026-09-21
 
 The second half of "named endpoints everywhere": the algebra surfaces that

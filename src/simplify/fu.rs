@@ -46,17 +46,28 @@ fn walk_transform(
 // Measure
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Count the number of trig function nodes in the expression.
+/// The number of trig function *occurrences* in the expression tree —
+/// Fu's `L` measure, counted with multiplicity as SymPy does.  The arena is
+/// a DAG, so `16·cos⁷x − 24·cos⁵x + 10·cos³x − cos x` shares one `cos(x)`
+/// node; counting nodes once would score it as *one* trig function and
+/// prefer it to Morrie's `sin(8x)/(8·sin x)` (two).  Computed bottom-up over
+/// the post-order so shared subtrees are still visited once.
 fn trig_count(arena: &Arena, expr: ExprId) -> usize {
-    walk::post_order_ids(arena, expr)
-        .iter()
-        .filter(|&&id| {
-            matches!(
-                arena.node(id),
-                ExprNode::Sin(_) | ExprNode::Cos(_) | ExprNode::Tan(_)
-            )
-        })
-        .count()
+    let order = walk::post_order_ids(arena, expr);
+    let mut counts: rustc_hash::FxHashMap<ExprId, usize> = rustc_hash::FxHashMap::default();
+    for &id in &order {
+        let own = usize::from(matches!(
+            arena.node(id),
+            ExprNode::Sin(_) | ExprNode::Cos(_) | ExprNode::Tan(_)
+        ));
+        let below: usize = arena
+            .children(id)
+            .iter()
+            .map(|c| counts.get(c).copied().unwrap_or(0))
+            .sum();
+        counts.insert(id, own + below);
+    }
+    counts.get(&expr).copied().unwrap_or(0)
 }
 
 /// Measure function for comparing candidate simplifications.
@@ -547,50 +558,50 @@ struct SameTypePair {
     coeff: Ratio<BigInt>,
 }
 
+/// The two trig factors of a term that is *exactly* `coeff · trig(a) · trig(b)`:
+/// `Some((sin args, cos args))` with two entries in total, `None` if the
+/// product has any other factor.  The addition formulas need the whole
+/// term; `sin(c)·cos(a)·cos(b) + sin(a)·sin(b)` is *not* `cos(a − b)`, and
+/// ignoring the `sin(c)` used to make `fu` return a wrong value for a
+/// rotation-matrix entry (`RᵀR` came out `0.78`, not `1`).
+fn exactly_two_trig_factors(arena: &Arena, core: ExprId) -> Option<(Vec<ExprId>, Vec<ExprId>)> {
+    let factors: Vec<ExprId> = match arena.node(core) {
+        ExprNode::Mul(children) => children.to_vec(),
+        _ => return None,
+    };
+    if factors.len() != 2 {
+        return None;
+    }
+    let mut sin_args = Vec::new();
+    let mut cos_args = Vec::new();
+    for &f in &factors {
+        match arena.node(f) {
+            ExprNode::Sin(arg) => sin_args.push(*arg),
+            ExprNode::Cos(arg) => cos_args.push(*arg),
+            _ => return None,
+        }
+    }
+    Some((sin_args, cos_args))
+}
+
 /// Try to extract `coeff * sin(a) * cos(b)` from a term.
 fn extract_sin_cos_pair(arena: &mut Arena, term: ExprId) -> Option<SinCosPair> {
     let (coeff, core) = arena.as_coeff_term(term);
-    let factors = match arena.node(core).clone() {
-        ExprNode::Mul(children) => children.to_vec(),
-        _ => vec![core],
-    };
-
-    let mut sin_arg = None;
-    let mut cos_arg = None;
-
-    for &f in &factors {
-        match arena.node(f).clone() {
-            ExprNode::Sin(arg) if sin_arg.is_none() => sin_arg = Some(arg),
-            ExprNode::Cos(arg) if cos_arg.is_none() => cos_arg = Some(arg),
-            _ => {}
-        }
+    let (sin_args, cos_args) = exactly_two_trig_factors(arena, core)?;
+    match (sin_args.as_slice(), cos_args.as_slice()) {
+        ([sin_arg], [cos_arg]) => Some(SinCosPair {
+            sin_arg: *sin_arg,
+            cos_arg: *cos_arg,
+            coeff,
+        }),
+        _ => None,
     }
-
-    Some(SinCosPair {
-        sin_arg: sin_arg?,
-        cos_arg: cos_arg?,
-        coeff,
-    })
 }
 
 /// Try to extract `coeff * sin(a) * sin(b)` or `coeff * cos(a) * cos(b)`.
 fn extract_same_type_pair(arena: &mut Arena, term: ExprId) -> Option<SameTypePair> {
     let (coeff, core) = arena.as_coeff_term(term);
-    let factors = match arena.node(core).clone() {
-        ExprNode::Mul(children) => children.to_vec(),
-        _ => vec![core],
-    };
-
-    let mut sin_args: Vec<ExprId> = Vec::new();
-    let mut cos_args: Vec<ExprId> = Vec::new();
-
-    for &f in &factors {
-        match arena.node(f).clone() {
-            ExprNode::Sin(arg) => sin_args.push(arg),
-            ExprNode::Cos(arg) => cos_args.push(arg),
-            _ => {}
-        }
-    }
+    let (sin_args, cos_args) = exactly_two_trig_factors(arena, core)?;
 
     if sin_args.len() == 2 {
         return Some(SameTypePair {
@@ -1816,6 +1827,34 @@ mod tests {
             "fu should not make 1/2-cos(2x)/2 worse: result={}, original measure={:?}",
             display(&arena, result),
             measure(&arena, original)
+        );
+    }
+
+    /// `sin(c)·cos(a)·cos(b) + sin(a)·sin(b)` must not collapse to `cos(a − b)`:
+    /// TR10i used to pick the two trig factors out of a longer product and
+    /// drop the rest.  Found by `Quaternion::from_rotation_matrix` on a
+    /// numeric Euler rotation (`RᵀR` evaluated to `0.78`).
+    #[test]
+    fn tr10i_requires_exactly_two_factors() {
+        let mut arena = Arena::new();
+        let a = arena.rational(2, 5);
+        let b = arena.rational(29, 10);
+        let c = arena.rational(-6, 5);
+        let sin_c = arena.sin(c);
+        let cos_a = arena.cos(a);
+        let cos_b = arena.cos(b);
+        let sin_a = arena.sin(a);
+        let sin_b = arena.sin(b);
+        let t1 = arena.mul(&[sin_c, cos_a, cos_b]);
+        let t2 = arena.mul(&[sin_a, sin_b]);
+        let expr = arena.add(&[t1, t2]);
+        let result = fu(&mut arena, expr);
+        let before: f64 = arena.evalf_expr(expr, 15).unwrap().parse().unwrap();
+        let after: f64 = arena.evalf_expr(result, 15).unwrap().parse().unwrap();
+        assert!(
+            (before - after).abs() < 1e-12,
+            "fu changed the value: {before} -> {after} ({})",
+            display(&arena, result)
         );
     }
 

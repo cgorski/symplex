@@ -9,3 +9,4 @@ cc aee1b3ebab75790ac1bd7431ef31c150e00217f3042db48b6daa22ecdc7bd44f # shrinks to
 cc db6c0221e07f7ef70b582eba9b8f3e005dc63225d001e49ce213df2c4e22142f # shrinks to a = Ex(ctx0, e9)
 cc d0c4f185b97f7736e21700101bdf4f6923a90ab952984d725511acb9e9ca6bbc # shrinks to a = Ex(ctx0, e141), b = Ex(ctx0, e9)
 cc 7e2a7f823ee8b293f329f08524e7c6cdc59cc6f3f99cecff0547282bec0b9c21 # shrinks to e = Ex(1/exp(-1))
+cc 19ffee571d2ae8b7db6a65c9c32e15274d18ff33bfc91944c72690d7265c05b2 # shrinks to e = Ex(sin(14*x))
