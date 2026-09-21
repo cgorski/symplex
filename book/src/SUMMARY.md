@@ -1,6 +1,7 @@
 # Summary
 
 [Introduction](./introduction.md)
+[What's New in 0.13](./whats-new-0.13.md)
 [What's New in 0.12](./whats-new-0.12.md)
 [What's New in 0.9 / 0.10](./whats-new-0.9.md)
 [What's New in 0.7](./whats-new-0.7.md)
@@ -38,6 +39,7 @@
 - [Transforms](./guide/transforms.md)
 - [Number Theory and Combinatorics](./guide/number-theory.md)
 - [Probability and Statistics](./guide/statistics.md)
+- [Analysing Rater and Response Data](./guide/response-analysis.md)
 - [Code Generation](./guide/code-generation.md)
 - [Dimensional Analysis](./guide/units.md)
 

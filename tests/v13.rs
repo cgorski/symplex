@@ -8,3 +8,5 @@ mod v13_agreement;
 mod v13_data_estimation;
 #[path = "v13/v13_hypothesis.rs"]
 mod v13_hypothesis;
+#[path = "v13/v13_walkthrough.rs"]
+mod v13_walkthrough;

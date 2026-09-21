@@ -503,12 +503,33 @@ impl Distribution {
         }
         let x = self.fresh_var("x", &[]);
         let name = x.to_string();
-        let cdf = self.cdf(&x).compile(&[name.as_str()])?;
+        let cdf_ex = self.cdf(&x);
+        // Compile the CDF when every node has an `f64` kernel; otherwise
+        // (`betainc_regularized`, …) evaluate the exact expression at each
+        // probe through the arbitrary-precision path.
+        let compiled = cdf_ex.compile(&[name.as_str()]).ok();
+        let cdf = |v: f64| -> f64 {
+            match &compiled {
+                Some(f) => f.call(&[v]),
+                None => ctx
+                    .from_f64(v)
+                    .and_then(|vv| cdf_ex.subs(&x, &vv).eval_f64())
+                    .unwrap_or(f64::NAN),
+            }
+        };
         let support = self.support();
         let (lo, hi) = match support.as_interval() {
             Some((lo, hi, _, _)) => (
-                if is_neg_inf(lo) { f64::NEG_INFINITY } else { lo.eval_f64()? },
-                if is_pos_inf(hi) { f64::INFINITY } else { hi.eval_f64()? },
+                if is_neg_inf(lo) {
+                    f64::NEG_INFINITY
+                } else {
+                    lo.eval_f64()?
+                },
+                if is_pos_inf(hi) {
+                    f64::INFINITY
+                } else {
+                    hi.eval_f64()?
+                },
             ),
             None => {
                 // Points: walk the cumulative sums.
@@ -519,6 +540,7 @@ impl Distribution {
                     .iter()
                     .map(|v| Ok((v.eval_f64()?, self.0.density(v).eval_f64()?)))
                     .collect::<Result<_, SymplexError>>()?;
+                let _ = &cdf;
                 pts.sort_by(|a, b| a.0.total_cmp(&b.0));
                 let mut acc = 0.0;
                 for (v, m) in pts {
@@ -533,7 +555,7 @@ impl Distribution {
                 ));
             }
         };
-        let g = |v: f64| cdf.call(&[v]) - p;
+        let g = |v: f64| cdf(v) - p;
         // Grow a bracket from a finite end (or from 0) until the sign changes.
         let (mut a, mut b) = match (lo.is_finite(), hi.is_finite()) {
             (true, true) => (lo, hi),
@@ -566,7 +588,7 @@ impl Distribution {
             // Smallest lattice point at or above the crossing.
             Kind::Discrete => {
                 let mut k = root.floor();
-                if cdf.call(&[k]) < p - 1e-12 {
+                if cdf(k) < p - 1e-12 {
                     k += 1.0;
                 }
                 k

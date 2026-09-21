@@ -6,6 +6,101 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.13.0] - 2026-09-20
+
+Statistics **on data**: the methods used to analyse many raters' answers
+to many items — agreement, aggregation, rater quality, group comparisons,
+screening under multiple comparisons — exact wherever the quantity is a
+rational function of the data.  Additive over 0.12.0.  Every reference
+value in `tests/v13/` (183 tests) is cited from statsmodels 0.15, scipy
+1.18, the `krippendorff` package, SymPy 1.14 or Python `Fraction`
+arithmetic; rationals are asserted exactly.  Book: "Analysing Rater and
+Response Data" (a walk-through that is itself a test).
+
+### Added
+
+- **`stats::data`** — exact descriptive statistics on `&[Q]`
+  (`Q = Ratio<BigInt>`): `mean`, `variance` / `std` / `covariance` with
+  `Ddof::{Population, Sample}`, `pearson`, `median`, `quantile` /
+  `quantiles` / `iqr` with `QuantileMethod::{Exclusive, Inclusive}`,
+  `min_max`, `modes`, `frequencies`, `ranks` (average ranks) and
+  `tie_sizes`, `spearman`, `kendall_tau` (τ-b), `skewness`, `kurtosis`,
+  `central_moment`, `median_abs_deviation`, `zscores`, `geometric_mean`,
+  `harmonic_mean`, `trimmed_mean`, `iqr_outliers`, `mad_outliers`,
+  `from_i64` / `from_f64` (exact) / `to_f64`, `binomial_q`.
+- **`stats::agreement`** — `RatingTable` (items × raters, missing cells)
+  and, all exact rationals: `percent_agreement`,
+  `pairwise_percent_agreement`, `cohen_kappa` (`KappaResult { kappa,
+  observed, expected }`), `weighted_kappa` (`Weights::{Unweighted, Linear,
+  Quadratic, Custom}`), `kappa_from_confusion`, `confusion_matrix`,
+  `category_frequencies`, `scott_pi`, `fleiss_kappa` /
+  `fleiss_kappa_ratings`, `krippendorff_alpha` (`Level::{Nominal, Ordinal,
+  Interval, Ratio}`, missing data), `gwet_ac1`, `icc` / `icc_anova`
+  (`IccForm::{Icc1, Icc1Average, Icc2Single, Icc2Average, Icc3Single,
+  Icc3Average}`, Shrout–Fleiss), `kendall_w` (tie-corrected).
+- **`stats::aggregation`** — `LabelTable`; exact `majority_vote` /
+  `majority_votes` (`Vote { winner, tied, counts }`), `plurality`,
+  `weighted_vote`, `worker_accuracy` (`Accuracy`), `category_metrics`
+  (precision / recall / F₁), `gold_screening`; `dawid_skene` /
+  `dawid_skene_counts` (EM, `DawidSkeneOpts`, posteriors, per-rater
+  confusion matrices, priors, convergence), `bradley_terry` (Hunter's MM)
+  and `wins_matrix`; `proportion_interval` with
+  `IntervalMethod::{Wilson, ClopperPearson, AgrestiCoull, Wald}`.
+- **`stats::hypothesis`** — `TestResult { statistic: Ex, p_value: Ex, df,
+  alternative }` with `p_value_f64`, `statistic_f64`, `p_value_exact`;
+  `Alternative::{TwoSided, Less, Greater}`.  Exact discrete tests
+  (`binomial_test`, `fisher_exact`, `mcnemar_test`, `sign_test`;
+  p-values as rationals); `chi_square_independence` (Yates optional),
+  `chi_square_goodness_of_fit`, `g_test`; `t_test_one_sample`,
+  `t_test_two_sample` (Student / Welch with exact Welch–Satterthwaite df),
+  `t_test_paired`, `z_test_proportion`, `two_proportion_z_test`,
+  `anova_one_way` (`AnovaResult`), `confidence_interval_mean`;
+  `mann_whitney_u` (`RankMethod::{Exact, Asymptotic { continuity }}` — the
+  exact null distribution of `U` by counting), `wilcoxon_signed_rank`,
+  `kruskal_wallis`, `friedman`, `spearman_test`, `kendall_test`,
+  `ks_one_sample`; effect sizes `cohens_d`, `hedges_g`, `glass_delta`,
+  `rank_biserial`, `eta_squared`, `cliffs_delta`, `cramers_v`,
+  `phi_coefficient`, `odds_ratio`, `relative_risk`, `cohens_h`;
+  `bonferroni`, `holm`, `benjamini_hochberg`, `benjamini_yekutieli`
+  (`Adjusted { p_adjusted, reject }`); `bootstrap_ci`
+  (`BootstrapMethod::{Percentile, Basic}`) and `permutation_test` on
+  `stats::Rng`; `sample_size_for_proportion`, `power_two_proportions`,
+  `sample_size_two_proportions`, `power_t_test_two_sample` (noncentral t
+  by quadrature), `sample_size_t_test_two_sample`.  Statistics are exact
+  expressions; p-values are exact expressions through the symbolic
+  StudentT / χ² / F CDFs (`betainc_regularized`, `uppergamma`, `erfc`).
+- **`stats::estimation`** — maximum likelihood `fit_normal`,
+  `fit_exponential`, `fit_poisson`, `fit_bernoulli`, `fit_binomial_p`,
+  `fit_geometric`, `fit_uniform`, `fit_log_normal`; method of moments
+  `fit_gamma_moments`, `fit_beta_moments`, `fit_negative_binomial_moments`,
+  `fit_uniform_moments`, `fit_log_normal_moments`; `fit(FamilyKind, data)`
+  and `method_of_moments`; `log_likelihood`, `aic`, `bic`; conjugate
+  posteriors `beta_binomial_posterior`, `gamma_poisson_posterior`,
+  `normal_known_variance_posterior`, `dirichlet_posterior_alphas`,
+  `dirichlet_multinomial_posterior`, `credible_interval`,
+  `posterior_predictive_beta_binomial` (exact `Finite` table);
+  `standard_error_mean`, `confidence_interval_mean_z`.  Fits return
+  `Distribution`s.
+- **`stats::markov`** — `MarkovChain` on an exact `QMatrix`: `n_step`,
+  `distribution_after`, `communication_classes` / `closed_classes` /
+  `transient_states`, `is_irreducible`, `period_of` / `is_aperiodic`,
+  `is_ergodic`, `is_regular`, `stationary_distributions` /
+  `stationary_distribution`, `absorbing_states`, `is_absorbing_chain`,
+  `fundamental_matrix`, `absorption_probabilities`,
+  `expected_steps_to_absorption`, `hitting_probability`,
+  `expected_hitting_time`, `fundamental_matrix_ergodic`,
+  `mean_first_passage_times`, `mean_recurrence_times`, `sample_path`.
+- `Distribution::quantile_f64(p)`: the numeric inverse CDF for every
+  family — the closed form when there is one, else Brent's method on the
+  CDF (compiled when possible, evaluated exactly otherwise), the smallest
+  lattice point with `F(x) ≥ p` for a discrete family.
+
+### Infrastructure
+
+- `symplex` and `symplex-build` at 0.13.0; `symplex-macros` unchanged at
+  0.3.3.  New test group `tests/v13/`.  The Python oracle environment
+  gains scipy, statsmodels and `krippendorff`.
+
 ## [0.12.0] - 2026-09-20
 
 ### Breaking (all in `symplex::stats`; see `book/src/reference/migrating-0.12.md`)

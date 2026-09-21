@@ -212,7 +212,9 @@ pub fn quantile(data: &[Q], p: &Q, method: QuantileMethod) -> Result<Q, SymplexE
         return Err(invalid("quantile of an empty sample"));
     }
     if p.is_negative() || *p > Q::one() {
-        return Err(invalid(format!("the quantile level must lie in [0, 1], got {p}")));
+        return Err(invalid(format!(
+            "the quantile level must lie in [0, 1], got {p}"
+        )));
     }
     let s = sorted(data);
     let n = s.len();
@@ -257,7 +259,9 @@ pub fn iqr(data: &[Q], method: QuantileMethod) -> Result<Q, SymplexError> {
 
 /// The smallest and largest observations.
 pub fn min_max(data: &[Q]) -> Result<(Q, Q), SymplexError> {
-    let first = data.first().ok_or_else(|| invalid("min/max of an empty sample"))?;
+    let first = data
+        .first()
+        .ok_or_else(|| invalid("min/max of an empty sample"))?;
     let mut lo = first.clone();
     let mut hi = first.clone();
     for x in data {
@@ -485,7 +489,11 @@ pub fn trimmed_mean(data: &[Q], p: &Q) -> Result<Q, SymplexError> {
         return Err(invalid("the trimming proportion must lie in [0, 1/2)"));
     }
     let s = sorted(data);
-    let cut = (p * qu(s.len())).floor().to_integer().to_usize().unwrap_or(0);
+    let cut = (p * qu(s.len()))
+        .floor()
+        .to_integer()
+        .to_usize()
+        .unwrap_or(0);
     if 2 * cut >= s.len() {
         return Err(invalid("trimming removes every observation"));
     }
