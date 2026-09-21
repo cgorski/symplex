@@ -348,7 +348,8 @@ fn data_modes_frequencies_and_min_max() -> Result<(), SymplexError> {
         data::frequencies(&d),
         vec![(qi(1), 1), (qi(2), 2), (qi(3), 2)]
     );
-    assert_eq!(data::min_max(&sample_d())?, (q(1, 2), qi(5)));
+    let range = data::min_max(&sample_d())?;
+    assert_eq!((range.lower, range.upper), (q(1, 2), qi(5)));
     assert!(data::modes(&[]).is_empty());
     Ok(())
 }
@@ -702,23 +703,31 @@ fn aic_and_bic_from_the_log_likelihood() -> Result<(), SymplexError> {
 fn beta_binomial_posterior_and_credible_interval() -> Result<(), SymplexError> {
     let ctx = Context::new();
     // Beta(2, 3) + 7 successes, 3 failures = Beta(9, 6); mean 9/15 = 3/5
-    let post = beta_binomial_posterior(&ctx, (&qi(2), &qi(3)), 7, 3)?;
+    let post = beta_binomial_posterior(&ctx, &qi(2), &qi(3), 7, 3)?;
     let b = post.downcast_ref::<Beta>().expect("Beta");
     assert_eq!((b.alpha.clone(), b.beta.clone()), (ctx.int(9), ctx.int(6)));
     assert_eq!(post.mean(), ctx.rational(3, 5));
     // scipy.stats.beta.ppf([0.025, 0.975], 9, 6) = (0.3513801106159917, 0.8233889100178821)
-    let (lo, hi) = credible_interval(&post, 0.95)?;
-    assert!((lo - 0.351_380_110_615_991_7).abs() < 1e-9, "{lo}");
-    assert!((hi - 0.823_388_910_017_882_1).abs() < 1e-9, "{hi}");
+    let ci = credible_interval(&post, 0.95)?;
+    assert!(
+        (ci.lower - 0.351_380_110_615_991_7).abs() < 1e-9,
+        "{}",
+        ci.lower
+    );
+    assert!(
+        (ci.upper - 0.823_388_910_017_882_1).abs() < 1e-9,
+        "{}",
+        ci.upper
+    );
     assert!(credible_interval(&post, 1.0).is_err());
     assert!(credible_interval(&post, 0.0).is_err());
     // Fractional prior, no data: unchanged.
-    let same = beta_binomial_posterior(&ctx, (&q(1, 2), &q(1, 2)), 0, 0)?;
+    let same = beta_binomial_posterior(&ctx, &q(1, 2), &q(1, 2), 0, 0)?;
     assert_eq!(
         same,
         Distribution::beta(ctx.rational(1, 2), ctx.rational(1, 2))
     );
-    assert!(beta_binomial_posterior(&ctx, (&qi(0), &qi(1)), 1, 1).is_err());
+    assert!(beta_binomial_posterior(&ctx, &qi(0), &qi(1), 1, 1).is_err());
     Ok(())
 }
 
@@ -726,7 +735,7 @@ fn beta_binomial_posterior_and_credible_interval() -> Result<(), SymplexError> {
 fn gamma_poisson_posterior_in_shape_scale_form() -> Result<(), SymplexError> {
     let ctx = Context::new();
     // Gamma(shape 2, scale 1/2) + counts [3, 5, 4]: shape 2 + 12 = 14, scale (1/2)/(1 + 3/2) = 1/5
-    let post = gamma_poisson_posterior(&ctx, (&qi(2), &q(1, 2)), &[3, 5, 4])?;
+    let post = gamma_poisson_posterior(&ctx, &qi(2), &q(1, 2), &[3, 5, 4])?;
     let g = post.downcast_ref::<Gamma>().expect("Gamma");
     assert_eq!(
         (g.shape.clone(), g.scale.clone()),
@@ -735,10 +744,10 @@ fn gamma_poisson_posterior_in_shape_scale_form() -> Result<(), SymplexError> {
     assert_eq!(post.mean(), ctx.rational(14, 5));
     // No counts: the prior is returned unchanged.
     assert_eq!(
-        gamma_poisson_posterior(&ctx, (&qi(2), &q(1, 2)), &[])?,
+        gamma_poisson_posterior(&ctx, &qi(2), &q(1, 2), &[])?,
         Distribution::gamma(ctx.int(2), ctx.rational(1, 2))
     );
-    assert!(gamma_poisson_posterior(&ctx, (&qi(2), &qi(0)), &[1]).is_err());
+    assert!(gamma_poisson_posterior(&ctx, &qi(2), &qi(0), &[1]).is_err());
     Ok(())
 }
 
@@ -746,13 +755,13 @@ fn gamma_poisson_posterior_in_shape_scale_form() -> Result<(), SymplexError> {
 fn normal_known_variance_posterior_is_precision_weighted() -> Result<(), SymplexError> {
     let ctx = Context::new();
     // Prior N(0, 1), σ = 2, data [1, 2, 3]: τ = 1 + 3/4 = 7/4, mean (0 + 6/4)/(7/4) = 6/7, var 4/7
-    let post = normal_known_variance_posterior(&ctx, (&qi(0), &qi(1)), &qi(2), &ints(&[1, 2, 3]))?;
+    let post = normal_known_variance_posterior(&ctx, &qi(0), &qi(1), &qi(2), &ints(&[1, 2, 3]))?;
     let n = post.downcast_ref::<Normal>().expect("Normal");
     assert_eq!(n.mean, ctx.rational(6, 7));
     assert_eq!(n.std.powi(2).simplify(), ctx.rational(4, 7));
     assert_eq!(post.variance().simplify(), ctx.rational(4, 7));
-    assert!(normal_known_variance_posterior(&ctx, (&qi(0), &qi(1)), &qi(2), &[]).is_err());
-    assert!(normal_known_variance_posterior(&ctx, (&qi(0), &qi(0)), &qi(2), &[qi(1)]).is_err());
+    assert!(normal_known_variance_posterior(&ctx, &qi(0), &qi(1), &qi(2), &[]).is_err());
+    assert!(normal_known_variance_posterior(&ctx, &qi(0), &qi(0), &qi(2), &[qi(1)]).is_err());
     Ok(())
 }
 
@@ -814,9 +823,17 @@ fn standard_error_and_z_confidence_interval() -> Result<(), SymplexError> {
     ex_close(&se, 1.154_700_538_379_251_7, "se");
     assert_eq!(se.powi(2).simplify(), ctx.rational(4, 3));
     // scipy.stats.norm.interval(0.95, loc=2, scale=2/sqrt(3)) = (-0.2631714681523438, 4.263171468152343)
-    let (lo, hi) = confidence_interval_mean_z(&ctx, &ints(&[1, 2, 3]), &qi(2), 0.95)?;
-    assert!((lo + 0.263_171_468_152_343_8).abs() < 1e-9, "{lo}");
-    assert!((hi - 4.263_171_468_152_343).abs() < 1e-9, "{hi}");
+    let ci = confidence_interval_mean_z(&ctx, &ints(&[1, 2, 3]), &qi(2), 0.95)?;
+    assert!(
+        (ci.lower + 0.263_171_468_152_343_8).abs() < 1e-9,
+        "{}",
+        ci.lower
+    );
+    assert!(
+        (ci.upper - 4.263_171_468_152_343).abs() < 1e-9,
+        "{}",
+        ci.upper
+    );
     assert!(standard_error_mean(&ctx, &qi(2), 0).is_err());
     assert!(standard_error_mean(&ctx, &qi(0), 3).is_err());
     assert!(confidence_interval_mean_z(&ctx, &[], &qi(2), 0.95).is_err());

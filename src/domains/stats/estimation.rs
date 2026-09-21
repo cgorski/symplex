@@ -40,6 +40,7 @@ use num_traits::{One, Signed, Zero};
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
+use crate::base::interval::Interval;
 
 use super::data::{self, Ddof, Q};
 use super::family::Distribution;
@@ -367,13 +368,13 @@ pub fn fit_geometric(ctx: &Context, data: &[Q]) -> Result<Distribution, SymplexE
 /// [`SymplexError::InvalidArgument`] on empty or constant data.
 pub fn fit_uniform(ctx: &Context, data: &[Q]) -> Result<Distribution, SymplexError> {
     nonempty(data, "fit_uniform")?;
-    let (lo, hi) = data::min_max(data)?;
-    if lo == hi {
+    let range = data::min_max(data)?;
+    if range.lower == range.upper {
         return Err(invalid(
             "fit_uniform: constant data give a zero-width interval",
         ));
     }
-    Distribution::try_uniform(ctx.from_ratio(lo), ctx.from_ratio(hi))
+    Distribution::try_uniform(ctx.from_ratio(range.lower), ctx.from_ratio(range.upper))
 }
 
 /// MLE of `LogNormal(μ, σ)`: the normal MLE of `ln xᵢ`, so
@@ -404,8 +405,8 @@ pub fn fit_uniform(ctx: &Context, data: &[Q]) -> Result<Distribution, SymplexErr
 /// ```
 pub fn fit_log_normal(ctx: &Context, data: &[Q]) -> Result<Distribution, SymplexError> {
     require_positive_data(data, "fit_log_normal")?;
-    let (lo, hi) = data::min_max(data)?;
-    if lo == hi {
+    let range = data::min_max(data)?;
+    if range.lower == range.upper {
         return Err(invalid("fit_log_normal: constant data give σ̂ = 0"));
     }
     let n = ctx.int(data.len() as i64);
@@ -585,12 +586,12 @@ pub fn bic(log_lik: &Ex, k: usize, n: usize) -> Ex {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// The Beta posterior of a Bernoulli/Binomial success probability:
-/// `Beta(α, β)` prior with `s` successes and `f` failures observed gives
-/// `Beta(α + s, β + f)` (definitional; exact).
+/// `Beta(alpha, beta)` prior with `successes` and `failures` observed
+/// gives `Beta(alpha + successes, beta + failures)` (definitional; exact).
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] unless `α, β > 0`.
+/// [`SymplexError::InvalidArgument`] unless `alpha, beta > 0`.
 ///
 /// ```
 /// use symplex::prelude::*;
@@ -599,7 +600,8 @@ pub fn bic(log_lik: &Ex, k: usize, n: usize) -> Ex {
 /// use symplex::linprog::qi;
 ///
 /// let ctx = Context::new();
-/// let post = beta_binomial_posterior(&ctx, (&qi(2), &qi(3)), 7, 3)?;
+/// // Beta(2, 3) prior, 7 successes and 3 failures: Beta(9, 6).
+/// let post = beta_binomial_posterior(&ctx, &qi(2), &qi(3), 7, 3)?;
 /// let b = post.downcast_ref::<Beta>().ok_or_else(|| SymplexError::computation_failed("post", "not beta"))?;
 /// assert_eq!((b.alpha.clone(), b.beta.clone()), (ctx.int(9), ctx.int(6)));
 /// assert_eq!(post.mean(), ctx.rational(3, 5));
@@ -607,11 +609,11 @@ pub fn bic(log_lik: &Ex, k: usize, n: usize) -> Ex {
 /// ```
 pub fn beta_binomial_posterior(
     ctx: &Context,
-    prior: (&Q, &Q),
+    alpha: &Q,
+    beta: &Q,
     successes: u64,
     failures: u64,
 ) -> Result<Distribution, SymplexError> {
-    let (alpha, beta) = prior;
     require_positive_param(alpha, "the prior α")?;
     require_positive_param(beta, "the prior β")?;
     Distribution::try_beta(
@@ -620,19 +622,37 @@ pub fn beta_binomial_posterior(
     )
 }
 
-/// The Gamma posterior of a Poisson rate: `Gamma(k, θ)` prior (shape,
-/// scale) with counts `x₁, …, xₙ` observed gives
-/// `Gamma(k + Σ xᵢ, θ / (1 + n θ))` — in rate form, `rate + n` (exact).
+/// The Gamma posterior of a Poisson rate, in **shape/scale** form (the
+/// convention of [`Distribution::gamma`]): a `Gamma(shape, scale)` prior
+/// with counts `x₁, …, xₙ` observed gives
+/// `Gamma(shape + Σ xᵢ, scale / (1 + n·scale))` (exact).  The `scale` is
+/// the *reciprocal* of the rate `β` of the `Gamma(α, β)` rate
+/// parameterisation, in which the same update reads `β → β + n`; pass
+/// `&rate.recip()` as `scale` if a prior is given that way.
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::Gamma;
+/// use symplex::stats::estimation::gamma_poisson_posterior;
+/// use symplex::linprog::{q, qi};
+///
+/// let ctx = Context::new();
+/// // Gamma(shape 2, scale 1/2) prior, counts [3, 5, 4]: shape 14, scale (1/2)/(1 + 3/2) = 1/5.
+/// let post = gamma_poisson_posterior(&ctx, &qi(2), &q(1, 2), &[3, 5, 4])?;
+/// let g = post.downcast_ref::<Gamma>().ok_or_else(|| SymplexError::computation_failed("post", "not gamma"))?;
+/// assert_eq!((g.shape.clone(), g.scale.clone()), (ctx.int(14), ctx.rational(1, 5)));
+/// # Ok::<(), SymplexError>(())
+/// ```
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] unless `k, θ > 0`.
+/// [`SymplexError::InvalidArgument`] unless `shape, scale > 0`.
 pub fn gamma_poisson_posterior(
     ctx: &Context,
-    prior: (&Q, &Q),
+    shape: &Q,
+    scale: &Q,
     counts: &[u64],
 ) -> Result<Distribution, SymplexError> {
-    let (shape, scale) = prior;
     require_positive_param(shape, "the prior shape")?;
     require_positive_param(scale, "the prior scale")?;
     let total: Q = counts.iter().fold(Q::zero(), |acc, &c| acc + q64(c));
@@ -641,22 +661,39 @@ pub fn gamma_poisson_posterior(
     Distribution::try_gamma(ctx.from_ratio(shape + total), ctx.from_ratio(post_scale))
 }
 
-/// The Normal posterior of a mean with the observation variance `σ²`
-/// known: prior `Normal(μ₀, σ₀)` and data `x₁, …, xₙ` give precision
+/// The Normal posterior of a mean with the observation standard deviation
+/// `sigma` known: the prior `Normal(prior_mean, prior_sd)` (`μ₀`, `σ₀` — a
+/// standard deviation, not a variance) and data `x₁, …, xₙ` give precision
 /// `τ = 1/σ₀² + n/σ²`, mean `(μ₀/σ₀² + Σ xᵢ/σ²) / τ` (exact) and standard
 /// deviation `√(1/τ)` (an exact expression).
 ///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::Normal;
+/// use symplex::stats::estimation::normal_known_variance_posterior;
+/// use symplex::linprog::qi;
+///
+/// let ctx = Context::new();
+/// // Prior N(0, 1), σ = 2, data [1, 2, 3]: τ = 1 + 3/4 = 7/4, mean (6/4)/(7/4) = 6/7, variance 4/7.
+/// let post = normal_known_variance_posterior(&ctx, &qi(0), &qi(1), &qi(2), &[1, 2, 3].map(qi))?;
+/// let n = post.downcast_ref::<Normal>().ok_or_else(|| SymplexError::computation_failed("post", "not normal"))?;
+/// assert_eq!(n.mean, ctx.rational(6, 7));
+/// assert_eq!(n.std.powi(2).simplify(), ctx.rational(4, 7));
+/// # Ok::<(), SymplexError>(())
+/// ```
+///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] unless `σ₀, σ > 0` and the data are
-/// non-empty.
+/// [`SymplexError::InvalidArgument`] unless `prior_sd, sigma > 0` and the
+/// data are non-empty.
 pub fn normal_known_variance_posterior(
     ctx: &Context,
-    prior: (&Q, &Q),
+    prior_mean: &Q,
+    prior_sd: &Q,
     sigma: &Q,
     data: &[Q],
 ) -> Result<Distribution, SymplexError> {
-    let (mu0, sigma0) = prior;
+    let (mu0, sigma0) = (prior_mean, prior_sd);
     require_positive_param(sigma0, "the prior standard deviation")?;
     require_positive_param(sigma, "the observation standard deviation")?;
     nonempty(data, "normal_known_variance_posterior")?;
@@ -718,7 +755,7 @@ pub fn dirichlet_multinomial_posterior(
 }
 
 /// The equal-tailed credible interval of `dist` at level `confidence`:
-/// `(F⁻¹((1 − c)/2), F⁻¹(1 − (1 − c)/2))` through
+/// `[F⁻¹((1 − c)/2), F⁻¹(1 − (1 − c)/2)]` through
 /// [`Distribution::quantile_f64`].  `scipy.stats.<dist>.ppf`.
 ///
 /// # Errors
@@ -733,18 +770,25 @@ pub fn dirichlet_multinomial_posterior(
 ///
 /// let ctx = Context::new();
 /// // scipy: stats.beta.ppf([0.025, 0.975], 9, 6) = (0.3513801106159917, 0.8233889100178821)
-/// let (lo, hi) = credible_interval(&Distribution::beta(ctx.int(9), ctx.int(6)), 0.95)?;
-/// assert!((lo - 0.3513801106159917).abs() < 1e-9 && (hi - 0.8233889100178821).abs() < 1e-9);
+/// let ci = credible_interval(&Distribution::beta(ctx.int(9), ctx.int(6)), 0.95)?;
+/// assert!((ci.lower - 0.3513801106159917).abs() < 1e-9);
+/// assert!((ci.upper - 0.8233889100178821).abs() < 1e-9);
 /// # Ok::<(), SymplexError>(())
 /// ```
-pub fn credible_interval(dist: &Distribution, confidence: f64) -> Result<(f64, f64), SymplexError> {
+pub fn credible_interval(
+    dist: &Distribution,
+    confidence: f64,
+) -> Result<Interval<f64>, SymplexError> {
     if !(confidence > 0.0 && confidence < 1.0) {
         return Err(invalid(format!(
             "the credible level must lie strictly between 0 and 1, got {confidence}"
         )));
     }
     let tail = (1.0 - confidence) / 2.0;
-    Ok((dist.quantile_f64(tail)?, dist.quantile_f64(1.0 - tail)?))
+    Ok(Interval {
+        lower: dist.quantile_f64(tail)?,
+        upper: dist.quantile_f64(1.0 - tail)?,
+    })
 }
 
 /// The posterior predictive of `n` further Bernoulli trials under a
@@ -833,8 +877,9 @@ pub fn standard_error_mean(ctx: &Context, sigma: &Q, n: usize) -> Result<Ex, Sym
 ///
 /// let ctx = Context::new();
 /// // x̄ = 2, σ/√n = 2/√3; scipy: norm.interval(0.95, 2, 2/sqrt(3)) = (-0.2631714681523438, 4.263171468152343)
-/// let (lo, hi) = confidence_interval_mean_z(&ctx, &[1, 2, 3].map(qi), &qi(2), 0.95)?;
-/// assert!((lo + 0.2631714681523438).abs() < 1e-9 && (hi - 4.263171468152343).abs() < 1e-9);
+/// let ci = confidence_interval_mean_z(&ctx, &[1, 2, 3].map(qi), &qi(2), 0.95)?;
+/// assert!((ci.lower + 0.2631714681523438).abs() < 1e-9);
+/// assert!((ci.upper - 4.263171468152343).abs() < 1e-9);
 /// # Ok::<(), SymplexError>(())
 /// ```
 pub fn confidence_interval_mean_z(
@@ -842,7 +887,7 @@ pub fn confidence_interval_mean_z(
     data: &[Q],
     sigma: &Q,
     confidence: f64,
-) -> Result<(f64, f64), SymplexError> {
+) -> Result<Interval<f64>, SymplexError> {
     nonempty(data, "confidence_interval_mean_z")?;
     if !(confidence > 0.0 && confidence < 1.0) {
         return Err(invalid(format!(
@@ -853,5 +898,8 @@ pub fn confidence_interval_mean_z(
     let mean = ctx.from_ratio(data::mean(data)?).eval_f64()?;
     let z =
         Distribution::normal(ctx.zero(), ctx.one()).quantile_f64(1.0 - (1.0 - confidence) / 2.0)?;
-    Ok((mean - z * se, mean + z * se))
+    Ok(Interval {
+        lower: mean - z * se,
+        upper: mean + z * se,
+    })
 }

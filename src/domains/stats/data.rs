@@ -27,6 +27,7 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
+use crate::base::interval::Interval;
 pub use crate::base::numeric::Q;
 
 fn invalid(reason: impl Into<String>) -> SymplexError {
@@ -257,8 +258,22 @@ pub fn iqr(data: &[Q], method: QuantileMethod) -> Result<Q, SymplexError> {
     Ok(q3 - q1)
 }
 
-/// The smallest and largest observations.
-pub fn min_max(data: &[Q]) -> Result<(Q, Q), SymplexError> {
+/// The sample range `[min, max]`: the smallest observation as `lower`,
+/// the largest as `upper`.
+///
+/// ```
+/// use symplex::stats::data::min_max;
+/// use symplex::linprog::qi;
+///
+/// let range = min_max(&[3, 1, 4, 1, 5].map(qi))?;
+/// assert_eq!((range.lower, range.upper), (qi(1), qi(5)));
+/// # Ok::<(), symplex::prelude::SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] on an empty sample.
+pub fn min_max(data: &[Q]) -> Result<Interval<Q>, SymplexError> {
     let first = data
         .first()
         .ok_or_else(|| invalid("min/max of an empty sample"))?;
@@ -272,7 +287,10 @@ pub fn min_max(data: &[Q]) -> Result<(Q, Q), SymplexError> {
             hi = x.clone();
         }
     }
-    Ok((lo, hi))
+    Ok(Interval {
+        lower: lo,
+        upper: hi,
+    })
 }
 
 /// The most frequent values, ascending (all of them when tied).

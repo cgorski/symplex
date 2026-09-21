@@ -93,17 +93,19 @@ fn pointwise_confidence_intervals() {
     // At t = 7: S = 7/12, se = √(119/3456); z = scipy norm.ppf(0.975).
     // linear: (0.21964053218643598, 0.9470261344802308);
     // log-log: (0.1801888910128228, 0.8440686916574577).
-    let (lo, hi) = km
+    let linear = km
         .confidence_interval(&qi(7), 0.95, CiMethod::Linear)
         .unwrap();
     assert!(
-        (lo - 0.219_640_532_186_435_98).abs() < 1e-9 && (hi - 0.947_026_134_480_230_8).abs() < 1e-9
+        (linear.lower - 0.219_640_532_186_435_98).abs() < 1e-9
+            && (linear.upper - 0.947_026_134_480_230_8).abs() < 1e-9
     );
-    let (lo, hi) = km
+    let log_log = km
         .confidence_interval(&qi(7), 0.95, CiMethod::LogLog)
         .unwrap();
     assert!(
-        (lo - 0.180_188_891_012_822_8).abs() < 1e-9 && (hi - 0.844_068_691_657_457_7).abs() < 1e-9
+        (log_log.lower - 0.180_188_891_012_822_8).abs() < 1e-9
+            && (log_log.upper - 0.844_068_691_657_457_7).abs() < 1e-9
     );
     assert!(
         km.confidence_interval(&qi(7), 1.5, CiMethod::Linear)

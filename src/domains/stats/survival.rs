@@ -29,6 +29,7 @@ use num_traits::{One, Zero};
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
+use crate::base::interval::Interval;
 use crate::domains::stats::data::Q;
 use crate::domains::stats::family::Distribution;
 use crate::domains::stats::hypothesis::{Alternative, TestResult};
@@ -248,7 +249,7 @@ impl KaplanMeier {
         t: &Q,
         confidence: f64,
         method: CiMethod,
-    ) -> Result<(f64, f64), SymplexError> {
+    ) -> Result<Interval<f64>, SymplexError> {
         if !(confidence > 0.0 && confidence < 1.0) {
             return Err(invalid("the confidence level must lie in (0, 1)"));
         }
@@ -258,15 +259,21 @@ impl KaplanMeier {
         let s = ratio_f64(&self.survival_at(t));
         let se = ratio_f64(&self.variance_at(t)).sqrt();
         Ok(match method {
-            CiMethod::Linear => ((s - z * se).max(0.0), (s + z * se).min(1.0)),
+            CiMethod::Linear => Interval {
+                lower: (s - z * se).max(0.0),
+                upper: (s + z * se).min(1.0),
+            },
             CiMethod::LogLog => {
                 if s <= 0.0 || s >= 1.0 {
-                    (s, s)
+                    Interval { lower: s, upper: s }
                 } else {
                     let theta = z * se / (s * s.ln());
                     let lo = s.powf(theta.exp());
                     let hi = s.powf((-theta).exp());
-                    (lo.min(hi), lo.max(hi))
+                    Interval {
+                        lower: lo.min(hi),
+                        upper: lo.max(hi),
+                    }
                 }
             }
         })

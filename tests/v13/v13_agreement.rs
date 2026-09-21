@@ -7,6 +7,7 @@
 //! `fractions.Fraction` re-implementation of the published formula in
 //! Python.  Data sets are named once here and reused across tests.
 
+use symplex::Interval;
 use symplex::linprog::{Q, q, qi};
 use symplex::stats::aggregation::*;
 use symplex::stats::agreement::*;
@@ -1236,16 +1237,17 @@ fn bradley_terry_transitive_symmetric_and_fixed_point() {
 
 #[test]
 fn bradley_terry_validation_and_wins_matrix() {
+    let beat = |winner, loser| PairwiseOutcome { winner, loser };
     assert_eq!(
-        wins_matrix(&[(0, 1), (0, 1), (1, 2), (2, 0)], 3).unwrap(),
+        wins_matrix(&[beat(0, 1), beat(0, 1), beat(1, 2), beat(2, 0)], 3).unwrap(),
         vec![vec![0, 2, 0], vec![0, 0, 1], vec![1, 0, 0]]
     );
-    assert!(wins_matrix(&[(0, 3)], 3).is_err());
-    assert!(wins_matrix(&[(1, 1)], 3).is_err());
+    assert!(wins_matrix(&[beat(0, 3)], 3).is_err());
+    assert!(wins_matrix(&[beat(1, 1)], 3).is_err());
     // An undefeated player: the beat graph is not strongly connected → no finite MLE.
-    let undefeated = wins_matrix(&[(0, 1), (0, 2), (1, 2), (2, 1)], 3).unwrap();
+    let undefeated = wins_matrix(&[beat(0, 1), beat(0, 2), beat(1, 2), beat(2, 1)], 3).unwrap();
     assert!(bradley_terry(&undefeated, &BradleyTerryOpts::default()).is_err());
-    let cycle = wins_matrix(&[(0, 1), (1, 2), (2, 0)], 3).unwrap();
+    let cycle = wins_matrix(&[beat(0, 1), beat(1, 2), beat(2, 0)], 3).unwrap();
     let bt = bradley_terry(&cycle, &BradleyTerryOpts::default()).unwrap();
     assert!(bt.strengths.iter().all(|p| (p - 1.0 / 3.0).abs() < 1e-12));
     assert!(bradley_terry(&[vec![1, 1], vec![1, 0]], &BradleyTerryOpts::default()).is_err());
@@ -1349,8 +1351,9 @@ fn gold_question_screening() {
 
 // ── Confidence intervals for a proportion ────────────────────────────
 
-fn close(a: (f64, f64), b: (f64, f64)) -> bool {
-    (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9
+/// `ci` agrees with the oracle's `(lower, upper)` pair to 1e-9.
+fn close(ci: Interval<f64>, expected: (f64, f64)) -> bool {
+    (ci.lower - expected.0).abs() < 1e-9 && (ci.upper - expected.1).abs() < 1e-9
 }
 
 #[test]

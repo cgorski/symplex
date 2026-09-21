@@ -87,7 +87,8 @@ Bradley–Terry model by Hunter's MM algorithm.
 ```rust,ignore
 let acc = worker_accuracy(&rater_labels, &gold)?;   // Accuracy { correct: 5, answered: 8, accuracy: Some(5/8) }
 category_metrics(&rater_labels, &gold, 3)?;         // precision / recall / F₁ per category, exact
-proportion_interval(5, 8, 0.95, IntervalMethod::ClopperPearson)?;   // (0.2449, 0.9148)
+let ci = proportion_interval(5, 8, 0.95, IntervalMethod::ClopperPearson)?;   // Interval<f64>
+(ci.lower, ci.upper);                                // (0.2449, 0.9148)
 proportion_interval(5, 8, 0.95, IntervalMethod::Wilson)?;
 gold_screening(&labels, &gold, &q(2, 3))?;          // pass / fail per rater on the gold items
 ```
@@ -169,9 +170,10 @@ where the estimate is rational), `fit_gamma_moments`, `fit_beta_moments`,
 so everything from the previous chapter (probabilities, quantiles,
 sampling) applies to the fitted model.  `log_likelihood`, `aic`, `bic`
 compare fits.  Conjugate Bayesian updating returns distributions too:
-`beta_binomial_posterior((α, β), successes, failures)` is the posterior for
-a rater's accuracy after `s` right and `f` wrong answers,
-`credible_interval(&post, 0.95)` its equal-tailed interval, and
+`beta_binomial_posterior(&ctx, &α, &β, successes, failures)` is the
+posterior for a rater's accuracy after `s` right and `f` wrong answers,
+`credible_interval(&post, 0.95)` its equal-tailed `Interval<f64>` (fields
+`lower`, `upper`), and
 `posterior_predictive_beta_binomial` the exact predictive table for the
 next `n` answers.
 
@@ -228,7 +230,7 @@ fit.r_squared; fit.adjusted_r_squared;                // exact rationals
 fit.standard_errors(&ctx)?;                           // exact expressions (√ of σ̂²(XᵀX)⁻¹)
 fit.coefficient_tests(&ctx)?;                         // TestResult per coefficient, p through StudentT
 fit.f_test(&ctx)?; fit.anova_table();                 // overall F, exact
-fit.conf_int(&ctx, 0.95)?; fit.prediction_interval(&ctx, &x_new, 0.95)?;
+fit.conf_int(&ctx, 0.95)?; fit.prediction_interval(&ctx, &x_new, 0.95)?;   // Vec<Interval<f64>>, Interval<f64>
 fit.leverage(); fit.cooks_distance(); fit.durbin_watson(); vif(&rows)?;
 // Correct / incorrect explained by features: logistic regression (IRLS, f64).
 let lg = logit(&correct, &features, true, &LogitOpts::default())?;
@@ -275,7 +277,7 @@ km.survival_at(&q(6, 1));               // 35/48 — an exact step function
 km.variance_at(&q(6, 1));               // Greenwood, 1505/55296
 km.cumulative_hazard_at(&q(6, 1));      // Nelson–Aalen, 7/24
 km.median();                            // Some(10)
-km.confidence_interval(&q(7, 1), 0.95, CiMethod::LogLog)?;
+km.confidence_interval(&q(7, 1), 0.95, CiMethod::LogLog)?;   // Interval<f64>
 km.restricted_mean(&q(12, 1));          // 1279/144
 let r = log_rank_test(&ctx, &all_obs, &groups)?;   // exact χ² statistic 149059681/48496587 ≈ 3.0736, p ≈ 0.0796
 ```

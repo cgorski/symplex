@@ -917,20 +917,20 @@ fn fisher_z_is_atanh() {
 fn pearson_ci_matches_scipy() {
     // scipy: pearsonr(x, y).confidence_interval(0.95) with r = 13/15, n = 10
     //   → (0.521743144851242, 0.9680507713838036); 0.90 → (0.6029901323842667, 0.9596310194877663)
-    let (lo, hi) = pearson_ci(13.0 / 15.0, 10, 0.95).unwrap();
-    assert!(close(lo, 0.521_743_144_851_242));
-    assert!(close(hi, 0.968_050_771_383_803_6));
-    let (lo, hi) = pearson_ci(13.0 / 15.0, 10, 0.90).unwrap();
-    assert!(close(lo, 0.602_990_132_384_266_7));
-    assert!(close(hi, 0.959_631_019_487_766_3));
+    let ci = pearson_ci(13.0 / 15.0, 10, 0.95).unwrap();
+    assert!(close(ci.lower, 0.521_743_144_851_242));
+    assert!(close(ci.upper, 0.968_050_771_383_803_6));
+    let ci = pearson_ci(13.0 / 15.0, 10, 0.90).unwrap();
+    assert!(close(ci.lower, 0.602_990_132_384_266_7));
+    assert!(close(ci.upper, 0.959_631_019_487_766_3));
     // Hand Fisher z with scipy.stats.norm.isf: (0.5, 30, 0.99) → (0.053536328090218556, 0.7798645389691239)
-    let (lo, hi) = pearson_ci(0.5, 30, 0.99).unwrap();
-    assert!(close(lo, 0.053_536_328_090_218_556));
-    assert!(close(hi, 0.779_864_538_969_123_9));
+    let ci = pearson_ci(0.5, 30, 0.99).unwrap();
+    assert!(close(ci.lower, 0.053_536_328_090_218_556));
+    assert!(close(ci.upper, 0.779_864_538_969_123_9));
     // (0.8, 10, 0.95) → (0.34328844799174646, 0.9507383861974117)
-    let (lo, hi) = pearson_ci(0.8, 10, 0.95).unwrap();
-    assert!(close(lo, 0.343_288_447_991_746_46));
-    assert!(close(hi, 0.950_738_386_197_411_7));
+    let ci = pearson_ci(0.8, 10, 0.95).unwrap();
+    assert!(close(ci.lower, 0.343_288_447_991_746_46));
+    assert!(close(ci.upper, 0.950_738_386_197_411_7));
 }
 
 #[test]

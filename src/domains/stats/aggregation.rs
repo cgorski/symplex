@@ -27,6 +27,7 @@ use num_traits::{One, Zero};
 
 use crate::api::context::Context;
 use crate::base::errors::SymplexError;
+use crate::base::interval::Interval;
 use crate::domains::stats::Distribution;
 use crate::domains::stats::data::Q;
 
@@ -700,13 +701,28 @@ pub struct BradleyTerry {
     pub converged: bool,
 }
 
-/// A wins matrix from a list of `(winner, loser)` outcomes among `n`
-/// players.
+/// One pairwise comparison: player `winner` beat player `loser` (both
+/// indices below the number of players).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PairwiseOutcome {
+    /// The index of the player who won.
+    pub winner: usize,
+    /// The index of the player who lost.
+    pub loser: usize,
+}
+
+/// A wins matrix (`wins[i][j]` = times `i` beat `j`) from a list of
+/// [`PairwiseOutcome`]s among `n` players — the input of
+/// [`bradley_terry`].
 ///
 /// ```
-/// use symplex::stats::aggregation::wins_matrix;
+/// use symplex::stats::aggregation::{wins_matrix, PairwiseOutcome};
 ///
-/// assert_eq!(wins_matrix(&[(0, 1), (0, 1), (1, 2)], 3)?, vec![vec![0, 2, 0], vec![0, 0, 1], vec![0, 0, 0]]);
+/// let beat = |winner, loser| PairwiseOutcome { winner, loser };
+/// assert_eq!(
+///     wins_matrix(&[beat(0, 1), beat(0, 1), beat(1, 2)], 3)?,
+///     vec![vec![0, 2, 0], vec![0, 0, 1], vec![0, 0, 0]],
+/// );
 /// # Ok::<(), symplex::prelude::SymplexError>(())
 /// ```
 ///
@@ -714,10 +730,14 @@ pub struct BradleyTerry {
 ///
 /// [`SymplexError::InvalidArgument`] for a player index `≥ n` or a
 /// player beating itself.
-pub fn wins_matrix(outcomes: &[(usize, usize)], n: usize) -> Result<Vec<Vec<usize>>, SymplexError> {
+pub fn wins_matrix(
+    outcomes: &[PairwiseOutcome],
+    n: usize,
+) -> Result<Vec<Vec<usize>>, SymplexError> {
     let op = "wins_matrix";
     let mut w = vec![vec![0usize; n]; n];
-    for &(a, b) in outcomes {
+    for outcome in outcomes {
+        let (a, b) = (outcome.winner, outcome.loser);
         if a >= n || b >= n {
             return Err(invalid(
                 op,
@@ -1102,8 +1122,9 @@ fn bisect_unit(f: impl Fn(f64) -> f64, increasing: bool) -> f64 {
 ///
 /// // statsmodels: proportion_confint(3, 10, alpha=0.05, method='wilson')
 /// //   = (0.10779126740630104, 0.6032218525388546)
-/// let (lo, hi) = proportion_interval(3, 10, 0.95, IntervalMethod::Wilson)?;
-/// assert!((lo - 0.10779126740630104).abs() < 1e-12 && (hi - 0.6032218525388546).abs() < 1e-12);
+/// let ci = proportion_interval(3, 10, 0.95, IntervalMethod::Wilson)?;
+/// assert!((ci.lower - 0.10779126740630104).abs() < 1e-12);
+/// assert!((ci.upper - 0.6032218525388546).abs() < 1e-12);
 /// # Ok::<(), symplex::prelude::SymplexError>(())
 /// ```
 ///
@@ -1116,7 +1137,7 @@ pub fn proportion_interval(
     trials: usize,
     confidence: f64,
     method: IntervalMethod,
-) -> Result<(f64, f64), SymplexError> {
+) -> Result<Interval<f64>, SymplexError> {
     let op = "proportion_interval";
     if trials == 0 {
         return Err(invalid(op, "needs at least one trial"));
@@ -1132,7 +1153,7 @@ pub fn proportion_interval(
     }
     let alpha = 1.0 - confidence;
     let (k, n) = (successes as f64, trials as f64);
-    let clip = |(lo, hi): (f64, f64)| (lo.clamp(0.0, 1.0), hi.clamp(0.0, 1.0));
+    let clip = |ci: Interval<f64>| ci.map(|v| v.clamp(0.0, 1.0));
     if method == IntervalMethod::ClopperPearson {
         let half = alpha / 2.0;
         let lo = if successes == 0 {
@@ -1150,7 +1171,10 @@ pub fn proportion_interval(
                 false,
             )
         };
-        return Ok((lo, hi));
+        return Ok(Interval {
+            lower: lo,
+            upper: hi,
+        });
     }
     let ctx = Context::new();
     let z = Distribution::normal(ctx.int(0), ctx.int(1)).quantile_f64(1.0 - alpha / 2.0)?;
@@ -1158,22 +1182,34 @@ pub fn proportion_interval(
     Ok(clip(match method {
         IntervalMethod::Wald => {
             let half = z * (p * (1.0 - p) / n).sqrt();
-            (p - half, p + half)
+            Interval {
+                lower: p - half,
+                upper: p + half,
+            }
         }
         IntervalMethod::Wilson => {
             let z2 = z * z;
             let denom = 1.0 + z2 / n;
             let centre = (p + z2 / (2.0 * n)) / denom;
             let half = z * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt() / denom;
-            (centre - half, centre + half)
+            Interval {
+                lower: centre - half,
+                upper: centre + half,
+            }
         }
         IntervalMethod::AgrestiCoull => {
             let z2 = z * z;
             let n_t = n + z2;
             let p_t = (k + z2 / 2.0) / n_t;
             let half = z * (p_t * (1.0 - p_t) / n_t).sqrt();
-            (p_t - half, p_t + half)
+            Interval {
+                lower: p_t - half,
+                upper: p_t + half,
+            }
         }
-        IntervalMethod::ClopperPearson => (0.0, 1.0),
+        IntervalMethod::ClopperPearson => Interval {
+            lower: 0.0,
+            upper: 1.0,
+        },
     }))
 }

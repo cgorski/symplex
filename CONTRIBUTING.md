@@ -720,6 +720,16 @@ TRYBUILD=overwrite cargo +1.95.0 test --test ui_tests
   standalone (~3 s each, twenty minutes in all).  A single trivial doctest
   reporting `finished in 3.6s` instead of `0.00s` is the signature; find
   the broken example with `git diff -- src | grep '^[-+].*///'`.
+- **Sub-agents run in parallel only when they are spawned in the same tool
+  block.**  A `spawn_agent` call blocks until that agent's final message;
+  two calls in consecutive blocks run one after the other, doubling the wall
+  time and leaving the coordinator idle.  Commit the skeleton (stubs
+  reachable, tree compiles), then issue every `spawn_agent` for the
+  milestone in one block with disjoint write sets, and do only
+  coordinator work (reviewing the plan, drafting the CHANGELOG) while they
+  run.  Agents share `target/`, so one agent's transient build break is
+  visible to the others — tell them to wait and retry, not to fix files they
+  do not own.  Agents never commit; integrate with one `cargo fmt --all`.
 
 ### Test Helpers
 

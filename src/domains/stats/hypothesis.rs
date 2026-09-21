@@ -50,6 +50,7 @@ use super::sample::Rng;
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
+use crate::base::interval::Interval;
 use crate::calculus::definite::{QuadOpts, quadrature};
 use crate::domains::optimize::{RootOpts, brent_root};
 use crate::output::codegen::numeric_rt::{erfc, erfcinv, lgamma};
@@ -352,9 +353,9 @@ impl AnovaResult {
 pub struct RatioEstimate {
     /// The point estimate, exact.
     pub estimate: Q,
-    /// `(lower, upper)` of the `confidence` Wald interval, computed on the
-    /// log scale and exponentiated.
-    pub ci: (f64, f64),
+    /// The `confidence` Wald interval, computed on the log scale and
+    /// exponentiated.
+    pub ci: Interval<f64>,
     /// The confidence level of `ci`.
     pub confidence: f64,
 }
@@ -1092,10 +1093,13 @@ pub fn phi_coefficient(ctx: &Context, table: [[usize; 2]; 2]) -> Result<Ex, Symp
 }
 
 /// Wald interval `exp(ln θ̂ ± z_{1−α/2} · se)`.
-fn log_wald_ci(estimate: &Q, se: f64, confidence: f64) -> (f64, f64) {
+fn log_wald_ci(estimate: &Q, se: f64, confidence: f64) -> Interval<f64> {
     let z = norm_isf((1.0 - confidence) / 2.0);
     let log = q_to_f64(estimate).ln();
-    ((log - z * se).exp(), (log + z * se).exp())
+    Interval {
+        lower: (log - z * se).exp(),
+        upper: (log + z * se).exp(),
+    }
 }
 
 /// The sample odds ratio `ad/(bc)` of a 2×2 table `[[a, b], [c, d]]` with
@@ -1111,8 +1115,8 @@ fn log_wald_ci(estimate: &Q, se: f64, confidence: f64) -> (f64, f64) {
 /// //              .oddsratio_confint(0.05) = (1.6931795592741443, 21.261773332199304)
 /// let r = odds_ratio([[20, 10], [5, 15]], 0.95)?;
 /// assert_eq!(r.estimate, q(6, 1));
-/// assert!((r.ci.0 - 1.693_179_559_274_144_3).abs() < 1e-9);
-/// assert!((r.ci.1 - 21.261_773_332_199_304).abs() < 1e-9);
+/// assert!((r.ci.lower - 1.693_179_559_274_144_3).abs() < 1e-9);
+/// assert!((r.ci.upper - 21.261_773_332_199_304).abs() < 1e-9);
 /// # Ok::<(), symplex::prelude::SymplexError>(())
 /// ```
 ///
@@ -1153,8 +1157,8 @@ pub fn odds_ratio(table: [[usize; 2]; 2], confidence: f64) -> Result<RatioEstima
 /// //        .confidence_interval(0.95) = (1.198028521436089, 5.935677643623166)
 /// let r = relative_risk([[20, 10], [5, 15]], 0.95)?;
 /// assert_eq!(r.estimate, q(8, 3));
-/// assert!((r.ci.0 - 1.198_028_521_436_089).abs() < 1e-9);
-/// assert!((r.ci.1 - 5.935_677_643_623_166).abs() < 1e-9);
+/// assert!((r.ci.lower - 1.198_028_521_436_089).abs() < 1e-9);
+/// assert!((r.ci.upper - 5.935_677_643_623_166).abs() < 1e-9);
 /// # Ok::<(), symplex::prelude::SymplexError>(())
 /// ```
 ///
@@ -1568,9 +1572,9 @@ pub fn anova_one_way(ctx: &Context, groups: &[Vec<Q>]) -> Result<AnovaResult, Sy
 /// let ctx = Context::new();
 /// let x = from_i64(&[5, 7, 8, 9, 10, 12]);
 /// // scipy: t.interval(0.95, 5, loc=mean(x), scale=sem(x)) = (5.9509296876164886, 11.049070312383511)
-/// let (lo, hi) = confidence_interval_mean(&ctx, &x, 0.95)?;
-/// assert!((lo - 5.950_929_687_616_488_6).abs() < 1e-9);
-/// assert!((hi - 11.049_070_312_383_511).abs() < 1e-9);
+/// let ci = confidence_interval_mean(&ctx, &x, 0.95)?;
+/// assert!((ci.lower - 5.950_929_687_616_488_6).abs() < 1e-9);
+/// assert!((ci.upper - 11.049_070_312_383_511).abs() < 1e-9);
 /// # Ok::<(), SymplexError>(())
 /// ```
 ///
@@ -1582,7 +1586,7 @@ pub fn confidence_interval_mean(
     ctx: &Context,
     x: &[Q],
     confidence: f64,
-) -> Result<(f64, f64), SymplexError> {
+) -> Result<Interval<f64>, SymplexError> {
     const OP: &str = "confidence_interval_mean";
     check_sample(OP, "the sample", x, 2)?;
     check_unit_open(OP, "confidence", confidence)?;
@@ -1590,7 +1594,10 @@ pub fn confidence_interval_mean(
     let mean = q_to_f64(&data::mean(x)?);
     let sem = q_to_f64(&(data::variance(x, Ddof::Sample)? / qu(n))).sqrt();
     let t = student_t_quantile_f64(OP, ctx, (n - 1) as f64, (1.0 + confidence) / 2.0)?;
-    Ok((mean - t * sem, mean + t * sem))
+    Ok(Interval {
+        lower: mean - t * sem,
+        upper: mean + t * sem,
+    })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2735,8 +2742,8 @@ fn check_f64_data(
 
 /// A bootstrap confidence interval for `statistic(data)`: `n_resamples`
 /// resamples with replacement drawn with the deterministic `rng`, then the
-/// `Percentile` interval `(q_{α/2}, q_{1−α/2})` of the resampled statistics
-/// or the `Basic` interval `(2θ̂ − q_{1−α/2}, 2θ̂ − q_{α/2})`.  Quantiles are
+/// `Percentile` interval `[q_{α/2}, q_{1−α/2}]` of the resampled statistics
+/// or the `Basic` interval `[2θ̂ − q_{1−α/2}, 2θ̂ − q_{α/2}]`.  Quantiles are
 /// linearly interpolated.  (`scipy.stats.bootstrap(method='percentile' |
 /// 'basic')` up to the random stream.)
 ///
@@ -2746,8 +2753,8 @@ fn check_f64_data(
 ///
 /// let data: Vec<f64> = (1..=20).map(f64::from).collect();
 /// let mean = |x: &[f64]| x.iter().sum::<f64>() / x.len() as f64;
-/// let (lo, hi) = bootstrap_ci(&data, mean, 2000, 0.95, &mut Rng::new(7), BootstrapMethod::Percentile)?;
-/// assert!(lo < 10.5 && 10.5 < hi);
+/// let ci = bootstrap_ci(&data, mean, 2000, 0.95, &mut Rng::new(7), BootstrapMethod::Percentile)?;
+/// assert!(ci.lower < 10.5 && 10.5 < ci.upper);
 /// # Ok::<(), symplex::prelude::SymplexError>(())
 /// ```
 ///
@@ -2763,7 +2770,7 @@ pub fn bootstrap_ci(
     confidence: f64,
     rng: &mut Rng,
     method: BootstrapMethod,
-) -> Result<(f64, f64), SymplexError> {
+) -> Result<Interval<f64>, SymplexError> {
     const OP: &str = "bootstrap_ci";
     check_f64_data(OP, "the data", data, 1)?;
     check_unit_open(OP, "confidence", confidence)?;
@@ -2794,8 +2801,14 @@ pub fn bootstrap_ci(
         quantile_sorted(&stats, 1.0 - alpha / 2.0),
     );
     Ok(match method {
-        BootstrapMethod::Percentile => (lo, hi),
-        BootstrapMethod::Basic => (2.0 * observed - hi, 2.0 * observed - lo),
+        BootstrapMethod::Percentile => Interval {
+            lower: lo,
+            upper: hi,
+        },
+        BootstrapMethod::Basic => Interval {
+            lower: 2.0 * observed - hi,
+            upper: 2.0 * observed - lo,
+        },
     })
 }
 

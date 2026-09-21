@@ -944,11 +944,11 @@ fn mutual_information_cover_thomas_example() {
         mutual_information(&ctx, &joint, Base::Bits).unwrap()
     );
     // I = H(X) + H(Y) − H(X, Y) = 2 + 7/4 − 27/8
-    let (rows, cols) = info::marginals(&joint).unwrap();
-    assert_eq!(rows, vec![q(1, 4), q(1, 4), q(1, 4), q(1, 4)]);
-    assert_eq!(cols, vec![q(1, 2), q(1, 4), q(1, 8), q(1, 8)]);
-    let hx = entropy(&ctx, &rows, Base::Bits).unwrap();
-    let hy = entropy(&ctx, &cols, Base::Bits).unwrap();
+    let m = info::marginals(&joint).unwrap();
+    assert_eq!(m.rows, vec![q(1, 4), q(1, 4), q(1, 4), q(1, 4)]);
+    assert_eq!(m.cols, vec![q(1, 2), q(1, 4), q(1, 8), q(1, 8)]);
+    let hx = entropy(&ctx, &m.rows, Base::Bits).unwrap();
+    let hy = entropy(&ctx, &m.cols, Base::Bits).unwrap();
     let hxy = joint_entropy(&ctx, &joint, Base::Bits).unwrap();
     assert_eq!(
         (hx, hy, hxy),
@@ -970,7 +970,7 @@ fn conditional_entropies_cover_thomas_example() {
         ctx.rational(13, 8)
     );
     // Chain rule: H(X, Y) = H(row) + H(col | row)
-    let (rows, _) = info::marginals(&joint).unwrap();
+    let rows = info::marginals(&joint).unwrap().rows;
     let chain = entropy(&ctx, &rows, Base::Nats).unwrap()
         + conditional_entropy(&ctx, &joint, Given::Row, Base::Nats).unwrap();
     is_true(
@@ -1112,11 +1112,11 @@ fn information_functions_validate_their_inputs() {
 #[test]
 fn sprt_boundaries_match_wald() {
     // A = ln(β/(1−α)) = ln(0.1/0.95) = −2.251291798606495; B = ln((1−β)/α) = ln(0.9/0.05) = 2.8903717578961645
-    let (a, b) = wald_boundaries(0.05, 0.10).unwrap();
-    close(a, -2.251291798606495, "A");
-    close(b, 2.8903717578961645, "B");
+    let bounds = wald_boundaries(0.05, 0.10).unwrap();
+    close(bounds.lower, -2.251291798606495, "A");
+    close(bounds.upper, 2.8903717578961645, "B");
     let test = Sprt::bernoulli(q(7, 10), q(9, 10), 0.05, 0.10).unwrap();
-    assert_eq!(test.boundaries(), (a, b));
+    assert_eq!(test.boundaries(), bounds);
     assert_eq!((test.alpha(), test.beta()), (0.05, 0.10));
     assert_eq!(test.decision(), Decision::Continue);
     assert!(wald_boundaries(0.0, 0.1).is_err());

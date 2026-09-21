@@ -226,15 +226,15 @@ fn ols_simple_conf_int_matches_statsmodels() {
     let (_, y) = d1();
     let fit = ols(&y, &col(&[1, 2, 3, 4, 5, 6, 7]), true).unwrap();
     let ci = fit.conf_int(&ctx, 0.95).unwrap();
-    close(ci[0].0, -0.927_998_778_916_851_8, 1e-9);
-    close(ci[0].1, 2.356_570_207_488_285_7, 1e-9);
-    close(ci[1].0, 0.775_631_166_337_669_6, 1e-9);
-    close(ci[1].1, 1.510_083_119_376_616_9, 1e-9);
+    close(ci[0].lower, -0.927_998_778_916_851_8, 1e-9);
+    close(ci[0].upper, 2.356_570_207_488_285_7, 1e-9);
+    close(ci[1].lower, 0.775_631_166_337_669_6, 1e-9);
+    close(ci[1].upper, 1.510_083_119_376_616_9, 1e-9);
     let ci = fit.conf_int(&ctx, 0.90).unwrap();
-    close(ci[0].0, -0.573_081_468_778_001_3, 1e-9);
-    close(ci[0].1, 2.001_652_897_349_434_7, 1e-9);
-    close(ci[1].0, 0.854_993_089_523_854_2, 1e-9);
-    close(ci[1].1, 1.430_721_196_190_432_3, 1e-9);
+    close(ci[0].lower, -0.573_081_468_778_001_3, 1e-9);
+    close(ci[0].upper, 2.001_652_897_349_434_7, 1e-9);
+    close(ci[1].lower, 0.854_993_089_523_854_2, 1e-9);
+    close(ci[1].upper, 1.430_721_196_190_432_3, 1e-9);
     assert!(fit.conf_int(&ctx, 1.0).is_err());
     assert!(fit.conf_int(&ctx, 0.0).is_err());
 }
@@ -249,24 +249,24 @@ fn ols_simple_predict_and_intervals() {
     let (_, y) = d1();
     let fit = ols(&y, &col(&[1, 2, 3, 4, 5, 6, 7]), true).unwrap();
     assert_eq!(fit.predict(&[qi(8)]).unwrap(), q(69, 7));
-    let (lo, hi) = fit
+    let mean_ci = fit
         .confidence_interval_mean_response(&ctx, &[qi(8)], 0.95)
         .unwrap();
-    close(lo, 8.214_858_363_940_294, 1e-9);
-    close(hi, 11.499_427_350_345_432, 1e-9);
-    let (lo, hi) = fit.prediction_interval(&ctx, &[qi(8)], 0.95).unwrap();
-    close(lo, 7.312_926_660_379_568, 1e-9);
-    close(hi, 12.401_359_053_906_159, 1e-9);
+    close(mean_ci.lower, 8.214_858_363_940_294, 1e-9);
+    close(mean_ci.upper, 11.499_427_350_345_432, 1e-9);
+    let obs_ci = fit.prediction_interval(&ctx, &[qi(8)], 0.95).unwrap();
+    close(obs_ci.lower, 7.312_926_660_379_568, 1e-9);
+    close(obs_ci.upper, 12.401_359_053_906_159, 1e-9);
 
     assert_eq!(fit.predict(&[q(5, 2)]).unwrap(), q(25, 7));
-    let (lo, hi) = fit
+    let mean_ci = fit
         .confidence_interval_mean_response(&ctx, &[q(5, 2)], 0.95)
         .unwrap();
-    close(lo, 2.653_363_630_129_891, 1e-9);
-    close(hi, 4.489_493_512_727_258, 1e-9);
-    let (lo, hi) = fit.prediction_interval(&ctx, &[q(5, 2)], 0.95).unwrap();
-    close(lo, 1.422_293_644_137_870_4, 1e-9);
-    close(hi, 5.720_563_498_719_279_5, 1e-9);
+    close(mean_ci.lower, 2.653_363_630_129_891, 1e-9);
+    close(mean_ci.upper, 4.489_493_512_727_258, 1e-9);
+    let obs_ci = fit.prediction_interval(&ctx, &[q(5, 2)], 0.95).unwrap();
+    close(obs_ci.lower, 1.422_293_644_137_870_4, 1e-9);
+    close(obs_ci.upper, 5.720_563_498_719_279_5, 1e-9);
 
     assert!(fit.predict(&[qi(1), qi(2)]).is_err());
     assert!(fit.prediction_interval(&ctx, &[qi(8)], 1.5).is_err());
@@ -557,19 +557,19 @@ fn ols_two_regressors_conf_int_95_and_99() {
     let (x, y) = d2();
     let fit = ols(&y, &x, true).unwrap();
     let ci = fit.conf_int(&ctx, 0.95).unwrap();
-    close(ci[0].0, -1.697_438_922_482_793_7, 1e-9);
-    close(ci[0].1, 2.071_543_323_711_033, 1e-9);
-    close(ci[1].0, 0.389_368_432_709_537_1, 1e-9);
-    close(ci[1].1, 0.998_451_423_994_658_9, 1e-9);
-    close(ci[2].0, 0.807_467_270_514_176_4, 1e-9);
-    close(ci[2].1, 1.321_908_369_199_232_6, 1e-9);
+    close(ci[0].lower, -1.697_438_922_482_793_7, 1e-9);
+    close(ci[0].upper, 2.071_543_323_711_033, 1e-9);
+    close(ci[1].lower, 0.389_368_432_709_537_1, 1e-9);
+    close(ci[1].upper, 0.998_451_423_994_658_9, 1e-9);
+    close(ci[2].lower, 0.807_467_270_514_176_4, 1e-9);
+    close(ci[2].upper, 1.321_908_369_199_232_6, 1e-9);
     let ci = fit.conf_int(&ctx, 0.99).unwrap();
-    close(ci[0].0, -2.768_908_023_731_902, 1e-9);
-    close(ci[0].1, 3.143_012_424_960_141, 1e-9);
-    close(ci[1].0, 0.216_214_630_799_899_22, 1e-9);
-    close(ci[1].1, 1.171_605_225_904_296_6, 1e-9);
-    close(ci[2].0, 0.661_218_839_068_173_2, 1e-9);
-    close(ci[2].1, 1.468_156_800_645_235_7, 1e-9);
+    close(ci[0].lower, -2.768_908_023_731_902, 1e-9);
+    close(ci[0].upper, 3.143_012_424_960_141, 1e-9);
+    close(ci[1].lower, 0.216_214_630_799_899_22, 1e-9);
+    close(ci[1].upper, 1.171_605_225_904_296_6, 1e-9);
+    close(ci[2].lower, 0.661_218_839_068_173_2, 1e-9);
+    close(ci[2].upper, 1.468_156_800_645_235_7, 1e-9);
 }
 
 #[test]
@@ -581,14 +581,14 @@ fn ols_two_regressors_predict_and_intervals() {
     let fit = ols(&y, &x, true).unwrap();
     let x0 = [qi(9), qi(6)];
     assert_eq!(fit.predict(&x0).unwrap(), q(25051, 1954));
-    let (lo, hi) = fit
+    let mean_ci = fit
         .confidence_interval_mean_response(&ctx, &x0, 0.95)
         .unwrap();
-    close(lo, 11.285_745_794_051_824, 1e-9);
-    close(hi, 14.354_991_155_794_632, 1e-9);
-    let (lo, hi) = fit.prediction_interval(&ctx, &x0, 0.95).unwrap();
-    close(lo, 10.329_841_215_158_392, 1e-9);
-    close(hi, 15.310_895_734_688_064, 1e-9);
+    close(mean_ci.lower, 11.285_745_794_051_824, 1e-9);
+    close(mean_ci.upper, 14.354_991_155_794_632, 1e-9);
+    let obs_ci = fit.prediction_interval(&ctx, &x0, 0.95).unwrap();
+    close(obs_ci.lower, 10.329_841_215_158_392, 1e-9);
+    close(obs_ci.upper, 15.310_895_734_688_064, 1e-9);
     // Predicting at an observed row returns its fitted value.
     assert_eq!(fit.predict(&x[2]).unwrap(), fit.fitted[2]);
 }
@@ -761,11 +761,11 @@ fn ols_no_intercept_inference_and_information_criteria() {
         1e-14,
     );
     let ci = fit.conf_int(&ctx, 0.95).unwrap();
-    close(ci[0].0, 1.822_414_958_553_380_4, 1e-9);
-    close(ci[0].1, 2.395_766_859_628_437_4, 1e-9);
+    close(ci[0].lower, 1.822_414_958_553_380_4, 1e-9);
+    close(ci[0].upper, 2.395_766_859_628_437_4, 1e-9);
     let ci = fit.conf_int(&ctx, 0.90).unwrap();
-    close(ci[0].0, 1.888_971_590_784_765_3, 1e-9);
-    close(ci[0].1, 2.329_210_227_397_052_5, 1e-9);
+    close(ci[0].lower, 1.888_971_590_784_765_3, 1e-9);
+    close(ci[0].upper, 2.329_210_227_397_052_5, 1e-9);
     close(
         ev(&fit.log_likelihood(&ctx).unwrap()),
         -5.202_295_932_761_115,
@@ -786,14 +786,14 @@ fn ols_no_intercept_prediction_and_influence() {
     let (x, y) = d3();
     let fit = ols(&y, &x, false).unwrap();
     assert_eq!(fit.predict(&[qi(6)]).unwrap(), q(696, 55));
-    let (lo, hi) = fit
+    let mean_ci = fit
         .confidence_interval_mean_response(&ctx, &[qi(6)], 0.95)
         .unwrap();
-    close(lo, 10.934_489_751_320_282, 1e-9);
-    close(hi, 14.374_601_157_770_623, 1e-9);
-    let (lo, hi) = fit.prediction_interval(&ctx, &[qi(6)], 0.95).unwrap();
-    close(lo, 9.919_831_181_333_315, 1e-9);
-    close(hi, 15.389_259_727_757_59, 1e-9);
+    close(mean_ci.lower, 10.934_489_751_320_282, 1e-9);
+    close(mean_ci.upper, 14.374_601_157_770_623, 1e-9);
+    let obs_ci = fit.prediction_interval(&ctx, &[qi(6)], 0.95).unwrap();
+    close(obs_ci.lower, 9.919_831_181_333_315, 1e-9);
+    close(obs_ci.upper, 15.389_259_727_757_59, 1e-9);
     assert_eq!(
         fit.leverage(),
         qs(&[(1, 55), (4, 55), (9, 55), (16, 55), (5, 11)])
@@ -959,10 +959,10 @@ fn wls_log_likelihood_information_criteria_and_conf_int() {
     close(ev(&fit.aic(&ctx).unwrap()), 17.213_836_009_891_21, 1e-12);
     close(ev(&fit.bic(&ctx).unwrap()), 17.105_656_308_001_837, 1e-12);
     let ci = fit.conf_int(&ctx, 0.95).unwrap();
-    close(ci[0].0, -0.728_934_059_460_919_7, 1e-9);
-    close(ci[0].1, 2.599_901_801_396_405_3, 1e-9);
-    close(ci[1].0, 0.756_139_301_834_615_3, 1e-9);
-    close(ci[1].1, 1.501_925_214_294_417_3, 1e-9);
+    close(ci[0].lower, -0.728_934_059_460_919_7, 1e-9);
+    close(ci[0].upper, 2.599_901_801_396_405_3, 1e-9);
+    close(ci[1].lower, 0.756_139_301_834_615_3, 1e-9);
+    close(ci[1].upper, 1.501_925_214_294_417_3, 1e-9);
 }
 
 #[test]
@@ -1013,14 +1013,14 @@ fn wls_leverage_cooks_prediction_and_durbin_watson() {
     assert_eq!(h.matmul(&h).unwrap(), h);
 
     assert_eq!(fit.predict(&[qi(8)]).unwrap(), q(309, 31));
-    let (lo, hi) = fit
+    let mean_ci = fit
         .confidence_interval_mean_response(&ctx, &[qi(8)], 0.95)
         .unwrap();
-    close(lo, 8.355_554_097_987_461, 1e-9);
-    close(hi, 11.579_929_772_980_282, 1e-9);
-    let (lo, hi) = fit.prediction_interval(&ctx, &[qi(8)], 0.95).unwrap();
-    close(lo, 7.040_701_232_480_428, 1e-9);
-    close(hi, 12.894_782_638_487_316, 1e-9);
+    close(mean_ci.lower, 8.355_554_097_987_461, 1e-9);
+    close(mean_ci.upper, 11.579_929_772_980_282, 1e-9);
+    let obs_ci = fit.prediction_interval(&ctx, &[qi(8)], 0.95).unwrap();
+    close(obs_ci.lower, 7.040_701_232_480_428, 1e-9);
+    close(obs_ci.upper, 12.894_782_638_487_316, 1e-9);
     assert_eq!(fit.durbin_watson().unwrap(), q(6575, 2936));
     close(
         data::to_f64(&[q(6575, 2936)])[0],
@@ -1365,12 +1365,12 @@ fn logit_conf_int_and_odds_ratios() {
     let (y, x) = l1();
     let fit = logit(&y, &x, true, &LogitOpts::default()).unwrap();
     let ci = fit.conf_int(0.95).unwrap();
-    close(ci[0].0, -17.916_152_792_001_96, 1e-6);
-    close(ci[0].1, 0.831_314_678_359_065_7, 1e-6);
-    close(ci[1].0, 0.044_983_150_553_238_98, 1e-6);
-    close(ci[1].1, 3.670_527_944_970_963, 1e-6);
-    close(ci[2].0, -0.688_432_401_709_320_2, 1e-6);
-    close(ci[2].1, 1.588_424_821_370_238_3, 1e-6);
+    close(ci[0].lower, -17.916_152_792_001_96, 1e-6);
+    close(ci[0].upper, 0.831_314_678_359_065_7, 1e-6);
+    close(ci[1].lower, 0.044_983_150_553_238_98, 1e-6);
+    close(ci[1].upper, 3.670_527_944_970_963, 1e-6);
+    close(ci[2].lower, -0.688_432_401_709_320_2, 1e-6);
+    close(ci[2].upper, 1.588_424_821_370_238_3, 1e-6);
     let or = fit.odds_ratios();
     close(or[0], 1.950_179_296_271_563e-4, 1e-10);
     close(or[1], 6.409_335_168_957_027, 1e-6);
@@ -1407,10 +1407,10 @@ fn logit_binary_regressor_has_closed_form() {
     close(fit.aic(), 28.434_572_082_195_736, 1e-6);
     close(fit.bic(), 30.426_036_629_303_717, 1e-6);
     let ci = fit.conf_int(0.95).unwrap();
-    close(ci[0].0, -2.199_801_503_669_705_4, 1e-6);
-    close(ci[0].1, 0.505_205_782_895_298, 1e-6);
-    close(ci[1].0, -0.218_133_274_714_729_1, 1e-6);
-    close(ci[1].1, 3.607_324_716_263_544, 1e-6);
+    close(ci[0].lower, -2.199_801_503_669_705_4, 1e-6);
+    close(ci[0].upper, 0.505_205_782_895_298, 1e-6);
+    close(ci[1].lower, -0.218_133_274_714_729_1, 1e-6);
+    close(ci[1].upper, 3.607_324_716_263_544, 1e-6);
     close(fit.predict_proba(&[0.0]).unwrap(), 0.3, 1e-9);
     close(fit.predict_proba(&[1.0]).unwrap(), 0.7, 1e-9);
     let or = fit.odds_ratios();
@@ -1488,10 +1488,10 @@ fn logit_without_intercept_matches_statsmodels() {
         1e-6,
     );
     let ci = fit.conf_int(0.90).unwrap();
-    close(ci[0].0, 0.328_497_120_350_663_9, 1e-6);
-    close(ci[0].1, 3.226_204_659_495_304_7, 1e-6);
-    close(ci[1].0, -0.476_523_101_958_121_25, 1e-6);
-    close(ci[1].1, 1.255_609_115_661_013_4, 1e-6);
+    close(ci[0].lower, 0.328_497_120_350_663_9, 1e-6);
+    close(ci[0].upper, 3.226_204_659_495_304_7, 1e-6);
+    close(ci[1].lower, -0.476_523_101_958_121_25, 1e-6);
+    close(ci[1].upper, 1.255_609_115_661_013_4, 1e-6);
 }
 
 #[test]

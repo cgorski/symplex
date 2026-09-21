@@ -575,13 +575,34 @@ pub fn joint_from_counts(counts: &[Vec<usize>]) -> Result<Vec<Vec<Q>>, SymplexEr
         .collect())
 }
 
-/// The row and column marginals `(Σⱼ pᵢⱼ)ᵢ`, `(Σᵢ pᵢⱼ)ⱼ` of a joint table.
+/// The two marginal distributions of a joint table `pᵢⱼ`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Marginals {
+    /// The row sums `(Σⱼ pᵢⱼ)ᵢ`: the distribution of the row variable.
+    pub rows: Vec<Q>,
+    /// The column sums `(Σᵢ pᵢⱼ)ⱼ`: the distribution of the column
+    /// variable.
+    pub cols: Vec<Q>,
+}
+
+/// The row and column marginals of a joint table.
+///
+/// ```
+/// use symplex::linprog::q;
+/// use symplex::stats::information::marginals;
+///
+/// let joint = vec![vec![q(1, 2), q(1, 4)], vec![q(0, 1), q(1, 4)]];
+/// let m = marginals(&joint)?;
+/// assert_eq!(m.rows, vec![q(3, 4), q(1, 4)]);
+/// assert_eq!(m.cols, vec![q(1, 2), q(1, 2)]);
+/// # Ok::<(), symplex::prelude::SymplexError>(())
+/// ```
 ///
 /// # Errors
 ///
 /// [`SymplexError::InvalidArgument`] unless the table is rectangular,
 /// non-negative and sums to `1`.
-pub fn marginals(joint: &[Vec<Q>]) -> Result<(Vec<Q>, Vec<Q>), SymplexError> {
+pub fn marginals(joint: &[Vec<Q>]) -> Result<Marginals, SymplexError> {
     let (_, c) = check_joint(joint)?;
     let rows = joint
         .iter()
@@ -590,7 +611,7 @@ pub fn marginals(joint: &[Vec<Q>]) -> Result<(Vec<Q>, Vec<Q>), SymplexError> {
     let cols = (0..c)
         .map(|j| joint.iter().fold(Q::zero(), |acc, row| acc + &row[j]))
         .collect();
-    Ok((rows, cols))
+    Ok(Marginals { rows, cols })
 }
 
 fn flatten(joint: &[Vec<Q>]) -> Vec<Q> {
@@ -608,17 +629,17 @@ pub fn joint_entropy(ctx: &Context, joint: &[Vec<Q>], base: Base) -> Result<Ex, 
 }
 
 /// `I(X; Y) = Σ pᵢⱼ ln(pᵢⱼ / (pᵢ· p·ⱼ))` as a log-sum, with the marginals.
-fn mutual_information_sum(joint: &[Vec<Q>]) -> Result<(LogSum, Vec<Q>, Vec<Q>), SymplexError> {
-    let (rows, cols) = marginals(joint)?;
+fn mutual_information_sum(joint: &[Vec<Q>]) -> Result<(LogSum, Marginals), SymplexError> {
+    let m = marginals(joint)?;
     let mut acc = LogSum::default();
     for (i, row) in joint.iter().enumerate() {
         for (j, v) in row.iter().enumerate() {
             if v.is_positive() {
-                acc.add(v, &(v / (&rows[i] * &cols[j])));
+                acc.add(v, &(v / (&m.rows[i] * &m.cols[j])));
             }
         }
     }
-    Ok((acc, rows, cols))
+    Ok((acc, m))
 }
 
 /// The mutual information
@@ -646,7 +667,7 @@ fn mutual_information_sum(joint: &[Vec<Q>]) -> Result<(LogSum, Vec<Q>, Vec<Q>), 
 ///
 /// As [`marginals`].
 pub fn mutual_information(ctx: &Context, joint: &[Vec<Q>], base: Base) -> Result<Ex, SymplexError> {
-    let (i, _, _) = mutual_information_sum(joint)?;
+    let (i, _) = mutual_information_sum(joint)?;
     Ok(i.in_base(ctx, base))
 }
 
@@ -675,7 +696,7 @@ pub fn conditional_entropy(
     given: Given,
     base: Base,
 ) -> Result<Ex, SymplexError> {
-    let (rows, cols) = marginals(joint)?;
+    let Marginals { rows, cols } = marginals(joint)?;
     let known = match given {
         Given::Row => rows,
         Given::Column => cols,
@@ -698,9 +719,9 @@ pub fn normalized_mutual_information(
     joint: &[Vec<Q>],
     norm: Norm,
 ) -> Result<Ex, SymplexError> {
-    let (i, rows, cols) = mutual_information_sum(joint)?;
-    let hx = entropy_sum(&rows);
-    let hy = entropy_sum(&cols);
+    let (i, m) = mutual_information_sum(joint)?;
+    let hx = entropy_sum(&m.rows);
+    let hy = entropy_sum(&m.cols);
     let degenerate = match norm {
         Norm::Min => hx.is_zero() || hy.is_zero(),
         Norm::Arithmetic | Norm::Geometric | Norm::Max => hx.is_zero() && hy.is_zero(),

@@ -340,24 +340,24 @@ fn odds_ratio_and_relative_risk_match_statsmodels_and_scipy() {
     //              .oddsratio_confint(0.05) = (1.6931795592741443, 21.261773332199304)
     let r = odds_ratio([[20, 10], [5, 15]], 0.95).unwrap();
     assert_eq!(r.estimate, qi(6));
-    close(r.ci.0, 1.693_179_559_274_144_3, 1e-9);
-    close(r.ci.1, 21.261_773_332_199_304, 1e-9);
+    close(r.ci.lower, 1.693_179_559_274_144_3, 1e-9);
+    close(r.ci.upper, 21.261_773_332_199_304, 1e-9);
     // statsmodels: Table2x2([[12, 28], [30, 30]]).oddsratio = 0.42857142857142855 (= 3/7),
     //              .oddsratio_confint(0.10) = (0.21094863132132893, 0.8707023517397149)
     let r = odds_ratio([[12, 28], [30, 30]], 0.90).unwrap();
     assert_eq!(r.estimate, q(3, 7));
-    close(r.ci.0, 0.210_948_631_321_328_93, 1e-9);
-    close(r.ci.1, 0.870_702_351_739_714_9, 1e-9);
+    close(r.ci.lower, 0.210_948_631_321_328_93, 1e-9);
+    close(r.ci.upper, 0.870_702_351_739_714_9, 1e-9);
     // scipy: relative_risk(20, 30, 5, 20) → 2.6666666666666665, CI(0.95) = (1.198028521436089, 5.935677643623166)
     let r = relative_risk([[20, 10], [5, 15]], 0.95).unwrap();
     assert_eq!(r.estimate, q(8, 3));
-    close(r.ci.0, 1.198_028_521_436_089, 1e-9);
-    close(r.ci.1, 5.935_677_643_623_166, 1e-9);
+    close(r.ci.lower, 1.198_028_521_436_089, 1e-9);
+    close(r.ci.upper, 5.935_677_643_623_166, 1e-9);
     // scipy: relative_risk(12, 40, 30, 60) → 0.6, CI(0.90) = (0.38240028924790753, 0.9414218820493997)
     let r = relative_risk([[12, 28], [30, 30]], 0.90).unwrap();
     assert_eq!(r.estimate, q(3, 5));
-    close(r.ci.0, 0.382_400_289_247_907_53, 1e-9);
-    close(r.ci.1, 0.941_421_882_049_399_7, 1e-9);
+    close(r.ci.lower, 0.382_400_289_247_907_53, 1e-9);
+    close(r.ci.upper, 0.941_421_882_049_399_7, 1e-9);
     is_invalid(odds_ratio([[0, 10], [5, 15]], 0.95));
     is_invalid(relative_risk([[0, 10], [5, 15]], 0.95));
     is_invalid(odds_ratio([[20, 10], [5, 15]], 1.0));
@@ -602,14 +602,14 @@ fn confidence_interval_mean_matches_scipy_t_interval() {
     let ctx = Context::new();
     // scipy: t.interval(0.95, 5, loc=mean(x), scale=sem(x)) = (5.9509296876164886, 11.049070312383511)
     let x = from_i64(&[5, 7, 8, 9, 10, 12]);
-    let (lo, hi) = confidence_interval_mean(&ctx, &x, 0.95).unwrap();
-    close(lo, 5.950_929_687_616_488_6, 1e-9);
-    close(hi, 11.049_070_312_383_511, 1e-9);
+    let ci = confidence_interval_mean(&ctx, &x, 0.95).unwrap();
+    close(ci.lower, 5.950_929_687_616_488_6, 1e-9);
+    close(ci.upper, 11.049_070_312_383_511, 1e-9);
     // scipy: t.interval(0.99, 6, loc=mean(a), scale=sem(a)) = (18.982530848003655, 22.16032629485349)
     let a = from_i64(&[20, 22, 19, 20, 22, 20, 21]);
-    let (lo, hi) = confidence_interval_mean(&ctx, &a, 0.99).unwrap();
-    close(lo, 18.982_530_848_003_655, 1e-9);
-    close(hi, 22.160_326_294_853_49, 1e-9);
+    let ci = confidence_interval_mean(&ctx, &a, 0.99).unwrap();
+    close(ci.lower, 18.982_530_848_003_655, 1e-9);
+    close(ci.upper, 22.160_326_294_853_49, 1e-9);
     is_invalid(confidence_interval_mean(&ctx, &a, 1.0));
     is_invalid(confidence_interval_mean(&ctx, &from_i64(&[1]), 0.95));
 }
@@ -1397,7 +1397,7 @@ fn bootstrap_ci_is_deterministic_and_covers_the_true_mean() {
     // Normal(10, 2), n = 400 — the 95% interval of the mean should contain 10 and be about ±0.2 wide.
     let normal = Distribution::normal(ctx.int(10), ctx.int(2));
     let data = normal.sample(400, &mut Rng::new(2024)).unwrap();
-    let (lo, hi) = bootstrap_ci(
+    let ci = bootstrap_ci(
         &data,
         mean,
         2000,
@@ -1406,8 +1406,12 @@ fn bootstrap_ci_is_deterministic_and_covers_the_true_mean() {
         BootstrapMethod::Percentile,
     )
     .unwrap();
-    assert!(lo < 10.0 && 10.0 < hi, "({lo}, {hi})");
-    assert!(hi - lo > 0.25 && hi - lo < 0.55, "width {}", hi - lo);
+    assert!(ci.lower < 10.0 && 10.0 < ci.upper, "{ci}");
+    assert!(
+        ci.width() > 0.25 && ci.width() < 0.55,
+        "width {}",
+        ci.width()
+    );
     // Deterministic under a fixed seed.
     let again = bootstrap_ci(
         &data,
@@ -1418,9 +1422,9 @@ fn bootstrap_ci_is_deterministic_and_covers_the_true_mean() {
         BootstrapMethod::Percentile,
     )
     .unwrap();
-    assert_eq!((lo, hi), again);
+    assert_eq!(ci, again);
     // The basic interval is the percentile interval reflected about the estimate.
-    let (blo, bhi) = bootstrap_ci(
+    let basic = bootstrap_ci(
         &data,
         mean,
         2000,
@@ -1430,8 +1434,8 @@ fn bootstrap_ci_is_deterministic_and_covers_the_true_mean() {
     )
     .unwrap();
     let m = mean(&data);
-    close(blo, 2.0 * m - hi, 1e-12);
-    close(bhi, 2.0 * m - lo, 1e-12);
+    close(basic.lower, 2.0 * m - ci.upper, 1e-12);
+    close(basic.upper, 2.0 * m - ci.lower, 1e-12);
 }
 
 #[test]
@@ -1440,7 +1444,7 @@ fn bootstrap_interval_width_shrinks_like_inverse_sqrt_n() {
     let normal = Distribution::normal(ctx.int(0), ctx.int(1));
     let small = normal.sample(100, &mut Rng::new(5)).unwrap();
     let large = normal.sample(1600, &mut Rng::new(6)).unwrap();
-    let (a, b) = bootstrap_ci(
+    let small_ci = bootstrap_ci(
         &small,
         mean,
         4000,
@@ -1449,7 +1453,7 @@ fn bootstrap_interval_width_shrinks_like_inverse_sqrt_n() {
         BootstrapMethod::Percentile,
     )
     .unwrap();
-    let (c, d) = bootstrap_ci(
+    let large_ci = bootstrap_ci(
         &large,
         mean,
         4000,
@@ -1458,7 +1462,7 @@ fn bootstrap_interval_width_shrinks_like_inverse_sqrt_n() {
         BootstrapMethod::Percentile,
     )
     .unwrap();
-    let ratio = (b - a) / (d - c);
+    let ratio = small_ci.width() / large_ci.width();
     // 16× the data → about 4× narrower.
     assert!(ratio > 3.0 && ratio < 5.2, "ratio {ratio}");
 }
@@ -1501,7 +1505,10 @@ fn bootstrap_validates_input() {
     // A single observation gives a degenerate but valid interval.
     assert_eq!(
         bootstrap_ci(&[3.0], mean, 10, 0.95, &mut rng, BootstrapMethod::Basic).unwrap(),
-        (3.0, 3.0)
+        Interval {
+            lower: 3.0,
+            upper: 3.0
+        }
     );
 }
 

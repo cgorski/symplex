@@ -41,6 +41,7 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
+use crate::base::interval::Interval;
 
 use super::data::Q;
 
@@ -82,24 +83,29 @@ fn check_probability(p: &Q, what: &str) -> Result<(), SymplexError> {
     Ok(())
 }
 
-/// Wald's boundaries `(A, B) = (ln(β/(1−α)), ln((1−β)/α))` for nominal
-/// error rates `α`, `β`.
+/// Wald's continuation region `[A, B]` for nominal error rates `α`, `β`:
+/// `lower = A = ln(β/(1−α))` (the log-likelihood ratio falling to it
+/// accepts `H₀`) and `upper = B = ln((1−β)/α)` (rising to it accepts
+/// `H₁`).
 ///
 /// ```
 /// use symplex::stats::sequential::wald_boundaries;
 ///
-/// let (a, b) = wald_boundaries(0.05, 0.10)?;
-/// assert!((a - (-2.251291798606495)).abs() < 1e-12);   // ln(0.1/0.95)
-/// assert!((b - 2.8903717578961645).abs() < 1e-12);     // ln(0.9/0.05)
+/// let bounds = wald_boundaries(0.05, 0.10)?;
+/// assert!((bounds.lower - (-2.251291798606495)).abs() < 1e-12);   // A = ln(0.1/0.95)
+/// assert!((bounds.upper - 2.8903717578961645).abs() < 1e-12);     // B = ln(0.9/0.05)
 /// # Ok::<(), symplex::prelude::SymplexError>(())
 /// ```
 ///
 /// # Errors
 ///
 /// [`SymplexError::InvalidArgument`] unless `0 < α, β` and `α + β < 1`.
-pub fn wald_boundaries(alpha: f64, beta: f64) -> Result<(f64, f64), SymplexError> {
+pub fn wald_boundaries(alpha: f64, beta: f64) -> Result<Interval<f64>, SymplexError> {
     check_rates(alpha, beta)?;
-    Ok(((beta / (1.0 - alpha)).ln(), ((1.0 - beta) / alpha).ln()))
+    Ok(Interval {
+        lower: (beta / (1.0 - alpha)).ln(),
+        upper: ((1.0 - beta) / alpha).ln(),
+    })
 }
 
 /// The state of a sequential test after an observation.
@@ -132,8 +138,8 @@ pub struct Sprt {
     model: Model,
     alpha: f64,
     beta: f64,
-    lower: f64,
-    upper: f64,
+    /// Wald's continuation region `[A, B]`.
+    boundaries: Interval<f64>,
     observations: usize,
     successes: usize,
     sum: Q,
@@ -154,13 +160,12 @@ impl Sprt {
         if p0 == p1 {
             return Err(invalid("p0 and p1 must differ"));
         }
-        let (lower, upper) = wald_boundaries(alpha, beta)?;
+        let boundaries = wald_boundaries(alpha, beta)?;
         Ok(Sprt {
             model: Model::Bernoulli { p0, p1 },
             alpha,
             beta,
-            lower,
-            upper,
+            boundaries,
             observations: 0,
             successes: 0,
             sum: Q::zero(),
@@ -189,13 +194,12 @@ impl Sprt {
         if mu0 == mu1 {
             return Err(invalid("mu0 and mu1 must differ"));
         }
-        let (lower, upper) = wald_boundaries(alpha, beta)?;
+        let boundaries = wald_boundaries(alpha, beta)?;
         Ok(Sprt {
             model: Model::NormalMean { mu0, mu1, sigma },
             alpha,
             beta,
-            lower,
-            upper,
+            boundaries,
             observations: 0,
             successes: 0,
             sum: Q::zero(),
@@ -250,9 +254,9 @@ impl Sprt {
     /// accepts `H₀`, otherwise continue.
     pub fn decision(&self) -> Decision {
         let llr = self.log_likelihood_ratio_f64();
-        if llr >= self.upper {
+        if llr >= self.boundaries.upper {
             Decision::AcceptH1
-        } else if llr <= self.lower {
+        } else if llr <= self.boundaries.lower {
             Decision::AcceptH0
         } else {
             Decision::Continue
@@ -266,9 +270,10 @@ impl Sprt {
         self.sum = Q::zero();
     }
 
-    /// Wald's boundaries `(A, B)`; see [`wald_boundaries`].
-    pub fn boundaries(&self) -> (f64, f64) {
-        (self.lower, self.upper)
+    /// Wald's continuation region `[A, B]` (`lower = A` accepts `H₀`,
+    /// `upper = B` accepts `H₁`); see [`wald_boundaries`].
+    pub fn boundaries(&self) -> Interval<f64> {
+        self.boundaries
     }
 
     /// The nominal type I error rate.
@@ -444,7 +449,7 @@ pub fn operating_characteristic_bernoulli(
     beta: f64,
 ) -> Result<f64, SymplexError> {
     let (ls, lf, drift) = bernoulli_increments(p, p0, p1)?;
-    let (a, b) = wald_boundaries(alpha, beta)?;
+    let Interval { lower: a, upper: b } = wald_boundaries(alpha, beta)?;
     match wald_h(p, ls, lf, drift)? {
         // (eᴮʰ − 1)/(eᴮʰ − eᴬʰ), i.e. ((1−β)/α)ʰ = e^{Bh}, (β/(1−α))ʰ = e^{Ah}
         Some(h) => Ok(((b * h).exp() - 1.0) / ((b * h).exp() - (a * h).exp())),
@@ -485,7 +490,7 @@ pub fn expected_sample_size_bernoulli(
     beta: f64,
 ) -> Result<f64, SymplexError> {
     let (ls, lf, drift) = bernoulli_increments(p, p0, p1)?;
-    let (a, b) = wald_boundaries(alpha, beta)?;
+    let Interval { lower: a, upper: b } = wald_boundaries(alpha, beta)?;
     match wald_h(p, ls, lf, drift)? {
         Some(h) => {
             let l = ((b * h).exp() - 1.0) / ((b * h).exp() - (a * h).exp());

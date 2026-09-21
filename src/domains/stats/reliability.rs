@@ -58,6 +58,7 @@ use super::hypothesis::{Alternative, TestResult};
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
+use crate::base::interval::Interval;
 use crate::output::codegen::numeric_rt::erfcinv;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1774,9 +1775,9 @@ pub fn fisher_z(r: &Ex) -> Ex {
 ///
 /// // scipy: pearsonr(range(1, 6), [1, 3, 2, 5, 4]).confidence_interval(0.95)
 /// //   → (-0.279640041969355, 0.9861961933012714); r = 0.8, n = 5
-/// let (lo, hi) = pearson_ci(0.8, 5, 0.95)?;
-/// assert!((lo + 0.279_640_041_969_355).abs() < 1e-12);
-/// assert!((hi - 0.986_196_193_301_271_4).abs() < 1e-12);
+/// let ci = pearson_ci(0.8, 5, 0.95)?;
+/// assert!((ci.lower + 0.279_640_041_969_355).abs() < 1e-12);
+/// assert!((ci.upper - 0.986_196_193_301_271_4).abs() < 1e-12);
 /// # Ok::<(), symplex::prelude::SymplexError>(())
 /// ```
 ///
@@ -1784,7 +1785,7 @@ pub fn fisher_z(r: &Ex) -> Ex {
 ///
 /// [`SymplexError::InvalidArgument`] for `|r| ≥ 1` or non-finite `r`,
 /// `n < 4`, or a confidence level outside `(0, 1)`.
-pub fn pearson_ci(r: f64, n: usize, confidence: f64) -> Result<(f64, f64), SymplexError> {
+pub fn pearson_ci(r: f64, n: usize, confidence: f64) -> Result<Interval<f64>, SymplexError> {
     const OP: &str = "pearson_ci";
     if !r.is_finite() || r.abs() >= 1.0 {
         return Err(invalid(
@@ -1802,7 +1803,10 @@ pub fn pearson_ci(r: f64, n: usize, confidence: f64) -> Result<(f64, f64), Sympl
     let z = r.atanh();
     let se = 1.0 / ((n - 3) as f64).sqrt();
     let zc = norm_isf((1.0 - confidence) / 2.0);
-    Ok(((z - zc * se).tanh(), (z + zc * se).tanh()))
+    Ok(Interval {
+        lower: (z - zc * se).tanh(),
+        upper: (z + zc * se).tanh(),
+    })
 }
 
 /// The population sums of squares and cross-products of a pair,

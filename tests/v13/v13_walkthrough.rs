@@ -134,13 +134,14 @@ fn aggregation_walkthrough() {
     // An exact 95% Clopper–Pearson interval for 5/8: statsmodels
     // proportion_confint(5, 8, alpha=0.05, method='beta') =
     // (0.2448632163665516, 0.9147665858627465).
-    let (lo, hi) = proportion_interval(5, 8, 0.95, IntervalMethod::ClopperPearson).unwrap();
+    let ci = proportion_interval(5, 8, 0.95, IntervalMethod::ClopperPearson).unwrap();
     assert!(
-        (lo - 0.244_863_216_366_551_6).abs() < 1e-9 && (hi - 0.914_766_585_862_746_5).abs() < 1e-9,
-        "({lo}, {hi})"
+        (ci.lower - 0.244_863_216_366_551_6).abs() < 1e-9
+            && (ci.upper - 0.914_766_585_862_746_5).abs() < 1e-9,
+        "{ci}"
     );
-    let (wlo, whi) = proportion_interval(5, 8, 0.95, IntervalMethod::Wilson).unwrap();
-    assert!(wlo < 0.625 && whi > 0.625);
+    let wilson = proportion_interval(5, 8, 0.95, IntervalMethod::Wilson).unwrap();
+    assert!(wilson.lower < 0.625 && wilson.upper > 0.625);
 }
 
 #[test]
