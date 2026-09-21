@@ -325,7 +325,7 @@ See [Polynomials as Data](../guide/polynomials.md). Generators are explicit; any
 
 | SymPy | symplex |
 |-------|---------|
-| `Interval(0, 5)`, `Interval.Lopen(3, 10)` | `ctx.interval(&zero, &five, false, false)`, `ctx.interval(&three, &ten, true, false)` |
+| `Interval(0, 5)`, `Interval.Lopen(3, 10)` | `ctx.interval(&zero, &five, IntervalKind::Closed)`, `ctx.interval(&three, &ten, IntervalKind::LeftOpen)` |
 | `FiniteSet(1, 2, 3)` | `ctx.finite_set(&[one, two, three])` |
 | `S.Reals`, `S.EmptySet` | `ctx.reals()`, `ctx.empty_set()` |
 | `A.union(B)`, `A.intersect(B)` | `a.union(&b).simplify()`, `a.intersection(&b).simplify()` |
@@ -363,11 +363,11 @@ SymPy defers to SciPy and NumPy here; symplex ships equivalents in `symplex::opt
 | `scipy.optimize.bisect(f, a, b)` | `optimize::bisect(f, a, b, &opts)?` |
 | `scipy.optimize.newton(f, x0, fprime)` | `optimize::newton_root(f, df, x0, &opts)?` (derivative from `e.diff(&x).compile(..)`) |
 | `scipy.optimize.minimize(f, x0, method="Nelder-Mead")` | `optimize::nelder_mead(f, &x0, &MinimizeOpts::default())?`; on an `Ex`: `e.minimize_numeric(&[&x, &y], &x0)?` → `MinimizeResult { x, fun, iterations, evaluations, converged }` |
-| `scipy.optimize.minimize_scalar(f, bounds=(a, b), method="bounded")` | `optimize::minimize_scalar(f, a, b, &opts)?` (Brent), `golden_section`; on an `Ex`: `e.minimize_scalar_numeric(&x, a, b)?` |
-| `scipy.optimize.differential_evolution(f, bounds, seed=0)` | `optimize::differential_evolution(f, &bounds, &DeOpts { seed, .. })?`; on an `Ex`: `e.minimize_global_numeric(&vars, &bounds, &opts)?` |
+| `scipy.optimize.minimize_scalar(f, bounds=(a, b), method="bounded")` | `optimize::minimize_scalar(f, a, b, &opts)?` (Brent), `golden_section`; on an `Ex`: `e.minimize_scalar_numeric(&x, a, b)?` → `ScalarMinimum { x, value }` |
+| `scipy.optimize.differential_evolution(f, bounds, seed=0)` | `optimize::differential_evolution(f, &bounds, &DeOpts { seed, .. })?` with `bounds: &[Interval<f64>]` (closed, `Interval::closed(lo, hi)`); on an `Ex`: `e.minimize_global_numeric(&vars, &bounds, &opts)?` |
 | `numpy.polyfit(x, y, deg)` (**highest degree first**) | `optimize::poly_fit(&xs, &ys, deg)?` (**ascending**: `[c₀, c₁, …]`); `eval_poly(&c, x)` evaluates |
 | `numpy.polyfit` with exact rationals (no NumPy equivalent) | `optimize::poly_fit_exact(&points, deg)?`, `Ex::poly_fit_points(&ctx, &points, &x, deg)?` → `Ex` |
-| `scipy.stats.linregress(x, y)` (slope, intercept) | `optimize::linear_fit(&xs, &ys)?` → `(slope, intercept)` |
+| `scipy.stats.linregress(x, y)` (slope, intercept) | `optimize::linear_fit(&xs, &ys)?` → `LinearFit { slope, intercept }` |
 | `numpy.trapz(y, x)` / `scipy.integrate.trapezoid(y, x)` | `optimize::trapezoid(&ys, &xs)?` |
 | `scipy.optimize.fsolve(F, x0)` | `solve_numeric_system(&eqs, &vars, &x0)?` (damped Newton, symbolic Jacobian) |
 

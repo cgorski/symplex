@@ -97,7 +97,7 @@ fn decompositions_are_exact_and_minimal_where_expected() {
     assert_eq!(c.rank(), 2);
     assert_eq!(c.basis().len(), 3);
     assert_eq!(c.gram().rank(), 2);
-    let (lhs, rhs) = c.identity();
+    let Equation { lhs, rhs } = c.identity();
     assert!((lhs - rhs).expand().is_zero_structural());
     // AM–GM in three variables: x⁴ + y⁴ + z⁴ + 1 ≥ 4xyz.
     let c = sos(

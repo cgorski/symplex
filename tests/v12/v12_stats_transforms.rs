@@ -29,12 +29,10 @@ fn assert_close(actual: &Ex, expected: f64, label: &str) {
 fn open_half_line(ctx: &Context, lo: Ex) -> Support {
     Support::from_pieces(
         symplex::stats::Kind::Continuous,
-        vec![symplex::stats::Piece::Interval {
+        vec![symplex::stats::Piece::Interval(Interval::open(
             lo,
-            hi: ctx.infinity(),
-            lo_open: true,
-            hi_open: true,
-        }],
+            ctx.infinity(),
+        ))],
     )
 }
 

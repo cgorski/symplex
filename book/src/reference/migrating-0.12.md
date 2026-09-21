@@ -30,7 +30,7 @@ struct with a `Kind` and `Piece`s.
 | `Support::Continuous { lo: Some(a), hi: Some(b) }` | `Support::interval(a, b)`; unbounded ends are `ctx.neg_infinity()` / `ctx.infinity()` |
 | `Support::Discrete { lo: Some(a), hi: None }` | `Support::integers(&ctx, Some(a), None)` |
 | `Support::Finite(values)` | `Support::points(values)` |
-| `match support { Support::Continuous { lo, hi } => … }` | `let (lo, hi, lo_open, hi_open) = support.as_interval()?` |
+| `match support { Support::Continuous { lo, hi } => … }` | `let iv = support.as_interval()?;` then `iv.lower`, `iv.upper`, `iv.kind` (an `Interval<Ex>`) |
 | `matches!(s, Support::Discrete { .. })` | `s.kind() == Kind::Discrete` |
 
 ## `Distribution::finite` takes the context

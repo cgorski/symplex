@@ -11,8 +11,8 @@
 //! Run with: `cargo run --example polyhedron_certificates`
 
 use symplex::certificates::{
-    PolyhedronLeanNames, PolyhedronOpts, PolyhedronOutcome, prove_nonnegative_on_polyhedron,
-    prove_polyhedron_empty,
+    ParamBound, PolyhedronLeanNames, PolyhedronOpts, PolyhedronOutcome,
+    prove_nonnegative_on_polyhedron, prove_polyhedron_empty,
 };
 use symplex::lean::LeanOpts;
 use symplex::prelude::*;
@@ -21,7 +21,11 @@ fn main() {
     println!("=== Certificates on a parametric polyhedron ===\n");
     let ctx = Context::new();
     let (j, r, t) = (ctx.symbol("j"), ctx.symbol("r"), ctx.symbol("t"));
-    let j0 = ctx.int(2);
+    // The parameter bound j ≥ 2.
+    let param = ParamBound {
+        var: j.clone(),
+        lower: ctx.int(2),
+    };
     let half = ctx.rational(1, 2);
 
     // A cell of the (r, t) plane whose facets depend on j:
@@ -37,7 +41,7 @@ fn main() {
     // ── 1. A goal on the cell: λ = 1 suffices ─────────────────────────────
     let goal = (&j * 2 + 1) * &t * 4 - &j * &r * 4 - &r - 3;
     let out =
-        prove_nonnegative_on_polyhedron(&goal, &hyps, Some((&j, &j0)), &PolyhedronOpts::default())
+        prove_nonnegative_on_polyhedron(&goal, &hyps, Some(&param), &PolyhedronOpts::default())
             .unwrap();
     match &out {
         PolyhedronOutcome::Proved(c) => {
@@ -59,10 +63,14 @@ fn main() {
     // but its Farkas multipliers are 1/(1 + j) and j/(1 + j): no polynomial
     // combination exists until the goal is multiplied by λ(j) = 1 + j.
     let needs_lambda = [&t - &r, &t + &j * &r - &j - 1];
+    let j_nonneg = ParamBound {
+        var: j.clone(),
+        lower: ctx.int(0),
+    };
     let out = prove_nonnegative_on_polyhedron(
         &(&t - 1),
         &needs_lambda,
-        Some((&j, &ctx.int(0))),
+        Some(&j_nonneg),
         &PolyhedronOpts::default(),
     )
     .unwrap();
@@ -80,7 +88,7 @@ fn main() {
     let out = prove_nonnegative_on_polyhedron(
         &(&t - 1),
         &needs_lambda,
-        Some((&j, &ctx.int(0))),
+        Some(&j_nonneg),
         &PolyhedronOpts::single(3, 0),
     )
     .unwrap();
@@ -97,7 +105,7 @@ fn main() {
     match prove_nonnegative_on_polyhedron(
         &false_goal,
         &hyps,
-        Some((&j, &j0)),
+        Some(&param),
         &PolyhedronOpts::default(),
     )
     .unwrap()
@@ -118,8 +126,7 @@ fn main() {
         (&j * 2 + 1) * &t - &j * &r - 1,
         ctx.rational(1, 4) - &t,
     ];
-    match prove_polyhedron_empty(&empty_hyps, Some((&j, &j0)), &PolyhedronOpts::default()).unwrap()
-    {
+    match prove_polyhedron_empty(&empty_hyps, Some(&param), &PolyhedronOpts::default()).unwrap() {
         PolyhedronOutcome::Proved(c) => {
             println!("\nemptiness certificate: {c}");
             let steps = c

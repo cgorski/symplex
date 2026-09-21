@@ -161,7 +161,7 @@ fn main() {
 
     // Critical points, extrema and the image on an interval.
     let g = &x.powi(3) - &x * 3;
-    let dom = ctx.interval(&ctx.int(-2), &ctx.int(2), false, false);  // [-2, 2]
+    let dom = ctx.interval(&ctx.int(-2), &ctx.int(2), IntervalKind::Closed);  // [-2, 2]
     println!("{}", g.stationary_points(&x, None).unwrap());           // {-1, 1}
     println!("{}", g.maximum(&x, &dom).unwrap());                     // 2
     println!("{}", g.minimum(&x, &dom).unwrap());                     // -2
@@ -169,14 +169,14 @@ fn main() {
 
     // Open and infinite endpoints are handled with one-sided limits, so the
     // supremum need not be attained and the range tracks open ends.
-    let tail = ctx.interval(&ctx.int(1), &ctx.infinity(), false, true); // [1, oo)
+    let tail = ctx.interval(&ctx.int(1), &ctx.infinity(), IntervalKind::RightOpen); // [1, oo)
     println!("{}", (1 / &x).minimum(&x, &tail).unwrap());             // 0
     println!("{}", (1 / &x).function_range(&x, &tail).unwrap());      // (0, 1]
     println!("{}", x.powi(2).maximum(&x, &reals).unwrap());           // oo
     println!("{}", x.exp().function_range(&x, &reals).unwrap());      // (0, oo)
 
     // Monotonicity and convexity are three-valued: `None` is "undecided".
-    let half = ctx.interval(&ctx.int(0), &ctx.infinity(), false, true);
+    let half = ctx.interval(&ctx.int(0), &ctx.infinity(), IntervalKind::RightOpen);
     println!("{:?}", x.powi(3).is_increasing(&x, &reals));            // Some(true)
     println!("{:?}", x.powi(3).is_strictly_increasing(&x, &reals));   // Some(true)
     println!("{:?}", x.powi(2).is_increasing(&x, &reals));            // Some(false)

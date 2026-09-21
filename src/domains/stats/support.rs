@@ -15,6 +15,7 @@ use std::fmt;
 
 use crate::api::context::Context;
 use crate::api::expr::{Ex, SetEx};
+use crate::base::interval::{Interval, IntervalKind};
 
 /// Whether a distribution puts its mass on intervals of ℝ (a density) or
 /// on isolated points (a probability mass function).
@@ -32,19 +33,11 @@ pub enum Kind {
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum Piece {
-    /// An interval; either end may be `±∞` (then it is open there).  For
-    /// a [`Kind::Discrete`] support the interval stands for the *integers*
-    /// in it.
-    Interval {
-        /// Lower end.
-        lo: Ex,
-        /// Upper end.
-        hi: Ex,
-        /// `true` for `(lo, …`.
-        lo_open: bool,
-        /// `true` for `…, hi)`.
-        hi_open: bool,
-    },
+    /// An interval; either end may be `±∞` (then it is open there —
+    /// [`Support::from_pieces`] and the other constructors enforce this).
+    /// For a [`Kind::Discrete`] support the interval stands for the
+    /// *integers* in it.
+    Interval(Interval<Ex>),
     /// A single value (not necessarily an integer, even on a discrete
     /// support: a `Finite` table lists arbitrary values).
     Point(Ex),
@@ -74,14 +67,26 @@ pub(crate) fn is_neg_inf(e: &Ex) -> bool {
     *e == e.context().neg_infinity()
 }
 
-/// The larger of two lower ends (`−∞` loses; numeric ends compare; symbolic
-/// ends become `max(a, b)`).  The second value says whether the result is
-/// open: when one end is strictly larger its own openness is kept, when
-/// they coincide either being open makes the result open, and when the
-/// order is unknown the result is open if either is (irrelevant for a
+/// The interval with a `−∞` lower end and a `+∞` upper end forced open,
+/// the invariant every [`Support`] constructor maintains.
+fn with_infinite_ends_open(iv: Interval<Ex>) -> Interval<Ex> {
+    let kind = IntervalKind::from_open_ends(
+        iv.kind.lower_open() || is_neg_inf(&iv.lower),
+        iv.kind.upper_open() || is_pos_inf(&iv.upper),
+    );
+    iv.with_kind(kind)
+}
+
+/// The larger of the two intervals' lower ends (`−∞` loses; numeric ends
+/// compare; symbolic ends become `max(a, b)`), and whether it is open:
+/// when one end is strictly larger its own openness is kept, when they
+/// coincide either being open makes the result open, and when the order
+/// is unknown the result is open if either is (irrelevant for a
 /// continuous variable; a discrete one has been normalised to closed
 /// integer ends before any intersection).
-fn max_lo(a: &Ex, a_open: bool, b: &Ex, b_open: bool) -> (Ex, bool) {
+fn max_lo(a: &Interval<Ex>, b: &Interval<Ex>) -> (Ex, bool) {
+    let (a_open, b_open) = (a.kind.lower_open(), b.kind.lower_open());
+    let (a, b) = (&a.lower, &b.lower);
     if is_neg_inf(a) {
         return (b.clone(), b_open);
     }
@@ -98,8 +103,10 @@ fn max_lo(a: &Ex, a_open: bool, b: &Ex, b_open: bool) -> (Ex, bool) {
     }
 }
 
-/// The smaller of two upper ends; see [`max_lo`].
-fn min_hi(a: &Ex, a_open: bool, b: &Ex, b_open: bool) -> (Ex, bool) {
+/// The smaller of the two intervals' upper ends; see [`max_lo`].
+fn min_hi(a: &Interval<Ex>, b: &Interval<Ex>) -> (Ex, bool) {
+    let (a_open, b_open) = (a.kind.upper_open(), b.kind.upper_open());
+    let (a, b) = (&a.upper, &b.upper);
     if is_pos_inf(a) {
         return (b.clone(), b_open);
     }
@@ -116,10 +123,11 @@ fn min_hi(a: &Ex, a_open: bool, b: &Ex, b_open: bool) -> (Ex, bool) {
     }
 }
 
-/// Is the interval `lo..hi` (with the given openness) known to be empty?
-/// `Some(true)` when `hi < lo`, or `hi = lo` with an open end;
-/// `Some(false)` when `hi > lo`; `None` when the order is unknown.
-fn interval_empty(lo: &Ex, hi: &Ex, lo_open: bool, hi_open: bool) -> Option<bool> {
+/// Is the interval known to be empty?  `Some(true)` when `hi < lo`, or
+/// `hi = lo` with an open end; `Some(false)` when `hi > lo`; `None` when
+/// the order is unknown.
+fn interval_empty(iv: &Interval<Ex>) -> Option<bool> {
+    let (lo, hi) = (&iv.lower, &iv.upper);
     if is_neg_inf(lo) || is_pos_inf(hi) {
         return Some(false);
     }
@@ -130,7 +138,7 @@ fn interval_empty(lo: &Ex, hi: &Ex, lo_open: bool, hi_open: bool) -> Option<bool
     match d.is_positive() {
         Some(true) => Some(false),
         Some(false) => match d.is_zero() {
-            Some(true) => Some(lo_open || hi_open),
+            Some(true) => Some(iv.kind != IntervalKind::Closed),
             Some(false) => Some(true),
             None => None,
         },
@@ -139,22 +147,22 @@ fn interval_empty(lo: &Ex, hi: &Ex, lo_open: bool, hi_open: bool) -> Option<bool
 }
 
 /// Does the interval contain `v`?  `None` when undecidable.
-fn interval_contains(lo: &Ex, hi: &Ex, lo_open: bool, hi_open: bool, v: &Ex) -> Option<bool> {
-    let above = if is_neg_inf(lo) {
+fn interval_contains(iv: &Interval<Ex>, v: &Ex) -> Option<bool> {
+    let above = if is_neg_inf(&iv.lower) {
         Some(true)
     } else {
-        let d = v - lo;
-        if lo_open {
+        let d = v - &iv.lower;
+        if iv.kind.lower_open() {
             d.is_positive()
         } else {
             d.is_nonnegative()
         }
     };
-    let below = if is_pos_inf(hi) {
+    let below = if is_pos_inf(&iv.upper) {
         Some(true)
     } else {
-        let d = hi - v;
-        if hi_open {
+        let d = &iv.upper - v;
+        if iv.kind.upper_open() {
             d.is_positive()
         } else {
             d.is_nonnegative()
@@ -175,16 +183,11 @@ impl Support {
 
     /// The closed interval `[lo, hi]` (continuous; `±∞` ends are open).
     pub fn interval(lo: Ex, hi: Ex) -> Self {
-        let lo_open = is_neg_inf(&lo);
-        let hi_open = is_pos_inf(&hi);
         Support {
             kind: Kind::Continuous,
-            pieces: vec![Piece::Interval {
-                lo,
-                hi,
-                lo_open,
-                hi_open,
-            }],
+            pieces: vec![Piece::Interval(with_infinite_ends_open(Interval::closed(
+                lo, hi,
+            )))],
         }
     }
 
@@ -199,16 +202,11 @@ impl Support {
     pub fn integers(ctx: &Context, lo: Option<Ex>, hi: Option<Ex>) -> Self {
         let lo = lo.unwrap_or_else(|| ctx.neg_infinity());
         let hi = hi.unwrap_or_else(|| ctx.infinity());
-        let lo_open = is_neg_inf(&lo);
-        let hi_open = is_pos_inf(&hi);
         Support {
             kind: Kind::Discrete,
-            pieces: vec![Piece::Interval {
-                lo,
-                hi,
-                lo_open,
-                hi_open,
-            }],
+            pieces: vec![Piece::Interval(with_infinite_ends_open(Interval::closed(
+                lo, hi,
+            )))],
         }
     }
 
@@ -220,8 +218,30 @@ impl Support {
         }
     }
 
-    /// A support from explicit pieces.
+    /// A support from explicit pieces.  An interval end at `−∞` / `+∞` is
+    /// made open, as the other constructors do; the pieces are otherwise
+    /// kept as given.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::stats::{Kind, Piece, Support};
+    ///
+    /// let ctx = Context::new();
+    /// let tail = Support::from_pieces(
+    ///     Kind::Continuous,
+    ///     vec![Piece::Interval(Interval::closed(ctx.int(2), ctx.infinity()))],
+    /// );
+    /// assert_eq!(tail.to_string(), "[2, oo)");
+    /// assert_eq!(tail.as_interval().map(|iv| iv.kind), Some(IntervalKind::RightOpen));
+    /// ```
     pub fn from_pieces(kind: Kind, pieces: Vec<Piece>) -> Self {
+        let pieces = pieces
+            .into_iter()
+            .map(|p| match p {
+                Piece::Interval(iv) => Piece::Interval(with_infinite_ends_open(iv)),
+                Piece::Point(v) => Piece::Point(v),
+            })
+            .collect();
         Support { kind, pieces }
     }
 
@@ -248,20 +268,25 @@ impl Support {
 
     /// `true` when the support is a single interval (no points).
     pub fn is_interval(&self) -> bool {
-        matches!(self.pieces.as_slice(), [Piece::Interval { .. }])
+        matches!(self.pieces.as_slice(), [Piece::Interval(_)])
     }
 
-    /// The single interval's ends, when the support is one interval.
-    pub fn as_interval(&self) -> Option<(&Ex, &Ex, bool, bool)> {
+    /// The single interval, when the support is one interval.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::stats::Support;
+    ///
+    /// let ctx = Context::new();
+    /// let half = Support::half_line(ctx.int(0));
+    /// let iv = half.as_interval().unwrap();
+    /// assert_eq!(iv.lower, ctx.int(0));
+    /// assert_eq!(iv.kind, IntervalKind::RightOpen); // [0, oo)
+    /// assert!(Support::points(vec![ctx.int(1)]).as_interval().is_none());
+    /// ```
+    pub fn as_interval(&self) -> Option<&Interval<Ex>> {
         match self.pieces.as_slice() {
-            [
-                Piece::Interval {
-                    lo,
-                    hi,
-                    lo_open,
-                    hi_open,
-                },
-            ] => Some((lo, hi, *lo_open, *hi_open)),
+            [Piece::Interval(iv)] => Some(iv),
             _ => None,
         }
     }
@@ -272,7 +297,7 @@ impl Support {
             .iter()
             .map(|p| match p {
                 Piece::Point(v) => Some(v.clone()),
-                Piece::Interval { .. } => None,
+                Piece::Interval(_) => None,
             })
             .collect()
     }
@@ -284,13 +309,8 @@ impl Support {
         for p in &self.pieces {
             let inside = match p {
                 Piece::Point(w) => w.equals(v),
-                Piece::Interval {
-                    lo,
-                    hi,
-                    lo_open,
-                    hi_open,
-                } => {
-                    let in_interval = interval_contains(lo, hi, *lo_open, *hi_open, v);
+                Piece::Interval(iv) => {
+                    let in_interval = interval_contains(iv, v);
                     if self.kind == Kind::Discrete {
                         match (in_interval, v.is_integer()) {
                             (Some(false), _) | (_, Some(false)) => Some(false),
@@ -323,33 +343,24 @@ impl Support {
             .pieces
             .iter()
             .map(|p| match p {
-                Piece::Interval {
-                    lo,
-                    hi,
-                    lo_open,
-                    hi_open,
-                } => {
-                    let ctx = lo.context();
-                    let lo = if is_neg_inf(lo) {
-                        lo.clone()
-                    } else if *lo_open {
-                        (lo.floor() + ctx.one()).simplify()
+                Piece::Interval(iv) => {
+                    let ctx = iv.lower.context();
+                    let lo = if is_neg_inf(&iv.lower) {
+                        iv.lower.clone()
+                    } else if iv.kind.lower_open() {
+                        (iv.lower.floor() + ctx.one()).simplify()
                     } else {
-                        lo.ceiling().simplify()
+                        iv.lower.ceiling().simplify()
                     };
-                    let hi = if is_pos_inf(hi) {
-                        hi.clone()
-                    } else if *hi_open {
-                        (hi.ceiling() - ctx.one()).simplify()
+                    let hi = if is_pos_inf(&iv.upper) {
+                        iv.upper.clone()
+                    } else if iv.kind.upper_open() {
+                        (iv.upper.ceiling() - ctx.one()).simplify()
                     } else {
-                        hi.floor().simplify()
+                        iv.upper.floor().simplify()
                     };
-                    Piece::Interval {
-                        lo_open: is_neg_inf(&lo),
-                        hi_open: is_pos_inf(&hi),
-                        lo,
-                        hi,
-                    }
+                    // Closed integer ends; only an infinite end stays open.
+                    Piece::Interval(with_infinite_ends_open(Interval::closed(lo, hi)))
                 }
                 Piece::Point(v) => Piece::Point(v.clone()),
             })
@@ -376,32 +387,19 @@ impl Support {
         for a in &me.pieces {
             for b in &other.pieces {
                 match (a, b) {
-                    (
-                        Piece::Interval {
-                            lo: alo,
-                            hi: ahi,
-                            lo_open: alo_o,
-                            hi_open: ahi_o,
-                        },
-                        Piece::Interval {
-                            lo: blo,
-                            hi: bhi,
-                            lo_open: blo_o,
-                            hi_open: bhi_o,
-                        },
-                    ) => {
-                        let (lo, lo_open) = max_lo(alo, *alo_o, blo, *blo_o);
-                        let (hi, hi_open) = min_hi(ahi, *ahi_o, bhi, *bhi_o);
-                        if interval_empty(&lo, &hi, lo_open, hi_open) != Some(true) {
-                            out.push(Piece::Interval {
-                                lo,
-                                hi,
-                                lo_open,
-                                hi_open,
-                            });
+                    (Piece::Interval(ia), Piece::Interval(ib)) => {
+                        let (lo, lo_open) = max_lo(ia, ib);
+                        let (hi, hi_open) = min_hi(ia, ib);
+                        let iv = Interval {
+                            lower: lo,
+                            upper: hi,
+                            kind: IntervalKind::from_open_ends(lo_open, hi_open),
+                        };
+                        if interval_empty(&iv) != Some(true) {
+                            out.push(Piece::Interval(iv));
                         }
                     }
-                    (Piece::Point(v), Piece::Interval { .. }) => {
+                    (Piece::Point(v), Piece::Interval(_)) => {
                         let single = Support::from_pieces(self.kind, vec![b.clone()]);
                         // A table value is a member by listing, so only the
                         // interval test applies (no lattice test).
@@ -410,7 +408,7 @@ impl Support {
                             out.push(Piece::Point(v.clone()));
                         }
                     }
-                    (Piece::Interval { .. }, Piece::Point(v)) => {
+                    (Piece::Interval(_), Piece::Point(v)) => {
                         let single = Support::from_pieces(self.kind, vec![a.clone()]);
                         match single.contains(v) {
                             Some(true) => out.push(Piece::Point(v.clone())),
@@ -442,13 +440,8 @@ impl Support {
         let mut points = Vec::new();
         for p in &self.pieces {
             match p {
-                Piece::Interval {
-                    lo,
-                    hi,
-                    lo_open,
-                    hi_open,
-                } => {
-                    let s = ctx.interval(lo, hi, *lo_open, *hi_open);
+                Piece::Interval(iv) => {
+                    let s = ctx.interval(&iv.lower, &iv.upper, iv.kind);
                     acc = Some(match acc {
                         Some(a) => a.union(&s),
                         None => s,
@@ -480,16 +473,11 @@ impl Support {
         let parts = set.as_intervals()?;
         let pieces = parts
             .into_iter()
-            .map(|(lo, hi, lo_open, hi_open)| {
-                if lo == hi && !lo_open && !hi_open {
-                    Piece::Point(lo)
+            .map(|iv| {
+                if iv.kind == IntervalKind::Closed && iv.lower == iv.upper {
+                    Piece::Point(iv.lower)
                 } else {
-                    Piece::Interval {
-                        lo,
-                        hi,
-                        lo_open,
-                        hi_open,
-                    }
+                    Piece::Interval(iv)
                 }
             })
             .collect();
@@ -506,19 +494,13 @@ impl fmt::Display for Support {
         let mut first = true;
         for p in &self.pieces {
             match p {
-                Piece::Interval {
-                    lo,
-                    hi,
-                    lo_open,
-                    hi_open,
-                } => {
+                Piece::Interval(iv) => {
                     if !first {
                         f.write_str(" ∪ ")?;
                     }
                     first = false;
-                    let l = if *lo_open { "(" } else { "[" };
-                    let r = if *hi_open { ")" } else { "]" };
-                    write!(f, "{l}{lo}, {hi}{r}")?;
+                    // `Interval`'s own `Display` is `[lo, hi]` / `(lo, hi)` / …
+                    write!(f, "{iv}")?;
                 }
                 Piece::Point(v) => points.push(v.to_string()),
             }
@@ -530,10 +512,7 @@ impl fmt::Display for Support {
             write!(f, "{{{}}}", points.join(", "))?;
         }
         if self.kind == Kind::Discrete
-            && self
-                .pieces
-                .iter()
-                .any(|p| matches!(p, Piece::Interval { .. }))
+            && self.pieces.iter().any(|p| matches!(p, Piece::Interval(_)))
         {
             f.write_str(" ∩ ℤ")?;
         }

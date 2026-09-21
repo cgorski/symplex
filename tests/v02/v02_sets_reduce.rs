@@ -131,7 +131,7 @@ fn irrational_roots() {
     assert_eq!(sol.contains(&ctx.rational(3, 2)), Some(false));
     assert_eq!(sol.contains(&ctx.rational(-7, 5)), Some(true));
     // combine with a rational window across the irrational endpoint
-    let window = ctx.interval(&ctx.int(1), &ctx.int(2), false, false);
+    let window = ctx.interval(&ctx.int(1), &ctx.int(2), IntervalKind::Closed);
     assert_eq!(s(&sol.intersection(&window).simplify()), "[1, sqrt(2))");
 }
 
@@ -159,9 +159,9 @@ fn to_condition_roundtrip() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let set = ctx
-        .interval(&ctx.int(0), &ctx.int(1), true, false)
+        .interval(&ctx.int(0), &ctx.int(1), IntervalKind::LeftOpen)
         .union(&ctx.finite_set(&[ctx.int(3)]))
-        .union(&ctx.interval(&ctx.int(5), &ctx.infinity(), false, true));
+        .union(&ctx.interval(&ctx.int(5), &ctx.infinity(), IntervalKind::RightOpen));
     let cond = set.to_condition(&x).unwrap();
     let d = s(&cond);
     assert!(
@@ -174,7 +174,7 @@ fn to_condition_roundtrip() {
     assert_eq!(s(&ctx.empty_set().to_condition(&x).unwrap()), "False");
     // symbolic set → symbolic condition
     let y = ctx.symbol("y");
-    let sym = ctx.interval(&y, &(&y + 1), false, true);
+    let sym = ctx.interval(&y, &(&y + 1), IntervalKind::RightOpen);
     assert_eq!(s(&sym.to_condition(&x).unwrap()), "x >= y & y + 1 > x");
     // complement → and-not
     let c = ctx.reals().complement(&ctx.finite_set(&[ctx.int(0)]));

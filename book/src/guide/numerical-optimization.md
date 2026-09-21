@@ -95,7 +95,7 @@ fn main() {
 
 ## Scalar minimisation
 
-`minimize_scalar(f, a, b, &opts)` is Brent's `localmin` (golden-section steps plus parabolic interpolation) and `golden_section` is the pure golden-section search — slower but immune to parabolic mis-steps. Both return `(x_min, f_min)`; the interval may be reversed. On an `Ex`: `minimize_scalar_numeric(&x, a, b)`.
+`minimize_scalar(f, a, b, &opts)` is Brent's `localmin` (golden-section steps plus parabolic interpolation) and `golden_section` is the pure golden-section search — slower but immune to parabolic mis-steps. Both return a `ScalarMinimum { x, value }` (the minimiser and the objective there); the interval may be reversed. On an `Ex`: `minimize_scalar_numeric(&x, a, b)`.
 
 ```rust
 use symplex::prelude::*;
@@ -107,23 +107,23 @@ fn main() {
 
     // x·ln x has its minimum −1/e at x = 1/e.
     let g = |t: f64| t * t.ln();
-    let (xb, fb) = minimize_scalar(g, 0.1, 2.0, &MinimizeOpts::default()).unwrap();
-    let (xg, fg) = golden_section(g, 0.1, 2.0, &MinimizeOpts::default()).unwrap();
-    println!("{xb:.10} {fb:.12}");            // 0.3678794418 -0.367879441171
-    println!("{xg:.10} {fg:.12}");            // 0.3678794415 -0.367879441171
-    println!("{:.10}", (-1.0f64).exp());      // 0.3678794412
+    let brent = minimize_scalar(g, 0.1, 2.0, &MinimizeOpts::default()).unwrap();
+    let golden = golden_section(g, 0.1, 2.0, &MinimizeOpts::default()).unwrap();
+    println!("{:.10} {:.12}", brent.x, brent.value);    // 0.3678794418 -0.367879441171
+    println!("{:.10} {:.12}", golden.x, golden.value);  // 0.3678794415 -0.367879441171
+    println!("{:.10}", (-1.0f64).exp());                // 0.3678794412
 
     // Γ has its minimum on (0, ∞) near 1.4616.
-    let (xm, fm) = x.gamma().minimize_scalar_numeric(&x, 1.0, 2.0).unwrap();
-    println!("{xm:.8} {fm:.10}");             // 1.46163212 0.8856031944
+    let m = x.gamma().minimize_scalar_numeric(&x, 1.0, 2.0).unwrap();
+    println!("{:.8} {:.10}", m.x, m.value);             // 1.46163212 0.8856031944
 }
 ```
 
-The location is only resolved to about `√ε·|x| ≈ 1e-8` relative — the objective is flat to rounding on that scale, which is why `x_min` above agrees with `1/e` to ten digits but not fifteen, while `f_min` is correct to twelve.
+The location is only resolved to about `√ε·|x| ≈ 1e-8` relative — the objective is flat to rounding on that scale, which is why `x` above agrees with `1/e` to ten digits but not fifteen, while `value` is correct to twelve.
 
 ## Differential evolution (deterministic)
 
-`differential_evolution(f, &bounds, &opts)` is `DE/rand/1/bin` — Latin-hypercube initialisation, one trial vector per member from three distinct others, binomial crossover, clipping to the box — followed by a Nelder–Mead polish of the best member. Every evaluation point, including during the polish, lies inside `bounds`. `DeOpts::default()` is population `max(15n, 8)`, 300 generations, `CR = 0.7`, `F = 0.8`, `tol = 1e-8`, `seed = 0`. On an `Ex`: `minimize_global_numeric(&vars, &bounds, &opts)`.
+`differential_evolution(f, &bounds, &opts)` is `DE/rand/1/bin` — Latin-hypercube initialisation, one trial vector per member from three distinct others, binomial crossover, clipping to the box — followed by a Nelder–Mead polish of the best member. `bounds` is a slice of closed `Interval<f64>`s, one per coordinate (`Interval::closed(lo, hi)` or `(lo..=hi).into()`; an open or half-open kind is rejected, since trial points are clamped onto the endpoints). Every evaluation point, including during the polish, lies inside `bounds`. `DeOpts::default()` is population `max(15n, 8)`, 300 generations, `CR = 0.7`, `F = 0.8`, `tol = 1e-8`, `seed = 0`. On an `Ex`: `minimize_global_numeric(&vars, &bounds, &opts)`.
 
 ```rust
 use std::f64::consts::PI;
@@ -138,7 +138,7 @@ fn main() {
     let rastrigin = |p: &[f64]| {
         10.0 * p.len() as f64 + p.iter().map(|v| v * v - 10.0 * (2.0 * PI * v).cos()).sum::<f64>()
     };
-    let bounds = [(-5.12, 5.12), (-5.12, 5.12)];
+    let bounds = [Interval::closed(-5.12, 5.12), Interval::closed(-5.12, 5.12)];
     let r = differential_evolution(rastrigin, &bounds, &DeOpts::default()).unwrap();
     println!("f = {:.2e}, |x| < 1e-6: {}, generations {}, evaluations {}, converged {}",
         r.fun, r.x.iter().all(|v| v.abs() < 1e-6), r.iterations, r.evaluations, r.converged);
@@ -152,11 +152,14 @@ fn main() {
 
     // Himmelblau's function has four global minima with f = 0.
     let h = (&x.powi(2) + &y - 11).powi(2) + (&x + &y.powi(2) - 7).powi(2);
-    let r = h.minimize_global_numeric(&[&x, &y], &[(-5.0, 5.0), (-5.0, 5.0)], &DeOpts::default()).unwrap();
+    let square = [Interval::closed(-5.0, 5.0), Interval::closed(-5.0, 5.0)];
+    let r = h.minimize_global_numeric(&[&x, &y], &square, &DeOpts::default()).unwrap();
     println!("f = {:.2e} at ({:.4}, {:.4})", r.fun, r.x[0], r.x[1]);       // f = 4.52e-16 at (3.0000, 2.0000)
 
-    println!("{}", differential_evolution(rastrigin, &[(1.0, -1.0)], &DeOpts::default()).unwrap_err());
-    // differential_evolution: invalid argument: each bound must be a finite (lo, hi) pair with lo <= hi, got (1, -1)
+    println!("{}", differential_evolution(rastrigin, &[Interval::closed(1.0, -1.0)], &DeOpts::default()).unwrap_err());
+    // differential_evolution: invalid argument: each bound must be a finite interval with lower <= upper, got [1, -1]
+    println!("{}", differential_evolution(rastrigin, &[Interval::open(-1.0, 1.0)], &DeOpts::default()).unwrap_err());
+    // differential_evolution: invalid argument: each bound must be a closed interval [lower, upper], got (-1, 1)
 }
 ```
 
@@ -164,13 +167,13 @@ Which of Himmelblau's four minima is found depends on the seed; the values print
 
 ## Fitting: floating point versus exact
 
-`poly_fit(&xs, &ys, degree)` is a backward-stable least-squares fit (column-scaled Vandermonde, Householder QR; the normal equations are never formed) returning **ascending** coefficients; `eval_poly(&c, x)` evaluates them by Horner's rule and `linear_fit` returns `(slope, intercept)`. `poly_fit_exact(&points, degree)` solves the normal equations over ℚ, so for consistent data it recovers the exact polynomial, and for inconsistent data the exact least-squares solution. `Ex::poly_fit_points(&ctx, &points, &x, degree)` is the same thing returning an `Ex`.
+`poly_fit(&xs, &ys, degree)` is a backward-stable least-squares fit (column-scaled Vandermonde, Householder QR; the normal equations are never formed) returning **ascending** coefficients; `eval_poly(&c, x)` evaluates them by Horner's rule and `linear_fit` returns a `LinearFit { slope, intercept }`. `poly_fit_exact(&points, degree)` solves the normal equations over ℚ, so for consistent data it recovers the exact polynomial, and for inconsistent data the exact least-squares solution. `Ex::poly_fit_points(&ctx, &points, &x, degree)` is the same thing returning an `Ex`.
 
 ```rust
 use num_bigint::BigInt;
 use num_rational::Ratio;
 use symplex::prelude::*;
-use symplex::optimize::{eval_poly, linear_fit, poly_fit, poly_fit_exact};
+use symplex::optimize::{LinearFit, eval_poly, linear_fit, poly_fit, poly_fit_exact};
 
 fn main() {
     let ctx = Context::new();
@@ -186,7 +189,7 @@ fn main() {
     println!("{}", poly_fit(&[0.0, 1.0], &[0.0, 1.0], 2).unwrap_err());
     // poly_fit: invalid argument: degree 2 needs at least 3 points, got 2
 
-    let (slope, intercept) = linear_fit(&[0.0, 1.0, 2.0, 3.0], &[1.0, 0.0, 4.0, 2.0]).unwrap();
+    let LinearFit { slope, intercept } = linear_fit(&[0.0, 1.0, 2.0, 3.0], &[1.0, 0.0, 4.0, 2.0]).unwrap();
     println!("{slope:.12} {intercept:.12}");                            // 0.700000000000 0.700000000000
 
     // The same six samples over ℚ: exact recovery.

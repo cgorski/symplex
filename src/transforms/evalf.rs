@@ -1097,7 +1097,8 @@ fn eval_node(
                 })?;
             let f = |t: f64| func(&[t]);
             let opts = crate::calculus::definite::QuadOpts::default();
-            let (value, err) = crate::calculus::definite::quadrature(&f, a, b, &opts)?;
+            let crate::calculus::definite::QuadResult { value, error: err } =
+                crate::calculus::definite::quadrature(&f, a, b, &opts)?;
             let tol = opts.abs_tol.max(opts.rel_tol * value.abs());
             if err > 1e3 * tol {
                 return Err(SymplexError::ComputationFailed {

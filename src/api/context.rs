@@ -490,10 +490,11 @@ impl Context {
         self.make_set_ex(id)
     }
 
-    /// Create an interval with explicit open/closed flags.
+    /// Create an interval between two endpoints, included or excluded
+    /// according to `kind` (`[a, b]`, `(a, b)`, `(a, b]` or `[a, b)`).
     ///
-    /// `left_open = true` means the left endpoint is excluded (open bracket).
-    /// `right_open = true` means the right endpoint is excluded (open bracket).
+    /// An [`Interval<Ex>`](crate::Interval) converts with
+    /// [`Interval::to_set`](crate::Interval::to_set).
     ///
     /// # Examples
     ///
@@ -502,27 +503,30 @@ impl Context {
     ///
     /// let ctx = Context::new();
     /// // Closed interval [0, 1]
-    /// let i = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    /// let i = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
     /// let s = format!("{i}");
     /// assert!(s.contains("[") && s.contains("]"), "closed interval: {s}");
     ///
     /// // Open interval (0, 1)
-    /// let i = ctx.interval(&ctx.int(0), &ctx.int(1), true, true);
+    /// let i = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Open);
     /// let s = format!("{i}");
     /// assert!(s.contains("(") && s.contains(")"), "open interval: {s}");
+    ///
+    /// // Half-open (0, 1]
+    /// let i = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::LeftOpen);
+    /// assert_eq!(format!("{i}"), "(0, 1]");
     /// ```
     pub fn interval(
         &self,
         start: &crate::api::expr::Ex,
         end: &crate::api::expr::Ex,
-        left_open: bool,
-        right_open: bool,
+        kind: crate::base::interval::IntervalKind,
     ) -> crate::api::expr::SetEx {
         let mut flags: u8 = 0;
-        if left_open {
+        if kind.lower_open() {
             flags |= crate::base::node::INTERVAL_LEFT_OPEN;
         }
-        if right_open {
+        if kind.upper_open() {
             flags |= crate::base::node::INTERVAL_RIGHT_OPEN;
         }
         let id = self

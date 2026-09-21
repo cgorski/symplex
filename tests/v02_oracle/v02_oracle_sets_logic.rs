@@ -63,12 +63,12 @@ fn build_set(ctx: &Context, tree: &Value) -> Result<SetEx, String> {
     if let Some(iv) = obj.get("interval").and_then(Value::as_array) {
         let lo = parse(ctx, iv[0].as_str().ok_or("bad lo")?)?;
         let hi = parse(ctx, iv[1].as_str().ok_or("bad hi")?)?;
-        return Ok(ctx.interval(
-            &lo,
-            &hi,
+        // Fixture layout: `[lo, hi, left_open, right_open]`.
+        let kind = IntervalKind::from_open_ends(
             iv[2].as_bool().unwrap_or(false),
             iv[3].as_bool().unwrap_or(false),
-        ));
+        );
+        return Ok(ctx.interval(&lo, &hi, kind));
     }
     if let Some(els) = obj.get("finite").and_then(Value::as_array) {
         let elems: Result<Vec<Ex>, String> = els

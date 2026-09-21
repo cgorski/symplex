@@ -19,6 +19,7 @@ use tracing::debug_span;
 
 use crate::api::expr::{BoolEx, Boolean, Ex, Expr, Numeric, SetEx, SetValued};
 use crate::base::errors::SymplexError;
+use crate::base::interval::Interval;
 use crate::base::node::ExprId;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -40,15 +41,15 @@ impl Expr<SetValued> {
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
-    /// let a = ctx.interval(&ctx.int(0), &ctx.int(2), false, false);
-    /// let b = ctx.interval(&ctx.int(1), &ctx.int(3), false, false);
+    /// let a = ctx.interval(&ctx.int(0), &ctx.int(2), IntervalKind::Closed);
+    /// let b = ctx.interval(&ctx.int(1), &ctx.int(3), IntervalKind::Closed);
     /// assert_eq!(format!("{}", a.intersection(&b).simplify()), "[1, 2]");
     /// assert_eq!(format!("{}", a.union(&b).simplify()), "[0, 3]");
     ///
     /// // Solver output: (−∞,−2) ∪ (2,∞) intersected with [0, 5] → (2, 5]
     /// let x = ctx.symbol("x");
     /// let sol = (&x.powi(2) - 4).solve_gt(&x);
-    /// let window = ctx.interval(&ctx.int(0), &ctx.int(5), false, false);
+    /// let window = ctx.interval(&ctx.int(0), &ctx.int(5), IntervalKind::Closed);
     /// assert_eq!(format!("{}", sol.intersection(&window).simplify()), "(2, 5]");
     /// ```
     #[must_use = "returns the simplified form; does not modify in place"]
@@ -78,8 +79,8 @@ impl Expr<SetValued> {
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
-    /// let a = ctx.interval(&ctx.int(0), &ctx.int(3), false, false);
-    /// let b = ctx.interval(&ctx.int(1), &ctx.int(2), false, false);
+    /// let a = ctx.interval(&ctx.int(0), &ctx.int(3), IntervalKind::Closed);
+    /// let b = ctx.interval(&ctx.int(1), &ctx.int(2), IntervalKind::Closed);
     /// assert_eq!(format!("{}", a.difference(&b)), "[0, 1) ∪ (2, 3]");
     /// ```
     #[must_use = "returns a new expression; does not modify in place"]
@@ -101,8 +102,8 @@ impl Expr<SetValued> {
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
-    /// let a = ctx.interval(&ctx.int(0), &ctx.int(2), false, false);
-    /// let b = ctx.interval(&ctx.int(1), &ctx.int(3), false, false);
+    /// let a = ctx.interval(&ctx.int(0), &ctx.int(2), IntervalKind::Closed);
+    /// let b = ctx.interval(&ctx.int(1), &ctx.int(3), IntervalKind::Closed);
     /// assert_eq!(format!("{}", a.symmetric_difference(&b)), "[0, 1) ∪ (2, 3]");
     /// ```
     #[must_use = "returns a new expression; does not modify in place"]
@@ -123,7 +124,7 @@ impl Expr<SetValued> {
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
-    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, true);
+    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::RightOpen);
     /// assert_eq!(format!("{}", a.absolute_complement()), "(-oo, 0) ∪ [1, oo)");
     /// assert_eq!(format!("{}", ctx.empty_set().absolute_complement()), "(-oo, oo)");
     /// ```
@@ -152,7 +153,7 @@ impl Expr<SetValued> {
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
-    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), true, false); // (0, 1]
+    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::LeftOpen); // (0, 1]
     /// assert_eq!(a.contains(&ctx.int(0)), Some(false));
     /// assert_eq!(a.contains(&ctx.int(1)), Some(true));
     /// assert_eq!(a.contains(&ctx.rational(1, 2)), Some(true));
@@ -173,8 +174,8 @@ impl Expr<SetValued> {
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
-    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
-    /// let b = ctx.interval(&ctx.int(-1), &ctx.int(2), true, true);
+    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
+    /// let b = ctx.interval(&ctx.int(-1), &ctx.int(2), IntervalKind::Open);
     /// assert_eq!(a.is_subset(&b), Some(true));
     /// assert_eq!(b.is_subset(&a), Some(false));
     /// ```
@@ -199,8 +200,8 @@ impl Expr<SetValued> {
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
-    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, true); // [0, 1)
-    /// let b = ctx.interval(&ctx.int(1), &ctx.int(2), false, false); // [1, 2]
+    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::RightOpen); // [0, 1)
+    /// let b = ctx.interval(&ctx.int(1), &ctx.int(2), IntervalKind::Closed); // [1, 2]
     /// assert_eq!(a.is_disjoint(&b), Some(true));
     /// ```
     #[must_use]
@@ -218,8 +219,8 @@ impl Expr<SetValued> {
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
-    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
-    /// let b = ctx.interval(&ctx.int(2), &ctx.int(3), false, false);
+    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
+    /// let b = ctx.interval(&ctx.int(2), &ctx.int(3), IntervalKind::Closed);
     /// assert_eq!(a.intersection(&b).is_empty(), Some(true));
     /// assert_eq!(a.is_empty(), Some(false));
     /// ```
@@ -240,7 +241,7 @@ impl Expr<SetValued> {
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
-    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), true, true);
+    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Open);
     /// let b = ctx.finite_set(&[ctx.int(5)]);
     /// let u = a.union(&b);
     /// assert_eq!(format!("{}", u.inf().unwrap()), "0");
@@ -275,8 +276,8 @@ impl Expr<SetValued> {
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
-    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
-    /// let b = ctx.interval(&ctx.int(2), &ctx.rational(5, 2), true, true);
+    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
+    /// let b = ctx.interval(&ctx.int(2), &ctx.rational(5, 2), IntervalKind::Open);
     /// assert_eq!(format!("{}", a.union(&b).measure().unwrap()), "3/2");
     /// assert_eq!(format!("{}", ctx.reals().measure().unwrap()), "oo");
     /// ```
@@ -298,7 +299,7 @@ impl Expr<SetValued> {
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
-    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), true, true);
+    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Open);
     /// assert_eq!(format!("{}", a.boundary().unwrap()), "{0, 1}");
     /// assert_eq!(format!("{}", a.closure().unwrap()), "[0, 1]");
     /// assert_eq!(format!("{}", a.closure().unwrap().interior().unwrap()), "(0, 1)");
@@ -340,7 +341,7 @@ impl Expr<SetValued> {
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
-    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), true, true);
+    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Open);
     /// assert_eq!(a.is_open(), Some(true));
     /// assert_eq!(a.is_closed(), Some(false));
     /// assert_eq!(ctx.reals().is_open(), Some(true));
@@ -359,10 +360,10 @@ impl Expr<SetValued> {
         crate::transforms::sets::is_closed(&mut inner.arena, self.raw_id())
     }
 
-    /// Normal-form accessor: the pieces of the set as
-    /// `(lo, hi, lo_open, hi_open)` in ascending order.  Isolated points
-    /// appear as `(p, p, false, false)`.  `None` when the set cannot be
-    /// evaluated to normal form.
+    /// Normal-form accessor: the pieces of the set as [`Interval<Ex>`]s in
+    /// ascending order (an unbounded end is `±∞` and open there).  Isolated
+    /// points appear as `Interval::point(p)`.  `None` when the set cannot
+    /// be evaluated to normal form.
     ///
     /// # Examples
     ///
@@ -374,12 +375,14 @@ impl Expr<SetValued> {
     /// let sol = (&x.powi(2) - 4).solve_gt(&x); // (−∞, −2) ∪ (2, ∞)
     /// let parts = sol.as_intervals().unwrap();
     /// assert_eq!(parts.len(), 2);
-    /// assert_eq!(format!("{}", parts[0].0), "-oo");
-    /// assert_eq!(format!("{}", parts[0].1), "-2");
-    /// assert!(parts[0].2 && parts[0].3);
+    /// assert_eq!(format!("{}", parts[0].lower), "-oo");
+    /// assert_eq!(format!("{}", parts[0].upper), "-2");
+    /// assert_eq!(parts[0].kind, IntervalKind::Open);
+    /// // and back to a set:
+    /// assert_eq!(format!("{}", parts[1].to_set()), "(2, oo)");
     /// ```
     #[must_use]
-    pub fn as_intervals(&self) -> Option<Vec<(Ex, Ex, bool, bool)>> {
+    pub fn as_intervals(&self) -> Option<Vec<Interval<Ex>>> {
         let parts = {
             let mut inner = self.inner.write();
             crate::transforms::sets::as_intervals(&mut inner.arena, self.raw_id())?
@@ -387,14 +390,7 @@ impl Expr<SetValued> {
         Some(
             parts
                 .into_iter()
-                .map(|(lo, hi, lo_open, hi_open)| {
-                    (
-                        self.wrap_as::<Numeric>(lo),
-                        self.wrap_as::<Numeric>(hi),
-                        lo_open,
-                        hi_open,
-                    )
-                })
+                .map(|iv| iv.map(|id| self.wrap_as::<Numeric>(id)))
                 .collect(),
         )
     }
@@ -444,7 +440,7 @@ impl Expr<SetValued> {
     ///
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
-    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), true, false);
+    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::LeftOpen);
     /// let cond = a.to_condition(&x).unwrap();
     /// assert_eq!(format!("{cond}"), "x > 0 & 1 >= x");
     /// // and back again:
@@ -508,6 +504,32 @@ impl Expr<SetValued> {
 /// details, errors and examples.
 pub fn reduce_inequalities(conds: &[BoolEx], var: &Ex) -> Result<SetEx, SymplexError> {
     SetEx::reduce_inequalities(conds, var)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// impl Interval<Ex>
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl Interval<Ex> {
+    /// The interval as a set expression, in the lower endpoint's context;
+    /// the inverse of [`SetEx::as_intervals`] on one piece.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let iv = Interval::left_open(ctx.int(0), ctx.int(1)); // (0, 1]
+    /// assert_eq!(format!("{}", iv.to_set()), "(0, 1]");
+    /// assert_eq!(iv.to_set(), ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::LeftOpen));
+    /// ```
+    #[must_use]
+    pub fn to_set(&self) -> SetEx {
+        self.lower
+            .context()
+            .interval(&self.lower, &self.upper, self.kind)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -311,7 +311,7 @@ pub mod prelude {
     pub use crate::base::config::EvalConfig;
     pub use crate::base::errors::SymplexError;
     pub use crate::base::interval::{Bounds, Interval, IntervalKind};
-    pub use crate::calculus::definite::QuadOpts;
+    pub use crate::calculus::definite::{QuadOpts, QuadResult};
     pub use crate::calculus::formal_series::FormalPowerSeries;
     pub use crate::domains::control::{StateSpace, TransferFunction};
     pub use crate::domains::linprog::{Feasibility, LpProblem, LpSolution, LpStatus, Q};

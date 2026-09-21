@@ -35,6 +35,7 @@ use std::cmp::Ordering;
 use crate::api::expr::{BoolEx, Ex, ExprType, SetEx, SetValued};
 use crate::api::poly_ex::Poly;
 use crate::base::errors::SymplexError;
+use crate::base::interval::{Interval, IntervalKind};
 use crate::base::node::ExprNode;
 use crate::calculus::calculus_util as util;
 use crate::calculus::limit::Direction;
@@ -112,18 +113,26 @@ fn is_real_finite_point(p: &Ex) -> bool {
     true
 }
 
-/// Finite `f64` bounds of `domain`, or `None` when it is unbounded or its
-/// bounds are not numeric.
-fn numeric_bounds(domain: &SetEx) -> Option<(f64, f64)> {
+/// Finite `f64` bounds of `domain` (its infimum and supremum, open or
+/// closed as the outermost pieces of the set are), or `None` when it is
+/// empty, unbounded or its bounds are not numeric.
+fn numeric_bounds(domain: &SetEx) -> Option<Interval<f64>> {
     let ctx = domain.context();
-    let lo = domain.inf()?;
-    let hi = domain.sup()?;
-    if lo == ctx.neg_infinity() || hi == ctx.infinity() {
+    // Normal form is ascending and disjoint, so the first piece's lower
+    // end is `inf` and the last piece's upper end is `sup`.
+    let parts = domain.as_intervals()?;
+    let first = parts.first()?;
+    let last = parts.last()?;
+    if first.lower == ctx.neg_infinity() || last.upper == ctx.infinity() {
         return None;
     }
-    let lo = lo.eval_f64().ok()?;
-    let hi = hi.eval_f64().ok()?;
-    (lo.is_finite() && hi.is_finite()).then_some((lo, hi))
+    let lo = first.lower.eval_f64().ok()?;
+    let hi = last.upper.eval_f64().ok()?;
+    (lo.is_finite() && hi.is_finite()).then_some(Interval {
+        lower: lo,
+        upper: hi,
+        kind: IntervalKind::from_open_ends(first.kind.lower_open(), last.kind.upper_open()),
+    })
 }
 
 /// `{var | cond}` as a set expression.
@@ -149,11 +158,14 @@ fn condition_set(var: &Ex, cond: &BoolEx) -> SetEx {
 fn enumerate_family(
     member: &Ex,
     param: &Ex,
-    (lo, hi): (f64, f64),
+    bounds: Interval<f64>,
     domain: &SetEx,
     op: &'static str,
     out: &mut Vec<Ex>,
 ) -> Result<(), SymplexError> {
+    // Only the numeric range matters here: every candidate is tested
+    // exactly against `domain` below, which is where openness is decided.
+    let (lo, hi) = bounds.into_pair();
     let step = member.diff(param).eval();
     let offset = member.subs_i64(param, 0).eval();
     if step.contains(param) {
@@ -641,20 +653,25 @@ impl Ex {
     }
 
     /// Every value that can be the supremum or infimum of `self` on the
-    /// interval `(lo, hi)` with the given openness: stationary points,
-    /// `abs` kinks, closed endpoints (attained) and one-sided limits at
-    /// open or infinite endpoints (not attained).
+    /// interval `part`: stationary points, `abs` kinks, closed endpoints
+    /// (attained) and one-sided limits at open or infinite endpoints (not
+    /// attained).
     fn candidates_on(
         &self,
         var: &Ex,
-        (lo, hi, lo_open, hi_open): (&Ex, &Ex, bool, bool),
+        part: Interval<&Ex>,
         op: &'static str,
     ) -> Result<Vec<Candidate>, SymplexError> {
         let ctx = self.context();
+        let Interval {
+            lower: lo,
+            upper: hi,
+            kind,
+        } = part;
         if lo == hi {
             return Ok(vec![self.value_at(var, lo, None, op)?]);
         }
-        let part = ctx.interval(lo, hi, lo_open, hi_open);
+        let part = ctx.interval(lo, hi, kind);
         let mut cands = Vec::new();
 
         // Interior critical points: stationary points and |g| kinks.
@@ -687,11 +704,11 @@ impl Ex {
                 // continuous with zero derivative on it, hence constant
                 // there, and one interior point carries the (attained)
                 // value.
-                for (a, b, _, _) in pieces {
-                    let p = if a == b {
-                        a
+                for piece in pieces {
+                    let p = if piece.lower == piece.upper {
+                        piece.lower
                     } else {
-                        interior_point(&ctx, &a, &b)
+                        interior_point(&ctx, &piece.lower, &piece.upper)
                     };
                     cands.push(self.value_at(var, &p, None, op)?);
                 }
@@ -703,9 +720,10 @@ impl Ex {
             }
         }
 
-        // Endpoints.
-        let lo_limit = (lo_open || *lo == ctx.neg_infinity()).then_some(Direction::Right);
-        let hi_limit = (hi_open || *hi == ctx.infinity()).then_some(Direction::Left);
+        // Endpoints: a closed finite end is attained, an open or infinite
+        // one contributes a one-sided limit.
+        let lo_limit = (kind.lower_open() || *lo == ctx.neg_infinity()).then_some(Direction::Right);
+        let hi_limit = (kind.upper_open() || *hi == ctx.infinity()).then_some(Direction::Left);
         cands.push(self.value_at(var, lo, lo_limit, op)?);
         cands.push(self.value_at(var, hi, hi_limit, op)?);
         Ok(cands)
@@ -733,8 +751,8 @@ impl Ex {
         }
         self.require_continuous(var, domain, op)?;
         let mut cands = Vec::new();
-        for (lo, hi, lo_open, hi_open) in &parts {
-            cands.extend(self.candidates_on(var, (lo, hi, *lo_open, *hi_open), op)?);
+        for part in &parts {
+            cands.extend(self.candidates_on(var, part.as_ref(), op)?);
         }
         let (lo, hi) = min_max(cands, op)?;
         Ok(if want_max { hi.value } else { lo.value })
@@ -745,14 +763,15 @@ impl Ex {
 // Monotonicity
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Is the polynomial `p` strictly positive on the interval `(lo, hi)` with
-/// the given openness?  Exact: a Sturm count of the roots inside the
-/// closed interval, discounting roots at open endpoints.
-fn poly_positive_on(
-    p: &Poly,
-    var: &Ex,
-    (lo, hi, lo_open, hi_open): (&Ex, &Ex, bool, bool),
-) -> Option<bool> {
+/// Is the polynomial `p` strictly positive on the interval `part`?  Exact:
+/// a Sturm count of the roots inside the closed interval, discounting
+/// roots at open endpoints.
+fn poly_positive_on(p: &Poly, var: &Ex, part: Interval<&Ex>) -> Option<bool> {
+    let Interval {
+        lower: lo,
+        upper: hi,
+        kind,
+    } = part;
     if p.is_positive_on(lo, hi) == Some(true) {
         return Some(true);
     }
@@ -764,10 +783,10 @@ fn poly_positive_on(
     let mut roots = p.count_real_roots_in(lo, hi)?;
     let e = p.to_ex();
     let vanishes_at = |pt: &Ex| e.subs(var, pt).eval().is_zero_structural();
-    if lo_open && *lo != ctx.neg_infinity() && vanishes_at(lo) {
+    if kind.lower_open() && *lo != ctx.neg_infinity() && vanishes_at(lo) {
         roots = roots.saturating_sub(1);
     }
-    if hi_open && *hi != ctx.infinity() && lo != hi && vanishes_at(hi) {
+    if kind.upper_open() && *hi != ctx.infinity() && lo != hi && vanishes_at(hi) {
         roots = roots.saturating_sub(1);
     }
     Some(roots == 0)
@@ -777,12 +796,7 @@ fn poly_positive_on(
 /// function `d = num/den` in `var` with rational coefficients.  With
 /// `strict`, additionally requires `d` not to vanish identically (its
 /// zeros are then isolated).  `None` when the route does not apply.
-fn rational_nonneg_on(
-    d: &Ex,
-    var: &Ex,
-    parts: &[(Ex, Ex, bool, bool)],
-    strict: bool,
-) -> Option<bool> {
+fn rational_nonneg_on(d: &Ex, var: &Ex, parts: &[Interval<Ex>], strict: bool) -> Option<bool> {
     let (num, den) = d.as_numer_denom();
     let pn = Poly::new(&num, &[var])?;
     let pd = Poly::new(&den, &[var])?;
@@ -791,23 +805,22 @@ fn rational_nonneg_on(
     }
     let neg_pn = pn.neg();
     let neg_pd = pd.neg();
-    for (lo, hi, lo_open, hi_open) in parts {
-        let part = (lo, hi, *lo_open, *hi_open);
-        let signed_num = if poly_positive_on(&pd, var, part)? {
+    for part in parts {
+        let signed_num = if poly_positive_on(&pd, var, part.as_ref())? {
             &pn
-        } else if poly_positive_on(&neg_pd, var, part)? {
+        } else if poly_positive_on(&neg_pd, var, part.as_ref())? {
             &neg_pn
         } else {
             // The denominator changes sign or vanishes inside the interval.
             return None;
         };
-        if !signed_num.is_nonnegative_on(lo, hi)? {
+        if !signed_num.is_nonnegative_on(&part.lower, &part.upper)? {
             return Some(false);
         }
     }
     if strict && pn.is_zero() {
         // Identically zero: not strict unless every part is a single point.
-        return Some(parts.iter().all(|(lo, hi, _, _)| lo == hi));
+        return Some(parts.iter().all(|part| part.lower == part.upper));
     }
     Some(true)
 }
@@ -815,7 +828,7 @@ fn rational_nonneg_on(
 /// Is `f` continuous at every finite closed endpoint of `parts`, i.e. is
 /// `f(e)` a finite real value equal to the one-sided limit from inside the
 /// interval?  (Isolated points need no check.)
-fn continuous_at_closed_endpoints(f: &Ex, var: &Ex, parts: &[(Ex, Ex, bool, bool)]) -> bool {
+fn continuous_at_closed_endpoints(f: &Ex, var: &Ex, parts: &[Interval<Ex>]) -> bool {
     let ctx = f.context();
     let check = |e: &Ex, dir: Direction| -> bool {
         let value = f.subs(var, e).eval();
@@ -825,10 +838,13 @@ fn continuous_at_closed_endpoints(f: &Ex, var: &Ex, parts: &[(Ex, Ex, bool, bool
         f.try_limit_dir(var, e, dir)
             .is_ok_and(|lim| lim.equals(&value) == Some(true))
     };
-    parts.iter().all(|(lo, hi, lo_open, hi_open)| {
+    parts.iter().all(|part| {
+        let (lo, hi) = (&part.lower, &part.upper);
         lo == hi
-            || ((*lo_open || *lo == ctx.neg_infinity() || check(lo, Direction::Right))
-                && (*hi_open || *hi == ctx.infinity() || check(hi, Direction::Left)))
+            || ((part.kind.lower_open()
+                || *lo == ctx.neg_infinity()
+                || check(lo, Direction::Right))
+                && (part.kind.upper_open() || *hi == ctx.infinity() || check(hi, Direction::Left)))
     })
 }
 
@@ -896,7 +912,7 @@ fn monotone_on(f: &Ex, var: &Ex, domain: &SetEx, strict: bool) -> Option<bool> {
         return Some(true);
     }
     if d.is_zero_structural() {
-        return Some(!strict || parts.iter().all(|(lo, hi, _, _)| lo == hi));
+        return Some(!strict || parts.iter().all(|part| part.lower == part.upper));
     }
     // The sign of `f'` on either side of an interior pole says nothing
     // about monotonicity across it.
@@ -1008,7 +1024,7 @@ impl Ex {
     /// // Polynomials have none.
     /// assert_eq!(x.powi(2).singularities(&x, None).unwrap().is_empty(), Some(true));
     /// // Restricted to a domain.
-    /// let dom = ctx.interval(&ctx.int(0), &ctx.int(5), false, false);
+    /// let dom = ctx.interval(&ctx.int(0), &ctx.int(5), IntervalKind::Closed);
     /// assert_eq!((1 / (&x.powi(2) - 1)).singularities(&x, Some(&dom)).unwrap().to_string(), "{1}");
     /// ```
     pub fn singularities(&self, var: &Ex, domain: Option<&SetEx>) -> Result<SetEx, SymplexError> {
@@ -1070,15 +1086,15 @@ impl Ex {
     /// // SymPy: stationary_points(x**3 - 3*x, x) == {-1, 1}
     /// assert_eq!(f.stationary_points(&x, None).unwrap().to_string(), "{-1, 1}");
     /// // SymPy: stationary_points(x**3 - 3*x, x, Interval(0, 5)) == {1}
-    /// let dom = ctx.interval(&ctx.int(0), &ctx.int(5), false, false);
+    /// let dom = ctx.interval(&ctx.int(0), &ctx.int(5), IntervalKind::Closed);
     /// assert_eq!(f.stationary_points(&x, Some(&dom)).unwrap().to_string(), "{1}");
     /// // SymPy: stationary_points(sin(x), x, Interval(0, 2*pi)) == {pi/2, 3*pi/2}
-    /// let two_pi = ctx.interval(&ctx.int(0), &(&ctx.pi() * 2), false, false);
+    /// let two_pi = ctx.interval(&ctx.int(0), &(&ctx.pi() * 2), IntervalKind::Closed);
     /// let sp = x.sin().stationary_points(&x, Some(&two_pi)).unwrap();
     /// assert_eq!(sp.as_finite_set().unwrap().len(), 2);
     /// // SymPy: stationary_points(Abs(x - 1) + x**2, x, Interval(-1, 2)) == {1/2}
     /// let g = (&x - 1).abs() + x.powi(2);
-    /// let dom = ctx.interval(&ctx.int(-1), &ctx.int(2), false, false);
+    /// let dom = ctx.interval(&ctx.int(-1), &ctx.int(2), IntervalKind::Closed);
     /// assert_eq!(g.stationary_points(&x, Some(&dom)).unwrap().to_string(), "{1/2}");
     /// ```
     pub fn stationary_points(
@@ -1140,13 +1156,13 @@ impl Ex {
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
     /// let f = &x.powi(3) - &x * 3;
-    /// let dom = ctx.interval(&ctx.int(-2), &ctx.int(2), false, false);
+    /// let dom = ctx.interval(&ctx.int(-2), &ctx.int(2), IntervalKind::Closed);
     /// // SymPy: maximum(x**3 - 3*x, x, Interval(-2, 2)) == 2
     /// assert_eq!(f.maximum(&x, &dom).unwrap().to_string(), "2");
     /// // SymPy: maximum(x**2, x, S.Reals) == oo
     /// assert_eq!(x.powi(2).maximum(&x, &ctx.reals()).unwrap(), ctx.infinity());
     /// // SymPy: maximum(1/x, x, Interval(1, oo)) == 1
-    /// let tail = ctx.interval(&ctx.int(1), &ctx.infinity(), false, true);
+    /// let tail = ctx.interval(&ctx.int(1), &ctx.infinity(), IntervalKind::RightOpen);
     /// assert_eq!((1 / &x).maximum(&x, &tail).unwrap().to_string(), "1");
     /// ```
     pub fn maximum(&self, var: &Ex, domain: &SetEx) -> Result<Ex, SymplexError> {
@@ -1169,11 +1185,11 @@ impl Ex {
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
     /// let f = &x.powi(3) - &x * 3;
-    /// let dom = ctx.interval(&ctx.int(-2), &ctx.int(2), false, false);
+    /// let dom = ctx.interval(&ctx.int(-2), &ctx.int(2), IntervalKind::Closed);
     /// // SymPy: minimum(x**3 - 3*x, x, Interval(-2, 2)) == -2
     /// assert_eq!(f.minimum(&x, &dom).unwrap().to_string(), "-2");
     /// // SymPy: minimum(1/x, x, Interval(1, oo)) == 0   (a limit, not attained)
-    /// let tail = ctx.interval(&ctx.int(1), &ctx.infinity(), false, true);
+    /// let tail = ctx.interval(&ctx.int(1), &ctx.infinity(), IntervalKind::RightOpen);
     /// assert_eq!((1 / &x).minimum(&x, &tail).unwrap().to_string(), "0");
     /// // SymPy: minimum(x**2, x, S.Reals) == 0
     /// assert_eq!(x.powi(2).minimum(&x, &ctx.reals()).unwrap().to_string(), "0");
@@ -1219,7 +1235,7 @@ impl Ex {
     /// // SymPy: is_increasing(x**2, S.Reals, x) is False
     /// assert_eq!(x.powi(2).is_increasing(&x, &reals), Some(false));
     /// // SymPy: is_increasing(x**2, Interval(0, oo), x) is True
-    /// let half = ctx.interval(&ctx.int(0), &ctx.infinity(), false, true);
+    /// let half = ctx.interval(&ctx.int(0), &ctx.infinity(), IntervalKind::RightOpen);
     /// assert_eq!(x.powi(2).is_increasing(&x, &half), Some(true));
     /// // SymPy: is_increasing(exp(x), S.Reals, x) is True
     /// assert_eq!(x.exp().is_increasing(&x, &reals), Some(true));
@@ -1243,10 +1259,10 @@ impl Ex {
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
     /// // SymPy: is_decreasing(x**2, Interval(-oo, 0), x) is True
-    /// let left = ctx.interval(&ctx.neg_infinity(), &ctx.int(0), true, false);
+    /// let left = ctx.interval(&ctx.neg_infinity(), &ctx.int(0), IntervalKind::LeftOpen);
     /// assert_eq!(x.powi(2).is_decreasing(&x, &left), Some(true));
     /// // SymPy: is_decreasing(1/x, Interval.open(0, oo), x) is True
-    /// let pos = ctx.interval(&ctx.int(0), &ctx.infinity(), true, true);
+    /// let pos = ctx.interval(&ctx.int(0), &ctx.infinity(), IntervalKind::Open);
     /// assert_eq!((1 / &x).is_decreasing(&x, &pos), Some(true));
     /// assert_eq!(x.powi(3).is_decreasing(&x, &ctx.reals()), Some(false));
     /// ```
@@ -1301,7 +1317,7 @@ impl Ex {
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
     /// assert_eq!((-&x.powi(3)).is_strictly_decreasing(&x, &ctx.reals()), Some(true));
-    /// let pos = ctx.interval(&ctx.int(0), &ctx.infinity(), true, true);
+    /// let pos = ctx.interval(&ctx.int(0), &ctx.infinity(), IntervalKind::Open);
     /// assert_eq!((1 / &x).is_strictly_decreasing(&x, &pos), Some(true));
     /// ```
     #[must_use]
@@ -1356,7 +1372,7 @@ impl Ex {
     /// assert_eq!(x.powi(2).is_convex(&x, &ctx.reals()), Some(true));
     /// assert_eq!(x.powi(3).is_convex(&x, &ctx.reals()), Some(false));
     /// // SymPy: is_convex(x**3, x, domain=Interval(0, oo)) is True
-    /// let half = ctx.interval(&ctx.int(0), &ctx.infinity(), false, true);
+    /// let half = ctx.interval(&ctx.int(0), &ctx.infinity(), IntervalKind::RightOpen);
     /// assert_eq!(x.powi(3).is_convex(&x, &half), Some(true));
     /// assert_eq!(x.exp().is_convex(&x, &ctx.reals()), Some(true));
     /// ```
@@ -1453,11 +1469,11 @@ impl Ex {
     /// let x = ctx.symbol("x");
     /// let r = |f: &Ex, d: &SetEx| f.function_range(&x, d).unwrap().to_string();
     /// // SymPy: function_range(sin(x), x, Interval(0, pi)) == Interval(0, 1)
-    /// assert_eq!(r(&x.sin(), &ctx.interval(&ctx.int(0), &ctx.pi(), false, false)), "[0, 1]");
+    /// assert_eq!(r(&x.sin(), &ctx.interval(&ctx.int(0), &ctx.pi(), IntervalKind::Closed)), "[0, 1]");
     /// // SymPy: function_range(x**2, x, S.Reals) == Interval(0, oo)
     /// assert_eq!(r(&x.powi(2), &ctx.reals()), "[0, oo)");
     /// // SymPy: function_range(1/x, x, Interval(1, oo)) == Interval.Lopen(0, 1)
-    /// let tail = ctx.interval(&ctx.int(1), &ctx.infinity(), false, true);
+    /// let tail = ctx.interval(&ctx.int(1), &ctx.infinity(), IntervalKind::RightOpen);
     /// assert_eq!(r(&(1 / &x), &tail), "(0, 1]");
     /// // SymPy: function_range(exp(x), x, S.Reals) == Interval.open(0, oo)
     /// assert_eq!(r(&x.exp(), &ctx.reals()), "(0, oo)");
@@ -1480,15 +1496,20 @@ impl Ex {
         self.require_continuous(var, domain, OP)?;
         let (inf, ninf) = (ctx.infinity(), ctx.neg_infinity());
         let mut result = ctx.empty_set();
-        for (lo, hi, lo_open, hi_open) in &parts {
-            let cands = self.candidates_on(var, (lo, hi, *lo_open, *hi_open), OP)?;
+        for part in &parts {
+            let cands = self.candidates_on(var, part.as_ref(), OP)?;
             let (min, max) = min_max(cands, OP)?;
             let piece = if min.value == max.value {
                 ctx.finite_set(&[min.value])
             } else {
+                // An end that is only approached (a limit, or infinite) is open.
                 let left_open = !min.attained || min.value == ninf;
                 let right_open = !max.attained || max.value == inf;
-                ctx.interval(&min.value, &max.value, left_open, right_open)
+                ctx.interval(
+                    &min.value,
+                    &max.value,
+                    IntervalKind::from_open_ends(left_open, right_open),
+                )
             };
             result = result.union(&piece);
         }

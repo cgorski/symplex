@@ -101,7 +101,8 @@ impl OrderStatistic {
     fn parent_cdf(&self, x: &Ex) -> Ex {
         let ctx = self.ctx();
         let support = self.inner.support();
-        if let Some((lo, hi, _, _)) = support.as_interval() {
+        if let Some(iv) = support.as_interval() {
+            let (lo, hi) = (&iv.lower, &iv.upper);
             if !is_neg_inf(lo) && (x - lo).is_negative() == Some(true) {
                 return ctx.zero();
             }
@@ -119,7 +120,7 @@ impl OrderStatistic {
         let dens = self.inner.density(&t);
         let lo = support
             .as_interval()
-            .map_or_else(|| ctx.neg_infinity(), |(lo, _, _, _)| lo.clone());
+            .map_or_else(|| ctx.neg_infinity(), |iv| iv.lower.clone());
         match support.kind() {
             Kind::Continuous => dens.integrate_definite(&t, &lo, x),
             Kind::Discrete => dens.summation(&t, &lo, &x.floor()),
@@ -282,8 +283,8 @@ fn finite_table(dist: &Distribution) -> Result<Option<Vec<(Ex, Ex)>>, SymplexErr
     let support = dist.support();
     let values: Vec<Ex> = if let Some(points) = support.as_points() {
         points
-    } else if let Some((lo, hi, _, _)) = support.as_interval() {
-        let (Some(lo), Some(hi)) = (lo.eval().as_i64(), hi.eval().as_i64()) else {
+    } else if let Some(iv) = support.as_interval() {
+        let (Some(lo), Some(hi)) = (iv.lower.eval().as_i64(), iv.upper.eval().as_i64()) else {
             return Ok(None);
         };
         if hi < lo || hi - lo >= MAX_ENUMERATED {

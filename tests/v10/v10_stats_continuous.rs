@@ -57,11 +57,13 @@ fn total_mass(rv: &RandomVariable) -> Ex {
     let ctx = rv.context();
     let x = rv.symbol();
     let support = rv.support();
-    let (lo, hi, _, _) = support
+    let iv = support
         .as_interval()
         .unwrap_or_else(|| panic!("continuous family with support {support}"));
     let _ = &ctx;
-    rv.density(x).integrate_definite(x, lo, hi).simplify()
+    rv.density(x)
+        .integrate_definite(x, &iv.lower, &iv.upper)
+        .simplify()
 }
 
 /// `cdf(quantile(p)) = p` numerically at `p = 0.3`.

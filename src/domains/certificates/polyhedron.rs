@@ -40,9 +40,11 @@ use num_bigint::BigInt;
 use num_traits::{One, Signed, Zero};
 
 use crate::api::context::Context;
+use crate::api::eq::Equation;
 use crate::api::expr::Ex;
 use crate::api::poly_ex::Poly;
 use crate::base::errors::SymplexError;
+use crate::base::interval::Bounds;
 use crate::domains::certificates::serial::{q_from_str, q_to_str};
 use crate::domains::certificates::{Certificate, Outcome};
 use crate::domains::linprog::{BudgetHit, LpMeter, LpProblem, LpStatus, Q, Stop};
@@ -286,6 +288,26 @@ impl fmt::Display for PolyhedronUnknown {
 // Certificate
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// The parameter bound `var ≥ lower` of a parametric polyhedron: the input
+/// of [`PolyhedronProver::new`] / [`prove_nonnegative_on_polyhedron`] and
+/// what [`PolyhedronCertificate::parameter`] reports back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParamBound {
+    /// The parameter (a symbol).
+    pub var: Ex,
+    /// Its lower bound `j₀` (a rational literal).
+    pub lower: Ex,
+}
+
+/// Serialisable form of a [`ParamBound`] (see [`PolyhedronCertificateData`]).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ParamBoundTree {
+    /// The parameter.
+    pub var: ExprTree,
+    /// Its lower bound.
+    pub lower: ExprTree,
+}
+
 /// The parameter of a certificate: `var ≥ lo`.
 #[derive(Clone, Debug)]
 struct Param {
@@ -421,12 +443,26 @@ pub struct PolyhedronCertificateData {
     pub goal: ExprTree,
     /// The hypotheses `hₖ ≥ 0`.
     pub hyps: Vec<ExprTree>,
-    /// `(parameter, lower bound)` if any.
-    pub param: Option<(ExprTree, ExprTree)>,
+    /// The parameter bound `var ≥ lower`, if any.
+    pub param: Option<ParamBoundTree>,
     /// `λ` coefficients as exact rationals `"p/q"`, ascending.
     pub lambda: Vec<String>,
-    /// The terms as `(hypothesis indices, j power, shift power, weight "p/q")`.
-    pub terms: Vec<(Vec<usize>, u32, u32, String)>,
+    /// The terms.
+    pub terms: Vec<PolyhedronTermData>,
+}
+
+/// One term of a [`PolyhedronCertificateData`] (the serialisable form of a
+/// [`PolyhedronTerm`]): `weight · Π hₖ · jᵃ · (j − j₀)ᵇ`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PolyhedronTermData {
+    /// Indices into `hyps` of the hypothesis factors.
+    pub hyps: Vec<usize>,
+    /// Exponent `a` of the parameter itself.
+    pub var_power: u32,
+    /// Exponent `b` of the shifted parameter `j − j₀`.
+    pub shift_power: u32,
+    /// The positive rational weight as `"p/q"`.
+    pub weight: String,
 }
 
 impl PolyhedronCertificate {
@@ -437,21 +473,19 @@ impl PolyhedronCertificate {
             gens: self.goal.gens().iter().map(Ex::to_tree).collect(),
             goal: self.goal.to_ex().to_tree(),
             hyps: self.hyps.iter().map(|h| h.to_ex().to_tree()).collect(),
-            param: self
-                .param
-                .as_ref()
-                .map(|p| (p.var.to_tree(), p.lo.to_tree())),
+            param: self.param.as_ref().map(|p| ParamBoundTree {
+                var: p.var.to_tree(),
+                lower: p.lo.to_tree(),
+            }),
             lambda: self.lambda.iter().map(q_to_str).collect(),
             terms: self
                 .terms
                 .iter()
-                .map(|t| {
-                    (
-                        t.hyps.clone(),
-                        t.var_power,
-                        t.shift_power,
-                        q_to_str(&t.weight),
-                    )
+                .map(|t| PolyhedronTermData {
+                    hyps: t.hyps.clone(),
+                    var_power: t.var_power,
+                    shift_power: t.shift_power,
+                    weight: q_to_str(&t.weight),
                 })
                 .collect(),
         }
@@ -486,13 +520,13 @@ impl PolyhedronCertificate {
             .map(|h| poly(h, "hypothesis"))
             .collect::<Result<_, _>>()?;
         let param = match &data.param {
-            Some((v, lo)) => {
-                let lo = ctx.from_tree(lo).eval();
+            Some(p) => {
+                let lo = ctx.from_tree(&p.lower).eval();
                 let lo_q = lo
                     .as_rational()
                     .ok_or_else(|| invalid("the parameter bound must be a rational literal"))?;
                 Some(Param {
-                    var: ctx.from_tree(v),
+                    var: ctx.from_tree(&p.var),
                     lo,
                     var_nonneg: !lo_q.is_negative(),
                     lo_zero: lo_q.is_zero(),
@@ -506,15 +540,18 @@ impl PolyhedronCertificate {
             .map(|s| q_from_str(s, OP))
             .collect::<Result<_, _>>()?;
         let mut terms = Vec::with_capacity(data.terms.len());
-        for (hs, a, b, w) in &data.terms {
-            if hs.iter().any(|&k| k >= hyps.len()) {
-                return Err(invalid(format!("hypothesis index out of range in {hs:?}")));
+        for t in &data.terms {
+            if t.hyps.iter().any(|&k| k >= hyps.len()) {
+                return Err(invalid(format!(
+                    "hypothesis index out of range in {:?}",
+                    t.hyps
+                )));
             }
             terms.push(PolyhedronTerm {
-                hyps: hs.clone(),
-                var_power: *a,
-                shift_power: *b,
-                weight: q_from_str(w, OP)?,
+                hyps: t.hyps.clone(),
+                var_power: t.var_power,
+                shift_power: t.shift_power,
+                weight: q_from_str(&t.weight, OP)?,
             });
         }
         let cert = PolyhedronCertificate {
@@ -534,12 +571,13 @@ impl PolyhedronCertificate {
     ///
     /// ```
     /// use symplex::prelude::*;
-    /// use symplex::certificates::{PolyhedronCertificate, PolyhedronOpts, prove_nonnegative_on_polyhedron};
+    /// use symplex::certificates::{ParamBound, PolyhedronCertificate, PolyhedronOpts, prove_nonnegative_on_polyhedron};
     ///
     /// let ctx = Context::new();
     /// let (j, r, t) = (ctx.symbol("j"), ctx.symbol("r"), ctx.symbol("t"));
     /// let hyps = [&t - &r, &t + &j * &r - &j - 1];
-    /// let out = prove_nonnegative_on_polyhedron(&(&t - 1), &hyps, Some((&j, &ctx.int(0))), &PolyhedronOpts::default()).unwrap();
+    /// let param = ParamBound { var: j.clone(), lower: ctx.int(0) };
+    /// let out = prove_nonnegative_on_polyhedron(&(&t - 1), &hyps, Some(&param), &PolyhedronOpts::default()).unwrap();
     /// let json = out.certificate().unwrap().to_json().unwrap();
     /// // … across a process boundary …
     /// let other = Context::new();
@@ -580,9 +618,12 @@ impl PolyhedronCertificate {
         &self.hyps
     }
 
-    /// The parameter `(var, lo)` meaning `var ≥ lo`, if any.
-    pub fn parameter(&self) -> Option<(&Ex, &Ex)> {
-        self.param.as_ref().map(|p| (&p.var, &p.lo))
+    /// The parameter bound `var ≥ lower`, if any.
+    pub fn parameter(&self) -> Option<ParamBound> {
+        self.param.as_ref().map(|p| ParamBound {
+            var: p.var.clone(),
+            lower: p.lo.clone(),
+        })
     }
 
     /// The weighted products, in the order the LP enumerated them.
@@ -710,15 +751,15 @@ impl PolyhedronCertificate {
         Poly::new(&self.product_expr(term), &gens).ok_or_else(|| invalid("internal: product"))
     }
 
-    /// The identity `λ·goal = Σ weight·product` as `(lhs, rhs)`, with the
-    /// products kept in factored form.
-    pub fn identity(&self) -> (Ex, Ex) {
+    /// The identity `λ·goal = Σ weight·product` as an [`Equation`], with
+    /// the products kept in factored form.
+    pub fn identity(&self) -> Equation {
         let ctx = self.goal.context();
         let mut rhs = ctx.zero();
         for t in &self.terms {
             rhs += ctx.from_ratio(t.weight.clone()) * self.product_expr(t);
         }
-        (self.lambda() * self.goal.to_ex(), rhs)
+        Equation::new(self.lambda() * self.goal.to_ex(), rhs)
     }
 
     /// Recompute `Σ weight·product − λ·goal` with exact polynomial
@@ -1192,12 +1233,13 @@ fn meter_for(opts: &PolyhedronOpts) -> LpMeter {
 ///
 /// ```
 /// use symplex::prelude::*;
-/// use symplex::certificates::{PolyhedronOpts, PolyhedronProver};
+/// use symplex::certificates::{ParamBound, PolyhedronOpts, PolyhedronProver};
 ///
 /// let ctx = Context::new();
 /// let (j, r, t) = (ctx.symbol("j"), ctx.symbol("r"), ctx.symbol("t"));
 /// let hyps = [r.clone(), ctx.rational(1, 2) - &r, t.clone(), 1 - &t, (&j * 2 + 1) * &t - &j * &r - 1];
-/// let prover = PolyhedronProver::new(&hyps, Some((&j, &ctx.int(2))), &PolyhedronOpts::default()).unwrap();
+/// let param = ParamBound { var: j.clone(), lower: ctx.int(2) };
+/// let prover = PolyhedronProver::new(&hyps, Some(&param), &PolyhedronOpts::default()).unwrap();
 /// // Every facet of the cell is a goal on the cell.
 /// for h in &hyps {
 ///     assert!(prover.prove(h).unwrap().is_proved());
@@ -1231,7 +1273,7 @@ impl PolyhedronProver {
     /// parameter or a non-literal `j₀`.
     pub fn new(
         hyps: &[Ex],
-        param: Option<(&Ex, &Ex)>,
+        param: Option<&ParamBound>,
         opts: &PolyhedronOpts,
     ) -> Result<Self, SymplexError> {
         let Some(first) = hyps.first() else {
@@ -1240,8 +1282,8 @@ impl PolyhedronProver {
         let ctx = first.context();
 
         let param_info = match param {
-            Some((var, lo)) => {
-                let lo = lo.eval();
+            Some(ParamBound { var, lower }) => {
+                let lo = lower.eval();
                 let Some(lo_q) = lo.as_rational() else {
                     return Err(invalid(format!(
                         "the parameter bound must be a rational literal, got `{lo}`"
@@ -1269,7 +1311,7 @@ impl PolyhedronProver {
         let mut names: Vec<(String, Ex)> = Vec::new();
         for e in hyps {
             for s in e.free_symbols() {
-                if param.is_some_and(|(v, _)| *v == s) {
+                if param.is_some_and(|p| p.var == s) {
                     continue;
                 }
                 let n = s.to_string();
@@ -1381,9 +1423,12 @@ impl PolyhedronProver {
         &self.gens
     }
 
-    /// The parameter `(var, lo)`, if any.
-    pub fn parameter(&self) -> Option<(&Ex, &Ex)> {
-        self.param.as_ref().map(|(p, _)| (&p.var, &p.lo))
+    /// The parameter bound `var ≥ lower`, if any.
+    pub fn parameter(&self) -> Option<ParamBound> {
+        self.param.as_ref().map(|(p, _)| ParamBound {
+            var: p.var.clone(),
+            lower: p.lo.clone(),
+        })
     }
 
     /// The search options.
@@ -1542,14 +1587,15 @@ impl PolyhedronProver {
     ///
     /// ```
     /// use symplex::prelude::*;
-    /// use symplex::certificates::{PolyhedronOpts, PolyhedronOutcome, PolyhedronProver};
+    /// use symplex::certificates::{ParamBound, PolyhedronOpts, PolyhedronOutcome, PolyhedronProver};
     /// use symplex::multipoly::MultiPoly;
     /// use symplex::poly_ex::Poly;
     ///
     /// let ctx = Context::new();
     /// let (j, r) = (ctx.symbol("j"), ctx.symbol("r"));
     /// // r ≥ 0 and j·(1 − r) ≥ 0 for j ≥ 1; goal j − j·r ≥ 0.
-    /// let prover = PolyhedronProver::new(&[r.clone(), &j * (1 - &r)], Some((&j, &ctx.int(1))), &PolyhedronOpts::default())?;
+    /// let param = ParamBound { var: j.clone(), lower: ctx.int(1) };
+    /// let prover = PolyhedronProver::new(&[r.clone(), &j * (1 - &r)], Some(&param), &PolyhedronOpts::default())?;
     /// let [mj, mr]: [MultiPoly; 2] = [MultiPoly::var(2, 0), MultiPoly::var(2, 1)];   // (j, r) order
     /// let goal = Poly::from_multipoly(&ctx, &[&j, &r], &mj.sub(&mj.mul(&mr)))?;
     /// assert!(matches!(prover.prove_poly(&goal)?, PolyhedronOutcome::Proved(_)));
@@ -1833,8 +1879,8 @@ fn to_poly(e: &Ex, gens: &[&Ex], what: &str) -> Result<Poly, SymplexError> {
 }
 
 /// Prove `goal ≥ 0` on `{x : hₖ(j, x) ≥ 0 ∀k}` for every real `j ≥ j₀`
-/// (`param = Some((j, j₀))`), or on the fixed polyhedron `{hₖ(x) ≥ 0}`
-/// (`param = None`), by the identity described in the
+/// (`param = Some(&ParamBound { var: j, lower: j₀ })`), or on the fixed
+/// polyhedron `{hₖ(x) ≥ 0}` (`param = None`), by the identity described in the
 /// [`certificates`](crate::certificates) module documentation; refute it
 /// with an exact point of the set where the goal is negative; or report
 /// `Unknown`.  To certify many goals against the same hypotheses, build a
@@ -1861,20 +1907,21 @@ fn to_poly(e: &Ex, gens: &[&Ex], what: &str) -> Result<Poly, SymplexError> {
 ///
 /// ```
 /// use symplex::prelude::*;
-/// use symplex::certificates::{prove_nonnegative_on_polyhedron, PolyhedronOpts, PolyhedronOutcome};
+/// use symplex::certificates::{prove_nonnegative_on_polyhedron, ParamBound, PolyhedronOpts, PolyhedronOutcome};
 ///
 /// let ctx = Context::new();
 /// let (j, r) = (ctx.symbol("j"), ctx.symbol("r"));
 /// // On { 0 ≤ r ≤ 1/2 } and j ≥ 1:  j·r + 1 − 2r ≥ 0  needs no λ,
 /// let goal = &j * &r + 1 - &r * 2;
 /// let hyps = [r.clone(), ctx.rational(1, 2) - &r];
-/// let out = prove_nonnegative_on_polyhedron(&goal, &hyps, Some((&j, &ctx.int(1))), &PolyhedronOpts::default()).unwrap();
+/// let param = ParamBound { var: j.clone(), lower: ctx.int(1) };
+/// let out = prove_nonnegative_on_polyhedron(&goal, &hyps, Some(&param), &PolyhedronOpts::default()).unwrap();
 /// let cert = out.certificate().expect("proved");
 /// assert!(cert.verify());
 /// assert!(cert.to_lean("jr_bound").unwrap().contains("linarith only"));
 ///
 /// // …while  j − 2·j·r ≥ 0  on the same set is false at r = 1/2 for every j > 0.
-/// match prove_nonnegative_on_polyhedron(&(&j - &j * &r * 2 - 1), &hyps, Some((&j, &ctx.int(1))), &PolyhedronOpts::default()).unwrap() {
+/// match prove_nonnegative_on_polyhedron(&(&j - &j * &r * 2 - 1), &hyps, Some(&param), &PolyhedronOpts::default()).unwrap() {
 ///     PolyhedronOutcome::Refuted { value, param_value, .. } => {
 ///         assert!(value < symplex::linprog::qi(0));
 ///         assert_eq!(param_value, Some(symplex::linprog::qi(1)));
@@ -1885,7 +1932,7 @@ fn to_poly(e: &Ex, gens: &[&Ex], what: &str) -> Result<Poly, SymplexError> {
 pub fn prove_nonnegative_on_polyhedron(
     goal: &Ex,
     hyps: &[Ex],
-    param: Option<(&Ex, &Ex)>,
+    param: Option<&ParamBound>,
     opts: &PolyhedronOpts,
 ) -> Result<PolyhedronOutcome, SymplexError> {
     PolyhedronProver::new(hyps, param, opts)?.prove(goal)
@@ -1899,18 +1946,19 @@ pub fn prove_nonnegative_on_polyhedron(
 ///
 /// ```
 /// use symplex::prelude::*;
-/// use symplex::certificates::{prove_polyhedron_empty, PolyhedronOpts};
+/// use symplex::certificates::{prove_polyhedron_empty, ParamBound, PolyhedronOpts};
 ///
 /// let ctx = Context::new();
 /// let (j, r) = (ctx.symbol("j"), ctx.symbol("r"));
 /// // r ≥ 1/2 and j·r ≤ j/2 − 1 cannot both hold for j ≥ 0.
 /// let hyps = [&r - ctx.rational(1, 2), &j / 2 - 1 - &j * &r];
-/// let out = prove_polyhedron_empty(&hyps, Some((&j, &ctx.int(0))), &PolyhedronOpts::default()).unwrap();
+/// let param = ParamBound { var: j.clone(), lower: ctx.int(0) };
+/// let out = prove_polyhedron_empty(&hyps, Some(&param), &PolyhedronOpts::default()).unwrap();
 /// assert!(out.is_proved());
 /// ```
 pub fn prove_polyhedron_empty(
     hyps: &[Ex],
-    param: Option<(&Ex, &Ex)>,
+    param: Option<&ParamBound>,
     opts: &PolyhedronOpts,
 ) -> Result<PolyhedronOutcome, SymplexError> {
     PolyhedronProver::new(hyps, param, opts)?.prove_empty()
@@ -1994,7 +2042,7 @@ fn refute(
         let bound = Q::from_integer(BigInt::from(1_000_000));
         let mut lp = LpProblem::minimize(gc.clone());
         for i in 0..n {
-            lp = lp.bounds(i, Some(-bound.clone()), Some(bound.clone()));
+            lp = lp.bounds(i, Bounds::closed(-bound.clone(), bound.clone()));
         }
         for (k, c) in &affine_hyps {
             lp = lp.ge(c.clone(), -k);
@@ -2045,6 +2093,13 @@ mod tests {
         (ctx, j, r, t)
     }
 
+    fn param(var: &Ex, lower: Ex) -> ParamBound {
+        ParamBound {
+            var: var.clone(),
+            lower,
+        }
+    }
+
     #[test]
     fn stages_are_ordered_small_to_large() {
         assert_eq!(
@@ -2078,7 +2133,7 @@ mod tests {
         let out = prove_nonnegative_on_polyhedron(
             &(&t - 1),
             &hyps,
-            Some((&j, &ctx.int(0))),
+            Some(&param(&j, ctx.int(0))),
             &PolyhedronOpts::default(),
         )
         .unwrap();
@@ -2090,13 +2145,13 @@ mod tests {
             c.to_string(),
             "(j + 1)*(t - 1) = j*h0 + h1; h0 = -r + t, h1 = j*r - j + t - 1; j ≥ 0"
         );
-        let (lhs, rhs) = c.identity();
+        let Equation { lhs, rhs } = c.identity();
         assert!((lhs - rhs).expand().is_zero_structural());
         // Without λ there is no certificate at any degree we try.
         let none = prove_nonnegative_on_polyhedron(
             &(&t - 1),
             &hyps,
-            Some((&j, &ctx.int(0))),
+            Some(&param(&j, ctx.int(0))),
             &PolyhedronOpts {
                 max_lambda_degree: 0,
                 ..Default::default()
@@ -2127,7 +2182,7 @@ mod tests {
         match prove_nonnegative_on_polyhedron(
             &(&t - ctx.rational(1, 2) - &r),
             &hyps,
-            Some((&j, &ctx.int(2))),
+            Some(&param(&j, ctx.int(2))),
             &PolyhedronOpts::default(),
         )
         .unwrap()
@@ -2141,8 +2196,12 @@ mod tests {
             other => panic!("{other:?}"),
         }
         // Emptiness refuted = a point of the cell.
-        match prove_polyhedron_empty(&hyps, Some((&j, &ctx.int(2))), &PolyhedronOpts::default())
-            .unwrap()
+        match prove_polyhedron_empty(
+            &hyps,
+            Some(&param(&j, ctx.int(2))),
+            &PolyhedronOpts::default(),
+        )
+        .unwrap()
         {
             PolyhedronOutcome::Refuted { value, .. } => assert_eq!(value, q(-1, 1)),
             other => panic!("{other:?}"),
@@ -2162,9 +2221,12 @@ mod tests {
             1 - &t,
             (&j * 2 + 1) * &t - &j * &r - 1,
         ];
-        let prover =
-            PolyhedronProver::new(&hyps, Some((&j, &ctx.int(2))), &PolyhedronOpts::default())
-                .unwrap();
+        let prover = PolyhedronProver::new(
+            &hyps,
+            Some(&param(&j, ctx.int(2))),
+            &PolyhedronOpts::default(),
+        )
+        .unwrap();
         let goal = prover
             .goal_poly(&(&t - ctx.rational(1, 2) - &r))
             .unwrap()
@@ -2237,8 +2299,12 @@ mod tests {
             (&j * 2 + 1) * &t - &j * &r - 1,
             ctx.rational(1, 4) - &t,
         ];
-        let c = prove_polyhedron_empty(&hyps, Some((&j, &ctx.int(2))), &PolyhedronOpts::default())
-            .unwrap();
+        let c = prove_polyhedron_empty(
+            &hyps,
+            Some(&param(&j, ctx.int(2))),
+            &PolyhedronOpts::default(),
+        )
+        .unwrap();
         let c = c.certificate().expect("empty");
         assert!(c.proves_emptiness());
         assert!(c.verify());
@@ -2294,7 +2360,7 @@ mod tests {
         let c = prove_nonnegative_on_polyhedron(
             &((&j + 1) * &t),
             &hyps,
-            Some((&j, &ctx.int(-1))),
+            Some(&param(&j, ctx.int(-1))),
             &PolyhedronOpts::default(),
         )
         .unwrap();
@@ -2316,7 +2382,7 @@ mod tests {
         let c = prove_nonnegative_on_polyhedron(
             &(&j * (&j - 2) * &t),
             &hyps,
-            Some((&j, &ctx.int(2))),
+            Some(&param(&j, ctx.int(2))),
             &PolyhedronOpts::default(),
         )
         .unwrap();
@@ -2364,7 +2430,7 @@ mod tests {
             prove_nonnegative_on_polyhedron(
                 &r,
                 &[],
-                Some((&j, &ctx.int(0))),
+                Some(&param(&j, ctx.int(0))),
                 &PolyhedronOpts::default()
             )
             .is_err()
@@ -2382,7 +2448,7 @@ mod tests {
             prove_nonnegative_on_polyhedron(
                 &r,
                 std::slice::from_ref(&r),
-                Some((&j, &ctx.pi())),
+                Some(&param(&j, ctx.pi())),
                 &PolyhedronOpts::default()
             )
             .is_err()
@@ -2391,7 +2457,7 @@ mod tests {
             prove_nonnegative_on_polyhedron(
                 &r,
                 std::slice::from_ref(&r),
-                Some((&(&j + 1), &ctx.int(0))),
+                Some(&param(&(&j + 1), ctx.int(0))),
                 &PolyhedronOpts::default()
             )
             .is_err()

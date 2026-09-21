@@ -99,7 +99,9 @@ fn q_rows(v: Option<&Value>) -> Result<Vec<Vec<Q>>, String> {
         .unwrap_or_else(|| Ok(Vec::new()))
 }
 
-type Bound = (Option<Q>, Option<Q>);
+/// The fixture stores a bound as a `[lo, hi]` pair with `null` for an
+/// unbounded side.
+type Bound = Bounds<Q>;
 
 fn bounds_of(v: Option<&Value>) -> Result<Vec<Bound>, String> {
     let Some(arr) = v.and_then(Value::as_array) else {
@@ -114,7 +116,10 @@ fn bounds_of(v: Option<&Value>) -> Result<Vec<Bound>, String> {
                     Some(s) => parse_q(s.as_str().unwrap_or("")).map(Some),
                 }
             };
-            Ok((side(0)?, side(1)?))
+            Ok(Bounds {
+                lower: side(0)?,
+                upper: side(1)?,
+            })
         })
         .collect()
 }
@@ -144,7 +149,7 @@ impl Lp {
 
     fn effective_bounds(&self) -> Vec<Bound> {
         if self.bounds.is_empty() {
-            vec![(Some(Q::zero()), None); self.c.len()]
+            vec![Bounds::at_least(Q::zero()); self.c.len()]
         } else {
             self.bounds.clone()
         }
@@ -159,8 +164,8 @@ impl Lp {
             for (row, rhs) in self.a_eq.iter().zip(&self.b_eq) {
                 p = p.eq(row.clone(), rhs.clone());
             }
-            for (j, (lo, hi)) in self.bounds.iter().enumerate() {
-                p = p.bounds(j, lo.clone(), hi.clone());
+            for (j, b) in self.bounds.iter().enumerate() {
+                p = p.bounds(j, b.clone());
             }
             p.solve()
         } else {
@@ -253,13 +258,13 @@ fn check_feasible(lp: &Lp, x: &[Q]) -> Result<(), String> {
             return Err(format!("equality {i}: {lhs} = {rhs} violated"));
         }
     }
-    for (j, ((lo, hi), xj)) in lp.effective_bounds().iter().zip(x).enumerate() {
-        if let Some(lo) = lo
+    for (j, (b, xj)) in lp.effective_bounds().iter().zip(x).enumerate() {
+        if let Some(lo) = &b.lower
             && xj < lo
         {
             return Err(format!("x[{j}] = {xj} < lower bound {lo}"));
         }
-        if let Some(hi) = hi
+        if let Some(hi) = &b.upper
             && xj > hi
         {
             return Err(format!("x[{j}] = {xj} > upper bound {hi}"));
@@ -293,14 +298,16 @@ fn check_farkas(lp: &Lp, y: &[Q]) -> Result<(), String> {
     }
     let ytb: Q = rhs.iter().zip(y).map(|(b, yi)| *b * yi).sum();
     let mut inf_sum = Q::zero();
-    for (j, ((lo, hi), gj)) in lp.effective_bounds().iter().zip(&g).enumerate() {
+    for (j, (b, gj)) in lp.effective_bounds().iter().zip(&g).enumerate() {
         if gj.is_positive() {
-            let lo = lo
+            let lo = b
+                .lower
                 .as_ref()
                 .ok_or_else(|| format!("g[{j}] = {gj} > 0 but x[{j}] has no lower bound"))?;
             inf_sum += gj * lo;
         } else if gj.is_negative() {
-            let hi = hi
+            let hi = b
+                .upper
                 .as_ref()
                 .ok_or_else(|| format!("g[{j}] = {gj} < 0 but x[{j}] has no upper bound"))?;
             inf_sum += gj * hi;
@@ -391,10 +398,7 @@ fn compare_solution(ctx: &Context, lp: &Lp, fx: &Fixture, sol: &LpSolution) -> S
                 },
                 // Allowed only when the bounds alone are contradictory.
                 None => {
-                    let bounds_bad = lp
-                        .effective_bounds()
-                        .iter()
-                        .any(|(lo, hi)| matches!((lo, hi), (Some(l), Some(h)) if l > h));
+                    let bounds_bad = lp.effective_bounds().iter().any(Bounds::is_empty);
                     if bounds_bad {
                         Status::Pass
                     } else {

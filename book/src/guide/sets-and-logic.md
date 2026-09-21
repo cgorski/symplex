@@ -6,7 +6,8 @@
 
 | Constructor | Result |
 |-------------|--------|
-| `ctx.interval(&lo, &hi, left_open, right_open)` | `[lo, hi]`, `(lo, hi]`, … |
+| `ctx.interval(&lo, &hi, IntervalKind::Closed)` (`Open`, `LeftOpen`, `RightOpen`) | `[lo, hi]`, `(lo, hi)`, `(lo, hi]`, `[lo, hi)` |
+| `Interval::closed(lo, hi).to_set()` | the same from an `Interval<Ex>` |
 | `ctx.finite_set(&[a, b, c])` | `{a, b, c}` (sorted, deduplicated) |
 | `ctx.reals()`, `ctx.empty_set()`, `ctx.universal_set()` | ℝ, ∅, U |
 | `x.closed_interval(&hi)`, `x.open_interval(&hi)` | intervals from an `Ex` endpoint |
@@ -20,8 +21,8 @@ use symplex::prelude::*;
 fn main() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let a = ctx.interval(&ctx.int(0), &ctx.int(5), false, false);   // [0, 5]
-    let b = ctx.interval(&ctx.int(3), &ctx.int(10), true, false);   // (3, 10]
+    let a = ctx.interval(&ctx.int(0), &ctx.int(5), IntervalKind::Closed);   // [0, 5]
+    let b = ctx.interval(&ctx.int(3), &ctx.int(10), IntervalKind::LeftOpen);   // (3, 10]
     let s = ctx.finite_set(&[ctx.int(1), ctx.int(2), ctx.int(7)]);
 
     println!("{}", a.union(&b));                       // [0, 5] ∪ (3, 10]   (lazy)
@@ -45,15 +46,15 @@ use symplex::prelude::*;
 fn main() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let a = ctx.interval(&ctx.int(0), &ctx.int(5), false, false);
-    let b = ctx.interval(&ctx.int(3), &ctx.int(10), true, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(5), IntervalKind::Closed);
+    let b = ctx.interval(&ctx.int(3), &ctx.int(10), IntervalKind::LeftOpen);
 
     println!("{:?} {:?} {:?}", a.contains(&ctx.int(3)), a.contains(&ctx.int(7)), a.contains(&x));
     // Some(true) Some(false) None
     println!("{:?}", ctx.int(3).is_in(&a));                                          // Some(true)
-    println!("{:?}", a.is_subset(&ctx.interval(&ctx.int(0), &ctx.int(10), false, false)));  // Some(true)
-    println!("{:?}", a.is_disjoint(&ctx.interval(&ctx.int(5), &ctx.int(6), true, true)));   // Some(true)
-    println!("{:?}", a.intersection(&ctx.interval(&ctx.int(6), &ctx.int(7), false, false)).is_empty()); // Some(true)
+    println!("{:?}", a.is_subset(&ctx.interval(&ctx.int(0), &ctx.int(10), IntervalKind::Closed)));  // Some(true)
+    println!("{:?}", a.is_disjoint(&ctx.interval(&ctx.int(5), &ctx.int(6), IntervalKind::Open)));   // Some(true)
+    println!("{:?}", a.intersection(&ctx.interval(&ctx.int(6), &ctx.int(7), IntervalKind::Closed)).is_empty()); // Some(true)
     println!("{:?} {:?}", b.is_open(), a.is_closed());                              // Some(false) Some(true)
 
     let ab = a.union(&b).simplify();
@@ -63,7 +64,7 @@ fn main() {
 }
 ```
 
-`as_intervals()` returns `Vec<(lo, hi, left_open, right_open)>` for a set that is a union of intervals; `as_finite_set()` returns the elements of a finite set; `to_condition(&x)` converts a set into the `BoolEx` "`x ∈ set`".
+`as_intervals()` returns `Vec<Interval<Ex>>` (each with `lower`, `upper` and `kind`; an isolated point is `Interval::point(p)`) for a set that is a union of intervals, and `Interval<Ex>::to_set()` goes back; `as_finite_set()` returns the elements of a finite set; `to_condition(&x)` converts a set into the `BoolEx` "`x ∈ set`".
 
 ## From conditions to sets
 
@@ -79,7 +80,7 @@ fn main() {
     println!("{}", reduce_inequalities(&conds, &x).unwrap());          // (2, 5]
     println!("{}", x.gt(&ctx.int(0)).and(&x.lt(&ctx.int(3))).solve_for(&x).unwrap());   // (0, 3)
     println!("{}", (&x.powi(2) - 1).ge(&ctx.int(0)).solve_for(&x).unwrap());  // (-oo, -1] ∪ [1, oo)
-    let a = ctx.interval(&ctx.int(0), &ctx.int(5), false, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(5), IntervalKind::Closed);
     println!("{}", a.to_condition(&x).unwrap());                       // x >= 0 & 5 >= x
 }
 ```

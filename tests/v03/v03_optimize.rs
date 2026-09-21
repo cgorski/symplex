@@ -8,9 +8,9 @@ use num_rational::Ratio;
 use std::cell::Cell;
 use std::f64::consts::PI;
 use symplex::optimize::{
-    DeOpts, MinimizeOpts, RootOpts, bisect, brent_root, differential_evolution, eval_poly,
-    golden_section, linear_fit, minimize_scalar, nelder_mead, newton_root, poly_fit,
-    poly_fit_exact, trapezoid,
+    DeOpts, LinearFit, MinimizeOpts, RootOpts, ScalarMinimum, bisect, brent_root,
+    differential_evolution, eval_poly, golden_section, linear_fit, minimize_scalar, nelder_mead,
+    newton_root, poly_fit, poly_fit_exact, trapezoid,
 };
 use symplex::prelude::*;
 
@@ -460,7 +460,7 @@ fn nelder_mead_negative_tolerance_is_invalid_argument() {
 
 #[test]
 fn brent_min_shifted_parabola() {
-    let (x, fx) = minimize_scalar(
+    let ScalarMinimum { x, value } = minimize_scalar(
         |x| (x - 1.0).powi(2) + 3.0,
         -5.0,
         5.0,
@@ -468,44 +468,48 @@ fn brent_min_shifted_parabola() {
     )
     .unwrap();
     assert!((x - 1.0).abs() < 1e-6, "{x}");
-    assert!((fx - 3.0).abs() < 1e-12, "{fx}");
+    assert!((value - 3.0).abs() < 1e-12, "{value}");
 }
 
 #[test]
 fn golden_min_shifted_parabola() {
-    let (x, fx) = golden_section(
+    let m = golden_section(
         |x| (x - 1.0).powi(2) + 3.0,
         -5.0,
         5.0,
         &MinimizeOpts::default(),
     )
     .unwrap();
-    assert!((x - 1.0).abs() < 1e-6, "{x}");
-    assert!((fx - 3.0).abs() < 1e-12, "{fx}");
+    assert!((m.x - 1.0).abs() < 1e-6, "{}", m.x);
+    assert!((m.value - 3.0).abs() < 1e-12, "{}", m.value);
 }
 
 #[test]
 fn brent_min_x_ln_x() {
-    let (x, fx) = minimize_scalar(|x| x * x.ln(), 0.1, 2.0, &MinimizeOpts::default()).unwrap();
+    let m = minimize_scalar(|x| x * x.ln(), 0.1, 2.0, &MinimizeOpts::default()).unwrap();
     let e_inv = (-1.0f64).exp();
-    assert!((x - e_inv).abs() < 1e-6, "{x}");
-    assert!((fx + e_inv).abs() < 1e-12, "{fx}");
+    assert!((m.x - e_inv).abs() < 1e-6, "{}", m.x);
+    assert!((m.value + e_inv).abs() < 1e-12, "{}", m.value);
 }
 
 #[test]
 fn golden_min_x_ln_x() {
-    let (x, fx) = golden_section(|x| x * x.ln(), 0.1, 2.0, &MinimizeOpts::default()).unwrap();
+    let m = golden_section(|x| x * x.ln(), 0.1, 2.0, &MinimizeOpts::default()).unwrap();
     let e_inv = (-1.0f64).exp();
-    assert!((x - e_inv).abs() < 1e-6, "{x}");
-    assert!((fx + e_inv).abs() < 1e-12, "{fx}");
+    assert!((m.x - e_inv).abs() < 1e-6, "{}", m.x);
+    assert!((m.value + e_inv).abs() < 1e-12, "{}", m.value);
 }
 
 #[test]
 fn brent_min_bracket_selects_one_of_two_minima() {
     // f = (x² − 1)² has minima at ±1.
     let f = |x: f64| (x * x - 1.0).powi(2);
-    let (xl, _) = minimize_scalar(f, -2.0, 0.0, &MinimizeOpts::default()).unwrap();
-    let (xr, _) = minimize_scalar(f, 0.0, 2.0, &MinimizeOpts::default()).unwrap();
+    let xl = minimize_scalar(f, -2.0, 0.0, &MinimizeOpts::default())
+        .unwrap()
+        .x;
+    let xr = minimize_scalar(f, 0.0, 2.0, &MinimizeOpts::default())
+        .unwrap()
+        .x;
     assert!((xl + 1.0).abs() < 1e-6, "{xl}");
     assert!((xr - 1.0).abs() < 1e-6, "{xr}");
 }
@@ -513,8 +517,12 @@ fn brent_min_bracket_selects_one_of_two_minima() {
 #[test]
 fn golden_min_bracket_selects_one_of_two_minima() {
     let f = |x: f64| (x * x - 1.0).powi(2);
-    let (xl, _) = golden_section(f, -2.0, 0.0, &MinimizeOpts::default()).unwrap();
-    let (xr, _) = golden_section(f, 0.0, 2.0, &MinimizeOpts::default()).unwrap();
+    let xl = golden_section(f, -2.0, 0.0, &MinimizeOpts::default())
+        .unwrap()
+        .x;
+    let xr = golden_section(f, 0.0, 2.0, &MinimizeOpts::default())
+        .unwrap()
+        .x;
     assert!((xl + 1.0).abs() < 1e-6, "{xl}");
     assert!((xr - 1.0).abs() < 1e-6, "{xr}");
 }
@@ -536,12 +544,10 @@ fn brent_min_uses_fewer_evaluations_than_golden_on_smooth_function() {
 
 #[test]
 fn scalar_minimisers_accept_reversed_interval() {
-    let (x, _) =
-        minimize_scalar(|x| (x - 1.0).powi(2), 5.0, -5.0, &MinimizeOpts::default()).unwrap();
-    assert!((x - 1.0).abs() < 1e-6);
-    let (x, _) =
-        golden_section(|x| (x - 1.0).powi(2), 5.0, -5.0, &MinimizeOpts::default()).unwrap();
-    assert!((x - 1.0).abs() < 1e-6);
+    let m = minimize_scalar(|x| (x - 1.0).powi(2), 5.0, -5.0, &MinimizeOpts::default()).unwrap();
+    assert!((m.x - 1.0).abs() < 1e-6);
+    let m = golden_section(|x| (x - 1.0).powi(2), 5.0, -5.0, &MinimizeOpts::default()).unwrap();
+    assert!((m.x - 1.0).abs() < 1e-6);
 }
 
 #[test]
@@ -588,9 +594,9 @@ fn scalar_minimiser_iteration_cap_is_error() {
 
 #[test]
 fn brent_min_monotone_function_returns_endpoint_region() {
-    let (x, fx) = minimize_scalar(|x| x, 0.0, 1.0, &MinimizeOpts::default()).unwrap();
-    assert!(x < 1e-6, "{x}");
-    assert!(fx < 1e-6);
+    let m = minimize_scalar(|x| x, 0.0, 1.0, &MinimizeOpts::default()).unwrap();
+    assert!(m.x < 1e-6, "{}", m.x);
+    assert!(m.value < 1e-6);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -600,7 +606,7 @@ fn brent_min_monotone_function_returns_endpoint_region() {
 #[test]
 fn de_rastrigin_2d_default_seed() {
     let start = std::time::Instant::now();
-    let bounds = [(-5.12, 5.12), (-5.12, 5.12)];
+    let bounds = [Interval::closed(-5.12, 5.12), Interval::closed(-5.12, 5.12)];
     let r = differential_evolution(rastrigin, &bounds, &DeOpts::default()).unwrap();
     assert!(r.fun < 1e-6, "{r:?}");
     assert!(r.x.iter().all(|x| x.abs() < 1e-3), "{:?}", r.x);
@@ -609,7 +615,7 @@ fn de_rastrigin_2d_default_seed() {
 
 #[test]
 fn de_is_deterministic_for_a_seed() {
-    let bounds = [(-5.12, 5.12), (-5.12, 5.12)];
+    let bounds = [Interval::closed(-5.12, 5.12), Interval::closed(-5.12, 5.12)];
     let opts = DeOpts {
         seed: 12345,
         ..DeOpts::default()
@@ -622,7 +628,7 @@ fn de_is_deterministic_for_a_seed() {
 #[test]
 fn de_different_seeds_all_converge() {
     let start = std::time::Instant::now();
-    let bounds = [(-5.12, 5.12), (-5.12, 5.12)];
+    let bounds = [Interval::closed(-5.12, 5.12), Interval::closed(-5.12, 5.12)];
     let mut results = Vec::new();
     for seed in [1u64, 7, 42, 2024] {
         let opts = DeOpts {
@@ -641,11 +647,15 @@ fn de_different_seeds_all_converge() {
 
 #[test]
 fn de_respects_bounds_on_every_evaluation() {
-    let bounds = [(-1.0, 2.0), (0.5, 3.0), (-4.0, -2.0)];
+    let bounds = [
+        Interval::closed(-1.0, 2.0),
+        Interval::closed(0.5, 3.0),
+        Interval::closed(-4.0, -2.0),
+    ];
     let violations = Cell::new(0usize);
     let f = |p: &[f64]| {
-        for (x, &(lo, hi)) in p.iter().zip(&bounds) {
-            if *x < lo || *x > hi {
+        for (x, iv) in p.iter().zip(&bounds) {
+            if !iv.contains(x) {
                 violations.set(violations.get() + 1);
             }
         }
@@ -653,8 +663,8 @@ fn de_respects_bounds_on_every_evaluation() {
     };
     let r = differential_evolution(f, &bounds, &DeOpts::default()).unwrap();
     assert_eq!(violations.get(), 0);
-    for (x, &(lo, hi)) in r.x.iter().zip(&bounds) {
-        assert!(*x >= lo && *x <= hi, "{:?}", r.x);
+    for (x, iv) in r.x.iter().zip(&bounds) {
+        assert!(iv.contains(x), "{:?}", r.x);
     }
     // Minimum of Σx² over the box: (0, 0.5, −2).
     assert!(
@@ -671,7 +681,7 @@ fn de_counts_evaluations() {
         count.set(count.get() + 1);
         (p[0] - 0.5).powi(2)
     };
-    let r = differential_evolution(f, &[(-1.0, 1.0)], &DeOpts::default()).unwrap();
+    let r = differential_evolution(f, &[Interval::closed(-1.0, 1.0)], &DeOpts::default()).unwrap();
     assert_eq!(r.evaluations, count.get());
     assert!(r.evaluations >= 8, "initial population is evaluated");
 }
@@ -680,7 +690,7 @@ fn de_counts_evaluations() {
 fn de_converged_flag_on_easy_problem() {
     let r = differential_evolution(
         |p: &[f64]| (p[0] - 0.25).powi(2) + (p[1] + 0.75).powi(2),
-        &[(-2.0, 2.0), (-2.0, 2.0)],
+        &[Interval::closed(-2.0, 2.0), Interval::closed(-2.0, 2.0)],
         &DeOpts::default(),
     )
     .unwrap();
@@ -695,7 +705,12 @@ fn de_generation_cap_reports_not_converged() {
         max_generations: 2,
         ..DeOpts::default()
     };
-    let r = differential_evolution(rastrigin, &[(-5.12, 5.12), (-5.12, 5.12)], &opts).unwrap();
+    let r = differential_evolution(
+        rastrigin,
+        &[Interval::closed(-5.12, 5.12), Interval::closed(-5.12, 5.12)],
+        &opts,
+    )
+    .unwrap();
     assert!(!r.converged);
     assert_eq!(r.iterations, 2);
     assert!(r.fun.is_finite());
@@ -709,19 +724,35 @@ fn de_rejects_bad_inputs() {
         Err(SymplexError::InvalidArgument { .. })
     ));
     assert!(matches!(
-        differential_evolution(f, &[(1.0, 0.0)], &DeOpts::default()),
+        differential_evolution(f, &[Interval::closed(1.0, 0.0)], &DeOpts::default()),
         Err(SymplexError::InvalidArgument { .. })
     ));
     assert!(matches!(
-        differential_evolution(f, &[(0.0, f64::INFINITY)], &DeOpts::default()),
+        differential_evolution(
+            f,
+            &[Interval::closed(0.0, f64::INFINITY)],
+            &DeOpts::default()
+        ),
         Err(SymplexError::InvalidArgument { .. })
     ));
+    // The box is closed by definition: an open or half-open kind is rejected.
+    assert!(matches!(
+        differential_evolution(f, &[Interval::open(0.0, 1.0)], &DeOpts::default()),
+        Err(SymplexError::InvalidArgument { .. })
+    ));
+    assert!(matches!(
+        differential_evolution(f, &[Interval::from(0.0..1.0)], &DeOpts::default()),
+        Err(SymplexError::InvalidArgument { .. })
+    ));
+    // `a..=b` is `[a, b]` and is accepted.
+    assert!(differential_evolution(f, &[Interval::from(0.0..=1.0)], &DeOpts::default()).is_ok());
+    let unit = [Interval::closed(0.0, 1.0)];
     let bad_pop = DeOpts {
         population: 3,
         ..DeOpts::default()
     };
     assert!(matches!(
-        differential_evolution(f, &[(0.0, 1.0)], &bad_pop),
+        differential_evolution(f, &unit, &bad_pop),
         Err(SymplexError::InvalidArgument { .. })
     ));
     let bad_cr = DeOpts {
@@ -729,7 +760,7 @@ fn de_rejects_bad_inputs() {
         ..DeOpts::default()
     };
     assert!(matches!(
-        differential_evolution(f, &[(0.0, 1.0)], &bad_cr),
+        differential_evolution(f, &unit, &bad_cr),
         Err(SymplexError::InvalidArgument { .. })
     ));
     let bad_f = DeOpts {
@@ -737,7 +768,7 @@ fn de_rejects_bad_inputs() {
         ..DeOpts::default()
     };
     assert!(matches!(
-        differential_evolution(f, &[(0.0, 1.0)], &bad_f),
+        differential_evolution(f, &unit, &bad_f),
         Err(SymplexError::InvalidArgument { .. })
     ));
 }
@@ -748,7 +779,7 @@ fn de_all_nan_objective_is_computation_failed() {
         max_generations: 5,
         ..DeOpts::default()
     };
-    let e = differential_evolution(|_: &[f64]| f64::NAN, &[(0.0, 1.0)], &opts);
+    let e = differential_evolution(|_: &[f64]| f64::NAN, &[Interval::closed(0.0, 1.0)], &opts);
     assert!(
         matches!(e, Err(SymplexError::ComputationFailed { .. })),
         "{e:?}"
@@ -759,9 +790,11 @@ fn de_all_nan_objective_is_computation_failed() {
 fn de_finds_global_minimum_among_local_ones() {
     // f(x) = x⁴ − 4x² + x has a local minimum near x ≈ 1.37 and the global one near x ≈ −1.47.
     let f = |p: &[f64]| p[0].powi(4) - 4.0 * p[0].powi(2) + p[0];
-    let r = differential_evolution(f, &[(-3.0, 3.0)], &DeOpts::default()).unwrap();
+    let r = differential_evolution(f, &[Interval::closed(-3.0, 3.0)], &DeOpts::default()).unwrap();
     assert!(r.x[0] < -1.0, "{:?}", r.x);
-    let (local, _) = minimize_scalar(|x| f(&[x]), 0.5, 2.5, &MinimizeOpts::default()).unwrap();
+    let local = minimize_scalar(|x| f(&[x]), 0.5, 2.5, &MinimizeOpts::default())
+        .unwrap()
+        .x;
     assert!(r.fun < f(&[local]) - 1.0);
 }
 
@@ -838,7 +871,7 @@ fn poly_fit_least_squares_residual_is_orthogonal_to_columns() {
 fn linear_fit_exact_line() {
     let xs: Vec<f64> = (0..10).map(f64::from).collect();
     let ys: Vec<f64> = xs.iter().map(|x| 3.0 * x + 1.0).collect();
-    let (slope, intercept) = linear_fit(&xs, &ys).unwrap();
+    let LinearFit { slope, intercept } = linear_fit(&xs, &ys).unwrap();
     assert!((slope - 3.0).abs() < 1e-12, "{slope}");
     assert!((intercept - 1.0).abs() < 1e-12, "{intercept}");
 }
@@ -847,7 +880,7 @@ fn linear_fit_exact_line() {
 fn linear_fit_matches_closed_form() {
     let xs = [1.0, 2.0, 3.0, 5.0, 8.0];
     let ys = [2.0, 2.5, 3.9, 6.1, 9.8];
-    let (slope, intercept) = linear_fit(&xs, &ys).unwrap();
+    let fit = linear_fit(&xs, &ys).unwrap();
     let n = xs.len() as f64;
     let sx: f64 = xs.iter().sum();
     let sy: f64 = ys.iter().sum();
@@ -855,7 +888,7 @@ fn linear_fit_matches_closed_form() {
     let sxy: f64 = xs.iter().zip(&ys).map(|(x, y)| x * y).sum();
     let m = (n * sxy - sx * sy) / (n * sxx - sx * sx);
     let b = (sy - m * sx) / n;
-    assert!((slope - m).abs() < 1e-12 && (intercept - b).abs() < 1e-12);
+    assert!((fit.slope - m).abs() < 1e-12 && (fit.intercept - b).abs() < 1e-12);
 }
 
 #[test]
@@ -1222,20 +1255,20 @@ fn ex_minimize_numeric_with_special_function() {
 fn ex_minimize_scalar_numeric() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let (xm, fm) = ((&x - 1).powi(2) + 3)
+    let m = ((&x - 1).powi(2) + 3)
         .minimize_scalar_numeric(&x, -5.0, 5.0)
         .unwrap();
-    assert!((xm - 1.0).abs() < 1e-6, "{xm}");
-    assert!((fm - 3.0).abs() < 1e-12, "{fm}");
+    assert!((m.x - 1.0).abs() < 1e-6, "{}", m.x);
+    assert!((m.value - 3.0).abs() < 1e-12, "{}", m.value);
 }
 
 #[test]
 fn ex_minimize_scalar_numeric_x_ln_x() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let (xm, fm) = (&x * x.ln()).minimize_scalar_numeric(&x, 0.1, 2.0).unwrap();
+    let m = (&x * x.ln()).minimize_scalar_numeric(&x, 0.1, 2.0).unwrap();
     let e_inv = (-1.0f64).exp();
-    assert!((xm - e_inv).abs() < 1e-6 && (fm + e_inv).abs() < 1e-12);
+    assert!((m.x - e_inv).abs() < 1e-6 && (m.value + e_inv).abs() < 1e-12);
 }
 
 #[test]
@@ -1256,7 +1289,7 @@ fn ex_minimize_global_numeric_rastrigin() {
     let r = ras
         .minimize_global_numeric(
             &[&x, &y],
-            &[(-5.12, 5.12), (-5.12, 5.12)],
+            &[Interval::closed(-5.12, 5.12), Interval::closed(-5.12, 5.12)],
             &DeOpts::default(),
         )
         .unwrap();
@@ -1271,7 +1304,7 @@ fn ex_minimize_global_numeric_bounds_mismatch_is_invalid_argument() {
     let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
     let e = (&x.powi(2) + &y.powi(2)).minimize_global_numeric(
         &[&x, &y],
-        &[(-1.0, 1.0)],
+        &[Interval::closed(-1.0, 1.0)],
         &DeOpts::default(),
     );
     assert!(
@@ -1375,7 +1408,7 @@ fn ex_root_and_min_agree_with_calculus() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let f = &x.powi(4) - 3 * &x.powi(2) + &x;
-    let (xm, _) = f.minimize_scalar_numeric(&x, -3.0, -0.5).unwrap();
+    let xm = f.minimize_scalar_numeric(&x, -3.0, -0.5).unwrap().x;
     let root = f.diff(&x).find_root_bracket(&x, -3.0, -0.5).unwrap();
     assert!((xm - root).abs() < 1e-6, "{xm} vs {root}");
 }

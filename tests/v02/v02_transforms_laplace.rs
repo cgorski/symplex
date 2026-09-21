@@ -30,7 +30,10 @@ fn verify(f: &Ex, t: &Ex, s: &Ex, big_f: &Ex, s_samples: &[f64]) {
     for &s0 in s_samples {
         let s0_ex = ctx.from_f64(s0).unwrap();
         let integrand = f * (-&s0_ex * t).exp();
-        let (num, err) = integrand
+        let QuadResult {
+            value: num,
+            error: err,
+        } = integrand
             .integrate_numeric_with(t, &ctx.int(0), &ctx.infinity(), &opts)
             .unwrap_or_else(|e| panic!("quadrature of {integrand} failed: {e}"));
         let sym = big_f

@@ -42,13 +42,13 @@ fn singularities_rational_log_tan_polynomial() {
     );
 
     // Restricted to a domain: {-1, 1} ∩ [0, 5] = {1}
-    let dom = ctx.interval(&ctx.int(0), &ctx.int(5), false, false);
+    let dom = ctx.interval(&ctx.int(0), &ctx.int(5), IntervalKind::Closed);
     assert_eq!(s(&f.singularities(&x, Some(&dom)).unwrap()), "{1}");
 
     // SymPy: singularities(tan(x), x) is the union of the two ImageSets
     // pi/2 + 2*n*pi and 3*pi/2 + 2*n*pi.  Enumerated on a bounded domain:
     // [0, 10] contains pi/2, 3*pi/2, 5*pi/2.
-    let ten = ctx.interval(&ctx.int(0), &ctx.int(10), false, false);
+    let ten = ctx.interval(&ctx.int(0), &ctx.int(10), IntervalKind::Closed);
     let poles = x.tan().singularities(&x, Some(&ten)).unwrap();
     let pts = poles.as_finite_set().expect("finite on a bounded domain");
     assert_eq!(pts.len(), 3, "{poles}");
@@ -91,12 +91,12 @@ fn stationary_points_cubic_and_sine() {
     // SymPy: stationary_points(x**3 - 3*x, x) == {-1, 1}
     assert_eq!(s(&f.stationary_points(&x, None).unwrap()), "{-1, 1}");
     // SymPy: stationary_points(x**3 - 3*x, x, Interval(0, 5)) == {1}
-    let dom = ctx.interval(&ctx.int(0), &ctx.int(5), false, false);
+    let dom = ctx.interval(&ctx.int(0), &ctx.int(5), IntervalKind::Closed);
     assert_eq!(s(&f.stationary_points(&x, Some(&dom)).unwrap()), "{1}");
 
     // SymPy: stationary_points(sin(x), x, Interval(0, 2*pi)) == {pi/2, 3*pi/2}
     let pi = ctx.pi();
-    let two_pi = ctx.interval(&ctx.int(0), &(&pi * 2), false, false);
+    let two_pi = ctx.interval(&ctx.int(0), &(&pi * 2), IntervalKind::Closed);
     let sp = x.sin().stationary_points(&x, Some(&two_pi)).unwrap();
     let pts = sp.as_finite_set().unwrap();
     assert_eq!(pts.len(), 2, "{sp}");
@@ -120,7 +120,7 @@ fn maximum_minimum_on_intervals() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let f = &x.powi(3) - &x * 3;
-    let dom = ctx.interval(&ctx.int(-2), &ctx.int(2), false, false);
+    let dom = ctx.interval(&ctx.int(-2), &ctx.int(2), IntervalKind::Closed);
 
     // SymPy: maximum(x**3 - 3*x, x, Interval(-2, 2)) == 2, minimum == -2
     assert_eq!(s(&f.maximum(&x, &dom).unwrap()), "2");
@@ -131,23 +131,23 @@ fn maximum_minimum_on_intervals() {
     assert_eq!(s(&x.powi(2).minimum(&x, &ctx.reals()).unwrap()), "0");
 
     // SymPy: minimum(1/x, x, Interval(1, oo)) == 0 (limit), maximum == 1
-    let tail = ctx.interval(&ctx.int(1), &ctx.infinity(), false, true);
+    let tail = ctx.interval(&ctx.int(1), &ctx.infinity(), IntervalKind::RightOpen);
     assert_eq!(s(&(1 / &x).minimum(&x, &tail).unwrap()), "0");
     assert_eq!(s(&(1 / &x).maximum(&x, &tail).unwrap()), "1");
 
     // SymPy: maximum(sin(x), x, Interval(0, pi)) == 1
-    let zero_pi = ctx.interval(&ctx.int(0), &ctx.pi(), false, false);
+    let zero_pi = ctx.interval(&ctx.int(0), &ctx.pi(), IntervalKind::Closed);
     assert_eq!(s(&x.sin().maximum(&x, &zero_pi).unwrap()), "1");
     assert_eq!(s(&x.sin().minimum(&x, &zero_pi).unwrap()), "0");
 
     // SymPy: maximum(x, x, Interval.open(0, 1)) == 1 (supremum, not attained)
-    let unit = ctx.interval(&ctx.int(0), &ctx.int(1), true, true);
+    let unit = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Open);
     assert_eq!(s(&x.maximum(&x, &unit).unwrap()), "1");
     assert_eq!(s(&x.minimum(&x, &unit).unwrap()), "0");
 
     // Union of intervals: x² on [-1, 1] ∪ [2, 3] → max 9, min 0.
-    let two = ctx.interval(&ctx.int(-1), &ctx.int(1), false, false);
-    let three = ctx.interval(&ctx.int(2), &ctx.int(3), false, false);
+    let two = ctx.interval(&ctx.int(-1), &ctx.int(1), IntervalKind::Closed);
+    let three = ctx.interval(&ctx.int(2), &ctx.int(3), IntervalKind::Closed);
     let both = two.union(&three);
     assert_eq!(s(&x.powi(2).maximum(&x, &both).unwrap()), "9");
     assert_eq!(s(&x.powi(2).minimum(&x, &both).unwrap()), "0");
@@ -158,7 +158,7 @@ fn maximum_minimum_on_intervals() {
     // Errors: singularity inside the domain, empty / non-interval domain,
     // discontinuous function, limit that does not exist.  (0.11.1: the
     // algorithmic failures are `ComputationFailed`, not `NotImplemented`.)
-    let across_zero = ctx.interval(&ctx.int(-1), &ctx.int(1), false, false);
+    let across_zero = ctx.interval(&ctx.int(-1), &ctx.int(1), IntervalKind::Closed);
     assert!(matches!(
         (1 / &x).maximum(&x, &across_zero),
         Err(SymplexError::ComputationFailed { .. })
@@ -191,9 +191,9 @@ fn monotonicity_queries() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let reals = ctx.reals();
-    let half = ctx.interval(&ctx.int(0), &ctx.infinity(), false, true); // [0, oo)
-    let open_half = ctx.interval(&ctx.int(0), &ctx.infinity(), true, true); // (0, oo)
-    let left = ctx.interval(&ctx.neg_infinity(), &ctx.int(0), true, false); // (-oo, 0]
+    let half = ctx.interval(&ctx.int(0), &ctx.infinity(), IntervalKind::RightOpen); // [0, oo)
+    let open_half = ctx.interval(&ctx.int(0), &ctx.infinity(), IntervalKind::Open); // (0, oo)
+    let left = ctx.interval(&ctx.neg_infinity(), &ctx.int(0), IntervalKind::LeftOpen); // (-oo, 0]
 
     // SymPy: is_increasing(x**3, S.Reals, x) is True
     assert_eq!(x.powi(3).is_increasing(&x, &reals), Some(true));
@@ -332,14 +332,14 @@ fn convexity_queries() {
     assert_eq!(x.powi(2).is_convex(&x, &reals), Some(true));
     assert_eq!(x.powi(3).is_convex(&x, &reals), Some(false));
     // SymPy: is_convex(x**3, x, domain=Interval(0, oo)) is True
-    let half = ctx.interval(&ctx.int(0), &ctx.infinity(), false, true);
+    let half = ctx.interval(&ctx.int(0), &ctx.infinity(), IntervalKind::RightOpen);
     assert_eq!(x.powi(3).is_convex(&x, &half), Some(true));
     // SymPy: is_convex(exp(x), x) is True; is_convex(-x**2, x) is False
     assert_eq!(x.exp().is_convex(&x, &reals), Some(true));
     assert_eq!((-&x.powi(2)).is_convex(&x, &reals), Some(false));
     // Affine functions are convex; 1/x is convex on (0, oo).
     assert_eq!((&x * 2 + 1).is_convex(&x, &reals), Some(true));
-    let pos = ctx.interval(&ctx.int(0), &ctx.infinity(), true, true);
+    let pos = ctx.interval(&ctx.int(0), &ctx.infinity(), IntervalKind::Open);
     assert_eq!((1 / &x).is_convex(&x, &pos), Some(true));
 }
 
@@ -356,50 +356,59 @@ fn function_range_tracks_open_and_closed_endpoints() {
 
     // SymPy: function_range(sin(x), x, Interval(0, pi)) == Interval(0, 1)
     assert_eq!(
-        r(&x.sin(), &ctx.interval(&ctx.int(0), &pi, false, false)),
+        r(
+            &x.sin(),
+            &ctx.interval(&ctx.int(0), &pi, IntervalKind::Closed)
+        ),
         "[0, 1]"
     );
     // SymPy: function_range(x**2, x, Interval(-1, 2)) == Interval(0, 4)
     assert_eq!(
         r(
             &x.powi(2),
-            &ctx.interval(&ctx.int(-1), &ctx.int(2), false, false)
+            &ctx.interval(&ctx.int(-1), &ctx.int(2), IntervalKind::Closed)
         ),
         "[0, 4]"
     );
     // SymPy: function_range(x**2, x, S.Reals) == Interval(0, oo)
     assert_eq!(r(&x.powi(2), &ctx.reals()), "[0, oo)");
     // SymPy: function_range(1/x, x, Interval(1, oo)) == Interval.Lopen(0, 1)
-    let tail = ctx.interval(&ctx.int(1), &ctx.infinity(), false, true);
+    let tail = ctx.interval(&ctx.int(1), &ctx.infinity(), IntervalKind::RightOpen);
     assert_eq!(r(&(1 / &x), &tail), "(0, 1]");
     // SymPy: function_range(x, x, Interval.open(0, 1)) == Interval.open(0, 1)
     assert_eq!(
-        r(&x, &ctx.interval(&ctx.int(0), &ctx.int(1), true, true)),
+        r(
+            &x,
+            &ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Open)
+        ),
         "(0, 1)"
     );
     // SymPy: function_range(x**2, x, Interval.open(-1, 1)) == Interval.Ropen(0, 1)
     assert_eq!(
         r(
             &x.powi(2),
-            &ctx.interval(&ctx.int(-1), &ctx.int(1), true, true)
+            &ctx.interval(&ctx.int(-1), &ctx.int(1), IntervalKind::Open)
         ),
         "[0, 1)"
     );
     // SymPy: function_range(x**3 - 3*x, x, Interval(-2, 2)) == Interval(-2, 2)
     let f = &x.powi(3) - &x * 3;
     assert_eq!(
-        r(&f, &ctx.interval(&ctx.int(-2), &ctx.int(2), false, false)),
+        r(
+            &f,
+            &ctx.interval(&ctx.int(-2), &ctx.int(2), IntervalKind::Closed)
+        ),
         "[-2, 2]"
     );
     // SymPy: function_range(exp(x), x, S.Reals) == Interval.open(0, oo)
     assert_eq!(r(&x.exp(), &ctx.reals()), "(0, oo)");
     // SymPy: function_range(tan(x), x, Interval.open(-pi/2, pi/2)) == Interval(-oo, oo)
-    let branch = ctx.interval(&(-&pi / 2), &(&pi / 2), true, true);
+    let branch = ctx.interval(&(-&pi / 2), &(&pi / 2), IntervalKind::Open);
     assert_eq!(r(&x.tan(), &branch), "(-oo, oo)");
     // SymPy: function_range(x**2, x, Union(Interval(-1, 1), Interval(2, 3)))
     //        == Union(Interval(0, 1), Interval(4, 9))
-    let two = ctx.interval(&ctx.int(-1), &ctx.int(1), false, false);
-    let three = ctx.interval(&ctx.int(2), &ctx.int(3), false, false);
+    let two = ctx.interval(&ctx.int(-1), &ctx.int(1), IntervalKind::Closed);
+    let three = ctx.interval(&ctx.int(2), &ctx.int(3), IntervalKind::Closed);
     assert_eq!(r(&x.powi(2), &two.union(&three)), "[0, 1] ∪ [4, 9]");
     // A constant maps to a single point; the empty domain to the empty set.
     assert_eq!(r(&ctx.int(3), &ctx.reals()), "{3}");

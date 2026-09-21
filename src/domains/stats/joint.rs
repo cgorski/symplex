@@ -539,19 +539,17 @@ fn probability_less(lower: &RandomVariable, upper: &RandomVariable) -> Result<Ex
         );
         return diff.probability_of(&Support::from_pieces(
             Kind::Continuous,
-            vec![super::support::Piece::Interval {
-                lo: ctx.neg_infinity(),
-                hi: ctx.zero(),
-                lo_open: true,
-                hi_open: true,
-            }],
+            vec![super::support::Piece::Interval(
+                crate::base::interval::Interval::open(ctx.neg_infinity(), ctx.zero()),
+            )],
         ));
     }
     let (sl, su) = (lower.support(), upper.support());
-    let (Some((lo_l, hi_l, _, _)), Some((lo_u, hi_u, _, _))) = (sl.as_interval(), su.as_interval())
-    else {
+    let (Some(iv_l), Some(iv_u)) = (sl.as_interval(), su.as_interval()) else {
         return Err(not_implemented());
     };
+    let (lo_l, hi_l) = (&iv_l.lower, &iv_l.upper);
+    let (lo_u, hi_u) = (&iv_u.lower, &iv_u.upper);
     if sl.kind() != Kind::Continuous || su.kind() != Kind::Continuous {
         return Err(not_implemented());
     }

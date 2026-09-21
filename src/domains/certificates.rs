@@ -91,15 +91,15 @@
 //!
 //! ```
 //! use symplex::prelude::*;
-//! use symplex::certificates::{prove_nonnegative_on_box, BoxOutcome};
+//! use symplex::certificates::{prove_nonnegative_on_box, BoxBound, BoxOutcome};
 //!
 //! let ctx = Context::new();
 //! let (r, f) = (ctx.symbol("r"), ctx.symbol("f"));
 //! // 1/4 − (r − f/2)² ≥ 0 on [0, 1/2] × [0, 1]
 //! let goal = ctx.rational(1, 4) - (&r - &f / 2).powi(2);
 //! let bounds = [
-//!     (r.clone(), ctx.int(0), ctx.rational(1, 2)),
-//!     (f.clone(), ctx.int(0), ctx.int(1)),
+//!     BoxBound { var: r.clone(), lo: ctx.int(0), hi: ctx.rational(1, 2) },
+//!     BoxBound { var: f.clone(), lo: ctx.int(0), hi: ctx.int(1) },
 //! ];
 //! match prove_nonnegative_on_box(&goal, &bounds, 2).unwrap() {
 //!     BoxOutcome::Proved(cert) => {
@@ -116,9 +116,11 @@ use num_bigint::BigInt;
 use num_traits::{One, Zero};
 
 use crate::api::context::Context;
+use crate::api::eq::Equation;
 use crate::api::expr::Ex;
 use crate::api::poly_ex::Poly;
 use crate::base::errors::SymplexError;
+use crate::base::interval::Interval;
 use crate::domains::linprog::{Feasibility, LpProblem, LpStatus, nonneg_combination};
 use crate::output::lean::{LeanOpts, MATHLIB_LINE_WIDTH, lean_ident, wrap_lean};
 
@@ -130,9 +132,10 @@ mod sos;
 pub use crate::domains::linprog::BudgetHit;
 pub use outcome::{Certificate, Outcome};
 pub use polyhedron::{
-    PolyhedronCertificate, PolyhedronCertificateData, PolyhedronLeanNames, PolyhedronLeanSteps,
-    PolyhedronOpts, PolyhedronOutcome, PolyhedronProver, PolyhedronTerm, PolyhedronUnknown,
-    prove_nonnegative_on_polyhedron, prove_polyhedron_empty,
+    ParamBound, ParamBoundTree, PolyhedronCertificate, PolyhedronCertificateData,
+    PolyhedronLeanNames, PolyhedronLeanSteps, PolyhedronOpts, PolyhedronOutcome, PolyhedronProver,
+    PolyhedronTerm, PolyhedronTermData, PolyhedronUnknown, prove_nonnegative_on_polyhedron,
+    prove_polyhedron_empty,
 };
 pub use sos::{
     SosCertificate, SosCertificateData, SosOpts, SosOutcome, SosUnknown, is_sos, prove_sos,
@@ -161,19 +164,40 @@ pub(crate) mod serial {
     }
 }
 
+/// One side of the box in a [`BoxCertificateData`]: `lo ≤ var ≤ hi` as
+/// expression trees (the serialisable form of a [`BoxBound`]).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BoxBoundTree {
+    /// The variable.
+    pub var: crate::output::tree::ExprTree,
+    /// Lower endpoint.
+    pub lo: crate::output::tree::ExprTree,
+    /// Upper endpoint.
+    pub hi: crate::output::tree::ExprTree,
+}
+
+/// One Handelman term in a [`BoxCertificateData`]:
+/// `weight · Π (xᵢ − lᵢ)^lower_powers[i] · Π (uᵢ − xᵢ)^upper_powers[i]`
+/// (the serialisable form of a [`HandelmanTerm`]).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HandelmanTermData {
+    /// Exponent of `(xᵢ − lᵢ)`, one per variable.
+    pub lower_powers: Vec<u32>,
+    /// Exponent of `(uᵢ − xᵢ)`, one per variable.
+    pub upper_powers: Vec<u32>,
+    /// The positive rational weight as `"p/q"`.
+    pub weight: String,
+}
+
 /// Serialisable form of a [`BoxCertificate`] (see [`BoxCertificate::to_json`]).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BoxCertificateData {
     /// The goal (a polynomial in the box variables).
     pub goal: crate::output::tree::ExprTree,
-    /// The box as `(variable, lo, hi)` trees.
-    pub bounds: Vec<(
-        crate::output::tree::ExprTree,
-        crate::output::tree::ExprTree,
-        crate::output::tree::ExprTree,
-    )>,
-    /// Terms as `(lower powers, upper powers, weight "p/q")`.
-    pub terms: Vec<(Vec<u32>, Vec<u32>, String)>,
+    /// The box, one [`BoxBoundTree`] per variable.
+    pub bounds: Vec<BoxBoundTree>,
+    /// The terms.
+    pub terms: Vec<HandelmanTermData>,
     /// The square factor `g`, if any.
     pub square: Option<crate::output::tree::ExprTree>,
 }
@@ -359,9 +383,9 @@ impl BoxCertificate {
         acc
     }
 
-    /// The certificate identity `goal = Σ λₖ·productₖ` as an expression pair
-    /// `(lhs, rhs)`, with the products kept in factored form.
-    pub fn identity(&self) -> (Ex, Ex) {
+    /// The certificate identity `goal = Σ λₖ·productₖ` as an [`Equation`],
+    /// with the products kept in factored form.
+    pub fn identity(&self) -> Equation {
         let ctx = self.goal.context();
         let mut rhs = ctx.zero();
         for t in &self.terms {
@@ -370,7 +394,7 @@ impl BoxCertificate {
         if let Some(g) = &self.square {
             rhs = g.to_ex().powi(2) * rhs;
         }
-        (self.goal.to_ex(), rhs)
+        Equation::new(self.goal.to_ex(), rhs)
     }
 
     /// A Lean 4 / Mathlib theorem proving `0 ≤ goal` on the box.
@@ -502,17 +526,19 @@ impl BoxCertificate {
             bounds: self
                 .bounds
                 .iter()
-                .map(|b| (b.var.to_tree(), b.lo.to_tree(), b.hi.to_tree()))
+                .map(|b| BoxBoundTree {
+                    var: b.var.to_tree(),
+                    lo: b.lo.to_tree(),
+                    hi: b.hi.to_tree(),
+                })
                 .collect(),
             terms: self
                 .terms
                 .iter()
-                .map(|t| {
-                    (
-                        t.lower_powers.clone(),
-                        t.upper_powers.clone(),
-                        serial::q_to_str(&t.weight),
-                    )
+                .map(|t| HandelmanTermData {
+                    lower_powers: t.lower_powers.clone(),
+                    upper_powers: t.upper_powers.clone(),
+                    weight: serial::q_to_str(&t.weight),
                 })
                 .collect(),
             square: self.square.as_ref().map(|g| g.to_ex().to_tree()),
@@ -535,10 +561,10 @@ impl BoxCertificate {
         let bounds: Vec<BoxBound> = data
             .bounds
             .iter()
-            .map(|(v, lo, hi)| BoxBound {
-                var: ctx.from_tree(v),
-                lo: ctx.from_tree(lo),
-                hi: ctx.from_tree(hi),
+            .map(|b| BoxBound {
+                var: ctx.from_tree(&b.var),
+                lo: ctx.from_tree(&b.lo),
+                hi: ctx.from_tree(&b.hi),
             })
             .collect();
         if bounds.is_empty() {
@@ -564,16 +590,16 @@ impl BoxCertificate {
             None => None,
         };
         let mut terms = Vec::with_capacity(data.terms.len());
-        for (lo, hi, w) in &data.terms {
-            if lo.len() != bounds.len() || hi.len() != bounds.len() {
+        for t in &data.terms {
+            if t.lower_powers.len() != bounds.len() || t.upper_powers.len() != bounds.len() {
                 return Err(bad(
                     "a term's power vectors must have one entry per variable".into(),
                 ));
             }
             terms.push(HandelmanTerm {
-                lower_powers: lo.clone(),
-                upper_powers: hi.clone(),
-                weight: serial::q_from_str(w, OP)?,
+                lower_powers: t.lower_powers.clone(),
+                upper_powers: t.upper_powers.clone(),
+                weight: serial::q_from_str(&t.weight, OP)?,
             });
         }
         let cert = BoxCertificate {
@@ -594,11 +620,12 @@ impl BoxCertificate {
     ///
     /// ```
     /// use symplex::prelude::*;
-    /// use symplex::certificates::{BoxCertificate, prove_nonnegative_on_box};
+    /// use symplex::certificates::{BoxBound, BoxCertificate, prove_nonnegative_on_box};
     ///
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
-    /// let out = prove_nonnegative_on_box(&(&x * (1 - &x)), &[(x.clone(), ctx.int(0), ctx.int(1))], 2).unwrap();
+    /// let unit = [BoxBound { var: x.clone(), lo: ctx.int(0), hi: ctx.int(1) }];
+    /// let out = prove_nonnegative_on_box(&(&x * (1 - &x)), &unit, 2).unwrap();
     /// let json = out.certificate().unwrap().to_json().unwrap();
     /// let back = BoxCertificate::from_json(&Context::new(), &json).unwrap();
     /// assert!(back.verify());
@@ -633,7 +660,7 @@ impl BoxCertificate {
 
 impl fmt::Display for BoxCertificate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (lhs, rhs) = self.identity();
+        let Equation { lhs, rhs } = self.identity();
         write!(f, "{lhs} = {rhs}")?;
         for b in &self.bounds {
             write!(f, ", {} ≤ {} ≤ {}", b.lo, b.var, b.hi)?;
@@ -715,7 +742,7 @@ fn value_at(goal: &Poly, point: &[Q]) -> Option<Q> {
 
 /// Search a grid of `steps + 1` points per axis (endpoints included) for a
 /// point where the goal is negative.
-fn find_counterexample(goal: &Poly, bounds: &[(Q, Q)], steps: u32) -> Option<(Vec<Q>, Q)> {
+fn find_counterexample(goal: &Poly, bounds: &[Interval<Q>], steps: u32) -> Option<(Vec<Q>, Q)> {
     let n = bounds.len();
     let total = (u64::from(steps) + 1).checked_pow(n as u32)?;
     if total > 200_000 {
@@ -726,7 +753,9 @@ fn find_counterexample(goal: &Poly, bounds: &[(Q, Q)], steps: u32) -> Option<(Ve
         let point: Vec<Q> = idx
             .iter()
             .zip(bounds)
-            .map(|(&k, (lo, hi))| lo + (hi - lo) * Q::new(BigInt::from(k), BigInt::from(steps)))
+            .map(|(&k, iv)| {
+                &iv.lower + (&iv.upper - &iv.lower) * Q::new(BigInt::from(k), BigInt::from(steps))
+            })
             .collect();
         if let Some(v) = value_at(goal, &point)
             && v < Q::zero()
@@ -781,9 +810,9 @@ fn sparse_nonneg_combination(
     }
 }
 
-/// Prove `goal ≥ 0` on the box `bounds` (each `(var, lo, hi)` with rational
-/// literal endpoints) by a Handelman certificate of total degree at most
-/// `degree`, or refute it with an exact counterexample.
+/// Prove `goal ≥ 0` on the box `bounds` (one [`BoxBound`] per variable, with
+/// rational literal endpoints) by a Handelman certificate of total degree at
+/// most `degree`, or refute it with an exact counterexample.
 ///
 /// `goal` must be a polynomial with rational coefficients in exactly the
 /// box variables.  The search cost grows with `C(2n + degree, degree)`
@@ -800,11 +829,11 @@ fn sparse_nonneg_combination(
 ///
 /// ```
 /// use symplex::prelude::*;
-/// use symplex::certificates::{prove_nonnegative_on_box, BoxOutcome};
+/// use symplex::certificates::{prove_nonnegative_on_box, BoxBound, BoxOutcome};
 ///
 /// let ctx = Context::new();
 /// let x = ctx.symbol("x");
-/// let bounds = [(x.clone(), ctx.int(0), ctx.int(1))];
+/// let bounds = [BoxBound { var: x.clone(), lo: ctx.int(0), hi: ctx.int(1) }];
 /// // x(1 − x) ≥ 0 on [0, 1]: the certificate is the single product itself.
 /// let out = prove_nonnegative_on_box(&(&x * (1 - &x)), &bounds, 2).unwrap();
 /// assert!(out.is_proved());
@@ -816,16 +845,16 @@ fn sparse_nonneg_combination(
 /// ```
 pub fn prove_nonnegative_on_box(
     goal: &Ex,
-    bounds: &[(Ex, Ex, Ex)],
+    bounds: &[BoxBound],
     degree: u32,
 ) -> Result<BoxOutcome, SymplexError> {
     if bounds.is_empty() {
         return Err(invalid("at least one bounded variable is required"));
     }
     let mut vars: Vec<&Ex> = Vec::with_capacity(bounds.len());
-    let mut q_bounds: Vec<(Q, Q)> = Vec::with_capacity(bounds.len());
+    let mut q_bounds: Vec<Interval<Q>> = Vec::with_capacity(bounds.len());
     let mut box_bounds: Vec<BoxBound> = Vec::with_capacity(bounds.len());
-    for (var, lo, hi) in bounds {
+    for BoxBound { var, lo, hi } in bounds {
         if vars.contains(&var) {
             return Err(invalid(format!("variable `{var}` is bounded twice")));
         }
@@ -840,7 +869,7 @@ pub fn prove_nonnegative_on_box(
             )));
         }
         vars.push(var);
-        q_bounds.push((l, h));
+        q_bounds.push(Interval::closed(l, h));
         box_bounds.push(BoxBound {
             var: var.clone(),
             lo: lo.eval(),
@@ -1032,15 +1061,18 @@ fn handelman_search(
 ///
 /// ```
 /// use symplex::prelude::*;
-/// use symplex::certificates::is_nonnegative_on_box;
+/// use symplex::certificates::{is_nonnegative_on_box, BoxBound};
 ///
 /// let ctx = Context::new();
 /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
-/// let bounds = [(x.clone(), ctx.int(0), ctx.int(1)), (y.clone(), ctx.int(0), ctx.int(1))];
+/// let bounds = [
+///     BoxBound { var: x.clone(), lo: ctx.int(0), hi: ctx.int(1) },
+///     BoxBound { var: y.clone(), lo: ctx.int(0), hi: ctx.int(1) },
+/// ];
 /// assert_eq!(is_nonnegative_on_box(&(1 - &x * &y), &bounds, 4), Some(true));
 /// assert_eq!(is_nonnegative_on_box(&(&x * &y - 1), &bounds, 4), Some(false));
 /// ```
-pub fn is_nonnegative_on_box(goal: &Ex, bounds: &[(Ex, Ex, Ex)], max_degree: u32) -> Option<bool> {
+pub fn is_nonnegative_on_box(goal: &Ex, bounds: &[BoxBound], max_degree: u32) -> Option<bool> {
     for d in 1..=max_degree.max(1) {
         match prove_nonnegative_on_box(goal, bounds, d) {
             Ok(Outcome::Proved(_)) => return Some(true),
@@ -1119,7 +1151,7 @@ impl Ex {
     /// [`prove_nonnegative_on_box`] as a method.
     pub fn prove_nonnegative_on_box(
         &self,
-        bounds: &[(Ex, Ex, Ex)],
+        bounds: &[BoxBound],
         degree: u32,
     ) -> Result<BoxOutcome, SymplexError> {
         prove_nonnegative_on_box(self, bounds, degree)
@@ -1346,9 +1378,9 @@ impl HalfLineCertificate {
         }
     }
 
-    /// The identity as `(lhs, rhs)` expressions:
-    /// `((1 + k)^N · goal, square² · Σ cᵢ kⁱ)`.
-    pub fn identity(&self) -> (Ex, Ex) {
+    /// The identity `(1 + k)^N · goal = square² · Σ cᵢ kⁱ` as an
+    /// [`Equation`].
+    pub fn identity(&self) -> Equation {
         let ctx = self.goal.context();
         let k = self.shift_expr();
         let mut rhs = ctx.zero();
@@ -1363,7 +1395,7 @@ impl HalfLineCertificate {
         } else {
             (1 + &k).powi(i64::from(self.polya_power)) * self.goal.to_ex()
         };
-        (lhs, rhs)
+        Equation::new(lhs, rhs)
     }
 
     /// The hint terms of the Lean proof, for an existing proof skeleton:
@@ -1490,7 +1522,7 @@ impl HalfLineCertificate {
 
 impl fmt::Display for HalfLineCertificate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (lhs, rhs) = self.identity();
+        let Equation { lhs, rhs } = self.identity();
         write!(f, "{lhs} = {rhs}")?;
         match self.ray {
             Ray::AtLeast => write!(f, ", {} ≥ {}", self.var, self.endpoint),
@@ -1575,8 +1607,8 @@ fn halfline_counterexample(p: &Poly, var: &Ex, a: &Q, ray: &Ray) -> Option<(Q, Q
     // isolating intervals, and a point beyond all roots.
     let mut candidates: Vec<Q> = vec![a.clone()];
     let iv = e.real_roots_isolate(var);
-    for (lo, hi) in &iv {
-        if let (Some(l), Some(h)) = (lo.as_rational(), hi.as_rational()) {
+    for interval in &iv {
+        if let (Some(l), Some(h)) = (interval.lower.as_rational(), interval.upper.as_rational()) {
             candidates.push((&l + &h) / Q::from_integer(BigInt::from(2)));
             candidates.push(&l - &one);
             candidates.push(&h + &one);

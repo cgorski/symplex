@@ -174,8 +174,8 @@ fn cross_context_boolean_and_panics() {
 fn cross_context_set_union_panics() {
     let ctx_a = Context::new();
     let ctx_b = Context::new();
-    let a = ctx_a.interval(&ctx_a.int(0), &ctx_a.int(1), false, false);
-    let b = ctx_b.interval(&ctx_b.int(2), &ctx_b.int(3), false, false);
+    let a = ctx_a.interval(&ctx_a.int(0), &ctx_a.int(1), IntervalKind::Closed);
+    let b = ctx_b.interval(&ctx_b.int(2), &ctx_b.int(3), IntervalKind::Closed);
     let _ = a.union(&b);
 }
 

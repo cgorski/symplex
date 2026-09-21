@@ -2626,13 +2626,13 @@ fn interval_construction() {
     let ctx = Context::new();
     let a = ctx.int(0);
     let b = ctx.int(1);
-    let interval = ctx.interval(&a, &b, false, false);
+    let interval = ctx.interval(&a, &b, IntervalKind::Closed);
     // (left_open, right_open) = (false, false) is the CLOSED interval [0, 1].
     assert_eq!(format!("{interval}"), "[0, 1]");
     assert_eq!(interval.contains(&ctx.int(0)), Some(true));
     assert_eq!(interval.contains(&ctx.int(1)), Some(true));
     assert_eq!(interval.contains(&ctx.int(2)), Some(false));
-    let open = ctx.interval(&a, &b, true, true);
+    let open = ctx.interval(&a, &b, IntervalKind::Open);
     assert_eq!(format!("{open}"), "(0, 1)");
     assert_eq!(open.contains(&ctx.int(0)), Some(false));
 }

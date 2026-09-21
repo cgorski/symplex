@@ -424,8 +424,8 @@ fn sets_and_logic() {
     let ctx = Context::new();
     syms!(ctx; x, p, q);
 
-    let a = ctx.interval(&ctx.int(0), &ctx.int(5), false, false);
-    let b = ctx.interval(&ctx.int(3), &ctx.int(10), true, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(5), IntervalKind::Closed);
+    let b = ctx.interval(&ctx.int(3), &ctx.int(10), IntervalKind::LeftOpen);
     assert_eq!(a.intersection(&b).simplify().to_string(), "(3, 5]");
     assert_eq!(a.symmetric_difference(&b).to_string(), "[0, 3] ∪ (5, 10]");
     assert_eq!(a.contains(&ctx.int(7)), Some(false));
@@ -549,12 +549,20 @@ fn linear_algebra() {
 
 fn certified_inequalities() {
     println!("\n--- Certified Inequalities and Lean Export ---");
-    use symplex::certificates::{BoxOutcome, prove_nonnegative_on_box};
+    use symplex::certificates::{BoxBound, BoxOutcome, prove_nonnegative_on_box};
     let ctx = Context::new();
     syms!(ctx; x, y);
     let square = [
-        (x.clone(), ctx.int(0), ctx.int(1)),
-        (y.clone(), ctx.int(0), ctx.int(1)),
+        BoxBound {
+            var: x.clone(),
+            lo: ctx.int(0),
+            hi: ctx.int(1),
+        },
+        BoxBound {
+            var: y.clone(),
+            lo: ctx.int(0),
+            hi: ctx.int(1),
+        },
     ];
 
     let cert = match prove_nonnegative_on_box(&(1 - &x * &y), &square, 2).unwrap() {
@@ -591,13 +599,17 @@ fn certified_inequalities() {
     );
 
     // 0.4: a polyhedron whose facets depend on a parameter j ≥ j₀.
-    use symplex::certificates::{PolyhedronOpts, prove_nonnegative_on_polyhedron};
+    use symplex::certificates::{ParamBound, PolyhedronOpts, prove_nonnegative_on_polyhedron};
     syms!(ctx; j, r, t);
     let hyps = [&t - &r, &t + &j * &r - &j - 1];
+    let j_bound = ParamBound {
+        var: j.clone(),
+        lower: ctx.int(0),
+    };
     let out = prove_nonnegative_on_polyhedron(
         &(&t - 1),
         &hyps,
-        Some((&j, &ctx.int(0))),
+        Some(&j_bound),
         &PolyhedronOpts::default(),
     )
     .unwrap();
@@ -823,19 +835,20 @@ fn numerical_toolbox() {
     assert!((r.x[0] - 1.0).abs() < 1e-6 && (r.x[1] - 1.0).abs() < 1e-6);
     assert!(r.fun < 1e-12);
 
-    // Differential evolution: global minimum in a box, deterministic for a given seed
+    // Differential evolution: global minimum in a closed box, deterministic for a given seed
     let himmelblau = (&x.powi(2) + &y - 11).powi(2) + (&x + &y.powi(2) - 7).powi(2);
+    let square = [Interval::closed(-5.0, 5.0), Interval::closed(-5.0, 5.0)];
     let g = himmelblau
-        .minimize_global_numeric(&[&x, &y], &[(-5.0, 5.0), (-5.0, 5.0)], &DeOpts::default())
+        .minimize_global_numeric(&[&x, &y], &square, &DeOpts::default())
         .unwrap();
     println!("Himmelblau: x = {:?}, f = {:e}", g.x, g.fun);
     assert!(g.fun < 1e-8);
 
     // Brent scalar minimisation, and least-squares fits (f64 via Householder QR, or exact rational)
-    let (xm, fm) = (&x * x.ln()).minimize_scalar_numeric(&x, 0.1, 2.0).unwrap();
-    println!("x ln x: min at {xm} with value {fm}");
-    assert!((xm - (-1.0f64).exp()).abs() < 1e-6);
-    assert!((fm + (-1.0f64).exp()).abs() < 1e-12);
+    let m = (&x * x.ln()).minimize_scalar_numeric(&x, 0.1, 2.0).unwrap();
+    println!("x ln x: min at {} with value {}", m.x, m.value);
+    assert!((m.x - (-1.0f64).exp()).abs() < 1e-6);
+    assert!((m.value + (-1.0f64).exp()).abs() < 1e-12);
     let c = poly_fit(&[0.0, 1.0, 2.0, 3.0], &[1.0, 3.0, 9.0, 19.0], 2).unwrap();
     println!("poly_fit: {c:?}");
     assert!((c[0] - 1.0).abs() < 1e-9 && c[1].abs() < 1e-9 && (c[2] - 2.0).abs() < 1e-9);
@@ -951,7 +964,7 @@ fn algebraic_numbers_and_analysis() {
 
     // SymPy's calculus.util on Ex
     let f = &x.powi(3) - 3 * &x;
-    let interval = ctx.interval(&ctx.int(-2), &ctx.int(2), false, false);
+    let interval = ctx.interval(&ctx.int(-2), &ctx.int(2), IntervalKind::Closed);
     println!(
         "stationary points: {}",
         f.stationary_points(&x, None).unwrap()

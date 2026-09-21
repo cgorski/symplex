@@ -39,6 +39,7 @@ use smallvec::SmallVec;
 
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
+use crate::base::interval::{Interval, IntervalKind};
 use crate::base::node::{ExprId, ExprNode, INTERVAL_LEFT_OPEN, INTERVAL_RIGHT_OPEN};
 
 /// Relative tolerance below which two floating-point endpoint
@@ -1270,25 +1271,18 @@ pub(crate) fn is_closed(arena: &mut Arena, set: ExprId) -> Option<bool> {
     }
 }
 
-/// The normal form as `(lo, hi, lo_open, hi_open)` tuples (isolated
-/// points appear as `(p, p, false, false)`), or `None` if the set cannot
-/// be fully evaluated.
-pub(crate) fn as_intervals(
-    arena: &mut Arena,
-    set: ExprId,
-) -> Option<Vec<(ExprId, ExprId, bool, bool)>> {
+/// The normal form as intervals (isolated points appear as `[p, p]`), or
+/// `None` if the set cannot be fully evaluated.
+pub(crate) fn as_intervals(arena: &mut Arena, set: ExprId) -> Option<Vec<Interval<ExprId>>> {
     let ev = evaluate(arena, &[set], &[]);
     let rs = ev.vals.get(&set)?.exact()?;
     Some(
         rs.pieces
             .iter()
-            .map(|p| {
-                (
-                    ev.table.rep(arena, p.lo),
-                    ev.table.rep(arena, p.hi),
-                    p.lo_open,
-                    p.hi_open,
-                )
+            .map(|p| Interval {
+                lower: ev.table.rep(arena, p.lo),
+                upper: ev.table.rep(arena, p.hi),
+                kind: IntervalKind::from_open_ends(p.lo_open, p.hi_open),
             })
             .collect(),
     )
@@ -1977,8 +1971,8 @@ mod tests {
         let u = arena.set_union(&[a, fs]);
         let ivs = as_intervals(&mut arena, u).unwrap();
         assert_eq!(ivs.len(), 2);
-        assert_eq!(ivs[0], (arena.zero, arena.one, true, true));
-        assert_eq!(ivs[1], (three, three, false, false));
+        assert_eq!(ivs[0], Interval::open(arena.zero, arena.one));
+        assert_eq!(ivs[1], Interval::point(three));
         assert!(as_finite_set(&mut arena, u).is_none());
         assert_eq!(as_finite_set(&mut arena, fs), Some(vec![three]));
     }

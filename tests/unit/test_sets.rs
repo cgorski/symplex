@@ -55,7 +55,7 @@ fn interval_closed_display() {
     let ctx = Context::new();
     let a = ctx.int(0);
     let b = ctx.int(1);
-    let i = ctx.interval(&a, &b, false, false);
+    let i = ctx.interval(&a, &b, IntervalKind::Closed);
     let s = format!("{i}");
     assert!(
         s.contains('[') && s.contains(']'),
@@ -68,7 +68,7 @@ fn interval_closed_display() {
 #[test]
 fn interval_open_display() {
     let ctx = Context::new();
-    let i = ctx.interval(&ctx.int(0), &ctx.int(1), true, true);
+    let i = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Open);
     let s = format!("{i}");
     assert!(
         s.contains('(') && s.contains(')'),
@@ -79,7 +79,7 @@ fn interval_open_display() {
 #[test]
 fn interval_half_open_left_display() {
     let ctx = Context::new();
-    let i = ctx.interval(&ctx.int(0), &ctx.int(1), true, false);
+    let i = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::LeftOpen);
     let s = format!("{i}");
     assert!(
         s.contains('(') && s.contains(']'),
@@ -90,7 +90,7 @@ fn interval_half_open_left_display() {
 #[test]
 fn interval_half_open_right_display() {
     let ctx = Context::new();
-    let i = ctx.interval(&ctx.int(0), &ctx.int(1), false, true);
+    let i = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::RightOpen);
     let s = format!("{i}");
     assert!(
         s.contains('[') && s.contains(')'),
@@ -106,14 +106,14 @@ fn interval_half_open_right_display() {
 fn degenerate_interval_start_gt_end_is_empty() {
     let ctx = Context::new();
     // Interval(3, 1) should be EmptySet (start > end)
-    let i = ctx.interval(&ctx.int(3), &ctx.int(1), false, false);
+    let i = ctx.interval(&ctx.int(3), &ctx.int(1), IntervalKind::Closed);
     assert_eq!(format!("{i}"), "EmptySet");
 }
 
 #[test]
 fn degenerate_interval_start_gt_end_open_is_empty() {
     let ctx = Context::new();
-    let i = ctx.interval(&ctx.int(5), &ctx.int(2), true, true);
+    let i = ctx.interval(&ctx.int(5), &ctx.int(2), IntervalKind::Open);
     assert_eq!(format!("{i}"), "EmptySet");
 }
 
@@ -121,7 +121,7 @@ fn degenerate_interval_start_gt_end_open_is_empty() {
 fn point_interval_closed_becomes_finite_set() {
     let ctx = Context::new();
     // Interval(2, 2, closed, closed) → FiniteSet({2})
-    let i = ctx.interval(&ctx.int(2), &ctx.int(2), false, false);
+    let i = ctx.interval(&ctx.int(2), &ctx.int(2), IntervalKind::Closed);
     let s = format!("{i}");
     assert!(
         s.contains('{') && s.contains('}'),
@@ -134,21 +134,21 @@ fn point_interval_closed_becomes_finite_set() {
 fn point_interval_open_becomes_empty() {
     let ctx = Context::new();
     // Interval(2, 2, open, open) → EmptySet
-    let i = ctx.interval(&ctx.int(2), &ctx.int(2), true, true);
+    let i = ctx.interval(&ctx.int(2), &ctx.int(2), IntervalKind::Open);
     assert_eq!(format!("{i}"), "EmptySet");
 }
 
 #[test]
 fn point_interval_half_open_left_becomes_empty() {
     let ctx = Context::new();
-    let i = ctx.interval(&ctx.int(2), &ctx.int(2), true, false);
+    let i = ctx.interval(&ctx.int(2), &ctx.int(2), IntervalKind::LeftOpen);
     assert_eq!(format!("{i}"), "EmptySet");
 }
 
 #[test]
 fn point_interval_half_open_right_becomes_empty() {
     let ctx = Context::new();
-    let i = ctx.interval(&ctx.int(2), &ctx.int(2), false, true);
+    let i = ctx.interval(&ctx.int(2), &ctx.int(2), IntervalKind::RightOpen);
     assert_eq!(format!("{i}"), "EmptySet");
 }
 
@@ -157,7 +157,7 @@ fn interval_with_symbolic_endpoints() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let i = ctx.interval(&x, &y, false, false);
+    let i = ctx.interval(&x, &y, IntervalKind::Closed);
     let s = format!("{i}");
     assert!(
         s.contains('[') && s.contains(']'),
@@ -230,8 +230,8 @@ fn finite_set_single_element() {
 #[test]
 fn union_of_intervals() {
     let ctx = Context::new();
-    let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
-    let b = ctx.interval(&ctx.int(2), &ctx.int(3), false, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
+    let b = ctx.interval(&ctx.int(2), &ctx.int(3), IntervalKind::Closed);
     let u = a.union(&b);
     let s = format!("{u}");
     // Should show union with ∪
@@ -241,7 +241,7 @@ fn union_of_intervals() {
 #[test]
 fn union_with_empty_set_is_identity() {
     let ctx = Context::new();
-    let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
     let e = ctx.empty_set();
     let result = a.union(&e);
     // Union of A and EmptySet should be A
@@ -264,7 +264,7 @@ fn union_of_empty_sets_is_empty() {
 #[test]
 fn union_with_universal_set() {
     let ctx = Context::new();
-    let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
     let univ = ctx.universal_set();
     let result = a.union(&univ);
     assert_eq!(
@@ -277,9 +277,9 @@ fn union_with_universal_set() {
 #[test]
 fn union_flattens_nested() {
     let ctx = Context::new();
-    let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
-    let b = ctx.interval(&ctx.int(2), &ctx.int(3), false, false);
-    let c = ctx.interval(&ctx.int(4), &ctx.int(5), false, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
+    let b = ctx.interval(&ctx.int(2), &ctx.int(3), IntervalKind::Closed);
+    let c = ctx.interval(&ctx.int(4), &ctx.int(5), IntervalKind::Closed);
     let ab = a.union(&b);
     let abc = ab.union(&c);
     let s = format!("{abc}");
@@ -294,7 +294,7 @@ fn union_flattens_nested() {
 #[test]
 fn union_deduplicates() {
     let ctx = Context::new();
-    let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
     let result = a.union(&a);
     // Union of A with itself should be just A
     let s = format!("{result}");
@@ -311,7 +311,7 @@ fn union_deduplicates() {
 #[test]
 fn intersection_with_empty() {
     let ctx = Context::new();
-    let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
     let e = ctx.empty_set();
     let result = a.intersection(&e);
     assert_eq!(format!("{result}"), "EmptySet");
@@ -320,7 +320,7 @@ fn intersection_with_empty() {
 #[test]
 fn intersection_with_universal_set_is_identity() {
     let ctx = Context::new();
-    let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
     let univ = ctx.universal_set();
     let result = a.intersection(&univ);
     assert_eq!(
@@ -333,8 +333,8 @@ fn intersection_with_universal_set_is_identity() {
 #[test]
 fn intersection_of_intervals() {
     let ctx = Context::new();
-    let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
-    let b = ctx.interval(&ctx.int(2), &ctx.int(3), false, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
+    let b = ctx.interval(&ctx.int(2), &ctx.int(3), IntervalKind::Closed);
     let result = a.intersection(&b);
     let s = format!("{result}");
     // Should show intersection with ∩
@@ -347,7 +347,7 @@ fn intersection_of_intervals() {
 #[test]
 fn intersection_deduplicates() {
     let ctx = Context::new();
-    let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
     let result = a.intersection(&a);
     // Intersection of A with itself should be just A
     let s = format!("{result}");
@@ -360,9 +360,9 @@ fn intersection_deduplicates() {
 #[test]
 fn intersection_flattens_nested() {
     let ctx = Context::new();
-    let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
-    let b = ctx.interval(&ctx.int(2), &ctx.int(3), false, false);
-    let c = ctx.interval(&ctx.int(4), &ctx.int(5), false, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
+    let b = ctx.interval(&ctx.int(2), &ctx.int(3), IntervalKind::Closed);
+    let c = ctx.interval(&ctx.int(4), &ctx.int(5), IntervalKind::Closed);
     let ab = a.intersection(&b);
     let abc = ab.intersection(&c);
     let s = format!("{abc}");
@@ -380,8 +380,8 @@ fn intersection_flattens_nested() {
 #[test]
 fn complement_display() {
     let ctx = Context::new();
-    let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
-    let b = ctx.interval(&ctx.int(2), &ctx.int(3), false, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
+    let b = ctx.interval(&ctx.int(2), &ctx.int(3), IntervalKind::Closed);
     let result = a.complement(&b);
     let s = format!("{result}");
     assert!(
@@ -435,7 +435,7 @@ fn ex_open_interval() {
 #[test]
 fn set_ex_into_ex() {
     let ctx = Context::new();
-    let i = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    let i = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
     let display_before = format!("{i}");
     let as_numeric: Ex = i.into_ex();
     // Display should be the same
@@ -445,7 +445,7 @@ fn set_ex_into_ex() {
 #[test]
 fn set_ex_as_ex() {
     let ctx = Context::new();
-    let i = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    let i = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
     let borrowed: Ex = i.as_ex();
     assert_eq!(format!("{borrowed}"), format!("{i}"));
 }
@@ -457,7 +457,7 @@ fn set_ex_as_ex() {
 #[test]
 fn interval_expr_type() {
     let ctx = Context::new();
-    let i = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    let i = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
     assert_eq!(i.as_ex().expr_type(), ExprType::Set);
 }
 
@@ -471,8 +471,8 @@ fn finite_set_expr_type() {
 #[test]
 fn union_expr_type() {
     let ctx = Context::new();
-    let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
-    let b = ctx.interval(&ctx.int(2), &ctx.int(3), false, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
+    let b = ctx.interval(&ctx.int(2), &ctx.int(3), IntervalKind::Closed);
     let u = a.union(&b);
     assert_eq!(u.as_ex().expr_type(), ExprType::Set);
 }
@@ -493,7 +493,7 @@ fn tree_roundtrip_empty_set() {
 #[test]
 fn tree_roundtrip_interval() {
     let ctx = Context::new();
-    let i = ctx.interval(&ctx.int(0), &ctx.int(5), true, false);
+    let i = ctx.interval(&ctx.int(0), &ctx.int(5), IntervalKind::LeftOpen);
     let original = format!("{i}");
     let tree = i.as_ex().to_tree();
     let back = ctx.from_tree(&tree);
@@ -513,8 +513,8 @@ fn tree_roundtrip_finite_set() {
 #[test]
 fn tree_roundtrip_union() {
     let ctx = Context::new();
-    let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
-    let b = ctx.interval(&ctx.int(2), &ctx.int(3), false, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
+    let b = ctx.interval(&ctx.int(2), &ctx.int(3), IntervalKind::Closed);
     let u = a.union(&b);
     let original = format!("{u}");
     let tree = u.as_ex().to_tree();
@@ -538,7 +538,7 @@ fn tree_roundtrip_universal_set() {
 #[test]
 fn json_roundtrip_interval() {
     let ctx = Context::new();
-    let i = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    let i = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
     let original = format!("{i}");
     let json = i.as_ex().to_json().unwrap();
     let back = ctx.from_json(&json).unwrap();
@@ -562,7 +562,7 @@ fn json_roundtrip_empty_set() {
 fn diff_of_set_is_zero() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let i = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    let i = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
     // Differentiating a set-valued expression should give zero
     let d = i.as_ex().diff(&x);
     assert_eq!(format!("{d}"), "0");
@@ -580,7 +580,7 @@ fn diff_of_empty_set_is_zero() {
 #[test]
 fn evalf_of_set_errors() {
     let ctx = Context::new();
-    let i = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    let i = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
     let result = i.as_ex().eval_decimal(15);
     assert!(result.is_err(), "evalf on a set should error");
 }
@@ -596,8 +596,8 @@ fn evalf_of_empty_set_errors() {
 #[test]
 fn expand_of_set_is_identity() {
     let ctx = Context::new();
-    let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
-    let b = ctx.interval(&ctx.int(2), &ctx.int(3), false, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
+    let b = ctx.interval(&ctx.int(2), &ctx.int(3), IntervalKind::Closed);
     let u = a.union(&b);
     let expanded = u.as_ex().expand();
     assert_eq!(
@@ -610,7 +610,7 @@ fn expand_of_set_is_identity() {
 #[test]
 fn eval_of_set_is_identity() {
     let ctx = Context::new();
-    let i = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    let i = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
     let evaled = i.as_ex().eval();
     assert_eq!(
         format!("{evaled}"),
@@ -633,7 +633,7 @@ fn empty_set_args_is_empty() {
 #[test]
 fn interval_args_has_two_children() {
     let ctx = Context::new();
-    let i = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    let i = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
     let args = i.as_ex().args();
     assert_eq!(args.len(), 2, "interval has 2 children");
 }
@@ -650,7 +650,7 @@ fn finite_set_args_count() {
 fn interval_with_symbol_has_free_symbols() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let i = ctx.interval(&x, &ctx.int(1), false, false);
+    let i = ctx.interval(&x, &ctx.int(1), IntervalKind::Closed);
     let free = i.as_ex().free_symbols();
     let free_names: Vec<String> = free.iter().map(|e| format!("{e}")).collect();
     assert!(
@@ -668,7 +668,7 @@ fn interval_with_symbol_has_free_symbols() {
 fn subs_in_interval_endpoint() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let i = ctx.interval(&x, &ctx.int(10), false, false);
+    let i = ctx.interval(&x, &ctx.int(10), IntervalKind::Closed);
     let result = i.as_ex().subs(&x, &ctx.int(0));
     let s = format!("{result}");
     assert!(s.contains('0') && s.contains("10"), "substituted: {s}");
@@ -683,7 +683,7 @@ fn interval_rational_endpoints() {
     let ctx = Context::new();
     let half = ctx.rational(1, 2);
     let three_halves = ctx.rational(3, 2);
-    let i = ctx.interval(&half, &three_halves, false, true);
+    let i = ctx.interval(&half, &three_halves, IntervalKind::RightOpen);
     let s = format!("{i}");
     assert!(s.contains("1/2"), "start: {s}");
     assert!(s.contains("3/2"), "end: {s}");
@@ -698,7 +698,7 @@ fn interval_rational_endpoints() {
 #[test]
 fn interval_negative_endpoints() {
     let ctx = Context::new();
-    let i = ctx.interval(&ctx.int(-3), &ctx.int(-1), false, false);
+    let i = ctx.interval(&ctx.int(-3), &ctx.int(-1), IntervalKind::Closed);
     let s = format!("{i}");
     assert!(s.contains('['), "has bracket: {s}");
     assert!(s.contains("-3"), "has -3: {s}");
@@ -709,7 +709,7 @@ fn interval_negative_endpoints() {
 fn interval_negative_reversed_is_empty() {
     let ctx = Context::new();
     // -1 > -3 is true, so Interval(-1, -3) is start > end → empty
-    let i = ctx.interval(&ctx.int(-1), &ctx.int(-3), false, false);
+    let i = ctx.interval(&ctx.int(-1), &ctx.int(-3), IntervalKind::Closed);
     assert_eq!(format!("{i}"), "EmptySet");
 }
 
@@ -742,8 +742,8 @@ fn universal_set_is_pre_interned() {
 fn sets_in_separate_contexts() {
     let ctx1 = Context::new();
     let ctx2 = Context::new();
-    let i1 = ctx1.interval(&ctx1.int(0), &ctx1.int(1), false, false);
-    let i2 = ctx2.interval(&ctx2.int(0), &ctx2.int(1), false, false);
+    let i1 = ctx1.interval(&ctx1.int(0), &ctx1.int(1), IntervalKind::Closed);
+    let i2 = ctx2.interval(&ctx2.int(0), &ctx2.int(1), IntervalKind::Closed);
     // Different contexts, but same display
     assert_eq!(format!("{i1}"), format!("{i2}"));
 }
@@ -812,7 +812,7 @@ fn intersection_absorbing_element_is_empty() {
 fn union_idempotent() {
     // union(A, A) = A
     let ctx = Context::new();
-    let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
     let result = a.union(&a);
     assert_eq!(format!("{result}"), format!("{a}"));
 }
@@ -821,7 +821,7 @@ fn union_idempotent() {
 fn intersection_idempotent() {
     // intersection(A, A) = A
     let ctx = Context::new();
-    let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
     let result = a.intersection(&a);
     assert_eq!(format!("{result}"), format!("{a}"));
 }
@@ -831,8 +831,8 @@ fn union_commutative_display() {
     // union(A, B) should have the same display regardless of order
     // (because we canonically sort children)
     let ctx = Context::new();
-    let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
-    let b = ctx.interval(&ctx.int(2), &ctx.int(3), false, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
+    let b = ctx.interval(&ctx.int(2), &ctx.int(3), IntervalKind::Closed);
     let ab = a.union(&b);
     let ba = b.union(&a);
     assert_eq!(format!("{ab}"), format!("{ba}"), "union is commutative");
@@ -841,8 +841,8 @@ fn union_commutative_display() {
 #[test]
 fn intersection_commutative_display() {
     let ctx = Context::new();
-    let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
-    let b = ctx.interval(&ctx.int(2), &ctx.int(3), false, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
+    let b = ctx.interval(&ctx.int(2), &ctx.int(3), IntervalKind::Closed);
     let ab = a.intersection(&b);
     let ba = b.intersection(&a);
     assert_eq!(
@@ -859,8 +859,8 @@ fn intersection_commutative_display() {
 #[test]
 fn complement_of_different_sets() {
     let ctx = Context::new();
-    let a = ctx.interval(&ctx.int(0), &ctx.int(10), false, false);
-    let b = ctx.interval(&ctx.int(3), &ctx.int(7), true, true);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(10), IntervalKind::Closed);
+    let b = ctx.interval(&ctx.int(3), &ctx.int(7), IntervalKind::Open);
     let result = a.complement(&b);
     let s = format!("{result}");
     // Should show "A \ B" style
@@ -870,8 +870,8 @@ fn complement_of_different_sets() {
 #[test]
 fn complement_expr_type() {
     let ctx = Context::new();
-    let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
-    let b = ctx.interval(&ctx.int(2), &ctx.int(3), false, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
+    let b = ctx.interval(&ctx.int(2), &ctx.int(3), IntervalKind::Closed);
     let result = a.complement(&b);
     assert_eq!(result.as_ex().expr_type(), ExprType::Set);
 }
@@ -884,7 +884,7 @@ fn complement_expr_type() {
 fn union_of_finite_set_and_interval() {
     let ctx = Context::new();
     let fs = ctx.finite_set(&[ctx.int(5)]);
-    let iv = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    let iv = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
     let u = fs.union(&iv);
     let s = format!("{u}");
     assert!(s.contains('∪'), "mixed union: {s}");
@@ -896,7 +896,7 @@ fn union_of_finite_set_and_interval() {
 fn intersection_of_finite_set_and_interval() {
     let ctx = Context::new();
     let fs = ctx.finite_set(&[ctx.int(5)]);
-    let iv = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    let iv = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
     let result = fs.intersection(&iv);
     let s = format!("{result}");
     assert!(s.contains('∩'), "mixed intersection: {s}");
@@ -909,9 +909,9 @@ fn intersection_of_finite_set_and_interval() {
 #[test]
 fn complement_inside_union() {
     let ctx = Context::new();
-    let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
-    let b = ctx.interval(&ctx.int(2), &ctx.int(3), false, false);
-    let c = ctx.interval(&ctx.int(4), &ctx.int(5), false, false);
+    let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
+    let b = ctx.interval(&ctx.int(2), &ctx.int(3), IntervalKind::Closed);
+    let c = ctx.interval(&ctx.int(4), &ctx.int(5), IntervalKind::Closed);
     let comp = a.complement(&b);
     let u = comp.union(&c);
     let s = format!("{u}");
@@ -928,7 +928,7 @@ fn interval_contains_its_endpoints() {
     let ctx = Context::new();
     let zero = ctx.int(0);
     let one = ctx.int(1);
-    let i = ctx.interval(&zero, &one, false, false);
+    let i = ctx.interval(&zero, &one, IntervalKind::Closed);
     // The interval should "contain" the subexpression 0 and 1
     // (structural containment, not set membership)
     let ex = i.as_ex();
@@ -951,7 +951,7 @@ fn count_ops_of_empty_set() {
 #[test]
 fn count_ops_of_interval() {
     let ctx = Context::new();
-    let i = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    let i = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
     let ops = i.as_ex().count_ops();
     assert!(ops >= 1, "interval should count as at least 1 op: {ops}");
 }

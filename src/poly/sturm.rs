@@ -9,11 +9,19 @@
 //! terminated when the remainder is zero.  The number of distinct real
 //! roots of `p` in an interval `(a, b]` equals `σ(a) − σ(b)`, where
 //! `σ(x)` counts the sign variations in the sequence evaluated at `x`.
+//!
+//! Because the count is over the half-open `(a, b]`, every isolating
+//! interval produced by bisection here is [`Interval::left_open`] — the
+//! root may sit on the upper endpoint but never on the lower one — except
+//! that a root hit exactly by a bisection point is reported as the closed
+//! singleton [`Interval::point`].
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
 use num_traits::{Signed, Zero};
 
+use crate::base::interval::{Interval, IntervalKind};
+use crate::base::numeric::Q;
 use crate::poly::Poly;
 
 /// A Sturm chain built from a polynomial.
@@ -131,31 +139,27 @@ impl SturmChain {
         sa.saturating_sub(sb)
     }
 
-    /// Isolate real roots into disjoint sub-intervals of `(a, b)` by
-    /// bisection.
+    /// Isolate the real roots in `(a, b]` into disjoint half-open
+    /// sub-intervals `(lo, hi]` by bisection.
     ///
-    /// Returns a list of `(lo, hi)` intervals, each containing exactly
-    /// one root.  `max_depth` bounds the number of bisection levels to
-    /// prevent runaway recursion.
-    pub fn isolate_roots_in(
-        &self,
-        a: &Ratio<BigInt>,
-        b: &Ratio<BigInt>,
-        max_depth: u32,
-    ) -> Vec<(Ratio<BigInt>, Ratio<BigInt>)> {
+    /// Every returned interval is [`Interval::left_open`] — the count that
+    /// drives the bisection is [`count_roots_in`](Self::count_roots_in),
+    /// i.e. over `(lo, hi]` — and contains exactly one root, unless
+    /// `max_depth` bisection levels were exhausted first, in which case an
+    /// interval may still hold several.  The output is sorted left to right.
+    pub fn isolate_roots_in(&self, a: &Q, b: &Q, max_depth: u32) -> Vec<Interval<Q>> {
         // Explicit stack (no recursion); intervals are pushed right-first so
         // that the output comes out sorted left to right.
         let two = Ratio::from_integer(BigInt::from(2));
         let mut result = Vec::new();
-        let mut stack: Vec<(Ratio<BigInt>, Ratio<BigInt>, u32)> =
-            vec![(a.clone(), b.clone(), max_depth)];
+        let mut stack: Vec<(Q, Q, u32)> = vec![(a.clone(), b.clone(), max_depth)];
         while let Some((lo, hi, depth)) = stack.pop() {
             let n = self.count_roots_in(&lo, &hi);
             if n == 0 {
                 continue;
             }
             if n == 1 || depth == 0 {
-                result.push((lo, hi));
+                result.push(Interval::left_open(lo, hi));
                 continue;
             }
             let mid = (&lo + &hi) / &two;
@@ -168,11 +172,18 @@ impl SturmChain {
     /// Isolate **all** distinct real roots of the polynomial into disjoint
     /// rational intervals, each containing exactly one root.
     ///
-    /// The search starts from the Cauchy root bound.  Every returned pair
-    /// `(lo, hi)` satisfies `lo < hi` and has exactly one root in `(lo, hi]`,
-    /// except that a root which is exactly hit by a bisection point is
-    /// reported as the degenerate interval `(r, r)`.  Intervals are sorted.
-    pub fn isolate_all_real_roots(&self) -> Vec<(Ratio<BigInt>, Ratio<BigInt>)> {
+    /// The search starts from the Cauchy root bound.  Each returned
+    /// interval is either
+    ///
+    /// * [`Interval::left_open`] `(lo, hi]` with `lo < hi` and exactly one
+    ///   root (the guarantee of [`isolate_roots_in`](Self::isolate_roots_in)),
+    ///   whose upper endpoint is *not* a root, or
+    /// * the closed singleton [`Interval::point`] `[r, r]` when the one root
+    ///   of a `(lo, r]` cell is `r` itself (a bisection point hit it
+    ///   exactly).
+    ///
+    /// Intervals are sorted.
+    pub fn isolate_all_real_roots(&self) -> Vec<Interval<Q>> {
         let Some(p) = self.chain.first() else {
             return vec![];
         };
@@ -183,29 +194,31 @@ impl SturmChain {
         let neg_bound = -bound.clone();
         let raw = self.isolate_roots_in(&neg_bound, &bound, 256);
         raw.into_iter()
-            .map(|(lo, hi)| {
-                if p.eval(&hi).is_zero() {
-                    (hi.clone(), hi)
+            .map(|iv| {
+                if p.eval(&iv.upper).is_zero() {
+                    Interval::point(iv.upper)
                 } else {
-                    (lo, hi)
+                    iv
                 }
             })
             .collect()
     }
 
-    /// Shrink an isolating interval `(lo, hi]` (containing exactly one root)
-    /// by bisection until its width is at most `max_width`.
+    /// Shrink an isolating interval by bisection until its width is at
+    /// most `max_width`.
     ///
-    /// A root hit exactly by a bisection point is returned as `(r, r)`.
-    pub fn refine_interval(
-        &self,
-        lo: &Ratio<BigInt>,
-        hi: &Ratio<BigInt>,
-        max_width: &Ratio<BigInt>,
-    ) -> (Ratio<BigInt>, Ratio<BigInt>) {
+    /// `iv` must be an interval as produced by
+    /// [`isolate_all_real_roots`](Self::isolate_all_real_roots): either
+    /// `(lo, hi]` containing exactly one root, or a point `[r, r]`, which
+    /// is returned unchanged.  Each bisection keeps the half whose
+    /// [`count_roots_in`](Self::count_roots_in) is one, so the result is
+    /// again `(lo, hi]` — or the closed singleton [`Interval::point`] `[r, r]`
+    /// when a bisection point lands exactly on the root.
+    pub fn refine_interval(&self, iv: &Interval<Q>, max_width: &Q) -> Interval<Q> {
         let two = Ratio::from_integer(BigInt::from(2));
-        let mut lo = lo.clone();
-        let mut hi = hi.clone();
+        let mut lo = iv.lower.clone();
+        let mut hi = iv.upper.clone();
+        let mut kind = iv.kind;
         // Guard against pathological inputs: at most 512 halvings.
         for _ in 0..512 {
             if &hi - &lo <= *max_width || lo == hi {
@@ -213,15 +226,21 @@ impl SturmChain {
             }
             let mid = (&lo + &hi) / &two;
             if self.chain.first().is_some_and(|p| p.eval(&mid).is_zero()) {
-                return (mid.clone(), mid);
+                return Interval::point(mid);
             }
             if self.count_roots_in(&lo, &mid) == 1 {
                 hi = mid;
             } else {
                 lo = mid;
             }
+            // After a bisection the root is located in `(lo, hi]`.
+            kind = IntervalKind::LeftOpen;
         }
-        (lo, hi)
+        Interval {
+            lower: lo,
+            upper: hi,
+            kind,
+        }
     }
 
     /// Count distinct real roots in the **closed** interval `[a, b]`.
@@ -364,9 +383,10 @@ mod tests {
         let chain = SturmChain::new(&p);
         let intervals = chain.isolate_roots_in(&r(-10), &r(10), 50);
         assert_eq!(intervals.len(), 3, "should isolate 3 roots");
-        // Each interval should contain exactly one root
-        for (lo, hi) in &intervals {
-            assert_eq!(chain.count_roots_in(lo, hi), 1);
+        // Each interval is `(lo, hi]` and contains exactly one root.
+        for iv in &intervals {
+            assert_eq!(iv.kind, IntervalKind::LeftOpen);
+            assert_eq!(chain.count_roots_in(&iv.lower, &iv.upper), 1);
         }
     }
 
@@ -422,13 +442,15 @@ mod tests {
         assert_eq!(iv.len(), 3);
         // Sorted and each contains exactly one root.
         for w in iv.windows(2) {
-            assert!(w[0].1 <= w[1].0);
+            assert!(w[0].upper <= w[1].lower);
         }
-        for (lo, hi) in &iv {
-            if lo == hi {
-                assert!(p.eval(lo).is_zero());
+        for i in &iv {
+            if i.is_point() {
+                assert!(p.eval(&i.lower).is_zero());
             } else {
-                assert_eq!(chain.count_roots_in(lo, hi), 1);
+                assert_eq!(i.kind, IntervalKind::LeftOpen);
+                assert_eq!(chain.count_roots_in(&i.lower, &i.upper), 1);
+                assert!(!p.eval(&i.upper).is_zero());
             }
         }
     }
@@ -440,13 +462,18 @@ mod tests {
         let chain = SturmChain::new(&p);
         let iv = chain.isolate_all_real_roots();
         assert_eq!(iv.len(), 2);
-        assert!(iv[0].1 <= r(0) && iv[1].0 >= r(0));
-        // Refinement tightens the brackets around ±√2 ≈ ±1.414.
+        assert!(iv[0].upper <= r(0) && iv[1].lower >= r(0));
+        // Refinement tightens the brackets around ±√2 ≈ ±1.414 and keeps
+        // the `(lo, hi]` kind (√2 is irrational, so no exact hit).
         let width = Ratio::new(BigInt::from(1), BigInt::from(100));
-        let (lo, hi) = chain.refine_interval(&iv[1].0, &iv[1].1, &width);
-        assert!(&hi - &lo <= width);
-        assert!(lo < Ratio::new(BigInt::from(1415), BigInt::from(1000)));
-        assert!(hi > Ratio::new(BigInt::from(1414), BigInt::from(1000)));
+        let refined = chain.refine_interval(&iv[1], &width);
+        assert_eq!(refined.kind, IntervalKind::LeftOpen);
+        assert!(refined.width() <= width);
+        assert!(refined.lower < Ratio::new(BigInt::from(1415), BigInt::from(1000)));
+        assert!(refined.upper > Ratio::new(BigInt::from(1414), BigInt::from(1000)));
+        // A point stays a point.
+        let zero = Interval::point(r(0));
+        assert_eq!(chain.refine_interval(&zero, &width), zero);
     }
 
     /// count_roots_in_closed includes the left endpoint

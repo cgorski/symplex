@@ -169,7 +169,7 @@ SymPy's `calculus.util` on `Ex` (0.9): singularities, stationary points, extrema
 let ctx = Context::new();
 syms!(ctx; x);
 let f = &x.powi(3) - 3 * &x;
-let interval = ctx.interval(&ctx.int(-2), &ctx.int(2), false, false);
+let interval = ctx.interval(&ctx.int(-2), &ctx.int(2), IntervalKind::Closed);
 f.stationary_points(&x, None).unwrap();                          // {-1, 1}
 f.maximum(&x, &interval).unwrap();                               // 2
 (1 / (&x.powi(2) - 1)).singularities(&x, None).unwrap();          // {-1, 1}
@@ -370,8 +370,8 @@ symplex::rsolve::rsolve_linear(&[ctx.int(-1), ctx.int(-1), ctx.int(1)], None, &n
 let ctx = Context::new();
 syms!(ctx; x, p, q);
 
-let a = ctx.interval(&ctx.int(0), &ctx.int(5), false, false);    // [0, 5]
-let b = ctx.interval(&ctx.int(3), &ctx.int(10), true, false);    // (3, 10]
+let a = ctx.interval(&ctx.int(0), &ctx.int(5), IntervalKind::Closed);    // [0, 5]
+let b = ctx.interval(&ctx.int(3), &ctx.int(10), IntervalKind::LeftOpen); // (3, 10]
 a.intersection(&b).simplify();                        // (3, 5]
 a.symmetric_difference(&b);                           // [0, 3] ∪ (5, 10]
 a.contains(&ctx.int(7));                              // Some(false)
@@ -490,10 +490,13 @@ Also: `linprog` (SciPy-shaped), `linprog_matrix` (from `Matrix` data), per-varia
 `certificates::prove_nonnegative_on_box` proves `goal ≥ 0` on a box with a Handelman certificate — an exact identity `goal = Σ λₖ·Π(xᵢ − lᵢ)^a(uᵢ − xᵢ)^b` with `λ ≥ 0` found by the exact LP and **re-verified with exact polynomial arithmetic** — or refutes the claim with an exact counterexample. The certificate exports as a Lean 4 / Mathlib theorem whose proof is `nlinarith` over exactly those products; `Ex::to_lean()` renders any elementary expression in Mathlib syntax.
 
 ```rust
-use symplex::certificates::{prove_nonnegative_on_box, BoxOutcome};
+use symplex::certificates::{prove_nonnegative_on_box, BoxBound, BoxOutcome};
 let ctx = Context::new();
 syms!(ctx; x, y);
-let square = [(x.clone(), ctx.int(0), ctx.int(1)), (y.clone(), ctx.int(0), ctx.int(1))];
+let square = [
+    BoxBound { var: x.clone(), lo: ctx.int(0), hi: ctx.int(1) },
+    BoxBound { var: y.clone(), lo: ctx.int(0), hi: ctx.int(1) },
+];
 
 let cert = match prove_nonnegative_on_box(&(1 - &x * &y), &square, 2).unwrap() {
     BoxOutcome::Proved(c) => c,
@@ -514,10 +517,11 @@ x.sqrt().gt(&ctx.int(0)).to_lean().unwrap();          // "0 < Real.sqrt x"
 
 // 0.4: a polyhedron whose facets depend on a parameter j ≥ j₀.  On { t ≥ r, t + j·r ≥ j + 1 }
 // the goal t − 1 ≥ 0 needs the multiplier λ(j) = 1 + j: (j + 1)(t − 1) = j·h₀ + h₁.
-use symplex::certificates::{prove_nonnegative_on_polyhedron, PolyhedronOpts};
+use symplex::certificates::{prove_nonnegative_on_polyhedron, ParamBound, PolyhedronOpts};
 syms!(ctx; j, r, t);
 let hyps = [&t - &r, &t + &j * &r - &j - 1];
-let out = prove_nonnegative_on_polyhedron(&(&t - 1), &hyps, Some((&j, &ctx.int(0))), &PolyhedronOpts::default()).unwrap();
+let j_bound = ParamBound { var: j.clone(), lower: ctx.int(0) };
+let out = prove_nonnegative_on_polyhedron(&(&t - 1), &hyps, Some(&j_bound), &PolyhedronOpts::default()).unwrap();
 out.certificate().unwrap().to_string();               // (j + 1)*(t - 1) = j*h0 + h1; h0 = -r + t, h1 = j*r - j + t - 1; j ≥ 0
 out.certificate().unwrap().to_lean("needs_lambda").unwrap();
 //   … have h0J := mul_nonneg hJ0 h0
@@ -613,18 +617,19 @@ nelder_mead(|p| (p[0] - 1.0).powi(2) + (p[1] + 2.0).powi(2), &[0.0, 0.0], &Minim
 let rosen = (1 - &x).powi(2) + 100 * (&y - &x.powi(2)).powi(2);
 let r = rosen.minimize_numeric(&[&x, &y], &[-1.2, 1.0]).unwrap();       // r.x ≈ [1, 1], r.fun ≈ 1e-18, r.converged
 
-// Differential evolution: global minimum in a box, deterministic for a given seed
+// Differential evolution: global minimum in a closed box, deterministic for a given seed
 let himmelblau = (&x.powi(2) + &y - 11).powi(2) + (&x + &y.powi(2) - 7).powi(2);
-himmelblau.minimize_global_numeric(&[&x, &y], &[(-5.0, 5.0), (-5.0, 5.0)], &DeOpts::default()).unwrap();   // fun < 1e-8
+let square = [Interval::closed(-5.0, 5.0), Interval::closed(-5.0, 5.0)];
+himmelblau.minimize_global_numeric(&[&x, &y], &square, &DeOpts::default()).unwrap();   // fun < 1e-8
 
 // Brent scalar minimisation, and least-squares fits (f64 via Householder QR, or exact rational)
-(&x * x.ln()).minimize_scalar_numeric(&x, 0.1, 2.0).unwrap();            // (0.36787944…, −0.36787944…) = (1/e, −1/e)
+let m = (&x * x.ln()).minimize_scalar_numeric(&x, 0.1, 2.0).unwrap();    // m.x = 0.36787944… (1/e), m.value = −0.36787944… (−1/e)
 poly_fit(&[0.0, 1.0, 2.0, 3.0], &[1.0, 3.0, 9.0, 19.0], 2).unwrap();     // ≈ [1, 0, 2]   (ascending: 1 + 2x²)
 let pts = [(ctx.int(0), ctx.int(1)), (ctx.int(1), ctx.int(0)), (ctx.int(2), ctx.int(4)), (ctx.int(3), ctx.int(2))];
 Ex::poly_fit_points(&ctx, &pts, &x, 1).unwrap();                          // 7/10*x + 7/10   (exact least-squares line)
 ```
 
-Also: `bisect`, `newton_root`, `golden_section`, `minimize_scalar`, `poly_fit_exact`, `linear_fit`, `trapezoid`, `eval_poly`; `RootOpts`/`MinimizeOpts`/`DeOpts` for tolerances, budgets and seeds.
+Also: `bisect`, `newton_root`, `golden_section`, `minimize_scalar` (→ `ScalarMinimum { x, value }`), `poly_fit_exact`, `linear_fit` (→ `LinearFit { slope, intercept }`), `trapezoid`, `eval_poly`; `RootOpts`/`MinimizeOpts`/`DeOpts` for tolerances, budgets and seeds.
 
 ### Code Generation: Rust, C99 and Compiled Closures
 

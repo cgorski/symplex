@@ -44,6 +44,7 @@ use crate::api::context::Context;
 use crate::api::expr::{Ex, ExprType};
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
+use crate::base::interval::Interval;
 use crate::base::node::{ExprId, ExprNode};
 use crate::domains::matrix::Matrix;
 use crate::poly::multipoly::{GrevLex, MultiPoly};
@@ -1018,11 +1019,24 @@ impl Poly {
         self.to_ex().count_real_roots_in(x, lo, hi)
     }
 
-    /// Isolating intervals `(lo, hi)` with exact rational endpoints for the
-    /// distinct real roots, sorted; empty unless univariate with rational
-    /// coefficients.  See [`Ex::real_roots_isolate`].
+    /// Isolating intervals with exact rational endpoints for the distinct
+    /// real roots, sorted — each a half-open `(lo, hi]` Sturm cell or the
+    /// closed point `[r, r]` of a root hit exactly; empty unless univariate
+    /// with rational coefficients.  See [`Ex::real_roots_isolate`].
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let p = (&x.powi(2) - 2).as_poly(&[&x]).unwrap();
+    /// let iv = p.real_roots_isolate();
+    /// assert_eq!(iv.len(), 2);
+    /// assert_eq!(iv[0].kind, IntervalKind::LeftOpen);
+    /// assert!(iv[0].upper.eval_f64().unwrap() <= 0.0 && 0.0 <= iv[1].lower.eval_f64().unwrap());
+    /// ```
     #[must_use]
-    pub fn real_roots_isolate(&self) -> Vec<(Ex, Ex)> {
+    pub fn real_roots_isolate(&self) -> Vec<Interval<Ex>> {
         match self.univariate_rational_gen() {
             Some(x) => self.to_ex().real_roots_isolate(x),
             None => Vec::new(),

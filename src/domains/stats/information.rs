@@ -392,8 +392,8 @@ pub fn probability_vector(dist: &Distribution) -> Result<Vec<Q>, SymplexError> {
     }
     let values: Vec<Ex> = if let Some(points) = support.as_points() {
         points
-    } else if let Some((lo, hi, _, _)) = support.as_interval() {
-        match (lo.eval().as_i64(), hi.eval().as_i64()) {
+    } else if let Some(iv) = support.as_interval() {
+        match (iv.lower.eval().as_i64(), iv.upper.eval().as_i64()) {
             (Some(lo), Some(hi)) if lo <= hi && hi - lo < 1_000_000 => {
                 let ctx = dist.context();
                 (lo..=hi).map(|v| ctx.int(v)).collect()

@@ -10,6 +10,7 @@ use tracing::debug_span;
 use crate::api::expr::{BoolEx, Ex, Expr, Numeric, SetEx, SetValued};
 use crate::base::assumptions::{Assumption, Props};
 use crate::base::errors::SymplexError;
+use crate::base::interval::Interval;
 
 /// Ascending coefficients of `expr` as a polynomial in `var`, allowing
 /// arbitrary `var`-free symbolic coefficients.  The zero polynomial is the
@@ -4910,12 +4911,12 @@ impl Expr<Numeric> {
 
     /// Validate the common plotting arguments and return the variable name.
     ///
-    /// Checks: `var` is a symbol, `a`/`b` are finite with `a < b`, and no
-    /// free symbol other than `var` occurs in `self`.
+    /// Checks: `var` is a symbol, the plot range `[a, b]` is finite with
+    /// `a < b`, and no free symbol other than `var` occurs in `self`.
     fn plot_check_args(
         &self,
         var: &Ex,
-        bounds: Option<(f64, f64)>,
+        bounds: Option<Interval<f64>>,
         operation: &'static str,
     ) -> Result<String, SymplexError> {
         use crate::base::node::ExprNode;
@@ -4928,7 +4929,8 @@ impl Expr<Numeric> {
                 reason: format!("plot variable must be a symbol, got `{var}`"),
             });
         }
-        if let Some((a, b)) = bounds {
+        if let Some(range) = bounds {
+            let (a, b) = (range.lower, range.upper);
             if !a.is_finite() || !b.is_finite() {
                 return Err(SymplexError::InvalidArgument {
                     operation,
@@ -4990,7 +4992,8 @@ impl Expr<Numeric> {
     ) -> Result<crate::plotting::sampling::PlotData, SymplexError> {
         use crate::base::node::ExprNode;
 
-        let var_name = self.plot_check_args(var, Some((a, b)), operation)?;
+        let range = Interval::closed(a, b);
+        let var_name = self.plot_check_args(var, Some(range), operation)?;
         let var_id = self.checked_id(var);
 
         // Step 1: Domain analysis (needs write lock for singularities)
@@ -5004,7 +5007,7 @@ impl Expr<Numeric> {
                         self.raw_id(),
                         var_id,
                         sid,
-                        (a, b),
+                        range,
                     );
                     let freq = crate::calculus::calculus_util::estimate_frequency(
                         &inner.arena,
@@ -5013,7 +5016,7 @@ impl Expr<Numeric> {
                         sid,
                     );
                     let min_pts = match freq {
-                        Some(f) => crate::plotting::sampling::min_points_for_frequency(f, (a, b)),
+                        Some(f) => crate::plotting::sampling::min_points_for_frequency(f, range),
                         None => 200,
                     };
                     (excluded, min_pts)
@@ -5028,7 +5031,7 @@ impl Expr<Numeric> {
             min_points,
             ..Default::default()
         };
-        let data = crate::plotting::sampling::sample_compiled(&*f, (a, b), &excluded_points, &opts);
+        let data = crate::plotting::sampling::sample_compiled(&*f, range, &excluded_points, &opts);
         if !data.points.iter().any(|(_, y)| y.is_finite()) {
             return Err(SymplexError::ComputationFailed {
                 operation,
@@ -5174,7 +5177,7 @@ impl Expr<Numeric> {
         b: f64,
         n: usize,
     ) -> Result<Vec<(f64, f64)>, SymplexError> {
-        let var_name = self.plot_check_args(var, Some((a, b)), "plot_data")?;
+        let var_name = self.plot_check_args(var, Some(Interval::closed(a, b)), "plot_data")?;
         if n < 2 {
             return Err(SymplexError::InvalidArgument {
                 operation: "plot_data",

@@ -1438,12 +1438,12 @@ fn quadrature_basic_and_options() {
         .integrate_numeric(&x, &ctx.int(0), &ctx.int(1))
         .unwrap();
     assert!((v - 1.0 / 3.0).abs() < 1e-13);
-    let (v, err) = x
+    let r = x
         .exp()
         .integrate_numeric_with(&x, &ctx.int(0), &ctx.int(1), &QuadOpts::default())
         .unwrap();
-    assert!((v - (std::f64::consts::E - 1.0)).abs() < 1e-12);
-    assert!(err < 1e-10);
+    assert!((r.value - (std::f64::consts::E - 1.0)).abs() < 1e-12);
+    assert!(r.error < 1e-10);
     // reversed bounds
     let v = x.integrate_numeric(&x, &ctx.int(2), &ctx.int(0)).unwrap();
     assert!((v + 2.0).abs() < 1e-13);

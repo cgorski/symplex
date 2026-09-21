@@ -5,9 +5,10 @@
 //! without the allowlist being tightened.  See CONTRIBUTING.md, "Tuples
 //! versus structs".
 //!
-//! A homogeneous tuple is one whose elements all have the same type, so
-//! nothing but memory says which position is which: `(lower, upper)`,
-//! `(Q, R)`, `(shape, scale)`.  Each remaining site below is either a
+//! A homogeneous tuple is one in which some element type occurs more than
+//! once, so nothing but memory says which of those positions is which:
+//! `(lower, upper)`, `(Q, R)`, `(shape, scale)`, `(lo, hi, lo_open, hi_open)`,
+//! `(&Angle, &Length, &Length, &Angle)`.  Each remaining site below is either a
 //! universal convention that is pattern-matched at every use (`(x, y)`
 //! points, `(numer, denom)`, `(var, value)` substitution pairs), an
 //! ecosystem convention (`shape() -> (rows, cols)`), or symmetric (the two
@@ -28,70 +29,109 @@ use syn::visit::Visit;
 /// Files allowed to expose homogeneous tuples, with the exact count and
 /// the reason each site is kept.  Paths are relative to `src/`.
 const ALLOWLIST: &[(&str, usize)] = &[
-    // 0.15 transition: the counts below are the pre-policy inventory.  Each site
-    // is being converted to a struct or justified here; see CHANGELOG 0.15.0.
+    // ── Kept: universal conventions, pattern-matched at every use ─────────
+    // `subs_map(&[(&var, &value)])` — substitution pairs (SymPy `subs([(x, 1)])`).
     ("api/expr.rs", 1),
+    // `as_real_imag -> (re, im)`; `polar -> (r, θ)`.
     ("api/expr_complex.rs", 2),
-    ("api/expr_funcs.rs", 6),
-    ("api/expr_integrate_ext.rs", 1),
+    // `factor_terms -> (coeff, rest)`; `as_numer_denom -> (numer, denom)`; `eval_complex64 -> (re, im)`;
+    // `cse`/`cse_many` `(symbol, definition)` bindings (SymPy `cse`); `plot_data -> (x, y)` points;
+    // `eval_f64_with_rational(&[(&var, numer, denom)])` — a rational literal per variable.
+    ("api/expr_funcs.rs", 7),
+    // `as_ratio_parts`/`as_ratio_i128 -> (numer, denom)`; `eval_at(&[(&var, &value)])`.
     ("api/expr_ops.rs", 3),
-    ("api/expr_poly_ext.rs", 6),
+    // `poly_div -> (quotient, remainder)` (num_integer `div_rem`); `content_primitive -> (content, primitive)`;
+    // `poly_interpolate(&[(x, y)])` points; `nroots -> (re, im)`; `poly_gcdex -> (s, t, g)` — 0.16: `ExtendedGcd`.
+    ("api/expr_poly_ext.rs", 5),
+    // `separate_vars_dict -> Vec<(var, factor)>` (SymPy `separatevars(dict=True)`).
     ("api/expr_rules_ext.rs", 1),
-    ("api/expr_solve_ext.rs", 1),
-    ("api/poly_ex.rs", 2),
+    // `LinearSolution::pairs -> &[(var, value)]`; `solve_ode_ivp(&[(order, x0, y0)])` ×2 — 0.16: `InitialCondition`.
+    ("api/expr_solve_ext.rs", 3),
+    // `nroots -> (re, im)`.
+    ("api/poly_ex.rs", 1),
+    // Internal mirrors of the public conventions: `as_base_exp -> (base, exp)` (as `Pow(base, exp)`),
+    // `subs_map_structural`, `as_numer_denom_expr`, `factor_terms_pair_expr`, `as_real_imag_expr`,
+    // `piecewise(&[(expr, cond)])` (SymPy `Piecewise((expr, cond), …)`).
     ("base/arena.rs", 6),
+    // `type Complex = (re, im)` for the arbitrary-precision evaluator.
     ("base/bigcomplex.rs", 1),
+    // `split_perfect_power(n, k) -> (a, b)` with `n = aᵏ·b`, in the order written; single caller.
     ("base/canon.rs", 1),
+    // `as_real_imag -> (re, im)`.
     ("base/complex.rs", 1),
+    // `Interval::into_pair -> (lower, upper)` — the documented escape hatch itself.
     ("base/interval.rs", 1),
-    ("calculus/calculus_util.rs", 4),
-    ("calculus/definite.rs", 1),
+    // `sign_nodes_of -> Vec<(sign(h), h)>`: a node and its own argument; single caller.
+    ("calculus/calculus_util.rs", 1),
+    // Gosper's normal form `(p, q, r)` — the algorithm's own names; `hypergeometric_ratio -> (numer, denom)`.
     ("calculus/gosper.rs", 2),
+    // `mellin_transform -> (transform, strip)`, typed `(Ex, BoolEx)` at the public boundary.
     ("calculus/mellin.rs", 1),
-    ("calculus/summation.rs", 1),
-    ("domains/certificates.rs", 6),
-    ("domains/certificates/polyhedron.rs", 7),
-    ("domains/certificates/sos.rs", 2),
+    // `TermShape.lin_pows: (β, p)` meaning `(k + β)^p`; `facts: (r, a, …)` — documented pattern-matched
+    // shape fields of a private analysis struct.
+    ("calculus/summation.rs", 2),
+    // `pell*/sum_of_two_squares -> (x, y)` (symmetric / `x² − Dy²`), `sum_of_four_squares` (symmetric),
+    // `pythagorean_triples -> (a, b, c)`; `linear_diophantine -> (x0, y0, dx, dy)` — 0.16: struct.
     ("domains/diophantine.rs", 7),
-    ("domains/dynamics.rs", 2),
+    // `coords: &[(&q, &q̇)]` ×2 — 0.16: `GeneralizedCoordinate`; `manipulator_equation -> (M, C, G)` — 0.16.
+    ("domains/dynamics.rs", 3),
+    // `shape -> (rows, cols)`; decompositions `(H, U)`, `(S, U, V)`, `(B, U)`, `(C, F)`, `(H, Q)` — 0.16: structs;
+    // `LLL_DEFAULT_DELTA`/`lll(delta: (numer, denom))` ×3 — 0.16: `Rational64`.
     ("domains/exact_matrix.rs", 9),
-    ("domains/linprog.rs", 1),
-    ("domains/matrix.rs", 7),
+    // `shape -> (rows, cols)`; `subs_map(&[(&var, &value)])`; `diagonalize/jordan_form/rank_decomposition/
+    // hessenberg/lu -> (P, D)…` ×5 and `lll(delta)` — 0.16: structs / `Rational64`.
+    ("domains/matrix.rs", 8),
+    // `qr -> (Q, R)`, `ldl -> (L, D)` — 0.16: structs.
     ("domains/matrix_decomp.rs", 2),
+    // `hermite_normal_form_with_transform`, `smith_normal_form_with_transforms`, `lll*` ×3 — 0.16.
     ("domains/normalforms.rs", 5),
+    // `gcdex -> (g, x, y)` — 0.16: `ExtendedGcd`; `continued_fraction_periodic -> (pre, period)` and
+    // `continued_fraction_reduce_periodic -> (p, q, d)` — 0.16: structs; `binomial_coefficients` keys `(n, k)`.
     ("domains/ntheory.rs", 4),
-    ("domains/optimize.rs", 8),
-    ("domains/polytope.rs", 2),
+    // `poly_fit_exact(&[(x, y)])` and `poly_fit_points(&[(x, y)])` — points.
+    ("domains/optimize.rs", 2),
+    // `to_euler -> (φ, θ, ψ)` in the order the `EulerConvention` names.
     ("domains/quaternion.rs", 1),
-    ("domains/robotics.rs", 6),
-    ("domains/stats/aggregation.rs", 2),
+    // `fk_position -> (x, y, z)`, `fk_position_typed -> (x, y, z)`, `inverse_kinematics_2dof -> (θ₁, θ₂)`
+    // by joint order; `DhParams` alias and `fk_chain/fk_position/fk_rotation(&[(θ, d, a, α)])` ×4 — 0.16: struct.
+    ("domains/robotics.rs", 7),
+    // `RatingTable::paired_ratings(j1, j2) -> (ratings of j1, ratings of j2)` — argument order.
     ("domains/stats/agreement.rs", 1),
-    ("domains/stats/data.rs", 1),
+    // `Finite.table: Vec<(value, probability)>` — a value → probability map (`HashMap::from([(k, v)])`).
     ("domains/stats/discrete.rs", 4),
-    ("domains/stats/estimation.rs", 5),
-    ("domains/stats/hypothesis.rs", 3),
-    ("domains/stats/information.rs", 1),
-    ("domains/stats/regression.rs", 4),
-    ("domains/stats/reliability.rs", 1),
-    ("domains/stats/sequential.rs", 2),
-    ("domains/stats/survival.rs", 1),
+    // `param_units: Vec<(parameter, unit)>` — key → value.
     ("output/codegen.rs", 1),
+    // `display_sort_key -> (category, …, name bytes, suffix bytes)`: a lexicographic sort key.
+    ("output/common.rs", 1),
+    // `CseResult`/`CseMultiResult.bindings: Vec<(symbol, definition)>`.
     ("output/cse.rs", 2),
+    // `symbol_text: Vec<(symbol, text)>` — key → value.
     ("output/lean.rs", 1),
+    // `from_points(&[(x, y)])`.
     ("plotting/data_export.rs", 1),
-    ("plotting/sampling.rs", 3),
+    // `PlotData.points: Vec<(x, y)>`.
+    ("plotting/sampling.rs", 1),
+    // `series: &[(&[(x, y)], label)]` ×3.
     ("plotting/svg_plot.rs", 1),
     ("plotting/textplot.rs", 1),
     ("plotting/tikz_plot.rs", 1),
+    // `lagrange_interpolate_points(&[(x, y)])`; `kronecker_find_factor -> (factor, cofactor)` (symmetric).
     ("poly/dense.rs", 2),
+    // `div_rem`/`try_div_rem -> (quotient, remainder)`; `extended_gcd -> (s, t, g)` — 0.16: `ExtendedGcd`.
     ("poly/generic.rs", 3),
+    // `as_numer_denom`, `fraction_parts -> (numer, denom)`.
     ("poly/polybridge.rs", 2),
+    // `rootof_eval_f64`, `nroots_f64 -> (re, im)`.
     ("poly/roots.rs", 2),
-    ("poly/sturm.rs", 3),
+    // `EuclideanDomain::div_rem -> (quotient, remainder)`.
     ("poly/traits.rs", 1),
+    // `symbolic_factor_terms_pair -> (coeff, rest)`.
     ("simplify/factor_terms.rs", 1),
+    // Hermite reduction step `(A, factor^{n−1}, B, factor)` — the algorithm's own names; single caller.
     ("transforms/apart.rs", 1),
+    // `subs_map(&[(var, value)])`.
     ("transforms/subs.rs", 1),
+    // Exact conversion factors as `(numer, denom)` rational literals.
     ("units/conv_factors.rs", 34),
 ];
 
@@ -104,11 +144,12 @@ struct Finder<'a> {
 impl<'ast> Visit<'ast> for Finder<'_> {
     fn visit_type_tuple(&mut self, t: &'ast syn::TypeTuple) {
         if t.elems.len() >= 2 {
-            let first = t.elems[0].to_token_stream().to_string();
-            if t.elems
+            let mut seen = std::collections::BTreeSet::new();
+            let repeated = t
+                .elems
                 .iter()
-                .all(|e| e.to_token_stream().to_string() == first)
-            {
+                .any(|e| !seen.insert(e.to_token_stream().to_string()));
+            if repeated {
                 self.sites.push(format!(
                     "{}: {}",
                     self.item,

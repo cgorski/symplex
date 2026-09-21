@@ -97,17 +97,13 @@ fn support_intersections_clip_symbolic_and_numeric_ends() {
     let s = Support::half_line(ctx.int(0))
         .intersect(&Support::from_pieces(
             Kind::Continuous,
-            vec![Piece::Interval {
-                lo: a.clone(),
-                hi: ctx.infinity(),
-                lo_open: true,
-                hi_open: true,
-            }],
+            vec![Piece::Interval(Interval::open(a.clone(), ctx.infinity()))],
         ))
         .unwrap();
-    let (lo, hi, _, _) = s.as_interval().unwrap();
-    assert_eq!(*lo, ctx.int(0).max_with(&a));
-    assert_eq!(*hi, ctx.infinity());
+    let iv = s.as_interval().unwrap();
+    assert_eq!(iv.lower, ctx.int(0).max_with(&a));
+    assert_eq!(iv.upper, ctx.infinity());
+    assert_eq!(iv.kind, IntervalKind::Open);
     // Numeric ends are decided exactly, and an empty result is empty.
     let s = Support::interval(ctx.int(0), ctx.int(5))
         .intersect(&Support::interval(ctx.int(3), ctx.int(9)))
@@ -122,12 +118,10 @@ fn support_intersections_clip_symbolic_and_numeric_ends() {
     let clipped = ints
         .intersect(&Support::from_pieces(
             Kind::Continuous,
-            vec![Piece::Interval {
-                lo: ctx.rational(3, 2),
-                hi: ctx.int(7),
-                lo_open: false,
-                hi_open: true,
-            }],
+            vec![Piece::Interval(Interval::right_open(
+                ctx.rational(3, 2),
+                ctx.int(7),
+            ))],
         ))
         .unwrap();
     assert_eq!(

@@ -28,8 +28,8 @@
 //! assert_eq!(tri.volume().unwrap(), q(1, 2));
 //! assert!(tri.contains(&[q(1, 4), q(1, 4)]));
 //! assert_eq!(tri.irredundant().unwrap().num_halfspaces(), 3);
-//! let (left, right) = tri.split(&[qi(-1), qi(0)], q(1, 2));   // cut at x = 1/2
-//! assert_eq!(left.volume().unwrap() + right.volume().unwrap(), q(1, 2));
+//! let halves = tri.split(&[qi(-1), qi(0)], q(1, 2));   // cut at x = 1/2
+//! assert_eq!(halves.nonnegative.volume().unwrap() + halves.nonpositive.volume().unwrap(), q(1, 2));
 //! ```
 
 use std::sync::OnceLock;
@@ -41,6 +41,7 @@ use num_traits::{One, Signed, Zero};
 use crate::api::expr::Ex;
 use crate::api::poly_ex::Poly;
 use crate::base::errors::SymplexError;
+use crate::base::interval::Bounds;
 use crate::domains::exact_matrix::fraction_free_gauss_jordan;
 use crate::domains::linprog::{LpProblem, LpStatus, Q};
 use crate::poly::multipoly::{GrevLex, MultiPoly};
@@ -49,8 +50,18 @@ fn invalid(operation: &'static str, reason: impl Into<String>) -> SymplexError {
     SymplexError::invalid_argument(operation, reason)
 }
 
-/// Per-coordinate `[min, max]` of a polytope; `None` = unbounded on that side.
-pub type BoundingBox = Vec<(Option<Q>, Option<Q>)>;
+/// Per-coordinate `[min, max]` of a polytope; an absent side is unbounded.
+pub type BoundingBox = Vec<Bounds<Q>>;
+
+/// The two closed pieces of a polytope cut by a hyperplane
+/// `coeffs·x + constant = 0` (see [`Polytope::split`]).
+#[derive(Clone, Debug)]
+pub struct Split {
+    /// `P ∩ {coeffs·x + constant ≥ 0}`.
+    pub nonnegative: Polytope,
+    /// `P ∩ {coeffs·x + constant ≤ 0}`.
+    pub nonpositive: Polytope,
+}
 
 /// One half-space `coeffs · x + constant ≥ 0`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -443,16 +454,20 @@ impl Polytope {
     }
 
     /// Cut by the hyperplane `coeffs·x + constant = 0`: the two closed
-    /// pieces `P ∩ {≥ 0}` and `P ∩ {≤ 0}`.
+    /// pieces [`Split::nonnegative`] `= P ∩ {coeffs·x + constant ≥ 0}` and
+    /// [`Split::nonpositive`] `= P ∩ {coeffs·x + constant ≤ 0}`.
     ///
     /// # Panics
     ///
     /// Panics if `coeffs.len() != dim`.
-    pub fn split(&self, coeffs: &[Q], constant: Q) -> (Polytope, Polytope) {
+    pub fn split(&self, coeffs: &[Q], constant: Q) -> Split {
         let pos = self.with_halfspace(coeffs, constant.clone());
         let neg_coeffs: Vec<Q> = coeffs.iter().map(|c| -c).collect();
         let neg = self.with_halfspace(&neg_coeffs, -constant);
-        (pos, neg)
+        Split {
+            nonnegative: pos,
+            nonpositive: neg,
+        }
     }
 
     /// Cut by the hyperplane of `h` **incrementally**: the vertex sets of
@@ -659,7 +674,10 @@ impl Polytope {
             let lo = self.minimize(&c)?.map(|(v, _)| v);
             c[i] = Q::from_integer(BigInt::from(-1));
             let hi = self.minimize(&c)?.map(|(v, _)| -v);
-            out.push((lo, hi));
+            out.push(Bounds {
+                lower: lo,
+                upper: hi,
+            });
         }
         Ok(Some(out))
     }
@@ -681,7 +699,7 @@ impl Polytope {
         }
         Ok(match self.bounding_box()? {
             None => true,
-            Some(b) => b.iter().all(|(lo, hi)| lo.is_some() && hi.is_some()),
+            Some(b) => b.iter().all(Bounds::is_bounded),
         })
     }
 
@@ -717,7 +735,7 @@ impl Polytope {
         for i in 0..n {
             lp = lp.free(i);
         }
-        lp = lp.bounds(n, Some(Q::zero()), Some(Q::one()));
+        lp = lp.bounds(n, Bounds::closed(Q::zero(), Q::one()));
         for h in &self.halfspaces {
             if h.is_trivial() {
                 if h.constant.is_negative() {
@@ -1535,13 +1553,16 @@ mod tests {
         assert!(c.is_bounded().unwrap());
         assert!(!c.is_empty().unwrap());
         let bb = c.bounding_box().unwrap().unwrap();
-        assert_eq!(bb, vec![(Some(qi(0)), Some(qi(1))); 3]);
+        assert_eq!(bb, vec![Bounds::closed(qi(0), qi(1)); 3]);
         assert_eq!(c.vertex_centroid().unwrap().unwrap(), vec![q(1, 2); 3]);
         assert!(c.contains(&[q(1, 2), q(1, 3), q(1, 4)]));
         assert!(!c.contains(&[q(3, 2), q(1, 3), q(1, 4)]));
         assert!(!c.contains(&[q(1, 2), q(1, 3)]));
-        // Cut the cube at z = 1/3.
-        let (lo, hi) = c.split(&[qi(0), qi(0), qi(-1)], q(1, 3));
+        // Cut the cube at z = 1/3: `-z + 1/3 ≥ 0` is the lower piece.
+        let Split {
+            nonnegative: lo,
+            nonpositive: hi,
+        } = c.split(&[qi(0), qi(0), qi(-1)], q(1, 3));
         assert_eq!(lo.volume().unwrap(), q(1, 3));
         assert_eq!(hi.volume().unwrap(), q(2, 3));
         assert_eq!(lo.vertices().unwrap().len(), 8);
@@ -1584,7 +1605,7 @@ mod tests {
         assert_eq!(quadrant.vertices().unwrap(), vec![vec![qi(0), qi(0)]]);
         assert!(quadrant.volume().is_err());
         let bb = quadrant.bounding_box().unwrap().unwrap();
-        assert_eq!(bb[0], (Some(qi(0)), None));
+        assert_eq!(bb[0], Bounds::at_least(qi(0)));
         assert!(quadrant.any_point().unwrap().is_some());
     }
 

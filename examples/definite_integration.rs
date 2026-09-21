@@ -165,10 +165,13 @@ fn main() {
         rel_tol: 1e-12,
         ..QuadOpts::default()
     };
-    let (val, err) = no_closed_form
+    let q = no_closed_form
         .integrate_numeric_with(&x, &zero, &one, &opts)
         .unwrap();
-    println!("∫₀¹ e^(x²) dx numerically    ≈ {val:.15}  (error estimate {err:.1e})");
+    println!(
+        "∫₀¹ e^(x²) dx numerically    ≈ {:.15}  (error estimate {:.1e})",
+        q.value, q.error
+    );
 
     // A divergent integral is an error here too, not a random large number.
     match x.powi(-2).integrate_numeric(&x, &neg_one, &one) {

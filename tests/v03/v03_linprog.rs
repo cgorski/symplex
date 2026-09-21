@@ -99,7 +99,13 @@ impl Spec {
             };
         }
         for (j, (lo, hi)) in self.bounds.iter().enumerate() {
-            p = p.bounds(j, lo.clone(), hi.clone());
+            p = p.bounds(
+                j,
+                Bounds {
+                    lower: lo.clone(),
+                    upper: hi.clone(),
+                },
+            );
         }
         p
     }
@@ -931,7 +937,7 @@ fn linprog_scipy_shape_known_answer() {
         &[qi(6), qi(4)],
         &[],
         &[],
-        &[(None, None), (Some(qi(-3)), None)],
+        &[Bounds::free(), Bounds::at_least(qi(-3))],
     )
     .unwrap();
     assert_eq!(sol.status, LpStatus::Optimal);
@@ -961,7 +967,7 @@ fn linprog_with_equalities_and_default_bounds() {
 fn linprog_shape_errors() {
     assert!(linprog(&[qi(1)], &[vec![qi(1)]], &[], &[], &[], &[]).is_err());
     assert!(linprog(&[qi(1)], &[], &[], &[vec![qi(1)]], &[qi(1), qi(2)], &[]).is_err());
-    assert!(linprog(&[qi(1), qi(2)], &[], &[], &[], &[], &[(None, None)]).is_err());
+    assert!(linprog(&[qi(1), qi(2)], &[], &[], &[], &[], &[Bounds::free()]).is_err());
     assert!(linprog(&[qi(1)], &[vec![qi(1), qi(2)]], &[qi(1)], &[], &[], &[]).is_err());
     assert!(linprog(&[], &[], &[], &[], &[], &[]).is_err());
 }
@@ -1146,7 +1152,7 @@ fn builder_errors_for_malformed_input() {
     ));
     assert!(matches!(
         LpProblem::minimize(vec![qi(1)])
-            .bounds(1, None, None)
+            .bounds(1, Bounds::free())
             .solve(),
         Err(SymplexError::InvalidArgument { .. })
     ));
@@ -1329,7 +1335,7 @@ fn budget_builders_combine_and_default_is_unlimited() {
     );
     // Contradictory bounds are decided before any pivot: no budget needed.
     let sol = LpProblem::minimize(vec![qi(1)])
-        .bounds(0, Some(qi(2)), Some(qi(1)))
+        .bounds(0, Bounds::closed(qi(2), qi(1)))
         .with_budget(Budget::max_pivots(0))
         .solve()
         .unwrap();

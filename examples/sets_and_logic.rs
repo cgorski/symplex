@@ -27,9 +27,9 @@ fn main() {
 
     // ── 1. Intervals and set algebra ────────────────────────────────────
     println!("--- Set algebra ---");
-    // interval(lo, hi, left_open, right_open)
-    let a = ctx.interval(&int(0), &int(5), false, false); // [0, 5]
-    let b = ctx.interval(&int(3), &int(10), true, false); // (3, 10]
+    // interval(lo, hi, kind): Closed, Open, LeftOpen `(a, b]`, RightOpen `[a, b)`
+    let a = ctx.interval(&int(0), &int(5), IntervalKind::Closed); // [0, 5]
+    let b = ctx.interval(&int(3), &int(10), IntervalKind::LeftOpen); // (3, 10]
     println!("A = {a}    B = {b}");
     // Construction is cheap and lazy; `simplify()` computes the normal form.
     println!("A ∪ B = {}  →  {}", a.union(&b), a.union(&b).simplify());
@@ -58,10 +58,10 @@ fn main() {
     );
     println!(
         "A ⊆ [0, 10]: {:?}    A ∩ (5, 6) = ∅: {:?}",
-        a.is_subset(&ctx.interval(&int(0), &int(10), false, false)),
-        a.is_disjoint(&ctx.interval(&int(5), &int(6), true, true))
+        a.is_subset(&ctx.interval(&int(0), &int(10), IntervalKind::Closed)),
+        a.is_disjoint(&ctx.interval(&int(5), &int(6), IntervalKind::Open))
     );
-    let empty = a.intersection(&ctx.interval(&int(6), &int(7), false, false));
+    let empty = a.intersection(&ctx.interval(&int(6), &int(7), IntervalKind::Closed));
     println!("{empty} is empty: {:?}", empty.is_empty());
     println!(
         "B is open: {:?}    A is closed: {:?}",
@@ -84,10 +84,14 @@ fn main() {
 
     // ── 3. Between sets and conditions ──────────────────────────────────
     println!("\n--- Sets ↔ conditions ---");
-    for (lo, hi, lopen, ropen) in ab.as_intervals().unwrap() {
-        let l = if lopen { "(" } else { "[" };
-        let r = if ropen { ")" } else { "]" };
-        println!("as_intervals: {l}{lo}, {hi}{r}");
+    // Each piece is an `Interval<Ex>` with `lower`, `upper` and `kind`;
+    // its `Display` shows the brackets, and `to_set()` goes back to a `SetEx`.
+    for piece in ab.as_intervals().unwrap() {
+        println!(
+            "as_intervals: {piece}  (kind {:?}, back to a set: {})",
+            piece.kind,
+            piece.to_set()
+        );
     }
     println!(
         "as_finite_set(S) = {:?}",

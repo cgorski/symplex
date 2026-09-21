@@ -955,8 +955,8 @@ impl Expr<SetValued> {
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
-    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
-    /// let b = ctx.interval(&ctx.int(2), &ctx.int(3), false, false);
+    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
+    /// let b = ctx.interval(&ctx.int(2), &ctx.int(3), IntervalKind::Closed);
     /// let u = a.union(&b);
     /// let s = format!("{u}");
     /// assert!(!s.is_empty(), "union display: {s}");
@@ -977,7 +977,7 @@ impl Expr<SetValued> {
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
-    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
     /// let e = ctx.empty_set();
     /// let result = a.intersection(&e);
     /// assert_eq!(format!("{result}"), "EmptySet");
@@ -1004,8 +1004,8 @@ impl Expr<SetValued> {
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
-    /// let a = ctx.interval(&ctx.int(0), &ctx.int(3), false, false);
-    /// let b = ctx.interval(&ctx.int(1), &ctx.int(2), true, true);
+    /// let a = ctx.interval(&ctx.int(0), &ctx.int(3), IntervalKind::Closed);
+    /// let b = ctx.interval(&ctx.int(1), &ctx.int(2), IntervalKind::Open);
     /// let lazy = a.complement(&b);
     /// assert_eq!(format!("{lazy}"), "[0, 3] \\ (1, 2)");
     /// assert_eq!(format!("{}", lazy.simplify()), "[0, 1] ∪ [2, 3]");

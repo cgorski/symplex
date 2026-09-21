@@ -5,7 +5,7 @@
 use num_traits::{Signed, Zero};
 use symplex::certificates::{PolyhedronOpts, prove_nonnegative_on_polyhedron};
 use symplex::linprog::{q, qi};
-use symplex::polytope::{HalfSpace, Polytope};
+use symplex::polytope::{HalfSpace, Polytope, Split};
 use symplex::prelude::*;
 
 #[test]
@@ -47,7 +47,10 @@ fn a_decision_tree_cell_round_trips_through_exprs_and_certifies() {
     }
     // A cut through the centroid splits the area exactly.
     let c = cell.vertex_centroid().unwrap().unwrap();
-    let (a, b) = cell.split(&[qi(1), qi(-1)], &c[1] - &c[0]);
+    let Split {
+        nonnegative: a,
+        nonpositive: b,
+    } = cell.split(&[qi(1), qi(-1)], &c[1] - &c[0]);
     assert_eq!(a.volume().unwrap() + b.volume().unwrap(), q(7, 16));
     assert!(a.contains(&c) && b.contains(&c));
 }
@@ -75,7 +78,7 @@ fn three_dimensional_cells() {
     assert_eq!(cell.volume().unwrap(), qi(1) - q(1, 48));
     assert!(cell.is_bounded().unwrap());
     let bb = cell.bounding_box().unwrap().unwrap();
-    assert_eq!(bb, vec![(Some(qi(0)), Some(qi(1))); 3]);
+    assert_eq!(bb, vec![Bounds::closed(qi(0), qi(1)); 3]);
     // Emptiness and a witness.
     let empty = cell.with_halfspace(&[qi(1), qi(1), qi(1)], qi(-3));
     assert!(empty.is_empty().unwrap());
@@ -868,5 +871,5 @@ fn unbounded_polyhedra_are_reported_not_mis_measured() {
     assert!(wedge.volume().is_err());
     assert_eq!(wedge.vertices().unwrap(), vec![vec![qi(0), qi(0)]]);
     let bb = wedge.bounding_box().unwrap().unwrap();
-    assert_eq!(bb, vec![(Some(qi(0)), None), (Some(qi(0)), None)]);
+    assert_eq!(bb, vec![Bounds::at_least(qi(0)), Bounds::at_least(qi(0))]);
 }

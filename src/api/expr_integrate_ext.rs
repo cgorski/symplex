@@ -5,7 +5,7 @@ use tracing::debug_span;
 use crate::api::expr::{Ex, Expr, Numeric};
 use crate::base::errors::SymplexError;
 use crate::base::node::ExprNode;
-use crate::calculus::definite::{self, QuadOpts};
+use crate::calculus::definite::{self, QuadOpts, QuadResult};
 
 impl Expr<Numeric> {
     /// Compute the definite integral `∫_lo^hi self dvar`.
@@ -295,7 +295,7 @@ impl Expr<Numeric> {
     /// for those.
     pub fn integrate_numeric(&self, var: &Ex, lo: &Ex, hi: &Ex) -> Result<f64, SymplexError> {
         let opts = QuadOpts::default();
-        let (value, err) = self.integrate_numeric_with(var, lo, hi, &opts)?;
+        let QuadResult { value, error: err } = self.integrate_numeric_with(var, lo, hi, &opts)?;
         let tol = opts.abs_tol.max(opts.rel_tol * value.abs());
         if err > 1e3 * tol {
             return Err(SymplexError::ComputationFailed {
@@ -308,8 +308,8 @@ impl Expr<Numeric> {
         Ok(value)
     }
 
-    /// Numerically integrate with explicit [`QuadOpts`], returning
-    /// `(value, error_estimate)`.
+    /// Numerically integrate with explicit [`QuadOpts`], returning the
+    /// estimate and its error estimate as a [`QuadResult`].
     ///
     /// The error estimate is returned even if the tolerance was not met
     /// within `max_subdivisions`; check it before trusting the value.
@@ -323,11 +323,11 @@ impl Expr<Numeric> {
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
     /// let opts = QuadOpts { rel_tol: 1e-6, ..QuadOpts::default() };
-    /// let (v, err) = (-x.powi(2)).exp()
+    /// let r = (-x.powi(2)).exp()
     ///     .integrate_numeric_with(&x, &ctx.neg_infinity(), &ctx.infinity(), &opts)
     ///     .unwrap();
-    /// assert!((v - std::f64::consts::PI.sqrt()).abs() < 1e-6);
-    /// assert!(err < 1e-4);
+    /// assert!((r.value - std::f64::consts::PI.sqrt()).abs() < 1e-6);
+    /// assert!(r.error < 1e-4);
     /// ```
     pub fn integrate_numeric_with(
         &self,
@@ -335,7 +335,7 @@ impl Expr<Numeric> {
         lo: &Ex,
         hi: &Ex,
         opts: &QuadOpts,
-    ) -> Result<(f64, f64), SymplexError> {
+    ) -> Result<QuadResult, SymplexError> {
         let var_id = self.checked_id(var);
         let lo_id = self.checked_id(lo);
         let hi_id = self.checked_id(hi);

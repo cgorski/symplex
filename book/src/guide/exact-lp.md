@@ -6,7 +6,7 @@ The module works on plain `Vec<Q>` data (`Q = Ratio<BigInt>`), with two small co
 
 ## The builder
 
-`LpProblem::minimize(c)` / `maximize(c)` start a program in `c.len()` variables; `.le(row, rhs)`, `.ge(row, rhs)`, `.eq(row, rhs)` add constraint rows; `.bounds(j, lo, hi)` and `.free(j)` change a variable's bounds from the default `0 ≤ xⱼ < ∞`; `.solve()` returns `Result<LpSolution>`.
+`LpProblem::minimize(c)` / `maximize(c)` start a program in `c.len()` variables; `.le(row, rhs)`, `.ge(row, rhs)`, `.eq(row, rhs)` add constraint rows; `.bounds(j, Bounds::closed(lo, hi))` (or `Bounds::at_least(lo)`, `Bounds::at_most(hi)`) and `.free(j)` change a variable's bounds from the default `0 ≤ xⱼ < ∞`; `.solve()` returns `Result<LpSolution>`.
 
 ```rust
 use symplex::prelude::*;
@@ -49,6 +49,7 @@ The remaining examples on this page reuse the `show` helper.
 | `Unbounded` | — | the objective improves without limit |
 
 ```rust
+use symplex::Bounds;
 use symplex::linprog::{LpProblem, qi};
 
 fn main() {
@@ -57,11 +58,11 @@ fn main() {
 
     println!("{}", LpProblem::maximize(vec![qi(1), qi(1)]).le(vec![qi(1)], qi(1)).solve().unwrap_err());
     // linprog: invalid argument: constraint 0 has 1 coefficients but there are 2 variables
-    println!("{}", LpProblem::maximize(vec![qi(1)]).bounds(3, None, None).solve().unwrap_err());
+    println!("{}", LpProblem::maximize(vec![qi(1)]).bounds(3, Bounds::free()).solve().unwrap_err());
     // linprog: invalid argument: bounds were set for variable 3 but there are only 1 variables
 
     // Contradictory bounds: infeasible, but there is no constraint certificate to give.
-    let bad = LpProblem::minimize(vec![qi(1)]).bounds(0, Some(qi(3)), Some(qi(1))).solve().unwrap();
+    let bad = LpProblem::minimize(vec![qi(1)]).bounds(0, Bounds::closed(qi(3), qi(1))).solve().unwrap();
     println!("{:?} {:?}", bad.status, bad.farkas);                       // Infeasible None
 }
 ```
@@ -72,8 +73,8 @@ fn main() {
 // min x − y  s.t.  x + y ≤ 3,  −2 ≤ x,  0 ≤ y ≤ 1
 let sol = LpProblem::minimize(vec![qi(1), qi(-1)])
     .le(vec![qi(1), qi(1)], qi(3))
-    .bounds(0, Some(qi(-2)), None)
-    .bounds(1, Some(qi(0)), Some(qi(1)))
+    .bounds(0, Bounds::at_least(qi(-2)))
+    .bounds(1, Bounds::closed(qi(0), qi(1)))
     .solve()
     .unwrap();
 println!("{:?} x* = {} objective {} duals {}", sol.status, show(&sol.x), sol.objective.unwrap(), show(&sol.duals));
@@ -256,7 +257,7 @@ fn main() {
 
 ## SciPy-shaped `linprog`
 
-`linprog(c, a_ub, b_ub, a_eq, b_eq, bounds)` minimises `cᵀx` subject to `A_ub·x ≤ b_ub`, `A_eq·x = b_eq` and per-variable bounds (empty `bounds` means `x ≥ 0`). Constraints are numbered `≤` rows first, then `=` rows — that is the order of `duals` and `farkas`.
+`linprog(c, a_ub, b_ub, a_eq, b_eq, bounds)` minimises `cᵀx` subject to `A_ub·x ≤ b_ub`, `A_eq·x = b_eq` and per-variable bounds (a `&[Bounds<Q>]`, one per variable; empty means `x ≥ 0`). Constraints are numbered `≤` rows first, then `=` rows — that is the order of `duals` and `farkas`.
 
 ```rust,ignore
 // min −x − y   s.t.  x + 2y ≤ 4,  3x + y ≤ 6,  x, y ≥ 0
@@ -323,8 +324,8 @@ fn main() {
     println!("{}", v.join(", "));                                 // (0, 0), (0, 1), (1/2, 1), (3/4, 3/4)
     println!("{}", cell.volume().unwrap());                       // 7/16
     println!("{}", cell.irredundant().unwrap().num_halfspaces()); // 5  (1 - r is implied)
-    let (left, right) = cell.split(&[qi(-1), qi(0)], q(1, 2));    // cut at r = 1/2
-    println!("{} {}", left.volume().unwrap(), right.volume().unwrap());   // 3/8 1/16
+    let halves = cell.split(&[qi(-1), qi(0)], q(1, 2));           // cut at r = 1/2: `1/2 - r ≥ 0` is the left piece
+    println!("{} {}", halves.nonnegative.volume().unwrap(), halves.nonpositive.volume().unwrap());   // 3/8 1/16
     println!("{}", cell.contains(&[q(1, 4), q(1, 2)]));            // true
 }
 ```

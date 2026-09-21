@@ -6,7 +6,8 @@
 //! emitted proof changed and should be re-checked, not just re-pinned.
 
 use symplex::certificates::{
-    BoxCertificate, BoxOutcome, BoxUnknown, is_nonnegative_on_box, prove_nonnegative_on_box,
+    BoxBound, BoxCertificate, BoxOutcome, BoxUnknown, is_nonnegative_on_box,
+    prove_nonnegative_on_box,
 };
 use symplex::linprog::Feasibility;
 use symplex::num_bigint::BigInt;
@@ -32,7 +33,7 @@ fn proved(out: Result<BoxOutcome, SymplexError>) -> BoxCertificate {
 /// and check the products are individually non-negative there.
 fn check_identity_numerically(cert: &BoxCertificate) {
     let ctx = cert.goal().context();
-    let (lhs, rhs) = cert.identity();
+    let Equation { lhs, rhs } = cert.identity();
     let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
     for _ in 0..25 {
         let mut subs: Vec<(Ex, Ex)> = Vec::new();
@@ -64,10 +65,18 @@ fn check_identity_numerically(cert: &BoxCertificate) {
     }
 }
 
-fn unit_square(ctx: &Context, x: &Ex, y: &Ex) -> Vec<(Ex, Ex, Ex)> {
+fn unit_square(ctx: &Context, x: &Ex, y: &Ex) -> Vec<BoxBound> {
     vec![
-        (x.clone(), ctx.int(0), ctx.int(1)),
-        (y.clone(), ctx.int(0), ctx.int(1)),
+        BoxBound {
+            var: x.clone(),
+            lo: ctx.int(0),
+            hi: ctx.int(1),
+        },
+        BoxBound {
+            var: y.clone(),
+            lo: ctx.int(0),
+            hi: ctx.int(1),
+        },
     ]
 }
 
@@ -79,8 +88,16 @@ fn quarter_bound_has_a_degree_two_certificate() {
     let (r, f) = (ctx.symbol("r"), ctx.symbol("f"));
     let goal = ctx.rational(1, 4) - (&r - &f / 2).powi(2);
     let bounds = [
-        (r.clone(), ctx.int(0), ctx.rational(1, 2)),
-        (f.clone(), ctx.int(0), ctx.int(1)),
+        BoxBound {
+            var: r.clone(),
+            lo: ctx.int(0),
+            hi: ctx.rational(1, 2),
+        },
+        BoxBound {
+            var: f.clone(),
+            lo: ctx.int(0),
+            hi: ctx.int(1),
+        },
     ];
     let cert = proved(prove_nonnegative_on_box(&goal, &bounds, 2));
     assert!(cert.verify());
@@ -98,7 +115,11 @@ fn quarter_bound_has_a_degree_two_certificate() {
 fn single_product_certificates_are_found_exactly() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let bounds = [(x.clone(), ctx.int(0), ctx.int(1))];
+    let bounds = [BoxBound {
+        var: x.clone(),
+        lo: ctx.int(0),
+        hi: ctx.int(1),
+    }];
     let cert = proved(prove_nonnegative_on_box(&(&x * (1 - &x)), &bounds, 2));
     assert_eq!(cert.terms().len(), 1);
     let t = &cert.terms()[0];
@@ -117,13 +138,27 @@ fn cubic_with_roots_outside_the_box() {
     let goal = (&x - 1) * (&x - 2) * (&x - 3);
     let cert = proved(prove_nonnegative_on_box(
         &goal,
-        &[(x.clone(), ctx.int(3), ctx.int(10))],
+        &[BoxBound {
+            var: x.clone(),
+            lo: ctx.int(3),
+            hi: ctx.int(10),
+        }],
         3,
     ));
     assert!(cert.verify());
     check_identity_numerically(&cert);
     // Same goal on [2, 10] is false (negative on (2, 3)).
-    match prove_nonnegative_on_box(&goal, &[(x.clone(), ctx.int(2), ctx.int(10))], 3).unwrap() {
+    match prove_nonnegative_on_box(
+        &goal,
+        &[BoxBound {
+            var: x.clone(),
+            lo: ctx.int(2),
+            hi: ctx.int(10),
+        }],
+        3,
+    )
+    .unwrap()
+    {
         BoxOutcome::Refuted { point, value, .. } => {
             assert!(value < Q::zero());
             assert_eq!(point[0].0, x);
@@ -140,9 +175,21 @@ fn three_variables_degree_two() {
     // 3 − xy − yz − zx ≥ 0 on the unit cube (each product ≤ 1).
     let goal = 3 - &x * &y - &y * &z - &z * &x;
     let bounds = [
-        (x.clone(), ctx.int(0), ctx.int(1)),
-        (y.clone(), ctx.int(0), ctx.int(1)),
-        (z.clone(), ctx.int(0), ctx.int(1)),
+        BoxBound {
+            var: x.clone(),
+            lo: ctx.int(0),
+            hi: ctx.int(1),
+        },
+        BoxBound {
+            var: y.clone(),
+            lo: ctx.int(0),
+            hi: ctx.int(1),
+        },
+        BoxBound {
+            var: z.clone(),
+            lo: ctx.int(0),
+            hi: ctx.int(1),
+        },
     ];
     let cert = proved(prove_nonnegative_on_box(&goal, &bounds, 2));
     assert!(cert.verify());
@@ -157,8 +204,16 @@ fn certificates_prefer_sparse_low_degree_products() {
     // (constant, x − 1/2, y), none using the upper bounds.
     let goal = 3 * &x + 2 * &y - 1;
     let bounds = [
-        (x.clone(), ctx.rational(1, 2), ctx.int(3)),
-        (y.clone(), ctx.int(0), ctx.int(1)),
+        BoxBound {
+            var: x.clone(),
+            lo: ctx.rational(1, 2),
+            hi: ctx.int(3),
+        },
+        BoxBound {
+            var: y.clone(),
+            lo: ctx.int(0),
+            hi: ctx.int(1),
+        },
     ];
     let cert = proved(prove_nonnegative_on_box(&goal, &bounds, 2));
     assert_eq!(cert.degree(), 1, "{cert}");
@@ -205,8 +260,16 @@ fn interior_zero_has_no_handelman_certificate() {
     // non-negative, but Handelman certificates cannot represent it.
     let goal = (&x - 1).powi(2) + (&y - 1).powi(2);
     let bounds = [
-        (x.clone(), ctx.int(0), ctx.int(2)),
-        (y.clone(), ctx.int(0), ctx.int(2)),
+        BoxBound {
+            var: x.clone(),
+            lo: ctx.int(0),
+            hi: ctx.int(2),
+        },
+        BoxBound {
+            var: y.clone(),
+            lo: ctx.int(0),
+            hi: ctx.int(2),
+        },
     ];
     for d in 1..=3 {
         match prove_nonnegative_on_box(&goal, &bounds, d).unwrap() {
@@ -229,19 +292,53 @@ fn interior_zero_has_no_handelman_certificate() {
 fn invalid_inputs_are_errors() {
     let ctx = Context::new();
     let (x, y, a) = (ctx.symbol("x"), ctx.symbol("y"), ctx.symbol("a"));
-    let ok = [(x.clone(), ctx.int(0), ctx.int(1))];
+    let ok = [BoxBound {
+        var: x.clone(),
+        lo: ctx.int(0),
+        hi: ctx.int(1),
+    }];
     assert!(prove_nonnegative_on_box(&x, &[], 2).is_err());
     // Non-literal bound.
-    assert!(prove_nonnegative_on_box(&x, &[(x.clone(), ctx.int(0), a.clone())], 2).is_err());
+    assert!(
+        prove_nonnegative_on_box(
+            &x,
+            &[BoxBound {
+                var: x.clone(),
+                lo: ctx.int(0),
+                hi: a.clone()
+            }],
+            2
+        )
+        .is_err()
+    );
     // lo ≥ hi.
-    assert!(prove_nonnegative_on_box(&x, &[(x.clone(), ctx.int(1), ctx.int(1))], 2).is_err());
+    assert!(
+        prove_nonnegative_on_box(
+            &x,
+            &[BoxBound {
+                var: x.clone(),
+                lo: ctx.int(1),
+                hi: ctx.int(1)
+            }],
+            2
+        )
+        .is_err()
+    );
     // Repeated variable.
     assert!(
         prove_nonnegative_on_box(
             &x,
             &[
-                (x.clone(), ctx.int(0), ctx.int(1)),
-                (x.clone(), ctx.int(0), ctx.int(2))
+                BoxBound {
+                    var: x.clone(),
+                    lo: ctx.int(0),
+                    hi: ctx.int(1)
+                },
+                BoxBound {
+                    var: x.clone(),
+                    lo: ctx.int(0),
+                    hi: ctx.int(2)
+                }
             ],
             2
         )
@@ -297,8 +394,16 @@ fn lean_output_is_stable() {
     let quarter = proved(prove_nonnegative_on_box(
         &(ctx.rational(1, 4) - (&r - &f / 2).powi(2)),
         &[
-            (r.clone(), ctx.int(0), ctx.rational(1, 2)),
-            (f.clone(), ctx.int(0), ctx.int(1)),
+            BoxBound {
+                var: r.clone(),
+                lo: ctx.int(0),
+                hi: ctx.rational(1, 2),
+            },
+            BoxBound {
+                var: f.clone(),
+                lo: ctx.int(0),
+                hi: ctx.int(1),
+            },
         ],
         2,
     ));
@@ -309,7 +414,11 @@ fn lean_output_is_stable() {
 
     let one_product = proved(prove_nonnegative_on_box(
         &(&x * (1 - &x)),
-        &[(x.clone(), ctx.int(0), ctx.int(1))],
+        &[BoxBound {
+            var: x.clone(),
+            lo: ctx.int(0),
+            hi: ctx.int(1),
+        }],
         2,
     ));
     assert_eq!(
@@ -321,8 +430,16 @@ fn lean_output_is_stable() {
     let linear = proved(prove_nonnegative_on_box(
         &(3 * &x + 2 * &y - 1),
         &[
-            (x.clone(), ctx.rational(1, 2), ctx.int(3)),
-            (y.clone(), ctx.int(0), ctx.int(1)),
+            BoxBound {
+                var: x.clone(),
+                lo: ctx.rational(1, 2),
+                hi: ctx.int(3),
+            },
+            BoxBound {
+                var: y.clone(),
+                lo: ctx.int(0),
+                hi: ctx.int(1),
+            },
         ],
         1,
     ));
@@ -338,7 +455,11 @@ fn lean_theorem_names_and_identifiers_are_sanitised() {
     let odd = ctx.symbol("x-1");
     let cert = proved(prove_nonnegative_on_box(
         &(&odd * (1 - &odd)),
-        &[(odd.clone(), ctx.int(0), ctx.int(1))],
+        &[BoxBound {
+            var: odd.clone(),
+            lo: ctx.int(0),
+            hi: ctx.int(1),
+        }],
         2,
     ));
     let text = cert.to_lean("my theorem").unwrap();
@@ -355,11 +476,15 @@ fn certificate_display_shows_the_identity_and_the_box() {
     let x = ctx.symbol("x");
     let cert = proved(prove_nonnegative_on_box(
         &(&x * (1 - &x)),
-        &[(x.clone(), ctx.int(0), ctx.int(1))],
+        &[BoxBound {
+            var: x.clone(),
+            lo: ctx.int(0),
+            hi: ctx.int(1),
+        }],
         2,
     ));
     assert_eq!(cert.to_string(), "-x^2 + x = x*(-x + 1), 0 ≤ x ≤ 1");
-    let (lhs, rhs) = cert.identity();
+    let Equation { lhs, rhs } = cert.identity();
     assert_eq!((lhs - rhs).expand().to_string(), "0");
 }
 
@@ -420,7 +545,7 @@ fn hl_proved(out: Result<HalfLineOutcome, SymplexError>) -> HalfLineCertificate 
 /// Sample the half-line and check the identity and the sign of the goal.
 fn check_halfline_numerically(cert: &HalfLineCertificate) {
     let ctx = cert.goal().context();
-    let (lhs, rhs) = cert.identity();
+    let Equation { lhs, rhs } = cert.identity();
     let a = cert.endpoint().as_rational().unwrap();
     for i in 0..40 {
         let t = q(i * i, 7); // 0, 1/7, 4/7, …
@@ -667,8 +792,16 @@ fn lean_output_respects_mathlib_line_width() {
     let cert = proved(prove_nonnegative_on_box(
         &(ctx.rational(1, 4) - (&r - &f / 2).powi(2)),
         &[
-            (r.clone(), ctx.int(0), ctx.rational(1, 2)),
-            (f.clone(), ctx.int(0), ctx.int(1)),
+            BoxBound {
+                var: r.clone(),
+                lo: ctx.int(0),
+                hi: ctx.rational(1, 2),
+            },
+            BoxBound {
+                var: f.clone(),
+                lo: ctx.int(0),
+                hi: ctx.int(1),
+            },
         ],
         2,
     ));

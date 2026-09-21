@@ -17,6 +17,7 @@ use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::api::poly_ex::Poly;
 use crate::base::errors::SymplexError;
+use crate::base::interval::Interval;
 
 use super::sample::Rng;
 use super::support::{Kind, Piece, Support, is_neg_inf, is_pos_inf};
@@ -359,7 +360,7 @@ impl Distribution {
         let dens = self.0.density(&t);
         let ctx = self.context();
         let lo = match support.as_interval() {
-            Some((lo, _, _, _)) => lo.clone(),
+            Some(iv) => iv.lower.clone(),
             None => ctx.neg_infinity(),
         };
         match support.kind() {
@@ -387,10 +388,11 @@ impl Distribution {
     pub fn cdf(&self, x: &Ex) -> Ex {
         let ctx = self.context();
         let support = self.support();
-        let Some((lo, hi, _, _)) = support.as_interval() else {
+        let Some(iv) = support.as_interval() else {
             // Points: the indicator sum is already total.
             return self.cdf_on_support(x);
         };
+        let (lo, hi) = (&iv.lower, &iv.upper);
         let lo_finite = !is_neg_inf(lo);
         let hi_finite = !is_pos_inf(hi);
         // Decide the branch for a numeric argument.
@@ -519,16 +521,16 @@ impl Distribution {
         };
         let support = self.support();
         let (lo, hi) = match support.as_interval() {
-            Some((lo, hi, _, _)) => (
-                if is_neg_inf(lo) {
+            Some(iv) => (
+                if is_neg_inf(&iv.lower) {
                     f64::NEG_INFINITY
                 } else {
-                    lo.eval_f64()?
+                    iv.lower.eval_f64()?
                 },
-                if is_pos_inf(hi) {
+                if is_pos_inf(&iv.upper) {
                     f64::INFINITY
                 } else {
-                    hi.eval_f64()?
+                    iv.upper.eval_f64()?
                 },
             ),
             None => {
@@ -660,9 +662,7 @@ impl Distribution {
     /// // P(Y > 2) = P(Y ∈ (2, ∞)) = 17/81
     /// let region = Support::from_pieces(
     ///     symplex::stats::Kind::Continuous,
-    ///     vec![symplex::stats::Piece::Interval {
-    ///         lo: ctx.int(2), hi: ctx.infinity(), lo_open: true, hi_open: true,
-    ///     }],
+    ///     vec![symplex::stats::Piece::Interval(Interval::open(ctx.int(2), ctx.infinity()))],
     /// );
     /// assert_eq!(y.probability_of(&region)?, ctx.rational(17, 81));
     /// # Ok::<(), SymplexError>(())
@@ -686,12 +686,7 @@ impl Distribution {
         let mut total = ctx.zero();
         for piece in clipped.pieces() {
             total += match piece {
-                Piece::Interval {
-                    lo,
-                    hi,
-                    lo_open,
-                    hi_open,
-                } => self.interval_mass(lo, hi, *lo_open, *hi_open, &support),
+                Piece::Interval(iv) => self.interval_mass(iv, &support),
                 Piece::Point(v) => match support.kind() {
                     Kind::Continuous => ctx.zero(),
                     Kind::Discrete => self.0.density(v).eval(),
@@ -701,18 +696,15 @@ impl Distribution {
         Ok(total.simplify())
     }
 
-    /// `P(lo ≤ X ≤ hi)` for an interval already clipped to the support.
-    fn interval_mass(
-        &self,
-        lo: &Ex,
-        hi: &Ex,
-        lo_open: bool,
-        hi_open: bool,
-        support: &Support,
-    ) -> Ex {
+    /// `P(X ∈ iv)` for an interval already clipped to the support.  The
+    /// interval's openness plays no part here: on the lattice it has been
+    /// folded into integer ends by `normalize_lattice`, and a continuous
+    /// distribution puts no mass on an endpoint.
+    fn interval_mass(&self, iv: &Interval<Ex>, support: &Support) -> Ex {
         let ctx = self.context();
+        let (lo, hi) = (&iv.lower, &iv.upper);
         let (slo, shi) = match support.as_interval() {
-            Some((a, b, _, _)) => (Some(a), Some(b)),
+            Some(s) => (Some(&s.lower), Some(&s.upper)),
             None => (None, None),
         };
         // F at the support's own lower end is 0 and at its upper end 1 by
@@ -743,7 +735,6 @@ impl Distribution {
                 return (u - l).simplify();
             }
         }
-        let _ = (lo_open, hi_open); // strictness is already folded into integer ends / irrelevant
         let t = probe;
         let dens = self.0.density(&t);
         match support.kind() {
@@ -785,9 +776,9 @@ impl Distribution {
         let mut acc = ctx.zero();
         for piece in region.pieces() {
             acc += match piece {
-                Piece::Interval { lo, hi, .. } => match region.kind() {
-                    Kind::Continuous => integrand.integrate_definite(x, lo, hi),
-                    Kind::Discrete => integrand.summation(x, lo, hi),
+                Piece::Interval(iv) => match region.kind() {
+                    Kind::Continuous => integrand.integrate_definite(x, &iv.lower, &iv.upper),
+                    Kind::Discrete => integrand.summation(x, &iv.lower, &iv.upper),
                 },
                 // The integrand at a listed value: for a table the mass
                 // function is a `Piecewise`, which `eval` resolves.
@@ -855,12 +846,13 @@ impl Distribution {
                         points[idx.min(points.len().saturating_sub(1))]
                     }));
                 }
-                let Some((lo, hi, _, _)) = support.as_interval() else {
+                let Some(iv) = support.as_interval() else {
                     return Err(not_implemented(format!(
                         "sampling {}: the support is not a single integer range",
                         self.name()
                     )));
                 };
+                let (lo, hi) = (&iv.lower, &iv.upper);
                 if is_neg_inf(lo) || is_pos_inf(hi) {
                     return Err(not_implemented(format!(
                         "sampling {}: no sampling route for an infinite discrete support",

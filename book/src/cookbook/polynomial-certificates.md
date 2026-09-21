@@ -240,7 +240,7 @@ Every term on the right is a product of factors that are non-negative on the box
 Everything above is what `symplex::certificates::prove_nonnegative_on_box` does for you: it enumerates the products of the box inequalities up to a degree, solves the exact LP (preferring few, low-degree products), **re-verifies the identity with exact polynomial arithmetic**, and — when the claim is false — returns an exact counterexample instead. `Certificate::to_lean` then writes the result as a Mathlib theorem whose proof is `nlinarith` over precisely the products of the certificate, so Lean only has to check linear arithmetic.
 
 ```rust
-use symplex::certificates::{prove_nonnegative_on_box, BoxOutcome};
+use symplex::certificates::{prove_nonnegative_on_box, BoxBound, BoxOutcome};
 use symplex::prelude::*;
 
 fn main() {
@@ -248,8 +248,8 @@ fn main() {
     let (r, f) = (ctx.symbol("r"), ctx.symbol("f"));
     let goal = ctx.rational(1, 4) - (&r - &f / 2).powi(2);
     let bounds = [
-        (r.clone(), ctx.int(0), ctx.rational(1, 2)),
-        (f.clone(), ctx.int(0), ctx.int(1)),
+        BoxBound { var: r.clone(), lo: ctx.int(0), hi: ctx.rational(1, 2) },
+        BoxBound { var: f.clone(), lo: ctx.int(0), hi: ctx.int(1) },
     ];
     match prove_nonnegative_on_box(&goal, &bounds, 2).unwrap() {
         BoxOutcome::Proved(cert) => {
@@ -330,7 +330,7 @@ A decision procedure over a polytope whose facets move with a real parameter `j 
 
 ```rust
 use symplex::prelude::*;
-use symplex::certificates::{PolyhedronOpts, PolyhedronOutcome, prove_nonnegative_on_polyhedron};
+use symplex::certificates::{ParamBound, PolyhedronOpts, PolyhedronOutcome, prove_nonnegative_on_polyhedron};
 
 fn main() {
     let ctx = Context::new();
@@ -338,7 +338,8 @@ fn main() {
     // On { t ≥ r,  t + j·r ≥ j + 1 } the goal t − 1 ≥ 0 holds for every j ≥ 0,
     // but its multipliers are 1/(1 + j) and j/(1 + j): λ(j) = 1 + j is needed.
     let hyps = [&t - &r, &t + &j * &r - &j - 1];
-    match prove_nonnegative_on_polyhedron(&(&t - 1), &hyps, Some((&j, &ctx.int(0))), &PolyhedronOpts::default()).unwrap() {
+    let param = ParamBound { var: j.clone(), lower: ctx.int(0) };
+    match prove_nonnegative_on_polyhedron(&(&t - 1), &hyps, Some(&param), &PolyhedronOpts::default()).unwrap() {
         PolyhedronOutcome::Proved(c) => {
             println!("{c}");
             // (j + 1)*(t - 1) = j*h0 + h1; h0 = -r + t, h1 = j*r - j + t - 1; j ≥ 0

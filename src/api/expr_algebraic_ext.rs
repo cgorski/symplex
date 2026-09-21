@@ -196,21 +196,27 @@ fn real_roots_of(f: &Poly) -> Option<(Vec<Poly>, Vec<RealRoot>)> {
     // Isolating intervals of the product of the distinct factors are
     // pairwise disjoint and sorted, so walking them in order visits every
     // real root ascending; each one belongs to exactly one factor.
+    // Each interval is either the point `[r, r]` of an exact hit or a
+    // half-open `(lo, hi]` Sturm cell, so `count_roots_in` (also `(a, b]`)
+    // is the right membership test for the latter.
     let intervals = SturmChain::new(&square_free).isolate_all_real_roots();
     let mut out: Vec<RealRoot> = Vec::with_capacity(intervals.len());
-    for (lo, hi) in intervals {
+    for iv in intervals {
         let owner = factors.iter().zip(&chains).position(|(g, chain)| {
-            if lo == hi {
-                g.eval(&lo).is_zero()
+            if iv.is_point() {
+                g.eval(&iv.lower).is_zero()
             } else {
-                chain.count_roots_in(&lo, &hi) == 1
+                chain.count_roots_in(&iv.lower, &iv.upper) == 1
             }
         })?;
         let g = &factors[owner];
         if g.degree() == Some(1) {
             out.push(RealRoot::Rational(-(g.coeff(0) / g.coeff(1))));
         } else {
-            let index = crate::poly::roots::real_root_index(g, &lo, &hi)?;
+            // `real_root_index` treats the pair as closed `[lo, hi]`, a
+            // superset of `(lo, hi]`; the extra endpoint is not a root of
+            // `g` (an exact hit is reported as a point instead).
+            let index = crate::poly::roots::real_root_index(g, &iv.lower, &iv.upper)?;
             out.push(RealRoot::RootOf {
                 factor: owner,
                 index,

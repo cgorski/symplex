@@ -17,6 +17,7 @@
 
 use crate::api::expr::{BoolEx, Ex, SetEx};
 use crate::base::errors::SymplexError;
+use crate::base::interval::{Interval, IntervalKind};
 use crate::base::node::ExprNode;
 
 use super::support::{Kind, Piece, Support};
@@ -129,31 +130,37 @@ fn linear_region(x: &Ex, rels: &[Relation]) -> Option<Support> {
         } else {
             return None;
         };
+        // `[lo, ∞)` or `(lo, ∞)` as a one-interval support.
+        let above = |lo: Ex, open: bool| {
+            Support::from_pieces(
+                Kind::Continuous,
+                vec![Piece::Interval(Interval {
+                    lower: lo,
+                    upper: ctx.infinity(),
+                    kind: IntervalKind::from_open_ends(open, true),
+                })],
+            )
+        };
+        // `(−∞, hi]` or `(−∞, hi)`.
+        let below = |hi: Ex, open: bool| {
+            Support::from_pieces(
+                Kind::Continuous,
+                vec![Piece::Interval(Interval {
+                    lower: ctx.neg_infinity(),
+                    upper: hi,
+                    kind: IntervalKind::from_open_ends(true, open),
+                })],
+            )
+        };
         let raise = |lo: &mut Ex, lo_open: &mut bool, a: Ex, strict: bool| {
-            let one = Support::from_pieces(
-                Kind::Continuous,
-                vec![Piece::Interval {
-                    lo: lo.clone(),
-                    hi: ctx.infinity(),
-                    lo_open: *lo_open,
-                    hi_open: true,
-                }],
-            );
-            let other = Support::from_pieces(
-                Kind::Continuous,
-                vec![Piece::Interval {
-                    lo: a,
-                    hi: ctx.infinity(),
-                    lo_open: strict,
-                    hi_open: true,
-                }],
-            );
+            let one = above(lo.clone(), *lo_open);
+            let other = above(a, strict);
             // `intersect` never fails on two intervals.
             if let Some(r) = one.intersect(&other)
-                && let Some((l, _, l_open, _)) = r.as_interval()
+                && let Some(iv) = r.as_interval()
             {
-                *lo = l.clone();
-                *lo_open = l_open;
+                *lo = iv.lower.clone();
+                *lo_open = iv.kind.lower_open();
             } else {
                 // Provably empty: a lower end above +∞ cannot occur, so
                 // this is `lo > hi` with numeric values — represent as an
@@ -163,29 +170,13 @@ fn linear_region(x: &Ex, rels: &[Relation]) -> Option<Support> {
             }
         };
         let lower = |hi: &mut Ex, hi_open: &mut bool, b: Ex, strict: bool| {
-            let one = Support::from_pieces(
-                Kind::Continuous,
-                vec![Piece::Interval {
-                    lo: ctx.neg_infinity(),
-                    hi: hi.clone(),
-                    lo_open: true,
-                    hi_open: *hi_open,
-                }],
-            );
-            let other = Support::from_pieces(
-                Kind::Continuous,
-                vec![Piece::Interval {
-                    lo: ctx.neg_infinity(),
-                    hi: b,
-                    lo_open: true,
-                    hi_open: strict,
-                }],
-            );
+            let one = below(hi.clone(), *hi_open);
+            let other = below(b, strict);
             if let Some(r) = one.intersect(&other)
-                && let Some((_, h, _, h_open)) = r.as_interval()
+                && let Some(iv) = r.as_interval()
             {
-                *hi = h.clone();
-                *hi_open = h_open;
+                *hi = iv.upper.clone();
+                *hi_open = iv.kind.upper_open();
             } else {
                 *hi = ctx.neg_infinity();
                 *hi_open = true;
@@ -216,12 +207,11 @@ fn linear_region(x: &Ex, rels: &[Relation]) -> Option<Support> {
     // The interval, possibly empty.
     let interval = Support::from_pieces(
         Kind::Continuous,
-        vec![Piece::Interval {
-            lo,
-            hi,
-            lo_open,
-            hi_open,
-        }],
+        vec![Piece::Interval(Interval {
+            lower: lo,
+            upper: hi,
+            kind: IntervalKind::from_open_ends(lo_open, hi_open),
+        })],
     );
     let interval = interval.intersect(&Support::reals(&ctx))?; // drops a provably empty piece
     match point {

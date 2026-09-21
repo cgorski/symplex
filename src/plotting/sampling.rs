@@ -6,6 +6,8 @@
 
 use std::f64::consts::PI;
 
+use crate::base::interval::Interval;
+
 /// Result of sampling a function over a range.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -56,10 +58,11 @@ fn jitter(x: f64, interval_width: f64) -> f64 {
 
 /// Estimate the minimum number of sample points based on oscillation frequency.
 ///
-/// Given a frequency in rad/s and a range, returns the number of initial
-/// sample points needed for roughly 20 points per cycle (visual smoothness).
-pub(crate) fn min_points_for_frequency(freq_rad_per_sec: f64, range: (f64, f64)) -> usize {
-    let interval = range.1 - range.0;
+/// Given a frequency in rad/s and a range `[lower, upper]`, returns the
+/// number of initial sample points needed for roughly 20 points per cycle
+/// (visual smoothness).
+pub(crate) fn min_points_for_frequency(freq_rad_per_sec: f64, range: Interval<f64>) -> usize {
+    let interval = range.width();
     let cycles = freq_rad_per_sec * interval / (2.0 * PI);
     let min = (cycles * 20.0) as usize;
     min.max(64)
@@ -72,16 +75,16 @@ fn near_excluded(x: f64, excluded: &[f64], eps: f64) -> bool {
 
 /// Sample a compiled function over a range, with adaptive refinement.
 ///
-/// `f` is the function to sample; `range` is `(x_min, x_max)`;
+/// `f` is the function to sample; `range` is the closed `[x_min, x_max]`;
 /// `excluded_points` lists x-values where the function is known to be undefined
 /// (e.g. from singularity analysis); `opts` controls sampling behaviour.
 pub(crate) fn sample_compiled(
     f: &dyn Fn(f64) -> f64,
-    range: (f64, f64),
+    range: Interval<f64>,
     excluded_points: &[f64],
     opts: &SampleOptions,
 ) -> PlotData {
-    let (x_min, x_max) = range;
+    let (x_min, x_max) = (range.lower, range.upper);
     let interval = x_max - x_min;
     assert!(interval > 0.0, "range must be non-empty (x_min < x_max)");
 
@@ -396,7 +399,7 @@ mod tests {
 
     #[test]
     fn test_min_points_for_frequency_basic() {
-        let pts = min_points_for_frequency(100.0, (0.0, 2.0 * PI));
+        let pts = min_points_for_frequency(100.0, Interval::closed(0.0, 2.0 * PI));
         // 100 rad/s over 2π → 100 cycles → 2000 points
         assert!(pts >= 2000);
     }

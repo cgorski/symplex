@@ -513,9 +513,12 @@ fn hypergeometric_support_is_clipped_by_the_population() {
     let (big_n, m, n) = (ctx.symbol("N"), ctx.symbol("m"), ctx.symbol("n"));
     let sym = Distribution::hypergeometric(big_n.clone(), m.clone(), n.clone());
     let support = sym.support();
-    let (lo, hi, _, _) = support.as_interval().expect("one integer range");
-    assert_eq!(*lo, ctx.zero().max_with(&(&n + &m - &big_n)).simplify());
-    assert_eq!(*hi, n.min_with(&m).simplify());
+    let iv = support.as_interval().expect("one integer range");
+    assert_eq!(
+        iv.lower,
+        ctx.zero().max_with(&(&n + &m - &big_n)).simplify()
+    );
+    assert_eq!(iv.upper, n.min_with(&m).simplify());
     assert_eq!(sym.family().mean(), Some((&n * &m / &big_n).simplify()));
 }
 

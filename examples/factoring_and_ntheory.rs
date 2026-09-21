@@ -115,8 +115,9 @@ fn main() {
         }
     }
     let iso = (&x.powi(3) - &x * 2 - 5).real_roots_isolate(&x);
-    for (lo, hi) in &iso {
-        println!("x³ − 2x − 5: real root isolated in ({lo}, {hi})");
+    for iv in &iso {
+        // `Display` shows the kind: `(lo, hi]` for a Sturm cell, `[r, r]` for an exact hit.
+        println!("x³ − 2x − 5: real root isolated in {iv}");
     }
 
     // ── 4. Integer factorization and primality ──────────────────────────

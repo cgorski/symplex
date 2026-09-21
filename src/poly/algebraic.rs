@@ -73,17 +73,20 @@ use super::generic::GenPoly;
 use super::sturm::SturmChain;
 use crate::base::arena::Arena;
 use crate::base::bigcomplex::{c_add, c_div, c_from_real, c_mul, c_one, c_zero};
+use crate::base::interval::Interval;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Sign determination helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Isolate the real root of `poly` nearest to `approx` into a rational
-/// interval `(lo, hi)` containing exactly one root.
+/// half-open interval `(lo, hi]` containing exactly one root (see
+/// [`SturmChain::isolate_roots_in`]).
 ///
 /// Returns `None` if `poly` has no real roots.
-fn isolate_root_near(poly: &Poly, approx: f64) -> Option<(Ratio<BigInt>, Ratio<BigInt>)> {
+fn isolate_root_near(poly: &Poly, approx: f64) -> Option<Interval<Q>> {
     let chain = SturmChain::new(poly);
     if chain.has_no_real_roots() {
         return None;
@@ -101,10 +104,10 @@ fn isolate_root_near(poly: &Poly, approx: f64) -> Option<(Ratio<BigInt>, Ratio<B
     // Find the interval closest to approx.
     let approx_rat = f64_to_rational_approx(approx);
     let mut best = &intervals[0];
-    let mut best_dist = rational_dist_to_interval(&approx_rat, &best.0, &best.1);
+    let mut best_dist = rational_dist_to_interval(&approx_rat, &best.lower, &best.upper);
 
     for interval in &intervals[1..] {
-        let dist = rational_dist_to_interval(&approx_rat, &interval.0, &interval.1);
+        let dist = rational_dist_to_interval(&approx_rat, &interval.lower, &interval.upper);
         if dist < best_dist {
             best = interval;
             best_dist = dist;
@@ -730,16 +733,18 @@ pub fn exact_is_zero(
     // Isolate the root of m nearest to the numerical approximation.
     if let Some(interval) = isolate_root_near(&mp, approx) {
         // If the interval is entirely positive or entirely negative,
-        // the expression corresponds to a nonzero root.
-        if interval.0.is_positive() || interval.1.is_negative() {
+        // the expression corresponds to a nonzero root.  (The cell is
+        // `(lo, hi]`, so `lo == 0` would exclude 0 too; testing `lo > 0`
+        // is merely conservative and falls through to the count below.)
+        if interval.lower.is_positive() || interval.upper.is_negative() {
             tracing::trace!("exact_is_zero: isolated root interval excludes 0 → nonzero");
             return Some(false);
         }
         // Interval straddles zero.  Check that 0 is the only root in it.
         let chain = SturmChain::new(&mp);
         let zero_rat = rat(0, 1);
-        let roots_in_neg = chain.count_roots_in(&interval.0, &zero_rat);
-        let roots_in_pos = chain.count_roots_in(&zero_rat, &interval.1);
+        let roots_in_neg = chain.count_roots_in(&interval.lower, &zero_rat);
+        let roots_in_pos = chain.count_roots_in(&zero_rat, &interval.upper);
         if roots_in_neg == 0 && roots_in_pos == 0 {
             // 0 is the only root in this interval — expression is zero.
             tracing::trace!("exact_is_zero: isolated interval contains only 0 → zero");
@@ -789,9 +794,9 @@ pub fn exact_sign(
 
     // The expression is the root of mp in this interval.
     // The sign of the root can be determined from the interval bounds.
-    if interval.0.is_positive() {
+    if interval.lower.is_positive() {
         Some(1)
-    } else if interval.1.is_negative() {
+    } else if interval.upper.is_negative() {
         Some(-1)
     } else {
         // Interval contains zero — the root might be zero.
@@ -802,8 +807,8 @@ pub fn exact_sign(
             let chain = SturmChain::new(&mp);
             // Count roots in (lo, 0] and (0, hi]
             let zero_rat = rat(0, 1);
-            let roots_left = chain.count_roots_in(&interval.0, &zero_rat);
-            let roots_right = chain.count_roots_in(&zero_rat, &interval.1);
+            let roots_left = chain.count_roots_in(&interval.lower, &zero_rat);
+            let roots_right = chain.count_roots_in(&zero_rat, &interval.upper);
             if roots_left == 0 && roots_right == 0 {
                 // The only root in the interval is at 0.
                 Some(0)

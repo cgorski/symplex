@@ -30,11 +30,11 @@ use crate::output::lean::LeanOpts;
 ///
 /// ```
 /// use symplex::prelude::*;
-/// use symplex::certificates::{prove_nonnegative_on_box, Outcome};
+/// use symplex::certificates::{prove_nonnegative_on_box, BoxBound, Outcome};
 ///
 /// let ctx = Context::new();
 /// let x = ctx.symbol("x");
-/// let bounds = [(x.clone(), ctx.int(0), ctx.int(1))];
+/// let bounds = [BoxBound { var: x.clone(), lo: ctx.int(0), hi: ctx.int(1) }];
 /// // x·(1 − x) ≥ 0 on [0, 1]: proved; x − 2 ≥ 0 there: refuted at x = 0.
 /// assert!(prove_nonnegative_on_box(&(&x * (1 - &x)), &bounds, 2)?.is_proved());
 /// match prove_nonnegative_on_box(&(&x - 2), &bounds, 1)? {

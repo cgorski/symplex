@@ -3101,7 +3101,7 @@ pub fn power_t_test_two_sample(
     let lo = (df - 40.0 * sd).max(0.0);
     let hi = df + 40.0 * sd + 50.0;
     let opts = QuadOpts::default();
-    let (accept, _) = quadrature(&integrand, lo, hi, &opts)?;
+    let accept = quadrature(&integrand, lo, hi, &opts)?.value;
     Ok((1.0 - accept).clamp(0.0, 1.0))
 }
 

@@ -681,15 +681,23 @@ fn cone_membership_with_fractional_generators() {
 
 #[test]
 fn certificates_still_verify_after_tableau_rewrite() {
-    use symplex::certificates::{BoxOutcome, prove_nonnegative_on_box};
+    use symplex::certificates::{BoxBound, BoxOutcome, prove_nonnegative_on_box};
     let ctx = Context::new();
     let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
     // (1 − x)(1 − y) + xy + 1/2 ≥ 1/2 on [0, 1]²: a degree-2 Handelman
     // certificate with fractional weights.
     let goal = ((1 - &x) * (1 - &y) + &x * &y + ctx.rational(1, 2)).expand();
     let bounds = [
-        (x.clone(), ctx.int(0), ctx.int(1)),
-        (y.clone(), ctx.int(0), ctx.int(1)),
+        BoxBound {
+            var: x.clone(),
+            lo: ctx.int(0),
+            hi: ctx.int(1),
+        },
+        BoxBound {
+            var: y.clone(),
+            lo: ctx.int(0),
+            hi: ctx.int(1),
+        },
     ];
     match prove_nonnegative_on_box(&goal, &bounds, 2).unwrap() {
         BoxOutcome::Proved(c) => assert!(c.verify()),

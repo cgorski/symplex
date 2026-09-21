@@ -24,7 +24,7 @@ fn s<T: std::fmt::Display>(e: &T) -> String {
 fn monotonicity_is_refuted_by_a_pole_inside_the_domain() {
     let ctx = Context::new();
     sym!(ctx; x, Real);
-    let m1 = ctx.interval(&ctx.int(-1), &ctx.int(1), false, false);
+    let m1 = ctx.interval(&ctx.int(-1), &ctx.int(1), IntervalKind::Closed);
     let inv = ctx.int(1) / &x;
 
     // f(-1) = -1 < 1 = f(1): 1/x is not decreasing on [-1, 1], although
@@ -46,7 +46,7 @@ fn monotonicity_is_refuted_by_a_pole_inside_the_domain() {
     // tan on [0, π] jumps from +∞ to -∞ at π/2.
     // SymPy: is_increasing(tan(x), Interval(0, pi), x) is True (wrong),
     //        is_strictly_increasing(tan(x), Interval(0, pi), x) is True (wrong).
-    let zero_pi = ctx.interval(&ctx.int(0), &ctx.pi(), false, false);
+    let zero_pi = ctx.interval(&ctx.int(0), &ctx.pi(), IntervalKind::Closed);
     assert_eq!(x.tan().is_increasing(&x, &zero_pi), Some(false));
     assert_eq!(x.tan().is_strictly_increasing(&x, &zero_pi), Some(false));
     // SymPy: is_decreasing(cot(x), Interval(-1, 1), x) is True (wrong: pole at 0).
@@ -58,10 +58,10 @@ fn monotonicity_is_refuted_by_a_pole_inside_the_domain() {
 
     // Away from the pole the old answers stand.
     // SymPy: is_increasing(tan(x), Interval.open(-pi/2, pi/2), x) is True
-    let branch = ctx.interval(&(-&ctx.pi() / 2), &(&ctx.pi() / 2), true, true);
+    let branch = ctx.interval(&(-&ctx.pi() / 2), &(&ctx.pi() / 2), IntervalKind::Open);
     assert_eq!(x.tan().is_increasing(&x, &branch), Some(true));
     // SymPy: is_decreasing(1/x, Interval(1, 2), x) is True; is_increasing is False
-    let one_two = ctx.interval(&ctx.int(1), &ctx.int(2), false, false);
+    let one_two = ctx.interval(&ctx.int(1), &ctx.int(2), IntervalKind::Closed);
     assert_eq!(inv.is_decreasing(&x, &one_two), Some(true));
     assert_eq!(inv.is_increasing(&x, &one_two), Some(false));
     // SymPy: is_increasing(x**3, Interval(-1, 1), x) is True
@@ -76,14 +76,14 @@ fn monotonicity_is_refuted_by_a_pole_inside_the_domain() {
 fn convexity_inherits_the_pole_check() {
     let ctx = Context::new();
     sym!(ctx; x, Real);
-    let m1 = ctx.interval(&ctx.int(-1), &ctx.int(1), false, false);
-    let zero_pi = ctx.interval(&ctx.int(0), &ctx.pi(), false, false);
+    let m1 = ctx.interval(&ctx.int(-1), &ctx.int(1), IntervalKind::Closed);
+    let zero_pi = ctx.interval(&ctx.int(0), &ctx.pi(), IntervalKind::Closed);
     // SymPy: is_convex(1/x, x, domain=Interval(-1, 1)) is False;
     //        is_convex(tan(x), x, domain=Interval(0, pi)) is False
     assert_eq!((ctx.int(1) / &x).is_convex(&x, &m1), Some(false));
     assert_eq!(x.tan().is_convex(&x, &zero_pi), Some(false));
     // SymPy: is_convex(1/x, x, domain=Interval.open(0, oo)) is True
-    let pos = ctx.interval(&ctx.int(0), &ctx.infinity(), true, true);
+    let pos = ctx.interval(&ctx.int(0), &ctx.infinity(), IntervalKind::Open);
     assert_eq!((ctx.int(1) / &x).is_convex(&x, &pos), Some(true));
 }
 
@@ -91,8 +91,8 @@ fn convexity_inherits_the_pole_check() {
 fn monotonicity_with_real_and_positive_symbols() {
     let ctx = Context::new();
     sym!(ctx; p, Positive);
-    let pos = ctx.interval(&ctx.int(0), &ctx.infinity(), true, true);
-    let half = ctx.interval(&ctx.int(0), &ctx.infinity(), false, true);
+    let pos = ctx.interval(&ctx.int(0), &ctx.infinity(), IntervalKind::Open);
+    let half = ctx.interval(&ctx.int(0), &ctx.infinity(), IntervalKind::RightOpen);
 
     // SymPy (p positive): is_increasing(sqrt(p), Interval.open(0, oo), p) is True,
     // is_strictly_increasing(...) is True
@@ -120,7 +120,7 @@ fn monotonicity_with_real_and_positive_symbols() {
 fn extrema_of_abs_expressions() {
     let ctx = Context::new();
     sym!(ctx; u, Real);
-    let m12 = ctx.interval(&ctx.int(-1), &ctx.int(2), false, false);
+    let m12 = ctx.interval(&ctx.int(-1), &ctx.int(2), IntervalKind::Closed);
 
     // SymPy: maximum(Abs(u), u, Interval(-1, 2)) == 2, minimum(...) == 0
     assert_eq!(s(&u.abs().maximum(&u, &m12).unwrap()), "2");
@@ -133,7 +133,7 @@ fn extrema_of_abs_expressions() {
     assert_eq!(f.maximum(&u, &m12).unwrap(), ctx.int(5));
 
     // SymPy: maximum(u**2 - Abs(u), u, Interval(-2, 2)) == 2, minimum == -1/4
-    let m22 = ctx.interval(&ctx.int(-2), &ctx.int(2), false, false);
+    let m22 = ctx.interval(&ctx.int(-2), &ctx.int(2), IntervalKind::Closed);
     let g = u.powi(2) - u.abs();
     assert_eq!(g.maximum(&u, &m22).unwrap(), ctx.int(2));
     assert_eq!(g.minimum(&u, &m22).unwrap(), ctx.rational(-1, 4));
@@ -157,7 +157,7 @@ fn extrema_of_abs_expressions() {
     // maximum(Abs(sin(u)), u, Interval(0, 2*pi)) raises NotImplementedError
     // ("as_set is not implemented for relationals with periodic solutions");
     // the values are 1 and 0.
-    let two_pi = ctx.interval(&ctx.int(0), &(&ctx.pi() * 2), false, false);
+    let two_pi = ctx.interval(&ctx.int(0), &(&ctx.pi() * 2), IntervalKind::Closed);
     assert_eq!(u.sin().abs().maximum(&u, &two_pi).unwrap(), ctx.int(1));
     assert_eq!(u.sin().abs().minimum(&u, &two_pi).unwrap(), ctx.int(0));
 }
@@ -166,8 +166,8 @@ fn extrema_of_abs_expressions() {
 fn function_range_of_abs_expressions() {
     let ctx = Context::new();
     sym!(ctx; x, Real);
-    let m12 = ctx.interval(&ctx.int(-1), &ctx.int(2), false, false);
-    let m22 = ctx.interval(&ctx.int(-2), &ctx.int(2), false, false);
+    let m12 = ctx.interval(&ctx.int(-1), &ctx.int(2), IntervalKind::Closed);
+    let m22 = ctx.interval(&ctx.int(-2), &ctx.int(2), IntervalKind::Closed);
     let r = |f: &Ex, d: &SetEx| s(&f.function_range(&x, d).unwrap());
 
     // SymPy: function_range(Abs(x), x, Interval(-1, 2)) == Interval(0, 2)
@@ -188,7 +188,7 @@ fn function_range_of_abs_expressions() {
 fn stationary_points_resolve_sign_factors_like_sympy() {
     let ctx = Context::new();
     sym!(ctx; x, Real);
-    let m12 = ctx.interval(&ctx.int(-1), &ctx.int(2), false, false);
+    let m12 = ctx.interval(&ctx.int(-1), &ctx.int(2), IntervalKind::Closed);
     let sp = |f: &Ex, d: Option<&SetEx>| s(&f.stationary_points(&x, d).unwrap());
 
     // SymPy: stationary_points(Abs(x), x) == {0}   (sign(0) = 0)
@@ -206,7 +206,7 @@ fn stationary_points_resolve_sign_factors_like_sympy() {
 fn constant_in_var_is_simplified_before_reporting() {
     let ctx = Context::new();
     sym!(ctx; x, Real);
-    let z1 = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    let z1 = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
     // SymPy: function_range(sin(x)**2 + cos(x)**2, x, Interval(0, 1))
     //        == {sin(x)**2 + cos(x)**2}   (left unsimplified); the image is {1}.
     let one = &x.sin().powi(2) + &x.cos().powi(2);
@@ -222,7 +222,7 @@ fn constant_in_var_is_simplified_before_reporting() {
 fn algorithmic_failures_are_computation_failed_not_not_implemented() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let m1 = ctx.interval(&ctx.int(-1), &ctx.int(1), false, false);
+    let m1 = ctx.interval(&ctx.int(-1), &ctx.int(1), IntervalKind::Closed);
     // A pole inside the domain.
     assert!(matches!(
         (ctx.int(1) / &x).maximum(&x, &m1),

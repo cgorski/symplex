@@ -102,7 +102,7 @@ An undecided definite integral keeps its bounds: the `DefiniteIntegral` node pri
 
 ## Numeric quadrature
 
-`integrate_numeric` compiles the integrand (so it must contain no free symbol other than the variable and only nodes `compile` supports) and runs adaptive Gauss–Kronrod G7/K15 quadrature. Infinite bounds are mapped to a finite interval. `integrate_numeric_with(&x, &a, &b, &QuadOpts)` returns `(value, error_estimate)` and lets you set tolerances and the subdivision limit.
+`integrate_numeric` compiles the integrand (so it must contain no free symbol other than the variable and only nodes `compile` supports) and runs adaptive Gauss–Kronrod G7/K15 quadrature. Infinite bounds are mapped to a finite interval. `integrate_numeric_with(&x, &a, &b, &QuadOpts)` returns a `QuadResult { value, error }` (the estimate and its estimated absolute error) and lets you set tolerances and the subdivision limit.
 
 ```rust
 use symplex::prelude::*;
@@ -117,8 +117,8 @@ fn main() {
 
     // No elementary antiderivative — numerics is the right tool
     let opts = QuadOpts { rel_tol: 1e-12, ..QuadOpts::default() };
-    let (val, err) = x.powi(2).exp().integrate_numeric_with(&x, &zero, &one, &opts).unwrap();
-    println!("∫₀¹ e^(x²) dx ≈ {val:.15} ± {err:.1e}");   // 1.462651745907181
+    let q = x.powi(2).exp().integrate_numeric_with(&x, &zero, &one, &opts).unwrap();
+    println!("∫₀¹ e^(x²) dx ≈ {:.15} ± {:.1e}", q.value, q.error);   // 1.462651745907181
 
     // A divergent integral does not converge and is reported as an error.
     assert!(x.powi(-2).integrate_numeric(&x, &ctx.int(-1), &one).is_err());
@@ -127,7 +127,7 @@ fn main() {
 
 Conditionally convergent oscillatory tails such as `∫₀^∞ sin(x)/x dx` are beyond plain adaptive quadrature and also return an error; use `integrate_definite` (which knows the closed form) for those.
 
-For integrating a plain Rust closure, `symplex::definite::quadrature(&f, a, b, &opts)` exposes the same algorithm.
+For integrating a plain Rust closure, `symplex::definite::quadrature(&f, a, b, &opts)` exposes the same algorithm and returns the same `QuadResult`.
 
 ## Residues
 

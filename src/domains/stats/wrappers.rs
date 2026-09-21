@@ -10,6 +10,7 @@ use std::fmt;
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
+use crate::base::interval::{Interval, IntervalKind};
 
 use super::family::{Distribution, Family, Sampler, same_family};
 use super::sample::Rng;
@@ -82,7 +83,7 @@ impl Family for Truncated {
     // (F(x) − F(lo)) / mass on a single interval [lo, hi].
     fn cdf(&self, x: &Ex) -> Option<Ex> {
         let clipped = self.clipped();
-        let (lo, _, _, _) = clipped.as_interval()?;
+        let lo = &clipped.as_interval()?.lower;
         let probe = self.inner.fresh_var("t", &[x]);
         self.inner.family().cdf(&probe)?;
         let ctx = self.context();
@@ -98,7 +99,7 @@ impl Family for Truncated {
     // Q(F(lo) + p·mass) when the inner family has both closed forms.
     fn quantile(&self, p: &Ex) -> Option<Ex> {
         let clipped = self.clipped();
-        let (lo, _, _, _) = clipped.as_interval()?;
+        let lo = &clipped.as_interval()?.lower;
         let ctx = self.context();
         let f_lo = if is_neg_inf(lo) {
             ctx.zero()
@@ -153,26 +154,30 @@ impl Family for Truncated {
             );
         }
         let clipped = self.clipped();
-        let Some((lo, hi, lo_open, hi_open)) = clipped.as_interval() else {
+        let Some(iv) = clipped.as_interval() else {
             return Some(Err(not_implemented(
                 "sampling a truncated distribution needs a single-interval region",
             )));
         };
-        let lo_v = if is_neg_inf(lo) {
+        let lo_v = if is_neg_inf(&iv.lower) {
             Ok(f64::NEG_INFINITY)
         } else {
-            lo.eval_f64()
+            iv.lower.eval_f64()
         };
-        let hi_v = if is_pos_inf(hi) {
+        let hi_v = if is_pos_inf(&iv.upper) {
             Ok(f64::INFINITY)
         } else {
-            hi.eval_f64()
+            iv.upper.eval_f64()
         };
-        let (lo_v, hi_v) = match (lo_v, hi_v) {
-            (Ok(a), Ok(b)) => (a, b),
+        // The same interval in `f64`, keeping which ends are excluded.
+        let window = match (lo_v, hi_v) {
+            (Ok(lower), Ok(upper)) => Interval {
+                lower,
+                upper,
+                kind: iv.kind,
+            },
             (Err(e), _) | (_, Err(e)) => return Some(Err(e)),
         };
-        let (lo_open, hi_open) = (lo_open, hi_open);
         let mut inner = match self.inner.sampler() {
             Ok(s) => s,
             Err(e) => return Some(Err(e)),
@@ -184,9 +189,7 @@ impl Family for Truncated {
             // region cannot spin forever.
             for _ in 0..1_000_000 {
                 let v = inner(rng);
-                let above = if lo_open { v > lo_v } else { v >= lo_v };
-                let below = if hi_open { v < hi_v } else { v <= hi_v };
-                if above && below {
+                if window.contains(&v) {
                     return v;
                 }
             }
@@ -248,27 +251,14 @@ impl Affine {
             .iter()
             .map(|p| match p {
                 Piece::Point(v) => Piece::Point(map(v)),
-                Piece::Interval {
-                    lo,
-                    hi,
-                    lo_open,
-                    hi_open,
-                } => {
-                    if self.increasing {
-                        Piece::Interval {
-                            lo: map_end(lo),
-                            hi: map_end(hi),
-                            lo_open: *lo_open,
-                            hi_open: *hi_open,
-                        }
+                Piece::Interval(iv) => {
+                    let image = iv.as_ref().map(map_end);
+                    // A decreasing map swaps the ends and their openness.
+                    Piece::Interval(if self.increasing {
+                        image
                     } else {
-                        Piece::Interval {
-                            lo: map_end(hi),
-                            hi: map_end(lo),
-                            lo_open: *hi_open,
-                            hi_open: *lo_open,
-                        }
-                    }
+                        image.reversed()
+                    })
                 }
             })
             .collect();
@@ -426,7 +416,8 @@ impl Transformed {
     /// `None` when its sign cannot be decided at a sample interior point.
     fn branch_derivative_sign(&self, dh: &Ex) -> Option<bool> {
         let ctx = self.context();
-        let (lo, hi, _, _) = self.image.as_interval()?;
+        let iv = self.image.as_interval()?;
+        let (lo, hi) = (&iv.lower, &iv.upper);
         // A point strictly inside the image.
         let probe = if is_neg_inf(lo) && is_pos_inf(hi) {
             ctx.one()
@@ -868,9 +859,10 @@ impl Distribution {
             ));
         }
         let support = self.support();
-        let (lo, hi, lo_open, hi_open) = support.as_interval().ok_or_else(|| {
+        let iv = support.as_interval().ok_or_else(|| {
             not_implemented("transforming a distribution whose support is not one interval")
         })?;
+        let (lo, hi) = (&iv.lower, &iv.upper);
         let y = super::family::fresh_symbol(&ctx, "y", &[g, x, lo, hi]);
         // Two-branch even shapes: x², |x|, x^{2k} on any support (the
         // branches are clipped to the support piece by piece).
@@ -888,7 +880,7 @@ impl Distribution {
         // Strictly monotone g on the (open) interior of the support: one
         // branch from `solve`.  A pole or kink at an endpoint (`1/x` at 0)
         // does not affect the distribution of g(X).
-        let domain = ctx.interval(lo, hi, true, true);
+        let domain = ctx.interval(lo, hi, IntervalKind::Open);
         let inc = g.is_strictly_increasing(x, &domain);
         let dec = g.is_strictly_decreasing(x, &domain);
         let increasing = match (inc, dec) {
@@ -921,19 +913,20 @@ impl Distribution {
         } else {
             g.limit_left(x, hi)
         };
-        let (ilo, ihi, ilo_open, ihi_open) = if increasing {
-            (glo, ghi, lo_open, hi_open)
-        } else {
-            (ghi, glo, hi_open, lo_open)
+        // The support's openness carries over to the image; a decreasing
+        // map swaps the ends with it.  (`from_pieces` opens infinite ends.)
+        let mapped = Interval {
+            lower: glo,
+            upper: ghi,
+            kind: iv.kind,
         };
         let image = Support::from_pieces(
             Kind::Continuous,
-            vec![Piece::Interval {
-                lo_open: ilo_open || is_neg_inf(&ilo),
-                hi_open: ihi_open || is_pos_inf(&ihi),
-                lo: ilo,
-                hi: ihi,
-            }],
+            vec![Piece::Interval(if increasing {
+                mapped
+            } else {
+                mapped.reversed()
+            })],
         );
         Ok(Distribution::from_family(Transformed {
             inner: self.clone(),
@@ -952,9 +945,9 @@ impl Distribution {
             return None;
         }
         let support = self.support();
-        let (lo, hi, _, _) = support.as_interval()?;
-        let lo = lo.eval().as_i64()?;
-        let hi = hi.eval().as_i64()?;
+        let iv = support.as_interval()?;
+        let lo = iv.lower.eval().as_i64()?;
+        let hi = iv.upper.eval().as_i64()?;
         if hi < lo || hi - lo > 100_000 {
             return None;
         }
@@ -1041,9 +1034,10 @@ fn even_branches(x: &Ex, g: &Ex, y: &Ex, ctx: &Context) -> Option<Vec<Ex>> {
 /// The image of `support` under an even shape: `[0, max(g(lo), g(hi)))`,
 /// or `[0, ∞)` when an end is infinite.
 fn even_image(g: &Ex, x: &Ex, support: &Support, ctx: &Context) -> Support {
-    let Some((lo, hi, _, _)) = support.as_interval() else {
+    let Some(iv) = support.as_interval() else {
         return Support::half_line(ctx.zero());
     };
+    let (lo, hi) = (&iv.lower, &iv.upper);
     if is_neg_inf(lo) || is_pos_inf(hi) {
         return Support::half_line(ctx.zero());
     }

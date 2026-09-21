@@ -117,6 +117,7 @@ use num_traits::{One, Signed, Zero};
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
+use crate::base::interval::Bounds;
 use crate::domains::matrix::Matrix;
 
 // The exact rational type and its literal constructors live in
@@ -371,7 +372,7 @@ pub struct LpProblem {
     objective: Objective,
     c: Vec<Q>,
     constraints: Vec<Constraint>,
-    bounds: Vec<(Option<Q>, Option<Q>)>,
+    bounds: Vec<Bounds<Q>>,
     /// First out-of-range variable index passed to `bounds`, reported by
     /// `solve`.
     bad_var: Option<usize>,
@@ -385,7 +386,7 @@ impl LpProblem {
             objective,
             c,
             constraints: Vec::new(),
-            bounds: vec![(Some(Q::zero()), None); n],
+            bounds: vec![Bounds::at_least(Q::zero()); n],
             bad_var: None,
             budget: Budget::default(),
         }
@@ -423,13 +424,15 @@ impl LpProblem {
         self
     }
 
-    /// Set the bounds `lo ≤ x[var] ≤ hi` of one variable.  `None` means
-    /// unbounded on that side; `(None, None)` makes the variable free.
+    /// Set the bounds `lower ≤ x[var] ≤ upper` of one variable: `.bounds(j,
+    /// Bounds::closed(q(1, 2), qi(3)))`, `.bounds(j, Bounds::at_most(qi(3)))`,
+    /// ….  An absent side is unbounded; [`Bounds::free`] makes the variable
+    /// free (see also [`free`](Self::free)).
     ///
     /// An out-of-range `var` is reported by [`solve`](Self::solve).
-    pub fn bounds(mut self, var: usize, lo: Option<Q>, hi: Option<Q>) -> Self {
+    pub fn bounds(mut self, var: usize, bounds: Bounds<Q>) -> Self {
         match self.bounds.get_mut(var) {
-            Some(slot) => *slot = (lo, hi),
+            Some(slot) => *slot = bounds,
             None => self.bad_var = self.bad_var.or(Some(var)),
         }
         self
@@ -437,7 +440,7 @@ impl LpProblem {
 
     /// Make `x[var]` free (`−∞ < x[var] < ∞`).
     pub fn free(self, var: usize) -> Self {
-        self.bounds(var, None, None)
+        self.bounds(var, Bounds::free())
     }
 
     /// Number of decision variables (the length of `c`).
@@ -670,8 +673,8 @@ fn standardize(p: &LpProblem) -> Standardized {
     let mut ncols = 0usize;
     // Rows for two-sided bounds `z ≤ hi − lo`, added after the constraints.
     let mut bound_rows: Vec<(usize, Q)> = Vec::new();
-    for (lo, hi) in &p.bounds {
-        match (lo, hi) {
+    for bounds in &p.bounds {
+        match (&bounds.lower, &bounds.upper) {
             (Some(lo), Some(hi)) => {
                 if hi < lo {
                     return Standardized::BoundsInfeasible;
@@ -2231,12 +2234,12 @@ fn solve_standard<T: Cell>(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// SciPy-shaped entry point: minimise `cᵀx` subject to `A_ub x ≤ b_ub`,
-/// `A_eq x = b_eq` and `bounds[j].0 ≤ xⱼ ≤ bounds[j].1`.
+/// `A_eq x = b_eq` and `bounds[j].lower ≤ xⱼ ≤ bounds[j].upper`.
 ///
 /// `bounds` may be empty (every variable then defaults to `0 ≤ xⱼ < ∞`) or
-/// have one `(lo, hi)` pair per variable, `None` meaning unbounded on that
-/// side.  Constraints are numbered with the `≤` rows first, then the `=`
-/// rows — that is the order of [`LpSolution::duals`] / [`farkas`](LpSolution::farkas).
+/// have one [`Bounds`] per variable, an absent side meaning unbounded on
+/// that side.  Constraints are numbered with the `≤` rows first, then the
+/// `=` rows — that is the order of [`LpSolution::duals`] / [`farkas`](LpSolution::farkas).
 ///
 /// # Errors
 ///
@@ -2269,7 +2272,7 @@ pub fn linprog(
     b_ub: &[Q],
     a_eq: &[Vec<Q>],
     b_eq: &[Q],
-    bounds: &[(Option<Q>, Option<Q>)],
+    bounds: &[Bounds<Q>],
 ) -> Result<LpSolution, SymplexError> {
     if a_ub.len() != b_ub.len() {
         return Err(invalid(
@@ -2308,8 +2311,8 @@ pub fn linprog(
     for (row, rhs) in a_eq.iter().zip(b_eq) {
         p = p.eq(row.clone(), rhs.clone());
     }
-    for (j, (lo, hi)) in bounds.iter().enumerate() {
-        p = p.bounds(j, lo.clone(), hi.clone());
+    for (j, b) in bounds.iter().enumerate() {
+        p = p.bounds(j, b.clone());
     }
     p.solve()
 }
@@ -3219,7 +3222,7 @@ mod tests {
         );
         assert!(
             LpProblem::minimize(vec![qi(1)])
-                .bounds(3, None, None)
+                .bounds(3, Bounds::free())
                 .solve()
                 .is_err()
         );

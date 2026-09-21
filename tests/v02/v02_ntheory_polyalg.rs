@@ -241,12 +241,21 @@ fn real_root_isolation_brackets_every_root() {
         3f64.sqrt(),
         3.0,
     ];
-    for ((lo, hi), root) in iv.iter().zip(expected.iter()) {
-        let lo = lo.eval_f64().unwrap();
-        let hi = hi.eval_f64().unwrap();
+    for (interval, root) in iv.iter().zip(expected.iter()) {
+        let lo = interval.lower.eval_f64().unwrap();
+        let hi = interval.upper.eval_f64().unwrap();
         assert!(lo <= *root && *root <= hi, "{root} not in [{lo}, {hi}]");
         assert!(hi - lo <= 1.0 / 1024.0 + 1e-12);
+        // A Sturm cell is `(lo, hi]`; an exact hit is the point `[r, r]`.
+        match interval.kind {
+            IntervalKind::LeftOpen => assert!(lo < hi, "{interval}"),
+            IntervalKind::Closed => assert_eq!(lo, hi, "{interval}"),
+            other => panic!("unexpected kind {other:?} for {interval}"),
+        }
     }
+    // 0 is hit exactly by the bisection and reported as a point.
+    assert_eq!(iv[3].kind, IntervalKind::Closed);
+    assert_eq!(iv[3].lower, iv[3].upper);
     assert!(x.sin().real_roots_isolate(&x).is_empty());
 }
 

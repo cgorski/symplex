@@ -8,6 +8,7 @@
 //! Principle 5.
 
 use crate::base::arena::Arena;
+use crate::base::interval::Interval;
 use crate::base::node::{ExprId, ExprNode, INTERVAL_BOTH_OPEN, SymbolId};
 use crate::base::walk;
 use crate::transforms::eval;
@@ -207,7 +208,7 @@ fn domain_exclude_zeros(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId 
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Returns the x-locations of singularities (poles, branch points) in
-/// the given numeric range.
+/// the closed numeric range `[range.lower, range.upper]`.
 ///
 /// Walks the expression tree, finds denominators and constrained
 /// functions (ln, sqrt, tan, …), and solves for zeros/boundaries
@@ -219,11 +220,11 @@ pub(crate) fn singularities(
     expr: ExprId,
     var: ExprId,
     _var_sym: SymbolId,
-    range: (f64, f64),
+    range: Interval<f64>,
 ) -> Vec<f64> {
     tracing::debug!(
-        range_lo = range.0,
-        range_hi = range.1,
+        range_lo = range.lower,
+        range_hi = range.upper,
         "singularities: scanning for singularities"
     );
 
@@ -236,8 +237,8 @@ pub(crate) fn singularities(
         }
         if let Some(val) = bp.value
             && val.is_finite()
-            && val >= range.0
-            && val <= range.1
+            && val >= range.lower
+            && val <= range.upper
         {
             // Deduplicate
             if !sing_points.iter().any(|&v| (v - val).abs() < 1e-12) {
@@ -295,15 +296,16 @@ pub(crate) struct BreakScan {
 ///
 /// When `range` is given, periodic families (`sin`, `cos`, `tan` with a
 /// linear argument, `Gamma` poles, `floor` steps) are enumerated inside
-/// the range; without a range only the solver's representative roots are
-/// reported and `complete` is cleared for such families.
+/// the closed range `[lower, upper]`; without a range only the solver's
+/// representative roots are reported and `complete` is cleared for such
+/// families.
 ///
 /// Uses an explicit post-order walk (no recursion).
 pub(crate) fn scan_breakpoints(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
-    range: Option<(f64, f64)>,
+    range: Option<Interval<f64>>,
 ) -> BreakScan {
     let post_order = walk::post_order_ids(arena, expr);
     let mut scan = BreakScan {
@@ -330,7 +332,7 @@ fn push_zeros(
     g: ExprId,
     var: ExprId,
     kind: BreakKind,
-    range: Option<(f64, f64)>,
+    range: Option<Interval<f64>>,
     scan: &mut BreakScan,
 ) {
     if !walk::contains(arena, g, var) {
@@ -426,7 +428,7 @@ fn push_trig_zeros(
     g: ExprId,
     var: ExprId,
     kind: BreakKind,
-    range: Option<(f64, f64)>,
+    range: Option<Interval<f64>>,
     scan: &mut BreakScan,
 ) -> Option<bool> {
     // offset_k: zeros are at αx+β = offset + kπ
@@ -438,12 +440,15 @@ fn push_trig_zeros(
     if !walk::contains(arena, inner, var) {
         return None;
     }
-    let (alpha, beta) = match linear_coeffs_f64(arena, inner, var) {
+    let LinearCoeffs {
+        slope: alpha,
+        intercept: beta,
+    } = match linear_coeffs_f64(arena, inner, var) {
         Some(ab) => ab,
         None => return Some(false),
     };
     let (lo, hi) = match range {
-        Some(r) => r,
+        Some(r) => (r.lower, r.upper),
         None => return Some(false),
     };
     if alpha == 0.0 || !lo.is_finite() || !hi.is_finite() {
@@ -463,7 +468,10 @@ fn push_trig_zeros(
         return Some(false);
     }
     // Build exact symbolic points: x = ((offset_frac + k)·π − β)/α.
-    let (alpha_ex, beta_ex) = match linear_coeffs_exact(arena, inner, var) {
+    let LinearCoeffs {
+        slope: alpha_ex,
+        intercept: beta_ex,
+    } = match linear_coeffs_exact(arena, inner, var) {
         Some(ab) => ab,
         None => return Some(false),
     };
@@ -492,30 +500,47 @@ fn push_trig_zeros(
     Some(true)
 }
 
-/// Numeric `(α, β)` for `expr = α·var + β` with constant coefficients.
-fn linear_coeffs_f64(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<(f64, f64)> {
-    let (a, b) = linear_coeffs_exact(arena, expr, var)?;
-    let af = expr_to_f64(arena, a)?;
-    let bf = expr_to_f64(arena, b)?;
+/// The coefficients of a linear expression `slope·var + intercept`, as
+/// returned by [`linear_coeffs_exact`] (exact `ExprId`s) and
+/// [`linear_coeffs_f64`] (numeric).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LinearCoeffs<T> {
+    /// Coefficient of `var` (`α` in `α·var + β`).
+    pub slope: T,
+    /// Constant term (`β` in `α·var + β`).
+    pub intercept: T,
+}
+
+/// Numeric `α·var + β` coefficients for `expr` with constant coefficients.
+fn linear_coeffs_f64(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<LinearCoeffs<f64>> {
+    let lin = linear_coeffs_exact(arena, expr, var)?;
+    let af = expr_to_f64(arena, lin.slope)?;
+    let bf = expr_to_f64(arena, lin.intercept)?;
     if af.is_finite() && bf.is_finite() {
-        Some((af, bf))
+        Some(LinearCoeffs {
+            slope: af,
+            intercept: bf,
+        })
     } else {
         None
     }
 }
 
-/// Exact `(α, β)` expressions for `expr = α·var + β`, where both
-/// coefficients are free of `var`.
+/// Exact `α·var + β` coefficients for `expr`, where both are free of
+/// `var`.
 pub(crate) fn linear_coeffs_exact(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
-) -> Option<(ExprId, ExprId)> {
+) -> Option<LinearCoeffs<ExprId>> {
     let coeffs = poly_coeffs_symbolic(arena, expr, var)?;
     if coeffs.len() != 2 {
         return None;
     }
-    Some((coeffs[1], coeffs[0]))
+    Some(LinearCoeffs {
+        slope: coeffs[1],
+        intercept: coeffs[0],
+    })
 }
 
 /// Coefficients `[c₀, c₁, …, cₙ]` of `expr` viewed as a polynomial in
@@ -627,7 +652,7 @@ fn breakpoints_of_node(
     arena: &mut Arena,
     node: &ExprNode,
     var: ExprId,
-    range: Option<(f64, f64)>,
+    range: Option<Interval<f64>>,
     scan: &mut BreakScan,
 ) {
     use BreakKind::{Kink, Singular};
@@ -760,12 +785,12 @@ fn push_integer_family(
     arena: &mut Arena,
     inner: ExprId,
     var: ExprId,
-    range: Option<(f64, f64)>,
+    range: Option<Interval<f64>>,
     kind: BreakKind,
     scan: &mut BreakScan,
     keep: impl Fn(i64) -> bool,
 ) {
-    let (Some((alpha, beta)), Some((alpha_ex, beta_ex)), Some((lo, hi))) = (
+    let (Some(lin), Some(lin_ex), Some(r)) = (
         linear_coeffs_f64(arena, inner, var),
         linear_coeffs_exact(arena, inner, var),
         range,
@@ -773,6 +798,9 @@ fn push_integer_family(
         scan.complete = false;
         return;
     };
+    let (alpha, beta) = (lin.slope, lin.intercept);
+    let (alpha_ex, beta_ex) = (lin_ex.slope, lin_ex.intercept);
+    let (lo, hi) = (r.lower, r.upper);
     if alpha == 0.0 || !lo.is_finite() || !hi.is_finite() {
         scan.complete = false;
         return;
@@ -1185,9 +1213,9 @@ fn node_period(
         // |sin g| and |cos g| have half the period of sin g / cos g.
         ExprNode::Abs(g) => {
             if let ExprNode::Sin(h) | ExprNode::Cos(h) = arena.node(*g).clone()
-                && let Some((a, _)) = linear_coeffs_exact(arena, h, var)
+                && let Some(lin) = linear_coeffs_exact(arena, h, var)
             {
-                return Some(pi_over_abs(arena, a, 1));
+                return Some(pi_over_abs(arena, lin.slope, 1));
             }
             memo.get(g).copied().flatten()
         }
@@ -1287,7 +1315,7 @@ fn as_trig_power(arena: &Arena, factor: ExprId) -> Option<(ExprId, TrigKind, i64
 /// factor is not of that shape.
 fn trig_power_period(arena: &mut Arena, factor: ExprId, var: ExprId) -> Option<ExprId> {
     let (g, kind, k) = as_trig_power(arena, factor)?;
-    let (a, _) = linear_coeffs_exact(arena, g, var)?;
+    let a = linear_coeffs_exact(arena, g, var)?.slope;
     let halves = kind == TrigKind::Tan || k % 2 == 0;
     Some(pi_over_abs(arena, a, if halves { 1 } else { 2 }))
 }
@@ -1311,7 +1339,7 @@ fn mul_period(
             continue;
         }
         if let Some((g, kind, k)) = as_trig_power(arena, c)
-            && let Some((a, _)) = linear_coeffs_exact(arena, g, var)
+            && let Some(LinearCoeffs { slope: a, .. }) = linear_coeffs_exact(arena, g, var)
         {
             let weight = if kind == TrigKind::Tan { 0 } else { k };
             match groups.iter_mut().find(|(gg, _, _)| *gg == g) {
@@ -1520,7 +1548,7 @@ mod tests {
 
         let expr = arena.tan(x);
 
-        let sings = singularities(&mut arena, expr, x, x_sym, (0.0, 5.0));
+        let sings = singularities(&mut arena, expr, x, x_sym, Interval::closed(0.0, 5.0));
 
         // tan(x) has singularities at π/2 ≈ 1.5708 and 3π/2 ≈ 4.7124
         // in [0, 5]
@@ -1548,7 +1576,7 @@ mod tests {
 
         let expr = arena.div(arena.one, x);
 
-        let sings = singularities(&mut arena, expr, x, x_sym, (-2.0, 2.0));
+        let sings = singularities(&mut arena, expr, x, x_sym, Interval::closed(-2.0, 2.0));
 
         assert_eq!(
             sings.len(),

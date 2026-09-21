@@ -3,8 +3,13 @@
 
 use symplex::prelude::*;
 
-fn iv(ctx: &Context, a: i64, b: i64, lo: bool, hi: bool) -> SetEx {
-    ctx.interval(&ctx.int(a), &ctx.int(b), lo, hi)
+/// `[a, b]` with the given ends excluded (`lo_open`, `hi_open`).
+fn iv(ctx: &Context, a: i64, b: i64, lo_open: bool, hi_open: bool) -> SetEx {
+    ctx.interval(
+        &ctx.int(a),
+        &ctx.int(b),
+        IntervalKind::from_open_ends(lo_open, hi_open),
+    )
 }
 
 fn s(e: &SetEx) -> String {
@@ -82,12 +87,12 @@ fn irrational_endpoints_are_ordered_numerically() {
     let ctx = Context::new();
     let pi = ctx.pi();
     let e = ctx.e();
-    let a = ctx.interval(&ctx.int(0), &pi, false, false);
-    let b = ctx.interval(&e, &ctx.int(4), false, false);
+    let a = ctx.interval(&ctx.int(0), &pi, IntervalKind::Closed);
+    let b = ctx.interval(&e, &ctx.int(4), IntervalKind::Closed);
     assert_eq!(s(&a.intersection(&b).simplify()), "[E, pi]");
     let sqrt2 = ctx.int(2).sqrt();
-    let c = ctx.interval(&ctx.int(1), &sqrt2, false, false);
-    let d = ctx.interval(&sqrt2, &ctx.int(2), true, false);
+    let c = ctx.interval(&ctx.int(1), &sqrt2, IntervalKind::Closed);
+    let d = ctx.interval(&sqrt2, &ctx.int(2), IntervalKind::LeftOpen);
     assert_eq!(s(&c.union(&d).simplify()), "[1, 2]");
 }
 
@@ -95,7 +100,7 @@ fn irrational_endpoints_are_ordered_numerically() {
 fn evaluable_endpoints_are_evaluated() {
     let ctx = Context::new();
     let four = ctx.int(4);
-    let a = ctx.interval(&four.sqrt(), &ctx.int(5), false, false);
+    let a = ctx.interval(&four.sqrt(), &ctx.int(5), IntervalKind::Closed);
     assert_eq!(s(&a.simplify()), "[2, 5]");
 }
 
@@ -103,7 +108,7 @@ fn evaluable_endpoints_are_evaluated() {
 fn symbolic_sets_keep_safe_identities() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let sym = ctx.interval(&x, &ctx.int(1), false, false);
+    let sym = ctx.interval(&x, &ctx.int(1), IntervalKind::Closed);
     assert_eq!(sym.union(&ctx.empty_set()).simplify(), sym);
     assert_eq!(sym.intersection(&ctx.universal_set()).simplify(), sym);
     assert_eq!(sym.union(&sym).simplify(), sym);
@@ -130,9 +135,9 @@ fn nested_structure_is_flattened() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let a = ctx.interval(&x, &ctx.int(1), false, false);
-    let b = ctx.interval(&y, &ctx.int(1), false, false);
-    let c = ctx.interval(&x, &ctx.int(2), false, false);
+    let a = ctx.interval(&x, &ctx.int(1), IntervalKind::Closed);
+    let b = ctx.interval(&y, &ctx.int(1), IntervalKind::Closed);
+    let c = ctx.interval(&x, &ctx.int(2), IntervalKind::Closed);
     let u = a.union(&b.union(&c)).simplify();
     assert_eq!(u.as_ex().args().len(), 3, "{u}");
     assert_eq!(u.as_ex().expr_type(), ExprType::Set);
@@ -209,7 +214,7 @@ fn contains_and_is_in() {
 fn contains_on_symbolic_sets() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let sym = ctx.interval(&x, &(&x + 1), false, true);
+    let sym = ctx.interval(&x, &(&x + 1), IntervalKind::RightOpen);
     assert_eq!(sym.contains(&x), Some(true));
     assert_eq!(sym.contains(&(&x + 1)), Some(false));
     assert_eq!(sym.contains(&(&x + 2)), Some(false));
@@ -241,7 +246,7 @@ fn subset_superset_disjoint_empty() {
     assert_eq!(ctx.empty_set().is_subset(&a), Some(true));
     assert_eq!(a.is_subset(&ctx.universal_set()), Some(true));
     let x = ctx.symbol("x");
-    let sym = ctx.interval(&x, &ctx.int(1), false, false);
+    let sym = ctx.interval(&x, &ctx.int(1), IntervalKind::Closed);
     assert_eq!(sym.is_empty(), None);
     assert_eq!(sym.is_subset(&sym), Some(true));
     assert_eq!(sym.is_subset(&a), None);
@@ -267,7 +272,7 @@ fn inf_sup_measure() {
     assert_eq!(format!("{}", ctx.reals().inf().unwrap()), "-oo");
     assert_eq!(format!("{}", ctx.reals().sup().unwrap()), "oo");
     assert_eq!(format!("{}", ctx.reals().measure().unwrap()), "oo");
-    let ray = ctx.interval(&ctx.int(0), &ctx.infinity(), false, true);
+    let ray = ctx.interval(&ctx.int(0), &ctx.infinity(), IntervalKind::RightOpen);
     assert_eq!(format!("{}", ray.measure().unwrap()), "oo");
     assert!(ctx.empty_set().inf().is_none());
     assert_eq!(format!("{}", ctx.empty_set().measure().unwrap()), "0");
@@ -275,10 +280,14 @@ fn inf_sup_measure() {
     assert_eq!(format!("{}", fs.inf().unwrap()), "-1");
     assert_eq!(format!("{}", fs.sup().unwrap()), "3");
     assert_eq!(format!("{}", fs.measure().unwrap()), "0");
-    let pi_iv = ctx.interval(&ctx.int(0), &ctx.pi(), false, false);
+    let pi_iv = ctx.interval(&ctx.int(0), &ctx.pi(), IntervalKind::Closed);
     assert_eq!(format!("{}", pi_iv.measure().unwrap()), "pi");
     let x = ctx.symbol("x");
-    assert!(ctx.interval(&x, &ctx.int(1), false, false).inf().is_none());
+    assert!(
+        ctx.interval(&x, &ctx.int(1), IntervalKind::Closed)
+            .inf()
+            .is_none()
+    );
 }
 
 #[test]
@@ -299,7 +308,7 @@ fn topology() {
     assert_eq!(s(&ctx.reals().boundary().unwrap()), "EmptySet");
     assert_eq!(ctx.empty_set().is_open(), Some(true));
     assert_eq!(ctx.empty_set().is_closed(), Some(true));
-    let half = ctx.interval(&ctx.neg_infinity(), &ctx.int(0), true, false);
+    let half = ctx.interval(&ctx.neg_infinity(), &ctx.int(0), IntervalKind::LeftOpen);
     assert_eq!(half.is_closed(), Some(true));
     assert_eq!(s(&half.boundary().unwrap()), "{0}");
     let x = ctx.symbol("x");
@@ -307,7 +316,7 @@ fn topology() {
     assert_eq!(fx.is_closed(), Some(true));
     assert_eq!(fx.is_open(), Some(false));
     assert!(
-        ctx.interval(&ctx.symbol("y"), &ctx.int(1), true, true)
+        ctx.interval(&ctx.symbol("y"), &ctx.int(1), IntervalKind::Open)
             .is_open()
             .is_none()
     );
@@ -320,19 +329,20 @@ fn accessors() {
     let sol = (&x.powi(2) - 4).solve_ge(&x);
     let parts = sol.as_intervals().unwrap();
     assert_eq!(parts.len(), 2);
-    assert_eq!(format!("{}", parts[0].0), "-oo");
-    assert_eq!(format!("{}", parts[0].1), "-2");
-    assert_eq!((parts[0].2, parts[0].3), (true, false));
-    assert_eq!(format!("{}", parts[1].0), "2");
-    assert_eq!(format!("{}", parts[1].1), "oo");
-    assert_eq!((parts[1].2, parts[1].3), (false, true));
+    assert_eq!(format!("{}", parts[0].lower), "-oo");
+    assert_eq!(format!("{}", parts[0].upper), "-2");
+    assert_eq!(parts[0].kind, IntervalKind::LeftOpen);
+    assert_eq!(format!("{}", parts[1].lower), "2");
+    assert_eq!(format!("{}", parts[1].upper), "oo");
+    assert_eq!(parts[1].kind, IntervalKind::RightOpen);
+    // Round trip through `Interval<Ex>::to_set`.
+    assert_eq!(s(&parts[0].to_set()), "(-oo, -2]");
+    assert_eq!(s(&parts[1].to_set()), "[2, oo)");
 
     let mixed = iv(&ctx, 0, 1, false, false).union(&ctx.finite_set(&[ctx.int(5)]));
     let parts = mixed.as_intervals().unwrap();
     assert_eq!(parts.len(), 2);
-    assert_eq!(format!("{}", parts[1].0), "5");
-    assert_eq!(format!("{}", parts[1].1), "5");
-    assert!(!parts[1].2 && !parts[1].3);
+    assert_eq!(parts[1], Interval::point(ctx.int(5)));
     assert!(mixed.as_finite_set().is_none());
 
     let fs = ctx.finite_set(&[ctx.int(3), ctx.int(1)]);
@@ -341,7 +351,7 @@ fn accessors() {
     assert_eq!(format!("{}", elems[0]), "1");
     assert_eq!(ctx.empty_set().as_finite_set(), Some(vec![]));
     assert!(
-        ctx.interval(&x, &ctx.int(1), false, false)
+        ctx.interval(&x, &ctx.int(1), IntervalKind::Closed)
             .as_intervals()
             .is_none()
     );
@@ -352,7 +362,7 @@ fn accessors() {
 #[test]
 fn eval_only_evaluates_endpoints() {
     let ctx = Context::new();
-    let a = ctx.interval(&ctx.int(4).sqrt(), &ctx.int(5), false, false);
+    let a = ctx.interval(&ctx.int(4).sqrt(), &ctx.int(5), IntervalKind::Closed);
     let b = iv(&ctx, 1, 3, false, false);
     let e = a.intersection(&b).eval();
     let d = s(&e);
@@ -395,9 +405,11 @@ fn random_set(ctx: &Context, rng: &mut Lcg, depth: u32) -> SetEx {
             2 => {
                 let a = rng.range(9) as i64 - 4;
                 if rng.range(2) == 0 {
-                    ctx.interval(&ctx.neg_infinity(), &ctx.int(a), true, rng.range(2) == 0)
+                    let kind = IntervalKind::from_open_ends(true, rng.range(2) == 0);
+                    ctx.interval(&ctx.neg_infinity(), &ctx.int(a), kind)
                 } else {
-                    ctx.interval(&ctx.int(a), &ctx.infinity(), rng.range(2) == 0, true)
+                    let kind = IntervalKind::from_open_ends(rng.range(2) == 0, true);
+                    ctx.interval(&ctx.int(a), &ctx.infinity(), kind)
                 }
             }
             _ => ctx.empty_set(),

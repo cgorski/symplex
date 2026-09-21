@@ -36,6 +36,7 @@ use num_bigint::BigInt;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
 use crate::api::context::Context;
+use crate::api::eq::Equation;
 use crate::api::expr::Ex;
 use crate::api::poly_ex::Poly;
 use crate::base::errors::SymplexError;
@@ -278,14 +279,14 @@ impl SosCertificate {
         acc
     }
 
-    /// The identity `goal = Σ dₖ pₖ²` as `(lhs, rhs)` (squares unexpanded).
-    pub fn identity(&self) -> (Ex, Ex) {
+    /// The identity `goal = Σ dₖ pₖ²` as an [`Equation`] (squares unexpanded).
+    pub fn identity(&self) -> Equation {
         let ctx = self.goal.context();
         let mut rhs = ctx.zero();
         for (d, p) in &self.squares {
             rhs += ctx.from_ratio(d.clone()) * p.to_ex().powi(2);
         }
-        (self.goal.to_ex(), rhs)
+        Equation::new(self.goal.to_ex(), rhs)
     }
 
     /// Recompute `Σ dₖ pₖ²` exactly and compare with the goal; also checks
@@ -567,7 +568,7 @@ impl Certificate for SosCertificate {
 
 impl fmt::Display for SosCertificate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (lhs, rhs) = self.identity();
+        let Equation { lhs, rhs } = self.identity();
         write!(f, "{lhs} = {rhs}")
     }
 }
@@ -724,9 +725,19 @@ mod dense {
         None
     }
 
-    /// Eigen-decomposition of a symmetric matrix by cyclic Jacobi rotations:
-    /// `(eigenvalues, eigenvectors as columns)`.
-    pub fn sym_eigen(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
+    /// Eigen-decomposition of a symmetric `n×n` matrix (see [`sym_eigen`]).
+    pub struct SymEigen {
+        /// The `n` eigenvalues, in the order the Jacobi sweeps leave them
+        /// on the diagonal (not sorted).
+        pub values: Vec<f64>,
+        /// The eigenvectors as the **columns** of a row-major `n×n` matrix:
+        /// component `i` of the eigenvector for `values[c]` is
+        /// `vectors[i * n + c]`.
+        pub vectors: Vec<f64>,
+    }
+
+    /// Eigen-decomposition of a symmetric matrix by cyclic Jacobi rotations.
+    pub fn sym_eigen(a: &[f64], n: usize) -> SymEigen {
         let mut m = a.to_vec();
         let mut v = vec![0.0; n * n];
         for i in 0..n {
@@ -777,7 +788,10 @@ mod dense {
             }
         }
         let eig: Vec<f64> = (0..n).map(|i| m[i * n + i]).collect();
-        (eig, v)
+        SymEigen {
+            values: eig,
+            vectors: v,
+        }
     }
 }
 
@@ -1065,7 +1079,7 @@ impl SosProblem {
             let mut alpha = match dense::cholesky(base, n) {
                 Some(l) => {
                     let w = dense::congruence_inverse(&l, dir, n);
-                    let (eig, _) = dense::sym_eigen(&w, n);
+                    let eig = dense::sym_eigen(&w, n).values;
                     let lmin = eig.iter().cloned().fold(f64::INFINITY, f64::min);
                     if lmin >= 0.0 {
                         1.0
@@ -1360,7 +1374,10 @@ fn rationalize(v: f64, max_den: u64, tol: f64) -> Option<Q> {
 /// Numerical kernel of a symmetric PSD `x` (eigenvalues below `1e-7 · λ_max`)
 /// as orthonormal rows, or `None` if there is none (or it is everything).
 fn numeric_kernel(x: &[f64], n: usize) -> Option<(Vec<Vec<f64>>, f64)> {
-    let (eig, vecs) = dense::sym_eigen(x, n);
+    let dense::SymEigen {
+        values: eig,
+        vectors: vecs,
+    } = dense::sym_eigen(x, n);
     let lmax = eig.iter().cloned().fold(0.0, f64::max).max(1e-300);
     let kernel: Vec<usize> = (0..n).filter(|&i| eig[i] < 1e-7 * lmax).collect();
     if kernel.is_empty() || kernel.len() == n {
@@ -2285,7 +2302,7 @@ mod tests {
         let c = sos(&g, &[x.clone(), y.clone()]);
         assert!(c.rank() >= 1);
         assert!(c.gram().is_positive_semidefinite());
-        let (lhs, rhs) = c.identity();
+        let Equation { lhs, rhs } = c.identity();
         assert!((lhs - rhs).expand().is_zero_structural());
     }
 

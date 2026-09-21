@@ -9,7 +9,7 @@
 
 use num_traits::Signed;
 use symplex::certificates::{
-    PolyhedronCertificate, PolyhedronLeanNames, PolyhedronOpts, PolyhedronOutcome,
+    ParamBound, PolyhedronCertificate, PolyhedronLeanNames, PolyhedronOpts, PolyhedronOutcome,
     PolyhedronUnknown, prove_nonnegative_on_polyhedron, prove_polyhedron_empty,
 };
 use symplex::lean::LeanOpts;
@@ -17,6 +17,14 @@ use symplex::linprog::{q, qi};
 use symplex::prelude::*;
 
 const COMPILED: &str = include_str!("../fixtures/polyhedron_certificates.lean");
+
+/// The parameter bound `var ≥ lower`.
+fn ge(var: &Ex, lower: Ex) -> ParamBound {
+    ParamBound {
+        var: var.clone(),
+        lower,
+    }
+}
 
 fn proved(out: PolyhedronOutcome) -> PolyhedronCertificate {
     match out {
@@ -43,15 +51,10 @@ impl Fixture {
     }
 
     fn prove(&self, goal: &Ex, hyps: &[Ex], j0: Option<i64>) -> PolyhedronCertificate {
-        let lo = j0.map(|v| self.ctx.int(v));
+        let param = j0.map(|v| ge(&self.j, self.ctx.int(v)));
         proved(
-            prove_nonnegative_on_polyhedron(
-                goal,
-                hyps,
-                lo.as_ref().map(|lo| (&self.j, lo)),
-                &PolyhedronOpts::default(),
-            )
-            .unwrap(),
+            prove_nonnegative_on_polyhedron(goal, hyps, param.as_ref(), &PolyhedronOpts::default())
+                .unwrap(),
         )
     }
 
@@ -80,7 +83,7 @@ impl Fixture {
         let neg_lambda = [t - r, t + (j + 1) * r - j - 2];
         let empty_cert = |hyps: &[Ex], j0: i64| {
             proved(
-                prove_polyhedron_empty(hyps, Some((j, &ctx.int(j0))), &PolyhedronOpts::default())
+                prove_polyhedron_empty(hyps, Some(&ge(j, ctx.int(j0))), &PolyhedronOpts::default())
                     .unwrap(),
             )
         };
@@ -152,7 +155,7 @@ fn lambda_is_required_and_minimal() {
         c.to_string(),
         "(j + 1)*(t - 1) = j*h0 + h1; h0 = -r + t, h1 = j*r - j + t - 1; j ≥ 0"
     );
-    let (lhs, rhs) = c.identity();
+    let Equation { lhs, rhs } = c.identity();
     assert!((lhs - rhs).expand().is_zero_structural());
     // A degree-2 λ is found when needed and not otherwise.
     let sq = [t - r, t + j.powi(2) * r - j.powi(2) - 1];
@@ -162,7 +165,7 @@ fn lambda_is_required_and_minimal() {
     let out = prove_nonnegative_on_polyhedron(
         &(t - 1),
         &hyps,
-        Some((j, &f.ctx.int(0))),
+        Some(&ge(j, f.ctx.int(0))),
         &PolyhedronOpts::default().with_max_lambda_degree(0),
     )
     .unwrap();
@@ -179,7 +182,7 @@ fn lambda_is_required_and_minimal() {
     let single = prove_nonnegative_on_polyhedron(
         &(t - 1),
         &hyps,
-        Some((j, &f.ctx.int(0))),
+        Some(&ge(j, f.ctx.int(0))),
         &PolyhedronOpts::single(1, 1),
     )
     .unwrap();
@@ -201,7 +204,7 @@ fn refutation_points_are_exact_and_inside_the_set() {
     match prove_nonnegative_on_polyhedron(
         &goal,
         &cell,
-        Some((j, &ctx.int(2))),
+        Some(&ge(j, ctx.int(2))),
         &PolyhedronOpts::default(),
     )
     .unwrap()
@@ -228,7 +231,8 @@ fn refutation_points_are_exact_and_inside_the_set() {
         other => panic!("{other:?}"),
     }
     // The emptiness question on a non-empty cell returns a point of it.
-    match prove_polyhedron_empty(&cell, Some((j, &ctx.int(2))), &PolyhedronOpts::default()).unwrap()
+    match prove_polyhedron_empty(&cell, Some(&ge(j, ctx.int(2))), &PolyhedronOpts::default())
+        .unwrap()
     {
         PolyhedronOutcome::Refuted { point, value, .. } => {
             assert_eq!(value, q(-1, 1));
@@ -248,7 +252,8 @@ fn emptiness_certificates_conclude_false() {
         ctx.rational(1, 4) - t,
     ];
     let c = proved(
-        prove_polyhedron_empty(&hyps, Some((j, &ctx.int(2))), &PolyhedronOpts::default()).unwrap(),
+        prove_polyhedron_empty(&hyps, Some(&ge(j, ctx.int(2))), &PolyhedronOpts::default())
+            .unwrap(),
     );
     assert!(c.proves_emptiness());
     assert_eq!(c.goal().to_ex(), ctx.int(-1));
@@ -312,7 +317,7 @@ fn lean_steps_slot_into_an_existing_skeleton() {
     let out = prove_nonnegative_on_polyhedron(
         &(j * (j - 2) * (r - r.powi(2))),
         &[r.clone(), 1 - r],
-        Some((j, &ctx.int(2))),
+        Some(&ge(j, ctx.int(2))),
         &PolyhedronOpts::default(),
     )
     .unwrap();
@@ -330,7 +335,7 @@ fn lean_steps_slot_into_an_existing_skeleton() {
 #[test]
 fn certificates_cross_a_trust_boundary_as_json_and_are_reverified() {
     use symplex::certificates::{
-        BoxCertificate, HalfLineCertificate, Ray, prove_nonnegative_on_box,
+        BoxBound, BoxCertificate, HalfLineCertificate, Ray, prove_nonnegative_on_box,
         prove_nonnegative_on_halfline,
     };
     let f = Fixture::new();
@@ -346,13 +351,13 @@ fn certificates_cross_a_trust_boundary_as_json_and_are_reverified() {
     assert_eq!(back.to_data(), c.to_data());
     // Tampering is detected: a changed weight, a changed goal, a bad index.
     let mut d = c.to_data();
-    d.terms[0].3 = "2/1".to_string();
+    d.terms[0].weight = "2/1".to_string();
     assert!(PolyhedronCertificate::from_data(&other, &d).is_err());
     let mut d = c.to_data();
     d.goal = (t * 2).to_tree();
     assert!(PolyhedronCertificate::from_data(&other, &d).is_err());
     let mut d = c.to_data();
-    d.terms[0].0 = vec![7];
+    d.terms[0].hyps = vec![7];
     assert!(PolyhedronCertificate::from_data(&other, &d).is_err());
     let mut d = c.to_data();
     d.lambda = vec!["1/0".to_string()];
@@ -363,7 +368,11 @@ fn certificates_cross_a_trust_boundary_as_json_and_are_reverified() {
     let x = ctx.symbol("x");
     let out = prove_nonnegative_on_box(
         &((&x - ctx.rational(1, 2)).powi(2) * (&x + 1)),
-        &[(x.clone(), ctx.int(0), ctx.int(1))],
+        &[BoxBound {
+            var: x.clone(),
+            lo: ctx.int(0),
+            hi: ctx.int(1),
+        }],
         2,
     )
     .unwrap();
@@ -373,7 +382,7 @@ fn certificates_cross_a_trust_boundary_as_json_and_are_reverified() {
     assert_eq!(back.to_string(), bc.to_string());
     assert!(back.square().is_some());
     let mut d = bc.to_data();
-    d.terms[0].2 = "3/1".to_string();
+    d.terms[0].weight = "3/1".to_string();
     assert!(BoxCertificate::from_data(&other, &d).is_err());
 
     // Half-line certificate with a Pólya power.
@@ -407,10 +416,10 @@ fn prover_reuses_hypotheses_and_matches_the_one_shot_functions() {
         (j * 2 + 1) * t - j * r - 1,
     ];
     let prover =
-        PolyhedronProver::new(&hyps, Some((j, &ctx.int(2))), &PolyhedronOpts::default()).unwrap();
+        PolyhedronProver::new(&hyps, Some(&ge(j, ctx.int(2))), &PolyhedronOpts::default()).unwrap();
     assert_eq!(prover.hyps().len(), 5);
     assert_eq!(prover.gens(), &[r.clone(), t.clone(), j.clone()]);
-    assert_eq!(prover.parameter(), Some((j, &ctx.int(2))));
+    assert_eq!(prover.parameter(), Some(ge(j, ctx.int(2))));
     for goal in hyps
         .iter()
         .chain([&((j * 2 + 1) * t * 4 - j * r * 4 - r - 3)])
@@ -419,7 +428,7 @@ fn prover_reuses_hypotheses_and_matches_the_one_shot_functions() {
         let b = prove_nonnegative_on_polyhedron(
             goal,
             &hyps,
-            Some((j, &ctx.int(2))),
+            Some(&ge(j, ctx.int(2))),
             &PolyhedronOpts::default(),
         )
         .unwrap();
@@ -465,7 +474,7 @@ fn prove_poly_accepts_permuted_and_partial_generators() {
         (j * 2 + 1) * t - j * r - 1,
     ];
     let prover =
-        PolyhedronProver::new(&hyps, Some((j, &ctx.int(2))), &PolyhedronOpts::default()).unwrap();
+        PolyhedronProver::new(&hyps, Some(&ge(j, ctx.int(2))), &PolyhedronOpts::default()).unwrap();
     let goal = (j * 2 + 1) * t * 4 - j * r * 4 - r - 3;
     let via_ex = proved(prover.prove(&goal).unwrap());
     // (j, r, t): the tool's order, parameter first.
@@ -560,7 +569,7 @@ fn prove_poly_ignores_generators_that_occur_in_no_term() {
         (j * 2 + 1) * t - j * r - 1,
     ];
     let pj =
-        PolyhedronProver::new(&cell, Some((j, &ctx.int(2))), &PolyhedronOpts::default()).unwrap();
+        PolyhedronProver::new(&cell, Some(&ge(j, ctx.int(2))), &PolyhedronOpts::default()).unwrap();
     let g = (j * 2 + 1) * t * 4 - j * r * 4 - r - 3;
     let a = proved(pj.prove(&g).unwrap());
     let b = proved(
@@ -599,7 +608,8 @@ fn pivot_budget_stops_the_search_quickly_and_names_the_limit() {
     let needs_lambda = [t - r, t + j * r - j - 1];
     let cases: [(&Ex, &[Ex], i64); 2] = [(&goal, &cell, 2), (&(t - 1), &needs_lambda, 0)];
     for (goal, hyps, j0) in cases {
-        let param = Some((j, &ctx.int(j0)));
+        let bound = ge(j, ctx.int(j0));
+        let param = Some(&bound);
         let free = proved(
             prove_nonnegative_on_polyhedron(goal, hyps, param, &PolyhedronOpts::default()).unwrap(),
         );
@@ -686,7 +696,8 @@ fn zero_time_limit_fires_at_the_first_check_and_a_prover_is_reusable() {
         (j * 2 + 1) * t - j * r - 1,
     ];
     let goal = (j * 2 + 1) * t * 4 - j * r * 4 - r - 3;
-    let param = Some((j, &ctx.int(2)));
+    let bound = ge(j, ctx.int(2));
+    let param = Some(&bound);
     let out = prove_nonnegative_on_polyhedron(
         &goal,
         &cell,
@@ -769,7 +780,8 @@ fn refutation_lps_share_the_pivot_budget() {
         (j * 2 + 1) * t - j * r - 1,
     ];
     let bad = t - &half - r;
-    let param = Some((j, &ctx.int(2)));
+    let bound = ge(j, ctx.int(2));
+    let param = Some(&bound);
     let free =
         prove_nonnegative_on_polyhedron(&bad, &cell, param, &PolyhedronOpts::default()).unwrap();
     let PolyhedronOutcome::Refuted {
@@ -974,7 +986,7 @@ fn random_constructed_identities_are_recovered_and_false_goals_never_proved() {
         let out = prove_nonnegative_on_polyhedron(
             &goal,
             &hyps,
-            Some((j, &ctx.int(j0))),
+            Some(&ge(j, ctx.int(j0))),
             &PolyhedronOpts::default(),
         )
         .unwrap();
@@ -987,7 +999,7 @@ fn random_constructed_identities_are_recovered_and_false_goals_never_proved() {
         match prove_nonnegative_on_polyhedron(
             &bad,
             &hyps,
-            Some((j, &ctx.int(j0))),
+            Some(&ge(j, ctx.int(j0))),
             &PolyhedronOpts::default(),
         )
         .unwrap()
@@ -999,7 +1011,7 @@ fn random_constructed_identities_are_recovered_and_false_goals_never_proved() {
                 assert!(
                     prove_polyhedron_empty(
                         &hyps,
-                        Some((j, &ctx.int(j0))),
+                        Some(&ge(j, ctx.int(j0))),
                         &PolyhedronOpts::default()
                     )
                     .unwrap()
@@ -1036,7 +1048,7 @@ fn shared_prover_across_threads_matches_sequential_certificates() {
     goals.push(t - &half - r); // false on the cell
     goals.push(j * t - j * r); // needs the parameter multiplier
     let prover =
-        PolyhedronProver::new(&hyps, Some((j, &ctx.int(1))), &PolyhedronOpts::default()).unwrap();
+        PolyhedronProver::new(&hyps, Some(&ge(j, ctx.int(1))), &PolyhedronOpts::default()).unwrap();
     let render = |out: PolyhedronOutcome| match out {
         PolyhedronOutcome::Proved(c) => format!("proved {}", c.to_lean("g").unwrap()),
         PolyhedronOutcome::Refuted { value, .. } => format!("refuted {value}"),
@@ -1052,7 +1064,7 @@ fn shared_prover_across_threads_matches_sequential_certificates() {
     // Concurrent, on a second prover shared by reference: the threads race
     // to build the stages.
     let shared =
-        PolyhedronProver::new(&hyps, Some((j, &ctx.int(1))), &PolyhedronOpts::default()).unwrap();
+        PolyhedronProver::new(&hyps, Some(&ge(j, ctx.int(1))), &PolyhedronOpts::default()).unwrap();
     let concurrent: Vec<String> = std::thread::scope(|scope| {
         let handles: Vec<_> = goals
             .iter()

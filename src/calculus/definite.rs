@@ -42,7 +42,8 @@
 //!    integral is returned unevaluated.
 //!
 //! The same file also provides the adaptive Gauss–Kronrod (G7/K15)
-//! quadrature used by `Ex::integrate_numeric` ([`quadrature`], [`QuadOpts`]).
+//! quadrature used by `Ex::integrate_numeric` ([`quadrature`], [`QuadOpts`],
+//! [`QuadResult`]).
 
 use std::cmp::Ordering;
 
@@ -54,9 +55,10 @@ use rustc_hash::FxHashMap;
 use crate::base::arena::Arena;
 use crate::base::assumptions::{AssumptionCache, Props};
 use crate::base::errors::SymplexError;
+use crate::base::interval::Interval;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
-use crate::calculus::calculus_util::{self, BreakKind, BreakScan};
+use crate::calculus::calculus_util::{self, BreakKind, BreakScan, LinearCoeffs};
 use crate::transforms::{eval, evalf, expand, subs};
 
 /// Maximum nesting of interval splits before giving up.
@@ -628,19 +630,21 @@ fn position_in(arena: &mut Arena, c: ExprId, a: ExprId, b: ExprId) -> Position {
     }
 }
 
-/// Numeric `(lo, hi)` of the interval when both bounds are constants.
-fn numeric_range(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<(f64, f64)> {
+/// Numeric `[a, b]` of the integration interval when both bounds are
+/// constants.  The endpoints keep the integral's orientation (`lower` is
+/// the value of `a`, `upper` of `b`) and may be infinite.
+fn numeric_range(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<Interval<f64>> {
     let av = point_value(arena, a)?;
     let bv = point_value(arena, b)?;
-    Some((av, bv))
+    Some(Interval::closed(av, bv))
 }
 
 /// Finite numeric range for enumeration purposes (clamped for infinite
 /// bounds: periodic families are only enumerated over a finite window).
-fn finite_scan_range(range: Option<(f64, f64)>) -> Option<(f64, f64)> {
-    let (lo, hi) = range?;
-    if lo.is_finite() && hi.is_finite() {
-        Some((lo, hi))
+fn finite_scan_range(range: Option<Interval<f64>>) -> Option<Interval<f64>> {
+    let r = range?;
+    if r.lower.is_finite() && r.upper.is_finite() {
+        Some(r)
     } else {
         None
     }
@@ -668,7 +672,7 @@ fn split_at_breakpoints(
     // Numeric guard: unexplained sign changes of any denominator / log
     // argument / fractional-power base mean an unlocated singularity.
     match range {
-        Some((lo, hi)) => match numeric_guard(arena, f, x, lo, hi, &scan) {
+        Some(r) => match numeric_guard(arena, f, x, r.lower, r.upper, &scan) {
             Some(false) => {
                 return Err(failed(
                     "a denominator or function argument changes sign inside the interval at a point the solver could not locate",
@@ -1063,8 +1067,8 @@ fn evaluate_antiderivative(
     // Discontinuities of F strictly inside (lo, hi).
     let range = numeric_range(arena, p.lo, p.hi);
     let scan = calculus_util::scan_breakpoints(arena, anti, x, finite_scan_range(range));
-    if let Some((lo, hi)) = range
-        && numeric_guard(arena, anti, x, lo, hi, &scan) == Some(false)
+    if let Some(r) = range
+        && numeric_guard(arena, anti, x, r.lower, r.upper, &scan) == Some(false)
     {
         return Err(failed(
             "the antiderivative has a discontinuity inside the interval that could not be located",
@@ -1973,7 +1977,11 @@ fn delta_integral(
     a: ExprId,
     b: ExprId,
 ) -> Result<ExprId, SymplexError> {
-    let Some((alpha, beta)) = calculus_util::linear_coeffs_exact(arena, g, x) else {
+    let Some(LinearCoeffs {
+        slope: alpha,
+        intercept: beta,
+    }) = calculus_util::linear_coeffs_exact(arena, g, x)
+    else {
         return Err(failed("DiracDelta with a non-linear argument"));
     };
     if sign_of(arena, alpha) == Some(Ordering::Equal) {
@@ -2011,7 +2019,11 @@ fn heaviside_integral(
     b: ExprId,
     depth: usize,
 ) -> Result<ExprId, SymplexError> {
-    let Some((alpha, beta)) = calculus_util::linear_coeffs_exact(arena, g, x) else {
+    let Some(LinearCoeffs {
+        slope: alpha,
+        intercept: beta,
+    }) = calculus_util::linear_coeffs_exact(arena, g, x)
+    else {
         return Err(failed("Heaviside with a non-linear argument"));
     };
     let alpha_sign = match sign_of(arena, alpha) {
@@ -2787,11 +2799,11 @@ fn parse_shape(arena: &Arena, dep: &[ExprId], x: ExprId) -> Shape {
 
 /// Extract `α` from a purely linear argument `α·x` (no constant term).
 fn pure_linear_coeff(arena: &mut Arena, arg: ExprId, x: ExprId) -> Option<ExprId> {
-    let (alpha, beta) = calculus_util::linear_coeffs_exact(arena, arg, x)?;
-    if !arena.is_zero_structural(beta) {
+    let lin = calculus_util::linear_coeffs_exact(arena, arg, x)?;
+    if !arena.is_zero_structural(lin.intercept) {
         return None;
     }
-    Some(alpha)
+    Some(lin.slope)
 }
 
 /// Build `Num` from a rational.
@@ -3792,6 +3804,24 @@ impl Default for QuadOpts {
     }
 }
 
+/// Result of [`quadrature`] and `Ex::integrate_numeric_with`: the integral
+/// estimate and the estimated absolute error of that estimate.
+///
+/// ```
+/// use symplex::definite::{quadrature, QuadOpts, QuadResult};
+///
+/// let QuadResult { value, error } =
+///     quadrature(&|x: f64| x * x, 0.0, 1.0, &QuadOpts::default()).unwrap();
+/// assert!((value - 1.0 / 3.0).abs() < 1e-12 && error < 1e-10);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QuadResult {
+    /// The estimate of the integral.
+    pub value: f64,
+    /// Estimated absolute error of [`value`](Self::value).
+    pub error: f64,
+}
+
 /// Kronrod-15 abscissae (positive half; index 7 is the centre).
 const XGK: [f64; 8] = [
     0.9914553711208126,
@@ -3886,27 +3916,28 @@ fn gk15(f: &dyn Fn(f64) -> f64, a: f64, b: f64) -> (f64, f64) {
 /// `x = b − t/(1−t)` and `x = t/(1−t²)`; endpoint singularities are
 /// absorbed by adaptive bisection (the rule never samples endpoints).
 ///
-/// Returns `(value, error_estimate)`.  If the integrand is non-finite on a
-/// vanishing interval (a non-integrable interior singularity) or the
-/// estimate is not a finite number, `Err(ComputationFailed)` is returned.
+/// Returns the estimate and its error estimate as a [`QuadResult`].  If the
+/// integrand is non-finite on a vanishing interval (a non-integrable
+/// interior singularity) or the estimate is not a finite number,
+/// `Err(ComputationFailed)` is returned.
 ///
 /// ```
 /// use symplex::definite::{quadrature, QuadOpts};
 ///
-/// let (v, err) = quadrature(&|x: f64| x.sin(), 0.0, std::f64::consts::PI, &QuadOpts::default()).unwrap();
-/// assert!((v - 2.0).abs() < 1e-12);
-/// assert!(err < 1e-8);
+/// let r = quadrature(&|x: f64| x.sin(), 0.0, std::f64::consts::PI, &QuadOpts::default()).unwrap();
+/// assert!((r.value - 2.0).abs() < 1e-12);
+/// assert!(r.error < 1e-8);
 ///
 /// // ∫₀^∞ e^{−x²} dx = √π / 2
-/// let (v, _) = quadrature(&|x: f64| (-x * x).exp(), 0.0, f64::INFINITY, &QuadOpts::default()).unwrap();
-/// assert!((v - std::f64::consts::PI.sqrt() / 2.0).abs() < 1e-10);
+/// let r = quadrature(&|x: f64| (-x * x).exp(), 0.0, f64::INFINITY, &QuadOpts::default()).unwrap();
+/// assert!((r.value - std::f64::consts::PI.sqrt() / 2.0).abs() < 1e-10);
 /// ```
 pub fn quadrature(
     f: &dyn Fn(f64) -> f64,
     a: f64,
     b: f64,
     opts: &QuadOpts,
-) -> Result<(f64, f64), SymplexError> {
+) -> Result<QuadResult, SymplexError> {
     if a.is_nan() || b.is_nan() {
         return Err(SymplexError::InvalidArgument {
             operation: "integrate_numeric",
@@ -3914,11 +3945,17 @@ pub fn quadrature(
         });
     }
     if a == b {
-        return Ok((0.0, 0.0));
+        return Ok(QuadResult {
+            value: 0.0,
+            error: 0.0,
+        });
     }
     if a > b {
-        let (v, e) = quadrature(f, b, a, opts)?;
-        return Ok((-v, e));
+        let r = quadrature(f, b, a, opts)?;
+        return Ok(QuadResult {
+            value: -r.value,
+            error: r.error,
+        });
     }
     // Transform infinite ranges onto finite ones.
     match (a.is_finite(), b.is_finite()) {
@@ -3947,9 +3984,12 @@ pub fn quadrature(
                 max_subdivisions: opts.max_subdivisions.div_ceil(2),
                 ..*opts
             };
-            let (v1, e1) = quadrature(f, f64::NEG_INFINITY, 0.0, &half)?;
-            let (v2, e2) = quadrature(f, 0.0, f64::INFINITY, &half)?;
-            Ok((v1 + v2, e1 + e2))
+            let left = quadrature(f, f64::NEG_INFINITY, 0.0, &half)?;
+            let right = quadrature(f, 0.0, f64::INFINITY, &half)?;
+            Ok(QuadResult {
+                value: left.value + right.value,
+                error: left.error + right.error,
+            })
         }
     }
 }
@@ -3965,12 +4005,12 @@ fn quadrature_finite_adaptive(
     a: f64,
     b: f64,
     opts: &QuadOpts,
-) -> Result<(f64, f64), SymplexError> {
+) -> Result<QuadResult, SymplexError> {
     let plain = quadrature_finite(f, a, b, opts);
-    if let Ok((v, err)) = plain
-        && err <= opts.abs_tol.max(opts.rel_tol * v.abs())
+    if let Ok(r) = plain
+        && r.error <= opts.abs_tol.max(opts.rel_tol * r.value.abs())
     {
-        return Ok((v, err));
+        return Ok(r);
     }
     let width = b - a;
     let g = move |t: f64| {
@@ -3995,7 +4035,7 @@ fn quadrature_finite_adaptive(
     };
     let mapped = quadrature_finite(&g, 0.0, 1.0, opts);
     match (plain, mapped) {
-        (Ok(p), Ok(m)) => Ok(if m.1 < p.1 { m } else { p }),
+        (Ok(p), Ok(m)) => Ok(if m.error < p.error { m } else { p }),
         (Ok(p), Err(_)) => Ok(p),
         (Err(_), Ok(m)) => Ok(m),
         (Err(e), Err(_)) => Err(e),
@@ -4017,7 +4057,7 @@ fn quadrature_finite(
     a: f64,
     b: f64,
     opts: &QuadOpts,
-) -> Result<(f64, f64), SymplexError> {
+) -> Result<QuadResult, SymplexError> {
     let nonfinite_err = |x: f64| SymplexError::ComputationFailed {
         operation: "integrate_numeric",
         reason: format!("integrand is not finite near x = {x}"),
@@ -4087,7 +4127,10 @@ fn quadrature_finite(
                     .into(),
         });
     }
-    Ok((total_value, total_err))
+    Ok(QuadResult {
+        value: total_value,
+        error: total_err,
+    })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -4350,15 +4393,15 @@ mod tests {
 
     #[test]
     fn quadrature_polynomial_exact() {
-        let (v, err) = quadrature(
+        let r = quadrature(
             &|x: f64| x.powi(5) - 3.0 * x,
             0.0,
             2.0,
             &QuadOpts::default(),
         )
         .unwrap();
-        assert!((v - (64.0 / 6.0 - 6.0)).abs() < 1e-12);
-        assert!(err < 1e-10);
+        assert!((r.value - (64.0 / 6.0 - 6.0)).abs() < 1e-12);
+        assert!(r.error < 1e-10);
     }
 
     #[test]
@@ -4367,13 +4410,20 @@ mod tests {
         // small relative to the value — never a confidently wrong number.
         match quadrature(&|x: f64| 1.0 / (x * x), -1.0, 1.0, &QuadOpts::default()) {
             Err(_) => {}
-            Ok((v, err)) => assert!(err > 1e-6 * v.abs(), "v={v} err={err}"),
+            Ok(r) => assert!(
+                r.error > 1e-6 * r.value.abs(),
+                "v={} err={}",
+                r.value,
+                r.error
+            ),
         }
     }
 
     #[test]
     fn quadrature_endpoint_singularity() {
-        let (v, _) = quadrature(&|x: f64| 1.0 / x.sqrt(), 0.0, 1.0, &QuadOpts::default()).unwrap();
+        let v = quadrature(&|x: f64| 1.0 / x.sqrt(), 0.0, 1.0, &QuadOpts::default())
+            .unwrap()
+            .value;
         assert!((v - 2.0).abs() < 1e-8, "{v}");
     }
 

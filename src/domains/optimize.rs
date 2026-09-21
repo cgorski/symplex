@@ -7,9 +7,9 @@
 //! | Bracketed root finding | [`brent_root`] (Brent–Dekker), [`bisect`] |
 //! | Root polishing from a point | [`newton_root`] |
 //! | Derivative-free local minimisation | [`nelder_mead`] |
-//! | Bracketed scalar minimisation | [`minimize_scalar`] (Brent), [`golden_section`] |
-//! | Global minimisation in a box | [`differential_evolution`] (DE/rand/1/bin + Nelder–Mead polish) |
-//! | Least-squares fitting | [`poly_fit`], [`poly_fit_exact`], [`linear_fit`] |
+//! | Bracketed scalar minimisation | [`minimize_scalar`] (Brent), [`golden_section`] → [`ScalarMinimum`] |
+//! | Global minimisation in a box | [`differential_evolution`] (DE/rand/1/bin + Nelder–Mead polish) over `&[Interval<f64>]` |
+//! | Least-squares fitting | [`poly_fit`], [`poly_fit_exact`], [`linear_fit`] → [`LinearFit`] |
 //! | Helpers | [`trapezoid`], [`eval_poly`] |
 //!
 //! and convenience methods on [`Ex`] that compile an expression with
@@ -50,6 +50,7 @@
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
+use crate::base::interval::{Interval, IntervalKind};
 use crate::base::node::ExprNode;
 use crate::output::lambdify::CompiledFn;
 use num_bigint::BigInt;
@@ -757,14 +758,32 @@ fn eval_finite(op: &'static str, f: &impl Fn(f64) -> f64, x: f64) -> Result<f64,
     }
 }
 
+/// Outcome of a bracketed scalar minimisation ([`minimize_scalar`],
+/// [`golden_section`], [`Ex::minimize_scalar_numeric`]): the minimiser and
+/// the objective value there.
+///
+/// ```
+/// use symplex::optimize::{minimize_scalar, MinimizeOpts, ScalarMinimum};
+///
+/// let m: ScalarMinimum = minimize_scalar(|x| (x - 2.0).powi(2), 0.0, 5.0, &MinimizeOpts::default()).unwrap();
+/// assert!((m.x - 2.0).abs() < 1e-6 && m.value < 1e-12);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScalarMinimum {
+    /// Location of the minimum.
+    pub x: f64,
+    /// Objective value at [`x`](Self::x).
+    pub value: f64,
+}
+
 /// Minimise a scalar function on `[a, b]` by Brent's method.
 ///
 /// Combines golden-section steps with successive parabolic interpolation
 /// (Brent's `localmin`), giving superlinear convergence on smooth functions
-/// and golden-section behaviour otherwise.  Returns `(x_min, f_min)`.  On a
-/// bracket containing several local minima the method converges to one of
-/// them; which one depends on the bracket.  A reversed interval is
-/// accepted.
+/// and golden-section behaviour otherwise.  Returns the minimiser and the
+/// value there as a [`ScalarMinimum`].  On a bracket containing several
+/// local minima the method converges to one of them; which one depends on
+/// the bracket.  A reversed interval is accepted.
 ///
 /// # Errors
 ///
@@ -779,16 +798,16 @@ fn eval_finite(op: &'static str, f: &impl Fn(f64) -> f64, x: f64) -> Result<f64,
 /// ```
 /// use symplex::optimize::{minimize_scalar, MinimizeOpts};
 ///
-/// let (x, fx) = minimize_scalar(|x| (x - 1.0).powi(2) + 3.0, -5.0, 5.0, &MinimizeOpts::default()).unwrap();
-/// assert!((x - 1.0).abs() < 1e-6);
-/// assert!((fx - 3.0).abs() < 1e-12);
+/// let m = minimize_scalar(|x| (x - 1.0).powi(2) + 3.0, -5.0, 5.0, &MinimizeOpts::default()).unwrap();
+/// assert!((m.x - 1.0).abs() < 1e-6);
+/// assert!((m.value - 3.0).abs() < 1e-12);
 /// ```
 pub fn minimize_scalar(
     f: impl Fn(f64) -> f64,
     a: f64,
     b: f64,
     opts: &MinimizeOpts,
-) -> Result<(f64, f64), SymplexError> {
+) -> Result<ScalarMinimum, SymplexError> {
     const OP: &str = "minimize_scalar";
     let (mut a, mut b) = check_interval(OP, a, b)?;
     check_minimize_opts(OP, opts)?;
@@ -811,7 +830,7 @@ pub fn minimize_scalar(
         let tol1 = sqrt_eps * x.abs() + opts.xtol / 3.0;
         let tol2 = 2.0 * tol1;
         if (x - xm).abs() <= tol2 - 0.5 * (b - a) {
-            return Ok((x, fx));
+            return Ok(ScalarMinimum { x, value: fx });
         }
         let golden = if e.abs() > tol1 {
             // Parabola through (x, fx), (v, fv), (w, fw).
@@ -887,8 +906,8 @@ pub fn minimize_scalar(
 ///
 /// Shrinks the bracket by the golden ratio each iteration using only
 /// function comparisons; linear convergence, but immune to the parabolic
-/// mis-steps of [`minimize_scalar`] on badly behaved functions.  Returns
-/// `(x_min, f_min)`.  Same argument rules and errors as
+/// mis-steps of [`minimize_scalar`] on badly behaved functions.  Returns a
+/// [`ScalarMinimum`].  Same argument rules and errors as
 /// [`minimize_scalar`].
 ///
 /// # Examples
@@ -897,16 +916,16 @@ pub fn minimize_scalar(
 /// use symplex::optimize::{golden_section, MinimizeOpts};
 ///
 /// // x·ln x has its minimum at x = 1/e.
-/// let (x, fx) = golden_section(|x| x * x.ln(), 0.1, 2.0, &MinimizeOpts::default()).unwrap();
-/// assert!((x - (-1.0f64).exp()).abs() < 1e-6);
-/// assert!((fx + (-1.0f64).exp()).abs() < 1e-12);
+/// let m = golden_section(|x| x * x.ln(), 0.1, 2.0, &MinimizeOpts::default()).unwrap();
+/// assert!((m.x - (-1.0f64).exp()).abs() < 1e-6);
+/// assert!((m.value + (-1.0f64).exp()).abs() < 1e-12);
 /// ```
 pub fn golden_section(
     f: impl Fn(f64) -> f64,
     a: f64,
     b: f64,
     opts: &MinimizeOpts,
-) -> Result<(f64, f64), SymplexError> {
+) -> Result<ScalarMinimum, SymplexError> {
     const OP: &str = "golden_section";
     let (mut a, mut b) = check_interval(OP, a, b)?;
     check_minimize_opts(OP, opts)?;
@@ -921,7 +940,11 @@ pub fn golden_section(
     for _ in 0..max_iter {
         let mid = 0.5 * (a + b);
         if (b - a).abs() <= opts.xtol + sqrt_eps * mid.abs() {
-            return Ok(if f1 <= f2 { (x1, f1) } else { (x2, f2) });
+            return Ok(if f1 <= f2 {
+                ScalarMinimum { x: x1, value: f1 }
+            } else {
+                ScalarMinimum { x: x2, value: f2 }
+            });
         }
         if f1 < f2 {
             b = x2;
@@ -1068,6 +1091,11 @@ fn population_converged(energies: &[f64], tol: f64) -> bool {
 /// evolution (strategy `DE/rand/1/bin`), followed by a Nelder–Mead polish
 /// of the best member.
 ///
+/// `bounds[j]` is the **closed** interval `[lo, hi]` of coordinate `j`
+/// (build it with [`Interval::closed`] or `(lo..=hi).into()`); trial points
+/// are clamped onto its endpoints, so an open or half-open kind would
+/// misdescribe the search box and is rejected as [`SymplexError::InvalidArgument`].
+///
 /// The population is initialised by Latin-hypercube sampling; each
 /// generation builds one trial vector per member from three other distinct
 /// members (`x_{r1} + F·(x_{r2} − x_{r3})`, binomial crossover), clips it
@@ -1085,9 +1113,9 @@ fn population_converged(energies: &[f64], tol: f64) -> bool {
 /// # Errors
 ///
 /// * [`SymplexError::InvalidArgument`] if `bounds` is empty, a bound is not
-///   finite or reversed, the population is smaller than 4, `crossover` is
-///   outside `[0, 1]`, or `differential_weight`/`tol` are not positive and
-///   finite.
+///   finite, reversed or not [`IntervalKind::Closed`], the population is
+///   smaller than 4, `crossover` is outside `[0, 1]`, or
+///   `differential_weight`/`tol` are not positive and finite.
 /// * [`SymplexError::ComputationFailed`] if `f` has no finite value
 ///   anywhere the search looked.
 ///
@@ -1095,6 +1123,7 @@ fn population_converged(energies: &[f64], tol: f64) -> bool {
 ///
 /// ```
 /// use symplex::optimize::{differential_evolution, DeOpts};
+/// use symplex::Interval;
 ///
 /// // Rastrigin's function: many local minima, global minimum 0 at the origin.
 /// let rastrigin = |p: &[f64]| {
@@ -1103,14 +1132,14 @@ fn population_converged(energies: &[f64], tol: f64) -> bool {
 ///             .map(|x| x * x - 10.0 * (2.0 * std::f64::consts::PI * x).cos())
 ///             .sum::<f64>()
 /// };
-/// let bounds = [(-5.12, 5.12), (-5.12, 5.12)];
+/// let bounds = [Interval::closed(-5.12, 5.12), Interval::closed(-5.12, 5.12)];
 /// let r = differential_evolution(rastrigin, &bounds, &DeOpts::default()).unwrap();
 /// assert!(r.fun < 1e-6, "f = {}", r.fun);
 /// assert!(r.x.iter().all(|x| x.abs() < 1e-3));
 /// ```
 pub fn differential_evolution(
     mut f: impl FnMut(&[f64]) -> f64,
-    bounds: &[(f64, f64)],
+    bounds: &[Interval<f64>],
     opts: &DeOpts,
 ) -> Result<MinimizeResult, SymplexError> {
     const OP: &str = "differential_evolution";
@@ -1118,13 +1147,17 @@ pub fn differential_evolution(
     if n == 0 {
         return Err(invalid(OP, "bounds must not be empty".into()));
     }
-    for &(lo, hi) in bounds {
-        if !lo.is_finite() || !hi.is_finite() || lo > hi {
+    for iv in bounds {
+        if !iv.lower.is_finite() || !iv.upper.is_finite() || iv.lower > iv.upper {
             return Err(invalid(
                 OP,
-                format!(
-                    "each bound must be a finite (lo, hi) pair with lo <= hi, got ({lo}, {hi})"
-                ),
+                format!("each bound must be a finite interval with lower <= upper, got {iv}"),
+            ));
+        }
+        if iv.kind != IntervalKind::Closed {
+            return Err(invalid(
+                OP,
+                format!("each bound must be a closed interval [lower, upper], got {iv}"),
             ));
         }
     }
@@ -1172,11 +1205,11 @@ pub fn differential_evolution(
     // `np` equal slices, each used exactly once.
     let mut pop = vec![vec![0.0; n]; np];
     let mut perm: Vec<usize> = (0..np).collect();
-    for (j, &(lo, hi)) in bounds.iter().enumerate() {
+    for (j, iv) in bounds.iter().enumerate() {
         rng.shuffle(&mut perm);
         for (member, &slice) in pop.iter_mut().zip(&perm) {
             let u = (slice as f64 + rng.next_f64()) / np as f64;
-            member[j] = lo + u * (hi - lo);
+            member[j] = iv.lower + u * (iv.upper - iv.lower);
         }
     }
     let mut energies: Vec<f64> = pop.iter().map(|m| eval(m)).collect();
@@ -1199,14 +1232,14 @@ pub fn differential_evolution(
             let r2 = rng.below_excluding(np, &mut [i, r1]);
             let r3 = rng.below_excluding(np, &mut [i, r1, r2]);
             let j_rand = rng.below(n);
-            for (j, &(lo, hi)) in bounds.iter().enumerate() {
+            for (j, iv) in bounds.iter().enumerate() {
                 let v = if j == j_rand || rng.next_f64() < opts.crossover {
                     pop[r1][j] + opts.differential_weight * (pop[r2][j] - pop[r3][j])
                 } else {
                     pop[i][j]
                 };
-                // Bounds were validated finite with lo <= hi, so clamp cannot panic.
-                trial[j] = v.clamp(lo, hi);
+                // Bounds were validated finite with lower <= upper, so clamp cannot panic.
+                trial[j] = v.clamp(iv.lower, iv.upper);
             }
             let ft = eval(&trial);
             if ft <= energies[i] {
@@ -1232,8 +1265,8 @@ pub fn differential_evolution(
     let mut clipped = vec![0.0; n];
     let polish = nelder_mead(
         |x: &[f64]| {
-            for ((c, &xi), &(lo, hi)) in clipped.iter_mut().zip(x).zip(bounds) {
-                *c = xi.clamp(lo, hi);
+            for ((c, &xi), iv) in clipped.iter_mut().zip(x).zip(bounds) {
+                *c = xi.clamp(iv.lower, iv.upper);
             }
             f(&clipped)
         },
@@ -1247,7 +1280,7 @@ pub fn differential_evolution(
             .x
             .iter()
             .zip(bounds)
-            .map(|(&xi, &(lo, hi))| xi.clamp(lo, hi))
+            .map(|(&xi, iv)| xi.clamp(iv.lower, iv.upper))
             .collect();
         (x, polish.fun)
     } else {
@@ -1531,10 +1564,26 @@ fn solve_exact(
     Some(x)
 }
 
+/// The straight line `y = slope·x + intercept` fitted by [`linear_fit`].
+///
+/// ```
+/// use symplex::optimize::{linear_fit, LinearFit};
+///
+/// let LinearFit { slope, intercept } = linear_fit(&[0.0, 1.0, 2.0], &[1.0, 3.0, 5.0]).unwrap();
+/// assert!((slope - 2.0).abs() < 1e-12 && (intercept - 1.0).abs() < 1e-12);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LinearFit {
+    /// Coefficient of `x`.
+    pub slope: f64,
+    /// Value at `x = 0`.
+    pub intercept: f64,
+}
+
 /// Least-squares straight line `y ≈ slope·x + intercept`.
 ///
-/// Returns `(slope, intercept)`.  Equivalent to [`poly_fit`] with
-/// `degree = 1`; needs at least two samples with distinct abscissae.
+/// Returns a [`LinearFit`].  Equivalent to [`poly_fit`] with `degree = 1`;
+/// needs at least two samples with distinct abscissae.
 ///
 /// # Examples
 ///
@@ -1543,13 +1592,16 @@ fn solve_exact(
 ///
 /// let xs = [0.0, 1.0, 2.0, 3.0];
 /// let ys = [1.0, 4.0, 7.0, 10.0]; // y = 3x + 1
-/// let (slope, intercept) = linear_fit(&xs, &ys).unwrap();
-/// assert!((slope - 3.0).abs() < 1e-12 && (intercept - 1.0).abs() < 1e-12);
+/// let fit = linear_fit(&xs, &ys).unwrap();
+/// assert!((fit.slope - 3.0).abs() < 1e-12 && (fit.intercept - 1.0).abs() < 1e-12);
 /// ```
-pub fn linear_fit(xs: &[f64], ys: &[f64]) -> Result<(f64, f64), SymplexError> {
+pub fn linear_fit(xs: &[f64], ys: &[f64]) -> Result<LinearFit, SymplexError> {
     let c = poly_fit(xs, ys, 1)?;
     match c.as_slice() {
-        [intercept, slope] => Ok((*slope, *intercept)),
+        [intercept, slope] => Ok(LinearFit {
+            slope: *slope,
+            intercept: *intercept,
+        }),
         _ => Err(failed(
             "linear_fit",
             format!("expected two coefficients, got {}", c.len()),
@@ -1792,7 +1844,8 @@ impl Ex {
 
     /// Minimise this expression in the single variable `var` over `[a, b]`
     /// by Brent's method ([`minimize_scalar`]) with default
-    /// [`MinimizeOpts`].  Returns `(x_min, f_min)`.
+    /// [`MinimizeOpts`].  Returns the minimiser and the value there as a
+    /// [`ScalarMinimum`].
     ///
     /// # Errors
     ///
@@ -1807,23 +1860,22 @@ impl Ex {
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
     /// // x·ln x has its minimum −1/e at x = 1/e.
-    /// let (xm, fm) = (&x * x.ln()).minimize_scalar_numeric(&x, 0.1, 2.0).unwrap();
-    /// assert!((xm - (-1.0f64).exp()).abs() < 1e-6);
-    /// assert!((fm + (-1.0f64).exp()).abs() < 1e-12);
+    /// let m = (&x * x.ln()).minimize_scalar_numeric(&x, 0.1, 2.0).unwrap();
+    /// assert!((m.x - (-1.0f64).exp()).abs() < 1e-6);
+    /// assert!((m.value + (-1.0f64).exp()).abs() < 1e-12);
     /// ```
     pub fn minimize_scalar_numeric(
         &self,
         var: &Ex,
         a: f64,
         b: f64,
-    ) -> Result<(f64, f64), SymplexError> {
+    ) -> Result<ScalarMinimum, SymplexError> {
         let f = compile_in(self, &[var], "minimize_scalar_numeric")?;
         minimize_scalar(|x| f.call(&[x]), a, b, &MinimizeOpts::default())
     }
 
-    /// Globally minimise this expression over the box `bounds` (one
-    /// `(lo, hi)` pair per entry of `vars`) by
-    /// [`differential_evolution`].
+    /// Globally minimise this expression over the box `bounds` (one closed
+    /// [`Interval`] per entry of `vars`) by [`differential_evolution`].
     ///
     /// # Errors
     ///
@@ -1841,13 +1893,14 @@ impl Ex {
     /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
     /// // Himmelblau's function has four global minima with f = 0.
     /// let h = (&x.powi(2) + &y - 11).powi(2) + (&x + &y.powi(2) - 7).powi(2);
-    /// let r = h.minimize_global_numeric(&[&x, &y], &[(-5.0, 5.0), (-5.0, 5.0)], &DeOpts::default()).unwrap();
+    /// let box_ = [Interval::closed(-5.0, 5.0), Interval::closed(-5.0, 5.0)];
+    /// let r = h.minimize_global_numeric(&[&x, &y], &box_, &DeOpts::default()).unwrap();
     /// assert!(r.fun < 1e-8, "f = {}", r.fun);
     /// ```
     pub fn minimize_global_numeric(
         &self,
         vars: &[&Ex],
-        bounds: &[(f64, f64)],
+        bounds: &[Interval<f64>],
         opts: &DeOpts,
     ) -> Result<MinimizeResult, SymplexError> {
         const OP: &str = "minimize_global_numeric";

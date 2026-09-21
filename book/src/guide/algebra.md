@@ -125,8 +125,11 @@ fn main() {
     for (re, im) in q5.nroots(&x, 12).unwrap() {
         println!("{re:.10} {im:+.10}i");
     }
+    // Isolating intervals carry their kind: a Sturm cell is `(lo, hi]`, a root
+    // hit exactly by the bisection is the point `[r, r]`.
     println!("{:?}", (&x.powi(3) - &x * 2 - 5).real_roots_isolate(&x).iter()
-        .map(|(a, b)| format!("({a}, {b})")).collect::<Vec<_>>());
+        .map(|iv| iv.to_string()).collect::<Vec<_>>());
+    // ["(17157/8192, 4291/2048]"]
 }
 ```
 

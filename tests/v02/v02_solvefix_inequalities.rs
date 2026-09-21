@@ -524,7 +524,7 @@ fn result_is_in_normal_form() {
     let parts = sol.as_intervals().expect("normal form");
     assert_eq!(parts.len(), 3);
     for w in parts.windows(2) {
-        let (hi_prev, lo_next) = (&w[0].1, &w[1].0);
+        let (hi_prev, lo_next) = (&w[0].upper, &w[1].lower);
         assert!(hi_prev.eval_f64().unwrap() <= lo_next.eval_f64().unwrap());
     }
 }

@@ -17,8 +17,8 @@
 
 use std::f64::consts::PI;
 use symplex::optimize::{
-    DeOpts, MinimizeOpts, RootOpts, differential_evolution, eval_poly, golden_section, linear_fit,
-    minimize_scalar, nelder_mead, newton_root, poly_fit, trapezoid,
+    DeOpts, LinearFit, MinimizeOpts, RootOpts, differential_evolution, eval_poly, golden_section,
+    linear_fit, minimize_scalar, nelder_mead, newton_root, poly_fit, trapezoid,
 };
 use symplex::prelude::*;
 
@@ -90,18 +90,24 @@ fn main() -> Result<(), SymplexError> {
     // ── 3. Scalar minimisation ───────────────────────────────────────────
     println!("--- Scalar minimisation ---");
     let g = |t: f64| t * t.ln();
-    let (xb, fb) = minimize_scalar(g, 0.1, 2.0, &MinimizeOpts::default())?;
-    let (xg, fg) = golden_section(g, 0.1, 2.0, &MinimizeOpts::default())?;
-    println!("x ln x on [0.1, 2]:  Brent  x = {xb:.10}, f = {fb:.12}");
-    println!("                     golden x = {xg:.10}, f = {fg:.12}");
+    let brent = minimize_scalar(g, 0.1, 2.0, &MinimizeOpts::default())?;
+    let golden = golden_section(g, 0.1, 2.0, &MinimizeOpts::default())?;
+    println!(
+        "x ln x on [0.1, 2]:  Brent  x = {:.10}, f = {:.12}",
+        brent.x, brent.value
+    );
+    println!(
+        "                     golden x = {:.10}, f = {:.12}",
+        golden.x, golden.value
+    );
     println!(
         "                     exact  x = 1/e = {:.10}",
         (-1.0f64).exp()
     );
 
     // Γ(x) has its minimum on (0, ∞) near 1.4616.
-    let (xm, fm) = x.gamma().minimize_scalar_numeric(&x, 1.0, 2.0)?;
-    println!("Γ(x) on [1, 2]:      x = {xm:.8}, Γ = {fm:.10}");
+    let m = x.gamma().minimize_scalar_numeric(&x, 1.0, 2.0)?;
+    println!("Γ(x) on [1, 2]:      x = {:.8}, Γ = {:.10}", m.x, m.value);
     println!();
 
     // ── 4. Differential evolution on Rastrigin ───────────────────────────
@@ -112,7 +118,7 @@ fn main() -> Result<(), SymplexError> {
                 .map(|v| v * v - 10.0 * (2.0 * PI * v).cos())
                 .sum::<f64>()
     };
-    let bounds = [(-5.12, 5.12), (-5.12, 5.12)];
+    let bounds = [Interval::closed(-5.12, 5.12), Interval::closed(-5.12, 5.12)];
     let r = differential_evolution(rastrigin, &bounds, &DeOpts::default())?;
     println!(
         "Rastrigin 2-D, seed 0:  x = ({:+.2e}, {:+.2e}), f = {:.2e}",
@@ -185,7 +191,7 @@ fn main() -> Result<(), SymplexError> {
     ];
     let line = Ex::poly_fit_points(&ctx, &noisy, &x, 1)?;
     println!("exact least-squares line through (0,1) (1,0) (2,4) (3,2): {line}");
-    let (slope, intercept) = linear_fit(&[0.0, 1.0, 2.0, 3.0], &[1.0, 0.0, 4.0, 2.0])?;
+    let LinearFit { slope, intercept } = linear_fit(&[0.0, 1.0, 2.0, 3.0], &[1.0, 0.0, 4.0, 2.0])?;
     println!("float linear_fit: slope = {slope:.12}, intercept = {intercept:.12}");
     println!();
 

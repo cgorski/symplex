@@ -15,6 +15,7 @@ use num_traits::{One, Signed, Zero};
 use crate::api::expr::{Ex, Expr, Numeric};
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
+use crate::base::interval::Interval;
 use crate::base::node::{ExprId, ExprNode};
 use crate::poly::Poly;
 use crate::poly::polybridge::{expr_to_poly, poly_to_expr};
@@ -934,10 +935,16 @@ impl Expr<Numeric> {
 
     /// Isolating intervals for the distinct real roots of `self` in `var`.
     ///
-    /// Each returned `(lo, hi)` pair has exact rational endpoints, contains
-    /// exactly one real root, and has width at most `1/1024`; a rational
-    /// root that is hit exactly is returned as `(r, r)`.  Intervals are
-    /// sorted.  Non-polynomial or constant input yields an empty vector.
+    /// Each returned [`Interval`] has exact rational endpoints, contains
+    /// exactly one real root, and has width at most `1/1024`.  Its `kind`
+    /// says where the root may lie: a Sturm bisection cell is the half-open
+    /// `(lo, hi]` ([`IntervalKind::LeftOpen`](crate::IntervalKind::LeftOpen);
+    /// the root is never `lo` and, since an exact hit is reported
+    /// separately, never `hi` either), while a root that a bisection point
+    /// lands on exactly is the closed singleton `[r, r]`
+    /// ([`IntervalKind::Closed`](crate::IntervalKind::Closed) with
+    /// `lower == upper`).  Intervals are sorted.  Non-polynomial or
+    /// constant input yields an empty vector.
     ///
     /// # Examples
     ///
@@ -948,14 +955,23 @@ impl Expr<Numeric> {
     /// let x = ctx.symbol("x");
     /// let iv = (&x.powi(2) - 2).real_roots_isolate(&x);
     /// assert_eq!(iv.len(), 2);
-    /// let hi = iv[1].1.eval_f64().unwrap();
-    /// let lo = iv[1].0.eval_f64().unwrap();
+    /// let lo = iv[1].lower.eval_f64().unwrap();
+    /// let hi = iv[1].upper.eval_f64().unwrap();
     /// assert!(lo <= 2f64.sqrt() && 2f64.sqrt() <= hi);
+    /// assert_eq!(iv[1].kind, IntervalKind::LeftOpen);
+    ///
+    /// // x³ − x: the bisection lands on the root 0 exactly, so that one is
+    /// // the point [0, 0]; ±1 are bracketed by (lo, hi] cells.
+    /// let iv = (&x.powi(3) - &x).real_roots_isolate(&x);
+    /// assert_eq!(iv.len(), 3);
+    /// assert_eq!(iv[1].kind, IntervalKind::Closed);
+    /// assert_eq!(iv[1].lower, ctx.int(0));
+    /// assert_eq!(iv[1].upper, ctx.int(0));
     /// ```
     #[must_use]
-    pub fn real_roots_isolate(&self, var: &Ex) -> Vec<(Ex, Ex)> {
+    pub fn real_roots_isolate(&self, var: &Ex) -> Vec<Interval<Ex>> {
         let var_id = self.checked_id(var);
-        let ids: Vec<(ExprId, ExprId)> = {
+        let ids: Vec<Interval<ExprId>> = {
             let mut inner = self.inner.write();
             let Some(f) = expr_to_poly(&inner.arena, self.raw_id(), var_id) else {
                 return vec![];
@@ -968,20 +984,18 @@ impl Expr<Numeric> {
             chain
                 .isolate_all_real_roots()
                 .into_iter()
-                .map(|(lo, hi)| {
-                    let (lo, hi) = if lo == hi {
-                        (lo, hi)
+                .map(|iv| {
+                    let iv = if iv.is_point() {
+                        iv
                     } else {
-                        chain.refine_interval(&lo, &hi, &width)
+                        chain.refine_interval(&iv, &width)
                     };
-                    let lo_id = inner.arena.num_ratio(lo);
-                    let hi_id = inner.arena.num_ratio(hi);
-                    (lo_id, hi_id)
+                    iv.map(|q| inner.arena.num_ratio(q))
                 })
                 .collect()
         };
         ids.into_iter()
-            .map(|(lo, hi)| (self.wrap(lo), self.wrap(hi)))
+            .map(|iv| iv.map(|id| self.wrap(id)))
             .collect()
     }
 

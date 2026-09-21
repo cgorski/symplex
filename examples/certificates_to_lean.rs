@@ -19,13 +19,13 @@
 //! Run with: `cargo run --example certificates_to_lean [out.lean]`
 
 use symplex::certificates::{
-    BoxOutcome, HalfLineOutcome, Ray, prove_nonnegative_on_box, prove_nonnegative_on_halfline,
-    prove_nonnegative_on_reals,
+    BoxBound, BoxOutcome, HalfLineOutcome, Ray, prove_nonnegative_on_box,
+    prove_nonnegative_on_halfline, prove_nonnegative_on_reals,
 };
 use symplex::prelude::*;
 
 /// A named claim `0 ≤ goal` on a box, with the certificate degree to search.
-type Case = (&'static str, Ex, Vec<(Ex, Ex, Ex)>, u32);
+type Case = (&'static str, Ex, Vec<BoxBound>, u32);
 
 fn main() {
     let ctx = Context::new();
@@ -35,13 +35,24 @@ fn main() {
         ctx.symbol("x"),
         ctx.symbol("y"),
     );
-    let unit = |v: &Ex| (v.clone(), ctx.int(0), ctx.int(1));
+    let unit = |v: &Ex| BoxBound {
+        var: v.clone(),
+        lo: ctx.int(0),
+        hi: ctx.int(1),
+    };
 
     let cases: Vec<Case> = vec![
         (
             "quarter_bound",
             ctx.rational(1, 4) - (&r - &f / 2).powi(2),
-            vec![(r.clone(), ctx.int(0), ctx.rational(1, 2)), unit(&f)],
+            vec![
+                BoxBound {
+                    var: r.clone(),
+                    lo: ctx.int(0),
+                    hi: ctx.rational(1, 2),
+                },
+                unit(&f),
+            ],
             2,
         ),
         ("x_one_minus_x", &x * (1 - &x), vec![unit(&x)], 2),
@@ -49,15 +60,27 @@ fn main() {
         (
             "cubic_on_interval",
             (&x - 1) * (&x - 2) * (&x - 3),
-            vec![(x.clone(), ctx.int(3), ctx.int(10))],
+            vec![BoxBound {
+                var: x.clone(),
+                lo: ctx.int(3),
+                hi: ctx.int(10),
+            }],
             3,
         ),
         (
             "interior_zero",
             (&x - 1).powi(2) + (&y - 1).powi(2),
             vec![
-                (x.clone(), ctx.int(0), ctx.int(2)),
-                (y.clone(), ctx.int(0), ctx.int(2)),
+                BoxBound {
+                    var: x.clone(),
+                    lo: ctx.int(0),
+                    hi: ctx.int(2),
+                },
+                BoxBound {
+                    var: y.clone(),
+                    lo: ctx.int(0),
+                    hi: ctx.int(2),
+                },
             ],
             2,
         ),
@@ -73,8 +96,8 @@ fn main() {
     println!("=== Handelman certificates on boxes ===\n");
     for (name, goal, bounds, degree) in &cases {
         println!("--- {name}: 0 ≤ {goal}");
-        for (v, lo, hi) in bounds {
-            println!("    {lo} ≤ {v} ≤ {hi}");
+        for BoxBound { var, lo, hi } in bounds {
+            println!("    {lo} ≤ {var} ≤ {hi}");
         }
         match prove_nonnegative_on_box(goal, bounds, *degree).unwrap() {
             BoxOutcome::Proved(cert) => {
