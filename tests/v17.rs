@@ -10,3 +10,7 @@ mod v17_audit_a;
 mod v17_audit_b;
 #[path = "v17/v17_audit_c.rs"]
 mod v17_audit_c;
+#[path = "v17/v17_exact_intervals.rs"]
+mod v17_exact_intervals;
+#[path = "v17/v17_pvalues.rs"]
+mod v17_pvalues;

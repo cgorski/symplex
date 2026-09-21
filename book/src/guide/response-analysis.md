@@ -98,6 +98,37 @@ The Clopper–Pearson interval is the exact one (statsmodels
 the usual approximations.  A rater's accuracy against chance is an exact
 binomial test (below).
 
+### Exact intervals
+
+The `f64` function rounds; the same intervals exist with exact endpoints.
+Wald, Wilson and Agresti–Coull are closed algebraic forms in the normal
+quantile `z`, so they take any expression for `z` — a symbol for the
+textbook formula, or `z_for_confidence(&ctx, &q(95, 100))` for the exact
+`√2·erfinv(19/20)` (`1.959963984540054`).  Clopper–Pearson's endpoints
+are the roots in `(0, 1)` of the two binomial-tail polynomials
+`Σ_{j≥k} C(n,j) pʲ(1−p)ⁿ⁻ʲ − α/2` and `Σ_{j≤k} … − α/2`, which
+`proportion_interval_exact` returns as `RootOf` algebraic numbers:
+
+```rust,ignore
+let z = ctx.symbol("z");
+let ci = proportion_interval_symbolic(&ctx, 5, 8, &z, IntervalMethod::Wilson)?;   // Interval<Ex> in z, contains z^2
+
+let ci = proportion_interval_exact(&ctx, 5, 8, &q(95, 100), IntervalMethod::ClopperPearson)?;
+ci.lower;                          // RootOf(…degree-8 polynomial in _p…, k)
+ci.lower.eval_f64()?;              // 0.2448632163665516   = scipy beta.ppf(0.025, 5, 4)
+ci.upper.eval_f64()?;              // 0.9147665858627464   = scipy beta.ppf(0.975, 6, 3)
+ci.lower.eval_decimal(30)?;        // as many digits as you like
+
+proportion_interval_exact(&ctx, 1, 1, &q(9, 10), IntervalMethod::ClopperPearson)?;   // [1/20, 1]: linear tail, rational root
+```
+
+The exact closed forms are **not** clipped to `[0, 1]` (Agresti–Coull at
+`k = 0` has a negative lower end that the `f64` function clamps), and the
+Clopper–Pearson roots need a Sturm isolation and a factorisation of a
+degree-`n` polynomial — fine for tens of trials, not thousands.  The
+known-`σ` mean interval has the same pair,
+`estimation::confidence_interval_mean_z_symbolic` / `_exact`.
+
 ## Do two groups differ?
 
 Response times of two groups, in seconds:

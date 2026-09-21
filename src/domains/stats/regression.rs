@@ -47,7 +47,7 @@ use num_traits::{One, Signed, Zero};
 
 use super::data::Q;
 use super::family::Distribution;
-use super::hypothesis::{Alternative, TestResult};
+use super::hypothesis::{self, Alternative, TestResult};
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
@@ -842,6 +842,22 @@ impl Ols {
             .zip(self.cov_params.diagonal())
             .map(|(b, v)| student_two_sided(ctx, self.df_resid, &(b * b / v)))
             .collect())
+    }
+
+    /// `log10` of each two-sided p-value of [`p_values`](Self::p_values),
+    /// evaluated as expressions so the values stay finite where `eval_f64`
+    /// underflows to `0.0` (below about `1e-308`); see
+    /// [`PValue`](super::hypothesis::PValue).
+    ///
+    /// # Errors
+    ///
+    /// As [`p_values`](Self::p_values), plus the evaluation error of an
+    /// expression (not expected).
+    pub fn p_values_log10(&self, ctx: &Context) -> Result<Vec<f64>, SymplexError> {
+        self.p_values(ctx)?
+            .iter()
+            .map(hypothesis::p_value_log10_of)
+            .collect()
     }
 
     /// One [`TestResult`] per coefficient: the Student-t test of `β_j = 0`

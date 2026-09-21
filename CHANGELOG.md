@@ -6,6 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.17.2] - 2026-09-21
+
+Two additions prompted by user feedback on the statistics API.  Additive.
+
+### Added
+
+- **Tiny p-values.**  A `χ²` of 12 800 has `p ≈ 2.3·10⁻²⁷⁸²`; `p_value_f64()`
+  returned `0.0` (below `f64::MIN_POSITIVE`) although the exact expression
+  `uppergamma(1/2, 6400)/Γ(1/2)` retained it.  New trait
+  **`stats::PValue`** — `p_value_ex`, `p_value_f64`, **`p_value_log10`**
+  (`−2781.636…` for that case), `p_value_ln`, `p_value_decimal(digits)`
+  (`"2.3100265595063985852e-2782"`) — implemented for `TestResult`,
+  `ChiSquareResult`, `AnovaResult`, `Mauchly`, `RepeatedMeasuresAnova`
+  (plus `p_value_gg_log10`/`p_value_hf_log10`), with inherent methods on
+  each and on `AnovaRow`; `Ols::p_values_log10`.  Evaluation runs in
+  arbitrary precision internally, so the logarithm never underflows.  Book:
+  "Tiny p-values" in the statistics chapter.
+- **Exact intervals.**  `aggregation::z_for_confidence(ctx, &Q) -> Ex`
+  (`√2·erfinv(c)`), `proportion_interval_symbolic(ctx, k, n, z: &Ex,
+  method) -> Interval<Ex>` (Wald / Wilson / Agresti–Coull as closed forms
+  in any `z`, unclipped) and **`proportion_interval_exact(ctx, k, n,
+  confidence: &Q, method) -> Interval<Ex>`** — for Clopper–Pearson the
+  endpoints are the roots in `(0, 1)` of the degree-`n` binomial-tail
+  polynomials, certified unique by Sturm counting and returned as `RootOf`
+  (a rational when it is one), evaluable to any precision
+  (`eval_decimal(30)` agrees with mpmath to 25+ digits).  Documented limit:
+  exact but `O(n)`-degree root isolation; practical up to `n ≈ 30`.
+  `estimation::confidence_interval_mean_z_symbolic` / `_exact` likewise
+  (`x̄ ± z·σ/√n` exact).  No exact Student-t quantile exists in the crate, so
+  the t-based interval has no exact twin yet.  Book: "Exact intervals" in
+  the response-analysis chapter.
+
 ## [0.17.1] - 2026-09-21
 
 An independent verification pass over the whole of `symplex::stats`: 200 new

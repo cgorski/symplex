@@ -51,7 +51,7 @@ use num_bigint::BigInt;
 use num_traits::{One, Signed, Zero};
 
 use super::data::{self, Q};
-use super::hypothesis::{self, Alternative, TestResult};
+use super::hypothesis::{self, Alternative, PValue, TestResult, p_value_accessors};
 use super::regression::ols;
 use crate::api::context::Context;
 use crate::api::expr::Ex;
@@ -244,13 +244,47 @@ impl AnovaRow {
     /// residual, subjects and total rows); otherwise the evaluation error of
     /// the expression (not expected).
     pub fn p_value_f64(&self) -> Result<f64, SymplexError> {
-        match &self.p_value {
-            Some(p) => p.eval_f64(),
-            None => Err(invalid(
-                "AnovaRow::p_value_f64",
-                format!("the {:?} row has no F test", self.source),
-            )),
-        }
+        self.tested_p_value("AnovaRow::p_value_f64")?.eval_f64()
+    }
+
+    /// `log10` of the p-value, finite even when
+    /// [`p_value_f64`](Self::p_value_f64) underflows to `0.0`; see
+    /// [`PValue`].  (`AnovaRow` cannot implement the trait itself: the
+    /// residual and total rows have no p-value.)
+    ///
+    /// # Errors
+    ///
+    /// As [`p_value_f64`](Self::p_value_f64).
+    pub fn p_value_log10(&self) -> Result<f64, SymplexError> {
+        hypothesis::p_value_log10_of(self.tested_p_value("AnovaRow::p_value_log10")?)
+    }
+
+    /// `ln` of the p-value, evaluated as an expression; see [`PValue`].
+    ///
+    /// # Errors
+    ///
+    /// As [`p_value_f64`](Self::p_value_f64).
+    pub fn p_value_ln(&self) -> Result<f64, SymplexError> {
+        hypothesis::p_value_ln_of(self.tested_p_value("AnovaRow::p_value_ln")?)
+    }
+
+    /// The p-value to `digits` significant digits as a decimal string with
+    /// exponent; see [`PValue`].
+    ///
+    /// # Errors
+    ///
+    /// As [`p_value_f64`](Self::p_value_f64).
+    pub fn p_value_decimal(&self, digits: u32) -> Result<String, SymplexError> {
+        self.tested_p_value("AnovaRow::p_value_decimal")?
+            .eval_decimal(digits)
+    }
+
+    /// The p-value expression of an effect row, or the `InvalidArgument`
+    /// error every accessor reports for an untested row.
+    fn tested_p_value(&self, op: &'static str) -> Result<&Ex, SymplexError> {
+        self.p_value
+            .as_ref()
+            .ok_or_else(|| invalid(op, format!("the {:?} row has no F test", self.source)))
     }
 }
 
@@ -815,6 +849,13 @@ impl Mauchly {
     }
 }
 
+impl PValue for Mauchly {
+    fn p_value_ex(&self) -> &Ex {
+        &self.p_value
+    }
+}
+p_value_accessors!(Mauchly);
+
 /// The outcome of a one-way repeated-measures analysis of variance; see
 /// [`anova_repeated_measures`].
 #[derive(Clone, Debug, PartialEq)]
@@ -888,12 +929,44 @@ impl RepeatedMeasuresAnova {
         self.p_value_hf.as_ref().map(Ex::eval_f64).transpose()
     }
 
+    /// `log10` of the Greenhouse–Geisser corrected p-value, finite even
+    /// when [`p_value_gg_f64`](Self::p_value_gg_f64) underflows to `0.0`;
+    /// see [`PValue`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates the evaluation error of the expression.
+    pub fn p_value_gg_log10(&self) -> Result<f64, SymplexError> {
+        hypothesis::p_value_log10_of(&self.p_value_gg)
+    }
+
+    /// `log10` of the Huynh–Feldt corrected p-value, if defined; see
+    /// [`p_value_gg_log10`](Self::p_value_gg_log10).
+    ///
+    /// # Errors
+    ///
+    /// Propagates the evaluation error of the expression.
+    pub fn p_value_hf_log10(&self) -> Result<Option<f64>, SymplexError> {
+        self.p_value_hf
+            .as_ref()
+            .map(hypothesis::p_value_log10_of)
+            .transpose()
+    }
+
     /// The rows in table order: conditions, subjects, error, total.
     #[must_use]
     pub fn rows(&self) -> Vec<&AnovaRow> {
         vec![&self.conditions, &self.subjects, &self.error, &self.total]
     }
 }
+
+/// The uncorrected p-value (the `F` tail under sphericity).
+impl PValue for RepeatedMeasuresAnova {
+    fn p_value_ex(&self) -> &Ex {
+        &self.p_value
+    }
+}
+p_value_accessors!(RepeatedMeasuresAnova);
 
 /// Mauchly's `W` and its χ² approximation from the `k × k` sample covariance
 /// `s` and the trace of its double-centred form `S̃ = C S C`.

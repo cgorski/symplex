@@ -8,8 +8,14 @@
 //! Labels are category indices `0..n_categories`; a [`LabelTable`] holds
 //! them items × raters with `None` for a missing label.  Votes and
 //! accuracies are exact ([`Q`]); the two iterative estimators
-//! ([`dawid_skene`], [`bradley_terry`]) and the confidence intervals are
-//! `f64`.
+//! ([`dawid_skene`], [`bradley_terry`]) are `f64`.  The confidence
+//! intervals for a proportion come in an `f64` form
+//! ([`proportion_interval`]) and an exact one: Wald, Wilson and
+//! Agresti–Coull are closed algebraic expressions in the normal quantile
+//! `z` ([`proportion_interval_symbolic`], with `z = √2·erfinv(c)` from
+//! [`z_for_confidence`]), and the Clopper–Pearson endpoints are roots of
+//! degree-`n` polynomials with rational coefficients, returned as `RootOf`
+//! algebraic numbers ([`proportion_interval_exact`]).
 //!
 //! ```
 //! use symplex::stats::aggregation::{majority_vote, worker_accuracy};
@@ -23,13 +29,15 @@
 //! ```
 
 use num_bigint::BigInt;
-use num_traits::{One, Zero};
+use num_traits::{One, Signed, Zero};
 
 use crate::api::context::Context;
+use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
 use crate::domains::stats::Distribution;
-use crate::domains::stats::data::Q;
+use crate::domains::stats::data::{self, Q};
+use crate::domains::stats::family::fresh_symbol;
 
 fn invalid(op: &'static str, reason: impl Into<String>) -> SymplexError {
     SymplexError::invalid_argument(op, reason)
@@ -1196,4 +1204,271 @@ pub fn proportion_interval(
         }
         IntervalMethod::ClopperPearson => Interval::closed(0.0, 1.0),
     }))
+}
+
+// ── Exact confidence intervals for a proportion ──────────────────────
+
+fn check_trials(op: &'static str, successes: usize, trials: usize) -> Result<(), SymplexError> {
+    if trials == 0 {
+        return Err(invalid(op, "needs at least one trial"));
+    }
+    if successes > trials {
+        return Err(invalid(op, "more successes than trials"));
+    }
+    Ok(())
+}
+
+fn check_confidence(op: &'static str, confidence: &Q) -> Result<(), SymplexError> {
+    if !(confidence.is_positive() && *confidence < Q::one()) {
+        return Err(invalid(
+            op,
+            format!("the confidence must lie strictly between 0 and 1, got {confidence}"),
+        ));
+    }
+    Ok(())
+}
+
+/// The two-sided standard-normal quantile of a confidence level, exactly:
+/// `z = Φ⁻¹(1 − α/2) = √2 · erfinv(confidence)` with `α = 1 − confidence`
+/// (`scipy.stats.norm.ppf(1 - alpha/2)`).  This is the `z` of
+/// [`proportion_interval_exact`] and
+/// [`confidence_interval_mean_z_exact`](crate::stats::estimation::confidence_interval_mean_z_exact).
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::aggregation::z_for_confidence;
+/// use symplex::linprog::q;
+///
+/// let ctx = Context::new();
+/// // scipy: norm.ppf(0.975) = 1.959963984540054
+/// let z = z_for_confidence(&ctx, &q(95, 100))?;
+/// assert_eq!(format!("{z}"), "sqrt(2)*erfinv(19/20)");
+/// assert!((z.eval_f64()? - 1.959963984540054).abs() < 1e-12);
+/// assert!(z_for_confidence(&ctx, &q(1, 1)).is_err());
+/// # Ok::<(), SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] unless `0 < confidence < 1`.
+pub fn z_for_confidence(ctx: &Context, confidence: &Q) -> Result<Ex, SymplexError> {
+    check_confidence("z_for_confidence", confidence)?;
+    Ok(ctx.int(2).sqrt() * ctx.from_ratio(confidence.clone()).erfinv())
+}
+
+/// A confidence interval for the success probability behind `successes`
+/// out of `trials` as an exact expression in `z`, the two-sided normal
+/// quantile: the closed forms of [`proportion_interval`] with `p̂ = k/n`
+/// exact and `z` any expression.  A symbol gives the textbook formula;
+/// [`z_for_confidence`] gives the exact `z` of a level.  With `n` the
+/// number of trials:
+///
+/// * Wald: `p̂ ± z √(p̂(1−p̂)/n)`;
+/// * Wilson: `(p̂ + z²/2n ± z √(p̂(1−p̂)/n + z²/4n²)) / (1 + z²/n)`;
+/// * Agresti–Coull: `p̃ ± z √(p̃(1−p̃)/ñ)` with `ñ = n + z²` and
+///   `p̃ = (k + z²/2)/ñ`.
+///
+/// Unlike the `f64` function, the endpoints are **not** clipped to
+/// `[0, 1]`: a Wald bound may fall outside it (`k = 1`, `n = 5` at 95 %
+/// has a negative lower end), and for a symbolic `z` whether it does is
+/// not decidable.  Clip the evaluated numbers yourself if statsmodels
+/// parity is wanted.  Clopper–Pearson has no closed form in `z`; its exact
+/// endpoints are in [`proportion_interval_exact`].
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::aggregation::{
+///     proportion_interval_symbolic, z_for_confidence, IntervalMethod,
+/// };
+/// use symplex::linprog::q;
+///
+/// let ctx = Context::new();
+/// let z = ctx.symbol("z");
+/// let ci = proportion_interval_symbolic(&ctx, 3, 10, &z, IntervalMethod::Wilson)?;
+/// assert!(format!("{}", ci.upper).contains("z^2"));
+///
+/// // statsmodels: proportion_confint(3, 10, alpha=0.05, method='wilson')
+/// //   = (0.10779126740630104, 0.6032218525388546)
+/// let z95 = z_for_confidence(&ctx, &q(95, 100))?;
+/// let ci = proportion_interval_symbolic(&ctx, 3, 10, &z95, IntervalMethod::Wilson)?;
+/// assert!((ci.lower.eval_f64()? - 0.10779126740630104).abs() < 1e-12);
+/// assert!((ci.upper.eval_f64()? - 0.6032218525388546).abs() < 1e-12);
+/// assert!(proportion_interval_symbolic(&ctx, 3, 10, &z, IntervalMethod::ClopperPearson).is_err());
+/// # Ok::<(), SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for `trials = 0`,
+/// `successes > trials` or `method = ClopperPearson`.
+pub fn proportion_interval_symbolic(
+    ctx: &Context,
+    successes: usize,
+    trials: usize,
+    z: &Ex,
+    method: IntervalMethod,
+) -> Result<Interval<Ex>, SymplexError> {
+    let op = "proportion_interval_symbolic";
+    check_trials(op, successes, trials)?;
+    let n = ctx.int(trials as i64);
+    let p_hat = ctx.rational(successes as i64, trials as i64);
+    let z2 = z.powi(2);
+    // p̂(1 − p̂)/n
+    let var = &p_hat * (ctx.one() - &p_hat) / &n;
+    Ok(match method {
+        IntervalMethod::Wald => {
+            let half = z * var.sqrt();
+            Interval::closed(&p_hat - &half, &p_hat + &half)
+        }
+        IntervalMethod::Wilson => {
+            let denom = ctx.one() + &z2 / &n;
+            let centre = (&p_hat + &z2 / (ctx.int(2) * &n)) / &denom;
+            let half = z * (&var + &z2 / (ctx.int(4) * &n * &n)).sqrt() / &denom;
+            Interval::closed(&centre - &half, &centre + &half)
+        }
+        IntervalMethod::AgrestiCoull => {
+            let n_t = &n + &z2;
+            let p_t = (ctx.int(successes as i64) + &z2 / ctx.int(2)) / &n_t;
+            let half = z * (&p_t * (ctx.one() - &p_t) / &n_t).sqrt();
+            Interval::closed(&p_t - &half, &p_t + &half)
+        }
+        IntervalMethod::ClopperPearson => {
+            return Err(invalid(
+                op,
+                "Clopper–Pearson has no closed form in z; use proportion_interval_exact",
+            ));
+        }
+    })
+}
+
+/// The `p ∈ (0, 1)` at which a binomial tail equals `half_alpha`, as an
+/// exact algebraic number: the unique root in `(0, 1)` of the degree-`n`
+/// polynomial `Σ_j C(n, j) pʲ (1 − p)ⁿ⁻ʲ − α/2`, summed over `j ≥ k`
+/// (`upper_tail`, needs `k ≥ 1`) or `j ≤ k` (needs `k ≤ n − 1`).
+///
+/// The polynomial is built in a fresh symbol and expanded; Sturm's theorem
+/// (`count_real_roots_in`) certifies that exactly one root lies in
+/// `(0, 1)` — the tail is strictly monotone there — and counts the roots
+/// below `0`, which is the root's index among the ascending real roots;
+/// [`Ex::root_of`] then names it (a rational for a linear polynomial,
+/// otherwise `RootOf` of the irreducible factor over ℤ).
+fn binomial_tail_root(
+    ctx: &Context,
+    n: usize,
+    k: usize,
+    upper_tail: bool,
+    half_alpha: &Q,
+) -> Result<Ex, SymplexError> {
+    let op = "proportion_interval_exact";
+    let failed = |reason: String| SymplexError::computation_failed(op, reason);
+    let p = fresh_symbol(ctx, "p", &[]);
+    let one_minus_p = ctx.one() - &p;
+    let range = if upper_tail { k..=n } else { 0..=k };
+    let tail = range.fold(ctx.zero(), |acc, j| {
+        acc + ctx.from_ratio(data::binomial_q(n, j))
+            * p.powi(j as i64)
+            * one_minus_p.powi((n - j) as i64)
+    });
+    let poly = (tail - ctx.from_ratio(half_alpha.clone())).expand();
+    let (zero, one) = (ctx.zero(), ctx.one());
+    // `[0, 1]` closed, but neither end is a root: the tail is 0 or 1 there
+    // and 0 < α/2 < 1/2.
+    let in_unit = poly
+        .count_real_roots_in(&p, &zero, &one)
+        .ok_or_else(|| failed("the binomial tail did not expand to a polynomial".into()))?;
+    if in_unit != 1 {
+        return Err(failed(format!(
+            "expected exactly one root of the binomial tail in (0, 1) for n = {n}, k = {k}, found {in_unit}"
+        )));
+    }
+    let below = poly
+        .count_real_roots_in(&p, &ctx.neg_infinity(), &zero)
+        .ok_or_else(|| failed("the binomial tail did not expand to a polynomial".into()))?;
+    poly.root_of(&p, below).ok_or_else(|| {
+        failed(format!(
+            "could not name the root of the degree-{n} binomial tail polynomial \
+             (its factorisation over ℤ was not certified or the RootOf index is unstable); \
+             try a smaller number of trials"
+        ))
+    })
+}
+
+/// A two-sided confidence interval for the success probability behind
+/// `successes` out of `trials` at the rational level `confidence`, with
+/// exact endpoints (the `f64` [`proportion_interval`] rounds).  With
+/// `α = 1 − confidence`:
+///
+/// * Wald, Wilson, Agresti–Coull: [`proportion_interval_symbolic`] at
+///   `z = √2 · erfinv(confidence)` ([`z_for_confidence`]), an exact
+///   expression — **not** clipped to `[0, 1]`;
+/// * Clopper–Pearson: `p_L` is the root in `(0, 1)` of
+///   `Σ_{j=k}^{n} C(n, j) pʲ (1 − p)ⁿ⁻ʲ − α/2` (`0` when `k = 0`) and `p_U`
+///   the root in `(0, 1)` of `Σ_{j=0}^{k} C(n, j) pʲ (1 − p)ⁿ⁻ʲ − α/2`
+///   (`1` when `k = n`) — the Beta quantiles `Beta(k, n−k+1)⁻¹(α/2)` and
+///   `Beta(k+1, n−k)⁻¹(1−α/2)` as algebraic numbers.  Each is a rational
+///   when its polynomial is linear (`n = 1`), otherwise a `RootOf` node
+///   over the irreducible factor, which `Display`s as such and evaluates
+///   to any precision with [`Ex::eval_decimal`].
+///
+/// The Clopper–Pearson endpoints cost a Sturm isolation and a
+/// factorisation over ℤ of a degree-`n` polynomial: exact, but `O(n)`
+/// degree root isolation with coefficients around `C(n, n/2) 2ⁿ`, so
+/// tens of trials are the practical range (beyond `n ≈ 40` the crate may
+/// not certify the factorisation and reports [`SymplexError::ComputationFailed`]).
+/// For large `n` use the `f64` function.
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::aggregation::{proportion_interval_exact, IntervalMethod};
+/// use symplex::linprog::q;
+///
+/// let ctx = Context::new();
+/// // scipy: beta.ppf(0.025, 3, 8) = 0.06673951117773447,
+/// //        beta.ppf(0.975, 4, 7) = 0.6524528500599973
+/// let ci = proportion_interval_exact(&ctx, 3, 10, &q(95, 100), IntervalMethod::ClopperPearson)?;
+/// assert!(format!("{}", ci.lower).starts_with("RootOf("));
+/// assert!((ci.lower.eval_f64()? - 0.06673951117773447).abs() < 1e-12);
+/// assert!((ci.upper.eval_f64()? - 0.6524528500599973).abs() < 1e-12);
+/// // mpmath (50 dps): 0.066739511177734467114648056291648899
+/// assert!(ci.lower.eval_decimal(30)?.starts_with("0.06673951117773446711464805629"));
+///
+/// // n = 1: the tail is linear and the endpoint is a rational.
+/// let ci = proportion_interval_exact(&ctx, 1, 1, &q(9, 10), IntervalMethod::ClopperPearson)?;
+/// assert_eq!(ci.lower, ctx.rational(1, 20));
+/// assert_eq!(ci.upper, ctx.int(1));
+/// # Ok::<(), SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for `trials = 0`,
+/// `successes > trials` or a confidence outside `(0, 1)`;
+/// [`SymplexError::ComputationFailed`] if a Clopper–Pearson root cannot be
+/// named (see above).
+pub fn proportion_interval_exact(
+    ctx: &Context,
+    successes: usize,
+    trials: usize,
+    confidence: &Q,
+    method: IntervalMethod,
+) -> Result<Interval<Ex>, SymplexError> {
+    let op = "proportion_interval_exact";
+    check_trials(op, successes, trials)?;
+    check_confidence(op, confidence)?;
+    if method != IntervalMethod::ClopperPearson {
+        let z = z_for_confidence(ctx, confidence)?;
+        return proportion_interval_symbolic(ctx, successes, trials, &z, method);
+    }
+    let half_alpha = (Q::one() - confidence) / qu(2);
+    let lower = if successes == 0 {
+        ctx.zero()
+    } else {
+        binomial_tail_root(ctx, trials, successes, true, &half_alpha)?
+    };
+    let upper = if successes == trials {
+        ctx.one()
+    } else {
+        binomial_tail_root(ctx, trials, successes, false, &half_alpha)?
+    };
+    Ok(Interval::closed(lower, upper))
 }

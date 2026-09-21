@@ -238,6 +238,24 @@ r.mauchly;          // Some: W = 1245/7921, χ² 5.551145791696415 on 2 df, p 0.
 
 **Post hoc.** `tukey_hsd(&ctx, &groups, 0.95)` returns one `PairwiseComparison { i, j, diff, se, statistic, p_adj, ci }` per pair of a one-way design: the difference, the Tukey–Kramer standard error `√(MSE/2·(1/nᵢ + 1/nⱼ))` and the statistic are exact, while `p_adj` and the simultaneous interval come from the studentized range distribution, which has no closed form and is integrated numerically (`studentized_range_cdf` / `_sf` / `_quantile`, agreeing with scipy to about 1e-9).  `pairwise_t_tests(&ctx, &groups, Adjustment::Holm, 0.05)` is the alternative when variances differ: Welch tests for every pair, adjusted by Holm or Bonferroni through the `hypothesis` module.
 
+### Tiny p-values
+
+A p-value is an exact expression, so nothing is lost until you convert it — and `p_value_f64()` (that is, `eval_f64`) converts to an `f64`, which has nothing below about `1e-308`.  A χ² test on `[[9000, 1000], [1000, 9000]]` gives `χ² = 12800` on one degree of freedom; scipy reports `pvalue = 0.0`, and so does `p_value_f64()`, but the expression `uppergamma(1/2, 6400)/Gamma(1/2)` still holds the value.  Every result type with an exact p-value (`TestResult`, `ChiSquareResult`, `AnovaResult`, `RepeatedMeasuresAnova`, `Mauchly`; `AnovaRow` for its effect rows) implements the `stats::PValue` trait and offers the same methods inherently:
+
+```rust,ignore
+use symplex::stats::hypothesis::chi_square_independence;
+let table = [from_i64(&[9000, 1000]), from_i64(&[1000, 9000])];
+let r = chi_square_independence(&ctx, &table, false)?;
+r.statistic;               // 12800
+r.p_value_f64()?;          // 0.0 — underflow
+r.p_value_log10()?;        // -2781.636383026783   (mpmath: -2781.6363830267828509)
+r.p_value_ln()?;           // -6404.954469687346
+r.p_value_decimal(20)?;    // "2.3100265595063985852e-2782"
+r.p_value_decimal(5)?;     // "2.31e-2782"
+```
+
+`p_value_log10` and `p_value_ln` evaluate the *logarithm* of the expression in arbitrary precision, so they are finite for any positive `p` (an exact `0`, as from a perfectly correlated `pearson_test`, gives `-∞`; an exact `1` gives `0`), and `p_value_decimal(digits)` prints the value itself with an exponent.  `Ols::p_values_log10(&ctx)` does the same for every coefficient of a regression.  The numbers above, and the same accessors on every other result type, are asserted against mpmath in `tests/v17/v17_pvalues.rs`.
+
 ## What is exact and what is not
 
 Everything above is symbolic: rational parameters give rational or closed-form answers, and symbolic parameters stay symbolic (`E[X] = μ`). Two honest gaps: the integrator does not close every density integral (`LogNormal` probabilities stay as an `Integral` although its closed-form `cdf` is available — `probability` uses the `cdf` first), and infinite sums with *symbolic* parameters may stay as a `Sum`. `RandomVariable::sample` is the only numerical routine, seeded through `stats::Rng` so results reproduce.

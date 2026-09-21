@@ -900,3 +900,75 @@ pub fn confidence_interval_mean_z(
         Distribution::normal(ctx.zero(), ctx.one()).quantile_f64(1.0 - (1.0 - confidence) / 2.0)?;
     Ok(Interval::closed(mean - z * se, mean + z * se))
 }
+
+/// The z confidence interval for a population mean with known `σ` as an
+/// exact expression in `z`: `x̄ ∓ z · σ/√n` with the sample mean and
+/// `σ/√n` exact ([`standard_error_mean`]) and `z` any expression — a
+/// symbol for the textbook formula, or the exact quantile of a level from
+/// [`z_for_confidence`](crate::stats::aggregation::z_for_confidence) (which
+/// is what [`confidence_interval_mean_z_exact`] passes).
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] unless the data are non-empty and
+/// `σ > 0`.
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::estimation::confidence_interval_mean_z_symbolic;
+/// use symplex::linprog::qi;
+///
+/// let ctx = Context::new();
+/// let z = ctx.symbol("z");
+/// // x̄ = 2, σ/√n = 2/√3
+/// let ci = confidence_interval_mean_z_symbolic(&ctx, &[1, 2, 3].map(qi), &qi(2), &z)?;
+/// assert_eq!(format!("{}", ci.upper), "2/3*z*sqrt(3) + 2");
+/// assert_eq!(format!("{}", (&ci.upper - &ci.lower).simplify()), "4/3*z*sqrt(3)");
+/// # Ok::<(), SymplexError>(())
+/// ```
+pub fn confidence_interval_mean_z_symbolic(
+    ctx: &Context,
+    data: &[Q],
+    sigma: &Q,
+    z: &Ex,
+) -> Result<Interval<Ex>, SymplexError> {
+    nonempty(data, "confidence_interval_mean_z_symbolic")?;
+    let se = standard_error_mean(ctx, sigma, data.len())?;
+    let mean = ctx.from_ratio(data::mean(data)?);
+    let half = z * se;
+    Ok(Interval::closed(&mean - &half, &mean + &half))
+}
+
+/// The z confidence interval for a population mean with known `σ` at the
+/// rational level `confidence`, with exact endpoints:
+/// [`confidence_interval_mean_z_symbolic`] at `z = √2 · erfinv(confidence)`
+/// ([`z_for_confidence`](crate::stats::aggregation::z_for_confidence)).  The
+/// `f64` [`confidence_interval_mean_z`] rounds the same numbers.
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] unless the data are non-empty,
+/// `σ > 0` and `0 < confidence < 1`.
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::estimation::confidence_interval_mean_z_exact;
+/// use symplex::linprog::{q, qi};
+///
+/// let ctx = Context::new();
+/// // x̄ = 2, σ/√n = 2/√3; scipy: norm.interval(0.95, 2, 2/sqrt(3)) = (-0.2631714681523438, 4.263171468152343)
+/// let ci = confidence_interval_mean_z_exact(&ctx, &[1, 2, 3].map(qi), &qi(2), &q(95, 100))?;
+/// assert!((ci.lower.eval_f64()? + 0.2631714681523438).abs() < 1e-12);
+/// assert!((ci.upper.eval_f64()? - 4.263171468152343).abs() < 1e-12);
+/// # Ok::<(), SymplexError>(())
+/// ```
+pub fn confidence_interval_mean_z_exact(
+    ctx: &Context,
+    data: &[Q],
+    sigma: &Q,
+    confidence: &Q,
+) -> Result<Interval<Ex>, SymplexError> {
+    nonempty(data, "confidence_interval_mean_z_exact")?;
+    let z = super::aggregation::z_for_confidence(ctx, confidence)?;
+    confidence_interval_mean_z_symbolic(ctx, data, sigma, &z)
+}

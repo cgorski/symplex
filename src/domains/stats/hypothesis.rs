@@ -19,6 +19,18 @@
 //!   through a quantile, the Kolmogorov–Smirnov `D` of a transcendental
 //!   CDF, bootstrap / permutation p-values, power) are `f64` and say so.
 //!
+//! **Tiny p-values.**  Because a p-value is an exact expression, nothing is
+//! lost until it is converted: `p_value_f64` (that is, [`Ex::eval_f64`])
+//! underflows to `0.0` below about `1e-308`, but the expression still holds
+//! the value (`χ² = 12800` on one degree of freedom is
+//! `uppergamma(1/2, 6400)/Γ(1/2) ≈ 2.31e-2782`).  Every result type with an
+//! exact p-value implements [`PValue`] and mirrors its methods inherently:
+//! `p_value_log10` / `p_value_ln` evaluate the logarithm *as an expression*,
+//! in arbitrary precision, so they are finite for any positive `p`
+//! (`−2781.64` for the example), and `p_value_decimal(digits)` gives the
+//! value itself as a decimal string with exponent
+//! (`"2.3100265595063985852e-2782"`).
+//!
 //! Every function names the `scipy.stats` / `statsmodels` routine whose
 //! conventions it follows (alternative hypotheses, tie corrections,
 //! continuity corrections, two-sided definitions of the discrete tests);
@@ -40,6 +52,7 @@
 //! ```
 
 use std::cmp::Ordering;
+use std::f64::consts::LN_10;
 
 use num_bigint::BigInt;
 use num_traits::{One, Signed, ToPrimitive, Zero};
@@ -225,6 +238,177 @@ pub enum Alternative {
     Greater,
 }
 
+/// A result carrying an exact p-value expression.
+///
+/// The p-value of every test in `stats` is an exact expression ([`Ex`]);
+/// this trait is the common way to read it.  [`p_value_f64`] is the usual
+/// conversion and underflows to `0.0` when `p < f64::MIN_POSITIVE`
+/// (about `1e-308`); [`p_value_log10`] and [`p_value_ln`] evaluate the
+/// logarithm *as an expression*, in arbitrary precision, and so stay finite
+/// for any positive `p`; [`p_value_decimal`] prints `p` itself to any
+/// number of digits.  Every implementing type also offers the same methods
+/// inherently, so the trait need not be imported to use them.
+///
+/// [`p_value_f64`]: PValue::p_value_f64
+/// [`p_value_log10`]: PValue::p_value_log10
+/// [`p_value_ln`]: PValue::p_value_ln
+/// [`p_value_decimal`]: PValue::p_value_decimal
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::PValue;
+/// use symplex::stats::data::from_i64;
+/// use symplex::stats::hypothesis::chi_square_independence;
+///
+/// let ctx = Context::new();
+/// // A 2 × 2 table with χ² = 12800 on one degree of freedom.
+/// let table = [from_i64(&[9000, 1000]), from_i64(&[1000, 9000])];
+/// let r = chi_square_independence(&ctx, &table, false)?;
+/// assert_eq!(r.p_value_f64()?, 0.0); // underflows: the true p is 2.31e-2782
+/// // mpmath: log10(gammainc(0.5, 6400, regularized=True)) = -2781.6363830267828509
+/// assert!((r.p_value_log10()? + 2781.636_383_026_783).abs() < 1e-9);
+/// assert!((r.p_value_ln()? + 6404.954_469_687_346).abs() < 1e-9);
+/// assert_eq!(r.p_value_decimal(20)?, "2.3100265595063985852e-2782");
+/// # Ok::<(), SymplexError>(())
+/// ```
+///
+/// An exact `0` (a discrete or degenerate test) gives `log10 p = ln p = −∞`;
+/// an exact `1` gives `0`:
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::PValue;
+/// use symplex::stats::data::from_i64;
+/// use symplex::stats::hypothesis::Alternative;
+/// use symplex::stats::reliability::pearson_test;
+///
+/// let ctx = Context::new();
+/// let x = from_i64(&[1, 2, 3, 4]);
+/// let y = from_i64(&[2, 4, 6, 8]); // r = 1 exactly
+/// let two_sided = pearson_test(&ctx, &x, &y, Alternative::TwoSided)?;
+/// assert_eq!(two_sided.p_value_ex(), &ctx.zero());
+/// assert_eq!(two_sided.p_value_log10()?, f64::NEG_INFINITY);
+/// let less = pearson_test(&ctx, &x, &y, Alternative::Less)?;
+/// assert_eq!(less.p_value_ex(), &ctx.one());
+/// assert_eq!(less.p_value_log10()?, 0.0);
+/// # Ok::<(), SymplexError>(())
+/// ```
+pub trait PValue {
+    /// The p-value as an exact expression.
+    fn p_value_ex(&self) -> &Ex;
+
+    /// The p-value as an `f64`.  Underflows to `0.0` below about `1e-308`;
+    /// use [`p_value_log10`](PValue::p_value_log10) or
+    /// [`p_value_decimal`](PValue::p_value_decimal) for tiny values.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the evaluation error of the expression (not expected for
+    /// the expressions `stats` builds).
+    fn p_value_f64(&self) -> Result<f64, SymplexError> {
+        self.p_value_ex().eval_f64()
+    }
+
+    /// `log10 p`, finite even when `p` underflows `f64` (`−2781.64` for
+    /// the χ² example above): `ln p` is evaluated as an expression and
+    /// divided by `ln 10`.  An exact `0` gives `−∞`; an exact `1` gives `0`.
+    ///
+    /// # Errors
+    ///
+    /// As [`p_value_f64`](PValue::p_value_f64).
+    fn p_value_log10(&self) -> Result<f64, SymplexError> {
+        p_value_log10_of(self.p_value_ex())
+    }
+
+    /// `ln p`, evaluated as an expression so it is finite for any positive
+    /// `p`.  An exact `0` gives `−∞`; an exact `1` gives `0`.
+    ///
+    /// # Errors
+    ///
+    /// As [`p_value_f64`](PValue::p_value_f64).
+    fn p_value_ln(&self) -> Result<f64, SymplexError> {
+        p_value_ln_of(self.p_value_ex())
+    }
+
+    /// `p` to `digits` significant digits as a decimal string, with an
+    /// exponent when one is needed (`"2.3100265595063985852e-2782"`);
+    /// [`Ex::eval_decimal`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Ex::eval_decimal`].
+    fn p_value_decimal(&self, digits: u32) -> Result<String, SymplexError> {
+        self.p_value_ex().eval_decimal(digits)
+    }
+}
+
+/// `ln p` of a p-value expression: `−∞` for an exact `0`, `0` for an exact
+/// `1`, otherwise `ln(p)` evaluated as an expression — in arbitrary
+/// precision, so the result is finite even when `p` is below
+/// `f64::MIN_POSITIVE`.  (`ln` of a structural zero would evaluate to `-oo`
+/// and fail to parse, hence the exact check first.)
+pub(crate) fn p_value_ln_of(p: &Ex) -> Result<f64, SymplexError> {
+    let reduced = p.eval();
+    match reduced.as_rational() {
+        Some(q) if q.is_zero() => Ok(f64::NEG_INFINITY),
+        Some(q) if q.is_one() => Ok(0.0),
+        _ => reduced.ln().eval_f64(),
+    }
+}
+
+/// `log10 p = ln p / ln 10`, with `ln p` from [`p_value_ln_of`].
+pub(crate) fn p_value_log10_of(p: &Ex) -> Result<f64, SymplexError> {
+    p_value_ln_of(p).map(|ln_p| ln_p / LN_10)
+}
+
+/// Inherent `p_value_log10` / `p_value_ln` / `p_value_decimal` on a type
+/// implementing [`PValue`], so the methods are discoverable without
+/// importing the trait.
+macro_rules! p_value_accessors {
+    ($ty:ty) => {
+        impl $ty {
+            /// `log10` of the p-value, finite even when
+            /// [`p_value_f64`](Self::p_value_f64) underflows to `0.0`: the
+            /// logarithm is evaluated as an expression.  An exact `0` gives
+            /// `−∞`, an exact `1` gives `0`.  See
+            /// [`PValue`](crate::stats::PValue).
+            ///
+            /// # Errors
+            ///
+            /// As [`p_value_f64`](Self::p_value_f64).
+            pub fn p_value_log10(&self) -> Result<f64, $crate::base::errors::SymplexError> {
+                <Self as $crate::stats::PValue>::p_value_log10(self)
+            }
+
+            /// `ln` of the p-value, evaluated as an expression so it is
+            /// finite for any positive `p`.  An exact `0` gives `−∞`, an
+            /// exact `1` gives `0`.  See [`PValue`](crate::stats::PValue).
+            ///
+            /// # Errors
+            ///
+            /// As [`p_value_f64`](Self::p_value_f64).
+            pub fn p_value_ln(&self) -> Result<f64, $crate::base::errors::SymplexError> {
+                <Self as $crate::stats::PValue>::p_value_ln(self)
+            }
+
+            /// The p-value to `digits` significant digits as a decimal
+            /// string with exponent (`"2.3100265595063985852e-2782"`).
+            /// See [`PValue`](crate::stats::PValue).
+            ///
+            /// # Errors
+            ///
+            /// As [`Ex::eval_decimal`](crate::api::expr::Ex::eval_decimal).
+            pub fn p_value_decimal(
+                &self,
+                digits: u32,
+            ) -> Result<String, $crate::base::errors::SymplexError> {
+                <Self as $crate::stats::PValue>::p_value_decimal(self, digits)
+            }
+        }
+    };
+}
+pub(crate) use p_value_accessors;
+
 /// The outcome of a test: an exact statistic, an exact p-value expression
 /// and (when the reference distribution has one) the degrees of freedom.
 #[derive(Clone, Debug, PartialEq)]
@@ -232,7 +416,10 @@ pub struct TestResult {
     /// The test statistic, exact (a rational, or a rational times a root).
     pub statistic: Ex,
     /// The p-value as an exact expression; evaluate with
-    /// [`p_value_f64`](Self::p_value_f64).
+    /// [`p_value_f64`](Self::p_value_f64), or with
+    /// [`p_value_log10`](Self::p_value_log10) /
+    /// [`p_value_decimal`](Self::p_value_decimal) when it may be below
+    /// `1e-308`.
     pub p_value: Ex,
     /// Degrees of freedom of the reference distribution, if any (exact; the
     /// Welch–Satterthwaite `ν` is a rational).
@@ -276,6 +463,13 @@ impl TestResult {
     }
 }
 
+impl PValue for TestResult {
+    fn p_value_ex(&self) -> &Ex {
+        &self.p_value
+    }
+}
+p_value_accessors!(TestResult);
+
 /// How the p-value of a rank test is computed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RankMethod {
@@ -316,6 +510,13 @@ impl ChiSquareResult {
     }
 }
 
+impl PValue for ChiSquareResult {
+    fn p_value_ex(&self) -> &Ex {
+        &self.p_value
+    }
+}
+p_value_accessors!(ChiSquareResult);
+
 /// The outcome of a one-way analysis of variance.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnovaResult {
@@ -346,6 +547,13 @@ impl AnovaResult {
         self.p_value.eval_f64()
     }
 }
+
+impl PValue for AnovaResult {
+    fn p_value_ex(&self) -> &Ex {
+        &self.p_value
+    }
+}
+p_value_accessors!(AnovaResult);
 
 /// A ratio estimate (odds ratio, relative risk) with a Wald confidence
 /// interval on the log scale.

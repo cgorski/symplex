@@ -86,6 +86,7 @@ mod wrappers;
 pub use continuous::*;
 pub use discrete::*;
 pub use family::{Distribution, Family, Sampler, same_family};
+pub use hypothesis::PValue;
 pub use joint::*;
 pub use rv::RandomVariable;
 pub use sample::Rng;
