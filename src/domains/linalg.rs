@@ -161,9 +161,9 @@ fn entry_is_zero(e: &Ex) -> bool {
     }
     // Purely numeric (no free symbols) but not folded: decide numerically.
     if s.free_symbols().is_empty()
-        && let Ok((re, im)) = s.eval_complex64()
+        && let Ok(z) = s.eval_complex64()
     {
-        return re.hypot(im) < 1e-12;
+        return z.norm() < 1e-12;
     }
     false
 }

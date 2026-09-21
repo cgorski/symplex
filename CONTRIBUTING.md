@@ -844,7 +844,8 @@ silently, so **on the public surface (function signatures, `pub` fields,
 tuple is one of these, which stay:
 
 - **universal conventions that are pattern-matched at every use**:
-  `(x, y)` points, `(re, im)`, `(numer, denom)`, `(quotient, remainder)`
+  `(x, y)` points, `(re, im)` for *symbolic* parts (`f64` complex values are
+  `num_complex::Complex64`), `(numer, denom)`, `(quotient, remainder)`
   (`num_integer::div_rem`), `(base, exp)`, `(var, value)` substitution pairs
   and other key → value pairs (`Vec<(K, V)>` is the ordered-map idiom);
 - **ecosystem conventions**: `shape() -> (rows, cols)`;
@@ -861,13 +862,14 @@ with a repeated element type beyond its allowlisted count (and when an
 allowlisted file loses one without the allowlist being tightened).  Each
 allowlist entry names its kept sites and the convention that justifies them.
 
-The shared types this produced live in `src/base/interval.rs` and are in the
-prelude:
+The shared types this produced live in `src/base/interval.rs` and
+`src/base/extended.rs` and are in the prelude:
 
 | Need | Type |
 |---|---|
 | two finite endpoints, any of `[a, b]`, `(a, b)`, `(a, b]`, `[a, b)` | `Interval<T> { lower, upper, kind }` — a `Vec<Interval<Q>>` can mix kinds (a bisection that hits a root exactly yields `[r, r]` beside `(lo, hi]`) |
 | closed constraint side, either end possibly absent (LP variable bounds, bounding boxes) | `Bounds<T> { lower: Option<T>, upper: Option<T> }` — **not** `Interval<Option<T>>`, whose `contains` is wrong because `None < Some` |
+| an endpoint that may be `±∞`, as a value | `Extended<T> { NegInf, Finite(T), PosInf }` (`src/base/extended.rs`), ordered `-∞ < a < b < +∞`; `Interval<Extended<T>>` for an unbounded interval whose infinite end has a kind |
 | symbolic endpoints, `±∞`, unions, set algebra | `SetEx` (`Context::interval`, `Interval<Ex>::to_set`) |
 | the support of a distribution | `stats::Support` (pieces are `Interval<Ex>` and points) |
 | oriented limits `∫ₐᵇ`, `Σₐᵇ`, a Fourier period | separate `lower`, `upper` arguments — reversal flips the sign, so it is not a set |

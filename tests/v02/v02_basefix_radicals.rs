@@ -120,7 +120,7 @@ fn negative_base_radicals_combine_flat() {
     // (-2)^(1/4)·(-2)^(1/4) = (-2)^(1/2) = i·√2 ; times √6 → i·√12 = 2·i·√3
     let p = &(&r * &r) * &r6;
     assert_flat_mul(&p);
-    let (re, im) = p.eval_complex64().unwrap();
+    let Complex64 { re, im } = p.eval_complex64().unwrap();
     assert!(
         re.abs() < 1e-12 && (im - 2.0 * 3f64.sqrt()).abs() < 1e-12,
         "{p}"
@@ -139,10 +139,10 @@ fn together_with_symbolic_radical_denominator() {
     let t = expr.together();
     assert_flat_mul(&t);
     // Must not panic; the value is preserved at a sample point.
-    let (re0, im0) = expr.subs_i64(&w, 2).eval_complex64().unwrap();
-    let (re1, im1) = t.subs_i64(&w, 2).eval_complex64().unwrap();
+    let z0 = expr.subs_i64(&w, 2).eval_complex64().unwrap();
+    let z1 = t.subs_i64(&w, 2).eval_complex64().unwrap();
     assert!(
-        (re0 - re1).abs() < 1e-9 && (im0 - im1).abs() < 1e-9,
+        (z0.re - z1.re).abs() < 1e-9 && (z0.im - z1.im).abs() < 1e-9,
         "{expr} vs {t}"
     );
 }

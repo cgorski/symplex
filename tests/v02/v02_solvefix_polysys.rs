@@ -18,11 +18,10 @@ use symplex::prelude::*;
 /// symbol, so sequential substitution would corrupt it).
 fn residual(f: &Ex, vars: &[Ex], sol: &[Ex]) -> f64 {
     let pairs: Vec<(&Ex, &Ex)> = vars.iter().zip(sol.iter()).collect();
-    let (re, im) = f
-        .subs_map(&pairs)
+    f.subs_map(&pairs)
         .eval_complex64()
-        .unwrap_or_else(|e| panic!("cannot evaluate residual of {f} at {sol:?}: {e}"));
-    re.hypot(im)
+        .unwrap_or_else(|e| panic!("cannot evaluate residual of {f} at {sol:?}: {e}"))
+        .norm()
 }
 
 /// Solve, assert the expected number of solutions, and verify every
@@ -43,7 +42,7 @@ fn check_system(eqs: &[Ex], vars: &[Ex], expected: usize) -> Vec<Vec<Ex>> {
         }
     }
     // Solutions must be pairwise distinct numerically.
-    let pts: Vec<Vec<(f64, f64)>> = sols
+    let pts: Vec<Vec<Complex64>> = sols
         .iter()
         .map(|s| s.iter().map(|v| v.eval_complex64().unwrap()).collect())
         .collect();
@@ -52,7 +51,7 @@ fn check_system(eqs: &[Ex], vars: &[Ex], expected: usize) -> Vec<Vec<Ex>> {
             let same = pts[i]
                 .iter()
                 .zip(&pts[j])
-                .all(|(a, b)| (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9);
+                .all(|(a, b)| (a.re - b.re).abs() < 1e-9 && (a.im - b.im).abs() < 1e-9);
             assert!(!same, "duplicate solution {:?}", pts[i]);
         }
     }
@@ -80,9 +79,9 @@ fn quartic_resultant_system_has_four_verified_solutions() {
             s[0].eval_complex64().unwrap(),
             s[1].eval_complex64().unwrap(),
         );
-        (xv.0 - 2.18754904943214).abs() < 1e-9
-            && xv.1.abs() < 1e-12
-            && (yv.0 + 1.78537084367146).abs() < 1e-9
+        (xv.re - 2.18754904943214).abs() < 1e-9
+            && xv.im.abs() < 1e-12
+            && (yv.re + 1.78537084367146).abs() < 1e-9
     });
     assert!(
         has_real,
@@ -101,7 +100,7 @@ fn biquadratic_eliminant_system_is_not_empty() {
     );
     let reals = sols
         .iter()
-        .filter(|s| s[0].eval_complex64().unwrap().1.abs() < 1e-12)
+        .filter(|s| s[0].eval_complex64().unwrap().im.abs() < 1e-12)
         .count();
     assert_eq!(reals, 2, "two real and two purely imaginary solutions");
 }
@@ -112,7 +111,7 @@ fn check_univariate_roots(p: &Ex, x: &Ex, expected: usize) -> Vec<Ex> {
     let roots = p.solve(x).expect("solvable");
     assert_eq!(roots.len(), expected, "roots of {p}: {roots:?}");
     for r in &roots {
-        let (re, im) = p.subs(x, r).eval_complex64().unwrap();
+        let Complex64 { re, im } = p.subs(x, r).eval_complex64().unwrap();
         assert!(
             re.hypot(im) < 1e-9,
             "root {r} of {p} has residual {re}+{im}i"
@@ -132,8 +131,8 @@ fn cubic_one_real_root_negative_cardano_radicand() {
     let reals: Vec<f64> = roots
         .iter()
         .filter_map(|r| {
-            let (re, im) = r.eval_complex64().unwrap();
-            (im.abs() < 1e-12).then_some(re)
+            let z = r.eval_complex64().unwrap();
+            (z.im.abs() < 1e-12).then_some(z.re)
         })
         .collect();
     assert_eq!(reals.len(), 1);
@@ -156,7 +155,7 @@ fn cubic_one_real_root_positive_q_negative_p() {
     let roots = check_univariate_roots(&p, &x, 3);
     let real: Vec<_> = roots
         .iter()
-        .filter(|r| r.eval_complex64().unwrap().1.abs() < 1e-12)
+        .filter(|r| r.eval_complex64().unwrap().im.abs() < 1e-12)
         .collect();
     assert_eq!(real.len(), 1);
     assert!((real[0].eval_f64().unwrap() + 2.279_018_786_).abs() < 1e-8);
@@ -170,7 +169,7 @@ fn cubic_three_real_roots_casus_irreducibilis() {
     let roots = check_univariate_roots(&p, &x, 3);
     for r in &roots {
         assert!(
-            r.eval_complex64().unwrap().1.abs() < 1e-12,
+            r.eval_complex64().unwrap().im.abs() < 1e-12,
             "{r} should be real"
         );
     }
@@ -185,8 +184,8 @@ fn quartic_with_negative_resolvent_radicand() {
     let reals: Vec<f64> = roots
         .iter()
         .filter_map(|r| {
-            let (re, im) = r.eval_complex64().unwrap();
-            (im.abs() < 1e-12).then_some(re)
+            let z = r.eval_complex64().unwrap();
+            (z.im.abs() < 1e-12).then_some(z.re)
         })
         .collect();
     assert_eq!(reals.len(), 2);
@@ -211,7 +210,7 @@ fn biquadratic_quartic_irrational() {
     let roots = check_univariate_roots(&p, &y, 4);
     let reals = roots
         .iter()
-        .filter(|r| r.eval_complex64().unwrap().1.abs() < 1e-12)
+        .filter(|r| r.eval_complex64().unwrap().im.abs() < 1e-12)
         .count();
     assert_eq!(reals, 2);
 }
@@ -224,11 +223,8 @@ fn biquadratic_quartic_all_complex() {
     let p = x.powi(4) + x.powi(2) + 1;
     let roots = check_univariate_roots(&p, &x, 4);
     for r in &roots {
-        let (re, im) = r.eval_complex64().unwrap();
-        assert!(
-            (re.hypot(im) - 1.0).abs() < 1e-9,
-            "{r} not on the unit circle"
-        );
+        let z = r.eval_complex64().unwrap();
+        assert!((z.norm() - 1.0).abs() < 1e-9, "{r} not on the unit circle");
     }
 }
 
@@ -271,7 +267,7 @@ fn system_cubic_and_line_has_complex_pair() {
     let sols = check_system(&[x.powi(3) - &y, &x + &y - 2], &[x.clone(), y.clone()], 3);
     let complex = sols
         .iter()
-        .filter(|s| s[0].eval_complex64().unwrap().1.abs() > 1e-9)
+        .filter(|s| s[0].eval_complex64().unwrap().im.abs() > 1e-9)
         .count();
     assert_eq!(complex, 2);
 }
@@ -305,7 +301,7 @@ fn system_parabola_pair_with_complex_solutions() {
     );
     let complex = sols
         .iter()
-        .filter(|s| s[0].eval_complex64().unwrap().1.abs() > 1e-9)
+        .filter(|s| s[0].eval_complex64().unwrap().im.abs() > 1e-9)
         .count();
     assert_eq!(complex, 2, "(-1/2 ± i√3/2) pair expected");
 }
@@ -355,7 +351,7 @@ fn system_purely_complex_solutions() {
     let (x, y) = xy(&ctx);
     let sols = check_system(&[x.powi(2) + 1, &y - &x], &[x.clone(), y.clone()], 2);
     for s in &sols {
-        assert!(s[0].eval_complex64().unwrap().1.abs() > 0.5);
+        assert!(s[0].eval_complex64().unwrap().im.abs() > 0.5);
     }
 }
 

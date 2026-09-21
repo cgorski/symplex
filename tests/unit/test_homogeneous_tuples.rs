@@ -32,23 +32,21 @@ const ALLOWLIST: &[(&str, usize)] = &[
     // ── Kept: universal conventions, pattern-matched at every use ─────────
     // `subs_map(&[(&var, &value)])` — substitution pairs (SymPy `subs([(x, 1)])`).
     ("api/expr.rs", 1),
-    // `as_real_imag -> (re, im)`; `polar -> (r, θ)`.
-    ("api/expr_complex.rs", 2),
-    // `factor_terms -> (coeff, rest)`; `as_numer_denom -> (numer, denom)`; `eval_complex64 -> (re, im)`;
+    // `as_real_imag -> (re, im)` (symbolic parts; the `f64` form is `Complex64`).
+    ("api/expr_complex.rs", 1),
+    // `factor_terms -> (coeff, rest)`; `as_numer_denom -> (numer, denom)`;
     // `cse`/`cse_many` `(symbol, definition)` bindings (SymPy `cse`); `plot_data -> (x, y)` points;
     // `eval_f64_with_rational(&[(&var, numer, denom)])` — a rational literal per variable.
-    ("api/expr_funcs.rs", 7),
+    ("api/expr_funcs.rs", 6),
     // `as_ratio_parts`/`as_ratio_i128 -> (numer, denom)`; `eval_at(&[(&var, &value)])`.
     ("api/expr_ops.rs", 3),
     // `poly_div -> (quotient, remainder)` (num_integer `div_rem`); `content_primitive -> (content, primitive)`;
-    // `poly_interpolate(&[(x, y)])` points; `nroots -> (re, im)`.
-    ("api/expr_poly_ext.rs", 4),
+    // `poly_interpolate(&[(x, y)])` points.
+    ("api/expr_poly_ext.rs", 3),
     // `separate_vars_dict -> Vec<(var, factor)>` (SymPy `separatevars(dict=True)`).
     ("api/expr_rules_ext.rs", 1),
     // `LinearSolution::pairs -> &[(var, value)]`.
     ("api/expr_solve_ext.rs", 1),
-    // `nroots -> (re, im)`.
-    ("api/poly_ex.rs", 1),
     // Internal mirrors of the public conventions: `as_base_exp -> (base, exp)` (as `Pow(base, exp)`),
     // `subs_map_structural`, `as_numer_denom_expr`, `factor_terms_pair_expr`, `as_real_imag_expr`,
     // `piecewise(&[(expr, cond)])` (SymPy `Piecewise((expr, cond), …)`).
@@ -112,8 +110,6 @@ const ALLOWLIST: &[(&str, usize)] = &[
     ("poly/generic.rs", 2),
     // `as_numer_denom`, `fraction_parts -> (numer, denom)`.
     ("poly/polybridge.rs", 2),
-    // `rootof_eval_f64`, `nroots_f64 -> (re, im)`.
-    ("poly/roots.rs", 2),
     // `EuclideanDomain::div_rem -> (quotient, remainder)`.
     ("poly/traits.rs", 1),
     // `symbolic_factor_terms_pair -> (coeff, rest)`.

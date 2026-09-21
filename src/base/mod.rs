@@ -7,6 +7,7 @@ pub(crate) mod compact;
 pub(crate) mod complex;
 pub mod config;
 pub mod errors;
+pub mod extended;
 pub mod interval;
 pub(crate) mod node;
 pub mod numeric;

@@ -104,8 +104,8 @@ fn is_real_finite_point(p: &Ex) -> bool {
         if p.contains(&ctx.i_unit()) && p.is_real() != Some(true) {
             return false;
         }
-        if let Ok((re, im)) = p.eval_complex64()
-            && im.abs() > 1e-12 * (1.0 + re.abs())
+        if let Ok(z) = p.eval_complex64()
+            && z.im.abs() > 1e-12 * (1.0 + z.re.abs())
         {
             return false;
         }

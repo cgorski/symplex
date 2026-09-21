@@ -38,7 +38,7 @@ fn higher_order_poles_from_spec() {
         .powi(-2)
         .try_residue(&z, &ctx.i_unit())
         .unwrap();
-    let (re, im) = r.eval_complex64().unwrap();
+    let Complex64 { re, im } = r.eval_complex64().unwrap();
     assert!(re.abs() < 1e-12 && (im + 0.25).abs() < 1e-12, "{r}");
 }
 

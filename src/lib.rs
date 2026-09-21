@@ -119,8 +119,10 @@ pub mod units;
 // `Matrix::from_ratio`, …).  Re-exported so a downstream crate can name and
 // manipulate those values without adding — and version-matching — the crates
 // itself: `symplex::num_rational::Ratio`, `symplex::num_bigint::BigInt`,
-// `symplex::num_traits::{Zero, One, Signed}`, `symplex::num_integer::Integer`.
+// `symplex::num_traits::{Zero, One, Signed}`, `symplex::num_integer::Integer`,
+// `symplex::num_complex::Complex64` (from `eval_complex64`, `nroots`).
 pub use num_bigint;
+pub use num_complex;
 pub use num_integer;
 pub use num_rational;
 pub use num_traits;
@@ -132,6 +134,8 @@ pub use base::assumptions;
 pub use base::config;
 /// Error types used throughout the library.
 pub use base::errors;
+/// A value or `±∞` — the extended line; `Interval<Extended<T>>` is an unbounded interval.
+pub use base::extended::Extended;
 /// Intervals (`[a, b]`, `(a, b)`, …) and possibly-unbounded closed bounds with named endpoints — the types behind every pair of bounds in the API.
 pub use base::interval::{Bounds, Interval, IntervalKind};
 
@@ -313,6 +317,7 @@ pub mod prelude {
     pub use crate::base::assumptions::{Assumption, Assumptions, Props};
     pub use crate::base::config::EvalConfig;
     pub use crate::base::errors::SymplexError;
+    pub use crate::base::extended::Extended;
     pub use crate::base::interval::{Bounds, Interval, IntervalKind};
     pub use crate::calculus::definite::{QuadOpts, QuadResult};
     pub use crate::calculus::formal_series::FormalPowerSeries;
@@ -331,6 +336,7 @@ pub mod prelude {
     pub use crate::output::lambdify::{CompiledFn, CompiledFnVec};
     pub use crate::poly::multipoly::{MonomialOrder, MultiPoly};
     pub use crate::transforms::expand::ExpandOpts;
+    pub use num_complex::Complex64;
     pub use symplex_macros::{dim, eq, expr, matrix, rule};
 
     // NOTE: `vars!`, `syms!`, and `sym!` are `#[macro_export]` macros and

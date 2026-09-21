@@ -122,7 +122,7 @@ fn main() {
 
     let q5 = &x.powi(5) - &x - 1;
     println!("{:?}", q5.count_real_roots(&x));                                      // Some(1)
-    for (re, im) in q5.nroots(&x, 12).unwrap() {
+    for Complex64 { re, im } in q5.nroots(&x, 12).unwrap() {
         println!("{re:.10} {im:+.10}i");
     }
     // Isolating intervals carry their kind: a Sturm cell is `(lo, hi]`, a root

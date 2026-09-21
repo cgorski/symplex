@@ -15,7 +15,7 @@ fn verify_roots(expr: &Ex, var: &Ex, roots: &[Ex], label: &str) {
         if residual.is_zero_structural() {
             continue;
         }
-        let (re, im) = residual
+        let Complex64 { re, im } = residual
             .eval_complex64()
             .unwrap_or_else(|e| panic!("{label}: cannot evaluate residual for root {r}: {e}"));
         assert!(
@@ -179,10 +179,10 @@ fn binomial_roots_are_explicit_not_rootof() {
     }
     verify_roots(&e, &x, &roots, "x^5 - 2");
     // Distinct as complex numbers.
-    let mut vals: Vec<(f64, f64)> = roots.iter().map(|r| r.eval_complex64().unwrap()).collect();
-    vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mut vals: Vec<Complex64> = roots.iter().map(|r| r.eval_complex64().unwrap()).collect();
+    vals.sort_by(|a, b| (a.re, a.im).partial_cmp(&(b.re, b.im)).unwrap());
     for w in vals.windows(2) {
-        assert!((w[0].0 - w[1].0).abs() + (w[0].1 - w[1].1).abs() > 1e-9);
+        assert!((w[0] - w[1]).l1_norm() > 1e-9);
     }
 }
 
@@ -231,7 +231,7 @@ fn verify_family(eq: &Ex, x: &Ex, fam: &symplex::polysys::GeneralSolution, label
     assert!(!fam.solutions.is_empty(), "{label}: empty");
     for k in -3..=3 {
         for s in fam.instance(k) {
-            let (re, im) = eq.subs(x, &s).eval_complex64().unwrap();
+            let Complex64 { re, im } = eq.subs(x, &s).eval_complex64().unwrap();
             assert!(
                 re.hypot(im) < 1e-9,
                 "{label}: n={k}, x={s}: residual {re}+{im}i"

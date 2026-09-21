@@ -152,12 +152,12 @@ fn check_coeff(
         match eval_at(got, ctx, pt) {
             Some(v) => {
                 evaluated += 1;
-                if !complex_matches(v, (*re, *im), 1e-9) {
+                if !complex_matches(v, Complex64::new(*re, *im), 1e-9) {
                     return Err(Status::Fail(format!(
                         "{what}: at {pt:?} symplex={} = ({}, {}i), sympy={want_str} = ({re}, {im}i)",
                         truncate(got),
-                        v.0,
-                        v.1
+                        v.re,
+                        v.im
                     )));
                 }
             }
@@ -799,7 +799,7 @@ fn optimize_brent_root_bracket() {
         let g = |t: f64| -> f64 {
             let mut subs = BTreeMap::new();
             subs.insert(x.to_string(), t);
-            eval_at(&f, ctx, &subs).map_or(f64::NAN, |(re, _)| re)
+            eval_at(&f, ctx, &subs).map_or(f64::NAN, |z| z.re)
         };
         let secondary = brent_root(g, lo, hi, &RootOpts::default());
         match (primary, secondary) {

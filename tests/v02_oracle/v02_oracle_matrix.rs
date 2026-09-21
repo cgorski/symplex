@@ -35,7 +35,7 @@ fn compare_matrix_entries(got: &Matrix, fx: &Fixture, key: &str, tol: f64) -> St
             let Num::Finite(re, im) = wv else {
                 return Status::SkippedOracle(format!("non-finite oracle entry ({i},{j})"));
             };
-            if !complex_matches(*gv, (*re, *im), tol) {
+            if !complex_matches(*gv, Complex64::new(*re, *im), tol) {
                 return Status::Fail(format!(
                     "entry ({i},{j}): symplex={gv:?} sympy=({re}, {im})"
                 ));
@@ -112,7 +112,7 @@ fn matrix_qr_decomposition() {
         for (i, row) in qtq.iter().enumerate() {
             for (j, v) in row.iter().enumerate() {
                 let want = if i == j { 1.0 } else { 0.0 };
-                if !complex_matches(*v, (want, 0.0), 1e-9) {
+                if !complex_matches(*v, Complex64::new(want, 0.0), 1e-9) {
                     return Status::Fail(format!("Q not orthonormal: (QᵀQ)[{i},{j}] = {v:?}"));
                 }
             }
@@ -124,7 +124,7 @@ fn matrix_qr_decomposition() {
         };
         for (i, row) in rr.iter().enumerate() {
             for (j, v) in row.iter().enumerate() {
-                if j < i && v.0.hypot(v.1) > 1e-9 {
+                if j < i && v.norm() > 1e-9 {
                     return Status::Fail(format!("R not upper triangular at ({i},{j}) = {v:?}"));
                 }
             }
@@ -135,7 +135,7 @@ fn matrix_qr_decomposition() {
             .map(|a| a.iter().filter_map(|v| v.as_f64()).collect())
             .unwrap_or_default();
         for (i, w) in want_diag.iter().enumerate() {
-            let g = rr[i][i].0.hypot(rr[i][i].1);
+            let g = rr[i][i].norm();
             if !approx_eq_tol(g, *w, 1e-8) {
                 return Status::Fail(format!("|R[{i},{i}]| = {g}, SymPy {w}"));
             }
@@ -182,14 +182,14 @@ fn matrix_jordan_form() {
                     continue;
                 }
                 if k == i + 1 {
-                    if complex_matches(*v, (1.0, 0.0), 1e-9) {
+                    if complex_matches(*v, Complex64::new(1.0, 0.0), 1e-9) {
                         ones += 1;
-                    } else if v.0.hypot(v.1) > 1e-9 {
+                    } else if v.norm() > 1e-9 {
                         return Status::Fail(format!(
                             "J super-diagonal entry ({i},{k}) = {v:?} is neither 0 nor 1"
                         ));
                     }
-                } else if v.0.hypot(v.1) > 1e-9 {
+                } else if v.norm() > 1e-9 {
                     return Status::Fail(format!("J has an off-Jordan entry at ({i},{k}) = {v:?}"));
                 }
             }
@@ -201,7 +201,7 @@ fn matrix_jordan_form() {
                 jn
             ));
         }
-        let diag: Vec<(f64, f64)> = (0..n).map(|i| jn[i][i]).collect();
+        let diag: Vec<Complex64> = (0..n).map(|i| jn[i][i]).collect();
         let want: Vec<Num> = fx
             .field("jordan_diag")
             .and_then(|v| v.as_array())
@@ -289,7 +289,7 @@ fn matrix_rank_and_nullspace() {
             let av = m.matmul(v).unwrap_or_else(|e| panic!("{e}"));
             match matrix_c64(&av) {
                 Ok(rows) => {
-                    if rows.iter().flatten().any(|c| c.0.hypot(c.1) > 1e-9) {
+                    if rows.iter().flatten().any(|c| c.norm() > 1e-9) {
                         return Status::Fail(format!(
                             "A·v != 0 for nullspace vector {:?}",
                             matrix_c64(v)
@@ -298,8 +298,7 @@ fn matrix_rank_and_nullspace() {
                 }
                 Err(e) => return Status::NotImplemented(e),
             }
-            if matrix_c64(v).map(|r| r.iter().flatten().all(|c| c.0.hypot(c.1) < 1e-12)) == Ok(true)
-            {
+            if matrix_c64(v).map(|r| r.iter().flatten().all(|c| c.norm() < 1e-12)) == Ok(true) {
                 return Status::Fail("nullspace contains the zero vector".into());
             }
         }
@@ -333,7 +332,7 @@ fn matrix_characteristic_polynomial() {
         let mut got = Vec::new();
         for c in coeffs.iter().rev() {
             match c.eval_complex64() {
-                Ok(v) => got.push((sign * v.0, sign * v.1)),
+                Ok(v) => got.push(Complex64::new(sign * v.re, sign * v.im)),
                 Err(e) => {
                     return Status::NotImplemented(format!(
                         "coefficient {} not numeric: {e}",

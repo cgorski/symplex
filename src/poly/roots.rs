@@ -18,13 +18,15 @@
 
 use astro_float::{BigFloat, Consts, RoundingMode};
 use num_bigint::BigInt;
+use num_complex::Complex64;
 use num_rational::Ratio;
 use num_traits::{One, Signed, Zero};
 
 use super::dense::Poly;
 use crate::base::bigcomplex::{c_add, c_div, c_from_real, c_mul, c_one, c_sub, c_zero};
 
-/// A complex number as `(real, imaginary)` pair of arbitrary-precision floats.
+/// A complex number as `(real, imaginary)` pair of arbitrary-precision
+/// floats (the working type; results are handed out as [`Complex64`]).
 type Complex = (BigFloat, BigFloat);
 
 /// Evaluate a polynomial with rational coefficients at a complex point
@@ -417,12 +419,12 @@ pub(crate) fn real_root_index(g: &Poly, lo: &Ratio<BigInt>, hi: &Ratio<BigInt>) 
     Some(k)
 }
 
-/// Convenience: evaluate the `index`-th root of a polynomial as a complex
-/// `(f64, f64)` pair.
+/// Convenience: evaluate the `index`-th root of a polynomial as a
+/// [`Complex64`].
 ///
 /// Returns `None` if the index is out of range.
 #[allow(dead_code)] // Used by tests; will be wired to evalf in a future PR
-pub(crate) fn rootof_eval_f64(poly: &Poly, index: usize) -> Option<(f64, f64)> {
+pub(crate) fn rootof_eval_f64(poly: &Poly, index: usize) -> Option<Complex64> {
     let n = poly.degree()?;
     if index >= n {
         return None;
@@ -435,9 +437,7 @@ pub(crate) fn rootof_eval_f64(poly: &Poly, index: usize) -> Option<(f64, f64)> {
     }
 
     let (re, im) = &roots[index];
-    let re_f64 = bigfloat_to_f64(re);
-    let im_f64 = bigfloat_to_f64(im);
-    Some((re_f64, im_f64))
+    Some(Complex64::new(bigfloat_to_f64(re), bigfloat_to_f64(im)))
 }
 
 /// Relative size below which a computed imaginary part is treated as a
@@ -447,7 +447,7 @@ pub(crate) fn rootof_eval_f64(poly: &Poly, index: usize) -> Option<(f64, f64)> {
 const REAL_AXIS_NOISE: f64 = 1e-6;
 
 /// Does the square-free polynomial `part` have a real root within a tiny
-/// interval around `z.0`?  Decided exactly with a Sturm count over
+/// interval around `z.re`?  Decided exactly with a Sturm count over
 /// `[re − ε, re + ε]`, `ε = 2⁻³⁰ · max(1, |re|)`, on exact rationals.
 ///
 /// Returns `false` immediately when `|im|` is not small relative to the
@@ -455,10 +455,10 @@ const REAL_AXIS_NOISE: f64 = 1e-6;
 /// chain is built lazily and cached in `sturm` across calls.
 fn is_real_root_near(
     part: &Poly,
-    z: (f64, f64),
+    z: Complex64,
     sturm: &mut Option<super::sturm::SturmChain>,
 ) -> bool {
-    let (re, im) = z;
+    let Complex64 { re, im } = z;
     if !re.is_finite() || !im.is_finite() {
         return false;
     }
@@ -485,7 +485,7 @@ fn bigfloat_to_f64(bf: &BigFloat) -> f64 {
     s.parse::<f64>().unwrap_or(f64::NAN)
 }
 
-/// All complex roots of `poly` as `(re, im)` pairs in `f64`, with
+/// All complex roots of `poly` as [`Complex64`] values, with
 /// multiplicities (a `k`-fold root appears `k` times).
 ///
 /// The polynomial is first split into square-free parts (Yun) so that
@@ -504,8 +504,8 @@ fn bigfloat_to_f64(bf: &BigFloat) -> f64 {
 ///
 /// Roots are sorted by real part, then imaginary part.  Constants and the
 /// zero polynomial produce an empty vector.
-pub(crate) fn nroots_f64(poly: &Poly, prec_bits: usize) -> Vec<(f64, f64)> {
-    let mut out: Vec<(f64, f64)> = Vec::new();
+pub(crate) fn nroots_f64(poly: &Poly, prec_bits: usize) -> Vec<Complex64> {
+    let mut out: Vec<Complex64> = Vec::new();
     if poly.degree().unwrap_or(0) == 0 {
         return out;
     }
@@ -518,19 +518,19 @@ pub(crate) fn nroots_f64(poly: &Poly, prec_bits: usize) -> Vec<(f64, f64)> {
         let roots = aberth_roots(&part, prec_bits, max_iter);
         let mut sturm: Option<super::sturm::SturmChain> = None;
         for (re, im) in roots {
-            let mut pair = (bigfloat_to_f64(&re), bigfloat_to_f64(&im));
-            if pair.1 != 0.0 && is_real_root_near(&part, pair, &mut sturm) {
-                pair.1 = 0.0;
+            let mut z = Complex64::new(bigfloat_to_f64(&re), bigfloat_to_f64(&im));
+            if z.im != 0.0 && is_real_root_near(&part, z, &mut sturm) {
+                z.im = 0.0;
             }
             for _ in 0..mult {
-                out.push(pair);
+                out.push(z);
             }
         }
     }
     out.sort_by(|a, b| {
-        a.0.partial_cmp(&b.0)
+        a.re.partial_cmp(&b.re)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .then(a.im.partial_cmp(&b.im).unwrap_or(std::cmp::Ordering::Equal))
     });
     out
 }
@@ -623,11 +623,11 @@ mod tests {
         let r1 = rootof_eval_f64(&poly, 1).unwrap();
 
         // Both imaginary parts should be ~0
-        assert!(r0.1.abs() < 1e-10);
-        assert!(r1.1.abs() < 1e-10);
+        assert!(r0.im.abs() < 1e-10);
+        assert!(r1.im.abs() < 1e-10);
 
         // Real parts should be -2 and 2 (sorted)
-        let mut reals = [r0.0, r1.0];
+        let mut reals = [r0.re, r1.re];
         reals.sort_by(|a, b| a.partial_cmp(b).unwrap());
         assert!((reals[0] - (-2.0)).abs() < 1e-10);
         assert!((reals[1] - 2.0).abs() < 1e-10);
@@ -646,10 +646,10 @@ mod tests {
         let poly = poly_from_coeffs(&[2, -3, 0, 1]);
         let roots = nroots_f64(&poly, 128);
         assert_eq!(roots.len(), 3);
-        assert!((roots[0].0 + 2.0).abs() < 1e-12, "{roots:?}");
-        assert!((roots[1].0 - 1.0).abs() < 1e-12, "{roots:?}");
-        assert!((roots[2].0 - 1.0).abs() < 1e-12, "{roots:?}");
-        assert!(roots.iter().all(|r| r.1.abs() < 1e-12));
+        assert!((roots[0].re + 2.0).abs() < 1e-12, "{roots:?}");
+        assert!((roots[1].re - 1.0).abs() < 1e-12, "{roots:?}");
+        assert!((roots[2].re - 1.0).abs() < 1e-12, "{roots:?}");
+        assert!(roots.iter().all(|r| r.im.abs() < 1e-12));
     }
 
     #[test]
@@ -662,8 +662,8 @@ mod tests {
         let roots = nroots_f64(&poly, 192);
         assert_eq!(roots.len(), 10);
         for (i, r) in roots.iter().enumerate() {
-            assert!((r.0 - (i as f64 + 1.0)).abs() < 1e-8, "root {i}: {r:?}");
-            assert!(r.1.abs() < 1e-8);
+            assert!((r.re - (i as f64 + 1.0)).abs() < 1e-8, "root {i}: {r:?}");
+            assert!(r.im.abs() < 1e-8);
         }
     }
 }

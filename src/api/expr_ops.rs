@@ -48,6 +48,7 @@ use std::ops;
 use std::sync::Arc;
 
 use num_bigint::BigInt;
+use num_complex::Complex64;
 use num_rational::Ratio;
 use num_traits::{ToPrimitive, Zero};
 use smallvec::SmallVec;
@@ -1300,9 +1301,9 @@ fn parse_decimal_exact(s: &str) -> Option<Ratio<BigInt>> {
 const NUMERIC_REL_TOL: f64 = 1e-9;
 
 /// Distance-based "clearly different" test for two complex f64 values.
-fn clearly_different((ar, ai): (f64, f64), (br, bi): (f64, f64)) -> bool {
-    let scale = 1.0_f64.max(ar.hypot(ai)).max(br.hypot(bi));
-    (ar - br).hypot(ai - bi) > NUMERIC_REL_TOL * scale
+fn clearly_different(a: Complex64, b: Complex64) -> bool {
+    let scale = 1.0_f64.max(a.norm()).max(b.norm());
+    (a - b).norm() > NUMERIC_REL_TOL * scale
 }
 
 /// SplitMix64 — tiny deterministic PRNG for sample points.
@@ -1513,11 +1514,11 @@ impl Ex {
         if d.is_constant()
             && let (Ok(a), Ok(b)) = (self.eval_complex64(), other.eval_complex64())
         {
-            let scale = 1.0_f64.max(a.0.abs()).max(b.0.abs());
-            if a.1.abs() > NUMERIC_REL_TOL * scale || b.1.abs() > NUMERIC_REL_TOL * scale {
+            let scale = 1.0_f64.max(a.re.abs()).max(b.re.abs());
+            if a.im.abs() > NUMERIC_REL_TOL * scale || b.im.abs() > NUMERIC_REL_TOL * scale {
                 return None; // complex values are unordered
             }
-            let diff = a.0 - b.0;
+            let diff = a.re - b.re;
             if diff.abs() > NUMERIC_REL_TOL * scale {
                 return Some(if diff > 0.0 {
                     Ordering::Greater

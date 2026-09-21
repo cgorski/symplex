@@ -19,13 +19,15 @@
 //! |---|---|
 //! | two finite endpoints, any of the four kinds | [`Interval<T>`] |
 //! | closed box side, either end possibly unbounded (LP, polytope) | [`Bounds<T>`] |
+//! | an endpoint that may be `±∞`, as a value | [`Extended<T>`](crate::base::extended::Extended); `Interval<Extended<T>>` for an unbounded interval |
 //! | symbolic endpoints, `±∞`, unions, set algebra | `SetEx` (`Context::interval`) |
 //! | the support of a distribution (intervals + points, lattice or continuous) | `stats::Support` |
 //! | oriented limits `∫ₐᵇ`, `Σₐᵇ` (reversal flips the sign) | separate `lower`, `upper` arguments — not a set |
 //!
 //! `Interval<Option<T>>` is *not* the way to spell an unbounded end:
 //! `Option`'s ordering puts `None` first, so `contains` would be wrong for
-//! an upper-unbounded interval.  Use [`Bounds<T>`].
+//! an upper-unbounded interval.  Use [`Bounds<T>`], or `Interval<Extended<T>>`
+//! when the openness of the infinite end matters.
 //!
 //! Neither type carries an ordering invariant — `lower <= upper` is the
 //! caller's business, because the endpoint type is often `Ex`, where

@@ -123,7 +123,7 @@ fn main() {
     let c = matrix![ctx, [0, 1, 0], [0, 0, 1], [1, 1, 0]];
     println!("C = {c}    char poly: {}", c.char_poly(&x).unwrap());
     for ev in c.eigenvals().unwrap() {
-        let (re, im) = ev.eval_complex64().unwrap();
+        let Complex64 { re, im } = ev.eval_complex64().unwrap();
         println!(
             "  {ev}  ≈  {re:.6} {} {:.6}i",
             if im < 0.0 { "−" } else { "+" },

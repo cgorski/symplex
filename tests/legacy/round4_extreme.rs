@@ -42,8 +42,8 @@ fn eval_f64_ex(expr: &Ex) -> Result<f64, SymplexError> {
     expr.eval().eval_f64()
 }
 
-/// Evaluate a fully numeric expression to complex (re, im).
-fn eval_c64(expr: &Ex) -> Result<(f64, f64), SymplexError> {
+/// Evaluate a fully numeric expression to a complex `f64`.
+fn eval_c64(expr: &Ex) -> Result<Complex64, SymplexError> {
     expr.eval().eval_complex64()
 }
 
@@ -398,7 +398,7 @@ fn complex_one_plus_i_to_the_10() {
 
     // (1+i)^2 = 2i => (1+i)^10 = (2i)^5 = 32*i^5 = 32*i
     match eval_c64(&result) {
-        Ok((re, im)) => {
+        Ok(Complex64 { re, im }) => {
             assert!(
                 approx(re, 0.0, 1e-10) && approx(im, 32.0, 1e-10),
                 "(1+i)^10 should be 32i, got ({re}, {im}i)"
@@ -432,7 +432,7 @@ fn euler_identity() {
 
     // Try numerical evaluation
     match eval_c64(&simplified) {
-        Ok((re, im)) => {
+        Ok(Complex64 { re, im }) => {
             assert!(
                 approx(re, 0.0, 1e-10) && approx(im, 0.0, 1e-10),
                 "exp(iπ) + 1 should be 0, got ({re} + {im}i)"
@@ -440,7 +440,7 @@ fn euler_identity() {
         }
         Err(_) => {
             match eval_c64(&expr) {
-                Ok((re, im)) => {
+                Ok(Complex64 { re, im }) => {
                     assert!(
                         approx(re, 0.0, 1e-10) && approx(im, 0.0, 1e-10),
                         "exp(iπ) + 1 should be 0, got ({re} + {im}i)"
@@ -511,7 +511,7 @@ fn i_to_the_i_is_real() {
     eprintln!("expected ≈ {expected}");
 
     match eval_c64(&result) {
-        Ok((re, im)) => {
+        Ok(Complex64 { re, im }) => {
             assert!(
                 approx(im, 0.0, 1e-8),
                 "i^i should be real, got imaginary part {im}"
@@ -559,7 +559,7 @@ fn complex_addition() {
     eprintln!("(2+3i) + (4-i) = {s}");
 
     match eval_c64(&result) {
-        Ok((re, im)) => {
+        Ok(Complex64 { re, im }) => {
             assert!(approx(re, 6.0, 1e-10), "real part should be 6, got {re}");
             assert!(approx(im, 2.0, 1e-10), "imag part should be 2, got {im}");
         }
@@ -2251,7 +2251,7 @@ fn simplify_preserves_value_stress() {
 fn eval_complex_real_expression() {
     let ctx = Context::new();
     let expr = ctx.int(42);
-    let (re, im) = eval_c64(&expr).expect("should evaluate");
+    let Complex64 { re, im } = eval_c64(&expr).expect("should evaluate");
     assert!(approx(re, 42.0, 1e-10), "real part should be 42, got {re}");
     assert!(
         approx(im, 0.0, 1e-10),
@@ -2607,10 +2607,10 @@ fn solve_quintic_no_radical() {
             );
             // Verify each claimed solution actually satisfies the equation
             for sol in &sols {
-                if let Ok((re, im)) = eval_c64(sol) {
+                if let Ok(Complex64 { re, im }) = eval_c64(sol) {
                     // Substitute back: sol^5 + sol + 1 should ≈ 0
                     let check = expr.subs(&x, sol).eval();
-                    if let Ok((cr, ci)) = eval_c64(&check) {
+                    if let Ok(Complex64 { re: cr, im: ci }) = eval_c64(&check) {
                         let mag = (cr * cr + ci * ci).sqrt();
                         assert!(
                             mag < 1e-6,

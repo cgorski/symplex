@@ -270,7 +270,7 @@ fn limit_from_the_right() {
 /// Decompose `Σ c·x^e` into `(e, c)` pairs by evaluating each term at
 /// x = 1, 2, 3 (works for any real exponent; returns None on anything that
 /// is not a monomial in `x`).
-fn monomial_coefficients(sum: &Ex, x: &Ex) -> Option<Vec<(f64, (f64, f64))>> {
+fn monomial_coefficients(sum: &Ex, x: &Ex) -> Option<Vec<(f64, Complex64)>> {
     let expanded = sum.expand();
     let terms = if expanded.expr_type() == ExprType::Add {
         expanded.args()
@@ -282,12 +282,12 @@ fn monomial_coefficients(sum: &Ex, x: &Ex) -> Option<Vec<(f64, (f64, f64))>> {
         let c = t.subs_i64(x, 1).eval_complex64().ok()?;
         let at2 = t.subs_i64(x, 2).eval_complex64().ok()?;
         let at3 = t.subs_i64(x, 3).eval_complex64().ok()?;
-        let cm = c.0.hypot(c.1);
+        let cm = c.norm();
         if cm < 1e-300 {
             continue;
         }
-        let r2 = at2.0.hypot(at2.1) / cm;
-        let r3 = at3.0.hypot(at3.1) / cm;
+        let r2 = at2.norm() / cm;
+        let r3 = at3.norm() / cm;
         let e = r2.log2();
         // Consistency: 3^e must match too, otherwise not a monomial.
         if (r3 - 3f64.powf(e)).abs() > 1e-6 * r3.max(1.0) {
@@ -307,7 +307,7 @@ fn series_at_infinity_laurent_coefficients() {
         };
         let x = ctx.symbol(fx.str("variable").unwrap_or("x"));
         let n_terms = fx.u64("n_terms").unwrap_or(6) as u32;
-        let want: Vec<(f64, (f64, f64))> = fx
+        let want: Vec<(f64, Complex64)> = fx
             .field("coefficients")
             .and_then(|v| v.as_array())
             .map(|a| {
@@ -315,7 +315,7 @@ fn series_at_infinity_laurent_coefficients() {
                     .filter_map(|c| {
                         let e = c.get("exp")?.as_f64()?;
                         match Num::from_json(c.get("value")?)? {
-                            Num::Finite(re, im) => Some((e, (re, im))),
+                            Num::Finite(re, im) => Some((e, Complex64::new(re, im))),
                             _ => None,
                         }
                     })
@@ -346,10 +346,10 @@ fn series_at_infinity_laurent_coefficients() {
         let min_got = got.iter().map(|(e, _)| *e).fold(f64::INFINITY, f64::min);
         let min_want = want.iter().map(|(e, _)| *e).fold(f64::INFINITY, f64::min);
         let cutoff = min_got.max(min_want);
-        let coeff_at = |list: &[(f64, (f64, f64))], e: f64| -> (f64, f64) {
+        let coeff_at = |list: &[(f64, Complex64)], e: f64| -> Complex64 {
             list.iter()
                 .filter(|(ee, _)| (ee - e).abs() < 1e-9)
-                .fold((0.0, 0.0), |acc, (_, c)| (acc.0 + c.0, acc.1 + c.1))
+                .fold(Complex64::new(0.0, 0.0), |acc, (_, c)| acc + c)
         };
         let mut exps: Vec<f64> = got.iter().chain(want.iter()).map(|(e, _)| *e).collect();
         exps.sort_by(|a, b| b.partial_cmp(a).unwrap());

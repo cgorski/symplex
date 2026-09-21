@@ -36,6 +36,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use num_bigint::BigInt;
+use num_complex::Complex64;
 use num_integer::Integer;
 use num_rational::Ratio;
 use num_traits::{One, Signed, Zero};
@@ -937,7 +938,7 @@ impl Poly {
     }
 
     /// Numeric complex roots of a univariate polynomial with rational
-    /// coefficients, as `(re, im)` pairs (see [`Ex::nroots`]).
+    /// coefficients, as [`Complex64`] values (see [`Ex::nroots`]).
     ///
     /// # Errors
     ///
@@ -954,9 +955,10 @@ impl Poly {
     /// let x = ctx.symbol("x");
     /// let p = Poly::new(&(&x.powi(2) - 2), &[&x]).unwrap();
     /// let roots = p.nroots(15).unwrap();
-    /// assert!((roots[1].0 - 2f64.sqrt()).abs() < 1e-12);
+    /// assert!((roots[1].re - 2f64.sqrt()).abs() < 1e-12);
+    /// assert_eq!(roots[1].im, 0.0);
     /// ```
-    pub fn nroots(&self, digits: u32) -> Result<Vec<(f64, f64)>, SymplexError> {
+    pub fn nroots(&self, digits: u32) -> Result<Vec<Complex64>, SymplexError> {
         if self.gens.len() != 1 {
             return Err(invalid("Poly::nroots", "polynomial must be univariate"));
         }

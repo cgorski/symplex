@@ -271,7 +271,7 @@ pub fn verify_roots(poly: &Ex, var: &Ex, roots: &[Ex], tol: f64) {
 
         // Fall back to complex evaluation
         match substituted.eval_complex64() {
-            Ok((re, im)) => {
+            Ok(Complex64 { re, im }) => {
                 let mag = (re * re + im * im).sqrt();
                 assert!(
                     mag < tol,

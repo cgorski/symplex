@@ -16,6 +16,18 @@
 use crate::api::expr::{Ex, Expr, Numeric};
 use crate::base::assumptions::Props;
 
+/// Polar form of a complex expression: `z = modulus · e^{i·argument}`.
+///
+/// Returned by [`Ex::polar`].  Both fields are symbolic; `modulus` is
+/// `|z|` and `argument` is the principal `arg(z) ∈ (−π, π]`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Polar {
+    /// `|z|`, the distance from the origin.
+    pub modulus: Ex,
+    /// `arg(z)`, the principal argument.
+    pub argument: Ex,
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // impl Expr<Numeric> — complex analysis
 // ═══════════════════════════════════════════════════════════════════════════
@@ -182,22 +194,27 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
-    /// Polar form `(|self|, arg(self))`.
+    /// Polar form `|self| · e^{i·arg(self)}` as a [`Polar`] with named
+    /// `modulus` and `argument` fields.
     ///
     /// # Examples
     ///
     /// ```
     /// use symplex::prelude::*;
+    /// use symplex::expr_complex::Polar;
     ///
     /// let ctx = Context::new();
     /// let z = &ctx.int(3) + &(&ctx.int(4) * &ctx.i_unit());
-    /// let (r, theta) = z.polar();
-    /// assert!((r.eval_f64().unwrap() - 5.0).abs() < 1e-12);
-    /// assert!((theta.eval_f64().unwrap() - (4.0f64).atan2(3.0)).abs() < 1e-12);
+    /// let Polar { modulus, argument } = z.polar();
+    /// assert!((modulus.eval_f64().unwrap() - 5.0).abs() < 1e-12);
+    /// assert!((argument.eval_f64().unwrap() - (4.0f64).atan2(3.0)).abs() < 1e-12);
     /// ```
     #[must_use]
-    pub fn polar(&self) -> (Ex, Ex) {
-        (self.abs(), self.arg())
+    pub fn polar(&self) -> Polar {
+        Polar {
+            modulus: self.abs(),
+            argument: self.arg(),
+        }
     }
 
     /// `|self|² = re² + im² = self·conjugate(self)`.

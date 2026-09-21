@@ -84,8 +84,8 @@ fn main() {
         "i^i           ≈ {}   (exact form stays i^i)",
         i.pow(&i).eval_decimal(20).unwrap()
     );
-    let (re_c, im_c) = i.exp().eval_complex64().unwrap();
-    println!("exp(i) as f64 = ({re_c:.6}, {im_c:.6})");
+    let exp_i = i.exp().eval_complex64().unwrap();
+    println!("exp(i) as f64 = ({:.6}, {:.6})", exp_i.re, exp_i.im);
 
     // ── 3. Roots of unity ───────────────────────────────────────────────
     println!("\n--- Roots of unity ---");

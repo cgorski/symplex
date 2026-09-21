@@ -307,10 +307,10 @@ fn gcd_or_lcm(ctx: &Context, fx: &Fixture) -> Status {
         if w.abs() < 1e-9 {
             continue;
         }
-        let Some((gv, _)) = eval_at(&r, ctx, &pt.subs) else {
+        let Some(gv) = eval_at(&r, ctx, &pt.subs) else {
             return Status::NotImplemented(format!("cannot evaluate {}", truncate(&r)));
         };
-        let q = gv / w;
+        let q = gv.re / w;
         match ratio {
             None => ratio = Some(q),
             Some(prev) if approx_eq(prev, q) => {}

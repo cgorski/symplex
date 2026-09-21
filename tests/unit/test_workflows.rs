@@ -442,7 +442,7 @@ fn workflow_complex_euler() {
 
     // exp(i*π) should evaluate to -1
     let expr = (&i * &pi).exp().eval();
-    let (re, im) = expr.eval_complex64().expect("exp(iπ) complex eval");
+    let Complex64 { re, im } = expr.eval_complex64().expect("exp(iπ) complex eval");
     assert!(
         (re - (-1.0)).abs() < 1e-9,
         "Re(exp(iπ)) should be -1, got {re}"
@@ -452,7 +452,8 @@ fn workflow_complex_euler() {
     // exp(i*π) + 1 should be 0  (Euler's identity)
     let euler = &(&i * &pi).exp() + 1;
     let euler_evaled = euler.eval();
-    let (re2, im2) = euler_evaled.eval_complex64().expect("euler identity eval");
+    let Complex64 { re: re2, im: im2 } =
+        euler_evaled.eval_complex64().expect("euler identity eval");
     let mag = (re2 * re2 + im2 * im2).sqrt();
     assert!(
         mag < 1e-9,
@@ -469,7 +470,7 @@ fn workflow_complex_euler_i_squared() {
     assert_eq!(format!("{i_sq}"), "-1");
 
     // |i| = 1
-    let (re, im) = i.eval_complex64().expect("i eval");
+    let Complex64 { re, im } = i.eval_complex64().expect("i eval");
     let mag = (re * re + im * im).sqrt();
     assert!((mag - 1.0).abs() < 1e-9, "|i| should be 1, got {mag}");
 }

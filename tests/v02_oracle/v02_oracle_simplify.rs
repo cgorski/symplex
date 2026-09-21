@@ -42,14 +42,14 @@ fn complex_part(ctx: &Context, fx: &Fixture) -> Status {
     // `re`/`im`/`arg`/`abs` are real by definition — a nonzero imaginary
     // part in the *evaluated* result is a wrong answer.
     if fx.subcategory != "conjugate"
-        && let Ok((_, im)) = r.eval_complex64()
-        && im.abs() > 1e-9
+        && let Ok(z) = r.eval_complex64()
+        && z.im.abs() > 1e-9
     {
         return Status::Fail(format!(
             "{}({}) evaluated to a non-real number: {}",
             fx.subcategory,
             truncate(&v),
-            im
+            z.im
         ));
     }
     compare_constant(ctx, &r, &expected, 1e-9)

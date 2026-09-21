@@ -443,7 +443,7 @@ fn log_of_negative_number_is_complex() {
     // Numerically, ln(-1) = i*pi ≈ 3.14159*i
     let eval_result = evaled.eval_complex64();
     match eval_result {
-        Ok((re, im)) => {
+        Ok(Complex64 { re, im }) => {
             eprintln!("ln(-1) complex: ({re}, {im})");
             // re should be ~0, im should be ~pi
             assert!(re.abs() < 1e-9, "ln(-1) real part should be 0, got: {re}");
@@ -782,7 +782,7 @@ fn rewrite_sin_as_exp() {
     // The rewritten form is complex — use eval_complex64
     let v_rew = rewritten.subs_i64(&x, 2).eval().eval_complex64();
     match (v_orig, v_rew) {
-        (Ok(o), Ok((re, im))) => {
+        (Ok(o), Ok(Complex64 { re, im })) => {
             assert!(
                 (o - re).abs() < 1e-9 && im.abs() < 1e-9,
                 "sin(x) rewrite_as_exp broke: orig={o}, rewritten=({re}+{im}i)"
@@ -828,7 +828,7 @@ fn rewrite_exp_ix_as_trig() {
     let orig_val = exp_ix.subs_i64(&x, 1).eval().eval_complex64();
     let rew_val = rewritten.subs_i64(&x, 1).eval().eval_complex64();
     match (orig_val, rew_val) {
-        (Ok((r1, i1)), Ok((r2, i2))) => {
+        (Ok(Complex64 { re: r1, im: i1 }), Ok(Complex64 { re: r2, im: i2 })) => {
             assert!(
                 (r1 - r2).abs() < 1e-9 && (i1 - i2).abs() < 1e-9,
                 "exp(ix) rewrite_as_trig broke: ({r1}+{i1}i) vs ({r2}+{i2}i)"
@@ -852,7 +852,7 @@ fn rewrite_roundtrip_sin_to_exp_and_back() {
     let v_orig = sin_x.subs_i64(&x, 2).eval().eval_f64();
     let v_round = back_to_trig.subs_i64(&x, 2).eval().eval_complex64();
     match (v_orig, v_round) {
-        (Ok(o), Ok((re, im))) => {
+        (Ok(o), Ok(Complex64 { re, im })) => {
             assert!(
                 (o - re).abs() < 1e-8 && im.abs() < 1e-8,
                 "sin(x) roundtrip rewrite broke: orig={o}, roundtrip=({re}+{im}i)"
@@ -1632,7 +1632,7 @@ fn pow_fractional_of_negative_number() {
     // Try numerical eval — should be -2 on real branch or complex
     let val = evaled.eval_complex64();
     match val {
-        Ok((re, im)) => {
+        Ok(Complex64 { re, im }) => {
             eprintln!("(-8)^(1/3) complex = ({re}, {im})");
             // Real cube root: -2.  Principal complex root: 1 + i*sqrt(3)
             // Either is acceptable; verify magnitude = 2
@@ -1991,7 +1991,7 @@ fn rewrite_tan_as_exp() {
     let v_orig = tan_x.subs_i64(&x, 1).eval().eval_f64();
     let v_rew = rewritten.subs_i64(&x, 1).eval().eval_complex64();
     match (v_orig, v_rew) {
-        (Ok(o), Ok((re, im))) => {
+        (Ok(o), Ok(Complex64 { re, im })) => {
             assert!(
                 (o - re).abs() < 1e-8 && im.abs() < 1e-8,
                 "tan(x) rewrite broke: {o} vs ({re}+{im}i)"
@@ -2565,7 +2565,7 @@ fn bug_rewrite_sin_cos_sum_as_exp_messy() {
         let v_orig = expr.subs_i64(&x, p).eval().eval_f64();
         let v_rew = rewritten.subs_i64(&x, p).eval().eval_complex64();
         match (v_orig, v_rew) {
-            (Ok(o), Ok((re, im))) => {
+            (Ok(o), Ok(Complex64 { re, im })) => {
                 assert!(
                     (o - re).abs() < 1e-9 && im.abs() < 1e-9,
                     "rewrite broke numerical equiv at x={p}: {o} vs ({re}+{im}i)"

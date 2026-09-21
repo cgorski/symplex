@@ -268,26 +268,28 @@ fn nroots_all_complex_roots() {
     let f = &x.powi(5) - &x - 1;
     let roots = f.nroots(&x, 15).unwrap();
     assert_eq!(roots.len(), 5);
-    let real: Vec<_> = roots.iter().filter(|r| r.1.abs() < 1e-9).collect();
+    let real: Vec<_> = roots.iter().filter(|r| r.im.abs() < 1e-9).collect();
     assert_eq!(real.len(), 1);
-    assert!((real[0].0 - 1.1673039782614187).abs() < 1e-9);
+    assert!((real[0].re - 1.1673039782614187).abs() < 1e-9);
     // Every root satisfies |f(z)| ≈ 0 (evaluate with complex arithmetic).
-    for (re, im) in &roots {
-        let z = (*re, *im);
+    for z in &roots {
         // Horner in complex arithmetic: coefficients of x^5 − x − 1.
         let coeffs = [-1.0, -1.0, 0.0, 0.0, 0.0, 1.0];
-        let mut acc = (0.0f64, 0.0f64);
+        let mut acc = Complex64::new(0.0, 0.0);
         for c in coeffs.iter().rev() {
-            acc = (acc.0 * z.0 - acc.1 * z.1 + c, acc.0 * z.1 + acc.1 * z.0);
+            acc = acc * z + c;
         }
-        assert!(acc.0.abs() < 1e-8 && acc.1.abs() < 1e-8, "residual {acc:?}");
+        assert!(
+            acc.re.abs() < 1e-8 && acc.im.abs() < 1e-8,
+            "residual {acc:?}"
+        );
     }
     // Multiplicity: (x − 1)² (x + 2)
     let g = ((&x - 1).powi(2) * (&x + 2)).expand();
     let roots = g.nroots(&x, 15).unwrap();
     assert_eq!(roots.len(), 3);
-    assert!((roots[0].0 + 2.0).abs() < 1e-10);
-    assert!((roots[1].0 - 1.0).abs() < 1e-10 && (roots[2].0 - 1.0).abs() < 1e-10);
+    assert!((roots[0].re + 2.0).abs() < 1e-10);
+    assert!((roots[1].re - 1.0).abs() < 1e-10 && (roots[2].re - 1.0).abs() < 1e-10);
     // Errors.
     assert!(x.sin().nroots(&x, 10).is_err());
     assert!(_ctx.int(3).nroots(&x, 10).is_err());
@@ -348,7 +350,7 @@ proptest! {
         let count = f.count_real_roots(&x).unwrap();
         let sf = f.square_free_part(&x).unwrap();
         let roots = sf.nroots(&x, 20).unwrap();
-        let real = roots.iter().filter(|(_, im)| im.abs() < 1e-7).count();
+        let real = roots.iter().filter(|z| z.im.abs() < 1e-7).count();
         prop_assert_eq!(count, real, "{}", f);
     }
 

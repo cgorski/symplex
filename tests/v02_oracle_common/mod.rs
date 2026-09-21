@@ -440,12 +440,10 @@ pub fn approx_eq(a: f64, b: f64) -> bool {
     approx_eq_tol(a, b, TOLERANCE)
 }
 
-pub fn complex_matches(actual: (f64, f64), expected: (f64, f64), tol: f64) -> bool {
+pub fn complex_matches(actual: Complex64, expected: Complex64, tol: f64) -> bool {
     // Compare with a tolerance relative to the magnitude of the whole number.
-    let scale = (expected.0.hypot(expected.1))
-        .max(actual.0.hypot(actual.1))
-        .max(1.0);
-    (actual.0 - expected.0).abs() / scale < tol && (actual.1 - expected.1).abs() / scale < tol
+    let scale = expected.norm().max(actual.norm()).max(1.0);
+    (actual.re - expected.re).abs() / scale < tol && (actual.im - expected.im).abs() / scale < tol
 }
 
 /// Parse a SymPy-syntax string; `oo` / `-oo` become ±∞.
@@ -471,7 +469,7 @@ pub fn f64_to_ex(ctx: &Context, v: f64) -> Option<Ex> {
 }
 
 /// Substitute the sample point and evaluate to a complex `f64`.
-pub fn eval_at(expr: &Ex, ctx: &Context, subs: &BTreeMap<String, f64>) -> Option<(f64, f64)> {
+pub fn eval_at(expr: &Ex, ctx: &Context, subs: &BTreeMap<String, f64>) -> Option<Complex64> {
     let mut e = expr.clone();
     for (name, v) in subs {
         let sym = ctx.symbol(name);
@@ -514,14 +512,14 @@ pub fn compare_constant(ctx: &Context, result: &Ex, expected: &Num, tol: f64) ->
     match expected {
         Num::Finite(re, im) => match result.eval_complex64() {
             Ok(val) => {
-                if complex_matches(val, (*re, *im), tol) {
+                if complex_matches(val, Complex64::new(*re, *im), tol) {
                     Status::Pass
                 } else {
                     Status::Fail(format!(
                         "symplex={} = ({}, {}i), sympy={}",
                         truncate(result),
-                        val.0,
-                        val.1,
+                        val.re,
+                        val.im,
                         expected
                     ))
                 }
@@ -559,10 +557,10 @@ pub fn compare_eval_points(
         match eval_at(result, ctx, &pt.subs) {
             Some(val) => {
                 evaluated += 1;
-                if !complex_matches(val, (re, im), tol) {
+                if !complex_matches(val, Complex64::new(re, im), tol) {
                     mismatches.push(format!(
                         "at {:?}: symplex=({}, {}i) sympy=({}, {}i)",
-                        pt.subs, val.0, val.1, re, im
+                        pt.subs, val.re, val.im, re, im
                     ));
                 }
             }
@@ -617,7 +615,7 @@ pub fn parse_matrix(ctx: &Context, fx: &Fixture, key: &str) -> Result<Matrix, St
 }
 
 /// Numeric `[[re, im]]` view of a matrix, or the entry that failed.
-pub fn matrix_c64(m: &Matrix) -> Result<Vec<Vec<(f64, f64)>>, String> {
+pub fn matrix_c64(m: &Matrix) -> Result<Vec<Vec<Complex64>>, String> {
     let (nr, nc) = m.shape();
     let mut out = Vec::with_capacity(nr);
     for i in 0..nr {
@@ -642,26 +640,26 @@ pub fn parse_num_matrix(fx: &Fixture, key: &str) -> Option<Vec<Vec<Num>>> {
         .collect()
 }
 
-pub fn sorted_complex(mut v: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+pub fn sorted_complex(mut v: Vec<Complex64>) -> Vec<Complex64> {
     v.sort_by(|a, b| {
-        let ka = ((a.0 * 1e9).round(), (a.1 * 1e9).round());
-        let kb = ((b.0 * 1e9).round(), (b.1 * 1e9).round());
+        let ka = ((a.re * 1e9).round(), (a.im * 1e9).round());
+        let kb = ((b.re * 1e9).round(), (b.im * 1e9).round());
         ka.partial_cmp(&kb).unwrap_or(std::cmp::Ordering::Equal)
     });
     v
 }
 
-pub fn nums_to_complex(v: &[Num]) -> Option<Vec<(f64, f64)>> {
+pub fn nums_to_complex(v: &[Num]) -> Option<Vec<Complex64>> {
     v.iter()
         .map(|n| match n {
-            Num::Finite(re, im) => Some((*re, *im)),
+            Num::Finite(re, im) => Some(Complex64::new(*re, *im)),
             _ => None,
         })
         .collect()
 }
 
 /// Compare two multisets of complex numbers (both sorted first).
-pub fn compare_complex_multisets(got: Vec<(f64, f64)>, want: Vec<(f64, f64)>, tol: f64) -> Status {
+pub fn compare_complex_multisets(got: Vec<Complex64>, want: Vec<Complex64>, tol: f64) -> Status {
     let got = sorted_complex(got);
     let want = sorted_complex(want);
     if got.len() != want.len() {

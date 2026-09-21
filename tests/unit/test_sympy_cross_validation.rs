@@ -160,8 +160,8 @@ fn approx_eq(a: f64, b: f64) -> bool {
     diff < TOLERANCE || diff / denom < TOLERANCE
 }
 
-/// Evaluate expression at a point, returning (re, im) or None.
-fn eval_at_point(expr: &Ex, ctx: &Context, subs: &HashMap<String, f64>) -> Option<(f64, f64)> {
+/// Evaluate expression at a point, returning the complex value or None.
+fn eval_at_point(expr: &Ex, ctx: &Context, subs: &HashMap<String, f64>) -> Option<Complex64> {
     let mut result = expr.clone();
     for (var_name, val) in subs {
         let var = ctx.symbol(var_name);
@@ -176,9 +176,9 @@ fn eval_at_point(expr: &Ex, ctx: &Context, subs: &HashMap<String, f64>) -> Optio
     result.eval_complex64().ok()
 }
 
-/// Check whether an actual (re, im) pair matches the expected NumValue.
-fn values_match(actual: (f64, f64), expected: &NumValue) -> bool {
-    approx_eq(actual.0, expected.re) && approx_eq(actual.1, expected.im)
+/// Check whether an actual complex value matches the expected NumValue.
+fn values_match(actual: Complex64, expected: &NumValue) -> bool {
+    approx_eq(actual.re, expected.re) && approx_eq(actual.im, expected.im)
 }
 
 /// Parse a "point" string that might be "0", "1", "oo", "pi", etc.
@@ -245,7 +245,7 @@ fn check_eval_points_strict(
                 if !values_match(val, expected) {
                     mismatches.push(format!(
                         "at {:?}: symplex=({}, {}i), sympy=({}, {}i)",
-                        pt.subs, val.0, val.1, expected.re, expected.im
+                        pt.subs, val.re, val.im, expected.re, expected.im
                     ));
                 }
             }
@@ -290,7 +290,7 @@ fn check_eval_points_fixture_strict(result: &Ex, ctx: &Context, fixture: &Fixtur
                         } else {
                             Status::Fail(format!(
                                 "value mismatch: symplex=({}, {}i), sympy=({}, {}i)",
-                                val.0, val.1, expected.re, expected.im
+                                val.re, val.im, expected.re, expected.im
                             ))
                         }
                     }
@@ -338,7 +338,7 @@ fn check_eval_points_integration(
             _ => continue,
         };
         match eval_at_point(result, ctx, &pt.subs) {
-            Some(val) => pairs.push((val.0, expected, pt.subs.clone())),
+            Some(val) => pairs.push((val.re, expected, pt.subs.clone())),
             None => {
                 // Can't evaluate our antiderivative at this point.
                 // With difference method we need at least 2 points,

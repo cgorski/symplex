@@ -28,7 +28,7 @@ fn verify_forward_on(f: &Ex, t: &Ex, w: &Ex, big_f: &Ex, lo: &Ex, hi: &Ex) {
         let im = -(f * (&w0_ex * t).sin())
             .integrate_numeric(t, lo, hi)
             .unwrap_or_else(|e| panic!("quadrature of {f} failed: {e}"));
-        let (gre, gim) = big_f
+        let Complex64 { re: gre, im: gim } = big_f
             .subs(w, &w0_ex)
             .eval_complex64()
             .unwrap_or_else(|e| panic!("{big_f} at {w0}: {e}"));
@@ -76,10 +76,10 @@ fn assert_same(a: &Ex, b: &Ex, label: &str) {
             ea = ea.subs(s, &v);
             eb = eb.subs(s, &v);
         }
-        let (ar, ai) = ea
+        let Complex64 { re: ar, im: ai } = ea
             .eval_complex64()
             .unwrap_or_else(|e| panic!("{label}: cannot evaluate {a}: {e}"));
-        let (br, bi) = eb
+        let Complex64 { re: br, im: bi } = eb
             .eval_complex64()
             .unwrap_or_else(|e| panic!("{label}: cannot evaluate {b}: {e}"));
         let tol = 1e-9 * (br.abs() + bi.abs()).max(1.0);
@@ -371,7 +371,7 @@ fn piecewise_inputs() {
     ]);
     let big_h = ft(&h, &t, &w);
     for w0 in [0.5f64, 1.5] {
-        let (re, im) = big_h
+        let Complex64 { re, im } = big_h
             .subs(&w, &ctx.from_f64(w0).unwrap())
             .eval_complex64()
             .unwrap();

@@ -123,34 +123,34 @@ fn main() {
 
     // ── 5. Numerical complex evaluation ────────────────────────────
     //
-    // eval_complex64() returns (real, imaginary) as f64 pair
+    // eval_complex64() returns a `Complex64` (num_complex) with `re`/`im` fields
 
     println!("\n--- Numerical Complex Evaluation ---");
 
     // I itself
-    let (re, im) = i.eval_complex64().unwrap();
+    let Complex64 { re, im } = i.eval_complex64().unwrap();
     println!("I  → ({re}, {im})");
 
     // I²
-    let (re, im) = i.powi(2).eval().eval_complex64().unwrap();
+    let Complex64 { re, im } = i.powi(2).eval().eval_complex64().unwrap();
     println!("I² → ({re}, {im})");
 
     // 2 + 3I
-    if let Ok((re, im)) = z1.eval_complex64() {
+    if let Ok(Complex64 { re, im }) = z1.eval_complex64() {
         println!("2 + 3I → ({re}, {im})");
     }
 
     // sqrt(-1) = I
     let sqrt_neg1 = ctx.int(-1).sqrt();
     println!("\nsqrt(-1) = {sqrt_neg1}");
-    if let Ok((re, im)) = sqrt_neg1.eval_complex64() {
+    if let Ok(Complex64 { re, im }) = sqrt_neg1.eval_complex64() {
         println!("  Numerical: ({re:.4}, {im:.4})");
     }
 
     // Evaluate complex roots numerically
     println!("\nNumerical values of roots of x² + 2x + 5 = 0:");
     for r in &roots2 {
-        if let Ok((re, im)) = r.eval_complex64() {
+        if let Ok(Complex64 { re, im }) = r.eval_complex64() {
             if im.abs() > 1e-10 {
                 println!("  {re:.6} + {im:.6}i");
             } else {
@@ -181,7 +181,7 @@ fn main() {
     let ix2 = &i * 2;
     let cos_i2 = ix2.cos().eval();
     println!("\ncos(2I) = {cos_i2}");
-    if let Ok((re, im)) = cos_i2.eval_complex64() {
+    if let Ok(Complex64 { re, im }) = cos_i2.eval_complex64() {
         println!("  Numerical: ({re:.6}, {im:.6})");
         println!("  cosh(2)  = {:.6}", 2.0_f64.cosh());
     }

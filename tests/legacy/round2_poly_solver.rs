@@ -702,7 +702,7 @@ fn solve_quartic_no_rational_roots() {
     assert_eq!(roots.len(), 4, "x⁴-2 has 4 roots, got {roots:?}");
     let mut real = 0;
     for r in &roots {
-        let (re, im) = r.eval_complex64().expect("root must be numeric");
+        let Complex64 { re, im } = r.eval_complex64().expect("root must be numeric");
         // (re + i im)^4 via two squarings
         let (a, b) = (re * re - im * im, 2.0 * re * im);
         let (p4re, p4im) = (a * a - b * b, 2.0 * a * b);

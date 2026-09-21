@@ -431,7 +431,7 @@ fn solve_quadratic_discriminant_is_a_single_fraction() {
                 .subs(&j, &ctx.rational(p, q))
                 .eval()
                 .eval_complex64();
-            let (re, im) = v.unwrap();
+            let Complex64 { re, im } = v.unwrap();
             assert!(
                 re.abs() < 1e-9 && im.abs() < 1e-9,
                 "residual {re}+{im}i at j={p}/{q}"

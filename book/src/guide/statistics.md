@@ -196,6 +196,48 @@ c.probability(&c.symbol().eq_expr(&ctx.int(1)))?;   // 2/3
 
 The joint model is **independence**: `stats::expectation(&[&x, &y], &g)` computes `E[g(X, Y)]` for a polynomial `g` from the marginals' raw moments (a product per monomial), and `stats::{variance, covariance, correlation}` follow (`cov(X, 2X) = 2`, `corr(X, 2X + 1) = 1` for a standard normal). `stats::probability(&[&x, &y], &event)` handles rectangles (a conjunction of per-variable relations → product of marginals) and the ordering `X < Y` of two independent normals exactly (`1/2`). `stats::sum_distribution(&x, &y)` returns the closed family of a sum when there is one — Normal + Normal, Binomial + Binomial (same `p`), Poisson + Poisson, NegativeBinomial + NegativeBinomial, Gamma + Gamma (same scale; Exponential and χ² included). `stats::conditional_expectation(&x, &g, &event)` is `E[g · 1_event]/P(event)` (`E[X | X > 0] = √(2/π)` for a standard normal), `conditional_probability(&x, &event, &given)` likewise, and `x.entropy()` is the differential (or Shannon) entropy with closed forms for every continuous family.
 
+## Analysis of variance on data
+
+`stats::anova` extends `hypothesis::anova_one_way` to factorial and repeated-measures designs, with the same contract as the rest of the data statistics: every quantity that is a rational function of the observations — sums of squares, `F`, `η²`, the sphericity `ε`s, Mauchly's `W` — is an exact `Q`, and p-values are exact expressions (`betainc_regularized` for an `F` tail, `uppergamma` for a χ² tail) evaluated with `eval_f64` when you ask.  The reference implementations named in `tests/v17/v17_anova.rs` are statsmodels' `anova_lm` / `AnovaRM`, pingouin's `rm_anova` / `epsilon` / `sphericity` and scipy's `tukey_hsd`; every number printed below is asserted there.
+
+**Two-way ANOVA.** A `TwoWayData` holds the observations by cell (`cells[a][b]` = replicates; build it from nested vectors, `from_i64`, or long-form `Observation { a, b, y }` rows).  Cell sizes may differ.  A 2 × 3 design with three replicates per cell:
+
+```rust,ignore
+use symplex::stats::anova::{anova_two_way, anova_two_way_with, SsType, TwoWayData};
+let data = TwoWayData::from_i64(&[
+    &[&[4, 5, 6], &[6, 7, 8], &[9, 10, 12]],     // A = 0: cells for B = 0, 1, 2
+    &[&[5, 5, 7], &[8, 9, 11], &[13, 14, 16]],   // A = 1
+])?;
+let r = anova_two_way(&ctx, &data)?;            // Type II sums of squares
+r.factor_a.ss;                 // 49/2     df 1    F 441/31    p 0.0026634776886835334
+r.factor_b.ss;                 // 1339/9   df 2    F 1339/31   p 3.291990727040258e-06
+r.interaction.ss;              // 25/3     df 2    F 75/31     p 0.13098893805732253
+r.residual.ss;                 // 62/3     df 12   MS 31/18
+r.total.ss;                    // 3641/18  df 17
+r.factor_b.partial_eta_squared;   // 1339/1525
+```
+
+Each row is an `AnovaRow { source, ss, df, ms, f, p_value, eta_squared, partial_eta_squared }` (`f`/`p_value` are `None` on the residual and total rows; `p_value_f64()` rounds).  Every sum of squares is the exact difference of the residual sums of squares of two nested least-squares fits on the dummy-coded design, so nothing is lost to floating point even when the design is unbalanced — which is where the *type* of sum of squares matters.  With equal cell sizes the factors are orthogonal and Types I, II and III agree, as above.  With unequal sizes they differ for the main effects: on the same layout with cell sizes 4, 2, 3 / 2, 4, 3, `anova_two_way` (Type II, `SS(A | B)`, statsmodels `anova_lm(typ=2)`) gives `SS_A = 24`, while `anova_two_way_with(&ctx, &data, SsType::TypeI)` (sequential, `SS(A)` first) gives `338/9`.  `SsType::TypeIII` uses sum-to-zero contrasts, the SPSS / `car::Anova(type=3)` convention, and matches statsmodels on a model fit with `C(A, Sum) * C(B, Sum)`; the interaction row is the same under every type.
+
+**Repeated measures.** `anova_repeated_measures(&ctx, &rows)` takes one row per subject over the `k` conditions and returns the conditions / subjects / error / total rows, the exact `F`, and the sphericity machinery: the Greenhouse–Geisser `ε̂ = (tr S̃)²/((k−1) tr S̃²)` computed exactly from the double-centred covariance (no eigenvalues needed), the Huynh–Feldt `ε̃`, the corrected p-values (the `F` tail with both degrees of freedom scaled by `ε`), and Mauchly's `W` with its χ² approximation.
+
+```rust,ignore
+use symplex::stats::anova::anova_repeated_measures;
+let y = [from_i64(&[5, 7, 9]), from_i64(&[4, 5, 8]), from_i64(&[6, 8, 10]),
+         from_i64(&[3, 6, 4]), from_i64(&[7, 9, 13])];       // 5 subjects × 3 conditions
+let r = anova_repeated_measures(&ctx, &y)?;
+r.conditions.ss;    // 542/15   df 2
+r.subjects.ss;      // 764/15   df 4
+r.error.ss;         // 178/15   df 8
+r.f;                // 1084/89 → 12.179775280898877      p 0.003735511033474317
+r.epsilon_gg;       // 7921/14597 → 0.5426457491265329
+r.epsilon_hf;       // Some(4168/7091) → 0.587787336059794
+r.p_value_gg;       // → 0.021264365858261566   (F on 2ε̂ and 8ε̂ degrees of freedom)
+r.mauchly;          // Some: W = 1245/7921, χ² 5.551145791696415 on 2 df, p 0.0623137671632364
+```
+
+**Post hoc.** `tukey_hsd(&ctx, &groups, 0.95)` returns one `PairwiseComparison { i, j, diff, se, statistic, p_adj, ci }` per pair of a one-way design: the difference, the Tukey–Kramer standard error `√(MSE/2·(1/nᵢ + 1/nⱼ))` and the statistic are exact, while `p_adj` and the simultaneous interval come from the studentized range distribution, which has no closed form and is integrated numerically (`studentized_range_cdf` / `_sf` / `_quantile`, agreeing with scipy to about 1e-9).  `pairwise_t_tests(&ctx, &groups, Adjustment::Holm, 0.05)` is the alternative when variances differ: Welch tests for every pair, adjusted by Holm or Bonferroni through the `hypothesis` module.
+
 ## What is exact and what is not
 
 Everything above is symbolic: rational parameters give rational or closed-form answers, and symbolic parameters stay symbolic (`E[X] = μ`). Two honest gaps: the integrator does not close every density integral (`LogNormal` probabilities stay as an `Integral` although its closed-form `cdf` is available — `probability` uses the `cdf` first), and infinite sums with *symbolic* parameters may stay as a `Sum`. `RandomVariable::sample` is the only numerical routine, seeded through `stats::Rng` so results reproduce.

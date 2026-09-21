@@ -2181,7 +2181,8 @@ const POLY_SIGN_MAX_DEGREE: usize = 24;
 /// real line.  Decided exactly with square-free factoring and Sturm
 /// sequences; returns an empty set when not applicable or undecidable.
 fn polynomial_sign_facts(arena: &Arena, id: ExprId) -> Assumptions {
-    use crate::api::expr_poly_ext::{Endpoint, poly_sign_on_interval};
+    use crate::api::expr_poly_ext::poly_sign_on_interval;
+    use crate::base::extended::Extended;
     use num_rational::Ratio;
 
     let mut facts = Assumptions::default();
@@ -2209,22 +2210,22 @@ fn polynomial_sign_facts(arena: &Arena, id: ExprId) -> Assumptions {
     let zero = Ratio::from_integer(BigInt::from(0));
     let (lo, hi, open_at) = if sym.query(Props::POSITIVE) == Some(true) {
         (
-            Endpoint::Finite(zero.clone()),
-            Endpoint::PosInf,
+            Extended::Finite(zero.clone()),
+            Extended::PosInf,
             Some(zero.clone()),
         )
     } else if sym.query(Props::NONNEGATIVE) == Some(true) {
-        (Endpoint::Finite(zero.clone()), Endpoint::PosInf, None)
+        (Extended::Finite(zero.clone()), Extended::PosInf, None)
     } else if sym.query(Props::NEGATIVE) == Some(true) {
         (
-            Endpoint::NegInf,
-            Endpoint::Finite(zero.clone()),
+            Extended::NegInf,
+            Extended::Finite(zero.clone()),
             Some(zero.clone()),
         )
     } else if sym.query(Props::NONPOSITIVE) == Some(true) {
-        (Endpoint::NegInf, Endpoint::Finite(zero.clone()), None)
+        (Extended::NegInf, Extended::Finite(zero.clone()), None)
     } else {
-        (Endpoint::NegInf, Endpoint::PosInf, None)
+        (Extended::NegInf, Extended::PosInf, None)
     };
 
     // A polynomial that is positive (≥ 0) on the closed domain is so on the
@@ -2244,8 +2245,8 @@ fn polynomial_sign_facts(arena: &Arena, id: ExprId) -> Assumptions {
         let bound = crate::poly::sturm::cauchy_bound(g) + Ratio::from_integer(BigInt::from(1));
         let chain = crate::poly::sturm::SturmChain::new(g);
         let roots_closed = match (&lo, &hi) {
-            (Endpoint::Finite(l), Endpoint::PosInf) => chain.count_roots_in_closed(l, &bound),
-            (Endpoint::NegInf, Endpoint::Finite(h)) => chain.count_roots_in_closed(&(-bound), h),
+            (Extended::Finite(l), Extended::PosInf) => chain.count_roots_in_closed(l, &bound),
+            (Extended::NegInf, Extended::Finite(h)) => chain.count_roots_in_closed(&(-bound), h),
             _ => return false,
         };
         roots_closed == 1

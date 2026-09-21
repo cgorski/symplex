@@ -4,8 +4,8 @@
 
 use symplex::prelude::*;
 
-fn real_count(roots: &[(f64, f64)]) -> usize {
-    roots.iter().filter(|(_, im)| *im == 0.0).count()
+fn real_count(roots: &[Complex64]) -> usize {
+    roots.iter().filter(|z| z.im == 0.0).count()
 }
 
 #[test]
@@ -17,14 +17,14 @@ fn x_cubed_plus_x_has_one_real_root_at_zero() {
     let roots = f.nroots(&x, 20).unwrap();
     assert_eq!(roots.len(), 3, "{roots:?}");
     assert_eq!(real_count(&roots), 1, "{roots:?}");
-    let zero = roots.iter().find(|(_, im)| *im == 0.0).unwrap();
-    assert_eq!(zero.0, 0.0, "exact zero root: {roots:?}");
+    let zero = roots.iter().find(|z| z.im == 0.0).unwrap();
+    assert_eq!(zero.re, 0.0, "exact zero root: {roots:?}");
     // The complex pair is ±i (to f64 accuracy).
-    let cplx: Vec<_> = roots.iter().filter(|(_, im)| *im != 0.0).collect();
+    let cplx: Vec<_> = roots.iter().filter(|z| z.im != 0.0).collect();
     assert_eq!(cplx.len(), 2);
-    for (re, im) in &cplx {
+    for z in &cplx {
         assert!(
-            re.abs() < 1e-30 && (im.abs() - 1.0).abs() < 1e-14,
+            z.re.abs() < 1e-30 && (z.im.abs() - 1.0).abs() < 1e-14,
             "{roots:?}"
         );
     }
@@ -52,10 +52,10 @@ fn real_roots_have_exactly_zero_imaginary_part() {
         let roots = f.nroots(&x, 20).unwrap();
         assert_eq!(real_count(&roots), sturm, "{f}: {roots:?}");
         // No lingering noise on the real roots' imaginary parts.
-        for (re, im) in &roots {
+        for z in &roots {
             assert!(
-                *im == 0.0 || im.abs() > 1e-6,
-                "{f}: root ({re}, {im}) neither real nor clearly complex"
+                z.im == 0.0 || z.im.abs() > 1e-6,
+                "{f}: root {z} neither real nor clearly complex"
             );
         }
     }
@@ -69,7 +69,10 @@ fn zero_root_with_multiplicity_is_exact() {
     let f = x.powi(4) + x.powi(2);
     let roots = f.nroots(&x, 20).unwrap();
     assert_eq!(roots.len(), 4);
-    let zeros = roots.iter().filter(|r| **r == (0.0, 0.0)).count();
+    let zeros = roots
+        .iter()
+        .filter(|r| **r == Complex64::new(0.0, 0.0))
+        .count();
     assert_eq!(zeros, 2, "{roots:?}");
     assert_eq!(real_count(&roots), 2);
     assert_eq!(
@@ -89,10 +92,10 @@ fn complex_roots_keep_their_imaginary_parts() {
     let f = (x.powi(2) + 1) * (x.powi(2) + 4);
     let roots = f.nroots(&x, 20).unwrap();
     assert_eq!(real_count(&roots), 0, "{roots:?}");
-    for (re, _) in &roots {
-        assert!(re.abs() < 1e-30, "{roots:?}");
+    for z in &roots {
+        assert!(z.re.abs() < 1e-30, "{roots:?}");
     }
-    let mut ims: Vec<f64> = roots.iter().map(|r| r.1).collect();
+    let mut ims: Vec<f64> = roots.iter().map(|r| r.im).collect();
     ims.sort_by(|a, b| a.partial_cmp(b).unwrap());
     for (got, want) in ims.iter().zip([-2.0, -1.0, 1.0, 2.0]) {
         assert!((got - want).abs() < 1e-12, "{roots:?}");
@@ -109,8 +112,8 @@ fn nearly_real_complex_pair_is_not_flattened() {
     assert_eq!(f.count_real_roots(&x), Some(0));
     let roots = f.nroots(&x, 20).unwrap();
     assert_eq!(real_count(&roots), 0, "{roots:?}");
-    for (_, im) in &roots {
-        assert!((im.abs() - 1e-5).abs() < 1e-12, "{roots:?}");
+    for z in &roots {
+        assert!((z.im.abs() - 1e-5).abs() < 1e-12, "{roots:?}");
     }
 }
 

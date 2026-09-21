@@ -35,7 +35,7 @@ fn main() {
 
 ## Splitting into real and imaginary parts
 
-`as_real_imag()` returns `(re, im)` as a pair; `expand_complex()` rewrites the expression as `re + im·I`; `polar()` returns `(modulus, argument)`.
+`as_real_imag()` returns `(re, im)` as a pair; `expand_complex()` rewrites the expression as `re + im·I`; `polar()` returns a `Polar { modulus, argument }` struct (`symplex::expr_complex::Polar`).
 
 ```rust
 use symplex::prelude::*;
@@ -80,7 +80,7 @@ fn main() {
     println!("{}", (&i * &ctx.pi()).exp().eval());    // -1
     println!("{}", ctx.int(-1).ln().eval());          // pi*I
     println!("{}", ctx.int(-4).sqrt());               // 2*I
-    println!("{:?}", i.exp().eval_complex64());       // Ok((0.5403…, 0.8414…))
+    println!("{}", i.exp().eval_complex64().unwrap()); // 0.5403…+0.8414…i  (a `Complex64`)
 }
 ```
 

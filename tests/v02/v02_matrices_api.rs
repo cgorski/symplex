@@ -29,7 +29,7 @@ fn assert_zero(m: &Matrix, label: &str) {
             if d.is_zero_structural() {
                 continue;
             }
-            if let Ok((re, im)) = d.eval_complex64() {
+            if let Ok(Complex64 { re, im }) = d.eval_complex64() {
                 assert!(
                     re.abs() < 1e-9 && im.abs() < 1e-9,
                     "{label}: ({i},{j}) ≈ {re}+{im}i"

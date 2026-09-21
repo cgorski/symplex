@@ -111,7 +111,7 @@ fn stability_with_rootof_poles() {
         "{poles:?}"
     );
     for p in &poles {
-        let (re, _) = p.eval_complex64().unwrap();
+        let re = p.eval_complex64().unwrap().re;
         assert!(re < 0.0, "{p} has re = {re}");
     }
     assert_eq!(ss.is_stable(), Some(true));

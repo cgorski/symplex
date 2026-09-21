@@ -23,7 +23,7 @@ fn assert_satisfies(eq: &Ex, assignment: &[(Ex, Ex)], params: &[(&Ex, i64)], lab
     for (p, val) in params {
         num = num.subs_i64(p, *val);
     }
-    let (re, im) = num
+    let Complex64 { re, im } = num
         .eval_complex64()
         .unwrap_or_else(|e| panic!("{label}: residual {simplified} not evaluable: {e}"));
     assert!(

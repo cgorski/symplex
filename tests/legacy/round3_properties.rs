@@ -563,7 +563,7 @@ fn assert_rewrite_exp_preserves_value(
         // Fall back to complex evaluation — the imaginary part should
         // be ~0 for real-valued expressions.
         match v_rewritten_complex {
-            Ok((re, im)) => {
+            Ok(Complex64 { re, im }) => {
                 checked += 1;
                 assert!(
                     im.abs() < tol * re.abs().max(1.0),
@@ -1009,7 +1009,7 @@ fn assert_solve_roots_satisfy(
 
         // Fall back to complex evaluation
         match substituted.eval_complex64() {
-            Ok((re, im)) => {
+            Ok(Complex64 { re, im }) => {
                 let mag = (re * re + im * im).sqrt();
                 assert!(
                     mag < tol,
@@ -1925,7 +1925,7 @@ fn prop3_hard_rewrite_exp_then_simplify_sin2_cos2() {
             }
             Err(_) => {
                 // Try complex eval
-                if let Ok((re, im)) = simplified.subs(&x, &pt).eval().eval_complex64() {
+                if let Ok(Complex64 { re, im }) = simplified.subs(&x, &pt).eval().eval_complex64() {
                     assert!(
                         approx(re, 1.0, 1e-9) && im.abs() < 1e-9,
                         "sin²+cos² rewrite+simplify: ({re}, {im}) at x={p}/{q}"

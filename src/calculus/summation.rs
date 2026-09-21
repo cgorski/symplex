@@ -54,6 +54,7 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 
 use crate::base::arena::Arena;
 use crate::base::bernoulli::bernoulli;
+use crate::base::extended::Extended;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
 use crate::calculus::gosper;
@@ -362,17 +363,13 @@ fn infinity_of_sign(arena: &Arena, positive: Option<bool>) -> Option<ExprId> {
 // Bounds
 // ═══════════════════════════════════════════════════════════════════════════
 
-enum Bound {
-    Finite(ExprId),
-    PosInf,
-    NegInf,
-}
-
-fn classify_bound(arena: &Arena, b: ExprId) -> Bound {
+/// A summation limit: `±∞`, or any other expression (an integer, a
+/// symbol, …) as `Finite`.
+fn classify_bound(arena: &Arena, b: ExprId) -> Extended<ExprId> {
     match arena.node(b) {
-        ExprNode::Infinity => Bound::PosInf,
-        ExprNode::NegInfinity => Bound::NegInf,
-        _ => Bound::Finite(b),
+        ExprNode::Infinity => Extended::PosInf,
+        ExprNode::NegInfinity => Extended::NegInf,
+        _ => Extended::Finite(b),
     }
 }
 
@@ -396,9 +393,9 @@ pub(crate) fn summation(
     }
     tracing::debug!("summation: dispatching");
     match (classify_bound(arena, lower), classify_bound(arena, upper)) {
-        (Bound::Finite(lo), Bound::Finite(hi)) => finite_sum(arena, body, var, lo, hi),
-        (Bound::Finite(lo), Bound::PosInf) => infinite_sum(arena, body, var, lo),
-        (Bound::NegInf, Bound::Finite(hi)) => {
+        (Extended::Finite(lo), Extended::Finite(hi)) => finite_sum(arena, body, var, lo, hi),
+        (Extended::Finite(lo), Extended::PosInf) => infinite_sum(arena, body, var, lo),
+        (Extended::NegInf, Extended::Finite(hi)) => {
             // k = −j:  Σ_{k=−∞}^{hi} f(k) = Σ_{j=−hi}^{∞} f(−j)
             let neg_var = arena.neg(var);
             let reflected = subs::subs(arena, body, var, neg_var);
@@ -406,7 +403,7 @@ pub(crate) fn summation(
             let lo2 = eval::eval(arena, lo2);
             infinite_sum(arena, reflected, var, lo2)
         }
-        (Bound::NegInf, Bound::PosInf) => {
+        (Extended::NegInf, Extended::PosInf) => {
             let zero = arena.zero;
             let one = arena.one;
             let right = infinite_sum(arena, body, var, zero);
@@ -2965,8 +2962,8 @@ pub(crate) fn product(
         return SumOutcome::Unevaluated;
     }
     match (classify_bound(arena, lower), classify_bound(arena, upper)) {
-        (Bound::Finite(lo), Bound::Finite(hi)) => finite_product(arena, body, var, lo, hi),
-        (Bound::Finite(lo), Bound::PosInf) => infinite_product(arena, body, var, lo),
+        (Extended::Finite(lo), Extended::Finite(hi)) => finite_product(arena, body, var, lo, hi),
+        (Extended::Finite(lo), Extended::PosInf) => infinite_product(arena, body, var, lo),
         _ => SumOutcome::Unevaluated,
     }
 }

@@ -25,12 +25,7 @@ fn bug_solve_system_ex_wrong_x_component() {
     assert_eq!(sols.len(), 4);
     for s in &sols {
         let r = f.subs(&x, &s[0]).subs(&y, &s[1]).eval_complex64().unwrap();
-        assert!(
-            r.0.hypot(r.1) < 1e-8,
-            "residual {r:?} for {}, {}",
-            s[0],
-            s[1]
-        );
+        assert!(r.norm() < 1e-8, "residual {r:?} for {}, {}", s[0], s[1]);
     }
 }
 
@@ -95,12 +90,12 @@ fn solve_general_periodic_families() {
                         truncate(&sol)
                     ));
                 };
-                if v.1.abs() > 1e-9 {
+                if v.im.abs() > 1e-9 {
                     continue; // complex instance: not in the real solution set
                 }
                 let resid = f.subs(&x, &sol).eval_complex64();
                 match resid {
-                    Ok(r) if r.0.hypot(r.1) < 1e-8 => {}
+                    Ok(r) if r.norm() < 1e-8 => {}
                     Ok(r) => {
                         return Status::Fail(format!(
                             "solution {} has residual {:?}",
@@ -110,8 +105,8 @@ fn solve_general_periodic_families() {
                     }
                     Err(e) => return Status::NotImplemented(format!("cannot check residual: {e}")),
                 }
-                if v.0.abs() <= window + 1e-9 {
-                    got.push(v.0);
+                if v.re.abs() <= window + 1e-9 {
+                    got.push(v.re);
                 }
             }
             if fam.parameters.is_empty() {
@@ -168,7 +163,7 @@ fn check_linear_values(ctx: &Context, pairs: &[(Ex, Ex)], fx: &Fixture) -> Statu
                 return Status::Fail(format!("oracle value for {name} is {want}"));
             };
             match eval_at(val, ctx, &pt.subs) {
-                Some(got) if complex_matches(got, (*re, *im), TOLERANCE) => {}
+                Some(got) if complex_matches(got, Complex64::new(*re, *im), TOLERANCE) => {}
                 Some(got) => {
                     return Status::Fail(format!(
                         "{name} = {} → {got:?} at {:?}, sympy={want}",
@@ -298,7 +293,7 @@ fn nonlinear_polynomial_systems() {
             Ok(v) => v,
             Err(e) => return Status::NotImplemented(e),
         };
-        let want: Vec<Vec<(f64, f64)>> = fx
+        let want: Vec<Vec<Complex64>> = fx
             .field("solutions")
             .and_then(|v| v.as_array())
             .map(|a| {
@@ -307,7 +302,7 @@ fn nonlinear_polynomial_systems() {
                         tup.as_array()?
                             .iter()
                             .map(|v| match Num::from_json(v)? {
-                                Num::Finite(re, im) => Some((re, im)),
+                                Num::Finite(re, im) => Some(Complex64::new(re, im)),
                                 _ => None,
                             })
                             .collect()
@@ -319,7 +314,7 @@ fn nonlinear_polynomial_systems() {
             Ok(s) => s,
             Err(e) => return Status::NotImplemented(format!("{e}")),
         };
-        let mut got: Vec<Vec<(f64, f64)>> = Vec::new();
+        let mut got: Vec<Vec<Complex64>> = Vec::new();
         for sol in &sols {
             let mut tup = Vec::new();
             for v in sol {
@@ -340,7 +335,7 @@ fn nonlinear_polynomial_systems() {
                     e = e.subs(var, val);
                 }
                 if let Ok(r) = e.eval_complex64()
-                    && r.0.hypot(r.1) > 1e-7
+                    && r.norm() > 1e-7
                 {
                     return Status::Fail(format!(
                         "solution {tup:?} has residual {r:?} in {}",
@@ -350,9 +345,9 @@ fn nonlinear_polynomial_systems() {
             }
             got.push(tup);
         }
-        let key = |t: &Vec<(f64, f64)>| -> Vec<(i64, i64)> {
+        let key = |t: &Vec<Complex64>| -> Vec<(i64, i64)> {
             t.iter()
-                .map(|(re, im)| ((re * 1e7).round() as i64, (im * 1e7).round() as i64))
+                .map(|z| ((z.re * 1e7).round() as i64, (z.im * 1e7).round() as i64))
                 .collect()
         };
         got.sort_by_key(|t| key(t));
@@ -480,7 +475,7 @@ fn rsolve_linear_recurrences() {
         }
         for (i, w) in want.iter().enumerate() {
             match sol.subs_i64(&n, i as i64).eval_complex64() {
-                Ok(v) if complex_matches(v, (*w, 0.0), 1e-9) => {}
+                Ok(v) if complex_matches(v, Complex64::new(*w, 0.0), 1e-9) => {}
                 Ok(v) => {
                     return Status::Fail(format!(
                         "a({i}) = {v:?}, expected {w} (closed form {})",

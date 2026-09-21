@@ -140,11 +140,11 @@ pub(crate) fn ex_is_zero(e: &Ex) -> Option<bool> {
     }
     // Numeric constants (including `RootOf`, whose bound variable
     // `is_constant` would report as free): decide by evaluation.
-    if let Ok((re, im)) = s.eval_complex64() {
-        if re == 0.0 && im == 0.0 {
+    if let Ok(z) = s.eval_complex64() {
+        if z.re == 0.0 && z.im == 0.0 {
             return Some(true);
         }
-        if re.abs() > 1e-12 || im.abs() > 1e-12 {
+        if z.re.abs() > 1e-12 || z.im.abs() > 1e-12 {
             return Some(false);
         }
         return None;
@@ -4372,7 +4372,7 @@ fn eigen_zero_test(e: &Ex) -> bool {
     match ex_is_zero(e) {
         Some(b) => b,
         None => {
-            matches!(e.eval_complex64(), Ok((re, im)) if re.abs() < 1e-10 && im.abs() < 1e-10)
+            matches!(e.eval_complex64(), Ok(z) if z.re.abs() < 1e-10 && z.im.abs() < 1e-10)
         }
     }
 }
@@ -5575,9 +5575,9 @@ mod tests {
         let expect = [[0.7f64.cos(), 0.7f64.sin()], [-0.7f64.sin(), 0.7f64.cos()]];
         for (i, row) in expect.iter().enumerate() {
             for (j, want) in row.iter().enumerate() {
-                let (re, im) = at.get(i, j).eval_complex64().unwrap();
-                assert!((re - want).abs() < 1e-12, "({i},{j}) re={re}");
-                assert!(im.abs() < 1e-12, "({i},{j}) im={im}");
+                let z = at.get(i, j).eval_complex64().unwrap();
+                assert!((z.re - want).abs() < 1e-12, "({i},{j}) re={}", z.re);
+                assert!(z.im.abs() < 1e-12, "({i},{j}) im={}", z.im);
             }
         }
     }

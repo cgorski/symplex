@@ -73,7 +73,7 @@ fn new_features_eigenvects() {
             Ok(m) => m,
             Err(s) => return s,
         };
-        let want: Vec<((f64, f64), usize, usize)> = fx
+        let want: Vec<(Complex64, usize, usize)> = fx
             .field("eigenspaces")
             .and_then(Value::as_array)
             .map(|a| {
@@ -83,7 +83,7 @@ fn new_features_eigenvects() {
                             return None;
                         };
                         Some((
-                            (re, im),
+                            Complex64::new(re, im),
                             e.get("algebraic_multiplicity")?.as_u64()? as usize,
                             e.get("geometric_multiplicity")?.as_u64()? as usize,
                         ))
@@ -95,7 +95,7 @@ fn new_features_eigenvects() {
             Ok(v) => v,
             Err(e) => return Status::NotImplemented(format!("{e}")),
         };
-        let mut got: Vec<((f64, f64), usize, usize)> = Vec::new();
+        let mut got: Vec<(Complex64, usize, usize)> = Vec::new();
         for (val, mult, vecs) in &got_raw {
             let Ok(c) = val.eval_complex64() else {
                 return Status::NotImplemented(format!("eigenvalue {} not numeric", truncate(val)));
@@ -106,7 +106,7 @@ fn new_features_eigenvects() {
                 let lv = v.scale(val);
                 let diff = av.sub(&lv).unwrap_or_else(|e| panic!("{e}"));
                 match matrix_c64(&diff) {
-                    Ok(rows) if rows.iter().flatten().all(|c| c.0.hypot(c.1) < 1e-9) => {}
+                    Ok(rows) if rows.iter().flatten().all(|c| c.norm() < 1e-9) => {}
                     Ok(_) => {
                         return Status::Fail(format!(
                             "A·v ≠ λ·v for λ={} v={:?}",
@@ -116,9 +116,7 @@ fn new_features_eigenvects() {
                     }
                     Err(e) => return Status::NotImplemented(e),
                 }
-                if matrix_c64(v).map(|r| r.iter().flatten().all(|c| c.0.hypot(c.1) < 1e-12))
-                    == Ok(true)
-                {
+                if matrix_c64(v).map(|r| r.iter().flatten().all(|c| c.norm() < 1e-12)) == Ok(true) {
                     return Status::Fail(format!(
                         "zero eigenvector reported for λ={}",
                         truncate(val)
@@ -127,8 +125,8 @@ fn new_features_eigenvects() {
             }
             got.push((c, *mult, vecs.len()));
         }
-        let key = |t: &((f64, f64), usize, usize)| {
-            ((t.0.0 * 1e9).round() as i64, (t.0.1 * 1e9).round() as i64)
+        let key = |t: &(Complex64, usize, usize)| {
+            ((t.0.re * 1e9).round() as i64, (t.0.im * 1e9).round() as i64)
         };
         got.sort_by_key(key);
         let mut want = want;
@@ -165,7 +163,7 @@ fn new_features_jordan_form() {
             Err(e) => return Status::NotImplemented(e),
         };
         let ones = (0..jn.len() - 1)
-            .filter(|&i| jn[i][i + 1].0.hypot(jn[i][i + 1].1) > 1e-9)
+            .filter(|&i| jn[i][i + 1].norm() > 1e-9)
             .count();
         if ones != fx.u64("superdiag_ones").unwrap_or(0) as usize {
             return Status::Fail(format!(
@@ -173,7 +171,7 @@ fn new_features_jordan_form() {
                 fx.u64("superdiag_ones").unwrap_or(0)
             ));
         }
-        let diag: Vec<(f64, f64)> = (0..jn.len()).map(|i| jn[i][i]).collect();
+        let diag: Vec<Complex64> = (0..jn.len()).map(|i| jn[i][i]).collect();
         let want: Vec<Num> = fx
             .field("jordan_diag")
             .and_then(Value::as_array)
@@ -303,7 +301,7 @@ fn new_features_integrate_inverse_hyperbolic() {
                 continue;
             };
             match eval_at(&big_f, ctx, &pt.subs) {
-                Some((g, _)) => pairs.push((g, w)),
+                Some(g) => pairs.push((g.re, w)),
                 None => {
                     return Status::NotImplemented(format!("cannot evaluate {}", truncate(&big_f)));
                 }
@@ -374,7 +372,7 @@ fn new_features_matrix_exp() {
                 let Num::Finite(re, im) = w else {
                     return Status::SkippedOracle("non-finite".into());
                 };
-                if !complex_matches(*g, (*re, *im), TOL) {
+                if !complex_matches(*g, Complex64::new(*re, *im), TOL) {
                     return Status::Fail(format!("exp(A)[{i},{j}] = {g:?}, SymPy ({re}, {im})"));
                 }
             }

@@ -4,6 +4,7 @@
 //! The type definitions live in `expr.rs`.
 
 use num_bigint::BigInt;
+use num_complex::Complex64;
 use num_traits::Zero;
 use tracing::debug_span;
 
@@ -1206,10 +1207,10 @@ impl Expr<Numeric> {
 
         // Layer 6: both sides are constants — compare 16-digit numeric values.
         if simplified.is_constant()
-            && let (Ok((ar, ai)), Ok((br, bi))) = (self.eval_complex64(), other.eval_complex64())
+            && let (Ok(a), Ok(b)) = (self.eval_complex64(), other.eval_complex64())
         {
-            let scale = 1.0_f64.max(ar.hypot(ai)).max(br.hypot(bi));
-            if (ar - br).hypot(ai - bi) > 1e-9 * scale {
+            let scale = 1.0_f64.max(a.norm()).max(b.norm());
+            if (a - b).norm() > 1e-9 * scale {
                 return Some(false);
             }
         }
@@ -3509,29 +3510,42 @@ impl Expr<Numeric> {
         // eval() first to reduce exact values (sin(0)→0, Gamma(5)→24, etc.)
         // before numerical computation. The eval_complex64 call below
         // will work on the simplified expression.
-        let (re, im) = self.eval().eval_complex64()?;
-        if im.abs() > 1e-15 {
+        let z = self.eval().eval_complex64()?;
+        if z.im.abs() > 1e-15 {
             return Err(SymplexError::ComputationFailed {
                 operation: "eval_f64",
                 reason: format!(
-                    "expression has nonzero imaginary part (im={im}); use eval_complex64() for complex results"
+                    "expression has nonzero imaginary part (im={}); use eval_complex64() for complex results",
+                    z.im
                 ),
             });
         }
-        Ok(re)
+        Ok(z.re)
     }
 
-    /// Evaluates the expression to a complex f64 pair `(real, imaginary)`.
+    /// Evaluates the expression to a [`Complex64`] (`re + im·i`).
     ///
     /// Uses 16 decimal digits of precision internally. Returns both the
     /// real and imaginary parts, correctly handling complex expressions
-    /// like `sqrt(-1)` → `(0.0, 1.0)`.
+    /// like `sqrt(-1)` → `Complex64::new(0.0, 1.0)`.  Real results have
+    /// `im == 0.0`.
     ///
     /// # Errors
     ///
     /// Returns `Err` if the expression contains free symbols or if
     /// the arbitrary-precision engine fails.
-    pub fn eval_complex64(&self) -> Result<(f64, f64), SymplexError> {
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let z = (&ctx.int(3) + &(&ctx.int(4) * &ctx.i_unit())).eval_complex64().unwrap();
+    /// assert!((z - Complex64::new(3.0, 4.0)).norm() < 1e-12);
+    /// assert!((z.norm() - 5.0).abs() < 1e-12);
+    /// ```
+    pub fn eval_complex64(&self) -> Result<Complex64, SymplexError> {
         let s = self.eval_decimal(16)?;
         parse_complex_evalf_string(&s)
     }
@@ -3993,8 +4007,8 @@ impl Expr<Numeric> {
             return Some(false);
         }
         // Try numerical (complex) evaluation.
-        if let Ok((re, im)) = substituted.eval_complex64() {
-            let mag = re.hypot(im);
+        if let Ok(z) = substituted.eval_complex64() {
+            let mag = z.norm();
             if mag < 1e-10 {
                 return Some(true);
             }
@@ -5250,7 +5264,7 @@ impl Expr<Numeric> {
 // ═══════════════════════════════════════════════════════════════════════════
 // Helper: parse complex evalf strings
 // ═══════════════════════════════════════════════════════════════════════════
-/// Parse the string output of `evalf()` into a complex (f64, f64) pair.
+/// Parse the string output of `evalf()` into a [`Complex64`] (`re`, `im`).
 ///
 /// Handles formats:
 /// - `"3.14"` → `(3.14, 0.0)`
@@ -5261,25 +5275,25 @@ impl Expr<Numeric> {
 /// - `"-1 + 2*I"` → `(-1.0, 2.0)`
 /// - `"I"` → `(0.0, 1.0)`
 /// - `"-I"` → `(0.0, -1.0)`
-fn parse_complex_evalf_string(s: &str) -> Result<(f64, f64), SymplexError> {
+fn parse_complex_evalf_string(s: &str) -> Result<Complex64, SymplexError> {
     let s = s.trim();
 
     // Try pure real first
     if let Ok(re) = s.parse::<f64>() {
-        return Ok((re, 0.0));
+        return Ok(Complex64::new(re, 0.0));
     }
 
     // Pure imaginary: "I", "-I", "2.5*I", "-0.866*I"
     if s == "I" || s == "i" {
-        return Ok((0.0, 1.0));
+        return Ok(Complex64::new(0.0, 1.0));
     }
     if s == "-I" || s == "-i" {
-        return Ok((0.0, -1.0));
+        return Ok(Complex64::new(0.0, -1.0));
     }
     if let Some(coeff) = s.strip_suffix("*I").or_else(|| s.strip_suffix("*i"))
         && let Ok(im) = coeff.parse::<f64>()
     {
-        return Ok((0.0, im));
+        return Ok(Complex64::new(0.0, im));
     }
 
     // Complex: "a + b*I" or "a - b*I"
@@ -5324,7 +5338,7 @@ fn parse_complex_evalf_string(s: &str) -> Result<(f64, f64), SymplexError> {
         };
 
         let im = if split_is_minus { -im_val } else { im_val };
-        return Ok((re, im));
+        return Ok(Complex64::new(re, im));
     }
 
     Err(SymplexError::NotImplemented(format!(
@@ -5341,27 +5355,27 @@ mod evalf_complex_tests {
         let x = ctx.symbol("x");
         let expr = &x.powi(2) + 1;
         let at_2 = expr.subs(&x, &ctx.int(2));
-        let (re, im) = at_2.eval_complex64().unwrap();
-        assert!((re - 5.0).abs() < 1e-10);
-        assert!(im.abs() < 1e-10);
+        let z = at_2.eval_complex64().unwrap();
+        assert!((z.re - 5.0).abs() < 1e-10);
+        assert!(z.im.abs() < 1e-10);
     }
 
     #[test]
     fn eval_complex64_pure_imaginary() {
         let ctx = crate::api::context::Context::new();
         let i = ctx.i_unit();
-        let (re, im) = i.eval_complex64().unwrap();
-        assert!(re.abs() < 1e-10);
-        assert!((im - 1.0).abs() < 1e-10);
+        let z = i.eval_complex64().unwrap();
+        assert!(z.re.abs() < 1e-10);
+        assert!((z.im - 1.0).abs() < 1e-10);
     }
 
     #[test]
     fn eval_complex64_mixed() {
         let ctx = crate::api::context::Context::new();
         let expr = &ctx.int(3) + &(&ctx.int(4) * &ctx.i_unit());
-        let (re, im) = expr.eval_complex64().unwrap();
-        assert!((re - 3.0).abs() < 1e-10);
-        assert!((im - 4.0).abs() < 1e-10);
+        let z = expr.eval_complex64().unwrap();
+        assert!((z.re - 3.0).abs() < 1e-10);
+        assert!((z.im - 4.0).abs() < 1e-10);
     }
 
     #[test]

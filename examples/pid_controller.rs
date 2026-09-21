@@ -108,9 +108,7 @@ fn main() {
                     Ok(v) => *v < 0.0,
                     Err(_) => {
                         // Complex root — check real part via eval_complex64
-                        root.eval_complex64()
-                            .map(|(re, _im)| re < 0.0)
-                            .unwrap_or(false)
+                        root.eval_complex64().map(|z| z.re < 0.0).unwrap_or(false)
                     }
                 };
                 if !stable {

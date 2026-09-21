@@ -566,15 +566,15 @@ fn c7_solve_x_squared_plus_1() {
     let expr = &x.powi(2) + 1;
     // Two complex roots ±i.
     let sols = expr.solve(&x).expect("x^2 + 1 = 0 has complex roots");
-    let mut vals: Vec<(f64, f64)> = sols.iter().map(|s| s.eval_complex64().unwrap()).collect();
-    vals.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    let mut vals: Vec<Complex64> = sols.iter().map(|s| s.eval_complex64().unwrap()).collect();
+    vals.sort_by(|a, b| a.im.partial_cmp(&b.im).unwrap());
     assert_eq!(vals.len(), 2, "solve(x^2 + 1, x) = {sols:?}");
     assert!(
-        (vals[0].0).abs() < 1e-12 && (vals[0].1 + 1.0).abs() < 1e-12,
+        (vals[0].re).abs() < 1e-12 && (vals[0].im + 1.0).abs() < 1e-12,
         "{vals:?}"
     );
     assert!(
-        (vals[1].0).abs() < 1e-12 && (vals[1].1 - 1.0).abs() < 1e-12,
+        (vals[1].re).abs() < 1e-12 && (vals[1].im - 1.0).abs() < 1e-12,
         "{vals:?}"
     );
 }

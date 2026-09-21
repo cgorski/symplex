@@ -28,6 +28,9 @@ num-bigint = "0.4"
 num-rational = "0.4"
 num-integer = "0.1"
 num-traits = "0.2"
+# `std` only forwards to `num-traits/std` (already on) and unlocks
+# `Complex64::norm`/`arg`; the crate is pure Rust and `no_std`-capable.
+num-complex = { version = "0.4", default-features = false, features = ["std"] }
 smallvec = "1.13"
 rustc-hash = "2.1"
 bitflags = "2.11"

@@ -321,7 +321,7 @@ fn si_ci_ei_li_reference_values() {
     assert_prefix(&ctx.int(300).si(), 20, "1.5708810882137495193");
     // Si is odd; Ci of a negative argument is complex.
     assert_prefix(&ctx.int(-1).si(), 20, "-0.946083070367183014");
-    let (re, im) = ctx.int(-1).ci().eval_complex64().unwrap();
+    let Complex64 { re, im } = ctx.int(-1).ci().eval_complex64().unwrap();
     assert!(approx(re, 0.337_403_922_900_968_1, 1e-14));
     assert!(approx(im, std::f64::consts::PI, 1e-14));
     // li(1/2) via Ei(ln 1/2)

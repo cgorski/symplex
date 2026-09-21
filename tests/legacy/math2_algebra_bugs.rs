@@ -24,7 +24,7 @@ fn verify_roots_are_zeros(poly: &Ex, var: &Ex, roots: &[Ex], label: &str) {
         }
         // Fall back to numerical check
         match val.eval_complex64() {
-            Ok((re, im)) => {
+            Ok(Complex64 { re, im }) => {
                 let mag = (re * re + im * im).sqrt();
                 assert!(
                     mag < 1e-6,

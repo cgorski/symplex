@@ -259,7 +259,7 @@ For the roots themselves use `count_real_roots`, `real_roots_isolate` and `nroot
 
 ## Numeric roots
 
-`Poly::nroots(digits)` is `Ex::nroots` for the univariate, rational-coefficient case; anything else is an `InvalidArgument` error rather than a wrong answer.
+`Poly::nroots(digits)` is `Ex::nroots` for the univariate, rational-coefficient case; anything else is an `InvalidArgument` error rather than a wrong answer. Roots come back as `Vec<Complex64>` (`num_complex`, re-exported in the prelude); real roots have `im == 0.0` exactly.
 
 ```rust
 use symplex::prelude::*;
@@ -268,7 +268,7 @@ fn main() {
     let ctx = Context::new();
     symplex::syms!(ctx; x, a);
     let p = (&x.powi(5) - &x - 1).as_poly(&[&x]).unwrap();
-    for (re, im) in p.nroots(12).unwrap() {
+    for Complex64 { re, im } in p.nroots(12).unwrap() {
         println!("{re:.10} {im:+.10}i");
     }
     // -0.7648844336 -0.3524715460i

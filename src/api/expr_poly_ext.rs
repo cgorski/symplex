@@ -9,6 +9,7 @@
 //! undefined, e.g. the discriminant of a constant).
 
 use num_bigint::BigInt;
+use num_complex::Complex64;
 use num_integer::ExtendedGcd;
 use num_rational::Ratio;
 use num_traits::{One, Signed, Zero};
@@ -16,6 +17,7 @@ use num_traits::{One, Signed, Zero};
 use crate::api::expr::{Ex, Expr, Numeric};
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
+use crate::base::extended::Extended;
 use crate::base::interval::Interval;
 use crate::base::node::{ExprId, ExprNode};
 use crate::poly::Poly;
@@ -26,18 +28,11 @@ use crate::poly::sturm::SturmChain;
 // Arena-level helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Interpret an expression as an exact rational endpoint, accepting `±∞`
-/// as `None` for the corresponding side.  Returns `Err(())` for anything
-/// else (symbols, π, …).
-pub(crate) enum Endpoint {
-    /// A finite rational endpoint.
-    Finite(Ratio<BigInt>),
-    /// `-∞`.
-    NegInf,
-    /// `+∞`.
-    PosInf,
-}
+/// An exact rational endpoint or `±∞`.
+pub(crate) type Endpoint = Extended<Ratio<BigInt>>;
 
+/// Interpret an expression as an exact rational endpoint, accepting `±∞`.
+/// `None` for anything else (symbols, π, …).
 fn endpoint(arena: &Arena, id: ExprId) -> Option<Endpoint> {
     match arena.node(id) {
         ExprNode::Num(nid) => Some(Endpoint::Finite(arena.num(*nid).clone())),
@@ -1008,8 +1003,8 @@ impl Expr<Numeric> {
     // ── Numeric roots ──────────────────────────────────────────────
 
     /// All complex roots of `self` as a polynomial in `var`, numerically,
-    /// as `(re, im)` pairs sorted by real then imaginary part.  A `k`-fold
-    /// root appears `k` times.
+    /// as [`Complex64`] values sorted by real then imaginary part.  A
+    /// `k`-fold root appears `k` times; real roots have `im == 0.0` exactly.
     ///
     /// `digits` requests the working precision (clamped to a sensible
     /// range; the output is `f64` so more than ~16 digits has no visible
@@ -1030,9 +1025,9 @@ impl Expr<Numeric> {
     /// let x = ctx.symbol("x");
     /// let roots = (&x.powi(2) + 1).nroots(&x, 15).unwrap();
     /// assert_eq!(roots.len(), 2);
-    /// assert!(roots.iter().all(|(re, im)| re.abs() < 1e-12 && (im.abs() - 1.0).abs() < 1e-12));
+    /// assert!(roots.iter().all(|z| z.re.abs() < 1e-12 && (z.im.abs() - 1.0).abs() < 1e-12));
     /// ```
-    pub fn nroots(&self, var: &Ex, digits: u32) -> Result<Vec<(f64, f64)>, SymplexError> {
+    pub fn nroots(&self, var: &Ex, digits: u32) -> Result<Vec<Complex64>, SymplexError> {
         let var_id = self.checked_id(var);
         let inner = self.inner.read();
         let f = expr_to_poly(&inner.arena, self.raw_id(), var_id).ok_or_else(|| {

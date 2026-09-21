@@ -55,6 +55,7 @@ use rustc_hash::FxHashMap;
 use crate::base::arena::Arena;
 use crate::base::assumptions::{AssumptionCache, Props};
 use crate::base::errors::SymplexError;
+use crate::base::extended::Extended;
 use crate::base::interval::Interval;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
@@ -1151,23 +1152,31 @@ fn ftc(
     p: &Piece,
 ) -> Result<Option<ExprId>, SymplexError> {
     let hi_val = endpoint_value(arena, anti, x, p.hi, Side::FromLeft, p.hi_sing);
-    if let EndVal::Infinite(sign) = hi_val {
+    if let Some(inf @ (Extended::PosInf | Extended::NegInf)) = hi_val {
         let shown = arena.display(p.hi).to_string();
-        let dir = if sign > 0 { "+∞" } else { "−∞" };
+        let dir = if inf == Extended::PosInf {
+            "+∞"
+        } else {
+            "−∞"
+        };
         return Err(divergent(format!(
             "the antiderivative tends to {dir} as x → {shown}"
         )));
     }
     let lo_val = endpoint_value(arena, anti, x, p.lo, Side::FromRight, p.lo_sing);
-    if let EndVal::Infinite(sign) = lo_val {
+    if let Some(inf @ (Extended::PosInf | Extended::NegInf)) = lo_val {
         let shown = arena.display(p.lo).to_string();
-        let dir = if sign > 0 { "+∞" } else { "−∞" };
+        let dir = if inf == Extended::PosInf {
+            "+∞"
+        } else {
+            "−∞"
+        };
         return Err(divergent(format!(
             "the antiderivative tends to {dir} as x → {shown}"
         )));
     }
     match (hi_val, lo_val) {
-        (EndVal::Finite(h), EndVal::Finite(l)) => {
+        (Some(Extended::Finite(h)), Some(Extended::Finite(l))) => {
             let d = arena.sub(h, l);
             Ok(Some(safe_eval(arena, d)))
         }
@@ -1229,9 +1238,9 @@ fn diverges_near(arena: &mut Arena, f: ExprId, x: ExprId, c: ExprId, side: Side)
     };
     let h = safe_eval(arena, h);
     match limit_pos_inf(arena, h, u) {
-        EndVal::Infinite(_) => true,
-        EndVal::Finite(v) => sign_of(arena, v).is_some_and(|s| s != Ordering::Equal),
-        EndVal::Unknown => false,
+        Some(Extended::PosInf | Extended::NegInf) => true,
+        Some(Extended::Finite(v)) => sign_of(arena, v).is_some_and(|s| s != Ordering::Equal),
+        None => false,
     }
 }
 
@@ -1246,15 +1255,6 @@ enum Side {
     FromRight,
     /// `x → c⁻` (upper endpoint).
     FromLeft,
-}
-
-/// Outcome of an endpoint evaluation / limit.
-#[derive(Clone, Copy, Debug)]
-enum EndVal {
-    Finite(ExprId),
-    /// `+1` for `+∞`, `−1` for `−∞`.
-    Infinite(i8),
-    Unknown,
 }
 
 /// Does `F` contain a node with a jump (so a direct substitution at a
@@ -1280,7 +1280,8 @@ fn has_jump_node(arena: &Arena, root: ExprId) -> bool {
     false
 }
 
-/// Value of `F` at endpoint `c`, approached from `side`.
+/// Value of `F` at endpoint `c`, approached from `side`: finite, `±∞`, or
+/// `None` when unknown.
 fn endpoint_value(
     arena: &mut Arena,
     anti: ExprId,
@@ -1288,7 +1289,7 @@ fn endpoint_value(
     c: ExprId,
     side: Side,
     singular: bool,
-) -> EndVal {
+) -> Option<Extended<ExprId>> {
     if !is_infinite(arena, c) {
         // Direct substitution.  Valid when F is continuous at c; when c is
         // a singular endpoint we still accept a finite value provided F
@@ -1297,7 +1298,7 @@ fn endpoint_value(
         let v = subs::subs(arena, anti, x, c);
         let v = safe_eval(arena, v);
         if is_finite_value(arena, v, x) && (!singular || !has_jump_node(arena, anti)) {
-            return EndVal::Finite(v);
+            return Some(Extended::Finite(v));
         }
         // One-sided limit: x = c ± 1/u, u → +∞.
         let u = fresh_symbol(arena, "defu", 0);
@@ -1322,28 +1323,28 @@ fn endpoint_value(
     limit_pos_inf(arena, g, u)
 }
 
-/// `lim_{u → +∞} g(u)`.
+/// `lim_{u → +∞} g(u)`: finite, `±∞`, or `None` when unknown.
 ///
 /// Compositional rules (with assumptions on parameters) first; then the
 /// black-box limit engine for parameter-free expressions, whose finite
 /// answers are checked against numeric samples.
-fn limit_pos_inf(arena: &mut Arena, g: ExprId, u: ExprId) -> EndVal {
+fn limit_pos_inf(arena: &mut Arena, g: ExprId, u: ExprId) -> Option<Extended<ExprId>> {
     if !walk::contains(arena, g, u) {
         let v = safe_eval(arena, g);
         return if is_finite_value(arena, v, u) {
-            EndVal::Finite(v)
+            Some(Extended::Finite(v))
         } else {
-            EndVal::Unknown
+            None
         };
     }
     match compositional_limit(arena, g, u) {
         LimVal::Finite(v) => {
             if is_finite_value(arena, v, u) {
-                return EndVal::Finite(v);
+                return Some(Extended::Finite(v));
             }
         }
-        LimVal::PosInf => return EndVal::Infinite(1),
-        LimVal::NegInf => return EndVal::Infinite(-1),
+        LimVal::PosInf => return Some(Extended::PosInf),
+        LimVal::NegInf => return Some(Extended::NegInf),
         LimVal::Bounded | LimVal::Unknown => {}
     }
 
@@ -1361,21 +1362,25 @@ fn limit_pos_inf(arena: &mut Arena, g: ExprId, u: ExprId) -> EndVal {
             // a half-finished result; a limit of a parameter-free
             // expression must itself be parameter-free.
             if !walk::free_symbols(arena, l).is_empty() {
-                return EndVal::Unknown;
+                return None;
             }
             if l == arena.infinity() || l == arena.neg_infinity() {
                 let sign: i8 = if l == arena.infinity() { 1 } else { -1 };
                 if numeric_growth_sanity(arena, g, u, sign) {
-                    return EndVal::Infinite(sign);
+                    return Some(if sign > 0 {
+                        Extended::PosInf
+                    } else {
+                        Extended::NegInf
+                    });
                 }
-                return EndVal::Unknown;
+                return None;
             }
             if is_finite_value(arena, l, u) && numeric_limit_sanity(arena, g, u, l) {
-                return EndVal::Finite(l);
+                return Some(Extended::Finite(l));
             }
         }
     }
-    EndVal::Unknown
+    None
 }
 
 /// Does `g` contain `sin`/`cos`/`tan` of an argument that does not

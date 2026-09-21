@@ -63,7 +63,7 @@ fn oracle(expr: &Ex, x: &Ex, p: &Ex, rel: Rel) -> Option<bool> {
         return Some(rel.holds(r.cmp(&num_rational::Ratio::from_integer(0.into()))));
     }
     match v.eval_complex64() {
-        Ok((re, im)) => {
+        Ok(Complex64 { re, im }) => {
             if !re.is_finite() || !im.is_finite() {
                 return Some(false);
             }

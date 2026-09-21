@@ -282,7 +282,7 @@ fn main() {
     println!("\nDiscrete poles (z-plane):");
     let mut all_inside = true;
     for p in &disc_poles {
-        let (re, im) = p.eval_complex64().unwrap();
+        let Complex64 { re, im } = p.eval_complex64().unwrap();
         let modulus = (re * re + im * im).sqrt();
         all_inside &= modulus < 1.0;
         println!(

@@ -114,7 +114,7 @@ fn main() {
     let ctx = Context::new();
     let c = matrix![ctx, [0, 1, 0], [0, 0, 1], [1, 1, 0]];      // char poly λ³ − λ − 1
     for ev in c.eigenvals().unwrap() {
-        let (re, im) = ev.eval_complex64().unwrap();
+        let Complex64 { re, im } = ev.eval_complex64().unwrap();
         println!("{ev} ≈ {re:.6} {im:+.6}i");       // RootOf(λ^3 - λ - 1, k) ≈ …
     }
 }

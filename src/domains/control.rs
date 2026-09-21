@@ -287,8 +287,8 @@ impl StateSpace {
                 if val >= 0.0 {
                     return Some(false);
                 }
-            } else if let Ok((re, _im)) = pole.eval_complex64() {
-                if re >= 0.0 {
+            } else if let Ok(z) = pole.eval_complex64() {
+                if z.re >= 0.0 {
                     return Some(false);
                 }
             } else {

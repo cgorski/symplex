@@ -69,7 +69,7 @@ fn main() {
 
     // Evaluate complex roots numerically
     for r in &roots {
-        if let Ok((re, im)) = r.eval_complex64()
+        if let Ok(Complex64 { re, im }) = r.eval_complex64()
             && im.abs() > 1e-10
         {
             println!("  Complex root: {re:.4} + {im:.4}i");

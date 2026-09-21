@@ -39,14 +39,14 @@ Crossing from symbols to numbers can fail (free symbols, unsupported node, preci
 
 ```rust,ignore
 expr.eval_f64()                        // Result<f64>
-expr.eval_complex64()                  // Result<(f64, f64)>
+expr.eval_complex64()                  // Result<Complex64>  (num_complex; in the prelude)
 expr.eval_decimal(50)                  // Result<String>
 expr.compile(&["x"])                   // Result<CompiledFn>
 Ex::compile_many(&[&a, &b], &["x"])    // Result<CompiledFnVec>
 expr.to_rust_fn("f", &["x"])           // Result<String>
 expr.to_c_fn("f", &["x"])              // Result<String>
 expr.integrate_numeric(&x, &a, &b)     // Result<f64>
-expr.nroots(&x, 12)                    // Result<Vec<(f64, f64)>>
+expr.nroots(&x, 12)                    // Result<Vec<Complex64>>
 expr.textplot(&x, a, b)                // Result<String>  (all plotting methods)
 ```
 

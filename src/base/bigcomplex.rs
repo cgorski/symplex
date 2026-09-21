@@ -2,6 +2,12 @@
 //! [`BigFloat`]s, with the field operations every numeric algorithm needs
 //! (`evalf`, the polynomial root finders, algebraic-number verification).
 //!
+//! This is the arbitrary-precision analogue of [`num_complex::Complex64`],
+//! which the public API uses for `f64` results (`eval_complex64`,
+//! `nroots`).  It stays a tuple because `num_complex::Complex<BigFloat>`
+//! would need `BigFloat: Num`, and every operation here also threads an
+//! explicit precision and rounding mode.
+//!
 //! Only the operations that need no transcendental constants live here;
 //! `exp`, `ln`, the trigonometric family and `sqrt` stay in
 //! `transforms::evalf`, next to the constant cache they draw on.
@@ -9,6 +15,9 @@
 use astro_float::{BigFloat, RoundingMode};
 
 /// A complex number at some working precision: `(real part, imaginary part)`.
+///
+/// Crate-internal, arbitrary-precision counterpart of
+/// [`num_complex::Complex64`].
 pub(crate) type Complex = (BigFloat, BigFloat);
 
 /// `0 + 0i` at `prec` bits.

@@ -99,7 +99,7 @@ Before the translation table, a few structural differences to be aware of:
 | `resultant(f, g, x)`, `discriminant(f, x)` | `f.resultant(&g, &x)`, `f.discriminant(&x)` → `Option<Ex>` |
 | `div(f, g, x)`, `gcdex(f, g, x)` → `(s, t, h)` | `f.poly_div(&g, &x)`, `f.poly_gcdex(&g, &x)` → `ExtendedGcd { x: s, y: t, gcd: h }` |
 | `decompose(f, x)`, `interpolate(points, x)` | `f.decompose(&x)`, `Ex::poly_interpolate(&points, &x)` |
-| `Poly(f).nroots()`, `real_roots(f)`, `count_roots(f)` | `f.nroots(&x, digits)`, `f.real_roots_isolate(&x)`, `f.count_real_roots(&x)` |
+| `Poly(f).nroots()`, `real_roots(f)`, `count_roots(f)` | `f.nroots(&x, digits)` → `Vec<Complex64>`, `f.real_roots_isolate(&x)`, `f.count_real_roots(&x)` |
 | `Poly(f).count_roots(inf, sup)` | `f.count_real_roots_in(&x, &lo, &hi)` / `p.count_real_roots_in(&lo, &hi)` on a `Poly` (endpoints rational or `±∞`) |
 | `cancel(expr)` (all variables) / `ratsimp(expr)` | `expr.ratsimp()` — rational normal form, opaque non-rational subexpressions treated as indeterminates |
 | `cancel(expr, x)` | `expr.cancel(&x)` |
@@ -144,7 +144,7 @@ See [Polynomials as Data](../guide/polynomials.md). Generators are explicit; any
 | `p.as_expr()` | `p.to_ex()` |
 | `p + q`, `p * q`, `p ** 3`, `p.diff(x)` | `p.add(&q)?`, `p.mul(&q)?`, `p.pow(3)?`, `p.derivative(&x)?` |
 | `p.primitive()`, `p.monic()` | `p.content_and_primitive()`, `p.monic()` |
-| `Poly(e, x).nroots()` | `e.as_poly(&[&x]).unwrap().nroots(digits)?` (or `e.nroots(&x, digits)?`) |
+| `Poly(e, x).nroots()` | `e.as_poly(&[&x]).unwrap().nroots(digits)?` (or `e.nroots(&x, digits)?`) → `Vec<Complex64>` |
 | `Poly(e, x).count_roots(a, b)`, `real_roots` | `p.count_real_roots_in(&a, &b)`, `p.count_real_roots()`, `p.real_roots_isolate()` |
 | `Poly(e, x).shift(a)` | `p.shift(&x, &a)?` — `p(x + a)`; all coefficients `≥ 0` after shifting by `a` certifies `p ≥ 0` on `[a, ∞)` |
 | (no equivalent) | `p.is_nonnegative_on(&lo, &hi)`, `p.is_positive_on(&lo, &hi)` → `Option<bool>` (exact, Sturm) |

@@ -135,7 +135,7 @@ fn neg_one_to_third_no_panic() {
     // NOTE: symplex rewrites (-1)^(1/3) to cbrt(-1) and evaluates it on
     // the real branch (-1); SymPy/Mathematica use the principal value
     // 1/2 + sqrt(3)/2*I.  This is a convention divergence, documented here.
-    let (re, im) = result
+    let Complex64 { re, im } = result
         .eval_complex64()
         .expect("cube root of -1 is a number");
     let cube_re = re * re * re - 3.0 * re * im * im;

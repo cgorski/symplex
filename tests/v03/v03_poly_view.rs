@@ -796,8 +796,8 @@ fn nroots_univariate_rational() {
     assert_eq!(roots.len(), 4);
     let reals: Vec<f64> = roots
         .iter()
-        .filter(|(_, im)| im.abs() < 1e-9)
-        .map(|(re, _)| *re)
+        .filter(|z| z.im.abs() < 1e-9)
+        .map(|z| z.re)
         .collect();
     assert_eq!(reals.len(), 2);
     assert!((reals[0] + 2.0).abs() < 1e-9 && (reals[1] - 1.0).abs() < 1e-9);

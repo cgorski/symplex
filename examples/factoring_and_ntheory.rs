@@ -106,7 +106,7 @@ fn main() {
         "x⁵ − x − 1 has {} real root(s)",
         quintic.count_real_roots(&x).unwrap()
     );
-    for (re, im) in quintic.nroots(&x, 12).unwrap() {
+    for Complex64 { re, im } in quintic.nroots(&x, 12).unwrap() {
         if im.abs() < 1e-9 {
             println!("   root ≈ {re:.12}");
         } else {

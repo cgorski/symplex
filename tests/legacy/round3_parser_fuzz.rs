@@ -856,7 +856,7 @@ fn c_identifier_i_unit() {
     let ctx = Context::new();
     let e = parse(&ctx, "I").expect("I parses");
     assert_eq!(e, ctx.i_unit());
-    assert_eq!(e.eval_complex64().unwrap(), (0.0, 1.0));
+    assert_eq!(e.eval_complex64().unwrap(), Complex64::new(0.0, 1.0));
     assert!(e.powi(2).eval().is_one_structural() || format!("{}", e.powi(2).eval()) == "-1");
     assert_eq!(format!("{}", e.powi(2).eval()), "-1");
 }

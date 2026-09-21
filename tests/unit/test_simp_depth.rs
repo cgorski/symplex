@@ -159,8 +159,8 @@ fn rewrite_as_exp_preserves_value() {
     let rw_f = rewritten.subs(&x, &val).eval_f64();
     // The rewritten form involves complex exponentials, so evalf_f64
     // might fail (complex intermediate). Use evalf_complex64 instead.
-    let rw_val: Result<(f64, f64), _> = rewritten.subs(&x, &val).eval_complex64();
-    if let Ok((re, im)) = rw_val {
+    let rw_val: Result<Complex64, _> = rewritten.subs(&x, &val).eval_complex64();
+    if let Ok(Complex64 { re, im }) = rw_val {
         assert!(
             im.abs() < 1e-10,
             "sin rewritten as exp should be real for real input: im={im}"
@@ -230,8 +230,8 @@ fn rewrite_roundtrip_numerical() {
     let orig_f = e.subs(&x, &val).eval_f64().unwrap();
 
     // The roundtrip may produce complex intermediates, so try complex eval
-    let back_result: Result<(f64, f64), _> = back.subs(&x, &val).eval_complex64();
-    if let Ok((re, im)) = back_result {
+    let back_result: Result<Complex64, _> = back.subs(&x, &val).eval_complex64();
+    if let Ok(Complex64 { re, im }) = back_result {
         assert!(
             (orig_f - re).abs() < 1e-10,
             "roundtrip should preserve value: orig={orig_f}, back_re={re}, back_im={im}"

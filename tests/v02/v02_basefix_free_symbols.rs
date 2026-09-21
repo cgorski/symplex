@@ -22,7 +22,7 @@ fn rootof_from_solver_is_constant() {
     }
     // A RootOf is numerically evaluable — it really is a number.
     let v = roots[0].eval_complex64().unwrap();
-    assert!(v.0.is_finite() && v.1.is_finite());
+    assert!(v.re.is_finite() && v.im.is_finite());
 }
 
 #[test]

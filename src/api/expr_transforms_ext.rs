@@ -421,7 +421,7 @@ impl Expr<Numeric> {
             }
             for p in &poles {
                 let re = match p.eval_complex64() {
-                    Ok((re, _)) => re,
+                    Ok(z) => z.re,
                     Err(_) => match p.re().is_negative() {
                         Some(true) => -1.0,
                         Some(false) => 0.0,

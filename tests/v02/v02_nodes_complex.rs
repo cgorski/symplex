@@ -371,8 +371,8 @@ fn numerical_evaluation() {
     assert!(approx(re_v, 3.0, 1e-12));
     assert!(approx(im_v, -4.0, 1e-12));
     assert!(approx(arg_v, (-4.0f64).atan2(3.0), 1e-12));
-    let (cr, ci) = z.conjugate().subs(&z, &w).eval_complex64().unwrap();
-    assert!(approx(cr, 3.0, 1e-12) && approx(ci, 4.0, 1e-12));
+    let c = z.conjugate().subs(&z, &w).eval_complex64().unwrap();
+    assert!(approx(c.re, 3.0, 1e-12) && approx(c.im, 4.0, 1e-12));
     // arg of exp(i·t) for numeric t through the general path
     let t = ctx.rational(1, 3);
     let v = (&i * &t).exp().arg().eval_f64().unwrap();
@@ -449,10 +449,10 @@ fn expand_complex_polar_abs_squared() {
     assert_eq!(format!("{e}"), "sin(x)*I + cos(x)");
 
     let w = &ctx.int(3) + &(&ctx.int(4) * &i);
-    let (r, theta) = w.polar();
-    assert!(approx(r.eval_f64().unwrap(), 5.0, 1e-12));
+    let polar = w.polar();
+    assert!(approx(polar.modulus.eval_f64().unwrap(), 5.0, 1e-12));
     assert!(approx(
-        theta.eval_f64().unwrap(),
+        polar.argument.eval_f64().unwrap(),
         (4.0f64).atan2(3.0),
         1e-12
     ));
