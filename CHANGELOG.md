@@ -104,6 +104,11 @@ satisfies:
   the `wasm32-unknown-unknown` check and the fuzz-target check that CI runs.
 - `proportion_interval` clips through `Interval::clamp_to_closure` instead
   of a hand `clamp`.
+- **CI's `Test` job took two hours** because `cargo test --benches` runs
+  every criterion bench once in debug mode and `qmatrix/hnf/40` (a 40×40
+  random-entry Hermite normal form, exponential coefficient growth) took
+  6,996 s of it.  The bench now stops at 20×20 for HNF; `scripts/gate.sh`
+  gained a `benches` stage (23 s) that mirrors CI.
 
 ### Changed
 

@@ -55,7 +55,7 @@ run_stage() {
 }
 
 FAILED_STAGES=""
-STAGES="${*:-fmt clippy deny nextest doctest doc ui subcrates examples book}"
+STAGES="${*:-fmt clippy deny nextest doctest doc ui benches subcrates examples book}"
 
 for stage in $STAGES; do
     case "$stage" in
@@ -66,6 +66,9 @@ for stage in $STAGES; do
         doctest)  run_stage doctest  120  cargo test --doc -q ;;
         doc)      run_stage doc      300  env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items ;;
         ui)       run_stage ui       120  cargo test --test ui_tests ;;
+        # CI runs the criterion benches once each in test mode; a bench that is
+        # slow in debug (0.14: qmatrix/hnf/40, two hours) shows up here first.
+        benches)  run_stage benches  300  cargo test --benches ;;
         subcrates)
             run_stage macros   120  sh -c 'cd symplex-macros && cargo test'
             run_stage build    120  sh -c 'cd symplex-build && cargo test'

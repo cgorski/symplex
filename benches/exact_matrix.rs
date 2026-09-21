@@ -43,10 +43,15 @@ fn bench_qmatrix(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("inv", n), &s, |b, s| {
             b.iter(|| black_box(s.inv().unwrap()))
         });
-        let z = random_z(n, n, 9);
-        group.bench_with_input(BenchmarkId::new("hnf", n), &z, |b, z| {
-            b.iter(|| black_box(z.hermite_normal_form()))
-        });
+        // The row-operation HNF has exponential coefficient growth on random
+        // input: 40×40 took two hours under `cargo test --benches` (debug) in
+        // CI, so the largest size is measured only for the other kernels.
+        if n <= 20 {
+            let z = random_z(n, n, 9);
+            group.bench_with_input(BenchmarkId::new("hnf", n), &z, |b, z| {
+                b.iter(|| black_box(z.hermite_normal_form()))
+            });
+        }
     }
     group.finish();
 }
