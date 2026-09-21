@@ -489,8 +489,8 @@ fn kappa_ci_d1_matches_statsmodels() {
     let ci = cohen_kappa_ci(&ctx, &a, &b, 0.95).unwrap();
     assert_eq!(ci.kappa, q(167, 267));
     assert_eq!(ci.variance, q(35_480_500, 1_694_040_507));
-    assert!(close(ci.lower, 0.341_819_292_454_126));
-    assert!(close(ci.upper, 0.909_117_037_133_889));
+    assert!(close(ci.ci.lower, 0.341_819_292_454_126));
+    assert!(close(ci.ci.upper, 0.909_117_037_133_889));
     assert_eq!(ci.confidence, 0.95);
     assert!(close(
         ci.se.eval_f64().unwrap(),
@@ -509,12 +509,12 @@ fn kappa_ci_2x2_exact_variance_and_other_levels() {
     let ci = kappa_ci_from_confusion(&ctx, &t2x2(), 0.95).unwrap();
     assert_eq!(ci.kappa, q(2, 5));
     assert_eq!(ci.variance, q(252, 15625));
-    assert!(close(ci.lower, 0.151_092_290_476_661));
-    assert!(close(ci.upper, 0.648_907_709_523_339));
+    assert!(close(ci.ci.lower, 0.151_092_290_476_661));
+    assert!(close(ci.ci.upper, 0.648_907_709_523_339));
     // 90 %: kappa ∓ norm.isf(0.05)·√var = (0.191110065279222, 0.608889934720778)
     let ci = kappa_ci_from_confusion(&ctx, &t2x2(), 0.90).unwrap();
-    assert!(close(ci.lower, 0.191_110_065_279_222));
-    assert!(close(ci.upper, 0.608_889_934_720_778));
+    assert!(close(ci.ci.lower, 0.191_110_065_279_222));
+    assert!(close(ci.ci.upper, 0.608_889_934_720_778));
 }
 
 #[test]
@@ -526,8 +526,8 @@ fn kappa_ci_3x3_unbalanced() {
     let ci = kappa_ci_from_confusion(&ctx, &t3(), 0.95).unwrap();
     assert_eq!(ci.kappa, q(97, 185));
     assert_eq!(ci.variance, q(89_006_544, 8_199_454_375));
-    assert!(close(ci.lower, 0.320_119_224_784_704));
-    assert!(close(ci.upper, 0.728_529_423_863_944));
+    assert!(close(ci.ci.lower, 0.320_119_224_784_704));
+    assert!(close(ci.ci.upper, 0.728_529_423_863_944));
 }
 
 #[test]

@@ -1171,10 +1171,7 @@ pub fn proportion_interval(
                 false,
             )
         };
-        return Ok(Interval {
-            lower: lo,
-            upper: hi,
-        });
+        return Ok(Interval::closed(lo, hi));
     }
     let ctx = Context::new();
     let z = Distribution::normal(ctx.int(0), ctx.int(1)).quantile_f64(1.0 - alpha / 2.0)?;
@@ -1182,34 +1179,22 @@ pub fn proportion_interval(
     Ok(clip(match method {
         IntervalMethod::Wald => {
             let half = z * (p * (1.0 - p) / n).sqrt();
-            Interval {
-                lower: p - half,
-                upper: p + half,
-            }
+            Interval::closed(p - half, p + half)
         }
         IntervalMethod::Wilson => {
             let z2 = z * z;
             let denom = 1.0 + z2 / n;
             let centre = (p + z2 / (2.0 * n)) / denom;
             let half = z * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt() / denom;
-            Interval {
-                lower: centre - half,
-                upper: centre + half,
-            }
+            Interval::closed(centre - half, centre + half)
         }
         IntervalMethod::AgrestiCoull => {
             let z2 = z * z;
             let n_t = n + z2;
             let p_t = (k + z2 / 2.0) / n_t;
             let half = z * (p_t * (1.0 - p_t) / n_t).sqrt();
-            Interval {
-                lower: p_t - half,
-                upper: p_t + half,
-            }
+            Interval::closed(p_t - half, p_t + half)
         }
-        IntervalMethod::ClopperPearson => Interval {
-            lower: 0.0,
-            upper: 1.0,
-        },
+        IntervalMethod::ClopperPearson => Interval::closed(0.0, 1.0),
     }))
 }

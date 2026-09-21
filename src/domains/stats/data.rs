@@ -287,10 +287,7 @@ pub fn min_max(data: &[Q]) -> Result<Interval<Q>, SymplexError> {
             hi = x.clone();
         }
     }
-    Ok(Interval {
-        lower: lo,
-        upper: hi,
-    })
+    Ok(Interval::closed(lo, hi))
 }
 
 /// The most frequent values, ascending (all of them when tied).

@@ -1505,10 +1505,7 @@ fn bootstrap_validates_input() {
     // A single observation gives a degenerate but valid interval.
     assert_eq!(
         bootstrap_ci(&[3.0], mean, 10, 0.95, &mut rng, BootstrapMethod::Basic).unwrap(),
-        Interval {
-            lower: 3.0,
-            upper: 3.0
-        }
+        Interval::closed(3.0, 3.0)
     );
 }
 

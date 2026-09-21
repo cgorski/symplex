@@ -132,8 +132,8 @@ pub use base::assumptions;
 pub use base::config;
 /// Error types used throughout the library.
 pub use base::errors;
-/// A closed interval with named endpoints — the type behind every pair of bounds in the API.
-pub use base::interval::Interval;
+/// Intervals (`[a, b]`, `(a, b)`, …) and possibly-unbounded closed bounds with named endpoints — the types behind every pair of bounds in the API.
+pub use base::interval::{Bounds, Interval, IntervalKind};
 
 // base
 /// Exact `f64` ↔ rational conversions (dyadic exact, and best bounded-denominator approximations).
@@ -310,7 +310,7 @@ pub mod prelude {
     pub use crate::base::assumptions::{Assumption, Assumptions, Props};
     pub use crate::base::config::EvalConfig;
     pub use crate::base::errors::SymplexError;
-    pub use crate::base::interval::Interval;
+    pub use crate::base::interval::{Bounds, Interval, IntervalKind};
     pub use crate::calculus::definite::QuadOpts;
     pub use crate::calculus::formal_series::FormalPowerSeries;
     pub use crate::domains::control::{StateSpace, TransferFunction};

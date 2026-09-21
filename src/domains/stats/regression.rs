@@ -941,10 +941,7 @@ impl Ols {
             .map(|(b, v)| {
                 let b = to_f64(OP, b)?;
                 let se = to_f64(OP, &v)?.sqrt();
-                Ok(Interval {
-                    lower: b - t * se,
-                    upper: b + t * se,
-                })
+                Ok(Interval::closed(b - t * se, b + t * se))
             })
             .collect()
     }
@@ -1014,10 +1011,7 @@ impl Ols {
         const OP: &str = "confidence_interval_mean_response";
         let (yhat, factor, t) = self.interval_parts(OP, ctx, x_row, confidence)?;
         let se = (to_f64(OP, &self.mse_resid)? * factor).sqrt();
-        Ok(Interval {
-            lower: yhat - t * se,
-            upper: yhat + t * se,
-        })
+        Ok(Interval::closed(yhat - t * se, yhat + t * se))
     }
 
     /// Prediction interval for a new observation at `x_row`:
@@ -1037,10 +1031,7 @@ impl Ols {
         const OP: &str = "prediction_interval";
         let (yhat, factor, t) = self.interval_parts(OP, ctx, x_row, confidence)?;
         let se = (to_f64(OP, &self.mse_resid)? * (1.0 + factor)).sqrt();
-        Ok(Interval {
-            lower: yhat - t * se,
-            upper: yhat + t * se,
-        })
+        Ok(Interval::closed(yhat - t * se, yhat + t * se))
     }
 
     /// The hat matrix `H = X(XᵀWX)⁻¹XᵀW` with `ŷ = Hy`, exact (`W = I` for
@@ -1684,10 +1675,7 @@ impl Logit {
             .coefficients
             .iter()
             .zip(&self.standard_errors)
-            .map(|(b, se)| Interval {
-                lower: b - z * se,
-                upper: b + z * se,
-            })
+            .map(|(b, se)| Interval::closed(b - z * se, b + z * se))
             .collect())
     }
 

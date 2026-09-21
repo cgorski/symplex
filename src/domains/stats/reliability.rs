@@ -1086,11 +1086,9 @@ pub struct KappaCi {
     pub variance: Q,
     /// The standard error `√variance`, exact.
     pub se: Ex,
-    /// Lower confidence limit `κ − z_{α/2} · se`.
-    pub lower: f64,
-    /// Upper confidence limit `κ + z_{α/2} · se`.
-    pub upper: f64,
-    /// The confidence level the limits refer to.
+    /// The normal-theory interval `κ ∓ z_{α/2} · se`.
+    pub ci: Interval<f64>,
+    /// The confidence level `ci` refers to.
     pub confidence: f64,
 }
 
@@ -1113,8 +1111,7 @@ fn kappa_ci_of(
     let kappa_f = q_to_f64(&m.kappa);
     Ok(KappaCi {
         se: ex(ctx, &m.var).sqrt(),
-        lower: kappa_f - delta,
-        upper: kappa_f + delta,
+        ci: Interval::closed(kappa_f - delta, kappa_f + delta),
         confidence,
         kappa: m.kappa,
         variance: m.var,
@@ -1141,8 +1138,8 @@ fn kappa_ci_of(
 /// //   kappa 0.4, var_kappa 0.016128, kappa_low 0.151092290476661, kappa_upp 0.648907709523339
 /// let ci = kappa_ci_from_confusion(&ctx, &[vec![20, 5], vec![10, 15]], 0.95)?;
 /// assert_eq!((ci.kappa, ci.variance), (q(2, 5), q(252, 15625)));
-/// assert!((ci.lower - 0.151_092_290_476_661).abs() < 1e-12);
-/// assert!((ci.upper - 0.648_907_709_523_339).abs() < 1e-12);
+/// assert!((ci.ci.lower - 0.151_092_290_476_661).abs() < 1e-12);
+/// assert!((ci.ci.upper - 0.648_907_709_523_339).abs() < 1e-12);
 /// # Ok::<(), SymplexError>(())
 /// ```
 ///
@@ -1803,10 +1800,7 @@ pub fn pearson_ci(r: f64, n: usize, confidence: f64) -> Result<Interval<f64>, Sy
     let z = r.atanh();
     let se = 1.0 / ((n - 3) as f64).sqrt();
     let zc = norm_isf((1.0 - confidence) / 2.0);
-    Ok(Interval {
-        lower: (z - zc * se).tanh(),
-        upper: (z + zc * se).tanh(),
-    })
+    Ok(Interval::closed((z - zc * se).tanh(), (z + zc * se).tanh()))
 }
 
 /// The population sums of squares and cross-products of a pair,

@@ -1096,10 +1096,7 @@ pub fn phi_coefficient(ctx: &Context, table: [[usize; 2]; 2]) -> Result<Ex, Symp
 fn log_wald_ci(estimate: &Q, se: f64, confidence: f64) -> Interval<f64> {
     let z = norm_isf((1.0 - confidence) / 2.0);
     let log = q_to_f64(estimate).ln();
-    Interval {
-        lower: (log - z * se).exp(),
-        upper: (log + z * se).exp(),
-    }
+    Interval::closed((log - z * se).exp(), (log + z * se).exp())
 }
 
 /// The sample odds ratio `ad/(bc)` of a 2×2 table `[[a, b], [c, d]]` with
@@ -1594,10 +1591,7 @@ pub fn confidence_interval_mean(
     let mean = q_to_f64(&data::mean(x)?);
     let sem = q_to_f64(&(data::variance(x, Ddof::Sample)? / qu(n))).sqrt();
     let t = student_t_quantile_f64(OP, ctx, (n - 1) as f64, (1.0 + confidence) / 2.0)?;
-    Ok(Interval {
-        lower: mean - t * sem,
-        upper: mean + t * sem,
-    })
+    Ok(Interval::closed(mean - t * sem, mean + t * sem))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2801,14 +2795,8 @@ pub fn bootstrap_ci(
         quantile_sorted(&stats, 1.0 - alpha / 2.0),
     );
     Ok(match method {
-        BootstrapMethod::Percentile => Interval {
-            lower: lo,
-            upper: hi,
-        },
-        BootstrapMethod::Basic => Interval {
-            lower: 2.0 * observed - hi,
-            upper: 2.0 * observed - lo,
-        },
+        BootstrapMethod::Percentile => Interval::closed(lo, hi),
+        BootstrapMethod::Basic => Interval::closed(2.0 * observed - hi, 2.0 * observed - lo),
     })
 }
 

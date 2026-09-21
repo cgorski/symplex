@@ -259,21 +259,15 @@ impl KaplanMeier {
         let s = ratio_f64(&self.survival_at(t));
         let se = ratio_f64(&self.variance_at(t)).sqrt();
         Ok(match method {
-            CiMethod::Linear => Interval {
-                lower: (s - z * se).max(0.0),
-                upper: (s + z * se).min(1.0),
-            },
+            CiMethod::Linear => Interval::closed((s - z * se).max(0.0), (s + z * se).min(1.0)),
             CiMethod::LogLog => {
                 if s <= 0.0 || s >= 1.0 {
-                    Interval { lower: s, upper: s }
+                    Interval::closed(s, s)
                 } else {
                     let theta = z * se / (s * s.ln());
                     let lo = s.powf(theta.exp());
                     let hi = s.powf((-theta).exp());
-                    Interval {
-                        lower: lo.min(hi),
-                        upper: lo.max(hi),
-                    }
+                    Interval::closed(lo.min(hi), lo.max(hi))
                 }
             }
         })

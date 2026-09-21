@@ -785,10 +785,10 @@ pub fn credible_interval(
         )));
     }
     let tail = (1.0 - confidence) / 2.0;
-    Ok(Interval {
-        lower: dist.quantile_f64(tail)?,
-        upper: dist.quantile_f64(1.0 - tail)?,
-    })
+    Ok(Interval::closed(
+        dist.quantile_f64(tail)?,
+        dist.quantile_f64(1.0 - tail)?,
+    ))
 }
 
 /// The posterior predictive of `n` further Bernoulli trials under a
@@ -898,8 +898,5 @@ pub fn confidence_interval_mean_z(
     let mean = ctx.from_ratio(data::mean(data)?).eval_f64()?;
     let z =
         Distribution::normal(ctx.zero(), ctx.one()).quantile_f64(1.0 - (1.0 - confidence) / 2.0)?;
-    Ok(Interval {
-        lower: mean - z * se,
-        upper: mean + z * se,
-    })
+    Ok(Interval::closed(mean - z * se, mean + z * se))
 }
