@@ -61,6 +61,7 @@
 
 pub mod aggregation;
 pub mod agreement;
+pub mod anova;
 mod continuous;
 pub mod data;
 mod discrete;
