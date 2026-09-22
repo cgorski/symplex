@@ -697,3 +697,207 @@ fn basym_small_tails_inside_its_window() {
         "I_0.405(2e5, 3e5)",
     );
 }
+
+/// Found by `fuzz_numdist` (0.22.3): Beta(10⁻³, 10⁻³) piles its mass within
+/// e⁻⁷⁰⁰ of 0 and 1 — mpmath (`mp.dps = 40`)
+/// `betainc(a, a, 0, 2**-1074, regularized=True)` = 0.23750048582096115 and
+/// `betainc(a, a, 1 - 2**-53, 1, regularized=True)` = 0.48196569551458541 —
+/// so every lower level up to 0.2375 has a quantile below the smallest
+/// positive float (the 0.2055 quantile is 8.5717190019063127e-387,
+/// `findroot` on the same `betainc`).  0.22 returned 5.56e-309, whose cdf is
+/// 0.246 — above the level.  The answer is the smallest float `x` with
+/// `F(x) ≥ p`; scipy's `beta.ppf` returns 2.2e-308 there.
+#[test]
+fn beta_quantile_below_the_smallest_float_is_the_smallest_float() {
+    let (a, b) = (1.0000000000000002e-3, 1.0000000000000002e-3);
+    let tiniest = f64::from_bits(1);
+    assert_eq!(beta::ppf(0.20554351806640625, a, b).unwrap(), tiniest);
+    assert_eq!(beta::ppf(1e-100, a, b).unwrap(), tiniest);
+    close(
+        beta::cdf(tiniest, a, b),
+        0.23750048582096115,
+        1e-12,
+        "F(5e-324)",
+    );
+    // By symmetry the upper tail ends at 1.
+    assert_eq!(beta::isf(0.20554351806640625, a, b).unwrap(), 1.0);
+    // Levels above F(5e-324) still solve normally and land on the level.
+    let x = beta::ppf(0.3, a, b).unwrap();
+    assert!(x > tiniest && x < 1e-100, "{x:e}");
+    close(beta::cdf(x, a, b), 0.3, 1e-9, "F(ppf(0.3))");
+}
+
+/// Found by `fuzz_numdist` (0.22.3): Gamma(0.005) — χ² with 0.01 degrees of
+/// freedom — has P(X ≤ 5e-324) = 0.024250093812704408 (mpmath,
+/// `gammainc(0.005, 0, 2**-1074, regularized=True)` at `mp.dps = 40`), so
+/// lower quantiles below that level are below every positive float.  0.22
+/// returned the underflowed 0 (whose cdf is 0, below the level); the answer
+/// is the smallest float with `F(x) ≥ p`, as for `beta`.
+#[test]
+fn gamma_quantile_below_the_smallest_float_is_the_smallest_float() {
+    let tiniest = f64::from_bits(1);
+    assert_eq!(gamma::ppf(8e-4, 0.005, 1.0).unwrap(), tiniest);
+    assert_eq!(chi2::ppf(8e-4, 0.01).unwrap(), tiniest);
+    // isf of a level near 1 is the same lower quantile.
+    assert_eq!(chi2::isf(1.0 - 8e-4, 0.01).unwrap(), tiniest);
+    close(
+        gamma::cdf(tiniest, 0.005, 1.0),
+        0.024250093812704408,
+        1e-12,
+        "F(5e-324)",
+    );
+    // χ²(0.01) at 5e-324 is Gamma(0.005) at 2.5e-324, which underflows in
+    // f64 (0.22 returned 0): mpmath `gammainc(0.005, 0, 2**-1075,
+    // regularized=True)` = 0.024166194861712902.  The same fix found
+    // `bd0(k, m)` overflowing `k/m` for a subnormal `m`.
+    close(
+        chi2::cdf(tiniest, 0.01),
+        0.024166194861712902,
+        1e-12,
+        "χ²(0.01) F(5e-324)",
+    );
+    let x = gamma::ppf(0.3, 0.005, 1.0).unwrap();
+    close(gamma::cdf(x, 0.005, 1.0), 0.3, 1e-9, "F(ppf(0.3))");
+}
+
+/// Found by `fuzz_numdist` (0.22.3): F(0.01, 0.01) has
+/// P(X ≤ 5e-324) = 0.012090845112971765 (mpmath `betainc(0.005, 0.005, 0,
+/// x/(x+1), regularized=True)` at `x = 2**-1074`, `mp.dps = 40`), but 0.22
+/// formed `d₁·x`, which underflows, and returned 0 for it — and so a lower
+/// quantile of 0.  Now the cdf is right at the subnormals and the quantile
+/// below them is the smallest float.
+#[test]
+fn f_quantile_below_the_smallest_float_is_the_smallest_float() {
+    use symplex::stats::numdist::f;
+    let tiniest = f64::from_bits(1);
+    assert_eq!(f::isf(1.0 - 2.3721549469e-6, 0.01, 0.01).unwrap(), tiniest);
+    assert_eq!(f::ppf(1e-3, 0.01, 0.01).unwrap(), tiniest);
+    close(
+        f::cdf(tiniest, 0.01, 0.01),
+        0.012090845112971765,
+        1e-10,
+        "F(5e-324)",
+    );
+    // Unequal degrees of freedom push the beta argument itself below every
+    // float: z = d₁x/(d₁x + d₂) ≈ 4e-330 for F(0.0105…, 13580.2) at 5e-324.
+    // mpmath: betainc(d1/2, d2/2, 0, z, regularized=True) = 0.019368514617951588.
+    let (d1, d2) = (1.0530057972938501e-2, 1.358019733374666e4);
+    close(
+        f::cdf(tiniest, d1, d2),
+        0.019368514617951588,
+        1e-10,
+        "F(5e-324), d2 ≫ d1",
+    );
+    assert_eq!(f::isf(0.9999927248020288, d1, d2).unwrap(), tiniest);
+}
+
+/// Found by `fuzz_numdist` (0.22.3): a subnormal quantile.  For
+/// Beta(1.0743069978730814e-3, 1.0000000000000002e-3), `isf(0.7814254760742188)`
+/// — `cdf = 0.2185745239257812` — is 1.7090373616895022e-320 (mpmath
+/// `findroot` on `betainc(a, b, 0, x, regularized=True)` at `mp.dps = 40`;
+/// P(X ≤ 5e-324) = 0.21666941174603115 lies just below the level).  0.22's
+/// logit `1/(1 + e^{−v})` cannot go below 1/f64::MAX = 5.6e-309 and returned
+/// that.  A subnormal carries few significant bits, so the check is that the
+/// neighbouring floats bracket the level.
+#[test]
+fn beta_quantile_reaches_the_subnormals() {
+    let (a, b) = (1.0743069978730814e-3, 1.0000000000000002e-3);
+    let q = 0.7814254760742188;
+    let x = beta::isf(q, a, b).unwrap();
+    assert!(x < 1e-300, "{x:e}");
+    close(x, 1.7090373616895022e-320, 1e-3, "subnormal quantile");
+    assert!(beta::sf(x.next_down(), a, b) >= q && beta::sf(x.next_up(), a, b) <= q);
+}
+
+/// Found by `fuzz_numdist` (0.22.3): the F(0.01, 0.01) lower quantile at
+/// `p = 0.01242828369140625` is subnormal.  The quantile solver formed
+/// `d₁·x` itself, saw a zero tail there and stopped at 1.497e-321, past the
+/// level (cdf 0.012441).  A subnormal has few significant bits, so the check
+/// is that the returned float is the first one whose cdf reaches the level.
+#[test]
+fn f_quantile_in_the_subnormals_brackets_the_level() {
+    use symplex::stats::numdist::f;
+    let p = 0.01242828369140625;
+    let x = f::ppf(p, 0.01, 0.01).unwrap();
+    assert!(x > 0.0 && x < 1e-300, "{x:e}");
+    assert!(
+        f::cdf(x.next_down(), 0.01, 0.01) <= p && f::cdf(x, 0.01, 0.01) >= p,
+        "cdf around {x:e}: {:e}, {:e}",
+        f::cdf(x.next_down(), 0.01, 0.01),
+        f::cdf(x, 0.01, 0.01)
+    );
+}
+
+/// Found by `fuzz_numdist` (0.22.3): F(6331.1, 0.01) has a tail heavier
+/// than any float can reach — mpmath (`mp.dps = 50`, `sf(x) =
+/// betainc(d2/2, d1/2, 0, d2/(d1*x + d2), regularized=True)`):
+/// sf(2.8391364988509896e304) = 0.029340876076892379,
+/// sf(f64::MAX) = 0.028084418152830489, and the `isf(0.02733612060546875)`
+/// root is 3.984972426007635e310.  0.22 formed `d₁·x`, which overflows, and
+/// stopped at 2.84e304; the quantile past `f64::MAX` is `+∞`, as for `t`.
+#[test]
+fn f_upper_tail_beyond_the_largest_float() {
+    use symplex::stats::numdist::f;
+    let (d1, d2) = (6.331113875958191e3, 1.0000000000000005e-2);
+    close(
+        f::sf(2.8391364988509896e304, d1, d2),
+        0.029340876076892379,
+        1e-10,
+        "sf near MAX/6000",
+    );
+    close(
+        f::sf(f64::MAX, d1, d2),
+        0.028084418152830489,
+        1e-10,
+        "sf(f64::MAX)",
+    );
+    assert_eq!(f::isf(0.02733612060546875, d1, d2).unwrap(), f64::INFINITY);
+    // A level inside the range still solves.
+    let x = f::isf(0.0292, d1, d2).unwrap();
+    assert!(x.is_finite(), "{x:e}");
+    close(f::sf(x, d1, d2), 0.0292, 1e-8, "sf(isf(0.0292))");
+}
+
+/// Found by `fuzz_numdist` (0.22.3): Gamma(k = 9.646949844764864e-3,
+/// θ = 615.39…) has its `ppf(7.7056884765625e-4)` at 6.7559119122692663e-321
+/// (mpmath `findroot` on `gammainc(k, 0, x/θ, regularized=True)`,
+/// `mp.dps = 50`), where the *standard* quantile `x/θ` ≈ 1.1e-323 is itself
+/// barely a float.  0.22 solved for `x/θ` and multiplied by θ, landing on
+/// 6.08e-321 (cdf 7.6979e-4 < p).  The solve now runs in `ln(x/θ)` and
+/// scales in logarithms.
+#[test]
+fn gamma_quantile_scales_in_logarithms() {
+    let (k, theta, p) = (9.646949844764864e-3, 6.15390567767807e2, 7.7056884765625e-4);
+    let x = gamma::ppf(p, k, theta).unwrap();
+    close(x, 6.7559119122692663e-321, 2e-3, "subnormal gamma quantile");
+    // The float nearest the root: its neighbours bracket the level.
+    assert!(gamma::cdf(x.next_down(), k, theta) <= p && gamma::cdf(x.next_up(), k, theta) >= p);
+}
+
+/// Found by `fuzz_numdist` (0.22.3): F(1.0116620928845984e-2, 2977.6…)
+/// `isf(0.9765701293945313)` is the subnormal 5.751550438474862e-321
+/// (mpmath `findroot` on `ln betainc(d1/2, d2/2, 0, d1*x/(d1*x + d2),
+/// regularized=True)`, `mp.dps = 60`; P(X ≤ 5e-324) = 0.022607946088527692
+/// lies below the lower level 0.0234).  0.22 started Newton from the
+/// deep-tail guess `(p·a·B(a, b))^{1/a}`, which underflows to 0 here, so the
+/// iteration began — and ended — at `ln 0 = −∞`.  The start is now formed in
+/// logarithms, and below e^-690 the solver uses the log-linear leading term
+/// of the tail instead of evaluating it at an underflowing `e^u`.
+#[test]
+fn f_quantile_solves_below_the_exp_underflow() {
+    use symplex::stats::numdist::f;
+    let (d1, d2, q) = (
+        1.0116620928845984e-2,
+        2.977617615047337e3,
+        9.765701293945313e-1,
+    );
+    close(
+        f::cdf(f64::from_bits(1), d1, d2),
+        0.022607946088527692,
+        1e-10,
+        "F(5e-324)",
+    );
+    let x = f::isf(q, d1, d2).unwrap();
+    close(x, 5.751550438474862e-321, 2e-3, "subnormal F quantile");
+    assert!(f::sf(x.next_down(), d1, d2) >= q && f::sf(x.next_up(), d1, d2) <= q);
+}

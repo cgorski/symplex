@@ -644,6 +644,36 @@ impl<C: Field> GenPoly<C> {
     /// Assumes `deg(a) >= deg(b)`.  If not, the arguments are swapped
     /// internally.
     pub fn euclidean_prs(a: &Self, b: &Self) -> std::collections::BTreeMap<usize, Self> {
+        Self::euclidean_prs_until(a, b, None)
+    }
+
+    /// [`euclidean_prs`](Self::euclidean_prs), stopping as soon as a member
+    /// of degree `stop_at` has been produced.  The members below it are the
+    /// most expensive (over `ℚ(t)` their coefficients grow with every
+    /// step), and the Lazard–Rioboo–Trager caller needs only the degree-1
+    /// member: computing the rest took 35 of 36 s for
+    /// `∫ atan(√x − x³) dx` (found by `fuzz_integrate`).
+    pub fn euclidean_prs_until(
+        a: &Self,
+        b: &Self,
+        stop_at: Option<usize>,
+    ) -> std::collections::BTreeMap<usize, Self> {
+        Self::euclidean_prs_normalized(a, b, stop_at, |r| r)
+    }
+
+    /// [`euclidean_prs_until`](Self::euclidean_prs_until) with every
+    /// remainder passed through `normalize` before it is stored and reused.
+    /// `normalize` must return a non-zero scalar multiple of its argument
+    /// (e.g. clear denominators and strip the content), so each member is a
+    /// scalar multiple of the Euclidean one and anything invariant under
+    /// scaling — degrees, the monic members — is unchanged, while the
+    /// coefficients stay small.
+    pub fn euclidean_prs_normalized(
+        a: &Self,
+        b: &Self,
+        stop_at: Option<usize>,
+        normalize: impl Fn(Self) -> Self,
+    ) -> std::collections::BTreeMap<usize, Self> {
         let mut prs = std::collections::BTreeMap::new();
 
         if a.is_zero() || b.is_zero() {
@@ -675,7 +705,11 @@ impl<C: Field> GenPoly<C> {
         // Euclidean remainder loop.
         let mut step = 0u32;
         while !next.is_zero() {
+            if stop_at.is_some_and(|d| prs.contains_key(&d)) {
+                break;
+            }
             let (_, r) = curr.div_rem(&next);
+            let r = if r.is_zero() { r } else { normalize(r) };
             if let Some(d) = r.degree() {
                 tracing::trace!(step, remainder_degree = d, "euclidean_prs: remainder");
                 prs.insert(d, r.clone());
@@ -1434,6 +1468,26 @@ mod tests {
         let z = P::zero();
         let g = P::gcd(&a, &z);
         assert_eq!(g.degree(), a.make_monic().degree());
+    }
+
+    /// `euclidean_prs_until(a, b, Some(d))` returns exactly the members of
+    /// the full PRS of degree ≥ `d` and none below it.
+    #[test]
+    fn euclidean_prs_until_stops_at_the_requested_degree() {
+        let a = p(&[-3, 1, 0, 2, 0, 1]); // x⁵ + 2x³ + x − 3
+        let b = p(&[1, 0, -1, 1]); // x³ − x² + 1
+        let full = P::euclidean_prs(&a, &b);
+        let cut = P::euclidean_prs_until(&a, &b, Some(1));
+        assert!(cut.contains_key(&1), "{:?}", cut.keys().collect::<Vec<_>>());
+        assert!(!cut.contains_key(&0));
+        for (d, m) in &cut {
+            assert_eq!(full.get(d), Some(m), "member of degree {d}");
+        }
+        assert_eq!(
+            full.keys().filter(|&&d| d >= 1).count(),
+            cut.len(),
+            "every member of degree ≥ 1 is kept"
+        );
     }
 
     // ── Extended GCD ────────────────────────────────────────────────

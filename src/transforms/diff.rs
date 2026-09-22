@@ -858,7 +858,16 @@ fn diff_node(
         | ExprNode::RootOf(_, _)
         | ExprNode::DSolve(_, _, _)
         | ExprNode::ConditionSet(_, _) => {
+            // A node in which `var` is not free is a constant: its bound
+            // variables (the `RootOf` polynomial's, a `Limit`'s) are not
+            // `var`.  0.22 returned `Derivative(RootOf(…), x)` for every
+            // `RootOf`, so no antiderivative containing one could be
+            // differentiated back or evaluated (fuzz_integrate).
             let v = var_expr(arena, var);
+            let free = crate::base::walk::free_symbols(arena, id);
+            if !free.contains(&v) {
+                return arena.zero;
+            }
             arena.intern(ExprNode::Derivative(id, v))
         }
     }

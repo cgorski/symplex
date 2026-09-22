@@ -39,7 +39,7 @@ use num_bigint::BigInt;
 use num_rational::Ratio;
 
 use crate::base::arena::Arena;
-use crate::base::node::ExprId;
+use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::poly::dense::Poly;
 use crate::poly::generic::GenPoly;
@@ -667,6 +667,19 @@ pub(crate) fn rootsum_doit(
 
     if roots.is_empty() {
         tracing::debug!("rootsum_doit: solve returned no roots, cannot expand");
+        return None;
+    }
+    // Expanding over `RootOf` placeholders gains nothing and multiplies the
+    // size by the degree: since 0.22 `solve` returns one `RootOf` per root of
+    // an irreducible factor of degree ≥ 5, and `∫ atan(√x − x⁹) dx` became a
+    // 486 KB sum of twelve copies of the body.  Keep the compact `RootSum`.
+    let has_rootof = roots.iter().any(|r| {
+        crate::base::walk::post_order_ids(arena, r.value)
+            .into_iter()
+            .any(|id| matches!(arena.node(id), ExprNode::RootOf(..)))
+    });
+    if has_rootof {
+        tracing::debug!("rootsum_doit: roots are RootOf placeholders, keeping RootSum");
         return None;
     }
 

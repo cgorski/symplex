@@ -2,7 +2,7 @@
 name = "symplex-fuzz"
 version = "0.0.0"
 publish = false
-edition = "2021"
+edition = "2024"
 
 [package.metadata]
 cargo-fuzz = true
@@ -31,4 +31,34 @@ doc = false
 [[bin]]
 name = "fuzz_lambertw"
 path = "fuzz_targets/fuzz_lambertw.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_exact_matrix"
+path = "fuzz_targets/fuzz_exact_matrix.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_numdist"
+path = "fuzz_targets/fuzz_numdist.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_poly"
+path = "fuzz_targets/fuzz_poly.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_simplify"
+path = "fuzz_targets/fuzz_simplify.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_integrate"
+path = "fuzz_targets/fuzz_integrate.rs"
+doc = false
+
+[[bin]]
+name = "print_expr"
+path = "fuzz_targets/print_expr.rs"
 doc = false

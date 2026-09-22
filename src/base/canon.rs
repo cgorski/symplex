@@ -1034,10 +1034,17 @@ fn canon_radical(
 
     // n^(-a/b) → n^(-(k+1)) · n^((b-s)/b),  a = k·b + s.
     if exp_r.is_negative() {
-        tracing::trace!("canon_radical: rationalising negative fractional exponent");
         let a = -exp_r.numer().clone();
         let b = exp_r.denom().clone();
         let (k, s) = num_integer::Integer::div_rem(&a, &b);
+        // Only when n^(k+1) folds to a number: otherwise both factors stay
+        // powers of n, `mul` adds the exponents back to −a/b and this
+        // recursed without end (`(37/5)^((387/5)^74)`, found by
+        // `fuzz_parser` as a stack overflow).
+        if (&k + BigInt::one()) > BigInt::from(arena.config.max_pow_exponent) {
+            return None;
+        }
+        tracing::trace!("canon_radical: rationalising negative fractional exponent");
         let pos_exp = {
             let nid = arena.intern_num(Ratio::new(&b - &s, b.clone()));
             arena.intern(ExprNode::Num(nid))
@@ -1056,6 +1063,10 @@ fn canon_radical(
     let a: u32 = exp_r.numer().to_u32()?;
     let (outside, inside) = split_perfect_power(&n, b);
     if outside.is_one() {
+        return None;
+    }
+    // outside^a must fold to a number of bounded size (a can be ~4·10⁹).
+    if a > arena.config.max_pow_exponent as u32 {
         return None;
     }
     tracing::trace!("canon_radical: extracted perfect power factor");

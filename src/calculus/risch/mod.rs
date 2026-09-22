@@ -29,7 +29,7 @@ pub mod tower_integrate;
 
 use std::cell::Cell;
 
-use num_traits::One;
+use num_traits::{One, Signed};
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
@@ -201,14 +201,86 @@ pub(crate) fn try_risch_tower(
 /// Returns `Some(result_expr_id)` if the expression is a rational function
 /// and integration succeeds.  Returns `None` if the expression is not a
 /// rational function or if algebraic log terms can't be represented.
+/// `p ∈ ℚ(t)[x]` scaled by a non-zero element of ℚ(t) so that its
+/// coefficients are polynomials in `t` with no common factor: clear the
+/// denominators (their lcm in `ℚ[t]`) and divide by the gcd of the numerators.
+fn primitive_over_q_t(
+    p: crate::poly::generic::GenPoly<crate::poly::ratfn::RationalFn>,
+) -> crate::poly::generic::GenPoly<crate::poly::ratfn::RationalFn> {
+    use crate::poly::ratfn::RationalFn;
+    let coeffs = &p.coeffs;
+    let mut lcm = Poly::from_int(1);
+    for c in coeffs {
+        let d = c.denom();
+        if !d.is_constant() {
+            let g = Poly::gcd(&lcm, d);
+            lcm = (&lcm * d).div(&g);
+        }
+    }
+    let numers: Vec<Poly> = coeffs
+        .iter()
+        .map(|c| (c.numer() * &lcm).div(c.denom()))
+        .collect();
+    let content = numers
+        .iter()
+        .filter(|n| !n.is_zero())
+        .fold(Poly::zero(), |g, n| Poly::gcd(&g, n));
+    if content.is_zero() {
+        return p;
+    }
+    crate::poly::generic::GenPoly::from_coeffs(
+        numers
+            .iter()
+            .map(|n| RationalFn::from_poly(n.div(&content)))
+            .collect(),
+    )
+}
+
+/// Does `e` contain `g^(−n)` (a negative integer power) of something that
+/// depends on `var`?
+fn has_negative_power_of(arena: &Arena, e: ExprId, var: ExprId) -> bool {
+    crate::base::walk::post_order_ids(arena, e)
+        .into_iter()
+        .any(|id| match arena.node(id) {
+            ExprNode::Pow(base, exp) => {
+                arena
+                    .as_num(*exp)
+                    .is_some_and(|r| r.is_integer() && r.is_negative())
+                    && crate::base::walk::contains(arena, *base, var)
+            }
+            _ => false,
+        })
+}
+
 pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<ExprId> {
     // Recursion guard: if we're already inside try_risch_rational
     // (integrating an algebraic remainder), skip to avoid infinite loop.
     // The RAII guard resets the flag on drop, even during panics.
     let _guard = RischRecursionGuard::enter()?;
 
-    // Decompose expr into numerator / denominator.
-    let (numer_id, denom_id) = crate::poly::polybridge::as_numer_denom(arena, expr);
+    // Decompose expr into numerator / denominator.  `as_numer_denom` only
+    // lifts negative powers that are *factors*; a reciprocal inside a sum
+    // (`x²·(x + 1/x)`) leaves the denominator at 1 and the rational function
+    // unrecognised (0.22: `∫ x²(x + 1/x) dx` stayed unevaluated).  Combine
+    // over a common denominator first in that case.
+    let (mut numer_id, mut denom_id) = crate::poly::polybridge::as_numer_denom(arena, expr);
+    if denom_id == arena.one() && has_negative_power_of(arena, expr, var) {
+        let combined = crate::poly::polybridge::together_deep(arena, expr);
+        (numer_id, denom_id) = crate::poly::polybridge::as_numer_denom(arena, combined);
+        if denom_id == arena.one() {
+            // The reciprocals cancelled (`x²(x + 1/x) = x³ + x`): a
+            // polynomial, integrated termwise.
+            let n = crate::transforms::expand::expand(arena, numer_id);
+            let n = crate::transforms::eval::eval(arena, n);
+            let p = crate::poly::polybridge::expr_to_poly(arena, n, var)?;
+            let hr = hermite::hermite_reduce(&p, &Poly::from_int(1));
+            return Some(crate::poly::polybridge::poly_to_expr(
+                arena,
+                &hr.g_numer,
+                var,
+            ));
+        }
+    }
 
     // Only proceed if there's a non-trivial denominator.
     if denom_id == arena.one() {
@@ -342,9 +414,16 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
         let dprime_t_gp = log_to_real::poly_to_genpoly_rf_times_t(&h_denom_deriv);
         let b_gp = &a_gp - &dprime_t_gp;
 
-        // Compute PRS, extract degree-1 member.
-        let prs = crate::poly::generic::GenPoly::<crate::poly::ratfn::RationalFn>::euclidean_prs(
-            &d_gp, &b_gp,
+        // Compute the PRS down to its degree-1 member (all log_to_real
+        // needs), each remainder made primitive over ℚ[t]: Euclid over ℚ(t)
+        // grows the coefficients' degree in t at every step (the degree-2 → 1
+        // step of `∫ atan(√x − x³) dx` alone took 4 s).  The monic
+        // degree-1 member is the same.
+        let prs = crate::poly::generic::GenPoly::<crate::poly::ratfn::RationalFn>::euclidean_prs_normalized(
+            &d_gp,
+            &b_gp,
+            Some(1),
+            primitive_over_q_t,
         );
         let h_prs_opt: Option<crate::poly::generic::GenPoly<crate::poly::ratfn::RationalFn>> =
             match prs.get(&1) {

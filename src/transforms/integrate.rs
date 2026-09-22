@@ -44,6 +44,44 @@ use crate::poly::Poly;
 /// Returns the antiderivative. If integration cannot be performed,
 /// returns an unevaluated `Integral(expr, var)` node.
 pub(crate) fn integrate(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
+    // The outermost call owns the step budget; nested calls (substitutions
+    // re-entering the pipeline, `integrate_definite`) draw from it.
+    let outermost = NODE_BUDGET_DEPTH.with(|d| {
+        let depth = d.get();
+        d.set(depth + 1);
+        depth == 0
+    });
+    if outermost {
+        NODE_BUDGET_USED.with(|u| u.set(0));
+    }
+    let result = integrate_impl(arena, expr, var);
+    NODE_BUDGET_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    result
+}
+
+/// Upper bound on `integrate_node` calls for one top-level `integrate`.
+/// Every successful integration in the test suite (≈ 4 000 of them) takes
+/// at most ~600; a failing search can branch much further before it gives
+/// up — `∫ x·ln(x + sin 2) dx` made 524 540 calls (12 s) to return the
+/// unevaluated form.  At the cap the remaining sub-integrals stay
+/// unevaluated, which the callers already treat as "no closed form".
+const INTEGRATE_NODE_BUDGET: usize = 20_000;
+
+thread_local! {
+    static NODE_BUDGET_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static NODE_BUDGET_USED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Charge one `integrate_node` step; `true` once the budget is spent.
+fn node_budget_exhausted() -> bool {
+    NODE_BUDGET_USED.with(|u| {
+        let used = u.get() + 1;
+        u.set(used);
+        used > INTEGRATE_NODE_BUDGET
+    })
+}
+
+fn integrate_impl(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     let var_sym = match arena.node(var) {
         ExprNode::Symbol(sid) => *sid,
         _ => {
@@ -70,7 +108,18 @@ pub(crate) fn integrate(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId 
     // falling back to the heuristic integrator.
     let result = if let ExprNode::Integral(_, _) = arena.node(result) {
         match crate::calculus::risch::try_risch_tower(arena, expr, var) {
-            crate::calculus::risch::TowerResult::Elementary(id) => id,
+            // Checked like the other routes: a dropped coefficient in the
+            // tower's θ-polynomial extraction once returned a wrong closed
+            // form (0.22.3).
+            crate::calculus::risch::TowerResult::Elementary(id)
+                if !antiderivative_is_wrong(arena, expr, id, var, var_sym) =>
+            {
+                id
+            }
+            crate::calculus::risch::TowerResult::Elementary(_) => {
+                tracing::debug!("integrate: rejecting unverified Risch-tower closed form");
+                result
+            }
             crate::calculus::risch::TowerResult::NonElementary => {
                 // Proved non-elementary — keep the unevaluated Integral node.
                 // Skip heurisch: it can't succeed and would waste cycles.
@@ -1188,7 +1237,7 @@ fn integrate_node(
 ) -> ExprId {
     tracing::trace!(depth = depth, "integrate_node entered");
 
-    if depth == 0 {
+    if depth == 0 || node_budget_exhausted() {
         return arena.intern(ExprNode::Integral(expr, var));
     }
 
@@ -1271,6 +1320,9 @@ fn integrate_node(
     }
     if risch_rejected {
         return arena.intern(ExprNode::Integral(expr, var));
+    }
+    if let Some(result) = try_poly_over_symbolic_linear(arena, expr, var, var_sym) {
+        return result;
     }
 
     let node = arena.node(expr).clone();
@@ -3200,17 +3252,67 @@ fn try_radical_substitution(
     if contains_var(arena, sub, var_sym) {
         return None;
     }
+    // `s = x^{1/q}` is real only where `x ≥ 0` (for even `q`), so the
+    // `s`-integrand may not contain anything whose value depends on `s`
+    // being real — `|s|`, `sign(s)`, `H(s)`: `∫ |√x| dx` became
+    // `∫ 2s·|s| ds = ⅔ s³ sign(s)`, wrong for x < 0 (fuzz_integrate).
+    let s_sym = match arena.node(s) {
+        ExprNode::Symbol(sid) => *sid,
+        _ => return None,
+    };
+    let real_only = crate::base::walk::post_order_ids(arena, sub)
+        .into_iter()
+        .any(|id| match arena.node(id) {
+            ExprNode::Abs(g) | ExprNode::Sign(g) | ExprNode::Heaviside(g) => {
+                contains_var(arena, *g, s_sym)
+            }
+            _ => false,
+        });
+    if real_only {
+        return None;
+    }
     // dx = q s^{q−1} ds
     let qm1 = arena.int(q - 1);
     let s_qm1 = arena.pow(s, qm1);
     let integrand_s = arena.mul(&[q_id, s_qm1, sub]);
     let integrand_s = crate::transforms::eval::eval(arena, integrand_s);
     let res_s = integrate_nested(arena, integrand_s, s)?;
+    // The `s`-integrand is analytic, but the rational integrator writes
+    // `ln|v(s)|`, the *real* antiderivative — wrong once `s = x^{1/q}` is not
+    // real (`∫ x^(−5/2)·atan(√x) dx` gained `−⅔ ln|√x|`, whose derivative
+    // at x < 0 is not the integrand; found by `fuzz_integrate`).  Use the
+    // analytic `ln v(s)`; any other `|·|`, `sign` or `H` of `s` is refused.
+    let res_s = analytic_logs(arena, res_s, s_sym)?;
     // Back-substitute s → x^{1/q}.
     let inv_q = arena.rational(1, q);
     let root = arena.pow(var, inv_q);
     let result = arena.subs_structural(res_s, s, root);
     Some(crate::transforms::eval::eval(arena, result))
+}
+
+/// `ln|g|` → `ln g` for every `g` depending on `s`; `None` when an `|·|`,
+/// `sign` or `H` of `s` remains anywhere else.
+fn analytic_logs(arena: &mut Arena, e: ExprId, s_sym: SymbolId) -> Option<ExprId> {
+    let order = crate::base::walk::post_order_ids(arena, e);
+    let mut out = e;
+    for id in order {
+        if let ExprNode::Ln(inner) = arena.node(id).clone()
+            && let ExprNode::Abs(g) = arena.node(inner).clone()
+            && contains_var(arena, g, s_sym)
+        {
+            let plain = arena.ln(g);
+            out = arena.subs_structural(out, id, plain);
+        }
+    }
+    let leftover = crate::base::walk::post_order_ids(arena, out)
+        .into_iter()
+        .any(|id| match arena.node(id) {
+            ExprNode::Abs(g) | ExprNode::Sign(g) | ExprNode::Heaviside(g) => {
+                contains_var(arena, *g, s_sym)
+            }
+            _ => false,
+        });
+    (!leftover).then_some(out)
 }
 
 /// Rewrite `sinh`/`cosh`/`tanh` in terms of `exp` and retry (e.g.
@@ -3618,6 +3720,126 @@ fn real_roots(arena: &mut Arena, g: ExprId, var: ExprId) -> Option<Vec<ExprId>> 
     Some(roots)
 }
 
+/// `∫ N(x)/(a·x + b) dx` for a polynomial `N` with rational coefficients and
+/// a linear denominator whose `a`, `b` are constants that are not both
+/// rational (`x + π`, `x + √2`, `x + c`, `x + sin 2`): with `x₀ = −b/a`,
+/// synthetic division gives `N(x) = (x − x₀)·Q(x) + N(x₀)`, so the
+/// antiderivative is `(1/a)·[∫Q + N(x₀)·ln|a·x + b|]`.  The rational
+/// integrator handles all-rational denominators and is left alone for them;
+/// 0.22 returned `∫ x/(x + π) dx` unevaluated (and searched for 12 s on
+/// `∫ x·ln(x + sin 2) dx`, whose by-parts step needs it).
+fn try_poly_over_symbolic_linear(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<ExprId> {
+    let (num, den) = crate::poly::polybridge::as_numer_denom(arena, expr);
+    if !contains_var(arena, den, var_sym) {
+        return None;
+    }
+    let (a, b) = symbolic_linear_coeff_of(arena, den, var, var_sym)?;
+    if contains_var(arena, a, var_sym)
+        || contains_var(arena, b, var_sym)
+        || arena.is_zero_structural(a)
+        || arena.as_num(a).is_some() && arena.as_num(b).is_some()
+    {
+        return None;
+    }
+    let p = crate::poly::polybridge::expr_to_poly(arena, num, var)?;
+    let coeffs: Vec<ExprId> = p
+        .coeffs()
+        .iter()
+        .map(|c| arena.num_ratio(c.clone()))
+        .collect();
+    let n = coeffs.len().checked_sub(1)?;
+    // x₀ = −b/a; Horner from the top: q_{n−1} = c_n, q_{k−1} = c_k + x₀·q_k.
+    let neg_b = arena.neg(b);
+    let x0 = arena.div(neg_b, a);
+    let mut q = vec![arena.zero; n];
+    let mut carry = coeffs[n];
+    for k in (1..=n).rev() {
+        q[k - 1] = carry;
+        let prod = arena.mul(&[x0, carry]);
+        carry = arena.add(&[coeffs[k - 1], prod]);
+    }
+    let remainder = crate::transforms::eval::eval(arena, carry);
+    // ∫Q = Σ q_k x^{k+1}/(k+1).
+    let mut terms = Vec::with_capacity(n + 1);
+    for (k, &qk) in q.iter().enumerate() {
+        let e = arena.int(k as i64 + 1);
+        let xp = arena.pow(var, e);
+        let inv = arena.rational(1, k as i64 + 1);
+        terms.push(arena.mul(&[inv, qk, xp]));
+    }
+    if !arena.is_zero_structural(remainder) {
+        let abs_den = arena.abs(den);
+        let log = arena.ln(abs_den);
+        terms.push(arena.mul(&[remainder, log]));
+    }
+    let sum = arena.add(&terms);
+    let inv_a = arena.pow(a, arena.neg_one());
+    let result = arena.mul(&[inv_a, sum]);
+    let result = crate::transforms::eval::eval(arena, result);
+    if antiderivative_is_wrong(arena, expr, result, var, var_sym) {
+        return None;
+    }
+    Some(result)
+}
+
+/// Does `e` contain `nan`, `zoo` or `±∞`?
+fn contains_non_finite(arena: &Arena, e: ExprId) -> bool {
+    crate::base::walk::post_order_ids(arena, e)
+        .into_iter()
+        .any(|id| {
+            matches!(
+                arena.node(id),
+                ExprNode::NaN
+                    | ExprNode::ComplexInfinity
+                    | ExprNode::Infinity
+                    | ExprNode::NegInfinity
+            )
+        })
+}
+
+/// Is `e` real *and continuous* for every real value of the integration
+/// variable (the other symbols are treated as real parameters)?  The
+/// `|g|`/`sign(g)` route needs both: `g` may change sign only at its real
+/// roots.  Conservative: sums, products, non-negative integer powers (a
+/// negative power only of a variable-free base), and `sin`/`cos`/`exp`/
+/// `atan`/`sinh`/`cosh`/`tanh`/`abs` of such; roots, logarithms, `tan`,
+/// reciprocals of the variable and `sign` are refused.  (`∫ |π/(4 cos x)| dx`
+/// came back as `(π/4)·ln|sec x + tan x|`, wrong wherever `cos x < 0` —
+/// `c/cos x` has no roots but changes sign at its poles; found by
+/// `fuzz_integrate`.)
+fn real_on_reals(arena: &Arena, e: ExprId, var_sym: SymbolId) -> bool {
+    crate::base::walk::post_order_ids(arena, e)
+        .into_iter()
+        .all(|id| match arena.node(id) {
+            ExprNode::Num(_)
+            | ExprNode::Symbol(_)
+            | ExprNode::Pi
+            | ExprNode::E
+            | ExprNode::EulerGamma
+            | ExprNode::Catalan
+            | ExprNode::GoldenRatio
+            | ExprNode::Add(_)
+            | ExprNode::Mul(_)
+            | ExprNode::Sin(_)
+            | ExprNode::Cos(_)
+            | ExprNode::Exp(_)
+            | ExprNode::Atan(_)
+            | ExprNode::Sinh(_)
+            | ExprNode::Cosh(_)
+            | ExprNode::Tanh(_)
+            | ExprNode::Abs(_) => true,
+            ExprNode::Pow(base, exp) => arena.as_num(*exp).is_some_and(|r| {
+                r.is_integer() && (!r.is_negative() || !contains_var(arena, *base, var_sym))
+            }),
+            _ => false,
+        })
+}
+
 /// `∫ P(x)·|g(x)| dx`, `∫ P(x)·sign(g(x)) dx`, `∫ P(x)·H(g(x)) dx` where
 /// `g` has at most one simple real root `r` (or none):
 ///
@@ -3644,6 +3866,12 @@ fn try_abs_sign_product(
         ExprNode::Abs(g) | ExprNode::Sign(g) | ExprNode::Heaviside(g) => g,
         _ => return None,
     };
+    // `|g| = sign(g)·g` and the root-shift below assume `g` is real at every
+    // real `x`; `|√x|` is `√|x|`, not `sign(√x)·√x` (0.22.2 returned
+    // `2/3·x^(3/2)·sign(√x)`, found by `fuzz_integrate`).
+    if !real_on_reals(arena, g, var_sym) {
+        return None;
+    }
     let rest = remaining_product(arena, dependent, idx);
     let roots = real_roots(arena, g, var)?;
     if roots.len() > 1 {
@@ -3663,6 +3891,11 @@ fn try_abs_sign_product(
         Some(r) => {
             let at_r = crate::transforms::subs::subs(arena, smooth_int, var, r);
             let at_r = crate::transforms::eval::eval(arena, at_r);
+            // The shift needs a finite G(r); an antiderivative singular at
+            // the root (`ln|x|` at 0) made `nan` of the whole answer.
+            if contains_non_finite(arena, at_r) {
+                return None;
+            }
             let shifted = arena.sub(smooth_int, at_r);
             let factor = match node {
                 ExprNode::Heaviside(_) => arena.heaviside(g),

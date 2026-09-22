@@ -633,3 +633,259 @@ fn u_substitution_rejects_factor_with_bare_var() {
         );
     }
 }
+
+/// Found by `fuzz_integrate` (0.22.3): `∫ |√x| dx` came back as
+/// `2/3·x^(3/2)·sign(√x)` — the `|g| = sign(g)·g` route assumed `g` real for
+/// real `x`, but `√x` is imaginary for `x < 0` (`|√x| = √|x|`).  At
+/// `x = −5/7` the integrand is `√(5/7)` = 0.8451542547285166 (sympy
+/// `N(Abs(sqrt(Rational(-5,7))))`) while that `F′` was its negative.  The
+/// route now refuses non-real arguments; any closed form returned must
+/// differentiate back to the integrand.
+#[test]
+fn abs_of_sqrt_is_not_integrated_as_a_sign_product() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let f = x.sqrt().abs();
+    let big_f = f.integrate(&x);
+    if !big_f.has_unevaluated() {
+        let df = big_f.diff(&x);
+        for v in [ctx.rational(-5, 7), ctx.rational(1, 3), ctx.rational(13, 4)] {
+            let fv = f.subs(&x, &v).eval_f64().unwrap();
+            let dv = df.subs(&x, &v).eval_f64().unwrap();
+            assert!(
+                (fv - dv).abs() < 1e-12,
+                "∫|√x| = {big_f}: F′({v}) = {dv}, f = {fv}"
+            );
+        }
+    }
+    // The polynomial case keeps its sign-product form: ∫ |x| dx = x·|x|/2.
+    let g = x.abs().integrate(&x);
+    assert!(!g.has_unevaluated(), "{g}");
+    let dg = g
+        .diff(&x)
+        .subs(&x, &ctx.rational(-5, 7))
+        .eval_f64()
+        .unwrap();
+    assert!((dg - 5.0 / 7.0).abs() < 1e-12, "{g}");
+}
+
+/// `∫ F′ = F` check at a few rational points (both sides finite reals).
+fn assert_differentiates_back(f: &Ex, big_f: &Ex, x: &Ex) {
+    assert!(!big_f.has_unevaluated(), "∫ {f} returned {big_f}");
+    let ctx = x.context();
+    let df = big_f.diff(x);
+    let mut checked = 0;
+    for v in [
+        ctx.rational(1, 3),
+        ctx.rational(7, 5),
+        ctx.rational(13, 4),
+        ctx.int(5),
+    ] {
+        // Only points where the integrand is a real number.
+        let Ok(fv) = f.subs(x, &v).eval_f64() else {
+            continue;
+        };
+        let dv = df.subs(x, &v).eval_f64().unwrap();
+        assert!(
+            (fv - dv).abs() <= 1e-12 * fv.abs().max(1.0),
+            "∫ {f} = {big_f}: F′({v}) = {dv}, f = {fv}"
+        );
+        checked += 1;
+    }
+    assert!(checked >= 2, "∫ {f}: only {checked} real sample points");
+}
+
+/// Found by `fuzz_integrate` (0.22.3) as a 20 s timeout: `∫ ln(√x + sin(−2)) dx`
+/// searched 524 540 `integrate_node` calls (12.5 s in release) before
+/// returning unevaluated.  The by-parts step needed `∫ x/(x + k) dx` for a
+/// constant `k` that is not rational (`π`, `√2`, `sin 2`, a symbol), which no
+/// route handled.  SymPy: `integrate(x*log(x + sin(2)), x)` =
+/// `x**2*log(x + sin(2))/2 - x**2/4 + x*sin(2)/2 - log(x + sin(2))*sin(2)**2/2`.
+#[test]
+fn polynomial_over_symbolic_linear_denominator() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    for k in [ctx.pi(), ctx.int(2).sqrt(), ctx.int(2).sin()] {
+        for f in [&x / (&x + &k), x.powi(3) / (2 * &x + &k), 1 / (&x - &k)] {
+            let big_f = f.integrate(&x);
+            assert_differentiates_back(&f, &big_f, &x);
+        }
+    }
+    // A symbolic constant: check at a = 5/3 after integrating symbolically.
+    for f in [&x / (&x + &a), x.powi(3) / (2 * &x + &a)] {
+        let big_f = f.integrate(&x);
+        let at = |e: &Ex| e.subs(&a, &ctx.rational(5, 3));
+        assert_differentiates_back(&at(&f), &at(&big_f), &x);
+    }
+    let f = &x * (&x + ctx.int(2).sin()).ln();
+    assert_differentiates_back(&f, &f.integrate(&x), &x);
+    let f = (x.sqrt() + ctx.int(-2).sin()).ln();
+    assert_differentiates_back(&f, &f.integrate(&x), &x);
+}
+
+/// A failing search is bounded: `integrate_node` is capped per top-level
+/// `integrate` (every successful integration in the suite takes ≤ ~600
+/// calls; the cap is 20 000), so a hopeless integrand returns unevaluated
+/// quickly instead of branching for seconds.
+#[test]
+fn failing_integration_search_is_bounded() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let f = (x.sin() + x.ln()).sqrt() * x.exp().atan();
+    let started = std::time::Instant::now();
+    let big_f = f.integrate(&x);
+    assert!(big_f.has_unevaluated(), "{big_f}");
+    assert!(
+        started.elapsed().as_secs() < 10,
+        "took {:?}",
+        started.elapsed()
+    );
+}
+
+/// Found by `fuzz_integrate` (0.22.3): `∫ |atan(−1)/cos x| dx` came back as
+/// `−atan(−1)·ln|sec x + tan x|`.  The `|g|` route took "no real root" to
+/// mean "constant sign", but `g = c/cos x` changes sign at its poles; at
+/// `x = 13/4` the integrand is 0.79003593021582217 (sympy
+/// `N(Abs(atan(-1)/cos(Rational(13,4))), 17)`) and that `F′` was its
+/// negative.  The route now requires `g` continuous as well as real.
+#[test]
+fn abs_of_a_function_with_poles_is_not_a_constant_sign() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let f = (ctx.int(-1).atan() / x.cos()).abs();
+    let big_f = f.integrate(&x);
+    if !big_f.has_unevaluated() {
+        assert_differentiates_back(&f, &big_f, &x);
+    }
+    // Continuous (polynomial) arguments keep the route: ∫ |x − 2| dx and
+    // ∫ x²·|2x + 1| dx.
+    let g = (&x - 2).abs();
+    assert_differentiates_back(&g, &g.integrate(&x), &x);
+    let h = x.powi(2) * (2 * &x + 1).abs();
+    assert_differentiates_back(&h, &h.integrate(&x), &x);
+}
+
+/// Found by `fuzz_integrate` (0.22.3) as `∫ x²(x − x⁻³ − ¼)·|x| dx = nan`.
+/// Two causes.  (1) A reciprocal inside a sum (`x²(x + 1/x)`) was never
+/// recognised as a rational function — `as_numer_denom` only lifts
+/// negative-power *factors* — so even `∫ x²(x + 1/x) dx` stayed
+/// unevaluated; the rational integrator now combines over a common
+/// denominator first.  SymPy: `integrate(x**2*(x + 1/x), x)` =
+/// `x**4/4 + x**2/2`, `integrate(x*(x + x**-2), x)` = `x**3/3 + log(x)`.
+/// (2) The `|g|` route shifted by `G(r)` even where `G` is singular at the
+/// root, turning the whole answer into `nan`.
+#[test]
+fn reciprocals_inside_sums_are_rational_functions() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let f = x.powi(2) * (&x + x.powi(-1));
+    assert_eq!(f.integrate(&x), x.powi(4) / 4 + x.powi(2) / 2);
+    let g = &x * (&x + x.powi(-2));
+    assert_differentiates_back(&g, &g.integrate(&x), &x);
+    let p = x.powi(2) * (&x - x.powi(-3) - ctx.rational(1, 4));
+    let h = &p * x.abs();
+    assert_differentiates_back(&h, &h.integrate(&x), &x);
+    // |x|/x² = 1/|x|: G = ln|x| is singular at the root — never `nan`.
+    let k = x.abs() / x.powi(2);
+    let big_k = k.integrate(&x);
+    assert!(!format!("{big_k}").contains("nan"), "{big_k}");
+    if !big_k.has_unevaluated() {
+        assert_differentiates_back(&k, &big_k, &x);
+    }
+}
+
+/// Found by `fuzz_integrate` (0.22.3): `∫ (x + ln x − ¾)·ln x dx` came back
+/// as `x·ln²x − 11/4·x·ln x + 11/4·x`, missing `∫ x·ln x = x²ln x/2 − x²/4`.
+/// The Risch tower's extraction of the integrand as a polynomial in
+/// θ = ln x kept only the first coefficient when two terms had the same power
+/// (`x·θ` and `−¾·θ`).  SymPy `integrate((x + log(x) - Rational(3,4))*log(x), x)`
+/// = `x**2*log(x)/2 - x**2/4 + x*log(x)**2 - 11*x*log(x)/4 + 11*x/4`.
+#[test]
+fn log_polynomial_with_repeated_powers_keeps_every_term() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let f = (&x + x.ln() - ctx.rational(3, 4)) * x.ln();
+    let big_f = f.integrate(&x);
+    assert_differentiates_back(&f, &big_f, &x);
+    let sympy = x.powi(2) * x.ln() / 2 - x.powi(2) / 4 + &x * x.ln().powi(2)
+        - ctx.rational(11, 4) * &x * x.ln()
+        + ctx.rational(11, 4) * &x;
+    assert_eq!((big_f - sympy).expand(), ctx.int(0));
+}
+
+/// Found by `fuzz_integrate` (0.22.3): `∫ x^(−5/2)·atan(√x) dx` contained
+/// `−⅔·ln|√x|`.  After `x = t²` the rational integrator's `ln|t|` is the
+/// antiderivative only for real `t`; for `x < 0` (where the integrand is
+/// still real: 2.8732399347178847 at x = −5/7, SymPy
+/// `N((x**Rational(-5,2)*atan(sqrt(x))).subs(x, Rational(-5,7)), 17)`)
+/// the derivative was 1.94.  The substitution now keeps the analytic `ln t`.
+#[test]
+fn radical_substitution_keeps_analytic_logarithms() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let f = x.pow(&ctx.rational(-5, 2)) * x.sqrt().atan();
+    let big_f = f.integrate(&x);
+    assert!(!big_f.has_unevaluated(), "{big_f}");
+    let df = big_f.diff(&x);
+    for v in [ctx.rational(-5, 7), ctx.rational(1, 3), ctx.rational(13, 4)] {
+        let fv = f.subs(&x, &v).eval_f64().unwrap();
+        let dv = df.subs(&x, &v).eval_f64().unwrap();
+        assert!(
+            (fv - dv).abs() <= 1e-12 * fv.abs().max(1.0),
+            "F′({v}) = {dv}, f = {fv}: {big_f}"
+        );
+    }
+}
+
+/// Found via `fuzz_integrate` (0.22.3, `∫ atan(√x − x³) dx`): a `RootOf` is
+/// a constant, but `diff` returned the unevaluated `Derivative(RootOf(…), x)`
+/// for every one — even when the polynomial's variable *is* `x`, which is
+/// bound there — so an antiderivative containing roots could neither be
+/// differentiated back nor evaluated.
+#[test]
+fn rootof_is_a_constant_under_differentiation() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let roots = (x.powi(5) - &x - 1).solve(&x).unwrap();
+    assert_eq!(roots.len(), 5);
+    let r = &roots[0];
+    assert!(format!("{r}").contains("RootOf"), "{r}");
+    assert_eq!(r.diff(&x), ctx.int(0));
+    assert_eq!((r * &x).diff(&x), r.clone());
+    assert_eq!((r * x.sin()).diff(&x), r * x.cos());
+}
+
+/// Found by `fuzz_integrate` (0.22.3) as a timeout: `∫ atan(√x − x³) dx`
+/// took 36 s and returned a 32 KB sum.  Three causes: the Lazard–Rioboo–
+/// Trager step computed the whole Euclidean remainder sequence over ℚ(t)
+/// although it needs only the degree-1 member (the lower ones cost 35 s),
+/// every remainder's coefficients grew in `t` (now made primitive over
+/// ℚ[t] at each step), and `RootSum` was expanded over twelve `RootOf`
+/// placeholders.  The answer must still differentiate back to the
+/// integrand.
+#[test]
+fn arctangent_of_a_radical_polynomial_is_fast_and_compact() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let f = (x.sqrt() - x.powi(3)).atan();
+    let started = std::time::Instant::now();
+    let big_f = f.integrate(&x);
+    let elapsed = started.elapsed();
+    assert!(!big_f.has_unevaluated(), "{big_f}");
+    assert!(
+        big_f.to_string().len() < 2_000,
+        "{} chars",
+        big_f.to_string().len()
+    );
+    let d = big_f.diff(&x);
+    for v in [ctx.rational(1, 3), ctx.rational(7, 5)] {
+        let fv = f.subs(&x, &v).eval_f64().unwrap();
+        let dv = d.subs(&x, &v).eval_complex64().unwrap();
+        assert!(
+            (dv.re - fv).abs() < 1e-10 && dv.im.abs() < 1e-10,
+            "F′({v}) = {dv}, f = {fv}"
+        );
+    }
+    assert!(elapsed.as_secs() < 20, "took {elapsed:?}");
+}

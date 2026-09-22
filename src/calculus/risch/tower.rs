@@ -503,21 +503,18 @@ pub fn extract_poly_in_ext(
         std::collections::BTreeMap::new();
     extract_terms(arena, expr, ext_var, &mut coeffs)?;
 
-    // Merge coefficient lists: for each power, sum the collected terms.
+    // Merge coefficient lists: for each power, sum the collected terms.  With
+    // only `&Arena` the sum cannot be built, so several terms at one power
+    // (`x·θ − ¾·θ` after expansion) are a refusal — the caller
+    // (`extract_poly_in_ext_mut`) adds them.  0.22 kept the first term and
+    // dropped the rest: `∫ (x + ln x − ¾)·ln x dx` lost its `∫ x·ln x` part
+    // (found by `fuzz_integrate`).
+    if coeffs.values().any(|terms| terms.len() > 1) {
+        return None;
+    }
     let result: Vec<(usize, ExprId)> = coeffs
         .into_iter()
-        .map(|(power, terms)| {
-            let coeff = if terms.len() == 1 {
-                terms[0]
-            } else {
-                // We can't call arena.add() since we only have &Arena.
-                // Instead, if there are multiple terms for the same power,
-                // return None — the caller should simplify/expand first.
-                // For well-canonicalized expressions, this shouldn't happen.
-                terms[0] // fallback: take the first (imprecise but safe)
-            };
-            (power, coeff)
-        })
+        .filter_map(|(power, terms)| terms.first().map(|&c| (power, c)))
         .collect();
 
     if result.is_empty() {
@@ -655,13 +652,26 @@ pub fn extract_poly_in_ext_mut(
         return Some(result);
     }
 
-    // If that fails (e.g., because of multi-factor coefficients),
-    // try expanding and re-extracting.
+    // If that fails (multi-factor coefficients, or several terms at one
+    // power), expand and collect again, summing the terms of each power.
     let expanded = crate::transforms::expand::expand(arena, expr);
     let evaled = crate::transforms::eval::eval(arena, expanded);
-
-    // Now try on the expanded form.
-    extract_poly_in_ext(arena, evaled, ext_var)
+    let mut coeffs: std::collections::BTreeMap<usize, Vec<ExprId>> =
+        std::collections::BTreeMap::new();
+    extract_terms(arena, evaled, ext_var, &mut coeffs)?;
+    let mut result = Vec::with_capacity(coeffs.len());
+    for (power, terms) in coeffs {
+        let coeff = match terms.as_slice() {
+            [] => continue,
+            [c] => *c,
+            _ => {
+                let s = arena.add(&terms);
+                crate::transforms::eval::eval(arena, s)
+            }
+        };
+        result.push((power, coeff));
+    }
+    (!result.is_empty()).then_some(result)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

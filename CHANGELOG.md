@@ -6,6 +6,87 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.22.3] - 2026-09-22
+
+The fuzzing release.  Five new cargo-fuzz targets check *properties* —
+exact linear-algebra and polynomial identities, probability invariants of
+the `f64` distributions, value preservation of the rewriting transforms,
+`F′ = f` for every closed-form antiderivative — and run nightly in CI.
+A few hours of local fuzzing found the defects below — wrong closed forms,
+wrong quantiles, a stack overflow and two searches of tens of seconds;
+each is fixed at its cause and pinned by a regression test in `tests/v21/`.  No
+API change.
+
+### Fixed — found by `fuzz_integrate`
+
+- `∫ |√x| dx` was `⅔ x^(3/2)·sign(√x)` and `∫ |c/cos x| dx` was
+  `|c|·ln|sec x + tan x|` — wrong wherever `√x` is imaginary or `cos x < 0`.
+  The `|g|`/`sign(g)` route now requires `g` real *and continuous* (a pole
+  changes sign without a root), and the `x = t²` substitution refuses
+  integrands whose value depends on `t` being real.
+- `∫ x^(−5/2)·atan(√x) dx` contained `−⅔ ln|√x|`, wrong for `x < 0`: after
+  `x = t²` the analytic `ln t` is kept instead of the real-variable
+  `ln|t|`.
+- `∫ (x + ln x − ¾)·ln x dx` lost its `∫ x·ln x` part: the Risch tower's
+  extraction of a polynomial in `θ = ln x` kept only the first coefficient
+  when two terms had the same power.  Tower results are now also verified
+  by differentiation, like the other risky routes.
+- `∫ x²(x + 1/x) dx` stayed unevaluated (a reciprocal inside a sum was not
+  recognised as a rational function) and `∫ x²(x − x⁻³ − ¼)·|x| dx`
+  returned `nan` (the `|g|` route shifted by an antiderivative singular at
+  the root).
+- `∫ ln(√x + sin(−2)) dx` searched for 12.5 s and gave up: nothing handled
+  `∫ N(x)/(a·x + b) dx` for a constant `b` that is not rational (`π`, `√2`,
+  `sin 2`, a symbol).  New exact route; 2 ms, SymPy's answer.  A failing
+  search is also capped at 20 000 `integrate_node` calls per `integrate`
+  (successful integrations in the suite use ≤ ~600).
+- `∫ atan(√x − x³) dx` took 36 s and returned a 32 KB sum; now 0.2 s and
+  700 characters.  The Lazard–Rioboo–Trager step computed the whole
+  Euclidean remainder sequence over ℚ(t) though it needs only the degree-1
+  member (`GenPoly::euclidean_prs_until`), each remainder's coefficients
+  grew in `t` (now made primitive over ℚ[t] at every step,
+  `euclidean_prs_normalized`), and `RootSum` was expanded over `RootOf`
+  placeholders (now kept compact).
+- `diff` of a `RootOf` was the unevaluated `Derivative(RootOf(…), x)` —
+  even when `x` is the polynomial's bound variable — so no antiderivative
+  containing a root could be differentiated or evaluated.  A node in which
+  the variable is not free differentiates to 0.
+
+### Fixed — found by `fuzz_numdist`
+
+- Quantiles whose true value is below the smallest positive float (tiny
+  shapes put their mass within e⁻⁷⁰⁰ of 0): `beta`, `gamma`, `chi2` and `f`
+  returned values whose cdf was far from the level (`beta::ppf(0.2055,
+  10⁻³, 10⁻³) = 5.6e-309` with cdf 0.246, or 0); they return the smallest
+  float with `F(x) ≥ p`, and `F` quantiles beyond `f64::MAX` are `+∞`.
+- Subnormal quantiles: the beta logit `1/(1 + e^{−v})` stopped at 5.6e-309,
+  the gamma solve scaled after exponentiating, and the F solve formed
+  `d₁·x` — all now reach the subnormals (the solvers work in logarithms and
+  use the tail's log-linear leading term below e⁻⁶⁹⁰).
+- `gamma::cdf`/`chi2::cdf` at subnormal `x` were 0 (`bd0` overflowed `k/m`;
+  `x/θ` underflowed); `f::cdf` at subnormal or huge `x` lost the tail
+  (`d₁·x` under- or overflowed); the beta deep-tail Newton start underflowed
+  to `ln 0 = −∞`.
+
+### Fixed — found by `fuzz_parser`
+
+- `7.4**77.4**74` overflowed the stack: the radical normal form rewrote
+  `5^(−a/b)` as `5^(−(k+1))·5^((b−s)/b)` even when `5^(k+1)` (k ≈ 10¹⁴⁰)
+  cannot fold to a number, and `mul` added the exponents back — an endless
+  recursion.  The arena also hashes rationals iteratively now (`Ratio`'s
+  `Hash` recurses once per continued-fraction partial quotient).
+
+### Added
+
+- `fuzz/`: `fuzz_numdist`, `fuzz_exact_matrix`, `fuzz_poly`, `fuzz_simplify`,
+  `fuzz_integrate` (and `print_expr`, which decodes an input), a shared
+  expression generator, and `fuzz/README.md` with the replay loop (build
+  once, replay an artifact in ~1 s, 30 s bursts).
+- `.github/workflows/fuzz.yml`: nightly (and on-demand) fuzzing, one job per
+  target, ten minutes each, the corpus cached between nights, a failing
+  input uploaded with its decoded expression.
+- `GenPoly::euclidean_prs_until`, `GenPoly::euclidean_prs_normalized`.
+
 ## [0.22.2] - 2026-09-22
 
 ### Changed

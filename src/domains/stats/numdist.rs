@@ -251,7 +251,15 @@ fn bd0_with(k: f64, m: f64, diff: f64, ln_ratio: f64) -> f64 {
 
 /// `k ln(k/m) + m − k` for `k, m > 0`.
 fn bd0(k: f64, m: f64) -> f64 {
-    bd0_with(k, m, k - m, (k / m).ln())
+    // `k/m` overflows for a subnormal `m` (0.005 / 5e-324 > f64::MAX) and
+    // underflows the other way; the logarithm of the ratio does neither.
+    let ratio = k / m;
+    let ln_ratio = if ratio.is_finite() && ratio > 0.0 {
+        ratio.ln()
+    } else {
+        k.ln() - m.ln()
+    };
+    bd0_with(k, m, k - m, ln_ratio)
 }
 
 /// `ln(xᵃ yᵇ / B(a, b))` for `x + y = 1`, the smaller of `x`, `y` taken
@@ -1550,7 +1558,20 @@ pub mod gamma {
         if x <= 0.0 {
             return Tails::ZERO;
         }
-        gammainc_tails(shape, x / scale)
+        let u = x / scale;
+        if u < f64::MIN_POSITIVE && scale != 1.0 {
+            // `x/θ` is subnormal or underflowed (θ > 1), keeping few or no
+            // significant bits, but a tiny shape still has real mass there
+            // (χ² with 0.01 df: P(X ≤ 5e-324) = 0.0242).  For u < 1e-300 the
+            // series is its leading term, P(k, u) = uᵏ/Γ(k + 1), formed in
+            // logarithms from `x` and `θ` themselves.
+            let lower = (shape * (x.ln() - scale.ln()) - lgamma(shape + 1.0)).exp();
+            return Tails {
+                lower,
+                upper: 1.0 - lower,
+            };
+        }
+        gammainc_tails(shape, u)
     }
 
     /// `P(X ≤ x) = P(k, x/θ)`.  `scipy.stats.gamma.cdf(x, k, scale=θ)`.
@@ -1567,25 +1588,49 @@ pub mod gamma {
     /// logarithm of the nearer tail in `u = ln x`, from the Wilson–Hilferty
     /// start `k(1 − 1/(9k) + z/(3√k))³` (or `(p Γ(k + 1))^{1/k}` deep in
     /// the lower tail).
-    pub(super) fn standard_quantile(
+    /// The logarithm `ln y` of the standard gamma (`θ = 1`) quantile:
+    /// Newton on the logarithm of the nearer tail in `u = ln y`, from the
+    /// Wilson–Hilferty start `k(1 − 1/(9k) + z/(3√k))³` (or
+    /// `(p Γ(k + 1))^{1/k}` deep in the lower tail).  Callers scale in
+    /// logarithms, `x = e^{u + ln θ}`: a tiny shape puts lower quantiles
+    /// where `y` itself is below every float although `θy` is not.  Below
+    /// `y = e^{−690}` the lower tail is its series' leading term
+    /// `yᵏ/Γ(k + 1)`, so `u` never has to be exponentiated there.
+    pub(super) fn standard_log_quantile(
         op: &'static str,
         side: Side,
         shape: f64,
     ) -> Result<f64, SymplexError> {
+        const LOG_TINY: f64 = -690.0;
         let (z, target, lower) = match side {
             Side::Lower(pl) => (norm::ppf(pl)?, pl, true),
             Side::Upper(q) => (norm::isf(q)?, q, false),
         };
-        let mut x0 = shape * (1.0 - 1.0 / (9.0 * shape) + z / (3.0 * shape.sqrt())).powi(3);
-        if !(x0.is_finite() && x0 > 0.0) {
-            x0 = if lower {
-                ((target.ln() + lgamma(shape + 1.0)) / shape).exp()
-            } else {
-                (-target.ln()).max(shape)
-            };
-        }
         let ln_target = target.ln();
+        let x0 = shape * (1.0 - 1.0 / (9.0 * shape) + z / (3.0 * shape.sqrt())).powi(3);
+        let u0 = if x0.is_finite() && x0 > 0.0 {
+            x0.ln()
+        } else if lower {
+            (ln_target + lgamma(shape + 1.0)) / shape
+        } else {
+            (-ln_target).max(shape).ln()
+        };
+        let ln_gamma_k1 = lgamma(shape + 1.0);
         let g = |u: f64| {
+            if u < LOG_TINY {
+                // ln P(k, y) = k·u − ln Γ(k + 1) + O(y), exactly linear.
+                let ln_lower = shape * u - ln_gamma_k1;
+                let (gv, dg) = if lower {
+                    (ln_lower - ln_target, shape)
+                } else {
+                    let ln_upper = (-ln_lower.exp()).ln_1p();
+                    (
+                        ln_target - ln_upper,
+                        shape * ln_lower.exp() / ln_upper.exp(),
+                    )
+                };
+                return Eval { g: gv, dg };
+            }
             let x = u.exp();
             let tl = gammainc_tails(shape, x);
             let ln_tail = if lower { tl.lower.ln() } else { tl.upper.ln() };
@@ -1599,13 +1644,35 @@ pub mod gamma {
                 dg: (log_gamma_pref(shape, x) - ln_tail).exp(),
             }
         };
-        solve_increasing(op, g, x0.ln(), f64::NEG_INFINITY, f64::INFINITY).map(f64::exp)
+        solve_increasing(op, g, u0, f64::NEG_INFINITY, f64::INFINITY)
     }
 
     fn quantile(op: &'static str, side: Side, shape: f64, scale: f64) -> Result<f64, SymplexError> {
         check_positive(op, "the shape", shape)?;
         check_positive(op, "the scale", scale)?;
-        standard_quantile(op, side, shape).map(|x| scale * x)
+        // A tiny shape puts P(X ≤ 5e-324) above small lower levels (shape
+        // 0.005: 0.024); those quantiles are below every positive float, and
+        // the answer is the smallest float with F(x) ≥ p (as for `beta`),
+        // not the 0 the logarithmic solve underflows to.
+        let tiniest = f64::from_bits(1);
+        if let Side::Lower(pl) = side
+            && pl <= tails(tiniest, shape, scale).lower
+        {
+            return Ok(tiniest);
+        }
+        standard_log_quantile(op, side, shape).map(|u| scale_log_quantile(u, scale))
+    }
+
+    /// `θ·eᵘ`, exactly as `θ * u.exp()` whenever `eᵘ` is a normal float (so
+    /// no existing quantile moves), and as `e^{u + ln θ}` where `eᵘ` alone
+    /// would under- or overflow.
+    pub(super) fn scale_log_quantile(u: f64, scale: f64) -> f64 {
+        let y = u.exp();
+        if y.is_finite() && y >= f64::MIN_POSITIVE {
+            scale * y
+        } else {
+            (u + scale.ln()).exp()
+        }
     }
 
     /// `x` with `P(X ≤ x) = p`.  `scipy.stats.gamma.ppf(p, k, scale=θ)`.
@@ -1648,7 +1715,15 @@ pub mod chi2 {
 
     fn quantile(op: &'static str, side: Side, df: f64) -> Result<f64, SymplexError> {
         check_positive(op, "df", df)?;
-        gamma::standard_quantile(op, side, 0.5 * df).map(|x| 2.0 * x)
+        // Below every positive float: the smallest float with F(x) ≥ p (see
+        // `gamma::quantile`).
+        let tiniest = f64::from_bits(1);
+        if let Side::Lower(pl) = side
+            && pl <= gamma::tails(tiniest, 0.5 * df, 2.0).lower
+        {
+            return Ok(tiniest);
+        }
+        gamma::standard_log_quantile(op, side, 0.5 * df).map(|u| gamma::scale_log_quantile(u, 2.0))
     }
 
     /// `x` with `P(X ≤ x) = p`.  `scipy.stats.chi2.ppf(p, df)`.
@@ -1717,26 +1792,28 @@ pub mod beta {
             Side::Upper(q) => norm::isf(q)?,
         };
         let x0 = mean + z * sd;
+        // The deep-tail start (p·a·B(a, b))^{1/a} underflows for tiny shapes
+        // (a = 0.005, p = 0.02: e^{−741}); its logit is then its logarithm,
+        // taken without exponentiating (0.22 started Newton at −∞).
+        let deep = |ln_x: f64| -> f64 {
+            let x = ln_x.exp().min(0.5);
+            if x > 0.0 { x.ln() - (-x).ln_1p() } else { ln_x }
+        };
         Ok(match side {
             Side::Lower(pl) => {
-                let x = if x0 > 0.0 && x0 < 1.0 && pl >= 1e-3 {
-                    x0
+                if x0 > 0.0 && x0 < 1.0 && pl >= 1e-3 {
+                    x0.ln() - (-x0).ln_1p()
                 } else {
-                    ((pl.ln() + alpha.ln() + lbeta(alpha, beta)) / alpha)
-                        .exp()
-                        .min(0.5)
-                };
-                x.ln() - (-x).ln_1p()
+                    deep((pl.ln() + alpha.ln() + lbeta(alpha, beta)) / alpha)
+                }
             }
             Side::Upper(q) => {
-                let y = if x0 > 0.0 && x0 < 1.0 && q >= 1e-3 {
-                    1.0 - x0
+                if x0 > 0.0 && x0 < 1.0 && q >= 1e-3 {
+                    let y = 1.0 - x0;
+                    (-y).ln_1p() - y.ln()
                 } else {
-                    ((q.ln() + beta.ln() + lbeta(alpha, beta)) / beta)
-                        .exp()
-                        .min(0.5)
-                };
-                (-y).ln_1p() - y.ln()
+                    -deep((q.ln() + beta.ln() + lbeta(alpha, beta)) / beta)
+                }
             }
         })
     }
@@ -1756,8 +1833,7 @@ pub mod beta {
         };
         let ln_target = target.ln();
         let g = |v: f64| {
-            let x = 1.0 / (1.0 + (-v).exp());
-            let y = 1.0 / (1.0 + v.exp());
+            let (x, y) = (logistic(v), logistic(-v));
             let tl = bratio(alpha, beta, x, y);
             let ln_tail = if lower { tl.lower.ln() } else { tl.upper.ln() };
             let gv = if lower {
@@ -1776,7 +1852,38 @@ pub mod beta {
     fn quantile(op: &'static str, side: Side, alpha: f64, beta: f64) -> Result<f64, SymplexError> {
         check_positive(op, "α", alpha)?;
         check_positive(op, "β", beta)?;
-        quantile_logit(op, side, alpha, beta).map(|v| 1.0 / (1.0 + (-v).exp()))
+        // With tiny shapes the mass piles up within e^-700 of an end of
+        // [0, 1]: Beta(10⁻³, 10⁻³) has P(X ≤ 5e-324) = 0.2375, so every
+        // lower level below that has a quantile no f64 can hold.  Answer
+        // with the smallest float whose tail reaches the level (the
+        // quantile's definition, inf{x : F(x) ≥ p}, over the floats) rather
+        // than letting the logit Newton wander into the subnormals (0.22
+        // returned 5.6e-309 for the 0.2055 quantile, whose cdf is 0.246).
+        let tiniest = f64::from_bits(1);
+        match side {
+            Side::Lower(pl) if pl <= tails(tiniest, alpha, beta).lower => {
+                return Ok(tiniest);
+            }
+            Side::Upper(q) if q <= tails(1.0 - f64::EPSILON / 2.0, alpha, beta).upper => {
+                return Ok(1.0);
+            }
+            _ => {}
+        }
+        quantile_logit(op, side, alpha, beta).map(logistic)
+    }
+
+    /// `1/(1 + e^{−v})` without overflow: `1/(1 + e^{−v})` stops at
+    /// `1/f64::MAX ≈ 5.6e-309` once `e^{−v}` overflows (`v < −709.8`), so
+    /// the quantile of a tail heavier than that was pinned there (0.22:
+    /// `beta::isf(0.781, 1.07e-3, 1e-3) = 5.6e-309` with cdf 0.775); for
+    /// `v < 0` the form `e^{v}/(1 + e^{v})` reaches the subnormals.
+    fn logistic(v: f64) -> f64 {
+        if v < 0.0 {
+            let e = v.exp();
+            e / (1.0 + e)
+        } else {
+            1.0 / (1.0 + (-v).exp())
+        }
     }
 
     /// `x` with `P(X ≤ x) = p`.  `scipy.stats.beta.ppf(p, a, b)`.
@@ -1805,8 +1912,8 @@ pub mod beta {
 /// The F distribution with `d₁, d₂ > 0` degrees of freedom.
 pub mod f {
     use super::{
-        Eval, Side, Tails, beta, bratio, check_level, check_positive, log_beta_pref, nearest_tail,
-        nearest_tail_upper, solve_increasing,
+        Eval, Side, Tails, beta, bratio, check_level, check_positive, lbeta, log_beta_pref,
+        nearest_tail, nearest_tail_upper, solve_increasing,
     };
     use crate::base::errors::SymplexError;
 
@@ -1819,8 +1926,43 @@ pub mod f {
         }
         let num = d1 * x;
         let den = num + d2;
-        if den.is_infinite() {
+        if x.is_infinite() {
             return Tails::ONE;
+        }
+        if den.is_infinite() {
+            // `d₁x` overflowed, but a tiny d₂ keeps real mass beyond
+            // (F(6331, 0.01): P(X > 2.8e304) ≈ 0.027).  The upper beta
+            // argument y = (d₂/d₁)/(x + d₂/d₁) is tiny, where I_y(b, a) is
+            // its leading term yᵇ/(b·B(a, b)), formed in logarithms.
+            let (a, b) = (0.5 * d1, 0.5 * d2);
+            let r = d2 / d1;
+            let ln_y = r.ln() - (x + r).ln();
+            let upper = if ln_y.is_finite() {
+                (b * ln_y - b.ln() - lbeta(a, b)).exp().min(1.0)
+            } else {
+                0.0
+            };
+            return Tails {
+                lower: 1.0 - upper,
+                upper,
+            };
+        }
+        if num < f64::MIN_POSITIVE {
+            // `d₁x` underflowed (a subnormal `x`); tiny degrees of freedom
+            // still have mass there (F(0.01, 0.01): P(X ≤ 5e-324) = 0.0121).
+            // The beta argument z = x/(x + d₂/d₁) may itself be below every
+            // float, but there I_z(a, b) is its leading term
+            // zᵃ/(a·B(a, b))·(1 + O(b·z)), formed in logarithms.
+            let (a, b) = (0.5 * d1, 0.5 * d2);
+            let r = d2 / d1;
+            if r.is_finite() {
+                let ln_z = x.ln() - (x + r).ln();
+                let lower = (a * ln_z - a.ln() - lbeta(a, b)).exp().min(1.0);
+                return Tails {
+                    lower,
+                    upper: 1.0 - lower,
+                };
+            }
         }
         bratio(0.5 * d1, 0.5 * d2, num / den, d2 / den)
     }
@@ -1840,6 +1982,16 @@ pub mod f {
     fn quantile(op: &'static str, side: Side, d1: f64, d2: f64) -> Result<f64, SymplexError> {
         check_positive(op, "d1", d1)?;
         check_positive(op, "d2", d2)?;
+        // Below every positive float: the smallest float with F(x) ≥ p (see
+        // `beta::quantile`).
+        let tiniest = f64::from_bits(1);
+        match side {
+            Side::Lower(pl) if pl <= tails(tiniest, d1, d2).lower => return Ok(tiniest),
+            // Beyond the largest float (a tiny d₂ has a tail heavier than
+            // any power we can hold): +∞, as for `t`.
+            Side::Upper(q) if q < tails(f64::MAX, d1, d2).upper => return Ok(f64::INFINITY),
+            _ => {}
+        }
         let (a, b) = (0.5 * d1, 0.5 * d2);
         // logit(b) = ln(b/(1 − b)); x = (d₂/d₁) e^{logit}.
         let u0 = beta::start_logit(side, a, b)? + (d2 / d1).ln();
@@ -1848,22 +2000,52 @@ pub mod f {
             Side::Upper(q) => (q, false),
         };
         let ln_target = target.ln();
+        let (ln_r, ln_ab) = ((d2 / d1).ln(), a.ln() + lbeta(a, b));
         let g = |u: f64| {
+            if u < -690.0 && ln_r > u + 40.0 {
+                // `x = eᵘ` is at or below the subnormals and negligible
+                // beside r = d₂/d₁: ln I_z(a, b) = a·(u − ln r) − ln(a·B(a, b))
+                // + O(z), exactly linear in u (as for `gamma`).
+                let ln_lower = a * (u - ln_r) - ln_ab;
+                let (gv, dg) = if lower {
+                    (ln_lower - ln_target, a)
+                } else {
+                    let ln_upper = (-ln_lower.exp()).ln_1p();
+                    (ln_target - ln_upper, a * ln_lower.exp() / ln_upper.exp())
+                };
+                return Eval { g: gv, dg };
+            }
             let x = u.exp();
             let num = d1 * x;
             let den = num + d2;
-            let (xb, yb) = (num / den, d2 / den);
-            let tl = bratio(a, b, xb, yb);
+            let (xb, yb) =
+                if (num < f64::MIN_POSITIVE || den.is_infinite()) && (d2 / d1).is_finite() {
+                    // Subnormal or huge `x`: form the beta arguments without
+                    // `d₁x`, which under- or overflows.
+                    let r = d2 / d1;
+                    (x / (x + r), r / (x + r))
+                } else {
+                    (num / den, d2 / den)
+                };
+            // `tails` handles an underflowed argument (leading term).
+            let tl = tails(x, d1, d2);
             let ln_tail = if lower { tl.lower.ln() } else { tl.upper.ln() };
             let gv = if lower {
                 ln_tail - ln_target
             } else {
                 ln_target - ln_tail
             };
-            Eval {
-                g: gv,
-                dg: (log_beta_pref(a, b, xb, yb) - ln_tail).exp(),
-            }
+            // d ln I/du = x_b^a y_b^b/(B·I); where x_b (or y_b) is below
+            // every float the leading term I ∝ x_b^a (y_b^b) gives the slope
+            // a (b).
+            let dg = if xb > 0.0 && yb > 0.0 {
+                (log_beta_pref(a, b, xb, yb) - ln_tail).exp()
+            } else if xb > 0.0 {
+                b
+            } else {
+                a
+            };
+            Eval { g: gv, dg }
         };
         solve_increasing(op, g, u0, f64::NEG_INFINITY, f64::INFINITY).map(f64::exp)
     }

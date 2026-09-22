@@ -370,8 +370,25 @@ impl Arena {
 
     /// Computes a `u64` hash for a [`Ratio<BigInt>`] using the `FxHasher`.
     fn hash_num(value: &Q) -> u64 {
+        // `Ratio`'s own `Hash` walks the continued fraction of numer/denom
+        // *recursively* — one stack frame per partial quotient — so that
+        // unreduced equal values hash alike.  A rational with a very long
+        // expansion (a ratio of consecutive huge Fibonacci numbers has one
+        // partial quotient per term) would need that many frames.  Same
+        // sequence of partial quotients, in a loop.
+        use num_integer::Integer;
         let mut hasher = rustc_hash::FxHasher::default();
-        value.hash(&mut hasher);
+        let (mut numer, mut denom) = (value.numer().clone(), value.denom().clone());
+        loop {
+            if denom.is_zero() {
+                denom.hash(&mut hasher);
+                break;
+            }
+            let (quot, rem) = numer.div_mod_floor(&denom);
+            quot.hash(&mut hasher);
+            numer = denom;
+            denom = rem;
+        }
         hasher.finish()
     }
 

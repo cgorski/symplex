@@ -189,7 +189,9 @@ src/
 
 Companion crates: `symplex-macros/` (proc macros), `symplex-build/` (build-time
 codegen for `no_std`), `symplex-wasm/` (wasm-bindgen bindings + `Session`),
-`fuzz/` (cargo-fuzz targets), `probes/` (developer diagnostics, not compiled by
+`fuzz/` (cargo-fuzz targets that check properties — exact identities, value
+preservation, `F′ = f` — run nightly by `.github/workflows/fuzz.yml`; see
+`fuzz/README.md` for the replay loop), `probes/` (developer diagnostics, not compiled by
 default), `book/` (mdBook), `benches/` (criterion).
 
 **Dependency flow.**  Two types are hubs that every layer may name: the
@@ -857,6 +859,13 @@ mixing.
 
 `.github/workflows/deploy-book.yml` builds the mdBook and deploys it to GitHub
 Pages on pushes to `main`.
+
+`.github/workflows/fuzz.yml` runs every `fuzz/` target for ten minutes each,
+nightly and on demand (`workflow_dispatch`, with the time per target as an
+input): one job per target, the corpus cached between nights, a failing
+input uploaded as an artifact with its decoded expression in the log.  A red
+nightly is a bug report: reproduce it with `fuzz/README.md`, pin it as a
+regression test, fix the cause.
 
 `RUSTFLAGS=-D warnings` is set globally, so a new warning anywhere fails CI.
 Before opening a PR run at least `cargo fmt --all`, `cargo clippy --all-targets`,

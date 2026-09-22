@@ -1417,3 +1417,28 @@ fn liveness_ratio_and_should_compact_on_a_small_arena() {
     let new_ratio = new_ctx.liveness_ratio(&new_roots);
     assert!(new_ratio >= ratio, "{new_ratio} < {ratio}");
 }
+
+/// Found by `fuzz_parser` (0.22.3): `7.4**77.4**74` overflowed the stack.
+/// `(37/5)^((387/5)^74)` splits into `37^(a/b)·5^(−a/b)`, and the radical
+/// normal form rewrote `5^(−a/b)` as `5^(−(k+1))·5^((b−s)/b)` — but
+/// `5^(k+1)` (k ≈ 10¹⁴⁰) cannot fold to a number, so `mul` added the
+/// exponents back to `−a/b` and the rewrite recursed without end.  It now
+/// applies only when the integer power folds.
+#[test]
+fn parsing_a_large_exact_power_does_not_overflow_the_stack() {
+    let handle = std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            let ctx = Context::new();
+            let e = symplex::parse::parse(&ctx, "7.4**77.4**74").expect("parses");
+            let shown = format!("{e}");
+            assert!(!shown.is_empty());
+            // The same power built directly, and its two halves.
+            let big = ctx.rational(387, 5).powi(74);
+            let p = ctx.rational(37, 5).pow(&big);
+            assert!(!format!("{p}").is_empty());
+            assert!(!format!("{}", ctx.int(5).pow(&-&big)).is_empty());
+        })
+        .expect("spawn");
+    handle.join().expect("no stack overflow");
+}
