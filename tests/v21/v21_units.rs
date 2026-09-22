@@ -1771,11 +1771,11 @@ fn reduced_planck_constant_displays_as_hbar_with_action_dimension() {
 
 /// `Context::physical_constant` documents that the constant "evaluates
 /// numerically to `value`", and `reduced_planck_constant` that "both h and
-/// π resolve to exact values" — but any physical constant whose value is a
-/// composite expression (here `h/(2π)`; even `3/π`) fails in evalf with
-/// `Unevaluable { reason: "sub-expression … not in cache" }`.
+/// π resolve to exact values".  Until 0.22 a constant whose value is a
+/// composite expression (here `h/(2π)`; even `3/π`) failed in evalf with
+/// `Unevaluable { reason: "sub-expression … not in cache" }` because the
+/// constant is an atom to every tree walk; fixed in 0.22.1.
 #[test]
-#[ignore = "BUG: physical_constant with a composite value is Unevaluable; ħ.eval_f64() should be 1.0545718176461564e-34"]
 fn reduced_planck_constant_evaluates_to_h_over_two_pi() {
     let ctx = Context::new();
     let hbar = symplex::units::constants::reduced_planck_constant(&ctx);

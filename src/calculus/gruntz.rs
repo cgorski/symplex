@@ -1296,13 +1296,21 @@ fn leadterm(
         | ExprNode::LogGamma(inner)
         | ExprNode::Digamma(inner)
         | ExprNode::LambertW(inner)
-        | ExprNode::Factorial(inner)
         | ExprNode::Abs(inner)
         | ExprNode::Sign(inner)
         | ExprNode::Heaviside(inner)
             if crate::base::walk::contains(arena, inner, w) =>
         {
             unary_leadterm(arena, f, &node, inner, w, logw, x, depth, budget)
+        }
+
+        // x! = Γ(x + 1): reuse the Gamma pole and asymptotic rules (the
+        // poles of x! at the negative integers are Γ's at 0, −1, …).
+        ExprNode::Factorial(inner) if crate::base::walk::contains(arena, inner, w) => {
+            let one = arena.one();
+            let shifted = arena.add(&[inner, one]);
+            let g = arena.gamma(shifted);
+            leadterm(arena, g, w, logw, x, depth + 1, budget)
         }
 
         // Fallback: try series expansion

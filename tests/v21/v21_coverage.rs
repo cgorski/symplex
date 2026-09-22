@@ -276,12 +276,13 @@ fn fourier_series_fallback_for_exp_ax_two_harmonics_has_the_mean_value_of_f() {
 /// The whole fallback partial sum for `exp(2·a·x)` at `a = 1/2` is the
 /// one-harmonic series of `eˣ`: at `x = 1/3`, `1.4051357510561506427`
 /// (SymPy: `a0 = 2*sinh(pi)/pi`, `a1 = -sinh(pi)/pi`, `b1 = sinh(pi)/pi`;
-/// `N(a0/2 + a1*cos(1/3) + b1*sin(1/3), 20)`).  Today the first-harmonic
-/// coefficients are `Piecewise(… if 1/2 != (-4)^(-1/2), …)` after the
-/// substitution and `eval` cannot decide a rational against a complex
-/// literal, so the sum has no numeric value.
+/// `N(a0/2 + a1*cos(1/3) + b1*sin(1/3), 20)`).  The first-harmonic
+/// coefficients carry `Piecewise(… if 1/2 != (-4)^(-1/2), …)` after the
+/// substitution; until 0.22 evalf could not decide an (in)equality between
+/// a rational and a complex literal, so the sum had no numeric value.
+/// Equality needs no order, so since 0.22.1 it is decided for complex
+/// operands too.
 #[test]
-#[ignore = "BUG: fourier_series(exp(2*a*x), x, 1) leaves `Piecewise(… if a != (-4)^(-1/2), …)` that eval cannot resolve once a = 1/2; expected 1.4051357510561506 at x = 1/3"]
 fn fourier_series_fallback_for_exp_2ax_is_evaluable() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -300,7 +301,6 @@ fn fourier_series_fallback_for_exp_2ax_is_evaluable() {
 /// a_k cos(kx) + b_k sin(kx)` at `a = 1/2`, `x = 1/3`):
 /// `1.0039018725353257480`.
 #[test]
-#[ignore = "BUG: fourier_series(exp(a*x), x, 2) leaves a Piecewise on `a != (-1/4)^(-1/2)` that eval cannot resolve; expected 1.0039018725353257 at a = 1/2, x = 1/3"]
 fn fourier_series_fallback_second_harmonic_of_exp_ax_is_evaluable() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -314,20 +314,23 @@ fn fourier_series_fallback_second_harmonic_of_exp_ax_is_evaluable() {
     );
 }
 
-/// `ln(2 + cos x)` has no elementary antiderivative, so both routes fail —
-/// but `fourier_series` returns the *number* `nan` with
-/// `has_unevaluated() == false` instead of an unevaluated form.  The true
+/// `ln(2 + cos x)` has no elementary antiderivative.  0.22's fallback
+/// substituted `±π` into the unevaluated antiderivative (and into
+/// tan-half-angle antiderivatives, `zoo` at `±π`) and returned the *number*
+/// `nan` with `has_unevaluated() == false`.  Since 0.22.1 each coefficient
+/// goes through the definite integrator and, without a closed form, stays a
+/// `DefiniteIntegral` that evaluates by quadrature.  The true
 /// coefficients (Gradshteyn–Ryzhik 4.224.9, `r = 2 − √3`):
 /// `a₀/2 = ln((2 + √3)/2)`, `aₙ = 2(−1)^{n+1} rⁿ/n`; SymPy confirms them
 /// numerically (`N(Integral(log(2+cos(x))*cos(x), (x,-pi,pi))/pi, 20)` =
 /// `0.53589838486224541294` = `4 − 2√3`) and the two-harmonic partial sum
 /// at `x = 1/3` is `1.0737874509678854546`.
 #[test]
-#[ignore = "BUG: fourier_series(ln(2 + cos x), x, 2) returns the literal `nan` with has_unevaluated() == false; expected the partial sum ln((2+√3)/2) + (4−2√3) cos x − (2−√3)² cos 2x (1.0737874509678855 at x = 1/3)"]
 fn fourier_series_of_ln_2_plus_cos_x_is_not_nan() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let series = (2 + x.cos()).ln().fourier_series(&x, 2);
+    assert!(series.has_unevaluated(), "{series}");
     close(
         at_one_third(&series, &x),
         1.073787450967885,
@@ -828,10 +831,9 @@ fn limit_of_factorial_at_minus_one_half_is_its_value_there() {
 }
 
 /// `(−1/2)! = Γ(1/2) = √π`; SymPy: `N(factorial(-1/2), 20)` =
-/// `1.7724538509055160273`.  `eval_f64` refuses ("cannot numerically
-/// evaluate symbolic factorial") although the argument is a literal.
+/// `1.7724538509055160273`.  (0.22 refused: "cannot numerically evaluate
+/// symbolic factorial"; since 0.22.1 evalf computes `Γ(x + 1)`.)
 #[test]
-#[ignore = "BUG: eval_f64 of the literal (-1/2)! is Unevaluable; expected Γ(1/2) = √π = 1.7724538509055159"]
 fn factorial_of_minus_one_half_evaluates_to_sqrt_pi() {
     let ctx = Context::new();
     let f = ctx.rational(-1, 2).factorial();
@@ -842,17 +844,21 @@ fn factorial_of_minus_one_half_evaluates_to_sqrt_pi() {
     );
 }
 
-/// `x! = Γ(x + 1) → +∞` as `x → −1⁺` (the pole of `Γ` at 0 approached
-/// from the right).  `(x + 1).gamma()` gets this right (see
-/// `one_sided_limits_of_gamma_and_digamma_at_zero`) but the `Factorial`
-/// node is returned unevaluated.  SymPy 1.14 also leaves
-/// `limit(factorial(x), x, -1, '+')` unevaluated.
+/// `x! = Γ(x + 1)` at its poles, one-sided.  SymPy 1.14 leaves
+/// `limit(factorial(x), x, -1, '+')` unevaluated, so the references are the
+/// Gamma limits it does compute: `limit(gamma(t), t, 0, '+') = oo`,
+/// `(t, 0, '-') = -oo`, `(t, -1, '+') = -oo`, `(t, -1, '-') = oo`.  Until
+/// 0.22 the `Factorial` node came back as an unevaluated `Limit`; since
+/// 0.22.1 gruntz rewrites it to `Γ(x + 1)`.
 #[test]
-#[ignore = "BUG: limit_right(x!, x → -1) returns the unevaluated `Limit(x!, x, -1)`; expected oo (Γ(x+1) → +∞ as x → -1⁺)"]
 fn right_limit_of_factorial_at_minus_one_is_infinite() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    assert_eq!(x.factorial().limit_right(&x, &ctx.int(-1)), ctx.infinity());
+    let f = x.factorial();
+    assert_eq!(f.limit_right(&x, &ctx.int(-1)), ctx.infinity());
+    assert_eq!(f.limit_left(&x, &ctx.int(-1)), ctx.neg_infinity());
+    assert_eq!(f.limit_right(&x, &ctx.int(-2)), ctx.neg_infinity());
+    assert_eq!(f.limit_left(&x, &ctx.int(-2)), ctx.infinity());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1376,12 +1382,10 @@ fn tree_round_trip_is_the_identity_for_every_node_kind() {
 }
 
 /// `to_tree` serialises `Factorial` / `Binomial` as `Apply { name:
-/// "factorial" | "binomial" }`, and `from_tree` turns every `Apply` into
-/// an opaque user function — so the round trip loses the built-in: the
-/// result prints as `factorial(n + 1)`, is a different node, and no longer
-/// evaluates (`5! = 120`, `C(5, 2) = 10`).
+/// "factorial" | "binomial" }`; until 0.22 `from_tree` turned every `Apply`
+/// into an opaque user function, so the round trip lost the built-in (it
+/// printed as `factorial(n + 1)` and no longer evaluated).  Fixed in 0.22.1.
 #[test]
-#[ignore = "BUG: from_tree(to_tree((n+1)!)) is the opaque Apply `factorial(n + 1)`, not the Factorial node; expected the identity round trip (and 120 at n = 4)"]
 fn tree_round_trip_preserves_factorial_and_binomial() {
     let ctx = Context::new();
     let n = ctx.symbol("n");

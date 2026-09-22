@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.22.1] - 2026-09-22
+
+Fixes the seven known issues 0.22.0 shipped with reproducers for, and a
+packaging gap.  No API change.
+
+### Fixed
+
+- `eval_f64` / `evalf` of a factorial with a non-integer argument: `x!` is
+  now `Γ(x + 1)` (`(−1/2)! = √π`); it used to be `Unevaluable`.
+- One-sided limits of `x!` at its poles: `limit_right(x!, x → −1) = ∞`,
+  `limit_left = −∞`, and the signs alternate at `−2, −3, …` (gruntz
+  rewrites `x!` to `Γ(x + 1)`); they used to stay unevaluated.
+- `from_tree(to_tree(e))` is the identity for `Factorial` and `Binomial`
+  (they came back as opaque `factorial(…)` / `binomial(…)` applications
+  that no longer evaluated).
+- A `physical_constant` whose value is a composite expression (ħ = h/2π)
+  evaluates numerically; the value was never visited because the constant
+  is an atom to every tree walk.
+- `fourier_series`' fallback no longer returns the literal `nan`:
+  coefficients go through the definite integrator (one-sided limits at
+  `±π`, where tan-half-angle antiderivatives are `zoo`) and, without a
+  closed form, stay `DefiniteIntegral` nodes that report
+  `has_unevaluated()` and evaluate by quadrature.
+- `evalf` decides `=` / `≠` between complex values (equality needs no
+  order), so a `Piecewise` guarded by `a ≠ (−4)^(−1/2)` evaluates at a
+  numeric `a`; this made the `exp(a·x)` Fourier fallback evaluable.
+- The published package includes the book's Markdown sources, so
+  `cargo test --doc` works from the crates.io tarball (`src/doctests.rs`
+  includes them); only the rendered HTML is excluded.
+
 ## [0.22.0] - 2026-09-22
 
 The audit release.  Four independent reviews of 0.21 — a documentation-vs-code
@@ -146,7 +176,7 @@ certificate are byte-identical to 0.14.0.
   for shapes ≥ 10⁴).
 - `Ex::solve` documents the distinct-roots / factor-first convention.
 
-### Known issues (reproducers in `tests/v21`, `#[ignore = "BUG: …"]`)
+### Known issues (reproducers in `tests/v21`, `#[ignore = "BUG: …"]`; all fixed in 0.22.1)
 
 - `fourier_series(ln(2 + cos x), x, 2)` returns the literal `nan` without an
   unevaluated marker; `fourier_series` of `exp(a·x)` leaves a `Piecewise`

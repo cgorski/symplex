@@ -258,18 +258,17 @@ fn roundtrip_factorial() {
         }
         other => panic!("expected Apply(factorial), got {other:?}"),
     }
-    // Factorial → Apply is a known one-way mapping (ExprNode::Factorial
-    // serializes to ExprTree::Apply, and deserializes back as a generic
-    // ExprNode::Apply), so the display form changes ("5!" → "factorial(5)").
-    // Verify instead that the *tree* itself survives a JSON round-trip.
+    // The tree survives a JSON round trip, and since 0.22.1 `from_tree`
+    // maps `Apply { name: "factorial" }` back to the built-in node (0.22
+    // produced an opaque `factorial(5)` that no longer evaluated).
     let json = serde_json::to_string(&tree).unwrap();
     let tree_back: ExprTree = serde_json::from_str(&json).unwrap();
     assert_eq!(tree, tree_back, "ExprTree should survive JSON round-trip");
 
-    // Also verify the deserialized Ex is usable.
-    let ctx = Context::new();
-    let back = ctx.from_tree(&tree);
-    assert_eq!(format!("{back}"), "factorial(5)");
+    let back = ctx.from_tree(&tree_back);
+    assert_eq!(back, expr);
+    assert_eq!(format!("{back}"), "5!");
+    assert_eq!(back.eval(), ctx.int(120));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

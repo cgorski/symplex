@@ -1090,6 +1090,14 @@ fn try_compose(
                 Ext::PosInf => Some(Ok(arena.infinity())),
                 Ext::NegInf => None,
                 Ext::Finite(_) => {
+                    // A pole of x! = Γ(x + 1): leave it to the one-sided
+                    // analysis, as for Γ itself.
+                    if arena
+                        .as_num(l)
+                        .is_some_and(|r| r.is_integer() && r.is_negative())
+                    {
+                        return None;
+                    }
                     let v = arena.factorial(l);
                     finite_candidate(arena, v, var).map(Ok)
                 }

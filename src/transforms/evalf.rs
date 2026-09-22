@@ -557,8 +557,24 @@ fn eval_node(
         }
 
         ExprNode::PhysicalConstant(_, value_id) => {
-            // Recursively evaluate the stored exact value to a float.
-            eval_node_or_subtree(arena, *value_id, cache, prec, rm, cc)
+            // The constant is an atom to every tree walk, so its stored value
+            // (`h/(2π)` for ħ) was never visited: evaluate it as a subtree of
+            // its own unless it is a single already-cached node.
+            if let Some(v) = cache.get(value_id) {
+                return Ok(v.clone());
+            }
+            let mut sub_cache: FxHashMap<ExprId, Complex> = FxHashMap::default();
+            for id in walk::post_order_ids(arena, *value_id) {
+                if !sub_cache.contains_key(&id) {
+                    let v = eval_node(arena, id, &sub_cache, prec, rm, cc)?;
+                    sub_cache.insert(id, v);
+                }
+            }
+            sub_cache
+                .remove(value_id)
+                .ok_or_else(|| SymplexError::Unevaluable {
+                    reason: "physical constant value could not be evaluated".into(),
+                })
         }
 
         ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity => {
@@ -567,10 +583,23 @@ fn eval_node(
             })
         }
 
-        ExprNode::Factorial(_) => Err(SymplexError::Unevaluable {
-            reason: "cannot numerically evaluate symbolic factorial; call eval() first to reduce"
-                .into(),
-        }),
+        // x! = Γ(x + 1) for every real x off the poles (x = −1, −2, …);
+        // `eval()` already reduces non-negative integer literals exactly.
+        ExprNode::Factorial(x_id) => {
+            let x_val = get_cached(cache, *x_id)?;
+            if !x_val.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "factorial of a complex argument not yet supported in evalf".into(),
+                });
+            }
+            debug!(
+                prec,
+                "evalf: factorial via arbitrary-precision Gamma(x + 1)"
+            );
+            let x_plus_1 = x_val.0.add(&BigFloat::from_i32(1, prec), prec, rm);
+            let r = arb_gamma_real(&x_plus_1, prec, rm, cc)?;
+            Ok((r, BigFloat::new(prec)))
+        }
 
         ExprNode::Binomial(n_id, k_id) => {
             debug!(prec, "evalf: Binomial via arbitrary-precision Gamma");
@@ -1589,6 +1618,15 @@ fn decide_condition(
         }
     };
 
+    // Equality needs no order, so it is decidable for complex operands too
+    // (`1/2 ≠ (−4)^(−1/2)` guards the `a = ±i/2` case of ∫ e^{2ax} cos x).
+    let complex_equal = |a: &ExprId, b: &ExprId| -> Option<bool> {
+        let (av, bv) = (cache.get(a)?, cache.get(b)?);
+        let d_re = av.0.sub(&bv.0, prec, rm);
+        let d_im = av.1.sub(&bv.1, prec, rm);
+        Some(d_re.is_zero() && d_im.is_zero())
+    };
+
     let order = walk::post_order_ids(arena, cond);
     let mut truth: FxHashMap<ExprId, Option<bool>> = FxHashMap::default();
     for &id in &order {
@@ -1597,8 +1635,8 @@ fn decide_condition(
             ExprNode::BoolFalse => Some(false),
             ExprNode::Gt(a, b) => real_diff(a, b).map(|d| d.is_positive()),
             ExprNode::Ge(a, b) => real_diff(a, b).map(|d| d.is_positive() || d.is_zero()),
-            ExprNode::Eq_(a, b) => real_diff(a, b).map(|d| d.is_zero()),
-            ExprNode::Ne(a, b) => real_diff(a, b).map(|d| !d.is_zero()),
+            ExprNode::Eq_(a, b) => complex_equal(a, b),
+            ExprNode::Ne(a, b) => complex_equal(a, b).map(|e| !e),
             ExprNode::Not(inner) => truth.get(inner).copied().flatten().map(|b| !b),
             ExprNode::And(kids) => {
                 let vals: Vec<Option<bool>> = kids

@@ -1,6 +1,6 @@
 [package]
 name = "symplex"
-version = "0.22.0"
+version = "0.22.1"
 edition = "2024"
 rust-version = "1.93.0"
 license = "MIT OR Apache-2.0"
@@ -11,9 +11,12 @@ documentation = "https://docs.rs/symplex"
 readme = "README.md"
 keywords = ["symbolic", "math", "cas", "codegen", "robotics"]
 categories = ["mathematics", "science", "development-tools::build-utils"]
-# Keep the published tarball to what `cargo test` / `cargo doc` need.
+# Keep the published tarball to what `cargo test` / `cargo doc` need.  The
+# book's Markdown sources stay in: `src/doctests.rs` runs their Rust blocks
+# under `cargo test --doc`; only the rendered HTML is excluded.
 exclude = [
-    "/book",
+    "/book/book",
+    "/book/book.toml",
     "/probes",
     "/scripts",
     "/.github",

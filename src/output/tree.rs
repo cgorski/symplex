@@ -1082,6 +1082,18 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
                 args.iter().map(|a| tree_to_expr(arena, a)).collect();
             arena.intern(ExprNode::Max(ids))
         }
+        // `to_tree` writes the built-in `Factorial` / `Binomial` nodes as
+        // `Apply` (as the parser reads them); map them back so the round
+        // trip is the identity.
+        ExprTree::Apply { name, args } if name == "factorial" && args.len() == 1 => {
+            let x = tree_to_expr(arena, &args[0]);
+            arena.factorial(x)
+        }
+        ExprTree::Apply { name, args } if name == "binomial" && args.len() == 2 => {
+            let n = tree_to_expr(arena, &args[0]);
+            let k = tree_to_expr(arena, &args[1]);
+            arena.binomial(n, k)
+        }
         ExprTree::Apply { name, args } => {
             let sym_id = arena.symbols.intern(name);
             let arg_ids: Vec<ExprId> = args.iter().map(|a| tree_to_expr(arena, a)).collect();
