@@ -10,7 +10,8 @@
 //! [`super::agreement`]; the ordinal association measures to
 //! [`super::data`]; the contingency-table diagnostics and the tests on
 //! Pearson's r to [`super::hypothesis`]; Fisher's z and the r interval to
-//! [`super::estimation`].  Each is re-exported here for one release.
+//! [`super::estimation`].  The transitional re-exports of those names from
+//! this module were removed in 0.22.
 //!
 //! **Exact where rational.**  Everything that is a rational function of
 //! the data (α, KR-20, α-if-deleted, item difficulties and D indices)
@@ -52,28 +53,6 @@ use super::data::{self, Ddof, Q};
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
-
-/// Moved to [`stats::agreement`](super::agreement) in 0.18; this
-/// re-export is kept for one release.
-pub use super::agreement::{
-    KappaCi, cochrans_q, cohen_kappa_ci, cohen_kappa_maximum, kappa_ci_from_confusion,
-    kappa_maximum_from_confusion, kappa_test, kappa_test_from_confusion,
-};
-/// Moved to [`stats::data`](super::data) in 0.18; this re-export is kept
-/// for one release.
-pub use super::data::{
-    ConcordanceCounts, Dependent, concordance_counts, goodman_kruskal_gamma, kendall_tau_c,
-    somers_d,
-};
-/// Moved to [`stats::estimation`](super::estimation) in 0.18; this
-/// re-export is kept for one release.
-pub use super::estimation::{fisher_z, pearson_ci};
-/// Moved to [`stats::hypothesis`](super::hypothesis) in 0.18; this
-/// re-export is kept for one release.
-pub use super::hypothesis::{
-    adjusted_residuals, chi2_contributions, compare_two_correlations, expected_counts,
-    pearson_t_statistic, pearson_test, standardized_residuals,
-};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Small helpers

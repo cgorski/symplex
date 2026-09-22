@@ -127,6 +127,10 @@ impl XorShift64Star {
 
     /// A big integer uniform in `0..n` up to the bias of reducing 64 more
     /// random bits than `n` has (below `2⁻⁶⁴`).  `n` must be positive.
+    ///
+    /// # Panics
+    ///
+    /// If `n` is zero (reduction modulo zero).
     pub fn next_big_below(&mut self, n: &BigInt) -> BigInt {
         let bits = n.bits() as usize + 64;
         let words = bits.div_ceil(64);

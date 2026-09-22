@@ -370,7 +370,15 @@ The proof shape is the one a person writes: one `have … := mul_nonneg …` per
 
 A generator that stitches many certificates into one lemma — a `refine frame_lemma … ?_ ?_` followed by one bullet per facet, inside `rcases` case splits — should not concatenate strings with hand-counted spaces: Lean's tactic blocks are column-sensitive (the tactics of a `by` block must sit strictly right of the tactic that opened it, and a `· ` bullet moves that column by two), and a mis-indented line silently changes which block a tactic belongs to. `symplex::lean::{Block, Tactic, Proof, Decl}` (0.8) is a small structured model of exactly this: `Tactic::have(name, Some(ty), Proof::by(block))`, `Tactic::bullet(block)`, `Tactic::raw("linarith only […]")`, and `Block::render(indent)` places every line from its tactic column and wraps past it. `steps.block()` gives a certificate's closing steps as such a block, so a leaf is
 
-```rust,ignore
+```rust
+# use symplex::certificates::PolyhedronLeanSteps;
+# let call = "leafG346_single_poly (20 * (j : ℝ) + 10) ρ hx";
+# let facets = ["e0", "e1"];
+# let facet_steps = vec![
+#     PolyhedronLeanSteps { haves: vec!["have h0J := mul_nonneg hJ0 e0".into()], hints: vec!["h0J".into(), "e1".into()], lambda_hints: vec![], lambda: None, closing: vec!["linarith only [h0J, e1]".into()] },
+#     PolyhedronLeanSteps { haves: vec![], hints: vec!["e0".into()], lambda_hints: vec![], lambda: None, closing: vec!["linarith only [e0]".into()] },
+# ];
+# let mut lemma_body = String::new();
 use symplex::lean::{Block, Tactic};
 
 let mut leaf = Block::new(vec![Tactic::raw(format!("refine {call}\n  {}", vec!["?_"; facets.len()].join(" ")))]);
@@ -378,6 +386,7 @@ for steps in &facet_steps {
     leaf.push(Tactic::bullet(steps.block()));
 }
 lemma_body.push_str(&leaf.render("  "));
+# assert!(lemma_body.starts_with("  refine ") && lemma_body.contains("\n  · have h0J := mul_nonneg hJ0 e0\n    linarith only [h0J, e1]\n  · linarith only [e0]\n"));
 ```
 
 and the dispatcher's `rcases le_or_gt (0 : ℝ) (g) with h | h` with its two bullets is `Tactic::raw(…)` followed by two `Tactic::bullet(…)`, each bullet starting with `Tactic::have("e6", Some("(0 : ℝ) ≤ …"), Proof::term("h6"))`. `Decl::new(DeclKind::Lemma, name, statement, body).with_binders(…).with_doc(…)` renders the header in Mathlib's style (binders packed, ` :` at the end of the binder lines, the statement on its own line, ` := by`). `lean::lean_ident` quotes a name with `«…»` when it is not a plain identifier. The renderer's output for the generator's leaf shape is pinned to text that compiled against Mathlib.

@@ -6,7 +6,9 @@ symplex 0.7.0 is a **breaking** release whose theme is the shape of the API rath
 
 The four provers used to return four enums with the same three arms and slightly different payloads (`Refuted { point: Vec<Q> }` here, `Refuted { point: Q }` there, `Unknown { farkas, degree }` versus `Unknown { reason }`). They now all return
 
-```rust,ignore
+```rust
+# use symplex::prelude::*;
+# use symplex::linprog::Q;
 pub enum Outcome<C, U> {
     Proved(C),                                                    // a re-verified certificate
     #[non_exhaustive]

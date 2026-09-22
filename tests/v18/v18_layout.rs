@@ -435,61 +435,61 @@ fn sprt_takes_parameters_by_reference() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// The old paths still compile (dropped in 0.19)
+// 0.18 moves: every name lives at its new home only (the transitional
+// re-exports from `aggregation`, `hypothesis` and `reliability` and the
+// deprecated `two_proportion_z_test` alias were removed in 0.22)
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[allow(deprecated)]
-fn old_paths_still_compile() {
-    use symplex::stats::aggregation as agg;
+fn moved_names_live_at_their_new_homes() {
+    use symplex::stats::agreement as agr;
+    use symplex::stats::anova;
+    use symplex::stats::data;
+    use symplex::stats::estimation as est;
     use symplex::stats::hypothesis as hyp;
-    use symplex::stats::reliability as rel;
 
     let ctx = Context::new();
     // hypothesis → anova / estimation
     let g = [from_i64(&[1, 2, 3]), from_i64(&[2, 3, 5])];
-    let _: hyp::AnovaResult = hyp::anova_one_way(&ctx, &g).unwrap();
-    assert!(hyp::confidence_interval_mean(&from_i64(&[5, 7, 8, 9]), 0.95).is_ok());
-    // the renamed test
-    let old = hyp::two_proportion_z_test(&ctx, 45, 100, 30, 100, Alternative::TwoSided).unwrap();
-    let new = z_test_two_proportions(&ctx, 45, 100, 30, 100, Alternative::TwoSided).unwrap();
-    assert_eq!(old, new);
+    let _: anova::AnovaResult = anova::anova_one_way(&ctx, &g).unwrap();
+    assert!(est::confidence_interval_mean(&from_i64(&[5, 7, 8, 9]), 0.95).is_ok());
+    assert!(z_test_two_proportions(&ctx, 45, 100, 30, 100, Alternative::TwoSided).is_ok());
     // reliability → agreement
     let table = [vec![20, 5], vec![10, 15]];
-    let _: rel::KappaCi = rel::kappa_ci_from_confusion(&ctx, &table, 0.95).unwrap();
-    assert!(rel::kappa_test_from_confusion(&ctx, &table, Alternative::TwoSided).is_ok());
-    assert_eq!(rel::kappa_maximum_from_confusion(&table).unwrap(), q(4, 5));
+    let _: agr::KappaCi = agr::kappa_ci_from_confusion(&ctx, &table, 0.95).unwrap();
+    assert!(agr::kappa_test_from_confusion(&ctx, &table, Alternative::TwoSided).is_ok());
+    assert_eq!(agr::kappa_maximum_from_confusion(&table).unwrap(), q(4, 5));
     let a = from_i64(&[0, 0, 1, 1, 1, 0]);
     let b = from_i64(&[0, 1, 1, 1, 0, 0]);
-    assert!(rel::cohen_kappa_ci(&ctx, &a, &b, 0.95).is_ok());
-    assert!(rel::kappa_test(&ctx, &a, &b, Alternative::TwoSided).is_ok());
-    assert_eq!(rel::cohen_kappa_maximum(&a, &b).unwrap(), qi(1));
+    assert!(agr::cohen_kappa_ci(&ctx, &a, &b, 0.95).is_ok());
+    assert!(agr::kappa_test(&ctx, &a, &b, Alternative::TwoSided).is_ok());
+    assert_eq!(agr::cohen_kappa_maximum(&a, &b).unwrap(), qi(1));
     let t = RatingTable::from_i64(&[&[1, 1, 0], &[1, 0, 0], &[0, 1, 1], &[1, 1, 0]]).unwrap();
-    assert!(rel::cochrans_q(&ctx, &t).is_ok());
+    assert!(agr::cochrans_q(&ctx, &t).is_ok());
     // reliability → hypothesis
     let (x, y) = xy();
-    assert!(rel::pearson_test(&ctx, &x, &y, Alternative::TwoSided).is_ok());
-    assert!(rel::pearson_t_statistic(&ctx, &x, &y).is_ok());
-    assert!(rel::compare_two_correlations(&ctx, 0.7, 50, 0.4, 60, Alternative::TwoSided).is_ok());
+    assert!(hyp::pearson_test(&ctx, &x, &y, Alternative::TwoSided).is_ok());
+    assert!(hyp::pearson_t_statistic(&ctx, &x, &y).is_ok());
+    assert!(hyp::compare_two_correlations(&ctx, 0.7, 50, 0.4, 60, Alternative::TwoSided).is_ok());
     let c = counts(&[&[10, 20, 30], &[6, 9, 17]]);
-    assert!(rel::expected_counts(&c).is_ok());
-    assert!(rel::chi2_contributions(&c).is_ok());
-    assert!(rel::standardized_residuals(&ctx, &c).is_ok());
-    assert!(rel::adjusted_residuals(&ctx, &c).is_ok());
+    assert!(hyp::expected_counts(&c).is_ok());
+    assert!(hyp::chi2_contributions(&c).is_ok());
+    assert!(hyp::standardized_residuals(&ctx, &c).is_ok());
+    assert!(hyp::adjusted_residuals(&ctx, &c).is_ok());
     // reliability → estimation
-    assert!(rel::pearson_ci(0.8, 5, 0.95).is_ok());
-    let _ = rel::fisher_z(&ctx.rational(4, 5));
+    assert!(est::pearson_ci(0.8, 5, 0.95).is_ok());
+    let _ = est::fisher_z(&ctx.rational(4, 5));
     // reliability → data
-    let _: rel::ConcordanceCounts = rel::concordance_counts(&x, &y).unwrap();
-    assert!(rel::goodman_kruskal_gamma(&x, &y).is_ok());
-    assert!(rel::somers_d(&x, &y, rel::Dependent::Symmetric).is_ok());
-    assert!(rel::kendall_tau_c(&x, &y).is_ok());
+    let _: data::ConcordanceCounts = data::concordance_counts(&x, &y).unwrap();
+    assert!(data::goodman_kruskal_gamma(&x, &y).is_ok());
+    assert!(data::somers_d(&x, &y, data::Dependent::Symmetric).is_ok());
+    assert!(data::kendall_tau_c(&x, &y).is_ok());
     // aggregation → estimation
-    assert!(agg::proportion_interval(3, 10, 0.95, agg::IntervalMethod::Wilson).is_ok());
-    let z = agg::z_for_confidence(&ctx, &q(95, 100)).unwrap();
-    assert!(agg::proportion_interval_symbolic(&ctx, 3, 10, &z, agg::IntervalMethod::Wald).is_ok());
+    assert!(est::proportion_interval(3, 10, 0.95, est::IntervalMethod::Wilson).is_ok());
+    let z = est::z_for_confidence(&ctx, &q(95, 100)).unwrap();
+    assert!(est::proportion_interval_symbolic(&ctx, 3, 10, &z, est::IntervalMethod::Wald).is_ok());
     assert!(
-        agg::proportion_interval_exact(&ctx, 1, 1, &q(9, 10), agg::IntervalMethod::ClopperPearson)
+        est::proportion_interval_exact(&ctx, 1, 1, &q(9, 10), est::IntervalMethod::ClopperPearson)
             .is_ok()
     );
 }

@@ -340,12 +340,15 @@ fn rule_pow_pow_integer_exponents_simplifies() {
 #[test]
 fn rule_pow_pow_blocked_both_fractional() {
     let ctx = Context::new();
-    // (x^(1/2))^(1/3) should NOT fire — no integer exponent
+    // (x^(1/2))^(1/3) → x^(1/6): valid on the principal branch because the
+    // inner exponent is in (-1, 1] (sympy agrees).  What pow_pow must NOT do
+    // is fire for an integer *inner* exponent with a fractional outer one:
+    // (x^2)^(1/3) ≠ x^(2/3) at x = -1 (1 vs -1/2 + 0.866i).
     let x = ctx.symbol("x");
     let half = ctx.rational(1, 2);
     let third = ctx.rational(1, 3);
-    let expr = x.pow(&half).pow(&third);
-    assert_simplify_unchanged!(expr);
+    assert_simplifies_to!(x.pow(&half).pow(&third), "x^(1/6)");
+    assert_simplify_unchanged!(x.powi(2).pow(&third));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -82,6 +82,8 @@
 //! | [`anova`] | every analysis of variance and post-hoc procedure |
 //! | [`agreement`] | every inter-rater statistic, including its inference |
 //! | [`reliability`] | scale reliability and item analysis only |
+//! | [`cox`] | Cox proportional-hazards regression (Efron / Breslow ties) |
+//! | [`numdist`] | the `f64` reference distributions (`cdf`/`sf`/`ppf`/`isf`) behind every numeric quantile and critical value |
 //! | [`regression`], [`survival`], [`sequential`], [`information`], [`multivariate`], [`markov`], [`aggregation`], [`order`] | as named |
 //!
 //! and one set of type conventions:

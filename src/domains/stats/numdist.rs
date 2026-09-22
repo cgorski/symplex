@@ -16,9 +16,10 @@
 //!
 //! | function | method | relative accuracy |
 //! |---|---|---|
-//! | [`betainc_regularized_f64`] | the dispatch of TOMS 708 (DiDonato & Morris 1992): power series `bpser`, the recurrence `bup`, the asymptotic expansion `bgrat` for a large first and small second parameter, the continued fraction `bfrac`, and the two-large-parameter expansion `basym`; each tail computed directly where it is the smaller one | ≈ 1e-15 typical, ≤ 1e-13 for `a + b ≤ 1e6`; for `a, b` both ≈ 1e7 or more the conditioning of `(a + b)·x` in double limits it to ≈ 1e-12 |
-//! | [`gammainc_lower_regularized_f64`], [`gammainc_upper_regularized_f64`] | the power series for `x < a + 1`, Lentz's continued fraction otherwise, with the prefactor `xᵃe⁻ˣ/Γ(a)` through Loader's `bd0` and the Stirling remainder (no cancellation for large `a`) | ≈ 1e-15; ≈ 5e-14 at `a = 5e7` (the series then has ≈ 6·10⁴ terms) |
-//! | `norm` | Cody's `erfc` / the crate's `erfcinv` | ≈ 1e-16 |
+//! | [`betainc_regularized_f64`] | the dispatch of TOMS 708 (DiDonato & Morris 1992): power series `bpser`, the recurrence `bup`, the asymptotic expansion `bgrat` for a large first and small second parameter, the continued fraction `bfrac`, and the two-large-parameter expansion `basym` (both shapes above 100 and `x` within `3 %` of the mean, in `λ = a − (a + b)x`); each tail computed directly where it is the smaller one | ≈ 1e-15 typical, ≤ 1e-13 for `a + b ≤ 1e6` away from the far tail; in the far tail (`1e-100` and below) with shapes ≥ 1e4 expect ≈ 1e-11 — the conditioning of the `f64` argument, one ulp of which moves such a tail by that much; for `a, b` both ≈ 1e7 or more the conditioning of `(a + b)·x` in double limits it to ≈ 1e-12 |
+//! | [`gammainc_lower_regularized_f64`], [`gammainc_upper_regularized_f64`] | a dispatch on `a`: below `GAMMA_TEMME_MIN_A = 1e6`, or for `x` more than 40 standard deviations from `a`, the power series for `x < a + 1` and Lentz's continued fraction otherwise, with the prefactor `xᵃe⁻ˣ/Γ(a)` through Loader's `bd0` and the Stirling remainder (no cancellation for large `a`); from `a = 1e6` on and within those 40σ, Temme's uniform asymptotic expansion (DLMF 8.12) truncated after `c₁/a`, its `½ erfc(z)` and correction term sharing one exponential so the tail stays correct into the subnormal range | ≈ 1e-15; ≈ 1e-12 at `a = 5e7` (the conditioning of the `f64` argument) |
+//! | `norm` | Cody's `erfc`, continued by `erfcx(x)·e^{−x²}` where Cody's approximation stops (`x > 26.5`, the subnormal range: `Φ(x)` is non-zero down to `x ≈ −38.5`) / the crate's `erfcinv` | ≈ 1e-16 (the precision of a subnormal result in the subnormal range) |
+//! | `t` | `½ I_{ν/(ν + x²)}(ν/2, ½)`; once `ν/x² < 1e-290` (so for `|x|` beyond `≈ 1e145`, where `x²` would soon overflow) the power law `½ (ν/x²)^{ν/2} / ((ν/2) B(ν/2, ½))` from `ln(ν/x²)`, so the tail is right up to `|x| = f64::MAX` (`P(T > 1e200) = 3.2e-101` for `ν = ½`) | ≈ 1e-15; ≈ 1e-13 in the power-law region (`|ν/2 · ln(ν/x²)| · ε`) |
 //! | quantiles | safeguarded Newton on the logarithm of the relevant tail, in a log or logit variable, from a Cornish–Fisher / Wilson–Hilferty start | ≈ 1e-15 (the CDF's accuracy) |
 //!
 //! # Conventions
@@ -33,7 +34,10 @@
 //!   it (`"numdist::t::ppf"`).
 //! * Discrete families take the argument `k` as an `f64` and floor it, as
 //!   scipy does; their quantile is the smallest lattice point `k` with
-//!   `F(k) ≥ p`.
+//!   `F(k) ≥ p`, and their `isf` the smallest `k` with `P(X > k) ≤ q`.  The
+//!   lattice parameter (`n`, `λ`) of a quantile must not exceed `2⁵³`,
+//!   beyond which consecutive integers are no longer distinct doubles
+//!   ([`SymplexError::InvalidArgument`]; scipy returns `NaN` there).
 //! * `sf(x) = 1 − cdf(x)` is computed directly, not by subtraction, so a
 //!   tail probability of `1e-300` keeps its relative accuracy.
 //!
@@ -51,16 +55,78 @@
 //! ```
 
 use crate::base::errors::SymplexError;
-use crate::output::codegen::numeric_rt::{erfc, erfcinv, lgamma};
+use crate::output::codegen::numeric_rt::{erfc as erfc_cody, erfcinv, lgamma};
 
 /// `ln √(2π)`.
 const LN_SQRT_2PI: f64 = 0.918_938_533_204_672_7;
 /// `√(2π)`.
 const SQRT_2PI: f64 = 2.506_628_274_631_000_2;
+/// `√π`.
+const SQRT_PI: f64 = 1.772_453_850_905_516;
 const EPS: f64 = f64::EPSILON;
 /// Budget for the incomplete-gamma series and continued fraction (they need
 /// about `8.5·√a` terms near `x ≈ a`, so this covers `a ≈ 10¹²`).
 const GAMMA_MAX_ITER: usize = 10_000_000;
+/// `2⁵³`: the largest lattice parameter (`n`, `λ`) of a discrete family for
+/// which every integer `k` up to it is an exact `f64`.
+const MAX_LATTICE_PARAM: f64 = 9_007_199_254_740_992.0;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// erfc into the subnormal range
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// From this argument on `erfc` is `erfcx(x)·e^{−x²}` rather than Cody's
+/// rational approximation, which stops at `XBIG = 26.543` — the point where
+/// `erfc` reaches the smallest normal double — and returns `0` beyond.  The
+/// product form stays correct through the subnormal range, until `e^{−x²}`
+/// itself underflows at `x ≈ 27.3` (`Φ(x)` for `x` down to `≈ −38.5`).
+const ERFC_ASYMPTOTIC_MIN_X: f64 = 26.0;
+
+/// `e^{−x²}` for `x ≥ 0` with the exponent split as Cody does it:
+/// `xₛ = ⌊16x⌋/16` (so `xₛ²` is exact) and `δ = (x − xₛ)(x + xₛ)`, then
+/// `e^{−xₛ²} e^{−δ}`.  The rounding of `x²` itself — `x²ε ≈ 8·10⁻¹⁴` in the
+/// exponent at `x = 27` — never enters.
+fn exp_neg_square(x: f64) -> f64 {
+    let xs = (x * 16.0).floor() / 16.0;
+    let del = (x - xs) * (x + xs);
+    (-xs * xs).exp() * (-del).exp()
+}
+
+/// `e^{x²} erfc(x)` for `x ≥ 0`, without overflow.  Below
+/// [`ERFC_ASYMPTOTIC_MIN_X`] it is Cody's `erfc` times `e^{x²}` with the
+/// exponent split exactly as inside `erfc`, so the two exponentials cancel
+/// to rounding; from there on the asymptotic series
+/// `(1/(x√π)) Σ_{k≥0} (−1)^k (2k − 1)!! / (2x²)^k`, whose eleventh term is
+/// below `2·10⁻²¹` at `x = 26`.
+fn erfcx(x: f64) -> f64 {
+    if x < ERFC_ASYMPTOTIC_MIN_X {
+        let xs = (x * 16.0).floor() / 16.0;
+        let del = (x - xs) * (x + xs);
+        return erfc_cody(x) * (xs * xs).exp() * del.exp();
+    }
+    let ratio = -0.5 / (x * x);
+    let mut term = 1.0;
+    let mut sum = 1.0;
+    let mut odd = 1.0;
+    for _ in 0..10 {
+        term *= odd * ratio;
+        sum += term;
+        odd += 2.0;
+    }
+    sum / (x * SQRT_PI)
+}
+
+/// The complementary error function, Cody's approximation continued into
+/// the subnormal range by `erfcx(x)·e^{−x²}` (see [`ERFC_ASYMPTOTIC_MIN_X`]).
+fn erfc(x: f64) -> f64 {
+    if x < ERFC_ASYMPTOTIC_MIN_X {
+        erfc_cody(x)
+    } else if x.is_infinite() {
+        0.0
+    } else {
+        erfcx(x) * exp_neg_square(x)
+    }
+}
 
 /// Both tails of a distribution function at one point, each computed
 /// directly where it is the smaller one.
@@ -380,6 +446,15 @@ fn temme_c0_c1(eta: f64, d: f64) -> (f64, f64) {
 /// relative.  Verified against 50-digit quadrature of the density at
 /// `a ∈ {10⁶, 5·10⁷, 10⁹}`, `|x − a| ≤ 8√a`: worst relative error `9·10⁻¹³`
 /// (at `a = 10⁹`, `x = a + 8√a`, where that ulp effect is `3·10⁻¹¹` per ulp).
+///
+/// With `z = η√(a/2)` both pieces of the smaller tail carry the same
+/// exponential, `½ erfc(|z|) = ½ erfcx(|z|) e^{−z²}` and
+/// `S = e^{−z²} (c₀ + c₁/a)/√(2πa)`, so that exponential is factored out
+/// and the two mantissas are summed before the one multiplication.  Summing
+/// the finished pieces instead let `erfc` underflow to `0` at `z > 26.5`
+/// while `S` survived and returned a *negative* tail (`−6·10⁻³²¹` for
+/// `Q(5·10⁷, 5.027·10⁷)`, truly `3.6·10⁻³¹⁸`).  The larger tail is `1 −` the
+/// smaller one, and the smaller is clamped into `[0, 1]`.
 fn gammainc_tails_temme(a: f64, x: f64) -> Tails {
     // (x − a) is exact for a/2 ≤ x ≤ 2a (Sterbenz), which the caller's
     // 40σ window guarantees; x/a − 1 would not be.
@@ -387,10 +462,24 @@ fn gammainc_tails_temme(a: f64, x: f64) -> Tails {
     let eta = temme_eta(d);
     let z = eta * (a / 2.0).sqrt();
     let (c0, c1) = temme_c0_c1(eta, d);
-    let r = (-0.5 * a * eta * eta).exp() / (2.0 * std::f64::consts::PI * a).sqrt() * (c0 + c1 / a);
-    Tails {
-        lower: 0.5 * erfc(-z) - r,
-        upper: 0.5 * erfc(z) + r,
+    let correction = (c0 + c1 / a) / (2.0 * std::f64::consts::PI * a).sqrt();
+    // Upper tail Q = ½ erfc(z) + S for z ≥ 0; lower tail P = ½ erfc(−z) − S for z < 0.
+    let mantissa = if z >= 0.0 {
+        0.5 * erfcx(z) + correction
+    } else {
+        0.5 * erfcx(-z) - correction
+    };
+    let small = (mantissa * exp_neg_square(z.abs())).clamp(0.0, 1.0);
+    if z >= 0.0 {
+        Tails {
+            lower: 1.0 - small,
+            upper: small,
+        }
+    } else {
+        Tails {
+            lower: small,
+            upper: 1.0 - small,
+        }
     }
 }
 
@@ -677,11 +766,6 @@ fn bfrac(a: f64, b: f64, x: f64, y: f64, lambda: f64) -> f64 {
         bnp1 = 1.0;
     }
     brc * r
-}
-
-/// `e^{x²} erfc(x)`, finite for `0 ≤ x < 26.6`.
-fn erfcx(x: f64) -> f64 {
-    (x * x).exp() * erfc(x)
 }
 
 /// `I_x(a, b)` for large `a, b` (both `≥ 15`, neither below `100` unless
@@ -1069,13 +1153,39 @@ fn solve_increasing(
     ))
 }
 
-/// The smallest lattice point `k ∈ [kmin, kmax]` with `cdf(k) ≥ p` for a
-/// non-decreasing `cdf`, from a guess `k0`: a doubling search for a
-/// bracket, then bisection on the integers.
-fn discrete_ppf(
+/// A lattice parameter (`n` of the binomial, `λ` of the Poisson) at most
+/// [`MAX_LATTICE_PARAM`]`= 2⁵³`: beyond it consecutive integers `k` are no
+/// longer distinct doubles and a quantile has no exact answer (scipy
+/// returns `NaN` there; the search here would run on a lattice coarser
+/// than the integers).
+fn check_lattice_param(op: &'static str, name: &str, v: f64) -> Result<(), SymplexError> {
+    if v <= MAX_LATTICE_PARAM {
+        Ok(())
+    } else {
+        Err(invalid(
+            op,
+            format!(
+                "{name} must not exceed 2^53 = {MAX_LATTICE_PARAM}, above which the lattice points k are not representable as f64, got {v}"
+            ),
+        ))
+    }
+}
+
+/// The smallest lattice point `k ∈ [kmin, kmax]` at which a monotone
+/// predicate `done` holds (`done` is `false` below some threshold and `true`
+/// from it on), from a guess `k0`: a doubling search for a bracket, then
+/// bisection on the integers.  `done` returns `None` when the distribution
+/// function is not a number.
+///
+/// The bisection ends as soon as the midpoint no longer separates the
+/// bracket — which happens only when `lo` and `hi` are adjacent doubles
+/// beyond `2⁵³`, where the lattice is coarser than the integers; `hi`,
+/// the smallest representable point known to satisfy the predicate, is
+/// then the answer.  (The callers reject parameters above `2⁵³`, so this
+/// is reached only within a few standard deviations above that limit.)
+fn discrete_search(
     op: &'static str,
-    cdf: impl Fn(f64) -> f64,
-    p: f64,
+    done: impl Fn(f64) -> Option<bool>,
     k0: f64,
     kmin: f64,
     kmax: f64,
@@ -1083,14 +1193,13 @@ fn discrete_ppf(
     const MAX_STEPS: usize = 2000;
     let nan = || SymplexError::computation_failed(op, "the distribution function is not a number");
     let k0 = k0.round().clamp(kmin, kmax);
-    let c0 = cdf(k0);
-    if c0.is_nan() {
+    let Some(d0) = done(k0) else {
         return Err(nan());
-    }
+    };
     let mut lo;
     let mut hi;
     let mut step = 1.0;
-    if c0 >= p {
+    if d0 {
         hi = k0;
         lo = k0 - 1.0;
         for _ in 0..MAX_STEPS {
@@ -1098,11 +1207,10 @@ fn discrete_ppf(
                 lo = kmin - 1.0;
                 break;
             }
-            let c = cdf(lo);
-            if c.is_nan() {
+            let Some(d) = done(lo) else {
                 return Err(nan());
-            }
-            if c < p {
+            };
+            if !d {
                 break;
             }
             hi = lo;
@@ -1117,11 +1225,10 @@ fn discrete_ppf(
                 hi = kmax;
                 break;
             }
-            let c = cdf(hi);
-            if c.is_nan() {
+            let Some(d) = done(hi) else {
                 return Err(nan());
-            }
-            if c >= p {
+            };
+            if d {
                 break;
             }
             lo = hi;
@@ -1129,20 +1236,57 @@ fn discrete_ppf(
             step *= 2.0;
         }
     }
-    // cdf(lo) < p ≤ cdf(hi) (or lo is below the support).
+    // !done(lo) and done(hi) (or lo is below the support).
     while hi - lo > 1.0 {
         let mid = (0.5 * (lo + hi)).floor();
-        let c = cdf(mid);
-        if c.is_nan() {
-            return Err(nan());
+        if mid <= lo || mid >= hi {
+            break;
         }
-        if c >= p {
+        let Some(d) = done(mid) else {
+            return Err(nan());
+        };
+        if d {
             hi = mid;
         } else {
             lo = mid;
         }
     }
     Ok(hi)
+}
+
+/// The smallest lattice point `k ∈ [kmin, kmax]` with `cdf(k) ≥ p` for a
+/// non-decreasing `cdf`, from a guess `k0`.
+fn discrete_ppf(
+    op: &'static str,
+    cdf: impl Fn(f64) -> f64,
+    p: f64,
+    k0: f64,
+    kmin: f64,
+    kmax: f64,
+) -> Result<f64, SymplexError> {
+    let done = |k: f64| {
+        let c = cdf(k);
+        if c.is_nan() { None } else { Some(c >= p) }
+    };
+    discrete_search(op, done, k0, kmin, kmax)
+}
+
+/// The smallest lattice point `k ∈ [kmin, kmax]` with `sf(k) ≤ q` for a
+/// non-increasing `sf`, from a guess `k0` — scipy's `isf` for a discrete
+/// distribution.
+fn discrete_isf(
+    op: &'static str,
+    sf: impl Fn(f64) -> f64,
+    q: f64,
+    k0: f64,
+    kmin: f64,
+    kmax: f64,
+) -> Result<f64, SymplexError> {
+    let done = |k: f64| {
+        let s = sf(k);
+        if s.is_nan() { None } else { Some(s <= q) }
+    };
+    discrete_search(op, done, k0, kmin, kmax)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1200,8 +1344,47 @@ pub mod t {
     };
     use crate::base::errors::SymplexError;
 
+    /// Below this value of `r = ν/x²` the incomplete beta function of the
+    /// tail is replaced by the leading term of its power series,
+    /// `I_r(a, ½) = rᵃ/(a B(a, ½)) · (1 + O(r))`, evaluated from `ln r`:
+    /// the relative error `O(r)` is far below `ε`, and neither `x²` (which
+    /// overflows for `|x| > 1.34·10¹⁵⁴`) nor `r` (subnormal or `0`) is ever
+    /// formed.  For `ν < 2` the tail is still a normal double out there:
+    /// `P(T > 10²⁰⁰) = 3.2·10⁻¹⁰¹` for `ν = ½`.
+    const POWER_LAW_MAX_R: f64 = 1e-290;
+
+    /// The incomplete-beta arguments `(ν/(ν + x²), x²/(ν + x²))` of the
+    /// tail at `|x|`, or `None` when `ν/x²` is below [`POWER_LAW_MAX_R`]
+    /// (including an overflowing `x²`) and the power law takes over.
+    fn beta_args(ax: f64, df: f64) -> Option<(f64, f64)> {
+        let x2 = ax * ax;
+        // `df / ∞ = 0`, so an overflowing `x²` also lands here.
+        if df / x2 < POWER_LAW_MAX_R {
+            return None;
+        }
+        Some((df / (df + x2), x2 / (df + x2)))
+    }
+
+    /// `ln(ν/x²)` from the logarithms, finite for every finite `x ≠ 0`.
+    fn ln_r(ax: f64, df: f64) -> f64 {
+        df.ln() - 2.0 * ax.ln()
+    }
+
+    /// `ln(x₀ᵃ y₀^½ / B(a, ½))` with `a = ν/2`, `x₀ = ν/(ν + x²)`: the
+    /// logarithm of `|x|·f(x)`, `f` the density.  In the power-law region
+    /// `y₀ = 1` and it is `a ln(ν/x²) − ln B(a, ½)`.
+    fn log_pref(ax: f64, df: f64) -> f64 {
+        let a = 0.5 * df;
+        match beta_args(ax, df) {
+            Some((x0, y0)) => log_beta_pref(a, 0.5, x0, y0),
+            None => a * ln_r(ax, df) - lbeta(a, 0.5),
+        }
+    }
+
     /// Both tails: `P(T > |x|) = ½ I_{ν/(ν + x²)}(ν/2, ½)`, with the
-    /// complementary argument `x²/(ν + x²)` formed directly.
+    /// complementary argument `x²/(ν + x²)` formed directly, and the
+    /// power law `½ (ν/x²)^{ν/2} / ((ν/2) B(ν/2, ½))` once `ν/x²` is
+    /// below [`POWER_LAW_MAX_R`].
     fn tails(x: f64, df: f64) -> Tails {
         if x.is_nan() || df.is_nan() || df <= 0.0 {
             return Tails::NAN;
@@ -1212,19 +1395,24 @@ pub mod t {
                 upper: norm::sf(x),
             };
         }
-        let x2 = x * x;
-        if x2.is_infinite() {
-            return if x > 0.0 { Tails::ONE } else { Tails::ZERO };
-        }
         if x == 0.0 {
             return Tails {
                 lower: 0.5,
                 upper: 0.5,
             };
         }
-        let i = bratio(0.5 * df, 0.5, df / (df + x2), x2 / (df + x2));
-        let tail = 0.5 * i.lower;
-        let body = 0.5 + 0.5 * i.upper;
+        let ax = x.abs();
+        let a = 0.5 * df;
+        let (tail, body) = match beta_args(ax, df) {
+            Some((x0, y0)) => {
+                let i = bratio(a, 0.5, x0, y0);
+                (0.5 * i.lower, 0.5 + 0.5 * i.upper)
+            }
+            None => {
+                let tail = 0.5 * (a * ln_r(ax, df) - a.ln() - lbeta(a, 0.5)).exp();
+                (tail, 1.0 - tail)
+            }
+        };
         if x > 0.0 {
             Tails {
                 lower: body,
@@ -1259,18 +1447,24 @@ pub mod t {
         if x == 0.0 {
             return (-lbeta(0.5 * df, 0.5)).exp() / df.sqrt();
         }
-        let x2 = x * x;
-        if x2.is_infinite() {
+        if x.is_infinite() {
             return 0.0;
         }
-        log_beta_pref(0.5 * df, 0.5, df / (df + x2), x2 / (df + x2)).exp() / x.abs()
+        let ax = x.abs();
+        log_pref(ax, df).exp() / ax
     }
 
     /// `t > 0` with `P(T > t) = q` for `0 < q < ½`: Newton on
     /// `ln P(T > eᵘ)` in `u = ln t` from the Cornish–Fisher expansion
     /// around the normal quantile (or, in the far tail and for small `ν`,
     /// the power-law tail `P(T > t) ≈ ν^{ν/2 − 1} t^{−ν}/B(ν/2, ½)`).
+    /// `+∞` when the quantile lies beyond the largest double, i.e. when
+    /// `q < P(T > f64::MAX)` — `6.2·10⁻³²` for `ν = 0.1`, `2.4·10⁻¹⁵⁵` for
+    /// `ν = ½` (the heavy tails of small `ν`).
     fn upper_quantile(op: &'static str, q: f64, df: f64) -> Result<f64, SymplexError> {
+        if q < tails(f64::MAX, df).upper {
+            return Ok(f64::INFINITY);
+        }
         let a = 0.5 * df;
         let z = norm::isf(q)?;
         let t0 = z
@@ -1286,13 +1480,11 @@ pub mod t {
         let lnq = q.ln();
         let g = |u: f64| {
             let t = u.exp();
-            let x2 = t * t;
             let sf = tails(t, df).upper;
             let ln_sf = sf.ln();
-            let lp = log_beta_pref(a, 0.5, df / (df + x2), x2 / (df + x2));
             Eval {
                 g: lnq - ln_sf,
-                dg: (lp - ln_sf).exp(),
+                dg: (log_pref(t, df) - ln_sf).exp(),
             }
         };
         solve_increasing(op, g, u0, f64::NEG_INFINITY, f64::INFINITY).map(f64::exp)
@@ -1313,7 +1505,11 @@ pub mod t {
         })
     }
 
-    /// `t` with `P(T ≤ t) = p`.  `scipy.stats.t.ppf(p, df)`.
+    /// `t` with `P(T ≤ t) = p`.  `scipy.stats.t.ppf(p, df)`.  Exact in the
+    /// far tails of small `ν`, where scipy's own `sf` underflows
+    /// (`t::ppf(1e-100, 0.5) = -1.0285e199`), and `∓∞` when the quantile
+    /// lies beyond the largest double (`P(T > f64::MAX) = 2.4e-155` for
+    /// `ν = ½`, so `t::ppf(1e-300, 0.5) = -∞`).
     ///
     /// ```
     /// use symplex::stats::numdist::t;
@@ -1697,7 +1893,9 @@ pub mod f {
 
 /// The binomial distribution with `n` trials and success probability `p`.
 pub mod binom {
-    use super::{Tails, bratio, check_level, discrete_ppf, invalid, norm};
+    use super::{
+        Tails, bratio, check_lattice_param, check_level, discrete_isf, discrete_ppf, invalid, norm,
+    };
     use crate::base::errors::SymplexError;
 
     fn tails(k: f64, n: f64, p: f64) -> Tails {
@@ -1725,7 +1923,24 @@ pub mod binom {
         tails(k, n, p).upper
     }
 
+    /// `n` a non-negative count at most `2⁵³`, `p ∈ [0, 1]`; returns `⌊n⌋`.
+    fn check_params(op: &'static str, n: f64, p: f64) -> Result<f64, SymplexError> {
+        if !(n.is_finite() && n >= 0.0) {
+            return Err(invalid(
+                op,
+                format!("n must be a non-negative count, got {n}"),
+            ));
+        }
+        check_lattice_param(op, "n", n)?;
+        if !(0.0..=1.0).contains(&p) {
+            return Err(invalid(op, format!("p must lie in [0, 1], got {p}")));
+        }
+        Ok(n.floor())
+    }
+
     /// The smallest `k ∈ 0..=n` with `P(X ≤ k) ≥ q`.  `scipy.stats.binom.ppf(q, n, p)`.
+    /// `n` must not exceed `2⁵³` (an [`InvalidArgument`](SymplexError::InvalidArgument)
+    /// beyond; scipy returns `NaN`).
     ///
     /// ```
     /// use symplex::stats::numdist::binom;
@@ -1738,24 +1953,37 @@ pub mod binom {
     pub fn ppf(q: f64, n: f64, p: f64) -> Result<f64, SymplexError> {
         const OP: &str = "numdist::binom::ppf";
         check_level(OP, "q", q)?;
-        if !(n.is_finite() && n >= 0.0) {
-            return Err(invalid(
-                OP,
-                format!("n must be a non-negative count, got {n}"),
-            ));
-        }
-        if !(0.0..=1.0).contains(&p) {
-            return Err(invalid(OP, format!("p must lie in [0, 1], got {p}")));
-        }
-        let n = n.floor();
+        let n = check_params(OP, n, p)?;
         let k0 = n * p + norm::ppf(q)? * (n * p * (1.0 - p)).sqrt();
         discrete_ppf(OP, |k| cdf(k, n, p), q, k0, 0.0, n)
+    }
+
+    /// The smallest `k ∈ 0..=n` with `P(X > k) ≤ q`.  `scipy.stats.binom.isf(q, n, p)`;
+    /// a small `q` is never rounded through `1 − q`.
+    ///
+    /// ```
+    /// use symplex::stats::numdist::binom;
+    ///
+    /// // scipy: stats.binom.isf([0.3, 0.9], 9, 3/7) = (5, 2)
+    /// assert_eq!(binom::isf(0.3, 9.0, 3.0 / 7.0)?, 5.0);
+    /// assert_eq!(binom::isf(0.9, 9.0, 3.0 / 7.0)?, 2.0);
+    /// # Ok::<(), symplex::prelude::SymplexError>(())
+    /// ```
+    pub fn isf(q: f64, n: f64, p: f64) -> Result<f64, SymplexError> {
+        const OP: &str = "numdist::binom::isf";
+        check_level(OP, "q", q)?;
+        let n = check_params(OP, n, p)?;
+        let k0 = n * p + norm::isf(q)? * (n * p * (1.0 - p)).sqrt();
+        discrete_isf(OP, |k| sf(k, n, p), q, k0, 0.0, n)
     }
 }
 
 /// The Poisson distribution with rate `λ > 0`.
 pub mod poisson {
-    use super::{Tails, check_level, check_positive, discrete_ppf, gammainc_tails, norm};
+    use super::{
+        Tails, check_lattice_param, check_level, check_positive, discrete_isf, discrete_ppf,
+        gammainc_tails, norm,
+    };
     use crate::base::errors::SymplexError;
 
     fn tails(k: f64, rate: f64) -> Tails {
@@ -1765,6 +1993,9 @@ pub mod poisson {
         let kf = k.floor();
         if kf < 0.0 {
             return Tails::ZERO;
+        }
+        if kf == f64::INFINITY {
+            return Tails::ONE;
         }
         // P(X ≤ k) = Q(k + 1, λ)
         gammainc_tails(kf + 1.0, rate).flipped()
@@ -1781,6 +2012,8 @@ pub mod poisson {
     }
 
     /// The smallest `k ≥ 0` with `P(X ≤ k) ≥ q`.  `scipy.stats.poisson.ppf(q, mu)`.
+    /// The rate must not exceed `2⁵³` (an [`InvalidArgument`](SymplexError::InvalidArgument)
+    /// beyond; scipy returns `NaN`).
     ///
     /// ```
     /// use symplex::stats::numdist::poisson;
@@ -1794,8 +2027,29 @@ pub mod poisson {
         const OP: &str = "numdist::poisson::ppf";
         check_level(OP, "q", q)?;
         check_positive(OP, "the rate", rate)?;
+        check_lattice_param(OP, "the rate", rate)?;
         let k0 = rate + norm::ppf(q)? * rate.sqrt();
         discrete_ppf(OP, |k| cdf(k, rate), q, k0, 0.0, f64::INFINITY)
+    }
+
+    /// The smallest `k ≥ 0` with `P(X > k) ≤ q`.  `scipy.stats.poisson.isf(q, mu)`;
+    /// a small `q` is never rounded through `1 − q`.
+    ///
+    /// ```
+    /// use symplex::stats::numdist::poisson;
+    ///
+    /// // scipy: stats.poisson.isf([0.1, 0.95], 7/3) = (4, 0)
+    /// assert_eq!(poisson::isf(0.1, 7.0 / 3.0)?, 4.0);
+    /// assert_eq!(poisson::isf(0.95, 7.0 / 3.0)?, 0.0);
+    /// # Ok::<(), symplex::prelude::SymplexError>(())
+    /// ```
+    pub fn isf(q: f64, rate: f64) -> Result<f64, SymplexError> {
+        const OP: &str = "numdist::poisson::isf";
+        check_level(OP, "q", q)?;
+        check_positive(OP, "the rate", rate)?;
+        check_lattice_param(OP, "the rate", rate)?;
+        let k0 = rate + norm::isf(q)? * rate.sqrt();
+        discrete_isf(OP, |k| sf(k, rate), q, k0, 0.0, f64::INFINITY)
     }
 }
 

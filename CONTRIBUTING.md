@@ -30,7 +30,7 @@ git clone https://github.com/cgorski/symplex
 cd symplex
 cargo build
 
-# Run the test suite (~11,000 tests; a few minutes in debug)
+# Run the test suite (~12,600 tests; a few minutes in debug)
 cargo test
 # ... or, recommended: one process per test with per-test timeouts
 # (`.config/nextest.toml`; `cargo install cargo-nextest`)
@@ -94,21 +94,29 @@ numbers.
 
 ## Architecture
 
-The source code (~174K lines at 0.3.0) is organized into 10 directories under
+The source code (~244K lines at 0.22.0) is organized into 10 directories under
 `src/`. Each directory is a layer in the dependency hierarchy — modules may
 depend on layers below them but should not reach upward.
 
 ```
 src/
-├── base/         Expression nodes (node.rs, 92 variants), arena (hash-consing), tree
-│                 traversal (walk.rs), canonicalization, assumptions, sort keys, compaction,
-│                 numeric.rs (exact f64 ↔ rational, the exact rational `Q`), bigcomplex.rs (BigFloat
-│                 complex pairs), bernoulli.rs, complex.rs, errors.rs
-├── poly/         Dense/sparse/generic polynomials, factor_zassenhaus.rs (Berlekamp–Zassenhaus
-│                 over ℤ + Kronecker multivariate), Gröbner bases, polysys.rs, Sturm sequences,
-│                 root finding (roots.rs), algebraic number fields ℚ(α) (algebraic.rs), ratfn.rs,
-│                 multipoly.rs (sparse multivariate; heuristic gcd/lcm, content, denominators),
-│                 polybridge.rs (Ex ↔ polynomial, incl. symbolic-coefficient term collection)
+├── base/         Expression nodes (node.rs, 92 variants), arena (hash-consing), symbol.rs (name
+│                 interning), tree traversal (walk.rs), canonicalization, assumptions, sort keys,
+│                 compaction, numeric.rs (exact f64 ↔ rational, the exact rational `Q`),
+│                 bigcomplex.rs (BigFloat complex pairs), bernoulli.rs, complex.rs (Complex64
+│                 helpers), errors.rs, config.rs (EvalConfig, EXPRESSION_BUDGET), and the shared
+│                 value types of 0.15–0.21: interval.rs (Interval/Bounds), extended.rs (Extended),
+│                 rng.rs (SplitMix64, XorShift64Star), budget.rs (Budget), combinatorics.rs,
+│                 graph.rs (Tarjan SCC), libfn.rs (the LibFn registry of 50 special functions),
+│                 dense_f64.rs (flat f64 Cholesky/SPD/Jacobi kernels)
+├── poly/         traits.rs (Ring/Field/EuclideanDomain hierarchy, the `poly_gcd` hook),
+│                 dense.rs/generic.rs (GenPoly<C>), zpoly.rs (ℤ-scaled forms, gcd_via_z),
+│                 modpoly.rs (𝔽ₚ[x]: Fp64, PolyIn<R>), interp.rs (Newton divided differences),
+│                 factor_zassenhaus.rs (Berlekamp–Zassenhaus over ℤ + Kronecker multivariate),
+│                 Gröbner bases, polysys.rs, Sturm sequences, root finding (roots.rs), algebraic
+│                 number fields ℚ(α) (algebraic.rs), ratfn.rs, multipoly.rs (sparse multivariate;
+│                 heuristic gcd/lcm, content, denominators), polybridge.rs (Ex ↔ polynomial,
+│                 incl. symbolic-coefficient term collection)
 ├── transforms/   diff, integrate (+ heurisch, trig_integ, apart), eval, evalf, expand, solve,
 │                 inequalities, pattern.rs (AC matcher), subs,
 │                 sets.rs (set-algebra normal form), logic.rs (boolean simplifier, DPLL,
@@ -122,15 +130,20 @@ src/
 │                 limit.rs + gruntz.rs, residue.rs, laplace.rs, fourier.rs (series),
 │                 fourier_transform.rs, mellin.rs, z_transform.rs, ode.rs, risch/ (tower,
 │                 hermite, rde, rothstein_trager, log_to_real)
-├── output/       display, pretty, latex, parse, tree (JSON), cse, lambdify (stack-VM compile),
-│                 codegen.rs (Rust) + codegen/{codegen_c.rs (C99), numeric_rt.rs (shared f64
+├── output/       display, pretty, latex, mathml, parse, tree (JSON), common.rs (shared print
+│                 ordering), cse, lambdify (stack-VM compile), lean.rs (Mathlib rendering) +
+│                 lean_proof.rs (structured tactic proofs), codegen.rs (Rust) +
+│                 codegen/{codegen_c.rs (C99), codegen_py.rs (Python), numeric_rt.rs (shared f64
 │                 special-function runtime), rt_embed.rs (embedding `mod symplex_rt`)}
 ├── plotting/     Adaptive sampling, textplot, SVG, TikZ, data export, RK4
 ├── domains/      matrix.rs + matrix_decomp.rs (QR, Cholesky, LDL, Gram–Schmidt, structure
 │                 tests, norms, hessian, wronskian, 0.3 selection/conversion helpers),
-│                 exact_matrix.rs (0.3.5: QMatrix/ZMatrix over Ratio<BigInt>/BigInt, the
-│                 fraction-free Gauss–Jordan kernel and Bareiss determinant, HNF/SNF cores;
-│                 Matrix routes all-rational input here), linalg.rs (symbolic rref/linsolve
+│                 decompositions.rs (named results of factorisations and normal forms),
+│                 exact_kernel.rs (0.20: the Cell trait over i64/i128/W256/BigInt, resumable
+│                 fraction-free Elimination, Bareiss, Berkowitz, FractionFreeLu — shared by
+│                 exact_matrix, polytope and the linprog tableau), exact_matrix.rs (QMatrix/ZMatrix
+│                 over Ratio<BigInt>/BigInt, HNF/SNF cores; Matrix routes all-rational input
+│                 here and caches the tier), linalg.rs (symbolic rref/linsolve
 │                 with the numeric fast path), linprog.rs (exact two-phase simplex on an
 │                 integer-pivoting tableau, duals, Farkas certificates), normalforms.rs
 │                 (Matrix wrappers over ZMatrix: Hermite/Smith normal forms, integer
@@ -140,17 +153,28 @@ src/
 │                 Lean export in the mul_nonneg / linarith-only shape) + certificates/sos.rs
 │                 (0.6: sums of squares — dense f64 primal–dual SDP, exact rounding/projection,
 │                 rational LDLᵀ, LLL-based facial reduction; Lean via ring + positivity),
-│                 polytope.rs (0.4: exact
+│                 certificates/outcome.rs (the shared Outcome<C, U>), polytope.rs (0.4: exact
 │                 polyhedra from half-spaces: vertices via QMatrix, LP-based emptiness and
-│                 bounds, volume ≤ 3-D), optimize.rs (Brent/bisection/Newton,
+│                 bounds, volume in any dimension), optimize.rs (Brent/bisection/Newton,
 │                 Nelder–Mead, golden section, differential evolution, least-squares fits),
 │                 control, dynamics, robotics, quaternion, vector (coordinate systems), ntheory
 │                 (rho/ECM, BPSW, sqrt_mod, dlog, continued fractions, gcd_many/lcm_many),
-│                 diophantine, combinatorics, separatevars
+│                 diophantine, combinatorics, discrete.rs (convolutions, NTT, Walsh–Hadamard,
+│                 Möbius), separatevars,
+│                 stats/ (0.11–: random variables — family.rs (the Family trait and
+│                 Distribution), continuous.rs, discrete.rs, support.rs, rv.rs, events.rs, joint.rs,
+│                 wrappers.rs (Truncated/Affine/Transformed/Mixture), order.rs, sample.rs — and
+│                 the data layer with one placement rule per module (stats/mod.rs): data,
+│                 estimation, hypothesis, anova, agreement, reliability, aggregation, regression,
+│                 survival, cox, markov, information, sequential, multivariate, plus common.rs
+│                 (shared level checks and exact tails) and numdist.rs (f64 reference
+│                 distributions: TOMS 708 incomplete beta, Temme incomplete gamma))
 ├── units/        Compile-time dimensional analysis, quantity types, conversions, constants
 └── api/          context.rs, expr.rs (Expr<S>), expr_funcs.rs (most methods), expr_ops.rs
                   (operators, Scalar/ToEx, Context ingestion), eq.rs (Equation), macros.rs,
-                  expr_view.rs, and the 0.2 extension files:
+                  expr_view.rs, expr_algebraic_ext.rs (0.9: minimal polynomials, multivariate
+                  gcd, Gröbner, factoring mod p), expr_calculus_util_ext.rs (0.9: singularities,
+                  extrema, monotonicity, periodicity), and the 0.2 extension files:
                   expr_complex.rs (re/im/conjugate/arg + Si/Ci/Ei/li/ζ/polygamma),
                   expr_integrate_ext.rs (definite/numeric integration, residue_at_infinity),
                   expr_series_ext.rs (summation/products/convergence/series at ∞),
@@ -206,7 +230,7 @@ extending the allowlist.
 
 | Type | Location | Purpose |
 |------|----------|---------|
-| `ExprNode` | `src/base/node.rs` | The expression tree — 91 variants (Add, Mul, Sin, Integral, Re/Im/Conjugate/Arg, Zeta, Polygamma, RootOf, RootSum, Interval, etc.) |
+| `ExprNode` | `src/base/node.rs` | The expression tree — 92 variants (Add, Mul, Sin, Integral, Re/Im/Conjugate/Arg, Zeta, Polygamma, RootOf, RootSum, Interval, etc.) |
 | `Arena` | `src/base/arena.rs` | Hash-consed expression storage. All nodes live here. |
 | `ExprId` | `src/base/node.rs` | A `u32` index into the arena. This is how expressions are referenced internally. |
 | `Context` | `src/api/context.rs` | User-facing entry point. Owns an arena + assumption cache. |
@@ -294,8 +318,9 @@ Two accessor methods exist:
 | `checked_id<T>(&self, other: &Expr<T>) -> ExprId` | Get ANOTHER expression's ID after validating same context | Any `pub(crate)` code |
 
 `checked_id` panics with a clear message if the two expressions belong to
-different contexts. This is the **only** panic in the symbolic layer (by design —
-it's a logic error, like indexing a Vec out of bounds).
+different contexts — by design: it is a logic error, like indexing a Vec out
+of bounds.  (The complete list of remaining panic paths is the two
+allowlists in `tests/unit/test_no_panics.rs`; see the next section.)
 
 **When adding a new public method** that takes multiple `Ex` arguments, you
 MUST use `self.checked_id(other)` for every foreign expression's ID. The
@@ -303,20 +328,31 @@ compiler enforces this — you can't access `.id` directly.
 
 ### No Panics Rule
 
-The symbolic layer has **zero panics** except for two documented logic
-errors: the cross-context guard, and `std::iter::Sum`/`Product` for `Ex` on an
+Library code never calls `.unwrap()`, `.expect()`, `unreachable!()`,
+`todo!()` or `panic!()`.  The exceptions are two documented logic errors —
+the cross-context guard, and `std::iter::Sum`/`Product` for `Ex` on an
 *empty* iterator (there is no context to build `0`/`1` in — users are steered
-to `Context::sum`/`product` or `Option<Ex>`). Every other operation that can
-fail returns `Result`, `Option`, or an unevaluated form. Never use `.unwrap()`,
-`.expect()`, `unreachable!()` or `panic!()` in library code (tests are fine);
-`debug_assert!` is acceptable for internal invariants.
+to `Context::sum`/`product` or `Option<Ex>`) — plus the arena's and symbol
+table's `u32` index conversions and the compile-time `const_assert_dim!`
+macro.  Every other operation that can fail returns `Result`, `Option`, or an
+unevaluated form.  Tests are free to unwrap; `debug_assert!` is acceptable for
+internal invariants.
 
-**The rule is enforced** by `tests/unit/test_no_panics.rs`, a ratchet over
-`src/` that fails when a file gains a panicking construct beyond its
+A second, shrinking category is **runtime `assert!`/`assert_eq!`/`assert_ne!`
+on caller-supplied shapes and preconditions** — 82 sites in 19 files at 0.22,
+e.g. `Matrix::zeros(0, n)`, `Context::symbol("")`, contradictory assumptions
+on one symbol, a zero denominator to `RationalFn`, a non-prime modulus to
+`legendre_symbol`, exponent overflow in `MultiPoly::mul`/`pow` (whose `try_`
+twins return `None`).  Each is documented under `# Panics` on its item.  They
+predate point 4 below and are debt, not precedent: new code returns a
+`Result` instead, and converting an existing one means removing it from the
+allowlist.
+
+**Both are enforced** by `tests/unit/test_no_panics.rs`, a ratchet over
+`src/` with one allowlist per category (`ALLOWLIST`, `ASSERT_ALLOWLIST`, each
+entry with its reason).  It fails when a file gains a site beyond its
 allowlisted count — and when an allowlisted file *loses* one without the
-allowlist being tightened.  The allowlist is the two logic errors above,
-the arena's `u32` index conversions and the compile-time
-`const_assert_dim!` macro.  The library region of a file ends at its
+allowlist being tightened.  The library region of a file ends at its
 `#[cfg(test)] mod` test module, not at a `#[cfg(test)]` attribute on a
 lone helper `fn` (0.11.1 found twelve panic sites hidden behind those).
 
@@ -359,7 +395,8 @@ conflict; when they do, this is the order and the reasoning:
    `try_`/`checked_` sibling returning `Option` exists and the panic is
    documented under `# Panics`.  Anything that is not an index — a shape, a
    degree, a generator list, a parameter that fails to parse — is a `Result`.
-   `assert!` on a caller-supplied *shape* is a bug, not a precondition.
+   `assert!` on a caller-supplied *shape* is a bug, not a precondition (the
+   existing ones are counted by `ASSERT_ALLOWLIST` and may only shrink).
 
 5. **Internal invariants: `debug_assert!`, never `assert!`/`unreachable!`.**
    Release builds must degrade gracefully (return `ComputationFailed` with
@@ -598,23 +635,28 @@ Follow the same steps as adding a new function (above), plus:
 
 ### Test Organization
 
-Tests are in `tests/` (integration tests, ~8,450 `#[test]` functions in ~275
-source files) and inline `#[cfg(test)]` modules (~2,580 unit tests). Total at
-0.3.0: **~11,000** tests plus ~610 doctests.
+Tests are in `tests/` (integration tests, ~10,000 `#[test]` functions in ~360
+source files) and inline `#[cfg(test)]` modules (~2,800 unit tests). Total at
+0.22.0: **~12,800** tests plus ~1,030 API doctests and ~230 README/book
+doctests (`src/doctests.rs` includes `README.md` and every book chapter, so
+the prose examples compile and run under `cargo test --doc`).
 
-The integration-test sources are grouped into **nine test binaries** (linking
+The integration-test sources are grouped into **21 test binaries** (linking
 277 separate debug binaries took ~6.5 min and ~13 GB of `target/`). Each
 former top-level file is a module of its group, so a test is addressed as
-`<module>::<test>` inside `--test <group>`:
+`<module>::<test>` inside `--test <group>`.  A new `vNN` group is added per
+minor release (`v21` holds the 0.22 tests); `tests/README.md` lists every
+group's modules:
 
 | Binary (`--test …`) | Sources | What they test |
 |---------------------|---------|----------------|
 | `v04` | `tests/v04/v04_<area>.rs` | One suite per 0.4–0.6 feature: `polyhedron` (parametric polyhedron certificates; emitted Lean pinned to the Mathlib-compiled `tests/fixtures/polyhedron_certificates.lean`), `polytope`, `sos` (pinned to `tests/fixtures/sos_certificates.lean`) |
-| `v03` | `tests/v03/v03_<area>.rs` (7 modules, ~400 tests) | One suite per 0.3 feature: `poly_view`, `poly_symbolic_coeffs`, `ratsimp`, `linprog` (full KKT check of every optimum, Farkas vector verified), `normalforms` (defining invariants, not pinned answers), `matrix_ergonomics`, `optimize` |
+| `v09` … `v21` | `tests/vNN/vNN_<area>.rs` (3–9 modules each) | Feature and regression suites of 0.9 → 0.22, one group per minor release (stats families, data statistics, ANOVA, Cox, numdist, the exact kernel, …) |
+| `v03` | `tests/v03/v03_<area>.rs` (11 modules, ~480 tests) | One suite per 0.3 feature: `poly_view`, `poly_symbolic_coeffs`, `ratsimp`, `linprog` (full KKT check of every optimum, Farkas vector verified), `normalforms` (defining invariants, not pinned answers), `matrix_ergonomics`, `optimize`, `certificates`, `assumptions_poly`, `exact_matrix`, `user_notes` |
 | `v03_oracle` | `tests/v03_oracle/v03_oracle_*.rs` | SymPy oracle for the 0.3 API (`tests/fixtures/v03_cross_validation.json`) |
 | `v02` | `tests/v02/v02_<area>_<topic>.rs` (62 modules, ~1,050 tests) | One suite per 0.2 feature area: `backends_{c,codegen,compile,cse}`, `basefix_*`, `ergonomics_*`, `integration_{battery,definite,residue}`, `matrices_*`, `nodes_*`, `ntheory_*`, `numfix_*`, `sets_*`, `simplify_*`, `solvefix_*`, `solving_*`, `summation_*`, `transforms_*` |
 | `v02_oracle` | `tests/v02_oracle/v02_oracle_*.rs` | SymPy oracle for the 0.2 API (`tests/fixtures/v02_cross_validation.json`); see `tests/README.md` |
-| `unit` | `tests/unit/test_*.rs` (156 modules, ~3,950 tests) | Unit-style suites per module / feature, e.g. `test_known_answers` (256 exact symbolic results against textbook answers), `test_sympy_cross_validation` (263 fixtures against SymPy 1.14, `tests/fixtures/sympy_cross_validation.json`), `test_correctness_audit` (108 fixtures: FTC verification, definite integrals, `tests/fixtures/new_capabilities.json`), `test_cross_context` (cross-context safety guards), `test_ode_comprehensive` (ODE solver classes), `test_rootof` (RootOf solver + numerical evaluation), `test_hard_math` (edge cases and negative tests) |
+| `unit` | `tests/unit/test_*.rs` (159 modules, ~3,980 tests) | Unit-style suites per module / feature, e.g. `test_known_answers` (256 exact symbolic results against textbook answers), `test_sympy_cross_validation` (263 fixtures against SymPy 1.14, `tests/fixtures/sympy_cross_validation.json`), `test_correctness_audit` (108 fixtures: FTC verification, definite integrals, `tests/fixtures/new_capabilities.json`), `test_cross_context` (cross-context safety guards), `test_ode_comprehensive` (ODE solver classes), `test_rootof` (RootOf solver + numerical evaluation), `test_hard_math` (edge cases and negative tests) |
 | `legacy` | `tests/legacy/{round*_*,math*_bugs,bugfinder*,*_validation,…}.rs` (23 modules) | Regression suites from bug-hunting rounds |
 | `proptests` | `tests/proptests/{proptest_*,test_proptest_new,test_quality_props,test_units_proptest}.rs` (~180 properties) | Algebraic axioms, idempotence, value preservation, round-trips. `<stem>.proptest-regressions` files live next to the sources |
 | `perf` | `tests/perf/{simplify_perf_test,perf_analysis}.rs` | `#[ignore]`d benchmarks (`--release -- --ignored --nocapture`) |
@@ -715,7 +757,7 @@ TRYBUILD=overwrite cargo +1.95.0 test --test ui_tests
   --doc -- path::to::item`) with a 60 s cap and `--test-threads=1` so the
   harness names the test in flight.
 - **The doctest stage is ~1 s of test time, or it is broken.**  Rustdoc
-  compiles all ~800 doctests into one merged binary; if *one* doc example
+  compiles all ~1,300 doctests (API, README and book) into one merged binary; if *one* doc example
   fails to compile there, it silently falls back to compiling every doctest
   standalone (~3 s each, twenty minutes in all).  A single trivial doctest
   reporting `finished in 3.6s` instead of `0.00s` is the signature; find

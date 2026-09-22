@@ -6,12 +6,25 @@ symplex 0.5.0 is a small minor release driven by the first hours of use of the 0
 
 A decision tree certifies dozens of facets per leaf against the *same* hypotheses. `PolyhedronProver::new(&hyps, param, &opts)?` parses them and builds every LP stage's product basis once; `.prove(&goal)` and `.prove_empty()` then run only the goal-dependent part (λ columns, monomial rows, the LP). The one-shot functions are wrappers over it.
 
-```rust,ignore
-let prover = PolyhedronProver::new(&hyps, Some((&j, &j0)), &PolyhedronOpts::default())?;
+```rust
+# use symplex::prelude::*;
+# use symplex::certificates::{ParamBound, PolyhedronOpts, PolyhedronOutcome, PolyhedronProver};
+# let ctx = Context::new();
+# let (j, r, t) = (ctx.symbol("j"), ctx.symbol("r"), ctx.symbol("t"));
+# let hyps = [&t - &r, &t + &j * &r - &j - 1];
+# let param = ParamBound { var: j.clone(), lower: ctx.int(0) };
+# let leaf_facets = [&t - 1, &t - &r];
+let prover = PolyhedronProver::new(&hyps, Some(&param), &PolyhedronOpts::default())?;
 for facet in &leaf_facets {
-    match prover.prove(facet)? { … }
+    match prover.prove(facet)? {
+        PolyhedronOutcome::Proved(c) => println!("{c}"),
+        PolyhedronOutcome::Refuted { point, value, .. } => println!("false: {value} at {point:?}"),
+        PolyhedronOutcome::Unknown(u) => println!("no certificate: {u}"),
+    }
 }
 let empty = prover.prove_empty()?;
+# assert!(matches!(empty, PolyhedronOutcome::Unknown(_) | PolyhedronOutcome::Refuted { .. }));
+# Ok::<(), SymplexError>(())
 ```
 
 ## Lean rendering hooks

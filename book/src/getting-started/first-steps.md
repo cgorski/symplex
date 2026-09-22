@@ -19,6 +19,8 @@ You can create multiple contexts if you need isolated environments (e.g., separa
 Symbols are named unknowns. They represent the variables in your expressions:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
 let x = ctx.symbol("x");
 let y = ctx.symbol("y");
 ```
@@ -26,6 +28,8 @@ let y = ctx.symbol("y");
 There is also a convenience macro for declaring multiple symbols at once:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
 symplex::syms!(ctx; x, y, z);
 ```
 
@@ -38,6 +42,9 @@ Symbols are symbolic — they don't have a value until you substitute one. Calli
 Expressions support the standard Rust arithmetic operators. Because `Ex` is not `Copy` (it is `Clone` and `Send + Sync`), you typically work with references:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
 let f = &x * &x + &x * 2 + 1;   // x² + 2x + 1
 let g = &x.powi(3) - &y;         // x³ - y
 ```
@@ -49,6 +56,9 @@ Integer literals (`1`, `2`, etc.) are automatically converted to exact rational 
 For more complex expressions, the `expr!` macro provides mathematical notation:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let x = ctx.symbol("x");
 let f = expr!(ctx, x^2 + 2*x + 1);
 let g = expr!(ctx, sin(x)^2 + cos(x)^2);
 let h = expr!(ctx, x^3 - 3*x^2 + 2*x);
@@ -61,6 +71,8 @@ The macro recognizes standard mathematical functions (`sin`, `cos`, `tan`, `exp`
 Constants are exact. The rational number 1/3 is stored as the ratio of two arbitrary-precision integers, not as `0.33333...`:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
 let half = ctx.rational(1, 2);     // exactly 1/2
 let third = ctx.rational(1, 3);    // exactly 1/3
 let big = ctx.int(1_000_000_007);  // arbitrary-precision integer
@@ -71,6 +83,9 @@ let big = ctx.int(1_000_000_007);  // arbitrary-precision integer
 Standard mathematical functions are methods on `Ex`:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
 let a = x.sin();          // sin(x)
 let b = x.exp();          // exp(x)
 let c = x.ln();           // ln(x)
@@ -86,6 +101,9 @@ let h = x.gamma();        // Γ(x)
 Expressions implement `Display` for plain-text output and have a `to_latex()` method for LaTeX:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let x = ctx.symbol("x");
 let f = expr!(ctx, x^2 + 2*x + 1);
 println!("{f}");                    // x^2 + 2*x + 1
 println!("{}", f.to_latex());       // x^{2} + 2x + 1
@@ -98,6 +116,8 @@ println!("{}", f.to_latex());       // x^{2} + 2x + 1
 `.eval()` applies exact simplification rules — reducing `sin(0)` to `0`, `exp(ln(x))` to `x`, computing `5!` to `120`, and so on — without any floating-point approximation:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
 let a = ctx.int(5).factorial().eval();
 println!("{a}");   // 120
 
@@ -110,6 +130,8 @@ println!("{b}");   // 0
 `.eval_f64()` converts a fully determined expression (no free symbols) to an `f64`. It returns `Result` because the conversion can fail:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
 let val = expr!(ctx, sin(1) + cos(1)).eval_f64().unwrap();
 println!("{val:.6}");   // 1.381773
 ```
@@ -117,6 +139,9 @@ println!("{val:.6}");   // 1.381773
 If free symbols remain, you get an error:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let x = ctx.symbol("x");
 let result = x.sin().eval_f64();
 assert!(result.is_err());   // "expression contains free symbol 'x'"
 ```
@@ -126,6 +151,9 @@ assert!(result.is_err());   // "expression contains free symbol 'x'"
 Use `.subs()` to replace a symbol with a value or another expression:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
 let f = expr!(ctx, x^2 + 1);
 
 // Substitute x = 3 (exact integer)
@@ -140,6 +168,10 @@ println!("{shifted}"); // (y + 1)^2 + 1
 For quick numerical substitution there is a convenience method:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let x = ctx.symbol("x");
+# let f = expr!(ctx, x^2 + 1);
 let val = f.eval_f64_with(&[(&x, 3)]).unwrap();
 println!("{val}");   // 10.0
 ```
@@ -149,6 +181,9 @@ println!("{val}");   // 10.0
 `.diff(&var)` computes the symbolic derivative with respect to a variable. It handles the chain rule, product rule, quotient rule, and all elementary functions:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let x = ctx.symbol("x");
 let f = expr!(ctx, x^3 - 3*x^2 + 2*x);
 let df = f.diff(&x);
 println!("{df}");   // 3*x^2 - 6*x + 2
@@ -161,6 +196,9 @@ println!("{d2f}");  // 6*x - 6
 Higher-order derivatives have a convenience method:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let x = ctx.symbol("x");
 let d4 = expr!(ctx, x^6).diff_n(&x, 4);
 println!("{d4}");   // 360*x^2
 ```
@@ -168,6 +206,9 @@ println!("{d4}");   // 360*x^2
 Partial derivatives work the same way — just specify which variable:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
 let g = expr!(ctx, x^2 * y + y^3);
 println!("∂g/∂x = {}", g.diff(&x));   // 2*x*y
 println!("∂g/∂y = {}", g.diff(&y));   // x^2 + 3*y^2
@@ -178,6 +219,9 @@ println!("∂g/∂y = {}", g.diff(&y));   // x^2 + 3*y^2
 `.integrate(&var)` computes the indefinite integral. The library uses multiple strategies (polynomial, u-substitution, by-parts, partial fractions, trigonometric, Risch algorithm, heuristic integration):
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let x = ctx.symbol("x");
 let f = expr!(ctx, x^2);
 let anti = f.integrate(&x);
 println!("{anti}");   // 1/3*x^3
@@ -186,6 +230,9 @@ println!("{anti}");   // 1/3*x^3
 Definite integrals:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let x = ctx.symbol("x");
 let zero = ctx.int(0);
 let one = ctx.int(1);
 let area = expr!(ctx, x^2).integrate_definite(&x, &zero, &one);
@@ -197,14 +244,21 @@ Definite integration is *not* a naive `F(b) − F(a)`: it looks for singularitie
 When integration cannot find a closed form, it returns an unevaluated `Integral` node rather than failing silently:
 
 ```rust
-let hard = expr!(ctx, exp(x^2));
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let x = ctx.symbol("x");
+let hard = expr!(ctx, x^x);
 let result = hard.integrate(&x);
-println!("{result}");   // Integral(exp(x^2), x)
+println!("{result}");   // Integral(x^x, x)
 ```
 
 You can check whether a result contains unevaluated forms:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let x = ctx.symbol("x");
+# let result = expr!(ctx, x^x).integrate(&x);
 if result.has_unevaluated() {
     println!("no closed form found");
 }
@@ -213,6 +267,10 @@ if result.has_unevaluated() {
 Or use the `try_integrate` variant, which returns `Err` if the result is not fully evaluated:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let x = ctx.symbol("x");
+# let hard = expr!(ctx, x^x);
 match hard.try_integrate(&x) {
     Ok(anti) => println!("closed form: {anti}"),
     Err(_) => println!("no closed form"),
@@ -224,6 +282,9 @@ match hard.try_integrate(&x) {
 `.simplify()` tries a dozen strategies (evaluation, expansion, factoring, trigonometric, logarithmic, power and radical rules, assumption-aware refinement, …), keeps the result with the fewest operations, and iterates to a fixpoint:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let x = ctx.symbol("x");
 let expr = expr!(ctx, sin(x)^2 + cos(x)^2);
 println!("{}", expr.simplify());   // 1
 

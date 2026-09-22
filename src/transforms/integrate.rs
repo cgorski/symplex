@@ -37,6 +37,7 @@ use num_traits::Zero;
 use crate::base::arena::{Arena, FN_CHI, FN_ERFI, FN_SHI};
 use crate::base::node::{ExprId, ExprNode, SymbolId};
 use crate::base::numeric::Q;
+use crate::poly::Poly;
 
 /// Integrate `expr` with respect to `var`.
 ///
@@ -1026,7 +1027,15 @@ fn try_weierstrass_substitution(
     // Integrate w.r.t. t
     let integral_t = integrate_node(arena, integrand_t, t, t_sym, depth.saturating_sub(2));
 
-    if matches!(arena.node(integral_t), ExprNode::Integral(_, _)) {
+    if crate::base::walk::has_unevaluated(arena, integral_t) {
+        return None;
+    }
+    // The integrand in `t` is a rational function; check the closed form
+    // before it is dressed up in tan(x/2) (the rational integrator's
+    // nested-radical failures show up here as e.g. `atan(3·tan(x/2))` for
+    // `∫ cos x/(sin²x + 1)`).
+    if antiderivative_is_wrong(arena, integrand_t, integral_t, t, t_sym) {
+        tracing::debug!("weierstrass: closed form in t failed verification");
         return None;
     }
 
@@ -1232,10 +1241,36 @@ fn integrate_node(
     // This is the standard CAS architecture: rational function integration
     // is a solved problem with efficient algorithms, and it should run
     // before any heuristic pattern matching.
-    if let Some(result) = crate::calculus::risch::try_risch_rational(arena, expr, var)
-        && !matches!(arena.node(result), ExprNode::Integral(_, _))
-    {
+    //
+    // The result is verified numerically before it is trusted: when the
+    // Rothstein–Trager resultant has nested-radical roots the `log_to_real`
+    // conversion can emit a closed form with opaque `re(…)`/`im(…)`
+    // constants that is simply wrong (0.21 audit: `∫ 1/((x²−4)²+1)`).  A
+    // rejected candidate goes to the biquadratic route below; if that does
+    // not apply either, the integral is left unevaluated: every remaining
+    // strategy for a rational function is the `apart` root-based fallback,
+    // which recovers its coefficients from the same nested-radical roots
+    // (and recurses deeply on them).  A wrong closed form is never returned
+    // silently.
+    let risch_rejected = match crate::calculus::risch::try_risch_rational(arena, expr, var) {
+        Some(result) if !matches!(arena.node(result), ExprNode::Integral(_, _)) => {
+            if !antiderivative_is_wrong(arena, expr, result, var, var_sym) {
+                return result;
+            }
+            tracing::debug!("integrate: rejecting unverified rational-function closed form");
+            true
+        }
+        _ => false,
+    };
+
+    // ── N(x)/(x⁴ + p·x² + q): explicit real factorisation ──────────────
+    // Reached only when the general rational integrator could not produce
+    // a verified answer, so the output of the cases it handles is unchanged.
+    if let Some(result) = try_biquadratic_rational(arena, expr, var, var_sym) {
         return result;
+    }
+    if risch_rejected {
+        return arena.intern(ExprNode::Integral(expr, var));
     }
 
     let node = arena.node(expr).clone();
@@ -1278,33 +1313,9 @@ fn integrate_node(
 
         // ── Mul: factor out constants ──────────────────────────────
         ExprNode::Mul(ref children) => {
-            // Separate constant factors (independent of var) from the rest.
-            let mut constants: SmallVec<[ExprId; 4]> = SmallVec::new();
-            let mut dependent: SmallVec<[ExprId; 4]> = SmallVec::new();
-
-            for &child in children {
-                if contains_var(arena, child, var_sym) {
-                    dependent.push(child);
-                } else {
-                    constants.push(child);
-                }
-            }
-
-            // Normalize dependent factors: flatten Pow(Pow(a, m), n) → Pow(a, m·n)
-            // for rational exponents.  The canon layer only flattens when both
-            // exponents are integers (branch-cut safety), but for integration we
-            // need e.g. Pow(Pow(x²+1, 1/2), -1) → Pow(x²+1, -1/2).
-            for d in dependent.iter_mut() {
-                if let ExprNode::Pow(pow_base, pow_exp) = arena.node(*d).clone()
-                    && let ExprNode::Pow(inner_base, inner_exp) = arena.node(pow_base).clone()
-                    && let (Some(m), Some(n)) = (arena.as_num(inner_exp), arena.as_num(pow_exp))
-                {
-                    let combined = m.clone() * n.clone();
-                    let combined_id = arena.num_ratio(combined.clone());
-                    let flattened = arena.pow(inner_base, combined_id);
-                    *d = flattened;
-                }
-            }
+            // Separate constant factors (independent of var) from the rest,
+            // with the dependent factors' nested powers flattened.
+            let (mut constants, dependent) = partition_factors(arena, children, var_sym);
 
             if dependent.is_empty() {
                 // All constant: ∫ c dx = c * x
@@ -1538,13 +1549,17 @@ fn integrate_node(
             }
 
             // ── Try partial fraction decomposition for rational integrands ──
+            // (verified: the root-based fallback of `apart` may recover its
+            // coefficients from `f64` roots, which is not an antiderivative.)
             {
                 let (_numer, denom) = crate::poly::polybridge::as_numer_denom(arena, expr);
                 if denom != arena.one {
                     let decomposed = crate::transforms::apart::apart(arena, expr, var);
                     if decomposed != expr {
                         let result = integrate_node(arena, decomposed, var, var_sym, depth - 1);
-                        if !matches!(arena.node(result), ExprNode::Integral(_, _)) {
+                        if !matches!(arena.node(result), ExprNode::Integral(_, _))
+                            && !antiderivative_is_wrong(arena, expr, result, var, var_sym)
+                        {
                             return result;
                         }
                     }
@@ -1563,14 +1578,18 @@ fn integrate_node(
             }
 
             // ── Weierstrass substitution for rational trig functions ──
-            if let Some(result) = try_weierstrass_substitution(arena, expr, var, var_sym, depth) {
-                if constants.is_empty() {
-                    return result;
-                } else {
-                    let mut all = constants.clone();
-                    all.push(result);
-                    return arena.mul(&all);
-                }
+            // The constant factors were split off above and are re-applied
+            // here, so the substitution must see only the dependent part
+            // (passing `expr` applied them twice: `∫ 3·g` came back as `9·∫g`).
+            let dependent_product = if dependent.len() == 1 {
+                dependent[0]
+            } else {
+                arena.mul(&dependent)
+            };
+            if let Some(result) =
+                try_weierstrass_substitution(arena, dependent_product, var, var_sym, depth)
+            {
+                return wrap_with_constants(arena, result, &constants);
             }
 
             // ── Special function integration table ──────────────────
@@ -1597,20 +1616,39 @@ fn integrate_node(
             // Flatten Pow(Pow(a, m), n) → Pow(a, m·n) when both m and n
             // are rational.  The canon layer only does this for integer
             // exponents (to avoid complex branch-cut issues), but for
-            // real-valued integration it is safe and necessary so that
+            // real-valued integration it is necessary so that
             // e.g.  1/√(x²+1) = Pow(Pow(x²+1, 1/2), -1) becomes
             // Pow(x²+1, -1/2) and hits the standard-form / completing-
-            // the-square handlers.
-            if let ExprNode::Pow(inner_base, inner_exp) = arena.node(base).clone()
-                && let (Some(m), Some(n)) = (arena.as_num(inner_exp), arena.as_num(exp))
+            // the-square handlers.  When `a^m` is non-negative by
+            // construction the identity is `|a|^{m·n}` instead
+            // (`sqrt(x²) = |x|`, not `x`) — see `flatten_nested_pow`.
+            if let Some(flattened) = flatten_nested_pow(arena, expr)
+                && flattened != expr
             {
-                let m = m.clone();
-                let n = n.clone();
-                let combined = &m * &n;
-                let combined_id = arena.num_ratio(combined.clone());
-                let flattened = arena.pow(inner_base, combined_id);
-                if flattened != expr {
-                    return integrate_node(arena, flattened, var, var_sym, depth - 1);
+                return integrate_node(arena, flattened, var, var_sym, depth - 1);
+            }
+
+            // ── |g|ⁿ, integer n ≥ 2: gⁿ for even n, |g|·gⁿ⁻¹ for odd n ──
+            // (gⁿ⁻¹ ≥ 0 for odd n, so the product form is exact); the
+            // product is then the `P(x)·|g(x)|` shape of `try_abs_sign_product`.
+            if let ExprNode::Abs(g) = arena.node(base).clone()
+                && contains_var(arena, g, var_sym)
+                && let Some(n_val) = arena.as_num(exp).cloned()
+                && n_val.is_integer()
+                && n_val >= num_rational::Ratio::from_integer(2.into())
+            {
+                let n_int = n_val.to_integer();
+                let n_is_even = (&n_int % num_bigint::BigInt::from(2)).is_zero();
+                let rewritten = if n_is_even {
+                    arena.pow(g, exp)
+                } else {
+                    let n_minus_1 = arena.num_ratio(&n_val - &Q::one());
+                    let g_pow = arena.pow(g, n_minus_1);
+                    arena.mul(&[base, g_pow])
+                };
+                let result = integrate_node(arena, rewritten, var, var_sym, depth - 1);
+                if !crate::base::walk::has_unevaluated(arena, result) {
+                    return result;
                 }
             }
 
@@ -1851,14 +1889,16 @@ fn integrate_node(
                 return result;
             }
 
-            // ── Try partial fraction decomposition ────────────────────
+            // ── Try partial fraction decomposition (verified, see the Mul arm) ──
             {
                 let (_numer, denom) = crate::poly::polybridge::as_numer_denom(arena, expr);
                 if denom != arena.one {
                     let decomposed = crate::transforms::apart::apart(arena, expr, var);
                     if decomposed != expr {
                         let result = integrate_node(arena, decomposed, var, var_sym, depth - 1);
-                        if !matches!(arena.node(result), ExprNode::Integral(_, _)) {
+                        if !matches!(arena.node(result), ExprNode::Integral(_, _))
+                            && !antiderivative_is_wrong(arena, expr, result, var, var_sym)
+                        {
                             return result;
                         }
                     }
@@ -2859,6 +2899,15 @@ fn try_u_substitution(
                 }
             };
 
+            // The factor must depend on `var` only through `u`: with `u`
+            // replaced by a fresh symbol nothing of `var` may remain
+            // (otherwise `g(var)` below would silently absorb it).
+            let placeholder = arena.symbol("__usub_u");
+            let factor_in_u = arena.subs_structural(factor, u_expr, placeholder);
+            if contains_var(arena, factor_in_u, var_sym) {
+                continue;
+            }
+
             // Replace u(x) → var inside the factor to get g(var),
             // integrate g(var) w.r.t. var, then substitute var → u(x) back.
             let g_of_var = arena.subs_structural(factor, u_expr, var);
@@ -2880,9 +2929,12 @@ fn try_u_substitution(
 
 /// Collect candidate `u`-expressions from a single factor.
 ///
-/// For function nodes (`sin`, `cos`, `exp`, …) the inner argument is
-/// returned.  For `Pow(base, exp)` the base is returned (enabling
-/// e.g. `u = x² + 1` inside `(x²+1)^{-1}`).
+/// For function nodes (`sin`, `cos`, `exp`, …) the inner argument and the
+/// node itself are returned.  For `Pow(base, exp)` the base is returned
+/// (enabling e.g. `u = x² + 1` inside `(x²+1)^{-1}`), and for `Pow` and
+/// `Add` factors also the function nodes found inside them (`u = sin x`
+/// for `(sin²x + 1)^{-1}` or `sin x + 1`), so that `∫ cos x·R(sin x) dx`
+/// is a substitution rather than a Weierstrass problem.
 fn u_sub_candidates(arena: &Arena, factor: ExprId, var_sym: SymbolId) -> SmallVec<[ExprId; 4]> {
     let mut out: SmallVec<[ExprId; 4]> = SmallVec::new();
     match arena.node(factor).clone() {
@@ -2911,10 +2963,46 @@ fn u_sub_candidates(arena: &Arena, factor: ExprId, var_sym: SymbolId) -> SmallVe
         }
         ExprNode::Pow(base, _exp) if contains_var(arena, base, var_sym) => {
             out.push(base);
+            inner_function_candidates(arena, base, var_sym, &mut out);
+        }
+        ExprNode::Add(_) => {
+            inner_function_candidates(arena, factor, var_sym, &mut out);
         }
         _ => {}
     }
     out
+}
+
+/// Elementary function nodes (`sin g`, `exp g`, … with `g` depending on
+/// `var`) inside `expr`, in post-order, deduplicated, at most four in total.
+fn inner_function_candidates(
+    arena: &Arena,
+    expr: ExprId,
+    var_sym: SymbolId,
+    out: &mut SmallVec<[ExprId; 4]>,
+) {
+    for id in crate::base::walk::post_order_ids(arena, expr) {
+        if out.len() >= 4 {
+            return;
+        }
+        if id == expr || out.contains(&id) {
+            continue;
+        }
+        let is_candidate = match arena.node(id) {
+            ExprNode::Sin(inner)
+            | ExprNode::Cos(inner)
+            | ExprNode::Tan(inner)
+            | ExprNode::Exp(inner)
+            | ExprNode::Ln(inner)
+            | ExprNode::Sinh(inner)
+            | ExprNode::Cosh(inner)
+            | ExprNode::Tanh(inner) => contains_var(arena, *inner, var_sym),
+            _ => false,
+        };
+        if is_candidate {
+            out.push(id);
+        }
+    }
 }
 
 /// Build the product of all elements in `children` except index `skip`.
@@ -3715,6 +3803,13 @@ fn try_piecewise_wrap(
             {
                 continue;
             }
+            // Only parameters of the integrand can be degenerate.  A symbol
+            // that occurs in the result alone (the bound variable of a
+            // `RootSum`, a substitution symbol) would leave the integrand
+            // unchanged and re-integrate the same problem forever.
+            if !crate::base::walk::contains(arena, original_integrand, *sym_expr) {
+                continue;
+            }
 
             // Solve denom = 0 for this parameter symbol.
             let solutions = crate::transforms::solve::solve(arena, *denom, *sym_expr);
@@ -3887,6 +3982,29 @@ fn is_inv_of_var(arena: &Arena, expr: ExprId, var: ExprId) -> bool {
     false
 }
 
+/// Split the factors of a product into those free of `var` and those
+/// depending on it.  Dependent factors have their nested powers flattened
+/// (`Pow(Pow(a, m), n)` → `Pow(a, m·n)`, or `Pow(|a|, m·n)` when that is
+/// the real-valued identity, e.g. `sqrt(x²) = |x|`): the canon layer only
+/// merges integer exponents (branch-cut safety), but for integration we
+/// need e.g. `Pow(Pow(x²+1, 1/2), -1)` → `Pow(x²+1, -1/2)`.
+fn partition_factors(
+    arena: &mut Arena,
+    children: &[ExprId],
+    var_sym: SymbolId,
+) -> (SmallVec<[ExprId; 4]>, SmallVec<[ExprId; 4]>) {
+    let mut constants: SmallVec<[ExprId; 4]> = SmallVec::new();
+    let mut dependent: SmallVec<[ExprId; 4]> = SmallVec::new();
+    for &child in children {
+        if contains_var(arena, child, var_sym) {
+            dependent.push(flatten_nested_pow(arena, child).unwrap_or(child));
+        } else {
+            constants.push(child);
+        }
+    }
+    (constants, dependent)
+}
+
 /// Multiply a result by constant factors (if any).
 fn wrap_with_constants(arena: &mut Arena, result: ExprId, constants: &[ExprId]) -> ExprId {
     if constants.is_empty() {
@@ -3896,6 +4014,376 @@ fn wrap_with_constants(arena: &mut Arena, result: ExprId, constants: &[ExprId]) 
         all.push(result);
         arena.mul(&all)
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Nested powers over the reals
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Real-valued flattening of `Pow(Pow(base, m), n)` with rational `m`, `n`.
+///
+/// The canon layer only merges integer exponents; for integration we want
+/// `((x²+1)^{1/2})^{-1} → (x²+1)^{-1/2}` as well.  But `(g^m)^n = g^{m·n}`
+/// is **not** an identity on the reals when `g^m` is non-negative by
+/// construction (`m` has an even numerator) while `g^{m·n}` is not:
+/// `sqrt(x²) = |x|`, not `x`.  In that case the correct rewrite is
+/// `|g|^{m·n}`.  Returns `None` when `expr` is not such a nested power.
+fn flatten_nested_pow(arena: &mut Arena, expr: ExprId) -> Option<ExprId> {
+    let ExprNode::Pow(base, exp) = arena.node(expr).clone() else {
+        return None;
+    };
+    let ExprNode::Pow(inner_base, inner_exp) = arena.node(base).clone() else {
+        return None;
+    };
+    let (m, n) = (arena.as_num(inner_exp)?.clone(), arena.as_num(exp)?.clone());
+    let two = num_bigint::BigInt::from(2);
+    let is_even = |z: &num_bigint::BigInt| (z % &two).is_zero();
+    let combined = &m * &n;
+    // `g^m ≥ 0` for every real `g` where it is defined ⇔ the (reduced)
+    // numerator of `m` is even.  Then `(g^m)^n = |g|^{m·n}`, which equals
+    // `g^{m·n}` only when `m·n` is itself an even-numerator / odd-denominator
+    // rational (so that `g^{m·n}` is also `|g|^{m·n}`).
+    let inner_nonneg = is_even(m.numer());
+    let combined_is_abs_power = is_even(combined.numer()) && !is_even(combined.denom());
+    let combined_id = arena.num_ratio(combined);
+    if inner_nonneg && !combined_is_abs_power {
+        let abs_base = arena.abs(inner_base);
+        Some(arena.pow(abs_base, combined_id))
+    } else {
+        Some(arena.pow(inner_base, combined_id))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Numeric verification of candidate antiderivatives
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Sample points for [`antiderivative_is_wrong`]: small rationals of both
+/// signs, none of them a root of the denominators met in practice.
+const FTC_SAMPLE_POINTS: [(i64, i64); 6] = [(1, 3), (-5, 7), (13, 11), (-17, 5), (7, 5), (-2, 1)];
+
+/// Decimal digits requested from `evalf` when checking `F′ − f`: the
+/// working precision behind 30 digits is ~50 digits, which separates an
+/// exact antiderivative (`F′ − f` at roundoff, ~1e-45) from one built on
+/// pseudo-exact decimal coefficients (`nsimplify`'d roots, ~1e-13).
+const FTC_CHECK_DIGITS: u32 = 30;
+
+/// Tolerance on `|F′(x₀) − f(x₀)| / max(1, |f(x₀)|)` at [`FTC_CHECK_DIGITS`].
+const FTC_CHECK_REL_TOL: f64 = 1e-20;
+
+/// `true` when `big_f` is **definitely not** an antiderivative of `f`:
+/// `F′ − f` evaluates to a real number clearly different from zero at some
+/// sample point.  `false` when the check passes *or cannot be decided*
+/// (free parameters, unevaluated nodes, no evaluable sample point), so a
+/// caller that treats `true` as "reject" keeps every result it cannot
+/// disprove.
+///
+/// Intended for integrands whose only free symbol is `var` and whose
+/// candidates consist of elementary functions (rational functions of `var`
+/// and their `ln`/`atan`/radical antiderivatives, trig rational functions):
+/// those `evalf` evaluates to full working precision, which is what the
+/// tight tolerance relies on.
+fn antiderivative_is_wrong(
+    arena: &mut Arena,
+    f: ExprId,
+    big_f: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> bool {
+    if crate::base::walk::has_unevaluated(arena, big_f) {
+        return false;
+    }
+    let free = crate::base::walk::free_symbols(arena, f);
+    if free.iter().any(|&s| s != var) {
+        return false;
+    }
+    let free_f = crate::base::walk::free_symbols(arena, big_f);
+    if free_f.iter().any(|&s| s != var) {
+        return false;
+    }
+    let d_big_f = crate::transforms::diff::diff(arena, big_f, var);
+    if crate::base::walk::has_unevaluated(arena, d_big_f) {
+        return false;
+    }
+    let residual = arena.sub(d_big_f, f);
+    if !contains_var(arena, residual, var_sym) {
+        // Constant residual: exact zero is fine, anything else is a wrong
+        // constant term in F′.
+        return matches!(residual_value(arena, residual), Some(v) if v.abs() > FTC_CHECK_REL_TOL);
+    }
+    for &(p, q) in &FTC_SAMPLE_POINTS {
+        let point = arena.rational(p, q);
+        let f_at = crate::transforms::subs::subs(arena, f, var, point);
+        let f_at = crate::transforms::eval::eval(arena, f_at);
+        let Some(f_val) = crate::transforms::evalf::eval_const_f64(arena, f_at) else {
+            continue;
+        };
+        if !f_val.is_finite() {
+            continue;
+        }
+        let r_at = crate::transforms::subs::subs(arena, residual, var, point);
+        let Some(r_val) = residual_value(arena, r_at) else {
+            continue;
+        };
+        if r_val.abs() > FTC_CHECK_REL_TOL * f_val.abs().max(1.0) {
+            tracing::debug!(
+                point = %arena.display(point),
+                residual = r_val,
+                "integrate: candidate antiderivative fails the numeric FTC check"
+            );
+            return true;
+        }
+    }
+    false
+}
+
+/// A variable-free `F′ − f` sample as a finite real `f64`, evaluated at
+/// [`FTC_CHECK_DIGITS`] so that a ~1e-13 discrepancy is not lost in the
+/// printed digits; `None` when it does not evaluate to a finite real.
+fn residual_value(arena: &mut Arena, residual: ExprId) -> Option<f64> {
+    let r = crate::transforms::eval::eval(arena, residual);
+    if crate::base::walk::has_unevaluated(arena, r) {
+        return None;
+    }
+    let v = if let Some(q) = arena.as_num(r) {
+        crate::base::numeric::ratio_to_f64(q)?
+    } else {
+        let s = crate::transforms::evalf::evalf(arena, r, FTC_CHECK_DIGITS).ok()?;
+        // A complex value ("a + b*i") or `oo` does not parse: undecidable.
+        s.parse::<f64>().ok()?
+    };
+    v.is_finite().then_some(v)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Rational functions with a biquadratic denominator
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `∫ N(x) / (x⁴ + p·x² + q) dx` with `deg N ≤ 3` and rational `p`, `q`,
+/// for the two shapes without real roots:
+///
+/// ```text
+///   p² < 4q:            x⁴ + p·x² + q = (x² − a·x + c)(x² + a·x + c),
+///                                        c = √q,  a = √(2c − p)
+///   p² > 4q, p, q > 0:  x⁴ + p·x² + q = (x² + r₁)(x² + r₂),
+///                                        r₁,₂ = (p ∓ √(p² − 4q))/2 > 0
+/// ```
+///
+/// followed by partial fractions over the corresponding real radical field
+/// and the closed forms
+/// `∫ (A·x + B)/(x² + a·x + c) = (A/2)·ln(x² + a·x + c)
+///   + (2B − a·A)/√(4c − a²) · atan((2x + a)/√(4c − a²))`,
+/// `∫ (A·x + B)/(x² + r) = (A/2)·ln(x² + r) + (B/√r)·atan(x/√r)`.
+///
+/// This is the route the general rational integrator gets wrong when the
+/// Rothstein–Trager resultant has nested-radical roots (the `re(…)`/`im(…)`
+/// closed forms of the 0.21 audit; also the denominators the Weierstrass
+/// substitution produces for `∫ 1/(a·sin²x + b) dx`).  Here every constant
+/// is an explicit real radical.  Returns `None` when `expr` is not of
+/// either shape.
+fn try_biquadratic_rational(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<ExprId> {
+    let (numer_id, denom_id) = crate::poly::polybridge::as_numer_denom(arena, expr);
+    if denom_id == arena.one {
+        return None;
+    }
+    let numer_id = crate::transforms::expand::expand(arena, numer_id);
+    let numer_id = crate::transforms::eval::eval(arena, numer_id);
+    let denom_id = crate::transforms::expand::expand(arena, denom_id);
+    let denom_id = crate::transforms::eval::eval(arena, denom_id);
+    let numer = crate::poly::polybridge::expr_to_poly(arena, numer_id, var)?;
+    let denom = crate::poly::polybridge::expr_to_poly(arena, denom_id, var)?;
+    if denom.degree() != Some(4) || numer.is_zero() {
+        return None;
+    }
+    if !denom.coeff(3).is_zero() || !denom.coeff(1).is_zero() {
+        return None;
+    }
+    let lead = denom.coeff(4);
+    if lead.is_zero() {
+        return None;
+    }
+    // Improper fraction: N = Q·D + R, ∫ N/D = ∫ Q + ∫ R/D with ∫ Q by the
+    // power rule (Σ qₖ x^{k+1}/(k+1)).
+    let (quotient, numer) = if numer.degree().unwrap_or(0) > 3 {
+        let (quot, rem) = numer.div_rem(&denom);
+        (Some(quot), rem)
+    } else {
+        (None, numer)
+    };
+    let poly_part = quotient.filter(|q| !q.is_zero()).map(|q| {
+        let deg = q.degree().unwrap_or(0);
+        let mut coeffs: Vec<Q> = vec![Q::zero(); deg + 2];
+        for (k, c) in coeffs.iter_mut().enumerate().skip(1) {
+            *c = q.coeff(k - 1) / Q::from_integer(k.into());
+        }
+        let antiderivative = Poly::from_coeffs(coeffs);
+        crate::poly::polybridge::poly_to_expr(arena, &antiderivative, var)
+    });
+    if numer.is_zero() {
+        // N was a polynomial multiple of D.
+        return poly_part;
+    }
+    let p = denom.coeff(2) / &lead;
+    let q = denom.coeff(0) / &lead;
+    let n_ids: [ExprId; 4] = [
+        arena.num_ratio(numer.coeff(0) / &lead),
+        arena.num_ratio(numer.coeff(1) / &lead),
+        arena.num_ratio(numer.coeff(2) / &lead),
+        arena.num_ratio(numer.coeff(3) / &lead),
+    ];
+    let disc = &p * &p - Q::from_integer(4.into()) * &q;
+    let quadratics: SmallVec<[(ExprId, ExprId, ExprId, ExprId); 2]> = if disc.is_negative() {
+        tracing::debug!(p = %p, q = %q, "integrate: biquadratic denominator, x² ± a·x + c");
+        biquadratic_conjugate_quadratics(arena, &p, &q, &n_ids)
+    } else if disc.is_positive() && p.is_positive() && q.is_positive() {
+        tracing::debug!(p = %p, q = %q, "integrate: biquadratic denominator, (x² + r₁)(x² + r₂)");
+        biquadratic_even_quadratics(arena, &p, &disc, &n_ids)
+    } else {
+        // Real roots (or a repeated factor): the general integrator's business.
+        return None;
+    };
+
+    // ∫ (A x + B)/(x² + a x + c) = (A/2) ln(x² + a x + c)
+    //                              + (2B − aA)/k · atan((2x + a)/k),  k = √(4c − a²)
+    let two = arena.int(2);
+    let four = arena.int(4);
+    let half = arena.rational(1, 2);
+    let x_sq = arena.pow(var, two);
+    let two_x = arena.mul(&[two, var]);
+    let mut terms: SmallVec<[ExprId; 4]> = SmallVec::new();
+    for &(a, c, lin, cst) in quadratics.iter() {
+        let a_x = arena.mul(&[a, var]);
+        let quad = arena.add(&[x_sq, a_x, c]);
+        // Both quadratics are positive on the whole line: no |·| in the ln.
+        let ln_quad = arena.ln(quad);
+        let half_lin = arena.mul(&[half, lin]);
+        terms.push(arena.mul(&[half_lin, ln_quad]));
+        let four_c = arena.mul(&[four, c]);
+        let a_sq = arena.mul(&[a, a]);
+        let k_sq = arena.sub(four_c, a_sq);
+        let k = arena.sqrt(k_sq);
+        let two_cst = arena.mul(&[two, cst]);
+        let a_lin = arena.mul(&[a, lin]);
+        let atan_coeff_num = arena.sub(two_cst, a_lin);
+        let atan_coeff = arena.div(atan_coeff_num, k);
+        let atan_arg_num = arena.add(&[two_x, a]);
+        let atan_arg = arena.div(atan_arg_num, k);
+        let atan_val = arena.atan(atan_arg);
+        terms.push(arena.mul(&[atan_coeff, atan_val]));
+    }
+    if let Some(poly_part) = poly_part {
+        terms.push(poly_part);
+    }
+    let result = arena.add(&terms);
+    let result = crate::transforms::eval::eval(arena, result);
+    // The closed form is exact by construction; the check guards the radical
+    // arithmetic above (a wrong sign here would be a silent wrong answer).
+    if antiderivative_is_wrong(arena, expr, result, var, var_sym) {
+        tracing::debug!("integrate: biquadratic closed form failed verification");
+        return None;
+    }
+    Some(result)
+}
+
+/// The two factors `(a, c, A, B)` of `N/(x⁴ + p x² + q)` = `Σ (A x + B)/(x² + a x + c)`
+/// when `p² < 4q`: `c = √q`, `a = ∓√(2c − p)`, and from
+/// `N = (A x + B)(x² + a x + c) + (C x + D)(x² − a x + c)`:
+/// `A + C = n₃`, `a(A − C) + (B + D) = n₂`, `c(A + C) + a(B − D) = n₁`, `c(B + D) = n₀`.
+fn biquadratic_conjugate_quadratics(
+    arena: &mut Arena,
+    p: &Q,
+    q: &Q,
+    n: &[ExprId; 4],
+) -> SmallVec<[(ExprId, ExprId, ExprId, ExprId); 2]> {
+    let p_id = arena.num_ratio(p.clone());
+    let q_id = arena.num_ratio(q.clone());
+    let two = arena.int(2);
+    let half = arena.rational(1, 2);
+    let c = arena.sqrt(q_id);
+    let two_c = arena.mul(&[two, c]);
+    let a_sq = arena.sub(two_c, p_id);
+    let a = arena.sqrt(a_sq);
+    let neg_a = arena.neg(a);
+
+    let sum_bd = arena.div(n[0], c); // B + D = n₀/c
+    let sum_ac = n[3]; // A + C = n₃
+    let diff_ac = {
+        let t = arena.sub(n[2], sum_bd);
+        arena.div(t, a)
+    }; // A − C = (n₂ − n₀/c)/a
+    let diff_bd = {
+        let c_n3 = arena.mul(&[c, n[3]]);
+        let t = arena.sub(n[1], c_n3);
+        arena.div(t, a)
+    }; // B − D = (n₁ − c·n₃)/a
+    let coeff_a = {
+        let s = arena.add(&[sum_ac, diff_ac]);
+        arena.mul(&[half, s])
+    };
+    let coeff_c = {
+        let s = arena.sub(sum_ac, diff_ac);
+        arena.mul(&[half, s])
+    };
+    let coeff_b = {
+        let s = arena.add(&[sum_bd, diff_bd]);
+        arena.mul(&[half, s])
+    };
+    let coeff_d = {
+        let s = arena.sub(sum_bd, diff_bd);
+        arena.mul(&[half, s])
+    };
+    // (A x + B)/(x² − a x + c) + (C x + D)/(x² + a x + c)
+    let mut out = SmallVec::new();
+    out.push((neg_a, c, coeff_a, coeff_b));
+    out.push((a, c, coeff_c, coeff_d));
+    out
+}
+
+/// The two factors `(0, r, A, B)` of `N/(x⁴ + p x² + q)` = `Σ (A x + B)/(x² + r)`
+/// when `p² > 4q` and `p, q > 0`: `r₁,₂ = (p ∓ √disc)/2`, and from
+/// `N = (A x + B)(x² + r₂) + (C x + D)(x² + r₁)`:
+/// `A = (n₁ − n₃ r₁)/(r₂ − r₁)`, `C = n₃ − A`, `B = (n₀ − n₂ r₁)/(r₂ − r₁)`, `D = n₂ − B`.
+fn biquadratic_even_quadratics(
+    arena: &mut Arena,
+    p: &Q,
+    disc: &Q,
+    n: &[ExprId; 4],
+) -> SmallVec<[(ExprId, ExprId, ExprId, ExprId); 2]> {
+    let p_id = arena.num_ratio(p.clone());
+    let disc_id = arena.num_ratio(disc.clone());
+    let half = arena.rational(1, 2);
+    let sqrt_disc = arena.sqrt(disc_id);
+    let r1 = {
+        let t = arena.sub(p_id, sqrt_disc);
+        arena.mul(&[half, t])
+    };
+    let r2 = {
+        let t = arena.add(&[p_id, sqrt_disc]);
+        arena.mul(&[half, t])
+    };
+    // r₂ − r₁ = √disc
+    let coeff_a = {
+        let n3_r1 = arena.mul(&[n[3], r1]);
+        let t = arena.sub(n[1], n3_r1);
+        arena.div(t, sqrt_disc)
+    };
+    let coeff_c = arena.sub(n[3], coeff_a);
+    let coeff_b = {
+        let n2_r1 = arena.mul(&[n[2], r1]);
+        let t = arena.sub(n[0], n2_r1);
+        arena.div(t, sqrt_disc)
+    };
+    let coeff_d = arena.sub(n[2], coeff_b);
+    let zero = arena.zero;
+    let mut out = SmallVec::new();
+    out.push((zero, r1, coeff_a, coeff_b));
+    out.push((zero, r2, coeff_c, coeff_d));
+    out
 }
 
 #[cfg(test)]

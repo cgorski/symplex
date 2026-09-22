@@ -76,13 +76,20 @@ pub trait RingOps: Clone + fmt::Debug {
 // 𝔽ₚ on u64
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// The prime field `𝔽ₚ` for an odd prime `p < 2⁶³`, elements as `u64`
+/// The prime field `𝔽ₚ` for a prime `p < 2⁶³`, elements as `u64`
 /// residues in `[0, p)`.
 ///
 /// Products go through `u128` only when `p ≥ 2³²`; below that the `u64`
 /// product cannot overflow and a native remainder is used.  Inverses are
 /// by Fermat (`a^(p−2)`).  The caller guarantees primality — nothing here
 /// checks it — exactly as the hand-rolled predecessors did.
+///
+/// `p = 2` is supported: the arithmetic is the same, and
+/// [`PolyIn::roots`] tests the two field elements directly, since the
+/// Cantor–Zassenhaus splitting it uses for odd `p` (`(x + a)^{(p−1)/2}`)
+/// degenerates there.  The factoring routes of the crate never call it
+/// with `2` (they need `p ∤ lc(f)` for arbitrary `f`), which is why the
+/// earlier documentation said "odd prime".
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Fp64 {
     p: u64,
@@ -91,11 +98,11 @@ pub struct Fp64 {
 impl Fp64 {
     /// The field with `p` elements.
     ///
-    /// `p` must be an odd prime below `2⁶³` (so that `a + b` never
-    /// overflows for reduced `a`, `b`).
+    /// `p` must be a prime below `2⁶³` (so that `a + b` never overflows
+    /// for reduced `a`, `b`); `2` is allowed.  Only checked in debug builds.
     #[inline]
     pub const fn new(p: u64) -> Self {
-        debug_assert!(p >= 3);
+        debug_assert!(p >= 2);
         debug_assert!(p < (1u64 << 63));
         Fp64 { p }
     }
@@ -326,6 +333,15 @@ impl<R: RingOps> PolyIn<R> {
     /// Is the leading coefficient `1`?  (`false` for the zero polynomial.)
     pub fn is_monic(&self) -> bool {
         self.coeffs.last().is_some_and(|c| self.ring.is_one(c))
+    }
+
+    /// The value at `x` by Horner's rule (`0` for the zero polynomial).
+    pub fn eval(&self, x: R::El) -> R::El {
+        let ring = &self.ring;
+        self.coeffs
+            .iter()
+            .rev()
+            .fold(ring.zero(), |acc, c| ring.add(&ring.mul(&acc, &x), c))
     }
 
     fn normalize(&mut self) {
@@ -639,21 +655,35 @@ impl PolyIn<Fp64> {
         self.with(out)
     }
 
-    /// Sorted roots in `𝔽ₚ` of a non-zero polynomial.
+    /// Sorted distinct roots in `𝔽ₚ` of a polynomial (a multiple root is
+    /// listed once; the zero polynomial and constants have none).
     ///
     /// `g = gcd(self, xᵖ − x)` is the product of `(x − r)` over the
     /// distinct roots; `g` is then split with random
     /// `gcd(g, (x + a)^{(p−1)/2} − 1)` (Cantor–Zassenhaus equal-degree
     /// factorisation, all factors linear).  Splitting draws from the
-    /// pinned xorshift64* seeded with `p ^ 0x9E37_79B9_7F4A_7C15`; after
-    /// 4096 failed attempts (probability `2⁻⁴⁰⁹⁶`) the roots found so far
-    /// are returned.
+    /// pinned xorshift64* seeded with `p ^ 0x9E37_79B9_7F4A_7C15`.
+    ///
+    /// For `p = 2` the exponent `(p − 1)/2` is `0` and no split can ever
+    /// happen, so the two field elements are simply evaluated — `x² + x`
+    /// has the roots `{0, 1}`, which the splitting loop used to miss.
+    ///
+    /// The random split succeeds with probability about `½` per draw; the
+    /// loop gives up after 4096 consecutive failures (probability
+    /// `2⁻⁴⁰⁹⁶`, a stuck generator rather than bad luck) and returns the
+    /// roots found so far, which is then an *incomplete* list — a
+    /// `tracing::warn!` says so.  There is no way to signal it in the
+    /// return type without changing every caller; in practice it does
+    /// not happen.
     pub fn roots(&self) -> Vec<u64> {
         let ring = self.ring;
         let p = ring.modulus();
         let f = self.monic();
         if f.coeffs.len() <= 1 {
             return vec![];
+        }
+        if p == 2 {
+            return [0u64, 1].into_iter().filter(|&r| f.eval(r) == 0).collect();
         }
         let x = Self::x(ring);
         let xp_minus_x = x.powmod(p, &f).sub(&x);
@@ -677,6 +707,13 @@ impl PolyIn<Fp64> {
                 attempts += 1;
                 if attempts > 4096 {
                     // Probability 2^{−4096}; give up rather than loop forever.
+                    tracing::warn!(
+                        p,
+                        found = out.len(),
+                        unsplit_degree = deg,
+                        "PolyIn::roots: 4096 failed Cantor–Zassenhaus splits, returning an incomplete root list"
+                    );
+                    out.sort_unstable();
                     return out;
                 }
                 let a = rng.next_u64() % p;

@@ -39,3 +39,16 @@ fn expr_id_size() {
     // that u32 is 4 bytes — any change to ExprId's repr would show up in expr_node_size.
     assert_eq!(size_of::<u32>(), 4, "u32 should be 4 bytes");
 }
+
+/// CONTRIBUTING.md ("How to not panic", point 1) quotes the size of
+/// `SymplexError` and of `Result<Ex, SymplexError>`; keep the prose honest.
+#[test]
+fn symplex_error_size_matches_contributing() {
+    use symplex::prelude::{Ex, SymplexError};
+    assert_eq!(
+        size_of::<SymplexError>(),
+        72,
+        "update CONTRIBUTING.md if this changes"
+    );
+    assert_eq!(size_of::<Result<Ex, SymplexError>>(), 72);
+}

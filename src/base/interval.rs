@@ -198,7 +198,7 @@ impl<T> Interval<T> {
 
     /// Apply `f` to both endpoints, keeping the kind.  (For a *decreasing*
     /// `f` the caller must also swap the endpoints and
-    /// [`reverse`](Self::reversed) the kind.)
+    /// [`reversed`](Self::reversed) the kind.)
     pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> Interval<U> {
         Interval {
             lower: f(self.lower),
@@ -334,7 +334,8 @@ impl<T: PartialOrd + Clone> Interval<T> {
     }
 
     /// The smallest interval containing both (`[0, 1) ∪ (2, 3]` hulls to
-    /// `[0, 3]`).  At a shared endpoint the closed side wins.
+    /// `[0, 3]`).  At a shared endpoint the closed side wins.  `None` only
+    /// when the endpoints cannot be ordered (a NaN endpoint).
     pub fn hull(&self, other: &Interval<T>) -> Option<Interval<T>> {
         use std::cmp::Ordering::*;
         let (lower, lower_open) = match self.lower.partial_cmp(&other.lower)? {

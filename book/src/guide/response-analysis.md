@@ -20,7 +20,8 @@ it is produced by the library.
 Eight items rated by five raters into three categories `0, 1, 2`, with two
 missing ratings:
 
-```rust,ignore
+```rust
+# use symplex::prelude::*;
 use symplex::stats::agreement::*;
 let table = RatingTable::from_i64_missing(&[
     &[Some(0), Some(0), Some(0), Some(0), Some(1)],
@@ -32,6 +33,7 @@ let table = RatingTable::from_i64_missing(&[
     &[Some(0), Some(0), Some(1), Some(0), Some(0)],
     &[Some(1), Some(2), Some(1), Some(1), Some(1)],
 ])?;
+# Ok::<(), SymplexError>(())
 ```
 
 `RatingTable` is items × raters with `Option<Q>` cells (`Q` is the exact
@@ -63,14 +65,27 @@ from.
 
 ## What is the answer to each item?
 
-```rust,ignore
+```rust
+# use symplex::prelude::*;
 use symplex::stats::aggregation::*;
+# let rows: [&[Option<usize>]; 8] = [
+#     &[Some(0), Some(0), Some(0), Some(0), Some(1)],
+#     &[Some(1), Some(1), Some(1), Some(2), Some(1)],
+#     &[Some(2), Some(2), Some(2), Some(2), Some(2)],
+#     &[Some(0), Some(1), Some(0), None,    Some(0)],
+#     &[Some(1), Some(1), Some(2), Some(1), Some(1)],
+#     &[Some(2), Some(1), Some(2), Some(2), None   ],
+#     &[Some(0), Some(0), Some(1), Some(0), Some(0)],
+#     &[Some(1), Some(2), Some(1), Some(1), Some(1)],
+# ];
+# let j = 3;
 let labels = LabelTable::from_rows(&rows, 3)?;      // items × raters, Option<usize>
 let votes = majority_votes(&labels);                // Vote { winner, tied, counts }
 let ds = dawid_skene(&labels, &DawidSkeneOpts::default())?;
 ds.labels();          // one label per item (argmax posterior)
-ds.confusion[j];      // rater j's estimated confusion matrix
+&ds.confusion[j];     // rater j's estimated confusion matrix
 ds.priors;            // class prevalences
+# Ok::<(), SymplexError>(())
 ```
 
 `majority_vote` / `majority_votes` / `plurality(labels, &threshold)` /
@@ -89,7 +104,20 @@ degenerate — a rater who only ever answered `0` gets the rows `(1, 0, 0)`
 and then carries no information at all.  Two Bayesian variants keep the
 estimates in the interior:
 
-```rust,ignore
+```rust
+# use symplex::prelude::*;
+# use symplex::stats::aggregation::*;
+# let labels = LabelTable::from_rows(&[
+#     &[Some(0), Some(0), Some(0), Some(0), Some(1)],
+#     &[Some(1), Some(1), Some(1), Some(2), Some(1)],
+#     &[Some(2), Some(2), Some(2), Some(2), Some(2)],
+#     &[Some(0), Some(1), Some(0), None,    Some(0)],
+#     &[Some(1), Some(1), Some(2), Some(1), Some(1)],
+#     &[Some(2), Some(1), Some(2), Some(2), None   ],
+#     &[Some(0), Some(0), Some(1), Some(0), Some(0)],
+#     &[Some(1), Some(2), Some(1), Some(1), Some(1)],
+# ], 3)?;
+# let gold = [Some(0), Some(1), Some(2), Some(0), Some(1), Some(2), Some(0), Some(1)];
 // Dirichlet priors: α on the class prevalences, β on every confusion row
 // ([true][observed], shared by all raters).  The M-step is the posterior
 // mode (count + α − 1) / Σ(count + α − 1), so every α ≥ 1; all ones is the MLE.
@@ -99,14 +127,15 @@ let ds = dawid_skene_map(&labels, &priors, &DawidSkeneOpts::default())?;
 // MACE (Hovy et al. 2013): rater r copies the true label with probability θ_r,
 // otherwise "spams" a label from its own distribution ξ_r.
 let m = mace(&labels, &MaceOpts::default())?;       // smoothing 0.1, majority-vote start
+m.labels();           // argmax posterior per item
 m.competence;         // θ_r per rater — who to trust
 m.spam_distribution;  // ξ_r — what a spammer types
-m.labels();           // argmax posterior per item
 
 // Rank items by how undecided the raters left them, and check the models
 // against gold labels where you have them.
 posterior_entropy(&m.posteriors);                   // bits per item
 rater_confusion_from_gold(&labels, &gold)?;         // exact [gold][given] per rater
+# Ok::<(), SymplexError>(())
 ```
 
 `dawid_skene_map` with `symmetric(K, 1, 1 + s, 1 + s)` is exactly
@@ -120,23 +149,41 @@ start of your choosing in place of random restarts).
 
 ## How good is each rater?
 
-```rust,ignore
+```rust
+# use symplex::prelude::*;
+# use symplex::linprog::q;
+# use symplex::stats::aggregation::*;
+# let labels = LabelTable::from_rows(&[
+#     &[Some(0), Some(0), Some(0), Some(0), Some(1)],
+#     &[Some(1), Some(1), Some(1), Some(2), Some(1)],
+#     &[Some(2), Some(2), Some(2), Some(2), Some(2)],
+#     &[Some(0), Some(1), Some(0), None,    Some(0)],
+#     &[Some(1), Some(1), Some(2), Some(1), Some(1)],
+#     &[Some(2), Some(1), Some(2), Some(2), None   ],
+#     &[Some(0), Some(0), Some(1), Some(0), Some(0)],
+#     &[Some(1), Some(2), Some(1), Some(1), Some(1)],
+# ], 3)?;
+# let gold: Vec<usize> = vec![0, 1, 2, 0, 1, 2, 0, 1];
+# let rater_labels = labels.rater(1).unwrap();
 use symplex::stats::estimation::{proportion_interval, IntervalMethod};
 let acc = worker_accuracy(&rater_labels, &gold)?;   // Accuracy { correct: 5, answered: 8, accuracy: Some(5/8) }
 category_metrics(&rater_labels, &gold, 3)?;         // precision / recall / F₁ per category, exact
 let ci = proportion_interval(5, 8, 0.95, IntervalMethod::ClopperPearson)?;   // Interval<f64>
 (ci.lower, ci.upper);                                // (0.2449, 0.9148)
 proportion_interval(5, 8, 0.95, IntervalMethod::Wilson)?;
+# let gold: Vec<Option<usize>> = gold.iter().map(|&g| Some(g)).collect();
 gold_screening(&labels, &gold, &q(2, 3))?;          // pass / fail per rater on the gold items
+# assert_eq!((acc.correct, acc.answered), (5, 8));
+# assert!((ci.lower - 0.2449).abs() < 1e-4 && (ci.upper - 0.9148).abs() < 1e-4);
+# Ok::<(), SymplexError>(())
 ```
 
 The Clopper–Pearson interval is the exact one (statsmodels
 `proportion_confint(method='beta')`); Wilson, Agresti–Coull and Wald are
 the usual approximations.  The proportion intervals are interval
 *estimates*, so since 0.18 they live in `stats::estimation` beside the
-mean intervals (the `stats::aggregation` paths still re-export them for
-one release).  A rater's accuracy against chance is an exact binomial
-test (below).
+mean intervals (the old `stats::aggregation` paths were removed in 0.22).
+A rater's accuracy against chance is an exact binomial test (below).
 
 ### Exact intervals
 
@@ -149,17 +196,24 @@ are the roots in `(0, 1)` of the two binomial-tail polynomials
 `Σ_{j≥k} C(n,j) pʲ(1−p)ⁿ⁻ʲ − α/2` and `Σ_{j≤k} … − α/2`, which
 `proportion_interval_exact` returns as `RootOf` algebraic numbers:
 
-```rust,ignore
+```rust
+# use symplex::prelude::*;
+# use symplex::linprog::q;
+# use symplex::stats::estimation::{proportion_interval_symbolic, proportion_interval_exact, IntervalMethod};
+# let ctx = Context::new();
 let z = ctx.symbol("z");
 let ci = proportion_interval_symbolic(&ctx, 5, 8, &z, IntervalMethod::Wilson)?;   // Interval<Ex> in z, contains z^2
 
 let ci = proportion_interval_exact(&ctx, 5, 8, &q(95, 100), IntervalMethod::ClopperPearson)?;
-ci.lower;                          // RootOf(…degree-8 polynomial in _p…, k)
+println!("{}", ci.lower);          // RootOf(1400*_p^8 - 4800*_p^7 + 5600*_p^6 - 2240*_p^5 + 1, 4)
 ci.lower.eval_f64()?;              // 0.2448632163665516   = scipy beta.ppf(0.025, 5, 4)
 ci.upper.eval_f64()?;              // 0.9147665858627464   = scipy beta.ppf(0.975, 6, 3)
 ci.lower.eval_decimal(30)?;        // as many digits as you like
 
 proportion_interval_exact(&ctx, 1, 1, &q(9, 10), IntervalMethod::ClopperPearson)?;   // [1/20, 1]: linear tail, rational root
+# assert!((ci.lower.eval_f64()? - 0.2448632163665516).abs() < 1e-12);
+# assert!((ci.upper.eval_f64()? - 0.9147665858627464).abs() < 1e-12);
+# Ok::<(), SymplexError>(())
 ```
 
 The exact closed forms are **not** clipped to `[0, 1]` (Agresti–Coull at
@@ -173,7 +227,10 @@ known-`σ` mean interval has the same pair,
 
 Response times of two groups, in seconds:
 
-```rust,ignore
+```rust
+# use symplex::prelude::*;
+# use symplex::linprog::q;
+# let ctx = Context::new();
 use symplex::stats::{data, hypothesis::*};
 let fast = data::from_i64(&[12, 15, 11, 14, 13, 16, 10, 17]);
 let slow = data::from_i64(&[18, 22, 19, 25, 20, 21, 23, 24]);
@@ -182,13 +239,17 @@ data::variance(&fast, data::Ddof::Sample)?;                  // 6
 data::quantile(&slow, &q(3, 4), data::QuantileMethod::Inclusive)?;   // 93/4
 
 let t = t_test_two_sample(&ctx, &fast, &slow, false, Alternative::TwoSided)?;   // Welch
+# assert!((t.statistic_f64()? - -6.531972647421809).abs() < 1e-12);
 t.statistic;          // exact: −(…)·√(…)   → −6.531972647421809
 t.p_value;            // exact expression through betainc_regularized → 1.3298737271301488e-05
 cohens_d(&ctx, &fast, &slow, true)?;
 
 let u = mann_whitney_u(&ctx, &fast, &slow, Alternative::TwoSided, RankMethod::Exact)?;
+# assert_eq!(data::mean(&fast)?, q(27, 2));
+# assert_eq!(u.p_value, ctx.rational(1, 6435));
 u.statistic;          // 0
 u.p_value;            // 1/6435 — the exact null distribution of U, as a rational
+# Ok::<(), SymplexError>(())
 ```
 
 `TestResult { statistic, p_value, df, alternative }` carries exact
@@ -200,7 +261,7 @@ exact tests).  The family:
 |---|---|
 | Two means | `t_test_one_sample`, `t_test_two_sample` (Student or Welch), `t_test_paired`; the t interval for a mean is `estimation::confidence_interval_mean(&x, 0.95)` |
 | Several means | `anova::anova_one_way` → `AnovaResult { f, df_between, df_within, p_value, ss_between, ss_within, eta_squared }` (in `stats::anova` with the factorial and repeated-measures designs since 0.18) |
-| Two proportions / one proportion | `z_test_proportion`, `z_test_two_proportions` (renamed from `two_proportion_z_test` in 0.18), `binomial_test` (exact) |
+| Two proportions / one proportion | `z_test_proportion`, `z_test_two_proportions` (renamed from `two_proportion_z_test` in 0.18; the old name was removed in 0.22), `binomial_test` (exact) |
 | Ranks / ordinal scores | `mann_whitney_u` (exact or asymptotic with tie correction), `wilcoxon_signed_rank`, `kruskal_wallis`, `friedman`, `spearman_test`, `kendall_test` |
 | Categorical tables | `chi_square_independence` (with Yates), `chi_square_goodness_of_fit`, `g_test`, `fisher_exact` (exact up to a 2 000-point support, numeric above), `mcnemar_test` (exact or χ²), `sign_test`; `counts(&[&[i64]])` / `counts_usize(&[Vec<usize>])` build the table (the latter from a `confusion_matrix`) |
 | Which cells drive a χ²? | `expected_counts`, `chi2_contributions`, `standardized_residuals`, `adjusted_residuals` (Haberman) |
@@ -228,9 +289,12 @@ many raters multiplies the false positives; `bonferroni`, `holm`,
 `benjamini_hochberg` and `benjamini_yekutieli` return adjusted p-values
 and reject flags (matching `statsmodels.multipletests`):
 
-```rust,ignore
+```rust
+# use symplex::prelude::*;
+# use symplex::stats::hypothesis::benjamini_hochberg;
 let adj = benjamini_hochberg(&[0.001, 0.02, 0.03, 0.2, 0.8], 0.05)?;
 adj.reject;   // [true, true, true, false, false]
+# Ok::<(), SymplexError>(())
 ```
 
 `bootstrap_ci` and `permutation_test` (seeded through `stats::Rng`, so
@@ -295,7 +359,7 @@ Every coefficient that is a rational function of the scores is an exact
 rational (Cronbach's α, KR-20); the ones with roots are exact
 expressions.  Since 0.18 `stats::reliability` holds *only* scale
 reliability and item analysis; its former neighbours moved to the module
-their rule names (the old paths re-export them for one release):
+their rule names (the old paths were removed in 0.22):
 
 | Question | Function (0.18 home) |
 |---|---|
@@ -308,20 +372,35 @@ their rule names (the old paths re-export them for one release):
 
 `stats::regression` fits models to the data you have about respondents:
 
-```rust,ignore
-use symplex::stats::regression::{ols, logit, LogitOpts, Design};
+```rust
+# use symplex::prelude::*;
+# use symplex::linprog::qi;
+# use symplex::stats::data;
+# let ctx = Context::new();
+# let y = data::from_i64(&[10, 12, 15, 19, 22, 27]);
+# let x1 = data::from_i64(&[1, 2, 3, 4, 5, 6]);
+# let x2 = data::from_i64(&[2, 1, 4, 3, 6, 5]);
+# let rows: Vec<Vec<_>> = x1.iter().zip(&x2).map(|(a, b)| vec![a.clone(), b.clone()]).collect();
+# let x_new = [qi(7), qi(7)];
+use symplex::stats::regression::{ols, logit, vif, LogitOpts, Design};
 // Response time explained by two features, with an intercept — exactly.
 let fit = ols(&y, &rows, true)?;                     // or Design::new().intercept().column(&x1).column(&x2).fit(&y)?
+# let fit2 = Design::new().intercept().column(&x1).column(&x2).fit(&y)?;
+# assert_eq!(fit.coefficients, fit2.coefficients);
+fit.standard_errors(&ctx);                            // exact expressions (√ of σ̂²(XᵀX)⁻¹)
+fit.coefficient_tests(&ctx)?;                         // TestResult per coefficient, p through StudentT
+fit.f_test(&ctx)?; fit.anova_table()?;                // overall F, exact
+fit.conf_int(0.95)?; fit.prediction_interval(&x_new, 0.95)?;   // Vec<Interval<f64>>, Interval<f64> — no ctx: the limits are f64
+fit.leverage(); fit.cooks_distance()?; fit.durbin_watson()?; vif(&rows)?;
 fit.coefficients;                                     // Vec<Q>, exact (XᵀX)⁻¹Xᵀy
 fit.r_squared; fit.adjusted_r_squared;                // exact rationals
-fit.standard_errors(&ctx)?;                           // exact expressions (√ of σ̂²(XᵀX)⁻¹)
-fit.coefficient_tests(&ctx)?;                         // TestResult per coefficient, p through StudentT
-fit.f_test(&ctx)?; fit.anova_table();                 // overall F, exact
-fit.conf_int(0.95)?; fit.prediction_interval(&x_new, 0.95)?;   // Vec<Interval<f64>>, Interval<f64> — no ctx: the limits are f64
-fit.leverage(); fit.cooks_distance(); fit.durbin_watson(); vif(&rows)?;
 // Correct / incorrect explained by features: logistic regression (IRLS, f64).
+# let correct = [false, false, true, false, false, true, false, true, true, false, true, true];
+# let features: Vec<Vec<f64>> = (1..=12).map(|i| vec![f64::from(i)]).collect();
+# let x_new = [7.0_f64];
 let lg = logit(&correct, &features, true, &LogitOpts::default())?;
-lg.coefficients; lg.odds_ratios(); lg.p_values; lg.pseudo_r_squared; lg.predict_proba(&x_new);
+lg.odds_ratios(); lg.predict_proba(&x_new)?; lg.coefficients; lg.p_values; lg.pseudo_r_squared;
+# Ok::<(), SymplexError>(())
 ```
 
 `ols`, `wls`, `simple_linear_regression` and `polyfit` are exact and match
@@ -339,7 +418,9 @@ thresholds instead of an intercept).  Both are Newton–Raphson in `f64`
 with the same `LogitOpts`, and both refuse separated data with an error
 that names the diverging coefficient.
 
-```rust,ignore
+```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
 use symplex::stats::regression::{mnlogit, ologit, LogitOpts};
 // Which of three answers a respondent picks, explained by one feature x = 1..24.
 let y = [0, 0, 1, 0, 0, 1, 2, 0, 1, 1, 2, 0, 1, 2, 1, 2, 1, 2, 2, 1, 2, 0, 2, 2];
@@ -362,6 +443,9 @@ println!("{:.4}", ol.odds_ratios()[0]);                                  // 1.12
 let p = ol.predict_proba(&[7.0])?;
 println!("{:.3} {:.3} {:.3}", p[0], p[1], p[2]);                         // 0.337 0.381 0.282
 println!("{:.3}", ol.llr_test(&ctx)?.p_value_f64()?);                    // 0.126  (H₀: β = 0, χ²₁)
+# assert!((mn.coefficients[1][1] - 0.2536).abs() < 1e-4);
+# assert!((ol.coefficients[0] - 0.1140).abs() < 1e-4);
+# Ok::<(), SymplexError>(())
 ```
 
 statsmodels reports the ordinal thresholds as `θ₀` followed by the
@@ -400,7 +484,10 @@ over prime factors, so `H(½, ¼, ¼)` is exactly `3/2` bits.
 respondent finishes (or is still working when the study ends), how long a
 worker stays active:
 
-```rust,ignore
+```rust
+# use symplex::prelude::*;
+# use symplex::linprog::q;
+# let ctx = Context::new();
 use symplex::stats::survival::{KaplanMeier, Observation, CiMethod, log_rank_test};
 let obs = Observation::from_i64(&[3, 5, 6, 7, 8, 10, 12, 12], &[true, false, true, true, false, true, true, false]);
 let km = KaplanMeier::fit(&obs)?;
@@ -410,7 +497,19 @@ km.cumulative_hazard_at(&q(6, 1));      // Nelson–Aalen, 7/24
 km.median();                            // Some(10)
 km.confidence_interval(&q(7, 1), 0.95, CiMethod::LogLog)?;   // Interval<f64>
 km.restricted_mean(&q(12, 1));          // 1279/144
+# let all_obs = Observation::from_i64(
+#     &[3, 5, 6, 7, 8, 10, 12, 12, 4, 9, 11, 13, 15, 16, 18, 20],
+#     &[true, false, true, true, false, true, true, false, true, true, false, true, true, true, false, true],
+# );
+# let groups = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1];
 let r = log_rank_test(&ctx, &all_obs, &groups)?;   // exact χ² statistic 149059681/48496587 ≈ 3.0736, p ≈ 0.0796
+# assert_eq!(km.survival_at(&q(6, 1)), q(35, 48));
+# assert_eq!(km.variance_at(&q(6, 1)), q(1505, 55296));
+# assert_eq!(km.cumulative_hazard_at(&q(6, 1)), q(7, 24));
+# assert_eq!(km.median(), Some(q(10, 1)));
+# assert_eq!(km.restricted_mean(&q(12, 1)), q(1279, 144));
+# assert_eq!(r.statistic, ctx.rational(149_059_681, 48_496_587));
+# Ok::<(), SymplexError>(())
 ```
 
 The Kaplan–Meier steps, Greenwood variances and Nelson–Aalen hazards are

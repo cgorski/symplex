@@ -119,7 +119,9 @@ impl Extended<f64> {
     /// every other value — **including NaN** — is `Finite`.  NaN is not a
     /// point of the extended line, but it is not an infinity either, so it
     /// stays where `f64`'s own comparisons treat it: unordered against
-    /// everything, and `Finite(NaN) != Finite(NaN)`.
+    /// every `Finite` value, and `Finite(NaN) != Finite(NaN)`.  The
+    /// infinities still bound it (`NegInf < Finite(NaN) < PosInf`), since
+    /// they compare before the finite payload is looked at.
     pub fn from_f64(x: f64) -> Self {
         if x == f64::INFINITY {
             Extended::PosInf

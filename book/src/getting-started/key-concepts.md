@@ -20,9 +20,10 @@ Contexts serve two purposes:
 
 1. **Isolation.** Different contexts have independent symbol tables and assumptions. A server handling multiple users can give each one a separate context without interference.
 
-2. **Safety.** Expressions from different contexts cannot be mixed. If you try to add an expression from `ctx_a` to one from `ctx_b`, the library detects this and panics with a clear message. This is the only panic in the symbolic layer — it guards against a logic error analogous to indexing out of bounds.
+2. **Safety.** Expressions from different contexts cannot be mixed. If you try to add an expression from `ctx_a` to one from `ctx_b`, the library detects this and panics with a clear message — it guards against a logic error analogous to indexing out of bounds. The library never calls `unwrap`/`expect`/`panic!`/`unreachable!` on user data (ratchet `tests/unit/test_no_panics.rs`); the remaining `assert!`s on caller-supplied *shapes* (e.g. `Matrix::zeros(0, n)`, `Context::symbol("")`) are documented under `# Panics` on each item and counted by the same ratchet.
 
 ```rust
+# use symplex::prelude::*;
 let ctx_a = Context::new();
 let ctx_b = Context::new();
 let x = ctx_a.symbol("x");
@@ -37,6 +38,7 @@ let y = ctx_b.symbol("y");
 `Context` is `Clone` — cloning shares the underlying arena via `Arc<RwLock<...>>`. Multiple threads can hold clones of the same context and create expressions concurrently. `Ex` (the expression handle type) is `Send + Sync`.
 
 ```rust
+# use symplex::prelude::*;
 let ctx = Context::new();
 let ctx2 = ctx.clone();  // shares the same arena
 
@@ -66,12 +68,17 @@ Every operation in symplex follows one of five patterns. Knowing which pattern a
 Operations where "unchanged" or "unevaluated" is a valid result. These never fail — they always return something meaningful.
 
 ```rust
-expr.simplify()       // might return input unchanged
-expr.expand()         // might return input unchanged
-expr.eval()           // sin(0) → 0; symbolic expr → unchanged
-expr.diff(&x)         // might return Derivative(expr, x) if it can't differentiate
-expr.integrate(&x)    // might return Integral(expr, x) if no closed form
-expr.limit(&x, &a)    // might return Limit(expr, x, a)
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let x = ctx.symbol("x");
+# let a = ctx.int(0);
+# let expr = x.sin();
+expr.simplify();       // might return input unchanged
+expr.expand();         // might return input unchanged
+expr.eval();           // sin(0) → 0; symbolic expr → unchanged
+expr.diff(&x);         // might return Derivative(expr, x) if it can't differentiate
+expr.integrate(&x);    // might return Integral(expr, x) if no closed form
+expr.limit(&x, &a);    // might return Limit(expr, x, a)
 ```
 
 ### Pattern 2: `try_` variant returns `Result`
@@ -79,11 +86,16 @@ expr.limit(&x, &a)    // might return Limit(expr, x, a)
 For users who need guaranteed closed-form results (e.g., in a code generation pipeline), every Pattern 1 method that can produce an unevaluated form has a `try_` twin:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let x = ctx.symbol("x");
+# let expr = x.sin();
 // CAS-style: always returns something
 let anti = expr.integrate(&x);
 
 // Pipeline-style: Err if unevaluated
 let anti = expr.try_integrate(&x)?;
+# Ok::<(), SymplexError>(())
 ```
 
 The `try_` variant calls the base method, then checks `has_unevaluated()`. There is zero code duplication between the two.
@@ -97,13 +109,18 @@ Some `try_` variants carry extra information in the error: `try_integrate_defini
 Operations that cross from symbolic to numeric always return `Result`, because the conversion can fail if free symbols remain:
 
 ```rust
-expr.eval_f64()                  // Err if free symbols remain
-expr.eval_complex64()            // Err if can't evaluate
-expr.eval_decimal(30)            // Err if precision exhausted
-expr.compile(&["x"])             // Err(FreeSymbol / NotImplemented) → Result<CompiledFn>
-expr.to_rust_fn("f", &["x"])     // Err if can't generate code
-expr.to_c_fn("f", &["x"])        // same, C99
-expr.integrate_numeric(&x, &a, &b)   // Err if the quadrature does not converge
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let x = ctx.symbol("x");
+# let (a, b) = (ctx.int(0), ctx.int(1));
+# let expr = x.sin();
+expr.eval_f64();                  // Err if free symbols remain
+expr.eval_complex64();            // Err if can't evaluate
+expr.eval_decimal(30);            // Err if precision exhausted
+expr.compile(&["x"]);             // Err(FreeSymbol / NotImplemented) → Result<CompiledFn>
+expr.to_rust_fn("f", &["x"]);     // Err if can't generate code
+expr.to_c_fn("f", &["x"]);        // same, C99
+expr.integrate_numeric(&x, &a, &b);   // Err if the quadrature does not converge
 ```
 
 Solvers whose failure is a mathematical fact also use `Result`: `solve` returns `Err(InfiniteSolutions)` for an identity and `Err(NoSolution)` for a contradiction or range violation (`sin x = 2`); `linsolve` returns `Ok(LinearSolution::Inconsistent)` because inconsistency is a legitimate answer, but `Err(InvalidArgument)` for non-linear input.
@@ -113,12 +130,21 @@ Solvers whose failure is a mathematical fact also use `Result`: `solve` returns 
 Three-valued queries return `Option` — the answer might be yes, no, or "can't determine":
 
 ```rust
-expr.is_positive()        // Some(true), Some(false), or None
-expr.degree(&x)           // Some(3) or None (not a polynomial)
-expr.equals(&other)       // Some(true), Some(false), or None
-expr.is_convergent(&k)    // decisive answers only
-set.contains(&elem)       // set membership
-matrix.is_symmetric()     // structure tests on matrices are three-valued too
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let x = ctx.symbol("x");
+# let k = ctx.symbol("k");
+# let expr = x.powi(3);
+# let other = x.powi(3);
+# let elem = ctx.int(1);
+# let set = ctx.reals();
+# let matrix = Matrix::identity(&ctx, 2);
+expr.is_positive();        // Some(true), Some(false), or None
+expr.degree(&x);           // Some(3) or None (not a polynomial)
+expr.equals(&other);       // Some(true), Some(false), or None
+expr.is_convergent(&k);    // decisive answers only
+set.contains(&elem);       // set membership
+matrix.is_symmetric();     // structure tests on matrices are three-valued too
 ```
 
 ### Pattern 5: Structural preconditions → `Result`
@@ -126,11 +152,15 @@ matrix.is_symmetric()     // structure tests on matrices are three-valued too
 Operations with structural requirements (e.g., matrix operations that require specific shapes):
 
 ```rust
-matrix.det()           // Err if non-square
-matrix.inv()           // Err if singular
-matrix.matmul(&other)  // Err if dimensions don't match
-matrix.cholesky()      // Err if not symmetric / not positive definite
-matrix.minor(0, 0)     // Err if out of range (the sub-matrix is minor_matrix)
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let matrix = Matrix::identity(&ctx, 2);
+# let other = Matrix::identity(&ctx, 2);
+matrix.det();           // Err if non-square
+matrix.inv();           // Err if singular
+matrix.matmul(&other);  // Err if dimensions don't match
+matrix.cholesky();      // Err if not symmetric / not positive definite
+matrix.minor(0, 0);     // Err if out of range (the sub-matrix is minor_matrix)
 ```
 
 ## Unevaluated Forms
@@ -138,15 +168,16 @@ matrix.minor(0, 0)     // Err if out of range (the sub-matrix is minor_matrix)
 When symplex cannot compute a closed-form result, it returns an unevaluated symbolic node. This is a deliberate design choice — the library never returns a wrong answer or silently drops a computation.
 
 ```rust
+# use symplex::prelude::*;
 let ctx = Context::new();
 let x = ctx.symbol("x");
 
-// No closed-form antiderivative exists for exp(x²)
-let result = expr!(ctx, exp(x^2)).integrate(&x);
-println!("{result}");   // Integral(exp(x^2), x)
+// No closed-form antiderivative exists for x^x
+let result = expr!(ctx, x^x).integrate(&x);
+println!("{result}");   // Integral(x^x, x)
 ```
 
-The expression `Integral(exp(x^2), x)` is not an error — it is a truthful representation of the mathematical object "the integral of exp(x²) with respect to x." It can be:
+The expression `Integral(x^x, x)` is not an error — it is a truthful representation of the mathematical object "the integral of x^x with respect to x." It can be:
 
 - Displayed as text or LaTeX
 - Substituted into larger expressions
@@ -162,7 +193,7 @@ Common unevaluated forms:
 | `Integral(f, x, a, b)` | Definite integral that could not be decided (`DefiniteIntegral` node; `eval_f64` evaluates it numerically) |
 | `Limit(f, x, a)` | Limit couldn't be determined (including a two-sided limit whose one-sided limits differ) |
 | `Series(f, x, a, n)` | Series expansion failed |
-| `Sum(f, k, a, b)` / `Product(f, k, a, b)` | No closed form for the sum / product |
+| `Sum(f, k, a, b)` / `Product_(f, k, a, b)` | No closed form for the sum / product |
 | `LaplaceTransform(f, t, s)` | Not in the Laplace table |
 | `re(z)`, `im(z)`, `conjugate(z)`, `arg(z)` | Realness of `z` unknown |
 | `stirling2(n, k)` | Stirling number with symbolic arguments |
@@ -174,6 +205,7 @@ Common unevaluated forms:
 You can control computational limits via `EvalConfig`:
 
 ```rust
+# use symplex::prelude::*;
 let config = EvalConfig {
     max_pow_exponent: 1000,    // don't auto-evaluate 2^5000
     max_result_digits: 5000,   // cap result size
@@ -189,8 +221,11 @@ When a computation exceeds these limits, the result stays in unevaluated form ra
 You can declare properties of symbols to help the simplifier:
 
 ```rust
-let x = sym!(ctx; x, Positive);    // x > 0
-let n = sym!(ctx; n, Integer);     // n ∈ ℤ
+# use symplex::prelude::*;
+# use symplex::sym;
+# let ctx = Context::new();
+sym!(ctx; x, Positive);    // x > 0
+sym!(ctx; n, Integer);     // n ∈ ℤ
 ```
 
 With `x` declared positive, `sqrt(x²)` simplifies to `x` (without the assumption, the result is `|x|` or stays as `sqrt(x²)`).

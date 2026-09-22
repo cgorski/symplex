@@ -5,6 +5,7 @@ symplex 0.2 is a breaking release. Most changes are mechanical (a `Result` where
 ## `compile` returns `Result`
 
 ```rust,ignore
+// ignore: the "before" lines show the removed API and cannot compile against the current crate
 // 0.1
 let f = expr.compile(&["x"]).expect("unsupported node");   // Option<Box<dyn Fn>>
 // 0.2
@@ -19,6 +20,7 @@ f.try_call(&[2.0])?;       // new: arity-checked
 ## `definite_integral` → `integrate_definite`
 
 ```rust,ignore
+// ignore: the "before" lines show the removed API and cannot compile against the current crate
 // 0.1  — computed F(b) − F(a) blindly: ∫₋₁¹ dx/x² gave −2
 let v = expr.definite_integral(&x, &a, &b);
 // 0.2
@@ -31,6 +33,7 @@ If you relied on `F(b) − F(a)` for a proper integral, results are unchanged. F
 ## `solve` semantics
 
 ```rust,ignore
+// ignore: the "before" lines show the removed API and cannot compile against the current crate
 // 0.1: identities and contradictions both gave Ok(vec![]) (or a guess)
 // 0.2:
 match expr.solve(&x) {
@@ -46,6 +49,7 @@ Roots are now `eval`'d: `asin(1/2)` comes back as `π/6`. If you matched on stri
 ## Matrices
 
 ```rust,ignore
+// ignore: the "before" lines show the removed API and cannot compile against the current crate
 // 0.1                                     // 0.2
 m.eigenvals(&lam)?                         m.eigenvals()?
 m.eigenvects(&lam)?                        m.eigenvects()?
@@ -68,6 +72,7 @@ Matrix::try_identity / try_zeros           Matrix::identity / zeros
 ## Linear systems
 
 ```rust,ignore
+// ignore: the "before" lines show the removed API and cannot compile against the current crate
 // 0.1
 let values: Vec<Ex> = ctx.solve_system(&eqs, &vars);
 // 0.2
@@ -84,6 +89,7 @@ match ctx.solve_system(&eqs, &vars)? {
 ## Complex parts
 
 ```rust,ignore
+// ignore: illustrative listing contrasting 0.1 and 0.2 results, not a runnable program
 let z = ctx.symbol("z");
 z.re()          // 0.1: z        (assumed real — wrong)
                 // 0.2: re(z)    (unevaluated until z is known real)

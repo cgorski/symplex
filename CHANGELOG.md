@@ -6,6 +6,162 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.22.0] - 2026-09-22
+
+The audit release.  Four independent reviews of 0.21 — a documentation-vs-code
+audit, an instrumented coverage run (89.9 % of lines, 93.4 % of functions),
+and differential tests of the symbolic core, the polynomial / exact-kernel
+layer and the statistics layer against SymPy, SciPy, statsmodels and mpmath
+— found wrong answers in `simplify`, `series`, `integrate` and
+`partial_fractions`, five defects in the `f64` reference distributions, a
+degraded `solve`, and ~100 stale sentences.  All are fixed here, each with a
+regression test citing its oracle (`tests/v21/`, 231 tests).  The poly /
+exact-kernel layer (863 comparisons) and the data-statistics layer (381
+comparisons: tests, intervals, ANOVA, Cox, logit / mnlogit) had no wrong
+answers.  The Rust blocks of `README.md` and the book now compile and run as
+doctests.  The LP pivot-path baseline and the Mathlib-compiled Lean
+certificate are byte-identical to 0.14.0.
+
+### Breaking
+
+- The 0.18 transitional re-exports are removed; use the names' homes
+  (unchanged since 0.18):
+  - `stats::aggregation::{IntervalMethod, proportion_interval,
+    proportion_interval_exact, proportion_interval_symbolic,
+    z_for_confidence}` → `stats::estimation`;
+  - `stats::hypothesis::{AnovaResult, anova_one_way}` → `stats::anova`,
+    `stats::hypothesis::confidence_interval_mean` → `stats::estimation`;
+  - `stats::reliability::{KappaCi, cochrans_q, cohen_kappa_ci,
+    cohen_kappa_maximum, kappa_ci_from_confusion,
+    kappa_maximum_from_confusion, kappa_test, kappa_test_from_confusion}` →
+    `stats::agreement`; `{ConcordanceCounts, Dependent, concordance_counts,
+    goodman_kruskal_gamma, kendall_tau_c, somers_d}` → `stats::data`;
+    `{fisher_z, pearson_ci}` → `stats::estimation`; `{adjusted_residuals,
+    chi2_contributions, compare_two_correlations, expected_counts,
+    pearson_t_statistic, pearson_test, standardized_residuals}` →
+    `stats::hypothesis`.
+- The deprecated `stats::hypothesis::two_proportion_z_test` (0.18) is
+  removed; the name is `z_test_two_proportions`.
+- `numdist::binom::ppf` and `numdist::poisson::ppf` return
+  `InvalidArgument` for `n` / `rate` above 2⁵³, where integer quantiles are
+  no longer representable (they used to loop forever).
+
+### Fixed — wrong answers
+
+- **`simplify`: `(x^a)^b → x^(a·b)` fired whenever *either* exponent was
+  an integer.**  An integer *inner* exponent is exactly the unsafe case:
+  `(x²)^(3/2) → x³` (8 vs −8 at x = −2), `sqrt(1/x²) → 1/x`,
+  `(x²)^(1/4) → sqrt(x)`, `cbrt(x³) → x`, and even the real constant
+  `cbrt(|sin 6|²) → sin(6)^(2/3)` (complex).  The rule now fires iff the
+  outer exponent is an integer, the base is known non-negative, or the inner
+  exponent is a rational in (−1, 1] — SymPy's condition.  Consequently
+  `(x^(1/2))^(1/3)` now simplifies to `x^(1/6)` and `sqrt(x³)` stays as
+  written (it used to become `x^(3/2)`, false for x < 0).
+- **`series` treated `|g(x)|` as the constant `|g(0)|`**: `series(|x²|)` was
+  `0`, `series(cos|x|)` was `1`, `series(e^|x|)` was `1`.  `|g|` with an
+  even-order leading term `c·xᵏ` of known sign expands as `±g`; an odd-order
+  one has no two-sided expansion and returns the unevaluated `Series` unless
+  both one-sided expansions of the whole expression agree.  `series(x^(5/2),
+  x, 0, 3)` returned `0`; Puiseux exponents now return unevaluated at every
+  order.
+- **`integrate`**: `∫ sqrt(x²) dx` was `x²/2` (now `x·|x|/2`); the
+  tan-half-angle path applied a constant factor twice (`∫ 3(cos x − 4) sin x`
+  had derivative `3f`); `∫ cos x·R(sin x)` and `∫ sin x·R(cos x)` with a
+  coefficient on `sin²`/`cos²` gave wrong `atan(3·tan(x/2))` forms (now the
+  substitution `u = sin x` / `cos x`: `∫ cos x/(sin²x + 1) = atan(sin x)`);
+  `∫ 1/(sin²x + 4)` was wrong; `∫ 1/((x²−4)²+1)` and `∫ ln((x²−4)²+1)`
+  emitted `re(…)`/`im(…)` garbage.  Candidate antiderivatives from the
+  Risch-rational, partial-fraction and Weierstrass routes are now verified
+  (`F′ − f` at up to six rational points, 30 digits) and rejected on
+  mismatch; a new exact route integrates biquadratic denominators
+  `x⁴ + px² + q`.  `∫ 1/|x|` and `∫ |sin x|` are now unevaluated (they
+  were wrong).  A latent infinite recursion in the piecewise-parameter path
+  (reachable once a wrong result was no longer accepted) is fixed.
+- **`partial_fractions`** returned float-rounded poles as "exact" rationals
+  for irreducible cubics (`1/(−91/64·x³ + 3x − 1)` → denominators of
+  5·10¹¹, relative error 2.6e-9).  Every `nsimplify`d root, residue and
+  quadratic factor is now verified exactly against the denominator, or the
+  exact symbolic route is used.
+- **`Ex::to_latex` of `Sum` / `Product`** dropped the brace closing the
+  subscript (`\sum_{n=1^{\infty} …`).
+- **`stats::numdist`**:
+  - `t` tails were exactly 0 once `x²` overflowed (|x| > 1.3e154), so for
+    `df < 2` every far quantile was clamped to ±1.34e154 (`t::ppf(1e-200, 1)`
+    is −3.18e199).  The tail is now computed from `ln(ν/x²)`; quantiles
+    beyond `f64::MAX` are `±∞`.
+  - Temme's incomplete gamma (a ≥ 10⁶) returned a *negative* tail when
+    `erfc` underflowed (`gamma::sf(5.027e7, 5e7, 1) = −6.4e-321`), so
+    `chi2::isf`/`gamma::isf` failed below ~1e-306.  Both terms now share one
+    exponential scaling (`erfcx`), and the tail is clamped to [0, 1].
+  - `norm::cdf(x)` was exactly 0 for x ∈ (−38.47, −37.5); `erfc` now
+    continues through the subnormal range.
+  - `poisson::cdf(+∞, μ)` was NaN (now 1).
+  - `binom::ppf` / `poisson::ppf` hung for `n`, `rate` ≥ 2⁵³ (see Breaking).
+
+### Fixed — degraded answers
+
+- **`Ex::solve` on polynomials** depended on a constant factor: `p` gave
+  `[5/2, 7/3, −7/3, 9]` but `4p` gave seven `RootOf`s (the rational-root
+  search silently gave up on constant terms above 10⁶).  Polynomials are now
+  factored exactly over ℤ first; each irreducible factor is solved once
+  (radicals through degree 4, `RootOf` only over an irreducible factor of
+  degree ≥ 5); each distinct root is returned once.
+- `poly::modpoly`: `PolyIn::roots` over 𝔽₂ returned `[]` for `x² + x`
+  (Cantor–Zassenhaus cannot split at p = 2); p = 2 is now evaluated
+  directly.
+
+### Added
+
+- `numdist::binom::isf`, `numdist::poisson::isf` (the smallest `k` with
+  `sf(k) ≤ q`), completing `{cdf, sf, ppf, isf}` for all eight families.
+- `src/doctests.rs`: `README.md` and every book chapter are included as
+  doctests (`cargo test --doc -- doctests::`, 233 blocks run); fragments
+  were completed with hidden `# ` setup lines (invisible in the rendered
+  book), stale examples corrected, and the 10 before/after migration
+  listings stay `ignore`.
+- `tests/unit/test_no_panics.rs` also ratchets runtime `assert!` /
+  `assert_eq!` / `assert_ne!` in library code (`ASSERT_ALLOWLIST`, 82 sites
+  in 19 files, each with its reason; the list may only shrink).
+- `tests/v21/`: the audit regressions (`apart`, `integrate`, `numdist`,
+  `series`, `simplify`, `solve`), every unit-conversion constructor pinned
+  to its SI / NIST SP 811 definition (`units`), and tests for public
+  functions no test reached before (`coverage`: `Matrix::lll`,
+  `QMatrix::{set, get_mut, as_slice}`, every `Outcome` method, `fourier`,
+  LaTeX / MathML / tree / compaction of ~45 node kinds).
+- `tests/unit/test_size_assertions.rs` pins `SymplexError` at 72 bytes (the
+  figure CONTRIBUTING.md quotes).
+
+### Documentation
+
+- README, CONTRIBUTING, `tests/README.md`, the crate docs and the book
+  brought up to date: version banners (0.11 / 0.16 / 0.3 → 0.22), test and
+  line counts, the 21 test binaries, the architecture tree (the whole
+  `domains/stats/` directory and ~20 newer files were missing), the
+  no-panics policy stated truthfully (the `assert!` category), fifteen
+  continuous families (`FDistribution` was missing), Beta / Student-t CDFs
+  are closed-form, polytope volume works in any dimension, five certificate
+  provers, the `stats` data modules listed in the README, `cox` and
+  `numdist` in the `stats` placement table, the `numdist` algorithm table
+  describes the Temme dispatch and a realistic far-tail accuracy (≈ 1e-11
+  for shapes ≥ 10⁴).
+- `Ex::solve` documents the distinct-roots / factor-first convention.
+
+### Known issues (reproducers in `tests/v21`, `#[ignore = "BUG: …"]`)
+
+- `fourier_series(ln(2 + cos x), x, 2)` returns the literal `nan` without an
+  unevaluated marker; `fourier_series` of `exp(a·x)` leaves a `Piecewise`
+  that `eval` cannot resolve at a numeric `a`.
+- `eval_f64` of the literal `(−1/2)!` is `Unevaluable` (expected √π);
+  `limit_right(x!, x → −1)` stays unevaluated (expected ∞).
+- `from_tree(to_tree((n+1)!))` yields an opaque `factorial` application.
+- A `physical_constant` with a composite value (e.g. ħ = h/2π) is
+  `Unevaluable`.
+- Not fixed in this release, found by the same audit: three evaluators
+  disagree on rational powers of negative numbers (`eval` takes the real
+  root for `(−n)^(1/k)`, `evalf` the principal branch, `compile` the real
+  root); `ln(exp(x)) → x` and `sqrt(x²) → |x|` fire without a realness
+  assumption; `Poly::extended_gcd` does not use the fast gcd path.
+
 ## [0.21.0] - 2026-09-22
 
 The consolidation release.  Three surveys catalogued every type, trait and

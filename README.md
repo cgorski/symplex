@@ -6,17 +6,19 @@ Symbolic mathematics for Rust.
 [![docs.rs](https://docs.rs/symplex/badge.svg)](https://docs.rs/symplex)
 [![License](https://img.shields.io/crates/l/symplex.svg)](LICENSE-MIT)
 
-> **Pre-release (0.11).** The API is stabilising but not stable: 0.7.0 reshaped the
+> **Pre-release (0.22).** The API is stabilising but not stable: 0.7.0 reshaped the
 > certificate API and 0.10.0 added variants to three fresh enums/structs; every
-> breaking change has a one-line fix in the book's migration pages
-> ([0.6 → 0.7](book/src/reference/migrating-0.7.md), [0.3 → 0.4](book/src/reference/migrating-0.4.md),
-> [0.1 → 0.2](book/src/reference/migrating-0.2.md)) and is listed first in
-> [CHANGELOG.md](CHANGELOG.md). Option structs are `#[non_exhaustive]` so that adding
+> breaking change is listed first, under `### Breaking`, in the release's entry in
+> [CHANGELOG.md](CHANGELOG.md), and the larger ones have a one-line fix in the book's
+> migration pages ([0.11 → 0.12](book/src/reference/migrating-0.12.md),
+> [0.6 → 0.7](book/src/reference/migrating-0.7.md), [0.3 → 0.4](book/src/reference/migrating-0.4.md),
+> [0.1 → 0.2](book/src/reference/migrating-0.2.md)). Option structs are `#[non_exhaustive]` so that adding
 > an option is never a break again. Feedback welcome.
 >
 > Contributing? See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture, the no-panic
 > policy (enforced by a ratchet test), and conventions. The user guide is
-> [The Symplex Book](book/src/SUMMARY.md); "What's New" pages cover each release.
+> [The Symplex Book](book/src/SUMMARY.md); its "What's New" pages cover the releases
+> up to 0.14; later releases are described in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -62,7 +64,7 @@ fn main() {
 }
 ```
 
-```
+```sh
 cargo add symplex
 ```
 
@@ -81,9 +83,9 @@ cargo add symplex
 ## When Not to Use This
 
 - You need a mature CAS with decades of community validation — use [SymPy](https://www.sympy.org/). It has broader coverage, more special functions, and a much larger test corpus.
-- You need geometry, tensor algebra, quantum mechanics, or PDE solving — these are not available (planar/space geometry is next on the roadmap; statistics arrived in 0.11).
+- You need geometry, tensor algebra, quantum mechanics, or PDE solving — these are not available (planar/space geometry is next on the roadmap; random variables arrived in 0.11 and the data-statistics modules — tests, estimation, agreement, survival, … — in 0.13–0.21).
 - You need interactive notebook-style exploration — symplex is a library, not an application. (Though see `cargo run --example repl` for a basic REPL.)
-- You need results verified against extensive known-answer databases — symplex has ~11,400 tests including SymPy cross-validation fixtures and every 0.9+ test cites its SymPy reference value, but SymPy has orders of magnitude more coverage.
+- You need results verified against extensive known-answer databases — symplex has ~12,800 tests including SymPy cross-validation fixtures and every 0.9+ test cites its SymPy reference value, but SymPy has orders of magnitude more coverage.
 - You need large-scale or sparse numerical optimisation — the exact simplex is dense (`O(m·n)` integer operations per pivot, in `i64`/`i128`/256-bit/`BigInt` as the numbers grow; hundreds of rows, not hundreds of thousands), and the `f64` routines are the classic derivative-free methods, not a replacement for a dedicated optimisation library.
 
 ---
@@ -95,6 +97,8 @@ cargo add symplex
 Differentiation handles the chain rule, product rule, all elementary functions, and the special functions (Bessel, orthogonal polynomials, `digamma → polygamma`). Indefinite integration uses 15+ strategies including by-parts, u-substitution, partial fractions, trig substitution, the Risch algorithm, Lazard–Rioboo–Trager log-to-real conversion, and heuristic integration. Radical coefficients (e.g., `√5` from cyclotomic denominators) are handled exactly via algebraic number field arithmetic.
 
 ```rust
+# use symplex::prelude::*;
+# use symplex::syms;
 let ctx = Context::new();
 syms!(ctx; x);
 
@@ -113,6 +117,8 @@ expr!(ctx, exp(x)).series(&x, &ctx.int(0), 5);      // 1 + x + x^2/2 + x^3/6 + x
 `integrate_definite` locates interior singularities, treats infinite bounds and endpoint singularities as improper integrals via one-sided limits, resolves `Abs`/`Heaviside`/`DiracDelta`/`Piecewise` integrands, and consults a table of ~30 classical improper integrals (with symbolic parameters under assumptions). Divergence is reported, never hidden.
 
 ```rust
+# use symplex::prelude::*;
+# use symplex::syms;
 let ctx = Context::new();
 syms!(ctx; x);
 let (zero, one, inf) = (ctx.int(0), ctx.int(1), ctx.infinity());
@@ -139,6 +145,8 @@ let z = ctx.symbol("z");
 ### Summation, Products and Series
 
 ```rust
+# use symplex::prelude::*;
+# use symplex::syms;
 let ctx = Context::new();
 syms!(ctx; k, x);
 let n = ctx.symbol_with("n", &[Assumption::Integer, Assumption::Positive]);
@@ -166,6 +174,8 @@ s.reversion().unwrap().coefficients(6);               // asin: [0, 1, 0, 1/6, 0,
 SymPy's `calculus.util` on `Ex` (0.9): singularities, stationary points, extrema on an interval or union of intervals (one-sided limits at open or infinite endpoints, `±∞` allowed), monotonicity and convexity (exact for polynomial and rational derivatives via Sturm sequences; three-valued, never a guess), periodicity and the range of a function.
 
 ```rust
+# use symplex::prelude::*;
+# use symplex::syms;
 let ctx = Context::new();
 syms!(ctx; x);
 let f = &x.powi(3) - 3 * &x;
@@ -184,6 +194,7 @@ Also: `minimum`, `is_decreasing`, `is_strictly_increasing`/`_decreasing`, `is_mo
 `re`, `im`, `conjugate`, `arg` are honest about unknown realness: with no assumption on `z`, `z.re()` is the unevaluated `re(z)`.
 
 ```rust
+# use symplex::prelude::*;
 let ctx = Context::new();
 let z = ctx.symbol("z");
 let x = ctx.symbol_with("x", &[Assumption::Real]);
@@ -207,6 +218,9 @@ ctx.catalan().eval_decimal(30).unwrap();              // 0.915965594177219015054
 ```
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let x = ctx.symbol("x");
 // 0.9: 24 more special functions — exact values, derivative rules, arbitrary-precision evalf
 // (checked at 40 digits against mpmath), Display/LaTeX/parse, and integration results
 x.powi(2).exp().integrate(&x);                        // 1/2*sqrt(pi)*erfi(x)      (was unevaluated before 0.9)
@@ -225,6 +239,8 @@ Also: Gamma, log-gamma, `lowergamma`/`uppergamma`, erf/erfc/`erfi`/`erfinv`/`erf
 Polynomial operations work over ℚ using arbitrary-precision rational arithmetic. Univariate factoring over ℤ uses Berlekamp–Zassenhaus (any degree); multivariate factoring uses Kronecker substitution. Gröbner bases use Buchberger's algorithm with FGLM order conversion.
 
 ```rust
+# use symplex::prelude::*;
+# use symplex::syms;
 let ctx = Context::new();
 syms!(ctx; x, y);
 
@@ -254,6 +270,8 @@ Ex::groebner(&[&x.powi(2) + &y.powi(2) - 1, &x - &y], &[x.clone(), y.clone()], M
 `Poly` (0.3) views an expression as a sparse polynomial in an explicit list of generators. Coefficients are exact rationals *or* symbolic parameter expressions, terms come back in SymPy's lex-descending order, and nothing is approximated. `degree`/`coeffs`/`leading_coeff` on `Ex` accept symbolic coefficients too. `ratsimp` is a rational-function normal form — one cancelled fraction with integer-primitive numerator and denominator — and `solve` uses it for parametric linear and quadratic equations.
 
 ```rust
+# use symplex::prelude::*;
+# use symplex::syms;
 let ctx = Context::new();
 syms!(ctx; x, y, a, j, r);
 
@@ -295,6 +313,8 @@ Also: `Poly::{from_terms, all_coeffs, degree_list, eval, add/sub/mul/pow/scale, 
 `simplify()` tries a dozen strategies and iterates to a fixpoint. The pattern-matching engine behind it is public in 0.2: build your own rules (symbols ending in `_` are wildcards, `rest__` absorbs the rest of a sum or product), rewrite with them, trace what fired, and interleave them with the built-in simplifier.
 
 ```rust
+# use symplex::prelude::*;
+# use symplex::syms;
 let ctx = Context::new();
 syms!(ctx; x, y);
 let (a, b) = (ctx.symbol("a_"), ctx.symbol("b_"));
@@ -318,6 +338,8 @@ x.powi(4).subs_algebraic(&x.powi(2), &y);             // y^2   (plain subs would
 Polynomial equations are solved through quartic by radicals; degree ≥ 5 produces `RootOf` nodes with numerical evaluation. Transcendental equations use inversion peeling and Lambert W. `solve` never lies: identities are `Err(InfiniteSolutions)`, contradictions and range violations are `Err(NoSolution)`.
 
 ```rust
+# use symplex::prelude::*;
+# use symplex::syms;
 let ctx = Context::new();
 syms!(ctx; x, y, z);
 
@@ -348,6 +370,8 @@ expr!(ctx, x^2 - 4).solve_gt(&x);                     // (-oo, -2) ∪ (2, oo)
 16 ODE classes (separable, linear, Bernoulli, Riccati, Euler–Cauchy, exact, integrating factor, Clairaut, nth-order constant-coefficient, variation of parameters, systems via matrix exponential, …), initial-value problems, and linear recurrences.
 
 ```rust
+# use symplex::prelude::*;
+# use symplex::syms;
 let ctx = Context::new();
 syms!(ctx; x, n);
 let y = ctx.symbol("y");
@@ -369,6 +393,8 @@ symplex::rsolve::rsolve_linear(&[ctx.int(-1), ctx.int(-1), ctx.int(1)], None, &n
 `SetEx` and `BoolEx` are first-class: intervals, finite sets, unions with a normal form, three-valued queries, and boolean normal forms with a DPLL satisfiability check.
 
 ```rust
+# use symplex::prelude::*;
+# use symplex::syms;
 let ctx = Context::new();
 syms!(ctx; x, p, q);
 
@@ -394,6 +420,8 @@ pp.or(&pp.not()).is_tautology();                      // Some(true)
 Symbolic matrices with exact decompositions. The eigen family needs no dummy variable in 0.2, structure tests are three-valued, and preconditions are `Result`s.
 
 ```rust
+# use symplex::prelude::*;
+# use symplex::syms;
 use symplex::linprog::q;   // exact rational literal: q(1, 2) = 1/2
 
 let ctx = Context::new();
@@ -425,7 +453,7 @@ Matrix::from_ratio(&ctx, &[vec![q(1, 2), q(3, 1)]]).unwrap();   // [[1/2, 3]]
 // Fraction-free (Bareiss) elimination: a 30×30 rational inverse takes 10 ms, not 470.
 let h = QMatrix::from_fn(4, 4, |i, j| q(1, (i + j + 1) as i64));   // Hilbert matrix
 h.det().unwrap();                                     // 1/6048000
-h.inv().unwrap()[(3, 3)];                             // 2800   (the inverse is integral)
+assert_eq!(h.inv().unwrap()[(3, 3)], q(2800, 1));     // the inverse is integral
 let (r, pivots) = QMatrix::from_i64(&[&[1, 2, 3], &[4, 5, 6]]).unwrap().rref();
 // r = [[1, 0, -1], [0, 1, 2]], pivots = [0, 1]
 ZMatrix::from_i64(&[&[2, 4, 4], &[-6, 6, 12], &[10, -4, -16]]).unwrap().smith_normal_form();
@@ -434,6 +462,8 @@ ZMatrix::from_i64(&[&[2, 4, 4], &[-6, 6, 12], &[10, -4, -16]]).unwrap().smith_no
 `Matrix::{rref, rank, nullspace, det, inv, solve}`, `linsolve`/`linsolve_matrix` and the normal forms route through `QMatrix`/`ZMatrix` automatically whenever every entry is a rational literal, so existing code gets the speed-up without changes.
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
 // 0.9: singular values and condition number, a pseudo-inverse defined for every matrix,
 // rank decomposition, Hessenberg form, permanent, companion / Jordan blocks, exact LLL
 matrix![ctx, [1, 2], [3, 4]].singular_values().unwrap();     // [sqrt(sqrt(221) + 15), sqrt(-sqrt(221) + 15)]
@@ -451,6 +481,7 @@ Also: LU, LDLᵀ, Gram–Schmidt, Jordan form, `matrix_log`, Kronecker product, 
 Linear programs are solved over ℚ by a two-phase simplex: optima, shadow prices and Farkas infeasibility certificates are exact, never "infeasible to within tolerance". The tableau is fraction-free (integers with a common denominator) and runs on `i64`, then `i128`, then 256-bit, then `BigInt` cells as the numbers grow — the same pivot path in every width, so results are identical and small problems never touch the heap. Dantzig's rule is used until twelve consecutive degenerate pivots, then Bland's until the next improving step (finite, and not condemned to Bland's slow walk on the degenerate certificate LPs). A `Budget` (deadline and/or pivot cap, checked at every pivot) turns a runaway solve into `LpStatus::BudgetExhausted`. Integer matrices get Hermite and Smith normal forms with unimodular transforms, ℤ-bases of integer kernels, and exact LLL reduction.
 
 ```rust
+# use symplex::prelude::*;
 use symplex::linprog::{feasible_nonneg, q, qi};
 use symplex::normalforms::hermite_normal_form_with_transform;
 let ctx = Context::new();
@@ -479,8 +510,8 @@ feasible_nonneg(&[vec![q(1, 3), q(1, 7)], vec![qi(1), qi(-1)]], &[qi(1), qi(0)])
 // Integer normal forms: H = U·A (row style), S = U·A·V, ℤ-basis of the kernel
 let a = matrix![ctx, [2, 4, 4], [-6, 6, 12], [10, -4, -16]];
 let HermiteNormalForm { h, u } = hermite_normal_form_with_transform(&a).unwrap();
-h;                                                    // [[2, 4, 4], [0, 6, 0], [0, 0, 12]]
-(&u * &a).eval() == h;                                // true  (det U = −1)
+// h = [[2, 4, 4], [0, 6, 0], [0, 0, 12]]
+assert_eq!((&u * &a).eval(), h);                      // det U = −1
 a.smith_normal_form().unwrap();                       // [[2, 0, 0], [0, 6, 0], [0, 0, 12]]
 matrix![ctx, [2, 1, 1]].integer_nullspace().unwrap(); // [(1, 0, −2)ᵀ, (0, 1, −1)ᵀ] — generates every integer solution
 ```
@@ -492,6 +523,8 @@ Also: `linprog` (SciPy-shaped), `linprog_matrix` (from `Matrix` data), per-varia
 `certificates::prove_nonnegative_on_box` proves `goal ≥ 0` on a box with a Handelman certificate — an exact identity `goal = Σ λₖ·Π(xᵢ − lᵢ)^a(uᵢ − xᵢ)^b` with `λ ≥ 0` found by the exact LP and **re-verified with exact polynomial arithmetic** — or refutes the claim with an exact counterexample. The certificate exports as a Lean 4 / Mathlib theorem whose proof is `nlinarith` over exactly those products; `Ex::to_lean()` renders any elementary expression in Mathlib syntax.
 
 ```rust
+# use symplex::prelude::*;
+# use symplex::syms;
 use symplex::certificates::{prove_nonnegative_on_box, BoxBound, BoxOutcome};
 let ctx = Context::new();
 syms!(ctx; x, y);
@@ -533,6 +566,9 @@ out.certificate().unwrap().to_lean("needs_lambda").unwrap();
 ```
 
 ```rust
+# use symplex::prelude::*;
+# use symplex::syms;
+# let ctx = Context::new();
 // 0.6: sums of squares — non-negativity on all of ℝⁿ, interior zeros included.  The Gram SDP is
 // solved by a built-in interior-point method, rounded, projected and checked exactly (rational LDLᵀ).
 use symplex::certificates::{prove_sos, SosOpts};
@@ -552,6 +588,8 @@ Also: `prove_polyhedron_empty` (the same identity with goal `−1`: a cell is em
 ### Transforms
 
 ```rust
+# use symplex::prelude::*;
+# use symplex::syms;
 let ctx = Context::new();
 syms!(ctx; t, w, s, x);
 let a = ctx.symbol_with("a", &[Assumption::Positive]);
@@ -605,6 +643,8 @@ Also: `quadratic_residues`, `is_nthpow_residue`, `multiplicity`, `primenu`/`prim
 Deterministic, budgeted `f64` routines — bracketed roots, derivative-free minimisation, global search in a box, least-squares fits — usable on plain closures or directly on expressions (which are `compile`d first). Bad input is `Err(InvalidArgument)`, a non-finite value is `Err(ComputationFailed)`; nothing panics.
 
 ```rust
+# use symplex::prelude::*;
+# use symplex::syms;
 use symplex::optimize::{DeOpts, brent_root, nelder_mead, poly_fit};
 
 let ctx = Context::new();
@@ -638,6 +678,8 @@ Also: `bisect`, `newton_root`, `golden_section`, `minimize_scalar` (→ `ScalarM
 Symbolic expressions compile to optimized Rust or C functions with common subexpression elimination, `mul_add`/`fma`, integer powers as multiplications, optional domain assertions, and a self-contained special-function runtime.
 
 ```rust
+# use symplex::prelude::*;
+# use symplex::syms;
 let ctx = Context::new();
 syms!(ctx; x, y);
 let f = &x.sin().powi(2) + &(&x * 2 + &y).exp() * 3;
@@ -680,9 +722,10 @@ For `build.rs` pipelines and `no_std` targets see [`symplex-build`](symplex-buil
 
 ### Probability and Statistics
 
-`symplex::stats` (0.11) is the counterpart of `sympy.stats`: a `RandomVariable` is a symbol with a `Distribution`, and mean, variance, moments, probabilities of events, density, CDF, moment generating function, quantile and entropy are computed *exactly* — closed-form moments for polynomial expectations, the family's CDF for probabilities, exact integration or summation over the support otherwise. Fourteen continuous families (Normal, Uniform, Exponential, Gamma, χ², Beta, Cauchy, Laplace, Logistic, LogNormal, Student t, Weibull, Pareto, Triangular), nine discrete ones (Bernoulli, Binomial, Poisson, Geometric, Negative Binomial, Hypergeometric, DiscreteUniform, Die, and explicit finite tables), independence algebra over several variables, and seeded sampling.
+`symplex::stats` (0.11) is the counterpart of `sympy.stats`: a `RandomVariable` is a symbol with a `Distribution`, and mean, variance, moments, probabilities of events, density, CDF, moment generating function, quantile and entropy are computed *exactly* — closed-form moments for polynomial expectations, the family's CDF for probabilities, exact integration or summation over the support otherwise. Fifteen continuous families (Normal, Uniform, Exponential, Gamma, χ², Beta, Cauchy, Laplace, Logistic, LogNormal, Student t, `FDistribution`, Weibull, Pareto, Triangular), eight discrete ones (Bernoulli, Binomial, Poisson, Geometric, Negative Binomial, Hypergeometric, DiscreteUniform, and explicit finite tables — a die is a finite table), independence algebra over several variables, and seeded sampling.
 
 ```rust
+# use symplex::prelude::*;
 use symplex::stats::{self, Distribution, RandomVariable, Rng};
 let ctx = Context::new();
 let x = RandomVariable::new(&ctx, "X", Distribution::normal(ctx.int(0), ctx.int(1)));
@@ -707,11 +750,33 @@ y.sample(20_000, &mut Rng::new(1)).unwrap();             // reproducible f64 sam
 
 Also: `std`, `moment(n)`, `central_moment`, `median`, `mgf`, `characteristic_function`, `density`, `support`; `stats::{expectation, variance, correlation, probability}` over several independent variables (rectangles and `X < Y`), `conditional_probability`; every constructor has a `try_` twin validating numeric parameters. All test values come from SymPy 1.14.
 
+Beside the random variables, `stats` has a data layer that works on observed samples (`Q` = exact rationals, or `f64` where the reference library is numeric), one module per question:
+
+- `data` — descriptive statistics and measures of association (Pearson, Spearman, Kendall's τ, Goodman–Kruskal's γ, Somers' D), exactly.
+- `estimation` — maximum likelihood, method of moments, conjugate Bayesian updating; confidence and credible intervals (`proportion_interval*`, `confidence_interval_mean*`).
+- `hypothesis` — t/z/χ²/exact/rank tests, effect sizes, multiple-comparison corrections, resampling, power and sample size.
+- `anova` — one-way, factorial and repeated-measures ANOVA with post-hoc comparisons.
+- `agreement` — inter-rater agreement: Cohen's/Fleiss' κ, Scott's π, Krippendorff's α, Gwet's AC₁, ICC, Kendall's W, Cochran's Q.
+- `reliability` — Cronbach's α and relatives, split-half, KR-20, item analysis.
+- `aggregation` — majority/plurality/weighted votes, Dawid–Skene, Bradley–Terry, worker-quality helpers.
+- `regression` — exact OLS/WLS over ℚ and logistic regression in `f64`.
+- `survival`, `cox` — Kaplan–Meier, log-rank and Cox proportional hazards with right censoring.
+- `markov` — finite discrete-time Markov chains with exact transition matrices.
+- `information` — entropies, divergences and mutual information on finite distributions, exactly.
+- `sequential` — Wald's SPRT.
+- `multivariate` — the multivariate normal, covariance/correlation matrices, principal components.
+- `order` — order statistics as a `Family` of their own.
+- `numdist` — the `f64` reference distributions (`scipy.stats.<dist>.{cdf, sf, ppf}`) the tests are checked against.
+
+The book chapters [Statistics](book/src/guide/statistics.md) and [Response analysis](book/src/guide/response-analysis.md) walk through them.
+
 ### Compile-Time Dimensional Analysis
 
 Physical quantity types are checked at compile time. Adding a `Mass` to a `Length` is a compiler error. Differentiation respects dimensions: `d(Length)/d(Time)` produces `Velocity`.
 
 ```rust
+# use symplex::prelude::*;
+# use symplex::syms;
 use symplex::units::*;
 
 let ctx = Context::new();
@@ -747,7 +812,7 @@ let velocity: Velocity = position.diff_wrt(&t_var);   // g·t [m/s]
 
 6. **Never silently wrong.** Numerical evaluation returns `Result`. Operations that can't produce a closed form return unevaluated symbolic nodes — `∫x^x dx` returns `Integral(x^x, x)`, not garbage. `∫₋₁¹ dx/x²` is `Err(Divergent)`, not `−2`. `re(z)` stays `re(z)` unless `z` is known to be real. A certificate prover says `Unknown` with what it tried, never a wrong `Proved`.
 
-7. **No panics in library code.** Failure is a `Result`, absence an `Option`, invariants `debug_assert!`; the two documented exceptions (mixing contexts, an empty `Sum` of `Ex`) are logic errors like indexing out of bounds. A ratchet test over `src/` fails the build if a panicking construct is added — see CONTRIBUTING.md for the policy and why error plumbing costs nothing measurable.
+7. **No panics in library code.** Failure is a `Result`, absence an `Option`, invariants `debug_assert!`. The library never calls `unwrap`/`expect`/`panic!`/`unreachable!` on user data (ratchet `tests/unit/test_no_panics.rs`); the remaining `assert!`s on caller-supplied *shapes* (e.g. `Matrix::zeros(0, n)`, `Context::symbol("")`, a non-prime modulus to `legendre_symbol`) are documented under `# Panics` on each item and counted by the same ratchet — see CONTRIBUTING.md for the policy and why error plumbing costs nothing measurable.
 
 8. **One crate, no knobs.** There are no Cargo features to combine; every capability is always present. Compile time is not the constraint, capability is.
 
@@ -767,6 +832,10 @@ Every symbolic operation that might not produce a closed-form result has two ent
 `try_` twins exist for `diff`, `integrate`, `integrate_definite`, `limit`, `limit_left/right/dir`, `series`, `series_at_infinity`, `summation`, `product_over`, `laplace`, `inverse_laplace`, `residue`, `gosper_sum`, `solve_ode`, `solve_gt/ge/lt/le`, `char_poly`, `wronskian`, and every `stats::Distribution` constructor. Check any expression for unevaluated forms:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let x = ctx.symbol("x");
+# let hard_expr = x.pow(&x);   // ∫ x^x dx has no elementary antiderivative
 let anti = hard_expr.integrate(&x);
 if anti.has_unevaluated() {
     println!("integration produced formal result: {anti}");
@@ -781,7 +850,7 @@ Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`, 
 
 **Three-valued queries.** `is_positive`, `equals`, `is_convergent`, `SetEx::contains`, `is_subset`, `Matrix::is_symmetric`, `is_diagonalizable`, `is_positive_definite`, `BoolEx::is_tautology`, `vector::is_conservative`, `is_increasing`, `is_convex` … return `Option<bool>`: yes, no, or unknown. `degree`, `resultant`, `discriminant`, `hypergeometric_ratio`, `minimal_polynomial`, `periodicity` return `Option<T>`.
 
-**Certificate outcomes.** The four inequality provers return `Outcome<C, U>`: `Proved(C)` (re-verified), `Refuted { point, value, .. }` (an exact point where the goal is negative) or `Unknown(U)` (what was tried, including a budget that ran out). `is_proved()`, `certificate()`, `refutation()`, `unknown()` and `map_certificate` are shared; `Refuted` and the `Unknown` payloads are `#[non_exhaustive]`.
+**Certificate outcomes.** The five inequality provers (`prove_nonnegative_on_box`, `prove_nonnegative_on_halfline`, `prove_nonnegative_on_reals`, `prove_nonnegative_on_polyhedron`, `prove_sos`) return `Outcome<C, U>`: `Proved(C)` (re-verified), `Refuted { point, value, .. }` (an exact point where the goal is negative) or `Unknown(U)` (what was tried, including a budget that ran out). `is_proved()`, `certificate()`, `refutation()`, `unknown()` and `map_certificate` are shared; `Refuted` and the `Unknown` payloads are `#[non_exhaustive]`.
 
 **Budgets.** Long-running exact algorithms accept a deadline and/or pivot cap (`linprog::Budget`, `PolyhedronOpts::with_time_limit`, `SosOpts::with_time_limit`); running out is a *status*, not an error.
 
@@ -791,7 +860,7 @@ Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`, 
 
 ## Comparison with SymPy
 
-| Feature | symplex 0.16 | SymPy 1.14 |
+| Feature | symplex 0.22 | SymPy 1.14 |
 |---------|--------------|------------|
 | Arithmetic | Exact `Ratio<BigInt>` | Exact (similar) |
 | Differentiation | Complete, incl. Bessel/Airy/orthogonal/polygamma/erf family | Complete |
@@ -832,7 +901,7 @@ Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`, 
 | Thread safety | `Send + Sync`, no GIL | GIL-bound |
 | Expression type safety | `Ex` / `BoolEx` / `SetEx` at compile time | Runtime only |
 | Failure model | No panics (ratchet-enforced); `Result`/`Option`/unevaluated forms; budgets are statuses | Exceptions |
-| Language | Rust (compiled, ~206K lines, 91 node types) | Python (interpreted) |
+| Language | Rust (compiled, ~240K lines, 92 node types) | Python (interpreted) |
 
 **Where SymPy is stronger:** geometry, tensor algebra, quantum mechanics, general Diophantine equations, PDE solving, hypergeometric/Meijer-G machinery, stochastic processes and joint distributions beyond independence, and 30 years of community contributions and testing.
 
@@ -846,6 +915,8 @@ Every breaking change has a one-line fix in the book:
 
 | From → to | Page | The gist |
 |---|---|---|
+| 0.12 → 0.22 | [CHANGELOG](CHANGELOG.md) | breaking changes listed per release under `### Breaking`; the transitional `stats` re-exports (`aggregation::proportion_interval*`, `hypothesis::{anova_one_way, confidence_interval_mean}`, `reliability::{kappa*, somers_d}`) were removed in 0.22 in favour of `stats::{estimation, anova, agreement, data}` |
+| 0.11 → 0.12 | [migrating-0.12](book/src/reference/migrating-0.12.md) | `Distribution` is a struct wrapping a `Family` trait (`downcast_ref::<Normal>()` instead of matching enum variants), `Support` is a typed region (`Support::interval`/`integers`/`points`), `Distribution::try_finite` takes `&ctx` |
 | 0.6 → 0.7 | [migrating-0.7](book/src/reference/migrating-0.7.md) | one `Outcome<C, U>` for every prover (patterns need `..`; `Unknown(u)`), the Handelman struct is `BoxCertificate` and `Certificate` is the trait, `LeanOpts`/`PolyhedronOpts`/`SosOpts` are `#[non_exhaustive]` (builders instead of literals), `control`/`robotics`/`dynamics` shape failures return `Result` |
 | 0.9 → 0.10 | [CHANGELOG](CHANGELOG.md) | `LpStatus::BudgetExhausted`, `Tactic::Apply`, `Decl.preamble` (use `Decl::new` + builders) |
 | 0.3 → 0.4 | [migrating-0.4](book/src/reference/migrating-0.4.md) | `roots_count_real` removed, `LeanOpts` gained a field |
@@ -860,14 +931,14 @@ Every breaking change has a one-line fix in the book:
 Every example is self-contained and runs in a few seconds; CI runs all of them.
 
 **Getting started:**
-```
+```sh
 cargo run --example quickstart              # Tour of core operations
 cargo run --example repl                    # Interactive expression evaluation
 cargo run --example readme_snippets         # Every code block in this README, executed
 ```
 
 **Certificates, Lean and exact geometry (0.3–0.10):**
-```
+```sh
 cargo run --example certificates_to_lean    # Handelman / half-line / SOS certificates exported as Mathlib theorems (writes a .lean file)
 cargo run --example polyhedron_certificates # Parametric polyhedra: λ(j) goal multiplier, staged exact LP, emptiness, lean_steps
 cargo run --example exact_matrices          # QMatrix / ZMatrix: fraction-free elimination, rank, nullspace, Smith form
@@ -878,7 +949,7 @@ cargo run --example numeric_optimization    # Brent/Newton roots, Nelder–Mead,
 ```
 
 **New in 0.2:**
-```
+```sh
 cargo run --example definite_integration    # Improper integrals, divergence detection, quadrature, residues
 cargo run --example summation_and_series    # Σ/Π closed forms, convergence, formal power series, finite differences
 cargo run --example complex_analysis        # re/im/conjugate/arg, new constants, Si/Ci/Ei/ζ/polygamma
@@ -892,7 +963,7 @@ cargo run --example c_codegen               # C99 backend, embedded runtime, com
 ```
 
 **Engineering workflows:**
-```
+```sh
 cargo run --example pid_controller          # PID design → stability → Rust codegen
 cargo run --example robotics_codegen        # DH parameters → Jacobian → optimized Rust
 cargo run --example control_system          # State-space, transfer functions, pole placement, ZOH
@@ -902,7 +973,7 @@ cargo run --example inverse_kinematics      # 2-DOF IK via Gröbner bases
 ```
 
 **Mathematics and science:**
-```
+```sh
 cargo run --example calculus                # Differentiation, integration, limits, series
 cargo run --example equation_solving        # Polynomial, transcendental, system solving
 cargo run --example matrix_algebra          # Eigenvalues, Jordan form, codegen
@@ -914,14 +985,14 @@ cargo run --example laplace_transforms      # Forward, inverse, z-transforms
 ```
 
 **Applied problems:**
-```
+```sh
 cargo run --example gradient_descent        # Symbolic gradient → compiled optimization loop
 cargo run --example crypto_rsa              # RSA with number theory primitives
 cargo run --example number_theory           # Primality, factorization, CRT
 ```
 
 **Dimensional analysis:**
-```
+```sh
 cargo run --example units_physics           # Compile-time unit checking
 cargo run --example units_electrical        # Circuit analysis with units
 cargo run --example units_engineering       # Motor design, imperial conversions
@@ -930,7 +1001,7 @@ cargo run --example units_lagrangian        # Lagrangian mechanics with units
 ```
 
 **Output:**
-```
+```sh
 cargo run --example latex_output            # LaTeX rendering
 cargo run --example physics_constants       # Physical constants (symbolic + exact)
 ```
@@ -941,7 +1012,7 @@ cargo run --example physics_constants       # Physical constants (symbolic + exa
 
 All MIT or Apache-2.0 licensed. No C bindings. No LGPL.
 
-Core: `num-bigint`, `num-rational`, `num-traits`, `num-integer`, `smallvec`, `rustc-hash`, `bitflags`, `parking_lot`, `thiserror`, `astro-float`, `serde`, `serde_json`, `tracing`, `typenum`.
+Core: `num-bigint`, `num-rational`, `num-complex`, `num-traits`, `num-integer`, `smallvec`, `rustc-hash`, `bitflags`, `parking_lot`, `thiserror`, `astro-float`, `serde`, `serde_json`, `tracing`, `typenum`.
 
 Proc macros: `syn`, `quote`, `proc-macro2`.
 
@@ -949,7 +1020,7 @@ Companion crates: [`symplex-build`](symplex-build/README.md) (build-time codegen
 
 ## Requirements
 
-Rust 1.93+ (Edition 2024). No Cargo features by design; pure Rust on every platform Rust targets, including `wasm32-unknown-unknown`. ~11,400 tests (`cargo nextest run`), ~800 doctests; every emitted Lean shape is pinned to text compiled against Mathlib (Lean 4.30).
+Rust 1.93+ (Edition 2024). No Cargo features by design; pure Rust on every platform Rust targets, including `wasm32-unknown-unknown`. ~12,800 tests (`cargo nextest run`), ~1,030 doctests — every Rust block in this README and in the book is compiled and run as a doctest too (`cargo test --doc -- doctests::`); every emitted Lean shape is pinned to text compiled against Mathlib (Lean 4.30).
 
 ## License
 

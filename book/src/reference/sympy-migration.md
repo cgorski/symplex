@@ -376,6 +376,7 @@ SymPy defers to SciPy and NumPy here; symplex ships equivalents in `symplex::opt
 SymPy does not have a built-in compile-time unit system. symplex provides one:
 
 ```rust
+use symplex::prelude::*;
 use symplex::units::*;
 
 let ctx = Context::new();
@@ -404,6 +405,7 @@ There is no SymPy equivalent for this. The closest is SymPy's `physics.units` mo
 ODE solving in symplex uses a different interface from SymPy. Instead of wrapping the ODE in `Eq()` and using `Function('f')`, you build the ODE as an expression involving `y.formal_diff(&x)`:
 
 ```rust
+# use symplex::prelude::*;
 let ctx = Context::new();
 symplex::syms!(ctx; x);
 let y = ctx.symbol("y");

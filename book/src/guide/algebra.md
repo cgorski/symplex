@@ -137,7 +137,7 @@ Since 0.18 these scale to high degree: root isolation and counting
 evaluate signs in `ℤ[x]` and `real_roots` / `root_of` start the numeric
 root finder behind a `RootOf` index from the Newton polygon of the
 coefficients, so the root in `(0, 1)` of a degree-50 binomial-tail
-polynomial (`stats::aggregation::proportion_interval_exact`) is named in
+polynomial (`stats::estimation::proportion_interval_exact`) is named in
 a few seconds even in a debug build — previously `root_of` gave `None`
 at degree ≥ 40.  `root_of` names only the requested root, so prefer it to
 `real_roots(&x)[k]` for one root of a large polynomial.  Should the

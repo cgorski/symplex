@@ -333,8 +333,11 @@ fn benchmark_shape_matches_naive_oracle() {
     let (nr, npivots) = naive_rref(&a);
     assert_eq!(pivots, npivots);
     assert_eq!(r, nr);
+    // ~2.5 s alone in a debug build; the bound guards against the 0.14
+    // two-hour regression, with headroom for a fully loaded `cargo nextest`
+    // run (6.5 s observed at 0.22 with every binary running in parallel).
     assert!(
-        started.elapsed().as_secs() < 5,
+        started.elapsed().as_secs() < 10,
         "40×48 rref + oracle took {:?}",
         started.elapsed()
     );

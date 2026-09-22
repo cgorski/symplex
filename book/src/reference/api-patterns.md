@@ -6,16 +6,22 @@ Every public operation in symplex follows one of a small number of patterns. Onc
 
 Operations for which "unchanged" or "unevaluated" is a legitimate answer never fail:
 
-```rust,ignore
-expr.simplify()          expr.expand()           expr.eval()
-expr.factor(&x)          expr.subs(&x, &v)       expr.rewrite(&rules)
-expr.diff(&x)            // Derivative(f, x) if it cannot differentiate
-expr.integrate(&x)       // Integral(f, x) if no closed form
-expr.integrate_definite(&x, &a, &b)   // Integral node if undecided
-expr.limit(&x, &a)       // Limit(f, x, a)
-expr.summation(&k, &a, &b)            // Sum node
-expr.laplace(&t, &s)     // LaplaceTransform node
-expr.solve_ode(&y, &x)   // DSolve node
+```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let (x, k, t, s, y) = (ctx.symbol("x"), ctx.symbol("k"), ctx.symbol("t"), ctx.symbol("s"), ctx.symbol("y"));
+# let (a, b, v) = (ctx.int(0), ctx.int(1), ctx.int(2));
+# let expr = x.sin();
+# let rules = RuleSet::from_rules(vec![]);
+expr.simplify();         expr.expand();          expr.eval();
+expr.factor(&x);         expr.subs(&x, &v);      expr.rewrite(&rules);
+expr.diff(&x);           // Derivative(f, x) if it cannot differentiate
+expr.integrate(&x);      // Integral(f, x) if no closed form
+expr.integrate_definite(&x, &a, &b);  // Integral node if undecided
+expr.limit(&x, &a);      // Limit(f, x, a)
+expr.summation(&k, &a, &b);           // Sum node
+expr.laplace(&t, &s);    // LaplaceTransform node
+expr.solve_ode(&y, &x);  // DSolve node
 ```
 
 Check with `has_unevaluated()`. Note that `RootOf` and `RootSum` are exact algebraic answers and are **not** counted.
@@ -24,11 +30,17 @@ Check with `has_unevaluated()`. Note that `RootOf` and `RootSum` are exact algeb
 
 Every Pattern-1 method that can produce an unevaluated form has a `try_` twin that returns `Err` instead. The twin calls the base method and checks `has_unevaluated()`, so there is no behavioural drift between the two.
 
-```rust,ignore
+```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let (x, k) = (ctx.symbol("x"), ctx.symbol("k"));
+# let (a, b, lo, hi) = (ctx.int(0), ctx.int(1), ctx.int(1), ctx.int(10));
+# let expr = x.powi(2);
 let anti = expr.try_integrate(&x)?;                       // Err(ComputationFailed) if unevaluated
 let val  = expr.try_integrate_definite(&x, &a, &b)?;      // Err(Divergent) if proven divergent
 let lim  = expr.try_limit_right(&x, &a)?;
 let sum  = expr.try_summation(&k, &lo, &hi)?;
+# Ok::<(), SymplexError>(())
 ```
 
 Available twins: `try_diff`, `try_integrate`, `try_integrate_definite`, `try_limit`, `try_limit_left`, `try_limit_right`, `try_limit_dir`, `try_series`, `try_maclaurin`, `try_series_at_infinity`, `try_summation`, `try_product_over`, `try_laplace`, `try_inverse_laplace`, `try_residue`, `try_gosper_sum`, `try_solve_ode`, `try_solve_gt`/`ge`/`lt`/`le`.
@@ -37,33 +49,50 @@ Available twins: `try_diff`, `try_integrate`, `try_integrate_definite`, `try_lim
 
 Crossing from symbols to numbers can fail (free symbols, unsupported node, precision exhausted, non-convergence):
 
-```rust,ignore
-expr.eval_f64()                        // Result<f64>
-expr.eval_complex64()                  // Result<Complex64>  (num_complex; in the prelude)
-expr.eval_decimal(50)                  // Result<String>
-expr.compile(&["x"])                   // Result<CompiledFn>
-Ex::compile_many(&[&a, &b], &["x"])    // Result<CompiledFnVec>
-expr.to_rust_fn("f", &["x"])           // Result<String>
-expr.to_c_fn("f", &["x"])              // Result<String>
-expr.integrate_numeric(&x, &a, &b)     // Result<f64>
-expr.nroots(&x, 12)                    // Result<Vec<Complex64>>
-expr.textplot(&x, a, b)                // Result<String>  (all plotting methods)
+```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let x = ctx.symbol("x");
+# let expr = x.powi(2) - 2;
+# let (a, b) = (ctx.int(0), ctx.int(1));
+expr.eval_f64();                       // Result<f64>
+expr.eval_complex64();                 // Result<Complex64>  (num_complex; in the prelude)
+expr.eval_decimal(50);                 // Result<String>
+expr.compile(&["x"]);                  // Result<CompiledFn>
+Ex::compile_many(&[&a, &b], &["x"]);   // Result<CompiledFnVec>
+expr.to_rust_fn("f", &["x"]);          // Result<String>
+expr.to_c_fn("f", &["x"]);             // Result<String>
+expr.integrate_numeric(&x, &a, &b);    // Result<f64>
+expr.nroots(&x, 12);                   // Result<Vec<Complex64>>
+expr.textplot(&x, -2.0, 2.0);          // Result<String>  (all plotting methods)
 ```
 
 ## Pattern 4 — Queries → `Option`
 
 Three-valued questions return `Option<bool>` (yes / no / cannot decide) and structural queries return `Option<T>`:
 
-```rust,ignore
-expr.is_positive()  expr.is_real()  expr.is_integer()  expr.equals(&other)
-expr.is_convergent(&k)  expr.is_absolutely_convergent(&k)  expr.is_real_valued()
-set.contains(&e)  set.is_subset(&t)  set.is_disjoint(&t)  set.is_empty()  set.is_open()
-matrix.is_symmetric()  matrix.is_orthogonal()  matrix.is_positive_definite()  matrix.is_diagonalizable()
-bool_ex.is_tautology()  bool_ex.satisfiable()
-vector::is_conservative(&f, &vars)
+```rust
+# use symplex::prelude::*;
+# use symplex::vector;
+# let ctx = Context::new();
+# let (x, y, k) = (ctx.symbol("x"), ctx.symbol("y"), ctx.symbol("k"));
+# let expr = x.powi(2) + 1;
+# let (other, g, e) = (x.powi(2) + 1, &x - 1, ctx.int(0));
+# let set = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
+# let t = ctx.reals();
+# let matrix = Matrix::identity(&ctx, 2);
+# let bool_ex = x.gt(&ctx.int(0));
+# let f = Matrix::col_vector(vec![y.clone(), x.clone()]);
+# let vars = [&x, &y];
+expr.is_positive();  expr.is_real();  expr.is_integer();  expr.equals(&other);
+expr.is_convergent(&k);  expr.is_absolutely_convergent(&k);  expr.is_real_valued();
+set.contains(&e);  set.is_subset(&t);  set.is_disjoint(&t);  set.is_empty();  set.is_open();
+matrix.is_symmetric();  matrix.is_orthogonal();  matrix.is_positive_definite();  matrix.is_diagonalizable();
+bool_ex.is_tautology();  bool_ex.satisfiable();
+vector::is_conservative(&f, &vars);
 
-expr.degree(&x)  expr.coeff(&x, 2)  expr.resultant(&g, &x)  expr.discriminant(&x)
-expr.hypergeometric_ratio(&k)  expr.as_i64()  expr.as_rational()  set.inf()  set.measure()
+expr.degree(&x);  expr.coeff(&x, 2);  expr.resultant(&g, &x);  expr.discriminant(&x);
+expr.hypergeometric_ratio(&k);  expr.as_i64();  expr.as_rational();  set.inf();  set.measure();
 ```
 
 `None` is a real answer — do not `unwrap()` it. A symbolic entry usually means the question cannot be decided without assumptions.
@@ -72,12 +101,22 @@ expr.hypergeometric_ratio(&k)  expr.as_i64()  expr.as_rational()  set.inf()  set
 
 Operations whose input must have a particular shape:
 
-```rust,ignore
-matrix.det()            matrix.inv()          matrix.matmul(&other)
-matrix.cholesky()       matrix.lu()           matrix.minor(i, j)
-matrix.eigenvals()      matrix.jordan_form()  matrix.qr()
-Matrix::new(rows)       Matrix::from_i64(&ctx, rows)
-Rule::try_new(...)      bool_ex.truth_table(&atoms)
+```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# let x = ctx.symbol("x");
+# let matrix = Matrix::identity(&ctx, 2);
+# let other = Matrix::identity(&ctx, 2);
+# let (i, j) = (0, 0);
+# let rows = vec![vec![ctx.int(1), ctx.int(2)], vec![ctx.int(3), ctx.int(4)]];
+# let (lhs, rhs) = (x.sin().powi(2), 1 - x.cos().powi(2));
+# let bool_ex = x.gt(&ctx.int(0));
+# let atoms = [bool_ex.clone()];
+matrix.det();            matrix.inv();          matrix.matmul(&other);
+matrix.cholesky();       matrix.lu();           matrix.minor(i, j);
+matrix.eigenvals();      matrix.jordan_form();  matrix.qr();
+Matrix::new(rows);       Matrix::from_i64(&ctx, &[&[1, 2], &[3, 4]]);
+Rule::try_new("sin2", &lhs, &rhs);              bool_ex.truth_table(&atoms);
 ```
 
 ## Pattern 6 — Mathematical outcomes as `Err` or enum variants
@@ -101,7 +140,7 @@ Solvers distinguish "no method" from "the answer is: none" or "the answer is: al
 
 ## Contexts
 
-Everything belongs to a `Context`. Mixing expressions from different contexts panics with a clear message (the only panic in the symbolic layer, treated as a logic error like indexing out of bounds). `Context` is `Clone`; clones share the arena. `Context::compact(&roots)` garbage-collects into a fresh context.
+Everything belongs to a `Context`. Mixing expressions from different contexts panics with a clear message (treated as a logic error like indexing out of bounds). The library never calls `unwrap`/`expect`/`panic!`/`unreachable!` on user data (ratchet `tests/unit/test_no_panics.rs`); the remaining `assert!`s on caller-supplied *shapes* (e.g. `Matrix::zeros(0, n)`, `Context::symbol("")`) are documented under `# Panics` on each item and counted by the same ratchet. `Context` is `Clone`; clones share the arena. `Context::compact(&roots)` garbage-collects into a fresh context.
 
 ## Naming conventions
 

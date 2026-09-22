@@ -69,7 +69,12 @@ fn main() {
 
 ### Bounds and free variables
 
-```rust,ignore
+```rust
+# use symplex::Bounds;
+# use symplex::linprog::{LpProblem, Q, qi};
+# fn show(v: &[Q]) -> String {
+#     format!("({})", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "))
+# }
 // min x − y  s.t.  x + y ≤ 3,  −2 ≤ x,  0 ≤ y ≤ 1
 let sol = LpProblem::minimize(vec![qi(1), qi(-1)])
     .le(vec![qi(1), qi(1)], qi(3))
@@ -84,6 +89,8 @@ println!("{:?} x* = {} objective {} duals {}", sol.status, show(&sol.x), sol.obj
 let free = LpProblem::minimize(vec![qi(1)]).free(0).ge(vec![qi(2)], qi(-5)).solve().unwrap();
 println!("{:?} x* = {} objective {}", free.status, show(&free.x), free.objective.unwrap());
 // Optimal x* = (-5/2) objective -5/2
+# assert_eq!(show(&sol.x), "(-2, 1)");
+# assert_eq!(show(&free.x), "(-5/2)");
 ```
 
 ## Duals and complementary slackness
@@ -259,7 +266,11 @@ fn main() {
 
 `linprog(c, a_ub, b_ub, a_eq, b_eq, bounds)` minimises `cᵀx` subject to `A_ub·x ≤ b_ub`, `A_eq·x = b_eq` and per-variable bounds (a `&[Bounds<Q>]`, one per variable; empty means `x ≥ 0`). Constraints are numbered `≤` rows first, then `=` rows — that is the order of `duals` and `farkas`.
 
-```rust,ignore
+```rust
+# use symplex::linprog::{Q, linprog, qi};
+# fn show(v: &[Q]) -> String {
+#     format!("({})", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "))
+# }
 // min −x − y   s.t.  x + 2y ≤ 4,  3x + y ≤ 6,  x, y ≥ 0
 let sol = linprog(
     &[qi(-1), qi(-1)],
@@ -272,6 +283,7 @@ let sol = linprog(
 .unwrap();
 println!("{:?} x* = {} objective {}", sol.status, show(&sol.x), sol.objective.unwrap());
 // Optimal x* = (8/5, 6/5) objective -14/5
+# assert_eq!(show(&sol.x), "(8/5, 6/5)");
 ```
 
 ## Matrix input: `linprog_matrix`

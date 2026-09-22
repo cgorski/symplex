@@ -13,8 +13,8 @@
 //! Laplace/Fourier/Mellin/Z transforms, and generate optimized Rust or C99
 //! code. See the [README](https://github.com/cgorski/symplex) and
 //! [The Symplex Book](https://cgorski.github.io/symplex/) for a guided tour,
-//! and `CHANGELOG.md` for the 0.1 → 0.2 breaking changes and the 0.2 → 0.3
-//! behaviour changes.
+//! and `CHANGELOG.md` for every release's changes (breaking changes first,
+//! under `### Breaking`).
 //!
 //! Symplex is designed around seven principles:
 //!
@@ -85,7 +85,16 @@
 //! [`formal_series`], [`finite_diff`], [`fourier_transform`], [`mellin`],
 //! [`z_transform`], [`ode`], [`rsolve`], [`sets`], [`logic`], [`parse`],
 //! [`tree`], [`codegen`], [`lambdify`], [`units`], [`assumptions`],
-//! [`numeric`], [`errors`], [`config`].
+//! [`numeric`], [`errors`], [`config`], [`stats`] (random variables and
+//! statistics on data), [`certificates`] (Handelman / half-line /
+//! polyhedron / sums-of-squares non-negativity proofs), [`polytope`],
+//! [`discrete`], [`decompositions`], [`lean`], [`mathml`], [`data_export`],
+//! [`expr_view`], and the method-surface modules [`integrate_api`],
+//! [`poly_api`], [`rules`], [`series_api`], [`sets_api`], [`solvers`],
+//! [`transforms_api`]. The shared value types [`Interval`], [`Bounds`],
+//! [`Extended`], [`Budget`] and the seeded generators [`SplitMix64`] /
+//! [`XorShift64Star`] are at the root too; [`base`] exposes the foundation
+//! layer.
 //!
 //! New in 0.3: [`poly_ex`] (the [`Poly`](prelude::Poly) view of an
 //! expression), [`linprog`] (exact simplex), [`normalforms`] (Hermite /
@@ -111,6 +120,10 @@ pub(crate) mod simplify;
 pub(crate) mod transforms;
 /// Compile-time dimensional analysis for physical quantities.
 pub mod units;
+
+// README and book code blocks as doctests (`cargo test --doc`); see the file.
+#[cfg(doctest)]
+mod doctests;
 
 // ── Public re-exports (backwards-compatible crate-root paths) ──────────
 

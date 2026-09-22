@@ -27,6 +27,63 @@ const ALLOWLIST: &[(&str, usize)] = &[
     ("units/assert_macros.rs", 1),
 ];
 
+/// Files allowed to contain runtime `assert!` / `assert_eq!` / `assert_ne!`
+/// in library code, with the exact count (0.22).  Every one checks a
+/// caller-supplied *shape* or precondition and is documented under
+/// `# Panics` on its item; converting them to `Result`s is tracked as a
+/// follow-up, and this list may only shrink.  `debug_assert!` is not counted.
+const ASSERT_ALLOWLIST: &[(&str, usize)] = &[
+    // `Context::symbol` / `symbol_with`: an empty name.
+    ("api/context.rs", 2),
+    // `Ex::replace`: the user's closure returned an expression from another context (cross-context logic error).
+    ("api/expr_funcs.rs", 1),
+    // Empty `Sum`/`Product` of `Ex` (no context to build 0/1 in, see ALLOWLIST) and an empty function name.
+    ("api/expr_ops.rs", 5),
+    // Contradictory assumptions declared on one symbol (e.g. Positive and Negative).
+    ("base/arena.rs", 1),
+    ("base/assumptions.rs", 1),
+    // Risch internals: a zero denominator handed in by the caller of the public reduction entry points.
+    ("calculus/risch/hermite.rs", 1),
+    ("calculus/risch/rde.rs", 2),
+    ("calculus/risch/rothstein_trager.rs", 1),
+    ("calculus/risch/tower_integrate.rs", 2),
+    // State-space matrix shapes (A square, B/C/D conformant) and an empty `routh_array` input.
+    ("domains/control.rs", 6),
+    // Exact matrices: dimensions, index bounds, conformant shapes.
+    ("domains/exact_matrix.rs", 10),
+    // `Matrix`: zero dimensions, index bounds, conformant shapes, non-empty jacobian/dot inputs.
+    ("domains/matrix.rs", 19),
+    // `hessian`: empty variable list.
+    ("domains/matrix_decomp.rs", 1),
+    // `legendre_symbol`: modulus must be an odd prime.
+    ("domains/ntheory.rs", 1),
+    // Vector calculus: field/variable shapes (curl needs 3-D), empty variable lists.
+    ("domains/vector.rs", 11),
+    // RK4 / plot sampling: step, interval and state preconditions.
+    ("plotting/rk4.rs", 3),
+    ("plotting/sampling.rs", 1),
+    // `MultiPoly`: variable-count agreement, variable index, exponent overflow in `mul`/`pow` (`try_` twins exist).
+    ("poly/multipoly.rs", 11),
+    // `RationalFn`: zero denominator, division by zero, inverse of zero.
+    ("poly/ratfn.rs", 3),
+];
+
+/// Does `line` (already trimmed) contain a runtime assertion macro?
+/// `debug_assert*` and `const_assert_dim!` do not count.
+fn is_assert_site(line: &str) -> bool {
+    if line.starts_with("//") || line.contains("debug_assert") {
+        return false;
+    }
+    ["assert!(", "assert_eq!(", "assert_ne!("].iter().any(|m| {
+        line.match_indices(m).any(|(i, _)| {
+            line[..i]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
+        })
+    })
+}
+
 /// Does `line` (already trimmed) contain a panicking construct?
 fn is_panic_site(line: &str) -> bool {
     if line.starts_with("//") || line.contains("debug_assert") {
@@ -68,12 +125,10 @@ fn library_region(text: &str) -> impl Iterator<Item = &str> {
     lines.into_iter().take(end)
 }
 
-/// Number of panic sites in the library region of one source file.
-fn count_file(path: &Path) -> usize {
+/// Number of lines matching `site` in the library region of one source file.
+fn count_file(path: &Path, site: fn(&str) -> bool) -> usize {
     let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    library_region(&text)
-        .filter(|l| is_panic_site(l.trim()))
-        .count()
+    library_region(&text).filter(|l| site(l.trim())).count()
 }
 
 fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -90,12 +145,33 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 #[test]
 fn library_code_has_no_unallowlisted_panics() {
+    ratchet("panic site", ALLOWLIST, is_panic_site);
+}
+
+#[test]
+fn library_code_has_no_unallowlisted_asserts() {
+    ratchet("assert", ASSERT_ALLOWLIST, is_assert_site);
+}
+
+#[test]
+fn assert_site_detection() {
+    assert!(is_assert_site("assert!(n > 0, \"msg\");"));
+    assert!(is_assert_site("let _ = { assert_eq!(a, b); };"));
+    assert!(is_assert_site("assert_ne!("));
+    assert!(!is_assert_site("debug_assert!(n > 0);"));
+    assert!(!is_assert_site("debug_assert_eq!(a, b);"));
+    assert!(!is_assert_site("const_assert_dim!(D, LENGTH);"));
+    assert!(!is_assert_site("/// assert!(x) in a doc comment"));
+    assert!(!is_assert_site("my_assert!(x);"));
+}
+
+fn ratchet(what: &str, allowlist: &[(&str, usize)], site: fn(&str) -> bool) {
     let src = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
     let mut files = Vec::new();
     collect_rs_files(src, &mut files);
     files.sort();
 
-    let allowed: BTreeMap<&str, usize> = ALLOWLIST.iter().copied().collect();
+    let allowed: BTreeMap<&str, usize> = allowlist.iter().copied().collect();
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for path in &files {
         let rel = path
@@ -103,7 +179,7 @@ fn library_code_has_no_unallowlisted_panics() {
             .expect("file is under src/")
             .to_string_lossy()
             .replace('\\', "/");
-        counts.insert(rel, count_file(path));
+        counts.insert(rel, count_file(path, site));
     }
 
     let mut violations = Vec::new();
@@ -111,11 +187,11 @@ fn library_code_has_no_unallowlisted_panics() {
         let allowance = allowed.get(rel.as_str()).copied().unwrap_or(0);
         if count > allowance {
             violations.push(format!(
-                "{rel}: {count} panic site(s), allowed {allowance} — fix them (CONTRIBUTING.md, \"No Panics Rule\")"
+                "{rel}: {count} {what}(s), allowed {allowance} — fix them (CONTRIBUTING.md, \"No Panics Rule\")"
             ));
         } else if count < allowance {
             violations.push(format!(
-                "{rel}: {count} panic site(s), allowed {allowance} — tighten the allowlist"
+                "{rel}: {count} {what}(s), allowed {allowance} — tighten the allowlist"
             ));
         }
     }
@@ -128,7 +204,7 @@ fn library_code_has_no_unallowlisted_panics() {
     }
 
     if !violations.is_empty() {
-        let mut report = String::from("panic-site ratchet failed:\n");
+        let mut report = format!("{what} ratchet failed:\n");
         for v in &violations {
             report.push_str("  ");
             report.push_str(v);

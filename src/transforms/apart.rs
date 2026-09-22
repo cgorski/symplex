@@ -322,7 +322,7 @@ fn try_root_based_apart(
 
     // ── Numeric log-to-real: try clean decomposition via f64 eval ──
     if let Some(numeric_terms) =
-        try_log_to_real_numeric(arena, var, &solutions, remainder, &denom_deriv)
+        try_log_to_real_numeric(arena, var, &solutions, remainder, denom_poly, &denom_deriv)
     {
         tracing::debug!(
             "apart: numeric log_to_real succeeded with {} terms",
@@ -559,15 +559,24 @@ fn build_conjugate_pair_term(
 /// using numeric evaluation of roots and `nsimplify` for exact coefficient
 /// recovery.
 ///
+/// Every `nsimplify` candidate is a *guess* from a 16-digit float and is
+/// accepted only after an **exact** check against the polynomials: a real
+/// root `r` must satisfy `D(r) = 0`, a quadratic `x² + p·x + q` must divide
+/// `D` exactly, and each numerator must satisfy the partial-fraction
+/// identity modulo its factor (see [`alg_is_zero`]).  Without this, an
+/// irrational pole is silently returned as the 12-digit rational it was
+/// rounded to (`1/(x³ − 2)` → poles at `251984209979/200000000000`).
+///
 /// Returns `Some(terms)` if every root can be evaluated numerically and
-/// every coefficient can be recovered as a clean closed-form expression.
-/// Returns `None` on failure — the caller falls back to the symbolic
-/// approach.
+/// every coefficient can be recovered as a clean closed-form expression
+/// that verifies exactly.  Returns `None` on failure — the caller falls
+/// back to the symbolic approach.
 fn try_log_to_real_numeric(
     arena: &mut Arena,
     var: ExprId,
     solutions: &[Solution],
     remainder: &Poly,
+    denom_poly: &Poly,
     denom_deriv: &Poly,
 ) -> Option<Vec<ExprId>> {
     let n_roots = solutions.len();
@@ -620,6 +629,12 @@ fn try_log_to_real_numeric(
                 tracing::trace!("log_to_real: irrational root nsimplify not clean, bailing");
                 return None;
             }
+            // Exact check: the candidate must be a root of the denominator.
+            let d_at_root = poly_eval_alg(arena, denom_poly, root_exact);
+            if !alg_is_zero(arena, d_at_root) {
+                tracing::trace!("log_to_real: nsimplified root is not an exact root, bailing");
+                return None;
+            }
             let (n_re, _) = eval_poly_complex_f64(remainder, re_i, 0.0);
             let (d_re, _) = eval_poly_complex_f64(denom_deriv, re_i, 0.0);
             if d_re.abs() < 1e-15 {
@@ -629,6 +644,15 @@ fn try_log_to_real_numeric(
             if res_f64.abs() > tol {
                 let res_exact = nsimplify_extended(arena, res_f64, 1e-9);
                 if !is_clean_expr(arena, res_exact) {
+                    return None;
+                }
+                // Exact check: res · D'(r) = N(r).
+                let dd_at_root = poly_eval_alg(arena, denom_deriv, root_exact);
+                let n_at_root = poly_eval_alg(arena, remainder, root_exact);
+                let lhs = arena.mul(&[res_exact, dd_at_root]);
+                let diff = arena.sub(lhs, n_at_root);
+                if !alg_is_zero(arena, diff) {
+                    tracing::trace!("log_to_real: nsimplified residue does not verify, bailing");
                     return None;
                 }
                 let factor = arena.sub(var, root_exact);
@@ -673,6 +697,17 @@ fn try_log_to_real_numeric(
             return None;
         }
 
+        // Exact check: x² + p·x + q must divide the denominator.  The
+        // quotient `cofactor` is needed again to verify the numerator.
+        let (cofactor, rem_lin, rem_const) =
+            div_by_monic_quadratic_alg(arena, denom_poly, p_exact, q_exact)?;
+        if !alg_is_zero(arena, rem_lin) || !alg_is_zero(arena, rem_const) {
+            tracing::trace!(
+                "log_to_real: nsimplified quadratic does not divide D exactly, bailing"
+            );
+            return None;
+        }
+
         tracing::debug!(
             "log_to_real: recovered exact quadratic x² + {}·x + {}",
             arena.display(p_exact),
@@ -707,6 +742,16 @@ fn try_log_to_real_numeric(
 
         if !is_clean_expr(arena, a_exact) || !is_clean_expr(arena, b_exact) {
             tracing::trace!("log_to_real: numerator coeff nsimplify not clean, bailing");
+            return None;
+        }
+
+        // Exact check of the partial-fraction identity for this factor:
+        // with D = Q·S, the term (A·x + B)/Q is right iff
+        // (A·x + B)·S ≡ N (mod Q).
+        if !numerator_verifies_mod_quadratic(
+            arena, remainder, &cofactor, a_exact, b_exact, p_exact, q_exact,
+        ) {
+            tracing::trace!("log_to_real: nsimplified numerator does not verify, bailing");
             return None;
         }
 
@@ -852,6 +897,138 @@ fn build_rational_plus_sqrt_expr(arena: &mut Arena, a: i64, b: i64, n: i64, c: i
 fn is_clean_expr(arena: &Arena, expr: ExprId) -> bool {
     let s = arena.display(expr).to_string();
     s.len() < 50 && !s.contains("cbrt")
+}
+
+// ── Exact verification of nsimplified candidates ─────────────────────────────
+//
+// `nsimplify` turns a 16-digit float into a candidate such as `(1 + √5)/2`
+// — or, when nothing matches, into the 12-digit rational it was rounded
+// to.  The helpers below do exact arithmetic on such candidates (rational
+// numbers and radicals: `expand` distributes, `eval` folds `√5·√5 → 5` and
+// collects like terms) so that a wrong guess is rejected instead of being
+// emitted as an "exact" pole.
+
+/// Canonicalise an algebraic-number expression: expand, then evaluate.
+fn alg_normalize(arena: &mut Arena, e: ExprId) -> ExprId {
+    let e = crate::transforms::expand::expand(arena, e);
+    crate::transforms::eval::eval(arena, e)
+}
+
+/// Is `e` exactly zero after [`alg_normalize`]?
+fn alg_is_zero(arena: &mut Arena, e: ExprId) -> bool {
+    let e = alg_normalize(arena, e);
+    arena.is_zero_structural(e) || arena.as_num(e).is_some_and(|r| r.is_zero())
+}
+
+/// `poly(r)` by Horner's rule with exact expression arithmetic.
+fn poly_eval_alg(arena: &mut Arena, poly: &Poly, r: ExprId) -> ExprId {
+    let Some(deg) = poly.degree() else {
+        return arena.zero;
+    };
+    let mut acc = arena.num_ratio(poly.coeff(deg));
+    for k in (0..deg).rev() {
+        let prod = arena.mul(&[acc, r]);
+        let ck = arena.num_ratio(poly.coeff(k));
+        let sum = arena.add(&[prod, ck]);
+        acc = alg_normalize(arena, sum);
+    }
+    acc
+}
+
+/// Divide `poly` by the monic quadratic `x² + p·x + q` (coefficients are
+/// expressions) with exact expression arithmetic.
+///
+/// Returns `(quotient, r₁, r₀)` with the quotient's coefficients in
+/// descending degree and the remainder `r₁·x + r₀`.  `None` if
+/// `deg poly < 2`.
+fn div_by_monic_quadratic_alg(
+    arena: &mut Arena,
+    poly: &Poly,
+    p: ExprId,
+    q: ExprId,
+) -> Option<(Vec<ExprId>, ExprId, ExprId)> {
+    let deg = poly.degree()?;
+    if deg < 2 {
+        return None;
+    }
+    // Synthetic division on descending coefficients.
+    let mut work: Vec<ExprId> = (0..=deg)
+        .rev()
+        .map(|k| arena.num_ratio(poly.coeff(k)))
+        .collect();
+    for i in 0..=(deg - 2) {
+        let lead = work[i];
+        if arena.is_zero_structural(lead) {
+            continue;
+        }
+        let lp = arena.mul(&[lead, p]);
+        let next = arena.sub(work[i + 1], lp);
+        work[i + 1] = alg_normalize(arena, next);
+        let lq = arena.mul(&[lead, q]);
+        let next2 = arena.sub(work[i + 2], lq);
+        work[i + 2] = alg_normalize(arena, next2);
+    }
+    let rem_const = work[deg];
+    let rem_lin = work[deg - 1];
+    work.truncate(deg - 1);
+    Some((work, rem_lin, rem_const))
+}
+
+/// Exact check of the partial-fraction identity for the factor
+/// `Q = x² + p·x + q` of `D = Q·S`: the term `(a·x + b)/Q` is correct iff
+/// `(a·x + b)·S ≡ N (mod Q)`.  `cofactor` is `S` in descending degree.
+fn numerator_verifies_mod_quadratic(
+    arena: &mut Arena,
+    numer: &Poly,
+    cofactor: &[ExprId],
+    a: ExprId,
+    b: ExprId,
+    p: ExprId,
+    q: ExprId,
+) -> bool {
+    // T = (a·x + b)·S − N, descending coefficients, degree deg S + 1.
+    let deg_s = cofactor.len().saturating_sub(1);
+    let deg_t = deg_s + 1;
+    let mut t: Vec<ExprId> = vec![arena.zero; deg_t + 1];
+    for (i, &s) in cofactor.iter().enumerate() {
+        // s is the coefficient of x^(deg_s - i); a·x·s lands one slot
+        // higher (index i), b·s at index i + 1.
+        let a_s = arena.mul(&[a, s]);
+        let sum = arena.add(&[t[i], a_s]);
+        t[i] = alg_normalize(arena, sum);
+        let b_s = arena.mul(&[b, s]);
+        let sum = arena.add(&[t[i + 1], b_s]);
+        t[i + 1] = alg_normalize(arena, sum);
+    }
+    if let Some(deg_n) = numer.degree() {
+        if deg_n > deg_t {
+            return false; // N should already be reduced below deg D
+        }
+        for k in 0..=deg_n {
+            let idx = deg_t - k;
+            let nk = arena.num_ratio(numer.coeff(k));
+            let diff = arena.sub(t[idx], nk);
+            t[idx] = alg_normalize(arena, diff);
+        }
+    }
+    // (An empty numerator is the zero polynomial; nothing to subtract.)
+    // Reduce T modulo Q by synthetic division and require a zero remainder.
+    if deg_t < 2 {
+        return t.iter().all(|&c| alg_is_zero(arena, c));
+    }
+    for i in 0..=(deg_t - 2) {
+        let lead = t[i];
+        if arena.is_zero_structural(lead) {
+            continue;
+        }
+        let lp = arena.mul(&[lead, p]);
+        let next = arena.sub(t[i + 1], lp);
+        t[i + 1] = alg_normalize(arena, next);
+        let lq = arena.mul(&[lead, q]);
+        let next2 = arena.sub(t[i + 2], lq);
+        t[i + 2] = alg_normalize(arena, next2);
+    }
+    alg_is_zero(arena, t[deg_t - 1]) && alg_is_zero(arena, t[deg_t])
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1123,6 +1300,57 @@ mod tests {
         let expr = a.add(&[x, one]);
         let result = apart(&mut a, expr, x);
         assert_eq!(display(&a, result), "x + 1");
+    }
+
+    #[test]
+    fn quadratic_surd_factor_verifies_exactly() {
+        // x⁴ + 1 = (x² + √2·x + 1)(x² − √2·x + 1): the surd quadratic divides
+        // exactly, and the partial-fraction numerator (√2/4)·x + 1/2 for the
+        // `+√2` factor verifies; a wrong numerator does not.
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let four = a.int(4);
+        let x4 = a.pow(x, four);
+        let one = a.one;
+        let d_expr = a.add(&[x4, one]);
+        let d = polybridge::expr_to_poly(&a, d_expr, x).unwrap();
+        let two = a.int(2);
+        let sqrt2 = a.sqrt(two);
+        let (cofactor, r1, r0) = div_by_monic_quadratic_alg(&mut a, &d, sqrt2, one).unwrap();
+        assert!(alg_is_zero(&mut a, r1) && alg_is_zero(&mut a, r0));
+        assert_eq!(cofactor.len(), 3);
+        let n = polybridge::expr_to_poly(&a, one, x).unwrap();
+        let quarter = a.rational(1, 4);
+        let a_coeff = a.mul(&[quarter, sqrt2]);
+        let b_coeff = a.rational(1, 2);
+        assert!(numerator_verifies_mod_quadratic(
+            &mut a, &n, &cofactor, a_coeff, b_coeff, sqrt2, one
+        ));
+        let wrong_b = a.rational(1, 3);
+        assert!(!numerator_verifies_mod_quadratic(
+            &mut a, &n, &cofactor, a_coeff, wrong_b, sqrt2, one
+        ));
+    }
+
+    #[test]
+    fn float_rounded_rational_is_not_an_exact_root() {
+        // The cube root of 2 rounded to 12 digits is not a root of x³ − 2.
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let three = a.int(3);
+        let x3 = a.pow(x, three);
+        let two = a.int(2);
+        let d_expr = a.sub(x3, two);
+        let d = polybridge::expr_to_poly(&a, d_expr, x).unwrap();
+        let rounded = a.rational(251_984_209_979, 200_000_000_000);
+        let at = poly_eval_alg(&mut a, &d, rounded);
+        assert!(!alg_is_zero(&mut a, at));
+        let cbrt2 = a.cbrt(two);
+        let at = poly_eval_alg(&mut a, &d, cbrt2);
+        assert!(
+            alg_is_zero(&mut a, at),
+            "cbrt(2)³ − 2 should normalise to 0"
+        );
     }
 
     #[test]

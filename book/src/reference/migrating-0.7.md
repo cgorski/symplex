@@ -18,6 +18,7 @@ The four outcome enums are aliases of one generic `certificates::Outcome<C, U>`.
 | `SosOutcome::Unknown { reason }` | `Unknown(u)` with `u: SosUnknown { reason, .. }`; `u.to_string()` is the reason |
 
 ```rust,ignore
+// ignore: the "before" lines show the removed API and cannot compile against the current crate
 // 0.6
 match prove_nonnegative_on_halfline(&g, &j, &ctx.int(3), Ray::AtLeast, 10)? {
     HalfLineOutcome::Refuted { point, value } => println!("false at j = {point}: {value}"),
@@ -49,6 +50,7 @@ A `use symplex::certificates::Certificate;` that meant the struct must become `B
 `LeanOpts`, `PolyhedronOpts` and `SosOpts` are `#[non_exhaustive]`: a struct literal, including one ending in `..Default::default()`, no longer compiles outside the crate.
 
 ```rust,ignore
+// ignore: the "before" lines show the removed API and cannot compile against the current crate
 // 0.6
 let opts = PolyhedronOpts { max_lambda_degree: 0, ..Default::default() };
 let lean = LeanOpts { real_type: "ℚ".into(), ..Default::default() };

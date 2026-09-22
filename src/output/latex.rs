@@ -918,7 +918,7 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
             stack.push(LatexItem::Expr(body));
             stack.push(LatexItem::Lit("} "));
             stack.push(LatexItem::Expr(hi));
-            stack.push(LatexItem::Lit("^{"));
+            stack.push(LatexItem::Lit("}^{"));
             stack.push(LatexItem::Expr(lo));
             stack.push(LatexItem::Lit("="));
             stack.push(LatexItem::Expr(var));
@@ -928,7 +928,7 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
             stack.push(LatexItem::Expr(body));
             stack.push(LatexItem::Lit("} "));
             stack.push(LatexItem::Expr(hi));
-            stack.push(LatexItem::Lit("^{"));
+            stack.push(LatexItem::Lit("}^{"));
             stack.push(LatexItem::Expr(lo));
             stack.push(LatexItem::Lit("="));
             stack.push(LatexItem::Expr(var));

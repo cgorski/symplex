@@ -86,7 +86,7 @@ fn main() {
 
 ## Examples
 
-```
+```sh
 cargo run --example units_physics           # Newton, Ohm, pendulum, compile-time assertions
 cargo run --example units_electrical        # Circuit analysis with units
 cargo run --example units_engineering       # Motor design, imperial conversions, uom codegen

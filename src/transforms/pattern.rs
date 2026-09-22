@@ -1412,12 +1412,19 @@ fn rule_cosh_sinh_identity(arena: &mut Arena) -> Rule {
 
 /// Power of power: `(w1^w2)^w3 → w1^(w2*w3)`.
 ///
-/// Note: strictly valid for positive bases or integer exponents.
-/// May produce incorrect results for negative bases with fractional exponents.
+/// Gated by [`condition_pow_pow`]: the identity holds on the principal
+/// branch only when the *outer* exponent is an integer, the base is known
+/// non-negative, or the *inner* exponent is a real number in `(-1, 1]`.
+/// In particular an integer **inner** exponent does not justify the
+/// rewrite: `(x^2)^(3/2) ≠ x^3` at `x = -2` (8 vs -8).
 fn rule_pow_pow(arena: &mut Arena) -> Rule {
+    // The three wilds are allocated in this order so that
+    // `condition_pow_pow` can recover (base, inner, outer) by sorting the
+    // bindings on `WildId` (the counter is monotone).
     let (w1_expr, w1_id) = arena.wild();
     let (w2_expr, w2_id) = arena.wild();
     let (w3_expr, w3_id) = arena.wild();
+    debug_assert!(w1_id.0 < w2_id.0 && w2_id.0 < w3_id.0);
 
     let inner_pow = arena.pow(w1_expr, w2_expr);
     let outer_pow = arena.pow(inner_pow, w3_expr);
@@ -1434,19 +1441,66 @@ fn rule_pow_pow(arena: &mut Arena) -> Rule {
         wilds,
     };
     let mut r = Rule::new("pow_pow", pattern, template);
-    r.condition = Some(|arena, bindings| {
-        // Only fire when at least one bound value is a known integer
-        for &val in bindings.values() {
-            if let crate::base::node::ExprNode::Num(nid) = arena.node(val) {
-                let r = arena.num(*nid);
-                if r.is_integer() {
-                    return true;
-                }
-            }
-        }
-        false
-    });
+    r.condition = Some(condition_pow_pow);
     r
+}
+
+/// Condition for [`rule_pow_pow`]: is `(base^inner)^outer = base^(inner·outer)`
+/// on the principal branch?
+///
+/// Mirrors SymPy's `Pow._eval_power`.  The rewrite is sound when any of
+/// the following holds:
+///
+/// 1. `outer` is an integer `n`: `(z^a)^n = z^(a·n)` for every complex `z`
+///    (`exp(w)^n = exp(n·w)` for integer `n`).
+/// 2. `base` is known non-negative (`Positive` / `NonNegative` assumption
+///    or a non-negative numeric literal): `log(base)` is real, so all the
+///    principal branches agree.
+/// 3. `inner` is a real number `a` with `-1 < a ≤ 1`: then
+///    `arg(z^a) = a·arg(z) ∈ (-π, π]`, so `log(z^a) = a·log(z)` and the
+///    identity holds for every complex `z` and every `outer`.
+///
+/// Anything else — notably an integer *inner* exponent with a fractional
+/// outer one, `(x^2)^(3/2)`, `cbrt(x^3)`, `sqrt(1/x^2)` — is left alone.
+/// (`sqrt(x^2) → |x|` for real `x` is handled by `powsimp`.)
+fn condition_pow_pow(arena: &Arena, subs: &Substitution) -> bool {
+    // Recover (base, inner, outer) from the bindings: the wilds were
+    // allocated in that order, so their ids are increasing.
+    let mut bound: SmallVec<[(WildId, ExprId); 3]> = subs.iter().map(|(&w, &e)| (w, e)).collect();
+    bound.sort_by_key(|(w, _)| w.0);
+    let [(_, base), (_, inner), (_, outer)] = bound.as_slice() else {
+        return false;
+    };
+
+    // 1. Integer outer exponent.
+    if let ExprNode::Num(nid) = arena.node(*outer)
+        && arena.num(*nid).is_integer()
+    {
+        return true;
+    }
+
+    // 2. Base known non-negative.
+    let base_nonneg = match arena.node(*base) {
+        ExprNode::Num(nid) => !arena.num(*nid).is_negative(),
+        ExprNode::Pi | ExprNode::E => true,
+        _ => {
+            let mut cache = crate::base::assumptions::AssumptionCache::new();
+            cache.query(arena, *base, Props::NONNEGATIVE) == Some(true)
+        }
+    };
+    if base_nonneg {
+        return true;
+    }
+
+    // 3. Inner exponent a real number in (-1, 1].
+    if let ExprNode::Num(nid) = arena.node(*inner) {
+        let a = arena.num(*nid);
+        if *a > crate::base::numeric::qi(-1) && *a <= crate::base::numeric::qi(1) {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Build a basic set of simplification rules.
@@ -2230,20 +2284,80 @@ mod tests {
     }
 
     #[test]
-    fn pow_pow_blocked_for_fractional_exponents() {
+    fn pow_pow_blocked_for_integer_inner_fractional_outer() {
+        // (x^2)^(1/3): inner exponent 2 is an integer but that is the
+        // *unsafe* case — at x = -2 the value is cbrt(4) ≠ (-2)^(2/3).
+        // sympy: (x**2)**Rational(1,3) stays (x**2)**(1/3).
+        let mut arena = Arena::new();
+        let x = arena.symbol("x");
+        let two = arena.int(2);
+        let third = arena.rational(1, 3);
+        let inner = arena.pow(x, two);
+        let expr = arena.pow(inner, third);
+        let rules = basic_rules(&mut arena);
+        let (result, steps) = apply_rules(&mut arena, expr, &rules);
+        assert_eq!(
+            result, expr,
+            "pow_pow must not fire for integer inner / fractional outer exponent"
+        );
+        assert!(steps.iter().all(|s| s.rule_name != "pow_pow"));
+    }
+
+    #[test]
+    fn pow_pow_blocked_for_inner_outside_unit_interval() {
+        // (x^(-2))^(1/2) = sqrt(1/x^2) ≠ 1/x at x = -2 (1/2 vs -1/2).
+        // sympy: sqrt(x**-2) stays sqrt(x**(-2)).
+        let mut arena = Arena::new();
+        let x = arena.symbol("x");
+        let neg_two = arena.int(-2);
+        let half = arena.rational(1, 2);
+        let inner = arena.pow(x, neg_two);
+        let expr = arena.pow(inner, half);
+        let rules = basic_rules(&mut arena);
+        let (result, _) = apply_rules(&mut arena, expr, &rules);
+        assert_eq!(result, expr, "sqrt(x^-2) must not collapse to 1/x");
+    }
+
+    #[test]
+    fn pow_pow_fires_for_inner_in_unit_interval() {
+        // (x^(1/2))^(1/3) → x^(1/6): arg(sqrt(x)) ∈ (-π/2, π/2], so the
+        // principal branches agree for every complex x.
+        // sympy: (x**Rational(1,2))**Rational(1,3) == x**(1/6).
         let mut arena = Arena::new();
         let x = arena.symbol("x");
         let half = arena.rational(1, 2);
         let third = arena.rational(1, 3);
         let inner = arena.pow(x, half);
-        let expr = arena.pow(inner, third); // (x^(1/2))^(1/3)
+        let expr = arena.pow(inner, third);
         let rules = basic_rules(&mut arena);
         let (result, _) = apply_rules(&mut arena, expr, &rules);
-        // Should NOT simplify to x^(1/6) because no exponent is integer
-        assert_eq!(
-            result, expr,
-            "pow_pow should not fire for fractional exponents"
-        );
+        let sixth = arena.rational(1, 6);
+        let expected = arena.pow(x, sixth);
+        assert_eq!(result, expected, "(x^(1/2))^(1/3) should become x^(1/6)");
+    }
+
+    #[test]
+    fn pow_pow_fires_for_nonnegative_base() {
+        // (p^2)^(3/2) → p^3 when p is known positive.
+        // sympy: (xp**2)**Rational(3,2) == xp**3 for xp positive.
+        let mut arena = Arena::new();
+        let p = arena.symbol("p");
+        let sid = match arena.node(p) {
+            ExprNode::Symbol(s) => *s,
+            _ => panic!("symbol expected"),
+        };
+        let mut a = arena.symbol_assumptions(sid);
+        a.assert_true(Props::POSITIVE);
+        arena.set_symbol_assumptions(sid, a);
+        let two = arena.int(2);
+        let three_halves = arena.rational(3, 2);
+        let inner = arena.pow(p, two);
+        let expr = arena.pow(inner, three_halves);
+        let rules = basic_rules(&mut arena);
+        let (result, _) = apply_rules(&mut arena, expr, &rules);
+        let three = arena.int(3);
+        let expected = arena.pow(p, three);
+        assert_eq!(result, expected, "(p^2)^(3/2) should become p^3 for p > 0");
     }
 
     #[test]

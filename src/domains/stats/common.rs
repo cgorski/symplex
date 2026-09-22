@@ -161,7 +161,7 @@ pub(crate) fn f_sf_rational(ctx: &Context, d1: &Q, d2: &Q, f: &Q) -> Ex {
 // ── Reference distributions: numeric quantiles ────────────────────────────────────
 //
 // The `f64` kernel lives in `numdist`; these are the names the data
-// modules import: `Φ`, `φ` and `1 − Φ`.
+// modules import: `Φ` and `1 − Φ` (`φ` is `numdist::norm::pdf`).
 pub(crate) use numdist::norm::{cdf as norm_cdf, sf as norm_sf};
 
 /// `P(|Z| ≥ |z|) = erfc(|z|/√2)`.

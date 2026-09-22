@@ -8,9 +8,12 @@
 //! - **Linear:** `a*x + b = 0` → `x = -b/a` (numeric or symbolic `a`, `b`)
 //! - **Quadratic:** `a*x² + b*x + c = 0` → quadratic formula (numeric or
 //!   symbolic coefficients)
-//! - **Cubic / quartic:** Cardano and Ferrari after rational-root extraction
+//! - **Cubic / quartic:** Cardano and Ferrari on the irreducible factors
 //! - **Binomial:** `a*xⁿ + b = 0` → all `n` complex roots via roots of unity
-//! - **Higher degree:** rational roots, then `RootOf` placeholders
+//! - **Higher degree:** exact factorisation over ℤ (Berlekamp–Zassenhaus);
+//!   rational roots from the linear factors, radicals for the quadratic to
+//!   quartic ones, `RootOf` placeholders only for irreducible factors of
+//!   degree ≥ 5
 //! - **Transcendental:** `exp`, `ln`, `sin`, `cos`, `tan`, hyperbolic and
 //!   inverse functions, `|·|`, constant-base exponentials, all by inversion
 //!   peeling (principal branches, or full periodic families in
@@ -90,8 +93,10 @@ impl SolveOutcome {
 ///   these cases apart.
 ///
 /// Solutions are returned as symbolic expressions ([`ExprId`]) in the
-/// arena, fully canonicalized.  Only principal branches of periodic
-/// functions are returned; see [`solve_general`] for full families.
+/// arena, fully canonicalized, each **distinct** root once whatever its
+/// multiplicity (`(x − 1)² = 0` gives `[1]`).  Only principal branches of
+/// periodic functions are returned; see [`solve_general`] for full
+/// families.
 pub(crate) fn solve(arena: &mut Arena, expr: ExprId, var: ExprId) -> Vec<Solution> {
     solve_classified(arena, expr, var).into_solutions()
 }
@@ -1642,23 +1647,36 @@ fn find_preferred_resolvent_root(resolvent: &Poly, p_rat: &Q) -> Option<Q> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Rational Root Theorem for higher-degree polynomials
+// Exact factorisation over ℤ for higher-degree polynomials
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Find rational roots of a polynomial using the Rational Root Theorem.
+/// The roots of a polynomial over ℚ through its exact factorisation over
+/// ℤ ([`Poly::factor_over_z`]: content, Yun's square-free decomposition,
+/// Berlekamp–Zassenhaus).
 ///
-/// For a polynomial with integer coefficients `aₙxⁿ + … + a₀`, any
-/// rational root `p/q` (in lowest terms) must have `p | a₀` and `q | aₙ`.
+/// The content is dropped first, so `c·p` has exactly the roots of `p` for
+/// every rational `c ≠ 0`, and every irreducible factor is solved once,
+/// whatever its multiplicity: a linear factor *is* a rational root, a
+/// quadratic, cubic or quartic factor goes to the radical formulas, and a
+/// `RootOf(f, k)` placeholder is emitted only for an irreducible `f` of
+/// degree ≥ 5, with `k` running over the roots of *that factor* — never
+/// over a reducible or non-square-free polynomial.  The result lists the
+/// **distinct** roots.
 ///
-/// We convert to integer coefficients by clearing denominators, then
-/// enumerate candidate roots and test them.
+/// This replaced a Rational Root Theorem search whose divisor enumeration
+/// gave up (silently, returning `{1, |n|}`) for a coefficient above `10⁶`,
+/// so that `4·p(x)` lost the rational roots `p(x)` had, and which divided a
+/// found root out once only, leaving its multiplicity in the cofactor
+/// handed to `RootOf`.
+///
+/// Used for degree ≥ 5 and as the first pass of the cubic and quartic
+/// solvers.  A binomial `a·xⁿ + b` of degree ≥ 5 keeps its roots-of-unity
+/// form (before factoring, so `x⁵ − 32` is not split into a linear and a
+/// quartic factor).
 fn solve_rational_roots(arena: &mut Arena, var: ExprId, poly: &Poly) -> Vec<Solution> {
-    // Convert to integer polynomial by clearing denominators.
-    let (int_poly, _scale) = clear_denominators(poly);
-
-    let degree = match int_poly.degree() {
-        Some(d) => d,
-        None => return Vec::new(),
+    let degree = match poly.degree() {
+        Some(d) if d >= 1 => d,
+        _ => return Vec::new(),
     };
 
     // Binomial a·xⁿ + b = 0 (n ≥ 5): all n roots explicitly via roots of
@@ -1670,101 +1688,45 @@ fn solve_rational_roots(arena: &mut Arena, var: ExprId, poly: &Poly) -> Vec<Solu
         return roots;
     }
 
-    // For very high degree, skip rational root search (combinatorial explosion)
-    // but still emit RootOf objects so the solver returns something useful.
-    if degree > 20 {
-        let poly_expr = polybridge::poly_to_expr(arena, poly, var);
-        let mut roots = Vec::new();
-        for i in 0..degree {
-            let idx = arena.int(i as i64);
-            roots.push(Solution {
-                value: arena.intern(ExprNode::RootOf(poly_expr, idx)),
-            });
-        }
-        return roots;
-    }
-
-    let a0 = int_poly.coeff(0).to_integer(); // constant term
-    let an = int_poly.coeff(degree).to_integer(); // leading coeff
-
-    if a0.is_zero() {
-        // x = 0 is a root.  Factor out x and recurse.
-        let mut roots = vec![Solution { value: arena.zero }];
-        // Divide by x: shift coefficients down.
-        let reduced_coeffs: Vec<Q> = poly.coeffs().iter().skip(1).cloned().collect();
-        let reduced = Poly::from_coeffs(reduced_coeffs);
-        if !reduced.is_zero() && !reduced.is_constant() {
-            let more = solve_rational_roots(arena, var, &reduced);
-            roots.extend(more);
-        }
-        return roots;
-    }
-
-    // Enumerate divisors of |a0| and |an|.
-    let divisors_a0 = divisors(&a0.abs());
-    let divisors_an = divisors(&an.abs());
-
-    // Test each candidate p/q.
-    let mut roots = Vec::new();
-    let mut remaining = poly.clone();
-
-    for p in &divisors_a0 {
-        for q in &divisors_an {
-            if remaining.is_constant() {
-                break;
-            }
-            // Test +p/q and -p/q.
-            for sign in &[1i64, -1i64] {
-                let candidate = Ratio::new(p * BigInt::from(*sign), q.clone());
-
-                if remaining.eval(&candidate).is_zero() {
-                    // Found a root!
-                    let value_id = arena.num_ratio(candidate.clone());
-                    roots.push(Solution { value: value_id });
-
-                    // Factor out (x - candidate) from remaining.
-                    let factor = Poly::from_coeffs(vec![-candidate.clone(), Ratio::one()]);
-                    let (quotient, _rem) = remaining.div_rem(&factor);
-                    remaining = quotient;
+    let (_content, factors) = poly.factor_over_z();
+    let mut roots: Vec<Solution> = Vec::new();
+    for (factor, _multiplicity) in &factors {
+        let found = match factor.degree() {
+            None | Some(0) => Vec::new(),
+            Some(1) => solve_linear(arena, factor),
+            Some(2) => solve_quadratic(arena, factor),
+            // Irreducible over ℚ: no rational root to extract, straight to
+            // the radical formulas (which are invariant under the scaling
+            // that made the factor primitive).
+            Some(3) => solve_cubic_cardano(arena, factor),
+            Some(4) => solve_quartic_ferrari(arena, factor),
+            Some(d) => {
+                if let Some(explicit) = try_solve_binomial_rational(arena, factor) {
+                    explicit
+                } else {
+                    let factor_expr = polybridge::poly_to_expr(arena, factor, var);
+                    (0..d)
+                        .map(|i| {
+                            let idx = arena.int(i as i64);
+                            Solution {
+                                value: arena.intern(ExprNode::RootOf(factor_expr, idx)),
+                            }
+                        })
+                        .collect()
                 }
             }
-        }
-    }
-
-    // If remaining has degree ≤ 4, solve it with the appropriate solver.
-    if let Some(d) = remaining.degree() {
-        match d {
-            1 => roots.extend(solve_linear(arena, &remaining)),
-            2 => roots.extend(solve_quadratic(arena, &remaining)),
-            3 => {
-                // Use Cardano directly (skip rational-root re-entry to avoid infinite loop)
-                roots.extend(solve_cubic_cardano(arena, &remaining));
-            }
-            4 => {
-                // Use Ferrari directly
-                roots.extend(solve_quartic_ferrari(arena, &remaining));
-            }
-            _ => {
-                // Degree ≥ 5 irreducible remainder — binomial shortcut, else
-                // emit RootOf objects
-                if let Some(more) = try_solve_binomial_rational(arena, &remaining) {
-                    roots.extend(more);
-                    return roots;
-                }
-                let poly_expr = polybridge::poly_to_expr(arena, &remaining, var);
-                for i in 0..d {
-                    let idx = arena.int(i as i64);
-                    roots.push(Solution {
-                        value: arena.intern(ExprNode::RootOf(poly_expr, idx)),
-                    });
-                }
+        };
+        for sol in found {
+            if !roots.iter().any(|s| s.value == sol.value) {
+                roots.push(sol);
             }
         }
     }
 
     tracing::debug!(
-        rational_roots = roots.len(),
-        "rational roots found via theorem"
+        factors = factors.len(),
+        roots = roots.len(),
+        "roots via factorisation over ℤ"
     );
     roots
 }

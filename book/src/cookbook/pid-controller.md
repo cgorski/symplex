@@ -14,13 +14,13 @@ You have a DC motor modeled as a second-order transfer function. You need to:
 
 A PID controller computes the control signal as:
 
-```
+```text
 u(t) = Kp·e(t) + Ki·∫e(t)dt + Kd·de/dt
 ```
 
 where `e(t)` is the tracking error. In the Laplace domain, the controller transfer function is:
 
-```
+```text
 C(s) = Kp + Ki/s + Kd·s = (Kd·s² + Kp·s + Ki) / s
 ```
 
@@ -60,6 +60,9 @@ let char_poly = expr!(ctx,
 The Routh-Hurwitz conditions are derived directly from the coefficients:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
+# symplex::syms!(ctx; s, Kp, Ki, Kd);
 let a2 = expr!(ctx, 10 + 20*Kd);
 let a1 = expr!(ctx, 20*Kp);
 let a0 = expr!(ctx, 20*Ki);
@@ -73,7 +76,7 @@ let routh_product = (&a2 * &a1).expand();
 
 Substituting Kp=5, Ki=2, Kd=0.5 gives `P(s) = s³ + 20s² + 100s + 40`. symplex finds the three closed-loop poles numerically and confirms all have negative real parts:
 
-```
+```text
 Closed-loop poles:
   p1 = -0.4374 ✓
   p2 = -11.8382 ✓
@@ -89,6 +92,8 @@ The Routh conditions are also verified: `a₂·a₁ = 2000 > a₀ = 40`.
 The PID update equation with the chosen gains is compiled to an optimized Rust function:
 
 ```rust
+# use symplex::prelude::*;
+# let ctx = Context::new();
 symplex::syms!(ctx; error, integral, derivative);
 let pid_output = &ctx.rational(5, 1) * &error
     + &ctx.rational(2, 1) * &integral
@@ -97,11 +102,13 @@ let pid_output = &ctx.rational(5, 1) * &error
 let code = pid_output.eval().to_rust_fn(
     "pid_update", &["error", "integral", "derivative"]
 ).unwrap();
+
 ```
 
 This produces:
 
 ```rust
+#[must_use]
 pub fn pid_update(error: f64, integral: f64, derivative: f64) -> f64 {
     5_f64.mul_add(error, 2_f64.mul_add(integral, (0.5_f64 * derivative)))
 }

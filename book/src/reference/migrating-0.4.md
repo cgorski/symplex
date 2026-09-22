@@ -7,6 +7,7 @@ symplex 0.4 is a minor release with two source-level breaking changes, both mech
 The 0.3 alias was kept without a deprecation warning so that `-D warnings` builds were not broken by a patch release; 0.4 removes it as announced.
 
 ```rust,ignore
+// ignore: the "before" lines show the removed API and cannot compile against the current crate
 // 0.3
 let n = f.roots_count_real(&x, &lo, &hi);
 // 0.4
@@ -19,6 +20,7 @@ let n = Poly::new(&f, &[&x]).unwrap().count_real_roots_in(&lo, &hi);   // Poly
 `LeanOpts` gained `prefer_subtraction`, and more fields may follow in minor releases. A struct literal that names every field no longer compiles; use functional update or the builders.
 
 ```rust,ignore
+// ignore: the "before" lines show the removed API and cannot compile against the current crate
 // 0.3
 let opts = LeanOpts { real_type: "ℚ".into(), ascribe_integers: false };
 // 0.4 — either

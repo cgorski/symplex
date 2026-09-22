@@ -24,7 +24,17 @@
 //! Fractional powers of a series with a zero constant term (Puiseux
 //! expansions such as `√x·sin x`) and logarithmic singularities are
 //! rejected — the caller then keeps an unevaluated `Series` node instead of
-//! producing a wrong polynomial.
+//! producing a wrong polynomial.  Such rejections are *definite*: the
+//! differentiation fallback is never tried for them, because the low-order
+//! derivatives of `x^(5/2)` or `|x²|` all vanish at `0` and would silently
+//! yield the wrong polynomial `0`.
+//!
+//! `|g|` is expanded as `±g` when the sign of `g` near the point is known:
+//! always when the leading exponent of `g` is even (`|x²| = x²`,
+//! `|x − 1| = 1 − x`), and one-sidedly otherwise.  For an odd leading
+//! exponent the two one-sided expansions of the *whole* expression are
+//! compared and accepted only when they agree (`cos|x| = cos x`); `e^|x|`
+//! and `|sin x|` have no two-sided expansion and are rejected.
 //!
 //! # Design
 //!
@@ -35,10 +45,11 @@
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::{One, ToPrimitive, Zero};
+use num_traits::{One, Signed, ToPrimitive, Zero};
 use rustc_hash::FxHashMap;
 
 use crate::base::arena::Arena;
+use crate::base::assumptions::Props;
 use crate::base::bernoulli::bernoulli;
 use crate::base::combinatorics::{binomial, factorial};
 use crate::base::errors::SymplexError;
@@ -285,6 +296,14 @@ impl TSeries {
             self.shift += lead as i64;
         }
         self
+    }
+
+    /// Do `a` and `b` agree on every coefficient of exponent `< order`?
+    /// (Structural comparison of the evaluated coefficients.)
+    fn same(arena: &Arena, a: &TSeries, b: &TSeries, order: i64) -> bool {
+        let lo = a.shift.min(b.shift);
+        let hi = a.known.min(b.known).min(order);
+        (lo..hi).all(|e| a.coeff_at(arena, e) == b.coeff_at(arena, e))
     }
 
     /// Restrict to exponents `< n`.
@@ -721,18 +740,86 @@ fn gen_binomial_expr(arena: &mut Arena, alpha: ExprId, n: usize) -> ExprId {
 // The engine
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// How the variable approaches the expansion point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Side {
+    /// Two-sided (ordinary Maclaurin / Laurent expansion).
+    Both,
+    /// From above only (`x → 0⁺`; used for `x → ±∞` via `t = 1/x`).
+    Above,
+    /// From below only (`x → 0⁻`; used to cross-check `|g|` with odd
+    /// valuation, see [`expand_maclaurin`]).
+    Below,
+}
+
+/// Why a structural expansion step produced no series.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Obstruction {
+    /// No structural rule for this node; the caller may fall back to Taylor
+    /// coefficients by differentiation.
+    Unknown,
+    /// No Laurent expansion exists here (Puiseux exponent, `|x|`-type
+    /// singularity, non-real `|·|` argument).  The differentiation fallback
+    /// must **not** be tried: the low-order derivatives of `x^(5/2)` or
+    /// `|x²|` (`2x·sign(x²)`) all vanish at `0`, so it would silently return
+    /// the wrong polynomial `0`.
+    NoExpansion,
+    /// `|g|` with `g` of odd valuation in a two-sided expansion: the two
+    /// one-sided expansions of `|g|` differ, but the enclosing expression may
+    /// still have a two-sided expansion (`cos|x|`).
+    Kink,
+}
+
 /// Expand `expr` around `var = 0` with all exponents `< order` exact.
 ///
 /// `one_sided` marks expansions where the variable only approaches `0`
 /// from above (used for `x → ±∞` via `t = 1/x`); this permits
 /// `(t^v)^α = t^{vα}` for every integer `vα`, which is not valid two-sided
 /// (`√(x²) = |x|`).
+///
+/// A two-sided expansion that fails only because of `|g|` with odd
+/// valuation (`|x|`, `|sin x|`) is retried from each side separately and
+/// accepted when both sides agree (`cos|x| = cos x`); otherwise there is
+/// no two-sided expansion and the error is returned.
 pub(crate) fn expand_maclaurin(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
     order: i64,
     one_sided: bool,
+) -> Result<TSeries, SymplexError> {
+    let side = if one_sided { Side::Above } else { Side::Both };
+    let mut kink = false;
+    match expand_from_side(arena, expr, var, order, side, &mut kink) {
+        Err(_) if kink => {
+            let above = expand_from_side(arena, expr, var, order, Side::Above, &mut false)?;
+            let below = expand_from_side(arena, expr, var, order, Side::Below, &mut false)?;
+            if TSeries::same(arena, &above, &below, order) {
+                Ok(above)
+            } else {
+                Err(SymplexError::ComputationFailed {
+                    operation: "series",
+                    reason: format!(
+                        "no two-sided expansion: the expansions of {} from the left and from the right differ (|·| with odd valuation)",
+                        arena.display(expr)
+                    ),
+                })
+            }
+        }
+        r => r,
+    }
+}
+
+/// [`expand_maclaurin`] for one [`Side`], with the precision-escalation loop.
+/// Sets `kink` when the failure was an odd-valuation `|g|` in a two-sided
+/// expansion.
+fn expand_from_side(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    order: i64,
+    side: Side,
+    kink: &mut bool,
 ) -> Result<TSeries, SymplexError> {
     // Work with at least a few terms so that the valuation of every
     // sub-expression is visible (at precision 1 the variable itself would
@@ -741,13 +828,13 @@ pub(crate) fn expand_maclaurin(
     let mut last_err = None;
     for _attempt in 0..MAX_PRECISION_ATTEMPTS {
         let mut hidden_valuation = false;
-        match expand_with_precision(arena, expr, var, working, one_sided, &mut hidden_valuation) {
+        match expand_with_precision(arena, expr, var, working, side, &mut hidden_valuation, kink) {
             Ok(ts) if ts.known >= order => return Ok(ts.truncate_known(order)),
             Ok(ts) => {
                 // Precision was lost through poles; increase and retry.
                 working += order - ts.known + 1;
             }
-            Err(e) if hidden_valuation => {
+            Err(e) if hidden_valuation && !*kink => {
                 // A sub-expression's leading term lay beyond the working
                 // window (e.g. `1/(x⁵ + x⁶)` at low order): widen and retry.
                 last_err = Some(e);
@@ -764,14 +851,16 @@ pub(crate) fn expand_maclaurin(
 
 /// One pass of the engine at working precision `n`.  Sets `hidden_valuation`
 /// when some `var`-dependent sub-expression had *no* visible term at this
-/// precision, so a failure may be curable by widening the window.
+/// precision, so a failure may be curable by widening the window; sets
+/// `kink` when the failure was [`Obstruction::Kink`].
 fn expand_with_precision(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
     n: i64,
-    one_sided: bool,
+    side: Side,
     hidden_valuation: &mut bool,
+    kink: &mut bool,
 ) -> Result<TSeries, SymplexError> {
     let order_ids = walk::post_order_ids(arena, expr);
     let mut cache: FxHashMap<ExprId, Option<TSeries>> = FxHashMap::default();
@@ -785,17 +874,21 @@ fn expand_with_precision(
         } else if id == var {
             Some(TSeries::var(arena, n))
         } else {
-            let structural = structural_series(arena, id, var, one_sided, &cache);
-            match structural {
-                Some(s) => Some(s),
-                None => {
+            match structural_series(arena, id, var, side, &cache) {
+                Ok(s) => Some(s),
+                Err(Obstruction::Unknown) => {
                     if id == expr || fallbacks_used < MAX_FALLBACK_NODES {
                         fallbacks_used += 1;
-                        taylor_by_differentiation(arena, id, var, n, one_sided)
+                        taylor_by_differentiation(arena, id, var, n, side)
                     } else {
                         None
                     }
                 }
+                Err(Obstruction::Kink) => {
+                    *kink = true;
+                    return Err(no_expansion_error(arena, id));
+                }
+                Err(Obstruction::NoExpansion) => return Err(no_expansion_error(arena, id)),
             }
         };
         if let Some(s) = &ts
@@ -816,8 +909,24 @@ fn expand_with_precision(
     }
 }
 
-fn child(cache: &FxHashMap<ExprId, Option<TSeries>>, id: ExprId) -> Option<TSeries> {
-    cache.get(&id).cloned().flatten()
+fn no_expansion_error(arena: &Arena, id: ExprId) -> SymplexError {
+    SymplexError::ComputationFailed {
+        operation: "series",
+        reason: format!(
+            "no Laurent expansion of {} at this point (fractional power, |·| or non-real argument)",
+            arena.display(id)
+        ),
+    }
+}
+
+/// The cached series of a child node, or [`Obstruction::Unknown`] when the
+/// child itself could not be expanded.
+fn child(cache: &FxHashMap<ExprId, Option<TSeries>>, id: ExprId) -> Result<TSeries, Obstruction> {
+    cache
+        .get(&id)
+        .cloned()
+        .flatten()
+        .ok_or(Obstruction::Unknown)
 }
 
 /// Combine children's series according to the node type.
@@ -825,11 +934,11 @@ fn structural_series(
     arena: &mut Arena,
     id: ExprId,
     var: ExprId,
-    one_sided: bool,
+    side: Side,
     cache: &FxHashMap<ExprId, Option<TSeries>>,
-) -> Option<TSeries> {
+) -> Result<TSeries, Obstruction> {
     let node = arena.node(id).clone();
-    match node {
+    let analytic = match node {
         ExprNode::Add(ref ch) => {
             let mut acc: Option<TSeries> = None;
             for &c in ch.iter() {
@@ -859,24 +968,25 @@ fn structural_series(
         ExprNode::Pow(base, exp) => {
             let b = child(cache, base)?;
             if !walk::contains(arena, exp, var) {
-                let e = arena.as_num(exp).cloned()?;
+                let e = arena.as_num(exp).cloned().ok_or(Obstruction::Unknown)?;
                 if e.is_integer() {
-                    let ei = e.to_integer().to_i64()?;
+                    let ei = e.to_integer().to_i64().ok_or(Obstruction::Unknown)?;
                     if ei.abs() <= MAX_INT_POWER {
-                        return TSeries::pow_int(arena, &b, ei);
+                        return TSeries::pow_int(arena, &b, ei).ok_or(Obstruction::Unknown);
                     }
                     // Large integer exponents: binomial series with
                     // closed-form coefficients instead of repeated products.
                 }
                 // Rational exponent: Puiseux expansions are refused.
-                return pow_rational(arena, &b, exp, one_sided);
+                return pow_rational(arena, &b, exp, side);
             }
             // b^e with var-dependent exponent: exp(e · ln b).
             let e = child(cache, exp)?;
-            let lnb = apply_ln(arena, &b)?;
+            let lnb = apply_ln(arena, &b).ok_or(Obstruction::Unknown)?;
             let prod = TSeries::mul(arena, &e, &lnb);
             apply_fn(arena, FnKind::Exp, &prod)
         }
+        ExprNode::Abs(a) => return abs_series(arena, &child(cache, a)?, side),
         ExprNode::Exp(a) => apply_fn(arena, FnKind::Exp, &child(cache, a)?),
         ExprNode::Sin(a) => apply_fn(arena, FnKind::Sin, &child(cache, a)?),
         ExprNode::Cos(a) => apply_fn(arena, FnKind::Cos, &child(cache, a)?),
@@ -892,6 +1002,76 @@ fn structural_series(
         ExprNode::LambertW(a) => apply_fn(arena, FnKind::LambertW, &child(cache, a)?),
         ExprNode::Ln(a) => apply_ln(arena, &child(cache, a)?),
         _ => None,
+    };
+    analytic.ok_or(Obstruction::Unknown)
+}
+
+/// `|g|` for a series `g` with leading term `c·x^k`, `c` a real constant of
+/// known sign and all visible coefficients real.
+///
+/// Near `0` the sign of `g` is that of `c·x^k`, so `|g| = ±g`:
+///
+/// * `k` even (including `k = 0`): `sign(c)·g` on both sides;
+/// * `k` odd, one-sided: `sign(c)·g` from above, `−sign(c)·g` from below;
+/// * `k` odd, two-sided: [`Obstruction::Kink`] — no expansion of `|g|`
+///   itself, but the caller re-expands the whole expression from each side.
+///
+/// A constant term of unknown sign (`|a + x|`) is left to the
+/// differentiation fallback (`|a| + sign(a)·x`, correct for real `a ≠ 0`);
+/// an unknown sign with `k ≠ 0`, or a non-real coefficient, is a definite
+/// [`Obstruction::NoExpansion`] — differentiating `|g|` at a zero of `g`
+/// gives `sign(0) = 0` and hence a wrong all-zero polynomial.
+fn abs_series(arena: &mut Arena, g: &TSeries, side: Side) -> Result<TSeries, Obstruction> {
+    let g = g.clone().normalized(arena);
+    // No visible term: the valuation is hidden at this precision.  Fail
+    // definitively so that the caller widens the window instead of
+    // differentiating.
+    let k = g.leading_exponent(arena).ok_or(Obstruction::NoExpansion)?;
+    let c = g.coeff_at(arena, k);
+    let Some(c_positive) = constant_sign(arena, c) else {
+        return Err(if k == 0 {
+            Obstruction::Unknown
+        } else {
+            Obstruction::NoExpansion
+        });
+    };
+    if !g.coeffs.iter().all(|&co| is_known_real(arena, co)) {
+        return Err(Obstruction::NoExpansion);
+    }
+    let flip_below = k.rem_euclid(2) == 1;
+    let positive = match side {
+        Side::Both if flip_below => return Err(Obstruction::Kink),
+        Side::Below if flip_below => !c_positive,
+        Side::Both | Side::Above | Side::Below => c_positive,
+    };
+    Ok(if positive { g } else { TSeries::neg(arena, &g) })
+}
+
+/// `Some(true)` if the var-free constant `c` is known positive, `Some(false)`
+/// if known negative, `None` if zero or of unknown sign.
+fn constant_sign(arena: &Arena, c: ExprId) -> Option<bool> {
+    if let Some(r) = arena.as_num(c) {
+        return if r.is_zero() {
+            None
+        } else {
+            Some(r.is_positive())
+        };
+    }
+    let mut cache = crate::base::assumptions::AssumptionCache::new();
+    if cache.query(arena, c, Props::POSITIVE) == Some(true) {
+        return Some(true);
+    }
+    if cache.query(arena, c, Props::NEGATIVE) == Some(true) {
+        return Some(false);
+    }
+    None
+}
+
+/// Is the var-free constant `c` known to be real?
+fn is_known_real(arena: &Arena, c: ExprId) -> bool {
+    arena.as_num(c).is_some() || {
+        let mut cache = crate::base::assumptions::AssumptionCache::new();
+        cache.query(arena, c, Props::REAL) == Some(true)
     }
 }
 
@@ -1019,25 +1199,35 @@ fn apply_ln(arena: &mut Arena, a: &TSeries) -> Option<TSeries> {
 /// `a^α` for a var-free non-integer exponent: `u0^α · Σ C(α,n) (w/u0)^n`.
 ///
 /// A non-zero valuation `v` is accepted only when `vα` is an integer and the
-/// result is single-valued: always for one-sided expansions, otherwise only
-/// when `v / denom(α)` is even (so that no `|x|` appears).
-fn pow_rational(arena: &mut Arena, a: &TSeries, alpha: ExprId, one_sided: bool) -> Option<TSeries> {
+/// result is single-valued: always for expansions from above, otherwise only
+/// when `v / denom(α)` is even (so that no `|x|` appears).  A genuine
+/// Puiseux series (`x^(5/2)`) or an `|x|` is a definite
+/// [`Obstruction::NoExpansion`]: the differentiation fallback would see only
+/// vanishing derivatives at low orders and return `0`.
+fn pow_rational(
+    arena: &mut Arena,
+    a: &TSeries,
+    alpha: ExprId,
+    side: Side,
+) -> Result<TSeries, Obstruction> {
     let mut a = a.clone().normalized(arena);
-    let v = a.leading_exponent(arena)?;
+    // No visible term: the valuation is hidden at this precision; fail
+    // definitively so that the caller widens the window.
+    let v = a.leading_exponent(arena).ok_or(Obstruction::NoExpansion)?;
     let mut outer_shift = 0i64;
     if v != 0 {
-        let ar = arena.as_num(alpha).cloned()?;
+        let ar = arena.as_num(alpha).cloned().ok_or(Obstruction::Unknown)?;
         let va = &ar * rat_i(v);
         if !va.is_integer() {
-            return None; // genuine Puiseux series
+            return Err(Obstruction::NoExpansion); // genuine Puiseux series
         }
-        if !one_sided && !ar.is_integer() {
-            let q = ar.denom().to_i64()?;
+        if side != Side::Above && !ar.is_integer() {
+            let q = ar.denom().to_i64().ok_or(Obstruction::Unknown)?;
             if (v / q) % 2 != 0 {
-                return None; // would introduce |x|
+                return Err(Obstruction::NoExpansion); // would introduce |x|
             }
         }
-        outer_shift = va.to_integer().to_i64()?;
+        outer_shift = va.to_integer().to_i64().ok_or(Obstruction::Unknown)?;
         a.shift -= v;
         a.known -= v;
     }
@@ -1058,7 +1248,7 @@ fn pow_rational(arena: &mut Arena, a: &TSeries, alpha: ExprId, one_sided: bool) 
     let mut r = TSeries::scale(arena, &s, u0a);
     r.shift += outer_shift;
     r.known += outer_shift;
-    Some(r)
+    Ok(r)
 }
 
 /// Taylor coefficients by repeated differentiation at `0`.
@@ -1073,7 +1263,7 @@ fn taylor_by_differentiation(
     expr: ExprId,
     var: ExprId,
     n: i64,
-    one_sided: bool,
+    side: Side,
 ) -> Option<TSeries> {
     let zero = arena.zero;
     let mut coeffs = Vec::with_capacity(n.max(0) as usize);
@@ -1085,10 +1275,10 @@ fn taylor_by_differentiation(
         let value = if is_finite_constant(arena, value, var) {
             value
         } else {
-            let dir = if one_sided {
-                crate::calculus::limit::Direction::Right
-            } else {
-                crate::calculus::limit::Direction::Both
+            let dir = match side {
+                Side::Above => crate::calculus::limit::Direction::Right,
+                Side::Below => crate::calculus::limit::Direction::Left,
+                Side::Both => crate::calculus::limit::Direction::Both,
             };
             let lim = crate::calculus::limit::limit_dir(arena, current, var, zero, dir).ok()?;
             if !is_finite_constant(arena, lim, var) {
@@ -1314,6 +1504,85 @@ mod tests {
         assert!(series(&mut a, f, x, zero, 5).is_err());
         let l = a.ln(x);
         assert!(series(&mut a, l, x, zero, 5).is_err());
+    }
+
+    #[test]
+    fn puiseux_is_rejected_below_the_singular_derivative() {
+        // x^(5/2): the first three derivatives vanish at 0, so a
+        // differentiation fallback at order 3 would return the wrong
+        // polynomial 0.  The refusal must be definite at every order.
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let zero = a.zero;
+        let e = a.rational(5, 2);
+        let f = a.pow(x, e);
+        assert!(series(&mut a, f, x, zero, 3).is_err());
+        assert!(series(&mut a, f, x, zero, 6).is_err());
+    }
+
+    #[test]
+    fn abs_of_even_valuation_is_signed_argument() {
+        // |x²| = x²; |x − 1| = 1 − x near 0; |−x² + x³| = x² − x³.
+        // sympy: series(Abs(x**2), x, 0, 6) == x**2;
+        //        series(Abs(x - 1), x, 0, 6) == 1 - x
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let zero = a.zero;
+        let two = a.int(2);
+        let x2 = a.pow(x, two);
+        let f = a.abs(x2);
+        let s = series(&mut a, f, x, zero, 6).unwrap();
+        assert_eq!(s, x2);
+        let one = a.one;
+        let xm1 = a.sub(x, one);
+        let g = a.abs(xm1);
+        let s = series(&mut a, g, x, zero, 6).unwrap();
+        let expected = a.sub(one, x);
+        assert_eq!(s, expected);
+        let three = a.int(3);
+        let x3 = a.pow(x, three);
+        let h_arg = a.sub(x3, x2);
+        let h = a.abs(h_arg);
+        let s = series(&mut a, h, x, zero, 6).unwrap();
+        let expected = a.sub(x2, x3);
+        assert_eq!(s, expected);
+    }
+
+    #[test]
+    fn abs_of_odd_valuation_needs_both_sides_to_agree() {
+        // |x| and |sin x| have a kink; cos|x| = cos x and |x|² = x² do not.
+        // sympy: series(cos(Abs(x)), x, 0, 6) == x**4/24 - x**2/2 + 1
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let zero = a.zero;
+        let ax = a.abs(x);
+        assert!(series(&mut a, ax, x, zero, 6).is_err());
+        let sn = a.sin(x);
+        let asn = a.abs(sn);
+        assert!(series(&mut a, asn, x, zero, 6).is_err());
+        let ex = a.exp(ax);
+        assert!(series(&mut a, ex, x, zero, 6).is_err());
+        let cs = a.cos(ax);
+        let s = series(&mut a, cs, x, zero, 6).unwrap();
+        assert_eq!(display(&a, s), "1/24*x^4 - 1/2*x^2 + 1");
+        let two = a.int(2);
+        let ax2 = a.pow(ax, two);
+        let s = series(&mut a, ax2, x, zero, 6).unwrap();
+        let x2 = a.pow(x, two);
+        assert_eq!(s, x2);
+    }
+
+    #[test]
+    fn abs_at_infinity_is_one_sided() {
+        // sympy: series(Abs(x), x, oo, 3) == x; series(Abs(x), x, -oo, 3) == -x
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let ax = a.abs(x);
+        let s = series_at_infinity(&mut a, ax, x, 3, false).unwrap();
+        assert_eq!(s, x);
+        let s = series_at_infinity(&mut a, ax, x, 3, true).unwrap();
+        let neg_x = a.neg(x);
+        assert_eq!(s, neg_x);
     }
 
     #[test]

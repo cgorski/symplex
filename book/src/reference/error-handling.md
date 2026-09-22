@@ -1,6 +1,6 @@
 # Error Handling
 
-symplex has one error type, `SymplexError` (in the prelude; `#[non_exhaustive]`, implements `std::error::Error` via `thiserror`). The symbolic layer never panics except for the cross-context guard; every other failure is either an unevaluated node (see [API Patterns](./api-patterns.md)) or one of the variants below.
+symplex has one error type, `SymplexError` (in the prelude; `#[non_exhaustive]`, implements `std::error::Error` via `thiserror`). The library never calls `unwrap`/`expect`/`panic!`/`unreachable!` on user data (ratchet `tests/unit/test_no_panics.rs`); the remaining `assert!`s on caller-supplied *shapes* (e.g. `Matrix::zeros(0, n)`, `Context::symbol("")`) are documented under `# Panics` on each item and counted by the same ratchet. Every other failure is either an unevaluated node (see [API Patterns](./api-patterns.md)) or one of the variants below.
 
 ## Variants
 
@@ -59,12 +59,12 @@ Three-valued queries (`is_positive`, `equals`, `SetEx::contains`, `Matrix::is_sy
 
 ## Panics
 
-The symbolic layer panics in exactly two situations, both programming errors:
+The library never calls `unwrap`/`expect`/`panic!`/`unreachable!` on user data (ratchet `tests/unit/test_no_panics.rs`); the remaining `assert!`s on caller-supplied *shapes* (e.g. `Matrix::zeros(0, n)`, `Context::symbol("")`) are documented under `# Panics` on each item and counted by the same ratchet. The programming errors that panic by design:
 
 1. **Cross-context mixing** — combining expressions from different `Context`s. The message names the operation.
 2. **Empty `Sum`/`Product` iterators** — `iter.sum::<Ex>()` on an empty iterator has no context to build `0` in. Use `ctx.sum(iter)` / `ctx.product(iter)`, or collect into `Option<Ex>` (which yields `None`).
 
-Library code never uses `unwrap`/`expect` on user data; if you find a panic elsewhere, it is a bug — please report it with the expression that triggered it.
+If you find a panic elsewhere, it is a bug — please report it with the expression that triggered it.
 
 ## Configuration limits
 

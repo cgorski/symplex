@@ -288,7 +288,7 @@ fn main() {
 }
 ```
 
-You rarely need to convert by hand: `Matrix::{rref, rank, nullspace, columnspace, rowspace, left_nullspace, det, inv, solve, solve_least_squares, pinv}`, `linsolve` / `linsolve_matrix` and every function in `symplex::normalforms` detect all-rational input and route through `QMatrix`/`ZMatrix` themselves, returning the same `Matrix` results as before (the RREF is unique, so pivots and entries are identical). A single symbolic entry sends the whole matrix down the expression path. Use the exact types directly when the data is numeric from the start — LP formulations, coefficient matrices from `Poly::coefficient_matrix`, lattices — to skip the arena round trip.
+You rarely need to convert by hand: `Matrix::{rref, rank, nullspace, columnspace, rowspace, left_nullspace, det, inv, solve, solve_least_squares, pinv}` (and, since 0.21, `char_poly_coeffs`, `matmul`, `trace`, `lu`), `linsolve` / `linsolve_matrix` and every function in `symplex::normalforms` detect all-rational input and route through `QMatrix`/`ZMatrix` themselves, returning the same `Matrix` results as before (the RREF is unique, so pivots and entries are identical). A single symbolic entry sends the whole matrix down the expression path. Use the exact types directly when the data is numeric from the start — LP formulations, coefficient matrices from `Poly::coefficient_matrix`, lattices — to skip the arena round trip.
 
 ## Integer normal forms
 

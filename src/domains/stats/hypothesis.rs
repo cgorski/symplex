@@ -80,13 +80,6 @@ use crate::calculus::definite::{QuadOpts, quadrature};
 use crate::domains::optimize::partition_point_by;
 use crate::output::codegen::numeric_rt::lgamma;
 
-/// Moved to [`stats::anova`](super::anova) in 0.18; this re-export is kept
-/// for one release.
-pub use super::anova::{AnovaResult, anova_one_way};
-/// Moved to [`stats::estimation`](super::estimation) in 0.18; this
-/// re-export is kept for one release.
-pub use super::estimation::confidence_interval_mean;
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Small helpers
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2126,20 +2119,6 @@ pub fn z_test_two_proportions(
     Ok(normal_result(ctx, &stat, alt))
 }
 
-/// Renamed to [`z_test_two_proportions`] in 0.18 (test first, then what
-/// it tests, like [`z_test_proportion`] and [`t_test_two_sample`]).
-#[deprecated(since = "0.18.0", note = "renamed to `z_test_two_proportions`")]
-pub fn two_proportion_z_test(
-    ctx: &Context,
-    k1: usize,
-    n1: usize,
-    k2: usize,
-    n2: usize,
-    alt: Alternative,
-) -> Result<TestResult, SymplexError> {
-    z_test_two_proportions(ctx, k1, n1, k2, n2, alt)
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // 3b. Inference on Pearson's r
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3257,7 +3236,7 @@ pub fn rank_biserial(u1: &Q, n1: usize, n2: usize) -> Result<Q, SymplexError> {
 }
 
 /// `η² = SS_between / SS_total` of `k` groups, exact (the same quantity as
-/// [`AnovaResult::eta_squared`]).
+/// [`AnovaResult::eta_squared`](super::anova::AnovaResult::eta_squared)).
 ///
 /// ```
 /// use symplex::linprog::q;

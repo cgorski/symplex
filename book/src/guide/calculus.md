@@ -63,10 +63,10 @@ fn main() {
     println!("{}", expr!(ctx, sin(x)^3).integrate(&x));
     println!("{}", expr!(ctx, 1 / (x^2 + 1)).integrate(&x));     // atan(x)
 
-    // No elementary antiderivative: honest unevaluated form
-    let hard = expr!(ctx, exp(x^2)).integrate(&x);
-    println!("{hard}   unevaluated: {}", hard.has_unevaluated());
-    assert!(expr!(ctx, exp(x^2)).try_integrate(&x).is_err());
+    // No closed form (exp(x^2) has one since 0.9: 1/2*sqrt(pi)*erfi(x)): honest unevaluated form
+    let hard = expr!(ctx, x^x).integrate(&x);
+    println!("{hard}   unevaluated: {}", hard.has_unevaluated());   // Integral(x^x, x)   unevaluated: true
+    assert!(expr!(ctx, x^x).try_integrate(&x).is_err());
 }
 ```
 

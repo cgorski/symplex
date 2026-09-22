@@ -2901,6 +2901,11 @@ impl Expr<Numeric> {
     /// principal branches are returned — use
     /// [`solve_general`](Ex::solve_general) for full solution families.
     ///
+    /// Polynomials are first factored exactly over ℤ, so a constant
+    /// multiple has the same roots, each distinct root is returned once
+    /// whatever its multiplicity, and `RootOf` placeholders only ever refer
+    /// to an irreducible factor of degree ≥ 5.
+    ///
     /// # Errors
     ///
     /// - [`SymplexError::InfiniteSolutions`] when the equation reduces to

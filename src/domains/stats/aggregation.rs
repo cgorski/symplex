@@ -6,9 +6,10 @@
 //!
 //! **Rule:** a function lives here iff it aggregates several raters'
 //! labels into an answer or scores a rater against one.  The confidence
-//! intervals for a proportion ([`proportion_interval`] and its exact
-//! forms) are interval estimates and moved to [`super::estimation`] in
-//! 0.18; they are re-exported here for one release.
+//! intervals for a proportion ([`proportion_interval`](super::estimation::proportion_interval)
+//! and its exact forms) are interval estimates and live in
+//! [`super::estimation`] (moved in 0.18; the transitional re-exports here
+//! were removed in 0.22).
 //!
 //! Labels are category indices `0..n_categories`; a [`LabelTable`] holds
 //! them items × raters with `None` for a missing label.  Votes and
@@ -31,13 +32,6 @@ use num_traits::{One, Zero};
 use super::common::{invalid, qu};
 use crate::base::errors::SymplexError;
 use crate::domains::stats::data::Q;
-
-/// Moved to [`stats::estimation`](super::estimation) in 0.18; this
-/// re-export is kept for one release.
-pub use super::estimation::{
-    IntervalMethod, proportion_interval, proportion_interval_exact, proportion_interval_symbolic,
-    z_for_confidence,
-};
 
 // ── Label tables ─────────────────────────────────────────────────────
 

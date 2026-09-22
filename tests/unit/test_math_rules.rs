@@ -277,14 +277,18 @@ fn neg_exp_ln_different_structure() {
 #[test]
 fn neg_sqrt_sq_wrong_exponent() {
     let ctx = Context::new();
-    // sqrt(x^3) should NOT simplify to |x| (exponent is 3, not 2)
-    // It correctly becomes x^(3/2) instead.
+    // sqrt(x^3) must NOT simplify to |x|, to x, or to x^(3/2): the inner
+    // exponent 3 is an integer, so (x^3)^(1/2) = x^(3/2) fails for x < 0
+    // (sympy: sqrt((-2)**3) = 2*sqrt(2)*I, (-2)**(3/2) = -2*sqrt(2)*I).
+    // Since 0.22 `pow_pow` only fires for an integer *outer* exponent, a
+    // non-negative base, or an inner exponent in (-1, 1].
     let x = ctx.symbol("x");
     let expr = x.powi(3).sqrt();
     let result = format!("{}", expr.simplify());
     assert_ne!(result, "abs(x)", "sqrt(x^3) must not simplify to abs(x)");
     assert_ne!(result, "x", "sqrt(x^3) must not simplify to x");
-    assert_eq!(result, "x^(3/2)");
+    assert_ne!(result, "x^(3/2)", "sqrt(x^3) = x^(3/2) is false for x < 0");
+    assert_simplify_unchanged!(expr);
 }
 
 #[test]
@@ -309,12 +313,18 @@ fn neg_exp_mul_not_both_exp() {
 #[test]
 fn neg_pow_pow_both_fractional() {
     let ctx = Context::new();
-    // (x^(1/2))^(1/3) should NOT become x^(1/6) (no integer exponent)
+    // (x^(1/2))^(1/3) = x^(1/6) holds on the principal branch for every
+    // complex x because the inner exponent lies in (-1, 1] (sympy:
+    // (x**Rational(1,2))**Rational(1,3) == x**Rational(1,6)).  The unsafe
+    // direction is an *integer* inner exponent — see `neg_sqrt_sq_wrong_exponent`.
     let x = ctx.symbol("x");
     let half = ctx.rational(1, 2);
     let third = ctx.rational(1, 3);
     let expr = x.pow(&half).pow(&third);
-    assert_simplify_unchanged!(expr);
+    assert_simplifies_to!(expr, "x^(1/6)");
+    // (x^2)^(1/3) is the unsafe shape and must stay.
+    let unsafe_shape = x.powi(2).pow(&third);
+    assert_simplify_unchanged!(unsafe_shape);
 }
 
 #[test]

@@ -14,7 +14,7 @@
 #
 # Budgets are per stage (seconds); a stage that exceeds its budget is killed
 # and reported as `rc=124`.  The budgets are deliberately tight: the merged
-# doctest binary runs all ~800 doctests in about a second, so a doctest
+# doctest binary runs all ~1,300 doctests in about a second, so a doctest
 # stage that takes minutes means rustdoc fell back to compiling each doctest
 # standalone — which it does silently when *one* doc example fails to
 # compile.  Run `cargo test --doc -- <one doctest name>` and look for
