@@ -1061,3 +1061,713 @@ pub fn gold_screening(
         })
         .collect())
 }
+
+// ── Shared initialisation of the rater models ────────────────────────
+
+/// Every item's posterior spread evenly over its majority-vote winners
+/// (uniform when it has no labels) — the `MajorityVote` start of both
+/// EM models.  Bit-identical to the `DawidSkeneInit::MajorityVote` branch
+/// of [`ds_initial`].
+fn majority_vote_posteriors(table: &LabelTable) -> Vec<Vec<f64>> {
+    let k = table.n_categories;
+    majority_votes(table)
+        .into_iter()
+        .map(|v| {
+            if v.tied.is_empty() {
+                vec![1.0 / k as f64; k]
+            } else {
+                let share = 1.0 / v.tied.len() as f64;
+                (0..k)
+                    .map(|c| if v.tied.contains(&c) { share } else { 0.0 })
+                    .collect()
+            }
+        })
+        .collect()
+}
+
+/// Caller-supplied starting posteriors checked (items × categories,
+/// finite, non-negative, no zero row) and normalised row by row, with
+/// the errors named after `op`.  The same rules as the
+/// `DawidSkeneInit::Posteriors` branch of [`ds_initial`].
+fn normalised_posteriors(
+    op: &'static str,
+    t: &[Vec<f64>],
+    n_items: usize,
+    k: usize,
+) -> Result<Vec<Vec<f64>>, SymplexError> {
+    if t.len() != n_items || t.iter().any(|r| r.len() != k) {
+        return Err(invalid(
+            op,
+            "the initial posteriors must be items × categories",
+        ));
+    }
+    t.iter()
+        .map(|row| {
+            if row.iter().any(|v| !v.is_finite() || *v < 0.0) {
+                return Err(invalid(
+                    op,
+                    "initial posteriors must be finite and non-negative",
+                ));
+            }
+            let s: f64 = row.iter().sum();
+            if s <= 0.0 {
+                return Err(invalid(op, "an initial posterior row sums to zero"));
+            }
+            Ok(row.iter().map(|v| v / s).collect())
+        })
+        .collect()
+}
+
+/// The `max_iter` / `tol` / `smoothing` checks shared by the EM models.
+fn check_em_opts(
+    op: &'static str,
+    max_iter: usize,
+    tol: f64,
+    smoothing: f64,
+) -> Result<(), SymplexError> {
+    if max_iter == 0 {
+        return Err(invalid(op, "max_iter must be positive"));
+    }
+    if !(tol > 0.0 && tol.is_finite()) {
+        return Err(invalid(op, "tol must be a positive finite number"));
+    }
+    if !(smoothing >= 0.0 && smoothing.is_finite()) {
+        return Err(invalid(
+            op,
+            "smoothing must be a non-negative finite number",
+        ));
+    }
+    Ok(())
+}
+
+/// The largest absolute change between two items × categories tables.
+fn max_abs_change(next: &[Vec<f64>], prev: &[Vec<f64>]) -> f64 {
+    next.iter()
+        .zip(prev)
+        .flat_map(|(a, b)| a.iter().zip(b).map(|(x, y)| (x - y).abs()))
+        .fold(0.0, f64::max)
+}
+
+/// The most probable category of every row (the smallest index on a
+/// tie).
+fn argmax_rows(posteriors: &[Vec<f64>]) -> Vec<usize> {
+    posteriors
+        .iter()
+        .map(|row| {
+            row.iter()
+                .enumerate()
+                .fold((0usize, f64::NEG_INFINITY), |(bi, bv), (i, &v)| {
+                    if v > bv { (i, v) } else { (bi, bv) }
+                })
+                .0
+        })
+        .collect()
+}
+
+// ── MAP Dawid–Skene ──────────────────────────────────────────────────
+
+/// Dirichlet priors of [`dawid_skene_map`]: one on the class prevalences
+/// and one, shared by every rater, on each row of the confusion matrix.
+///
+/// The M-step is the posterior *mode*, `(count + α − 1) / Σ (count + α − 1)`,
+/// so every `α` must be `≥ 1` (an `α < 1` puts the mode on the boundary,
+/// where the multinomial log-likelihood is unbounded); `α = 1` everywhere
+/// is the flat prior and reproduces [`dawid_skene`] exactly.  In this
+/// parametrisation the pseudo-count of a cell is `α − 1`, so
+/// `symmetric(k, 1, 1 + s, 1 + s)` is [`dawid_skene`] with
+/// `smoothing = s`.
+///
+/// ```
+/// use symplex::stats::aggregation::DawidSkenePriors;
+///
+/// let p = DawidSkenePriors::symmetric(3, 2.0, 5.0, 1.5);
+/// assert_eq!(p.class_prior_alpha, vec![2.0, 2.0, 2.0]);
+/// assert_eq!(p.confusion_alpha[1], vec![1.5, 5.0, 1.5]);
+/// ```
+#[derive(Clone, Debug, PartialEq)]
+pub struct DawidSkenePriors {
+    /// `α_j` of the `Dirichlet(α)` prior on the class prevalences `p_j`
+    /// (length `n_categories`).
+    pub class_prior_alpha: Vec<f64>,
+    /// `β_jl` of the `Dirichlet(β_j·)` prior on row `j` (true class) of
+    /// every rater's confusion matrix, indexed `[true][observed]`
+    /// (`n_categories × n_categories`, shared across raters).
+    pub confusion_alpha: Vec<Vec<f64>>,
+}
+
+impl DawidSkenePriors {
+    /// The same `class_alpha` for every class, `diag_alpha` on the
+    /// diagonal of the confusion prior (a rater tends to give the true
+    /// label) and `off_diag_alpha` elsewhere.
+    pub fn symmetric(
+        n_categories: usize,
+        class_alpha: f64,
+        diag_alpha: f64,
+        off_diag_alpha: f64,
+    ) -> Self {
+        let k = n_categories;
+        Self {
+            class_prior_alpha: vec![class_alpha; k],
+            confusion_alpha: (0..k)
+                .map(|j| {
+                    (0..k)
+                        .map(|l| if j == l { diag_alpha } else { off_diag_alpha })
+                        .collect()
+                })
+                .collect(),
+        }
+    }
+}
+
+/// The MAP M-step: `p_j = (Σ_i T_ij + a_j) / (I + Σ_j a_j)` and
+/// `π^(k)_jl = (Σ_i T_ij n_ikl + b_jl + s) / Σ_l (…)` with the prior
+/// offsets `a = α − 1`, `b = β − 1` and the extra pseudo-count `s`.  A
+/// row whose denominator is zero (flat prior, no smoothing, a class the
+/// rater never saw) is uniform, as in [`ds_m_step`]; with all offsets
+/// zero the arithmetic is bit-identical to [`ds_m_step`].
+fn ds_map_m_step(
+    counts: &[Vec<Vec<usize>>],
+    t: &[Vec<f64>],
+    j: usize,
+    class_offset: &[f64],
+    conf_offset: &[Vec<f64>],
+    smoothing: f64,
+) -> (Vec<f64>, Vec<Vec<Vec<f64>>>) {
+    let n_items = counts.len();
+    let n_raters = counts[0].len();
+    let class_den = n_items as f64 + class_offset.iter().sum::<f64>();
+    let priors: Vec<f64> = (0..j)
+        .map(|c| (t.iter().map(|row| row[c]).sum::<f64>() + class_offset[c]) / class_den)
+        .collect();
+    let confusion = (0..n_raters)
+        .map(|k| {
+            (0..j)
+                .map(|c| {
+                    let mut num: Vec<f64> = (0..j)
+                        .map(|l| {
+                            counts
+                                .iter()
+                                .zip(t)
+                                .map(|(item, row)| row[c] * item[k][l] as f64)
+                                .sum::<f64>()
+                                + conf_offset[c][l]
+                                + smoothing
+                        })
+                        .collect();
+                    let den: f64 = num.iter().sum();
+                    if den > 0.0 {
+                        for v in &mut num {
+                            *v /= den;
+                        }
+                        num
+                    } else {
+                        vec![1.0 / j as f64; j]
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    (priors, confusion)
+}
+
+/// Maximum-a-posteriori Dawid–Skene: the EM of [`dawid_skene`] with
+/// Dirichlet priors on the class prevalences and on every confusion
+/// row, whose M-step is the posterior mode (the E-step is unchanged):
+///
+/// * M-step: `p_j = (Σ_i T_ij + α_j − 1) / (I + Σ_j (α_j − 1))`,
+///   `π^(k)_jl = (Σ_i T_ij n_ikl + β_jl − 1) / Σ_l (Σ_i T_ij n_ikl + β_jl − 1)`;
+/// * E-step: `T_ij ∝ p_j Π_k Π_l (π^(k)_jl)^{n_ikl}`.
+///
+/// The priors regularise the maximum-likelihood estimate: a rater who
+/// gave a single label has a degenerate MLE row `(1, 0, …)`, the MAP row
+/// `(n + β_jj − 1, β_jl − 1, …) / (n + Σ_l (β_jl − 1))` stays in the
+/// interior.  With every `α = β = 1` the result is bit-identical to
+/// [`dawid_skene`] (same start, same iterations); `opts.smoothing` is
+/// added to every confusion cell on top of `β − 1`, so it may be left at
+/// `0`.  `log_likelihood` is the marginal log-likelihood at the returned
+/// parameters (not the log-posterior).  Deterministic.
+///
+/// ```
+/// use symplex::stats::aggregation::{dawid_skene_map, DawidSkeneOpts, DawidSkenePriors, LabelTable};
+///
+/// // Rater 2 always answers 0: its MLE confusion rows are (1, 0); the MAP rows are not.
+/// let t = LabelTable::complete(&[&[0, 0, 0], &[1, 1, 0], &[0, 0, 0], &[1, 1, 0]], 2)?;
+/// let priors = DawidSkenePriors::symmetric(2, 1.0, 3.0, 2.0);
+/// let ds = dawid_skene_map(&t, &priors, &DawidSkeneOpts::default())?;
+/// assert!(ds.converged);
+/// assert_eq!(ds.labels(), vec![0, 1, 0, 1]);
+/// assert!(ds.confusion[2][1][0] < 1.0 && ds.confusion[2][1][1] > 0.0);
+/// # Ok::<(), symplex::prelude::SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for fewer than two categories, a
+/// prior of the wrong shape or with an entry that is not finite or is
+/// `< 1`, or invalid options.
+pub fn dawid_skene_map(
+    table: &LabelTable,
+    priors: &DawidSkenePriors,
+    opts: &DawidSkeneOpts,
+) -> Result<DawidSkene, SymplexError> {
+    let op = "dawid_skene_map";
+    let j = table.n_categories;
+    if j < 2 {
+        return Err(invalid(op, "needs at least two categories"));
+    }
+    check_em_opts(op, opts.max_iter, opts.tol, opts.smoothing)?;
+    if priors.class_prior_alpha.len() != j {
+        return Err(invalid(
+            op,
+            format!("the class prior needs one α per category ({j})"),
+        ));
+    }
+    if priors.confusion_alpha.len() != j || priors.confusion_alpha.iter().any(|r| r.len() != j) {
+        return Err(invalid(
+            op,
+            format!("the confusion prior must be {j} × {j} (true × observed)"),
+        ));
+    }
+    let valid_alpha = |a: &f64| a.is_finite() && *a >= 1.0;
+    if !priors.class_prior_alpha.iter().all(valid_alpha)
+        || !priors.confusion_alpha.iter().flatten().all(valid_alpha)
+    {
+        return Err(invalid(
+            op,
+            "every prior α must be a finite number ≥ 1 (the M-step is the posterior mode)",
+        ));
+    }
+    let class_offset: Vec<f64> = priors.class_prior_alpha.iter().map(|a| a - 1.0).collect();
+    let conf_offset: Vec<Vec<f64>> = priors
+        .confusion_alpha
+        .iter()
+        .map(|r| r.iter().map(|b| b - 1.0).collect())
+        .collect();
+    let counts = table.to_counts();
+    let mut t = match &opts.init {
+        DawidSkeneInit::MajorityVote => majority_vote_posteriors(table),
+        DawidSkeneInit::Posteriors(t0) => normalised_posteriors(op, t0, table.n_items(), j)?,
+    };
+    let mut iterations = 0;
+    let mut converged = false;
+    for it in 1..=opts.max_iter {
+        let (p, pi) = ds_map_m_step(&counts, &t, j, &class_offset, &conf_offset, opts.smoothing);
+        let next = ds_e_step(&counts, &p, &pi, &t);
+        let delta = max_abs_change(&next, &t);
+        t = next;
+        iterations = it;
+        if delta < opts.tol {
+            converged = true;
+            break;
+        }
+    }
+    let (p, pi) = ds_map_m_step(&counts, &t, j, &class_offset, &conf_offset, opts.smoothing);
+    let log_likelihood = ds_log_likelihood(&counts, &p, &pi);
+    Ok(DawidSkene {
+        posteriors: t,
+        confusion: pi,
+        priors: p,
+        iterations,
+        converged,
+        log_likelihood,
+    })
+}
+
+// ── MACE ─────────────────────────────────────────────────────────────
+
+/// How the [`mace`] EM iteration is started (posteriors over the true
+/// labels; the first M-step takes `P(rater r spammed on item i) =
+/// 1 − T_{i, a_ir}`, the posterior mass off the label the rater gave).
+#[derive(Clone, Debug, PartialEq)]
+pub enum MaceInit {
+    /// Each item's posterior is spread evenly over its majority-vote
+    /// winners (uniform when it has no labels).
+    MajorityVote,
+    /// Every item uniform over the labels: the first M-step then puts
+    /// `θ_r ≈ 1/K` and `ξ_r` at the rater's empirical label frequencies.
+    Uniform,
+    /// Explicit items × categories posteriors (rows are normalised).
+    Posteriors(Vec<Vec<f64>>),
+}
+
+/// Options of [`mace`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct MaceOpts {
+    /// Maximum number of EM iterations (default 1000).
+    pub max_iter: usize,
+    /// Convergence: the largest change of any posterior falls below this
+    /// (default `1e-10`).
+    pub tol: f64,
+    /// Dirichlet add-`δ` smoothing of the M-step: `δ` is added to both
+    /// counts behind `θ_r` and to every cell of `ξ_r` before normalising
+    /// (default `0.1`; `0` is plain maximum likelihood, where a rater who
+    /// never spammed gets `θ_r = 1` exactly).  MACE's reference
+    /// implementation exposes the same constant as `--smoothing`, with
+    /// default `0.01 / K`.
+    pub smoothing: f64,
+    /// Starting posteriors (default majority vote).
+    pub init: MaceInit,
+}
+
+impl Default for MaceOpts {
+    fn default() -> Self {
+        Self {
+            max_iter: 1000,
+            tol: 1e-10,
+            smoothing: 0.1,
+            init: MaceInit::MajorityVote,
+        }
+    }
+}
+
+/// The MACE estimates.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mace {
+    /// Items × categories: `T_it = P(item i has true label t | labels)`.
+    pub posteriors: Vec<Vec<f64>>,
+    /// `θ_r`: the probability that rater `r` copies the true label
+    /// rather than spamming.
+    pub competence: Vec<f64>,
+    /// `ξ_r`: the distribution rater `r` draws a label from when
+    /// spamming (raters × categories).
+    pub spam_distribution: Vec<Vec<f64>>,
+    /// EM iterations performed.
+    pub iterations: usize,
+    /// Whether the posteriors changed by less than `tol` in the last
+    /// iteration.
+    pub converged: bool,
+    /// The marginal log-likelihood
+    /// `Σ_i ln (1/K) Σ_t Π_r (θ_r [a_ir = t] + (1 − θ_r) ξ_r(a_ir))` at the
+    /// returned parameters (the true-label prior is uniform, so an item
+    /// without labels contributes `0`).
+    pub log_likelihood: f64,
+}
+
+impl Mace {
+    /// The most probable label of every item (the smallest index on a
+    /// tie).
+    pub fn labels(&self) -> Vec<usize> {
+        argmax_rows(&self.posteriors)
+    }
+}
+
+/// The rater parameters of the MACE model.
+struct MaceParams {
+    /// `θ_r`.
+    competence: Vec<f64>,
+    /// `ξ_r`, raters × categories.
+    spam: Vec<Vec<f64>>,
+}
+
+/// The responsibilities of one MACE E-step.
+struct MaceResponsibilities {
+    /// `T_it`, items × categories.
+    posteriors: Vec<Vec<f64>>,
+    /// `ρ_ir = P(rater r spammed on item i | labels)`, items × raters
+    /// (`0` where the label is missing).
+    spamming: Vec<Vec<f64>>,
+}
+
+/// The log of every item's per-label likelihoods
+/// `ln Π_r (θ_r [a_ir = t] + (1 − θ_r) ξ_r(a_ir))` for `t = 0..k`.
+fn mace_log_terms(row: &[Option<usize>], k: usize, p: &MaceParams) -> Vec<f64> {
+    let mut lp = vec![0.0f64; k];
+    for (r, a) in row.iter().enumerate() {
+        let Some(a) = a else { continue };
+        let theta = p.competence[r];
+        let spam = (1.0 - theta) * p.spam[r][*a];
+        for (t, v) in lp.iter_mut().enumerate() {
+            *v += ln_or_neg_inf(if t == *a { theta + spam } else { spam });
+        }
+    }
+    lp
+}
+
+/// E-step: `T_it ∝ Π_r (θ_r [a_ir = t] + (1 − θ_r) ξ_r(a_ir))` and
+/// `ρ_ir = 1 − T_{i,a_ir} · θ_r / (θ_r + (1 − θ_r) ξ_r(a_ir))` (a rater
+/// whose label differs from the true one certainly spammed; one whose
+/// label agrees spammed with the posterior odds of the spam branch).  An
+/// item whose labels have probability zero under the parameters gets a
+/// uniform posterior.
+fn mace_e_step(rows: &[Vec<Option<usize>>], k: usize, p: &MaceParams) -> MaceResponsibilities {
+    let mut posteriors = Vec::with_capacity(rows.len());
+    let mut spamming = Vec::with_capacity(rows.len());
+    for row in rows {
+        let lp = mace_log_terms(row, k, p);
+        let m = lp.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let gamma: Vec<f64> = if m.is_finite() {
+            let w: Vec<f64> = lp.iter().map(|&v| (v - m).exp()).collect();
+            let s: f64 = w.iter().sum();
+            w.into_iter().map(|v| v / s).collect()
+        } else {
+            vec![1.0 / k as f64; k]
+        };
+        let rho: Vec<f64> = row
+            .iter()
+            .enumerate()
+            .map(|(r, a)| {
+                let Some(a) = a else { return 0.0 };
+                let theta = p.competence[r];
+                let den = theta + (1.0 - theta) * p.spam[r][*a];
+                let copied = if den > 0.0 {
+                    gamma[*a] * theta / den
+                } else {
+                    0.0
+                };
+                1.0 - copied
+            })
+            .collect();
+        posteriors.push(gamma);
+        spamming.push(rho);
+    }
+    MaceResponsibilities {
+        posteriors,
+        spamming,
+    }
+}
+
+/// M-step with add-`δ` smoothing:
+/// `θ_r = (Σ_i (1 − ρ_ir) + δ) / (n_r + 2δ)` and
+/// `ξ_r(l) = (Σ_i ρ_ir [a_ir = l] + δ) / (Σ_i ρ_ir + Kδ)`, the sums over
+/// the items rater `r` labelled (`n_r` of them).  A zero denominator
+/// (`δ = 0`) gives `θ_r = 1/2`, respectively a uniform `ξ_r`.
+fn mace_m_step(
+    rows: &[Vec<Option<usize>>],
+    k: usize,
+    resp: &MaceResponsibilities,
+    smoothing: f64,
+) -> MaceParams {
+    let n_raters = rows.first().map_or(0, |r| r.len());
+    let mut copied = vec![0.0f64; n_raters];
+    let mut spammed = vec![0.0f64; n_raters];
+    let mut spam_counts = vec![vec![0.0f64; k]; n_raters];
+    for (row, rho) in rows.iter().zip(&resp.spamming) {
+        for (r, a) in row.iter().enumerate() {
+            if let Some(a) = a {
+                copied[r] += 1.0 - rho[r];
+                spammed[r] += rho[r];
+                spam_counts[r][*a] += rho[r];
+            }
+        }
+    }
+    let competence = (0..n_raters)
+        .map(|r| {
+            let den = copied[r] + spammed[r] + 2.0 * smoothing;
+            if den > 0.0 {
+                (copied[r] + smoothing) / den
+            } else {
+                0.5
+            }
+        })
+        .collect();
+    let spam = (0..n_raters)
+        .map(|r| {
+            let den = spammed[r] + k as f64 * smoothing;
+            if den > 0.0 {
+                spam_counts[r]
+                    .iter()
+                    .map(|c| (c + smoothing) / den)
+                    .collect()
+            } else {
+                vec![1.0 / k as f64; k]
+            }
+        })
+        .collect();
+    MaceParams { competence, spam }
+}
+
+/// `Σ_i ln (1/K) Σ_t Π_r P(a_ir | t)`.
+fn mace_log_likelihood(rows: &[Vec<Option<usize>>], k: usize, p: &MaceParams) -> f64 {
+    let ln_k = (k as f64).ln();
+    rows.iter()
+        .map(|row| {
+            let lp = mace_log_terms(row, k, p);
+            let m = lp.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            if !m.is_finite() {
+                return f64::NEG_INFINITY;
+            }
+            m + lp.iter().map(|&v| (v - m).exp()).sum::<f64>().ln() - ln_k
+        })
+        .sum()
+}
+
+/// The MACE model of rater competence (Hovy, Berg-Kirkpatrick, Vaswani &
+/// Hovy 2013, *Learning Whom to Trust with MACE*, NAACL-HLT, 1120–1130):
+/// item `i` has a true label `T_i` drawn uniformly from the `K`
+/// categories; rater `r` either copies it (`S_ir = 0`, probability
+/// `θ_r`) or *spams* (`S_ir = 1`, probability `1 − θ_r`) a label from a
+/// rater-specific distribution `ξ_r` — the generative story of their §2,
+/// whose marginal likelihood (their eq. 1) is
+/// `Π_i Σ_t (1/K) Π_r (θ_r [a_ir = t] + (1 − θ_r) ξ_r(a_ir))`.  Fitted by
+/// the EM of their §3 over the latent `T_i` and `S_ir`:
+///
+/// * E-step: `T_it ∝ Π_r (θ_r [a_ir = t] + (1 − θ_r) ξ_r(a_ir))` and
+///   `ρ_ir = P(S_ir = 1 | labels) = 1 − T_{i,a_ir} θ_r / (θ_r + (1 − θ_r) ξ_r(a_ir))`;
+/// * M-step: `θ_r = (Σ_i (1 − ρ_ir) + δ) / (n_r + 2δ)`,
+///   `ξ_r(l) = (Σ_i ρ_ir [a_ir = l] + δ) / (Σ_i ρ_ir + Kδ)`
+///   (`δ = opts.smoothing`, the add-`δ` of the reference implementation's
+///   `--em` mode),
+///
+/// started from the [`MaceInit`] posteriors with
+/// `ρ_ir = 1 − T_{i,a_ir}` and iterated until the posteriors move by less
+/// than `tol`.  Deterministic — no random restarts; use
+/// `MaceInit::Posteriors` to try several starts.  Missing labels are
+/// skipped; an item nobody labelled has a uniform posterior.
+///
+/// ```
+/// use symplex::stats::aggregation::{mace, LabelTable, MaceOpts};
+///
+/// // Rater 2 answers 0 whatever the item.
+/// let t = LabelTable::complete(
+///     &[&[0, 0, 0], &[1, 1, 0], &[2, 2, 0], &[0, 0, 0], &[1, 1, 0], &[2, 2, 0]],
+///     3,
+/// )?;
+/// let m = mace(&t, &MaceOpts::default())?;
+/// assert!(m.converged);
+/// assert_eq!(m.labels(), vec![0, 1, 2, 0, 1, 2]);
+/// assert!(m.competence[0] > 0.9 && m.competence[2] < 0.5);
+/// assert!(m.spam_distribution[2][0] > 0.8);
+/// # Ok::<(), symplex::prelude::SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for fewer than two categories or
+/// invalid options (including initial posteriors of the wrong shape).
+pub fn mace(table: &LabelTable, opts: &MaceOpts) -> Result<Mace, SymplexError> {
+    let op = "mace";
+    let k = table.n_categories;
+    if k < 2 {
+        return Err(invalid(op, "needs at least two categories"));
+    }
+    check_em_opts(op, opts.max_iter, opts.tol, opts.smoothing)?;
+    let rows = table.rows();
+    let posteriors = match &opts.init {
+        MaceInit::MajorityVote => majority_vote_posteriors(table),
+        MaceInit::Uniform => vec![vec![1.0 / k as f64; k]; table.n_items()],
+        MaceInit::Posteriors(t0) => normalised_posteriors(op, t0, table.n_items(), k)?,
+    };
+    let spamming = rows
+        .iter()
+        .zip(&posteriors)
+        .map(|(row, g)| row.iter().map(|a| a.map_or(0.0, |a| 1.0 - g[a])).collect())
+        .collect();
+    let mut resp = MaceResponsibilities {
+        posteriors,
+        spamming,
+    };
+    let mut iterations = 0;
+    let mut converged = false;
+    for it in 1..=opts.max_iter {
+        let params = mace_m_step(rows, k, &resp, opts.smoothing);
+        let next = mace_e_step(rows, k, &params);
+        let delta = max_abs_change(&next.posteriors, &resp.posteriors);
+        resp = next;
+        iterations = it;
+        if delta < opts.tol {
+            converged = true;
+            break;
+        }
+    }
+    let params = mace_m_step(rows, k, &resp, opts.smoothing);
+    let log_likelihood = mace_log_likelihood(rows, k, &params);
+    Ok(Mace {
+        posteriors: resp.posteriors,
+        competence: params.competence,
+        spam_distribution: params.spam,
+        iterations,
+        converged,
+        log_likelihood,
+    })
+}
+
+// ── Confusion against gold, posterior entropy ────────────────────────
+
+/// Every rater's exact confusion matrix against gold labels: entry
+/// `[gold][given]` is the fraction of the rater's answered gold items of
+/// class `gold` that were labelled `given` (rows sum to `1`; a gold class
+/// the rater never answered gets a uniform row, the convention of
+/// [`dawid_skene`]).  `gold[i]` is the gold label of item `i` or `None`
+/// for a non-gold item.  Convert with `to_f64` to initialise or check
+/// the confusion matrices of [`dawid_skene`] / [`dawid_skene_map`].
+///
+/// ```
+/// use symplex::stats::aggregation::{rater_confusion_from_gold, LabelTable};
+/// use symplex::linprog::{q, qi};
+///
+/// let t = LabelTable::from_rows(
+///     &[&[Some(0), Some(1)], &[Some(0), Some(0)], &[Some(1), None], &[Some(1), Some(1)]],
+///     2,
+/// )?;
+/// let c = rater_confusion_from_gold(&t, &[Some(0), Some(0), Some(1), None])?;
+/// assert_eq!(c[0], vec![vec![qi(1), qi(0)], vec![qi(0), qi(1)]]);
+/// assert_eq!(c[1], vec![vec![q(1, 2), q(1, 2)], vec![q(1, 2), q(1, 2)]]);
+/// # Ok::<(), symplex::prelude::SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] if `gold` does not have one entry
+/// per item or a gold label is out of range.
+pub fn rater_confusion_from_gold(
+    table: &LabelTable,
+    gold: &[Option<usize>],
+) -> Result<Vec<Vec<Vec<Q>>>, SymplexError> {
+    let op = "rater_confusion_from_gold";
+    if gold.len() != table.n_items() {
+        return Err(invalid(op, "one gold entry per item is needed"));
+    }
+    if gold.iter().flatten().any(|&g| g >= table.n_categories) {
+        return Err(invalid(op, "a gold label is not a category"));
+    }
+    let k = table.n_categories;
+    Ok((0..table.n_raters)
+        .map(|r| {
+            let mut counts = vec![vec![0usize; k]; k];
+            for (row, g) in table.rows.iter().zip(gold) {
+                if let (Some(a), Some(g)) = (row[r], g) {
+                    counts[*g][a] += 1;
+                }
+            }
+            counts
+                .into_iter()
+                .map(|row| {
+                    let total: usize = row.iter().sum();
+                    if total == 0 {
+                        vec![qu(1) / qu(k); k]
+                    } else {
+                        row.into_iter().map(|c| qu(c) / qu(total)).collect()
+                    }
+                })
+                .collect()
+        })
+        .collect())
+}
+
+/// The Shannon entropy in bits, `−Σ_t p_t log₂ p_t`, of every row of a
+/// posterior table — `0` for a certain item, `log₂ K` for a uniform one —
+/// to rank items by how much the raters left undecided.  Each row is
+/// normalised by its positive mass first (entries `≤ 0` contribute
+/// nothing); a row without positive mass has entropy `0`.
+///
+/// ```
+/// use symplex::stats::aggregation::posterior_entropy;
+///
+/// let h = posterior_entropy(&[vec![1.0, 0.0], vec![0.5, 0.5], vec![0.5, 0.25, 0.25]]);
+/// assert_eq!(h, vec![0.0, 1.0, 1.5]);
+/// ```
+pub fn posterior_entropy(posteriors: &[Vec<f64>]) -> Vec<f64> {
+    posteriors
+        .iter()
+        .map(|row| {
+            let mass: f64 = row.iter().filter(|v| **v > 0.0).sum();
+            if !(mass > 0.0 && mass.is_finite()) {
+                return 0.0;
+            }
+            row.iter().filter(|v| **v > 0.0).fold(0.0, |h, v| {
+                let p = v / mass;
+                h - p * p.log2()
+            })
+        })
+        .collect()
+}

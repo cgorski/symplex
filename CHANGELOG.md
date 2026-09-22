@@ -6,6 +6,66 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.20.0] - 2026-09-21
+
+Multinomial and ordinal logistic regression, Bayesian rater models (MAP
+Dawid–Skene, MACE), and the exact linear-algebra kernel shared between the
+matrices and the LP solver — with width escalation (`i64 → i128 → 256-bit
+→ BigInt`) now available to `QMatrix`: `rref` on a 40×48 matrix is 4.7×
+faster, results identical.  Additive except the `i128` verification below.
+LP pivot paths and Lean certificates are byte-identical.
+
+### Added
+
+- **`regression::mnlogit`** — multinomial logit (reference category 0,
+  Newton–Raphson on the full `(k−1)·p` vector with the exact block Hessian,
+  step-halving, separation named by category and covariate).  `MnLogit`
+  with `coefficients`/`standard_errors`/`z_values`/`p_values` as
+  `[category−1][param]`, `cov_params`, `log_likelihood`,
+  `null_log_likelihood`, `pseudo_r_squared`, `predict_proba`, `predict`,
+  `relative_risk_ratios`, `conf_int`, `llr`/`llr_test`, `aic`, `bic`.
+- **`regression::ologit`** — proportional-odds (cumulative-link) logit
+  `P(Y ≤ j | x) = σ(θ_j − xβ)` with the *actual* thresholds reported
+  (statsmodels' `OrderedModel` reports `θ₁` and log-differences; the
+  transform is verified in the tests and standard errors are moved by the
+  delta method), `OrderedLogit` with `thresholds`, `coefficients`,
+  `cumulative_proba`, `predict_proba`, `predict`, `odds_ratios`,
+  `conf_int`, `llr_test`, `aic`, `bic`.  34 tests against `statsmodels`
+  (Newton fits at `tol = 1e-12`) and a 40-digit mpmath Hessian.
+- **`aggregation::dawid_skene_map`** with `DawidSkenePriors` (Dirichlet
+  priors on class prevalence and on the shared confusion rows; posterior-mode
+  M-step; all-ones priors reproduce `dawid_skene` bit for bit) and
+  **`aggregation::mace`** (Hovy et al. 2013: each rater copies the truth
+  with competence `θ_r` or spams from `ξ_r`; `MaceOpts`, `MaceInit`,
+  `Mace { posteriors, competence, spam_distribution, log_likelihood, … }`).
+  On a 200-item synthetic table MACE labels 199/200 correctly against
+  majority vote's 164/200.  Also `rater_confusion_from_gold` (exact
+  per-rater confusion against gold) and `posterior_entropy` (bits, to rank
+  items by uncertainty).
+- **`markov`**: `impl Display for MarkovChain` (rows of exact rationals,
+  labelled when labels exist) and `limiting_distribution()` (`Some(π)` iff
+  the chain is irreducible and aperiodic).
+- **`domains::exact_kernel`** (crate-private): the `Cell` trait (`i64`,
+  `i128`, 256-bit, `BigInt`), the single-pivot fraction-free row update,
+  a resumable Gauss–Jordan `Elimination` and `Bareiss` determinant shared
+  by `exact_matrix`, `polytope` and `linprog`'s tableau.  `QMatrix::{rref,
+  rank, det, inv, solve, nullspace, …}` start in `i64` cells and escalate
+  on overflow, converting the pre-overflow state instead of restarting:
+  `qmatrix/rref/40` 6.05 ms → 1.28 ms, `det/40` 2.1 ms → 0.26 ms,
+  `inv/40` 12.5 ms → 4.6 ms.
+
+### Changed
+
+- The fraction-free kernel's exactness check runs in **release** builds
+  (was `debug_assert!`): every exact division is verified (`BigInt`: the
+  remainder of the `div_rem` already computed; fixed-width cells: a
+  checking multiply).  For `i128` cells that adds a 256-bit verification
+  multiply: `+3 %` on `rref/20`, `+29 %` on an `i128`-bound LP
+  (`linprog/maximize/20x50`), `+3–4 %` on the certificate tree build.  An
+  inexact division is now `ComputationFailed("internal invariant
+violated…")` on the fallible operations and a logged fall-back to plain
+  rational Gauss–Jordan on the infallible ones — never a wrong number.
+
 ## [0.19.0] - 2026-09-21
 
 Cox proportional hazards (`stats::cox`), an exact fast path inside `Poly`

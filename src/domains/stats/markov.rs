@@ -36,6 +36,8 @@
 //!   can reach one; its transient states are then listed in ascending order
 //!   in the fundamental matrix and the absorption probabilities.
 
+use std::fmt;
+
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
@@ -806,5 +808,100 @@ impl MarkovChain {
             path.push(state);
         }
         Ok(path)
+    }
+
+    // ── Limits ──────────────────────────────────────────────────────────────────
+
+    /// The limiting distribution `lim_{n→∞} Pⁿ[i][·]`, the same for every
+    /// start `i`: `Some(π)` iff the chain is irreducible **and**
+    /// aperiodic ([`is_regular`](Self::is_regular)), when every row of
+    /// `Pⁿ` converges to the unique stationary distribution `π`;
+    /// `None` otherwise.
+    ///
+    /// * *Periodic* irreducible chains (a period-2 walk on two states)
+    ///   have a stationary distribution but `Pⁿ` oscillates and does not
+    ///   converge.
+    /// * *Reducible* chains — including every absorbing chain — may well
+    ///   have `Pⁿ` converge, but the limit row depends on the starting
+    ///   state (the gambler ruined from `1` and from `3` end up in
+    ///   different places), so there is no single limiting distribution:
+    ///   see [`absorption_probabilities`](Self::absorption_probabilities)
+    ///   for the start-dependent limit and
+    ///   [`stationary_distributions`](Self::stationary_distributions)
+    ///   for the extreme stationary vectors.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::stats::markov::MarkovChain;
+    /// use symplex::linprog::{q, qi};
+    ///
+    /// let ergodic = MarkovChain::new(QMatrix::new(vec![vec![q(1, 2), q(1, 2)], vec![q(1, 4), q(3, 4)]])?)?;
+    /// assert_eq!(ergodic.limiting_distribution()?, Some(vec![q(1, 3), q(2, 3)]));
+    /// let periodic = MarkovChain::new(QMatrix::new(vec![vec![qi(0), qi(1)], vec![qi(1), qi(0)]])?)?;
+    /// assert_eq!(periodic.limiting_distribution()?, None);
+    /// # Ok::<(), SymplexError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::ComputationFailed`] if the stationary distribution
+    /// of a regular chain cannot be computed (it always exists).
+    pub fn limiting_distribution(&self) -> Result<Option<Vec<Q>>, SymplexError> {
+        if !self.is_regular() {
+            return Ok(None);
+        }
+        self.stationary_distribution().map(Some)
+    }
+}
+
+impl fmt::Display for MarkovChain {
+    /// The transition matrix as rows of exact rationals in the layout of
+    /// [`QMatrix`] (`[[a, b]]` for one state, otherwise one right-aligned
+    /// row per line).  With state labels each row is prefixed by its
+    /// label, right-aligned to a common width:
+    ///
+    /// ```text
+    /// [
+    ///   sunny: [1/2, 1/2],
+    ///    rain: [  1,   0]
+    /// ]
+    /// ```
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Some(labels) = &self.labels else {
+            return write!(f, "{}", self.p);
+        };
+        let n = self.n_states();
+        let cells: Vec<Vec<String>> = self
+            .p
+            .rows()
+            .map(|row| row.iter().map(ToString::to_string).collect())
+            .collect();
+        let width = |j: usize| {
+            cells
+                .iter()
+                .map(|r| r[j].chars().count())
+                .max()
+                .unwrap_or(0)
+        };
+        let widths: Vec<usize> = (0..n).map(width).collect();
+        let label_width = labels.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+        writeln!(f, "[")?;
+        for (i, (label, row)) in labels.iter().zip(&cells).enumerate() {
+            let pad = label_width - label.chars().count();
+            write!(f, "  {}{label}: [", " ".repeat(pad))?;
+            for (j, cell) in row.iter().enumerate() {
+                if j > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{}{cell}", " ".repeat(widths[j] - cell.chars().count()))?;
+            }
+            write!(f, "]")?;
+            if i + 1 < n {
+                writeln!(f, ",")?;
+            } else {
+                writeln!(f)?;
+            }
+        }
+        write!(f, "]")
     }
 }

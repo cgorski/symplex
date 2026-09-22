@@ -42,7 +42,7 @@ use crate::api::expr::Ex;
 use crate::api::poly_ex::Poly;
 use crate::base::errors::SymplexError;
 use crate::base::interval::Bounds;
-use crate::domains::exact_matrix::fraction_free_gauss_jordan;
+use crate::domains::exact_kernel::scaled_rref;
 use crate::domains::linprog::{LpProblem, LpStatus, Q};
 use crate::poly::multipoly::{GrevLex, MultiPoly};
 
@@ -917,7 +917,7 @@ impl Polytope {
                 aug.extend(r.a.iter().cloned());
                 aug.push(-&r.b);
             }
-            let (pivots, d) = fraction_free_gauss_jordan(&mut aug, n, width, n);
+            let (pivots, d) = scaled_rref(&mut aug, n, width, n);
             if pivots.len() == n && !d.is_zero() {
                 // Every row is d · (eᵢ | xᵢ): the solution is X / d.
                 let negative = d.is_negative();
@@ -1209,7 +1209,7 @@ fn affine_rank<'a>(mut points: impl Iterator<Item = &'a [Q]>, n: usize) -> usize
     if rows == 0 {
         return 0;
     }
-    fraction_free_gauss_jordan(&mut a, rows, n, n).0.len()
+    scaled_rref(&mut a, rows, n, n).0.len()
 }
 
 /// Rank of the normals of the half-spaces `idx` (indices into `halfspaces`,
@@ -1219,7 +1219,7 @@ fn normals_rank(halfspaces: &[HalfSpace], idx: &[usize], n: usize) -> usize {
     for &i in idx {
         push_integer_row(&mut a, &halfspaces[i].coeffs);
     }
-    fraction_free_gauss_jordan(&mut a, idx.len(), n, n).0.len()
+    scaled_rref(&mut a, idx.len(), n, n).0.len()
 }
 
 /// `vol_n` of the polytope with H-representation `halfspaces` and vertex

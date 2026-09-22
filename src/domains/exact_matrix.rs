@@ -57,6 +57,7 @@ use crate::base::numeric::Q;
 use crate::domains::decompositions::{
     HermiteNormalForm, Hessenberg, LllReduction, RankDecomposition, SmithNormalForm,
 };
+use crate::domains::exact_kernel::{KernelError, scaled_rref, try_det, try_scaled_rref};
 use crate::domains::matrix::Matrix;
 use crate::domains::ntheory::{gcdex, mod_inverse};
 
@@ -879,129 +880,30 @@ fn ryser_permanent<T: ExactScalar>(data: &[T], n: usize) -> T {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Fraction-free Gauss–Jordan kernel (shared by ℤ rank and every ℚ operation)
+// Fraction-free kernels (shared with the polytopes and the simplex tableau)
 // ═══════════════════════════════════════════════════════════════════════════
+//
+// Every ℤ rank and every ℚ elimination below runs on the `Cell`-generic
+// kernel in `exact_kernel`: Bareiss's fraction-free Gauss–Jordan
+// (`scaled_rref` / `try_scaled_rref`) and the Bareiss determinant
+// (`try_det`), both starting on `i64` cells and widening to `i128`,
+// 256-bit and finally `BigInt` cells as the minors grow, with every exact
+// division verified in release builds.  The fallible operations map a
+// verification failure to `ComputationFailed`; the infallible ones
+// (`rank`, `rref`) fall back to plain Gauss–Jordan over ℚ inside the kernel.
 
-/// Bareiss's fraction-free Gauss–Jordan elimination on a row-major integer
-/// matrix.  Pivots are taken from columns `0..pivot_limit` only.
-///
-/// On return every row equals `d · (row of the rational reduced row-echelon
-/// form)` for the returned `d` (the last pivot; it may be negative), so
-/// the RREF entry `(i, j)` is `a[i][j] / d`.  Rows without a pivot are zero
-/// in columns `< pivot_limit`; in the remaining columns they hold `d` times
-/// the reduced right-hand side (the inconsistency residual of an augmented
-/// system).  Every division is exact (Sylvester's identity: all
-/// intermediate entries are minors of the input).
-///
-/// Returns the pivot columns (their count is the rank of the first
-/// `pivot_limit` columns) and `d`.
-pub(crate) fn fraction_free_gauss_jordan(
-    a: &mut [BigInt],
-    nrows: usize,
-    ncols: usize,
-    pivot_limit: usize,
-) -> (Vec<usize>, BigInt) {
-    let mut d = BigInt::one();
-    let mut pivots: Vec<usize> = Vec::new();
-    let mut pr = 0usize;
-    for c in 0..pivot_limit.min(ncols) {
-        if pr >= nrows {
-            break;
-        }
-        let Some(p) = (pr..nrows).find(|&i| !a[i * ncols + c].is_zero()) else {
-            continue;
-        };
-        if p != pr {
-            let (head, tail) = a.split_at_mut(p * ncols);
-            head[pr * ncols..(pr + 1) * ncols].swap_with_slice(&mut tail[..ncols]);
-        }
-        // Take the pivot row out so the other rows can be updated against it.
-        let prow: Vec<BigInt> = a[pr * ncols..(pr + 1) * ncols]
-            .iter_mut()
-            .map(std::mem::take)
-            .collect();
-        let pv = prow[c].clone();
-        for i in 0..nrows {
-            if i == pr {
-                continue;
+/// `ComputationFailed` for a kernel that found a fraction-free division
+/// inexact (a violated internal invariant).
+fn kernel_failed(operation: &'static str, err: KernelError) -> SymplexError {
+    failed(
+        operation,
+        match err {
+            KernelError::Inexact => {
+                "internal invariant violated: fraction-free elimination met an inexact division"
             }
-            let row = &mut a[i * ncols..(i + 1) * ncols];
-            let f = std::mem::take(&mut row[c]);
-            if f.is_zero() {
-                // Row keeps its rational value: rescale d_old → d_new = pv.
-                for v in row.iter_mut() {
-                    if !v.is_zero() {
-                        let t = &*v * &pv;
-                        debug_assert!(
-                            (&t % &d).is_zero(),
-                            "fraction-free elimination: inexact division"
-                        );
-                        *v = t / &d;
-                    }
-                }
-                continue;
-            }
-            for (j, (v, p)) in row.iter_mut().zip(prow.iter()).enumerate() {
-                if j == c {
-                    continue;
-                }
-                let t = &*v * &pv - &f * p;
-                if t.is_zero() {
-                    *v = t;
-                } else {
-                    debug_assert!(
-                        (&t % &d).is_zero(),
-                        "fraction-free elimination: inexact division"
-                    );
-                    *v = t / &d;
-                }
-            }
-        }
-        a[pr * ncols..(pr + 1) * ncols]
-            .iter_mut()
-            .zip(prow)
-            .for_each(|(slot, v)| *slot = v);
-        d = pv;
-        pivots.push(c);
-        pr += 1;
-    }
-    (pivots, d)
-}
-
-/// Bareiss fraction-free determinant of a square row-major integer matrix
-/// (consumes the buffer).
-fn bareiss_det(mut a: Vec<BigInt>, n: usize) -> BigInt {
-    if n == 0 {
-        return BigInt::one();
-    }
-    let mut sign = false;
-    let mut prev = BigInt::one();
-    for k in 0..n - 1 {
-        if a[k * n + k].is_zero() {
-            let Some(p) = ((k + 1)..n).find(|&i| !a[i * n + k].is_zero()) else {
-                return BigInt::zero();
-            };
-            let (head, tail) = a.split_at_mut(p * n);
-            head[k * n..(k + 1) * n].swap_with_slice(&mut tail[..n]);
-            sign = !sign;
-        }
-        let pivot = a[k * n + k].clone();
-        for i in (k + 1)..n {
-            let aik = std::mem::take(&mut a[i * n + k]);
-            for j in (k + 1)..n {
-                let t = if aik.is_zero() {
-                    &a[i * n + j] * &pivot
-                } else {
-                    &a[i * n + j] * &pivot - &aik * &a[k * n + j]
-                };
-                debug_assert!((&t % &prev).is_zero(), "Bareiss: inexact division");
-                a[i * n + j] = if prev.is_one() { t } else { t / &prev };
-            }
-        }
-        prev = pivot;
-    }
-    let d = std::mem::take(&mut a[n * n - 1]);
-    if sign { -d } else { d }
+            KernelError::Overflow => "internal invariant violated: fixed-width cells overflowed",
+        },
+    )
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1042,7 +944,7 @@ impl ZMatrix {
     /// ```
     pub fn det(&self) -> Result<BigInt, SymplexError> {
         self.require_square("det")?;
-        Ok(bareiss_det(self.data.clone(), self.nrows))
+        try_det(self.data.clone(), self.nrows).map_err(|e| kernel_failed("det", e))
     }
 
     /// Rank over ℚ (equivalently over ℤ as a lattice).
@@ -1056,7 +958,7 @@ impl ZMatrix {
     /// ```
     pub fn rank(&self) -> usize {
         let mut a = self.data.clone();
-        fraction_free_gauss_jordan(&mut a, self.nrows, self.ncols, self.ncols)
+        scaled_rref(&mut a, self.nrows, self.ncols, self.ncols)
             .0
             .len()
     }
@@ -1482,7 +1384,8 @@ impl ZMatrix {
                 format!("modulus must be at least 2, got {m}"),
             ));
         }
-        let det = bareiss_det(self.data.clone(), self.nrows);
+        let det =
+            try_det(self.data.clone(), self.nrows).map_err(|e| kernel_failed("inv_mod", e))?;
         let Some(det_inv) = mod_inverse(det.mod_floor(m), m.clone()) else {
             return Err(invalid(
                 "inv_mod",
@@ -1818,10 +1721,29 @@ impl QMatrix {
 
     /// RREF restricted to pivots in columns `0..pivot_limit`.  Rows without
     /// a pivot are zero in those columns and carry the reduced residual in
-    /// the rest (see [`fraction_free_gauss_jordan`]).
+    /// the rest (see [`Elimination`](crate::domains::exact_kernel::Elimination)).
     pub(crate) fn rref_limited(&self, pivot_limit: usize) -> (QMatrix, Vec<usize>) {
         let (mut a, _) = self.integer_rows();
-        let (pivots, d) = fraction_free_gauss_jordan(&mut a, self.nrows, self.ncols, pivot_limit);
+        let (pivots, d) = scaled_rref(&mut a, self.nrows, self.ncols, pivot_limit);
+        (self.with_scaled(a, &d), pivots)
+    }
+
+    /// [`rref_limited`](Self::rref_limited) that reports a violated
+    /// exactness invariant instead of falling back — for the fallible
+    /// operations (`solve`, `inv`).
+    fn try_rref_limited(
+        &self,
+        operation: &'static str,
+        pivot_limit: usize,
+    ) -> Result<(QMatrix, Vec<usize>), SymplexError> {
+        let (mut a, _) = self.integer_rows();
+        let (pivots, d) = try_scaled_rref(&mut a, self.nrows, self.ncols, pivot_limit)
+            .map_err(|e| kernel_failed(operation, e))?;
+        Ok((self.with_scaled(a, &d), pivots))
+    }
+
+    /// The matrix of the same shape whose entries are `a[k] / d`.
+    fn with_scaled(&self, a: Vec<BigInt>, d: &BigInt) -> QMatrix {
         let data: Vec<Q> = a
             .into_iter()
             .map(|v| {
@@ -1832,14 +1754,11 @@ impl QMatrix {
                 }
             })
             .collect();
-        (
-            QMatrix {
-                data,
-                nrows: self.nrows,
-                ncols: self.ncols,
-            },
-            pivots,
-        )
+        QMatrix {
+            data,
+            nrows: self.nrows,
+            ncols: self.ncols,
+        }
     }
 
     /// Reduced row-echelon form and the pivot columns.
@@ -1866,7 +1785,7 @@ impl QMatrix {
     /// Rank.
     pub fn rank(&self) -> usize {
         let (mut a, _) = self.integer_rows();
-        fraction_free_gauss_jordan(&mut a, self.nrows, self.ncols, self.ncols)
+        scaled_rref(&mut a, self.nrows, self.ncols, self.ncols)
             .0
             .len()
     }
@@ -1927,7 +1846,7 @@ impl QMatrix {
     pub fn det(&self) -> Result<Q, SymplexError> {
         self.require_square("det")?;
         let (a, scales) = self.integer_rows();
-        let dz = bareiss_det(a, self.nrows);
+        let dz = try_det(a, self.nrows).map_err(|e| kernel_failed("det", e))?;
         let denom: BigInt = scales.into_iter().product();
         Ok(Ratio::new(dz, denom))
     }
@@ -1962,7 +1881,7 @@ impl QMatrix {
             ));
         }
         let aug = QMatrix::hstack(&[self, b])?;
-        let (r, pivots) = aug.rref_limited(n);
+        let (r, pivots) = aug.try_rref_limited("solve", n)?;
         if pivots.len() != n {
             return Err(failed(
                 "solve",

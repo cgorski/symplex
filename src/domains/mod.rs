@@ -5,6 +5,7 @@ pub mod decompositions;
 pub mod diophantine;
 pub mod discrete;
 pub mod dynamics;
+pub(crate) mod exact_kernel;
 pub(crate) mod exact_matrix;
 pub(crate) mod linalg;
 pub mod linprog;

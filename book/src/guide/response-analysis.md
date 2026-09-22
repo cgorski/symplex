@@ -82,6 +82,42 @@ information; `dawid_skene_counts` takes replicate ratings.  For pairwise
 judgements ("is A better than B?") `bradley_terry(&wins, &opts)` fits the
 Bradley–Terry model by Hunter's MM algorithm.
 
+### Priors on the raters: MAP Dawid–Skene and MACE
+
+With few items per rater the maximum-likelihood confusion matrices
+degenerate — a rater who only ever answered `0` gets the rows `(1, 0, 0)`
+and then carries no information at all.  Two Bayesian variants keep the
+estimates in the interior:
+
+```rust,ignore
+// Dirichlet priors: α on the class prevalences, β on every confusion row
+// ([true][observed], shared by all raters).  The M-step is the posterior
+// mode (count + α − 1) / Σ(count + α − 1), so every α ≥ 1; all ones is the MLE.
+let priors = DawidSkenePriors::symmetric(3, 1.0, 3.0, 1.5);   // K, class α, diagonal β, off-diagonal β
+let ds = dawid_skene_map(&labels, &priors, &DawidSkeneOpts::default())?;
+
+// MACE (Hovy et al. 2013): rater r copies the true label with probability θ_r,
+// otherwise "spams" a label from its own distribution ξ_r.
+let m = mace(&labels, &MaceOpts::default())?;       // smoothing 0.1, majority-vote start
+m.competence;         // θ_r per rater — who to trust
+m.spam_distribution;  // ξ_r — what a spammer types
+m.labels();           // argmax posterior per item
+
+// Rank items by how undecided the raters left them, and check the models
+// against gold labels where you have them.
+posterior_entropy(&m.posteriors);                   // bits per item
+rater_confusion_from_gold(&labels, &gold)?;         // exact [gold][given] per rater
+```
+
+`dawid_skene_map` with `symmetric(K, 1, 1 + s, 1 + s)` is exactly
+`dawid_skene` with `smoothing = s`; the priors matter when a rater's rows
+would otherwise be estimated from two or three items.  MACE has one
+parameter per rater instead of a `K × K` matrix, so it is the model to
+reach for when raters are many and their labels few — it finds the
+constant-answer spammer that a majority vote is fooled by.  Both are
+deterministic EM iterations in `f64` (`MaceInit::Posteriors` gives a
+start of your choosing in place of random restarts).
+
 ## How good is each rater?
 
 ```rust,ignore
@@ -292,6 +328,47 @@ lg.coefficients; lg.odds_ratios(); lg.p_values; lg.pseudo_r_squared; lg.predict_
 statsmodels `OLS` attribute for attribute; `logit` matches `Logit` to
 1e-6 and reports perfect separation as an error rather than as enormous
 coefficients.
+
+### Several answers, or ordered answers
+
+When the response has more than two categories, `mnlogit` fits a
+multinomial logit (statsmodels `MNLogit`: category `0` is the reference,
+one equation per other category) and `ologit` a proportional-odds model
+(statsmodels `OrderedModel(distr='logit')`: `P(y ≤ j | x) = σ(θ_j − xβ)`,
+thresholds instead of an intercept).  Both are Newton–Raphson in `f64`
+with the same `LogitOpts`, and both refuse separated data with an error
+that names the diverging coefficient.
+
+```rust,ignore
+use symplex::stats::regression::{mnlogit, ologit, LogitOpts};
+// Which of three answers a respondent picks, explained by one feature x = 1..24.
+let y = [0, 0, 1, 0, 0, 1, 2, 0, 1, 1, 2, 0, 1, 2, 1, 2, 1, 2, 2, 1, 2, 0, 2, 2];
+let x: Vec<Vec<f64>> = (1..=24).map(|i| vec![f64::from(i)]).collect();
+let mn = mnlogit(&y, &x, true, &LogitOpts::default())?;
+println!("{:.4} {:.4}", mn.coefficients[1][0], mn.coefficients[1][1]);   // -2.8750 0.2536  (answer 2 vs 0: intercept, slope)
+println!("{:.4}", mn.relative_risk_ratios()[1][1]);                     // 1.2887  (× per unit of x for P(2)/P(0))
+let p = mn.predict_proba(&[12.0])?;
+println!("{:.3} {:.3} {:.3}", p[0], p[1], p[2]);                         // 0.272 0.406 0.322
+println!("{}", mn.predict(&[12.0])?);                                    // 1  (the modal answer)
+println!("{:.4}", mn.pseudo_r_squared);                                  // 0.1572
+
+// A rating on an ordered scale 0 < 1 < 2, explained by x = 0..19: no intercept column.
+let y = [0, 0, 1, 0, 1, 1, 2, 1, 2, 2, 0, 1, 2, 2, 1, 0, 0, 1, 2, 2];
+let x: Vec<Vec<f64>> = (0..20).map(|i| vec![f64::from(i)]).collect();
+let ol = ologit(&y, &x, &LogitOpts::default())?;
+println!("{:.4}", ol.coefficients[0]);                                   // 0.1140  (β)
+println!("{:.4} {:.4}", ol.thresholds[0], ol.thresholds[1]);             // 0.1212 1.7317  (θ₀ < θ₁, as thresholds)
+println!("{:.4}", ol.odds_ratios()[0]);                                  // 1.1208  (odds of a higher rating, per unit of x)
+let p = ol.predict_proba(&[7.0])?;
+println!("{:.3} {:.3} {:.3}", p[0], p[1], p[2]);                         // 0.337 0.381 0.282
+println!("{:.3}", ol.llr_test(&ctx)?.p_value_f64()?);                    // 0.126  (H₀: β = 0, χ²₁)
+```
+
+statsmodels reports the ordinal thresholds as `θ₀` followed by the
+*log-differences* `ln(θ_j − θ_{j−1})`; `ologit` reports the thresholds
+themselves (statsmodels' `transform_threshold_params`), and its standard
+errors are for those.  Every printed number above is asserted in
+`tests/v19/v19_mnlogit.rs`.
 
 ## Screening while the answers arrive
 

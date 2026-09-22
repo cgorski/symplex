@@ -56,6 +56,47 @@ fn bench_qmatrix(c: &mut Criterion) {
     group.finish();
 }
 
+/// A random `n × m` matrix of `bits`-bit entries (either sign).
+fn random_wide(n: usize, m: usize, bits: u32, seed: u64) -> QMatrix {
+    let mut g = Lcg(seed);
+    ZMatrix::from_fn(n, m, |_, _| {
+        let mut v = BigInt::from(0);
+        let mut left = bits;
+        while left > 0 {
+            let take = left.min(50);
+            v = (v << take) + BigInt::from(g.next() & ((1u64 << take) - 1));
+            left -= take;
+        }
+        if g.next() & 1 == 1 { -v } else { v }
+    })
+    .to_qmatrix()
+}
+
+/// The fraction-free kernel's width escalation, one shape per stage it
+/// ends on: `qmatrix/rref/*` above stays on `i64` (10), reaches `i128`
+/// (20) and the 256-bit cells (40); these start beyond `i64` at once and
+/// end on `i128`, on the 256-bit cells, or on `BigInt` (entries past 255
+/// bits, where the kernel runs on `BigInt` from the first pivot).
+fn bench_kernel_stages(c: &mut Criterion) {
+    let mut group = c.benchmark_group("kernel");
+    for &(name, n, bits) in &[
+        ("rref_12x14_40bit_i128", 12usize, 40u32),
+        ("rref_12x14_90bit_w256", 12, 90),
+        ("rref_12x14_300bit_bigint", 12, 300),
+    ] {
+        let a = random_wide(n, n + 2, bits, 17);
+        group.bench_with_input(BenchmarkId::new(name, n), &a, |b, a| {
+            b.iter(|| black_box(a.rref()))
+        });
+        let s = random_wide(n, n, bits, 19);
+        let dname = name.replacen("rref", "det", 1);
+        group.bench_with_input(BenchmarkId::new(dname, n), &s, |b, s| {
+            b.iter(|| black_box(s.det().unwrap()))
+        });
+    }
+    group.finish();
+}
+
 fn bench_matrix_fast_paths(c: &mut Criterion) {
     let ctx = Context::new();
     let mut group = c.benchmark_group("matrix_rational");
@@ -101,6 +142,7 @@ fn bench_linprog(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_qmatrix,
+    bench_kernel_stages,
     bench_matrix_fast_paths,
     bench_linprog
 );
