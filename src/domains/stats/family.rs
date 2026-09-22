@@ -483,7 +483,12 @@ impl Distribution {
     /// smallest lattice point with `F(x) ≥ p`).  This is the numeric route
     /// behind critical values and confidence limits of `Beta`, `StudentT`,
     /// `ChiSquared` and `FDistribution`, whose inverse CDFs have no
-    /// elementary form.  Parameters must evaluate numerically.
+    /// elementary form.  A lattice family *without* a closed CDF
+    /// (`NegativeBinomial` with a non-integer `r`) is walked instead: the
+    /// pmf is accumulated from the support's lower end until `p` is
+    /// reached (`nbinom.ppf(0.9, 1.5, 1/3) = 7` in milliseconds; Brent on
+    /// the symbolic sum took seconds).  Parameters must evaluate
+    /// numerically.
     ///
     /// ```
     /// use symplex::prelude::*;
@@ -584,6 +589,17 @@ impl Distribution {
                 "unsupported support shape",
             ));
         }
+        // A lattice family without a closed CDF (`NegativeBinomial` with a
+        // rational `r`, whose CDF is a symbolic `Sum`): walk the atoms from
+        // the lower end accumulating the pmf, rather than Brent on the sum
+        // (seconds per probe).
+        if support.kind() == Kind::Discrete
+            && lo.is_finite()
+            && self.0.cdf(&x).is_none()
+            && let Some(k) = self.lattice_quantile_walk(p, &support)?
+        {
+            return Ok(k);
+        }
         // On a lattice the first atom may already carry p: the quantile
         // is the support's lower end and no sign change exists to bracket.
         if support.kind() == Kind::Discrete && lo.is_finite() && cdf(lo) >= p - 1e-12 {
@@ -628,6 +644,54 @@ impl Distribution {
                 k
             }
         })
+    }
+
+    /// The smallest lattice point `k ≥ lo` with `Σ_{lo ≤ j ≤ k} f(j) ≥ p`
+    /// (to `1e-12`), the pmf compiled to `f64` when every node has a
+    /// kernel and otherwise evaluated exactly at each atom (`eval_f64`);
+    /// `k = hi` when a finite support is exhausted first.  `None` when the
+    /// support is not a single interval with a finite lower end, or the
+    /// walk exceeds `LATTICE_WALK_LIMIT` atoms — the caller then brackets
+    /// as before.
+    fn lattice_quantile_walk(
+        &self,
+        p: f64,
+        support: &Support,
+    ) -> Result<Option<f64>, SymplexError> {
+        const LATTICE_WALK_LIMIT: usize = 100_000;
+        let lattice = support.normalize_lattice();
+        let Some(iv) = lattice.as_interval() else {
+            return Ok(None);
+        };
+        if is_neg_inf(&iv.lower) {
+            return Ok(None);
+        }
+        let ctx = self.context();
+        let lo = iv.lower.eval_f64()?;
+        let hi = if is_pos_inf(&iv.upper) {
+            f64::INFINITY
+        } else {
+            iv.upper.eval_f64()?
+        };
+        let k_var = self.fresh_var("k", &[]);
+        let pmf = self.0.density(&k_var);
+        let compiled = pmf.compile(&[k_var.to_string().as_str()]).ok();
+        let pmf_at = |k: f64| -> Result<f64, SymplexError> {
+            match &compiled {
+                Some(f) => Ok(f.call(&[k])),
+                None => self.0.density(&ctx.from_f64(k)?).eval_f64(),
+            }
+        };
+        let mut k = lo;
+        let mut mass = 0.0;
+        for _ in 0..LATTICE_WALK_LIMIT {
+            mass += pmf_at(k)?;
+            if mass >= p - 1e-12 || k >= hi {
+                return Ok(Some(k));
+            }
+            k += 1.0;
+        }
+        Ok(None)
     }
 
     /// Entropy in nats — differential (`−E[ln f(X)]`) for a continuous

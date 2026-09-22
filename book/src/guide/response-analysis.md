@@ -166,7 +166,7 @@ exact tests).  The family:
 | Several means | `anova::anova_one_way` → `AnovaResult { f, df_between, df_within, p_value, ss_between, ss_within, eta_squared }` (in `stats::anova` with the factorial and repeated-measures designs since 0.18) |
 | Two proportions / one proportion | `z_test_proportion`, `z_test_two_proportions` (renamed from `two_proportion_z_test` in 0.18), `binomial_test` (exact) |
 | Ranks / ordinal scores | `mann_whitney_u` (exact or asymptotic with tie correction), `wilcoxon_signed_rank`, `kruskal_wallis`, `friedman`, `spearman_test`, `kendall_test` |
-| Categorical tables | `chi_square_independence` (with Yates), `chi_square_goodness_of_fit`, `g_test`, `fisher_exact` (exact), `mcnemar_test` (exact or χ²), `sign_test`; `counts(&[&[i64]])` / `counts_usize(&[Vec<usize>])` build the table (the latter from a `confusion_matrix`) |
+| Categorical tables | `chi_square_independence` (with Yates), `chi_square_goodness_of_fit`, `g_test`, `fisher_exact` (exact up to a 2 000-point support, numeric above), `mcnemar_test` (exact or χ²), `sign_test`; `counts(&[&[i64]])` / `counts_usize(&[Vec<usize>])` build the table (the latter from a `confusion_matrix`) |
 | Which cells drive a χ²? | `expected_counts`, `chi2_contributions`, `standardized_residuals`, `adjusted_residuals` (Haberman) |
 | Correlation inference | `pearson_test`, `pearson_t_statistic`, `compare_two_correlations`; the Fisher-z interval is `estimation::pearson_ci` |
 | Distribution fit | `ks_one_sample(x, &Distribution)` |
@@ -175,7 +175,13 @@ exact tests).  The family:
 Approval counts by group, `[[30, 10], [18, 22]]`: `fisher_exact` gives
 `p = 0.01150621201656047` exactly as a rational, and
 `chi_square_independence(…, true)` `p = 0.01205961617749023` as a
-χ²-tail expression — both matching scipy to the last digit.
+χ²-tail expression — both matching scipy to the last digit.  Fisher's
+p-value is an exact rational while the hypergeometric support has at most
+2 000 points; for larger tables (cells in the `10⁴`–`10¹¹` range) it is
+numeric — the pmf walked from its mode in floating point, returned as
+`ctx.from_f64(p)` and agreeing with scipy to `1e-9` — and a `[[10⁶, 10⁶ +
+7], [10⁶ − 3, 10⁶]]` table takes milliseconds.  Below `1e-308` the
+expression is `exp(ln p)`, so `p_value_log10` still reads the tail.
 
 ## Screening many raters at once
 
@@ -294,8 +300,11 @@ probability ratio test: feed each gold-question outcome to `update`, and
 the moment the exact log-likelihood ratio (`log_likelihood_ratio(&ctx)`)
 crosses a boundary the decision is `AcceptH0` (the rater performs at the
 chance rate `p0`) or `AcceptH1` (at the competent rate `p1`); until then
-`Continue`.  `expected_sample_size_bernoulli` says how many questions that
-takes on average.
+`Continue`.  The decision is sticky — once reached, every later `update`
+returns it, `is_decided()` is `true` and `stopped_at()` gives the sample
+size at which the test stopped; `reset()` starts over.
+`expected_sample_size_bernoulli` says how many questions that takes on
+average.
 
 ## Comparing label distributions
 

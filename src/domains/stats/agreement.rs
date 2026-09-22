@@ -562,7 +562,9 @@ pub fn kappa_from_confusion(
     for (i, r) in table.iter().enumerate() {
         for (j, &cell) in r.iter().enumerate() {
             d_obs += &w[i][j] * qu(cell);
-            d_exp += &w[i][j] * qu(row[i] * col[j]);
+            // In `Q`: the product of two margins overflows `usize` from
+            // `n ≈ 4·10⁹`.
+            d_exp += &w[i][j] * qu(row[i]) * qu(col[j]);
         }
     }
     d_obs /= &nq;

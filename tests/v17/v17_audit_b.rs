@@ -2805,7 +2805,7 @@ fn sprt_rejects_invalid_designs_and_observations() -> R {
 }
 
 #[test]
-fn sprt_decision_is_recomputed_from_the_counts_after_a_boundary_is_reached() -> R {
+fn sprt_decision_is_sticky_after_a_boundary_is_reached() -> R {
     // The test is a plain value: observations after a decision keep being counted and the decision
     // is re-derived from the running log-likelihood ratio, so it can fall back to `Continue`.
     let ctx = Context::new();
@@ -2823,9 +2823,11 @@ fn sprt_decision_is_recomputed_from_the_counts_after_a_boundary_is_reached() -> 
             .equals(&(ctx.int(6) * ctx.rational(3, 2).ln())),
         Some(true)
     );
-    // One failure subtracts ln 2 = 0.693: Λ = 1.7396 < B → back to Continue.
-    assert_eq!(t.update(false), Decision::Continue);
-    assert_eq!(t.decision(), Decision::Continue);
+    // 0.19: decisions are sticky — a boundary once reached stays reached even
+    // though one failure would pull Λ = 1.7396 back below B.
+    assert_eq!(t.update(false), Decision::AcceptH1);
+    assert_eq!(t.decision(), Decision::AcceptH1);
+    assert!(t.is_decided());
     assert_eq!(t.observations(), 7);
     // Reset forgets the data but not the design.
     let before = t.boundaries();

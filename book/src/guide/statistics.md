@@ -256,6 +256,31 @@ r.p_value_decimal(5)?;     // "2.31e-2782"
 
 `p_value_log10` and `p_value_ln` evaluate the *logarithm* of the expression in arbitrary precision, so they are finite for any positive `p` (an exact `0`, as from a perfectly correlated `pearson_test`, gives `-∞`; an exact `1` gives `0`), and `p_value_decimal(digits)` prints the value itself with an exponent.  `Ols::p_values_log10(&ctx)` does the same for every coefficient of a regression.  The numbers above, and the same accessors on every other result type, are asserted against mpmath in `tests/v17/v17_pvalues.rs`.
 
+## Survival regression: Cox proportional hazards
+
+`stats::survival` (Kaplan–Meier, Greenwood, Nelson–Aalen, the log-rank test — see [Analysing Rater and Response Data](./response-analysis.md)) describes *when* events happen; `stats::cox` explains it with covariates.  `cox_ph(&obs, &x, &opts)` fits `h(t | x) = h₀(t)·exp(xᵀβ)` by Newton–Raphson on Cox's partial likelihood — the same `Observation { time, event }` rows, one `f64` covariate row per observation, no intercept (the baseline hazard absorbs it) — with Efron's tie correction by default (`Ties::Breslow` is the other), the analytic score and information matrix, and step-halving.  Ten subjects, one covariate, three censored:
+
+```rust,ignore
+use symplex::stats::cox::{cox_ph, CoxOpts};
+use symplex::stats::survival::Observation;
+let obs = Observation::from_i64(&[4, 7, 2, 9, 12, 5, 15, 3, 11, 8],
+                                &[true, true, true, false, true, true, false, true, true, false]);
+let x: Vec<Vec<f64>> = [3.0, 1.0, 5.0, 2.0, 0.0, 4.0, 1.0, 6.0, 2.0, 3.0].iter().map(|&v| vec![v]).collect();
+let fit = cox_ph(&obs, &x, &CoxOpts::default())?;
+fit.coefficients;            // [0.8759809887649096]      statsmodels PHReg(..., ties='efron').fit().params
+fit.hazard_ratios();         // [2.401229718322006]       exp(β): each unit of x multiplies the hazard by 2.4
+fit.standard_errors;         // [0.3809028296542367]      bse
+fit.p_values;                // [0.021462431348704628]    two-sided normal
+fit.log_likelihood;          // -8.465216276861835        llf;  fit.null_log_likelihood = -12.108680299521524
+let lr = fit.llr_test(&ctx)?;   // χ² 7.286928045319378 on 1 df, p 0.006945814500177098
+fit.score_statistic();       // 7.355733707724492         the log-rank-type score test at β = 0
+fit.concordance()?;          // 31/38 — Harrell's C, exactly
+fit.baseline_hazard()[0];    // BaselineHazardRow { stratum: 0, time: 2, hazard: 0.002858840843475405, cumulative: 0.002858840843475405 }
+fit.baseline_hazard()[6];    //   … { time: 12, hazard: 0.2940113085020759, cumulative: 0.4700301513413364 }
+```
+
+The fit is numerical (`f64` coefficients, standard errors, residuals), so this is one of the places where the crate is not exact; what *is* exact is kept so: event times are `Q`, and the concordance index is a ratio of pair counts — `(concordant + ½ tied) / usable` over the pairs `tᵢ < tⱼ` with `i` an event — returned as a rational.  `llr_test`, `wald_test` and `score_test` return `TestResult`s (the trio `summary(coxph)` prints; `df = p`), so `p_value_log10` and friends work on them; for a single `0/1` covariate under Breslow ties with no tied event times the score statistic *is* the log-rank statistic of `log_rank_test`, which the tests assert.  `conf_int(c)` gives Wald intervals for `β` and `hazard_ratio_conf_int(c)` the same exponentiated; `baseline_hazard()` is the Breslow estimator `dₜ / Σ_{Rₜ} exp(xⱼᵀβ̂)` with its running sum; `schoenfeld_residuals()` (one row per event) and `martingale_residuals()` (one per subject, summing to zero) are the two diagnostics you plot; `predict_partial_hazard(&x₀)` is `exp(x₀ᵀβ̂)`.  `cox_ph_stratified(&obs, &x, &strata, &opts)` sums the partial likelihood over strata, each with its own baseline hazard.  A monotone likelihood (every subject with the larger covariate value fails before every subject with the smaller one, so `β̂ → ∞`; `coxph` warns "beta may be infinite") is a `ComputationFailed` that names the covariate, as `logit` does for separation.  Every number above is asserted against statsmodels 0.15 in `tests/v18/v18_cox.rs`, including the Freireich 6-MP data (`β̂ = −1.5721` Efron, `−1.5092` Breslow, as in R).
+
 ## What is exact and what is not
 
 Everything above is symbolic: rational parameters give rational or closed-form answers, and symbolic parameters stay symbolic (`E[X] = μ`). Two honest gaps: the integrator does not close every density integral (`LogNormal` probabilities stay as an `Integral` although its closed-form `cdf` is available — `probability` uses the `cdf` first), and infinite sums with *symbolic* parameters may stay as a `Sum`. `RandomVariable::sample` is the only numerical routine, seeded through `stats::Rng` so results reproduce.

@@ -131,6 +131,8 @@ fn main() {
 }
 ```
 
+Since 0.18 a `Poly` whose coefficients are all rational literals is held as an exact `MultiPoly<Lex>` rather than as one `Ex` per monomial, and `add`/`sub`/`mul`/`pow`/`scale`/`derivative`/`eval`/`eval_gen` between such polynomials run on rationals without touching the expression arena (products and powers accumulate integer numerators over a common denominator and reduce once). The representation is invisible: `terms()`, `Display`, `to_ex()` and `to_multipoly()` report exactly what they did before, a symbolic coefficient switches the polynomial to the `Ex` form, and mixed operations convert the exact side. Expect roughly 5–15× on dense products and 10–30× on exact evaluation compared with 0.17.
+
 ## Coefficient matrices and exact linear systems
 
 The reason `Poly` exists is to make questions like *"is `goal` a linear combination of `h₁, …, hₖ`?"* mechanical. `Poly::monomial_basis` collects every monomial that occurs in a family, and `Poly::coefficient_matrix` lays the family out with one **row per monomial** and one **column per polynomial**. The unknown multipliers `λ` then satisfy `M·λ = coefficients of goal`, which `linsolve_matrix` solves exactly — including the under- and over-determined cases.

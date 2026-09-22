@@ -46,7 +46,10 @@ pub struct Observation {
 }
 
 impl Observation {
-    /// Observations from integer times and event flags.
+    /// Observations from integer times and event flags.  The two slices
+    /// are **zipped to the shorter one**: extra times or flags are dropped
+    /// silently.  Use [`try_from_i64`](Self::try_from_i64) to have a
+    /// length mismatch reported instead.
     pub fn from_i64(times: &[i64], events: &[bool]) -> Vec<Observation> {
         times
             .iter()
@@ -58,7 +61,9 @@ impl Observation {
             .collect()
     }
 
-    /// Observations from exact times and event flags.
+    /// Observations from exact times and event flags, zipped to the
+    /// shorter slice like [`from_i64`](Self::from_i64); see
+    /// [`try_from_q`](Self::try_from_q).
     pub fn from_q(times: &[Q], events: &[bool]) -> Vec<Observation> {
         times
             .iter()
@@ -69,6 +74,44 @@ impl Observation {
             })
             .collect()
     }
+
+    /// [`from_i64`](Self::from_i64) that insists on one flag per time.
+    ///
+    /// ```
+    /// use symplex::stats::survival::Observation;
+    ///
+    /// assert_eq!(Observation::try_from_i64(&[1, 2], &[true, false])?.len(), 2);
+    /// assert!(Observation::try_from_i64(&[1, 2, 3], &[true]).is_err());
+    /// # Ok::<(), symplex::prelude::SymplexError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] when the slices differ in length.
+    pub fn try_from_i64(times: &[i64], events: &[bool]) -> Result<Vec<Observation>, SymplexError> {
+        check_paired("Observation::try_from_i64", times.len(), events.len())?;
+        Ok(Self::from_i64(times, events))
+    }
+
+    /// [`from_q`](Self::from_q) that insists on one flag per time.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] when the slices differ in length.
+    pub fn try_from_q(times: &[Q], events: &[bool]) -> Result<Vec<Observation>, SymplexError> {
+        check_paired("Observation::try_from_q", times.len(), events.len())?;
+        Ok(Self::from_q(times, events))
+    }
+}
+
+fn check_paired(op: &'static str, times: usize, events: usize) -> Result<(), SymplexError> {
+    if times != events {
+        return Err(invalid(
+            op,
+            format!("{times} times but {events} event flags; one flag per time is needed"),
+        ));
+    }
+    Ok(())
 }
 
 /// One distinct event time in a life table.
@@ -80,7 +123,10 @@ pub struct LifeTableRow {
     pub at_risk: usize,
     /// Events at `time`.
     pub events: usize,
-    /// Subjects censored at `time` (leaving the risk set after it).
+    /// Subjects censored at *this event time* (leaving the risk set after
+    /// it).  Censorings at times without an event have no row here; ask
+    /// [`KaplanMeier::censored_at`] or [`KaplanMeier::censoring_times`]
+    /// for those.
     pub censored: usize,
     /// `S(time)`: the Kaplan–Meier estimate just after `time`.
     pub survival: Q,
@@ -96,6 +142,16 @@ pub struct LifeTableRow {
 pub struct KaplanMeier {
     rows: Vec<LifeTableRow>,
     n: usize,
+    /// Every distinct censoring time, ascending, with its count — including
+    /// the times at which no event occurred (which have no life-table row).
+    censorings: Vec<Censoring>,
+}
+
+/// Censorings at one time.
+#[derive(Clone, Debug, PartialEq)]
+struct Censoring {
+    time: Q,
+    count: usize,
 }
 
 fn validate(op: &'static str, obs: &[Observation]) -> Result<(), SymplexError> {
@@ -141,7 +197,14 @@ impl KaplanMeier {
         let mut greenwood = Q::zero();
         let mut hazard = Q::zero();
         let mut rows = Vec::new();
+        let mut censorings = Vec::new();
         for (time, events, censored) in tally(obs) {
+            if censored > 0 {
+                censorings.push(Censoring {
+                    time: time.clone(),
+                    count: censored,
+                });
+            }
             if events > 0 {
                 let d = qu(events);
                 let nn = qu(at_risk);
@@ -162,7 +225,11 @@ impl KaplanMeier {
             }
             at_risk -= events + censored;
         }
-        Ok(KaplanMeier { rows, n })
+        Ok(KaplanMeier {
+            rows,
+            n,
+            censorings,
+        })
     }
 
     /// The number of subjects.
@@ -178,6 +245,36 @@ impl KaplanMeier {
     /// The distinct event times.
     pub fn event_times(&self) -> Vec<Q> {
         self.rows.iter().map(|r| r.time.clone()).collect()
+    }
+
+    /// The distinct censoring times, ascending — every time at which a
+    /// subject left under observation without the event, whether or not
+    /// an event also occurred then (the life table's `censored` column
+    /// only covers the latter).
+    ///
+    /// ```
+    /// use symplex::linprog::qi;
+    /// use symplex::stats::survival::{KaplanMeier, Observation};
+    ///
+    /// // Censored at 5 (no event there), at 8 (no event) and at 12 (an event too).
+    /// let obs = Observation::from_i64(&[3, 5, 6, 7, 8, 10, 12, 12], &[true, false, true, true, false, true, true, false]);
+    /// let km = KaplanMeier::fit(&obs)?;
+    /// assert_eq!(km.censoring_times(), vec![qi(5), qi(8), qi(12)]);
+    /// assert_eq!(km.censored_at(&qi(5)), 1);
+    /// assert_eq!(km.censored_at(&qi(6)), 0);
+    /// assert_eq!(km.table().iter().map(|r| r.censored).sum::<usize>(), 1);   // only the one at 12
+    /// # Ok::<(), symplex::prelude::SymplexError>(())
+    /// ```
+    pub fn censoring_times(&self) -> Vec<Q> {
+        self.censorings.iter().map(|c| c.time.clone()).collect()
+    }
+
+    /// The number of subjects censored exactly at `t` (`0` when none was).
+    pub fn censored_at(&self, t: &Q) -> usize {
+        self.censorings
+            .iter()
+            .find(|c| c.time == *t)
+            .map_or(0, |c| c.count)
     }
 
     /// `S(t)`: `1` before the first event, then the step value at the last
@@ -219,6 +316,29 @@ impl KaplanMeier {
         self.rows
             .iter()
             .find(|r| r.survival <= target)
+            .map(|r| r.time.clone())
+    }
+
+    /// The `p`-quantile with statsmodels' strict convention: the smallest
+    /// event time at which `S(t) < 1 − p` (`SurvfuncRight.quantile`), so it
+    /// differs from [`quantile`](Self::quantile) exactly when the curve
+    /// lands on `1 − p`.
+    ///
+    /// ```
+    /// use symplex::linprog::{q, qi};
+    /// use symplex::stats::survival::{KaplanMeier, Observation};
+    ///
+    /// // Four events at 1, 2, 3, 4: S(2) = 1/2 exactly.
+    /// let km = KaplanMeier::fit(&Observation::from_i64(&[1, 2, 3, 4], &[true; 4]))?;
+    /// assert_eq!(km.quantile(&q(1, 2)), Some(qi(2)));          // R: survfit
+    /// assert_eq!(km.quantile_strict(&q(1, 2)), Some(qi(3)));   // statsmodels: SurvfuncRight.quantile(0.5)
+    /// # Ok::<(), symplex::prelude::SymplexError>(())
+    /// ```
+    pub fn quantile_strict(&self, p: &Q) -> Option<Q> {
+        let target = Q::one() - p;
+        self.rows
+            .iter()
+            .find(|r| r.survival < target)
             .map(|r| r.time.clone())
     }
 

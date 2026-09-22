@@ -644,24 +644,432 @@ pub fn binomial_test(
     Ok(result(ctx, ex(ctx, &(qu(k) / qu(n))), p, None, alt))
 }
 
-/// `P(X = x)` of `Hypergeometric(N = n₁ + n₂, n₁, n)` for every `x` in the
-/// support `max(0, n − n₂) ..= min(n, n₁)`; returns `(lowest x, masses)`.
-fn hypergeometric_pmf_table(n1: usize, n2: usize, n: usize) -> (usize, Vec<Q>) {
-    let lo = n.saturating_sub(n2);
-    let hi = n.min(n1);
-    let total = data::binomial_q(n1 + n2, n);
-    let pmf = (lo..=hi)
-        .map(|x| data::binomial_q(n1, x) * data::binomial_q(n2, n - x) / &total)
-        .collect();
-    (lo, pmf)
+/// The exact `Hypergeometric(N = n₁ + n₂, n₁, n)` as integer weights
+/// `w(x) = C(n₁, x)·C(n₂, n − x)` over the support `lo ..= hi` (`lo = max(0,
+/// n − n₂)`, `hi = min(n, n₁)`) and their total `C(N, n)`: `P(X = x) =
+/// w(x)/total`.  Tail sums are integer additions over one denominator — a
+/// thousand times faster than adding reduced `Q`s at 2 000 points.
+struct HypergeomExact {
+    lo: usize,
+    weights: Vec<BigInt>,
+    total: BigInt,
+}
+
+impl HypergeomExact {
+    /// `w(lo)` from binomials, the rest by the exact integer ratio
+    /// `w(x+1) = w(x)·(n₁ − x)(n − x) / ((x + 1)(n₂ + x + 1 − n))`.
+    fn new(n1: usize, n2: usize, n: usize) -> Self {
+        let lo = n.saturating_sub(n2);
+        let hi = n.min(n1);
+        let total = data::binomial_q(n1 + n2, n).to_integer();
+        let mut w = (data::binomial_q(n1, lo) * data::binomial_q(n2, n - lo)).to_integer();
+        let mut weights = Vec::with_capacity(hi - lo + 1);
+        for x in lo..hi {
+            weights.push(w.clone());
+            w = w * BigInt::from(n1 - x) * BigInt::from(n - x)
+                / (BigInt::from(x + 1) * BigInt::from(n2 + x + 1 - n));
+        }
+        weights.push(w);
+        Self { lo, weights, total }
+    }
+
+    /// `P(X ∈ {x : keep(x − lo, w(x))})`, an exact rational.
+    fn mass_where(&self, keep: impl Fn(usize, &BigInt) -> bool) -> Q {
+        let sum = self
+            .weights
+            .iter()
+            .enumerate()
+            .filter(|(i, w)| keep(*i, w))
+            .fold(BigInt::zero(), |acc, (_, w)| acc + w);
+        Q::new(sum, self.total.clone())
+    }
+
+    /// `P(X ≤ a)`, `P(X ≥ a)`, or the two-sided total mass of the outcomes
+    /// no more likely than `a` (`Σ_{x: w(x) ≤ w(a)} w(x) / total`).
+    fn p_value(&self, a: usize, alt: Alternative) -> Q {
+        let idx = a - self.lo;
+        match alt {
+            Alternative::Less => self.mass_where(|i, _| i <= idx),
+            Alternative::Greater => self.mass_where(|i, _| i >= idx),
+            Alternative::TwoSided => {
+                let at = &self.weights[idx];
+                self.mass_where(|_, w| w <= at).min(Q::one())
+            }
+        }
+    }
+}
+
+/// Support size (number of possible values of the top-left cell given the
+/// margins) above which [`fisher_exact`] leaves the exact `BigInt`
+/// enumeration for its numeric route.
+pub const FISHER_EXACT_NUMERIC_THRESHOLD: usize = 2_000;
+
+/// Longest walk of the pmf recurrence before [`HypergeomNumeric`] falls
+/// back to Stirling (`lgamma`) differences, whose absolute error in the
+/// logarithm (`~1e-5` at arguments near `10⁹`) is then invisible: a point
+/// that far from the mode carries a mass below `e^{-10⁴}`.
+const HYPERGEOM_MAX_WALK: usize = 2_000_000;
+
+/// Relative tolerance under which two floating pmf values count as equal
+/// for the two-sided cutoff (the walk from the mode loses about
+/// `steps · ε`); exact ties — a symmetric distribution — are recognised
+/// without it.
+const HYPERGEOM_TIE_TOL: f64 = 1e-11;
+
+/// A term below this fraction of the running sum ends an outer-tail walk.
+const HYPERGEOM_TAIL_CUTOFF: f64 = 1e-22;
+
+/// The direction of a walk along the lattice.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Walk {
+    Down,
+    Up,
+}
+
+/// `Hypergeometric(N = n₁ + n₂, n₁, n)` in floating point, for the large
+/// tables of [`fisher_exact`].  The pmf is never formed from `lgamma`
+/// differences — nine terms of size `10¹⁰` cancelling to `−10` lose five
+/// digits — but walked from the mode with the exact ratio
+/// `f(x+1)/f(x) = (n₁ − x)(n − x) / ((x + 1)(n₂ + x + 1 − n))`, so a tail
+/// is accurate to about `steps · ε` (`10⁻¹²` for the `10⁴`-point window of
+/// a `4·10⁶` table).  Every tail is summed *outwards* from its inner end
+/// (terms decreasing) in units of `f(mode)`, and the normalisation is the
+/// walked total rather than `C(N, n)`.
+struct HypergeomNumeric {
+    n1: usize,
+    n2: usize,
+    n: usize,
+    lo: usize,
+    hi: usize,
+    mode: usize,
+    /// `ln Σ_x f(x)/f(mode)`.
+    ln_total: f64,
+}
+
+impl HypergeomNumeric {
+    fn new(n1: usize, n2: usize, n: usize) -> Self {
+        let lo = n.saturating_sub(n2);
+        let hi = n.min(n1);
+        let wide = |v: usize| v as u128;
+        // ⌊(n + 1)(n₁ + 1) / (N + 2)⌋ is a mode; clamped into the support.
+        let mode = (wide(n) + 1) * (wide(n1) + 1) / (wide(n1) + wide(n2) + 2);
+        let mode = usize::try_from(mode).unwrap_or(hi).clamp(lo, hi);
+        let mut me = Self {
+            n1,
+            n2,
+            n,
+            lo,
+            hi,
+            mode,
+            ln_total: 0.0,
+        };
+        let below = if mode > lo {
+            me.ln_outer_tail(mode - 1, Walk::Down).exp()
+        } else {
+            0.0
+        };
+        let above = if mode < hi {
+            me.ln_outer_tail(mode + 1, Walk::Up).exp()
+        } else {
+            0.0
+        };
+        me.ln_total = (1.0 + below + above).ln();
+        me
+    }
+
+    /// `f(x) = f(lo + hi − x)`: `n₁ = n₂` or `2n = N`.
+    fn symmetric(&self) -> bool {
+        self.n1 == self.n2 || 2 * self.n == self.n1 + self.n2
+    }
+
+    /// `f(x + 1) / f(x)` for `lo ≤ x < hi` (every factor is an exact
+    /// integer below `2⁵³`).
+    fn ratio_up(&self, x: usize) -> f64 {
+        let num = (self.n1 - x) as f64 * (self.n - x) as f64;
+        let den = (x + 1) as f64 * (self.n2 + x + 1 - self.n) as f64;
+        num / den
+    }
+
+    /// `ln C(n, k)` by Stirling.
+    fn ln_binom(n: usize, k: usize) -> f64 {
+        lgamma(n as f64 + 1.0) - lgamma(k as f64 + 1.0) - lgamma((n - k) as f64 + 1.0)
+    }
+
+    /// `ln(f(x)/f(mode))` from `lgamma` differences.
+    fn ln_shape_stirling(&self, x: usize) -> f64 {
+        let (n1, n2, n, m) = (self.n1, self.n2, self.n, self.mode);
+        Self::ln_binom(n1, x) - Self::ln_binom(n1, m) + Self::ln_binom(n2, n - x)
+            - Self::ln_binom(n2, n - m)
+    }
+
+    /// `ln(f(x)/f(mode))`: the recurrence walked from the mode, or
+    /// Stirling beyond [`HYPERGEOM_MAX_WALK`] steps.
+    fn ln_shape(&self, x: usize) -> f64 {
+        let m = self.mode;
+        if x.abs_diff(m) > HYPERGEOM_MAX_WALK {
+            return self.ln_shape_stirling(x);
+        }
+        let mut acc = LogProduct::default();
+        if x > m {
+            for y in m..x {
+                acc.mul(self.ratio_up(y));
+            }
+        } else {
+            for y in (x..m).rev() {
+                acc.div(self.ratio_up(y));
+            }
+        }
+        acc.ln()
+    }
+
+    /// `ln Σ f(y)/f(mode)` over `y` from `start` to the support's end in
+    /// direction `dir`.  Meant for an *outer* tail (`start` on or beyond
+    /// the mode in that direction), whose terms decrease: the walk stops
+    /// once a term falls below [`HYPERGEOM_TAIL_CUTOFF`] of the sum.
+    fn ln_outer_tail(&self, start: usize, dir: Walk) -> f64 {
+        let ln_start = self.ln_shape(start);
+        let mut sum = 1.0_f64;
+        let mut term = 1.0_f64;
+        let mut y = start;
+        loop {
+            match dir {
+                Walk::Up => {
+                    if y >= self.hi {
+                        break;
+                    }
+                    term *= self.ratio_up(y);
+                    y += 1;
+                }
+                Walk::Down => {
+                    if y <= self.lo {
+                        break;
+                    }
+                    term /= self.ratio_up(y - 1);
+                    y -= 1;
+                }
+            }
+            sum += term;
+            if term < HYPERGEOM_TAIL_CUTOFF * sum {
+                break;
+            }
+        }
+        ln_start + sum.ln()
+    }
+
+    /// `ln P(X ≤ a)` (`Down`) or `ln P(X ≥ a)` (`Up`): the outer tail when
+    /// `a` lies beyond the mode in that direction, else one minus the
+    /// opposite outer tail.
+    fn ln_tail(&self, a: usize, dir: Walk) -> f64 {
+        let m = self.mode;
+        match dir {
+            Walk::Down if a >= self.hi => 0.0,
+            Walk::Up if a <= self.lo => 0.0,
+            Walk::Down if a < m => self.ln_outer_tail(a, Walk::Down) - self.ln_total,
+            Walk::Up if a > m => self.ln_outer_tail(a, Walk::Up) - self.ln_total,
+            Walk::Down => (-(self.ln_outer_tail(a + 1, Walk::Up) - self.ln_total).exp()).ln_1p(),
+            Walk::Up => (-(self.ln_outer_tail(a - 1, Walk::Down) - self.ln_total).exp()).ln_1p(),
+        }
+    }
+
+    /// The two-sided cutoff on the far side of the mode from `a < mode`:
+    /// the smallest `g ≥ mode` with `f(g) ≤ f(a)` (up to
+    /// [`HYPERGEOM_TIE_TOL`]), or `None` when even `f(hi)` exceeds `f(a)`.
+    /// A symmetric distribution mirrors `a` exactly.
+    fn cutoff_above(&self, a: usize) -> Option<usize> {
+        if self.symmetric() {
+            return Some(self.lo + self.hi - a);
+        }
+        let target = self.ln_shape(a) + HYPERGEOM_TIE_TOL;
+        let m = self.mode;
+        let mut acc = LogProduct::default();
+        let mut y = m;
+        loop {
+            if acc.ln() <= target {
+                return Some(y);
+            }
+            if y >= self.hi {
+                return None;
+            }
+            if y - m >= HYPERGEOM_MAX_WALK {
+                // Far tail: bisect on the (decreasing) Stirling shape.
+                let (mut lo, mut hi) = (y, self.hi);
+                if self.ln_shape_stirling(hi) > target {
+                    return None;
+                }
+                while hi - lo > 1 {
+                    let mid = lo + (hi - lo) / 2;
+                    if self.ln_shape_stirling(mid) <= target {
+                        hi = mid;
+                    } else {
+                        lo = mid;
+                    }
+                }
+                return Some(hi);
+            }
+            acc.mul(self.ratio_up(y));
+            y += 1;
+        }
+    }
+
+    /// Mirror image of [`cutoff_above`](Self::cutoff_above) for `a > mode`:
+    /// the largest `g ≤ mode` with `f(g) ≤ f(a)`.
+    fn cutoff_below(&self, a: usize) -> Option<usize> {
+        if self.symmetric() {
+            return Some(self.lo + self.hi - a);
+        }
+        let target = self.ln_shape(a) + HYPERGEOM_TIE_TOL;
+        let m = self.mode;
+        let mut acc = LogProduct::default();
+        let mut y = m;
+        loop {
+            if acc.ln() <= target {
+                return Some(y);
+            }
+            if y <= self.lo {
+                return None;
+            }
+            if m - y >= HYPERGEOM_MAX_WALK {
+                let (mut lo, mut hi) = (self.lo, y);
+                if self.ln_shape_stirling(lo) > target {
+                    return None;
+                }
+                while hi - lo > 1 {
+                    let mid = lo + (hi - lo) / 2;
+                    if self.ln_shape_stirling(mid) <= target {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                return Some(lo);
+            }
+            acc.div(self.ratio_up(y - 1));
+            y -= 1;
+        }
+    }
+
+    /// `ln p` of Fisher's test at `a` (in the support) for `alt`.
+    fn ln_p_value(&self, a: usize, alt: Alternative) -> f64 {
+        match alt {
+            Alternative::Less => self.ln_tail(a, Walk::Down),
+            Alternative::Greater => self.ln_tail(a, Walk::Up),
+            Alternative::TwoSided => {
+                let m = self.mode;
+                if a == m {
+                    return 0.0;
+                }
+                let (near, far) = if a < m {
+                    (
+                        self.ln_tail(a, Walk::Down),
+                        self.cutoff_above(a).map(|g| self.ln_tail(g, Walk::Up)),
+                    )
+                } else {
+                    (
+                        self.ln_tail(a, Walk::Up),
+                        self.cutoff_below(a).map(|g| self.ln_tail(g, Walk::Down)),
+                    )
+                };
+                match far {
+                    Some(far) => log_add_exp(near, far).min(0.0),
+                    None => near,
+                }
+            }
+        }
+    }
+}
+
+/// A running product kept as `acc · e^{shift}` with `acc ∈ [1e-250, 1]`
+/// (or above `1` briefly on a flat top), so a walk of a million factors
+/// below one never underflows.
+#[derive(Clone, Copy)]
+struct LogProduct {
+    acc: f64,
+    shift: f64,
+}
+
+impl Default for LogProduct {
+    fn default() -> Self {
+        Self {
+            acc: 1.0,
+            shift: 0.0,
+        }
+    }
+}
+
+impl LogProduct {
+    fn renormalise(&mut self) {
+        if self.acc < 1e-250 || self.acc > 1e250 {
+            self.shift += self.acc.ln();
+            self.acc = 1.0;
+        }
+    }
+
+    fn mul(&mut self, r: f64) {
+        self.acc *= r;
+        self.renormalise();
+    }
+
+    fn div(&mut self, r: f64) {
+        self.acc /= r;
+        self.renormalise();
+    }
+
+    fn ln(&self) -> f64 {
+        self.shift + self.acc.ln()
+    }
+}
+
+/// `ln(eᵃ + eᵇ)` without overflow.
+fn log_add_exp(a: f64, b: f64) -> f64 {
+    if a == f64::NEG_INFINITY {
+        return b;
+    }
+    if b == f64::NEG_INFINITY {
+        return a;
+    }
+    let (hi, lo) = if a >= b { (a, b) } else { (b, a) };
+    hi + (lo - hi).exp().ln_1p()
+}
+
+/// A numeric p-value known through its logarithm, as an expression: the
+/// dyadic `ctx.from_f64(p)` when `p` is a normal `f64`, else `exp(ln p)`
+/// (with `ln p` dyadic) so that [`PValue::p_value_log10`] and
+/// [`PValue::p_value_decimal`] stay informative where `p_value_f64`
+/// underflows to `0.0`.
+fn numeric_p_value(ctx: &Context, ln_p: f64) -> Result<Ex, SymplexError> {
+    if ln_p == f64::NEG_INFINITY {
+        return Ok(ctx.zero());
+    }
+    let p = ln_p.exp().min(1.0);
+    if p >= f64::MIN_POSITIVE {
+        ctx.from_f64(p)
+    } else {
+        Ok(ctx.from_f64(ln_p)?.exp())
+    }
 }
 
 /// Fisher's exact test on a 2×2 table `[[a, b], [c, d]]`: the statistic is
 /// the sample odds ratio `ad/(bc)` (`+∞` when `bc = 0`); the p-value is
-/// exact from the hypergeometric distribution of `a` given the margins —
+/// from the hypergeometric distribution of `a` given the margins —
 /// `P(X ≤ a)` (`Less`), `P(X ≥ a)` (`Greater`), or two-sided the total mass
 /// of the tables no more likely than the observed one.
 /// `scipy.stats.fisher_exact(table, alternative)`.
+///
+/// **Exact below the threshold, numeric above.**  While the support of
+/// `a` has at most [`FISHER_EXACT_NUMERIC_THRESHOLD`] (2 000) points the
+/// p-value is an exact rational from `BigInt` binomials.  Above it — cells
+/// in the `10⁴`–`10¹¹` range — the p-value is numeric: the pmf is walked
+/// from its mode with the exact ratio `f(x+1)/f(x)`, each tail summed
+/// outwards from its inner end, and the result is `ctx.from_f64(p)`
+/// (dyadic, so [`TestResult::p_value_exact`] is `Some` but not the exact
+/// rational), agreeing with scipy to `1e-9` relative or better.  Below
+/// `1e-308` the expression is `exp(ln p)` so that
+/// [`p_value_log10`](TestResult::p_value_log10) stays finite where
+/// [`p_value_f64`](TestResult::p_value_f64) is `0.0`.  The two-sided
+/// cutoff on the far side of the mode compares floating pmf values with a
+/// `1e-11` relative tolerance except for a symmetric distribution
+/// (`n₁ = n₂` or `2n = N`), whose mirror point is exact.  `[[10⁶, 10⁶ +
+/// 7], [10⁶ − 3, 10⁶]]` takes milliseconds (it took minutes before 0.18.1).
 ///
 /// ```
 /// use symplex::prelude::*;
@@ -673,13 +1081,17 @@ fn hypergeometric_pmf_table(n1: usize, n2: usize, n: usize) -> (usize, Vec<Q>) {
 /// let r = fisher_exact(&ctx, [[8, 2], [1, 5]], Alternative::TwoSided)?;
 /// assert_eq!(r.statistic_exact(), Some(qi(20)));
 /// assert_eq!(r.p_value_exact(), Some(q(5, 143)));
+/// // A large table takes the numeric route: scipy 0.9992021157304142 (mpmath 0.99920211598773724586)
+/// let big = fisher_exact(&ctx, [[1_000_000, 1_000_007], [999_997, 1_000_000]], Alternative::TwoSided)?;
+/// assert!((big.p_value_f64()? - 0.999_202_115_987_737_2).abs() < 1e-12);
 /// # Ok::<(), SymplexError>(())
 /// ```
 ///
 /// # Errors
 ///
 /// [`SymplexError::InvalidArgument`] if a row or a column of the table is
-/// empty (the test is undefined; scipy reports `p = 1`, odds ratio NaN).
+/// empty (the test is undefined; scipy reports `p = 1`, odds ratio NaN),
+/// or if a margin overflows `usize`.
 pub fn fisher_exact(
     ctx: &Context,
     table: [[usize; 2]; 2],
@@ -687,22 +1099,32 @@ pub fn fisher_exact(
 ) -> Result<TestResult, SymplexError> {
     const OP: &str = "fisher_exact";
     let [[a, b], [c, d]] = table;
-    let (n1, n2, n) = (a + b, c + d, a + c);
-    if n1 == 0 || n2 == 0 || n == 0 || b + d == 0 {
+    let margin = |x: usize, y: usize| {
+        x.checked_add(y)
+            .ok_or_else(|| invalid(OP, "a margin of the table overflows usize"))
+    };
+    let (n1, n2, n, n_col2) = (margin(a, b)?, margin(c, d)?, margin(a, c)?, margin(b, d)?);
+    margin(n1, n2)?;
+    if n1 == 0 || n2 == 0 || n == 0 || n_col2 == 0 {
         return Err(invalid(OP, "a row or a column of the table is empty"));
     }
-    let (lo, pmf) = hypergeometric_pmf_table(n1, n2, n);
-    let idx = a - lo;
-    let p = match alt {
-        Alternative::Less => mass_where(&pmf, |i, _| i <= idx),
-        Alternative::Greater => mass_where(&pmf, |i, _| i >= idx),
-        Alternative::TwoSided => two_sided_mass(&pmf, idx),
-    };
     let odds = if b == 0 || c == 0 {
         ctx.infinity()
     } else {
         ex(ctx, &(qu(a) * qu(d) / (qu(b) * qu(c))))
     };
+    let lo = n.saturating_sub(n2);
+    let hi = n.min(n1);
+    if hi - lo >= FISHER_EXACT_NUMERIC_THRESHOLD {
+        let ln_p = HypergeomNumeric::new(n1, n2, n).ln_p_value(a, alt);
+        return Ok(TestResult {
+            statistic: odds,
+            p_value: numeric_p_value(ctx, ln_p)?,
+            df: None,
+            alternative: alt,
+        });
+    }
+    let p = HypergeomExact::new(n1, n2, n).p_value(a, alt);
     Ok(result(ctx, odds, p, None, alt))
 }
 
@@ -1939,18 +2361,51 @@ pub fn compare_two_correlations(
 // 4. Rank tests
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// `Σ (t³ − t)` over the tie groups of a sample.
-fn tie_term(x: &[Q]) -> Q {
-    data::tie_sizes(x)
-        .into_iter()
-        .fold(Q::zero(), |acc, t| acc + qu(t * t * t - t))
+/// `Σ (t³ − t)` over tie-group sizes `t` — the tie term of the rank-test
+/// variances and corrections (Mann–Whitney, Wilcoxon, Kruskal–Wallis,
+/// Friedman) — exact in `Q`: `t³` overflows `usize` from `t ≈ 2.6·10⁶`.
+/// Sizes below `2` contribute `0`.  Pair with [`data::tie_sizes`].
+///
+/// ```
+/// use symplex::linprog::qi;
+/// use symplex::stats::hypothesis::tie_term;
+///
+/// // two groups of 2 and one of 3: (8 − 2) + (8 − 2) + (27 − 3) = 36
+/// assert_eq!(tie_term(&[2, 2, 3]), qi(36));
+/// ```
+pub fn tie_term(tie_sizes: &[usize]) -> Q {
+    tie_sizes
+        .iter()
+        .fold(Q::zero(), |acc, &t| acc + cubic_minus_linear(t))
+}
+
+/// [`tie_term`] of a sample's tie groups.
+fn tie_term_of(x: &[Q]) -> Q {
+    tie_term(&data::tie_sizes(x))
+}
+
+/// `n³ − n` exactly.
+fn cubic_minus_linear(n: usize) -> Q {
+    let n = qu(n);
+    &n * &n * &n - &n
+}
+
+/// `a · b` of two counts, exactly.
+fn qmul(a: usize, b: usize) -> Q {
+    qu(a) * qu(b)
+}
+
+/// `n(n + 1)`, exactly.
+fn pronic(n: usize) -> Q {
+    qmul(n, n + 1)
 }
 
 /// Frequencies of `U = u`, `u = 0..=mn`, over the `C(m+n, m)` equally likely
 /// arrangements of `m` and `n` distinct values: the coefficients of the
 /// Gaussian binomial `[m+n choose m]_q = Π_{i=1}^{m} (1 − q^{n+i})/(1 − q^i)`.
-fn mann_whitney_frequencies(m: usize, n: usize) -> Vec<BigInt> {
-    let size = m * n + 1;
+/// `None` when `mn + 1` does not fit in `usize`.
+fn mann_whitney_frequencies(m: usize, n: usize) -> Option<Vec<BigInt>> {
+    let size = m.checked_mul(n)?.checked_add(1)?;
     let mut c = vec![BigInt::zero(); size];
     c[0] = BigInt::one();
     for i in 1..=m {
@@ -1964,13 +2419,14 @@ fn mann_whitney_frequencies(m: usize, n: usize) -> Vec<BigInt> {
             c[t] += v;
         }
     }
-    c
+    Some(c)
 }
 
 /// Frequencies of `T⁺ = s`, `s = 0..=n(n+1)/2`, over the `2ⁿ` equally likely
 /// sign patterns of the ranks `1..=n` (the number of subsets with sum `s`).
-fn signed_rank_frequencies(n: usize) -> Vec<BigInt> {
-    let size = n * (n + 1) / 2 + 1;
+/// `None` when `n(n+1)/2 + 1` does not fit in `usize`.
+fn signed_rank_frequencies(n: usize) -> Option<Vec<BigInt>> {
+    let size = n.checked_mul(n + 1)?.checked_div(2)?.checked_add(1)?;
     let mut c = vec![BigInt::zero(); size];
     c[0] = BigInt::one();
     for k in 1..=n {
@@ -1979,7 +2435,12 @@ fn signed_rank_frequencies(n: usize) -> Vec<BigInt> {
             c[s] += v;
         }
     }
-    c
+    Some(c)
+}
+
+/// The error for an exact rank distribution whose table would not fit.
+fn exact_table_too_large(op: &'static str) -> SymplexError {
+    invalid(op, "the exact distribution's table is too large for usize")
 }
 
 /// Mahonian numbers `M(n, k)`, `k = 0..=cmax`: permutations of `n` with `k`
@@ -2092,8 +2553,9 @@ pub fn mann_whitney_u(
     let pooled: Vec<Q> = x.iter().chain(y).cloned().collect();
     let ranks = data::ranks(&pooled);
     let r1 = data::sum(&ranks[..n1]);
-    let u1 = r1 - qu(n1 * (n1 + 1) / 2);
-    let u2 = qu(n1 * n2) - &u1;
+    let u1 = r1 - pronic(n1) / qi(2);
+    let n1n2 = qmul(n1, n2);
+    let u2 = &n1n2 - &u1;
     let statistic = ex(ctx, &u1);
     match method {
         RankMethod::Exact => {
@@ -2109,7 +2571,7 @@ pub fn mann_whitney_u(
                 Alternative::TwoSided => (&u1).max(&u2),
             };
             let k = rank_statistic_to_index(OP, u)?;
-            let freq = mann_whitney_frequencies(n1, n2);
+            let freq = mann_whitney_frequencies(n1, n2).ok_or_else(|| exact_table_too_large(OP))?;
             let total = sum_big(&freq);
             let sf = sf_of(&freq, &total, k);
             let p = match alt {
@@ -2120,11 +2582,11 @@ pub fn mann_whitney_u(
         }
         RankMethod::Asymptotic { continuity } => {
             let n = n1 + n2;
-            let var = qu(n1 * n2) / qi(12) * (qu(n + 1) - tie_term(&pooled) / qu(n * (n - 1)));
+            let var = &n1n2 / qi(12) * (qu(n + 1) - tie_term_of(&pooled) / qmul(n, n - 1));
             if !var.is_positive() {
                 return Err(invalid(OP, "every observation is identical"));
             }
-            let mut num = &u1 - qu(n1 * n2) / qi(2);
+            let mut num = &u1 - &n1n2 / qi(2);
             if continuity {
                 num = continuity_shift(&num, alt);
             }
@@ -2212,7 +2674,7 @@ pub fn wilcoxon_signed_rank(
                 ));
             }
             let k = rank_statistic_to_index(OP, &r_plus)?;
-            let freq = signed_rank_frequencies(n);
+            let freq = signed_rank_frequencies(n).ok_or_else(|| exact_table_too_large(OP))?;
             let total = BigInt::one() << n;
             let (cdf, sf) = (cdf_of(&freq, &total, k), sf_of(&freq, &total, k));
             let p = match alt {
@@ -2223,11 +2685,11 @@ pub fn wilcoxon_signed_rank(
             Ok(result(ctx, statistic, p, None, alt))
         }
         RankMethod::Asymptotic { continuity } => {
-            let var = (qu(n * (n + 1) * (2 * n + 1)) - tie_term(&abs) / qi(2)) / qi(24);
+            let var = (pronic(n) * (qi(2) * qu(n) + Q::one()) - tie_term_of(&abs) / qi(2)) / qi(24);
             if !var.is_positive() {
                 return Err(invalid(OP, "the variance of the rank sum is zero"));
             }
-            let mut num = &r_plus - qu(n * (n + 1)) / qi(4);
+            let mut num = &r_plus - pronic(n) / qi(4);
             if continuity {
                 num = continuity_shift(&num, alt);
             }
@@ -2284,8 +2746,8 @@ pub fn kruskal_wallis(ctx: &Context, groups: &[Vec<Q>]) -> Result<TestResult, Sy
         ssbn += &r * &r / qu(g.len());
         start += g.len();
     }
-    let h = qi(12) / qu(n * (n + 1)) * ssbn - qu(3 * (n + 1));
-    let correction = Q::one() - tie_term(&pooled) / qu(n * n * n - n);
+    let h = qi(12) / pronic(n) * ssbn - qi(3) * qu(n + 1);
+    let correction = Q::one() - tie_term_of(&pooled) / cubic_minus_linear(n);
     if correction.is_zero() {
         return Err(invalid(OP, "every observation is identical"));
     }
@@ -2347,14 +2809,15 @@ pub fn friedman(ctx: &Context, blocks: &[Vec<Q>]) -> Result<TestResult, SymplexE
         for (s, v) in column_sums.iter_mut().zip(&r) {
             *s += v;
         }
-        ties += tie_term(b);
+        ties += tie_term_of(b);
     }
-    let correction = Q::one() - ties / qu(k * (k * k - 1) * n);
+    let correction = Q::one() - ties / (cubic_minus_linear(k) * qu(n));
     if correction.is_zero() {
         return Err(invalid(OP, "every block is constant"));
     }
     let ssbn = column_sums.iter().fold(Q::zero(), |acc, r| acc + r * r);
-    let stat = (qi(12) / qu(k * n * (k + 1)) * ssbn - qu(3 * n * (k + 1))) / correction;
+    let nk1 = qmul(n, k + 1);
+    let stat = (qi(12) / (&nk1 * qu(k)) * ssbn - qi(3) * &nk1) / correction;
     Ok(TestResult {
         p_value: chi_squared_sf_q(ctx, k - 1, &stat),
         statistic: ex(ctx, &stat),
@@ -2805,10 +3268,11 @@ pub fn rank_biserial(u1: &Q, n1: usize, n2: usize) -> Result<Q, SymplexError> {
     if n1 == 0 || n2 == 0 {
         return Err(invalid(OP, "both samples must be non-empty"));
     }
-    if u1.is_negative() || *u1 > qu(n1 * n2) {
+    let n1n2 = qmul(n1, n2);
+    if u1.is_negative() || *u1 > n1n2 {
         return Err(invalid(OP, "U must lie in [0, n₁n₂]"));
     }
-    Ok(qi(2) * u1 / qu(n1 * n2) - Q::one())
+    Ok(qi(2) * u1 / n1n2 - Q::one())
 }
 
 /// `η² = SS_between / SS_total` of `k` groups, exact (the same quantity as
@@ -2873,7 +3337,7 @@ pub fn cliffs_delta(x: &[Q], y: &[Q]) -> Result<Q, SymplexError> {
             };
         }
     }
-    Ok(qi(diff) / qu(x.len() * y.len()))
+    Ok(qi(diff) / qmul(x.len(), y.len()))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

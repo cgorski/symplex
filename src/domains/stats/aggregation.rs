@@ -293,13 +293,23 @@ pub struct WeightedVote {
 /// A vote where rater `k`'s label counts `weights[k]` (non-negative,
 /// exact).
 ///
+/// A weight of `0` is a vote not cast: it adds nothing to any score, so a
+/// label backed only by zero-weight raters cannot win — when every weight
+/// is zero the result has `winner: None` and `tied: []` even if a single
+/// label was cast, exactly as [`majority_vote`] treats a rater whose
+/// label is `None`.  (Compare `majority_vote(&[Some(3)])`, one *counted*
+/// vote, which does elect `3`.)  `scores` still runs to the largest label
+/// seen.
+///
 /// ```
 /// use symplex::stats::aggregation::weighted_vote;
-/// use symplex::linprog::q;
+/// use symplex::linprog::{q, qi};
 ///
 /// let labels = [Some(0), Some(1), Some(1)];
 /// let v = weighted_vote(&labels, &[q(3, 1), q(1, 1), q(1, 1)])?;
 /// assert_eq!((v.winner, v.scores), (Some(0), vec![q(3, 1), q(2, 1)]));
+/// let none = weighted_vote(&[Some(2)], &[qi(0)])?;
+/// assert_eq!((none.winner, none.tied, none.scores), (None, vec![], vec![qi(0), qi(0), qi(0)]));
 /// # Ok::<(), symplex::prelude::SymplexError>(())
 /// ```
 ///

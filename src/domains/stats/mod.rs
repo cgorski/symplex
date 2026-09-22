@@ -101,6 +101,7 @@ pub mod agreement;
 pub mod anova;
 pub(crate) mod common;
 mod continuous;
+pub mod cox;
 pub mod data;
 mod discrete;
 pub mod estimation;

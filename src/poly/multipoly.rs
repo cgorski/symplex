@@ -354,6 +354,37 @@ impl<O: MonomialOrd> MultiPoly<O> {
         Some(p)
     }
 
+    /// [`from_terms`](Self::from_terms) for pairs that are already reduced
+    /// and (normally) free of duplicates and zeros: each coefficient is
+    /// stored as given instead of being added to a fresh zero.  Duplicate
+    /// monomials are still summed and zero coefficients dropped, so the
+    /// result is well-formed either way.  `None` if an exponent vector does
+    /// not have length `num_vars`.
+    pub(crate) fn from_distinct_terms(
+        num_vars: usize,
+        terms: Vec<(Vec<u32>, Ratio<BigInt>)>,
+    ) -> Option<Self> {
+        let mut p = Self::zero(num_vars);
+        for (exp, c) in terms {
+            if exp.len() != num_vars {
+                return None;
+            }
+            if c.is_zero() {
+                continue;
+            }
+            match p.terms.entry(MonoKey::new(exp)) {
+                std::collections::btree_map::Entry::Vacant(slot) => {
+                    slot.insert(c);
+                }
+                std::collections::btree_map::Entry::Occupied(mut slot) => {
+                    *slot.get_mut() += c;
+                }
+            }
+        }
+        p.prune();
+        Some(p)
+    }
+
     /// Apply `f` to every coefficient, dropping terms that become zero.
     ///
     /// # Examples
@@ -464,8 +495,12 @@ impl<O: MonomialOrd> MultiPoly<O> {
         self.terms.last_key_value().map(|(_, v)| v)
     }
 
-    /// Iterate over all terms as `(exponent_slice, coefficient)` pairs.
-    pub fn terms(&self) -> impl Iterator<Item = (&[u32], &Ratio<BigInt>)> {
+    /// Iterate over all terms as `(exponent_slice, coefficient)` pairs, in
+    /// ascending order of `O`; `.rev()` walks them from the leading term
+    /// down.
+    pub fn terms(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (&[u32], &Ratio<BigInt>)> + ExactSizeIterator {
         self.terms.iter().map(|(k, v)| (k.exponents.as_slice(), v))
     }
 

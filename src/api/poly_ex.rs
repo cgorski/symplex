@@ -14,6 +14,16 @@
 //! vectors (the order of SymPy's `Poly.terms()`), so the leading term of
 //! `Poly(x² y + x y² + y³, x, y)` is `x² y`.
 //!
+//! # Representation
+//!
+//! A polynomial whose coefficients are all rational literals is stored as
+//! an exact [`MultiPoly`] in [`Lex`] order (the order of
+//! [`Poly::terms`]), and arithmetic between two such polynomials runs on
+//! rationals without touching the expression arena.  As soon as a
+//! symbolic coefficient appears the polynomial is stored as one `Ex` per
+//! monomial, and mixed operations convert the exact side to that form.
+//! Both representations report the same terms in the same order.
+//!
 //! # Examples
 //!
 //! ```
@@ -31,24 +41,27 @@
 //! assert_eq!(p.to_ex(), e.expand());
 //! ```
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use num_bigint::BigInt;
 use num_complex::Complex64;
 use num_integer::Integer;
 use num_rational::Ratio;
 use num_traits::{One, Signed, Zero};
+use rustc_hash::FxHashMap;
 
 use crate::api::context::Context;
 use crate::api::expr::{Ex, ExprType};
 use crate::base::arena::Arena;
+use crate::base::config::EvalConfig;
 use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
 use crate::base::node::{ExprId, ExprNode};
 use crate::domains::matrix::Matrix;
-use crate::poly::multipoly::{GrevLex, MultiPoly};
+use crate::poly::multipoly::{GrevLex, Lex, MultiPoly};
 use crate::poly::polybridge;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -141,9 +154,418 @@ fn validate_gens(
     Ok(gens.iter().map(|g| (*g).clone()).collect())
 }
 
+// ── Exact-arithmetic helpers ───────────────────────────────────────────────
+
+/// The rational literal `r` as an arena node (the node `norm_coeff` would
+/// produce for it: rationals intern to a unique `Num`).
+fn intern_ratio(arena: &mut Arena, r: &Ratio<BigInt>) -> ExprId {
+    let nid = arena.intern_num(r.clone());
+    arena.intern(ExprNode::Num(nid))
+}
+
+/// Digit count of a rational as the arena's numeric guards measure it
+/// (decimal digits of numerator and denominator, sign included).
+fn digits(r: &Ratio<BigInt>) -> usize {
+    r.numer().to_string().len() + r.denom().to_string().len()
+}
+
+/// Would the arena evaluate `base^exp` to a rational literal?  Mirrors the
+/// guards of canonical `pow` (`max_pow_exponent`, `max_result_digits`)
+/// conservatively — `true` only when the expression path is certain to
+/// fold the power, so an exact computation returns the identical node.
+fn pow_within_limits(config: &EvalConfig, base: &Ratio<BigInt>, exp: u32) -> bool {
+    if exp <= 1 || base.is_one() {
+        return true;
+    }
+    let exp = exp as usize;
+    exp <= config.max_pow_exponent
+        && exp
+            .checked_mul(digits(base))
+            .is_some_and(|d| d <= config.max_result_digits)
+}
+
+/// `base^exp` of a reduced rational, reduced (no gcd is needed: powers of
+/// coprime integers stay coprime).
+fn pow_ratio(base: &Ratio<BigInt>, exp: u32) -> Ratio<BigInt> {
+    if base.is_zero() {
+        return if exp == 0 {
+            Ratio::one()
+        } else {
+            Ratio::zero()
+        };
+    }
+    Ratio::new_raw(base.numer().pow(exp), base.denom().pow(exp))
+}
+
+/// `[1, b, b², …, b^d]`.
+fn powers(b: &BigInt, d: u32) -> Vec<BigInt> {
+    let mut out = Vec::with_capacity(d as usize + 1);
+    out.push(BigInt::one());
+    for _ in 0..d {
+        let next = out.last().map_or_else(BigInt::one, |p| p * b);
+        out.push(next);
+    }
+    out
+}
+
+/// Maximum exponent of each variable (all zeros for the zero polynomial).
+fn degree_list_of(mp: &MultiPoly<Lex>) -> Vec<u32> {
+    let mut out = vec![0u32; mp.num_vars()];
+    for (e, _) in mp.terms() {
+        for (o, &x) in out.iter_mut().zip(e) {
+            *o = (*o).max(x);
+        }
+    }
+    out
+}
+
+/// An exact polynomial over a common denominator, `Σ nᵢ · xᵉⁱ / den`: the
+/// working form for products, powers and evaluation, where accumulating
+/// integer numerators avoids a gcd reduction per term product.  The
+/// result is reduced once when converted back.
+struct ZPoly {
+    den: BigInt,
+    terms: BTreeMap<Vec<u32>, BigInt>,
+}
+
+impl ZPoly {
+    fn one(nv: usize) -> ZPoly {
+        let mut terms = BTreeMap::new();
+        terms.insert(vec![0u32; nv], BigInt::one());
+        ZPoly {
+            den: BigInt::one(),
+            terms,
+        }
+    }
+
+    fn from_multipoly(mp: &MultiPoly<Lex>) -> ZPoly {
+        let mut den = BigInt::one();
+        for (_, c) in mp.terms() {
+            if !c.denom().is_one() {
+                den = den.lcm(c.denom());
+            }
+        }
+        let terms = mp
+            .terms()
+            .map(|(e, c)| {
+                let n = if den.is_one() {
+                    c.numer().clone()
+                } else {
+                    c.numer() * (&den / c.denom())
+                };
+                (e.to_vec(), n)
+            })
+            .collect();
+        ZPoly { den, terms }
+    }
+
+    fn into_multipoly(self, nv: usize) -> Option<MultiPoly<Lex>> {
+        let den = self.den;
+        let terms: Vec<(Vec<u32>, Ratio<BigInt>)> = if den.is_one() {
+            self.terms
+                .into_iter()
+                .map(|(e, n)| (e, Ratio::from_integer(n)))
+                .collect()
+        } else {
+            self.terms
+                .into_iter()
+                .map(|(e, n)| (e, Ratio::new(n, den.clone())))
+                .collect()
+        };
+        MultiPoly::from_distinct_terms(nv, terms)
+    }
+
+    /// Product; `None` if some exponent would overflow `u32` (the check
+    /// `Poly::mul` performs on the symbolic path).
+    fn mul(&self, other: &ZPoly) -> Option<ZPoly> {
+        let mut terms: BTreeMap<Vec<u32>, BigInt> = BTreeMap::new();
+        for (ea, na) in &self.terms {
+            for (eb, nb) in &other.terms {
+                let e: Option<Vec<u32>> =
+                    ea.iter().zip(eb).map(|(a, b)| a.checked_add(*b)).collect();
+                let prod = na * nb;
+                match terms.entry(e?) {
+                    std::collections::btree_map::Entry::Vacant(slot) => {
+                        slot.insert(prod);
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut slot) => {
+                        *slot.get_mut() += prod;
+                    }
+                }
+            }
+        }
+        terms.retain(|_, n| !n.is_zero());
+        Some(ZPoly {
+            den: &self.den * &other.den,
+            terms,
+        })
+    }
+
+    /// `self^n` by repeated squaring.
+    fn pow(self, nv: usize, n: u32) -> Option<ZPoly> {
+        let mut result = ZPoly::one(nv);
+        let mut base = self;
+        let mut k = n;
+        while k > 0 {
+            if k & 1 == 1 {
+                result = result.mul(&base)?;
+            }
+            k >>= 1;
+            if k > 0 {
+                base = base.mul(&base)?;
+            }
+        }
+        Some(result)
+    }
+}
+
+/// Product of two exact polynomials, `None` on exponent overflow.
+fn mul_checked(a: &MultiPoly<Lex>, b: &MultiPoly<Lex>) -> Option<MultiPoly<Lex>> {
+    ZPoly::from_multipoly(a)
+        .mul(&ZPoly::from_multipoly(b))?
+        .into_multipoly(a.num_vars())
+}
+
+/// `base^n` by repeated squaring, `None` on exponent overflow.
+fn pow_checked(base: &MultiPoly<Lex>, n: u32) -> Option<MultiPoly<Lex>> {
+    let nv = base.num_vars();
+    ZPoly::from_multipoly(base).pow(nv, n)?.into_multipoly(nv)
+}
+
+/// Exact value of `mp` at the rational point `vals` (one reduction at the
+/// end: every term is brought over the common denominator
+/// `den · Π qᵢ^{dᵢ}` with `dᵢ` the degree in variable `i`).
+fn eval_exact(mp: &MultiPoly<Lex>, vals: &[Ratio<BigInt>]) -> Ratio<BigInt> {
+    let degs = degree_list_of(mp);
+    let num_pows: Vec<Vec<BigInt>> = vals
+        .iter()
+        .zip(&degs)
+        .map(|(v, &d)| powers(v.numer(), d))
+        .collect();
+    let den_pows: Vec<Vec<BigInt>> = vals
+        .iter()
+        .zip(&degs)
+        .map(|(v, &d)| {
+            if v.denom().is_one() {
+                Vec::new()
+            } else {
+                powers(v.denom(), d)
+            }
+        })
+        .collect();
+    let z = ZPoly::from_multipoly(mp);
+    let mut sum = BigInt::zero();
+    for (e, n) in &z.terms {
+        let mut t = n.clone();
+        for (i, &ei) in e.iter().enumerate() {
+            if ei > 0 {
+                t *= &num_pows[i][ei as usize];
+            }
+            let rest = degs[i] - ei;
+            if rest > 0 && !den_pows[i].is_empty() {
+                t *= &den_pows[i][rest as usize];
+            }
+        }
+        sum += t;
+    }
+    let mut den = z.den;
+    for (i, &d) in degs.iter().enumerate() {
+        if d > 0 && !den_pows[i].is_empty() {
+            den *= &den_pows[i][d as usize];
+        }
+    }
+    Ratio::new(sum, den)
+}
+
+/// `base^exp` for the exact reading of an expression, or `None` to defer
+/// to the expand-based path.  Beyond the exponent being a non-negative
+/// integer, the limits of that path are honoured so that both paths accept
+/// the same inputs and produce the same coefficients: a power of a sum is
+/// expanded only up to `min(max_pow_exponent, 200)`, and a numeric
+/// coefficient is raised only within the `pow` guards.
+fn exact_pow(
+    config: &EvalConfig,
+    base: &MultiPoly<Lex>,
+    exp: &Ratio<BigInt>,
+) -> Option<MultiPoly<Lex>> {
+    if !exp.is_integer() || exp.is_negative() {
+        return None;
+    }
+    let n: u32 = exp.to_integer().try_into().ok()?;
+    let nv = base.num_vars();
+    match n {
+        0 => return (!base.is_zero()).then(|| MultiPoly::from_int(nv, 1)),
+        1 => return Some(base.clone()),
+        _ => {}
+    }
+    if base.num_terms() > 1 && n as usize > config.max_pow_exponent.min(200) {
+        return None;
+    }
+    if base.terms().any(|(_, c)| !pow_within_limits(config, c, n)) {
+        return None;
+    }
+    match base.num_terms() {
+        0 => Some(MultiPoly::zero(nv)),
+        1 => {
+            let (e, c) = base.terms().next()?;
+            let exps: Option<Vec<u32>> = e.iter().map(|&x| x.checked_mul(n)).collect();
+            Some(MultiPoly::monomial(pow_ratio(c, n), exps?))
+        }
+        _ => pow_checked(base, n),
+    }
+}
+
+/// One factor of a flat term folded into `(exps, coeff)`: a generator, an
+/// integer power of one, a number, or a product / negation of those.
+fn flat_factor(
+    arena: &Arena,
+    factor: ExprId,
+    gens: &[ExprId],
+    exps: &mut [u32],
+    coeff: &mut Option<Ratio<BigInt>>,
+) -> Option<()> {
+    if let Some(i) = gens.iter().position(|&g| g == factor) {
+        exps[i] = exps[i].checked_add(1)?;
+        return Some(());
+    }
+    match arena.node(factor) {
+        ExprNode::Num(nid) => {
+            let c = arena.num(*nid);
+            *coeff = Some(match coeff.take() {
+                None => c.clone(),
+                Some(acc) => acc * c,
+            });
+            Some(())
+        }
+        ExprNode::Pow(base, exp) => {
+            let i = gens.iter().position(|&g| g == *base)?;
+            let k = arena.as_num(*exp)?;
+            if !k.is_integer() || k.is_negative() {
+                return None;
+            }
+            let k: u32 = k.to_integer().try_into().ok()?;
+            exps[i] = exps[i].checked_add(k)?;
+            Some(())
+        }
+        ExprNode::Mul(children) => {
+            for &c in children {
+                flat_factor(arena, c, gens, exps, coeff)?;
+            }
+            Some(())
+        }
+        ExprNode::Neg(inner) => {
+            flat_factor(arena, *inner, gens, exps, coeff)?;
+            *coeff = Some(match coeff.take() {
+                None => -Ratio::<BigInt>::one(),
+                Some(acc) => -acc,
+            });
+            Some(())
+        }
+        _ => None,
+    }
+}
+
+/// An already-expanded expression — a sum of `c · Π genᵢ^kᵢ` terms, the
+/// usual shape after canonicalisation — read off as exact terms with no
+/// polynomial arithmetic at all.  `None` if some term is not of that flat
+/// shape; [`exact_multipoly`] then evaluates the tree.
+fn flat_terms(
+    arena: &Arena,
+    expr: ExprId,
+    gens: &[ExprId],
+) -> Option<Vec<(Vec<u32>, Ratio<BigInt>)>> {
+    let terms: Vec<ExprId> = match arena.node(expr) {
+        ExprNode::Add(children) => children.to_vec(),
+        _ => vec![expr],
+    };
+    let mut out = Vec::with_capacity(terms.len());
+    for term in terms {
+        let mut exps = vec![0u32; gens.len()];
+        let mut coeff = None;
+        flat_factor(arena, term, gens, &mut exps, &mut coeff)?;
+        out.push((exps, coeff.unwrap_or_else(Ratio::one)));
+    }
+    Some(out)
+}
+
+/// `expr` as an exact rational-coefficient polynomial in `gens`, by a
+/// bottom-up walk over `Num`/`Add`/`Mul`/`Pow`/`Neg` nodes.  `None` when
+/// some node is not of that shape (a symbol outside `gens`, a function, a
+/// non-integer power, …) or a power exceeds the limits the expand-based
+/// path honours ([`exact_pow`]); the caller then takes that path, so the
+/// fast path never accepts an input the general one rejects.
+fn exact_multipoly(arena: &Arena, expr: ExprId, gens: &[ExprId]) -> Option<MultiPoly<Lex>> {
+    let nv = gens.len();
+    let mut cache: FxHashMap<ExprId, MultiPoly<Lex>> = FxHashMap::default();
+    for id in crate::base::walk::post_order_ids(arena, expr) {
+        if let Some(i) = gens.iter().position(|&g| g == id) {
+            cache.insert(id, MultiPoly::var(nv, i));
+            continue;
+        }
+        let poly = match arena.node(id) {
+            ExprNode::Num(nid) => MultiPoly::constant(nv, arena.num(*nid).clone()),
+            ExprNode::Add(children) => {
+                let mut terms: Vec<(Vec<u32>, Ratio<BigInt>)> = Vec::new();
+                for c in children {
+                    terms.extend(cache.get(c)?.terms().map(|(e, r)| (e.to_vec(), r.clone())));
+                }
+                MultiPoly::from_distinct_terms(nv, terms)?
+            }
+            ExprNode::Mul(children) => {
+                let mut acc = MultiPoly::from_int(nv, 1);
+                for c in children {
+                    acc = mul_checked(&acc, cache.get(c)?)?;
+                }
+                acc
+            }
+            ExprNode::Pow(base, exp) => {
+                exact_pow(&arena.config, cache.get(base)?, arena.as_num(*exp)?)?
+            }
+            ExprNode::Neg(inner) => cache.get(inner)?.neg(),
+            _ => return None,
+        };
+        cache.insert(id, poly);
+    }
+    cache.remove(&expr)
+}
+
+/// The symbolic term map as an exact polynomial, `None` if some
+/// coefficient is not a rational literal.
+fn rational_multipoly(nv: usize, terms: &BTreeMap<Vec<u32>, Ex>) -> Option<MultiPoly<Lex>> {
+    let mut out: Vec<(Vec<u32>, Ratio<BigInt>)> = Vec::with_capacity(terms.len());
+    for (e, c) in terms {
+        out.push((e.clone(), c.as_rational()?));
+    }
+    MultiPoly::from_distinct_terms(nv, out)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Poly
 // ═══════════════════════════════════════════════════════════════════════════
+
+/// Rational-coefficient terms as an exact [`MultiPoly`] in `Lex` order —
+/// the order of [`Poly::terms`] — with the `Ex` coefficients materialised
+/// once, on the first request from an accessor that hands out expressions.
+#[derive(Clone, Debug)]
+struct ExactTerms {
+    mp: MultiPoly<Lex>,
+    ex: OnceLock<BTreeMap<Vec<u32>, Ex>>,
+}
+
+/// Term storage: exact when every coefficient is a rational literal,
+/// otherwise one `Ex` per monomial (ascending lex order in the map; every
+/// accessor reports them descending).
+#[derive(Clone, Debug)]
+enum Terms {
+    Exact(ExactTerms),
+    Symbolic(BTreeMap<Vec<u32>, Ex>),
+}
+
+/// A coefficient seen through either representation, for printing.
+enum CoeffView<'a> {
+    Rational(&'a Ratio<BigInt>),
+    Symbolic(&'a Ex),
+}
 
 /// A sparse multivariate polynomial view of an expression over explicit
 /// generators, with coefficients that are expressions free of the
@@ -156,21 +578,44 @@ fn validate_gens(
 pub struct Poly {
     ctx: Context,
     gens: Vec<Ex>,
-    /// Non-zero terms keyed by exponent vector (ascending lex order in the
-    /// map; every accessor reports them descending).
-    terms: BTreeMap<Vec<u32>, Ex>,
+    /// Non-zero terms keyed by exponent vector.
+    terms: Terms,
 }
 
 // ── Construction ───────────────────────────────────────────────────────────
 
 impl Poly {
-    /// Internal constructor from already-normalised arena terms.
-    fn from_normalized(ctx: &Context, gens: Vec<Ex>, ids: Vec<(Vec<u32>, ExprId)>) -> Poly {
-        let terms = ids.into_iter().map(|(e, c)| (e, wrap(ctx, c))).collect();
+    /// Internal constructor from an exact polynomial.
+    fn from_exact(ctx: &Context, gens: Vec<Ex>, mp: MultiPoly<Lex>) -> Poly {
         Poly {
             ctx: ctx.clone(),
             gens,
-            terms,
+            terms: Terms::Exact(ExactTerms {
+                mp,
+                ex: OnceLock::new(),
+            }),
+        }
+    }
+
+    /// Internal constructor from already-normalised arena terms: exact when
+    /// every coefficient is a rational literal, symbolic otherwise.
+    fn from_normalized(ctx: &Context, gens: Vec<Ex>, ids: Vec<(Vec<u32>, ExprId)>) -> Poly {
+        let rational: Option<Vec<(Vec<u32>, Ratio<BigInt>)>> = {
+            let inner = ctx.inner.read();
+            ids.iter()
+                .map(|(e, c)| inner.arena.as_num(*c).map(|r| (e.clone(), r.clone())))
+                .collect()
+        };
+        match rational.and_then(|terms| MultiPoly::from_distinct_terms(gens.len(), terms)) {
+            Some(mp) => Self::from_exact(ctx, gens, mp),
+            None => {
+                let terms = ids.into_iter().map(|(e, c)| (e, wrap(ctx, c))).collect();
+                Poly {
+                    ctx: ctx.clone(),
+                    gens,
+                    terms: Terms::Symbolic(terms),
+                }
+            }
         }
     }
 
@@ -184,11 +629,59 @@ impl Poly {
         self.gens.iter().map(Ex::raw_id).collect()
     }
 
+    /// The exact representation, if this polynomial has one.
+    fn exact(&self) -> Option<&MultiPoly<Lex>> {
+        match &self.terms {
+            Terms::Exact(t) => Some(&t.mp),
+            Terms::Symbolic(_) => None,
+        }
+    }
+
+    /// The exact representation, converting a symbolic one whose
+    /// coefficients all happen to be rational; `None` otherwise.
+    fn lex_multipoly(&self) -> Option<Cow<'_, MultiPoly<Lex>>> {
+        match &self.terms {
+            Terms::Exact(t) => Some(Cow::Borrowed(&t.mp)),
+            Terms::Symbolic(m) => rational_multipoly(self.gens.len(), m).map(Cow::Owned),
+        }
+    }
+
+    /// Terms as `Ex` coefficients keyed by exponent vector (ascending lex),
+    /// materialised once for the exact representation.
+    fn ex_terms(&self) -> &BTreeMap<Vec<u32>, Ex> {
+        match &self.terms {
+            Terms::Symbolic(m) => m,
+            Terms::Exact(t) => t.ex.get_or_init(|| {
+                let ids: Vec<(Vec<u32>, ExprId)> = self.ctx.with_arena_mut(|arena| {
+                    t.mp.terms()
+                        .map(|(e, c)| (e.to_vec(), intern_ratio(arena, c)))
+                        .collect()
+                });
+                ids.into_iter()
+                    .map(|(e, c)| (e, wrap(&self.ctx, c)))
+                    .collect()
+            }),
+        }
+    }
+
+    /// Exponent vectors in ascending lex order.
+    fn exponents(&self) -> Box<dyn DoubleEndedIterator<Item = &[u32]> + '_> {
+        match &self.terms {
+            Terms::Exact(t) => Box::new(t.mp.terms().map(|(e, _)| e)),
+            Terms::Symbolic(m) => Box::new(m.keys().map(Vec::as_slice)),
+        }
+    }
+
     fn raw_terms(&self) -> Vec<(Vec<u32>, ExprId)> {
-        self.terms
+        self.ex_terms()
             .iter()
             .map(|(e, c)| (e.clone(), c.raw_id()))
             .collect()
+    }
+
+    /// The arena's evaluation guards.
+    fn eval_config(&self) -> EvalConfig {
+        self.ctx.inner.read().arena.config.clone()
     }
 
     /// View `expr` as a polynomial in the generators `gens`.
@@ -261,6 +754,19 @@ impl Poly {
         let ctx = expr.context();
         let gens = validate_gens(&ctx, gens, OP)?;
         let gen_ids: Vec<ExprId> = gens.iter().map(Ex::raw_id).collect();
+        // Fast path: a rational-coefficient polynomial read off the tree
+        // directly, without expanding in the arena.
+        let exact = {
+            let inner = ctx.inner.read();
+            let arena = &inner.arena;
+            match flat_terms(arena, expr.raw_id(), &gen_ids) {
+                Some(terms) => MultiPoly::from_distinct_terms(gen_ids.len(), terms),
+                None => exact_multipoly(arena, expr.raw_id(), &gen_ids),
+            }
+        };
+        if let Some(mp) = exact {
+            return Ok(Self::from_exact(&ctx, gens, mp));
+        }
         let ids = ctx.with_arena_mut(|arena| {
             let raw = polybridge::symbolic_multipoly_terms(arena, expr.raw_id(), &gen_ids)?;
             Some(normalize_terms(arena, raw))
@@ -316,17 +822,41 @@ impl Poly {
         let gens = validate_gens(ctx, gens, OP)?;
         let gen_ids: Vec<ExprId> = gens.iter().map(Ex::raw_id).collect();
         let probe = ctx.zero();
+        let wrong_length = |e: &[u32]| {
+            invalid(
+                OP,
+                format!(
+                    "exponent vector has length {} but there are {} generators",
+                    e.len(),
+                    gen_ids.len()
+                ),
+            )
+        };
+        // Fast path: all coefficients rational literals (which cannot
+        // mention a generator).
+        let mut rational: Vec<(Vec<u32>, Ratio<BigInt>)> = Vec::with_capacity(terms.len());
+        for (e, c) in &terms {
+            if e.len() != gen_ids.len() {
+                return Err(wrong_length(e));
+            }
+            probe.checked_id(c);
+            match c.as_rational() {
+                Some(r) => rational.push((e.clone(), r)),
+                None => {
+                    rational.clear();
+                    break;
+                }
+            }
+        }
+        if rational.len() == terms.len()
+            && let Some(mp) = MultiPoly::from_distinct_terms(gen_ids.len(), rational)
+        {
+            return Ok(Self::from_exact(ctx, gens, mp));
+        }
         let mut raw: Vec<(Vec<u32>, ExprId)> = Vec::with_capacity(terms.len());
         for (e, c) in terms {
             if e.len() != gen_ids.len() {
-                return Err(invalid(
-                    OP,
-                    format!(
-                        "exponent vector has length {} but there are {} generators",
-                        e.len(),
-                        gen_ids.len()
-                    ),
-                ));
+                return Err(wrong_length(&e));
             }
             let cid = probe.checked_id(&c);
             let mentions = ctx.with_arena_mut(|arena| mentions_any(arena, cid, &gen_ids));
@@ -351,7 +881,8 @@ impl Poly {
             return Err(invalid("Poly::zero", "at least one generator is required"));
         }
         let gens = validate_gens(ctx, gens, "Poly::zero")?;
-        Ok(Self::from_normalized(ctx, gens, vec![]))
+        let n = gens.len();
+        Ok(Self::from_exact(ctx, gens, MultiPoly::zero(n)))
     }
 
     /// The constant polynomial `1` over `gens`.
@@ -436,15 +967,7 @@ impl Poly {
             ));
         }
         let gens = validate_gens(ctx, gens, OP)?;
-        let ids: Vec<(Vec<u32>, ExprId)> = ctx.with_arena_mut(|arena| {
-            mp.terms()
-                .map(|(e, c)| {
-                    let nid = arena.intern_num(c.clone());
-                    (e.to_vec(), arena.intern(ExprNode::Num(nid)))
-                })
-                .collect()
-        });
-        Ok(Self::from_normalized(ctx, gens, ids))
+        Ok(Self::from_exact(ctx, gens, mp.convert_order()))
     }
 }
 
@@ -499,14 +1022,14 @@ impl Poly {
     /// Is this the zero polynomial?
     #[must_use]
     pub fn is_zero(&self) -> bool {
-        self.terms.is_empty()
+        self.num_terms() == 0
     }
 
     /// Is this a constant (every generator has exponent zero)?  The zero
     /// polynomial is ground.
     #[must_use]
     pub fn is_ground(&self) -> bool {
-        self.terms.keys().all(|e| e.iter().all(|&x| x == 0))
+        self.exponents().all(|e| e.iter().all(|&x| x == 0))
     }
 
     /// Exactly one generator?
@@ -519,14 +1042,14 @@ impl Poly {
     /// `x y`)?  The zero polynomial is linear.
     #[must_use]
     pub fn is_linear(&self) -> bool {
-        self.terms.keys().all(|e| e.iter().sum::<u32>() <= 1)
+        self.exponents().all(|e| e.iter().sum::<u32>() <= 1)
     }
 
     /// Do all terms have the same total degree?  The zero polynomial is
     /// homogeneous.
     #[must_use]
     pub fn is_homogeneous(&self) -> bool {
-        let mut degs = self.terms.keys().map(|e| e.iter().sum::<u32>());
+        let mut degs = self.exponents().map(|e| e.iter().sum::<u32>());
         match degs.next() {
             None => true,
             Some(d) => degs.all(|x| x == d),
@@ -536,13 +1059,19 @@ impl Poly {
     /// Is every coefficient an exact rational number?
     #[must_use]
     pub fn has_rational_coeffs(&self) -> bool {
-        self.terms.values().all(|c| c.as_rational().is_some())
+        match &self.terms {
+            Terms::Exact(_) => true,
+            Terms::Symbolic(m) => m.values().all(|c| c.as_rational().is_some()),
+        }
     }
 
     /// Number of non-zero terms.
     #[must_use]
     pub fn num_terms(&self) -> usize {
-        self.terms.len()
+        match &self.terms {
+            Terms::Exact(t) => t.mp.num_terms(),
+            Terms::Symbolic(m) => m.len(),
+        }
     }
 
     /// All `(exponent vector, coefficient)` pairs in descending
@@ -562,7 +1091,7 @@ impl Poly {
     /// ```
     #[must_use]
     pub fn terms(&self) -> Vec<(Vec<u32>, Ex)> {
-        self.terms
+        self.ex_terms()
             .iter()
             .rev()
             .map(|(e, c)| (e.clone(), c.clone()))
@@ -587,7 +1116,7 @@ impl Poly {
     /// assert_eq!(p.terms_iter().next().unwrap().1, &ctx.int(3));
     /// ```
     pub fn terms_iter(&self) -> impl Iterator<Item = (&[u32], &Ex)> + '_ {
-        self.terms.iter().rev().map(|(e, c)| (e.as_slice(), c))
+        self.ex_terms().iter().rev().map(|(e, c)| (e.as_slice(), c))
     }
 
     /// The coefficients as exact rationals, in the order of
@@ -608,19 +1137,22 @@ impl Poly {
     /// ```
     #[must_use]
     pub fn coeffs_rational(&self) -> Option<Vec<Ratio<BigInt>>> {
-        self.terms.values().rev().map(Ex::as_rational).collect()
+        match &self.terms {
+            Terms::Exact(t) => Some(t.mp.terms().rev().map(|(_, c)| c.clone()).collect()),
+            Terms::Symbolic(m) => m.values().rev().map(Ex::as_rational).collect(),
+        }
     }
 
     /// Exponent vectors in descending lexicographic order.
     #[must_use]
     pub fn monoms(&self) -> Vec<Vec<u32>> {
-        self.terms.keys().rev().cloned().collect()
+        self.exponents().rev().map(<[u32]>::to_vec).collect()
     }
 
     /// Coefficients in the order of [`terms`](Self::terms).
     #[must_use]
     pub fn coeffs(&self) -> Vec<Ex> {
-        self.terms.values().rev().cloned().collect()
+        self.ex_terms().values().rev().cloned().collect()
     }
 
     /// Coefficient of the monomial with exponents `exps`; zero if absent.
@@ -653,17 +1185,20 @@ impl Poly {
                 ),
             ));
         }
-        Ok(self
-            .terms
-            .get(exps)
-            .cloned()
-            .unwrap_or_else(|| self.ctx.zero()))
+        Ok(match &self.terms {
+            Terms::Exact(t) => match t.ex.get() {
+                Some(m) => m.get(exps).cloned(),
+                None => t.mp.coeff(exps).map(|r| self.ctx.from_ratio(r.clone())),
+            },
+            Terms::Symbolic(m) => m.get(exps).cloned(),
+        }
+        .unwrap_or_else(|| self.ctx.zero()))
     }
 
     /// Total degree (largest exponent sum); `None` for the zero polynomial.
     #[must_use]
     pub fn total_degree(&self) -> Option<u32> {
-        self.terms.keys().map(|e| e.iter().sum::<u32>()).max()
+        self.exponents().map(|e| e.iter().sum::<u32>()).max()
     }
 
     /// Degree in one generator; `None` for the zero polynomial or a `var`
@@ -685,7 +1220,7 @@ impl Poly {
     #[must_use]
     pub fn degree_in(&self, var: &Ex) -> Option<u32> {
         let i = self.gens.iter().position(|g| g == var)?;
-        self.terms.keys().map(|e| e[i]).max()
+        self.exponents().map(|e| e[i]).max()
     }
 
     /// Maximum exponent of each generator (all zeros for the zero
@@ -693,7 +1228,7 @@ impl Poly {
     #[must_use]
     pub fn degree_list(&self) -> Vec<u32> {
         let mut out = vec![0u32; self.gens.len()];
-        for e in self.terms.keys() {
+        for e in self.exponents() {
             for (o, &x) in out.iter_mut().zip(e) {
                 *o = (*o).max(x);
             }
@@ -704,23 +1239,29 @@ impl Poly {
     /// Leading term under the lexicographic order; `None` for zero.
     #[must_use]
     pub fn leading_term(&self) -> Option<(Vec<u32>, Ex)> {
-        self.terms
-            .last_key_value()
-            .map(|(e, c)| (e.clone(), c.clone()))
+        match &self.terms {
+            Terms::Exact(t) => match t.ex.get() {
+                Some(m) => m.last_key_value().map(|(e, c)| (e.clone(), c.clone())),
+                None => {
+                    t.mp.leading_term()
+                        .map(|(e, c)| (e.to_vec(), self.ctx.from_ratio(c.clone())))
+                }
+            },
+            Terms::Symbolic(m) => m.last_key_value().map(|(e, c)| (e.clone(), c.clone())),
+        }
     }
 
     /// Leading coefficient under the lexicographic order; `0` for zero.
     #[must_use]
     pub fn leading_coeff(&self) -> Ex {
-        self.terms
-            .last_key_value()
-            .map_or_else(|| self.ctx.zero(), |(_, c)| c.clone())
+        self.leading_term()
+            .map_or_else(|| self.ctx.zero(), |(_, c)| c)
     }
 
     /// Leading monomial under the lexicographic order; `None` for zero.
     #[must_use]
     pub fn leading_monomial(&self) -> Option<Vec<u32>> {
-        self.terms.last_key_value().map(|(e, _)| e.clone())
+        self.exponents().next_back().map(<[u32]>::to_vec)
     }
 
     /// Dense coefficient list of a univariate polynomial, highest degree
@@ -744,10 +1285,11 @@ impl Poly {
         if self.gens.len() != 1 {
             return None;
         }
-        let deg = self.terms.keys().map(|e| e[0]).max().unwrap_or(0);
+        let terms = self.ex_terms();
+        let deg = terms.keys().map(|e| e[0]).max().unwrap_or(0);
         let zero = self.ctx.zero();
         let mut out = vec![zero; deg as usize + 1];
-        for (e, c) in &self.terms {
+        for (e, c) in terms {
             out[(deg - e[0]) as usize] = c.clone();
         }
         Some(out)
@@ -757,7 +1299,16 @@ impl Poly {
     /// coefficients for every monomial.
     #[must_use]
     pub fn equals(&self, other: &Poly) -> bool {
-        self.gens == other.gens && self.terms == other.terms
+        if self.gens != other.gens {
+            return false;
+        }
+        match (&self.terms, &other.terms) {
+            (Terms::Exact(a), Terms::Exact(b)) => a.mp == b.mp,
+            (Terms::Symbolic(a), Terms::Symbolic(b)) => a == b,
+            (Terms::Exact(a), Terms::Symbolic(b)) | (Terms::Symbolic(b), Terms::Exact(a)) => {
+                rational_multipoly(self.gens.len(), b).is_some_and(|mp| mp == a.mp)
+            }
+        }
     }
 }
 
@@ -813,6 +1364,27 @@ impl Poly {
         }
         let probe = self.ctx.zero();
         let value_ids: Vec<ExprId> = values.iter().map(|v| probe.checked_id(v)).collect();
+        // Fast path: exact polynomial at a rational point, provided every
+        // power involved is one the arena would fold to a literal too.
+        if let Some(mp) = self.exact() {
+            let rationals: Option<Vec<Ratio<BigInt>>> = {
+                let inner = self.ctx.inner.read();
+                value_ids
+                    .iter()
+                    .map(|&v| inner.arena.as_num(v).cloned())
+                    .collect()
+            };
+            if let Some(vals) = rationals {
+                let config = self.eval_config();
+                let within = degree_list_of(mp)
+                    .iter()
+                    .zip(&vals)
+                    .all(|(&d, v)| pow_within_limits(&config, v, d));
+                if within {
+                    return Ok(self.ctx.from_ratio(eval_exact(mp, &vals)));
+                }
+            }
+        }
         let raw = self.raw_terms();
         let id = self.ctx.with_arena_mut(|arena| {
             let terms: Vec<ExprId> = raw
@@ -866,6 +1438,13 @@ impl Poly {
             .filter(|(k, _)| *k != i)
             .map(|(_, g)| g.clone())
             .collect();
+        // Fast path: exact polynomial at a rational value of the generator.
+        if let Some(mp) = self.exact()
+            && let Some(v) = value.as_rational()
+            && pow_within_limits(&self.eval_config(), &v, mp.degree_in(i))
+        {
+            return Ok(Self::from_exact(&self.ctx, remaining, mp.substitute(i, &v)));
+        }
         let remaining_ids: Vec<ExprId> = remaining.iter().map(Ex::raw_id).collect();
         let raw = self.raw_terms();
         let result: Result<Vec<(Vec<u32>, ExprId)>, SymplexError> =
@@ -930,11 +1509,7 @@ impl Poly {
     /// exact rational number.
     #[must_use]
     pub fn to_multipoly(&self) -> Option<MultiPoly<GrevLex>> {
-        let mut terms: Vec<(Vec<u32>, Ratio<BigInt>)> = Vec::with_capacity(self.terms.len());
-        for (e, c) in &self.terms {
-            terms.push((e.clone(), c.as_rational()?));
-        }
-        MultiPoly::from_terms(self.gens.len(), terms)
+        self.lex_multipoly().map(|mp| mp.convert_order())
     }
 
     /// Numeric complex roots of a univariate polynomial with rational
@@ -1137,6 +1712,9 @@ impl Poly {
     /// `InvalidArgument` if the generators differ.
     pub fn add(&self, other: &Poly) -> Result<Poly, SymplexError> {
         self.check_same_gens(other, "Poly::add")?;
+        if let (Some(a), Some(b)) = (self.exact(), other.exact()) {
+            return Ok(Self::from_exact(&self.ctx, self.gens.clone(), a.add(b)));
+        }
         let mut raw = self.raw_terms();
         raw.extend(other.raw_terms());
         Ok(Self::from_raw(&self.ctx, self.gens.clone(), raw))
@@ -1149,6 +1727,9 @@ impl Poly {
     /// `InvalidArgument` if the generators differ.
     pub fn sub(&self, other: &Poly) -> Result<Poly, SymplexError> {
         self.check_same_gens(other, "Poly::sub")?;
+        if let (Some(a), Some(b)) = (self.exact(), other.exact()) {
+            return Ok(Self::from_exact(&self.ctx, self.gens.clone(), a.sub(b)));
+        }
         let mine = self.raw_terms();
         let theirs = other.raw_terms();
         let ids = self.ctx.with_arena_mut(|arena| {
@@ -1181,6 +1762,11 @@ impl Poly {
     /// ```
     pub fn mul(&self, other: &Poly) -> Result<Poly, SymplexError> {
         self.check_same_gens(other, "Poly::mul")?;
+        if let (Some(a), Some(b)) = (self.exact(), other.exact()) {
+            let prod =
+                mul_checked(a, b).ok_or_else(|| invalid("Poly::mul", "exponent overflow"))?;
+            return Ok(Self::from_exact(&self.ctx, self.gens.clone(), prod));
+        }
         let mine = self.raw_terms();
         let theirs = other.raw_terms();
         let ids: Result<Vec<(Vec<u32>, ExprId)>, SymplexError> = self.ctx.with_arena_mut(|arena| {
@@ -1205,6 +1791,9 @@ impl Poly {
     /// Negation.
     #[must_use]
     pub fn neg(&self) -> Poly {
+        if let Some(mp) = self.exact() {
+            return Self::from_exact(&self.ctx, self.gens.clone(), mp.neg());
+        }
         let raw = self.raw_terms();
         let ids = self.ctx.with_arena_mut(|arena| {
             let negated: Vec<(Vec<u32>, ExprId)> =
@@ -1222,6 +1811,11 @@ impl Poly {
     /// [`mul`](Self::mul) with a polynomial instead).
     pub fn scale(&self, c: &Ex) -> Result<Poly, SymplexError> {
         let cid = self.ctx.zero().checked_id(c);
+        if let Some(mp) = self.exact()
+            && let Some(r) = c.as_rational()
+        {
+            return Ok(Self::from_exact(&self.ctx, self.gens.clone(), mp.scale(&r)));
+        }
         let gens = self.gen_ids();
         let raw = self.raw_terms();
         let ids: Result<Vec<(Vec<u32>, ExprId)>, SymplexError> = self.ctx.with_arena_mut(|arena| {
@@ -1243,6 +1837,11 @@ impl Poly {
     ///
     /// `InvalidArgument` if an exponent overflows `u32`.
     pub fn pow(&self, n: u32) -> Result<Poly, SymplexError> {
+        if let Some(mp) = self.exact() {
+            let power =
+                pow_checked(mp, n).ok_or_else(|| invalid("Poly::mul", "exponent overflow"))?;
+            return Ok(Self::from_exact(&self.ctx, self.gens.clone(), power));
+        }
         let gens: Vec<&Ex> = self.gens.iter().collect();
         let mut result = Self::one(&self.ctx, &gens)?;
         let mut base = self.clone();
@@ -1283,6 +1882,13 @@ impl Poly {
                 format!("`{var}` is not a generator"),
             ));
         };
+        if let Some(mp) = self.exact() {
+            return Ok(Self::from_exact(
+                &self.ctx,
+                self.gens.clone(),
+                mp.partial_derivative(i),
+            ));
+        }
         let raw = self.raw_terms();
         let ids = self.ctx.with_arena_mut(|arena| {
             let mut out: Vec<(Vec<u32>, ExprId)> = Vec::with_capacity(raw.len());
@@ -1322,7 +1928,7 @@ impl Poly {
     /// ```
     #[must_use]
     pub fn content_and_primitive(&self) -> Option<(Ex, Poly)> {
-        let mp = self.to_multipoly()?;
+        let mp = self.lex_multipoly()?;
         if mp.is_zero() {
             return Some((self.ctx.zero(), self.clone()));
         }
@@ -1333,15 +1939,11 @@ impl Poly {
             den = den.lcm(c.denom());
         }
         let mut content = Ratio::new(num, den);
-        if self
-            .leading_coeff()
-            .as_rational()
-            .is_some_and(|lc| lc.is_negative())
-        {
+        if mp.leading_coeff().is_some_and(Signed::is_negative) {
             content = -content;
         }
         let inv = Ratio::one() / &content;
-        let prim = self.scale(&self.ctx.from_ratio(inv)).ok()?;
+        let prim = Self::from_exact(&self.ctx, self.gens.clone(), mp.scale(&inv));
         Some((self.ctx.from_ratio(content), prim))
     }
 
@@ -1350,15 +1952,11 @@ impl Poly {
     /// `None` for the zero polynomial or non-rational coefficients.
     #[must_use]
     pub fn monic(&self) -> Option<Poly> {
-        if self.is_zero() {
+        let mp = self.lex_multipoly()?;
+        if mp.is_zero() {
             return None;
         }
-        let lc = self.leading_coeff().as_rational()?;
-        if !self.has_rational_coeffs() {
-            return None;
-        }
-        let inv = Ratio::one() / lc;
-        self.scale(&self.ctx.from_ratio(inv)).ok()
+        Some(Self::from_exact(&self.ctx, self.gens.clone(), mp.monic()))
     }
 }
 
@@ -1381,7 +1979,7 @@ impl Poly {
         let mut set: BTreeSet<Vec<u32>> = BTreeSet::new();
         for p in polys {
             first.check_same_gens(p, "Poly::monomial_basis")?;
-            set.extend(p.terms.keys().cloned());
+            set.extend(p.exponents().map(<[u32]>::to_vec));
         }
         Ok(set.into_iter().rev().collect())
     }
@@ -1438,6 +2036,38 @@ impl Poly {
     }
 }
 
+/// Sign and printed magnitude of a rational coefficient.
+fn rational_sign_magnitude(r: &Ratio<BigInt>) -> (bool, String) {
+    let abs = r.abs();
+    let s = if abs.is_integer() {
+        abs.numer().to_string()
+    } else {
+        format!("{}/{}", abs.numer(), abs.denom())
+    };
+    (r.is_negative(), s)
+}
+
+/// Sign and printed magnitude of a coefficient; a symbolic sum in front of
+/// a monomial is parenthesised.
+fn coeff_sign_magnitude(coeff: &CoeffView<'_>, has_monomial: bool) -> (bool, String) {
+    match coeff {
+        CoeffView::Rational(r) => rational_sign_magnitude(r),
+        CoeffView::Symbolic(coeff) => match coeff.as_rational() {
+            Some(r) => rational_sign_magnitude(&r),
+            None => {
+                let s = coeff.to_string();
+                if coeff.expr_type() == ExprType::Add && has_monomial {
+                    (false, format!("({s})"))
+                } else if let Some(rest) = s.strip_prefix('-') {
+                    (true, rest.to_string())
+                } else {
+                    (false, s)
+                }
+            }
+        },
+    }
+}
+
 /// `Poly(<terms in lex-descending order>, g₁, g₂, …)`.
 ///
 /// Unlike [`Poly::to_ex`], whose printed form follows the arena's canonical
@@ -1457,10 +2087,20 @@ impl Poly {
 impl fmt::Display for Poly {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Poly(")?;
-        if self.terms.is_empty() {
+        if self.is_zero() {
             write!(f, "0")?;
         }
-        for (i, (exps, coeff)) in self.terms.iter().rev().enumerate() {
+        let terms: Box<dyn Iterator<Item = (&[u32], CoeffView<'_>)> + '_> = match &self.terms {
+            Terms::Exact(t) => {
+                Box::new(t.mp.terms().rev().map(|(e, c)| (e, CoeffView::Rational(c))))
+            }
+            Terms::Symbolic(m) => Box::new(
+                m.iter()
+                    .rev()
+                    .map(|(e, c)| (e.as_slice(), CoeffView::Symbolic(c))),
+            ),
+        };
+        for (i, (exps, coeff)) in terms.enumerate() {
             let monomial: Vec<String> = exps
                 .iter()
                 .zip(&self.gens)
@@ -1475,28 +2115,7 @@ impl fmt::Display for Poly {
                 .collect();
             let monomial = monomial.join("*");
 
-            // Sign and magnitude of the coefficient.
-            let (negative, magnitude) = match coeff.as_rational() {
-                Some(r) => {
-                    let abs = r.abs();
-                    let s = if abs.is_integer() {
-                        abs.numer().to_string()
-                    } else {
-                        format!("{}/{}", abs.numer(), abs.denom())
-                    };
-                    (r.is_negative(), s)
-                }
-                None => {
-                    let s = coeff.to_string();
-                    if coeff.expr_type() == ExprType::Add && !monomial.is_empty() {
-                        (false, format!("({s})"))
-                    } else if let Some(rest) = s.strip_prefix('-') {
-                        (true, rest.to_string())
-                    } else {
-                        (false, s)
-                    }
-                }
-            };
+            let (negative, magnitude) = coeff_sign_magnitude(&coeff, !monomial.is_empty());
 
             match (i, negative) {
                 (0, false) => {}

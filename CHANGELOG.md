@@ -6,6 +6,73 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.19.0] - 2026-09-21
+
+Cox proportional hazards (`stats::cox`), an exact fast path inside `Poly`
+(5–50× on rational-coefficient arithmetic, byte-identical output), and the
+last items from the verification passes: `fisher_exact` on large tables,
+`usize` overflow in rank statistics, sticky sequential decisions.  LP pivot
+paths and Lean certificates are byte-identical.
+
+### Breaking
+
+- **`Sprt` decisions are sticky**: once `AcceptH0`/`AcceptH1` is reached,
+  `update`/`observe`/`decision` keep returning it (observations are still
+  recorded); `reset()` clears.  New `is_decided()`, `stopped_at()`.
+  Previously a later observation could pull the test back to `Continue`.
+- **`fisher_exact` above `FISHER_EXACT_NUMERIC_THRESHOLD` (2 000 support
+  points)** returns a numeric p-value (`ctx.from_f64`, dyadic-exact;
+  `exp(ln p)` below `10⁻³⁰⁸` so `p_value_log10` stays informative) computed
+  by an exact-ratio walk of the hypergeometric pmf from its mode; below the
+  threshold the p-value is the exact rational as before.  Tables with cells
+  in the `10⁶–10⁹` range that used to take minutes take `< 2 ms`; agreement
+  with `scipy.stats.fisher_exact` is `≤ 10⁻⁹` relative (mpmath agrees with
+  us to `10⁻¹³`; scipy's Boost CDF is the one `2.6·10⁻¹⁰` off on the
+  million-count table).
+- `mann_whitney_u`/`wilcoxon_signed_rank` exact frequency tables return
+  `InvalidArgument` instead of overflowing when `n₁n₂ + 1` does not fit
+  (`> 10¹⁸` observations — unreachable in practice, but now an error).
+
+### Added
+
+- **`stats::cox`** — `cox_ph(obs, x, &CoxOpts)` and
+  `cox_ph_stratified(obs, x, strata, &CoxOpts)` (Newton–Raphson on the
+  partial likelihood, `Ties::{Efron, Breslow}`, step-halving, monotone
+  likelihood detected and named); `CoxModel` with `coefficients`,
+  `hazard_ratios`, `standard_errors`, `z_values`, `p_values`, `conf_int` /
+  `hazard_ratio_conf_int`, `log_likelihood`, `null_log_likelihood`,
+  `llr_test`/`wald_test`/`score_test` (χ² `TestResult`s), `aic`,
+  **`concordance`** (Harrell's C, exact rational over the usable pairs),
+  `baseline_hazard` (Breslow), `predict_partial_hazard`,
+  `linear_predictors`, `schoenfeld_residuals`, `martingale_residuals`,
+  `cov_params`.  39 tests against `statsmodels.duration.PHReg` (Efron and
+  Breslow, ties, censoring, strata, the Gehan–Freireich data); the score
+  test of a single binary covariate equals the log-rank statistic.  Book:
+  "Survival regression" in the statistics chapter.
+- `hypothesis::tie_term`, `FISHER_EXACT_NUMERIC_THRESHOLD`;
+  `KaplanMeier::{censoring_times, censored_at, quantile_strict}`;
+  `Observation::{try_from_i64, try_from_q}` (the infallible `from_*` zip to
+  the shorter slice, now documented).
+- `Distribution::quantile_f64` on a lattice family without a closed CDF
+  walks the pmf (`negative_binomial(3/2, 1/3).quantile_f64(0.9)`: 4 s →
+  3 ms).
+
+### Changed / performance
+
+- **`Poly` exact fast path.**  When every coefficient is a rational
+  literal, `Poly` now stores a `MultiPoly<Lex>` and runs `add`/`sub`/`mul`/
+  `pow`/`derivative`/`eval`/`content_and_primitive`/`monic` on it through
+  a common-denominator integer form, materialising the `Ex` view lazily;
+  `Poly::new` reads expanded input and simple trees without the arena.
+  Ordering, `Display` and every `terms()` result are unchanged (the
+  Lex-not-GrevLex fact is pinned as a test).  Debug timings:
+  `(x+y+z+1)^12` 45 ms → 7 ms, dense degree-30 product 43 ms → 3 ms,
+  `eval` 30 ms → 0.6 ms, 1 000 `Poly::new` 50 ms → 4 ms.
+- `fisher_exact`'s exact path stops recomputing two `O(x)` binomials per
+  support point (2 000 points: 10 s → 25 ms, values identical).
+- Tie terms (`t³ − t`, `n(n+1)(2n+1)`), `n₁n₂` products and
+  `kappa_from_confusion`'s `row·col` are computed in `Q`, not `usize`.
+
 ## [0.18.0] - 2026-09-21
 
 The statistics module gets one rule per sub-module for what lives where,

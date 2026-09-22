@@ -125,6 +125,19 @@ enum Model {
 /// [`observe`](Self::observe) (a value); each returns the [`Decision`]
 /// reached so far.  The test is a plain value: clone it to branch, and
 /// [`reset`](Self::reset) it to start over with the same design.
+///
+/// **Decisions are sticky.**  A sequential test *stops* at the first
+/// boundary crossing: once `update`/`observe` has returned `AcceptH0` or
+/// `AcceptH1`, every later call returns that same decision, whatever the
+/// new data do to the likelihood ratio, and [`decision`](Self::decision)
+/// reports it too ([`is_decided`](Self::is_decided) says whether this has
+/// happened).  The observations are still recorded — `observations()`,
+/// `successes()`, `sum()` and the log-likelihood ratio keep counting, so
+/// a batch fed after the fact can still be inspected — and
+/// [`stopped_at`](Self::stopped_at) gives the sample size at which the
+/// test stopped.  [`reset`](Self::reset) clears the decision with the
+/// data.  (Before 0.18.1 `decision()` re-evaluated the current ratio, so a
+/// test that had accepted `H₁` could report `Continue` again.)
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sprt {
     model: Model,
@@ -135,6 +148,16 @@ pub struct Sprt {
     observations: usize,
     successes: usize,
     sum: Q,
+    /// The first terminal decision and the observation count at which it
+    /// was reached; `None` while the test continues.
+    stopped: Option<Stop>,
+}
+
+/// Where a sequential test stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Stop {
+    decision: Decision,
+    at: usize,
 }
 
 impl Sprt {
@@ -166,6 +189,7 @@ impl Sprt {
             observations: 0,
             successes: 0,
             sum: Q::zero(),
+            stopped: None,
         })
     }
 
@@ -206,24 +230,27 @@ impl Sprt {
             observations: 0,
             successes: 0,
             sum: Q::zero(),
+            stopped: None,
         })
     }
 
     /// Record a success (`true`) or failure (`false`) and return the
     /// decision so far.  For a [`normal_mean`](Self::normal_mean) test this
     /// records the observation `1` or `0`; use [`observe`](Self::observe)
-    /// for real-valued data.
+    /// for real-valued data.  Once a terminal decision has been reached it
+    /// is returned unchanged (see the type's docs).
     pub fn update(&mut self, success: bool) -> Decision {
         self.observations += 1;
         if success {
             self.successes += 1;
             self.sum += Q::one();
         }
-        self.decision()
+        self.settle()
     }
 
     /// Record an observed value and return the decision so far.  A
-    /// Bernoulli test accepts only `0` and `1`.
+    /// Bernoulli test accepts only `0` and `1`.  Once a terminal decision
+    /// has been reached it is returned unchanged (see the type's docs).
     ///
     /// # Errors
     ///
@@ -249,14 +276,30 @@ impl Sprt {
                     self.successes += 1;
                 }
                 self.sum += x;
-                Ok(self.decision())
+                Ok(self.settle())
             }
         }
     }
 
-    /// The decision at the current state: `Λ ≥ B` accepts `H₁`, `Λ ≤ A`
-    /// accepts `H₀`, otherwise continue.
-    pub fn decision(&self) -> Decision {
+    /// After an observation: the sticky decision if there is one, else the
+    /// current boundary test, recording the first terminal outcome.
+    fn settle(&mut self) -> Decision {
+        if let Some(stop) = self.stopped {
+            return stop.decision;
+        }
+        let decision = self.current();
+        if decision != Decision::Continue {
+            self.stopped = Some(Stop {
+                decision,
+                at: self.observations,
+            });
+        }
+        decision
+    }
+
+    /// The boundary test on the current ratio: `Λ ≥ B` accepts `H₁`,
+    /// `Λ ≤ A` accepts `H₀`, otherwise continue.
+    fn current(&self) -> Decision {
         let llr = self.log_likelihood_ratio_f64();
         if llr >= self.boundaries.upper {
             Decision::AcceptH1
@@ -267,11 +310,36 @@ impl Sprt {
         }
     }
 
-    /// Forget every observation; the design (hypotheses, boundaries) stays.
+    /// The decision so far: the terminal decision once one has been
+    /// reached (sticky, see the type's docs), otherwise the boundary test
+    /// on the current ratio — `Λ ≥ B` accepts `H₁`, `Λ ≤ A` accepts `H₀`,
+    /// and in between the test continues.
+    pub fn decision(&self) -> Decision {
+        match self.stopped {
+            Some(stop) => stop.decision,
+            None => self.current(),
+        }
+    }
+
+    /// `true` once `update`/`observe` has returned `AcceptH0` or
+    /// `AcceptH1`; the decision then stays until [`reset`](Self::reset).
+    pub fn is_decided(&self) -> bool {
+        self.stopped.is_some()
+    }
+
+    /// The number of observations at which the test stopped (Wald's `N`),
+    /// or `None` while it continues.
+    pub fn stopped_at(&self) -> Option<usize> {
+        self.stopped.map(|s| s.at)
+    }
+
+    /// Forget every observation and any decision reached; the design
+    /// (hypotheses, boundaries) stays.
     pub fn reset(&mut self) {
         self.observations = 0;
         self.successes = 0;
         self.sum = Q::zero();
+        self.stopped = None;
     }
 
     /// Wald's open continuation region `(A, B)` (`lower = A` accepts `H₀`,
