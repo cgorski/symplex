@@ -6,6 +6,151 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.21.0] - 2026-09-22
+
+The consolidation release.  Three surveys catalogued every type, trait and
+algorithm the crate had written more than once; this release merges them
+into single shared versions — one `f64` linear-algebra kernel, one
+polynomial gcd path, one RNG, one budget, one binomial, one special-function
+registry, one numeric reference-distribution kernel — and gives the
+symbolic `Matrix` the exact fast tier `Poly` already had.  Fifteen
+measured speed-ups, from 6× to 1 000×; no numeric result changed; the LP
+pivot-path baseline and the Mathlib-compiled Lean certificate are
+byte-identical to 0.14.0.  ~10 900 lines added, ~5 800 removed.
+
+### Breaking
+
+- `exact_matrix::ExactScalar` (sealed; implemented only by `BigInt` and `Q`)
+  is now a thin supertrait `Sealed + Ring + IntegralCoeff + Ord + Hash +
+  Display + Signed`; its `add_ref`/`sub_ref`/`mul_ref`/`from_i64` are the
+  `poly::traits::Ring`/`IntegralCoeff` methods of the same meaning.
+- `stats::common`'s numeric Student-t helpers lost their unused `ctx`
+  (`t_two_sided(op, df, confidence)`, `student_t_quantile_f64(op, df, p)`);
+  they are `pub(crate)`, listed for completeness.
+- `Matrix::as_qmatrix()` (`pub(crate)`) returns `Option<&QMatrix>` from a
+  cache instead of a fresh `Option<QMatrix>`.
+- `MultiPoly::mul`/`pow` assert on `u32` exponent overflow (previously a
+  debug-only overflow); `try_mul`/`try_pow` return `None`.
+- The homogeneous-tuple ratchet counts *any* repeated element type;
+  `stats::Rng` is now a re-export of `base::rng::SplitMix64` (same path,
+  same methods, bit-identical streams).
+
+### Added — shared kernels (each replaces the copies named)
+
+- **`base::dense_f64`** (crate-private): flat row-major `f64` Cholesky
+  (`cholesky`, `cholesky_solve`, `spd_inverse`, `quadratic_form`,
+  `congruence_inverse`, `solve_spd_regularised`), cyclic Jacobi `sym_eigen`
+  with `EigenTol::{RelativeFrobenius, Absolute}` and `OnExhaust::{Error,
+  Accept}`, `solve_partial_pivot`, `lstsq_householder`.  Replaces four
+  Cholesky copies (`regression`, `cox`, `multivariate`, `sos`), two Jacobi
+  copies, four dense solvers (`heurisch` moved from normal equations to
+  Householder QR — no result changed).  `stats::common` gains `norm_cdf`/
+  `norm_sf`/`norm_pdf`/`normal_two_sided`/`wald_summary` (five normal-CDF
+  wrappers and two inlined Wald blocks gone).
+- **`Field::poly_gcd` hook** in `poly::traits`, implemented for `Q` by the
+  ℤ[x] primitive PRS (`poly::zpoly::gcd_via_z`): every `Poly::gcd`, `square_free_part`,
+  `squarefree_factors`, `is_squarefree` — 17 call sites in `apart`, `gosper`,
+  Risch, canonicalisation, `polybridge`, `ratfn` — is on the fast path with
+  no call-site change.  Degree-30 gcd with a degree-10 common factor:
+  349 ms → 20 ms.  `sturm::square_free_part` deleted.
+- **`poly::zpoly`**: `ZPoly<O>` (common-denominator integer form, moved from
+  `poly_ex` and made generic over the monomial order) now backs
+  `MultiPoly::mul` (11.2 ms → 2.4 ms on 35×35 terms), new `MultiPoly::pow`
+  (repeated squaring) and `eval` (14 ms → 0.8 ms); the integer-scaling
+  helpers of `dense`, `multipoly`, `sturm`, `poly_ex` are one set.
+- **`poly::interp`**: Newton divided-difference interpolation (`O(n²)`)
+  replacing four `O(n³)` Lagrange builders; `Ex::poly_interpolate` through
+  31 points 627 ms → 52 ms.  One `cauchy_bound`; `bigint_to_bigfloat`/
+  `ratio_to_bigfloat` in `base::numeric` replace three identical copies;
+  `ratio_to_f64` replaces `to_string().parse()` in `apart`, `evalf`,
+  `algebraic`.
+- **`base::rng`**: `SplitMix64` and `XorShift64Star` replace three and two
+  copies (`stats::sample`, `optimize`, `expr_ops`; `ntheory`,
+  `factor_zassenhaus`); the first ten outputs from seed 42 are pinned so the
+  streams can never drift.  `shuffle` replaces two Fisher–Yates copies.
+- **`base::budget`**: `Budget`/`BudgetHit`/`deadline_from`/`deadline_passed`
+  moved from `linprog` (re-exported there and at the crate root); `Budget`
+  gains `time_limit`, `with_max_steps`, `unlimited`, `exhausted`;
+  `SosOpts`/`PolyhedronOpts` route their deadlines through it and expose
+  `budget()`/`with_budget()`.  `EXPRESSION_BUDGET` lives in `base::config`
+  (removing an allowlisted upward layering edge).
+- **`base::combinatorics`**: `factorial` (binary splitting), `binomial`,
+  `multinomial` replace fourteen copies (`fu::binomial_coeff` was `i64` and
+  overflowed at `n ≈ 66`); `eval`'s negative-`n` guard preserved.
+- **`Extended<T>` adopted** by `sets::Pos`/`Piece`, `limit::Ext`,
+  `definite::LimVal`; `Ratio<BigInt>` is spelled `Q` throughout.
+- **`regression::LikelihoodFit`** (`log_likelihood`, `null_log_likelihood`,
+  `n_params`, `nobs`, `df_model` → provided `aic`, `bic`, `llr`,
+  `pseudo_r_squared`, `llr_test`) and **`WaldFit`** (`coefficients`,
+  `standard_errors` → `z_values`, `p_values`, `conf_int`) for `Logit`,
+  `MnLogit`, `OrderedLogit`, `CoxModel`: sixteen method bodies deleted,
+  `CoxModel::bic` added (`−2ℓ + p·ln n_events`, R's `BIC(coxph)`).  One
+  `family_boilerplate!` macro; `Support::accumulate`,
+  `Distribution::mass_below` centralise the continuous/lattice decisions.
+- **`evalf_f64`/`evalf_complex64`**: `Ex::eval_f64` rounds the 128-bit
+  result directly (the old decimal-string route was *less* accurate: up to
+  4 ulp) and a per-thread constants cache stops recomputing π/ln 2 per call
+  — `sin(1) + exp(2)` × 10 000: 7.3 s → 1.2 s.  No test value changed.
+  `optimize::grow_bracket` and `partition_point_by` replace five
+  bracket-doubling loops, two fixed 200-step bisections and three hand-rolled
+  integer searches.  `base::graph::strongly_connected_components` (Tarjan)
+  replaces `MarkovChain`'s Warshall reachability, whose classes are now
+  cached (seven methods recomputed them).
+- **`base::libfn::LibFn`**: the 50 special functions as an enum with
+  `name`, `from_name`, `arity`; `eval`, `evalf`, `diff`, `latex`, `mathml`,
+  `codegen`, `codegen_c`, `lambdify`, `codegen_py` and `parse` match on it
+  exhaustively, so adding a function is a compile error in every printer
+  instead of a runtime `unsupported`.  This surfaced that **C code
+  generation lacked `erfinv`/`erfcinv`** (added, verified against
+  `scipy.special.erfinv`), that `mathml` rendered only the Bessel family by
+  name, and that `codegen_py` refused every special function (its refusal
+  now cites the `scipy.special` routine).  The parser accepts every
+  registry function at its arity.  `SymbolId` numbering is unchanged
+  (names are resolved from text, not pre-interned).
+- **`Matrix` exact tier, stage 1**: `QMatrix::char_poly_coeffs` (Berkowitz
+  on the escalating kernel), `QMatrix::lu` (fraction-free), fraction-free
+  `QMatrix::matmul`; `Matrix::{char_poly_coeffs, matmul, trace, lu}` take
+  the exact path when every entry is rational and the decision is cached
+  (`OnceLock`) instead of rescanned per call.  Rational 8×8 `char_poly`
+  9.8 ms → 1.0 ms, 20×20 `matmul` 43 ms → 3.4 ms, 15×15 `lu` 25 ms → 2.7 ms;
+  results are the identical arena nodes.  (Stage 2 — storing the tier
+  instead of caching it — is blocked on `get_mut`/`IndexMut` needing an
+  unreachable arm; documented in the source.)
+- **ℤ[x] and 𝔽ₚ[x] on the generic polynomial**: `Ring + EuclideanDomain +
+  IntegralCoeff for BigInt`, so `GenPoly<BigInt>` replaces the hand-rolled
+  `Vec<BigInt>` helpers in the Zassenhaus factoriser; **`poly::modpoly`**
+  (`RingOps` value-level ring, `Fp64`, `PolyIn<R>` with `div_rem`, `gcd`,
+  `extended_gcd`, `powmod`, `roots`, …) replaces both hand-rolled 𝔽ₚ[x]
+  copies (`factor_zassenhaus`, `ntheory`).  Factoring timings unchanged to
+  within noise (debug and release, 16 polynomials up to `x¹⁰⁵ − 1`).
+- **`stats::numdist`** — the `f64` reference-distribution kernel:
+  `betainc_regularized_f64` (the full TOMS 708 dispatch: `bpser`, `bup`,
+  `bgrat`, `bfrac`, `basym`), `gammainc_{lower,upper}_regularized_f64`
+  (series / Lentz continued fraction, and **Temme's uniform asymptotic
+  expansion** for `a ≥ 10⁶` within 40σ of the mean — DLMF 8.12.3–8.12.10
+  with the `c₀, c₁` Taylor series of 8.12.12–8.12.14; verified against
+  50-digit quadrature of the density, worst relative error `9·10⁻¹³` at
+  `a = 10⁹`), and `norm`/`t`/`chi2`/`f`/`beta`/`gamma`/`binom`/`poisson`
+  `{cdf, sf, ppf, isf}`.  Numeric quantile routes switched:
+  `student_t(10).quantile_f64(0.975)` 670 ms → well under a millisecond,
+  `confidence_interval_mean` on 20 points 407 ms → microseconds; the exact
+  `Ex` CDFs are untouched and remain what `cdf()`/`p_value` return.  While
+  writing the reference grid: **scipy 1.18's `gammaincinv(5·10⁷, 10⁻¹⁰)` is
+  18 % off** (the mass below its answer is `1.18·10⁻¹⁰`); the crate's value
+  carries `9.99999999995·10⁻¹¹`.
+
+### Fixed
+
+- `DivRem` over 𝔽ₚ: a `debug_assert!` contradicted the documented `(0, self)`
+  contract for a zero divisor; removed.
+- Two test oracles had used the composite `7 000 021 = 7 · 1 000 003` as a
+  "prime" (`sympy.polynomial_congruence` happily works modulo composites);
+  replaced by the prime `7 000 009`.
+
+### Changed
+
+- `scripts/gate.sh` honours `GATE_LOG_DIR` (the sandbox may forbid `/tmp`).
+
 ## [0.20.0] - 2026-09-21
 
 Multinomial and ordinal logistic regression, Bayesian rater models (MAP
