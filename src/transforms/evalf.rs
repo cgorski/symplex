@@ -33,10 +33,12 @@ use num_rational::Ratio;
 use num_traits::Zero;
 use rustc_hash::FxHashMap;
 
-use astro_float::{BigFloat, Consts, Radix, RoundingMode, Sign};
+use astro_float::{BigFloat, Consts, Radix, RoundingMode, Sign, WORD_BIT_SIZE};
+use num_complex::Complex64;
 
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
+use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
 use tracing::debug;
@@ -153,6 +155,174 @@ pub(crate) fn evalf(arena: &Arena, expr: ExprId, digits: u32) -> Result<String, 
     }
 
     format_complex(result, digits, prec, rm, &mut cc)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Direct `f64` / `Complex64` results (no decimal string in between)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Decimal digits requested by `Ex::eval_f64` and `Ex::eval_complex64`:
+/// 16 digits map to a 128-bit working precision (see [`evalf`]), the same
+/// precision [`evalf_f64`] and [`evalf_complex64`] evaluate at.
+pub(crate) const F64_DIGITS: u32 = 16;
+
+thread_local! {
+    /// The constants cache of the `f64` route, kept per thread.
+    ///
+    /// `Consts::new()` alone costs ~170 µs and a cold cache recomputes π
+    /// and `ln 2` on every `sin`/`exp` (`exp(2)` at 128 bits: 475 µs cold,
+    /// 2.5 µs warm), which dominated every `eval_f64`.  The route always
+    /// evaluates at the same precision, so the cache stays small, and
+    /// astro-float rounds each constant correctly to the precision asked
+    /// for, so a warm cache returns the same bits a cold one would.
+    static F64_CONSTS: std::cell::RefCell<Option<Consts>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with this thread's constants cache, creating it on first use.
+///
+/// The cache is taken out of its slot for the duration of `f` and put back
+/// afterwards, so a nested evaluation on the same thread (a definite
+/// integral's integrand, say) finds the slot empty and simply uses a fresh
+/// cache instead of panicking on a double borrow.
+fn with_f64_consts<T>(
+    f: impl FnOnce(&mut Consts) -> Result<T, SymplexError>,
+) -> Result<T, SymplexError> {
+    let mut cc = match F64_CONSTS.with(|slot| slot.borrow_mut().take()) {
+        Some(cc) => cc,
+        None => Consts::new().map_err(|e| {
+            SymplexError::NotImplemented(format!("astro-float constants init failed: {e:?}"))
+        })?,
+    };
+    let out = f(&mut cc);
+    F64_CONSTS.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(cc);
+        }
+    });
+    out
+}
+
+/// Evaluate `expr` to an arbitrary-precision complex value at the working
+/// precision [`evalf`] uses for `digits` decimal digits — the evaluation
+/// half of [`evalf`], without the decimal formatting.
+///
+/// Errors as [`evalf`]: [`SymplexError::PrecisionExhausted`] when the
+/// precision exceeds the configured maximum or the result is NaN,
+/// [`SymplexError::FreeSymbol`] for an unbound symbol.
+fn evalf_value(arena: &Arena, expr: ExprId, digits: u32) -> Result<Complex, SymplexError> {
+    let prec = ((digits as usize) * 34 / 10 + 64).max(128);
+    let max_prec = arena.config.max_evalf_precision as usize;
+    if prec > max_prec {
+        return Err(SymplexError::PrecisionExhausted {
+            requested: digits,
+            achieved: (max_prec * 10 / 34).saturating_sub(6) as u32,
+        });
+    }
+
+    let free = walk::free_symbols(arena, expr);
+    if !free.is_empty() {
+        let mut names: Vec<&str> = free
+            .iter()
+            .filter_map(|&id| match arena.node(id) {
+                ExprNode::Symbol(sid) => Some(arena.symbol_name(*sid)),
+                _ => None,
+            })
+            .collect();
+        names.sort_unstable();
+        if let Some(name) = names.first() {
+            debug!(symbol = name, "evalf_value: expression has free symbols");
+            return Err(SymplexError::FreeSymbol {
+                name: (*name).to_owned(),
+            });
+        }
+    }
+
+    let rm = RoundingMode::ToEven;
+    let post_order = walk::post_order_ids(arena, expr);
+    let result = with_f64_consts(|cc| {
+        let mut cache: FxHashMap<ExprId, Complex> = FxHashMap::default();
+        for &id in &post_order {
+            match eval_node(arena, id, &cache, prec, rm, cc) {
+                Ok(value) => {
+                    cache.insert(id, value);
+                }
+                // A failed non-root node is left to its parent (`Sum`,
+                // `Product`, `Piecewise` evaluate their own sub-trees).
+                Err(e) if id == expr => return Err(e),
+                Err(_) => {}
+            }
+        }
+        cache.remove(&expr).ok_or_else(|| {
+            SymplexError::NotImplemented("evalf: expression not found in cache".into())
+        })
+    })?;
+    if result.0.is_nan() || result.1.is_nan() {
+        return Err(SymplexError::PrecisionExhausted {
+            requested: digits,
+            achieved: 0,
+        });
+    }
+    Ok(result)
+}
+
+/// One part of a complex result as an `f64`: `0.0` when it is negligible
+/// next to the other part (the criterion `format_complex` uses to print a
+/// real or a pure-imaginary number), otherwise the correctly rounded
+/// value; an infinite part is refused, as the decimal route refuses to
+/// parse `oo`.
+fn finite_part_to_f64(part: &BigFloat, other: &BigFloat) -> Result<f64, SymplexError> {
+    if is_negligible_part(part, other, F64_DIGITS) {
+        return Ok(0.0);
+    }
+    if part.is_inf() {
+        return Err(SymplexError::Unevaluable {
+            reason: "the value overflowed the arbitrary-precision exponent range".into(),
+        });
+    }
+    bigfloat_to_f64_rounded(part, RoundingMode::ToEven)
+}
+
+/// Evaluate `expr` to a [`Complex64`] at the precision behind
+/// `Ex::eval_complex64` (16 digits, 128 working bits), rounding each part
+/// straight from the `BigFloat` result — the string-free counterpart of
+/// `evalf(arena, expr, 16)` followed by a parse.  A part that is
+/// negligible next to the other (below the printed precision) is `0.0`,
+/// exactly as it would be absent from the printed number.
+///
+/// The direct rounding is correct to the last bit; the decimal route
+/// rounded to 16 significant digits first, which can land one ulp away.
+///
+/// # Errors
+///
+/// As [`evalf`]; additionally [`SymplexError::Unevaluable`] when a part is
+/// infinite.
+pub(crate) fn evalf_complex64(arena: &Arena, expr: ExprId) -> Result<Complex64, SymplexError> {
+    let z = evalf_value(arena, expr, F64_DIGITS)?;
+    let re = finite_part_to_f64(&z.0, &z.1)?;
+    let im = finite_part_to_f64(&z.1, &z.0)?;
+    Ok(Complex64::new(re, im))
+}
+
+/// Evaluate `expr` to an `f64` at the precision behind `Ex::eval_f64`
+/// (see [`evalf_complex64`]).
+///
+/// # Errors
+///
+/// As [`evalf_complex64`]; [`SymplexError::ComputationFailed`] when the
+/// imaginary part exceeds `1e-15` in magnitude.
+pub(crate) fn evalf_f64(arena: &Arena, expr: ExprId) -> Result<f64, SymplexError> {
+    let z = evalf_complex64(arena, expr)?;
+    if z.im.abs() > 1e-15 {
+        return Err(SymplexError::ComputationFailed {
+            operation: "eval_f64",
+            reason: format!(
+                "expression has nonzero imaginary part (im={}); use eval_complex64() for complex results",
+                z.im
+            ),
+        });
+    }
+    Ok(z.re)
 }
 
 /// Evaluate a constant (variable-free) arena expression to `f64`.
@@ -964,95 +1134,16 @@ fn eval_node(
         // ── Apply-based special functions ───────────────────────────
         ExprNode::Apply(sid, args) => {
             let name = arena.symbol_name(*sid);
-            match name {
-                "besselj" if args.len() == 2 => {
-                    let order = get_cached(cache, args[0])?;
-                    let arg = get_cached(cache, args[1])?;
-                    if !order.1.is_zero() || !arg.1.is_zero() {
-                        return Err(SymplexError::Unevaluable {
-                            reason: "Bessel of complex argument not yet supported in evalf".into(),
-                        });
-                    }
-                    tracing::debug!(prec, "evalf: BesselJ via series/asymptotic");
-                    let result = arb_bessel_j(&order.0, &arg.0, prec, rm, cc)?;
-                    Ok((result, BigFloat::new(prec)))
+            match arena.lib_fn(*sid) {
+                Some(f) if f.arity().accepts(args.len()) => {
+                    eval_lib_fn(f, args, cache, prec, rm, cc)
                 }
-                "bessely" if args.len() == 2 => {
-                    let order = get_cached(cache, args[0])?;
-                    let arg = get_cached(cache, args[1])?;
-                    if !order.1.is_zero() || !arg.1.is_zero() {
-                        return Err(SymplexError::Unevaluable {
-                            reason: "Bessel of complex argument not yet supported in evalf".into(),
-                        });
-                    }
-                    tracing::debug!(prec, "evalf: BesselY via series/asymptotic");
-                    let result = arb_bessel_y(&order.0, &arg.0, prec, rm, cc)?;
-                    Ok((result, BigFloat::new(prec)))
-                }
-                "besseli" if args.len() == 2 => {
-                    let order = get_cached(cache, args[0])?;
-                    let arg = get_cached(cache, args[1])?;
-                    if !order.1.is_zero() || !arg.1.is_zero() {
-                        return Err(SymplexError::Unevaluable {
-                            reason: "Bessel of complex argument not yet supported in evalf".into(),
-                        });
-                    }
-                    tracing::debug!(prec, "evalf: BesselI via ascending series");
-                    let result = arb_bessel_i(&order.0, &arg.0, prec, rm, cc)?;
-                    Ok((result, BigFloat::new(prec)))
-                }
-                "besselk" if args.len() == 2 => {
-                    let order = get_cached(cache, args[0])?;
-                    let arg = get_cached(cache, args[1])?;
-                    if !order.1.is_zero() || !arg.1.is_zero() {
-                        return Err(SymplexError::Unevaluable {
-                            reason: "Bessel of complex argument not yet supported in evalf".into(),
-                        });
-                    }
-                    tracing::debug!(prec, "evalf: BesselK via series/asymptotic");
-                    let result = arb_bessel_k(&order.0, &arg.0, prec, rm, cc)?;
-                    Ok((result, BigFloat::new(prec)))
-                }
-                "legendre" | "chebyshev_t" | "chebyshev_u" | "hermite" | "laguerre"
-                    if args.len() == 2 =>
-                {
-                    let n_val = get_cached(cache, args[0])?;
-                    let x_val = get_cached(cache, args[1])?;
-                    if !n_val.1.is_zero() || !x_val.1.is_zero() {
-                        return Err(SymplexError::Unevaluable {
-                            reason: "orthogonal polynomial of complex arguments not supported"
-                                .into(),
-                        });
-                    }
-                    let n_f = bigfloat_to_f64(&n_val.0, rm, cc)?;
-                    let n_round = n_f.round();
-                    if (n_f - n_round).abs() > 1e-12 || !(0.0..=1.0e7).contains(&n_round) {
-                        return Err(SymplexError::Unevaluable {
-                            reason: format!("{name}: degree must be a non-negative integer"),
-                        });
-                    }
-                    tracing::debug!(
-                        prec,
-                        n = n_round,
-                        "evalf: orthogonal polynomial via recurrence"
-                    );
-                    let kind = match name {
-                        "legendre" => OrthoPoly::Legendre,
-                        "chebyshev_t" => OrthoPoly::ChebyshevT,
-                        "chebyshev_u" => OrthoPoly::ChebyshevU,
-                        "hermite" => OrthoPoly::Hermite,
-                        _ => OrthoPoly::Laguerre,
-                    };
-                    let result = arb_orthopoly(kind, n_round as u64, &x_val.0, prec, rm);
-                    Ok((result, BigFloat::new(prec)))
-                }
-                // ── More special functions (0.9) ──
-                n if crate::transforms::eval::is_special_09(n) => {
-                    eval_special_09(n, args, cache, prec, rm, cc)
-                }
-                _ => Err(SymplexError::Unevaluable {
-                    reason: format!("cannot evaluate function '{name}'"),
-                }),
+                Some(_) => Err(unevaluable(format!(
+                    "{name} called with {} argument(s)",
+                    args.len()
+                ))),
+                // A user function has no numeric meaning.
+                None => Err(unevaluable(format!("cannot evaluate function '{name}'"))),
             }
         }
 
@@ -1766,8 +1857,28 @@ fn atan2_bf(
 // Special function helpers (f64-based)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Convert a `BigFloat` to `f64` via decimal radix conversion.
-fn bigfloat_to_f64(bf: &BigFloat, rm: RoundingMode, cc: &mut Consts) -> Result<f64, SymplexError> {
+/// Convert a `BigFloat` to `f64`, rounding once from the binary mantissa
+/// (see [`bigfloat_to_f64_rounded`]).
+///
+/// `_cc` is not needed by the binary rounding; the parameter stays so the
+/// many call sites written for the earlier decimal-radix route are
+/// unchanged.
+fn bigfloat_to_f64(bf: &BigFloat, rm: RoundingMode, _cc: &mut Consts) -> Result<f64, SymplexError> {
+    bigfloat_to_f64_rounded(bf, rm)
+}
+
+/// The `f64` nearest to a `BigFloat`, rounded straight from the binary
+/// mantissa with `rm` as the tie rule (astro-float's modes are all
+/// round-to-nearest with different tie-breaking; `None` truncates).
+///
+/// Zero maps to `+0.0`; `±∞` to `±INFINITY`.  A value beyond the `f64`
+/// exponent range overflows to `±INFINITY` or underflows through the
+/// subnormals to `±0.0`, as a decimal parse of it would.
+///
+/// # Errors
+///
+/// [`SymplexError::Unevaluable`] for NaN.
+fn bigfloat_to_f64_rounded(bf: &BigFloat, rm: RoundingMode) -> Result<f64, SymplexError> {
     if bf.is_zero() {
         return Ok(0.0);
     }
@@ -1777,33 +1888,102 @@ fn bigfloat_to_f64(bf: &BigFloat, rm: RoundingMode, cc: &mut Consts) -> Result<f
     if bf.is_inf_neg() {
         return Ok(f64::NEG_INFINITY);
     }
-    if bf.is_nan() {
+    let Some((words, _, sign, exponent, _)) = bf.as_raw_parts() else {
         return Err(SymplexError::Unevaluable {
             reason: "NaN in BigFloat to f64 conversion".into(),
         });
+    };
+    let negative = sign == Sign::Neg;
+    let signed = |v: f64| if negative { -v } else { v };
+
+    // The mantissa words are little-endian and the value is
+    // `0.m × 2^exponent`, so the leading bit is worth `2^(exponent − 1)`.
+    // Gather the 64 most significant bits (the word size is 32 on wasm32)
+    // and remember whether anything below them is set.
+    let mut acc: u128 = 0;
+    let mut filled = 0usize;
+    let mut sticky = false;
+    for &w in words.iter().rev() {
+        if filled < 64 {
+            acc = (acc << WORD_BIT_SIZE) | w as u128;
+            filled += WORD_BIT_SIZE;
+        } else if w != 0 {
+            sticky = true;
+        }
+    }
+    let top: u64 = if filled >= 64 {
+        let extra = filled - 64;
+        if extra > 0 && acc & ((1u128 << extra) - 1) != 0 {
+            sticky = true;
+        }
+        (acc >> extra) as u64
+    } else {
+        (acc << (64 - filled)) as u64
+    };
+    if top & (1 << 63) == 0 {
+        // Only astro-float's own subnormals (at its minimum exponent, far
+        // below the f64 range) lack the leading bit.
+        return Ok(signed(0.0));
     }
 
-    let (sign, mantissa, exponent) =
-        bf.convert_to_radix(Radix::Dec, rm, cc)
-            .map_err(|e| SymplexError::Unevaluable {
-                reason: format!("BigFloat to f64 conversion failed: {e:?}"),
-            })?;
-
-    // mantissa is [d1, d2, ...] representing 0.d1d2d3... × 10^exponent
-    let mut s = String::with_capacity(mantissa.len() + 8);
-    if sign == Sign::Neg {
-        s.push('-');
+    let mut unbiased = exponent as i64 - 1;
+    if unbiased > 1023 {
+        return Ok(signed(f64::INFINITY));
     }
-    s.push_str("0.");
-    for &d in &mantissa {
-        s.push((b'0' + d) as char);
-    }
-    s.push('e');
-    s.push_str(&exponent.to_string());
+    // Significand bits the result can hold: 53 for a normal number, fewer
+    // for a subnormal (`2^-1074` is the last representable bit).
+    let keep = if unbiased >= -1022 {
+        53
+    } else {
+        unbiased + 1075
+    };
+    // `mant`: the kept bits; `above_half` / `exactly_half`: the dropped
+    // remainder against half a unit in the last kept place.
+    let (mant, above_half, exactly_half) = if keep <= 0 {
+        // Below the smallest subnormal `2^-1074`; `keep == 0` puts the
+        // value in `[2^-1075, 2^-1074)`, at or above half of it.
+        let at_half = top == 1 << 63 && !sticky;
+        (0u64, keep == 0 && !at_half, keep == 0 && at_half)
+    } else {
+        let shift = (64 - keep) as u32;
+        let mant = top >> shift;
+        let rem = top & ((1u64 << shift) - 1);
+        let half = 1u64 << (shift - 1);
+        (
+            mant,
+            rem > half || (rem == half && sticky),
+            rem == half && !sticky,
+        )
+    };
+    let round_up = match rm {
+        RoundingMode::None => false,
+        _ if above_half => true,
+        _ if !exactly_half => false,
+        RoundingMode::Up => !negative,
+        RoundingMode::Down => negative,
+        RoundingMode::ToZero => false,
+        RoundingMode::FromZero => true,
+        RoundingMode::ToEven => mant & 1 == 1,
+        RoundingMode::ToOdd => mant & 1 == 0,
+    };
+    let mut mant = mant + u64::from(round_up);
 
-    s.parse::<f64>().map_err(|_| SymplexError::Unevaluable {
-        reason: "failed to parse BigFloat decimal representation as f64".into(),
-    })
+    let bits = if keep == 53 {
+        if mant == 1 << 53 {
+            // Rounded up into the next binade.
+            mant >>= 1;
+            unbiased += 1;
+            if unbiased > 1023 {
+                return Ok(signed(f64::INFINITY));
+            }
+        }
+        (((unbiased + 1023) as u64) << 52) | (mant & ((1 << 52) - 1))
+    } else {
+        // Subnormal: the value is `mant × 2^-1074` and the bit pattern is
+        // `mant` itself (`mant == 2^52` is the smallest normal number).
+        mant
+    };
+    Ok(signed(f64::from_bits(bits)))
 }
 
 /// Lanczos approximation for the Gamma function (g=7, 9 coefficients).
@@ -4089,31 +4269,160 @@ fn bf_as_int(x: &BigFloat, rm: RoundingMode, cc: &mut Consts) -> Result<Option<i
     }
 }
 
-/// Dispatch for the 0.9 special functions inside `eval_node`.
-fn eval_special_09(
-    name: &str,
+/// Numeric value of the library function `f` on `args` (of the arity `f`
+/// declares) inside `eval_node`.
+///
+/// Exhaustive over [`LibFn`].  The integer sequences and combinatorial
+/// counts have no arbitrary-precision routine: `eval` folds them exactly
+/// for integer arguments before `evalf` runs, and anything left is an
+/// error rather than a guess.
+fn eval_lib_fn(
+    f: LibFn,
     args: &[ExprId],
     cache: &FxHashMap<ExprId, Complex>,
     prec: usize,
     rm: RoundingMode,
     cc: &mut Consts,
 ) -> Result<Complex, SymplexError> {
-    use crate::base::arena::{
-        FN_AIRYAI, FN_AIRYAIPRIME, FN_AIRYBI, FN_AIRYBIPRIME, FN_ASSOC_LAGUERRE, FN_ASSOC_LEGENDRE,
-        FN_BETAINC, FN_BETAINC_REGULARIZED, FN_CHI, FN_DIRICHLET_ETA, FN_ELLIPTIC_E, FN_ELLIPTIC_F,
-        FN_ELLIPTIC_K, FN_ELLIPTIC_PI, FN_ERFCINV, FN_ERFI, FN_ERFINV, FN_EXPINT, FN_FRESNELC,
-        FN_FRESNELS, FN_GEGENBAUER, FN_JACOBI, FN_LOWERGAMMA, FN_POLYLOG, FN_SHI, FN_UPPERGAMMA,
-    };
+    match f {
+        LibFn::BesselJ => eval_bessel(arb_bessel_j, "BesselJ", args, cache, prec, rm, cc),
+        LibFn::BesselY => eval_bessel(arb_bessel_y, "BesselY", args, cache, prec, rm, cc),
+        LibFn::BesselI => eval_bessel(arb_bessel_i, "BesselI", args, cache, prec, rm, cc),
+        LibFn::BesselK => eval_bessel(arb_bessel_k, "BesselK", args, cache, prec, rm, cc),
+        LibFn::Legendre => eval_orthopoly(OrthoPoly::Legendre, f, args, cache, prec, rm, cc),
+        LibFn::ChebyshevT => eval_orthopoly(OrthoPoly::ChebyshevT, f, args, cache, prec, rm, cc),
+        LibFn::ChebyshevU => eval_orthopoly(OrthoPoly::ChebyshevU, f, args, cache, prec, rm, cc),
+        LibFn::Hermite => eval_orthopoly(OrthoPoly::Hermite, f, args, cache, prec, rm, cc),
+        LibFn::Laguerre => eval_orthopoly(OrthoPoly::Laguerre, f, args, cache, prec, rm, cc),
+        LibFn::Erfi
+        | LibFn::ErfInv
+        | LibFn::ErfcInv
+        | LibFn::ExpInt
+        | LibFn::Shi
+        | LibFn::Chi
+        | LibFn::FresnelS
+        | LibFn::FresnelC
+        | LibFn::LowerGamma
+        | LibFn::UpperGamma
+        | LibFn::PolyLog
+        | LibFn::DirichletEta
+        | LibFn::AiryAi
+        | LibFn::AiryBi
+        | LibFn::AiryAiPrime
+        | LibFn::AiryBiPrime
+        | LibFn::EllipticK
+        | LibFn::EllipticE
+        | LibFn::EllipticF
+        | LibFn::EllipticPi
+        | LibFn::Gegenbauer
+        | LibFn::Jacobi
+        | LibFn::AssocLegendre
+        | LibFn::AssocLaguerre
+        | LibFn::BetaInc
+        | LibFn::BetaIncRegularized => eval_special_09(f, args, cache, prec, rm, cc),
+        LibFn::Factorial2
+        | LibFn::Subfactorial
+        | LibFn::RisingFactorial
+        | LibFn::FallingFactorial
+        | LibFn::Fibonacci
+        | LibFn::Lucas
+        | LibFn::Bernoulli
+        | LibFn::Harmonic
+        | LibFn::Catalan
+        | LibFn::Bell
+        | LibFn::EulerNumber
+        | LibFn::Stirling1
+        | LibFn::Stirling2
+        | LibFn::PartitionCount
+        | LibFn::LambertW => Err(unevaluable(format!("cannot evaluate function '{f}'"))),
+    }
+}
+
+/// A Bessel function `(order, x)` of real arguments through `arb`.
+fn eval_bessel(
+    arb: fn(
+        &BigFloat,
+        &BigFloat,
+        usize,
+        RoundingMode,
+        &mut Consts,
+    ) -> Result<BigFloat, SymplexError>,
+    what: &str,
+    args: &[ExprId],
+    cache: &FxHashMap<ExprId, Complex>,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<Complex, SymplexError> {
+    let order = get_cached(cache, args[0])?;
+    let arg = get_cached(cache, args[1])?;
+    if !order.1.is_zero() || !arg.1.is_zero() {
+        return Err(SymplexError::Unevaluable {
+            reason: "Bessel of complex argument not yet supported in evalf".into(),
+        });
+    }
+    tracing::debug!(prec, what, "evalf: Bessel function via series/asymptotic");
+    let result = arb(&order.0, &arg.0, prec, rm, cc)?;
+    Ok((result, BigFloat::new(prec)))
+}
+
+/// A classical orthogonal polynomial `(n, x)` of real arguments by
+/// recurrence, for a non-negative integer degree.
+fn eval_orthopoly(
+    kind: OrthoPoly,
+    f: LibFn,
+    args: &[ExprId],
+    cache: &FxHashMap<ExprId, Complex>,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<Complex, SymplexError> {
+    let n_val = get_cached(cache, args[0])?;
+    let x_val = get_cached(cache, args[1])?;
+    if !n_val.1.is_zero() || !x_val.1.is_zero() {
+        return Err(SymplexError::Unevaluable {
+            reason: "orthogonal polynomial of complex arguments not supported".into(),
+        });
+    }
+    let n_f = bigfloat_to_f64(&n_val.0, rm, cc)?;
+    let n_round = n_f.round();
+    if (n_f - n_round).abs() > 1e-12 || !(0.0..=1.0e7).contains(&n_round) {
+        return Err(SymplexError::Unevaluable {
+            reason: format!("{f}: degree must be a non-negative integer"),
+        });
+    }
+    tracing::debug!(
+        prec,
+        n = n_round,
+        "evalf: orthogonal polynomial via recurrence"
+    );
+    let result = arb_orthopoly(kind, n_round as u64, &x_val.0, prec, rm);
+    Ok((result, BigFloat::new(prec)))
+}
+
+/// Dispatch for the 0.9 special functions inside `eval_node`.
+///
+/// Exhaustive over [`LibFn`]; the functions outside this family are an
+/// error here (they are dispatched by [`eval_lib_fn`] and never arrive).
+fn eval_special_09(
+    f: LibFn,
+    args: &[ExprId],
+    cache: &FxHashMap<ExprId, Complex>,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<Complex, SymplexError> {
+    let name = f.name();
     let v = real_args(name, args, cache)?;
     let real = |r: BigFloat| Ok((r, BigFloat::new(prec)));
     debug!(prec, name, "evalf: special function (0.9)");
-    match (name, v.len()) {
-        (FN_ERFI, 1) => real(arb_erfi(&v[0], prec, rm, cc)?),
-        (FN_ERFINV, 1) => real(arb_erfinv(&v[0], prec, rm, cc)?),
-        (FN_ERFCINV, 1) => real(arb_erfcinv(&v[0], prec, rm, cc)?),
-        (FN_EXPINT, 2) => real(arb_expint(&v[0], &v[1], prec, rm, cc)?),
-        (FN_SHI, 1) => real(arb_shi_chi(&v[0], true, prec, rm, cc)?),
-        (FN_CHI, 1) => {
+    match f {
+        LibFn::Erfi => real(arb_erfi(&v[0], prec, rm, cc)?),
+        LibFn::ErfInv => real(arb_erfinv(&v[0], prec, rm, cc)?),
+        LibFn::ErfcInv => real(arb_erfcinv(&v[0], prec, rm, cc)?),
+        LibFn::ExpInt => real(arb_expint(&v[0], &v[1], prec, rm, cc)?),
+        LibFn::Shi => real(arb_shi_chi(&v[0], true, prec, rm, cc)?),
+        LibFn::Chi => {
             if v[0].is_zero() {
                 return Err(unevaluable("Chi(0) is -∞"));
             }
@@ -4125,38 +4434,58 @@ fn eval_special_09(
                 real(chi)
             }
         }
-        (FN_FRESNELS, 1) => real(arb_fresnel(&v[0], true, prec, rm, cc)?),
-        (FN_FRESNELC, 1) => real(arb_fresnel(&v[0], false, prec, rm, cc)?),
-        (FN_LOWERGAMMA, 2) => real(arb_lowergamma(&v[0], &v[1], prec, rm, cc)?),
-        (FN_UPPERGAMMA, 2) => real(arb_uppergamma(&v[0], &v[1], prec, rm, cc)?),
-        (FN_POLYLOG, 2) => real(arb_polylog(&v[0], &v[1], prec, rm, cc)?),
-        (FN_DIRICHLET_ETA, 1) => real(arb_dirichlet_eta(&v[0], prec, rm, cc)?),
-        (FN_AIRYAI, 1) => real(arb_airy(&v[0], AiryKind::Ai, prec, rm, cc)?),
-        (FN_AIRYBI, 1) => real(arb_airy(&v[0], AiryKind::Bi, prec, rm, cc)?),
-        (FN_AIRYAIPRIME, 1) => real(arb_airy(&v[0], AiryKind::AiPrime, prec, rm, cc)?),
-        (FN_AIRYBIPRIME, 1) => real(arb_airy(&v[0], AiryKind::BiPrime, prec, rm, cc)?),
-        (FN_ELLIPTIC_K, 1) => real(arb_elliptic_k(&v[0], prec, rm, cc)?),
-        (FN_ELLIPTIC_E, 1) => real(arb_elliptic_e(&v[0], prec, rm, cc)?),
-        (FN_ELLIPTIC_F, 2) => real(arb_elliptic_f(&v[0], &v[1], prec, rm, cc)?),
-        (FN_ELLIPTIC_PI, 2) => real(arb_elliptic_pi(&v[0], &v[1], prec, rm, cc)?),
-        (FN_GEGENBAUER, 3) => real(arb_gegenbauer(&v[0], &v[1], &v[2], prec, rm, cc)?),
-        (FN_JACOBI, 4) => real(arb_jacobi(&v[0], &v[1], &v[2], &v[3], prec, rm, cc)?),
-        (FN_ASSOC_LEGENDRE, 3) => real(arb_assoc_legendre(&v[0], &v[1], &v[2], prec, rm, cc)?),
-        (FN_ASSOC_LAGUERRE, 3) => real(arb_assoc_laguerre(&v[0], &v[1], &v[2], prec, rm, cc)?),
-        (FN_BETAINC | FN_BETAINC_REGULARIZED, 4) => real(arb_betainc(
+        LibFn::FresnelS => real(arb_fresnel(&v[0], true, prec, rm, cc)?),
+        LibFn::FresnelC => real(arb_fresnel(&v[0], false, prec, rm, cc)?),
+        LibFn::LowerGamma => real(arb_lowergamma(&v[0], &v[1], prec, rm, cc)?),
+        LibFn::UpperGamma => real(arb_uppergamma(&v[0], &v[1], prec, rm, cc)?),
+        LibFn::PolyLog => real(arb_polylog(&v[0], &v[1], prec, rm, cc)?),
+        LibFn::DirichletEta => real(arb_dirichlet_eta(&v[0], prec, rm, cc)?),
+        LibFn::AiryAi => real(arb_airy(&v[0], AiryKind::Ai, prec, rm, cc)?),
+        LibFn::AiryBi => real(arb_airy(&v[0], AiryKind::Bi, prec, rm, cc)?),
+        LibFn::AiryAiPrime => real(arb_airy(&v[0], AiryKind::AiPrime, prec, rm, cc)?),
+        LibFn::AiryBiPrime => real(arb_airy(&v[0], AiryKind::BiPrime, prec, rm, cc)?),
+        LibFn::EllipticK => real(arb_elliptic_k(&v[0], prec, rm, cc)?),
+        LibFn::EllipticE => real(arb_elliptic_e(&v[0], prec, rm, cc)?),
+        LibFn::EllipticF => real(arb_elliptic_f(&v[0], &v[1], prec, rm, cc)?),
+        LibFn::EllipticPi => real(arb_elliptic_pi(&v[0], &v[1], prec, rm, cc)?),
+        LibFn::Gegenbauer => real(arb_gegenbauer(&v[0], &v[1], &v[2], prec, rm, cc)?),
+        LibFn::Jacobi => real(arb_jacobi(&v[0], &v[1], &v[2], &v[3], prec, rm, cc)?),
+        LibFn::AssocLegendre => real(arb_assoc_legendre(&v[0], &v[1], &v[2], prec, rm, cc)?),
+        LibFn::AssocLaguerre => real(arb_assoc_laguerre(&v[0], &v[1], &v[2], prec, rm, cc)?),
+        LibFn::BetaInc | LibFn::BetaIncRegularized => real(arb_betainc(
             &v[0],
             &v[1],
             &v[2],
             &v[3],
-            name == FN_BETAINC_REGULARIZED,
+            f == LibFn::BetaIncRegularized,
             prec,
             rm,
             cc,
         )?),
-        _ => Err(unevaluable(format!(
-            "{name} called with {} argument(s)",
-            v.len()
-        ))),
+        LibFn::Factorial2
+        | LibFn::Subfactorial
+        | LibFn::RisingFactorial
+        | LibFn::FallingFactorial
+        | LibFn::Fibonacci
+        | LibFn::Lucas
+        | LibFn::Bernoulli
+        | LibFn::Harmonic
+        | LibFn::Catalan
+        | LibFn::Bell
+        | LibFn::EulerNumber
+        | LibFn::Stirling1
+        | LibFn::Stirling2
+        | LibFn::PartitionCount
+        | LibFn::LambertW
+        | LibFn::BesselJ
+        | LibFn::BesselY
+        | LibFn::BesselI
+        | LibFn::BesselK
+        | LibFn::Legendre
+        | LibFn::ChebyshevT
+        | LibFn::ChebyshevU
+        | LibFn::Hermite
+        | LibFn::Laguerre => Err(unevaluable(format!("cannot evaluate function '{name}'"))),
     }
 }
 
@@ -7341,9 +7670,8 @@ mod tests {
     // ── 0.11.1 special-function fixes (direct numeric paths that `eval`
     //    would otherwise fold away) ──────────────────────────────────────────
 
-    fn apply(a: &mut Arena, name: &str, args: &[ExprId]) -> ExprId {
-        let sid = a.symbols.intern(name);
-        a.intern(ExprNode::Apply(sid, args.iter().copied().collect()))
+    fn apply(a: &mut Arena, f: LibFn, args: &[ExprId]) -> ExprId {
+        a.lib_apply(f, args)
     }
 
     #[test]
@@ -7397,66 +7725,63 @@ mod tests {
 
     #[test]
     fn polylog_at_minus_one_is_minus_eta_for_all_s() {
-        use crate::base::arena::FN_POLYLOG;
         let mut a = Arena::new();
         let neg_one = a.neg_one;
         // mpmath 1.3: polylog(1/2, -1) = -0.6048986434216303702472659142359555
         let half = a.rational(1, 2);
-        let li = apply(&mut a, FN_POLYLOG, &[half, neg_one]);
+        let li = apply(&mut a, LibFn::PolyLog, &[half, neg_one]);
         assert_evalf_starts_with(&a, li, 30, "-0.60489864342163037024726591423");
         // mpmath 1.3: polylog(1, -1) = -ln 2 = -0.69314718055994530941723212145817657
         let one = a.one;
-        let li1 = apply(&mut a, FN_POLYLOG, &[one, neg_one]);
+        let li1 = apply(&mut a, LibFn::PolyLog, &[one, neg_one]);
         assert_evalf_starts_with(&a, li1, 30, "-0.69314718055994530941723212145");
         // mpmath 1.3: polylog(-1/2, -1) = -0.38010481260968401677754215655180836
         let neg_half = a.rational(-1, 2);
-        let lim = apply(&mut a, FN_POLYLOG, &[neg_half, neg_one]);
+        let lim = apply(&mut a, LibFn::PolyLog, &[neg_half, neg_one]);
         assert_evalf_starts_with(&a, lim, 30, "-0.38010481260968401677754215655");
         // mpmath 1.3: polylog(3/2, -1) = -0.76514702462540794536726875860347818
         let three_halves = a.rational(3, 2);
-        let li32 = apply(&mut a, FN_POLYLOG, &[three_halves, neg_one]);
+        let li32 = apply(&mut a, LibFn::PolyLog, &[three_halves, neg_one]);
         assert_evalf_starts_with(&a, li32, 30, "-0.76514702462540794536726875860");
         // z = +1 still diverges for s ≤ 1
         let one_id = a.one;
-        let div = apply(&mut a, FN_POLYLOG, &[half, one_id]);
+        let div = apply(&mut a, LibFn::PolyLog, &[half, one_id]);
         assert!(evalf(&a, div, 16).is_err());
     }
 
     #[test]
     fn dirichlet_eta_near_one_uses_alternating_sum() {
-        use crate::base::arena::FN_DIRICHLET_ETA;
         let mut a = Arena::new();
         // mpmath 1.3: altzeta(1 + 1e-20) = 0.69314718055994530941883081049560088
         let ten = a.int(10);
         let e20 = a.int(-20);
         let tiny = a.pow(ten, e20);
         let s = a.add(&[a.one, tiny]);
-        let eta = apply(&mut a, FN_DIRICHLET_ETA, &[s]);
+        let eta = apply(&mut a, LibFn::DirichletEta, &[s]);
         assert_evalf_starts_with(&a, eta, 30, "0.69314718055994530941883081049");
         // mpmath 1.3: altzeta(1 - 1e-20) = 0.69314718055994530941563343242075226
         let s2 = a.sub(a.one, tiny);
-        let eta2 = apply(&mut a, FN_DIRICHLET_ETA, &[s2]);
+        let eta2 = apply(&mut a, LibFn::DirichletEta, &[s2]);
         assert_evalf_starts_with(&a, eta2, 30, "0.69314718055994530941563343242");
         // Exactly 1 through the numeric path: mpmath altzeta(1) = ln 2
         let one = a.one;
-        let eta1 = apply(&mut a, FN_DIRICHLET_ETA, &[one]);
+        let eta1 = apply(&mut a, LibFn::DirichletEta, &[one]);
         assert_evalf_starts_with(&a, eta1, 30, "0.69314718055994530941723212145");
         // s ≤ 0 still goes through ζ: mpmath altzeta(-1/2) = 0.38010481260968401677754215655180836
         let neg_half = a.rational(-1, 2);
-        let etam = apply(&mut a, FN_DIRICHLET_ETA, &[neg_half]);
+        let etam = apply(&mut a, LibFn::DirichletEta, &[neg_half]);
         assert_evalf_starts_with(&a, etam, 30, "0.38010481260968401677754215655");
     }
 
     #[test]
     fn airy_derivatives_at_exact_zero() {
-        use crate::base::arena::{FN_AIRYAIPRIME, FN_AIRYBIPRIME};
         let mut a = Arena::new();
         let zero = a.zero;
         // mpmath 1.3: airyai(0, derivative=1) = -0.25881940379280679840518356018920396
-        let aip = apply(&mut a, FN_AIRYAIPRIME, &[zero]);
+        let aip = apply(&mut a, LibFn::AiryAiPrime, &[zero]);
         assert_evalf_starts_with(&a, aip, 30, "-0.25881940379280679840518356018");
         // mpmath 1.3: airybi(0, derivative=1) = 0.44828835735382635791482371039882839
-        let bip = apply(&mut a, FN_AIRYBIPRIME, &[zero]);
+        let bip = apply(&mut a, LibFn::AiryBiPrime, &[zero]);
         assert_evalf_starts_with(&a, bip, 30, "0.44828835735382635791482371039");
     }
 

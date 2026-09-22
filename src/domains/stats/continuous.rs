@@ -4,10 +4,10 @@
 //! identity, cited at the arm.  Where a closed form is absent the generic
 //! machinery in [`Distribution`] integrates the density instead.
 //!
-//! To add a family: a struct, `impl Family` (support, density, `eq_family`
-//! via [`same_family`], the closed forms), and a constructor pair
-//! `Distribution::try_name(…)` (validates numeric parameters) /
-//! `Distribution::name(…)` (unchecked).
+//! To add a family: a struct, `impl Family` (`family_boilerplate!` for
+//! `name`/`context`/`parameters`/`eq_family`, then support, density and
+//! the closed forms), and a constructor pair `Distribution::try_name(…)`
+//! (validates numeric parameters) / `Distribution::name(…)` (unchecked).
 //!
 //! Sampling: a family with a closed-form quantile leaves [`Family::sampler`]
 //! unset and is drawn by inverse transform ([`Distribution::sampler`]);
@@ -19,7 +19,7 @@ use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 
-use super::family::{Distribution, Family, Sampler, same_family};
+use super::family::{Distribution, Family, Sampler, family_boilerplate};
 use super::sample::{self, Rng};
 use super::support::Support;
 
@@ -89,29 +89,6 @@ fn raw_from_even_central(mean: &Ex, n: u32, ctx: &Context, central: impl Fn(u32)
         acc += binom * mean.powi(i64::from(n - 2 * j)) * c;
     }
     acc.simplify()
-}
-
-macro_rules! family_boilerplate {
-    ($ty:ident, $name:literal, [$($field:ident),+]) => {
-        fn name(&self) -> &str {
-            $name
-        }
-        fn context(&self) -> Context {
-            first_ctx!(self, $($field),+)
-        }
-        fn parameters(&self) -> Vec<(&'static str, Ex)> {
-            vec![$((stringify!($field), self.$field.clone())),+]
-        }
-        fn eq_family(&self, other: &dyn Family) -> bool {
-            same_family(self, other)
-        }
-    };
-}
-
-macro_rules! first_ctx {
-    ($self:ident, $first:ident $(, $rest:ident)*) => {
-        $self.$first.context()
-    };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

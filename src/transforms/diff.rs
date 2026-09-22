@@ -28,6 +28,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
 use crate::base::arena::Arena;
+use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode, SymbolId};
 use crate::transforms::eval::apply_named;
 
@@ -712,12 +713,11 @@ fn diff_node(
         ExprNode::Apply(func_sym, ref args) => {
             let args_clone = args.clone();
 
-            // Library special functions with known derivative rules
-            // (Bessel functions, orthogonal polynomials).
-            if let Some(result) = diff_known_apply(arena, func_sym, &args_clone, cache) {
-                return result;
-            }
-            if let Some(result) = diff_special_09(arena, id, func_sym, &args_clone, cache) {
+            // Library special functions with known derivative rules.
+            if let Some(f) = arena.lib_fn(func_sym)
+                && f.arity().accepts(args_clone.len())
+                && let Some(result) = diff_lib_fn(arena, id, f, &args_clone, cache)
+            {
                 return result;
             }
 
@@ -885,6 +885,75 @@ fn var_is_real(arena: &mut Arena, var: SymbolId) -> bool {
     crate::base::complex::is_real(arena, v) == Some(true)
 }
 
+/// Derivative of the library function `f` applied to `args` (of the arity
+/// `f` declares), with the chain rule applied; `None` when `f` has no rule
+/// — the caller then differentiates it as an unknown function.
+///
+/// Exhaustive over [`LibFn`].  The integer sequences and combinatorial
+/// counts (`factorial2`, `fibonacci`, `stirling2`, …) are functions of an
+/// integer argument and have no derivative rule; `lambertw` is registered
+/// for its name only (the arena builds `ExprNode::LambertW`).
+fn diff_lib_fn(
+    arena: &mut Arena,
+    id: ExprId,
+    f: LibFn,
+    args: &[ExprId],
+    cache: &FxHashMap<ExprId, ExprId>,
+) -> Option<ExprId> {
+    match f {
+        LibFn::BesselJ
+        | LibFn::BesselY
+        | LibFn::BesselI
+        | LibFn::BesselK
+        | LibFn::Legendre
+        | LibFn::ChebyshevT
+        | LibFn::ChebyshevU
+        | LibFn::Hermite
+        | LibFn::Laguerre => diff_known_apply(arena, f, args, cache),
+        LibFn::Erfi
+        | LibFn::ErfInv
+        | LibFn::ErfcInv
+        | LibFn::ExpInt
+        | LibFn::Shi
+        | LibFn::Chi
+        | LibFn::FresnelS
+        | LibFn::FresnelC
+        | LibFn::LowerGamma
+        | LibFn::UpperGamma
+        | LibFn::PolyLog
+        | LibFn::DirichletEta
+        | LibFn::AiryAi
+        | LibFn::AiryBi
+        | LibFn::AiryAiPrime
+        | LibFn::AiryBiPrime
+        | LibFn::EllipticK
+        | LibFn::EllipticE
+        | LibFn::EllipticF
+        | LibFn::EllipticPi
+        | LibFn::Gegenbauer
+        | LibFn::Jacobi
+        | LibFn::AssocLegendre
+        | LibFn::AssocLaguerre
+        | LibFn::BetaInc
+        | LibFn::BetaIncRegularized => diff_special_09(arena, id, f, args, cache),
+        LibFn::Factorial2
+        | LibFn::Subfactorial
+        | LibFn::RisingFactorial
+        | LibFn::FallingFactorial
+        | LibFn::Fibonacci
+        | LibFn::Lucas
+        | LibFn::Bernoulli
+        | LibFn::Harmonic
+        | LibFn::Catalan
+        | LibFn::Bell
+        | LibFn::EulerNumber
+        | LibFn::Stirling1
+        | LibFn::Stirling2
+        | LibFn::PartitionCount
+        | LibFn::LambertW => None,
+    }
+}
+
 /// Derivative rules for library `Apply` functions whose derivative has a
 /// closed form in terms of the same family (chain rule applied):
 ///
@@ -895,25 +964,19 @@ fn var_is_real(arena: &mut Arena, var: SymbolId) -> bool {
 /// * Hermite: `Hₙ' = 2n Hₙ₋₁`
 /// * Laguerre: `Lₙ' = (n Lₙ − n Lₙ₋₁) / x`
 ///
-/// Returns `None` when the function is not one of these, when the
-/// order/degree parameter depends on the variable, or when the arity is
-/// unexpected — the caller then falls back to a formal derivative.
+/// Returns `None` when the function is not one of these or when the
+/// order/degree parameter depends on the variable — the caller then falls
+/// back to a formal derivative.
 fn diff_known_apply(
     arena: &mut Arena,
-    func_sym: SymbolId,
+    f: LibFn,
     args: &[ExprId],
     cache: &FxHashMap<ExprId, ExprId>,
 ) -> Option<ExprId> {
-    use crate::base::arena::{
-        FN_BESSELI, FN_BESSELJ, FN_BESSELK, FN_BESSELY, FN_CHEBYSHEV_T, FN_CHEBYSHEV_U, FN_HERMITE,
-        FN_LAGUERRE, FN_LEGENDRE,
-    };
-
-    if args.len() != 2 {
+    let [param, x] = args else {
         return None;
-    }
-    let name = arena.symbol_name(func_sym).to_owned();
-    let (param, x) = (args[0], args[1]);
+    };
+    let (param, x) = (*param, *x);
 
     // The order / degree must be constant w.r.t. the variable.
     let dparam = get_deriv(cache, param, arena);
@@ -931,33 +994,33 @@ fn diff_known_apply(
     let p_minus_1 = arena.sub(param, one);
     let p_plus_1 = arena.add(&[param, one]);
 
-    let outer = match name.as_str() {
-        FN_BESSELJ => {
+    let outer = match f {
+        LibFn::BesselJ => {
             let a = arena.besselj(p_minus_1, x);
             let b = arena.besselj(p_plus_1, x);
             let d = arena.sub(a, b);
             arena.mul(&[half, d])
         }
-        FN_BESSELY => {
+        LibFn::BesselY => {
             let a = arena.bessely(p_minus_1, x);
             let b = arena.bessely(p_plus_1, x);
             let d = arena.sub(a, b);
             arena.mul(&[half, d])
         }
-        FN_BESSELI => {
+        LibFn::BesselI => {
             let a = arena.besseli(p_minus_1, x);
             let b = arena.besseli(p_plus_1, x);
             let s = arena.add(&[a, b]);
             arena.mul(&[half, s])
         }
-        FN_BESSELK => {
+        LibFn::BesselK => {
             let a = arena.besselk(p_minus_1, x);
             let b = arena.besselk(p_plus_1, x);
             let s = arena.add(&[a, b]);
             let neg_half = arena.rational(-1, 2);
             arena.mul(&[neg_half, s])
         }
-        FN_LEGENDRE => {
+        LibFn::Legendre => {
             // Pₙ' = n (x Pₙ − Pₙ₋₁) / (x² − 1)
             let pn = arena.legendre(param, x);
             let pn_1 = arena.legendre(p_minus_1, x);
@@ -968,12 +1031,12 @@ fn diff_known_apply(
             let denom = arena.sub(x2, one);
             arena.div(numer, denom)
         }
-        FN_CHEBYSHEV_T => {
+        LibFn::ChebyshevT => {
             // Tₙ' = n Uₙ₋₁
             let u = arena.chebyshev_u(p_minus_1, x);
             arena.mul(&[param, u])
         }
-        FN_CHEBYSHEV_U => {
+        LibFn::ChebyshevU => {
             // Uₙ' = ((n+1) Tₙ₊₁ − x Uₙ) / (x² − 1)
             let t = arena.chebyshev_t(p_plus_1, x);
             let un = arena.chebyshev_u(param, x);
@@ -984,12 +1047,12 @@ fn diff_known_apply(
             let denom = arena.sub(x2, one);
             arena.div(numer, denom)
         }
-        FN_HERMITE => {
+        LibFn::Hermite => {
             // Hₙ' = 2n Hₙ₋₁
             let h = arena.hermite(p_minus_1, x);
             arena.mul(&[two, param, h])
         }
-        FN_LAGUERRE => {
+        LibFn::Laguerre => {
             // Lₙ' = (n Lₙ − n Lₙ₋₁) / x
             let ln_ = arena.laguerre(param, x);
             let ln_1 = arena.laguerre(p_minus_1, x);
@@ -1040,20 +1103,10 @@ fn half_pi_sq(arena: &mut Arena, f: ExprId) -> ExprId {
 fn diff_special_09(
     arena: &mut Arena,
     id: ExprId,
-    func_sym: SymbolId,
+    name: LibFn,
     args: &[ExprId],
     cache: &FxHashMap<ExprId, ExprId>,
 ) -> Option<ExprId> {
-    use crate::base::arena::{
-        FN_AIRYAI, FN_AIRYAIPRIME, FN_AIRYBI, FN_AIRYBIPRIME, FN_ASSOC_LAGUERRE, FN_ASSOC_LEGENDRE,
-        FN_BETAINC, FN_BETAINC_REGULARIZED, FN_CHI, FN_DIRICHLET_ETA, FN_ELLIPTIC_E, FN_ELLIPTIC_F,
-        FN_ELLIPTIC_K, FN_ELLIPTIC_PI, FN_ERFCINV, FN_ERFI, FN_ERFINV, FN_EXPINT, FN_FRESNELC,
-        FN_FRESNELS, FN_GEGENBAUER, FN_JACOBI, FN_LOWERGAMMA, FN_POLYLOG, FN_SHI, FN_UPPERGAMMA,
-    };
-
-    let name = arena.symbol_name(func_sym).to_owned();
-    let name = name.as_str();
-
     // Formal derivative of the whole node: used when a parameter depends on
     // the variable (or the rule is unknown, e.g. η).
     let formal = |arena: &mut Arena, arg: ExprId| -> ExprId {
@@ -1065,52 +1118,52 @@ fn diff_special_09(
     // ── Unary functions of x ──
     let unary_rule = |arena: &mut Arena, f: ExprId| -> Option<ExprId> {
         Some(match name {
-            FN_ERFI => {
+            LibFn::Erfi => {
                 let two = arena.int(2);
                 let f2 = arena.pow(f, two);
                 let e = arena.exp(f2);
                 let c = two_over_sqrt_pi(arena);
                 arena.mul(&[c, e])
             }
-            FN_ERFINV | FN_ERFCINV => {
+            LibFn::ErfInv | LibFn::ErfcInv => {
                 let two = arena.int(2);
                 let w = apply_named(arena, name, &[f]);
                 let w2 = arena.pow(w, two);
                 let e = arena.exp(w2);
                 let sqrt_pi = arena.sqrt(arena.pi);
-                let half = arena.rational(if name == FN_ERFINV { 1 } else { -1 }, 2);
+                let half = arena.rational(if name == LibFn::ErfInv { 1 } else { -1 }, 2);
                 arena.mul(&[half, sqrt_pi, e])
             }
-            FN_SHI => {
+            LibFn::Shi => {
                 let s = arena.sinh(f);
                 arena.div(s, f)
             }
-            FN_CHI => {
+            LibFn::Chi => {
                 let c = arena.cosh(f);
                 arena.div(c, f)
             }
-            FN_FRESNELS => {
+            LibFn::FresnelS => {
                 let a = half_pi_sq(arena, f);
                 arena.sin(a)
             }
-            FN_FRESNELC => {
+            LibFn::FresnelC => {
                 let a = half_pi_sq(arena, f);
                 arena.cos(a)
             }
-            FN_AIRYAI => apply_named(arena, FN_AIRYAIPRIME, &[f]),
-            FN_AIRYBI => apply_named(arena, FN_AIRYBIPRIME, &[f]),
-            FN_AIRYAIPRIME => {
-                let ai = apply_named(arena, FN_AIRYAI, &[f]);
+            LibFn::AiryAi => apply_named(arena, LibFn::AiryAiPrime, &[f]),
+            LibFn::AiryBi => apply_named(arena, LibFn::AiryBiPrime, &[f]),
+            LibFn::AiryAiPrime => {
+                let ai = apply_named(arena, LibFn::AiryAi, &[f]);
                 arena.mul(&[f, ai])
             }
-            FN_AIRYBIPRIME => {
-                let bi = apply_named(arena, FN_AIRYBI, &[f]);
+            LibFn::AiryBiPrime => {
+                let bi = apply_named(arena, LibFn::AiryBi, &[f]);
                 arena.mul(&[f, bi])
             }
-            FN_ELLIPTIC_K => {
+            LibFn::EllipticK => {
                 // (E − (1−m)K) / (2m(1−m))
-                let k = apply_named(arena, FN_ELLIPTIC_K, &[f]);
-                let e = apply_named(arena, FN_ELLIPTIC_E, &[f]);
+                let k = apply_named(arena, LibFn::EllipticK, &[f]);
+                let e = apply_named(arena, LibFn::EllipticE, &[f]);
                 let one_minus_m = arena.sub(arena.one, f);
                 let t = arena.mul(&[one_minus_m, k]);
                 let numer = arena.sub(e, t);
@@ -1118,10 +1171,10 @@ fn diff_special_09(
                 let denom = arena.mul(&[two, f, one_minus_m]);
                 arena.div(numer, denom)
             }
-            FN_ELLIPTIC_E => {
+            LibFn::EllipticE => {
                 // (E − K) / (2m)
-                let k = apply_named(arena, FN_ELLIPTIC_K, &[f]);
-                let e = apply_named(arena, FN_ELLIPTIC_E, &[f]);
+                let k = apply_named(arena, LibFn::EllipticK, &[f]);
+                let e = apply_named(arena, LibFn::EllipticE, &[f]);
                 let numer = arena.sub(e, k);
                 let two = arena.int(2);
                 let denom = arena.mul(&[two, f]);
@@ -1133,9 +1186,19 @@ fn diff_special_09(
 
     match (name, args.len()) {
         (
-            FN_ERFI | FN_ERFINV | FN_ERFCINV | FN_SHI | FN_CHI | FN_FRESNELS | FN_FRESNELC
-            | FN_AIRYAI | FN_AIRYBI | FN_AIRYAIPRIME | FN_AIRYBIPRIME | FN_ELLIPTIC_K
-            | FN_ELLIPTIC_E,
+            LibFn::Erfi
+            | LibFn::ErfInv
+            | LibFn::ErfcInv
+            | LibFn::Shi
+            | LibFn::Chi
+            | LibFn::FresnelS
+            | LibFn::FresnelC
+            | LibFn::AiryAi
+            | LibFn::AiryBi
+            | LibFn::AiryAiPrime
+            | LibFn::AiryBiPrime
+            | LibFn::EllipticK
+            | LibFn::EllipticE,
             1,
         ) => {
             let f = args[0];
@@ -1146,7 +1209,7 @@ fn diff_special_09(
             let outer = unary_rule(arena, f)?;
             Some(arena.mul(&[outer, df]))
         }
-        (FN_DIRICHLET_ETA, 1) => {
+        (LibFn::DirichletEta, 1) => {
             let df = get_deriv(cache, args[0], arena);
             if arena.is_zero_structural(df) {
                 return Some(arena.zero);
@@ -1154,7 +1217,7 @@ fn diff_special_09(
             Some(formal(arena, args[0]))
         }
         // ── (parameter, x) functions ──
-        (FN_EXPINT | FN_LOWERGAMMA | FN_UPPERGAMMA | FN_POLYLOG, 2) => {
+        (LibFn::ExpInt | LibFn::LowerGamma | LibFn::UpperGamma | LibFn::PolyLog, 2) => {
             let (p, f) = (args[0], args[1]);
             let dp = get_deriv(cache, p, arena);
             let df = get_deriv(cache, f, arena);
@@ -1172,29 +1235,29 @@ fn diff_special_09(
             }
             let p_minus_1 = arena.sub(p, arena.one);
             let outer = match name {
-                FN_EXPINT => {
-                    let e = apply_named(arena, FN_EXPINT, &[p_minus_1, f]);
+                LibFn::ExpInt => {
+                    let e = apply_named(arena, LibFn::ExpInt, &[p_minus_1, f]);
                     arena.neg(e)
                 }
-                FN_LOWERGAMMA | FN_UPPERGAMMA => {
+                LibFn::LowerGamma | LibFn::UpperGamma => {
                     let x_pow = arena.pow(f, p_minus_1);
                     let neg_f = arena.neg(f);
                     let e = arena.exp(neg_f);
                     let v = arena.mul(&[x_pow, e]);
-                    if name == FN_LOWERGAMMA {
+                    if name == LibFn::LowerGamma {
                         v
                     } else {
                         arena.neg(v)
                     }
                 }
                 _ => {
-                    let li = apply_named(arena, FN_POLYLOG, &[p_minus_1, f]);
+                    let li = apply_named(arena, LibFn::PolyLog, &[p_minus_1, f]);
                     arena.div(li, f)
                 }
             };
             Some(arena.mul(&[outer, df]))
         }
-        (FN_ELLIPTIC_F, 2) => {
+        (LibFn::EllipticF, 2) => {
             let (phi, m) = (args[0], args[1]);
             let dphi = get_deriv(cache, phi, arena);
             let dm = get_deriv(cache, m, arena);
@@ -1219,16 +1282,16 @@ fn diff_special_09(
                 _ => arena.add(&terms),
             })
         }
-        (FN_ELLIPTIC_PI, 2) => {
+        (LibFn::EllipticPi, 2) => {
             let (n, m) = (args[0], args[1]);
             let dn = get_deriv(cache, n, arena);
             let dm = get_deriv(cache, m, arena);
             if arena.is_zero_structural(dn) && arena.is_zero_structural(dm) {
                 return Some(arena.zero);
             }
-            let k = apply_named(arena, FN_ELLIPTIC_K, &[m]);
-            let e = apply_named(arena, FN_ELLIPTIC_E, &[m]);
-            let pi_nm = apply_named(arena, FN_ELLIPTIC_PI, &[n, m]);
+            let k = apply_named(arena, LibFn::EllipticK, &[m]);
+            let e = apply_named(arena, LibFn::EllipticE, &[m]);
+            let pi_nm = apply_named(arena, LibFn::EllipticPi, &[n, m]);
             let two = arena.int(2);
             let m_minus_n = arena.sub(m, n);
             let mut terms: SmallVec<[ExprId; 2]> = SmallVec::new();
@@ -1263,7 +1326,8 @@ fn diff_special_09(
             })
         }
         // ── Orthogonal polynomials with parameters: (n, params…, x) ──
-        (FN_GEGENBAUER | FN_ASSOC_LEGENDRE | FN_ASSOC_LAGUERRE, 3) | (FN_JACOBI, 4) => {
+        (LibFn::Gegenbauer | LibFn::AssocLegendre | LibFn::AssocLaguerre, 3)
+        | (LibFn::Jacobi, 4) => {
             let x = args[args.len() - 1];
             let params = &args[..args.len() - 1];
             for &p in params {
@@ -1287,29 +1351,29 @@ fn diff_special_09(
             let n = params[0];
             let n_minus_1 = arena.sub(n, arena.one);
             let outer = match name {
-                FN_GEGENBAUER => {
+                LibFn::Gegenbauer => {
                     // 2a C_{n−1}^{(a+1)}
                     let a = params[1];
                     let a_plus_1 = arena.add(&[a, arena.one]);
-                    let c = apply_named(arena, FN_GEGENBAUER, &[n_minus_1, a_plus_1, x]);
+                    let c = apply_named(arena, LibFn::Gegenbauer, &[n_minus_1, a_plus_1, x]);
                     let two = arena.int(2);
                     arena.mul(&[two, a, c])
                 }
-                FN_JACOBI => {
+                LibFn::Jacobi => {
                     // (n + a + b + 1)/2 · P_{n−1}^{(a+1, b+1)}
                     let (a, b) = (params[1], params[2]);
                     let a_plus_1 = arena.add(&[a, arena.one]);
                     let b_plus_1 = arena.add(&[b, arena.one]);
-                    let p = apply_named(arena, FN_JACOBI, &[n_minus_1, a_plus_1, b_plus_1, x]);
+                    let p = apply_named(arena, LibFn::Jacobi, &[n_minus_1, a_plus_1, b_plus_1, x]);
                     let s = arena.add(&[n, a, b, arena.one]);
                     let half = arena.rational(1, 2);
                     arena.mul(&[half, s, p])
                 }
-                FN_ASSOC_LEGENDRE => {
+                LibFn::AssocLegendre => {
                     // (n x P_n^m − (n+m) P_{n−1}^m) / (x² − 1)
                     let m = params[1];
-                    let pn = apply_named(arena, FN_ASSOC_LEGENDRE, &[n, m, x]);
-                    let pn1 = apply_named(arena, FN_ASSOC_LEGENDRE, &[n_minus_1, m, x]);
+                    let pn = apply_named(arena, LibFn::AssocLegendre, &[n, m, x]);
+                    let pn1 = apply_named(arena, LibFn::AssocLegendre, &[n_minus_1, m, x]);
                     let t1 = arena.mul(&[n, x, pn]);
                     let n_plus_m = arena.add(&[n, m]);
                     let t2 = arena.mul(&[n_plus_m, pn1]);
@@ -1323,14 +1387,14 @@ fn diff_special_09(
                     // −L_{n−1}^{(a+1)}
                     let a = params[1];
                     let a_plus_1 = arena.add(&[a, arena.one]);
-                    let l = apply_named(arena, FN_ASSOC_LAGUERRE, &[n_minus_1, a_plus_1, x]);
+                    let l = apply_named(arena, LibFn::AssocLaguerre, &[n_minus_1, a_plus_1, x]);
                     arena.neg(l)
                 }
             };
             Some(arena.mul(&[outer, dx]))
         }
         // ── Incomplete beta: (a, b, x1, x2) ──
-        (FN_BETAINC | FN_BETAINC_REGULARIZED, 4) => {
+        (LibFn::BetaInc | LibFn::BetaIncRegularized, 4) => {
             let (a, b, x1, x2) = (args[0], args[1], args[2], args[3]);
             let dx1 = get_deriv(cache, x1, arena);
             let dx2 = get_deriv(cache, x2, arena);
@@ -1350,7 +1414,7 @@ fn diff_special_09(
                 let p1 = arena.pow(t, a_minus_1);
                 let p2 = arena.pow(one_minus_t, b_minus_1);
                 let v = arena.mul(&[p1, p2]);
-                if name == FN_BETAINC_REGULARIZED {
+                if name == LibFn::BetaIncRegularized {
                     let beta = arena.beta(a, b);
                     arena.div(v, beta)
                 } else {

@@ -14,9 +14,10 @@
 //!
 //! The emitter walks the expression with an explicit stack (no recursion).
 
-use super::{CodegenOptions, Precision};
+use super::{CodegenOptions, Precision, RtLowering, rt_lowering};
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
+use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode};
 use num_traits::ToPrimitive;
 use rustc_hash::FxHashMap;
@@ -604,10 +605,15 @@ impl<'a> CEmitter<'a> {
                 self.schedule(id, Plan::AndOr("||", kids.len()), &kids);
             }
             ExprNode::Not(x) => self.schedule(id, Plan::Not, &[(x, Kind::Bool)]),
-            ExprNode::Apply(sid, apply_args) => {
-                let fname = arena.symbol_name(sid).to_string();
-                self.visit_apply(id, &fname, &apply_args)?;
-            }
+            ExprNode::Apply(sid, apply_args) => match arena.lib_fn(sid) {
+                Some(f) => self.visit_apply(id, f, &apply_args)?,
+                None => {
+                    return Err(SymplexError::NotImplemented(format!(
+                        "cannot generate C code for user-defined Apply node `{}`",
+                        arena.symbol_name(sid)
+                    )));
+                }
+            },
             ExprNode::Derivative(_, _) => return Err(self.unsupported("Derivative")),
             ExprNode::Integral(_, _) => return Err(self.unsupported("Integral")),
             ExprNode::DefiniteIntegral(_, _, _, _) => {
@@ -639,13 +645,10 @@ impl<'a> CEmitter<'a> {
         Ok(())
     }
 
-    fn visit_apply(
-        &mut self,
-        id: ExprId,
-        fname: &str,
-        args: &[ExprId],
-    ) -> Result<(), SymplexError> {
-        use crate::base::arena as names;
+    /// Library functions through the C helper library, which mirrors the
+    /// shared Rust runtime helper for helper (see [`rt_lowering`]).
+    fn visit_apply(&mut self, id: ExprId, f: LibFn, args: &[ExprId]) -> Result<(), SymplexError> {
+        let fname = f.name();
         let v = Kind::Value;
         let arity_err = |n: usize| {
             SymplexError::NotImplemented(format!(
@@ -653,55 +656,29 @@ impl<'a> CEmitter<'a> {
                 args.len()
             ))
         };
-        let ordered = match fname {
-            n if n == names::FN_BESSELJ => Some("bessel_j"),
-            n if n == names::FN_BESSELY => Some("bessel_y"),
-            n if n == names::FN_BESSELI => Some("bessel_i"),
-            n if n == names::FN_BESSELK => Some("bessel_k"),
-            n if n == names::FN_LEGENDRE => Some("legendre_p"),
-            n if n == names::FN_CHEBYSHEV_T => Some("chebyshev_t"),
-            n if n == names::FN_CHEBYSHEV_U => Some("chebyshev_u"),
-            n if n == names::FN_HERMITE => Some("hermite_h"),
-            n if n == names::FN_LAGUERRE => Some("laguerre_l"),
-            _ => None,
-        };
-        if let Some(helper) = ordered {
-            if args.len() != 2 {
-                return Err(arity_err(2));
+        match rt_lowering(f) {
+            RtLowering::Ordered(helper) => {
+                let [order, x] = args else {
+                    return Err(arity_err(2));
+                };
+                let order = const_order(self.arena, *order, fname)?;
+                self.schedule(id, Plan::RtOrdered(helper, order), &[(*x, v)]);
             }
-            let order = const_order(self.arena, args[0], fname)?;
-            self.schedule(id, Plan::RtOrdered(helper, order), &[(args[1], v)]);
-            return Ok(());
-        }
-        let unary = match fname {
-            n if n == names::FN_FIBONACCI => Some("fibonacci"),
-            n if n == names::FN_LUCAS => Some("lucas"),
-            n if n == names::FN_HARMONIC => Some("harmonic"),
-            n if n == names::FN_FACTORIAL2 => Some("factorial2"),
-            _ => None,
-        };
-        if let Some(helper) = unary {
-            if args.len() != 1 {
-                return Err(arity_err(1));
+            RtLowering::Unary(helper) => {
+                let [x] = args else {
+                    return Err(arity_err(1));
+                };
+                self.schedule(id, Plan::RtUnary(helper), &[(*x, v)]);
             }
-            self.schedule(id, Plan::RtUnary(helper), &[(args[0], v)]);
-            return Ok(());
-        }
-        let binary = match fname {
-            n if n == names::FN_RISING_FACTORIAL => Some("rising_factorial"),
-            n if n == names::FN_FALLING_FACTORIAL => Some("falling_factorial"),
-            _ => None,
-        };
-        if let Some(helper) = binary {
-            if args.len() != 2 {
-                return Err(arity_err(2));
+            RtLowering::Binary(helper) => {
+                let [a, b] = args else {
+                    return Err(arity_err(2));
+                };
+                self.schedule(id, Plan::RtBinary(helper), &[(*a, v), (*b, v)]);
             }
-            self.schedule(id, Plan::RtBinary(helper), &[(args[0], v), (args[1], v)]);
-            return Ok(());
+            RtLowering::Unsupported => return Err(self.unsupported(fname)),
         }
-        Err(SymplexError::NotImplemented(format!(
-            "cannot generate C code for user-defined Apply node `{fname}`"
-        )))
+        Ok(())
     }
 
     /// Domain precondition (C boolean expression) for a `<math.h>` function.
@@ -1203,6 +1180,100 @@ static inline double symplex_lambert_w0(double x) {
         if (fabs(dw) <= 2.0 * 2.220446049250313e-16 * (fabs(w) + 1e-300)) break;
     }
     return w;
+}
+"#,
+    },
+    CHelper {
+        name: "erfinv_core",
+        deps: &[],
+        src: r#"
+/* Inverse error functions, mirroring numeric_rt::{erfinv, erfcinv}:
+   an 8-term Maclaurin start polished by Halley on erf(z) - x for |x| <= 1/2,
+   Winitzki's approximation refined by Halley on erfc(z) - y in the tail, and
+   Newton on ln erfc(z) through the scaled erfcx for y < 1.5e-8. */
+static inline double symplex_erfcx_large(double x) {
+    static const double p[6] = { 3.05326634961232344e-1, 3.60344899949804439e-1, 1.25781726111229246e-1,
+        1.60837851487422766e-2, 6.58749161529837803e-4, 1.63153871373020978e-2 };
+    static const double q[5] = { 2.56852019228982242e00, 1.87295284992346725e00, 5.27905102951428412e-1,
+        6.05183413124413191e-2, 2.33520497626869185e-3 };
+    double ysq = 1.0 / (x * x);
+    double xnum = p[5] * ysq, xden = ysq;
+    for (int i = 0; i < 4; i++) { xnum = (xnum + p[i]) * ysq; xden = (xden + q[i]) * ysq; }
+    double result = ysq * (xnum + p[4]) / (xden + q[4]);
+    return (0.56418958354775628695 - result) / x;
+}
+static inline double symplex_erfinv_central(double x) {
+    static const double c[8] = { 1.0, 0.33333333333333333333, 0.23333333333333333333, 0.20158730158730158730,
+        0.19263668430335097002, 0.19532547699214365881, 0.20593586454697565891, 0.22320975741875211778 };
+    const double half_sqrt_pi = 0.88622692545275801365;
+    double w = half_sqrt_pi * x, w2 = w * w;
+    double p = c[7];
+    for (int i = 6; i >= 0; i--) p = c[i] + p * w2;
+    double z = w * p;
+    for (int iter = 0; iter < 8; iter++) {
+        double f = erf(z) - x;
+        double d = f * half_sqrt_pi * exp(z * z);
+        double dz = d / (1.0 + z * d);
+        z -= dz;
+        if (fabs(dz) <= 2.0 * 2.220446049250313e-16 * fabs(z)) break;
+    }
+    return z;
+}
+static inline double symplex_erfcinv_tail(double y) {
+    const double half_sqrt_pi = 0.88622692545275801365;
+    double l = log(y) + log(2.0 - y);
+    double t = 2.0 / (3.141592653589793 * 0.147) + 0.5 * l;
+    double z = sqrt(sqrt(t * t - l / 0.147) - t);
+    if (y > 1.5e-8) {
+        for (int iter = 0; iter < 12; iter++) {
+            double f = erfc(z) - y;
+            double d = -f * half_sqrt_pi * exp(z * z);
+            double dz = d / (1.0 + z * d);
+            z -= dz;
+            if (fabs(dz) <= 2.0 * 2.220446049250313e-16 * fabs(z)) break;
+        }
+    } else {
+        double ln_y = log(y);
+        for (int iter = 0; iter < 12; iter++) {
+            double ex = symplex_erfcx_large(z);
+            double g = log(ex) - z * z - ln_y;
+            double dz = -g * ex * half_sqrt_pi;
+            z -= dz;
+            if (fabs(dz) <= 4.0 * 2.220446049250313e-16 * fabs(z)) break;
+        }
+    }
+    return z;
+}
+"#,
+    },
+    CHelper {
+        name: "erfinv",
+        deps: &["erfinv_core"],
+        src: r#"
+/* Inverse error function: erf(erfinv(x)) = x for -1 < x < 1; +-1 -> +-inf, |x| > 1 -> NaN. */
+static inline double symplex_erfinv(double x) {
+    if (isnan(x) || x < -1.0 || x > 1.0) return NAN;
+    if (x == 1.0) return INFINITY;
+    if (x == -1.0) return -INFINITY;
+    double a = fabs(x);
+    if (a <= 0.5) return symplex_erfinv_central(x);
+    double z = symplex_erfcinv_tail(1.0 - a);
+    return x < 0.0 ? -z : z;
+}
+"#,
+    },
+    CHelper {
+        name: "erfcinv",
+        deps: &["erfinv_core"],
+        src: r#"
+/* Inverse complementary error function: erfc(erfcinv(y)) = y for 0 < y < 2; 0 -> inf, 2 -> -inf. */
+static inline double symplex_erfcinv(double y) {
+    if (isnan(y) || y < 0.0 || y > 2.0) return NAN;
+    if (y == 0.0) return INFINITY;
+    if (y == 2.0) return -INFINITY;
+    if (y > 1.5) return -symplex_erfcinv_tail(2.0 - y);
+    if (y >= 0.5) return symplex_erfinv_central(1.0 - y);
+    return symplex_erfcinv_tail(y);
 }
 "#,
     },
@@ -1829,5 +1900,37 @@ mod tests {
         }
         assert_eq!(rt.matches('{').count(), rt.matches('}').count());
         assert_eq!(rt.matches('(').count(), rt.matches(')').count());
+    }
+
+    /// Every runtime helper the shared lowering table names has a C
+    /// implementation (and every dependency it declares exists).
+    #[test]
+    fn every_lowered_library_function_has_a_c_helper() {
+        let names: BTreeSet<&str> = C_HELPERS.iter().map(|h| h.name).collect();
+        for h in C_HELPERS {
+            for d in h.deps {
+                assert!(names.contains(d), "{}: missing dependency {d}", h.name);
+            }
+        }
+        for &f in LibFn::ALL {
+            let helper = match rt_lowering(f) {
+                RtLowering::Ordered(h) | RtLowering::Unary(h) | RtLowering::Binary(h) => h,
+                RtLowering::Unsupported => continue,
+            };
+            assert!(names.contains(helper), "{f}: no C helper `{helper}`");
+        }
+    }
+
+    #[test]
+    fn erfinv_and_erfcinv_lower_to_helpers() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let e = a.lib_apply(LibFn::ErfInv, &[x]);
+        let code = gen_c(&mut a, e, &["x"]);
+        assert!(code.contains("return symplex_erfinv(x);"), "{code}");
+        assert!(code.contains("symplex_erfinv_central(double x)"), "{code}");
+        let e = a.lib_apply(LibFn::ErfcInv, &[x]);
+        let code = gen_c(&mut a, e, &["x"]);
+        assert!(code.contains("return symplex_erfcinv(x);"), "{code}");
     }
 }

@@ -55,6 +55,7 @@ use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
+use crate::domains::optimize::{RootOpts, bisect};
 
 use super::common::{
     check_confidence, check_sample, ex_usize, invalid, q_to_f64, qu, standard_normal, t_two_sided,
@@ -1054,10 +1055,18 @@ pub enum IntervalMethod {
     Wald,
 }
 
-/// `P(X ≥ k)` (`upper`) or `P(X ≤ k)` for `X ~ Binomial(n, p)`, `0 < p < 1`,
-/// each summed directly from log-binomial coefficients (never as `1 −` the
-/// other tail, which would lose a small tail to cancellation).
+/// `P(X ≥ k)` (`upper`) or `P(X ≤ k)` for `X ~ Binomial(n, p)`, each
+/// summed directly from log-binomial coefficients (never as `1 −` the
+/// other tail, which would lose a small tail to cancellation).  At `p = 0`
+/// and `p = 1` the mass sits entirely on `0` or `n`.
 fn binomial_tail(n: usize, k: usize, p: f64, upper: bool) -> f64 {
+    let indicator = |c: bool| if c { 1.0 } else { 0.0 };
+    if p <= 0.0 {
+        return if upper { indicator(k == 0) } else { 1.0 };
+    }
+    if p >= 1.0 {
+        return if upper { 1.0 } else { indicator(k == n) };
+    }
     let (lp, lq) = (p.ln(), (1.0 - p).ln());
     let mut log_c = 0.0; // ln C(n, i), built up from i = 0
     let mut tail = 0.0;
@@ -1072,22 +1081,15 @@ fn binomial_tail(n: usize, k: usize, p: f64, upper: bool) -> f64 {
     tail.min(1.0)
 }
 
-/// The `p ∈ (0, 1)` with `f(p) = 0` for a monotone `f`, by bisection.
-fn bisect_unit(f: impl Fn(f64) -> f64, increasing: bool) -> f64 {
-    let (mut lo, mut hi) = (0.0f64, 1.0f64);
-    for _ in 0..200 {
-        let mid = 0.5 * (lo + hi);
-        if mid <= lo || mid >= hi {
-            break;
-        }
-        let v = f(mid);
-        if (v < 0.0) == increasing {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    0.5 * (lo + hi)
+/// The `p ∈ [0, 1]` with `f(p) = 0` for a monotone `f` with a sign change
+/// over `[0, 1]`, by bisection to the last bits.
+fn bisect_unit(op: &'static str, f: impl Fn(f64) -> f64) -> Result<f64, SymplexError> {
+    let tight = RootOpts {
+        xtol: 0.0,
+        max_iter: 200,
+        ..RootOpts::default()
+    };
+    bisect(f, 0.0, 1.0, &tight).map_err(|e| SymplexError::computation_failed(op, e.to_string()))
 }
 
 fn check_trials(op: &'static str, successes: usize, trials: usize) -> Result<(), SymplexError> {
@@ -1158,14 +1160,14 @@ pub fn proportion_interval(
         let lo = if successes == 0 {
             0.0
         } else {
-            // P(X ≥ k) grows with p.
-            bisect_unit(|p| binomial_tail(trials, successes, p, true) - half, true)
+            // P(X ≥ k) grows with p, from 0 to 1.
+            bisect_unit(OP, |p| binomial_tail(trials, successes, p, true) - half)?
         };
         let hi = if successes == trials {
             1.0
         } else {
-            // P(X ≤ k) falls with p.
-            bisect_unit(|p| binomial_tail(trials, successes, p, false) - half, false)
+            // P(X ≤ k) falls with p, from 1 to 0.
+            bisect_unit(OP, |p| binomial_tail(trials, successes, p, false) - half)?
         };
         return Ok(Interval::closed(lo, hi));
     }

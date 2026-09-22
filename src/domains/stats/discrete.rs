@@ -22,7 +22,7 @@ use crate::base::numeric::Q;
 use crate::domains::combinatorics::stirling2;
 
 use super::continuous::sampler_positive;
-use super::family::{Distribution, Family, Sampler, same_family};
+use super::family::{Distribution, Family, Sampler, family_boilerplate};
 use super::sample::{self, Rng};
 use super::support::Support;
 
@@ -148,23 +148,6 @@ fn moment_from_mgf(mgf: impl Fn(&Ex) -> Option<Ex>, n: u32, ctx: &Context) -> Op
     (!at_zero.has_unevaluated() && !at_zero.contains(&t)).then_some(at_zero)
 }
 
-macro_rules! family_boilerplate {
-    ($ty:ident, $name:literal, [$first:ident $(, $field:ident)*]) => {
-        fn name(&self) -> &str {
-            $name
-        }
-        fn context(&self) -> Context {
-            self.$first.context()
-        }
-        fn parameters(&self) -> Vec<(&'static str, Ex)> {
-            vec![(stringify!($first), self.$first.clone()) $(, (stringify!($field), self.$field.clone()))*]
-        }
-        fn eq_family(&self, other: &dyn Family) -> bool {
-            same_family(self, other)
-        }
-    };
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Finite tables
 // ═══════════════════════════════════════════════════════════════════════════
@@ -196,9 +179,7 @@ impl Finite {
 }
 
 impl Family for Finite {
-    fn name(&self) -> &str {
-        "Finite"
-    }
+    family_boilerplate!(Finite, "Finite");
 
     fn context(&self) -> Context {
         self.ctx.clone()
@@ -209,10 +190,6 @@ impl Family for Finite {
             .iter()
             .flat_map(|(v, p)| [("value", v.clone()), ("probability", p.clone())])
             .collect()
-    }
-
-    fn eq_family(&self, other: &dyn Family) -> bool {
-        same_family(self, other)
     }
 
     fn support(&self) -> Support {

@@ -199,11 +199,9 @@ fn erfinv_rust_codegen_uses_the_shared_runtime() {
     // erfcinv likewise.
     let code = p.erfcinv().to_rust_fn("f", &["p"]).unwrap();
     assert!(code.contains("symplex_rt::erfcinv("), "{code}");
-    // The C backend has no hand-written helper for the inverses (yet).
-    assert!(matches!(
-        p.erfinv().to_c_fn("f", &["p"]),
-        Err(SymplexError::NotImplemented(_))
-    ));
+    // The C backend mirrors the runtime with `symplex_erfinv` (0.21).
+    let code = p.erfinv().to_c_fn("f", &["p"]).unwrap();
+    assert!(code.contains("symplex_erfinv("), "{code}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

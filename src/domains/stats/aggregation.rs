@@ -762,25 +762,20 @@ pub fn wins_matrix(
     Ok(w)
 }
 
-/// Every player reachable from every other along "beat" edges.
+/// Every player reachable from every other along "beat" edges: the beat
+/// graph has a single strongly connected component.
 fn strongly_connected(wins: &[Vec<usize>]) -> bool {
-    let n = wins.len();
-    let reach = |forward: bool| -> bool {
-        let mut seen = vec![false; n];
-        let mut stack = vec![0usize];
-        seen[0] = true;
-        while let Some(i) = stack.pop() {
-            for j in 0..n {
-                let edge = if forward { wins[i][j] } else { wins[j][i] };
-                if edge > 0 && !seen[j] {
-                    seen[j] = true;
-                    stack.push(j);
-                }
-            }
-        }
-        seen.iter().all(|&s| s)
-    };
-    reach(true) && reach(false)
+    let adj: Vec<Vec<usize>> = wins
+        .iter()
+        .map(|row| {
+            row.iter()
+                .enumerate()
+                .filter(|&(_, &w)| w > 0)
+                .map(|(j, _)| j)
+                .collect()
+        })
+        .collect();
+    crate::base::graph::strongly_connected_components(&adj).len() == 1
 }
 
 /// Maximum-likelihood Bradley–Terry strengths from a wins matrix

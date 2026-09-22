@@ -12,7 +12,7 @@ use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 use crate::base::interval::{Interval, IntervalKind};
 
-use super::family::{Distribution, Family, Sampler, same_family};
+use super::family::{Distribution, Family, Sampler, family_boilerplate};
 use super::sample::Rng;
 use super::support::{Kind, Piece, Support, is_neg_inf, is_pos_inf};
 
@@ -51,35 +51,10 @@ impl Truncated {
             .intersect(&self.region)
             .unwrap_or_else(|| self.inner.support())
     }
-
-    /// `P_inner(X < lo)` for the clipped support's lower end `lo`, through
-    /// the inner closed form: `0` at `−∞` and at the inner support's own
-    /// lower end (where the closed form need not fold — `Φ(ln 0)`), else
-    /// `F(lo)` for a density and `F(lo − 1)` on the integer lattice (the
-    /// atom at `lo` belongs to the truncated variable).
-    fn mass_below(&self, lo: &Ex) -> Option<Ex> {
-        let ctx = self.context();
-        if is_neg_inf(lo) {
-            return Some(ctx.zero());
-        }
-        let inner_support = self.inner.support();
-        if let Some(s) = inner_support.as_interval()
-            && !is_neg_inf(&s.lower)
-            && (lo - &s.lower).is_zero() == Some(true)
-        {
-            return Some(ctx.zero());
-        }
-        match self.inner.kind() {
-            Kind::Continuous => self.inner.family().cdf(lo),
-            Kind::Discrete => self.inner.family().cdf(&(lo - ctx.one())),
-        }
-    }
 }
 
 impl Family for Truncated {
-    fn name(&self) -> &str {
-        "Truncated"
-    }
+    family_boilerplate!(Truncated, "Truncated");
 
     fn context(&self) -> Context {
         self.inner.context()
@@ -91,10 +66,6 @@ impl Family for Truncated {
         p
     }
 
-    fn eq_family(&self, other: &dyn Family) -> bool {
-        same_family(self, other)
-    }
-
     fn support(&self) -> Support {
         self.clipped()
     }
@@ -103,13 +74,15 @@ impl Family for Truncated {
         self.inner.density(x) / &self.mass
     }
 
-    // (F(x) − F(lo⁻)) / mass on a single interval [lo, hi].
+    // (F(x) − F(lo⁻)) / mass on a single interval [lo, hi]; F(lo⁻) is the
+    // inner `mass_below` (0 at the inner support's own end, F(lo − 1) on
+    // the lattice: the atom at `lo` belongs to the truncated variable).
     fn cdf(&self, x: &Ex) -> Option<Ex> {
         let clipped = self.clipped();
         let lo = &clipped.as_interval()?.lower;
         let probe = self.inner.fresh_var("t", &[x]);
         self.inner.family().cdf(&probe)?;
-        let f_lo = self.mass_below(lo)?;
+        let f_lo = self.inner.mass_below(lo)?;
         let f_x = self.inner.family().cdf(x)?;
         Some(((f_x - f_lo) / &self.mass).simplify())
     }
@@ -118,7 +91,7 @@ impl Family for Truncated {
     fn quantile(&self, p: &Ex) -> Option<Ex> {
         let clipped = self.clipped();
         let lo = &clipped.as_interval()?.lower;
-        let f_lo = self.mass_below(lo)?;
+        let f_lo = self.inner.mass_below(lo)?;
         self.inner.family().quantile(&(f_lo + p * &self.mass))
     }
 
@@ -280,9 +253,7 @@ impl Affine {
 }
 
 impl Family for Affine {
-    fn name(&self) -> &str {
-        "Affine"
-    }
+    family_boilerplate!(Affine, "Affine");
 
     fn context(&self) -> Context {
         self.inner.context()
@@ -292,10 +263,6 @@ impl Family for Affine {
         let mut p = vec![("a", self.a.clone()), ("b", self.b.clone())];
         p.extend(self.inner.parameters());
         p
-    }
-
-    fn eq_family(&self, other: &dyn Family) -> bool {
-        same_family(self, other)
     }
 
     fn support(&self) -> Support {
@@ -463,9 +430,7 @@ impl Transformed {
 }
 
 impl Family for Transformed {
-    fn name(&self) -> &str {
-        "Transformed"
-    }
+    family_boilerplate!(Transformed, "Transformed");
 
     fn context(&self) -> Context {
         self.inner.context()
@@ -475,10 +440,6 @@ impl Family for Transformed {
         let mut p = vec![("map", self.map.clone())];
         p.extend(self.inner.parameters());
         p
-    }
-
-    fn eq_family(&self, other: &dyn Family) -> bool {
-        same_family(self, other)
     }
 
     fn support(&self) -> Support {
@@ -555,9 +516,7 @@ impl Mixture {
 }
 
 impl Family for Mixture {
-    fn name(&self) -> &str {
-        "Mixture"
-    }
+    family_boilerplate!(Mixture, "Mixture");
 
     fn context(&self) -> Context {
         self.ctx()
@@ -572,10 +531,6 @@ impl Family for Mixture {
                 p
             })
             .collect()
-    }
-
-    fn eq_family(&self, other: &dyn Family) -> bool {
-        same_family(self, other)
     }
 
     // The union of the components' supports, as given (they may overlap;

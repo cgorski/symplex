@@ -730,64 +730,12 @@ fn try_log_to_real_numeric(
     Some(terms)
 }
 
-/// Evaluate a symbolic expression to a complex `(re, im)` pair via `evalf`.
+/// Evaluate a symbolic expression to a complex `(re, im)` pair at `f64`
+/// precision (16 digits, rounded straight from the arbitrary-precision
+/// value).
 fn eval_complex_f64(arena: &Arena, expr: ExprId) -> Option<(f64, f64)> {
-    let s = crate::transforms::evalf::evalf(arena, expr, 16).ok()?;
-    parse_evalf_complex(&s)
-}
-
-/// Parse the string output of `evalf` into `(re, im)` components.
-///
-/// Handles formats: `"1.23"`, `"4.56*i"`, `"i"`, `"-i"`,
-/// `"1.23 + 4.56*i"`, `"1.23 - 4.56*i"`, `"1.23 + i"`, `"1.23 - i"`.
-fn parse_evalf_complex(s: &str) -> Option<(f64, f64)> {
-    let s = s.trim();
-    if s == "0" {
-        return Some((0.0, 0.0));
-    }
-
-    // Pure real — no imaginary marker at all.
-    if !s.contains('i') {
-        return Some((s.parse::<f64>().ok()?, 0.0));
-    }
-
-    // Both parts present: look for " + " or " - " separating re and im.
-    if let Some(pos) = s.rfind(" + ") {
-        let tail = &s[pos + 3..];
-        if tail.contains('i') {
-            let re = s[..pos].parse::<f64>().ok()?;
-            let im_str = tail.trim_end_matches("*i").trim_end_matches('i');
-            let im = if im_str.is_empty() {
-                1.0
-            } else {
-                im_str.parse::<f64>().ok()?
-            };
-            return Some((re, im));
-        }
-    }
-    if let Some(pos) = s.rfind(" - ") {
-        let tail = &s[pos + 3..];
-        if tail.contains('i') {
-            let re = s[..pos].parse::<f64>().ok()?;
-            let im_str = tail.trim_end_matches("*i").trim_end_matches('i');
-            let im = if im_str.is_empty() {
-                1.0
-            } else {
-                im_str.parse::<f64>().ok()?
-            };
-            return Some((re, -im));
-        }
-    }
-
-    // Pure imaginary: "i", "-i", "3.5*i", "-3.5*i".
-    let im_str = s.trim_end_matches("*i").trim_end_matches('i');
-    if im_str.is_empty() {
-        return Some((0.0, 1.0));
-    }
-    if im_str == "-" {
-        return Some((0.0, -1.0));
-    }
-    Some((0.0, im_str.parse::<f64>().ok()?))
+    let z = crate::transforms::evalf::evalf_complex64(arena, expr).ok()?;
+    Some((z.re, z.im))
 }
 
 /// Evaluate a [`Poly`] at a complex point `z = (re, im)` using Horner's

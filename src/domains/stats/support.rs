@@ -266,6 +266,17 @@ impl Support {
         self.pieces.is_empty()
     }
 
+    /// The mass of `f` in `var` between `lo` and `hi`, read by this
+    /// support's kind: `∫_lo^hi f dvar` for a density, `Σ_{var=lo}^{hi} f`
+    /// for a mass function on the integer lattice.  The one place the kind
+    /// decides between integration and summation.
+    pub(crate) fn accumulate(&self, f: &Ex, var: &Ex, lo: &Ex, hi: &Ex) -> Ex {
+        match self.kind {
+            Kind::Continuous => f.integrate_definite(var, lo, hi),
+            Kind::Discrete => f.summation(var, lo, hi),
+        }
+    }
+
     /// `true` when the support is a single interval (no points).
     pub fn is_interval(&self) -> bool {
         matches!(self.pieces.as_slice(), [Piece::Interval(_)])

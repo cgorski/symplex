@@ -270,6 +270,8 @@ fn generated_c_compiles_and_matches_compile() {
             &(&x.gamma() + &x.log_gamma()) + &x.digamma(),
         ),
         ("erf_family", &(&x.erf() * &y.erfc()) + &(&x + 1).lambertw()),
+        // erfinv on (0, 1), erfcinv on (0, 2) at every probe point.
+        ("erf_inverses", &(&x / 10).erfinv() + &(&y / 10).erfcinv()),
         (
             "beta_binomial",
             &x.beta(&y) + &(&y.binomial(&ctx.int(2)) / &y.factorial()),

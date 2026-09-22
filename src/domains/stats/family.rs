@@ -138,11 +138,63 @@ pub trait Family: Any + Send + Sync + fmt::Debug {
 
 /// The equality every family's [`Family::eq_family`] delegates to: the
 /// other family is the same concrete type and compares equal.
+///
+/// It cannot be the trait's default: a provided `eq_family` would need
+/// `Self: PartialEq`, which is only expressible with `where Self: Sized`,
+/// and that takes the method out of the vtable that `Distribution`'s
+/// `PartialEq` dispatches through.  The crate-private `family_boilerplate!`
+/// macro writes the delegation instead.
 pub fn same_family<T: Family + PartialEq>(a: &T, other: &dyn Family) -> bool {
     (other as &dyn Any)
         .downcast_ref::<T>()
         .is_some_and(|b| a == b)
 }
+
+/// The items of an [`impl Family`](Family) that every family writes the
+/// same way.  The three-argument form is for a struct whose parameters are
+/// `Ex` fields: `name`, `context` (the first field's), `parameters` (the
+/// fields, in order, named as written) and `eq_family` (through
+/// [`same_family`]).  The two-argument form emits `name` and `eq_family`
+/// only, for a family whose context and parameters are not plain fields
+/// (a table, a wrapper around another distribution).  The type is named
+/// first in both forms, as the call site reads.
+///
+/// ```ignore
+/// impl Family for Normal {
+///     family_boilerplate!(Normal, "Normal", [mean, std]);
+///     // support, density, closed forms…
+/// }
+/// impl Family for Truncated {
+///     family_boilerplate!(Truncated, "Truncated");
+///     fn context(&self) -> Context { self.inner.context() }
+///     // …
+/// }
+/// ```
+macro_rules! family_boilerplate {
+    ($ty:ident, $name:literal, [$first:ident $(, $field:ident)*]) => {
+        fn name(&self) -> &str {
+            $name
+        }
+        fn context(&self) -> $crate::api::context::Context {
+            self.$first.context()
+        }
+        fn parameters(&self) -> Vec<(&'static str, $crate::api::expr::Ex)> {
+            vec![(stringify!($first), self.$first.clone()) $(, (stringify!($field), self.$field.clone()))*]
+        }
+        fn eq_family(&self, other: &dyn $crate::stats::Family) -> bool {
+            $crate::stats::same_family(self, other)
+        }
+    };
+    ($ty:ident, $name:literal) => {
+        fn name(&self) -> &str {
+            $name
+        }
+        fn eq_family(&self, other: &dyn $crate::stats::Family) -> bool {
+            $crate::stats::same_family(self, other)
+        }
+    };
+}
+pub(crate) use family_boilerplate;
 
 /// A probability distribution: a shared handle to a [`Family`] with the
 /// generic exact machinery on top.  Construct with the associated
@@ -342,7 +394,9 @@ impl Distribution {
 
     /// The closed-form CDF on the support, if the family has one, else
     /// the integral / sum of the density from the support's lower end.
-    fn cdf_on_support(&self, x: &Ex) -> Ex {
+    /// Nothing is clamped: `x` is taken to lie in the support (see
+    /// [`cdf`](Self::cdf) for the whole line).
+    pub(crate) fn cdf_on_support(&self, x: &Ex) -> Ex {
         if let Some(c) = self.0.cdf(x) {
             return c;
         }
@@ -367,9 +421,35 @@ impl Distribution {
             Some(iv) => iv.lower.clone(),
             None => ctx.neg_infinity(),
         };
+        // On the lattice `P(X ≤ x)` sums up to `⌊x⌋`.
+        let hi = match support.kind() {
+            Kind::Continuous => x.clone(),
+            Kind::Discrete => x.floor(),
+        };
+        support.accumulate(&dens, &t, &lo, &hi)
+    }
+
+    /// `P(X < lo)` through the closed-form CDF, for the lower end `lo` of
+    /// a region already clipped to the support: `0` at `−∞` and at the
+    /// support's own lower end (where the closed form need not fold —
+    /// `Φ(ln 0)` for a log-normal), else `F(lo)` for a density and
+    /// `F(lo − 1)` on the integer lattice, whose atom at `lo` belongs to
+    /// the region.  `None` when the family has no closed-form CDF.
+    pub(crate) fn mass_below(&self, lo: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        if is_neg_inf(lo) {
+            return Some(ctx.zero());
+        }
+        let support = self.support();
+        if let Some(s) = support.as_interval()
+            && !is_neg_inf(&s.lower)
+            && (lo - &s.lower).is_zero() == Some(true)
+        {
+            return Some(ctx.zero());
+        }
         match support.kind() {
-            Kind::Continuous => dens.integrate_definite(&t, &lo, x),
-            Kind::Discrete => dens.summation(&t, &lo, &x.floor()),
+            Kind::Continuous => self.0.cdf(lo),
+            Kind::Discrete => self.0.cdf(&(lo - ctx.one())),
         }
     }
 
@@ -804,44 +884,29 @@ impl Distribution {
         if support.kind() == Kind::Continuous && (hi - lo).is_zero() == Some(true) {
             return ctx.zero();
         }
-        let (slo, shi) = match support.as_interval() {
-            Some(s) => (Some(&s.lower), Some(&s.upper)),
-            None => (None, None),
-        };
-        // F at the support's own lower end is 0 and at its upper end 1 by
-        // definition (the closed forms need not fold there: Φ(ln 0)…).
-        let at_lower_end = is_neg_inf(lo) || slo.is_some_and(|s| (lo - s).is_zero() == Some(true));
-        let at_upper_end = is_pos_inf(hi) || shi.is_some_and(|s| (hi - s).is_zero() == Some(true));
+        // F at the support's own upper end is 1 by definition (the closed
+        // form need not fold there); `mass_below` does the same at the
+        // lower end.
+        let at_upper_end = is_pos_inf(hi)
+            || support
+                .as_interval()
+                .is_some_and(|s| (hi - &s.upper).is_zero() == Some(true));
         let probe = self.fresh_var("t", &[lo, hi]);
         if self.0.cdf(&probe).is_some() {
+            // `hi` is an integer after lattice normalisation, so on either
+            // kind the upper term is `P(X ≤ hi) = F(hi)`.
             let upper = if at_upper_end {
                 Some(ctx.one())
             } else {
-                match support.kind() {
-                    Kind::Continuous => self.0.cdf(hi),
-                    // hi is an integer after lattice normalisation: P(X ≤ hi).
-                    Kind::Discrete => self.0.cdf(hi),
-                }
+                self.0.cdf(hi)
             };
-            let lower = if at_lower_end {
-                Some(ctx.zero())
-            } else {
-                match support.kind() {
-                    Kind::Continuous => self.0.cdf(lo),
-                    // P(X < lo) = F(lo − 1) on the integer lattice.
-                    Kind::Discrete => self.0.cdf(&(lo - ctx.one())),
-                }
-            };
-            if let (Some(u), Some(l)) = (upper, lower) {
+            if let (Some(u), Some(l)) = (upper, self.mass_below(lo)) {
                 return (u - l).simplify();
             }
         }
         let t = probe;
         let dens = self.0.density(&t);
-        match support.kind() {
-            Kind::Continuous => dens.integrate_definite(&t, lo, hi).simplify(),
-            Kind::Discrete => dens.summation(&t, lo, hi).simplify(),
-        }
+        support.accumulate(&dens, &t, lo, hi).simplify()
     }
 
     /// `E[g(X)·1_{X ∈ region}]` for `g` in the symbol `x`: `g·density`
@@ -874,12 +939,9 @@ impl Distribution {
     pub(crate) fn integrate_over(&self, integrand: &Ex, x: &Ex, region: &Support) -> Ex {
         let ctx = self.context();
         let integrand = integrand.simplify();
-        let over = |iv: &Interval<Ex>, f: &Ex| match region.kind() {
-            Kind::Continuous => f.integrate_definite(x, &iv.lower, &iv.upper),
-            Kind::Discrete => f.summation(x, &iv.lower, &iv.upper),
-        };
         // Integer ends for a lattice region (open ends moved inwards).
         let region = region.normalize_lattice();
+        let over = |iv: &Interval<Ex>, f: &Ex| region.accumulate(f, x, &iv.lower, &iv.upper);
         let mut acc = ctx.zero();
         for piece in region.pieces() {
             acc += match piece {

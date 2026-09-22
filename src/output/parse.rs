@@ -37,13 +37,8 @@ use smallvec::SmallVec;
 
 use crate::api::context::Context;
 use crate::api::expr::{BoolEx, Ex};
-use crate::base::arena::{
-    Arena, FN_AIRYAI, FN_AIRYAIPRIME, FN_AIRYBI, FN_AIRYBIPRIME, FN_ASSOC_LAGUERRE,
-    FN_ASSOC_LEGENDRE, FN_BETAINC, FN_BETAINC_REGULARIZED, FN_CHI, FN_DIRICHLET_ETA, FN_ELLIPTIC_E,
-    FN_ELLIPTIC_F, FN_ELLIPTIC_K, FN_ELLIPTIC_PI, FN_ERFCINV, FN_ERFI, FN_ERFINV, FN_EXPINT,
-    FN_FRESNELC, FN_FRESNELS, FN_GEGENBAUER, FN_JACOBI, FN_LOWERGAMMA, FN_POLYLOG, FN_SHI,
-    FN_UPPERGAMMA,
-};
+use crate::base::arena::Arena;
+use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 
@@ -309,8 +304,9 @@ fn is_bool_node(arena: &Arena, id: ExprId) -> bool {
 }
 
 /// Every function name the call tables (`call_1` … `call_4`, `min`/`max`,
-/// `Sum`/`Product`) accept, lower-cased.  Used by [`parse_implicit`] to tell
-/// `sin(x)` (a call) from `f(x)` (a product).
+/// `Sum`/`Product`) accept by a dedicated arm, lower-cased; the library
+/// functions ([`LibFn`]) are known by their registry names.  Used by
+/// [`parse_implicit`] to tell `sin(x)` (a call) from `f(x)` (a product).
 const KNOWN_FUNCTIONS: &[&str] = &[
     // call_1
     "sin",
@@ -371,21 +367,7 @@ const KNOWN_FUNCTIONS: &[&str] = &[
     "ei",
     "li",
     "zeta",
-    "erfi",
-    "erfinv",
-    "erfcinv",
     "e1",
-    "shi",
-    "chi",
-    "fresnels",
-    "fresnelc",
-    "dirichlet_eta",
-    "airyai",
-    "airybi",
-    "airyaiprime",
-    "airybiprime",
-    "elliptic_k",
-    "elliptic_e",
     // call_2
     "rootof",
     "conditionset",
@@ -398,30 +380,14 @@ const KNOWN_FUNCTIONS: &[&str] = &[
     "c",
     "beta",
     "b",
-    "besselj",
-    "bessely",
-    "besseli",
-    "besselk",
-    "expint",
-    "lowergamma",
-    "uppergamma",
-    "polylog",
-    "elliptic_f",
-    "elliptic_pi",
     // call_3
     "limit",
     "laplacetransform",
     "inverselaplacetransform",
     "residue",
     "dsolve",
-    "gegenbauer",
-    "assoc_legendre",
-    "assoc_laguerre",
     // call_4
     "series",
-    "jacobi",
-    "betainc",
-    "betainc_regularized",
     // variadic / binder forms
     "min",
     "max",
@@ -430,7 +396,14 @@ const KNOWN_FUNCTIONS: &[&str] = &[
 ];
 
 fn is_known_function(name_lower: &str) -> bool {
-    KNOWN_FUNCTIONS.contains(&name_lower)
+    KNOWN_FUNCTIONS.contains(&name_lower) || lib_fn_by_name(name_lower).is_some()
+}
+
+/// The library function a (lower-cased) call name denotes.  `lambertw` is
+/// excluded: the parser builds the dedicated `LambertW` node for it, as the
+/// `Arena` does.
+fn lib_fn_by_name(name_lower: &str) -> Option<LibFn> {
+    LibFn::from_name_ignore_ascii_case(name_lower).filter(|f| *f != LibFn::LambertW)
 }
 
 /// Textbook one-argument functions that [`parse_implicit`] applies without
@@ -1327,20 +1300,32 @@ impl<'a> Parser<'a> {
             "sum" | "product" => {
                 self.make_sum_product(arena, name, name_lower, arg, arg2, arg3, arg4)
             }
-            "jacobi" => Ok(apply_named(arena, FN_JACOBI, &[arg, arg2, arg3, arg4])),
-            // SymPy-style `betainc(a, b, x1, x2)` / `betainc_regularized(a, b, x1, x2)`.
-            "betainc" => Ok(apply_named(arena, FN_BETAINC, &[arg, arg2, arg3, arg4])),
-            "betainc_regularized" => Ok(apply_named(
-                arena,
-                FN_BETAINC_REGULARIZED,
-                &[arg, arg2, arg3, arg4],
-            )),
-            _ => Err(ParseError {
-                message: format!(
+            // `jacobi(n, a, b, x)`, `betainc(a, b, x1, x2)`, `betainc_regularized(a, b, x1, x2)`.
+            _ => self.lib_call(arena, name_lower, &[arg, arg2, arg3, arg4], || {
+                format!(
                     "unknown 4-argument function '{}'. Supported: Series, Sum, Product, Integral, \
                      jacobi, betainc, betainc_regularized",
                     name
-                ),
+                )
+            }),
+        }
+    }
+
+    /// A library special function by its registry name, in the arity it
+    /// declares (`besselj(n, x)`, `expint(n, x)`, `gegenbauer(n, a, x)`,
+    /// `jacobi(n, a, b, x)`, `fibonacci(n)`, …); otherwise the error the
+    /// call table would have reported.
+    fn lib_call(
+        &self,
+        arena: &mut Arena,
+        name_lower: &str,
+        args: &[ExprId],
+        unknown: impl FnOnce() -> String,
+    ) -> Result<ExprId, ParseError> {
+        match lib_fn_by_name(name_lower) {
+            Some(f) if f.arity().accepts(args.len()) => Ok(arena.lib_apply(f, args)),
+            _ => Err(ParseError {
+                message: unknown(),
                 position: self.lexer.pos,
             }),
         }
@@ -1364,17 +1349,13 @@ impl<'a> Parser<'a> {
             "residue" => Ok(arena.intern(ExprNode::Residue(arg, arg2, arg3))),
             "dsolve" => Ok(arena.intern(ExprNode::DSolve(arg, arg2, arg3))),
             // Orthogonal polynomials with a parameter: (n, param, x).
-            "gegenbauer" => Ok(apply_named(arena, FN_GEGENBAUER, &[arg, arg2, arg3])),
-            "assoc_legendre" => Ok(apply_named(arena, FN_ASSOC_LEGENDRE, &[arg, arg2, arg3])),
-            "assoc_laguerre" => Ok(apply_named(arena, FN_ASSOC_LAGUERRE, &[arg, arg2, arg3])),
-            _ => Err(ParseError {
-                message: format!(
+            _ => self.lib_call(arena, name_lower, &[arg, arg2, arg3], || {
+                format!(
                     "unknown 3-argument function '{}'. Supported: Limit, LaplaceTransform, \
                      InverseLaplaceTransform, Residue, DSolve, min, max, gegenbauer, \
                      assoc_legendre, assoc_laguerre",
                     name
-                ),
-                position: self.lexer.pos,
+                )
             }),
         }
     }
@@ -1405,27 +1386,18 @@ impl<'a> Parser<'a> {
             // the display forms).
             "binomial" | "c" => Ok(arena.binomial(arg, arg2)),
             "beta" | "b" => Ok(arena.beta(arg, arg2)),
-            // Bessel functions: order first, as in SymPy and in the display.
-            "besselj" => Ok(arena.besselj(arg, arg2)),
-            "bessely" => Ok(arena.bessely(arg, arg2)),
-            "besseli" => Ok(arena.besseli(arg, arg2)),
-            "besselk" => Ok(arena.besselk(arg, arg2)),
-            // More special functions (0.9): parameter first, as in SymPy.
-            "expint" => Ok(apply_named(arena, FN_EXPINT, &[arg, arg2])),
-            "lowergamma" => Ok(apply_named(arena, FN_LOWERGAMMA, &[arg, arg2])),
-            "uppergamma" => Ok(apply_named(arena, FN_UPPERGAMMA, &[arg, arg2])),
-            "polylog" => Ok(apply_named(arena, FN_POLYLOG, &[arg, arg2])),
-            "elliptic_f" => Ok(apply_named(arena, FN_ELLIPTIC_F, &[arg, arg2])),
-            "elliptic_pi" => Ok(apply_named(arena, FN_ELLIPTIC_PI, &[arg, arg2])),
-            _ => Err(ParseError {
-                message: format!(
+            // Library functions with a parameter first, as in SymPy and in
+            // the display: Bessel `(order, x)`, `expint`/`lowergamma`/
+            // `uppergamma`/`polylog` `(s, x)`, `elliptic_f`/`elliptic_pi`,
+            // the classical orthogonal polynomials `(n, x)`, …
+            _ => self.lib_call(arena, name_lower, &[arg, arg2], || {
+                format!(
                     "unknown 2-argument function '{}'. Supported: log, atan2, polygamma, \
                      binomial, beta, besselj, bessely, besseli, besselk, expint, lowergamma, \
                      uppergamma, polylog, elliptic_f, elliptic_pi, min, max, KroneckerDelta, \
                      RootOf, ConditionSet, Integral",
                     name
-                ),
-                position: self.lexer.pos,
+                )
             }),
         }
     }
@@ -1512,24 +1484,16 @@ impl<'a> Parser<'a> {
             "ei" => Ok(arena.ei(arg)),
             "li" => Ok(arena.li(arg)),
             "zeta" => Ok(arena.zeta(arg)),
-            // More special functions (0.9)
-            "erfi" => Ok(apply_named(arena, FN_ERFI, &[arg])),
-            "erfinv" => Ok(apply_named(arena, FN_ERFINV, &[arg])),
-            "erfcinv" => Ok(apply_named(arena, FN_ERFCINV, &[arg])),
-            "e1" => Ok(apply_named(arena, FN_EXPINT, &[arena.one, arg])),
-            "shi" => Ok(apply_named(arena, FN_SHI, &[arg])),
-            "chi" => Ok(apply_named(arena, FN_CHI, &[arg])),
-            "fresnels" => Ok(apply_named(arena, FN_FRESNELS, &[arg])),
-            "fresnelc" => Ok(apply_named(arena, FN_FRESNELC, &[arg])),
-            "dirichlet_eta" => Ok(apply_named(arena, FN_DIRICHLET_ETA, &[arg])),
-            "airyai" => Ok(apply_named(arena, FN_AIRYAI, &[arg])),
-            "airybi" => Ok(apply_named(arena, FN_AIRYBI, &[arg])),
-            "airyaiprime" => Ok(apply_named(arena, FN_AIRYAIPRIME, &[arg])),
-            "airybiprime" => Ok(apply_named(arena, FN_AIRYBIPRIME, &[arg])),
-            "elliptic_k" => Ok(apply_named(arena, FN_ELLIPTIC_K, &[arg])),
-            "elliptic_e" => Ok(apply_named(arena, FN_ELLIPTIC_E, &[arg])),
-            _ => Err(ParseError {
-                message: format!(
+            // `E1(x) = expint(1, x)`.
+            "e1" => {
+                let one = arena.one;
+                Ok(arena.lib_apply(LibFn::ExpInt, &[one, arg]))
+            }
+            // One-argument library functions: `erfi`, `erfinv`, `erfcinv`,
+            // `Shi`, `Chi`, `fresnels`, `fresnelc`, `dirichlet_eta`, the Airy
+            // functions, `elliptic_k`, `elliptic_e`, the integer sequences, …
+            _ => self.lib_call(arena, name_lower, &[arg], || {
+                format!(
                     "unknown function '{}'. Supported: sin, cos, tan, cot, sec, csc, exp, ln, log, \
                      sqrt, cbrt, abs, asin, acos, atan, acot, sinh, cosh, tanh, coth, sech, csch, \
                      asinh, acosh, atanh, sign, floor, ceil, gamma, erf, erfc, heaviside, \
@@ -1543,18 +1507,10 @@ impl<'a> Parser<'a> {
                      KroneckerDelta, Limit, RootOf, ConditionSet, LaplaceTransform, \
                      InverseLaplaceTransform, Residue, DSolve, Series, Sum, Product, Integral",
                     name
-                ),
-                position: self.lexer.pos,
+                )
             }),
         }
     }
-}
-
-/// Intern a library `Apply(name, args)` node (the 0.9 special functions,
-/// which have no dedicated `Arena` constructors).
-fn apply_named(arena: &mut Arena, name: &str, args: &[ExprId]) -> ExprId {
-    let sid = arena.symbols.intern(name);
-    arena.intern(ExprNode::Apply(sid, args.iter().copied().collect()))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

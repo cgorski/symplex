@@ -5,6 +5,8 @@
 //! | Task | Routines |
 //! |------|----------|
 //! | Bracketed root finding | [`brent_root`] (Brent–Dekker), [`bisect`] |
+//! | Finding a bracket | [`grow_bracket`] (doubling outward within [`Bounds`]) |
+//! | First integer with a monotone property | [`partition_point_by`] (galloping, then bisection) |
 //! | Root polishing from a point | [`newton_root`] |
 //! | Derivative-free local minimisation | [`nelder_mead`] |
 //! | Bracketed scalar minimisation | [`minimize_scalar`] (Brent), [`golden_section`] → [`ScalarMinimum`] |
@@ -51,7 +53,7 @@ use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::dense_f64;
 use crate::base::errors::SymplexError;
-use crate::base::interval::{Interval, IntervalKind};
+use crate::base::interval::{Bounds, Interval, IntervalKind};
 use crate::base::node::ExprNode;
 use crate::base::rng::SplitMix64;
 use crate::output::lambdify::CompiledFn;
@@ -447,6 +449,175 @@ pub fn newton_root(
             f(x).abs()
         ),
     ))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Bracketing and integer search
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Grow the interval `[a, b]` outward until `f` changes sign across it,
+/// staying within `bounds`.
+///
+/// `f(a)` and `f(b)` are evaluated first; if they already differ in sign
+/// (or one is exactly zero) the interval is returned as it is.  Otherwise
+/// the end where `|f|` is smaller — for a monotone `f`, the side the root
+/// lies on — is moved away from the other end by the current width, so
+/// the width doubles at each step (both ends move when `|f(a)| = |f(b)|`).
+/// An end never passes its side of `bounds`; once it rests there the other
+/// end grows instead, and when both are pinned there is no sign change
+/// within `bounds`.  At most `max_doublings` growth steps are taken.
+///
+/// The result is a closed [`Interval`] ready for [`brent_root`] or
+/// [`bisect`].  A reversed `[a, b]` is accepted and ordered.
+///
+/// # Errors
+///
+/// * [`SymplexError::InvalidArgument`] if an endpoint is not finite,
+///   `a == b`, `[a, b]` is not inside `bounds`, or `f` is not finite at `a`
+///   or `b`.
+/// * [`SymplexError::ComputationFailed`] if `f` is not finite at a grown
+///   endpoint, or no sign change is found within `bounds` or within
+///   `max_doublings` steps.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::optimize::{brent_root, grow_bracket, RootOpts};
+/// use symplex::Bounds;
+///
+/// // √500 lies well past the initial [0, 1]; with 0 as a bound only the
+/// // upper end grows: 1, 2, 4, 8, 16, 32.
+/// let f = |x: f64| x * x - 500.0;
+/// let iv = grow_bracket(f, 0.0, 1.0, Bounds::at_least(0.0), 20)?;
+/// assert_eq!((iv.lower, iv.upper), (0.0, 32.0));
+/// let r = brent_root(f, iv.lower, iv.upper, &RootOpts::default())?;
+/// assert!((r - 500f64.sqrt()).abs() < 1e-10);
+///
+/// // No sign change inside the bounds: an error, not a bogus bracket.
+/// assert!(grow_bracket(|x| x * x + 1.0, 0.0, 1.0, Bounds::closed(0.0, 8.0), 10).is_err());
+/// # Ok::<(), symplex::prelude::SymplexError>(())
+/// ```
+pub fn grow_bracket(
+    f: impl Fn(f64) -> f64,
+    a: f64,
+    b: f64,
+    bounds: Bounds<f64>,
+    max_doublings: usize,
+) -> Result<Interval<f64>, SymplexError> {
+    const OP: &str = "grow_bracket";
+    let (mut a, mut b) = check_interval(OP, a, b)?;
+    if !bounds.contains(&a) || !bounds.contains(&b) {
+        return Err(invalid(
+            OP,
+            format!("the initial interval [{a}, {b}] must lie within the bounds {bounds}"),
+        ));
+    }
+    let (mut fa, mut fb) = (f(a), f(b));
+    if !fa.is_finite() || !fb.is_finite() {
+        return Err(invalid(
+            OP,
+            format!(
+                "function is not finite at the initial endpoints: f({a}) = {fa}, f({b}) = {fb}"
+            ),
+        ));
+    }
+    let bracketed = |fa: f64, fb: f64| fa == 0.0 || fb == 0.0 || (fa > 0.0) != (fb > 0.0);
+    for _ in 0..max_doublings {
+        if bracketed(fa, fb) {
+            return Ok(Interval::closed(a, b));
+        }
+        let width = b - a;
+        let lower_free = bounds.lower.is_none_or(|lo| a > lo);
+        let upper_free = bounds.upper.is_none_or(|hi| b < hi);
+        let prefer_lower = fa.abs() <= fb.abs();
+        let prefer_upper = fb.abs() <= fa.abs();
+        let grow_lower = lower_free && (prefer_lower || !upper_free);
+        let grow_upper = upper_free && (prefer_upper || !lower_free);
+        if !grow_lower && !grow_upper {
+            return Err(failed(
+                OP,
+                format!("no sign change within the bounds {bounds}: f({a}) = {fa}, f({b}) = {fb}"),
+            ));
+        }
+        if grow_lower {
+            a = match bounds.lower {
+                Some(lo) => (a - width).max(lo),
+                None => a - width,
+            };
+            fa = eval_finite(OP, &f, a)?;
+        }
+        if grow_upper {
+            b = match bounds.upper {
+                Some(hi) => (b + width).min(hi),
+                None => b + width,
+            };
+            fb = eval_finite(OP, &f, b)?;
+        }
+        if !a.is_finite() || !b.is_finite() {
+            return Err(failed(
+                OP,
+                format!("the bracket [{a}, {b}] grew beyond the finite range"),
+            ));
+        }
+    }
+    if bracketed(fa, fb) {
+        return Ok(Interval::closed(a, b));
+    }
+    Err(failed(
+        OP,
+        format!("no sign change within {max_doublings} doublings: f({a}) = {fa}, f({b}) = {fb}"),
+    ))
+}
+
+/// The first `n` in `lo..hi` with `pred(n)`, for a `pred` that is `false`
+/// up to some point and `true` from there on; `hi` when there is none.
+///
+/// The search gallops from `lo` (`lo`, `lo + 1`, `lo + 2`, `lo + 4`, …)
+/// until `pred` holds or `hi` is passed, then bisects the last step, so
+/// the cost is `O(log(n − lo))` evaluations however large the cap `hi` is
+/// — the pattern behind "the smallest sample size with power ≥ 0.8".  For a
+/// slice, this is [`slice::partition_point`] with `lo` and `hi` as the
+/// index range.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::optimize::partition_point_by;
+///
+/// // Smallest n with n² ≥ 1000.
+/// assert_eq!(partition_point_by(1, usize::MAX / 2, |n| n * n >= 1000), 32);
+/// // Nothing qualifies below the cap: the cap itself is returned.
+/// assert_eq!(partition_point_by(0, 100, |n| n >= 500), 100);
+/// assert_eq!(partition_point_by(7, 7, |_| true), 7);
+/// ```
+pub fn partition_point_by(lo: usize, hi: usize, mut pred: impl FnMut(usize) -> bool) -> usize {
+    if lo >= hi {
+        return hi;
+    }
+    // Gallop: `l` is the first untested index, `r` an index where `pred`
+    // holds (or `hi`).
+    let (mut l, mut r) = (lo, hi);
+    let mut step = 1usize;
+    let mut probe = lo;
+    while probe < hi {
+        if pred(probe) {
+            r = probe;
+            break;
+        }
+        l = probe + 1;
+        probe = lo.saturating_add(step);
+        step = step.saturating_mul(2);
+    }
+    // Bisect `l..r`: `pred` is false below `l` and true at `r`.
+    while l < r {
+        let mid = l + (r - l) / 2;
+        if pred(mid) {
+            r = mid;
+        } else {
+            l = mid + 1;
+        }
+    }
+    r
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

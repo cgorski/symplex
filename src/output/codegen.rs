@@ -5,6 +5,7 @@
 
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
+use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode};
 use num_traits::ToPrimitive;
 use rustc_hash::FxHashMap;
@@ -1139,10 +1140,13 @@ fn expr_to_rust_cse(
         ExprNode::Binomial(n, k) => {
             emit_rt_binary(arena, n, k, "binomial", var_names, options, cse_constants)
         }
-        ExprNode::Apply(sid, ref apply_args) => {
-            let fname = arena.symbols.name(sid).to_string();
-            emit_rt_apply(arena, &fname, apply_args, var_names, options, cse_constants)
-        }
+        ExprNode::Apply(sid, ref apply_args) => match arena.lib_fn(sid) {
+            Some(f) => emit_rt_apply(arena, f, apply_args, var_names, options, cse_constants),
+            None => Err(SymplexError::NotImplemented(format!(
+                "cannot generate Rust code for user-defined Apply node `{}`",
+                arena.symbols.name(sid)
+            ))),
+        },
         // Unsupported nodes
         ExprNode::ImaginaryUnit => Err(SymplexError::NotImplemented(
             "cannot generate Rust code for imaginary unit".to_string(),
@@ -2110,76 +2114,129 @@ fn const_order(arena: &Arena, id: ExprId, what: &str) -> Result<i32, SymplexErro
     )))
 }
 
+/// How a library function is lowered by the numeric back ends (`compile`,
+/// `to_rust_fn`, `to_c_fn`): the shared-runtime helper it calls, or the
+/// fact that the runtime has no implementation.
+///
+/// Exhaustive over [`LibFn`], so adding a function forces a decision here.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RtLowering {
+    /// `helper(order, x)` with a compile-time integer order/degree.
+    Ordered(&'static str),
+    /// `helper(x)`.
+    Unary(&'static str),
+    /// `helper(a, b)`.
+    Binary(&'static str),
+    /// No `f64` implementation in the shared runtime.
+    Unsupported,
+}
+
+/// The runtime lowering of `f`; every back end consults this one table.
+pub(crate) fn rt_lowering(f: LibFn) -> RtLowering {
+    match f {
+        LibFn::BesselJ => RtLowering::Ordered("bessel_j"),
+        LibFn::BesselY => RtLowering::Ordered("bessel_y"),
+        LibFn::BesselI => RtLowering::Ordered("bessel_i"),
+        LibFn::BesselK => RtLowering::Ordered("bessel_k"),
+        LibFn::Legendre => RtLowering::Ordered("legendre_p"),
+        LibFn::ChebyshevT => RtLowering::Ordered("chebyshev_t"),
+        LibFn::ChebyshevU => RtLowering::Ordered("chebyshev_u"),
+        LibFn::Hermite => RtLowering::Ordered("hermite_h"),
+        LibFn::Laguerre => RtLowering::Ordered("laguerre_l"),
+        LibFn::Fibonacci => RtLowering::Unary("fibonacci"),
+        LibFn::Lucas => RtLowering::Unary("lucas"),
+        LibFn::Harmonic => RtLowering::Unary("harmonic"),
+        LibFn::Factorial2 => RtLowering::Unary("factorial2"),
+        LibFn::ErfInv => RtLowering::Unary("erfinv"),
+        LibFn::ErfcInv => RtLowering::Unary("erfcinv"),
+        LibFn::RisingFactorial => RtLowering::Binary("rising_factorial"),
+        LibFn::FallingFactorial => RtLowering::Binary("falling_factorial"),
+        // No `f64` routine in `numeric_rt` (yet): the exact combinatorial
+        // counts, `lambertw` as an `Apply` (the `LambertW` node compiles),
+        // and the 0.9 special functions other than the inverse error
+        // functions.
+        LibFn::Subfactorial
+        | LibFn::Bernoulli
+        | LibFn::Catalan
+        | LibFn::Bell
+        | LibFn::EulerNumber
+        | LibFn::Stirling1
+        | LibFn::Stirling2
+        | LibFn::PartitionCount
+        | LibFn::LambertW
+        | LibFn::Erfi
+        | LibFn::ExpInt
+        | LibFn::Shi
+        | LibFn::Chi
+        | LibFn::FresnelS
+        | LibFn::FresnelC
+        | LibFn::LowerGamma
+        | LibFn::UpperGamma
+        | LibFn::PolyLog
+        | LibFn::DirichletEta
+        | LibFn::AiryAi
+        | LibFn::AiryBi
+        | LibFn::AiryAiPrime
+        | LibFn::AiryBiPrime
+        | LibFn::EllipticK
+        | LibFn::EllipticE
+        | LibFn::EllipticF
+        | LibFn::EllipticPi
+        | LibFn::Gegenbauer
+        | LibFn::Jacobi
+        | LibFn::AssocLegendre
+        | LibFn::AssocLaguerre
+        | LibFn::BetaInc
+        | LibFn::BetaIncRegularized => RtLowering::Unsupported,
+    }
+}
+
 /// Emit library `Apply` nodes (Bessel functions, orthogonal polynomials,
 /// integer sequences, factorial variants) through the shared runtime.
 fn emit_rt_apply(
     arena: &Arena,
-    fname: &str,
+    f: LibFn,
     args: &[ExprId],
     var_names: &[&str],
     options: &CodegenOptions,
     cse_constants: &FxHashMap<usize, f64>,
 ) -> Result<String, SymplexError> {
-    use crate::base::arena as names;
+    let fname = f.name();
     let arity_err = |n: usize| {
         SymplexError::NotImplemented(format!(
             "cannot generate code for `{fname}` with {} argument(s) (expected {n})",
             args.len()
         ))
     };
-    let ordered = match fname {
-        n if n == names::FN_BESSELJ => Some("bessel_j"),
-        n if n == names::FN_BESSELY => Some("bessel_y"),
-        n if n == names::FN_BESSELI => Some("bessel_i"),
-        n if n == names::FN_BESSELK => Some("bessel_k"),
-        n if n == names::FN_LEGENDRE => Some("legendre_p"),
-        n if n == names::FN_CHEBYSHEV_T => Some("chebyshev_t"),
-        n if n == names::FN_CHEBYSHEV_U => Some("chebyshev_u"),
-        n if n == names::FN_HERMITE => Some("hermite_h"),
-        n if n == names::FN_LAGUERRE => Some("laguerre_l"),
-        _ => None,
-    };
-    if let Some(helper) = ordered {
-        if args.len() != 2 {
-            return Err(arity_err(2));
+    match rt_lowering(f) {
+        RtLowering::Ordered(helper) => {
+            let [order, x] = args else {
+                return Err(arity_err(2));
+            };
+            let order = const_order(arena, *order, fname)?;
+            let x = expr_to_rust_cse(arena, *x, var_names, options, cse_constants)?;
+            let call = rt_call(helper, Some(order), std::slice::from_ref(&x), options);
+            Ok(wrap_domain_check(&call, &x, helper, options))
         }
-        let order = const_order(arena, args[0], fname)?;
-        let x = expr_to_rust_cse(arena, args[1], var_names, options, cse_constants)?;
-        let call = rt_call(helper, Some(order), std::slice::from_ref(&x), options);
-        return Ok(wrap_domain_check(&call, &x, helper, options));
-    }
-    let unary = match fname {
-        n if n == names::FN_FIBONACCI => Some("fibonacci"),
-        n if n == names::FN_LUCAS => Some("lucas"),
-        n if n == names::FN_HARMONIC => Some("harmonic"),
-        n if n == names::FN_FACTORIAL2 => Some("factorial2"),
-        n if n == names::FN_ERFINV => Some("erfinv"),
-        n if n == names::FN_ERFCINV => Some("erfcinv"),
-        _ => None,
-    };
-    if let Some(helper) = unary {
-        if args.len() != 1 {
-            return Err(arity_err(1));
+        RtLowering::Unary(helper) => {
+            let [x] = args else {
+                return Err(arity_err(1));
+            };
+            let x = expr_to_rust_cse(arena, *x, var_names, options, cse_constants)?;
+            Ok(rt_call(helper, None, &[x], options))
         }
-        let x = expr_to_rust_cse(arena, args[0], var_names, options, cse_constants)?;
-        return Ok(rt_call(helper, None, &[x], options));
-    }
-    let binary = match fname {
-        n if n == names::FN_RISING_FACTORIAL => Some("rising_factorial"),
-        n if n == names::FN_FALLING_FACTORIAL => Some("falling_factorial"),
-        _ => None,
-    };
-    if let Some(helper) = binary {
-        if args.len() != 2 {
-            return Err(arity_err(2));
+        RtLowering::Binary(helper) => {
+            let [a, b] = args else {
+                return Err(arity_err(2));
+            };
+            let a = expr_to_rust_cse(arena, *a, var_names, options, cse_constants)?;
+            let b = expr_to_rust_cse(arena, *b, var_names, options, cse_constants)?;
+            Ok(rt_call(helper, None, &[a, b], options))
         }
-        let a = expr_to_rust_cse(arena, args[0], var_names, options, cse_constants)?;
-        let b = expr_to_rust_cse(arena, args[1], var_names, options, cse_constants)?;
-        return Ok(rt_call(helper, None, &[a, b], options));
+        RtLowering::Unsupported => Err(SymplexError::NotImplemented(format!(
+            "cannot generate Rust code for the special function `{fname}`"
+        ))),
     }
-    Err(SymplexError::NotImplemented(format!(
-        "cannot generate Rust code for user-defined Apply node `{fname}`"
-    )))
 }
 
 /// Emit a powi call.

@@ -38,6 +38,7 @@ use rustc_hash::FxHashMap;
 use crate::api::expr::{Expr, Sort};
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
+use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::walk;
@@ -746,10 +747,18 @@ impl Emitter<'_> {
                         .ok_or_else(|| self.unsupported(&describe(node)))?;
                     self.call(name, &[&child(a)?])
                 }
+                // Library special functions are outside `math`/`numpy`/base
+                // Julia; the error names the SciPy routine that computes the
+                // function, when there is one.
                 ExprNode::Apply(sid, _) => {
-                    return Err(
-                        self.unsupported(&format!("the function `{}`", arena.symbol_name(*sid)))
-                    );
+                    let name = arena.symbol_name(*sid);
+                    let spelling = arena.lib_fn(*sid).and_then(scipy_spelling);
+                    return Err(match spelling {
+                        Some(scipy) => {
+                            self.unsupported(&format!("the function `{name}` (SciPy: `{scipy}`)"))
+                        }
+                        None => self.unsupported(&format!("the function `{name}`")),
+                    });
                 }
                 other => return Err(self.unsupported(&describe(other))),
             };
@@ -761,6 +770,82 @@ impl Emitter<'_> {
 
 /// Short description of a node kind for error messages.
 use crate::output::common::describe;
+
+/// The `scipy.special` routine with the value of a library function, written
+/// as a call template over the function's own argument names (SciPy 1.13
+/// documentation).  `None` when SciPy has no routine (the integer sequences,
+/// `polylog`, `dirichlet_eta`, `elliptic_pi`) or only a differently shaped
+/// one (`bernoulli`/`euler` return the whole sequence; `lambertw` is
+/// complex-valued).
+///
+/// The Python back ends do not emit these — `to_python` is `math` only and
+/// `to_numpy` is `numpy` only, and both are pinned to refuse every `Apply`
+/// node — but the refusal names the routine.  Exhaustive over [`LibFn`].
+pub(crate) fn scipy_spelling(f: LibFn) -> Option<&'static str> {
+    Some(match f {
+        LibFn::Factorial2 => "scipy.special.factorial2(n)",
+        LibFn::RisingFactorial => "scipy.special.poch(x, n)",
+        // x^(n) = Γ(x+1)/Γ(x−n+1) = (x−n+1)_n.
+        LibFn::FallingFactorial => "scipy.special.poch(x - n + 1, n)",
+        LibFn::Stirling2 => "scipy.special.stirling2(n, k)",
+        LibFn::BesselJ => "scipy.special.jv(order, x)",
+        LibFn::BesselY => "scipy.special.yv(order, x)",
+        LibFn::BesselI => "scipy.special.iv(order, x)",
+        LibFn::BesselK => "scipy.special.kv(order, x)",
+        LibFn::Legendre => "scipy.special.eval_legendre(n, x)",
+        LibFn::ChebyshevT => "scipy.special.eval_chebyt(n, x)",
+        LibFn::ChebyshevU => "scipy.special.eval_chebyu(n, x)",
+        LibFn::Hermite => "scipy.special.eval_hermite(n, x)",
+        LibFn::Laguerre => "scipy.special.eval_laguerre(n, x)",
+        LibFn::Erfi => "scipy.special.erfi(x)",
+        LibFn::ErfInv => "scipy.special.erfinv(y)",
+        LibFn::ErfcInv => "scipy.special.erfcinv(y)",
+        LibFn::ExpInt => "scipy.special.expn(n, x)",
+        // `shichi` returns the pair (Shi, Chi).
+        LibFn::Shi => "scipy.special.shichi(x)[0]",
+        LibFn::Chi => "scipy.special.shichi(x)[1]",
+        // `fresnel` returns the pair (S, C).
+        LibFn::FresnelS => "scipy.special.fresnel(x)[0]",
+        LibFn::FresnelC => "scipy.special.fresnel(x)[1]",
+        // `gammainc`/`gammaincc` are the regularised P and Q.
+        LibFn::LowerGamma => "scipy.special.gamma(s) * scipy.special.gammainc(s, x)",
+        LibFn::UpperGamma => "scipy.special.gamma(s) * scipy.special.gammaincc(s, x)",
+        // `airy` returns (Ai, Ai', Bi, Bi').
+        LibFn::AiryAi => "scipy.special.airy(x)[0]",
+        LibFn::AiryAiPrime => "scipy.special.airy(x)[1]",
+        LibFn::AiryBi => "scipy.special.airy(x)[2]",
+        LibFn::AiryBiPrime => "scipy.special.airy(x)[3]",
+        LibFn::EllipticK => "scipy.special.ellipk(m)",
+        LibFn::EllipticE => "scipy.special.ellipe(m)",
+        LibFn::EllipticF => "scipy.special.ellipkinc(phi, m)",
+        LibFn::Gegenbauer => "scipy.special.eval_gegenbauer(n, alpha, x)",
+        LibFn::Jacobi => "scipy.special.eval_jacobi(n, alpha, beta, x)",
+        // Both use the Condon–Shortley phase; SciPy takes the order first.
+        LibFn::AssocLegendre => "scipy.special.lpmv(m, n, x)",
+        LibFn::AssocLaguerre => "scipy.special.eval_genlaguerre(n, alpha, x)",
+        // SciPy's `betainc` is the regularised I_x(a, b) of one bound.
+        LibFn::BetaInc => {
+            "scipy.special.beta(a, b) * (scipy.special.betainc(a, b, x2) - scipy.special.betainc(a, b, x1))"
+        }
+        LibFn::BetaIncRegularized => {
+            "scipy.special.betainc(a, b, x2) - scipy.special.betainc(a, b, x1)"
+        }
+        LibFn::Subfactorial
+        | LibFn::Fibonacci
+        | LibFn::Lucas
+        | LibFn::Bernoulli
+        | LibFn::Harmonic
+        | LibFn::Catalan
+        | LibFn::Bell
+        | LibFn::EulerNumber
+        | LibFn::Stirling1
+        | LibFn::PartitionCount
+        | LibFn::LambertW
+        | LibFn::PolyLog
+        | LibFn::DirichletEta
+        | LibFn::EllipticPi => return None,
+    })
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Entry points

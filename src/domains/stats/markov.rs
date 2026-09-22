@@ -37,11 +37,13 @@
 //!   in the fundamental matrix and the absorption probabilities.
 
 use std::fmt;
+use std::sync::OnceLock;
 
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
 use crate::base::errors::SymplexError;
+use crate::base::graph::strongly_connected_components;
 use crate::domains::exact_matrix::QMatrix;
 
 use super::common::invalid;
@@ -69,10 +71,32 @@ fn pick(m: &QMatrix, rows: &[usize], cols: &[usize]) -> QMatrix {
 }
 
 /// A finite Markov chain with an exact transition matrix.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Equality and `Debug` see the transition matrix and the labels; the
+/// communication classes are computed once on demand and cached (a clone
+/// carries the cache along).
+#[derive(Clone)]
 pub struct MarkovChain {
     p: QMatrix,
     labels: Option<Vec<String>>,
+    classes: OnceLock<Vec<Vec<usize>>>,
+}
+
+impl PartialEq for MarkovChain {
+    fn eq(&self, other: &Self) -> bool {
+        self.p == other.p && self.labels == other.labels
+    }
+}
+
+impl Eq for MarkovChain {}
+
+impl fmt::Debug for MarkovChain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MarkovChain")
+            .field("p", &self.p)
+            .field("labels", &self.labels)
+            .finish()
+    }
 }
 
 impl MarkovChain {
@@ -103,7 +127,11 @@ impl MarkovChain {
                 return Err(invalid(OP, format!("row {i} sums to {sum}, not 1")));
             }
         }
-        Ok(MarkovChain { p, labels: None })
+        Ok(MarkovChain {
+            p,
+            labels: None,
+            classes: OnceLock::new(),
+        })
     }
 
     /// A chain with named states (`labels[i]` is the name of state `i`).
@@ -248,6 +276,19 @@ impl MarkovChain {
         reach
     }
 
+    /// The communication classes, computed once: the strongly connected
+    /// components of the positive-entry graph, each ascending and ordered
+    /// by smallest member.
+    fn classes(&self) -> &[Vec<usize>] {
+        self.classes.get_or_init(|| {
+            let n = self.n_states();
+            let adj: Vec<Vec<usize>> = (0..n)
+                .map(|i| (0..n).filter(|&j| self.p.get(i, j).is_positive()).collect())
+                .collect();
+            strongly_connected_components(&adj)
+        })
+    }
+
     /// The communication classes (states that reach each other, or a
     /// single state that reaches nothing that returns), each ascending,
     /// ordered by smallest member.  SymPy: `communication_classes()`
@@ -255,36 +296,21 @@ impl MarkovChain {
     /// [`closed_classes`](Self::closed_classes) and
     /// [`period_of`](Self::period_of)).
     pub fn communication_classes(&self) -> Vec<Vec<usize>> {
-        let n = self.n_states();
-        let reach = self.reachability();
-        let mut assigned = vec![false; n];
-        let mut classes = Vec::new();
-        for i in 0..n {
-            if assigned[i] {
-                continue;
-            }
-            let class: Vec<usize> = (i..n)
-                .filter(|&j| j == i || (reach[i][j] && reach[j][i]))
-                .collect();
-            for &j in &class {
-                assigned[j] = true;
-            }
-            classes.push(class);
-        }
-        classes
+        self.classes().to_vec()
     }
 
     /// The closed (recurrent) communication classes: those no transition
     /// leaves.  Every finite chain has at least one.
     pub fn closed_classes(&self) -> Vec<Vec<usize>> {
         let n = self.n_states();
-        self.communication_classes()
-            .into_iter()
+        self.classes()
+            .iter()
             .filter(|class| {
                 class
                     .iter()
                     .all(|&i| (0..n).all(|j| class.contains(&j) || !self.p.get(i, j).is_positive()))
             })
+            .cloned()
             .collect()
     }
 
@@ -300,7 +326,7 @@ impl MarkovChain {
     /// `true` if every state reaches every other (one communication
     /// class).
     pub fn is_irreducible(&self) -> bool {
-        self.communication_classes().len() == 1
+        self.classes().len() == 1
     }
 
     /// The period of `state`: the gcd of the lengths of all cycles through
@@ -314,9 +340,10 @@ impl MarkovChain {
     pub fn period_of(&self, state: usize) -> Result<Option<usize>, SymplexError> {
         self.check_state("MarkovChain::period_of", state)?;
         let class = self
-            .communication_classes()
-            .into_iter()
+            .classes()
+            .iter()
             .find(|c| c.contains(&state))
+            .cloned()
             .unwrap_or_else(|| vec![state]);
         Ok(self.class_period(&class))
     }
@@ -353,7 +380,7 @@ impl MarkovChain {
 
     /// `true` if every class that has a cycle has period `1`.
     pub fn is_aperiodic(&self) -> bool {
-        self.communication_classes()
+        self.classes()
             .iter()
             .all(|c| self.class_period(c).is_none_or(|d| d == 1))
     }

@@ -21,6 +21,7 @@
 
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
+use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode, SymbolId};
 use crate::output::codegen::numeric_rt as rt;
 use num_traits::{One, ToPrimitive, Zero};
@@ -982,10 +983,15 @@ impl<'a> Emitter<'a> {
             | ExprNode::Or(_)
             | ExprNode::Not(_) => self.work.push(Task::Bool(id)),
 
-            ExprNode::Apply(sid, ref args) => {
-                let name = arena.symbol_name(sid).to_string();
-                self.lower_apply(&name, args)?;
-            }
+            ExprNode::Apply(sid, ref args) => match arena.lib_fn(sid) {
+                Some(f) => self.lower_apply(f, args)?,
+                None => {
+                    return Err(SymplexError::NotImplemented(format!(
+                        "cannot compile `Apply({}, …)` to a numerical function",
+                        arena.symbol_name(sid)
+                    )));
+                }
+            },
 
             ExprNode::Derivative(_, _) => return Err(self.unsupported("Derivative")),
             ExprNode::Integral(_, _) => return Err(self.unsupported("Integral")),
@@ -1052,74 +1058,120 @@ impl<'a> Emitter<'a> {
     }
 
     /// Lower library `Apply` nodes (Bessel functions, orthogonal polynomials,
-    /// integer sequences, factorial variants).
-    fn lower_apply(&mut self, name: &str, args: &[ExprId]) -> Result<(), SymplexError> {
-        use crate::base::arena as names;
+    /// integer sequences, factorial variants, inverse error functions).
+    ///
+    /// The VM instruction for each function is [`vm_lowering`]; the source
+    /// back ends use `codegen::rt_lowering`, and a test keeps the two tables
+    /// in step.
+    fn lower_apply(&mut self, f: LibFn, args: &[ExprId]) -> Result<(), SymplexError> {
+        let name = f.name();
         let arity_err = |n: usize| {
             SymplexError::NotImplemented(format!(
                 "cannot compile `{name}` with {} argument(s) (expected {n})",
                 args.len()
             ))
         };
-        // (order, x) families with compile-time integer order.
-        let ordered: Option<fn(i32) -> Instruction> = match name {
-            n if n == names::FN_BESSELJ => Some(Instruction::BesselJ),
-            n if n == names::FN_BESSELY => Some(Instruction::BesselY),
-            n if n == names::FN_BESSELI => Some(Instruction::BesselI),
-            n if n == names::FN_BESSELK => Some(Instruction::BesselK),
-            n if n == names::FN_LEGENDRE => Some(Instruction::LegendreP),
-            n if n == names::FN_CHEBYSHEV_T => Some(Instruction::ChebyshevT),
-            n if n == names::FN_CHEBYSHEV_U => Some(Instruction::ChebyshevU),
-            n if n == names::FN_HERMITE => Some(Instruction::HermiteH),
-            n if n == names::FN_LAGUERRE => Some(Instruction::LaguerreL),
-            _ => None,
-        };
-        if let Some(make) = ordered {
-            if args.len() != 2 {
-                return Err(arity_err(2));
+        match vm_lowering(f) {
+            // (order, x) families with compile-time integer order.
+            VmLowering::Ordered(make) => {
+                let [order, x] = args else {
+                    return Err(arity_err(2));
+                };
+                let order = self.const_i32(*order, name)?;
+                self.unary(*x, make(order));
             }
-            let order = self.const_i32(args[0], name)?;
-            self.unary(args[1], make(order));
-            return Ok(());
-        }
-        let unary: Option<Instruction> = match name {
-            n if n == names::FN_FIBONACCI => Some(Instruction::Fibonacci),
-            n if n == names::FN_LUCAS => Some(Instruction::Lucas),
-            n if n == names::FN_HARMONIC => Some(Instruction::Harmonic),
-            n if n == names::FN_FACTORIAL2 => Some(Instruction::Factorial2),
-            n if n == names::FN_ERFINV => Some(Instruction::Erfinv),
-            n if n == names::FN_ERFCINV => Some(Instruction::Erfcinv),
-            _ => None,
-        };
-        if let Some(inst) = unary {
-            if args.len() != 1 {
-                return Err(arity_err(1));
+            VmLowering::Unary(inst) => {
+                let [x] = args else {
+                    return Err(arity_err(1));
+                };
+                self.unary(*x, inst);
             }
-            self.unary(args[0], inst);
-            return Ok(());
-        }
-        let binary: Option<Instruction> = match name {
-            n if n == names::FN_RISING_FACTORIAL => Some(Instruction::RisingFactorial),
-            n if n == names::FN_FALLING_FACTORIAL => Some(Instruction::FallingFactorial),
-            _ => None,
-        };
-        if let Some(inst) = binary {
-            if args.len() != 2 {
-                return Err(arity_err(2));
+            VmLowering::Binary(inst) => {
+                let [a, b] = args else {
+                    return Err(arity_err(2));
+                };
+                self.binary(*a, *b, inst);
             }
-            self.binary(args[0], args[1], inst);
-            return Ok(());
+            VmLowering::Unsupported => {
+                return Err(SymplexError::NotImplemented(format!(
+                    "cannot compile `Apply({name}, …)` to a numerical function"
+                )));
+            }
         }
-        Err(SymplexError::NotImplemented(format!(
-            "cannot compile `Apply({name}, …)` to a numerical function"
-        )))
+        Ok(())
+    }
+}
+
+/// The stack-VM instruction a library function lowers to.
+enum VmLowering {
+    /// `make(order)` applied to the second argument.
+    Ordered(fn(i32) -> Instruction),
+    Unary(Instruction),
+    Binary(Instruction),
+    /// No `f64` routine in the shared runtime.
+    Unsupported,
+}
+
+/// Exhaustive over [`LibFn`]; agrees with `codegen::rt_lowering` on which
+/// functions are implemented (checked by `vm_and_rt_lowering_agree`).
+fn vm_lowering(f: LibFn) -> VmLowering {
+    match f {
+        LibFn::BesselJ => VmLowering::Ordered(Instruction::BesselJ),
+        LibFn::BesselY => VmLowering::Ordered(Instruction::BesselY),
+        LibFn::BesselI => VmLowering::Ordered(Instruction::BesselI),
+        LibFn::BesselK => VmLowering::Ordered(Instruction::BesselK),
+        LibFn::Legendre => VmLowering::Ordered(Instruction::LegendreP),
+        LibFn::ChebyshevT => VmLowering::Ordered(Instruction::ChebyshevT),
+        LibFn::ChebyshevU => VmLowering::Ordered(Instruction::ChebyshevU),
+        LibFn::Hermite => VmLowering::Ordered(Instruction::HermiteH),
+        LibFn::Laguerre => VmLowering::Ordered(Instruction::LaguerreL),
+        LibFn::Fibonacci => VmLowering::Unary(Instruction::Fibonacci),
+        LibFn::Lucas => VmLowering::Unary(Instruction::Lucas),
+        LibFn::Harmonic => VmLowering::Unary(Instruction::Harmonic),
+        LibFn::Factorial2 => VmLowering::Unary(Instruction::Factorial2),
+        LibFn::ErfInv => VmLowering::Unary(Instruction::Erfinv),
+        LibFn::ErfcInv => VmLowering::Unary(Instruction::Erfcinv),
+        LibFn::RisingFactorial => VmLowering::Binary(Instruction::RisingFactorial),
+        LibFn::FallingFactorial => VmLowering::Binary(Instruction::FallingFactorial),
+        LibFn::Subfactorial
+        | LibFn::Bernoulli
+        | LibFn::Catalan
+        | LibFn::Bell
+        | LibFn::EulerNumber
+        | LibFn::Stirling1
+        | LibFn::Stirling2
+        | LibFn::PartitionCount
+        | LibFn::LambertW
+        | LibFn::Erfi
+        | LibFn::ExpInt
+        | LibFn::Shi
+        | LibFn::Chi
+        | LibFn::FresnelS
+        | LibFn::FresnelC
+        | LibFn::LowerGamma
+        | LibFn::UpperGamma
+        | LibFn::PolyLog
+        | LibFn::DirichletEta
+        | LibFn::AiryAi
+        | LibFn::AiryBi
+        | LibFn::AiryAiPrime
+        | LibFn::AiryBiPrime
+        | LibFn::EllipticK
+        | LibFn::EllipticE
+        | LibFn::EllipticF
+        | LibFn::EllipticPi
+        | LibFn::Gegenbauer
+        | LibFn::Jacobi
+        | LibFn::AssocLegendre
+        | LibFn::AssocLaguerre
+        | LibFn::BetaInc
+        | LibFn::BetaIncRegularized => VmLowering::Unsupported,
     }
 }
 
 /// Iterative check for nodes that must bypass the `eval()` pre-pass
 /// (`Piecewise` and orthogonal-polynomial `Apply` nodes).
 fn needs_raw_lowering(arena: &Arena, root: ExprId) -> bool {
-    use crate::base::arena as names;
     let mut stack = vec![root];
     let mut seen = rustc_hash::FxHashSet::default();
     while let Some(id) = stack.pop() {
@@ -1129,16 +1181,19 @@ fn needs_raw_lowering(arena: &Arena, root: ExprId) -> bool {
         let node = arena.node(id);
         match node {
             ExprNode::Piecewise(_) => return true,
-            ExprNode::Apply(sid, _) => {
-                let name = arena.symbol_name(*sid);
-                if name == names::FN_LEGENDRE
-                    || name == names::FN_CHEBYSHEV_T
-                    || name == names::FN_CHEBYSHEV_U
-                    || name == names::FN_HERMITE
-                    || name == names::FN_LAGUERRE
-                {
-                    return true;
-                }
+            ExprNode::Apply(sid, _)
+                if matches!(
+                    arena.lib_fn(*sid),
+                    Some(
+                        LibFn::Legendre
+                            | LibFn::ChebyshevT
+                            | LibFn::ChebyshevU
+                            | LibFn::Hermite
+                            | LibFn::Laguerre
+                    )
+                ) =>
+            {
+                return true;
             }
             _ => {}
         }
@@ -1353,15 +1408,36 @@ mod tests {
         let f = compile(&mut a, fib, &["x"]).unwrap();
         assert_eq!(f(&[20.0]), 6765.0);
         // Named `Apply` inverses of erf/erfc (mpmath: erfinv(0.5), erfcinv(0.1)).
-        use crate::transforms::eval::apply_named;
-        let ei = apply_named(&mut a, crate::base::arena::FN_ERFINV, &[x]);
+        let ei = a.lib_apply(LibFn::ErfInv, &[x]);
         let f = compile(&mut a, ei, &["x"]).unwrap();
         assert!(close(f(&[0.5]), 0.47693627620446987338, 1e-15));
         assert_eq!(f(&[1.0]), f64::INFINITY);
         assert!(f(&[1.5]).is_nan());
-        let eci = apply_named(&mut a, crate::base::arena::FN_ERFCINV, &[x]);
+        let eci = a.lib_apply(LibFn::ErfcInv, &[x]);
         let f = compile(&mut a, eci, &["x"]).unwrap();
         assert!(close(f(&[0.1]), 1.1630871536766740677, 1e-15));
+    }
+
+    /// The VM and the source back ends implement the same library functions
+    /// with the same shapes.
+    #[test]
+    fn vm_and_rt_lowering_agree() {
+        use crate::output::codegen::{RtLowering, rt_lowering};
+        for &f in LibFn::ALL {
+            let vm = match vm_lowering(f) {
+                VmLowering::Ordered(_) => "ordered",
+                VmLowering::Unary(_) => "unary",
+                VmLowering::Binary(_) => "binary",
+                VmLowering::Unsupported => "unsupported",
+            };
+            let rt = match rt_lowering(f) {
+                RtLowering::Ordered(_) => "ordered",
+                RtLowering::Unary(_) => "unary",
+                RtLowering::Binary(_) => "binary",
+                RtLowering::Unsupported => "unsupported",
+            };
+            assert_eq!(vm, rt, "{f}");
+        }
     }
 
     #[test]

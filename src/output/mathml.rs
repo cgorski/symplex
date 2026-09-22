@@ -30,6 +30,7 @@ use rustc_hash::FxHashMap;
 use crate::api::expr::{Expr, Sort};
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
+use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode, INTERVAL_LEFT_OPEN, INTERVAL_RIGHT_OPEN};
 use crate::base::numeric::Q;
 use crate::base::walk;
@@ -718,7 +719,7 @@ pub(crate) fn render(arena: &Arena, expr: ExprId) -> Result<String, SymplexError
             }
             ExprNode::Apply(sid, args) => {
                 let rendered: Vec<String> = args.iter().map(child).collect::<Result<_, _>>()?;
-                render_apply(arena.symbol_name(*sid), &rendered)
+                render_apply(arena.lib_fn(*sid), arena.symbol_name(*sid), &rendered)
             }
 
             // ── Calculus ───────────────────────────────────────────────
@@ -882,16 +883,67 @@ pub(crate) fn render(arena: &Arena, expr: ExprId) -> Result<String, SymplexError
 }
 
 /// A library or user `Apply` node: Bessel functions as `J_n(x)`, everything
-/// else as `name(args)`.
-fn render_apply(name: &str, args: &[String]) -> String {
-    use crate::base::arena::{FN_BESSELI, FN_BESSELJ, FN_BESSELK, FN_BESSELY};
+/// else — the other library functions and user functions alike — as
+/// `<mi>name</mi><mo>&#x2061;</mo><mo>(</mo>args<mo>)</mo>`.
+///
+/// Exhaustive over [`LibFn`]: a new library function renders as a plain
+/// call unless it is given a notation here.
+fn render_apply(lib: Option<LibFn>, name: &str, args: &[String]) -> String {
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let bessel = match name {
-        n if n == FN_BESSELJ => Some("J"),
-        n if n == FN_BESSELY => Some("Y"),
-        n if n == FN_BESSELI => Some("I"),
-        n if n == FN_BESSELK => Some("K"),
-        _ => None,
+    let bessel = match lib {
+        Some(LibFn::BesselJ) => Some("J"),
+        Some(LibFn::BesselY) => Some("Y"),
+        Some(LibFn::BesselI) => Some("I"),
+        Some(LibFn::BesselK) => Some("K"),
+        Some(
+            LibFn::Factorial2
+            | LibFn::Subfactorial
+            | LibFn::RisingFactorial
+            | LibFn::FallingFactorial
+            | LibFn::Fibonacci
+            | LibFn::Lucas
+            | LibFn::Bernoulli
+            | LibFn::Harmonic
+            | LibFn::Catalan
+            | LibFn::Bell
+            | LibFn::EulerNumber
+            | LibFn::Stirling1
+            | LibFn::Stirling2
+            | LibFn::PartitionCount
+            | LibFn::LambertW
+            | LibFn::Legendre
+            | LibFn::ChebyshevT
+            | LibFn::ChebyshevU
+            | LibFn::Hermite
+            | LibFn::Laguerre
+            | LibFn::Erfi
+            | LibFn::ErfInv
+            | LibFn::ErfcInv
+            | LibFn::ExpInt
+            | LibFn::Shi
+            | LibFn::Chi
+            | LibFn::FresnelS
+            | LibFn::FresnelC
+            | LibFn::LowerGamma
+            | LibFn::UpperGamma
+            | LibFn::PolyLog
+            | LibFn::DirichletEta
+            | LibFn::AiryAi
+            | LibFn::AiryBi
+            | LibFn::AiryAiPrime
+            | LibFn::AiryBiPrime
+            | LibFn::EllipticK
+            | LibFn::EllipticE
+            | LibFn::EllipticF
+            | LibFn::EllipticPi
+            | LibFn::Gegenbauer
+            | LibFn::Jacobi
+            | LibFn::AssocLegendre
+            | LibFn::AssocLaguerre
+            | LibFn::BetaInc
+            | LibFn::BetaIncRegularized,
+        )
+        | None => None,
     };
     if let (Some(letter), [order, arg]) = (bessel, refs.as_slice()) {
         let head = format!("<msub>{}{order}</msub>", mi(letter));

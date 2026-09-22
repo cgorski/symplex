@@ -3486,15 +3486,16 @@ impl Expr<Numeric> {
 
     /// Convenience: evaluate to an `f64`.
     ///
-    /// Calls [`eval_decimal`](Ex::eval_decimal) with 16 digits of precision and
-    /// parses the result to `f64`. This avoids the common pattern of
+    /// Evaluates at the precision of [`eval_decimal`](Ex::eval_decimal)
+    /// with 16 digits (128 working bits) and rounds the result once, to
+    /// the nearest `f64`. This avoids the common pattern of
     /// `.eval_decimal(15).unwrap().parse::<f64>().unwrap()`.
     ///
     /// # Errors
     ///
     /// Returns the same errors as [`eval_decimal`](Ex::eval_decimal), plus a
-    /// [`SymplexError::NotImplemented`] if the decimal string cannot
-    /// be parsed to `f64`.
+    /// [`SymplexError::ComputationFailed`] if the value has an imaginary
+    /// part above `1e-15` in magnitude.
     ///
     /// # Examples
     ///
@@ -3507,20 +3508,12 @@ impl Expr<Numeric> {
     /// assert!((val - 9.0).abs() < 1e-10);
     /// ```
     pub fn eval_f64(&self) -> Result<f64, SymplexError> {
+        let _span = debug_span!("eval_f64", expr = ?self.raw_id()).entered();
         // eval() first to reduce exact values (sin(0)→0, Gamma(5)→24, etc.)
-        // before numerical computation. The eval_complex64 call below
-        // will work on the simplified expression.
-        let z = self.eval().eval_complex64()?;
-        if z.im.abs() > 1e-15 {
-            return Err(SymplexError::ComputationFailed {
-                operation: "eval_f64",
-                reason: format!(
-                    "expression has nonzero imaginary part (im={}); use eval_complex64() for complex results",
-                    z.im
-                ),
-            });
-        }
-        Ok(z.re)
+        // before numerical computation.
+        let evaled = self.eval();
+        let guard = evaled.inner.read();
+        crate::transforms::evalf::evalf_f64(&guard.arena, evaled.raw_id())
     }
 
     /// Evaluates the expression to a [`Complex64`] (`re + im·i`).
@@ -3546,8 +3539,10 @@ impl Expr<Numeric> {
     /// assert!((z.norm() - 5.0).abs() < 1e-12);
     /// ```
     pub fn eval_complex64(&self) -> Result<Complex64, SymplexError> {
-        let s = self.eval_decimal(16)?;
-        parse_complex_evalf_string(&s)
+        let _span = debug_span!("eval_complex64", expr = ?self.raw_id()).entered();
+        let evaled = self.eval();
+        let guard = evaled.inner.read();
+        crate::transforms::evalf::evalf_complex64(&guard.arena, evaled.raw_id())
     }
 
     // ── Code generation ────────────────────────────────────────────
@@ -4338,17 +4333,14 @@ impl Expr<Numeric> {
 
     // ── More special functions (0.9) ───────────────────────────────────
 
-    /// Build a library `Apply(name, args)` node.  Every id in `args` must
+    /// Build a library `Apply(f, args)` node.  Every id in `args` must
     /// already have been validated with `checked_id` (or be `self`).
-    fn special_apply(&self, name: &str, args: &[crate::base::node::ExprId]) -> Ex {
-        let id = {
-            let mut guard = self.inner.write();
-            let sid = guard.arena.symbols.intern(name);
-            guard.arena.intern(crate::base::node::ExprNode::Apply(
-                sid,
-                args.iter().copied().collect(),
-            ))
-        };
+    fn special_apply(
+        &self,
+        f: crate::base::libfn::LibFn,
+        args: &[crate::base::node::ExprId],
+    ) -> Ex {
+        let id = self.inner.write().arena.lib_apply(f, args);
         self.wrap(id)
     }
 
@@ -4367,7 +4359,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn erfi(&self) -> Ex {
-        self.special_apply(crate::base::arena::FN_ERFI, &[self.raw_id()])
+        self.special_apply(crate::base::libfn::LibFn::Erfi, &[self.raw_id()])
     }
 
     /// Inverse error function `erfinv(self)`: `erf(erfinv(y)) = y` for `|y| < 1`.
@@ -4376,7 +4368,7 @@ impl Expr<Numeric> {
     /// `d/dy erfinv(y) = (√π/2) e^{erfinv(y)²}`.
     #[must_use]
     pub fn erfinv(&self) -> Ex {
-        self.special_apply(crate::base::arena::FN_ERFINV, &[self.raw_id()])
+        self.special_apply(crate::base::libfn::LibFn::ErfInv, &[self.raw_id()])
     }
 
     /// Inverse complementary error function `erfcinv(self) = erfinv(1 − self)`.
@@ -4384,7 +4376,7 @@ impl Expr<Numeric> {
     /// Exact: `erfcinv(1) = 0`, `erfcinv(0) = ∞`, `erfcinv(2) = −∞`.
     #[must_use]
     pub fn erfcinv(&self) -> Ex {
-        self.special_apply(crate::base::arena::FN_ERFCINV, &[self.raw_id()])
+        self.special_apply(crate::base::libfn::LibFn::ErfcInv, &[self.raw_id()])
     }
 
     /// Generalised exponential integral `E_n(self) = ∫₁^∞ e^{−self·t} t^{−n} dt`
@@ -4404,7 +4396,7 @@ impl Expr<Numeric> {
     #[must_use]
     pub fn expint(&self, n: &Ex) -> Ex {
         let n_id = self.checked_id(n);
-        self.special_apply(crate::base::arena::FN_EXPINT, &[n_id, self.raw_id()])
+        self.special_apply(crate::base::libfn::LibFn::ExpInt, &[n_id, self.raw_id()])
     }
 
     /// Exponential integral `E₁(self) = expint(1, self) = ∫_self^∞ e^{−t}/t dt`.
@@ -4413,7 +4405,7 @@ impl Expr<Numeric> {
     #[must_use]
     pub fn e1(&self) -> Ex {
         let one = self.inner.read().arena.one;
-        self.special_apply(crate::base::arena::FN_EXPINT, &[one, self.raw_id()])
+        self.special_apply(crate::base::libfn::LibFn::ExpInt, &[one, self.raw_id()])
     }
 
     /// Hyperbolic sine integral `Shi(self) = ∫₀ˣ sinh(t)/t dt`.
@@ -4421,7 +4413,7 @@ impl Expr<Numeric> {
     /// Exact: `Shi(0) = 0`, odd; `d/dx Shi(x) = sinh(x)/x`.
     #[must_use]
     pub fn shi(&self) -> Ex {
-        self.special_apply(crate::base::arena::FN_SHI, &[self.raw_id()])
+        self.special_apply(crate::base::libfn::LibFn::Shi, &[self.raw_id()])
     }
 
     /// Hyperbolic cosine integral `Chi(self) = γ + ln x + ∫₀ˣ (cosh(t) − 1)/t dt`.
@@ -4429,7 +4421,7 @@ impl Expr<Numeric> {
     /// Exact: `Chi(0) = −∞`; `d/dx Chi(x) = cosh(x)/x`.
     #[must_use]
     pub fn chi(&self) -> Ex {
-        self.special_apply(crate::base::arena::FN_CHI, &[self.raw_id()])
+        self.special_apply(crate::base::libfn::LibFn::Chi, &[self.raw_id()])
     }
 
     /// Fresnel sine integral `S(self) = ∫₀ˣ sin(πt²/2) dt`.
@@ -4437,7 +4429,7 @@ impl Expr<Numeric> {
     /// Exact: `S(0) = 0`, `S(±∞) = ±1/2`, odd; `d/dx S(x) = sin(πx²/2)`.
     #[must_use]
     pub fn fresnels(&self) -> Ex {
-        self.special_apply(crate::base::arena::FN_FRESNELS, &[self.raw_id()])
+        self.special_apply(crate::base::libfn::LibFn::FresnelS, &[self.raw_id()])
     }
 
     /// Fresnel cosine integral `C(self) = ∫₀ˣ cos(πt²/2) dt`.
@@ -4445,7 +4437,7 @@ impl Expr<Numeric> {
     /// Exact: `C(0) = 0`, `C(±∞) = ±1/2`, odd; `d/dx C(x) = cos(πx²/2)`.
     #[must_use]
     pub fn fresnelc(&self) -> Ex {
-        self.special_apply(crate::base::arena::FN_FRESNELC, &[self.raw_id()])
+        self.special_apply(crate::base::libfn::LibFn::FresnelC, &[self.raw_id()])
     }
 
     /// Lower incomplete gamma function `γ(s, self) = ∫₀ˣ t^{s−1} e^{−t} dt`
@@ -4466,7 +4458,10 @@ impl Expr<Numeric> {
     #[must_use]
     pub fn lowergamma(&self, s: &Ex) -> Ex {
         let s_id = self.checked_id(s);
-        self.special_apply(crate::base::arena::FN_LOWERGAMMA, &[s_id, self.raw_id()])
+        self.special_apply(
+            crate::base::libfn::LibFn::LowerGamma,
+            &[s_id, self.raw_id()],
+        )
     }
 
     /// Upper incomplete gamma function `Γ(s, self) = ∫_x^∞ t^{s−1} e^{−t} dt`
@@ -4478,7 +4473,10 @@ impl Expr<Numeric> {
     #[must_use]
     pub fn uppergamma(&self, s: &Ex) -> Ex {
         let s_id = self.checked_id(s);
-        self.special_apply(crate::base::arena::FN_UPPERGAMMA, &[s_id, self.raw_id()])
+        self.special_apply(
+            crate::base::libfn::LibFn::UpperGamma,
+            &[s_id, self.raw_id()],
+        )
     }
 
     /// Polylogarithm `Li_s(self) = Σ_{k≥1} self^k / k^s` (SymPy `polylog(s, z)`).
@@ -4499,7 +4497,7 @@ impl Expr<Numeric> {
     #[must_use]
     pub fn polylog(&self, s: &Ex) -> Ex {
         let s_id = self.checked_id(s);
-        self.special_apply(crate::base::arena::FN_POLYLOG, &[s_id, self.raw_id()])
+        self.special_apply(crate::base::libfn::LibFn::PolyLog, &[s_id, self.raw_id()])
     }
 
     /// Dirichlet eta function `η(self) = Σ (−1)^{k+1}/k^s = (1 − 2^{1−s}) ζ(s)`.
@@ -4508,7 +4506,7 @@ impl Expr<Numeric> {
     /// whenever `s` is an integer (so `η(2) = π²/12`).
     #[must_use]
     pub fn dirichlet_eta(&self) -> Ex {
-        self.special_apply(crate::base::arena::FN_DIRICHLET_ETA, &[self.raw_id()])
+        self.special_apply(crate::base::libfn::LibFn::DirichletEta, &[self.raw_id()])
     }
 
     /// Airy function of the first kind `Ai(self)`.
@@ -4525,7 +4523,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn airyai(&self) -> Ex {
-        self.special_apply(crate::base::arena::FN_AIRYAI, &[self.raw_id()])
+        self.special_apply(crate::base::libfn::LibFn::AiryAi, &[self.raw_id()])
     }
 
     /// Airy function of the second kind `Bi(self)`.
@@ -4533,7 +4531,7 @@ impl Expr<Numeric> {
     /// Exact: `Bi(0) = 1/(3^{1/6} Γ(2/3))`, `Bi(−∞) = 0`, `Bi(∞) = ∞`.
     #[must_use]
     pub fn airybi(&self) -> Ex {
-        self.special_apply(crate::base::arena::FN_AIRYBI, &[self.raw_id()])
+        self.special_apply(crate::base::libfn::LibFn::AiryBi, &[self.raw_id()])
     }
 
     /// Derivative of the Airy function of the first kind `Ai′(self)`.
@@ -4541,7 +4539,7 @@ impl Expr<Numeric> {
     /// Exact: `Ai′(0) = −1/(3^{1/3} Γ(1/3))`; `d/dx Ai′(x) = x·Ai(x)`.
     #[must_use]
     pub fn airyaiprime(&self) -> Ex {
-        self.special_apply(crate::base::arena::FN_AIRYAIPRIME, &[self.raw_id()])
+        self.special_apply(crate::base::libfn::LibFn::AiryAiPrime, &[self.raw_id()])
     }
 
     /// Derivative of the Airy function of the second kind `Bi′(self)`.
@@ -4549,7 +4547,7 @@ impl Expr<Numeric> {
     /// Exact: `Bi′(0) = 3^{1/6}/Γ(1/3)`; `d/dx Bi′(x) = x·Bi(x)`.
     #[must_use]
     pub fn airybiprime(&self) -> Ex {
-        self.special_apply(crate::base::arena::FN_AIRYBIPRIME, &[self.raw_id()])
+        self.special_apply(crate::base::libfn::LibFn::AiryBiPrime, &[self.raw_id()])
     }
 
     /// Complete elliptic integral of the first kind
@@ -4568,7 +4566,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn elliptic_k(&self) -> Ex {
-        self.special_apply(crate::base::arena::FN_ELLIPTIC_K, &[self.raw_id()])
+        self.special_apply(crate::base::libfn::LibFn::EllipticK, &[self.raw_id()])
     }
 
     /// Complete elliptic integral of the second kind
@@ -4577,7 +4575,7 @@ impl Expr<Numeric> {
     /// Exact: `E(0) = π/2`, `E(1) = 1`; `d/dm E = (E(m) − K(m)) / (2m)`.
     #[must_use]
     pub fn elliptic_e(&self) -> Ex {
-        self.special_apply(crate::base::arena::FN_ELLIPTIC_E, &[self.raw_id()])
+        self.special_apply(crate::base::libfn::LibFn::EllipticE, &[self.raw_id()])
     }
 
     /// Incomplete elliptic integral of the first kind
@@ -4588,7 +4586,7 @@ impl Expr<Numeric> {
     #[must_use]
     pub fn elliptic_f(&self, m: &Ex) -> Ex {
         let m_id = self.checked_id(m);
-        self.special_apply(crate::base::arena::FN_ELLIPTIC_F, &[self.raw_id(), m_id])
+        self.special_apply(crate::base::libfn::LibFn::EllipticF, &[self.raw_id(), m_id])
     }
 
     /// Complete elliptic integral of the third kind
@@ -4599,7 +4597,10 @@ impl Expr<Numeric> {
     #[must_use]
     pub fn elliptic_pi(&self, m: &Ex) -> Ex {
         let m_id = self.checked_id(m);
-        self.special_apply(crate::base::arena::FN_ELLIPTIC_PI, &[self.raw_id(), m_id])
+        self.special_apply(
+            crate::base::libfn::LibFn::EllipticPi,
+            &[self.raw_id(), m_id],
+        )
     }
 
     /// Gegenbauer (ultraspherical) polynomial `C_n^{(a)}(self)`.
@@ -4619,7 +4620,7 @@ impl Expr<Numeric> {
         let n_id = self.checked_id(n);
         let a_id = self.checked_id(a);
         self.special_apply(
-            crate::base::arena::FN_GEGENBAUER,
+            crate::base::libfn::LibFn::Gegenbauer,
             &[n_id, a_id, self.raw_id()],
         )
     }
@@ -4634,7 +4635,7 @@ impl Expr<Numeric> {
         let a_id = self.checked_id(a);
         let b_id = self.checked_id(b);
         self.special_apply(
-            crate::base::arena::FN_JACOBI,
+            crate::base::libfn::LibFn::Jacobi,
             &[n_id, a_id, b_id, self.raw_id()],
         )
     }
@@ -4658,7 +4659,7 @@ impl Expr<Numeric> {
         let n_id = self.checked_id(n);
         let m_id = self.checked_id(m);
         self.special_apply(
-            crate::base::arena::FN_ASSOC_LEGENDRE,
+            crate::base::libfn::LibFn::AssocLegendre,
             &[n_id, m_id, self.raw_id()],
         )
     }
@@ -4680,7 +4681,7 @@ impl Expr<Numeric> {
         let n_id = self.checked_id(n);
         let a_id = self.checked_id(a);
         self.special_apply(
-            crate::base::arena::FN_ASSOC_LAGUERRE,
+            crate::base::libfn::LibFn::AssocLaguerre,
             &[n_id, a_id, self.raw_id()],
         )
     }
@@ -4717,7 +4718,7 @@ impl Expr<Numeric> {
         let b_id = self.checked_id(b);
         let x1_id = self.checked_id(x1);
         self.special_apply(
-            crate::base::arena::FN_BETAINC,
+            crate::base::libfn::LibFn::BetaInc,
             &[a_id, b_id, x1_id, self.raw_id()],
         )
     }
@@ -4749,7 +4750,7 @@ impl Expr<Numeric> {
         let b_id = self.checked_id(b);
         let x1_id = self.checked_id(x1);
         self.special_apply(
-            crate::base::arena::FN_BETAINC_REGULARIZED,
+            crate::base::libfn::LibFn::BetaIncRegularized,
             &[a_id, b_id, x1_id, self.raw_id()],
         )
     }
@@ -5259,92 +5260,6 @@ impl Expr<Numeric> {
             "x", "f(x)", points, f,
         ))
     }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Helper: parse complex evalf strings
-// ═══════════════════════════════════════════════════════════════════════════
-/// Parse the string output of `evalf()` into a [`Complex64`] (`re`, `im`).
-///
-/// Handles formats:
-/// - `"3.14"` → `(3.14, 0.0)`
-/// - `"2.5*I"` → `(0.0, 2.5)`
-/// - `"-0.866*I"` → `(0.0, -0.866)`
-/// - `"1.5 + 2.3*I"` → `(1.5, 2.3)`
-/// - `"1.5 - 2.3*I"` → `(1.5, -2.3)`
-/// - `"-1 + 2*I"` → `(-1.0, 2.0)`
-/// - `"I"` → `(0.0, 1.0)`
-/// - `"-I"` → `(0.0, -1.0)`
-fn parse_complex_evalf_string(s: &str) -> Result<Complex64, SymplexError> {
-    let s = s.trim();
-
-    // Try pure real first
-    if let Ok(re) = s.parse::<f64>() {
-        return Ok(Complex64::new(re, 0.0));
-    }
-
-    // Pure imaginary: "I", "-I", "2.5*I", "-0.866*I"
-    if s == "I" || s == "i" {
-        return Ok(Complex64::new(0.0, 1.0));
-    }
-    if s == "-I" || s == "-i" {
-        return Ok(Complex64::new(0.0, -1.0));
-    }
-    if let Some(coeff) = s.strip_suffix("*I").or_else(|| s.strip_suffix("*i"))
-        && let Ok(im) = coeff.parse::<f64>()
-    {
-        return Ok(Complex64::new(0.0, im));
-    }
-
-    // Complex: "a + b*I" or "a - b*I"
-    // Find the last '+' or '-' that separates real and imaginary parts
-    // (not at position 0, which would be a negative sign on the real part)
-    let bytes = s.as_bytes();
-    let mut split_pos = None;
-    let mut split_is_minus = false;
-    for i in (1..bytes.len()).rev() {
-        if (bytes[i] == b'+' || bytes[i] == b'-')
-            && (bytes[i - 1] == b' ' || bytes[i - 1].is_ascii_digit())
-        {
-            split_pos = Some(i);
-            split_is_minus = bytes[i] == b'-';
-            break;
-        }
-    }
-
-    if let Some(pos) = split_pos {
-        let re_str = s[..pos].trim();
-        let im_part = s[pos + 1..].trim();
-        let im_str = im_part
-            .trim_end_matches("*I")
-            .trim_end_matches("*i")
-            .trim_end_matches('I')
-            .trim_end_matches('i')
-            .trim();
-
-        let re = re_str.parse::<f64>().map_err(|e| {
-            SymplexError::NotImplemented(format!("could not parse real part '{}': {}", re_str, e))
-        })?;
-
-        let im_val = if im_str.is_empty() {
-            1.0 // just "I" after the +/-
-        } else {
-            im_str.parse::<f64>().map_err(|e| {
-                SymplexError::NotImplemented(format!(
-                    "could not parse imaginary part '{}': {}",
-                    im_str, e
-                ))
-            })?
-        };
-
-        let im = if split_is_minus { -im_val } else { im_val };
-        return Ok(Complex64::new(re, im));
-    }
-
-    Err(SymplexError::NotImplemented(format!(
-        "could not parse '{}' as complex number",
-        s
-    )))
 }
 
 #[cfg(test)]

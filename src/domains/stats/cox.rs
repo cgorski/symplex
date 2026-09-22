@@ -14,7 +14,8 @@
 //! Schoenfeld and martingale residuals, and Harrell's concordance index,
 //! which is a ratio of pair counts and therefore an exact rational.
 //! `statsmodels.duration.hazard_regression.PHReg` is the reference named
-//! in the tests.
+//! in the tests.  [`CoxModel`] implements the shared
+//! [`LikelihoodFit`] and [`WaldFit`] summaries of the regression module.
 //!
 //! ```
 //! use symplex::prelude::*;
@@ -49,12 +50,10 @@
 //!   standard errors and residuals are `f64`.  Counts, event times and the
 //!   concordance index are exact.
 
-use super::common::{
-    check_confidence, chi_squared_sf, ex_usize, information_cholesky, invalid, qu, wald_summary,
-    z_two_sided,
-};
+use super::common::{information_cholesky, invalid, qu, wald_summary};
 use super::data::Q;
 use super::hypothesis::{Alternative, TestResult};
+use super::regression::{LikelihoodFit, WaldFit, chi_squared_test_result};
 use super::survival::Observation;
 use crate::api::context::Context;
 use crate::base::dense_f64::{self, dot};
@@ -598,11 +597,62 @@ fn fit(
     })
 }
 
+impl LikelihoodFit for CoxModel {
+    /// `ℓ(β̂)`, the maximised log *partial* likelihood.
+    fn log_likelihood(&self) -> f64 {
+        self.log_likelihood
+    }
+
+    /// `ℓ(0)`, under the same tie correction.
+    fn null_log_likelihood(&self) -> f64 {
+        self.null_log_likelihood
+    }
+
+    fn n_params(&self) -> usize {
+        self.coefficients.len()
+    }
+
+    fn nobs(&self) -> usize {
+        self.nobs
+    }
+
+    /// `p`: there is no intercept, so every coefficient is a slope.
+    fn df_model(&self) -> usize {
+        self.coefficients.len()
+    }
+
+    /// `BIC = −2ℓ(β̂) + p ln d` with `d` the number of **events**
+    /// ([`n_events`](CoxModel::n_events)), not of observations: the
+    /// partial likelihood has one factor per event, so the effective sample
+    /// size is the event count (Volinsky & Raftery 2000).  This is R's
+    /// `BIC(coxph)` (`logLik.coxph` reports `nobs = nevent`); statsmodels'
+    /// `PHRegResults` has no `bic`.
+    fn bic(&self) -> f64 {
+        -2.0 * self.log_likelihood + self.coefficients.len() as f64 * (self.n_events as f64).ln()
+    }
+
+    /// [`llr`](LikelihoodFit::llr) referred to `χ²_p`, reported — like
+    /// the model's Wald and score tests — with [`Alternative::TwoSided`].
+    fn llr_test(&self, ctx: &Context) -> Result<TestResult, SymplexError> {
+        self.chi_squared_test(ctx, LikelihoodFit::llr(self))
+    }
+}
+
+impl WaldFit for CoxModel {
+    fn coefficients(&self) -> &[f64] {
+        &self.coefficients
+    }
+
+    fn standard_errors(&self) -> &[f64] {
+        &self.standard_errors
+    }
+}
+
 impl CoxModel {
     /// Number of coefficients `p`.
     #[must_use]
     pub fn n_params(&self) -> usize {
-        self.coefficients.len()
+        <Self as LikelihoodFit>::n_params(self)
     }
 
     /// The stratum label of each observation (`0` throughout for [`cox_ph`]).
@@ -619,20 +669,13 @@ impl CoxModel {
     }
 
     /// Wald intervals for the coefficients, `β̂_j ± z_{(1+c)/2} · se_j`
-    /// (`conf_int(alpha = 1 − c)`).
+    /// (`conf_int(alpha = 1 − c)`); [`WaldFit::conf_int`].
     ///
     /// # Errors
     ///
     /// [`SymplexError::InvalidArgument`] for `confidence ∉ (0, 1)`.
     pub fn conf_int(&self, confidence: f64) -> Result<Vec<Interval<f64>>, SymplexError> {
-        check_confidence("conf_int", confidence)?;
-        let z = z_two_sided(confidence);
-        Ok(self
-            .coefficients
-            .iter()
-            .zip(&self.standard_errors)
-            .map(|(b, se)| Interval::closed(b - z * se, b + z * se))
-            .collect())
+        <Self as WaldFit>::conf_int(self, confidence)
     }
 
     /// Wald intervals for the hazard ratios: [`conf_int`](Self::conf_int)
@@ -653,10 +696,10 @@ impl CoxModel {
     }
 
     /// The likelihood-ratio statistic `2(ℓ(β̂) − ℓ(0))`, asymptotically
-    /// `χ²_p`.
+    /// `χ²_p`; [`LikelihoodFit::llr`].
     #[must_use]
     pub fn llr(&self) -> f64 {
-        2.0 * (self.log_likelihood - self.null_log_likelihood)
+        <Self as LikelihoodFit>::llr(self)
     }
 
     /// The Wald statistic `β̂ᵀ I(β̂) β̂` (`= β̂ᵀ cov_params⁻¹ β̂`),
@@ -675,30 +718,20 @@ impl CoxModel {
         self.score_statistic
     }
 
+    /// A statistic referred to `χ²_p`, as the trio below reports it.
     fn chi_squared_test(&self, ctx: &Context, statistic: f64) -> Result<TestResult, SymplexError> {
-        let df = self.n_params();
-        let statistic = ctx.from_f64(statistic)?;
-        let p_value = if statistic.is_positive() == Some(true) {
-            chi_squared_sf(ctx, df, &statistic)
-        } else {
-            ctx.one()
-        };
-        Ok(TestResult {
-            statistic,
-            p_value,
-            df: Some(ex_usize(ctx, df)),
-            alternative: Alternative::TwoSided,
-        })
+        chi_squared_test_result(ctx, statistic, self.n_params(), Alternative::TwoSided)
     }
 
     /// The likelihood-ratio test of `β = 0`: [`llr`](Self::llr) referred to
-    /// `χ²_p` (`summary(coxph)`'s "Likelihood ratio test").
+    /// `χ²_p` (`summary(coxph)`'s "Likelihood ratio test");
+    /// [`LikelihoodFit::llr_test`].
     ///
     /// # Errors
     ///
     /// [`SymplexError::InvalidArgument`] if the statistic is not a number.
     pub fn llr_test(&self, ctx: &Context) -> Result<TestResult, SymplexError> {
-        self.chi_squared_test(ctx, self.llr())
+        <Self as LikelihoodFit>::llr_test(self, ctx)
     }
 
     /// The Wald test of `β = 0`: [`wald_statistic`](Self::wald_statistic)
@@ -721,10 +754,18 @@ impl CoxModel {
         self.chi_squared_test(ctx, self.score_statistic)
     }
 
-    /// `AIC = −2ℓ(β̂) + 2p`.
+    /// `AIC = −2ℓ(β̂) + 2p`; [`LikelihoodFit::aic`].
     #[must_use]
     pub fn aic(&self) -> f64 {
-        -2.0 * self.log_likelihood + 2.0 * self.n_params() as f64
+        <Self as LikelihoodFit>::aic(self)
+    }
+
+    /// `BIC = −2ℓ(β̂) + p ln d`, `d` the number of events
+    /// ([`n_events`](Self::n_events)) — R's `BIC(coxph)`; see
+    /// [`LikelihoodFit::bic`] for why events rather than observations.
+    #[must_use]
+    pub fn bic(&self) -> f64 {
+        <Self as LikelihoodFit>::bic(self)
     }
 
     fn check_row(&self, op: &'static str, x_row: &[f64]) -> Result<(), SymplexError> {

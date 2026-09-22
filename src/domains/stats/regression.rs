@@ -24,6 +24,13 @@
 //! are `f64` (a Brent root of the exact CDF).  Logistic regression has no
 //! closed form and is fitted numerically in `f64`.
 //!
+//! The maximum-likelihood fits — [`Logit`], [`MnLogit`], [`OrderedLogit`]
+//! and [`CoxModel`](super::cox::CoxModel) — share two traits:
+//! [`LikelihoodFit`] (information criteria, pseudo-`R²`, the
+//! likelihood-ratio test) and [`WaldFit`] (`z`, p-values and Wald
+//! intervals from coefficients and standard errors).  Each fit also offers
+//! the same methods inherently.
+//!
 //! ```
 //! use symplex::prelude::*;
 //! use symplex::linprog::q;
@@ -45,8 +52,8 @@
 use num_traits::{One, Signed, Zero};
 
 use super::common::{
-    WaldSummary, check_confidence, ex, ex_usize, f_sf, information_cholesky, invalid, qu,
-    t_two_sided, wald_summary, z_two_sided,
+    WaldSummary, check_confidence, chi_squared_sf, ex, ex_usize, f_sf, information_cholesky,
+    invalid, normal_two_sided, qu, t_two_sided, wald_summary, z_two_sided,
 };
 use super::data::Q;
 use super::hypothesis::{self, Alternative, TestResult};
@@ -1494,11 +1501,236 @@ pub fn logit<B: BinaryOutcome>(
     })
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Maximum-likelihood fits: the shared summaries
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A `χ²_df` test of an `f64` statistic as a [`TestResult`]: the statistic
+/// exactly, `P(χ²_df ≥ statistic)` through [`chi_squared_sf`] (`1` for a
+/// non-positive statistic), the degrees of freedom, and the alternative
+/// the caller reports.  Behind [`LikelihoodFit::llr_test`] and the Cox
+/// model's likelihood-ratio / Wald / score trio.
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for a `NaN` statistic.
+pub(crate) fn chi_squared_test_result(
+    ctx: &Context,
+    statistic: f64,
+    df: usize,
+    alternative: Alternative,
+) -> Result<TestResult, SymplexError> {
+    let positive = statistic > 0.0;
+    let statistic = ctx.from_f64(statistic)?;
+    let p_value = if positive {
+        chi_squared_sf(ctx, df, &statistic)
+    } else {
+        ctx.one()
+    };
+    Ok(TestResult {
+        statistic,
+        p_value,
+        df: Some(ex_usize(ctx, df)),
+        alternative,
+    })
+}
+
+/// A model fitted by maximum likelihood, read through its log-likelihoods.
+/// The information criteria, McFadden's pseudo-`R²` and the
+/// likelihood-ratio test against the null model all follow from five
+/// numbers, so a fit supplies those and gets the rest here.
+///
+/// Implemented by [`Logit`], [`MnLogit`], [`OrderedLogit`] and
+/// [`CoxModel`](super::cox::CoxModel); each also offers `llr`, `aic`,
+/// `bic` and `llr_test` inherently (the log-likelihoods are fields), so
+/// the trait need not be imported to call them on a concrete fit — import
+/// it to write code generic over fits:
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::LikelihoodFit;
+/// use symplex::stats::regression::{logit, LogitOpts};
+///
+/// fn summary<F: LikelihoodFit>(fit: &F) -> String {
+///     format!("AIC {:.3}, pseudo-R² {:.3}", fit.aic(), fit.pseudo_r_squared())
+/// }
+///
+/// // Ten controls with 3 successes, ten treated with 7.
+/// let y: Vec<bool> = (0..20).map(|i| matches!(i, 7..=9 | 13..=19)).collect();
+/// let x: Vec<Vec<f64>> = (0..20).map(|i| vec![if i < 10 { 0.0 } else { 1.0 }]).collect();
+/// let fit = logit(&y, &x, true, &LogitOpts::default())?;
+/// // statsmodels: aic 28.434572082195736, prsquared 0.11870910076930752
+/// assert_eq!(summary(&fit), "AIC 28.435, pseudo-R² 0.119");
+/// # Ok::<(), SymplexError>(())
+/// ```
+pub trait LikelihoodFit {
+    /// `ℓ`, the maximised log-likelihood (`llf`).
+    fn log_likelihood(&self) -> f64;
+
+    /// `ℓ₀`, the log-likelihood of the null model the fit is compared
+    /// against (`llnull`): intercept-only for [`Logit`] and [`MnLogit`],
+    /// thresholds-only for [`OrderedLogit`], no covariate effect for
+    /// [`CoxModel`](super::cox::CoxModel).
+    fn null_log_likelihood(&self) -> f64;
+
+    /// The number of free parameters `k` that [`aic`](Self::aic) and
+    /// [`bic`](Self::bic) charge for.
+    fn n_params(&self) -> usize;
+
+    /// The number of observations `n` (`nobs`).
+    fn nobs(&self) -> usize;
+
+    /// The degrees of freedom of [`llr_test`](Self::llr_test): how many
+    /// parameters the null model fixes (`df_model`).
+    fn df_model(&self) -> usize;
+
+    /// The likelihood-ratio statistic `2(ℓ − ℓ₀)` against the null model
+    /// (`llr`), asymptotically `χ²_{df_model}`.
+    #[must_use]
+    fn llr(&self) -> f64 {
+        2.0 * (self.log_likelihood() - self.null_log_likelihood())
+    }
+
+    /// McFadden's pseudo-`R²`, `1 − ℓ/ℓ₀` (`prsquared`).
+    #[must_use]
+    fn pseudo_r_squared(&self) -> f64 {
+        1.0 - self.log_likelihood() / self.null_log_likelihood()
+    }
+
+    /// `AIC = −2ℓ + 2k` (`aic`).
+    #[must_use]
+    fn aic(&self) -> f64 {
+        -2.0 * self.log_likelihood() + 2.0 * self.n_params() as f64
+    }
+
+    /// `BIC = −2ℓ + k ln n` with `n = nobs()` (`bic`).  A fit whose
+    /// effective sample size is not its observation count overrides this:
+    /// [`CoxModel`](super::cox::CoxModel) counts events, as R's
+    /// `BIC(coxph)` does.
+    #[must_use]
+    fn bic(&self) -> f64 {
+        -2.0 * self.log_likelihood() + self.n_params() as f64 * (self.nobs() as f64).ln()
+    }
+
+    /// The likelihood-ratio test of the null model: [`llr`](Self::llr)
+    /// referred to `χ²_{df_model}` (`llr_pvalue`), reported with
+    /// [`Alternative::Greater`] — the upper tail of `χ²`.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] when the null model *is* the model
+    /// (`df_model = 0`; statsmodels reports `nan`), or for a `NaN`
+    /// statistic.
+    fn llr_test(&self, ctx: &Context) -> Result<TestResult, SymplexError> {
+        let df = self.df_model();
+        if df == 0 {
+            return Err(invalid(
+                "llr_test",
+                "the model has no regressors besides the constant (df_model = 0)",
+            ));
+        }
+        chi_squared_test_result(ctx, self.llr(), df, Alternative::Greater)
+    }
+}
+
+/// A fit with coefficients and their standard errors from an information
+/// matrix: the Wald `z` statistics, two-sided normal p-values and Wald
+/// intervals follow.  Implemented by [`Logit`], [`OrderedLogit`] (over the
+/// slopes `β`) and [`CoxModel`](super::cox::CoxModel), and by [`MnLogit`]
+/// over its parameters flattened in the order of its `cov_params`; each
+/// offers [`conf_int`](Self::conf_int) inherently as well.
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::WaldFit;
+/// use symplex::stats::regression::{logit, LogitOpts};
+///
+/// let y: Vec<bool> = (0..20).map(|i| matches!(i, 7..=9 | 13..=19)).collect();
+/// let x: Vec<Vec<f64>> = (0..20).map(|i| vec![if i < 10 { 0.0 } else { 1.0 }]).collect();
+/// let fit = logit(&y, &x, true, &LogitOpts::default())?;
+/// // statsmodels: tvalues [-1.2278512511111188, 1.736443891898117], pvalues[1] 0.08248537711586468
+/// assert!((fit.z_values()[1] - 1.736_443_891_898_117).abs() < 1e-8);
+/// assert!((fit.p_values()[1] - 0.082_485_377_115_864_68).abs() < 1e-9);
+/// # Ok::<(), SymplexError>(())
+/// ```
+pub trait WaldFit {
+    /// The estimates `β̂` (`params`).
+    fn coefficients(&self) -> &[f64];
+
+    /// The standard errors `√diag(I⁻¹)`, one per coefficient (`bse`).
+    fn standard_errors(&self) -> &[f64];
+
+    /// `z_j = β̂_j / se_j` (`tvalues`).
+    #[must_use]
+    fn z_values(&self) -> Vec<f64> {
+        self.coefficients()
+            .iter()
+            .zip(self.standard_errors())
+            .map(|(b, s)| b / s)
+            .collect()
+    }
+
+    /// Two-sided normal p-values `P(|Z| ≥ |z_j|) = erfc(|z_j|/√2)`
+    /// (`pvalues`).
+    #[must_use]
+    fn p_values(&self) -> Vec<f64> {
+        self.z_values().into_iter().map(normal_two_sided).collect()
+    }
+
+    /// Wald intervals `β̂_j ± z_{(1+c)/2} · se_j` (`conf_int(alpha = 1 − c)`).
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] for `confidence ∉ (0, 1)`.
+    fn conf_int(&self, confidence: f64) -> Result<Vec<Interval<f64>>, SymplexError> {
+        check_confidence("conf_int", confidence)?;
+        let z = z_two_sided(confidence);
+        Ok(self
+            .coefficients()
+            .iter()
+            .zip(self.standard_errors())
+            .map(|(b, se)| Interval::closed(b - z * se, b + z * se))
+            .collect())
+    }
+}
+
+impl LikelihoodFit for Logit {
+    fn log_likelihood(&self) -> f64 {
+        self.log_likelihood
+    }
+
+    fn null_log_likelihood(&self) -> f64 {
+        self.null_log_likelihood
+    }
+
+    fn n_params(&self) -> usize {
+        self.coefficients.len()
+    }
+
+    fn nobs(&self) -> usize {
+        self.nobs
+    }
+
+    fn df_model(&self) -> usize {
+        self.df_model
+    }
+}
+
+impl WaldFit for Logit {
+    fn coefficients(&self) -> &[f64] {
+        &self.coefficients
+    }
+
+    fn standard_errors(&self) -> &[f64] {
+        &self.standard_errors
+    }
+}
+
 impl Logit {
     /// Number of parameters `p`.
     #[must_use]
     pub fn n_params(&self) -> usize {
-        self.coefficients.len()
+        <Self as LikelihoodFit>::n_params(self)
     }
 
     fn design_row(&self, op: &'static str, x_row: &[f64]) -> Result<Vec<f64>, SymplexError> {
@@ -1551,39 +1783,45 @@ impl Logit {
         self.coefficients.iter().map(|b| b.exp()).collect()
     }
 
-    /// Wald intervals `β̂_j ± z_{(1+c)/2} · se_j` (`conf_int(alpha = 1 − c)`).
+    /// Wald intervals `β̂_j ± z_{(1+c)/2} · se_j` (`conf_int(alpha = 1 − c)`);
+    /// [`WaldFit::conf_int`].
     ///
     /// # Errors
     ///
     /// [`SymplexError::InvalidArgument`] for `confidence ∉ (0, 1)`.
     pub fn conf_int(&self, confidence: f64) -> Result<Vec<Interval<f64>>, SymplexError> {
-        check_confidence("conf_int", confidence)?;
-        let z = z_two_sided(confidence);
-        Ok(self
-            .coefficients
-            .iter()
-            .zip(&self.standard_errors)
-            .map(|(b, se)| Interval::closed(b - z * se, b + z * se))
-            .collect())
+        <Self as WaldFit>::conf_int(self, confidence)
     }
 
     /// Likelihood-ratio statistic `2(ℓ − ℓ₀)` against the intercept-only
-    /// model (`llr`), asymptotically `χ²_{df_model}`.
+    /// model (`llr`), asymptotically `χ²_{df_model}`; [`LikelihoodFit::llr`].
     #[must_use]
     pub fn llr(&self) -> f64 {
-        2.0 * (self.log_likelihood - self.null_log_likelihood)
+        <Self as LikelihoodFit>::llr(self)
     }
 
-    /// `AIC = −2ℓ + 2p` (`aic`).
+    /// The likelihood-ratio test of every slope being zero:
+    /// [`llr`](Self::llr) referred to `χ²_{p−1}` (`llr_pvalue`);
+    /// [`LikelihoodFit::llr_test`].
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] for an intercept-only model
+    /// (`df_model = 0`) or a non-finite statistic.
+    pub fn llr_test(&self, ctx: &Context) -> Result<TestResult, SymplexError> {
+        <Self as LikelihoodFit>::llr_test(self, ctx)
+    }
+
+    /// `AIC = −2ℓ + 2p` (`aic`); [`LikelihoodFit::aic`].
     #[must_use]
     pub fn aic(&self) -> f64 {
-        -2.0 * self.log_likelihood + 2.0 * self.n_params() as f64
+        <Self as LikelihoodFit>::aic(self)
     }
 
-    /// `BIC = −2ℓ + p ln n` (`bic`).
+    /// `BIC = −2ℓ + p ln n` (`bic`); [`LikelihoodFit::bic`].
     #[must_use]
     pub fn bic(&self) -> f64 {
-        -2.0 * self.log_likelihood + self.n_params() as f64 * (self.nobs as f64).ln()
+        <Self as LikelihoodFit>::bic(self)
     }
 }
 
@@ -1932,33 +2170,6 @@ fn modal_category(probs: &[f64]) -> usize {
     best
 }
 
-/// The likelihood-ratio test `2(ℓ − ℓ₀) ~ χ²_df`, as a [`TestResult`].
-fn llr_chi_squared(
-    op: &'static str,
-    ctx: &Context,
-    llr: f64,
-    df: usize,
-) -> Result<TestResult, SymplexError> {
-    if df == 0 {
-        return Err(invalid(
-            op,
-            "the model has no regressors besides the constant (df_model = 0)",
-        ));
-    }
-    let statistic = ctx.from_f64(llr)?;
-    let p_value = if llr > 0.0 {
-        super::common::chi_squared_sf(ctx, df, &statistic)
-    } else {
-        ctx.one()
-    };
-    Ok(TestResult {
-        statistic,
-        p_value,
-        df: Some(ex_usize(ctx, df)),
-        alternative: Alternative::Greater,
-    })
-}
-
 // ── Multinomial logit ───────────────────────────────────────────────────
 
 /// A fitted multinomial logistic regression (statsmodels
@@ -1969,7 +2180,13 @@ fn llr_chi_squared(
 /// category `j` first, then the parameter (intercept first when one was
 /// added) — statsmodels' `params.T`.  [`cov_params`](Self::cov_params) is
 /// `(k − 1)p × (k − 1)p` over the flat index `(j − 1)·p + a`, statsmodels'
-/// Fortran-order flattening (`cov_params()`).
+/// Fortran-order flattening (`cov_params()`); the [`WaldFit`] view of the
+/// fit uses that same flat index, while the inherent
+/// [`conf_int`](Self::conf_int) keeps the nested shape.
+///
+/// [`LikelihoodFit::n_params`] is the total `(k − 1)p` the information
+/// criteria charge for; the [`n_params`](Self::n_params) *field* is the
+/// per-equation `p`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MnLogit {
     /// `β̂_j` for each non-reference category (`params.T`).
@@ -2007,6 +2224,10 @@ pub struct MnLogit {
     /// `n − (k − 1)p` (`df_resid`).
     pub df_resid: usize,
     added_intercept: bool,
+    /// `coefficients` over the flat index `(j − 1)·p + a`, for [`WaldFit`].
+    flat_coefficients: Vec<f64>,
+    /// `standard_errors` over the same flat index.
+    flat_standard_errors: Vec<f64>,
 }
 
 /// Log-likelihood, score and observed information of the multinomial logit
@@ -2144,7 +2365,44 @@ pub fn mnlogit(
         df_model: (k - 1) * (p - 1),
         df_resid: n - m,
         added_intercept: add_intercept,
+        flat_coefficients: out.params,
+        flat_standard_errors: wald.se,
     })
+}
+
+impl LikelihoodFit for MnLogit {
+    fn log_likelihood(&self) -> f64 {
+        self.log_likelihood
+    }
+
+    fn null_log_likelihood(&self) -> f64 {
+        self.null_log_likelihood
+    }
+
+    /// `(k − 1)p`, every equation's parameters together (the
+    /// [`n_params`](MnLogit::n_params) field is the per-equation `p`).
+    fn n_params(&self) -> usize {
+        (self.n_categories - 1) * self.n_params
+    }
+
+    fn nobs(&self) -> usize {
+        self.nobs
+    }
+
+    fn df_model(&self) -> usize {
+        self.df_model
+    }
+}
+
+/// Over the flat index `(j − 1)·p + a` of [`cov_params`](MnLogit::cov_params).
+impl WaldFit for MnLogit {
+    fn coefficients(&self) -> &[f64] {
+        &self.flat_coefficients
+    }
+
+    fn standard_errors(&self) -> &[f64] {
+        &self.flat_standard_errors
+    }
 }
 
 impl MnLogit {
@@ -2196,56 +2454,49 @@ impl MnLogit {
 
     /// Wald intervals `β̂ ± z_{(1+c)/2} · se` for every coefficient, same
     /// shape as [`coefficients`](Self::coefficients) (`conf_int(alpha = 1 − c)`).
+    /// [`WaldFit::conf_int`] gives the same intervals over the flat index
+    /// of [`cov_params`](Self::cov_params).
     ///
     /// # Errors
     ///
     /// [`SymplexError::InvalidArgument`] for `confidence ∉ (0, 1)`.
     pub fn conf_int(&self, confidence: f64) -> Result<Vec<Vec<Interval<f64>>>, SymplexError> {
-        check_confidence("conf_int", confidence)?;
-        let z = z_two_sided(confidence);
-        Ok(self
-            .coefficients
-            .iter()
-            .zip(&self.standard_errors)
-            .map(|(bs, ses)| {
-                bs.iter()
-                    .zip(ses)
-                    .map(|(b, se)| Interval::closed(b - z * se, b + z * se))
-                    .collect()
-            })
+        let flat = <Self as WaldFit>::conf_int(self, confidence)?;
+        Ok(flat
+            .chunks(self.n_params.max(1))
+            .map(<[Interval<f64>]>::to_vec)
             .collect())
     }
 
     /// Likelihood-ratio statistic `2(ℓ − ℓ₀)` against the intercept-only
-    /// model (`llr`), asymptotically `χ²_{df_model}`.
+    /// model (`llr`), asymptotically `χ²_{df_model}`; [`LikelihoodFit::llr`].
     #[must_use]
     pub fn llr(&self) -> f64 {
-        2.0 * (self.log_likelihood - self.null_log_likelihood)
+        <Self as LikelihoodFit>::llr(self)
     }
 
     /// The likelihood-ratio test of every slope being zero:
     /// [`llr`](Self::llr) referred to `χ²_{(k−1)(p−1)}` (`llr_pvalue`, whose
-    /// `df_model` is `(J − 1)(K − 1)`).
+    /// `df_model` is `(J − 1)(K − 1)`); [`LikelihoodFit::llr_test`].
     ///
     /// # Errors
     ///
     /// [`SymplexError::InvalidArgument`] for an intercept-only model
     /// (`df_model = 0`) or a non-finite statistic.
     pub fn llr_test(&self, ctx: &Context) -> Result<TestResult, SymplexError> {
-        llr_chi_squared("llr_test", ctx, self.llr(), self.df_model)
+        <Self as LikelihoodFit>::llr_test(self, ctx)
     }
 
-    /// `AIC = −2ℓ + 2(k − 1)p` (`aic`).
+    /// `AIC = −2ℓ + 2(k − 1)p` (`aic`); [`LikelihoodFit::aic`].
     #[must_use]
     pub fn aic(&self) -> f64 {
-        -2.0 * self.log_likelihood + 2.0 * ((self.n_categories - 1) * self.n_params) as f64
+        <Self as LikelihoodFit>::aic(self)
     }
 
-    /// `BIC = −2ℓ + (k − 1)p ln n` (`bic`).
+    /// `BIC = −2ℓ + (k − 1)p ln n` (`bic`); [`LikelihoodFit::bic`].
     #[must_use]
     pub fn bic(&self) -> f64 {
-        -2.0 * self.log_likelihood
-            + ((self.n_categories - 1) * self.n_params) as f64 * (self.nobs as f64).ln()
+        <Self as LikelihoodFit>::bic(self)
     }
 }
 
@@ -2523,11 +2774,49 @@ pub fn ologit(y: &[usize], x: &[Vec<f64>], opts: &LogitOpts) -> Result<OrderedLo
     })
 }
 
+impl LikelihoodFit for OrderedLogit {
+    fn log_likelihood(&self) -> f64 {
+        self.log_likelihood
+    }
+
+    fn null_log_likelihood(&self) -> f64 {
+        self.null_log_likelihood
+    }
+
+    /// `p + k − 1`: slopes and thresholds together.
+    fn n_params(&self) -> usize {
+        self.coefficients.len() + self.thresholds.len()
+    }
+
+    fn nobs(&self) -> usize {
+        self.nobs
+    }
+
+    fn df_model(&self) -> usize {
+        self.df_model
+    }
+}
+
+/// Over the slopes `β` only: the thresholds' Wald quantities are the tail
+/// of the [`standard_errors`](OrderedLogit::standard_errors),
+/// [`z_values`](OrderedLogit::z_values) and [`p_values`](OrderedLogit::p_values)
+/// fields.
+impl WaldFit for OrderedLogit {
+    fn coefficients(&self) -> &[f64] {
+        &self.coefficients
+    }
+
+    fn standard_errors(&self) -> &[f64] {
+        let p = self.coefficients.len().min(self.standard_errors.len());
+        &self.standard_errors[..p]
+    }
+}
+
 impl OrderedLogit {
     /// `p + k − 1`: slopes and thresholds together.
     #[must_use]
     pub fn n_params(&self) -> usize {
-        self.coefficients.len() + self.thresholds.len()
+        <Self as LikelihoodFit>::n_params(self)
     }
 
     fn linear_predictor(&self, op: &'static str, x_row: &[f64]) -> Result<f64, SymplexError> {
@@ -2583,49 +2872,42 @@ impl OrderedLogit {
     }
 
     /// Wald intervals `β̂_a ± z_{(1+c)/2} · se_a` for the slopes
-    /// (`conf_int(alpha = 1 − c)[:p]`).
+    /// (`conf_int(alpha = 1 − c)[:p]`); [`WaldFit::conf_int`].
     ///
     /// # Errors
     ///
     /// [`SymplexError::InvalidArgument`] for `confidence ∉ (0, 1)`.
     pub fn conf_int(&self, confidence: f64) -> Result<Vec<Interval<f64>>, SymplexError> {
-        check_confidence("conf_int", confidence)?;
-        let z = z_two_sided(confidence);
-        Ok(self
-            .coefficients
-            .iter()
-            .zip(&self.standard_errors)
-            .map(|(b, se)| Interval::closed(b - z * se, b + z * se))
-            .collect())
+        <Self as WaldFit>::conf_int(self, confidence)
     }
 
     /// Likelihood-ratio statistic `2(ℓ − ℓ₀)` against the thresholds-only
-    /// model (`llr`), asymptotically `χ²_p`.
+    /// model (`llr`), asymptotically `χ²_p`; [`LikelihoodFit::llr`].
     #[must_use]
     pub fn llr(&self) -> f64 {
-        2.0 * (self.log_likelihood - self.null_log_likelihood)
+        <Self as LikelihoodFit>::llr(self)
     }
 
     /// The likelihood-ratio test of `β = 0`: [`llr`](Self::llr) referred to
-    /// `χ²_p` (`llr_pvalue`, `df_model = k_vars`).
+    /// `χ²_p` (`llr_pvalue`, `df_model = k_vars`); [`LikelihoodFit::llr_test`].
     ///
     /// # Errors
     ///
     /// [`SymplexError::InvalidArgument`] for a non-finite statistic.
     pub fn llr_test(&self, ctx: &Context) -> Result<TestResult, SymplexError> {
-        llr_chi_squared("llr_test", ctx, self.llr(), self.df_model)
+        <Self as LikelihoodFit>::llr_test(self, ctx)
     }
 
-    /// `AIC = −2ℓ + 2(p + k − 1)` (`aic`).
+    /// `AIC = −2ℓ + 2(p + k − 1)` (`aic`); [`LikelihoodFit::aic`].
     #[must_use]
     pub fn aic(&self) -> f64 {
-        -2.0 * self.log_likelihood + 2.0 * self.n_params() as f64
+        <Self as LikelihoodFit>::aic(self)
     }
 
-    /// `BIC = −2ℓ + (p + k − 1) ln n` (`bic`).
+    /// `BIC = −2ℓ + (p + k − 1) ln n` (`bic`); [`LikelihoodFit::bic`].
     #[must_use]
     pub fn bic(&self) -> f64 {
-        -2.0 * self.log_likelihood + self.n_params() as f64 * (self.nobs as f64).ln()
+        <Self as LikelihoodFit>::bic(self)
     }
 }
 

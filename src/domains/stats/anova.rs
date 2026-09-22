@@ -64,10 +64,10 @@ use super::regression::ols;
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
-use crate::base::interval::Interval;
+use crate::base::interval::{Bounds, Interval};
 use crate::base::numeric::ratio_to_f64;
 use crate::domains::exact_matrix::QMatrix;
-use crate::domains::optimize::{RootOpts, brent_root};
+use crate::domains::optimize::{RootOpts, brent_root, grow_bracket};
 use crate::output::codegen::numeric_rt::lgamma;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1553,20 +1553,19 @@ pub fn studentized_range_quantile(p: f64, k: usize, df: f64) -> Result<f64, Symp
     check_studentized_range_args(OP, k, df)?;
     check_unit_open(OP, "p", p)?;
     let g = |q: f64| studentized_range_cdf_impl(q, k, df) - p;
-    let mut hi = 2.0;
-    let mut steps = 0;
-    while g(hi) < 0.0 {
-        hi *= 2.0;
-        steps += 1;
-        if steps > 20 {
-            return Err(failed(OP, "no bracket for the studentized range quantile"));
-        }
-    }
+    // `g(0) = −p`; the upper end doubles from 2 until `g ≥ 0`.
+    let bracket = grow_bracket(g, 0.0, 2.0, Bounds::at_least(0.0), 21).map_err(|e| {
+        failed(
+            OP,
+            format!("no bracket for the studentized range quantile: {e}"),
+        )
+    })?;
     let opts = RootOpts {
         xtol: 1e-10,
         ..RootOpts::default()
     };
-    let root = brent_root(g, 0.0, hi, &opts).map_err(|e| failed(OP, e.to_string()))?;
+    let root = brent_root(g, bracket.lower, bracket.upper, &opts)
+        .map_err(|e| failed(OP, e.to_string()))?;
     if root.is_finite() {
         Ok(root)
     } else {

@@ -24,78 +24,21 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 
 use crate::base::config::EvalConfig;
+use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode, NumId, SymbolId};
 use crate::base::numeric::Q;
 use crate::base::sort_key::{SortKey, compute_sort_key};
 use crate::base::symbol::SymbolTable;
 
-// ── Apply function name constants ──────────────────────────────────────
-// Use these instead of string literals to prevent typo bugs.
-pub(crate) const FN_FACTORIAL2: &str = "factorial2";
-pub(crate) const FN_SUBFACTORIAL: &str = "subfactorial";
-pub(crate) const FN_RISING_FACTORIAL: &str = "rising_factorial";
-pub(crate) const FN_FALLING_FACTORIAL: &str = "falling_factorial";
-pub(crate) const FN_FIBONACCI: &str = "fibonacci";
-pub(crate) const FN_LUCAS: &str = "lucas";
-pub(crate) const FN_BERNOULLI: &str = "bernoulli";
-pub(crate) const FN_HARMONIC: &str = "harmonic";
-pub(crate) const FN_CATALAN: &str = "catalan";
-pub(crate) const FN_BELL: &str = "bell";
-pub(crate) const FN_EULER_NUMBER: &str = "euler_number";
-
-// ── Combinatorial function name constants (Phase 1) ────────────────────
-pub(crate) const FN_STIRLING1: &str = "stirling1";
-pub(crate) const FN_STIRLING2: &str = "stirling2";
-pub(crate) const FN_PARTITION_COUNT: &str = "partition_count";
-
-#[allow(dead_code)]
-pub(crate) const FN_LAMBERTW: &str = "lambertw";
-
-// ── Bessel function name constants ─────────────────────────────────────
-pub(crate) const FN_BESSELJ: &str = "besselj";
-pub(crate) const FN_BESSELY: &str = "bessely";
-pub(crate) const FN_BESSELI: &str = "besseli";
-pub(crate) const FN_BESSELK: &str = "besselk";
-
-// ── Orthogonal polynomial name constants ───────────────────────────────
-pub(crate) const FN_LEGENDRE: &str = "legendre";
-pub(crate) const FN_CHEBYSHEV_T: &str = "chebyshev_t";
-pub(crate) const FN_CHEBYSHEV_U: &str = "chebyshev_u";
-pub(crate) const FN_HERMITE: &str = "hermite";
-pub(crate) const FN_LAGUERRE: &str = "laguerre";
-
-// ── More special functions (0.9) ───────────────────────────────────────
-// Error-function family and integrals.
-pub(crate) const FN_ERFI: &str = "erfi";
-pub(crate) const FN_ERFINV: &str = "erfinv";
-pub(crate) const FN_ERFCINV: &str = "erfcinv";
-pub(crate) const FN_EXPINT: &str = "expint";
-pub(crate) const FN_SHI: &str = "Shi";
-pub(crate) const FN_CHI: &str = "Chi";
-pub(crate) const FN_FRESNELS: &str = "fresnels";
-pub(crate) const FN_FRESNELC: &str = "fresnelc";
-pub(crate) const FN_LOWERGAMMA: &str = "lowergamma";
-pub(crate) const FN_UPPERGAMMA: &str = "uppergamma";
-pub(crate) const FN_POLYLOG: &str = "polylog";
-pub(crate) const FN_DIRICHLET_ETA: &str = "dirichlet_eta";
-// Airy functions.
-pub(crate) const FN_AIRYAI: &str = "airyai";
-pub(crate) const FN_AIRYBI: &str = "airybi";
-pub(crate) const FN_AIRYAIPRIME: &str = "airyaiprime";
-pub(crate) const FN_AIRYBIPRIME: &str = "airybiprime";
-// Elliptic integrals (parameter `m = k²` convention, as in SymPy).
-pub(crate) const FN_ELLIPTIC_K: &str = "elliptic_k";
-pub(crate) const FN_ELLIPTIC_E: &str = "elliptic_e";
-pub(crate) const FN_ELLIPTIC_F: &str = "elliptic_f";
-pub(crate) const FN_ELLIPTIC_PI: &str = "elliptic_pi";
-// Orthogonal polynomials with parameters.
-pub(crate) const FN_GEGENBAUER: &str = "gegenbauer";
-pub(crate) const FN_JACOBI: &str = "jacobi";
-pub(crate) const FN_ASSOC_LEGENDRE: &str = "assoc_legendre";
-pub(crate) const FN_ASSOC_LAGUERRE: &str = "assoc_laguerre";
-// Generalised incomplete beta (0.12), SymPy argument order `(a, b, x1, x2)`.
-pub(crate) const FN_BETAINC: &str = "betainc";
-pub(crate) const FN_BETAINC_REGULARIZED: &str = "betainc_regularized";
+// ── Library function names ─────────────────────────────────────────────
+// The registry is `base::libfn::LibFn`; consumers match on the enum and
+// build nodes with `Arena::lib_apply`.  These aliases remain for the two
+// callers outside the registry's consumers (`transforms::integrate`,
+// `calculus::laplace`), which compare or intern the name text directly.
+pub(crate) const FN_BESSELJ: &str = LibFn::BesselJ.name();
+pub(crate) const FN_ERFI: &str = LibFn::Erfi.name();
+pub(crate) const FN_SHI: &str = LibFn::Shi.name();
+pub(crate) const FN_CHI: &str = LibFn::Chi.name();
 
 // ---------------------------------------------------------------------------
 // Arena
@@ -553,6 +496,21 @@ impl Arena {
     /// Panics if `id` was not produced by this arena's symbol table.
     pub fn symbol_name(&self, id: SymbolId) -> &str {
         self.symbols.name(id)
+    }
+
+    /// The library function an `Apply` head names, if it is one.
+    ///
+    /// Resolved from the interned text, so the registry never pre-interns a
+    /// symbol and `SymbolId` numbering is exactly what the user's own
+    /// interning order produces.
+    pub(crate) fn lib_fn(&self, sym: SymbolId) -> Option<LibFn> {
+        LibFn::from_name(self.symbols.name(sym))
+    }
+
+    /// Interns `f(args)` as a library `Apply` node without folding.
+    pub(crate) fn lib_apply(&mut self, f: LibFn, args: &[ExprId]) -> ExprId {
+        let sid = self.symbols.intern(f.name());
+        self.intern(ExprNode::Apply(sid, args.iter().copied().collect()))
     }
 
     /// Get the stored assumptions for a symbol.
@@ -1548,102 +1506,74 @@ impl Arena {
 
     /// Creates a `factorial2` (double factorial) node: `n!!`.
     pub fn factorial2(&mut self, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_FACTORIAL2);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::Factorial2, &[n])
     }
 
     /// Creates a `subfactorial` (derangement count) node: `!n`.
     pub fn subfactorial(&mut self, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_SUBFACTORIAL);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::Subfactorial, &[n])
     }
 
     /// Creates a `rising_factorial` (Pochhammer symbol) node: `(x)_n`.
     pub fn rising_factorial(&mut self, x: ExprId, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_RISING_FACTORIAL);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![x, n];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::RisingFactorial, &[x, n])
     }
 
     /// Creates a `falling_factorial` node: `x^(n)`.
     pub fn falling_factorial(&mut self, x: ExprId, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_FALLING_FACTORIAL);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![x, n];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::FallingFactorial, &[x, n])
     }
 
     /// Creates a `fibonacci` node: `F(n)`.
     pub fn fibonacci(&mut self, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_FIBONACCI);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::Fibonacci, &[n])
     }
 
     /// Creates a `lucas` node: `L(n)`.
     pub fn lucas(&mut self, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_LUCAS);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::Lucas, &[n])
     }
 
     /// Creates a `bernoulli` (Bernoulli number) node: `B(n)`.
     pub fn bernoulli_number(&mut self, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_BERNOULLI);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::Bernoulli, &[n])
     }
 
     /// Creates a `harmonic` (harmonic number) node: `H(n)`.
     pub fn harmonic(&mut self, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_HARMONIC);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::Harmonic, &[n])
     }
 
     /// Creates a `catalan` (Catalan number) node: `C(n)`.
     pub fn catalan_number(&mut self, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_CATALAN);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::Catalan, &[n])
     }
 
     /// Creates a `bell` (Bell number) node: `B(n)`.
     pub fn bell(&mut self, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_BELL);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::Bell, &[n])
     }
 
     /// Creates an `euler_number` node: `E(n)`.
     pub fn euler_number(&mut self, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_EULER_NUMBER);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::EulerNumber, &[n])
     }
 
     // ── Combinatorial functions — Phase 1 (Apply-based) ────────────
 
     /// Creates a `stirling1` (signed Stirling number of the first kind) node: `s(n, k)`.
     pub fn stirling1(&mut self, n: ExprId, k: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_STIRLING1);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n, k];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::Stirling1, &[n, k])
     }
 
     /// Creates a `stirling2` (Stirling number of the second kind) node: `S(n, k)`.
     pub fn stirling2(&mut self, n: ExprId, k: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_STIRLING2);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n, k];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::Stirling2, &[n, k])
     }
 
     /// Creates a `partition_count` node: `p(n)`.
     pub fn partition_count(&mut self, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_PARTITION_COUNT);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::PartitionCount, &[n])
     }
 
     // ── Special / distribution functions (Apply-based) ─────────────
@@ -1667,67 +1597,49 @@ impl Arena {
 
     /// Creates a `besselj` (Bessel function of the first kind) node: J_ν(x).
     pub fn besselj(&mut self, order: ExprId, arg: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_BESSELJ);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![order, arg];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::BesselJ, &[order, arg])
     }
 
     /// Creates a `bessely` (Bessel function of the second kind) node: Y_ν(x).
     pub fn bessely(&mut self, order: ExprId, arg: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_BESSELY);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![order, arg];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::BesselY, &[order, arg])
     }
 
     /// Creates a `besseli` (modified Bessel function of the first kind) node: I_ν(x).
     pub fn besseli(&mut self, order: ExprId, arg: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_BESSELI);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![order, arg];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::BesselI, &[order, arg])
     }
 
     /// Creates a `besselk` (modified Bessel function of the second kind) node: K_ν(x).
     pub fn besselk(&mut self, order: ExprId, arg: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_BESSELK);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![order, arg];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::BesselK, &[order, arg])
     }
 
     // ── Orthogonal polynomials (Apply-based) ───────────────────────
 
     /// Creates a `legendre` (Legendre polynomial) node: P_n(x).
     pub fn legendre(&mut self, n: ExprId, x: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_LEGENDRE);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n, x];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::Legendre, &[n, x])
     }
 
     /// Creates a `chebyshev_t` (Chebyshev polynomial of the first kind) node: T_n(x).
     pub fn chebyshev_t(&mut self, n: ExprId, x: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_CHEBYSHEV_T);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n, x];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::ChebyshevT, &[n, x])
     }
 
     /// Creates a `chebyshev_u` (Chebyshev polynomial of the second kind) node: U_n(x).
     pub fn chebyshev_u(&mut self, n: ExprId, x: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_CHEBYSHEV_U);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n, x];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::ChebyshevU, &[n, x])
     }
 
     /// Creates a `hermite` (physicist's Hermite polynomial) node: H_n(x).
     pub fn hermite(&mut self, n: ExprId, x: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_HERMITE);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n, x];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::Hermite, &[n, x])
     }
 
     /// Creates a `laguerre` (Laguerre polynomial) node: L_n(x).
     pub fn laguerre(&mut self, n: ExprId, x: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_LAGUERRE);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n, x];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.lib_apply(LibFn::Laguerre, &[n, x])
     }
 
     /// Create a named physical constant with a known exact value.

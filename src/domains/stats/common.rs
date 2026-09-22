@@ -21,7 +21,8 @@ use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::dense_f64;
 use crate::base::errors::SymplexError;
-use crate::domains::optimize::{RootOpts, brent_root};
+use crate::base::interval::Bounds;
+use crate::domains::optimize::{RootOpts, brent_root, grow_bracket};
 use crate::output::codegen::numeric_rt::{erfc, erfcinv};
 
 // ── Exact conversions ───────────────────────────────────────────────────
@@ -224,21 +225,10 @@ pub(crate) fn student_t_quantile_f64(
         return Ok(0.0);
     }
     let g = |t: f64| student_t_cdf_f64(ctx, df, t).unwrap_or(f64::NAN) - p;
-    let mut hi = 1.0;
-    for _ in 0..64 {
-        let v = g(hi);
-        if v.is_nan() {
-            return Err(SymplexError::computation_failed(
-                op,
-                "the Student-t distribution function could not be evaluated",
-            ));
-        }
-        if v >= 0.0 {
-            break;
-        }
-        hi *= 2.0;
-    }
-    let root = brent_root(g, 0.0, hi, &RootOpts::default())
+    // `g(0) = ½ − p < 0`; the upper end doubles from 1 until `g ≥ 0`.
+    let bracket = grow_bracket(g, 0.0, 1.0, Bounds::at_least(0.0), 64)
+        .map_err(|e| SymplexError::computation_failed(op, e.to_string()))?;
+    let root = brent_root(g, bracket.lower, bracket.upper, &RootOpts::default())
         .map_err(|e| SymplexError::computation_failed(op, e.to_string()))?;
     if root.is_finite() {
         Ok(root)

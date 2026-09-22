@@ -77,6 +77,7 @@ use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
 use crate::calculus::definite::{QuadOpts, quadrature};
+use crate::domains::optimize::partition_point_by;
 use crate::output::codegen::numeric_rt::lgamma;
 
 /// Moved to [`stats::anova`](super::anova) in 0.18; this re-export is kept
@@ -881,20 +882,14 @@ impl HypergeomNumeric {
                 return None;
             }
             if y - m >= HYPERGEOM_MAX_WALK {
-                // Far tail: bisect on the (decreasing) Stirling shape.
-                let (mut lo, mut hi) = (y, self.hi);
-                if self.ln_shape_stirling(hi) > target {
+                // Far tail: the first point past `y` where the (decreasing)
+                // Stirling shape drops to the target; `hi` qualifies.
+                if self.ln_shape_stirling(self.hi) > target {
                     return None;
                 }
-                while hi - lo > 1 {
-                    let mid = lo + (hi - lo) / 2;
-                    if self.ln_shape_stirling(mid) <= target {
-                        hi = mid;
-                    } else {
-                        lo = mid;
-                    }
-                }
-                return Some(hi);
+                return Some(partition_point_by(y + 1, self.hi, |g| {
+                    self.ln_shape_stirling(g) <= target
+                }));
             }
             acc.mul(self.ratio_up(y));
             y += 1;
@@ -919,19 +914,15 @@ impl HypergeomNumeric {
                 return None;
             }
             if m - y >= HYPERGEOM_MAX_WALK {
-                let (mut lo, mut hi) = (self.lo, y);
-                if self.ln_shape_stirling(lo) > target {
+                // Mirror image: the shape rises towards `y`, so search the
+                // distance below `y` for the first point where it still
+                // exceeds the target; the cutoff is one step further down.
+                if self.ln_shape_stirling(self.lo) > target {
                     return None;
                 }
-                while hi - lo > 1 {
-                    let mid = lo + (hi - lo) / 2;
-                    if self.ln_shape_stirling(mid) <= target {
-                        lo = mid;
-                    } else {
-                        hi = mid;
-                    }
-                }
-                return Some(lo);
+                let first_above =
+                    partition_point_by(self.lo, y, |g| self.ln_shape_stirling(g) > target);
+                return Some(first_above - 1);
             }
             acc.div(self.ratio_up(y - 1));
             y -= 1;
@@ -3775,8 +3766,9 @@ pub fn power_two_proportions(
     Ok(normal_power_two_sided(h, n_per_group as f64, alpha))
 }
 
-/// The smallest integer `n` with `power(n) ≥ target` for an increasing
-/// `power`, searched by doubling then bisection from `start`.
+/// The smallest integer `n ≥ start` with `power(n) ≥ target` for an
+/// increasing `power`, by galloping then bisection
+/// ([`partition_point_by`]).
 fn smallest_n_with_power(
     op: &'static str,
     start: usize,
@@ -3790,30 +3782,26 @@ fn smallest_n_with_power(
     } else {
         usize::MAX / 2
     };
-    let (mut lo, mut hi) = (start, start);
-    while power(hi)? < target {
-        lo = hi;
-        hi = hi.saturating_mul(2);
-        if hi > CAP {
-            return Err(SymplexError::computation_failed(
-                op,
-                "the required sample size exceeds 2^40",
-            ));
+    // The first error stops the search (`true` ends the gallop at once)
+    // and is reported instead of a sample size.
+    let mut error = None;
+    let n = partition_point_by(start, CAP, |n| match power(n) {
+        Ok(pw) => pw >= target,
+        Err(e) => {
+            error.get_or_insert(e);
+            true
         }
+    });
+    if let Some(e) = error {
+        return Err(e);
     }
-    // Invariant: power(hi) ≥ target; lo = start or power(lo) < target.
-    if lo == hi {
-        return Ok(hi);
+    if n >= CAP {
+        return Err(SymplexError::computation_failed(
+            op,
+            "the required sample size exceeds 2^40",
+        ));
     }
-    while hi - lo > 1 {
-        let mid = lo + (hi - lo) / 2;
-        if power(mid)? >= target {
-            hi = mid;
-        } else {
-            lo = mid;
-        }
-    }
-    Ok(hi)
+    Ok(n)
 }
 
 /// The per-group sample size for the two-sided two-proportion z-test to

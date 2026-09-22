@@ -40,7 +40,7 @@ use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 
 use super::data::binomial_q;
-use super::family::{Distribution, Family, Sampler, same_family};
+use super::family::{Distribution, Family, Sampler, family_boilerplate};
 use super::sample::Rng;
 use super::support::{Kind, Support, is_neg_inf, is_pos_inf};
 
@@ -94,14 +94,15 @@ impl OrderStatistic {
         (ctx.int(usize_to_i64(self.n)), ctx.int(usize_to_i64(self.k)))
     }
 
-    /// The parent's `F(x)` as a single expression: the closed form on the
-    /// support when the family has one, else the integral / sum of the
-    /// density from the support's lower end; `0` / `1` when `x` is
-    /// decidably below / above the support.
+    /// The parent's `F(x)` as a single expression: `0` / `1` when `x` is
+    /// decidably below / above the support, else the parent's
+    /// [`cdf_on_support`](Distribution::cdf_on_support) — the closed form
+    /// when the family has one, else the integral / sum of the density
+    /// from the support's lower end.  (The whole-line [`Distribution::cdf`]
+    /// would wrap a symbolic `x` in a `Piecewise`.)
     fn parent_cdf(&self, x: &Ex) -> Ex {
         let ctx = self.ctx();
-        let support = self.inner.support();
-        if let Some(iv) = support.as_interval() {
+        if let Some(iv) = self.inner.support().as_interval() {
             let (lo, hi) = (&iv.lower, &iv.upper);
             if !is_neg_inf(lo) && (x - lo).is_negative() == Some(true) {
                 return ctx.zero();
@@ -110,21 +111,7 @@ impl OrderStatistic {
                 return ctx.one();
             }
         }
-        if let Some(c) = self.inner.family().cdf(x) {
-            return c;
-        }
-        if support.as_points().is_some() {
-            return self.inner.cdf(x);
-        }
-        let t = self.inner.fresh_var("t", &[x]);
-        let dens = self.inner.density(&t);
-        let lo = support
-            .as_interval()
-            .map_or_else(|| ctx.neg_infinity(), |iv| iv.lower.clone());
-        match support.kind() {
-            Kind::Continuous => dens.integrate_definite(&t, &lo, x),
-            Kind::Discrete => dens.summation(&t, &lo, &x.floor()),
-        }
+        self.inner.cdf_on_support(x)
     }
 
     /// `I_u(k, n − k + 1)`: `P(X_(k) ≤ x)` as a function of `u = F(x)`.
@@ -140,9 +127,7 @@ fn usize_to_i64(n: usize) -> i64 {
 }
 
 impl Family for OrderStatistic {
-    fn name(&self) -> &str {
-        "OrderStatistic"
-    }
+    family_boilerplate!(OrderStatistic, "OrderStatistic");
 
     fn context(&self) -> Context {
         self.ctx()
@@ -153,10 +138,6 @@ impl Family for OrderStatistic {
         let mut p = vec![("n", n), ("k", k)];
         p.extend(self.inner.parameters());
         p
-    }
-
-    fn eq_family(&self, other: &dyn Family) -> bool {
-        same_family(self, other)
     }
 
     fn support(&self) -> Support {

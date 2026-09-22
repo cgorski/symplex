@@ -45,7 +45,8 @@ use num_traits::{One, Signed, Zero};
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
-use crate::base::interval::Interval;
+use crate::base::interval::{Bounds, Interval};
+use crate::domains::optimize::{RootOpts, bisect, grow_bracket};
 
 use super::common::{check_alpha, check_unit_open, ex_usize, invalid, q_to_f64};
 use super::data::Q;
@@ -484,30 +485,37 @@ fn wald_h(
     }
     // g(h) = p e^{h ls} + (1−p) e^{h lf} − 1 is convex with g(0) = 0 and
     // g'(0) = drift, so the other root lies on the side where g' < 0 first.
-    let g = |h: f64| p * (h * ls).exp() + (1.0 - p) * (h * lf).exp() - 1.0;
-    let side = if drift < 0.0 { 1.0 } else { -1.0 };
-    let mut hi = side;
-    let mut grown = 0;
-    while g(hi) <= 0.0 {
-        hi *= 2.0;
-        grown += 1;
-        if grown > 60 {
-            return Err(SymplexError::computation_failed(
-                op,
-                "operating characteristic: could not bracket the root of Wald's identity",
-            ));
-        }
-    }
-    let mut lo = 0.0;
-    for _ in 0..200 {
-        let mid = 0.5 * (lo + hi);
-        if g(mid) > 0.0 {
-            hi = mid;
+    // Divide out the root at 0: φ(h) = g(h)/h is increasing, φ(0) = drift,
+    // and its only zero is the root wanted (`exp_m1` keeps it accurate
+    // near 0).
+    let phi = |h: f64| {
+        if h == 0.0 {
+            drift
         } else {
-            lo = mid;
+            (p * (h * ls).exp_m1() + (1.0 - p) * (h * lf).exp_m1()) / h
         }
-    }
-    Ok(Some(0.5 * (lo + hi)))
+    };
+    let side = if drift < 0.0 { 1.0 } else { -1.0 };
+    let (a, b, bounds) = if side > 0.0 {
+        (0.0, side, Bounds::at_least(0.0))
+    } else {
+        (side, 0.0, Bounds::at_most(0.0))
+    };
+    let bracket = grow_bracket(phi, a, b, bounds, 60).map_err(|_| {
+        SymplexError::computation_failed(
+            op,
+            "operating characteristic: could not bracket the root of Wald's identity",
+        )
+    })?;
+    // To the last bits, as the fixed 200-step bisection this replaces.
+    let tight = RootOpts {
+        xtol: 0.0,
+        max_iter: 200,
+        ..RootOpts::default()
+    };
+    bisect(phi, bracket.lower, bracket.upper, &tight)
+        .map(Some)
+        .map_err(|e| SymplexError::computation_failed(op, e.to_string()))
 }
 
 /// Wald's `L(p)` from the increments, the drift and the boundaries `(a, b)`.

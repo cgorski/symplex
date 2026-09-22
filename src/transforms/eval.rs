@@ -52,16 +52,8 @@ use num_rational::Ratio;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use rustc_hash::FxHashMap;
 
-use crate::base::arena::{
-    Arena, FN_AIRYAI, FN_AIRYAIPRIME, FN_AIRYBI, FN_AIRYBIPRIME, FN_ASSOC_LAGUERRE,
-    FN_ASSOC_LEGENDRE, FN_BELL, FN_BERNOULLI, FN_BESSELI, FN_BESSELJ, FN_BESSELK, FN_BESSELY,
-    FN_BETAINC, FN_BETAINC_REGULARIZED, FN_CATALAN, FN_CHEBYSHEV_T, FN_CHEBYSHEV_U, FN_CHI,
-    FN_DIRICHLET_ETA, FN_ELLIPTIC_E, FN_ELLIPTIC_F, FN_ELLIPTIC_K, FN_ELLIPTIC_PI, FN_ERFCINV,
-    FN_ERFI, FN_ERFINV, FN_EULER_NUMBER, FN_EXPINT, FN_FACTORIAL2, FN_FALLING_FACTORIAL,
-    FN_FIBONACCI, FN_FRESNELC, FN_FRESNELS, FN_GEGENBAUER, FN_HARMONIC, FN_HERMITE, FN_JACOBI,
-    FN_LAGUERRE, FN_LEGENDRE, FN_LOWERGAMMA, FN_LUCAS, FN_PARTITION_COUNT, FN_POLYLOG,
-    FN_RISING_FACTORIAL, FN_SHI, FN_STIRLING1, FN_STIRLING2, FN_SUBFACTORIAL, FN_UPPERGAMMA,
-};
+use crate::base::arena::Arena;
+use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::walk;
@@ -567,339 +559,25 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 }
             }
 
-            // ── Apply (named combinatorial functions) ──────────────
+            // ── Apply (library special functions) ──────────────────
             ExprNode::Apply(name_sid, ref args) => {
                 let new_args: smallvec::SmallVec<[ExprId; 2]> = args
                     .iter()
                     .map(|&c| cache.get(&c).copied().unwrap_or(c))
                     .collect();
-                let name = arena.symbols.name(name_sid).to_owned();
-                match name.as_str() {
-                    FN_FACTORIAL2 if new_args.len() == 1 => {
-                        if let Some(result) = eval_factorial2(arena, new_args[0]) {
-                            result
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.factorial2(new_args[0])
-                        }
+                // A library function with the right number of arguments may
+                // fold to an exact value; anything else — a user function or
+                // a wrong arity — is rebuilt on its evaluated arguments.
+                let folded = match arena.lib_fn(name_sid) {
+                    Some(f) if f.arity().accepts(new_args.len()) => {
+                        eval_lib_fn(arena, f, &new_args)
                     }
-                    FN_SUBFACTORIAL if new_args.len() == 1 => {
-                        if let Some(result) = eval_subfactorial(arena, new_args[0]) {
-                            result
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.subfactorial(new_args[0])
-                        }
-                    }
-                    FN_RISING_FACTORIAL if new_args.len() == 2 => {
-                        if let Some(result) = eval_rising_factorial(arena, new_args[0], new_args[1])
-                        {
-                            result
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.rising_factorial(new_args[0], new_args[1])
-                        }
-                    }
-                    FN_FALLING_FACTORIAL if new_args.len() == 2 => {
-                        if let Some(result) =
-                            eval_falling_factorial(arena, new_args[0], new_args[1])
-                        {
-                            result
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.falling_factorial(new_args[0], new_args[1])
-                        }
-                    }
-                    FN_FIBONACCI if new_args.len() == 1 => {
-                        if let Some(result) = eval_fibonacci(arena, new_args[0]) {
-                            result
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.fibonacci(new_args[0])
-                        }
-                    }
-                    FN_LUCAS if new_args.len() == 1 => {
-                        if let Some(result) = eval_lucas(arena, new_args[0]) {
-                            result
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.lucas(new_args[0])
-                        }
-                    }
-                    FN_BERNOULLI if new_args.len() == 1 => {
-                        if let Some(result) = eval_bernoulli(arena, new_args[0]) {
-                            result
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.bernoulli_number(new_args[0])
-                        }
-                    }
-                    FN_HARMONIC if new_args.len() == 1 => {
-                        if let Some(result) = eval_harmonic(arena, new_args[0]) {
-                            result
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.harmonic(new_args[0])
-                        }
-                    }
-                    FN_CATALAN if new_args.len() == 1 => {
-                        if let Some(result) = eval_catalan(arena, new_args[0]) {
-                            result
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.catalan_number(new_args[0])
-                        }
-                    }
-                    FN_BELL if new_args.len() == 1 => {
-                        if let Some(result) = eval_bell(arena, new_args[0]) {
-                            result
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.bell(new_args[0])
-                        }
-                    }
-                    FN_EULER_NUMBER if new_args.len() == 1 => {
-                        if let Some(result) = eval_euler_number(arena, new_args[0]) {
-                            result
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.euler_number(new_args[0])
-                        }
-                    }
-
-                    // ── Combinatorial (Phase 1) ────────────────────
-                    FN_STIRLING2 if new_args.len() == 2 => {
-                        if let Some(result) = eval_stirling2(arena, new_args[0], new_args[1]) {
-                            result
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.stirling2(new_args[0], new_args[1])
-                        }
-                    }
-                    FN_STIRLING1 if new_args.len() == 2 => {
-                        if let Some(result) = eval_stirling1(arena, new_args[0], new_args[1]) {
-                            result
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.stirling1(new_args[0], new_args[1])
-                        }
-                    }
-                    FN_PARTITION_COUNT if new_args.len() == 1 => {
-                        if let Some(result) = eval_partition_count(arena, new_args[0]) {
-                            result
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.partition_count(new_args[0])
-                        }
-                    }
-
-                    // ── Bessel functions ────────────────────────────
-                    FN_BESSELJ if new_args.len() == 2 => {
-                        if let (Some(order_num), Some(arg_num)) = (
-                            arena.as_num(new_args[0]).cloned(),
-                            arena.as_num(new_args[1]).cloned(),
-                        ) {
-                            if arg_num.is_zero() {
-                                if order_num.is_zero() {
-                                    arena.one // J_0(0) = 1
-                                } else if order_num.is_positive() && order_num.is_integer() {
-                                    arena.zero // J_n(0) = 0 for integer n > 0
-                                } else {
-                                    arena.besselj(new_args[0], new_args[1])
-                                }
-                            } else {
-                                arena.besselj(new_args[0], new_args[1])
-                            }
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.besselj(new_args[0], new_args[1])
-                        }
-                    }
-                    FN_BESSELY if new_args.len() == 2 => {
-                        // Y_n(0) diverges, leave symbolic
-                        if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.bessely(new_args[0], new_args[1])
-                        }
-                    }
-                    FN_BESSELI if new_args.len() == 2 => {
-                        if let (Some(order_num), Some(arg_num)) = (
-                            arena.as_num(new_args[0]).cloned(),
-                            arena.as_num(new_args[1]).cloned(),
-                        ) {
-                            if arg_num.is_zero() {
-                                if order_num.is_zero() {
-                                    arena.one // I_0(0) = 1
-                                } else if order_num.is_positive() && order_num.is_integer() {
-                                    arena.zero // I_n(0) = 0 for integer n > 0
-                                } else {
-                                    arena.besseli(new_args[0], new_args[1])
-                                }
-                            } else {
-                                arena.besseli(new_args[0], new_args[1])
-                            }
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.besseli(new_args[0], new_args[1])
-                        }
-                    }
-                    FN_BESSELK if new_args.len() == 2 => {
-                        // K_n(0) diverges, leave symbolic
-                        if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.besselk(new_args[0], new_args[1])
-                        }
-                    }
-
-                    // ── Orthogonal polynomials ─────────────────────
-                    FN_LEGENDRE if new_args.len() == 2 => {
-                        if let Some(n_num) = arena.as_num(new_args[0]).cloned() {
-                            if n_num.is_integer() && !n_num.is_negative() {
-                                if let Some(n_int) = n_num.to_integer().to_u64() {
-                                    if n_int <= arena.config.max_pow_exponent as u64 {
-                                        let x = new_args[1];
-                                        eval_legendre(arena, n_int as usize, x)
-                                    } else {
-                                        arena.legendre(new_args[0], new_args[1])
-                                    }
-                                } else {
-                                    arena.legendre(new_args[0], new_args[1])
-                                }
-                            } else {
-                                arena.legendre(new_args[0], new_args[1])
-                            }
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.legendre(new_args[0], new_args[1])
-                        }
-                    }
-                    FN_CHEBYSHEV_T if new_args.len() == 2 => {
-                        if let Some(n_num) = arena.as_num(new_args[0]).cloned() {
-                            if n_num.is_integer() && !n_num.is_negative() {
-                                if let Some(n_int) = n_num.to_integer().to_u64() {
-                                    if n_int <= arena.config.max_pow_exponent as u64 {
-                                        let x = new_args[1];
-                                        eval_chebyshev_t(arena, n_int as usize, x)
-                                    } else {
-                                        arena.chebyshev_t(new_args[0], new_args[1])
-                                    }
-                                } else {
-                                    arena.chebyshev_t(new_args[0], new_args[1])
-                                }
-                            } else {
-                                arena.chebyshev_t(new_args[0], new_args[1])
-                            }
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.chebyshev_t(new_args[0], new_args[1])
-                        }
-                    }
-                    FN_CHEBYSHEV_U if new_args.len() == 2 => {
-                        if let Some(n_num) = arena.as_num(new_args[0]).cloned() {
-                            if n_num.is_integer() && !n_num.is_negative() {
-                                if let Some(n_int) = n_num.to_integer().to_u64() {
-                                    if n_int <= arena.config.max_pow_exponent as u64 {
-                                        let x = new_args[1];
-                                        eval_chebyshev_u(arena, n_int as usize, x)
-                                    } else {
-                                        arena.chebyshev_u(new_args[0], new_args[1])
-                                    }
-                                } else {
-                                    arena.chebyshev_u(new_args[0], new_args[1])
-                                }
-                            } else {
-                                arena.chebyshev_u(new_args[0], new_args[1])
-                            }
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.chebyshev_u(new_args[0], new_args[1])
-                        }
-                    }
-                    FN_HERMITE if new_args.len() == 2 => {
-                        if let Some(n_num) = arena.as_num(new_args[0]).cloned() {
-                            if n_num.is_integer() && !n_num.is_negative() {
-                                if let Some(n_int) = n_num.to_integer().to_u64() {
-                                    if n_int <= arena.config.max_pow_exponent as u64 {
-                                        let x = new_args[1];
-                                        eval_hermite(arena, n_int as usize, x)
-                                    } else {
-                                        arena.hermite(new_args[0], new_args[1])
-                                    }
-                                } else {
-                                    arena.hermite(new_args[0], new_args[1])
-                                }
-                            } else {
-                                arena.hermite(new_args[0], new_args[1])
-                            }
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.hermite(new_args[0], new_args[1])
-                        }
-                    }
-                    FN_LAGUERRE if new_args.len() == 2 => {
-                        if let Some(n_num) = arena.as_num(new_args[0]).cloned() {
-                            if n_num.is_integer() && !n_num.is_negative() {
-                                if let Some(n_int) = n_num.to_integer().to_u64() {
-                                    if n_int <= arena.config.max_pow_exponent as u64 {
-                                        let x = new_args[1];
-                                        eval_laguerre(arena, n_int as usize, x)
-                                    } else {
-                                        arena.laguerre(new_args[0], new_args[1])
-                                    }
-                                } else {
-                                    arena.laguerre(new_args[0], new_args[1])
-                                }
-                            } else {
-                                arena.laguerre(new_args[0], new_args[1])
-                            }
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.laguerre(new_args[0], new_args[1])
-                        }
-                    }
-
-                    // ── More special functions (0.9) ────────────────
-                    n if is_special_09(n) => {
-                        if let Some(result) = eval_special_09(arena, n, &new_args) {
-                            result
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.intern(ExprNode::Apply(name_sid, new_args))
-                        }
-                    }
-
-                    _ => {
-                        if new_args[..] == args[..] {
-                            id
-                        } else {
-                            let sv: smallvec::SmallVec<[ExprId; 2]> = new_args;
-                            arena.intern(ExprNode::Apply(name_sid, sv))
-                        }
-                    }
+                    _ => None,
+                };
+                match folded {
+                    Some(result) => result,
+                    None if new_args[..] == args[..] => id,
+                    None => arena.intern(ExprNode::Apply(name_sid, new_args)),
                 }
             }
 
@@ -3236,47 +2914,118 @@ fn eval_laguerre(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// More special functions (0.9): exact values
+// Library functions: exact values
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Is `name` one of the 0.9 `Apply`-based special functions handled by
-/// [`eval_special_09`] (and numerically by `evalf`)?
-pub(crate) fn is_special_09(name: &str) -> bool {
-    matches!(
-        name,
-        FN_ERFI
-            | FN_ERFINV
-            | FN_ERFCINV
-            | FN_EXPINT
-            | FN_SHI
-            | FN_CHI
-            | FN_FRESNELS
-            | FN_FRESNELC
-            | FN_LOWERGAMMA
-            | FN_UPPERGAMMA
-            | FN_POLYLOG
-            | FN_DIRICHLET_ETA
-            | FN_AIRYAI
-            | FN_AIRYBI
-            | FN_AIRYAIPRIME
-            | FN_AIRYBIPRIME
-            | FN_ELLIPTIC_K
-            | FN_ELLIPTIC_E
-            | FN_ELLIPTIC_F
-            | FN_ELLIPTIC_PI
-            | FN_GEGENBAUER
-            | FN_JACOBI
-            | FN_ASSOC_LEGENDRE
-            | FN_ASSOC_LAGUERRE
-            | FN_BETAINC
-            | FN_BETAINC_REGULARIZED
-    )
+/// Exact value of the library function `f` on `args` (already evaluated and
+/// of the arity `f` declares); `None` leaves the node as is.
+///
+/// Exhaustive over [`LibFn`]: a function with no exact rules (`bessely`,
+/// `besselk`, `lambertw`) says so here rather than in a wildcard arm.
+fn eval_lib_fn(arena: &mut Arena, f: LibFn, args: &[ExprId]) -> Option<ExprId> {
+    match f {
+        // ── Integer sequences and combinatorial counts ──
+        LibFn::Factorial2 => eval_factorial2(arena, args[0]),
+        LibFn::Subfactorial => eval_subfactorial(arena, args[0]),
+        LibFn::RisingFactorial => eval_rising_factorial(arena, args[0], args[1]),
+        LibFn::FallingFactorial => eval_falling_factorial(arena, args[0], args[1]),
+        LibFn::Fibonacci => eval_fibonacci(arena, args[0]),
+        LibFn::Lucas => eval_lucas(arena, args[0]),
+        LibFn::Bernoulli => eval_bernoulli(arena, args[0]),
+        LibFn::Harmonic => eval_harmonic(arena, args[0]),
+        LibFn::Catalan => eval_catalan(arena, args[0]),
+        LibFn::Bell => eval_bell(arena, args[0]),
+        LibFn::EulerNumber => eval_euler_number(arena, args[0]),
+        LibFn::Stirling1 => eval_stirling1(arena, args[0], args[1]),
+        LibFn::Stirling2 => eval_stirling2(arena, args[0], args[1]),
+        LibFn::PartitionCount => eval_partition_count(arena, args[0]),
+        // The arena builds `ExprNode::LambertW`, which has its own rules.
+        LibFn::LambertW => None,
+
+        // ── Bessel functions: J and I at the origin; Y and K diverge there ──
+        LibFn::BesselJ | LibFn::BesselI => eval_bessel_regular_at_zero(arena, args[0], args[1]),
+        LibFn::BesselY | LibFn::BesselK => None,
+
+        // ── Classical orthogonal polynomials of small explicit degree ──
+        LibFn::Legendre => eval_orthopoly(arena, args[0], args[1], eval_legendre),
+        LibFn::ChebyshevT => eval_orthopoly(arena, args[0], args[1], eval_chebyshev_t),
+        LibFn::ChebyshevU => eval_orthopoly(arena, args[0], args[1], eval_chebyshev_u),
+        LibFn::Hermite => eval_orthopoly(arena, args[0], args[1], eval_hermite),
+        LibFn::Laguerre => eval_orthopoly(arena, args[0], args[1], eval_laguerre),
+
+        // ── More special functions (0.9) ──
+        LibFn::Erfi => eval_erfi(arena, args[0]),
+        LibFn::ErfInv => eval_erfinv(arena, args[0]),
+        LibFn::ErfcInv => eval_erfcinv(arena, args[0]),
+        LibFn::ExpInt => eval_expint(arena, args[0], args[1]),
+        LibFn::Shi => eval_shi(arena, args[0]),
+        LibFn::Chi => eval_chi(arena, args[0]),
+        LibFn::FresnelS | LibFn::FresnelC => eval_fresnel(arena, f, args[0]),
+        LibFn::LowerGamma => eval_lowergamma(arena, args[0], args[1]),
+        LibFn::UpperGamma => eval_uppergamma(arena, args[0], args[1]),
+        LibFn::PolyLog => eval_polylog(arena, args[0], args[1]),
+        LibFn::DirichletEta => eval_dirichlet_eta(arena, args[0]),
+        LibFn::AiryAi | LibFn::AiryBi | LibFn::AiryAiPrime | LibFn::AiryBiPrime => {
+            eval_airy(arena, f, args[0])
+        }
+        LibFn::EllipticK => eval_elliptic_k(arena, args[0]),
+        LibFn::EllipticE => eval_elliptic_e(arena, args[0]),
+        LibFn::EllipticF => eval_elliptic_f(arena, args[0], args[1]),
+        LibFn::EllipticPi => eval_elliptic_pi(arena, args[0], args[1]),
+        LibFn::Gegenbauer => eval_gegenbauer(arena, args[0], args[1], args[2]),
+        LibFn::Jacobi => eval_jacobi(arena, args[0], args[1], args[2], args[3]),
+        LibFn::AssocLegendre => eval_assoc_legendre(arena, args[0], args[1], args[2]),
+        LibFn::AssocLaguerre => eval_assoc_laguerre(arena, args[0], args[1], args[2]),
+        LibFn::BetaInc | LibFn::BetaIncRegularized => eval_betainc(
+            arena,
+            f == LibFn::BetaIncRegularized,
+            args[0],
+            args[1],
+            args[2],
+            args[3],
+        ),
+    }
 }
 
-/// Intern `name(args)` as a library `Apply` node (no folding).
-pub(crate) fn apply_named(arena: &mut Arena, name: &str, args: &[ExprId]) -> ExprId {
-    let sid = arena.symbols.intern(name);
-    arena.intern(ExprNode::Apply(sid, args.iter().copied().collect()))
+/// `J_0(0) = I_0(0) = 1` and `J_n(0) = I_n(0) = 0` for integer `n > 0`, when
+/// both order and argument are numbers.
+fn eval_bessel_regular_at_zero(arena: &mut Arena, order: ExprId, x: ExprId) -> Option<ExprId> {
+    let order_num = arena.as_num(order)?;
+    let arg_num = arena.as_num(x)?;
+    if !arg_num.is_zero() {
+        return None;
+    }
+    if order_num.is_zero() {
+        Some(arena.one)
+    } else if order_num.is_positive() && order_num.is_integer() {
+        Some(arena.zero)
+    } else {
+        None
+    }
+}
+
+/// A classical orthogonal polynomial `p_n(x)` expanded by `expand` when `n`
+/// is a non-negative integer no larger than the configured power limit.
+fn eval_orthopoly(
+    arena: &mut Arena,
+    n: ExprId,
+    x: ExprId,
+    expand: fn(&mut Arena, usize, ExprId) -> ExprId,
+) -> Option<ExprId> {
+    let n_num = arena.as_num(n)?;
+    if !n_num.is_integer() || n_num.is_negative() {
+        return None;
+    }
+    let n_int = n_num.to_integer().to_u64()?;
+    if n_int > arena.config.max_pow_exponent as u64 {
+        return None;
+    }
+    Some(expand(arena, n_int as usize, x))
+}
+
+/// Intern `f(args)` as a library `Apply` node (no folding).
+pub(crate) fn apply_named(arena: &mut Arena, f: LibFn, args: &[ExprId]) -> ExprId {
+    arena.lib_apply(f, args)
 }
 
 /// Largest integer / half-integer parameter for which the incomplete gamma
@@ -3305,44 +3054,6 @@ fn half_pi(arena: &mut Arena) -> ExprId {
     arena.mul(&[half, arena.pi])
 }
 
-/// Exact values of the 0.9 special functions; `None` leaves the node as is.
-fn eval_special_09(arena: &mut Arena, name: &str, args: &[ExprId]) -> Option<ExprId> {
-    match (name, args.len()) {
-        (FN_ERFI, 1) => eval_erfi(arena, args[0]),
-        (FN_ERFINV, 1) => eval_erfinv(arena, args[0]),
-        (FN_ERFCINV, 1) => eval_erfcinv(arena, args[0]),
-        (FN_EXPINT, 2) => eval_expint(arena, args[0], args[1]),
-        (FN_SHI, 1) => eval_shi(arena, args[0]),
-        (FN_CHI, 1) => eval_chi(arena, args[0]),
-        (FN_FRESNELS, 1) => eval_fresnel(arena, FN_FRESNELS, args[0]),
-        (FN_FRESNELC, 1) => eval_fresnel(arena, FN_FRESNELC, args[0]),
-        (FN_LOWERGAMMA, 2) => eval_lowergamma(arena, args[0], args[1]),
-        (FN_UPPERGAMMA, 2) => eval_uppergamma(arena, args[0], args[1]),
-        (FN_POLYLOG, 2) => eval_polylog(arena, args[0], args[1]),
-        (FN_DIRICHLET_ETA, 1) => eval_dirichlet_eta(arena, args[0]),
-        (FN_AIRYAI | FN_AIRYBI | FN_AIRYAIPRIME | FN_AIRYBIPRIME, 1) => {
-            eval_airy(arena, name, args[0])
-        }
-        (FN_ELLIPTIC_K, 1) => eval_elliptic_k(arena, args[0]),
-        (FN_ELLIPTIC_E, 1) => eval_elliptic_e(arena, args[0]),
-        (FN_ELLIPTIC_F, 2) => eval_elliptic_f(arena, args[0], args[1]),
-        (FN_ELLIPTIC_PI, 2) => eval_elliptic_pi(arena, args[0], args[1]),
-        (FN_GEGENBAUER, 3) => eval_gegenbauer(arena, args[0], args[1], args[2]),
-        (FN_JACOBI, 4) => eval_jacobi(arena, args[0], args[1], args[2], args[3]),
-        (FN_ASSOC_LEGENDRE, 3) => eval_assoc_legendre(arena, args[0], args[1], args[2]),
-        (FN_ASSOC_LAGUERRE, 3) => eval_assoc_laguerre(arena, args[0], args[1], args[2]),
-        (FN_BETAINC | FN_BETAINC_REGULARIZED, 4) => eval_betainc(
-            arena,
-            name == FN_BETAINC_REGULARIZED,
-            args[0],
-            args[1],
-            args[2],
-            args[3],
-        ),
-        _ => None,
-    }
-}
-
 /// `erfi(0) = 0`, `erfi(±∞) = ±∞`, odd.
 fn eval_erfi(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
     if x == arena.zero {
@@ -3355,7 +3066,7 @@ fn eval_erfi(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
         return Some(arena.neg_infinity);
     }
     if let Some(y) = as_negated_general(arena, x) {
-        let e = apply_named(arena, FN_ERFI, &[y]);
+        let e = apply_named(arena, LibFn::Erfi, &[y]);
         return Some(arena.neg(e));
     }
     None
@@ -3373,7 +3084,7 @@ fn eval_erfinv(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
         return Some(arena.neg_infinity);
     }
     if let Some(y) = as_negated_general(arena, x) {
-        let e = apply_named(arena, FN_ERFINV, &[y]);
+        let e = apply_named(arena, LibFn::ErfInv, &[y]);
         return Some(arena.neg(e));
     }
     None
@@ -3426,7 +3137,7 @@ fn eval_shi(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
         return Some(arena.neg_infinity);
     }
     if let Some(y) = as_negated_general(arena, x) {
-        let e = apply_named(arena, FN_SHI, &[y]);
+        let e = apply_named(arena, LibFn::Shi, &[y]);
         return Some(arena.neg(e));
     }
     None
@@ -3444,7 +3155,7 @@ fn eval_chi(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
 }
 
 /// Fresnel `S`/`C`: `0 ↦ 0`, `±∞ ↦ ±1/2`, odd.
-fn eval_fresnel(arena: &mut Arena, name: &str, x: ExprId) -> Option<ExprId> {
+fn eval_fresnel(arena: &mut Arena, f: LibFn, x: ExprId) -> Option<ExprId> {
     if x == arena.zero {
         return Some(arena.zero);
     }
@@ -3455,7 +3166,7 @@ fn eval_fresnel(arena: &mut Arena, name: &str, x: ExprId) -> Option<ExprId> {
         return Some(arena.rational(-1, 2));
     }
     if let Some(y) = as_negated_general(arena, x) {
-        let e = apply_named(arena, name, &[y]);
+        let e = apply_named(arena, f, &[y]);
         return Some(arena.neg(e));
     }
     None
@@ -3531,7 +3242,7 @@ fn uppergamma_closed(arena: &mut Arena, s: &Q, x: ExprId) -> Option<ExprId> {
             return Some(eval(arena, v));
         }
         // n ≤ 0: shift down from Γ(0, x) = E₁(x).
-        let e1 = apply_named(arena, FN_EXPINT, &[arena.one, x]);
+        let e1 = apply_named(arena, LibFn::ExpInt, &[arena.one, x]);
         return Some(shift_uppergamma(arena, Ratio::zero(), e1, n, x));
     }
     if s.denom() == &two {
@@ -3612,7 +3323,7 @@ fn eval_polylog(arena: &mut Arena, s: ExprId, z: ExprId) -> Option<ExprId> {
     }
     if z == arena.neg_one {
         let eta = eval_dirichlet_eta(arena, s)
-            .unwrap_or_else(|| apply_named(arena, FN_DIRICHLET_ETA, &[s]));
+            .unwrap_or_else(|| apply_named(arena, LibFn::DirichletEta, &[s]));
         return Some(arena.neg(eta));
     }
     if s == arena.one {
@@ -3708,27 +3419,27 @@ fn eval_dirichlet_eta(arena: &mut Arena, s: ExprId) -> Option<ExprId> {
 }
 
 /// Airy functions at `0` and `±∞`.
-fn eval_airy(arena: &mut Arena, name: &str, x: ExprId) -> Option<ExprId> {
+fn eval_airy(arena: &mut Arena, f: LibFn, x: ExprId) -> Option<ExprId> {
     if x == arena.zero {
         let three = arena.int(3);
         let third = arena.rational(1, 3);
         let two_thirds = arena.rational(2, 3);
         let g13 = arena.gamma(third);
         let g23 = arena.gamma(two_thirds);
-        return Some(match name {
-            FN_AIRYAI => {
+        return Some(match f {
+            LibFn::AiryAi => {
                 // 3^{-2/3} / Γ(2/3)
                 let e = arena.rational(-2, 3);
                 let p = arena.pow(three, e);
                 arena.div(p, g23)
             }
-            FN_AIRYBI => {
+            LibFn::AiryBi => {
                 // 3^{-1/6} / Γ(2/3)
                 let e = arena.rational(-1, 6);
                 let p = arena.pow(three, e);
                 arena.div(p, g23)
             }
-            FN_AIRYAIPRIME => {
+            LibFn::AiryAiPrime => {
                 // -3^{-1/3} / Γ(1/3)
                 let e = arena.rational(-1, 3);
                 let p = arena.pow(three, e);
@@ -3744,8 +3455,8 @@ fn eval_airy(arena: &mut Arena, name: &str, x: ExprId) -> Option<ExprId> {
         });
     }
     if x == arena.infinity {
-        return Some(match name {
-            FN_AIRYAI | FN_AIRYAIPRIME => arena.zero,
+        return Some(match f {
+            LibFn::AiryAi | LibFn::AiryAiPrime => arena.zero,
             _ => arena.infinity,
         });
     }
@@ -3804,11 +3515,11 @@ fn eval_elliptic_f(arena: &mut Arena, phi: ExprId, m: ExprId) -> Option<ExprId> 
         && r == Ratio::new(BigInt::one(), BigInt::from(2))
     {
         return Some(
-            eval_elliptic_k(arena, m).unwrap_or_else(|| apply_named(arena, FN_ELLIPTIC_K, &[m])),
+            eval_elliptic_k(arena, m).unwrap_or_else(|| apply_named(arena, LibFn::EllipticK, &[m])),
         );
     }
     if let Some(y) = as_negated_general(arena, phi) {
-        let e = apply_named(arena, FN_ELLIPTIC_F, &[y, m]);
+        let e = apply_named(arena, LibFn::EllipticF, &[y, m]);
         return Some(arena.neg(e));
     }
     None
@@ -3818,7 +3529,7 @@ fn eval_elliptic_f(arena: &mut Arena, phi: ExprId, m: ExprId) -> Option<ExprId> 
 fn eval_elliptic_pi(arena: &mut Arena, n: ExprId, m: ExprId) -> Option<ExprId> {
     if n == arena.zero {
         return Some(
-            eval_elliptic_k(arena, m).unwrap_or_else(|| apply_named(arena, FN_ELLIPTIC_K, &[m])),
+            eval_elliptic_k(arena, m).unwrap_or_else(|| apply_named(arena, LibFn::EllipticK, &[m])),
         );
     }
     if n == arena.one {
@@ -3833,7 +3544,7 @@ fn eval_elliptic_pi(arena: &mut Arena, n: ExprId, m: ExprId) -> Option<ExprId> {
     }
     if n == m {
         let e =
-            eval_elliptic_e(arena, n).unwrap_or_else(|| apply_named(arena, FN_ELLIPTIC_E, &[n]));
+            eval_elliptic_e(arena, n).unwrap_or_else(|| apply_named(arena, LibFn::EllipticE, &[n]));
         let one_minus_n = arena.sub(arena.one, n);
         return Some(arena.div(e, one_minus_n));
     }

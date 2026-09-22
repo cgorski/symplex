@@ -22,6 +22,7 @@ use num_traits::Signed;
 use smallvec::SmallVec;
 
 use crate::base::arena::Arena;
+use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::prelude::*;
@@ -430,48 +431,42 @@ fn push_latex_call(head: &str, args: &[ExprId], stack: &mut Vec<LatexItem>) {
     stack.push(LatexItem::Owned(format!("{head}\\left(")));
 }
 
-/// LaTeX for the 0.9 `Apply`-based special functions, following SymPy's
-/// printer: `\operatorname{erfi}`, `\operatorname{E}_{n}`, `S`/`C`,
+/// LaTeX for the library special functions with a SymPy-style notation:
+/// `\operatorname{erfi}`, `\operatorname{E}_{n}`, `S`/`C`,
 /// `\gamma`/`\Gamma`, `\operatorname{Li}_{s}`, `\eta`, `\operatorname{Ai}`,
 /// `K`/`E`/`F\left(\phi\middle| m\right)`/`\Pi`, `C_{n}^{\left(a\right)}`,
 /// `\operatorname{B}_{(x_1, x_2)}`/`\operatorname{I}_{(x_1, x_2)}`, …
 ///
-/// Returns `false` (pushing nothing) for any other name.
-fn push_special_09_latex(name: &str, args: &[ExprId], stack: &mut Vec<LatexItem>) -> bool {
-    use crate::base::arena::{
-        FN_AIRYAI, FN_AIRYAIPRIME, FN_AIRYBI, FN_AIRYBIPRIME, FN_ASSOC_LAGUERRE, FN_ASSOC_LEGENDRE,
-        FN_BETAINC, FN_BETAINC_REGULARIZED, FN_CHI, FN_DIRICHLET_ETA, FN_ELLIPTIC_E, FN_ELLIPTIC_F,
-        FN_ELLIPTIC_K, FN_ELLIPTIC_PI, FN_ERFCINV, FN_ERFI, FN_ERFINV, FN_EXPINT, FN_FRESNELC,
-        FN_FRESNELS, FN_GEGENBAUER, FN_JACOBI, FN_LOWERGAMMA, FN_POLYLOG, FN_SHI, FN_UPPERGAMMA,
-    };
-    // Plain `head(args)` renderings.
-    let head: Option<&str> = match (name, args.len()) {
-        (FN_ERFI, 1) => Some(r"\operatorname{erfi}"),
-        (FN_ERFINV, 1) => Some(r"\operatorname{erf}^{-1}"),
-        (FN_ERFCINV, 1) => Some(r"\operatorname{erfc}^{-1}"),
-        (FN_SHI, 1) => Some(r"\operatorname{Shi}"),
-        (FN_CHI, 1) => Some(r"\operatorname{Chi}"),
-        (FN_FRESNELS, 1) => Some("S"),
-        (FN_FRESNELC, 1) => Some("C"),
-        (FN_LOWERGAMMA, 2) => Some(r"\gamma"),
-        (FN_UPPERGAMMA, 2) => Some(r"\Gamma"),
-        (FN_DIRICHLET_ETA, 1) => Some(r"\eta"),
-        (FN_AIRYAI, 1) => Some(r"\operatorname{Ai}"),
-        (FN_AIRYBI, 1) => Some(r"\operatorname{Bi}"),
-        (FN_AIRYAIPRIME, 1) => Some(r"\operatorname{Ai}^\prime"),
-        (FN_AIRYBIPRIME, 1) => Some(r"\operatorname{Bi}^\prime"),
-        (FN_ELLIPTIC_K, 1) => Some("K"),
-        (FN_ELLIPTIC_E, 1) => Some("E"),
-        _ => None,
-    };
-    if let Some(head) = head {
-        push_latex_call(head, args, stack);
-        return true;
+/// Returns `false` (pushing nothing) for a function rendered as a plain
+/// `name\left(args\right)` — the integer sequences, the Bessel functions and
+/// the classical orthogonal polynomials — and for a call of the wrong arity.
+/// Exhaustive over [`LibFn`].
+fn push_lib_fn_latex(name: LibFn, args: &[ExprId], stack: &mut Vec<LatexItem>) -> bool {
+    if !name.arity().accepts(args.len()) {
+        return false;
     }
-    match (name, args.len()) {
+    // Plain `head\left(args\right)` renderings fall out of the match; the
+    // structured layouts push their items and return directly.
+    let head: &str = match name {
+        LibFn::Erfi => r"\operatorname{erfi}",
+        LibFn::ErfInv => r"\operatorname{erf}^{-1}",
+        LibFn::ErfcInv => r"\operatorname{erfc}^{-1}",
+        LibFn::Shi => r"\operatorname{Shi}",
+        LibFn::Chi => r"\operatorname{Chi}",
+        LibFn::FresnelS => "S",
+        LibFn::FresnelC => "C",
+        LibFn::LowerGamma => r"\gamma",
+        LibFn::UpperGamma => r"\Gamma",
+        LibFn::DirichletEta => r"\eta",
+        LibFn::AiryAi => r"\operatorname{Ai}",
+        LibFn::AiryBi => r"\operatorname{Bi}",
+        LibFn::AiryAiPrime => r"\operatorname{Ai}^\prime",
+        LibFn::AiryBiPrime => r"\operatorname{Bi}^\prime",
+        LibFn::EllipticK => "K",
+        LibFn::EllipticE => "E",
         // head_{param}\left(x\right)
-        (FN_EXPINT, 2) | (FN_POLYLOG, 2) => {
-            let head = if name == FN_EXPINT {
+        LibFn::ExpInt | LibFn::PolyLog => {
+            let head = if name == LibFn::ExpInt {
                 r"\operatorname{E}_{"
             } else {
                 r"\operatorname{Li}_{"
@@ -481,26 +476,26 @@ fn push_special_09_latex(name: &str, args: &[ExprId], stack: &mut Vec<LatexItem>
             stack.push(LatexItem::Lit(r"}\left("));
             stack.push(LatexItem::Expr(args[0]));
             stack.push(LatexItem::Lit(head));
-            true
+            return true;
         }
         // F\left(\phi\middle| m\right), \Pi\left(n\middle| m\right)
-        (FN_ELLIPTIC_F, 2) | (FN_ELLIPTIC_PI, 2) => {
+        LibFn::EllipticF | LibFn::EllipticPi => {
             stack.push(LatexItem::Lit(r"\right)"));
             stack.push(LatexItem::Expr(args[1]));
             stack.push(LatexItem::Lit(r"\middle| "));
             stack.push(LatexItem::Expr(args[0]));
-            stack.push(LatexItem::Lit(if name == FN_ELLIPTIC_F {
+            stack.push(LatexItem::Lit(if name == LibFn::EllipticF {
                 r"F\left("
             } else {
                 r"\Pi\left("
             }));
-            true
+            return true;
         }
         // C_{n}^{\left(a\right)}\left(x\right), P_{n}^{\left(m\right)}, L_{n}^{\left(a\right)}
-        (FN_GEGENBAUER, 3) | (FN_ASSOC_LEGENDRE, 3) | (FN_ASSOC_LAGUERRE, 3) => {
+        LibFn::Gegenbauer | LibFn::AssocLegendre | LibFn::AssocLaguerre => {
             let letter = match name {
-                FN_GEGENBAUER => r"C_{",
-                FN_ASSOC_LEGENDRE => r"P_{",
+                LibFn::Gegenbauer => r"C_{",
+                LibFn::AssocLegendre => r"P_{",
                 _ => r"L_{",
             };
             stack.push(LatexItem::Lit(r"\right)"));
@@ -510,10 +505,10 @@ fn push_special_09_latex(name: &str, args: &[ExprId], stack: &mut Vec<LatexItem>
             stack.push(LatexItem::Lit(r"}^{\left("));
             stack.push(LatexItem::Expr(args[0]));
             stack.push(LatexItem::Lit(letter));
-            true
+            return true;
         }
         // P_{n}^{\left(a,b\right)}\left(x\right)
-        (FN_JACOBI, 4) => {
+        LibFn::Jacobi => {
             stack.push(LatexItem::Lit(r"\right)"));
             stack.push(LatexItem::Expr(args[3]));
             stack.push(LatexItem::Lit(r"\right)}\left("));
@@ -523,10 +518,10 @@ fn push_special_09_latex(name: &str, args: &[ExprId], stack: &mut Vec<LatexItem>
             stack.push(LatexItem::Lit(r"}^{\left("));
             stack.push(LatexItem::Expr(args[0]));
             stack.push(LatexItem::Lit(r"P_{"));
-            true
+            return true;
         }
         // \operatorname{B}_{(x_1, x_2)}\left(a, b\right), \operatorname{I}_{(x_1, x_2)}\left(a, b\right)
-        (FN_BETAINC, 4) | (FN_BETAINC_REGULARIZED, 4) => {
+        LibFn::BetaInc | LibFn::BetaIncRegularized => {
             stack.push(LatexItem::Lit(r"\right)"));
             stack.push(LatexItem::Expr(args[1]));
             stack.push(LatexItem::Lit(", "));
@@ -535,15 +530,41 @@ fn push_special_09_latex(name: &str, args: &[ExprId], stack: &mut Vec<LatexItem>
             stack.push(LatexItem::Expr(args[3]));
             stack.push(LatexItem::Lit(", "));
             stack.push(LatexItem::Expr(args[2]));
-            stack.push(LatexItem::Lit(if name == FN_BETAINC {
+            stack.push(LatexItem::Lit(if name == LibFn::BetaInc {
                 r"\operatorname{B}_{("
             } else {
                 r"\operatorname{I}_{("
             }));
-            true
+            return true;
         }
-        _ => false,
-    }
+        // Plain `name\left(args\right)`, exactly as a user function.
+        LibFn::Factorial2
+        | LibFn::Subfactorial
+        | LibFn::RisingFactorial
+        | LibFn::FallingFactorial
+        | LibFn::Fibonacci
+        | LibFn::Lucas
+        | LibFn::Bernoulli
+        | LibFn::Harmonic
+        | LibFn::Catalan
+        | LibFn::Bell
+        | LibFn::EulerNumber
+        | LibFn::Stirling1
+        | LibFn::Stirling2
+        | LibFn::PartitionCount
+        | LibFn::LambertW
+        | LibFn::BesselJ
+        | LibFn::BesselY
+        | LibFn::BesselI
+        | LibFn::BesselK
+        | LibFn::Legendre
+        | LibFn::ChebyshevT
+        | LibFn::ChebyshevU
+        | LibFn::Hermite
+        | LibFn::Laguerre => return false,
+    };
+    push_latex_call(head, args, stack);
+    true
 }
 
 /// Expand a single expression node into LaTeX work items on the stack.
@@ -1034,7 +1055,9 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
         ExprNode::Apply(sym_id, ref args) => {
             let name = arena.symbol_name(sym_id).to_owned();
             let args = args.clone();
-            if push_special_09_latex(&name, &args, stack) {
+            if let Some(f) = arena.lib_fn(sym_id)
+                && push_lib_fn_latex(f, &args, stack)
+            {
                 return;
             }
             stack.push(LatexItem::Lit(r"\right)"));
