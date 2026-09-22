@@ -26,6 +26,7 @@
 use crate::base::arena::Arena;
 use crate::base::assumptions::{AssumptionCache, Props};
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::base::walk;
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -973,7 +974,7 @@ pub(crate) fn arg(arena: &mut Arena, z: ExprId) -> ExprId {
 }
 
 /// If `id` is `k·π` for a rational `k` (or the number `0`), return `k`.
-fn as_pi_multiple(arena: &Arena, id: ExprId) -> Option<Ratio<BigInt>> {
+fn as_pi_multiple(arena: &Arena, id: ExprId) -> Option<Q> {
     if id == arena.pi() {
         return Some(Ratio::from_integer(BigInt::from(1)));
     }
@@ -993,7 +994,7 @@ fn as_pi_multiple(arena: &Arena, id: ExprId) -> Option<Ratio<BigInt>> {
 }
 
 /// Reduce `k` (in units of π) into `(−1, 1]`.
-fn reduce_pi_multiple(k: Ratio<BigInt>) -> Ratio<BigInt> {
+fn reduce_pi_multiple(k: Q) -> Q {
     let two = Ratio::from_integer(BigInt::from(2));
     let one = Ratio::from_integer(BigInt::from(1));
     // k mod 2 into [0, 2)

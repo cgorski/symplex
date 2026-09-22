@@ -29,6 +29,7 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::base::walk;
 use crate::poly::Poly;
 use crate::poly::polybridge;
@@ -204,11 +205,7 @@ pub(crate) fn gosper_normal(p: &Poly, q: &Poly) -> Option<(Poly, Poly, Poly)> {
 /// Returns a solution vector of length `ncols`, or `None` if inconsistent.
 /// Free variables (under-determined systems) are set to zero.
 #[allow(clippy::needless_range_loop)]
-fn solve_rational_system(
-    mat: &mut [Vec<Ratio<BigInt>>],
-    nrows: usize,
-    ncols: usize,
-) -> Option<Vec<Ratio<BigInt>>> {
+fn solve_rational_system(mat: &mut [Vec<Q>], nrows: usize, ncols: usize) -> Option<Vec<Q>> {
     let mut pivot_row = 0;
     let mut pivot_cols = Vec::new();
 
@@ -805,7 +802,7 @@ mod tests {
     use num_bigint::BigInt;
     use num_rational::Ratio;
 
-    fn r(n: i64) -> Ratio<BigInt> {
+    fn r(n: i64) -> Q {
         Ratio::from_integer(BigInt::from(n))
     }
 

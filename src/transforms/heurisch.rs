@@ -36,6 +36,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
 use crate::base::arena::Arena;
+use crate::base::dense_f64;
 use crate::base::node::{ExprId, ExprNode, SymbolId};
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -230,8 +231,7 @@ fn heurisch_attempt(
         return None;
     }
 
-    // ── Step 8: Solve via least-squares ────────────────────────────
-    // Solve A^T A x = A^T b using Gaussian elimination with partial pivoting.
+    // ── Step 8: Solve via least-squares ──────────────────────────────
     let coeffs = solve_least_squares(&matrix_a, &vec_b, n_unknowns)?;
 
     // ── Step 9: Rational reconstruction ────────────────────────────
@@ -709,94 +709,14 @@ fn erf_approx_f64(x: f64) -> f64 {
 // Linear system solver
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Solve the overdetermined system A·x = b in the least-squares sense.
-///
-/// Forms the normal equations A^T·A·x = A^T·b and solves via Gaussian
-/// elimination with partial pivoting.
+/// Solve the overdetermined system A·x = b in the least-squares sense by
+/// Householder QR ([`dense_f64::lstsq_householder`]); `None` when `A` is
+/// rank deficient or the solution is not finite.
 fn solve_least_squares(a: &[Vec<f64>], b: &[f64], n: usize) -> Option<Vec<f64>> {
-    let m = a.len();
-    assert_eq!(b.len(), m);
-
-    // Form A^T·A (n×n) and A^T·b (n×1).
-    let mut ata = vec![vec![0.0; n]; n];
-    let mut atb = vec![0.0; n];
-
-    for i in 0..n {
-        for j in 0..n {
-            let mut s = 0.0;
-            for a_row in a.iter().take(m) {
-                s += a_row[i] * a_row[j];
-            }
-            ata[i][j] = s;
-        }
-        let mut s = 0.0;
-        for k in 0..m {
-            s += a[k][i] * b[k];
-        }
-        atb[i] = s;
-    }
-
-    // Gaussian elimination with partial pivoting on the augmented matrix
-    // [A^T·A | A^T·b].
-    let mut aug: Vec<Vec<f64>> = Vec::with_capacity(n);
-    for i in 0..n {
-        let mut row = ata[i].clone();
-        row.push(atb[i]);
-        aug.push(row);
-    }
-
-    for col in 0..n {
-        // Find pivot.
-        let mut max_val = aug[col][col].abs();
-        let mut max_row = col;
-        for (row, aug_row) in aug.iter().enumerate().take(n).skip(col + 1) {
-            let v = aug_row[col].abs();
-            if v > max_val {
-                max_val = v;
-                max_row = row;
-            }
-        }
-
-        if max_val < 1e-14 {
-            // Singular or near-singular.
-            return None;
-        }
-
-        // Swap rows.
-        if max_row != col {
-            aug.swap(col, max_row);
-        }
-
-        // Eliminate below.
-        let pivot = aug[col][col];
-        for row in (col + 1)..n {
-            let factor = aug[row][col] / pivot;
-            #[allow(clippy::needless_range_loop)]
-            for j in col..=n {
-                let v = aug[col][j];
-                aug[row][j] -= factor * v;
-            }
-        }
-    }
-
-    // Back-substitution.
-    let mut x = vec![0.0; n];
-    for i in (0..n).rev() {
-        let mut s = aug[i][n];
-        for j in (i + 1)..n {
-            s -= aug[i][j] * x[j];
-        }
-        if aug[i][i].abs() < 1e-14 {
-            return None;
-        }
-        x[i] = s / aug[i][i];
-    }
-
-    // Sanity check: all finite.
+    let x = dense_f64::lstsq_householder(&dense_f64::flatten(a), a.len(), n, b)?;
     if x.iter().any(|v| !v.is_finite()) {
         return None;
     }
-
     Some(x)
 }
 

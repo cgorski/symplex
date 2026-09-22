@@ -31,6 +31,7 @@ use smallvec::SmallVec;
 
 use crate::base::arena::Arena;
 use crate::base::assumptions::{AssumptionCache, Props};
+use crate::base::combinatorics::multinomial_u64;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
 
@@ -938,7 +939,8 @@ fn multinomial_expand_terms(arena: &mut Arena, children: &[ExprId], n: usize) ->
 
     for partition in &compositions {
         // Compute multinomial coefficient n! / (n₁! · n₂! · … · nₖ!)
-        let coeff = multinomial_coeff(n, partition);
+        let parts: Vec<u64> = partition.iter().map(|&p| p as u64).collect();
+        let coeff = multinomial_u64(&parts);
 
         // Build term: coeff · x₁^n₁ · x₂^n₂ · … · xₖ^nₖ
         let mut factors: SmallVec<[ExprId; 6]> = SmallVec::new();
@@ -967,24 +969,6 @@ fn multinomial_expand_terms(arena: &mut Arena, children: &[ExprId], n: usize) ->
     }
 
     arena.add(&terms)
-}
-
-/// Compute the multinomial coefficient `n! / (n₁! · n₂! · … · nₖ!)`.
-///
-/// Uses the product-of-binomials identity:
-///   `C(n; n₁,…,nₖ) = C(n, n₁) · C(n−n₁, n₂) · C(n−n₁−n₂, n₃) · …`
-fn multinomial_coeff(n: usize, partition: &[usize]) -> BigInt {
-    let mut result = BigInt::one();
-    let mut remaining = n;
-    for &ni in partition {
-        // C(remaining, ni) via multiplicative formula
-        for j in 0..ni {
-            result *= BigInt::from(remaining - j);
-            result /= BigInt::from(j + 1);
-        }
-        remaining -= ni;
-    }
-    result
 }
 
 /// Generate all weak compositions of `n` into `k` non-negative parts.

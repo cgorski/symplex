@@ -133,6 +133,21 @@ pub trait Field: EuclideanDomain {
     ///
     /// May panic if `self` is zero.
     fn inv(&self) -> Self;
+
+    /// A fast path for the gcd of two univariate polynomials over this
+    /// field, given as coefficient slices in ascending degree.
+    ///
+    /// Returns the *monic* gcd (ascending, no trailing zeros; empty for
+    /// `gcd(0, 0)`), or `None` to let
+    /// [`GenPoly::gcd`](super::generic::GenPoly::gcd) run Euclid's
+    /// algorithm over the field.  Because the monic gcd over a field is
+    /// unique, an implementation must return exactly what Euclid would.
+    /// `Ratio<BigInt>` routes through the primitive PRS in `ℤ[x]`
+    /// (`zpoly::gcd_via_z`).
+    fn poly_gcd(a: &[Self], b: &[Self]) -> Option<Vec<Self>> {
+        let _ = (a, b);
+        None
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -272,6 +287,10 @@ impl Field for Ratio<BigInt> {
     #[inline]
     fn inv(&self) -> Self {
         Ratio::new(self.denom().clone(), self.numer().clone())
+    }
+
+    fn poly_gcd(a: &[Self], b: &[Self]) -> Option<Vec<Self>> {
+        Some(super::zpoly::gcd_via_z(a, b))
     }
 }
 

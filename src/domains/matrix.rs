@@ -44,12 +44,14 @@
 
 use crate::api::context::Context;
 use crate::api::expr::{Ex, ExprType};
+use crate::base::combinatorics::factorial;
 use crate::base::errors::SymplexError;
+use crate::base::numeric::Q;
 use crate::domains::decompositions::{
     Diagonalization, Hessenberg, JordanForm, Lu, RankDecomposition,
 };
 use num_bigint::BigInt;
-use num_rational::{Ratio, Rational64};
+use num_rational::Rational64;
 use std::fmt;
 use tracing::{debug, trace, warn};
 
@@ -197,11 +199,7 @@ fn fix_trig_parity(e: &Ex) -> Ex {
     use crate::base::node::ExprNode;
     use num_traits::Signed;
     // Pass 1 (read lock): find sin/cos nodes with a negative numeric argument.
-    let targets: Vec<(
-        crate::base::node::ExprId,
-        bool,
-        num_rational::Ratio<num_bigint::BigInt>,
-    )> = {
+    let targets: Vec<(crate::base::node::ExprId, bool, Q)> = {
         let inner = e.inner.read();
         let arena = &inner.arena;
         let mut out = Vec::new();
@@ -327,35 +325,9 @@ pub(crate) fn sqrt_rationalized(e: &Ex) -> Ex {
 // Expression-swell budget
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Upper bound on the total expression-tree size (nodes, counted without
-/// sharing) of the operands and intermediate results of the symbolic
-/// algorithms that can swell: [`Matrix::det`], [`Matrix::inv`],
-/// [`Matrix::solve`], [`Matrix::diagonalize`], [`Matrix::jordan_form`],
-/// [`Matrix::matrix_exp`] and [`Matrix::qr`].
-///
-/// When the budget is exceeded these return
-/// [`SymplexError::ComputationFailed`] whose reason starts with
-/// `"expression swell"` instead of running for an unbounded time.  The
-/// value is calibrated so that everything below it finishes in well under
-/// a minute: a fully symbolic 7×7 determinant (5040 terms, ≈ 40 000 nodes)
-/// passes, an 8×8 one (≈ 360 000 nodes, many minutes) is rejected.
-///
-/// # Examples
-///
-/// ```
-/// use symplex::prelude::*;
-///
-/// let ctx = Context::new();
-/// // A tiny DAG whose *tree* is enormous: eₙ₊₁ = sin(eₙ) + cos(eₙ).
-/// let mut e = ctx.symbol("x");
-/// for _ in 0..16 {
-///     e = &e.sin() + &e.cos();
-/// }
-/// let m = Matrix::new(vec![vec![e.clone(), ctx.int(1)], vec![ctx.int(1), e]]).unwrap();
-/// let err = m.inv().unwrap_err();
-/// assert!(err.to_string().contains("expression swell"), "{err}");
-/// ```
-pub const EXPRESSION_BUDGET: usize = 100_000;
+// The swell budget is a crate-wide knob (`rsolve` uses a quarter of it);
+// this is its historical public path.
+pub use crate::base::config::EXPRESSION_BUDGET;
 
 /// Tree size of `e` (nodes, without sharing), stopping as soon as `cap` is
 /// exceeded.  Iterative, so deep expressions cannot overflow the stack.
@@ -2376,7 +2348,7 @@ impl Matrix {
             for i in 0..block_size {
                 for jj in i..block_size {
                     let d = jj - i;
-                    let factorial_val = ctx.int(factorial_usize(d) as i64);
+                    let factorial_val = ctx.from_bigint(factorial(d as u64));
                     let mut entry = &exp_lambda / &factorial_val;
                     if d > 0
                         && let Some(t) = t
@@ -3874,7 +3846,7 @@ impl Matrix {
     /// assert_eq!(rows[0][1], Ratio::from_integer(BigInt::from(3)));
     /// assert!(Matrix::new(vec![vec![ctx.symbol("x")]]).unwrap().to_rational_rows().is_none());
     /// ```
-    pub fn to_rational_rows(&self) -> Option<Vec<Vec<Ratio<BigInt>>>> {
+    pub fn to_rational_rows(&self) -> Option<Vec<Vec<Q>>> {
         self.rows
             .iter()
             .map(|r| r.iter().map(Ex::as_rational).collect())
@@ -3924,7 +3896,7 @@ impl Matrix {
     /// assert_eq!(m.get(0, 0), &ctx.rational(1, 2));
     /// assert_eq!(m.to_rational_rows().unwrap(), vec![vec![q(1, 2), q(3, 1)]]);
     /// ```
-    pub fn from_ratio(ctx: &Context, rows: &[Vec<Ratio<BigInt>>]) -> Result<Matrix, SymplexError> {
+    pub fn from_ratio(ctx: &Context, rows: &[Vec<Q>]) -> Result<Matrix, SymplexError> {
         let data: Vec<Vec<Ex>> = rows
             .iter()
             .map(|r| r.iter().map(|q| ctx.from_ratio(q.clone())).collect())
@@ -4400,11 +4372,6 @@ fn matrix_pow_vec(
         result = a_minus_lambda.matmul(&result)?;
     }
     Ok(result)
-}
-
-/// Compute n! for small n (used by the matrix-exponential Jordan block formula).
-fn factorial_usize(n: usize) -> usize {
-    (1..=n).product::<usize>().max(1)
 }
 
 /// Pick a vector from `candidates` that lies outside the span of

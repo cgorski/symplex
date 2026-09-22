@@ -797,22 +797,17 @@ fn eval_poly_complex_f64(poly: &Poly, z_re: f64, z_im: f64) -> (f64, f64) {
         Some(d) => d,
         None => return (0.0, 0.0),
     };
-    let mut acc_re = ratio_to_f64_approx(&poly.coeff(deg));
+    let coeff_f64 =
+        |k: usize| crate::base::numeric::ratio_to_f64(&poly.coeff(k)).unwrap_or(f64::NAN);
+    let mut acc_re = coeff_f64(deg);
     let mut acc_im = 0.0;
     for k in (0..deg).rev() {
         let t_re = acc_re * z_re - acc_im * z_im;
         let t_im = acc_re * z_im + acc_im * z_re;
-        acc_re = t_re + ratio_to_f64_approx(&poly.coeff(k));
+        acc_re = t_re + coeff_f64(k);
         acc_im = t_im;
     }
     (acc_re, acc_im)
-}
-
-/// Best-effort conversion of a `Ratio<BigInt>` to `f64`.
-fn ratio_to_f64_approx(r: &Ratio<BigInt>) -> f64 {
-    let n: f64 = r.numer().to_string().parse().unwrap_or(0.0);
-    let d: f64 = r.denom().to_string().parse().unwrap_or(1.0);
-    if d == 0.0 { f64::NAN } else { n / d }
 }
 
 /// Convert an `f64` to a high-precision rational expression suitable for

@@ -66,8 +66,8 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 
 use super::common::{
     check_alpha, check_confidence, check_finite, check_sample, check_unit_open, chi_squared_sf,
-    chi_squared_sf_q, ex, invalid, norm_isf, q_to_f64, qi, qu, student_t_quantile_f64,
-    usize_to_i64,
+    chi_squared_sf_q, ex, invalid, norm_cdf, norm_isf, norm_sf, q_to_f64, qi, qu,
+    student_t_quantile_f64, usize_to_i64,
 };
 use super::data::{self, Ddof, Q};
 use super::family::Distribution;
@@ -77,7 +77,7 @@ use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
 use crate::calculus::definite::{QuadOpts, quadrature};
-use crate::output::codegen::numeric_rt::{erfc, lgamma};
+use crate::output::codegen::numeric_rt::lgamma;
 
 /// Moved to [`stats::anova`](super::anova) in 0.18; this re-export is kept
 /// for one release.
@@ -114,16 +114,6 @@ fn check_same_len(op: &'static str, x: &[Q], y: &[Q]) -> Result<(), SymplexError
         ));
     }
     Ok(())
-}
-
-/// Φ(x) in `f64`.
-fn norm_cdf(x: f64) -> f64 {
-    0.5 * erfc(-x / std::f64::consts::SQRT_2)
-}
-
-/// 1 − Φ(x) in `f64`.
-fn norm_sf(x: f64) -> f64 {
-    0.5 * erfc(x / std::f64::consts::SQRT_2)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

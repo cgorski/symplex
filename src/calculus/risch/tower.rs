@@ -29,6 +29,7 @@ use num_traits::Signed;
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Types
@@ -341,7 +342,7 @@ fn find_integer_multiples(
         return None;
     }
 
-    let mut ratios: Vec<num_rational::Ratio<num_bigint::BigInt>> = Vec::new();
+    let mut ratios: Vec<Q> = Vec::new();
     ratios.push(num_rational::Ratio::from_integer(num_bigint::BigInt::from(
         1,
     )));
@@ -368,8 +369,7 @@ fn find_integer_multiples(
     // Simpler approach: find the minimum ratio and divide all by it.
     // This gives multipliers ≥ 1.  Then check they're all integers.
     let min_ratio = ratios.iter().min().cloned()?;
-    let int_multiples: Vec<num_rational::Ratio<num_bigint::BigInt>> =
-        ratios.iter().map(|r| r / &min_ratio).collect();
+    let int_multiples: Vec<Q> = ratios.iter().map(|r| r / &min_ratio).collect();
 
     // Check all are positive integers.
     for m in &int_multiples {

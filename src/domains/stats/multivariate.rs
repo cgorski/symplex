@@ -43,6 +43,7 @@ use num_traits::{Signed, Zero};
 
 use crate::api::context::Context;
 use crate::api::expr::Ex;
+use crate::base::dense_f64::{self, EigenOpts, EigenTol, OnExhaust};
 use crate::base::errors::SymplexError;
 use crate::domains::exact_matrix::QMatrix;
 use crate::domains::matrix::Matrix;
@@ -463,41 +464,24 @@ impl MultivariateNormal {
             .map(Ex::eval_f64)
             .collect::<Result<_, _>>()?;
         let cov = self.cov.eval_f64()?;
-        let l = cholesky_f64("MultivariateNormal::sample", &cov)?;
+        let l = dense_f64::cholesky(&dense_f64::flatten(&cov), k, 0.0).ok_or_else(|| {
+            failed(
+                "MultivariateNormal::sample",
+                "the covariance is not numerically positive definite",
+            )
+        })?;
         let ctx = self.context();
         let mut z = Distribution::normal(ctx.zero(), ctx.one()).sampler()?;
         let mut out = Vec::with_capacity(n);
         for _ in 0..n {
             let zs: Vec<f64> = (0..k).map(|_| z(rng)).collect();
             let x: Vec<f64> = (0..k)
-                .map(|i| mean[i] + (0..=i).map(|j| l[i][j] * zs[j]).sum::<f64>())
+                .map(|i| mean[i] + dense_f64::dot(&l[i * k..i * k + i + 1], &zs))
                 .collect();
             out.push(x);
         }
         Ok(out)
     }
-}
-
-/// Lower-triangular `L` with `A = L Lᵀ`, in `f64`.
-fn cholesky_f64(op: &'static str, a: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, SymplexError> {
-    let n = a.len();
-    let mut l = vec![vec![0.0; n]; n];
-    for j in 0..n {
-        let d = a[j][j] - l[j][..j].iter().map(|v| v * v).sum::<f64>();
-        if d <= 0.0 || !d.is_finite() {
-            return Err(failed(
-                op,
-                format!("the covariance is not numerically positive definite (pivot {j} = {d})"),
-            ));
-        }
-        let ljj = d.sqrt();
-        l[j][j] = ljj;
-        for i in (j + 1)..n {
-            let s: f64 = l[i][..j].iter().zip(&l[j][..j]).map(|(x, y)| x * y).sum();
-            l[i][j] = (a[i][j] - s) / ljj;
-        }
-    }
-    Ok(l)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -796,7 +780,9 @@ pub fn pca_f64(cov: &[Vec<f64>]) -> Result<PcaF64, SymplexError> {
             }
         }
     }
-    let (values, vectors) = jacobi_eigen(OP, cov)?;
+    let dense_f64::SymEigen { values, vectors } =
+        dense_f64::sym_eigen(&dense_f64::flatten(cov), n, &PCA_EIGEN)
+            .map_err(|e| failed(OP, e.to_string()))?;
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by(|&a, &b| values[b].total_cmp(&values[a]));
     let total: f64 = values.iter().sum();
@@ -804,7 +790,7 @@ pub fn pca_f64(cov: &[Vec<f64>]) -> Result<PcaF64, SymplexError> {
     let mut components = Vec::with_capacity(n);
     let mut ratio = Vec::with_capacity(n);
     for &idx in &order {
-        let mut v: Vec<f64> = vectors.iter().map(|row| row[idx]).collect();
+        let mut v: Vec<f64> = (0..n).map(|i| vectors[i * n + idx]).collect();
         if v.iter()
             .find(|c| c.abs() > 1e-12)
             .is_some_and(|lead| *lead < 0.0)
@@ -828,65 +814,14 @@ pub fn pca_f64(cov: &[Vec<f64>]) -> Result<PcaF64, SymplexError> {
     })
 }
 
-/// Cyclic Jacobi rotations: `(eigenvalues, V)` with `A = V diag(λ) Vᵀ`,
-/// eigenvectors in the columns of `V`.
-fn jacobi_eigen(
-    op: &'static str,
-    a: &[Vec<f64>],
-) -> Result<(Vec<f64>, Vec<Vec<f64>>), SymplexError> {
-    let n = a.len();
-    let mut m: Vec<Vec<f64>> = a.to_vec();
-    let mut v = vec![vec![0.0; n]; n];
-    for (i, row) in v.iter_mut().enumerate() {
-        row[i] = 1.0;
-    }
-    let frob: f64 = m.iter().flatten().map(|x| x * x).sum::<f64>().sqrt();
-    let tol = 1e-15 * frob.max(f64::MIN_POSITIVE);
-    for _sweep in 0..100 {
-        let off: f64 = (0..n)
-            .flat_map(|i| (0..n).filter(move |&j| j != i).map(move |j| (i, j)))
-            .map(|(i, j)| m[i][j] * m[i][j])
-            .sum::<f64>()
-            .sqrt();
-        if off <= tol {
-            let values = (0..n).map(|i| m[i][i]).collect();
-            return Ok((values, v));
-        }
-        for p in 0..n {
-            for q in (p + 1)..n {
-                if m[p][q].abs() <= f64::MIN_POSITIVE {
-                    continue;
-                }
-                // Rotation angle (Golub & Van Loan, Algorithm 8.5.1)
-                let theta = (m[q][q] - m[p][p]) / (2.0 * m[p][q]);
-                let t = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
-                let c = 1.0 / (t * t + 1.0).sqrt();
-                let s = t * c;
-                // A ← A·J (columns p, q), then A ← Jᵀ·A (rows p, q).
-                for row in m.iter_mut() {
-                    let (mkp, mkq) = (row[p], row[q]);
-                    row[p] = c * mkp - s * mkq;
-                    row[q] = s * mkp + c * mkq;
-                }
-                let (top, bottom) = m.split_at_mut(q);
-                for (mpk, mqk) in top[p].iter_mut().zip(bottom[0].iter_mut()) {
-                    let (a, b) = (*mpk, *mqk);
-                    *mpk = c * a - s * b;
-                    *mqk = s * a + c * b;
-                }
-                for row in v.iter_mut() {
-                    let (vkp, vkq) = (row[p], row[q]);
-                    row[p] = c * vkp - s * vkq;
-                    row[q] = s * vkp + c * vkq;
-                }
-            }
-        }
-    }
-    Err(failed(
-        op,
-        "the Jacobi sweeps did not converge in 100 iterations",
-    ))
-}
+/// The Jacobi settings of [`pca_f64`]: stop when the off-diagonal norm is
+/// below `1e-15 · ‖A‖_F`, and fail rather than return a partial result
+/// after 100 sweeps.
+const PCA_EIGEN: EigenOpts = EigenOpts {
+    tol: EigenTol::RelativeFrobenius(1e-15),
+    max_sweeps: 100,
+    on_exhaust: OnExhaust::Error,
+};
 
 impl Pca {
     /// The explained variance ratios evaluated to `f64`.

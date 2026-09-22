@@ -34,10 +34,10 @@
 //! - Bronstein, *Symbolic Integration I*, Chapters 5–6
 //! - SymPy `integrals/rde.py`
 
-use num_bigint::BigInt;
 use num_rational::Ratio;
 use num_traits::{One, Zero};
 
+use crate::base::numeric::Q;
 use crate::poly::dense::Poly;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -356,8 +356,7 @@ fn solve_with_ansatz(
     let num_equations = rhs_degree.max(max_lhs_degree) + 1;
 
     // Build the coefficient matrix.
-    let mut matrix: Vec<Vec<Ratio<BigInt>>> =
-        vec![vec![Ratio::zero(); num_unknowns + 1]; num_equations];
+    let mut matrix: Vec<Vec<Q>> = vec![vec![Ratio::zero(); num_unknowns + 1]; num_equations];
 
     // Fill the RHS column (last column).
     for j in 0..num_equations {
@@ -399,10 +398,7 @@ fn solve_with_ansatz(
 /// `matrix` is an `m × (n+1)` augmented matrix (last column is RHS).
 /// Returns `Some(solution)` with `n` values if consistent, `None` otherwise.
 #[allow(clippy::needless_range_loop)]
-fn solve_linear_system(
-    matrix: &mut [Vec<Ratio<BigInt>>],
-    num_unknowns: usize,
-) -> Option<Vec<Ratio<BigInt>>> {
+fn solve_linear_system(matrix: &mut [Vec<Q>], num_unknowns: usize) -> Option<Vec<Q>> {
     let m = matrix.len();
     let n = num_unknowns;
 
@@ -483,8 +479,9 @@ fn solve_linear_system(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use num_bigint::BigInt;
 
-    fn rat(n: i64, d: i64) -> Ratio<BigInt> {
+    fn rat(n: i64, d: i64) -> Q {
         Ratio::new(BigInt::from(n), BigInt::from(d))
     }
 

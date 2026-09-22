@@ -63,6 +63,7 @@ use crate::base::arena::{
     FN_RISING_FACTORIAL, FN_SHI, FN_STIRLING1, FN_STIRLING2, FN_SUBFACTORIAL, FN_UPPERGAMMA,
 };
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::base::walk;
 
 /// Evaluate known special values in an expression.
@@ -957,7 +958,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                     .map(|&c| cache.get(&c).copied().unwrap_or(c))
                     .collect();
                 // If all args are numeric, return the smallest.
-                let all_numeric: Option<Vec<(Ratio<BigInt>, ExprId)>> = new
+                let all_numeric: Option<Vec<(Q, ExprId)>> = new
                     .iter()
                     .map(|&c| arena.as_num(c).cloned().map(|r| (r, c)))
                     .collect();
@@ -981,7 +982,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                     .map(|&c| cache.get(&c).copied().unwrap_or(c))
                     .collect();
                 // If all args are numeric, return the largest.
-                let all_numeric: Option<Vec<(Ratio<BigInt>, ExprId)>> = new
+                let all_numeric: Option<Vec<(Q, ExprId)>> = new
                     .iter()
                     .map(|&c| arena.as_num(c).cloned().map(|r| (r, c)))
                     .collect();
@@ -1505,6 +1506,9 @@ fn eval_beta(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<ExprId> {
     Some(arena.intern(ExprNode::Num(nid)))
 }
 
+/// `C(n, k)` for non-negative integer literals.  A negative `n` is left
+/// unevaluated on purpose: the generalised `C(−3, 2) = 6` of
+/// `combinatorics::binomial` is not what the symbolic node promises.
 fn eval_binomial(arena: &mut Arena, n: ExprId, k: ExprId) -> Option<ExprId> {
     let nr = arena.as_num(n)?;
     let kr = arena.as_num(k)?;
@@ -1513,17 +1517,9 @@ fn eval_binomial(arena: &mut Arena, n: ExprId, k: ExprId) -> Option<ExprId> {
     }
     let n_u64: u64 = nr.to_integer().try_into().ok()?;
     let k_u64: u64 = kr.to_integer().try_into().ok()?;
-    if k_u64 > n_u64 {
-        // C(n, k) = 0 for 0 ≤ n < k (SymPy: `binomial(1, 2) == 0`).
-        return Some(arena.zero);
-    }
-    // C(n,k) = n! / (k! * (n-k)!)
-    let mut result = num_bigint::BigInt::from(1);
-    for i in 0..k_u64 {
-        result *= num_bigint::BigInt::from(n_u64 - i);
-        result /= num_bigint::BigInt::from(i + 1);
-    }
-    let ratio = num_rational::Ratio::from_integer(result);
+    // `binomial` gives 0 for 0 ≤ n < k (SymPy: `binomial(1, 2) == 0`).
+    let result = crate::base::combinatorics::binomial(n_u64, k_u64);
+    let ratio = Ratio::from_integer(result);
     let nid = arena.intern_num(ratio);
     Some(arena.intern(ExprNode::Num(nid)))
 }
@@ -1696,12 +1692,8 @@ pub(crate) fn eval_zeta(arena: &mut Arena, s: ExprId) -> Option<ExprId> {
 const MAX_POLYGAMMA_SHIFT: i64 = 64;
 
 /// `n!` as a rational.
-fn factorial_ratio(n: usize) -> Ratio<BigInt> {
-    let mut f = BigInt::from(1);
-    for i in 2..=n {
-        f *= BigInt::from(i as u64);
-    }
-    Ratio::from_integer(f)
+fn factorial_ratio(n: usize) -> Q {
+    Ratio::from_integer(crate::base::combinatorics::factorial(n as u64))
 }
 
 /// Exact values of the digamma function:
@@ -1985,7 +1977,7 @@ fn eval_bernoulli(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     }
     let n: u64 = r.to_integer().try_into().ok()?;
     // Build table of B(0)..B(n)
-    let mut b_vals: Vec<Ratio<BigInt>> = Vec::with_capacity((n + 1) as usize);
+    let mut b_vals: Vec<Q> = Vec::with_capacity((n + 1) as usize);
     b_vals.push(Ratio::one()); // B(0) = 1
     for m in 1..=n {
         // B(m) = -1/(m+1) * sum_{k=0}^{m-1} C(m+1, k) * B(k)
@@ -2161,7 +2153,7 @@ fn is_e(arena: &Arena, id: ExprId) -> bool {
 
 /// Check if `id` is a rational multiple of π: returns the multiplier
 /// as `Some(Ratio)`, or `None` if not a multiple of π.
-fn as_pi_multiple(arena: &Arena, id: ExprId) -> Option<Ratio<BigInt>> {
+fn as_pi_multiple(arena: &Arena, id: ExprId) -> Option<Q> {
     // Exact π.
     if is_pi(arena, id) {
         return Some(Ratio::one());
@@ -2205,7 +2197,7 @@ fn eval_sin(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     let coeff = as_pi_multiple(arena, inner)?;
 
     // Reduce modulo 2 (sin has period 2π).
-    let two: Ratio<BigInt> = Ratio::from_integer(2.into());
+    let two: Q = Ratio::from_integer(2.into());
     let coeff = mod_positive(&coeff, &two);
 
     // Known values of sin(k*π).
@@ -2284,7 +2276,7 @@ fn eval_sin(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         }
     }
     // Q4: sin(2π - x) = -sin(x), for coeff in (3/2, 2)
-    let two: Ratio<BigInt> = Ratio::from_integer(2.into());
+    let two: Q = Ratio::from_integer(2.into());
     if coeff > three_half && coeff < two {
         let reduced = two - &coeff;
         let nid = arena.intern_num(reduced);
@@ -2312,7 +2304,7 @@ fn eval_cos(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 
     let coeff = as_pi_multiple(arena, inner)?;
 
-    let two: Ratio<BigInt> = Ratio::from_integer(2.into());
+    let two: Q = Ratio::from_integer(2.into());
     let coeff = mod_positive(&coeff, &two);
 
     // cos(0) = 1
@@ -2392,7 +2384,7 @@ fn eval_cos(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         }
     }
     // Q4: cos(2π - x) = cos(x), for coeff in (3/2, 2)
-    let two: Ratio<BigInt> = Ratio::from_integer(2.into());
+    let two: Q = Ratio::from_integer(2.into());
     if coeff > three_half && coeff < two {
         let reduced = two - &coeff;
         let nid = arena.intern_num(reduced);
@@ -2414,7 +2406,7 @@ fn eval_tan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 
     let coeff = as_pi_multiple(arena, inner)?;
 
-    let one_ratio: Ratio<BigInt> = Ratio::one();
+    let one_ratio: Q = Ratio::one();
     let coeff = mod_positive(&coeff, &one_ratio);
 
     // tan(0) = 0
@@ -2510,7 +2502,7 @@ fn eval_exp(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 
 /// Check if `id` is of the form `i * k * π` for some rational `k`.
 /// Returns `Some(k)` if so, `None` otherwise.
-fn as_imaginary_pi_multiple(arena: &mut Arena, id: ExprId) -> Option<Ratio<BigInt>> {
+fn as_imaginary_pi_multiple(arena: &mut Arena, id: ExprId) -> Option<Q> {
     // The canonical form of i * k * π is Mul([k, π, I]) or variations
     // (sorted by sort key: Num < Pi < ImaginaryUnit).
     // We need to check if the expression is a product containing exactly
@@ -3077,7 +3069,7 @@ fn as_negated(arena: &mut Arena, id: ExprId) -> Option<ExprId> {
 }
 
 /// Compute `a mod m` in the range `[0, m)` for positive `m`.
-fn mod_positive(a: &Ratio<BigInt>, m: &Ratio<BigInt>) -> Ratio<BigInt> {
+fn mod_positive(a: &Q, m: &Q) -> Q {
     let mut result = a % m;
     if result.is_negative() {
         result += m;
@@ -3303,7 +3295,7 @@ fn as_int_in(arena: &Arena, id: ExprId, lo: i64, hi: i64) -> Option<i64> {
 }
 
 /// `id` as a rational number.
-fn as_ratio(arena: &Arena, id: ExprId) -> Option<Ratio<BigInt>> {
+fn as_ratio(arena: &Arena, id: ExprId) -> Option<Q> {
     arena.as_num(id).cloned()
 }
 
@@ -3471,13 +3463,7 @@ fn eval_fresnel(arena: &mut Arena, name: &str, x: ExprId) -> Option<ExprId> {
 
 /// `Γ(s, x)` for `s = base + k` (`k ∈ ℤ`) from the base value `Γ(base, x)`
 /// via `Γ(s+1, x) = s Γ(s, x) + x^s e^{−x}`, upward or downward.
-fn shift_uppergamma(
-    arena: &mut Arena,
-    base: Ratio<BigInt>,
-    base_val: ExprId,
-    k: i64,
-    x: ExprId,
-) -> ExprId {
+fn shift_uppergamma(arena: &mut Arena, base: Q, base_val: ExprId, k: i64, x: ExprId) -> ExprId {
     let neg_x = arena.neg(x);
     let e_neg_x = arena.exp(neg_x);
     let mut s = base;
@@ -3512,7 +3498,7 @@ fn shift_uppergamma(
 /// Closed form of `Γ(s, x)` for integer or half-integer `s` with
 /// `|s| ≤ MAX_SPECIAL_EXPANSION`: bases `Γ(1, x) = e^{−x}`,
 /// `Γ(0, x) = E₁(x)`, `Γ(1/2, x) = √π erfc(√x)`.
-fn uppergamma_closed(arena: &mut Arena, s: &Ratio<BigInt>, x: ExprId) -> Option<ExprId> {
+fn uppergamma_closed(arena: &mut Arena, s: &Q, x: ExprId) -> Option<ExprId> {
     let two = BigInt::from(2);
     let bound = Ratio::from_integer(BigInt::from(MAX_SPECIAL_EXPANSION));
     if s.abs() > bound {
@@ -4171,7 +4157,7 @@ fn eval_betainc(
         Ratio::one()
     };
     // Antiderivative coefficients c_k of t^{a+k}, k = 0..b−1.
-    let mut coeffs: Vec<Ratio<BigInt>> = Vec::with_capacity(b_int as usize);
+    let mut coeffs: Vec<Q> = Vec::with_capacity(b_int as usize);
     let mut binom = BigInt::one();
     for k in 0..b_int {
         if k > 0 {

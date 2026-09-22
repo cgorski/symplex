@@ -1,6 +1,7 @@
 //! Machinery shared by the statistics-on-data modules: exact conversions,
-//! argument checks with one wording, and the reference tail functions
-//! (`χ²`, `F`, Student-t, normal) each module used to carry its own copy of.
+//! argument checks with one wording, the reference tail functions
+//! (`χ²`, `F`, Student-t, normal) each module used to carry its own copy
+//! of, and the Wald summary of a maximum-likelihood fit.
 //!
 //! Everything here is `pub(crate)`.  The public vocabulary it standardises:
 //!
@@ -18,9 +19,10 @@ use super::data::Q;
 use super::family::Distribution;
 use crate::api::context::Context;
 use crate::api::expr::Ex;
+use crate::base::dense_f64;
 use crate::base::errors::SymplexError;
 use crate::domains::optimize::{RootOpts, brent_root};
-use crate::output::codegen::numeric_rt::erfcinv;
+use crate::output::codegen::numeric_rt::{erfc, erfcinv};
 
 // ── Exact conversions ───────────────────────────────────────────────────
 
@@ -158,6 +160,27 @@ pub(crate) fn f_sf_rational(ctx: &Context, d1: &Q, d2: &Q, f: &Q) -> Ex {
 
 // ── Reference distributions: numeric quantiles ──────────────────────────
 
+/// `Φ(x) = ½ erfc(−x/√2)`.
+pub(crate) fn norm_cdf(x: f64) -> f64 {
+    0.5 * erfc(-x / std::f64::consts::SQRT_2)
+}
+
+/// `1 − Φ(x) = ½ erfc(x/√2)`.
+pub(crate) fn norm_sf(x: f64) -> f64 {
+    0.5 * erfc(x / std::f64::consts::SQRT_2)
+}
+
+/// `φ(x) = e^{−x²/2} / √(2π)`.
+pub(crate) fn norm_pdf(x: f64) -> f64 {
+    const SQRT_2PI: f64 = 2.506_628_274_631_000_5;
+    (-0.5 * x * x).exp() / SQRT_2PI
+}
+
+/// `P(|Z| ≥ |z|) = erfc(|z|/√2)`.
+pub(crate) fn normal_two_sided(z: f64) -> f64 {
+    erfc(z.abs() / std::f64::consts::SQRT_2)
+}
+
 /// `Φ⁻¹(1 − alpha)`: the upper-tail standard normal quantile.
 pub(crate) fn norm_isf(alpha: f64) -> f64 {
     std::f64::consts::SQRT_2 * erfcinv(2.0 * alpha)
@@ -239,6 +262,45 @@ pub(crate) fn t_two_sided(op: &'static str, df: f64, confidence: f64) -> Result<
 pub(crate) fn standard_normal() -> Distribution {
     let ctx = Context::new();
     Distribution::normal(ctx.int(0), ctx.int(1))
+}
+
+// ── Maximum-likelihood fits: information matrices ────────────────────────────
+
+/// A Cholesky pivot below this fraction of its diagonal entry marks an
+/// information matrix as numerically singular (collinear regressors, a
+/// likelihood without a finite maximiser).
+const INFORMATION_PIVOT_REL_TOL: f64 = 1e-12;
+
+/// Lower Cholesky factor (flat row-major, see [`dense_f64`]) of a
+/// `p×p` information matrix given as rows; `None` when it is not
+/// positive definite to [`INFORMATION_PIVOT_REL_TOL`].
+pub(crate) fn information_cholesky(info: &[Vec<f64>]) -> Option<Vec<f64>> {
+    dense_f64::cholesky(
+        &dense_f64::flatten(info),
+        info.len(),
+        INFORMATION_PIVOT_REL_TOL,
+    )
+}
+
+/// `I⁻¹` from the observed information at the estimate, with the standard
+/// errors, `z` and two-sided normal p-values of `params`.
+pub(crate) struct WaldSummary {
+    pub cov: Vec<Vec<f64>>,
+    pub se: Vec<f64>,
+    pub z: Vec<f64>,
+    pub p: Vec<f64>,
+}
+
+/// The Wald summary of a fit, or `None` when `info` is singular (the
+/// standard errors are undefined).
+pub(crate) fn wald_summary(info: &[Vec<f64>], params: &[f64]) -> Option<WaldSummary> {
+    let n = info.len();
+    let l = information_cholesky(info)?;
+    let cov = dense_f64::to_rows(&dense_f64::spd_inverse(&l, n), n, n);
+    let se: Vec<f64> = (0..params.len()).map(|j| cov[j][j].sqrt()).collect();
+    let z: Vec<f64> = params.iter().zip(&se).map(|(b, s)| b / s).collect();
+    let p: Vec<f64> = z.iter().map(|z| normal_two_sided(*z)).collect();
+    Some(WaldSummary { cov, se, z, p })
 }
 
 #[cfg(test)]

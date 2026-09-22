@@ -10,9 +10,11 @@ use num_rational::Ratio;
 use num_traits::{One, Zero};
 use parking_lot::Mutex;
 
+use crate::base::numeric::Q;
+
 /// Global cache of Bernoulli numbers as exact rationals.
 /// Lazily computed on demand via the standard recurrence.
-static BERNOULLI_CACHE: Mutex<Vec<Ratio<BigInt>>> = Mutex::new(Vec::new());
+static BERNOULLI_CACHE: Mutex<Vec<Q>> = Mutex::new(Vec::new());
 
 /// Return B_n (the n-th Bernoulli number) as an exact rational.
 ///
@@ -23,7 +25,7 @@ static BERNOULLI_CACHE: Mutex<Vec<Ratio<BigInt>>> = Mutex::new(Vec::new());
 /// immediately without computation. Results are cached globally.
 /// Thread-safe via `Mutex`.
 #[must_use]
-pub(crate) fn bernoulli(n: usize) -> Ratio<BigInt> {
+pub(crate) fn bernoulli(n: usize) -> Q {
     let mut cache = BERNOULLI_CACHE.lock();
 
     // Extend cache if needed.
@@ -46,7 +48,7 @@ pub(crate) fn bernoulli(n: usize) -> Ratio<BigInt> {
 
         // Recurrence: B_m = -1/(m+1) · Σ_{k=0}^{m-1} C(m+1, k) · B_k
         let mut sum = Ratio::zero();
-        let mut binom: Ratio<BigInt> = Ratio::one(); // C(m+1, 0) = 1
+        let mut binom: Q = Ratio::one(); // C(m+1, 0) = 1
         for k in 0..m {
             sum += &binom * &cache[k];
             // C(m+1, k+1) = C(m+1, k) · (m+1-k) / (k+1)

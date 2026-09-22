@@ -31,16 +31,16 @@
 
 use std::cmp::Ordering;
 
-use num_bigint::BigInt;
-use num_rational::Ratio;
 use num_traits::{Signed, ToPrimitive, Zero};
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
+use crate::base::extended::Extended;
 use crate::base::interval::{Interval, IntervalKind};
 use crate::base::node::{ExprId, ExprNode, INTERVAL_LEFT_OPEN, INTERVAL_RIGHT_OPEN};
+use crate::base::numeric::Q;
 
 /// Relative tolerance below which two floating-point endpoint
 /// approximations are considered "too close to order safely".
@@ -53,7 +53,7 @@ const CLOSE_REL_TOL: f64 = 1e-9;
 /// Numeric value of an endpoint: exact rational or floating approximation.
 #[derive(Clone, Debug)]
 enum Val {
-    Exact(Ratio<BigInt>),
+    Exact(Q),
     Approx(f64),
 }
 
@@ -66,17 +66,13 @@ impl Val {
     }
 }
 
-/// Position of an endpoint on the extended real line after ranking.
+/// Position of an endpoint on the extended real line after ranking: a
+/// finite endpoint's rank in the table, or `±∞`.
 ///
-/// The derived `Ord` orders `MinusInf < Rank(_) < PlusInf`, and ranks are
+/// `Extended`'s order is `NegInf < Finite(_) < PosInf`, and ranks are
 /// assigned in ascending numeric order, so `Pos` comparisons are
 /// numeric comparisons.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum Pos {
-    MinusInf,
-    Rank(usize),
-    PlusInf,
-}
+type Pos = Extended<usize>;
 
 /// Evaluate an expression to a finite real number, if possible.
 ///
@@ -181,10 +177,10 @@ impl Table {
             evaluated.insert(raw, ev);
             match arena.node(ev) {
                 ExprNode::Infinity => {
-                    pos.insert(ev, Pos::PlusInf);
+                    pos.insert(ev, Pos::PosInf);
                 }
                 ExprNode::NegInfinity => {
-                    pos.insert(ev, Pos::MinusInf);
+                    pos.insert(ev, Pos::NegInf);
                 }
                 _ => {
                     if seen_ev.insert(ev)
@@ -236,7 +232,7 @@ impl Table {
 
         let mut reps = Vec::with_capacity(cand.len());
         for (rank, (id, _)) in cand.iter().enumerate() {
-            pos.insert(*id, Pos::Rank(rank));
+            pos.insert(*id, Pos::Finite(rank));
             reps.push(*id);
         }
         // Aliases may chain (c → b → a); resolve transitively.
@@ -276,9 +272,9 @@ impl Table {
     /// Representative expression for a position.
     fn rep(&self, arena: &Arena, p: Pos) -> ExprId {
         match p {
-            Pos::MinusInf => arena.neg_infinity,
-            Pos::PlusInf => arena.infinity,
-            Pos::Rank(r) => self.reps[r],
+            Pos::NegInf => arena.neg_infinity,
+            Pos::PosInf => arena.infinity,
+            Pos::Finite(r) => self.reps[r],
         }
     }
 }
@@ -287,44 +283,35 @@ impl Table {
 // RankSet — the normal form over ranks
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// One connected piece: an interval `lo..hi` or an isolated point
-/// (`lo == hi`, both closed).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Piece {
-    lo: Pos,
-    hi: Pos,
-    lo_open: bool,
-    hi_open: bool,
+/// One connected piece: an interval between two positions, or an isolated
+/// point (`lower == upper`, closed).  In a normalised [`RankSet`] a piece
+/// with `lower == upper` is always closed at both ends.
+type Piece = Interval<Pos>;
+
+/// A piece with the given ends and openness.
+fn piece(lower: Pos, upper: Pos, lower_open: bool, upper_open: bool) -> Piece {
+    Interval {
+        lower,
+        upper,
+        kind: IntervalKind::from_open_ends(lower_open, upper_open),
+    }
 }
 
-impl Piece {
-    fn point(p: Pos) -> Piece {
-        Piece {
-            lo: p,
-            hi: p,
-            lo_open: false,
-            hi_open: false,
-        }
-    }
+/// The isolated point `{p}`.
+fn point(p: Pos) -> Piece {
+    Interval::point(p)
+}
 
-    fn is_point(&self) -> bool {
-        self.lo == self.hi
-    }
-
-    /// Force infinite endpoints open and report whether the piece is
-    /// non-empty.
-    fn fix(&mut self) -> bool {
-        if self.lo == Pos::MinusInf {
-            self.lo_open = true;
-        }
-        if self.hi == Pos::PlusInf {
-            self.hi_open = true;
-        }
-        match self.lo.cmp(&self.hi) {
-            Ordering::Less => true,
-            Ordering::Equal => matches!(self.lo, Pos::Rank(_)) && !self.lo_open && !self.hi_open,
-            Ordering::Greater => false,
-        }
+/// Force infinite endpoints open and report whether the piece is
+/// non-empty.
+fn fix(p: &mut Piece) -> bool {
+    let lower_open = p.kind.lower_open() || p.lower == Pos::NegInf;
+    let upper_open = p.kind.upper_open() || p.upper == Pos::PosInf;
+    p.kind = IntervalKind::from_open_ends(lower_open, upper_open);
+    match p.lower.cmp(&p.upper) {
+        Ordering::Less => true,
+        Ordering::Equal => p.lower.is_finite() && p.kind == IntervalKind::Closed,
+        Ordering::Greater => false,
     }
 }
 
@@ -342,32 +329,34 @@ impl RankSet {
 
     fn full() -> RankSet {
         RankSet {
-            pieces: vec![Piece {
-                lo: Pos::MinusInf,
-                hi: Pos::PlusInf,
-                lo_open: true,
-                hi_open: true,
-            }],
+            pieces: vec![Interval::open(Pos::NegInf, Pos::PosInf)],
         }
     }
 
     /// Build the normal form from arbitrary (possibly overlapping,
     /// unsorted, invalid) pieces.
     fn normalize(mut pieces: Vec<Piece>) -> RankSet {
-        pieces.retain_mut(|p| p.fix());
-        pieces.sort_by(|x, y| x.lo.cmp(&y.lo).then(x.lo_open.cmp(&y.lo_open)));
+        pieces.retain_mut(fix);
+        pieces.sort_by(|x, y| {
+            x.lower
+                .cmp(&y.lower)
+                .then(x.kind.lower_open().cmp(&y.kind.lower_open()))
+        });
         let mut out: Vec<Piece> = Vec::with_capacity(pieces.len());
         for p in pieces {
             if let Some(cur) = out.last_mut() {
-                let merge = p.lo < cur.hi || (p.lo == cur.hi && !(cur.hi_open && p.lo_open));
+                let merge = p.lower < cur.upper
+                    || (p.lower == cur.upper && !(cur.kind.upper_open() && p.kind.lower_open()));
                 if merge {
-                    match p.hi.cmp(&cur.hi) {
+                    match p.upper.cmp(&cur.upper) {
                         Ordering::Greater => {
-                            cur.hi = p.hi;
-                            cur.hi_open = p.hi_open;
+                            cur.upper = p.upper;
+                            cur.kind = cur.kind.with_upper_open(p.kind.upper_open());
                         }
                         Ordering::Equal => {
-                            cur.hi_open = cur.hi_open && p.hi_open;
+                            cur.kind = cur
+                                .kind
+                                .with_upper_open(cur.kind.upper_open() && p.kind.upper_open());
                         }
                         Ordering::Less => {}
                     }
@@ -385,8 +374,8 @@ impl RankSet {
 
     fn is_full(&self) -> bool {
         self.pieces.len() == 1
-            && self.pieces[0].lo == Pos::MinusInf
-            && self.pieces[0].hi == Pos::PlusInf
+            && self.pieces[0].lower == Pos::NegInf
+            && self.pieces[0].upper == Pos::PosInf
     }
 
     fn union(&self, other: &RankSet) -> RankSet {
@@ -397,24 +386,14 @@ impl RankSet {
 
     fn complement(&self) -> RankSet {
         let mut out = Vec::with_capacity(self.pieces.len() + 1);
-        let mut prev_hi = Pos::MinusInf;
+        let mut prev_hi = Pos::NegInf;
         let mut prev_hi_open = true;
         for p in &self.pieces {
-            out.push(Piece {
-                lo: prev_hi,
-                hi: p.lo,
-                lo_open: !prev_hi_open,
-                hi_open: !p.lo_open,
-            });
-            prev_hi = p.hi;
-            prev_hi_open = p.hi_open;
+            out.push(piece(prev_hi, p.lower, !prev_hi_open, !p.kind.lower_open()));
+            prev_hi = p.upper;
+            prev_hi_open = p.kind.upper_open();
         }
-        out.push(Piece {
-            lo: prev_hi,
-            hi: Pos::PlusInf,
-            lo_open: !prev_hi_open,
-            hi_open: true,
-        });
+        out.push(piece(prev_hi, Pos::PosInf, !prev_hi_open, true));
         RankSet::normalize(out)
     }
 
@@ -427,12 +406,10 @@ impl RankSet {
     }
 
     fn contains(&self, p: Pos) -> bool {
-        if !matches!(p, Pos::Rank(_)) {
+        if !p.is_finite() {
             return false;
         }
-        self.pieces.iter().any(|pc| {
-            (pc.lo < p && p < pc.hi) || (pc.lo == p && !pc.lo_open) || (pc.hi == p && !pc.hi_open)
-        })
+        self.pieces.iter().any(|pc| pc.contains(&p))
     }
 
     fn is_subset(&self, other: &RankSet) -> bool {
@@ -443,11 +420,7 @@ impl RankSet {
         let pieces = self
             .pieces
             .iter()
-            .map(|p| Piece {
-                lo_open: false,
-                hi_open: false,
-                ..*p
-            })
+            .map(|p| p.with_kind(IntervalKind::Closed))
             .collect();
         RankSet::normalize(pieces)
     }
@@ -457,11 +430,7 @@ impl RankSet {
             .pieces
             .iter()
             .filter(|p| !p.is_point())
-            .map(|p| Piece {
-                lo_open: true,
-                hi_open: true,
-                ..*p
-            })
+            .map(|p| p.with_kind(IntervalKind::Open))
             .collect();
         RankSet::normalize(pieces)
     }
@@ -469,11 +438,11 @@ impl RankSet {
     fn boundary(&self) -> RankSet {
         let mut pts: Vec<Piece> = Vec::new();
         for p in &self.pieces {
-            if let Pos::Rank(_) = p.lo {
-                pts.push(Piece::point(p.lo));
+            if p.lower.is_finite() {
+                pts.push(point(p.lower));
             }
-            if let Pos::Rank(_) = p.hi {
-                pts.push(Piece::point(p.hi));
+            if p.upper.is_finite() {
+                pts.push(point(p.upper));
             }
         }
         RankSet::normalize(pts)
@@ -482,21 +451,22 @@ impl RankSet {
     fn is_open(&self) -> bool {
         self.pieces
             .iter()
-            .all(|p| !p.is_point() && p.lo_open && p.hi_open)
+            .all(|p| !p.is_point() && p.kind == IntervalKind::Open)
     }
 
     fn is_closed(&self) -> bool {
         self.pieces.iter().all(|p| {
-            (p.lo_open == (p.lo == Pos::MinusInf)) && (p.hi_open == (p.hi == Pos::PlusInf))
+            (p.kind.lower_open() == (p.lower == Pos::NegInf))
+                && (p.kind.upper_open() == (p.upper == Pos::PosInf))
         })
     }
 
     fn inf(&self) -> Option<Pos> {
-        self.pieces.first().map(|p| p.lo)
+        self.pieces.first().map(|p| p.lower)
     }
 
     fn sup(&self) -> Option<Pos> {
-        self.pieces.last().map(|p| p.hi)
+        self.pieces.last().map(|p| p.upper)
     }
 }
 
@@ -545,15 +515,15 @@ fn rankset_to_expr(arena: &mut Arena, table: &Table, rs: &RankSet) -> ExprId {
     let mut points: Vec<ExprId> = Vec::new();
     for p in &rs.pieces {
         if p.is_point() {
-            points.push(table.rep(arena, p.lo));
+            points.push(table.rep(arena, p.lower));
         } else {
-            let lo = table.rep(arena, p.lo);
-            let hi = table.rep(arena, p.hi);
+            let lo = table.rep(arena, p.lower);
+            let hi = table.rep(arena, p.upper);
             let mut flags = 0u8;
-            if p.lo_open {
+            if p.kind.lower_open() {
                 flags |= INTERVAL_LEFT_OPEN;
             }
-            if p.hi_open {
+            if p.kind.upper_open() {
                 flags |= INTERVAL_RIGHT_OPEN;
             }
             parts.push(arena.intern(ExprNode::Interval(lo, hi, flags)));
@@ -665,12 +635,12 @@ fn eval_node(
 
         ExprNode::Interval(a, b, flags) => match (table.pos_of(a), table.pos_of(b)) {
             (Some(lo), Some(hi)) => {
-                let piece = Piece {
+                let piece = piece(
                     lo,
                     hi,
-                    lo_open: flags & INTERVAL_LEFT_OPEN != 0,
-                    hi_open: flags & INTERVAL_RIGHT_OPEN != 0,
-                };
+                    flags & INTERVAL_LEFT_OPEN != 0,
+                    flags & INTERVAL_RIGHT_OPEN != 0,
+                );
                 SetVal::Exact(RankSet::normalize(vec![piece]))
             }
             _ => {
@@ -691,7 +661,7 @@ fn eval_node(
             let mut syms = Vec::new();
             for &e in &elems {
                 match table.pos_of(e) {
-                    Some(p @ Pos::Rank(_)) => pieces.push(Piece::point(p)),
+                    Some(p @ Pos::Finite(_)) => pieces.push(point(p)),
                     _ => syms.push(table.ev(e)),
                 }
             }
@@ -939,7 +909,7 @@ pub(crate) fn set_contains(arena: &mut Arena, set: ExprId, elem: ExprId) -> Opti
         // Exact fast path.
         if let Some(rs) = ev.vals.get(&id).and_then(SetVal::exact) {
             let r = match elem_pos {
-                Some(p @ Pos::Rank(_)) => Some(rs.contains(p)),
+                Some(p @ Pos::Finite(_)) => Some(rs.contains(p)),
                 Some(_) => Some(false), // ±∞ is never a member of a real set
                 None => {
                     if rs.is_empty() {
@@ -1208,11 +1178,11 @@ pub(crate) fn measure(arena: &mut Arena, set: ExprId) -> Option<ExprId> {
         if p.is_point() {
             continue;
         }
-        if !matches!(p.lo, Pos::Rank(_)) || !matches!(p.hi, Pos::Rank(_)) {
+        if !p.is_bounded() {
             return Some(arena.infinity);
         }
-        let lo = ev.table.rep(arena, p.lo);
-        let hi = ev.table.rep(arena, p.hi);
+        let lo = ev.table.rep(arena, p.lower);
+        let hi = ev.table.rep(arena, p.upper);
         terms.push(arena.sub(hi, lo));
     }
     let total = if terms.is_empty() {
@@ -1279,11 +1249,7 @@ pub(crate) fn as_intervals(arena: &mut Arena, set: ExprId) -> Option<Vec<Interva
     Some(
         rs.pieces
             .iter()
-            .map(|p| Interval {
-                lower: ev.table.rep(arena, p.lo),
-                upper: ev.table.rep(arena, p.hi),
-                kind: IntervalKind::from_open_ends(p.lo_open, p.hi_open),
-            })
+            .map(|p| p.as_ref().map(|pos| ev.table.rep(arena, *pos)))
             .collect(),
     )
 }
@@ -1298,7 +1264,7 @@ pub(crate) fn as_finite_set(arena: &mut Arena, set: ExprId) -> Option<Vec<ExprId
                 Some(
                     rs.pieces
                         .iter()
-                        .map(|p| ev.table.rep(arena, p.lo))
+                        .map(|p| ev.table.rep(arena, p.lower))
                         .collect(),
                 )
             } else {
@@ -1312,7 +1278,7 @@ pub(crate) fn as_finite_set(arena: &mut Arena, set: ExprId) -> Option<Vec<ExprId
             let mut out: Vec<ExprId> = rs
                 .pieces
                 .iter()
-                .map(|p| ev.table.rep(arena, p.lo))
+                .map(|p| ev.table.rep(arena, p.lower))
                 .collect();
             for &s in syms {
                 match arena.node(s) {
@@ -1631,12 +1597,7 @@ mod tests {
     // ── RankSet unit tests ────────────────────────────────────────────
 
     fn r(lo: usize, hi: usize, lo_open: bool, hi_open: bool) -> Piece {
-        Piece {
-            lo: Pos::Rank(lo),
-            hi: Pos::Rank(hi),
-            lo_open,
-            hi_open,
-        }
+        piece(Pos::Finite(lo), Pos::Finite(hi), lo_open, hi_open)
     }
 
     #[test]
@@ -1657,7 +1618,7 @@ mod tests {
     fn normalize_absorbs_points_and_bridges() {
         let s = RankSet::normalize(vec![
             r(0, 1, true, true),
-            Piece::point(Pos::Rank(1)),
+            point(Pos::Finite(1)),
             r(1, 2, true, true),
         ]);
         assert_eq!(s.pieces, vec![r(0, 2, true, true)]);
@@ -1667,12 +1628,7 @@ mod tests {
     fn normalize_drops_invalid() {
         let s = RankSet::normalize(vec![r(2, 1, false, false), r(1, 1, true, false)]);
         assert!(s.is_empty());
-        let s = RankSet::normalize(vec![Piece {
-            lo: Pos::MinusInf,
-            hi: Pos::MinusInf,
-            lo_open: false,
-            hi_open: false,
-        }]);
+        let s = RankSet::normalize(vec![piece(Pos::NegInf, Pos::NegInf, false, false)]);
         assert!(s.is_empty());
     }
 
@@ -1683,18 +1639,8 @@ mod tests {
         assert_eq!(
             c.pieces,
             vec![
-                Piece {
-                    lo: Pos::MinusInf,
-                    hi: Pos::Rank(0),
-                    lo_open: true,
-                    hi_open: true
-                },
-                Piece {
-                    lo: Pos::Rank(1),
-                    hi: Pos::PlusInf,
-                    lo_open: true,
-                    hi_open: true
-                },
+                Interval::open(Pos::NegInf, Pos::Finite(0)),
+                Interval::open(Pos::Finite(1), Pos::PosInf),
             ]
         );
         assert_eq!(c.complement(), s, "double complement");
@@ -1703,20 +1649,10 @@ mod tests {
     #[test]
     fn complement_of_punctured_line_is_point() {
         let s = RankSet::normalize(vec![
-            Piece {
-                lo: Pos::MinusInf,
-                hi: Pos::Rank(0),
-                lo_open: true,
-                hi_open: true,
-            },
-            Piece {
-                lo: Pos::Rank(0),
-                hi: Pos::PlusInf,
-                lo_open: true,
-                hi_open: true,
-            },
+            Interval::open(Pos::NegInf, Pos::Finite(0)),
+            Interval::open(Pos::Finite(0), Pos::PosInf),
         ]);
-        assert_eq!(s.complement().pieces, vec![Piece::point(Pos::Rank(0))]);
+        assert_eq!(s.complement().pieces, vec![point(Pos::Finite(0))]);
         assert!(RankSet::full().complement().is_empty());
         assert!(RankSet::empty().complement().is_full());
     }
@@ -1735,18 +1671,18 @@ mod tests {
 
     #[test]
     fn topology() {
-        let a = RankSet::normalize(vec![r(0, 1, true, false), Piece::point(Pos::Rank(2))]);
+        let a = RankSet::normalize(vec![r(0, 1, true, false), point(Pos::Finite(2))]);
         assert_eq!(
             a.closure().pieces,
-            vec![r(0, 1, false, false), Piece::point(Pos::Rank(2))]
+            vec![r(0, 1, false, false), point(Pos::Finite(2))]
         );
         assert_eq!(a.interior().pieces, vec![r(0, 1, true, true)]);
         assert_eq!(
             a.boundary().pieces,
             vec![
-                Piece::point(Pos::Rank(0)),
-                Piece::point(Pos::Rank(1)),
-                Piece::point(Pos::Rank(2))
+                point(Pos::Finite(0)),
+                point(Pos::Finite(1)),
+                point(Pos::Finite(2))
             ]
         );
         assert!(!a.is_open());
@@ -1761,9 +1697,9 @@ mod tests {
     #[test]
     fn contains_respects_openness() {
         let a = RankSet::normalize(vec![r(0, 1, true, false)]);
-        assert!(!a.contains(Pos::Rank(0)));
-        assert!(a.contains(Pos::Rank(1)));
-        assert!(!a.contains(Pos::PlusInf));
+        assert!(!a.contains(Pos::Finite(0)));
+        assert!(a.contains(Pos::Finite(1)));
+        assert!(!a.contains(Pos::PosInf));
     }
 
     // ── Arena-level tests ────────────────────────────────────────────

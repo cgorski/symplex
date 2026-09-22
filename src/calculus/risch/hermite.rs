@@ -230,8 +230,9 @@ fn integrate_poly(p: &Poly) -> Poly {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::base::numeric::Q;
 
-    fn rat(n: i64, d: i64) -> Ratio<BigInt> {
+    fn rat(n: i64, d: i64) -> Q {
         Ratio::new(BigInt::from(n), BigInt::from(d))
     }
 

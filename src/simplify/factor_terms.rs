@@ -12,8 +12,8 @@
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::base::walk;
-use num_bigint::BigInt;
 use num_integer::Integer;
 use num_rational::Ratio;
 use num_traits::{One, Signed, Zero};
@@ -40,7 +40,7 @@ fn try_as_integer(arena: &Arena, id: ExprId) -> Option<i64> {
 }
 
 /// Raise a rational to an integer power.
-fn pow_rational(r: &Ratio<BigInt>, n: i64) -> Ratio<BigInt> {
+fn pow_rational(r: &Q, n: i64) -> Q {
     if n == 0 {
         return Ratio::one();
     }
@@ -66,7 +66,7 @@ fn pow_rational(r: &Ratio<BigInt>, n: i64) -> Ratio<BigInt> {
 ///   -m*x      → (-1, {m: 1, x: 1})
 ///   x         → (1, {x: 1})
 ///   5         → (5, {})
-fn decompose_product(arena: &mut Arena, id: ExprId) -> (Ratio<BigInt>, FxHashMap<ExprId, i64>) {
+fn decompose_product(arena: &mut Arena, id: ExprId) -> (Q, FxHashMap<ExprId, i64>) {
     let (mut coeff, term) = arena.as_coeff_term(id);
     let mut factors = FxHashMap::default();
 
@@ -117,7 +117,7 @@ fn decompose_product(arena: &mut Arena, id: ExprId) -> (Ratio<BigInt>, FxHashMap
 /// For example: base = (2x + 4), exp = 2
 ///   content = 2, primitive = (x + 2)
 ///   Returns (2^2 = 4, (x + 2))
-fn extract_add_content(arena: &mut Arena, base: ExprId, exp: i64) -> (Ratio<BigInt>, ExprId) {
+fn extract_add_content(arena: &mut Arena, base: ExprId, exp: i64) -> (Q, ExprId) {
     if let ExprNode::Add(_) = arena.node(base).clone() {
         let (content, primitive) = numeric_factor_terms_pair(arena, base);
         if !content.is_one() {
@@ -193,11 +193,7 @@ fn map_to_expr(arena: &mut Arena, map: &FxHashMap<ExprId, i64>) -> ExprId {
 }
 
 /// Rebuild a term from a coefficient and factor map.
-fn rebuild_term(
-    arena: &mut Arena,
-    coeff: &Ratio<BigInt>,
-    factors: &FxHashMap<ExprId, i64>,
-) -> ExprId {
+fn rebuild_term(arena: &mut Arena, coeff: &Q, factors: &FxHashMap<ExprId, i64>) -> ExprId {
     let sym_expr = map_to_expr(arena, factors);
     arena.make_coeff_term(coeff.clone(), sym_expr)
 }
@@ -209,20 +205,20 @@ fn rebuild_term(
 /// Factor out the GCD of numeric coefficients only.
 /// Returns (gcd, inner) where expr == gcd * inner mathematically.
 /// The inner expression has each coefficient divided by gcd.
-fn numeric_factor_terms_pair(arena: &mut Arena, expr: ExprId) -> (Ratio<BigInt>, ExprId) {
+fn numeric_factor_terms_pair(arena: &mut Arena, expr: ExprId) -> (Q, ExprId) {
     let node = arena.node(expr).clone();
     let children = match node {
         ExprNode::Add(ref children) if children.len() >= 2 => children.clone(),
         _ => return (Ratio::one(), expr),
     };
 
-    let mut pairs: Vec<(Ratio<BigInt>, ExprId)> = Vec::new();
+    let mut pairs: Vec<(Q, ExprId)> = Vec::new();
     for &child in &children {
         let (coeff, term) = arena.as_coeff_term(child);
         pairs.push((coeff, term));
     }
 
-    let coeffs: Vec<&Ratio<BigInt>> = pairs.iter().map(|(c, _)| c).collect();
+    let coeffs: Vec<&Q> = pairs.iter().map(|(c, _)| c).collect();
     let gcd = rational_gcd_multi(&coeffs);
 
     if gcd.is_one() || gcd.is_zero() {
@@ -246,7 +242,7 @@ fn numeric_factor_terms_pair(arena: &mut Arena, expr: ExprId) -> (Ratio<BigInt>,
 ///
 /// This is the public entry point that preserves backward compatibility.
 #[allow(dead_code)]
-pub(crate) fn factor_terms_pair(arena: &mut Arena, expr: ExprId) -> (Ratio<BigInt>, ExprId) {
+pub(crate) fn factor_terms_pair(arena: &mut Arena, expr: ExprId) -> (Q, ExprId) {
     numeric_factor_terms_pair(arena, expr)
 }
 
@@ -275,7 +271,7 @@ pub(crate) fn symbolic_factor_terms_pair(arena: &mut Arena, expr: ExprId) -> (Ex
         .collect();
 
     // Numeric GCD
-    let coeffs: Vec<&Ratio<BigInt>> = decomposed.iter().map(|(c, _)| c).collect();
+    let coeffs: Vec<&Q> = decomposed.iter().map(|(c, _)| c).collect();
     let num_gcd = rational_gcd_multi(&coeffs);
 
     // Symbolic GCD
@@ -618,7 +614,7 @@ fn collect_by_vars_term(arena: &mut Arena, term: ExprId, var: ExprId, rest: &[Ex
 // ---------------------------------------------------------------------------
 
 /// Compute the GCD of a list of rational numbers.
-fn rational_gcd_multi(values: &[&Ratio<BigInt>]) -> Ratio<BigInt> {
+fn rational_gcd_multi(values: &[&Q]) -> Q {
     if values.is_empty() {
         return Ratio::one();
     }
@@ -633,7 +629,7 @@ fn rational_gcd_multi(values: &[&Ratio<BigInt>]) -> Ratio<BigInt> {
 }
 
 /// GCD of two rationals: gcd(a/b, c/d) = gcd(a,c) / lcm(b,d).
-fn rational_gcd(a: &Ratio<BigInt>, b: &Ratio<BigInt>) -> Ratio<BigInt> {
+fn rational_gcd(a: &Q, b: &Q) -> Q {
     let a_abs = if a.is_negative() {
         -a.clone()
     } else {
@@ -658,6 +654,7 @@ fn rational_gcd(a: &Ratio<BigInt>, b: &Ratio<BigInt>) -> Ratio<BigInt> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use num_bigint::BigInt;
 
     fn sym(a: &mut Arena, name: &str) -> ExprId {
         a.symbol(name)

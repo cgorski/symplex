@@ -107,32 +107,11 @@ fn gcd_u64(mut a: u64, mut b: u64) -> u64 {
     a
 }
 
-/// Tiny deterministic xorshift generator (used for randomized algorithms
-/// so that results are reproducible run-to-run).
-struct XorShift(u64);
-
-impl XorShift {
-    fn new(seed: u64) -> Self {
-        XorShift(seed.max(1) ^ 0x9E37_79B9_7F4A_7C15)
-    }
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
-    fn next_big_below(&mut self, n: &BigInt) -> BigInt {
-        let bits = n.bits() as usize + 64;
-        let words = bits.div_ceil(64);
-        let mut acc = BigInt::zero();
-        for _ in 0..words {
-            acc = (acc << 64usize) + BigInt::from(self.next_u64());
-        }
-        acc.mod_floor(n)
-    }
-}
+use crate::base::numeric::Q;
+/// The deterministic generator of the randomised algorithms here
+/// (Miller–Rabin witnesses, Pollard–Brent, root finding mod `p`), so that
+/// results are reproducible run-to-run.
+use crate::base::rng::XorShift64Star as XorShift;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Small prime table
@@ -3000,7 +2979,7 @@ pub fn is_palindromic(n: impl Into<BigInt>, base: u32) -> bool {
 /// let cf: Vec<i64> = continued_fraction(&neg).iter().map(|t| t.try_into().unwrap()).collect();
 /// assert_eq!(cf, vec![-3, 1, 2]);
 /// ```
-pub fn continued_fraction(r: &Ratio<BigInt>) -> Vec<BigInt> {
+pub fn continued_fraction(r: &Q) -> Vec<BigInt> {
     let mut out = Vec::new();
     let mut num = r.numer().clone();
     let mut den = r.denom().clone();
@@ -3100,7 +3079,7 @@ pub fn continued_fraction_periodic(d: impl Into<BigInt>) -> Option<PeriodicConti
 /// assert_eq!(*last.numer(), BigInt::from(355));
 /// assert_eq!(*last.denom(), BigInt::from(113));
 /// ```
-pub fn continued_fraction_convergents(terms: &[BigInt]) -> Vec<Ratio<BigInt>> {
+pub fn continued_fraction_convergents(terms: &[BigInt]) -> Vec<Q> {
     let mut out = Vec::with_capacity(terms.len());
     let (mut h_prev, mut h) = (BigInt::zero(), BigInt::one()); // h_{-2}, h_{-1}
     let (mut k_prev, mut k) = (BigInt::one(), BigInt::zero()); // k_{-2}, k_{-1}
@@ -3134,7 +3113,7 @@ pub fn continued_fraction_convergents(terms: &[BigInt]) -> Vec<Ratio<BigInt>> {
 /// assert_eq!(d, vec![4, 18, 468]);   // 4/13 = 1/4 + 1/18 + 1/468
 /// assert!(egyptian_fraction(&Ratio::from_integer(BigInt::from(2))).is_none());
 /// ```
-pub fn egyptian_fraction(r: &Ratio<BigInt>) -> Option<Vec<BigInt>> {
+pub fn egyptian_fraction(r: &Q) -> Option<Vec<BigInt>> {
     if !r.is_positive() || *r > Ratio::one() {
         return None;
     }
@@ -3236,7 +3215,7 @@ pub fn lucas(n: impl Into<BigInt>) -> BigInt {
 /// assert_eq!(bernoulli(12), Some(r(-691, 2730)));
 /// assert_eq!(bernoulli(3), Some(r(0, 1)));
 /// ```
-pub fn bernoulli(n: impl Into<BigInt>) -> Option<Ratio<BigInt>> {
+pub fn bernoulli(n: impl Into<BigInt>) -> Option<Q> {
     let n: BigInt = n.into();
     if n.is_negative() {
         return None;
@@ -3276,24 +3255,11 @@ pub fn euler_number(n: impl Into<BigInt>) -> Option<BigInt> {
     for i in 1..=m {
         let mut sum = BigInt::zero();
         for (k, ek) in e.iter().enumerate().take(i) {
-            sum += binomial_u64((2 * i) as u64, (2 * k) as u64) * ek;
+            sum += binomial((2 * i) as u64, (2 * k) as u64) * ek;
         }
         e.push(-sum);
     }
     Some(e[m].clone())
-}
-
-/// `C(n, k)` for `u64` arguments.
-fn binomial_u64(n: u64, k: u64) -> BigInt {
-    if k > n {
-        return BigInt::zero();
-    }
-    let k = k.min(n - k);
-    let mut r = BigInt::one();
-    for i in 0..k {
-        r = r * BigInt::from(n - i) / BigInt::from(i + 1);
-    }
-    r
 }
 
 /// Harmonic number `Hₙ = 1 + 1/2 + … + 1/n` as an exact rational
@@ -3309,7 +3275,7 @@ fn binomial_u64(n: u64, k: u64) -> BigInt {
 /// assert_eq!(harmonic(4), Some(Ratio::new(BigInt::from(25), BigInt::from(12))));
 /// assert_eq!(harmonic(0), Some(Ratio::from_integer(BigInt::from(0))));
 /// ```
-pub fn harmonic(n: impl Into<BigInt>) -> Option<Ratio<BigInt>> {
+pub fn harmonic(n: impl Into<BigInt>) -> Option<Q> {
     let n: BigInt = n.into();
     if n.is_negative() {
         return None;
@@ -3435,7 +3401,7 @@ pub fn ilcm<I: Into<BigInt> + Clone>(values: &[I]) -> BigInt {
 ///     assert!((r * Ratio::from_integer(l.clone())).is_integer());
 /// }
 /// ```
-pub fn rational_lcm_of_denominators(values: &[Ratio<BigInt>]) -> BigInt {
+pub fn rational_lcm_of_denominators(values: &[Q]) -> BigInt {
     let denoms: Vec<BigInt> = values.iter().map(|r| r.denom().clone()).collect();
     lcm_many(&denoms)
 }
@@ -4505,7 +4471,7 @@ pub fn binomial_coefficients(n: u32) -> Vec<((u32, u32), BigInt)> {
 /// assert_eq!(continued_fraction_reduce(&cf(&[1, 0])), None);
 /// assert_eq!(continued_fraction_reduce(&[]), None);
 /// ```
-pub fn continued_fraction_reduce(terms: &[BigInt]) -> Option<Ratio<BigInt>> {
+pub fn continued_fraction_reduce(terms: &[BigInt]) -> Option<Q> {
     let (last, init) = terms.split_last()?;
     let mut x = Ratio::from_integer(last.clone());
     for a in init.iter().rev() {
@@ -5619,7 +5585,7 @@ mod tests {
         assert!(egyptian_fraction(&Ratio::new(bi(-1), bi(2))).is_none());
         // Sum check.
         let r = Ratio::new(bi(7), bi(15));
-        let sum: Ratio<BigInt> = egyptian_fraction(&r)
+        let sum: Q = egyptian_fraction(&r)
             .unwrap()
             .iter()
             .map(|d| Ratio::new(BigInt::one(), d.clone()))

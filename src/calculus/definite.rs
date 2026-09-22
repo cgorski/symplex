@@ -58,6 +58,7 @@ use crate::base::errors::SymplexError;
 use crate::base::extended::Extended;
 use crate::base::interval::Interval;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::base::walk;
 use crate::calculus::calculus_util::{self, BreakKind, BreakScan, LinearCoeffs};
 use crate::transforms::{eval, evalf, expand, subs};
@@ -1338,13 +1339,12 @@ fn limit_pos_inf(arena: &mut Arena, g: ExprId, u: ExprId) -> Option<Extended<Exp
         };
     }
     match compositional_limit(arena, g, u) {
-        LimVal::Finite(v) => {
+        LimVal::Value(Extended::Finite(v)) => {
             if is_finite_value(arena, v, u) {
                 return Some(Extended::Finite(v));
             }
         }
-        LimVal::PosInf => return Some(Extended::PosInf),
-        LimVal::NegInf => return Some(Extended::NegInf),
+        LimVal::Value(infinite) => return Some(infinite),
         LimVal::Bounded | LimVal::Unknown => {}
     }
 
@@ -1396,7 +1396,7 @@ fn has_unbounded_oscillation(arena: &mut Arena, g: ExprId, u: ExprId) -> bool {
             continue;
         }
         match compositional_limit(arena, arg, u) {
-            LimVal::Finite(_) => {}
+            LimVal::Value(Extended::Finite(_)) => {}
             _ => return true,
         }
     }
@@ -1461,9 +1461,8 @@ fn numeric_limit_sanity(arena: &mut Arena, g: ExprId, u: ExprId, l: ExprId) -> b
 /// Value classes for the compositional limit evaluator.
 #[derive(Clone, Copy, Debug)]
 enum LimVal {
-    Finite(ExprId),
-    PosInf,
-    NegInf,
+    /// A limit on the extended line: a finite value or `±∞`.
+    Value(Extended<ExprId>),
     /// Bounded but not convergent (e.g. `sin(u)`).
     Bounded,
     Unknown,
@@ -1479,9 +1478,9 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
     for id in order {
         let node = arena.node(id).clone();
         let v = if id == u {
-            LimVal::PosInf
+            LimVal::Value(Extended::PosInf)
         } else if !walk::contains(arena, id, u) {
-            LimVal::Finite(id)
+            LimVal::Value(Extended::Finite(id))
         } else {
             match node {
                 ExprNode::Add(children) => {
@@ -1492,9 +1491,9 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
                     let mut unknown = false;
                     for c in children.iter() {
                         match vals.get(c).copied().unwrap_or(LimVal::Unknown) {
-                            LimVal::Finite(v) => finite.push(v),
-                            LimVal::PosInf => pos += 1,
-                            LimVal::NegInf => neg += 1,
+                            LimVal::Value(Extended::Finite(v)) => finite.push(v),
+                            LimVal::Value(Extended::PosInf) => pos += 1,
+                            LimVal::Value(Extended::NegInf) => neg += 1,
                             LimVal::Bounded => bounded = true,
                             LimVal::Unknown => unknown = true,
                         }
@@ -1502,14 +1501,14 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
                     if unknown || (pos > 0 && neg > 0) {
                         LimVal::Unknown
                     } else if pos > 0 {
-                        LimVal::PosInf
+                        LimVal::Value(Extended::PosInf)
                     } else if neg > 0 {
-                        LimVal::NegInf
+                        LimVal::Value(Extended::NegInf)
                     } else if bounded {
                         LimVal::Bounded
                     } else {
                         let s = arena.add(&finite);
-                        LimVal::Finite(safe_eval(arena, s))
+                        LimVal::Value(Extended::Finite(safe_eval(arena, s)))
                     }
                 }
                 ExprNode::Mul(children) => {
@@ -1520,9 +1519,9 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
                     let mut unknown = false;
                     for c in children.iter() {
                         match vals.get(c).copied().unwrap_or(LimVal::Unknown) {
-                            LimVal::Finite(v) => finite.push(v),
-                            LimVal::PosInf => infs += 1,
-                            LimVal::NegInf => {
+                            LimVal::Value(Extended::Finite(v)) => finite.push(v),
+                            LimVal::Value(Extended::PosInf) => infs += 1,
+                            LimVal::Value(Extended::NegInf) => {
                                 infs += 1;
                                 neg_infs += 1;
                             }
@@ -1549,32 +1548,32 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
                                     } else {
                                         let negative = (s == Ordering::Less) ^ (neg_infs % 2 == 1);
                                         if negative {
-                                            LimVal::NegInf
+                                            LimVal::Value(Extended::NegInf)
                                         } else {
-                                            LimVal::PosInf
+                                            LimVal::Value(Extended::PosInf)
                                         }
                                     }
                                 }
                             }
                         } else if bounded {
                             if psign == Some(Ordering::Equal) {
-                                LimVal::Finite(arena.zero())
+                                LimVal::Value(Extended::Finite(arena.zero()))
                             } else {
                                 LimVal::Bounded
                             }
                         } else {
-                            LimVal::Finite(prod)
+                            LimVal::Value(Extended::Finite(prod))
                         }
                     }
                 }
                 ExprNode::Neg(inner) => {
                     match vals.get(&inner).copied().unwrap_or(LimVal::Unknown) {
-                        LimVal::Finite(v) => {
+                        LimVal::Value(Extended::Finite(v)) => {
                             let n = arena.neg(v);
-                            LimVal::Finite(safe_eval(arena, n))
+                            LimVal::Value(Extended::Finite(safe_eval(arena, n)))
                         }
-                        LimVal::PosInf => LimVal::NegInf,
-                        LimVal::NegInf => LimVal::PosInf,
+                        LimVal::Value(Extended::PosInf) => LimVal::Value(Extended::NegInf),
+                        LimVal::Value(Extended::NegInf) => LimVal::Value(Extended::PosInf),
                         other => other,
                     }
                 }
@@ -1585,148 +1584,166 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
                 }
                 ExprNode::Exp(inner) => {
                     match vals.get(&inner).copied().unwrap_or(LimVal::Unknown) {
-                        LimVal::Finite(v) => {
+                        LimVal::Value(Extended::Finite(v)) => {
                             let e = arena.exp(v);
-                            LimVal::Finite(safe_eval(arena, e))
+                            LimVal::Value(Extended::Finite(safe_eval(arena, e)))
                         }
-                        LimVal::PosInf => LimVal::PosInf,
-                        LimVal::NegInf => LimVal::Finite(arena.zero()),
+                        LimVal::Value(Extended::PosInf) => LimVal::Value(Extended::PosInf),
+                        LimVal::Value(Extended::NegInf) => {
+                            LimVal::Value(Extended::Finite(arena.zero()))
+                        }
                         LimVal::Bounded => LimVal::Bounded,
                         LimVal::Unknown => LimVal::Unknown,
                     }
                 }
                 ExprNode::Ln(inner) => match vals.get(&inner).copied().unwrap_or(LimVal::Unknown) {
-                    LimVal::Finite(v) => match sign_of(arena, v) {
-                        Some(Ordering::Equal) => LimVal::NegInf,
+                    LimVal::Value(Extended::Finite(v)) => match sign_of(arena, v) {
+                        Some(Ordering::Equal) => LimVal::Value(Extended::NegInf),
                         Some(_) => {
                             let l = arena.ln(v);
-                            LimVal::Finite(safe_eval(arena, l))
+                            LimVal::Value(Extended::Finite(safe_eval(arena, l)))
                         }
                         None => LimVal::Unknown,
                     },
-                    LimVal::PosInf => LimVal::PosInf,
+                    LimVal::Value(Extended::PosInf) => LimVal::Value(Extended::PosInf),
                     _ => LimVal::Unknown,
                 },
                 ExprNode::Atan(inner) => match vals.get(&inner).copied().unwrap_or(LimVal::Unknown)
                 {
-                    LimVal::Finite(v) => {
+                    LimVal::Value(Extended::Finite(v)) => {
                         let a = arena.atan(v);
-                        LimVal::Finite(safe_eval(arena, a))
+                        LimVal::Value(Extended::Finite(safe_eval(arena, a)))
                     }
-                    LimVal::PosInf => {
+                    LimVal::Value(Extended::PosInf) => {
                         let half_pi = arena.rational(1, 2);
                         let pi = arena.pi();
-                        LimVal::Finite(arena.mul(&[half_pi, pi]))
+                        LimVal::Value(Extended::Finite(arena.mul(&[half_pi, pi])))
                     }
-                    LimVal::NegInf => {
+                    LimVal::Value(Extended::NegInf) => {
                         let neg_half = arena.rational(-1, 2);
                         let pi = arena.pi();
-                        LimVal::Finite(arena.mul(&[neg_half, pi]))
+                        LimVal::Value(Extended::Finite(arena.mul(&[neg_half, pi])))
                     }
                     _ => LimVal::Unknown,
                 },
                 ExprNode::Tanh(inner) | ExprNode::Erf(inner) => {
                     match vals.get(&inner).copied().unwrap_or(LimVal::Unknown) {
-                        LimVal::Finite(v) => {
+                        LimVal::Value(Extended::Finite(v)) => {
                             let r = if matches!(node, ExprNode::Tanh(_)) {
                                 arena.tanh(v)
                             } else {
                                 arena.erf(v)
                             };
-                            LimVal::Finite(safe_eval(arena, r))
+                            LimVal::Value(Extended::Finite(safe_eval(arena, r)))
                         }
-                        LimVal::PosInf => LimVal::Finite(arena.one()),
-                        LimVal::NegInf => LimVal::Finite(arena.neg_one()),
+                        LimVal::Value(Extended::PosInf) => {
+                            LimVal::Value(Extended::Finite(arena.one()))
+                        }
+                        LimVal::Value(Extended::NegInf) => {
+                            LimVal::Value(Extended::Finite(arena.neg_one()))
+                        }
                         _ => LimVal::Unknown,
                     }
                 }
                 ExprNode::Erfc(inner) => match vals.get(&inner).copied().unwrap_or(LimVal::Unknown)
                 {
-                    LimVal::Finite(v) => {
+                    LimVal::Value(Extended::Finite(v)) => {
                         let r = arena.erfc(v);
-                        LimVal::Finite(safe_eval(arena, r))
+                        LimVal::Value(Extended::Finite(safe_eval(arena, r)))
                     }
-                    LimVal::PosInf => LimVal::Finite(arena.zero()),
-                    LimVal::NegInf => LimVal::Finite(arena.int(2)),
+                    LimVal::Value(Extended::PosInf) => {
+                        LimVal::Value(Extended::Finite(arena.zero()))
+                    }
+                    LimVal::Value(Extended::NegInf) => {
+                        LimVal::Value(Extended::Finite(arena.int(2)))
+                    }
                     _ => LimVal::Unknown,
                 },
                 ExprNode::Sin(inner) | ExprNode::Cos(inner) => {
                     match vals.get(&inner).copied().unwrap_or(LimVal::Unknown) {
-                        LimVal::Finite(v) => {
+                        LimVal::Value(Extended::Finite(v)) => {
                             let r = if matches!(node, ExprNode::Sin(_)) {
                                 arena.sin(v)
                             } else {
                                 arena.cos(v)
                             };
-                            LimVal::Finite(safe_eval(arena, r))
+                            LimVal::Value(Extended::Finite(safe_eval(arena, r)))
                         }
-                        LimVal::PosInf | LimVal::NegInf | LimVal::Bounded => LimVal::Bounded,
+                        LimVal::Value(Extended::PosInf)
+                        | LimVal::Value(Extended::NegInf)
+                        | LimVal::Bounded => LimVal::Bounded,
                         LimVal::Unknown => LimVal::Unknown,
                     }
                 }
                 ExprNode::Sinh(inner) | ExprNode::Asinh(inner) => {
                     match vals.get(&inner).copied().unwrap_or(LimVal::Unknown) {
-                        LimVal::Finite(v) => {
+                        LimVal::Value(Extended::Finite(v)) => {
                             let r = if matches!(node, ExprNode::Sinh(_)) {
                                 arena.sinh(v)
                             } else {
                                 arena.asinh(v)
                             };
-                            LimVal::Finite(safe_eval(arena, r))
+                            LimVal::Value(Extended::Finite(safe_eval(arena, r)))
                         }
-                        LimVal::PosInf => LimVal::PosInf,
-                        LimVal::NegInf => LimVal::NegInf,
+                        LimVal::Value(Extended::PosInf) => LimVal::Value(Extended::PosInf),
+                        LimVal::Value(Extended::NegInf) => LimVal::Value(Extended::NegInf),
                         _ => LimVal::Unknown,
                     }
                 }
                 ExprNode::Cosh(inner) => match vals.get(&inner).copied().unwrap_or(LimVal::Unknown)
                 {
-                    LimVal::Finite(v) => {
+                    LimVal::Value(Extended::Finite(v)) => {
                         let r = arena.cosh(v);
-                        LimVal::Finite(safe_eval(arena, r))
+                        LimVal::Value(Extended::Finite(safe_eval(arena, r)))
                     }
-                    LimVal::PosInf | LimVal::NegInf => LimVal::PosInf,
+                    LimVal::Value(Extended::PosInf) | LimVal::Value(Extended::NegInf) => {
+                        LimVal::Value(Extended::PosInf)
+                    }
                     _ => LimVal::Unknown,
                 },
                 ExprNode::Abs(inner) => {
                     match vals.get(&inner).copied().unwrap_or(LimVal::Unknown) {
-                        LimVal::Finite(v) => {
+                        LimVal::Value(Extended::Finite(v)) => {
                             let r = arena.abs(v);
-                            LimVal::Finite(safe_eval(arena, r))
+                            LimVal::Value(Extended::Finite(safe_eval(arena, r)))
                         }
-                        LimVal::PosInf | LimVal::NegInf => LimVal::PosInf,
+                        LimVal::Value(Extended::PosInf) | LimVal::Value(Extended::NegInf) => {
+                            LimVal::Value(Extended::PosInf)
+                        }
                         LimVal::Bounded => LimVal::Bounded,
                         LimVal::Unknown => LimVal::Unknown,
                     }
                 }
                 ExprNode::Sign(inner) => match vals.get(&inner).copied().unwrap_or(LimVal::Unknown)
                 {
-                    LimVal::PosInf => LimVal::Finite(arena.one()),
-                    LimVal::NegInf => LimVal::Finite(arena.neg_one()),
-                    LimVal::Finite(v) => match sign_of(arena, v) {
-                        Some(Ordering::Greater) => LimVal::Finite(arena.one()),
-                        Some(Ordering::Less) => LimVal::Finite(arena.neg_one()),
+                    LimVal::Value(Extended::PosInf) => LimVal::Value(Extended::Finite(arena.one())),
+                    LimVal::Value(Extended::NegInf) => {
+                        LimVal::Value(Extended::Finite(arena.neg_one()))
+                    }
+                    LimVal::Value(Extended::Finite(v)) => match sign_of(arena, v) {
+                        Some(Ordering::Greater) => LimVal::Value(Extended::Finite(arena.one())),
+                        Some(Ordering::Less) => LimVal::Value(Extended::Finite(arena.neg_one())),
                         _ => LimVal::Unknown,
                     },
                     _ => LimVal::Unknown,
                 },
                 ExprNode::Acosh(inner) | ExprNode::Gamma(inner) => {
                     match vals.get(&inner).copied().unwrap_or(LimVal::Unknown) {
-                        LimVal::PosInf => LimVal::PosInf,
-                        LimVal::Finite(v) if is_positive(arena, v) => {
+                        LimVal::Value(Extended::PosInf) => LimVal::Value(Extended::PosInf),
+                        LimVal::Value(Extended::Finite(v)) if is_positive(arena, v) => {
                             let r = if matches!(node, ExprNode::Acosh(_)) {
                                 arena.acosh(v)
                             } else {
                                 arena.gamma(v)
                             };
-                            LimVal::Finite(safe_eval(arena, r))
+                            LimVal::Value(Extended::Finite(safe_eval(arena, r)))
                         }
                         _ => LimVal::Unknown,
                     }
                 }
                 ExprNode::Asin(inner) | ExprNode::Acos(inner) | ExprNode::Atanh(inner) => {
                     match vals.get(&inner).copied().unwrap_or(LimVal::Unknown) {
-                        LimVal::Finite(v) => {
+                        LimVal::Value(Extended::Finite(v)) => {
                             let r = match node {
                                 ExprNode::Asin(_) => arena.asin(v),
                                 ExprNode::Acos(_) => arena.acos(v),
@@ -1734,7 +1751,7 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
                             };
                             let r = safe_eval(arena, r);
                             if is_finite_value(arena, r, u) {
-                                LimVal::Finite(r)
+                                LimVal::Value(Extended::Finite(r))
                             } else {
                                 LimVal::Unknown
                             }
@@ -1774,12 +1791,12 @@ fn pow_limit(
             }
         });
         return match bv {
-            LimVal::Finite(b) => {
+            LimVal::Value(Extended::Finite(b)) => {
                 let b_zero = sign_of(arena, b) == Some(Ordering::Equal);
                 if b_zero {
                     // 0^e: 0 for e > 0, undefined/infinite otherwise.
                     return if e_sign == Ordering::Greater {
-                        LimVal::Finite(arena.zero())
+                        LimVal::Value(Extended::Finite(arena.zero()))
                     } else {
                         LimVal::Unknown
                     };
@@ -1787,24 +1804,24 @@ fn pow_limit(
                 let p = arena.pow(b, exp);
                 let p = safe_eval(arena, p);
                 if is_finite_value(arena, p, u) {
-                    LimVal::Finite(p)
+                    LimVal::Value(Extended::Finite(p))
                 } else {
                     LimVal::Unknown
                 }
             }
-            LimVal::PosInf => match e_sign {
-                Ordering::Greater => LimVal::PosInf,
-                Ordering::Less => LimVal::Finite(arena.zero()),
-                Ordering::Equal => LimVal::Finite(arena.one()),
+            LimVal::Value(Extended::PosInf) => match e_sign {
+                Ordering::Greater => LimVal::Value(Extended::PosInf),
+                Ordering::Less => LimVal::Value(Extended::Finite(arena.zero())),
+                Ordering::Equal => LimVal::Value(Extended::Finite(arena.one())),
             },
-            LimVal::NegInf => match e_sign {
+            LimVal::Value(Extended::NegInf) => match e_sign {
                 Ordering::Greater => match e_int_parity {
-                    Some(true) => LimVal::PosInf,
-                    Some(false) => LimVal::NegInf,
+                    Some(true) => LimVal::Value(Extended::PosInf),
+                    Some(false) => LimVal::Value(Extended::NegInf),
                     None => LimVal::Unknown,
                 },
-                Ordering::Less => LimVal::Finite(arena.zero()),
-                Ordering::Equal => LimVal::Finite(arena.one()),
+                Ordering::Less => LimVal::Value(Extended::Finite(arena.zero())),
+                Ordering::Equal => LimVal::Value(Extended::Finite(arena.one())),
             },
             LimVal::Bounded => {
                 if e_sign == Ordering::Greater {
@@ -1828,16 +1845,16 @@ fn pow_limit(
             return LimVal::Unknown;
         }
         return match (ev, cmp1) {
-            (LimVal::Finite(e), _) => {
+            (LimVal::Value(Extended::Finite(e)), _) => {
                 let p = arena.pow(base, e);
-                LimVal::Finite(safe_eval(arena, p))
+                LimVal::Value(Extended::Finite(safe_eval(arena, p)))
             }
-            (_, Ordering::Equal) => LimVal::Finite(arena.one()),
-            (LimVal::PosInf, Ordering::Greater) | (LimVal::NegInf, Ordering::Less) => {
-                LimVal::PosInf
-            }
-            (LimVal::PosInf, Ordering::Less) | (LimVal::NegInf, Ordering::Greater) => {
-                LimVal::Finite(arena.zero())
+            (_, Ordering::Equal) => LimVal::Value(Extended::Finite(arena.one())),
+            (LimVal::Value(Extended::PosInf), Ordering::Greater)
+            | (LimVal::Value(Extended::NegInf), Ordering::Less) => LimVal::Value(Extended::PosInf),
+            (LimVal::Value(Extended::PosInf), Ordering::Less)
+            | (LimVal::Value(Extended::NegInf), Ordering::Greater) => {
+                LimVal::Value(Extended::Finite(arena.zero()))
             }
             _ => LimVal::Unknown,
         };
@@ -2511,13 +2528,13 @@ fn as_x_power(arena: &Arena, e: ExprId, x: ExprId) -> Option<ExprId> {
 }
 
 /// Rational value of a numeric expression.
-fn as_ratio(arena: &Arena, e: ExprId) -> Option<Ratio<BigInt>> {
+fn as_ratio(arena: &Arena, e: ExprId) -> Option<Q> {
     arena.as_num(e).cloned()
 }
 
 /// `Pow(base, −m)` → `(base, m)` with `m` a positive number; a bare
 /// non-power expression is not a reciprocal.
-fn as_reciprocal(arena: &Arena, e: ExprId) -> Option<(ExprId, Ratio<BigInt>)> {
+fn as_reciprocal(arena: &Arena, e: ExprId) -> Option<(ExprId, Q)> {
     if let ExprNode::Pow(base, exp) = arena.node(e)
         && let Some(r) = arena.as_num(*exp)
         && r.is_negative()
@@ -2535,7 +2552,7 @@ enum Trig {
 }
 
 /// `sin(arg)^n` / `cos(arg)^n` → `(kind, arg, n)`; bare `sin(arg)` has `n = 1`.
-fn as_trig_power(arena: &Arena, e: ExprId) -> Option<(Trig, ExprId, Ratio<BigInt>)> {
+fn as_trig_power(arena: &Arena, e: ExprId) -> Option<(Trig, ExprId, Q)> {
     let (inner, n) = if let ExprNode::Pow(base, exp) = arena.node(e) {
         (*base, arena.as_num(*exp)?.clone())
     } else {
@@ -2549,7 +2566,7 @@ fn as_trig_power(arena: &Arena, e: ExprId) -> Option<(Trig, ExprId, Ratio<BigInt
 }
 
 /// `ln(arg)^n` → `(arg, n)`.
-fn as_ln_power(arena: &Arena, e: ExprId) -> Option<(ExprId, Ratio<BigInt>)> {
+fn as_ln_power(arena: &Arena, e: ExprId) -> Option<(ExprId, Q)> {
     let (inner, n) = if let ExprNode::Pow(base, exp) = arena.node(e) {
         (*base, arena.as_num(*exp)?.clone())
     } else {
@@ -2562,7 +2579,7 @@ fn as_ln_power(arena: &Arena, e: ExprId) -> Option<(ExprId, Ratio<BigInt>)> {
 }
 
 /// Exact `Γ(r)` for integer and half-integer `r`; a `Gamma` node otherwise.
-fn gamma_exact(arena: &mut Arena, r: &Ratio<BigInt>) -> Option<ExprId> {
+fn gamma_exact(arena: &mut Arena, r: &Q) -> Option<ExprId> {
     if r.is_integer() {
         if !r.is_positive() {
             return None;
@@ -2687,11 +2704,7 @@ fn quadratic_coeffs(arena: &mut Arena, e: ExprId, x: ExprId) -> Option<[ExprId; 
 }
 
 /// Decompose `k + c·x^n` (exactly two terms, `k`, `c` free of `x`).
-fn as_binomial_in_x(
-    arena: &mut Arena,
-    e: ExprId,
-    x: ExprId,
-) -> Option<(ExprId, ExprId, Ratio<BigInt>)> {
+fn as_binomial_in_x(arena: &mut Arena, e: ExprId, x: ExprId) -> Option<(ExprId, ExprId, Q)> {
     let terms: Vec<ExprId> = match arena.node(e).clone() {
         ExprNode::Add(ch) => ch.to_vec(),
         _ => return None,
@@ -2700,7 +2713,7 @@ fn as_binomial_in_x(
         return None;
     }
     let mut k: Option<ExprId> = None;
-    let mut cx: Option<(ExprId, Ratio<BigInt>)> = None;
+    let mut cx: Option<(ExprId, Q)> = None;
     for t in terms {
         if !walk::contains(arena, t, x) {
             k = Some(t);
@@ -2757,13 +2770,13 @@ struct Shape {
     /// argument of an `exp(...)` factor
     exp_arg: Option<ExprId>,
     /// `(kind, arg, n)` of trig factors (at most two)
-    trig: Vec<(Trig, ExprId, Ratio<BigInt>)>,
+    trig: Vec<(Trig, ExprId, Q)>,
     /// `(base, m)` of reciprocal factors
-    recip: Vec<(ExprId, Ratio<BigInt>)>,
+    recip: Vec<(ExprId, Q)>,
     /// `(arg, n)` of a logarithm factor
-    ln: Option<(ExprId, Ratio<BigInt>)>,
+    ln: Option<(ExprId, Q)>,
     /// `(arg, m)` of `cosh(arg)^{-m}` / `sinh(arg)^{-m}` (kind: true = cosh)
-    hyp_recip: Option<(bool, ExprId, Ratio<BigInt>)>,
+    hyp_recip: Option<(bool, ExprId, Q)>,
     /// any factor that could not be classified
     other: bool,
 }
@@ -2812,7 +2825,7 @@ fn pure_linear_coeff(arena: &mut Arena, arg: ExprId, x: ExprId) -> Option<ExprId
 }
 
 /// Build `Num` from a rational.
-fn ratio_expr(arena: &mut Arena, r: &Ratio<BigInt>) -> ExprId {
+fn ratio_expr(arena: &mut Arena, r: &Q) -> ExprId {
     let nid = arena.intern_num(r.clone());
     arena.intern(ExprNode::Num(nid))
 }
@@ -3523,7 +3536,7 @@ fn double_factorial(n: i64) -> BigInt {
 
 /// Wallis: `∫₀^{π/2} sin^m cos^n = ((m−1)!!(n−1)!!/(m+n)!!) · (π/2 if m, n even)`
 /// for non-negative integers; `½ B((m+1)/2, (n+1)/2)` otherwise (m, n > −1).
-fn wallis(arena: &mut Arena, m: &Ratio<BigInt>, n: &Ratio<BigInt>) -> Option<ExprId> {
+fn wallis(arena: &mut Arena, m: &Q, n: &Q) -> Option<ExprId> {
     if m.is_integer() && n.is_integer() && !m.is_negative() && !n.is_negative() {
         let mi = m.to_integer().to_i64()?;
         let ni = n.to_integer().to_i64()?;

@@ -1,6 +1,6 @@
-//! Combinatorial functions: binomial and multinomial coefficients, Stirling,
-//! Bell and Catalan numbers, derangements, and integer partitions (counting
-//! and enumeration).
+//! Combinatorial functions: factorials, binomial and multinomial
+//! coefficients, Stirling, Bell and Catalan numbers, derangements, and
+//! integer partitions (counting and enumeration).
 //!
 //! **Unified API** — every function accepts arbitrary-precision integers via
 //! `impl Into<BigInt>`.  Returns `Option<BigInt>` where `None` means the
@@ -34,6 +34,10 @@
 
 use num_bigint::BigInt;
 use num_traits::{One, Signed, ToPrimitive, Zero};
+
+// The integer kernels live in `base` so that every layer can use them;
+// this module is their public home.
+pub use crate::base::combinatorics::{binomial, factorial, multinomial};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Stirling numbers of the second kind: S(n, k)
@@ -209,87 +213,6 @@ fn stirling1_u64(n: u64, k: u64) -> BigInt {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Multinomial coefficient
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Multinomial coefficient `n! / (k₁! · k₂! · … · kₘ!)`.
-///
-/// This is the number of ways to divide `n` objects into groups of sizes
-/// `k₁, k₂, …, kₘ`.
-///
-/// Returns `Some(0)` if the `kᵢ` don't sum to `n` or if any `kᵢ` is negative.
-/// Returns `None` if `n` or any `kᵢ` doesn't fit in `u64`.
-///
-/// The computation avoids computing full factorials by using incremental
-/// products and divisions, keeping intermediate values small.
-///
-/// # Examples
-///
-/// ```
-/// use symplex::combinatorics::multinomial;
-/// use num_bigint::BigInt;
-///
-/// // 6! / (2! * 3! * 1!) = 60
-/// assert_eq!(multinomial(6, &[2, 3, 1]), Some(BigInt::from(60)));
-///
-/// // Reduces to binomial: C(10, 3) = 120
-/// assert_eq!(multinomial(10, &[3, 7]), Some(BigInt::from(120)));
-/// ```
-pub fn multinomial(n: impl Into<BigInt>, ks: &[impl Into<BigInt> + Clone]) -> Option<BigInt> {
-    let n = n.into();
-    if n.is_negative() {
-        return Some(BigInt::zero());
-    }
-
-    let ks_big: Vec<BigInt> = ks.iter().map(|k| k.clone().into()).collect();
-
-    // Check all k_i are non-negative and sum to n.
-    let mut sum = BigInt::zero();
-    for k in &ks_big {
-        if k.is_negative() {
-            return Some(BigInt::zero());
-        }
-        sum += k;
-    }
-    if sum != n {
-        return Some(BigInt::zero());
-    }
-
-    // Convert to u64 for the computation loop (consistent with
-    // eval_rising_factorial, eval_falling_factorial, etc.)
-    let ks_u64: Vec<u64> = ks_big
-        .iter()
-        .map(|k| k.try_into().ok())
-        .collect::<Option<Vec<u64>>>()?;
-
-    Some(multinomial_u64(&ks_u64))
-}
-
-fn multinomial_u64(ks: &[u64]) -> BigInt {
-    // Compute n! / (k1! * k2! * ... * km!) incrementally.
-    // Use the identity: multinomial(n; k1, k2, ...) = C(n, k1) * C(n-k1, k2) * ...
-    // This keeps intermediate values bounded by C(n, k_i).
-    let mut result = BigInt::one();
-    let mut remaining: u64 = ks.iter().sum();
-
-    for &k in ks {
-        if k == 0 {
-            continue;
-        }
-        // Incremental binomial: C(remaining, k) = ∏_{i=0}^{k-1} (remaining - i) / (i + 1)
-        let mut binom = BigInt::one();
-        for i in 0..k {
-            binom *= BigInt::from(remaining - i);
-            binom /= BigInt::from(i + 1);
-        }
-        result *= binom;
-        remaining -= k;
-    }
-
-    result
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Integer partition count: p(n)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -460,51 +383,8 @@ pub fn partitions(n: u64) -> PartitionIter {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Binomial, Bell, Catalan, derangements
+// Bell, Catalan, derangements
 // ═══════════════════════════════════════════════════════════════════════════
-
-/// Binomial coefficient `C(n, k)` for integer `n` (any sign) and `k ≥ 0`.
-///
-/// For negative `n` the generalised definition
-/// `C(n, k) = n(n−1)⋯(n−k+1)/k!` is used, so
-/// `C(−n, k) = (−1)ᵏ C(n+k−1, k)`.  Returns `0` for `k < 0` or
-/// `0 ≤ n < k`.
-///
-/// # Examples
-///
-/// ```
-/// use symplex::combinatorics::binomial;
-/// use num_bigint::BigInt;
-///
-/// assert_eq!(binomial(10, 3), BigInt::from(120));
-/// assert_eq!(binomial(5, 7), BigInt::from(0));
-/// assert_eq!(binomial(-3, 2), BigInt::from(6));    // (−3)(−4)/2
-/// assert_eq!(binomial(100, 50).to_string(), "100891344545564193334812497256");
-/// ```
-pub fn binomial(n: impl Into<BigInt>, k: impl Into<BigInt>) -> BigInt {
-    let n: BigInt = n.into();
-    let k: BigInt = k.into();
-    if k.is_negative() {
-        return BigInt::zero();
-    }
-    if !n.is_negative() && k > n {
-        return BigInt::zero();
-    }
-    // Use symmetry for non-negative n to keep k small.
-    let k = if !n.is_negative() && &k * 2 > n {
-        &n - &k
-    } else {
-        k
-    };
-    let Some(k) = k.to_u64() else {
-        return BigInt::zero();
-    };
-    let mut result = BigInt::one();
-    for i in 0..k {
-        result = result * (&n - BigInt::from(i)) / BigInt::from(i + 1);
-    }
-    result
-}
 
 /// Bell number `Bₙ`: the number of set partitions of an `n`-element set
 /// (`1, 1, 2, 5, 15, 52, 203, …`).

@@ -43,6 +43,7 @@ use num_traits::{One, Signed, Zero};
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode, SymbolId};
+use crate::base::numeric::Q;
 use crate::prelude::*;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -535,7 +536,7 @@ fn extract_linear_coeff(arena: &mut Arena, expr: ExprId, n_var: ExprId) -> Optio
 }
 
 /// Convert a `Ratio<BigInt>` to an `ExprId`.
-fn rational_to_expr(arena: &mut Arena, r: &Ratio<BigInt>) -> ExprId {
+fn rational_to_expr(arena: &mut Arena, r: &Q) -> ExprId {
     let nid = arena.intern_num(r.clone());
     arena.intern(ExprNode::Num(nid))
 }

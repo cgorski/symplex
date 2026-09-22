@@ -25,6 +25,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::base::config::EvalConfig;
 use crate::base::node::{ExprId, ExprNode, NumId, SymbolId};
+use crate::base::numeric::Q;
 use crate::base::sort_key::{SortKey, compute_sort_key};
 use crate::base::symbol::SymbolTable;
 
@@ -116,7 +117,7 @@ pub struct Arena {
     nodes: Vec<ExprNode>,
 
     /// Numeric literal side-table indexed by [`NumId`].
-    numbers: Vec<Ratio<BigInt>>,
+    numbers: Vec<Q>,
 
     /// Sort keys parallel to `nodes` — `sort_keys[i]` is the key for
     /// `nodes[i]`.
@@ -425,7 +426,7 @@ impl Arena {
     }
 
     /// Computes a `u64` hash for a [`Ratio<BigInt>`] using the `FxHasher`.
-    fn hash_num(value: &Ratio<BigInt>) -> u64 {
+    fn hash_num(value: &Q) -> u64 {
         let mut hasher = rustc_hash::FxHasher::default();
         value.hash(&mut hasher);
         hasher.finish()
@@ -467,7 +468,7 @@ impl Arena {
     ///
     /// If the same value is already present the existing [`NumId`] is
     /// returned.  A hash-map lookup is used for fast deduplication.
-    pub(crate) fn intern_num(&mut self, value: Ratio<BigInt>) -> NumId {
+    pub(crate) fn intern_num(&mut self, value: Q) -> NumId {
         let hash = Self::hash_num(&value);
 
         // Check the num_dedup map for an existing match.
@@ -536,7 +537,7 @@ impl Arena {
     /// # Panics
     ///
     /// Panics if `id` was not produced by this arena.
-    pub fn num(&self, id: NumId) -> &Ratio<BigInt> {
+    pub fn num(&self, id: NumId) -> &Q {
         &self.numbers[id.0 as usize]
     }
 
@@ -607,7 +608,7 @@ impl Arena {
     /// - `Mul([Num(n), rest...])` → `(n, Mul(rest))` or `(n, rest[0])` if single
     /// - `Neg(x)` → `(-1, x)`
     /// - anything else → `(1, itself)`
-    pub(crate) fn as_coeff_term(&mut self, id: ExprId) -> (Ratio<BigInt>, ExprId) {
+    pub(crate) fn as_coeff_term(&mut self, id: ExprId) -> (Q, ExprId) {
         match self.node(id).clone() {
             ExprNode::Num(nid) => (self.num(nid).clone(), self.one),
             ExprNode::Neg(inner) => {
@@ -654,7 +655,7 @@ impl Arena {
     ///
     /// Uses [`canon_mul`](crate::base::canon::canon_mul) to ensure the result
     /// is properly flattened (no nested Mul nodes).
-    pub(crate) fn make_coeff_term(&mut self, coeff: Ratio<BigInt>, term: ExprId) -> ExprId {
+    pub(crate) fn make_coeff_term(&mut self, coeff: Q, term: ExprId) -> ExprId {
         if coeff.is_zero() {
             return self.zero;
         }
@@ -673,7 +674,7 @@ impl Arena {
     }
 
     /// Check if an expression is a numeric literal and return its value.
-    pub(crate) fn as_num(&self, id: ExprId) -> Option<&Ratio<BigInt>> {
+    pub(crate) fn as_num(&self, id: ExprId) -> Option<&Q> {
         match self.node(id) {
             ExprNode::Num(nid) => Some(self.num(*nid)),
             _ => None,
@@ -711,7 +712,7 @@ impl Arena {
     /// Creates (or retrieves) the numeric expression for an exact rational.
     /// (The one place the solvers, integrators and polynomial bridges turn
     /// a `Ratio<BigInt>` back into a node.)
-    pub fn num_ratio(&mut self, r: Ratio<BigInt>) -> ExprId {
+    pub fn num_ratio(&mut self, r: Q) -> ExprId {
         let num_id = self.intern_num(r);
         self.intern(ExprNode::Num(num_id))
     }

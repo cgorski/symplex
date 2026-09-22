@@ -32,11 +32,11 @@
 //! - Lazard & Rioboo, "Integration of rational functions: rational computation
 //!   of the logarithmic part", 1990
 
-use num_bigint::BigInt;
 use num_rational::Ratio;
 use num_traits::Zero;
 
 use super::LogTerm;
+use crate::base::numeric::Q;
 use crate::poly::dense::Poly;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -163,7 +163,7 @@ pub fn logarithmic_part(a: &Poly, d: &Poly) -> LogPartResult {
 
 /// Extract the rational root of a monic-ish linear polynomial `a·t + b`.
 /// Returns `c = -b/a`.
-fn extract_linear_root(factor: &Poly) -> Ratio<BigInt> {
+fn extract_linear_root(factor: &Poly) -> Q {
     let a = factor.coeff(1);
     let b = factor.coeff(0);
     if a.is_zero() { Ratio::zero() } else { -b / a }
@@ -176,9 +176,10 @@ fn extract_linear_root(factor: &Poly) -> Ratio<BigInt> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use num_bigint::BigInt;
     use num_traits::Signed;
 
-    fn rat(n: i64, d: i64) -> Ratio<BigInt> {
+    fn rat(n: i64, d: i64) -> Q {
         Ratio::new(BigInt::from(n), BigInt::from(d))
     }
 
@@ -362,8 +363,7 @@ mod tests {
 
         // Check coefficients sum to 3 (= leading coeff of A divided by leading coeff of D)
         // Actually, the coefficients should be 2 and 1.
-        let mut coeffs: Vec<Ratio<BigInt>> =
-            rational_terms.iter().map(|(c, _)| c.clone()).collect();
+        let mut coeffs: Vec<Q> = rational_terms.iter().map(|(c, _)| c.clone()).collect();
         coeffs.sort_by(|a, b| a.partial_cmp(b).unwrap());
         assert_eq!(
             coeffs,

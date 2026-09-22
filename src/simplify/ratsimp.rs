@@ -22,6 +22,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::base::walk;
 use crate::poly::multipoly::{GrevLex, Lex, MonomialOrd, MultiPoly};
 use crate::poly::polybridge::multipoly_to_expr;
@@ -269,8 +270,8 @@ fn to_rational_function(
 }
 
 /// Leading coefficient under the lexicographic order.
-fn lex_leading_coeff(p: &RatPoly) -> Option<Ratio<BigInt>> {
-    let mut best: Option<(&[u32], &Ratio<BigInt>)> = None;
+fn lex_leading_coeff(p: &RatPoly) -> Option<Q> {
+    let mut best: Option<(&[u32], &Q)> = None;
     for (exp, c) in p.terms() {
         match best {
             Some((be, _)) if Lex::cmp_exponents(exp, be) != std::cmp::Ordering::Greater => {}

@@ -32,7 +32,6 @@
 //! The printer is an iterative post-order walk (no recursion).
 
 use num_bigint::BigInt;
-use num_rational::Ratio;
 use num_traits::{One, Signed};
 use rustc_hash::FxHashMap;
 
@@ -40,6 +39,7 @@ use crate::api::expr::{Expr, Sort};
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::base::walk;
 use crate::output::common::display_sort_key;
 
@@ -228,7 +228,7 @@ impl Emitter<'_> {
     }
 
     /// An exact literal: integers bare, rationals as `(p/q)`.
-    fn number(&self, r: &Ratio<BigInt>) -> Rendered {
+    fn number(&self, r: &Q) -> Rendered {
         if r.is_integer() {
             if r.is_negative() {
                 Rendered::new(r.numer().to_string(), PREC_NEG)
@@ -248,7 +248,7 @@ impl Emitter<'_> {
     /// `coeff * factors / denominators`; `coeff` is already non-negative.
     fn product(
         &self,
-        coeff: Option<&Ratio<BigInt>>,
+        coeff: Option<&Q>,
         factors: &[ExprId],
         cache: &Cache,
     ) -> Result<Rendered, SymplexError> {
@@ -323,7 +323,7 @@ impl Emitter<'_> {
     /// `compile()` and the Rust/C back ends: `sign(b)·|b|^(p/q)` for odd
     /// `p`, `|b|^(p/q)` for even `p` (`numpy.cbrt`/`cbrt` for `1/3`).  A
     /// bare `b**(1/3)` would be complex for negative `b` in Python.
-    fn pow_rational(&self, b: &Rendered, r: &Ratio<BigInt>) -> Rendered {
+    fn pow_rational(&self, b: &Rendered, r: &Q) -> Rendered {
         let one = BigInt::one();
         let two = BigInt::from(2);
         if *r.numer() == one && *r.denom() == two {

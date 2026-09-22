@@ -63,6 +63,7 @@ use crate::base::node::{ExprId, ExprNode};
 use crate::domains::matrix::Matrix;
 use crate::poly::multipoly::{GrevLex, Lex, MultiPoly};
 use crate::poly::polybridge;
+use crate::poly::zpoly::pow_ratio;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
@@ -184,30 +185,6 @@ fn pow_within_limits(config: &EvalConfig, base: &Ratio<BigInt>, exp: u32) -> boo
             .is_some_and(|d| d <= config.max_result_digits)
 }
 
-/// `base^exp` of a reduced rational, reduced (no gcd is needed: powers of
-/// coprime integers stay coprime).
-fn pow_ratio(base: &Ratio<BigInt>, exp: u32) -> Ratio<BigInt> {
-    if base.is_zero() {
-        return if exp == 0 {
-            Ratio::one()
-        } else {
-            Ratio::zero()
-        };
-    }
-    Ratio::new_raw(base.numer().pow(exp), base.denom().pow(exp))
-}
-
-/// `[1, b, b², …, b^d]`.
-fn powers(b: &BigInt, d: u32) -> Vec<BigInt> {
-    let mut out = Vec::with_capacity(d as usize + 1);
-    out.push(BigInt::one());
-    for _ in 0..d {
-        let next = out.last().map_or_else(BigInt::one, |p| p * b);
-        out.push(next);
-    }
-    out
-}
-
 /// Maximum exponent of each variable (all zeros for the zero polynomial).
 fn degree_list_of(mp: &MultiPoly<Lex>) -> Vec<u32> {
     let mut out = vec![0u32; mp.num_vars()];
@@ -219,162 +196,22 @@ fn degree_list_of(mp: &MultiPoly<Lex>) -> Vec<u32> {
     out
 }
 
-/// An exact polynomial over a common denominator, `Σ nᵢ · xᵉⁱ / den`: the
-/// working form for products, powers and evaluation, where accumulating
-/// integer numerators avoids a gcd reduction per term product.  The
-/// result is reduced once when converted back.
-struct ZPoly {
-    den: BigInt,
-    terms: BTreeMap<Vec<u32>, BigInt>,
-}
-
-impl ZPoly {
-    fn one(nv: usize) -> ZPoly {
-        let mut terms = BTreeMap::new();
-        terms.insert(vec![0u32; nv], BigInt::one());
-        ZPoly {
-            den: BigInt::one(),
-            terms,
-        }
-    }
-
-    fn from_multipoly(mp: &MultiPoly<Lex>) -> ZPoly {
-        let mut den = BigInt::one();
-        for (_, c) in mp.terms() {
-            if !c.denom().is_one() {
-                den = den.lcm(c.denom());
-            }
-        }
-        let terms = mp
-            .terms()
-            .map(|(e, c)| {
-                let n = if den.is_one() {
-                    c.numer().clone()
-                } else {
-                    c.numer() * (&den / c.denom())
-                };
-                (e.to_vec(), n)
-            })
-            .collect();
-        ZPoly { den, terms }
-    }
-
-    fn into_multipoly(self, nv: usize) -> Option<MultiPoly<Lex>> {
-        let den = self.den;
-        let terms: Vec<(Vec<u32>, Ratio<BigInt>)> = if den.is_one() {
-            self.terms
-                .into_iter()
-                .map(|(e, n)| (e, Ratio::from_integer(n)))
-                .collect()
-        } else {
-            self.terms
-                .into_iter()
-                .map(|(e, n)| (e, Ratio::new(n, den.clone())))
-                .collect()
-        };
-        MultiPoly::from_distinct_terms(nv, terms)
-    }
-
-    /// Product; `None` if some exponent would overflow `u32` (the check
-    /// `Poly::mul` performs on the symbolic path).
-    fn mul(&self, other: &ZPoly) -> Option<ZPoly> {
-        let mut terms: BTreeMap<Vec<u32>, BigInt> = BTreeMap::new();
-        for (ea, na) in &self.terms {
-            for (eb, nb) in &other.terms {
-                let e: Option<Vec<u32>> =
-                    ea.iter().zip(eb).map(|(a, b)| a.checked_add(*b)).collect();
-                let prod = na * nb;
-                match terms.entry(e?) {
-                    std::collections::btree_map::Entry::Vacant(slot) => {
-                        slot.insert(prod);
-                    }
-                    std::collections::btree_map::Entry::Occupied(mut slot) => {
-                        *slot.get_mut() += prod;
-                    }
-                }
-            }
-        }
-        terms.retain(|_, n| !n.is_zero());
-        Some(ZPoly {
-            den: &self.den * &other.den,
-            terms,
-        })
-    }
-
-    /// `self^n` by repeated squaring.
-    fn pow(self, nv: usize, n: u32) -> Option<ZPoly> {
-        let mut result = ZPoly::one(nv);
-        let mut base = self;
-        let mut k = n;
-        while k > 0 {
-            if k & 1 == 1 {
-                result = result.mul(&base)?;
-            }
-            k >>= 1;
-            if k > 0 {
-                base = base.mul(&base)?;
-            }
-        }
-        Some(result)
-    }
-}
-
-/// Product of two exact polynomials, `None` on exponent overflow.
+/// Product of two exact polynomials, `None` on exponent overflow (the
+/// check `Poly::mul` performs on the symbolic path).  Accumulated over a
+/// common denominator in `ℤ` (see [`crate::poly::zpoly::ZPoly`]).
 fn mul_checked(a: &MultiPoly<Lex>, b: &MultiPoly<Lex>) -> Option<MultiPoly<Lex>> {
-    ZPoly::from_multipoly(a)
-        .mul(&ZPoly::from_multipoly(b))?
-        .into_multipoly(a.num_vars())
+    a.try_mul(b)
 }
 
 /// `base^n` by repeated squaring, `None` on exponent overflow.
 fn pow_checked(base: &MultiPoly<Lex>, n: u32) -> Option<MultiPoly<Lex>> {
-    let nv = base.num_vars();
-    ZPoly::from_multipoly(base).pow(nv, n)?.into_multipoly(nv)
+    base.try_pow(n)
 }
 
 /// Exact value of `mp` at the rational point `vals` (one reduction at the
-/// end: every term is brought over the common denominator
-/// `den · Π qᵢ^{dᵢ}` with `dᵢ` the degree in variable `i`).
+/// end; see [`MultiPoly::eval`]).
 fn eval_exact(mp: &MultiPoly<Lex>, vals: &[Ratio<BigInt>]) -> Ratio<BigInt> {
-    let degs = degree_list_of(mp);
-    let num_pows: Vec<Vec<BigInt>> = vals
-        .iter()
-        .zip(&degs)
-        .map(|(v, &d)| powers(v.numer(), d))
-        .collect();
-    let den_pows: Vec<Vec<BigInt>> = vals
-        .iter()
-        .zip(&degs)
-        .map(|(v, &d)| {
-            if v.denom().is_one() {
-                Vec::new()
-            } else {
-                powers(v.denom(), d)
-            }
-        })
-        .collect();
-    let z = ZPoly::from_multipoly(mp);
-    let mut sum = BigInt::zero();
-    for (e, n) in &z.terms {
-        let mut t = n.clone();
-        for (i, &ei) in e.iter().enumerate() {
-            if ei > 0 {
-                t *= &num_pows[i][ei as usize];
-            }
-            let rest = degs[i] - ei;
-            if rest > 0 && !den_pows[i].is_empty() {
-                t *= &den_pows[i][rest as usize];
-            }
-        }
-        sum += t;
-    }
-    let mut den = z.den;
-    for (i, &d) in degs.iter().enumerate() {
-        if d > 0 && !den_pows[i].is_empty() {
-            den *= &den_pows[i][d as usize];
-        }
-    }
-    Ratio::new(sum, den)
+    mp.eval(vals)
 }
 
 /// `base^exp` for the exact reading of an expression, or `None` to defer

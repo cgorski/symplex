@@ -24,7 +24,6 @@
 //! [`SymplexError::NotImplemented`] rather than a guess.
 
 use num_bigint::BigInt;
-use num_rational::Ratio;
 use num_traits::{One, Signed};
 use rustc_hash::FxHashMap;
 
@@ -32,6 +31,7 @@ use crate::api::expr::{Expr, Sort};
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode, INTERVAL_LEFT_OPEN, INTERVAL_RIGHT_OPEN};
+use crate::base::numeric::Q;
 use crate::base::walk;
 use crate::output::common::{display_sort_key, is_neg_coeff_mul, is_neg_one_mul};
 
@@ -171,7 +171,7 @@ fn symbol(name: &str) -> String {
 }
 
 /// A rational literal.
-fn number(r: &Ratio<BigInt>) -> String {
+fn number(r: &Q) -> String {
     let magnitude = if r.is_integer() {
         mn(&r.numer().abs().to_string())
     } else {
@@ -355,7 +355,7 @@ fn join_factors(factors: &[(String, bool)]) -> String {
 }
 
 /// `Pow(base, -n)` → `(base, n)` for a negative rational exponent.
-fn negative_power(arena: &Arena, id: ExprId) -> Option<(ExprId, Ratio<BigInt>)> {
+fn negative_power(arena: &Arena, id: ExprId) -> Option<(ExprId, Q)> {
     if let ExprNode::Pow(base, exp) = arena.node(id)
         && let Some(r) = arena.as_num(*exp)
         && r.is_negative()
@@ -366,7 +366,7 @@ fn negative_power(arena: &Arena, id: ExprId) -> Option<(ExprId, Ratio<BigInt>)> 
 }
 
 /// The exponent of a denominator factor: `<mn>n</mn>` or a fraction.
-fn exponent_xml(r: &Ratio<BigInt>) -> String {
+fn exponent_xml(r: &Q) -> String {
     number(r)
 }
 
@@ -375,7 +375,7 @@ fn exponent_xml(r: &Ratio<BigInt>) -> String {
 /// number"; `Some(1)` is dropped.
 fn render_mul_parts(
     arena: &Arena,
-    coeff: Option<&Ratio<BigInt>>,
+    coeff: Option<&Q>,
     factors: &[ExprId],
     cache: &Cache,
 ) -> Result<String, SymplexError> {

@@ -26,7 +26,9 @@
 
 use crate::api::expr::Ex;
 use crate::base::arena::Arena;
+use crate::base::combinatorics::binomial;
 use crate::base::node::{ExprId, ExprNode, SymbolId};
+use crate::base::numeric::Q;
 use crate::domains::matrix::Matrix;
 use num_traits::One;
 use num_traits::Signed;
@@ -333,12 +335,7 @@ fn try_second_order_const_coeff(
 ///
 /// This is extracted as a helper so that both the homogeneous and
 /// nonhomogeneous second-order solvers can reuse it.
-fn solve_characteristic_equation(
-    arena: &mut Arena,
-    b: num_rational::Ratio<num_bigint::BigInt>,
-    c: num_rational::Ratio<num_bigint::BigInt>,
-    var: ExprId,
-) -> Option<OdeResult> {
+fn solve_characteristic_equation(arena: &mut Arena, b: Q, c: Q, var: ExprId) -> Option<OdeResult> {
     // Check for complex roots: if disc = b² − 4c < 0, use Euler/trig form
     {
         let four_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer(4.into());
@@ -488,7 +485,7 @@ fn try_second_order_cc_nonhomogeneous(
         if f_coeffs_expr.is_empty() {
             None
         } else {
-            let mut rhs_coeffs: Vec<num_rational::Ratio<num_bigint::BigInt>> = Vec::new();
+            let mut rhs_coeffs: Vec<Q> = Vec::new();
             let mut all_numeric = true;
             for &cid in &f_coeffs_expr {
                 if let Some(val) = arena.as_num(cid) {
@@ -540,11 +537,7 @@ fn try_second_order_cc_nonhomogeneous(
 /// in ascending degree order.
 ///
 /// Returns ascending-order coefficients of y_p, or `None` on failure.
-fn find_particular_polynomial(
-    b: &num_rational::Ratio<num_bigint::BigInt>,
-    c: &num_rational::Ratio<num_bigint::BigInt>,
-    rhs_coeffs: &[num_rational::Ratio<num_bigint::BigInt>],
-) -> Option<Vec<num_rational::Ratio<num_bigint::BigInt>>> {
+fn find_particular_polynomial(b: &Q, c: &Q, rhs_coeffs: &[Q]) -> Option<Vec<Q>> {
     use num_bigint::BigInt;
     use num_rational::Ratio;
     use num_traits::Zero;
@@ -614,11 +607,7 @@ fn find_particular_polynomial(
 
 /// Build an arena polynomial expression from ascending-order rational
 /// coefficients: `coeffs[j]` is the coefficient of `var^j`.
-fn build_polynomial_expr(
-    arena: &mut Arena,
-    coeffs: &[num_rational::Ratio<num_bigint::BigInt>],
-    var: ExprId,
-) -> ExprId {
+fn build_polynomial_expr(arena: &mut Arena, coeffs: &[Q], var: ExprId) -> ExprId {
     use num_traits::Zero;
     let mut terms = Vec::new();
     for (j, coeff) in coeffs.iter().enumerate() {
@@ -1807,7 +1796,7 @@ fn exp_of_log_sum(arena: &mut Arena, integral: ExprId) -> ExprId {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Convert a `Ratio<BigInt>` to an arena `ExprId`.
-fn ode_ratio_to_expr(arena: &mut Arena, r: &num_rational::Ratio<num_bigint::BigInt>) -> ExprId {
+fn ode_ratio_to_expr(arena: &mut Arena, r: &Q) -> ExprId {
     let nid = arena.intern_num(r.clone());
     arena.intern(ExprNode::Num(nid))
 }
@@ -1820,8 +1809,8 @@ fn ode_ratio_to_expr(arena: &mut Arena, r: &num_rational::Ratio<num_bigint::BigI
 ///   solution = exp(α·x)·(C1·cos(β·x) + C2·sin(β·x))
 fn build_trig_homogeneous_solution(
     arena: &mut Arena,
-    b: &num_rational::Ratio<num_bigint::BigInt>,
-    disc: &num_rational::Ratio<num_bigint::BigInt>,
+    b: &Q,
+    disc: &Q,
     var: ExprId,
 ) -> Option<OdeResult> {
     use num_traits::Zero;
@@ -1875,8 +1864,8 @@ fn build_trig_homogeneous_solution(
 fn try_undetermined_trig_exp(
     arena: &mut Arena,
     rhs: ExprId,
-    b: &num_rational::Ratio<num_bigint::BigInt>,
-    c: &num_rational::Ratio<num_bigint::BigInt>,
+    b: &Q,
+    c: &Q,
     var: ExprId,
 ) -> Option<ExprId> {
     use num_traits::Zero;
@@ -1914,14 +1903,7 @@ fn try_undetermined_trig_exp(
 
 /// Extract the numeric coefficient and constant from a linear expression.
 /// Returns `Some((a, b))` where `expr = a·var + b`, both rational.
-fn extract_linear_numeric(
-    arena: &Arena,
-    expr: ExprId,
-    var: ExprId,
-) -> Option<(
-    num_rational::Ratio<num_bigint::BigInt>,
-    num_rational::Ratio<num_bigint::BigInt>,
-)> {
+fn extract_linear_numeric(arena: &Arena, expr: ExprId, var: ExprId) -> Option<(Q, Q)> {
     let poly = crate::poly::polybridge::expr_to_poly(arena, expr, var)?;
     if poly.degree()? != 1 {
         return None;
@@ -1933,11 +1915,11 @@ fn extract_linear_numeric(
 /// via the method of undetermined coefficients.
 fn try_trig_particular(
     arena: &mut Arena,
-    p: &num_rational::Ratio<num_bigint::BigInt>,
-    q: &num_rational::Ratio<num_bigint::BigInt>,
-    omega: &num_rational::Ratio<num_bigint::BigInt>,
-    b: &num_rational::Ratio<num_bigint::BigInt>,
-    c: &num_rational::Ratio<num_bigint::BigInt>,
+    p: &Q,
+    q: &Q,
+    omega: &Q,
+    b: &Q,
+    c: &Q,
     var: ExprId,
 ) -> Option<ExprId> {
     use num_traits::Zero;
@@ -2014,10 +1996,10 @@ fn try_trig_particular(
 /// via the method of undetermined coefficients.
 fn try_exp_particular(
     arena: &mut Arena,
-    coeff_r: &num_rational::Ratio<num_bigint::BigInt>,
-    r: &num_rational::Ratio<num_bigint::BigInt>,
-    b: &num_rational::Ratio<num_bigint::BigInt>,
-    c: &num_rational::Ratio<num_bigint::BigInt>,
+    coeff_r: &Q,
+    r: &Q,
+    b: &Q,
+    c: &Q,
     var: ExprId,
 ) -> Option<ExprId> {
     use num_traits::Zero;
@@ -2092,7 +2074,7 @@ fn try_bernoulli(
 
     let mut dy_coeff = num_rational::Ratio::<num_bigint::BigInt>::zero();
     let mut p_x_terms: Vec<ExprId> = Vec::new();
-    let mut q_x_terms: Vec<(ExprId, num_rational::Ratio<num_bigint::BigInt>)> = Vec::new();
+    let mut q_x_terms: Vec<(ExprId, Q)> = Vec::new();
 
     for &child in &children {
         let (coeff, term) = arena.as_coeff_term(child);
@@ -2211,7 +2193,7 @@ fn extract_bernoulli_term(
     func: ExprId,
     func_sym: SymbolId,
     _var_sym: SymbolId,
-) -> Option<(ExprId, num_rational::Ratio<num_bigint::BigInt>)> {
+) -> Option<(ExprId, Q)> {
     // Case 1: expr is y^n
     if let ExprNode::Pow(base, exp) = arena.node(expr).clone()
         && base == func
@@ -2631,15 +2613,13 @@ fn extract_fundamental_solutions(
 // nth-order linear constant-coefficient ODEs: Σ a_k y^(k) = g(x)
 // ═══════════════════════════════════════════════════════════════════════════
 
-type Rat = num_rational::Ratio<num_bigint::BigInt>;
-
 /// Highest derivative order recognised by the nth-order solver.
 const MAX_ODE_ORDER: usize = 12;
 
 /// A linear constant-coefficient ODE `Σ a_k·y^(k) + g(x) = 0`.
 struct LinearCcOde {
     /// `a_0 … a_n` (ascending derivative order), `a_n ≠ 0`.
-    coeffs: Vec<Rat>,
+    coeffs: Vec<Q>,
     /// The forcing terms `g(x)` as they appear in the zero-form expression.
     forcing: Vec<ExprId>,
 }
@@ -2668,7 +2648,7 @@ fn extract_linear_cc(
         ExprNode::Add(c) => c.to_vec(),
         _ => vec![expr],
     };
-    let mut coeffs = vec![Rat::zero(); MAX_ODE_ORDER + 1];
+    let mut coeffs = vec![Q::zero(); MAX_ODE_ORDER + 1];
     let mut forcing = Vec::new();
     for child in children {
         let (coeff, term) = arena.as_coeff_term(child);
@@ -2693,15 +2673,15 @@ fn extract_linear_cc(
 /// exponential shift used by undetermined coefficients.
 #[derive(Clone, Debug, PartialEq)]
 struct CQ {
-    re: Rat,
-    im: Rat,
+    re: Q,
+    im: Q,
 }
 
 impl CQ {
-    fn new(re: Rat, im: Rat) -> Self {
+    fn new(re: Q, im: Q) -> Self {
         Self { re, im }
     }
-    fn real(re: Rat) -> Self {
+    fn real(re: Q) -> Self {
         Self {
             re,
             im: num_traits::Zero::zero(),
@@ -2727,33 +2707,24 @@ impl CQ {
         let num = self.mul(&CQ::new(o.re.clone(), -o.im.clone()));
         CQ::new(num.re / &denom, num.im / &denom)
     }
-    fn scale(&self, r: &Rat) -> CQ {
+    fn scale(&self, r: &Q) -> CQ {
         CQ::new(&self.re * r, &self.im * r)
     }
 }
 
 /// Evaluate `p^(j)(λ) / j!` for a rational polynomial `p` (ascending
 /// coefficients) at a Gaussian rational `λ`.
-fn shifted_coefficient(p: &[Rat], j: usize, lambda: &CQ) -> CQ {
+fn shifted_coefficient(p: &[Q], j: usize, lambda: &CQ) -> CQ {
     // p^(j)(λ)/j! = Σ_{k≥j} C(k, j) a_k λ^{k-j}
     let mut acc = CQ::real(num_traits::Zero::zero());
     let mut lambda_pow = CQ::real(num_traits::One::one());
     for (k, a_k) in p.iter().enumerate().skip(j) {
-        let binom = binomial_rat(k, j);
+        let binom = Q::from_integer(binomial(k as u64, j as u64));
         let term = lambda_pow.scale(&(a_k * binom));
         acc = acc.add(&term);
         lambda_pow = lambda_pow.mul(lambda);
     }
     acc
-}
-
-fn binomial_rat(n: usize, k: usize) -> Rat {
-    let mut r = Rat::from_integer(1.into());
-    for i in 0..k {
-        r *= Rat::from_integer(((n - i) as i64).into());
-        r /= Rat::from_integer(((i + 1) as i64).into());
-    }
-    r
 }
 
 /// Trigonometric flavour of a forcing term.
@@ -2766,10 +2737,10 @@ enum TrigKind {
 
 /// One forcing term `c·x^d·e^{ax}·{1 | cos(bx) | sin(bx)}`.
 struct ForcingTerm {
-    coeff: Rat,
+    coeff: Q,
     degree: usize,
-    a: Rat,
-    b: Rat,
+    a: Q,
+    b: Q,
     kind: TrigKind,
 }
 
@@ -2786,8 +2757,8 @@ fn parse_forcing_term(arena: &mut Arena, term: ExprId, var: ExprId) -> Option<Fo
         }
     };
     let mut degree = 0usize;
-    let mut a = Rat::zero();
-    let mut b = Rat::zero();
+    let mut a = Q::zero();
+    let mut b = Q::zero();
     let mut kind = TrigKind::None;
     let mut seen_exp = false;
     for f in factors {
@@ -2857,7 +2828,7 @@ fn parse_forcing_term(arena: &mut Arena, term: ExprId, var: ExprId) -> Option<Fo
 }
 
 /// Build `Σ c_k·x^k` from rational coefficients.
-fn rat_poly_expr(arena: &mut Arena, coeffs: &[Rat], var: ExprId) -> ExprId {
+fn rat_poly_expr(arena: &mut Arena, coeffs: &[Q], var: ExprId) -> ExprId {
     build_polynomial_expr(arena, coeffs, var)
 }
 
@@ -2868,10 +2839,10 @@ fn rat_poly_expr(arena: &mut Arena, coeffs: &[Rat], var: ExprId) -> ExprId {
 /// factor `x^s` implicit in the degree of `w`.
 fn particular_for_group(
     arena: &mut Arena,
-    p: &[Rat],
-    q: &[Rat],
-    a: &Rat,
-    b: &Rat,
+    p: &[Q],
+    q: &[Q],
+    a: &Q,
+    b: &Q,
     kind: TrigKind,
     var: ExprId,
 ) -> Option<ExprId> {
@@ -2885,7 +2856,7 @@ fn particular_for_group(
     let s = c.iter().position(|cj| !cj.is_zero())?;
     let d = q.len().checked_sub(1)?;
     let m = d + s;
-    let mut w = vec![CQ::real(Rat::zero()); m + 1];
+    let mut w = vec![CQ::real(Q::zero()); m + 1];
     // Solve from the top degree down: for k = d..0,
     //   Σ_{j≥s} c_j·(k+j)!/k!·w_{k+j} = q_k
     for k in (0..=d).rev() {
@@ -2900,8 +2871,8 @@ fn particular_for_group(
         let lead = c[s].scale(&falling_factorial_rat(k + s, s));
         w[k + s] = rhs.div(&lead);
     }
-    let wr: Vec<Rat> = w.iter().map(|z| z.re.clone()).collect();
-    let wi: Vec<Rat> = w.iter().map(|z| z.im.clone()).collect();
+    let wr: Vec<Q> = w.iter().map(|z| z.re.clone()).collect();
+    let wi: Vec<Q> = w.iter().map(|z| z.im.clone()).collect();
     let wr_x = rat_poly_expr(arena, &wr, var);
     let wi_x = rat_poly_expr(arena, &wi, var);
     let exp_ax = if a.is_zero() {
@@ -2937,10 +2908,10 @@ fn particular_for_group(
 }
 
 /// `n·(n-1)·…·(n-j+1)` as a rational.
-fn falling_factorial_rat(n: usize, j: usize) -> Rat {
-    let mut r = Rat::from_integer(1.into());
+fn falling_factorial_rat(n: usize, j: usize) -> Q {
+    let mut r = Q::from_integer(1.into());
     for i in 0..j {
-        r *= Rat::from_integer(((n - i) as i64).into());
+        r *= Q::from_integer(((n - i) as i64).into());
     }
     r
 }
@@ -2949,7 +2920,7 @@ fn falling_factorial_rat(n: usize, j: usize) -> Rat {
 /// factorisation of the characteristic polynomial: `x^j e^{rx}` for a
 /// real root of multiplicity `> j`, and `x^j e^{αx} cos(βx)`,
 /// `x^j e^{αx} sin(βx)` for a complex pair `α ± βi`.
-fn homogeneous_basis_cc(arena: &mut Arena, coeffs: &[Rat], var: ExprId) -> Option<Vec<ExprId>> {
+fn homogeneous_basis_cc(arena: &mut Arena, coeffs: &[Q], var: ExprId) -> Option<Vec<ExprId>> {
     let p = crate::poly::Poly::from_coeffs(coeffs.to_vec());
     let r_sym = arena.symbol("__r_cc");
     let mut basis: Vec<ExprId> = Vec::new();
@@ -3076,7 +3047,7 @@ fn try_nth_order_linear_const_coeff(
     tracing::debug!(order = n, "ode: nth-order linear constant-coefficient");
 
     // Forcing: L[y] = -g(x).  Parse and group by (a, b, kind).
-    let mut groups: Vec<((Rat, Rat, TrigKind), Vec<Rat>)> = Vec::new();
+    let mut groups: Vec<((Q, Q, TrigKind), Vec<Q>)> = Vec::new();
     for &term in &ode.forcing {
         let ft = parse_forcing_term(arena, term, var)?;
         let key = (ft.a.clone(), ft.b.clone(), ft.kind);
@@ -3088,7 +3059,7 @@ fn try_nth_order_linear_const_coeff(
             }
         };
         if entry.1.len() <= ft.degree {
-            entry.1.resize(ft.degree + 1, Rat::zero());
+            entry.1.resize(ft.degree + 1, Q::zero());
         }
         entry.1[ft.degree] -= ft.coeff; // move to the right-hand side
     }

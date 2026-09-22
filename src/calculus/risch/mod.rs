@@ -29,12 +29,11 @@ pub mod tower_integrate;
 
 use std::cell::Cell;
 
-use num_bigint::BigInt;
-use num_rational::Ratio;
 use num_traits::One;
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::poly::dense::Poly;
 
 // Recursion guard: prevents try_risch_rational from re-entering itself
@@ -84,10 +83,7 @@ impl Drop for RischRecursionGuard {
 #[derive(Clone, Debug)]
 pub enum LogTerm {
     /// `coeff * ln(argument(x))` where `coeff` is rational.
-    Rational {
-        coeff: Ratio<BigInt>,
-        argument: Poly,
-    },
+    Rational { coeff: Q, argument: Poly },
     /// Symbolic sum over roots of a minimal polynomial:
     /// `Σ_{α: min_poly(α)=0} α * ln(gcd(denom, numer - α·denom'))`.
     ///
@@ -263,7 +259,7 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
     // ── Logarithmic terms ──────────────────────────────────────────────
     //
     // Pass 1: Collect rational (c_i, v_i) pairs and detect algebraic terms.
-    let mut rational_log_parts: Vec<(Ratio<BigInt>, Poly)> = Vec::new();
+    let mut rational_log_parts: Vec<(Q, Poly)> = Vec::new();
     let mut has_algebraic = false;
     let mut n_algebraic = 0usize;
 
@@ -558,6 +554,8 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+    use num_bigint::BigInt;
+    use num_rational::Ratio;
 
     fn sym(arena: &mut Arena, name: &str) -> ExprId {
         arena.symbol(name)
@@ -685,7 +683,7 @@ mod tests {
         use crate::poly::generic::GenPoly;
         use crate::poly::ratfn::RationalFn;
 
-        fn r(n: i64, d: i64) -> Ratio<BigInt> {
+        fn r(n: i64, d: i64) -> Q {
             Ratio::new(BigInt::from(n), BigInt::from(d))
         }
 

@@ -66,16 +66,16 @@
 use astro_float::{BigFloat, Consts, RoundingMode};
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::{One, Signed, ToPrimitive, Zero};
+use num_traits::{One, Signed, Zero};
 
 use super::dense::Poly;
 use super::generic::GenPoly;
-use super::sturm::SturmChain;
+use super::sturm::{SturmChain, cauchy_bound};
 use crate::base::arena::Arena;
 use crate::base::bigcomplex::{c_add, c_div, c_from_real, c_mul, c_one, c_zero};
 use crate::base::interval::Interval;
 use crate::base::node::{ExprId, ExprNode};
-use crate::base::numeric::Q;
+use crate::base::numeric::{self, Q};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Sign determination helpers
@@ -115,31 +115,6 @@ fn isolate_root_near(poly: &Poly, approx: f64) -> Option<Interval<Q>> {
     }
 
     Some(best.clone())
-}
-
-/// Cauchy bound:
-/// Cauchy bound: all roots of `p(x) = a_n x^n + ... + a_0` satisfy
-/// `|x| ≤ 1 + max(|a_{n-1}/a_n|, ..., |a_0/a_n|)`.
-fn cauchy_bound(p: &Poly) -> Ratio<BigInt> {
-    let n = match p.degree() {
-        Some(d) if d >= 1 => d,
-        _ => return Ratio::from_integer(BigInt::from(1)),
-    };
-    let lc = p.coeff(n);
-    if lc.is_zero() {
-        return Ratio::from_integer(BigInt::from(1));
-    }
-    let mut max_ratio = Ratio::from_integer(BigInt::from(0));
-    for i in 0..n {
-        let ratio = Ratio::new(
-            p.coeff(i).numer().clone().abs(),
-            p.coeff(i).denom().clone() * lc.numer().clone().abs(),
-        ) * Ratio::new(lc.denom().clone(), BigInt::from(1));
-        if ratio > max_ratio {
-            max_ratio = ratio;
-        }
-    }
-    max_ratio + Ratio::from_integer(BigInt::from(1))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -648,37 +623,10 @@ fn is_real_positive(z: &Complex, prec: usize) -> bool {
 }
 
 /// Convert a `Ratio<BigInt>` to a `BigFloat` at `prec` bits (exactly up to
-/// the final rounding, whatever the size of numerator and denominator).
+/// the final rounding, whatever the size of numerator and denominator; see
+/// [`numeric::ratio_to_bigfloat`]).
 fn ratio_to_bigfloat(r: &Ratio<BigInt>, prec: usize) -> BigFloat {
-    let n = bigint_to_bigfloat(r.numer(), prec);
-    if r.denom().is_one() {
-        return n;
-    }
-    let d = bigint_to_bigfloat(r.denom(), prec);
-    n.div(&d, prec, RoundingMode::None)
-}
-
-/// Convert a `BigInt` to a `BigFloat`: directly when it fits `i128`,
-/// otherwise limb by limb at a precision wide enough to hold every bit.
-fn bigint_to_bigfloat(n: &BigInt, prec: usize) -> BigFloat {
-    if let Some(v) = n.to_i128() {
-        return BigFloat::from_i128(v, prec);
-    }
-    let (sign, limbs) = n.to_u64_digits();
-    let wp = (limbs.len() * 64 + 64).max(prec);
-    let rm = RoundingMode::ToEven;
-    let base = BigFloat::from_u64(1u64 << 32, wp).powi(2, wp, rm); // 2^64
-    let mut acc = BigFloat::new(wp);
-    for &limb in limbs.iter().rev() {
-        acc = acc
-            .mul(&base, wp, rm)
-            .add(&BigFloat::from_u64(limb, wp), wp, rm);
-    }
-    if sign == num_bigint::Sign::Minus {
-        acc = acc.neg();
-    }
-    let _ = acc.set_precision(prec, rm);
-    acc
+    numeric::ratio_to_bigfloat(r, prec, RoundingMode::None)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1570,10 +1518,7 @@ mod tests {
     /// Helper: evaluate polynomial at f64 via rational approximation, return f64.
     fn eval_poly_at_f64(p: &Poly, x: f64) -> f64 {
         let x_rat = f64_to_rational_approx(x);
-        let result = p.eval(&x_rat);
-        let n: f64 = result.numer().to_string().parse().unwrap_or(f64::NAN);
-        let d: f64 = result.denom().to_string().parse().unwrap_or(1.0);
-        n / d
+        numeric::ratio_to_f64(&p.eval(&x_rat)).unwrap_or(f64::NAN)
     }
 
     #[test]

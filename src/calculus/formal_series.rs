@@ -54,13 +54,13 @@ use num_traits::{One, Zero};
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::arena::Arena;
+use crate::base::combinatorics::factorial;
 use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::base::walk;
 use crate::calculus::series::{FnKind, TSeries, expand_maclaurin};
 use crate::transforms::eval;
-
-type Rat = Ratio<BigInt>;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Types
@@ -151,21 +151,13 @@ impl std::fmt::Debug for FormalPowerSeries {
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn rat_expr(arena: &mut Arena, r: Rat) -> ExprId {
+fn rat_expr(arena: &mut Arena, r: Q) -> ExprId {
     let nid = arena.intern_num(r);
     arena.intern(ExprNode::Num(nid))
 }
 
-fn rat_i(n: i64) -> Rat {
+fn rat_i(n: i64) -> Q {
     Ratio::from_integer(BigInt::from(n))
-}
-
-fn factorial_big(n: u64) -> BigInt {
-    let mut acc = BigInt::one();
-    for i in 2..=n {
-        acc *= BigInt::from(i);
-    }
-    acc
 }
 
 fn add_all(arena: &mut Arena, terms: &[ExprId]) -> ExprId {
@@ -204,7 +196,7 @@ fn gen_binomial(arena: &mut Arena, alpha: ExprId, n: usize) -> ExprId {
         return arena.one;
     }
     if let Some(a) = arena.as_num(alpha).cloned() {
-        let mut acc = Rat::one();
+        let mut acc = Q::one();
         for i in 0..n {
             acc = acc * (&a - rat_i(i as i64)) / rat_i(i as i64 + 1);
         }
@@ -215,10 +207,7 @@ fn gen_binomial(arena: &mut Arena, alpha: ExprId, n: usize) -> ExprId {
         let ie = arena.int(-(i as i64));
         factors.push(arena.add(&[alpha, ie]));
     }
-    factors.push(rat_expr(
-        arena,
-        Rat::new(BigInt::one(), factorial_big(n as u64)),
-    ));
+    factors.push(rat_expr(arena, Q::new(BigInt::one(), factorial(n as u64))));
     mul_all(arena, &factors)
 }
 
@@ -666,7 +655,7 @@ impl FormalPowerSeries {
     /// The `k`-th coefficient as an exact rational, or `None` if it is not
     /// a rational number (e.g. `ln 2`, `2/√π`, or a symbolic parameter).
     #[must_use]
-    pub fn coefficient_rational(&self, k: usize) -> Option<Rat> {
+    pub fn coefficient_rational(&self, k: usize) -> Option<Q> {
         let id = self.coefficient_id(k);
         let inner = self.ctx.inner.read();
         inner.arena.as_num(id).cloned()
@@ -773,7 +762,7 @@ impl FormalPowerSeries {
                 }
                 let x = a.coefficient_id(k - 1);
                 let mut inner = self.ctx.inner.write();
-                let inv = rat_expr(&mut inner.arena, Rat::new(BigInt::one(), BigInt::from(k)));
+                let inv = rat_expr(&mut inner.arena, Q::new(BigInt::one(), BigInt::from(k)));
                 mul_all(&mut inner.arena, &[inv, x])
             }
             Source::Inverse(a) => {
@@ -820,7 +809,7 @@ impl FormalPowerSeries {
                 for _ in 0..k {
                     power = poly_mul(arena, &power, &inv_h, k);
                 }
-                let inv_k = rat_expr(arena, Rat::new(BigInt::one(), BigInt::from(k)));
+                let inv_k = rat_expr(arena, Q::new(BigInt::one(), BigInt::from(k)));
                 mul_all(arena, &[inv_k, power[k - 1]])
             }
         }
@@ -1120,8 +1109,8 @@ impl FormalPowerSeries {
 mod tests {
     use super::*;
 
-    fn rat(p: i64, q: i64) -> Rat {
-        Rat::new(BigInt::from(p), BigInt::from(q))
+    fn rat(p: i64, q: i64) -> Q {
+        Q::new(BigInt::from(p), BigInt::from(q))
     }
 
     #[test]

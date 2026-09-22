@@ -36,6 +36,7 @@ use smallvec::SmallVec;
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 
 use super::common::{display_sort_key, is_neg_coeff_mul, is_neg_one_mul};
 
@@ -918,7 +919,7 @@ fn push_mul_factors(arena: &Arena, factors: &[ExprId], _mul_prec: u8, stack: &mu
 /// Without inverse factors the coefficient is printed as-is: `1/2*j`.
 fn push_mul_with_coeff(
     arena: &Arena,
-    coeff: Option<Ratio<BigInt>>,
+    coeff: Option<Q>,
     factors: &[ExprId],
     stack: &mut Vec<WorkItem>,
 ) {
@@ -1011,7 +1012,7 @@ fn push_mul_with_coeff(
 }
 
 /// `p` or `p/q` for a rational literal.
-fn rational_literal(r: &Ratio<BigInt>) -> String {
+fn rational_literal(r: &Q) -> String {
     if r.denom() == &BigInt::from(1) {
         format!("{}", r.numer())
     } else {
@@ -1022,11 +1023,7 @@ fn rational_literal(r: &Ratio<BigInt>) -> String {
 /// Render `coeff * factors` to a string with the same fraction folding as
 /// [`push_mul_with_coeff`].  Used where the caller needs an owned string
 /// (negative-coefficient terms inside a sum).
-fn render_mul_with_coeff(
-    arena: &Arena,
-    coeff: Option<Ratio<BigInt>>,
-    factors: &[ExprId],
-) -> String {
+fn render_mul_with_coeff(arena: &Arena, coeff: Option<Q>, factors: &[ExprId]) -> String {
     let mut stack: Vec<WorkItem> = Vec::with_capacity(16);
     push_mul_with_coeff(arena, coeff, factors, &mut stack);
     let mut out = String::new();

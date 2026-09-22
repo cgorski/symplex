@@ -47,6 +47,7 @@ use smallvec::{SmallVec, smallvec};
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Add
@@ -80,10 +81,10 @@ pub(crate) fn canon_add(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     }
 
     // Running numeric constant (the "coefficient of 1").
-    let mut constant: Ratio<BigInt> = Ratio::zero();
+    let mut constant: Q = Ratio::zero();
 
     // Map: symbolic_key → accumulated coefficient.
-    let mut terms: FxHashMap<ExprId, Ratio<BigInt>> = FxHashMap::default();
+    let mut terms: FxHashMap<ExprId, Q> = FxHashMap::default();
 
     // Track whether we've seen infinity / neg-infinity to handle oo − oo → NaN.
     let mut has_pos_inf = false;
@@ -131,7 +132,7 @@ pub(crate) fn canon_add(arena: &mut Arena, args: &[ExprId]) -> ExprId {
 
             ExprNode::Neg(inner) => {
                 // −x has coefficient −1, term x.
-                let neg_one: Ratio<BigInt> = -Ratio::one();
+                let neg_one: Q = -Ratio::one();
                 let (c, key) = arena.as_coeff_term(inner);
                 let combined = neg_one * c;
                 if key == arena.one {
@@ -164,7 +165,7 @@ pub(crate) fn canon_add(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     }
 
     // Collect non-zero terms.
-    let non_zero_terms: SmallVec<[(ExprId, Ratio<BigInt>); 8]> =
+    let non_zero_terms: SmallVec<[(ExprId, Q); 8]> =
         terms.into_iter().filter(|(_, c)| !c.is_zero()).collect();
 
     // Build the result argument list.
@@ -279,7 +280,7 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     }
 
     // Running numeric coefficient.
-    let mut coeff: Ratio<BigInt> = Ratio::one();
+    let mut coeff: Q = Ratio::one();
 
     // Map: base → list of exponents to be summed.
     let mut bases: FxHashMap<ExprId, SmallVec<[ExprId; 4]>> = FxHashMap::default();
@@ -372,7 +373,7 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     {
         let mut combined_factors: SmallVec<[(ExprId, ExprId); 8]> = SmallVec::new();
         // Map: exponent ExprId → (product of bases as Ratio, indices consumed)
-        let mut exp_groups: FxHashMap<ExprId, (Ratio<BigInt>, usize)> = FxHashMap::default();
+        let mut exp_groups: FxHashMap<ExprId, (Q, usize)> = FxHashMap::default();
         let mut factor_used: SmallVec<[bool; 8]> = smallvec::smallvec![false; factors.len()];
 
         for (i, &(base, exp_id)) in factors.iter().enumerate() {
@@ -599,7 +600,7 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
 fn handle_mul_with_zoo(
     arena: &mut Arena,
     remaining: &mut SmallVec<[ExprId; 16]>,
-    coeff: &Ratio<BigInt>,
+    coeff: &Q,
 ) -> ExprId {
     if coeff.is_zero() {
         return arena.nan;
@@ -934,7 +935,7 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
 
 /// Try to evaluate `b ^ e` when both are rational, returning `None` if the
 /// exponent is not a suitably small integer.
-fn eval_numeric_pow(arena: &mut Arena, b: &Ratio<BigInt>, e: &Ratio<BigInt>) -> Option<ExprId> {
+fn eval_numeric_pow(arena: &mut Arena, b: &Q, e: &Q) -> Option<ExprId> {
     // Only evaluate when the exponent is an integer.
     if !e.is_integer() {
         return None;
@@ -1005,9 +1006,9 @@ fn eval_numeric_pow(arena: &mut Arena, b: &Ratio<BigInt>, e: &Ratio<BigInt>) -> 
 fn canon_radical(
     arena: &mut Arena,
     base: ExprId,
-    base_r: &Ratio<BigInt>,
+    base_r: &Q,
     exp: ExprId,
-    exp_r: &Ratio<BigInt>,
+    exp_r: &Q,
 ) -> Option<ExprId> {
     debug_assert!(base_r.is_positive() && !exp_r.is_integer());
 

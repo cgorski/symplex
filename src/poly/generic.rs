@@ -509,10 +509,24 @@ impl<C: Field> GenPoly<C> {
         self.scale(&inv_lc)
     }
 
-    /// Greatest common divisor via the Euclidean algorithm.
+    /// Greatest common divisor, monic (leading coefficient = 1);
+    /// `gcd(a, 0) = monic(a)` and `gcd(0, 0) = 0`.
     ///
-    /// The result is monic (leading coefficient = 1).
+    /// Coefficient fields may provide a faster route through
+    /// [`Field::poly_gcd`] (`Ratio<BigInt>` uses the primitive PRS in
+    /// `ℤ[x]`); otherwise Euclid's algorithm over the field is run
+    /// (`gcd_euclid`).  Both give the same polynomial.
     pub fn gcd(a: &Self, b: &Self) -> Self {
+        if let Some(g) = C::poly_gcd(&a.coeffs, &b.coeffs) {
+            return GenPoly::from_coeffs(g);
+        }
+        Self::gcd_euclid(a, b)
+    }
+
+    /// Greatest common divisor via the Euclidean algorithm over the
+    /// coefficient field, monic.  The reference implementation behind
+    /// [`gcd`](Self::gcd).
+    pub(crate) fn gcd_euclid(a: &Self, b: &Self) -> Self {
         let mut a = a.clone();
         let mut b = b.clone();
 
@@ -806,7 +820,7 @@ impl<C: Field> GenPoly<C> {
     ///
     /// Uses evaluation-interpolation: evaluate at `z = 0, 1, 2, …, deg(f)`
     /// (embedded via `IntegralCoeff::from_i64`), compute scalar resultants,
-    /// then Lagrange-interpolate to recover `R(z)`.
+    /// then interpolate to recover `R(z)`.
     pub fn resultant_poly(f: &Self, g: &Self, h: &Self) -> Self
     where
         C: Field + super::traits::IntegralCoeff,
@@ -829,7 +843,7 @@ impl<C: Field> GenPoly<C> {
             points.push((k as i64, res_val));
         }
 
-        lagrange_interpolate_generic(&points)
+        super::interp::interpolate_at_integers(&points)
     }
 }
 
@@ -930,54 +944,6 @@ fn decompose_step<C: Field + IntegralCoeff>(f: &GenPoly<C>) -> Option<(GenPoly<C
         }
     }
     None
-}
-
-/// Lagrange interpolation for `GenPoly<C>` through rational-valued points
-/// at integer abscissae.
-///
-/// Given `(x₀, y₀), …, (xₙ, yₙ)` with integer `xᵢ` and `C`-valued `yᵢ`,
-/// returns the unique polynomial of degree ≤ n passing through all points.
-fn lagrange_interpolate_generic<C: Field + super::traits::IntegralCoeff>(
-    points: &[(i64, C)],
-) -> GenPoly<C> {
-    let n = points.len();
-    if n == 0 {
-        return GenPoly::zero();
-    }
-
-    let mut result = GenPoly::zero();
-
-    for i in 0..n {
-        let (xi, yi) = &points[i];
-        if yi.is_zero() {
-            continue;
-        }
-
-        // L_i(z) = ∏_{j≠i} (z − xⱼ) / (xᵢ − xⱼ)
-        let mut basis = GenPoly::one();
-        let mut denom_scalar = C::one();
-
-        for (j, (xj, _)) in points.iter().enumerate() {
-            if i == j {
-                continue;
-            }
-            // (z - xj)
-            let neg_xj = Ring::neg(&<C as super::traits::IntegralCoeff>::from_i64(*xj));
-            let linear = GenPoly::from_coeffs(vec![neg_xj, C::one()]);
-            basis = basis.mul(&linear);
-
-            // (xi - xj)
-            let diff = <C as super::traits::IntegralCoeff>::from_i64(*xi - *xj);
-            denom_scalar = Ring::mul(&denom_scalar, &diff);
-        }
-
-        // L_i(z) = basis / denom_scalar
-        let inv_denom = Field::inv(&denom_scalar);
-        let scaled_basis = basis.scale(&Ring::mul(yi, &inv_denom));
-        result = result.add(&scaled_basis);
-    }
-
-    result
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

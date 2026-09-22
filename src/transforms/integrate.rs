@@ -36,6 +36,7 @@ use num_traits::Zero;
 
 use crate::base::arena::{Arena, FN_CHI, FN_ERFI, FN_SHI};
 use crate::base::node::{ExprId, ExprNode, SymbolId};
+use crate::base::numeric::Q;
 
 /// Integrate `expr` with respect to `var`.
 ///
@@ -182,7 +183,7 @@ fn try_standard_form_integral(
     };
 
     // ── Classify each child ────────────────────────────────────────
-    let mut const_val: Option<num_rational::Ratio<num_bigint::BigInt>> = None;
+    let mut const_val: Option<Q> = None;
     let mut has_pos_x2 = false;
     let mut has_neg_x2 = false;
 
@@ -664,7 +665,7 @@ fn try_trig_sub_sqrt_integral(
     };
 
     // ── Classify each child ────────────────────────────────────────
-    let mut const_val: Option<num_rational::Ratio<num_bigint::BigInt>> = None;
+    let mut const_val: Option<Q> = None;
     let mut has_pos_x2 = false;
     let mut has_neg_x2 = false;
 
@@ -2449,12 +2450,7 @@ fn is_polynomial_in(arena: &Arena, expr: ExprId, var: ExprId, var_sym: SymbolId)
 /// Check if `expr` is a linear function of `var` with **numeric** coefficients.
 /// Returns `Some(a)` (the leading coefficient as `Ratio<BigInt>`) if linear, `None` otherwise.
 #[allow(dead_code)]
-fn linear_coeff_of(
-    arena: &Arena,
-    expr: ExprId,
-    _var: ExprId,
-    _var_sym: SymbolId,
-) -> Option<num_rational::Ratio<num_bigint::BigInt>> {
+fn linear_coeff_of(arena: &Arena, expr: ExprId, _var: ExprId, _var_sym: SymbolId) -> Option<Q> {
     // Try to convert to polynomial in var.
     let poly = crate::poly::polybridge::expr_to_poly(arena, expr, _var)?;
     // Must be degree exactly 1.
@@ -2991,7 +2987,7 @@ fn collect_exp_multiples(
     expr: ExprId,
     var: ExprId,
     var_sym: SymbolId,
-) -> Option<Vec<(ExprId, num_rational::Ratio<num_bigint::BigInt>)>> {
+) -> Option<Vec<(ExprId, Q)>> {
     let order = crate::base::walk::post_order_ids(arena, expr);
     let mut out = Vec::new();
     for id in order {
@@ -3083,7 +3079,7 @@ fn try_radical_substitution(
 ) -> Option<ExprId> {
     use num_integer::Integer;
     let order = crate::base::walk::post_order_ids(arena, expr);
-    let mut radicals: Vec<(ExprId, num_rational::Ratio<num_bigint::BigInt>)> = Vec::new();
+    let mut radicals: Vec<(ExprId, Q)> = Vec::new();
     let mut q_lcm = num_bigint::BigInt::one();
     for id in order {
         if let ExprNode::Pow(base, e) = arena.node(id).clone()
@@ -3159,16 +3155,14 @@ fn try_hyperbolic_to_exp(
 // Algebraic reductions: P(x)·Q(x)^{k/2}
 // ═══════════════════════════════════════════════════════════════════════════
 
-type Rat = num_rational::Ratio<num_bigint::BigInt>;
-
 /// Split the dependent factors into a rational-coefficient polynomial `P`
 /// and a single factor `Q^{k/2}` (`k` odd, `Q` of degree 1 or 2).
 fn split_poly_and_half_power(
     arena: &mut Arena,
     dependent: &[ExprId],
     var: ExprId,
-) -> Option<(crate::poly::Poly, crate::poly::Poly, ExprId, Rat)> {
-    let mut half: Option<(ExprId, Rat)> = None;
+) -> Option<(crate::poly::Poly, crate::poly::Poly, ExprId, Q)> {
+    let mut half: Option<(ExprId, Q)> = None;
     let mut poly = crate::poly::Poly::from_int(1);
     for &d in dependent {
         if let ExprNode::Pow(base, e) = arena.node(d).clone()
@@ -3204,7 +3198,7 @@ fn try_poly_times_half_power(
     depth: usize,
 ) -> Option<ExprId> {
     let (p, q, q_expr, k) = split_poly_and_half_power(arena, dependent, var)?;
-    let two = Rat::from_integer(2.into());
+    let two = Q::from_integer(2.into());
     let k2 = &k * &two; // odd integer as rational
     let k2: i64 = k2.to_integer().to_string().parse().ok()?;
     if !matches!(k2, -1 | 1 | 3) {
@@ -3230,35 +3224,35 @@ fn try_poly_times_half_power(
     }
     // Build the linear system: coefficient of x^j in (2R'Q + RQ')/2 + c.
     let q_prime = q.derivative();
-    let mut rows: Vec<Vec<Rat>> = vec![vec![Rat::zero(); n_unknowns + 1]; n_eq];
+    let mut rows: Vec<Vec<Q>> = vec![vec![Q::zero(); n_unknowns + 1]; n_eq];
     for i in 0..=(m.max(-1)) {
         if i < 0 {
             break;
         }
         let iu = i as usize;
         // basis monomial x^i for R
-        let mut mono = vec![Rat::zero(); iu + 1];
-        mono[iu] = Rat::one();
+        let mut mono = vec![Q::zero(); iu + 1];
+        mono[iu] = Q::one();
         let r_i = crate::poly::Poly::from_coeffs(mono);
         let term = r_i
             .derivative()
             .mul(&q)
             .scale(&two)
             .add(&r_i.mul(&q_prime))
-            .scale(&Rat::new(1.into(), 2.into()));
+            .scale(&Q::new(1.into(), 2.into()));
         for (j, row) in rows.iter_mut().enumerate() {
             row[iu] = term.coeff(j);
         }
     }
     if with_c {
-        rows[0][n_unknowns - 1] = Rat::one();
+        rows[0][n_unknowns - 1] = Q::one();
     }
     for (j, row) in rows.iter_mut().enumerate() {
         row[n_unknowns] = p_tilde.coeff(j);
     }
     let sol = solve_linear_system(rows, n_unknowns)?;
     // Assemble R√Q + c∫1/√Q.
-    let r_coeffs: Vec<Rat> = sol[..(m.max(-1) + 1) as usize].to_vec();
+    let r_coeffs: Vec<Q> = sol[..(m.max(-1) + 1) as usize].to_vec();
     let r_poly = crate::poly::Poly::from_coeffs(r_coeffs);
     let r_expr = crate::poly::polybridge::poly_to_expr(arena, &r_poly, var);
     let half = arena.rational(1, 2);
@@ -3282,7 +3276,7 @@ fn try_poly_times_half_power(
 }
 
 /// Gaussian elimination over ℚ on an augmented matrix (`n` unknowns).
-fn solve_linear_system(mut rows: Vec<Vec<Rat>>, n: usize) -> Option<Vec<Rat>> {
+fn solve_linear_system(mut rows: Vec<Vec<Q>>, n: usize) -> Option<Vec<Q>> {
     let m = rows.len();
     let mut pivot_row = 0;
     let mut pivot_cols: Vec<usize> = Vec::new();
@@ -3291,7 +3285,7 @@ fn solve_linear_system(mut rows: Vec<Vec<Rat>>, n: usize) -> Option<Vec<Rat>> {
             continue;
         };
         rows.swap(pivot_row, p);
-        let inv = Rat::one() / rows[pivot_row][col].clone();
+        let inv = Q::one() / rows[pivot_row][col].clone();
         for v in rows[pivot_row].iter_mut() {
             *v = &*v * &inv;
         }
@@ -3317,7 +3311,7 @@ fn solve_linear_system(mut rows: Vec<Vec<Rat>>, n: usize) -> Option<Vec<Rat>> {
             return None;
         }
     }
-    let mut sol = vec![Rat::zero(); n];
+    let mut sol = vec![Q::zero(); n];
     for (r, &col) in pivot_cols.iter().enumerate() {
         sol[col] = rows[r][n].clone();
     }
@@ -3337,7 +3331,7 @@ fn try_reciprocal_sqrt_substitution(
         return None;
     }
     let mut n_neg: Option<i64> = None;
-    let mut half: Option<(ExprId, Rat)> = None;
+    let mut half: Option<(ExprId, Q)> = None;
     for &d in dependent {
         if let ExprNode::Pow(base, e) = arena.node(d).clone()
             && let Some(r) = arena.as_num(e).cloned()
@@ -3355,7 +3349,7 @@ fn try_reciprocal_sqrt_substitution(
     }
     let n = n_neg?;
     let (q_expr, k) = half?;
-    if k != Rat::new((-1).into(), 2.into()) || !(1..=4).contains(&n) {
+    if k != Q::new((-1).into(), 2.into()) || !(1..=4).contains(&n) {
         return None;
     }
     let q = crate::poly::polybridge::expr_to_poly(arena, q_expr, var)?;
@@ -3404,13 +3398,13 @@ fn try_tan_sec_patterns(
         return None;
     }
     // Identify tan^m(g) and cos^{-n}(g).
-    let mut tan_part: Option<(ExprId, Rat)> = None;
-    let mut sec_part: Option<(ExprId, Rat)> = None;
+    let mut tan_part: Option<(ExprId, Q)> = None;
+    let mut sec_part: Option<(ExprId, Q)> = None;
     for &d in dependent {
         let (base, e) = if let ExprNode::Pow(b, e) = arena.node(d).clone() {
             (b, arena.as_num(e)?.clone())
         } else {
-            (d, Rat::one())
+            (d, Q::one())
         };
         match arena.node(base).clone() {
             ExprNode::Tan(g) if e.is_integer() && e.is_positive() => tan_part = Some((g, e)),
@@ -3424,17 +3418,17 @@ fn try_tan_sec_patterns(
         return None;
     }
     let (a_expr, _) = symbolic_linear_coeff_of(arena, g, var, var_sym)?;
-    let two = Rat::from_integer(2.into());
+    let two = Q::from_integer(2.into());
     if n == two {
         // ∫ tan^m sec² = tan^{m+1}/(m+1)
-        let m1 = &m + &Rat::one();
+        let m1 = &m + &Q::one();
         let m1_id = arena.num_ratio(m1.clone());
         let tan_g = arena.tan(g);
         let tp = arena.pow(tan_g, m1_id);
         let denom = arena.mul(&[m1_id, a_expr]);
         return Some(arena.div(tp, denom));
     }
-    if m == Rat::one() {
+    if m == Q::one() {
         // ∫ secⁿ tan = secⁿ/n = cos^{-n}/n
         let cos_g = arena.cos(g);
         let neg_n = arena.num_ratio(-n.clone());

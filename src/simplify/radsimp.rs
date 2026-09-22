@@ -20,6 +20,7 @@ use rustc_hash::FxHashMap;
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::base::numeric::is_perfect_square;
 use crate::base::walk;
 use crate::poly::polybridge;
@@ -135,7 +136,7 @@ fn denest_sqrt(arena: &mut Arena, base: ExprId) -> Option<ExprId> {
 }
 
 /// Exact square root of a non-negative rational, if it is a rational.
-fn rational_sqrt(r: &Ratio<BigInt>) -> Option<Ratio<BigInt>> {
+fn rational_sqrt(r: &Q) -> Option<Q> {
     if r.is_negative() {
         return None;
     }
@@ -146,7 +147,7 @@ fn rational_sqrt(r: &Ratio<BigInt>) -> Option<Ratio<BigInt>> {
 }
 
 /// Intern a rational number as an expression node.
-fn num_expr(arena: &mut Arena, r: Ratio<BigInt>) -> ExprId {
+fn num_expr(arena: &mut Arena, r: Q) -> ExprId {
     let nid = arena.intern_num(r);
     arena.intern(ExprNode::Num(nid))
 }

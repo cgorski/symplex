@@ -59,6 +59,8 @@ use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric;
+use crate::base::numeric::Q;
+use crate::base::rng::SplitMix64;
 use crate::output::display::fmt_expr;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -189,11 +191,11 @@ impl_scalar!(i128, |v, arena| match i64::try_from(v) {
 });
 impl_scalar!(f64, |v, arena| f64_to_id(arena, v));
 impl_scalar!(BigInt, |v, arena| arena.big_int(v));
-impl_scalar!(Ratio<BigInt>, |v, arena| ratio_to_id(arena, v));
+impl_scalar!(Q, |v, arena| ratio_to_id(arena, v));
 
 /// Intern a rational, handling the (pathological) zero denominator that
 /// `Ratio::new_raw` can produce without panicking.
-fn ratio_to_id(arena: &mut Arena, r: Ratio<BigInt>) -> ExprId {
+fn ratio_to_id(arena: &mut Arena, r: Q) -> ExprId {
     if r.denom().is_zero() {
         return if r.numer().is_zero() {
             arena.nan()
@@ -629,7 +631,7 @@ macro_rules! impl_scalar_lhs_ops {
 impl_scalar_lhs_ops!(i64);
 impl_scalar_lhs_ops!(f64);
 impl_scalar_lhs_ops!(BigInt);
-impl_scalar_lhs_ops!(Ratio<BigInt>);
+impl_scalar_lhs_ops!(Q);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Sum and Product trait implementations
@@ -952,7 +954,7 @@ impl Context {
     /// let r = Ratio::new(BigInt::from(6), BigInt::from(-4));
     /// assert_eq!(format!("{}", ctx.from_ratio(r)), "-3/2");
     /// ```
-    pub fn from_ratio(&self, r: Ratio<BigInt>) -> Ex {
+    pub fn from_ratio(&self, r: Q) -> Ex {
         let id = ratio_to_id(&mut self.inner.write().arena, r);
         ctx_wrap(self, id)
     }
@@ -1243,7 +1245,7 @@ impl Context {
 }
 
 /// Parse `[+-]digits[.digits][(e|E)[+-]digits]` into an exact rational.
-fn parse_decimal_exact(s: &str) -> Option<Ratio<BigInt>> {
+fn parse_decimal_exact(s: &str) -> Option<Q> {
     let s = s.trim();
     let (negative, rest) = match s.as_bytes().first()? {
         b'-' => (true, &s[1..]),
@@ -1306,28 +1308,16 @@ fn clearly_different(a: Complex64, b: Complex64) -> bool {
     (a - b).norm() > NUMERIC_REL_TOL * scale
 }
 
-/// SplitMix64 — tiny deterministic PRNG for sample points.
-struct SplitMix64(u64);
-
-impl SplitMix64 {
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
+/// A "random" rational `(p, q)` with numerator in `[-64, 64]` and
+/// denominator in `[1, 8]`, never zero — the sample points of
+/// [`Ex::probably_equal`].
+fn next_rational(rng: &mut SplitMix64) -> (i64, i64) {
+    let q = (rng.next_u64() % 8) as i64 + 1;
+    let mut p = (rng.next_u64() % 129) as i64 - 64;
+    if p == 0 {
+        p = 1;
     }
-
-    /// A "random" rational with numerator in `[-64, 64]` and denominator
-    /// in `[1, 8]`, never zero.
-    fn next_rational(&mut self) -> (i64, i64) {
-        let q = (self.next_u64() % 8) as i64 + 1;
-        let mut p = (self.next_u64() % 129) as i64 - 64;
-        if p == 0 {
-            p = 1;
-        }
-        (p, q)
-    }
+    (p, q)
 }
 
 impl Ex {
@@ -1351,7 +1341,7 @@ impl Ex {
     /// assert!((&ctx.int(2).sqrt() * &ctx.int(2).sqrt()).eval().as_rational().is_some());
     /// ```
     #[must_use]
-    pub fn as_rational(&self) -> Option<Ratio<BigInt>> {
+    pub fn as_rational(&self) -> Option<Q> {
         let inner = self.inner.read();
         inner.arena.as_num(self.raw_id()).cloned()
     }
@@ -1637,7 +1627,7 @@ impl Ex {
             ^ (u64::from(self.raw_id().0) << 32)
             ^ u64::from(other_id.0)
             ^ (samples as u64).rotate_left(17);
-        let mut rng = SplitMix64(seed);
+        let mut rng = SplitMix64::new(seed);
         let samples = samples.max(1);
         let mut confirmed = 0usize;
 
@@ -1645,7 +1635,7 @@ impl Ex {
             let vals: Vec<Ex> = syms
                 .iter()
                 .map(|_| {
-                    let (p, q) = rng.next_rational();
+                    let (p, q) = next_rational(&mut rng);
                     ctx.rational(p, q)
                 })
                 .collect();

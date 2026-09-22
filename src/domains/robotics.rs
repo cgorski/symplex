@@ -17,13 +17,12 @@
 //! (`Angle`/`Length`); both name the four parameters so `d` and `a` — two
 //! lengths — cannot be transposed silently.
 
+use crate::base::numeric::Q;
 use crate::domains::matrix::Matrix;
 use crate::poly::multipoly::{GrevLex, MultiPoly};
 use crate::poly::polysys;
 use crate::prelude::*;
 use crate::units::si::{Angle, Length};
-use num_bigint::BigInt;
-use num_rational::Ratio;
 use num_traits::ToPrimitive;
 
 /// Build the standard Denavit-Hartenberg transformation matrix for one joint.
@@ -405,7 +404,7 @@ pub fn rot_euler(phi: &Ex, theta: &Ex, psi: &Ex, convention: EulerConvention) ->
 /// (continued-fraction convergents), so `0.1 → 1/10` and `1/3` round-trips.
 ///
 /// Returns `None` for NaN / ±∞.
-fn f64_to_ratio(v: f64) -> Option<Ratio<BigInt>> {
+fn f64_to_ratio(v: f64) -> Option<Q> {
     crate::base::numeric::f64_to_ratio_approx(v, 1_000_000)
 }
 

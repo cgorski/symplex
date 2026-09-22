@@ -44,16 +44,19 @@
 
 use num_traits::{One, Signed, Zero};
 
-use super::common::{check_confidence, ex, ex_usize, f_sf, invalid, qu, t_two_sided, z_two_sided};
+use super::common::{
+    WaldSummary, check_confidence, ex, ex_usize, f_sf, information_cholesky, invalid, qu,
+    t_two_sided, wald_summary, z_two_sided,
+};
 use super::data::Q;
 use super::hypothesis::{self, Alternative, TestResult};
 use crate::api::context::Context;
 use crate::api::expr::Ex;
+use crate::base::dense_f64::{self, dot as dot_f64};
 use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
 use crate::base::numeric::ratio_to_f64;
 use crate::domains::exact_matrix::QMatrix;
-use crate::output::codegen::numeric_rt::erfc;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Small helpers
@@ -98,11 +101,6 @@ fn student_two_sided(ctx: &Context, df: usize, t_squared: &Q) -> Ex {
     let nu = qu(df);
     let z = &nu / (t_squared + &nu);
     ex(ctx, &z).betainc_regularized(&ex(ctx, &(nu / qu(2))), &ctx.rational(1, 2), &ctx.zero())
-}
-
-/// `P(|Z| ≥ |z|) = erfc(|z|/√2)`.
-fn normal_two_sided(z: f64) -> f64 {
-    erfc(z.abs() / std::f64::consts::SQRT_2)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1254,68 +1252,6 @@ fn softplus(x: f64) -> f64 {
     }
 }
 
-/// Lower Cholesky factor of a symmetric positive-definite matrix; `None`
-/// when a pivot is not positive relative to its diagonal entry (singular
-/// or indefinite).
-fn cholesky(a: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
-    let p = a.len();
-    let mut l = vec![vec![0.0; p]; p];
-    for j in 0..p {
-        let d = a[j][j] - dot_f64(&l[j][..j], &l[j][..j]);
-        if !d.is_finite() || d <= 1e-12 * a[j][j].abs() {
-            return None;
-        }
-        let ljj = d.sqrt();
-        l[j][j] = ljj;
-        for i in (j + 1)..p {
-            let s = a[i][j] - dot_f64(&l[i][..j], &l[j][..j]);
-            l[i][j] = s / ljj;
-        }
-    }
-    Some(l)
-}
-
-/// Solve `L Lᵀ x = b`.
-fn cholesky_solve(l: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
-    let p = l.len();
-    let mut z = vec![0.0; p];
-    for i in 0..p {
-        let mut s = b[i];
-        for k in 0..i {
-            s -= l[i][k] * z[k];
-        }
-        z[i] = s / l[i][i];
-    }
-    let mut x = vec![0.0; p];
-    for i in (0..p).rev() {
-        let mut s = z[i];
-        for k in (i + 1)..p {
-            s -= l[k][i] * x[k];
-        }
-        x[i] = s / l[i][i];
-    }
-    x
-}
-
-/// `(L Lᵀ)⁻¹`, column by column.
-fn cholesky_inverse(l: &[Vec<f64>]) -> Vec<Vec<f64>> {
-    let p = l.len();
-    let mut inv = vec![vec![0.0; p]; p];
-    for j in 0..p {
-        let mut e = vec![0.0; p];
-        e[j] = 1.0;
-        let col = cholesky_solve(l, &e);
-        for (i, v) in col.into_iter().enumerate() {
-            inv[i][j] = v;
-        }
-    }
-    inv
-}
-
-fn dot_f64(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
-}
-
 /// Logistic regression `P(y = 1 | x) = σ(xᵀβ)` by Newton–Raphson
 /// (iteratively reweighted least squares) on the log-likelihood, from
 /// `β = 0`: `β ← β + (XᵀWX)⁻¹Xᵀ(y − p)`, `W = diag(pᵢ(1 − pᵢ))`.
@@ -1460,7 +1396,7 @@ pub fn logit<B: BinaryOutcome>(
     for iter in 1..=opts.max_iter {
         iterations = iter;
         let (g, h) = score_and_information(&beta, &mut probs);
-        let Some(l) = cholesky(&h) else {
+        let Some(l) = information_cholesky(&h) else {
             return Err(if iter == 1 {
                 invalid(
                     OP,
@@ -1473,7 +1409,7 @@ pub fn logit<B: BinaryOutcome>(
                 )
             });
         };
-        let step = cholesky_solve(&l, &g);
+        let step = dense_f64::cholesky_solve(&l, p, &g);
         for (b, s) in beta.iter_mut().zip(&step) {
             *b += s;
         }
@@ -1516,20 +1452,12 @@ pub fn logit<B: BinaryOutcome>(
             ));
         }
     }
-    let l = cholesky(&h).ok_or_else(|| {
+    let wald = wald_summary(&h, &beta).ok_or_else(|| {
         failed(
             OP,
             "the Hessian at the estimate is singular: the standard errors are undefined",
         )
     })?;
-    let cov_params = cholesky_inverse(&l);
-    let standard_errors: Vec<f64> = (0..p).map(|j| cov_params[j][j].sqrt()).collect();
-    let z_values: Vec<f64> = beta
-        .iter()
-        .zip(&standard_errors)
-        .map(|(b, se)| b / se)
-        .collect();
-    let p_values: Vec<f64> = z_values.iter().map(|z| normal_two_sided(*z)).collect();
 
     let log_likelihood = design
         .iter()
@@ -1550,15 +1478,15 @@ pub fn logit<B: BinaryOutcome>(
         pseudo_r_squared: 1.0 - log_likelihood / null_log_likelihood,
         deviance: -2.0 * log_likelihood,
         coefficients: beta,
-        standard_errors,
-        z_values,
-        p_values,
+        standard_errors: wald.se,
+        z_values: wald.z,
+        p_values: wald.p,
         log_likelihood,
         null_log_likelihood,
         iterations,
         converged,
         fitted_probabilities: probs,
-        cov_params,
+        cov_params: wald.cov,
         nobs: n,
         df_model: p - 1,
         df_resid: n - p,
@@ -1863,7 +1791,7 @@ fn newton_categorical(
     let mut iterations = 0;
     for iter in 1..=opts.max_iter {
         iterations = iter;
-        let Some(l) = cholesky(&cur.info) else {
+        let Some(l) = information_cholesky(&cur.info) else {
             return Err(if iter == 1 {
                 invalid(
                     op,
@@ -1879,7 +1807,7 @@ fn newton_categorical(
                 )
             });
         };
-        let dir = cholesky_solve(&l, &cur.score);
+        let dir = dense_f64::cholesky_solve(&l, cur.info.len(), &cur.score);
         let max_step = dir.iter().fold(0.0_f64, |m, s| m.max(s.abs()));
         let scale = params.iter().fold(1.0_f64, |m, b| m.max(b.abs()));
         // Step halving: accept the first fraction of the Newton step that
@@ -1950,31 +1878,18 @@ fn newton_categorical(
     })
 }
 
-/// `(XᵀŴX)⁻¹` from the observed information at the estimate, with the
-/// standard errors, `z` and two-sided normal p-values of `params`.
-struct WaldSummary {
-    cov: Vec<Vec<f64>>,
-    se: Vec<f64>,
-    z: Vec<f64>,
-    p: Vec<f64>,
-}
-
-fn wald_summary(
+/// [`wald_summary`] with this module's wording for a singular Hessian.
+fn wald_summary_or_singular(
     op: &'static str,
     info: &[Vec<f64>],
     params: &[f64],
 ) -> Result<WaldSummary, SymplexError> {
-    let l = cholesky(info).ok_or_else(|| {
+    wald_summary(info, params).ok_or_else(|| {
         failed(
             op,
             "the Hessian at the estimate is singular: the standard errors are undefined",
         )
-    })?;
-    let cov = cholesky_inverse(&l);
-    let se: Vec<f64> = (0..params.len()).map(|j| cov[j][j].sqrt()).collect();
-    let z: Vec<f64> = params.iter().zip(&se).map(|(b, s)| b / s).collect();
-    let p: Vec<f64> = z.iter().map(|z| normal_two_sided(*z)).collect();
-    Ok(WaldSummary { cov, se, z, p })
+    })
 }
 
 /// Checks a new regressor row against the fitted design and prepends the
@@ -2207,7 +2122,7 @@ pub fn mnlogit(
     let evaluate = |beta: &[f64]| Some(mnlogit_evaluate(&data.design, &data.y, k, beta));
     let culprit = |beta: &[f64]| diverging_coefficient(beta, p, &data.rms, add_intercept, true);
     let out = newton_categorical(OP, opts, &data.y, vec![0.0; m], &evaluate, &culprit)?;
-    let wald = wald_summary(OP, &out.eval.info, &out.params)?;
+    let wald = wald_summary_or_singular(OP, &out.eval.info, &out.params)?;
     let by_category = |v: &[f64]| -> Vec<Vec<f64>> { v.chunks(p).map(<[f64]>::to_vec).collect() };
     let log_likelihood = out.eval.ll;
     let null_log_likelihood = categorical_null_log_likelihood(&data.counts);
@@ -2584,7 +2499,7 @@ pub fn ologit(y: &[usize], x: &[Vec<f64>], opts: &LogitOpts) -> Result<OrderedLo
     let evaluate = |par: &[f64]| ologit_evaluate(&data.design, &data.y, k, par);
     let culprit = |par: &[f64]| diverging_coefficient(&par[..p], p, &data.rms, false, false);
     let out = newton_categorical(OP, opts, &data.y, start, &evaluate, &culprit)?;
-    let wald = wald_summary(OP, &out.eval.info, &out.params)?;
+    let wald = wald_summary_or_singular(OP, &out.eval.info, &out.params)?;
     let log_likelihood = out.eval.ll;
     let null_log_likelihood = categorical_null_log_likelihood(&data.counts);
     let (beta, theta) = out.params.split_at(p);

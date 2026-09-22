@@ -37,6 +37,7 @@ use num_traits::{One, Signed, Zero};
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode, SymbolId};
+use crate::base::numeric::Q;
 use crate::poly::Poly;
 use crate::poly::polybridge;
 
@@ -1252,7 +1253,7 @@ fn solve_cubic_cardano(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
 ///
 /// Returns `(sign_u, sign_v)` with values in `{-1, 0, 1}`; `0` is also used
 /// when `Δ < 0` (complex radicands, principal branch is correct there).
-fn cardano_radicand_signs(p: &Ratio<BigInt>, q: &Ratio<BigInt>, disc: &Ratio<BigInt>) -> (i8, i8) {
+fn cardano_radicand_signs(p: &Q, q: &Q, disc: &Q) -> (i8, i8) {
     use std::cmp::Ordering;
     if disc.is_negative() {
         return (0, 0);
@@ -1576,7 +1577,7 @@ fn solve_quartic_ferrari(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
 /// every rational root `p/q` satisfies `p | a₀` and `q | aₙ`.
 ///
 /// Returns `None` if no rational root is found (Cardano fallback will be used).
-fn find_preferred_resolvent_root(resolvent: &Poly, p_rat: &Ratio<BigInt>) -> Option<Ratio<BigInt>> {
+fn find_preferred_resolvent_root(resolvent: &Poly, p_rat: &Q) -> Option<Q> {
     let (int_poly, _scale) = clear_denominators(resolvent);
     let a0 = int_poly.coeff(0).to_integer();
     let an = {
@@ -1585,7 +1586,7 @@ fn find_preferred_resolvent_root(resolvent: &Poly, p_rat: &Ratio<BigInt>) -> Opt
     };
 
     let two_r = Ratio::from_integer(BigInt::from(2));
-    let mut fallback: Option<Ratio<BigInt>> = None;
+    let mut fallback: Option<Q> = None;
 
     if a0.is_zero() {
         // m = 0 is a root.  Record it but keep looking for a non-degenerate one.
@@ -1596,8 +1597,7 @@ fn find_preferred_resolvent_root(resolvent: &Poly, p_rat: &Ratio<BigInt>) -> Opt
         fallback = Some(zero);
 
         // Divide out m and check the remaining quadratic for rational roots.
-        let reduced_coeffs: Vec<Ratio<BigInt>> =
-            resolvent.coeffs().iter().skip(1).cloned().collect();
+        let reduced_coeffs: Vec<Q> = resolvent.coeffs().iter().skip(1).cloned().collect();
         let reduced = Poly::from_coeffs(reduced_coeffs);
         let aq = reduced.coeff(2);
         let bq = reduced.coeff(1);
@@ -1691,7 +1691,7 @@ fn solve_rational_roots(arena: &mut Arena, var: ExprId, poly: &Poly) -> Vec<Solu
         // x = 0 is a root.  Factor out x and recurse.
         let mut roots = vec![Solution { value: arena.zero }];
         // Divide by x: shift coefficients down.
-        let reduced_coeffs: Vec<Ratio<BigInt>> = poly.coeffs().iter().skip(1).cloned().collect();
+        let reduced_coeffs: Vec<Q> = poly.coeffs().iter().skip(1).cloned().collect();
         let reduced = Poly::from_coeffs(reduced_coeffs);
         if !reduced.is_zero() && !reduced.is_constant() {
             let more = solve_rational_roots(arena, var, &reduced);
@@ -1777,7 +1777,7 @@ fn solve_rational_roots(arena: &mut Arena, var: ExprId, poly: &Poly) -> Vec<Solu
 ///
 /// Returns `Some(√r)` if `r` is a perfect square (both numerator and
 /// denominator are perfect squares), or `None` otherwise.
-fn rational_sqrt(r: &Ratio<BigInt>) -> Option<Ratio<BigInt>> {
+fn rational_sqrt(r: &Q) -> Option<Q> {
     if r.is_negative() {
         return None;
     }

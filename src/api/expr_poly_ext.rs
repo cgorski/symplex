@@ -20,6 +20,7 @@ use crate::base::errors::SymplexError;
 use crate::base::extended::Extended;
 use crate::base::interval::Interval;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::poly::Poly;
 use crate::poly::polybridge::{expr_to_poly, poly_to_expr};
 use crate::poly::sturm::SturmChain;
@@ -29,7 +30,7 @@ use crate::poly::sturm::SturmChain;
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// An exact rational endpoint or `±∞`.
-pub(crate) type Endpoint = Extended<Ratio<BigInt>>;
+pub(crate) type Endpoint = Extended<Q>;
 
 /// Interpret an expression as an exact rational endpoint, accepting `±∞`.
 /// `None` for anything else (symbols, π, …).
@@ -43,7 +44,7 @@ fn endpoint(arena: &Arena, id: ExprId) -> Option<Endpoint> {
 }
 
 /// Sign of a rational: `+1`, `0` or `-1`.
-fn sign_of(r: &Ratio<BigInt>) -> i8 {
+fn sign_of(r: &Q) -> i8 {
     if r.is_positive() {
         1
     } else if r.is_negative() {
@@ -847,7 +848,7 @@ impl Expr<Numeric> {
         let var_id = var.raw_id();
         let id = {
             let mut inner = var.inner.write();
-            let mut pts: Vec<(Ratio<BigInt>, Ratio<BigInt>)> = Vec::with_capacity(points.len());
+            let mut pts: Vec<(Q, Q)> = Vec::with_capacity(points.len());
             for (px, py) in points {
                 let xi = var.checked_id(px);
                 let yi = var.checked_id(py);

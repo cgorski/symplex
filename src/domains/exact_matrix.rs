@@ -68,10 +68,10 @@ use crate::domains::ntheory::{gcdex, mod_inverse};
 mod sealed {
     pub trait Sealed {}
     impl Sealed for num_bigint::BigInt {}
-    impl Sealed for num_rational::Ratio<num_bigint::BigInt> {}
+    impl Sealed for crate::base::numeric::Q {}
 }
 
-/// Entry type of an [`ExactMatrix`]: [`BigInt`] or [`Ratio<BigInt>`](Ratio).
+/// Entry type of an [`ExactMatrix`]: [`BigInt`] or [`Q`].
 ///
 /// Sealed — the two implementations are [`ZMatrix`] and [`QMatrix`].
 pub trait ExactScalar:

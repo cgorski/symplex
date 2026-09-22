@@ -23,6 +23,7 @@ use smallvec::SmallVec;
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::prelude::*;
 
 use super::common::{display_sort_key, extract_negative_power, is_neg_coeff_mul, is_neg_one_mul};
@@ -377,7 +378,7 @@ fn render_neg_coeff_mul_as_subtraction(arena: &Arena, id: ExprId) -> String {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Render a rational number to LaTeX.
-fn render_num_value(r: &Ratio<BigInt>) -> String {
+fn render_num_value(r: &Q) -> String {
     if r.is_integer() {
         format!("{}", r.numer())
     } else if r.numer().is_negative() {

@@ -56,6 +56,7 @@ use smallvec::SmallVec;
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 
 /// Maximum nesting of rule applications (shift → scale → shift …).
 const MAX_RULE_DEPTH: usize = 6;
@@ -841,7 +842,7 @@ fn simplify_heaviside_products(arena: &mut Arena, f: ExprId, v: ExprId) -> ExprI
 
 /// Classify `H(arg)` with `arg = a·v + b`, numeric `a ≠ 0`: returns
 /// `(rising, threshold)` meaning `H(v − θ)` (rising) or `H(θ − v)`.
-fn heaviside_kind(arena: &mut Arena, arg: ExprId, v: ExprId) -> Option<(bool, Ratio<BigInt>)> {
+fn heaviside_kind(arena: &mut Arena, arg: ExprId, v: ExprId) -> Option<(bool, Q)> {
     let (a, b) = linear_in(arena, arg, v)?;
     let a = arena.as_num(a).cloned()?;
     let b = arena.as_num(b).cloned()?;
@@ -858,8 +859,8 @@ fn simplify_heaviside_term(arena: &mut Arena, term: ExprId, v: ExprId) -> ExprId
         ExprNode::Mul(ch) => ch.iter().copied().collect(),
         _ => return term,
     };
-    let mut lower: Option<Ratio<BigInt>> = None; // v > lower
-    let mut upper: Option<Ratio<BigInt>> = None; // v < upper
+    let mut lower: Option<Q> = None; // v > lower
+    let mut upper: Option<Q> = None; // v < upper
     let mut others = Vec::new();
     let mut n_heaviside = 0;
     for &c in &children {
@@ -898,7 +899,7 @@ fn simplify_heaviside_term(arena: &mut Arena, term: ExprId, v: ExprId) -> ExprId
     if n_heaviside < 2 {
         return term;
     }
-    let num = |arena: &mut Arena, r: Ratio<BigInt>| {
+    let num = |arena: &mut Arena, r: Q| {
         let nid = arena.intern_num(r);
         arena.intern(ExprNode::Num(nid))
     };

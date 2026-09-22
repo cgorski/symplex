@@ -45,6 +45,7 @@ use crate::base::arena::{
     FN_UPPERGAMMA,
 };
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 
 /// Error returned when parsing fails.
 #[derive(Debug, Clone)]
@@ -505,7 +506,7 @@ fn constant_of(arena: &Arena, name: &str) -> Option<ExprId> {
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
     Int(BigInt),
-    Rational(Ratio<BigInt>),
+    Rational(Q),
     Ident(String),
     Plus,
     Minus,

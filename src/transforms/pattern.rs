@@ -45,6 +45,7 @@ use smallvec::SmallVec;
 use crate::base::arena::Arena;
 use crate::base::assumptions::Props;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::base::walk;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1009,7 +1010,7 @@ enum OldShape {
     Power { base: ExprId, exp: ExprId },
     /// `coeff · Π base_i^exp_i` with at least two symbolic factors.
     Product {
-        coeff: Ratio<BigInt>,
+        coeff: Q,
         factors: Vec<(ExprId, ExprId)>,
     },
     /// A sum with at least one symbolic term.
@@ -1040,7 +1041,7 @@ fn make_pow_ext(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId {
 /// `k·e`: for numeric `f`, `e` this is `trunc(f/e)`; otherwise a term of
 /// `f` with the same symbolic part as `e` supplies the ratio.
 fn integer_multiple(arena: &mut Arena, f: ExprId, e: ExprId) -> Option<BigInt> {
-    let ratio = |cf: &Ratio<BigInt>, ce: &Ratio<BigInt>| -> Option<BigInt> {
+    let ratio = |cf: &Q, ce: &Q| -> Option<BigInt> {
         if ce.is_zero() {
             return None;
         }
@@ -1175,7 +1176,7 @@ fn subs_power(
 fn subs_product(
     arena: &mut Arena,
     node: ExprId,
-    old_coeff: &Ratio<BigInt>,
+    old_coeff: &Q,
     old_factors: &[(ExprId, ExprId)],
     new: ExprId,
 ) -> Option<ExprId> {
@@ -1241,7 +1242,7 @@ fn subs_product(
 }
 
 /// `r^n` for integer `n` (returns `None` for `0^negative`).
-fn pow_ratio(r: &Ratio<BigInt>, n: i64) -> Option<Ratio<BigInt>> {
+fn pow_ratio(r: &Q, n: i64) -> Option<Q> {
     if n == 0 {
         return Some(Ratio::from_integer(BigInt::from(1)));
     }
@@ -1271,12 +1272,12 @@ fn subs_sum(arena: &mut Arena, node: ExprId, old: ExprId, new: ExprId) -> Option
         _ => return None,
     };
     // symbolic term → coefficient in the target
-    let mut target: FxHashMap<ExprId, Ratio<BigInt>> = FxHashMap::default();
+    let mut target: FxHashMap<ExprId, Q> = FxHashMap::default();
     for &t in &node_terms {
         let (c, term) = arena.as_coeff_term(t);
         target.insert(term, c);
     }
-    let mut k: Option<Ratio<BigInt>> = None;
+    let mut k: Option<Q> = None;
     let mut any_symbolic = false;
     for &t in &old_terms {
         let (c, term) = arena.as_coeff_term(t);

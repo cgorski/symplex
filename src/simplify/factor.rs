@@ -19,12 +19,11 @@
 //! Every factorization is verified by multiplying back before it is
 //! returned; expressions that are not polynomial are returned unchanged.
 
-use num_bigint::BigInt;
-use num_rational::Ratio;
 use num_traits::One;
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::base::walk;
 use crate::poly::Poly;
 use crate::poly::factor_zassenhaus::factor_multivariate;
@@ -34,7 +33,7 @@ use crate::poly::polybridge;
 const MAX_MULTIVARIATE_SYMBOLS: usize = 4;
 
 /// Rational content plus `(factor expression, multiplicity)` pairs.
-type FactorParts = (Ratio<BigInt>, Vec<(ExprId, u32)>);
+type FactorParts = (Q, Vec<(ExprId, u32)>);
 
 /// Factor a polynomial expression in `var` into a product of irreducible
 /// factors over ℤ.
@@ -149,16 +148,12 @@ fn factor_multi(arena: &mut Arena, expr: ExprId, syms: &[ExprId]) -> Option<Fact
 
 /// A factorization is worth reporting if it has more than one factor, a
 /// repeated factor, or a non-unit content.
-fn is_nontrivial(content: &Ratio<BigInt>, factors: &[(ExprId, u32)]) -> bool {
+fn is_nontrivial(content: &Q, factors: &[(ExprId, u32)]) -> bool {
     factors.len() > 1 || factors.iter().any(|(_, m)| *m > 1) || !content.is_one()
 }
 
 /// Build `content · ∏ factor^mult` as an expression.
-fn build_factored_expr(
-    arena: &mut Arena,
-    content: &Ratio<BigInt>,
-    factors: &[(ExprId, u32)],
-) -> ExprId {
+fn build_factored_expr(arena: &mut Arena, content: &Q, factors: &[(ExprId, u32)]) -> ExprId {
     let mut parts: Vec<ExprId> = Vec::with_capacity(factors.len() + 1);
 
     if !content.is_one() {

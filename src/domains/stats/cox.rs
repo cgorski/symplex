@@ -49,14 +49,17 @@
 //!   standard errors and residuals are `f64`.  Counts, event times and the
 //!   concordance index are exact.
 
-use super::common::{check_confidence, chi_squared_sf, ex_usize, invalid, qu, z_two_sided};
+use super::common::{
+    check_confidence, chi_squared_sf, ex_usize, information_cholesky, invalid, qu, wald_summary,
+    z_two_sided,
+};
 use super::data::Q;
 use super::hypothesis::{Alternative, TestResult};
 use super::survival::Observation;
 use crate::api::context::Context;
+use crate::base::dense_f64::{self, dot};
 use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
-use crate::output::codegen::numeric_rt::erfc;
 
 /// A coefficient beyond this magnitude with the Newton step not yet small
 /// is taken as a monotone likelihood (`β → ±∞`): a hazard ratio of
@@ -187,75 +190,6 @@ struct Evaluation {
     ll: f64,
     score: Vec<f64>,
     info: Vec<Vec<f64>>,
-}
-
-fn dot(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
-}
-
-/// Lower Cholesky factor of a symmetric positive-definite matrix; `None`
-/// when a pivot is not positive relative to its diagonal entry.
-fn cholesky(a: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
-    let p = a.len();
-    let mut l = vec![vec![0.0; p]; p];
-    for j in 0..p {
-        let d = a[j][j] - dot(&l[j][..j], &l[j][..j]);
-        if !d.is_finite() || d <= 1e-12 * a[j][j].abs() {
-            return None;
-        }
-        let ljj = d.sqrt();
-        l[j][j] = ljj;
-        for i in (j + 1)..p {
-            let s = a[i][j] - dot(&l[i][..j], &l[j][..j]);
-            l[i][j] = s / ljj;
-        }
-    }
-    Some(l)
-}
-
-/// Solve `L Lᵀ x = b`.
-fn cholesky_solve(l: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
-    let p = l.len();
-    let mut z = vec![0.0; p];
-    for i in 0..p {
-        let mut s = b[i];
-        for k in 0..i {
-            s -= l[i][k] * z[k];
-        }
-        z[i] = s / l[i][i];
-    }
-    let mut x = vec![0.0; p];
-    for i in (0..p).rev() {
-        let mut s = z[i];
-        for k in (i + 1)..p {
-            s -= l[k][i] * x[k];
-        }
-        x[i] = s / l[i][i];
-    }
-    x
-}
-
-/// `(L Lᵀ)⁻¹`, column by column.
-fn cholesky_inverse(l: &[Vec<f64>]) -> Vec<Vec<f64>> {
-    let p = l.len();
-    let mut inv = vec![vec![0.0; p]; p];
-    for j in 0..p {
-        let mut e = vec![0.0; p];
-        e[j] = 1.0;
-        for (i, v) in cholesky_solve(l, &e).into_iter().enumerate() {
-            inv[i][j] = v;
-        }
-    }
-    inv
-}
-
-/// `bᵀ A⁻¹ b` for a positive-definite `A` given by its Cholesky factor.
-fn quadratic_form(l: &[Vec<f64>], b: &[f64]) -> f64 {
-    dot(b, &cholesky_solve(l, b))
-}
-
-fn normal_two_sided(z: f64) -> f64 {
-    erfc(z.abs() / std::f64::consts::SQRT_2)
 }
 
 /// The distinct event times of every stratum with their risk-set entries,
@@ -554,8 +488,8 @@ fn fit(
             "the information matrix at β = 0 is singular: a covariate is collinear with the others or constant within every risk set",
         )
     };
-    let l0 = cholesky(&current.info).ok_or_else(singular_at_start)?;
-    let score_statistic = quadratic_form(&l0, &current.score);
+    let l0 = information_cholesky(&current.info).ok_or_else(singular_at_start)?;
+    let score_statistic = dense_f64::quadratic_form(&l0, p, &current.score);
 
     let mut iterations = 0;
     let mut converged = false;
@@ -564,14 +498,14 @@ fn fit(
         let l = if iter == 1 {
             l0.clone()
         } else {
-            cholesky(&current.info).ok_or_else(|| {
+            information_cholesky(&current.info).ok_or_else(|| {
                 failed(
                     op,
                     "the information matrix became singular: the partial likelihood has no finite maximiser",
                 )
             })?
         };
-        let direction = cholesky_solve(&l, &current.score);
+        let direction = dense_f64::cholesky_solve(&l, p, &current.score);
         // Step-halving: shrink the Newton step while ℓ would decrease.
         let mut lambda = 1.0;
         let mut halvings = 0;
@@ -631,30 +565,25 @@ fn fit(
         ));
     }
 
-    let l = cholesky(&current.info).ok_or_else(|| {
+    let wald = wald_summary(&current.info, &beta).ok_or_else(|| {
         failed(
             op,
             "the information matrix at the estimate is singular: the standard errors are undefined",
         )
     })?;
-    let cov_params = cholesky_inverse(&l);
-    let wald_statistic = (0..p).map(|a| beta[a] * dot(&current.info[a], &beta)).sum();
-    let standard_errors: Vec<f64> = (0..p).map(|j| cov_params[j][j].sqrt()).collect();
-    let z_values: Vec<f64> = beta
-        .iter()
-        .zip(&standard_errors)
-        .map(|(b, se)| b / se)
-        .collect();
-    let p_values: Vec<f64> = z_values.iter().map(|z| normal_two_sided(*z)).collect();
+    let wald_statistic = dot(
+        &beta,
+        &dense_f64::matvec(&dense_f64::flatten(&current.info), p, p, &beta),
+    );
 
     Ok(CoxModel {
         coefficients: beta,
-        standard_errors,
-        z_values,
-        p_values,
+        standard_errors: wald.se,
+        z_values: wald.z,
+        p_values: wald.p,
         log_likelihood: current.ll,
         null_log_likelihood,
-        cov_params,
+        cov_params: wald.cov,
         nobs: obs.len(),
         n_events: obs.iter().filter(|o| o.event).count(),
         ties,

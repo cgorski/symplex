@@ -27,7 +27,6 @@
 //! * Ties in ranks take the average rank (`scipy.stats.rankdata`).
 
 use num_bigint::BigInt;
-use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
 use super::common::{invalid, qi, qu};
@@ -605,19 +604,11 @@ pub fn to_f64(data: &[Q]) -> Vec<f64> {
         .collect()
 }
 
-/// `n choose k` as an exact rational (`0` for `k > n`).
+/// `n choose k` as an exact rational (`0` for `k > n`): the integer
+/// [`combinatorics::binomial`](crate::base::combinatorics::binomial) as a
+/// `Q`.
 pub fn binomial_q(n: usize, k: usize) -> Q {
-    if k > n {
-        return Q::zero();
-    }
-    let mut num = BigInt::one();
-    let mut den = BigInt::one();
-    for i in 0..k {
-        num *= BigInt::from(n - i);
-        den *= BigInt::from(i + 1);
-    }
-    let g = num.gcd(&den);
-    Q::new(num / &g, den / g)
+    Q::from_integer(crate::base::combinatorics::binomial(n as u64, k as u64))
 }
 
 // ── Ordinal association ───────────────────────────────────────────────

@@ -27,6 +27,7 @@ use smallvec::SmallVec;
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 
 /// Maximum recursion depth for the Gruntz algorithm.
 const MAX_DEPTH: usize = 15;
@@ -1154,7 +1155,7 @@ fn leadterm(
             }
 
             // Find the term with the SMALLEST exponent (it dominates as w→0)
-            let mut terms: Vec<(ExprId, ExprId, Ratio<BigInt>)> = Vec::new();
+            let mut terms: Vec<(ExprId, ExprId, Q)> = Vec::new();
             for &child in children {
                 let (c, e) = leadterm(arena, child, w, logw, x, depth + 1, budget)?;
                 let e_eval = crate::transforms::eval::eval(arena, e);
@@ -1619,7 +1620,7 @@ fn leadterm_add_by_series(
     f: ExprId,
     w: ExprId,
     logw: ExprId,
-    min_exp: &Ratio<BigInt>,
+    min_exp: &Q,
     x: ExprId,
     depth: usize,
     budget: &mut Budget,

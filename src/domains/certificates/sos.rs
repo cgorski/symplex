@@ -39,13 +39,13 @@ use crate::api::context::Context;
 use crate::api::eq::Equation;
 use crate::api::expr::Ex;
 use crate::api::poly_ex::Poly;
+use crate::base::budget::deadline_passed;
+use crate::base::dense_f64::{self, EigenOpts, EigenTol, OnExhaust, RegSchedule};
 use crate::base::errors::SymplexError;
 use crate::domains::certificates::serial::{q_from_str, q_to_str};
 use crate::domains::certificates::{Certificate, Outcome};
 use crate::domains::exact_matrix::QMatrix;
-use crate::domains::linprog::{
-    Budget, BudgetHit, LpProblem, LpStatus, Q, deadline_from, deadline_passed,
-};
+use crate::domains::linprog::{Budget, BudgetHit, LpProblem, LpStatus, Q};
 use crate::output::lean::{LeanOpts, MATHLIB_LINE_WIDTH, lean_ident, wrap_lean};
 use crate::output::tree::ExprTree;
 
@@ -64,8 +64,10 @@ fn invalid(reason: impl Into<String>) -> SymplexError {
 /// **Budget.**  A call may be bounded by a deadline
 /// ([`with_deadline`](Self::with_deadline), absolute, or
 /// [`with_time_limit`](Self::with_time_limit), measured from the start of
-/// the call).  The interior-point loop checks it between iterations and
-/// the facial-reduction loop between rounds; when it passes the answer is
+/// the call); the two fields are the crate-wide [`Budget`] (see
+/// [`budget`](Self::budget) / [`with_budget`](Self::with_budget)).  The
+/// interior-point loop checks it between iterations and the
+/// facial-reduction loop between rounds; when it passes the answer is
 /// `Unknown` with a reason starting `budget exhausted: deadline`.
 ///
 /// `#[non_exhaustive]`: build it with [`Default`] and the `with_*`
@@ -149,10 +151,30 @@ impl SosOpts {
         self
     }
 
+    /// The budget of one call: `deadline` and `time_limit` as one
+    /// [`Budget`] (the time limit still relative — it is resolved when the
+    /// call starts; `max_pivots` is unused here).
+    pub fn budget(&self) -> Budget {
+        Budget {
+            deadline: self.deadline,
+            time_limit: self.time_limit,
+            max_pivots: None,
+        }
+    }
+
+    /// Replace `deadline` and `time_limit` with those of `budget` (its
+    /// `max_pivots` is ignored: the SDP search has no pivot cap).
+    #[must_use]
+    pub fn with_budget(mut self, budget: Budget) -> Self {
+        self.deadline = budget.deadline;
+        self.time_limit = budget.time_limit;
+        self
+    }
+
     /// The deadline of a call starting now: the earlier of `deadline` and
     /// now + `time_limit` (a limit too large to represent is no limit).
     fn deadline_from_now(&self) -> Option<Instant> {
-        deadline_from(self.deadline, self.time_limit)
+        self.budget().deadline_from_now()
     }
 }
 
@@ -577,7 +599,25 @@ impl fmt::Display for SosCertificate {
 // Dense f64 linear algebra (symmetric, small)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Row-major dense matrix helpers on `Vec<f64>`.
+/// The Jacobi settings of the SDP: an absolute off-diagonal tolerance, and
+/// the diagonal after 100 sweeps is accepted as is (the Gram matrices are
+/// small and the eigenvalues only steer step lengths and kernel detection).
+const SOS_EIGEN: EigenOpts = EigenOpts {
+    tol: EigenTol::Absolute(1e-30),
+    max_sweeps: 100,
+    on_exhaust: OnExhaust::Accept,
+};
+
+/// Diagonal regularisation of the Schur complement when its Cholesky
+/// factorisation fails: `1e-12 · max|m_ii|`, then `×100`, six attempts.
+const SCHUR_REGULARISATION: RegSchedule = RegSchedule {
+    rounds: 6,
+    initial_rel: 1e-12,
+    growth: 100.0,
+};
+
+/// Row-major dense matrix helpers on `Vec<f64>` (the rest is
+/// [`dense_f64`]).
 mod dense {
     /// `a · b` for `n×n` matrices.
     pub fn mul(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
@@ -594,204 +634,6 @@ mod dense {
             }
         }
         c
-    }
-
-    /// Cholesky factor `L` (lower) with `a = L Lᵀ`, or `None` if `a` is not
-    /// numerically positive definite.
-    pub fn cholesky(a: &[f64], n: usize) -> Option<Vec<f64>> {
-        let mut l = vec![0.0; n * n];
-        for j in 0..n {
-            let mut s = a[j * n + j];
-            for k in 0..j {
-                s -= l[j * n + k] * l[j * n + k];
-            }
-            if s.is_nan() || s <= 0.0 || !s.is_finite() {
-                return None;
-            }
-            let d = s.sqrt();
-            l[j * n + j] = d;
-            for i in (j + 1)..n {
-                let mut s = a[i * n + j];
-                for k in 0..j {
-                    s -= l[i * n + k] * l[j * n + k];
-                }
-                l[i * n + j] = s / d;
-            }
-        }
-        Some(l)
-    }
-
-    /// Inverse of a symmetric positive definite matrix from its Cholesky factor.
-    pub fn spd_inverse(l: &[f64], n: usize) -> Vec<f64> {
-        // Solve L Lᵀ X = I column by column.
-        let mut inv = vec![0.0; n * n];
-        for c in 0..n {
-            let mut y = vec![0.0; n];
-            for i in 0..n {
-                let mut s = if i == c { 1.0 } else { 0.0 };
-                for k in 0..i {
-                    s -= l[i * n + k] * y[k];
-                }
-                y[i] = s / l[i * n + i];
-            }
-            for i in (0..n).rev() {
-                let mut s = y[i];
-                for k in (i + 1)..n {
-                    s -= l[k * n + i] * y[k];
-                }
-                y[i] = s / l[i * n + i];
-            }
-            for i in 0..n {
-                inv[i * n + c] = y[i];
-            }
-        }
-        inv
-    }
-
-    /// `L⁻¹ a L⁻ᵀ` for a lower-triangular `L` and symmetric `a`.
-    pub fn congruence_inverse(l: &[f64], a: &[f64], n: usize) -> Vec<f64> {
-        // Solve L Y = A  (column by column), then W = Y L⁻ᵀ, i.e. L Wᵀ = Yᵀ.
-        let mut y = vec![0.0; n * n];
-        for c in 0..n {
-            for i in 0..n {
-                let mut s = a[i * n + c];
-                for k in 0..i {
-                    s -= l[i * n + k] * y[k * n + c];
-                }
-                y[i * n + c] = s / l[i * n + i];
-            }
-        }
-        let mut w = vec![0.0; n * n];
-        for r in 0..n {
-            // Row r of W: solve L wᵀ = (row r of Y)ᵀ.
-            for i in 0..n {
-                let mut s = y[r * n + i];
-                for k in 0..i {
-                    s -= l[i * n + k] * w[r * n + k];
-                }
-                w[r * n + i] = s / l[i * n + i];
-            }
-        }
-        // Symmetrise against rounding.
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let v = 0.5 * (w[i * n + j] + w[j * n + i]);
-                w[i * n + j] = v;
-                w[j * n + i] = v;
-            }
-        }
-        w
-    }
-
-    /// Solve the symmetric positive definite system `m x = rhs` (Cholesky
-    /// with a tiny diagonal regularisation on failure).
-    pub fn solve_spd(m: &[f64], rhs: &[f64], n: usize) -> Option<Vec<f64>> {
-        let mut reg = 0.0;
-        for _ in 0..6 {
-            let mut a = m.to_vec();
-            if reg > 0.0 {
-                for i in 0..n {
-                    a[i * n + i] += reg;
-                }
-            }
-            if let Some(l) = cholesky(&a, n) {
-                let mut y = vec![0.0; n];
-                for i in 0..n {
-                    let mut s = rhs[i];
-                    for k in 0..i {
-                        s -= l[i * n + k] * y[k];
-                    }
-                    y[i] = s / l[i * n + i];
-                }
-                for i in (0..n).rev() {
-                    let mut s = y[i];
-                    for k in (i + 1)..n {
-                        s -= l[k * n + i] * y[k];
-                    }
-                    y[i] = s / l[i * n + i];
-                }
-                return Some(y);
-            }
-            let scale = (0..n)
-                .map(|i| m[i * n + i].abs())
-                .fold(0.0, f64::max)
-                .max(1e-300);
-            reg = if reg == 0.0 {
-                scale * 1e-12
-            } else {
-                reg * 100.0
-            };
-        }
-        None
-    }
-
-    /// Eigen-decomposition of a symmetric `n×n` matrix (see [`sym_eigen`]).
-    pub struct SymEigen {
-        /// The `n` eigenvalues, in the order the Jacobi sweeps leave them
-        /// on the diagonal (not sorted).
-        pub values: Vec<f64>,
-        /// The eigenvectors as the **columns** of a row-major `n×n` matrix:
-        /// component `i` of the eigenvector for `values[c]` is
-        /// `vectors[i * n + c]`.
-        pub vectors: Vec<f64>,
-    }
-
-    /// Eigen-decomposition of a symmetric matrix by cyclic Jacobi rotations.
-    pub fn sym_eigen(a: &[f64], n: usize) -> SymEigen {
-        let mut m = a.to_vec();
-        let mut v = vec![0.0; n * n];
-        for i in 0..n {
-            v[i * n + i] = 1.0;
-        }
-        for _sweep in 0..100 {
-            let mut off = 0.0;
-            for i in 0..n {
-                for j in (i + 1)..n {
-                    off += m[i * n + j] * m[i * n + j];
-                }
-            }
-            if off < 1e-30 {
-                break;
-            }
-            for p in 0..n {
-                for q in (p + 1)..n {
-                    let apq = m[p * n + q];
-                    if apq.abs() < 1e-300 {
-                        continue;
-                    }
-                    let app = m[p * n + p];
-                    let aqq = m[q * n + q];
-                    let theta = (aqq - app) / (2.0 * apq);
-                    let t = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
-                    let t = if theta == 0.0 { 1.0 } else { t };
-                    let c = 1.0 / (t * t + 1.0).sqrt();
-                    let s = t * c;
-                    for k in 0..n {
-                        let mkp = m[k * n + p];
-                        let mkq = m[k * n + q];
-                        m[k * n + p] = c * mkp - s * mkq;
-                        m[k * n + q] = s * mkp + c * mkq;
-                    }
-                    for k in 0..n {
-                        let mpk = m[p * n + k];
-                        let mqk = m[q * n + k];
-                        m[p * n + k] = c * mpk - s * mqk;
-                        m[q * n + k] = s * mpk + c * mqk;
-                    }
-                    for k in 0..n {
-                        let vkp = v[k * n + p];
-                        let vkq = v[k * n + q];
-                        v[k * n + p] = c * vkp - s * vkq;
-                        v[k * n + q] = s * vkp + c * vkq;
-                    }
-                }
-            }
-        }
-        let eig: Vec<f64> = (0..n).map(|i| m[i * n + i]).collect();
-        SymEigen {
-            values: eig,
-            vectors: v,
-        }
     }
 }
 
@@ -1076,11 +918,13 @@ impl SosProblem {
         // with base = L Lᵀ, α_max = 1 / max(0, −λ_min(L⁻¹ dir L⁻ᵀ)),
         // refined by a Cholesky check (and backtracking if rounding bites).
         let step = |base: &[f64], dir: &[f64]| -> f64 {
-            let mut alpha = match dense::cholesky(base, n) {
-                Some(l) => {
-                    let w = dense::congruence_inverse(&l, dir, n);
-                    let eig = dense::sym_eigen(&w, n).values;
-                    let lmin = eig.iter().cloned().fold(f64::INFINITY, f64::min);
+            let eig = dense_f64::cholesky(base, n, 0.0).and_then(|l| {
+                let w = dense_f64::congruence_inverse(&l, dir, n);
+                dense_f64::sym_eigen(&w, n, &SOS_EIGEN).ok()
+            });
+            let mut alpha = match eig {
+                Some(eig) => {
+                    let lmin = eig.values.iter().cloned().fold(f64::INFINITY, f64::min);
                     if lmin >= 0.0 {
                         1.0
                     } else {
@@ -1091,7 +935,7 @@ impl SosProblem {
             };
             for _ in 0..60 {
                 let trial: Vec<f64> = base.iter().zip(dir).map(|(b, d)| b + alpha * d).collect();
-                if dense::cholesky(&trial, n).is_some() {
+                if dense_f64::cholesky(&trial, n, 0.0).is_some() {
                     return alpha;
                 }
                 alpha *= 0.9;
@@ -1139,10 +983,10 @@ impl SosProblem {
             // A numerical breakdown (Z no longer positive definite in floating
             // point, a singular Schur complement) ends the iteration; the best
             // iterate so far is returned below.
-            let Some(lz) = dense::cholesky(&z, n) else {
+            let Some(lz) = dense_f64::cholesky(&z, n, 0.0) else {
                 break;
             };
-            let zinv = dense::spd_inverse(&lz, n);
+            let zinv = dense_f64::spd_inverse(&lz, n);
             let t: Vec<Vec<f64>> = mats
                 .iter()
                 .map(|a| dense::mul(&dense::mul(&x, a, n), &zinv, n))
@@ -1173,7 +1017,7 @@ impl SosProblem {
                 for k in 0..m {
                     rhs[k] = rp[k] - inner(&mats[k], &rz) + inner(&mats[k], &xrz);
                 }
-                let dy = dense::solve_spd(&mm, &rhs, m)?;
+                let dy = dense_f64::solve_spd_regularised(&mm, m, &rhs, &SCHUR_REGULARISATION)?;
                 let mut dz = rd.clone();
                 for k in 0..m {
                     for (d, a) in dz.iter_mut().zip(&mats[k]) {
@@ -1374,10 +1218,10 @@ fn rationalize(v: f64, max_den: u64, tol: f64) -> Option<Q> {
 /// Numerical kernel of a symmetric PSD `x` (eigenvalues below `1e-7 · λ_max`)
 /// as orthonormal rows, or `None` if there is none (or it is everything).
 fn numeric_kernel(x: &[f64], n: usize) -> Option<(Vec<Vec<f64>>, f64)> {
-    let dense::SymEigen {
+    let dense_f64::SymEigen {
         values: eig,
         vectors: vecs,
-    } = dense::sym_eigen(x, n);
+    } = dense_f64::sym_eigen(x, n, &SOS_EIGEN).ok()?;
     let lmax = eig.iter().cloned().fold(0.0, f64::max).max(1e-300);
     let kernel: Vec<usize> = (0..n).filter(|&i| eig[i] < 1e-7 * lmax).collect();
     if kernel.is_empty() || kernel.len() == n {
@@ -1703,48 +1547,6 @@ impl FloatPoly {
     }
 }
 
-/// Solve the small dense system `a x = b` by Gaussian elimination with
-/// partial pivoting; `None` if singular.
-fn solve_dense(a: &[f64], b: &[f64], n: usize) -> Option<Vec<f64>> {
-    let mut m: Vec<f64> = a.to_vec();
-    let mut r = b.to_vec();
-    for c in 0..n {
-        let p = (c..n).max_by(|&i, &j| {
-            m[i * n + c]
-                .abs()
-                .partial_cmp(&m[j * n + c].abs())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })?;
-        if m[p * n + c].abs() < 1e-300 {
-            return None;
-        }
-        if p != c {
-            for k in 0..n {
-                m.swap(c * n + k, p * n + k);
-            }
-            r.swap(c, p);
-        }
-        for i in (c + 1)..n {
-            let f = m[i * n + c] / m[c * n + c];
-            if f != 0.0 {
-                for k in c..n {
-                    m[i * n + k] -= f * m[c * n + k];
-                }
-                r[i] -= f * r[c];
-            }
-        }
-    }
-    let mut x = vec![0.0; n];
-    for i in (0..n).rev() {
-        let mut sacc = r[i];
-        for k in (i + 1)..n {
-            sacc -= m[i * n + k] * x[k];
-        }
-        x[i] = sacc / m[i * n + i];
-    }
-    Some(x)
-}
-
 /// Refine an approximate real zero of the non-negative polynomial `g`
 /// (a minimum, so `∇g = 0`) by Newton's method on the gradient; `Some` if
 /// it converges to a point where `g` vanishes to double precision.
@@ -1758,7 +1560,7 @@ fn refine_zero(g: &FloatPoly, start: &[f64]) -> Option<Vec<f64>> {
             break;
         }
         let h = g.hessian(&x);
-        let mut step = solve_dense(&h, &grad, n)?;
+        let mut step = dense_f64::solve_partial_pivot(&h, n, &grad)?;
         // Damp very large steps.
         let snorm = step.iter().map(|v| v * v).sum::<f64>().sqrt();
         if snorm > 10.0 {

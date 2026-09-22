@@ -130,6 +130,8 @@ pub use num_traits;
 // base
 /// Assumption system for symbolic variables.
 pub use base::assumptions;
+/// Limits on one call — deadline, time limit, step cap — shared by the simplex and the certificate provers.
+pub use base::budget::{Budget, BudgetHit};
 /// Library-wide configuration knobs.
 pub use base::config;
 /// Error types used throughout the library.
@@ -142,6 +144,8 @@ pub use base::interval::{Bounds, Interval, IntervalKind};
 // base
 /// Exact `f64` ↔ rational conversions (dyadic exact, and best bounded-denominator approximations).
 pub use base::numeric;
+/// Deterministic seeded generators: SplitMix64 (general purpose) and xorshift64* (randomised algorithms).
+pub use base::rng::{SplitMix64, XorShift64Star};
 
 // poly
 /// Univariate factorization over ℤ via Berlekamp–Zassenhaus.

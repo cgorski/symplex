@@ -35,12 +35,11 @@ use tracing::trace;
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::base::walk;
 use crate::calculus::summation::{self, TermShape};
 use crate::poly::polybridge;
 use crate::transforms::eval;
-
-type Rat = Ratio<BigInt>;
 
 /// Result of a convergence test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,8 +155,8 @@ fn bertrand_test(arena: &mut Arena, body: ExprId, var: ExprId) -> Option<Converg
         ExprNode::Mul(ch) => ch.to_vec(),
         _ => vec![body],
     };
-    let mut a = Rat::zero();
-    let mut b = Rat::zero();
+    let mut a = Q::zero();
+    let mut b = Q::zero();
     let mut saw_log = false;
     for f in factors {
         if !walk::contains(arena, f, var) {
@@ -186,7 +185,7 @@ fn bertrand_test(arena: &mut Arena, body: ExprId, var: ExprId) -> Option<Converg
     if !saw_log {
         return None; // pure powers are handled by the growth analysis
     }
-    let minus_one = -Rat::one();
+    let minus_one = -Q::one();
     trace!("convergence: Bertrand series with a = {a}, b = {b}");
     Some(if a < minus_one || (a == minus_one && b < minus_one) {
         Convergence::Converges
@@ -232,15 +231,15 @@ fn rational_test(arena: &mut Arena, body: ExprId, var: ExprId) -> Option<Converg
 /// `ln|a_k| = a·k ln k + b·k + c·ln k + O(1)` with `b = b_rat + Σ b_logs[p]·ln p`.
 #[derive(Debug, Clone)]
 pub(crate) struct Growth {
-    a: Rat,
-    b_rat: Rat,
-    b_logs: BTreeMap<u64, Rat>,
+    a: Q,
+    b_rat: Q,
+    b_logs: BTreeMap<u64, Q>,
     /// Contribution `Σ a·ln|base|` of constant, non-rational bases (e.g. `π^k`).
     b_numeric: f64,
     b_has_numeric: bool,
     /// `b` contains `ln|x|` for a symbolic base `x` (sign unknown).
     b_symbolic: bool,
-    c: Rat,
+    c: Q,
     alternating: bool,
 }
 
@@ -318,7 +317,7 @@ impl Growth {
             Some(None) => {}
         }
         // Purely algebraic decay/growth k^c.
-        let minus_one = -Rat::one();
+        let minus_one = -Q::one();
         if self.alternating && !absolute {
             // Alternating-series test: terms are eventually monotone, so
             // convergence ⇔ |a_k| → 0 ⇔ c < 0.
@@ -336,7 +335,7 @@ impl Growth {
 }
 
 /// Add `q·ln|r|` for a rational `r ≠ 0` to the exact log-sum.
-fn add_log_rational(logs: &mut BTreeMap<u64, Rat>, r: &Rat, q: &Rat) -> Option<()> {
+fn add_log_rational(logs: &mut BTreeMap<u64, Q>, r: &Q, q: &Q) -> Option<()> {
     if r.is_zero() {
         return None;
     }
@@ -344,7 +343,7 @@ fn add_log_rational(logs: &mut BTreeMap<u64, Rat>, r: &Rat, q: &Rat) -> Option<(
     let denom = r.denom().abs().to_u64()?;
     for (n, sign) in [(numer, 1i64), (denom, -1i64)] {
         for (p, e) in factor_small(n) {
-            let entry = logs.entry(p).or_insert_with(Rat::zero);
+            let entry = logs.entry(p).or_insert_with(Q::zero);
             *entry += q * Ratio::from_integer(BigInt::from(sign * e as i64));
         }
     }
@@ -384,7 +383,7 @@ pub(crate) fn growth_exponents(arena: &mut Arena, body: ExprId, var: ExprId) -> 
         _ => vec![body],
     };
     // Split off (αk+β)^(ck+d) factors, which `term_shape` does not model.
-    let mut pow_pows: Vec<(Rat, Rat, Rat, Rat)> = Vec::new();
+    let mut pow_pows: Vec<(Q, Q, Q, Q)> = Vec::new();
     let mut rest: Vec<ExprId> = Vec::new();
     for f in factors {
         // Flatten (b^p)^q with integer q (e.g. (k^k)^(-1) → k^(-k)).
@@ -422,13 +421,13 @@ pub(crate) fn growth_exponents(arena: &mut Arena, body: ExprId, var: ExprId) -> 
         return None;
     }
     let mut g = Growth {
-        a: Rat::zero(),
-        b_rat: Rat::zero(),
+        a: Q::zero(),
+        b_rat: Q::zero(),
         b_logs: BTreeMap::new(),
         b_numeric: 0.0,
         b_has_numeric: false,
         b_symbolic: false,
-        c: Rat::zero(),
+        c: Q::zero(),
         alternating: shape.alternating,
     };
     // Algebraic part.
@@ -440,7 +439,7 @@ pub(crate) fn growth_exponents(arena: &mut Arena, body: ExprId, var: ExprId) -> 
         if shape.numeric_base.is_negative() {
             g.alternating = !g.alternating;
         }
-        add_log_rational(&mut g.b_logs, &shape.numeric_base, &Rat::one())?;
+        add_log_rational(&mut g.b_logs, &shape.numeric_base, &Q::one())?;
     }
     for (base, a) in &shape.bases {
         if *base == arena.e_const {
@@ -458,7 +457,7 @@ pub(crate) fn growth_exponents(arena: &mut Arena, body: ExprId, var: ExprId) -> 
         }
     }
     // Factorials: ((αk+β)!)^e → a += eα, b += e(α ln α − α), c += e(β + 1/2).
-    let half = Rat::new(BigInt::one(), BigInt::from(2));
+    let half = Q::new(BigInt::one(), BigInt::from(2));
     for (alpha, beta, e) in &shape.facts {
         if !alpha.is_positive() {
             return None;
@@ -486,11 +485,11 @@ fn numeric_abs(arena: &mut Arena, e: ExprId) -> Option<f64> {
     crate::transforms::evalf::eval_const_f64(arena, e).map(f64::abs)
 }
 
-fn linear_in(arena: &Arena, e: ExprId, var: ExprId) -> Option<(Rat, Rat)> {
+fn linear_in(arena: &Arena, e: ExprId, var: ExprId) -> Option<(Q, Q)> {
     let p = polybridge::expr_to_poly(arena, e, var)?;
     match p.degree() {
         Some(1) => Some((p.coeff(1), p.coeff(0))),
-        Some(0) => Some((Rat::zero(), p.coeff(0))),
+        Some(0) => Some((Q::zero(), p.coeff(0))),
         _ => None,
     }
 }

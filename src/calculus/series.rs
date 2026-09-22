@@ -40,12 +40,12 @@ use rustc_hash::FxHashMap;
 
 use crate::base::arena::Arena;
 use crate::base::bernoulli::bernoulli;
+use crate::base::combinatorics::{binomial, factorial};
 use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::base::walk;
 use crate::transforms::{eval, subs};
-
-type Rat = Ratio<BigInt>;
 
 /// Maximum number of sub-expressions expanded by differentiation before the
 /// engine gives up on per-node fallbacks (the root is always tried).
@@ -521,34 +521,23 @@ impl TSeries {
 // Closed-form Maclaurin coefficients
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn rat_expr(arena: &mut Arena, r: Rat) -> ExprId {
+fn rat_expr(arena: &mut Arena, r: Q) -> ExprId {
     let nid = arena.intern_num(r);
     arena.intern(ExprNode::Num(nid))
 }
 
-fn rat_i(n: i64) -> Rat {
+fn rat_i(n: i64) -> Q {
     Ratio::from_integer(BigInt::from(n))
 }
 
-fn factorial_big(n: u64) -> BigInt {
-    let mut acc = BigInt::one();
-    for i in 2..=n {
-        acc *= BigInt::from(i);
-    }
-    acc
-}
-
+/// The central binomial coefficient `C(2n, n)`.
 fn central_binomial(n: u64) -> BigInt {
-    let mut acc = BigInt::one();
-    for i in 0..n {
-        acc = acc * BigInt::from(2 * n - i) / BigInt::from(i + 1);
-    }
-    acc
+    binomial(2 * n, n)
 }
 
-fn pow_rat_i(r: &Rat, n: i64) -> Rat {
-    let mut acc = Rat::one();
-    let base = if n < 0 { Rat::one() / r } else { r.clone() };
+fn pow_rat_i(r: &Q, n: i64) -> Q {
+    let mut acc = Q::one();
+    let base = if n < 0 { Q::one() / r } else { r.clone() };
     for _ in 0..n.unsigned_abs() {
         acc *= &base;
     }
@@ -600,49 +589,49 @@ impl FnKind {
     }
 
     /// Rational part of the `n`-th coefficient.
-    pub(crate) fn rational_coefficient(self, n: usize) -> Rat {
+    pub(crate) fn rational_coefficient(self, n: usize) -> Q {
         let odd = n % 2 == 1;
         let m = n / 2;
         let sign_m = if m.is_multiple_of(2) {
-            Rat::one()
+            Q::one()
         } else {
-            -Rat::one()
+            -Q::one()
         };
         match self {
-            FnKind::Exp => Rat::new(BigInt::one(), factorial_big(n as u64)),
+            FnKind::Exp => Q::new(BigInt::one(), factorial(n as u64)),
             FnKind::Sin => {
                 if odd {
-                    sign_m / Rat::from_integer(factorial_big(n as u64))
+                    sign_m / Q::from_integer(factorial(n as u64))
                 } else {
-                    Rat::zero()
+                    Q::zero()
                 }
             }
             FnKind::Cos => {
                 if odd {
-                    Rat::zero()
+                    Q::zero()
                 } else {
-                    sign_m / Rat::from_integer(factorial_big(n as u64))
+                    sign_m / Q::from_integer(factorial(n as u64))
                 }
             }
             FnKind::Sinh => {
                 if odd {
-                    Rat::new(BigInt::one(), factorial_big(n as u64))
+                    Q::new(BigInt::one(), factorial(n as u64))
                 } else {
-                    Rat::zero()
+                    Q::zero()
                 }
             }
             FnKind::Cosh => {
                 if odd {
-                    Rat::zero()
+                    Q::zero()
                 } else {
-                    Rat::new(BigInt::one(), factorial_big(n as u64))
+                    Q::new(BigInt::one(), factorial(n as u64))
                 }
             }
             FnKind::Ln1p => {
                 if n == 0 {
-                    Rat::zero()
+                    Q::zero()
                 } else {
-                    let s = if n % 2 == 1 { Rat::one() } else { -Rat::one() };
+                    let s = if n % 2 == 1 { Q::one() } else { -Q::one() };
                     s / rat_i(n as i64)
                 }
             }
@@ -650,22 +639,22 @@ impl FnKind {
                 if odd {
                     sign_m / rat_i(n as i64)
                 } else {
-                    Rat::zero()
+                    Q::zero()
                 }
             }
             FnKind::Atanh => {
                 if odd {
-                    Rat::one() / rat_i(n as i64)
+                    Q::one() / rat_i(n as i64)
                 } else {
-                    Rat::zero()
+                    Q::zero()
                 }
             }
             FnKind::Asin | FnKind::Asinh => {
                 if !odd {
-                    return Rat::zero();
+                    return Q::zero();
                 }
                 // C(2m,m) / (4^m (2m+1))
-                let c = Rat::from_integer(central_binomial(m as u64));
+                let c = Q::from_integer(central_binomial(m as u64));
                 let d = pow_rat_i(&rat_i(4), m as i64) * rat_i(n as i64);
                 let v = c / d;
                 if self == FnKind::Asinh { sign_m * v } else { v }
@@ -674,13 +663,13 @@ impl FnKind {
                 // tan x = Σ_{m≥1} (−1)^{m−1} 2^{2m}(2^{2m}−1) B_{2m} x^{2m−1}/(2m)!
                 // tanh x = Σ_{m≥1} 2^{2m}(2^{2m}−1) B_{2m} x^{2m−1}/(2m)!
                 if !odd {
-                    return Rat::zero();
+                    return Q::zero();
                 }
                 let mm = m + 1; // n = 2mm − 1
                 let two_pow = pow_rat_i(&rat_i(2), 2 * mm as i64);
                 let b = bernoulli(2 * mm);
-                let v = &two_pow * (&two_pow - Rat::one()) * b
-                    / Rat::from_integer(factorial_big(2 * mm as u64));
+                let v = &two_pow * (&two_pow - Q::one()) * b
+                    / Q::from_integer(factorial(2 * mm as u64));
                 if self == FnKind::Tan {
                     if (mm - 1).is_multiple_of(2) { v } else { -v }
                 } else {
@@ -689,17 +678,17 @@ impl FnKind {
             }
             FnKind::Erf => {
                 if !odd {
-                    return Rat::zero();
+                    return Q::zero();
                 }
-                sign_m / (Rat::from_integer(factorial_big(m as u64)) * rat_i(n as i64))
+                sign_m / (Q::from_integer(factorial(m as u64)) * rat_i(n as i64))
             }
             FnKind::LambertW => {
                 if n == 0 {
-                    return Rat::zero();
+                    return Q::zero();
                 }
                 // (−n)^{n−1} / n!
                 let base = rat_i(-(n as i64));
-                pow_rat_i(&base, n as i64 - 1) / Rat::from_integer(factorial_big(n as u64))
+                pow_rat_i(&base, n as i64 - 1) / Q::from_integer(factorial(n as u64))
             }
         }
     }
@@ -711,7 +700,7 @@ fn gen_binomial_expr(arena: &mut Arena, alpha: ExprId, n: usize) -> ExprId {
         return arena.one;
     }
     if let Some(a) = arena.as_num(alpha).cloned() {
-        let mut acc = Rat::one();
+        let mut acc = Q::one();
         for i in 0..n {
             acc = acc * (&a - rat_i(i as i64)) / rat_i(i as i64 + 1);
         }
@@ -722,7 +711,7 @@ fn gen_binomial_expr(arena: &mut Arena, alpha: ExprId, n: usize) -> ExprId {
         let ie = arena.int(-(i as i64));
         factors.push(arena.add(&[alpha, ie]));
     }
-    let inv_fact = rat_expr(arena, Rat::new(BigInt::one(), factorial_big(n as u64)));
+    let inv_fact = rat_expr(arena, Q::new(BigInt::one(), factorial(n as u64)));
     factors.push(inv_fact);
     let p = arena.mul(&factors);
     eval::eval(arena, p)
@@ -1089,7 +1078,7 @@ fn taylor_by_differentiation(
     let zero = arena.zero;
     let mut coeffs = Vec::with_capacity(n.max(0) as usize);
     let mut current = expr;
-    let mut factorial = Rat::one();
+    let mut factorial = Q::one();
     for k in 0..n {
         let at0 = subs::subs(arena, current, var, zero);
         let value = eval::eval(arena, at0);
@@ -1110,7 +1099,7 @@ fn taylor_by_differentiation(
         let coeff = if k == 0 {
             value
         } else {
-            let inv = rat_expr(arena, Rat::one() / &factorial);
+            let inv = rat_expr(arena, Q::one() / &factorial);
             let p = arena.mul(&[value, inv]);
             eval::eval(arena, p)
         };
@@ -1442,7 +1431,7 @@ mod tests {
             let c = FnKind::Tan.rational_coefficient(*n as usize);
             assert_eq!(
                 c,
-                Rat::new(BigInt::from(*num), BigInt::from(denoms[i])),
+                Q::new(BigInt::from(*num), BigInt::from(denoms[i])),
                 "n={n}"
             );
         }

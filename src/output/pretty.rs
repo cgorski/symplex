@@ -37,6 +37,7 @@ use num_traits::{One, Signed};
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Render mode
@@ -689,7 +690,7 @@ fn pretty_negated_mul(arena: &Arena, id: ExprId, mode: RenderMode, depth: u8) ->
     pretty_node(arena, id, mode, depth)
 }
 
-fn pretty_ratio(r: &Ratio<BigInt>, mode: RenderMode, depth: u8) -> MathBox {
+fn pretty_ratio(r: &Q, mode: RenderMode, depth: u8) -> MathBox {
     if r.is_integer() {
         MathBox::text(&r.numer().to_string())
     } else if depth < 3 {

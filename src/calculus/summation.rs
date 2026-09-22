@@ -54,15 +54,15 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 
 use crate::base::arena::Arena;
 use crate::base::bernoulli::bernoulli;
+use crate::base::combinatorics::{binomial, factorial};
 use crate::base::extended::Extended;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::base::walk;
 use crate::calculus::gosper;
 use crate::poly::Poly;
 use crate::poly::polybridge;
 use crate::transforms::{apart, eval, subs};
-
-type Rat = Ratio<BigInt>;
 
 /// Maximum number of terms that will be summed / multiplied by direct
 /// enumeration when both bounds are concrete integers.
@@ -96,11 +96,11 @@ pub(crate) enum SumOutcome {
 // Small helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn rat_i(n: i64) -> Rat {
+fn rat_i(n: i64) -> Q {
     Ratio::from_integer(BigInt::from(n))
 }
 
-fn rat_expr(arena: &mut Arena, r: Rat) -> ExprId {
+fn rat_expr(arena: &mut Arena, r: Q) -> ExprId {
     let nid = arena.intern_num(r);
     arena.intern(ExprNode::Num(nid))
 }
@@ -109,7 +109,7 @@ fn depends_on(arena: &Arena, e: ExprId, var: ExprId) -> bool {
     walk::contains(arena, e, var)
 }
 
-fn as_rat(arena: &Arena, e: ExprId) -> Option<Rat> {
+fn as_rat(arena: &Arena, e: ExprId) -> Option<Q> {
     arena.as_num(e).cloned()
 }
 
@@ -123,7 +123,7 @@ fn as_i64(arena: &Arena, e: ExprId) -> Option<i64> {
     })
 }
 
-fn eval_rat(arena: &mut Arena, e: ExprId) -> Option<Rat> {
+fn eval_rat(arena: &mut Arena, e: ExprId) -> Option<Q> {
     let v = eval::eval(arena, e);
     as_rat(arena, v)
 }
@@ -159,7 +159,7 @@ fn mul_factors(arena: &Arena, e: ExprId) -> Vec<ExprId> {
 }
 
 /// `pow(base, r)` for a rational exponent.
-fn pow_rat(arena: &mut Arena, base: ExprId, r: &Rat) -> ExprId {
+fn pow_rat(arena: &mut Arena, base: ExprId, r: &Q) -> ExprId {
     if r.is_zero() {
         return arena.one;
     }
@@ -171,30 +171,11 @@ fn pow_rat(arena: &mut Arena, base: ExprId, r: &Rat) -> ExprId {
 }
 
 /// `r^n` for rational `r` and integer `n` (exact).
-fn rat_pow_i(r: &Rat, n: i64) -> Rat {
-    let mut acc = Rat::one();
-    let base = if n < 0 { Rat::one() / r } else { r.clone() };
+fn rat_pow_i(r: &Q, n: i64) -> Q {
+    let mut acc = Q::one();
+    let base = if n < 0 { Q::one() / r } else { r.clone() };
     for _ in 0..n.unsigned_abs() {
         acc *= &base;
-    }
-    acc
-}
-
-fn factorial_big(n: u64) -> BigInt {
-    let mut acc = BigInt::one();
-    for i in 2..=n {
-        acc *= BigInt::from(i);
-    }
-    acc
-}
-
-fn binomial_big(n: u64, k: u64) -> BigInt {
-    if k > n {
-        return BigInt::zero();
-    }
-    let mut acc = BigInt::one();
-    for i in 0..k {
-        acc = acc * BigInt::from(n - i) / BigInt::from(i + 1);
     }
     acc
 }
@@ -210,12 +191,12 @@ fn combine_fractions(arena: &mut Arena, e: ExprId) -> ExprId {
 }
 
 /// Fractional part `β − ⌊β⌋` of a rational.
-fn frac_part(r: &Rat) -> Rat {
+fn frac_part(r: &Q) -> Q {
     r - r.floor()
 }
 
 /// Is `x + c` (as an expression) — builds `x + c` with rational `c`.
-fn add_rat(arena: &mut Arena, x: ExprId, c: &Rat) -> ExprId {
+fn add_rat(arena: &mut Arena, x: ExprId, c: &Q) -> ExprId {
     if c.is_zero() {
         return x;
     }
@@ -224,7 +205,7 @@ fn add_rat(arena: &mut Arena, x: ExprId, c: &Rat) -> ExprId {
 }
 
 /// Evaluate `e` and, if the result is a rational number, return it.
-fn const_value(arena: &mut Arena, e: ExprId) -> Option<Rat> {
+fn const_value(arena: &mut Arena, e: ExprId) -> Option<Q> {
     eval_rat(arena, e)
 }
 
@@ -236,7 +217,7 @@ fn range_count(arena: &mut Arena, lo: ExprId, hi: ExprId) -> ExprId {
 }
 
 /// Extract `(a, b)` such that `e = a·var + b` with rational `a ≠ 0`, `b`.
-fn linear_in(arena: &Arena, e: ExprId, var: ExprId) -> Option<(Rat, Rat)> {
+fn linear_in(arena: &Arena, e: ExprId, var: ExprId) -> Option<(Q, Q)> {
     let p = polybridge::expr_to_poly(arena, e, var)?;
     match p.degree() {
         Some(1) => Some((p.coeff(1), p.coeff(0))),
@@ -246,12 +227,12 @@ fn linear_in(arena: &Arena, e: ExprId, var: ExprId) -> Option<(Rat, Rat)> {
 
 /// Extract `(a, b)` such that `e = a·var + b` with rational `a ≠ 0` and a
 /// `var`-free intercept `b` that may be symbolic (`n − k` → `(−1, n)`).
-fn linear_in_sym(arena: &mut Arena, e: ExprId, var: ExprId) -> Option<(Rat, ExprId)> {
+fn linear_in_sym(arena: &mut Arena, e: ExprId, var: ExprId) -> Option<(Q, ExprId)> {
     if let Some((a, b)) = linear_in(arena, e, var) {
         return Some((a, rat_expr(arena, b)));
     }
     let monomials = sym_poly_in(arena, e, var)?;
-    let mut slope: Option<Rat> = None;
+    let mut slope: Option<Q> = None;
     let mut intercept = arena.zero;
     for (deg, coeff) in monomials {
         match deg {
@@ -276,7 +257,7 @@ fn pow_const(arena: &mut Arena, base: ExprId, b: ExprId) -> ExprId {
 }
 
 /// `r·e` for a rational `r` and a `var`-free expression `e`.
-fn scale_const(arena: &mut Arena, e: ExprId, r: &Rat) -> ExprId {
+fn scale_const(arena: &mut Arena, e: ExprId, r: &Q) -> ExprId {
     if r.is_one() {
         return e;
     }
@@ -335,7 +316,7 @@ fn const_sign(arena: &mut Arena, e: ExprId) -> Option<bool> {
 /// `1e-9` of the unit circle.
 fn abs_less_than_one(arena: &mut Arena, e: ExprId) -> Option<bool> {
     if let Some(r) = const_value(arena, e) {
-        return Some(r.abs() < Rat::one());
+        return Some(r.abs() < Q::one());
     }
     let f = crate::transforms::evalf::eval_const_f64(arena, e)?;
     if !f.is_finite() {
@@ -656,8 +637,8 @@ fn monomial_in(arena: &mut Arena, t: ExprId, var: ExprId) -> Option<(usize, Expr
 ///
 /// `S_p(n) = 1/(p+1) · Σ_{j=0}^{p} C(p+1, j) · B⁺_j · n^{p+1−j}`.
 pub(crate) fn faulhaber_coefficients(p: usize) -> Poly {
-    let mut coeffs = vec![Rat::zero(); p + 2];
-    let inv = Rat::one() / rat_i(p as i64 + 1);
+    let mut coeffs = vec![Q::zero(); p + 2];
+    let inv = Q::one() / rat_i(p as i64 + 1);
     for j in 0..=p {
         let mut bj = bernoulli(j);
         if j == 1 {
@@ -666,7 +647,7 @@ pub(crate) fn faulhaber_coefficients(p: usize) -> Poly {
         if bj.is_zero() {
             continue;
         }
-        let c = Rat::from_integer(binomial_big((p + 1) as u64, j as u64));
+        let c = Q::from_integer(binomial((p + 1) as u64, j as u64));
         let power = p + 1 - j;
         coeffs[power] += &inv * c * bj;
     }
@@ -740,8 +721,8 @@ fn faulhaber_sym(arena: &mut Arena, poly: &[(usize, ExprId)], lo: ExprId, hi: Ex
 /// A pole term `c·(k + β)^(−m)`.
 #[derive(Debug, Clone)]
 struct PoleTerm {
-    c: Rat,
-    beta: Rat,
+    c: Q,
+    beta: Q,
     m: u32,
 }
 
@@ -840,7 +821,7 @@ fn pole_group_partial(arena: &mut Arena, group: &[PoleTerm], n_expr: ExprId) -> 
     let b0 = group[0].beta.clone();
     let integer_offsets = b0.is_integer();
     let mut terms = Vec::new();
-    let mut csum = Rat::zero();
+    let mut csum = Q::zero();
     let mut far = Vec::new();
     for p in group {
         let d = (&p.beta - &b0).to_integer().to_i64()?;
@@ -911,14 +892,14 @@ fn rational_sum_infinite(
 ) -> Option<SumOutcome> {
     let (poly_part, poles) = rational_decompose(arena, body, var)?;
     if !poly_part.is_zero() {
-        let lc = poly_part.leading_coeff().cloned().unwrap_or_else(Rat::zero);
+        let lc = poly_part.leading_coeff().cloned().unwrap_or_else(Q::zero);
         return Some(SumOutcome::Divergent(infinity_of_sign(
             arena,
             Some(lc.is_positive()),
         )));
     }
     // Simple poles: total coefficient must vanish for convergence.
-    let simple_total: Rat = poles.iter().filter(|p| p.m == 1).map(|p| p.c.clone()).sum();
+    let simple_total: Q = poles.iter().filter(|p| p.m == 1).map(|p| p.c.clone()).sum();
     if !simple_total.is_zero() {
         return Some(SumOutcome::Divergent(infinity_of_sign(
             arena,
@@ -927,7 +908,7 @@ fn rational_sum_infinite(
     }
     // Integer-offset simple poles: use harmonic numbers only if their
     // own coefficient sum vanishes (so Euler's γ cancels); otherwise digamma.
-    let int_simple_total: Rat = poles
+    let int_simple_total: Q = poles
         .iter()
         .filter(|p| p.m == 1 && p.beta.is_integer())
         .map(|p| p.c.clone())
@@ -938,7 +919,7 @@ fn rational_sum_infinite(
     for group in group_poles(&poles) {
         let m = group[0].m;
         let b0 = group[0].beta.clone();
-        let csum: Rat = group.iter().map(|p| p.c.clone()).sum();
+        let csum: Q = group.iter().map(|p| p.c.clone()).sum();
         if m == 1 {
             // Σ_{k=lo}^{∞} Σ_i c_i/(k+β_i) = −Σ_i c_i ψ(lo + β_i)   (Σ c_i = 0 overall)
             // Within the group, ψ(x + d) = ψ(x) + Σ_{j<d} 1/(x+j), so only the
@@ -956,7 +937,7 @@ fn rational_sum_infinite(
                     arena.digamma(x)
                 }
             };
-            let mut near_sum = Rat::zero();
+            let mut near_sum = Q::zero();
             for p in &group {
                 let d = (&p.beta - &b0).to_integer().to_i64()?;
                 if d > MAX_TELESCOPE_SHIFT {
@@ -969,7 +950,7 @@ fn rational_sum_infinite(
                 near_sum += &p.c;
                 for j in 0..d {
                     let x = add_rat(arena, x0, &rat_i(j));
-                    let inv = pow_rat(arena, x, &(-Rat::one()));
+                    let inv = pow_rat(arena, x, &(-Q::one()));
                     let ce = rat_expr(arena, -p.c.clone());
                     parts.push(arena.mul(&[ce, inv]));
                 }
@@ -1016,12 +997,12 @@ fn rational_sum_infinite(
 
 /// `ζ(2m) = (−1)^{m+1} B_{2m} (2π)^{2m} / (2·(2m)!)` — returns the rational
 /// factor `r` such that `ζ(2m) = r·π^{2m}`.
-pub(crate) fn zeta_even_rational(m: usize) -> Rat {
+pub(crate) fn zeta_even_rational(m: usize) -> Q {
     let two_m = 2 * m;
     let b = bernoulli(two_m);
-    let sign = if m % 2 == 1 { Rat::one() } else { -Rat::one() };
+    let sign = if m % 2 == 1 { Q::one() } else { -Q::one() };
     let two_pow = rat_pow_i(&rat_i(2), two_m as i64);
-    let denom = Rat::from_integer(factorial_big(two_m as u64)) * rat_i(2);
+    let denom = Q::from_integer(factorial(two_m as u64)) * rat_i(2);
     sign * b * two_pow / denom
 }
 
@@ -1032,7 +1013,7 @@ pub(crate) fn euler_number(n: usize) -> BigInt {
     for nn in 1..=n {
         let mut acc = BigInt::zero();
         for (k, ek) in e.iter().enumerate() {
-            acc += binomial_big(2 * nn as u64, 2 * k as u64) * ek;
+            acc += binomial(2 * nn as u64, 2 * k as u64) * ek;
         }
         e.push(-acc);
     }
@@ -1068,7 +1049,7 @@ fn eta_value(arena: &mut Arena, p: usize) -> Option<ExprId> {
         return Some(arena.ln(two));
     }
     let z = zeta_value(arena, p)?;
-    let factor = Rat::one() - rat_pow_i(&rat_i(2), 1 - p as i64);
+    let factor = Q::one() - rat_pow_i(&rat_i(2), 1 - p as i64);
     let fe = rat_expr(arena, factor);
     let v = arena.mul(&[fe, z]);
     Some(eval::eval(arena, v))
@@ -1091,8 +1072,8 @@ fn dirichlet_beta_value(arena: &mut Arena, p: usize) -> Option<ExprId> {
     } else {
         -BigInt::one()
     };
-    let denom = rat_pow_i(&rat_i(4), m as i64 + 1) * Rat::from_integer(factorial_big(2 * m as u64));
-    let r = Rat::from_integer(sign * e) / denom;
+    let denom = rat_pow_i(&rat_i(4), m as i64 + 1) * Q::from_integer(factorial(2 * m as u64));
+    let r = Q::from_integer(sign * e) / denom;
     let re = rat_expr(arena, r);
     let pi = arena.pi;
     let pip = pow_rat(arena, pi, &rat_i(p as i64));
@@ -1103,7 +1084,7 @@ fn dirichlet_beta_value(arena: &mut Arena, p: usize) -> Option<ExprId> {
 /// Hurwitz zeta `ζ(m, q) = Σ_{k≥0} 1/(k+q)^m` for integer `m ≥ 2` and the
 /// rational offsets we can handle exactly: positive integers and
 /// half-integers, with `m` even.
-fn hurwitz_zeta_closed(arena: &mut Arena, m: usize, q: &Rat) -> Option<ExprId> {
+fn hurwitz_zeta_closed(arena: &mut Arena, m: usize, q: &Q) -> Option<ExprId> {
     if m < 2 || !q.is_positive() {
         return None;
     }
@@ -1113,7 +1094,7 @@ fn hurwitz_zeta_closed(arena: &mut Arena, m: usize, q: &Rat) -> Option<ExprId> {
             return None;
         }
         let z = zeta_value(arena, m)?;
-        let mut acc = Rat::zero();
+        let mut acc = Q::zero();
         for j in 1..qi {
             acc += rat_pow_i(&rat_i(j), -(m as i64));
         }
@@ -1124,15 +1105,15 @@ fn hurwitz_zeta_closed(arena: &mut Arena, m: usize, q: &Rat) -> Option<ExprId> {
     // half-integer q = n + 1/2 with n ≥ 0: ζ(m, 1/2) = (2^m − 1) ζ(m)
     let two_q = q * rat_i(2);
     if two_q.is_integer() {
-        let n = ((q - Rat::new(BigInt::one(), BigInt::from(2))).to_integer()).to_i64()?;
+        let n = ((q - Q::new(BigInt::one(), BigInt::from(2))).to_integer()).to_i64()?;
         if !(0..=MAX_TELESCOPE_SHIFT).contains(&n) {
             return None;
         }
         let z = zeta_value(arena, m)?;
-        let factor = rat_pow_i(&rat_i(2), m as i64) - Rat::one();
-        let mut acc = Rat::zero();
+        let factor = rat_pow_i(&rat_i(2), m as i64) - Q::one();
+        let mut acc = Q::zero();
         for j in 0..n {
-            let x = rat_i(j) + Rat::new(BigInt::one(), BigInt::from(2));
+            let x = rat_i(j) + Q::new(BigInt::one(), BigInt::from(2));
             acc += rat_pow_i(&x, -(m as i64));
         }
         let fe = rat_expr(arena, factor);
@@ -1313,7 +1294,7 @@ fn dominant_factor_form(arena: &mut Arena, f: ExprId, var: ExprId) -> ExprId {
 
 /// `lim_{k→∞}` of a rational function with rational coefficients.
 /// `Some(None)` means the limit is infinite.
-fn rational_limit_at_infinity(arena: &mut Arena, f: ExprId, var: ExprId) -> Option<Option<Rat>> {
+fn rational_limit_at_infinity(arena: &mut Arena, f: ExprId, var: ExprId) -> Option<Option<Q>> {
     let (n, d) = polybridge::as_numer_denom(arena, f);
     let np = polybridge::expr_to_poly(arena, n, var)?;
     let dp = polybridge::expr_to_poly(arena, d, var)?;
@@ -1321,12 +1302,12 @@ fn rational_limit_at_infinity(arena: &mut Arena, f: ExprId, var: ExprId) -> Opti
         return None;
     }
     if np.is_zero() {
-        return Some(Some(Rat::zero()));
+        return Some(Some(Q::zero()));
     }
     let dn = np.degree()?;
     let dd = dp.degree()?;
     if dn < dd {
-        Some(Some(Rat::zero()))
+        Some(Some(Q::zero()))
     } else if dn == dd {
         Some(Some(np.coeff(dn) / dp.coeff(dd)))
     } else {
@@ -1354,13 +1335,13 @@ pub(crate) struct TermShape {
     /// A `(−1)^k` alternation is present.
     pub(crate) alternating: bool,
     /// Exact rational `Π rᵢ^{aᵢ}` over numeric bases with integer `aᵢ`.
-    pub(crate) numeric_base: Rat,
+    pub(crate) numeric_base: Q,
     /// Symbolic geometric bases `(base, a)` meaning `base^(a·k)`.
-    pub(crate) bases: Vec<(ExprId, Rat)>,
+    pub(crate) bases: Vec<(ExprId, Q)>,
     /// Monic linear powers `(β, p)` meaning `(k + β)^p`, sorted by `β`.
-    pub(crate) lin_pows: Vec<(Rat, Rat)>,
+    pub(crate) lin_pows: Vec<(Q, Q)>,
     /// Factorial factors `(α, β, e)` meaning `((α·k + β)!)^e`, sorted.
-    pub(crate) facts: Vec<(Rat, Rat, i64)>,
+    pub(crate) facts: Vec<(Q, Q, i64)>,
     /// Binomial factors `(n, e)` meaning `C(n, k)^e` with `n` free of `k`.
     pub(crate) binomials: Vec<(ExprId, i64)>,
 }
@@ -1400,7 +1381,7 @@ pub(crate) fn term_shape(arena: &mut Arena, body: ExprId, var: ExprId) -> Option
     let mut shape = TermShape {
         constant: arena.one,
         alternating: false,
-        numeric_base: Rat::one(),
+        numeric_base: Q::one(),
         bases: Vec::new(),
         lin_pows: Vec::new(),
         facts: Vec::new(),
@@ -1409,14 +1390,14 @@ pub(crate) fn term_shape(arena: &mut Arena, body: ExprId, var: ExprId) -> Option
     let mut consts: Vec<ExprId> = Vec::new();
     let factors = mul_factors(arena, body);
     for f in factors {
-        shape_factor(arena, f, var, &Rat::one(), &mut shape, &mut consts)?;
+        shape_factor(arena, f, var, &Q::one(), &mut shape, &mut consts)?;
     }
     shape.constant = mul_all(arena, &consts);
     shape.constant = eval::eval(arena, shape.constant);
     // Merge & sort.
     shape.lin_pows = merge_pairs(shape.lin_pows);
     shape.facts.sort_by_key(|a| (a.0.clone(), a.1.clone()));
-    let mut merged_facts: Vec<(Rat, Rat, i64)> = Vec::new();
+    let mut merged_facts: Vec<(Q, Q, i64)> = Vec::new();
     for (a, b, e) in shape.facts {
         if let Some(last) = merged_facts.last_mut()
             && last.0 == a
@@ -1429,7 +1410,7 @@ pub(crate) fn term_shape(arena: &mut Arena, body: ExprId, var: ExprId) -> Option
     }
     merged_facts.retain(|f| f.2 != 0);
     shape.facts = merged_facts;
-    let mut merged_bases: Vec<(ExprId, Rat)> = Vec::new();
+    let mut merged_bases: Vec<(ExprId, Q)> = Vec::new();
     for (b, a) in shape.bases {
         if let Some(slot) = merged_bases.iter_mut().find(|(bb, _)| *bb == b) {
             slot.1 += a;
@@ -1453,9 +1434,9 @@ pub(crate) fn term_shape(arena: &mut Arena, body: ExprId, var: ExprId) -> Option
     Some(shape)
 }
 
-fn merge_pairs(mut v: Vec<(Rat, Rat)>) -> Vec<(Rat, Rat)> {
+fn merge_pairs(mut v: Vec<(Q, Q)>) -> Vec<(Q, Q)> {
     v.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut out: Vec<(Rat, Rat)> = Vec::new();
+    let mut out: Vec<(Q, Q)> = Vec::new();
     for (b, p) in v {
         if let Some(last) = out.last_mut()
             && last.0 == b
@@ -1474,7 +1455,7 @@ fn shape_factor(
     arena: &mut Arena,
     f: ExprId,
     var: ExprId,
-    outer: &Rat,
+    outer: &Q,
     shape: &mut TermShape,
     consts: &mut Vec<ExprId>,
 ) -> Option<()> {
@@ -1484,7 +1465,7 @@ fn shape_factor(
         return Some(());
     }
     if f == var {
-        shape.lin_pows.push((Rat::zero(), outer.clone()));
+        shape.lin_pows.push((Q::zero(), outer.clone()));
         return Some(());
     }
     match arena.node(f).clone() {
@@ -1526,7 +1507,7 @@ fn shape_factor(
             let (alpha, beta) = linear_in(arena, arg, var)?;
             shape
                 .facts
-                .push((alpha, beta - Rat::one(), outer.to_integer().to_i64()?));
+                .push((alpha, beta - Q::one(), outer.to_integer().to_i64()?));
             Some(())
         }
         ExprNode::Binomial(n, kk) => {
@@ -1543,7 +1524,7 @@ fn shape_factor(
                 && let Some((a, b)) = linear_in(arena, n, var)
             {
                 shape.facts.push((a, b, e));
-                shape.facts.push((Rat::one(), Rat::zero(), -e));
+                shape.facts.push((Q::one(), Q::zero(), -e));
                 let nm = arena.sub(n, var);
                 let (a2, b2) = linear_in(arena, nm, var)?;
                 shape.facts.push((a2, b2, -e));
@@ -1577,7 +1558,7 @@ fn shape_factor(
 fn shape_geometric(
     arena: &mut Arena,
     base: ExprId,
-    a: &Rat,
+    a: &Q,
     b: ExprId,
     shape: &mut TermShape,
     consts: &mut Vec<ExprId>,
@@ -1593,7 +1574,7 @@ fn shape_geometric(
         }
         if a.is_integer() {
             let ai = a.to_integer().to_i64()?;
-            if r == -Rat::one() {
+            if r == -Q::one() {
                 if ai.rem_euclid(2) == 1 {
                     shape.alternating = !shape.alternating;
                 }
@@ -1627,7 +1608,7 @@ fn shape_geometric(
 fn shape_polynomial(
     arena: &mut Arena,
     p: &Poly,
-    outer: &Rat,
+    outer: &Q,
     shape: &mut TermShape,
     consts: &mut Vec<ExprId>,
 ) -> Option<()> {
@@ -1665,11 +1646,11 @@ fn shape_polynomial(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Stirling numbers of the second kind `S(m, j)` for `0 ≤ j ≤ m`.
-fn stirling_second_row(m: usize) -> Vec<Rat> {
+fn stirling_second_row(m: usize) -> Vec<Q> {
     // S(0,0) = 1; S(m, j) = j·S(m−1, j) + S(m−1, j−1).
-    let mut row = vec![Rat::one()];
+    let mut row = vec![Q::one()];
     for _ in 0..m {
-        let mut next = vec![Rat::zero(); row.len() + 1];
+        let mut next = vec![Q::zero(); row.len() + 1];
         for (j, s) in row.iter().enumerate() {
             next[j] += rat_i(j as i64) * s;
             next[j + 1] += s;
@@ -1775,7 +1756,7 @@ fn binomial_poly_sum(
         let xx = mul_all(arena, &x_parts);
         eval::eval(arena, xx)
     };
-    if as_rat(arena, x) == Some(-Rat::one()) {
+    if as_rat(arena, x) == Some(-Q::one()) {
         return None; // (1+x)^{n−j} = 0^{n−j} needs a case split; leave to Gosper
     }
     // Constant factors q^n are absorbed into x^j·(1+x)^{n−j} as (xq)^j·((1+x)q)^{n−j}.
@@ -1872,7 +1853,7 @@ fn binomial_sum(
             arena.mul(&[n, n_p1, t])
         }
         // Σ C(n,k)/(k+1) = (2^(n+1) − 1)/(n+1)
-        (1, [(b, p)], None) if b.is_one() && *p == -Rat::one() => {
+        (1, [(b, p)], None) if b.is_one() && *p == -Q::one() => {
             let t = arena.pow(two, n_p1);
             let num = arena.sub(t, one);
             arena.div(num, n_p1)
@@ -1884,7 +1865,7 @@ fn binomial_sum(
         }
         // Σ C(n,k) x^k = (1+x)^n      (x = −1 gives 0 for n ≥ 1, 1 for n = 0)
         (1, [], Some(x)) => {
-            if as_rat(arena, x) == Some(-Rat::one()) {
+            if as_rat(arena, x) == Some(-Q::one()) {
                 let zero = arena.zero;
                 let cond = arena.eq_(n, zero);
                 let ncond = arena.ne_(n, zero);
@@ -2008,7 +1989,7 @@ fn geometric_poly_finite(
     hi: ExprId,
 ) -> Option<ExprId> {
     let (poly, y, c) = geometric_split(arena, body, var)?;
-    if as_rat(arena, y) == Some(Rat::one()) {
+    if as_rat(arena, y) == Some(Q::one()) {
         return None; // degenerate; polynomial path applies
     }
     // Numeric ratio with rational coefficients → Gosper gives the tidiest form.
@@ -2241,10 +2222,10 @@ fn p_series_infinite(arena: &mut Arena, shape: &TermShape, lo: ExprId) -> Option
     }
     let (beta, exp) = shape.lin_pows[0].clone();
     let c = shape.constant;
-    if exp >= -Rat::one() {
+    if exp >= -Q::one() {
         // Terms do not decay fast enough (or grow).
         if shape.alternating {
-            if exp >= Rat::zero() {
+            if exp >= Q::zero() {
                 return Some(SumOutcome::Divergent(None));
             }
             // Alternating with (k+β)^(−p), 0 < p ≤ 1: conditionally convergent.
@@ -2277,9 +2258,9 @@ fn p_series_infinite(arena: &mut Arena, shape: &TermShape, lo: ExprId) -> Option
             return None;
         }
         let eta = eta_value(arena, p)?;
-        let mut acc = Rat::zero();
+        let mut acc = Q::zero();
         for j in 1..qi {
-            let s = if j % 2 == 0 { Rat::one() } else { -Rat::one() };
+            let s = if j % 2 == 0 { Q::one() } else { -Q::one() };
             acc += s * rat_pow_i(&rat_i(j), -(p as i64));
         }
         let neg_eta = arena.neg(eta);
@@ -2296,7 +2277,7 @@ fn p_series_infinite(arena: &mut Arena, shape: &TermShape, lo: ExprId) -> Option
         // β = n + 1/2:  (k + β)^(−p) = 2^p (2(k+n) + 1)^(−p).  With j = k + n,
         // Σ_{k=lo}^{∞} (−1)^k (k+β)^(−p) = 2^p (−1)^n [β(p) − Σ_{j=0}^{s−1} (−1)^j (2j+1)^(−p)],
         // where s = lo + n is the first index of the tail.
-        let half = Rat::new(BigInt::one(), BigInt::from(2));
+        let half = Q::new(BigInt::one(), BigInt::from(2));
         let n = &beta - &half;
         let s = &q - &half;
         if !s.is_integer() || s.is_negative() {
@@ -2308,18 +2289,18 @@ fn p_series_infinite(arena: &mut Arena, shape: &TermShape, lo: ExprId) -> Option
         }
         let ni = n.to_integer().to_i64()?;
         let beta_p = dirichlet_beta_value(arena, p)?;
-        let mut acc = Rat::zero();
+        let mut acc = Q::zero();
         for j in 0..si {
-            let sg = if j % 2 == 0 { Rat::one() } else { -Rat::one() };
+            let sg = if j % 2 == 0 { Q::one() } else { -Q::one() };
             acc += sg * rat_pow_i(&rat_i(2 * j + 1), -(p as i64));
         }
         let ce = rat_expr(arena, -acc);
         let inner = arena.add(&[beta_p, ce]);
         let scale = rat_pow_i(&rat_i(2), p as i64)
             * if ni.rem_euclid(2) == 0 {
-                Rat::one()
+                Q::one()
             } else {
-                -Rat::one()
+                -Q::one()
             };
         let se = rat_expr(arena, scale);
         let v = arena.mul(&[se, inner]);
@@ -2512,20 +2493,20 @@ enum Domain {
 struct SeriesEntry {
     name: &'static str,
     alternating: bool,
-    base_const: Rat,
+    base_const: Q,
     lin_pows: &'static [(i64, i64, i64)], // (β numer, β denom, p)
     facts: &'static [(i64, i64, i64)],    // (α, β, e)
     a: i64,
     b: i64,
     k0: i64,
-    table_const: Rat,
+    table_const: Q,
     domain: Domain,
     build: fn(&mut Arena, ExprId) -> ExprId,
 }
 
 fn series_table() -> Vec<SeriesEntry> {
-    let one = Rat::one;
-    let half = || Rat::new(BigInt::one(), BigInt::from(2));
+    let one = Q::one;
+    let half = || Q::new(BigInt::one(), BigInt::from(2));
     vec![
         SeriesEntry {
             name: "exp",
@@ -2611,7 +2592,7 @@ fn series_table() -> Vec<SeriesEntry> {
                 if let Some(r) = as_rat(a, omx)
                     && r.is_positive()
                 {
-                    let inv = rat_expr(a, Rat::one() / r);
+                    let inv = rat_expr(a, Q::one() / r);
                     return a.ln(inv);
                 }
                 let l = a.ln(omx);
@@ -2665,7 +2646,7 @@ fn series_table() -> Vec<SeriesEntry> {
         SeriesEntry {
             name: "asin",
             alternating: false,
-            base_const: Rat::new(BigInt::one(), BigInt::from(4)),
+            base_const: Q::new(BigInt::one(), BigInt::from(4)),
             lin_pows: &[(1, 2, -1)],
             facts: &[(1, 0, -2), (2, 0, 1)],
             a: 2,
@@ -2678,7 +2659,7 @@ fn series_table() -> Vec<SeriesEntry> {
         SeriesEntry {
             name: "asinh",
             alternating: true,
-            base_const: Rat::new(BigInt::one(), BigInt::from(4)),
+            base_const: Q::new(BigInt::one(), BigInt::from(4)),
             lin_pows: &[(1, 2, -1)],
             facts: &[(1, 0, -2), (2, 0, 1)],
             a: 2,
@@ -2713,7 +2694,7 @@ fn series_table() -> Vec<SeriesEntry> {
         SeriesEntry {
             name: "besselj0",
             alternating: true,
-            base_const: Rat::new(BigInt::one(), BigInt::from(4)),
+            base_const: Q::new(BigInt::one(), BigInt::from(4)),
             lin_pows: &[],
             facts: &[(1, 0, -2)],
             a: 2,
@@ -2729,7 +2710,7 @@ fn series_table() -> Vec<SeriesEntry> {
         SeriesEntry {
             name: "besseli0",
             alternating: false,
-            base_const: Rat::new(BigInt::one(), BigInt::from(4)),
+            base_const: Q::new(BigInt::one(), BigInt::from(4)),
             lin_pows: &[],
             facts: &[(1, 0, -2)],
             a: 2,
@@ -2745,15 +2726,15 @@ fn series_table() -> Vec<SeriesEntry> {
     ]
 }
 
-fn entry_lin_pows(e: &SeriesEntry) -> Vec<(Rat, Rat)> {
+fn entry_lin_pows(e: &SeriesEntry) -> Vec<(Q, Q)> {
     e.lin_pows
         .iter()
-        .map(|&(bn, bd, p)| (Rat::new(BigInt::from(bn), BigInt::from(bd)), rat_i(p)))
+        .map(|&(bn, bd, p)| (Q::new(BigInt::from(bn), BigInt::from(bd)), rat_i(p)))
         .collect()
 }
 
-fn entry_facts(e: &SeriesEntry) -> Vec<(Rat, Rat, i64)> {
-    let mut v: Vec<(Rat, Rat, i64)> = e
+fn entry_facts(e: &SeriesEntry) -> Vec<(Q, Q, i64)> {
+    let mut v: Vec<(Q, Q, i64)> = e
         .facts
         .iter()
         .map(|&(a, b, ee)| (rat_i(a), rat_i(b), ee))
@@ -2769,7 +2750,7 @@ fn in_domain(arena: &mut Arena, x: ExprId, domain: Domain) -> Option<bool> {
     }
     if let Some(r) = const_value(arena, x) {
         let a = r.abs();
-        let one = Rat::one();
+        let one = Q::one();
         return Some(match domain {
             Domain::Everywhere => true,
             Domain::OpenUnit => a < one,
@@ -2831,7 +2812,7 @@ fn power_series_infinite(
                 continue;
             }
             let re = rat_expr(arena, ratio.clone());
-            let inv_a = Rat::one() / &a_rat;
+            let inv_a = Q::one() / &a_rat;
             x_factors.push(pow_rat(arena, re, &inv_a));
         }
         let mut ok = true;
@@ -2927,7 +2908,7 @@ fn power_series_infinite(
                 if arg < 0 {
                     return None;
                 }
-                let fv = Rat::from_integer(factorial_big(arg as u64));
+                let fv = Q::from_integer(factorial(arg as u64));
                 fs.push(rat_expr(arena, rat_pow_i(&fv, e)));
             }
             if extra_power > 0 {
@@ -3137,7 +3118,7 @@ fn linear_symbolic_product(
     if !alpha.is_one() {
         factors.push(arena.pow(alpha_e, count));
     }
-    let inv_alpha = rat_expr(arena, Rat::one() / &alpha);
+    let inv_alpha = rat_expr(arena, Q::one() / &alpha);
     let shift = arena.mul(&[beta, inv_alpha]);
     let one = arena.one;
     let hi1 = arena.add(&[hi, one]);
@@ -3146,7 +3127,7 @@ fn linear_symbolic_product(
     let top = arena.gamma(top_arg);
     let bot = arena.gamma(bot_arg);
     factors.push(top);
-    factors.push(pow_rat(arena, bot, &(-Rat::one())));
+    factors.push(pow_rat(arena, bot, &(-Q::one())));
     Some(arena.mul(&factors))
 }
 
@@ -3209,11 +3190,11 @@ pub(crate) fn gamma_ratio_normalize(arena: &mut Arena, expr: ExprId) -> ExprId {
     let expr = eval::eval(arena, expr);
     let factors = mul_factors(arena, expr);
     // (arg, exponent) for Gamma factors; others pass through.
-    let mut gammas: Vec<(ExprId, Rat)> = Vec::new();
+    let mut gammas: Vec<(ExprId, Q)> = Vec::new();
     let mut others: Vec<ExprId> = Vec::new();
     for f in factors {
         match arena.node(f).clone() {
-            ExprNode::Gamma(arg) => gammas.push((arg, Rat::one())),
+            ExprNode::Gamma(arg) => gammas.push((arg, Q::one())),
             ExprNode::Pow(base, exp) => {
                 if let (ExprNode::Gamma(arg), Some(e)) =
                     (arena.node(base).clone(), as_rat(arena, exp))
@@ -3230,7 +3211,7 @@ pub(crate) fn gamma_ratio_normalize(arena: &mut Arena, expr: ExprId) -> ExprId {
         return expr;
     }
     // Group by integer difference of arguments.
-    let mut groups: Vec<Vec<(ExprId, Rat, i64)>> = Vec::new(); // (arg, exp, offset from group ref)
+    let mut groups: Vec<Vec<(ExprId, Q, i64)>> = Vec::new(); // (arg, exp, offset from group ref)
     'outer: for (arg, e) in gammas {
         for g in groups.iter_mut() {
             let (ref_arg, _, _) = g[0];
@@ -3259,7 +3240,7 @@ pub(crate) fn gamma_ratio_normalize(arena: &mut Arena, expr: ExprId) -> ExprId {
         // X = ref_arg + min_off
         let x = add_rat(arena, ref_arg, &rat_i(min_off));
         let x = eval::eval(arena, x);
-        let mut total_e = Rat::zero();
+        let mut total_e = Q::zero();
         for (_, e, d) in &g {
             total_e += e;
             let steps = d - min_off;
@@ -3309,13 +3290,13 @@ fn gamma_to_factorial(arena: &mut Arena, expr: ExprId) -> ExprId {
 fn gamma_arg_to_factorial(arena: &mut Arena, arg: ExprId) -> Option<ExprId> {
     if let Some(r) = as_rat(arena, arg) {
         if r.is_integer() && r.is_positive() {
-            let m1 = rat_expr(arena, r - Rat::one());
+            let m1 = rat_expr(arena, r - Q::one());
             return Some(arena.factorial(m1));
         }
         return None;
     }
     let terms = add_terms(arena, arg);
-    let mut const_part = Rat::zero();
+    let mut const_part = Q::zero();
     let mut rest = Vec::new();
     for t in terms {
         if let Some(r) = as_rat(arena, t) {
@@ -3329,11 +3310,11 @@ fn gamma_arg_to_factorial(arena: &mut Arena, arg: ExprId) -> Option<ExprId> {
     }
     let inner = add_all(arena, &rest);
     if const_part.is_integer() && const_part.is_positive() {
-        let shifted = add_rat(arena, inner, &(const_part - Rat::one()));
+        let shifted = add_rat(arena, inner, &(const_part - Q::one()));
         return Some(arena.factorial(shifted));
     }
     // Legendre duplication: Γ(m + 1/2) = (2m)! √π / (4^m m!)  for m = inner + (c − 1/2).
-    let half = Rat::new(BigInt::one(), BigInt::from(2));
+    let half = Q::new(BigInt::one(), BigInt::from(2));
     let m_shift = &const_part - &half;
     if m_shift.is_integer() && !m_shift.is_negative() {
         let m = add_rat(arena, inner, &m_shift);
@@ -3360,10 +3341,10 @@ fn infinite_product(arena: &mut Arena, body: ExprId, var: ExprId, lo: ExprId) ->
             if r.is_one() {
                 return SumOutcome::Closed(v);
             }
-            if r.is_zero() || r.abs() < Rat::one() {
+            if r.is_zero() || r.abs() < Q::one() {
                 return SumOutcome::Closed(arena.zero);
             }
-            if r > Rat::one() {
+            if r > Q::one() {
                 return SumOutcome::Divergent(Some(arena.infinity));
             }
             return SumOutcome::Divergent(None);
@@ -3407,15 +3388,15 @@ mod tests {
         }
     }
 
-    fn eval_at(arena: &mut Arena, e: ExprId, n: ExprId, v: i64) -> Rat {
+    fn eval_at(arena: &mut Arena, e: ExprId, n: ExprId, v: i64) -> Q {
         let ve = arena.int(v);
         let s = subs::subs(arena, e, n, ve);
         let s = eval::eval(arena, s);
         as_rat(arena, s).unwrap_or_else(|| panic!("not rational: {}", arena.display(s)))
     }
 
-    fn brute(arena: &mut Arena, body: ExprId, k: ExprId, lo: i64, hi: i64) -> Rat {
-        let mut acc = Rat::zero();
+    fn brute(arena: &mut Arena, body: ExprId, k: ExprId, lo: i64, hi: i64) -> Q {
+        let mut acc = Q::zero();
         for i in lo..=hi {
             let ie = arena.int(i);
             let t = subs::subs(arena, body, k, ie);
@@ -3469,8 +3450,8 @@ mod tests {
     fn faulhaber_b1_sign_convention() {
         // Σ_{k=1}^{n} k = n²/2 + n/2  ⇒ coefficient of n is +1/2.
         let p = faulhaber_coefficients(1);
-        assert_eq!(p.coeff(1), Rat::new(BigInt::from(1), BigInt::from(2)));
-        assert_eq!(p.coeff(2), Rat::new(BigInt::from(1), BigInt::from(2)));
+        assert_eq!(p.coeff(1), Q::new(BigInt::from(1), BigInt::from(2)));
+        assert_eq!(p.coeff(2), Q::new(BigInt::from(1), BigInt::from(2)));
     }
 
     #[test]
@@ -3490,7 +3471,7 @@ mod tests {
         // Infinite: 1
         let inf = arena.infinity;
         let s = closed(summation(&mut arena, body, k, one, inf));
-        assert_eq!(as_rat(&arena, s), Some(Rat::one()));
+        assert_eq!(as_rat(&arena, s), Some(Q::one()));
     }
 
     #[test]
@@ -3512,7 +3493,7 @@ mod tests {
         let s = closed(summation(&mut arena, body, k, one, inf));
         assert_eq!(
             as_rat(&arena, s),
-            Some(Rat::new(BigInt::from(3), BigInt::from(4)))
+            Some(Q::new(BigInt::from(3), BigInt::from(4)))
         );
     }
 
@@ -3539,7 +3520,7 @@ mod tests {
         let s = closed(summation(&mut arena, body, k, one, inf));
         assert_eq!(
             as_rat(&arena, s),
-            Some(Rat::new(BigInt::from(1), BigInt::from(2)))
+            Some(Q::new(BigInt::from(1), BigInt::from(2)))
         );
     }
 
@@ -3554,7 +3535,7 @@ mod tests {
         assert_eq!(arena.display(s).to_string(), "harmonic(n)");
         assert_eq!(
             eval_at(&mut arena, s, n, 4),
-            Rat::new(BigInt::from(25), BigInt::from(12))
+            Q::new(BigInt::from(25), BigInt::from(12))
         );
     }
 
@@ -3619,19 +3600,19 @@ mod tests {
     fn zeta_even_rationals() {
         assert_eq!(
             zeta_even_rational(1),
-            Rat::new(BigInt::from(1), BigInt::from(6))
+            Q::new(BigInt::from(1), BigInt::from(6))
         );
         assert_eq!(
             zeta_even_rational(2),
-            Rat::new(BigInt::from(1), BigInt::from(90))
+            Q::new(BigInt::from(1), BigInt::from(90))
         );
         assert_eq!(
             zeta_even_rational(3),
-            Rat::new(BigInt::from(1), BigInt::from(945))
+            Q::new(BigInt::from(1), BigInt::from(945))
         );
         assert_eq!(
             zeta_even_rational(4),
-            Rat::new(BigInt::from(1), BigInt::from(9450))
+            Q::new(BigInt::from(1), BigInt::from(9450))
         );
     }
 
@@ -3810,8 +3791,8 @@ mod tests {
         let sgn = arena.pow(m1, k);
         let body = arena.mul(&[bin, sgn]);
         let s = closed(summation(&mut arena, body, k, zero, n));
-        assert_eq!(eval_at(&mut arena, s, n, 0), Rat::one());
-        assert_eq!(eval_at(&mut arena, s, n, 5), Rat::zero());
+        assert_eq!(eval_at(&mut arena, s, n, 0), Q::one());
+        assert_eq!(eval_at(&mut arena, s, n, 5), Q::zero());
     }
 
     #[test]
@@ -3891,17 +3872,17 @@ mod tests {
         let bin = arena.binomial(k3, k);
         let body = arena.mul(&[bin, xk]);
         let s = closed(summation(&mut arena, body, k, zero, inf));
-        assert_eq!(as_rat(&arena, s), Some(Rat::new(81.into(), 16.into())));
+        assert_eq!(as_rat(&arena, s), Some(Q::new(81.into(), 16.into())));
         let body_k = arena.mul(&[k, bin, xk]);
         let s = closed(summation(&mut arena, body_k, k, zero, inf));
-        assert_eq!(as_rat(&arena, s), Some(Rat::new(81.into(), 8.into())));
+        assert_eq!(as_rat(&arena, s), Some(Q::new(81.into(), 8.into())));
         // Symbolic c with a numeric ratio closes to (2/3)^(-c-1); at c = 2 → 27/8.
         let kc = arena.add(&[k, c]);
         let binc = arena.binomial(kc, k);
         let body = arena.mul(&[binc, xk]);
         let s = closed(summation(&mut arena, body, k, zero, inf));
         assert!(!walk::has_unevaluated(&arena, s), "{}", arena.display(s));
-        assert_eq!(eval_at(&mut arena, s, c, 2), Rat::new(27.into(), 8.into()));
+        assert_eq!(eval_at(&mut arena, s, c, 2), Q::new(27.into(), 8.into()));
         // Symbolic ratio: no |x| < 1 assumption → unevaluated.
         let x = arena.symbol("x");
         let xs = arena.pow(x, k);
@@ -3970,7 +3951,7 @@ mod tests {
         let body = arena.mul(&[two, k]);
         let p = closed(product(&mut arena, body, k, one, n));
         for nv in [1i64, 2, 4, 6] {
-            let expected: Rat = (1..=nv).map(|i| rat_i(2 * i)).product();
+            let expected: Q = (1..=nv).map(|i| rat_i(2 * i)).product();
             assert_eq!(eval_at(&mut arena, p, n, nv), expected);
         }
         // Π (1 + 1/k) = n + 1
@@ -3985,7 +3966,7 @@ mod tests {
         let body = arena.sub(one, k2);
         let p = closed(product(&mut arena, body, k, two, n));
         for nv in [2i64, 3, 5, 9] {
-            let expected = Rat::new(BigInt::from(nv + 1), BigInt::from(2 * nv));
+            let expected = Q::new(BigInt::from(nv + 1), BigInt::from(2 * nv));
             assert_eq!(
                 eval_at(&mut arena, p, n, nv),
                 expected,
@@ -3997,7 +3978,7 @@ mod tests {
         let p = closed(product(&mut arena, body, k, two, inf));
         assert_eq!(
             as_rat(&arena, p),
-            Some(Rat::new(BigInt::from(1), BigInt::from(2)))
+            Some(Q::new(BigInt::from(1), BigInt::from(2)))
         );
         // Π (2k−1) = (2n)!/(2^n n!)
         let m1 = arena.neg_one;
@@ -4005,7 +3986,7 @@ mod tests {
         let body = arena.add(&[twok, m1]);
         let p = closed(product(&mut arena, body, k, one, n));
         for nv in [1i64, 2, 3, 5] {
-            let expected: Rat = (1..=nv).map(|i| rat_i(2 * i - 1)).product();
+            let expected: Q = (1..=nv).map(|i| rat_i(2 * i - 1)).product();
             assert_eq!(
                 eval_at(&mut arena, p, n, nv),
                 expected,

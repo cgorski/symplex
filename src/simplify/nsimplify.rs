@@ -16,6 +16,7 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::base::numeric::f64_to_ratio_approx;
 
 /// Largest denominator accepted for the rational factor / offset in
@@ -149,7 +150,7 @@ pub(crate) fn nsimplify_with_constants(
 }
 
 /// Intern a rational number as an expression node.
-fn num_expr(arena: &mut Arena, r: Ratio<BigInt>) -> ExprId {
+fn num_expr(arena: &mut Arena, r: Q) -> ExprId {
     let nid = arena.intern_num(r);
     arena.intern(ExprNode::Num(nid))
 }

@@ -36,6 +36,7 @@ use crate::api::expr::Ex;
 use crate::api::expr_solve_ext::{LinearSolution, linsolve};
 use crate::base::errors::SymplexError;
 use crate::base::node::ExprNode;
+use crate::base::numeric::Q;
 
 /// A parsed forcing term `c · n^d · bⁿ`.
 struct ForcingTerm {
@@ -50,7 +51,7 @@ fn constant(ctx: &crate::api::context::Context, k: usize) -> Ex {
 }
 
 /// Rational value of a numeric literal.
-fn as_rational(e: &Ex) -> Option<num_rational::Ratio<num_bigint::BigInt>> {
+fn as_rational(e: &Ex) -> Option<Q> {
     e.inner.read().arena.as_num(e.raw_id()).cloned()
 }
 
@@ -166,7 +167,7 @@ fn n_pow(n: &Ex, j: usize) -> Ex {
 /// Node budget for the closed form (before and after fitting the initial
 /// values); exceeding it is reported as "expression swell" instead of
 /// letting simplification of nested radicals spin.
-const RSOLVE_BUDGET: usize = crate::domains::matrix::EXPRESSION_BUDGET / 4;
+const RSOLVE_BUDGET: usize = crate::base::config::EXPRESSION_BUDGET / 4;
 
 /// Fit the constants of `a(n) = Σ C_k r_kⁿ` (all roots simple, no forcing)
 /// to `a(0), …, a(m−1)` through the closed-form inverse of the Vandermonde
@@ -233,11 +234,17 @@ fn fit_vandermonde(roots: &[(Ex, usize)], n: &Ex, ics: &[Ex]) -> Option<Ex> {
     Some(closed.eval())
 }
 
+/// Tree size of `e` (nodes, without sharing), saturating at `cap + 1` so
+/// that a caller comparing against `cap` sees the overflow.
+fn tree_size_capped(e: &Ex, cap: usize) -> usize {
+    let inner = e.inner.read();
+    crate::transforms::pattern::tree_size_capped(&inner.arena, e.raw_id(), cap.saturating_add(1))
+}
+
 fn swell_check(exprs: &[&Ex]) -> Result<(), SymplexError> {
     let mut total = 0usize;
     for e in exprs {
-        total +=
-            crate::domains::matrix::tree_size_capped(e, RSOLVE_BUDGET - total.min(RSOLVE_BUDGET));
+        total += tree_size_capped(e, RSOLVE_BUDGET - total.min(RSOLVE_BUDGET));
         if total > RSOLVE_BUDGET {
             return Err(SymplexError::ComputationFailed {
                 operation: "rsolve_linear",

@@ -81,12 +81,14 @@
 //!
 //! # Budgets
 //!
-//! A solve can be bounded by a [`Budget`] — an absolute deadline and/or a
-//! cap on the number of pivots ([`LpProblem::with_budget`]).  The budget is
-//! checked at every pivot; when it runs out the solve stops and reports
+//! A solve can be bounded by a [`Budget`] — an absolute deadline, a time
+//! limit counted from the start of the solve, and/or a cap on the number
+//! of pivots ([`LpProblem::with_budget`]).  The budget is checked at every
+//! pivot; when it runs out the solve stops and reports
 //! [`LpStatus::BudgetExhausted`] (an answer, not an error), with no point,
 //! objective or certificate.  Without a budget the solver behaves exactly
-//! as before.
+//! as before.  `Budget` is the crate-wide type
+//! ([`symplex::Budget`](crate::base::budget::Budget)), re-exported here.
 //!
 //! # Examples
 //!
@@ -107,7 +109,7 @@
 //! ```
 
 use std::fmt;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use num_bigint::BigInt;
 use num_integer::Integer;
@@ -162,125 +164,9 @@ struct Constraint {
     relation: Relation,
 }
 
-/// A limit on one solve: an absolute deadline and/or a cap on the number
-/// of pivots.  Both default to "none".
-///
-/// The budget is checked at every pivot (the deadline before the entering
-/// column is chosen, the pivot cap before the pivot is performed), and it
-/// is shared by the `i64 → i128 → 256-bit → BigInt` attempts of one
-/// solve: pivots begun by an attempt that overflowed its cell type still
-/// count, and the deadline is absolute.  When it runs out,
-/// [`LpProblem::solve`] returns [`LpStatus::BudgetExhausted`].
-///
-/// `#[non_exhaustive]`: build it with the constructors and `with_*`
-/// builders.
-///
-/// ```
-/// use std::time::Duration;
-/// use symplex::linprog::{Budget, LpProblem, LpStatus, qi};
-///
-/// // min x + y  s.t.  x + 2y ≥ 1,  3x + y ≥ 1  needs two pivots: one is not enough.
-/// let p = LpProblem::minimize(vec![qi(1), qi(1)])
-///     .ge(vec![qi(1), qi(2)], qi(1))
-///     .ge(vec![qi(3), qi(1)], qi(1));
-/// let sol = p.clone().with_budget(Budget::max_pivots(1)).solve().unwrap();
-/// assert_eq!(sol.status, LpStatus::BudgetExhausted);
-/// assert!(sol.x.is_empty() && sol.objective.is_none());
-/// // A generous budget changes nothing.
-/// let sol = p.with_budget(Budget::within(Duration::from_secs(60)).with_max_pivots(1000)).solve().unwrap();
-/// assert_eq!(sol.status, LpStatus::Optimal);
-/// ```
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct Budget {
-    /// Stop once this instant has passed.
-    pub deadline: Option<Instant>,
-    /// Stop before performing this many pivots (across both phases and all
-    /// cell-type attempts).
-    pub max_pivots: Option<usize>,
-}
-
-impl Budget {
-    /// A budget with only an absolute deadline.
-    pub fn deadline(at: Instant) -> Self {
-        Budget {
-            deadline: Some(at),
-            max_pivots: None,
-        }
-    }
-
-    /// A budget with only a pivot cap.
-    pub fn max_pivots(n: usize) -> Self {
-        Budget {
-            deadline: None,
-            max_pivots: Some(n),
-        }
-    }
-
-    /// A budget whose deadline is `duration` from now.  A duration too
-    /// large to represent as an instant means no deadline.
-    pub fn within(duration: Duration) -> Self {
-        Budget {
-            deadline: Instant::now().checked_add(duration),
-            max_pivots: None,
-        }
-    }
-
-    /// Set (or replace) the deadline.
-    #[must_use]
-    pub fn with_deadline(mut self, at: Instant) -> Self {
-        self.deadline = Some(at);
-        self
-    }
-
-    /// Set (or replace) the pivot cap.
-    #[must_use]
-    pub fn with_max_pivots(mut self, n: usize) -> Self {
-        self.max_pivots = Some(n);
-        self
-    }
-}
-
-/// Which limit of a [`Budget`] ran out.
-///
-/// `#[non_exhaustive]`: match with a `_` arm.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum BudgetHit {
-    /// The deadline passed.
-    Deadline,
-    /// The pivot cap was reached.
-    MaxPivots,
-}
-
-impl fmt::Display for BudgetHit {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            BudgetHit::Deadline => "deadline",
-            BudgetHit::MaxPivots => "max_pivots",
-        })
-    }
-}
-
-/// The deadline of a call starting now under an absolute `deadline`
-/// and/or a relative `time_limit`: the earlier of the two (a limit too
-/// large to represent as an instant is no limit).  The one rule every
-/// budgeted prover option set follows.
-pub(crate) fn deadline_from(
-    deadline: Option<Instant>,
-    time_limit: Option<Duration>,
-) -> Option<Instant> {
-    let from_limit = time_limit.and_then(|t| Instant::now().checked_add(t));
-    match (deadline, from_limit) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
-    }
-}
-
-/// Has `deadline` passed?  (`None` never passes.)
-pub(crate) fn deadline_passed(deadline: Option<Instant>) -> bool {
-    deadline.is_some_and(|d| Instant::now() >= d)
-}
+// The budget types live in `base::budget` (shared with the certificate
+// provers); this is their historical public path.
+pub use crate::base::budget::{Budget, BudgetHit};
 
 /// Why a budgeted search stopped without an answer: its budget ran out,
 /// or an LP failed.
@@ -301,22 +187,19 @@ impl From<SymplexError> for Stop {
 /// cap spans all the LPs of the call and the `i64 → i128 → W256 → BigInt`
 /// attempts inside each.
 pub(crate) struct LpMeter {
-    deadline: Option<Instant>,
-    max_pivots: Option<usize>,
+    /// The call's budget with its time limit already resolved
+    /// ([`Budget::start`]).
+    budget: Budget,
     spent: usize,
 }
 
 impl LpMeter {
-    /// Start the clock for one call: `deadline` is the earlier of the
-    /// absolute deadline and now + `time_limit` (see [`deadline_from`]).
-    pub(crate) fn start(
-        deadline: Option<Instant>,
-        time_limit: Option<Duration>,
-        max_pivots: Option<usize>,
-    ) -> Self {
+    /// Start the clock for one call: the budget's relative `time_limit`
+    /// becomes an absolute deadline now (the earlier of the two if both
+    /// are set; see [`Budget::start`]).
+    pub(crate) fn start(budget: &Budget) -> Self {
         LpMeter {
-            deadline: deadline_from(deadline, time_limit),
-            max_pivots,
+            budget: budget.start(),
             spent: 0,
         }
     }
@@ -329,8 +212,9 @@ impl LpMeter {
     /// What is left for the next LP.
     pub(crate) fn remaining(&self) -> Budget {
         Budget {
-            deadline: self.deadline,
-            max_pivots: self.max_pivots.map(|m| m.saturating_sub(self.spent)),
+            deadline: self.budget.deadline,
+            time_limit: None,
+            max_pivots: self.budget.max_pivots.map(|m| m.saturating_sub(self.spent)),
         }
     }
 
@@ -986,7 +870,7 @@ impl<'a, T: Cell> Tableau<'a, T> {
     /// `Err(Halt::Budget(Deadline))` once the budget's deadline has passed.
     #[inline]
     fn check_deadline(&self) -> Result<(), Halt> {
-        if deadline_passed(self.budget.deadline) {
+        if self.budget.deadline_passed() {
             return Err(Halt::Budget(BudgetHit::Deadline));
         }
         Ok(())
@@ -1269,6 +1153,9 @@ fn solve_lp(p: &LpProblem) -> Result<SolveReport, SymplexError> {
             });
         }
     };
+    // The clock of a relative `time_limit` starts here, once for the whole
+    // solve.
+    let budget = p.budget.start();
     // One pivot counter for every attempt, so that the budget's pivot cap
     // is a cap on the whole solve.
     let mut spent = 0usize;
@@ -1312,23 +1199,23 @@ fn solve_lp(p: &LpProblem) -> Result<SolveReport, SymplexError> {
     // cells if a value outgrows them all.  Fraction-free entries are minors
     // of the scaled system: a 16-row certificate LP typically peaks around
     // 70–120 bits, a 20-row one around 130–190.
-    let r = solve_standard::<i64>(p, &sf, &mut spent);
+    let r = solve_standard::<i64>(p, &sf, &budget, &mut spent);
     attempt("i64", &r, spent);
     if let Some(done) = settle(r, spent) {
         return done;
     }
-    let r = solve_standard::<i128>(p, &sf, &mut spent);
+    let r = solve_standard::<i128>(p, &sf, &budget, &mut spent);
     attempt("i128", &r, spent);
     if let Some(done) = settle(r, spent) {
         return done;
     }
-    let r = solve_standard::<W256>(p, &sf, &mut spent);
+    let r = solve_standard::<W256>(p, &sf, &budget, &mut spent);
     attempt("W256", &r, spent);
     if let Some(done) = settle(r, spent) {
         return done;
     }
     tracing::debug!(target: "symplex::linprog", rows = sf.a.len(), cols = sf.c.len(), "256-bit tableau overflowed; solving on BigInt");
-    let r = solve_standard::<BigInt>(p, &sf, &mut spent);
+    let r = solve_standard::<BigInt>(p, &sf, &budget, &mut spent);
     attempt("BigInt", &r, spent);
     settle(r, spent).unwrap_or_else(|| {
         Err(failed(
@@ -1338,12 +1225,14 @@ fn solve_lp(p: &LpProblem) -> Result<SolveReport, SymplexError> {
     })
 }
 
+/// One cell-type attempt under `budget` (already [`started`](Budget::start)).
 fn solve_standard<T: Cell>(
     p: &LpProblem,
     sf: &Standard,
+    budget: &Budget,
     spent: &mut usize,
 ) -> Result<LpSolution, Halt> {
-    let mut t = Tableau::<T>::new(sf, &p.budget, spent).ok_or(Halt::Overflow)?;
+    let mut t = Tableau::<T>::new(sf, budget, spent).ok_or(Halt::Overflow)?;
     let m = t.m;
     let n = t.n;
 
@@ -1890,6 +1779,8 @@ pub fn linprog_matrix(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -2015,11 +1906,16 @@ mod tests {
             panic!("bounds are fine");
         };
         assert!(
-            matches!(solve_standard::<i64>(&p, &sf, &mut 0), Err(Halt::Overflow)),
+            matches!(
+                solve_standard::<i64>(&p, &sf, &Budget::default(), &mut 0),
+                Err(Halt::Overflow)
+            ),
             "the i64 attempt must report overflow, not a wrong answer"
         );
         let sol = p.solve().unwrap();
-        let via_big = solve_standard::<BigInt>(&p, &sf, &mut 0).ok().unwrap();
+        let via_big = solve_standard::<BigInt>(&p, &sf, &Budget::default(), &mut 0)
+            .ok()
+            .unwrap();
         assert_eq!(sol.status, LpStatus::Optimal);
         assert_eq!(sol.x, via_big.x);
         assert_eq!(sol.objective, via_big.objective);
@@ -2035,7 +1931,7 @@ mod tests {
         let Standardized::Ready(sf2) = standardize(&small) else {
             panic!("bounds are fine");
         };
-        assert!(solve_standard::<i64>(&small, &sf2, &mut 0).is_ok());
+        assert!(solve_standard::<i64>(&small, &sf2, &Budget::default(), &mut 0).is_ok());
     }
 
     /// White-box: entries beyond `i128` but within 256 bits are solved on
@@ -2054,15 +1950,19 @@ mod tests {
             panic!("bounds are fine");
         };
         assert!(matches!(
-            solve_standard::<i64>(&p, &sf, &mut 0),
+            solve_standard::<i64>(&p, &sf, &Budget::default(), &mut 0),
             Err(Halt::Overflow)
         ));
         assert!(matches!(
-            solve_standard::<i128>(&p, &sf, &mut 0),
+            solve_standard::<i128>(&p, &sf, &Budget::default(), &mut 0),
             Err(Halt::Overflow)
         ));
-        let via_w256 = solve_standard::<W256>(&p, &sf, &mut 0).ok().unwrap();
-        let via_big = solve_standard::<BigInt>(&p, &sf, &mut 0).ok().unwrap();
+        let via_w256 = solve_standard::<W256>(&p, &sf, &Budget::default(), &mut 0)
+            .ok()
+            .unwrap();
+        let via_big = solve_standard::<BigInt>(&p, &sf, &Budget::default(), &mut 0)
+            .ok()
+            .unwrap();
         assert_eq!(via_w256.status, LpStatus::Optimal);
         assert_eq!(via_w256.x, via_big.x);
         assert_eq!(via_w256.objective, via_big.objective);
@@ -2091,7 +1991,7 @@ mod tests {
         // How many pivots the i64 attempt manages before it overflows.
         let mut wasted = 0usize;
         assert!(matches!(
-            solve_standard::<i64>(&p, &sf, &mut wasted),
+            solve_standard::<i64>(&p, &sf, &Budget::default(), &mut wasted),
             Err(Halt::Overflow)
         ));
         // Pivots spent in the overflowed attempt count: a budget that

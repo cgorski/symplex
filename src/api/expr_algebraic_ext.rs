@@ -18,6 +18,7 @@ use crate::api::expr::{Ex, Expr, ExprType, Numeric};
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::poly::Poly;
 use crate::poly::groebner::{groebner_basis, groebner_basis_lex};
 use crate::poly::multipoly::{GrevLex, Lex, MultiPoly};
@@ -153,7 +154,7 @@ fn reduce_in_order(
 /// One distinct real root of a polynomial, before it is interned.
 enum RealRoot {
     /// A rational root (of a linear factor).
-    Rational(Ratio<BigInt>),
+    Rational(Q),
     /// `RootOf(g, k)`: the `k`-th root of the factor `g` in the (re, im)
     /// order the `RootOf` evaluator uses.
     RootOf { factor: usize, index: usize },
@@ -166,7 +167,7 @@ struct RootCell {
     factor: usize,
     /// Either the point `[r, r]` of an exact hit or a half-open `(lo, hi]`
     /// Sturm cell containing exactly one root of the factor.
-    interval: crate::base::interval::Interval<Ratio<BigInt>>,
+    interval: crate::base::interval::Interval<Q>,
 }
 
 /// The square-free factors of a polynomial over ℤ and the cells of its

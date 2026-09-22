@@ -24,6 +24,7 @@ use crate::api::expr::{Expr, Sort};
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::base::walk;
 use crate::output::common::display_sort_key;
 
@@ -307,7 +308,7 @@ fn int_literal(n: &BigInt, opts: &LeanOpts, ascribe: bool) -> Rendered {
 
 /// Rational literal `(p / q : ℝ)` (always ascribed: bare `p / q` would be
 /// natural-number division in Lean).
-fn ratio_literal(r: &Ratio<BigInt>, opts: &LeanOpts, ascribe: bool) -> Rendered {
+fn ratio_literal(r: &Q, opts: &LeanOpts, ascribe: bool) -> Rendered {
     if r.is_integer() {
         int_literal(r.numer(), opts, ascribe)
     } else {
@@ -545,7 +546,7 @@ fn render_mul(
 /// factors go below.
 fn render_mul_with_coeff(
     arena: &Arena,
-    coeff: Option<&Ratio<BigInt>>,
+    coeff: Option<&Q>,
     factors: &[ExprId],
     opts: &LeanOpts,
     cache: &FxHashMap<ExprId, Rendered>,

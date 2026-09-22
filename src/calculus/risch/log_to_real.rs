@@ -40,6 +40,7 @@ use num_rational::Ratio;
 
 use crate::base::arena::Arena;
 use crate::base::node::ExprId;
+use crate::base::numeric::Q;
 use crate::poly::dense::Poly;
 use crate::poly::generic::GenPoly;
 use crate::poly::ratfn::RationalFn;
@@ -501,7 +502,7 @@ pub(crate) fn log_to_real(
 /// The input polynomial must be monic (leading coefficient = 1).
 ///
 /// Returns `None` if the polynomial is zero, constant, or not monic.
-pub(crate) fn vieta_elementary_symmetric(poly: &Poly) -> Option<Vec<Ratio<BigInt>>> {
+pub(crate) fn vieta_elementary_symmetric(poly: &Poly) -> Option<Vec<Q>> {
     let n = poly.degree()?;
     if n == 0 {
         return None;
@@ -514,8 +515,8 @@ pub(crate) fn vieta_elementary_symmetric(poly: &Poly) -> Option<Vec<Ratio<BigInt
         return None;
     }
 
-    let one: Ratio<BigInt> = Ratio::from_integer(BigInt::from(1));
-    let neg_one: Ratio<BigInt> = Ratio::from_integer(BigInt::from(-1));
+    let one: Q = Ratio::from_integer(BigInt::from(1));
+    let neg_one: Q = Ratio::from_integer(BigInt::from(-1));
 
     let mut e = Vec::with_capacity(n);
     for k in 1..=n {
@@ -540,11 +541,11 @@ pub(crate) fn vieta_elementary_symmetric(poly: &Poly) -> Option<Vec<Ratio<BigInt
 /// ```
 ///
 /// Returns `p_1, p_2, ..., p_max_k`.
-pub(crate) fn vieta_power_sums(elementary: &[Ratio<BigInt>], max_k: usize) -> Vec<Ratio<BigInt>> {
+pub(crate) fn vieta_power_sums(elementary: &[Q], max_k: usize) -> Vec<Q> {
     let n = elementary.len(); // degree of the polynomial
-    let one: Ratio<BigInt> = Ratio::from_integer(BigInt::from(1));
-    let neg_one: Ratio<BigInt> = Ratio::from_integer(BigInt::from(-1));
-    let mut p: Vec<Ratio<BigInt>> = Vec::with_capacity(max_k);
+    let one: Q = Ratio::from_integer(BigInt::from(1));
+    let neg_one: Q = Ratio::from_integer(BigInt::from(-1));
+    let mut p: Vec<Q> = Vec::with_capacity(max_k);
 
     for k in 1..=max_k {
         let mut pk = Ratio::from_integer(BigInt::from(0));
@@ -594,7 +595,7 @@ pub(crate) fn vieta_rootsum_poly_body(
     poly_id: ExprId,
     body_id: ExprId,
     sumvar_id: ExprId,
-) -> Option<Ratio<BigInt>> {
+) -> Option<Q> {
     // Extract the polynomial as Poly.
     let poly = crate::poly::polybridge::expr_to_poly(arena, poly_id, sumvar_id)?;
     let n = poly.degree()?;
@@ -829,7 +830,7 @@ mod tests {
         );
     }
 
-    fn r(n: i64, d: i64) -> Ratio<BigInt> {
+    fn r(n: i64, d: i64) -> Q {
         Ratio::new(BigInt::from(n), BigInt::from(d))
     }
 

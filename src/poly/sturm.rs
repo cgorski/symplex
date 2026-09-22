@@ -18,12 +18,12 @@
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::{One, Signed, Zero};
+use num_traits::{Signed, Zero};
 
 use crate::base::interval::{Interval, IntervalKind};
 use crate::base::numeric::Q;
 use crate::poly::Poly;
-use crate::poly::dense::{gcd_via_z, integer_scaled, pseudo_rem_pos, z_primitive};
+use crate::poly::zpoly::{integer_scaled, powers, pseudo_rem_pos, z_primitive};
 
 /// A Sturm chain built from a polynomial.
 #[derive(Debug, Clone)]
@@ -57,7 +57,7 @@ impl SturmChain {
             return Self::from_chain(vec![Poly::zero()]);
         }
 
-        let p0 = square_free_part(p);
+        let p0 = p.square_free_part();
         let p1 = p0.derivative();
 
         if p1.is_zero() {
@@ -66,7 +66,7 @@ impl SturmChain {
         }
 
         let mut chain = vec![p0.clone(), p1.clone()];
-        let mut int_chain = vec![integer_scaled(&p0), integer_scaled(&p1)];
+        let mut int_chain = vec![integer_scaled(p0.coeffs()), integer_scaled(p1.coeffs())];
 
         loop {
             let n = int_chain.len();
@@ -85,7 +85,7 @@ impl SturmChain {
     }
 
     fn from_chain(chain: Vec<Poly>) -> Self {
-        let int_chain = chain.iter().map(integer_scaled).collect();
+        let int_chain = chain.iter().map(|p| integer_scaled(p.coeffs())).collect();
         SturmChain { chain, int_chain }
     }
 
@@ -340,21 +340,6 @@ struct Cell {
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// `p / gcd(p, p')` — the same polynomial as
-/// [`GenPoly::square_free_part`](crate::poly::generic::GenPoly::square_free_part)
-/// (the quotient by the *monic* gcd, which is unique), with the gcd
-/// computed through `ℤ[x]` by [`gcd_via_z`].
-fn square_free_part(p: &Poly) -> Poly {
-    if p.is_zero() {
-        return Poly::zero();
-    }
-    let dp = p.derivative();
-    if dp.is_zero() {
-        return p.clone();
-    }
-    p.div(&gcd_via_z(p, &dp))
-}
-
 /// `x = a / b` with `b > 0`.
 fn numer_denom(x: &Ratio<BigInt>) -> (BigInt, BigInt) {
     if x.denom().is_negative() {
@@ -362,17 +347,6 @@ fn numer_denom(x: &Ratio<BigInt>) -> (BigInt, BigInt) {
     } else {
         (x.numer().clone(), x.denom().clone())
     }
-}
-
-/// `[1, b, b², …, b^n]`.
-fn powers(b: &BigInt, n: usize) -> Vec<BigInt> {
-    let mut out = Vec::with_capacity(n + 1);
-    let mut acc = BigInt::one();
-    for _ in 0..=n {
-        out.push(acc.clone());
-        acc *= b;
-    }
-    out
 }
 
 /// Sign of the integer polynomial `c` (ascending) at `a / b` with `b > 0`:
@@ -600,20 +574,39 @@ mod tests {
         assert!(!SturmChain::new(&q).is_root(&r(1)) || q.eval(&r(1)).is_zero());
     }
 
-    /// `square_free_part` (integer gcd) equals the generic rational one.
+    /// The square-free part the chain starts from (`Poly::square_free_part`,
+    /// whose gcd runs through `ℤ[x]`) equals `p / gcd(p, p')` with the gcd
+    /// computed by Euclid over ℚ.  Regression for the former private
+    /// integer-gcd copy of `square_free_part` in this module.
     #[test]
     fn integer_square_free_part_matches_generic() {
+        fn euclid_square_free_part(p: &Poly) -> Poly {
+            let dp = p.derivative();
+            if dp.is_zero() {
+                return p.clone();
+            }
+            p.div(&Poly::gcd_euclid(p, &dp))
+        }
         for seed in 1..=10u64 {
             let p = pseudo_random_poly(seed, 6 + seed as usize % 4, true);
-            assert_eq!(square_free_part(&p), p.square_free_part(), "seed {seed}");
+            assert_eq!(
+                euclid_square_free_part(&p),
+                p.square_free_part(),
+                "seed {seed}"
+            );
+            assert_eq!(SturmChain::new(&p).chain[0], p.square_free_part());
             let q = pseudo_random_poly(seed + 100, 9, false);
-            assert_eq!(square_free_part(&q), q.square_free_part(), "seed {seed}");
+            assert_eq!(
+                euclid_square_free_part(&q),
+                q.square_free_part(),
+                "seed {seed}"
+            );
         }
         // Rational coefficients too.
         let half = Ratio::new(BigInt::from(1), BigInt::from(2));
         let p = Poly::from_coeffs(vec![half.clone(), r(3), half, r(1)]);
         let p2 = &p * &p;
-        assert_eq!(square_free_part(&p2), p2.square_free_part());
+        assert_eq!(euclid_square_free_part(&p2), p2.square_free_part());
     }
 
     /// x^2 - 1 = (x-1)(x+1) → 2 real roots

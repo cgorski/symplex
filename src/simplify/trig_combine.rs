@@ -10,9 +10,8 @@
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::base::walk;
-use num_bigint::BigInt;
-use num_rational::Ratio;
 use rustc_hash::FxHashMap;
 
 /// Apply trig product-to-sum and double-angle identities.
@@ -136,7 +135,7 @@ struct TrigSquare {
     /// `true` for sin², `false` for cos².
     is_sin: bool,
     /// The rational scalar coefficient (e.g. `1` or `-1`).
-    coeff: Ratio<BigInt>,
+    coeff: Q,
 }
 
 /// Scan children of an `Add` node for double-angle patterns.

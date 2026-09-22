@@ -49,9 +49,11 @@
 
 use crate::api::context::Context;
 use crate::api::expr::Ex;
+use crate::base::dense_f64;
 use crate::base::errors::SymplexError;
 use crate::base::interval::{Interval, IntervalKind};
 use crate::base::node::ExprNode;
+use crate::base::rng::SplitMix64;
 use crate::output::lambdify::CompiledFn;
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -970,59 +972,6 @@ pub fn golden_section(
 // Differential evolution
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// SplitMix64: a tiny, fast, well-distributed 64-bit generator.  Used so
-/// that [`differential_evolution`] is reproducible from a `u64` seed
-/// without pulling in a dependency.
-struct SplitMix64(u64);
-
-impl SplitMix64 {
-    fn new(seed: u64) -> Self {
-        Self(seed)
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    /// Uniform in `[0, 1)` with 53 random bits.
-    fn next_f64(&mut self) -> f64 {
-        const SCALE: f64 = 1.0 / (1u64 << 53) as f64;
-        (self.next_u64() >> 11) as f64 * SCALE
-    }
-
-    /// Uniform in `0..n` (`0` when `n == 0`).
-    fn below(&mut self, n: usize) -> usize {
-        // The modulo bias is < 2⁻⁴⁰ for any realistic population size.
-        (self.next_u64() % (n as u64).max(1)) as usize
-    }
-
-    /// Uniform index in `0..n` that is not in `excluded`.
-    ///
-    /// `excluded` must hold distinct values `< n` and is sorted in place;
-    /// the caller guarantees `excluded.len() < n`.
-    fn below_excluding(&mut self, n: usize, excluded: &mut [usize]) -> usize {
-        excluded.sort_unstable();
-        let mut r = self.below(n.saturating_sub(excluded.len()));
-        for &e in excluded.iter() {
-            if r >= e {
-                r += 1;
-            }
-        }
-        r
-    }
-
-    fn shuffle<T>(&mut self, items: &mut [T]) {
-        for i in (1..items.len()).rev() {
-            let j = self.below(i + 1);
-            items.swap(i, j);
-        }
-    }
-}
-
 /// Options for [`differential_evolution`].
 ///
 /// ```
@@ -1390,66 +1339,16 @@ pub fn poly_fit(xs: &[f64], ys: &[f64], degree: usize) -> Result<Vec<f64>, Sympl
             }
         }
     }
-    let c = lstsq_householder(a, ys.to_vec(), ncols).ok_or_else(|| {
-        failed(
-            OP,
-            format!("Vandermonde matrix is rank deficient: fewer than {ncols} distinct abscissae"),
-        )
-    })?;
+    let c =
+        dense_f64::lstsq_householder(&dense_f64::flatten(&a), m, ncols, ys).ok_or_else(|| {
+            failed(
+                OP,
+                format!(
+                    "Vandermonde matrix is rank deficient: fewer than {ncols} distinct abscissae"
+                ),
+            )
+        })?;
     Ok(c.iter().zip(&scale).map(|(c, s)| c / s).collect())
-}
-
-/// Least-squares solution of the overdetermined system `a·x = b`
-/// (`a` is `m × n` with `m ≥ n`) via Householder QR.  `None` if `a` is
-/// numerically rank deficient.
-fn lstsq_householder(mut a: Vec<Vec<f64>>, mut b: Vec<f64>, n: usize) -> Option<Vec<f64>> {
-    let m = a.len();
-    if m < n || b.len() != m {
-        return None;
-    }
-    for k in 0..n {
-        let norm = (k..m).map(|i| a[i][k] * a[i][k]).sum::<f64>().sqrt();
-        if norm == 0.0 || !norm.is_finite() {
-            return None;
-        }
-        // Householder vector v = x − α·e₁ with α chosen to avoid cancellation.
-        let alpha = if a[k][k] > 0.0 { -norm } else { norm };
-        let mut v: Vec<f64> = (k..m).map(|i| a[i][k]).collect();
-        v[0] -= alpha;
-        let vnorm2: f64 = v.iter().map(|x| x * x).sum();
-        if vnorm2 == 0.0 {
-            continue;
-        }
-        // Apply H = I − 2vvᵀ/‖v‖² to the trailing block of `a` and to `b`:
-        // A ← A − (2/‖v‖²)·v·(vᵀA).
-        let scale = 2.0 / vnorm2;
-        let w: Vec<f64> = (k..n)
-            .map(|j| v.iter().zip(k..m).map(|(vi, i)| vi * a[i][j]).sum::<f64>())
-            .collect();
-        for (vi, i) in v.iter().zip(k..m) {
-            for (wj, entry) in w.iter().zip(a[i][k..].iter_mut()) {
-                *entry -= scale * vi * wj;
-            }
-        }
-        let s: f64 = v.iter().zip(k..m).map(|(vi, i)| vi * b[i]).sum();
-        let factor = scale * s;
-        for (vi, i) in v.iter().zip(k..m) {
-            b[i] -= factor * vi;
-        }
-    }
-    // Back-substitution on the leading n × n block (R).
-    let r_max = (0..n).map(|k| a[k][k].abs()).fold(0.0_f64, f64::max);
-    let threshold = r_max * f64::EPSILON * m as f64;
-    let mut x = vec![0.0; n];
-    for r in (0..n).rev() {
-        let diag = a[r][r];
-        if !diag.is_finite() || diag.abs() <= threshold {
-            return None;
-        }
-        let s = b[r] - ((r + 1)..n).map(|c| a[r][c] * x[c]).sum::<f64>();
-        x[r] = s / diag;
-    }
-    Some(x)
 }
 
 /// Exact least-squares polynomial fit over ℚ.
@@ -2003,56 +1902,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn splitmix_is_deterministic_and_in_range() {
-        let mut a = SplitMix64::new(42);
-        let mut b = SplitMix64::new(42);
-        for _ in 0..100 {
-            let u = a.next_f64();
-            assert_eq!(u, b.next_f64());
-            assert!((0.0..1.0).contains(&u));
-            let k = a.below(7);
-            assert_eq!(k, b.below(7));
-            assert!(k < 7);
-        }
-        assert_eq!(SplitMix64::new(0).below(0), 0);
-    }
-
-    #[test]
-    fn below_excluding_never_returns_excluded() {
-        let mut rng = SplitMix64::new(7);
-        for _ in 0..1000 {
-            let i = rng.below(10);
-            let r1 = rng.below_excluding(10, &mut [i]);
-            assert_ne!(r1, i);
-            let r2 = rng.below_excluding(10, &mut [i, r1]);
-            assert!(r2 != i && r2 != r1);
-            let r3 = rng.below_excluding(10, &mut [i, r1, r2]);
-            assert!(r3 != i && r3 != r1 && r3 != r2 && r3 < 10);
-        }
-    }
-
-    #[test]
-    fn shuffle_is_a_permutation() {
-        let mut rng = SplitMix64::new(3);
-        let mut v: Vec<usize> = (0..20).collect();
-        rng.shuffle(&mut v);
-        let mut sorted = v.clone();
-        sorted.sort_unstable();
-        assert_eq!(sorted, (0..20).collect::<Vec<_>>());
-        assert_ne!(v, sorted, "20 elements should not stay in order");
-    }
-
-    #[test]
     fn householder_solves_square_system() {
-        let a = vec![vec![2.0, 1.0], vec![1.0, 3.0]];
-        let x = lstsq_householder(a, vec![3.0, 5.0], 2).unwrap();
+        let a = [2.0, 1.0, 1.0, 3.0];
+        let x = dense_f64::lstsq_householder(&a, 2, 2, &[3.0, 5.0]).unwrap();
         assert!((x[0] - 0.8).abs() < 1e-12 && (x[1] - 1.4).abs() < 1e-12);
     }
 
     #[test]
     fn householder_detects_rank_deficiency() {
-        let a = vec![vec![1.0, 2.0], vec![2.0, 4.0], vec![3.0, 6.0]];
-        assert!(lstsq_householder(a, vec![1.0, 2.0, 3.0], 2).is_none());
+        let a = [1.0, 2.0, 2.0, 4.0, 3.0, 6.0];
+        assert!(dense_f64::lstsq_householder(&a, 3, 2, &[1.0, 2.0, 3.0]).is_none());
     }
 
     #[test]

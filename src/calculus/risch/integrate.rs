@@ -32,6 +32,7 @@ use super::tower::{DifferentialExtension, ExtensionKind};
 use super::tower_integrate::{tower_hermite_reduce, tower_logarithmic_part};
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::poly::dense::Poly;
 use crate::poly::generic::GenPoly;
 use crate::poly::ratfn::RationalFn;
@@ -245,7 +246,7 @@ fn integrate_poly(p: &Poly) -> Poly {
         return Poly::zero();
     }
     let coeffs = p.coeffs();
-    let mut result = vec![<Ratio<BigInt> as num_traits::Zero>::zero()]; // constant term = 0
+    let mut result = vec![<Q as num_traits::Zero>::zero()]; // constant term = 0
     for (k, c) in coeffs.iter().enumerate() {
         let k_plus_1 = Ratio::from_integer(BigInt::from((k + 1) as i64));
         result.push(c / &k_plus_1);
@@ -623,7 +624,7 @@ fn integrate_hyperexponential(arena: &mut Arena, de: &mut DifferentialExtension)
 mod tests {
     use super::*;
 
-    fn rat(n: i64, d: i64) -> Ratio<BigInt> {
+    fn rat(n: i64, d: i64) -> Q {
         Ratio::new(BigInt::from(n), BigInt::from(d))
     }
 

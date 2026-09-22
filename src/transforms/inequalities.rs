@@ -34,6 +34,7 @@ use crate::base::node::{
     ExprId, ExprNode, INTERVAL_BOTH_CLOSED, INTERVAL_BOTH_OPEN, INTERVAL_LEFT_OPEN,
     INTERVAL_RIGHT_OPEN,
 };
+use crate::base::numeric::Q;
 use crate::base::walk;
 
 /// Relation type for inequalities.
@@ -156,7 +157,7 @@ struct Critical {
     /// Exact expression for the point (used as an interval endpoint).
     id: ExprId,
     /// Exact value when rational, otherwise a 30-digit approximation.
-    approx: Ratio<BigInt>,
+    approx: Q,
     /// Is `approx` exact?
     exact: bool,
     /// The point is a zero of the numerator of (a branch of) `expr`.
@@ -522,7 +523,7 @@ fn real_roots(arena: &mut Arena, e: ExprId, var: ExprId) -> Result<RootSet, Symp
             return Ok(RootSet::Finite(Vec::new()));
         }
         let candidates = crate::transforms::solve::solve(arena, e, var);
-        let mut reals: Vec<(ExprId, Ratio<BigInt>)> = Vec::new();
+        let mut reals: Vec<(ExprId, Q)> = Vec::new();
         for s in candidates {
             match value_sign(arena, s.value) {
                 ValueSign::NonReal | ValueSign::Undefined => continue,
@@ -631,7 +632,7 @@ fn sort_points(points: &mut [Critical]) {
 }
 
 /// Are two approximations the same point (to [`MERGE_REL`])?
-fn approx_same(a: &Ratio<BigInt>, b: &Ratio<BigInt>) -> bool {
+fn approx_same(a: &Q, b: &Q) -> bool {
     let scale = ratio_abs_f64(a).max(ratio_abs_f64(b)).max(1.0);
     let Some(tol) = crate::base::numeric::f64_to_ratio_exact(MERGE_REL * scale) else {
         return a == b;
@@ -640,11 +641,11 @@ fn approx_same(a: &Ratio<BigInt>, b: &Ratio<BigInt>) -> bool {
 }
 
 /// `a ≤ b` up to the merge tolerance.
-fn approx_le(a: &Ratio<BigInt>, b: &Ratio<BigInt>) -> bool {
+fn approx_le(a: &Q, b: &Q) -> bool {
     a <= b || approx_same(a, b)
 }
 
-fn ratio_abs_f64(r: &Ratio<BigInt>) -> f64 {
+fn ratio_abs_f64(r: &Q) -> f64 {
     crate::base::numeric::ratio_to_f64(r)
         .map(f64::abs)
         .unwrap_or(f64::INFINITY)
@@ -823,7 +824,7 @@ fn resolve_branches(
                 },
                 ExprNode::Min(args) | ExprNode::Max(args) => {
                     let want_max = matches!(arena.node(id), ExprNode::Max(_));
-                    let mut best: Option<(ExprId, Ratio<BigInt>)> = None;
+                    let mut best: Option<(ExprId, Q)> = None;
                     for &a in args.iter() {
                         let at = crate::transforms::subs::subs(arena, a, var, p);
                         let Some(v) = approx_real(arena, at) else {
@@ -909,7 +910,7 @@ fn sign_at(
 // ── sampling and evaluation ────────────────────────────────────────────
 
 /// The branch active at the rational sample point `p`.
-fn branch_for<'a>(branches: &'a [Branch], kinks: &[Critical], p: &Ratio<BigInt>) -> &'a Branch {
+fn branch_for<'a>(branches: &'a [Branch], kinks: &[Critical], p: &Q) -> &'a Branch {
     let idx = kinks.iter().take_while(|k| k.approx < *p).count();
     &branches[idx.min(branches.len() - 1)]
 }
@@ -929,10 +930,7 @@ fn sample_between(
 /// consecutive critical points.  The first one is the "main" sample
 /// (midpoint / one unit beyond the end); the others spread over the
 /// interval so that a missed sign change is detected.
-fn probe_ratios(
-    lo: Option<&Critical>,
-    hi: Option<&Critical>,
-) -> Result<Vec<Ratio<BigInt>>, SymplexError> {
+fn probe_ratios(lo: Option<&Critical>, hi: Option<&Critical>) -> Result<Vec<Q>, SymplexError> {
     let int = |n: i64| Ratio::from_integer(BigInt::from(n));
     match (lo, hi) {
         (None, None) => Ok(vec![
@@ -1119,7 +1117,7 @@ fn value_sign(arena: &mut Arena, e: ExprId) -> ValueSign {
 }
 
 /// `10^-k` as an exact rational.
-fn pow10_inv(k: usize) -> Ratio<BigInt> {
+fn pow10_inv(k: usize) -> Q {
     Ratio::new(BigInt::one(), num_traits::pow(BigInt::from(10), k))
 }
 
@@ -1131,7 +1129,7 @@ fn is_negligible_imaginary(p: &ParsedComplex) -> bool {
 
 /// Real value of a variable-free expression as an exact rational (when
 /// it evaluates to one) or a [`DECISION_DIGITS`]-digit approximation.
-fn approx_real(arena: &mut Arena, e: ExprId) -> Option<Ratio<BigInt>> {
+fn approx_real(arena: &mut Arena, e: ExprId) -> Option<Q> {
     let ev = crate::transforms::eval::eval(arena, e);
     if let Some(r) = arena.as_num(ev) {
         return Some(r.clone());
@@ -1152,8 +1150,8 @@ fn approx_real(arena: &mut Arena, e: ExprId) -> Option<Ratio<BigInt>> {
 /// A parsed `evalf` string, as exact decimal rationals (no overflow or
 /// underflow for huge / tiny magnitudes).
 struct ParsedComplex {
-    re: Ratio<BigInt>,
-    im: Ratio<BigInt>,
+    re: Q,
+    im: Q,
 }
 
 /// Parse an `evalf` result: `"1.5"`, `"-2e-7"`, `"i"`, `"2.5*i"`,
@@ -1204,7 +1202,7 @@ fn parse_evalf_complex(s: &str) -> Option<ParsedComplex> {
 }
 
 /// Exact rational value of a decimal literal such as `-12.345e-7`.
-fn decimal_to_ratio(text: &str) -> Option<Ratio<BigInt>> {
+fn decimal_to_ratio(text: &str) -> Option<Q> {
     let t = text.trim();
     let (negative, t) = match t.strip_prefix('-') {
         Some(rest) => (true, rest),

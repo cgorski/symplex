@@ -13,13 +13,12 @@
 
 use std::fmt;
 
-use num_bigint::BigInt;
-use num_rational::Ratio;
 use num_traits::{One, Zero};
 
 use crate::api::context::Context;
 use crate::api::expr::{BoolEx, Ex};
 use crate::base::errors::SymplexError;
+use crate::base::numeric::Q;
 use crate::domains::combinatorics::stirling2;
 
 use super::continuous::sampler_positive;
@@ -27,21 +26,19 @@ use super::family::{Distribution, Family, Sampler, same_family};
 use super::sample::{self, Rng};
 use super::support::Support;
 
-type Rat = Ratio<BigInt>;
-
 fn invalid(reason: impl Into<String>) -> SymplexError {
     SymplexError::invalid_argument("stats", reason)
 }
 
 /// The exact value of a numeric parameter; `None` for a symbolic one.
-fn numeric(e: &Ex) -> Option<Rat> {
+fn numeric(e: &Ex) -> Option<Q> {
     e.eval().as_rational()
 }
 
 /// Reject a numeric probability outside `[0, 1]`; accept symbolic ones.
 fn require_probability(p: &Ex, what: &str) -> Result<(), SymplexError> {
     if let Some(q) = numeric(p)
-        && (q < Rat::zero() || q > Rat::one())
+        && (q < Q::zero() || q > Q::one())
     {
         return Err(invalid(format!("{what} must lie in [0, 1], got `{p}`")));
     }
@@ -52,7 +49,7 @@ fn require_probability(p: &Ex, what: &str) -> Result<(), SymplexError> {
 /// accept symbolic ones.
 fn require_probability_positive(p: &Ex, what: &str, allow_one: bool) -> Result<(), SymplexError> {
     if let Some(q) = numeric(p)
-        && (q <= Rat::zero() || q > Rat::one() || (!allow_one && q == Rat::one()))
+        && (q <= Q::zero() || q > Q::one() || (!allow_one && q == Q::one()))
     {
         let range = if allow_one { "(0, 1]" } else { "(0, 1)" };
         return Err(invalid(format!("{what} must lie in {range}, got `{p}`")));
@@ -64,7 +61,7 @@ fn require_probability_positive(p: &Ex, what: &str, allow_one: bool) -> Result<(
 /// symbolic ones.
 fn require_count(n: &Ex, what: &str) -> Result<(), SymplexError> {
     if let Some(q) = numeric(n)
-        && (!q.is_integer() || q < Rat::zero())
+        && (!q.is_integer() || q < Q::zero())
     {
         return Err(invalid(format!(
             "{what} must be a non-negative integer, got `{n}`"
@@ -735,12 +732,12 @@ impl Distribution {
         if table.is_empty() {
             return Err(invalid("a finite distribution needs at least one value"));
         }
-        let mut total = Rat::zero();
+        let mut total = Q::zero();
         let mut all_numeric = true;
         for (v, p) in &table {
             match p.eval().as_rational() {
                 Some(q) => {
-                    if q < Rat::zero() {
+                    if q < Q::zero() {
                         return Err(invalid(format!("probability of `{v}` is negative: `{p}`")));
                     }
                     total += q;
@@ -748,7 +745,7 @@ impl Distribution {
                 None => all_numeric = false,
             }
         }
-        if all_numeric && total != Rat::one() {
+        if all_numeric && total != Q::one() {
             return Err(invalid(format!("the probabilities sum to {total}, not 1")));
         }
         for (i, (v, _)) in table.iter().enumerate() {

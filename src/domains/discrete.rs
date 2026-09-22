@@ -41,6 +41,7 @@ use num_traits::{One, Zero};
 
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
+use crate::base::numeric::Q;
 use crate::domains::ntheory::{isprime, mod_inverse, primitive_root};
 
 /// The power of two at or above `len`.  A `Vec` holds at most `isize::MAX`
@@ -96,7 +97,7 @@ fn pad_pow2<T: Clone + Zero>(a: &[T]) -> Vec<T> {
 /// assert_eq!(convolution(&[r(1, 2), r(1, 3)], &q(&[3, 4])), vec![r(3, 2), r(3, 1), r(4, 3)]);
 /// assert!(convolution(&[], &q(&[1, 2])).is_empty());
 /// ```
-pub fn convolution(a: &[Ratio<BigInt>], b: &[Ratio<BigInt>]) -> Vec<Ratio<BigInt>> {
+pub fn convolution(a: &[Q], b: &[Q]) -> Vec<Q> {
     if a.is_empty() || b.is_empty() {
         return vec![];
     }
@@ -135,11 +136,7 @@ pub fn convolution(a: &[Ratio<BigInt>], b: &[Ratio<BigInt>]) -> Vec<Ratio<BigInt
 /// // SymPy: convolution([1, 2, 3], [4, 5, 6], cycle=6) == [4, 13, 28, 27, 18, 0]
 /// assert_eq!(convolution_cyclic(&q(&[1, 2, 3]), &q(&[4, 5, 6]), 6), q(&[4, 13, 28, 27, 18, 0]));
 /// ```
-pub fn convolution_cyclic(
-    a: &[Ratio<BigInt>],
-    b: &[Ratio<BigInt>],
-    n: usize,
-) -> Vec<Ratio<BigInt>> {
+pub fn convolution_cyclic(a: &[Q], b: &[Q], n: usize) -> Vec<Q> {
     if n == 0 || a.is_empty() || b.is_empty() {
         return vec![];
     }
@@ -172,7 +169,7 @@ pub fn convolution_cyclic(
 /// // SymPy: convolution_subset([1, 2], [3, 4, 5]) == [3, 10, 5, 10]
 /// assert_eq!(convolution_subset(&q(&[1, 2]), &q(&[3, 4, 5])), q(&[3, 10, 5, 10]));
 /// ```
-pub fn convolution_subset(a: &[Ratio<BigInt>], b: &[Ratio<BigInt>]) -> Vec<Ratio<BigInt>> {
+pub fn convolution_subset(a: &[Q], b: &[Q]) -> Vec<Q> {
     if a.is_empty() || b.is_empty() {
         return vec![];
     }
@@ -478,7 +475,7 @@ pub fn convolution_ntt(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// In-place butterflies `(u, v) ← (u + v, u − v)` over every stride.
-fn fwht_in_place(v: &mut [Ratio<BigInt>]) {
+fn fwht_in_place(v: &mut [Q]) {
     let n = v.len();
     let mut h = 1;
     while h < n {
@@ -513,7 +510,7 @@ fn fwht_in_place(v: &mut [Ratio<BigInt>]) {
 /// // SymPy: fwht([1, 2, 3]) == [6, 2, 0, -4]   (padded to length 4)
 /// assert_eq!(fwht(&q(&[1, 2, 3])), q(&[6, 2, 0, -4]));
 /// ```
-pub fn fwht(a: &[Ratio<BigInt>]) -> Vec<Ratio<BigInt>> {
+pub fn fwht(a: &[Q]) -> Vec<Q> {
     let mut v = pad_pow2(a);
     fwht_in_place(&mut v);
     v
@@ -538,7 +535,7 @@ pub fn fwht(a: &[Ratio<BigInt>]) -> Vec<Ratio<BigInt>> {
 /// // SymPy: ifwht([1, 2, 3, 4]) == [5/2, -1/2, -1, 0]
 /// assert_eq!(ifwht(&q(&[1, 2, 3, 4])), vec![r(5, 2), r(-1, 2), r(-1, 1), r(0, 1)]);
 /// ```
-pub fn ifwht(a: &[Ratio<BigInt>]) -> Vec<Ratio<BigInt>> {
+pub fn ifwht(a: &[Q]) -> Vec<Q> {
     let mut v = pad_pow2(a);
     fwht_in_place(&mut v);
     if v.is_empty() {
@@ -557,7 +554,7 @@ pub fn ifwht(a: &[Ratio<BigInt>]) -> Vec<Ratio<BigInt>> {
 
 /// Sum-over-subsets (`subset = true`) or sum-over-supersets transform and
 /// its inverse (`sign = −1`), in place on a power-of-two length.
-fn mobius_in_place(v: &mut [Ratio<BigInt>], subset: bool, inverse: bool) {
+fn mobius_in_place(v: &mut [Q], subset: bool, inverse: bool) {
     let n = v.len();
     let mut bit = 1;
     while bit < n {
@@ -602,7 +599,7 @@ fn mobius_in_place(v: &mut [Ratio<BigInt>], subset: bool, inverse: bool) {
 ///     q(&[1, 3, 4, 10, 6, 14, 16, 36])
 /// );
 /// ```
-pub fn mobius_transform(a: &[Ratio<BigInt>]) -> Vec<Ratio<BigInt>> {
+pub fn mobius_transform(a: &[Q]) -> Vec<Q> {
     let mut v = pad_pow2(a);
     mobius_in_place(&mut v, true, false);
     v
@@ -626,7 +623,7 @@ pub fn mobius_transform(a: &[Ratio<BigInt>]) -> Vec<Ratio<BigInt>> {
 /// // SymPy: inverse_mobius_transform([1, 2, 3, 4]) == [1, 1, 2, 0]
 /// assert_eq!(inverse_mobius_transform(&q(&[1, 2, 3, 4])), q(&[1, 1, 2, 0]));
 /// ```
-pub fn inverse_mobius_transform(a: &[Ratio<BigInt>]) -> Vec<Ratio<BigInt>> {
+pub fn inverse_mobius_transform(a: &[Q]) -> Vec<Q> {
     let mut v = pad_pow2(a);
     mobius_in_place(&mut v, true, true);
     v
@@ -648,7 +645,7 @@ pub fn inverse_mobius_transform(a: &[Ratio<BigInt>]) -> Vec<Ratio<BigInt>> {
 /// // SymPy: mobius_transform([1, 2, 3, 4], subset=False) == [10, 6, 7, 4]
 /// assert_eq!(mobius_transform_superset(&q(&[1, 2, 3, 4])), q(&[10, 6, 7, 4]));
 /// ```
-pub fn mobius_transform_superset(a: &[Ratio<BigInt>]) -> Vec<Ratio<BigInt>> {
+pub fn mobius_transform_superset(a: &[Q]) -> Vec<Q> {
     let mut v = pad_pow2(a);
     mobius_in_place(&mut v, false, false);
     v
@@ -670,7 +667,7 @@ pub fn mobius_transform_superset(a: &[Ratio<BigInt>]) -> Vec<Ratio<BigInt>> {
 /// let a = q(&[1, 2, 3, 4]);
 /// assert_eq!(inverse_mobius_transform_superset(&mobius_transform_superset(&a)), a);
 /// ```
-pub fn inverse_mobius_transform_superset(a: &[Ratio<BigInt>]) -> Vec<Ratio<BigInt>> {
+pub fn inverse_mobius_transform_superset(a: &[Q]) -> Vec<Q> {
     let mut v = pad_pow2(a);
     mobius_in_place(&mut v, false, true);
     v

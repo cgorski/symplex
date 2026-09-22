@@ -15,6 +15,7 @@ use crate::api::context::Context;
 use crate::api::eq::Equation;
 use crate::api::expr::Ex;
 use crate::base::assumptions::Assumption;
+use crate::base::dense_f64;
 use crate::base::errors::SymplexError;
 use crate::base::node::SymbolId;
 use crate::domains::matrix::Matrix;
@@ -486,50 +487,15 @@ fn float_to_ex(like: &Ex, x: f64) -> Result<Ex, SymplexError> {
     Ok(like.wrap(id))
 }
 
-/// Solve the dense linear system `a·x = b` in place with partial pivoting.
-/// Returns `None` if the matrix is numerically singular.
-fn gauss_solve(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
-    let n = b.len();
-    for col in 0..n {
-        // Partial pivoting.
-        let (best, best_val) = a
-            .iter()
-            .enumerate()
-            .skip(col)
-            .map(|(r, row)| (r, row[col].abs()))
-            .fold(
-                (col, -1.0_f64),
-                |acc, cur| if cur.1 > acc.1 { cur } else { acc },
-            );
-        if best_val < 1e-300 || !best_val.is_finite() {
-            return None;
-        }
-        if best != col {
-            a.swap(col, best);
-            b.swap(col, best);
-        }
-        let pivot_row = a[col].clone();
-        let pivot_b = b[col];
-        for (r, row) in a.iter_mut().enumerate().skip(col + 1) {
-            let f = row[col] / pivot_row[col];
-            if f == 0.0 {
-                continue;
-            }
-            for (entry, p) in row.iter_mut().zip(&pivot_row).skip(col) {
-                *entry -= f * p;
-            }
-            b[r] -= f * pivot_b;
-        }
+/// Solve the dense linear system `a·x = b` with partial pivoting
+/// ([`dense_f64::solve_partial_pivot`]).  Returns `None` if the matrix is
+/// numerically singular or has a non-finite entry.
+fn gauss_solve(a: Vec<Vec<f64>>, b: Vec<f64>) -> Option<Vec<f64>> {
+    let flat = dense_f64::flatten(&a);
+    if flat.iter().any(|v| !v.is_finite()) {
+        return None;
     }
-    let mut x = vec![0.0; n];
-    for r in (0..n).rev() {
-        let mut s = b[r];
-        for c in (r + 1)..n {
-            s -= a[r][c] * x[c];
-        }
-        x[r] = s / a[r][r];
-    }
-    Some(x)
+    dense_f64::solve_partial_pivot(&flat, b.len(), &b)
 }
 
 fn inf_norm(v: &[f64]) -> f64 {

@@ -21,10 +21,11 @@ use astro_float::{BigFloat, Consts, RoundingMode};
 use num_bigint::BigInt;
 use num_complex::Complex64;
 use num_rational::Ratio;
-use num_traits::{One, Signed, ToPrimitive, Zero};
+use num_traits::{ToPrimitive, Zero};
 
 use super::dense::Poly;
 use crate::base::bigcomplex::{c_add, c_div, c_mul, c_one, c_sub, c_zero};
+use crate::base::numeric;
 
 /// A complex number as `(real, imaginary)` pair of arbitrary-precision
 /// floats (the working type; results are handed out as [`Complex64`]).
@@ -63,67 +64,17 @@ fn poly_eval_complex_bf(
     result
 }
 
-/// Convert a `Ratio<BigInt>` to a `BigFloat` at the given precision.
+/// Convert a `Ratio<BigInt>` to a `BigFloat` at the given precision
+/// (see [`numeric::ratio_to_bigfloat`]).
 fn ratio_to_bigfloat(r: &Ratio<BigInt>, prec: usize) -> BigFloat {
-    let numer_f = bigint_to_bigfloat(r.numer(), prec);
-    if r.denom().is_one() {
-        return numer_f;
-    }
-    let denom_f = bigint_to_bigfloat(r.denom(), prec);
-    if denom_f.is_zero() {
-        return BigFloat::new(prec);
-    }
-    numer_f.div(&denom_f, prec, RoundingMode::None)
+    numeric::ratio_to_bigfloat(r, prec, RoundingMode::None)
 }
 
-/// Convert a `BigInt` to a `BigFloat`: directly when it fits `i128`,
-/// otherwise limb by limb at a precision wide enough to hold every bit, so
-/// the conversion is exact up to the final rounding to `prec` bits.
-fn bigint_to_bigfloat(n: &BigInt, prec: usize) -> BigFloat {
-    if let Some(v) = n.to_i128() {
-        return BigFloat::from_i128(v, prec);
-    }
-    let (sign, limbs) = n.to_u64_digits();
-    let wp = (limbs.len() * 64 + 64).max(prec);
-    let rm = RoundingMode::ToEven;
-    let base = BigFloat::from_u64(1u64 << 32, wp).powi(2, wp, rm); // 2^64
-    let mut acc = BigFloat::new(wp);
-    for &limb in limbs.iter().rev() {
-        acc = acc
-            .mul(&base, wp, rm)
-            .add(&BigFloat::from_u64(limb, wp), wp, rm);
-    }
-    if sign == num_bigint::Sign::Minus {
-        acc = acc.neg();
-    }
-    let _ = acc.set_precision(prec, rm);
-    acc
-}
-
-/// Compute Cauchy's upper bound on the absolute value of all roots.
-///
-/// For `p(x) = a_n x^n + ... + a_0`, all roots satisfy
-/// `|z| ≤ 1 + max(|a_i / a_n|)` for `i = 0..n-1`.
+/// Cauchy's upper bound on the absolute value of all roots,
+/// `1 + maxᵢ |aᵢ / aₙ|` (see [`super::sturm::cauchy_bound`]), converted
+/// once to a `BigFloat`.
 fn cauchy_bound(poly: &Poly, prec: usize) -> BigFloat {
-    let rm = RoundingMode::None;
-    let lc = poly.leading_coeff().cloned().unwrap_or_else(Ratio::one);
-    if lc.is_zero() {
-        return BigFloat::from_i32(1, prec);
-    }
-    let mut max_ratio = BigFloat::from_i32(0, prec);
-    for c in poly
-        .coeffs()
-        .iter()
-        .take(poly.coeffs().len().saturating_sub(1))
-    {
-        let ratio = c / &lc;
-        let abs_ratio = if ratio.is_negative() { -ratio } else { ratio };
-        let bf = ratio_to_bigfloat(&abs_ratio, prec);
-        if bf.sub(&max_ratio, prec, rm).is_positive() {
-            max_ratio = bf;
-        }
-    }
-    max_ratio.add(&BigFloat::from_i32(1, prec), prec, rm)
+    ratio_to_bigfloat(&super::sturm::cauchy_bound(poly), prec)
 }
 
 /// `log₂ |r|` for a non-zero rational, from the bit lengths when the value
@@ -765,6 +716,7 @@ pub(crate) fn nroots_f64(poly: &Poly, prec_bits: usize) -> Vec<Complex64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use num_traits::One;
 
     fn poly_from_coeffs(coeffs: &[i64]) -> Poly {
         let rat_coeffs: Vec<Ratio<BigInt>> = coeffs

@@ -43,6 +43,7 @@ use crate::api::context::Context;
 use crate::api::eq::Equation;
 use crate::api::expr::Ex;
 use crate::api::poly_ex::Poly;
+use crate::base::budget::Budget;
 use crate::base::errors::SymplexError;
 use crate::base::interval::Bounds;
 use crate::domains::certificates::serial::{q_from_str, q_to_str};
@@ -78,9 +79,11 @@ fn invalid(reason: impl Into<String>) -> SymplexError {
 /// [`with_time_limit`](Self::with_time_limit), converted to a deadline when
 /// the call starts — so a prover built once gets a fresh allowance per
 /// goal) and/or a cap on the total number of simplex pivots across every
-/// LP of the call ([`with_max_pivots`](Self::with_max_pivots)).  The stage
-/// LPs and the refutation's sample LPs each run under what is left.  When
-/// the budget runs out the answer is `Unknown` with
+/// LP of the call ([`with_max_pivots`](Self::with_max_pivots)).  The three
+/// fields are the crate-wide [`Budget`] (see [`budget`](Self::budget) /
+/// [`with_budget`](Self::with_budget)).  The stage LPs and the
+/// refutation's sample LPs each run under what is left.  When the budget
+/// runs out the answer is `Unknown` with
 /// [`PolyhedronUnknown::budget_exhausted`] set; a budget never changes a
 /// `Proved` or `Refuted` answer that fits inside it.
 ///
@@ -189,6 +192,27 @@ impl PolyhedronOpts {
     #[must_use]
     pub fn with_max_pivots(mut self, max_pivots: usize) -> Self {
         self.max_pivots = Some(max_pivots);
+        self
+    }
+
+    /// The budget of one `prove*` call: `deadline`, `time_limit` and
+    /// `max_pivots` as one [`Budget`] (the time limit still relative — it
+    /// is resolved when the call starts).
+    pub fn budget(&self) -> Budget {
+        Budget {
+            deadline: self.deadline,
+            time_limit: self.time_limit,
+            max_pivots: self.max_pivots,
+        }
+    }
+
+    /// Replace `deadline`, `time_limit` and `max_pivots` with those of
+    /// `budget`.
+    #[must_use]
+    pub fn with_budget(mut self, budget: Budget) -> Self {
+        self.deadline = budget.deadline;
+        self.time_limit = budget.time_limit;
+        self.max_pivots = budget.max_pivots;
         self
     }
 
@@ -1216,9 +1240,9 @@ struct Stage {
 }
 
 /// The budget of one `prove*` call: a [`linprog::LpMeter`](LpMeter)
-/// started from the options (deadline / time limit / pivot cap).
+/// started from the options' [`Budget`](PolyhedronOpts::budget).
 fn meter_for(opts: &PolyhedronOpts) -> LpMeter {
-    LpMeter::start(opts.deadline, opts.time_limit, opts.max_pivots)
+    LpMeter::start(&opts.budget())
 }
 
 /// A prover for a **fixed** hypothesis set and parameter: parses the

@@ -46,7 +46,9 @@ use rustc_hash::FxHashMap;
 
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
+use crate::base::extended::Extended;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 
 /// Maximum L'Hôpital iterations to prevent infinite loops.
 const MAX_LHOPITAL: usize = 5;
@@ -627,7 +629,7 @@ fn const_sign_depth(arena: &mut Arena, e: ExprId, depth: usize) -> Option<i32> {
     }
 }
 
-fn sign_of_ratio(r: &Ratio<BigInt>) -> i32 {
+fn sign_of_ratio(r: &Q) -> i32 {
     if r.is_positive() {
         1
     } else if r.is_negative() {
@@ -657,13 +659,9 @@ fn assumption_sign(arena: &Arena, e: ExprId) -> Option<i32> {
 // (b) Compositional rule
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Extended-real classification of a computed limit value.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Ext {
-    Finite,
-    PosInf,
-    NegInf,
-}
+/// Extended-real classification of a computed limit value: the value
+/// itself when finite, or the infinity it is.
+type Ext = Extended<ExprId>;
 
 fn classify(arena: &Arena, v: ExprId) -> Ext {
     if v == arena.infinity() {
@@ -671,14 +669,14 @@ fn classify(arena: &Arena, v: ExprId) -> Ext {
     } else if v == arena.neg_infinity() {
         Ext::NegInf
     } else {
-        Ext::Finite
+        Ext::Finite(v)
     }
 }
 
 /// Wrap a finite candidate: evaluate and validate.
 fn finite_candidate(arena: &mut Arena, v: ExprId, var: ExprId) -> Option<ExprId> {
     let v = crate::transforms::eval::eval(arena, v);
-    if is_valid_limit_value(arena, v, var) && classify(arena, v) == Ext::Finite {
+    if is_valid_limit_value(arena, v, var) && classify(arena, v).is_finite() {
         Some(v)
     } else {
         None
@@ -719,7 +717,7 @@ fn try_compose(
             };
             let l = inner_limit(arena, deps[0])?;
             match classify(arena, l) {
-                Ext::Finite => {
+                Ext::Finite(_) => {
                     let s = arena.add(&[c, l]);
                     finite_candidate(arena, s, var).map(Ok)
                 }
@@ -735,7 +733,7 @@ fn try_compose(
             let c = arena.mul(&consts);
             let l = inner_limit(arena, deps[0])?;
             match classify(arena, l) {
-                Ext::Finite => {
+                Ext::Finite(_) => {
                     let p = arena.mul(&[c, l]);
                     finite_candidate(arena, p, var).map(Ok)
                 }
@@ -756,7 +754,7 @@ fn try_compose(
         ExprNode::Neg(inner) => {
             let l = inner_limit(arena, inner)?;
             match classify(arena, l) {
-                Ext::Finite => {
+                Ext::Finite(_) => {
                     let n = arena.neg(l);
                     finite_candidate(arena, n, var).map(Ok)
                 }
@@ -770,7 +768,7 @@ fn try_compose(
             let k = arena.as_num(exp).cloned();
             let l = inner_limit(arena, base)?;
             match classify(arena, l) {
-                Ext::Finite => {
+                Ext::Finite(_) => {
                     if arena.is_zero_structural(l) {
                         // 0^k: continuous only for definite positive k.
                         return match &k {
@@ -827,7 +825,7 @@ fn try_compose(
             let l = inner_limit(arena, exp)?;
             let one = Ratio::from_integer(BigInt::from(1));
             match classify(arena, l) {
-                Ext::Finite => {
+                Ext::Finite(_) => {
                     let p = arena.pow(base, l);
                     finite_candidate(arena, p, var).map(Ok)
                 }
@@ -853,20 +851,26 @@ fn try_compose(
             for &a in &args {
                 limits.push(inner_limit(arena, a)?);
             }
-            // Exact if all are numbers or infinities.
-            let mut best: Option<(ExprId, Option<Ratio<BigInt>>, Ext)> = None;
+            // Exact if all are numbers or infinities: then the values are
+            // points of the extended line and `Extended`'s order decides.
+            let mut best: Option<(ExprId, Extended<Q>)> = None;
             let mut all_ordered = true;
             for &l in &limits {
-                let cls = classify(arena, l);
-                let num = arena.as_num(l).cloned();
-                if cls == Ext::Finite && num.is_none() {
-                    all_ordered = false;
-                    break;
-                }
+                let value: Extended<Q> = match classify(arena, l) {
+                    Ext::Finite(_) => match arena.as_num(l) {
+                        Some(r) => Extended::Finite(r.clone()),
+                        None => {
+                            all_ordered = false;
+                            break;
+                        }
+                    },
+                    Ext::PosInf => Extended::PosInf,
+                    Ext::NegInf => Extended::NegInf,
+                };
                 let better = match &best {
                     None => true,
-                    Some((_, bnum, bcls)) => {
-                        let ord = ext_cmp(&num, cls, bnum, *bcls);
+                    Some((_, bvalue)) => {
+                        let ord = value.cmp(bvalue);
                         if is_min {
                             ord == std::cmp::Ordering::Less
                         } else {
@@ -875,14 +879,14 @@ fn try_compose(
                     }
                 };
                 if better {
-                    best = Some((l, num, cls));
+                    best = Some((l, value));
                 }
             }
             if all_ordered {
-                return best.map(|(l, _, _)| Ok(l));
+                return best.map(|(l, _)| Ok(l));
             }
             // Symbolic finite limits: rebuild the node and evaluate.
-            if limits.iter().any(|&l| classify(arena, l) != Ext::Finite) {
+            if limits.iter().any(|&l| !classify(arena, l).is_finite()) {
                 return None;
             }
             let sv: smallvec::SmallVec<[ExprId; 4]> = limits.iter().copied().collect();
@@ -898,7 +902,7 @@ fn try_compose(
         ExprNode::Exp(a) => {
             let l = inner_limit(arena, a)?;
             match classify(arena, l) {
-                Ext::Finite => {
+                Ext::Finite(_) => {
                     let v = arena.exp(l);
                     finite_candidate(arena, v, var).map(Ok)
                 }
@@ -909,7 +913,7 @@ fn try_compose(
         ExprNode::Ln(a) => {
             let l = inner_limit(arena, a)?;
             match classify(arena, l) {
-                Ext::Finite => {
+                Ext::Finite(_) => {
                     if arena.is_zero_structural(l) {
                         return None; // ln 0: one-sided behaviour, leave to Gruntz
                     }
@@ -1051,7 +1055,7 @@ fn try_compose(
             match classify(arena, l) {
                 Ext::PosInf => Some(Ok(arena.infinity())),
                 Ext::NegInf => Some(Err(fail("Γ(x) has no limit as x → −∞"))),
-                Ext::Finite => {
+                Ext::Finite(_) => {
                     if is_nonpositive_integer(arena, l) {
                         return None;
                     }
@@ -1065,7 +1069,7 @@ fn try_compose(
             match classify(arena, l) {
                 Ext::PosInf => Some(Ok(arena.infinity())),
                 Ext::NegInf => None,
-                Ext::Finite => {
+                Ext::Finite(_) => {
                     if matches!(node, ExprNode::LogGamma(_) | ExprNode::Digamma(_))
                         && is_nonpositive_integer(arena, l)
                     {
@@ -1085,7 +1089,7 @@ fn try_compose(
             match classify(arena, l) {
                 Ext::PosInf => Some(Ok(arena.infinity())),
                 Ext::NegInf => None,
-                Ext::Finite => {
+                Ext::Finite(_) => {
                     let v = arena.factorial(l);
                     finite_candidate(arena, v, var).map(Ok)
                 }
@@ -1097,7 +1101,7 @@ fn try_compose(
             let s = match classify(arena, l) {
                 Ext::PosInf => 1,
                 Ext::NegInf => -1,
-                Ext::Finite => match arena.as_num(l) {
+                Ext::Finite(_) => match arena.as_num(l) {
                     Some(r) if !r.is_zero() => sign_of_ratio(r),
                     _ => return None,
                 },
@@ -1116,7 +1120,7 @@ fn try_compose(
             match classify(arena, l) {
                 Ext::PosInf => Some(Ok(arena.infinity())),
                 Ext::NegInf => Some(Ok(arena.neg_infinity())),
-                Ext::Finite => {
+                Ext::Finite(_) => {
                     let r = arena.as_num(l).cloned()?;
                     if r.is_integer() {
                         return None;
@@ -1128,28 +1132,6 @@ fn try_compose(
             }
         }
         _ => None,
-    }
-}
-
-/// Compare two extended-real values (numbers or `±∞`).
-fn ext_cmp(
-    a: &Option<Ratio<BigInt>>,
-    a_cls: Ext,
-    b: &Option<Ratio<BigInt>>,
-    b_cls: Ext,
-) -> std::cmp::Ordering {
-    use std::cmp::Ordering::*;
-    let rank = |c: Ext| match c {
-        Ext::NegInf => 0,
-        Ext::Finite => 1,
-        Ext::PosInf => 2,
-    };
-    match rank(a_cls).cmp(&rank(b_cls)) {
-        Equal if a_cls == Ext::Finite => match (a, b) {
-            (Some(x), Some(y)) => x.cmp(y),
-            _ => Equal,
-        },
-        other => other,
     }
 }
 
@@ -1180,7 +1162,7 @@ fn unary_with_asymptotes(
 ) -> Option<Result<ExprId, SymplexError>> {
     let l = inner_limit(arena, inner)?;
     match classify(arena, l) {
-        Ext::Finite => {
+        Ext::Finite(_) => {
             let v = build(arena, l);
             finite_candidate(arena, v, var).map(Ok)
         }

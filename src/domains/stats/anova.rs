@@ -50,12 +50,13 @@
 //! # Ok::<(), SymplexError>(())
 //! ```
 
-use std::f64::consts::{PI, SQRT_2};
+use std::f64::consts::PI;
 
 use num_traits::{One, Signed, Zero};
 
 use super::common::{
-    check_confidence, check_unit_open, chi_squared_sf, ex, f_sf, f_sf_rational, invalid, qi, qu,
+    check_confidence, check_unit_open, chi_squared_sf, ex, f_sf, f_sf_rational, invalid, norm_cdf,
+    norm_pdf, qi, qu,
 };
 use super::data::{self, Q};
 use super::hypothesis::{self, Alternative, PValue, TestResult, p_value_accessors};
@@ -67,7 +68,7 @@ use crate::base::interval::Interval;
 use crate::base::numeric::ratio_to_f64;
 use crate::domains::exact_matrix::QMatrix;
 use crate::domains::optimize::{RootOpts, brent_root};
-use crate::output::codegen::numeric_rt::{erfc, lgamma};
+use crate::output::codegen::numeric_rt::lgamma;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Small helpers
@@ -1333,8 +1334,6 @@ pub fn anova_repeated_measures(
 // The studentized range distribution
 // ═══════════════════════════════════════════════════════════════════════════
 
-const SQRT_2PI: f64 = 2.506_628_274_631_000_5;
-
 /// An `m`-point Gauss–Legendre rule on `[−1, 1]`, applied panel-wise.
 struct GaussLegendre {
     nodes: Vec<f64>,
@@ -1397,21 +1396,13 @@ fn legendre(m: usize, x: f64) -> (f64, f64) {
     (p1, dp)
 }
 
-fn normal_cdf(x: f64) -> f64 {
-    0.5 * erfc(-x / SQRT_2)
-}
-
-fn normal_pdf(x: f64) -> f64 {
-    (-0.5 * x * x).exp() / SQRT_2PI
-}
-
 /// `P(range of k iid standard normals ≤ w) = k ∫ φ(z) (Φ(z + w) − Φ(z))^{k−1} dz`.
 fn normal_range_cdf(w: f64, k: usize, rule: &GaussLegendre) -> f64 {
     if w <= 0.0 {
         return 0.0;
     }
     let power = (k - 1) as i32;
-    let f = |z: f64| normal_pdf(z) * (normal_cdf(z + w) - normal_cdf(z)).powi(power);
+    let f = |z: f64| norm_pdf(z) * (norm_cdf(z + w) - norm_cdf(z)).powi(power);
     // The integrand is bounded by φ(z), negligible beyond |z| = 9; its
     // features sharpen like 1/√k as the power grows.
     let panel_width = (3.0 / (k as f64).sqrt() * 1.5).min(3.0);

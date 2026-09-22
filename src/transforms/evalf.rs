@@ -170,13 +170,7 @@ pub(crate) fn eval_const_f64(arena: &mut Arena, expr: ExprId) -> Option<f64> {
     // Fast path: if the result is already a rational number, convert directly
     // without invoking the expensive arbitrary-precision machinery.
     if let Some(r) = arena.as_num(evaled) {
-        let n: f64 = r.numer().to_string().parse().ok()?;
-        let d: f64 = r.denom().to_string().parse().ok()?;
-        if d == 0.0 {
-            tracing::debug!("eval_const_f64: rational with zero denominator");
-            return None;
-        }
-        let result = n / d;
+        let result = crate::base::numeric::ratio_to_f64(r)?;
         tracing::trace!(result, "eval_const_f64: rational fast path");
         return Some(result);
     }
@@ -6402,50 +6396,10 @@ fn get_cached(cache: &FxHashMap<ExprId, Complex>, id: ExprId) -> Result<&Complex
     })
 }
 
-/// Convert a `Ratio<BigInt>` to a `BigFloat` with the given precision in bits.
+/// Convert a `Ratio<BigInt>` to a `BigFloat` with the given precision in
+/// bits (see [`crate::base::numeric::ratio_to_bigfloat`]).
 fn ratio_to_bigfloat(r: &Ratio<BigInt>, prec: usize, rm: RoundingMode) -> BigFloat {
-    if r.is_zero() {
-        return BigFloat::from_i32(0, prec);
-    }
-
-    let numer = r.numer();
-    let denom = r.denom();
-
-    let n_bf = bigint_to_bigfloat(numer, prec);
-
-    if denom == &BigInt::from(1) {
-        return n_bf;
-    }
-
-    let d_bf = bigint_to_bigfloat(denom, prec);
-    n_bf.div(&d_bf, prec, rm)
-}
-
-/// Convert a `BigInt` to a `BigFloat`, exactly up to the final rounding
-/// to `prec` bits.
-///
-/// Values that fit in `i128` are converted directly.  Larger integers are
-/// accumulated limb-by-limb (`acc = acc·2⁶⁴ + limb`) at a working
-/// precision wide enough to hold every bit, then rounded once.
-fn bigint_to_bigfloat(n: &BigInt, prec: usize) -> BigFloat {
-    if let Ok(v) = <BigInt as TryInto<i128>>::try_into(n.clone()) {
-        return BigFloat::from_i128(v, prec);
-    }
-    let (sign, limbs) = n.to_u64_digits();
-    let wp = (limbs.len() * 64 + 64).max(prec);
-    let rm = RoundingMode::ToEven;
-    let base = BigFloat::from_u64(1u64 << 32, wp).powi(2, wp, rm); // 2^64
-    let mut acc = BigFloat::new(wp);
-    for &limb in limbs.iter().rev() {
-        acc = acc
-            .mul(&base, wp, rm)
-            .add(&BigFloat::from_u64(limb, wp), wp, rm);
-    }
-    if sign == num_bigint::Sign::Minus {
-        acc = acc.neg();
-    }
-    let _ = acc.set_precision(prec, rm);
-    acc
+    crate::base::numeric::ratio_to_bigfloat(r, prec, rm)
 }
 
 /// Try to extract a small integer exponent (fits in i32) from an ExprId.
@@ -7240,7 +7194,7 @@ mod tests {
     fn bigint_to_bigfloat_is_exact_for_huge_integers() {
         // 2^200 + 1 is far beyond i128; its BigFloat must keep all bits.
         let n = (BigInt::from(1) << 200) + BigInt::from(1);
-        let bf = bigint_to_bigfloat(&n, 256);
+        let bf = crate::base::numeric::bigint_to_bigfloat(&n, 256);
         let two200 = BigFloat::from_i32(2, 256).powi(200, 256, RoundingMode::ToEven);
         let diff = bf.sub(&two200, 256, RoundingMode::ToEven);
         assert_eq!(diff, BigFloat::from_i32(1, 256));

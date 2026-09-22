@@ -8,6 +8,7 @@
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 use crate::base::walk;
 use crate::simplify::simplify_engine::count_ops;
 
@@ -547,7 +548,7 @@ fn tr9(arena: &mut Arena, expr: ExprId) -> ExprId {
 struct SinCosPair {
     sin_arg: ExprId,
     cos_arg: ExprId,
-    coeff: Ratio<BigInt>,
+    coeff: Q,
 }
 
 /// Information about a product of two trig functions of the same type.
@@ -555,7 +556,7 @@ struct SameTypePair {
     arg1: ExprId,
     arg2: ExprId,
     is_sin: bool,
-    coeff: Ratio<BigInt>,
+    coeff: Q,
 }
 
 /// The two trig factors of a term that is *exactly* `coeff · trig(a) · trig(b)`:
@@ -813,8 +814,8 @@ pub(crate) fn tr14(arena: &mut Arena, expr: ExprId) -> ExprId {
     walk_transform(arena, expr, |arena, id| {
         let node = arena.node(id).clone();
         if let ExprNode::Add(ref children) = node {
-            let mut cos_entries: Vec<(usize, ExprId, Ratio<BigInt>)> = Vec::new();
-            let mut one_entry: Option<(usize, Ratio<BigInt>)> = None;
+            let mut cos_entries: Vec<(usize, ExprId, Q)> = Vec::new();
+            let mut one_entry: Option<(usize, Q)> = None;
 
             for (idx, &child) in children.iter().enumerate() {
                 let (coeff, term) = arena.as_coeff_term(child);
@@ -984,13 +985,13 @@ pub(crate) fn tr_power(arena: &mut Arena, expr: ExprId) -> ExprId {
 /// - Even n: `sin^n(x) = (1/2^n) * [C(n,n/2) + 2·Σ (-1)^(n/2-k)·C(n,k)·cos((n-2k)x)]`
 /// - Odd n:  `sin^n(x) = (1/2^n) * [2·Σ (-1)^((n-1)/2-k)·C(n,k)·sin((n-2k)x)]`
 pub(crate) fn linearize_sin_power(arena: &mut Arena, arg: ExprId, n: u32) -> ExprId {
-    let denom = arena.int(1i64 << n);
+    let denom = arena.big_int(BigInt::one() << n);
     let mut terms: Vec<ExprId> = Vec::new();
 
     if n.is_multiple_of(2) {
         let half_n = n / 2;
         let central = binomial_coeff(n, half_n);
-        terms.push(arena.int(central));
+        terms.push(arena.big_int(central));
 
         for k in 0..half_n {
             let binom = binomial_coeff(n, k);
@@ -999,7 +1000,7 @@ pub(crate) fn linearize_sin_power(arena: &mut Arena, arg: ExprId, n: u32) -> Exp
             } else {
                 -1i64
             };
-            let coeff = arena.int(2 * sign * binom);
+            let coeff = arena.big_int(2 * sign * binom);
             let mult = arena.int((n - 2 * k) as i64);
             let mult_arg = arena.mul(&[mult, arg]);
             let cos_term = arena.cos(mult_arg);
@@ -1014,7 +1015,7 @@ pub(crate) fn linearize_sin_power(arena: &mut Arena, arg: ExprId, n: u32) -> Exp
             } else {
                 -1i64
             };
-            let coeff = arena.int(2 * sign * binom);
+            let coeff = arena.big_int(2 * sign * binom);
             let mult = arena.int((n - 2 * k) as i64);
             let mult_arg = arena.mul(&[mult, arg]);
             let sin_term = arena.sin(mult_arg);
@@ -1031,17 +1032,17 @@ pub(crate) fn linearize_sin_power(arena: &mut Arena, arg: ExprId, n: u32) -> Exp
 /// - Even n: `cos^n(x) = (1/2^n) * [C(n,n/2) + 2·Σ C(n,k)·cos((n-2k)x)]`
 /// - Odd n:  `cos^n(x) = (1/2^n) * [2·Σ C(n,k)·cos((n-2k)x)]`
 pub(crate) fn linearize_cos_power(arena: &mut Arena, arg: ExprId, n: u32) -> ExprId {
-    let denom = arena.int(1i64 << n);
+    let denom = arena.big_int(BigInt::one() << n);
     let mut terms: Vec<ExprId> = Vec::new();
 
     if n.is_multiple_of(2) {
         let half_n = n / 2;
         let central = binomial_coeff(n, half_n);
-        terms.push(arena.int(central));
+        terms.push(arena.big_int(central));
 
         for k in 0..half_n {
             let binom = binomial_coeff(n, k);
-            let coeff = arena.int(2 * binom);
+            let coeff = arena.big_int(2 * binom);
             let mult = arena.int((n - 2 * k) as i64);
             let mult_arg = arena.mul(&[mult, arg]);
             let cos_term = arena.cos(mult_arg);
@@ -1051,7 +1052,7 @@ pub(crate) fn linearize_cos_power(arena: &mut Arena, arg: ExprId, n: u32) -> Exp
         let half_n = (n - 1) / 2;
         for k in 0..=half_n {
             let binom = binomial_coeff(n, k);
-            let coeff = arena.int(2 * binom);
+            let coeff = arena.big_int(2 * binom);
             let mult = arena.int((n - 2 * k) as i64);
             let mult_arg = arena.mul(&[mult, arg]);
             let cos_term = arena.cos(mult_arg);
@@ -1063,20 +1064,10 @@ pub(crate) fn linearize_cos_power(arena: &mut Arena, arg: ExprId, n: u32) -> Exp
     arena.div(sum, denom)
 }
 
-/// Compute binomial coefficient C(n, k) for small n.
-pub(crate) fn binomial_coeff(n: u32, k: u32) -> i64 {
-    if k > n {
-        return 0;
-    }
-    if k == 0 || k == n {
-        return 1;
-    }
-    let k = k.min(n - k) as i64;
-    let mut result: i64 = 1;
-    for i in 0..k {
-        result = result * (n as i64 - i) / (i + 1);
-    }
-    result
+/// The binomial coefficient `C(n, k)` (`0` for `k > n`), exact for every
+/// `n`: the shared [`combinatorics::binomial`](crate::base::combinatorics::binomial).
+pub(crate) fn binomial_coeff(n: u32, k: u32) -> BigInt {
+    crate::base::combinatorics::binomial(n, k)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1896,13 +1887,16 @@ mod tests {
 
     #[test]
     fn fu_binomial_coeff_values() {
-        assert_eq!(binomial_coeff(0, 0), 1);
-        assert_eq!(binomial_coeff(4, 0), 1);
-        assert_eq!(binomial_coeff(4, 1), 4);
-        assert_eq!(binomial_coeff(4, 2), 6);
-        assert_eq!(binomial_coeff(4, 3), 4);
-        assert_eq!(binomial_coeff(4, 4), 1);
-        assert_eq!(binomial_coeff(6, 3), 20);
-        assert_eq!(binomial_coeff(3, 5), 0);
+        let b = |n, k| binomial_coeff(n, k).to_string();
+        assert_eq!(b(0, 0), "1");
+        assert_eq!(b(4, 0), "1");
+        assert_eq!(b(4, 1), "4");
+        assert_eq!(b(4, 2), "6");
+        assert_eq!(b(4, 3), "4");
+        assert_eq!(b(4, 4), "1");
+        assert_eq!(b(6, 3), "20");
+        assert_eq!(b(3, 5), "0");
+        // Beyond `i64`: the old implementation overflowed here.
+        assert_eq!(b(70, 35), "112186277816662845432");
     }
 }

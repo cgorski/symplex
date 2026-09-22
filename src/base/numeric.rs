@@ -17,6 +17,7 @@
 //! helpers that used to be scattered through the crate, each with a
 //! different scale and each silently saturating on large inputs.
 
+use astro_float::{BigFloat, RoundingMode};
 use num_bigint::{BigInt, Sign};
 use num_rational::Ratio;
 use num_traits::{One, Signed, ToPrimitive, Zero};
@@ -222,6 +223,48 @@ pub fn ratio_to_f64(r: &Ratio<BigInt>) -> Option<f64> {
     }
     let v = n.to_f64()? / d.to_f64()?;
     v.is_finite().then_some(v)
+}
+
+/// Convert a `BigInt` to a `BigFloat`, exactly up to the final rounding
+/// to `prec` bits.
+///
+/// Values that fit in `i128` are converted directly.  Larger integers are
+/// accumulated limb-by-limb (`acc = acc·2⁶⁴ + limb`) at a working
+/// precision wide enough to hold every bit, then rounded once.
+pub(crate) fn bigint_to_bigfloat(n: &BigInt, prec: usize) -> BigFloat {
+    if let Some(v) = n.to_i128() {
+        return BigFloat::from_i128(v, prec);
+    }
+    let (sign, limbs) = n.to_u64_digits();
+    let wp = (limbs.len() * 64 + 64).max(prec);
+    let rm = RoundingMode::ToEven;
+    let base = BigFloat::from_u64(1u64 << 32, wp).powi(2, wp, rm); // 2^64
+    let mut acc = BigFloat::new(wp);
+    for &limb in limbs.iter().rev() {
+        acc = acc
+            .mul(&base, wp, rm)
+            .add(&BigFloat::from_u64(limb, wp), wp, rm);
+    }
+    if sign == Sign::Minus {
+        acc = acc.neg();
+    }
+    let _ = acc.set_precision(prec, rm);
+    acc
+}
+
+/// Convert a `Ratio<BigInt>` to a `BigFloat` at `prec` bits: numerator and
+/// denominator are converted exactly (up to their own final rounding, see
+/// [`bigint_to_bigfloat`]) and divided with rounding mode `rm`.
+pub(crate) fn ratio_to_bigfloat(r: &Ratio<BigInt>, prec: usize, rm: RoundingMode) -> BigFloat {
+    if r.is_zero() {
+        return BigFloat::from_i32(0, prec);
+    }
+    let n = bigint_to_bigfloat(r.numer(), prec);
+    if r.denom().is_one() {
+        return n;
+    }
+    let d = bigint_to_bigfloat(r.denom(), prec);
+    n.div(&d, prec, rm)
 }
 
 /// Integer square root helper for tests and callers that need exactness.

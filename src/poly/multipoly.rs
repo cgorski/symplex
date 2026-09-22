@@ -23,6 +23,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::ops;
 
+use super::zpoly::{self, ZPoly, pow_ratio};
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Monomial orderings
 // ═══════════════════════════════════════════════════════════════════════════
@@ -385,6 +387,17 @@ impl<O: MonomialOrd> MultiPoly<O> {
         Some(p)
     }
 
+    /// A polynomial from a ready-made term map (zero coefficients are
+    /// dropped; every key must have `num_vars` exponents).
+    pub(crate) fn from_term_map(
+        num_vars: usize,
+        terms: BTreeMap<MonoKey<O>, Ratio<BigInt>>,
+    ) -> Self {
+        let mut p = MultiPoly { num_vars, terms };
+        p.prune();
+        p
+    }
+
     /// Apply `f` to every coefficient, dropping terms that become zero.
     ///
     /// # Examples
@@ -584,6 +597,9 @@ impl<O: MonomialOrd> MultiPoly<O> {
     /// Evaluate the polynomial at a point: substitute each variable with
     /// a rational value.
     ///
+    /// Computed over a common denominator with a single reduction at the
+    /// end (`zpoly::ZPoly::eval`).
+    ///
     /// # Panics
     ///
     /// Panics if `values.len() != self.num_vars`.
@@ -595,27 +611,8 @@ impl<O: MonomialOrd> MultiPoly<O> {
             self.num_vars,
             values.len()
         );
-        let mut result = Ratio::from_integer(BigInt::from(0));
-        for (key, coeff) in &self.terms {
-            let mut term_val = coeff.clone();
-            for (i, &e) in key.exponents.iter().enumerate() {
-                if e > 0 {
-                    term_val *= pow_ratio(&values[i], e);
-                }
-            }
-            result += term_val;
-        }
-        result
+        ZPoly::from_multipoly(self).eval(values)
     }
-}
-
-/// Raise a rational to a non-negative integer power.
-fn pow_ratio(base: &Ratio<BigInt>, exp: u32) -> Ratio<BigInt> {
-    let mut result = Ratio::one();
-    for _ in 0..exp {
-        result *= base;
-    }
-    result
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -783,26 +780,68 @@ impl<O: MonomialOrd> MultiPoly<O> {
 
     /// Multiply two polynomials.
     ///
+    /// The product is accumulated over a common denominator in `ℤ` and
+    /// reduced once per term (`zpoly::ZPoly`).
+    ///
     /// # Panics
     ///
-    /// Panics if the polynomials have different numbers of variables.
+    /// Panics if the polynomials have different numbers of variables, or
+    /// if an exponent of the product overflows `u32` (use
+    /// [`try_mul`](Self::try_mul) to observe the overflow).
     pub fn mul(&self, other: &MultiPoly<O>) -> MultiPoly<O> {
         self.assert_compatible(other);
-        let mut result = Self::zero(self.num_vars);
-        for (key_a, coeff_a) in &self.terms {
-            for (key_b, coeff_b) in &other.terms {
-                let new_coeff = coeff_a * coeff_b;
-                let new_exp: Vec<u32> = key_a
-                    .exponents
-                    .iter()
-                    .zip(key_b.exponents.iter())
-                    .map(|(&a, &b)| a + b)
-                    .collect();
-                result.insert_term(new_exp, new_coeff);
-            }
+        let prod = self.try_mul(other);
+        assert!(prod.is_some(), "MultiPoly::mul: exponent overflow");
+        prod.unwrap_or_else(|| Self::zero(self.num_vars))
+    }
+
+    /// Multiply two polynomials; `None` if the polynomials have different
+    /// numbers of variables or an exponent of the product would overflow
+    /// `u32`.
+    pub fn try_mul(&self, other: &MultiPoly<O>) -> Option<MultiPoly<O>> {
+        if self.num_vars != other.num_vars {
+            return None;
         }
-        result.prune();
-        result
+        ZPoly::from_multipoly(self)
+            .mul(&ZPoly::from_multipoly(other))
+            .map(|z| z.into_multipoly(self.num_vars))
+    }
+
+    /// `self^n` by repeated squaring (`self^0 = 1`, also for the zero
+    /// polynomial).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an exponent of the power overflows `u32` (use
+    /// [`try_pow`](Self::try_pow) to observe the overflow).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::multipoly::MultiPoly;
+    ///
+    /// let [x, y]: [MultiPoly; 2] = [MultiPoly::var(2, 0), MultiPoly::var(2, 1)];
+    /// let s = x.add(&y);
+    /// assert_eq!(s.pow(3), s.mul(&s).mul(&s));
+    /// assert_eq!(s.pow(0), MultiPoly::from_int(2, 1));
+    /// ```
+    pub fn pow(&self, n: u32) -> MultiPoly<O> {
+        let p = self.try_pow(n);
+        assert!(p.is_some(), "MultiPoly::pow: exponent overflow");
+        p.unwrap_or_else(|| Self::zero(self.num_vars))
+    }
+
+    /// `self^n` by repeated squaring; `None` if an exponent would overflow
+    /// `u32`.
+    pub fn try_pow(&self, n: u32) -> Option<MultiPoly<O>> {
+        match n {
+            0 => return Some(Self::from_int(self.num_vars, 1)),
+            1 => return Some(self.clone()),
+            _ => {}
+        }
+        ZPoly::from_multipoly(self)
+            .pow(self.num_vars, n)
+            .map(|z| z.into_multipoly(self.num_vars))
     }
 
     /// Scale by a rational constant.
@@ -861,19 +900,8 @@ impl<O: MonomialOrd> MultiPoly<O> {
         if self.is_zero() {
             return self.clone();
         }
-        // Find LCM of all denominators
-        let mut denom_lcm = BigInt::one();
-        for (_, coeff) in self.terms() {
-            denom_lcm = num_integer::lcm(denom_lcm, coeff.denom().clone());
-        }
-        // Multiply through to clear denominators
-        let scale_factor = Ratio::from_integer(denom_lcm);
-        let integer_poly = self.scale(&scale_factor);
-        // Find GCD of all numerators
-        let mut content = BigInt::zero();
-        for (_, coeff) in integer_poly.terms() {
-            content = num_integer::gcd(content, coeff.numer().clone());
-        }
+        let (_, integer_poly) = self.clear_denominators();
+        let content = integer_poly.integer_content();
         if content.is_zero() || content.is_one() {
             return integer_poly;
         }
@@ -917,14 +945,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
     /// assert_eq!(MultiPoly::<symplex::multipoly::GrevLex>::zero(1).integer_content(), BigInt::from(0));
     /// ```
     pub fn integer_content(&self) -> BigInt {
-        let mut g = BigInt::zero();
-        for (_, c) in self.terms() {
-            g = num_integer::gcd(g, c.numer().clone());
-            if g.is_one() {
-                break;
-            }
-        }
-        g
+        zpoly::integer_content(self.terms().map(|(_, c)| c.numer()))
     }
 
     /// Multiply through by the least common multiple `d` of all coefficient
@@ -945,10 +966,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
     /// assert_eq!(g, x + 2);
     /// ```
     pub fn clear_denominators(&self) -> (BigInt, Self) {
-        let mut d = BigInt::one();
-        for (_, c) in self.terms() {
-            d = num_integer::lcm(d, c.denom().clone());
-        }
+        let d = zpoly::denominator_lcm(self.terms().map(|(_, c)| c));
         if d.is_one() {
             return (d, self.clone());
         }

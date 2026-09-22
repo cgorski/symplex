@@ -22,6 +22,7 @@
 use num_bigint::BigInt;
 use num_rational::Ratio;
 
+use crate::base::numeric::Q;
 use crate::poly::generic::GenPoly;
 use crate::poly::ratfn::RationalFn;
 use crate::poly::traits::{Field, Ring};
@@ -50,7 +51,7 @@ pub struct TowerHermiteResult {
 pub enum TowerLogTerm {
     /// `coeff · ln(argument(θ))` where `coeff` is a constant (in ℚ).
     Constant {
-        coeff: Ratio<BigInt>,
+        coeff: Q,
         argument: GenPoly<RationalFn>,
     },
     /// `coeff · ln(argument(θ))` where `coeff ∈ ℚ(x)` is NOT constant.
@@ -352,7 +353,7 @@ pub fn tower_logarithmic_part(
             // This covers the common cases like ±1/2, ±1/3, ±2/3, etc.
             let max_denom = 12i64;
             let max_numer = 10i64;
-            let mut found_roots: Vec<Ratio<BigInt>> = Vec::new();
+            let mut found_roots: Vec<Q> = Vec::new();
 
             for denom in 1..=max_denom {
                 for numer in (-max_numer * denom)..=(max_numer * denom) {
@@ -414,7 +415,7 @@ mod tests {
     use super::*;
     use crate::poly::dense::Poly;
 
-    fn r(n: i64, d: i64) -> Ratio<BigInt> {
+    fn r(n: i64, d: i64) -> Q {
         Ratio::new(BigInt::from(n), BigInt::from(d))
     }
 

@@ -35,6 +35,7 @@ use num_rational::Ratio;
 use num_traits::{One, Signed, Zero};
 
 use crate::base::arena::Arena;
+use crate::base::combinatorics::factorial;
 use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode, SymbolId};
 
@@ -259,15 +260,6 @@ fn extract_linear_coeff(arena: &mut Arena, expr: ExprId, t: ExprId) -> Option<Ex
     Some(arena.intern(ExprNode::Num(nid)))
 }
 
-/// Compute n! as a BigInt.
-fn factorial_bigint(n: u64) -> BigInt {
-    let mut result = BigInt::from(1u64);
-    for i in 2..=n {
-        result *= BigInt::from(i);
-    }
-    result
-}
-
 // ─── Forward table rules ─────────────────────────────────────────────────
 
 fn try_table_forward(
@@ -297,7 +289,7 @@ fn try_table_forward(
                 && r.is_positive()
             {
                 let n_val = r.to_integer().try_into().ok()?;
-                let fact = factorial_bigint(n_val);
+                let fact = factorial(n_val);
                 let fact_rat = Ratio::from_integer(fact);
                 let fact_id = arena.num_ratio(fact_rat.clone());
 
@@ -1037,7 +1029,7 @@ fn try_tn_exp(
             .collect();
 
         // n! / (s - a)^(n+1)
-        let fact = factorial_bigint(n_val);
+        let fact = factorial(n_val);
         let fact_rat = Ratio::from_integer(fact);
         let fact_id = arena.num_ratio(fact_rat.clone());
 
@@ -1327,7 +1319,7 @@ fn try_special_inverse(
                     let m = arena.int(nm1 as i64);
                     arena.pow(t, m)
                 };
-                let f = factorial_bigint(nm1);
+                let f = factorial(nm1);
                 let f_id = arena.num_ratio(Ratio::from_integer(f).clone());
                 let den = arena.mul(&[kn, f_id]);
                 let num = arena.mul(&[tp, ex]);
@@ -1922,7 +1914,7 @@ fn inverse_power_form(
         let t_pow = arena.pow(t, n_minus_1);
 
         // (n-1)!
-        let fact = factorial_bigint(n_val - 1);
+        let fact = factorial(n_val - 1);
         let fact_rat = Ratio::from_integer(fact);
         let fact_id = arena.num_ratio(fact_rat.clone());
 

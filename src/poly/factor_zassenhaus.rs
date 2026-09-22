@@ -1305,22 +1305,10 @@ fn odd_primes() -> impl Iterator<Item = u64> {
         .filter(|&p| is_small_odd_prime(p))
 }
 
-/// Tiny deterministic xorshift generator for Cantor–Zassenhaus splitting.
-struct XorShift(u64);
-
-impl XorShift {
-    fn new(seed: u64) -> Self {
-        XorShift(seed.max(1) ^ 0x9E37_79B9_7F4A_7C15)
-    }
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
-}
+/// The deterministic generator for Cantor–Zassenhaus splitting: which
+/// split is found first depends on its stream, so it is the shared,
+/// pinned xorshift64*.
+use crate::base::rng::XorShift64Star as XorShift;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GF(p)[x] arithmetic

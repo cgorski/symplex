@@ -88,8 +88,8 @@ const ALLOWLIST: &[(&str, usize)] = &[
     ("transforms/logic.rs", 1),
     // The pattern matcher is the engine behind `RuleSet` and the simplifier.
     ("transforms/pattern.rs", 2),
-    // `rsolve` uses `linsolve` and `Matrix`.
-    ("transforms/rsolve.rs", 2),
+    // `rsolve` uses `linsolve`.
+    ("transforms/rsolve.rs", 1),
     // `solve` normalises with `ratsimp`.
     ("transforms/solve.rs", 1),
 ];
