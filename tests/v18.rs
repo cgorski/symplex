@@ -8,3 +8,9 @@ mod v18_layout;
 mod v18_roots;
 #[path = "v18/v18_samplers.rs"]
 mod v18_samplers;
+#[path = "v18/v18_loose_ends.rs"]
+mod v18_loose_ends;
+#[path = "v18/v18_poly_fast.rs"]
+mod v18_poly_fast;
+#[path = "v18/v18_cox.rs"]
+mod v18_cox;
