@@ -42,11 +42,10 @@
 //! # Ok::<(), SymplexError>(())
 //! ```
 
-use num_bigint::BigInt;
 use num_traits::{One, Signed, Zero};
 
+use super::common::{check_confidence, ex, ex_usize, f_sf, invalid, qu, t_two_sided, z_two_sided};
 use super::data::Q;
-use super::family::Distribution;
 use super::hypothesis::{self, Alternative, TestResult};
 use crate::api::context::Context;
 use crate::api::expr::Ex;
@@ -54,45 +53,18 @@ use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
 use crate::base::numeric::ratio_to_f64;
 use crate::domains::exact_matrix::QMatrix;
-use crate::output::codegen::numeric_rt::{erfc, erfcinv};
+use crate::output::codegen::numeric_rt::erfc;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Small helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn invalid(op: &'static str, reason: impl Into<String>) -> SymplexError {
-    SymplexError::invalid_argument(op, reason)
-}
-
 fn failed(op: &'static str, reason: impl Into<String>) -> SymplexError {
     SymplexError::computation_failed(op, reason)
 }
 
-fn qu(n: usize) -> Q {
-    Q::from_integer(BigInt::from(n))
-}
-
-fn ex(ctx: &Context, q: &Q) -> Ex {
-    ctx.from_ratio(q.clone())
-}
-
-fn ex_usize(ctx: &Context, n: usize) -> Ex {
-    ctx.from_bigint(BigInt::from(n))
-}
-
 fn to_f64(op: &'static str, q: &Q) -> Result<f64, SymplexError> {
     ratio_to_f64(q).ok_or_else(|| failed(op, format!("{q} does not fit in an f64")))
-}
-
-fn check_unit_open(op: &'static str, name: &str, v: f64) -> Result<(), SymplexError> {
-    if v > 0.0 && v < 1.0 {
-        Ok(())
-    } else {
-        Err(invalid(
-            op,
-            format!("{name} must lie strictly between 0 and 1, got {v}"),
-        ))
-    }
 }
 
 fn dot(a: &[Q], b: &[Q]) -> Q {
@@ -126,29 +98,6 @@ fn student_two_sided(ctx: &Context, df: usize, t_squared: &Q) -> Ex {
     let nu = qu(df);
     let z = &nu / (t_squared + &nu);
     ex(ctx, &z).betainc_regularized(&ex(ctx, &(nu / qu(2))), &ctx.rational(1, 2), &ctx.zero())
-}
-
-/// `P(F_{d₁,d₂} ≥ f) = I_{d₂/(d₂ + d₁f)}(d₂/2, d₁/2)`.
-fn f_sf(ctx: &Context, d1: usize, d2: usize, f: &Q) -> Ex {
-    if !f.is_positive() {
-        return ctx.one();
-    }
-    let z = qu(d2) / (qu(d2) + qu(d1) * f);
-    ex(ctx, &z).betainc_regularized(
-        &ex(ctx, &(qu(d2) / qu(2))),
-        &ex(ctx, &(qu(d1) / qu(2))),
-        &ctx.zero(),
-    )
-}
-
-/// The two-sided Student-t critical value `t_{(1+c)/2, df}`.
-fn student_t_critical(ctx: &Context, df: usize, confidence: f64) -> Result<f64, SymplexError> {
-    Distribution::student_t(ex_usize(ctx, df)).quantile_f64((1.0 + confidence) / 2.0)
-}
-
-/// The two-sided standard-normal critical value `z_{(1+c)/2}`.
-fn normal_critical(confidence: f64) -> f64 {
-    std::f64::consts::SQRT_2 * erfcinv(1.0 - confidence)
 }
 
 /// `P(|Z| ≥ |z|) = erfc(|z|/√2)`.
@@ -938,20 +887,17 @@ impl Ols {
     }
 
     /// `β̂_j ± t_{(1+c)/2, n−p} · se_j` for every coefficient
-    /// (`conf_int(alpha = 1 − c)`).
+    /// (`conf_int(alpha = 1 − c)`).  The limits are `f64`, so no context is
+    /// needed.
     ///
     /// # Errors
     ///
     /// [`SymplexError::InvalidArgument`] for `confidence ∉ (0, 1)`; the
     /// quantile's error if it does not converge.
-    pub fn conf_int(
-        &self,
-        ctx: &Context,
-        confidence: f64,
-    ) -> Result<Vec<Interval<f64>>, SymplexError> {
+    pub fn conf_int(&self, confidence: f64) -> Result<Vec<Interval<f64>>, SymplexError> {
         const OP: &str = "conf_int";
-        check_unit_open(OP, "confidence", confidence)?;
-        let t = student_t_critical(ctx, self.df_resid, confidence)?;
+        check_confidence(OP, confidence)?;
+        let t = t_two_sided(OP, self.df_resid as f64, confidence)?;
         self.coefficients
             .iter()
             .zip(self.cov_params.diagonal())
@@ -999,15 +945,14 @@ impl Ols {
     fn interval_parts(
         &self,
         op: &'static str,
-        ctx: &Context,
         x_row: &[Q],
         confidence: f64,
     ) -> Result<(f64, f64, f64), SymplexError> {
-        check_unit_open(op, "confidence", confidence)?;
+        check_confidence(op, confidence)?;
         let row = self.design_row(op, x_row)?;
         let yhat = to_f64(op, &dot(&row, &self.coefficients))?;
         let factor = to_f64(op, &quadratic_form(&self.xtx_inv, &row))?;
-        let t = student_t_critical(ctx, self.df_resid, confidence)?;
+        let t = t_two_sided(op, self.df_resid as f64, confidence)?;
         Ok((yhat, factor, t))
     }
 
@@ -1021,12 +966,11 @@ impl Ols {
     /// `confidence ∉ (0, 1)`.
     pub fn confidence_interval_mean_response(
         &self,
-        ctx: &Context,
         x_row: &[Q],
         confidence: f64,
     ) -> Result<Interval<f64>, SymplexError> {
         const OP: &str = "confidence_interval_mean_response";
-        let (yhat, factor, t) = self.interval_parts(OP, ctx, x_row, confidence)?;
+        let (yhat, factor, t) = self.interval_parts(OP, x_row, confidence)?;
         let se = (to_f64(OP, &self.mse_resid)? * factor).sqrt();
         Ok(Interval::closed(yhat - t * se, yhat + t * se))
     }
@@ -1041,12 +985,11 @@ impl Ols {
     /// As [`confidence_interval_mean_response`](Self::confidence_interval_mean_response).
     pub fn prediction_interval(
         &self,
-        ctx: &Context,
         x_row: &[Q],
         confidence: f64,
     ) -> Result<Interval<f64>, SymplexError> {
         const OP: &str = "prediction_interval";
-        let (yhat, factor, t) = self.interval_parts(OP, ctx, x_row, confidence)?;
+        let (yhat, factor, t) = self.interval_parts(OP, x_row, confidence)?;
         let se = (to_f64(OP, &self.mse_resid)? * (1.0 + factor)).sqrt();
         Ok(Interval::closed(yhat - t * se, yhat + t * se))
     }
@@ -1686,8 +1629,8 @@ impl Logit {
     ///
     /// [`SymplexError::InvalidArgument`] for `confidence ∉ (0, 1)`.
     pub fn conf_int(&self, confidence: f64) -> Result<Vec<Interval<f64>>, SymplexError> {
-        check_unit_open("conf_int", "confidence", confidence)?;
-        let z = normal_critical(confidence);
+        check_confidence("conf_int", confidence)?;
+        let z = z_two_sided(confidence);
         Ok(self
             .coefficients
             .iter()

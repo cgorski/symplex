@@ -12,6 +12,7 @@ use symplex::linprog::{Q, q, qi};
 use symplex::stats::aggregation::*;
 use symplex::stats::agreement::*;
 use symplex::stats::data::{from_i64, to_f64};
+use symplex::stats::estimation::{IntervalMethod, proportion_interval};
 
 // ── Data sets ────────────────────────────────────────────────────────
 

@@ -1115,7 +1115,7 @@ fn sprt_boundaries_match_wald() {
     let bounds = wald_boundaries(0.05, 0.10).unwrap();
     close(bounds.lower, -2.251291798606495, "A");
     close(bounds.upper, 2.8903717578961645, "B");
-    let test = Sprt::bernoulli(q(7, 10), q(9, 10), 0.05, 0.10).unwrap();
+    let test = Sprt::bernoulli(&q(7, 10), &q(9, 10), 0.05, 0.10).unwrap();
     assert_eq!(test.boundaries(), bounds);
     assert_eq!((test.alpha(), test.beta()), (0.05, 0.10));
     assert_eq!(test.decision(), Decision::Continue);
@@ -1126,7 +1126,7 @@ fn sprt_boundaries_match_wald() {
 #[test]
 fn sprt_good_worker_is_accepted_after_twelve_successes() {
     // ln(9/7) = 0.25131442828090617 per success; ⌈2.8903717578961645 / 0.25131442828090617⌉ = 12
-    let mut test = Sprt::bernoulli(q(7, 10), q(9, 10), 0.05, 0.10).unwrap();
+    let mut test = Sprt::bernoulli(&q(7, 10), &q(9, 10), 0.05, 0.10).unwrap();
     let mut n = 0;
     loop {
         n += 1;
@@ -1150,7 +1150,7 @@ fn sprt_good_worker_is_accepted_after_twelve_successes() {
 #[test]
 fn sprt_bad_worker_is_rejected_after_three_failures() {
     // ln(1/3) = −1.0986122886681098 per failure; ⌈2.251291798606495 / 1.0986122886681098⌉ = 3
-    let mut test = Sprt::bernoulli(q(7, 10), q(9, 10), 0.05, 0.10).unwrap();
+    let mut test = Sprt::bernoulli(&q(7, 10), &q(9, 10), 0.05, 0.10).unwrap();
     assert_eq!(test.update(false), Decision::Continue);
     assert_eq!(test.update(false), Decision::Continue);
     assert_eq!(test.update(false), Decision::AcceptH0);
@@ -1161,7 +1161,7 @@ fn sprt_bad_worker_is_rejected_after_three_failures() {
 #[test]
 fn sprt_mixed_sequence_decisions_match_python_replay() {
     // T T F T T F F: Continue ×6, then AcceptH0 at the 7th observation (Python replay of Wald's rule)
-    let mut test = Sprt::bernoulli(q(7, 10), q(9, 10), 0.05, 0.10).unwrap();
+    let mut test = Sprt::bernoulli(&q(7, 10), &q(9, 10), 0.05, 0.10).unwrap();
     let seq = [true, true, false, true, true, false, false];
     let decisions: Vec<Decision> = seq.iter().map(|&s| test.update(s)).collect();
     assert_eq!(&decisions[..6], &[Decision::Continue; 6]);
@@ -1172,7 +1172,7 @@ fn sprt_mixed_sequence_decisions_match_python_replay() {
 #[test]
 fn sprt_log_likelihood_ratio_is_exact() {
     let ctx = Context::new();
-    let mut test = Sprt::bernoulli(q(7, 10), q(9, 10), 0.05, 0.10).unwrap();
+    let mut test = Sprt::bernoulli(&q(7, 10), &q(9, 10), 0.05, 0.10).unwrap();
     for s in [true, true, false, true, false] {
         test.update(s);
     }
@@ -1184,14 +1184,14 @@ fn sprt_log_likelihood_ratio_is_exact() {
     close(test.log_likelihood_ratio_f64(), -1.443281292493501, "Λ f64");
     assert_eq!(test.decision(), Decision::Continue);
     // Before any observation the ratio is exactly 0.
-    let fresh = Sprt::bernoulli(q(7, 10), q(9, 10), 0.05, 0.10).unwrap();
+    let fresh = Sprt::bernoulli(&q(7, 10), &q(9, 10), 0.05, 0.10).unwrap();
     assert_eq!(fresh.log_likelihood_ratio(&ctx), ctx.zero());
 }
 
 #[test]
 fn sprt_reset_counters_and_determinism() {
     let ctx = Context::new();
-    let mut a = Sprt::bernoulli(q(7, 10), q(9, 10), 0.05, 0.10).unwrap();
+    let mut a = Sprt::bernoulli(&q(7, 10), &q(9, 10), 0.05, 0.10).unwrap();
     let mut b = a.clone();
     let seq = [
         true, false, true, true, true, false, true, true, true, true, true, true, true, true,
@@ -1214,8 +1214,8 @@ fn sprt_reset_counters_and_determinism() {
         "the design survives a reset"
     );
     // observe() accepts only 0/1 for a Bernoulli test.
-    assert_eq!(a.observe(qi(1)).unwrap(), Decision::Continue);
-    assert!(a.observe(q(1, 2)).is_err());
+    assert_eq!(a.observe(&qi(1)).unwrap(), Decision::Continue);
+    assert!(a.observe(&q(1, 2)).is_err());
     assert_eq!(a.successes(), 1);
 }
 
@@ -1223,22 +1223,22 @@ fn sprt_reset_counters_and_determinism() {
 fn sprt_normal_mean_llr_is_exact_in_the_data() {
     let ctx = Context::new();
     // μ₀ = 0, μ₁ = 1, σ = 1: Λ = Σ(xᵢ − ½); observations 1/2, 3/2 give Λ = 1 exactly
-    let mut test = Sprt::normal_mean(qi(0), qi(1), qi(1), 0.05, 0.10).unwrap();
-    assert_eq!(test.observe(q(1, 2)).unwrap(), Decision::Continue);
+    let mut test = Sprt::normal_mean(&qi(0), &qi(1), &qi(1), 0.05, 0.10).unwrap();
+    assert_eq!(test.observe(&q(1, 2)).unwrap(), Decision::Continue);
     assert_eq!(test.log_likelihood_ratio(&ctx), ctx.zero());
-    assert_eq!(test.observe(q(3, 2)).unwrap(), Decision::Continue);
+    assert_eq!(test.observe(&q(3, 2)).unwrap(), Decision::Continue);
     assert_eq!(test.log_likelihood_ratio(&ctx), ctx.one());
     close(test.log_likelihood_ratio_f64(), 1.0, "Λ");
     assert_eq!(test.observations(), 2);
     assert_eq!(*test.sum(), qi(2));
     // Large observations cross B = 2.8904 quickly: x = 4 adds 3.5.
-    assert_eq!(test.observe(qi(4)).unwrap(), Decision::AcceptH1);
+    assert_eq!(test.observe(&qi(4)).unwrap(), Decision::AcceptH1);
     assert!(
-        Sprt::normal_mean(qi(0), qi(1), qi(0), 0.05, 0.10).is_err(),
+        Sprt::normal_mean(&qi(0), &qi(1), &qi(0), 0.05, 0.10).is_err(),
         "σ = 0"
     );
     assert!(
-        Sprt::normal_mean(qi(1), qi(1), qi(1), 0.05, 0.10).is_err(),
+        Sprt::normal_mean(&qi(1), &qi(1), &qi(1), 0.05, 0.10).is_err(),
         "μ₀ = μ₁"
     );
 }
@@ -1285,31 +1285,31 @@ fn expected_sample_size_and_oc_match_wald_formulas() {
 #[test]
 fn sprt_rejects_invalid_parameters() {
     assert!(
-        Sprt::bernoulli(q(7, 10), q(7, 10), 0.05, 0.10).is_err(),
+        Sprt::bernoulli(&q(7, 10), &q(7, 10), 0.05, 0.10).is_err(),
         "p0 = p1"
     );
     assert!(
-        Sprt::bernoulli(qi(0), q(9, 10), 0.05, 0.10).is_err(),
+        Sprt::bernoulli(&qi(0), &q(9, 10), 0.05, 0.10).is_err(),
         "p0 = 0"
     );
     assert!(
-        Sprt::bernoulli(q(7, 10), qi(1), 0.05, 0.10).is_err(),
+        Sprt::bernoulli(&q(7, 10), &qi(1), 0.05, 0.10).is_err(),
         "p1 = 1"
     );
     assert!(
-        Sprt::bernoulli(q(7, 10), q(9, 10), 1.0, 0.10).is_err(),
+        Sprt::bernoulli(&q(7, 10), &q(9, 10), 1.0, 0.10).is_err(),
         "α = 1"
     );
     assert!(
-        Sprt::bernoulli(q(7, 10), q(9, 10), 0.05, -0.1).is_err(),
+        Sprt::bernoulli(&q(7, 10), &q(9, 10), 0.05, -0.1).is_err(),
         "β < 0"
     );
     assert!(
-        Sprt::bernoulli(q(7, 10), q(9, 10), 0.5, 0.5).is_err(),
+        Sprt::bernoulli(&q(7, 10), &q(9, 10), 0.5, 0.5).is_err(),
         "α + β = 1"
     );
     // p₁ < p₀ is a valid design too (the boundaries are the same, the increments flip).
-    let mut reversed = Sprt::bernoulli(q(9, 10), q(7, 10), 0.05, 0.10).unwrap();
+    let mut reversed = Sprt::bernoulli(&q(9, 10), &q(7, 10), 0.05, 0.10).unwrap();
     assert_eq!(reversed.update(false), Decision::Continue);
     assert!(reversed.log_likelihood_ratio_f64() > 0.0);
 }

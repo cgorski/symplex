@@ -1,11 +1,21 @@
 //! Parameter estimation from observed data: maximum likelihood, the method
-//! of moments, and Bayesian conjugate updating — every estimate handed back
-//! as a [`Distribution`] so it plugs into the rest of `stats`.
+//! of moments, Bayesian conjugate updating — every point estimate handed
+//! back as a [`Distribution`] so it plugs into the rest of `stats` — and
+//! the confidence / credible intervals for a parameter (a mean with known
+//! or unknown `σ`, a proportion, a correlation, a posterior).
+//!
+//! **Rule:** a function lives here iff it *estimates* a parameter — a point
+//! estimate or an interval for it.  Tests belong to [`super::hypothesis`];
+//! the intervals for a proportion, the t interval for a mean and Fisher's
+//! z interval for a correlation moved in from `aggregation`, `hypothesis`
+//! and `reliability` in 0.18.
 //!
 //! Observations are exact rationals ([`Q`]).  Every estimate that is a
 //! rational function of the data (means, rates, probabilities, moment
 //! estimators) is exact; the few that involve a root or a logarithm (the
 //! normal `σ̂`, the log-normal parameters) are exact expressions ([`Ex`]).
+//! Interval limits that need a numeric quantile are `f64`; the `_exact` /
+//! `_symbolic` proportion intervals keep them as expressions.
 //!
 //! ```
 //! use symplex::prelude::*;
@@ -33,6 +43,10 @@
 //!   `NegativeBinomial(r, p)` counts failures before the `r`-th success.
 //! * `Gamma(k, θ)` is shape/scale; the Poisson conjugate prior is given as
 //!   shape/scale too.
+//! * Counts (`n`, successes, failures, category counts) are `usize`, as
+//!   everywhere in `stats`; a `ctx: &Context` is a parameter exactly when
+//!   the result contains an [`Ex`] (a `Distribution`, a symbolic interval),
+//!   so the `f64` intervals take none.
 
 use num_bigint::BigInt;
 use num_traits::{One, Signed, Zero};
@@ -42,53 +56,46 @@ use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
 
+use super::common::{
+    check_confidence, check_sample, ex_usize, invalid, q_to_f64, qu, standard_normal, t_two_sided,
+    z_two_sided,
+};
 use super::data::{self, Ddof, Q};
-use super::family::Distribution;
+use super::family::{Distribution, fresh_symbol};
 
-const OP: &str = "stats::estimation";
-
-fn invalid(reason: impl Into<String>) -> SymplexError {
-    SymplexError::invalid_argument(OP, reason)
-}
-
-fn qu(n: usize) -> Q {
-    Q::from_integer(BigInt::from(n))
-}
-
-fn q64(n: u64) -> Q {
-    Q::from_integer(BigInt::from(n))
-}
-
-fn nonempty(data: &[Q], what: &str) -> Result<(), SymplexError> {
+/// `data` non-empty, for the function `op`.
+fn nonempty(op: &'static str, data: &[Q]) -> Result<(), SymplexError> {
     if data.is_empty() {
-        return Err(invalid(format!("{what} needs at least one observation")));
+        return Err(invalid(op, format!("{op} needs at least one observation")));
     }
     Ok(())
 }
 
-fn require_positive_data(data: &[Q], what: &str) -> Result<(), SymplexError> {
-    nonempty(data, what)?;
+fn require_positive_data(op: &'static str, data: &[Q]) -> Result<(), SymplexError> {
+    nonempty(op, data)?;
     if let Some(x) = data.iter().find(|x| !x.is_positive()) {
-        return Err(invalid(format!(
-            "{what} needs positive observations, got {x}"
-        )));
+        return Err(invalid(
+            op,
+            format!("{op} needs positive observations, got {x}"),
+        ));
     }
     Ok(())
 }
 
-fn require_counts(data: &[Q], what: &str) -> Result<(), SymplexError> {
-    nonempty(data, what)?;
+fn require_counts(op: &'static str, data: &[Q]) -> Result<(), SymplexError> {
+    nonempty(op, data)?;
     if let Some(x) = data.iter().find(|x| !x.is_integer() || x.is_negative()) {
-        return Err(invalid(format!(
-            "{what} needs non-negative integer observations, got {x}"
-        )));
+        return Err(invalid(
+            op,
+            format!("{op} needs non-negative integer observations, got {x}"),
+        ));
     }
     Ok(())
 }
 
-fn require_positive_param(x: &Q, what: &str) -> Result<(), SymplexError> {
+fn require_positive_param(op: &'static str, x: &Q, what: &str) -> Result<(), SymplexError> {
     if !x.is_positive() {
-        return Err(invalid(format!("{what} must be positive, got {x}")));
+        return Err(invalid(op, format!("{what} must be positive, got {x}")));
     }
     Ok(())
 }
@@ -155,7 +162,7 @@ pub enum FamilyKind {
     /// `Binomial(n, p)` with the number of trials `n` known.
     Binomial {
         /// The (known) number of trials of every observation.
-        n: u64,
+        n: usize,
     },
     /// `Geometric(p)` on `1, 2, …`.
     Geometric,
@@ -204,11 +211,12 @@ pub fn fit(ctx: &Context, family: FamilyKind, data: &[Q]) -> Result<Distribution
         FamilyKind::Geometric => fit_geometric(ctx, data),
         FamilyKind::Uniform => fit_uniform(ctx, data),
         FamilyKind::LogNormal => fit_log_normal(ctx, data),
-        FamilyKind::Gamma | FamilyKind::Beta | FamilyKind::NegativeBinomial => {
-            Err(invalid(format!(
+        FamilyKind::Gamma | FamilyKind::Beta | FamilyKind::NegativeBinomial => Err(invalid(
+            "fit",
+            format!(
                 "the {family:?} maximum-likelihood estimate has no closed form; use method_of_moments"
-            )))
-        }
+            ),
+        )),
     }
 }
 
@@ -270,11 +278,12 @@ pub fn method_of_moments(
 ///
 /// [`SymplexError::InvalidArgument`] on empty or constant data (`σ̂ = 0`).
 pub fn fit_normal(ctx: &Context, data: &[Q]) -> Result<Distribution, SymplexError> {
-    nonempty(data, "fit_normal")?;
+    const OP: &str = "fit_normal";
+    nonempty(OP, data)?;
     let mean = data::mean(data)?;
     let var = data::variance(data, Ddof::Population)?;
     if var.is_zero() {
-        return Err(invalid("fit_normal: constant data give σ̂ = 0"));
+        return Err(invalid(OP, "constant data give σ̂ = 0"));
     }
     Distribution::try_normal(ctx.from_ratio(mean), sqrt_q(ctx, var))
 }
@@ -286,7 +295,7 @@ pub fn fit_normal(ctx: &Context, data: &[Q]) -> Result<Distribution, SymplexErro
 ///
 /// [`SymplexError::InvalidArgument`] unless every observation is positive.
 pub fn fit_exponential(ctx: &Context, data: &[Q]) -> Result<Distribution, SymplexError> {
-    require_positive_data(data, "fit_exponential")?;
+    require_positive_data("fit_exponential", data)?;
     let rate = data::mean(data)?.recip();
     Distribution::try_exponential(ctx.from_ratio(rate))
 }
@@ -298,10 +307,11 @@ pub fn fit_exponential(ctx: &Context, data: &[Q]) -> Result<Distribution, Symple
 /// [`SymplexError::InvalidArgument`] unless the observations are
 /// non-negative integers with a positive sum.
 pub fn fit_poisson(ctx: &Context, data: &[Q]) -> Result<Distribution, SymplexError> {
-    require_counts(data, "fit_poisson")?;
+    const OP: &str = "fit_poisson";
+    require_counts(OP, data)?;
     let rate = data::mean(data)?;
     if rate.is_zero() {
-        return Err(invalid("fit_poisson: all-zero counts give λ̂ = 0"));
+        return Err(invalid(OP, "all-zero counts give λ̂ = 0"));
     }
     Distribution::try_poisson(ctx.from_ratio(rate))
 }
@@ -312,11 +322,13 @@ pub fn fit_poisson(ctx: &Context, data: &[Q]) -> Result<Distribution, SymplexErr
 ///
 /// [`SymplexError::InvalidArgument`] unless every observation is `0` or `1`.
 pub fn fit_bernoulli(ctx: &Context, data: &[Q]) -> Result<Distribution, SymplexError> {
-    nonempty(data, "fit_bernoulli")?;
+    const OP: &str = "fit_bernoulli";
+    nonempty(OP, data)?;
     if let Some(x) = data.iter().find(|x| !x.is_zero() && !x.is_one()) {
-        return Err(invalid(format!(
-            "fit_bernoulli needs observations in {{0, 1}}, got {x}"
-        )));
+        return Err(invalid(
+            OP,
+            format!("fit_bernoulli needs observations in {{0, 1}}, got {x}"),
+        ));
     }
     Distribution::try_bernoulli(ctx.from_ratio(data::mean(data)?))
 }
@@ -328,16 +340,18 @@ pub fn fit_bernoulli(ctx: &Context, data: &[Q]) -> Result<Distribution, SymplexE
 ///
 /// [`SymplexError::InvalidArgument`] if `n = 0` or an observation is not an
 /// integer in `0..=n`.
-pub fn fit_binomial_p(ctx: &Context, n: u64, data: &[Q]) -> Result<Distribution, SymplexError> {
+pub fn fit_binomial_p(ctx: &Context, n: usize, data: &[Q]) -> Result<Distribution, SymplexError> {
+    const OP: &str = "fit_binomial_p";
     if n == 0 {
-        return Err(invalid("fit_binomial_p needs at least one trial"));
+        return Err(invalid(OP, "fit_binomial_p needs at least one trial"));
     }
-    require_counts(data, "fit_binomial_p")?;
-    let nq = q64(n);
+    require_counts(OP, data)?;
+    let nq = qu(n);
     if let Some(x) = data.iter().find(|x| **x > nq) {
-        return Err(invalid(format!(
-            "fit_binomial_p: observation {x} exceeds the number of trials {n}"
-        )));
+        return Err(invalid(
+            OP,
+            format!("observation {x} exceeds the number of trials {n}"),
+        ));
     }
     let p = data::mean(data)? / &nq;
     Distribution::try_binomial(ctx.from_ratio(nq), ctx.from_ratio(p))
@@ -351,11 +365,15 @@ pub fn fit_binomial_p(ctx: &Context, n: u64, data: &[Q]) -> Result<Distribution,
 /// [`SymplexError::InvalidArgument`] unless every observation is a positive
 /// integer.
 pub fn fit_geometric(ctx: &Context, data: &[Q]) -> Result<Distribution, SymplexError> {
-    require_counts(data, "fit_geometric")?;
+    const OP: &str = "fit_geometric";
+    require_counts(OP, data)?;
     if let Some(x) = data.iter().find(|x| x.is_zero()) {
-        return Err(invalid(format!(
-            "fit_geometric needs observations ≥ 1 (trials up to the first success), got {x}"
-        )));
+        return Err(invalid(
+            OP,
+            format!(
+                "fit_geometric needs observations ≥ 1 (trials up to the first success), got {x}"
+            ),
+        ));
     }
     Distribution::try_geometric(ctx.from_ratio(data::mean(data)?.recip()))
 }
@@ -367,12 +385,11 @@ pub fn fit_geometric(ctx: &Context, data: &[Q]) -> Result<Distribution, SymplexE
 ///
 /// [`SymplexError::InvalidArgument`] on empty or constant data.
 pub fn fit_uniform(ctx: &Context, data: &[Q]) -> Result<Distribution, SymplexError> {
-    nonempty(data, "fit_uniform")?;
+    const OP: &str = "fit_uniform";
+    nonempty(OP, data)?;
     let range = data::min_max(data)?;
     if range.lower == range.upper {
-        return Err(invalid(
-            "fit_uniform: constant data give a zero-width interval",
-        ));
+        return Err(invalid(OP, "constant data give a zero-width interval"));
     }
     Distribution::try_uniform(ctx.from_ratio(range.lower), ctx.from_ratio(range.upper))
 }
@@ -404,10 +421,11 @@ pub fn fit_uniform(ctx: &Context, data: &[Q]) -> Result<Distribution, SymplexErr
 /// # Ok::<(), SymplexError>(())
 /// ```
 pub fn fit_log_normal(ctx: &Context, data: &[Q]) -> Result<Distribution, SymplexError> {
-    require_positive_data(data, "fit_log_normal")?;
+    const OP: &str = "fit_log_normal";
+    require_positive_data(OP, data)?;
     let range = data::min_max(data)?;
     if range.lower == range.upper {
-        return Err(invalid("fit_log_normal: constant data give σ̂ = 0"));
+        return Err(invalid(OP, "constant data give σ̂ = 0"));
     }
     let n = ctx.int(data.len() as i64);
     let logs: Vec<Ex> = data.iter().map(|x| ln_q(ctx, x)).collect();
@@ -426,14 +444,15 @@ pub fn fit_log_normal(ctx: &Context, data: &[Q]) -> Result<Distribution, Symplex
 
 /// Mean and population variance, the two moments every estimator below
 /// matches.
-fn two_moments(data: &[Q], what: &str) -> Result<(Q, Q), SymplexError> {
-    nonempty(data, what)?;
+fn two_moments(op: &'static str, data: &[Q]) -> Result<(Q, Q), SymplexError> {
+    nonempty(op, data)?;
     let m = data::mean(data)?;
     let v = data::variance(data, Ddof::Population)?;
     if v.is_zero() {
-        return Err(invalid(format!(
-            "{what}: constant data have zero variance; the moment equations are degenerate"
-        )));
+        return Err(invalid(
+            op,
+            "constant data have zero variance; the moment equations are degenerate",
+        ));
     }
     Ok((m, v))
 }
@@ -446,8 +465,9 @@ fn two_moments(data: &[Q], what: &str) -> Result<(Q, Q), SymplexError> {
 /// [`SymplexError::InvalidArgument`] unless the observations are positive
 /// and not all equal.
 pub fn fit_gamma_moments(ctx: &Context, data: &[Q]) -> Result<Distribution, SymplexError> {
-    require_positive_data(data, "fit_gamma_moments")?;
-    let (m, v) = two_moments(data, "fit_gamma_moments")?;
+    const OP: &str = "fit_gamma_moments";
+    require_positive_data(OP, data)?;
+    let (m, v) = two_moments(OP, data)?;
     let shape = &m * &m / &v;
     let scale = &v / &m;
     Distribution::try_gamma(ctx.from_ratio(shape), ctx.from_ratio(scale))
@@ -463,18 +483,21 @@ pub fn fit_gamma_moments(ctx: &Context, data: &[Q]) -> Result<Distribution, Symp
 /// [`SymplexError::InvalidArgument`] unless the observations lie strictly
 /// in `(0, 1)` and are not all equal.
 pub fn fit_beta_moments(ctx: &Context, data: &[Q]) -> Result<Distribution, SymplexError> {
-    nonempty(data, "fit_beta_moments")?;
+    const OP: &str = "fit_beta_moments";
+    nonempty(OP, data)?;
     if let Some(x) = data.iter().find(|x| !x.is_positive() || **x >= Q::one()) {
-        return Err(invalid(format!(
-            "fit_beta_moments needs observations in (0, 1), got {x}"
-        )));
+        return Err(invalid(
+            OP,
+            format!("fit_beta_moments needs observations in (0, 1), got {x}"),
+        ));
     }
-    let (m, v) = two_moments(data, "fit_beta_moments")?;
+    let (m, v) = two_moments(OP, data)?;
     let one_minus = Q::one() - &m;
     let c = &m * &one_minus / &v - Q::one();
     if !c.is_positive() {
         return Err(invalid(
-            "fit_beta_moments: the variance is too large for a Beta law (x̄(1 − x̄)/s² ≤ 1)",
+            OP,
+            "the variance is too large for a Beta law (x̄(1 − x̄)/s² ≤ 1)",
         ));
     }
     Distribution::try_beta(ctx.from_ratio(&m * &c), ctx.from_ratio(one_minus * c))
@@ -492,15 +515,19 @@ pub fn fit_negative_binomial_moments(
     ctx: &Context,
     data: &[Q],
 ) -> Result<Distribution, SymplexError> {
-    require_counts(data, "fit_negative_binomial_moments")?;
-    let (m, v) = two_moments(data, "fit_negative_binomial_moments")?;
+    const OP: &str = "fit_negative_binomial_moments";
+    require_counts(OP, data)?;
+    let (m, v) = two_moments(OP, data)?;
     if !m.is_positive() {
-        return Err(invalid("fit_negative_binomial_moments: all-zero counts"));
+        return Err(invalid(OP, "all-zero counts"));
     }
     if v <= m {
-        return Err(invalid(format!(
-            "fit_negative_binomial_moments needs over-dispersed counts (s² > x̄), got s² = {v}, x̄ = {m}"
-        )));
+        return Err(invalid(
+            OP,
+            format!(
+                "fit_negative_binomial_moments needs over-dispersed counts (s² > x̄), got s² = {v}, x̄ = {m}"
+            ),
+        ));
     }
     let p = &m / &v;
     let r = &m * &m / (&v - &m);
@@ -514,7 +541,7 @@ pub fn fit_negative_binomial_moments(
 ///
 /// [`SymplexError::InvalidArgument`] on empty or constant data.
 pub fn fit_uniform_moments(ctx: &Context, data: &[Q]) -> Result<Distribution, SymplexError> {
-    let (m, v) = two_moments(data, "fit_uniform_moments")?;
+    let (m, v) = two_moments("fit_uniform_moments", data)?;
     let half_width = sqrt_q(ctx, v * qu(3));
     let m = ctx.from_ratio(m);
     Distribution::try_uniform((&m - &half_width).simplify(), (m + half_width).simplify())
@@ -528,8 +555,9 @@ pub fn fit_uniform_moments(ctx: &Context, data: &[Q]) -> Result<Distribution, Sy
 /// [`SymplexError::InvalidArgument`] unless the observations are positive
 /// and not all equal.
 pub fn fit_log_normal_moments(ctx: &Context, data: &[Q]) -> Result<Distribution, SymplexError> {
-    require_positive_data(data, "fit_log_normal_moments")?;
-    let (m, v) = two_moments(data, "fit_log_normal_moments")?;
+    const OP: &str = "fit_log_normal_moments";
+    require_positive_data(OP, data)?;
+    let (m, v) = two_moments(OP, data)?;
     let var = ctx.from_ratio(Q::one() + &v / (&m * &m)).ln();
     let mu = (ctx.from_ratio(m).ln() - &var / ctx.int(2)).simplify();
     Distribution::try_log_normal(mu, positive_root(&var))
@@ -586,12 +614,13 @@ pub fn bic(log_lik: &Ex, k: usize, n: usize) -> Ex {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// The Beta posterior of a Bernoulli/Binomial success probability:
-/// `Beta(alpha, beta)` prior with `successes` and `failures` observed
-/// gives `Beta(alpha + successes, beta + failures)` (definitional; exact).
+/// `Beta(prior_alpha, prior_beta)` prior with `successes` and `failures`
+/// observed gives `Beta(prior_alpha + successes, prior_beta + failures)`
+/// (definitional; exact).
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] unless `alpha, beta > 0`.
+/// [`SymplexError::InvalidArgument`] unless `prior_alpha, prior_beta > 0`.
 ///
 /// ```
 /// use symplex::prelude::*;
@@ -609,16 +638,17 @@ pub fn bic(log_lik: &Ex, k: usize, n: usize) -> Ex {
 /// ```
 pub fn beta_binomial_posterior(
     ctx: &Context,
-    alpha: &Q,
-    beta: &Q,
-    successes: u64,
-    failures: u64,
+    prior_alpha: &Q,
+    prior_beta: &Q,
+    successes: usize,
+    failures: usize,
 ) -> Result<Distribution, SymplexError> {
-    require_positive_param(alpha, "the prior α")?;
-    require_positive_param(beta, "the prior β")?;
+    const OP: &str = "beta_binomial_posterior";
+    require_positive_param(OP, prior_alpha, "the prior α")?;
+    require_positive_param(OP, prior_beta, "the prior β")?;
     Distribution::try_beta(
-        ctx.from_ratio(alpha + q64(successes)),
-        ctx.from_ratio(beta + q64(failures)),
+        ctx.from_ratio(prior_alpha + qu(successes)),
+        ctx.from_ratio(prior_beta + qu(failures)),
     )
 }
 
@@ -651,11 +681,12 @@ pub fn gamma_poisson_posterior(
     ctx: &Context,
     shape: &Q,
     scale: &Q,
-    counts: &[u64],
+    counts: &[usize],
 ) -> Result<Distribution, SymplexError> {
-    require_positive_param(shape, "the prior shape")?;
-    require_positive_param(scale, "the prior scale")?;
-    let total: Q = counts.iter().fold(Q::zero(), |acc, &c| acc + q64(c));
+    const OP: &str = "gamma_poisson_posterior";
+    require_positive_param(OP, shape, "the prior shape")?;
+    require_positive_param(OP, scale, "the prior scale")?;
+    let total: Q = counts.iter().fold(Q::zero(), |acc, &c| acc + qu(c));
     let n = qu(counts.len());
     let post_scale = scale / (Q::one() + n * scale);
     Distribution::try_gamma(ctx.from_ratio(shape + total), ctx.from_ratio(post_scale))
@@ -693,10 +724,11 @@ pub fn normal_known_variance_posterior(
     sigma: &Q,
     data: &[Q],
 ) -> Result<Distribution, SymplexError> {
+    const OP: &str = "normal_known_variance_posterior";
     let (mu0, sigma0) = (prior_mean, prior_sd);
-    require_positive_param(sigma0, "the prior standard deviation")?;
-    require_positive_param(sigma, "the observation standard deviation")?;
-    nonempty(data, "normal_known_variance_posterior")?;
+    require_positive_param(OP, sigma0, "the prior standard deviation")?;
+    require_positive_param(OP, sigma, "the observation standard deviation")?;
+    nonempty(OP, data)?;
     let prior_prec = (sigma0 * sigma0).recip();
     let obs_prec = (sigma * sigma).recip();
     let n = qu(data.len());
@@ -713,21 +745,25 @@ pub fn normal_known_variance_posterior(
 ///
 /// [`SymplexError::InvalidArgument`] if the lengths differ, `k = 0`, or an
 /// `αᵢ ≤ 0`.
-pub fn dirichlet_posterior_alphas(prior: &[Q], counts: &[u64]) -> Result<Vec<Q>, SymplexError> {
+pub fn dirichlet_posterior_alphas(prior: &[Q], counts: &[usize]) -> Result<Vec<Q>, SymplexError> {
+    const OP: &str = "dirichlet_posterior_alphas";
     if prior.is_empty() {
-        return Err(invalid("a Dirichlet prior needs at least one category"));
+        return Err(invalid(OP, "a Dirichlet prior needs at least one category"));
     }
     if prior.len() != counts.len() {
-        return Err(invalid(format!(
-            "the Dirichlet prior has {} categories but {} counts were given",
-            prior.len(),
-            counts.len()
-        )));
+        return Err(invalid(
+            OP,
+            format!(
+                "the Dirichlet prior has {} categories but {} counts were given",
+                prior.len(),
+                counts.len()
+            ),
+        ));
     }
     for a in prior {
-        require_positive_param(a, "every prior α")?;
+        require_positive_param(OP, a, "every prior α")?;
     }
-    Ok(prior.iter().zip(counts).map(|(a, &c)| a + q64(c)).collect())
+    Ok(prior.iter().zip(counts).map(|(a, &c)| a + qu(c)).collect())
 }
 
 /// The posterior mean of multinomial probabilities under a Dirichlet
@@ -747,7 +783,7 @@ pub fn dirichlet_posterior_alphas(prior: &[Q], counts: &[u64]) -> Result<Vec<Q>,
 /// ```
 pub fn dirichlet_multinomial_posterior(
     prior: &[Q],
-    counts: &[u64],
+    counts: &[usize],
 ) -> Result<Vec<Q>, SymplexError> {
     let alphas = dirichlet_posterior_alphas(prior, counts)?;
     let total = data::sum(&alphas);
@@ -779,11 +815,7 @@ pub fn credible_interval(
     dist: &Distribution,
     confidence: f64,
 ) -> Result<Interval<f64>, SymplexError> {
-    if !(confidence > 0.0 && confidence < 1.0) {
-        return Err(invalid(format!(
-            "the credible level must lie strictly between 0 and 1, got {confidence}"
-        )));
-    }
+    check_confidence("credible_interval", confidence)?;
     let tail = (1.0 - confidence) / 2.0;
     Ok(Interval::closed(
         dist.quantile_f64(tail)?,
@@ -792,7 +824,7 @@ pub fn credible_interval(
 }
 
 /// The posterior predictive of `n` further Bernoulli trials under a
-/// `Beta(α, β)` posterior — the Beta-Binomial law
+/// `Beta(prior_alpha, prior_beta)` posterior — the Beta-Binomial law
 /// `P(K = k) = C(n, k) B(k + α, n − k + β) / B(α, β)` on `0..=n`, as an
 /// exact [`Finite`](super::Finite) table (the Beta ratios reduce to
 /// rising factorials `α⁽ᵏ⁾ β⁽ⁿ⁻ᵏ⁾ / (α + β)⁽ⁿ⁾`, so rational `α, β` give
@@ -800,7 +832,7 @@ pub fn credible_interval(
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] unless `α, β > 0`.
+/// [`SymplexError::InvalidArgument`] unless `prior_alpha, prior_beta > 0`.
 ///
 /// ```
 /// use symplex::prelude::*;
@@ -816,22 +848,21 @@ pub fn credible_interval(
 /// ```
 pub fn posterior_predictive_beta_binomial(
     ctx: &Context,
-    alpha: &Q,
-    beta: &Q,
-    n: u64,
+    prior_alpha: &Q,
+    prior_beta: &Q,
+    n: usize,
 ) -> Result<Distribution, SymplexError> {
-    require_positive_param(alpha, "α")?;
-    require_positive_param(beta, "β")?;
-    let n_usize = usize::try_from(n)
-        .map_err(|_| invalid(format!("the number of trials {n} is too large")))?;
-    let denom = rising_factorial(&(alpha + beta), n_usize);
-    let table: Vec<(Ex, Ex)> = (0..=n_usize)
+    const OP: &str = "posterior_predictive_beta_binomial";
+    require_positive_param(OP, prior_alpha, "α")?;
+    require_positive_param(OP, prior_beta, "β")?;
+    let denom = rising_factorial(&(prior_alpha + prior_beta), n);
+    let table: Vec<(Ex, Ex)> = (0..=n)
         .map(|k| {
-            let mass = data::binomial_q(n_usize, k)
-                * rising_factorial(alpha, k)
-                * rising_factorial(beta, n_usize - k)
+            let mass = data::binomial_q(n, k)
+                * rising_factorial(prior_alpha, k)
+                * rising_factorial(prior_beta, n - k)
                 / &denom;
-            (ctx.int(k as i64), ctx.from_ratio(mass))
+            (ex_usize(ctx, k), ctx.from_ratio(mass))
         })
         .collect();
     Distribution::try_finite(ctx, table)
@@ -853,17 +884,54 @@ fn rising_factorial(a: &Q, m: usize) -> Q {
 ///
 /// [`SymplexError::InvalidArgument`] unless `σ > 0` and `n ≥ 1`.
 pub fn standard_error_mean(ctx: &Context, sigma: &Q, n: usize) -> Result<Ex, SymplexError> {
-    require_positive_param(sigma, "σ")?;
+    const OP: &str = "standard_error_mean";
+    require_positive_param(OP, sigma, "σ")?;
     if n == 0 {
-        return Err(invalid("the standard error needs at least one observation"));
+        return Err(invalid(
+            OP,
+            "the standard error needs at least one observation",
+        ));
     }
-    Ok((ctx.from_ratio(sigma.clone()) / ctx.int(n as i64).sqrt()).simplify())
+    Ok((ctx.from_ratio(sigma.clone()) / ex_usize(ctx, n).sqrt()).simplify())
+}
+
+/// The `confidence` interval for the mean with unknown `σ`,
+/// `x̄ ± t_{(1+c)/2, n−1} · s/√n`, with the Student-t quantile found by
+/// Brent's method on the exact CDF expression (evaluated numerically).
+/// `scipy.stats.t.interval(c, n−1, loc=mean, scale=sem)`.
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::data::from_i64;
+/// use symplex::stats::estimation::confidence_interval_mean;
+///
+/// let x = from_i64(&[5, 7, 8, 9, 10, 12]);
+/// // scipy: t.interval(0.95, 5, loc=mean(x), scale=sem(x)) = (5.9509296876164886, 11.049070312383511)
+/// let ci = confidence_interval_mean(&x, 0.95)?;
+/// assert!((ci.lower - 5.950_929_687_616_488_6).abs() < 1e-9);
+/// assert!((ci.upper - 11.049_070_312_383_511).abs() < 1e-9);
+/// # Ok::<(), SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for fewer than two observations or
+/// `confidence ∉ (0, 1)`; the quantile's error if it fails to converge.
+pub fn confidence_interval_mean(x: &[Q], confidence: f64) -> Result<Interval<f64>, SymplexError> {
+    const OP: &str = "confidence_interval_mean";
+    check_sample(OP, "the sample", x, 2)?;
+    check_confidence(OP, confidence)?;
+    let n = x.len();
+    let mean = q_to_f64(&data::mean(x)?);
+    let sem = q_to_f64(&(data::variance(x, Ddof::Sample)? / qu(n))).sqrt();
+    let t = t_two_sided(OP, (n - 1) as f64, confidence)?;
+    Ok(Interval::closed(mean - t * sem, mean + t * sem))
 }
 
 /// The z confidence interval for a population mean with known `σ`:
 /// `x̄ ∓ z_{1 − (1 − c)/2} · σ/√n` (`scipy.stats.norm.interval(c, loc=x̄,
-/// scale=σ/√n)`).  The t-based interval for unknown `σ` lives in the
-/// hypothesis-testing module.
+/// scale=σ/√n)`).  The t-based interval for unknown `σ` is
+/// [`confidence_interval_mean`].
 ///
 /// # Errors
 ///
@@ -875,29 +943,24 @@ pub fn standard_error_mean(ctx: &Context, sigma: &Q, n: usize) -> Result<Ex, Sym
 /// use symplex::stats::estimation::confidence_interval_mean_z;
 /// use symplex::linprog::qi;
 ///
-/// let ctx = Context::new();
 /// // x̄ = 2, σ/√n = 2/√3; scipy: norm.interval(0.95, 2, 2/sqrt(3)) = (-0.2631714681523438, 4.263171468152343)
-/// let ci = confidence_interval_mean_z(&ctx, &[1, 2, 3].map(qi), &qi(2), 0.95)?;
+/// let ci = confidence_interval_mean_z(&[1, 2, 3].map(qi), &qi(2), 0.95)?;
 /// assert!((ci.lower + 0.2631714681523438).abs() < 1e-9);
 /// assert!((ci.upper - 4.263171468152343).abs() < 1e-9);
 /// # Ok::<(), SymplexError>(())
 /// ```
 pub fn confidence_interval_mean_z(
-    ctx: &Context,
     data: &[Q],
     sigma: &Q,
     confidence: f64,
 ) -> Result<Interval<f64>, SymplexError> {
-    nonempty(data, "confidence_interval_mean_z")?;
-    if !(confidence > 0.0 && confidence < 1.0) {
-        return Err(invalid(format!(
-            "the confidence level must lie strictly between 0 and 1, got {confidence}"
-        )));
-    }
-    let se = standard_error_mean(ctx, sigma, data.len())?.eval_f64()?;
-    let mean = ctx.from_ratio(data::mean(data)?).eval_f64()?;
-    let z =
-        Distribution::normal(ctx.zero(), ctx.one()).quantile_f64(1.0 - (1.0 - confidence) / 2.0)?;
+    const OP: &str = "confidence_interval_mean_z";
+    nonempty(OP, data)?;
+    check_confidence(OP, confidence)?;
+    require_positive_param(OP, sigma, "σ")?;
+    let se = q_to_f64(&(sigma * sigma / qu(data.len()))).sqrt();
+    let mean = q_to_f64(&data::mean(data)?);
+    let z = z_two_sided(confidence);
     Ok(Interval::closed(mean - z * se, mean + z * se))
 }
 
@@ -905,8 +968,8 @@ pub fn confidence_interval_mean_z(
 /// exact expression in `z`: `x̄ ∓ z · σ/√n` with the sample mean and
 /// `σ/√n` exact ([`standard_error_mean`]) and `z` any expression — a
 /// symbol for the textbook formula, or the exact quantile of a level from
-/// [`z_for_confidence`](crate::stats::aggregation::z_for_confidence) (which
-/// is what [`confidence_interval_mean_z_exact`] passes).
+/// [`z_for_confidence`] (which is what [`confidence_interval_mean_z_exact`]
+/// passes).
 ///
 /// # Errors
 ///
@@ -932,7 +995,7 @@ pub fn confidence_interval_mean_z_symbolic(
     sigma: &Q,
     z: &Ex,
 ) -> Result<Interval<Ex>, SymplexError> {
-    nonempty(data, "confidence_interval_mean_z_symbolic")?;
+    nonempty("confidence_interval_mean_z_symbolic", data)?;
     let se = standard_error_mean(ctx, sigma, data.len())?;
     let mean = ctx.from_ratio(data::mean(data)?);
     let half = z * se;
@@ -942,8 +1005,8 @@ pub fn confidence_interval_mean_z_symbolic(
 /// The z confidence interval for a population mean with known `σ` at the
 /// rational level `confidence`, with exact endpoints:
 /// [`confidence_interval_mean_z_symbolic`] at `z = √2 · erfinv(confidence)`
-/// ([`z_for_confidence`](crate::stats::aggregation::z_for_confidence)).  The
-/// `f64` [`confidence_interval_mean_z`] rounds the same numbers.
+/// ([`z_for_confidence`]).  The `f64` [`confidence_interval_mean_z`] rounds
+/// the same numbers.
 ///
 /// # Errors
 ///
@@ -968,7 +1031,471 @@ pub fn confidence_interval_mean_z_exact(
     sigma: &Q,
     confidence: &Q,
 ) -> Result<Interval<Ex>, SymplexError> {
-    nonempty(data, "confidence_interval_mean_z_exact")?;
-    let z = super::aggregation::z_for_confidence(ctx, confidence)?;
+    nonempty("confidence_interval_mean_z_exact", data)?;
+    let z = z_for_confidence(ctx, confidence)?;
     confidence_interval_mean_z_symbolic(ctx, data, sigma, &z)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Confidence intervals for a proportion
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Confidence-interval methods for a binomial proportion
+/// (`statsmodels.stats.proportion.proportion_confint(method=…)`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum IntervalMethod {
+    /// Wilson score interval (`'wilson'`).
+    Wilson,
+    /// Clopper–Pearson exact interval from Beta quantiles (`'beta'`).
+    ClopperPearson,
+    /// Agresti–Coull (`'agresti_coull'`).
+    AgrestiCoull,
+    /// Wald / normal approximation (`'normal'`).
+    Wald,
+}
+
+/// `P(X ≥ k)` (`upper`) or `P(X ≤ k)` for `X ~ Binomial(n, p)`, `0 < p < 1`,
+/// each summed directly from log-binomial coefficients (never as `1 −` the
+/// other tail, which would lose a small tail to cancellation).
+fn binomial_tail(n: usize, k: usize, p: f64, upper: bool) -> f64 {
+    let (lp, lq) = (p.ln(), (1.0 - p).ln());
+    let mut log_c = 0.0; // ln C(n, i), built up from i = 0
+    let mut tail = 0.0;
+    for i in 0..=n {
+        if i > 0 {
+            log_c += ((n - i + 1) as f64).ln() - (i as f64).ln();
+        }
+        if if upper { i >= k } else { i <= k } {
+            tail += (log_c + i as f64 * lp + (n - i) as f64 * lq).exp();
+        }
+    }
+    tail.min(1.0)
+}
+
+/// The `p ∈ (0, 1)` with `f(p) = 0` for a monotone `f`, by bisection.
+fn bisect_unit(f: impl Fn(f64) -> f64, increasing: bool) -> f64 {
+    let (mut lo, mut hi) = (0.0f64, 1.0f64);
+    for _ in 0..200 {
+        let mid = 0.5 * (lo + hi);
+        if mid <= lo || mid >= hi {
+            break;
+        }
+        let v = f(mid);
+        if (v < 0.0) == increasing {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+fn check_trials(op: &'static str, successes: usize, trials: usize) -> Result<(), SymplexError> {
+    if trials == 0 {
+        return Err(invalid(op, "needs at least one trial"));
+    }
+    if successes > trials {
+        return Err(invalid(op, "more successes than trials"));
+    }
+    Ok(())
+}
+
+/// `0 < confidence < 1` for a rational level.
+fn check_confidence_q(op: &'static str, confidence: &Q) -> Result<(), SymplexError> {
+    if !(confidence.is_positive() && *confidence < Q::one()) {
+        return Err(invalid(
+            op,
+            format!("confidence must lie strictly between 0 and 1, got {confidence}"),
+        ));
+    }
+    Ok(())
+}
+
+/// A two-sided confidence interval for the success probability behind
+/// `successes` out of `trials`, at level `confidence` (e.g. `0.95`).
+/// With `p̂ = k/n`, `α = 1 − confidence` and `z = Φ⁻¹(1 − α/2)`:
+///
+/// * Wald: `p̂ ± z √(p̂(1−p̂)/n)`;
+/// * Wilson: `(p̂ + z²/2n ± z √(p̂(1−p̂)/n + z²/4n²)) / (1 + z²/n)`;
+/// * Agresti–Coull: Wald around `p̃ = (k + z²/2)/(n + z²)` with `ñ = n + z²`;
+/// * Clopper–Pearson (1934): the `p_L`, `p_U` with `P(Bin(n, p_L) ≥ k) = α/2`
+///   and `P(Bin(n, p_U) ≤ k) = α/2` — equivalently the Beta quantiles
+///   `Beta(k, n−k+1)⁻¹(α/2)` and `Beta(k+1, n−k)⁻¹(1−α/2)` — found by
+///   bisection on the binomial tail (`0` / `1` at `k = 0` / `k = n`).
+///
+/// The first three are clipped to `[0, 1]`, as in statsmodels.
+///
+/// ```
+/// use symplex::stats::estimation::{IntervalMethod, proportion_interval};
+///
+/// // statsmodels: proportion_confint(3, 10, alpha=0.05, method='wilson')
+/// //   = (0.10779126740630104, 0.6032218525388546)
+/// let ci = proportion_interval(3, 10, 0.95, IntervalMethod::Wilson)?;
+/// assert!((ci.lower - 0.10779126740630104).abs() < 1e-12);
+/// assert!((ci.upper - 0.6032218525388546).abs() < 1e-12);
+/// # Ok::<(), symplex::prelude::SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for `trials = 0`,
+/// `successes > trials` or a confidence outside `(0, 1)`.
+pub fn proportion_interval(
+    successes: usize,
+    trials: usize,
+    confidence: f64,
+    method: IntervalMethod,
+) -> Result<Interval<f64>, SymplexError> {
+    const OP: &str = "proportion_interval";
+    check_trials(OP, successes, trials)?;
+    check_confidence(OP, confidence)?;
+    let alpha = 1.0 - confidence;
+    let (k, n) = (successes as f64, trials as f64);
+    let unit = Interval::closed(0.0, 1.0);
+    let clip = |ci: Interval<f64>| ci.map(|v| unit.clamp_to_closure(v));
+    if method == IntervalMethod::ClopperPearson {
+        let half = alpha / 2.0;
+        let lo = if successes == 0 {
+            0.0
+        } else {
+            // P(X ≥ k) grows with p.
+            bisect_unit(|p| binomial_tail(trials, successes, p, true) - half, true)
+        };
+        let hi = if successes == trials {
+            1.0
+        } else {
+            // P(X ≤ k) falls with p.
+            bisect_unit(|p| binomial_tail(trials, successes, p, false) - half, false)
+        };
+        return Ok(Interval::closed(lo, hi));
+    }
+    let z = standard_normal().quantile_f64(1.0 - alpha / 2.0)?;
+    let p = k / n;
+    Ok(clip(match method {
+        IntervalMethod::Wald => {
+            let half = z * (p * (1.0 - p) / n).sqrt();
+            Interval::closed(p - half, p + half)
+        }
+        IntervalMethod::Wilson => {
+            let z2 = z * z;
+            let denom = 1.0 + z2 / n;
+            let centre = (p + z2 / (2.0 * n)) / denom;
+            let half = z * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt() / denom;
+            Interval::closed(centre - half, centre + half)
+        }
+        IntervalMethod::AgrestiCoull => {
+            let z2 = z * z;
+            let n_t = n + z2;
+            let p_t = (k + z2 / 2.0) / n_t;
+            let half = z * (p_t * (1.0 - p_t) / n_t).sqrt();
+            Interval::closed(p_t - half, p_t + half)
+        }
+        IntervalMethod::ClopperPearson => Interval::closed(0.0, 1.0),
+    }))
+}
+
+/// The two-sided standard-normal quantile of a confidence level, exactly:
+/// `z = Φ⁻¹(1 − α/2) = √2 · erfinv(confidence)` with `α = 1 − confidence`
+/// (`scipy.stats.norm.ppf(1 - alpha/2)`).  This is the `z` of
+/// [`proportion_interval_exact`] and [`confidence_interval_mean_z_exact`].
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::estimation::z_for_confidence;
+/// use symplex::linprog::q;
+///
+/// let ctx = Context::new();
+/// // scipy: norm.ppf(0.975) = 1.959963984540054
+/// let z = z_for_confidence(&ctx, &q(95, 100))?;
+/// assert_eq!(format!("{z}"), "sqrt(2)*erfinv(19/20)");
+/// assert!((z.eval_f64()? - 1.959963984540054).abs() < 1e-12);
+/// assert!(z_for_confidence(&ctx, &q(1, 1)).is_err());
+/// # Ok::<(), SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] unless `0 < confidence < 1`.
+pub fn z_for_confidence(ctx: &Context, confidence: &Q) -> Result<Ex, SymplexError> {
+    check_confidence_q("z_for_confidence", confidence)?;
+    Ok(ctx.int(2).sqrt() * ctx.from_ratio(confidence.clone()).erfinv())
+}
+
+/// A confidence interval for the success probability behind `successes`
+/// out of `trials` as an exact expression in `z`, the two-sided normal
+/// quantile: the closed forms of [`proportion_interval`] with `p̂ = k/n`
+/// exact and `z` any expression.  A symbol gives the textbook formula;
+/// [`z_for_confidence`] gives the exact `z` of a level.  With `n` the
+/// number of trials:
+///
+/// * Wald: `p̂ ± z √(p̂(1−p̂)/n)`;
+/// * Wilson: `(p̂ + z²/2n ± z √(p̂(1−p̂)/n + z²/4n²)) / (1 + z²/n)`;
+/// * Agresti–Coull: `p̃ ± z √(p̃(1−p̃)/ñ)` with `ñ = n + z²` and
+///   `p̃ = (k + z²/2)/ñ`.
+///
+/// Unlike the `f64` function, the endpoints are **not** clipped to
+/// `[0, 1]`: a Wald bound may fall outside it (`k = 1`, `n = 5` at 95 %
+/// has a negative lower end), and for a symbolic `z` whether it does is
+/// not decidable.  Clip the evaluated numbers yourself if statsmodels
+/// parity is wanted.  Clopper–Pearson has no closed form in `z`; its exact
+/// endpoints are in [`proportion_interval_exact`].
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::estimation::{
+///     IntervalMethod, proportion_interval_symbolic, z_for_confidence,
+/// };
+/// use symplex::linprog::q;
+///
+/// let ctx = Context::new();
+/// let z = ctx.symbol("z");
+/// let ci = proportion_interval_symbolic(&ctx, 3, 10, &z, IntervalMethod::Wilson)?;
+/// assert!(format!("{}", ci.upper).contains("z^2"));
+///
+/// // statsmodels: proportion_confint(3, 10, alpha=0.05, method='wilson')
+/// //   = (0.10779126740630104, 0.6032218525388546)
+/// let z95 = z_for_confidence(&ctx, &q(95, 100))?;
+/// let ci = proportion_interval_symbolic(&ctx, 3, 10, &z95, IntervalMethod::Wilson)?;
+/// assert!((ci.lower.eval_f64()? - 0.10779126740630104).abs() < 1e-12);
+/// assert!((ci.upper.eval_f64()? - 0.6032218525388546).abs() < 1e-12);
+/// assert!(proportion_interval_symbolic(&ctx, 3, 10, &z, IntervalMethod::ClopperPearson).is_err());
+/// # Ok::<(), SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for `trials = 0`,
+/// `successes > trials` or `method = ClopperPearson`.
+pub fn proportion_interval_symbolic(
+    ctx: &Context,
+    successes: usize,
+    trials: usize,
+    z: &Ex,
+    method: IntervalMethod,
+) -> Result<Interval<Ex>, SymplexError> {
+    const OP: &str = "proportion_interval_symbolic";
+    check_trials(OP, successes, trials)?;
+    let n = ex_usize(ctx, trials);
+    let p_hat = ctx.from_ratio(qu(successes) / qu(trials));
+    let z2 = z.powi(2);
+    // p̂(1 − p̂)/n
+    let var = &p_hat * (ctx.one() - &p_hat) / &n;
+    Ok(match method {
+        IntervalMethod::Wald => {
+            let half = z * var.sqrt();
+            Interval::closed(&p_hat - &half, &p_hat + &half)
+        }
+        IntervalMethod::Wilson => {
+            let denom = ctx.one() + &z2 / &n;
+            let centre = (&p_hat + &z2 / (ctx.int(2) * &n)) / &denom;
+            let half = z * (&var + &z2 / (ctx.int(4) * &n * &n)).sqrt() / &denom;
+            Interval::closed(&centre - &half, &centre + &half)
+        }
+        IntervalMethod::AgrestiCoull => {
+            let n_t = &n + &z2;
+            let p_t = (ex_usize(ctx, successes) + &z2 / ctx.int(2)) / &n_t;
+            let half = z * (&p_t * (ctx.one() - &p_t) / &n_t).sqrt();
+            Interval::closed(&p_t - &half, &p_t + &half)
+        }
+        IntervalMethod::ClopperPearson => {
+            return Err(invalid(
+                OP,
+                "Clopper–Pearson has no closed form in z; use proportion_interval_exact",
+            ));
+        }
+    })
+}
+
+/// The `p ∈ (0, 1)` at which a binomial tail equals `half_alpha`, as an
+/// exact algebraic number: the unique root in `(0, 1)` of the degree-`n`
+/// polynomial `Σ_j C(n, j) pʲ (1 − p)ⁿ⁻ʲ − α/2`, summed over `j ≥ k`
+/// (`upper_tail`, needs `k ≥ 1`) or `j ≤ k` (needs `k ≤ n − 1`).
+///
+/// The polynomial is built in a fresh symbol and expanded; Sturm's theorem
+/// (`count_real_roots_in`) certifies that exactly one root lies in
+/// `(0, 1)` — the tail is strictly monotone there — and counts the roots
+/// below `0`, which is the root's index among the ascending real roots;
+/// [`Ex::root_of`] then names it (a rational for a linear polynomial,
+/// otherwise `RootOf` of the irreducible factor over ℤ).
+fn binomial_tail_root(
+    ctx: &Context,
+    n: usize,
+    k: usize,
+    upper_tail: bool,
+    half_alpha: &Q,
+) -> Result<Ex, SymplexError> {
+    let op = "proportion_interval_exact";
+    let failed = |reason: String| SymplexError::computation_failed(op, reason);
+    let p = fresh_symbol(ctx, "p", &[]);
+    let one_minus_p = ctx.one() - &p;
+    let range = if upper_tail { k..=n } else { 0..=k };
+    let tail = range.fold(ctx.zero(), |acc, j| {
+        acc + ctx.from_ratio(data::binomial_q(n, j))
+            * p.powi(j as i64)
+            * one_minus_p.powi((n - j) as i64)
+    });
+    let poly = (tail - ctx.from_ratio(half_alpha.clone())).expand();
+    let (zero, one) = (ctx.zero(), ctx.one());
+    // `[0, 1]` closed, but neither end is a root: the tail is 0 or 1 there
+    // and 0 < α/2 < 1/2.
+    let in_unit = poly
+        .count_real_roots_in(&p, &zero, &one)
+        .ok_or_else(|| failed("the binomial tail did not expand to a polynomial".into()))?;
+    if in_unit != 1 {
+        return Err(failed(format!(
+            "expected exactly one root of the binomial tail in (0, 1) for n = {n}, k = {k}, found {in_unit}"
+        )));
+    }
+    let below = poly
+        .count_real_roots_in(&p, &ctx.neg_infinity(), &zero)
+        .ok_or_else(|| failed("the binomial tail did not expand to a polynomial".into()))?;
+    poly.root_of(&p, below).ok_or_else(|| {
+        failed(format!(
+            "could not name the root of the degree-{n} binomial tail polynomial \
+             (its factorisation over ℤ was not certified or the RootOf index is unstable); \
+             try a smaller number of trials"
+        ))
+    })
+}
+
+/// A two-sided confidence interval for the success probability behind
+/// `successes` out of `trials` at the rational level `confidence`, with
+/// exact endpoints (the `f64` [`proportion_interval`] rounds).  With
+/// `α = 1 − confidence`:
+///
+/// * Wald, Wilson, Agresti–Coull: [`proportion_interval_symbolic`] at
+///   `z = √2 · erfinv(confidence)` ([`z_for_confidence`]), an exact
+///   expression — **not** clipped to `[0, 1]`;
+/// * Clopper–Pearson: `p_L` is the root in `(0, 1)` of
+///   `Σ_{j=k}^{n} C(n, j) pʲ (1 − p)ⁿ⁻ʲ − α/2` (`0` when `k = 0`) and `p_U`
+///   the root in `(0, 1)` of `Σ_{j=0}^{k} C(n, j) pʲ (1 − p)ⁿ⁻ʲ − α/2`
+///   (`1` when `k = n`) — the Beta quantiles `Beta(k, n−k+1)⁻¹(α/2)` and
+///   `Beta(k+1, n−k)⁻¹(1−α/2)` as algebraic numbers.  Each is a rational
+///   when its polynomial is linear (`n = 1`), otherwise a `RootOf` node
+///   over the irreducible factor, which `Display`s as such and evaluates
+///   to any precision with [`Ex::eval_decimal`].
+///
+/// The Clopper–Pearson endpoints cost a Sturm isolation and a
+/// factorisation over ℤ of a degree-`n` polynomial: exact, but `O(n)`
+/// degree root isolation with coefficients around `C(n, n/2) 2ⁿ`, so
+/// tens of trials are the practical range (beyond `n ≈ 40` the crate may
+/// not certify the factorisation and reports [`SymplexError::ComputationFailed`]).
+/// For large `n` use the `f64` function.
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::estimation::{IntervalMethod, proportion_interval_exact};
+/// use symplex::linprog::q;
+///
+/// let ctx = Context::new();
+/// // scipy: beta.ppf(0.025, 3, 8) = 0.06673951117773447,
+/// //        beta.ppf(0.975, 4, 7) = 0.6524528500599973
+/// let ci = proportion_interval_exact(&ctx, 3, 10, &q(95, 100), IntervalMethod::ClopperPearson)?;
+/// assert!(format!("{}", ci.lower).starts_with("RootOf("));
+/// assert!((ci.lower.eval_f64()? - 0.06673951117773447).abs() < 1e-12);
+/// assert!((ci.upper.eval_f64()? - 0.6524528500599973).abs() < 1e-12);
+/// // mpmath (50 dps): 0.066739511177734467114648056291648899
+/// assert!(ci.lower.eval_decimal(30)?.starts_with("0.06673951117773446711464805629"));
+///
+/// // n = 1: the tail is linear and the endpoint is a rational.
+/// let ci = proportion_interval_exact(&ctx, 1, 1, &q(9, 10), IntervalMethod::ClopperPearson)?;
+/// assert_eq!(ci.lower, ctx.rational(1, 20));
+/// assert_eq!(ci.upper, ctx.int(1));
+/// # Ok::<(), SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for `trials = 0`,
+/// `successes > trials` or a confidence outside `(0, 1)`;
+/// [`SymplexError::ComputationFailed`] if a Clopper–Pearson root cannot be
+/// named (see above).
+pub fn proportion_interval_exact(
+    ctx: &Context,
+    successes: usize,
+    trials: usize,
+    confidence: &Q,
+    method: IntervalMethod,
+) -> Result<Interval<Ex>, SymplexError> {
+    const OP: &str = "proportion_interval_exact";
+    check_trials(OP, successes, trials)?;
+    check_confidence_q(OP, confidence)?;
+    if method != IntervalMethod::ClopperPearson {
+        let z = z_for_confidence(ctx, confidence)?;
+        return proportion_interval_symbolic(ctx, successes, trials, &z, method);
+    }
+    let half_alpha = (Q::one() - confidence) / qu(2);
+    let lower = if successes == 0 {
+        ctx.zero()
+    } else {
+        binomial_tail_root(ctx, trials, successes, true, &half_alpha)?
+    };
+    let upper = if successes == trials {
+        ctx.one()
+    } else {
+        binomial_tail_root(ctx, trials, successes, false, &half_alpha)?
+    };
+    Ok(Interval::closed(lower, upper))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Interval for a correlation
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Fisher's z-transform `z = atanh(r) = ½ ln((1 + r)/(1 − r))`, whose
+/// sampling distribution is approximately normal with variance
+/// `1/(n − 3)`.
+///
+/// ```
+/// use symplex::prelude::*;
+/// let ctx = Context::new();
+/// // atanh(0.8) = 1.0986122886681098 (= ln 3)
+/// let z = symplex::stats::estimation::fisher_z(&ctx.rational(4, 5));
+/// assert!((z.eval_f64()? - 1.098_612_288_668_109_8).abs() < 1e-12);
+/// # Ok::<(), SymplexError>(())
+/// ```
+#[must_use]
+pub fn fisher_z(r: &Ex) -> Ex {
+    r.atanh()
+}
+
+/// A confidence interval for a population correlation by Fisher's z:
+/// `tanh(atanh(r) ∓ z_{α/2} / √(n − 3))`.  `f64` throughout (a normal
+/// quantile is involved).  `scipy.stats.pearsonr(x, y).confidence_interval
+/// (confidence_level)`.
+///
+/// ```
+/// use symplex::stats::estimation::pearson_ci;
+///
+/// // scipy: pearsonr(range(1, 6), [1, 3, 2, 5, 4]).confidence_interval(0.95)
+/// //   → (-0.279640041969355, 0.9861961933012714); r = 0.8, n = 5
+/// let ci = pearson_ci(0.8, 5, 0.95)?;
+/// assert!((ci.lower + 0.279_640_041_969_355).abs() < 1e-12);
+/// assert!((ci.upper - 0.986_196_193_301_271_4).abs() < 1e-12);
+/// # Ok::<(), symplex::prelude::SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for `|r| ≥ 1` or non-finite `r`,
+/// `n < 4`, or a confidence level outside `(0, 1)`.
+pub fn pearson_ci(r: f64, n: usize, confidence: f64) -> Result<Interval<f64>, SymplexError> {
+    const OP: &str = "pearson_ci";
+    if !r.is_finite() || r.abs() >= 1.0 {
+        return Err(invalid(
+            OP,
+            format!("the correlation must lie strictly between −1 and 1, got {r}"),
+        ));
+    }
+    if n < 4 {
+        return Err(invalid(
+            OP,
+            format!("Fisher's z interval needs at least four observations, got {n}"),
+        ));
+    }
+    check_confidence(OP, confidence)?;
+    let z = r.atanh();
+    let se = 1.0 / ((n - 3) as f64).sqrt();
+    let zc = z_two_sided(confidence);
+    Ok(Interval::closed((z - zc * se).tanh(), (z + zc * se).tanh()))
 }

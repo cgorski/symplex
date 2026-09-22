@@ -1,13 +1,20 @@
 //! Inter-rater agreement, exactly: percent agreement, Cohen's κ (plain
-//! and weighted), Scott's π, Fleiss' κ, Krippendorff's α, Gwet's AC₁,
-//! the intraclass correlations of Shrout & Fleiss and Kendall's W.
+//! and weighted) with its confidence interval, test and maximum, Scott's
+//! π, Fleiss' κ, Krippendorff's α, Gwet's AC₁, the intraclass
+//! correlations of Shrout & Fleiss, Kendall's W and Cochran's Q.
+//!
+//! **Rule:** every inter-rater statistic lives here, including its
+//! inference (the κ interval, the κ test, κ_max and Cochran's Q moved in
+//! from `reliability` in 0.18).
 //!
 //! Ratings live in a [`RatingTable`] — items × raters, each cell an
 //! exact rational ([`Q`]) or missing.  Every coefficient in this module
 //! is a rational function of the counts, so every result is a `Q`
-//! (nothing is rounded); the references named in the tests are
-//! `statsmodels.stats.inter_rater`, the `krippendorff` package, and the
-//! formulas of the cited papers.
+//! (nothing is rounded) — except the inference functions, which return
+//! [`TestResult`] / [`KappaCi`] (an exact statistic and p-value
+//! expression; `f64` confidence limits); the references named in the
+//! tests are `statsmodels.stats.inter_rater`, the `krippendorff` package,
+//! and the formulas of the cited papers.
 //!
 //! ```
 //! use symplex::stats::agreement::{cohen_kappa, RatingTable, krippendorff_alpha, Level};
@@ -44,22 +51,17 @@
 //!   [`SymplexError::InvalidArgument`].
 
 use num_bigint::BigInt;
-use num_traits::{One, Zero};
+use num_traits::{One, Signed, Zero};
 
+use super::common::{
+    check_confidence, chi_squared_sf_q, ex, ex_usize, invalid, norm_isf, q_to_f64, qi, qu,
+};
+use super::hypothesis::{Alternative, TestResult};
+use crate::api::context::Context;
+use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
+use crate::base::interval::Interval;
 use crate::domains::stats::data::{self, Q};
-
-fn invalid(op: &'static str, reason: impl Into<String>) -> SymplexError {
-    SymplexError::invalid_argument(op, reason)
-}
-
-fn qu(n: usize) -> Q {
-    Q::from_integer(BigInt::from(n))
-}
-
-fn qi(n: i64) -> Q {
-    Q::from_integer(BigInt::from(n))
-}
 
 fn sum(values: impl IntoIterator<Item = Q>) -> Q {
     values.into_iter().fold(Q::zero(), |acc, x| acc + x)
@@ -1023,7 +1025,7 @@ pub struct IccAnova {
 /// [`SymplexError::InvalidArgument`] for a table with missing cells or
 /// fewer than two items or two raters.
 pub fn icc_anova(table: &RatingTable) -> Result<IccAnova, SymplexError> {
-    let op = "icc";
+    let op = "icc_anova";
     let x = table
         .complete_rows()
         .map_err(|_| invalid(op, "the intraclass correlation needs a complete table"))?;
@@ -1153,4 +1155,416 @@ pub fn kendall_w(table: &RatingTable) -> Result<Q, SymplexError> {
         return Err(invalid(op, "every rater ties all items, W is undefined"));
     }
     Ok(qi(12) * s / Q::from_integer(denom))
+}
+
+// ── κ inference, κ_max and Cochran's Q ───────────────────────────────
+
+/// Cohen's κ with the ingredients of its large-sample inference, from a
+/// `k × k` confusion matrix.
+struct KappaMoments {
+    kappa: Q,
+    /// Large-sample variance of κ̂ (Fleiss, Cohen & Everitt 1969).
+    var: Q,
+    /// Variance of κ̂ under `H₀: κ = 0`.
+    var0: Q,
+    /// κ_max given the marginals.
+    max: Q,
+}
+
+fn kappa_moments(op: &'static str, table: &[Vec<usize>]) -> Result<KappaMoments, SymplexError> {
+    let k = table.len();
+    if k == 0 || table.iter().any(|r| r.len() != k) {
+        return Err(invalid(
+            op,
+            "the confusion matrix must be square and non-empty",
+        ));
+    }
+    let n: usize = table.iter().flatten().sum();
+    if n == 0 {
+        return Err(invalid(op, "the confusion matrix is empty"));
+    }
+    let nq = qu(n);
+    let p: Vec<Vec<Q>> = table
+        .iter()
+        .map(|r| r.iter().map(|&c| qu(c) / &nq).collect())
+        .collect();
+    let pr: Vec<Q> = p.iter().map(|r| sum(r.iter().cloned())).collect();
+    let pc: Vec<Q> = (0..k)
+        .map(|j| sum(p.iter().map(|r| r[j].clone())))
+        .collect();
+    let po = sum((0..k).map(|i| p[i][i].clone()));
+    let pe = sum(pr.iter().zip(&pc).map(|(r, c)| r * c));
+    let one_minus_pe = Q::one() - &pe;
+    if one_minus_pe.is_zero() {
+        return Err(invalid(
+            op,
+            "the expected agreement is 1 (a single category), κ is undefined",
+        ));
+    }
+    let kappa = (&po - &pe) / &one_minus_pe;
+    let one_minus_k = Q::one() - &kappa;
+    let term_a = sum((0..k).map(|i| {
+        let d = Q::one() - (&pr[i] + &pc[i]) * &one_minus_k;
+        &p[i][i] * square(&d)
+    }));
+    let mut term_b = Q::zero();
+    for i in 0..k {
+        for j in 0..k {
+            if i != j {
+                term_b += &p[i][j] * square(&(&pc[i] + &pr[j]));
+            }
+        }
+    }
+    term_b *= square(&one_minus_k);
+    let term_c = square(&(&kappa - &pe * &one_minus_k));
+    let scale = square(&one_minus_pe) * &nq;
+    let var = (term_a + term_b - term_c) / &scale;
+    let marg = sum(pr.iter().zip(&pc).map(|(r, c)| r * c * (r + c)));
+    let var0 = (&pe + square(&pe) - marg) / scale;
+    let p_max = sum(pr.iter().zip(&pc).map(|(r, c)| r.min(c).clone()));
+    let max = (p_max - &pe) / one_minus_pe;
+    Ok(KappaMoments {
+        kappa,
+        var,
+        var0,
+        max,
+    })
+}
+
+/// The confusion matrix of two raters over their observed categories.
+fn confusion_of(op: &'static str, a: &[Q], b: &[Q]) -> Result<Vec<Vec<usize>>, SymplexError> {
+    if a.len() != b.len() {
+        return Err(invalid(
+            op,
+            format!(
+                "the two variables must have the same length ({} and {})",
+                a.len(),
+                b.len()
+            ),
+        ));
+    }
+    if a.is_empty() {
+        return Err(invalid(op, "needs at least one item"));
+    }
+    confusion_matrix(a, b, &observed_categories(a, b))
+}
+
+/// The test of a statistic `z = num / √var` (`num`, `var > 0` rational)
+/// against the standard normal: `P(|Z| ≥ |z|) = erfc(|z|/√2)`.
+fn normal_test(ctx: &Context, num: &Q, var: &Q, alt: Alternative) -> TestResult {
+    let statistic = (ex(ctx, num) / ex(ctx, var).sqrt()).simplify();
+    let half_z2 = square(num) / var / qi(2);
+    let two_sided = ex(ctx, &half_z2).sqrt().erfc();
+    let in_tail = match alt {
+        Alternative::Greater | Alternative::TwoSided => !num.is_negative(),
+        Alternative::Less => !num.is_positive(),
+    };
+    let p_value = match alt {
+        Alternative::TwoSided => two_sided,
+        Alternative::Greater | Alternative::Less => {
+            let half = ctx.rational(1, 2) * two_sided;
+            if in_tail { half } else { ctx.one() - half }
+        }
+    };
+    TestResult {
+        statistic,
+        p_value,
+        df: None,
+        alternative: alt,
+    }
+}
+
+/// Cohen's κ with its large-sample standard error and a normal-theory
+/// confidence interval.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KappaCi {
+    /// The coefficient, exact.
+    pub kappa: Q,
+    /// The large-sample variance of κ̂ (Fleiss, Cohen & Everitt 1969),
+    /// exact.
+    pub variance: Q,
+    /// The standard error `√variance`, exact.
+    pub se: Ex,
+    /// The normal-theory interval `κ ∓ z_{α/2} · se`.
+    pub ci: Interval<f64>,
+    /// The confidence level `ci` refers to.
+    pub confidence: f64,
+}
+
+fn kappa_ci_of(
+    ctx: &Context,
+    op: &'static str,
+    table: &[Vec<usize>],
+    confidence: f64,
+) -> Result<KappaCi, SymplexError> {
+    check_confidence(op, confidence)?;
+    let m = kappa_moments(op, table)?;
+    if m.var.is_negative() {
+        return Err(SymplexError::computation_failed(
+            op,
+            "the large-sample variance of κ came out negative",
+        ));
+    }
+    let z = norm_isf((1.0 - confidence) / 2.0);
+    let delta = z * q_to_f64(&m.var).sqrt();
+    let kappa_f = q_to_f64(&m.kappa);
+    Ok(KappaCi {
+        se: ex(ctx, &m.var).sqrt(),
+        ci: Interval::closed(kappa_f - delta, kappa_f + delta),
+        confidence,
+        kappa: m.kappa,
+        variance: m.var,
+    })
+}
+
+/// Cohen's κ of two raters with the large-sample variance of Fleiss,
+/// Cohen & Everitt (1969),
+///
+/// `Var(κ̂) = [Σᵢ pᵢᵢ(1 − (pᵢ· + p·ᵢ)(1 − κ))² + (1 − κ)² Σᵢ≠ⱼ pᵢⱼ(p·ᵢ + pⱼ·)² − (κ − p_e(1 − κ))²] / (n (1 − p_e)²)`
+///
+/// and the interval `κ ± z_{α/2} √Var(κ̂)`.  κ and the variance are exact;
+/// the limits are `f64` (they need a normal quantile).
+/// `statsmodels.stats.inter_rater.cohens_kappa(table, return_results=True)`
+/// → `var_kappa`, `kappa_low`, `kappa_upp` (95 %).
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::linprog::q;
+/// use symplex::stats::agreement::kappa_ci_from_confusion;
+///
+/// let ctx = Context::new();
+/// // statsmodels: cohens_kappa([[20, 5], [10, 15]], return_results=True)
+/// //   kappa 0.4, var_kappa 0.016128, kappa_low 0.151092290476661, kappa_upp 0.648907709523339
+/// let ci = kappa_ci_from_confusion(&ctx, &[vec![20, 5], vec![10, 15]], 0.95)?;
+/// assert_eq!((ci.kappa, ci.variance), (q(2, 5), q(252, 15625)));
+/// assert!((ci.ci.lower - 0.151_092_290_476_661).abs() < 1e-12);
+/// assert!((ci.ci.upper - 0.648_907_709_523_339).abs() < 1e-12);
+/// # Ok::<(), SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for unequal or empty ratings, a
+/// confidence level outside `(0, 1)`, or an expected agreement of 1.
+pub fn cohen_kappa_ci(
+    ctx: &Context,
+    a: &[Q],
+    b: &[Q],
+    confidence: f64,
+) -> Result<KappaCi, SymplexError> {
+    const OP: &str = "cohen_kappa_ci";
+    kappa_ci_of(ctx, OP, &confusion_of(OP, a, b)?, confidence)
+}
+
+/// [`cohen_kappa_ci`] from a `k × k` confusion matrix (rows: rater A,
+/// columns: rater B).
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for a non-square or empty table, a
+/// confidence level outside `(0, 1)`, or an expected agreement of 1.
+pub fn kappa_ci_from_confusion(
+    ctx: &Context,
+    table: &[Vec<usize>],
+    confidence: f64,
+) -> Result<KappaCi, SymplexError> {
+    kappa_ci_of(ctx, "kappa_ci_from_confusion", table, confidence)
+}
+
+fn kappa_test_of(
+    ctx: &Context,
+    op: &'static str,
+    table: &[Vec<usize>],
+    alt: Alternative,
+) -> Result<TestResult, SymplexError> {
+    let m = kappa_moments(op, table)?;
+    if !m.var0.is_positive() {
+        return Err(invalid(
+            op,
+            "the null variance of κ is zero, the test is undefined",
+        ));
+    }
+    Ok(normal_test(ctx, &m.kappa, &m.var0, alt))
+}
+
+/// The test of `H₀: κ = 0` for two raters: `z = κ̂ / √Var₀(κ̂)` with the
+/// variance under independence (Fleiss, Cohen & Everitt 1969)
+///
+/// `Var₀(κ̂) = [p_e + p_e² − Σᵢ pᵢ· p·ᵢ (pᵢ· + p·ᵢ)] / (n (1 − p_e)²)`,
+///
+/// referred to the standard normal.  The statistic is exact
+/// (`κ/√Var₀`); `Greater` is the usual one-sided `κ > 0`.
+/// `statsmodels` `cohens_kappa(...).z_value`, `pvalue_one_sided`
+/// (`Greater`), `pvalue_two_sided`.
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::agreement::kappa_test_from_confusion;
+/// use symplex::stats::hypothesis::Alternative;
+///
+/// let ctx = Context::new();
+/// // statsmodels: z_value 2.886751345948128, pvalue_two_sided 0.003892417122779
+/// let r = kappa_test_from_confusion(&ctx, &[vec![20, 5], vec![10, 15]], Alternative::TwoSided)?;
+/// assert!((r.statistic_f64()? - 2.886_751_345_948_128).abs() < 1e-12);
+/// assert!((r.p_value_f64()? - 0.003_892_417_122_779).abs() < 1e-12);
+/// # Ok::<(), SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for unequal or empty ratings, an
+/// expected agreement of 1, or a zero null variance.
+pub fn kappa_test(
+    ctx: &Context,
+    a: &[Q],
+    b: &[Q],
+    alt: Alternative,
+) -> Result<TestResult, SymplexError> {
+    const OP: &str = "kappa_test";
+    kappa_test_of(ctx, OP, &confusion_of(OP, a, b)?, alt)
+}
+
+/// [`kappa_test`] from a `k × k` confusion matrix.
+///
+/// # Errors
+///
+/// As [`kappa_test`], for a non-square or empty table.
+pub fn kappa_test_from_confusion(
+    ctx: &Context,
+    table: &[Vec<usize>],
+    alt: Alternative,
+) -> Result<TestResult, SymplexError> {
+    kappa_test_of(ctx, "kappa_test_from_confusion", table, alt)
+}
+
+/// The largest κ the two raters' marginal distributions allow (Umesh,
+/// Peterson & Sauber 1989; Cohen 1960 §"κ_max"):
+///
+/// `κ_max = (Σᵢ min(pᵢ·, p·ᵢ) − p_e) / (1 − p_e)`,
+///
+/// attained when each rater's counts overlap as much as the marginals
+/// permit; `κ / κ_max` is the agreement relative to what was achievable.
+/// `statsmodels` `cohens_kappa(...).kappa_max`.
+///
+/// ```
+/// use symplex::linprog::q;
+/// use symplex::stats::agreement::cohen_kappa_maximum;
+/// use symplex::stats::data::from_i64;
+///
+/// let a = from_i64(&[0, 0, 1, 1, 1, 0]);
+/// let b = from_i64(&[0, 1, 1, 1, 0, 0]);
+/// // Equal marginals (3/6 each): κ_max = 1.
+/// assert_eq!(cohen_kappa_maximum(&a, &b)?, q(1, 1));
+/// # Ok::<(), symplex::prelude::SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for unequal or empty ratings or an
+/// expected agreement of 1.
+pub fn cohen_kappa_maximum(a: &[Q], b: &[Q]) -> Result<Q, SymplexError> {
+    const OP: &str = "cohen_kappa_maximum";
+    Ok(kappa_moments(OP, &confusion_of(OP, a, b)?)?.max)
+}
+
+/// [`cohen_kappa_maximum`] from a `k × k` confusion matrix.
+///
+/// ```
+/// use symplex::linprog::q;
+/// use symplex::stats::agreement::kappa_maximum_from_confusion;
+///
+/// // statsmodels: cohens_kappa([[20, 5], [10, 15]], return_results=True).kappa_max = 0.8
+/// assert_eq!(kappa_maximum_from_confusion(&[vec![20, 5], vec![10, 15]])?, q(4, 5));
+/// # Ok::<(), symplex::prelude::SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for a non-square or empty table or an
+/// expected agreement of 1.
+pub fn kappa_maximum_from_confusion(table: &[Vec<usize>]) -> Result<Q, SymplexError> {
+    Ok(kappa_moments("kappa_maximum_from_confusion", table)?.max)
+}
+
+/// Cochran's Q test (Cochran 1950) that `k` matched binary treatments /
+/// raters have the same success rate, on a subjects × treatments table
+/// of 0/1 responses:
+///
+/// `Q = (k − 1) (k Σⱼ Cⱼ² − (Σⱼ Cⱼ)²) / (k Σᵢ Rᵢ − Σᵢ Rᵢ²)`
+///
+/// with the column totals `Cⱼ` and row totals `Rᵢ`, referred to
+/// `χ²_{k−1}`.  `Q` is exact; the p-value is the exact χ² tail.  Subjects
+/// with a constant row contribute nothing (they are *not* dropped, as in
+/// statsmodels).  `statsmodels.stats.contingency_tables.cochrans_q(x)`.
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::linprog::q;
+/// use symplex::stats::agreement::{RatingTable, cochrans_q};
+///
+/// let ctx = Context::new();
+/// let t = RatingTable::from_i64(&[
+///     &[1, 1, 0], &[1, 1, 0], &[1, 0, 0], &[1, 1, 1], &[0, 1, 0], &[1, 0, 0],
+///     &[1, 1, 0], &[1, 1, 0], &[0, 0, 0], &[1, 1, 1], &[1, 0, 0], &[1, 1, 0],
+/// ])?;
+/// // statsmodels: cochrans_q(x) → statistic 11.555555555555555 (= 104/9), pvalue 0.003095586852365, df 2
+/// let r = cochrans_q(&ctx, &t)?;
+/// assert_eq!(r.statistic_exact(), Some(q(104, 9)));
+/// assert_eq!(r.df, Some(ctx.int(2)));
+/// assert!((r.p_value_f64()? - 0.003_095_586_852_365).abs() < 1e-12);
+/// # Ok::<(), SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for a missing cell, a response other
+/// than 0 or 1, fewer than two subjects or treatments, or every subject
+/// constant (zero denominator).
+pub fn cochrans_q(ctx: &Context, table: &RatingTable) -> Result<TestResult, SymplexError> {
+    const OP: &str = "cochrans_q";
+    let rows = table.complete_rows().map_err(|_| {
+        invalid(
+            OP,
+            "Cochran's Q needs a complete table (drop incomplete rows first)",
+        )
+    })?;
+    if let Some(v) = rows.iter().flatten().find(|v| !(v.is_zero() || v.is_one())) {
+        return Err(invalid(
+            OP,
+            format!("every response must be scored 0 or 1, found {v}"),
+        ));
+    }
+    let (n, k) = (rows.len(), table.n_raters());
+    if n < 2 {
+        return Err(invalid(
+            OP,
+            format!("needs at least two complete respondents (rows), got {n}"),
+        ));
+    }
+    if k < 2 {
+        return Err(invalid(
+            OP,
+            format!("needs at least 2 items (columns), got {k}"),
+        ));
+    }
+    let row_tot: Vec<Q> = rows.iter().map(|r| data::sum(r)).collect();
+    let col_tot: Vec<Q> = (0..k)
+        .map(|j| sum(rows.iter().map(|r| r[j].clone())))
+        .collect();
+    let total = data::sum(&row_tot);
+    let denom = qu(k) * &total - sum(row_tot.iter().map(square));
+    if denom.is_zero() {
+        return Err(invalid(
+            OP,
+            "every subject responds identically under every treatment, Q is undefined",
+        ));
+    }
+    let num = qu(k) * sum(col_tot.iter().map(square)) - square(&total);
+    let statistic = qu(k - 1) * num / denom;
+    Ok(TestResult {
+        p_value: chi_squared_sf_q(ctx, k - 1, &statistic),
+        statistic: ex(ctx, &statistic),
+        df: Some(ex_usize(ctx, k - 1)),
+        alternative: Alternative::TwoSided,
+    })
 }

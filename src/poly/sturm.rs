@@ -18,17 +18,24 @@
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::{Signed, Zero};
+use num_traits::{One, Signed, Zero};
 
 use crate::base::interval::{Interval, IntervalKind};
 use crate::base::numeric::Q;
 use crate::poly::Poly;
+use crate::poly::dense::{gcd_via_z, integer_scaled, pseudo_rem_pos, z_primitive};
 
 /// A Sturm chain built from a polynomial.
 #[derive(Debug, Clone)]
 pub(crate) struct SturmChain {
     /// The polynomials P_0, P_1, …, P_k forming the chain.
     chain: Vec<Poly>,
+    /// `chain[i]` multiplied by a positive integer so that every
+    /// coefficient is an integer (ascending degree).  Signs are unchanged,
+    /// so every sign query is answered from these with integer Horner
+    /// evaluation instead of `Ratio<BigInt>` arithmetic (which would
+    /// normalise a gcd after every operation).
+    int_chain: Vec<Vec<BigInt>>,
 }
 
 #[allow(dead_code)] // Used indirectly via Ex::count_real_roots() bridge; will be exposed publicly later
@@ -37,58 +44,87 @@ impl SturmChain {
     ///
     /// The input is first made square-free so that the chain correctly
     /// counts *distinct* real roots.
+    ///
+    /// The remainders are computed in `ℤ[x]` as primitive pseudo-remainders
+    /// (the primitive PRS), which yields exactly the polynomials
+    /// `-rem(P_{i-1}, P_i).primitive_part()` of the definition — a
+    /// pseudo-remainder is a positive multiple of the remainder when the
+    /// leading coefficient is taken in absolute value, and the primitive
+    /// part is invariant under positive scaling — without the gcd that
+    /// `Ratio<BigInt>` arithmetic performs after every operation.
     pub fn new(p: &Poly) -> Self {
         if p.is_zero() {
-            return SturmChain {
-                chain: vec![Poly::zero()],
-            };
+            return Self::from_chain(vec![Poly::zero()]);
         }
 
-        let p0 = p.square_free_part();
+        let p0 = square_free_part(p);
         let p1 = p0.derivative();
 
         if p1.is_zero() {
             // Constant (degree 0) — no roots.
-            return SturmChain { chain: vec![p0] };
+            return Self::from_chain(vec![p0]);
         }
 
         let mut chain = vec![p0.clone(), p1.clone()];
-        let mut prev = p0;
-        let mut curr = p1;
+        let mut int_chain = vec![integer_scaled(&p0), integer_scaled(&p1)];
 
         loop {
-            let rem = prev.rem(&curr);
-            if rem.is_zero() {
+            let n = int_chain.len();
+            let rem = pseudo_rem_pos(&int_chain[n - 2], &int_chain[n - 1]);
+            if rem.is_empty() {
                 break;
             }
-            let neg_rem = (-&rem).primitive_part();
-            chain.push(neg_rem.clone());
-            prev = curr;
-            curr = neg_rem;
+            let next = z_primitive(&rem.into_iter().map(|c| -c).collect::<Vec<_>>());
+            chain.push(Poly::from_coeffs(
+                next.iter().cloned().map(Ratio::from_integer).collect(),
+            ));
+            int_chain.push(next);
         }
 
-        SturmChain { chain }
+        SturmChain { chain, int_chain }
+    }
+
+    fn from_chain(chain: Vec<Poly>) -> Self {
+        let int_chain = chain.iter().map(integer_scaled).collect();
+        SturmChain { chain, int_chain }
+    }
+
+    /// Largest degree among the chain polynomials.
+    fn max_degree(&self) -> usize {
+        self.int_chain
+            .iter()
+            .map(|c| c.len().saturating_sub(1))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The sign of every chain polynomial at `x` (`+1`, `-1` or `0`), in
+    /// chain order.  `signs[0]` is the sign of the square-free part of the
+    /// original polynomial, so `signs[0] == 0` iff `x` is a root.
+    fn signs_at(&self, x: &Ratio<BigInt>) -> Vec<i8> {
+        let (a, b) = numer_denom(x);
+        let b_pows = powers(&b, self.max_degree());
+        self.int_chain
+            .iter()
+            .map(|c| int_sign_at(c, &a, &b, &b_pows))
+            .collect()
+    }
+
+    /// Is `x` a root of the (square-free part of the) polynomial?
+    fn is_root(&self, x: &Ratio<BigInt>) -> bool {
+        let Some(p0) = self.int_chain.first() else {
+            return false;
+        };
+        let (a, b) = numer_denom(x);
+        let b_pows = powers(&b, p0.len().saturating_sub(1));
+        int_sign_at(p0, &a, &b, &b_pows) == 0
     }
 
     /// Count sign variations when each polynomial is evaluated at `x`.
     ///
     /// Zeros are skipped (as per the standard Sturm convention).
     pub fn sign_variations_at(&self, x: &Ratio<BigInt>) -> usize {
-        let signs: Vec<i8> = self
-            .chain
-            .iter()
-            .map(|p| {
-                let v = p.eval(x);
-                if v.is_positive() {
-                    1
-                } else if v.is_negative() {
-                    -1
-                } else {
-                    0
-                }
-            })
-            .collect();
-        count_sign_changes(&signs)
+        count_sign_changes(&self.signs_at(x))
     }
 
     /// Count sign variations at +∞.
@@ -149,22 +185,43 @@ impl SturmChain {
     /// interval may still hold several.  The output is sorted left to right.
     pub fn isolate_roots_in(&self, a: &Q, b: &Q, max_depth: u32) -> Vec<Interval<Q>> {
         // Explicit stack (no recursion); intervals are pushed right-first so
-        // that the output comes out sorted left to right.
+        // that the output comes out sorted left to right.  Each entry
+        // carries the sign variations at its endpoints, so a bisection
+        // point is evaluated once and shared by both halves.
         let two = Ratio::from_integer(BigInt::from(2));
         let mut result = Vec::new();
-        let mut stack: Vec<(Q, Q, u32)> = vec![(a.clone(), b.clone(), max_depth)];
-        while let Some((lo, hi, depth)) = stack.pop() {
-            let n = self.count_roots_in(&lo, &hi);
+        let mut stack: Vec<Cell> = vec![Cell {
+            lo: a.clone(),
+            hi: b.clone(),
+            depth: max_depth,
+            var_lo: self.sign_variations_at(a),
+            var_hi: self.sign_variations_at(b),
+        }];
+        while let Some(cell) = stack.pop() {
+            let n = cell.var_lo.saturating_sub(cell.var_hi);
             if n == 0 {
                 continue;
             }
-            if n == 1 || depth == 0 {
-                result.push(Interval::left_open(lo, hi));
+            if n == 1 || cell.depth == 0 {
+                result.push(Interval::left_open(cell.lo, cell.hi));
                 continue;
             }
-            let mid = (&lo + &hi) / &two;
-            stack.push((mid.clone(), hi, depth - 1));
-            stack.push((lo, mid, depth - 1));
+            let mid = (&cell.lo + &cell.hi) / &two;
+            let var_mid = self.sign_variations_at(&mid);
+            stack.push(Cell {
+                lo: mid.clone(),
+                hi: cell.hi,
+                depth: cell.depth - 1,
+                var_lo: var_mid,
+                var_hi: cell.var_hi,
+            });
+            stack.push(Cell {
+                lo: cell.lo,
+                hi: mid,
+                depth: cell.depth - 1,
+                var_lo: cell.var_lo,
+                var_hi: var_mid,
+            });
         }
         result
     }
@@ -195,7 +252,7 @@ impl SturmChain {
         let raw = self.isolate_roots_in(&neg_bound, &bound, 256);
         raw.into_iter()
             .map(|iv| {
-                if p.eval(&iv.upper).is_zero() {
+                if self.is_root(&iv.upper) {
                     Interval::point(iv.upper)
                 } else {
                     iv
@@ -219,19 +276,28 @@ impl SturmChain {
         let mut lo = iv.lower.clone();
         let mut hi = iv.upper.clone();
         let mut kind = iv.kind;
+        // Sign variations at `lo`, computed on first use and carried across
+        // bisections (when the root is in the right half `lo` moves to the
+        // midpoint, whose variations were just computed).
+        let mut var_lo: Option<usize> = None;
         // Guard against pathological inputs: at most 512 halvings.
         for _ in 0..512 {
             if &hi - &lo <= *max_width || lo == hi {
                 break;
             }
             let mid = (&lo + &hi) / &two;
-            if self.chain.first().is_some_and(|p| p.eval(&mid).is_zero()) {
+            let signs_mid = self.signs_at(&mid);
+            if signs_mid.first() == Some(&0) {
                 return Interval::point(mid);
             }
-            if self.count_roots_in(&lo, &mid) == 1 {
+            let var_mid = count_sign_changes(&signs_mid);
+            let at_lo = *var_lo.get_or_insert_with(|| self.sign_variations_at(&lo));
+            // Exactly one root in `(lo, mid]`?
+            if at_lo.saturating_sub(var_mid) == 1 {
                 hi = mid;
             } else {
                 lo = mid;
+                var_lo = Some(var_mid);
             }
             // After a bisection the root is located in `(lo, hi]`.
             kind = IntervalKind::LeftOpen;
@@ -249,8 +315,7 @@ impl SturmChain {
             return 0;
         }
         let open_right = self.count_roots_in(a, b);
-        let at_a = self.chain.first().is_some_and(|p| p.eval(a).is_zero());
-        open_right + usize::from(at_a)
+        open_right + usize::from(self.is_root(a))
     }
 
     /// Return the sign of the leading coefficient of the first (original)
@@ -261,9 +326,80 @@ impl SturmChain {
     }
 }
 
+/// A bisection cell of [`SturmChain::isolate_roots_in`] with the sign
+/// variations at its endpoints.
+struct Cell {
+    lo: Q,
+    hi: Q,
+    depth: u32,
+    var_lo: usize,
+    var_hi: usize,
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════
+
+/// `p / gcd(p, p')` — the same polynomial as
+/// [`GenPoly::square_free_part`](crate::poly::generic::GenPoly::square_free_part)
+/// (the quotient by the *monic* gcd, which is unique), with the gcd
+/// computed through `ℤ[x]` by [`gcd_via_z`].
+fn square_free_part(p: &Poly) -> Poly {
+    if p.is_zero() {
+        return Poly::zero();
+    }
+    let dp = p.derivative();
+    if dp.is_zero() {
+        return p.clone();
+    }
+    p.div(&gcd_via_z(p, &dp))
+}
+
+/// `x = a / b` with `b > 0`.
+fn numer_denom(x: &Ratio<BigInt>) -> (BigInt, BigInt) {
+    if x.denom().is_negative() {
+        (-x.numer(), -x.denom())
+    } else {
+        (x.numer().clone(), x.denom().clone())
+    }
+}
+
+/// `[1, b, b², …, b^n]`.
+fn powers(b: &BigInt, n: usize) -> Vec<BigInt> {
+    let mut out = Vec::with_capacity(n + 1);
+    let mut acc = BigInt::one();
+    for _ in 0..=n {
+        out.push(acc.clone());
+        acc *= b;
+    }
+    out
+}
+
+/// Sign of the integer polynomial `c` (ascending) at `a / b` with `b > 0`:
+/// the sign of `b^n · c(a/b) = Σ cᵢ aⁱ b^{n−i}`, by Horner's rule in `ℤ`.
+/// `b_pows[j] = b^j` are precomputed powers shared between the chain
+/// polynomials (any missing power is computed on the spot).
+fn int_sign_at(c: &[BigInt], a: &BigInt, b: &BigInt, b_pows: &[BigInt]) -> i8 {
+    let Some((lead, rest)) = c.split_last() else {
+        return 0;
+    };
+    let n = rest.len();
+    let mut v = lead.clone();
+    for (i, ci) in rest.iter().enumerate().rev() {
+        v *= a;
+        if !ci.is_zero() {
+            match b_pows.get(n - i) {
+                Some(bp) => v += ci * bp,
+                None => v += ci * b.pow((n - i) as u32),
+            }
+        }
+    }
+    match v.sign() {
+        num_bigint::Sign::Plus => 1,
+        num_bigint::Sign::Minus => -1,
+        num_bigint::Sign::NoSign => 0,
+    }
+}
 
 /// Cauchy root bound: every root `z` of `p` satisfies
 /// `|z| ≤ 1 + maxᵢ |aᵢ / aₙ|`.
@@ -311,9 +447,173 @@ mod tests {
     use super::*;
     use num_bigint::BigInt;
     use num_rational::Ratio;
+    use num_traits::ToPrimitive;
 
     fn r(n: i64) -> Ratio<BigInt> {
         Ratio::from_integer(BigInt::from(n))
+    }
+
+    /// `Σ_{j=k}^{n} C(n,j) x^j (1−x)^{n−j} − 1/denom`: the Clopper–Pearson
+    /// tail polynomial, whose Cauchy bound is huge (`> 6·10⁷` at `n = 40`)
+    /// while all roots lie in `|z| < 1.5`.
+    fn binomial_tail(n: usize, k: usize, denom: i64) -> Poly {
+        let mut acc = Poly::zero();
+        let one_minus_x = Poly::from_coeffs(vec![r(1), r(-1)]);
+        let x = Poly::x();
+        for j in k..=n {
+            let mut c = r(1);
+            for i in 0..j {
+                c *= Ratio::new(BigInt::from(n - i), BigInt::from(i + 1));
+            }
+            let mut term = Poly::from_coeffs(vec![c]);
+            for _ in 0..j {
+                term = &term * &x;
+            }
+            for _ in 0..(n - j) {
+                term = &term * &one_minus_x;
+            }
+            acc = &acc + &term;
+        }
+        &acc - &Poly::from_coeffs(vec![Ratio::new(BigInt::from(1), BigInt::from(denom))])
+    }
+
+    /// Isolating and refining the roots of the degree-40 tail polynomial
+    /// bisects a width-`10⁸` Cauchy interval down to `1/1024` — about 36
+    /// halvings per root — and used to take 16 s with rational Horner
+    /// evaluation; with integer signs it is milliseconds.
+    #[test]
+    fn degree_40_tail_isolation_is_fast_and_correct() {
+        let f = binomial_tail(40, 12, 40);
+        assert_eq!(f.degree(), Some(40));
+        let start = std::time::Instant::now();
+        let chain = SturmChain::new(&f);
+        let ivs = chain.isolate_all_real_roots();
+        assert_eq!(ivs.len(), 2, "{ivs:?}");
+        let width = Ratio::new(BigInt::from(1), BigInt::from(1024));
+        let refined: Vec<Interval<Q>> = ivs
+            .iter()
+            .map(|iv| chain.refine_interval(iv, &width))
+            .collect();
+        assert!(start.elapsed().as_secs() < 5, "took {:?}", start.elapsed());
+        for (iv, fine) in ivs.iter().zip(&refined) {
+            assert!(&fine.upper - &fine.lower <= width);
+            assert!(iv.lower <= fine.lower && fine.upper <= iv.upper);
+            assert_eq!(chain.count_roots_in(&fine.lower, &fine.upper), 1);
+        }
+        // The root in (0, 1) is the 2.5% Clopper–Pearson lower bound for
+        // 12 successes in 40 trials: 0.16562720439… (scipy.stats.beta.ppf).
+        let lo = refined[1].lower.to_f64().unwrap_or(f64::NAN);
+        let hi = refined[1].upper.to_f64().unwrap_or(f64::NAN);
+        assert!(
+            lo <= 0.1656272043932356 && 0.1656272043932356 <= hi,
+            "[{lo}, {hi}]"
+        );
+    }
+
+    /// A deterministic pseudo-random polynomial with small integer
+    /// coefficients (some repeated factors when `square` is set).
+    fn pseudo_random_poly(seed: u64, degree: usize, square: bool) -> Poly {
+        let mut state = seed;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % 19) as i64 - 9
+        };
+        let mut coeffs: Vec<Ratio<BigInt>> = (0..=degree).map(|_| r(next())).collect();
+        if coeffs[degree].is_zero() {
+            coeffs[degree] = r(1);
+        }
+        let p = Poly::from_coeffs(coeffs);
+        if square {
+            let q = Poly::from_coeffs(vec![r(next()), r(next()), r(1)]);
+            &(&p * &q) * &q
+        } else {
+            p
+        }
+    }
+
+    /// The integer primitive-PRS chain equals the definition computed over
+    /// `ℚ`: `P_{i+1} = -rem(P_{i-1}, P_i).primitive_part()`.
+    #[test]
+    fn integer_chain_matches_rational_definition() {
+        for seed in 1..=12u64 {
+            let p = pseudo_random_poly(seed, 8 + (seed as usize % 5), seed % 3 == 0);
+            let chain = SturmChain::new(&p);
+            let p0 = p.square_free_part();
+            assert_eq!(chain.chain[0], p0, "seed {seed}: square-free part");
+            let mut expected = vec![p0.clone(), p0.derivative()];
+            loop {
+                let n = expected.len();
+                let rem = expected[n - 2].rem(&expected[n - 1]);
+                if rem.is_zero() {
+                    break;
+                }
+                expected.push((-&rem).primitive_part());
+            }
+            assert_eq!(chain.chain, expected, "seed {seed}");
+            // The integer copies have the sign of the rational entries.
+            for (q, z) in chain.chain.iter().zip(&chain.int_chain) {
+                let x = Ratio::new(BigInt::from(-7), BigInt::from(3));
+                let zq = Poly::from_coeffs(z.iter().cloned().map(Ratio::from_integer).collect());
+                assert_eq!(q.eval(&x).is_positive(), zq.eval(&x).is_positive());
+                assert_eq!(q.eval(&x).is_zero(), zq.eval(&x).is_zero());
+            }
+        }
+    }
+
+    /// Sign queries through the integer chain agree with rational
+    /// evaluation of the chain polynomials.
+    #[test]
+    fn integer_sign_evaluation_matches_rational() {
+        let p = pseudo_random_poly(5, 11, true);
+        let chain = SturmChain::new(&p);
+        let xs = [
+            r(0),
+            r(3),
+            r(-2),
+            Ratio::new(BigInt::from(5), BigInt::from(7)),
+            Ratio::new(BigInt::from(-1234567), BigInt::from(89)),
+            Ratio::new(BigInt::from(1), BigInt::from(1) << 40),
+        ];
+        for x in &xs {
+            let expected: Vec<i8> = chain
+                .chain
+                .iter()
+                .map(|q| {
+                    let v = q.eval(x);
+                    if v.is_positive() {
+                        1
+                    } else if v.is_negative() {
+                        -1
+                    } else {
+                        0
+                    }
+                })
+                .collect();
+            assert_eq!(chain.signs_at(x), expected, "at {x}");
+        }
+        // A root of `p` is reported as a root.
+        let root = Ratio::new(BigInt::from(2), BigInt::from(1));
+        let q = &p * &Poly::from_coeffs(vec![r(-2), r(1)]);
+        assert!(SturmChain::new(&q).is_root(&root));
+        assert!(!SturmChain::new(&q).is_root(&r(1)) || q.eval(&r(1)).is_zero());
+    }
+
+    /// `square_free_part` (integer gcd) equals the generic rational one.
+    #[test]
+    fn integer_square_free_part_matches_generic() {
+        for seed in 1..=10u64 {
+            let p = pseudo_random_poly(seed, 6 + seed as usize % 4, true);
+            assert_eq!(square_free_part(&p), p.square_free_part(), "seed {seed}");
+            let q = pseudo_random_poly(seed + 100, 9, false);
+            assert_eq!(square_free_part(&q), q.square_free_part(), "seed {seed}");
+        }
+        // Rational coefficients too.
+        let half = Ratio::new(BigInt::from(1), BigInt::from(2));
+        let p = Poly::from_coeffs(vec![half.clone(), r(3), half, r(1)]);
+        let p2 = &p * &p;
+        assert_eq!(square_free_part(&p2), p2.square_free_part());
     }
 
     /// x^2 - 1 = (x-1)(x+1) → 2 real roots

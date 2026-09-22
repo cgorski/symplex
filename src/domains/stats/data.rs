@@ -1,4 +1,10 @@
-//! Descriptive statistics on observed data, exactly.
+//! Descriptive statistics on observed data, exactly — location, spread,
+//! shape, ranks and the measures of association (Pearson, Spearman,
+//! Kendall's τ-b and τ-c, Goodman–Kruskal's γ, Somers' D).
+//!
+//! **Rule:** a function lives here iff it *describes* a sample or the
+//! association of two samples without inference; tests are in
+//! [`super::hypothesis`], interval estimates in [`super::estimation`].
 //!
 //! Observations are exact rationals ([`Q`]); every quantity that is a
 //! rational function of the data (mean, variance, covariance, median,
@@ -24,23 +30,12 @@ use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
+use super::common::{invalid, qi, qu};
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
 pub use crate::base::numeric::Q;
-
-fn invalid(reason: impl Into<String>) -> SymplexError {
-    SymplexError::invalid_argument("stats::data", reason)
-}
-
-fn qi(n: i64) -> Q {
-    Q::from_integer(BigInt::from(n))
-}
-
-fn qu(n: usize) -> Q {
-    Q::from_integer(BigInt::from(n))
-}
 
 /// The divisor of a variance / covariance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -54,17 +49,20 @@ pub enum Ddof {
 }
 
 impl Ddof {
-    fn divisor(self, n: usize) -> Result<Q, SymplexError> {
+    fn divisor(self, op: &'static str, n: usize) -> Result<Q, SymplexError> {
         match self {
             Ddof::Population => {
                 if n == 0 {
-                    return Err(invalid("variance of an empty sample"));
+                    return Err(invalid(op, "variance of an empty sample"));
                 }
                 Ok(qu(n))
             }
             Ddof::Sample => {
                 if n < 2 {
-                    return Err(invalid("sample variance needs at least two observations"));
+                    return Err(invalid(
+                        op,
+                        "sample variance needs at least two observations",
+                    ));
                 }
                 Ok(qu(n - 1))
             }
@@ -102,7 +100,7 @@ pub fn sum(data: &[Q]) -> Q {
 /// ```
 pub fn mean(data: &[Q]) -> Result<Q, SymplexError> {
     if data.is_empty() {
-        return Err(invalid("mean of an empty sample"));
+        return Err(invalid("mean", "mean of an empty sample"));
     }
     Ok(sum(data) / qu(data.len()))
 }
@@ -130,7 +128,7 @@ pub fn sum_of_squares(data: &[Q]) -> Result<Q, SymplexError> {
 /// assert_eq!(variance(&d, Ddof::Sample).unwrap(), q(32, 7));
 /// ```
 pub fn variance(data: &[Q], ddof: Ddof) -> Result<Q, SymplexError> {
-    let div = ddof.divisor(data.len())?;
+    let div = ddof.divisor("variance", data.len())?;
     Ok(sum_of_squares(data)? / div)
 }
 
@@ -142,14 +140,18 @@ pub fn std(ctx: &Context, data: &[Q], ddof: Ddof) -> Result<Ex, SymplexError> {
 /// The covariance of two equally long samples.  `statistics.covariance`
 /// (which uses the `Sample` divisor).
 pub fn covariance(x: &[Q], y: &[Q], ddof: Ddof) -> Result<Q, SymplexError> {
+    const OP: &str = "covariance";
     if x.len() != y.len() {
-        return Err(invalid(format!(
-            "covariance of samples of different sizes ({} and {})",
-            x.len(),
-            y.len()
-        )));
+        return Err(invalid(
+            OP,
+            format!(
+                "covariance of samples of different sizes ({} and {})",
+                x.len(),
+                y.len()
+            ),
+        ));
     }
-    let div = ddof.divisor(x.len())?;
+    let div = ddof.divisor(OP, x.len())?;
     let (mx, my) = (mean(x)?, mean(y)?);
     let s = x
         .iter()
@@ -170,7 +172,10 @@ pub fn pearson(ctx: &Context, x: &[Q], y: &[Q]) -> Result<Ex, SymplexError> {
     let sxx = variance(x, Ddof::Population)?;
     let syy = variance(y, Ddof::Population)?;
     if sxx.is_zero() || syy.is_zero() {
-        return Err(invalid("correlation with a constant sample is undefined"));
+        return Err(invalid(
+            "pearson",
+            "correlation with a constant sample is undefined",
+        ));
     }
     Ok((ctx.from_ratio(sxy) / (ctx.from_ratio(sxx) * ctx.from_ratio(syy)).sqrt()).simplify())
 }
@@ -186,7 +191,7 @@ pub fn sorted(data: &[Q]) -> Vec<Q> {
 /// ones.  `statistics.median`.
 pub fn median(data: &[Q]) -> Result<Q, SymplexError> {
     if data.is_empty() {
-        return Err(invalid("median of an empty sample"));
+        return Err(invalid("median", "median of an empty sample"));
     }
     let s = sorted(data);
     let n = s.len();
@@ -209,13 +214,15 @@ pub fn median(data: &[Q]) -> Result<Q, SymplexError> {
 /// assert_eq!(quantile(&d, &q(3, 4), QuantileMethod::Inclusive).unwrap(), q(11, 2));
 /// ```
 pub fn quantile(data: &[Q], p: &Q, method: QuantileMethod) -> Result<Q, SymplexError> {
+    const OP: &str = "quantile";
     if data.is_empty() {
-        return Err(invalid("quantile of an empty sample"));
+        return Err(invalid(OP, "quantile of an empty sample"));
     }
     if p.is_negative() || *p > Q::one() {
-        return Err(invalid(format!(
-            "the quantile level must lie in [0, 1], got {p}"
-        )));
+        return Err(invalid(
+            OP,
+            format!("the quantile level must lie in [0, 1], got {p}"),
+        ));
     }
     let s = sorted(data);
     let n = s.len();
@@ -244,7 +251,7 @@ pub fn quantile(data: &[Q], p: &Q, method: QuantileMethod) -> Result<Q, SymplexE
 /// groups (`statistics.quantiles(data, n=n, method=…)`).
 pub fn quantiles(data: &[Q], n: usize, method: QuantileMethod) -> Result<Vec<Q>, SymplexError> {
     if n < 2 {
-        return Err(invalid("quantiles need n ≥ 2 groups"));
+        return Err(invalid("quantiles", "quantiles need n ≥ 2 groups"));
     }
     (1..n)
         .map(|i| quantile(data, &(qu(i) / qu(n)), method))
@@ -276,7 +283,7 @@ pub fn iqr(data: &[Q], method: QuantileMethod) -> Result<Q, SymplexError> {
 pub fn min_max(data: &[Q]) -> Result<Interval<Q>, SymplexError> {
     let first = data
         .first()
-        .ok_or_else(|| invalid("min/max of an empty sample"))?;
+        .ok_or_else(|| invalid("min_max", "min/max of an empty sample"))?;
     let mut lo = first.clone();
     let mut hi = first.clone();
     for x in data {
@@ -378,12 +385,13 @@ pub fn spearman(ctx: &Context, x: &[Q], y: &[Q]) -> Result<Ex, SymplexError> {
 /// the tie corrections `n₁`, `n₂`, as an exact expression.
 /// `scipy.stats.kendalltau` (default `variant='b'`).
 pub fn kendall_tau(ctx: &Context, x: &[Q], y: &[Q]) -> Result<Ex, SymplexError> {
+    const OP: &str = "kendall_tau";
     if x.len() != y.len() {
-        return Err(invalid("Kendall's τ of samples of different sizes"));
+        return Err(invalid(OP, "Kendall's τ of samples of different sizes"));
     }
     let n = x.len();
     if n < 2 {
-        return Err(invalid("Kendall's τ needs at least two pairs"));
+        return Err(invalid(OP, "Kendall's τ needs at least two pairs"));
     }
     let (mut conc, mut disc) = (0i64, 0i64);
     for i in 0..n {
@@ -406,7 +414,10 @@ pub fn kendall_tau(ctx: &Context, x: &[Q], y: &[Q]) -> Result<Ex, SymplexError> 
     let n2 = pairs(&tie_sizes(y));
     let denom = (n0 - n1) * (n0 - n2);
     if denom <= 0 {
-        return Err(invalid("Kendall's τ with a constant sample is undefined"));
+        return Err(invalid(
+            OP,
+            "Kendall's τ with a constant sample is undefined",
+        ));
     }
     Ok((ctx.int(conc - disc) / ctx.int(denom).sqrt()).simplify())
 }
@@ -416,7 +427,10 @@ pub fn kendall_tau(ctx: &Context, x: &[Q], y: &[Q]) -> Result<Ex, SymplexError> 
 pub fn skewness(ctx: &Context, data: &[Q]) -> Result<Ex, SymplexError> {
     let (m2, m3) = (central_moment(data, 2)?, central_moment(data, 3)?);
     if m2.is_zero() {
-        return Err(invalid("skewness of a constant sample is undefined"));
+        return Err(invalid(
+            "skewness",
+            "skewness of a constant sample is undefined",
+        ));
     }
     Ok((ctx.from_ratio(m3) / ctx.from_ratio(m2).pow(&ctx.rational(3, 2))).simplify())
 }
@@ -426,7 +440,10 @@ pub fn skewness(ctx: &Context, data: &[Q]) -> Result<Ex, SymplexError> {
 pub fn kurtosis(data: &[Q]) -> Result<Q, SymplexError> {
     let (m2, m4) = (central_moment(data, 2)?, central_moment(data, 4)?);
     if m2.is_zero() {
-        return Err(invalid("kurtosis of a constant sample is undefined"));
+        return Err(invalid(
+            "kurtosis",
+            "kurtosis of a constant sample is undefined",
+        ));
     }
     Ok(m4 / (&m2 * &m2) - qi(3))
 }
@@ -462,7 +479,10 @@ pub fn zscores(ctx: &Context, data: &[Q], ddof: Ddof) -> Result<Vec<Ex>, Symplex
     let m = mean(data)?;
     let s = std(ctx, data, ddof)?;
     if variance(data, ddof)?.is_zero() {
-        return Err(invalid("z-scores of a constant sample are undefined"));
+        return Err(invalid(
+            "zscores",
+            "z-scores of a constant sample are undefined",
+        ));
     }
     Ok(data
         .iter()
@@ -472,11 +492,12 @@ pub fn zscores(ctx: &Context, data: &[Q], ddof: Ddof) -> Result<Vec<Ex>, Symplex
 
 /// The geometric mean `(Π xᵢ)^{1/n}` of positive data, exactly.
 pub fn geometric_mean(ctx: &Context, data: &[Q]) -> Result<Ex, SymplexError> {
+    const OP: &str = "geometric_mean";
     if data.is_empty() {
-        return Err(invalid("geometric mean of an empty sample"));
+        return Err(invalid(OP, "geometric mean of an empty sample"));
     }
     if data.iter().any(|x| !x.is_positive()) {
-        return Err(invalid("geometric mean needs positive observations"));
+        return Err(invalid(OP, "geometric mean needs positive observations"));
     }
     let prod = data.iter().fold(Q::one(), |acc, x| acc * x);
     Ok(ctx
@@ -487,11 +508,12 @@ pub fn geometric_mean(ctx: &Context, data: &[Q]) -> Result<Ex, SymplexError> {
 
 /// The harmonic mean `n / Σ (1/xᵢ)` of positive data.  `statistics.harmonic_mean`.
 pub fn harmonic_mean(data: &[Q]) -> Result<Q, SymplexError> {
+    const OP: &str = "harmonic_mean";
     if data.is_empty() {
-        return Err(invalid("harmonic mean of an empty sample"));
+        return Err(invalid(OP, "harmonic mean of an empty sample"));
     }
     if data.iter().any(|x| !x.is_positive()) {
-        return Err(invalid("harmonic mean needs positive observations"));
+        return Err(invalid(OP, "harmonic mean needs positive observations"));
     }
     let s = data.iter().fold(Q::zero(), |acc, x| acc + x.recip());
     Ok(qu(data.len()) / s)
@@ -500,8 +522,9 @@ pub fn harmonic_mean(data: &[Q]) -> Result<Q, SymplexError> {
 /// The mean after removing the `⌊n·p⌋` smallest and largest observations
 /// (`scipy.stats.trim_mean(data, p)`).
 pub fn trimmed_mean(data: &[Q], p: &Q) -> Result<Q, SymplexError> {
+    const OP: &str = "trimmed_mean";
     if p.is_negative() || *p >= Q::new(BigInt::from(1), BigInt::from(2)) {
-        return Err(invalid("the trimming proportion must lie in [0, 1/2)"));
+        return Err(invalid(OP, "the trimming proportion must lie in [0, 1/2)"));
     }
     let s = sorted(data);
     let cut = (p * qu(s.len()))
@@ -510,7 +533,7 @@ pub fn trimmed_mean(data: &[Q], p: &Q) -> Result<Q, SymplexError> {
         .to_usize()
         .unwrap_or(0);
     if 2 * cut >= s.len() {
-        return Err(invalid("trimming removes every observation"));
+        return Err(invalid(OP, "trimming removes every observation"));
     }
     mean(&s[cut..s.len() - cut])
 }
@@ -538,7 +561,10 @@ pub fn mad_outliers(data: &[Q], threshold: &Q) -> Result<Vec<usize>, SymplexErro
     let m = median(data)?;
     let mad = median_abs_deviation(data)?;
     if mad.is_zero() {
-        return Err(invalid("the median absolute deviation is zero"));
+        return Err(invalid(
+            "mad_outliers",
+            "the median absolute deviation is zero",
+        ));
     }
     let c = Q::new(BigInt::from(6745), BigInt::from(10_000));
     Ok(data
@@ -566,7 +592,7 @@ pub fn from_f64(data: &[f64]) -> Result<Vec<Q>, SymplexError> {
     data.iter()
         .map(|&x| {
             crate::base::numeric::f64_to_ratio_exact(x)
-                .ok_or_else(|| invalid(format!("{x} is not a finite number")))
+                .ok_or_else(|| invalid("from_f64", format!("{x} is not a finite number")))
         })
         .collect()
 }
@@ -592,4 +618,209 @@ pub fn binomial_q(n: usize, k: usize) -> Q {
     }
     let g = num.gcd(&den);
     Q::new(num / &g, den / g)
+}
+
+// ── Ordinal association ───────────────────────────────────────────────
+
+/// The classification of the `n(n−1)/2` pairs of observations of two
+/// variables: concordant, discordant, tied on `x` only, tied on `y` only,
+/// tied on both.  The five counts sum to [`pairs`](Self::pairs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ConcordanceCounts {
+    /// Pairs ordered the same way on both variables (`C`, SAS `P`).
+    pub concordant: usize,
+    /// Pairs ordered opposite ways (`D`, SAS `Q`).
+    pub discordant: usize,
+    /// Pairs tied on `x` but not on `y` (`T_x`).
+    pub ties_x: usize,
+    /// Pairs tied on `y` but not on `x` (`T_y`).
+    pub ties_y: usize,
+    /// Pairs tied on both (`T_xy`).
+    pub ties_both: usize,
+}
+
+impl ConcordanceCounts {
+    /// The total number of pairs `n(n−1)/2`.
+    #[must_use]
+    pub fn pairs(&self) -> usize {
+        self.concordant + self.discordant + self.ties_x + self.ties_y + self.ties_both
+    }
+}
+
+/// Count the concordant, discordant and tied pairs of two variables.
+///
+/// ```
+/// use symplex::stats::data::{ConcordanceCounts, concordance_counts, from_i64};
+///
+/// let x = from_i64(&[1, 2, 2, 3]);
+/// let y = from_i64(&[1, 1, 2, 3]);
+/// let c = concordance_counts(&x, &y)?;
+/// assert_eq!(c, ConcordanceCounts { concordant: 4, discordant: 0, ties_x: 1, ties_y: 1, ties_both: 0 });
+/// assert_eq!(c.pairs(), 6);
+/// # Ok::<(), symplex::prelude::SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for unequal lengths or fewer than two
+/// observations.
+pub fn concordance_counts(x: &[Q], y: &[Q]) -> Result<ConcordanceCounts, SymplexError> {
+    const OP: &str = "concordance_counts";
+    if x.len() != y.len() {
+        return Err(invalid(
+            OP,
+            format!(
+                "the two variables must have the same length ({} and {})",
+                x.len(),
+                y.len()
+            ),
+        ));
+    }
+    let n = x.len();
+    if n < 2 {
+        return Err(invalid(OP, "needs at least two observations"));
+    }
+    let mut c = ConcordanceCounts {
+        concordant: 0,
+        discordant: 0,
+        ties_x: 0,
+        ties_y: 0,
+        ties_both: 0,
+    };
+    for i in 0..n {
+        for j in i + 1..n {
+            let sx = x[i].cmp(&x[j]);
+            let sy = y[i].cmp(&y[j]);
+            match (sx, sy) {
+                (std::cmp::Ordering::Equal, std::cmp::Ordering::Equal) => c.ties_both += 1,
+                (std::cmp::Ordering::Equal, _) => c.ties_x += 1,
+                (_, std::cmp::Ordering::Equal) => c.ties_y += 1,
+                _ if sx == sy => c.concordant += 1,
+                _ => c.discordant += 1,
+            }
+        }
+    }
+    Ok(c)
+}
+
+/// Goodman and Kruskal's γ (1954): `(C − D) / (C + D)`, the ordinal
+/// association ignoring every tied pair.  Exact.
+///
+/// ```
+/// use symplex::linprog::q;
+/// use symplex::stats::data::{from_i64, goodman_kruskal_gamma};
+///
+/// let x = from_i64(&[1, 2, 2, 3, 3, 3, 4, 4, 5, 1, 2, 4]);
+/// let y = from_i64(&[1, 1, 2, 2, 3, 2, 4, 3, 5, 2, 3, 4]);
+/// // C = 44, D = 3 → γ = 41/47
+/// assert_eq!(goodman_kruskal_gamma(&x, &y)?, q(41, 47));
+/// # Ok::<(), symplex::prelude::SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for unequal lengths, fewer than two
+/// observations, or no untied pair (`C + D = 0`).
+pub fn goodman_kruskal_gamma(x: &[Q], y: &[Q]) -> Result<Q, SymplexError> {
+    let c = concordance_counts(x, y)?;
+    let untied = c.concordant + c.discordant;
+    if untied == 0 {
+        return Err(invalid(
+            "goodman_kruskal_gamma",
+            "every pair is tied on one of the variables, γ is undefined",
+        ));
+    }
+    Ok((qu(c.concordant) - qu(c.discordant)) / qu(untied))
+}
+
+/// Which variable Somers' D treats as dependent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Dependent {
+    /// `D_{Y|X}`: `y` depends on `x`; pairs tied on `x` are excluded
+    /// (`scipy.stats.somersd(x, y)`).
+    Y,
+    /// `D_{X|Y}`: `x` depends on `y`; pairs tied on `y` are excluded
+    /// (`scipy.stats.somersd(y, x)`).
+    X,
+    /// The symmetric version: `(C − D)` over the mean of the two
+    /// denominators.
+    Symmetric,
+}
+
+/// Somers' D (1962): the ordinal association of a dependent on an
+/// independent variable,
+///
+/// `D_{Y|X} = (C − D) / (C + D + T_y)`, `D_{X|Y} = (C − D) / (C + D + T_x)`,
+/// `D_sym = 2 (C − D) / (2 (C + D) + T_x + T_y)`,
+///
+/// where `T_y` counts the pairs tied on `y` only (so `D_{Y|X}` drops the
+/// pairs tied on the independent `x`).  Exact.  `scipy.stats.somersd(x,
+/// y).statistic` is `D_{Y|X}` (`x` the row / independent variable).
+///
+/// ```
+/// use symplex::linprog::q;
+/// use symplex::stats::data::{Dependent, from_i64, somers_d};
+///
+/// let x = from_i64(&[1, 2, 2, 3, 3, 3, 4, 4, 5, 1, 2, 4]);
+/// let y = from_i64(&[1, 1, 2, 2, 3, 2, 4, 3, 5, 2, 3, 4]);
+/// // scipy: somersd(x, y).statistic = 0.732142857142857 (= 41/56); somersd(y, x) = 0.745454545454545 (= 41/55)
+/// assert_eq!(somers_d(&x, &y, Dependent::Y)?, q(41, 56));
+/// assert_eq!(somers_d(&x, &y, Dependent::X)?, q(41, 55));
+/// # Ok::<(), symplex::prelude::SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for unequal lengths, fewer than two
+/// observations, or a zero denominator (the independent variable
+/// constant).
+pub fn somers_d(x: &[Q], y: &[Q], dependent: Dependent) -> Result<Q, SymplexError> {
+    let c = concordance_counts(x, y)?;
+    let diff = qu(c.concordant) - qu(c.discordant);
+    let untied = c.concordant + c.discordant;
+    let denom = match dependent {
+        Dependent::Y => qu(untied + c.ties_y),
+        Dependent::X => qu(untied + c.ties_x),
+        Dependent::Symmetric => qu(2 * untied + c.ties_x + c.ties_y) / qi(2),
+    };
+    if denom.is_zero() {
+        return Err(invalid(
+            "somers_d",
+            "the independent variable is constant, Somers' D is undefined",
+        ));
+    }
+    Ok(diff / denom)
+}
+
+/// Stuart's τ-c (Kendall's τ-c, 1953): `2m (C − D) / (n² (m − 1))` with
+/// `m = min(#distinct x, #distinct y)`, the tie-adjusted τ for
+/// rectangular tables.  Exact.  `scipy.stats.kendalltau(x, y, variant='c')`.
+///
+/// ```
+/// use symplex::linprog::q;
+/// use symplex::stats::data::{from_i64, kendall_tau_c};
+///
+/// let x = from_i64(&[1, 2, 2, 3, 3, 3, 4, 4, 5, 1, 2, 4]);
+/// let y = from_i64(&[1, 1, 2, 2, 3, 2, 4, 3, 5, 2, 3, 4]);
+/// // scipy: kendalltau(x, y, variant='c').statistic = 0.711805555555556 (= 205/288)
+/// assert_eq!(kendall_tau_c(&x, &y)?, q(205, 288));
+/// # Ok::<(), symplex::prelude::SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for unequal lengths, fewer than two
+/// observations, or a constant variable (`m = 1`).
+pub fn kendall_tau_c(x: &[Q], y: &[Q]) -> Result<Q, SymplexError> {
+    let c = concordance_counts(x, y)?;
+    let m = frequencies(x).len().min(frequencies(y).len());
+    if m < 2 {
+        return Err(invalid(
+            "kendall_tau_c",
+            "a constant variable has no rank correlation",
+        ));
+    }
+    let n = x.len();
+    let diff = qu(c.concordant) - qu(c.discordant);
+    Ok(qu(2 * m) * diff / (qu(n * n) * qu(m - 1)))
 }

@@ -42,17 +42,12 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 use crate::base::errors::SymplexError;
 use crate::domains::exact_matrix::QMatrix;
 
+use super::common::invalid;
 use super::data::Q;
 use super::sample::Rng;
 
-const OP: &str = "stats::markov";
-
-fn invalid(reason: impl Into<String>) -> SymplexError {
-    SymplexError::invalid_argument(OP, reason)
-}
-
-fn failed(reason: impl Into<String>) -> SymplexError {
-    SymplexError::computation_failed(OP, reason)
+fn failed(op: &'static str, reason: impl Into<String>) -> SymplexError {
+    SymplexError::computation_failed(op, reason)
 }
 
 /// Square matrix product without the (impossible here) shape error.
@@ -86,20 +81,24 @@ impl MarkovChain {
     /// [`SymplexError::InvalidArgument`] unless `p` is square, every entry
     /// is non-negative and every row sums to exactly `1`.
     pub fn new(p: QMatrix) -> Result<Self, SymplexError> {
+        const OP: &str = "MarkovChain::new";
         if !p.is_square() {
-            return Err(invalid(format!(
-                "a transition matrix must be square, got {}×{}",
-                p.nrows(),
-                p.ncols()
-            )));
+            return Err(invalid(
+                OP,
+                format!(
+                    "a transition matrix must be square, got {}×{}",
+                    p.nrows(),
+                    p.ncols()
+                ),
+            ));
         }
         for (i, row) in p.rows().enumerate() {
             if let Some(v) = row.iter().find(|v| v.is_negative()) {
-                return Err(invalid(format!("negative entry {v} in row {i}")));
+                return Err(invalid(OP, format!("negative entry {v} in row {i}")));
             }
             let sum = row.iter().fold(Q::zero(), |acc, v| acc + v);
             if !sum.is_one() {
-                return Err(invalid(format!("row {i} sums to {sum}, not 1")));
+                return Err(invalid(OP, format!("row {i} sums to {sum}, not 1")));
             }
         }
         Ok(MarkovChain { p, labels: None })
@@ -113,11 +112,10 @@ impl MarkovChain {
     /// there is not exactly one label per state.
     pub fn with_labels(p: QMatrix, labels: Vec<String>) -> Result<Self, SymplexError> {
         if labels.len() != p.nrows() {
-            return Err(invalid(format!(
-                "{} labels for {} states",
-                labels.len(),
-                p.nrows()
-            )));
+            return Err(invalid(
+                "MarkovChain::with_labels",
+                format!("{} labels for {} states", labels.len(), p.nrows()),
+            ));
         }
         let mut chain = Self::new(p)?;
         chain.labels = Some(labels);
@@ -146,12 +144,12 @@ impl MarkovChain {
             .and_then(|l| l.iter().position(|s| s == label))
     }
 
-    fn check_state(&self, state: usize) -> Result<(), SymplexError> {
+    fn check_state(&self, op: &'static str, state: usize) -> Result<(), SymplexError> {
         if state >= self.n_states() {
-            return Err(invalid(format!(
-                "state {state} out of range for {} states",
-                self.n_states()
-            )));
+            return Err(invalid(
+                op,
+                format!("state {state} out of range for {} states", self.n_states()),
+            ));
         }
         Ok(())
     }
@@ -196,21 +194,26 @@ impl MarkovChain {
     /// [`SymplexError::InvalidArgument`] unless `initial` has one
     /// non-negative entry per state and sums to `1`.
     pub fn distribution_after(&self, initial: &[Q], k: usize) -> Result<Vec<Q>, SymplexError> {
+        const OP: &str = "MarkovChain::distribution_after";
         let n = self.n_states();
         if initial.len() != n {
-            return Err(invalid(format!(
-                "the initial distribution has {} entries for {n} states",
-                initial.len()
-            )));
+            return Err(invalid(
+                OP,
+                format!(
+                    "the initial distribution has {} entries for {n} states",
+                    initial.len()
+                ),
+            ));
         }
         if initial.iter().any(|v| v.is_negative()) {
-            return Err(invalid("the initial distribution has a negative entry"));
+            return Err(invalid(OP, "the initial distribution has a negative entry"));
         }
         let total = initial.iter().fold(Q::zero(), |acc, v| acc + v);
         if !total.is_one() {
-            return Err(invalid(format!(
-                "the initial distribution sums to {total}, not 1"
-            )));
+            return Err(invalid(
+                OP,
+                format!("the initial distribution sums to {total}, not 1"),
+            ));
         }
         let pk = self.n_step(k);
         Ok((0..n)
@@ -307,7 +310,7 @@ impl MarkovChain {
     ///
     /// [`SymplexError::InvalidArgument`] if `state` is out of range.
     pub fn period_of(&self, state: usize) -> Result<Option<usize>, SymplexError> {
-        self.check_state(state)?;
+        self.check_state("MarkovChain::period_of", state)?;
         let class = self
             .communication_classes()
             .into_iter()
@@ -407,14 +410,18 @@ impl MarkovChain {
     /// [`stationary_distributions`](Self::stationary_distributions) is
     /// stationary).
     pub fn stationary_distribution(&self) -> Result<Vec<Q>, SymplexError> {
+        const OP: &str = "MarkovChain::stationary_distribution";
         let mut all = self.stationary_distributions();
         match all.len() {
             1 => all
                 .pop()
-                .ok_or_else(|| failed("no stationary distribution")),
-            k => Err(invalid(format!(
-                "the chain has {k} closed classes, so its stationary distribution is not unique"
-            ))),
+                .ok_or_else(|| failed(OP, "no stationary distribution")),
+            k => Err(invalid(
+                OP,
+                format!(
+                    "the chain has {k} closed classes, so its stationary distribution is not unique"
+                ),
+            )),
         }
     }
 
@@ -439,9 +446,10 @@ impl MarkovChain {
     }
 
     /// The transient and absorbing state lists of an absorbing chain.
-    fn absorbing_split(&self) -> Result<(Vec<usize>, Vec<usize>), SymplexError> {
+    fn absorbing_split(&self, op: &'static str) -> Result<(Vec<usize>, Vec<usize>), SymplexError> {
         if !self.is_absorbing_chain() {
             return Err(invalid(
+                op,
                 "not an absorbing chain (some state cannot reach an absorbing state)",
             ));
         }
@@ -451,6 +459,7 @@ impl MarkovChain {
             .collect();
         if transient.is_empty() {
             return Err(invalid(
+                op,
                 "every state is absorbing; there are no transient states",
             ));
         }
@@ -488,12 +497,13 @@ impl MarkovChain {
     /// # Ok::<(), SymplexError>(())
     /// ```
     pub fn fundamental_matrix(&self) -> Result<QMatrix, SymplexError> {
-        let (transient, _) = self.absorbing_split()?;
+        const OP: &str = "MarkovChain::fundamental_matrix";
+        let (transient, _) = self.absorbing_split(OP)?;
         let q = pick(&self.p, &transient, &transient);
         QMatrix::identity(transient.len())
             .sub(&q)?
             .inv()
-            .map_err(|e| failed(format!("I − Q is singular: {e}")))
+            .map_err(|e| failed(OP, format!("I − Q is singular: {e}")))
     }
 
     /// The absorption probabilities `B = N R` of an absorbing chain:
@@ -505,7 +515,8 @@ impl MarkovChain {
     ///
     /// As [`fundamental_matrix`](Self::fundamental_matrix).
     pub fn absorption_probabilities(&self) -> Result<QMatrix, SymplexError> {
-        let (transient, absorbing) = self.absorbing_split()?;
+        let (transient, absorbing) =
+            self.absorbing_split("MarkovChain::absorption_probabilities")?;
         let n = self.fundamental_matrix()?;
         let r = pick(&self.p, &transient, &absorbing);
         n.matmul(&r)
@@ -526,12 +537,12 @@ impl MarkovChain {
 
     // ── Hitting probabilities and times ──────────────────────────────────
 
-    fn check_target(&self, target: &[usize]) -> Result<Vec<usize>, SymplexError> {
+    fn check_target(&self, op: &'static str, target: &[usize]) -> Result<Vec<usize>, SymplexError> {
         if target.is_empty() {
-            return Err(invalid("the target set is empty"));
+            return Err(invalid(op, "the target set is empty"));
         }
         for &t in target {
-            self.check_state(t)?;
+            self.check_state(op, t)?;
         }
         let mut sorted = target.to_vec();
         sorted.sort_unstable();
@@ -569,7 +580,17 @@ impl MarkovChain {
     /// # Ok::<(), SymplexError>(())
     /// ```
     pub fn hitting_probability(&self, target: &[usize]) -> Result<Vec<Q>, SymplexError> {
-        let target = self.check_target(target)?;
+        self.hitting_probability_of("MarkovChain::hitting_probability", target)
+    }
+
+    /// [`hitting_probability`](Self::hitting_probability) labelled with the
+    /// calling method.
+    fn hitting_probability_of(
+        &self,
+        op: &'static str,
+        target: &[usize],
+    ) -> Result<Vec<Q>, SymplexError> {
+        let target = self.check_target(op, target)?;
         let n = self.n_states();
         let reach = self.reachability();
         let mut h = vec![Q::zero(); n];
@@ -595,9 +616,12 @@ impl MarkovChain {
                 })
                 .collect(),
         );
-        let sol = a
-            .solve(&b)
-            .map_err(|e| failed(format!("the hitting-probability system is singular: {e}")))?;
+        let sol = a.solve(&b).map_err(|e| {
+            failed(
+                op,
+                format!("the hitting-probability system is singular: {e}"),
+            )
+        })?;
         for (k, &i) in unknown.iter().enumerate() {
             h[i] = sol.get(k, 0).clone();
         }
@@ -630,14 +654,18 @@ impl MarkovChain {
     /// # Ok::<(), SymplexError>(())
     /// ```
     pub fn expected_hitting_time(&self, target: &[usize]) -> Result<Vec<Q>, SymplexError> {
-        let target = self.check_target(target)?;
-        let h = self.hitting_probability(&target)?;
+        const OP: &str = "MarkovChain::expected_hitting_time";
+        let target = self.check_target(OP, target)?;
+        let h = self.hitting_probability_of(OP, &target)?;
         let n = self.n_states();
         let infinite: Vec<usize> = (0..n).filter(|&i| !h[i].is_one()).collect();
         if !infinite.is_empty() {
-            return Err(failed(format!(
-                "states {infinite:?} reach the target with probability < 1, so their expected hitting time is infinite"
-            )));
+            return Err(failed(
+                OP,
+                format!(
+                    "states {infinite:?} reach the target with probability < 1, so their expected hitting time is infinite"
+                ),
+            ));
         }
         let unknown: Vec<usize> = (0..n).filter(|i| !target.contains(i)).collect();
         let mut k = vec![Q::zero(); n];
@@ -649,7 +677,7 @@ impl MarkovChain {
         let b = QMatrix::col_vector(vec![Q::one(); unknown.len()]);
         let sol = a
             .solve(&b)
-            .map_err(|e| failed(format!("the hitting-time system is singular: {e}")))?;
+            .map_err(|e| failed(OP, format!("the hitting-time system is singular: {e}")))?;
         for (idx, &i) in unknown.iter().enumerate() {
             k[i] = sol.get(idx, 0).clone();
         }
@@ -667,8 +695,10 @@ impl MarkovChain {
     ///
     /// [`SymplexError::InvalidArgument`] unless the chain is irreducible.
     pub fn fundamental_matrix_ergodic(&self) -> Result<QMatrix, SymplexError> {
+        const OP: &str = "MarkovChain::fundamental_matrix_ergodic";
         if !self.is_irreducible() {
             return Err(invalid(
+                OP,
                 "the ergodic fundamental matrix needs an irreducible chain",
             ));
         }
@@ -679,7 +709,7 @@ impl MarkovChain {
             .sub(&self.p)?
             .add(&w)?
             .inv()
-            .map_err(|e| failed(format!("I − P + W is singular: {e}")))
+            .map_err(|e| failed(OP, format!("I − P + W is singular: {e}")))
     }
 
     /// The mean first-passage times of an irreducible chain:
@@ -712,7 +742,10 @@ impl MarkovChain {
     /// As [`stationary_distribution`](Self::stationary_distribution).
     pub fn mean_recurrence_times(&self) -> Result<Vec<Q>, SymplexError> {
         if !self.is_irreducible() {
-            return Err(invalid("mean recurrence times need an irreducible chain"));
+            return Err(invalid(
+                "MarkovChain::mean_recurrence_times",
+                "mean recurrence times need an irreducible chain",
+            ));
         }
         Ok(self
             .stationary_distribution()?
@@ -736,7 +769,7 @@ impl MarkovChain {
         steps: usize,
         rng: &mut Rng,
     ) -> Result<Vec<usize>, SymplexError> {
-        self.check_state(initial)?;
+        self.check_state("MarkovChain::sample_path", initial)?;
         let n = self.n_states();
         let rows: Vec<Vec<f64>> = self
             .p

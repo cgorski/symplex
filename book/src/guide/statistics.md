@@ -37,7 +37,7 @@ fn main() -> Result<(), SymplexError> {
 | `density(&x)`, `cdf(&x)` | `density(X)(x)`, `cdf(X)(x)` | `Ex` |
 | `mgf(&t)`, `characteristic_function(&t)` | `moment_generating_function(X)(t)`, `characteristic_function(X)(t)` | `Ex` |
 | `quantile(&p)`, `median()` | `quantile(X)(p)`, `median(X)` | `Option<Ex>` — `None` when there is no closed inverse CDF |
-| `sample(n, &mut rng)` | `sample(X, size=n)` | `Result<Vec<f64>>` — inverse-transform sampling through the quantile |
+| `sample(n, &mut rng)` | `sample(X, size=n)` | `Result<Vec<f64>>` — exact-in-distribution sampling (inverse transform, cumulative sums, or the family's own algorithm) |
 
 Events are `BoolEx` conditions in the variable's symbol: relations `X < a`, `X ≤ a`, `X > a`, `X ≥ a`, `X = a` with any (also symbolic) bound and their conjunctions, and — with numeric bounds — any boolean combination of relations in `X` (`X² < 1`, `|X| > 2`, `X < −1 ∨ X > 1`), which the crate's inequality solver turns into a set. The event's region is clipped to the support and measured through the closed-form CDF when the family has one, else by exact integration / summation, so `P(X > 1)` for `Exponential(3)` is `exp(-3)`, `P(0 < U < 1/4)` for `Uniform(0, 1)` is `1/4`, and `P(N² < 1)` for a standard normal is `erf(√2/2)`.
 
@@ -150,7 +150,7 @@ fn main() {
 
 ### Sampling
 
-`sample(n, &mut rng)` draws by inverse transform sampling for every continuous family with a closed-form quantile (`Uniform`, `Exponential`, `Cauchy`, `Laplace`, `Logistic`, `Weibull`, `Pareto`, `Triangular`; `Normal`/`LogNormal` need `erfinv`, which the numeric compiler does not support yet). Families without a quantile (`Gamma`, `ChiSquared`, `Beta`, `StudentT`) return `Err(NotImplemented)`.
+`sample(n, &mut rng)` draws from every built-in family, each route exact in distribution (no normal approximations). A continuous family with a closed-form quantile (`Normal`, `Uniform`, `Exponential`, `Cauchy`, `Laplace`, `Logistic`, `LogNormal`, `Weibull`, `Pareto`, `Triangular`) is drawn by inverse transform through the compiled quantile; a family on a finite lattice or table (`Bernoulli`, `Binomial`, `Hypergeometric`, `DiscreteUniform`/`Die`, `Finite`) by cumulative sums of its pmf. The rest have algorithms of their own: `Gamma` by Marsaglia–Tsang (with the `U^{1/k}` boost for shape `< 1`), `ChiSquared` as `Gamma(k/2, 2)`, `Beta` as `X/(X+Y)` of two gammas, `StudentT` as `Z/√(V/ν)`, `FDistribution` as `(U/d₁)/(V/d₂)` of two χ²; `Poisson` by Knuth's multiplication method below `λ = 30` and Hörmann's transformed rejection (PTRS) above; `Geometric` by the closed inversion `⌊ln U / ln(1−p)⌋ + 1`; `NegativeBinomial` as the Poisson–Gamma mixture (so a non-integer `r` is fine). Parameters must be numeric: a symbolic parameter is `Err(Unevaluable)`, a numeric one outside the family's domain `Err(InvalidArgument)`.
 
 ```rust
 use symplex::prelude::*;
@@ -198,7 +198,7 @@ The joint model is **independence**: `stats::expectation(&[&x, &y], &g)` compute
 
 ## Analysis of variance on data
 
-`stats::anova` extends `hypothesis::anova_one_way` to factorial and repeated-measures designs, with the same contract as the rest of the data statistics: every quantity that is a rational function of the observations — sums of squares, `F`, `η²`, the sphericity `ε`s, Mauchly's `W` — is an exact `Q`, and p-values are exact expressions (`betainc_regularized` for an `F` tail, `uppergamma` for a χ² tail) evaluated with `eval_f64` when you ask.  The reference implementations named in `tests/v17/v17_anova.rs` are statsmodels' `anova_lm` / `AnovaRM`, pingouin's `rm_anova` / `epsilon` / `sphericity` and scipy's `tukey_hsd`; every number printed below is asserted there.
+`stats::anova` holds every analysis of variance — `anova_one_way` (moved here from `hypothesis` in 0.18) and its extensions to factorial and repeated-measures designs — with the same contract as the rest of the data statistics: every quantity that is a rational function of the observations — sums of squares, `F`, `η²`, the sphericity `ε`s, Mauchly's `W` — is an exact `Q`, and p-values are exact expressions (`betainc_regularized` for an `F` tail, `uppergamma` for a χ² tail) evaluated with `eval_f64` when you ask.  The reference implementations named in `tests/v17/v17_anova.rs` are statsmodels' `anova_lm` / `AnovaRM`, pingouin's `rm_anova` / `epsilon` / `sphericity` and scipy's `tukey_hsd`; every number printed below is asserted there.
 
 **Two-way ANOVA.** A `TwoWayData` holds the observations by cell (`cells[a][b]` = replicates; build it from nested vectors, `from_i64`, or long-form `Observation { a, b, y }` rows).  Cell sizes may differ.  A 2 × 3 design with three replicates per cell:
 

@@ -2689,9 +2689,10 @@ mod order_audit {
 #[test]
 fn sampling_routes_and_quantile_argument_validation() {
     let ctx = Context::new();
-    // Documented: no sampler without a closed-form quantile (continuous) or a
-    // finite lattice (discrete); quantile_f64 still works numerically for all.
-    let no_route = [
+    // Families without a closed-form quantile (continuous) or on an infinite
+    // lattice (discrete) sample through routes of their own since 0.18
+    // (`tests/v18/v18_samplers.rs`); quantile_f64 works numerically for all.
+    let own_route = [
         Distribution::gamma(ctx.int(2), ctx.int(3)),
         Distribution::beta(ctx.int(2), ctx.int(3)),
         Distribution::chi_squared(ctx.int(3)),
@@ -2701,13 +2702,10 @@ fn sampling_routes_and_quantile_argument_validation() {
         Distribution::geometric(ctx.rational(1, 3)),
         Distribution::negative_binomial(ctx.int(3), ctx.rational(1, 3)),
     ];
-    for d in &no_route {
+    for d in &own_route {
         assert!(
-            matches!(
-                d.sample(1, &mut Rng::new(1)),
-                Err(SymplexError::NotImplemented(_))
-            ),
-            "{d}: sampling should be reported as not implemented"
+            d.sample(1, &mut Rng::new(1)).is_ok(),
+            "{d}: sampling should have a route"
         );
         let q = d
             .quantile_f64(0.4)

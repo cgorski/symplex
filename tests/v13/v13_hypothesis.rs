@@ -4,7 +4,9 @@
 
 use symplex::linprog::{Q, q, qi};
 use symplex::prelude::*;
+use symplex::stats::anova::anova_one_way;
 use symplex::stats::data::{from_f64, from_i64};
+use symplex::stats::estimation::confidence_interval_mean;
 use symplex::stats::hypothesis::*;
 use symplex::stats::{Distribution, Rng};
 
@@ -534,14 +536,14 @@ fn z_tests_for_proportions_match_statsmodels() {
     close(s_of(&r), 1.581_138_830_084_189, 1e-12);
     close(p_of(&r), 0.056_923_149_003_329_086, 1e-12);
     // statsmodels: proportions_ztest([45, 30], [100, 100]) = (2.1908902300206647, 0.028459736916310555)
-    let r = two_proportion_z_test(&ctx, 45, 100, 30, 100, Alternative::TwoSided).unwrap();
+    let r = z_test_two_proportions(&ctx, 45, 100, 30, 100, Alternative::TwoSided).unwrap();
     close(s_of(&r), 2.190_890_230_020_664_7, 1e-12);
     close(p_of(&r), 0.028_459_736_916_310_555, 1e-12);
     // statsmodels: proportions_ztest([45, 30], [100, 100], alternative='larger').pvalue = 0.014229868458155277
-    let r = two_proportion_z_test(&ctx, 45, 100, 30, 100, Alternative::Greater).unwrap();
+    let r = z_test_two_proportions(&ctx, 45, 100, 30, 100, Alternative::Greater).unwrap();
     close(p_of(&r), 0.014_229_868_458_155_277, 1e-12);
     // statsmodels: proportions_ztest([12, 20], [50, 60]) = (-1.0731772461757665, 0.28319159771497027)
-    let r = two_proportion_z_test(&ctx, 12, 50, 20, 60, Alternative::TwoSided).unwrap();
+    let r = z_test_two_proportions(&ctx, 12, 50, 20, 60, Alternative::TwoSided).unwrap();
     close(s_of(&r), -1.073_177_246_175_766_5, 1e-12);
     close(p_of(&r), 0.283_191_597_714_970_27, 1e-12);
     is_invalid(z_test_proportion(
@@ -551,7 +553,7 @@ fn z_tests_for_proportions_match_statsmodels() {
         &qi(1),
         Alternative::TwoSided,
     ));
-    is_invalid(two_proportion_z_test(
+    is_invalid(z_test_two_proportions(
         &ctx,
         0,
         10,
@@ -599,19 +601,18 @@ fn anova_one_way_matches_scipy_with_exact_sums_of_squares() {
 
 #[test]
 fn confidence_interval_mean_matches_scipy_t_interval() {
-    let ctx = Context::new();
     // scipy: t.interval(0.95, 5, loc=mean(x), scale=sem(x)) = (5.9509296876164886, 11.049070312383511)
     let x = from_i64(&[5, 7, 8, 9, 10, 12]);
-    let ci = confidence_interval_mean(&ctx, &x, 0.95).unwrap();
+    let ci = confidence_interval_mean(&x, 0.95).unwrap();
     close(ci.lower, 5.950_929_687_616_488_6, 1e-9);
     close(ci.upper, 11.049_070_312_383_511, 1e-9);
     // scipy: t.interval(0.99, 6, loc=mean(a), scale=sem(a)) = (18.982530848003655, 22.16032629485349)
     let a = from_i64(&[20, 22, 19, 20, 22, 20, 21]);
-    let ci = confidence_interval_mean(&ctx, &a, 0.99).unwrap();
+    let ci = confidence_interval_mean(&a, 0.99).unwrap();
     close(ci.lower, 18.982_530_848_003_655, 1e-9);
     close(ci.upper, 22.160_326_294_853_49, 1e-9);
-    is_invalid(confidence_interval_mean(&ctx, &a, 1.0));
-    is_invalid(confidence_interval_mean(&ctx, &from_i64(&[1]), 0.95));
+    is_invalid(confidence_interval_mean(&a, 1.0));
+    is_invalid(confidence_interval_mean(&from_i64(&[1]), 0.95));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1116,8 +1117,8 @@ fn two_sample_tests_are_symmetric_under_swapping_the_samples() {
         assert_eq!(ab.df, ba.df);
         assert_eq!((-&ab.statistic).simplify(), ba.statistic);
     }
-    let g = two_proportion_z_test(&ctx, 45, 100, 30, 100, Alternative::Greater).unwrap();
-    let l = two_proportion_z_test(&ctx, 30, 100, 45, 100, Alternative::Less).unwrap();
+    let g = z_test_two_proportions(&ctx, 45, 100, 30, 100, Alternative::Greater).unwrap();
+    let l = z_test_two_proportions(&ctx, 30, 100, 45, 100, Alternative::Less).unwrap();
     assert_eq!(g.p_value, l.p_value);
 }
 

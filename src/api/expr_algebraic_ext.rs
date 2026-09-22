@@ -154,76 +154,136 @@ fn reduce_in_order(
 enum RealRoot {
     /// A rational root (of a linear factor).
     Rational(Ratio<BigInt>),
-    /// `RootOf(g, k)`: the `k`-th root of the irreducible factor `g` in the
-    /// (re, im) order the `RootOf` evaluator uses.
+    /// `RootOf(g, k)`: the `k`-th root of the factor `g` in the (re, im)
+    /// order the `RootOf` evaluator uses.
     RootOf { factor: usize, index: usize },
 }
 
-/// The distinct real roots of `f` (a non-constant polynomial with rational
-/// coefficients), ascending, together with the irreducible factors over ℤ
-/// that the `RootOf` entries refer to.  Rational roots are exact; every
-/// other root is named `RootOf(g, k)` with `k` from
-/// [`real_root_index`](crate::poly::roots::real_root_index), which
-/// verifies that the `k`-th computed root of `g` lies in the root's Sturm
-/// isolating interval and that the index is stable.
-///
-/// Returns `None` when the factorisation over ℤ is not certified complete
-/// (a `RootOf` must name an *irreducible* polynomial), when a root cannot
-/// be assigned to exactly one factor, or when its `RootOf` index cannot be
-/// verified.  These are internal limits, not a statement about `f`; the
-/// public wrapper folds them into its `None` alongside "not a polynomial"
-/// because its return type cannot distinguish the two in a patch release.
-fn real_roots_of(f: &Poly) -> Option<(Vec<Poly>, Vec<RealRoot>)> {
-    let (_content, parts, complete) = crate::poly::factor_zassenhaus::factor_zassenhaus_checked(f);
-    if !complete {
-        return None;
-    }
-    let mut factors: Vec<Poly> = Vec::with_capacity(parts.len());
-    let mut chains: Vec<SturmChain> = Vec::with_capacity(parts.len());
-    let mut square_free = Poly::from_int(1);
-    for (g, _mult) in &parts {
-        if g.degree()? == 0 {
-            continue;
-        }
-        square_free = &square_free * g;
-        chains.push(SturmChain::new(g));
-        factors.push(g.clone());
-    }
-    if square_free.degree().unwrap_or(0) == 0 {
-        return None;
-    }
+/// One distinct real root of a polynomial, located but not yet named:
+/// the factor it belongs to and its Sturm isolating interval.
+struct RootCell {
+    /// Index into [`RealRootCells::factors`].
+    factor: usize,
+    /// Either the point `[r, r]` of an exact hit or a half-open `(lo, hi]`
+    /// Sturm cell containing exactly one root of the factor.
+    interval: crate::base::interval::Interval<Ratio<BigInt>>,
+}
 
-    // Isolating intervals of the product of the distinct factors are
-    // pairwise disjoint and sorted, so walking them in order visits every
-    // real root ascending; each one belongs to exactly one factor.
-    // Each interval is either the point `[r, r]` of an exact hit or a
-    // half-open `(lo, hi]` Sturm cell, so `count_roots_in` (also `(a, b]`)
-    // is the right membership test for the latter.
-    let intervals = SturmChain::new(&square_free).isolate_all_real_roots();
-    let mut out: Vec<RealRoot> = Vec::with_capacity(intervals.len());
-    for iv in intervals {
-        let owner = factors.iter().zip(&chains).position(|(g, chain)| {
-            if iv.is_point() {
-                g.eval(&iv.lower).is_zero()
-            } else {
-                chain.count_roots_in(&iv.lower, &iv.upper) == 1
+/// The square-free factors of a polynomial over ℤ and the cells of its
+/// distinct real roots, ascending.  Naming a cell (the Aberth run behind a
+/// `RootOf` index) is deferred to [`RealRootCells::name`], so `root_of`
+/// pays for one root only.
+struct RealRootCells {
+    /// Pairwise coprime square-free factors over ℤ (irreducible when the
+    /// factorisation was certified complete).
+    factors: Vec<Poly>,
+    cells: Vec<RootCell>,
+    /// `rootof_roots(factors[i])`, computed on first use.
+    roots_cache: Vec<Option<Vec<crate::poly::roots::Complex>>>,
+}
+
+impl RealRootCells {
+    /// Locate the distinct real roots of `f` (a non-constant polynomial
+    /// with rational coefficients).
+    ///
+    /// `f` is factored over ℤ (Berlekamp–Zassenhaus).  When the
+    /// factorisation is certified complete every factor is irreducible and
+    /// each `RootOf(g, k)` is canonical.  When it is not (the recombination
+    /// budget of `factor_zassenhaus` ran out on a factor with very many
+    /// modular factors) the uncertified factors are still square-free and
+    /// pairwise coprime — the square-free decomposition runs first — so
+    /// `RootOf(g, k)` on such a `g` is well defined and evaluates
+    /// correctly (the evaluator only needs the `k`-th root of `g` in
+    /// (re, im) order); it merely may not be in lowest terms, so two
+    /// `RootOf`s naming the same algebraic number could compare unequal.
+    /// That is logged and accepted rather than refusing the root.
+    ///
+    /// Returns `None` when a root cannot be assigned to exactly one
+    /// factor.  This is an internal limit, not a statement about `f`; the
+    /// public wrapper folds it into its `None` alongside "not a polynomial"
+    /// because its return type cannot distinguish the two in a patch
+    /// release.
+    fn locate(f: &Poly) -> Option<Self> {
+        let (_content, parts, complete) =
+            crate::poly::factor_zassenhaus::factor_zassenhaus_checked(f);
+        if !complete {
+            tracing::debug!(
+                degree = f.degree().unwrap_or(0),
+                "real_roots: factorisation over ℤ not certified complete; naming roots of square-free factors"
+            );
+        }
+        let mut factors: Vec<Poly> = Vec::with_capacity(parts.len());
+        let mut chains: Vec<SturmChain> = Vec::with_capacity(parts.len());
+        let mut square_free = Poly::from_int(1);
+        for (g, _mult) in &parts {
+            if g.degree()? == 0 {
+                continue;
             }
-        })?;
-        let g = &factors[owner];
-        if g.degree() == Some(1) {
-            out.push(RealRoot::Rational(-(g.coeff(0) / g.coeff(1))));
-        } else {
-            // `real_root_index` treats the pair as closed `[lo, hi]`, a
-            // superset of `(lo, hi]`; the extra endpoint is not a root of
-            // `g` (an exact hit is reported as a point instead).
-            let index = crate::poly::roots::real_root_index(g, &iv.lower, &iv.upper)?;
-            out.push(RealRoot::RootOf {
+            square_free = &square_free * g;
+            chains.push(SturmChain::new(g));
+            factors.push(g.clone());
+        }
+        if square_free.degree().unwrap_or(0) == 0 {
+            return None;
+        }
+
+        // Isolating intervals of the product of the distinct factors are
+        // pairwise disjoint and sorted, so walking them in order visits
+        // every real root ascending; each one belongs to exactly one
+        // factor.  Each interval is either the point `[r, r]` of an exact
+        // hit or a half-open `(lo, hi]` Sturm cell, so `count_roots_in`
+        // (also `(a, b]`) is the right membership test for the latter.
+        let intervals = SturmChain::new(&square_free).isolate_all_real_roots();
+        let mut cells: Vec<RootCell> = Vec::with_capacity(intervals.len());
+        for iv in intervals {
+            let owner = factors.iter().zip(&chains).position(|(g, chain)| {
+                if iv.is_point() {
+                    g.eval(&iv.lower).is_zero()
+                } else {
+                    chain.count_roots_in(&iv.lower, &iv.upper) == 1
+                }
+            })?;
+            cells.push(RootCell {
                 factor: owner,
-                index,
+                interval: iv,
             });
         }
+        let roots_cache = vec![None; factors.len()];
+        Some(Self {
+            factors,
+            cells,
+            roots_cache,
+        })
     }
-    Some((factors, out))
+
+    /// Name the `i`-th real root: exact for a linear factor, otherwise
+    /// `RootOf(g, k)` with `k` from
+    /// [`real_root_index`](crate::poly::roots::real_root_index), which
+    /// verifies that the `k`-th computed root of `g` lies in the root's
+    /// Sturm isolating interval and that the index is stable.  The
+    /// computed roots of `g` are cached, so naming every root of `g` costs
+    /// one Aberth run.
+    ///
+    /// `None` when `i` is out of range or the index cannot be verified.
+    fn name(&mut self, i: usize) -> Option<RealRoot> {
+        let cell = self.cells.get(i)?;
+        let g = &self.factors[cell.factor];
+        if g.degree() == Some(1) {
+            return Some(RealRoot::Rational(-(g.coeff(0) / g.coeff(1))));
+        }
+        let roots = self.roots_cache[cell.factor].get_or_insert_with(|| {
+            crate::poly::roots::rootof_roots(g, crate::poly::roots::ROOTOF_DEFAULT_PREC)
+        });
+        // `real_root_index` treats the pair as closed `[lo, hi]`, a
+        // superset of `(lo, hi]`; the extra endpoint is not a root of `g`
+        // (an exact hit is reported as a point instead).
+        let index =
+            crate::poly::roots::real_root_index(roots, &cell.interval.lower, &cell.interval.upper)?;
+        Some(RealRoot::RootOf {
+            factor: cell.factor,
+            index,
+        })
+    }
 }
 
 /// Determinant of the Sylvester matrix of two coefficient lists (highest
@@ -573,12 +633,24 @@ impl Expr<Numeric> {
     /// Returns `None` if `self` is not a polynomial in `var` with rational
     /// coefficients or is constant; a polynomial without real roots gives
     /// `Some(vec![])`.  `None` is also returned in the rare case that a
-    /// root cannot be *named* reliably — the factorisation over ℤ could
-    /// not be certified complete, or the `RootOf` index of a root is not
-    /// stable because another root of the same factor has the same real
-    /// part to within `2⁻⁶⁰` (the (re, im) order would then depend on
-    /// rounding).  Every `RootOf(g, k)` that is returned has been checked
+    /// root cannot be *named* reliably: the `RootOf` index of a root is
+    /// not stable because another root of the same factor has the same
+    /// real part to within `2⁻⁶⁰` (the (re, im) order would then depend
+    /// on rounding), or the numeric root finder behind the index did not
+    /// converge.  Every `RootOf(g, k)` that is returned has been checked
     /// to evaluate inside the root's exact isolating interval.
+    ///
+    /// If the factorisation over ℤ cannot be certified complete (the
+    /// recombination budget of Berlekamp–Zassenhaus is exhausted — a
+    /// polynomial with very many small factors modulo every prime), `g` is
+    /// a square-free but possibly reducible factor.  `RootOf(g, k)` is
+    /// still well defined and evaluates correctly; it just is not a
+    /// canonical form, so two such nodes naming the same number may
+    /// compare unequal.  Degree alone is not a limit: a degree-50
+    /// irreducible polynomial is certified in well under a second.
+    ///
+    /// For one root, [`root_of`](Self::root_of) is cheaper: it names only
+    /// that root.
     ///
     /// # Examples
     ///
@@ -605,25 +677,37 @@ impl Expr<Numeric> {
         if f.degree().unwrap_or(0) == 0 {
             return None;
         }
-        let (factors, roots) = real_roots_of(&f)?;
-        let ids: Vec<ExprId> = {
-            let mut inner = self.inner.write();
-            let arena = &mut inner.arena;
-            let mut factor_ids: Vec<Option<ExprId>> = vec![None; factors.len()];
-            roots
-                .into_iter()
-                .map(|root| match root {
-                    RealRoot::Rational(r) => arena.num_ratio(r),
-                    RealRoot::RootOf { factor, index } => {
-                        let g_expr = *factor_ids[factor]
-                            .get_or_insert_with(|| poly_to_expr(arena, &factors[factor], var_id));
-                        let idx = arena.int(index as i64);
-                        arena.intern(ExprNode::RootOf(g_expr, idx))
-                    }
-                })
-                .collect()
-        };
+        let mut cells = RealRootCells::locate(&f)?;
+        let roots: Vec<RealRoot> = (0..cells.cells.len())
+            .map(|i| cells.name(i))
+            .collect::<Option<_>>()?;
+        let ids = self.intern_real_roots(&cells.factors, roots, var_id);
         Some(ids.into_iter().map(|id| self.wrap(id)).collect())
+    }
+
+    /// Intern named real roots: rationals as numbers, the rest as
+    /// `RootOf(g, k)` with each factor `g` converted once.
+    fn intern_real_roots(
+        &self,
+        factors: &[Poly],
+        roots: Vec<RealRoot>,
+        var_id: ExprId,
+    ) -> Vec<ExprId> {
+        let mut inner = self.inner.write();
+        let arena = &mut inner.arena;
+        let mut factor_ids: Vec<Option<ExprId>> = vec![None; factors.len()];
+        roots
+            .into_iter()
+            .map(|root| match root {
+                RealRoot::Rational(r) => arena.num_ratio(r),
+                RealRoot::RootOf { factor, index } => {
+                    let g_expr = *factor_ids[factor]
+                        .get_or_insert_with(|| poly_to_expr(arena, &factors[factor], var_id));
+                    let idx = arena.int(index as i64);
+                    arena.intern(ExprNode::RootOf(g_expr, idx))
+                }
+            })
+            .collect()
     }
 
     /// The `index`-th distinct real root of `self` in `var`, counting from
@@ -631,7 +715,12 @@ impl Expr<Numeric> {
     /// `rootof(f, index)` for the real roots).
     ///
     /// `None` under the same conditions as [`real_roots`](Self::real_roots),
-    /// or if there are at most `index` real roots.
+    /// or if there are at most `index` real roots.  Only the requested
+    /// root is named (the numeric root finding behind a `RootOf` index
+    /// runs once, for that root's factor), so this is the method to use
+    /// for one root of a high-degree polynomial — the root in `(0, 1)` of
+    /// a degree-50 binomial-tail polynomial takes a few seconds in a
+    /// debug build.
     ///
     /// # Examples
     ///
@@ -647,7 +736,18 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn root_of(&self, var: &Ex, index: usize) -> Option<Ex> {
-        self.real_roots(var)?.into_iter().nth(index)
+        let var_id = self.checked_id(var);
+        let f = {
+            let inner = self.inner.read();
+            expr_to_poly(&inner.arena, self.raw_id(), var_id)?
+        };
+        if f.degree().unwrap_or(0) == 0 {
+            return None;
+        }
+        let mut cells = RealRootCells::locate(&f)?;
+        let root = cells.name(index)?;
+        let ids = self.intern_real_roots(&cells.factors, vec![root], var_id);
+        ids.into_iter().next().map(|id| self.wrap(id))
     }
 
     // ── Factoring modulo a prime ───────────────────────────────────

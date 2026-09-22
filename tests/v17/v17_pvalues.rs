@@ -21,17 +21,17 @@ use std::f64::consts::LN_10;
 use symplex::linprog::{q, qi};
 use symplex::prelude::*;
 use symplex::stats::PValue;
-use symplex::stats::agreement::RatingTable;
+use symplex::stats::agreement::{RatingTable, cochrans_q};
 use symplex::stats::anova::{
-    Mauchly, RepeatedMeasuresAnova, TwoWayData, anova_repeated_measures, anova_two_way,
+    AnovaResult, Mauchly, RepeatedMeasuresAnova, TwoWayData, anova_one_way,
+    anova_repeated_measures, anova_two_way,
 };
 use symplex::stats::data::from_i64;
 use symplex::stats::hypothesis::{
-    Alternative, AnovaResult, ChiSquareResult, TestResult, anova_one_way, binomial_test,
-    chi_square_independence, t_test_one_sample, z_test_proportion,
+    Alternative, ChiSquareResult, TestResult, binomial_test, chi_square_independence, pearson_test,
+    t_test_one_sample, z_test_proportion,
 };
 use symplex::stats::regression::ols;
-use symplex::stats::reliability::{cochrans_q, pearson_test};
 use symplex::stats::survival::{Observation, log_rank_test};
 
 fn close(actual: f64, expected: f64, tol: f64) {

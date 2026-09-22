@@ -823,7 +823,7 @@ fn standard_error_and_z_confidence_interval() -> Result<(), SymplexError> {
     ex_close(&se, 1.154_700_538_379_251_7, "se");
     assert_eq!(se.powi(2).simplify(), ctx.rational(4, 3));
     // scipy.stats.norm.interval(0.95, loc=2, scale=2/sqrt(3)) = (-0.2631714681523438, 4.263171468152343)
-    let ci = confidence_interval_mean_z(&ctx, &ints(&[1, 2, 3]), &qi(2), 0.95)?;
+    let ci = confidence_interval_mean_z(&ints(&[1, 2, 3]), &qi(2), 0.95)?;
     assert!(
         (ci.lower + 0.263_171_468_152_343_8).abs() < 1e-9,
         "{}",
@@ -836,8 +836,8 @@ fn standard_error_and_z_confidence_interval() -> Result<(), SymplexError> {
     );
     assert!(standard_error_mean(&ctx, &qi(2), 0).is_err());
     assert!(standard_error_mean(&ctx, &qi(0), 3).is_err());
-    assert!(confidence_interval_mean_z(&ctx, &[], &qi(2), 0.95).is_err());
-    assert!(confidence_interval_mean_z(&ctx, &ints(&[1]), &qi(2), 1.0).is_err());
+    assert!(confidence_interval_mean_z(&[], &qi(2), 0.95).is_err());
+    assert!(confidence_interval_mean_z(&ints(&[1]), &qi(2), 1.0).is_err());
     Ok(())
 }
 

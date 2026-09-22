@@ -6,6 +6,103 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.18.0] - 2026-09-21
+
+The statistics module gets one rule per sub-module for what lives where,
+one rule for when a function takes a `Context`, one type for counts, one
+wording for every level check — answering a user's "inconsistency in where
+functions live and what types they expect".  Every moved item keeps a
+documented re-export at its old path for this release.  Also: samplers
+for the eight families that had none, and exact `RootOf` roots at degree
+60 in seconds instead of `None`.  LP pivot paths and Lean certificates are
+byte-identical.
+
+### Breaking
+
+*Where things live* (old path still works via a `pub use` marked "moved
+in 0.18; kept for one release"):
+
+| moved | to |
+|---|---|
+| `hypothesis::{anova_one_way, AnovaResult}` | `anova` |
+| `hypothesis::confidence_interval_mean` | `estimation` |
+| `reliability::{cohen_kappa_ci, kappa_ci_from_confusion, KappaCi, kappa_test, kappa_test_from_confusion, cohen_kappa_maximum, kappa_maximum_from_confusion, cochrans_q}` | `agreement` |
+| `reliability::{pearson_test, pearson_t_statistic, compare_two_correlations, expected_counts, chi2_contributions, standardized_residuals, adjusted_residuals}` | `hypothesis` |
+| `reliability::{pearson_ci, fisher_z}` | `estimation` |
+| `reliability::{concordance_counts, ConcordanceCounts, goodman_kruskal_gamma, somers_d, Dependent, kendall_tau_c}` | `data` |
+| `aggregation::{proportion_interval, IntervalMethod, proportion_interval_symbolic, proportion_interval_exact, z_for_confidence}` | `estimation` |
+
+The rules, now in each module's docs: **`data`** describes a sample or the
+association of two without inference; **`estimation`** estimates a
+parameter (point or interval); **`hypothesis`** tests, effect sizes,
+multiplicity, resampling, power, contingency-table tools; **`anova`** every
+ANOVA and post-hoc; **`agreement`** every inter-rater statistic including
+its inference; **`reliability`** scale reliability and item analysis only;
+**`aggregation`** combines raters' labels or scores a rater.
+
+*`ctx` iff the result contains an `Ex`* — dropped from
+`confidence_interval_mean`, `confidence_interval_mean_z`,
+`Ols::{conf_int, confidence_interval_mean_response, prediction_interval}`
+(all return `Interval<f64>`) and from `reliability::spearman_brown(r, k)`
+(uses `r.context()`).
+
+*Counts are `usize`* — `estimation` used `u64`: `fit_binomial_p(ctx, n:
+usize, …)`, `FamilyKind::Binomial { n: usize }`, `beta_binomial_posterior(
+ctx, prior_alpha, prior_beta, successes: usize, failures: usize)`,
+`posterior_predictive_beta_binomial(ctx, prior_alpha, prior_beta, n:
+usize)`, `gamma_poisson_posterior`/`dirichlet_posterior_alphas`/
+`dirichlet_multinomial_posterior(…, &[usize])`.  (The Beta shapes are named
+`prior_alpha`/`prior_beta` so `alpha` means a level everywhere.)
+
+*Parameters are borrowed* — `Sprt::bernoulli(p0: &Q, p1: &Q, …)`,
+`Sprt::normal_mean(mu0: &Q, mu1: &Q, sigma: &Q, …)`, `Sprt::observe(x: &Q)`.
+
+*Names* — `two_proportion_z_test` → `z_test_two_proportions` (deprecated
+forwarding function kept).
+
+*Errors* — `estimation`, `information`, `multivariate`, `sequential`,
+`survival`, `data`, `markov` errors name the raising function (was a
+module-wide `"stats::estimation"`); every level check says
+"`confidence`/`alpha` must lie strictly between 0 and 1, got …".
+
+*`RootOf` may now be reducible-squarefree*: when the ℤ-factorisation is
+not certified within budget, `Ex::real_roots`/`root_of` name the root on
+the square-free factor instead of returning `None`; evaluation is exact,
+but two `RootOf`s of the same number may compare unequal (documented on
+`real_roots`).
+
+### Added
+
+- **Samplers** for `Gamma` (Marsaglia–Tsang, with the `k < 1` boost),
+  `ChiSquared`, `Beta` (gamma ratio), `StudentT`, `FDistribution`,
+  `Poisson` (Knuth below `λ = 30`, Hörmann's PTRS above), `Geometric`,
+  `NegativeBinomial` (Poisson–Gamma mixture, any rational `r`).  18 tests
+  (`tests/v18/v18_samplers.rs`): moments, support, pmf at the mode, KS
+  distance, reproducibility; a 400 000-draw χ² goodness-of-fit sweep found
+  no bias.
+- `hypothesis::counts_usize(&[Vec<usize>]) -> Vec<Vec<Q>>` so
+  `confusion_matrix → chi_square_independence` composes.
+- `stats::common` (crate-private): one copy each of `χ²`/`F`/`t`/normal
+  tails, level checks, exact conversions — replacing three copies of
+  `f_sf`, `chi_squared_sf`, `norm_isf`, `check_unit_open` across modules.
+
+### Fixed / performance
+
+- **`root_of` at degree ≥ 40 returned `None`** after 9 s: the Aberth
+  iteration that indexes a `RootOf` started every guess on the Cauchy circle
+  (radius `6·10⁷` for a binomial-tail polynomial whose roots lie in
+  `|z| < 1.5`) and had not converged after 200 steps.  Starts are now
+  Bini's Newton-polygon circles (MPSolve's initialisation); the Sturm chain
+  and its sign evaluations run on integer-scaled polynomials (primitive
+  PRS, integer Horner); Yun's square-free decomposition uses a gcd over
+  ℤ.  Degree 40: `real_roots_isolate` 16.9 s → 0.1 s, `root_of` `None`
+  → 1.1 s; degree 60: ~160 s → 3.4 s; random degree 30 `root_of` 6.0 s →
+  0.25 s.  Values agree with `scipy.stats.beta.ppf` to 1e-16.
+- `nroots` snaps a real part below the iteration's own tolerance to exactly
+  `0.0` (`x² + 1` gives `±i`, not `−7.7·10⁻⁹³ + i`); genuinely tiny roots
+  (`x² − 10⁻⁴⁰`) are untouched.
+- `bigint_to_bigfloat` was lossy beyond `i128`; now exact.
+
 ## [0.17.2] - 2026-09-21
 
 Two additions prompted by user feedback on the statistics API.  Additive.

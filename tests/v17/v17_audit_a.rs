@@ -36,7 +36,9 @@ use symplex::linprog::{Q, q, qi};
 use symplex::prelude::*;
 use symplex::stats::aggregation::*;
 use symplex::stats::agreement::*;
+use symplex::stats::anova::anova_one_way;
 use symplex::stats::data::*;
+use symplex::stats::estimation::{IntervalMethod, confidence_interval_mean, proportion_interval};
 use symplex::stats::hypothesis::*;
 use symplex::stats::{Distribution, Rng};
 
@@ -621,16 +623,16 @@ fn z_tests_for_proportions_new_counts_all_alternatives() {
     close(p_of(&r), 0.070_008_251_598_584_44, 1e-12);
     // statsmodels: proportions_ztest([18, 33], [40, 55]) → z -1.4476146708617306;
     //   two-sided 0.14772484583052478, 'smaller' 0.07386242291526239, 'larger' 0.9261375770847377
-    let r = two_proportion_z_test(&ctx, 18, 40, 33, 55, Alternative::TwoSided).unwrap();
+    let r = z_test_two_proportions(&ctx, 18, 40, 33, 55, Alternative::TwoSided).unwrap();
     close(s_of(&r), -1.447_614_670_861_730_6, 1e-12);
     close(p_of(&r), 0.147_724_845_830_524_78, 1e-12);
-    let r = two_proportion_z_test(&ctx, 18, 40, 33, 55, Alternative::Less).unwrap();
+    let r = z_test_two_proportions(&ctx, 18, 40, 33, 55, Alternative::Less).unwrap();
     close(p_of(&r), 0.073_862_422_915_262_39, 1e-12);
-    let r = two_proportion_z_test(&ctx, 18, 40, 33, 55, Alternative::Greater).unwrap();
+    let r = z_test_two_proportions(&ctx, 18, 40, 33, 55, Alternative::Greater).unwrap();
     close(p_of(&r), 0.926_137_577_084_737_7, 1e-12);
     // k₁ = 0 with a non-degenerate pooled proportion:
     // statsmodels: proportions_ztest([0, 5], [10, 10]) → (-2.581988897471611, 0.009823274507519247)
-    let r = two_proportion_z_test(&ctx, 0, 10, 5, 10, Alternative::TwoSided).unwrap();
+    let r = z_test_two_proportions(&ctx, 0, 10, 5, 10, Alternative::TwoSided).unwrap();
     close(s_of(&r), -2.581_988_897_471_611, 1e-12);
     close(p_of(&r), 0.009_823_274_507_519_247, 1e-12);
     // Validation: p₀ at the boundary, pooled 0 or 1, k > n.
@@ -648,7 +650,7 @@ fn z_tests_for_proportions_new_counts_all_alternatives() {
         &qi(1),
         Alternative::TwoSided,
     ));
-    is_invalid(two_proportion_z_test(
+    is_invalid(z_test_two_proportions(
         &ctx,
         0,
         10,
@@ -656,7 +658,7 @@ fn z_tests_for_proportions_new_counts_all_alternatives() {
         10,
         Alternative::TwoSided,
     ));
-    is_invalid(two_proportion_z_test(
+    is_invalid(z_test_two_proportions(
         &ctx,
         10,
         10,
@@ -664,7 +666,7 @@ fn z_tests_for_proportions_new_counts_all_alternatives() {
         10,
         Alternative::TwoSided,
     ));
-    is_invalid(two_proportion_z_test(
+    is_invalid(z_test_two_proportions(
         &ctx,
         11,
         10,
@@ -708,26 +710,25 @@ fn anova_one_way_unbalanced_four_groups_exact() {
 
 #[test]
 fn confidence_interval_mean_at_several_levels_and_n_equals_2() {
-    let ctx = Context::new();
     // scipy: t.interval(c, 10, loc=mean(T1), scale=sem(T1)):
     //   0.99 → (11.83072732738305, 18.16927267261695); 0.5 → (14.300187938687568, 15.699812061312432);
     //   0.8 → (13.627816358889664, 16.372183641110336)
-    let ci = confidence_interval_mean(&ctx, &t1(), 0.99).unwrap();
+    let ci = confidence_interval_mean(&t1(), 0.99).unwrap();
     close(ci.lower, 11.830_727_327_383_05, 1e-9);
     close(ci.upper, 18.169_272_672_616_95, 1e-9);
-    let ci = confidence_interval_mean(&ctx, &t1(), 0.5).unwrap();
+    let ci = confidence_interval_mean(&t1(), 0.5).unwrap();
     close(ci.lower, 14.300_187_938_687_568, 1e-9);
     close(ci.upper, 15.699_812_061_312_432, 1e-9);
-    let ci = confidence_interval_mean(&ctx, &t1(), 0.8).unwrap();
+    let ci = confidence_interval_mean(&t1(), 0.8).unwrap();
     close(ci.lower, 13.627_816_358_889_664, 1e-9);
     close(ci.upper, 16.372_183_641_110_336, 1e-9);
     // n = 2 (df = 1, the Cauchy quantile): scipy: t.interval(0.95, 1, loc=3.5, scale=sem([3, 4]))
     //   = (-2.853102368087347, 9.853102368087347)
-    let ci = confidence_interval_mean(&ctx, &from_i64(&[3, 4]), 0.95).unwrap();
+    let ci = confidence_interval_mean(&from_i64(&[3, 4]), 0.95).unwrap();
     close(ci.lower, -2.853_102_368_087_347, 1e-9);
     close(ci.upper, 9.853_102_368_087_347, 1e-9);
-    is_invalid(confidence_interval_mean(&ctx, &t1(), 1.0));
-    is_invalid(confidence_interval_mean(&ctx, &t1(), 0.0));
+    is_invalid(confidence_interval_mean(&t1(), 1.0));
+    is_invalid(confidence_interval_mean(&t1(), 0.0));
 }
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -9,9 +9,20 @@
 
 use symplex::linprog::{Q, q, qi};
 use symplex::prelude::*;
-use symplex::stats::agreement::RatingTable;
-use symplex::stats::data::{from_i64, to_f64};
-use symplex::stats::hypothesis::{Alternative, chi_square_independence, counts};
+use symplex::stats::agreement::{
+    RatingTable, cochrans_q, cohen_kappa_ci, cohen_kappa_maximum, kappa_ci_from_confusion,
+    kappa_maximum_from_confusion, kappa_test, kappa_test_from_confusion,
+};
+use symplex::stats::data::{
+    ConcordanceCounts, Dependent, concordance_counts, from_i64, goodman_kruskal_gamma,
+    kendall_tau_c, somers_d, to_f64,
+};
+use symplex::stats::estimation::{fisher_z, pearson_ci};
+use symplex::stats::hypothesis::{
+    Alternative, adjusted_residuals, chi_square_independence, chi2_contributions,
+    compare_two_correlations, counts, expected_counts, pearson_t_statistic, pearson_test,
+    standardized_residuals,
+};
 use symplex::stats::reliability::*;
 
 fn close(a: f64, b: f64) -> bool {
@@ -246,16 +257,16 @@ fn spearman_brown_prophecy_formula() {
     let ctx = Context::new();
     // 2 · 0.6 / (1 + 0.6) = 3/4; tripling: 3 · 0.6 / (1 + 2 · 0.6) = 9/11.
     assert_eq!(
-        spearman_brown(&ctx, &ctx.rational(3, 5), 2).simplify(),
+        spearman_brown(&ctx.rational(3, 5), 2).simplify(),
         ctx.rational(3, 4)
     );
     assert_eq!(
-        spearman_brown(&ctx, &ctx.rational(3, 5), 3).simplify(),
+        spearman_brown(&ctx.rational(3, 5), 3).simplify(),
         ctx.rational(9, 11)
     );
     // k = 1 is the identity.
     assert_eq!(
-        spearman_brown(&ctx, &ctx.rational(3, 5), 1).simplify(),
+        spearman_brown(&ctx.rational(3, 5), 1).simplify(),
         ctx.rational(3, 5)
     );
 }

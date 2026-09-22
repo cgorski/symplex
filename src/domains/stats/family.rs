@@ -112,9 +112,13 @@ pub trait Family: Any + Send + Sync + fmt::Debug {
     }
 
     /// A sampler, when the family has a route of its own (a wrapper
-    /// transforms its inner family's samples).  `None` leaves it to the
-    /// generic route: inverse transform through the quantile, or cumulative
-    /// sums of the mass function.
+    /// transforms its inner family's samples; `Gamma` and the families
+    /// built on it, `Poisson`, `Geometric` and `NegativeBinomial` run exact
+    /// algorithms of their own).  `None` leaves it to the generic route:
+    /// inverse transform through the quantile, or cumulative sums of the
+    /// mass function.  Convert the parameters once here (`eval_f64`) and
+    /// return `Some(Err(_))` when one is symbolic, so the closure itself
+    /// cannot fail.
     fn sampler(&self) -> Option<Result<Sampler, SymplexError>> {
         None
     }
@@ -842,13 +846,30 @@ impl Distribution {
     /// `n` samples as `f64`: the family's own route when it has one, else
     /// inverse transform sampling through the closed-form quantile
     /// (continuous) or the cumulative sums of the mass function over a
-    /// finite support (discrete).  Parameters must evaluate numerically.
+    /// finite support (discrete).  Every built-in family has a route, each
+    /// exact in distribution (see the [module docs](super)); a custom
+    /// [`Family`] on an infinite lattice or without a quantile needs its
+    /// own [`Family::sampler`].  Parameters must evaluate numerically.
     /// SymPy: `sample(X, size=n)`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::stats::{Distribution, Rng};
+    ///
+    /// let ctx = Context::new();
+    /// let g = Distribution::gamma(ctx.int(3), ctx.int(2));   // mean 6
+    /// let s = g.sample(4000, &mut Rng::new(1))?;
+    /// let mean = s.iter().sum::<f64>() / 4000.0;
+    /// assert!((mean - 6.0).abs() < 0.3);
+    /// # Ok::<(), SymplexError>(())
+    /// ```
     ///
     /// # Errors
     ///
     /// [`SymplexError::NotImplemented`] if the family has no route;
-    /// [`SymplexError::Unevaluable`] if a parameter is symbolic.
+    /// [`SymplexError::Unevaluable`] if a parameter is symbolic;
+    /// [`SymplexError::InvalidArgument`] if a numeric parameter is outside
+    /// the family's domain (an unchecked constructor accepted it).
     pub fn sample(&self, n: usize, rng: &mut Rng) -> Result<Vec<f64>, SymplexError> {
         let mut sampler = self.sampler()?;
         Ok((0..n).map(|_| sampler(rng)).collect())

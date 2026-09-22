@@ -85,6 +85,7 @@ Bradley–Terry model by Hunter's MM algorithm.
 ## How good is each rater?
 
 ```rust,ignore
+use symplex::stats::estimation::{proportion_interval, IntervalMethod};
 let acc = worker_accuracy(&rater_labels, &gold)?;   // Accuracy { correct: 5, answered: 8, accuracy: Some(5/8) }
 category_metrics(&rater_labels, &gold, 3)?;         // precision / recall / F₁ per category, exact
 let ci = proportion_interval(5, 8, 0.95, IntervalMethod::ClopperPearson)?;   // Interval<f64>
@@ -95,8 +96,11 @@ gold_screening(&labels, &gold, &q(2, 3))?;          // pass / fail per rater on 
 
 The Clopper–Pearson interval is the exact one (statsmodels
 `proportion_confint(method='beta')`); Wilson, Agresti–Coull and Wald are
-the usual approximations.  A rater's accuracy against chance is an exact
-binomial test (below).
+the usual approximations.  The proportion intervals are interval
+*estimates*, so since 0.18 they live in `stats::estimation` beside the
+mean intervals (the `stats::aggregation` paths still re-export them for
+one release).  A rater's accuracy against chance is an exact binomial
+test (below).
 
 ### Exact intervals
 
@@ -127,7 +131,7 @@ The exact closed forms are **not** clipped to `[0, 1]` (Agresti–Coull at
 Clopper–Pearson roots need a Sturm isolation and a factorisation of a
 degree-`n` polynomial — fine for tens of trials, not thousands.  The
 known-`σ` mean interval has the same pair,
-`estimation::confidence_interval_mean_z_symbolic` / `_exact`.
+`confidence_interval_mean_z_symbolic` / `_exact`, in the same module.
 
 ## Do two groups differ?
 
@@ -158,11 +162,13 @@ exact tests).  The family:
 
 | Data | Tests |
 |---|---|
-| Two means | `t_test_one_sample`, `t_test_two_sample` (Student or Welch), `t_test_paired`, `confidence_interval_mean` |
-| Several means | `anova_one_way` → `AnovaResult { f, df_between, df_within, p_value, ss_between, ss_within, eta_squared }` |
-| Two proportions / one proportion | `z_test_proportion`, `two_proportion_z_test`, `binomial_test` (exact) |
+| Two means | `t_test_one_sample`, `t_test_two_sample` (Student or Welch), `t_test_paired`; the t interval for a mean is `estimation::confidence_interval_mean(&x, 0.95)` |
+| Several means | `anova::anova_one_way` → `AnovaResult { f, df_between, df_within, p_value, ss_between, ss_within, eta_squared }` (in `stats::anova` with the factorial and repeated-measures designs since 0.18) |
+| Two proportions / one proportion | `z_test_proportion`, `z_test_two_proportions` (renamed from `two_proportion_z_test` in 0.18), `binomial_test` (exact) |
 | Ranks / ordinal scores | `mann_whitney_u` (exact or asymptotic with tie correction), `wilcoxon_signed_rank`, `kruskal_wallis`, `friedman`, `spearman_test`, `kendall_test` |
-| Categorical tables | `chi_square_independence` (with Yates), `chi_square_goodness_of_fit`, `g_test`, `fisher_exact` (exact), `mcnemar_test` (exact or χ²), `sign_test` |
+| Categorical tables | `chi_square_independence` (with Yates), `chi_square_goodness_of_fit`, `g_test`, `fisher_exact` (exact), `mcnemar_test` (exact or χ²), `sign_test`; `counts(&[&[i64]])` / `counts_usize(&[Vec<usize>])` build the table (the latter from a `confusion_matrix`) |
+| Which cells drive a χ²? | `expected_counts`, `chi2_contributions`, `standardized_residuals`, `adjusted_residuals` (Haberman) |
+| Correlation inference | `pearson_test`, `pearson_t_statistic`, `compare_two_correlations`; the Fisher-z interval is `estimation::pearson_ci` |
 | Distribution fit | `ks_one_sample(x, &Distribution)` |
 | Effect sizes | `cohens_d`, `hedges_g`, `glass_delta`, `rank_biserial`, `cliffs_delta`, `eta_squared`, `cramers_v`, `phi_coefficient`, `odds_ratio`, `relative_risk`, `cohens_h` |
 
@@ -225,8 +231,11 @@ for the textbook 3-state chain), `absorption_probabilities`,
 `covariance`, `pearson`, `spearman`, `kendall_tau`, `skewness`, `kurtosis`,
 `median_abs_deviation`, `zscores`, `geometric_mean`, `harmonic_mean`,
 `trimmed_mean`, and the outlier screens `iqr_outliers` (Tukey's fences) and
-`mad_outliers` (modified z-scores) for response times.  `from_f64` converts
-floats *exactly* (every `f64` is a dyadic rational), `to_f64` rounds back.
+`mad_outliers` (modified z-scores) for response times.  The ordinal
+association measures live here too: `goodman_kruskal_gamma`,
+`somers_d(x, y, Dependent::{Y, X, Symmetric})`, `kendall_tau_c` and the
+`concordance_counts` they are built from.  `from_f64` converts floats
+*exactly* (every `f64` is a dyadic rational), `to_f64` rounds back.
 
 ## Is the questionnaire itself reliable?
 
@@ -237,16 +246,21 @@ columns of a `RatingTable`:
 | Question | Function |
 |---|---|
 | Internal consistency | `cronbach_alpha` (and `cronbach_alpha_complete` with list-wise deletion), `standardized_alpha`, `kr20` for right/wrong items, `guttman_lambda2`, `alpha_if_deleted` |
-| Split-half reliability | `split_half(&table, &SplitHalf::{OddEven, FirstLast, Custom})` with the Spearman–Brown prophecy (`spearman_brown`) |
+| Split-half reliability | `split_half(&table, &SplitHalf::{OddEven, FirstLast, Custom})` with the Spearman–Brown prophecy (`spearman_brown(&r, k)`, in the context of `r`) |
 | Item quality | `item_difficulty`, `item_discrimination_index` (upper vs lower third), `point_biserial`, `item_total_correlation`, `corrected_item_total_correlation`, all bundled by `item_response_summary` |
-| Agreement inference | `cohen_kappa_ci` (Fleiss–Cohen–Everitt variance, exact), `kappa_test` (H₀: κ = 0), `cohen_kappa_maximum` (the κ the marginals allow), `cochrans_q` (many raters, binary items) |
-| Ordinal association | `goodman_kruskal_gamma`, `somers_d(x, y, Dependent::{Y, X, Symmetric})`, `kendall_tau_c`, `concordance_counts` |
-| Which cells drive a χ²? | `expected_counts`, `chi2_contributions`, `standardized_residuals`, `adjusted_residuals` (Haberman) |
-| Correlation inference | `pearson_test`, `pearson_ci` (Fisher's z), `compare_two_correlations` |
 
 Every coefficient that is a rational function of the scores is an exact
-rational (Cronbach's α, KR-20, γ, Somers' D, κ_max, both κ variances);
-the ones with roots are exact expressions.
+rational (Cronbach's α, KR-20); the ones with roots are exact
+expressions.  Since 0.18 `stats::reliability` holds *only* scale
+reliability and item analysis; its former neighbours moved to the module
+their rule names (the old paths re-export them for one release):
+
+| Question | Function (0.18 home) |
+|---|---|
+| Agreement inference | `agreement::{cohen_kappa_ci}` (Fleiss–Cohen–Everitt variance, exact), `kappa_test` (H₀: κ = 0), `cohen_kappa_maximum` (the κ the marginals allow), `cochrans_q` (many raters, binary items) |
+| Ordinal association | `data::{goodman_kruskal_gamma, somers_d, kendall_tau_c, concordance_counts}` |
+| Which cells drive a χ²? | `hypothesis::{expected_counts, chi2_contributions, standardized_residuals, adjusted_residuals}` |
+| Correlation inference | `hypothesis::{pearson_test, pearson_t_statistic, compare_two_correlations}`; `estimation::{pearson_ci, fisher_z}` |
 
 ## Explaining accuracy or time by features
 
@@ -261,7 +275,7 @@ fit.r_squared; fit.adjusted_r_squared;                // exact rationals
 fit.standard_errors(&ctx)?;                           // exact expressions (√ of σ̂²(XᵀX)⁻¹)
 fit.coefficient_tests(&ctx)?;                         // TestResult per coefficient, p through StudentT
 fit.f_test(&ctx)?; fit.anova_table();                 // overall F, exact
-fit.conf_int(&ctx, 0.95)?; fit.prediction_interval(&ctx, &x_new, 0.95)?;   // Vec<Interval<f64>>, Interval<f64>
+fit.conf_int(0.95)?; fit.prediction_interval(&x_new, 0.95)?;   // Vec<Interval<f64>>, Interval<f64> — no ctx: the limits are f64
 fit.leverage(); fit.cooks_distance(); fit.durbin_watson(); vif(&rows)?;
 // Correct / incorrect explained by features: logistic regression (IRLS, f64).
 let lg = logit(&correct, &features, true, &LogitOpts::default())?;
@@ -275,7 +289,7 @@ coefficients.
 
 ## Screening while the answers arrive
 
-`stats::sequential::Sprt::bernoulli(p0, p1, α, β)` is Wald's sequential
+`stats::sequential::Sprt::bernoulli(&p0, &p1, α, β)` is Wald's sequential
 probability ratio test: feed each gold-question outcome to `update`, and
 the moment the exact log-likelihood ratio (`log_likelihood_ratio(&ctx)`)
 crosses a boundary the decision is `AcceptH0` (the rater performs at the

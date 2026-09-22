@@ -12,28 +12,32 @@ use symplex::linprog::{q, qi};
 use symplex::num_traits::{One, Signed, Zero};
 use symplex::prelude::*;
 use symplex::stats::Rng;
-use symplex::stats::agreement::RatingTable;
-use symplex::stats::anova::{
-    Adjustment, SsType, TwoWayData, anova_repeated_measures, anova_two_way, anova_two_way_with,
-    pairwise_t_tests, studentized_range_cdf, studentized_range_quantile, studentized_range_sf,
-    tukey_hsd,
+use symplex::stats::agreement::{
+    RatingTable, cochrans_q, cohen_kappa_ci, cohen_kappa_maximum, kappa_ci_from_confusion,
+    kappa_maximum_from_confusion, kappa_test, kappa_test_from_confusion,
 };
-use symplex::stats::data::from_i64;
-use symplex::stats::hypothesis::{Alternative, anova_one_way, counts, t_test_two_sample};
+use symplex::stats::anova::{
+    Adjustment, SsType, TwoWayData, anova_one_way, anova_repeated_measures, anova_two_way,
+    anova_two_way_with, pairwise_t_tests, studentized_range_cdf, studentized_range_quantile,
+    studentized_range_sf, tukey_hsd,
+};
+use symplex::stats::data::{
+    Dependent, concordance_counts, from_i64, goodman_kruskal_gamma, kendall_tau_c, somers_d,
+};
+use symplex::stats::estimation::{fisher_z, pearson_ci};
+use symplex::stats::hypothesis::{
+    Alternative, adjusted_residuals, chi2_contributions, compare_two_correlations, counts,
+    expected_counts, pearson_t_statistic, pearson_test, standardized_residuals, t_test_two_sample,
+};
 use symplex::stats::regression::{
     Design, LogitOpts, hat_matrix, logit, ols, polyfit, r_squared_from_correlation,
     simple_linear_regression, slope_from_correlation, vif, wls,
 };
 use symplex::stats::reliability::{
-    Dependent, SplitHalf, adjusted_residuals, alpha_if_deleted, average_inter_item_correlation,
-    chi2_contributions, cochrans_q, cohen_kappa_ci, cohen_kappa_maximum, compare_two_correlations,
-    concordance_counts, corrected_item_total_correlation, cronbach_alpha, cronbach_alpha_complete,
-    expected_counts, fisher_z, goodman_kruskal_gamma, guttman_lambda2, item_difficulty,
-    item_discrimination_index, item_response_summary, item_total_correlation,
-    kappa_ci_from_confusion, kappa_maximum_from_confusion, kappa_test, kappa_test_from_confusion,
-    kendall_tau_c, kr20, pearson_ci, pearson_t_statistic, pearson_test, point_biserial, somers_d,
-    spearman_brown, split_half, split_half_correlation, standardized_alpha, standardized_residuals,
-    total_scores,
+    SplitHalf, alpha_if_deleted, average_inter_item_correlation, corrected_item_total_correlation,
+    cronbach_alpha, cronbach_alpha_complete, guttman_lambda2, item_difficulty,
+    item_discrimination_index, item_response_summary, item_total_correlation, kr20, point_biserial,
+    spearman_brown, split_half, split_half_correlation, standardized_alpha, total_scores,
 };
 use symplex::stats::sequential::{
     Decision, Sprt, expected_sample_size_bernoulli, operating_characteristic_bernoulli,
@@ -203,13 +207,13 @@ fn r1_covariance_standard_errors_t_p_and_conf_int() -> R {
     assert_eq!(tests[1].alternative, Alternative::TwoSided);
     close(tests[1].p_value_f64()?, 9.697_825_165_130_998e-6, 1e-15);
     // conf_int(0.05) = [[0.46936326, 4.8552269], [0.90798998, 1.39037067]]
-    let ci = fit.conf_int(&ctx, 0.95)?;
+    let ci = fit.conf_int(0.95)?;
     close(ci[0].lower, 0.469_363_26, 1e-7);
     close(ci[0].upper, 4.855_226_9, 1e-7);
     close(ci[1].lower, 0.907_989_98, 1e-7);
     close(ci[1].upper, 1.390_370_67, 1e-7);
     // conf_int(0.10) = [[0.90527948, 4.41931069], [0.95593438, 1.34242628]]
-    let ci90 = fit.conf_int(&ctx, 0.90)?;
+    let ci90 = fit.conf_int(0.90)?;
     close(ci90[0].lower, 0.905_279_48, 1e-7);
     close(ci90[1].upper, 1.342_426_28, 1e-7);
     Ok(())
@@ -251,26 +255,25 @@ fn r1_f_test_anova_table_and_information_criteria() -> R {
 
 #[test]
 fn r1_prediction_and_intervals_at_x_9() -> R {
-    let ctx = Context::new();
     let (x, y) = r1();
     let fit = simple_linear_regression(&x, &y)?;
     // ŷ(9) = 812/305 + 9·701/610 = 7933/610; statsmodels get_prediction([[1, 9]]).summary_frame():
     //   mean 13.004918032786891, mean_ci (12.050259148715563, 13.95957691685822),
     //   obs_ci (10.038941402823053, 15.97089466275073)
     assert_eq!(fit.predict(&[qi(9)])?, q(7933, 610));
-    let mean = fit.confidence_interval_mean_response(&ctx, &[qi(9)], 0.95)?;
+    let mean = fit.confidence_interval_mean_response(&[qi(9)], 0.95)?;
     close(mean.lower, 12.050_259_148_715_563, 1e-7);
     close(mean.upper, 13.959_576_916_858_22, 1e-7);
-    let obs = fit.prediction_interval(&ctx, &[qi(9)], 0.95)?;
+    let obs = fit.prediction_interval(&[qi(9)], 0.95)?;
     close(obs.lower, 10.038_941_402_823_053, 1e-7);
     close(obs.upper, 15.970_894_662_750_73, 1e-7);
     // The prediction interval contains the mean-response interval.
     assert!(obs.lower < mean.lower && mean.upper < obs.upper);
     // Wrong row length and confidence outside (0, 1) are rejected.
     is_invalid(fit.predict(&[qi(9), qi(1)]));
-    is_invalid(fit.prediction_interval(&ctx, &[qi(9)], 1.0));
-    is_invalid(fit.confidence_interval_mean_response(&ctx, &[qi(9)], 0.0));
-    is_invalid(fit.conf_int(&ctx, 1.0));
+    is_invalid(fit.prediction_interval(&[qi(9)], 1.0));
+    is_invalid(fit.confidence_interval_mean_response(&[qi(9)], 0.0));
+    is_invalid(fit.conf_int(1.0));
     Ok(())
 }
 
@@ -428,7 +431,7 @@ fn r2_two_regressors_exact_fit_statistics() -> R {
     close(fit.bic(&ctx)?.eval_f64()?, 17.056_539_917_760_027, 1e-12);
     // conf_int(0.05): [[3.185874332198384, 4.878108845933186], [0.9008678160356096, 1.2091877562083067],
     //   [0.959866546048345, 1.1905164518489215]]
-    let ci = fit.conf_int(&ctx, 0.95)?;
+    let ci = fit.conf_int(0.95)?;
     close(ci[0].lower, 3.185_874_332_198_384, 1e-9);
     close(ci[1].upper, 1.209_187_756_208_306_7, 1e-9);
     close(ci[2].lower, 0.959_866_546_048_345, 1e-9);
@@ -439,10 +442,10 @@ fn r2_two_regressors_exact_fit_statistics() -> R {
         13.628_060_228_296_784,
         1e-13,
     );
-    let m = fit.confidence_interval_mean_response(&ctx, &[qi(4), qi(5)], 0.90)?;
+    let m = fit.confidence_interval_mean_response(&[qi(4), qi(5)], 0.90)?;
     close(m.lower, 13.338_779_768_589_674, 1e-9);
     close(m.upper, 13.917_340_688_003_893, 1e-9);
-    let o = fit.prediction_interval(&ctx, &[qi(4), qi(5)], 0.90)?;
+    let o = fit.prediction_interval(&[qi(4), qi(5)], 0.90)?;
     close(o.lower, 12.673_060_829_376_17, 1e-9);
     close(o.upper, 14.583_059_627_217_397, 1e-9);
     Ok(())
@@ -539,7 +542,7 @@ fn r3_weighted_least_squares_exact() -> R {
     close(fit.bic(&ctx)?.eval_f64()?, 15.660_446_096_550_316, 1e-12);
     // conf_int(0.05) = [[3.2831084016223304, 4.813522927222342], [0.9029115921520401, 1.192083716779411],
     //   [0.9872791193661856, 1.1871380875669162]]
-    let ci = fit.conf_int(&ctx, 0.95)?;
+    let ci = fit.conf_int(0.95)?;
     close(ci[0].lower, 3.283_108_401_622_330_4, 1e-9);
     close(ci[2].upper, 1.187_138_087_566_916_2, 1e-9);
     Ok(())
@@ -547,7 +550,6 @@ fn r3_weighted_least_squares_exact() -> R {
 
 #[test]
 fn r3_wls_influence_prediction_and_durbin_watson() -> R {
-    let ctx = Context::new();
     let (x, y) = r2();
     let fit = wls(&y, &x, &r3_weights(), true)?;
     // Fraction leverages wᵢxᵢᵀ(XᵀWX)⁻¹xᵢ: 40943/640579, 90527/640579, …, 284215/640579 (sum 3)
@@ -584,10 +586,10 @@ fn r3_wls_influence_prediction_and_durbin_watson() -> R {
         13.674_349_299_617_994,
         1e-13,
     );
-    let m = fit.confidence_interval_mean_response(&ctx, &[qi(4), qi(5)], 0.95)?;
+    let m = fit.confidence_interval_mean_response(&[qi(4), qi(5)], 0.95)?;
     close(m.lower, 13.358_362_578_260_236, 1e-9);
     close(m.upper, 13.990_336_020_975_752, 1e-9);
-    let o = fit.prediction_interval(&ctx, &[qi(4), qi(5)], 0.95)?;
+    let o = fit.prediction_interval(&[qi(4), qi(5)], 0.95)?;
     close(o.lower, 11.935_553_151_891_51, 1e-9);
     close(o.upper, 15.413_145_447_344_478, 1e-9);
     // The hat matrix reproduces the fitted values: ŷ = H y.
@@ -699,13 +701,13 @@ fn ols_through_the_origin_uses_uncentred_tss() -> R {
     // conf_int(0.05) = [2.118537629541821, 2.518825007820816]; prediction at x = 7:
     //   mean 16.23076923076923, mean_ci (14.829763406792745, 17.631775054745717),
     //   obs_ci (13.862637164702916, 18.598901296835546)
-    let ci = fit.conf_int(&ctx, 0.95)?;
+    let ci = fit.conf_int(0.95)?;
     close(ci[0].lower, 2.118_537_629_541_821, 1e-9);
     close(ci[0].upper, 2.518_825_007_820_816, 1e-9);
     assert_eq!(fit.predict(&[qi(7)])?, q(211, 13));
-    let m = fit.confidence_interval_mean_response(&ctx, &[qi(7)], 0.95)?;
+    let m = fit.confidence_interval_mean_response(&[qi(7)], 0.95)?;
     close(m.lower, 14.829_763_406_792_745, 1e-9);
-    let o = fit.prediction_interval(&ctx, &[qi(7)], 0.95)?;
+    let o = fit.prediction_interval(&[qi(7)], 0.95)?;
     close(o.upper, 18.598_901_296_835_546, 1e-9);
     Ok(())
 }
@@ -1037,12 +1039,12 @@ fn t1_standardized_alpha_and_mean_inter_item_correlation() -> R {
     // Spearman–Brown of r̄ with k = 5 is exactly the standardized α.
     let r = average_inter_item_correlation(&ctx, &t)?;
     close(
-        spearman_brown(&ctx, &r, 5).eval_f64()?,
+        spearman_brown(&r, 5).eval_f64()?,
         standardized_alpha(&ctx, &t)?.eval_f64()?,
         1e-14,
     );
     assert_eq!(
-        spearman_brown(&ctx, &ctx.rational(1, 3), 3).simplify(),
+        spearman_brown(&ctx.rational(1, 3), 3).simplify(),
         ctx.rational(3, 5)
     );
     Ok(())
@@ -2610,7 +2612,7 @@ fn wald_boundaries_new_rates_and_sprt_reports_the_same_pair() -> R {
     let b = wald_boundaries(0.1, 0.2)?;
     close(b.lower, -1.504_077_396_776_274, 1e-15);
     close(b.upper, 2.079_441_541_679_835_7, 1e-15);
-    let test = Sprt::bernoulli(q(1, 2), q(3, 4), 0.1, 0.2)?;
+    let test = Sprt::bernoulli(&q(1, 2), &q(3, 4), 0.1, 0.2)?;
     assert_eq!(test.boundaries(), b);
     assert_eq!((test.alpha(), test.beta()), (0.1, 0.2));
     assert!(test.boundaries().contains(&0.0));
@@ -2620,7 +2622,7 @@ fn wald_boundaries_new_rates_and_sprt_reports_the_same_pair() -> R {
     close(s.lower, -2.944_438_979_166_440_3, 1e-15);
     close(s.upper, 2.944_438_979_166_440_3, 1e-15);
     assert_eq!(
-        Sprt::normal_mean(qi(0), qi(1), qi(2), 0.05, 0.05)?.boundaries(),
+        Sprt::normal_mean(&qi(0), &qi(1), &qi(2), 0.05, 0.05)?.boundaries(),
         s
     );
     Ok(())
@@ -2692,7 +2694,7 @@ fn sprt_reversed_hypotheses_operating_characteristic() -> R {
         1e-9,
     );
     // A run of failures accepts H₁ (the lower success rate).
-    let mut t = Sprt::bernoulli(p0, p1, 0.05, 0.05)?;
+    let mut t = Sprt::bernoulli(&p0, &p1, 0.05, 0.05)?;
     let mut d = Decision::Continue;
     while d == Decision::Continue {
         d = t.update(false);
@@ -2753,14 +2755,14 @@ fn sprt_rejects_invalid_designs_and_observations() -> R {
     // α + β ≥ 1, α or β outside (0, 1), p₀ = p₁, p outside (0, 1), σ ≤ 0.
     is_invalid(wald_boundaries(0.4, 0.6));
     is_invalid(wald_boundaries(0.3, 0.7));
-    is_invalid(Sprt::bernoulli(q(1, 2), q(3, 4), 0.5, 0.5));
-    is_invalid(Sprt::bernoulli(q(1, 2), q(3, 4), 1.0, 0.1));
-    is_invalid(Sprt::bernoulli(q(1, 2), q(3, 4), 0.1, 0.0));
-    is_invalid(Sprt::bernoulli(q(1, 2), q(1, 2), 0.1, 0.2));
-    is_invalid(Sprt::bernoulli(q(1, 2), Q::one(), 0.1, 0.2));
-    is_invalid(Sprt::bernoulli(Q::zero(), q(1, 2), 0.1, 0.2));
-    is_invalid(Sprt::normal_mean(qi(0), qi(1), qi(0), 0.1, 0.2));
-    is_invalid(Sprt::normal_mean(qi(1), qi(1), qi(1), 0.1, 0.2));
+    is_invalid(Sprt::bernoulli(&q(1, 2), &q(3, 4), 0.5, 0.5));
+    is_invalid(Sprt::bernoulli(&q(1, 2), &q(3, 4), 1.0, 0.1));
+    is_invalid(Sprt::bernoulli(&q(1, 2), &q(3, 4), 0.1, 0.0));
+    is_invalid(Sprt::bernoulli(&q(1, 2), &q(1, 2), 0.1, 0.2));
+    is_invalid(Sprt::bernoulli(&q(1, 2), &Q::one(), 0.1, 0.2));
+    is_invalid(Sprt::bernoulli(&Q::zero(), &q(1, 2), 0.1, 0.2));
+    is_invalid(Sprt::normal_mean(&qi(0), &qi(1), &qi(0), 0.1, 0.2));
+    is_invalid(Sprt::normal_mean(&qi(1), &qi(1), &qi(1), 0.1, 0.2));
     is_invalid(operating_characteristic_bernoulli(
         0.5,
         &q(1, 2),
@@ -2790,11 +2792,11 @@ fn sprt_rejects_invalid_designs_and_observations() -> R {
         0.4,
     ));
     // A Bernoulli test only accepts 0 and 1 as observed values.
-    let mut t = Sprt::bernoulli(q(1, 2), q(3, 4), 0.1, 0.2)?;
-    is_invalid(t.observe(q(1, 2)));
+    let mut t = Sprt::bernoulli(&q(1, 2), &q(3, 4), 0.1, 0.2)?;
+    is_invalid(t.observe(&q(1, 2)));
     assert_eq!(t.observations(), 0);
-    assert_eq!(t.observe(Q::one())?, Decision::Continue);
-    assert_eq!(t.observe(Q::zero())?, Decision::Continue);
+    assert_eq!(t.observe(&Q::one())?, Decision::Continue);
+    assert_eq!(t.observe(&Q::zero())?, Decision::Continue);
     assert_eq!(
         (t.observations(), t.successes(), t.failures(), t.sum()),
         (2, 1, 1, &Q::one())
@@ -2807,7 +2809,7 @@ fn sprt_decision_is_recomputed_from_the_counts_after_a_boundary_is_reached() -> 
     // The test is a plain value: observations after a decision keep being counted and the decision
     // is re-derived from the running log-likelihood ratio, so it can fall back to `Continue`.
     let ctx = Context::new();
-    let mut t = Sprt::bernoulli(q(1, 2), q(3, 4), 0.1, 0.2)?;
+    let mut t = Sprt::bernoulli(&q(1, 2), &q(3, 4), 0.1, 0.2)?;
     let mut d = Decision::Continue;
     while d == Decision::Continue {
         d = t.update(true);
@@ -2839,9 +2841,9 @@ fn sprt_decision_is_recomputed_from_the_counts_after_a_boundary_is_reached() -> 
 fn sprt_normal_mean_llr_is_exact_and_decides() -> R {
     let ctx = Context::new();
     // H₀: μ = 0, H₁: μ = 1, σ = 2, α = β = 0.05.  Λ = (1/4)·Σx − n/8.
-    let mut t = Sprt::normal_mean(qi(0), qi(1), qi(2), 0.05, 0.05)?;
+    let mut t = Sprt::normal_mean(&qi(0), &qi(1), &qi(2), 0.05, 0.05)?;
     for x in [q(3, 2), qi(-1), q(5, 2), qi(2)] {
-        t.observe(x)?;
+        t.observe(&x)?;
     }
     // Σx = 5, n = 4: Λ = 5/4 − 1/2 = 3/4; positive observations counted as "successes" = 3
     assert_eq!(t.sum(), &qi(5));
@@ -2850,10 +2852,10 @@ fn sprt_normal_mean_llr_is_exact_and_decides() -> R {
     assert_eq!((t.observations(), t.successes()), (4, 3));
     assert_eq!(t.decision(), Decision::Continue);
     // Large observations push Λ past B = 2.9444: Σx = 5 + 12 = 17, n = 5: Λ = 17/4 − 5/8 = 29/8 = 3.625
-    assert_eq!(t.observe(qi(12))?, Decision::AcceptH1);
+    assert_eq!(t.observe(&qi(12))?, Decision::AcceptH1);
     assert_eq!(t.log_likelihood_ratio(&ctx), ctx.rational(29, 8));
     // `update` on a normal-mean test records 1 or 0.
-    let mut u = Sprt::normal_mean(qi(0), qi(1), qi(2), 0.05, 0.05)?;
+    let mut u = Sprt::normal_mean(&qi(0), &qi(1), &qi(2), 0.05, 0.05)?;
     u.update(true);
     u.update(false);
     assert_eq!(u.sum(), &Q::one());
@@ -2872,7 +2874,7 @@ fn sprt_expected_sample_size_against_a_simulation() -> R {
         (0.75, 0.2, 10.417_525_758_882_162),
         (0.6, 0.680_865_397_059_899_1, 10.607_844_223_914_88),
     ] {
-        let mut test = Sprt::bernoulli(p0.clone(), p1.clone(), 0.1, 0.2)?;
+        let mut test = Sprt::bernoulli(&p0, &p1, 0.1, 0.2)?;
         let runs = 10_000;
         let mut total = 0usize;
         let mut accept_h0 = 0usize;

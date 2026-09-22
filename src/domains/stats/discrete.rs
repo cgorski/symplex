@@ -5,6 +5,11 @@
 //! several families: factorial moments through Stirling numbers
 //! ([`raw_moment_from_factorial_moments`]) and derivatives of the moment
 //! generating function at `0` ([`moment_from_mgf`]).
+//!
+//! Sampling: a family on a finite lattice leaves [`Family::sampler`] unset
+//! and is drawn from the cumulative sums of its pmf
+//! ([`Distribution::sampler`]); the three on `0..∞` / `1..∞` — `Poisson`,
+//! `Geometric`, `NegativeBinomial` — supply their own exact routes.
 
 use std::fmt;
 
@@ -17,7 +22,9 @@ use crate::api::expr::{BoolEx, Ex};
 use crate::base::errors::SymplexError;
 use crate::domains::combinatorics::stirling2;
 
-use super::family::{Distribution, Family, same_family};
+use super::continuous::sampler_positive;
+use super::family::{Distribution, Family, Sampler, same_family};
+use super::sample::{self, Rng};
 use super::support::Support;
 
 type Rat = Ratio<BigInt>;
@@ -84,6 +91,23 @@ fn require_le(a: &Ex, b: &Ex, what: &str) -> Result<(), SymplexError> {
         return Err(invalid(format!("{what}: `{a}` exceeds `{b}`")));
     }
     Ok(())
+}
+
+/// A success probability as the `f64` in `(0, 1]` a sampler needs,
+/// evaluated once when the sampler is built.
+///
+/// # Errors
+///
+/// The evaluation error for a symbolic parameter;
+/// [`SymplexError::InvalidArgument`] for a number outside `(0, 1]`.
+fn sampler_probability(p: &Ex, what: &str) -> Result<f64, SymplexError> {
+    let v = p.eval_f64()?;
+    if !(v > 0.0 && v <= 1.0) {
+        return Err(invalid(format!(
+            "{what} must lie in (0, 1] to sample, got `{p}`"
+        )));
+    }
+    Ok(v)
 }
 
 /// The falling factorial `x^{(k)} = x(x−1)⋯(x−k+1)` as an explicit product
@@ -412,6 +436,16 @@ impl Family for Poisson {
     fn mgf(&self, t: &Ex) -> Option<Ex> {
         Some((&self.rate * (t.exp() - self.context().one())).exp())
     }
+
+    // Knuth's multiplication method below λ = 30, Hörmann's PTRS above
+    // (see `sample::poisson`).
+    fn sampler(&self) -> Option<Result<Sampler, SymplexError>> {
+        Some(
+            sampler_positive(&self.rate, "the rate").map(|lambda| -> Sampler {
+                Box::new(move |rng: &mut Rng| sample::poisson(rng, lambda))
+            }),
+        )
+    }
 }
 
 /// `Geometric(p)`: the number of trials up to and including the first
@@ -460,6 +494,21 @@ impl Family for Geometric {
         let ctx = self.context();
         Some(&self.p * t.exp() / (ctx.one() - (ctx.one() - &self.p) * t.exp()))
     }
+
+    // Inverse transform in closed form: `⌊ln U / ln(1−p)⌋` counts the
+    // failures before the first success (`P(≥ j) = (1−p)ʲ`), so the trial
+    // count is one more.  `U ∈ (0, 1]`; `p = 1` gives `ln 0 = −∞` in the
+    // denominator and the constant 1.
+    fn sampler(&self) -> Option<Result<Sampler, SymplexError>> {
+        Some(
+            sampler_probability(&self.p, "the success probability").map(|p| -> Sampler {
+                let ln_q = (-p).ln_1p();
+                Box::new(move |rng: &mut Rng| {
+                    (sample::positive_uniform(rng).ln() / ln_q).floor() + 1.0
+                })
+            }),
+        )
+    }
 }
 
 /// `NegativeBinomial(r, p)`: the number of failures before the `r`-th
@@ -504,6 +553,25 @@ impl Family for NegativeBinomial {
     fn mgf(&self, t: &Ex) -> Option<Ex> {
         let ctx = self.context();
         Some((&self.p / (ctx.one() - (ctx.one() - &self.p) * t.exp())).pow(&self.r))
+    }
+
+    // Poisson–Gamma mixture: X | Λ ~ Poisson(Λ) with Λ ~ Gamma(r, (1−p)/p)
+    // is NegativeBinomial(r, p) (mean r(1−p)/p, variance r(1−p)/p²), for
+    // any real r > 0.
+    fn sampler(&self) -> Option<Result<Sampler, SymplexError>> {
+        Some(self.build_sampler())
+    }
+}
+
+impl NegativeBinomial {
+    fn build_sampler(&self) -> Result<Sampler, SymplexError> {
+        let r = sampler_positive(&self.r, "the number of successes")?;
+        let p = sampler_probability(&self.p, "the success probability")?;
+        let scale = (1.0 - p) / p;
+        Ok(Box::new(move |rng: &mut Rng| {
+            let lambda = scale * sample::standard_gamma(rng, r);
+            sample::poisson(rng, lambda)
+        }))
     }
 }
 

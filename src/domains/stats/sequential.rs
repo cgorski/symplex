@@ -21,7 +21,7 @@
 //! use symplex::stats::sequential::{Decision, Sprt};
 //!
 //! // Is a worker's accuracy 90 % (H₁) rather than 70 % (H₀)?  α = 5 %, β = 10 %.
-//! let mut test = Sprt::bernoulli(q(7, 10), q(9, 10), 0.05, 0.10)?;
+//! let mut test = Sprt::bernoulli(&q(7, 10), &q(9, 10), 0.05, 0.10)?;
 //! let mut decision = Decision::Continue;
 //! while decision == Decision::Continue {
 //!     decision = test.update(true);          // every answer correct
@@ -35,50 +35,41 @@
 //! `Λ = s·ln(p₁/p₀) + f·ln((1−p₁)/(1−p₀))`, and is returned as an
 //! expression by [`Sprt::log_likelihood_ratio`]; decisions compare its
 //! `f64` value with the `f64` boundaries.
+//!
+//! Hypothesis parameters (`p₀`, `p₁`, `μ₀`, `μ₁`, `σ`) and observations are
+//! `&Q`, as everywhere in `stats`; the error rates `α`, `β` are `f64`
+//! levels.
 
-use num_traits::{One, Signed, ToPrimitive, Zero};
+use num_traits::{One, Signed, Zero};
 
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
 
+use super::common::{check_alpha, check_unit_open, ex_usize, invalid, q_to_f64};
 use super::data::Q;
 
-const OP: &str = "stats::sequential";
-
-fn invalid(reason: impl Into<String>) -> SymplexError {
-    SymplexError::invalid_argument(OP, reason)
-}
-
-fn failed(reason: impl Into<String>) -> SymplexError {
-    SymplexError::computation_failed(OP, reason)
-}
-
-fn q_f64(q: &Q) -> f64 {
-    q.to_f64().unwrap_or(f64::NAN)
-}
-
-fn check_rates(alpha: f64, beta: f64) -> Result<(), SymplexError> {
-    if !(alpha > 0.0 && alpha < 1.0) {
-        return Err(invalid(format!("alpha must lie in (0, 1), got {alpha}")));
-    }
-    if !(beta > 0.0 && beta < 1.0) {
-        return Err(invalid(format!("beta must lie in (0, 1), got {beta}")));
-    }
+fn check_rates(op: &'static str, alpha: f64, beta: f64) -> Result<(), SymplexError> {
+    check_alpha(op, alpha)?;
+    check_unit_open(op, "beta", beta)?;
     if alpha + beta >= 1.0 {
-        return Err(invalid(format!(
-            "alpha + beta must be below 1 for the boundaries to be ordered, got {alpha} + {beta}"
-        )));
+        return Err(invalid(
+            op,
+            format!(
+                "alpha + beta must be below 1 for the boundaries to be ordered, got {alpha} + {beta}"
+            ),
+        ));
     }
     Ok(())
 }
 
-fn check_probability(p: &Q, what: &str) -> Result<(), SymplexError> {
+fn check_probability(op: &'static str, p: &Q, what: &str) -> Result<(), SymplexError> {
     if !p.is_positive() || p >= &Q::one() {
-        return Err(invalid(format!(
-            "{what} must lie strictly in (0, 1), got {p}"
-        )));
+        return Err(invalid(
+            op,
+            format!("{what} must lie strictly in (0, 1), got {p}"),
+        ));
     }
     Ok(())
 }
@@ -102,7 +93,7 @@ fn check_probability(p: &Q, what: &str) -> Result<(), SymplexError> {
 ///
 /// [`SymplexError::InvalidArgument`] unless `0 < α, β` and `α + β < 1`.
 pub fn wald_boundaries(alpha: f64, beta: f64) -> Result<Interval<f64>, SymplexError> {
-    check_rates(alpha, beta)?;
+    check_rates("wald_boundaries", alpha, beta)?;
     Ok(Interval::open(
         (beta / (1.0 - alpha)).ln(),
         ((1.0 - beta) / alpha).ln(),
@@ -155,15 +146,20 @@ impl Sprt {
     ///
     /// [`SymplexError::InvalidArgument`] unless `0 < p₀, p₁ < 1`,
     /// `p₀ ≠ p₁`, `0 < α, β` and `α + β < 1`.
-    pub fn bernoulli(p0: Q, p1: Q, alpha: f64, beta: f64) -> Result<Self, SymplexError> {
-        check_probability(&p0, "p0")?;
-        check_probability(&p1, "p1")?;
+    pub fn bernoulli(p0: &Q, p1: &Q, alpha: f64, beta: f64) -> Result<Self, SymplexError> {
+        const OP: &str = "Sprt::bernoulli";
+        check_probability(OP, p0, "p0")?;
+        check_probability(OP, p1, "p1")?;
         if p0 == p1 {
-            return Err(invalid("p0 and p1 must differ"));
+            return Err(invalid(OP, "p0 and p1 must differ"));
         }
+        check_rates(OP, alpha, beta)?;
         let boundaries = wald_boundaries(alpha, beta)?;
         Ok(Sprt {
-            model: Model::Bernoulli { p0, p1 },
+            model: Model::Bernoulli {
+                p0: p0.clone(),
+                p1: p1.clone(),
+            },
             alpha,
             beta,
             boundaries,
@@ -183,21 +179,27 @@ impl Sprt {
     /// [`SymplexError::InvalidArgument`] unless `σ > 0`, `μ₀ ≠ μ₁`,
     /// `0 < α, β` and `α + β < 1`.
     pub fn normal_mean(
-        mu0: Q,
-        mu1: Q,
-        sigma: Q,
+        mu0: &Q,
+        mu1: &Q,
+        sigma: &Q,
         alpha: f64,
         beta: f64,
     ) -> Result<Self, SymplexError> {
+        const OP: &str = "Sprt::normal_mean";
         if !sigma.is_positive() {
-            return Err(invalid(format!("sigma must be positive, got {sigma}")));
+            return Err(invalid(OP, format!("sigma must be positive, got {sigma}")));
         }
         if mu0 == mu1 {
-            return Err(invalid("mu0 and mu1 must differ"));
+            return Err(invalid(OP, "mu0 and mu1 must differ"));
         }
+        check_rates(OP, alpha, beta)?;
         let boundaries = wald_boundaries(alpha, beta)?;
         Ok(Sprt {
-            model: Model::NormalMean { mu0, mu1, sigma },
+            model: Model::NormalMean {
+                mu0: mu0.clone(),
+                mu1: mu1.clone(),
+                sigma: sigma.clone(),
+            },
             alpha,
             beta,
             boundaries,
@@ -227,7 +229,7 @@ impl Sprt {
     ///
     /// [`SymplexError::InvalidArgument`] if a Bernoulli test is given a
     /// value other than `0` or `1`.
-    pub fn observe(&mut self, x: Q) -> Result<Decision, SymplexError> {
+    pub fn observe(&mut self, x: &Q) -> Result<Decision, SymplexError> {
         match &self.model {
             Model::Bernoulli { .. } => {
                 if x.is_one() {
@@ -235,9 +237,10 @@ impl Sprt {
                 } else if x.is_zero() {
                     Ok(self.update(false))
                 } else {
-                    Err(invalid(format!(
-                        "a Bernoulli observation must be 0 or 1, got {x}"
-                    )))
+                    Err(invalid(
+                        "Sprt::observe",
+                        format!("a Bernoulli observation must be 0 or 1, got {x}"),
+                    ))
                 }
             }
             Model::NormalMean { .. } => {
@@ -321,7 +324,7 @@ impl Sprt {
     /// use symplex::stats::sequential::Sprt;
     ///
     /// let ctx = Context::new();
-    /// let mut test = Sprt::bernoulli(q(7, 10), q(9, 10), 0.05, 0.10)?;
+    /// let mut test = Sprt::bernoulli(&q(7, 10), &q(9, 10), 0.05, 0.10)?;
     /// for s in [true, true, false, true, false] {
     ///     test.update(s);
     /// }
@@ -332,8 +335,8 @@ impl Sprt {
     pub fn log_likelihood_ratio(&self, ctx: &Context) -> Ex {
         match &self.model {
             Model::Bernoulli { p0, p1 } => {
-                let s = ctx.int(usize_to_i64(self.successes));
-                let f = ctx.int(usize_to_i64(self.failures()));
+                let s = ex_usize(ctx, self.successes);
+                let f = ex_usize(ctx, self.failures());
                 let one = Q::one();
                 s * ctx.from_ratio(p1 / p0).ln()
                     + f * ctx.from_ratio((&one - p1) / (&one - p0)).ln()
@@ -348,11 +351,11 @@ impl Sprt {
         match &self.model {
             Model::Bernoulli { p0, p1 } => {
                 let one = Q::one();
-                let ls = q_f64(&(p1 / p0)).ln();
-                let lf = q_f64(&((&one - p1) / (&one - p0))).ln();
+                let ls = q_to_f64(&(p1 / p0)).ln();
+                let lf = q_to_f64(&((&one - p1) / (&one - p0))).ln();
                 self.successes as f64 * ls + self.failures() as f64 * lf
             }
-            Model::NormalMean { .. } => q_f64(&self.normal_llr_exact()),
+            Model::NormalMean { .. } => q_to_f64(&self.normal_llr_exact()),
         }
     }
 
@@ -370,10 +373,6 @@ impl Sprt {
     }
 }
 
-fn usize_to_i64(n: usize) -> i64 {
-    i64::try_from(n).unwrap_or(i64::MAX)
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Wald's approximations for the Bernoulli test
 // ═══════════════════════════════════════════════════════════════════════════
@@ -381,18 +380,23 @@ fn usize_to_i64(n: usize) -> i64 {
 /// The per-observation log-likelihood-ratio increments
 /// `(ln(p₁/p₀), ln((1−p₁)/(1−p₀)))` and the expectation of one increment
 /// under a true success probability `p`.
-fn bernoulli_increments(p: f64, p0: &Q, p1: &Q) -> Result<(f64, f64, f64), SymplexError> {
-    check_probability(p0, "p0")?;
-    check_probability(p1, "p1")?;
+fn bernoulli_increments(
+    op: &'static str,
+    p: f64,
+    p0: &Q,
+    p1: &Q,
+) -> Result<(f64, f64, f64), SymplexError> {
+    check_probability(op, p0, "p0")?;
+    check_probability(op, p1, "p1")?;
     if p0 == p1 {
-        return Err(invalid("p0 and p1 must differ"));
+        return Err(invalid(op, "p0 and p1 must differ"));
     }
     if !(0.0..=1.0).contains(&p) {
-        return Err(invalid(format!("p must lie in [0, 1], got {p}")));
+        return Err(invalid(op, format!("p must lie in [0, 1], got {p}")));
     }
     let one = Q::one();
-    let ls = q_f64(&(p1 / p0)).ln();
-    let lf = q_f64(&((&one - p1) / (&one - p0))).ln();
+    let ls = q_to_f64(&(p1 / p0)).ln();
+    let lf = q_to_f64(&((&one - p1) / (&one - p0))).ln();
     Ok((ls, lf, p * ls + (1.0 - p) * lf))
 }
 
@@ -400,7 +404,13 @@ fn bernoulli_increments(p: f64, p0: &Q, p1: &Q) -> Result<(f64, f64, f64), Sympl
 /// (Wald's fundamental identity), or `None` when `E_p[Z] = 0` (`h → 0`).
 /// The caller excludes `p ∈ {0, 1}`, where the only root is `h = 0` (the
 /// non-zero root has escaped to `±∞`).
-fn wald_h(p: f64, ls: f64, lf: f64, drift: f64) -> Result<Option<f64>, SymplexError> {
+fn wald_h(
+    op: &'static str,
+    p: f64,
+    ls: f64,
+    lf: f64,
+    drift: f64,
+) -> Result<Option<f64>, SymplexError> {
     if drift.abs() < 1e-13 {
         return Ok(None);
     }
@@ -414,7 +424,8 @@ fn wald_h(p: f64, ls: f64, lf: f64, drift: f64) -> Result<Option<f64>, SymplexEr
         hi *= 2.0;
         grown += 1;
         if grown > 60 {
-            return Err(failed(
+            return Err(SymplexError::computation_failed(
+                op,
                 "operating characteristic: could not bracket the root of Wald's identity",
             ));
         }
@@ -432,14 +443,22 @@ fn wald_h(p: f64, ls: f64, lf: f64, drift: f64) -> Result<Option<f64>, SymplexEr
 }
 
 /// Wald's `L(p)` from the increments, the drift and the boundaries `(a, b)`.
-fn wald_oc(p: f64, ls: f64, lf: f64, drift: f64, a: f64, b: f64) -> Result<f64, SymplexError> {
+fn wald_oc(
+    op: &'static str,
+    p: f64,
+    ls: f64,
+    lf: f64,
+    drift: f64,
+    a: f64,
+    b: f64,
+) -> Result<f64, SymplexError> {
     // Every trial has the same outcome, so `Λₙ = n·drift` marches to the
     // boundary on the side of the drift (the non-zero root of Wald's
     // identity has escaped to `±∞`, where the formula tends to 0 or 1).
     if p <= 0.0 || p >= 1.0 {
         return Ok(if drift < 0.0 { 1.0 } else { 0.0 });
     }
-    match wald_h(p, ls, lf, drift)? {
+    match wald_h(op, p, ls, lf, drift)? {
         // (eᴮʰ − 1)/(eᴮʰ − eᴬʰ), i.e. ((1−β)/α)ʰ = e^{Bh}, (β/(1−α))ʰ = e^{Ah}
         Some(h) => Ok(((b * h).exp() - 1.0) / ((b * h).exp() - (a * h).exp())),
         // h → 0: L = B / (B − A)
@@ -471,9 +490,11 @@ pub fn operating_characteristic_bernoulli(
     alpha: f64,
     beta: f64,
 ) -> Result<f64, SymplexError> {
-    let (ls, lf, drift) = bernoulli_increments(p, p0, p1)?;
+    const OP: &str = "operating_characteristic_bernoulli";
+    let (ls, lf, drift) = bernoulli_increments(OP, p, p0, p1)?;
+    check_rates(OP, alpha, beta)?;
     let (a, b) = wald_boundaries(alpha, beta)?.into_pair();
-    wald_oc(p, ls, lf, drift, a, b)
+    wald_oc(OP, p, ls, lf, drift, a, b)
 }
 
 /// Wald's approximation to the expected number of observations of the
@@ -509,12 +530,14 @@ pub fn expected_sample_size_bernoulli(
     alpha: f64,
     beta: f64,
 ) -> Result<f64, SymplexError> {
-    let (ls, lf, drift) = bernoulli_increments(p, p0, p1)?;
+    const OP: &str = "expected_sample_size_bernoulli";
+    let (ls, lf, drift) = bernoulli_increments(OP, p, p0, p1)?;
+    check_rates(OP, alpha, beta)?;
     let (a, b) = wald_boundaries(alpha, beta)?.into_pair();
     if drift.abs() < 1e-13 {
         let second_moment = p * ls * ls + (1.0 - p) * lf * lf;
         return Ok(-a * b / second_moment);
     }
-    let l = wald_oc(p, ls, lf, drift, a, b)?;
+    let l = wald_oc(OP, p, ls, lf, drift, a, b)?;
     Ok((l * a + (1.0 - l) * b) / drift)
 }

@@ -142,6 +142,20 @@ pub(crate) fn f_sf(ctx: &Context, d1: usize, d2: usize, f: &Q) -> Ex {
     )
 }
 
+/// [`f_sf`] for rational (not necessarily integer) degrees of freedom —
+/// the Greenhouse–Geisser and Huynh–Feldt corrections scale both by `ε`.
+pub(crate) fn f_sf_rational(ctx: &Context, d1: &Q, d2: &Q, f: &Q) -> Ex {
+    if !f.is_positive() {
+        return ctx.one();
+    }
+    let z = d2 / (d2 + d1 * f);
+    ex(ctx, &z).betainc_regularized(
+        &ex(ctx, &(d2 / qi(2))),
+        &ex(ctx, &(d1 / qi(2))),
+        &ctx.zero(),
+    )
+}
+
 // ── Reference distributions: numeric quantiles ──────────────────────────
 
 /// `Φ⁻¹(1 − alpha)`: the upper-tail standard normal quantile.

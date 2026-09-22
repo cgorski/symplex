@@ -52,14 +52,9 @@ use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 use crate::domains::ntheory::factorint_bounded;
 
+use super::common::invalid;
 use super::data::Q;
 use super::family::Distribution;
-
-const OP: &str = "stats::information";
-
-fn invalid(reason: impl Into<String>) -> SymplexError {
-    SymplexError::invalid_argument(OP, reason)
-}
 
 /// The unit of an entropy: natural logarithms (nats, `scipy` default) or
 /// base-2 logarithms (bits, shannons).
@@ -231,59 +226,65 @@ fn geometric_ratio(ctx: &Context, num: &LogSum, a: &LogSum, b: &LogSum) -> Ex {
 // Validation
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn check_vector(p: &[Q], name: &str) -> Result<(), SymplexError> {
+fn check_vector(op: &'static str, p: &[Q], name: &str) -> Result<(), SymplexError> {
     if p.is_empty() {
-        return Err(invalid(format!("{name} is empty")));
+        return Err(invalid(op, format!("{name} is empty")));
     }
     if let Some((i, v)) = p.iter().enumerate().find(|(_, v)| v.is_negative()) {
-        return Err(invalid(format!("{name}[{i}] = {v} is negative")));
+        return Err(invalid(op, format!("{name}[{i}] = {v} is negative")));
     }
     let total = p.iter().fold(Q::zero(), |acc, v| acc + v);
     if !total.is_one() {
-        return Err(invalid(format!("{name} sums to {total}, not 1")));
+        return Err(invalid(op, format!("{name} sums to {total}, not 1")));
     }
     Ok(())
 }
 
-fn check_pair(p: &[Q], q: &[Q]) -> Result<(), SymplexError> {
-    check_vector(p, "p")?;
-    check_vector(q, "q")?;
+fn check_pair(op: &'static str, p: &[Q], q: &[Q]) -> Result<(), SymplexError> {
+    check_vector(op, p, "p")?;
+    check_vector(op, q, "q")?;
     if p.len() != q.len() {
-        return Err(invalid(format!(
-            "p and q have different lengths ({} and {})",
-            p.len(),
-            q.len()
-        )));
+        return Err(invalid(
+            op,
+            format!(
+                "p and q have different lengths ({} and {})",
+                p.len(),
+                q.len()
+            ),
+        ));
     }
     Ok(())
 }
 
-fn check_joint(joint: &[Vec<Q>]) -> Result<(usize, usize), SymplexError> {
+fn check_joint(op: &'static str, joint: &[Vec<Q>]) -> Result<(usize, usize), SymplexError> {
     let r = joint.len();
     if r == 0 {
-        return Err(invalid("the joint table is empty"));
+        return Err(invalid(op, "the joint table is empty"));
     }
     let c = joint[0].len();
     if c == 0 {
-        return Err(invalid("the joint table has no columns"));
+        return Err(invalid(op, "the joint table has no columns"));
     }
     if let Some((i, row)) = joint.iter().enumerate().find(|(_, row)| row.len() != c) {
-        return Err(invalid(format!(
-            "joint row {i} has {} entries, expected {c}",
-            row.len()
-        )));
+        return Err(invalid(
+            op,
+            format!("joint row {i} has {} entries, expected {c}", row.len()),
+        ));
     }
     let mut total = Q::zero();
     for (i, row) in joint.iter().enumerate() {
         for (j, v) in row.iter().enumerate() {
             if v.is_negative() {
-                return Err(invalid(format!("joint[{i}][{j}] = {v} is negative")));
+                return Err(invalid(op, format!("joint[{i}][{j}] = {v} is negative")));
             }
             total += v;
         }
     }
     if !total.is_one() {
-        return Err(invalid(format!("the joint table sums to {total}, not 1")));
+        return Err(invalid(
+            op,
+            format!("the joint table sums to {total}, not 1"),
+        ));
     }
     Ok((r, c))
 }
@@ -298,16 +299,17 @@ fn entropy_sum(p: &[Q]) -> LogSum {
 }
 
 /// `D(p‖q) = Σ_{pᵢ>0} pᵢ ln(pᵢ/qᵢ)` as a log-sum, for validated vectors.
-fn kl_sum(p: &[Q], q: &[Q], what: &str) -> Result<LogSum, SymplexError> {
+fn kl_sum(op: &'static str, p: &[Q], q: &[Q], what: &str) -> Result<LogSum, SymplexError> {
     let mut acc = LogSum::default();
     for (i, (pi, qi)) in p.iter().zip(q).enumerate() {
         if pi.is_zero() {
             continue;
         }
         if qi.is_zero() {
-            return Err(invalid(format!(
-                "{what} is infinite: q[{i}] = 0 while p[{i}] = {pi} > 0"
-            )));
+            return Err(invalid(
+                op,
+                format!("{what} is infinite: q[{i}] = 0 while p[{i}] = {pi} > 0"),
+            ));
         }
         acc.add(pi, &(pi / qi));
     }
@@ -341,7 +343,7 @@ fn kl_sum(p: &[Q], q: &[Q], what: &str) -> Result<LogSum, SymplexError> {
 /// [`SymplexError::InvalidArgument`] unless `p` is non-empty, non-negative
 /// and sums to exactly `1`.
 pub fn entropy(ctx: &Context, p: &[Q], base: Base) -> Result<Ex, SymplexError> {
-    check_vector(p, "p")?;
+    check_vector("entropy", p, "p")?;
     Ok(entropy_sum(p).in_base(ctx, base))
 }
 
@@ -353,7 +355,7 @@ pub fn entropy(ctx: &Context, p: &[Q], base: Base) -> Result<Ex, SymplexError> {
 ///
 /// As [`entropy`].
 pub fn perplexity(ctx: &Context, p: &[Q]) -> Result<Ex, SymplexError> {
-    check_vector(p, "p")?;
+    check_vector("perplexity", p, "p")?;
     let mut acc = ctx.one();
     for v in p.iter().filter(|v| v.is_positive()) {
         let e = ctx.from_ratio(v.clone());
@@ -383,12 +385,16 @@ pub fn perplexity(ctx: &Context, p: &[Q]) -> Result<Ex, SymplexError> {
 /// [`SymplexError::InvalidArgument`] if the distribution is continuous,
 /// has infinitely many values, or a probability is not a rational number.
 pub fn probability_vector(dist: &Distribution) -> Result<Vec<Q>, SymplexError> {
+    const OP: &str = "probability_vector";
     let support = dist.support();
     if dist.is_continuous() {
-        return Err(invalid(format!(
-            "{}: a probability vector needs a discrete distribution",
-            dist.name()
-        )));
+        return Err(invalid(
+            OP,
+            format!(
+                "{}: a probability vector needs a discrete distribution",
+                dist.name()
+            ),
+        ));
     }
     let values: Vec<Ex> = if let Some(points) = support.as_points() {
         points
@@ -399,26 +405,32 @@ pub fn probability_vector(dist: &Distribution) -> Result<Vec<Q>, SymplexError> {
                 (lo..=hi).map(|v| ctx.int(v)).collect()
             }
             _ => {
-                return Err(invalid(format!(
-                    "{}: the support is not a finite range of integers",
-                    dist.name()
-                )));
+                return Err(invalid(
+                    OP,
+                    format!(
+                        "{}: the support is not a finite range of integers",
+                        dist.name()
+                    ),
+                ));
             }
         }
     } else {
-        return Err(invalid(format!(
-            "{}: the support is not a finite set of values",
-            dist.name()
-        )));
+        return Err(invalid(
+            OP,
+            format!("{}: the support is not a finite set of values", dist.name()),
+        ));
     };
     values
         .iter()
         .map(|v| {
             dist.density(v).eval().as_rational().ok_or_else(|| {
-                invalid(format!(
-                    "{}: the probability of `{v}` is not a rational number",
-                    dist.name()
-                ))
+                invalid(
+                    OP,
+                    format!(
+                        "{}: the probability of `{v}` is not a rational number",
+                        dist.name()
+                    ),
+                )
             })
         })
         .collect()
@@ -436,8 +448,9 @@ pub fn probability_vector(dist: &Distribution) -> Result<Vec<Q>, SymplexError> {
 /// [`SymplexError::InvalidArgument`] for invalid or mismatched vectors,
 /// or if some `qᵢ = 0 < pᵢ` (the divergence is infinite).
 pub fn kl_divergence(ctx: &Context, p: &[Q], q: &[Q], base: Base) -> Result<Ex, SymplexError> {
-    check_pair(p, q)?;
-    Ok(kl_sum(p, q, "KL divergence")?.in_base(ctx, base))
+    const OP: &str = "kl_divergence";
+    check_pair(OP, p, q)?;
+    Ok(kl_sum(OP, p, q, "KL divergence")?.in_base(ctx, base))
 }
 
 /// The cross-entropy `H(p, q) = −Σ pᵢ log qᵢ = H(p) + D(p‖q)`.
@@ -446,16 +459,18 @@ pub fn kl_divergence(ctx: &Context, p: &[Q], q: &[Q], base: Base) -> Result<Ex, 
 ///
 /// As [`kl_divergence`].
 pub fn cross_entropy(ctx: &Context, p: &[Q], q: &[Q], base: Base) -> Result<Ex, SymplexError> {
-    check_pair(p, q)?;
+    const OP: &str = "cross_entropy";
+    check_pair(OP, p, q)?;
     let mut acc = LogSum::default();
     for (i, (pi, qi)) in p.iter().zip(q).enumerate() {
         if pi.is_zero() {
             continue;
         }
         if qi.is_zero() {
-            return Err(invalid(format!(
-                "cross-entropy is infinite: q[{i}] = 0 while p[{i}] = {pi} > 0"
-            )));
+            return Err(invalid(
+                OP,
+                format!("cross-entropy is infinite: q[{i}] = 0 while p[{i}] = {pi} > 0"),
+            ));
         }
         acc.add(&(-pi), qi);
     }
@@ -471,12 +486,13 @@ pub fn cross_entropy(ctx: &Context, p: &[Q], q: &[Q], base: Base) -> Result<Ex, 
 ///
 /// [`SymplexError::InvalidArgument`] for invalid or mismatched vectors.
 pub fn js_divergence(ctx: &Context, p: &[Q], q: &[Q], base: Base) -> Result<Ex, SymplexError> {
-    check_pair(p, q)?;
+    const OP: &str = "js_divergence";
+    check_pair(OP, p, q)?;
     let two = Q::from_integer(2.into());
     let half = Q::one() / &two;
     let m: Vec<Q> = p.iter().zip(q).map(|(a, b)| (a + b) / &two).collect();
-    let js = kl_sum(p, &m, "JS divergence")?
-        .plus(&kl_sum(q, &m, "JS divergence")?)
+    let js = kl_sum(OP, p, &m, "JS divergence")?
+        .plus(&kl_sum(OP, q, &m, "JS divergence")?)
         .scaled(&half);
     Ok(js.in_base(ctx, base))
 }
@@ -487,7 +503,7 @@ pub fn js_divergence(ctx: &Context, p: &[Q], q: &[Q], base: Base) -> Result<Ex, 
 ///
 /// [`SymplexError::InvalidArgument`] for invalid or mismatched vectors.
 pub fn total_variation(p: &[Q], q: &[Q]) -> Result<Q, SymplexError> {
-    check_pair(p, q)?;
+    check_pair("total_variation", p, q)?;
     let sum = p
         .iter()
         .zip(q)
@@ -501,7 +517,7 @@ pub fn total_variation(p: &[Q], q: &[Q]) -> Result<Q, SymplexError> {
 ///
 /// [`SymplexError::InvalidArgument`] for invalid or mismatched vectors.
 pub fn bhattacharyya_coefficient(ctx: &Context, p: &[Q], q: &[Q]) -> Result<Ex, SymplexError> {
-    check_pair(p, q)?;
+    check_pair("bhattacharyya_coefficient", p, q)?;
     let mut acc = ctx.zero();
     for (a, b) in p.iter().zip(q) {
         if a.is_positive() && b.is_positive() {
@@ -521,6 +537,7 @@ pub fn bhattacharyya_distance(ctx: &Context, p: &[Q], q: &[Q]) -> Result<Ex, Sym
     let bc = bhattacharyya_coefficient(ctx, p, q)?;
     if bc.is_zero() == Some(true) {
         return Err(invalid(
+            "bhattacharyya_distance",
             "Bhattacharyya distance is infinite: p and q have disjoint supports",
         ));
     }
@@ -550,19 +567,20 @@ pub fn hellinger(ctx: &Context, p: &[Q], q: &[Q]) -> Result<Ex, SymplexError> {
 /// [`SymplexError::InvalidArgument`] if the table is empty or jagged, or
 /// every count is zero.
 pub fn joint_from_counts(counts: &[Vec<usize>]) -> Result<Vec<Vec<Q>>, SymplexError> {
+    const OP: &str = "joint_from_counts";
     if counts.is_empty() || counts[0].is_empty() {
-        return Err(invalid("the count table is empty"));
+        return Err(invalid(OP, "the count table is empty"));
     }
     let c = counts[0].len();
     if let Some((i, row)) = counts.iter().enumerate().find(|(_, row)| row.len() != c) {
-        return Err(invalid(format!(
-            "count row {i} has {} entries, expected {c}",
-            row.len()
-        )));
+        return Err(invalid(
+            OP,
+            format!("count row {i} has {} entries, expected {c}", row.len()),
+        ));
     }
     let total: usize = counts.iter().flatten().sum();
     if total == 0 {
-        return Err(invalid("the count table is all zeros"));
+        return Err(invalid(OP, "the count table is all zeros"));
     }
     let total = Q::from_integer(total.into());
     Ok(counts
@@ -603,7 +621,12 @@ pub struct Marginals {
 /// [`SymplexError::InvalidArgument`] unless the table is rectangular,
 /// non-negative and sums to `1`.
 pub fn marginals(joint: &[Vec<Q>]) -> Result<Marginals, SymplexError> {
-    let (_, c) = check_joint(joint)?;
+    marginals_of("marginals", joint)
+}
+
+/// [`marginals`] labelled with the calling function.
+fn marginals_of(op: &'static str, joint: &[Vec<Q>]) -> Result<Marginals, SymplexError> {
+    let (_, c) = check_joint(op, joint)?;
     let rows = joint
         .iter()
         .map(|row| row.iter().fold(Q::zero(), |acc, v| acc + v))
@@ -624,13 +647,16 @@ fn flatten(joint: &[Vec<Q>]) -> Vec<Q> {
 ///
 /// As [`marginals`].
 pub fn joint_entropy(ctx: &Context, joint: &[Vec<Q>], base: Base) -> Result<Ex, SymplexError> {
-    check_joint(joint)?;
+    check_joint("joint_entropy", joint)?;
     Ok(entropy_sum(&flatten(joint)).in_base(ctx, base))
 }
 
 /// `I(X; Y) = Σ pᵢⱼ ln(pᵢⱼ / (pᵢ· p·ⱼ))` as a log-sum, with the marginals.
-fn mutual_information_sum(joint: &[Vec<Q>]) -> Result<(LogSum, Marginals), SymplexError> {
-    let m = marginals(joint)?;
+fn mutual_information_sum(
+    op: &'static str,
+    joint: &[Vec<Q>],
+) -> Result<(LogSum, Marginals), SymplexError> {
+    let m = marginals_of(op, joint)?;
     let mut acc = LogSum::default();
     for (i, row) in joint.iter().enumerate() {
         for (j, v) in row.iter().enumerate() {
@@ -667,7 +693,7 @@ fn mutual_information_sum(joint: &[Vec<Q>]) -> Result<(LogSum, Marginals), Sympl
 ///
 /// As [`marginals`].
 pub fn mutual_information(ctx: &Context, joint: &[Vec<Q>], base: Base) -> Result<Ex, SymplexError> {
-    let (i, _) = mutual_information_sum(joint)?;
+    let (i, _) = mutual_information_sum("mutual_information", joint)?;
     Ok(i.in_base(ctx, base))
 }
 
@@ -680,7 +706,8 @@ pub fn mutual_information(ctx: &Context, joint: &[Vec<Q>], base: Base) -> Result
 ///
 /// As [`marginals`].
 pub fn information_gain(ctx: &Context, joint: &[Vec<Q>], base: Base) -> Result<Ex, SymplexError> {
-    mutual_information(ctx, joint, base)
+    let (i, _) = mutual_information_sum("information_gain", joint)?;
+    Ok(i.in_base(ctx, base))
 }
 
 /// The conditional entropy `H(Y | X) = H(X, Y) − H(X)`: with
@@ -696,7 +723,7 @@ pub fn conditional_entropy(
     given: Given,
     base: Base,
 ) -> Result<Ex, SymplexError> {
-    let Marginals { rows, cols } = marginals(joint)?;
+    let Marginals { rows, cols } = marginals_of("conditional_entropy", joint)?;
     let known = match given {
         Given::Row => rows,
         Given::Column => cols,
@@ -719,7 +746,8 @@ pub fn normalized_mutual_information(
     joint: &[Vec<Q>],
     norm: Norm,
 ) -> Result<Ex, SymplexError> {
-    let (i, m) = mutual_information_sum(joint)?;
+    const OP: &str = "normalized_mutual_information";
+    let (i, m) = mutual_information_sum(OP, joint)?;
     let hx = entropy_sum(&m.rows);
     let hy = entropy_sum(&m.cols);
     let degenerate = match norm {
@@ -728,6 +756,7 @@ pub fn normalized_mutual_information(
     };
     if degenerate {
         return Err(invalid(
+            OP,
             "normalised mutual information is undefined: the normalising entropy is zero",
         ));
     }

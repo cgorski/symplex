@@ -1,23 +1,23 @@
-//! Scale reliability, item analysis and further agreement / association
-//! statistics: Cronbach's α and its relatives (standardized α, KR-20,
-//! split-half with the Spearman–Brown prophecy, α-if-deleted, Guttman's
-//! λ₂), classical item analysis (difficulty, the D discrimination index,
-//! point-biserial and corrected item–total correlations), a confidence
-//! interval and a test for Cohen's κ, κ_max, Cochran's Q, the ordinal
-//! association measures (Goodman–Kruskal γ, Somers' D, Stuart's τ-c),
-//! contingency-table diagnostics (expected counts, χ² contributions,
-//! standardized and adjusted residuals) and inference on Pearson's r
-//! (Fisher's z, a confidence interval, the t-test, comparing two r's).
+//! Scale reliability and item analysis: Cronbach's α and its relatives
+//! (standardized α, KR-20, split-half with the Spearman–Brown prophecy,
+//! α-if-deleted, Guttman's λ₂) and classical item analysis (difficulty,
+//! the D discrimination index, point-biserial and corrected item–total
+//! correlations).
+//!
+//! **Rule:** a function lives here iff it measures the reliability of a
+//! *scale* (a respondents × items response matrix) or analyses its items.
+//! In 0.18 the κ inference, κ_max and Cochran's Q moved to
+//! [`super::agreement`]; the ordinal association measures to
+//! [`super::data`]; the contingency-table diagnostics and the tests on
+//! Pearson's r to [`super::hypothesis`]; Fisher's z and the r interval to
+//! [`super::estimation`].  Each is re-exported here for one release.
 //!
 //! **Exact where rational.**  Everything that is a rational function of
-//! the data (α, KR-20, α-if-deleted, κ and its large-sample variance,
-//! Cochran's Q, γ, D, τ-c, expected counts, χ² contributions, item
-//! difficulties and D indices) comes back as a [`Q`]; anything with a
-//! square root (a correlation, a standard error, a standardized residual,
-//! λ₂, a t or z statistic) as an exact [`Ex`]; and only confidence limits
-//! that need a normal quantile are `f64`.  `scipy.stats`, `statsmodels`
-//! and `fractions.Fraction` re-implementations of the cited formulas are
-//! the references named in the tests.
+//! the data (α, KR-20, α-if-deleted, item difficulties and D indices)
+//! comes back as a [`Q`]; anything with a square root (a correlation,
+//! λ₂) as an exact [`Ex`].  `pingouin`, `numpy` and `fractions.Fraction`
+//! re-implementations of the cited formulas are the references named in
+//! the tests.
 //!
 //! ```
 //! use symplex::linprog::q;
@@ -40,50 +40,44 @@
 //!   same type [`super::agreement`] reads as items × raters.  The
 //!   functions here need every cell present; [`cronbach_alpha_complete`]
 //!   drops incomplete respondents first.
-//! * A **contingency table** is a `&[Vec<Q>]` of counts, as in
-//!   [`super::hypothesis`] (build one with
-//!   [`counts`](super::hypothesis::counts)).
-//! * Two **ordinal variables** are two equally long slices of `Q`.
-//! * Tests return a [`TestResult`]: the χ² tail is `Γ(df/2, x/2)/Γ(df/2)`,
-//!   the normal tail `erfc(|z|/√2)`, the Student tail a regularized
-//!   incomplete beta — exact expressions evaluated by
-//!   [`TestResult::p_value_f64`], as in [`super::hypothesis`].
+//! * A `ctx: &Context` is a parameter exactly when the result is an
+//!   [`Ex`] built from rational inputs; [`spearman_brown`] takes its
+//!   context from the correlation it is given.
 
-use num_bigint::BigInt;
-use num_traits::{One, Signed, Zero};
+use num_traits::{One, Zero};
 
-use super::agreement::{RatingTable, confusion_matrix};
+use super::agreement::RatingTable;
+use super::common::{ex, ex_usize, invalid, qu};
 use super::data::{self, Ddof, Q};
-use super::hypothesis::{Alternative, TestResult};
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
-use crate::base::interval::Interval;
-use crate::output::codegen::numeric_rt::erfcinv;
+
+/// Moved to [`stats::agreement`](super::agreement) in 0.18; this
+/// re-export is kept for one release.
+pub use super::agreement::{
+    KappaCi, cochrans_q, cohen_kappa_ci, cohen_kappa_maximum, kappa_ci_from_confusion,
+    kappa_maximum_from_confusion, kappa_test, kappa_test_from_confusion,
+};
+/// Moved to [`stats::data`](super::data) in 0.18; this re-export is kept
+/// for one release.
+pub use super::data::{
+    ConcordanceCounts, Dependent, concordance_counts, goodman_kruskal_gamma, kendall_tau_c,
+    somers_d,
+};
+/// Moved to [`stats::estimation`](super::estimation) in 0.18; this
+/// re-export is kept for one release.
+pub use super::estimation::{fisher_z, pearson_ci};
+/// Moved to [`stats::hypothesis`](super::hypothesis) in 0.18; this
+/// re-export is kept for one release.
+pub use super::hypothesis::{
+    adjusted_residuals, chi2_contributions, compare_two_correlations, expected_counts,
+    pearson_t_statistic, pearson_test, standardized_residuals,
+};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Small helpers
 // ═══════════════════════════════════════════════════════════════════════════
-
-fn invalid(op: &'static str, reason: impl Into<String>) -> SymplexError {
-    SymplexError::invalid_argument(op, reason)
-}
-
-fn qi(n: i64) -> Q {
-    Q::from_integer(BigInt::from(n))
-}
-
-fn qu(n: usize) -> Q {
-    Q::from_integer(BigInt::from(n))
-}
-
-fn ex(ctx: &Context, q: &Q) -> Ex {
-    ctx.from_ratio(q.clone())
-}
-
-fn exu(ctx: &Context, n: usize) -> Ex {
-    ex(ctx, &qu(n))
-}
 
 fn sum(values: impl IntoIterator<Item = Q>) -> Q {
     values.into_iter().fold(Q::zero(), |acc, x| acc + x)
@@ -91,43 +85,6 @@ fn sum(values: impl IntoIterator<Item = Q>) -> Q {
 
 fn square(x: &Q) -> Q {
     x * x
-}
-
-fn q_to_f64(q: &Q) -> f64 {
-    data::to_f64(std::slice::from_ref(q))
-        .first()
-        .copied()
-        .unwrap_or(f64::NAN)
-}
-
-/// `Φ⁻¹(1 − α)`: the upper `α` quantile of the standard normal.
-fn norm_isf(alpha: f64) -> f64 {
-    std::f64::consts::SQRT_2 * erfcinv(2.0 * alpha)
-}
-
-fn check_confidence(op: &'static str, confidence: f64) -> Result<(), SymplexError> {
-    if confidence > 0.0 && confidence < 1.0 {
-        Ok(())
-    } else {
-        Err(invalid(
-            op,
-            format!("the confidence level must lie strictly between 0 and 1, got {confidence}"),
-        ))
-    }
-}
-
-fn check_same_len(op: &'static str, x: &[Q], y: &[Q]) -> Result<(), SymplexError> {
-    if x.len() != y.len() {
-        return Err(invalid(
-            op,
-            format!(
-                "the two variables must have the same length ({} and {})",
-                x.len(),
-                y.len()
-            ),
-        ));
-    }
-    Ok(())
 }
 
 fn check_dichotomous<'a>(
@@ -161,51 +118,6 @@ fn pearson_of(
             format!("{what} is constant, so its correlation is undefined"),
         )
     })
-}
-
-/// `P(χ²_df ≥ x) = Γ(df/2, x/2) / Γ(df/2)` as an expression (`1` for `x ≤ 0`).
-fn chi_squared_sf(ctx: &Context, df: usize, x: &Q) -> Ex {
-    if !x.is_positive() {
-        return ctx.one();
-    }
-    let half_df = exu(ctx, df) / ctx.int(2);
-    (ex(ctx, x) / ctx.int(2)).uppergamma(&half_df) / half_df.gamma()
-}
-
-/// Turn the two-sided tail `P(|X| ≥ |x|)` of a symmetric distribution into
-/// the requested one: half of it when `x` lies in the alternative's tail,
-/// its complement otherwise.
-fn one_sided_from_symmetric(ctx: &Context, two_sided: Ex, in_tail: bool, alt: Alternative) -> Ex {
-    match alt {
-        Alternative::TwoSided => two_sided,
-        Alternative::Greater | Alternative::Less => {
-            let half = ctx.rational(1, 2) * two_sided;
-            if in_tail { half } else { ctx.one() - half }
-        }
-    }
-}
-
-/// Whether a statistic with the sign of `num` lies in the alternative's tail.
-fn in_tail(num_is_negative: bool, num_is_positive: bool, alt: Alternative) -> bool {
-    match alt {
-        Alternative::Greater | Alternative::TwoSided => !num_is_negative,
-        Alternative::Less => !num_is_positive,
-    }
-}
-
-/// The test of a statistic `z = num / √var` (`num`, `var > 0` rational)
-/// against the standard normal: `P(|Z| ≥ |z|) = erfc(|z|/√2)`.
-fn normal_test(ctx: &Context, num: &Q, var: &Q, alt: Alternative) -> TestResult {
-    let statistic = (ex(ctx, num) / ex(ctx, var).sqrt()).simplify();
-    let half_z2 = square(num) / var / qi(2);
-    let two_sided = ex(ctx, &half_z2).sqrt().erfc();
-    let tail = in_tail(num.is_negative(), num.is_positive(), alt);
-    TestResult {
-        statistic,
-        p_value: one_sided_from_symmetric(ctx, two_sided, tail, alt),
-        df: None,
-        alternative: alt,
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -393,7 +305,7 @@ fn inter_item_correlations(
 fn mean_ex(ctx: &Context, values: Vec<Ex>) -> Ex {
     let m = values.len();
     let total = values.into_iter().fold(ctx.zero(), |acc, r| acc + r);
-    total / exu(ctx, m)
+    total / ex_usize(ctx, m)
 }
 
 /// The mean of the `k(k−1)/2` inter-item Pearson correlations, as an
@@ -443,7 +355,7 @@ pub fn standardized_alpha(ctx: &Context, table: &RatingTable) -> Result<Ex, Symp
     let rows = score_matrix(OP, table)?;
     let k = rows[0].len();
     let r = mean_ex(ctx, inter_item_correlations(ctx, OP, &rows)?);
-    Ok(spearman_brown(ctx, &r, k))
+    Ok(spearman_brown(&r, k))
 }
 
 /// The Kuder–Richardson formula 20 (Kuder & Richardson 1937) for
@@ -605,7 +517,7 @@ pub fn split_half(
     split: &SplitHalf,
 ) -> Result<Ex, SymplexError> {
     let r = split_half_correlation(ctx, table, split)?;
-    Ok(spearman_brown(ctx, &r, 2))
+    Ok(spearman_brown(&r, 2))
 }
 
 /// The Spearman–Brown prophecy formula: the reliability of a test
@@ -613,17 +525,20 @@ pub fn split_half(
 ///
 /// `ρ_k = k ρ / (1 + (k − 1) ρ)`
 ///
-/// (`k = 2` steps a half-test correlation up to the full test).
+/// (`k = 2` steps a half-test correlation up to the full test).  The
+/// result lives in the context of `r`.
 ///
 /// ```
 /// use symplex::prelude::*;
 /// let ctx = Context::new();
 /// // A half-test correlation of 0.6 predicts 2·0.6/1.6 = 0.75 for the full test.
-/// let r = symplex::stats::reliability::spearman_brown(&ctx, &ctx.rational(3, 5), 2);
+/// let r = symplex::stats::reliability::spearman_brown(&ctx.rational(3, 5), 2);
 /// assert_eq!(r.simplify(), ctx.rational(3, 4));
 /// ```
-pub fn spearman_brown(ctx: &Context, r: &Ex, k: usize) -> Ex {
-    let kq = exu(ctx, k);
+#[must_use]
+pub fn spearman_brown(r: &Ex, k: usize) -> Ex {
+    let ctx = r.context();
+    let kq = ex_usize(&ctx, k);
     (&kq * r / (ctx.one() + (kq - ctx.one()) * r)).simplify()
 }
 
@@ -853,7 +768,16 @@ pub fn item_discrimination_index(table: &RatingTable) -> Result<Vec<Q>, SymplexE
 /// respondents, a score other than 0 or 1, or a constant item or score.
 pub fn point_biserial(ctx: &Context, item: &[Q], total: &[Q]) -> Result<Ex, SymplexError> {
     const OP: &str = "point_biserial";
-    check_same_len(OP, item, total)?;
+    if item.len() != total.len() {
+        return Err(invalid(
+            OP,
+            format!(
+                "the two variables must have the same length ({} and {})",
+                item.len(),
+                total.len()
+            ),
+        ));
+    }
     if item.len() < 2 {
         return Err(invalid(OP, "needs at least two respondents"));
     }
@@ -981,1014 +905,4 @@ pub fn item_response_summary(
             })
         })
         .collect()
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 3. Agreement extras: κ inference, κ_max, Cochran's Q
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Cohen's κ with the ingredients of its large-sample inference, from a
-/// `k × k` confusion matrix.
-struct KappaMoments {
-    kappa: Q,
-    /// Large-sample variance of κ̂ (Fleiss, Cohen & Everitt 1969).
-    var: Q,
-    /// Variance of κ̂ under `H₀: κ = 0`.
-    var0: Q,
-    /// κ_max given the marginals.
-    max: Q,
-}
-
-fn kappa_moments(op: &'static str, table: &[Vec<usize>]) -> Result<KappaMoments, SymplexError> {
-    let k = table.len();
-    if k == 0 || table.iter().any(|r| r.len() != k) {
-        return Err(invalid(
-            op,
-            "the confusion matrix must be square and non-empty",
-        ));
-    }
-    let n: usize = table.iter().flatten().sum();
-    if n == 0 {
-        return Err(invalid(op, "the confusion matrix is empty"));
-    }
-    let nq = qu(n);
-    let p: Vec<Vec<Q>> = table
-        .iter()
-        .map(|r| r.iter().map(|&c| qu(c) / &nq).collect())
-        .collect();
-    let pr: Vec<Q> = p.iter().map(|r| sum(r.iter().cloned())).collect();
-    let pc: Vec<Q> = (0..k)
-        .map(|j| sum(p.iter().map(|r| r[j].clone())))
-        .collect();
-    let po = sum((0..k).map(|i| p[i][i].clone()));
-    let pe = sum(pr.iter().zip(&pc).map(|(r, c)| r * c));
-    let one_minus_pe = Q::one() - &pe;
-    if one_minus_pe.is_zero() {
-        return Err(invalid(
-            op,
-            "the expected agreement is 1 (a single category), κ is undefined",
-        ));
-    }
-    let kappa = (&po - &pe) / &one_minus_pe;
-    let one_minus_k = Q::one() - &kappa;
-    let term_a = sum((0..k).map(|i| {
-        let d = Q::one() - (&pr[i] + &pc[i]) * &one_minus_k;
-        &p[i][i] * square(&d)
-    }));
-    let mut term_b = Q::zero();
-    for i in 0..k {
-        for j in 0..k {
-            if i != j {
-                term_b += &p[i][j] * square(&(&pc[i] + &pr[j]));
-            }
-        }
-    }
-    term_b *= square(&one_minus_k);
-    let term_c = square(&(&kappa - &pe * &one_minus_k));
-    let scale = square(&one_minus_pe) * &nq;
-    let var = (term_a + term_b - term_c) / &scale;
-    let marg = sum(pr.iter().zip(&pc).map(|(r, c)| r * c * (r + c)));
-    let var0 = (&pe + square(&pe) - marg) / scale;
-    let p_max = sum(pr.iter().zip(&pc).map(|(r, c)| r.min(c).clone()));
-    let max = (p_max - &pe) / one_minus_pe;
-    Ok(KappaMoments {
-        kappa,
-        var,
-        var0,
-        max,
-    })
-}
-
-/// The sorted distinct values of two raters' ratings.
-fn observed_categories(a: &[Q], b: &[Q]) -> Vec<Q> {
-    let mut v: Vec<Q> = a.iter().chain(b).cloned().collect();
-    v.sort();
-    v.dedup();
-    v
-}
-
-fn confusion_of(op: &'static str, a: &[Q], b: &[Q]) -> Result<Vec<Vec<usize>>, SymplexError> {
-    check_same_len(op, a, b)?;
-    if a.is_empty() {
-        return Err(invalid(op, "needs at least one item"));
-    }
-    confusion_matrix(a, b, &observed_categories(a, b))
-}
-
-/// Cohen's κ with its large-sample standard error and a normal-theory
-/// confidence interval.
-#[derive(Clone, Debug, PartialEq)]
-pub struct KappaCi {
-    /// The coefficient, exact.
-    pub kappa: Q,
-    /// The large-sample variance of κ̂ (Fleiss, Cohen & Everitt 1969),
-    /// exact.
-    pub variance: Q,
-    /// The standard error `√variance`, exact.
-    pub se: Ex,
-    /// The normal-theory interval `κ ∓ z_{α/2} · se`.
-    pub ci: Interval<f64>,
-    /// The confidence level `ci` refers to.
-    pub confidence: f64,
-}
-
-fn kappa_ci_of(
-    ctx: &Context,
-    op: &'static str,
-    table: &[Vec<usize>],
-    confidence: f64,
-) -> Result<KappaCi, SymplexError> {
-    check_confidence(op, confidence)?;
-    let m = kappa_moments(op, table)?;
-    if m.var.is_negative() {
-        return Err(SymplexError::computation_failed(
-            op,
-            "the large-sample variance of κ came out negative",
-        ));
-    }
-    let z = norm_isf((1.0 - confidence) / 2.0);
-    let delta = z * q_to_f64(&m.var).sqrt();
-    let kappa_f = q_to_f64(&m.kappa);
-    Ok(KappaCi {
-        se: ex(ctx, &m.var).sqrt(),
-        ci: Interval::closed(kappa_f - delta, kappa_f + delta),
-        confidence,
-        kappa: m.kappa,
-        variance: m.var,
-    })
-}
-
-/// Cohen's κ of two raters with the large-sample variance of Fleiss,
-/// Cohen & Everitt (1969),
-///
-/// `Var(κ̂) = [Σᵢ pᵢᵢ(1 − (pᵢ· + p·ᵢ)(1 − κ))² + (1 − κ)² Σᵢ≠ⱼ pᵢⱼ(p·ᵢ + pⱼ·)² − (κ − p_e(1 − κ))²] / (n (1 − p_e)²)`
-///
-/// and the interval `κ ± z_{α/2} √Var(κ̂)`.  κ and the variance are exact;
-/// the limits are `f64` (they need a normal quantile).
-/// `statsmodels.stats.inter_rater.cohens_kappa(table, return_results=True)`
-/// → `var_kappa`, `kappa_low`, `kappa_upp` (95 %).
-///
-/// ```
-/// use symplex::prelude::*;
-/// use symplex::linprog::q;
-/// use symplex::stats::reliability::kappa_ci_from_confusion;
-///
-/// let ctx = Context::new();
-/// // statsmodels: cohens_kappa([[20, 5], [10, 15]], return_results=True)
-/// //   kappa 0.4, var_kappa 0.016128, kappa_low 0.151092290476661, kappa_upp 0.648907709523339
-/// let ci = kappa_ci_from_confusion(&ctx, &[vec![20, 5], vec![10, 15]], 0.95)?;
-/// assert_eq!((ci.kappa, ci.variance), (q(2, 5), q(252, 15625)));
-/// assert!((ci.ci.lower - 0.151_092_290_476_661).abs() < 1e-12);
-/// assert!((ci.ci.upper - 0.648_907_709_523_339).abs() < 1e-12);
-/// # Ok::<(), SymplexError>(())
-/// ```
-///
-/// # Errors
-///
-/// [`SymplexError::InvalidArgument`] for unequal or empty ratings, a
-/// confidence level outside `(0, 1)`, or an expected agreement of 1.
-pub fn cohen_kappa_ci(
-    ctx: &Context,
-    a: &[Q],
-    b: &[Q],
-    confidence: f64,
-) -> Result<KappaCi, SymplexError> {
-    const OP: &str = "cohen_kappa_ci";
-    kappa_ci_of(ctx, OP, &confusion_of(OP, a, b)?, confidence)
-}
-
-/// [`cohen_kappa_ci`] from a `k × k` confusion matrix (rows: rater A,
-/// columns: rater B).
-///
-/// # Errors
-///
-/// [`SymplexError::InvalidArgument`] for a non-square or empty table, a
-/// confidence level outside `(0, 1)`, or an expected agreement of 1.
-pub fn kappa_ci_from_confusion(
-    ctx: &Context,
-    table: &[Vec<usize>],
-    confidence: f64,
-) -> Result<KappaCi, SymplexError> {
-    kappa_ci_of(ctx, "kappa_ci_from_confusion", table, confidence)
-}
-
-fn kappa_test_of(
-    ctx: &Context,
-    op: &'static str,
-    table: &[Vec<usize>],
-    alt: Alternative,
-) -> Result<TestResult, SymplexError> {
-    let m = kappa_moments(op, table)?;
-    if !m.var0.is_positive() {
-        return Err(invalid(
-            op,
-            "the null variance of κ is zero, the test is undefined",
-        ));
-    }
-    Ok(normal_test(ctx, &m.kappa, &m.var0, alt))
-}
-
-/// The test of `H₀: κ = 0` for two raters: `z = κ̂ / √Var₀(κ̂)` with the
-/// variance under independence (Fleiss, Cohen & Everitt 1969)
-///
-/// `Var₀(κ̂) = [p_e + p_e² − Σᵢ pᵢ· p·ᵢ (pᵢ· + p·ᵢ)] / (n (1 − p_e)²)`,
-///
-/// referred to the standard normal.  The statistic is exact
-/// (`κ/√Var₀`); `Greater` is the usual one-sided `κ > 0`.
-/// `statsmodels` `cohens_kappa(...).z_value`, `pvalue_one_sided`
-/// (`Greater`), `pvalue_two_sided`.
-///
-/// ```
-/// use symplex::prelude::*;
-/// use symplex::stats::hypothesis::Alternative;
-/// use symplex::stats::reliability::kappa_test_from_confusion;
-///
-/// let ctx = Context::new();
-/// // statsmodels: z_value 2.886751345948128, pvalue_two_sided 0.003892417122779
-/// let r = kappa_test_from_confusion(&ctx, &[vec![20, 5], vec![10, 15]], Alternative::TwoSided)?;
-/// assert!((r.statistic_f64()? - 2.886_751_345_948_128).abs() < 1e-12);
-/// assert!((r.p_value_f64()? - 0.003_892_417_122_779).abs() < 1e-12);
-/// # Ok::<(), SymplexError>(())
-/// ```
-///
-/// # Errors
-///
-/// [`SymplexError::InvalidArgument`] for unequal or empty ratings, an
-/// expected agreement of 1, or a zero null variance.
-pub fn kappa_test(
-    ctx: &Context,
-    a: &[Q],
-    b: &[Q],
-    alt: Alternative,
-) -> Result<TestResult, SymplexError> {
-    const OP: &str = "kappa_test";
-    kappa_test_of(ctx, OP, &confusion_of(OP, a, b)?, alt)
-}
-
-/// [`kappa_test`] from a `k × k` confusion matrix.
-///
-/// # Errors
-///
-/// As [`kappa_test`], for a non-square or empty table.
-pub fn kappa_test_from_confusion(
-    ctx: &Context,
-    table: &[Vec<usize>],
-    alt: Alternative,
-) -> Result<TestResult, SymplexError> {
-    kappa_test_of(ctx, "kappa_test_from_confusion", table, alt)
-}
-
-/// The largest κ the two raters' marginal distributions allow (Umesh,
-/// Peterson & Sauber 1989; Cohen 1960 §"κ_max"):
-///
-/// `κ_max = (Σᵢ min(pᵢ·, p·ᵢ) − p_e) / (1 − p_e)`,
-///
-/// attained when each rater's counts overlap as much as the marginals
-/// permit; `κ / κ_max` is the agreement relative to what was achievable.
-/// `statsmodels` `cohens_kappa(...).kappa_max`.
-///
-/// ```
-/// use symplex::linprog::q;
-/// use symplex::stats::data::from_i64;
-/// use symplex::stats::reliability::cohen_kappa_maximum;
-///
-/// let a = from_i64(&[0, 0, 1, 1, 1, 0]);
-/// let b = from_i64(&[0, 1, 1, 1, 0, 0]);
-/// // Equal marginals (3/6 each): κ_max = 1.
-/// assert_eq!(cohen_kappa_maximum(&a, &b)?, q(1, 1));
-/// # Ok::<(), symplex::prelude::SymplexError>(())
-/// ```
-///
-/// # Errors
-///
-/// [`SymplexError::InvalidArgument`] for unequal or empty ratings or an
-/// expected agreement of 1.
-pub fn cohen_kappa_maximum(a: &[Q], b: &[Q]) -> Result<Q, SymplexError> {
-    const OP: &str = "cohen_kappa_maximum";
-    Ok(kappa_moments(OP, &confusion_of(OP, a, b)?)?.max)
-}
-
-/// [`cohen_kappa_maximum`] from a `k × k` confusion matrix.
-///
-/// ```
-/// use symplex::linprog::q;
-/// use symplex::stats::reliability::kappa_maximum_from_confusion;
-///
-/// // statsmodels: cohens_kappa([[20, 5], [10, 15]], return_results=True).kappa_max = 0.8
-/// assert_eq!(kappa_maximum_from_confusion(&[vec![20, 5], vec![10, 15]])?, q(4, 5));
-/// # Ok::<(), symplex::prelude::SymplexError>(())
-/// ```
-///
-/// # Errors
-///
-/// [`SymplexError::InvalidArgument`] for a non-square or empty table or an
-/// expected agreement of 1.
-pub fn kappa_maximum_from_confusion(table: &[Vec<usize>]) -> Result<Q, SymplexError> {
-    Ok(kappa_moments("kappa_maximum_from_confusion", table)?.max)
-}
-
-/// Cochran's Q test (Cochran 1950) that `k` matched binary treatments /
-/// raters have the same success rate, on a subjects × treatments table
-/// of 0/1 responses:
-///
-/// `Q = (k − 1) (k Σⱼ Cⱼ² − (Σⱼ Cⱼ)²) / (k Σᵢ Rᵢ − Σᵢ Rᵢ²)`
-///
-/// with the column totals `Cⱼ` and row totals `Rᵢ`, referred to
-/// `χ²_{k−1}`.  `Q` is exact; the p-value is the exact χ² tail.  Subjects
-/// with a constant row contribute nothing (they are *not* dropped, as in
-/// statsmodels).  `statsmodels.stats.contingency_tables.cochrans_q(x)`.
-///
-/// ```
-/// use symplex::prelude::*;
-/// use symplex::linprog::q;
-/// use symplex::stats::agreement::RatingTable;
-/// use symplex::stats::reliability::cochrans_q;
-///
-/// let ctx = Context::new();
-/// let t = RatingTable::from_i64(&[
-///     &[1, 1, 0], &[1, 1, 0], &[1, 0, 0], &[1, 1, 1], &[0, 1, 0], &[1, 0, 0],
-///     &[1, 1, 0], &[1, 1, 0], &[0, 0, 0], &[1, 1, 1], &[1, 0, 0], &[1, 1, 0],
-/// ])?;
-/// // statsmodels: cochrans_q(x) → statistic 11.555555555555555 (= 104/9), pvalue 0.003095586852365, df 2
-/// let r = cochrans_q(&ctx, &t)?;
-/// assert_eq!(r.statistic_exact(), Some(q(104, 9)));
-/// assert_eq!(r.df, Some(ctx.int(2)));
-/// assert!((r.p_value_f64()? - 0.003_095_586_852_365).abs() < 1e-12);
-/// # Ok::<(), SymplexError>(())
-/// ```
-///
-/// # Errors
-///
-/// [`SymplexError::InvalidArgument`] for a missing cell, a response other
-/// than 0 or 1, fewer than two subjects or treatments, or every subject
-/// constant (zero denominator).
-pub fn cochrans_q(ctx: &Context, table: &RatingTable) -> Result<TestResult, SymplexError> {
-    const OP: &str = "cochrans_q";
-    let rows = score_matrix(OP, table)?;
-    check_dichotomous(OP, rows.iter().flatten(), "every response")?;
-    let (_, k) = check_scale(OP, &rows, 2)?;
-    let row_tot = row_sums(&rows);
-    let col_tot: Vec<Q> = columns(&rows).iter().map(|c| data::sum(c)).collect();
-    let total = data::sum(&row_tot);
-    let denom = qu(k) * &total - sum(row_tot.iter().map(square));
-    if denom.is_zero() {
-        return Err(invalid(
-            OP,
-            "every subject responds identically under every treatment, Q is undefined",
-        ));
-    }
-    let num = qu(k) * sum(col_tot.iter().map(square)) - square(&total);
-    let statistic = qu(k - 1) * num / denom;
-    Ok(TestResult {
-        p_value: chi_squared_sf(ctx, k - 1, &statistic),
-        statistic: ex(ctx, &statistic),
-        df: Some(exu(ctx, k - 1)),
-        alternative: Alternative::TwoSided,
-    })
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 4. Ordinal association
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// The classification of the `n(n−1)/2` pairs of observations of two
-/// variables: concordant, discordant, tied on `x` only, tied on `y` only,
-/// tied on both.  The five counts sum to [`pairs`](Self::pairs).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ConcordanceCounts {
-    /// Pairs ordered the same way on both variables (`C`, SAS `P`).
-    pub concordant: usize,
-    /// Pairs ordered opposite ways (`D`, SAS `Q`).
-    pub discordant: usize,
-    /// Pairs tied on `x` but not on `y` (`T_x`).
-    pub ties_x: usize,
-    /// Pairs tied on `y` but not on `x` (`T_y`).
-    pub ties_y: usize,
-    /// Pairs tied on both (`T_xy`).
-    pub ties_both: usize,
-}
-
-impl ConcordanceCounts {
-    /// The total number of pairs `n(n−1)/2`.
-    #[must_use]
-    pub fn pairs(&self) -> usize {
-        self.concordant + self.discordant + self.ties_x + self.ties_y + self.ties_both
-    }
-}
-
-/// Count the concordant, discordant and tied pairs of two variables.
-///
-/// ```
-/// use symplex::stats::data::from_i64;
-/// use symplex::stats::reliability::{concordance_counts, ConcordanceCounts};
-///
-/// let x = from_i64(&[1, 2, 2, 3]);
-/// let y = from_i64(&[1, 1, 2, 3]);
-/// let c = concordance_counts(&x, &y)?;
-/// assert_eq!(c, ConcordanceCounts { concordant: 4, discordant: 0, ties_x: 1, ties_y: 1, ties_both: 0 });
-/// assert_eq!(c.pairs(), 6);
-/// # Ok::<(), symplex::prelude::SymplexError>(())
-/// ```
-///
-/// # Errors
-///
-/// [`SymplexError::InvalidArgument`] for unequal lengths or fewer than two
-/// observations.
-pub fn concordance_counts(x: &[Q], y: &[Q]) -> Result<ConcordanceCounts, SymplexError> {
-    const OP: &str = "concordance_counts";
-    check_same_len(OP, x, y)?;
-    let n = x.len();
-    if n < 2 {
-        return Err(invalid(OP, "needs at least two observations"));
-    }
-    let mut c = ConcordanceCounts {
-        concordant: 0,
-        discordant: 0,
-        ties_x: 0,
-        ties_y: 0,
-        ties_both: 0,
-    };
-    for i in 0..n {
-        for j in i + 1..n {
-            let sx = x[i].cmp(&x[j]);
-            let sy = y[i].cmp(&y[j]);
-            match (sx, sy) {
-                (std::cmp::Ordering::Equal, std::cmp::Ordering::Equal) => c.ties_both += 1,
-                (std::cmp::Ordering::Equal, _) => c.ties_x += 1,
-                (_, std::cmp::Ordering::Equal) => c.ties_y += 1,
-                _ if sx == sy => c.concordant += 1,
-                _ => c.discordant += 1,
-            }
-        }
-    }
-    Ok(c)
-}
-
-/// Goodman and Kruskal's γ (1954): `(C − D) / (C + D)`, the ordinal
-/// association ignoring every tied pair.  Exact.
-///
-/// ```
-/// use symplex::linprog::q;
-/// use symplex::stats::data::from_i64;
-/// use symplex::stats::reliability::goodman_kruskal_gamma;
-///
-/// let x = from_i64(&[1, 2, 2, 3, 3, 3, 4, 4, 5, 1, 2, 4]);
-/// let y = from_i64(&[1, 1, 2, 2, 3, 2, 4, 3, 5, 2, 3, 4]);
-/// // C = 44, D = 3 → γ = 41/47
-/// assert_eq!(goodman_kruskal_gamma(&x, &y)?, q(41, 47));
-/// # Ok::<(), symplex::prelude::SymplexError>(())
-/// ```
-///
-/// # Errors
-///
-/// [`SymplexError::InvalidArgument`] for unequal lengths, fewer than two
-/// observations, or no untied pair (`C + D = 0`).
-pub fn goodman_kruskal_gamma(x: &[Q], y: &[Q]) -> Result<Q, SymplexError> {
-    let c = concordance_counts(x, y)?;
-    let untied = c.concordant + c.discordant;
-    if untied == 0 {
-        return Err(invalid(
-            "goodman_kruskal_gamma",
-            "every pair is tied on one of the variables, γ is undefined",
-        ));
-    }
-    Ok((qu(c.concordant) - qu(c.discordant)) / qu(untied))
-}
-
-/// Which variable Somers' D treats as dependent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Dependent {
-    /// `D_{Y|X}`: `y` depends on `x`; pairs tied on `x` are excluded
-    /// (`scipy.stats.somersd(x, y)`).
-    Y,
-    /// `D_{X|Y}`: `x` depends on `y`; pairs tied on `y` are excluded
-    /// (`scipy.stats.somersd(y, x)`).
-    X,
-    /// The symmetric version: `(C − D)` over the mean of the two
-    /// denominators.
-    Symmetric,
-}
-
-/// Somers' D (1962): the ordinal association of a dependent on an
-/// independent variable,
-///
-/// `D_{Y|X} = (C − D) / (C + D + T_y)`, `D_{X|Y} = (C − D) / (C + D + T_x)`,
-/// `D_sym = 2 (C − D) / (2 (C + D) + T_x + T_y)`,
-///
-/// where `T_y` counts the pairs tied on `y` only (so `D_{Y|X}` drops the
-/// pairs tied on the independent `x`).  Exact.  `scipy.stats.somersd(x,
-/// y).statistic` is `D_{Y|X}` (`x` the row / independent variable).
-///
-/// ```
-/// use symplex::linprog::q;
-/// use symplex::stats::data::from_i64;
-/// use symplex::stats::reliability::{somers_d, Dependent};
-///
-/// let x = from_i64(&[1, 2, 2, 3, 3, 3, 4, 4, 5, 1, 2, 4]);
-/// let y = from_i64(&[1, 1, 2, 2, 3, 2, 4, 3, 5, 2, 3, 4]);
-/// // scipy: somersd(x, y).statistic = 0.732142857142857 (= 41/56); somersd(y, x) = 0.745454545454545 (= 41/55)
-/// assert_eq!(somers_d(&x, &y, Dependent::Y)?, q(41, 56));
-/// assert_eq!(somers_d(&x, &y, Dependent::X)?, q(41, 55));
-/// # Ok::<(), symplex::prelude::SymplexError>(())
-/// ```
-///
-/// # Errors
-///
-/// [`SymplexError::InvalidArgument`] for unequal lengths, fewer than two
-/// observations, or a zero denominator (the independent variable
-/// constant).
-pub fn somers_d(x: &[Q], y: &[Q], dependent: Dependent) -> Result<Q, SymplexError> {
-    let c = concordance_counts(x, y)?;
-    let diff = qu(c.concordant) - qu(c.discordant);
-    let untied = c.concordant + c.discordant;
-    let denom = match dependent {
-        Dependent::Y => qu(untied + c.ties_y),
-        Dependent::X => qu(untied + c.ties_x),
-        Dependent::Symmetric => qu(2 * untied + c.ties_x + c.ties_y) / qi(2),
-    };
-    if denom.is_zero() {
-        return Err(invalid(
-            "somers_d",
-            "the independent variable is constant, Somers' D is undefined",
-        ));
-    }
-    Ok(diff / denom)
-}
-
-/// Stuart's τ-c (Kendall's τ-c, 1953): `2m (C − D) / (n² (m − 1))` with
-/// `m = min(#distinct x, #distinct y)`, the tie-adjusted τ for
-/// rectangular tables.  Exact.  `scipy.stats.kendalltau(x, y, variant='c')`.
-///
-/// ```
-/// use symplex::linprog::q;
-/// use symplex::stats::data::from_i64;
-/// use symplex::stats::reliability::kendall_tau_c;
-///
-/// let x = from_i64(&[1, 2, 2, 3, 3, 3, 4, 4, 5, 1, 2, 4]);
-/// let y = from_i64(&[1, 1, 2, 2, 3, 2, 4, 3, 5, 2, 3, 4]);
-/// // scipy: kendalltau(x, y, variant='c').statistic = 0.711805555555556 (= 205/288)
-/// assert_eq!(kendall_tau_c(&x, &y)?, q(205, 288));
-/// # Ok::<(), symplex::prelude::SymplexError>(())
-/// ```
-///
-/// # Errors
-///
-/// [`SymplexError::InvalidArgument`] for unequal lengths, fewer than two
-/// observations, or a constant variable (`m = 1`).
-pub fn kendall_tau_c(x: &[Q], y: &[Q]) -> Result<Q, SymplexError> {
-    let c = concordance_counts(x, y)?;
-    let m = data::frequencies(x).len().min(data::frequencies(y).len());
-    if m < 2 {
-        return Err(invalid(
-            "kendall_tau_c",
-            "a constant variable has no rank correlation",
-        ));
-    }
-    let n = x.len();
-    let diff = qu(c.concordant) - qu(c.discordant);
-    Ok(qu(2 * m) * diff / (qu(n * n) * qu(m - 1)))
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 5. Contingency-table diagnostics
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Check a rectangular table of non-negative counts; returns `(rows, cols)`.
-fn check_table(op: &'static str, table: &[Vec<Q>]) -> Result<(usize, usize), SymplexError> {
-    let r = table.len();
-    let c = table.first().map_or(0, Vec::len);
-    if r == 0 || c == 0 {
-        return Err(invalid(op, "the table is empty"));
-    }
-    if table.iter().any(|row| row.len() != c) {
-        return Err(invalid(op, "the table is not rectangular"));
-    }
-    if table.iter().flatten().any(Signed::is_negative) {
-        return Err(invalid(op, "counts must be non-negative"));
-    }
-    Ok((r, c))
-}
-
-/// Row sums, column sums and the grand total of a checked table.
-fn margins(table: &[Vec<Q>]) -> (Vec<Q>, Vec<Q>, Q) {
-    let cols = table[0].len();
-    let rows: Vec<Q> = table.iter().map(|r| data::sum(r)).collect();
-    let col_sums: Vec<Q> = (0..cols)
-        .map(|j| table.iter().fold(Q::zero(), |acc, r| acc + &r[j]))
-        .collect();
-    let total = data::sum(&rows);
-    (rows, col_sums, total)
-}
-
-/// Expected counts and the margins, erroring on an empty row or column.
-type Expected = (Vec<Vec<Q>>, Vec<Q>, Vec<Q>, Q);
-
-fn expected_of(op: &'static str, table: &[Vec<Q>]) -> Result<Expected, SymplexError> {
-    check_table(op, table)?;
-    let (rows, cols, total) = margins(table);
-    if rows.iter().any(Zero::is_zero) || cols.iter().any(Zero::is_zero) {
-        return Err(invalid(
-            op,
-            "a row or a column of the table is empty, so an expected count is zero",
-        ));
-    }
-    let expected = rows
-        .iter()
-        .map(|r| cols.iter().map(|c| r * c / &total).collect())
-        .collect();
-    Ok((expected, rows, cols, total))
-}
-
-/// The expected counts under independence, `Eᵢⱼ = rowᵢ · colⱼ / N`, exact.
-/// `statsmodels.stats.contingency_tables.Table(t).fittedvalues`;
-/// `scipy.stats.contingency.expected_freq`.
-///
-/// ```
-/// use symplex::linprog::q;
-/// use symplex::stats::hypothesis::counts;
-/// use symplex::stats::reliability::expected_counts;
-///
-/// let t = counts(&[&[10, 20, 30], &[6, 9, 17]]);
-/// // statsmodels: Table(t).fittedvalues[0][0] = 10.434782608695652 (= 240/23)
-/// assert_eq!(expected_counts(&t)?[0][0], q(240, 23));
-/// # Ok::<(), symplex::prelude::SymplexError>(())
-/// ```
-///
-/// # Errors
-///
-/// [`SymplexError::InvalidArgument`] for an empty, ragged or negative
-/// table, or an empty row / column.
-pub fn expected_counts(table: &[Vec<Q>]) -> Result<Vec<Vec<Q>>, SymplexError> {
-    Ok(expected_of("expected_counts", table)?.0)
-}
-
-/// Each cell's contribution `(Oᵢⱼ − Eᵢⱼ)² / Eᵢⱼ` to Pearson's χ², exact
-/// (they sum to the statistic of
-/// [`chi_square_independence`](super::hypothesis::chi_square_independence)
-/// without Yates' correction).  `Table(t).chi2_contribs`.
-///
-/// ```
-/// use symplex::linprog::q;
-/// use symplex::stats::hypothesis::counts;
-/// use symplex::stats::reliability::chi2_contributions;
-///
-/// let t = counts(&[&[10, 20, 30], &[6, 9, 17]]);
-/// // statsmodels: Table(t).chi2_contribs[1][1] = 0.11712893553223394 (= 625/5336)
-/// assert_eq!(chi2_contributions(&t)?[1][1], q(625, 5336));
-/// # Ok::<(), symplex::prelude::SymplexError>(())
-/// ```
-///
-/// # Errors
-///
-/// As [`expected_counts`].
-pub fn chi2_contributions(table: &[Vec<Q>]) -> Result<Vec<Vec<Q>>, SymplexError> {
-    let (expected, ..) = expected_of("chi2_contributions", table)?;
-    Ok(table
-        .iter()
-        .zip(&expected)
-        .map(|(o, e)| o.iter().zip(e).map(|(o, e)| square(&(o - e)) / e).collect())
-        .collect())
-}
-
-/// The standardized (Pearson) residuals `(Oᵢⱼ − Eᵢⱼ) / √Eᵢⱼ`, exact
-/// expressions; their squares are the [`chi2_contributions`].
-/// `statsmodels` `Table(t).resid_pearson` (statsmodels reserves the name
-/// `standardized_resids` for the [`adjusted_residuals`]).
-///
-/// ```
-/// use symplex::prelude::*;
-/// use symplex::stats::hypothesis::counts;
-/// use symplex::stats::reliability::standardized_residuals;
-///
-/// let ctx = Context::new();
-/// let t = counts(&[&[10, 20, 30], &[6, 9, 17]]);
-/// // statsmodels: Table(t).resid_pearson[0][1] = 0.24993752342773828
-/// let r = standardized_residuals(&ctx, &t)?;
-/// assert!((r[0][1].eval_f64()? - 0.249_937_523_427_738_28).abs() < 1e-12);
-/// # Ok::<(), SymplexError>(())
-/// ```
-///
-/// # Errors
-///
-/// As [`expected_counts`].
-pub fn standardized_residuals(
-    ctx: &Context,
-    table: &[Vec<Q>],
-) -> Result<Vec<Vec<Ex>>, SymplexError> {
-    let (expected, ..) = expected_of("standardized_residuals", table)?;
-    Ok(table
-        .iter()
-        .zip(&expected)
-        .map(|(o, e)| {
-            o.iter()
-                .zip(e)
-                .map(|(o, e)| (ex(ctx, &(o - e)) / ex(ctx, e).sqrt()).simplify())
-                .collect()
-        })
-        .collect())
-}
-
-/// Haberman's adjusted residuals (1973): the Pearson residual divided by
-/// its standard error under independence,
-///
-/// `rᵢⱼ = (Oᵢⱼ − Eᵢⱼ) / √(Eᵢⱼ (1 − rowᵢ/N)(1 − colⱼ/N))`,
-///
-/// approximately standard normal, so `|r| > 2` flags a cell.  Exact
-/// expressions.  `statsmodels` `Table(t).standardized_resids`.
-///
-/// ```
-/// use symplex::prelude::*;
-/// use symplex::stats::hypothesis::counts;
-/// use symplex::stats::reliability::adjusted_residuals;
-///
-/// let ctx = Context::new();
-/// let t = counts(&[&[10, 20, 30], &[6, 9, 17]]);
-/// // statsmodels: Table(t).standardized_resids[0][1] = 0.5121226989905664
-/// let r = adjusted_residuals(&ctx, &t)?;
-/// assert!((r[0][1].eval_f64()? - 0.512_122_698_990_566_4).abs() < 1e-12);
-/// # Ok::<(), SymplexError>(())
-/// ```
-///
-/// # Errors
-///
-/// As [`expected_counts`], and for a table with a single row or column
-/// (the adjustment factor vanishes).
-pub fn adjusted_residuals(ctx: &Context, table: &[Vec<Q>]) -> Result<Vec<Vec<Ex>>, SymplexError> {
-    const OP: &str = "adjusted_residuals";
-    let (expected, rows, cols, total) = expected_of(OP, table)?;
-    if rows.len() < 2 || cols.len() < 2 {
-        return Err(invalid(
-            OP,
-            "adjusted residuals need at least two rows and two columns",
-        ));
-    }
-    let row_f: Vec<Q> = rows.iter().map(|r| Q::one() - r / &total).collect();
-    let col_f: Vec<Q> = cols.iter().map(|c| Q::one() - c / &total).collect();
-    Ok(table
-        .iter()
-        .zip(&expected)
-        .zip(&row_f)
-        .map(|((o, e), rf)| {
-            o.iter()
-                .zip(e)
-                .zip(&col_f)
-                .map(|((o, e), cf)| {
-                    let var = e * rf * cf;
-                    (ex(ctx, &(o - e)) / ex(ctx, &var).sqrt()).simplify()
-                })
-                .collect()
-        })
-        .collect())
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 6. Inference on Pearson's r
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Fisher's z-transform `z = atanh(r) = ½ ln((1 + r)/(1 − r))`, whose
-/// sampling distribution is approximately normal with variance
-/// `1/(n − 3)`.
-///
-/// ```
-/// use symplex::prelude::*;
-/// let ctx = Context::new();
-/// // atanh(0.8) = 1.0986122886681098 (= ln 3)
-/// let z = symplex::stats::reliability::fisher_z(&ctx.rational(4, 5));
-/// assert!((z.eval_f64()? - 1.098_612_288_668_109_8).abs() < 1e-12);
-/// # Ok::<(), SymplexError>(())
-/// ```
-#[must_use]
-pub fn fisher_z(r: &Ex) -> Ex {
-    r.atanh()
-}
-
-/// A confidence interval for a population correlation by Fisher's z:
-/// `tanh(atanh(r) ∓ z_{α/2} / √(n − 3))`.  `f64` throughout (a normal
-/// quantile is involved).  `scipy.stats.pearsonr(x, y).confidence_interval
-/// (confidence_level)`.
-///
-/// ```
-/// use symplex::stats::reliability::pearson_ci;
-///
-/// // scipy: pearsonr(range(1, 6), [1, 3, 2, 5, 4]).confidence_interval(0.95)
-/// //   → (-0.279640041969355, 0.9861961933012714); r = 0.8, n = 5
-/// let ci = pearson_ci(0.8, 5, 0.95)?;
-/// assert!((ci.lower + 0.279_640_041_969_355).abs() < 1e-12);
-/// assert!((ci.upper - 0.986_196_193_301_271_4).abs() < 1e-12);
-/// # Ok::<(), symplex::prelude::SymplexError>(())
-/// ```
-///
-/// # Errors
-///
-/// [`SymplexError::InvalidArgument`] for `|r| ≥ 1` or non-finite `r`,
-/// `n < 4`, or a confidence level outside `(0, 1)`.
-pub fn pearson_ci(r: f64, n: usize, confidence: f64) -> Result<Interval<f64>, SymplexError> {
-    const OP: &str = "pearson_ci";
-    if !r.is_finite() || r.abs() >= 1.0 {
-        return Err(invalid(
-            OP,
-            format!("the correlation must lie strictly between −1 and 1, got {r}"),
-        ));
-    }
-    if n < 4 {
-        return Err(invalid(
-            OP,
-            format!("Fisher's z interval needs at least four observations, got {n}"),
-        ));
-    }
-    check_confidence(OP, confidence)?;
-    let z = r.atanh();
-    let se = 1.0 / ((n - 3) as f64).sqrt();
-    let zc = norm_isf((1.0 - confidence) / 2.0);
-    Ok(Interval::closed((z - zc * se).tanh(), (z + zc * se).tanh()))
-}
-
-/// The population sums of squares and cross-products of a pair,
-/// erroring on a constant sample.
-fn cross_moments(
-    op: &'static str,
-    x: &[Q],
-    y: &[Q],
-    min_n: usize,
-) -> Result<(Q, Q, Q), SymplexError> {
-    check_same_len(op, x, y)?;
-    if x.len() < min_n {
-        return Err(invalid(
-            op,
-            format!(
-                "needs at least {min_n} paired observations, got {}",
-                x.len()
-            ),
-        ));
-    }
-    let sxy = data::covariance(x, y, Ddof::Population)?;
-    let sxx = data::variance(x, Ddof::Population)?;
-    let syy = data::variance(y, Ddof::Population)?;
-    if sxx.is_zero() || syy.is_zero() {
-        return Err(invalid(op, "a constant sample has no correlation"));
-    }
-    Ok((sxy, sxx, syy))
-}
-
-/// The t statistic of Pearson's `r`: `t = r √(n − 2) / √(1 − r²)`, as an
-/// exact expression (`t² = r²(n−2)/(1−r²)` is rational).
-///
-/// ```
-/// use symplex::prelude::*;
-/// use symplex::stats::data::from_i64;
-/// use symplex::stats::reliability::pearson_t_statistic;
-///
-/// let ctx = Context::new();
-/// let x = from_i64(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-/// let y = from_i64(&[2, 1, 4, 3, 7, 8, 5, 6, 10, 9]);
-/// // r = 13/15, t² = 169/7: t = 4.913538149119947
-/// assert!((pearson_t_statistic(&ctx, &x, &y)?.eval_f64()? - 4.913_538_149_119_947).abs() < 1e-12);
-/// # Ok::<(), SymplexError>(())
-/// ```
-///
-/// # Errors
-///
-/// [`SymplexError::InvalidArgument`] for unequal lengths, fewer than three
-/// pairs, a constant sample, or `|r| = 1` (infinite `t`).
-pub fn pearson_t_statistic(ctx: &Context, x: &[Q], y: &[Q]) -> Result<Ex, SymplexError> {
-    const OP: &str = "pearson_t_statistic";
-    let (sxy, sxx, syy) = cross_moments(OP, x, y, 3)?;
-    let resid = &sxx * &syy - square(&sxy);
-    if resid.is_zero() {
-        return Err(invalid(OP, "|r| = 1, the t statistic is infinite"));
-    }
-    let var = resid / qu(x.len() - 2);
-    Ok((ex(ctx, &sxy) / ex(ctx, &var).sqrt()).simplify())
-}
-
-/// The test of `H₀: ρ = 0` for Pearson's `r`: the statistic is `r`
-/// ([`data::pearson`], exact); the p-value uses `t = r √((n−2)/(1−r²))`
-/// with `n − 2` degrees of freedom (exact Student-t tail
-/// `I_{ν/(t²+ν)}(ν/2, ½)`; `t²` is rational even when `r` is not).
-/// `|r| = 1` gives `p = 0` in the alternative's direction.
-/// `scipy.stats.pearsonr(x, y, alternative)`.
-///
-/// ```
-/// use symplex::prelude::*;
-/// use symplex::linprog::q;
-/// use symplex::stats::data::from_i64;
-/// use symplex::stats::hypothesis::Alternative;
-/// use symplex::stats::reliability::pearson_test;
-///
-/// let ctx = Context::new();
-/// let x = from_i64(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-/// let y = from_i64(&[2, 1, 4, 3, 7, 8, 5, 6, 10, 9]);
-/// // scipy: pearsonr(x, y) → statistic 0.866666666666666 (= 13/15), pvalue 0.001173538180155
-/// let r = pearson_test(&ctx, &x, &y, Alternative::TwoSided)?;
-/// assert_eq!(r.statistic, ctx.from_ratio(q(13, 15)));
-/// assert_eq!(r.df, Some(ctx.int(8)));
-/// assert!((r.p_value_f64()? - 0.001_173_538_180_155).abs() < 1e-12);
-/// # Ok::<(), SymplexError>(())
-/// ```
-///
-/// # Errors
-///
-/// [`SymplexError::InvalidArgument`] for unequal lengths, fewer than three
-/// pairs, or a constant sample.
-pub fn pearson_test(
-    ctx: &Context,
-    x: &[Q],
-    y: &[Q],
-    alt: Alternative,
-) -> Result<TestResult, SymplexError> {
-    const OP: &str = "pearson_test";
-    let (sxy, sxx, syy) = cross_moments(OP, x, y, 3)?;
-    let r = (ex(ctx, &sxy) / (ex(ctx, &sxx) * ex(ctx, &syy)).sqrt()).simplify();
-    let df = qu(x.len() - 2);
-    let r2 = square(&sxy) / (&sxx * &syy);
-    let one_minus = Q::one() - &r2;
-    let tail = in_tail(sxy.is_negative(), sxy.is_positive(), alt);
-    let p_value = if one_minus.is_zero() {
-        // |r| = 1: t is infinite in the direction of sign(r).
-        let extreme = match alt {
-            Alternative::TwoSided => true,
-            Alternative::Greater => sxy.is_positive(),
-            Alternative::Less => sxy.is_negative(),
-        };
-        if extreme { ctx.zero() } else { ctx.one() }
-    } else {
-        // t² = r²(n−2)/(1−r²); z = ν/(t² + ν) = (1 − r²)/((1 − r²) + r²) … kept as a rational.
-        let t2 = &r2 * &df / &one_minus;
-        let z = &df / (&t2 + &df);
-        let two_sided = ex(ctx, &z).betainc_regularized(
-            &(ex(ctx, &df) / ctx.int(2)),
-            &ctx.rational(1, 2),
-            &ctx.zero(),
-        );
-        one_sided_from_symmetric(ctx, two_sided, tail, alt)
-    };
-    Ok(TestResult {
-        statistic: r,
-        p_value,
-        df: Some(ex(ctx, &df)),
-        alternative: alt,
-    })
-}
-
-/// The test that two independent samples' correlations are equal
-/// (Fisher's z):
-///
-/// `z = (atanh r₁ − atanh r₂) / √(1/(n₁ − 3) + 1/(n₂ − 3))`,
-///
-/// referred to the standard normal; `Greater` tests `ρ₁ > ρ₂`.  The
-/// statistic and the `erfc` p-value are expressions in the (dyadic-exact)
-/// inputs.
-///
-/// ```
-/// use symplex::prelude::*;
-/// use symplex::stats::hypothesis::Alternative;
-/// use symplex::stats::reliability::compare_two_correlations;
-///
-/// let ctx = Context::new();
-/// // scipy.stats.norm: z = 2.251706268343729, two-sided p = 0.024340840282246236
-/// let r = compare_two_correlations(&ctx, 0.7, 50, 0.4, 60, Alternative::TwoSided)?;
-/// assert!((r.statistic_f64()? - 2.251_706_268_343_729).abs() < 1e-12);
-/// assert!((r.p_value_f64()? - 0.024_340_840_282_246_236).abs() < 1e-12);
-/// # Ok::<(), SymplexError>(())
-/// ```
-///
-/// # Errors
-///
-/// [`SymplexError::InvalidArgument`] for `|r| ≥ 1`, a non-finite `r`, or
-/// a sample of fewer than four observations.
-pub fn compare_two_correlations(
-    ctx: &Context,
-    r1: f64,
-    n1: usize,
-    r2: f64,
-    n2: usize,
-    alt: Alternative,
-) -> Result<TestResult, SymplexError> {
-    const OP: &str = "compare_two_correlations";
-    for (name, r, n) in [("first", r1, n1), ("second", r2, n2)] {
-        if !r.is_finite() || r.abs() >= 1.0 {
-            return Err(invalid(
-                OP,
-                format!("the {name} correlation must lie strictly between −1 and 1, got {r}"),
-            ));
-        }
-        if n < 4 {
-            return Err(invalid(
-                OP,
-                format!("the {name} sample needs at least four observations, got {n}"),
-            ));
-        }
-    }
-    let diff = ctx.from_f64(r1)?.atanh() - ctx.from_f64(r2)?.atanh();
-    let var = Q::one() / qu(n1 - 3) + Q::one() / qu(n2 - 3);
-    let statistic = diff / ex(ctx, &var).sqrt();
-    let two_sided = (statistic.abs() / ctx.int(2).sqrt()).erfc();
-    let sign = r1.atanh() - r2.atanh();
-    let tail = in_tail(sign < 0.0, sign > 0.0, alt);
-    Ok(TestResult {
-        statistic,
-        p_value: one_sided_from_symmetric(ctx, two_sided, tail, alt),
-        df: None,
-        alternative: alt,
-    })
 }

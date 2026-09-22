@@ -6,8 +6,9 @@
 //!
 //! # Algorithm
 //!
-//! Starting from `n` initial guesses distributed on a circle, the method
-//! iterates:
+//! Starting from `n` initial guesses on the circles given by the Newton
+//! polygon of the coefficients (one circle per scale of root moduli, see
+//! [`initial_guesses`]), the method iterates:
 //!
 //! ```text
 //! w_k = p(z_k) / (p'(z_k) - p(z_k) * Σ_{j≠k} 1/(z_k - z_j))
@@ -20,34 +21,44 @@ use astro_float::{BigFloat, Consts, RoundingMode};
 use num_bigint::BigInt;
 use num_complex::Complex64;
 use num_rational::Ratio;
-use num_traits::{One, Signed, Zero};
+use num_traits::{One, Signed, ToPrimitive, Zero};
 
 use super::dense::Poly;
-use crate::base::bigcomplex::{c_add, c_div, c_from_real, c_mul, c_one, c_sub, c_zero};
+use crate::base::bigcomplex::{c_add, c_div, c_mul, c_one, c_sub, c_zero};
 
 /// A complex number as `(real, imaginary)` pair of arbitrary-precision
 /// floats (the working type; results are handed out as [`Complex64`]).
-type Complex = (BigFloat, BigFloat);
+pub(crate) use crate::base::bigcomplex::Complex;
 
 /// Evaluate a polynomial with rational coefficients at a complex point
 /// using Horner's method.
 ///
 /// Coefficients are in ascending degree order: `[a_0, a_1, ..., a_n]`.
+#[cfg(test)]
 fn poly_eval_complex(
     coeffs: &[Ratio<BigInt>],
     z: &Complex,
     prec: usize,
     rm: RoundingMode,
 ) -> Complex {
-    if coeffs.is_empty() {
-        return c_zero(prec);
-    }
+    let bf: Vec<BigFloat> = coeffs.iter().map(|c| ratio_to_bigfloat(c, prec)).collect();
+    poly_eval_complex_bf(&bf, z, prec, rm)
+}
+
+/// `poly_eval_complex` on coefficients already converted to `BigFloat`
+/// (the Aberth loop evaluates the same polynomial `n` times per iteration
+/// and converts once).  The coefficients are real, so each Horner step is
+/// `result · z + c` with a real `c`.
+fn poly_eval_complex_bf(
+    coeffs: &[BigFloat],
+    z: &Complex,
+    prec: usize,
+    rm: RoundingMode,
+) -> Complex {
     let mut result = c_zero(prec);
     for c in coeffs.iter().rev() {
         result = c_mul(&result, z, prec, rm);
-        let c_re = ratio_to_bigfloat(c, prec);
-        let c_complex = c_from_real(c_re, prec);
-        result = c_add(&result, &c_complex, prec, rm);
+        result.0 = result.0.add(c, prec, rm);
     }
     result
 }
@@ -55,6 +66,9 @@ fn poly_eval_complex(
 /// Convert a `Ratio<BigInt>` to a `BigFloat` at the given precision.
 fn ratio_to_bigfloat(r: &Ratio<BigInt>, prec: usize) -> BigFloat {
     let numer_f = bigint_to_bigfloat(r.numer(), prec);
+    if r.denom().is_one() {
+        return numer_f;
+    }
     let denom_f = bigint_to_bigfloat(r.denom(), prec);
     if denom_f.is_zero() {
         return BigFloat::new(prec);
@@ -62,19 +76,28 @@ fn ratio_to_bigfloat(r: &Ratio<BigInt>, prec: usize) -> BigFloat {
     numer_f.div(&denom_f, prec, RoundingMode::None)
 }
 
-/// Convert a `BigInt` to a `BigFloat`.
+/// Convert a `BigInt` to a `BigFloat`: directly when it fits `i128`,
+/// otherwise limb by limb at a precision wide enough to hold every bit, so
+/// the conversion is exact up to the final rounding to `prec` bits.
 fn bigint_to_bigfloat(n: &BigInt, prec: usize) -> BigFloat {
-    // For small integers, use direct conversion
-    if let Ok(small) = i64::try_from(n) {
-        return BigFloat::from_i64(small, prec);
+    if let Some(v) = n.to_i128() {
+        return BigFloat::from_i128(v, prec);
     }
-    // For large integers, convert via i128 or fall back to f64
-    if let Ok(medium) = i128::try_from(n) {
-        return BigFloat::from_i128(medium, prec);
+    let (sign, limbs) = n.to_u64_digits();
+    let wp = (limbs.len() * 64 + 64).max(prec);
+    let rm = RoundingMode::ToEven;
+    let base = BigFloat::from_u64(1u64 << 32, wp).powi(2, wp, rm); // 2^64
+    let mut acc = BigFloat::new(wp);
+    for &limb in limbs.iter().rev() {
+        acc = acc
+            .mul(&base, wp, rm)
+            .add(&BigFloat::from_u64(limb, wp), wp, rm);
     }
-    // Last resort: lose precision via f64 (only for very large BigInts)
-    let f = n.to_string().parse::<f64>().unwrap_or(f64::NAN);
-    BigFloat::from_f64(f, prec)
+    if sign == num_bigint::Sign::Minus {
+        acc = acc.neg();
+    }
+    let _ = acc.set_precision(prec, rm);
+    acc
 }
 
 /// Compute Cauchy's upper bound on the absolute value of all roots.
@@ -103,11 +126,151 @@ fn cauchy_bound(poly: &Poly, prec: usize) -> BigFloat {
     max_ratio.add(&BigFloat::from_i32(1, prec), prec, rm)
 }
 
-/// Generate initial root approximations distributed on a circle.
+/// `log₂ |r|` for a non-zero rational, from the bit lengths when the value
+/// does not fit an `f64`.  Only used to size the starting circle of the
+/// iteration, so a few bits of error are irrelevant.
+fn log2_abs(r: &Ratio<BigInt>) -> f64 {
+    match r.to_f64() {
+        Some(v) if v.is_finite() && v != 0.0 => v.abs().log2(),
+        _ => r.numer().bits() as f64 - r.denom().bits() as f64,
+    }
+}
+
+/// Fujiwara's bound on the modulus of the roots of
+/// `p(x) = a_n x^n + … + a_0`:
 ///
-/// Uses the classic Aberth initialization
-/// `z_k = center + radius · exp(i(2πk/n + θ))` where
-/// `center = -a_{n-1} / (n · a_n)` and `radius` is the Cauchy bound.
+/// ```text
+/// |z| ≤ 2 · max( |a_{n−1}/a_n|, |a_{n−2}/a_n|^{1/2}, …, |a_1/a_n|^{1/(n−1)}, |a_0/(2a_n)|^{1/n} )
+/// ```
+///
+/// Unlike the Cauchy bound `1 + max |a_i/a_n|` this is within a factor of
+/// two of the largest root modulus even when a middle coefficient is huge
+/// (a binomial-tail polynomial of degree 40 has all roots in `|z| < 1.5`
+/// but a Cauchy bound above `6·10⁷`; Aberth started that far out shrinks
+/// the circle by only `≈ (1 − 1/n)` per step and needs thousands of
+/// iterations).  Computed in `f64` from `log₂` of the coefficient ratios;
+/// `None` when that fails (a non-finite result), in which case the caller
+/// falls back to the Cauchy bound.
+fn fujiwara_bound(poly: &Poly) -> Option<f64> {
+    let n = poly.degree()?;
+    if n == 0 {
+        return None;
+    }
+    let lc = poly.coeff(n);
+    if lc.is_zero() {
+        return None;
+    }
+    let mut max_log = f64::NEG_INFINITY;
+    for i in 1..=n {
+        let c = poly.coeff(n - i);
+        if c.is_zero() {
+            continue;
+        }
+        let mut ratio = &c / &lc;
+        if i == n {
+            ratio /= Ratio::from_integer(BigInt::from(2));
+        }
+        let l = log2_abs(&ratio) / i as f64;
+        if l > max_log {
+            max_log = l;
+        }
+    }
+    if !max_log.is_finite() {
+        return None;
+    }
+    let bound = 2.0 * max_log.exp2();
+    (bound.is_finite() && bound > 0.0).then_some(bound)
+}
+
+/// Radius of the starting circle for the Aberth iteration: the Fujiwara
+/// root bound, widened by 10% so that the guesses do not sit on a root,
+/// or the Cauchy bound when the former cannot be computed.
+fn start_radius(poly: &Poly, prec: usize) -> BigFloat {
+    match fujiwara_bound(poly) {
+        Some(b) => BigFloat::from_f64(b * 1.1, prec),
+        None => cauchy_bound(poly, prec),
+    }
+}
+
+/// A group of starting points on one circle: `count` guesses at modulus
+/// `radius`, the circle belonging to the Newton-polygon edge that starts
+/// at coefficient index `start`.
+struct StartCircle {
+    start: usize,
+    count: usize,
+    radius: f64,
+}
+
+/// Bini's starting circles from the Newton polygon of `p`: the upper
+/// convex hull of the points `(i, log₂|aᵢ|)`.  An edge from `(k, yₖ)` to
+/// `(l, yₗ)` says that `p` has `l − k` roots of modulus close to
+/// `2^{(yₖ − yₗ)/(l − k)}` (Bini, *Numer. Algorithms* 13 (1996); the
+/// initialisation MPSolve uses).  Where all roots have comparable modulus
+/// the hull is a single edge and this reduces to one circle at the
+/// geometric mean of the root moduli; where they do not — the
+/// binomial-tail polynomials have a dozen roots at modulus `≈ 0.1` and
+/// the rest near `1` — one circle per scale lets Aberth converge in a
+/// few dozen iterations instead of a few hundred.
+///
+/// `p(0) ≠ 0` is required (zero roots are split off by the caller).
+/// `None` when a logarithm is not finite, in which case the caller falls
+/// back to a single circle.
+fn newton_polygon_circles(poly: &Poly) -> Option<Vec<StartCircle>> {
+    let n = poly.degree()?;
+    let pts: Vec<(usize, f64)> = poly
+        .coeffs()
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| !c.is_zero())
+        .map(|(i, c)| (i, log2_abs(c)))
+        .collect();
+    if pts.len() < 2 || pts.iter().any(|(_, y)| !y.is_finite()) {
+        return None;
+    }
+    // Upper hull, left to right: keep only clockwise turns.
+    let mut hull: Vec<(usize, f64)> = Vec::with_capacity(pts.len());
+    for &p in &pts {
+        while hull.len() >= 2 {
+            let o = hull[hull.len() - 2];
+            let a = hull[hull.len() - 1];
+            let cross =
+                (a.0 as f64 - o.0 as f64) * (p.1 - o.1) - (a.1 - o.1) * (p.0 as f64 - o.0 as f64);
+            if cross >= 0.0 {
+                hull.pop();
+            } else {
+                break;
+            }
+        }
+        hull.push(p);
+    }
+    let mut circles: Vec<StartCircle> = Vec::with_capacity(hull.len() - 1);
+    for w in hull.windows(2) {
+        let (k, yk) = w[0];
+        let (l, yl) = w[1];
+        let count = l - k;
+        let radius = ((yk - yl) / count as f64).exp2();
+        if !radius.is_finite() || radius <= 0.0 {
+            return None;
+        }
+        circles.push(StartCircle {
+            start: k,
+            count,
+            radius,
+        });
+    }
+    (circles.iter().map(|c| c.count).sum::<usize>() == n).then_some(circles)
+}
+
+/// Generate initial root approximations.
+///
+/// The guesses lie on the circles of [`newton_polygon_circles`]: for the
+/// edge starting at coefficient `k` with `m` roots of modulus `r`,
+/// `z_j = r · exp(iθ_j)` with `θ_j = 2π(j + 1/4)/m + 2πk/n + 0.4`.  The
+/// `2πk/n` term rotates each circle differently so guesses on different
+/// circles are not radially aligned.  If the polygon cannot be computed
+/// the classic single circle is used instead: `z_k = center + radius ·
+/// exp(i(2π(k + 1/4)/n + 0.4))` with `center = -a_{n-1}/(n · a_n)` and
+/// `radius` from [`start_radius`].
 ///
 /// The phase offset `θ = π/(2n) + 0.4` is deliberately *not* a rational
 /// multiple of `π/n`: the textbook choice `θ = π/(2n)` places the guesses
@@ -120,8 +283,44 @@ fn cauchy_bound(poly: &Poly, prec: usize) -> BigFloat {
 /// same trick MPSolve uses).
 fn initial_guesses(poly: &Poly, n: usize, prec: usize, cc: &mut Consts) -> Vec<Complex> {
     let rm = RoundingMode::None;
-    let radius = cauchy_bound(poly, prec);
+    let two_pi = cc.pi(prec, rm).mul(&BigFloat::from_i32(2, prec), prec, rm);
+    let n_bf = BigFloat::from_i64(n as i64, prec);
+    let quarter = BigFloat::from_f64(0.25, prec);
+    let offset = BigFloat::from_f64(0.4, prec);
 
+    // `center + radius · exp(i · (2π · frac + rotation + 0.4))`.
+    let mut point = |center: &BigFloat, radius: &BigFloat, frac: &BigFloat, rotation: &BigFloat| {
+        let angle = two_pi
+            .mul(frac, prec, rm)
+            .add(rotation, prec, rm)
+            .add(&offset, prec, rm);
+        let cos_a = angle.cos(prec, rm, cc);
+        let sin_a = angle.sin(prec, rm, cc);
+        let re = center.add(&radius.mul(&cos_a, prec, rm), prec, rm);
+        let im = radius.mul(&sin_a, prec, rm);
+        (re, im)
+    };
+
+    if let Some(circles) = newton_polygon_circles(poly) {
+        let zero = BigFloat::new(prec);
+        let mut guesses = Vec::with_capacity(n);
+        for circle in circles {
+            let radius = BigFloat::from_f64(circle.radius, prec);
+            let m_bf = BigFloat::from_i64(circle.count as i64, prec);
+            let rotation = two_pi
+                .mul(&BigFloat::from_i64(circle.start as i64, prec), prec, rm)
+                .div(&n_bf, prec, rm);
+            for j in 0..circle.count {
+                let frac = BigFloat::from_i64(j as i64, prec)
+                    .add(&quarter, prec, rm)
+                    .div(&m_bf, prec, rm);
+                guesses.push(point(&zero, &radius, &frac, &rotation));
+            }
+        }
+        return guesses;
+    }
+
+    let radius = start_radius(poly, prec);
     // Center: -a_{n-1} / (n * a_n) — shifts initial guesses toward the centroid of roots
     let center = if n >= 2 && poly.coeffs().len() > n {
         let an = &poly.coeffs()[n];
@@ -135,26 +334,14 @@ fn initial_guesses(poly: &Poly, n: usize, prec: usize, cc: &mut Consts) -> Vec<C
     } else {
         BigFloat::new(prec)
     };
-
-    let two_pi = cc.pi(prec, rm).mul(&BigFloat::from_i32(2, prec), prec, rm);
-    let n_bf = BigFloat::from_i64(n as i64, prec);
-    let quarter = BigFloat::from_f64(0.25, prec);
-    let offset = BigFloat::from_f64(0.4, prec);
-
+    let zero = BigFloat::new(prec);
     (0..n)
         .map(|k| {
             // angle = 2π * (k + 1/4) / n + 0.4
-            let k_bf = BigFloat::from_i64(k as i64, prec);
-            let frac = k_bf.add(&quarter, prec, rm).div(&n_bf, prec, rm);
-            let angle = two_pi.mul(&frac, prec, rm).add(&offset, prec, rm);
-
-            let cos_a = angle.cos(prec, rm, cc);
-            let sin_a = angle.sin(prec, rm, cc);
-
-            let re = center.add(&radius.mul(&cos_a, prec, rm), prec, rm);
-            let im = radius.mul(&sin_a, prec, rm);
-
-            (re, im)
+            let frac = BigFloat::from_i64(k as i64, prec)
+                .add(&quarter, prec, rm)
+                .div(&n_bf, prec, rm);
+            point(&center, &radius, &frac, &zero)
         })
         .collect()
 }
@@ -236,6 +423,14 @@ pub(crate) fn aberth_roots(poly: &Poly, prec: usize, max_iter: usize) -> Vec<Com
     roots
 }
 
+/// Convergence tolerance of the Aberth iteration: it stops once every
+/// correction `|w_k|` is below this (absolute) value, which is far beyond
+/// what an `f64` result can show.  A computed root component smaller than
+/// this (relative to `max(1, |z|)`) is therefore not distinguishable from
+/// zero by the method; [`nroots_f64`] uses that to clean up noise such as
+/// `re ≈ 10⁻⁹³` on `±i`.
+pub(crate) const ABERTH_TOLERANCE: f64 = 1e-30;
+
 /// The Aberth–Ehrlich iteration proper, for a monic polynomial of degree
 /// `n ≥ 1` with `p(0) ≠ 0`.  Returns the `n` (unsorted) roots.
 #[allow(clippy::too_many_arguments)]
@@ -251,8 +446,20 @@ fn aberth_iterate(
 ) -> Vec<Complex> {
     let mut roots = initial_guesses(monic, n, wp, cc);
 
-    // Convergence threshold: ~10^{-30} (good enough for f64 output)
-    let threshold = BigFloat::from_f64(1e-30, wp);
+    // Coefficients converted once; the loop evaluates `p` and `p'` at `n`
+    // points per iteration.
+    let monic_bf: Vec<BigFloat> = monic
+        .coeffs()
+        .iter()
+        .map(|c| ratio_to_bigfloat(c, wp))
+        .collect();
+    let deriv_bf: Vec<BigFloat> = deriv
+        .coeffs()
+        .iter()
+        .map(|c| ratio_to_bigfloat(c, wp))
+        .collect();
+
+    let threshold = BigFloat::from_f64(ABERTH_TOLERANCE, wp);
 
     for _iter in 0..max_iter {
         let mut max_correction = BigFloat::new(wp);
@@ -260,10 +467,10 @@ fn aberth_iterate(
 
         for i in 0..n {
             // p(z_i)
-            let p_zi = poly_eval_complex(monic.coeffs(), &roots[i], wp, rm);
+            let p_zi = poly_eval_complex_bf(&monic_bf, &roots[i], wp, rm);
 
             // p'(z_i)
-            let pp_zi = poly_eval_complex(deriv.coeffs(), &roots[i], wp, rm);
+            let pp_zi = poly_eval_complex_bf(&deriv_bf, &roots[i], wp, rm);
 
             // Σ_{j≠i} 1/(z_i - z_j)
             let mut sum_recip = c_zero(wp);
@@ -354,16 +561,22 @@ const ROOTOF_TIE_BITS: usize = 60;
 
 /// The index `k` for which `RootOf(g, k)` denotes the real root of the
 /// square-free polynomial `g` that lies in the (Sturm) isolating interval
-/// `[lo, hi]` — its position in [`rootof_roots`]`(g, ROOTOF_DEFAULT_PREC)`.
+/// `[lo, hi]` — its position in `roots = `[`rootof_roots`]`(g,
+/// ROOTOF_DEFAULT_PREC)`, which the caller computes once per `g` (it is
+/// the expensive step) and reuses for every real root of `g`.
 ///
 /// The root is verified, not assumed: exactly one computed root must have
 /// its real part in `[lo, hi]` and a negligible imaginary part, and no
 /// other root may have a real part within `2⁻⁶⁰` (relative) of it, since
 /// the (re, im) sort would then order the two by rounding noise and the
 /// index would not be stable across evaluation precisions.  `None` when
-/// any of these fails; the caller then has no reliable name for the root.
-pub(crate) fn real_root_index(g: &Poly, lo: &Ratio<BigInt>, hi: &Ratio<BigInt>) -> Option<usize> {
-    let roots = rootof_roots(g, ROOTOF_DEFAULT_PREC);
+/// any of these fails (including when the iteration behind `roots` did
+/// not converge); the caller then has no reliable name for the root.
+pub(crate) fn real_root_index(
+    roots: &[Complex],
+    lo: &Ratio<BigInt>,
+    hi: &Ratio<BigInt>,
+) -> Option<usize> {
     let wp = ROOTOF_DEFAULT_PREC + 128;
     let rm = RoundingMode::None;
     let one = BigFloat::from_i32(1, wp);
@@ -502,6 +715,17 @@ fn bigfloat_to_f64(bf: &BigFloat) -> f64 {
 /// keep it, and the number of returned real roots always agrees with
 /// [`SturmChain::count_real_roots`](super::sturm::SturmChain::count_real_roots).
 ///
+/// A real part below the iteration's convergence tolerance
+/// ([`ABERTH_TOLERANCE`]` · max(1, |z|)`, i.e. `10⁻³⁰` for roots of
+/// modulus at most one) is numerical noise on a purely imaginary root and
+/// is returned as exactly `0.0`, so `x² + 1` gives `±i` and not
+/// `-7.7·10⁻⁹³ ± i`.  Only a component the iteration cannot distinguish
+/// from zero is touched (the tolerance is some fourteen orders of
+/// magnitude below `f64` resolution at that scale); a genuinely tiny root
+/// such as `±10⁻²⁰` (from `x² − 10⁻⁴⁰`) is far above it and kept.
+/// The imaginary part is never snapped this way — whether a root is real
+/// is decided exactly, as above.
+///
 /// Roots are sorted by real part, then imaginary part.  Constants and the
 /// zero polynomial produce an empty vector.
 pub(crate) fn nroots_f64(poly: &Poly, prec_bits: usize) -> Vec<Complex64> {
@@ -521,6 +745,9 @@ pub(crate) fn nroots_f64(poly: &Poly, prec_bits: usize) -> Vec<Complex64> {
             let mut z = Complex64::new(bigfloat_to_f64(&re), bigfloat_to_f64(&im));
             if z.im != 0.0 && is_real_root_near(&part, z, &mut sturm) {
                 z.im = 0.0;
+            }
+            if z.re != 0.0 && z.re.abs() < ABERTH_TOLERANCE * z.norm().max(1.0) {
+                z.re = 0.0;
             }
             for _ in 0..mult {
                 out.push(z);
@@ -545,6 +772,130 @@ mod tests {
             .map(|&c| Ratio::from_integer(BigInt::from(c)))
             .collect();
         Poly::from_coeffs(rat_coeffs)
+    }
+
+    /// Aberth started from the Newton-polygon circles converges (residual
+    /// below `10⁻²⁰`) on polynomials whose roots span several scales: a
+    /// cluster far from the origin, Wilkinson's, and root moduli from
+    /// `10⁻³` to `10³`.
+    #[test]
+    fn aberth_converges_from_newton_polygon_start() {
+        let cases: Vec<(&str, Poly)> = vec![
+            ("x^2+1", poly_from_coeffs(&[1, 0, 1])),
+            ("x^3-1", poly_from_coeffs(&[-1, 0, 0, 1])),
+            ("x^5-x-1", poly_from_coeffs(&[-1, -1, 0, 0, 0, 1])),
+            ("(x-10)^5+1", {
+                let mut p = poly_from_coeffs(&[1]);
+                for _ in 0..5 {
+                    p = &p * &poly_from_coeffs(&[-10, 1]);
+                }
+                &p + &poly_from_coeffs(&[1])
+            }),
+            ("wilkinson10", {
+                let mut p = poly_from_coeffs(&[1]);
+                for k in 1..=10 {
+                    p = &p * &poly_from_coeffs(&[-k, 1]);
+                }
+                p
+            }),
+            ("wilkinson20", {
+                let mut p = poly_from_coeffs(&[1]);
+                for k in 1..=20 {
+                    p = &p * &poly_from_coeffs(&[-k, 1]);
+                }
+                p
+            }),
+            ("(x^2-2)(x^2-3)(x-1000)(x+1/1000)", {
+                let p = &poly_from_coeffs(&[-2, 0, 1]) * &poly_from_coeffs(&[-3, 0, 1]);
+                let p = &p * &poly_from_coeffs(&[-1000, 1]);
+                &p * &Poly::from_coeffs(vec![
+                    Ratio::new(BigInt::from(1), BigInt::from(1000)),
+                    Ratio::from_integer(BigInt::from(1)),
+                ])
+            }),
+            ("x^30 + 3x^7 - 2x + 5", {
+                let mut c = vec![0i64; 31];
+                c[0] = 5;
+                c[1] = -2;
+                c[7] = 3;
+                c[30] = 1;
+                poly_from_coeffs(&c)
+            }),
+        ];
+        for (name, p) in cases {
+            // Well below the 200 iterations `rootof_roots` allows.
+            let roots = aberth_roots(&p, 192, 60);
+            assert_eq!(roots.len(), p.degree().unwrap_or(0), "{name}");
+            for (re, im) in &roots {
+                let v = poly_eval_complex(
+                    p.coeffs(),
+                    &(re.clone(), im.clone()),
+                    256,
+                    RoundingMode::None,
+                );
+                let mag = bigfloat_to_f64(&v.0).abs() + bigfloat_to_f64(&v.1).abs();
+                assert!(
+                    mag < 1e-20,
+                    "{name}: residual {mag} at {} {}",
+                    bigfloat_to_f64(re),
+                    bigfloat_to_f64(im)
+                );
+            }
+        }
+    }
+
+    /// The Newton polygon of the degree-40 binomial-tail polynomial has
+    /// two edges: a dozen roots at modulus ≈ 0.1 and the rest near 1.
+    #[test]
+    fn newton_polygon_separates_scales() {
+        // (x² + 10⁻⁴)(x² + 10⁴): two roots at 10⁻², two at 10².
+        let p = &poly_from_coeffs(&[1, 0, 10_000]) * &poly_from_coeffs(&[10_000, 0, 1]);
+        let circles = newton_polygon_circles(&p).expect("finite logs");
+        assert_eq!(circles.len(), 2);
+        assert_eq!((circles[0].start, circles[0].count), (0, 2));
+        assert!(
+            (circles[0].radius - 0.01).abs() < 1e-9,
+            "{}",
+            circles[0].radius
+        );
+        assert_eq!((circles[1].start, circles[1].count), (2, 2));
+        assert!(
+            (circles[1].radius - 100.0).abs() < 1e-6,
+            "{}",
+            circles[1].radius
+        );
+        // x⁵ − x − 1: one edge, geometric-mean radius 1.
+        let q = poly_from_coeffs(&[-1, -1, 0, 0, 0, 1]);
+        let circles = newton_polygon_circles(&q).expect("finite logs");
+        assert_eq!(circles.len(), 1);
+        assert_eq!(circles[0].count, 5);
+        assert!((circles[0].radius - 1.0).abs() < 1e-12);
+    }
+
+    /// `nroots_f64` returns exactly `0.0` for the real part of `±i` and
+    /// keeps the genuinely tiny roots `±10⁻²⁰` of `x² − 10⁻⁴⁰`.
+    #[test]
+    fn nroots_snaps_noise_but_not_tiny_roots() {
+        let roots = nroots_f64(&poly_from_coeffs(&[1, 0, 1]), 128);
+        assert_eq!(roots.len(), 2);
+        assert!(roots.iter().all(|z| z.re == 0.0), "{roots:?}");
+        assert!(
+            roots.iter().all(|z| (z.im.abs() - 1.0).abs() < 1e-15),
+            "{roots:?}"
+        );
+
+        let tiny = Ratio::new(BigInt::from(-1), BigInt::from(10).pow(40));
+        let p = Poly::from_coeffs(vec![tiny, Ratio::zero(), Ratio::one()]);
+        let roots = nroots_f64(&p, 128);
+        assert_eq!(roots.len(), 2);
+        assert!(
+            (roots[0].re + 1e-20).abs() < 1e-33 && roots[0].im == 0.0,
+            "{roots:?}"
+        );
+        assert!(
+            (roots[1].re - 1e-20).abs() < 1e-33 && roots[1].im == 0.0,
+            "{roots:?}"
+        );
     }
 
     #[test]

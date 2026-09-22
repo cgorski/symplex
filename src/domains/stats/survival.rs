@@ -26,6 +26,7 @@
 
 use num_traits::{One, Zero};
 
+use super::common::{check_confidence, ex_usize, invalid, norm_ppf, q_to_f64, qi, qu};
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
@@ -33,18 +34,6 @@ use crate::base::interval::Interval;
 use crate::domains::stats::data::Q;
 use crate::domains::stats::family::Distribution;
 use crate::domains::stats::hypothesis::{Alternative, TestResult};
-
-fn invalid(reason: impl Into<String>) -> SymplexError {
-    SymplexError::invalid_argument("stats::survival", reason)
-}
-
-fn qi(n: i64) -> Q {
-    Q::from_integer(n.into())
-}
-
-fn qu(n: usize) -> Q {
-    Q::from_integer(n.into())
-}
 
 /// One subject: the time observed and whether the event occurred then
 /// (`true`) or the observation was censored (`false`).
@@ -109,12 +98,12 @@ pub struct KaplanMeier {
     n: usize,
 }
 
-fn validate(obs: &[Observation]) -> Result<(), SymplexError> {
+fn validate(op: &'static str, obs: &[Observation]) -> Result<(), SymplexError> {
     if obs.is_empty() {
-        return Err(invalid("at least one observation is required"));
+        return Err(invalid(op, "at least one observation is required"));
     }
     if obs.iter().any(|o| o.time < Q::zero()) {
-        return Err(invalid("times must be non-negative"));
+        return Err(invalid(op, "times must be non-negative"));
     }
     Ok(())
 }
@@ -145,7 +134,7 @@ impl KaplanMeier {
     /// [`SymplexError::InvalidArgument`] for an empty sample or a negative
     /// time.
     pub fn fit(obs: &[Observation]) -> Result<Self, SymplexError> {
-        validate(obs)?;
+        validate("KaplanMeier::fit", obs)?;
         let n = obs.len();
         let mut at_risk = n;
         let mut survival = Q::one();
@@ -253,14 +242,10 @@ impl KaplanMeier {
         confidence: f64,
         method: CiMethod,
     ) -> Result<Interval<f64>, SymplexError> {
-        if !(confidence > 0.0 && confidence < 1.0) {
-            return Err(invalid("the confidence level must lie in (0, 1)"));
-        }
-        let ctx = Context::new();
-        let z =
-            Distribution::normal(ctx.int(0), ctx.int(1)).quantile_f64(0.5 + confidence / 2.0)?;
-        let s = ratio_f64(&self.survival_at(t));
-        let se = ratio_f64(&self.variance_at(t)).sqrt();
+        check_confidence("KaplanMeier::confidence_interval", confidence)?;
+        let z = norm_ppf(0.5 + confidence / 2.0);
+        let s = q_to_f64(&self.survival_at(t));
+        let se = q_to_f64(&self.variance_at(t)).sqrt();
         Ok(match method {
             CiMethod::Linear => Interval::closed((s - z * se).max(0.0), (s + z * se).min(1.0)),
             CiMethod::LogLog => {
@@ -306,11 +291,6 @@ pub enum CiMethod {
     LogLog,
 }
 
-fn ratio_f64(q: &Q) -> f64 {
-    use num_traits::ToPrimitive;
-    q.numer().to_f64().unwrap_or(f64::NAN) / q.denom().to_f64().unwrap_or(f64::NAN)
-}
-
 /// The log-rank (Mantel–Cox) test that `k` groups share one survival
 /// function.  At each distinct event time `t` with `n` at risk in all
 /// groups and `d` events, group `g` with `n_g` at risk expects
@@ -345,17 +325,18 @@ pub fn log_rank_test(
     obs: &[Observation],
     groups: &[usize],
 ) -> Result<TestResult, SymplexError> {
-    validate(obs)?;
+    const OP: &str = "log_rank_test";
+    validate(OP, obs)?;
     if obs.len() != groups.len() {
-        return Err(invalid("one group label per observation is required"));
+        return Err(invalid(OP, "one group label per observation is required"));
     }
     let k = groups.iter().copied().max().map_or(0, |m| m + 1);
     if k < 2 {
-        return Err(invalid("the log-rank test needs at least two groups"));
+        return Err(invalid(OP, "the log-rank test needs at least two groups"));
     }
     for g in 0..k {
         if !groups.contains(&g) {
-            return Err(invalid(format!("group {g} has no observations")));
+            return Err(invalid(OP, format!("group {g} has no observations")));
         }
     }
     // O − E and V over the first k − 1 groups.
@@ -403,15 +384,15 @@ pub fn log_rank_test(
         }
     }
     if !any_event {
-        return Err(invalid("no events were observed"));
+        return Err(invalid(OP, "no events were observed"));
     }
     // (O − E)ᵀ V⁻¹ (O − E) through an exact solve.
-    let vm = crate::prelude::QMatrix::new(v).map_err(|e| invalid(e.to_string()))?;
+    let vm = crate::prelude::QMatrix::new(v).map_err(|e| invalid(OP, e.to_string()))?;
     let rhs = crate::prelude::QMatrix::new(diff.iter().map(|d| vec![d.clone()]).collect())
-        .map_err(|e| invalid(e.to_string()))?;
+        .map_err(|e| invalid(OP, e.to_string()))?;
     let x = vm.solve(&rhs).map_err(|_| {
         SymplexError::computation_failed(
-            "stats::survival",
+            OP,
             "the log-rank covariance matrix is singular (a group has no risk set at every event time)",
         )
     })?;
@@ -420,12 +401,12 @@ pub fn log_rank_test(
         stat += d * x.get(g, 0);
     }
     let statistic = ctx.from_ratio(stat);
-    let chi = Distribution::chi_squared(ctx.int(m as i64));
+    let chi = Distribution::chi_squared(ex_usize(ctx, m));
     let p_value = (ctx.one() - chi.cdf(&statistic)).simplify();
     Ok(TestResult {
         statistic,
         p_value,
-        df: Some(ctx.int(m as i64)),
+        df: Some(ex_usize(ctx, m)),
         alternative: Alternative::TwoSided,
     })
 }
@@ -437,10 +418,11 @@ pub fn log_rank_test(
 ///
 /// [`SymplexError::InvalidArgument`] for an empty sample or zero total time.
 pub fn exponential_rate(obs: &[Observation]) -> Result<Q, SymplexError> {
-    validate(obs)?;
+    const OP: &str = "exponential_rate";
+    validate(OP, obs)?;
     let total: Q = obs.iter().fold(Q::zero(), |acc, o| acc + &o.time);
     if total.is_zero() {
-        return Err(invalid("the total time at risk is zero"));
+        return Err(invalid(OP, "the total time at risk is zero"));
     }
     let events = obs.iter().filter(|o| o.event).count();
     Ok(qu(events) / total)
@@ -449,14 +431,15 @@ pub fn exponential_rate(obs: &[Observation]) -> Result<Q, SymplexError> {
 /// The mean of the uncensored event times (a naive summary; biased under
 /// censoring — prefer [`KaplanMeier::restricted_mean`]).
 pub fn mean_event_time(obs: &[Observation]) -> Result<Q, SymplexError> {
-    validate(obs)?;
+    const OP: &str = "mean_event_time";
+    validate(OP, obs)?;
     let events: Vec<Q> = obs
         .iter()
         .filter(|o| o.event)
         .map(|o| o.time.clone())
         .collect();
     if events.is_empty() {
-        return Err(invalid("no events were observed"));
+        return Err(invalid(OP, "no events were observed"));
     }
     let n = events.len();
     Ok(events.into_iter().fold(Q::zero(), |a, t| a + t) / qu(n))

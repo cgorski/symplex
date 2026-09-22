@@ -133,6 +133,23 @@ fn main() {
 }
 ```
 
+Since 0.18 these scale to high degree: root isolation and counting
+evaluate signs in `ℤ[x]` and `real_roots` / `root_of` start the numeric
+root finder behind a `RootOf` index from the Newton polygon of the
+coefficients, so the root in `(0, 1)` of a degree-50 binomial-tail
+polynomial (`stats::aggregation::proportion_interval_exact`) is named in
+a few seconds even in a debug build — previously `root_of` gave `None`
+at degree ≥ 40.  `root_of` names only the requested root, so prefer it to
+`real_roots(&x)[k]` for one root of a large polynomial.  Should the
+factorisation over ℤ not be certified complete (an exhausted
+recombination budget, not a matter of degree), `RootOf(g, k)` names a
+square-free but possibly reducible `g`: it still evaluates correctly but
+is not a canonical form.  `nroots` returns exactly `0.0` for a real part
+that is below the iteration's convergence tolerance (`10⁻³⁰` relative to
+`max(1, |z|)`), so `x² + 1` gives `±i` rather than `-7.7e-93 ± i`, while
+genuinely tiny roots (`x² − 10⁻⁴⁰` → `±10⁻²⁰`) are kept; whether a root
+is *real* is still decided exactly.
+
 ## Simplification
 
 `simplify()` runs a dozen strategies (eval, expand, factor, trig, log, cancel, power, radical, assumption-aware refinement, …), keeps the result with the fewest operations, and iterates to a fixpoint. `simplify_with(&SimplifyOpts)` controls the iteration count; `simplify_traced` shows what fired. Targeted simplifiers are available when you know which identity you want:

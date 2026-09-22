@@ -51,14 +51,10 @@ use super::data::{self, Ddof, Q};
 use super::family::Distribution;
 use super::sample::Rng;
 
-const OP: &str = "stats::multivariate";
+use super::common::invalid;
 
-fn invalid(reason: impl Into<String>) -> SymplexError {
-    SymplexError::invalid_argument(OP, reason)
-}
-
-fn failed(reason: impl Into<String>) -> SymplexError {
-    SymplexError::computation_failed(OP, reason)
+fn failed(op: &'static str, reason: impl Into<String>) -> SymplexError {
+    SymplexError::computation_failed(op, reason)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -103,25 +99,33 @@ impl MultivariateNormal {
     /// assert!(indefinite.is_err());
     /// ```
     pub fn try_new(mean: Vec<Ex>, cov: Matrix) -> Result<Self, SymplexError> {
+        const OP: &str = "MultivariateNormal::try_new";
         let k = mean.len();
         if k == 0 {
-            return Err(invalid("the mean vector must have at least one coordinate"));
+            return Err(invalid(
+                OP,
+                "the mean vector must have at least one coordinate",
+            ));
         }
         if cov.shape() != (k, k) {
-            return Err(invalid(format!(
-                "the covariance must be {k}×{k} for a mean of length {k}, got {}×{}",
-                cov.nrows(),
-                cov.ncols()
-            )));
+            return Err(invalid(
+                OP,
+                format!(
+                    "the covariance must be {k}×{k} for a mean of length {k}, got {}×{}",
+                    cov.nrows(),
+                    cov.ncols()
+                ),
+            ));
         }
         if cov.is_symmetric() == Some(false) {
-            return Err(invalid("the covariance matrix must be symmetric"));
+            return Err(invalid(OP, "the covariance matrix must be symmetric"));
         }
         match QMatrix::try_from(&cov) {
             Ok(q) => match q.ldl_psd() {
                 Some((_, d)) if d.iter().all(|v| v.is_positive()) => {}
                 _ => {
                     return Err(invalid(
+                        OP,
                         "the covariance matrix must be positive definite (exact L·D·Lᵀ test failed)",
                     ));
                 }
@@ -129,6 +133,7 @@ impl MultivariateNormal {
             Err(_) => {
                 if cov.is_positive_definite() == Some(false) {
                     return Err(invalid(
+                        OP,
                         "the covariance matrix must be positive definite (a leading minor is not positive)",
                     ));
                 }
@@ -152,13 +157,16 @@ impl MultivariateNormal {
         self.cov.context()
     }
 
-    fn check_point(&self, x: &[Ex], what: &str) -> Result<(), SymplexError> {
+    fn check_point(&self, op: &'static str, x: &[Ex]) -> Result<(), SymplexError> {
         if x.len() != self.dim() {
-            return Err(invalid(format!(
-                "{what}: expected a point of dimension {}, got {}",
-                self.dim(),
-                x.len()
-            )));
+            return Err(invalid(
+                op,
+                format!(
+                    "expected a point of dimension {}, got {}",
+                    self.dim(),
+                    x.len()
+                ),
+            ));
         }
         Ok(())
     }
@@ -169,9 +177,12 @@ impl MultivariateNormal {
     ///
     /// [`SymplexError::ComputationFailed`] if `Σ` is singular.
     pub fn precision(&self) -> Result<Matrix, SymplexError> {
-        self.cov
-            .inv()
-            .map_err(|e| failed(format!("the covariance matrix is not invertible: {e}")))
+        self.cov.inv().map_err(|e| {
+            failed(
+                "MultivariateNormal::precision",
+                format!("the covariance matrix is not invertible: {e}"),
+            )
+        })
     }
 
     /// The quadratic form `(x−μ)ᵀ Σ⁻¹ (x−μ)`, simplified.
@@ -194,7 +205,7 @@ impl MultivariateNormal {
     /// [`SymplexError::InvalidArgument`] if `x` has the wrong length;
     /// [`SymplexError::ComputationFailed`] if `Σ` is singular.
     pub fn mahalanobis_squared(&self, x: &[Ex]) -> Result<Ex, SymplexError> {
-        self.check_point(x, "mahalanobis")?;
+        self.check_point("MultivariateNormal::mahalanobis_squared", x)?;
         self.quadratic_form(x)
     }
 
@@ -240,15 +251,16 @@ impl MultivariateNormal {
     /// [`SymplexError::InvalidArgument`] if `x` has the wrong length;
     /// [`SymplexError::ComputationFailed`] if `Σ` is singular.
     pub fn density(&self, x: &[Ex]) -> Result<Ex, SymplexError> {
-        self.check_point(x, "density")?;
+        const OP: &str = "MultivariateNormal::density";
+        self.check_point(OP, x)?;
         let ctx = self.context();
         let quad = self.quadratic_form(x)?;
         let det = self
             .cov
             .det()
-            .map_err(|e| failed(format!("determinant of the covariance: {e}")))?
+            .map_err(|e| failed(OP, format!("determinant of the covariance: {e}")))?
             .simplify();
-        let k = i64::try_from(self.dim()).map_err(|_| invalid("dimension too large"))?;
+        let k = i64::try_from(self.dim()).map_err(|_| invalid(OP, "dimension too large"))?;
         let two_pi_k = (ctx.int(2) * ctx.pi()).powi(k);
         Ok((-quad / 2).exp() / (two_pi_k * det).sqrt())
     }
@@ -260,33 +272,33 @@ impl MultivariateNormal {
     /// [`SymplexError::ComputationFailed`] if the determinant cannot be
     /// computed.
     pub fn entropy(&self) -> Result<Ex, SymplexError> {
+        const OP: &str = "MultivariateNormal::entropy";
         let ctx = self.context();
         let det = self
             .cov
             .det()
-            .map_err(|e| failed(format!("determinant of the covariance: {e}")))?
+            .map_err(|e| failed(OP, format!("determinant of the covariance: {e}")))?
             .simplify();
-        let k = i64::try_from(self.dim()).map_err(|_| invalid("dimension too large"))?;
+        let k = i64::try_from(self.dim()).map_err(|_| invalid(OP, "dimension too large"))?;
         Ok(ctx.rational(1, 2) * ((ctx.int(2) * ctx.pi() * ctx.e()).powi(k) * det).ln())
     }
 
-    fn check_indices(&self, indices: &[usize], what: &str) -> Result<(), SymplexError> {
+    fn check_indices(&self, op: &'static str, indices: &[usize]) -> Result<(), SymplexError> {
         if indices.is_empty() {
-            return Err(invalid(format!(
-                "{what}: at least one coordinate is needed"
-            )));
+            return Err(invalid(op, "at least one coordinate is needed"));
         }
         for (pos, &i) in indices.iter().enumerate() {
             if i >= self.dim() {
-                return Err(invalid(format!(
-                    "{what}: coordinate index {i} out of range for dimension {}",
-                    self.dim()
-                )));
+                return Err(invalid(
+                    op,
+                    format!(
+                        "coordinate index {i} out of range for dimension {}",
+                        self.dim()
+                    ),
+                ));
             }
             if indices[..pos].contains(&i) {
-                return Err(invalid(format!(
-                    "{what}: coordinate index {i} listed twice"
-                )));
+                return Err(invalid(op, format!("coordinate index {i} listed twice")));
             }
         }
         Ok(())
@@ -300,12 +312,13 @@ impl MultivariateNormal {
     /// [`SymplexError::InvalidArgument`] if `indices` is empty, repeats an
     /// index, or names a coordinate out of range.
     pub fn marginal(&self, indices: &[usize]) -> Result<MultivariateNormal, SymplexError> {
-        self.check_indices(indices, "marginal")?;
+        const OP: &str = "MultivariateNormal::marginal";
+        self.check_indices(OP, indices)?;
         let mean = indices.iter().map(|&i| self.mean[i].clone()).collect();
         let cov = self
             .cov
             .extract(indices, indices)
-            .map_err(|e| failed(format!("marginal: {e}")))?;
+            .map_err(|e| failed(OP, e.to_string()))?;
         Ok(MultivariateNormal { mean, cov })
     }
 
@@ -328,7 +341,7 @@ impl MultivariateNormal {
     ///
     /// [`SymplexError::InvalidArgument`] if `i` is out of range.
     pub fn marginal_1d(&self, i: usize) -> Result<Distribution, SymplexError> {
-        self.check_indices(&[i], "marginal_1d")?;
+        self.check_indices("MultivariateNormal::marginal_1d", &[i])?;
         let std = self.cov.get(i, i).sqrt().simplify();
         Ok(Distribution::normal(self.mean[i].clone(), std))
     }
@@ -351,15 +364,17 @@ impl MultivariateNormal {
     /// coordinate; [`SymplexError::ComputationFailed`] if `Σ_BB` is
     /// singular.
     pub fn conditional(&self, given: &[(usize, Ex)]) -> Result<MultivariateNormal, SymplexError> {
+        const OP: &str = "MultivariateNormal::conditional";
         let b: Vec<usize> = given.iter().map(|(i, _)| *i).collect();
-        self.check_indices(&b, "conditional")?;
+        self.check_indices(OP, &b)?;
         let a: Vec<usize> = (0..self.dim()).filter(|i| !b.contains(i)).collect();
         if a.is_empty() {
             return Err(invalid(
-                "conditional: conditioning on every coordinate leaves nothing to distribute",
+                OP,
+                "conditioning on every coordinate leaves nothing to distribute",
             ));
         }
-        let wrap = |e: SymplexError| failed(format!("conditional: {e}"));
+        let wrap = |e: SymplexError| failed(OP, e.to_string());
         let s_aa = self.cov.extract(&a, &a).map_err(wrap)?;
         let s_ab = self.cov.extract(&a, &b).map_err(wrap)?;
         let s_ba = self.cov.extract(&b, &a).map_err(wrap)?;
@@ -396,21 +411,24 @@ impl MultivariateNormal {
     /// [`SymplexError::InvalidArgument`] if `A` has `≠ k` columns or `b`
     /// has `≠ m` entries.
     pub fn affine(&self, a: &Matrix, b: &[Ex]) -> Result<MultivariateNormal, SymplexError> {
+        const OP: &str = "MultivariateNormal::affine";
         if a.ncols() != self.dim() {
-            return Err(invalid(format!(
-                "affine: A has {} columns but the distribution has dimension {}",
-                a.ncols(),
-                self.dim()
-            )));
+            return Err(invalid(
+                OP,
+                format!(
+                    "A has {} columns but the distribution has dimension {}",
+                    a.ncols(),
+                    self.dim()
+                ),
+            ));
         }
         if b.len() != a.nrows() {
-            return Err(invalid(format!(
-                "affine: b has {} entries but A has {} rows",
-                b.len(),
-                a.nrows()
-            )));
+            return Err(invalid(
+                OP,
+                format!("b has {} entries but A has {} rows", b.len(), a.nrows()),
+            ));
         }
-        let wrap = |e: SymplexError| failed(format!("affine: {e}"));
+        let wrap = |e: SymplexError| failed(OP, e.to_string());
         let mu = Matrix::col_vector(self.mean.clone());
         let a_mu = a.matmul(&mu).map_err(wrap)?;
         let mean = b
@@ -445,7 +463,7 @@ impl MultivariateNormal {
             .map(Ex::eval_f64)
             .collect::<Result<_, _>>()?;
         let cov = self.cov.eval_f64()?;
-        let l = cholesky_f64(&cov)?;
+        let l = cholesky_f64("MultivariateNormal::sample", &cov)?;
         let ctx = self.context();
         let mut z = Distribution::normal(ctx.zero(), ctx.one()).sampler()?;
         let mut out = Vec::with_capacity(n);
@@ -461,15 +479,16 @@ impl MultivariateNormal {
 }
 
 /// Lower-triangular `L` with `A = L Lᵀ`, in `f64`.
-fn cholesky_f64(a: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, SymplexError> {
+fn cholesky_f64(op: &'static str, a: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, SymplexError> {
     let n = a.len();
     let mut l = vec![vec![0.0; n]; n];
     for j in 0..n {
         let d = a[j][j] - l[j][..j].iter().map(|v| v * v).sum::<f64>();
         if d <= 0.0 || !d.is_finite() {
-            return Err(failed(format!(
-                "sample: the covariance is not numerically positive definite (pivot {j} = {d})"
-            )));
+            return Err(failed(
+                op,
+                format!("the covariance is not numerically positive definite (pivot {j} = {d})"),
+            ));
         }
         let ljj = d.sqrt();
         l[j][j] = ljj;
@@ -486,20 +505,20 @@ fn cholesky_f64(a: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, SymplexError> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Validate a data matrix (rows = observations) and return `(n, p)`.
-fn check_data(data: &[Vec<Q>], what: &str) -> Result<(usize, usize), SymplexError> {
+fn check_data(op: &'static str, data: &[Vec<Q>]) -> Result<(usize, usize), SymplexError> {
     let n = data.len();
     if n == 0 {
-        return Err(invalid(format!("{what}: no observations")));
+        return Err(invalid(op, "no observations"));
     }
     let p = data[0].len();
     if p == 0 {
-        return Err(invalid(format!("{what}: observations have no variables")));
+        return Err(invalid(op, "observations have no variables"));
     }
     if let Some((i, row)) = data.iter().enumerate().find(|(_, r)| r.len() != p) {
-        return Err(invalid(format!(
-            "{what}: observation {i} has {} variables, expected {p}",
-            row.len()
-        )));
+        return Err(invalid(
+            op,
+            format!("observation {i} has {} variables, expected {p}", row.len()),
+        ));
     }
     Ok((n, p))
 }
@@ -531,7 +550,7 @@ fn column(data: &[Vec<Q>], j: usize) -> Vec<Q> {
 /// [`SymplexError::InvalidArgument`] if `data` is empty or jagged, or has
 /// fewer than two observations for [`Ddof::Sample`].
 pub fn covariance_matrix(data: &[Vec<Q>], ddof: Ddof) -> Result<QMatrix, SymplexError> {
-    let (_, p) = check_data(data, "covariance_matrix")?;
+    let (_, p) = check_data("covariance_matrix", data)?;
     let cols: Vec<Vec<Q>> = (0..p).map(|j| column(data, j)).collect();
     let mut rows = vec![vec![Q::zero(); p]; p];
     for i in 0..p {
@@ -554,7 +573,7 @@ pub fn covariance_matrix(data: &[Vec<Q>], ddof: Ddof) -> Result<QMatrix, Symplex
 /// [`SymplexError::InvalidArgument`] if `data` is empty or jagged, or a
 /// variable is constant (its correlation is undefined).
 pub fn correlation_matrix(ctx: &Context, data: &[Vec<Q>]) -> Result<Matrix, SymplexError> {
-    let (_, p) = check_data(data, "correlation_matrix")?;
+    let (_, p) = check_data("correlation_matrix", data)?;
     let cols: Vec<Vec<Q>> = (0..p).map(|j| column(data, j)).collect();
     let mut rows = vec![vec![ctx.one(); p]; p];
     for i in 0..p {
@@ -621,44 +640,49 @@ pub struct Pca {
 /// semidefinite; [`SymplexError::ComputationFailed`] if the eigenvalues
 /// cannot be found, ordered numerically, or an eigenspace is defective.
 pub fn pca(ctx: &Context, cov: &QMatrix) -> Result<Pca, SymplexError> {
+    const OP: &str = "pca";
     if !cov.is_symmetric() {
-        return Err(invalid("pca: the covariance matrix must be symmetric"));
+        return Err(invalid(OP, "the covariance matrix must be symmetric"));
     }
     if !cov.is_positive_semidefinite() {
         return Err(invalid(
-            "pca: the covariance matrix must be positive semidefinite",
+            OP,
+            "the covariance matrix must be positive semidefinite",
         ));
     }
     let n = cov.nrows();
     let trace = cov.diagonal().iter().fold(Q::zero(), |acc, v| acc + v);
     if trace.is_zero() {
-        return Err(invalid("pca: the covariance matrix is zero"));
+        return Err(invalid(OP, "the covariance matrix is zero"));
     }
     let m = cov.to_matrix(ctx);
     let eigen = m
         .eigenvects()
-        .map_err(|e| failed(format!("pca: eigen-decomposition failed: {e}")))?;
+        .map_err(|e| failed(OP, format!("eigen-decomposition failed: {e}")))?;
     let mut items: Vec<(f64, Ex, Vec<Ex>)> = Vec::with_capacity(n);
     for (value, mult, vecs) in eigen {
         if vecs.len() != mult {
-            return Err(failed(format!(
-                "pca: eigenvalue {value} has geometric multiplicity {} < algebraic {mult}",
-                vecs.len()
-            )));
+            return Err(failed(
+                OP,
+                format!(
+                    "eigenvalue {value} has geometric multiplicity {} < algebraic {mult}",
+                    vecs.len()
+                ),
+            ));
         }
         let approx = value
             .eval_f64()
-            .map_err(|e| failed(format!("pca: cannot order eigenvalue {value}: {e}")))?;
+            .map_err(|e| failed(OP, format!("cannot order eigenvalue {value}: {e}")))?;
         let raw: Vec<Vec<Ex>> = vecs.iter().map(|v| v.col(0)).collect();
         for v in gram_schmidt(ctx, &raw) {
             items.push((approx, value.clone(), v));
         }
     }
     if items.len() != n {
-        return Err(failed(format!(
-            "pca: found {} eigenvectors for dimension {n}",
-            items.len()
-        )));
+        return Err(failed(
+            OP,
+            format!("found {} eigenvectors for dimension {n}", items.len()),
+        ));
     }
     items.sort_by(|a, b| b.0.total_cmp(&a.0));
     let trace_ex = ctx.from_ratio(trace);
@@ -745,12 +769,13 @@ pub struct PcaF64 {
 /// symmetric (to `1e-12` relative), or has a non-finite entry;
 /// [`SymplexError::ComputationFailed`] if the sweeps do not converge.
 pub fn pca_f64(cov: &[Vec<f64>]) -> Result<PcaF64, SymplexError> {
+    const OP: &str = "pca_f64";
     let n = cov.len();
     if n == 0 {
-        return Err(invalid("pca_f64: empty matrix"));
+        return Err(invalid(OP, "empty matrix"));
     }
     if cov.iter().any(|r| r.len() != n) {
-        return Err(invalid("pca_f64: the matrix must be square"));
+        return Err(invalid(OP, "the matrix must be square"));
     }
     let scale = cov
         .iter()
@@ -758,19 +783,20 @@ pub fn pca_f64(cov: &[Vec<f64>]) -> Result<PcaF64, SymplexError> {
         .fold(0.0_f64, |m, v| m.max(v.abs()))
         .max(1.0);
     if !scale.is_finite() {
-        return Err(invalid("pca_f64: non-finite entry"));
+        return Err(invalid(OP, "non-finite entry"));
     }
     for (i, row) in cov.iter().enumerate() {
         for (j, &below) in row.iter().enumerate().take(i) {
             let above = cov[j][i];
             if (below - above).abs() > 1e-12 * scale {
-                return Err(invalid(format!(
-                    "pca_f64: not symmetric at ({i}, {j}): {below} vs {above}"
-                )));
+                return Err(invalid(
+                    OP,
+                    format!("not symmetric at ({i}, {j}): {below} vs {above}"),
+                ));
             }
         }
     }
-    let (values, vectors) = jacobi_eigen(cov)?;
+    let (values, vectors) = jacobi_eigen(OP, cov)?;
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by(|&a, &b| values[b].total_cmp(&values[a]));
     let total: f64 = values.iter().sum();
@@ -804,7 +830,10 @@ pub fn pca_f64(cov: &[Vec<f64>]) -> Result<PcaF64, SymplexError> {
 
 /// Cyclic Jacobi rotations: `(eigenvalues, V)` with `A = V diag(λ) Vᵀ`,
 /// eigenvectors in the columns of `V`.
-fn jacobi_eigen(a: &[Vec<f64>]) -> Result<(Vec<f64>, Vec<Vec<f64>>), SymplexError> {
+fn jacobi_eigen(
+    op: &'static str,
+    a: &[Vec<f64>],
+) -> Result<(Vec<f64>, Vec<Vec<f64>>), SymplexError> {
     let n = a.len();
     let mut m: Vec<Vec<f64>> = a.to_vec();
     let mut v = vec![vec![0.0; n]; n];
@@ -854,7 +883,8 @@ fn jacobi_eigen(a: &[Vec<f64>]) -> Result<(Vec<f64>, Vec<Vec<f64>>), SymplexErro
         }
     }
     Err(failed(
-        "pca_f64: the Jacobi sweeps did not converge in 100 iterations",
+        op,
+        "the Jacobi sweeps did not converge in 100 iterations",
     ))
 }
 

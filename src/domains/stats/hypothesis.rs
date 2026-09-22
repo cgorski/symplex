@@ -1,5 +1,12 @@
 //! Hypothesis tests, effect sizes, multiple-comparison corrections,
-//! resampling and power / sample-size utilities.
+//! resampling, power / sample-size utilities and contingency-table tools.
+//!
+//! **Rule:** a function lives here iff it *tests* something (a statistic
+//! with a p-value), measures the size of an effect, adjusts for multiple
+//! testing, resamples, computes power or a sample size, or diagnoses a
+//! contingency table.  Confidence intervals for a parameter are in
+//! [`super::estimation`]; descriptive measures of association in
+//! [`super::data`]; analysis of variance in [`super::anova`].
 //!
 //! The tests take exact observations ([`Q`], `Ratio<BigInt>`, see
 //! [`super::data`]) and follow one principle: **exact where possible,
@@ -57,6 +64,11 @@ use std::f64::consts::LN_10;
 use num_bigint::BigInt;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
+use super::common::{
+    check_alpha, check_confidence, check_finite, check_sample, check_unit_open, chi_squared_sf,
+    chi_squared_sf_q, ex, invalid, norm_isf, q_to_f64, qi, qu, student_t_quantile_f64,
+    usize_to_i64,
+};
 use super::data::{self, Ddof, Q};
 use super::family::Distribution;
 use super::sample::Rng;
@@ -65,39 +77,18 @@ use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
 use crate::calculus::definite::{QuadOpts, quadrature};
-use crate::domains::optimize::{RootOpts, brent_root};
-use crate::output::codegen::numeric_rt::{erfc, erfcinv, lgamma};
+use crate::output::codegen::numeric_rt::{erfc, lgamma};
+
+/// Moved to [`stats::anova`](super::anova) in 0.18; this re-export is kept
+/// for one release.
+pub use super::anova::{AnovaResult, anova_one_way};
+/// Moved to [`stats::estimation`](super::estimation) in 0.18; this
+/// re-export is kept for one release.
+pub use super::estimation::confidence_interval_mean;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Small helpers
 // ═══════════════════════════════════════════════════════════════════════════
-
-fn invalid(op: &'static str, reason: impl Into<String>) -> SymplexError {
-    SymplexError::invalid_argument(op, reason)
-}
-
-fn qi(n: i64) -> Q {
-    Q::from_integer(BigInt::from(n))
-}
-
-fn qu(n: usize) -> Q {
-    Q::from_integer(BigInt::from(n))
-}
-
-fn ex(ctx: &Context, q: &Q) -> Ex {
-    ctx.from_ratio(q.clone())
-}
-
-fn q_to_f64(q: &Q) -> f64 {
-    data::to_f64(std::slice::from_ref(q))
-        .first()
-        .copied()
-        .unwrap_or(f64::NAN)
-}
-
-fn usize_to_i64(op: &'static str, n: usize) -> Result<i64, SymplexError> {
-    i64::try_from(n).map_err(|_| invalid(op, format!("{n} does not fit in an i64")))
-}
 
 fn factorial_big(n: usize) -> BigInt {
     (1..=n).fold(BigInt::one(), |acc, k| acc * BigInt::from(k))
@@ -107,37 +98,8 @@ fn sum_big(v: &[BigInt]) -> BigInt {
     v.iter().fold(BigInt::zero(), |acc, x| acc + x)
 }
 
-fn check_finite(op: &'static str, name: &str, v: f64) -> Result<(), SymplexError> {
-    if v.is_finite() {
-        Ok(())
-    } else {
-        Err(invalid(op, format!("{name} must be finite, got {v}")))
-    }
-}
-
-fn check_unit_open(op: &'static str, name: &str, v: f64) -> Result<(), SymplexError> {
-    if v > 0.0 && v < 1.0 {
-        Ok(())
-    } else {
-        Err(invalid(
-            op,
-            format!("{name} must lie strictly between 0 and 1, got {v}"),
-        ))
-    }
-}
-
-fn check_sample(op: &'static str, name: &str, x: &[Q], min: usize) -> Result<(), SymplexError> {
-    if x.len() < min {
-        return Err(invalid(
-            op,
-            format!(
-                "{name} needs at least {min} observation{}, got {}",
-                if min == 1 { "" } else { "s" },
-                x.len()
-            ),
-        ));
-    }
-    Ok(())
+fn square(x: &Q) -> Q {
+    x * x
 }
 
 fn check_same_len(op: &'static str, x: &[Q], y: &[Q]) -> Result<(), SymplexError> {
@@ -162,65 +124,6 @@ fn norm_cdf(x: f64) -> f64 {
 /// 1 − Φ(x) in `f64`.
 fn norm_sf(x: f64) -> f64 {
     0.5 * erfc(x / std::f64::consts::SQRT_2)
-}
-
-/// Φ⁻¹(1 − α) in `f64`.
-fn norm_isf(alpha: f64) -> f64 {
-    std::f64::consts::SQRT_2 * erfcinv(2.0 * alpha)
-}
-
-/// `P(T ≤ t)` for Student's t with `ν` degrees of freedom, as an `f64`:
-/// the exact expression `½ I_{ν/(t²+ν)}(ν/2, ½)` evaluated by `eval_f64`
-/// (arbitrary precision, then rounded).
-fn student_t_cdf_f64(ctx: &Context, df: f64, t: f64) -> Result<f64, SymplexError> {
-    let nu = ctx.from_f64(df)?;
-    let z = &nu / (ctx.from_f64(t * t)? + &nu);
-    let tail = ctx.rational(1, 2)
-        * z.betainc_regularized(&(&nu / ctx.int(2)), &ctx.rational(1, 2), &ctx.zero());
-    let tail = tail.eval_f64()?;
-    Ok(if t < 0.0 { tail } else { 1.0 - tail })
-}
-
-/// The Student-t quantile `t_{p, ν}` by Brent's method on
-/// [`student_t_cdf_f64`] over a bracket grown from `0` (the distribution
-/// is symmetric, so `p < ½` is mirrored).
-fn student_t_quantile_f64(
-    op: &'static str,
-    ctx: &Context,
-    df: f64,
-    p: f64,
-) -> Result<f64, SymplexError> {
-    if p < 0.5 {
-        return student_t_quantile_f64(op, ctx, df, 1.0 - p).map(|t| -t);
-    }
-    if p == 0.5 {
-        return Ok(0.0);
-    }
-    let g = |t: f64| student_t_cdf_f64(ctx, df, t).unwrap_or(f64::NAN) - p;
-    let mut hi = 1.0;
-    for _ in 0..64 {
-        let v = g(hi);
-        if v.is_nan() {
-            return Err(SymplexError::computation_failed(
-                op,
-                "the Student-t distribution function could not be evaluated",
-            ));
-        }
-        if v >= 0.0 {
-            break;
-        }
-        hi *= 2.0;
-    }
-    let root = brent_root(g, 0.0, hi, &RootOpts::default())
-        .map_err(|e| SymplexError::computation_failed(op, e.to_string()))?;
-    if root.is_finite() {
-        Ok(root)
-    } else {
-        Err(SymplexError::computation_failed(
-            op,
-            "the Student-t quantile did not converge",
-        ))
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -279,8 +182,7 @@ pub enum Alternative {
 /// use symplex::prelude::*;
 /// use symplex::stats::PValue;
 /// use symplex::stats::data::from_i64;
-/// use symplex::stats::hypothesis::Alternative;
-/// use symplex::stats::reliability::pearson_test;
+/// use symplex::stats::hypothesis::{Alternative, pearson_test};
 ///
 /// let ctx = Context::new();
 /// let x = from_i64(&[1, 2, 3, 4]);
@@ -517,44 +419,6 @@ impl PValue for ChiSquareResult {
 }
 p_value_accessors!(ChiSquareResult);
 
-/// The outcome of a one-way analysis of variance.
-#[derive(Clone, Debug, PartialEq)]
-pub struct AnovaResult {
-    /// The `F` statistic `(SS_between/df_between) / (SS_within/df_within)`,
-    /// exact.
-    pub f: Q,
-    /// `k − 1`.
-    pub df_between: usize,
-    /// `N − k`.
-    pub df_within: usize,
-    /// `P(F_{df_between, df_within} ≥ f)` as an exact expression.
-    pub p_value: Ex,
-    /// `Σ nᵢ (x̄ᵢ − x̄)²`.
-    pub ss_between: Q,
-    /// `Σᵢ Σⱼ (xᵢⱼ − x̄ᵢ)²`.
-    pub ss_within: Q,
-    /// `SS_between / SS_total`, the proportion of variance explained.
-    pub eta_squared: Q,
-}
-
-impl AnovaResult {
-    /// The p-value as an `f64`.
-    ///
-    /// # Errors
-    ///
-    /// Propagates the evaluation error of the expression.
-    pub fn p_value_f64(&self) -> Result<f64, SymplexError> {
-        self.p_value.eval_f64()
-    }
-}
-
-impl PValue for AnovaResult {
-    fn p_value_ex(&self) -> &Ex {
-        &self.p_value
-    }
-}
-p_value_accessors!(AnovaResult);
-
 /// A ratio estimate (odds ratio, relative risk) with a Wald confidence
 /// interval on the log scale.
 #[derive(Clone, Debug, PartialEq)]
@@ -633,10 +497,15 @@ impl RootRatio {
     }
 
     fn in_tail(&self, alt: Alternative) -> bool {
-        match alt {
-            Alternative::Greater | Alternative::TwoSided => !self.num.is_negative(),
-            Alternative::Less => !self.num.is_positive(),
-        }
+        in_tail(self.num.is_negative(), self.num.is_positive(), alt)
+    }
+}
+
+/// Whether a statistic with the sign of `num` lies in the alternative's tail.
+fn in_tail(num_is_negative: bool, num_is_positive: bool, alt: Alternative) -> bool {
+    match alt {
+        Alternative::Greater | Alternative::TwoSided => !num_is_negative,
+        Alternative::Less => !num_is_positive,
     }
 }
 
@@ -669,32 +538,6 @@ fn one_sided_from_symmetric(ctx: &Context, two_sided: Ex, in_tail: bool, alt: Al
             if in_tail { half } else { ctx.one() - half }
         }
     }
-}
-
-/// `P(χ²_df ≥ x) = Γ(df/2, x/2) / Γ(df/2)` as an expression.
-fn chi_squared_sf(ctx: &Context, df: usize, x: &Ex) -> Ex {
-    let half_df = ctx.rational(df as i64, 2);
-    (x / ctx.int(2)).uppergamma(&half_df) / half_df.gamma()
-}
-
-fn chi_squared_sf_q(ctx: &Context, df: usize, x: &Q) -> Ex {
-    if !x.is_positive() {
-        return ctx.one();
-    }
-    chi_squared_sf(ctx, df, &ex(ctx, x))
-}
-
-/// `P(F_{d₁,d₂} ≥ f) = I_{d₂/(d₂ + d₁f)}(d₂/2, d₁/2)` as an expression.
-fn f_sf(ctx: &Context, d1: usize, d2: usize, f: &Q) -> Ex {
-    if !f.is_positive() {
-        return ctx.one();
-    }
-    let z = qu(d2) / (qu(d2) + qu(d1) * f);
-    ex(ctx, &z).betainc_regularized(
-        &ctx.rational(d2 as i64, 2),
-        &ctx.rational(d1 as i64, 2),
-        &ctx.zero(),
-    )
 }
 
 fn result(
@@ -986,6 +829,36 @@ pub fn counts(rows: &[&[i64]]) -> Vec<Vec<Q>> {
     rows.iter().map(|r| data::from_i64(r)).collect()
 }
 
+/// A table of counts from `usize` rows — the shape
+/// [`confusion_matrix`](super::agreement::confusion_matrix) and
+/// [`RatingTable::count_table`](super::agreement::RatingTable::count_table)
+/// produce, so they compose with [`chi_square_independence`], [`g_test`],
+/// [`expected_counts`] and the residuals.
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::linprog::q;
+/// use symplex::stats::agreement::confusion_matrix;
+/// use symplex::stats::data::from_i64;
+/// use symplex::stats::hypothesis::{chi_square_independence, counts_usize};
+///
+/// let ctx = Context::new();
+/// let a = from_i64(&[1, 2, 3, 1, 2, 3, 1, 1, 2, 3]);
+/// let b = from_i64(&[1, 2, 3, 1, 3, 3, 1, 2, 2, 3]);
+/// let m = confusion_matrix(&a, &b, &from_i64(&[1, 2, 3]))?;
+/// let r = chi_square_independence(&ctx, &counts_usize(&m), false)?;
+/// assert_eq!(r.df, 4);
+/// // Row sums 4, 3, 3 and column sums 3, 3, 4 over N = 10: E₁₁ = 4 · 3 / 10.
+/// assert_eq!(r.expected[0][0], q(6, 5));
+/// # Ok::<(), SymplexError>(())
+/// ```
+#[must_use]
+pub fn counts_usize(rows: &[Vec<usize>]) -> Vec<Vec<Q>> {
+    rows.iter()
+        .map(|r| r.iter().map(|&c| qu(c)).collect())
+        .collect()
+}
+
 /// Check a rectangular table of non-negative entries; returns `(rows, cols)`.
 fn check_table(op: &'static str, table: &[Vec<Q>]) -> Result<(usize, usize), SymplexError> {
     let r = table.len();
@@ -1013,8 +886,20 @@ fn margins(table: &[Vec<Q>]) -> (Vec<Q>, Vec<Q>, Q) {
     (rows, col_sums, total)
 }
 
-/// `Eᵢⱼ = rowᵢ · colⱼ / N`, erroring on an empty row or column.
-fn expected_counts(op: &'static str, table: &[Vec<Q>]) -> Result<Vec<Vec<Q>>, SymplexError> {
+/// The expected counts under independence together with the margins they
+/// were computed from.
+struct Expected {
+    /// `Eᵢⱼ = rowᵢ · colⱼ / N`.
+    cells: Vec<Vec<Q>>,
+    rows: Vec<Q>,
+    cols: Vec<Q>,
+    total: Q,
+}
+
+/// The expected counts of a checked table, erroring on an empty row or
+/// column.
+fn expected_of(op: &'static str, table: &[Vec<Q>]) -> Result<Expected, SymplexError> {
+    check_table(op, table)?;
     let (rows, cols, total) = margins(table);
     if rows.iter().any(Zero::is_zero) || cols.iter().any(Zero::is_zero) {
         return Err(invalid(
@@ -1022,9 +907,157 @@ fn expected_counts(op: &'static str, table: &[Vec<Q>]) -> Result<Vec<Vec<Q>>, Sy
             "a row or a column of the table is empty, so an expected count is zero",
         ));
     }
-    Ok(rows
+    let cells = rows
         .iter()
         .map(|r| cols.iter().map(|c| r * c / &total).collect())
+        .collect();
+    Ok(Expected {
+        cells,
+        rows,
+        cols,
+        total,
+    })
+}
+
+/// The expected counts under independence, `Eᵢⱼ = rowᵢ · colⱼ / N`, exact.
+/// `statsmodels.stats.contingency_tables.Table(t).fittedvalues`;
+/// `scipy.stats.contingency.expected_freq`.
+///
+/// ```
+/// use symplex::linprog::q;
+/// use symplex::stats::hypothesis::{counts, expected_counts};
+///
+/// let t = counts(&[&[10, 20, 30], &[6, 9, 17]]);
+/// // statsmodels: Table(t).fittedvalues[0][0] = 10.434782608695652 (= 240/23)
+/// assert_eq!(expected_counts(&t)?[0][0], q(240, 23));
+/// # Ok::<(), symplex::prelude::SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for an empty, ragged or negative
+/// table, or an empty row / column.
+pub fn expected_counts(table: &[Vec<Q>]) -> Result<Vec<Vec<Q>>, SymplexError> {
+    Ok(expected_of("expected_counts", table)?.cells)
+}
+
+/// Each cell's contribution `(Oᵢⱼ − Eᵢⱼ)² / Eᵢⱼ` to Pearson's χ², exact
+/// (they sum to the statistic of [`chi_square_independence`] without
+/// Yates' correction).  `Table(t).chi2_contribs`.
+///
+/// ```
+/// use symplex::linprog::q;
+/// use symplex::stats::hypothesis::{chi2_contributions, counts};
+///
+/// let t = counts(&[&[10, 20, 30], &[6, 9, 17]]);
+/// // statsmodels: Table(t).chi2_contribs[1][1] = 0.11712893553223394 (= 625/5336)
+/// assert_eq!(chi2_contributions(&t)?[1][1], q(625, 5336));
+/// # Ok::<(), symplex::prelude::SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// As [`expected_counts`].
+pub fn chi2_contributions(table: &[Vec<Q>]) -> Result<Vec<Vec<Q>>, SymplexError> {
+    let expected = expected_of("chi2_contributions", table)?.cells;
+    Ok(table
+        .iter()
+        .zip(&expected)
+        .map(|(o, e)| o.iter().zip(e).map(|(o, e)| square(&(o - e)) / e).collect())
+        .collect())
+}
+
+/// The standardized (Pearson) residuals `(Oᵢⱼ − Eᵢⱼ) / √Eᵢⱼ`, exact
+/// expressions; their squares are the [`chi2_contributions`].
+/// `statsmodels` `Table(t).resid_pearson` (statsmodels reserves the name
+/// `standardized_resids` for the [`adjusted_residuals`]).
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::hypothesis::{counts, standardized_residuals};
+///
+/// let ctx = Context::new();
+/// let t = counts(&[&[10, 20, 30], &[6, 9, 17]]);
+/// // statsmodels: Table(t).resid_pearson[0][1] = 0.24993752342773828
+/// let r = standardized_residuals(&ctx, &t)?;
+/// assert!((r[0][1].eval_f64()? - 0.249_937_523_427_738_28).abs() < 1e-12);
+/// # Ok::<(), SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// As [`expected_counts`].
+pub fn standardized_residuals(
+    ctx: &Context,
+    table: &[Vec<Q>],
+) -> Result<Vec<Vec<Ex>>, SymplexError> {
+    let expected = expected_of("standardized_residuals", table)?.cells;
+    Ok(table
+        .iter()
+        .zip(&expected)
+        .map(|(o, e)| {
+            o.iter()
+                .zip(e)
+                .map(|(o, e)| (ex(ctx, &(o - e)) / ex(ctx, e).sqrt()).simplify())
+                .collect()
+        })
+        .collect())
+}
+
+/// Haberman's adjusted residuals (1973): the Pearson residual divided by
+/// its standard error under independence,
+///
+/// `rᵢⱼ = (Oᵢⱼ − Eᵢⱼ) / √(Eᵢⱼ (1 − rowᵢ/N)(1 − colⱼ/N))`,
+///
+/// approximately standard normal, so `|r| > 2` flags a cell.  Exact
+/// expressions.  `statsmodels` `Table(t).standardized_resids`.
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::hypothesis::{adjusted_residuals, counts};
+///
+/// let ctx = Context::new();
+/// let t = counts(&[&[10, 20, 30], &[6, 9, 17]]);
+/// // statsmodels: Table(t).standardized_resids[0][1] = 0.5121226989905664
+/// let r = adjusted_residuals(&ctx, &t)?;
+/// assert!((r[0][1].eval_f64()? - 0.512_122_698_990_566_4).abs() < 1e-12);
+/// # Ok::<(), SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// As [`expected_counts`], and for a table with a single row or column
+/// (the adjustment factor vanishes).
+pub fn adjusted_residuals(ctx: &Context, table: &[Vec<Q>]) -> Result<Vec<Vec<Ex>>, SymplexError> {
+    const OP: &str = "adjusted_residuals";
+    let Expected {
+        cells: expected,
+        rows,
+        cols,
+        total,
+    } = expected_of(OP, table)?;
+    if rows.len() < 2 || cols.len() < 2 {
+        return Err(invalid(
+            OP,
+            "adjusted residuals need at least two rows and two columns",
+        ));
+    }
+    let row_f: Vec<Q> = rows.iter().map(|r| Q::one() - r / &total).collect();
+    let col_f: Vec<Q> = cols.iter().map(|c| Q::one() - c / &total).collect();
+    Ok(table
+        .iter()
+        .zip(&expected)
+        .zip(&row_f)
+        .map(|((o, e), rf)| {
+            o.iter()
+                .zip(e)
+                .zip(&col_f)
+                .map(|((o, e), cf)| {
+                    let var = e * rf * cf;
+                    (ex(ctx, &(o - e)) / ex(ctx, &var).sqrt()).simplify()
+                })
+                .collect()
+        })
         .collect())
 }
 
@@ -1082,7 +1115,7 @@ pub fn chi_square_independence(
             "the table needs at least two rows and two columns",
         ));
     }
-    let expected = expected_counts(OP, table)?;
+    let expected = expected_of(OP, table)?.cells;
     let df = (r - 1) * (c - 1);
     let shift = if correction && df == 1 {
         Q::new(BigInt::one(), BigInt::from(2))
@@ -1213,7 +1246,7 @@ pub fn g_test(ctx: &Context, table: &[Vec<Q>]) -> Result<TestResult, SymplexErro
             "the table needs at least two rows and two columns",
         ));
     }
-    let expected = expected_counts(OP, table)?;
+    let expected = expected_of(OP, table)?.cells;
     let df = (r - 1) * (c - 1);
     let mut terms: Vec<Ex> = Vec::new();
     for (o_row, e_row) in table.iter().zip(&expected) {
@@ -1334,7 +1367,7 @@ fn log_wald_ci(estimate: &Q, se: f64, confidence: f64) -> Interval<f64> {
 /// its standard error is infinite) or `confidence ∉ (0, 1)`.
 pub fn odds_ratio(table: [[usize; 2]; 2], confidence: f64) -> Result<RatioEstimate, SymplexError> {
     const OP: &str = "odds_ratio";
-    check_unit_open(OP, "confidence", confidence)?;
+    check_confidence(OP, confidence)?;
     let [[a, b], [c, d]] = table;
     if a == 0 || b == 0 || c == 0 || d == 0 {
         return Err(invalid(
@@ -1379,7 +1412,7 @@ pub fn relative_risk(
     confidence: f64,
 ) -> Result<RatioEstimate, SymplexError> {
     const OP: &str = "relative_risk";
-    check_unit_open(OP, "confidence", confidence)?;
+    check_confidence(OP, confidence)?;
     let [[a, b], [c, d]] = table;
     let (n1, n2) = (a + b, c + d);
     if a == 0 || c == 0 {
@@ -1647,11 +1680,11 @@ pub fn z_test_proportion(
 ///
 /// ```
 /// use symplex::prelude::*;
-/// use symplex::stats::hypothesis::{two_proportion_z_test, Alternative};
+/// use symplex::stats::hypothesis::{z_test_two_proportions, Alternative};
 ///
 /// let ctx = Context::new();
 /// // statsmodels: proportions_ztest([45, 30], [100, 100]) = (2.1908902300206647, 0.028459736916310555)
-/// let r = two_proportion_z_test(&ctx, 45, 100, 30, 100, Alternative::TwoSided)?;
+/// let r = z_test_two_proportions(&ctx, 45, 100, 30, 100, Alternative::TwoSided)?;
 /// assert!((r.statistic_f64()? - 2.190_890_230_020_664_7).abs() < 1e-12);
 /// assert!((r.p_value_f64()? - 0.028_459_736_916_310_555).abs() < 1e-12);
 /// # Ok::<(), SymplexError>(())
@@ -1661,7 +1694,7 @@ pub fn z_test_proportion(
 ///
 /// [`SymplexError::InvalidArgument`] for an empty sample, `k > n`, or a
 /// pooled proportion of `0` or `1` (zero variance).
-pub fn two_proportion_z_test(
+pub fn z_test_two_proportions(
     ctx: &Context,
     k1: usize,
     n1: usize,
@@ -1669,7 +1702,7 @@ pub fn two_proportion_z_test(
     n2: usize,
     alt: Alternative,
 ) -> Result<TestResult, SymplexError> {
-    const OP: &str = "two_proportion_z_test";
+    const OP: &str = "z_test_two_proportions";
     if n1 == 0 || n2 == 0 {
         return Err(invalid(OP, "both samples must be non-empty"));
     }
@@ -1690,119 +1723,216 @@ pub fn two_proportion_z_test(
     Ok(normal_result(ctx, &stat, alt))
 }
 
-/// `(SS_between, SS_within, N, k)` of a collection of groups.
-fn sums_of_squares(
-    op: &'static str,
-    groups: &[Vec<Q>],
-) -> Result<(Q, Q, usize, usize), SymplexError> {
-    let k = groups.len();
-    if k < 2 {
-        return Err(invalid(op, "at least two groups are needed"));
-    }
-    if groups.iter().any(Vec::is_empty) {
-        return Err(invalid(op, "every group must be non-empty"));
-    }
-    let all: Vec<Q> = groups.iter().flatten().cloned().collect();
-    let grand = data::mean(&all)?;
-    let mut ss_between = Q::zero();
-    let mut ss_within = Q::zero();
-    for g in groups {
-        let m = data::mean(g)?;
-        let d = &m - &grand;
-        ss_between += qu(g.len()) * &d * &d;
-        ss_within += data::sum_of_squares(g)?;
-    }
-    Ok((ss_between, ss_within, all.len(), k))
+/// Renamed to [`z_test_two_proportions`] in 0.18 (test first, then what
+/// it tests, like [`z_test_proportion`] and [`t_test_two_sample`]).
+#[deprecated(since = "0.18.0", note = "renamed to `z_test_two_proportions`")]
+pub fn two_proportion_z_test(
+    ctx: &Context,
+    k1: usize,
+    n1: usize,
+    k2: usize,
+    n2: usize,
+    alt: Alternative,
+) -> Result<TestResult, SymplexError> {
+    z_test_two_proportions(ctx, k1, n1, k2, n2, alt)
 }
 
-/// One-way analysis of variance of `k` independent groups:
-/// `F = (SS_between/(k−1)) / (SS_within/(N−k))` with the sums of squares and
-/// `F` exact, `η² = SS_between/SS_total`, and `P(F_{k−1, N−k} ≥ F)` as an
-/// exact expression.  `scipy.stats.f_oneway(*groups)`.
+// ═══════════════════════════════════════════════════════════════════════════
+// 3b. Inference on Pearson's r
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The population sums of squares and cross-products of a pair.
+struct CrossMoments {
+    sxy: Q,
+    sxx: Q,
+    syy: Q,
+}
+
+/// The cross-moments of a pair, erroring on a constant sample.
+fn cross_moments(
+    op: &'static str,
+    x: &[Q],
+    y: &[Q],
+    min_n: usize,
+) -> Result<CrossMoments, SymplexError> {
+    check_same_len(op, x, y)?;
+    if x.len() < min_n {
+        return Err(invalid(
+            op,
+            format!(
+                "needs at least {min_n} paired observations, got {}",
+                x.len()
+            ),
+        ));
+    }
+    let sxy = data::covariance(x, y, Ddof::Population)?;
+    let sxx = data::variance(x, Ddof::Population)?;
+    let syy = data::variance(y, Ddof::Population)?;
+    if sxx.is_zero() || syy.is_zero() {
+        return Err(invalid(op, "a constant sample has no correlation"));
+    }
+    Ok(CrossMoments { sxy, sxx, syy })
+}
+
+/// The t statistic of Pearson's `r`: `t = r √(n − 2) / √(1 − r²)`, as an
+/// exact expression (`t² = r²(n−2)/(1−r²)` is rational).
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::data::from_i64;
+/// use symplex::stats::hypothesis::pearson_t_statistic;
+///
+/// let ctx = Context::new();
+/// let x = from_i64(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+/// let y = from_i64(&[2, 1, 4, 3, 7, 8, 5, 6, 10, 9]);
+/// // r = 13/15, t² = 169/7: t = 4.913538149119947
+/// assert!((pearson_t_statistic(&ctx, &x, &y)?.eval_f64()? - 4.913_538_149_119_947).abs() < 1e-12);
+/// # Ok::<(), SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for unequal lengths, fewer than three
+/// pairs, a constant sample, or `|r| = 1` (infinite `t`).
+pub fn pearson_t_statistic(ctx: &Context, x: &[Q], y: &[Q]) -> Result<Ex, SymplexError> {
+    const OP: &str = "pearson_t_statistic";
+    let CrossMoments { sxy, sxx, syy } = cross_moments(OP, x, y, 3)?;
+    let resid = &sxx * &syy - square(&sxy);
+    if resid.is_zero() {
+        return Err(invalid(OP, "|r| = 1, the t statistic is infinite"));
+    }
+    let var = resid / qu(x.len() - 2);
+    Ok((ex(ctx, &sxy) / ex(ctx, &var).sqrt()).simplify())
+}
+
+/// The test of `H₀: ρ = 0` for Pearson's `r`: the statistic is `r`
+/// ([`data::pearson`], exact); the p-value uses `t = r √((n−2)/(1−r²))`
+/// with `n − 2` degrees of freedom (exact Student-t tail
+/// `I_{ν/(t²+ν)}(ν/2, ½)`; `t²` is rational even when `r` is not).
+/// `|r| = 1` gives `p = 0` in the alternative's direction.
+/// `scipy.stats.pearsonr(x, y, alternative)`.
 ///
 /// ```
 /// use symplex::prelude::*;
 /// use symplex::linprog::q;
 /// use symplex::stats::data::from_i64;
-/// use symplex::stats::hypothesis::anova_one_way;
+/// use symplex::stats::hypothesis::{Alternative, pearson_test};
 ///
 /// let ctx = Context::new();
-/// let g = [from_i64(&[6, 8, 4, 5, 3, 4]), from_i64(&[8, 12, 9, 11, 6, 8]), from_i64(&[13, 9, 11, 8, 7, 12])];
-/// // scipy: f_oneway(*g) → statistic 9.264705882352942 (= 315/34), pvalue 0.0023987773293929083
-/// let r = anova_one_way(&ctx, &g)?;
-/// assert_eq!(r.f, q(315, 34));
-/// assert_eq!((r.df_between, r.df_within), (2, 15));
-/// assert!((r.p_value_f64()? - 0.002_398_777_329_392_908_3).abs() < 1e-12);
+/// let x = from_i64(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+/// let y = from_i64(&[2, 1, 4, 3, 7, 8, 5, 6, 10, 9]);
+/// // scipy: pearsonr(x, y) → statistic 0.866666666666666 (= 13/15), pvalue 0.001173538180155
+/// let r = pearson_test(&ctx, &x, &y, Alternative::TwoSided)?;
+/// assert_eq!(r.statistic, ctx.from_ratio(q(13, 15)));
+/// assert_eq!(r.df, Some(ctx.int(8)));
+/// assert!((r.p_value_f64()? - 0.001_173_538_180_155).abs() < 1e-12);
 /// # Ok::<(), SymplexError>(())
 /// ```
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for fewer than two groups, an empty
-/// group, `N ≤ k`, or zero within-group variance.
-pub fn anova_one_way(ctx: &Context, groups: &[Vec<Q>]) -> Result<AnovaResult, SymplexError> {
-    const OP: &str = "anova_one_way";
-    let (ss_between, ss_within, n, k) = sums_of_squares(OP, groups)?;
-    if n <= k {
-        return Err(invalid(
-            OP,
-            "at least one group needs more than one observation",
-        ));
-    }
-    if ss_within.is_zero() {
-        return Err(invalid(OP, "the within-group variance is zero"));
-    }
-    let (df_between, df_within) = (k - 1, n - k);
-    let f = (&ss_between / qu(df_between)) / (&ss_within / qu(df_within));
-    let total = &ss_between + &ss_within;
-    let eta_squared = &ss_between / &total;
-    Ok(AnovaResult {
-        p_value: f_sf(ctx, df_between, df_within, &f),
-        f,
-        df_between,
-        df_within,
-        ss_between,
-        ss_within,
-        eta_squared,
+/// [`SymplexError::InvalidArgument`] for unequal lengths, fewer than three
+/// pairs, or a constant sample.
+pub fn pearson_test(
+    ctx: &Context,
+    x: &[Q],
+    y: &[Q],
+    alt: Alternative,
+) -> Result<TestResult, SymplexError> {
+    const OP: &str = "pearson_test";
+    let CrossMoments { sxy, sxx, syy } = cross_moments(OP, x, y, 3)?;
+    let r = (ex(ctx, &sxy) / (ex(ctx, &sxx) * ex(ctx, &syy)).sqrt()).simplify();
+    let df = qu(x.len() - 2);
+    let r2 = square(&sxy) / (&sxx * &syy);
+    let one_minus = Q::one() - &r2;
+    let tail = in_tail(sxy.is_negative(), sxy.is_positive(), alt);
+    let p_value = if one_minus.is_zero() {
+        // |r| = 1: t is infinite in the direction of sign(r).
+        let extreme = match alt {
+            Alternative::TwoSided => true,
+            Alternative::Greater => sxy.is_positive(),
+            Alternative::Less => sxy.is_negative(),
+        };
+        if extreme { ctx.zero() } else { ctx.one() }
+    } else {
+        // t² = r²(n−2)/(1−r²); z = ν/(t² + ν) = (1 − r²)/((1 − r²) + r²) … kept as a rational.
+        let t2 = &r2 * &df / &one_minus;
+        let z = &df / (&t2 + &df);
+        let two_sided = ex(ctx, &z).betainc_regularized(
+            &(ex(ctx, &df) / ctx.int(2)),
+            &ctx.rational(1, 2),
+            &ctx.zero(),
+        );
+        one_sided_from_symmetric(ctx, two_sided, tail, alt)
+    };
+    Ok(TestResult {
+        statistic: r,
+        p_value,
+        df: Some(ex(ctx, &df)),
+        alternative: alt,
     })
 }
 
-/// The `confidence` interval for the mean, `x̄ ± t_{(1+c)/2, n−1} · s/√n`,
-/// with the Student-t quantile found by Brent's method on the exact CDF
-/// expression (evaluated numerically).  `scipy.stats.t.interval(c, n−1,
-/// loc=mean, scale=sem)`.
+/// The test that two independent samples' correlations are equal
+/// (Fisher's z):
+///
+/// `z = (atanh r₁ − atanh r₂) / √(1/(n₁ − 3) + 1/(n₂ − 3))`,
+///
+/// referred to the standard normal; `Greater` tests `ρ₁ > ρ₂`.  The
+/// statistic and the `erfc` p-value are expressions in the (dyadic-exact)
+/// inputs.
 ///
 /// ```
 /// use symplex::prelude::*;
-/// use symplex::stats::data::from_i64;
-/// use symplex::stats::hypothesis::confidence_interval_mean;
+/// use symplex::stats::hypothesis::{Alternative, compare_two_correlations};
 ///
 /// let ctx = Context::new();
-/// let x = from_i64(&[5, 7, 8, 9, 10, 12]);
-/// // scipy: t.interval(0.95, 5, loc=mean(x), scale=sem(x)) = (5.9509296876164886, 11.049070312383511)
-/// let ci = confidence_interval_mean(&ctx, &x, 0.95)?;
-/// assert!((ci.lower - 5.950_929_687_616_488_6).abs() < 1e-9);
-/// assert!((ci.upper - 11.049_070_312_383_511).abs() < 1e-9);
+/// // scipy.stats.norm: z = 2.251706268343729, two-sided p = 0.024340840282246236
+/// let r = compare_two_correlations(&ctx, 0.7, 50, 0.4, 60, Alternative::TwoSided)?;
+/// assert!((r.statistic_f64()? - 2.251_706_268_343_729).abs() < 1e-12);
+/// assert!((r.p_value_f64()? - 0.024_340_840_282_246_236).abs() < 1e-12);
 /// # Ok::<(), SymplexError>(())
 /// ```
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for fewer than two observations or
-/// `confidence ∉ (0, 1)`; the quantile's error if it fails to converge.
-pub fn confidence_interval_mean(
+/// [`SymplexError::InvalidArgument`] for `|r| ≥ 1`, a non-finite `r`, or
+/// a sample of fewer than four observations.
+pub fn compare_two_correlations(
     ctx: &Context,
-    x: &[Q],
-    confidence: f64,
-) -> Result<Interval<f64>, SymplexError> {
-    const OP: &str = "confidence_interval_mean";
-    check_sample(OP, "the sample", x, 2)?;
-    check_unit_open(OP, "confidence", confidence)?;
-    let n = x.len();
-    let mean = q_to_f64(&data::mean(x)?);
-    let sem = q_to_f64(&(data::variance(x, Ddof::Sample)? / qu(n))).sqrt();
-    let t = student_t_quantile_f64(OP, ctx, (n - 1) as f64, (1.0 + confidence) / 2.0)?;
-    Ok(Interval::closed(mean - t * sem, mean + t * sem))
+    r1: f64,
+    n1: usize,
+    r2: f64,
+    n2: usize,
+    alt: Alternative,
+) -> Result<TestResult, SymplexError> {
+    const OP: &str = "compare_two_correlations";
+    for (name, r, n) in [("first", r1, n1), ("second", r2, n2)] {
+        if !r.is_finite() || r.abs() >= 1.0 {
+            return Err(invalid(
+                OP,
+                format!("the {name} correlation must lie strictly between −1 and 1, got {r}"),
+            ));
+        }
+        if n < 4 {
+            return Err(invalid(
+                OP,
+                format!("the {name} sample needs at least four observations, got {n}"),
+            ));
+        }
+    }
+    let diff = ctx.from_f64(r1)?.atanh() - ctx.from_f64(r2)?.atanh();
+    let var = Q::one() / qu(n1 - 3) + Q::one() / qu(n2 - 3);
+    let statistic = diff / ex(ctx, &var).sqrt();
+    let two_sided = (statistic.abs() / ctx.int(2).sqrt()).erfc();
+    let sign = r1.atanh() - r2.atanh();
+    let tail = in_tail(sign < 0.0, sign > 0.0, alt);
+    Ok(TestResult {
+        statistic,
+        p_value: one_sided_from_symmetric(ctx, two_sided, tail, alt),
+        df: None,
+        alternative: alt,
+    })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2701,7 +2831,11 @@ pub fn rank_biserial(u1: &Q, n1: usize, n2: usize) -> Result<Q, SymplexError> {
 /// group, or identical observations throughout.
 pub fn eta_squared(groups: &[Vec<Q>]) -> Result<Q, SymplexError> {
     const OP: &str = "eta_squared";
-    let (ss_between, ss_within, _, _) = sums_of_squares(OP, groups)?;
+    let super::anova::GroupSums {
+        ss_between,
+        ss_within,
+        ..
+    } = super::anova::sums_of_squares(OP, groups)?;
     let total = &ss_between + &ss_within;
     if total.is_zero() {
         return Err(invalid(OP, "every observation is identical"));
@@ -2756,7 +2890,7 @@ fn check_pvalues(op: &'static str, p: &[f64], alpha: f64) -> Result<(), SymplexE
             format!("p-values must lie in [0, 1], got {bad}"),
         ));
     }
-    check_unit_open(op, "alpha", alpha)
+    check_alpha(op, alpha)
 }
 
 /// Indices that sort `p` ascending (stable).
@@ -2978,7 +3112,7 @@ pub fn bootstrap_ci(
 ) -> Result<Interval<f64>, SymplexError> {
     const OP: &str = "bootstrap_ci";
     check_f64_data(OP, "the data", data, 1)?;
-    check_unit_open(OP, "confidence", confidence)?;
+    check_confidence(OP, confidence)?;
     if n_resamples == 0 {
         return Err(invalid(OP, "at least one resample is needed"));
     }
@@ -3128,7 +3262,7 @@ pub fn sample_size_for_proportion(
     if margin <= 0.0 {
         return Err(invalid(OP, "the margin must be positive"));
     }
-    check_unit_open(OP, "confidence", confidence)?;
+    check_confidence(OP, confidence)?;
     check_unit_open(OP, "p", p)?;
     let z = norm_isf((1.0 - confidence) / 2.0);
     let n = z * z * p * (1.0 - p) / (margin * margin);
@@ -3151,7 +3285,7 @@ fn check_proportions_and_alpha(
 ) -> Result<(), SymplexError> {
     check_unit_open(op, "p1", p1)?;
     check_unit_open(op, "p2", p2)?;
-    check_unit_open(op, "alpha", alpha)
+    check_alpha(op, alpha)
 }
 
 /// The power of the two-sided two-proportion z-test with `n_per_group` per
@@ -3291,7 +3425,7 @@ pub fn power_t_test_two_sample(
 ) -> Result<f64, SymplexError> {
     const OP: &str = "power_t_test_two_sample";
     check_finite(OP, "effect_size", effect_size)?;
-    check_unit_open(OP, "alpha", alpha)?;
+    check_alpha(OP, alpha)?;
     if n_per_group < 2 {
         return Err(invalid(OP, "each group needs at least two observations"));
     }
@@ -3346,7 +3480,7 @@ pub fn sample_size_t_test_two_sample(
 ) -> Result<usize, SymplexError> {
     const OP: &str = "sample_size_t_test_two_sample";
     check_finite(OP, "effect_size", effect_size)?;
-    check_unit_open(OP, "alpha", alpha)?;
+    check_alpha(OP, alpha)?;
     check_unit_open(OP, "power", power)?;
     if power <= alpha {
         return Err(invalid(OP, "the target power must exceed alpha"));

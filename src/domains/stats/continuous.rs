@@ -8,12 +8,19 @@
 //! via [`same_family`], the closed forms), and a constructor pair
 //! `Distribution::try_name(…)` (validates numeric parameters) /
 //! `Distribution::name(…)` (unchecked).
+//!
+//! Sampling: a family with a closed-form quantile leaves [`Family::sampler`]
+//! unset and is drawn by inverse transform ([`Distribution::sampler`]);
+//! `Gamma`, `ChiSquared`, `Beta`, `StudentT` and `FDistribution` have no
+//! elementary inverse and supply their own exact routes (Marsaglia–Tsang
+//! gamma variates and the classical representations through them).
 
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 
-use super::family::{Distribution, Family, same_family};
+use super::family::{Distribution, Family, Sampler, same_family};
+use super::sample::{self, Rng};
 use super::support::Support;
 
 fn invalid(reason: impl Into<String>) -> SymplexError {
@@ -26,6 +33,33 @@ pub(crate) fn require_positive(e: &Ex, what: &str) -> Result<(), SymplexError> {
         Some(false) => Err(invalid(format!("{what} must be positive, got `{e}`"))),
         _ => Ok(()),
     }
+}
+
+/// A parameter as the positive finite `f64` a sampler needs, evaluated
+/// once when the sampler is built.
+///
+/// # Errors
+///
+/// The evaluation error ([`SymplexError::Unevaluable`], …) for a symbolic
+/// parameter; [`SymplexError::InvalidArgument`] for a numeric one that is
+/// not positive (the unchecked constructors do not validate).
+pub(crate) fn sampler_positive(e: &Ex, what: &str) -> Result<f64, SymplexError> {
+    let v = e.eval_f64()?;
+    if !(v > 0.0 && v.is_finite()) {
+        return Err(invalid(format!(
+            "{what} must be a positive number to sample, got `{e}`"
+        )));
+    }
+    Ok(v)
+}
+
+/// `θ · Gamma(k, 1)`: the sampler behind `Gamma` and `ChiSquared`.
+fn gamma_sampler(shape: &Ex, scale: &Ex) -> Result<Sampler, SymplexError> {
+    let k = sampler_positive(shape, "the shape")?;
+    let theta = sampler_positive(scale, "the scale")?;
+    Ok(Box::new(move |rng: &mut Rng| {
+        theta * sample::standard_gamma(rng, k)
+    }))
 }
 
 /// Reject a numeric parameter that is negative; accept symbolic ones.
@@ -340,6 +374,11 @@ impl Family for Gamma {
                 + (ctx.one() - &self.shape) * self.shape.digamma(),
         )
     }
+
+    // θ · Gamma(k, 1) by Marsaglia–Tsang (see `sample::standard_gamma`).
+    fn sampler(&self) -> Option<Result<Sampler, SymplexError>> {
+        Some(gamma_sampler(&self.shape, &self.scale))
+    }
 }
 
 /// `ChiSquared(k)` = `Gamma(k/2, 2)`: density
@@ -393,6 +432,11 @@ impl Family for ChiSquared {
 
     fn entropy(&self) -> Option<Ex> {
         self.as_gamma().entropy()
+    }
+
+    // χ²(k) = Gamma(k/2, 2).
+    fn sampler(&self) -> Option<Result<Sampler, SymplexError>> {
+        self.as_gamma().sampler()
     }
 }
 
@@ -462,6 +506,29 @@ impl Family for Beta {
                 - (&self.beta - 1) * self.beta.digamma()
                 + (&s - 2) * s.digamma(),
         )
+    }
+
+    // X/(X+Y) for independent X ~ Gamma(α, 1), Y ~ Gamma(β, 1).
+    fn sampler(&self) -> Option<Result<Sampler, SymplexError>> {
+        Some(self.build_sampler())
+    }
+}
+
+impl Beta {
+    fn build_sampler(&self) -> Result<Sampler, SymplexError> {
+        let a = sampler_positive(&self.alpha, "α")?;
+        let b = sampler_positive(&self.beta, "β")?;
+        Ok(Box::new(move |rng: &mut Rng| {
+            // Both gammas underflow to 0 only for tiny shapes; redraw rather
+            // than return 0/0.
+            loop {
+                let x = sample::standard_gamma(rng, a);
+                let y = sample::standard_gamma(rng, b);
+                if x + y > 0.0 {
+                    return x / (x + y);
+                }
+            }
+        }))
     }
 }
 
@@ -793,6 +860,22 @@ impl Family for StudentT {
         let b = &self.dof * &half;
         Some(&a * (a.digamma() - b.digamma()) + (self.dof.sqrt() * b.beta(&half)).ln())
     }
+
+    // Z / √(V/ν) for independent Z ~ N(0, 1), V ~ χ²(ν) = 2·Gamma(ν/2, 1).
+    fn sampler(&self) -> Option<Result<Sampler, SymplexError>> {
+        Some(self.build_sampler())
+    }
+}
+
+impl StudentT {
+    fn build_sampler(&self) -> Result<Sampler, SymplexError> {
+        let nu = sampler_positive(&self.dof, "the degrees of freedom")?;
+        Ok(Box::new(move |rng: &mut Rng| {
+            let z = sample::standard_normal(rng);
+            let v = 2.0 * sample::standard_gamma(rng, nu / 2.0);
+            z / (v / nu).sqrt()
+        }))
+    }
 }
 
 /// `FDistribution(d₁, d₂)`: density
@@ -861,6 +944,24 @@ impl Family for FDistribution {
         let half = ctx.rational(1, 2);
         let z = &self.d1 * x / (&self.d1 * x + &self.d2);
         Some(z.betainc_regularized(&(&self.d1 * &half), &(&self.d2 * &half), &ctx.zero()))
+    }
+
+    // (U/d₁) / (V/d₂) for independent U ~ χ²(d₁), V ~ χ²(d₂).
+    fn sampler(&self) -> Option<Result<Sampler, SymplexError>> {
+        Some(self.build_sampler())
+    }
+}
+
+impl FDistribution {
+    fn build_sampler(&self) -> Result<Sampler, SymplexError> {
+        let d1 = sampler_positive(&self.d1, "the numerator degrees of freedom")?;
+        let d2 = sampler_positive(&self.d2, "the denominator degrees of freedom")?;
+        Ok(Box::new(move |rng: &mut Rng| {
+            // The factors 2 of the two χ² variates cancel.
+            let u = sample::standard_gamma(rng, d1 / 2.0);
+            let v = sample::standard_gamma(rng, d2 / 2.0);
+            (u / d1) / (v / d2)
+        }))
     }
 }
 

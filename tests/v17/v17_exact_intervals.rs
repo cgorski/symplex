@@ -1,8 +1,8 @@
 //! symplex 0.17 — exact (symbolic) confidence intervals:
-//! `stats::aggregation::{z_for_confidence, proportion_interval_symbolic,
-//! proportion_interval_exact}` and
-//! `stats::estimation::{confidence_interval_mean_z_symbolic,
-//! confidence_interval_mean_z_exact}`.
+//! `stats::estimation::{z_for_confidence, proportion_interval_symbolic,
+//! proportion_interval_exact, confidence_interval_mean_z_symbolic,
+//! confidence_interval_mean_z_exact}` (the proportion intervals moved from
+//! `aggregation` to `estimation` in 0.18).
 //!
 //! Oracles (`symplex/.venv/bin/python`, scipy 1.18.1, statsmodels 0.15.0,
 //! mpmath 1.3.0):
@@ -22,13 +22,10 @@
 
 use symplex::linprog::{q, qi};
 use symplex::prelude::*;
-use symplex::stats::aggregation::{
-    IntervalMethod, proportion_interval, proportion_interval_exact, proportion_interval_symbolic,
-    z_for_confidence,
-};
 use symplex::stats::estimation::{
-    confidence_interval_mean_z, confidence_interval_mean_z_exact,
-    confidence_interval_mean_z_symbolic,
+    IntervalMethod, confidence_interval_mean_z, confidence_interval_mean_z_exact,
+    confidence_interval_mean_z_symbolic, proportion_interval, proportion_interval_exact,
+    proportion_interval_symbolic, z_for_confidence,
 };
 
 fn close(actual: f64, expected: f64, tol: f64) {
@@ -585,7 +582,7 @@ fn mean_z_exact_matches_f64_function() {
     for (data, sigma, conf, conf_f64) in cases {
         let data: Vec<Q> = data.iter().map(|&x| qi(x)).collect();
         let exact = confidence_interval_mean_z_exact(&ctx, &data, &sigma, &conf).unwrap();
-        let f = confidence_interval_mean_z(&ctx, &data, &sigma, conf_f64).unwrap();
+        let f = confidence_interval_mean_z(&data, &sigma, conf_f64).unwrap();
         close(ev(&exact.lower), f.lower, 1e-12);
         close(ev(&exact.upper), f.upper, 1e-12);
     }

@@ -1,5 +1,9 @@
-//! Factorial (two-way) and repeated-measures analysis of variance, and the
-//! post-hoc pairwise comparisons that follow a significant `F`.
+//! Analysis of variance — one-way, factorial (two-way) and
+//! repeated-measures — and the post-hoc pairwise comparisons that follow a
+//! significant `F`.
+//!
+//! **Rule:** every ANOVA and every post-hoc procedure lives here; the
+//! one-way `F` test moved in from `hypothesis` in 0.18.
 //!
 //! As in [`super::hypothesis`], everything that is a rational function of the
 //! observations is **exact** ([`Q`]): sums of squares, mean squares, `F`,
@@ -14,6 +18,7 @@
 //!
 //! | Function | Design | Reference |
 //! |---|---|---|
+//! | [`anova_one_way`] | `k` independent groups | `scipy.stats.f_oneway` |
 //! | [`anova_two_way`] | `A × B` factorial with interaction, balanced or unbalanced; Type I, II or III sums of squares ([`SsType`]) | `statsmodels.stats.anova.anova_lm(ols('y ~ C(A) * C(B)').fit(), typ)` |
 //! | [`anova_repeated_measures`] | one within-subject factor, `n` subjects × `k` conditions | `statsmodels.stats.anova.AnovaRM`; `pingouin.rm_anova(correction=True)`, `pingouin.epsilon`, `pingouin.sphericity` |
 //! | [`tukey_hsd`] | all pairwise differences of `k` independent groups | `scipy.stats.tukey_hsd` |
@@ -47,9 +52,11 @@
 
 use std::f64::consts::{PI, SQRT_2};
 
-use num_bigint::BigInt;
 use num_traits::{One, Signed, Zero};
 
+use super::common::{
+    check_confidence, check_unit_open, chi_squared_sf, ex, f_sf, f_sf_rational, invalid, qi, qu,
+};
 use super::data::{self, Q};
 use super::hypothesis::{self, Alternative, PValue, TestResult, p_value_accessors};
 use super::regression::ols;
@@ -66,24 +73,8 @@ use crate::output::codegen::numeric_rt::{erfc, lgamma};
 // Small helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn invalid(op: &'static str, reason: impl Into<String>) -> SymplexError {
-    SymplexError::invalid_argument(op, reason)
-}
-
 fn failed(op: &'static str, reason: impl Into<String>) -> SymplexError {
     SymplexError::computation_failed(op, reason)
-}
-
-fn qu(n: usize) -> Q {
-    Q::from_integer(BigInt::from(n))
-}
-
-fn qi(n: i64) -> Q {
-    Q::from_integer(BigInt::from(n))
-}
-
-fn ex(ctx: &Context, q: &Q) -> Ex {
-    ctx.from_ratio(q.clone())
 }
 
 fn to_f64(op: &'static str, q: &Q) -> Result<f64, SymplexError> {
@@ -96,36 +87,147 @@ fn centred_ss(x: &[Q]) -> Q {
     data::sum_of_squares(x).unwrap_or_else(|_| Q::zero())
 }
 
-/// `P(F_{d₁,d₂} ≥ f) = I_{d₂/(d₂ + d₁f)}(d₂/2, d₁/2)` as an expression, for
-/// rational (not necessarily integer) degrees of freedom — the
-/// Greenhouse–Geisser correction scales both by `ε`.
-fn f_sf(ctx: &Context, d1: &Q, d2: &Q, f: &Q) -> Ex {
-    if !f.is_positive() {
-        return ctx.one();
-    }
-    let z = d2 / (d2 + d1 * f);
-    ex(ctx, &z).betainc_regularized(
-        &ex(ctx, &(d2 / qu(2))),
-        &ex(ctx, &(d1 / qu(2))),
-        &ctx.zero(),
-    )
+// ═══════════════════════════════════════════════════════════════════════════
+// One-way ANOVA
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The between- and within-group sums of squares of a collection of
+/// groups, with the total count and the number of groups.
+pub(crate) struct GroupSums {
+    /// `Σ nᵢ (x̄ᵢ − x̄)²`.
+    pub(crate) ss_between: Q,
+    /// `Σᵢ Σⱼ (xᵢⱼ − x̄ᵢ)²`.
+    pub(crate) ss_within: Q,
+    /// `N`, the total number of observations.
+    pub(crate) n: usize,
+    /// `k`, the number of groups.
+    pub(crate) k: usize,
 }
 
-/// `P(χ²_df ≥ x) = Γ(df/2, x/2) / Γ(df/2)` as an expression.
-fn chi_squared_sf(ctx: &Context, df: usize, x: &Ex) -> Ex {
-    let half_df = ex(ctx, &(qu(df) / qu(2)));
-    (x / ctx.int(2)).uppergamma(&half_df) / half_df.gamma()
+/// The sums of squares of `k ≥ 2` non-empty groups (shared with
+/// [`eta_squared`](super::hypothesis::eta_squared)).
+pub(crate) fn sums_of_squares(
+    op: &'static str,
+    groups: &[Vec<Q>],
+) -> Result<GroupSums, SymplexError> {
+    let k = groups.len();
+    if k < 2 {
+        return Err(invalid(op, "at least two groups are needed"));
+    }
+    if groups.iter().any(Vec::is_empty) {
+        return Err(invalid(op, "every group must be non-empty"));
+    }
+    let all: Vec<Q> = groups.iter().flatten().cloned().collect();
+    let grand = data::mean(&all)?;
+    let mut ss_between = Q::zero();
+    let mut ss_within = Q::zero();
+    for g in groups {
+        let m = data::mean(g)?;
+        let d = &m - &grand;
+        ss_between += qu(g.len()) * &d * &d;
+        ss_within += data::sum_of_squares(g)?;
+    }
+    Ok(GroupSums {
+        ss_between,
+        ss_within,
+        n: all.len(),
+        k,
+    })
 }
 
-fn check_confidence(op: &'static str, confidence: f64) -> Result<(), SymplexError> {
-    if confidence > 0.0 && confidence < 1.0 {
-        Ok(())
-    } else {
-        Err(invalid(
-            op,
-            format!("confidence must lie strictly between 0 and 1, got {confidence}"),
-        ))
+/// The outcome of a one-way analysis of variance.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnovaResult {
+    /// The `F` statistic `(SS_between/df_between) / (SS_within/df_within)`,
+    /// exact.
+    pub f: Q,
+    /// `k − 1`.
+    pub df_between: usize,
+    /// `N − k`.
+    pub df_within: usize,
+    /// `P(F_{df_between, df_within} ≥ f)` as an exact expression.
+    pub p_value: Ex,
+    /// `Σ nᵢ (x̄ᵢ − x̄)²`.
+    pub ss_between: Q,
+    /// `Σᵢ Σⱼ (xᵢⱼ − x̄ᵢ)²`.
+    pub ss_within: Q,
+    /// `SS_between / SS_total`, the proportion of variance explained.
+    pub eta_squared: Q,
+}
+
+impl AnovaResult {
+    /// The p-value as an `f64`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the evaluation error of the expression.
+    pub fn p_value_f64(&self) -> Result<f64, SymplexError> {
+        self.p_value.eval_f64()
     }
+}
+
+impl PValue for AnovaResult {
+    fn p_value_ex(&self) -> &Ex {
+        &self.p_value
+    }
+}
+p_value_accessors!(AnovaResult);
+
+/// One-way analysis of variance of `k` independent groups:
+/// `F = (SS_between/(k−1)) / (SS_within/(N−k))` with the sums of squares and
+/// `F` exact, `η² = SS_between/SS_total`, and `P(F_{k−1, N−k} ≥ F)` as an
+/// exact expression.  `scipy.stats.f_oneway(*groups)`.
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::linprog::q;
+/// use symplex::stats::anova::anova_one_way;
+/// use symplex::stats::data::from_i64;
+///
+/// let ctx = Context::new();
+/// let g = [from_i64(&[6, 8, 4, 5, 3, 4]), from_i64(&[8, 12, 9, 11, 6, 8]), from_i64(&[13, 9, 11, 8, 7, 12])];
+/// // scipy: f_oneway(*g) → statistic 9.264705882352942 (= 315/34), pvalue 0.0023987773293929083
+/// let r = anova_one_way(&ctx, &g)?;
+/// assert_eq!(r.f, q(315, 34));
+/// assert_eq!((r.df_between, r.df_within), (2, 15));
+/// assert!((r.p_value_f64()? - 0.002_398_777_329_392_908_3).abs() < 1e-12);
+/// # Ok::<(), SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for fewer than two groups, an empty
+/// group, `N ≤ k`, or zero within-group variance.
+pub fn anova_one_way(ctx: &Context, groups: &[Vec<Q>]) -> Result<AnovaResult, SymplexError> {
+    const OP: &str = "anova_one_way";
+    let GroupSums {
+        ss_between,
+        ss_within,
+        n,
+        k,
+    } = sums_of_squares(OP, groups)?;
+    if n <= k {
+        return Err(invalid(
+            OP,
+            "at least one group needs more than one observation",
+        ));
+    }
+    if ss_within.is_zero() {
+        return Err(invalid(OP, "the within-group variance is zero"));
+    }
+    let (df_between, df_within) = (k - 1, n - k);
+    let f = (&ss_between / qu(df_between)) / (&ss_within / qu(df_within));
+    let total = &ss_between + &ss_within;
+    let eta_squared = &ss_between / &total;
+    Ok(AnovaResult {
+        p_value: f_sf(ctx, df_between, df_within, &f),
+        f,
+        df_between,
+        df_within,
+        ss_between,
+        ss_within,
+        eta_squared,
+    })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -299,7 +401,7 @@ impl FTest {
     /// `F = (ss/df) / (ss_resid/df_resid)` and `P(F_{df, df_resid} ≥ F)`.
     fn of(ctx: &Context, ss: &Q, df: usize, ss_resid: &Q, df_resid: usize) -> Self {
         let f = (ss / qu(df)) / (ss_resid / qu(df_resid));
-        let p_value = f_sf(ctx, &qu(df), &qu(df_resid), &f);
+        let p_value = f_sf(ctx, df, df_resid, &f);
         Self { f, p_value }
     }
 }
@@ -1196,7 +1298,7 @@ pub fn anova_repeated_measures(
     let epsilon_hf = hf_denominator
         .is_positive()
         .then(|| (qu(n) * qu(df_c) * &epsilon_gg - qi(2)) / hf_denominator);
-    let corrected = |eps: &Q| f_sf(ctx, &(qu(df_c) * eps), &(qu(df_e) * eps), &f);
+    let corrected = |eps: &Q| f_sf_rational(ctx, &(qu(df_c) * eps), &(qu(df_e) * eps), &f);
     let p_value_gg = corrected(&epsilon_gg);
     let one = Q::one();
     let p_value_hf = epsilon_hf
@@ -1458,12 +1560,7 @@ pub fn studentized_range_sf(q: f64, k: usize, df: f64) -> Result<f64, SymplexErr
 pub fn studentized_range_quantile(p: f64, k: usize, df: f64) -> Result<f64, SymplexError> {
     const OP: &str = "studentized_range_quantile";
     check_studentized_range_args(OP, k, df)?;
-    if !(p > 0.0 && p < 1.0) {
-        return Err(invalid(
-            OP,
-            format!("p must lie strictly between 0 and 1, got {p}"),
-        ));
-    }
+    check_unit_open(OP, "p", p)?;
     let g = |q: f64| studentized_range_cdf_impl(q, k, df) - p;
     let mut hi = 2.0;
     let mut steps = 0;

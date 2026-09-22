@@ -20,12 +20,11 @@
 use symplex::linprog::{q, qi};
 use symplex::prelude::*;
 use symplex::stats::anova::{
-    Adjustment, Observation, Source, SsType, TwoWayData, anova_repeated_measures, anova_two_way,
-    anova_two_way_with, pairwise_t_tests, studentized_range_cdf, studentized_range_quantile,
-    studentized_range_sf, tukey_hsd,
+    Adjustment, Observation, Source, SsType, TwoWayData, anova_one_way, anova_repeated_measures,
+    anova_two_way, anova_two_way_with, pairwise_t_tests, studentized_range_cdf,
+    studentized_range_quantile, studentized_range_sf, tukey_hsd,
 };
 use symplex::stats::data::from_i64;
-use symplex::stats::hypothesis::anova_one_way;
 
 fn close(actual: f64, expected: f64, tol: f64) {
     assert!(

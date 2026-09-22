@@ -53,16 +53,52 @@
 //!   `try_` constructors.
 //! * Nothing here is numerical by default: [`Distribution::sample`] is the
 //!   only place a random number generator appears, and it is a plain
-//!   deterministic-seed generator so tests are reproducible.
+//!   deterministic-seed generator so tests are reproducible.  Every
+//!   built-in family samples exactly in distribution: by inverse transform
+//!   through a closed-form quantile (`Normal`, `Uniform`, `Exponential`,
+//!   `Cauchy`, `Laplace`, `Logistic`, `LogNormal`, `Weibull`, `Pareto`,
+//!   `Triangular`), by cumulative sums over a finite lattice or table
+//!   (`Bernoulli`, `Binomial`, `Hypergeometric`, `DiscreteUniform`,
+//!   `Finite`), or by a route of its own — Marsaglia–Tsang gamma variates
+//!   behind `Gamma`, `ChiSquared`, `Beta`, `StudentT` and `FDistribution`;
+//!   Knuth's method and Hörmann's PTRS behind `Poisson`; closed-form
+//!   inversion for `Geometric`; the Poisson–Gamma mixture for
+//!   `NegativeBinomial`.  The wrappers sample through their inner family.
 //!
 //! Distribution families: the structs re-exported below
 //! ([`Normal`], [`Binomial`], …); each has a `Distribution::name(…)`
 //! constructor and a `try_name` twin.
+//!
+//! # Statistics on data: where things live and what they take
+//!
+//! The data modules follow one placement rule each (stated at the top of
+//! every module):
+//!
+//! | Module | Contains |
+//! |---|---|
+//! | [`data`] | descriptive statistics, including measures of association |
+//! | [`estimation`] | point and interval estimates — every confidence / credible interval for a parameter |
+//! | [`hypothesis`] | tests, effect sizes, multiplicity, resampling, power, contingency-table tools |
+//! | [`anova`] | every analysis of variance and post-hoc procedure |
+//! | [`agreement`] | every inter-rater statistic, including its inference |
+//! | [`reliability`] | scale reliability and item analysis only |
+//! | [`regression`], [`survival`], [`sequential`], [`information`], [`multivariate`], [`markov`], [`aggregation`], [`order`] | as named |
+//!
+//! and one set of type conventions:
+//!
+//! * observations are `&[Q]` (exact rationals); counts are `usize`;
+//! * a distribution or hypothesis *parameter* (`p0`, `mu0`, `sigma`, a
+//!   prior shape) is a `&Q`; a probability *level* (`confidence`,
+//!   `alpha`, `power`) is an `f64` in `(0, 1)`, checked with one wording;
+//! * **`ctx: &Context` is a parameter iff the result contains an
+//!   [`Ex`](crate::api::expr::Ex)** — a function returning `f64`
+//!   intervals or plain `Q`s takes none, and a function given an `Ex`
+//!   uses that expression's context;
+//! * every error names the function that raised it.
 
 pub mod aggregation;
 pub mod agreement;
 pub mod anova;
-#[allow(dead_code)] // 0.18 skeleton: every stats module switches to these helpers in the structure pass
 pub(crate) mod common;
 mod continuous;
 pub mod data;

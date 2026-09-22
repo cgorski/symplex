@@ -909,13 +909,12 @@ fn sampling_weibull_and_logistic_mean_within_three_standard_errors() {
 }
 
 #[test]
-fn sampling_needs_a_closed_quantile() {
+fn sampling_without_a_closed_quantile_uses_the_family_route() {
+    // 0.18: `Gamma` has no elementary quantile; it samples by
+    // Marsaglia–Tsang instead of returning `NotImplemented`.
     let ctx = Context::new();
     let g = RandomVariable::new(&ctx, "G", Distribution::gamma(ctx.int(3), ctx.int(2)));
-    assert!(matches!(
-        g.sample(10, &mut Rng::new(1)),
-        Err(SymplexError::NotImplemented(_))
-    ));
+    assert_sample_mean(&g);
 }
 
 // ── Entropy ──────────────────────────────────────────────────────────────

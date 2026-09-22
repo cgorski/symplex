@@ -89,7 +89,7 @@ impl GenPoly<Ratio<BigInt>> {
         if d == 0 {
             return None;
         }
-        let g = Poly::gcd(self, &self.derivative());
+        let g = gcd_via_z(self, &self.derivative());
         Some(g.degree() == Some(0))
     }
 
@@ -229,6 +229,121 @@ fn rational_gcd(a: &Ratio<BigInt>, b: &Ratio<BigInt>) -> Ratio<BigInt> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Crate-private helpers: polynomial gcd through ℤ[x]
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// `GenPoly::gcd` runs Euclid's algorithm over ℚ.  Every `Ratio<BigInt>`
+// operation reduces its fraction with an integer gcd, and the rational
+// remainder sequence of a degree-30 polynomial has coefficients of
+// hundreds of bits, so that costs over a second in a debug build.  The
+// same monic gcd is obtained from the *primitive PRS* in ℤ[x]: scale the
+// inputs to integers, take pseudo-remainders (no division at all) and
+// strip the integer content after each step.  Results are identical — the
+// monic gcd over a field is unique — so callers can be switched over
+// without changing any output.
+
+/// `p` scaled by the (positive) least common multiple of its coefficient
+/// denominators: integer coefficients in ascending degree, the same sign
+/// as `p` at every point.
+pub(crate) fn integer_scaled(p: &Poly) -> Vec<BigInt> {
+    let lcm = p
+        .coeffs()
+        .iter()
+        .fold(BigInt::one(), |acc, c| acc.lcm(c.denom()));
+    p.coeffs()
+        .iter()
+        .map(|c| c.numer() * (&lcm / c.denom()))
+        .collect()
+}
+
+/// Drop trailing zero coefficients.
+pub(crate) fn z_normalize(c: &mut Vec<BigInt>) {
+    while c.last().is_some_and(Zero::is_zero) {
+        c.pop();
+    }
+}
+
+/// `c / gcd(coefficients)` with the gcd taken positive: the unique
+/// primitive integer polynomial that is a positive multiple of `c`.
+pub(crate) fn z_primitive(c: &[BigInt]) -> Vec<BigInt> {
+    let g = c.iter().fold(BigInt::zero(), |acc, x| acc.gcd(x));
+    if g.is_zero() || g.is_one() {
+        return c.to_vec();
+    }
+    c.iter().map(|x| x / &g).collect()
+}
+
+/// `|lc(b)|^{deg a − deg b + 1} · rem(a, b)` in `ℤ[x]` (ascending, normalised;
+/// empty for zero) — the pseudo-remainder with a *positive* scale factor,
+/// so its sign agrees with `rem(a, b)` everywhere (the Sturm chain relies
+/// on that).  `b` must be non-zero.  Returns `a` itself when
+/// `deg a < deg b`.
+pub(crate) fn pseudo_rem_pos(a: &[BigInt], b: &[BigInt]) -> Vec<BigInt> {
+    let mut r = a.to_vec();
+    z_normalize(&mut r);
+    let Some(lc_b) = b.last() else {
+        return r;
+    };
+    let m = b.len() - 1;
+    let abs_lc = lc_b.abs();
+    let neg_lc = lc_b.is_negative();
+    while r.len() > m {
+        let k = r.len() - 1;
+        // r ← |lc_b| · r − sign(lc_b) · r_k · x^{k−m} · b   (kills the x^k term)
+        let rk = r[k].clone();
+        for c in &mut r {
+            *c *= &abs_lc;
+        }
+        for (j, bj) in b.iter().enumerate() {
+            if neg_lc {
+                r[k - m + j] += &rk * bj;
+            } else {
+                r[k - m + j] -= &rk * bj;
+            }
+        }
+        r.truncate(k);
+        z_normalize(&mut r);
+    }
+    r
+}
+
+/// `gcd(a, b)` in `ℤ[x]` by the primitive PRS, primitive with positive
+/// leading coefficient (`[1]` when coprime; empty when both are zero).
+pub(crate) fn z_gcd(a: &[BigInt], b: &[BigInt]) -> Vec<BigInt> {
+    let mut a = a.to_vec();
+    let mut b = b.to_vec();
+    z_normalize(&mut a);
+    z_normalize(&mut b);
+    if a.len() < b.len() {
+        std::mem::swap(&mut a, &mut b);
+    }
+    while !b.is_empty() {
+        let r = z_primitive(&pseudo_rem_pos(&a, &b));
+        a = b;
+        b = r;
+    }
+    let mut g = z_primitive(&a);
+    if g.last().is_some_and(Signed::is_negative) {
+        for c in &mut g {
+            *c = -std::mem::take(c);
+        }
+    }
+    g
+}
+
+/// The monic `gcd(a, b)` over ℚ — exactly [`GenPoly::gcd`]`(a, b)`,
+/// including the conventions `gcd(a, 0) = monic(a)` and `gcd(0, 0) = 0` —
+/// computed through the primitive PRS in `ℤ[x]` (see the module note
+/// above).
+pub(crate) fn gcd_via_z(a: &Poly, b: &Poly) -> Poly {
+    if a.is_zero() && b.is_zero() {
+        return Poly::zero();
+    }
+    let g = z_gcd(&integer_scaled(a), &integer_scaled(b));
+    Poly::from_coeffs(g.into_iter().map(Ratio::from_integer).collect()).make_monic()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Private helpers: square-free decomposition (Yun's algorithm)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -250,7 +365,7 @@ pub(crate) fn square_free_decomposition(f: &Poly) -> Vec<(Poly, u32)> {
         return vec![(ensure_positive_lc(f), 1)];
     }
 
-    let g = Poly::gcd(f, &df);
+    let g = gcd_via_z(f, &df);
 
     // If gcd is trivial (constant), f is already square-free.
     if g.degree().unwrap_or(0) == 0 {
@@ -268,7 +383,7 @@ pub(crate) fn square_free_decomposition(f: &Poly) -> Vec<(Poly, u32)> {
             break;
         }
 
-        let y = Poly::gcd(&w, &c); // factors with multiplicity > i
+        let y = gcd_via_z(&w, &c); // factors with multiplicity > i
         let z = w.div(&y); //         factors with multiplicity exactly i
 
         if z.degree().unwrap_or(0) > 0 {
@@ -635,7 +750,86 @@ mod tests {
         Ratio::from_integer(BigInt::from(n))
     }
 
-    // ── Resultant ───────────────────────────────────────────────────
+    // ── gcd through ℤ[x] ───────────────────────────────────────────────────────────
+
+    /// Small pseudo-random polynomial (xorshift), degree `deg`, with
+    /// integer coefficients in `-9..=9` or, when `frac`, denominators too.
+    fn pseudo_random(seed: u64, deg: usize, frac: bool) -> Poly {
+        let mut s = seed;
+        let mut next = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        let mut coeffs: Vec<Ratio<BigInt>> = (0..=deg)
+            .map(|_| {
+                let n = (next() % 19) as i64 - 9;
+                let d = if frac { (next() % 5) as i64 + 1 } else { 1 };
+                r(n, d)
+            })
+            .collect();
+        if coeffs[deg].is_zero() {
+            coeffs[deg] = ri(1);
+        }
+        Poly::from_coeffs(coeffs)
+    }
+
+    /// `gcd_via_z` returns exactly what Euclid over ℚ returns, including
+    /// for common factors, coprime inputs, rational coefficients and the
+    /// zero conventions.
+    #[test]
+    fn gcd_via_z_matches_generic_gcd() {
+        for seed in 1..=15u64 {
+            let a = pseudo_random(seed, 3 + seed as usize % 4, seed % 2 == 0);
+            let b = pseudo_random(seed + 50, 2 + seed as usize % 3, seed % 3 == 0);
+            let g = pseudo_random(seed + 100, 1 + seed as usize % 3, false);
+            let ag = &a * &g;
+            let bg = &b * &g;
+            assert_eq!(gcd_via_z(&ag, &bg), Poly::gcd(&ag, &bg), "seed {seed}");
+            assert_eq!(
+                gcd_via_z(&a, &b),
+                Poly::gcd(&a, &b),
+                "seed {seed} coprime-ish"
+            );
+            assert_eq!(
+                gcd_via_z(&ag, &ag.derivative()),
+                Poly::gcd(&ag, &ag.derivative())
+            );
+        }
+        let a = pseudo_random(7, 5, true);
+        assert_eq!(gcd_via_z(&a, &Poly::zero()), Poly::gcd(&a, &Poly::zero()));
+        assert_eq!(gcd_via_z(&Poly::zero(), &a), Poly::gcd(&Poly::zero(), &a));
+        assert_eq!(gcd_via_z(&Poly::zero(), &Poly::zero()), Poly::zero());
+        assert_eq!(gcd_via_z(&Poly::from_int(6), &a), Poly::from_int(1));
+        assert_eq!(
+            gcd_via_z(&Poly::from_int(6), &Poly::from_int(-4)),
+            Poly::from_int(1)
+        );
+    }
+
+    /// The positive pseudo-remainder is a positive multiple of the
+    /// rational remainder.
+    #[test]
+    fn pseudo_rem_pos_is_positive_multiple_of_rem() {
+        for seed in 1..=10u64 {
+            let a = pseudo_random(seed, 7, false);
+            let b = pseudo_random(seed + 7, 3, false);
+            let rem = a.rem(&b);
+            let prem = pseudo_rem_pos(&integer_scaled(&a), &integer_scaled(&b));
+            let prem = Poly::from_coeffs(prem.into_iter().map(Ratio::from_integer).collect());
+            if rem.is_zero() {
+                assert!(prem.is_zero());
+                continue;
+            }
+            let scale = prem.leading_coeff().cloned().unwrap_or_default()
+                / rem.leading_coeff().cloned().unwrap_or_default();
+            assert!(scale.is_positive(), "seed {seed}: scale {scale}");
+            assert_eq!(rem.scale(&scale), prem, "seed {seed}");
+        }
+    }
+
+    // ── Resultant ────────────────────────────────────────────────────────────────
 
     #[test]
     fn resultant_coprime() {

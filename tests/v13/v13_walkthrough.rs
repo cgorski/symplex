@@ -6,14 +6,14 @@
 use symplex::linprog::{q, qi};
 use symplex::prelude::*;
 use symplex::stats::aggregation::{
-    DawidSkeneOpts, IntervalMethod, LabelTable, dawid_skene, majority_votes, proportion_interval,
-    worker_accuracy,
+    DawidSkeneOpts, LabelTable, dawid_skene, majority_votes, worker_accuracy,
 };
 use symplex::stats::agreement::{
     IccForm, Level, RatingTable, cohen_kappa, fleiss_kappa_ratings, icc, kendall_w,
     krippendorff_alpha, percent_agreement,
 };
 use symplex::stats::data::{self, Ddof, Q, QuantileMethod};
+use symplex::stats::estimation::{IntervalMethod, proportion_interval};
 use symplex::stats::hypothesis::{
     Alternative, RankMethod, benjamini_hochberg, binomial_test, chi_square_independence, cohens_d,
     counts, fisher_exact, mann_whitney_u, t_test_two_sample,
