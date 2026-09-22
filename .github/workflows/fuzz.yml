@@ -43,6 +43,9 @@ jobs:
           - fuzz_lambertw
     env:
       SECONDS_PER_TARGET: ${{ github.event.inputs.seconds || '600' }}
+      # cargo-fuzz defaults `--target` to the triple it was built for, and
+      # the prebuilt binary is a musl build (no sanitizer, no musl std here).
+      FUZZ_TARGET_TRIPLE: x86_64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@nightly
@@ -60,21 +63,27 @@ jobs:
           key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
           restore-keys: fuzz-corpus-${{ matrix.target }}-
       - name: Build
-        run: cargo fuzz build ${{ matrix.target }}
+        run: cargo fuzz build --target "$FUZZ_TARGET_TRIPLE" ${{ matrix.target }}
       - name: Fuzz for ${{ env.SECONDS_PER_TARGET }} s
         run: |
           mkdir -p fuzz/corpus/${{ matrix.target }}
-          cargo fuzz run ${{ matrix.target }} -- \
+          cargo fuzz run --target "$FUZZ_TARGET_TRIPLE" ${{ matrix.target }} -- \
             -max_total_time=${SECONDS_PER_TARGET} -timeout=30 -rss_limit_mb=4096 \
             -print_final_stats=1
       - name: Decode the failing input
         if: failure()
         run: |
-          cargo fuzz build print_expr
-          for f in fuzz/artifacts/${{ matrix.target }}/*; do
+          shopt -s nullglob
+          inputs=(fuzz/artifacts/${{ matrix.target }}/*)
+          if [ ${#inputs[@]} -eq 0 ]; then
+            echo "no failing input was written (the failure is not a finding)"
+            exit 0
+          fi
+          cargo fuzz build --target "$FUZZ_TARGET_TRIPLE" print_expr
+          for f in "${inputs[@]}"; do
             echo "::group::$f"
             base64 -w0 "$f"; echo
-            cargo fuzz run print_expr "$f" 2>/dev/null | grep '^depth' || true
+            cargo fuzz run --target "$FUZZ_TARGET_TRIPLE" print_expr "$f" 2>/dev/null | grep '^depth' || true
             echo "::endgroup::"
           done
           {
@@ -94,4 +103,5 @@ jobs:
         with:
           name: fuzz-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
           retention-days: 30
