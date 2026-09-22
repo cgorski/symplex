@@ -210,6 +210,193 @@ pub(crate) fn gcd_via_z(a: &[Ratio<BigInt>], b: &[Ratio<BigInt>]) -> Vec<Ratio<B
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Extended gcd through the primitive PRS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Pseudo-division in `ℤ[x]`: `(q, r, l)` with `l·a = q·b + r`,
+/// `deg r < deg b`, and `l = lc(b)^k` for the `k` reduction steps taken
+/// (at most `deg a − deg b + 1`).  `b` must be non-zero and normalised.
+fn pseudo_divmod(a: &[BigInt], b: &[BigInt]) -> (Vec<BigInt>, Vec<BigInt>, BigInt) {
+    let mut r = a.to_vec();
+    z_normalize(&mut r);
+    let mut l = BigInt::one();
+    let Some(lc_b) = b.last() else {
+        return (Vec::new(), r, l);
+    };
+    let m = b.len() - 1;
+    let mut q = vec![BigInt::zero(); r.len().saturating_sub(m)];
+    while r.len() > m {
+        // q ← lc_b·q + r_k·x^s,  r ← lc_b·r − r_k·x^s·b   (kills the x^k term)
+        let k = r.len() - 1;
+        let shift = k - m;
+        let rk = r[k].clone();
+        for c in &mut q {
+            *c *= lc_b;
+        }
+        q[shift] += &rk;
+        for c in &mut r {
+            *c *= lc_b;
+        }
+        for (j, bj) in b.iter().enumerate() {
+            r[shift + j] -= &rk * bj;
+        }
+        r.truncate(k);
+        z_normalize(&mut r);
+        l *= lc_b;
+    }
+    z_normalize(&mut q);
+    (q, r, l)
+}
+
+/// `a·b` in `ℤ[x]` (ascending, normalised).
+fn z_mul(a: &[BigInt], b: &[BigInt]) -> Vec<BigInt> {
+    if a.is_empty() || b.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![BigInt::zero(); a.len() + b.len() - 1];
+    for (i, ai) in a.iter().enumerate() {
+        if ai.is_zero() {
+            continue;
+        }
+        for (j, bj) in b.iter().enumerate() {
+            out[i + j] += ai * bj;
+        }
+    }
+    z_normalize(&mut out);
+    out
+}
+
+/// `u·a − v·b` in `ℤ[x]` for integer scalars `u`, `v` (normalised).
+fn z_lin(u: &BigInt, a: &[BigInt], v: &BigInt, b: &[BigInt]) -> Vec<BigInt> {
+    let mut out = vec![BigInt::zero(); a.len().max(b.len())];
+    for (o, ai) in out.iter_mut().zip(a) {
+        *o += u * ai;
+    }
+    for (o, bi) in out.iter_mut().zip(b) {
+        *o -= v * bi;
+    }
+    z_normalize(&mut out);
+    out
+}
+
+/// One row of the extended remainder sequence: `s·A + t·B = d·r`, with
+/// `r` the (primitive) remainder and the cofactors `s/d`, `t/d` held over
+/// one common denominator in lowest terms.
+struct ExtRow {
+    r: Vec<BigInt>,
+    s: Vec<BigInt>,
+    t: Vec<BigInt>,
+    d: BigInt,
+}
+
+/// The monic `gcd(a, b)` over ℚ with its Bézout cofactors `x·a + y·b = gcd`
+/// (ascending coefficient vectors) — exactly what the extended Euclidean
+/// algorithm over ℚ returns, computed through the primitive PRS in `ℤ[x]`.
+/// `None` when `b` is zero (the caller's convention for that case).
+///
+/// Every member of the primitive PRS is a non-zero scalar multiple of the
+/// corresponding Euclidean remainder, and its cofactors are the same
+/// multiples of Euclid's; normalising the last member to be monic divides
+/// the multiple out, so `gcd`, `x` and `y` agree with Euclid exactly (they
+/// are also the unique cofactors with `deg x < deg b − deg gcd`).  The
+/// cofactors are kept as integer vectors over one denominator per row, so a
+/// step costs integer arithmetic and one content gcd instead of a rational
+/// reduction per coefficient operation — Euclid over ℚ on degree-12 inputs
+/// with 40-digit coefficients took 4 s.
+pub(crate) fn extended_gcd_via_z(
+    a: &[Ratio<BigInt>],
+    b: &[Ratio<BigInt>],
+) -> Option<num_integer::ExtendedGcd<Vec<Ratio<BigInt>>>> {
+    let mut side_a = (integer_scaled(a), denominator_lcm(a));
+    let mut side_b = (integer_scaled(b), denominator_lcm(b));
+    z_normalize(&mut side_a.0);
+    z_normalize(&mut side_b.0);
+    if side_b.0.is_empty() {
+        return None;
+    }
+    if side_a.0.is_empty() {
+        // gcd(0, b) = monic(b) = (1/lc(b))·b: x = 0, y = 1/lc(b).
+        let lc = b.iter().rev().find(|c| !c.is_zero())?;
+        let gcd = b.iter().take(side_b.0.len()).map(|c| c / lc).collect();
+        return Some(num_integer::ExtendedGcd {
+            gcd,
+            x: Vec::new(),
+            y: vec![lc.recip()],
+        });
+    }
+    // Euclid's first step on deg a < deg b is the swap itself.
+    let swapped = side_a.0.len() < side_b.0.len();
+    if swapped {
+        std::mem::swap(&mut side_a, &mut side_b);
+    }
+    let (za, scale_a) = side_a;
+    let (zb, scale_b) = side_b;
+
+    let mut prev = ExtRow {
+        r: za,
+        s: vec![BigInt::one()],
+        t: Vec::new(),
+        d: BigInt::one(),
+    };
+    let mut curr = ExtRow {
+        r: zb,
+        s: Vec::new(),
+        t: vec![BigInt::one()],
+        d: BigInt::one(),
+    };
+    loop {
+        let (q, rem, l) = pseudo_divmod(&prev.r, &curr.r);
+        if rem.is_empty() {
+            break;
+        }
+        // l·r_prev − q·r_curr = rem, with r = (s·A + t·B)/d on each row:
+        // (l·d_c·s_p − q·d_p·s_c)·A + (…)·B = d_p·d_c·rem.
+        let ld = &l * &curr.d;
+        let qs = z_mul(&q, &curr.s);
+        let qt = z_mul(&q, &curr.t);
+        let mut s = z_lin(&ld, &prev.s, &prev.d, &qs);
+        let mut t = z_lin(&ld, &prev.t, &prev.d, &qt);
+        let mut d = &prev.d * &curr.d;
+        let c = integer_content(&rem);
+        let r: Vec<BigInt> = rem.iter().map(|x| x / &c).collect();
+        d *= &c;
+        let g = integer_content(s.iter().chain(t.iter()).chain(std::iter::once(&d)));
+        if !g.is_one() && !g.is_zero() {
+            for x in s.iter_mut().chain(t.iter_mut()) {
+                *x /= &g;
+            }
+            d /= &g;
+        }
+        prev = curr;
+        curr = ExtRow { r, s, t, d };
+    }
+
+    // s·A + t·B = d·r with A = scale_a·a', B = scale_b·b' (a', b' the
+    // inputs in swapped order), so the monic gcd is r/lc and the cofactors
+    // are s·scale_a/(d·lc), t·scale_b/(d·lc).
+    let lc = curr.r.last()?.clone();
+    let den = &curr.d * &lc;
+    let over = |v: &[BigInt], scale: &BigInt| -> Vec<Ratio<BigInt>> {
+        v.iter()
+            .map(|c| Ratio::new(c * scale, den.clone()))
+            .collect()
+    };
+    let gcd: Vec<Ratio<BigInt>> = curr
+        .r
+        .iter()
+        .map(|c| Ratio::new(c.clone(), lc.clone()))
+        .collect();
+    let cof_a = over(&curr.s, &scale_a);
+    let cof_b = over(&curr.t, &scale_b);
+    let (x, y) = if swapped {
+        (cof_b, cof_a)
+    } else {
+        (cof_a, cof_b)
+    };
+    Some(num_integer::ExtendedGcd { gcd, x, y })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // ZPoly — sparse multivariate polynomial over a common denominator
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -382,6 +569,68 @@ mod tests {
 
     fn r(n: i64, d: i64) -> Ratio<BigInt> {
         Ratio::new(BigInt::from(n), BigInt::from(d))
+    }
+
+    /// The fast extended gcd must return exactly Euclid's `(gcd, x, y)` —
+    /// the same three polynomials, not merely a valid Bézout identity —
+    /// on edge cases and on seeded random inputs with repeated factors,
+    /// rational coefficients and every degree ordering.
+    #[test]
+    fn extended_gcd_via_z_matches_euclid() {
+        use crate::base::rng::SplitMix64;
+        use crate::poly::dense::Poly;
+        let p = |c: &[Ratio<BigInt>]| Poly::from_coeffs(c.to_vec());
+        let check = |a: &Poly, b: &Poly| {
+            let fast = Poly::extended_gcd(a, b);
+            let slow = Poly::extended_gcd_euclid(a, b);
+            assert_eq!(fast.gcd, slow.gcd, "gcd of {a:?}, {b:?}");
+            assert_eq!(fast.x, slow.x, "x of {a:?}, {b:?}");
+            assert_eq!(fast.y, slow.y, "y of {a:?}, {b:?}");
+            assert_eq!(&(&fast.x * a) + &(&fast.y * b), fast.gcd);
+        };
+        let zero = Poly::zero();
+        let one = p(&[r(1, 1)]);
+        let c = p(&[r(-7, 3)]);
+        let x2m1 = p(&[r(-1, 1), r(0, 1), r(1, 1)]);
+        let xm1 = p(&[r(-1, 1), r(1, 1)]);
+        let half = p(&[r(1, 2), r(1, 2)]);
+        for (a, b) in [
+            (&zero, &x2m1),
+            (&x2m1, &zero),
+            (&zero, &zero),
+            (&c, &x2m1),
+            (&x2m1, &c),
+            (&one, &c),
+            (&x2m1, &xm1),
+            (&xm1, &x2m1),
+            (&x2m1, &x2m1),
+            (&half, &x2m1),
+        ] {
+            check(a, b);
+        }
+        let mut rng = SplitMix64::new(20260922);
+        let mut rand_poly = |deg: usize, big: bool| -> Poly {
+            let coeffs: Vec<Ratio<BigInt>> = (0..=deg)
+                .map(|_| {
+                    let n = (rng.next_u64() % 41) as i64 - 20;
+                    let d = (rng.next_u64() % 5) as i64 + 1;
+                    let mut v = r(n, d);
+                    if big {
+                        v *= Ratio::from_integer(BigInt::from(10u32).pow(30));
+                    }
+                    v
+                })
+                .collect();
+            p(&coeffs)
+        };
+        for i in 0..120 {
+            let common = rand_poly(i % 4, false);
+            let a = &rand_poly(i % 7, i % 5 == 0) * &common;
+            let b = &rand_poly((i * 3) % 6, i % 3 == 0) * &common;
+            let b = if i % 11 == 0 { &b * &common } else { b };
+            check(&a, &b);
+            check(&b, &a);
+        }
     }
 
     #[test]

@@ -700,7 +700,27 @@ impl<C: Field> GenPoly<C> {
     /// `gcd = gcd(a, b)` monic (the Bézout cofactors `s, t` of the
     /// textbook `s·a + t·b = g` are `x` and `y`).  The zero gcd, from
     /// `a = b = 0`, is returned as is with `x = 1`, `y = 0`.
+    ///
+    /// Coefficient fields may provide a faster route through
+    /// [`Field::poly_extended_gcd`] (`Ratio<BigInt>` uses the primitive PRS
+    /// in `ℤ[x]`); otherwise Euclid runs over the field
+    /// (`extended_gcd_euclid`).  Both give the same three polynomials.
     pub fn extended_gcd(a: &Self, b: &Self) -> ExtendedGcd<Self> {
+        if !b.is_zero()
+            && let Some(e) = C::poly_extended_gcd(&a.coeffs, &b.coeffs)
+        {
+            return ExtendedGcd {
+                gcd: GenPoly::from_coeffs(e.gcd),
+                x: GenPoly::from_coeffs(e.x),
+                y: GenPoly::from_coeffs(e.y),
+            };
+        }
+        Self::extended_gcd_euclid(a, b)
+    }
+
+    /// The extended Euclidean algorithm over the coefficient field: the
+    /// reference implementation behind [`extended_gcd`](Self::extended_gcd).
+    pub(crate) fn extended_gcd_euclid(a: &Self, b: &Self) -> ExtendedGcd<Self> {
         if b.is_zero() {
             let Some(lc) = a.leading_coeff() else {
                 return ExtendedGcd {

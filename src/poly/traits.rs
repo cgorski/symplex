@@ -152,6 +152,19 @@ pub trait Field: EuclideanDomain {
         let _ = (a, b);
         None
     }
+
+    /// A fast path for the extended gcd of two univariate polynomials
+    /// (ascending coefficient slices, `b` non-zero): the monic gcd and the
+    /// Bézout cofactors `x·a + y·b = gcd`, or `None` to let
+    /// [`GenPoly::extended_gcd`](super::generic::GenPoly::extended_gcd) run
+    /// the extended Euclidean algorithm.  An implementation must return
+    /// exactly what Euclid would (the cofactors with `deg x < deg b −
+    /// deg gcd` are unique).  `Ratio<BigInt>` routes through the primitive
+    /// PRS in `ℤ[x]` (`zpoly::extended_gcd_via_z`).
+    fn poly_extended_gcd(a: &[Self], b: &[Self]) -> Option<num_integer::ExtendedGcd<Vec<Self>>> {
+        let _ = (a, b);
+        None
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -295,6 +308,10 @@ impl Field for Ratio<BigInt> {
 
     fn poly_gcd(a: &[Self], b: &[Self]) -> Option<Vec<Self>> {
         Some(super::zpoly::gcd_via_z(a, b))
+    }
+
+    fn poly_extended_gcd(a: &[Self], b: &[Self]) -> Option<num_integer::ExtendedGcd<Vec<Self>>> {
+        super::zpoly::extended_gcd_via_z(a, b)
     }
 }
 

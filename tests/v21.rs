@@ -10,6 +10,8 @@ mod v21_coverage;
 mod v21_integrate;
 #[path = "v21/v21_numdist.rs"]
 mod v21_numdist;
+#[path = "v21/v21_poly_gcdex.rs"]
+mod v21_poly_gcdex;
 #[path = "v21/v21_series.rs"]
 mod v21_series;
 #[path = "v21/v21_simplify.rs"]

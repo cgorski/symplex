@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.22.2] - 2026-09-22
+
+### Changed
+
+- `Poly::extended_gcd` (and `Ex::poly_gcdex`, the partial-fraction and
+  Hermite-reduction steps that call it) runs through the primitive PRS in
+  `ℤ[x]` via a new `Field::poly_extended_gcd` hook, as `gcd` has since 0.21:
+  remainders are made primitive and the cofactors kept over one integer
+  denominator per step, instead of Euclid over ℚ paying a gcd per rational
+  operation.  Degree 11 × 12 with 40-digit rational coefficients: 5.15 s →
+  0.18 s (release).  The results are the same three polynomials as
+  Euclid's (pinned in-crate against the Euclidean reference on 250 random
+  and edge-case pairs, and against SymPy `gcdex` in
+  `tests/v21/v21_poly_gcdex.rs`); the LP pivot-path baseline and the
+  Mathlib-compiled Lean certificate are byte-identical.
+
 ## [0.22.1] - 2026-09-22
 
 Fixes the seven known issues 0.22.0 shipped with reproducers for, and a
