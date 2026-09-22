@@ -12,3 +12,9 @@ mod v20_fits;
 mod v20_libfn;
 #[path = "v20/v20_poly_kernel.rs"]
 mod v20_poly_kernel;
+#[path = "v20/v20_matrix_tier.rs"]
+mod v20_matrix_tier;
+#[path = "v20/v20_fp_poly.rs"]
+mod v20_fp_poly;
+#[path = "v20/v20_numdist.rs"]
+mod v20_numdist;
