@@ -109,9 +109,11 @@ fn gcd_u64(mut a: u64, mut b: u64) -> u64 {
 
 use crate::base::numeric::Q;
 /// The deterministic generator of the randomised algorithms here
-/// (Miller–Rabin witnesses, Pollard–Brent, root finding mod `p`), so that
-/// results are reproducible run-to-run.
+/// (Miller–Rabin witnesses, Pollard–Brent), so that results are
+/// reproducible run-to-run.  Root finding modulo `p` draws from the same
+/// generator inside `PolyIn::roots`.
 use crate::base::rng::XorShift64Star as XorShift;
+use crate::poly::modpoly::PolyIn;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Small prime table
@@ -3989,186 +3991,14 @@ fn poly_roots_mod_prime(c: &[BigInt], p: &BigInt) -> Vec<BigInt> {
             .map(BigInt::from)
             .collect();
     }
-    let mut f: FpPoly = cu.iter().rev().copied().collect();
-    fpp_trim(&mut f);
-    if f.is_empty() {
+    // Dense `𝔽ₚ[x]` (the value-level ring in `poly::modpoly`): `gcd(f, xᵖ − x)`
+    // followed by Cantor–Zassenhaus splitting, all factors linear.
+    let f = PolyIn::over_prime(pu, cu.iter().rev().copied().collect());
+    if f.is_zero() {
         // Vanishes identically modulo p: every residue is a root.
         return (0..pu).map(BigInt::from).collect();
     }
-    fpp_roots(&f, pu).into_iter().map(BigInt::from).collect()
-}
-
-// ── Dense polynomials over 𝔽ₚ (p < 2⁶³) for root finding ─────────────────
-
-/// Coefficients low-to-high, no trailing zeros; the empty vector is `0`.
-type FpPoly = Vec<u64>;
-
-fn fpp_trim(v: &mut FpPoly) {
-    while v.last().is_some_and(|c| *c == 0) {
-        v.pop();
-    }
-}
-
-/// Remainder of `a` modulo the monic polynomial `m`.
-fn fpp_rem(a: &[u64], m: &[u64], p: u64) -> FpPoly {
-    let Some(dm) = m.len().checked_sub(1) else {
-        return vec![];
-    };
-    let mut r = a.to_vec();
-    fpp_trim(&mut r);
-    while r.len() > dm {
-        let lc = r[r.len() - 1];
-        let shift = r.len() - 1 - dm;
-        if lc != 0 {
-            for (i, &mi) in m.iter().enumerate() {
-                let sub = mod_mul_u64(lc, mi, p);
-                r[shift + i] = (r[shift + i] + p - sub) % p;
-            }
-        }
-        r.pop();
-        fpp_trim(&mut r);
-    }
-    r
-}
-
-/// Quotient of `a` by the monic polynomial `m` (the remainder is dropped).
-fn fpp_div(a: &[u64], m: &[u64], p: u64) -> FpPoly {
-    let Some(dm) = m.len().checked_sub(1) else {
-        return vec![];
-    };
-    let mut r = a.to_vec();
-    fpp_trim(&mut r);
-    if r.len() <= dm {
-        return vec![];
-    }
-    let mut q = vec![0u64; r.len() - dm];
-    while r.len() > dm {
-        let lc = r[r.len() - 1];
-        let shift = r.len() - 1 - dm;
-        q[shift] = lc;
-        if lc != 0 {
-            for (i, &mi) in m.iter().enumerate() {
-                let sub = mod_mul_u64(lc, mi, p);
-                r[shift + i] = (r[shift + i] + p - sub) % p;
-            }
-        }
-        r.pop();
-    }
-    fpp_trim(&mut q);
-    q
-}
-
-fn fpp_mulmod(a: &[u64], b: &[u64], m: &[u64], p: u64) -> FpPoly {
-    if a.is_empty() || b.is_empty() {
-        return vec![];
-    }
-    let mut prod = vec![0u64; a.len() + b.len() - 1];
-    for (i, &ai) in a.iter().enumerate() {
-        if ai == 0 {
-            continue;
-        }
-        for (j, &bj) in b.iter().enumerate() {
-            prod[i + j] = mod_add_u64(prod[i + j], mod_mul_u64(ai, bj, p), p);
-        }
-    }
-    fpp_rem(&prod, m, p)
-}
-
-/// `base^e mod m` for a monic `m` of degree `≥ 1`.
-fn fpp_powmod(base: &[u64], mut e: u64, m: &[u64], p: u64) -> FpPoly {
-    let mut result = vec![1u64];
-    let mut b = fpp_rem(base, m, p);
-    while e > 0 {
-        if e & 1 == 1 {
-            result = fpp_mulmod(&result, &b, m, p);
-        }
-        e >>= 1;
-        if e > 0 {
-            b = fpp_mulmod(&b, &b, m, p);
-        }
-    }
-    result
-}
-
-fn fpp_monic(a: &[u64], p: u64) -> FpPoly {
-    let mut a = a.to_vec();
-    fpp_trim(&mut a);
-    let Some(&lc) = a.last() else {
-        return vec![];
-    };
-    let inv = mod_pow_u64(lc, p - 2, p);
-    a.iter().map(|&c| mod_mul_u64(c, inv, p)).collect()
-}
-
-/// Monic gcd.
-fn fpp_gcd(a: &[u64], b: &[u64], p: u64) -> FpPoly {
-    let mut a = fpp_monic(a, p);
-    let mut b = b.to_vec();
-    fpp_trim(&mut b);
-    while !b.is_empty() {
-        let bm = fpp_monic(&b, p);
-        let r = fpp_rem(&a, &bm, p);
-        a = bm;
-        b = r;
-    }
-    a
-}
-
-/// Sorted roots in 𝔽ₚ of the non-zero polynomial `f`, `p` an odd prime
-/// below `2⁶³`: `g = gcd(f, xᵖ − x)` is the product of `(x − r)` over the
-/// distinct roots; `g` is then split with random `gcd(g, (x + a)^{(p−1)/2} − 1)`
-/// (Cantor–Zassenhaus equal-degree factorisation, all factors linear).
-fn fpp_roots(f: &[u64], p: u64) -> Vec<u64> {
-    let f = fpp_monic(f, p);
-    if f.len() <= 1 {
-        return vec![];
-    }
-    let mut xp_minus_x = fpp_powmod(&[0, 1], p, &f, p);
-    if xp_minus_x.len() < 2 {
-        xp_minus_x.resize(2, 0);
-    }
-    xp_minus_x[1] = (xp_minus_x[1] + p - 1) % p;
-    fpp_trim(&mut xp_minus_x);
-    let g = fpp_gcd(&f, &xp_minus_x, p);
-    let mut out = Vec::new();
-    let mut rng = XorShift::new(p ^ 0x9E37_79B9_7F4A_7C15);
-    let mut stack = vec![g];
-    let mut attempts = 0u32;
-    while let Some(g) = stack.pop() {
-        let deg = g.len().saturating_sub(1);
-        if deg == 0 {
-            continue;
-        }
-        if deg == 1 {
-            out.push((p - g[0]) % p);
-            continue;
-        }
-        // Split g with a random (x + a)^{(p−1)/2} − 1.
-        loop {
-            attempts += 1;
-            if attempts > 4096 {
-                // Probability 2^{−4096}; give up rather than loop forever.
-                return out;
-            }
-            let a = rng.next_u64() % p;
-            let mut pw = fpp_powmod(&[a, 1], (p - 1) / 2, &g, p);
-            if pw.is_empty() {
-                pw.push(0);
-            }
-            pw[0] = (pw[0] + p - 1) % p;
-            fpp_trim(&mut pw);
-            let h = fpp_gcd(&g, &pw, p);
-            let dh = h.len().saturating_sub(1);
-            if dh > 0 && dh < deg {
-                let q = fpp_div(&g, &h, p);
-                stack.push(h);
-                stack.push(q);
-                break;
-            }
-        }
-    }
-    out.sort_unstable();
-    out
+    f.roots().into_iter().map(BigInt::from).collect()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -1175,6 +1175,246 @@ pub(crate) fn bareiss_det<C: Cell>(a: Vec<C>, n: usize) -> Result<C, KernelError
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Fraction-free LU
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Bareiss forward elimination of a square `n × n` buffer that also records
+/// what an LU decomposition needs: the row permutation, each step's pivot
+/// and the column entries it eliminated.  Gaussian elimination's entries
+/// are ratios of consecutive leading minors, and Bareiss's intermediates
+/// *are* those minors, so `L[i][k] = col[i][k] / pivot[k]` and
+/// `U[k][·] = row k / pivot[k − 1]` come out with one exact division per
+/// entry instead of a normalised fraction per operation.  The pivot of a
+/// column is its first non-zero entry at or below the diagonal — the rule
+/// of the symbolic `Matrix::lu`, so the same factors.
+#[derive(Clone, Debug)]
+pub(crate) struct FractionFreeLu<C: Cell> {
+    a: Vec<C>,
+    n: usize,
+    /// `col[i · n + k]` for `i > k`: entry `(i, k)` just before step `k`
+    /// cleared it (zero elsewhere).
+    col: Vec<C>,
+    /// The pivot of every completed step.
+    pivots: Vec<C>,
+    perm: Vec<usize>,
+    /// Next elimination column.
+    k: usize,
+    singular: bool,
+}
+
+/// The finished elimination (non-singular): see [`FractionFreeLu`].
+pub(crate) struct LuParts<C> {
+    /// Row `k` is `pivot[k − 1]` times row `k` of `U` (`pivot[−1] = 1`).
+    pub(crate) rows: Vec<C>,
+    /// `col[i · n + k]` is `pivot[k]` times `L[i][k]` for `i > k`.
+    pub(crate) col: Vec<C>,
+    pub(crate) pivots: Vec<C>,
+    pub(crate) perm: Vec<usize>,
+}
+
+impl<C: Cell> FractionFreeLu<C> {
+    pub(crate) fn new(a: Vec<C>, n: usize) -> Self {
+        debug_assert_eq!(a.len(), n * n);
+        FractionFreeLu {
+            col: vec![C::cell_zero(); n * n],
+            a,
+            n,
+            pivots: Vec::with_capacity(n),
+            perm: (0..n).collect(),
+            k: 0,
+            singular: false,
+        }
+    }
+
+    /// Eliminate the next column.  `Ok(true)` when finished — every column
+    /// pivoted, or one had no non-zero candidate (singular).
+    pub(crate) fn step(&mut self) -> Result<bool, KernelError> {
+        let n = self.n;
+        if self.singular || self.k >= n {
+            return Ok(true);
+        }
+        let k = self.k;
+        let Some(p) = (k..n).find(|&i| !self.a[i * n + k].is_zero()) else {
+            self.singular = true;
+            return Ok(true);
+        };
+        if p != k {
+            swap_rows(&mut self.a, n, k, p);
+            // Columns < k of `col` are the multipliers of rows k and p;
+            // columns ≥ k are still zero in both.
+            swap_rows(&mut self.col, n, k, p);
+            self.perm.swap(k, p);
+        }
+        let pivot = self.a[k * n + k].clone();
+        if k + 1 < n {
+            let prev = self.pivots.last().cloned().unwrap_or_else(C::cell_one);
+            let d = C::divisor(&prev);
+            let (head, tail) = self.a.split_at_mut((k + 1) * n);
+            let prow = &head[k * n..(k + 1) * n];
+            for (below, row) in tail.chunks_exact_mut(n).enumerate() {
+                let i = k + 1 + below;
+                self.col[i * n + k] = row[k].clone();
+                pivot_row_update(row, prow, k, &pivot, &d).ok_or_else(KernelError::of::<C>)?;
+            }
+        }
+        self.pivots.push(pivot);
+        self.k += 1;
+        Ok(self.k >= n)
+    }
+
+    pub(crate) fn run(&mut self) -> Result<(), KernelError> {
+        while !self.step()? {}
+        Ok(())
+    }
+
+    pub(crate) fn convert<D: Cell>(self, mut f: impl FnMut(C) -> D) -> FractionFreeLu<D> {
+        FractionFreeLu {
+            a: self.a.into_iter().map(&mut f).collect(),
+            n: self.n,
+            col: self.col.into_iter().map(&mut f).collect(),
+            pivots: self.pivots.into_iter().map(&mut f).collect(),
+            perm: self.perm,
+            k: self.k,
+            singular: self.singular,
+        }
+    }
+
+    /// The factors' integer parts (after [`run`](Self::run)); `None` if the
+    /// matrix is singular.
+    pub(crate) fn finish(self) -> Option<LuParts<C>> {
+        if self.singular {
+            return None;
+        }
+        Some(LuParts {
+            rows: self.a,
+            col: self.col,
+            pivots: self.pivots,
+            perm: self.perm,
+        })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Berkowitz characteristic polynomial
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Berkowitz's division-free characteristic polynomial of a square `n × n`
+/// buffer in progress: [`vec`](Self::vec) holds the coefficients of
+/// `det(λI − A_k)` for the trailing `k × k` block, highest degree first,
+/// and each [`step`](Self::step) grows the block by one row and column.
+/// Only multiplications and additions are used, so the state between two
+/// steps moves to a wider cell type exactly like [`Bareiss`].
+#[derive(Clone, Debug)]
+pub(crate) struct Berkowitz<C: Cell> {
+    a: Vec<C>,
+    /// `−A` entry-wise: every accumulation `acc + x·y` is written as
+    /// `acc − (−x)·y` so that the one checked fused operation of [`Cell`]
+    /// ([`sub_mul`](Cell::sub_mul)) covers it.
+    neg_a: Vec<C>,
+    n: usize,
+    /// Coefficients for the trailing block of size `vec.len() − 1`.
+    vec: Vec<C>,
+}
+
+impl<C: Cell> Berkowitz<C> {
+    /// `Err` only if an entry cannot be negated in `C` (the minimum of a
+    /// fixed-width cell): the caller then widens the cells.
+    pub(crate) fn new(a: Vec<C>, n: usize) -> Result<Self, KernelError> {
+        debug_assert_eq!(a.len(), n * n);
+        let neg_a = a
+            .iter()
+            .map(Cell::neg)
+            .collect::<Option<Vec<C>>>()
+            .ok_or_else(KernelError::of::<C>)?;
+        // The trailing 1×1 block: det(λ − a_{n−1,n−1}).
+        let vec = match neg_a.last() {
+            Some(last) => vec![C::cell_one(), last.clone()],
+            None => vec![C::cell_one()],
+        };
+        Ok(Berkowitz { a, neg_a, n, vec })
+    }
+
+    /// Extend the coefficients to the next larger trailing block.
+    /// `Ok(true)` when the whole matrix is covered.
+    pub(crate) fn step(&mut self) -> Result<bool, KernelError> {
+        let n = self.n;
+        let k = self.vec.len(); // block size after this step
+        if k > n {
+            return Ok(true);
+        }
+        let s = n - k; // top-left index of the trailing k×k block
+        let err = KernelError::of::<C>;
+        let zero = C::cell_zero();
+
+        // Negated Toeplitz diagonals: [−1, a_ss, R·C, R·A'·C, …, R·A'^{k−2}·C]
+        // with R = row s (columns s+1..n), C = column s (rows s+1..n) and
+        // A' the trailing (k−1)×(k−1) block.
+        let mut nd: Vec<C> = Vec::with_capacity(k + 1);
+        nd.push(C::cell_one().neg().ok_or_else(err)?);
+        nd.push(self.a[s * n + s].clone());
+        let mut c: Vec<C> = (s + 1..n).map(|i| self.a[i * n + s].clone()).collect();
+        for pass in 0..k - 1 {
+            if pass > 0 {
+                // c ← A'·c
+                let mut next = Vec::with_capacity(k - 1);
+                for i in s + 1..n {
+                    let mut acc = zero.clone();
+                    for (cj, j) in c.iter().zip(s + 1..n) {
+                        if !cj.is_zero() {
+                            acc = acc.sub_mul(&self.neg_a[i * n + j], cj).ok_or_else(err)?;
+                        }
+                    }
+                    next.push(acc);
+                }
+                c = next;
+            }
+            let mut rc = zero.clone();
+            for (cj, j) in c.iter().zip(s + 1..n) {
+                if !cj.is_zero() {
+                    rc = rc.sub_mul(&self.neg_a[s * n + j], cj).ok_or_else(err)?;
+                }
+            }
+            nd.push(rc);
+        }
+
+        // vec ← T·vec, T the (k+1)×k lower-triangular Toeplitz matrix with
+        // T[i][j] = −nd[i − j].
+        let mut next_vec: Vec<C> = Vec::with_capacity(k + 1);
+        for i in 0..=k {
+            let mut acc = zero.clone();
+            for (j, v) in self.vec.iter().enumerate().take(i + 1) {
+                if !v.is_zero() {
+                    acc = acc.sub_mul(&nd[i - j], v).ok_or_else(err)?;
+                }
+            }
+            next_vec.push(acc);
+        }
+        self.vec = next_vec;
+        Ok(self.vec.len() > n)
+    }
+
+    pub(crate) fn run(&mut self) -> Result<(), KernelError> {
+        while !self.step()? {}
+        Ok(())
+    }
+
+    pub(crate) fn convert<D: Cell>(self, mut f: impl FnMut(C) -> D) -> Berkowitz<D> {
+        Berkowitz {
+            a: self.a.into_iter().map(&mut f).collect(),
+            neg_a: self.neg_a.into_iter().map(&mut f).collect(),
+            n: self.n,
+            vec: self.vec.into_iter().map(&mut f).collect(),
+        }
+    }
+
+    /// The coefficients of `det(λI − A)`, highest degree first (length
+    /// `n + 1`), after [`run`](Self::run).
+    pub(crate) fn finish(self) -> Vec<C> {
+        self.vec
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Width escalation: i64 → i128 → W256 → BigInt, resuming where the narrower
 // cells overflowed
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1431,6 +1671,109 @@ pub(crate) fn try_det(a: Vec<BigInt>, n: usize) -> Result<BigInt, KernelError> {
     b.finish().ok_or(KernelError::Inexact)
 }
 
+/// The fixed-width stages of [`try_lu`].
+fn lu_fixed(a: &[BigInt], n: usize) -> Staged<FractionFreeLu<BigInt>> {
+    let b128 = match a
+        .iter()
+        .map(|v| i64::try_from(v).ok())
+        .collect::<Option<Vec<i64>>>()
+    {
+        Some(cells) => match run_bounded(FractionFreeLu::new(cells, n), FractionFreeLu::step) {
+            Ok(done) => return Staged::Done(done.convert(BigInt::from)),
+            Err(snap) => Some(snap.convert(i128::from)),
+        },
+        None => a
+            .iter()
+            .map(|v| i128::try_from(v).ok())
+            .collect::<Option<Vec<i128>>>()
+            .map(|cells| FractionFreeLu::new(cells, n)),
+    };
+    let b256 = match b128 {
+        Some(b) => match run_bounded(b, FractionFreeLu::step) {
+            Ok(done) => return Staged::Done(done.convert(BigInt::from)),
+            Err(snap) => Some(snap.convert(W256::from_i128)),
+        },
+        None => a
+            .iter()
+            .map(W256::from_big)
+            .collect::<Option<Vec<W256>>>()
+            .map(|cells| FractionFreeLu::new(cells, n)),
+    };
+    match b256 {
+        Some(b) => match run_bounded(b, FractionFreeLu::step) {
+            Ok(done) => Staged::Done(done.convert(|w| w.to_big())),
+            Err(snap) => Staged::Resume(snap.convert(|w| w.to_big())),
+        },
+        None => Staged::TooWide,
+    }
+}
+
+/// Fraction-free LU of a square row-major integer buffer with width
+/// escalation (see [`try_scaled_rref`]): `Ok(None)` for a singular matrix,
+/// `Err(Inexact)` only for a violated exactness invariant.
+pub(crate) fn try_lu(a: Vec<BigInt>, n: usize) -> Result<Option<LuParts<BigInt>>, KernelError> {
+    let mut b = match lu_fixed(&a, n) {
+        Staged::Done(done) => return Ok(done.finish()),
+        Staged::Resume(b) => b,
+        Staged::TooWide => FractionFreeLu::new(a, n),
+    };
+    b.run()?;
+    Ok(b.finish())
+}
+
+/// The fixed-width stages of [`try_char_poly`].
+fn berkowitz_fixed(a: &[BigInt], n: usize) -> Staged<Berkowitz<BigInt>> {
+    let b128 = match a
+        .iter()
+        .map(|v| i64::try_from(v).ok())
+        .collect::<Option<Vec<i64>>>()
+        .and_then(|cells| Berkowitz::new(cells, n).ok())
+    {
+        Some(b) => match run_bounded(b, Berkowitz::step) {
+            Ok(done) => return Staged::Done(done.convert(BigInt::from)),
+            Err(snap) => Some(snap.convert(i128::from)),
+        },
+        None => a
+            .iter()
+            .map(|v| i128::try_from(v).ok())
+            .collect::<Option<Vec<i128>>>()
+            .and_then(|cells| Berkowitz::new(cells, n).ok()),
+    };
+    let b256 = match b128 {
+        Some(b) => match run_bounded(b, Berkowitz::step) {
+            Ok(done) => return Staged::Done(done.convert(BigInt::from)),
+            Err(snap) => Some(snap.convert(W256::from_i128)),
+        },
+        None => a
+            .iter()
+            .map(W256::from_big)
+            .collect::<Option<Vec<W256>>>()
+            .and_then(|cells| Berkowitz::new(cells, n).ok()),
+    };
+    match b256 {
+        Some(b) => match run_bounded(b, Berkowitz::step) {
+            Ok(done) => Staged::Done(done.convert(|w| w.to_big())),
+            Err(snap) => Staged::Resume(snap.convert(|w| w.to_big())),
+        },
+        None => Staged::TooWide,
+    }
+}
+
+/// Berkowitz characteristic polynomial `det(λI − A)` of a square row-major
+/// integer buffer, highest degree first (length `n + 1`), with width
+/// escalation (see [`try_scaled_rref`]).  The algorithm is division-free,
+/// so the `BigInt` stage cannot fail; the `Result` is the shape shared with
+/// the other drivers.
+pub(crate) fn try_char_poly(a: Vec<BigInt>, n: usize) -> Result<Vec<BigInt>, KernelError> {
+    let mut b = match berkowitz_fixed(&a, n) {
+        Staged::Done(done) => return Ok(done.finish()),
+        Staged::Resume(b) => b,
+        Staged::TooWide => Berkowitz::new(a, n)?,
+    };
+    b.run()?;
+    Ok(b.finish())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1675,6 +2018,105 @@ mod tests {
             try_det(a, 3),
             Ok(BigInt::from(3 * (15 - 1) - (3 - 2) + 2 * (1 - 10)) * &big * &big * &big)
         );
+    }
+
+    /// Berkowitz on `BigInt` cells, written out with plain `+`/`*` (no
+    /// `Cell` operations): `det(λI − A)`, highest degree first.
+    fn reference_char_poly(a: &[BigInt], n: usize) -> Vec<BigInt> {
+        if n == 0 {
+            return vec![BigInt::from(1)];
+        }
+        let at = |i: usize, j: usize| &a[i * n + j];
+        let mut vec = vec![BigInt::from(1), -at(n - 1, n - 1)];
+        for k in 2..=n {
+            let s = n - k;
+            let mut c: Vec<BigInt> = (s + 1..n).map(|i| at(i, s).clone()).collect();
+            let mut diags = vec![BigInt::from(1), -at(s, s)];
+            for step in 0..k - 1 {
+                if step > 0 {
+                    c = (s + 1..n)
+                        .map(|i| (s + 1..n).zip(&c).map(|(j, cj)| at(i, j) * cj).sum())
+                        .collect();
+                }
+                let rc: BigInt = (s + 1..n).zip(&c).map(|(j, cj)| at(s, j) * cj).sum();
+                diags.push(-rc);
+            }
+            vec = (0..=k)
+                .map(|i| {
+                    vec.iter()
+                        .enumerate()
+                        .take(i + 1)
+                        .map(|(j, v)| &diags[i - j] * v)
+                        .sum()
+                })
+                .collect();
+        }
+        vec
+    }
+
+    /// The escalating Berkowitz driver returns the plain `BigInt`
+    /// computation exactly, whichever cell widths the coefficients pass
+    /// through, and the small cases by hand: `det(λI − A)` of the empty
+    /// matrix is `1`, of `[a]` is `λ − a`, of a 2×2 is `λ² − tr·λ + det`.
+    #[test]
+    fn escalating_char_poly_matches_the_bigint_computation() {
+        let m = |rows: &[&[i64]]| -> Vec<BigInt> {
+            rows.iter()
+                .flat_map(|r| r.iter().map(|&v| BigInt::from(v)))
+                .collect()
+        };
+        let ints = |v: &[i64]| -> Vec<BigInt> { v.iter().map(|&x| BigInt::from(x)).collect() };
+        assert_eq!(try_char_poly(Vec::new(), 0), Ok(ints(&[1])));
+        assert_eq!(try_char_poly(m(&[&[7]]), 1), Ok(ints(&[1, -7])));
+        assert_eq!(
+            try_char_poly(m(&[&[1, 2], &[3, 4]]), 2),
+            Ok(ints(&[1, -5, -2]))
+        );
+        assert_eq!(
+            try_char_poly(m(&[&[2, 0, 0], &[0, 3, 0], &[0, 0, 5]]), 3),
+            Ok(ints(&[1, -10, 31, -30]))
+        );
+        // i64::MIN cannot be negated on i64 cells: the driver widens.
+        assert_eq!(
+            try_char_poly(vec![BigInt::from(i64::MIN)], 1),
+            Ok(vec![BigInt::from(1), -BigInt::from(i64::MIN)])
+        );
+        let mut g = Lcg(5);
+        let cases: Vec<(usize, u32)> = vec![
+            (4, 3),   // stays on i64
+            (8, 3),   // i64 throughout
+            (7, 12),  // into i128
+            (9, 24),  // into 256-bit cells
+            (6, 45),  // i64 overflows at once
+            (5, 100), // starts on 256-bit cells, overflows into BigInt
+            (4, 300), // does not fit 256-bit cells: BigInt from the start
+        ];
+        for (n, bits) in cases {
+            for round in 0..3 {
+                let a: Vec<BigInt> = (0..n * n)
+                    .map(|k| {
+                        if (k + round) % 5 == 0 {
+                            BigInt::from(0)
+                        } else if bits <= 3 {
+                            g.small()
+                        } else {
+                            g.wide(bits)
+                        }
+                    })
+                    .collect();
+                let want = reference_char_poly(&a, n);
+                assert_eq!(want.len(), n + 1);
+                assert_eq!(want[0], BigInt::from(1));
+                assert_eq!(
+                    try_char_poly(a.clone(), n),
+                    Ok(want.clone()),
+                    "{n}×{n}, {bits} bits"
+                );
+                // Against the fraction-free determinant: c_0 = (−1)ⁿ det A.
+                let det = try_det(a, n).expect("exact");
+                assert_eq!(want[n], if n % 2 == 1 { -det } else { det });
+            }
+        }
     }
 
     /// The invariant-free fallback agrees with the fraction-free kernel as

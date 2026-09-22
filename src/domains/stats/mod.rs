@@ -112,6 +112,7 @@ pub mod information;
 mod joint;
 pub mod markov;
 pub mod multivariate;
+pub mod numdist;
 pub mod order;
 pub mod regression;
 pub mod reliability;

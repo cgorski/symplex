@@ -3873,8 +3873,7 @@ pub fn power_t_test_two_sample(
     }
     let df = (2 * n_per_group - 2) as f64;
     let delta = effect_size * (n_per_group as f64 / 2.0).sqrt();
-    let ctx = Context::new();
-    let t_crit = student_t_quantile_f64(OP, &ctx, df, 1.0 - alpha / 2.0)?;
+    let t_crit = student_t_quantile_f64(OP, df, 1.0 - alpha / 2.0)?;
     // χ²_ν density in log form.
     let half = df / 2.0;
     let log_norm = half * std::f64::consts::LN_2 + lgamma(half);

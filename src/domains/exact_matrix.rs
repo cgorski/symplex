@@ -55,11 +55,17 @@ use crate::api::context::Context;
 use crate::base::errors::SymplexError;
 use crate::base::numeric::Q;
 use crate::domains::decompositions::{
-    HermiteNormalForm, Hessenberg, LllReduction, RankDecomposition, SmithNormalForm,
+    HermiteNormalForm, Hessenberg, LllReduction, Lu, RankDecomposition, SmithNormalForm,
 };
-use crate::domains::exact_kernel::{KernelError, scaled_rref, try_det, try_scaled_rref};
+use crate::domains::exact_kernel::{
+    KernelError, LuParts, scaled_rref, try_char_poly, try_det, try_lu, try_scaled_rref,
+};
 use crate::domains::matrix::Matrix;
 use crate::domains::ntheory::{gcdex, mod_inverse};
+// Named through the module on purpose: importing `Ring` itself would make
+// every `BigInt::zero()` / `x.is_zero()` on the concrete scalars below
+// ambiguous with `num_traits::{Zero, One}`.
+use crate::poly::traits as coeff;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Scalar trait
@@ -73,40 +79,64 @@ mod sealed {
 
 /// Entry type of an [`ExactMatrix`]: [`BigInt`] or [`Q`].
 ///
-/// Sealed — the two implementations are [`ZMatrix`] and [`QMatrix`].
+/// Sealed — the two implementations are [`ZMatrix`] and [`QMatrix`].  The
+/// arithmetic is the polynomial coefficient hierarchy's:
+/// [`Ring`](crate::factor_zassenhaus::traits::Ring) supplies
+/// `add`/`sub`/`mul`/`neg` by reference and `zero`/`one`,
+/// [`IntegralCoeff`](crate::factor_zassenhaus::traits::IntegralCoeff)
+/// supplies `from_i64`; `Signed` adds `abs`/`is_negative`.  (`Zero`/`One`
+/// arrive through `Signed`, so generic code names `zero`/`is_zero` through
+/// one trait explicitly.)
 pub trait ExactScalar:
-    sealed::Sealed + Clone + Eq + Ord + Hash + fmt::Display + fmt::Debug + Zero + One + Signed
+    sealed::Sealed
+    + crate::poly::traits::Ring
+    + crate::poly::traits::IntegralCoeff
+    + Ord
+    + Hash
+    + fmt::Display
+    + Signed
 {
     /// Name used by `Debug` output (`ZMatrix` / `QMatrix`).
     fn matrix_name() -> &'static str;
-    /// `self + other`, by reference.
-    fn add_ref(&self, other: &Self) -> Self;
-    /// `self − other`, by reference.
-    fn sub_ref(&self, other: &Self) -> Self;
-    /// `self · other`, by reference.
-    fn mul_ref(&self, other: &Self) -> Self;
-    /// The scalar `n`.
-    fn from_i64(n: i64) -> Self;
+    /// The product of `a` (`n × k`) and `b` (`k × m`); the shapes are
+    /// checked by [`ExactMatrix::matmul`].  `Q` clears denominators and
+    /// multiplies over ℤ (one normalised fraction per result entry instead
+    /// of one per operation).
+    #[doc(hidden)]
+    fn matmul(a: &ExactMatrix<Self>, b: &ExactMatrix<Self>) -> ExactMatrix<Self> {
+        schoolbook_matmul(a, b)
+    }
+}
+
+/// `a · b` by the schoolbook loop, skipping zero entries.
+fn schoolbook_matmul<T: ExactScalar>(a: &ExactMatrix<T>, b: &ExactMatrix<T>) -> ExactMatrix<T> {
+    let (n, k, m) = (a.nrows, a.ncols, b.ncols);
+    let mut data = vec![<T as Zero>::zero(); n * m];
+    for i in 0..n {
+        for p in 0..k {
+            let x = &a.data[i * k + p];
+            if Zero::is_zero(x) {
+                continue;
+            }
+            let brow = &b.data[p * m..(p + 1) * m];
+            let crow = &mut data[i * m..(i + 1) * m];
+            for (c, y) in crow.iter_mut().zip(brow) {
+                if !Zero::is_zero(y) {
+                    *c = coeff::Ring::add(c, &coeff::Ring::mul(x, y));
+                }
+            }
+        }
+    }
+    ExactMatrix {
+        data,
+        nrows: n,
+        ncols: m,
+    }
 }
 
 impl ExactScalar for BigInt {
     fn matrix_name() -> &'static str {
         "ZMatrix"
-    }
-    #[inline]
-    fn add_ref(&self, other: &Self) -> Self {
-        self + other
-    }
-    #[inline]
-    fn sub_ref(&self, other: &Self) -> Self {
-        self - other
-    }
-    #[inline]
-    fn mul_ref(&self, other: &Self) -> Self {
-        self * other
-    }
-    fn from_i64(n: i64) -> Self {
-        BigInt::from(n)
     }
 }
 
@@ -114,20 +144,42 @@ impl ExactScalar for Q {
     fn matrix_name() -> &'static str {
         "QMatrix"
     }
-    #[inline]
-    fn add_ref(&self, other: &Self) -> Self {
-        self + other
-    }
-    #[inline]
-    fn sub_ref(&self, other: &Self) -> Self {
-        self - other
-    }
-    #[inline]
-    fn mul_ref(&self, other: &Self) -> Self {
-        self * other
-    }
-    fn from_i64(n: i64) -> Self {
-        Ratio::from_integer(BigInt::from(n))
+    fn matmul(a: &QMatrix, b: &QMatrix) -> QMatrix {
+        // (Dₐ·A)(B·D_b) = Dₐ·(AB)·D_b with Dₐ the row scales of A and D_b
+        // the column scales of B, so cᵢⱼ = zᵢⱼ / (sₐᵢ · s_bⱼ).
+        let (za, sa) = a.integer_rows();
+        let (zb, sb) = b.integer_cols();
+        let zc = schoolbook_matmul(
+            &ZMatrix {
+                data: za,
+                nrows: a.nrows,
+                ncols: a.ncols,
+            },
+            &ZMatrix {
+                data: zb,
+                nrows: b.nrows,
+                ncols: b.ncols,
+            },
+        );
+        let m = b.ncols;
+        let data = zc
+            .data
+            .into_iter()
+            .enumerate()
+            .map(|(idx, z)| {
+                let d = &sa[idx / m] * &sb[idx % m];
+                if d.is_one() {
+                    Ratio::from_integer(z)
+                } else {
+                    Ratio::new(z, d)
+                }
+            })
+            .collect();
+        QMatrix {
+            data,
+            nrows: a.nrows,
+            ncols: m,
+        }
     }
 }
 
@@ -299,7 +351,7 @@ impl<T: ExactScalar> ExactMatrix<T> {
             "ExactMatrix::zeros: dimensions must be positive"
         );
         Self {
-            data: vec![T::zero(); nrows * ncols],
+            data: vec![<T as Zero>::zero(); nrows * ncols],
             nrows,
             ncols,
         }
@@ -314,7 +366,7 @@ impl<T: ExactScalar> ExactMatrix<T> {
         assert!(n > 0, "ExactMatrix::identity: dimension must be positive");
         let mut m = Self::zeros(n, n);
         for i in 0..n {
-            m.data[i * n + i] = T::one();
+            m.data[i * n + i] = <T as One>::one();
         }
         m
     }
@@ -523,9 +575,9 @@ impl<T: ExactScalar> ExactMatrix<T> {
         self.is_square()
             && self.data.iter().enumerate().all(|(k, v)| {
                 if k / self.ncols == k % self.ncols {
-                    v.is_one()
+                    One::is_one(v)
                 } else {
-                    v.is_zero()
+                    Zero::is_zero(v)
                 }
             })
     }
@@ -674,7 +726,7 @@ impl<T: ExactScalar> ExactMatrix<T> {
                 .data
                 .iter()
                 .zip(&other.data)
-                .map(|(a, b)| a.add_ref(b))
+                .map(|(a, b)| coeff::Ring::add(a, b))
                 .collect(),
             nrows: self.nrows,
             ncols: self.ncols,
@@ -693,7 +745,7 @@ impl<T: ExactScalar> ExactMatrix<T> {
                 .data
                 .iter()
                 .zip(&other.data)
-                .map(|(a, b)| a.sub_ref(b))
+                .map(|(a, b)| coeff::Ring::sub(a, b))
                 .collect(),
             nrows: self.nrows,
             ncols: self.ncols,
@@ -707,10 +759,11 @@ impl<T: ExactScalar> ExactMatrix<T> {
 
     /// Multiply every entry by `k`.
     pub fn scale(&self, k: &T) -> Self {
-        self.map(|v| v.mul_ref(k))
+        self.map(|v| coeff::Ring::mul(v, k))
     }
 
-    /// Matrix product.
+    /// Matrix product.  A `QMatrix` product is formed over ℤ (row scales
+    /// of `self`, column scales of `other`) and normalised once per entry.
     ///
     /// # Errors
     ///
@@ -725,28 +778,7 @@ impl<T: ExactScalar> ExactMatrix<T> {
                 ),
             ));
         }
-        let (n, k, m) = (self.nrows, self.ncols, other.ncols);
-        let mut data = vec![T::zero(); n * m];
-        for i in 0..n {
-            for p in 0..k {
-                let a = &self.data[i * k + p];
-                if a.is_zero() {
-                    continue;
-                }
-                let brow = &other.data[p * m..(p + 1) * m];
-                let crow = &mut data[i * m..(i + 1) * m];
-                for (c, b) in crow.iter_mut().zip(brow) {
-                    if !b.is_zero() {
-                        *c = c.add_ref(&a.mul_ref(b));
-                    }
-                }
-            }
-        }
-        Ok(Self {
-            data,
-            nrows: n,
-            ncols: m,
-        })
+        Ok(T::matmul(self, other))
     }
 
     /// Sum of the diagonal entries.
@@ -759,7 +791,7 @@ impl<T: ExactScalar> ExactMatrix<T> {
         Ok(self
             .diagonal()
             .iter()
-            .fold(T::zero(), |acc, v| acc.add_ref(v)))
+            .fold(<T as Zero>::zero(), |acc, v| coeff::Ring::add(&acc, v)))
     }
 
     /// Swap rows `a` and `b`.
@@ -843,8 +875,8 @@ impl<T: ExactScalar> ExactMatrix<T> {
 /// updates the `n` row sums by a single addition or subtraction.
 /// `data` is a row-major `n × n` buffer with `1 ≤ n ≤ 63`.
 fn ryser_permanent<T: ExactScalar>(data: &[T], n: usize) -> T {
-    let mut row_sums = vec![T::zero(); n];
-    let mut total = T::zero();
+    let mut row_sums = vec![<T as Zero>::zero(); n];
+    let mut total = <T as Zero>::zero();
     let mut size = 0usize; // |S|
     for k in 1u64..(1u64 << n) {
         // gray(k) and gray(k − 1) differ exactly in bit `trailing_zeros(k)`.
@@ -852,13 +884,13 @@ fn ryser_permanent<T: ExactScalar>(data: &[T], n: usize) -> T {
         let added = ((k ^ (k >> 1)) >> bit) & 1 == 1;
         for (i, sum) in row_sums.iter_mut().enumerate() {
             let a = &data[i * n + bit];
-            if a.is_zero() {
+            if Zero::is_zero(a) {
                 continue;
             }
             *sum = if added {
-                sum.add_ref(a)
+                coeff::Ring::add(sum, a)
             } else {
-                sum.sub_ref(a)
+                coeff::Ring::sub(sum, a)
             };
         }
         if added {
@@ -869,11 +901,13 @@ fn ryser_permanent<T: ExactScalar>(data: &[T], n: usize) -> T {
         if row_sums.iter().any(Zero::is_zero) {
             continue;
         }
-        let prod = row_sums.iter().fold(T::one(), |acc, r| acc.mul_ref(r));
+        let prod = row_sums
+            .iter()
+            .fold(<T as One>::one(), |acc, r| coeff::Ring::mul(&acc, r));
         total = if size % 2 == 1 {
-            total.sub_ref(&prod)
+            coeff::Ring::sub(&total, &prod)
         } else {
-            total.add_ref(&prod)
+            coeff::Ring::add(&total, &prod)
         };
     }
     if n % 2 == 1 { -total } else { total }
@@ -1695,6 +1729,30 @@ impl QMatrix {
         (data, scales)
     }
 
+    /// Multiply every column by the least common multiple of its
+    /// denominators.  Returns the integer data and the per-column
+    /// multipliers `sⱼ > 0`.
+    fn integer_cols(&self) -> (Vec<BigInt>, Vec<BigInt>) {
+        let (n, m) = (self.nrows, self.ncols);
+        let scales: Vec<BigInt> = (0..m)
+            .map(|j| (0..n).fold(BigInt::one(), |l, i| l.lcm(self.data[i * m + j].denom())))
+            .collect();
+        let data = self
+            .data
+            .iter()
+            .enumerate()
+            .map(|(idx, q)| {
+                let s = &scales[idx % m];
+                if s.is_one() {
+                    q.numer().clone()
+                } else {
+                    q.numer() * (s / q.denom())
+                }
+            })
+            .collect();
+        (data, scales)
+    }
+
     /// Clear denominators: `(Z, s)` with `Z = s · self` integral and `s`
     /// the least common multiple of all denominators.
     ///
@@ -1914,6 +1972,145 @@ impl QMatrix {
                 SymplexError::ComputationFailed { reason, .. } => failed("inv", reason),
                 other => other,
             })
+    }
+
+    /// Berkowitz's division-free characteristic polynomial: the
+    /// coefficients of `det(λI − A)`, **highest degree first**
+    /// (`[1, c_{n−1}, …, c_0]`, length `n + 1`).  Requires a square matrix
+    /// (checked by the callers).
+    ///
+    /// The denominators are cleared once (`Z = s·A`), the integer
+    /// characteristic polynomial runs on the escalating fraction-free
+    /// kernel, and `det(λI − sA) = sⁿ·det((λ/s)I − A)` divides the scale
+    /// back out: the coefficient of `λ^{n−i}` is the integer one over `sⁱ`.
+    pub(crate) fn berkowitz_monic(&self) -> Result<Vec<Q>, SymplexError> {
+        let n = self.nrows;
+        let (z, s) = self.clear_denominators();
+        let coeffs =
+            try_char_poly(z.into_flat(), n).map_err(|e| kernel_failed("char_poly_coeffs", e))?;
+        if s.is_one() {
+            return Ok(coeffs.into_iter().map(Ratio::from_integer).collect());
+        }
+        let mut pow = BigInt::one();
+        Ok(coeffs
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| {
+                if i > 0 {
+                    pow *= &s;
+                }
+                Ratio::new(c, pow.clone())
+            })
+            .collect())
+    }
+
+    /// Coefficients of the characteristic polynomial `det(A − λI)` in
+    /// **ascending** degree order: `[c_0, c_1, …, c_n]` with `c_0 = det(A)`
+    /// and `c_n = (−1)ⁿ` — the convention of
+    /// [`Matrix::char_poly_coeffs`], which routes here for rational
+    /// matrices.  Berkowitz's division-free algorithm (`O(n⁴)` ring
+    /// operations, no gcd normalisation inside the loops).
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if the matrix is not square.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::matrix::QMatrix;
+    /// use symplex::linprog::{q, qi};
+    ///
+    /// // det(A − λI) = λ² − 5λ − 2
+    /// let a = QMatrix::from_i64(&[&[1, 2], &[3, 4]]).unwrap();
+    /// assert_eq!(a.char_poly_coeffs().unwrap(), vec![qi(-2), qi(-5), qi(1)]);
+    /// // det(B − λI) = −λ³ + 3λ²/2 + 3λ − 1/4 for a rational 3×3
+    /// let b = QMatrix::new(vec![
+    ///     vec![q(1, 2), qi(1), qi(0)],
+    ///     vec![qi(2), qi(1), q(1, 2)],
+    ///     vec![qi(1), qi(3), qi(0)],
+    /// ]).unwrap();
+    /// assert_eq!(b.char_poly_coeffs().unwrap(), vec![q(-1, 4), qi(3), q(3, 2), qi(-1)]);
+    /// ```
+    pub fn char_poly_coeffs(&self) -> Result<Vec<Q>, SymplexError> {
+        self.require_square("char_poly_coeffs")?;
+        let n = self.nrows;
+        let monic = self.berkowitz_monic()?;
+        let sign_flip = n % 2 == 1;
+        Ok((0..=n)
+            .map(|k| {
+                let c = monic[n - k].clone();
+                if sign_flip { -c } else { c }
+            })
+            .collect())
+    }
+
+    /// LU decomposition with partial pivoting: `P·A = L·U`, returned as
+    /// [`Lu`]`{ l, u, perm }` with `L` unit lower triangular, `U` upper
+    /// triangular and `perm[i]` the original index of row `i` of `P·A`.
+    /// The pivot of each column is the first non-zero entry at or below
+    /// the diagonal — the rule of [`Matrix::lu`], which routes here for
+    /// rational matrices and therefore returns the same factors entry for
+    /// entry.
+    ///
+    /// # Errors
+    ///
+    /// - [`SymplexError::InvalidArgument`] if the matrix is not square.
+    /// - [`SymplexError::ComputationFailed`] if the matrix is singular.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::decompositions::Lu;
+    /// use symplex::matrix::QMatrix;
+    /// use symplex::linprog::{q, qi};
+    ///
+    /// let a = QMatrix::from_i64(&[&[4, 3], &[6, 3]]).unwrap();
+    /// let Lu { l, u, perm } = a.lu().unwrap();
+    /// assert_eq!(perm, vec![0, 1]);
+    /// assert_eq!(l[(1, 0)], q(3, 2));
+    /// assert_eq!(u.row(1), &[qi(0), q(-3, 2)]);
+    /// assert_eq!(&l * &u, a);
+    /// assert!(QMatrix::from_i64(&[&[1, 2], &[2, 4]]).unwrap().lu().is_err());
+    /// ```
+    pub fn lu(&self) -> Result<Lu<QMatrix>, SymplexError> {
+        self.require_square("lu")?;
+        let n = self.nrows;
+        // P·(sA) = L·U_Z  ⇒  P·A = L·(U_Z / s): fraction-free over ℤ (Bareiss,
+        // whose intermediates are the minors that Gaussian elimination's
+        // entries are ratios of), one exact division per factor entry.
+        let (z, s) = self.clear_denominators();
+        let LuParts {
+            rows,
+            col,
+            pivots,
+            perm,
+        } = try_lu(z.into_flat(), n)
+            .map_err(|e| kernel_failed("lu", e))?
+            .ok_or_else(|| failed("lu", "matrix is singular (zero pivot column)"))?;
+        let mut l = QMatrix::identity(n);
+        let mut u = QMatrix::zeros(n, n);
+        for k in 0..n {
+            // Row k of the buffer is pivot[k−1] · (row k of U_Z).
+            let denom = match k {
+                0 => s.clone(),
+                _ => &pivots[k - 1] * &s,
+            };
+            for j in k..n {
+                let v = &rows[k * n + j];
+                if !v.is_zero() {
+                    u.data[k * n + j] = Ratio::new(v.clone(), denom.clone());
+                }
+            }
+            // Entry (i, k) before step k cleared it is pivot[k] · L[i][k].
+            for i in (k + 1)..n {
+                let v = &col[i * n + k];
+                if !v.is_zero() {
+                    l.data[i * n + k] = Ratio::new(v.clone(), pivots[k].clone());
+                }
+            }
+        }
+        Ok(Lu { l, u, perm })
     }
 
     /// `true` if `self` equals its transpose.

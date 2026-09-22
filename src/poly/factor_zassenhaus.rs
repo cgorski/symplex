@@ -8,8 +8,9 @@
 //!    kept.  The sets of achievable factor degrees are intersected across all
 //!    tried primes, which often proves irreducibility outright.
 //! 2. **Factor mod p** with Cantor–Zassenhaus (distinct-degree splitting
-//!    followed by equal-degree splitting).  Arithmetic in `GF(p)[x]` uses
-//!    `u64` coefficients with `p < 2³¹`.
+//!    followed by equal-degree splitting).  Arithmetic in `GF(p)[x]` is
+//!    the value-level ring [`PolyIn<Fp64>`](modpoly::PolyIn) (`u64`
+//!    coefficients, `p < 2³¹`); the integer side is `GenPoly<BigInt>`.
 //! 3. **Hensel lift** the modular factorization to `p^k` where
 //!    `p^k > 2 · 2ⁿ · ‖f‖₂ · |lc(f)|` (the Mignotte bound) using linear
 //!    multifactor lifting.
@@ -50,6 +51,7 @@ use num_integer::Integer;
 use num_rational::Ratio;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
+use super::modpoly::{Fp64, PolyIn, RingOps};
 use super::multipoly::{MonomialOrd, MultiPoly};
 
 // The dense polynomial types live in crate-private modules; re-export them
@@ -64,6 +66,13 @@ pub mod traits {
     pub use crate::poly::traits::{
         BindingStrength, CoeffDisplay, EuclideanDomain, Field, IntegralCoeff, Ring,
     };
+}
+
+/// The value-level polynomial ring `𝔽ₚ[x]` behind [`factor_mod_p`] and the
+/// modular steps of the Zassenhaus algorithm: [`PolyIn`]
+/// over [`Fp64`].
+pub mod modpoly {
+    pub use crate::poly::modpoly::{DivRem, ExtendedGcd, Fp64, PolyIn, RingOps};
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -189,8 +198,7 @@ pub(crate) fn factor_zassenhaus_checked(f: &Poly) -> (Ratio<BigInt>, Vec<(Poly, 
     let mut all: Vec<(Poly, u32)> = Vec::new();
     let mut complete = true;
     for (sf, mult) in super::dense::square_free_decomposition(&prim) {
-        let coeffs = poly_to_z(&sf);
-        let (factors, part_complete) = factor_squarefree_z_checked(&coeffs);
+        let (factors, part_complete) = factor_squarefree_z_checked(&poly_to_z(&sf));
         complete &= part_complete;
         for g in factors {
             all.push((z_to_poly(&g), mult));
@@ -248,39 +256,37 @@ pub(crate) fn factor_zassenhaus_checked(f: &Poly) -> (Ratio<BigInt>, Vec<(Poly, 
 /// ```
 #[must_use]
 pub fn factor_squarefree_z(f: &[BigInt]) -> Vec<Vec<BigInt>> {
-    factor_squarefree_z_checked(f).0
+    factor_squarefree_z_checked(&GenPoly::from_coeffs(f.to_vec()))
+        .0
+        .into_iter()
+        .map(|g| g.coeffs)
+        .collect()
 }
 
-/// [`factor_squarefree_z`] that also reports whether every returned factor
-/// is certified irreducible (see [`factor_zassenhaus_checked`]).
-fn factor_squarefree_z_checked(f: &[BigInt]) -> (Vec<Vec<BigInt>>, bool) {
-    let mut f = f.to_vec();
-    z_normalize(&mut f);
-    let Some(n) = z_degree(&f) else {
+/// [`factor_squarefree_z`] on a `GenPoly<BigInt>` that also reports whether
+/// every returned factor is certified irreducible (see
+/// [`factor_zassenhaus_checked`]).
+fn factor_squarefree_z_checked(f: &ZPoly) -> (Vec<ZPoly>, bool) {
+    let Some(n) = f.degree() else {
         return (vec![], true);
     };
     if n == 0 {
         return (vec![], true);
     }
-    let mut f = z_primitive_part(&f);
-    if f.last().is_some_and(|lc| lc.is_negative()) {
-        for c in &mut f {
-            *c = -std::mem::take(c);
-        }
-    }
+    let mut f = positive_lc(f.primitive_part());
 
-    let mut factors: Vec<Vec<BigInt>> = Vec::new();
+    let mut factors: Vec<ZPoly> = Vec::new();
 
     // Powers of x.
-    let low_zeros = f.iter().take_while(|c| c.is_zero()).count();
+    let low_zeros = f.coeffs.iter().take_while(|c| c.is_zero()).count();
     if low_zeros > 0 {
         for _ in 0..low_zeros {
-            factors.push(vec![BigInt::zero(), BigInt::one()]);
+            factors.push(ZPoly::x());
         }
-        f.drain(..low_zeros);
+        f.coeffs.drain(..low_zeros);
     }
 
-    if z_degree(&f).unwrap_or(0) == 0 {
+    if f.degree().unwrap_or(0) == 0 {
         factors.sort_by(cmp_z);
         return (factors, true);
     }
@@ -307,15 +313,10 @@ fn factor_squarefree_z_checked(f: &[BigInt]) -> (Vec<Vec<BigInt>>, bool) {
     for l in linear {
         factors.push(poly_to_z(&l));
     }
-    let mut remaining = poly_to_z(&remaining);
-    if remaining.last().is_some_and(|lc| lc.is_negative()) {
-        for c in &mut remaining {
-            *c = -std::mem::take(c);
-        }
-    }
+    let remaining = positive_lc(poly_to_z(&remaining));
 
     let mut complete = true;
-    match z_degree(&remaining) {
+    match remaining.degree() {
         None | Some(0) => {}
         Some(1) => factors.push(remaining),
         Some(_) => match zassenhaus_core(&remaining) {
@@ -401,33 +402,34 @@ pub fn factor_mod_p(f: &Poly, p: u64) -> Option<ModPFactorization> {
     if !is_small_odd_prime(p) {
         return None;
     }
+    let ring = Fp64::new(p);
     let pb = BigInt::from(p);
-    let mut fp: FpPoly = Vec::with_capacity(f.coeffs().len());
+    let mut coeffs: Vec<u64> = Vec::with_capacity(f.coeffs().len());
     for c in f.coeffs() {
         let d = c.denom().mod_floor(&pb).to_u64()?;
-        if d == 0 {
-            return None;
-        }
+        let d_inv = ring.inv(&d)?;
         let nmod = c.numer().mod_floor(&pb).to_u64()?;
-        fp.push(mod_mul(nmod, mod_inv(d, p), p));
+        coeffs.push(ring.mul(&nmod, &d_inv));
     }
-    fp_normalize(&mut fp);
-    let Some(deg) = fp_degree(&fp) else {
+    let fp = FpPoly::from_coeffs(ring, coeffs);
+    let Some(lc) = fp.leading_coeff().copied() else {
         return Some((0, vec![]));
     };
-    let lc = fp[deg];
-    if deg == 0 {
+    if fp.degree() == Some(0) {
         return Some((lc, vec![]));
     }
-    let monic = fp_monic(&fp, p);
-    let mut out: Vec<(Vec<u64>, u32)> = Vec::new();
-    for (g, m) in fp_squarefree_factorization(&monic, p) {
-        for h in fp_factor_squarefree_monic(&g, p) {
+    let monic = fp.monic();
+    let mut out: Vec<(FpPoly, u32)> = Vec::new();
+    for (g, m) in fp_squarefree_factorization(&monic) {
+        for h in fp_factor_squarefree_monic(&g) {
             out.push((h, m));
         }
     }
     out.sort_by(|a, b| cmp_fp(&a.0, &b.0).then(a.1.cmp(&b.1)));
-    Some((lc, out))
+    Some((
+        lc,
+        out.into_iter().map(|(h, m)| (h.into_coeffs(), m)).collect(),
+    ))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -748,10 +750,11 @@ fn cmp_multipoly<O: MonomialOrd>(a: &MultiPoly<O>, b: &MultiPoly<O>) -> std::cmp
 // Core algorithm
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Integer polynomial, ascending degree order, normalized (no trailing zeros).
-type ZPoly = Vec<BigInt>;
-/// Polynomial over `GF(p)`, ascending degree order, coefficients in `[0, p)`.
-type FpPoly = Vec<u64>;
+/// Integer polynomial: dense `ℤ[x]`, ascending degree order, normalized.
+type ZPoly = GenPoly<BigInt>;
+/// Polynomial over `GF(p)`: the value-level ring [`PolyIn<Fp64>`], with
+/// coefficients in `[0, p)`.
+type FpPoly = PolyIn<Fp64>;
 
 /// Berlekamp–Zassenhaus on a square-free primitive `f` of degree ≥ 2 with
 /// positive leading coefficient and `f(0) ≠ 0`.
@@ -761,10 +764,10 @@ type FpPoly = Vec<u64>;
 /// fallback leaves a cofactor of degree ≥ 2 unsplit); `None` if no usable
 /// prime could be found.
 fn zassenhaus_core(f: &ZPoly) -> Option<(Vec<ZPoly>, bool)> {
-    let n = z_degree(f)?;
-    let lc = f[n].clone();
+    let n = f.degree()?;
+    let lc = f.coeffs[n].clone();
 
-    // ── 1. Choose a prime ──────────────────────────────────────────────
+    // ── 1. Choose a prime ──────────────────────────────────────────────────────
     let mut degree_mask = vec![true; n + 1];
     let mut best: Option<(u64, Vec<FpPoly>)> = None;
     let mut usable = 0usize;
@@ -779,17 +782,16 @@ fn zassenhaus_core(f: &ZPoly) -> Option<(Vec<ZPoly>, bool)> {
             continue;
         }
         let fp = z_to_fp(f, p);
-        if fp_degree(&fp) != Some(n) || !fp_is_squarefree(&fp, p) {
+        if fp.degree() != Some(n) || !fp.is_squarefree() {
             continue;
         }
-        let monic = fp_monic(&fp, p);
-        let factors = fp_factor_squarefree_monic(&monic, p);
+        let factors = fp_factor_squarefree_monic(&fp.monic());
         if factors.len() <= 1 {
             return Some((vec![f.clone()], true));
         }
 
         // Intersect the achievable degree set.
-        let degs: Vec<usize> = factors.iter().map(|g| fp_degree(g).unwrap_or(0)).collect();
+        let degs: Vec<usize> = factors.iter().map(|g| g.degree().unwrap_or(0)).collect();
         let achievable = subset_sums(&degs, n);
         for (m, a) in degree_mask.iter_mut().zip(achievable.iter()) {
             *m &= *a;
@@ -850,7 +852,7 @@ fn zassenhaus_core(f: &ZPoly) -> Option<(Vec<ZPoly>, bool)> {
             found.push(rem);
         } else {
             tracing::warn!(
-                degree = z_degree(&rem).unwrap_or(0),
+                degree = rem.degree().unwrap_or(0),
                 "factor_zassenhaus: recombination budget exhausted; trying Kronecker fallback on cofactor"
             );
             let (pieces, pieces_certified) = kronecker_fallback(&rem);
@@ -891,7 +893,7 @@ fn kronecker_fallback(f: &ZPoly) -> (Vec<ZPoly>, bool) {
     }
     let rem_deg = remaining.degree().unwrap_or(0);
     if rem_deg >= 1 {
-        out.push(poly_to_z(&super::dense::ensure_positive_lc(&remaining)));
+        out.push(positive_lc(poly_to_z(&remaining)));
     }
     if rem_deg >= 2 {
         certified = false;
@@ -902,10 +904,10 @@ fn kronecker_fallback(f: &ZPoly) -> (Vec<ZPoly>, bool) {
 /// Mignotte-style bound `2ⁿ · ⌈‖f‖₂⌉ · |lc(f)|` on the coefficients of
 /// `lc(f) · g` for any monic-scaled factor `g` of `f`.
 fn mignotte_bound(f: &ZPoly) -> BigInt {
-    let n = z_degree(f).unwrap_or(0);
-    let sum_sq: BigInt = f.iter().map(|c| c * c).sum();
+    let n = f.degree().unwrap_or(0);
+    let sum_sq: BigInt = f.coeffs.iter().map(|c| c * c).sum();
     let norm = isqrt_ceil(&sum_sq);
-    let lc_abs = f[n].abs();
+    let lc_abs = f.coeffs[n].abs();
     (BigInt::one() << n) * norm * lc_abs
 }
 
@@ -941,29 +943,32 @@ fn subset_sums(degs: &[usize], n: usize) -> Vec<bool> {
 ///
 /// Returns the lifted monic factors with coefficients in `[0, p^k)`.
 fn hensel_lift(f: &ZPoly, p: u64, factors: &[FpPoly], k: u32) -> Vec<ZPoly> {
-    let n = z_degree(f).unwrap_or(0);
-    let lc_p = f[n].mod_floor(&BigInt::from(p)).to_u64().unwrap_or(0);
-    let lc_inv = mod_inv(lc_p, p);
+    let ring = Fp64::new(p);
+    let n = f.degree().unwrap_or(0);
+    let lc_p = f.coeffs[n]
+        .mod_floor(&BigInt::from(p))
+        .to_u64()
+        .unwrap_or(0);
+    let lc_inv = ring.inv(&lc_p).unwrap_or(0);
     let r = factors.len();
 
     // Bezout coefficients: sᵢ with Σ sᵢ · ∏_{j≠i} gⱼ ≡ 1 (mod p), deg sᵢ < deg gᵢ.
     let mut s_coeffs: Vec<FpPoly> = Vec::with_capacity(r);
     for i in 0..r {
-        let mut others = vec![1u64];
+        let mut others = FpPoly::one(ring);
         for (j, g) in factors.iter().enumerate() {
             if j != i {
-                others = fp_mul(&others, g, p);
+                others = others.mul(g);
             }
         }
-        let (u, _v, _g) = fp_extended_gcd(&others, &factors[i], p);
-        let (_, s) = fp_div_rem(&u, &factors[i], p);
-        s_coeffs.push(s);
+        let u = others.extended_gcd(&factors[i]).u;
+        s_coeffs.push(u.rem(&factors[i]));
     }
 
     let pb = BigInt::from(p);
     let mut lifted: Vec<ZPoly> = factors
         .iter()
-        .map(|g| g.iter().map(|&c| BigInt::from(c)).collect())
+        .map(|g| GenPoly::from_coeffs(g.coeffs().iter().map(|&c| BigInt::from(c)).collect()))
         .collect();
     let mut modulus = pb.clone();
 
@@ -971,17 +976,17 @@ fn hensel_lift(f: &ZPoly, p: u64, factors: &[FpPoly], k: u32) -> Vec<ZPoly> {
         let next = &modulus * &pb;
 
         // prod = lc · ∏ gᵢ  (mod next)
-        let mut prod: ZPoly = vec![f[n].mod_floor(&next)];
+        let mut prod = ZPoly::constant(f.coeffs[n].mod_floor(&next));
         for g in &lifted {
-            prod = z_mul_mod(&prod, g, &next);
+            prod = prod.mul_mod(g, &next);
         }
 
         // e = (f − prod) / modulus, reduced mod p.
-        let mut e_p: FpPoly = vec![0; n.max(1)];
+        let mut e_p: Vec<u64> = vec![0; n.max(1)];
         let mut any = false;
         for (i, slot) in e_p.iter_mut().enumerate().take(n) {
-            let fi = f.get(i).cloned().unwrap_or_else(BigInt::zero);
-            let pi = prod.get(i).cloned().unwrap_or_else(BigInt::zero);
+            let fi = f.coeff(i);
+            let pi = prod.coeff(i);
             let diff = (fi - pi).mod_floor(&next);
             debug_assert!((&diff % &modulus).is_zero());
             let q = diff / &modulus;
@@ -991,15 +996,15 @@ fn hensel_lift(f: &ZPoly, p: u64, factors: &[FpPoly], k: u32) -> Vec<ZPoly> {
             }
             *slot = c;
         }
-        fp_normalize(&mut e_p);
         if any {
-            let e_scaled = fp_scale(&e_p, lc_inv, p);
+            let e_scaled = FpPoly::from_coeffs(ring, e_p).scale(&lc_inv);
             for (i, g) in lifted.iter_mut().enumerate() {
-                let se = fp_mul(&s_coeffs[i], &e_scaled, p);
-                let (_, delta) = fp_div_rem(&se, &factors[i], p);
-                for (j, &d) in delta.iter().enumerate() {
+                let delta = s_coeffs[i].mul(&e_scaled).rem(&factors[i]);
+                // deg delta < deg gᵢ, so the leading coefficient (and the
+                // normalization invariant) is untouched.
+                for (j, &d) in delta.coeffs().iter().enumerate() {
                     if d != 0 {
-                        g[j] += &modulus * BigInt::from(d);
+                        g.coeffs[j] += &modulus * BigInt::from(d);
                     }
                 }
             }
@@ -1032,10 +1037,10 @@ fn recombine(
 
     'outer: while 2 * s <= g.len() {
         let r = g.len();
-        let n_cur = z_degree(&f_cur).unwrap_or(0);
-        let lc_cur = f_cur[n_cur].clone();
-        let lc_f0 = &lc_cur * &f_cur[0];
-        let degs: Vec<usize> = g.iter().map(|gi| z_degree(gi).unwrap_or(0)).collect();
+        let n_cur = f_cur.degree().unwrap_or(0);
+        let lc_cur = f_cur.coeffs[n_cur].clone();
+        let lc_f0 = &lc_cur * &f_cur.coeffs[0];
+        let degs: Vec<usize> = g.iter().map(|gi| gi.degree().unwrap_or(0)).collect();
 
         let mut idx: Vec<usize> = (0..s).collect();
         loop {
@@ -1051,22 +1056,22 @@ fn recombine(
                 // Constant-term filter.
                 let mut c = lc_cur.mod_floor(pk);
                 for &i in &idx {
-                    c = (&c * &g[i][0]).mod_floor(pk);
+                    c = (&c * &g[i].coeffs[0]).mod_floor(pk);
                 }
                 let c = symmetric(c, pk);
                 if !c.is_zero() && (&lc_f0 % &c).is_zero() {
                     // Full candidate.
-                    let mut cand: ZPoly = vec![lc_cur.mod_floor(pk)];
+                    let mut cand = ZPoly::constant(lc_cur.mod_floor(pk));
                     for &i in &idx {
-                        cand = z_mul_mod(&cand, &g[i], pk);
+                        cand = cand.mul_mod(&g[i], pk);
                     }
-                    for coeff in &mut cand {
+                    for coeff in &mut cand.coeffs {
                         *coeff = symmetric(std::mem::take(coeff), pk);
                     }
-                    z_normalize(&mut cand);
-                    let cand = z_primitive_part(&cand);
-                    if z_degree(&cand).is_some_and(|d| d >= 1)
-                        && let Some(quot) = z_div_exact(&f_cur, &cand)
+                    cand.normalize();
+                    let cand = cand.primitive_part();
+                    if cand.degree().is_some_and(|d| d >= 1)
+                        && let Some(quot) = f_cur.div_exact(&cand)
                     {
                         found.push(cand);
                         f_cur = quot;
@@ -1086,14 +1091,8 @@ fn recombine(
     }
 
     let complete = 2 * s > g.len() || g.is_empty();
-    let remainder = if z_degree(&f_cur).is_some_and(|d| d >= 1) {
-        let mut rem = z_primitive_part(&f_cur);
-        if rem.last().is_some_and(|lc| lc.is_negative()) {
-            for c in &mut rem {
-                *c = -std::mem::take(c);
-            }
-        }
-        Some(rem)
+    let remainder = if f_cur.degree().is_some_and(|d| d >= 1) {
+        Some(positive_lc(f_cur.primitive_part()))
     } else {
         None
     };
@@ -1127,98 +1126,27 @@ fn symmetric(x: BigInt, m: &BigInt) -> BigInt {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ℤ[x] helpers
+// ℤ[x] ↔ ℚ[x] ↔ GF(p)[x] conversions and orderings
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn z_normalize(f: &mut ZPoly) {
-    while f.last().is_some_and(|c| c.is_zero()) {
-        f.pop();
-    }
-}
-
-fn z_degree(f: &ZPoly) -> Option<usize> {
-    if f.is_empty() {
-        None
+/// `f` or `−f`, whichever has a positive leading coefficient.
+fn positive_lc(f: ZPoly) -> ZPoly {
+    if f.leading_coeff().is_some_and(|lc| lc.is_negative()) {
+        f.neg()
     } else {
-        Some(f.len() - 1)
+        f
     }
-}
-
-/// Product with all coefficients reduced modulo `m` into `[0, m)`.
-fn z_mul_mod(a: &ZPoly, b: &ZPoly, m: &BigInt) -> ZPoly {
-    if a.is_empty() || b.is_empty() {
-        return vec![];
-    }
-    let mut out = vec![BigInt::zero(); a.len() + b.len() - 1];
-    for (i, ai) in a.iter().enumerate() {
-        if ai.is_zero() {
-            continue;
-        }
-        for (j, bj) in b.iter().enumerate() {
-            out[i + j] += ai * bj;
-        }
-    }
-    for c in &mut out {
-        *c = c.mod_floor(m);
-    }
-    z_normalize(&mut out);
-    out
-}
-
-fn z_content(f: &ZPoly) -> BigInt {
-    let mut g = BigInt::zero();
-    for c in f {
-        g = g.gcd(c);
-    }
-    g
-}
-
-fn z_primitive_part(f: &ZPoly) -> ZPoly {
-    let c = z_content(f);
-    if c.is_zero() || c.is_one() {
-        return f.clone();
-    }
-    f.iter().map(|x| x / &c).collect()
-}
-
-/// Exact division in ℤ\[x\]; `None` if `g ∤ f` (or `g = 0`).
-fn z_div_exact(f: &ZPoly, g: &ZPoly) -> Option<ZPoly> {
-    let dg = z_degree(g)?;
-    let Some(df) = z_degree(f) else {
-        return Some(vec![]);
-    };
-    if df < dg {
-        return None;
-    }
-    let lc_g = &g[dg];
-    let mut rem = f.clone();
-    let mut quot = vec![BigInt::zero(); df - dg + 1];
-    while let Some(dr) = z_degree(&rem) {
-        if dr < dg {
-            return None;
-        }
-        let (c, r) = rem[dr].div_rem(lc_g);
-        if !r.is_zero() {
-            return None;
-        }
-        let shift = dr - dg;
-        for (j, gj) in g.iter().enumerate() {
-            rem[shift + j] -= &c * gj;
-        }
-        quot[shift] = c;
-        z_normalize(&mut rem);
-    }
-    Some(quot)
 }
 
 fn z_to_fp(f: &ZPoly, p: u64) -> FpPoly {
     let pb = BigInt::from(p);
-    let mut out: FpPoly = f
-        .iter()
-        .map(|c| c.mod_floor(&pb).to_u64().unwrap_or(0))
-        .collect();
-    fp_normalize(&mut out);
-    out
+    FpPoly::from_coeffs(
+        Fp64::new(p),
+        f.coeffs
+            .iter()
+            .map(|c| c.mod_floor(&pb).to_u64().unwrap_or(0))
+            .collect(),
+    )
 }
 
 fn poly_to_z(p: &Poly) -> ZPoly {
@@ -1228,21 +1156,24 @@ fn poly_to_z(p: &Poly) -> ZPoly {
     for c in p.coeffs() {
         denom = denom.lcm(c.denom());
     }
-    let mut out: ZPoly = p
-        .coeffs()
-        .iter()
-        .map(|c| c.numer() * (&denom / c.denom()))
-        .collect();
-    z_normalize(&mut out);
-    out
+    GenPoly::from_coeffs(
+        p.coeffs()
+            .iter()
+            .map(|c| c.numer() * (&denom / c.denom()))
+            .collect(),
+    )
 }
 
 fn z_to_poly(f: &ZPoly) -> Poly {
-    Poly::from_coeffs(f.iter().cloned().map(Ratio::from_integer).collect())
+    Poly::from_coeffs(f.coeffs.iter().cloned().map(Ratio::from_integer).collect())
 }
 
+/// Degree, then coefficients lexicographically (ascending order).
 fn cmp_z(a: &ZPoly, b: &ZPoly) -> std::cmp::Ordering {
-    a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+    a.coeffs
+        .len()
+        .cmp(&b.coeffs.len())
+        .then_with(|| a.coeffs.cmp(&b.coeffs))
 }
 
 fn cmp_poly(a: &Poly, b: &Poly) -> std::cmp::Ordering {
@@ -1253,35 +1184,15 @@ fn cmp_poly(a: &Poly, b: &Poly) -> std::cmp::Ordering {
 }
 
 fn cmp_fp(a: &FpPoly, b: &FpPoly) -> std::cmp::Ordering {
-    a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+    a.coeffs()
+        .len()
+        .cmp(&b.coeffs().len())
+        .then_with(|| a.coeffs().cmp(b.coeffs()))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// GF(p) scalar helpers
+// Primes
 // ═══════════════════════════════════════════════════════════════════════════
-
-#[inline]
-fn mod_mul(a: u64, b: u64, p: u64) -> u64 {
-    ((a as u128 * b as u128) % p as u128) as u64
-}
-
-fn mod_pow(mut base: u64, mut exp: u64, p: u64) -> u64 {
-    let mut result = 1u64 % p;
-    base %= p;
-    while exp > 0 {
-        if exp & 1 == 1 {
-            result = mod_mul(result, base, p);
-        }
-        base = mod_mul(base, base, p);
-        exp >>= 1;
-    }
-    result
-}
-
-/// Inverse of `a` modulo the prime `p` (Fermat).  `a` must be nonzero mod `p`.
-fn mod_inv(a: u64, p: u64) -> u64 {
-    mod_pow(a % p, p - 2, p)
-}
 
 /// Deterministic primality test for odd `p < 2³¹` by trial division.
 fn is_small_odd_prime(p: u64) -> bool {
@@ -1311,267 +1222,51 @@ fn odd_primes() -> impl Iterator<Item = u64> {
 use crate::base::rng::XorShift64Star as XorShift;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// GF(p)[x] arithmetic
+// Factoring over GF(p): square-free, distinct-degree, equal-degree
 // ═══════════════════════════════════════════════════════════════════════════
-
-fn fp_normalize(f: &mut FpPoly) {
-    while f.last() == Some(&0) {
-        f.pop();
-    }
-}
-
-fn fp_degree(f: &FpPoly) -> Option<usize> {
-    if f.is_empty() {
-        None
-    } else {
-        Some(f.len() - 1)
-    }
-}
-
-#[cfg(test)]
-fn fp_add(a: &FpPoly, b: &FpPoly, p: u64) -> FpPoly {
-    let n = a.len().max(b.len());
-    let mut out = Vec::with_capacity(n);
-    for i in 0..n {
-        let x = a.get(i).copied().unwrap_or(0);
-        let y = b.get(i).copied().unwrap_or(0);
-        out.push((x + y) % p);
-    }
-    fp_normalize(&mut out);
-    out
-}
-
-fn fp_sub(a: &FpPoly, b: &FpPoly, p: u64) -> FpPoly {
-    let n = a.len().max(b.len());
-    let mut out = Vec::with_capacity(n);
-    for i in 0..n {
-        let x = a.get(i).copied().unwrap_or(0);
-        let y = b.get(i).copied().unwrap_or(0);
-        out.push((x + p - y) % p);
-    }
-    fp_normalize(&mut out);
-    out
-}
-
-fn fp_scale(a: &FpPoly, c: u64, p: u64) -> FpPoly {
-    let mut out: FpPoly = a.iter().map(|&x| mod_mul(x, c, p)).collect();
-    fp_normalize(&mut out);
-    out
-}
-
-fn fp_mul(a: &FpPoly, b: &FpPoly, p: u64) -> FpPoly {
-    if a.is_empty() || b.is_empty() {
-        return vec![];
-    }
-    let mut out = vec![0u64; a.len() + b.len() - 1];
-    for (i, &ai) in a.iter().enumerate() {
-        if ai == 0 {
-            continue;
-        }
-        for (j, &bj) in b.iter().enumerate() {
-            out[i + j] = (out[i + j] + mod_mul(ai, bj, p)) % p;
-        }
-    }
-    fp_normalize(&mut out);
-    out
-}
-
-/// Euclidean division in `GF(p)[x]`.  Every caller passes a nonzero `b`
-/// (a factor, a nonzero gcd remainder, a modulus); should the zero
-/// polynomial ever arrive, the result is `(0, a)` — the only pair that
-/// still satisfies `a = q·b + r` — rather than a panic.
-fn fp_div_rem(a: &FpPoly, b: &FpPoly, p: u64) -> (FpPoly, FpPoly) {
-    debug_assert!(
-        fp_degree(b).is_some(),
-        "fp_div_rem: division by zero polynomial"
-    );
-    let Some(db) = fp_degree(b) else {
-        return (vec![], a.clone());
-    };
-    let Some(da) = fp_degree(a) else {
-        return (vec![], vec![]);
-    };
-    if da < db {
-        return (vec![], a.clone());
-    }
-    let inv_lc = mod_inv(b[db], p);
-    let mut rem = a.clone();
-    let mut quot = vec![0u64; da - db + 1];
-    while let Some(dr) = fp_degree(&rem) {
-        if dr < db {
-            break;
-        }
-        let c = mod_mul(rem[dr], inv_lc, p);
-        let shift = dr - db;
-        quot[shift] = c;
-        for (j, &bj) in b.iter().enumerate() {
-            let sub = mod_mul(c, bj, p);
-            rem[shift + j] = (rem[shift + j] + p - sub) % p;
-        }
-        fp_normalize(&mut rem);
-    }
-    fp_normalize(&mut quot);
-    (quot, rem)
-}
-
-fn fp_rem(a: &FpPoly, b: &FpPoly, p: u64) -> FpPoly {
-    fp_div_rem(a, b, p).1
-}
-
-fn fp_monic(a: &FpPoly, p: u64) -> FpPoly {
-    match fp_degree(a) {
-        None => vec![],
-        Some(d) => {
-            if a[d] == 1 {
-                a.clone()
-            } else {
-                fp_scale(a, mod_inv(a[d], p), p)
-            }
-        }
-    }
-}
-
-/// Monic GCD in `GF(p)[x]`.
-fn fp_gcd(a: &FpPoly, b: &FpPoly, p: u64) -> FpPoly {
-    let mut a = a.clone();
-    let mut b = b.clone();
-    while !b.is_empty() {
-        let r = fp_rem(&a, &b, p);
-        a = b;
-        b = r;
-    }
-    fp_monic(&a, p)
-}
-
-/// Extended Euclid: returns `(u, v, g)` with `u·a + v·b = g`, `g` monic.
-fn fp_extended_gcd(a: &FpPoly, b: &FpPoly, p: u64) -> (FpPoly, FpPoly, FpPoly) {
-    let (mut r0, mut r1) = (a.clone(), b.clone());
-    let (mut s0, mut s1) = (vec![1u64], vec![]);
-    let (mut t0, mut t1) = (vec![], vec![1u64]);
-    while !r1.is_empty() {
-        let (q, r) = fp_div_rem(&r0, &r1, p);
-        let s = fp_sub(&s0, &fp_mul(&q, &s1, p), p);
-        let t = fp_sub(&t0, &fp_mul(&q, &t1, p), p);
-        r0 = r1;
-        r1 = r;
-        s0 = s1;
-        s1 = s;
-        t0 = t1;
-        t1 = t;
-    }
-    if let Some(d) = fp_degree(&r0) {
-        let inv = mod_inv(r0[d], p);
-        return (
-            fp_scale(&s0, inv, p),
-            fp_scale(&t0, inv, p),
-            fp_scale(&r0, inv, p),
-        );
-    }
-    (s0, t0, r0)
-}
-
-fn fp_derivative(a: &FpPoly, p: u64) -> FpPoly {
-    if a.len() <= 1 {
-        return vec![];
-    }
-    let mut out: FpPoly = a
-        .iter()
-        .enumerate()
-        .skip(1)
-        .map(|(i, &c)| mod_mul(c, (i as u64) % p, p))
-        .collect();
-    fp_normalize(&mut out);
-    out
-}
-
-fn fp_is_squarefree(a: &FpPoly, p: u64) -> bool {
-    let d = fp_derivative(a, p);
-    if d.is_empty() {
-        return fp_degree(a) == Some(0);
-    }
-    fp_degree(&fp_gcd(a, &d, p)) == Some(0)
-}
-
-/// `base^exp mod m` in `GF(p)[x]` with a `u64` exponent.
-fn fp_powmod_u64(base: &FpPoly, mut exp: u64, m: &FpPoly, p: u64) -> FpPoly {
-    let mut result = vec![1u64];
-    let mut b = fp_rem(base, m, p);
-    while exp > 0 {
-        if exp & 1 == 1 {
-            result = fp_rem(&fp_mul(&result, &b, p), m, p);
-        }
-        exp >>= 1;
-        if exp > 0 {
-            b = fp_rem(&fp_mul(&b, &b, p), m, p);
-        }
-    }
-    result
-}
-
-/// `base^exp mod m` in `GF(p)[x]` with an arbitrary-precision exponent.
-fn fp_powmod_big(base: &FpPoly, exp: &BigUint, m: &FpPoly, p: u64) -> FpPoly {
-    let mut result = vec![1u64];
-    let mut b = fp_rem(base, m, p);
-    let bits = exp.bits();
-    for i in 0..bits {
-        if exp.bit(i) {
-            result = fp_rem(&fp_mul(&result, &b, p), m, p);
-        }
-        if i + 1 < bits {
-            b = fp_rem(&fp_mul(&b, &b, p), m, p);
-        }
-    }
-    result
-}
-
-/// `p`-th root of a polynomial in `GF(p)[x]` whose derivative vanishes
-/// (i.e. `a(x) = b(x^p)`): returns `b`.
-fn fp_pth_root(a: &FpPoly, p: u64) -> FpPoly {
-    let step = p as usize;
-    let mut out: FpPoly = a.iter().step_by(step).copied().collect();
-    fp_normalize(&mut out);
-    out
-}
+//
+// The ring arithmetic (`add`, `mul`, `div_rem`, `gcd`, `extended_gcd`,
+// `derivative`, `is_squarefree`, `powmod`, `pth_root`) is `PolyIn<Fp64>`
+// in `poly::modpoly`; only the factoring algorithms live here.
 
 /// Square-free factorization of a monic polynomial over `GF(p)`.
 ///
 /// Returns `[(g₁, m₁), …]` with `a = ∏ gᵢ^mᵢ`, each `gᵢ` monic square-free
 /// and pairwise coprime.  Recursion depth is bounded by `log_p(deg a)`.
-fn fp_squarefree_factorization(a: &FpPoly, p: u64) -> Vec<(FpPoly, u32)> {
+fn fp_squarefree_factorization(a: &FpPoly) -> Vec<(FpPoly, u32)> {
+    let p = a.modulus();
     let mut result: Vec<(FpPoly, u32)> = Vec::new();
-    let Some(d) = fp_degree(a) else {
+    let Some(d) = a.degree() else {
         return result;
     };
     if d == 0 {
         return result;
     }
 
-    let da = fp_derivative(a, p);
-    if da.is_empty() {
+    let da = a.derivative();
+    if da.is_zero() {
         // a = b(x^p) = b(x)^p.
-        let b = fp_pth_root(a, p);
-        for (g, m) in fp_squarefree_factorization(&b, p) {
+        for (g, m) in fp_squarefree_factorization(&a.pth_root()) {
             result.push((g, m * (p as u32)));
         }
         return result;
     }
 
-    let mut c = fp_gcd(a, &da, p);
-    let mut w = fp_div_rem(a, &c, p).0;
+    let mut c = a.gcd(&da);
+    let mut w = a.div(&c);
     let mut i = 1u32;
-    while fp_degree(&w).unwrap_or(0) > 0 {
-        let y = fp_gcd(&w, &c, p);
-        let z = fp_div_rem(&w, &y, p).0;
-        if fp_degree(&z).unwrap_or(0) > 0 {
-            result.push((fp_monic(&z, p), i));
+    while w.degree().unwrap_or(0) > 0 {
+        let y = w.gcd(&c);
+        let z = w.div(&y);
+        if z.degree().unwrap_or(0) > 0 {
+            result.push((z.monic(), i));
         }
         i += 1;
         w = y;
-        c = fp_div_rem(&c, &w, p).0;
+        c = c.div(&w);
     }
-    if fp_degree(&c).unwrap_or(0) > 0 {
-        let b = fp_pth_root(&c, p);
-        for (g, m) in fp_squarefree_factorization(&b, p) {
+    if c.degree().unwrap_or(0) > 0 {
+        for (g, m) in fp_squarefree_factorization(&c.pth_root()) {
             result.push((g, m * (p as u32)));
         }
     }
@@ -1580,17 +1275,17 @@ fn fp_squarefree_factorization(a: &FpPoly, p: u64) -> Vec<(FpPoly, u32)> {
 
 /// Factor a monic square-free polynomial over `GF(p)` into monic
 /// irreducibles (Cantor–Zassenhaus).  Sorted by degree, then coefficients.
-fn fp_factor_squarefree_monic(a: &FpPoly, p: u64) -> Vec<FpPoly> {
+fn fp_factor_squarefree_monic(a: &FpPoly) -> Vec<FpPoly> {
     let mut out: Vec<FpPoly> = Vec::new();
-    let Some(d) = fp_degree(a) else {
+    let Some(d) = a.degree() else {
         return out;
     };
     if d == 0 {
         return out;
     }
-    let mut rng = XorShift::new(p ^ ((d as u64) << 32));
-    for (g, deg) in fp_distinct_degree(a, p) {
-        fp_equal_degree(&g, deg, p, &mut rng, &mut out);
+    let mut rng = XorShift::new(a.modulus() ^ ((d as u64) << 32));
+    for (g, deg) in fp_distinct_degree(a) {
+        fp_equal_degree(&g, deg, &mut rng, &mut out);
     }
     out.sort_by(cmp_fp);
     out
@@ -1598,24 +1293,26 @@ fn fp_factor_squarefree_monic(a: &FpPoly, p: u64) -> Vec<FpPoly> {
 
 /// Distinct-degree factorization: returns `[(g, d)]` where every irreducible
 /// factor of `g` has degree exactly `d`.
-fn fp_distinct_degree(a: &FpPoly, p: u64) -> Vec<(FpPoly, usize)> {
+fn fp_distinct_degree(a: &FpPoly) -> Vec<(FpPoly, usize)> {
+    let p = a.modulus();
     let mut result = Vec::new();
     let mut f = a.clone();
-    let x: FpPoly = vec![0, 1];
+    let x = FpPoly::x(*a.ring());
     let mut h = x.clone();
     let mut i = 1usize;
-    while fp_degree(&f).unwrap_or(0) >= 2 * i {
-        h = fp_powmod_u64(&h, p, &f, p);
-        let g = fp_gcd(&fp_sub(&h, &x, p), &f, p);
-        if fp_degree(&g).unwrap_or(0) > 0 {
-            result.push((g.clone(), i));
-            f = fp_div_rem(&f, &g, p).0;
-            h = fp_rem(&h, &f, p);
+    while f.degree().unwrap_or(0) >= 2 * i {
+        h = h.powmod(p, &f);
+        let g = h.sub(&x).gcd(&f);
+        if g.degree().unwrap_or(0) > 0 {
+            f = f.div(&g);
+            h = h.rem(&f);
+            result.push((g, i));
         }
         i += 1;
     }
-    if fp_degree(&f).unwrap_or(0) > 0 {
-        let d = fp_degree(&f).unwrap_or(0);
+    if let Some(d) = f.degree()
+        && d > 0
+    {
         result.push((f, d));
     }
     result
@@ -1623,39 +1320,40 @@ fn fp_distinct_degree(a: &FpPoly, p: u64) -> Vec<(FpPoly, usize)> {
 
 /// Equal-degree splitting (Cantor–Zassenhaus) of a monic `g` all of whose
 /// irreducible factors have degree `d`.  Appends the factors to `out`.
-fn fp_equal_degree(g: &FpPoly, d: usize, p: u64, rng: &mut XorShift, out: &mut Vec<FpPoly>) {
+fn fp_equal_degree(g: &FpPoly, d: usize, rng: &mut XorShift, out: &mut Vec<FpPoly>) {
+    let ring = *g.ring();
+    let p = ring.modulus();
     // Explicit work stack instead of recursion.
     let mut stack: Vec<FpPoly> = vec![g.clone()];
     // (p^d − 1) / 2
     let exp = (BigUint::from(p).pow(d as u32) - BigUint::one()) / BigUint::from(2u32);
-    let one: FpPoly = vec![1];
+    let one = FpPoly::one(ring);
 
     while let Some(cur) = stack.pop() {
-        let deg = fp_degree(&cur).unwrap_or(0);
+        let deg = cur.degree().unwrap_or(0);
         if deg == 0 {
             continue;
         }
         if deg == d {
-            out.push(fp_monic(&cur, p));
+            out.push(cur.monic());
             continue;
         }
         // Try random splitting polynomials until a proper divisor appears.
         let mut split: Option<FpPoly> = None;
         for _attempt in 0..256 {
-            let mut a: FpPoly = (0..deg).map(|_| rng.next_u64() % p).collect();
-            fp_normalize(&mut a);
-            if fp_degree(&a).unwrap_or(0) == 0 {
+            let a = FpPoly::from_coeffs(ring, (0..deg).map(|_| rng.next_u64() % p).collect());
+            if a.degree().unwrap_or(0) == 0 {
                 continue;
             }
-            let g1 = fp_gcd(&a, &cur, p);
-            let dg1 = fp_degree(&g1).unwrap_or(0);
+            let g1 = a.gcd(&cur);
+            let dg1 = g1.degree().unwrap_or(0);
             if dg1 > 0 && dg1 < deg {
                 split = Some(g1);
                 break;
             }
-            let b = fp_powmod_big(&a, &exp, &cur, p);
-            let h = fp_gcd(&fp_sub(&b, &one, p), &cur, p);
-            let dh = fp_degree(&h).unwrap_or(0);
+            let b = a.powmod_big(&exp, &cur);
+            let h = b.sub(&one).gcd(&cur);
+            let dh = h.degree().unwrap_or(0);
             if dh > 0 && dh < deg {
                 split = Some(h);
                 break;
@@ -1663,7 +1361,7 @@ fn fp_equal_degree(g: &FpPoly, d: usize, p: u64, rng: &mut XorShift, out: &mut V
         }
         match split {
             Some(h) => {
-                let q = fp_div_rem(&cur, &h, p).0;
+                let q = cur.div(&h);
                 stack.push(h);
                 stack.push(q);
             }
@@ -1671,7 +1369,7 @@ fn fp_equal_degree(g: &FpPoly, d: usize, p: u64, rng: &mut XorShift, out: &mut V
                 // Astronomically unlikely (each attempt succeeds with
                 // probability ≥ 1/2); keep the block unsplit rather than loop.
                 tracing::error!("factor_mod_p: equal-degree splitting failed to split a block");
-                out.push(fp_monic(&cur, p));
+                out.push(cur.monic());
             }
         }
     }
@@ -1686,7 +1384,7 @@ mod tests {
     use super::*;
 
     fn zp(c: &[i64]) -> ZPoly {
-        c.iter().map(|&x| BigInt::from(x)).collect()
+        GenPoly::from_coeffs(c.iter().map(|&x| BigInt::from(x)).collect())
     }
 
     fn qp(c: &[i64]) -> Poly {
@@ -1697,22 +1395,16 @@ mod tests {
         )
     }
 
+    fn fp(p: u64, c: &[u64]) -> FpPoly {
+        FpPoly::over_prime(p, c.to_vec())
+    }
+
     fn z_mul(a: &ZPoly, b: &ZPoly) -> ZPoly {
-        if a.is_empty() || b.is_empty() {
-            return vec![];
-        }
-        let mut out = vec![BigInt::zero(); a.len() + b.len() - 1];
-        for (i, ai) in a.iter().enumerate() {
-            for (j, bj) in b.iter().enumerate() {
-                out[i + j] += ai * bj;
-            }
-        }
-        z_normalize(&mut out);
-        out
+        a.mul(b)
     }
 
     fn product(fs: &[ZPoly]) -> ZPoly {
-        let mut acc = vec![BigInt::one()];
+        let mut acc = ZPoly::one();
         for f in fs {
             acc = z_mul(&acc, f);
         }
@@ -1724,63 +1416,66 @@ mod tests {
         let mut v = vec![BigInt::zero(); n + 1];
         v[0] = BigInt::from(-1);
         v[n] = BigInt::one();
-        v
+        GenPoly::from_coeffs(v)
     }
 
-    // ── GF(p) primitives ────────────────────────────────────────────
-
-    #[test]
-    fn fp_div_rem_roundtrip() {
-        let p = 7;
-        let a = vec![3, 1, 4, 1, 5];
-        let b = vec![2, 0, 1];
-        let (q, r) = fp_div_rem(&a, &b, p);
-        let back = fp_add(&fp_mul(&q, &b, p), &r, p);
-        assert_eq!(back, a);
-        assert!(fp_degree(&r).unwrap_or(0) < 2);
-    }
-
-    #[test]
-    fn fp_extended_gcd_bezout() {
-        let p = 13;
-        let a = vec![1, 2, 3, 1];
-        let b = vec![5, 1, 1];
-        let (u, v, g) = fp_extended_gcd(&a, &b, p);
-        let lhs = fp_add(&fp_mul(&u, &a, p), &fp_mul(&v, &b, p), p);
-        assert_eq!(lhs, g);
-    }
-
-    #[test]
-    fn fp_squarefree_detects_square() {
-        let p = 5;
-        // (x+1)^2 = x^2 + 2x + 1
-        assert!(!fp_is_squarefree(&vec![1, 2, 1], p));
-        // x^2 + 1 is square-free mod 5 (= (x+2)(x+3))
-        assert!(fp_is_squarefree(&vec![1, 0, 1], p));
-    }
+    // ── GF(p) factoring ─────────────────────────────────────────────────
 
     #[test]
     fn fp_factor_x4_minus_1_mod_5_splits_fully() {
-        let p = 5;
-        let f = vec![4, 0, 0, 0, 1]; // x^4 − 1 ≡ x^4 + 4
-        let fs = fp_factor_squarefree_monic(&f, p);
+        let f = fp(5, &[4, 0, 0, 0, 1]); // x^4 − 1 ≡ x^4 + 4
+        let fs = fp_factor_squarefree_monic(&f);
         assert_eq!(fs.len(), 4);
         for g in &fs {
-            assert_eq!(fp_degree(g), Some(1));
+            assert_eq!(g.degree(), Some(1));
         }
+        // sympy: gf_factor([1,0,0,0,4], 5, ZZ) → (x+1)(x+2)(x+3)(x+4)
+        let coeffs: Vec<Vec<u64>> = fs.iter().map(|g| g.coeffs().to_vec()).collect();
+        assert_eq!(coeffs, vec![vec![1, 1], vec![2, 1], vec![3, 1], vec![4, 1]]);
+    }
+
+    #[test]
+    fn fp_factor_matches_sympy_gf_factor() {
+        // sympy: gf_factor(x^8 + x^4 + 1, 7) → (x+2)(x+3)(x+4)(x+5)(x²+2)(x²+4)
+        let fs = fp_factor_squarefree_monic(&fp(7, &[1, 0, 0, 0, 1, 0, 0, 0, 1]));
+        let coeffs: Vec<Vec<u64>> = fs.iter().map(|g| g.coeffs().to_vec()).collect();
+        assert_eq!(
+            coeffs,
+            vec![
+                vec![2, 1],
+                vec![3, 1],
+                vec![4, 1],
+                vec![5, 1],
+                vec![2, 0, 1],
+                vec![4, 0, 1]
+            ]
+        );
+        // sympy: gf_factor(x^6 - 1, 13) → (x+1)(x+3)(x+4)(x+9)(x+10)(x+12)
+        let fs = fp_factor_squarefree_monic(&fp(13, &[12, 0, 0, 0, 0, 0, 1]));
+        let coeffs: Vec<Vec<u64>> = fs.iter().map(|g| g.coeffs().to_vec()).collect();
+        assert_eq!(
+            coeffs,
+            vec![
+                vec![1, 1],
+                vec![3, 1],
+                vec![4, 1],
+                vec![9, 1],
+                vec![10, 1],
+                vec![12, 1]
+            ]
+        );
     }
 
     #[test]
     fn fp_squarefree_factorization_with_pth_power() {
-        let p = 3;
         // (x+1)^3 (x+2) mod 3: (x+1)^3 = x^3 + 1 (mod 3).  Times (x+2): x^4 + 2x^3 + x + 2
-        let f = vec![2, 1, 0, 2, 1];
-        let sqf = fp_squarefree_factorization(&f, p);
+        let f = fp(3, &[2, 1, 0, 2, 1]);
+        let sqf = fp_squarefree_factorization(&f);
         // Reconstruct.
-        let mut acc = vec![1u64];
+        let mut acc = FpPoly::one(*f.ring());
         for (g, m) in &sqf {
             for _ in 0..*m {
-                acc = fp_mul(&acc, g, p);
+                acc = acc.mul(g);
             }
         }
         assert_eq!(acc, f);
@@ -1812,15 +1507,22 @@ mod tests {
         assert_eq!(fs, vec![(vec![1, 1], 2), (vec![2, 1], 1)]);
     }
 
-    // ── ℤ[x] helpers ────────────────────────────────────────────────
+    // ── ℤ[x] helpers ────────────────────────────────────────────────────
 
     #[test]
     fn z_div_exact_works_and_rejects() {
         let f = z_mul(&zp(&[1, 1]), &zp(&[-2, 3]));
-        assert_eq!(z_div_exact(&f, &zp(&[1, 1])), Some(zp(&[-2, 3])));
-        assert_eq!(z_div_exact(&f, &zp(&[-2, 3])), Some(zp(&[1, 1])));
-        assert_eq!(z_div_exact(&f, &zp(&[1, 2])), None);
-        assert_eq!(z_div_exact(&f, &zp(&[5, 1])), None);
+        assert_eq!(f.div_exact(&zp(&[1, 1])), Some(zp(&[-2, 3])));
+        assert_eq!(f.div_exact(&zp(&[-2, 3])), Some(zp(&[1, 1])));
+        assert_eq!(f.div_exact(&zp(&[1, 2])), None);
+        assert_eq!(f.div_exact(&zp(&[5, 1])), None);
+    }
+
+    #[test]
+    fn positive_lc_flips_only_negative() {
+        assert_eq!(positive_lc(zp(&[1, 0, -1])), zp(&[-1, 0, 1]));
+        assert_eq!(positive_lc(zp(&[-1, 0, 1])), zp(&[-1, 0, 1]));
+        assert_eq!(positive_lc(ZPoly::zero()), ZPoly::zero());
     }
 
     #[test]
@@ -1840,37 +1542,40 @@ mod tests {
         // f = (x − 1)(x + 2)(2x + 3) = 2x^3 + 5x^2 − 4x − 6 ... compute
         let f = product(&[zp(&[-1, 1]), zp(&[2, 1]), zp(&[3, 2])]);
         let p = 7;
-        let fp = fp_monic(&z_to_fp(&f, p), p);
-        let factors = fp_factor_squarefree_monic(&fp, p);
+        let fp = z_to_fp(&f, p).monic();
+        let factors = fp_factor_squarefree_monic(&fp);
         assert_eq!(factors.len(), 3);
         let k = 6;
         let lifted = hensel_lift(&f, p, &factors, k);
         let pk = BigInt::from(p).pow(k);
-        let n = z_degree(&f).unwrap();
-        let mut prod = vec![f[n].mod_floor(&pk)];
+        let n = f.degree().unwrap();
+        let mut prod = ZPoly::constant(f.coeffs()[n].mod_floor(&pk));
         for g in &lifted {
-            prod = z_mul_mod(&prod, g, &pk);
+            prod = prod.mul_mod(g, &pk);
         }
-        let f_mod: ZPoly = f.iter().map(|c| c.mod_floor(&pk)).collect();
+        let f_mod = GenPoly::from_coeffs(f.coeffs().iter().map(|c| c.mod_floor(&pk)).collect());
         assert_eq!(prod, f_mod);
     }
 
     // ── Full factorization ──────────────────────────────────────────
 
+    /// `factor_squarefree_z` on a `GenPoly<BigInt>`, factors as polynomials.
+    fn factor_z(f: &ZPoly) -> Vec<ZPoly> {
+        factor_squarefree_z(f.coeffs())
+            .into_iter()
+            .map(GenPoly::from_coeffs)
+            .collect()
+    }
+
     fn check_factorization(f: &ZPoly, expected_degrees: &[usize]) -> Vec<ZPoly> {
-        let fs = factor_squarefree_z(f);
-        let mut degs: Vec<usize> = fs.iter().map(|g| z_degree(g).unwrap()).collect();
+        let fs = factor_z(f);
+        let mut degs: Vec<usize> = fs.iter().map(|g| g.degree().unwrap()).collect();
         degs.sort_unstable();
         let mut exp = expected_degrees.to_vec();
         exp.sort_unstable();
         assert_eq!(degs, exp, "degrees for {f:?}: got {fs:?}");
         let back = product(&fs);
-        let mut f_pos = f.clone();
-        if f_pos.last().unwrap().is_negative() {
-            for c in &mut f_pos {
-                *c = -std::mem::take(c);
-            }
-        }
+        let f_pos = positive_lc(f.clone());
         assert_eq!(back, f_pos, "product of factors must equal input");
         fs
     }
@@ -1902,7 +1607,7 @@ mod tests {
     fn factor_6x4_minus_7x3_minus_8x2_plus_7x_plus_2() {
         // 6x^4 − 7x^3 − 8x^2 + 7x + 2 = (x − 1)(x + 1)(6x² − 7x − 2)
         let f = zp(&[2, 7, -8, -7, 6]);
-        let fs = factor_squarefree_z(&f);
+        let fs = factor_z(&f);
         assert_eq!(product(&fs), f);
         assert_eq!(fs, vec![zp(&[-1, 1]), zp(&[1, 1]), zp(&[-2, -7, 6])]);
     }
@@ -1922,7 +1627,7 @@ mod tests {
     #[test]
     fn factor_x_n_minus_1_for_n_up_to_30() {
         for n in 2..=30usize {
-            let fs = factor_squarefree_z(&xn_minus_1(n));
+            let fs = factor_z(&xn_minus_1(n));
             assert_eq!(product(&fs), xn_minus_1(n), "x^{n} - 1");
             // Number of factors = number of divisors of n.
             let divisors = (1..=n).filter(|d| n % d == 0).count();
@@ -1933,7 +1638,7 @@ mod tests {
     #[test]
     fn factor_x60_minus_1() {
         let n = 60;
-        let fs = factor_squarefree_z(&xn_minus_1(n));
+        let fs = factor_z(&xn_minus_1(n));
         assert_eq!(product(&fs), xn_minus_1(n));
         assert_eq!(fs.len(), 12); // τ(60) = 12
     }
@@ -1942,13 +1647,13 @@ mod tests {
     fn factor_x105_minus_1() {
         let n = 105;
         let start = std::time::Instant::now();
-        let fs = factor_squarefree_z(&xn_minus_1(n));
+        let fs = factor_z(&xn_minus_1(n));
         let elapsed = start.elapsed();
         assert_eq!(product(&fs), xn_minus_1(n));
         assert_eq!(fs.len(), 8); // τ(105) = 8
         // Φ_105 has degree 48 and is famous for having a coefficient −2.
-        let phi105 = fs.iter().find(|g| z_degree(g) == Some(48)).unwrap();
-        assert!(phi105.iter().any(|c| *c == BigInt::from(-2)));
+        let phi105 = fs.iter().find(|g| g.degree() == Some(48)).unwrap();
+        assert!(phi105.coeffs().iter().any(|c| *c == BigInt::from(-2)));
         eprintln!("x^105 - 1 factored in {elapsed:?}");
     }
 
@@ -1989,7 +1694,7 @@ mod tests {
         for combo in combos {
             let parts: Vec<ZPoly> = combo.iter().map(|&i| irreducibles[i].clone()).collect();
             let f = product(&parts);
-            let fs = factor_squarefree_z(&f);
+            let fs = factor_z(&f);
             assert_eq!(fs.len(), combo.len(), "combo {combo:?}: got {fs:?}");
             assert_eq!(product(&fs), f);
             for part in &parts {
@@ -2041,10 +1746,10 @@ mod tests {
     fn factor_large_coefficients() {
         // (10^12 x + 1)(x − 10^12)
         let big = BigInt::from(1_000_000_000_000i64);
-        let a = vec![BigInt::one(), big.clone()];
-        let b = vec![-big.clone(), BigInt::one()];
+        let a = GenPoly::from_coeffs(vec![BigInt::one(), big.clone()]);
+        let b = GenPoly::from_coeffs(vec![-big.clone(), BigInt::one()]);
         let f = z_mul(&a, &b);
-        let fs = factor_squarefree_z(&f);
+        let fs = factor_z(&f);
         assert_eq!(fs.len(), 2);
         assert_eq!(product(&fs), f);
     }
@@ -2053,7 +1758,7 @@ mod tests {
     fn factor_squarefree_z_handles_repeated_factors() {
         // (x + 1)^2 (x^2 + 1) passed directly to the "square-free" entry point.
         let f = product(&[zp(&[1, 1]), zp(&[1, 1]), zp(&[1, 0, 1])]);
-        let fs = factor_squarefree_z(&f);
+        let fs = factor_z(&f);
         assert_eq!(fs, vec![zp(&[1, 1]), zp(&[1, 1]), zp(&[1, 0, 1])]);
         assert_eq!(product(&fs), f);
     }
@@ -2061,13 +1766,13 @@ mod tests {
     #[test]
     fn factor_negative_leading_coefficient() {
         // −(x^2 − 1) → factors have positive lc
-        let fs = factor_squarefree_z(&zp(&[1, 0, -1]));
+        let fs = factor_z(&zp(&[1, 0, -1]));
         assert_eq!(fs, vec![zp(&[-1, 1]), zp(&[1, 1])]);
     }
 
     #[test]
     fn factor_constant_and_zero() {
-        assert!(factor_squarefree_z(&zp(&[5])).is_empty());
+        assert!(factor_z(&zp(&[5])).is_empty());
         assert!(factor_squarefree_z(&[]).is_empty());
         assert_eq!(
             factor_zassenhaus_with_content(&Poly::zero()).0,

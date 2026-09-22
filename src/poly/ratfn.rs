@@ -271,7 +271,7 @@ impl IntegralCoeff for RationalFn {
             return false;
         }
         let val = n / d;
-        val.denom().is_one()
+        One::is_one(val.denom())
     }
 
     fn to_integer(&self) -> Option<BigInt> {
@@ -279,7 +279,7 @@ impl IntegralCoeff for RationalFn {
             return None;
         }
         let val = self.numer.coeff(0) / self.denom.coeff(0);
-        if val.denom().is_one() {
+        if One::is_one(val.denom()) {
             Some(val.numer().clone())
         } else {
             None

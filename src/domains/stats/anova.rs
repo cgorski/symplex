@@ -55,11 +55,11 @@ use std::f64::consts::PI;
 use num_traits::{One, Signed, Zero};
 
 use super::common::{
-    check_confidence, check_unit_open, chi_squared_sf, ex, f_sf, f_sf_rational, invalid, norm_cdf,
-    norm_pdf, qi, qu,
+    check_confidence, check_unit_open, chi_squared_sf, ex, f_sf, f_sf_rational, invalid, qi, qu,
 };
 use super::data::{self, Q};
 use super::hypothesis::{self, Alternative, PValue, TestResult, p_value_accessors};
+use super::numdist::norm::{cdf as norm_cdf, pdf as norm_pdf};
 use super::regression::ols;
 use crate::api::context::Context;
 use crate::api::expr::Ex;

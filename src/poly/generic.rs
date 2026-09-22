@@ -27,7 +27,7 @@ use std::hash;
 
 use num_integer::ExtendedGcd;
 
-use super::traits::{BindingStrength, CoeffDisplay, Field, IntegralCoeff, Ring};
+use super::traits::{BindingStrength, CoeffDisplay, EuclideanDomain, Field, IntegralCoeff, Ring};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // The type
@@ -308,6 +308,95 @@ impl<C: IntegralCoeff> GenPoly<C> {
     /// A constant polynomial from an integer.
     pub fn from_int(n: i64) -> Self {
         Self::constant(C::from_i64(n))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Euclidean-domain coefficients (exact division without a field)
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl<C: EuclideanDomain> GenPoly<C> {
+    /// Exact division in `C[θ]`: `Some(q)` with `self = q · divisor`, or
+    /// `None` when `divisor` does not divide `self` (or is zero).
+    ///
+    /// Long division from the top, refusing as soon as a leading
+    /// coefficient is not divisible in `C` — the trial division of the
+    /// Zassenhaus recombination over `ℤ`.
+    pub fn div_exact(&self, divisor: &Self) -> Option<Self> {
+        let d_deg = divisor.degree()?;
+        let Some(s_deg) = self.degree() else {
+            return Some(Self::zero());
+        };
+        if s_deg < d_deg {
+            return None;
+        }
+        let d_lc = &divisor.coeffs[d_deg];
+        let mut rem = self.clone();
+        let mut quot = vec![C::zero(); s_deg - d_deg + 1];
+        while let Some(r_deg) = rem.degree() {
+            if r_deg < d_deg {
+                return None;
+            }
+            let (c, r) = rem.coeffs[r_deg].div_rem(d_lc);
+            if !r.is_zero() {
+                return None;
+            }
+            let shift = r_deg - d_deg;
+            for (j, dj) in divisor.coeffs.iter().enumerate() {
+                let sub = Ring::mul(&c, dj);
+                rem.coeffs[shift + j] = Ring::sub(&rem.coeffs[shift + j], &sub);
+            }
+            quot[shift] = c;
+            rem.normalize();
+        }
+        Some(Self::from_coeffs(quot))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ℤ[θ]: integer content and products reduced modulo an integer
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl GenPoly<num_bigint::BigInt> {
+    /// Non-negative gcd of the coefficients (`0` for the zero polynomial).
+    pub fn content(&self) -> num_bigint::BigInt {
+        super::zpoly::integer_content(&self.coeffs)
+    }
+
+    /// `self / content`: the primitive polynomial with the same sign
+    /// pattern (the zero polynomial is returned unchanged).
+    #[must_use]
+    pub fn primitive_part(&self) -> Self {
+        GenPoly {
+            coeffs: super::zpoly::z_primitive(&self.coeffs),
+        }
+    }
+
+    /// Product with every coefficient reduced into `[0, m)`.
+    ///
+    /// Accumulates in place (`+=`) and reduces once per output
+    /// coefficient, the inner step of Hensel lifting and of the
+    /// Zassenhaus recombination.
+    #[must_use]
+    pub fn mul_mod(&self, rhs: &Self, m: &num_bigint::BigInt) -> Self {
+        use num_integer::Integer;
+        if self.is_zero() || rhs.is_zero() {
+            return Self::zero();
+        }
+        let mut coeffs =
+            vec![<num_bigint::BigInt as Ring>::zero(); self.coeffs.len() + rhs.coeffs.len() - 1];
+        for (i, a) in self.coeffs.iter().enumerate() {
+            if Ring::is_zero(a) {
+                continue;
+            }
+            for (j, b) in rhs.coeffs.iter().enumerate() {
+                coeffs[i + j] += a * b;
+            }
+        }
+        for c in &mut coeffs {
+            *c = c.mod_floor(m);
+        }
+        Self::from_coeffs(coeffs)
     }
 }
 
@@ -1523,6 +1612,56 @@ mod tests {
         let (q_poly, r) = a.div_rem(&b);
         let reconstructed = q_poly.mul(&b).add(&r);
         assert_eq!(reconstructed, a, "a should equal q*b + r");
+    }
+
+    // ── GenPoly<BigInt>: ℤ[θ] ────────────────────────────────────────────────
+
+    type Z = GenPoly<BigInt>;
+
+    fn zp(cs: &[i64]) -> Z {
+        GenPoly::from_coeffs(cs.iter().map(|&c| BigInt::from(c)).collect())
+    }
+
+    #[test]
+    fn z_content_and_primitive_part() {
+        assert_eq!(zp(&[6, -9, 12]).content(), BigInt::from(3));
+        assert_eq!(zp(&[6, -9, 12]).primitive_part(), zp(&[2, -3, 4]));
+        assert_eq!(zp(&[-4, -6]).content(), BigInt::from(2));
+        assert_eq!(zp(&[-4, -6]).primitive_part(), zp(&[-2, -3]));
+        assert_eq!(zp(&[5, 7]).primitive_part(), zp(&[5, 7]));
+        assert_eq!(Z::zero().content(), BigInt::from(0));
+        assert_eq!(Z::zero().primitive_part(), Z::zero());
+    }
+
+    #[test]
+    fn z_div_exact_accepts_and_rejects() {
+        let f = zp(&[1, 1]).mul(&zp(&[-2, 3]));
+        assert_eq!(f.div_exact(&zp(&[1, 1])), Some(zp(&[-2, 3])));
+        assert_eq!(f.div_exact(&zp(&[-2, 3])), Some(zp(&[1, 1])));
+        assert_eq!(f.div_exact(&zp(&[1, 2])), None);
+        assert_eq!(f.div_exact(&zp(&[5, 1])), None);
+        // 2θ + 2 is not divisible by 4 in ℤ[θ] even though it is over ℚ.
+        assert_eq!(zp(&[2, 2]).div_exact(&zp(&[4])), None);
+        assert_eq!(zp(&[2, 2]).div_exact(&zp(&[2])), Some(zp(&[1, 1])));
+        assert_eq!(Z::zero().div_exact(&zp(&[1, 1])), Some(Z::zero()));
+        assert_eq!(zp(&[1, 1]).div_exact(&Z::zero()), None);
+        assert_eq!(zp(&[1]).div_exact(&zp(&[1, 1])), None);
+    }
+
+    #[test]
+    fn z_mul_mod_reduces_into_range() {
+        let m = BigInt::from(7);
+        // (3θ + 5)(4θ + 6) = 12θ² + 38θ + 30 ≡ 5θ² + 3θ + 2 (mod 7)
+        assert_eq!(zp(&[5, 3]).mul_mod(&zp(&[6, 4]), &m), zp(&[2, 3, 5]));
+        // Leading coefficient vanishing mod m is stripped.
+        assert_eq!(zp(&[1, 7]).mul_mod(&zp(&[1, 1]), &m), zp(&[1, 1]));
+        assert_eq!(zp(&[1, 1]).mul_mod(&Z::zero(), &m), Z::zero());
+    }
+
+    #[test]
+    fn z_display_uses_theta() {
+        assert_eq!(format!("{}", zp(&[-2, 0, 3])), "3*θ^2 - 2");
+        assert_eq!(format!("{}", zp(&[1, -1])), "-θ + 1");
     }
 
     // ═══════════════════════════════════════════════════════════════

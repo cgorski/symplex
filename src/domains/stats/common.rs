@@ -17,13 +17,12 @@ use num_traits::{Signed, ToPrimitive};
 
 use super::data::Q;
 use super::family::Distribution;
+use super::numdist;
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::dense_f64;
 use crate::base::errors::SymplexError;
-use crate::base::interval::Bounds;
-use crate::domains::optimize::{RootOpts, brent_root, grow_bracket};
-use crate::output::codegen::numeric_rt::{erfc, erfcinv};
+use crate::output::codegen::numeric_rt::erfc;
 
 // ── Exact conversions ───────────────────────────────────────────────────
 
@@ -159,37 +158,26 @@ pub(crate) fn f_sf_rational(ctx: &Context, d1: &Q, d2: &Q, f: &Q) -> Ex {
     )
 }
 
-// ── Reference distributions: numeric quantiles ──────────────────────────
-
-/// `Φ(x) = ½ erfc(−x/√2)`.
-pub(crate) fn norm_cdf(x: f64) -> f64 {
-    0.5 * erfc(-x / std::f64::consts::SQRT_2)
-}
-
-/// `1 − Φ(x) = ½ erfc(x/√2)`.
-pub(crate) fn norm_sf(x: f64) -> f64 {
-    0.5 * erfc(x / std::f64::consts::SQRT_2)
-}
-
-/// `φ(x) = e^{−x²/2} / √(2π)`.
-pub(crate) fn norm_pdf(x: f64) -> f64 {
-    const SQRT_2PI: f64 = 2.506_628_274_631_000_5;
-    (-0.5 * x * x).exp() / SQRT_2PI
-}
+// ── Reference distributions: numeric quantiles ────────────────────────────────────
+//
+// The `f64` kernel lives in `numdist`; these are the names the data
+// modules import: `Φ`, `φ` and `1 − Φ`.
+pub(crate) use numdist::norm::{cdf as norm_cdf, sf as norm_sf};
 
 /// `P(|Z| ≥ |z|) = erfc(|z|/√2)`.
 pub(crate) fn normal_two_sided(z: f64) -> f64 {
     erfc(z.abs() / std::f64::consts::SQRT_2)
 }
 
-/// `Φ⁻¹(1 − alpha)`: the upper-tail standard normal quantile.
+/// `Φ⁻¹(1 − alpha)`: the upper-tail standard normal quantile (`NaN`
+/// outside `0 < alpha < 1`; the callers check their levels first).
 pub(crate) fn norm_isf(alpha: f64) -> f64 {
-    std::f64::consts::SQRT_2 * erfcinv(2.0 * alpha)
+    numdist::norm::isf(alpha).unwrap_or(f64::NAN)
 }
 
-/// `Φ⁻¹(p)`.
+/// `Φ⁻¹(p)` (`NaN` outside `0 < p < 1`).
 pub(crate) fn norm_ppf(p: f64) -> f64 {
-    -norm_isf(p)
+    numdist::norm::ppf(p).unwrap_or(f64::NAN)
 }
 
 /// The two-sided critical value `z_{α/2}` for a confidence level.
@@ -197,55 +185,26 @@ pub(crate) fn z_two_sided(confidence: f64) -> f64 {
     norm_isf((1.0 - confidence) / 2.0)
 }
 
-/// `P(T ≤ t)` for Student's t with `ν` degrees of freedom, as an `f64`:
-/// the exact expression `½ I_{ν/(t²+ν)}(ν/2, ½)` evaluated by `eval_f64`
-/// (arbitrary precision, then rounded).
-pub(crate) fn student_t_cdf_f64(ctx: &Context, df: f64, t: f64) -> Result<f64, SymplexError> {
-    let nu = ctx.from_f64(df)?;
-    let z = &nu / (ctx.from_f64(t * t)? + &nu);
-    let tail = ctx.rational(1, 2)
-        * z.betainc_regularized(&(&nu / ctx.int(2)), &ctx.rational(1, 2), &ctx.zero());
-    let tail = tail.eval_f64()?;
-    Ok(if t < 0.0 { tail } else { 1.0 - tail })
-}
-
-/// The Student-t quantile `t_{p, ν}` by Brent's method on
-/// [`student_t_cdf_f64`] over a bracket grown from `0` (the distribution
-/// is symmetric, so `p < ½` is mirrored).
+/// The Student-t quantile `t_{p, ν}` ([`numdist::t::ppf`]), its errors
+/// renamed to the calling operation `op`.
 pub(crate) fn student_t_quantile_f64(
     op: &'static str,
-    ctx: &Context,
     df: f64,
     p: f64,
 ) -> Result<f64, SymplexError> {
-    if p < 0.5 {
-        return student_t_quantile_f64(op, ctx, df, 1.0 - p).map(|t| -t);
-    }
-    if p == 0.5 {
-        return Ok(0.0);
-    }
-    let g = |t: f64| student_t_cdf_f64(ctx, df, t).unwrap_or(f64::NAN) - p;
-    // `g(0) = ½ − p < 0`; the upper end doubles from 1 until `g ≥ 0`.
-    let bracket = grow_bracket(g, 0.0, 1.0, Bounds::at_least(0.0), 64)
-        .map_err(|e| SymplexError::computation_failed(op, e.to_string()))?;
-    let root = brent_root(g, bracket.lower, bracket.upper, &RootOpts::default())
-        .map_err(|e| SymplexError::computation_failed(op, e.to_string()))?;
-    if root.is_finite() {
-        Ok(root)
-    } else {
-        Err(SymplexError::computation_failed(
-            op,
-            "the Student-t quantile did not converge",
-        ))
-    }
+    numdist::t::ppf(p, df).map_err(|e| match e {
+        SymplexError::InvalidArgument { reason, .. } => SymplexError::invalid_argument(op, reason),
+        SymplexError::ComputationFailed { reason, .. } => {
+            SymplexError::computation_failed(op, reason)
+        }
+        other => other,
+    })
 }
 
 /// The two-sided Student-t critical value `t_{α/2, ν}` for a confidence
-/// level, without a caller-supplied context (a private one is made: the
-/// result is an `f64`).
+/// level.
 pub(crate) fn t_two_sided(op: &'static str, df: f64, confidence: f64) -> Result<f64, SymplexError> {
-    let ctx = Context::new();
-    student_t_quantile_f64(op, &ctx, df, 1.0 - (1.0 - confidence) / 2.0)
+    student_t_quantile_f64(op, df, 1.0 - (1.0 - confidence) / 2.0)
 }
 
 /// A standard normal in a private context, for numeric quantiles.
@@ -308,7 +267,12 @@ mod tests {
     #[test]
     fn student_t_quantile() {
         // scipy.stats.t.ppf(0.975, 5) = 2.5705818356363146
-        assert!((t_two_sided("test", 5.0, 0.95).unwrap() - 2.5705818356363146).abs() < 1e-9);
+        assert!((t_two_sided("test", 5.0, 0.95).unwrap() - 2.5705818356363146).abs() < 1e-14);
+        // Errors are renamed to the caller's operation.
+        match student_t_quantile_f64("caller", -1.0, 0.5) {
+            Err(SymplexError::InvalidArgument { operation, .. }) => assert_eq!(operation, "caller"),
+            other => panic!("expected an invalid-argument error, got {other:?}"),
+        }
     }
 
     #[test]

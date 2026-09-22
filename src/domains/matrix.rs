@@ -53,6 +53,7 @@ use crate::domains::decompositions::{
 use num_bigint::BigInt;
 use num_rational::Rational64;
 use std::fmt;
+use std::sync::{Arc, OnceLock};
 use tracing::{debug, trace, warn};
 
 // Re-export codegen option types so users can access them from the public
@@ -73,6 +74,13 @@ use crate::domains::exact_matrix::PERMANENT_MAX_DIM;
 /// expression in the same [`Context`].  Use
 /// [`equals`](Self::equals) for a mathematical (simplifying) comparison.
 ///
+/// Whether every entry is a rational literal — the condition for the exact
+/// [`QMatrix`] fast paths of `det`, `inv`, `rref`, `char_poly_coeffs`,
+/// `matmul`, `lu`, … — is decided once per matrix, on the first such call,
+/// and cached together with the converted entries; the cache travels with
+/// [`clone`](Clone::clone), is dropped by [`get_mut`](Self::get_mut) /
+/// [`set`](Self::set), and is invisible to `==` and `Debug`.
+///
 /// # Examples
 ///
 /// ```
@@ -86,12 +94,25 @@ use crate::domains::exact_matrix::PERMANENT_MAX_DIM;
 /// assert_eq!(format!("{}", a.det().unwrap()), "-2");
 /// assert_eq!(a[(1, 0)], ctx.int(3));
 /// ```
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct Matrix {
     rows: Vec<Vec<Ex>>,
     nrows: usize,
     ncols: usize,
+    /// `Some` when every entry is a rational literal: the entries as a
+    /// [`QMatrix`], converted on the first request (see
+    /// [`as_qmatrix`](Self::as_qmatrix)).  Shared, so a clone is a pointer
+    /// copy.
+    exact: OnceLock<Option<Arc<QMatrix>>>,
 }
+
+impl PartialEq for Matrix {
+    fn eq(&self, other: &Self) -> bool {
+        self.nrows == other.nrows && self.ncols == other.ncols && self.rows == other.rows
+    }
+}
+
+impl Eq for Matrix {}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Error helpers
@@ -408,7 +429,19 @@ impl Matrix {
             }
         }
         let nrows = rows.len();
-        Ok(Matrix { rows, nrows, ncols })
+        Ok(Matrix::with_shape(rows, nrows, ncols))
+    }
+
+    /// The one place a `Matrix` is assembled from its parts (no
+    /// validation; the exact cache starts empty).
+    #[inline]
+    fn with_shape(rows: Vec<Vec<Ex>>, nrows: usize, ncols: usize) -> Self {
+        Matrix {
+            rows,
+            nrows,
+            ncols,
+            exact: OnceLock::new(),
+        }
     }
 
     /// Build a matrix from validated parts without re-checking.
@@ -418,7 +451,7 @@ impl Matrix {
         let ncols = rows.first().map_or(0, Vec::len);
         debug_assert!(nrows > 0 && ncols > 0);
         debug_assert!(rows.iter().all(|r| r.len() == ncols));
-        Matrix { rows, nrows, ncols }
+        Matrix::with_shape(rows, nrows, ncols)
     }
 
     /// Create an `n × m` matrix of zeros.
@@ -432,11 +465,7 @@ impl Matrix {
         let rows = (0..n)
             .map(|_| (0..m).map(|_| zero.clone()).collect())
             .collect();
-        Matrix {
-            rows,
-            nrows: n,
-            ncols: m,
-        }
+        Matrix::with_shape(rows, n, m)
     }
 
     /// Create an `n × n` identity matrix.
@@ -455,11 +484,7 @@ impl Matrix {
                     .collect()
             })
             .collect();
-        Matrix {
-            rows,
-            nrows: n,
-            ncols: n,
-        }
+        Matrix::with_shape(rows, n, n)
     }
 
     /// Create an `n × m` matrix from a closure `f(i, j)`.
@@ -473,11 +498,7 @@ impl Matrix {
             "Matrix::from_fn: dimensions must be positive"
         );
         let rows = (0..n).map(|i| (0..m).map(|j| f(i, j)).collect()).collect();
-        Matrix {
-            rows,
-            nrows: n,
-            ncols: m,
-        }
+        Matrix::with_shape(rows, n, m)
     }
 
     /// Create a 1×n row vector from a list of elements.
@@ -491,11 +512,7 @@ impl Matrix {
             "Matrix::row_vector: need at least one element"
         );
         let ncols = elems.len();
-        Matrix {
-            rows: vec![elems],
-            nrows: 1,
-            ncols,
-        }
+        Matrix::with_shape(vec![elems], 1, ncols)
     }
 
     /// Create an n×1 column vector from a list of elements.
@@ -510,11 +527,7 @@ impl Matrix {
         );
         let nrows = elems.len();
         let rows = elems.into_iter().map(|e| vec![e]).collect();
-        Matrix {
-            rows,
-            nrows,
-            ncols: 1,
-        }
+        Matrix::with_shape(rows, nrows, 1)
     }
 
     /// Create a square diagonal matrix from a slice of diagonal entries.
@@ -606,7 +619,7 @@ impl Matrix {
             r0 += b.nrows;
             c0 += b.ncols;
         }
-        Ok(Matrix { rows, nrows, ncols })
+        Ok(Matrix::with_shape(rows, nrows, ncols))
     }
 
     /// Companion matrix of the monic polynomial
@@ -775,6 +788,8 @@ impl Matrix {
             self.nrows,
             self.ncols
         );
+        // The entry may stop (or start) being a rational literal.
+        self.exact.take();
         &mut self.rows[i][j]
     }
 
@@ -950,10 +965,27 @@ impl Matrix {
     }
 
     /// The matrix as a [`QMatrix`] if every entry is a rational literal
-    /// (the exact fast path of `rref`, `det`, `inv`, `solve`, …).
-    pub(crate) fn as_qmatrix(&self) -> Option<QMatrix> {
-        let rows = self.to_rational_rows()?;
-        QMatrix::new(rows).ok()
+    /// (the exact fast path of `rref`, `det`, `inv`, `solve`,
+    /// `char_poly_coeffs`, `matmul`, `lu`, …).
+    ///
+    /// The entries are scanned and converted on the first call and the
+    /// answer — either way — is cached, so the later exact operations on the
+    /// same matrix pay nothing for the decision.
+    pub(crate) fn as_qmatrix(&self) -> Option<&QMatrix> {
+        self.exact
+            .get_or_init(|| {
+                let rows = self.to_rational_rows()?;
+                QMatrix::new(rows).ok().map(Arc::new)
+            })
+            .as_deref()
+    }
+
+    /// Has the rationality decision of [`as_qmatrix`](Self::as_qmatrix)
+    /// been made (and cached) for this matrix?  A probe for the tests of
+    /// the cache's lifetime; not part of the supported API.
+    #[doc(hidden)]
+    pub fn is_exact_cached(&self) -> bool {
+        self.exact.get().is_some()
     }
 
     /// Does any entry contain `sym` as a sub-expression?
@@ -1009,11 +1041,7 @@ impl Matrix {
         let rows: Vec<Vec<Ex>> = (0..self.ncols)
             .map(|j| (0..self.nrows).map(|i| self.rows[i][j].clone()).collect())
             .collect();
-        Matrix {
-            nrows: self.ncols,
-            ncols: self.nrows,
-            rows,
-        }
+        Matrix::with_shape(rows, self.ncols, self.nrows)
     }
 
     /// Conjugate transpose `Aᴴ = conj(A)ᵀ`.
@@ -1090,11 +1118,7 @@ impl Matrix {
                     .collect()
             })
             .collect();
-        Matrix {
-            nrows: self.nrows,
-            ncols: self.ncols,
-            rows,
-        }
+        Matrix::with_shape(rows, self.nrows, self.ncols)
     }
 
     /// Scalar multiplication: multiply every element by `scalar`.
@@ -1106,7 +1130,9 @@ impl Matrix {
     ///
     /// `self` is `n × p` and `other` is `p × m`; the result is `n × m`.
     /// Each element is computed symbolically:
-    /// `result[i][j] = Σ_k self[i][k] * other[k][j]`.
+    /// `result[i][j] = Σ_k self[i][k] * other[k][j]`.  When both operands
+    /// are rational the product is formed on [`QMatrix`] and converted
+    /// back — the same entries, without an arena operation per term.
     ///
     /// # Errors
     ///
@@ -1120,6 +1146,14 @@ impl Matrix {
                     self.nrows, self.ncols, other.nrows, other.ncols
                 ),
             ));
+        }
+        // (Operands from different contexts fall through to the symbolic
+        // loop, which raises the standard cross-context panic.)
+        if self.rows[0][0].ctx_id() == other.rows[0][0].ctx_id()
+            && let (Some(qa), Some(qb)) = (self.as_qmatrix(), other.as_qmatrix())
+        {
+            let product = qa.matmul(qb).map_err(|e| reop(e, "matmul"))?;
+            return Ok(product.to_matrix(&self.ctx()));
         }
         let p = self.ncols;
         let rows: Vec<Vec<Ex>> = (0..self.nrows)
@@ -1136,20 +1170,27 @@ impl Matrix {
                     .collect()
             })
             .collect();
-        Ok(Matrix {
-            nrows: self.nrows,
-            ncols: other.ncols,
-            rows,
-        })
+        Ok(Matrix::with_shape(rows, self.nrows, other.ncols))
     }
 
     /// Trace: sum of the diagonal elements.
+    ///
+    /// A rational diagonal is summed exactly and interned once (one arena
+    /// operation instead of `n − 1`); this needs only the diagonal to be
+    /// rational, not the whole matrix.
     ///
     /// # Errors
     ///
     /// Returns [`SymplexError::InvalidArgument`] if the matrix is not square.
     pub fn trace(&self) -> Result<Ex, SymplexError> {
         self.require_square("trace")?;
+        let rational: Option<Q> = (0..self.nrows)
+            .try_fold(<Q as num_traits::Zero>::zero(), |acc, i| {
+                self.rows[i][i].as_rational().map(|v| acc + v)
+            });
+        if let Some(sum) = rational {
+            return Ok(self.ctx().from_ratio(sum));
+        }
         let mut acc = self.rows[0][0].clone();
         for i in 1..self.nrows {
             acc += &self.rows[i][i];
@@ -1303,7 +1344,17 @@ impl Matrix {
     ///
     /// Returns `Err(ComputationFailed)` (reported under `operation`) if the
     /// expanded coefficients exceed [`EXPRESSION_BUDGET`] at any stage.
+    ///
+    /// A rational matrix runs the same algorithm on [`QMatrix`] (integer
+    /// cells, no `expand`) and interns the coefficients afterwards: every
+    /// intermediate of the symbolic route would have been a rational
+    /// literal, so the results are the same nodes.
     fn berkowitz_monic(&self, operation: &'static str) -> Result<Vec<Ex>, SymplexError> {
+        if let Some(q) = self.as_qmatrix() {
+            let ctx = self.ctx();
+            let coeffs = q.berkowitz_monic().map_err(|e| reop(e, operation))?;
+            return Ok(coeffs.into_iter().map(|c| ctx.from_ratio(c)).collect());
+        }
         let n = self.nrows;
         let one = self.ctx_one();
         let zero = self.ctx_zero();
@@ -1368,11 +1419,7 @@ impl Matrix {
             .iter()
             .map(|row| row.iter().map(&mut f).collect())
             .collect();
-        Matrix {
-            nrows: self.nrows,
-            ncols: self.ncols,
-            rows,
-        }
+        Matrix::with_shape(rows, self.nrows, self.ncols)
     }
 
     /// Apply `f(i, j, &a_ij)` to every element, producing a new matrix.
@@ -1383,11 +1430,7 @@ impl Matrix {
             .enumerate()
             .map(|(i, row)| row.iter().enumerate().map(|(j, e)| f(i, j, e)).collect())
             .collect();
-        Matrix {
-            nrows: self.nrows,
-            ncols: self.ncols,
-            rows,
-        }
+        Matrix::with_shape(rows, self.nrows, self.ncols)
     }
 
     // ── Linear-algebra: minor, cofactor, adjugate, inverse ─────────────
@@ -1570,7 +1613,7 @@ impl Matrix {
         }
 
         if let (Some(qa), Some(qb)) = (self.as_qmatrix(), b.as_qmatrix()) {
-            return qa.solve(&qb).map(|x| x.to_matrix(&self.ctx()));
+            return qa.solve(qb).map(|x| x.to_matrix(&self.ctx()));
         }
 
         let augmented = Matrix::hstack(&[self, b])?;
@@ -2572,7 +2615,7 @@ impl Matrix {
         let (m, n) = self.shape();
         let gram = if let Some(q) = self.as_qmatrix() {
             let qt = q.transpose();
-            let g = if m >= n { qt.matmul(&q) } else { q.matmul(&qt) };
+            let g = if m >= n { qt.matmul(q) } else { q.matmul(&qt) };
             g.map_err(|e| reop(e, "singular_values"))?.to_matrix(&ctx)
         } else {
             let at = self.transpose();
@@ -3080,6 +3123,16 @@ impl Matrix {
     pub fn lu(&self) -> Result<Lu<Matrix>, SymplexError> {
         self.require_square("lu")?;
         let n = self.nrows;
+        if let Some(q) = self.as_qmatrix() {
+            // Same pivot rule (first non-zero entry), so the same factors.
+            let ctx = self.ctx();
+            let Lu { l, u, perm } = q.lu().map_err(|e| reop(e, "lu"))?;
+            return Ok(Lu {
+                l: l.to_matrix(&ctx),
+                u: u.to_matrix(&ctx),
+                perm,
+            });
+        }
 
         let mut perm: Vec<usize> = (0..n).collect();
         let mut u: Vec<Vec<Ex>> = self.rows.clone();
@@ -3197,7 +3250,7 @@ impl Matrix {
             pivot_row += 1;
         }
 
-        (Matrix { rows, nrows, ncols }, pivots)
+        (Matrix::with_shape(rows, nrows, ncols), pivots)
     }
 
     /// Rank of the matrix (number of pivot columns in RREF).
@@ -3316,7 +3369,7 @@ impl Matrix {
                     .collect()
             })
             .collect();
-        Ok(Matrix { rows, nrows, ncols })
+        Ok(Matrix::with_shape(rows, nrows, ncols))
     }
 
     /// Stack matrices vertically (on top of each other).
@@ -3343,7 +3396,7 @@ impl Matrix {
             .iter()
             .flat_map(|m| m.rows.iter().cloned())
             .collect();
-        Ok(Matrix { rows, nrows, ncols })
+        Ok(Matrix::with_shape(rows, nrows, ncols))
     }
 
     /// Vectorization `vec(A)`: stack the columns into a single `(mn)×1`
@@ -3644,11 +3697,11 @@ impl Matrix {
         data.extend(self.rows[..pos].iter().cloned());
         data.extend(rows.rows.iter().cloned());
         data.extend(self.rows[pos..].iter().cloned());
-        Ok(Matrix {
-            rows: data,
-            nrows: self.nrows + rows.nrows,
-            ncols: self.ncols,
-        })
+        Ok(Matrix::with_shape(
+            data,
+            self.nrows + rows.nrows,
+            self.ncols,
+        ))
     }
 
     /// Insert the columns of `cols` before column `pos` (`pos == ncols`
@@ -3702,11 +3755,7 @@ impl Matrix {
                 row
             })
             .collect();
-        Ok(Matrix {
-            rows: data,
-            nrows: self.nrows,
-            ncols,
-        })
+        Ok(Matrix::with_shape(data, self.nrows, ncols))
     }
 
     /// Check that `perm` is a permutation of `0..bound`.

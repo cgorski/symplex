@@ -556,18 +556,19 @@ impl Distribution {
         self.quantile(&self.context().rational(1, 2))
     }
 
-    /// The quantile at `p ∈ (0, 1)` as an `f64`: the closed form evaluated
-    /// when the family has one, otherwise the root of `F(x) = p` by Brent's
+    /// The quantile at `p ∈ (0, 1)` as an `f64`.  `Normal`, `StudentT`,
+    /// `ChiSquared`, `FDistribution`, `Beta`, `Gamma`, `Binomial` and
+    /// `Poisson` with numeric parameters go through the `f64` kernel
+    /// [`numdist`](super::numdist) (`scipy.stats.<dist>.ppf`, about
+    /// `1e-15`, microseconds).  Otherwise the closed form is evaluated when
+    /// the family has one, else the root of `F(x) = p` is found by Brent's
     /// method on the compiled distribution function over a bracket grown
     /// from the support's ends (a discrete distribution returns the
-    /// smallest lattice point with `F(x) ≥ p`).  This is the numeric route
-    /// behind critical values and confidence limits of `Beta`, `StudentT`,
-    /// `ChiSquared` and `FDistribution`, whose inverse CDFs have no
-    /// elementary form.  A lattice family *without* a closed CDF
-    /// (`NegativeBinomial` with a non-integer `r`) is walked instead: the
-    /// pmf is accumulated from the support's lower end until `p` is
-    /// reached (`nbinom.ppf(0.9, 1.5, 1/3) = 7` in milliseconds; Brent on
-    /// the symbolic sum took seconds).  Parameters must evaluate
+    /// smallest lattice point with `F(x) ≥ p`).  A lattice family *without*
+    /// a closed CDF (`NegativeBinomial` with a non-integer `r`) is walked
+    /// instead: the pmf is accumulated from the support's lower end until
+    /// `p` is reached (`nbinom.ppf(0.9, 1.5, 1/3) = 7` in milliseconds;
+    /// Brent on the symbolic sum took seconds).  Parameters must evaluate
     /// numerically.
     ///
     /// ```
@@ -577,21 +578,25 @@ impl Distribution {
     /// let ctx = Context::new();
     /// // scipy: stats.t.ppf(0.975, 5) = 2.5705818356363146
     /// let t5 = Distribution::student_t(ctx.int(5));
-    /// assert!((t5.quantile_f64(0.975)? - 2.570_581_835_636_314_6).abs() < 1e-9);
+    /// assert!((t5.quantile_f64(0.975)? - 2.570_581_835_636_314_6).abs() < 1e-14);
     /// # Ok::<(), SymplexError>(())
     /// ```
     ///
     /// # Errors
     ///
-    /// [`SymplexError::InvalidArgument`] for `p` outside `(0, 1)`;
-    /// [`SymplexError::Unevaluable`] for symbolic parameters;
-    /// [`SymplexError::ComputationFailed`] if no bracket is found.
+    /// [`SymplexError::InvalidArgument`] for `p` outside `(0, 1)` or an
+    /// invalid numeric parameter; [`SymplexError::Unevaluable`] for
+    /// symbolic parameters; [`SymplexError::ComputationFailed`] if no
+    /// bracket is found.
     pub fn quantile_f64(&self, p: f64) -> Result<f64, SymplexError> {
         if !(p > 0.0 && p < 1.0) {
             return Err(SymplexError::invalid_argument(
                 "quantile_f64",
                 format!("p must lie strictly between 0 and 1, got {p}"),
             ));
+        }
+        if let Some(q) = self.kernel_quantile_f64(p) {
+            return q;
         }
         let ctx = self.context();
         if let Some(q) = self.0.quantile(&ctx.from_f64(p)?) {
@@ -724,6 +729,60 @@ impl Distribution {
                 k
             }
         })
+    }
+
+    /// [`quantile_f64`](Self::quantile_f64) through the `f64` kernel
+    /// [`numdist`](super::numdist) for the eight families it covers, when
+    /// every parameter is numeric; `None` leaves it to the generic route.
+    /// The lattice families use the same `1e-12` slack on `F(k) ≥ p` as
+    /// the generic walk, so a level that equals a jump of `F` to rounding
+    /// picks the same atom either way.
+    fn kernel_quantile_f64(&self, p: f64) -> Option<Result<f64, SymplexError>> {
+        use super::continuous::{Beta, ChiSquared, FDistribution, Gamma, Normal, StudentT};
+        use super::discrete::{Binomial, Poisson};
+        use super::numdist;
+        const LATTICE_SLACK: f64 = 1e-12;
+        let num = |e: &Ex| -> Option<f64> {
+            if e.free_symbols().is_empty() {
+                e.eval_f64().ok().filter(|v| v.is_finite())
+            } else {
+                None
+            }
+        };
+        let p_lattice = (p - LATTICE_SLACK).max(f64::MIN_POSITIVE);
+        if let Some(d) = self.downcast_ref::<Normal>() {
+            let (mean, std) = (num(&d.mean)?, num(&d.std)?);
+            if std <= 0.0 {
+                return None;
+            }
+            return Some(numdist::norm::ppf(p).map(|z| mean + std * z));
+        }
+        if let Some(d) = self.downcast_ref::<StudentT>() {
+            return Some(numdist::t::ppf(p, num(&d.dof)?));
+        }
+        if let Some(d) = self.downcast_ref::<ChiSquared>() {
+            return Some(numdist::chi2::ppf(p, num(&d.dof)?));
+        }
+        if let Some(d) = self.downcast_ref::<FDistribution>() {
+            return Some(numdist::f::ppf(p, num(&d.d1)?, num(&d.d2)?));
+        }
+        if let Some(d) = self.downcast_ref::<Beta>() {
+            return Some(numdist::beta::ppf(p, num(&d.alpha)?, num(&d.beta)?));
+        }
+        if let Some(d) = self.downcast_ref::<Gamma>() {
+            return Some(numdist::gamma::ppf(p, num(&d.shape)?, num(&d.scale)?));
+        }
+        if let Some(d) = self.downcast_ref::<Binomial>() {
+            let (n, prob) = (num(&d.n)?, num(&d.p)?);
+            if n.fract() != 0.0 {
+                return None;
+            }
+            return Some(numdist::binom::ppf(p_lattice, n, prob));
+        }
+        if let Some(d) = self.downcast_ref::<Poisson>() {
+            return Some(numdist::poisson::ppf(p_lattice, num(&d.rate)?));
+        }
+        None
     }
 
     /// The smallest lattice point `k ≥ lo` with `Σ_{lo ≤ j ≤ k} f(j) ≥ p`

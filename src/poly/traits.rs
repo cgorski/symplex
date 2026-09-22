@@ -20,7 +20,10 @@
 //!
 //! - `impl<C: Ring> Poly<C>` — add, mul, derivative, etc.
 //! - `impl<C: Field> Poly<C>` — div_rem, gcd, extended_gcd, etc.
-
+//!
+//! Implementations are provided for `Ratio<BigInt>` (a field) and for
+//! [`BigInt`] (a Euclidean domain that is not a field), so that
+//! `GenPoly<BigInt>` is the dense form of `ℤ[x]`.
 //!
 //! # References
 //!
@@ -30,6 +33,7 @@
 use std::fmt;
 
 use num_bigint::BigInt;
+use num_integer::Integer;
 use num_rational::Ratio;
 use num_traits::{One, Zero};
 
@@ -297,7 +301,7 @@ impl Field for Ratio<BigInt> {
 impl IntegralCoeff for Ratio<BigInt> {
     #[inline]
     fn is_integer(&self) -> bool {
-        self.denom().is_one()
+        One::is_one(self.denom())
     }
 
     fn to_integer(&self) -> Option<BigInt> {
@@ -316,7 +320,7 @@ impl IntegralCoeff for Ratio<BigInt> {
 
 impl CoeffDisplay for Ratio<BigInt> {
     fn fmt_coeff(&self, f: &mut fmt::Formatter<'_>, env: BindingStrength) -> fmt::Result {
-        if self.denom().is_one() {
+        if One::is_one(self.denom()) {
             // Integer: no parens needed unless it's negative in a tight context.
             let n = self.numer();
             if n.sign() == num_bigint::Sign::Minus && env >= BindingStrength::Sum {
@@ -331,6 +335,96 @@ impl CoeffDisplay for Ratio<BigInt> {
             } else {
                 write!(f, "{}/{}", self.numer(), self.denom())
             }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Implementations for BigInt (ℤ: a Euclidean domain, not a field)
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl Ring for BigInt {
+    #[inline]
+    fn zero() -> Self {
+        <BigInt as Zero>::zero()
+    }
+
+    #[inline]
+    fn one() -> Self {
+        <BigInt as One>::one()
+    }
+
+    #[inline]
+    fn is_zero(&self) -> bool {
+        Zero::is_zero(self)
+    }
+
+    #[inline]
+    fn is_one(&self) -> bool {
+        One::is_one(self)
+    }
+
+    #[inline]
+    fn add(&self, rhs: &Self) -> Self {
+        self + rhs
+    }
+
+    #[inline]
+    fn sub(&self, rhs: &Self) -> Self {
+        self - rhs
+    }
+
+    #[inline]
+    fn mul(&self, rhs: &Self) -> Self {
+        self * rhs
+    }
+
+    #[inline]
+    fn neg(&self) -> Self {
+        -self
+    }
+}
+
+impl EuclideanDomain for BigInt {
+    /// Truncated division (`num_integer::Integer::div_rem`): the quotient
+    /// rounds toward zero and the remainder takes the sign of `self`, so
+    /// an exact quotient is exact regardless of signs — the convention the
+    /// ℤ\[x\] trial division in `factor_zassenhaus` relies on.
+    #[inline]
+    fn div_rem(&self, other: &Self) -> (Self, Self) {
+        Integer::div_rem(self, other)
+    }
+
+    /// Non-negative gcd (`gcd(0, 0) = 0`).
+    #[inline]
+    fn gcd(a: &Self, b: &Self) -> Self {
+        Integer::gcd(a, b)
+    }
+}
+
+impl IntegralCoeff for BigInt {
+    #[inline]
+    fn is_integer(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    fn to_integer(&self) -> Option<BigInt> {
+        Some(self.clone())
+    }
+
+    #[inline]
+    fn from_integer(n: BigInt) -> Self {
+        n
+    }
+}
+
+impl CoeffDisplay for BigInt {
+    fn fmt_coeff(&self, f: &mut fmt::Formatter<'_>, env: BindingStrength) -> fmt::Result {
+        if self.sign() == num_bigint::Sign::Minus && env >= BindingStrength::Sum {
+            write!(f, "({})", self)
+        } else {
+            write!(f, "{}", self)
         }
     }
 }
@@ -503,12 +597,12 @@ mod tests {
 
     // ── CoeffDisplay tests ──────────────────────────────────────────
 
-    fn format_coeff(c: &Q, env: BindingStrength) -> String {
+    fn format_coeff<C: CoeffDisplay>(c: &C, env: BindingStrength) -> String {
         use std::fmt::Write;
         let mut s = String::new();
         // Use a simple wrapper to call fmt_coeff
-        struct Wrapper<'a>(&'a Q, BindingStrength);
-        impl fmt::Display for Wrapper<'_> {
+        struct Wrapper<'a, C>(&'a C, BindingStrength);
+        impl<C: CoeffDisplay> fmt::Display for Wrapper<'_, C> {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 self.0.fmt_coeff(f, self.1)
             }
@@ -568,5 +662,56 @@ mod tests {
         assert!(BindingStrength::Sum < BindingStrength::Product);
         assert!(BindingStrength::Product < BindingStrength::Power);
         assert!(BindingStrength::Power < BindingStrength::Atom);
+    }
+
+    // ── BigInt as a Euclidean domain ────────────────────────────────
+
+    fn z(n: i64) -> BigInt {
+        BigInt::from(n)
+    }
+
+    #[test]
+    fn bigint_ring_ops() {
+        assert_eq!(<BigInt as Ring>::zero(), z(0));
+        assert_eq!(<BigInt as Ring>::one(), z(1));
+        assert!(Ring::is_zero(&z(0)) && !Ring::is_zero(&z(3)));
+        assert!(Ring::is_one(&z(1)) && !Ring::is_one(&z(-1)));
+        assert_eq!(Ring::add(&z(7), &z(-9)), z(-2));
+        assert_eq!(Ring::sub(&z(7), &z(-9)), z(16));
+        assert_eq!(Ring::mul(&z(7), &z(-9)), z(-63));
+        assert_eq!(Ring::neg(&z(7)), z(-7));
+        assert_eq!(z(-3).pow_usize(3), z(-27));
+    }
+
+    #[test]
+    fn bigint_div_rem_is_truncated() {
+        // Quotient toward zero; remainder takes the sign of the dividend.
+        assert_eq!(EuclideanDomain::div_rem(&z(7), &z(2)), (z(3), z(1)));
+        assert_eq!(EuclideanDomain::div_rem(&z(-7), &z(2)), (z(-3), z(-1)));
+        assert_eq!(EuclideanDomain::div_rem(&z(7), &z(-2)), (z(-3), z(1)));
+        assert_eq!(EuclideanDomain::div_rem(&z(-6), &z(3)), (z(-2), z(0)));
+    }
+
+    #[test]
+    fn bigint_gcd_is_non_negative() {
+        assert_eq!(<BigInt as EuclideanDomain>::gcd(&z(-12), &z(18)), z(6));
+        assert_eq!(<BigInt as EuclideanDomain>::gcd(&z(-4), &z(0)), z(4));
+        assert_eq!(<BigInt as EuclideanDomain>::gcd(&z(0), &z(0)), z(0));
+    }
+
+    #[test]
+    fn bigint_integral_coeff() {
+        assert!(IntegralCoeff::is_integer(&z(5)));
+        assert_eq!(IntegralCoeff::to_integer(&z(5)), Some(z(5)));
+        assert_eq!(<BigInt as IntegralCoeff>::from_integer(z(9)), z(9));
+        assert_eq!(<BigInt as IntegralCoeff>::from_i64(-4), z(-4));
+    }
+
+    #[test]
+    fn bigint_coeff_display() {
+        assert_eq!(format_coeff(&z(3), BindingStrength::Product), "3");
+        assert_eq!(format_coeff(&z(-3), BindingStrength::Weakest), "-3");
+        assert_eq!(format_coeff(&z(-3), BindingStrength::Sum), "(-3)");
+        assert_eq!(format_coeff(&z(-3), BindingStrength::Product), "(-3)");
     }
 }
