@@ -846,6 +846,28 @@ fn eval_node(
                 return Ok((bf_pow(&b.0, &e.0, prec, rm, cc), BigFloat::new(prec)));
             }
 
+            // Negative real base, half-integer exponent n/2:
+            // (−r)^(n/2) = r^(n/2)·iⁿ exactly (n odd, so ±i).  Through
+            // exp(½·(ln r + iπ)) the real part is r^(n/2)·cos(nπ/2), a rounding
+            // residue whose sign then picks the side of the next branch cut.
+            if b_is_real
+                && b.0.is_negative()
+                && let ExprNode::Num(nid) = arena.node(*exp)
+                && *arena.num(*nid).denom() == BigInt::from(2)
+            {
+                let n = arena.num(*nid).numer();
+                let r = b.0.abs();
+                let magnitude = bf_pow(&r, &e.0, prec, rm, cc);
+                let i_power_is_plus_i =
+                    num_integer::Integer::mod_floor(n, &BigInt::from(4)) == BigInt::from(1);
+                let im = if i_power_is_plus_i {
+                    magnitude
+                } else {
+                    magnitude.neg()
+                };
+                return Ok((BigFloat::new(prec), im));
+            }
+
             // General complex power: b^e = exp(e * ln(b)).
             Ok(c_pow(b, e, prec, rm, cc))
         }
@@ -859,8 +881,10 @@ fn eval_node(
         // ── Trig ───────────────────────────────────────────────────
         ExprNode::Sin(inner) => {
             let val = get_cached(cache, *inner)?;
+            let (arg, extra) = trig_arg(arena, *inner, val, prec, rm);
+            check_trig_arg(&arg, extra, prec, arena)?;
             if val.1.is_zero() {
-                Ok((val.0.sin(prec, rm, cc), BigFloat::new(prec)))
+                Ok((arg.sin(prec, rm, cc), BigFloat::new(prec)))
             } else {
                 Ok(c_sin(val, prec, rm, cc))
             }
@@ -868,8 +892,10 @@ fn eval_node(
 
         ExprNode::Cos(inner) => {
             let val = get_cached(cache, *inner)?;
+            let (arg, extra) = trig_arg(arena, *inner, val, prec, rm);
+            check_trig_arg(&arg, extra, prec, arena)?;
             if val.1.is_zero() {
-                Ok((val.0.cos(prec, rm, cc), BigFloat::new(prec)))
+                Ok((arg.cos(prec, rm, cc), BigFloat::new(prec)))
             } else {
                 Ok(c_cos(val, prec, rm, cc))
             }
@@ -877,8 +903,10 @@ fn eval_node(
 
         ExprNode::Tan(inner) => {
             let val = get_cached(cache, *inner)?;
+            let (arg, extra) = trig_arg(arena, *inner, val, prec, rm);
+            check_trig_arg(&arg, extra, prec, arena)?;
             if val.1.is_zero() {
-                Ok((val.0.tan(prec, rm, cc), BigFloat::new(prec)))
+                Ok((arg.tan(prec, rm, cc), BigFloat::new(prec)))
             } else {
                 let s = c_sin(val, prec, rm, cc);
                 let c = c_cos(val, prec, rm, cc);
@@ -892,6 +920,7 @@ fn eval_node(
             if val.1.is_zero() {
                 Ok((val.0.exp(prec, rm, cc), BigFloat::new(prec)))
             } else {
+                check_trig_arg(&val.1, 0, prec, arena)?;
                 Ok(c_exp(val, prec, rm, cc))
             }
         }
@@ -916,22 +945,42 @@ fn eval_node(
         }
 
         // ── Inverse trig ──────────────────────────────────────────
+        // A real argument outside the real domain (`asin 2`, `acosh ½`,
+        // `atanh 2`) takes the complex formula, which is the principal value
+        // (mpmath's, and so SymPy's `N`); the real routines would give NaN.
         ExprNode::Asin(inner) => {
             let val = get_cached(cache, *inner)?;
             if val.1.is_zero() {
-                Ok((val.0.asin(prec, rm, cc), BigFloat::new(prec)))
-            } else {
-                Ok(c_asin(val, prec, rm, cc))
+                if abs_le_one(&val.0, prec) {
+                    return Ok((val.0.asin(prec, rm, cc), BigFloat::new(prec)));
+                }
+                // |x| > 1: sign(x)·π/2 − i·sign(x)·acosh|x|.
+                let half_pi = half_pi_bf(prec, rm, cc);
+                let ach = val.0.abs().acosh(prec, rm, cc);
+                return Ok(if val.0.is_negative() {
+                    (half_pi.neg(), ach)
+                } else {
+                    (half_pi, ach.neg())
+                });
             }
+            Ok(c_asin(val, prec, rm, cc))
         }
 
         ExprNode::Acos(inner) => {
             let val = get_cached(cache, *inner)?;
             if val.1.is_zero() {
-                Ok((val.0.acos(prec, rm, cc), BigFloat::new(prec)))
-            } else {
-                Ok(c_acos(val, prec, rm, cc))
+                if abs_le_one(&val.0, prec) {
+                    return Ok((val.0.acos(prec, rm, cc), BigFloat::new(prec)));
+                }
+                // x > 1: i·acosh x;  x < −1: π − i·acosh|x|.
+                let ach = val.0.abs().acosh(prec, rm, cc);
+                return Ok(if val.0.is_negative() {
+                    (cc.pi(prec, rm).clone(), ach.neg())
+                } else {
+                    (BigFloat::new(prec), ach)
+                });
             }
+            Ok(c_acos(val, prec, rm, cc))
         }
 
         ExprNode::Atan(inner) => {
@@ -966,6 +1015,7 @@ fn eval_node(
             if val.1.is_zero() {
                 Ok((val.0.sinh(prec, rm, cc), BigFloat::new(prec)))
             } else {
+                check_trig_arg(&val.1, 0, prec, arena)?;
                 Ok(c_sinh(val, prec, rm, cc))
             }
         }
@@ -975,6 +1025,7 @@ fn eval_node(
             if val.1.is_zero() {
                 Ok((val.0.cosh(prec, rm, cc), BigFloat::new(prec)))
             } else {
+                check_trig_arg(&val.1, 0, prec, arena)?;
                 Ok(c_cosh(val, prec, rm, cc))
             }
         }
@@ -984,6 +1035,7 @@ fn eval_node(
             if val.1.is_zero() {
                 Ok((val.0.tanh(prec, rm, cc), BigFloat::new(prec)))
             } else {
+                check_trig_arg(&val.1, 0, prec, arena)?;
                 let s = c_sinh(val, prec, rm, cc);
                 let c = c_cosh(val, prec, rm, cc);
                 Ok(c_div(&s, &c, prec, rm))
@@ -1003,19 +1055,37 @@ fn eval_node(
         ExprNode::Acosh(inner) => {
             let val = get_cached(cache, *inner)?;
             if val.1.is_zero() {
-                Ok((val.0.acosh(prec, rm, cc), BigFloat::new(prec)))
-            } else {
-                Ok(c_acosh(val, prec, rm, cc))
+                let one = BigFloat::from_i32(1, prec);
+                if val.0 >= one {
+                    return Ok((val.0.acosh(prec, rm, cc), BigFloat::new(prec)));
+                }
+                // −1 ≤ x < 1: i·acos x;  x < −1: acosh|x| + iπ.
+                return Ok(if val.0 >= one.neg() {
+                    (BigFloat::new(prec), val.0.acos(prec, rm, cc))
+                } else {
+                    (val.0.abs().acosh(prec, rm, cc), cc.pi(prec, rm).clone())
+                });
             }
+            Ok(c_acosh(val, prec, rm, cc))
         }
 
         ExprNode::Atanh(inner) => {
             let val = get_cached(cache, *inner)?;
             if val.1.is_zero() {
-                Ok((val.0.atanh(prec, rm, cc), BigFloat::new(prec)))
-            } else {
-                Ok(c_atanh(val, prec, rm, cc))
+                if abs_le_one(&val.0, prec) {
+                    return Ok((val.0.atanh(prec, rm, cc), BigFloat::new(prec)));
+                }
+                // |x| > 1: atanh(1/x) − sign(x)·iπ/2.
+                let recip = BigFloat::from_i32(1, prec).div(&val.0, prec, rm);
+                let half_pi = half_pi_bf(prec, rm, cc);
+                let im = if val.0.is_negative() {
+                    half_pi
+                } else {
+                    half_pi.neg()
+                };
+                return Ok((recip.atanh(prec, rm, cc), im));
             }
+            Ok(c_atanh(val, prec, rm, cc))
         }
 
         // ── Sign ───────────────────────────────────────────────────
@@ -1701,9 +1771,39 @@ pub(crate) use crate::base::bigcomplex::{
 fn c_exp(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
     // exp(a+bi) = exp(a)(cos(b) + i·sin(b))
     let exp_a = z.0.exp(prec, rm, cc);
-    let cos_b = z.1.cos(prec, rm, cc);
-    let sin_b = z.1.sin(prec, rm, cc);
+    let (sin_b, cos_b) = sin_cos(&z.1, prec, rm, cc);
     (exp_a.mul(&cos_b, prec, rm), exp_a.mul(&sin_b, prec, rm))
+}
+
+/// `(sin x, cos x)`, exact at `x ∈ {0, ±π/2, ±π}` when `x` is bit for bit
+/// the working-precision constant.
+///
+/// The evaluator produces exactly those constants itself — `arg` of a
+/// negative real is π, `asin` of a real beyond 1 has real part ±π/2 — and
+/// `sin` of the *rounded* π is a residue of about `2^(−prec)`, not 0.
+/// Carried on, that residue picks the side of the next branch cut by its
+/// sign: `exp(ln(−5/7))` came out `−5/7 + 1e-50·i`, and
+/// `acosh(1/exp(ln x))` at `x = −5/7` the conjugate of `acosh(−7/5)`.  A
+/// value equal to the rounded π is indistinguishable from π at this
+/// precision, so its exact sine is the right answer.
+fn sin_cos(x: &BigFloat, prec: usize, rm: RoundingMode, cc: &mut Consts) -> (BigFloat, BigFloat) {
+    let zero = BigFloat::new(prec);
+    let one = BigFloat::from_i32(1, prec);
+    if x.is_zero() {
+        return (zero, one);
+    }
+    let pi = cc.pi(prec, rm).clone();
+    let half_pi = pi.div(&BigFloat::from_i32(2, prec), prec, rm);
+    if *x == half_pi {
+        return (one, zero);
+    }
+    if *x == half_pi.neg() {
+        return (one.neg(), zero);
+    }
+    if *x == pi || *x == pi.neg() {
+        return (zero, one.neg());
+    }
+    (x.sin(prec, rm, cc), x.cos(prec, rm, cc))
 }
 
 fn c_ln(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
@@ -1715,8 +1815,7 @@ fn c_ln(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex 
 
 fn c_sin(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
     // sin(a+bi) = sin(a)cosh(b) + i·cos(a)sinh(b)
-    let sin_a = z.0.sin(prec, rm, cc);
-    let cos_a = z.0.cos(prec, rm, cc);
+    let (sin_a, cos_a) = sin_cos(&z.0, prec, rm, cc);
     let cosh_b = z.1.cosh(prec, rm, cc);
     let sinh_b = z.1.sinh(prec, rm, cc);
     (sin_a.mul(&cosh_b, prec, rm), cos_a.mul(&sinh_b, prec, rm))
@@ -1724,8 +1823,7 @@ fn c_sin(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex
 
 fn c_cos(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
     // cos(a+bi) = cos(a)cosh(b) - i·sin(a)sinh(b)
-    let cos_a = z.0.cos(prec, rm, cc);
-    let sin_a = z.0.sin(prec, rm, cc);
+    let (sin_a, cos_a) = sin_cos(&z.0, prec, rm, cc);
     let cosh_b = z.1.cosh(prec, rm, cc);
     let sinh_b = z.1.sinh(prec, rm, cc);
     (
@@ -1738,8 +1836,7 @@ fn c_sinh(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Comple
     // sinh(a+bi) = sinh(a)cos(b) + i·cosh(a)sin(b)
     let sinh_a = z.0.sinh(prec, rm, cc);
     let cosh_a = z.0.cosh(prec, rm, cc);
-    let cos_b = z.1.cos(prec, rm, cc);
-    let sin_b = z.1.sin(prec, rm, cc);
+    let (sin_b, cos_b) = sin_cos(&z.1, prec, rm, cc);
     (sinh_a.mul(&cos_b, prec, rm), cosh_a.mul(&sin_b, prec, rm))
 }
 
@@ -1747,8 +1844,7 @@ fn c_cosh(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Comple
     // cosh(a+bi) = cosh(a)cos(b) + i·sinh(a)sin(b)
     let cosh_a = z.0.cosh(prec, rm, cc);
     let sinh_a = z.0.sinh(prec, rm, cc);
-    let cos_b = z.1.cos(prec, rm, cc);
-    let sin_b = z.1.sin(prec, rm, cc);
+    let (sin_b, cos_b) = sin_cos(&z.1, prec, rm, cc);
     (cosh_a.mul(&cos_b, prec, rm), sinh_a.mul(&sin_b, prec, rm))
 }
 
@@ -1781,17 +1877,31 @@ fn c_sqrt(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Comple
 // ── Inverse trig (complex) ─────────────────────────────────────────
 
 fn c_asin(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
-    // asin(z) = -i * ln(iz + sqrt(1 - z²))
+    // asin(z) = −i·ln(iz + √(1 − z²)).  In half the plane the two terms
+    // nearly cancel for large |z|; there the sum is taken as 1/(√(1 − z²) −
+    // iz), the same number ((iz + s)(s − iz) = 1), without the cancellation.
     let i_unit = c_i(prec);
     let one = c_one(prec);
     let z_sq = c_mul(z, z, prec, rm);
     let one_minus_z_sq = c_sub(&one, &z_sq, prec, rm);
     let sqrt_term = c_sqrt(&one_minus_z_sq, prec, rm, cc);
     let iz = c_mul(&i_unit, z, prec, rm);
-    let sum = c_add(&iz, &sqrt_term, prec, rm);
+    let sum = sum_without_cancellation(&iz, &sqrt_term, prec, rm);
     let ln_sum = c_ln(&sum, prec, rm, cc);
     let neg_i = c_neg(&i_unit);
     c_mul(&neg_i, &ln_sum, prec, rm)
+}
+
+/// `a + s` for `a`, `s` with `s² − a² = 1` (then `(a + s)(s − a) = 1`):
+/// the direct sum when it does not cancel, `1/(s − a)` when it does.
+fn sum_without_cancellation(a: &Complex, s: &Complex, prec: usize, rm: RoundingMode) -> Complex {
+    let plus = c_add(a, s, prec, rm);
+    let minus = c_sub(s, a, prec, rm);
+    if c_abs(&plus, prec, rm) >= c_abs(&minus, prec, rm) {
+        plus
+    } else {
+        c_div(&c_one(prec), &minus, prec, rm)
+    }
 }
 
 fn c_acos(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
@@ -1803,49 +1913,129 @@ fn c_acos(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Comple
 }
 
 fn c_atan(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
-    // atan(z) = (i/2) * ln((i+z)/(i-z))
-    let i_unit = c_i(prec);
-    let two = c_from_real(BigFloat::from_i32(2, prec), prec);
-    let i_over_2 = c_div(&i_unit, &two, prec, rm);
-    let i_plus_z = c_add(&i_unit, z, prec, rm);
-    let i_minus_z = c_sub(&i_unit, z, prec, rm);
-    let ratio = c_div(&i_plus_z, &i_minus_z, prec, rm);
-    let ln_ratio = c_ln(&ratio, prec, rm, cc);
-    c_mul(&i_over_2, &ln_ratio, prec, rm)
+    // atan(z) = (i/2)·(ln(1 − iz) − ln(1 + iz)).  The quotient form
+    // (i/2)·ln((i + z)/(i − z)) differs from it by π on the cut
+    // z ∈ i·(1, ∞) (atan(2i) would be −π/2 + …, mpmath says +π/2 + …).
+    let one = c_one(prec);
+    let iz = c_mul(&c_i(prec), z, prec, rm);
+    let ln_minus = c_ln(&c_sub(&one, &iz, prec, rm), prec, rm, cc);
+    let ln_plus = c_ln(&c_add(&one, &iz, prec, rm), prec, rm, cc);
+    let diff = c_sub(&ln_minus, &ln_plus, prec, rm);
+    let half = BigFloat::from_i32(1, prec).div(&BigFloat::from_i32(2, prec), prec, rm);
+    // (i/2)·(a + bi) = −b/2 + (a/2)·i
+    (
+        diff.1.mul(&half, prec, rm).neg(),
+        diff.0.mul(&half, prec, rm),
+    )
 }
 
 // ── Inverse hyperbolic (complex) ──────────────────────────────────
 
 fn c_asinh(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
-    // asinh(z) = ln(z + sqrt(z² + 1))
+    // asinh(z) = ln(z + √(z² + 1)), the sum taken without cancellation
+    // (it cancels for Re z < 0 and large |z|).
     let one = c_one(prec);
     let z_sq = c_mul(z, z, prec, rm);
     let z_sq_plus_one = c_add(&z_sq, &one, prec, rm);
     let sqrt_term = c_sqrt(&z_sq_plus_one, prec, rm, cc);
-    let sum = c_add(z, &sqrt_term, prec, rm);
+    let sum = sum_without_cancellation(z, &sqrt_term, prec, rm);
     c_ln(&sum, prec, rm, cc)
 }
 
 fn c_acosh(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
-    // acosh(z) = ln(z + sqrt(z² - 1))
+    // acosh(z) = ln(z + √(z + 1)·√(z − 1)).  The single root √(z² − 1)
+    // is the other branch whenever Re z < 0 (acosh(−2 + i/2) came out
+    // negated); the product of two roots is the principal value everywhere.
     let one = c_one(prec);
-    let z_sq = c_mul(z, z, prec, rm);
-    let z_sq_minus_one = c_sub(&z_sq, &one, prec, rm);
-    let sqrt_term = c_sqrt(&z_sq_minus_one, prec, rm, cc);
-    let sum = c_add(z, &sqrt_term, prec, rm);
+    let root_plus = c_sqrt(&c_add(z, &one, prec, rm), prec, rm, cc);
+    let root_minus = c_sqrt(&c_sub(z, &one, prec, rm), prec, rm, cc);
+    let sum = c_add(z, &c_mul(&root_plus, &root_minus, prec, rm), prec, rm);
     c_ln(&sum, prec, rm, cc)
 }
 
 fn c_atanh(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
-    // atanh(z) = (1/2) * ln((1+z)/(1-z))
+    // atanh(z) = (ln(1 + z) − ln(1 − z))/2.  The quotient form
+    // ln((1 + z)/(1 − z))/2 differs from it by πi on the cut z ∈ (1, ∞).
     let one = c_one(prec);
-    let two = c_from_real(BigFloat::from_i32(2, prec), prec);
-    let half = c_div(&one, &two, prec, rm);
-    let one_plus_z = c_add(&one, z, prec, rm);
-    let one_minus_z = c_sub(&one, z, prec, rm);
-    let ratio = c_div(&one_plus_z, &one_minus_z, prec, rm);
-    let ln_ratio = c_ln(&ratio, prec, rm, cc);
-    c_mul(&half, &ln_ratio, prec, rm)
+    let ln_plus = c_ln(&c_add(&one, z, prec, rm), prec, rm, cc);
+    let ln_minus = c_ln(&c_sub(&one, z, prec, rm), prec, rm, cc);
+    let diff = c_sub(&ln_plus, &ln_minus, prec, rm);
+    let half = BigFloat::from_i32(1, prec).div(&BigFloat::from_i32(2, prec), prec, rm);
+    (diff.0.mul(&half, prec, rm), diff.1.mul(&half, prec, rm))
+}
+
+/// The real part of a trigonometric node's argument, and the bits it
+/// carries beyond `prec`.  A rational child (`sin(10^100)`) is converted
+/// again with `log₂|r|` extra bits, so that reducing it modulo 2π starts
+/// from a value correct to `prec` bits after the point, not one rounded to
+/// `prec` significant bits.
+fn trig_arg(
+    arena: &Arena,
+    inner: ExprId,
+    val: &Complex,
+    prec: usize,
+    rm: RoundingMode,
+) -> (BigFloat, usize) {
+    if let ExprNode::Num(nid) = arena.node(inner)
+        && let Some(e) = val.0.exponent()
+        && e > 0
+        && val.0.inexact()
+    {
+        let extra = usize::try_from(e).unwrap_or(0);
+        if extra <= arena.config.max_evalf_precision as usize {
+            return (ratio_to_bigfloat(arena.num(*nid), prec + extra, rm), extra);
+        }
+    }
+    (val.0.clone(), 0)
+}
+
+/// π/2 at `prec` bits.
+fn half_pi_bf(prec: usize, rm: RoundingMode, cc: &mut Consts) -> BigFloat {
+    cc.pi(prec, rm).div(&BigFloat::from_i32(2, prec), prec, rm)
+}
+
+/// `|x| ≤ 1`: the real domain of `asin`, `acos` and (open) `atanh`.
+fn abs_le_one(x: &BigFloat, prec: usize) -> bool {
+    x.abs() <= BigFloat::from_i32(1, prec)
+}
+
+/// Binary exponent above which an *inexact* trigonometric argument is
+/// refused.  Reducing `x` modulo 2π turns its relative rounding error into
+/// an absolute error of about `2^(e − prec)`, and [`evalf`] carries at least
+/// 64 guard bits beyond the digits requested, so past `2^64` the reduction
+/// eats into the digits that are printed.
+const TRIG_ARG_MAX_INEXACT_EXPONENT: i64 = 64;
+
+/// Refuse a trigonometric argument whose value is not known well enough to
+/// reduce it modulo 2π at this precision: an inexact one of magnitude
+/// ≥ `2^64` (see [`TRIG_ARG_MAX_INEXACT_EXPONENT`]; `exp(100) ≈ 2^144` at
+/// 30 digits is known only to within about `2^(144 − 166)`), or any beyond
+/// `EvalConfig::max_evalf_precision` bits — astro-float would compute π to
+/// that many bits, and `cos(cosh(cosh(4i)))` ran for minutes.
+///
+/// `extra` is the number of bits `x` carries beyond `prec` (see
+/// [`trig_arg`]); they widen the inexact bound by as much.
+fn check_trig_arg(
+    x: &BigFloat,
+    extra: usize,
+    prec: usize,
+    arena: &Arena,
+) -> Result<(), SymplexError> {
+    let Some(e) = x.exponent() else {
+        return Ok(());
+    };
+    let e = i64::from(e);
+    let cap = i64::from(arena.config.max_evalf_precision);
+    let bound =
+        TRIG_ARG_MAX_INEXACT_EXPONENT.saturating_add(i64::try_from(extra).unwrap_or(i64::MAX));
+    if e > cap || (x.inexact() && e > bound) {
+        let digits = u32::try_from(prec.saturating_sub(64) * 10 / 34).unwrap_or(u32::MAX);
+        return Err(SymplexError::PrecisionExhausted {
+            requested: digits,
+            achieved: 0,
+        });
+    }
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1862,6 +2052,16 @@ fn atan2_bf(
 ) -> BigFloat {
     if x.is_zero() && y.is_zero() {
         return BigFloat::new(prec);
+    }
+    // On the real axis the sign of a zero `y` is an accident of how the
+    // value was computed (`c_neg` turns `+0` into `−0`), not a side of the
+    // cut: a negative real has argument +π on the principal branch.
+    if y.is_zero() {
+        return if x.is_negative() {
+            cc.pi(prec, rm).clone()
+        } else {
+            BigFloat::new(prec)
+        };
     }
 
     let pi_val = cc.pi(prec, rm);

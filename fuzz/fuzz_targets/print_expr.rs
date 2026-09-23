@@ -5,8 +5,8 @@
 //! cargo +nightly fuzz run print_expr -s none fuzz/artifacts/fuzz_integrate/timeout-…
 //! ```
 //!
-//! prints `depth 4: …` (the `fuzz_simplify` tree) and `depth 3: …` (the
-//! `fuzz_integrate` tree).
+//! prints `depth 4: …` (the `fuzz_simplify` tree, full grammar) and
+//! `depth 3: …` (the `fuzz_integrate` tree, elementary grammar).
 #![no_main]
 
 #[path = "common/mod.rs"]
@@ -18,9 +18,9 @@ use symplex::prelude::*;
 fuzz_target!(|data: &[u8]| {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    for depth in [4, 3] {
+    for (depth, grammar) in [(4, common::Grammar::Full), (3, common::Grammar::Elementary)] {
         let mut b = common::Bytes::new(data);
-        let f = common::expr(&ctx, &x, &mut b, depth);
+        let f = common::expr_in(&ctx, &x, &mut b, depth, grammar);
         println!("depth {depth}: {f}");
     }
 });

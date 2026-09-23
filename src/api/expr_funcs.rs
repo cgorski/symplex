@@ -117,11 +117,70 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
-    /// Cube root: `∛self`.
+    /// Principal cube root: `self^(1/3)`.
+    ///
+    /// Like every power, this is the principal branch: `∛(−8) = 2·(−1)^(1/3)
+    /// = 1 + √3·i` (SymPy's `cbrt`).  For the real cube root of a negative
+    /// real use [`real_root`](Self::real_root).
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn cbrt(&self) -> Ex {
         let id = self.inner.write().arena.cbrt(self.raw_id());
         self.wrap(id)
+    }
+
+    /// The real `n`-th root (SymPy's `real_root`).
+    ///
+    /// For odd `n` and real `self` this is the real `r` with `rⁿ = self`:
+    /// `sign(self)·|self|^(1/n)`, so `real_root(−8, 3) = −2` where the
+    /// principal [`cbrt`](Self::cbrt) is `1 + √3·i`.  For even `n` it is the
+    /// principal root, real exactly when `self ≥ 0`.  When `self` is not
+    /// known to be real the odd case is
+    /// `Piecewise((sign(x)·|x|^(1/n), im(x) = 0), (x^(1/n), True))`, as in
+    /// SymPy.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] for `n = 0`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// assert_eq!(ctx.int(-8).real_root(3)?, ctx.int(-2));
+    /// assert_eq!(ctx.rational(-1, 8).real_root(3)?, ctx.rational(-1, 2));
+    /// assert_eq!(ctx.int(-4).real_root(2)?, ctx.int(-4).sqrt());       // 2*I: no real root
+    /// let r = ctx.symbol_with("r", &[Assumption::Real]);
+    /// assert_eq!(format!("{}", r.real_root(3)?), "cbrt(abs(r))*sign(r)");
+    /// assert!((ctx.int(-2).real_root(3)?.eval_f64()? + 2f64.cbrt()).abs() < 1e-15);
+    /// # Ok::<(), SymplexError>(())
+    /// ```
+    pub fn real_root(&self, n: u32) -> Result<Ex, SymplexError> {
+        if n == 0 {
+            return Err(SymplexError::invalid_argument(
+                "real_root",
+                "the root index n must be at least 1",
+            ));
+        }
+        let ctx = self.context();
+        let exp = ctx.rational(1, i64::from(n));
+        let principal = self.pow(&exp);
+        if n.is_multiple_of(2) {
+            return Ok(principal);
+        }
+        let real_form = &self.sign() * &self.abs().pow(&exp);
+        if self.as_rational().is_some() {
+            return Ok(real_form.eval());
+        }
+        if self.is_real_valued() == Some(true) {
+            return Ok(real_form);
+        }
+        let on_real_line = self.im().eq_expr(&ctx.zero());
+        Ok(Ex::piecewise(&[
+            (&real_form, &on_real_line),
+            (&principal, &ctx.bool_true()),
+        ]))
     }
 
     /// Nth root: `self^(1/n)`.
@@ -1842,14 +1901,16 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
-    /// Expand logarithmic expressions.
+    /// Expand logarithms where the identities hold (SymPy's `expand_log`).
     ///
-    /// Applies logarithm properties:
-    /// - `ln(a * b)` → `ln(a) + ln(b)`
-    /// - `ln(a^n)` → `n * ln(a)`
-    /// - `ln(a / b)` → `ln(a) - ln(b)`
-    ///
-    /// These rules are valid for positive real arguments.
+    /// `ln(a·b) → ln a + ln b` and `ln(a^e) → e·ln a` hold for positive
+    /// reals, not for every complex value (`ln((−1)·(−1)) = 0 ≠ 2πi`), so
+    /// by default a product splits off only the factors known positive (and
+    /// known-negative ones as `ln(−f)`, their sign kept in the rest), and a
+    /// power `e·ln a` only for `a > 0` with `e` real, or `−1 < e ≤ 1`
+    /// (`ln √x = ½ ln x` for every `x`).
+    /// [`expand_log_with(true)`](Self::expand_log_with) applies both
+    /// unconditionally.  (Before 0.23 the forced form was the default.)
     ///
     /// # Examples
     ///
@@ -1858,10 +1919,11 @@ impl Expr<Numeric> {
     ///
     /// let ctx = Context::new();
     /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
-    /// let expr = (&x * &y).ln();
-    /// let expanded = expr.expand_log();
-    /// let s = format!("{expanded}");
-    /// assert!(s.contains("ln(x)") && s.contains("ln(y)"), "should expand: {s}");
+    /// assert_eq!((&x * &y).ln().expand_log(), (&x * &y).ln());   // x = y = −1 would break it
+    /// assert_eq!(format!("{}", (&x * 2).ln().expand_log()), "ln(2) + ln(x)");
+    /// assert_eq!(format!("{}", x.sqrt().ln().expand_log()), "1/2*ln(x)");
+    /// let (p, q) = (ctx.symbol_with("p", &[Assumption::Positive]), ctx.symbol_with("q", &[Assumption::Positive]));
+    /// assert_eq!(format!("{}", (&p * q.powi(2)).ln().expand_log()), "2*ln(q) + ln(p)");
     /// ```
     #[must_use = "returns the expanded form; does not modify in place"]
     pub fn expand_log(&self) -> Ex {
@@ -1869,9 +1931,17 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
-    /// Combine logarithmic terms (inverse of [`expand_log`](Self::expand_log)).
+    /// Combine logarithms where the identities hold (inverse of
+    /// [`expand_log`](Self::expand_log); SymPy's `logcombine`).
     ///
-    /// Applies: `ln(a) + ln(b) → ln(a·b)` and `n·ln(a) → ln(aⁿ)`.
+    /// `ln a + ln b → ln(a·b)` and `c·ln a → ln(a^c)` hold for positive
+    /// reals, not for every complex value, so by default the logarithms of
+    /// known-positive arguments combine with each other and with at most
+    /// one other logarithm (`ln 2 + ln x = ln(2x)` for every complex `x`:
+    /// `arg 2 = 0`), and `c·ln a` becomes `ln(a^c)` only for `a > 0` with `c`
+    /// real, or `−1 < c ≤ 1`.  [`log_combine_with(true)`](Self::log_combine_with)
+    /// combines unconditionally.  (Before 0.23 the forced form was the
+    /// default.)
     ///
     /// # Examples
     ///
@@ -1880,10 +1950,11 @@ impl Expr<Numeric> {
     ///
     /// let ctx = Context::new();
     /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
-    /// let expr = &x.ln() + &y.ln();
-    /// let combined = expr.log_combine();
-    /// let s = format!("{combined}");
-    /// assert!(s.contains("ln"), "should combine logs: {s}");
+    /// let e = &x.ln() + &y.ln();
+    /// assert_eq!(e.log_combine(), e);                          // x = y = −1 would break it
+    /// assert_eq!(format!("{}", (ctx.int(2).ln() + x.ln()).log_combine()), "ln(2*x)");
+    /// let p = ctx.symbol_with("p", &[Assumption::Positive]);
+    /// assert_eq!(format!("{}", (&p.ln() * 3).log_combine()), "ln(p^3)");
     /// ```
     #[must_use = "returns the combined form; does not modify in place"]
     pub fn log_combine(&self) -> Ex {

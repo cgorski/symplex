@@ -1,11 +1,15 @@
-//! Value preservation of the rewriting transforms.
+//! Value preservation of the rewriting transforms, over ℂ.
 //!
-//! For an elementary expression `f` (see `common::expr`), each of
-//! `simplify`, `expand`, `factor`, `together`, `cancel`, `ratsimp` and
-//! `simplify_trig` must return an expression with the same value at every
-//! sample point where both are finite reals (30-digit evaluation, relative
-//! 1e-9), and `simplify` must be idempotent.  The 0.21 audit found the
-//! `pow_pow` collapse (`(x²)^(3/2) → x³`) exactly this way.
+//! For an expression `f` (see `common::expr_in`, [`common::Grammar::Full`]:
+//! elementary functions, hyperbolic functions and their inverses, rational
+//! powers), each of `simplify`, `expand`, `factor`, `together`, `cancel`,
+//! `ratsimp` and `simplify_trig` must return an expression with the same
+//! complex value at every real and complex sample point where both
+//! evaluate (30-digit evaluation, relative 1e-9) — a symbol without
+//! assumptions may be complex — and `simplify` must be idempotent.  The
+//! 0.21 audit found the `pow_pow` collapse (`(x²)^(3/2) → x³`) this way;
+//! comparing complex values (0.23) found the rewrites that were right only
+//! on the reals.
 #![no_main]
 
 #[path = "common/mod.rs"]
@@ -21,7 +25,7 @@ fuzz_target!(|data: &[u8]| {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let mut b = common::Bytes::new(data);
-    let f = common::expr(&ctx, &x, &mut b, 4);
+    let f = common::expr_in(&ctx, &x, &mut b, 4, common::Grammar::Full);
     let transforms: [Transform; 7] = [
         ("simplify", |e, _| e.simplify()),
         ("expand", |e, _| e.expand()),
@@ -34,8 +38,8 @@ fuzz_target!(|data: &[u8]| {
     let which = b.u8() as usize % transforms.len();
     let (name, t) = transforms[which];
     let g = t(&f, &x);
-    if let Some((v, fa, fb)) = common::close_at(&ctx, &f, &g, &x) {
-        panic!("{name} changed the value: f = {f}, {name}(f) = {g}, at x = {v}: {fa:e} vs {fb:e}");
+    if let Some((v, fa, fb)) = common::close_at_complex(&ctx, &f, &g, &x) {
+        panic!("{name} changed the value: f = {f}, {name}(f) = {g}, at x = {v}: {fa} vs {fb}");
     }
     if name == "simplify" {
         let gg = g.simplify();

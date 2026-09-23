@@ -17,7 +17,8 @@
 //!
 //! # Algorithm
 //!
-//! Follows Bronstein §2.3 and SymPy's `hermite_reduce` in `risch.py`.
+//! Follows Bronstein §2.3 and SymPy's `hermite_reduce` in `risch.py`
+//! (BSD-3-Clause; notice in `THIRD-PARTY-NOTICES.md`).
 //!
 //! 1. Compute `D₋ = gcd(D, D')` — this captures all repeated factors.
 //! 2. Compute `D* = D / D₋` — the square-free cofactor.

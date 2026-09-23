@@ -6,6 +6,138 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.23.0] - 2026-09-23
+
+One domain model.  The documentation has always promised a CAS over ℂ — a
+symbol without assumptions may be complex, every function takes its
+principal branch — and the code now keeps it everywhere: in the exact
+evaluator, in numerical evaluation and in every rewrite.  `fuzz_simplify`
+now compares *complex* values at real and complex points (it used to skip
+every point where either side was not real) and found each of the defects
+below; each is pinned by a test in `tests/v22/` quoting the point where the
+old answer was wrong and the mpmath / SymPy value.  The new model is
+documented in one place, [Key Concepts → The Domain
+Model](book/src/getting-started/key-concepts.md#the-domain-model).
+
+### Breaking (behaviour; no signature changed)
+
+- **`expand_log` and `log_combine` apply only identities that hold** (the
+  forced forms were the default).  `expand_log` splits off factors known
+  positive (`ln(2x) = ln 2 + ln x`), a known-negative factor as `ln(−f)`,
+  and `ln(a^c) = c·ln a` for `a > 0` with real `c`, or `−1 < c ≤ 1`
+  (`ln √x = ½ ln x` for every `x`); `ln(xy)`, `ln(x²)`, `ln(1/x)` stay.
+  `log_combine` joins the logarithms of known-positive arguments with each
+  other *and with at most one other logarithm* (`ln 2 + ln x = ln(2x)` for
+  every complex `x`, since `arg 2 = 0` — SymPy's `logcombine` refuses it),
+  and `c·ln a → ln(a^c)` under the same condition.  The old behaviour is
+  `expand_log_with(true)` / `log_combine_with(true)`.  Symbols that are
+  positive should be declared so (`Assumption::Positive`).
+- **`simplify` no longer combines `ln x + ln y` into `ln(xy)`** for
+  arguments of unknown sign (strategy 6 used the forced `log_combine`):
+  at `x = y = −1` the two differ by `2πi`, and even at real negative
+  points `−ln x → ln(1/x)` was off by `2πi`.
+- **Real-analysis identities need a known-real argument.**
+  `ln(e^w) → w` and `√(w²) → |w|` (the simplify rules and
+  `powdenest(false)`) fired for every argument not known *non*-real;
+  `asinh(sinh w) → w`, `atanh(tanh w) → w` and `acosh(cosh w) → |w|` had
+  no condition at all.  All five now require `w` known real (for real
+  arguments they still fire — SymPy 1.14 leaves the three hyperbolic ones
+  alone even then).  `√(i²) = i`, `ln(e^{1/3+4i}) = 1/3 + (4 − 2π)i`,
+  `acosh(cosh(1 + 2i)) = 1 + 2i`.
+- **`eval` takes the principal root of a negative number**, as `evalf`
+  always did: `(−8)^(1/3)` is `2·(−1)^(1/3) = 1 + √3·i` (SymPy's
+  `2*(-1)**(1/3)`), not `−2`.  Before, the two evaluators disagreed, so
+  `simplify(∛x²) = x^(2/3)` looked wrong at `x = −2`.  The real root is the
+  new [`Ex::real_root`].  `compile()` and the Rust / C / Python / NumPy /
+  Julia back ends are unchanged: generated `f64` code takes the real odd
+  root (the documented exception since 0.11.1 — an `f64` cannot hold the
+  principal value).
+- **`eval` merges `(e^f)^g` into `e^(f·g)` only on the principal branch**:
+  for integer `g`, or `f` known real (`√(e^{4i}) = −e^{2i}`, not `e^{2i}`).
+  This also changes `eval_decimal`/`eval_f64` of such expressions, which
+  run `eval` first and so returned the wrong branch.  Limits are
+  unaffected: the limit variable is now a positive dummy inside Gruntz, as
+  in SymPy.
+- **`evalf` (`eval_f64`, `eval_complex64`, `eval_decimal`) returns
+  `PrecisionExhausted` for `sin`/`cos`/`tan` of an inexact argument above
+  `2⁶⁴`** (e.g. `sin(exp(100))`), whose reduction modulo 2π the working
+  precision cannot determine — it used to print digits the argument did not
+  determine.  Exact rational arguments are reduced exactly at any size up to
+  `EvalConfig::max_evalf_precision` bits (`sin(10¹⁰⁰)` is right); beyond
+  that, or for a huge imaginary part of `exp`/`sinh`/`cosh`/`tanh`, the
+  same error instead of a minutes-long computation.
+
+### Fixed — the evaluator (found by `fuzz_simplify`: the oracle itself)
+
+- The sign of a zero imaginary part chose the side of a branch cut:
+  `c_neg` turns `+0` into `−0`, so `ln(−sin(1/3))` evaluated to `… − πi`
+  and `√(−tan(1/3))`, `(−sin(1/3))^(−3/2)` to the conjugate of the
+  principal value.  A negative real now has argument `+π` however it was
+  computed; `(−r)^(n/2)` is exactly `r^(n/2)·iⁿ`; and `sin`/`cos` of the
+  working-precision constants `0, ±π/2, ±π` are exact, so
+  `e^{ln(−5/7)}` has no `1e-50·i` residue to push the next function onto
+  the wrong side.
+- `acosh` was the other branch for `Re z < 0` (`acosh(−2 + i/2)` came out
+  negated); `atanh` and `atan` were wrong on their cuts (`atanh(2)`,
+  `atan(2i)`); now `ln(z + √(z+1)·√(z−1))`, `½(ln(1+z) − ln(1−z))`,
+  `(i/2)(ln(1−iz) − ln(1+iz))`, which agree with mpmath across the plane.
+  `asin` and `asinh` (and so `acos`) of large `|z|` in half the plane had no
+  correct digit — the two terms of the logarithm's argument cancelled:
+  `acos(cosh(x^(9/2)))` at `x = 1/3 + 4i` was `2.64 + 346.7i`, mpmath
+  `0.548 − 476.7i`.  The sum is now formed without cancellation.
+- Real arguments outside the real domain gave NaN (an error): `asin(2)`,
+  `acos(−2)`, `acosh(1/3)`, `acosh(−2)`, `atanh(2)` now evaluate to their
+  principal complex values.
+
+### Fixed — rewrites
+
+- `refine`'s `√(r²) → |r|` returned `|r|` for the *whole* expression:
+  `simplify(cos(√(|x|²)))` was `|x|`, `refine(√(r²) + 1)` stayed
+  `√(r²) + 1` (the rewrite of an inner node was dropped).
+- The assumption system called `asin`, `acos` and `atanh` of any real
+  real, and `acosh` of any positive real real and non-negative:
+  `asin(4)`, `atanh(−2)`, `acosh(1/64)` are not, and `refine` dropped
+  `|acosh(e⁻³)|`.  Now only on `[−1, 1]`, `(−1, 1)` and `[1, ∞)`.
+- Integration flattened `(g^m)^n → g^(m·n)` whenever both exponents were
+  rational, so `∫ √x·√(1/x) dx` was `x` (the integrand is `−1` for every
+  `x < 0`), and `∫ cos(√x)/√(x⁻²) dx` lost `|x|` through `x = s²` (found by
+  `fuzz_integrate`).  The flattening now keeps the value, and
+  radical-substitution results are verified by differentiation like the
+  other risky routes; these integrals are unevaluated.
+- `powdenest(true)` denests the factors it distributes (`√(4x²) → 2x`
+  in one pass), which is what keeps `matrix_exp_t([[0, −ω], [ω, 0]])` in
+  `cos(ωt)` form without a realness assumption on `ω`.
+
+### Added
+
+- `Ex::real_root(n)` — SymPy's `real_root`: the real odd root of a real
+  (`real_root(−8, 3) = −2`), the principal root for even `n`, and SymPy's
+  `Piecewise` on `im(x) = 0` for a symbol not known real.
+- `fuzz_simplify` compares complex values at real and complex points, and
+  its grammar (`Grammar::Full`) adds `sinh`/`cosh`/`tanh`, their inverses,
+  `asin`/`acos` and rational powers; points where either side is not
+  continuous (on a branch cut) are skipped.
+- `tests/v22/`: `v22_evalf`, `v22_simplify`, `v22_integrate` (34 tests).
+  39 existing tests and 3 doctests pinned the old behaviour (a sum of logs
+  of unassumed symbols combined, `√(x²) = |x|` and `ln(e^x) = x` for
+  unassumed `x`, `∛(−8) = −2`, …); they now declare their symbols `Real`
+  or `Positive`, or assert the value is kept.
+- `THIRD-PARTY-NOTICES.md`: how SymPy, mpmath, SciPy and statsmodels are
+  used (as oracles; a few modules follow SymPy's implementation of a
+  published algorithm), with SymPy's BSD-3-Clause notice.  CONTRIBUTING
+  gains the provenance policy (mathematics is free; restrictively licensed
+  code is not read, and a clean-room description is used instead).
+
+### Documentation
+
+- The domain model — ℂ by default, principal branch, which identity needs
+  which assumption, the `force` variants, the real-variable conventions of
+  limits and integration, and the generated-code exception — in Key
+  Concepts, README principle 7, the complex-analysis guide and the SymPy
+  migration table (`expand_log(force=True)`, `logcombine(force=True)`,
+  `cbrt`, `real_root`).  Stale lines fixed: `ExprNode` has 92 variants,
+  "Patterns 2–5", `stats` is no longer listed as missing.
+
 ## [0.22.3] - 2026-09-22
 
 The fuzzing release.  Five new cargo-fuzz targets check *properties* —

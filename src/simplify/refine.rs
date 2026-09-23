@@ -284,9 +284,14 @@ fn refine_mutable(arena: &mut Arena, assumptions: &mut AssumptionCache, root: Ex
 
                     // Positive was already handled in immutable pass.
                     // Here we handle the real-but-not-positive case.
+                    // Replace this node only (the walk continues to the
+                    // parents): an early `return` here made the whole
+                    // expression `|x|` — `refine(cos(√(r²))) = |r|` — until 0.23.
                     if is_real == Some(true) && is_positive != Some(true) {
                         tracing::debug!("refine: sqrt(x²) -> abs(x) (real)");
-                        return arena.abs(inner_base);
+                        let abs = arena.abs(inner_base);
+                        cache.insert(id, abs);
+                        continue;
                     }
                 }
 
@@ -298,7 +303,12 @@ fn refine_mutable(arena: &mut Arena, assumptions: &mut AssumptionCache, root: Ex
                 }
             }
 
-            _ => None,
+            // Any other node: rebuild it when a child was rewritten.
+            _ => {
+                let mut changed = false;
+                node.for_each_child(|c| changed |= cache.contains_key(&c));
+                changed.then(|| walk::rebuild_with_cache(arena, id, &cache))
+            }
         };
 
         if let Some(new_id) = replacement {

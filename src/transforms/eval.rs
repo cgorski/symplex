@@ -341,17 +341,20 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 if let Some(result) = eval_pow_root(arena, nb, ne) {
                     result
                 }
-                // Pow(Exp(f), g) → Exp(f·g): valid because exp(f) > 0 for all
-                // real f, so (exp(f))^g = exp(f·g) without branch-cut issues.
+                // Pow(Exp(f), g) → Exp(f·g) when that is the principal power
+                // (see `exp_pow_merges`: integer g, or real f).
                 //
                 // Critical for the Gruntz algorithm: without this, exp(x)^(1/x)
                 // stays as Pow(Exp(x), 1/x) and mrv creates dangling dummy
                 // variables when trying to rewrite via exp((1/x)·ln(exp(x))).
-                // With this rule, eval simplifies it to Exp(x·(1/x)) = Exp(1).
+                // Gruntz's variable is a positive dummy, so the rule applies
+                // there: exp(x)^(1/x) = Exp(x·(1/x)) = Exp(1).
                 //
                 // Placed in eval (not canon_pow) so the solver's intermediate
                 // Pow(Exp(x), k) nodes survive until substitution completes.
-                else if let ExprNode::Exp(inner) = arena.node(nb).clone() {
+                else if let ExprNode::Exp(inner) = arena.node(nb).clone()
+                    && exp_pow_merges(arena, inner, ne)
+                {
                     // Re-evaluate the new argument so `exp(-1)^(-1)` becomes
                     // `E`, not an `exp(1)` that a second `eval` would fold.
                     let product = arena.mul(&[inner, ne]);
@@ -2257,6 +2260,20 @@ fn eval_ln(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     None
 }
 
+/// `(e^f)^g = e^(f·g)` on the principal branch?  Always for an integer
+/// `g`; for any `g` when `f` is real (then `e^f > 0`, so `ln(e^f) = f`).
+/// In general it needs `Im f ∈ (−π, π]`: `√(e^{4i}) = −e^{2i}`.  Before
+/// 0.23 the merge was unconditional, which also corrupted `eval_decimal`
+/// of such an expression (it calls `eval` first).
+fn exp_pow_merges(arena: &Arena, f: ExprId, g: ExprId) -> bool {
+    if arena.as_num(g).is_some_and(|r| r.is_integer()) {
+        return true;
+    }
+    let mut cache = crate::base::assumptions::AssumptionCache::new();
+    cache.query(arena, g, crate::base::assumptions::Props::INTEGER) == Some(true)
+        || cache.query(arena, f, crate::base::assumptions::Props::REAL) == Some(true)
+}
+
 /// Factor out the largest perfect q-th power from n.
 /// Returns (k, m) such that n = k^q * m and m has no q-th power factors
 /// (bounded factorisation — see [`crate::base::canon::split_perfect_power`]).
@@ -2280,26 +2297,18 @@ fn eval_pow_root(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<ExprId>
         return None;
     }
 
-    // Odd roots of negative integers: (-n)^(1/k) = -(n^(1/k)) when k is odd
-    if base_r.is_negative()
-        && base_r.is_integer()
-        && let Some(exp_r) = arena.as_num(exp)
-    {
-        let exp_r = exp_r.clone();
-        if *exp_r.numer() == BigInt::from(1) {
-            let k = exp_r.denom().clone();
-            // Check k is odd
-            if &k % BigInt::from(2) != BigInt::from(0) {
-                let abs_base = -base_r.clone();
-                let abs_base_id = {
-                    let nid = arena.intern_num(Ratio::from_integer(abs_base.to_integer()));
-                    arena.intern(ExprNode::Num(nid))
-                };
-                let root = arena.pow(abs_base_id, exp);
-                let root_eval = eval(arena, root);
-                return Some(arena.neg(root_eval));
-            }
-        }
+    // Roots of negative rationals take the principal branch, like every
+    // other evaluator: (−r)^(1/k) = r^(1/k)·(−1)^(1/k), exact because
+    // arg(−r) = π (so ∛(−8) = 2·(−1)^(1/3) = 1 + √3·i, SymPy's
+    // `2*(-1)**(1/3)`).  Before 0.23 odd roots of negative integers folded to
+    // the real root (∛(−8) → −2) while `evalf` took the principal one; the
+    // real root is `Ex::real_root`.
+    if base_r.is_negative() && base_r != -Ratio::from_integer(BigInt::from(1)) {
+        let abs_id = arena.num_ratio(-base_r.clone());
+        let abs_root = arena.pow(abs_id, exp);
+        let abs_root = eval(arena, abs_root);
+        let neg_one_root = arena.pow(arena.neg_one, exp);
+        return Some(arena.mul(&[abs_root, neg_one_root]));
     }
 
     // For integer base
@@ -4743,14 +4752,18 @@ mod tests {
     }
 
     #[test]
-    fn eval_negative_cube_root() {
+    fn eval_negative_cube_root_is_principal() {
+        // SymPy: Integer(-8)**Rational(1, 3) = 2*(-1)**(1/3) (= 1 + sqrt(3)*I),
+        // the principal root, like evalf; the real root is Ex::real_root.
         let mut arena = Arena::new();
         let neg8 = arena.int(-8);
         let third = arena.rational(1, 3);
         let expr = arena.pow(neg8, third);
         let result = eval(&mut arena, expr);
-        let expected = arena.int(-2);
-        assert_eq!(result, expected, "(-8)^(1/3) should be -2");
+        let two = arena.int(2);
+        let neg_one_root = arena.pow(arena.neg_one, third);
+        let expected = arena.mul(&[two, neg_one_root]);
+        assert_eq!(result, expected, "(-8)^(1/3) should be 2*(-1)^(1/3)");
     }
 
     // ── 0.2 special functions ─────────────────────────────────────────────

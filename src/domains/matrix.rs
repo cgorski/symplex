@@ -2921,13 +2921,14 @@ fn low_degree_roots(coeffs: &[Ex]) -> Vec<(Ex, usize)> {
 /// A square root of `disc` for the quadratic formula.
 ///
 /// Any `r` with `r² = disc` yields the same *set* `{(−b ± r)/2a}`, so we
-/// are free to pick the friendliest one.  When `±disc` is a perfect square
-/// (`4ω²`, `(a−d)²`, …) the evaluator returns `2·|ω|`; dropping the
-/// absolute value (the other sign is also a square root) gives `2ω`, and
-/// for negative discriminants `2·i·ω` instead of `√(−4ω²)`.  The nice form
-/// matters downstream: `A − λI` pivots then cancel structurally, which is
-/// what makes `eigenvects` / `matrix_exp` of e.g. `[[0, −ω], [ω, 0]]` work
-/// without sign assumptions on `ω`.  Falls back to `disc.sqrt()`.
+/// are free to pick the friendliest one — it need not be the principal
+/// root.  When `±disc` is a perfect square (`4ω²`, `(a−d)²`, …) forced
+/// denesting (every symbol treated as positive) gives `2ω`, and for
+/// negative discriminants `2·i·ω` instead of `√(−4ω²)`; the candidate is
+/// then checked exactly (`r² − disc = 0`), so forcing is sound here.  The
+/// nice form matters downstream: `A − λI` pivots then cancel structurally,
+/// which is what makes `eigenvects` / `matrix_exp` of e.g. `[[0, −ω], [ω,
+/// 0]]` work without sign assumptions on `ω`.  Falls back to `disc.sqrt()`.
 fn quadratic_sqrt(disc: &Ex) -> Ex {
     use crate::base::node::ExprNode;
     let ctx = disc.context();
@@ -2938,7 +2939,7 @@ fn quadratic_sqrt(disc: &Ex) -> Ex {
         })
     };
     for (base, factor) in [(disc.clone(), ctx.one()), ((-disc).eval(), ctx.i_unit())] {
-        let root = strip_abs(&base.sqrt().simplify());
+        let root = strip_abs(&base.sqrt().powdenest(true).simplify());
         if has_radical(&root) {
             continue;
         }

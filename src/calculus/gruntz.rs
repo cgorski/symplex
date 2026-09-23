@@ -17,7 +17,9 @@
 //!
 //! - Gruntz, D. "On Computing Limits in a Symbolic Manipulation System"
 //!   PhD Thesis, ETH Zürich, 1996.
-//! - SymPy implementation: `sympy/series/gruntz.py`
+//! - The structure (`SubsSet`, `mrv`, `sign`, `rewrite`) follows SymPy's
+//!   `sympy/series/gruntz.py` (BSD-3-Clause; notice in
+//!   `THIRD-PARTY-NOTICES.md`).
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -124,6 +126,19 @@ fn fresh_dummy(arena: &mut Arena, budget: &mut Budget) -> ExprId {
     let n = budget.dummies;
     budget.dummies += 1;
     arena.symbol(&format!("__gw{n}"))
+}
+
+/// A fresh dummy declared positive, for the variable `x → +∞` of
+/// `limitinf`.  The limit is taken along the positive real axis, so the
+/// real-variable identities that simplification only applies to known-real
+/// arguments (`exp(x)^(1/x) = e`, `√(x²) = x`) hold for it — as in
+/// SymPy's `limitinf`, which substitutes a positive dummy the same way.
+/// (`__gwp…` is a separate name family from the MRV dummies `__gw…`,
+/// which carry no assumptions.)
+fn fresh_positive_dummy(arena: &mut Arena, budget: &mut Budget) -> ExprId {
+    let n = budget.dummies;
+    budget.dummies += 1;
+    arena.positive_symbol(&format!("__gwp{n}"))
 }
 
 /// Maclaurin series of `expr` in `var` to `order` terms, charged against
@@ -2434,14 +2449,18 @@ fn gruntz_with_budget(
     tracing::info!("gruntz: entry point");
 
     if z0 == arena.infinity() {
-        tracing::debug!("gruntz: limit at +∞");
-        let r = limitinf(arena, e, z, 0, budget)?;
+        tracing::debug!("gruntz: limit at +∞, substituting a positive z");
+        let x = fresh_positive_dummy(arena, budget);
+        let e_sub = crate::transforms::subs::subs(arena, e, z, x);
+        let e_sub = crate::transforms::eval::eval(arena, e_sub);
+        let r = limitinf(arena, e_sub, x, 0, budget)?;
+        let r = validate_result(arena, r, x)?;
         return validate_result(arena, r, z);
     }
 
     if z0 == arena.neg_infinity() {
         tracing::debug!("gruntz: limit at -∞, substituting z = -x");
-        let x = fresh_dummy(arena, budget);
+        let x = fresh_positive_dummy(arena, budget);
         let neg_x = arena.neg(x);
         let e_sub = crate::transforms::subs::subs(arena, e, z, neg_x);
         let r = limitinf(arena, e_sub, x, 0, budget)?;
@@ -2452,7 +2471,7 @@ fn gruntz_with_budget(
     let e_display = arena.display(e).to_string();
     let z0_display = arena.display(z0).to_string();
     tracing::debug!(expr = %e_display, z0 = %z0_display, "gruntz: finite-point limit, substituting z = z0 + 1/x");
-    let x = fresh_dummy(arena, budget);
+    let x = fresh_positive_dummy(arena, budget);
     let one = arena.one();
     let inv_x = arena.div(one, x);
     let z0_plus_inv_x = arena.add(&[z0, inv_x]);

@@ -163,8 +163,10 @@ impl Tails {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// `ln Γ(z) − [(z − ½) ln z − z + ln √(2π)]`, the Stirling remainder
-/// (Loader's `stirlerr`): the asymptotic series through `z⁻¹³` for
-/// `z ≥ 10` (truncation below `3e-17`), the definition below.
+/// (`stirlerr` in C. Loader, *Fast and accurate computation of binomial
+/// probabilities*, 2000): the series `Σ B₂ₖ/(2k(2k − 1) z^(2k−1))` (DLMF
+/// 5.11.1) through `z⁻¹³` for `z ≥ 10` (truncation below `3e-17`), the
+/// definition below.
 fn stirlerr(z: f64) -> f64 {
     if z >= 10.0 {
         let inv = 1.0 / z;
@@ -185,7 +187,9 @@ fn stirlerr(z: f64) -> f64 {
 }
 
 /// `ln B(a, b)` for `a, b > 0`, without the cancellation of
-/// `ln Γ(a) + ln Γ(b) − ln Γ(a + b)` for large arguments (R's `lbeta`).
+/// `ln Γ(a) + ln Γ(b) − ln Γ(a + b)` for large arguments: each large
+/// `ln Γ` is written as Stirling's formula plus its remainder (DLMF 5.11.1)
+/// and the leading terms are combined analytically.
 fn lbeta(a: f64, b: f64) -> f64 {
     let (p, q) = if a < b { (a, b) } else { (b, a) };
     if p >= 10.0 {
@@ -226,7 +230,7 @@ fn rlog1(x: f64) -> f64 {
     2.0 * t * (1.0 / (1.0 - r) - r * w)
 }
 
-/// `k ln(k/m) + m − k` (Loader's `bd0`) given `diff = k − m` exactly and
+/// `k ln(k/m) + m − k` (`bd0` in Loader 2000) given `diff = k − m` exactly and
 /// `ln_ratio = ln(k/m)`: the series in `v = diff/(k + m)` when `k ≈ m`
 /// (where the direct formula cancels), the direct formula otherwise.
 fn bd0_with(k: f64, m: f64, diff: f64, ln_ratio: f64) -> f64 {

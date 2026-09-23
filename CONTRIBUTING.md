@@ -3,6 +3,55 @@
 Welcome. This document covers everything you need to understand the codebase,
 make changes safely, and submit contributions.
 
+**The goal is to be better than SymPy, not to match it.**  SymPy (with
+mpmath, SciPy and statsmodels) is our *oracle* and a development aid: it
+supplies reference values, a coverage map and a well-tested default for
+questions of convention (branch cuts, `expand_log`'s rules, `N`'s digits).
+It is not the ceiling.  Where an oracle is wrong (SymPy 1.14's resultant
+sign when `deg a < deg b` and `deg a·deg b` is odd, SciPy's `gammaincinv`
+in the far tail), weaker than the mathematics allows, slow, or silently
+wrong, symplex should do better — provably: an exact argument in the doc
+comment, an independent check (mpmath at high precision, a derivative, an
+exact identity) in the test, and the oracle's differing answer quoted
+beside it.  We owe these projects a great deal; say so where we follow
+them (see *Provenance* below), and keep comparisons factual.
+
+### Provenance: mathematics is free, code has a licence
+
+Mathematics — theorems, formulas, algorithms, series coefficients,
+conventions such as a branch cut — is not copyrightable, and the values an
+oracle computes are facts.  An *implementation* is: its structure,
+identifiers and comments are someone's expression.  We want nothing in this
+repository that anyone could reasonably flag, so:
+
+* **Oracles.**  Running SymPy, mpmath, SciPy or statsmodels to obtain a
+  reference value is always fine; cite the call next to the value.  None of
+  their code is copied into the crate.
+* **Permissive sources** (BSD, MIT, Apache-2.0, ISC, Zlib, BSL-1.0, public
+  domain — SymPy, mpmath, SciPy, statsmodels, Boost.Math, Rubi): reading
+  the implementation and following its structure is fine.  Say so in the
+  doc comment ("follows SymPy's `gruntz.py`"), cite the publication the
+  algorithm comes from, and add a row to
+  [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md), with the licence
+  text if it is not already there.  Vendored data (e.g. the Rubi test
+  suite) keeps its licence file next to it.
+* **Restrictive or unclear sources** — GPL / LGPL / AGPL (R's `nmath`,
+  GSL, Maxima, PARI/GP, GiNaC, FLINT), the ACM Software License of the
+  CALGO / TOMS Fortran codes, Numerical Recipes, "non-commercial" terms,
+  code with no licence at all: **do not read the implementation** while
+  writing the corresponding symplex code, and do not name it as the
+  source.  Work from the publication (the paper, the book, DLMF).  When
+  the publication is not enough, use a clean room: one person or agent
+  writes a purely mathematical description (formulas, case analysis,
+  error bounds, test values — no code and no identifiers beyond the
+  paper's notation), and someone who has not seen the restricted code
+  implements from that description alone.  Keep the description with
+  the change.
+* **Be careful with "R's `f`", "as in GSL", "from the TOMS code" in
+  comments**: they read as a claim of derivation.  Name the mathematics
+  ("Stirling's series", "DiDonato & Morris 1992, §3") instead, and put
+  an implementation's name only where it is the *oracle* of a test value.
+
 ---
 
 ## Table of Contents
@@ -30,7 +79,7 @@ git clone https://github.com/cgorski/symplex
 cd symplex
 cargo build
 
-# Run the test suite (~12,600 tests; a few minutes in debug)
+# Run the test suite (~12,900 tests; a few minutes in debug)
 cargo test
 # ... or, recommended: one process per test with per-test timeouts
 # (`.config/nextest.toml`; `cargo install cargo-nextest`)
@@ -94,7 +143,7 @@ numbers.
 
 ## Architecture
 
-The source code (~244K lines at 0.22.0) is organized into 10 directories under
+The source code (~245K lines at 0.23.0) is organized into 10 directories under
 `src/`. Each directory is a layer in the dependency hierarchy — modules may
 depend on layers below them but should not reach upward.
 
@@ -518,7 +567,7 @@ matrix.minor(i, j)    // Err if out of range
 
 ## Expression Nodes
 
-The `ExprNode` enum in `src/base/node.rs` has 91 variants. They fall into categories:
+The `ExprNode` enum in `src/base/node.rs` has 92 variants. They fall into categories:
 
 | Category | Examples | How they work |
 |----------|---------|---------------|
@@ -639,21 +688,21 @@ Follow the same steps as adding a new function (above), plus:
 
 Tests are in `tests/` (integration tests, ~10,000 `#[test]` functions in ~360
 source files) and inline `#[cfg(test)]` modules (~2,800 unit tests). Total at
-0.22.0: **~12,800** tests plus ~1,030 API doctests and ~230 README/book
+0.23.0: **~12,900** tests plus ~1,040 API doctests and ~240 README/book
 doctests (`src/doctests.rs` includes `README.md` and every book chapter, so
 the prose examples compile and run under `cargo test --doc`).
 
-The integration-test sources are grouped into **21 test binaries** (linking
+The integration-test sources are grouped into **22 test binaries** (linking
 277 separate debug binaries took ~6.5 min and ~13 GB of `target/`). Each
 former top-level file is a module of its group, so a test is addressed as
 `<module>::<test>` inside `--test <group>`.  A new `vNN` group is added per
-minor release (`v21` holds the 0.22 tests); `tests/README.md` lists every
+minor release (`v22` holds the 0.23 tests); `tests/README.md` lists every
 group's modules:
 
 | Binary (`--test …`) | Sources | What they test |
 |---------------------|---------|----------------|
 | `v04` | `tests/v04/v04_<area>.rs` | One suite per 0.4–0.6 feature: `polyhedron` (parametric polyhedron certificates; emitted Lean pinned to the Mathlib-compiled `tests/fixtures/polyhedron_certificates.lean`), `polytope`, `sos` (pinned to `tests/fixtures/sos_certificates.lean`) |
-| `v09` … `v21` | `tests/vNN/vNN_<area>.rs` (3–9 modules each) | Feature and regression suites of 0.9 → 0.22, one group per minor release (stats families, data statistics, ANOVA, Cox, numdist, the exact kernel, …) |
+| `v09` … `v22` | `tests/vNN/vNN_<area>.rs` (3–9 modules each) | Feature and regression suites of 0.9 → 0.23, one group per minor release (stats families, data statistics, ANOVA, Cox, numdist, the exact kernel, …) |
 | `v03` | `tests/v03/v03_<area>.rs` (11 modules, ~480 tests) | One suite per 0.3 feature: `poly_view`, `poly_symbolic_coeffs`, `ratsimp`, `linprog` (full KKT check of every optimum, Farkas vector verified), `normalforms` (defining invariants, not pinned answers), `matrix_ergonomics`, `optimize`, `certificates`, `assumptions_poly`, `exact_matrix`, `user_notes` |
 | `v03_oracle` | `tests/v03_oracle/v03_oracle_*.rs` | SymPy oracle for the 0.3 API (`tests/fixtures/v03_cross_validation.json`) |
 | `v02` | `tests/v02/v02_<area>_<topic>.rs` (62 modules, ~1,050 tests) | One suite per 0.2 feature area: `backends_{c,codegen,compile,cse}`, `basefix_*`, `ergonomics_*`, `integration_{battery,definite,residue}`, `matrices_*`, `nodes_*`, `ntheory_*`, `numfix_*`, `sets_*`, `simplify_*`, `solvefix_*`, `solving_*`, `summation_*`, `transforms_*` |

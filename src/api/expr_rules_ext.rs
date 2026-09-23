@@ -1265,12 +1265,13 @@ impl Expr<Numeric> {
         self.expand_with(&ExpandOpts::none().multinomial(true))
     }
 
-    /// Expand logarithms, honouring the positivity guard unless `force`
-    /// is set ([`expand_log`](Self::expand_log) is the forced form).
+    /// Expand logarithms: where the identities hold (`force = false`, the
+    /// same as [`expand_log`](Self::expand_log)) or unconditionally
+    /// (`force = true`, SymPy's `expand_log(force=True)`).
     ///
     /// `ln(a·b) → ln a + ln b` and `ln(a^n) → n·ln a` are exact for
     /// positive real `a`, `b` (and real `n`); for other arguments they can
-    /// be off by a multiple of `2πi`.
+    /// be off by a multiple of `2πi`, which `force` accepts.
     ///
     /// # Examples
     ///
@@ -1291,8 +1292,9 @@ impl Expr<Numeric> {
         self.transform(move |a, id| crate::simplify::log_expand::expand_log_with(a, id, force))
     }
 
-    /// Combine logarithms, honouring the positivity guard unless `force`
-    /// is set ([`log_combine`](Self::log_combine) is the forced form).
+    /// Combine logarithms: where the identities hold (`force = false`, the
+    /// same as [`log_combine`](Self::log_combine)) or unconditionally
+    /// (`force = true`, SymPy's `logcombine(force=True)`).
     ///
     /// # Examples
     ///
@@ -1360,7 +1362,7 @@ impl Expr<Numeric> {
     /// | `(a·b)^e → a^e·b^e`        | `e ∈ ℤ`; all factors known non-negative; `force`    |
     /// | `(x^a)^b → x^(a·b)`        | `b ∈ ℤ`; `x > 0` and `a` real; `force`               |
     /// | `√(x²) → x`                | `x ≥ 0`; `force`                                     |
-    /// | `√(x²) → ∣x∣`              | `x` real (not known non-real)                        |
+    /// | `√(x²) → ∣x∣`              | `x` known real                                       |
     ///
     /// `(x^a)^b = exp(b·Log(exp(a·Log x)))` equals `x^(ab)` exactly when
     /// `Im(a·Log x) ∈ (−π, π]` — guaranteed for `x > 0` and real `a` — or
@@ -1379,7 +1381,9 @@ impl Expr<Numeric> {
     /// assert_eq!(format!("{}", nested.powdenest(false)), "(x^a)^b");
     /// assert_eq!(format!("{}", nested.powdenest(true)), "x^(a*b)");
     /// assert_eq!(format!("{}", x.pow(&a).powi(3).powdenest(false)), "x^(3*a)");
-    /// assert_eq!(format!("{}", x.powi(2).sqrt().powdenest(false)), "abs(x)");
+    /// assert_eq!(x.powi(2).sqrt().powdenest(false), x.powi(2).sqrt());   // x may be complex
+    /// let r = ctx.symbol_with("r", &[Assumption::Real]);
+    /// assert_eq!(format!("{}", r.powi(2).sqrt().powdenest(false)), "abs(r)");
     /// let p = ctx.symbol_with("p", &[Assumption::Positive]);
     /// assert_eq!(format!("{}", p.powi(2).sqrt().powdenest(false)), "p");
     /// ```

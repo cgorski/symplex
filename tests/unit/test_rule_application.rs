@@ -180,17 +180,16 @@ fn rule_ln_exp_fires_for_real_symbol() {
 }
 
 #[test]
-fn rule_ln_exp_fires_for_unassumed_symbol() {
+fn rule_ln_exp_stays_for_unassumed_symbol() {
     let ctx = Context::new();
-    // ln(exp(x)) now simplifies to x for unassumed symbols (fires unless
-    // the variable is KNOWN to be non-real). This matches SymPy behavior.
+    // A symbol without assumptions may be complex: ln(exp(4i)) = (4 − 2π)i,
+    // so ln(exp(x)) stays (SymPy: log(exp(x)) stays; log(exp(r)) = r for
+    // real r).  Before 0.23 the rule fired unless x was known non-real.
     let x = ctx.symbol("x");
     let expr = x.exp().ln();
-    let s = format!("{}", expr.simplify());
-    assert_eq!(
-        s, "x",
-        "ln(exp(x)) should simplify to x for unassumed symbols"
-    );
+    assert_eq!(expr.simplify(), expr);
+    let r = ctx.symbol_with("r", &[Assumption::Real]);
+    assert_eq!(r.exp().ln().simplify(), r);
 }
 
 #[test]
@@ -241,14 +240,16 @@ fn rule_abs_abs_value_preserved() {
 #[test]
 fn rule_sqrt_sq_fires() {
     let ctx = Context::new();
-    let x = ctx.symbol("x");
+    // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
+    let x = ctx.symbol_with("x", &[Assumption::Real]);
     assert_simplifies_to!(x.powi(2).sqrt(), "abs(x)");
 }
 
 #[test]
 fn rule_sqrt_sq_trace() {
     let ctx = Context::new();
-    let x = ctx.symbol("x");
+    // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
+    let x = ctx.symbol_with("x", &[Assumption::Real]);
     assert_trace_contains_rule!(x.powi(2).sqrt(), "sqrt_sq");
 }
 
@@ -358,14 +359,16 @@ fn rule_pow_pow_blocked_both_fractional() {
 #[test]
 fn rule_asinh_sinh_fires() {
     let ctx = Context::new();
-    let x = ctx.symbol("x");
+    // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
+    let x = ctx.symbol_with("x", &[Assumption::Real]);
     assert_simplifies_to!(x.sinh().asinh(), "x");
 }
 
 #[test]
 fn rule_asinh_sinh_trace() {
     let ctx = Context::new();
-    let x = ctx.symbol("x");
+    // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
+    let x = ctx.symbol_with("x", &[Assumption::Real]);
     assert_trace_contains_rule!(x.sinh().asinh(), "asinh_sinh");
 }
 
@@ -384,14 +387,16 @@ fn rule_asinh_sinh_value_preserved() {
 #[test]
 fn rule_acosh_cosh_fires() {
     let ctx = Context::new();
-    let x = ctx.symbol("x");
+    // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
+    let x = ctx.symbol_with("x", &[Assumption::Real]);
     assert_simplifies_to!(x.cosh().acosh(), "abs(x)");
 }
 
 #[test]
 fn rule_acosh_cosh_trace() {
     let ctx = Context::new();
-    let x = ctx.symbol("x");
+    // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
+    let x = ctx.symbol_with("x", &[Assumption::Real]);
     assert_trace_contains_rule!(x.cosh().acosh(), "acosh_cosh");
 }
 
@@ -410,14 +415,16 @@ fn rule_acosh_cosh_value_preserved() {
 #[test]
 fn rule_atanh_tanh_fires() {
     let ctx = Context::new();
-    let x = ctx.symbol("x");
+    // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
+    let x = ctx.symbol_with("x", &[Assumption::Real]);
     assert_simplifies_to!(x.tanh().atanh(), "x");
 }
 
 #[test]
 fn rule_atanh_tanh_trace() {
     let ctx = Context::new();
-    let x = ctx.symbol("x");
+    // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
+    let x = ctx.symbol_with("x", &[Assumption::Real]);
     assert_trace_contains_rule!(x.tanh().atanh(), "atanh_tanh");
 }
 

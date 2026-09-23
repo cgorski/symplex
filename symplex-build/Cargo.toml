@@ -1,6 +1,6 @@
 [package]
 name = "symplex-build"
-version = "0.22.3"
+version = "0.23.0"
 edition = "2024"
 rust-version = "1.93.0"
 license = "MIT OR Apache-2.0"
@@ -11,6 +11,6 @@ keywords = ["robotics", "codegen", "embedded", "symbolic", "no-std"]
 categories = ["mathematics", "embedded", "development-tools::build-utils"]
 
 [dependencies]
-symplex = { version = "0.22.3", path = ".." }
+symplex = { version = "0.23.0", path = ".." }
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }

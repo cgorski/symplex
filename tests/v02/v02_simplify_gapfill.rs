@@ -569,7 +569,11 @@ fn powdenest_sqrt_of_square() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let e = x.powi(2).sqrt();
-    assert_eq!(s(&e.powdenest(false)), "abs(x)");
+    // 0.23: unassumed x may be complex (√(i²) = i ≠ |i|): only a known-real
+    // argument gives |x|.
+    assert_eq!(e.powdenest(false), e);
+    let r = ctx.symbol_with("r", &[Assumption::Real]);
+    assert_eq!(s(&r.powi(2).sqrt().powdenest(false)), "abs(r)");
     assert_eq!(s(&e.powdenest(true)), "x");
     let p = ctx.symbol_with("p", &[Assumption::NonNegative]);
     assert_eq!(s(&p.powi(2).sqrt().powdenest(false)), "p");
@@ -604,7 +608,8 @@ fn log_combine_with_guard_vs_force() {
     assert_eq!(e.log_combine_with(false), e);
     let forced = e.log_combine_with(true);
     assert_eq!(s(&forced), "ln(x*y^2)");
-    assert_eq!(forced, e.log_combine());
+    // 0.23: the default is the guarded form.
+    assert_eq!(e.log_combine(), e);
     assert_same_value_positive(&e, &forced, "log_combine force");
     let p = ctx.symbol_with("p", &[Assumption::Positive]);
     let q = ctx.symbol_with("q", &[Assumption::Positive]);
@@ -620,7 +625,15 @@ fn log_combine_with_guard_mixes_known_and_unknown_terms() {
     let q = ctx.symbol_with("q", &[Assumption::Positive]);
     let e = &p.ln() + &q.ln() + &x.ln();
     let r = e.log_combine_with(false);
-    assert_eq!(s(&r), "ln(x) + ln(p*q)");
+    // 0.23: logarithms of positive arguments also absorb one other
+    // logarithm — arg(p·q) = 0, so ln(pq) + ln x = ln(pqx) for every x.
+    assert_eq!(s(&r), "ln(p*q*x)");
+    let y = ctx.symbol("y");
+    let two_unknown = &e + &y.ln();
+    assert_eq!(
+        s(&two_unknown.log_combine_with(false)),
+        "ln(x) + ln(y) + ln(p*q)"
+    );
 }
 
 #[test]

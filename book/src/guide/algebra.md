@@ -180,7 +180,7 @@ fn main() {
     println!("{}", (&x.sin().powi(2) + &x.cos().powi(2)).simplify());          // 1
     println!("{}", (ctx.int(5) + ctx.int(24).sqrt()).sqrt().sqrtdenest());     // sqrt(2) + sqrt(3)
     println!("{}", ((-&x - &y) * (-&t)).signsimp());                           // t*(x + y)
-    println!("{} / {}", x.powi(2).sqrt().powdenest(false), x.powi(2).sqrt().powdenest(true)); // abs(x) / x
+    println!("{} / {}", x.powi(2).sqrt().powdenest(false), x.powi(2).sqrt().powdenest(true)); // sqrt(x^2) / x  (x may be complex)
     println!("{}", ctx.from_f64(0.333333333333).unwrap().nsimplify(1e-9));    // 1/3
     println!("{}", ctx.from_f64(std::f64::consts::PI / 2.0).unwrap()
         .nsimplify_with_constants(&[&ctx.pi()], 1e-12));                       // 1/2*pi

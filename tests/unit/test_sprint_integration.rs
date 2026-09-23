@@ -246,8 +246,9 @@ fn logcombine_two_logs() {
 #[test]
 fn logcombine_two_logs_exact() {
     let ctx = Context::new();
-    let x = ctx.symbol("x");
-    let y = ctx.symbol("y");
+    // 0.23: the log identities need positive arguments (x = y = -1 breaks ln(x*y) = ln x + ln y).
+    let x = ctx.symbol_with("x", &[Assumption::Positive]);
+    let y = ctx.symbol_with("y", &[Assumption::Positive]);
     let expr = &x.ln() + &y.ln();
     let combined = expr.log_combine();
     assert_eq!(format!("{combined}"), "ln(x*y)");
@@ -272,8 +273,9 @@ fn logcombine_then_expand_roundtrip() {
 #[test]
 fn logcombine_roundtrip_exact() {
     let ctx = Context::new();
-    let x = ctx.symbol("x");
-    let y = ctx.symbol("y");
+    // 0.23: the log identities need positive arguments (x = y = -1 breaks ln(x*y) = ln x + ln y).
+    let x = ctx.symbol_with("x", &[Assumption::Positive]);
+    let y = ctx.symbol_with("y", &[Assumption::Positive]);
     let product = &x * &y;
     let ln_product = product.ln();
     assert_eq!(format!("{ln_product}"), "ln(x*y)");
@@ -517,8 +519,9 @@ fn replace_then_differentiate() {
 fn logcombine_preserves_simplification() {
     // ln(x) + ln(y) → ln(x*y), then differentiating w.r.t. x should give 1/x
     let ctx = Context::new();
-    let x = ctx.symbol("x");
-    let y = ctx.symbol("y");
+    // 0.23: the log identities need positive arguments (x = y = -1 breaks ln(x*y) = ln x + ln y).
+    let x = ctx.symbol_with("x", &[Assumption::Positive]);
+    let y = ctx.symbol_with("y", &[Assumption::Positive]);
     let combined = (&x.ln() + &y.ln()).log_combine();
     assert_eq!(format!("{combined}"), "ln(x*y)");
     let deriv = combined.diff(&x);

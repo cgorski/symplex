@@ -164,10 +164,10 @@ macro_rules! define_quantity {
             /// Expand trigonometric identities, preserving dimension.
             pub fn expand_trig(&self) -> Self { $name(self.0.expand_trig()) }
 
-            /// Expand logarithmic identities, preserving dimension.
+            /// Expand logarithms where the identities hold (`Ex::expand_log`), preserving dimension.
             pub fn expand_log(&self) -> Self { $name(self.0.expand_log()) }
 
-            /// Combine logarithmic terms, preserving dimension.
+            /// Combine logarithms where the identities hold (`Ex::log_combine`), preserving dimension.
             pub fn log_combine(&self) -> Self { $name(self.0.log_combine()) }
 
             /// Combine trigonometric terms, preserving dimension.

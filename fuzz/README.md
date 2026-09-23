@@ -13,16 +13,25 @@ wrong answer, a hang or a crash, never noise:
 | `fuzz_numdist` | `stats::numdist`: `cdf`/`sf` in `[0, 1]`, `cdf + sf = 1`, `cdf` monotone, `ppf`/`isf` terminate and invert (`cdf(ppf(p)) ≈ p`, or the neighbouring floats bracket `p` where the quantile is not representable), for every family over the whole `f64` range |
 | `fuzz_exact_matrix` | `QMatrix`/`Matrix` exact identities: `det(AB) = det A·det B`, `A·A⁻¹ = I`, rank–nullity, `rref` idempotent, Cayley–Hamilton, `P·A = L·U`, the `Matrix` tier agrees with `QMatrix` |
 | `fuzz_poly` | ℚ[x]: `gcd` divides both inputs and is divisible by their planted common factor, Bézout for `poly_gcdex`, `a = q·b + r`, `factor_list` reproduces the input, every `solve` root makes `a` vanish and `c·a` has the same roots |
-| `fuzz_simplify` | `simplify`, `expand`, `factor`, `together`, `cancel`, `ratsimp`, `simplify_trig` preserve the value at every sample point where both sides are finite reals (30-digit evaluation); `simplify` is idempotent |
+| `fuzz_simplify` | `simplify`, `expand`, `factor`, `together`, `cancel`, `ratsimp`, `simplify_trig` preserve the **complex** value at real and complex sample points (second quadrant, just below the negative real axis, `Im x = 4 > π`), wherever both sides evaluate and are continuous (30-digit evaluation) — a symbol without assumptions may be complex; `simplify` is idempotent |
 | `fuzz_integrate` | when `integrate` returns a closed form `F`, `F′ = f` at the sample points |
 | `fuzz_parser` | parsing never panics; what parses displays, re-parses and prints as LaTeX |
 | `fuzz_refine`, `fuzz_eigenvects`, `fuzz_lambertw` | `refine` under assumptions, `A·v = λv` for eigenvectors, `W(x)·e^{W(x)} = x` |
 
 `fuzz_simplify`, `fuzz_integrate` and `fuzz_poly` decode their input with
-`fuzz_targets/common/mod.rs` (elementary expressions of depth ≤ 4 in one
-symbol; odd roots other than `√` are left out while the three evaluators
-disagree on odd roots of negative numbers).  `print_expr` is not a target:
-it prints the expression an input decodes to.
+`fuzz_targets/common/mod.rs`: elementary expressions of depth ≤ 4 in one
+symbol for `fuzz_integrate`/`fuzz_poly` (`Grammar::Elementary`), and for
+`fuzz_simplify` also `sinh`/`cosh`/`tanh`, their inverses, `asin`/`acos` and
+rational powers `x^(p/q)`, `q ≤ 5` (`Grammar::Full`).  `fuzz_integrate`
+compares real values at real points: the integrator's antiderivatives are
+the real-variable ones (`∫ dx/x = ln|x|`).  `print_expr` is not a target:
+it prints the expression an input decodes to (`depth 4:` is the
+`fuzz_simplify` tree, `depth 3:` the `fuzz_integrate` one).
+
+To keep fuzzing past the first finding and collect every failing input,
+run in fork mode: `$B/fuzz_simplify -fork=6 -ignore_crashes=1
+-ignore_timeouts=1 -max_total_time=300 -artifact_prefix=… fuzz/corpus/fuzz_simplify`,
+then replay each artifact to read its message.
 
 ## Finding and fixing a failure — the fast loop
 

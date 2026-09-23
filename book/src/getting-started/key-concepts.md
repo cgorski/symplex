@@ -228,11 +228,54 @@ sym!(ctx; x, Positive);    // x > 0
 sym!(ctx; n, Integer);     // n ∈ ℤ
 ```
 
-With `x` declared positive, `sqrt(x²)` simplifies to `x` (without the assumption, the result is `|x|` or stays as `sqrt(x²)`).
+With `x` declared positive, `sqrt(x²)` simplifies to `x`; declared `Real`, to `|x|`; without an assumption it stays `sqrt(x²)` (see the domain model below).
 
 Assumptions matter for correctness, not just for prettier output. Without `Real`, `z.re()` stays `re(z)`, `√(z²)` does not become `|z|`, and `∫₀^∞ e^(−a x) dx` will not simplify to `1/a` (it needs `a > 0`).
 
 Available assumptions include `Positive`, `Negative`, `NonNegative`, `NonPositive`, `Integer`, `Real`, `ExtendedReal`, `Complex`, `Even`, `Odd`, `Prime`, `Finite`, `Zero`, `NonZero`, and their negations (`NotPositive`, `NotZero`, …). `ctx.symbol_with("a", &[Assumption::Positive])` is the non-macro form; `Assumptions::implies` and `Assumption::negate` let you reason about them programmatically.
+
+## The Domain Model
+
+symplex is a CAS over the complex numbers, on the principal branch:
+
+1. **A symbol without assumptions may be complex.**  `Real`, `Positive`, `Integer`, … narrow it.
+2. **Every multivalued function takes its principal branch** — `ln z = ln|z| + i·arg z` with `arg z ∈ (−π, π]`, `z^a = e^(a·ln z)`, and the inverse trigonometric and hyperbolic functions as in DLMF (and mpmath, and SymPy's `N`).  So `∛(−8) = 2·(−1)^(1/3) = 1 + √3·i`; the real cube root is `ctx.int(-8).real_root(3)? = −2`.  The exact evaluator (`eval`), the numeric one (`eval_f64`, `eval_complex64`, `eval_decimal`) and every rewrite agree on it.
+3. **A rewrite preserves the value everywhere.**  An identity of real analysis is applied only where the assumptions make it true:
+
+| Identity | Holds when | Applied by default when | Unconditionally |
+|---|---|---|---|
+| `ln(a·b) = ln a + ln b` | `arg a + arg b ∈ (−π, π]` | a factor is known positive (it is split off), or known negative (split off as `ln(−f)`, its sign kept) | `expand_log_with(true)` |
+| `ln a + ln b = ln(a·b)` | the same | the logarithms of known-positive arguments, together with at most one other (`ln 2 + ln x = ln(2x)` for every `x`) | `log_combine_with(true)` |
+| `ln(a^c) = c·ln a` | `c·arg a ∈ (−π, π]` | `a > 0` and `c` real, or `−1 < c ≤ 1` (`ln √x = ½ ln x` for every `x`) | `expand_log_with(true)` / `log_combine_with(true)` |
+| `ln(e^w) = w` | `Im w ∈ (−π, π]` | `w` known real | `expand_log_with(true)` |
+| `√(w²) = ∣w∣` | `w` real | `w` known real (`√(i²) = i`) | `powdenest(true)` gives `w` |
+| `(x^a)^b = x^(a·b)` | `b ∈ ℤ`, or `x ≥ 0`, or `−1 < a ≤ 1` | the same | `powdenest(true)` |
+| `(e^f)^g = e^(f·g)` | `g ∈ ℤ`, or `Im f ∈ (−π, π]` | `g` integer or `f` known real (`√(e^{4i}) ≠ e^{2i}`) | — |
+| `asinh(sinh w) = w`, `atanh(tanh w) = w`, `acosh(cosh w) = ∣w∣` | `w` real (for `asinh`, `∣Im w∣ ≤ π/2`) | `w` known real | — |
+
+```rust
+# use symplex::prelude::*;
+let ctx = Context::new();
+let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+assert_eq!((&x.ln() + &y.ln()).simplify(), &x.ln() + &y.ln());   // x = y = −1: 2πi ≠ 0
+assert_eq!(x.powi(2).sqrt().simplify(), x.powi(2).sqrt());      // x = i:  i ≠ 1
+let r = ctx.symbol_with("r", &[Assumption::Real]);
+assert_eq!(r.powi(2).sqrt().simplify(), r.abs());
+let (p, q) = (ctx.symbol_with("p", &[Assumption::Positive]), ctx.symbol_with("q", &[Assumption::Positive]));
+assert_eq!(format!("{}", (&p.ln() + &q.ln()).simplify()), "ln(p*q)");
+assert_eq!(format!("{}", (ctx.int(2).ln() + x.ln()).log_combine()), "ln(2*x)");
+assert_eq!(ctx.int(-8).real_root(3)?, ctx.int(-2));
+# Ok::<(), SymplexError>(())
+```
+
+**Where a variable is real by construction**, symplex uses the fact:
+
+- *Limits* approach along the real axis: the limit variable is a positive dummy inside the Gruntz algorithm (as in SymPy), so `lim_{x→∞} e^x^(1/x) = e`.
+- *Integration* is over a real variable, with the real-variable antiderivative `∫ dx/x = ln|x|`: an antiderivative is valid on each real interval where the integrand is continuous, and `√(x²)` is `|x|` for the integration variable itself.
+
+**The one documented exception is generated numeric code.**  `compile()` and the Rust, C, Python, NumPy and Julia back ends work in `f64` reals, so `x^(p/q)` with an odd denominator `q` is the *real* root there (`sign(x)·|x|^(p/q)` for odd `p`, `|x|^(p/q)` for even `p`), as it has been since 0.11.1 — a principal-branch value would be complex, which an `f64` cannot hold.  Even denominators follow `f64` semantics (`NaN` for a negative base).
+
+Before 0.23 some of these rewrites fired for every symbol not known to be *non*-real, `expand_log`/`log_combine` were the forced forms, and `eval` took the real odd root; the changelog lists every change.
 
 ## Next Steps
 

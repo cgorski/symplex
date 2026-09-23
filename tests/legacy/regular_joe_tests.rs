@@ -544,7 +544,8 @@ fn exp_of_ln_x_is_x() {
 #[test]
 fn ln_of_exp_x_is_x() {
     let ctx = Context::new();
-    let x = ctx.symbol("x");
+    // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
+    let x = ctx.symbol_with("x", &[Assumption::Real]);
     let result = x.exp().ln();
     let simplified = result.simplify();
     assert_eq!(

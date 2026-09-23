@@ -6,7 +6,7 @@ Symbolic mathematics for Rust.
 [![docs.rs](https://docs.rs/symplex/badge.svg)](https://docs.rs/symplex)
 [![License](https://img.shields.io/crates/l/symplex.svg)](LICENSE-MIT)
 
-> **Pre-release (0.22).** The API is stabilising but not stable: 0.7.0 reshaped the
+> **Pre-release (0.23).** The API is stabilising but not stable: 0.7.0 reshaped the
 > certificate API and 0.10.0 added variants to three fresh enums/structs; every
 > breaking change is listed first, under `### Breaking`, in the release's entry in
 > [CHANGELOG.md](CHANGELOG.md), and the larger ones have a one-line fix in the book's
@@ -85,7 +85,7 @@ cargo add symplex
 - You need a mature CAS with decades of community validation — use [SymPy](https://www.sympy.org/). It has broader coverage, more special functions, and a much larger test corpus.
 - You need geometry, tensor algebra, quantum mechanics, or PDE solving — these are not available (planar/space geometry is next on the roadmap; random variables arrived in 0.11 and the data-statistics modules — tests, estimation, agreement, survival, … — in 0.13–0.21).
 - You need interactive notebook-style exploration — symplex is a library, not an application. (Though see `cargo run --example repl` for a basic REPL.)
-- You need results verified against extensive known-answer databases — symplex has ~12,800 tests including SymPy cross-validation fixtures and every 0.9+ test cites its SymPy reference value, but SymPy has orders of magnitude more coverage.
+- You need results verified against extensive known-answer databases — symplex has ~12,900 tests including SymPy cross-validation fixtures and every 0.9+ test cites its SymPy reference value, but SymPy has orders of magnitude more coverage.
 - You need large-scale or sparse numerical optimisation — the exact simplex is dense (`O(m·n)` integer operations per pivot, in `i64`/`i128`/256-bit/`BigInt` as the numbers grow; hundreds of rows, not hundreds of thousands), and the `f64` routines are the classic derivative-free methods, not a replacement for a dedicated optimisation library.
 
 ---
@@ -812,11 +812,13 @@ let velocity: Velocity = position.diff_wrt(&t_var);   // g·t [m/s]
 
 6. **Never silently wrong.** Numerical evaluation returns `Result`. Operations that can't produce a closed form return unevaluated symbolic nodes — `∫x^x dx` returns `Integral(x^x, x)`, not garbage. `∫₋₁¹ dx/x²` is `Err(Divergent)`, not `−2`. `re(z)` stays `re(z)` unless `z` is known to be real. A certificate prover says `Unknown` with what it tried, never a wrong `Proved`.
 
-7. **No panics in library code.** Failure is a `Result`, absence an `Option`, invariants `debug_assert!`. The library never calls `unwrap`/`expect`/`panic!`/`unreachable!` on user data (ratchet `tests/unit/test_no_panics.rs`); the remaining `assert!`s on caller-supplied *shapes* (e.g. `Matrix::zeros(0, n)`, `Context::symbol("")`, a non-prime modulus to `legendre_symbol`) are documented under `# Panics` on each item and counted by the same ratchet — see CONTRIBUTING.md for the policy and why error plumbing costs nothing measurable.
+7. **One domain: ℂ, principal branch.** A symbol without assumptions may be complex, every multivalued function takes its principal branch (`∛(−8) = 1 + √3·i`; the real root is `real_root`), and a rewrite is applied only where it preserves the value: `ln x + ln y` stays unless the arguments are known positive, `√(x²)` is `|x|` only for real `x`. The table of identities and their conditions, and the one exception (generated `f64` code takes real odd roots), is in [Key Concepts](book/src/getting-started/key-concepts.md#the-domain-model). `fuzz_simplify` checks it at real and complex points every night.
 
-8. **One crate, no knobs.** There are no Cargo features to combine; every capability is always present. Compile time is not the constraint, capability is.
+8. **No panics in library code.** Failure is a `Result`, absence an `Option`, invariants `debug_assert!`. The library never calls `unwrap`/`expect`/`panic!`/`unreachable!` on user data (ratchet `tests/unit/test_no_panics.rs`); the remaining `assert!`s on caller-supplied *shapes* (e.g. `Matrix::zeros(0, n)`, `Context::symbol("")`, a non-prime modulus to `legendre_symbol`) are documented under `# Panics` on each item and counted by the same ratchet — see CONTRIBUTING.md for the policy and why error plumbing costs nothing measurable.
 
-9. **Named positions, not tuples.** Where two values share a type, the API says which is which: `Interval { lower, upper, kind }` rather than `(f64, f64)`, `Qr { q, r }` rather than `(Matrix, Matrix)`, `ExtendedGcd { gcd, x, y }` rather than `(BigInt, BigInt, BigInt)`, `DhLink { theta, d, a, alpha }`, `Bounds::at_least(0)` for an LP variable. Universal conventions stay tuples (`(x, y)` points, `(re, im)`, `(numer, denom)`, `(quotient, remainder)`, `shape() -> (rows, cols)`). Polynomial coefficient vectors are ascending (`c[i]` multiplies `x^i`) everywhere except `Poly::all_coeffs`, which is SymPy's highest-first by name. A ratchet test keeps new same-typed tuples off the public surface — see CONTRIBUTING.md, "Tuples versus structs".
+9. **One crate, no knobs.** There are no Cargo features to combine; every capability is always present. Compile time is not the constraint, capability is.
+
+10. **Named positions, not tuples.** Where two values share a type, the API says which is which: `Interval { lower, upper, kind }` rather than `(f64, f64)`, `Qr { q, r }` rather than `(Matrix, Matrix)`, `ExtendedGcd { gcd, x, y }` rather than `(BigInt, BigInt, BigInt)`, `DhLink { theta, d, a, alpha }`, `Bounds::at_least(0)` for an LP variable. Universal conventions stay tuples (`(x, y)` points, `(re, im)`, `(numer, denom)`, `(quotient, remainder)`, `shape() -> (rows, cols)`). Polynomial coefficient vectors are ascending (`c[i]` multiplies `x^i`) everywhere except `Poly::all_coeffs`, which is SymPy's highest-first by name. A ratchet test keeps new same-typed tuples off the public surface — see CONTRIBUTING.md, "Tuples versus structs".
 
 ---
 
@@ -860,7 +862,7 @@ Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`, 
 
 ## Comparison with SymPy
 
-| Feature | symplex 0.22 | SymPy 1.14 |
+| Feature | symplex 0.23 | SymPy 1.14 |
 |---------|--------------|------------|
 | Arithmetic | Exact `Ratio<BigInt>` | Exact (similar) |
 | Differentiation | Complete, incl. Bessel/Airy/orthogonal/polygamma/erf family | Complete |
@@ -901,7 +903,7 @@ Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`, 
 | Thread safety | `Send + Sync`, no GIL | GIL-bound |
 | Expression type safety | `Ex` / `BoolEx` / `SetEx` at compile time | Runtime only |
 | Failure model | No panics (ratchet-enforced); `Result`/`Option`/unevaluated forms; budgets are statuses | Exceptions |
-| Language | Rust (compiled, ~240K lines, 92 node types) | Python (interpreted) |
+| Language | Rust (compiled, ~245K lines, 92 node types) | Python (interpreted) |
 
 **Where SymPy is stronger:** geometry, tensor algebra, quantum mechanics, general Diophantine equations, PDE solving, hypergeometric/Meijer-G machinery, stochastic processes and joint distributions beyond independence, and 30 years of community contributions and testing.
 
@@ -1020,8 +1022,14 @@ Companion crates: [`symplex-build`](symplex-build/README.md) (build-time codegen
 
 ## Requirements
 
-Rust 1.93+ (Edition 2024). No Cargo features by design; pure Rust on every platform Rust targets, including `wasm32-unknown-unknown`. ~12,800 tests (`cargo nextest run`), ~1,030 doctests — every Rust block in this README and in the book is compiled and run as a doctest too (`cargo test --doc -- doctests::`); every emitted Lean shape is pinned to text compiled against Mathlib (Lean 4.30).
+Rust 1.93+ (Edition 2024). No Cargo features by design; pure Rust on every platform Rust targets, including `wasm32-unknown-unknown`. ~12,900 tests (`cargo nextest run`), ~1,290 doctests — every Rust block in this README and in the book is compiled and run as a doctest too (`cargo test --doc -- doctests::`); every emitted Lean shape is pinned to text compiled against Mathlib (Lean 4.30).
 
 ## License
 
 Dual-licensed under [MIT](LICENSE-MIT) and [Apache 2.0](LICENSE-APACHE).
+
+symplex is an independent project, not affiliated with or endorsed by SymPy.
+SymPy, mpmath, SciPy and statsmodels (all BSD-3-Clause) are run as test
+oracles; the few modules that follow SymPy's implementation of a published
+algorithm, and SymPy's licence notice, are listed in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

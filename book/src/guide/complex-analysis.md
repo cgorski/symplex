@@ -1,6 +1,6 @@
 # Complex Analysis and Special Functions
 
-New in 0.2. symplex is a CAS over ℂ: a symbol with no assumptions may be complex, and the library refuses to pretend otherwise.
+New in 0.2. symplex is a CAS over ℂ: a symbol with no assumptions may be complex, and the library refuses to pretend otherwise.  Every multivalued function takes its principal branch — in `eval`, in numerical evaluation and in every rewrite (since 0.23; before, `eval` took the real odd root of a negative number and some simplifications assumed real arguments).  [The Domain Model](../getting-started/key-concepts.md#the-domain-model) lists which identities need which assumptions.
 
 ## re, im, conjugate, arg
 
@@ -80,6 +80,8 @@ fn main() {
     println!("{}", (&i * &ctx.pi()).exp().eval());    // -1
     println!("{}", ctx.int(-1).ln().eval());          // pi*I
     println!("{}", ctx.int(-4).sqrt());               // 2*I
+    println!("{}", ctx.int(-8).cbrt().eval());        // 2*cbrt(-1)   (principal: 1 + √3·i)
+    println!("{}", ctx.int(-8).real_root(3).unwrap()); // -2          (the real cube root)
     println!("{}", i.exp().eval_complex64().unwrap()); // 0.5403…+0.8414…i  (a `Complex64`)
 }
 ```

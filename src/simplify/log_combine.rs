@@ -7,10 +7,10 @@
 //!
 //! This is the inverse of [`expand_log`](crate::simplify::log_expand::expand_log).
 //!
-//! [`log_combine`] applies the rules unconditionally (`force = true`);
-//! [`log_combine_with`] with `force = false` only combines logarithms
-//! whose arguments are known positive (and, for `n·ln a`, whose
-//! coefficient is known real) through the assumption system.
+//! Neither holds for every complex value (`ln(−1) + ln(−1) = 2πi ≠
+//! ln 1`), so [`log_combine`] (the default) applies them only where they
+//! do — see [`log_combine_with`] — and `force = true` applies them
+//! unconditionally (SymPy's `logcombine(force=True)`).
 
 use crate::base::arena::Arena;
 use crate::base::assumptions::{AssumptionCache, Props};
@@ -18,28 +18,31 @@ use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
 use rustc_hash::FxHashMap;
 
-/// Combine logarithmic expressions unconditionally.
+/// Combine logarithms where the identities hold.
 ///
-/// Walks the expression bottom-up and applies log combination rules:
-///
-/// - Sums containing multiple `ln` terms are combined into a single
-///   logarithm of a product.
-/// - Products of the form `n · ln(a)` are rewritten as `ln(a^n)`.
-///
-/// Equivalent to [`log_combine_with`] with `force = true`.
+/// Walks the expression bottom-up; sums of `ln` terms become the logarithm
+/// of a product and `c·ln a` becomes `ln(a^c)`, as far as
+/// [`log_combine_with`] with `force = false` allows.
 pub(crate) fn log_combine(arena: &mut Arena, expr: ExprId) -> ExprId {
-    log_combine_with(arena, expr, true)
+    log_combine_with(arena, expr, false)
 }
 
-/// Combine logarithmic expressions, honouring the positivity guard unless
-/// `force` is set.
+/// Combine logarithms: exactly where the identities hold, or everywhere
+/// with `force` (SymPy's `logcombine(force=True)`).
 ///
 /// # Branch reasoning
 ///
 /// `ln a + ln b = ln(a·b)` holds exactly when `arg a + arg b ∈ (−π, π]`,
-/// and `n·ln a = ln(a^n)` when `n·arg a ∈ (−π, π]`; both are guaranteed
-/// for positive real arguments (and real `n`), which is what the guard
-/// requires.  With `force` the identities are applied regardless.
+/// and `c·ln a = ln(a^c)` when `c·arg a ∈ (−π, π]`.  Without `force`:
+///
+/// * the logarithms of known-positive arguments combine with each other
+///   *and with at most one other logarithm*: `arg p = 0`, so `ln p + ln z =
+///   ln(p·z)` for every complex `z` (`ln 2 + ln x → ln(2x)`).  SymPy's
+///   `logcombine` combines only when every argument is positive; this is
+///   the same identity used to its full extent.
+/// * `c·ln a → ln(a^c)` when `a > 0` and `c` is real, or `c` is a rational
+///   in `(−1, 1]` (then `c·arg a ∈ (−π, π]` for every `a`: `½·ln x =
+///   ln √x`).  `2·ln x` and `−ln x` stay: `−ln(−1) = −iπ ≠ ln(−1) = iπ`.
 pub(crate) fn log_combine_with(arena: &mut Arena, expr: ExprId, force: bool) -> ExprId {
     let post_order = walk::post_order_ids(arena, expr);
     let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
@@ -151,8 +154,13 @@ fn combine_mul_ln(
         arena.mul(&coeff_factors)
     };
 
-    // Guard: n·ln(a) = ln(a^n) needs a > 0 and n real.
+    // Guard: c·ln(a) = ln(a^c) needs c·arg a ∈ (−π, π]: a > 0 with c real,
+    // or c a rational in (−1, 1].
+    let coeff_in_principal_range = arena
+        .as_num(coeff)
+        .is_some_and(|c| *c > crate::base::numeric::qi(-1) && *c <= crate::base::numeric::qi(1));
     let guard_ok = force
+        || coeff_in_principal_range
         || (assumptions.query(arena, ln_arg, Props::POSITIVE) == Some(true)
             && assumptions.query(arena, coeff, Props::REAL) == Some(true));
     if !guard_ok {
@@ -177,20 +185,29 @@ fn combine_add_ln(
     new: &[ExprId],
     force: bool,
 ) -> ExprId {
-    // Partition children into ln-inner-arguments and everything else.
-    // Without `force`, only logarithms of known-positive arguments are
-    // eligible for combination.
+    // Partition the children: logarithms of known-positive arguments,
+    // other logarithms, everything else.  The positive ones combine with
+    // each other and with at most one other logarithm (see
+    // `log_combine_with`); with `force` every logarithm combines.
     let mut ln_inner_args: smallvec::SmallVec<[ExprId; 6]> = smallvec::SmallVec::new();
+    let mut unknown: smallvec::SmallVec<[(ExprId, ExprId); 6]> = smallvec::SmallVec::new();
     let mut others: smallvec::SmallVec<[ExprId; 6]> = smallvec::SmallVec::new();
 
     for &child in new {
-        if let ExprNode::Ln(inner) = *arena.node(child)
-            && (force || assumptions.query(arena, inner, Props::POSITIVE) == Some(true))
-        {
-            ln_inner_args.push(inner);
+        if let ExprNode::Ln(inner) = *arena.node(child) {
+            if force || assumptions.query(arena, inner, Props::POSITIVE) == Some(true) {
+                ln_inner_args.push(inner);
+            } else {
+                unknown.push((child, inner));
+            }
         } else {
             others.push(child);
         }
+    }
+    if unknown.len() == 1 {
+        ln_inner_args.push(unknown[0].1);
+    } else {
+        others.extend(unknown.iter().map(|&(child, _)| child));
     }
 
     if ln_inner_args.len() >= 2 {
@@ -223,153 +240,133 @@ mod tests {
         a.display(id).to_string()
     }
 
-    #[test]
-    fn combine_two_logs() {
-        // ln(x) + ln(y) → ln(x*y)
-        let mut a = Arena::new();
-        let x = sym(&mut a, "x");
-        let y = sym(&mut a, "y");
-        let lnx = a.ln(x);
-        let lny = a.ln(y);
-        let expr = a.add(&[lnx, lny]);
-        let result = log_combine(&mut a, expr);
-        let s = display(&a, result);
-        assert!(s.contains("ln("), "expected ln(...), got: {s}");
-        assert!(!s.contains('+'), "should not contain +, got: {s}");
-        // The argument of the combined ln should be a product of x and y.
-        assert!(s.contains('x') && s.contains('y'), "got: {s}");
+    fn positive(a: &mut Arena, name: &str) -> ExprId {
+        let s = a.symbol(name);
+        if let ExprNode::Symbol(sid) = *a.node(s) {
+            let mut asm = crate::base::assumptions::Assumptions::default();
+            asm.assert_true(Props::POSITIVE);
+            asm.forward_chain();
+            a.set_symbol_assumptions(sid, asm);
+        }
+        s
+    }
+
+    fn forced(a: &mut Arena, e: ExprId) -> String {
+        let r = log_combine_with(a, e, true);
+        display(a, r)
+    }
+
+    fn guarded(a: &mut Arena, e: ExprId) -> String {
+        let r = log_combine(a, e);
+        display(a, r)
     }
 
     #[test]
-    fn combine_three_logs() {
-        // ln(x) + ln(y) + ln(z) → ln(x*y*z)
+    fn forced_combine_two_and_three_logs() {
         let mut a = Arena::new();
-        let x = sym(&mut a, "x");
-        let y = sym(&mut a, "y");
-        let z = sym(&mut a, "z");
-        let lnx = a.ln(x);
-        let lny = a.ln(y);
-        let lnz = a.ln(z);
-        let expr = a.add(&[lnx, lny, lnz]);
-        let result = log_combine(&mut a, expr);
-        let s = display(&a, result);
-        assert!(s.contains("ln("), "expected ln(...), got: {s}");
-        assert!(!s.contains('+'), "should not contain +, got: {s}");
-        assert!(
-            s.contains('x') && s.contains('y') && s.contains('z'),
-            "got: {s}"
-        );
+        let (x, y, z) = (sym(&mut a, "x"), sym(&mut a, "y"), sym(&mut a, "z"));
+        let (lnx, lny, lnz) = (a.ln(x), a.ln(y), a.ln(z));
+        let two = a.add(&[lnx, lny]);
+        assert_eq!(forced(&mut a, two), "ln(x*y)");
+        let three = a.add(&[lnx, lny, lnz]);
+        assert_eq!(forced(&mut a, three), "ln(x*y*z)");
     }
 
     #[test]
-    fn combine_coeff_log() {
-        // 2*ln(x) → ln(x^2)
+    fn forced_combine_coeff_log() {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
         let two = a.int(2);
         let lnx = a.ln(x);
         let expr = a.mul(&[two, lnx]);
-
-        // The Mul-level rule fires, giving ln(x^2).
-        let result = log_combine(&mut a, expr);
-        let s = display(&a, result);
-        assert!(s.contains("ln("), "expected ln(...), got: {s}");
-        assert!(s.contains('x') && s.contains('2'), "got: {s}");
+        assert_eq!(forced(&mut a, expr), "ln(x^2)");
     }
 
     #[test]
     fn no_combine_single_log() {
-        // ln(x) + 1 stays as is (only one log term).
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
         let lnx = a.ln(x);
         let one = a.int(1);
         let expr = a.add(&[lnx, one]);
-        let result = log_combine(&mut a, expr);
-        let s = display(&a, result);
-        assert!(s.contains("ln(x)"), "ln(x) should remain, got: {s}");
-        assert!(
-            s.contains('+') || s.contains('1'),
-            "1 should remain, got: {s}"
-        );
+        assert_eq!(log_combine(&mut a, expr), expr);
+        assert_eq!(log_combine_with(&mut a, expr, true), expr);
     }
 
     #[test]
-    fn combine_nested() {
-        // ln(x) + ln(y) + z → ln(x*y) + z
+    fn forced_combine_keeps_other_terms() {
         let mut a = Arena::new();
-        let x = sym(&mut a, "x");
-        let y = sym(&mut a, "y");
-        let z = sym(&mut a, "z");
-        let lnx = a.ln(x);
-        let lny = a.ln(y);
+        let (x, y, z) = (sym(&mut a, "x"), sym(&mut a, "y"), sym(&mut a, "z"));
+        let (lnx, lny) = (a.ln(x), a.ln(y));
         let expr = a.add(&[lnx, lny, z]);
-        let result = log_combine(&mut a, expr);
-        let s = display(&a, result);
-        // Should have exactly one ln(...) wrapping a product, plus z.
-        assert!(s.contains("ln("), "expected ln(...), got: {s}");
-        assert!(s.contains('z'), "z should remain, got: {s}");
-        // The two logs should be combined, so there shouldn't be two ln(
-        let ln_count = s.matches("ln(").count();
-        assert_eq!(ln_count, 1, "expected 1 ln term, got {ln_count} in: {s}");
+        assert_eq!(forced(&mut a, expr), "z + ln(x*y)");
     }
 
     #[test]
     fn combine_logs_inside_exp() {
         let mut a = Arena::new();
-        let x = sym(&mut a, "x");
-        let y = sym(&mut a, "y");
-        let ln_x = a.ln(x);
-        let ln_y = a.ln(y);
+        let (x, y) = (positive(&mut a, "x"), positive(&mut a, "y"));
+        let (ln_x, ln_y) = (a.ln(x), a.ln(y));
         let sum = a.add(&[ln_x, ln_y]);
         let expr = a.exp(sum);
-        let result = log_combine(&mut a, expr);
-        let s = display(&a, result);
-        // ln(x)+ln(y) should be combined even inside exp()
-        assert!(
-            !s.contains("ln(x)"),
-            "log combination should work inside exp(): {s}"
-        );
+        assert_eq!(guarded(&mut a, expr), "exp(ln(x*y))");
     }
 
     #[test]
     fn bare_symbol_unchanged() {
-        // x + y → unchanged
-        let mut a = Arena::new();
-        let x = sym(&mut a, "x");
-        let y = sym(&mut a, "y");
-        let expr = a.add(&[x, y]);
-        let before = display(&a, expr);
-        let result = log_combine(&mut a, expr);
-        let after = display(&a, result);
-        assert_eq!(before, after, "x + y should be unchanged");
-    }
-
-    // ── guarded combination ────────────────────────────────────────
-
-    #[test]
-    fn guarded_combine_requires_positive_arguments() {
         let mut a = Arena::new();
         let (x, y) = (sym(&mut a, "x"), sym(&mut a, "y"));
-        let lnx = a.ln(x);
-        let lny = a.ln(y);
+        let expr = a.add(&[x, y]);
+        assert_eq!(log_combine(&mut a, expr), expr);
+    }
+
+    // ── the default: only what holds for every complex value ─────────────
+
+    #[test]
+    fn guarded_combine_leaves_two_unknown_logs() {
+        // SymPy: logcombine(log(x) + log(y)) = log(x) + log(y);
+        // ln(-1) + ln(-1) = 2*pi*I but ln(1) = 0.
+        let mut a = Arena::new();
+        let (x, y) = (sym(&mut a, "x"), sym(&mut a, "y"));
+        let (lnx, lny) = (a.ln(x), a.ln(y));
         let e = a.add(&[lnx, lny]);
-        assert_eq!(log_combine_with(&mut a, e, false), e);
-        let r = log_combine_with(&mut a, e, true);
-        assert_eq!(display(&a, r), "ln(x*y)");
-        if let ExprNode::Symbol(sid) = *a.node(x) {
-            let mut asm = crate::base::assumptions::Assumptions::default();
-            asm.assert_true(crate::base::assumptions::Props::POSITIVE);
-            asm.forward_chain();
-            a.set_symbol_assumptions(sid, asm);
-        }
-        // Only ln(x) is known positive: nothing to combine (need two).
-        assert_eq!(log_combine_with(&mut a, e, false), e);
+        assert_eq!(log_combine(&mut a, e), e);
+    }
+
+    #[test]
+    fn guarded_combine_joins_positive_logs_with_one_other() {
+        // arg(p) = 0 for p > 0, so ln p + ln z = ln(p*z) for every complex z.
+        // SymPy: logcombine(log(2) + log(x)) = log(2*x),
+        //        logcombine(log(p) + log(x)) = log(p*x);
+        //        logcombine(log(p) + log(x) + log(y)) leaves all three.
+        let mut a = Arena::new();
+        let (x, y, p) = (sym(&mut a, "x"), sym(&mut a, "y"), positive(&mut a, "p"));
         let two = a.int(2);
-        let two_lnx = a.mul(&[two, lnx]);
-        let r = log_combine_with(&mut a, two_lnx, false);
-        assert_eq!(display(&a, r), "ln(x^2)");
-        let two_lny = a.mul(&[two, lny]);
-        assert_eq!(log_combine_with(&mut a, two_lny, false), two_lny);
+        let (ln2, lnx, lny, lnp) = (a.ln(two), a.ln(x), a.ln(y), a.ln(p));
+        let e = a.add(&[ln2, lnx]);
+        assert_eq!(guarded(&mut a, e), "ln(2*x)");
+        let e = a.add(&[lnp, lnx]);
+        assert_eq!(guarded(&mut a, e), "ln(p*x)");
+        let e = a.add(&[ln2, lnp, lnx, lny]);
+        assert_eq!(guarded(&mut a, e), "ln(x) + ln(y) + ln(2*p)");
+    }
+
+    #[test]
+    fn guarded_combine_coefficient_needs_positive_argument_or_principal_range() {
+        // SymPy: logcombine(2*log(p)) = log(p**2); logcombine(2*log(x)) and
+        // logcombine(-log(x)) leave them; logcombine(log(x)/2) = log(x)/2
+        // (though ln(sqrt(x)) = ln(x)/2 for every x: -pi < arg(x)/2 <= pi/2).
+        let mut a = Arena::new();
+        let (x, p) = (sym(&mut a, "x"), positive(&mut a, "p"));
+        let (two, neg_one, half) = (a.int(2), a.int(-1), a.rational(1, 2));
+        let (lnx, lnp) = (a.ln(x), a.ln(p));
+        let e = a.mul(&[two, lnp]);
+        assert_eq!(guarded(&mut a, e), "ln(p^2)");
+        for c in [two, neg_one] {
+            let e = a.mul(&[c, lnx]);
+            assert_eq!(log_combine(&mut a, e), e);
+        }
+        let e = a.mul(&[half, lnx]);
+        assert_eq!(guarded(&mut a, e), "ln(sqrt(x))");
     }
 }

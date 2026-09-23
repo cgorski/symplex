@@ -1101,10 +1101,10 @@ impl AssumptionCache {
             ExprNode::Sinh(inner)
             | ExprNode::Tanh(inner)
             | ExprNode::Asinh(inner)
-            | ExprNode::Atanh(inner) => self.compute_hyp_odd(arena, inner),
+            | ExprNode::Atanh(inner) => self.compute_hyp_odd(arena, id, inner),
             ExprNode::Cosh(inner) => self.compute_cosh(arena, inner),
             ExprNode::Asin(inner) | ExprNode::Acos(inner) | ExprNode::Atan(inner) => {
-                self.compute_inverse_trig(arena, inner)
+                self.compute_inverse_trig(arena, id, inner)
             }
             ExprNode::Acosh(inner) => self.compute_acosh(arena, inner),
             // ── 0.2 additions: named constants, complex-analysis nodes, specials ──
@@ -1683,12 +1683,16 @@ impl AssumptionCache {
         a
     }
 
-    fn compute_hyp_odd(&mut self, arena: &Arena, inner: ExprId) -> Assumptions {
-        // sinh, tanh, asinh, atanh: real → real, complex → complex, odd function
+    fn compute_hyp_odd(&mut self, arena: &Arena, id: ExprId, inner: ExprId) -> Assumptions {
+        // sinh, tanh, asinh: real → real.  atanh: real only on (−1, 1)
+        // (atanh 2 = 0.549… − (π/2)i).  Complex → complex.
         let inner_a = self.compute(arena, inner);
         let mut a = Assumptions::default();
         a.known_true |= Props::COMMUTATIVE | Props::FINITE;
-        if inner_a.query(Props::REAL) == Some(true) {
+        let real = inner_a.query(Props::REAL) == Some(true)
+            && (!matches!(arena.node(id), ExprNode::Atanh(_))
+                || self.known_in_unit_interval(arena, inner, false));
+        if real {
             a.known_true |= Props::REAL;
         }
         if inner_a.query(Props::COMPLEX) == Some(true) {
@@ -1713,13 +1717,21 @@ impl AssumptionCache {
         a
     }
 
-    fn compute_inverse_trig(&mut self, arena: &Arena, inner: ExprId) -> Assumptions {
-        // asin, acos, atan: real → real (for appropriate domain), complex → complex
+    fn compute_inverse_trig(&mut self, arena: &Arena, id: ExprId, inner: ExprId) -> Assumptions {
+        // atan: real → real.  asin, acos: real only on [−1, 1]
+        // (asin 4 = π/2 − 2.06…i); acos is then non-negative.  Before 0.23
+        // every real argument counted, which let `refine` drop |asin(4)|.
         let inner_a = self.compute(arena, inner);
         let mut a = Assumptions::default();
         a.known_true |= Props::COMMUTATIVE | Props::FINITE;
-        if inner_a.query(Props::REAL) == Some(true) {
-            a.known_true |= Props::REAL; // technically only for |x|≤1 for asin/acos, but conservative
+        let is_atan = matches!(arena.node(id), ExprNode::Atan(_));
+        if inner_a.query(Props::REAL) == Some(true)
+            && (is_atan || self.known_in_unit_interval(arena, inner, true))
+        {
+            a.known_true |= Props::REAL;
+            if matches!(arena.node(id), ExprNode::Acos(_)) {
+                a.known_true |= Props::NONNEGATIVE;
+            }
         }
         if inner_a.query(Props::COMPLEX) == Some(true) {
             a.known_true |= Props::COMPLEX;
@@ -1729,14 +1741,15 @@ impl AssumptionCache {
     }
 
     fn compute_acosh(&mut self, arena: &Arena, inner: ExprId) -> Assumptions {
-        // acosh: real >= 1 → real, nonnegative
+        // acosh: real and non-negative exactly on [1, ∞); for 0 < x < 1 it is
+        // i·acos x (acosh(1/64) = 1.555…i), which the positive-argument rule
+        // of 0.22 called real.
         let inner_a = self.compute(arena, inner);
         let mut a = Assumptions::default();
         a.known_true |= Props::COMMUTATIVE | Props::FINITE;
         if inner_a.query(Props::REAL) == Some(true) {
-            // acosh is real for x >= 1, complex otherwise. Conservative: just say complex.
             a.known_true |= Props::COMPLEX;
-            if inner_a.query(Props::POSITIVE) == Some(true) {
+            if self.known_at_least_one(arena, inner) {
                 a.known_true |= Props::REAL | Props::NONNEGATIVE;
             }
         }
@@ -1745,6 +1758,35 @@ impl AssumptionCache {
         }
         a.forward_chain();
         a
+    }
+
+    /// Is the real `e` known to lie in `[−1, 1]` (`closed`) or `(−1, 1)`?
+    /// A rational literal, `sin`/`cos` of a real (closed only), `tanh` of a
+    /// real (open).  Nothing else is decided: there are no interval bounds
+    /// in the assumption system.
+    fn known_in_unit_interval(&mut self, arena: &Arena, e: ExprId, closed: bool) -> bool {
+        let one = crate::base::numeric::qi(1);
+        match arena.node(e) {
+            ExprNode::Num(nid) => {
+                let r = num_traits::Signed::abs(arena.num(*nid));
+                if closed { r <= one } else { r < one }
+            }
+            ExprNode::Sin(arg) | ExprNode::Cos(arg) if closed => {
+                self.compute(arena, *arg).query(Props::REAL) == Some(true)
+            }
+            ExprNode::Tanh(arg) => self.compute(arena, *arg).query(Props::REAL) == Some(true),
+            _ => false,
+        }
+    }
+
+    /// Is `e` known to be a real number `≥ 1`?  A rational literal, or
+    /// `cosh` of a real.
+    fn known_at_least_one(&mut self, arena: &Arena, e: ExprId) -> bool {
+        match arena.node(e) {
+            ExprNode::Num(nid) => *arena.num(*nid) >= crate::base::numeric::qi(1),
+            ExprNode::Cosh(arg) => self.compute(arena, *arg).query(Props::REAL) == Some(true),
+            _ => false,
+        }
     }
 
     /// `conjugate(z)` shares realness/imaginariness/finiteness with `z`

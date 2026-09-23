@@ -293,8 +293,9 @@ fn trig_hyperbolic_tanh_equals_sinh_over_cosh() {
 fn log_expand_product() {
     // ln(a*b) -> ln(a) + ln(b)
     let ctx = Context::new();
-    let a = ctx.symbol("a");
-    let b = ctx.symbol("b");
+    // 0.23: the log identities need positive arguments (x = y = -1 breaks ln(x*y) = ln x + ln y).
+    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let b = ctx.symbol_with("b", &[Assumption::Positive]);
     let expr = (&a * &b).ln();
     let expanded = expr.expand_log();
     let s = fmt(&expanded);
@@ -308,7 +309,8 @@ fn log_expand_product() {
 fn log_expand_power() {
     // ln(a^n) -> n*ln(a)
     let ctx = Context::new();
-    let a = ctx.symbol("a");
+    // 0.23: the log identities need positive arguments (x = y = -1 breaks ln(x*y) = ln x + ln y).
+    let a = ctx.symbol_with("a", &[Assumption::Positive]);
     let expr = a.powi(3).ln();
     let expanded = expr.expand_log();
     let s = fmt(&expanded);
@@ -322,8 +324,9 @@ fn log_expand_power() {
 fn log_combine_sum() {
     // ln(a) + ln(b) -> ln(a*b)
     let ctx = Context::new();
-    let a = ctx.symbol("a");
-    let b = ctx.symbol("b");
+    // 0.23: the log identities need positive arguments (x = y = -1 breaks ln(x*y) = ln x + ln y).
+    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let b = ctx.symbol_with("b", &[Assumption::Positive]);
     let expr = &a.ln() + &b.ln();
     let combined = expr.log_combine();
     let s = fmt(&combined);
@@ -463,9 +466,10 @@ fn log_of_negative_number_is_complex() {
 fn log_expand_three_factors() {
     // ln(a*b*c) -> ln(a) + ln(b) + ln(c)
     let ctx = Context::new();
-    let a = ctx.symbol("a");
-    let b = ctx.symbol("b");
-    let c = ctx.symbol("c");
+    // 0.23: the log identities need positive arguments (x = y = -1 breaks ln(x*y) = ln x + ln y).
+    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let b = ctx.symbol_with("b", &[Assumption::Positive]);
+    let c = ctx.symbol_with("c", &[Assumption::Positive]);
     let expr = (&a * &b * &c).ln();
     let expanded = expr.expand_log();
     let s = fmt(&expanded);
@@ -1336,8 +1340,9 @@ fn smart_simplify_pythagorean() {
 fn log_expand_nested_deep() {
     // ln(x^2 * y) should fully expand to 2*ln(x) + ln(y) after two passes
     let ctx = Context::new();
-    let x = ctx.symbol("x");
-    let y = ctx.symbol("y");
+    // 0.23: the log identities need positive arguments (x = y = -1 breaks ln(x*y) = ln x + ln y).
+    let x = ctx.symbol_with("x", &[Assumption::Positive]);
+    let y = ctx.symbol_with("y", &[Assumption::Positive]);
     let expr = (&x.powi(2) * &y).ln();
     let expanded = expr.expand_log();
     let s = fmt(&expanded);
@@ -1736,8 +1741,9 @@ fn log_exp_without_real_assumption() {
 fn log_expand_respects_negative_exponents() {
     // ln(x/y) = ln(x * y^(-1)) — expand_log should give ln(x) - ln(y)
     let ctx = Context::new();
-    let x = ctx.symbol("x");
-    let y = ctx.symbol("y");
+    // 0.23: the log identities need positive arguments (x = y = -1 breaks ln(x*y) = ln x + ln y).
+    let x = ctx.symbol_with("x", &[Assumption::Positive]);
+    let y = ctx.symbol_with("y", &[Assumption::Positive]);
     let expr = (&x / &y).ln();
     let expanded = expr.expand_log();
     let s = fmt(&expanded);
@@ -2297,9 +2303,10 @@ fn trig_expand_cos_negative_2x() {
 fn log_combine_three_logs() {
     // ln(a) + ln(b) + ln(c) -> ln(a*b*c)
     let ctx = Context::new();
-    let a = ctx.symbol("a");
-    let b = ctx.symbol("b");
-    let c = ctx.symbol("c");
+    // 0.23: the log identities need positive arguments (x = y = -1 breaks ln(x*y) = ln x + ln y).
+    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let b = ctx.symbol_with("b", &[Assumption::Positive]);
+    let c = ctx.symbol_with("c", &[Assumption::Positive]);
     let expr = &(&a.ln() + &b.ln()) + &c.ln();
     let combined = expr.log_combine();
     let s = fmt(&combined);

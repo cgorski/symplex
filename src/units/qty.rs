@@ -146,12 +146,12 @@ impl<D> Qty<D> {
         Self::from_ex(self.inner.expand_trig())
     }
 
-    /// Log expansion (ln(ab) → ln(a)+ln(b)).
+    /// Log expansion (ln(ab) → ln(a)+ln(b)) where it holds; see `Ex::expand_log`.
     pub fn expand_log(&self) -> Self {
         Self::from_ex(self.inner.expand_log())
     }
 
-    /// Combine logarithms (ln(a)+ln(b) → ln(ab)).
+    /// Combine logarithms (ln(a)+ln(b) → ln(ab)) where it holds; see `Ex::log_combine`.
     pub fn log_combine(&self) -> Self {
         Self::from_ex(self.inner.log_combine())
     }

@@ -191,7 +191,8 @@ fn regression_by_parts_x_ln_x_no_crash() {
 #[test]
 fn regression_pow_pow_negative_base() {
     let ctx = Context::new();
-    let x = ctx.symbol("x");
+    // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
+    let x = ctx.symbol_with("x", &[Assumption::Real]);
     // (x^2)^(1/2) should give |x| via sqrt_sq, not x via pow_pow
     let half = ctx.rational(1, 2);
     let expr = x.powi(2).pow(&half);
@@ -223,7 +224,8 @@ fn regression_asin_sin_symbolic_not_simplified() {
 #[test]
 fn regression_acosh_cosh_gives_abs() {
     let ctx = Context::new();
-    let x = ctx.symbol("x");
+    // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
+    let x = ctx.symbol_with("x", &[Assumption::Real]);
     let expr = x.cosh().acosh();
     let result = expr.simplify();
     let result_str = format!("{result}");

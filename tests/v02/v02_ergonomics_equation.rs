@@ -93,7 +93,10 @@ fn negation_flips_both_sides() {
 
 #[test]
 fn apply_function_to_both_sides() {
-    let (ctx, x) = setup();
+    // Real x: over ℂ, e^x = 5 has the solutions ln 5 + 2πik and
+    // ln(e^x) = x only for Im x ∈ (−π, π] (0.23).
+    let ctx = Context::new();
+    let x = ctx.symbol_with("x", &[Assumption::Real]);
     let eq = Equation::new(x.exp(), ctx.int(5))
         .apply(|s| s.ln())
         .simplify();

@@ -716,6 +716,18 @@ impl Arena {
         self.intern(ExprNode::Symbol(sym_id))
     }
 
+    /// An internal dummy symbol declared positive (a limit variable
+    /// `x → +∞`, a `w → 0⁺`).  Symbols are interned by name, so `name` must
+    /// be reserved for positive dummies: every call re-declares it positive.
+    pub(crate) fn positive_symbol(&mut self, name: &str) -> ExprId {
+        let sym_id = self.symbols.intern(name);
+        let mut a = crate::base::assumptions::Assumptions::default();
+        a.assert_true(crate::base::assumptions::Props::POSITIVE);
+        a.forward_chain();
+        self.set_symbol_assumptions(sym_id, a);
+        self.intern(ExprNode::Symbol(sym_id))
+    }
+
     /// Creates an `Add` node with full canonicalization.
     ///
     /// Flattens nested Adds, combines like terms, sorts by canonical
@@ -929,13 +941,14 @@ impl Arena {
 
     /// Expand logarithmic expressions.
     ///
-    /// `ln(a*b) → ln(a)+ln(b)`, `ln(a^n) → n*ln(a)`, etc.
+    /// `ln(a*b) → ln(a)+ln(b)`, `ln(a^n) → n*ln(a)`, etc., where they hold.
     /// Delegates to [`log_expand::expand_log`](crate::simplify::log_expand::expand_log).
     pub fn expand_log_expr(&mut self, expr: ExprId) -> ExprId {
         crate::simplify::log_expand::expand_log(self, expr)
     }
 
-    /// Combine logarithmic terms: `ln(a)+ln(b) → ln(a*b)`, `n*ln(a) → ln(a^n)`.
+    /// Combine logarithmic terms where it is exact: `ln(a)+ln(b) → ln(a*b)`,
+    /// `n*ln(a) → ln(a^n)`.
     /// Delegates to [`log_combine::log_combine`](crate::simplify::log_combine::log_combine).
     pub fn log_combine_expr(&mut self, expr: ExprId) -> ExprId {
         crate::simplify::log_combine::log_combine(self, expr)

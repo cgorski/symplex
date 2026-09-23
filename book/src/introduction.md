@@ -45,7 +45,7 @@ Being clear about limitations is important for evaluating whether this library f
 - **Group theory** is limited. There is no permutation group, symmetric group, or abstract algebra module.
 - **Hypergeometric / Meijer-G machinery** is absent; definite integration relies on antiderivatives, symmetry, and a table of ~30 classical improper integrals.
 - **Interactive notebooks** are not part of the library. symplex is a Rust library, not an application. A basic REPL is available as an example (`cargo run --example repl`), and `symplex-wasm` exposes a `Session` API for the browser.
-- **Test coverage**, while substantial (~11,000 tests including cross-validation against SymPy), is far less than what SymPy has accumulated over 30 years of development.
+- **Test coverage**, while substantial (~12,900 tests including cross-validation against SymPy, plus nightly property fuzzing), is far less than what SymPy has accumulated over 30 years of development.
 
 ## Design Principles
 
@@ -60,6 +60,8 @@ These choices are deliberate and pervasive:
 4. **Thread safety.** `Context` is `Clone` (Arc-based) and `Ex` is `Send + Sync`. Multiple threads can work with the same context without data races.
 
 5. **Honest failure.** Operations that cannot produce a closed-form result return unevaluated symbolic forms. `∫x^x dx` returns `Integral(x^x, x)` — a truthful representation of the problem — rather than an incorrect value or a panic. `∫₋₁¹ dx/x²` is `Err(Divergent)`, not `−2`. `re(z)` stays `re(z)` unless `z` is known to be real. Numerical operations return `Result`.
+
+6. **One domain: ℂ, principal branch.** A symbol without assumptions may be complex, and every rewrite preserves the value there: `ln x + ln y` and `√(x²)` stay as written until assumptions make `ln(xy)` and `|x|` true. See [The Domain Model](./getting-started/key-concepts.md#the-domain-model).
 
 ## How to Read This Book
 

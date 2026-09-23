@@ -1556,7 +1556,8 @@ fn simp_pow_pow() {
 #[test]
 fn simp_sqrt_of_square() {
     let ctx = Context::new();
-    let x = ctx.symbol("x");
+    // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
+    let x = ctx.symbol_with("x", &[Assumption::Real]);
     check(&x.powi(2).sqrt().simplify(), "abs(x)");
 }
 

@@ -147,7 +147,7 @@ pub(crate) fn powdenest(arena: &mut Arena, expr: ExprId) -> ExprId {
 /// | `(a·b)^e → a^e·b^e`        | `e ∈ ℤ`; all factors but at most one known non-negative; `force` |
 /// | `(x^a)^b → x^(a·b)`        | `b ∈ ℤ`; `x > 0` and `a` real; `force`               |
 /// | `√(x²) → x`                | `x ≥ 0`; `force`                                     |
-/// | `√(x²) → ∣x∣`              | `x` real (not known non-real)                        |
+/// | `√(x²) → ∣x∣`              | `x` known real                                       |
 ///
 /// # Branch reasoning
 ///
@@ -175,7 +175,10 @@ pub(crate) fn powdenest_with(arena: &mut Arena, expr: ExprId, force: bool) -> Ex
                     powdenest_pow(arena, rebuilt, base, exp)
                 };
                 if distributed != rebuilt {
-                    distributed
+                    // The distributed factors are new nodes the post-order
+                    // walk will not visit: denest them here, so that
+                    // `√(4x²)` becomes `2x` (forced) in one pass, not `2√(x²)`.
+                    denest_factors(arena, &mut assumptions, distributed, force)
                 } else if let ExprNode::Mul(children) = arena.node(base).clone() {
                     // Assumption-aware factor check: all factors but at most one
                     // known non-negative (see `expand::at_most_one_non_nonneg`).
@@ -201,6 +204,33 @@ pub(crate) fn powdenest_with(arena: &mut Arena, expr: ExprId, force: bool) -> Ex
     cache.get(&expr).copied().unwrap_or(expr)
 }
 
+/// Apply [`denest_pow_pow`] to every factor of `product` (or to `product`
+/// itself) that is a power of a power.
+fn denest_factors(
+    arena: &mut Arena,
+    assumptions: &mut AssumptionCache,
+    product: ExprId,
+    force: bool,
+) -> ExprId {
+    let mut one = |arena: &mut Arena, f: ExprId| match arena.node(f).clone() {
+        ExprNode::Pow(b, e) if matches!(arena.node(b), ExprNode::Pow(..)) => {
+            denest_pow_pow(arena, assumptions, f, b, e, force)
+        }
+        _ => f,
+    };
+    match arena.node(product).clone() {
+        ExprNode::Mul(children) => {
+            let new: SmallVec<[ExprId; 6]> = children.iter().map(|&c| one(arena, c)).collect();
+            if new == children {
+                product
+            } else {
+                arena.mul(&new)
+            }
+        }
+        _ => one(arena, product),
+    }
+}
+
 /// `(x^a)^b` / `√(x²)` handling for [`powdenest_with`].
 fn denest_pow_pow(
     arena: &mut Arena,
@@ -224,7 +254,8 @@ fn denest_pow_pow(
         if force || assumptions.query(arena, inner_base, Props::NONNEGATIVE) == Some(true) {
             return inner_base;
         }
-        if assumptions.query(arena, inner_base, Props::REAL) != Some(false) {
+        // Known real, not merely "not known non-real": √(i²) = i ≠ |i|.
+        if assumptions.query(arena, inner_base, Props::REAL) == Some(true) {
             return arena.abs(inner_base);
         }
         return original;
@@ -648,10 +679,16 @@ mod tests {
         let half = a.rational(1, 2);
         let sq = a.pow(x, two);
         let e = a.pow(sq, half);
-        let r = powdenest_with(&mut a, e, false);
-        assert_eq!(a.display(r).to_string(), "abs(x)");
+        // Unassumed x may be complex: sqrt(i^2) = i, not |i| = 1.
+        assert_eq!(powdenest_with(&mut a, e, false), e);
         let f = powdenest_with(&mut a, e, true);
         assert_eq!(f, x);
+        let r_sym = a.symbol("r");
+        set_assumption(&mut a, r_sym, Props::REAL);
+        let rsq = a.pow(r_sym, two);
+        let er = a.pow(rsq, half);
+        let r = powdenest_with(&mut a, er, false);
+        assert_eq!(a.display(r).to_string(), "abs(r)");
         let n = a.symbol("n");
         set_assumption(&mut a, n, Props::NONNEGATIVE);
         let nsq = a.pow(n, two);

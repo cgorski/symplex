@@ -1665,16 +1665,12 @@ fn integrate_node(
 
         // ── Pow: power rule ────────────────────────────────────────
         ExprNode::Pow(base, exp) => {
-            // Flatten Pow(Pow(a, m), n) → Pow(a, m·n) when both m and n
-            // are rational.  The canon layer only does this for integer
-            // exponents (to avoid complex branch-cut issues), but for
-            // real-valued integration it is necessary so that
-            // e.g.  1/√(x²+1) = Pow(Pow(x²+1, 1/2), -1) becomes
-            // Pow(x²+1, -1/2) and hits the standard-form / completing-
-            // the-square handlers.  When `a^m` is non-negative by
-            // construction the identity is `|a|^{m·n}` instead
-            // (`sqrt(x²) = |x|`, not `x`) — see `flatten_nested_pow`.
-            if let Some(flattened) = flatten_nested_pow(arena, expr)
+            // Flatten Pow(Pow(a, m), n) → Pow(a, m·n) where that keeps the
+            // value (see `flatten_nested_pow`): e.g. 1/√(x²+1) =
+            // Pow(Pow(x²+1, 1/2), -1) becomes Pow(x²+1, -1/2) and hits the
+            // standard-form / completing-the-square handlers, and √(x²) is
+            // |x| for the real integration variable.
+            if let Some(flattened) = flatten_nested_pow(arena, expr, var_sym)
                 && flattened != expr
             {
                 return integrate_node(arena, flattened, var, var_sym, depth - 1);
@@ -3287,7 +3283,17 @@ fn try_radical_substitution(
     let inv_q = arena.rational(1, q);
     let root = arena.pow(var, inv_q);
     let result = arena.subs_structural(res_s, s, root);
-    Some(crate::transforms::eval::eval(arena, result))
+    let result = crate::transforms::eval::eval(arena, result);
+    // Verified like the other risky routes: the `s`-integral is computed by
+    // the real-variable integrator, and a real-only step can still slip
+    // through below the checks above — `(s⁻⁴)^{1/2}` flattened to `s⁻²` gave
+    // `∫ cos(√x)/√(x⁻²) dx` a closed form whose derivative is wrong for
+    // x < 0 (0.23, fuzz_integrate).
+    if antiderivative_is_wrong(arena, expr, result, var, var_sym) {
+        tracing::debug!("integrate: rejecting unverified radical-substitution closed form");
+        return None;
+    }
+    Some(result)
 }
 
 /// `ln|g|` → `ln g` for every `g` depending on `s`; `None` when an `|·|`,
@@ -4230,7 +4236,7 @@ fn partition_factors(
     let mut dependent: SmallVec<[ExprId; 4]> = SmallVec::new();
     for &child in children {
         if contains_var(arena, child, var_sym) {
-            dependent.push(flatten_nested_pow(arena, child).unwrap_or(child));
+            dependent.push(flatten_nested_pow(arena, child, var_sym).unwrap_or(child));
         } else {
             constants.push(child);
         }
@@ -4253,15 +4259,22 @@ fn wrap_with_constants(arena: &mut Arena, result: ExprId, constants: &[ExprId]) 
 // Nested powers over the reals
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Real-valued flattening of `Pow(Pow(base, m), n)` with rational `m`, `n`.
+/// Flattening of `Pow(Pow(g, m), n)` with rational `m`, `n` that keeps the
+/// value — on the principal branch, and on the real line of the
+/// integration variable.
 ///
 /// The canon layer only merges integer exponents; for integration we want
-/// `((x²+1)^{1/2})^{-1} → (x²+1)^{-1/2}` as well.  But `(g^m)^n = g^{m·n}`
-/// is **not** an identity on the reals when `g^m` is non-negative by
-/// construction (`m` has an even numerator) while `g^{m·n}` is not:
-/// `sqrt(x²) = |x|`, not `x`.  In that case the correct rewrite is
-/// `|g|^{m·n}`.  Returns `None` when `expr` is not such a nested power.
-fn flatten_nested_pow(arena: &mut Arena, expr: ExprId) -> Option<ExprId> {
+/// `((x²+1)^{1/2})^{-1} → (x²+1)^{-1/2}` as well.  `(g^m)^n = g^{m·n}` holds
+/// for every complex `g` when `n` is an integer or `−1 < m ≤ 1` (the
+/// condition of simplify's `pow_pow`); for `g` real on the real line and `m`
+/// an even integer, `g^m = |g|^m ≥ 0` and `(g^m)^n = |g|^{m·n}` (`√(x²) =
+/// |x|`), which is `g^{m·n}` again when `m·n` is an even integer.  Anything
+/// else stays nested (`None`): `(1/x)^{1/2} ≠ x^{−1/2}` for `x < 0` (`i/√|x|`
+/// against `−i/√|x|`), and `(g^{2/3})` is not `|g|^{2/3}` for `g < 0` —
+/// before 0.23 both were flattened (the second under the real-root
+/// convention the evaluator no longer uses), and `∫ √x·√(1/x) dx` came out
+/// `x`, whose derivative is wrong for `x < 0` (found by `fuzz_integrate`).
+fn flatten_nested_pow(arena: &mut Arena, expr: ExprId, var_sym: SymbolId) -> Option<ExprId> {
     let ExprNode::Pow(base, exp) = arena.node(expr).clone() else {
         return None;
     };
@@ -4269,21 +4282,20 @@ fn flatten_nested_pow(arena: &mut Arena, expr: ExprId) -> Option<ExprId> {
         return None;
     };
     let (m, n) = (arena.as_num(inner_exp)?.clone(), arena.as_num(exp)?.clone());
-    let two = num_bigint::BigInt::from(2);
-    let is_even = |z: &num_bigint::BigInt| (z % &two).is_zero();
     let combined = &m * &n;
-    // `g^m ≥ 0` for every real `g` where it is defined ⇔ the (reduced)
-    // numerator of `m` is even.  Then `(g^m)^n = |g|^{m·n}`, which equals
-    // `g^{m·n}` only when `m·n` is itself an even-numerator / odd-denominator
-    // rational (so that `g^{m·n}` is also `|g|^{m·n}`).
-    let inner_nonneg = is_even(m.numer());
-    let combined_is_abs_power = is_even(combined.numer()) && !is_even(combined.denom());
-    let combined_id = arena.num_ratio(combined);
-    if inner_nonneg && !combined_is_abs_power {
+    let two = num_bigint::BigInt::from(2);
+    let even_integer = |q: &crate::base::numeric::Q| q.is_integer() && (q.numer() % &two).is_zero();
+    let principal =
+        n.is_integer() || (m > crate::base::numeric::qi(-1) && m <= crate::base::numeric::qi(1));
+    let abs_form = even_integer(&m) && real_on_reals(arena, inner_base, var_sym);
+    let combined_id = arena.num_ratio(combined.clone());
+    if principal || (abs_form && even_integer(&combined)) {
+        Some(arena.pow(inner_base, combined_id))
+    } else if abs_form {
         let abs_base = arena.abs(inner_base);
         Some(arena.pow(abs_base, combined_id))
     } else {
-        Some(arena.pow(inner_base, combined_id))
+        None
     }
 }
 

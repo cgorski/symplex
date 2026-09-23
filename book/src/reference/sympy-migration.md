@@ -12,8 +12,8 @@ Before the translation table, a few structural differences to be aware of:
 | Types | Everything is an `Expr` at runtime | `Ex` (numeric), `BoolEx` (boolean), `SetEx` (set-valued) — distinct at compile time |
 | Arithmetic | Python operators on SymPy objects | Rust operators on `&Ex` references (or use `expr!` macro) |
 | Evaluation | `simplify()` is the catch-all | `eval()` for exact reduction, `simplify()` for multi-strategy simplification to a fixpoint, `simplify_traced()` to see what fired |
-| Failure | Returns unevaluated or raises exception | Returns unevaluated `Ex` (Pattern 1) or `Result` (Patterns 2–6); never raises |
-| Realness | Symbols are complex unless `real=True`; `re(z)` stays symbolic | Same in 0.2: `z.re()` is `re(z)` unless `z` is declared `Real` |
+| Failure | Returns unevaluated or raises exception | Returns unevaluated `Ex` (Pattern 1) or `Result` (Patterns 2–5); never raises |
+| Realness | Symbols are complex unless `real=True`; `re(z)` stays symbolic | The same: a symbol without assumptions may be complex, every function takes its principal branch, and `simplify`/`expand_log`/`log_combine`/`powdenest` apply real-only identities only under assumptions (since 0.23; see [The Domain Model](../getting-started/key-concepts.md#the-domain-model)) |
 | Floats | `Float` type exists alongside exact | No float type in expressions; floats only via `eval_f64()` |
 | Printing | `pprint()`, `latex()`, `str()` | `println!("{expr}")`, `expr.to_latex()` |
 
@@ -49,6 +49,8 @@ Before the translation table, a few structural differences to be aware of:
 | `exp(x)` | `x.exp()` |
 | `log(x)` | `x.ln()` |
 | `sqrt(x)` | `x.sqrt()` |
+| `cbrt(x)`, `root(x, n)` (principal) | `x.cbrt()`, `x.nthroot(n)` |
+| `real_root(x, n)` | `x.real_root(n)?` |
 | `Abs(x)` | `x.abs()` |
 | `re(z)`, `im(z)`, `conjugate(z)`, `arg(z)` | `z.re()`, `z.im()`, `z.conjugate()`, `z.arg()` |
 | `z.as_real_imag()` | `z.as_real_imag()` |
@@ -110,8 +112,10 @@ Before the translation table, a few structural differences to be aware of:
 | `collect(expr, x)` | `expr.collect(&x)` |
 | `trigsimp(expr)` | `expr.simplify_trig()` |
 | `expand_trig(expr)` | `expr.expand_trig()` |
-| `logcombine(expr)` | `expr.log_combine()` |
+| `logcombine(expr)` | `expr.log_combine()` — also joins positive logarithms with one other (`ln 2 + ln x → ln(2x)`, exact for every `x`) |
+| `logcombine(expr, force=True)` | `expr.log_combine_with(true)` |
 | `expand_log(expr)` | `expr.expand_log()` |
+| `expand_log(expr, force=True)` | `expr.expand_log_with(true)` |
 | `powsimp(expr)` | `expr.simplify_powers()` |
 | `combsimp(expr)` | `expr.simplify_combinatorial()` |
 | `radsimp(expr)` | `expr.rationalize_denom()` |
@@ -425,7 +429,7 @@ symplex supports 16 ODE classes: simple separable, full separable, first-order l
 
 - `Permutation`, `PermutationGroup`, and abstract algebra
 - `geometry` module (Point, Line, Circle, Polygon)
-- `stats` module (probability distributions)
+- `stats` beyond independent variables: joint and compound distributions, stochastic processes, matrix distributions (symplex has `symplex::stats`: random variables, exact moments and probabilities, and the data-statistics modules)
 - `tensor` module (indexed tensors, Einstein summation)
 - `physics.quantum` module
 - `pdsolve` (PDE solving)

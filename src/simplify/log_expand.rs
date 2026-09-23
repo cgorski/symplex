@@ -6,26 +6,25 @@
 //! - `ln(a / b)` → `ln(a) - ln(b)` (i.e., `ln(a * b^(-1))`)
 //! - `ln(a^n)` → `n * ln(a)`
 //!
-//! These rules are always valid for positive real arguments.
-//! [`expand_log`] applies them unconditionally (`force = true`);
-//! [`expand_log_with`] with `force = false` only expands when every
-//! factor is known positive (and, for `ln(a^n)`, `n` is known real)
-//! through the assumption system.
+//! These rules hold for positive real arguments, and not in general:
+//! `ln((−1)·(−1)) = 0 ≠ 2πi = ln(−1) + ln(−1)`.  [`expand_log`] (the
+//! default, SymPy's `expand_log`) applies them only where the assumption
+//! system shows they hold; [`expand_log_with`] with `force = true` applies
+//! them unconditionally (SymPy's `force=True`).
 
 use crate::base::arena::Arena;
 use crate::base::assumptions::{AssumptionCache, Props};
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
-use num_traits::Signed;
 use rustc_hash::FxHashMap;
 
-/// Expand logarithmic expressions unconditionally.
+/// Expand logarithms where the identities hold.
 ///
-/// Walks the expression bottom-up and applies log expansion rules
-/// to `Ln` nodes whose arguments are products, quotients, or powers.
-/// Equivalent to [`expand_log_with`] with `force = true`.
+/// Walks the expression bottom-up and expands `Ln` nodes whose arguments
+/// are products, quotients, or powers, as far as the assumptions allow.
+/// Equivalent to [`expand_log_with`] with `force = false`.
 pub(crate) fn expand_log(arena: &mut Arena, expr: ExprId) -> ExprId {
-    expand_log_with(arena, expr, true)
+    expand_log_with(arena, expr, false)
 }
 
 /// Expand logarithmic expressions, honouring the positivity guard unless
@@ -97,91 +96,106 @@ pub(crate) fn expand_log_with(arena: &mut Arena, expr: ExprId, force: bool) -> E
     cache.get(&expr).copied().unwrap_or(expr)
 }
 
-/// Expand a single `ln(inner)` node, checking the positivity guard first
-/// unless `force` is set.  Returns `ln(inner)` unchanged when the guard
-/// rejects.
+/// Expand a single `ln(inner)` node: unconditionally with `force`,
+/// otherwise only as far as the identities hold (SymPy's
+/// `log._eval_expand_log`):
+///
+/// * a product splits off every factor known positive, and a factor known
+///   negative as `ln(−f)` with its sign left in the remaining product:
+///   `ln(2·x) = ln 2 + ln x`, `ln(−2·x) = ln 2 + ln(−x)`, `ln(p·x) = ln p
+///   + ln x` for `p > 0` — exact, since `arg(p·z) = arg z` for `p > 0`;
+/// * `ln(b^e) = e·ln b` for real `e` when `b > 0`, or when `−1 < e ≤ 1`
+///   (then `e·arg b ∈ (−π, π]`): `ln(√x) = ½·ln x` for every `x`, while
+///   `ln(x²)` and `ln(1/x)` stay.
+///
+/// With `force` every factor counts as positive and every exponent as
+/// admissible (SymPy's `force=True`).  Nested arguments expand all the way
+/// (`ln(x²·y)` → `2·ln x + ln y` for positive `x`, `y`), through an explicit
+/// work list of `(coefficient, argument)` pairs rather than recursion.
 pub(crate) fn expand_ln_node_guarded(
     arena: &mut Arena,
     assumptions: &mut AssumptionCache,
     inner: ExprId,
     force: bool,
 ) -> ExprId {
-    if !force {
-        let ok = match arena.node(inner).clone() {
-            // Every factor must be a positive real (then so is its
-            // reciprocal, which the a^(-n) branch below relies on).
-            ExprNode::Mul(ref children) => children
-                .iter()
-                .all(|&c| assumptions.query(arena, c, Props::POSITIVE) == Some(true)),
-            ExprNode::Pow(base, exp) => {
-                assumptions.query(arena, base, Props::POSITIVE) == Some(true)
-                    && assumptions.query(arena, exp, Props::REAL) == Some(true)
-            }
-            _ => true,
-        };
-        if !ok {
-            return arena.ln(inner);
-        }
-    }
-    expand_ln_node(arena, inner)
-}
-
-/// Expand a single `ln(inner)` node.
-///
-/// Factors of a product are expanded one level further (`ln(x·y²) →
-/// ln x + 2·ln y`); a canonical `Mul` never nests another `Mul`, so this
-/// recursion is bounded to one level.
-fn expand_ln_node(arena: &mut Arena, inner: ExprId) -> ExprId {
-    match arena.node(inner).clone() {
-        // ln(a * b * ...) → ln(a) + ln(b) + ...
-        ExprNode::Mul(ref children) => {
-            let terms: Vec<ExprId> = children
-                .iter()
-                .map(|&child| {
-                    // Check for negative exponent: a^(-n) contributes -n·ln(a)
-                    if let ExprNode::Pow(base, exp) = arena.node(child).clone()
-                        && let Some(r) = arena.as_num(exp)
-                        && r.is_negative()
+    let mut work: Vec<(ExprId, ExprId)> = vec![(arena.one, inner)];
+    let mut terms: smallvec::SmallVec<[ExprId; 6]> = smallvec::SmallVec::new();
+    while let Some((coeff, arg)) = work.pop() {
+        match arena.node(arg).clone() {
+            ExprNode::Mul(ref children) => {
+                let mut split = false;
+                let mut rest: smallvec::SmallVec<[ExprId; 6]> = smallvec::SmallVec::new();
+                for &c in children {
+                    if force || assumptions.query(arena, c, Props::POSITIVE) == Some(true) {
+                        work.push((coeff, c));
+                        split = true;
+                    } else if c != arena.neg_one
+                        && assumptions.query(arena, c, Props::NEGATIVE) == Some(true)
                     {
-                        let pos_exp = {
-                            let pos = -r.clone();
-                            let nid = arena.intern_num(pos);
-                            arena.intern(ExprNode::Num(nid))
-                        };
-                        let pos_pow = arena.pow(base, pos_exp);
-                        let ln_pos = expand_ln_factor(arena, pos_pow);
-                        return arena.neg(ln_pos);
+                        let neg_c = arena.neg(c);
+                        work.push((coeff, neg_c));
+                        rest.push(arena.neg_one);
+                        split = true;
+                    } else {
+                        rest.push(c);
                     }
-                    expand_ln_factor(arena, child)
-                })
-                .collect();
-            if terms.len() == 1 {
-                terms[0]
-            } else {
-                arena.add(&terms)
+                }
+                if !split {
+                    let ln_arg = arena.ln(arg);
+                    terms.push(arena.mul(&[coeff, ln_arg]));
+                } else if !rest.is_empty() {
+                    let remaining = arena.mul(&rest);
+                    if remaining == arena.neg_one {
+                        // ln(−1) = iπ (`ln(−3p) = ln 3 + ln p + iπ` for p > 0).
+                        let i_pi = arena.mul(&[arena.i_unit, arena.pi]);
+                        terms.push(arena.mul(&[coeff, i_pi]));
+                    } else if remaining != arena.one {
+                        work.push((coeff, remaining));
+                    }
+                }
+            }
+            ExprNode::Pow(base, exp) if pow_log_splits(arena, assumptions, base, exp, force) => {
+                let c = arena.mul(&[coeff, exp]);
+                work.push((c, base));
+            }
+            // ln(e^w) = w for real w (Im w ∈ (−π, π] suffices; real is what
+            // the assumptions can show).
+            ExprNode::Exp(w) if force || assumptions.query(arena, w, Props::REAL) == Some(true) => {
+                terms.push(arena.mul(&[coeff, w]));
+            }
+            _ => {
+                let ln_arg = arena.ln(arg);
+                terms.push(arena.mul(&[coeff, ln_arg]));
             }
         }
-
-        // ln(a^n) → n * ln(a)
-        ExprNode::Pow(base, exp) => {
-            let ln_base = arena.ln(base);
-            arena.mul(&[exp, ln_base])
-        }
-
-        // Nothing to expand.
-        _ => arena.ln(inner),
+    }
+    match terms.len() {
+        0 => arena.zero,
+        1 => terms[0],
+        _ => arena.add(&terms),
     }
 }
 
-/// `ln(factor)` for one factor of a product: powers become `n·ln(a)`.
-fn expand_ln_factor(arena: &mut Arena, factor: ExprId) -> ExprId {
-    match arena.node(factor).clone() {
-        ExprNode::Pow(base, exp) => {
-            let ln_base = arena.ln(base);
-            arena.mul(&[exp, ln_base])
-        }
-        _ => arena.ln(factor),
+/// `ln(b^e) = e·ln b`?  For real `e` when `b > 0`, or when `−1 < e ≤ 1`
+/// (then `e·arg b ∈ (−π, π]`, so the principal logarithms agree); always
+/// with `force`.
+fn pow_log_splits(
+    arena: &Arena,
+    assumptions: &mut AssumptionCache,
+    base: ExprId,
+    exp: ExprId,
+    force: bool,
+) -> bool {
+    if force {
+        return true;
     }
+    if assumptions.query(arena, exp, Props::REAL) != Some(true) {
+        return false;
+    }
+    let in_principal_range = arena
+        .as_num(exp)
+        .is_some_and(|e| *e > crate::base::numeric::qi(-1) && *e <= crate::base::numeric::qi(1));
+    in_principal_range || assumptions.query(arena, base, Props::POSITIVE) == Some(true)
 }
 
 #[cfg(test)]
@@ -196,43 +210,47 @@ mod tests {
         a.display(id).to_string()
     }
 
+    fn positive(a: &mut Arena, name: &str) -> ExprId {
+        let s = a.symbol(name);
+        if let ExprNode::Symbol(sid) = *a.node(s) {
+            let mut asm = crate::base::assumptions::Assumptions::default();
+            asm.assert_true(Props::POSITIVE);
+            asm.forward_chain();
+            a.set_symbol_assumptions(sid, asm);
+        }
+        s
+    }
+
+    fn forced(a: &mut Arena, e: ExprId) -> String {
+        let r = expand_log_with(a, e, true);
+        display(a, r)
+    }
+
+    fn guarded(a: &mut Arena, e: ExprId) -> String {
+        let r = expand_log(a, e);
+        display(a, r)
+    }
+
     #[test]
-    fn expand_ln_product() {
+    fn forced_expand_ln_product() {
         let mut a = Arena::new();
-        let x = sym(&mut a, "x");
-        let y = sym(&mut a, "y");
+        let (x, y) = (sym(&mut a, "x"), sym(&mut a, "y"));
         let product = a.mul(&[x, y]);
         let expr = a.ln(product);
-        let result = expand_log(&mut a, expr);
-        let s = display(&a, result);
-        // ln(x*y) → ln(x) + ln(y)
-        assert!(s.contains("ln(x)") && s.contains("ln(y)"), "got: {s}");
+        assert_eq!(forced(&mut a, expr), "ln(x) + ln(y)");
     }
 
     #[test]
-    fn expand_ln_power() {
+    fn forced_expand_ln_power_and_quotient() {
         let mut a = Arena::new();
-        let x = sym(&mut a, "x");
+        let (x, y) = (sym(&mut a, "x"), sym(&mut a, "y"));
         let two = a.int(2);
         let x2 = a.pow(x, two);
-        let expr = a.ln(x2);
-        let result = expand_log(&mut a, expr);
-        let s = display(&a, result);
-        // ln(x^2) → 2*ln(x)
-        assert!(s.contains("ln(x)") && s.contains("2"), "got: {s}");
-    }
-
-    #[test]
-    fn expand_ln_quotient() {
-        let mut a = Arena::new();
-        let x = sym(&mut a, "x");
-        let y = sym(&mut a, "y");
-        let quotient = a.div(x, y);
-        let expr = a.ln(quotient);
-        let result = expand_log(&mut a, expr);
-        let s = display(&a, result);
-        // ln(x/y) = ln(x * y^(-1)) → ln(x) - ln(y)
-        assert!(s.contains("ln(x)") && s.contains("ln(y)"), "got: {s}");
+        let e = a.ln(x2);
+        assert_eq!(forced(&mut a, e), "2*ln(x)");
+        let q = a.div(x, y);
+        let e = a.ln(q);
+        assert_eq!(forced(&mut a, e), "-ln(y) + ln(x)");
     }
 
     #[test]
@@ -240,42 +258,94 @@ mod tests {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
         let expr = a.ln(x);
-        let result = expand_log(&mut a, expr);
-        assert_eq!(display(&a, result), "ln(x)");
+        assert_eq!(guarded(&mut a, expr), "ln(x)");
+        assert_eq!(forced(&mut a, expr), "ln(x)");
     }
 
     #[test]
     fn expand_log_inside_sin() {
         let mut a = Arena::new();
-        let x = sym(&mut a, "x");
-        let y = sym(&mut a, "y");
+        let (x, y) = (positive(&mut a, "x"), positive(&mut a, "y"));
         let product = a.mul(&[x, y]);
         let ln_product = a.ln(product);
         let expr = a.sin(ln_product);
-        let result = expand_log(&mut a, expr);
-        let s = display(&a, result);
-        // ln(x*y) should be expanded even inside sin()
-        assert!(
-            !s.contains("ln(x*y)"),
-            "log expansion should work inside sin(): {s}"
-        );
+        assert_eq!(guarded(&mut a, expr), "sin(ln(x) + ln(y))");
     }
 
     #[test]
-    fn expand_ln_nested() {
+    fn expand_ln_nested_in_one_pass() {
         let mut a = Arena::new();
-        let x = sym(&mut a, "x");
-        let y = sym(&mut a, "y");
+        let (x, y) = (positive(&mut a, "x"), sym(&mut a, "y"));
         let two = a.int(2);
-        // ln(x^2 * y) → first pass: ln(x^2) + ln(y) → second pass: 2*ln(x) + ln(y)
         let x2 = a.pow(x, two);
         let product = a.mul(&[x2, y]);
         let expr = a.ln(product);
-        // Apply twice for full expansion (product then power).
-        let pass1 = expand_log(&mut a, expr);
-        let pass2 = expand_log(&mut a, pass1);
-        let s = display(&a, pass2);
-        assert!(s.contains("ln(x)") && s.contains("ln(y)"), "got: {s}");
+        // SymPy: expand_log(log(p**2*y)) = 2*log(p) + log(y)
+        assert_eq!(guarded(&mut a, expr), "2*ln(x) + ln(y)");
+    }
+
+    // ── the default: only what holds for every complex value ─────────────
+
+    #[test]
+    fn guarded_expand_splits_off_positive_factors() {
+        // SymPy: expand_log(log(2*x)) = log(x) + log(2)
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let e = a.mul(&[two, x]);
+        let e = a.ln(e);
+        assert_eq!(guarded(&mut a, e), "ln(2) + ln(x)");
+    }
+
+    #[test]
+    fn guarded_expand_moves_the_sign_of_a_negative_factor() {
+        // SymPy: expand_log(log(-2*x)) = log(-x) + log(2),
+        //        expand_log(log(-3*p)) = log(p) + log(3) + I*pi  (p > 0)
+        let mut a = Arena::new();
+        let (x, p) = (sym(&mut a, "x"), positive(&mut a, "p"));
+        let (m2, m3) = (a.int(-2), a.int(-3));
+        let e = a.mul(&[m2, x]);
+        let e = a.ln(e);
+        assert_eq!(guarded(&mut a, e), "ln(2) + ln(-x)");
+        let e = a.mul(&[m3, p]);
+        let e = a.ln(e);
+        assert_eq!(guarded(&mut a, e), "pi*I + ln(3) + ln(p)");
+    }
+
+    #[test]
+    fn guarded_expand_keeps_powers_outside_the_principal_range() {
+        // SymPy: expand_log(log(x**2)) = log(x**2), expand_log(log(1/x)) = log(1/x),
+        //        expand_log(log(sqrt(x))) = log(x)/2, expand_log(log(x**(1/3))) = log(x)/3
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let (two, neg_one) = (a.int(2), a.int(-1));
+        for exp in [two, neg_one] {
+            let p = a.pow(x, exp);
+            let e = a.ln(p);
+            assert_eq!(expand_log(&mut a, e), e);
+        }
+        let half = a.rational(1, 2);
+        let e = a.pow(x, half);
+        let e = a.ln(e);
+        assert_eq!(guarded(&mut a, e), "1/2*ln(x)");
+        let third = a.rational(1, 3);
+        let e = a.pow(x, third);
+        let e = a.ln(e);
+        assert_eq!(guarded(&mut a, e), "1/3*ln(x)");
+    }
+
+    #[test]
+    fn guarded_expand_of_exp_needs_a_real_exponent() {
+        // SymPy: expand_log(log(exp(x))) = log(exp(x)); force=True gives x.
+        let mut a = Arena::new();
+        let (x, p) = (sym(&mut a, "x"), positive(&mut a, "p"));
+        let ex = a.exp(x);
+        let e = a.ln(ex);
+        assert_eq!(expand_log(&mut a, e), e);
+        assert_eq!(forced(&mut a, e), "x");
+        let ep = a.exp(p);
+        let e = a.ln(ep);
+        assert_eq!(guarded(&mut a, e), "p");
     }
 
     // ── guarded expansion ──────────────────────────────────────────
@@ -303,14 +373,13 @@ mod tests {
     }
 
     #[test]
-    fn expand_ln_of_product_with_power_factor() {
+    fn forced_expand_ln_of_product_with_power_factor() {
         let mut a = Arena::new();
         let (x, y) = (sym(&mut a, "x"), sym(&mut a, "y"));
         let two = a.int(2);
         let y2 = a.pow(y, two);
         let xy2 = a.mul(&[x, y2]);
         let e = a.ln(xy2);
-        let r = expand_log(&mut a, e);
-        assert_eq!(display(&a, r), "2*ln(y) + ln(x)");
+        assert_eq!(forced(&mut a, e), "2*ln(y) + ln(x)");
     }
 }

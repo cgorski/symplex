@@ -1369,8 +1369,9 @@ fn identity(_arena: &mut Arena, w: ExprId) -> ExprId {
 /// Build the rule: `sqrt(w^2) → abs(w)`.
 ///
 /// Valid for real `w` (`√(w²) = |w|`).  For non-real `w` the principal
-/// square root gives `±w`, not `|w|`, so the rule is gated on `w` not
-/// being known non-real (see [`condition_wild_not_known_nonreal`]).
+/// square root gives `±w`, not `|w|` (`√(i²) = i ≠ 1`), so the rule
+/// needs `w` known real (see [`condition_wild_real`]).  Before 0.23 it fired
+/// unless `w` was known *non*-real, i.e. for every unannotated symbol.
 fn rule_sqrt_sq(arena: &mut Arena) -> Rule {
     let (w_expr, w_id) = arena.wild();
     let two = arena.int(2);
@@ -1386,7 +1387,7 @@ fn rule_sqrt_sq(arena: &mut Arena) -> Rule {
         wilds,
     };
     let mut r = Rule::new("sqrt_sq", pattern, abs_w);
-    r.condition = Some(condition_wild_not_known_nonreal);
+    r.condition = Some(condition_wild_real);
     r
 }
 
@@ -1626,73 +1627,31 @@ fn condition_wild_positive(arena: &Arena, subs: &Substitution) -> bool {
     true
 }
 
-/// Condition: every wild-bound value in the substitution is known to be real.
-///
-/// Numeric literals are always real.  Symbols are checked via their
-/// stored assumptions.  The constants π and *e* are real.  Anything
-/// else (compound expressions, imaginary unit, etc.) is conservatively
-/// rejected.
-#[allow(dead_code)]
-fn condition_wild_real(arena: &Arena, subs: &Substitution) -> bool {
-    for &id in subs.values() {
-        match arena.node(id) {
-            ExprNode::Num(_) | ExprNode::Pi | ExprNode::E => {
-                // These are unconditionally real.
-            }
-            ExprNode::Symbol(sid) => {
-                let assumptions = arena.symbol_assumptions(*sid);
-                if assumptions.query(Props::REAL) != Some(true) {
-                    return false;
-                }
-            }
-            _ => {
-                // Compound or unknown expression: cannot confirm real → reject.
-                return false;
-            }
-        }
-    }
-    true
-}
-
-/// Condition: every wild-bound value is *not known* to be non-real.
-///
-/// This is a weaker gate than [`condition_wild_real`]: it fires unless
-/// we have positive evidence that the value is **not** real (e.g. the
-/// symbol has an `Imaginary` assumption, or the expression is `i·x` for
-/// real `x`).  Unknown assumptions are treated as "probably real", which
-/// matches the common case where users don't annotate variables.
+/// Condition: every wild-bound value is known to be real — a real numeric
+/// literal, `π`, `e`, or anything the assumption system proves real
+/// (`x² + 1` for real `x`, `sin y` for real `y`).
 ///
 /// # Branch reasoning
 ///
-/// `ln(exp(x)) = x` holds exactly when `Im(x) ∈ (−π, π]`, which is
-/// guaranteed for real `x`.  For `x` known to be non-real the principal
-/// branch of `ln` may differ from `x` by a multiple of `2πi`, so the rule
-/// must not fire.  Compound expressions are checked through the
-/// assumption system (`Props::REAL == Some(false)` blocks the rewrite).
-pub(crate) fn condition_wild_not_known_nonreal(arena: &Arena, subs: &Substitution) -> bool {
-    for &id in subs.values() {
-        match arena.node(id) {
-            ExprNode::Num(_) | ExprNode::Pi | ExprNode::E => {
-                // These are unconditionally real.
-            }
-            ExprNode::ImaginaryUnit => return false,
-            ExprNode::Symbol(sid) => {
-                let assumptions = arena.symbol_assumptions(*sid);
-                if assumptions.query(Props::REAL) == Some(false) {
-                    return false;
-                }
-            }
-            _ => {
-                // Compound expression: ask the assumption system.  Only a
-                // definite "not real" blocks the rewrite.
-                let mut cache = crate::base::assumptions::AssumptionCache::new();
-                if cache.query(arena, id, Props::REAL) == Some(false) {
-                    return false;
-                }
-            }
-        }
-    }
-    true
+/// The rules behind it are identities of real analysis that fail off the
+/// real line:
+///
+/// * `ln(e^w) = w` exactly when `Im w ∈ (−π, π]` (`ln(e^{4i}) = (4 − 2π)i`);
+/// * `√(w²) = |w|` for real `w` only (`√(i²) = i`);
+/// * `asinh(sinh w) = w` needs `Im w ∈ [−π/2, π/2]`, `atanh(tanh w) = w`
+///   needs `Im w ∈ (−π/2, π/2)`, and `acosh(cosh w) = |w|` holds for real
+///   `w` (for complex `w` it is `±w` on strips).
+///
+/// A symbol without assumptions may be complex, so it does not qualify.
+/// (Before 0.23 these rules fired unless the argument was known
+/// *non*-real — for every unannotated symbol — and the three hyperbolic
+/// ones had no condition at all.)
+fn condition_wild_real(arena: &Arena, subs: &Substitution) -> bool {
+    let mut cache = crate::base::assumptions::AssumptionCache::new();
+    subs.values().all(|&id| match arena.node(id) {
+        ExprNode::Num(_) | ExprNode::Pi | ExprNode::E => true,
+        _ => cache.query(arena, id, Props::REAL) == Some(true),
+    })
 }
 
 /// `abs(w) → w` when `w` is a positive numeric literal.
@@ -1712,22 +1671,48 @@ fn rule_abs_positive(arena: &mut Arena) -> Rule {
     }
 }
 
+/// `rule`, firing only for a known-real argument ([`condition_wild_real`]).
+fn real_only(mut rule: Rule) -> Rule {
+    rule.condition = Some(condition_wild_real);
+    rule
+}
+
 pub(crate) fn basic_rules(arena: &mut Arena) -> Vec<Rule> {
     vec![
         rule_pythagorean(arena),
         unary_compose_rule(arena, "exp_ln", Arena::exp, Arena::ln, identity),
-        {
-            let mut r = unary_compose_rule(arena, "ln_exp", Arena::ln, Arena::exp, identity);
-            r.condition = Some(condition_wild_not_known_nonreal);
-            r
-        },
+        real_only(unary_compose_rule(
+            arena,
+            "ln_exp",
+            Arena::ln,
+            Arena::exp,
+            identity,
+        )),
         unary_compose_rule(arena, "abs_abs", Arena::abs, Arena::abs, Arena::abs),
         rule_sqrt_sq(arena),
         rule_cosh_sinh_identity(arena),
         rule_pow_pow(arena),
-        unary_compose_rule(arena, "asinh_sinh", Arena::asinh, Arena::sinh, identity),
-        unary_compose_rule(arena, "acosh_cosh", Arena::acosh, Arena::cosh, Arena::abs),
-        unary_compose_rule(arena, "atanh_tanh", Arena::atanh, Arena::tanh, identity),
+        real_only(unary_compose_rule(
+            arena,
+            "asinh_sinh",
+            Arena::asinh,
+            Arena::sinh,
+            identity,
+        )),
+        real_only(unary_compose_rule(
+            arena,
+            "acosh_cosh",
+            Arena::acosh,
+            Arena::cosh,
+            Arena::abs,
+        )),
+        real_only(unary_compose_rule(
+            arena,
+            "atanh_tanh",
+            Arena::atanh,
+            Arena::tanh,
+            identity,
+        )),
         rule_sin_div_cos(arena),
         rule_cos_div_sin(arena),
         rule_sinh_div_cosh(arena),
@@ -2379,15 +2364,30 @@ mod tests {
     }
 
     #[test]
-    fn acosh_cosh_gives_abs() {
+    fn acosh_cosh_gives_abs_for_real_argument_only() {
+        use crate::base::assumptions::{Assumptions, Props};
         let mut arena = Arena::new();
+        let z = arena.symbol("z");
+        let cosh_z = arena.cosh(z);
+        let expr_z = arena.acosh(cosh_z);
         let x = arena.symbol("x");
+        if let ExprNode::Symbol(sid) = *arena.node(x) {
+            let mut a = Assumptions::default();
+            a.assert_true(Props::REAL);
+            arena.set_symbol_assumptions(sid, a);
+        }
         let cosh_x = arena.cosh(x);
         let expr = arena.acosh(cosh_x);
         let rules = basic_rules(&mut arena);
         let (result, _) = apply_rules(&mut arena, expr, &rules);
         let expected = arena.abs(x);
-        assert_eq!(result, expected, "acosh(cosh(x)) should give |x|");
+        assert_eq!(
+            result, expected,
+            "acosh(cosh(x)) should give |x| for real x"
+        );
+        // mpmath: acosh(cosh(1 + 2j)) = 1.0 + 2.0j, not |1 + 2i| = sqrt(5)
+        let (result, _) = apply_rules(&mut arena, expr_z, &rules);
+        assert_eq!(result, expr_z, "acosh(cosh(z)) must stay for complex z");
     }
 
     #[test]
@@ -2416,17 +2416,15 @@ mod tests {
     }
 
     #[test]
-    fn ln_exp_fires_without_assumption() {
+    fn ln_exp_stays_without_assumption() {
+        // A symbol without assumptions may be complex: ln(exp(4i)) = (4 - 2*pi)*i.
         let mut arena = Arena::new();
         let x = arena.symbol("x"); // no assumptions at all
         let exp_x = arena.exp(x);
         let expr = arena.ln(exp_x); // ln(exp(x))
         let rules = basic_rules(&mut arena);
         let (result, _) = apply_rules(&mut arena, expr, &rules);
-        assert_eq!(
-            result, x,
-            "ln(exp(x)) should simplify to x without assumptions"
-        );
+        assert_eq!(result, expr, "ln(exp(x)) must stay for x not known real");
     }
 
     #[test]

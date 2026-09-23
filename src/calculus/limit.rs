@@ -1201,7 +1201,8 @@ fn one_sided_gruntz(
     point: ExprId,
     right: bool,
 ) -> Result<ExprId, SymplexError> {
-    let w = arena.symbol(LIM_DUMMY);
+    // w → +∞ along the reals: declared positive, like Gruntz's own variable.
+    let w = arena.positive_symbol(LIM_DUMMY);
     let one = arena.one();
     let inv_w = arena.div(one, w);
     let shift = if right { inv_w } else { arena.neg(inv_w) };
@@ -1474,7 +1475,8 @@ pub(crate) fn limit_at_infinity(
     }
 
     // ── Strategy 1: Substitution x = 1/t, then together+cancel ──
-    let t = arena.symbol("__limit_t");
+    // x = ±1/t with t → 0⁺: t is positive.
+    let t = arena.positive_symbol("__limit_t");
     let one = arena.one();
     let t_inv = arena.div(one, t);
 
