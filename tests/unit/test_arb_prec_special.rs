@@ -407,7 +407,9 @@ fn integrate_sqrt_x2_plus_one_ftc() {
 
 #[test]
 fn integrate_sqrt_x2_minus_four() {
-    // ∫ √(x²-4) dx = ½(x·√(x²-4) − 4·acosh(x/2))
+    // ∫ √(x²-4) dx = ½(x·√(x²-4) − 4·ln|x + √(x²-4)|) (0.24): the
+    // acosh(x/2) form is right only for x > 2; F′ = f is checked on both
+    // sides of the gap (x = ±3).
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let neg_four = ctx.int(-4);
@@ -415,17 +417,21 @@ fn integrate_sqrt_x2_minus_four() {
     let base = &x2 + &neg_four;
     let integrand = base.pow(&ctx.rational(1, 2));
     let result = integrand.integrate(&x);
-    let s = format!("{result}");
-
-    let is_unevaluated = s.contains("Integral") || s.contains("∫");
     assert!(
-        !is_unevaluated,
-        "∫ √(x²-4) dx should not be unevaluated, got: {s}"
+        !result.has_unevaluated(),
+        "∫ √(x²-4) dx should not be unevaluated, got: {result}"
     );
-    assert!(
-        s.contains("acosh"),
-        "∫ √(x²-4) dx should contain acosh, got: {s}"
-    );
+    let d = result.diff(&x);
+    for v in [3, -3] {
+        let (a, b) = (
+            d.subs_i64(&x, v).eval_f64().unwrap(),
+            integrand.subs_i64(&x, v).eval_f64().unwrap(),
+        );
+        assert!(
+            (a - b).abs() < 1e-12,
+            "F'({v}) = {a}, f({v}) = {b}: {result}"
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

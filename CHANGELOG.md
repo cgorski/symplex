@@ -6,6 +6,62 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.24.0] - 2026-09-23
+
+The Rubi release.  `rubi-harness/` runs `integrate` on the Rubi integration
+test suite (72,254 integrands, MIT, vendored) and judges every answer by
+differentiation at five real points (both signs) with fixed rational
+parameters.  Against 0.23.0 it found 76 answers whose derivative is not the
+integrand; all are fixed, and the suite now reports **0 wrong, 0 panics**:
+5,524 answers verified, 73 more verified wherever the integrand is real (the
+real-variable convention: `ln|u|` where the integrand is complex), 66,519
+unevaluated, 3 timeouts.  A ratchet (`rubi-harness/ratchet.tsv`, `--check`)
+keeps each file's counts from regressing.  Each fix is pinned in
+`tests/v23/`.
+
+### Breaking (behaviour; no signature changed)
+
+- `d/dx acosh(u)` is `u′/(√(u−1)·√(u+1))` (SymPy's form), the derivative
+  of the principal `acosh` everywhere; `u′/√(u²−1)` had the wrong sign for
+  `u < −1`.
+- Antiderivatives of `1/√(x² − a²)`, `√(x² − a²)` and
+  `1/√(a x² + b x + c)` with a gap in the real domain are written with
+  `ln|x + √(x² − a²)|` instead of `acosh(x/a)` (which is right only on
+  `x > a`); `∫ acosh(g) dx` uses `√(g−1)·√(g+1)`.
+- `eval` folds `exp(ln w) = w` and `exp(w + i·k·π)` for half-integer `k`
+  (`exp(ln 2 − 3πi) = −2`); the `exp_ln` pattern rule therefore no longer
+  appears in `simplify_traced` steps.
+
+### Fixed — wrong antiderivatives (Rubi suite)
+
+- `∫ (a·x + b)/(x² + 1) dx` was `0` (and 55 more of the linear-over-
+  quadratic shape): a coefficient containing a parameter has no numeric
+  value, and was dropped as if it were zero.
+- `∫ dx/√((3x − 2)²)` was `ln|x − 2/3|/3`: `√(a·u²)` is `√a·|u|`, so the
+  antiderivative needs `sign(u)`.
+- `∫ cosh x/(i + sinh x) dx` was `ln|i + sinh x|`, whose derivative is the
+  conjugate: `ln|u|` is the real-variable antiderivative only for real `u`;
+  a `u` containing `i` now gives `ln u`.
+- `acosh`-based answers (above) were wrong for `x < −a`.
+
+### Fixed — found by `fuzz_integrate` / `fuzz_simplify`
+
+- `∫ |√x|² dx` was `x²/2`: `|g|ⁿ → gⁿ` for even `n` needs `g` real on the
+  real line.
+- `√((e^{ln(−2)})^{−3})` evaluated to `−(√2/4)i` at 30 digits (`+` at 50):
+  the exponential of `−3 ln 2 − 3πi` carried a rounding residue that chose
+  the branch (fixed by the `eval` folds above).
+
+### Added
+
+- `rubi-harness/` (own workspace, not published): Maxima-syntax reader and
+  translator, per-integrand time and memory limits in worker processes, the
+  verdicts `verified` / `real_verified` / `wrong` / `unevaluated` /
+  `undecided` / `timeout` / `panic` / `unsupported`, per-file summary, a
+  `--selftest` that judges Rubi's own answers (54,993 verified, 2 false
+  alarms, both Rubi answers dividing by `x − log(e^x) ≡ 0`), and the ratchet.
+- `tests/v23/`: `v23_eval`, `v23_integrate` (9 tests).
+
 ## [0.23.0] - 2026-09-23
 
 One domain model.  The documentation has always promised a CAS over ℂ — a

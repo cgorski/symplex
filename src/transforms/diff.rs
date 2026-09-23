@@ -453,18 +453,22 @@ fn diff_node(
             arena.div(df, sqrt_denom)
         }
 
-        // d/dx(acosh(f)) = f' / sqrt(f^2 - 1)
+        // d/dx(acosh(f)) = f' / (sqrt(f - 1)·sqrt(f + 1)), SymPy's form: the
+        // derivative of the principal acosh everywhere.  The single root
+        // sqrt(f² − 1) has the wrong sign for f < −1 (acosh(−2)′ is
+        // −1/√3, not 1/√3); found by the Rubi harness's self-test (0.24).
         ExprNode::Acosh(inner) => {
             let df = get_deriv(cache, inner, arena);
             if arena.is_zero_structural(df) {
                 return arena.zero;
             }
             let one = arena.one;
-            let two = arena.int(2);
-            let f_sq = arena.pow(inner, two);
-            let f_sq_minus_1 = arena.sub(f_sq, one);
-            let sqrt_denom = arena.sqrt(f_sq_minus_1);
-            arena.div(df, sqrt_denom)
+            let f_minus_1 = arena.sub(inner, one);
+            let f_plus_1 = arena.add(&[inner, one]);
+            let root_minus = arena.sqrt(f_minus_1);
+            let root_plus = arena.sqrt(f_plus_1);
+            let denom = arena.mul(&[root_minus, root_plus]);
+            arena.div(df, denom)
         }
 
         // d/dx(atanh(f)) = f' / (1 - f^2)

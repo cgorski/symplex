@@ -6,7 +6,7 @@ Symbolic mathematics for Rust.
 [![docs.rs](https://docs.rs/symplex/badge.svg)](https://docs.rs/symplex)
 [![License](https://img.shields.io/crates/l/symplex.svg)](LICENSE-MIT)
 
-> **Pre-release (0.23).** The API is stabilising but not stable: 0.7.0 reshaped the
+> **Pre-release (0.24).** The API is stabilising but not stable: 0.7.0 reshaped the
 > certificate API and 0.10.0 added variants to three fresh enums/structs; every
 > breaking change is listed first, under `### Breaking`, in the release's entry in
 > [CHANGELOG.md](CHANGELOG.md), and the larger ones have a one-line fix in the book's
@@ -862,7 +862,7 @@ Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`, 
 
 ## Comparison with SymPy
 
-| Feature | symplex 0.23 | SymPy 1.14 |
+| Feature | symplex 0.24 | SymPy 1.14 |
 |---------|--------------|------------|
 | Arithmetic | Exact `Ratio<BigInt>` | Exact (similar) |
 | Differentiation | Complete, incl. Bessel/Airy/orthogonal/polygamma/erf family | Complete |
@@ -1022,7 +1022,7 @@ Companion crates: [`symplex-build`](symplex-build/README.md) (build-time codegen
 
 ## Requirements
 
-Rust 1.93+ (Edition 2024). No Cargo features by design; pure Rust on every platform Rust targets, including `wasm32-unknown-unknown`. ~12,900 tests (`cargo nextest run`), ~1,290 doctests — every Rust block in this README and in the book is compiled and run as a doctest too (`cargo test --doc -- doctests::`); every emitted Lean shape is pinned to text compiled against Mathlib (Lean 4.30).
+Rust 1.93+ (Edition 2024). No Cargo features by design; pure Rust on every platform Rust targets, including `wasm32-unknown-unknown`. ~12,900 tests (`cargo nextest run`), ~1,290 doctests — every Rust block in this README and in the book is compiled and run as a doctest too (`cargo test --doc -- doctests::`); every emitted Lean shape is pinned to text compiled against Mathlib (Lean 4.30). `integrate` is also run on the 72,254 integrands of the [Rubi](https://rulebasedintegration.org/) test suite and every answer is checked by differentiation ([`rubi-harness/`](rubi-harness/README.md): 0 wrong at 0.24, with a per-file ratchet); `fuzz/` checks properties nightly.
 
 ## License
 

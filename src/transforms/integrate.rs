@@ -140,8 +140,34 @@ fn integrate_impl(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
         result
     };
 
+    // `ln|u|` is the real-variable antiderivative of `u′/u` only for real
+    // `u`; for a `u` with an explicit `i` (`∫ cosh x/(i + sinh x) dx`) it is
+    // `ln u` — the conjugate derivative came out before 0.24 (Rubi suite).
+    let result = analytic_log_of_complex_arguments(arena, result, var_sym);
+
     // Piecewise wrapping for parametric degenerate cases
     try_piecewise_wrap(arena, result, expr, var, var_sym)
+}
+
+/// Every `ln|u|` in `e` whose `u` depends on the variable and contains the
+/// imaginary unit becomes `ln u`.  `|u|` of a non-real `u` is not the
+/// real-variable device the integrator means by it (`d/dx ln|u| = Re(u′/u)
+/// ≠ u′/u`), while `ln u` is analytic along the real line as long as `u`
+/// avoids the negative real axis, which a `u` with a non-zero imaginary
+/// part does.
+fn analytic_log_of_complex_arguments(arena: &mut Arena, e: ExprId, var_sym: SymbolId) -> ExprId {
+    let mut out = e;
+    for id in crate::base::walk::post_order_ids(arena, e) {
+        if let ExprNode::Ln(inner) = arena.node(id).clone()
+            && let ExprNode::Abs(u) = arena.node(inner).clone()
+            && contains_var(arena, u, var_sym)
+            && crate::base::walk::contains(arena, u, arena.i_unit)
+        {
+            let plain = arena.ln(u);
+            out = arena.subs_structural(out, id, plain);
+        }
+    }
+    out
 }
 
 /// Check whether `expr` is a suitable candidate for the `u` factor in
@@ -318,12 +344,26 @@ fn try_standard_form_integral(
 
     // Pattern: x² − a²  (c_val < 0, positive x², a² = |c_val|)
     if has_pos_x2 && c_val.is_negative() && is_neg_half {
-        // A6: ∫ (x²−a²)^{-1/2} dx = acosh(x/a)
-        let acosh_val = arena.acosh(x_over_a);
-        return Some(acosh_val);
+        // A6: ∫ (x²−a²)^{-1/2} dx = ln|x + √(x²−a²)|, the real-variable
+        // antiderivative on both x > a and x < −a.  `acosh(x/a)` (SymPy's
+        // answer, and ours before 0.24) differs from it by a constant for
+        // x > a but has the wrong derivative for x < −a.
+        return Some(ln_abs_x_plus_sqrt(arena, var, base));
     }
 
     None
+}
+
+/// `ln|v + √q|`, the real-variable antiderivative of `v′/√q` when
+/// `q = v² − c` for a constant `c > 0` (`q` is `x² − a²`, or `a·u² + d`
+/// with `v = √a·u`): `d/dx ln|v + √(v² − c)| = v′/√(v² − c)` on both
+/// `v > √c` and `v < −√c`.
+fn ln_abs_x_plus_sqrt(arena: &mut Arena, v: ExprId, q: ExprId) -> ExprId {
+    let half = arena.rational(1, 2);
+    let sqrt_q = arena.pow(q, half);
+    let sum = arena.add(&[v, sqrt_q]);
+    let abs_sum = arena.abs(sum);
+    arena.ln(abs_sum)
 }
 
 /// Try integrating `(ax²+bx+c)^exp` via completing the square.
@@ -504,19 +544,20 @@ fn try_complete_square_integral(
             let asinh_val = arena.asinh(arg);
             return Some(arena.mul(&[inv_sqrt_a, asinh_val]));
         } else if d.is_negative() {
-            // a > 0, d < 0: (1/√a) · acosh(u·√a / √|d|)
-            let abs_d = d.abs();
-            let abs_d_id = arena.num_ratio(abs_d.clone());
-            let sqrt_abs_d = arena.pow(abs_d_id, half);
+            // a > 0, d < 0: (1/√a) · ln|u·√a + √(a u² + d)|, valid on both
+            // sides of the gap (acosh(u·√a/√|d|) is wrong for u < 0).
             let u_sqrt_a = arena.mul(&[u_expr, sqrt_a]);
-            let arg = arena.div(u_sqrt_a, sqrt_abs_d);
-            let acosh_val = arena.acosh(arg);
-            return Some(arena.mul(&[inv_sqrt_a, acosh_val]));
+            let ln_val = ln_abs_x_plus_sqrt(arena, u_sqrt_a, base);
+            return Some(arena.mul(&[inv_sqrt_a, ln_val]));
         } else {
-            // a > 0, d = 0: (1/√a) · ln|u|
+            // a > 0, d = 0: √(a·u²) = √a·|u| for the real variable, so the
+            // antiderivative is sign(u)·ln|u|/√a (0.23 dropped the sign:
+            // ∫ 1/√((3x − 2)²) dx was ln|x − 2/3|/3, wrong for x < 2/3;
+            // found by the Rubi suite).
             let abs_u = arena.abs(u_expr);
             let ln_u = arena.ln(abs_u);
-            return Some(arena.mul(&[inv_sqrt_a, ln_u]));
+            let sign_u = arena.sign(u_expr);
+            return Some(arena.mul(&[inv_sqrt_a, sign_u, ln_u]));
         }
     } else if a_coeff.is_negative() && d.is_positive() {
         // a < 0, d > 0: (1/√|a|) · asin(u·√|a| / √d)
@@ -792,16 +833,17 @@ fn try_trig_sub_sqrt_integral(
     }
 
     // ── Pattern: x² − a²  (c_val < 0, positive x²) ───────────────
-    // ∫ √(x²−a²) dx = ½(x·√(x²−a²) − a²·acosh(x/a))
+    // ∫ √(x²−a²) dx = ½(x·√(x²−a²) − a²·ln|x + √(x²−a²)|), valid for
+    // x > a and x < −a (the acosh(x/a) form is wrong for x < −a).
     if has_pos_x2 && c_val.is_negative() {
         let x_sqrt = arena.mul(&[var, sqrt_base]);
-        let acosh_term = arena.acosh(x_over_a);
-        let a_sq_acosh = if a_sq_is_one {
-            acosh_term
+        let ln_term = ln_abs_x_plus_sqrt(arena, var, base);
+        let a_sq_ln = if a_sq_is_one {
+            ln_term
         } else {
-            arena.mul(&[a_sq_expr, acosh_term])
+            arena.mul(&[a_sq_expr, ln_term])
         };
-        let diff = arena.sub(x_sqrt, a_sq_acosh);
+        let diff = arena.sub(x_sqrt, a_sq_ln);
         return Some(arena.mul(&[half, diff]));
     }
 
@@ -939,25 +981,25 @@ fn try_linear_over_quadratic(
 
     let mut terms: Vec<ExprId> = Vec::new();
 
+    // A term is dropped only when its coefficient is *known* to vanish:
+    // structurally zero, or a constant whose value is zero to the working
+    // precision (`√5·√5/5 − 1`).  A coefficient with a free parameter has no
+    // numeric value, and treating that as "zero" returned
+    // `∫ (a·x + b)/(x² + 1) dx = 0` — 56 wrong answers on the Rubi suite (0.24).
+    let known_zero = |arena: &mut Arena, c: ExprId| {
+        arena.is_zero_structural(c)
+            || crate::transforms::evalf::eval_const_f64(arena, c).is_some_and(|v| v.abs() <= 1e-14)
+    };
+
     // First term: log_coeff · ln|quadratic|
-    let log_coeff_f64 = crate::transforms::evalf::eval_const_f64(arena, log_coeff);
-    tracing::trace!(
-        ?log_coeff_f64,
-        "try_linear_over_quadratic: symbolic log coefficient"
-    );
-    if log_coeff_f64.is_some_and(|v| v.abs() > 1e-14) {
+    if !known_zero(arena, log_coeff) {
         let abs_quad = arena.abs(pow_base);
         let ln_quad = arena.ln(abs_quad);
         terms.push(arena.mul(&[log_coeff, ln_quad]));
     }
 
     // Second term: remainder · ∫ 1/(cx²+dx+e) dx
-    let remainder_f64 = crate::transforms::evalf::eval_const_f64(arena, remainder_expr);
-    tracing::trace!(
-        ?remainder_f64,
-        "try_linear_over_quadratic: symbolic remainder coefficient"
-    );
-    if remainder_f64.is_some_and(|v| v.abs() > 1e-14) {
+    if !known_zero(arena, remainder_expr) {
         let inv_quad = arena.pow(pow_base, pow_exp); // (quad)^{-1}
         let inv_integral = integrate_node(arena, inv_quad, var, var_sym, depth.saturating_sub(1));
         if crate::base::walk::has_unevaluated(arena, inv_integral) {
@@ -1679,8 +1721,11 @@ fn integrate_node(
             // ── |g|ⁿ, integer n ≥ 2: gⁿ for even n, |g|·gⁿ⁻¹ for odd n ──
             // (gⁿ⁻¹ ≥ 0 for odd n, so the product form is exact); the
             // product is then the `P(x)·|g(x)|` shape of `try_abs_sign_product`.
+            // Only for g real on the real line: |√x|² = |x|, not x (0.23 gave
+            // ∫ |√x|² dx = x²/2; found by fuzz_integrate).
             if let ExprNode::Abs(g) = arena.node(base).clone()
                 && contains_var(arena, g, var_sym)
+                && real_on_reals(arena, g, var_sym)
                 && let Some(n_val) = arena.as_num(exp).cloned()
                 && n_val.is_integer()
                 && n_val >= num_rational::Ratio::from_integer(2.into())
@@ -2411,33 +2456,33 @@ fn integrate_node(
             arena.intern(ExprNode::Integral(expr, var))
         }
 
-        // ── Acosh: ∫ acosh(x) dx = x·acosh(x) - √(x²-1) ─────────
+        // ── Acosh: ∫ acosh(g) dx = (g·acosh(g) − √(g−1)·√(g+1))/a ──
+        // for g = a·x + b.  The product of roots is the principal-branch
+        // companion of acosh (its derivative is g/(√(g−1)√(g+1))); the
+        // single root √(g²−1) of 0.23 had the wrong sign for g < −1.
         ExprNode::Acosh(inner) => {
-            if inner == var {
-                tracing::debug!("integrate: matched acosh(x) direct");
-                let acosh_var = arena.acosh(var);
-                let x_acosh = arena.mul(&[var, acosh_var]);
-                let two = arena.int(2);
-                let x2 = arena.pow(var, two);
-                let one = arena.one;
-                let x2_minus_1 = arena.sub(x2, one);
-                let half = arena.rational(1, 2);
-                let sqrt_term = arena.pow(x2_minus_1, half);
-                return arena.sub(x_acosh, sqrt_term);
-            }
-            // Linear chain rule: ∫ acosh(ax+b) dx
-            if let Some((a_expr, _b_expr)) = symbolic_linear_coeff_of(arena, inner, var, var_sym) {
-                tracing::debug!("integrate: matched acosh(ax+b) linear");
+            let a_expr = if inner == var {
+                Some(arena.one)
+            } else {
+                symbolic_linear_coeff_of(arena, inner, var, var_sym).map(|(a, _)| a)
+            };
+            if let Some(a_expr) = a_expr {
+                tracing::debug!("integrate: matched acosh(ax+b)");
                 let acosh_g = arena.acosh(inner);
                 let g_acosh = arena.mul(&[inner, acosh_g]);
-                let two = arena.int(2);
-                let g2 = arena.pow(inner, two);
                 let one = arena.one;
-                let g2_minus_1 = arena.sub(g2, one);
+                let g_minus_1 = arena.sub(inner, one);
+                let g_plus_1 = arena.add(&[inner, one]);
                 let half = arena.rational(1, 2);
-                let sqrt_term = arena.pow(g2_minus_1, half);
-                let numer = arena.sub(g_acosh, sqrt_term);
-                return arena.div(numer, a_expr);
+                let root_minus = arena.pow(g_minus_1, half);
+                let root_plus = arena.pow(g_plus_1, half);
+                let roots = arena.mul(&[root_minus, root_plus]);
+                let numer = arena.sub(g_acosh, roots);
+                return if a_expr == arena.one {
+                    numer
+                } else {
+                    arena.div(numer, a_expr)
+                };
             }
             arena.intern(ExprNode::Integral(expr, var))
         }

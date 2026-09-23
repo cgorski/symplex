@@ -2147,6 +2147,11 @@ fn eval_exp(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     if inner == arena.one {
         return Some(arena.e_const);
     }
+    // exp(ln w) = w for every w ≠ 0 on the principal branch (the logarithm
+    // is defined exactly there), as SymPy folds it.
+    if let ExprNode::Ln(w) = *arena.node(inner) {
+        return Some(w);
+    }
 
     // Euler's formula: exp(i*k*π) = cos(kπ) + i*sin(kπ)
     // Detect if inner is i * (something that's a π-multiple)
@@ -2175,6 +2180,31 @@ fn eval_exp(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
             // General: cos + i*sin
             let i_sin = arena.mul(&[arena.i_unit, s]);
             return Some(arena.add(&[c, i_sin]));
+        }
+    }
+
+    // exp(w + i·k·π) = exp(w)·exp(i·k·π) for a sum with an imaginary
+    // π-multiple term whose exponential folds (k integer or half-integer):
+    // exp(ln 2 − 3πi) = −2 exactly.  Otherwise the numeric evaluator meets
+    // e^{ln 2}·(cos 3π − i sin 3π) with a rounding residue in the imaginary
+    // part whose sign picks the side of the next branch cut (0.24,
+    // fuzz_simplify: √((e^{ln(−2)})^{−3}) came out −(√2/4)i at 30 digits).
+    if let ExprNode::Add(terms) = arena.node(inner).clone() {
+        for (k, &t) in terms.iter().enumerate() {
+            if let Some(pi_coeff) = as_imaginary_pi_multiple(arena, t)
+                && (&pi_coeff * Q::from_integer(BigInt::from(2))).is_integer()
+                && let Some(unit) = eval_exp(arena, t)
+            {
+                let rest: smallvec::SmallVec<[ExprId; 6]> = terms
+                    .iter()
+                    .enumerate()
+                    .filter(|&(j, _)| j != k)
+                    .map(|(_, &c)| c)
+                    .collect();
+                let rest = arena.add(&rest);
+                let rest_exp = eval_exp(arena, rest).unwrap_or_else(|| arena.exp(rest));
+                return Some(arena.mul(&[unit, rest_exp]));
+            }
         }
     }
 

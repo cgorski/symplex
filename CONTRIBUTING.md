@@ -238,7 +238,7 @@ src/
 
 Companion crates: `symplex-macros/` (proc macros), `symplex-build/` (build-time
 codegen for `no_std`), `symplex-wasm/` (wasm-bindgen bindings + `Session`),
-`fuzz/` (cargo-fuzz targets that check properties — exact identities, value
+`rubi-harness/` (the Rubi integration test suite, 72,254 integrands judged by differentiation, with a per-file ratchet: `cd rubi-harness && cargo run --release -- --check`; see its README), `fuzz/` (cargo-fuzz targets that check properties — exact identities, value
 preservation, `F′ = f` — run nightly by `.github/workflows/fuzz.yml`; see
 `fuzz/README.md` for the replay loop), `probes/` (developer diagnostics, not compiled by
 default), `book/` (mdBook), `benches/` (criterion).
@@ -692,17 +692,17 @@ source files) and inline `#[cfg(test)]` modules (~2,800 unit tests). Total at
 doctests (`src/doctests.rs` includes `README.md` and every book chapter, so
 the prose examples compile and run under `cargo test --doc`).
 
-The integration-test sources are grouped into **22 test binaries** (linking
+The integration-test sources are grouped into **23 test binaries** (linking
 277 separate debug binaries took ~6.5 min and ~13 GB of `target/`). Each
 former top-level file is a module of its group, so a test is addressed as
 `<module>::<test>` inside `--test <group>`.  A new `vNN` group is added per
-minor release (`v22` holds the 0.23 tests); `tests/README.md` lists every
+minor release (`v23` holds the 0.24 tests); `tests/README.md` lists every
 group's modules:
 
 | Binary (`--test …`) | Sources | What they test |
 |---------------------|---------|----------------|
 | `v04` | `tests/v04/v04_<area>.rs` | One suite per 0.4–0.6 feature: `polyhedron` (parametric polyhedron certificates; emitted Lean pinned to the Mathlib-compiled `tests/fixtures/polyhedron_certificates.lean`), `polytope`, `sos` (pinned to `tests/fixtures/sos_certificates.lean`) |
-| `v09` … `v22` | `tests/vNN/vNN_<area>.rs` (3–9 modules each) | Feature and regression suites of 0.9 → 0.23, one group per minor release (stats families, data statistics, ANOVA, Cox, numdist, the exact kernel, …) |
+| `v09` … `v23` | `tests/vNN/vNN_<area>.rs` (2–9 modules each) | Feature and regression suites of 0.9 → 0.24, one group per minor release (stats families, data statistics, ANOVA, Cox, numdist, the exact kernel, …) |
 | `v03` | `tests/v03/v03_<area>.rs` (11 modules, ~480 tests) | One suite per 0.3 feature: `poly_view`, `poly_symbolic_coeffs`, `ratsimp`, `linprog` (full KKT check of every optimum, Farkas vector verified), `normalforms` (defining invariants, not pinned answers), `matrix_ergonomics`, `optimize`, `certificates`, `assumptions_poly`, `exact_matrix`, `user_notes` |
 | `v03_oracle` | `tests/v03_oracle/v03_oracle_*.rs` | SymPy oracle for the 0.3 API (`tests/fixtures/v03_cross_validation.json`) |
 | `v02` | `tests/v02/v02_<area>_<topic>.rs` (62 modules, ~1,050 tests) | One suite per 0.2 feature area: `backends_{c,codegen,compile,cse}`, `basefix_*`, `ergonomics_*`, `integration_{battery,definite,residue}`, `matrices_*`, `nodes_*`, `ntheory_*`, `numfix_*`, `sets_*`, `simplify_*`, `solvefix_*`, `solving_*`, `summation_*`, `transforms_*` |

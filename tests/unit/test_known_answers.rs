@@ -225,9 +225,12 @@ fn diff_asinh() {
 
 #[test]
 fn diff_acosh() {
+    // SymPy: diff(acosh(x), x) = 1/(sqrt(x - 1)*sqrt(x + 1)) — the derivative of
+    // the principal acosh everywhere; 1/sqrt(x^2 - 1) has the wrong sign for
+    // x < -1 (mpmath: diff(acosh, -2) = -0.57735026918962576).
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    check(&x.acosh().diff(&x), "1/sqrt(x^2 - 1)");
+    check(&x.acosh().diff(&x), "1/(sqrt(x - 1)*sqrt(x + 1))");
 }
 
 #[test]

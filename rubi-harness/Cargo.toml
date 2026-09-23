@@ -1,0 +1,19 @@
+[package]
+name = "rubi-harness"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Runs symplex's Ex::integrate on the Rubi integration test suite and judges every answer by differentiation"
+
+[dependencies]
+symplex = { path = ".." }
+
+# Its own workspace: the harness is not a member of the symplex package and
+# is excluded from the published crate (see the top-level `Cargo.toml`).
+[workspace]
+
+[profile.release]
+debug = false
+# `catch_unwind` around every integration relies on unwinding panics.
+panic = "unwind"

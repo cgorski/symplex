@@ -67,6 +67,13 @@ LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
 OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
 ```
 
+**Vendored test data.**  `rubi-harness/suite/` is an unmodified copy of the
+Rubi integration test suite in Maxima syntax
+(<https://github.com/RuleBasedIntegration/MaximaSyntaxTestSuite>, commit
+`60295e21`), MIT licensed, "Copyright (c) 2018 Rule-based Integration"; its
+`LICENSE` file is kept next to it.  It is used as test input only (no Rubi
+rules or code are part of symplex) and is excluded from the published crate.
+
 Everything else in symplex is original work under the crate's licence
 (MIT OR Apache-2.0, see `LICENSE-MIT` and `LICENSE-APACHE`), implemented
 from the mathematical literature cited in the source.

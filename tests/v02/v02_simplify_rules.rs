@@ -644,7 +644,9 @@ fn simplify_traced_reports_strategy_and_rules() {
     assert_eq!(s(&steps[0].before), s(&expr));
     let names: Vec<&str> = steps.iter().map(|st| st.rule_name.as_str()).collect();
     assert!(names.contains(&"pythagorean"), "{names:?}");
-    assert!(names.contains(&"exp_ln"), "{names:?}");
+    // 0.24: `exp(ln x) = x` folds in `eval` already (SymPy folds it at
+    // construction), so the pattern rule `exp_ln` has nothing left to do.
+    assert!(!names.contains(&"exp_ln"), "{names:?}");
 }
 
 #[test]
