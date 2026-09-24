@@ -559,7 +559,11 @@ fn compute_jacobian_impl(dh_json: &str) -> Result<String, String> {
         })
         .collect();
     let (x, y, z) = symplex::robotics::fk_position(&dh_refs);
-    let theta_vars: Vec<Ex> = config.joints.iter().map(|j| sym(&ctx, &j.theta)).collect::<Result<_, _>>()?;
+    let theta_vars: Vec<Ex> = config
+        .joints
+        .iter()
+        .map(|j| sym(&ctx, &j.theta))
+        .collect::<Result<_, _>>()?;
     let theta_refs: Vec<&Ex> = theta_vars.iter().collect();
     let jac = symplex::matrix::jacobian(&[&x, &y, &z], &theta_refs);
     Ok(matrix_latex_json(&jac))
@@ -579,7 +583,11 @@ fn generate_jacobian_code_impl(dh_json: &str) -> Result<String, String> {
         })
         .collect();
     let (x, y, z) = symplex::robotics::fk_position(&dh_refs);
-    let theta_vars: Vec<Ex> = config.joints.iter().map(|j| sym(&ctx, &j.theta)).collect::<Result<_, _>>()?;
+    let theta_vars: Vec<Ex> = config
+        .joints
+        .iter()
+        .map(|j| sym(&ctx, &j.theta))
+        .collect::<Result<_, _>>()?;
     let theta_refs: Vec<&Ex> = theta_vars.iter().collect();
     let param_names: Vec<&str> = config.joints.iter().map(|j| j.theta.as_str()).collect();
     let jac = symplex::matrix::jacobian(&[&x, &y, &z], &theta_refs);

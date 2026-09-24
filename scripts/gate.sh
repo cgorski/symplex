@@ -59,7 +59,9 @@ STAGES="${*:-fmt clippy deny nextest doctest doc ui benches subcrates examples b
 
 for stage in $STAGES; do
     case "$stage" in
-        fmt)      run_stage fmt      60   cargo fmt --all -- --check ;;
+        # All four crates, as CI checks them (0.25.0 failed CI on
+        # symplex-wasm, which `cargo fmt --all` here does not reach).
+        fmt)      run_stage fmt      60   sh -c 'cargo fmt --all -- --check && cargo fmt --all --manifest-path symplex-macros/Cargo.toml -- --check && cargo fmt --all --manifest-path symplex-build/Cargo.toml -- --check && cargo fmt --all --manifest-path symplex-wasm/Cargo.toml -- --check' ;;
         clippy)   run_stage clippy   600  cargo clippy --all-targets -- -D warnings ;;
         deny)     run_stage deny     120  cargo deny check ;;
         nextest)  run_stage nextest  900  cargo nextest run --no-fail-fast ;;
