@@ -406,6 +406,14 @@ impl Family for Poisson {
         Some(self.rate.uppergamma(&(&kf + self.context().one())) / kf.factorial())
     }
 
+    // γ(⌊k⌋+1, λ) / ⌊k⌋! (the Poisson–gamma duality `P(X > k) = P(G ≤ λ)`,
+    // `G ~ Gamma(k + 1, 1)`); `eval` keeps `γ` where its closed form
+    // `k! − Γ(k+1, λ)` would cancel.
+    fn sf(&self, k: &Ex) -> Option<Ex> {
+        let kf = k.floor();
+        Some(self.rate.lowergamma(&(&kf + self.context().one())) / kf.factorial())
+    }
+
     // exp(λ(eᵗ − 1))
     fn mgf(&self, t: &Ex) -> Option<Ex> {
         Some((&self.rate * (t.exp() - self.context().one())).exp())
@@ -461,6 +469,12 @@ impl Family for Geometric {
     fn cdf(&self, k: &Ex) -> Option<Ex> {
         let ctx = self.context();
         Some(ctx.one() - (ctx.one() - &self.p).pow(&k.floor()))
+    }
+
+    // (1−p)^{⌊k⌋}
+    fn sf(&self, k: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        Some((ctx.one() - &self.p).pow(&k.floor()))
     }
 
     // p eᵗ / (1 − (1−p) eᵗ)
@@ -527,6 +541,19 @@ impl Family for NegativeBinomial {
     fn mgf(&self, t: &Ex) -> Option<Ex> {
         let ctx = self.context();
         Some((&self.p / (ctx.one() - (ctx.one() - &self.p) * t.exp())).pow(&self.r))
+    }
+
+    // P(X > k) = I_{1−p}(⌊k⌋ + 1, r) (from P(X ≤ k) = I_p(r, k + 1)), for
+    // any real r > 0.  The family has no closed CDF on purpose (see
+    // `quantile_f64`'s lattice walk); this measures an upper tail that
+    // the generic route left as an unevaluable infinite sum.
+    fn sf(&self, k: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        Some(
+            (ctx.one() - &self.p)
+                .betainc_regularized(&(k.floor() + ctx.one()), &self.r, &ctx.zero())
+                .eval(),
+        )
     }
 
     // Poisson–Gamma mixture: X | Λ ~ Poisson(Λ) with Λ ~ Gamma(r, (1−p)/p)

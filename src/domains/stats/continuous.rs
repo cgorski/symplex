@@ -151,6 +151,20 @@ impl Family for Normal {
         Some(&half + &half * arg.erf())
     }
 
+    // ½ erfc((μ−x)/(σ√2))
+    fn cdf_lower(&self, x: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let arg = (&self.mean - x) / (&self.std * ctx.int(2).sqrt());
+        Some(ctx.rational(1, 2) * arg.erfc())
+    }
+
+    // ½ erfc((x−μ)/(σ√2))
+    fn sf(&self, x: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let arg = (x - &self.mean) / (&self.std * ctx.int(2).sqrt());
+        Some(ctx.rational(1, 2) * arg.erfc())
+    }
+
     // exp(μt + σ²t²/2)
     fn mgf(&self, t: &Ex) -> Option<Ex> {
         let ctx = self.context();
@@ -217,6 +231,10 @@ impl Family for Uniform {
         Some((x - &self.lo) / (&self.hi - &self.lo))
     }
 
+    fn sf(&self, x: &Ex) -> Option<Ex> {
+        Some((&self.hi - x) / (&self.hi - &self.lo))
+    }
+
     // (e^{bt} − e^{at}) / ((b−a) t)
     fn mgf(&self, t: &Ex) -> Option<Ex> {
         Some(((&self.hi * t).exp() - (&self.lo * t).exp()) / ((&self.hi - &self.lo) * t))
@@ -272,6 +290,18 @@ impl Family for Exponential {
     // 1 − e^{−λx}
     fn cdf(&self, x: &Ex) -> Option<Ex> {
         Some(self.context().one() - (-(&self.rate * x)).exp())
+    }
+
+    // γ(1, λx) = 1 − e^{−λx}, which `eval` leaves unfolded where the
+    // difference would cancel (λx rational and below 5·10⁻²⁰); `evalf`
+    // then sums its power series.
+    fn cdf_lower(&self, x: &Ex) -> Option<Ex> {
+        Some((&self.rate * x).lowergamma(&self.context().one()))
+    }
+
+    // e^{−λx}
+    fn sf(&self, x: &Ex) -> Option<Ex> {
+        Some((-(&self.rate * x)).exp())
     }
 
     // λ / (λ − t)
@@ -331,9 +361,15 @@ impl Family for Gamma {
     }
 
     // γ(k, x/θ) / Γ(k); `eval` closes the incomplete gamma for integer and
-    // half-integer `k`.
+    // half-integer `k` (except where the closed form would cancel).
     fn cdf(&self, x: &Ex) -> Option<Ex> {
         Some(((x / &self.scale).lowergamma(&self.shape) / self.shape.gamma()).eval())
+    }
+
+    // Γ(k, x/θ) / Γ(k): closed (a positive sum) for integer and
+    // half-integer `k`.
+    fn sf(&self, x: &Ex) -> Option<Ex> {
+        Some(((x / &self.scale).uppergamma(&self.shape) / self.shape.gamma()).eval())
     }
 
     // (1 − θt)^{−k}
@@ -401,6 +437,10 @@ impl Family for ChiSquared {
 
     fn cdf(&self, x: &Ex) -> Option<Ex> {
         self.as_gamma().cdf(x)
+    }
+
+    fn sf(&self, x: &Ex) -> Option<Ex> {
+        self.as_gamma().sf(x)
     }
 
     fn mgf(&self, t: &Ex) -> Option<Ex> {
@@ -474,6 +514,16 @@ impl Family for Beta {
         )
     }
 
+    // I_{1−x}(β, α)
+    fn sf(&self, x: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        Some(
+            (ctx.one() - x)
+                .betainc_regularized(&self.beta, &self.alpha, &ctx.zero())
+                .eval(),
+        )
+    }
+
     // ln B(α, β) − (α−1) ψ(α) − (β−1) ψ(β) + (α+β−2) ψ(α+β)
     fn entropy(&self) -> Option<Ex> {
         let s = &self.alpha + &self.beta;
@@ -542,6 +592,27 @@ impl Family for Cauchy {
         Some(ctx.rational(1, 2) + ((x - &self.location) / &self.scale).atan() / ctx.pi())
     }
 
+    // −atan(γ/(x−x₀))/π for x < x₀ (atan z + atan(1/z) = −π/2 for z < 0),
+    // the classic form elsewhere.
+    fn cdf_lower(&self, x: &Ex) -> Option<Ex> {
+        let d = x - &self.location;
+        if d.is_negative() != Some(true) {
+            return self.cdf(x);
+        }
+        Some(-(&self.scale / d).atan() / self.context().pi())
+    }
+
+    // atan(γ/(x−x₀))/π for x > x₀ (atan z + atan(1/z) = π/2 for z > 0),
+    // ½ − atan((x−x₀)/γ)/π elsewhere.
+    fn sf(&self, x: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let d = x - &self.location;
+        if d.is_positive() == Some(true) {
+            return Some((&self.scale / d).atan() / ctx.pi());
+        }
+        Some(ctx.rational(1, 2) - (d / &self.scale).atan() / ctx.pi())
+    }
+
     // x₀ + γ tan(π(p − ½))
     fn quantile(&self, p: &Ex) -> Option<Ex> {
         let ctx = self.context();
@@ -598,6 +669,19 @@ impl Family for Laplace {
         let z = (x - &self.mean) / &self.scale;
         let below = &half * z.exp();
         let above = ctx.one() - &half * (-z).exp();
+        Some(Ex::piecewise(&[
+            (&below, &x.lt(&self.mean)),
+            (&above, &x.ge(&self.mean)),
+        ]))
+    }
+
+    // 1 − ½ e^{(x−μ)/b} for x < μ, ½ e^{−(x−μ)/b} for x ≥ μ
+    fn sf(&self, x: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let half = ctx.rational(1, 2);
+        let z = (x - &self.mean) / &self.scale;
+        let below = ctx.one() - &half * z.exp();
+        let above = &half * (-z).exp();
         Some(Ex::piecewise(&[
             (&below, &x.lt(&self.mean)),
             (&above, &x.ge(&self.mean)),
@@ -675,6 +759,12 @@ impl Family for Logistic {
         Some(ctx.one() / (ctx.one() + (-((x - &self.mean) / &self.scale)).exp()))
     }
 
+    // 1 / (1 + e^{(x−μ)/s})
+    fn sf(&self, x: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        Some(ctx.one() / (ctx.one() + ((x - &self.mean) / &self.scale).exp()))
+    }
+
     // e^{μt} B(1 − st, 1 + st)
     fn mgf(&self, t: &Ex) -> Option<Ex> {
         let ctx = self.context();
@@ -746,6 +836,20 @@ impl Family for LogNormal {
         let half = ctx.rational(1, 2);
         let arg = (x.ln() - &self.mu) / (&self.sigma * ctx.int(2).sqrt());
         Some(&half + &half * arg.erf())
+    }
+
+    // ½ erfc((μ − ln x)/(σ√2))
+    fn cdf_lower(&self, x: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let arg = (&self.mu - x.ln()) / (&self.sigma * ctx.int(2).sqrt());
+        Some(ctx.rational(1, 2) * arg.erfc())
+    }
+
+    // ½ erfc((ln x − μ)/(σ√2))
+    fn sf(&self, x: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let arg = (x.ln() - &self.mu) / (&self.sigma * ctx.int(2).sqrt());
+        Some(ctx.rational(1, 2) * arg.erfc())
     }
 
     // exp(μ + σ√2 · erfinv(2p − 1))
@@ -826,6 +930,19 @@ impl Family for StudentT {
         Some(Ex::piecewise(&[
             (&tail, &x.lt(&ctx.zero())),
             (&above, &x.ge(&ctx.zero())),
+        ]))
+    }
+
+    // The mirror image: ½ I_{ν/(t²+ν)}(ν/2, ½) for t > 0, 1 − that for t ≤ 0.
+    fn sf(&self, x: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let half = ctx.rational(1, 2);
+        let z = &self.dof / (x.powi(2) + &self.dof);
+        let tail = &half * z.betainc_regularized(&(&self.dof * &half), &half, &ctx.zero());
+        let below = ctx.one() - &tail;
+        Some(Ex::piecewise(&[
+            (&tail, &x.gt(&ctx.zero())),
+            (&below, &x.le(&ctx.zero())),
         ]))
     }
 
@@ -923,6 +1040,14 @@ impl Family for FDistribution {
         Some(z.betainc_regularized(&(&self.d1 * &half), &(&self.d2 * &half), &ctx.zero()))
     }
 
+    // I_{d₂/(d₁x + d₂)}(d₂/2, d₁/2)
+    fn sf(&self, x: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let half = ctx.rational(1, 2);
+        let w = &self.d2 / (&self.d1 * x + &self.d2);
+        Some(w.betainc_regularized(&(&self.d2 * &half), &(&self.d1 * &half), &ctx.zero()))
+    }
+
     // (U/d₁) / (V/d₂) for independent U ~ χ²(d₁), V ~ χ²(d₂).
     fn sampler(&self) -> Option<Result<Sampler, SymplexError>> {
         Some(self.build_sampler())
@@ -995,6 +1120,20 @@ impl Family for Weibull {
         Some(self.context().one() - (-((x / &self.scale).pow(&self.shape))).exp())
     }
 
+    // γ(1, (x/λ)ᵏ), as for the exponential.
+    fn cdf_lower(&self, x: &Ex) -> Option<Ex> {
+        Some(
+            (x / &self.scale)
+                .pow(&self.shape)
+                .lowergamma(&self.context().one()),
+        )
+    }
+
+    // e^{−(x/λ)ᵏ}
+    fn sf(&self, x: &Ex) -> Option<Ex> {
+        Some((-((x / &self.scale).pow(&self.shape))).exp())
+    }
+
     // λ (−ln(1 − p))^{1/k}
     fn quantile(&self, p: &Ex) -> Option<Ex> {
         let ctx = self.context();
@@ -1056,6 +1195,11 @@ impl Family for Pareto {
     // 1 − (x_m/x)^α
     fn cdf(&self, x: &Ex) -> Option<Ex> {
         Some(self.context().one() - (&self.scale / x).pow(&self.shape))
+    }
+
+    // (x_m/x)^α
+    fn sf(&self, x: &Ex) -> Option<Ex> {
+        Some((&self.scale / x).pow(&self.shape))
     }
 
     // x_m (1 − p)^{−1/α}

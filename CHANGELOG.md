@@ -6,6 +6,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [Unreleased]
+
+### Breaking (behaviour; no signature changed)
+
+- **`eval` no longer folds `lowergamma(s, x)` into `Γ(s) − Γ(s, x)` where
+  that difference cancels.** For an integer or half-integer `s ≤ 64` and a
+  rational `x` well below `s`, the closed form would lose more than 64
+  bits: `lowergamma(5, 10⁻³⁰)` was an exact expression that evaluates to
+  `0`, and now stays `lowergamma(5, 1/10^30)`, which `evalf` computes by
+  its power series (`2e-151`).  Everywhere else the closed form stays, as
+  SymPy writes it: `lowergamma(3, 1)` is still `2 − 5e⁻¹`.
+- **A far tail of a symbolic distribution is written in a
+  non-cancelling form**, so its exact expression changes.  This applies
+  where the classic CDF puts a numeric point below `2⁻³²` or above
+  `1 − 2⁻³²`.  For example, `P(N > 20)` is `½ erfc(10√2)`, not
+  `½ − ½ erf(10√2)`.  Near the median the classic forms stay.
+
+### Added
+
+- `Distribution::sf` and `RandomVariable::sf`: the survival function
+  `P(X > x)` on the whole line (scipy's `sf`).
+- `Family::sf` and `Family::cdf_lower`: the non-cancelling survival
+  function and lower-tail CDF a family may supply.  Both are provided
+  methods, so existing families compile unchanged.  Every built-in
+  continuous family has an `sf`; Normal, LogNormal, Cauchy, Exponential
+  and Weibull also have a `cdf_lower`.  Of the discrete families, Poisson,
+  Geometric and NegativeBinomial have an `sf`.
+
+### Fixed
+
+- **The symbolic distributions' far tails keep their digits.** Each of
+  the following evaluated to `0` (or was an error) in 0.27.0, and now
+  matches mpmath to 1e-14 or better:
+  - standard normal: `P(X > 20) = 2.75e-89`;
+  - `Normal(2, 3).cdf(−100) = 1.11e-253`;
+  - log-normal: `P(X > 10²⁰) = 2.63e-463`;
+  - Cauchy: `P(X > 10¹⁰⁰) = 3.18e-101`;
+  - `Gamma(⅓)`: `P(X > 800)`;
+  - `Gamma(5).cdf(10⁻³⁰) = 8.33e-153`;
+  - `Exponential(1).cdf(10⁻¹⁰⁰)`;
+  - Poisson(1): `P(X > 60) = 7.37e-85`;
+  - NegativeBinomial(3, ½): `P(X > 2000)`, which was an unevaluable
+    infinite sum;
+  - the same tails through a truncation, a decreasing affine map, a
+    mixture and an order statistic.
+
+  Changes that make this work:
+  - `probability_of` measures a region that reaches the support's upper
+    end as `P(X ≥ lo)`, and an interval inside the far upper tail as
+    `S(lo) − S(hi)`.
+  - The wrappers transport both forms.
+
 ## [0.27.0] - 2026-09-24
 
 The first round of a bug hunt in `symplex::stats`.  `hypothesis` was

@@ -3308,10 +3308,67 @@ fn known_nonpositive(arena: &Arena, s: ExprId) -> bool {
     arena.as_num(s).is_some_and(|r| !r.is_positive())
 }
 
+/// Bits the closed form `γ(s, x) = Γ(s) − Γ(s, x)` may lose to cancellation
+/// at a rational `x` before the fold keeps `γ(s, x)` instead.
+const LOWERGAMMA_FOLD_MAX_LOSS_BITS: f64 = 64.0;
+
+/// `ln q` for a positive rational, without overflowing on huge numerators
+/// or denominators.
+fn ln_positive_ratio(q: &Q) -> f64 {
+    fn ln_big(n: &BigInt) -> f64 {
+        let bits = n.bits();
+        if bits <= 1000 {
+            return n.to_f64().unwrap_or(f64::INFINITY).ln();
+        }
+        let shift = bits - 64;
+        let top: BigInt = n >> shift;
+        top.to_f64().unwrap_or(f64::INFINITY).ln() + shift as f64 * std::f64::consts::LN_2
+    }
+    ln_big(q.numer()) - ln_big(q.denom())
+}
+
+/// Does the closed form `Γ(s) − Γ(s, x)` of `γ(s, x)`, for an integer or
+/// half-integer `s > 0` and a rational `x > 0`, subtract two numbers that
+/// agree to more than [`LOWERGAMMA_FOLD_MAX_LOSS_BITS`]?  It loses about
+/// `−log₂ P(s, x)` bits (`P = γ/Γ`, regularised), which is large only for
+/// `x` well below `s`, where `P(s, x) ≤ xˢ e⁻ˣ/Γ(s + 1) · (s + 1)/(s + 1 − x)`
+/// (the power series).  There the closed form is an exact expression that
+/// evaluates to `0`: `γ(61, 1)/60!` (a Poisson(1) tail, `7.4·10⁻⁸⁵`) is
+/// `1 − e⁻¹ Σ_{k ≤ 60} 1/k!`, `γ(5, 10⁻³⁰)` loses 500 bits.
+fn lowergamma_closure_cancels(s: &Q, x: &Q) -> bool {
+    let half_integer = s.denom() == &BigInt::from(2);
+    if !(s.is_integer() || half_integer)
+        || *s > Q::from_integer(BigInt::from(MAX_SPECIAL_EXPANSION))
+        || !x.is_positive()
+        || x >= s
+    {
+        return false;
+    }
+    let (Some(s_f), Some(x_f)) = (s.to_f64(), x.to_f64()) else {
+        return false;
+    };
+    // ln Γ(s + 1) for an integer or half-integer s ≤ MAX_SPECIAL_EXPANSION.
+    let mut ln_gamma = if s.is_integer() {
+        0.0
+    } else {
+        0.5 * std::f64::consts::PI.ln()
+    };
+    let mut k = if s.is_integer() { 2.0 } else { 0.5 };
+    while k <= s_f + 0.25 {
+        ln_gamma += f64::ln(k);
+        k += 1.0;
+    }
+    let ln_p = s_f * ln_positive_ratio(x) - x_f - ln_gamma + ((s_f + 1.0) / (s_f + 1.0 - x_f)).ln();
+    -ln_p / std::f64::consts::LN_2 > LOWERGAMMA_FOLD_MAX_LOSS_BITS
+}
+
 /// `γ(s, 0) = 0`, `γ(s, ∞) = Γ(s)`, closed forms for integer / half-integer `s > 0`.
 ///
 /// `γ(s, 0) = 0` holds only for `s > 0` (`∫₀ˣ t^{s−1} e^{−t} dt` diverges at
 /// the lower end otherwise), so that fold is refused for `s` known to be `≤ 0`.
+/// The closed form is also refused at a rational `x` where it would cancel
+/// catastrophically ([`lowergamma_closure_cancels`]): `γ(s, x)` stays, and
+/// `evalf` computes it by its power series.
 fn eval_lowergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
     if x == arena.zero {
         if known_nonpositive(arena, s) {
@@ -3324,6 +3381,11 @@ fn eval_lowergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
     }
     let r = as_ratio(arena, s)?;
     if !r.is_positive() {
+        return None;
+    }
+    if let Some(xr) = as_ratio(arena, x)
+        && lowergamma_closure_cancels(&r, &xr)
+    {
         return None;
     }
     let upper = uppergamma_closed(arena, &r, x)?;

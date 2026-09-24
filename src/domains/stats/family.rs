@@ -25,6 +25,18 @@ use super::support::{Kind, Piece, Support, is_neg_inf, is_pos_inf};
 /// A closure producing one `f64` sample per call.
 pub type Sampler = Box<dyn FnMut(&mut Rng) -> f64 + Send>;
 
+/// A tail probability below this (`2⁻³²`) is far: see
+/// [`Distribution::tail_of`].
+const FAR_TAIL: f64 = 1.0 / 4_294_967_296.0;
+
+/// Where a numeric point lies relative to a distribution's far tails.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tail {
+    Lower,
+    Upper,
+    Neither,
+}
+
 /// A probability distribution family: its support and density, plus
 /// whatever closed forms it has (each defaults to "none", which makes the
 /// generic machinery in [`Distribution`] integrate or sum instead).
@@ -72,8 +84,32 @@ pub trait Family: Any + Send + Sync + fmt::Debug {
         None
     }
 
-    /// Closed-form `P(X ≤ x)` for `x` in the support.
+    /// Closed-form `P(X ≤ x)` for `x` in the support, in its classic form
+    /// (`½ + ½ erf(z/√2)` for a normal): the form of a symbolic CDF and of
+    /// the mass of an interval around the median.
     fn cdf(&self, _x: &Ex) -> Option<Ex> {
+        None
+    }
+
+    /// `P(X ≤ x)` again, written so that it keeps its relative accuracy
+    /// where it is small: `½ erfc(−z/√2)` for a normal, whose classic
+    /// `½ + ½ erf(z/√2)` is the difference of two numbers within `10⁻³⁰⁰`
+    /// of each other in a far tail and evaluates to `0`.  The expression
+    /// must equal [`cdf`](Family::cdf) everywhere; the generic machinery
+    /// uses it for a numeric `x` below the median.  `None` (the default):
+    /// the classic form is already accurate in the lower tail.
+    fn cdf_lower(&self, _x: &Ex) -> Option<Ex> {
+        None
+    }
+
+    /// Closed-form survival function `P(X > x)` for `x` in the support,
+    /// written so that it keeps its relative accuracy where it is small —
+    /// `½ erfc(z/√2)`, `Γ(k, x)/Γ(k)`, `I_{1−x}(β, α)` — rather than as
+    /// `1 − cdf`, which evaluates to `0` in a far tail.  On the lattice
+    /// `P(X > x) = P(X > ⌊x⌋)`.  The generic machinery uses it for a
+    /// numeric `x` above the median (and whenever there is no
+    /// [`cdf`](Family::cdf)); `None` (the default) makes it use `1 − cdf`.
+    fn sf(&self, _x: &Ex) -> Option<Ex> {
         None
     }
 
@@ -392,12 +428,48 @@ impl Distribution {
 
     // ── Distribution functions ─────────────────────────────────────────
 
+    /// Where `x` lies, when it and the parameters are numeric: in the far
+    /// lower tail, the far upper tail, or neither — read off the classic
+    /// closed-form `F(x)` in `f64`.  A far tail is beyond [`FAR_TAIL`]
+    /// (`2⁻³²`): short of it the classic form loses at most 32 bits to
+    /// cancellation, which `evalf` recovers at any precision, and it is
+    /// kept (`P(−1 < N < 1)` stays `erf(√2/2)`); beyond it the classic
+    /// form of that tail is a difference of two numbers that may agree to
+    /// hundreds of digits, and the family's non-cancelling form is used.
+    /// (A classic far lower tail may itself evaluate to `0.0`: still in the
+    /// far lower tail.)
+    fn tail_of(&self, x: &Ex) -> Tail {
+        if !x.free_symbols().is_empty() {
+            return Tail::Neither;
+        }
+        match self.0.cdf(x).and_then(|c| c.eval_f64().ok()) {
+            Some(p) if p.is_finite() && p < FAR_TAIL => Tail::Lower,
+            Some(p) if p.is_finite() && p > 1.0 - FAR_TAIL => Tail::Upper,
+            _ => Tail::Neither,
+        }
+    }
+
+    /// Is the numeric `x` in the far upper tail (`P(X > x) < 2⁻³²` by the
+    /// classic CDF), where a probability must be formed from survival
+    /// functions?  See [`tail_of`](Self::tail_of).
+    pub(crate) fn in_far_upper_tail(&self, x: &Ex) -> bool {
+        self.tail_of(x) == Tail::Upper
+    }
+
     /// The closed-form CDF on the support, if the family has one, else
     /// the integral / sum of the density from the support's lower end.
     /// Nothing is clamped: `x` is taken to lie in the support (see
-    /// [`cdf`](Self::cdf) for the whole line).
+    /// [`cdf`](Self::cdf) for the whole line).  A numeric `x` in the far
+    /// lower tail gets the family's [`cdf_lower`](Family::cdf_lower) when
+    /// it has one (`½ erfc(−z/√2)` for a normal, whose classic `½ + ½ erf`
+    /// evaluates to `0` there).
     pub(crate) fn cdf_on_support(&self, x: &Ex) -> Ex {
         if let Some(c) = self.0.cdf(x) {
+            if self.tail_of(x) == Tail::Lower
+                && let Some(lower) = self.0.cdf_lower(x)
+            {
+                return lower;
+            }
             return c;
         }
         let support = self.support();
@@ -447,10 +519,64 @@ impl Distribution {
         {
             return Some(ctx.zero());
         }
-        match support.kind() {
-            Kind::Continuous => self.0.cdf(lo),
-            Kind::Discrete => self.0.cdf(&(lo - ctx.one())),
+        let at = match support.kind() {
+            Kind::Continuous => lo.clone(),
+            Kind::Discrete => lo - ctx.one(),
+        };
+        self.0.cdf(&at)?;
+        Some(self.cdf_on_support(&at))
+    }
+
+    /// `P(X > x)` on the support: for a numeric `x` in the far upper tail
+    /// the family's [`sf`](Family::sf) (the non-cancelling form),
+    /// elsewhere `1 − F(x)` with the classic `F`; a family with a survival
+    /// function but no CDF uses the survival function throughout.
+    pub(crate) fn sf_on_support(&self, x: &Ex) -> Ex {
+        let ctx = self.context();
+        match self.0.cdf(x) {
+            Some(c) => {
+                if self.tail_of(x) == Tail::Upper
+                    && let Some(s) = self.0.sf(x)
+                {
+                    return s;
+                }
+                ctx.one() - c
+            }
+            None => self
+                .0
+                .sf(x)
+                .unwrap_or_else(|| ctx.one() - self.cdf_on_support(x)),
         }
+    }
+
+    /// `P(X ≥ lo)` for the lower end `lo` of a region already clipped to
+    /// the support, through the closed forms: `1` at `−∞` and at the
+    /// support's own lower end, else `P(X > lo)` for a density and
+    /// `P(X > lo − 1)` on the integer lattice ([`sf_on_support`]).  `None`
+    /// when the family has neither a closed-form CDF nor a survival
+    /// function.
+    ///
+    /// [`sf_on_support`]: Self::sf_on_support
+    pub(crate) fn mass_above(&self, lo: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        if is_neg_inf(lo) {
+            return Some(ctx.one());
+        }
+        let support = self.support();
+        if let Some(s) = support.as_interval()
+            && !is_neg_inf(&s.lower)
+            && (lo - &s.lower).is_zero() == Some(true)
+        {
+            return Some(ctx.one());
+        }
+        let at = match support.kind() {
+            Kind::Continuous => lo.clone(),
+            Kind::Discrete => lo - ctx.one(),
+        };
+        if self.0.cdf(&at).is_none() && self.0.sf(&at).is_none() {
+            return None;
+        }
+        Some(self.sf_on_support(&at))
     }
 
     /// Cumulative distribution function `P(X ≤ x)` as an expression in
@@ -511,6 +637,69 @@ impl Distribution {
         if hi_finite {
             pairs.push((on, x.lt(hi)));
             pairs.push((ctx.one(), ctx.bool_true()));
+        } else {
+            pairs.push((on, ctx.bool_true()));
+        }
+        let refs: Vec<(&Ex, &crate::api::expr::BoolEx)> =
+            pairs.iter().map(|(a, b)| (a, b)).collect();
+        Ex::piecewise(&refs)
+    }
+
+    /// Survival function `P(X > x)` as an expression in `x`, on the whole
+    /// line: `1` below the support, `0` at or above its upper end, and on
+    /// the support the complement of the CDF — written, for a numeric `x`
+    /// in the far upper tail, in the family's non-cancelling form
+    /// ([`Family::sf`]: `½ erfc(z/√2)` for a normal, `Γ(k, x)/Γ(k)` for a
+    /// gamma), so that it keeps its digits where `1 − F(x)` would evaluate
+    /// to `0`.  A symbolic `x` gets a `Piecewise`.  `scipy.stats.<dist>.sf`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::stats::Distribution;
+    ///
+    /// let ctx = Context::new();
+    /// let n = Distribution::normal(ctx.int(0), ctx.int(1));
+    /// let tail = n.sf(&ctx.int(20));
+    /// assert_eq!(tail, ctx.rational(1, 2) * (ctx.int(10) * ctx.int(2).sqrt()).erfc());
+    /// // mpmath: ncdf(-20) = 2.7536241186062336951e-89
+    /// assert!((tail.eval_f64()? / 2.753_624_118_606_233_7e-89 - 1.0).abs() < 1e-14);
+    /// # Ok::<(), SymplexError>(())
+    /// ```
+    pub fn sf(&self, x: &Ex) -> Ex {
+        let ctx = self.context();
+        let support = self.support();
+        let Some(iv) = support.as_interval() else {
+            return self.sf_on_support(x);
+        };
+        let (lo, hi) = (&iv.lower, &iv.upper);
+        let lo_finite = !is_neg_inf(lo);
+        let hi_finite = !is_pos_inf(hi);
+        if lo_finite && (x - lo).is_negative() == Some(true) {
+            return ctx.one();
+        }
+        if lo_finite && support.kind() == Kind::Continuous && (x - lo).is_zero() == Some(true) {
+            return ctx.one();
+        }
+        if hi_finite && (x - hi).is_nonnegative() == Some(true) {
+            return ctx.zero();
+        }
+        let on = self.sf_on_support(x);
+        if (!lo_finite || (x - lo).is_nonnegative() == Some(true))
+            && (!hi_finite || (hi - x).is_positive() == Some(true))
+        {
+            return if x.free_symbols().is_empty() {
+                on.eval()
+            } else {
+                on
+            };
+        }
+        let mut pairs: Vec<(Ex, crate::api::expr::BoolEx)> = Vec::new();
+        if lo_finite {
+            pairs.push((ctx.one(), x.lt(lo)));
+        }
+        if hi_finite {
+            pairs.push((on, x.lt(hi)));
+            pairs.push((ctx.zero(), ctx.bool_true()));
         } else {
             pairs.push((on, ctx.bool_true()));
         }
@@ -951,16 +1140,30 @@ impl Distribution {
                 .as_interval()
                 .is_some_and(|s| (hi - &s.upper).is_zero() == Some(true));
         let probe = self.fresh_var("t", &[lo, hi]);
-        if self.0.cdf(&probe).is_some() {
-            // `hi` is an integer after lattice normalisation, so on either
-            // kind the upper term is `P(X ≤ hi) = F(hi)`.
-            let upper = if at_upper_end {
-                Some(ctx.one())
-            } else {
-                self.0.cdf(hi)
-            };
-            if let (Some(u), Some(l)) = (upper, self.mass_below(lo)) {
-                return (u - l).simplify();
+        let has_cdf = self.0.cdf(&probe).is_some();
+        let has_sf = self.0.sf(&probe).is_some();
+        // Up to the support's upper end: `P(X ≥ lo)` directly, the survival
+        // function in the far upper tail (`1 − F` evaluates to `0` there).
+        if at_upper_end
+            && (has_cdf || has_sf)
+            && let Some(above) = self.mass_above(lo)
+        {
+            return above.simplify();
+        }
+        if has_cdf {
+            // An interval in the far upper tail: `P(X ≥ lo) − P(X > hi)`,
+            // two survival functions, instead of `F(hi) − F(lo⁻)`, two
+            // numbers next to `1`.  `hi` is an integer after lattice
+            // normalisation, so on either kind `P(X > hi)` is `S(hi)`.
+            if has_sf
+                && self.tail_of(lo) == Tail::Upper
+                && let Some(above) = self.mass_above(lo)
+            {
+                return (above - self.sf_on_support(hi)).simplify();
+            }
+            // Otherwise `F(hi) − F(lo⁻)`, each in its non-cancelling form.
+            if let Some(below) = self.mass_below(lo) {
+                return (self.cdf_on_support(hi) - below).simplify();
             }
         }
         let t = probe;

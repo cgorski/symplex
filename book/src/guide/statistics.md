@@ -41,7 +41,9 @@ fn main() -> Result<(), SymplexError> {
 
 Events are `BoolEx` conditions in the variable's symbol: relations `X < a`, `X ≤ a`, `X > a`, `X ≥ a`, `X = a` with any (also symbolic) bound and their conjunctions, and — with numeric bounds — any boolean combination of relations in `X` (`X² < 1`, `|X| > 2`, `X < −1 ∨ X > 1`), which the crate's inequality solver turns into a set. The event's region is clipped to the support and measured through the closed-form CDF when the family has one, else by exact integration / summation, so `P(X > 1)` for `Exponential(3)` is `exp(-3)`, `P(0 < U < 1/4)` for `Uniform(0, 1)` is `1/4`, and `P(N² < 1)` for a standard normal is `erf(√2/2)`.
 
-`cdf(&x)` is the whole-line distribution function as SymPy prints it: a `Piecewise` that is `0` below the support and `1` above it (`Uniform(0,1).cdf(3) = 1`); the family's own closed form on the support is `distribution().family().cdf(&x)`.
+`cdf(&x)` is the whole-line distribution function as SymPy prints it: a `Piecewise` that is `0` below the support and `1` above it (`Uniform(0,1).cdf(3) = 1`); the family's own closed form on the support is `distribution().family().cdf(&x)`.  `sf(&x)` is the survival function `P(X > x)` (scipy's `sf`), `1` below the support and `0` above it.
+
+**Far tails keep their digits.**  The classic closed forms cancel in a far tail: for a standard normal, `P(X > 20) = ½ − ½ erf(10√2)` is the difference of two numbers that agree to 89 digits, and it evaluates to `0`.  So a family also supplies a survival function and a lower-tail CDF written without the cancellation (`½ erfc(z/√2)`, `Γ(k, x)/Γ(k)`, `I_{1−x}(β, α)`, `atan(γ/(x − x₀))/π`, `γ(k + 1, λ)/k!` for a Poisson tail), and a numeric point beyond `2⁻³²` in either tail is measured with them: `P(X > 20)` is `½ erfc(10√2) ≈ 2.75e-89`, an interval inside the upper tail is `S(lo) − S(hi)`, and the wrappers (truncation, affine maps, mixtures, order statistics) carry the same forms through.  Near the median the classic forms are kept, so exact answers read as before.
 
 ## Continuous families
 

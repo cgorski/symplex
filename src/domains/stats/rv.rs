@@ -137,6 +137,14 @@ impl RandomVariable {
         self.dist.cdf(var)
     }
 
+    /// Survival function `P(X > x)` as an expression in `var`, on the
+    /// whole line (`1` below the support, `0` above it), in a form that
+    /// keeps its digits in the far upper tail.  See
+    /// [`Distribution::sf`].  `scipy.stats.<dist>.sf`.
+    pub fn sf(&self, var: &Ex) -> Ex {
+        self.dist.sf(var)
+    }
+
     /// Moment generating function `E[e^{tX}]` in `t`.  SymPy:
     /// `moment_generating_function(X)(t)`.
     pub fn mgf(&self, t: &Ex) -> Ex {

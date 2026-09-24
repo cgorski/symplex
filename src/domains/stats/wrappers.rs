@@ -76,15 +76,42 @@ impl Family for Truncated {
 
     // (F(x) − F(lo⁻)) / mass on a single interval [lo, hi]; F(lo⁻) is the
     // inner `mass_below` (0 at the inner support's own end, F(lo − 1) on
-    // the lattice: the atom at `lo` belongs to the truncated variable).
+    // the lattice: the atom at `lo` belongs to the truncated variable).  A
+    // truncation in the inner far upper tail (`N | N > 10`) takes
+    // (S(lo⁻) − S(x)) / mass instead: the two F are within 10⁻²³ of 1.
     fn cdf(&self, x: &Ex) -> Option<Ex> {
         let clipped = self.clipped();
         let lo = &clipped.as_interval()?.lower;
         let probe = self.inner.fresh_var("t", &[x]);
         self.inner.family().cdf(&probe)?;
+        if self.inner.family().sf(&probe).is_some()
+            && self.inner.in_far_upper_tail(lo)
+            && let Some(s_lo) = self.inner.mass_above(lo)
+        {
+            return Some(((s_lo - self.inner.sf_on_support(x)) / &self.mass).simplify());
+        }
         let f_lo = self.inner.mass_below(lo)?;
-        let f_x = self.inner.family().cdf(x)?;
+        let f_x = self.inner.cdf_on_support(x);
         Some(((f_x - f_lo) / &self.mass).simplify())
+    }
+
+    // (S(x) − S(hi)) / mass on [lo, hi]; S(hi) = 0 at the inner support's
+    // upper end.
+    fn sf(&self, x: &Ex) -> Option<Ex> {
+        let clipped = self.clipped();
+        let hi = &clipped.as_interval()?.upper;
+        let probe = self.inner.fresh_var("t", &[x]);
+        if self.inner.family().cdf(&probe).is_none() && self.inner.family().sf(&probe).is_none() {
+            return None;
+        }
+        let inner_hi = self.inner.support().as_interval().map(|s| s.upper.clone());
+        let s_hi = if is_pos_inf(hi) || inner_hi.is_some_and(|u| (hi - &u).is_zero() == Some(true))
+        {
+            self.context().zero()
+        } else {
+            self.inner.sf_on_support(hi)
+        };
+        Some(((self.inner.sf_on_support(x) - s_hi) / &self.mass).simplify())
     }
 
     // Q(F(lo⁻) + p·mass) when the inner family has both closed forms.
@@ -305,21 +332,49 @@ impl Family for Affine {
         Some(acc.simplify())
     }
 
+    // Each side through the inner distribution's non-cancelling forms
+    // (`cdf_on_support` / `sf_on_support`): a decreasing map turns the
+    // inner upper tail into the lower one.
     fn cdf(&self, y: &Ex) -> Option<Ex> {
         let x = self.inverse(y);
+        let family = self.inner.family();
         if self.increasing {
-            self.inner.family().cdf(&x)
+            family.cdf(&x)?;
+            Some(self.inner.cdf_on_support(&x))
         } else {
             let ctx = self.context();
-            match self.inner.kind() {
-                // P(aX + b ≤ y) = P(X ≥ x) = 1 − F(x⁻)
-                Kind::Continuous => Some(ctx.one() - self.inner.family().cdf(&x)?),
-                // On the lattice P(X ≥ x) = 1 − F(⌈x⌉ − 1): for an integer x
-                // that is F(x − 1), for a non-integer one F(⌊x⌋).
-                Kind::Discrete => {
-                    Some(ctx.one() - self.inner.family().cdf(&(x.ceiling() - ctx.one()))?)
-                }
+            // P(aX + b ≤ y) = P(X ≥ x): P(X > x) for a density; on the
+            // lattice P(X > ⌈x⌉ − 1) (for an integer x that is P(X > x − 1),
+            // for a non-integer one P(X > ⌊x⌋)).
+            let at = match self.inner.kind() {
+                Kind::Continuous => x,
+                Kind::Discrete => x.ceiling() - ctx.one(),
+            };
+            if family.cdf(&at).is_none() && family.sf(&at).is_none() {
+                return None;
             }
+            Some(self.inner.sf_on_support(&at))
+        }
+    }
+
+    fn sf(&self, y: &Ex) -> Option<Ex> {
+        let x = self.inverse(y);
+        let family = self.inner.family();
+        if self.increasing {
+            if family.cdf(&x).is_none() && family.sf(&x).is_none() {
+                return None;
+            }
+            Some(self.inner.sf_on_support(&x))
+        } else {
+            let ctx = self.context();
+            // P(aX + b > y) = P(X < x): F(x) for a density, F(⌈x⌉ − 1) on
+            // the lattice.
+            let at = match self.inner.kind() {
+                Kind::Continuous => x,
+                Kind::Discrete => x.ceiling() - ctx.one(),
+            };
+            family.cdf(&at)?;
+            Some(self.inner.cdf_on_support(&at))
         }
     }
 
@@ -598,6 +653,15 @@ impl Family for Mixture {
         let mut acc = self.ctx().zero();
         for (w, d) in &self.components {
             acc += w * d.cdf(x);
+        }
+        Some(acc.simplify())
+    }
+
+    fn sf(&self, x: &Ex) -> Option<Ex> {
+        // Each component's whole-line survival function, weighted.
+        let mut acc = self.ctx().zero();
+        for (w, d) in &self.components {
+            acc += w * d.sf(x);
         }
         Some(acc.simplify())
     }

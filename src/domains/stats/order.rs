@@ -114,6 +114,24 @@ impl OrderStatistic {
         self.inner.cdf_on_support(x)
     }
 
+    /// The parent's `P(X > x)` as a single expression, as
+    /// [`parent_cdf`](Self::parent_cdf): `1` / `0` when `x` is decidably
+    /// below / above the support, else the parent's `sf_on_support` (its
+    /// non-cancelling survival function in the far upper tail).
+    fn parent_sf(&self, x: &Ex) -> Ex {
+        let ctx = self.ctx();
+        if let Some(iv) = self.inner.support().as_interval() {
+            let (lo, hi) = (&iv.lower, &iv.upper);
+            if !is_neg_inf(lo) && (x - lo).is_negative() == Some(true) {
+                return ctx.one();
+            }
+            if !is_pos_inf(hi) && (x - hi).is_nonnegative() == Some(true) {
+                return ctx.zero();
+            }
+        }
+        self.inner.sf_on_support(x)
+    }
+
     /// `I_u(k, n − k + 1)`: `P(X_(k) ≤ x)` as a function of `u = F(x)`.
     fn beta_cdf(&self, u: &Ex) -> Ex {
         let ctx = self.ctx();
@@ -171,6 +189,18 @@ impl Family for OrderStatistic {
 
     fn cdf(&self, x: &Ex) -> Option<Ex> {
         Some(self.beta_cdf(&self.parent_cdf(x)))
+    }
+
+    // P(X_(k) > x) = 1 − I_F(k, n − k + 1) = I_{1−F}(n − k + 1, k), with
+    // 1 − F the parent's survival function: the maximum of n normals
+    // beyond 20 is n·½ erfc(10√2) to first order, not 1 − (1 − …)ⁿ.
+    fn sf(&self, x: &Ex) -> Option<Ex> {
+        let ctx = self.ctx();
+        let (n, k) = self.nk();
+        Some(
+            self.parent_sf(x)
+                .betainc_regularized(&(n - &k + 1), &k, &ctx.zero()),
+        )
     }
 
     // n draws from the parent, sorted; the k-th smallest.

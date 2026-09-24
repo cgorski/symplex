@@ -34,10 +34,13 @@
 //!   finite union of intervals and points, continuous or on the integer
 //!   lattice), its **density** (or probability mass function) as an
 //!   expression in a free variable, and the **closed forms** it happens to
-//!   have (moments, CDF, MGF, quantile, entropy), each optional.  The
-//!   generic machinery on [`Distribution`] answers every query from those:
-//!   it clips an event's region to the support and measures each piece
-//!   through the CDF, or by exact
+//!   have (moments, CDF, survival function, MGF, quantile, entropy), each
+//!   optional.  The generic machinery on [`Distribution`] answers every
+//!   query from those: it clips an event's region to the support and
+//!   measures each piece through the CDF — through the survival function
+//!   and the family's lower-tail CDF in a far tail, where `1 − F` and the
+//!   classic forms cancel ([`Family::sf`], [`Family::cdf_lower`]) — or by
+//!   exact
 //!   [`integrate_definite`](crate::api::expr::Ex::integrate_definite) /
 //!   [`summation`](crate::api::expr::Ex::summation) of the density, and it
 //!   takes `E[g(X)]` through the raw moments when `g` is a polynomial.
