@@ -6,6 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.26.0] - 2026-09-23
+
+Numerical evaluation knows how many of its digits are right.  Until now an
+expression was evaluated once, bottom-up, at a fixed working precision,
+and the result was returned whatever its accuracy: catastrophic
+cancellation silently lost digits, and a quotient by a difference that
+cancels to zero came out as noise presented as a number (the two false
+"wrong" verdicts of the Rubi harness self-test).  Every sub-expression now
+carries an error bound, propagated to first order (`src/transforms/evalf/
+accuracy.rs`); when the bound does not cover the requested digits the
+expression is re-evaluated at a higher precision, as SymPy's `evalf` does
+for a cancelling sum, and otherwise the evaluation is refused.
+
+### Breaking (behaviour; no signature changed)
+
+- **`eval_decimal`, `eval_f64` and `eval_complex64` return
+  `PrecisionExhausted` when the digits cannot be certified** within twice
+  the initial working precision plus 256 bits: `1/(sin²1 + cos²1 − 1)`,
+  `sign(sin²1 + cos²1 − 1)`, Rubi's `∫ cot(x)/ln(e^sin x)` answer at
+  `x = 13/4` (which evaluated to `−64` at every precision).  Such a value
+  used to be noise.
+- **Digits lost to cancellation are recovered:** `exp(10⁻³⁰) − 1` is
+  `1e-30` (was `0`), `sqrt(10⁴⁰ + 1) − 10²⁰` is `5e-21`.  A value that is
+  zero to the precision reached is `0` (was a rounding residue such as
+  `1e-40`).
+- **`n^(a/b)` with `a > b` splits off its integer part**, as SymPy writes
+  it: `2^(3/2)` is `2*sqrt(2)`, `15^(3/2)` is `15*sqrt(15)`, `(29/15)^(-3/2)`
+  is `15/841*sqrt(435)`, `2^(5/3)` is `2*2^(2/3)`.  Before, `15^(3/2)` and
+  `15*sqrt(15)` were two canonical forms of one number and did not
+  cancel; 0.25's flattening of `(√b)ⁿ` produced more of the first kind,
+  and 161 of Rubi's own answers lost their numeric value in the self-test
+  (54,993 verified at 0.24, 54,832 at 0.25) because `polylog` terms that
+  should cancel no longer did.
+
+### Fixed
+
+- LaTeX and the pretty printer render `b^(-1/2)` as `\frac{1}{\sqrt{b}}`
+  and `1/√(b)` again: 0.25 flattened `(√b)^{-1}` to `b^(-1/2)` and they
+  showed `(x + 1)^{1/2}` in the denominator.  The pretty printer also
+  showed a denominator of several factors with their negative exponents
+  (`x⁻²·y` for `x²·y`) and without parentheses around sums.
+
+### Measured
+
+- Rubi harness: unchanged (6,032 verified, 0 wrong).  Self-test on Rubi's
+  own answers: 55,044 verified (0.25: 54,832; 0.24: 54,993), **0 wrong**
+  (0.24 and 0.25: 2 false alarms), 1,173 undecided (0.25: 1,383).
+- `tests/v25/`: `v25_evalf`, `v25_radicals` (6 tests).
+
 ## [0.25.0] - 2026-09-23
 
 No integrand can exhaust memory.  The three Rubi "timeouts" of 0.24 were

@@ -1048,6 +1048,22 @@ fn canon_radical(
     let a: u32 = exp_r.numer().to_u32()?;
     let (outside, inside) = split_perfect_power(&n, b);
     if outside.is_one() {
+        // n^(a/b) → n^k · n^(s/b) with a = k·b + s, 0 < s < b: the radical
+        // keeps a proper exponent (`15^(3/2) = 15·√15`, as SymPy writes
+        // it).  Before 0.26 `15^(3/2)` and `15·√15` were different
+        // canonical forms of one number, so equal coefficients did not
+        // combine (and a `polylog` term that should cancel stayed).
+        if a > b && (a / b) <= arena.config.max_pow_exponent as u32 {
+            let k = a / b;
+            let s = a % b;
+            let integer_part = arena.big_int(NumPow::pow(n.clone(), k));
+            let frac_exp = {
+                let nid = arena.intern_num(Ratio::new(BigInt::from(s), BigInt::from(b)));
+                arena.intern(ExprNode::Num(nid))
+            };
+            let radical = arena.intern(ExprNode::Pow(base, frac_exp));
+            return Some(arena.mul(&[integer_part, radical]));
+        }
         return None;
     }
     // outside^a must fold to a number of bounded size (a can be ~4·10⁹).
@@ -1061,7 +1077,13 @@ fn canon_radical(
         return Some(outside_expr);
     }
     let inside_base = arena.big_int(inside);
-    let inside_radical = arena.intern(ExprNode::Pow(inside_base, exp));
+    // `inside` has no b-th power factor, so this only splits off the
+    // integer part of the exponent (no further recursion).
+    let inside_radical = if a > b {
+        canon_pow(arena, inside_base, exp)
+    } else {
+        arena.intern(ExprNode::Pow(inside_base, exp))
+    };
     Some(arena.mul(&[outside_expr, inside_radical]))
 }
 

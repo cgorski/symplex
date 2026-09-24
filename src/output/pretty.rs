@@ -799,21 +799,7 @@ fn render_product(arena: &Arena, factors: &[ExprId], mode: RenderMode, depth: u8
 /// Render denominator factors (strip negative exponents).
 fn render_denom_product(arena: &Arena, factors: &[ExprId], mode: RenderMode, depth: u8) -> MathBox {
     if factors.len() == 1 {
-        let factor = factors[0];
-        // If it was base^(-n), render just base^n or base.
-        if let ExprNode::Pow(base, exp) = arena.node(factor).clone()
-            && let Some(r) = arena.as_num(exp)
-        {
-            let pos = -r;
-            if pos.is_one() {
-                return pretty_node(arena, base, mode, depth);
-            }
-            // base^pos_exp — render as base with superscript.
-            let base_box = pretty_node(arena, base, mode, depth);
-            let exp_box = pretty_ratio(&pos, mode, depth.saturating_add(1));
-            return MathBox::superscript(base_box, exp_box);
-        }
-        return pretty_node(arena, factor, mode, depth);
+        return denom_factor_box(arena, factors[0], false, mode, depth);
     }
 
     // Multiple denominator factors: render as product.
@@ -822,19 +808,68 @@ fn render_denom_product(arena: &Arena, factors: &[ExprId], mode: RenderMode, dep
         if i > 0 {
             parts.push(mul_dot(mode));
         }
-        // Strip negative exponent for display.
-        if let ExprNode::Pow(base, exp) = arena.node(factor).clone()
-            && let Some(r) = arena.as_num(exp)
-        {
-            let pos = -r;
-            if pos.is_one() {
-                parts.push(pretty_node(arena, base, mode, depth));
-                continue;
-            }
-        }
-        parts.push(pretty_node(arena, factor, mode, depth));
+        parts.push(denom_factor_box(arena, factor, true, mode, depth));
     }
     MathBox::hcat(&parts)
+}
+
+/// One factor `base^(-e)` of a denominator, shown with the positive
+/// exponent: `base` for `e = 1`, `√(base)` for `e = 1/2`, `base^e`
+/// otherwise.  In a product (`in_product`) a sum or negation is
+/// parenthesised.  Before 0.25 a denominator of several factors printed
+/// the negative exponent itself (`x⁻²·y` for `x²·y`).
+fn denom_factor_box(
+    arena: &Arena,
+    factor: ExprId,
+    in_product: bool,
+    mode: RenderMode,
+    depth: u8,
+) -> MathBox {
+    let (base, pos) = match arena.node(factor).clone() {
+        ExprNode::Pow(base, exp) if arena.as_num(exp).is_some_and(Signed::is_negative) => {
+            (base, -arena.as_num(exp).cloned().unwrap_or_else(Ratio::one))
+        }
+        // `pretty_mul` hands over the bare base of a `base^(-1)`.
+        _ => (factor, Ratio::one()),
+    };
+    if pos == Ratio::new(BigInt::from(1), BigInt::from(2)) {
+        return sqrt_box(arena, base, mode, depth);
+    }
+    let base_box = pretty_node(arena, base, mode, depth);
+    let compound = matches!(
+        arena.node(base),
+        ExprNode::Add(_) | ExprNode::Neg(_) | ExprNode::Mul(_) | ExprNode::Pow(_, _)
+    );
+    if pos.is_one() {
+        return if in_product && compound {
+            MathBox::parens(base_box, mode)
+        } else {
+            base_box
+        };
+    }
+    let base_box = if compound {
+        MathBox::parens(base_box, mode)
+    } else {
+        base_box
+    };
+    let exp_box = pretty_ratio(&pos, mode, depth.saturating_add(1));
+    MathBox::superscript(base_box, exp_box)
+}
+
+/// `√(base)` (`sqrt(base)` in ASCII mode).
+fn sqrt_box(arena: &Arena, base: ExprId, mode: RenderMode, depth: u8) -> MathBox {
+    let inner_box = pretty_node(arena, base, mode, depth);
+    let sqrt_sym = if mode == RenderMode::Unicode {
+        "√"
+    } else {
+        "sqrt"
+    };
+    MathBox::hcat(&[
+        MathBox::text(sqrt_sym),
+        MathBox::text("("),
+        inner_box,
+        MathBox::text(")"),
+    ])
 }
 
 fn mul_dot(mode: RenderMode) -> MathBox {
@@ -852,18 +887,12 @@ fn pretty_pow(arena: &Arena, base: ExprId, exp: ExprId, mode: RenderMode, depth:
     // Special case: exp = 1/2 → sqrt
     if let Some(r) = arena.as_num(exp) {
         if *r == Ratio::new(BigInt::from(1), BigInt::from(2)) {
-            let inner_box = pretty_node(arena, base, mode, depth);
-            let sqrt_sym = if mode == RenderMode::Unicode {
-                "√"
-            } else {
-                "sqrt"
-            };
-            return MathBox::hcat(&[
-                MathBox::text(sqrt_sym),
-                MathBox::text("("),
-                inner_box,
-                MathBox::text(")"),
-            ]);
+            return sqrt_box(arena, base, mode, depth);
+        }
+        // exp = -1/2 → 1/sqrt
+        if *r == Ratio::new(BigInt::from(-1), BigInt::from(2)) {
+            let numer = MathBox::text("1");
+            return MathBox::frac(numer, sqrt_box(arena, base, mode, depth), depth, mode);
         }
         // exp = -1 → handled by Mul as denominator
         if *r == Ratio::from(BigInt::from(-1)) {

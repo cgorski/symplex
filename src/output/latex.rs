@@ -282,6 +282,11 @@ fn render_mul(arena: &Arena, children: &[ExprId]) -> String {
 
     for &factor in factors {
         if let Some((base_id, pos_exp_str)) = extract_negative_power(arena, factor) {
+            if pos_exp_str == r"\frac{1}{2}" {
+                // b^(-1/2) → …/\sqrt{b}, as the plain-text printer does.
+                denom_factors.push(format!(r"\sqrt{{{}}}", latex_to_string(arena, base_id)));
+                continue;
+            }
             let base_latex = render_pow_base(arena, base_id);
             if pos_exp_str == "1" {
                 denom_factors.push(base_latex);
@@ -720,6 +725,13 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
                     stack.push(LatexItem::Lit("}"));
                     stack.push(LatexItem::Expr(base));
                     stack.push(LatexItem::Owned(format!("\\sqrt[{}]{{", n)));
+                    return;
+                }
+                // exp = -1/2 → \frac{1}{\sqrt{base}}
+                if *r == Ratio::new(BigInt::from(-1), BigInt::from(2)) {
+                    stack.push(LatexItem::Lit("}}"));
+                    stack.push(LatexItem::Expr(base));
+                    stack.push(LatexItem::Lit(r"\frac{1}{\sqrt{"));
                     return;
                 }
                 // exp = -1 → \frac{1}{base}

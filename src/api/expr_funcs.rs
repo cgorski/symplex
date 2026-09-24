@@ -3562,6 +3562,22 @@ impl Expr<Numeric> {
     /// digits.
     ///
     /// Returns the decimal string representation of the evaluated expression.
+    /// Every digit shown is right up to the rounding of the last one: the
+    /// evaluator keeps an error bound for each sub-expression and
+    /// re-evaluates at a higher working precision when cancellation or
+    /// amplification has eaten into the requested digits (`exp(10⁻³⁰) − 1`
+    /// gives `1e-30`, not `0`).  A value that is zero to the precision
+    /// reached is `0`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// let ctx = Context::new();
+    /// let tiny = ctx.parse("exp(1/10^30) - 1").unwrap();
+    /// assert_eq!(tiny.eval_decimal(20).unwrap(), "1e-30");
+    /// // A quotient by a difference that cancels to 0 has no digits to give.
+    /// let q = ctx.parse("1/(sin(1)^2 + cos(1)^2 - 1)").unwrap();
+    /// assert!(matches!(q.eval_decimal(20), Err(SymplexError::PrecisionExhausted { .. })));
+    /// ```
     ///
     /// # Errors
     ///
@@ -3573,8 +3589,11 @@ impl Expr<Numeric> {
     /// imaginary unit, unevaluated derivatives/integrals, user functions).
     ///
     /// Returns [`SymplexError::PrecisionExhausted`] if the requested
-    /// precision exceeds `EvalConfig::max_evalf_precision`, or if
-    /// intermediate computation produces NaN.
+    /// precision exceeds `EvalConfig::max_evalf_precision`, if intermediate
+    /// computation produces NaN, or if the requested digits cannot be
+    /// certified within twice the initial working precision plus 256 bits
+    /// (a division by a quantity that cancels to 0, `sign` of such a
+    /// quantity).
     #[must_use = "returns the numerical value as a string"]
     pub fn eval_decimal(&self, digits: u32) -> Result<String, SymplexError> {
         let _span = debug_span!("eval_decimal", expr = ?self.raw_id(), digits = digits).entered();

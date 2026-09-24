@@ -8,7 +8,7 @@ symplex has one error type, `SymplexError` (in the prelude; `#[non_exhaustive]`,
 |---------|--------|-----------|
 | `FreeSymbol { name }` | the unbound symbol | `eval_f64`, `compile`, `to_rust_fn`, `to_c_fn`, `integrate_numeric`, `eval_f64_with` when a symbol is not supplied |
 | `Unevaluable { reason }` | | numeric evaluation of a node with no finite value (`oo`, `zoo`, a set, …), a non-real integration bound |
-| `PrecisionExhausted { requested, achieved }` | | `eval_decimal` when the working precision cannot deliver the requested digits |
+| `PrecisionExhausted { requested, achieved }` | | `eval_decimal`, `eval_f64`, `eval_complex64` when the requested digits cannot be certified: evaluation tracks an error bound and re-evaluates at a higher precision (up to twice the initial one plus 256 bits), so this means a division by a quantity that cancels to 0, `sign`/`floor` of such a quantity, or a precision above `EvalConfig::max_evalf_precision` |
 | `NotImplemented(String)` | names the node | `compile`/codegen on a node without numerical meaning (unevaluated `Integral`, `Apply`, Bessel with symbolic order, …) |
 | `ComputationFailed { operation, reason }` | which operation, why | every `try_*` method when the result is unevaluated; `fourier_transform`/`mellin_transform`/`z_transform` when no rule applies; `solve` when no method applies; `solve_ode_ivp` when constants cannot be fitted; `integrate_numeric` when quadrature does not converge |
 | `Divergent { operation, reason }` | | `try_integrate_definite` when the integral is *proven* divergent; `laplace_final_value` for a pole in the closed right half-plane |

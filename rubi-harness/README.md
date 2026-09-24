@@ -150,15 +150,17 @@ happens, rerun with fewer `--jobs` or a larger `--timeout`.
 on Rubi's optimal antiderivatives, which are known to be correct.  On the
 full suite:
 
-- 54,993 verified and 0 real_verified.  Rubi's answers are valid for
-  complex `x` too.
-- 1,222 undecided: symplex cannot evaluate the derivative numerically,
+- 55,044 verified and 0 real_verified (0.26).  Rubi's answers are valid
+  for complex `x` too.
+- 1,173 undecided: symplex cannot evaluate the derivative numerically,
   often `elliptic_f`/`polylog` at complex arguments.
 - 16,037 unsupported, mostly answers with hypergeometric, incomplete
   elliptic or Appell functions, or `Unintegrable`.
-- 2 "wrong": two entries whose Rubi answer divides by `x − log(%e^x)`,
-  which is identically zero.  The evaluator returns noise instead of an
-  error.
+- 0 wrong.  Until 0.25 there were 2 false alarms: two entries whose Rubi
+  answer divides by `x − log(%e^x)`, which is identically zero, and the
+  evaluator returned noise instead of an error.  Since 0.26 it tracks an
+  error bound and refuses (`PrecisionExhausted`), so those points are
+  skipped.
 
 An earlier false alarm came from symplex's own `acosh` derivative
 (`u′/sqrt(u²−1)`, wrong sign for `u < −1`); it is now fixed in the library.

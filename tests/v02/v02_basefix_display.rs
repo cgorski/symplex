@@ -103,9 +103,13 @@ fn positive_integer_bases_need_no_parens() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     assert_eq!(s(&ctx.int(2).pow(&x)), "2^x");
-    assert_eq!(s(&ctx.int(2).pow(&ctx.rational(3, 2))), "2^(3/2)");
+    assert_eq!(s(&ctx.int(3).pow(&ctx.rational(2, 3))), "3^(2/3)");
+    // Since 0.26 an exponent above 1 splits off its integer part, as in
+    // SymPy 1.14 (`2**Rational(3,2)` prints `2*sqrt(2)`).
+    assert_eq!(s(&ctx.int(2).pow(&ctx.rational(3, 2))), "2*sqrt(2)");
     assert_eq!(s(&x.pow(&ctx.rational(2, 3))), "x^(2/3)");
     roundtrip(&ctx, &ctx.int(2).pow(&x));
+    roundtrip(&ctx, &ctx.int(3).pow(&ctx.rational(2, 3)));
     roundtrip(&ctx, &ctx.int(2).pow(&ctx.rational(3, 2)));
 }
 

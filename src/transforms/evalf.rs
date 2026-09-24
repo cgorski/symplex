@@ -43,6 +43,8 @@ use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
 use tracing::debug;
 
+mod accuracy;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Complex type
 // ═══════════════════════════════════════════════════════════════════════════
@@ -123,38 +125,162 @@ pub(crate) fn evalf(arena: &Arena, expr: ExprId, digits: u32) -> Result<String, 
         SymplexError::NotImplemented(format!("astro-float constants init failed: {e:?}"))
     })?;
 
-    // Post-order traversal — evaluate children before parents.
-    let post_order = walk::post_order_ids(arena, expr);
-    let mut cache: FxHashMap<ExprId, Complex> = FxHashMap::default();
+    let result = evaluate_adaptive(arena, expr, digits, rm, &mut cc)?;
+    format_complex(&result, digits, prec, rm, &mut cc)
+}
 
-    for &id in &post_order {
-        match eval_node(arena, id, &cache, prec, rm, &mut cc) {
+/// The working precision behind `digits` decimal digits: `3.4` bits per
+/// digit plus 64 guard bits, at least 128.
+fn working_precision(digits: u32) -> usize {
+    ((digits as usize) * 34 / 10 + 64).max(128)
+}
+
+/// Evaluate `expr` once at `prec` bits: its value and the exponent of its
+/// error bound (see [`accuracy`]).  A failed node other than the root is
+/// skipped: parent nodes (`Sum`, `Product`, `Piecewise`) evaluate their own
+/// sub-trees with substitution.
+fn evaluate_once(
+    arena: &Arena,
+    expr: ExprId,
+    post_order: &[ExprId],
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<(Complex, accuracy::ErrExp), SymplexError> {
+    let mut cache: FxHashMap<ExprId, Complex> = FxHashMap::default();
+    let mut errs: FxHashMap<ExprId, accuracy::ErrExp> = FxHashMap::default();
+    for &id in post_order {
+        match eval_node(arena, id, &cache, prec, rm, cc) {
             Ok(value) => {
+                let e = accuracy::node_error(arena, id, &value, &cache, &errs, prec);
+
+                errs.insert(id, e);
                 cache.insert(id, value);
             }
-            Err(e) => {
-                if id == expr {
-                    return Err(e);
-                }
-                // Non-root node failed — skip it.  Parent nodes
-                // (Sum, Product, Piecewise) will handle their own
-                // sub-tree evaluation with substitution.
-            }
+            Err(e) if id == expr => return Err(e),
+            Err(_) => {}
         }
     }
-
-    let result = cache.get(&expr).ok_or_else(|| {
+    let value = cache.remove(&expr).ok_or_else(|| {
         SymplexError::NotImplemented("evalf: expression not found in cache".into())
     })?;
+    let err = errs.get(&expr).copied().unwrap_or(accuracy::UNKNOWN);
+    Ok((value, err))
+}
 
-    if result.0.is_nan() || result.1.is_nan() {
-        return Err(SymplexError::PrecisionExhausted {
-            requested: digits,
-            achieved: 0,
-        });
+/// Evaluate `expr` to `digits` correct significant digits.
+///
+/// The value is computed at [`working_precision`] with an error bound
+/// ([`accuracy`]).  It is accepted when the bound covers the requested
+/// digits; otherwise — catastrophic cancellation, amplification by `exp`
+/// or a division by a small difference, or just a pessimistic bound — the
+/// whole expression is re-evaluated at a higher precision (Ziv's strategy),
+/// up to twice the initial precision plus 256 bits (and the configured
+/// maximum), as SymPy's `evalf` retries an `Add` that lost its accuracy.
+/// Two successive values that agree to the requested digits are accepted
+/// as well: the bound is an estimate, and some nodes (`sin` of an exact
+/// huge integer, reduced exactly) are more accurate than it says.  Before
+/// 0.26 the first value was returned whatever its accuracy: `exp(10⁻³⁰) −
+/// 1` came out `0`, and a quotient by a difference that is zero to the
+/// working precision came out as noise.
+///
+/// When the budget is spent, a value that is zero to the precision reached
+/// — its error ball contains 0, or it shrank with every increase in
+/// precision — is returned as 0 (SymPy returns a float with no significant
+/// digits); any other value lacking the digits is refused with
+/// [`SymplexError::PrecisionExhausted`].  So is an infinite value: from
+/// finite inputs it can only come from a division by a difference that
+/// cancelled to 0, whose true value is unknown.
+fn evaluate_adaptive(
+    arena: &Arena,
+    expr: ExprId,
+    digits: u32,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<Complex, SymplexError> {
+    let prec0 = working_precision(digits);
+    let max_prec = arena.config.max_evalf_precision as usize;
+    let cap = (2 * prec0).max(prec0 + 256).min(max_prec).max(prec0);
+    let needed = i64::from(digits) * 3322 / 1000 + 4;
+    let post_order = walk::post_order_ids(arena, expr);
+    let mut prec = prec0;
+    let mut previous: Option<(Complex, usize, accuracy::ErrExp)> = None;
+    loop {
+        let (value, err) = evaluate_once(arena, expr, &post_order, prec, rm, cc)?;
+        if value.0.is_nan() || value.1.is_nan() {
+            return Err(SymplexError::PrecisionExhausted {
+                requested: digits,
+                achieved: 0,
+            });
+        }
+        let finite = !(value.0.is_inf() || value.1.is_inf());
+        let acc = accuracy::accurate_bits(&value, err);
+        let exact_zero = accuracy::mag(&value).is_none() && accuracy::is_exact(err);
+        if finite && (exact_zero || acc.is_some_and(|a| a >= needed)) {
+            return Ok(value);
+        }
+        // Ziv: two evaluations at different precisions that agree — but
+        // only to relax a finite bound.  Without one (a division by a
+        // value indistinguishable from 0) agreement proves nothing: in
+        // `cos/(D·s) − cos/(D·L)` with `D = s − L` a rounding residue, the
+        // two huge terms scale together and their difference came out as
+        // the same wrong −64 at every precision (Rubi's answer to
+        // ∫ cot(x)/ln(e^sin x) dx).
+        let mut shrinking = false;
+        if let Some((prev, prev_prec, prev_err)) = &previous
+            && finite
+        {
+            if !accuracy::is_unknown(err)
+                && !accuracy::is_unknown(*prev_err)
+                && agree(&value, prev, needed, prec, rm)
+            {
+                return Ok(value);
+            }
+            let gained = i64::try_from(prec - prev_prec).unwrap_or(0);
+            shrinking = match (accuracy::mag(&value), accuracy::mag(prev)) {
+                (None, _) => true,
+                (Some(m), Some(pm)) => m <= pm - gained / 2,
+                (Some(_), None) => false,
+            };
+        }
+        if prec >= cap {
+            // Only with a bound: `sign` of a value that cancelled to 0 is 0
+            // at every precision, but its true value may be ±1.
+            let known = !accuracy::is_unknown(err);
+            let zero_ball = known && accuracy::contains_zero(&value, err);
+            if finite && known && (zero_ball || shrinking) {
+                debug!(prec, err, "evalf: zero to the working precision");
+                return Ok(c_zero(prec0));
+            }
+            debug!(prec, err, ?acc, "evalf: precision exhausted");
+            let achieved = acc.map_or(0, |a| (a.max(0) * 301 / 1000).min(i64::from(digits)));
+            return Err(SymplexError::PrecisionExhausted {
+                requested: digits,
+                achieved: u32::try_from(achieved).unwrap_or(0),
+            });
+        }
+        let step = match acc {
+            Some(a) if !accuracy::is_unknown(err) && finite => {
+                usize::try_from((needed - a).max(0)).unwrap_or(prec) + 32
+            }
+            _ => prec,
+        };
+        previous = Some((value, prec, err));
+        prec = (prec + step.max(64)).min(cap);
+        debug!(prec, ?acc, "evalf: re-evaluating at a higher precision");
     }
+}
 
-    format_complex(result, digits, prec, rm, &mut cc)
+/// Do `a` and `b` agree to `bits` significant bits (relative to the larger
+/// magnitude)?  Two zeros agree.
+fn agree(a: &Complex, b: &Complex, bits: i64, prec: usize, rm: RoundingMode) -> bool {
+    let scale = match (accuracy::mag(a), accuracy::mag(b)) {
+        (None, None) => return true,
+        (Some(x), Some(y)) => x.max(y),
+        _ => return false,
+    };
+    let diff = crate::base::bigcomplex::c_sub(a, b, prec + 64, rm);
+    accuracy::mag(&diff).is_none_or(|d| d <= scale - bits)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -239,31 +365,7 @@ fn evalf_value(arena: &Arena, expr: ExprId, digits: u32) -> Result<Complex, Symp
     }
 
     let rm = RoundingMode::ToEven;
-    let post_order = walk::post_order_ids(arena, expr);
-    let result = with_f64_consts(|cc| {
-        let mut cache: FxHashMap<ExprId, Complex> = FxHashMap::default();
-        for &id in &post_order {
-            match eval_node(arena, id, &cache, prec, rm, cc) {
-                Ok(value) => {
-                    cache.insert(id, value);
-                }
-                // A failed non-root node is left to its parent (`Sum`,
-                // `Product`, `Piecewise` evaluate their own sub-trees).
-                Err(e) if id == expr => return Err(e),
-                Err(_) => {}
-            }
-        }
-        cache.remove(&expr).ok_or_else(|| {
-            SymplexError::NotImplemented("evalf: expression not found in cache".into())
-        })
-    })?;
-    if result.0.is_nan() || result.1.is_nan() {
-        return Err(SymplexError::PrecisionExhausted {
-            requested: digits,
-            achieved: 0,
-        });
-    }
-    Ok(result)
+    with_f64_consts(|cc| evaluate_adaptive(arena, expr, digits, rm, cc))
 }
 
 /// One part of a complex result as an `f64`: `0.0` when it is negligible
