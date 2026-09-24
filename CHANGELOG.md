@@ -6,6 +6,124 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.27.0] - 2026-09-24
+
+The first round of a bug hunt in `symplex::stats`.  `hypothesis` was
+differentially tested against scipy 1.18.1 and statsmodels 0.15.0 (about
+19,700 value checks on random datasets, and 2,625 degenerate cases), and
+`numdist` (the `f64`
+reference distributions) against mpmath at 50 digits, far tails and extreme
+shapes included.  Every bug found is pinned in `tests/v26/` against the
+oracle call that produced the reference value.  No signature changed.
+
+### Breaking (behaviour; no signature changed)
+
+- **`mcnemar_test` with the continuity correction at `b = c`** gives
+  statistic `0` and `p = 1`.  It used to give `1/(b + c)`: `b = c = 5` gave
+  `χ² = 1/10`, `p = 0.7518`, more significant than the exact test's
+  `p = 1`.  The correction now moves `|b − c|` towards 0 and stops there,
+  as R's `mcnemar.test` and scipy's Yates correction do.  statsmodels
+  squares the `−1`, so symplex now differs from it here (documented).
+- **`bonferroni` and `holm` decide rejection by `p ≤ α/m`**, as
+  statsmodels does, instead of `m·p ≤ α`.  The two disagree in the last
+  bit: `p = 0.05/11` with `m = 11` is now rejected at `α = 0.05`.
+- **`sample_size_for_proportion` returns `ComputationFailed`** when the
+  size doesn't fit in `usize`.  A margin of `1e-200` used to return
+  `18446744073709551615`.
+- **Counts that overflow `usize` are an `InvalidArgument`** in
+  `mcnemar_test` (`b + c`) and `relative_risk` (a row total), instead of an
+  overflow.  `z_test_two_proportions` and `phi_coefficient` compute their
+  sums without overflowing.
+- **`cohens_h` returns `2·atan((p₁ − p₂)/(√(p₁q₁) + √(p₂q₂)))`**, one
+  arctangent, instead of the difference of two arcsines (same value, no
+  cancellation; see Fixed).
+- **`numdist`:**
+  - A quantile beyond the positive floats is `5e-324`, `+∞` or `1`.
+    `f::isf(0.3, 1e-300, 1e-100)` and `beta::isf(0.1, 2, 1e20)` used to
+    return `Ok(NaN)`.
+  - Beta quantiles return `InvalidArgument`, and the beta tails `NaN`,
+    when `α + β` overflows a double.
+  - Many quantiles change in their last ulps: each is now the float where
+    the level is crossed.
+
+### Fixed
+
+- **`hypothesis`:**
+  - `p_value_ln` and `p_value_log10` are finite for every χ² tail.
+    Goodness of fit on `[301, 1, 0]` gave `PrecisionExhausted`; it now
+    gives `ln p = −299.00993377483445` (mpmath
+    `log(gammainc(1, Fraction(90301, 151)/2, inf, regularized=True))`).
+    This helper also serves `anova` and `regression`.
+  - The exact binomial, sign and McNemar tests stream integer weights over
+    one denominator instead of adding reduced rationals:
+    `binomial_test(0, 1500, ½)` took 2.1 s and now takes 1.1 ms (debug
+    build), with the same exact p-value.
+  - `p_value_f64`, `p_value_ln` and `p_value_decimal` of an exact rational
+    no longer go through the evaluator, which is slow on the
+    `10⁵`-bit rationals of the large exact tests.  `p_value_decimal`
+    rounds exactly, ties to even, in `eval_decimal`'s format.
+  - `cohens_h(½, ½ + 10⁻¹⁰⁰)` evaluated to `0`, and
+    `cohens_h(1 − 10⁻³⁰, 1)` to `PrecisionExhausted`.  They now give
+    `−2e-100` and `−2e-15`.  `power_two_proportions` uses the same form.
+  - `power_t_test_two_sample`:
+    - it no longer overflows `2n − 2`;
+    - its χ² density no longer cancels terms of size `ν ln ν`: at
+      `d = 0` and `n = 10⁹` the power was `α − 1.65e-6` (now within
+      `1e-13` of `α`).
+  - `relative_risk` forms its variance exactly, as `b/(a n₁) + d/(c n₂)`.
+  - The docs spell out the remaining deliberate differences from scipy:
+    - the two-sided binomial p compares the pmf exactly (scipy allows a
+      `1e-7` slack: `binomtest(198, 950, 0.25)` is `0.00305` in scipy and
+      `0.0027180105491057661` exactly);
+    - `kendall_test` with `n = 2` is asymptotic (scipy raises
+      `ZeroDivisionError`);
+    - scipy's `method='auto'` rules are listed on `RankMethod`.
+- **`numdist`:**
+  - Every tail carries its logarithm (a mantissa and a separate exponent),
+    so quantiles at subnormal levels are right.
+    `t::ppf(4.4e-323, 111961533.34)` was `−38.410885323407236` (1.2e-5
+    off); it is now `−38.41040928038728`.
+  - The quantile solver returns its best evaluated point plus a Newton
+    correction, snapped to the floats where the level is crossed.
+  - Discrete quantiles compare the smaller tail:
+    - `poisson::isf(1 − 2⁻⁵², 1229036.68)` was `1220000`; it is now
+      `1220039`;
+    - binomial quantiles near 1 and at subnormal levels are fixed.
+  - The incomplete gamma for a shape below 1 uses the Taylor route of
+    DiDonato & Morris (1986).  `gammaincc(1e-300, 0.9)` was
+    `−4.64e-14`; it is now `2.6018393932599960e-301`.
+  - The incomplete beta with a tiny second shape (`bgrat`) and with two
+    tiny shapes is fixed.
+  - F tails beyond the normal range of the beta arguments are fixed.
+  - `gamma::ppf` for shapes of `1e10` and above uses Cornish–Fisher plus
+    Newton: `gamma::ppf(0.3, 1e30)` was `7.389e30` and is now
+    `9.999999999999995e29`, and `gamma::ppf(0.5, 1e300)` converges.
+  - `gamma::sf(f64::MAX, 1e300)` was `2.2e-159`; it is now `0`.
+  - `t::ppf(1e-300, 1e100)` converges.
+  - `fuzz_numdist` covers wider shape ranges and checks the discrete
+    `isf`.
+
+### Known issues (reproduced; next round)
+
+- The symbolic distributions build tails as `½ + ½ erf(…)` or
+  `1 − Σ pmf`, which cancel in a far tail, so the result evaluates to `0`:
+  - `Distribution::normal(2, 3).cdf(−100)` gives `0.0` (Φ(−34) is
+    1.11e-253);
+  - the standard normal `P(X > 20)`, the log-normal `P(X > 10²⁰)` and
+    Poisson(1) `P(X > 60)` do the same.
+- `Distribution::quantile_f64` for Binomial and Poisson compares against
+  `p − 10⁻¹²`:
+  - `poisson(10⁶).quantile_f64(10⁻¹³)` gives `962716`; the answer is
+    `992660`;
+  - `poisson(7/3)` at `1 − 2⁻⁵³` gives `20`; the answer is `24`.
+- The evaluator's error bound for `ln(exp(x))` is too pessimistic below
+  `x ≈ −250`: `exp(−2601/10).ln().eval_f64()` is `PrecisionExhausted`.
+  `stats` works around it.
+
+### Measured
+
+- `tests/v26/`: `v26_hypothesis`, `v26_numdist` (33 tests).
+
 ## [0.26.0] - 2026-09-23
 
 Numerical evaluation knows how many of its digits are right.  Until now an

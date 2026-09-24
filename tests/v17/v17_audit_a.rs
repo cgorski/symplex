@@ -270,12 +270,15 @@ fn mcnemar_test_new_counts_and_degenerate_discordance() {
     assert_eq!(r.statistic_exact(), Some(qi(4)));
     close(p_of(&r), 0.045_500_263_896_358_445, 1e-12);
     // b = c: statsmodels: mcnemar([[1, 5], [5, 1]], exact=True).pvalue = 1.0;
-    //   exact=False, correction=True → statistic 0.1, pvalue 0.7518296340458492
+    //   exact=False, correction=True → statistic 0.1, pvalue 0.7518296340458492 (it squares
+    //   |b − c| − 1 = −1).  Since 0.27 the correction stops at 0, as scipy's Yates correction
+    //   (chi2_contingency([[5, 5], [5, 5]]) → (0.0, 1.0)) and R's mcnemar.test: statistic 0, p = 1,
+    //   agreeing with the exact test instead of being more significant than it.
     let r = mcnemar_test(&ctx, 5, 5, true, true).unwrap();
     assert_eq!(r.p_value_exact(), Some(qi(1)));
     let r = mcnemar_test(&ctx, 5, 5, false, true).unwrap();
-    assert_eq!(r.statistic_exact(), Some(q(1, 10)));
-    close(p_of(&r), 0.751_829_634_045_849_2, 1e-12);
+    assert_eq!(r.statistic_exact(), Some(qi(0)));
+    assert_eq!(r.p_value, ctx.one());
     // b = 0: statsmodels: mcnemar([[1, 0], [7, 1]], exact=True) → statistic 0.0, pvalue 0.015625 (= 1/64)
     let r = mcnemar_test(&ctx, 0, 7, true, true).unwrap();
     assert_eq!(r.statistic_exact(), Some(qi(0)));

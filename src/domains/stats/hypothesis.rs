@@ -62,7 +62,7 @@ use std::cmp::Ordering;
 use std::f64::consts::LN_10;
 
 use num_bigint::BigInt;
-use num_traits::{One, Signed, ToPrimitive, Zero};
+use num_traits::{One, Pow, Signed, ToPrimitive, Zero};
 
 use super::common::{
     check_alpha, check_confidence, check_finite, check_sample, check_unit_open, chi_squared_sf,
@@ -185,14 +185,16 @@ pub trait PValue {
 
     /// The p-value as an `f64`.  Underflows to `0.0` below about `1e-308`;
     /// use [`p_value_log10`](PValue::p_value_log10) or
-    /// [`p_value_decimal`](PValue::p_value_decimal) for tiny values.
+    /// [`p_value_decimal`](PValue::p_value_decimal) for tiny values.  An
+    /// exact rational is converted directly (correctly rounded), anything
+    /// else by [`Ex::eval_f64`].
     ///
     /// # Errors
     ///
     /// Propagates the evaluation error of the expression (not expected for
     /// the expressions `stats` builds).
     fn p_value_f64(&self) -> Result<f64, SymplexError> {
-        self.p_value_ex().eval_f64()
+        p_value_f64_of(self.p_value_ex())
     }
 
     /// `log10 p`, finite even when `p` underflows `f64` (`−2781.64` for
@@ -218,14 +220,72 @@ pub trait PValue {
 
     /// `p` to `digits` significant digits as a decimal string, with an
     /// exponent when one is needed (`"2.3100265595063985852e-2782"`);
-    /// [`Ex::eval_decimal`].
+    /// [`Ex::eval_decimal`], or for an exact rational `p` the same format
+    /// by exact integer arithmetic (rounded to nearest, ties to even) —
+    /// the exact tests' rationals can have `10⁵` bits.
     ///
     /// # Errors
     ///
     /// As [`Ex::eval_decimal`].
     fn p_value_decimal(&self, digits: u32) -> Result<String, SymplexError> {
-        self.p_value_ex().eval_decimal(digits)
+        let p = self.p_value_ex();
+        match p.as_rational().and_then(|q| rational_decimal(&q, digits)) {
+            Some(s) => Ok(s),
+            None => p.eval_decimal(digits),
+        }
     }
+}
+
+/// A rational `q ∈ (0, 1]` to `digits` significant digits in the format of
+/// [`Ex::eval_decimal`] (`"0.34375"`, `"0.0012"`, `"3.7266589428590489823e-16"`),
+/// by exact integer arithmetic: `q·10^k ∈ [1, 10)` fixes the exponent, the
+/// digits are `round(q·10^{k+digits−1})` with ties to even.  The exact
+/// discrete tests produce rationals of `10⁵` bits, whose `eval_decimal`
+/// takes seconds.  `None` outside `(0, 1]` or for `digits = 0`.
+fn rational_decimal(q: &Q, digits: u32) -> Option<String> {
+    if !q.is_positive() || *q > Q::one() || digits == 0 {
+        return None;
+    }
+    let (num, den) = (q.numer(), q.denom());
+    let ten = BigInt::from(10);
+    // A lower bound on k = ⌈−log₁₀ q⌉ from the bit lengths (q > 2^(bn − bd − 1)),
+    // then up to the first k with q·10^k ≥ 1.
+    let gap = den.bits().saturating_sub(num.bits() + 1);
+    let mut k = ((gap as f64) * std::f64::consts::LOG10_2).floor() as u64;
+    k = k.saturating_sub(1);
+    let mut scaled = num * Pow::pow(&ten, k);
+    while scaled < *den {
+        scaled *= &ten;
+        k += 1;
+    }
+    let top = Pow::pow(&ten, digits - 1);
+    let (mut kept, rest) = num_integer::Integer::div_rem(&(scaled * &top), den);
+    match (rest * 2u32).cmp(den) {
+        Ordering::Greater => kept += 1u32,
+        Ordering::Equal if num_integer::Integer::is_odd(&kept) => kept += 1u32,
+        _ => {}
+    }
+    let mut exponent = -i64::try_from(k).ok()?;
+    if kept == &top * &ten {
+        kept = top;
+        exponent += 1;
+    }
+    let text = kept.to_string();
+    let (lead, tail) = text.split_at(1);
+    let tail = tail.trim_end_matches('0');
+    let dot_tail = if tail.is_empty() {
+        String::new()
+    } else {
+        format!(".{tail}")
+    };
+    Some(match exponent {
+        0 => format!("{lead}{dot_tail}"),
+        -4..=-1 => {
+            let zeros = "0".repeat(usize::try_from(-exponent - 1).ok()?);
+            format!("0.{zeros}{lead}{tail}")
+        }
+        _ => format!("{lead}{dot_tail}e{exponent}"),
+    })
 }
 
 /// `ln p` of a p-value expression: `−∞` for an exact `0`, `0` for an exact
@@ -233,13 +293,62 @@ pub trait PValue {
 /// precision, so the result is finite even when `p` is below
 /// `f64::MIN_POSITIVE`.  (`ln` of a structural zero would evaluate to `-oo`
 /// and fail to parse, hence the exact check first.)
+///
+/// The logarithm is expanded first (`ln(c·e^{−x}) = ln c − x`, the even-df
+/// χ² tails), and when the evaluator still cannot certify `ln(p)` — its
+/// error bound for `exp(−x)` is absolute, so `ln(exp(−2601/10))` was
+/// `PrecisionExhausted` although `p = 1.1e-113` evaluates fine — `ln p` is
+/// read off the certified decimal expansion `m·10^e` of `p` as `ln m + e
+/// ln 10`.
 pub(crate) fn p_value_ln_of(p: &Ex) -> Result<f64, SymplexError> {
     let reduced = p.eval();
     match reduced.as_rational() {
-        Some(q) if q.is_zero() => Ok(f64::NEG_INFINITY),
-        Some(q) if q.is_one() => Ok(0.0),
-        _ => reduced.ln().eval_f64(),
+        Some(q) if q.is_zero() => return Ok(f64::NEG_INFINITY),
+        Some(q) if q.is_one() => return Ok(0.0),
+        Some(q) if q.is_positive() => return Ok(ln_of_rational(&q)),
+        _ => {}
     }
+    match reduced.ln().expand_log().eval_f64() {
+        Err(err @ SymplexError::PrecisionExhausted { .. }) => ln_from_decimal(&reduced).ok_or(err),
+        other => other,
+    }
+}
+
+/// `p` as an `f64`: an exact rational converted directly ([`q_to_f64`],
+/// correctly rounded), anything else by [`Ex::eval_f64`].  The exact
+/// discrete tests produce rationals of `10⁵` bits (`binomial_test` at `n =
+/// 20 000`, `p₀ = 3/20`), whose `eval_f64` takes seconds.
+fn p_value_f64_of(p: &Ex) -> Result<f64, SymplexError> {
+    match p.as_rational() {
+        Some(q) => Ok(q_to_f64(&q)),
+        None => p.eval_f64(),
+    }
+}
+
+/// `ln q` of a positive rational without evaluating an expression:
+/// `ln_1p(q − 1)` above `½` (accurate next to `1`), else `ln(q·2ˢ) − s ln 2`
+/// with `q·2ˢ ∈ (½, 2)`, so neither underflows.
+fn ln_of_rational(q: &Q) -> f64 {
+    let (num, den) = (q.numer(), q.denom());
+    if *q > Q::new_raw(BigInt::one(), BigInt::from(2)) {
+        return q_to_f64(&Q::new_raw(num - den, den.clone())).ln_1p();
+    }
+    let shift = den.bits().saturating_sub(num.bits());
+    let scaled = Q::new_raw(num << shift, den.clone());
+    q_to_f64(&scaled).ln() - shift as f64 * std::f64::consts::LN_2
+}
+
+/// `ln p = ln m + e·ln 10` from the decimal expansion `m·10^e` of a
+/// positive `p` ([`Ex::eval_decimal`], which certifies its digits);
+/// `None` if `p` does not evaluate or is not positive.
+fn ln_from_decimal(p: &Ex) -> Option<f64> {
+    let s = p.eval_decimal(20).ok()?;
+    let (mantissa, exponent) = match s.split_once('e') {
+        Some((m, e)) => (m, e.parse::<i64>().ok()?),
+        None => (s.as_str(), 0),
+    };
+    let m: f64 = mantissa.parse().ok()?;
+    (m > 0.0 && m.is_finite()).then(|| m.ln() + exponent as f64 * LN_10)
 }
 
 /// `log10 p = ln p / ln 10`, with `ln p` from [`p_value_ln_of`].
@@ -322,7 +431,7 @@ impl TestResult {
     /// Propagates the evaluation error of the expression (not expected for
     /// the expressions this module builds).
     pub fn p_value_f64(&self) -> Result<f64, SymplexError> {
-        self.p_value.eval_f64()
+        p_value_f64_of(&self.p_value)
     }
 
     /// The statistic as an `f64`.
@@ -357,6 +466,16 @@ impl PValue for TestResult {
 p_value_accessors!(TestResult);
 
 /// How the p-value of a rank test is computed.
+///
+/// There is no `auto`: the caller chooses.  scipy's `method='auto'` (1.18)
+/// is `Exact` for `mannwhitneyu` when there are no ties and one sample has
+/// at most 8 observations; for `wilcoxon` when there are at most 50
+/// non-zero differences without ties or zeros (with ties or zeros and at
+/// most 13 of them it runs a permutation test instead); for `kendalltau`
+/// (the `exact` flag of [`kendall_test`]) when there are no ties and `n ≤
+/// 33` or at most one pair is discordant (or concordant) — and
+/// `Asymptotic` otherwise.  scipy's default continuity correction is on
+/// for `mannwhitneyu` and off for `wilcoxon`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RankMethod {
     /// The exact permutation distribution of the statistic (an exact
@@ -392,7 +511,7 @@ impl ChiSquareResult {
     ///
     /// Propagates the evaluation error of the expression.
     pub fn p_value_f64(&self) -> Result<f64, SymplexError> {
-        self.p_value.eval_f64()
+        p_value_f64_of(&self.p_value)
     }
 }
 
@@ -543,41 +662,126 @@ fn result(
 // 1. Exact discrete tests
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// `P(X = i)` for `i = 0..=n`, `X ~ Binomial(n, p)`, exact.
-fn binomial_pmf_table(n: usize, p: &Q) -> Vec<Q> {
-    let q = Q::one() - p;
-    let mut pp = vec![Q::one(); n + 1];
-    let mut qq = vec![Q::one(); n + 1];
-    for i in 1..=n {
-        pp[i] = &pp[i - 1] * p;
-        qq[i] = &qq[i - 1] * &q;
+/// The exact `Binomial(n, p₀)`, `p₀ = a/c` in lowest terms, as integer
+/// weights `w(i) = C(n, i)·aⁱ·(c − a)ⁿ⁻ⁱ` over the one denominator `cⁿ`
+/// (`P(X = i) = w(i)/cⁿ`).  The weights are streamed by the exact integer
+/// recurrence `w(i+1) = w(i)·(n − i)·a / ((i + 1)(c − a))`, so a tail is
+/// one pass of integer additions and nothing but the running weight is
+/// stored.  (Before 0.27 the pmf was a table of reduced rationals, added
+/// one by one: `binomial_test(0, 5000, ½)` took minutes.)
+struct BinomialExact {
+    n: usize,
+    a: BigInt,
+    b: BigInt,
+    c: BigInt,
+    total: BigInt,
+}
+
+impl BinomialExact {
+    /// `p₀ ∈ [0, 1]`.
+    fn new(n: usize, p0: &Q) -> Self {
+        let a = p0.numer().clone();
+        let c = p0.denom().clone();
+        let b = &c - &a;
+        let total = Pow::pow(&c, n);
+        Self { n, a, b, c, total }
     }
-    let mut coef = Q::one();
-    (0..=n)
-        .map(|i| {
-            if i > 0 {
-                coef = &coef * qu(n + 1 - i) / qu(i);
+
+    /// `sum / cⁿ` in lowest terms.  Only primes of `c` can be common, so
+    /// `gcd(sum, c)` is divided out until none is left — a remainder by the
+    /// small `c` per step, where [`Q::new`]'s full `gcd` of two
+    /// `n log₂ c`-bit integers took seconds at `n = 20 000`.
+    fn ratio(&self, sum: BigInt) -> Q {
+        if sum.is_zero() {
+            return Q::zero();
+        }
+        let (mut sum, mut total) = (sum, self.total.clone());
+        loop {
+            let g = num_integer::Integer::gcd(&(&sum % &self.c), &self.c);
+            let g = num_integer::Integer::gcd(&(&total % &g), &g);
+            if g.is_one() {
+                break;
             }
-            &coef * &pp[i] * &qq[n - i]
-        })
-        .collect()
-}
+            sum /= &g;
+            total /= &g;
+        }
+        Q::new_raw(sum, total)
+    }
 
-/// The sum of `pmf` over the indices selected by `keep`.
-fn mass_where(pmf: &[Q], keep: impl Fn(usize, &Q) -> bool) -> Q {
-    pmf.iter()
-        .enumerate()
-        .filter(|(i, m)| keep(*i, m))
-        .fold(Q::zero(), |acc, (_, m)| acc + m)
-}
+    /// `Σ_{i ≤ upto} w(i)` and, with `stop_at`, `w(stop_at)`: the weights
+    /// up to `max(upto, stop_at)`.
+    fn walk(&self, upto: Option<usize>, stop_at: Option<usize>) -> (BigInt, BigInt) {
+        let last = upto.max(stop_at).unwrap_or(0).min(self.n);
+        let mut sum = BigInt::zero();
+        let mut at = BigInt::zero();
+        if self.b.is_zero() {
+            // p₀ = 1: all the mass (cⁿ = 1) sits at n.
+            if upto == Some(self.n) {
+                sum = self.total.clone();
+            }
+            if stop_at == Some(self.n) {
+                at = self.total.clone();
+            }
+            return (sum, at);
+        }
+        let mut w = Pow::pow(&self.b, self.n);
+        for i in 0..=last {
+            if upto.is_some_and(|u| i <= u) {
+                sum += &w;
+            }
+            if stop_at == Some(i) {
+                at = w.clone();
+            }
+            if i < last {
+                w = w * BigInt::from(self.n - i) * &self.a / (BigInt::from(i + 1) * &self.b);
+            }
+        }
+        (sum, at)
+    }
 
-/// scipy's two-sided p-value of a discrete exact test: the total mass of
-/// the outcomes no more likely than the observed one, `Σ_{i : P(i) ≤ P(k)}
-/// P(i)`.  (scipy compares with a relative slack of `1e-7`; here the
-/// comparison is exact.)
-fn two_sided_mass(pmf: &[Q], observed: usize) -> Q {
-    let at = &pmf[observed];
-    mass_where(pmf, |_, m| m <= at).min(Q::one())
+    /// `Σ_{i : w(i) ≤ bound} w(i)`, one full pass.
+    fn sum_at_most(&self, bound: &BigInt) -> BigInt {
+        if self.b.is_zero() {
+            return if self.total <= *bound {
+                self.total.clone()
+            } else {
+                BigInt::zero()
+            };
+        }
+        let mut sum = BigInt::zero();
+        let mut w = Pow::pow(&self.b, self.n);
+        for i in 0..=self.n {
+            if w <= *bound {
+                sum += &w;
+            }
+            if i < self.n {
+                w = w * BigInt::from(self.n - i) * &self.a / (BigInt::from(i + 1) * &self.b);
+            }
+        }
+        sum
+    }
+
+    /// `P(X ≤ k)`, exact.
+    fn cdf(&self, k: usize) -> Q {
+        self.ratio(self.walk(Some(k), None).0)
+    }
+
+    /// `P(X ≥ k) = 1 − P(X ≤ k − 1)`, exact.
+    fn sf(&self, k: usize) -> Q {
+        match k.checked_sub(1) {
+            None => Q::one(),
+            Some(below) => self.ratio(&self.total - self.walk(Some(below), None).0),
+        }
+    }
+
+    /// scipy's two-sided p-value of a discrete exact test: the total mass
+    /// of the outcomes no more likely than the observed one, `Σ_{i : P(i) ≤
+    /// P(k)} P(i)`.  scipy compares the floating pmf with a relative slack
+    /// of `1e-7`; here the comparison is exact.
+    fn two_sided(&self, k: usize) -> Q {
+        let at = self.walk(None, Some(k)).1;
+        self.ratio(self.sum_at_most(&at)).min(Q::one())
+    }
 }
 
 /// Exact binomial test of `P(success) = p₀` from `k` successes in `n`
@@ -585,6 +789,17 @@ fn two_sided_mass(pmf: &[Q], observed: usize) -> Q {
 /// `P(X ≤ k)` (`Less`), `P(X ≥ k)` (`Greater`) or, two-sided, the total
 /// probability of the outcomes no more likely than `k` (`Σ_{i: P(i) ≤ P(k)}
 /// P(i)`), an exact rational.  `scipy.stats.binomtest(k, n, p, alternative)`.
+///
+/// **Two-sided: exact comparison.**  scipy decides "no more likely" on
+/// floating pmf values with a relative slack of `10⁻⁷`, so it also adds
+/// outcomes that are slightly *more* likely than `k`; here the comparison
+/// is exact.  They rarely differ, but then visibly: for `k = 198, n = 950,
+/// p₀ = ¼`, `P(X = 278)` exceeds `P(X = 198)` by a relative `2.97·10⁻⁸`, so
+/// symplex gives `p = 0.0027180105491057661`, scipy `0.0030516140249515723`
+/// (which includes `x = 278`).  Cost: one pass of `BigInt` additions over
+/// the `n + 1` outcomes, whose weights have about `n·log₂ c` bits for `p₀ =
+/// a/c`, so it grows as `n²`: milliseconds at `n = 5000`, about two
+/// seconds (debug build) at `n = 20 000` with `p₀ = 3/20`.
 ///
 /// ```
 /// use symplex::prelude::*;
@@ -619,11 +834,11 @@ pub fn binomial_test(
     if p0.is_negative() || *p0 > Q::one() {
         return Err(invalid(OP, "the null proportion must lie in [0, 1]"));
     }
-    let pmf = binomial_pmf_table(n, p0);
+    let dist = BinomialExact::new(n, p0);
     let p = match alt {
-        Alternative::Less => mass_where(&pmf, |i, _| i <= k),
-        Alternative::Greater => mass_where(&pmf, |i, _| i >= k),
-        Alternative::TwoSided => two_sided_mass(&pmf, k),
+        Alternative::Less => dist.cdf(k),
+        Alternative::Greater => dist.sf(k),
+        Alternative::TwoSided => dist.two_sided(k),
     };
     Ok(result(ctx, ex(ctx, &(qu(k) / qu(n))), p, None, alt))
 }
@@ -1105,9 +1320,15 @@ pub fn fisher_exact(
 /// McNemar's test on the discordant counts `b` (row 1 / column 2) and `c`
 /// (row 2 / column 1) of a paired 2×2 table.  `exact`: statistic
 /// `min(b, c)`, p-value `min(1, 2·P(Binomial(b + c, ½) ≤ min(b, c)))`, an
-/// exact rational.  Otherwise the χ² statistic `(|b − c| − 1)²/(b + c)`
-/// (`correction`) or `(b − c)²/(b + c)` with `P(χ²₁ ≥ ·)`.
-/// `statsmodels.stats.contingency_tables.mcnemar(table, exact, correction)`.
+/// exact rational.  Otherwise the χ² statistic `max(|b − c| − 1, 0)²/(b +
+/// c)` (`correction`, Edwards 1948) or `(b − c)²/(b + c)` with `P(χ²₁ ≥
+/// ·)`.  `statsmodels.stats.contingency_tables.mcnemar(table, exact,
+/// correction)`, except at `b = c` with the correction: the continuity
+/// correction moves `|b − c|` towards `0` and stops there (as R's
+/// `mcnemar.test` and scipy's Yates correction in `chi2_contingency` do),
+/// so the statistic is `0` and `p = 1` — statsmodels squares `−1` into
+/// `1/(b + c)` (`b = c = 5`: `χ² = 1/10`, `p = 0.7518`, which symplex
+/// returned before 0.27), smaller than the exact test's `p = 1`.
 ///
 /// ```
 /// use symplex::prelude::*;
@@ -1127,7 +1348,8 @@ pub fn fisher_exact(
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] when `b + c = 0` (no discordant pairs).
+/// [`SymplexError::InvalidArgument`] when `b + c = 0` (no discordant pairs)
+/// or `b + c` overflows `usize`.
 pub fn mcnemar_test(
     ctx: &Context,
     b: usize,
@@ -1136,14 +1358,16 @@ pub fn mcnemar_test(
     correction: bool,
 ) -> Result<TestResult, SymplexError> {
     const OP: &str = "mcnemar_test";
-    let n = b + c;
+    let n = b
+        .checked_add(c)
+        .ok_or_else(|| invalid(OP, "b + c overflows usize"))?;
     if n == 0 {
         return Err(invalid(OP, "there are no discordant pairs"));
     }
     if exact {
         let k = b.min(c);
-        let pmf = binomial_pmf_table(n, &Q::new(BigInt::one(), BigInt::from(2)));
-        let p = (mass_where(&pmf, |i, _| i <= k) * qi(2)).min(Q::one());
+        let half = Q::new(BigInt::one(), BigInt::from(2));
+        let p = (BinomialExact::new(n, &half).cdf(k) * qi(2)).min(Q::one());
         return Ok(result(
             ctx,
             ctx.int(k as i64),
@@ -1152,7 +1376,12 @@ pub fn mcnemar_test(
             Alternative::TwoSided,
         ));
     }
-    let diff = qu(b.max(c) - b.min(c)) - if correction { Q::one() } else { Q::zero() };
+    let gap = b.abs_diff(c);
+    let diff = qu(if correction {
+        gap.saturating_sub(1)
+    } else {
+        gap
+    });
     let stat = &diff * &diff / qu(n);
     Ok(TestResult {
         statistic: ex(ctx, &stat),
@@ -1699,7 +1928,8 @@ pub fn cramers_v(ctx: &Context, table: &[Vec<Q>]) -> Result<Ex, SymplexError> {
 
 fn check_2x2_margins(op: &'static str, table: [[usize; 2]; 2]) -> Result<(), SymplexError> {
     let [[a, b], [c, d]] = table;
-    if a + b == 0 || c + d == 0 || a + c == 0 || b + d == 0 {
+    let empty = |x: usize, y: usize| x == 0 && y == 0;
+    if empty(a, b) || empty(c, d) || empty(a, c) || empty(b, d) {
         return Err(invalid(op, "a row or a column of the table is empty"));
     }
     Ok(())
@@ -1784,7 +2014,9 @@ pub fn odds_ratio(table: [[usize; 2]; 2], confidence: f64) -> Result<RatioEstima
 /// [control cases, control non-cases]]`: `(a/(a+b)) / (c/(c+d))` with the
 /// log-scale Wald interval `exp(ln RR ± z √(1/a − 1/(a+b) + 1/c − 1/(c+d)))`.
 /// `scipy.stats.contingency.relative_risk(a, a+b, c, c+d)` and its
-/// `.confidence_interval(confidence)`.
+/// `.confidence_interval(confidence)`.  The variance is formed exactly as
+/// `b/(a(a+b)) + d/(c(c+d))` and rounded once (scipy subtracts the
+/// reciprocals in floating point, which loses digits when `b ≪ a`).
 ///
 /// ```
 /// use symplex::linprog::q;
@@ -1801,8 +2033,8 @@ pub fn odds_ratio(table: [[usize; 2]; 2], confidence: f64) -> Result<RatioEstima
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] if either case count is zero or a
-/// row is empty, or `confidence ∉ (0, 1)`.
+/// [`SymplexError::InvalidArgument`] if either case count is zero, a row
+/// total overflows `usize`, or `confidence ∉ (0, 1)`.
 pub fn relative_risk(
     table: [[usize; 2]; 2],
     confidence: f64,
@@ -1810,7 +2042,9 @@ pub fn relative_risk(
     const OP: &str = "relative_risk";
     check_confidence(OP, confidence)?;
     let [[a, b], [c, d]] = table;
-    let (n1, n2) = (a + b, c + d);
+    let (Some(n1), Some(n2)) = (a.checked_add(b), c.checked_add(d)) else {
+        return Err(invalid(OP, "a row total overflows usize"));
+    };
     if a == 0 || c == 0 {
         return Err(invalid(
             OP,
@@ -1818,7 +2052,8 @@ pub fn relative_risk(
         ));
     }
     let estimate = (qu(a) / qu(n1)) / (qu(c) / qu(n2));
-    let se = (1.0 / a as f64 - 1.0 / n1 as f64 + 1.0 / c as f64 - 1.0 / n2 as f64).sqrt();
+    let var = qu(b) / (qu(a) * qu(n1)) + qu(d) / (qu(c) * qu(n2));
+    let se = q_to_f64(&var).sqrt();
     Ok(RatioEstimate {
         ci: log_wald_ci(&estimate, se, confidence),
         estimate,
@@ -1829,6 +2064,21 @@ pub fn relative_risk(
 /// Cohen's `h = 2 asin √p₁ − 2 asin √p₂`, the effect size of a difference
 /// of proportions, as an exact expression.
 /// `statsmodels.stats.proportion.proportion_effectsize(p1, p2)`.
+///
+/// The expression is the difference folded into one arctangent,
+///
+/// `h = 2 atan((p₁ − p₂) / (√(p₁(1 − p₁)) + √(p₂(1 − p₂))))`
+///
+/// (with `A = asin √p₁`, `B = asin √p₂`: `tan(A − B) = (√(p₁q₂) −
+/// √(p₂q₁))/(√(q₁q₂) + √(p₁p₂))`, `q = 1 − p`, and multiplying both by
+/// `√(p₁q₂) + √(p₂q₁)` leaves the form above; `A − B ∈ [−π/2, π/2]`), so
+/// nothing cancels — `p₁ − p₂` is an exact rational, the denominator a
+/// sum of non-negative roots — and the arctangent is well conditioned even
+/// where `h` is near `±π`.  (Before 0.27 the two arcsines were
+/// subtracted: `cohens_h(½, ½ + 10⁻¹⁰⁰)` evaluated to `0`, and
+/// `cohens_h(1 − 10⁻³⁰, 1)` failed with `PrecisionExhausted`, an arcsine
+/// of an argument within `10⁻³⁰` of `1`.)  Equal proportions give an
+/// exact `0`, `(0, 1)` and `(1, 0)` give `∓π`.
 ///
 /// ```
 /// use symplex::prelude::*;
@@ -1852,8 +2102,18 @@ pub fn cohens_h(ctx: &Context, p1: &Q, p2: &Q) -> Result<Ex, SymplexError> {
             return Err(invalid(OP, "proportions must lie in [0, 1]"));
         }
     }
-    let two = ctx.int(2);
-    Ok(&two * ex(ctx, p1).sqrt().asin() - &two * ex(ctx, p2).sqrt().asin())
+    if p1 == p2 {
+        return Ok(ctx.zero());
+    }
+    let spread = |p: &Q| p * (Q::one() - p);
+    let (s1, s2) = (spread(p1), spread(p2));
+    if s1.is_zero() && s2.is_zero() {
+        // {p₁, p₂} = {0, 1}: A − B = ±π/2.
+        let pi = ctx.pi();
+        return Ok(if p1 > p2 { pi } else { -pi });
+    }
+    let tangent = ex(ctx, &(p1 - p2)) / (ex(ctx, &s1).sqrt() + ex(ctx, &s2).sqrt());
+    Ok(ctx.int(2) * tangent.atan())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2105,7 +2365,7 @@ pub fn z_test_two_proportions(
     if k1 > n1 || k2 > n2 {
         return Err(invalid(OP, "successes exceed trials"));
     }
-    let pooled = qu(k1 + k2) / qu(n1 + n2);
+    let pooled = (qu(k1) + qu(k2)) / (qu(n1) + qu(n2));
     if pooled.is_zero() || pooled.is_one() {
         return Err(invalid(
             OP,
@@ -2371,12 +2631,12 @@ fn mann_whitney_frequencies(m: usize, n: usize) -> Option<Vec<BigInt>> {
     for i in 1..=m {
         let shift = n + i;
         for t in (shift..size).rev() {
-            let v = c[t - shift].clone();
-            c[t] -= v;
+            let (lo, hi) = c.split_at_mut(t);
+            hi[0] -= &lo[t - shift];
         }
         for t in i..size {
-            let v = c[t - i].clone();
-            c[t] += v;
+            let (lo, hi) = c.split_at_mut(t);
+            hi[0] += &lo[t - i];
         }
     }
     Some(c)
@@ -2391,8 +2651,8 @@ fn signed_rank_frequencies(n: usize) -> Option<Vec<BigInt>> {
     c[0] = BigInt::one();
     for k in 1..=n {
         for s in (k..size).rev() {
-            let v = c[s - k].clone();
-            c[s] += v;
+            let (lo, hi) = c.split_at_mut(s);
+            hi[0] += &lo[s - k];
         }
     }
     Some(c)
@@ -2409,17 +2669,15 @@ fn inversion_counts(n: usize, cmax: usize) -> Vec<BigInt> {
     let mut c = vec![BigInt::zero(); cmax + 1];
     c[0] = BigInt::one();
     for j in 2..=n {
-        let mut s = c.clone();
+        // In place: prefix sums S(k) = Σ_{t ≤ k} M(j − 1, t), then
+        // M(j, k) = S(k) − S(k − j), descending so that S(k − j) is intact.
         for t in 1..=cmax {
-            let v = s[t - 1].clone();
-            s[t] += v;
+            let (lo, hi) = c.split_at_mut(t);
+            hi[0] += &lo[t - 1];
         }
-        for k in 0..=cmax {
-            c[k] = if k >= j {
-                &s[k] - &s[k - j]
-            } else {
-                s[k].clone()
-            };
+        for k in (j..=cmax).rev() {
+            let (lo, hi) = c.split_at_mut(k);
+            hi[0] -= &lo[k - j];
         }
     }
     c
@@ -2864,7 +3122,12 @@ pub fn spearman_test(
 /// Otherwise `z = (C − D)/√var` with the tie-corrected variance
 /// `var = (m(2n+5) − Σt(t−1)(2t+5) − Σu(u−1)(2u+5))/18 + 2n₁n₂/m + x₀y₀/(9m(n−2))`,
 /// `m = n(n−1)`, and the normal tail — scipy's `method='asymptotic'`.
-/// `scipy.stats.kendalltau(x, y, method, alternative)`.
+/// `scipy.stats.kendalltau(x, y, method, alternative)`.  The last term
+/// needs a tie group of three or more in both samples, so it is added only
+/// then; with `n = 2` the asymptotic `var = 1`, `z = ±1` and the two-sided
+/// `p = erfc(1/√2) ≈ 0.3173`, where scipy (1.18) evaluates that term
+/// anyway and raises `ZeroDivisionError` (`n − 2 = 0`).  (The exact
+/// `p = 1` of `n = 2` shows how poor the normal approximation is there.)
 ///
 /// ```
 /// use symplex::prelude::*;
@@ -3335,8 +3598,12 @@ fn unsort(order: &[usize], sorted_p: Vec<f64>, sorted_reject: Vec<bool>) -> Adju
     Adjusted { p_adjusted, reject }
 }
 
-/// Bonferroni: `p̃ᵢ = min(1, m·pᵢ)`, reject where `p̃ᵢ ≤ α`.
-/// `statsmodels.stats.multitest.multipletests(p, alpha, method='bonferroni')`.
+/// Bonferroni: `p̃ᵢ = min(1, m·pᵢ)`, reject where `pᵢ ≤ α/m`.
+/// `statsmodels.stats.multitest.multipletests(p, alpha, method='bonferroni')`,
+/// comparison included: in floating point `p ≤ α/m` and `m·p ≤ α` can
+/// disagree in the last bit (`p = 0.05/11` at `α = 0.05` is rejected,
+/// although `p̃ = 11·p` rounds to `0.05000000000000001`); before 0.27
+/// symplex compared `p̃ ≤ α` and differed from statsmodels there.
 ///
 /// ```
 /// use symplex::stats::hypothesis::bonferroni;
@@ -3357,12 +3624,14 @@ pub fn bonferroni(p: &[f64], alpha: f64) -> Result<Adjusted, SymplexError> {
     check_pvalues("bonferroni", p, alpha)?;
     let m = p.len() as f64;
     let p_adjusted: Vec<f64> = p.iter().map(|&v| (v * m).min(1.0)).collect();
-    let reject = p_adjusted.iter().map(|&v| v <= alpha).collect();
+    let reject = p.iter().map(|&v| v <= alpha / m).collect();
     Ok(Adjusted { p_adjusted, reject })
 }
 
 /// Holm's step-down procedure: with `p₍₁₎ ≤ … ≤ p₍ₘ₎`, `p̃₍ᵢ₎ = min(1,
-/// max_{j ≤ i} (m − j + 1) p₍ⱼ₎)`, reject where `p̃ ≤ α`.
+/// max_{j ≤ i} (m − j + 1) p₍ⱼ₎)`; reject `p₍ᵢ₎` while every `p₍ⱼ₎ ≤ α/(m −
+/// j + 1)`, `j ≤ i` (equivalently `p̃₍ᵢ₎ ≤ α`, up to the last bit — the
+/// comparison is statsmodels', as in [`bonferroni`]).
 /// `multipletests(p, alpha, method='holm')`.
 ///
 /// ```
@@ -3384,12 +3653,16 @@ pub fn holm(p: &[f64], alpha: f64) -> Result<Adjusted, SymplexError> {
     let m = p.len();
     let order = ascending_order(p);
     let mut sorted_p = Vec::with_capacity(m);
+    let mut sorted_reject = Vec::with_capacity(m);
     let mut running = 0.0f64;
+    let mut rejecting = true;
     for (rank, &i) in order.iter().enumerate() {
-        running = running.max(p[i] * (m - rank) as f64);
+        let k = (m - rank) as f64;
+        running = running.max(p[i] * k);
         sorted_p.push(running);
+        rejecting = rejecting && p[i] <= alpha / k;
+        sorted_reject.push(rejecting);
     }
-    let sorted_reject = sorted_p.iter().map(|&v| v.min(1.0) <= alpha).collect();
     Ok(unsort(&order, sorted_p, sorted_reject))
 }
 
@@ -3674,8 +3947,11 @@ pub fn permutation_test(
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for `margin ≤ 0`, `confidence ∉ (0,
-/// 1)` or `p ∉ (0, 1)`.
+/// [`SymplexError::InvalidArgument`] for a non-finite or non-positive
+/// `margin`, `confidence ∉ (0, 1)` or `p ∉ (0, 1)`;
+/// [`SymplexError::ComputationFailed`] when the sample size does not fit
+/// in `usize` (`margin = 10⁻¹⁰` needs `9.6·10¹⁹`; before 0.27 the
+/// conversion saturated to `usize::MAX`).
 pub fn sample_size_for_proportion(
     margin: f64,
     confidence: f64,
@@ -3689,8 +3965,16 @@ pub fn sample_size_for_proportion(
     check_confidence(OP, confidence)?;
     check_unit_open(OP, "p", p)?;
     let z = norm_isf((1.0 - confidence) / 2.0);
-    let n = z * z * p * (1.0 - p) / (margin * margin);
-    Ok(n.ceil() as usize)
+    let n = (z * z * p * (1.0 - p) / (margin * margin)).ceil();
+    // `n` is positive, possibly +∞ (`margin²` underflowing); `usize::MAX as
+    // f64` is 2^64 (or 2^32), itself out of range.
+    if n >= usize::MAX as f64 {
+        return Err(SymplexError::computation_failed(
+            OP,
+            format!("the required sample size {n:e} does not fit in usize"),
+        ));
+    }
+    Ok(n as usize)
 }
 
 /// statsmodels' two-sided normal power with `nobs = n/2` (equal groups):
@@ -3741,8 +4025,22 @@ pub fn power_two_proportions(
     if n_per_group == 0 {
         return Err(invalid(OP, "the group size must be positive"));
     }
-    let h = 2.0 * p1.sqrt().asin() - 2.0 * p2.sqrt().asin();
-    Ok(normal_power_two_sided(h, n_per_group as f64, alpha))
+    Ok(normal_power_two_sided(
+        cohens_h_f64(p1, p2),
+        n_per_group as f64,
+        alpha,
+    ))
+}
+
+/// Cohen's `h` in floating point, in the non-cancelling form of
+/// [`cohens_h`]: `2 atan((p₁ − p₂)/(√(p₁(1 − p₁)) + √(p₂(1 − p₂))))` (the
+/// callers pass `p ∈ (0, 1)`, so the denominator is positive).
+fn cohens_h_f64(p1: f64, p2: f64) -> f64 {
+    if p1 == p2 {
+        return 0.0;
+    }
+    let den = (p1 * (1.0 - p1)).sqrt() + (p2 * (1.0 - p2)).sqrt();
+    2.0 * ((p1 - p2) / den).atan()
 }
 
 /// The smallest integer `n ≥ start` with `power(n) ≥ target` for an
@@ -3818,6 +4116,61 @@ pub fn sample_size_two_proportions(
     smallest_n_with_power(OP, 1, power, |n| power_two_proportions(p1, p2, n, alpha))
 }
 
+/// `ln(1 + t) − t` without cancellation near `t = 0`: with `w = t/(2 + t)`,
+/// `ln(1 + t) = 2 atanh w`, so `ln(1 + t) − t = −t²/(2 + t) + 2 Σ_{j≥1}
+/// w^{2j+1}/(2j + 1)` (`|w| ≤ ⅓` for `|t| < ½`; beyond, the direct
+/// difference loses at most a factor 3).
+fn ln_1p_minus(t: f64) -> f64 {
+    if t.abs() >= 0.5 {
+        return t.ln_1p() - t;
+    }
+    let w = t / (2.0 + t);
+    let w2 = w * w;
+    let mut power = w * w2;
+    let mut sum = 0.0;
+    for j in 1..=40 {
+        let term = power / f64::from(2 * j + 1);
+        sum += term;
+        if term.abs() <= f64::EPSILON * sum.abs() {
+            break;
+        }
+        power *= w2;
+    }
+    -t * t / (2.0 + t) + 2.0 * sum
+}
+
+/// The Stirling remainder `ln Γ(k) − ((k − ½) ln k − k + ½ ln 2π)`: its
+/// asymptotic series from `k = 15` (the first omitted term is below
+/// `3·10⁻¹⁶` there), `lgamma` below.
+fn stirling_remainder(k: f64) -> f64 {
+    if k < 15.0 {
+        let tau = 2.0 * std::f64::consts::PI;
+        return lgamma(k) - ((k - 0.5) * k.ln() - k + 0.5 * tau.ln());
+    }
+    let r = k.recip();
+    let r2 = r * r;
+    r * (1.0 / 12.0 - r2 * (1.0 / 360.0 - r2 * (1.0 / 1260.0 - r2 * (1.0 / 1680.0 - r2 / 1188.0))))
+}
+
+/// The `χ²_ν` density.  With `k = ν/2` and `u = v/ν`, `ln f(v) = −ln 2 −
+/// ½ ln(2πk) − s(k) − ln u + k·(ln u − u + 1)` (`s` the Stirling
+/// remainder), which keeps its digits at any `ν`: the textbook `(k − 1)
+/// ln v − v/2 − k ln 2 − ln Γ(k)` cancels terms of size `ν ln ν`, and at
+/// `ν = 2·10⁹` lost `10⁻⁶` of the power (before 0.27).
+fn chi_squared_density(df: f64) -> impl Fn(f64) -> f64 {
+    let k = df / 2.0;
+    let log_norm = -std::f64::consts::LN_2
+        - 0.5 * (2.0 * std::f64::consts::PI * k).ln()
+        - stirling_remainder(k);
+    move |v: f64| -> f64 {
+        if v <= 0.0 {
+            return 0.0;
+        }
+        let t = (v - df) / df;
+        (log_norm - t.ln_1p() + k * ln_1p_minus(t)).exp()
+    }
+}
+
 /// The power of the two-sided two-sample Student t-test (equal group
 /// sizes) for a standardised effect `d` at level `alpha`, through the
 /// noncentral t distribution: with `ν = 2n − 2`, `δ = d√(n/2)` and the
@@ -3850,18 +4203,11 @@ pub fn power_t_test_two_sample(
     if n_per_group < 2 {
         return Err(invalid(OP, "each group needs at least two observations"));
     }
-    let df = (2 * n_per_group - 2) as f64;
-    let delta = effect_size * (n_per_group as f64 / 2.0).sqrt();
+    let n = n_per_group as f64;
+    let df = 2.0 * n - 2.0;
+    let delta = effect_size * (n / 2.0).sqrt();
     let t_crit = student_t_quantile_f64(OP, df, 1.0 - alpha / 2.0)?;
-    // χ²_ν density in log form.
-    let half = df / 2.0;
-    let log_norm = half * std::f64::consts::LN_2 + lgamma(half);
-    let density = move |v: f64| -> f64 {
-        if v <= 0.0 {
-            return 0.0;
-        }
-        ((half - 1.0) * v.ln() - v / 2.0 - log_norm).exp()
-    };
+    let density = chi_squared_density(df);
     let integrand = move |v: f64| -> f64 {
         let scale = (v / df).sqrt();
         (norm_cdf(t_crit * scale - delta) - norm_cdf(-t_crit * scale - delta)) * density(v)

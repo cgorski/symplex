@@ -16,11 +16,17 @@
 //!
 //! | function | method | relative accuracy |
 //! |---|---|---|
-//! | [`betainc_regularized_f64`] | the dispatch of TOMS 708 (DiDonato & Morris 1992): power series `bpser`, the recurrence `bup`, the asymptotic expansion `bgrat` for a large first and small second parameter, the continued fraction `bfrac`, and the two-large-parameter expansion `basym` (both shapes above 100 and `x` within `3 %` of the mean, in `λ = a − (a + b)x`); each tail computed directly where it is the smaller one | ≈ 1e-15 typical, ≤ 1e-13 for `a + b ≤ 1e6` away from the far tail; in the far tail (`1e-100` and below) with shapes ≥ 1e4 expect ≈ 1e-11 — the conditioning of the `f64` argument, one ulp of which moves such a tail by that much; for `a, b` both ≈ 1e7 or more the conditioning of `(a + b)·x` in double limits it to ≈ 1e-12 |
-//! | [`gammainc_lower_regularized_f64`], [`gammainc_upper_regularized_f64`] | a dispatch on `a`: below `GAMMA_TEMME_MIN_A = 1e6`, or for `x` more than 40 standard deviations from `a`, the power series for `x < a + 1` and Lentz's continued fraction otherwise, with the prefactor `xᵃe⁻ˣ/Γ(a)` through Loader's `bd0` and the Stirling remainder (no cancellation for large `a`); from `a = 1e6` on and within those 40σ, Temme's uniform asymptotic expansion (DLMF 8.12) truncated after `c₁/a`, its `½ erfc(z)` and correction term sharing one exponential so the tail stays correct into the subnormal range | ≈ 1e-15; ≈ 1e-12 at `a = 5e7` (the conditioning of the `f64` argument) |
+//! | [`betainc_regularized_f64`] | the dispatch of TOMS 708 (DiDonato & Morris 1992): power series `bpser`, the recurrence `bup`, the asymptotic expansion `bgrat` for a large first and small second parameter, the continued fraction `bfrac`, and the two-large-parameter expansion `basym` (both shapes above 100 and `x` within `3 %` of the mean, in `λ = a − (a + b)x`); each tail computed directly where it is the smaller one.  A shape below 1 is kept as a factor, never as `ln` of it in an exponent: `1/(a B(a, b))` from `ln Γ(1 + t)` (through `gam1`, the Taylor series of `1/Γ(1 + t)`, DLMF 5.7.1) and `ln Γ(a + b) − ln Γ(a)` without cancellation (the `algdiv` of DiDonato & Morris) | ≈ 1e-15 typical, ≤ 1e-13 for `a + b ≤ 1e6` away from the far tail, also for shapes down to `1e-300`; in the far tail (`1e-100` and below) with shapes ≥ 1e4 expect ≈ 1e-11 — the conditioning of the `f64` argument, one ulp of which moves such a tail by that much; for `a, b` both ≈ 1e7 or more the conditioning of `(a + b)·x` in double limits it to ≈ 1e-12.  `a + b` must be a double (`NaN` beyond) |
+//! | [`gammainc_lower_regularized_f64`], [`gammainc_upper_regularized_f64`] | a dispatch on `a`: below 1, the Taylor route of DiDonato & Morris (1986, §2) for `x < 1.1` (each tail formed where it is the smaller one) and Legendre's continued fraction beyond, with the prefactor `a(1 + gam1(a))·e^{a ln x − x}`; below `GAMMA_TEMME_MIN_A = 1e6`, or for `x` beyond both 40 standard deviations and `a/2` from `a`, the power series for `x < a + 1` and Lentz's continued fraction otherwise (rescaled by `x` beyond `10¹⁰⁰`), with the prefactor `xᵃe⁻ˣ/Γ(a)` directly for `a ≤ 10` and through Loader's `bd0` and the Stirling remainder above (no cancellation for large `a`); from `a = 1e6` on and within that window, Temme's uniform asymptotic expansion (DLMF 8.12) truncated after `c₁/a`, its `½ erfc(z)` and correction term sharing one exponential so the tail stays correct into the subnormal range | ≈ 1e-15, also for `a` down to `1e-300`; ≈ 1e-12 at `a = 5e7` (the conditioning of the `f64` argument) |
 //! | `norm` | Cody's `erfc`, continued by `erfcx(x)·e^{−x²}` where Cody's approximation stops (`x > 26.5`, the subnormal range: `Φ(x)` is non-zero down to `x ≈ −38.5`) / the crate's `erfcinv` | ≈ 1e-16 (the precision of a subnormal result in the subnormal range) |
-//! | `t` | `½ I_{ν/(ν + x²)}(ν/2, ½)`; once `ν/x² < 1e-290` (so for `|x|` beyond `≈ 1e145`, where `x²` would soon overflow) the power law `½ (ν/x²)^{ν/2} / ((ν/2) B(ν/2, ½))` from `ln(ν/x²)`, so the tail is right up to `|x| = f64::MAX` (`P(T > 1e200) = 3.2e-101` for `ν = ½`) | ≈ 1e-15; ≈ 1e-13 in the power-law region (`|ν/2 · ln(ν/x²)| · ε`) |
-//! | quantiles | safeguarded Newton on the logarithm of the relevant tail, in a log or logit variable, from a Cornish–Fisher / Wilson–Hilferty start | ≈ 1e-15 (the CDF's accuracy) |
+//! | `t` | `½ I_{ν/(ν + x²)}(ν/2, ½)`; once `ν/x² < 1e-290` (so for `|x|` beyond `≈ 1e145`, where `x²` would soon overflow) the power law `½ (ν/x²)^{ν/2} / ((ν/2) B(ν/2, ½))`, the power as `ν^{ν/2}·|x|^{−ν}` while that is a normal double and from `ln(ν/x²)` below, so the tail is right up to `|x| = f64::MAX` (`P(T > 1e200) = 3.2e-101` for `ν = ½`) | ≈ 1e-15; ≈ 1e-13 in the power-law region where the tail is subnormal (`|ν/2 · ln(ν/x²)| · ε`) |
+//! | `f` | `I_z(d₁/2, d₂/2)` with `z = d₁x/(d₁x + d₂)`, `y = 1 − z` formed directly; where `z` or `y` is below the normal range (`d₁x` under- or overflows, or a shape is extreme) the power series of the small tail from `ln z` (`ln y`) and `d₂z` (`d₁y`), never from the subnormal argument, and the other tail as `−expm1` of its logarithm | as the incomplete beta |
+//! | quantiles | safeguarded Newton on the logarithm of the relevant tail, in a log or logit variable, from a Cornish–Fisher / Wilson–Hilferty start; the root's last Newton correction applied in `x` itself (the log variable cannot resolve it); the gamma for shapes from `1e10` on directly in `x` from the Cornish–Fisher expansion `k + z√k + (z² − 1)/3 + (z³ − 7z)/(36√k)`; where one float step moves the tail by more than `1e-9` (shapes ≳ 1e20), the float next to the crossing of the level | ≈ 1e-15 (the CDF's accuracy); at a subnormal level ≈ `ε·|ln p|·∂ln x/∂ln p` (the logarithm of the level is rounded) |
+//!
+//! Every tail is carried with its logarithm (a mantissa and an exponent
+//! until the end), so a tail below the smallest double still has one: the
+//! quantile iterations and the discrete searches compare in logarithms
+//! where a value would be subnormal.
 //!
 //! # Conventions
 //!
@@ -40,6 +46,12 @@
 //!   ([`SymplexError::InvalidArgument`]; scipy returns `NaN` there).
 //! * `sf(x) = 1 − cdf(x)` is computed directly, not by subtraction, so a
 //!   tail probability of `1e-300` keeps its relative accuracy.
+//! * A quantile outside the positive floats of the support is the float
+//!   the definition `inf{x : F(x) ≥ p}` gives over the floats: the smallest
+//!   positive double (`5e-324`) when that already meets the level (a tiny
+//!   shape piles its mass against 0), `+∞` (`1` for the beta) when even the
+//!   largest double falls short.  The discrete searches compare the smaller
+//!   tail with its level (`sf(k) ≤ 1 − p` for `p > ½`).
 //!
 //! ```
 //! use symplex::stats::numdist::{norm, t};
@@ -128,32 +140,191 @@ fn erfc(x: f64) -> f64 {
     }
 }
 
+/// `m·eˢ`: a non-negative quantity held as a mantissa and a separate
+/// natural exponent.  A tail probability is carried this way until the
+/// end, so that
+///
+/// * a tail below the smallest double keeps its logarithm `ln m + s` —
+///   the quantile solvers work on `ln P`, and at a subnormal level the
+///   rounded `P` has only a few bits (0.26 returned `t::ppf(4.4e-323,
+///   1.12e8)` with a relative error of `1.2·10⁻⁵`);
+/// * a small factor — `b` in `I_x(a, b) ≈ b·(…)` for a tiny shape —
+///   multiplies the mantissa instead of entering the exponent as `ln b`,
+///   where its rounding would be amplified `|ln b|` times.
+#[derive(Clone, Copy, Debug)]
+struct Scaled {
+    m: f64,
+    s: f64,
+}
+
+impl Scaled {
+    const ZERO: Scaled = Scaled { m: 0.0, s: 0.0 };
+
+    /// A plain value.
+    fn of(v: f64) -> Scaled {
+        Scaled { m: v, s: 0.0 }
+    }
+
+    /// `eˢ`.
+    fn exp(s: f64) -> Scaled {
+        Scaled { m: 1.0, s }
+    }
+
+    /// The value, rounded once: `m·eˢ` while `eˢ` is a normal double (so an
+    /// in-range value is exactly what the direct product gives), otherwise
+    /// `e^{s + ln m}`, which neither under- nor overflows on the way.
+    fn value(self) -> f64 {
+        if (-708.0..=709.0).contains(&self.s) || self.m <= 0.0 || self.m.is_nan() {
+            self.m * self.s.exp()
+        } else {
+            (self.s + self.m.ln()).exp()
+        }
+    }
+
+    /// `ln(m·eˢ)`, finite whenever `m > 0`.
+    fn ln(self) -> f64 {
+        self.m.ln() + self.s
+    }
+
+    /// The product of two scaled quantities.
+    fn mul(self, o: Scaled) -> Scaled {
+        Scaled {
+            m: self.m,
+            s: self.s + o.s,
+        }
+        .times(o.m)
+    }
+
+    /// `f·m·eˢ`, the mantissa kept a normal double: a product that would be
+    /// subnormal (or overflow) first moves a factor `2⁶⁰⁰` into the exponent
+    /// — at the price of one rounding of `s`, `½ ulp(s)`, where the product
+    /// alone would have lost its digits.  Only then: `s − 600 ln 2` rounds at
+    /// the magnitude of `s` (a few `10⁻¹⁴` relative near `|s| = 400`).  0.26
+    /// multiplied `(b/a)·yᵃ` into a subnormal mantissa and lost the tail:
+    /// `f::sf(3.6e123, 3.3e-121, 1956)` was `0`, truly `6.6e-324`.
+    fn times(self, f: f64) -> Scaled {
+        /// `2⁶⁰⁰`.
+        const BIG: f64 = 4.149_515_568_880_993e180;
+        let (mut m, mut s) = (self.m, self.s);
+        for _ in 0..4 {
+            let p = (m * f).abs();
+            if p < f64::MIN_POSITIVE && m != 0.0 && f != 0.0 {
+                m *= BIG;
+                s -= 600.0 * std::f64::consts::LN_2;
+            } else if p.is_infinite() && m.is_finite() && f.is_finite() {
+                m /= BIG;
+                s += 600.0 * std::f64::consts::LN_2;
+            } else {
+                break;
+            }
+        }
+        Scaled { m: m * f, s }
+    }
+
+    /// `m·e^{s + t}`.
+    fn times_exp(self, t: f64) -> Scaled {
+        Scaled {
+            m: self.m,
+            s: self.s + t,
+        }
+    }
+
+    /// The sum of two non-negative quantities.  While the larger is a normal
+    /// double the values are added (the smaller one's lost bits are below
+    /// its rounding); only a sum below that is combined in logarithms.
+    fn plus(self, other: Scaled) -> Scaled {
+        if self.m.is_nan() || other.m.is_nan() {
+            return Scaled::of(f64::NAN);
+        }
+        if self.m == 0.0 {
+            return other;
+        }
+        if other.m == 0.0 {
+            return self;
+        }
+        let (u, v) = (self.value(), other.value());
+        if u.max(v) >= 1e-290 {
+            return Scaled::of(u + v);
+        }
+        let s = self.s.max(other.s);
+        Scaled {
+            m: self.m * (self.s - s).exp() + other.m * (other.s - s).exp(),
+            s,
+        }
+    }
+}
+
 /// Both tails of a distribution function at one point, each computed
-/// directly where it is the smaller one.
+/// directly where it is the smaller one, with their logarithms (`ln_lower`,
+/// `ln_upper`) — finite, and accurate, where the tail itself is subnormal
+/// or below the smallest double.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Tails {
     lower: f64,
     upper: f64,
+    ln_lower: f64,
+    ln_upper: f64,
 }
 
 impl Tails {
     const NAN: Tails = Tails {
         lower: f64::NAN,
         upper: f64::NAN,
+        ln_lower: f64::NAN,
+        ln_upper: f64::NAN,
     };
     const ZERO: Tails = Tails {
         lower: 0.0,
         upper: 1.0,
+        ln_lower: f64::NEG_INFINITY,
+        ln_upper: 0.0,
     };
     const ONE: Tails = Tails {
         lower: 1.0,
         upper: 0.0,
+        ln_lower: 0.0,
+        ln_upper: f64::NEG_INFINITY,
     };
+
+    /// Two tails given as plain values (their logarithms taken from them).
+    fn of(lower: f64, upper: f64) -> Tails {
+        Tails {
+            lower,
+            upper,
+            ln_lower: lower.ln(),
+            ln_upper: upper.ln(),
+        }
+    }
+
+    /// The lower tail computed directly as `w`, the upper one as `1 − w`.
+    fn from_lower(w: Scaled) -> Tails {
+        if w.m.is_nan() || w.s.is_nan() {
+            return Tails::NAN;
+        }
+        let lower = w.value().clamp(0.0, 1.0);
+        Tails {
+            lower,
+            upper: 1.0 - lower,
+            ln_lower: if w.m > 0.0 {
+                w.ln().min(0.0)
+            } else {
+                lower.ln()
+            },
+            ln_upper: (-lower).ln_1p(),
+        }
+    }
+
+    /// The upper tail computed directly as `w`, the lower one as `1 − w`.
+    fn from_upper(w: Scaled) -> Tails {
+        Tails::from_lower(w).flipped()
+    }
 
     fn flipped(self) -> Tails {
         Tails {
             lower: self.upper,
             upper: self.lower,
+            ln_lower: self.ln_upper,
+            ln_upper: self.ln_lower,
         }
     }
 }
@@ -234,11 +405,15 @@ fn rlog1(x: f64) -> f64 {
 /// `ln_ratio = ln(k/m)`: the series in `v = diff/(k + m)` when `k ≈ m`
 /// (where the direct formula cancels), the direct formula otherwise.
 fn bd0_with(k: f64, m: f64, diff: f64, ln_ratio: f64) -> f64 {
-    if diff.abs() < 0.1 * (k + m) {
-        let v = diff / (k + m);
+    // `0.1k + 0.1m` and the halved quotient: `k + m` overflows near
+    // f64::MAX, and 0.26 then took the series branch for any pair
+    // (`bd0(1e300, 1.8e308) = 0`, and `gamma::sf(1.8e308, 1e300)` came out
+    // `2.2e-159` instead of 0).
+    if diff.abs() < 0.1 * k + 0.1 * m {
+        let v = (0.5 * diff) / (0.5 * k + 0.5 * m);
         let v2 = v * v;
         let mut s = diff * v;
-        let mut ej = 2.0 * k * v;
+        let mut ej = 2.0 * (k * v);
         let mut j = 1.0;
         loop {
             ej *= v2;
@@ -284,13 +459,64 @@ fn log_beta_pref(a: f64, b: f64, x: f64, y: f64) -> f64 {
     let t_small = bd0_with(small, ns, -d, (small / n).ln() - s.ln());
     let nl = n - ns;
     let t_large = bd0_with(large, nl, d, (large / n).ln() - ln_l);
-    -t_small - t_large - stirlerr(a) - stirlerr(b) + stirlerr(n) + 0.5 * (a * b / n).ln()
-        - LN_SQRT_2PI
+    // ln(ab/n): the product underflows for two tiny shapes (1e-111·5e-283),
+    // where 0.26 returned −∞ and dropped the whole term.
+    let ab_n = a * (b / n);
+    let ln_ab_n = if ab_n >= f64::MIN_POSITIVE {
+        ab_n.ln()
+    } else {
+        a.ln() + b.ln() - n.ln()
+    };
+    -t_small - t_large - stirlerr(a) - stirlerr(b) + stirlerr(n) + 0.5 * ln_ab_n - LN_SQRT_2PI
+}
+
+/// `xᵃ yᵇ / B(a, b)` for `x + y = 1`, from whichever form rounds less.
+/// Loader's [`log_beta_pref`] is made for `x` near the mean `a/(a + b)`,
+/// where the factors are astronomically large and small and their product
+/// is not; its error is about `ε` times its own size, so far from the mean
+/// (`x = 1.6·10⁻⁵²` for shapes 6.4 and 1.5e5: an exponent of `−698`) it
+/// loses `10⁻¹³`.  There the direct product `a·inv_a_beta(a, b)·xᵃyᵇ`
+/// ([`power_pair`]) carries only the exponent of `1/(aB)` (here 69) and
+/// that of the larger argument's power.
+fn beta_pref(a: f64, b: f64, x: f64, y: f64) -> Scaled {
+    let lbp = log_beta_pref(a, b, x, y);
+    let iab = inv_a_beta(a, b);
+    let big_power = if x <= y {
+        b * (-x).ln_1p()
+    } else {
+        a * (-y).ln_1p()
+    };
+    if lbp.is_finite() && iab.s.abs() + big_power.abs() + 1.0 < 0.5 * lbp.abs() {
+        let direct = power_pair(iab.times(a), x, a, y, b);
+        if direct.m.is_finite() && direct.m > 0.0 && direct.s.is_finite() {
+            return direct;
+        }
+    }
+    Scaled::exp(lbp)
 }
 
 /// `ln(xᵃ e⁻ˣ / Γ(a))` for `a, x > 0`: `−stirlerr(a) − bd0(a, x) + ½ ln(a/(2π))`.
 fn log_gamma_pref(a: f64, x: f64) -> f64 {
     -stirlerr(a) - bd0(a, x) + 0.5 * a.ln() - LN_SQRT_2PI
+}
+
+/// `xᵃ e⁻ˣ / Γ(a)` for `a ≥ 1`: for `a ≤ 10` as the product itself while
+/// `xᵃ` (through `powf`) and `e⁻ˣ` are normal doubles, otherwise
+/// Loader's form [`log_gamma_pref`].  Far from the mean — `x = 10⁻¹⁷⁴`,
+/// `a = 1.2` — `bd0 ≈ a ln(a/x)` is several hundred, and its rounding in
+/// the exponent cost `6·10⁻¹⁴`; Loader's form is for `x ≈ a`, which the
+/// product cannot do for large `a`.
+fn gamma_pref(a: f64, x: f64) -> Scaled {
+    if a <= 10.0 {
+        let (xa, ex) = (x.powf(a), (-x).exp());
+        if xa.is_finite() && xa >= f64::MIN_POSITIVE && ex >= f64::MIN_POSITIVE {
+            return Scaled {
+                m: xa * ex,
+                s: -lgamma(a),
+            };
+        }
+    }
+    Scaled::exp(log_gamma_pref(a, x))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -314,17 +540,36 @@ fn gamma_p_series_over_r(a: f64, x: f64) -> f64 {
 }
 
 /// `Q(a, x) / r` by Lentz's algorithm on Legendre's continued fraction
-/// (`x ≥ a + 1`, where it converges fast).
-fn gamma_q_cf_over_r(a: f64, x: f64) -> f64 {
+/// (`x ≥ a + 1`, where it converges fast).  Beyond `x = 10¹⁰⁰` the
+/// fraction is evaluated for `x·Q/r` (every partial numerator divided by
+/// `x²`, every denominator by `x`), which is of order 1: the unscaled
+/// value `≈ 1/x` is subnormal near `f64::MAX`, where 0.26's iteration
+/// never met its tolerance and ran its ten million steps (48 ms).
+fn gamma_q_cf_over_r(a: f64, x: f64) -> Scaled {
+    if x > 1e100 {
+        return Scaled {
+            m: gamma_q_cf_scaled_by(a, x, x),
+            s: -x.ln(),
+        };
+    }
+    Scaled::of(gamma_q_cf_scaled_by(a, x, 1.0))
+}
+
+/// `s·Q(a, x)/r`: Legendre's fraction with its denominators divided by `s`
+/// and its partial numerators by `s²`.
+fn gamma_q_cf_scaled_by(a: f64, x: f64, s: f64) -> f64 {
     const TINY: f64 = 1e-300;
-    let mut b = x + 1.0 - a;
+    // Divisions, not a reciprocal: 1/s is subnormal for s near f64::MAX,
+    // and dividing by s = 1 leaves the unscaled fraction bit for bit.
+    let step = 2.0 / s;
+    let mut b = (x + 1.0 - a) / s;
     let mut c = 1.0 / TINY;
     let mut d = 1.0 / b;
     let mut h = d;
     let mut i = 1.0;
     for _ in 0..GAMMA_MAX_ITER {
-        let an = -i * (i - a);
-        b += 2.0;
+        let an = -i * (i - a) / s / s;
+        b += step;
         d = an * d + b;
         if d.abs() < TINY {
             d = TINY;
@@ -469,7 +714,7 @@ fn temme_c0_c1(eta: f64, d: f64) -> (f64, f64) {
 /// smaller one, and the smaller is clamped into `[0, 1]`.
 fn gammainc_tails_temme(a: f64, x: f64) -> Tails {
     // (x − a) is exact for a/2 ≤ x ≤ 2a (Sterbenz), which the caller's
-    // 40σ window guarantees; x/a − 1 would not be.
+    // window guarantees; x/a − 1 would not be.
     let d = (x - a) / a;
     let eta = temme_eta(d);
     let z = eta * (a / 2.0).sqrt();
@@ -481,17 +726,19 @@ fn gammainc_tails_temme(a: f64, x: f64) -> Tails {
     } else {
         0.5 * erfcx(-z) - correction
     };
-    let small = (mantissa * exp_neg_square(z.abs())).clamp(0.0, 1.0);
+    // e^{−z²} split as in `exp_neg_square`: the exact square xₛ² is the
+    // exponent, e^{−δ} joins the mantissa.
+    let az = z.abs();
+    let xs = (az * 16.0).floor() / 16.0;
+    let del = (az - xs) * (az + xs);
+    let small = Scaled {
+        m: (mantissa * (-del).exp()).max(0.0),
+        s: -(xs * xs),
+    };
     if z >= 0.0 {
-        Tails {
-            lower: 1.0 - small,
-            upper: small,
-        }
+        Tails::from_upper(small)
     } else {
-        Tails {
-            lower: small,
-            upper: 1.0 - small,
-        }
+        Tails::from_lower(small)
     }
 }
 
@@ -508,25 +755,24 @@ fn gammainc_tails(a: f64, x: f64) -> Tails {
     }
     if a >= GAMMA_TEMME_MIN_A {
         // Within ~40 standard deviations of the mean the uniform expansion
-        // is both faster and more accurate than the series / fraction.
+        // is both faster and more accurate than the series / fraction; so
+        // it is for `|x − a| ≤ a/2` (`|η| ≤ 0.6`, inside the `|η| ≤ 1.5` of
+        // its error bound), where the series needs `a/|x − a|` terms — up to
+        // its ten-million cap once `40√a ≪ a` (0.26: 9 ms and a wrong
+        // tail for `gamma::cdf(0.9999999999999998e300, 1e300)`).
         let sd = a.sqrt();
-        if (x - a).abs() < 40.0 * sd {
+        if (x - a).abs() < 40.0 * sd || (x - a).abs() <= 0.5 * a {
             return gammainc_tails_temme(a, x);
         }
     }
-    let r = log_gamma_pref(a, x).exp();
+    if a < 1.0 {
+        return gammainc_tails_small_shape(a, x);
+    }
+    let r = gamma_pref(a, x);
     if x < a + 1.0 {
-        let p = r * gamma_p_series_over_r(a, x);
-        Tails {
-            lower: p,
-            upper: 1.0 - p,
-        }
+        Tails::from_lower(r.times(gamma_p_series_over_r(a, x)))
     } else {
-        let q = r * gamma_q_cf_over_r(a, x);
-        Tails {
-            lower: 1.0 - q,
-            upper: q,
-        }
+        Tails::from_upper(r.mul(gamma_q_cf_over_r(a, x)))
     }
 }
 
@@ -567,14 +813,11 @@ pub fn gammainc_upper_regularized_f64(a: f64, x: f64) -> f64 {
 /// `I_x(a, b)` by the power series
 /// `xᵃ/(a B(a, b)) · [1 + a Σ_{n≥1} (1−b)(2−b)⋯(n−b)/n! · xⁿ/(a + n)]`,
 /// for `b ≤ 1` or `b x ≤ 0.7` and `x ≤ 0.7`.
-fn bpser(a: f64, b: f64, x: f64) -> f64 {
+fn bpser(a: f64, b: f64, x: f64) -> Scaled {
     if x == 0.0 {
-        return 0.0;
+        return Scaled::ZERO;
     }
-    let lead = (a * x.ln() - lbeta(a, b)).exp() / a;
-    if lead == 0.0 {
-        return 0.0;
-    }
+    let lead = times_power(inv_a_beta(a, b), x, a);
     let tol = EPS / a;
     let mut n = 0.0;
     let mut sum = 0.0;
@@ -588,20 +831,59 @@ fn bpser(a: f64, b: f64, x: f64) -> f64 {
             break;
         }
     }
-    lead * (1.0 + a * sum)
+    lead.times(1.0 + a * sum)
+}
+
+/// `f·xᵃyᵇ` for `x + y = 1` with the smaller of `x`, `y` exact (the other
+/// is `1 −` it, rounded): the larger one's power as `e^{b ln(1 − s)}` from
+/// the exact `s`, since `powf` of the rounded complement would carry its
+/// rounding times the exponent.
+fn power_pair(f: Scaled, x: f64, a: f64, y: f64, b: f64) -> Scaled {
+    if x <= y {
+        times_power(f, x, a).times_exp(b * (-x).ln_1p())
+    } else {
+        times_power(f, y, b).times_exp(a * (-y).ln_1p())
+    }
+}
+
+/// `f·xᵖ` for `0 < x ≤ 1`, `p > 0`: through `powf` (one rounding) while
+/// `xᵖ` is a normal double, as `p ln x` in the exponent below.
+fn times_power(f: Scaled, x: f64, p: f64) -> Scaled {
+    let xp = x.powf(p);
+    if xp >= f64::MIN_POSITIVE {
+        return f.times(xp);
+    }
+    // xᵖ underflows, but f·xᵖ may be a normal double: fold eˢ into the
+    // base, (e^{s/p}·x)ᵖ, whose rounding is amplified p-fold rather than
+    // |p ln x|-fold (`I_{9.2e-65}(4.91, 517)` lost 1.4·10⁻¹³ through the
+    // exponent ≈ −723).
+    let base = x * (f.s / p).exp();
+    let v = f.m * base.powf(p);
+    if base.is_finite() && v.is_finite() && v >= f64::MIN_POSITIVE {
+        return Scaled::of(v);
+    }
+    f.times_exp(p * x.ln())
 }
 
 /// `I_x(a, b) − I_x(a + n, b)` for an integer `n ≥ 1`: the sum of the `n`
 /// positive terms `x^{a+j} yᵇ / ((a + j) B(a + j, b))`, accumulated
 /// relative to the largest so far so that no term over- or underflows.
-fn bup(a: f64, b: f64, x: f64, y: f64, n: usize) -> f64 {
-    let log_t0 = log_beta_pref(a, b, x, y) - a.ln();
-    if log_t0 == f64::NEG_INFINITY {
-        return 0.0;
+fn bup(a: f64, b: f64, x: f64, y: f64, n: usize) -> Scaled {
+    // The first term xᵃyᵇ/(a B(a, b)): Loader's form, except for a tiny
+    // shape, where its stirlerr cancels (|ln a|·ε) and `inv_a_beta` keeps
+    // the shape as a factor.
+    let t0 = if a.min(b) < 1e-3 {
+        power_pair(inv_a_beta(a, b), x, a, y, b)
+    } else {
+        beta_pref(a, b, x, y).times(1.0 / a)
+    };
+    if t0.m == 0.0 || t0.s == f64::NEG_INFINITY {
+        return Scaled::ZERO;
     }
     let apb = a + b;
     let ap1 = a + 1.0;
     let lnx = x.ln();
+    let log_t0 = 0.0;
     let mut log_t = log_t0;
     let mut max = log_t;
     let mut sum = 1.0;
@@ -621,25 +903,165 @@ fn bup(a: f64, b: f64, x: f64, y: f64, n: usize) -> f64 {
             }
         }
     }
-    max.exp() * sum
+    Scaled {
+        m: t0.m * sum,
+        s: t0.s + max,
+    }
 }
 
-/// `1/Γ(a + 1) − 1` for `0 ≤ a ≤ 1`.
+/// `1/Γ(1 + a) − 1` for `−½ ≤ a ≤ ½`, and through `1/Γ(1 + a) =
+/// (1 + gam1(a − 1))/a` on `(½, 1½]`: the Taylor series
+/// `1/Γ(1 + t) = 1 + Σ_{k≥1} cₖ tᵏ` (DLMF 5.7.1, whose coefficients are these
+/// shifted by one) through `t²²`, where the next term is below `10⁻²³` for
+/// `|t| ≤ ½`.  Relative error below `1.2·10⁻¹⁵` on `(0, 1½]` against
+/// mpmath's `rgamma(1 + a) − 1` at 700 digits.  0.26 formed `lgamma(1 + a)`,
+/// which loses `a` in the rounding of `1 + a` (all of it for `a < ε`), so
+/// the incomplete gamma and beta functions of a shape below `10⁻³` lost
+/// digits — up to all of them.
 fn gam1(a: f64) -> f64 {
-    let lg = lgamma(a + 1.0);
-    -lg.exp_m1() * (-lg).exp()
+    // mpmath 1.3: mp.dps = 40; taylor(lambda z: rgamma(1 + z), 0, 22)[1:]
+    const C: [f64; 22] = [
+        0.577_215_664_901_532_9,
+        -0.655_878_071_520_253_9,
+        -0.042_002_635_034_095_24,
+        0.166_538_611_382_291_48,
+        -0.042_197_734_555_544_33,
+        -0.009_621_971_527_876_973,
+        0.007_218_943_246_663_1,
+        -0.001_165_167_591_859_065_2,
+        -0.000_215_241_674_114_950_98,
+        0.000_128_050_282_388_116_2,
+        -2.013_485_478_078_824e-5,
+        -1.250_493_482_142_670_6e-6,
+        1.133_027_231_981_696e-6,
+        -2.056_338_416_977_607e-7,
+        6.116_095_104_481_416e-9,
+        5.002_007_644_469_223e-9,
+        -1.181_274_570_487_02e-9,
+        1.043_426_711_691_100_5e-10,
+        7.782_263_439_905_071e-12,
+        -3.696_805_618_642_206e-12,
+        5.100_370_287_454_476e-13,
+        -2.058_326_053_566_506_6e-14,
+    ];
+    let series = |t: f64| C.iter().rev().fold(0.0, |acc, &c| acc * t + c) * t;
+    if a <= 0.5 {
+        series(a)
+    } else {
+        // 1/Γ(1 + a) − 1 = (1 + S(t))/a − 1 = (S(t) − t)/a, t = a − 1 exact.
+        let t = a - 1.0;
+        (series(t) - t) / a
+    }
 }
 
-/// `Q(a, x) / r` with `r = e⁻ˣxᵃ/Γ(a) = exp(log_r)`, for `a ≤ 1`
-/// (TOMS 708 `grat_r`): a Taylor expansion of `P(a, x)/xᵃ` for `x < 1.1`
-/// arranged so that neither tail cancels, the continued fraction beyond.
-fn grat_r(a: f64, x: f64, log_r: f64) -> f64 {
-    if a * x == 0.0 {
-        return if x <= a { (-log_r).exp() } else { 0.0 };
+/// `ln Γ(1 + a)` for `0 ≤ a ≤ 1`, from [`gam1`]: no rounding of `1 + a`.
+fn lgamma1p(a: f64) -> f64 {
+    -gam1(a).ln_1p()
+}
+
+/// `ln Γ(a + b) − ln Γ(a)` for `a, b > 0`, without the cancellation of the
+/// two logarithms when `b` is small beside `a` (the `algdiv` of DiDonato &
+/// Morris 1992): for `a ≥ 10` the Stirling forms with the leading terms
+/// combined analytically,
+/// `(a − ½) ln(1 + b/a) + b ln(a + b) − b + stirlerr(a + b) − stirlerr(a)`;
+/// below, `a` is first shifted past 10 by the recurrence
+/// `Γ(a + b)/Γ(a) = [Γ(a + n + b)/Γ(a + n)] · Π_{k<n} (a + k)/(a + k + b)`,
+/// each factor through `ln(1 + b/(a + k))`.
+fn ln_gamma_ratio(a: f64, b: f64) -> f64 {
+    let mut a = a;
+    let mut shift = 0.0;
+    while a < 10.0 {
+        shift += (b / a).ln_1p();
+        a += 1.0;
     }
-    if x >= 1.1 {
-        return gamma_q_cf_over_r(a, x);
+    (a - 0.5) * (b / a).ln_1p() + b * (a + b).ln() - b + stirlerr_diff(a, b) - shift
+}
+
+/// `stirlerr(a + b) − stirlerr(a)` for `a ≥ 10`, `b > 0`, term by term in
+/// the series of [`stirlerr`] (DLMF 5.11.1):
+/// `Σ cₖ a^{−m}·expm1(−m ln(1 + b/a))`, `m = 2k − 1`, so that the difference
+/// keeps its relative accuracy as `b → 0` — the direct difference of two
+/// `≈ 1/(12a)` values has an absolute error `ε/(12a)`, which swamps a
+/// result of order `b/a²`.
+fn stirlerr_diff(a: f64, b: f64) -> f64 {
+    // B₂ₖ/(2k(2k − 1)), k = 1..7, as in `stirlerr`.
+    const C: [f64; 7] = [
+        1.0 / 12.0,
+        -1.0 / 360.0,
+        1.0 / 1260.0,
+        -1.0 / 1680.0,
+        1.0 / 1188.0,
+        -691.0 / 360_360.0,
+        1.0 / 156.0,
+    ];
+    let l = (b / a).ln_1p();
+    let inv = 1.0 / a;
+    let inv2 = inv * inv;
+    let mut pow = inv; // a^{−m}
+    let mut m = 1.0;
+    let mut sum = 0.0;
+    for c in C {
+        sum += c * pow * (-m * l).exp_m1();
+        pow *= inv2;
+        m += 2.0;
     }
+    sum
+}
+
+/// `1/(a·B(a, b)) = Γ(a + b)/(Γ(1 + a)Γ(b))`, the prefactor of the power
+/// series of `I_x(a, b)`, with a small shape kept out of the exponent:
+///
+/// * `b < a ≤ 1`: `(b/(a + b))·Γ(1 + a + b)/(Γ(1 + a)Γ(1 + b))`, the
+///   small `b` as a mantissa;
+/// * `a ≤ 1`, `a ≤ b`: `e^{ln Γ(b + a) − ln Γ(b) − ln Γ(1 + a)}` — an
+///   exponent of order `a` computed to its own relative accuracy, so that
+///   `1 − I_x(a, b)` can be taken from it through `expm1` when `a` is tiny;
+/// * `b ≤ 1 < a`: `(b/a)·e^{ln Γ(a + b) − ln Γ(a) − ln Γ(1 + b)}`;
+/// * `a, b > 1`: `e^{−ln a − ln B(a, b)}`.
+///
+/// `ln Γ(1 + t)` is [`lgamma1p`], the differences [`ln_gamma_ratio`].  The
+/// `ln B(a, b)` of 0.26 carried `−ln b` (690 at `b = 10⁻³⁰⁰`) into an
+/// exponent that then cancelled, costing `|ln b|·ε` relative.
+fn inv_a_beta(a: f64, b: f64) -> Scaled {
+    // u/v as a mantissa, or in the exponent where the quotient is not a
+    // normal double (b = 10⁻³⁰⁰ over a = 10¹⁰).
+    let ratio = |u: f64, v: f64| {
+        let r = u / v;
+        if r >= f64::MIN_POSITIVE {
+            Scaled::of(r)
+        } else {
+            Scaled::exp(u.ln() - v.ln())
+        }
+    };
+    if a <= 1.0 && b < a {
+        ratio(b, a + b).times_exp(lgamma_small(a + b) - lgamma1p(a) - lgamma1p(b))
+    } else if a <= 1.0 {
+        Scaled::exp(ln_gamma_ratio(b, a) - lgamma1p(a))
+    } else if b <= 1.0 {
+        ratio(b, a).times_exp(ln_gamma_ratio(a, b) - lgamma1p(b))
+    } else {
+        Scaled::exp(-a.ln() - lbeta(a, b))
+    }
+}
+
+/// `ln Γ(1 + t)` for `0 ≤ t ≤ 2`: [`lgamma1p`] up to 1, `lgamma(1 + t)`
+/// beyond (where `1 + t` loses nothing).
+fn lgamma_small(t: f64) -> f64 {
+    if t <= 1.0 {
+        lgamma1p(t)
+    } else {
+        lgamma(1.0 + t)
+    }
+}
+
+/// The Taylor route for a shape `0 < a ≤ 1` and `x < 1.1` (DiDonato &
+/// Morris 1986, §2): from the series
+/// `Γ(1 + a) P(a, x)/xᵃ = 1 − j`, `j = −a Σ_{n≥1} (−x)ⁿ/(n!(a + n))`, and
+/// `1/Γ(1 + a) = 1 + h` (`h =` [`gam1`]), `P = eᶻ(1 + h)(1 − j)` with
+/// `z = a ln x`, and `Q = ((l + 1) j − l)(1 + h) − h` with `l = eᶻ − 1`.
+/// Where `Q` is the smaller tail (`xᵃ` near 1) it is formed by the second
+/// expression, which does not cancel; elsewhere `P` by the first.
+fn gamma_taylor_small_shape(a: f64, x: f64) -> Tails {
     let mut an = 3.0;
     let mut c = x;
     let mut sum = x / (a + 3.0);
@@ -649,50 +1071,82 @@ fn grat_r(a: f64, x: f64, log_r: f64) -> f64 {
         c *= -(x / an);
         let t = c / (a + an);
         sum += t;
-        if t.abs() <= tol {
+        if t.abs() <= tol || an > 200.0 {
             break;
         }
     }
-    // j = 1 − Γ(a + 1) P(a, x) / xᵃ
     let j = a * x * ((sum / 6.0 - 0.5 / (a + 2.0)) * x + 1.0 / (a + 1.0));
     let z = a * x.ln();
     let h = gam1(a);
     let g = h + 1.0;
     if (x >= 0.25 && a < x / 2.59) || z > -0.13394 {
-        // Q directly, through eᶻ − 1: no `1 − P` cancellation.
         let l = z.exp_m1();
         let q = ((l + 1.0) * j - l) * g - h;
-        if q <= 0.0 { 0.0 } else { q * (-log_r).exp() }
+        Tails::from_upper(Scaled::of(q.max(0.0)))
     } else {
-        let p = z.exp() * g * (1.0 - j);
-        (1.0 - p) * (-log_r).exp()
+        Tails::from_lower(Scaled::of(z.exp() * g * (1.0 - j)))
     }
+}
+
+/// `(P(a, x), Q(a, x))` for `0 < a < 1`: the Taylor route below `x = 1.1`,
+/// Legendre's continued fraction for `Q` above it with the prefactor
+/// `xᵃe⁻ˣ/Γ(a) = a(1 + h)e^{a ln x − x}` — `Γ(a)` never formed, whose
+/// logarithm `≈ −ln a` would carry `|ln a|·ε` into the result.  (0.26 took
+/// `P` from the power series and `Q = 1 − P` for every `x < a + 1`:
+/// `gammaincc(1e-300, 0.9) = −4.6·10⁻¹⁴`, truly `2.6·10⁻³⁰¹`.)
+fn gammainc_tails_small_shape(a: f64, x: f64) -> Tails {
+    if x < 1.1 {
+        return gamma_taylor_small_shape(a, x);
+    }
+    let r = Scaled {
+        m: a * (1.0 + gam1(a)),
+        s: a * x.ln() - x,
+    };
+    Tails::from_upper(r.mul(gamma_q_cf_over_r(a, x)))
+}
+
+/// `Q(a, x)/r` with `r = xᵃe⁻ˣ/Γ(a)` for `0 < a ≤ 1` (the `j` of
+/// [`bgrat`]): the continued fraction from `x = 1.1` on, the Taylor route
+/// divided by `r` below.  Infinite when `r` underflows.
+fn grat_r(a: f64, x: f64, r: Scaled) -> f64 {
+    if x >= 1.1 {
+        return gamma_q_cf_over_r(a, x).value();
+    }
+    gamma_taylor_small_shape(a, x).upper / r.value()
 }
 
 /// `I_x(a, b)` for `a ≥ 15`, `b ≤ 1` by the asymptotic expansion of
 /// DiDonato & Morris (1992, §9) in the incomplete gamma function of
-/// `−(a + (b−1)/2) ln x`; `None` when it cannot be evaluated (the leading
-/// term underflows or the partial sums turn negative).
-fn bgrat(a: f64, b: f64, x: f64, y: f64) -> Option<f64> {
+/// `−(a + (b−1)/2) ln x`; `None` when it cannot be evaluated (the partial
+/// sums turn negative).  The prefactors keep `b` as a factor —
+/// `r = e⁻ᶻzᵇ/Γ(b) = b(1 + gam1(b))·zᵇe⁻ᶻ` and `u = r·Γ(a + b)/(Γ(a)νᵇ)`
+/// with `ln Γ(a + b) − ln Γ(a)` from [`ln_gamma_ratio`] — where 0.26 took
+/// `lgamma(b) ≈ −ln b` into the exponent and out again, and `gam1(b)` from
+/// `lgamma(1 + b)`, which is `0` for `b < ε`: `I_{0.99}(50, 10⁻²⁰)` came out
+/// `1.14·10⁻²⁰`, truly `5.63·10⁻²¹`.
+fn bgrat(a: f64, b: f64, x: f64, y: f64) -> Option<Scaled> {
     const N_TERMS: usize = 30;
     let bm1 = b - 1.0;
     let nu = a + 0.5 * bm1;
     let lnx = if y > 0.375 { x.ln() } else { (-y).ln_1p() };
     let z = -nu * lnx;
-    if b * z == 0.0 {
+    if z.is_nan() || z <= 0.0 {
         return None;
     }
-    // r = e⁻ᶻ zᵇ / Γ(b);  u = r · Γ(a + b) / (Γ(a) νᵇ).
-    let log_r = b * z.ln() - z - lgamma(b);
-    let log_u = log_r - ((lbeta(a, b) - lgamma(b)) + b * nu.ln());
-    if log_u == f64::NEG_INFINITY {
-        // The whole expansion underflows: the tail is below the smallest double.
-        return Some(0.0);
-    }
-    let u = log_u.exp();
+    let r = Scaled {
+        m: b * (1.0 + gam1(b)),
+        s: b * z.ln() - z,
+    };
+    let u = Scaled {
+        m: r.m,
+        s: r.s + ln_gamma_ratio(a, b) - b * nu.ln(),
+    };
     let v = 0.25 / (nu * nu);
     let t2 = lnx * 0.25 * lnx;
-    let mut j = grat_r(b, z, log_r);
+    let mut j = grat_r(b, z, r);
+    if !j.is_finite() {
+        return None;
+    }
     let mut sum = j;
     let mut t = 1.0;
     let mut cn = 1.0;
@@ -724,20 +1178,16 @@ fn bgrat(a: f64, b: f64, x: f64, y: f64) -> Option<f64> {
             break;
         }
     }
-    Some(if u == 0.0 {
-        (log_u + sum.ln()).exp()
-    } else {
-        u * sum
-    })
+    Some(u.times(sum))
 }
 
 /// `I_x(a, b)` for `a, b > 1` by the continued fraction of DiDonato &
 /// Morris, `λ = (a + b) y − b ≥ 0` (so `x` is below the mean and the value
 /// is the smaller tail).
-fn bfrac(a: f64, b: f64, x: f64, y: f64, lambda: f64) -> f64 {
-    let brc = log_beta_pref(a, b, x, y).exp();
-    if brc == 0.0 {
-        return 0.0;
+fn bfrac(a: f64, b: f64, x: f64, y: f64, lambda: f64) -> Scaled {
+    let brc = beta_pref(a, b, x, y);
+    if brc.s == f64::NEG_INFINITY || brc.m == 0.0 {
+        return Scaled::ZERO;
     }
     let c = lambda + 1.0;
     let c0 = b / a;
@@ -777,23 +1227,19 @@ fn bfrac(a: f64, b: f64, x: f64, y: f64, lambda: f64) -> f64 {
         anp1 = r;
         bnp1 = 1.0;
     }
-    brc * r
+    brc.times(r)
 }
 
 /// `I_x(a, b)` for large `a, b` (both `≥ 15`, neither below `100` unless
 /// `λ` is small) by the asymptotic expansion of DiDonato & Morris,
 /// `λ = (a + b) y − b ≥ 0`.
-fn basym(a: f64, b: f64, lambda: f64) -> f64 {
+fn basym(a: f64, b: f64, lambda: f64) -> Scaled {
     const NUM: usize = 20;
     /// `2/√π`.
     const E0: f64 = std::f64::consts::FRAC_2_SQRT_PI;
     /// `2^{−3/2}`.
     const E1: f64 = 0.353_553_390_593_273_7;
     let f = a * rlog1(-lambda / a) + b * rlog1(lambda / b);
-    let t = (-f).exp();
-    if t == 0.0 {
-        return 0.0;
-    }
     let z0 = f.sqrt();
     let z = 0.5 * z0 / E1;
     let z2 = f + f;
@@ -863,6 +1309,12 @@ fn basym(a: f64, b: f64, lambda: f64) -> f64 {
         let t0 = d[n - 1] * w * j0;
         w *= w0;
         let t1 = d[np1 - 1] * w * j1;
+        // Far out (f of order 10³⁰⁰ for shapes near 10³⁰⁰) the powers of
+        // z overflow while those of w₀ underflow; their product is small, and
+        // the tail itself is e^{−f} — keep the terms so far.
+        if !(t0.is_finite() && t1.is_finite()) {
+            break;
+        }
         sum += t0 + t1;
         if t0.abs() + t1.abs() <= 100.0 * EPS * sum {
             break;
@@ -870,45 +1322,54 @@ fn basym(a: f64, b: f64, lambda: f64) -> f64 {
         n += 2;
     }
     let bcorr = stirlerr(a) + stirlerr(b) - stirlerr(a + b);
-    E0 * t * (-bcorr).exp() * sum
+    Scaled {
+        m: E0 * (-bcorr).exp() * sum,
+        s: -f,
+    }
 }
 
 /// A tail probability: the lower tail `P(X ≤ x)` or the upper tail
-/// `P(X > x)`.  Names which tail a route of [`bratio`] computed directly,
-/// and which tail a quantile inversion targets.
+/// `P(X > x)` — the tail a quantile inversion targets.
 #[derive(Clone, Copy, Debug)]
 enum Side {
     Lower(f64),
     Upper(f64),
 }
 
+/// The tail a route of [`bratio`] computed directly.
+#[derive(Clone, Copy, Debug)]
+enum Direct {
+    Lower(Scaled),
+    Upper(Scaled),
+}
+
 /// The TOMS 708 dispatch for `I_x(a, b)`, `a, b > 0`, `0 < x < 1`,
 /// `y = 1 − x`: chooses the route, and the tail it computes directly, from
 /// the sizes of `a`, `b` and the position of `x` relative to the mean.
 /// `None` when `bgrat` fails.
-fn bratio_route(a: f64, b: f64, x: f64, y: f64) -> Option<(Side, bool)> {
+fn bratio_route(a: f64, b: f64, x: f64, y: f64) -> Option<(Direct, bool)> {
     let (side, swap) = if a.min(b) <= 1.0 {
         let swap = x > 0.5;
         let (a0, b0, x0, y0) = if swap { (b, a, y, x) } else { (a, b, x, y) };
         // Now x0 ≤ ½ ≤ y0.
         let side = if a0.max(b0) > 1.0 {
             if b0 <= 1.0 {
-                Side::Lower(bpser(a0, b0, x0))
+                Direct::Lower(bpser(a0, b0, x0))
             } else if x0 >= 0.29 {
-                Side::Upper(bpser(b0, a0, y0))
+                Direct::Upper(bpser(b0, a0, y0))
             } else if x0 < 0.1 && (x0 * b0).powf(a0) <= 0.7 {
-                Side::Lower(bpser(a0, b0, x0))
+                Direct::Lower(bpser(a0, b0, x0))
             } else if b0 > 15.0 {
-                Side::Upper(bgrat(b0, a0, y0, x0)?)
+                Direct::Upper(bgrat(b0, a0, y0, x0)?)
             } else {
-                Side::Upper(bup(b0, a0, y0, x0, 20) + bgrat(b0 + 20.0, a0, y0, x0)?)
+                Direct::Upper(bup(b0, a0, y0, x0, 20).plus(bgrat(b0 + 20.0, a0, y0, x0)?))
             }
         } else if a0 >= 0.2f64.min(b0) || x0.powf(a0) <= 0.9 {
-            Side::Lower(bpser(a0, b0, x0))
+            Direct::Lower(bpser(a0, b0, x0))
         } else if x0 >= 0.3 {
-            Side::Upper(bpser(b0, a0, y0))
+            Direct::Upper(bpser(b0, a0, y0))
         } else {
-            Side::Upper(bup(b0, a0, y0, x0, 20) + bgrat(b0 + 20.0, a0, y0, x0)?)
+            Direct::Upper(bup(b0, a0, y0, x0, 20).plus(bgrat(b0 + 20.0, a0, y0, x0)?))
         };
         (side, swap)
     } else {
@@ -926,7 +1387,7 @@ fn bratio_route(a: f64, b: f64, x: f64, y: f64) -> Option<(Side, bool)> {
         };
         let side = if b0 < 40.0 {
             if b0 * x0 <= 0.7 {
-                Side::Lower(bpser(a0, b0, x0))
+                Direct::Lower(bpser(a0, b0, x0))
             } else {
                 // Reduce b0 to its fractional part bf ∈ (0, 1] by the
                 // recurrence, then finish with the series or bgrat.
@@ -938,27 +1399,27 @@ fn bratio_route(a: f64, b: f64, x: f64, y: f64) -> Option<(Side, bool)> {
                 }
                 let mut w = bup(bf, a0, y0, x0, n as usize);
                 if x0 <= 0.7 {
-                    w += bpser(a0, bf, x0);
+                    w = w.plus(bpser(a0, bf, x0));
                 } else {
                     let mut aa = a0;
                     if aa <= 15.0 {
-                        w += bup(aa, bf, x0, y0, 20);
+                        w = w.plus(bup(aa, bf, x0, y0, 20));
                         aa += 20.0;
                     }
-                    w += bgrat(aa, bf, x0, y0)?;
+                    w = w.plus(bgrat(aa, bf, x0, y0)?);
                 }
-                Side::Lower(w)
+                Direct::Lower(w)
             }
         } else if a0 > b0 {
             if b0 <= 100.0 || lambda > 0.03 * b0 {
-                Side::Lower(bfrac(a0, b0, x0, y0, lambda))
+                Direct::Lower(bfrac(a0, b0, x0, y0, lambda))
             } else {
-                Side::Lower(basym(a0, b0, lambda))
+                Direct::Lower(basym(a0, b0, lambda))
             }
         } else if a0 <= 100.0 || lambda > 0.03 * a0 {
-            Side::Lower(bfrac(a0, b0, x0, y0, lambda))
+            Direct::Lower(bfrac(a0, b0, x0, y0, lambda))
         } else {
-            Side::Lower(basym(a0, b0, lambda))
+            Direct::Lower(basym(a0, b0, lambda))
         };
         (side, swap)
     };
@@ -969,12 +1430,15 @@ fn bratio_route(a: f64, b: f64, x: f64, y: f64) -> Option<(Side, bool)> {
 /// computed directly where it is the smaller one.  `NaN` for invalid
 /// arguments.
 fn bratio(a: f64, b: f64, x: f64, y: f64) -> Tails {
+    // `a + b` must be a double: every route forms it (0.26 returned 0 and
+    // 1 for both tails of Beta(f64::MAX, f64::MAX)).
     if a.is_nan()
         || b.is_nan()
         || x.is_nan()
         || y.is_nan()
         || a <= 0.0
         || b <= 0.0
+        || !(a + b).is_finite()
         || !(0.0..=1.0).contains(&x)
         || !(0.0..=1.0).contains(&y)
     {
@@ -990,14 +1454,8 @@ fn bratio(a: f64, b: f64, x: f64, y: f64) -> Tails {
         return Tails::NAN;
     };
     let tails = match side {
-        Side::Lower(w) => Tails {
-            lower: w,
-            upper: 1.0 - w,
-        },
-        Side::Upper(w1) => Tails {
-            lower: 1.0 - w1,
-            upper: w1,
-        },
+        Direct::Lower(w) => Tails::from_lower(w),
+        Direct::Upper(w1) => Tails::from_upper(w1),
     };
     if swap { tails.flipped() } else { tails }
 }
@@ -1070,10 +1528,162 @@ fn nearest_tail_upper(q: f64) -> Side {
     }
 }
 
+/// The quantile when it lies outside the positive floats of a family's
+/// support, from the tails at the smallest positive float `lo_x` and at
+/// the largest float of the support `hi_x`: `lo_x` when that end already
+/// meets the level — `P(X ≤ lo_x) ≥ p`, or `P(X > lo_x) ≤ q` — the
+/// definition `inf{x : F(x) ≥ p}` over the floats; `beyond` when even
+/// `hi_x` falls short (`+∞`, or `1` for the beta).  Compared in
+/// logarithms, which a subnormal tail keeps.  `None` otherwise.
+///
+/// Tiny shapes pile the mass against an end: 0.26 had only the first of
+/// the four cases for most families and answered, say, `f::isf(1e-10,
+/// 1e-300, 1e10)` — where every positive `x` has `P(X > x) < 10⁻²⁹⁷` —
+/// with `+∞`.
+fn outside_float_range(
+    side: Side,
+    at_lo: Tails,
+    lo_x: f64,
+    at_hi: Tails,
+    beyond: f64,
+) -> Option<f64> {
+    match side {
+        Side::Lower(p) => {
+            let lp = p.ln();
+            if lp <= at_lo.ln_lower {
+                Some(lo_x)
+            } else if lp > at_hi.ln_lower {
+                Some(beyond)
+            } else {
+                None
+            }
+        }
+        Side::Upper(q) => {
+            let lq = q.ln();
+            if lq >= at_lo.ln_upper {
+                Some(lo_x)
+            } else if lq < at_hi.ln_upper {
+                Some(beyond)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// `ln(value/target)` for a tail and its level, each given with its
+/// logarithm: `ln(1 + (value − target)/target)` while both are normal
+/// doubles, so that near the root the objective keeps the relative
+/// resolution of the values (`ε`) rather than that of their logarithms
+/// (`ε·|ln p|`: `1.1·10⁻¹³` at `p = 10⁻³⁰⁶`, which let 0.26 stop 45 ulps
+/// from `gamma::ppf(1.46e-306, 2.98, 0.0284)`); the logarithms below.
+fn log_ratio(value: f64, ln_value: f64, target: f64, ln_target: f64) -> f64 {
+    if value >= f64::MIN_POSITIVE && target >= f64::MIN_POSITIVE && value.is_finite() {
+        ((value - target) / target).ln_1p()
+    } else {
+        ln_value - ln_target
+    }
+}
+
+/// The float nearest the quantile where one float step changes the tail by
+/// more than `10⁻⁹` relative (or the tail misses its level): from the
+/// solver's `x`, step by single floats against the family's own `tails`
+/// (its rounding of `x/θ` included) to the adjacent pair between which the
+/// level is crossed, and return the one whose tail is nearer the level in
+/// logarithm — linear interpolation of `ln tail` across the ulp.  Elsewhere
+/// the last ulp is below the tails' own rounding and `x` is returned as it
+/// is.
+///
+/// A shape of `10²⁴` puts one ulp of the quantile at `10⁻⁴` of the tail,
+/// and `10³⁰⁰` puts the whole distribution between two floats, where the
+/// crossing pair is the only information there is; the audit's build
+/// returned floats a few ulps off, whose tails missed the level by up to
+/// that much (`gamma::isf(3.78e-3, 2.7e24, 1.75)`: 3.7762e-3).
+fn snap_to_floats(x: f64, side: Side, tails: impl Fn(f64) -> Tails) -> f64 {
+    use std::cmp::Ordering::{Greater, Less};
+    if !x.is_finite() {
+        return x;
+    }
+    let tail = |t: Tails| match side {
+        Side::Lower(_) => t.ln_lower,
+        Side::Upper(_) => t.ln_upper,
+    };
+    let ln_level = match side {
+        Side::Lower(p) | Side::Upper(p) => p.ln(),
+    };
+    let here = tail(tails(x));
+    let per_ulp = (tail(tails(x.next_up())) - here).abs();
+    // Neighbouring floats can share one `x/θ` and so one tail value; a tail
+    // that misses its level although it does not move within an ulp is the
+    // same regime.
+    let misses = (here - ln_level).abs() > 1e-6;
+    if !misses && (per_ulp.is_nan() || per_ulp <= 1e-9) {
+        return x;
+    }
+    let done = |x: f64| {
+        let t = tails(x);
+        match side {
+            Side::Lower(p) => tail_cmp(t.lower, t.ln_lower, p).map(|o| o != Less),
+            Side::Upper(q) => tail_cmp(t.upper, t.ln_upper, q).map(|o| o != Greater),
+        }
+    };
+    // The crossing pair (lo, hi): the level not yet met at lo, met at hi.
+    let start = x;
+    let mut x = x;
+    let mut crossing = None;
+    for _ in 0..64 {
+        match done(x) {
+            Some(true) => {
+                let prev = x.next_down();
+                if done(prev) == Some(true) {
+                    x = prev;
+                } else {
+                    crossing = Some((prev, x));
+                    break;
+                }
+            }
+            Some(false) => x = x.next_up(),
+            None => return start,
+        }
+    }
+    let Some((lo, hi)) = crossing else {
+        return start;
+    };
+    let (d_lo, d_hi) = (
+        (tail(tails(lo)) - ln_level).abs(),
+        (tail(tails(hi)) - ln_level).abs(),
+    );
+    if d_lo < d_hi { lo } else { hi }
+}
+
 /// A monotone objective and its derivative at one point.
 struct Eval {
     g: f64,
     dg: f64,
+}
+
+/// The root `v + dv` found by [`solve_increasing`]: `v` is the evaluated
+/// iterate with the smallest `|g|`, `dv` the Newton correction from it.
+/// The correction is below the resolution of `v` — a log or logit variable
+/// near `|v| = 100` has a spacing of `1.4·10⁻¹⁴`, 64 ulps of the quantile
+/// — so the caller applies it in the quantile's own variable
+/// (`x = eᵛ·e^{dv}`), where it is not rounded away.
+#[derive(Clone, Copy, Debug)]
+struct Root {
+    v: f64,
+    dv: f64,
+}
+
+impl Root {
+    /// `e^{v + dv}` for a log variable.
+    fn exp(self) -> f64 {
+        let x = self.v.exp();
+        if x.is_finite() && x >= f64::MIN_POSITIVE {
+            x * self.dv.exp()
+        } else {
+            (self.v + self.dv).exp()
+        }
+    }
 }
 
 /// The root of an increasing `g` by Newton's method safeguarded by a
@@ -1082,16 +1692,20 @@ struct Eval {
 /// infinite, a doubling step outwards) otherwise.  `g` may return `±∞`
 /// (a tail that underflowed): only its sign is used then.  Converged when
 /// the step is below `16ε(1 + |v|)`, the resolution of a log or logit
-/// variable, or when a step already below `10⁻⁶(1 + |v|)` fails to
-/// reduce `|g|` — the iteration has reached the rounding noise of `g`,
-/// and the best iterate is the answer.
+/// variable, when the bracket is that narrow, or when a step already below
+/// `10⁻⁶(1 + |v|)` fails to reduce `|g|` — the iteration has reached the
+/// rounding noise of `g`.  The answer is then the best *evaluated* iterate
+/// with its Newton correction ([`Root`]); 0.26 returned the unevaluated
+/// last step, which after a rejected Newton step was a bisection midpoint
+/// half a bracket away from a point that already solved the equation
+/// (`gamma::ppf(1.3e-235, 2.4e10, 0.118)`, 254 ulps).
 fn solve_increasing(
     op: &'static str,
     g: impl Fn(f64) -> Eval,
     v0: f64,
     lo: f64,
     hi: f64,
-) -> Result<f64, SymplexError> {
+) -> Result<Root, SymplexError> {
     const MAX_ITER: usize = 200;
     const TOL: f64 = 16.0 * EPS;
     const QUADRATIC_PHASE: f64 = 1e-6;
@@ -1102,12 +1716,36 @@ fn solve_increasing(
         ));
     }
     let (mut lo, mut hi) = (lo, hi);
-    let mut v = v0.clamp(lo, hi);
+    // An infinite start (a start formula at its limit) begins at the edge
+    // of the doubles' logarithms instead; the bracket search goes from there.
+    let mut v = v0.clamp(-745.0, 710.0).clamp(lo, hi);
     let mut step = 1.0;
     let mut width = f64::INFINITY;
-    let mut best = (v, f64::INFINITY);
+    // (iterate, |g|, Newton correction)
+    let mut best = (v, f64::INFINITY, 0.0);
+    // The answer once the iteration stops: `best` with its Newton
+    // correction, if that is within the resolution of `v` (otherwise `g` is
+    // at its rounding noise and the correction means nothing).  But if even
+    // the best `|g|` is large — the tail is a factor `e^{1/2}` off its level
+    // at every point tried — then `g` jumps across zero between adjacent
+    // values of `v`: the distribution is narrower than a float's spacing
+    // (Beta(10¹⁰⁰, 10¹⁰⁰) lies within 10⁻⁴⁹ of ½), and the smallest `|g|`
+    // picks an arbitrary float (0.26 answered `beta::isf(1e-300, 1e100,
+    // 1e100)` with 0.29).  The quantile over the floats, `inf{x : F(x) ≥ p}`,
+    // is then the upper end of the bracket: `g > 0` there, and `g` increases.
+    let finish = |best: (f64, f64, f64), hi: f64| {
+        let (v, g_abs, dv) = best;
+        if g_abs >= 0.5 && hi.is_finite() {
+            Root { v: hi, dv: 0.0 }
+        } else if dv.abs() <= 64.0 * TOL * (1.0 + v.abs()) {
+            Root { v, dv }
+        } else {
+            Root { v, dv: 0.0 }
+        }
+    };
     for _ in 0..MAX_ITER {
         let Eval { g: gv, dg } = g(v);
+
         if gv.is_nan() {
             return Err(SymplexError::computation_failed(
                 op,
@@ -1115,12 +1753,26 @@ fn solve_increasing(
             ));
         }
         if gv == 0.0 {
-            return Ok(v);
+            return Ok(Root { v, dv: 0.0 });
         }
         if gv.abs() < best.1 {
-            best = (v, gv.abs());
-        } else if width <= QUADRATIC_PHASE * (1.0 + v.abs()) {
-            return Ok(best.0);
+            let corr = if dg.is_finite() && dg > 0.0 {
+                -gv / dg
+            } else {
+                0.0
+            };
+            best = (v, gv.abs(), corr);
+        } else if gv.is_finite()
+            && best.1 < 0.5
+            && best.2.abs() <= QUADRATIC_PHASE * (1.0 + best.0.abs())
+            && width <= QUADRATIC_PHASE * (1.0 + v.abs())
+        {
+            // Only at the root: the best point's own Newton correction is
+            // already that small (0.26 also stopped here far from it, when a
+            // meaningless derivative at an overflowed `x` gave a tiny step:
+            // `f::isf(0.93, 3.6e6, 2.1e-4)` returned 2.1e219, whose tail is
+            // 0.948).
+            return Ok(finish(best, hi));
         }
         if gv < 0.0 {
             lo = v;
@@ -1128,12 +1780,18 @@ fn solve_increasing(
             hi = v;
         }
         let newton = v - gv / dg;
+        // Toward a side not yet bracketed a Newton step may go no further
+        // than the outward doubling step would: far from the root `dg` can
+        // be meaningless (0.26 took `t::ppf(1e-300, 1e100)` from `u = 700`
+        // to `u = −5.8e102` in one step and then bisected past its budget).
+        let open = if newton < v { lo } else { hi };
         let newton_ok = gv.is_finite()
             && dg.is_finite()
             && dg > 0.0
             && newton > lo
             && newton < hi
-            && 2.0 * gv.abs() <= (width * dg).abs();
+            && 2.0 * gv.abs() <= (width * dg).abs()
+            && (open.is_finite() || (newton - v).abs() <= 2.0 * step);
         let next = if newton_ok {
             newton
         } else if gv < 0.0 {
@@ -1149,12 +1807,21 @@ fn solve_increasing(
             step *= 2.0;
             v - step
         };
-        let tol = TOL * (1.0 + v.abs());
-        if (next - v).abs() <= tol {
-            return Ok(next);
-        }
-        if hi - lo <= tol {
-            return Ok(0.5 * (lo + hi));
+        // While `g` only jumps (see `finish`) the bracket is the answer, and
+        // it is narrowed to a quarter ulp of the quantile variable.
+        let tol = if best.1 >= 0.5 {
+            0.25 * EPS * (1.0 + v.abs())
+        } else {
+            TOL * (1.0 + v.abs())
+        };
+        if (next - v).abs() <= tol || hi - lo <= tol {
+            // No finite |g| seen (every tail underflowed): only the
+            // bracket is known.
+            if best.1.is_infinite() {
+                let v = if hi.is_finite() { hi } else { next };
+                return Ok(Root { v, dv: 0.0 });
+            }
+            return Ok(finish(best, hi));
         }
         width = (next - v).abs();
         v = next;
@@ -1266,37 +1933,46 @@ fn discrete_search(
     Ok(hi)
 }
 
-/// The smallest lattice point `k ∈ [kmin, kmax]` with `cdf(k) ≥ p` for a
-/// non-decreasing `cdf`, from a guess `k0`.
-fn discrete_ppf(
-    op: &'static str,
-    cdf: impl Fn(f64) -> f64,
-    p: f64,
-    k0: f64,
-    kmin: f64,
-    kmax: f64,
-) -> Result<f64, SymplexError> {
-    let done = |k: f64| {
-        let c = cdf(k);
-        if c.is_nan() { None } else { Some(c >= p) }
-    };
-    discrete_search(op, done, k0, kmin, kmax)
+/// A tail, given with its logarithm, against a level `> 0`: the values
+/// while both are normal doubles, the logarithms otherwise — a subnormal
+/// tail has too few bits to be compared (0.26 answered
+/// `poisson::ppf(2e-323, 8.81e7)` with 87782519, whose cdf `1.73e-323`
+/// rounds up to the level; the answer is 87782552).
+fn tail_cmp(value: f64, ln_value: f64, level: f64) -> Option<std::cmp::Ordering> {
+    if value >= f64::MIN_POSITIVE && level >= f64::MIN_POSITIVE {
+        value.partial_cmp(&level)
+    } else {
+        ln_value.partial_cmp(&level.ln())
+    }
 }
 
-/// The smallest lattice point `k ∈ [kmin, kmax]` with `sf(k) ≤ q` for a
-/// non-increasing `sf`, from a guess `k0` — scipy's `isf` for a discrete
-/// distribution.
-fn discrete_isf(
+/// The smallest lattice point `k ∈ [kmin, kmax]` at which the tail named by
+/// `target` has crossed its level — `P(X ≤ k) ≥ p` for `Side::Lower(p)`,
+/// `P(X > k) ≤ q` for `Side::Upper(q)` — from a guess `k0`.  Callers name
+/// the *smaller* tail ([`nearest_tail`], [`nearest_tail_upper`]): `cdf(k) ≥
+/// p` and `sf(k) ≤ 1 − p` are the same condition, and `1 − p` is exact
+/// for `p ≥ ½`, but only the small tail is resolved near its level (0.26
+/// compared the rounded `sf = 1 − 1.67·10⁻¹⁶` with `q = 1 − 2⁻⁵²` and
+/// returned `poisson::isf(1 − 2⁻⁵², 1229036.68) = 1220000`; the answer is
+/// 1220039).
+fn discrete_quantile(
     op: &'static str,
-    sf: impl Fn(f64) -> f64,
-    q: f64,
+    tails: impl Fn(f64) -> Tails,
+    target: Side,
     k0: f64,
     kmin: f64,
     kmax: f64,
 ) -> Result<f64, SymplexError> {
     let done = |k: f64| {
-        let s = sf(k);
-        if s.is_nan() { None } else { Some(s <= q) }
+        let t = tails(k);
+        if t.lower.is_nan() || t.upper.is_nan() {
+            return None;
+        }
+        use std::cmp::Ordering::{Greater, Less};
+        Some(match target {
+            Side::Lower(p) => tail_cmp(t.lower, t.ln_lower, p)? != Less,
+            Side::Upper(q) => tail_cmp(t.upper, t.ln_upper, q)? != Greater,
+        })
     };
     discrete_search(op, done, k0, kmin, kmax)
 }
@@ -1351,10 +2027,12 @@ pub mod norm {
 /// Student's t distribution with `df > 0` degrees of freedom.
 pub mod t {
     use super::{
-        Eval, Side, Tails, bratio, check_level, check_positive, lbeta, log_beta_pref, nearest_tail,
-        nearest_tail_upper, norm, solve_increasing,
+        Eval, Side, Tails, bratio, check_level, check_positive, inv_a_beta, lbeta, log_beta_pref,
+        log_ratio, nearest_tail, nearest_tail_upper, norm, power_pair, snap_to_floats,
+        solve_increasing,
     };
     use crate::base::errors::SymplexError;
+    use std::f64::consts::LN_2;
 
     /// Below this value of `r = ν/x²` the incomplete beta function of the
     /// tail is replaced by the leading term of its power series,
@@ -1388,6 +2066,10 @@ pub mod t {
     fn log_pref(ax: f64, df: f64) -> f64 {
         let a = 0.5 * df;
         match beta_args(ax, df) {
+            // A tiny ν: 1/B(a, ½) = a·inv_a_beta(a, ½) (Loader's form cancels).
+            Some((x0, y0)) if a < 1e-3 => {
+                power_pair(inv_a_beta(a, 0.5).times(a), x0, a, y0, 0.5).ln()
+            }
             Some((x0, y0)) => log_beta_pref(a, 0.5, x0, y0),
             None => a * ln_r(ax, df) - lbeta(a, 0.5),
         }
@@ -1402,40 +2084,40 @@ pub mod t {
             return Tails::NAN;
         }
         if df.is_infinite() {
-            return Tails {
-                lower: norm::cdf(x),
-                upper: norm::sf(x),
-            };
+            return Tails::of(norm::cdf(x), norm::sf(x));
         }
         if x == 0.0 {
-            return Tails {
-                lower: 0.5,
-                upper: 0.5,
-            };
+            return Tails::of(0.5, 0.5);
         }
         let ax = x.abs();
         let a = 0.5 * df;
-        let (tail, body) = match beta_args(ax, df) {
+        let (tail, ln_tail, body) = match beta_args(ax, df) {
             Some((x0, y0)) => {
                 let i = bratio(a, 0.5, x0, y0);
-                (0.5 * i.lower, 0.5 + 0.5 * i.upper)
+                (0.5 * i.lower, i.ln_lower - LN_2, 0.5 + 0.5 * i.upper)
             }
             None => {
-                let tail = 0.5 * (a * ln_r(ax, df) - a.ln() - lbeta(a, 0.5)).exp();
-                (tail, 1.0 - tail)
+                // (ν/x²)^{ν/2} = ν^{ν/2}·|x|^{−ν}: two `powf` roundings while
+                // both are normal, instead of `(ν/2)·ln(ν/x²)` (several hundred)
+                // rounded in the exponent.
+                let pw = df.powf(a) * ax.powf(-df);
+                let w = if pw.is_finite() && pw >= f64::MIN_POSITIVE {
+                    inv_a_beta(a, 0.5).times(pw)
+                } else {
+                    inv_a_beta(a, 0.5).times_exp(a * ln_r(ax, df))
+                }
+                .times(0.5);
+                let tail = w.value();
+                (tail, w.ln(), 1.0 - tail)
             }
         };
-        if x > 0.0 {
-            Tails {
-                lower: body,
-                upper: tail,
-            }
-        } else {
-            Tails {
-                lower: tail,
-                upper: body,
-            }
-        }
+        let t = Tails {
+            lower: tail,
+            upper: body,
+            ln_lower: ln_tail,
+            ln_upper: body.ln(),
+        };
+        if x > 0.0 { t.flipped() } else { t }
     }
 
     /// `P(T ≤ x)`.  `scipy.stats.t.cdf(x, df)`.
@@ -1474,7 +2156,9 @@ pub mod t {
     /// `q < P(T > f64::MAX)` — `6.2·10⁻³²` for `ν = 0.1`, `2.4·10⁻¹⁵⁵` for
     /// `ν = ½` (the heavy tails of small `ν`).
     fn upper_quantile(op: &'static str, q: f64, df: f64) -> Result<f64, SymplexError> {
-        if q < tails(f64::MAX, df).upper {
+        // In logarithms: at a subnormal level the rounded tail has too few
+        // bits to decide.
+        if q.ln() < tails(f64::MAX, df).ln_upper {
             return Ok(f64::INFINITY);
         }
         let a = 0.5 * df;
@@ -1492,14 +2176,14 @@ pub mod t {
         let lnq = q.ln();
         let g = |u: f64| {
             let t = u.exp();
-            let sf = tails(t, df).upper;
-            let ln_sf = sf.ln();
+            let tl = tails(t, df);
             Eval {
-                g: lnq - ln_sf,
-                dg: (log_pref(t, df) - ln_sf).exp(),
+                g: -log_ratio(tl.upper, tl.ln_upper, q, lnq),
+                dg: (log_pref(t, df) - tl.ln_upper).exp(),
             }
         };
-        solve_increasing(op, g, u0, f64::NEG_INFINITY, f64::INFINITY).map(f64::exp)
+        let t = solve_increasing(op, g, u0, f64::NEG_INFINITY, f64::INFINITY)?.exp();
+        Ok(snap_to_floats(t, Side::Upper(q), |x| tails(x, df)))
     }
 
     fn quantile(op: &'static str, side: Side, df: f64) -> Result<f64, SymplexError> {
@@ -1511,7 +2195,9 @@ pub mod t {
         }
         check_positive(op, "df", df)?;
         Ok(match side {
-            Side::Lower(0.5) => 0.0,
+            // The median, for `ppf(½)` and `isf(½)` alike (0.26 answered
+            // `t::isf(0.5, 1)` with 5.5e-30).
+            Side::Lower(0.5) | Side::Upper(0.5) => 0.0,
             Side::Lower(pl) => -upper_quantile(op, pl, df)?,
             Side::Upper(q) => upper_quantile(op, q, df)?,
         })
@@ -1549,8 +2235,9 @@ pub mod t {
 /// crate's `Gamma(k, θ)`; the rate is `1/θ`).
 pub mod gamma {
     use super::{
-        Eval, Side, Tails, check_level, check_positive, gammainc_tails, lgamma, log_gamma_pref,
-        nearest_tail, nearest_tail_upper, norm, solve_increasing,
+        Eval, Root, Side, Tails, check_level, check_positive, gammainc_tails, lgamma, lgamma1p,
+        log_gamma_pref, log_ratio, nearest_tail, nearest_tail_upper, norm, outside_float_range,
+        snap_to_floats, solve_increasing,
     };
     use crate::base::errors::SymplexError;
 
@@ -1569,10 +2256,22 @@ pub mod gamma {
             // (χ² with 0.01 df: P(X ≤ 5e-324) = 0.0242).  For u < 1e-300 the
             // series is its leading term, P(k, u) = uᵏ/Γ(k + 1), formed in
             // logarithms from `x` and `θ` themselves.
-            let lower = (shape * (x.ln() - scale.ln()) - lgamma(shape + 1.0)).exp();
+            // The upper tail as −expm1 of that logarithm: a tiny shape has
+            // P near 1 here, and 0.26's `1 − P` gave `chi2::sf(5e-324, 5e-144)
+            // = 0` (truly 1.9e-141), so `chi2::isf(4.9e-308, 5e-144)` answered
+            // 5e-324.
+            let lg = if shape <= 1.0 {
+                lgamma1p(shape)
+            } else {
+                lgamma(shape + 1.0)
+            };
+            let ln_lower = shape * (x.ln() - scale.ln()) - lg;
+            let upper = -ln_lower.exp_m1();
             return Tails {
-                lower,
-                upper: 1.0 - lower,
+                lower: ln_lower.exp(),
+                upper,
+                ln_lower,
+                ln_upper: upper.ln(),
             };
         }
         gammainc_tails(shape, u)
@@ -1588,10 +2287,6 @@ pub mod gamma {
         tails(x, shape, scale).upper
     }
 
-    /// The quantile of the standard gamma (`θ = 1`): Newton on the
-    /// logarithm of the nearer tail in `u = ln x`, from the Wilson–Hilferty
-    /// start `k(1 − 1/(9k) + z/(3√k))³` (or `(p Γ(k + 1))^{1/k}` deep in
-    /// the lower tail).
     /// The logarithm `ln y` of the standard gamma (`θ = 1`) quantile:
     /// Newton on the logarithm of the nearer tail in `u = ln y`, from the
     /// Wilson–Hilferty start `k(1 − 1/(9k) + z/(3√k))³` (or
@@ -1604,13 +2299,16 @@ pub mod gamma {
         op: &'static str,
         side: Side,
         shape: f64,
-    ) -> Result<f64, SymplexError> {
+    ) -> Result<StdQuantile, SymplexError> {
         const LOG_TINY: f64 = -690.0;
         let (z, target, lower) = match side {
             Side::Lower(pl) => (norm::ppf(pl)?, pl, true),
             Side::Upper(q) => (norm::isf(q)?, q, false),
         };
         let ln_target = target.ln();
+        if shape >= DIRECT_MIN_SHAPE {
+            return direct_quantile(op, z, target, lower, shape).map(StdQuantile::Value);
+        }
         let x0 = shape * (1.0 - 1.0 / (9.0 * shape) + z / (3.0 * shape.sqrt())).powi(3);
         let u0 = if x0.is_finite() && x0 > 0.0 {
             x0.ln()
@@ -1637,18 +2335,85 @@ pub mod gamma {
             }
             let x = u.exp();
             let tl = gammainc_tails(shape, x);
-            let ln_tail = if lower { tl.lower.ln() } else { tl.upper.ln() };
-            let gv = if lower {
-                ln_tail - ln_target
+            let (tail, ln_tail) = if lower {
+                (tl.lower, tl.ln_lower)
             } else {
-                ln_target - ln_tail
+                (tl.upper, tl.ln_upper)
             };
+            let r = log_ratio(tail, ln_tail, target, ln_target);
             Eval {
-                g: gv,
+                g: if lower { r } else { -r },
                 dg: (log_gamma_pref(shape, x) - ln_tail).exp(),
             }
         };
-        solve_increasing(op, g, u0, f64::NEG_INFINITY, f64::INFINITY)
+        solve_increasing(op, g, u0, f64::NEG_INFINITY, f64::INFINITY).map(StdQuantile::Log)
+    }
+
+    /// A standard gamma quantile `y`: as `ln y` from the log-variable
+    /// iteration (a tiny shape puts `y` below every float although `θy`
+    /// is not), or as `y` itself from [`direct_quantile`].
+    pub(super) enum StdQuantile {
+        Log(Root),
+        Value(f64),
+    }
+
+    /// From this shape on the quantile is found in `y` itself, not `ln y`:
+    /// the distribution's relative width `1/√k` falls below the resolution
+    /// of `ln y` (`ε ln k`) near `k = 10³⁰`, and 0.26's log-variable
+    /// iteration returned `gamma::ppf(0.3, 1e30) = e²·10³⁰` (and failed
+    /// outright at `k = 10³⁰⁰`); it was also slow (1.4 ms at `k = 10²⁰`).
+    const DIRECT_MIN_SHAPE: f64 = 1e10;
+
+    /// The standard gamma quantile for `k ≥` [`DIRECT_MIN_SHAPE`]: the
+    /// Cornish–Fisher start `k + z√k + (z² − 1)/3 + (z³ − 7z)/(36√k)`
+    /// (standardised skewness `2/√k`, excess kurtosis `6/k`), whose
+    /// neglected term is `O(z⁴/k)` — below a unit at `|z| ≤ 38.5`, the
+    /// subnormal levels — then Newton on the logarithm of the tail in `y`
+    /// (Temme's expansion evaluates every tail within `38.5` standard
+    /// deviations), until a step no longer moves `y`.
+    fn direct_quantile(
+        op: &'static str,
+        z: f64,
+        target: f64,
+        lower: bool,
+        shape: f64,
+    ) -> Result<f64, SymplexError> {
+        let ln_target = target.ln();
+        let sd = shape.sqrt();
+        // `z` is already signed as the quantile's standard score: `ppf` of a
+        // lower level, `isf` of an upper one.
+        let mut y = (shape + z * sd + (z * z - 1.0) / 3.0 + (z * z * z - 7.0 * z) / (36.0 * sd))
+            .min(f64::MAX);
+        for _ in 0..8 {
+            let tl = gammainc_tails(shape, y);
+            let (tail, ln_tail) = if lower {
+                (tl.lower, tl.ln_lower)
+            } else {
+                (tl.upper, tl.ln_upper)
+            };
+            let r = log_ratio(tail, ln_tail, target, ln_target);
+            let g = if lower { r } else { -r };
+            // d ln P/dy = f(y)/P, f(y) = yᵏ⁻¹e⁻ʸ/Γ(k).
+            let dg = (log_gamma_pref(shape, y) - y.ln() - ln_tail).exp();
+            if !g.is_finite() || !dg.is_finite() || dg <= 0.0 {
+                return Err(SymplexError::computation_failed(
+                    op,
+                    format!("the distribution function is not usable at {y}"),
+                ));
+            }
+            // `g` increases with `y`: still negative at the largest double,
+            // the quantile lies beyond it (a shape within a few standard
+            // deviations of f64::MAX).
+            if y == f64::MAX && g < 0.0 {
+                return Ok(f64::INFINITY);
+            }
+            let next = (y - g / dg).min(f64::MAX);
+            if (next - y).abs() <= 0.5 * f64::EPSILON * y {
+                return Ok(next);
+            }
+            y = next;
+        }
+        Ok(y)
     }
 
     fn quantile(op: &'static str, side: Side, shape: f64, scale: f64) -> Result<f64, SymplexError> {
@@ -1659,23 +2424,32 @@ pub mod gamma {
         // the answer is the smallest float with F(x) ≥ p (as for `beta`),
         // not the 0 the logarithmic solve underflows to.
         let tiniest = f64::from_bits(1);
-        if let Side::Lower(pl) = side
-            && pl <= tails(tiniest, shape, scale).lower
-        {
-            return Ok(tiniest);
+        if let Some(x) = outside_float_range(
+            side,
+            tails(tiniest, shape, scale),
+            tiniest,
+            tails(f64::MAX, shape, scale),
+            f64::INFINITY,
+        ) {
+            return Ok(x);
         }
-        standard_log_quantile(op, side, shape).map(|u| scale_log_quantile(u, scale))
+        let x = scale_log_quantile(standard_log_quantile(op, side, shape)?, scale);
+        Ok(snap_to_floats(x, side, |x| tails(x, shape, scale)))
     }
 
-    /// `θ·eᵘ`, exactly as `θ * u.exp()` whenever `eᵘ` is a normal float (so
-    /// no existing quantile moves), and as `e^{u + ln θ}` where `eᵘ` alone
-    /// would under- or overflow.
-    pub(super) fn scale_log_quantile(u: f64, scale: f64) -> f64 {
-        let y = u.exp();
+    /// `θy`; for `y = e^{v + dv}` as `θ·eᵛ·e^{dv}` whenever `eᵛ` is a normal
+    /// float, and `e^{v + dv + ln θ}` where `eᵛ` alone would under- or
+    /// overflow.
+    pub(super) fn scale_log_quantile(q: StdQuantile, scale: f64) -> f64 {
+        let u = match q {
+            StdQuantile::Value(y) => return scale * y,
+            StdQuantile::Log(u) => u,
+        };
+        let y = u.v.exp();
         if y.is_finite() && y >= f64::MIN_POSITIVE {
-            scale * y
+            scale * (y * u.dv.exp())
         } else {
-            (u + scale.ln()).exp()
+            (u.v + u.dv + scale.ln()).exp()
         }
     }
 
@@ -1704,7 +2478,10 @@ pub mod gamma {
 
 /// The χ² distribution with `df > 0` degrees of freedom (`Gamma(df/2, 2)`).
 pub mod chi2 {
-    use super::{Side, check_level, check_positive, gamma, nearest_tail, nearest_tail_upper};
+    use super::{
+        Side, check_level, check_positive, gamma, nearest_tail, nearest_tail_upper,
+        outside_float_range, snap_to_floats,
+    };
     use crate::base::errors::SymplexError;
 
     /// `P(X ≤ x)`.  `scipy.stats.chi2.cdf(x, df)`.
@@ -1719,15 +2496,19 @@ pub mod chi2 {
 
     fn quantile(op: &'static str, side: Side, df: f64) -> Result<f64, SymplexError> {
         check_positive(op, "df", df)?;
-        // Below every positive float: the smallest float with F(x) ≥ p (see
-        // `gamma::quantile`).
+        // Outside the positive floats (see `gamma::quantile`).
         let tiniest = f64::from_bits(1);
-        if let Side::Lower(pl) = side
-            && pl <= gamma::tails(tiniest, 0.5 * df, 2.0).lower
-        {
-            return Ok(tiniest);
+        if let Some(x) = outside_float_range(
+            side,
+            gamma::tails(tiniest, 0.5 * df, 2.0),
+            tiniest,
+            gamma::tails(f64::MAX, 0.5 * df, 2.0),
+            f64::INFINITY,
+        ) {
+            return Ok(x);
         }
-        gamma::standard_log_quantile(op, side, 0.5 * df).map(|u| gamma::scale_log_quantile(u, 2.0))
+        let x = gamma::scale_log_quantile(gamma::standard_log_quantile(op, side, 0.5 * df)?, 2.0);
+        Ok(snap_to_floats(x, side, |x| gamma::tails(x, 0.5 * df, 2.0)))
     }
 
     /// `x` with `P(X ≤ x) = p`.  `scipy.stats.chi2.ppf(p, df)`.
@@ -1756,8 +2537,9 @@ pub mod chi2 {
 /// The beta distribution with shapes `α, β > 0`.
 pub mod beta {
     use super::{
-        Eval, Side, Tails, bratio, check_level, check_positive, lbeta, log_beta_pref, nearest_tail,
-        nearest_tail_upper, norm, solve_increasing,
+        Eval, Root, Side, Tails, bratio, check_level, check_positive, lbeta, log_beta_pref,
+        log_ratio, nearest_tail, nearest_tail_upper, norm, outside_float_range, snap_to_floats,
+        solve_increasing,
     };
     use crate::base::errors::SymplexError;
 
@@ -1803,18 +2585,28 @@ pub mod beta {
             let x = ln_x.exp().min(0.5);
             if x > 0.0 { x.ln() - (-x).ln_1p() } else { ln_x }
         };
+        // logit(x₀) from whichever of x₀, 1 − x₀ is not rounded: 0.26 took
+        // `1 − x₀` for every upper level, which is 1 for x₀ < ε/2, and
+        // started from −∞ (`beta::isf(0.1, 2, 1e20)` came out 0).
+        let logit = |x0: f64| {
+            if x0 <= 0.5 {
+                x0.ln() - (-x0).ln_1p()
+            } else {
+                let y = 1.0 - x0;
+                (-y).ln_1p() - y.ln()
+            }
+        };
         Ok(match side {
             Side::Lower(pl) => {
                 if x0 > 0.0 && x0 < 1.0 && pl >= 1e-3 {
-                    x0.ln() - (-x0).ln_1p()
+                    logit(x0)
                 } else {
                     deep((pl.ln() + alpha.ln() + lbeta(alpha, beta)) / alpha)
                 }
             }
             Side::Upper(q) => {
                 if x0 > 0.0 && x0 < 1.0 && q >= 1e-3 {
-                    let y = 1.0 - x0;
-                    (-y).ln_1p() - y.ln()
+                    logit(x0)
                 } else {
                     -deep((q.ln() + beta.ln() + lbeta(alpha, beta)) / beta)
                 }
@@ -1829,7 +2621,7 @@ pub mod beta {
         side: Side,
         alpha: f64,
         beta: f64,
-    ) -> Result<f64, SymplexError> {
+    ) -> Result<Root, SymplexError> {
         let v0 = start_logit(side, alpha, beta)?;
         let (target, lower) = match side {
             Side::Lower(pl) => (pl, true),
@@ -1839,12 +2631,13 @@ pub mod beta {
         let g = |v: f64| {
             let (x, y) = (logistic(v), logistic(-v));
             let tl = bratio(alpha, beta, x, y);
-            let ln_tail = if lower { tl.lower.ln() } else { tl.upper.ln() };
-            let gv = if lower {
-                ln_tail - ln_target
+            let (tail, ln_tail) = if lower {
+                (tl.lower, tl.ln_lower)
             } else {
-                ln_target - ln_tail
+                (tl.upper, tl.ln_upper)
             };
+            let r = log_ratio(tail, ln_tail, target, ln_target);
+            let gv = if lower { r } else { -r };
             Eval {
                 g: gv,
                 dg: (log_beta_pref(alpha, beta, x, y) - ln_tail).exp(),
@@ -1856,6 +2649,7 @@ pub mod beta {
     fn quantile(op: &'static str, side: Side, alpha: f64, beta: f64) -> Result<f64, SymplexError> {
         check_positive(op, "α", alpha)?;
         check_positive(op, "β", beta)?;
+        check_positive(op, "α + β", alpha + beta)?;
         // With tiny shapes the mass piles up within e^-700 of an end of
         // [0, 1]: Beta(10⁻³, 10⁻³) has P(X ≤ 5e-324) = 0.2375, so every
         // lower level below that has a quantile no f64 can hold.  Answer
@@ -1864,16 +2658,28 @@ pub mod beta {
         // than letting the logit Newton wander into the subnormals (0.22
         // returned 5.6e-309 for the 0.2055 quantile, whose cdf is 0.246).
         let tiniest = f64::from_bits(1);
-        match side {
-            Side::Lower(pl) if pl <= tails(tiniest, alpha, beta).lower => {
-                return Ok(tiniest);
-            }
-            Side::Upper(q) if q <= tails(1.0 - f64::EPSILON / 2.0, alpha, beta).upper => {
-                return Ok(1.0);
-            }
-            _ => {}
+        let largest = 1.0 - f64::EPSILON / 2.0;
+        if let Some(x) = outside_float_range(
+            side,
+            tails(tiniest, alpha, beta),
+            tiniest,
+            tails(largest, alpha, beta),
+            1.0,
+        ) {
+            return Ok(x);
         }
-        quantile_logit(op, side, alpha, beta).map(logistic)
+        let x = logistic_root(quantile_logit(op, side, alpha, beta)?);
+        Ok(snap_to_floats(x, side, |x| tails(x, alpha, beta)))
+    }
+
+    /// `logistic(v + dv)` with the correction applied to `x` itself:
+    /// `d ln x/dv = 1 − x`.
+    fn logistic_root(r: Root) -> f64 {
+        if r.v < -700.0 {
+            // 1 + eᵛ = 1: x = e^{v + dv}, rounded once.
+            return (r.v + r.dv).exp();
+        }
+        logistic(r.v) * (r.dv * logistic(-r.v)).exp()
     }
 
     /// `1/(1 + e^{−v})` without overflow: `1/(1 + e^{−v})` stops at
@@ -1890,7 +2696,9 @@ pub mod beta {
         }
     }
 
-    /// `x` with `P(X ≤ x) = p`.  `scipy.stats.beta.ppf(p, a, b)`.
+    /// `x` with `P(X ≤ x) = p`.  `scipy.stats.beta.ppf(p, a, b)`.  `α + β`
+    /// must be a finite double ([`SymplexError::InvalidArgument`] beyond, as
+    /// for a non-positive shape).
     ///
     /// ```
     /// use symplex::stats::numdist::beta;
@@ -1916,10 +2724,12 @@ pub mod beta {
 /// The F distribution with `d₁, d₂ > 0` degrees of freedom.
 pub mod f {
     use super::{
-        Eval, Side, Tails, beta, bratio, check_level, check_positive, lbeta, log_beta_pref,
-        nearest_tail, nearest_tail_upper, solve_increasing,
+        EPS, Eval, Scaled, Side, Tails, beta, bratio, check_level, check_positive, inv_a_beta,
+        lbeta, log_beta_pref, log_ratio, nearest_tail, nearest_tail_upper, outside_float_range,
+        snap_to_floats, solve_increasing,
     };
     use crate::base::errors::SymplexError;
+    use std::f64::consts::LN_2;
 
     fn tails(x: f64, d1: f64, d2: f64) -> Tails {
         if x.is_nan() || !(d1.is_finite() && d1 > 0.0) || !(d2.is_finite() && d2 > 0.0) {
@@ -1928,47 +2738,130 @@ pub mod f {
         if x <= 0.0 {
             return Tails::ZERO;
         }
-        let num = d1 * x;
-        let den = num + d2;
         if x.is_infinite() {
             return Tails::ONE;
         }
-        if den.is_infinite() {
-            // `d₁x` overflowed, but a tiny d₂ keeps real mass beyond
-            // (F(6331, 0.01): P(X > 2.8e304) ≈ 0.027).  The upper beta
-            // argument y = (d₂/d₁)/(x + d₂/d₁) is tiny, where I_y(b, a) is
-            // its leading term yᵇ/(b·B(a, b)), formed in logarithms.
-            let (a, b) = (0.5 * d1, 0.5 * d2);
-            let r = d2 / d1;
-            let ln_y = r.ln() - (x + r).ln();
-            let upper = if ln_y.is_finite() {
-                (b * ln_y - b.ln() - lbeta(a, b)).exp().min(1.0)
-            } else {
-                0.0
-            };
-            return Tails {
-                lower: 1.0 - upper,
-                upper,
-            };
+        let (a, b) = (0.5 * d1, 0.5 * d2);
+        let args = BetaArgs::new(x, d1, d2);
+        if args.y < f64::MIN_POSITIVE {
+            // The upper argument y = 1/(1 + t) is below the normal range (a
+            // tiny d₂ keeps real mass there: F(6331, 0.01) has
+            // P(X > 2.8e304) ≈ 0.027).  0.26 formed y = d₂/(d₁x + d₂), which
+            // underflows to 0 long before the tail does, and returned
+            // sf = 0 (`f::sf(7.2e239, 1.03e5, 6.4e-154)`: truly 1 − 2.9·10⁻¹⁵¹).
+            let upper = small_arg_series(b, a, args.ln_y, (d1.ln() - LN_2 + args.ln_y).exp());
+            return tails_from_small_arg(upper).flipped();
         }
-        if num < f64::MIN_POSITIVE {
-            // `d₁x` underflowed (a subnormal `x`); tiny degrees of freedom
-            // still have mass there (F(0.01, 0.01): P(X ≤ 5e-324) = 0.0121).
-            // The beta argument z = x/(x + d₂/d₁) may itself be below every
-            // float, but there I_z(a, b) is its leading term
-            // zᵃ/(a·B(a, b))·(1 + O(b·z)), formed in logarithms.
-            let (a, b) = (0.5 * d1, 0.5 * d2);
-            let r = d2 / d1;
-            if r.is_finite() {
-                let ln_z = x.ln() - (x + r).ln();
-                let lower = (a * ln_z - a.ln() - lbeta(a, b)).exp().min(1.0);
-                return Tails {
-                    lower,
-                    upper: 1.0 - lower,
-                };
+        if args.z < f64::MIN_POSITIVE {
+            // The lower argument z = t/(1 + t) is (`d₁x` underflowed, or d₂
+            // is huge); a tiny d₁ still has mass there (F(0.01, 0.01):
+            // P(X ≤ 5e-324) = 0.0121).
+            let lower = small_arg_series(a, b, args.ln_z, (d2.ln() - LN_2 + args.ln_z).exp());
+            return tails_from_small_arg(lower);
+        }
+        bratio(a, b, args.z, args.y)
+    }
+
+    /// `I_w(p, q)` for an argument `w` below the normal range, given `ln w`
+    /// and `v = q·w` (which may be of order 1 when `q` is huge): the power
+    /// series `wᵖ/(p B(p, q))·[1 + p Σ_{n≥1} ((1 − q)ₙ/n!) wⁿ/(p + n)]`
+    /// with the terms `((1 − q)ₙ/n!) wⁿ = Π_{k≤n} (k/q − 1) v/k` built from
+    /// `v`, never from the subnormal `w`.
+    fn small_arg_series(p: f64, q: f64, ln_w: f64, v: f64) -> Scaled {
+        let mut c = 1.0;
+        let mut sum = 0.0;
+        let mut n = 0.0;
+        while n < 1000.0 {
+            n += 1.0;
+            c *= (n / q - 1.0) * v / n;
+            let w = c / (p + n);
+            sum += w;
+            if (p * w).abs() <= EPS * (1.0 + p * sum).abs() {
+                break;
             }
         }
-        bratio(0.5 * d1, 0.5 * d2, num / den, d2 / den)
+        // The correction as ln(1 + p·Σ) in the exponent: the complement
+        // `1 − I` is taken from the logarithm when `I` is near 1.
+        inv_a_beta(p, q).times_exp(p * ln_w + (p * sum).ln_1p())
+    }
+
+    /// Both tails from the leading term `w` of the tail whose beta argument
+    /// is below the normal range: that tail is `w`, the other `1 − w` —
+    /// through `−expm1(ln w)` when `w` is near 1 (a tiny shape), where 0.26
+    /// subtracted: `f::sf(2.2e-279, 4.2e-283, 1.89)` was `1.1·10⁻¹³`, truly
+    /// `2.7·10⁻²⁸⁰`.
+    fn tails_from_small_arg(w: Scaled) -> Tails {
+        let mut t = Tails::from_lower(w);
+        let ln_w = t.ln_lower;
+        if ln_w > -1.0 {
+            let other = -ln_w.exp_m1();
+            t.upper = other;
+            t.ln_upper = other.ln();
+        }
+        t
+    }
+
+    /// The beta arguments of the F distribution function at `x`,
+    /// `z = d₁x/(d₁x + d₂)` and `y = d₂/(d₁x + d₂)`, with their logarithms
+    /// `ln z = −ln(1 + 1/t)`, `ln y = −ln(1 + t)` from `t = d₁x/d₂` — finite
+    /// where `d₁x` or `d₁x + d₂` under- or overflows and `z` or `y` is not a
+    /// normal double.
+    pub(super) struct BetaArgs {
+        pub(super) z: f64,
+        pub(super) y: f64,
+        pub(super) ln_z: f64,
+        pub(super) ln_y: f64,
+    }
+
+    impl BetaArgs {
+        pub(super) fn new(x: f64, d1: f64, d2: f64) -> BetaArgs {
+            let num = d1 * x;
+            let den = num + d2;
+            let in_range = |v: f64| v.is_finite() && v >= f64::MIN_POSITIVE;
+            if in_range(num) && den.is_finite() {
+                let (z, y) = (num / den, d2 / den);
+                if in_range(z) && in_range(y) {
+                    return BetaArgs {
+                        z,
+                        y,
+                        ln_z: z.ln(),
+                        ln_y: y.ln(),
+                    };
+                }
+            }
+            // t = d₁x/d₂ in whichever order keeps it in range, else only its
+            // logarithm.
+            let ratio = d1 / d2;
+            let t = if in_range(num) && in_range(num / d2) {
+                num / d2
+            } else if in_range(ratio) && in_range(x * ratio) {
+                x * ratio
+            } else if in_range(x / d2) && in_range(x / d2 * d1) {
+                x / d2 * d1
+            } else {
+                f64::NAN
+            };
+            let ln_t = if t.is_nan() {
+                x.ln() + d1.ln() - d2.ln()
+            } else {
+                t.ln()
+            };
+            // ln y = −ln(1 + t), ln z = ln t − ln(1 + t), each from the
+            // form that neither cancels nor overflows.
+            let (ln_y, ln_z) = if ln_t <= 0.0 {
+                let l1p = ln_t.exp().ln_1p();
+                (-l1p, ln_t - l1p)
+            } else {
+                let l1p = (-ln_t).exp().ln_1p();
+                (-ln_t - l1p, -l1p)
+            };
+            BetaArgs {
+                z: ln_z.exp(),
+                y: ln_y.exp(),
+                ln_z,
+                ln_y,
+            }
+        }
     }
 
     /// `P(X ≤ x) = I_{d₁x/(d₁x + d₂)}(d₁/2, d₂/2)`.  `scipy.stats.f.cdf(x, d1, d2)`.
@@ -1988,13 +2881,17 @@ pub mod f {
         check_positive(op, "d2", d2)?;
         // Below every positive float: the smallest float with F(x) ≥ p (see
         // `beta::quantile`).
+        // Beyond the largest float a tiny d₂ has a tail heavier than any
+        // power we can hold: +∞, as for `t`.
         let tiniest = f64::from_bits(1);
-        match side {
-            Side::Lower(pl) if pl <= tails(tiniest, d1, d2).lower => return Ok(tiniest),
-            // Beyond the largest float (a tiny d₂ has a tail heavier than
-            // any power we can hold): +∞, as for `t`.
-            Side::Upper(q) if q < tails(f64::MAX, d1, d2).upper => return Ok(f64::INFINITY),
-            _ => {}
+        if let Some(x) = outside_float_range(
+            side,
+            tails(tiniest, d1, d2),
+            tiniest,
+            tails(f64::MAX, d1, d2),
+            f64::INFINITY,
+        ) {
+            return Ok(x);
         }
         let (a, b) = (0.5 * d1, 0.5 * d2);
         // logit(b) = ln(b/(1 − b)); x = (d₂/d₁) e^{logit}.
@@ -2033,16 +2930,20 @@ pub mod f {
                 };
             // `tails` handles an underflowed argument (leading term).
             let tl = tails(x, d1, d2);
-            let ln_tail = if lower { tl.lower.ln() } else { tl.upper.ln() };
-            let gv = if lower {
-                ln_tail - ln_target
+            let (tail, ln_tail) = if lower {
+                (tl.lower, tl.ln_lower)
             } else {
-                ln_target - ln_tail
+                (tl.upper, tl.ln_upper)
             };
+            let r = log_ratio(tail, ln_tail, target, ln_target);
+            let gv = if lower { r } else { -r };
             // d ln I/du = x_b^a y_b^b/(B·I); where x_b (or y_b) is below
             // every float the leading term I ∝ x_b^a (y_b^b) gives the slope
             // a (b).
-            let dg = if xb > 0.0 && yb > 0.0 {
+            let dg = if !x.is_finite() {
+                // `eᵘ` overflowed: no slope to speak of, bisect.
+                f64::NAN
+            } else if xb > 0.0 && yb > 0.0 {
                 (log_beta_pref(a, b, xb, yb) - ln_tail).exp()
             } else if xb > 0.0 {
                 b
@@ -2051,7 +2952,8 @@ pub mod f {
             };
             Eval { g: gv, dg }
         };
-        solve_increasing(op, g, u0, f64::NEG_INFINITY, f64::INFINITY).map(f64::exp)
+        let x = solve_increasing(op, g, u0, f64::NEG_INFINITY, f64::INFINITY)?.exp();
+        Ok(snap_to_floats(x, side, |x| tails(x, d1, d2)))
     }
 
     /// `x` with `P(X ≤ x) = p`.  `scipy.stats.f.ppf(p, d1, d2)`.
@@ -2080,7 +2982,8 @@ pub mod f {
 /// The binomial distribution with `n` trials and success probability `p`.
 pub mod binom {
     use super::{
-        Tails, bratio, check_lattice_param, check_level, discrete_isf, discrete_ppf, invalid, norm,
+        Tails, bratio, check_lattice_param, check_level, discrete_quantile, invalid, nearest_tail,
+        nearest_tail_upper, norm,
     };
     use crate::base::errors::SymplexError;
 
@@ -2141,7 +3044,7 @@ pub mod binom {
         check_level(OP, "q", q)?;
         let n = check_params(OP, n, p)?;
         let k0 = n * p + norm::ppf(q)? * (n * p * (1.0 - p)).sqrt();
-        discrete_ppf(OP, |k| cdf(k, n, p), q, k0, 0.0, n)
+        discrete_quantile(OP, |k| tails(k, n, p), nearest_tail(q), k0, 0.0, n)
     }
 
     /// The smallest `k ∈ 0..=n` with `P(X > k) ≤ q`.  `scipy.stats.binom.isf(q, n, p)`;
@@ -2160,15 +3063,15 @@ pub mod binom {
         check_level(OP, "q", q)?;
         let n = check_params(OP, n, p)?;
         let k0 = n * p + norm::isf(q)? * (n * p * (1.0 - p)).sqrt();
-        discrete_isf(OP, |k| sf(k, n, p), q, k0, 0.0, n)
+        discrete_quantile(OP, |k| tails(k, n, p), nearest_tail_upper(q), k0, 0.0, n)
     }
 }
 
 /// The Poisson distribution with rate `λ > 0`.
 pub mod poisson {
     use super::{
-        Tails, check_lattice_param, check_level, check_positive, discrete_isf, discrete_ppf,
-        gammainc_tails, norm,
+        Tails, check_lattice_param, check_level, check_positive, discrete_quantile, gammainc_tails,
+        nearest_tail, nearest_tail_upper, norm,
     };
     use crate::base::errors::SymplexError;
 
@@ -2215,7 +3118,14 @@ pub mod poisson {
         check_positive(OP, "the rate", rate)?;
         check_lattice_param(OP, "the rate", rate)?;
         let k0 = rate + norm::ppf(q)? * rate.sqrt();
-        discrete_ppf(OP, |k| cdf(k, rate), q, k0, 0.0, f64::INFINITY)
+        discrete_quantile(
+            OP,
+            |k| tails(k, rate),
+            nearest_tail(q),
+            k0,
+            0.0,
+            f64::INFINITY,
+        )
     }
 
     /// The smallest `k ≥ 0` with `P(X > k) ≤ q`.  `scipy.stats.poisson.isf(q, mu)`;
@@ -2235,7 +3145,14 @@ pub mod poisson {
         check_positive(OP, "the rate", rate)?;
         check_lattice_param(OP, "the rate", rate)?;
         let k0 = rate + norm::isf(q)? * rate.sqrt();
-        discrete_isf(OP, |k| sf(k, rate), q, k0, 0.0, f64::INFINITY)
+        discrete_quantile(
+            OP,
+            |k| tails(k, rate),
+            nearest_tail_upper(q),
+            k0,
+            0.0,
+            f64::INFINITY,
+        )
     }
 }
 
@@ -2277,8 +3194,12 @@ mod tests {
     fn grat_r_is_continuous_at_the_branch_point() {
         // Q(a, x)/r from the Taylor branch (x < 1.1) and the continued fraction agree.
         for a in [0.05, 0.5, 0.9] {
-            let lo = grat_r(a, 1.099_999_999, log_gamma_pref(a, 1.099_999_999));
-            let hi = grat_r(a, 1.1, log_gamma_pref(a, 1.1));
+            let lo = grat_r(
+                a,
+                1.099_999_999,
+                Scaled::exp(log_gamma_pref(a, 1.099_999_999)),
+            );
+            let hi = grat_r(a, 1.1, Scaled::exp(log_gamma_pref(a, 1.1)));
             assert!(rel(lo, hi) < 1e-9, "a = {a}: {lo} vs {hi}");
             // and both agree with Q/r from the generic route
             let q = gammainc_tails(a, 1.1).upper / log_gamma_pref(a, 1.1).exp();

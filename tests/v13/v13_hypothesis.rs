@@ -154,10 +154,13 @@ fn mcnemar_exact_and_chi_squared_match_statsmodels() {
     // statsmodels: mcnemar([[100, 10], [10, 100]], exact=True).pvalue = 1.0
     let r = mcnemar_test(&ctx, 10, 10, true, true).unwrap();
     assert_eq!(r.p_value_exact(), Some(qi(1)));
-    // statsmodels: mcnemar([[100, 10], [10, 100]], exact=False, correction=True) → (0.05, 0.8230632737581214)
+    // statsmodels: mcnemar([[100, 10], [10, 100]], exact=False, correction=True) → (0.05, 0.8230632737581214),
+    // squaring |b − c| − 1 = −1.  Since 0.27 the correction stops at 0 (scipy:
+    // chi2_contingency([[5, 5], [5, 5]]) → (0.0, 1.0); R's mcnemar.test), matching the exact test's
+    // p = 1 above: statistic 0, p = 1.
     let r = mcnemar_test(&ctx, 10, 10, false, true).unwrap();
-    assert_eq!(r.statistic_exact(), Some(q(1, 20)));
-    close(p_of(&r), 0.823_063_273_758_121_4, 1e-12);
+    assert_eq!(r.statistic_exact(), Some(qi(0)));
+    assert_eq!(r.p_value, ctx.one());
     // statsmodels: mcnemar([[100, 10], [10, 100]], exact=False, correction=False) → (0.0, 1.0)
     let r = mcnemar_test(&ctx, 10, 10, false, false).unwrap();
     assert_eq!(r.p_value, ctx.one());
