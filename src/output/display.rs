@@ -227,7 +227,13 @@ fn expand_expr(
     stack: &mut Vec<WorkItem>,
 ) -> fmt::Result {
     let node = arena.node(id);
-    let my_prec = prec_of(node);
+    // `b^(-1)` and `b^(-1/2)` print as the quotients `1/b`, `1/sqrt(b)`,
+    // which bind like a product: `x^(1/y)` printed as `x^1/y` (re-parsing
+    // as `x/y`) before 0.25.
+    let my_prec = match node {
+        ExprNode::Pow(_, e) if exponent_prints_as_quotient(arena, *e) => PREC_MUL,
+        _ => prec_of(node),
+    };
     let need_parens = my_prec < parent_prec;
 
     // Clone the node so we can release the borrow on `arena`.
@@ -304,7 +310,7 @@ fn expand_expr(
                     let rest: SmallVec<[ExprId; 6]> = SmallVec::from_slice(&children[1..]);
                     if i == 0 {
                         // Leading negative: "-rest..."
-                        if rest.len() == 1 {
+                        if rest.len() == 1 && as_denominator(arena, rest[0]).is_none() {
                             stack.push(WorkItem::Expr(rest[0], PREC_UNARY));
                         } else {
                             push_mul_factors(arena, &rest, PREC_MUL, stack);
@@ -404,8 +410,18 @@ fn expand_expr(
             } else {
                 false
             };
+            // x^(-1/2) → "1/sqrt(x)".
+            let is_neg_half_exp = if let ExprNode::Num(nid) = arena.node(exp) {
+                *arena.num(*nid) == Ratio::new(BigInt::from(-1), BigInt::from(2))
+            } else {
+                false
+            };
 
-            if is_half_exp {
+            if is_neg_half_exp {
+                stack.push(WorkItem::Lit(")"));
+                stack.push(WorkItem::Expr(base, 0));
+                stack.push(WorkItem::Lit("1/sqrt("));
+            } else if is_half_exp {
                 stack.push(WorkItem::Lit(")"));
                 stack.push(WorkItem::Expr(base, 0));
                 stack.push(WorkItem::Lit("sqrt("));
@@ -924,14 +940,11 @@ fn push_mul_with_coeff(
     stack: &mut Vec<WorkItem>,
 ) {
     let mut numer: SmallVec<[ExprId; 6]> = SmallVec::new();
-    let mut denom_bases: SmallVec<[ExprId; 6]> = SmallVec::new();
+    let mut denom_bases: SmallVec<[Denominator; 6]> = SmallVec::new();
 
     for &f in factors {
-        if let ExprNode::Pow(base, exp) = arena.node(f)
-            && let ExprNode::Num(nid) = arena.node(*exp)
-            && *arena.num(*nid) == Ratio::from(BigInt::from(-1))
-        {
-            denom_bases.push(*base);
+        if let Some(d) = as_denominator(arena, f) {
+            denom_bases.push(d);
             continue;
         }
         numer.push(f);
@@ -964,19 +977,24 @@ fn push_mul_with_coeff(
 
     // ── Denominator ────────────────────────────────────────────
     if q_is_one && denom_bases.len() == 1 {
-        let base = denom_bases[0];
-        // Parenthesise compound bases: .../(x + y), .../(a*b), etc.
-        let base_prec = match arena.node(base) {
-            ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) | ExprNode::Pow(_, _) => {
-                PREC_MUL + 1
+        match denom_bases[0] {
+            Denominator::Base(base) => {
+                // Parenthesise compound bases: .../(x + y), .../(a*b), etc.
+                let base_prec = match arena.node(base) {
+                    ExprNode::Add(_)
+                    | ExprNode::Mul(_)
+                    | ExprNode::Neg(_)
+                    | ExprNode::Pow(_, _) => PREC_MUL + 1,
+                    _ => PREC_MUL,
+                };
+                stack.push(WorkItem::Expr(base, base_prec));
             }
-            _ => PREC_MUL,
-        };
-        stack.push(WorkItem::Expr(base, base_prec));
+            d @ Denominator::Sqrt(_) => push_denominator(d, stack),
+        }
     } else {
         // Several denominator factors (possibly including `q`): .../(q*a*b)
         stack.push(WorkItem::Lit(")"));
-        push_plain_mul_factors(arena, &denom_bases, stack);
+        push_denominator_factors(arena, &denom_bases, stack);
         if !q_is_one {
             stack.push(WorkItem::Lit("*"));
             stack.push(WorkItem::Owned(q.to_string()));
@@ -1038,6 +1056,72 @@ fn render_mul_with_coeff(arena: &Arena, coeff: Option<Q>, factors: &[ExprId]) ->
         }
     }
     out
+}
+
+/// Does a power with exponent `exp` print as a quotient (`1/b`,
+/// `1/sqrt(b)`)?
+fn exponent_prints_as_quotient(arena: &Arena, exp: ExprId) -> bool {
+    arena.as_num(exp).is_some_and(|e| {
+        *e == Ratio::from(BigInt::from(-1)) || *e == Ratio::new(BigInt::from(-1), BigInt::from(2))
+    })
+}
+
+/// A factor of a product that is printed in the denominator: `b` for
+/// `b^(-1)`, `sqrt(b)` for `b^(-1/2)`.
+#[derive(Clone, Copy)]
+enum Denominator {
+    Base(ExprId),
+    Sqrt(ExprId),
+}
+
+/// `f` as a denominator factor, if it is `b^(-1)` or `b^(-1/2)`.
+fn as_denominator(arena: &Arena, f: ExprId) -> Option<Denominator> {
+    let ExprNode::Pow(base, exp) = arena.node(f) else {
+        return None;
+    };
+    let ExprNode::Num(nid) = arena.node(*exp) else {
+        return None;
+    };
+    let e = arena.num(*nid);
+    if *e == Ratio::from(BigInt::from(-1)) {
+        Some(Denominator::Base(*base))
+    } else if *e == Ratio::new(BigInt::from(-1), BigInt::from(2)) {
+        Some(Denominator::Sqrt(*base))
+    } else {
+        None
+    }
+}
+
+/// Push one denominator factor (as a product factor: a compound `b` is
+/// parenthesised by the caller's precedence).
+fn push_denominator(d: Denominator, stack: &mut Vec<WorkItem>) {
+    match d {
+        Denominator::Base(b) => stack.push(WorkItem::Expr(b, PREC_MUL)),
+        Denominator::Sqrt(b) => {
+            stack.push(WorkItem::Lit(")"));
+            stack.push(WorkItem::Expr(b, 0));
+            stack.push(WorkItem::Lit("sqrt("));
+        }
+    }
+}
+
+/// Push denominator factors joined by `*`, like [`push_plain_mul_factors`].
+fn push_denominator_factors(arena: &Arena, factors: &[Denominator], stack: &mut Vec<WorkItem>) {
+    for (i, &d) in factors.iter().enumerate().rev() {
+        match d {
+            Denominator::Base(b) => {
+                let child_prec = match arena.node(b) {
+                    ExprNode::Add(_) => PREC_MUL + 1,
+                    _ => PREC_MUL,
+                };
+                stack.push(WorkItem::Expr(b, child_prec));
+            }
+            Denominator::Sqrt(_) => push_denominator(d, stack),
+        }
+        if i > 0 {
+            stack.push(WorkItem::Lit("*"));
+        }
+    }
 }
 
 /// Push Mul factors joined by `*` without fraction splitting.

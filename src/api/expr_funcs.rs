@@ -2129,13 +2129,22 @@ impl Expr<Numeric> {
     /// // Original x is unchanged — no permanent assumption was set:
     /// assert!(x.is_positive().is_none());
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if a variable comes from another context, or if the temporary
+    /// assumptions contradict each other or a symbol's stored ones (`x`
+    /// positive and negative).  The context is left unchanged either way:
+    /// the stored assumptions are restored before the panic continues
+    /// (before 0.25 a contradiction on the second symbol left the first
+    /// one's temporary assumptions in place).
     #[must_use = "returns the refined form; does not modify in place"]
     pub fn refine_with(
         &self,
         temp_assumptions: &[(&Ex, crate::base::assumptions::Assumption)],
     ) -> Ex {
         use crate::base::assumptions::{AssumptionCache, Assumptions};
-        use crate::base::node::ExprNode;
+        use crate::base::node::{ExprNode, SymbolId};
 
         // Extract checked IDs before acquiring the lock.
         let var_ids: Vec<crate::base::node::ExprId> = temp_assumptions
@@ -2150,29 +2159,43 @@ impl Expr<Numeric> {
             ..
         } = *inner;
 
-        // Save original assumptions for symbols we're temporarily overriding.
-        let mut saved: Vec<(crate::base::node::SymbolId, Assumptions)> = Vec::new();
+        // The stored assumptions of each symbol involved (once per symbol,
+        // so two hypotheses on one symbol restore to the original), and the
+        // temporary set: the stored one plus every hypothesis on it.
+        let mut saved: Vec<(SymbolId, Assumptions)> = Vec::new();
+        let mut temporary: Vec<(SymbolId, Assumptions)> = Vec::new();
         for (i, (_var, assumption)) in temp_assumptions.iter().enumerate() {
-            if let ExprNode::Symbol(sid) = arena.node(var_ids[i]) {
-                let sid = *sid;
-                saved.push((sid, arena.symbol_assumptions(sid)));
-                let mut a = arena.symbol_assumptions(sid);
-                let (prop, value) = assumption.to_prop_value();
-                if value {
-                    a.assert_true(prop);
-                } else {
-                    a.assert_false(prop);
+            let ExprNode::Symbol(sid) = *arena.node(var_ids[i]) else {
+                continue;
+            };
+            let slot = match temporary.iter().position(|(s, _)| *s == sid) {
+                Some(k) => k,
+                None => {
+                    let original = arena.symbol_assumptions(sid);
+                    saved.push((sid, original));
+                    temporary.push((sid, original));
+                    temporary.len() - 1
                 }
+            };
+            let a = &mut temporary[slot].1;
+            let (prop, value) = assumption.to_prop_value();
+            if value {
+                a.assert_true(prop);
+            } else {
+                a.assert_false(prop);
+            }
+        }
+        // Apply the temporary sets (a contradictory one panics in
+        // `set_symbol_assumptions`) and refine with a fresh assumption cache;
+        // restore the stored sets whatever happens.
+        let refined = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            for (sid, mut a) in temporary {
                 a.forward_chain();
                 arena.set_symbol_assumptions(sid, a);
             }
-        }
-
-        // Run refine with a fresh assumption cache (picks up the temp assumptions).
-        let mut temp_cache = AssumptionCache::new();
-        let id = crate::simplify::refine::refine_full(arena, &mut temp_cache, self.raw_id());
-
-        // Restore original assumptions.
+            let mut temp_cache = AssumptionCache::new();
+            crate::simplify::refine::refine_full(arena, &mut temp_cache, self.raw_id())
+        }));
         for (sid, original) in saved {
             arena.set_symbol_assumptions(sid, original);
         }
@@ -2184,7 +2207,10 @@ impl Expr<Numeric> {
         }
 
         drop(inner);
-        self.wrap(id)
+        match refined {
+            Ok(id) => self.wrap(id),
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
     }
 
     ///

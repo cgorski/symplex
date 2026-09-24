@@ -6,6 +6,113 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.25.0] - 2026-09-23
+
+No integrand can exhaust memory.  The three Rubi "timeouts" of 0.24 were
+`∫ x³/(x⁸+1)`-shaped integrands that passed 8 GB within seconds.  The root
+cause was in the rational integrator: the Rothstein–Trager resultant of
+`x³/(x⁸+1)` is `(64t²+1)⁴`, and a residue of multiplicity `i` needs a log
+argument of degree `i`, but only the degree-1 member of the remainder
+sequence was ever used.  The integrand therefore fell through to partial
+fractions over the eight complex roots, whose common-denominator expansion
+headed for ~10⁸ terms.  The logarithmic part is now the full
+Lazard–Rioboo–Trager algorithm, quadratic factors get exact real forms,
+and budgets on `expand`, on the integrator's arena growth and on dense
+polynomial degree bound what is left.  On the Rubi suite: **6,032 verified**
+(0.24: 5,524), 77 real_verified (73), **0 wrong, 0 panics, 0 timeouts, 0
+undecided** (3 timeouts and 2 undecided in 0.24), 66,012 unevaluated.
+Each change is pinned in `tests/v24/`.
+
+### Breaking (behaviour; no signature changed)
+
+- **`(a^b)^c = a^(b·c)` for every base when `c` is an integer and `b` a
+  rational.**  `z^c` is single-valued for integer `c`, so the rule holds on
+  the principal branch for all complex `a` (SymPy's `Pow._eval_power`
+  does the same).  Before, only integer `b` or a positive rational `a`
+  flattened, so `(√y)²` stayed `(√y)²` instead of `y`, and
+  `((x²+1)^{1/2})^{-1}` stayed nested instead of `(x²+1)^{-1/2}`.
+  Structural results change accordingly: `∫ atan(√x − x⁹) dx` now
+  begins `x·atan(…)` instead of `(√x)²·atan(…)`.
+- **Display: `b^(-1/2)` prints as `1/sqrt(b)`** (`a/sqrt(x + 1)`,
+  `1/(sqrt(x + 1)*sqrt(y + 1))`).  That was the printed form of the old
+  nested `(√b)^{-1}`; it is kept for the flattened power.  A power that
+  prints as a quotient is now parenthesised where it binds: `x^(1/y)`
+  printed as `x^1/y`, which re-parses as `x/y`.
+- **`expand` leaves an expansion of more than 1,000,000 terms unexpanded**
+  ([`EXPAND_TERM_LIMIT`](https://docs.rs/symplex/0.25.0/symplex/macros/constant.EXPAND_TERM_LIMIT.html)):
+  a product of 21 binomials, or `(a + b + c + d + 1)^100`, stays as it is
+  (it is still equal to its expansion) instead of exhausting memory.
+- **Rational-function antiderivatives take the Lazard–Rioboo–Trager
+  forms.**  `∫ x/(x⁴ + 1) dx` is `atan(x²)/2` (was a sum of two linear
+  `atan`s), `∫ 1/(x² − 2) dx` is `√2/4·(ln|x − √2| − ln|x + √2|)` (was a
+  `RootSum`), `∫ x/(x⁶ + 1) dx` has `atan(√3/3·(2x² − 1))`, and
+  integrands `x^(k−1)·F(x^k)` are integrated through `u = x^k`.  The
+  answers agree with SymPy's where it has one.
+- `integrate` evaluates the integrand first (`ln 1`, `atan 0` are exact
+  zeros): `∫ ln(x)/(x² + ln 1) dx` was built on `atan(x/√(ln 1))`, whose
+  derivative is 0 (found by `fuzz_integrate` during this release).
+- The conversion to a dense `ℚ`-polynomial behind `collect`, `cancel` and
+  the rational integrators refuses a power of degree above 10,000
+  (`x^1000000000` asked for a billion coefficients); `∫ 1/(x^1000000000 +
+  1) dx` is unevaluated at once and `collect` leaves such a power alone.
+
+### Fixed — memory and time
+
+- `∫ x³/(x⁸+1)`, `x⁴/(16+x¹⁰)`, `x⁵/(9+x¹²)`, `x⁷/(x¹⁶+1)`: 5.8–10 GB
+  resident when killed at 6 s → `atan(x⁴)/4`, `atan(x⁵/4)/20`,
+  `atan(x⁶/3)/18`, `atan(x⁸)/8` in about 1 ms, as SymPy.
+- One top-level `integrate` may create at most 2,000,000 arena nodes;
+  past that the remaining sub-integrals stay unevaluated.  The rational
+  integrator refuses anything that is not in `ℚ(x)` before expanding it.
+- The integrator remembers the outcome of each sub-integrand for the rest
+  of the call: `∫ x^(3/2)/(sin(−1) − 2x) dx` made 918 u-substitution
+  attempts on 53 distinct integrands (1.3 s, 850,000 nodes) to give up;
+  it now has a closed form, as does `∫ atan(√x·cos 4) dx` (0.8 s → a few
+  ms; both SymPy's): polynomials over quadratics with transcendental
+  coefficients are divided out over the field of constants.
+
+### Fixed — closed forms that were missing
+
+- A real irrational root of the resultant (`∫ 1/(x³ − 2) dx`, root `∛2/6`)
+  lost its `α·ln|x − root|` term, so the derivative check rejected every
+  such answer: `1/(x³ ± 2)`, `x/(x³ − 2)`, `1/(x⁵ − 2)`, `1/(x⁶ − 2)` now
+  integrate.
+- Quadratic factors of any multiplicity (`x/(x⁸+1)`, `x/(x⁶+1)`,
+  `x/(x⁸+x⁴+1)`, `x³/(x¹²+1)`, `x²/(x⁹+1)`, `(x⁴+1)/(x⁶+1)`) were
+  unevaluated or `RootSum`s.
+- `∫ sech(6x)·sinh(x) dx` and `∫ cosh(x)·sech(6x) dx` (the two Rubi
+  "undecided" cases, whose derivative evaluated to NaN) are verified.
+
+### Fixed — panics reachable from user input
+
+- `symplex-wasm` passed JavaScript strings to `Context::symbol`, which
+  panics on an empty name; every entry point now returns an error, as does
+  an empty DH configuration.
+- `RandomVariable::try_new` panicked on an empty name; it returns
+  `InvalidArgument`.
+- `Ex::refine_with` left the temporary assumptions of earlier symbols in
+  place when a later one was contradictory (the panic corrupted the
+  `Context`); the stored assumptions are now restored before the panic
+  continues.
+- Three `_ => unreachable!()` arms (the Weierstrass substitution, the
+  Fourier transform of `sin`/`cos` products, `i^n` in `canon`) are gone;
+  the no-panics ratchet now counts `panic!`/`unreachable!` anywhere on a
+  line (it only saw them at the start), with the matrix and polytope
+  operators that panic on a shape mismatch allowlisted and documented.
+
+### Added
+
+- `Context::try_symbol` (an error, not a panic, for an empty name) and
+  `symplex::macros::EXPAND_TERM_LIMIT`.
+- Stage tracing for debugging (`src/base/stage.rs`, CONTRIBUTING.md →
+  "Finding where a slow or memory-hungry call spends its time"): the
+  expensive steps of the integrator and the Risch rational path are
+  `DEBUG` spans that log their time and arena growth under the
+  `symplex::stage` target (`RUST_LOG=symplex::stage=debug` lists the hot
+  ones).  Nothing is computed unless a subscriber enables them.
+  `rubi-harness --probe` logs under `RUST_LOG`.
+- `tests/v24/`: `v24_canon`, `v24_integrate`, `v24_panics` (11 tests).
+
 ## [0.24.0] - 2026-09-23
 
 The Rubi release.  `rubi-harness/` runs `integrate` on the Rubi integration

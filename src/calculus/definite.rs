@@ -2488,7 +2488,7 @@ fn factorize(arena: &mut Arena, f: ExprId, x: ExprId) -> (Vec<ExprId>, Vec<ExprI
                         }
                     }
                     // (b^m)^n with numeric m, n → b^{mn} (real-valued
-                    // context; the canon layer only flattens integers).
+                    // context; the canon layer flattens only an integer n).
                     ExprNode::Pow(inner_base, inner_exp) if arena.as_num(inner_exp).is_some() => {
                         let m = arena.as_num(inner_exp).cloned().unwrap_or_else(Ratio::one);
                         let n = arena.as_num(exp).cloned().unwrap_or_else(Ratio::one);

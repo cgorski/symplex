@@ -39,7 +39,9 @@ usage: rubi-harness [options]
   --scan                translate and parse only (no integration); print
                         statistics
   --probe EXPR [VAR]    integrate one Maxima expression in-process and show
-                        the translation, the answer and the check
+                        the translation, the answer and the check; logs to
+                        stderr under RUST_LOG (RUST_LOG=symplex::stage=debug
+                        lists the stages that were slow or allocated much)
 ";
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -164,6 +166,13 @@ fn probe(argv: &[String]) -> ExitCode {
         return ExitCode::from(2);
     };
     let var = argv.get(1).map_or("x", String::as_str);
+    if std::env::var_os("RUST_LOG").is_some() {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_writer(std::io::stderr)
+            .with_ansi(false)
+            .init();
+    }
     let tr = match translate::translate(src) {
         Ok(t) => t,
         Err(u) => {

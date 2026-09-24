@@ -12,7 +12,7 @@
 // ── Rewrite-engine / simplification option types ───────────────────────
 
 pub use crate::api::expr_rules_ext::{Bindings, RewriteOpts, RewriteStrategy, Rule, RuleSet, Step};
-pub use crate::transforms::expand::ExpandOpts;
+pub use crate::transforms::expand::{EXPAND_TERM_LIMIT, ExpandOpts};
 
 /// Declare multiple symbolic variables at once.
 ///

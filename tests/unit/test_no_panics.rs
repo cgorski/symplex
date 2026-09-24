@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 const ALLOWLIST: &[(&str, usize)] = &[
     // Cross-context guard (`checked_id`): a documented logic error, like indexing a Vec out of bounds.
     ("api/expr.rs", 1),
-    // `impl Sum`/`Product for Ex` on an empty iterator: no context to build 0/1 in (documented logic error).
+    // `Context::own_id`: the same cross-context guard, for expressions handed to a `Context` method.
     ("api/expr_ops.rs", 1),
     // `u32::try_from` on the node/number index: making `Arena::intern`/`intern_num` fallible touches ~800 call sites; tracked as a follow-up.
     ("base/arena.rs", 2),
@@ -25,6 +25,12 @@ const ALLOWLIST: &[(&str, usize)] = &[
     ("base/symbol.rs", 1),
     // `const_assert_dim!`: a `panic!` inside a `const` block only fires during const evaluation (a compile error, never at runtime).
     ("units/assert_macros.rs", 1),
+    // Arithmetic operators on matrices of mismatched shapes (`&a + &b`): an operator cannot return a
+    // `Result`, so like `Vec` indexing it panics, documented, with `add`/`sub`/`matmul` returning one.
+    ("domains/exact_matrix.rs", 1),
+    ("domains/matrix.rs", 1),
+    // `Polytope::with_halfspace` with the wrong number of coefficients; `try_with_halfspace` returns a `Result`.
+    ("domains/polytope.rs", 1),
 ];
 
 /// Files allowed to contain runtime `assert!` / `assert_eq!` / `assert_ne!`
@@ -37,7 +43,8 @@ const ASSERT_ALLOWLIST: &[(&str, usize)] = &[
     ("api/context.rs", 2),
     // `Ex::replace`: the user's closure returned an expression from another context (cross-context logic error).
     ("api/expr_funcs.rs", 1),
-    // Empty `Sum`/`Product` of `Ex` (no context to build 0/1 in, see ALLOWLIST) and an empty function name.
+    // `impl Sum`/`Product for Ex` on an empty iterator (no context to build 0/1 in; `Context::sum`/`product`
+    // take one) and an empty function name.
     ("api/expr_ops.rs", 5),
     // Contradictory assumptions declared on one symbol (e.g. Positive and Negative).
     ("base/arena.rs", 1),
@@ -96,9 +103,18 @@ fn is_panic_site(line: &str) -> bool {
     if line.contains(".expect(") && !line.contains(".expect(&Token") {
         return true;
     }
+    // Anywhere on the line, not only at its start: `Err(e) => panic!(…)`
+    // and `_ => unreachable!()` went uncounted before 0.25.
     ["panic!(", "unreachable!(", "todo!(", "unimplemented!("]
         .iter()
-        .any(|m| line.starts_with(m))
+        .any(|m| {
+            line.match_indices(m).any(|(i, _)| {
+                line[..i]
+                    .chars()
+                    .next_back()
+                    .is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
+            })
+        })
 }
 
 /// The library region of a source file: every line before its
@@ -151,6 +167,18 @@ fn library_code_has_no_unallowlisted_panics() {
 #[test]
 fn library_code_has_no_unallowlisted_asserts() {
     ratchet("assert", ASSERT_ALLOWLIST, is_assert_site);
+}
+
+#[test]
+fn panic_site_detection() {
+    assert!(is_panic_site("panic!(\"msg\");"));
+    assert!(is_panic_site("Err(e) => panic!(\"{e}\"),"));
+    assert!(is_panic_site("_ => unreachable!(),"));
+    assert!(is_panic_site("let v = x.unwrap();"));
+    assert!(!is_panic_site("// panic!(\"in a comment\")"));
+    assert!(!is_panic_site("/// _ => unreachable!() in a doc comment"));
+    assert!(!is_panic_site("my_panic!(x);"));
+    assert!(!is_panic_site("debug_assert!(n > 0, \"no panic!(\");"));
 }
 
 #[test]

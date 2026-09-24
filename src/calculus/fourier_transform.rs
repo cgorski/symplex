@@ -1383,18 +1383,19 @@ fn forward_product(
 
     // ── cos(ω₀t)·g(t) → [G(ω−ω₀) + G(ω+ω₀)]/2,  sin(ω₀t)·g(t) → [G(ω−ω₀) − G(ω+ω₀)]/(2i) ──
     // (not for sinc, which has its own entry)
-    if let Some(idx) = others
-        .iter()
-        .position(|&o| matches!(arena.node(o), ExprNode::Sin(_) | ExprNode::Cos(_)))
+    if let Some((idx, is_sin, arg)) =
+        others
+            .iter()
+            .enumerate()
+            .find_map(|(k, &o)| match *arena.node(o) {
+                ExprNode::Sin(a) => Some((k, true, a)),
+                ExprNode::Cos(a) => Some((k, false, a)),
+                _ => None,
+            })
         && !(inv_t && others.len() == 1 && t_power == 0 && steps.is_empty() && exp_lin.is_empty())
         && (others.len() > 1 || !steps.is_empty() || !exp_lin.is_empty() || inv_t)
     {
         let trig = others[idx];
-        let (is_sin, arg) = match arena.node(trig).clone() {
-            ExprNode::Sin(a) => (true, a),
-            ExprNode::Cos(a) => (false, a),
-            _ => unreachable!(),
-        };
         if let Some((w0, b)) = linear_in(arena, arg, t)
             && arena.is_zero_structural(b)
             && !crate::base::walk::contains(arena, w0, i)

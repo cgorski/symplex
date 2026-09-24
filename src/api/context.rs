@@ -127,11 +127,39 @@ impl Context {
     ///
     /// # Panics
     ///
-    /// Panics if `name` is empty.
+    /// Panics if `name` is empty; [`try_symbol`](Self::try_symbol) returns
+    /// an error instead (for names that come from user input).
     pub fn symbol(&self, name: &str) -> crate::api::expr::Ex {
         assert!(!name.is_empty(), "symbol name cannot be empty");
         let id = self.inner.write().arena.symbol(name);
         self.make_ex(id)
+    }
+
+    /// [`symbol`](Self::symbol) for a name that may be empty.
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`](crate::base::errors::SymplexError::InvalidArgument)
+    /// if `name` is empty.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// let ctx = Context::new();
+    /// assert_eq!(ctx.try_symbol("x").unwrap(), ctx.symbol("x"));
+    /// assert!(ctx.try_symbol("").is_err());
+    /// ```
+    pub fn try_symbol(
+        &self,
+        name: &str,
+    ) -> Result<crate::api::expr::Ex, crate::base::errors::SymplexError> {
+        if name.is_empty() {
+            return Err(crate::base::errors::SymplexError::invalid_argument(
+                "Context::symbol",
+                "symbol name cannot be empty",
+            ));
+        }
+        let id = self.inner.write().arena.symbol(name);
+        Ok(self.make_ex(id))
     }
 
     /// Create a symbolic variable (alias for [`symbol`](Context::symbol)).

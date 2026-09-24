@@ -40,10 +40,17 @@ use crate::poly::multipoly::{GrevLex, MultiPoly};
 // Expression → Poly
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// The largest degree [`expr_to_poly`] builds a power to.  A dense
+/// polynomial of higher degree is never what a caller can use, and
+/// building one is not: `1/(x^1000000000 + 1)` asked the integrator's
+/// rational routes for a billion coefficients.
+pub(crate) const MAX_EXPR_POLY_DEGREE: usize = 10_000;
+
 /// Try to convert an expression into a univariate polynomial in `var`.
 ///
 /// Returns `None` if the expression contains terms that are not
-/// polynomial in `var` (e.g., `sin(x)`, `x^(1/2)`, `x^y`).
+/// polynomial in `var` (e.g., `sin(x)`, `x^(1/2)`, `x^y`), or a power of
+/// degree above [`MAX_EXPR_POLY_DEGREE`].
 ///
 /// Constant sub-expressions (not containing `var`) are treated as
 /// degree-0 coefficients.
@@ -158,6 +165,11 @@ fn convert_node(
             let n: i64 = exp_val.to_integer().try_into().ok()?;
             if n < 0 {
                 return None; // x^(-1) is not polynomial
+            }
+            let n = usize::try_from(n).ok()?;
+            let base_degree = base_poly.degree().unwrap_or(0);
+            if n > MAX_EXPR_POLY_DEGREE || base_degree.checked_mul(n)? > MAX_EXPR_POLY_DEGREE {
+                return None;
             }
 
             let mut result = Poly::from_int(1);

@@ -212,6 +212,188 @@ pub(crate) fn log_to_atan_deg1(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Quadratic factors: exact conversion over ℚ[x]
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `Σ_{q(α)=0} α·ln(S(α, x))` for an irreducible quadratic `q`, as a real
+/// expression, with every polynomial computed exactly over `ℚ`.
+///
+/// Write `q = a·t² + b·t + c`, `u = −b/2a` and `w = √|b² − 4ac| / 2a`.  The
+/// coefficients of `S` lie in `ℚ[t]/(q)`, so `S(t, x) = Σ (p_k + s_k·t)·x^k`
+/// and at a root `α = u ± w` (real roots) or `u ± i·w` (complex roots)
+/// `S(α, x) = P(x) ± w·Q(x)` resp. `P ± i·w·Q`, with
+/// `P = Σ (p_k + s_k·u)·x^k` and `Q = Σ s_k·x^k` in `ℚ[x]`.  Then
+///
+/// - real roots: `(u + w)·ln|P + w·Q| + (u − w)·ln|P − w·Q|`;
+/// - complex roots: `u·ln(P² + w²·Q²) + w·LogToAtan(P, w·Q)`
+///   ([`log_to_atan_surd`]), where `P² + w²Q² ∈ ℚ[x]` has no real zero.
+///
+/// `S` is the log argument of the Lazard–Rioboo–Trager algorithm, monic
+/// in `x`, of any degree; `None` if `q` is not quadratic or a coefficient
+/// of `S` is not a polynomial in `t`.  (Bronstein, *Symbolic Integration I*,
+/// §2.8; SymPy's `log_to_real` does the same with the roots found by
+/// `roots`.)
+pub(crate) fn quadratic_log_to_real(
+    arena: &mut Arena,
+    var: ExprId,
+    q: &Poly,
+    s: &GenPoly<RationalFn>,
+) -> Option<Vec<ExprId>> {
+    if q.degree() != Some(2) {
+        return None;
+    }
+    let (c, b, a) = (q.coeff(0), q.coeff(1), q.coeff(2));
+    let two = Q::from_integer(BigInt::from(2));
+    let u = -&b / (&two * &a);
+    let disc = &b * &b - Q::from_integer(BigInt::from(4)) * &a * &c;
+    if disc.is_zero() {
+        return None;
+    }
+    let w2 = num_traits::Signed::abs(&disc) / (Q::from_integer(BigInt::from(4)) * &a * &a);
+
+    // P and Q from the coefficients of S, reduced modulo q.
+    let mut p_coeffs = Vec::with_capacity(s.coeffs.len());
+    let mut q_coeffs = Vec::with_capacity(s.coeffs.len());
+    for coeff in &s.coeffs {
+        if !coeff.denom().is_constant() {
+            return None;
+        }
+        let lin = coeff.numer().rem(q).scale(&coeff.denom().coeff(0).recip());
+        let (p0, p1) = (lin.coeff(0), lin.coeff(1));
+        p_coeffs.push(&p0 + &p1 * &u);
+        q_coeffs.push(p1);
+    }
+    let big_p = Poly::from_coeffs(p_coeffs);
+    let big_q = Poly::from_coeffs(q_coeffs);
+    if big_q.is_zero() {
+        // S(α, x) would not depend on the root: impossible for the log
+        // argument of distinct residues.
+        return None;
+    }
+
+    let u_id = arena.num_ratio(u.clone());
+    let w = surd(arena, &w2);
+    let p_expr = crate::poly::polybridge::poly_to_expr(arena, &big_p, var);
+    let q_expr = crate::poly::polybridge::poly_to_expr(arena, &big_q, var);
+    let mut terms = Vec::new();
+
+    if num_traits::Signed::is_positive(&disc) {
+        let w_q = arena.mul(&[w, q_expr]);
+        let neg_w = arena.neg(w);
+        for (sign_w, sign_wq) in [(w, w_q), (neg_w, arena.neg(w_q))] {
+            let alpha = arena.add(&[u_id, sign_w]);
+            let arg = arena.add(&[p_expr, sign_wq]);
+            let abs_arg = arena.abs(arg);
+            let ln = arena.ln(abs_arg);
+            terms.push(arena.mul(&[alpha, ln]));
+        }
+    } else {
+        if !u.is_zero() {
+            let norm = &(&big_p * &big_p) + &(&big_q * &big_q).scale(&w2);
+            let norm_expr = crate::poly::polybridge::poly_to_expr(arena, &norm, var);
+            let ln = arena.ln(norm_expr);
+            terms.push(arena.mul(&[u_id, ln]));
+        }
+        let atans = log_to_atan_surd(arena, var, &big_p, &big_q, &w2)?;
+        terms.push(arena.mul(&[w, atans]));
+    }
+    Some(terms)
+}
+
+/// `√r` for a positive rational `r`, canonicalised by the arena (`√(1/64)`
+/// is `1/8`, `√(3/4)` is `√3/2`).
+fn surd(arena: &mut Arena, r: &Q) -> ExprId {
+    let r_id = arena.num_ratio(r.clone());
+    let half = arena.rational(1, 2);
+    arena.pow(r_id, half)
+}
+
+/// `2·atan(u(x)/√r2)`, written `±2·atan((c/√r2)·p(x))` with `c > 0` and
+/// `p` primitive over ℤ with a positive leading coefficient (atan is odd):
+/// `2·atan(√3/3·(2x² − 1))` rather than `2·atan(4√3·(x²/6 − 1/12))`.
+fn two_atan_poly_over_surd(arena: &mut Arena, u: &Poly, var: ExprId, r2: &Q) -> ExprId {
+    let c = u.content();
+    if c.is_zero() {
+        return arena.zero;
+    }
+    let negative = u
+        .leading_coeff()
+        .is_some_and(num_traits::Signed::is_negative);
+    let p = u.scale(&if negative { -c.recip() } else { c.recip() });
+    let p_expr = crate::poly::polybridge::poly_to_expr(arena, &p, var);
+    let c_id = arena.num_ratio(c);
+    let inv_r = surd(arena, &r2.recip());
+    let arg = arena.mul(&[c_id, inv_r, p_expr]);
+    let atan = arena.atan(arg);
+    let two = arena.int(if negative { -2 } else { 2 });
+    arena.mul(&[two, atan])
+}
+
+/// Bronstein's `LogToAtan(A, r·B)` for `A, B ∈ ℚ[x]` and a real constant
+/// `r = √r2` (`r2 ∈ ℚ`, positive): a sum `F` of arctangents of real
+/// polynomials with `F' = (i·ln((A + i·rB)/(A − i·rB)))'`.
+///
+/// Bronstein's recursion (*Symbolic Integration I*, §2.8) stays in `ℚ[x]`
+/// because only `r²` enters the polynomial arithmetic: with
+/// `s·B − t·A = h` over `ℚ` (so `(s/r)·(rB) − t·A = h`),
+///
+/// - `rB | A`: `2·atan(A/(rB))`;
+/// - `deg A < deg B`: `LogToAtan(−rB, A)`, which is `LogToAtan(−B, A/r)` up
+///   to the common real factor `r` (the value is invariant under scaling
+///   both arguments), i.e. `B ← A`, `A ← −B`, `r2 ← 1/r2`;
+/// - otherwise `2·atan((A·s + r2·B·t)/(h·r)) + LogToAtan(s/r, t)`, the
+///   last again `LogToAtan(s, r·t)` up to the factor `r`.
+///
+/// `None` if `B` is zero.
+pub(crate) fn log_to_atan_surd(
+    arena: &mut Arena,
+    var: ExprId,
+    a: &Poly,
+    b: &Poly,
+    r2: &Q,
+) -> Option<ExprId> {
+    if b.is_zero() {
+        return None;
+    }
+    let (mut a, mut b, mut r2) = (a.clone(), b.clone(), r2.clone());
+    let mut atans = Vec::new();
+    // Each step lowers deg A + deg B, as in Euclid's algorithm.
+    let max_steps = 2 * (a.degree().unwrap_or(0) + b.degree().unwrap_or(0)) + 4;
+    for _ in 0..max_steps {
+        if b.is_zero() {
+            break;
+        }
+        if a.is_zero() {
+            // i·ln(i·rB / (−i·rB)) is constant.
+            break;
+        }
+        if a.degree() < b.degree() {
+            (a, b) = (-&b, a);
+            r2 = r2.recip();
+        }
+        let (quot, rem) = a.div_rem(&b);
+        if rem.is_zero() {
+            atans.push(two_atan_poly_over_surd(arena, &quot, var, &r2));
+            break;
+        }
+        let eg = Poly::extended_gcd(&b, &(-&a));
+        let (s, t, h) = (eg.x, eg.y, eg.gcd);
+        let u_num = &(&a * &s) + &(&b * &t).scale(&r2);
+        let (u, u_rem) = u_num.div_rem(&h);
+        if !u_rem.is_zero() {
+            return None;
+        }
+        atans.push(two_atan_poly_over_surd(arena, &u, var, &r2));
+        (a, b) = (s, t);
+    }
+    Some(match atans.len() {
+        0 => arena.zero,
+        1 => atans[0],
+        _ => arena.add(&atans),
+    })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // log_to_real — main conversion function
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -260,6 +442,7 @@ pub(crate) fn log_to_real(
     // ── Step 2: Decompose roots into (u, v) = (Re, Im) pairs ──────
     let i_unit = arena.i_unit;
     let mut pairs: Vec<(ExprId, ExprId)> = Vec::new();
+    let mut reals: Vec<ExprId> = Vec::new();
     let mut used = vec![false; roots.len()];
 
     for (idx, root) in roots.iter().enumerate() {
@@ -284,17 +467,29 @@ pub(crate) fn log_to_real(
         let v_is_zero = crate::poly::algebraic::is_zero_checked(arena, v_val).unwrap_or(false);
 
         if v_is_zero {
-            // Real root — skip (handled by rational LogTerm path).
-            tracing::trace!(idx, "log_to_real: skipping real root (v = 0)");
+            // Real (irrational) root α: contributes α·ln|h(α, x)|.  Before
+            // 0.25 it was skipped, so `∫ 1/(x³ − 2) dx` lost its
+            // `ln|x − ∛2|` term and was rejected.
+            tracing::trace!(idx, "log_to_real: real root");
+            reals.push(u_val);
             used[idx] = true;
             continue;
         }
 
         // Sign test: keep roots with positive imaginary part.
-        let v_sign = crate::poly::algebraic::sign_checked(arena, v_val);
-        if v_sign == Some(1) {
-            tracing::trace!(idx, "log_to_real: found root with positive Im");
-            pairs.push((u_val, v_val));
+        // A root listed before its conjugate may have the negative
+        // imaginary part; the pair is represented by the conjugate.
+        match crate::poly::algebraic::sign_checked(arena, v_val) {
+            Some(1) => {
+                tracing::trace!(idx, "log_to_real: found root with positive Im");
+                pairs.push((u_val, v_val));
+            }
+            Some(-1) => {
+                let neg_v = arena.neg(v_val);
+                let neg_v = crate::transforms::eval::eval(arena, neg_v);
+                pairs.push((u_val, neg_v));
+            }
+            _ => return None,
         }
 
         // Mark this root as used.
@@ -326,8 +521,16 @@ pub(crate) fn log_to_real(
         "log_to_real: conjugate pairs identified"
     );
 
-    if pairs.is_empty() {
-        tracing::debug!("log_to_real: no conjugate pairs found");
+    if pairs.is_empty() && reals.is_empty() {
+        tracing::debug!("log_to_real: no roots to convert");
+        return None;
+    }
+    if pairs.len() * 2 + reals.len() != q_deg {
+        tracing::debug!(
+            n_pairs = pairs.len(),
+            n_reals = reals.len(),
+            "log_to_real: roots not all classified"
+        );
         return None;
     }
 
@@ -352,6 +555,18 @@ pub(crate) fn log_to_real(
 
     // ── Step 4: For each (u_j, v_j), build ln + atan terms ────────
     let mut result_terms: Vec<ExprId> = Vec::new();
+
+    for &alpha in &reals {
+        let h1_at = crate::transforms::subs::subs(arena, h1_expr, t_sym, alpha);
+        let h1_at = crate::transforms::eval::eval(arena, h1_at);
+        let h0_at = crate::transforms::subs::subs(arena, h0_expr, t_sym, alpha);
+        let h0_at = crate::transforms::eval::eval(arena, h0_at);
+        let h1_x = arena.mul(&[h1_at, var]);
+        let h_at = arena.add(&[h1_x, h0_at]);
+        let abs_h = arena.abs(h_at);
+        let ln_h = arena.ln(abs_h);
+        result_terms.push(arena.mul(&[alpha, ln_h]));
+    }
 
     for (pair_idx, (u_j, v_j)) in pairs.iter().enumerate() {
         tracing::debug!(pair_idx, "log_to_real: processing conjugate pair");
@@ -994,6 +1209,110 @@ mod tests {
             );
         } else {
             panic!("could not evaluate log_to_real result to f64");
+        }
+    }
+
+    /// `f(x0)` as an `f64`.
+    fn value_at(arena: &mut Arena, f: ExprId, x: ExprId, x0: Q) -> f64 {
+        let x0 = arena.num_ratio(x0);
+        let v = crate::transforms::subs::subs(arena, f, x, x0);
+        let v = crate::transforms::eval::eval(arena, v);
+        crate::transforms::evalf::eval_const_f64(arena, v).expect("numeric value")
+    }
+
+    fn poly_q(coeffs: &[(i64, i64)]) -> Poly {
+        Poly::from_coeffs(coeffs.iter().map(|&(n, d)| r(n, d)).collect())
+    }
+
+    fn ratfn_poly(coeffs: &[(i64, i64)]) -> RationalFn {
+        RationalFn::from_poly(poly_q(coeffs))
+    }
+
+    #[test]
+    fn quadratic_factor_with_a_degree_4_log_argument() {
+        // Σ_{64α²+1=0} α·ln(x⁴ + 8α) = atan(x⁴)/4 (the log part of
+        // ∫ x³/(x⁸ + 1) dx; SymPy 1.14 `integrate(x**3/(x**8+1), x)`).
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let q = poly_q(&[(1, 1), (0, 1), (64, 1)]);
+        let zero = ratfn_poly(&[]);
+        let s: GenPoly<RationalFn> = GenPoly::from_coeffs(vec![
+            ratfn_poly(&[(0, 1), (8, 1)]),
+            zero.clone(),
+            zero.clone(),
+            zero,
+            ratfn_poly(&[(1, 1)]),
+        ]);
+        let terms = quadratic_log_to_real(&mut arena, x, &q, &s).expect("real form");
+        let sum = arena.add(&terms);
+        assert_eq!(arena.display(sum).to_string(), "1/4*atan(x^4)");
+    }
+
+    #[test]
+    fn quadratic_factor_with_real_roots() {
+        // Σ_{8α²−1=0} α·ln(x − 4α) = (√2/4)·(ln|x − √2| − ln|x + √2|), the
+        // log part of ∫ 1/(x² − 2) dx (SymPy 1.14 `integrate(1/(x**2-2), x)`).
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let q = poly_q(&[(-1, 1), (0, 1), (8, 1)]);
+        let s: GenPoly<RationalFn> =
+            GenPoly::from_coeffs(vec![ratfn_poly(&[(0, 1), (-4, 1)]), ratfn_poly(&[(1, 1)])]);
+        let terms = quadratic_log_to_real(&mut arena, x, &q, &s).expect("real form");
+        let sum = arena.add(&terms);
+        for x0 in [r(3, 1), r(1, 3), r(-7, 2)] {
+            let got = value_at(&mut arena, sum, x, x0.clone());
+            let xf = num_traits::ToPrimitive::to_f64(&x0).expect("f64");
+            let s2 = 2f64.sqrt();
+            let want = s2 / 4.0 * ((xf - s2).abs().ln() - (xf + s2).abs().ln());
+            assert!((got - want).abs() < 1e-12, "x = {xf}: {got} vs {want}");
+        }
+    }
+
+    #[test]
+    fn log_to_atan_surd_satisfies_its_defining_derivative() {
+        // F' = 2(A'·rB − A·rB')/(A² + r²B²) for F = LogToAtan(A, rB), here with
+        // A = x³ + 2x, B = x² − 3, r = √3: B ∤ A, so the Bézout step and the
+        // recursion both run.
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let a = poly_q(&[(0, 1), (2, 1), (0, 1), (1, 1)]);
+        let b = poly_q(&[(-3, 1), (0, 1), (1, 1)]);
+        let r2 = r(3, 1);
+        let f = log_to_atan_surd(&mut arena, x, &a, &b, &r2).expect("atan sum");
+        let df = crate::transforms::diff::diff(&mut arena, f, x);
+        for x0 in [r(1, 2), r(5, 3), r(-9, 4)] {
+            let got = value_at(&mut arena, df, x, x0.clone());
+            let xf = num_traits::ToPrimitive::to_f64(&x0).expect("f64");
+            let rt = 3f64.sqrt();
+            let (av, dav) = (xf.powi(3) + 2.0 * xf, 3.0 * xf * xf + 2.0);
+            let (bv, dbv) = (rt * (xf * xf - 3.0), rt * 2.0 * xf);
+            let want = 2.0 * (dav * bv - av * dbv) / (av * av + bv * bv);
+            assert!((got - want).abs() < 1e-10, "x = {xf}: {got} vs {want}");
+        }
+    }
+
+    #[test]
+    fn log_to_real_keeps_the_real_roots_of_a_cubic() {
+        // ∫ 1/(x³ − 2) dx: q = 108t³ − 1 has the real root ∛2/6, whose term
+        // (∛2/6)·ln|x − ∛2| was dropped before 0.25.  Checked through the
+        // whole integrator: F' = f at three points.
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let three = arena.int(3);
+        let x3 = arena.pow(x, three);
+        let m2 = arena.int(-2);
+        let den = arena.add(&[x3, m2]);
+        let m1 = arena.int(-1);
+        let f = arena.pow(den, m1);
+        let big_f =
+            crate::calculus::risch::try_risch_rational(&mut arena, f, x).expect("closed form");
+        assert!(!crate::base::walk::has_unevaluated(&arena, big_f));
+        let df = crate::transforms::diff::diff(&mut arena, big_f, x);
+        for x0 in [r(3, 1), r(1, 2), r(-5, 2)] {
+            let got = value_at(&mut arena, df, x, x0.clone());
+            let xf = num_traits::ToPrimitive::to_f64(&x0).expect("f64");
+            let want = 1.0 / (xf.powi(3) - 2.0);
+            assert!((got - want).abs() < 1e-10, "x = {xf}: {got} vs {want}");
         }
     }
 

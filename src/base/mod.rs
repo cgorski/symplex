@@ -8,6 +8,7 @@ pub(crate) mod combinatorics;
 pub(crate) mod compact;
 pub(crate) mod complex;
 pub mod config;
+
 pub(crate) mod dense_f64;
 pub mod errors;
 pub mod extended;
@@ -18,5 +19,6 @@ pub(crate) mod node;
 pub mod numeric;
 pub mod rng;
 pub(crate) mod sort_key;
+pub(crate) mod stage;
 pub(crate) mod symbol;
 pub(crate) mod walk;

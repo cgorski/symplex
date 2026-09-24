@@ -108,6 +108,10 @@ cargo run --example quickstart
 # With tracing output (see simplification steps, integration attempts, etc.)
 RUST_LOG=symplex=debug cargo run --example quickstart
 
+# Which steps of a slow call took the time (see "Finding where a slow or
+# memory-hungry call spends its time" below)
+RUST_LOG=symplex::stage=debug cargo run --release --example …
+
 # Dependency policy check (CI runs this too; `cargo install cargo-deny`)
 cargo deny check
 ```
@@ -155,7 +159,7 @@ src/
 │                 bigcomplex.rs (BigFloat complex pairs), bernoulli.rs, complex.rs (Complex64
 │                 helpers), errors.rs, config.rs (EvalConfig, EXPRESSION_BUDGET), and the shared
 │                 value types of 0.15–0.21: interval.rs (Interval/Bounds), extended.rs (Extended),
-│                 rng.rs (SplitMix64, XorShift64Star), budget.rs (Budget), combinatorics.rs,
+│                 rng.rs (SplitMix64, XorShift64Star), budget.rs (Budget), stage.rs (stage! tracing), combinatorics.rs,
 │                 graph.rs (Tarjan SCC), libfn.rs (the LibFn registry of 50 special functions),
 │                 dense_f64.rs (flat f64 Cholesky/SPD/Jacobi kernels)
 ├── poly/         traits.rs (Ring/Field/EuclideanDomain hierarchy, the `poly_gcd` hook),
@@ -823,6 +827,35 @@ TRYBUILD=overwrite cargo +1.95.0 test --test ui_tests
   run.  Agents share `target/`, so one agent's transient build break is
   visible to the others — tell them to wait and retry, not to fix files they
   do not own.  Agents never commit; integrate with one `cargo fmt --all`.
+
+### Finding where a slow or memory-hungry call spends its time
+
+The expensive steps of an algorithm are wrapped in `stage!`
+(`src/base/stage.rs`): a `DEBUG` span named after the step, which
+records the time taken and the arena nodes created.  Nothing is computed
+unless a subscriber enables the span, so the stages stay in release
+builds.  With a subscriber installed (any example or probe that calls
+`tracing_subscriber::fmt().with_env_filter(…).init()`, or
+`rubi-harness --probe`):
+
+```bash
+# The stages that took ≥ 250 ms or created ≥ 200 000 nodes, innermost first,
+# each with the chain of stages above it:
+RUST_LOG=symplex::stage=debug cargo run --release --example my_probe
+#   DEBUG integrate:substitutions:integrate:risch_rational:lrt_prs: …
+#         hot stage stage="lrt_prs" ms=23505 new_nodes=0
+
+# Every stage entered (with its expression, clipped) and left:
+RUST_LOG=symplex::stage=trace …
+```
+
+A call that never returns — a timeout, a memory cap — never logs its
+`exit`; the last `enter` lines under `trace` name the step it is stuck in
+and the expression it is stuck on.  When the step is not a stage yet,
+sample the running process (`sample <name> 1` on macOS, `perf top -p` on
+Linux) to find the function, then wrap its call in `stage!` so the next
+person sees it directly: `stage!(arena, "name", expr, call(arena, …))`
+evaluates to the call's value.
 
 ### Test Helpers
 

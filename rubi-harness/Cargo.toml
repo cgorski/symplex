@@ -8,6 +8,8 @@ description = "Runs symplex's Ex::integrate on the Rubi integration test suite a
 
 [dependencies]
 symplex = { path = ".." }
+# `--probe` logs to stderr under `RUST_LOG` (e.g. `symplex::stage=debug`).
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Its own workspace: the harness is not a member of the symplex package and
 # is excluded from the published crate (see the top-level `Cargo.toml`).

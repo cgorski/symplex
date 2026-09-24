@@ -30,10 +30,10 @@ impl RandomVariable {
     ///
     /// # Panics
     ///
-    /// If `dist`'s parameters live in another context than `ctx` (the
-    /// crate's cross-context logic error, raised here at construction
-    /// rather than deep inside a later query).  [`try_new`](Self::try_new)
-    /// reports it as an error instead.
+    /// If `name` is empty, or if `dist`'s parameters live in another context
+    /// than `ctx` (the crate's cross-context logic error, raised here at
+    /// construction rather than deep inside a later query).
+    /// [`try_new`](Self::try_new) reports both as errors instead.
     pub fn new(ctx: &Context, name: &str, dist: Distribution) -> Self {
         let symbol = ctx.symbol(name);
         // The cross-context guard: `checked_id` is the crate's one
@@ -44,12 +44,13 @@ impl RandomVariable {
         RandomVariable { symbol, dist }
     }
 
-    /// A random variable, or an error when the distribution lives in
-    /// another context than `ctx`.
+    /// A random variable, or an error when the name is empty or the
+    /// distribution lives in another context than `ctx`.
     ///
     /// # Errors
     ///
-    /// [`SymplexError::InvalidArgument`] on a context mismatch.
+    /// [`SymplexError::InvalidArgument`] on an empty name or a context
+    /// mismatch.
     pub fn try_new(ctx: &Context, name: &str, dist: Distribution) -> Result<Self, SymplexError> {
         if dist.context().id != ctx.id {
             return Err(SymplexError::invalid_argument(
@@ -58,7 +59,7 @@ impl RandomVariable {
             ));
         }
         Ok(RandomVariable {
-            symbol: ctx.symbol(name),
+            symbol: ctx.try_symbol(name)?,
             dist,
         })
     }

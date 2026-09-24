@@ -635,41 +635,26 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
         return arena.intern(ExprNode::Exp(exp));
     }
 
-    // Pow(Pow(a, b), c) → Pow(a, b*c) when both b and c are integers.
-    // This is mathematically safe for integer exponents (no branch cut issues).
-    // Critical for the Gruntz algorithm: ensures 1/(1/x) = Pow(Pow(x,-1),-1) → x.
-    // Matches SymPy's auto-simplification of nested powers at construction time.
+    // Pow(Pow(a, b), c) → Pow(a, b*c) when c is an integer and b a number.
+    //
+    // Valid for every complex a and b on the principal branch: z^c is
+    // single-valued for integer c, and Log(a^b) = b·Log a + 2πik, so
+    // (a^b)^c = exp(c·b·Log a)·exp(2πikc) = a^(bc).  SymPy's `Pow._eval_power`
+    // applies the same rule (`s = 1` for an integer exponent).  Critical for
+    // the Gruntz algorithm (1/(1/x) = Pow(Pow(x,-1),-1) → x) and for
+    // (√y)² → y: before 0.25 only integer b or a positive rational a were
+    // flattened, and u-substitution kept wrapping `sqrt((sqrt(c))²)` around
+    // `∫ x^(3/2)/(sin(−1) − 2x) dx`, a new integrand every round (1.3 s,
+    // 850 000 nodes, to give up).
     if let ExprNode::Pow(inner_base, inner_exp) = arena.node(base).clone()
         && let (Some(b), Some(c)) = (arena.as_num(inner_exp), arena.as_num(exp))
+        && c.is_integer()
     {
-        let b = b.clone();
-        let c = c.clone();
-        if b.is_integer() && c.is_integer() {
-            tracing::trace!("canon_pow: flattening Pow(Pow(a,b),c) → Pow(a,b*c)");
-            let product = b * c;
-            let prod_id = arena.intern_num(product);
-            let prod_expr = arena.intern(ExprNode::Num(prod_id));
-            return canon_pow(arena, inner_base, prod_expr);
-        }
-
-        // Also flatten when the inner base is a positive rational and the
-        // outer exponent is an integer.  This handles cases like
-        //   (5^{1/2})^2 → 5^{1/2 * 2} = 5^1 → 5
-        //   (2^{1/3})^3 → 2^{1/3 * 3} = 2^1 → 2
-        //   (3^{1/4})^2 → 3^{1/4 * 2} = 3^{1/2} = √3
-        // Safe because a > 0 avoids all branch-cut ambiguity.
-        if c.is_integer()
-            && let Some(base_r) = arena.as_num(inner_base)
-            && base_r.is_positive()
-        {
-            tracing::trace!(
-                "canon_pow: flattening Pow(Pow(pos_rational, frac), int) → Pow(pos_rational, frac*int)"
-            );
-            let product = b * c;
-            let prod_id = arena.intern_num(product);
-            let prod_expr = arena.intern(ExprNode::Num(prod_id));
-            return canon_pow(arena, inner_base, prod_expr);
-        }
+        tracing::trace!("canon_pow: flattening Pow(Pow(a,b),c) → Pow(a,b*c)");
+        let product = b * c;
+        let prod_id = arena.intern_num(product);
+        let prod_expr = arena.intern(ExprNode::Num(prod_id));
+        return canon_pow(arena, inner_base, prod_expr);
     }
 
     // Pow(Mul(children), n) → Mul(Pow(child_i, n)) when n is integer, |n| ≤ 10.
@@ -731,12 +716,12 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
         let four = BigInt::from(4);
         let remainder = exp_int.mod_floor(&four);
         let r: u32 = remainder.try_into().unwrap_or(0);
+        // `mod_floor(4)` is 0..=3.
         return match r {
             0 => arena.one,
             1 => arena.i_unit,
             2 => arena.neg_one,
-            3 => arena.neg(arena.i_unit),
-            _ => unreachable!(),
+            _ => arena.neg(arena.i_unit),
         };
     }
 
@@ -754,12 +739,12 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
             use num_integer::Integer;
             let remainder = n.mod_floor(&four);
             let r: u32 = (&remainder).try_into().unwrap_or(0);
+            // `mod_floor(4)` is 0..=3.
             return match r {
                 0 => arena.one,
                 1 => arena.i_unit,
                 2 => arena.neg_one,
-                3 => arena.neg(arena.i_unit),
-                _ => unreachable!(),
+                _ => arena.neg(arena.i_unit),
             };
         }
     }

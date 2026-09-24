@@ -40,6 +40,12 @@ fn parse_in(ctx: &Context, input: &str) -> Result<Ex, String> {
     symplex::parse::parse(ctx, input).map_err(|e| format!("Parse error: {e}"))
 }
 
+/// The symbol named by a JavaScript string: an error, not a panic, for an
+/// empty name.
+fn sym(ctx: &Context, name: &str) -> Result<Ex, String> {
+    ctx.try_symbol(name).map_err(|e| e.to_string())
+}
+
 /// Split a comma-separated parameter list, trimming whitespace and
 /// dropping empty entries.
 fn split_params(params: &str) -> Vec<&str> {
@@ -76,35 +82,35 @@ mod core {
     pub fn factor(expr: &str, var: &str) -> Result<String, String> {
         let ctx = Context::new();
         let e = parse_in(&ctx, expr)?;
-        let v = ctx.symbol(var);
+        let v = sym(&ctx, var)?;
         Ok(e.factor(&v).to_string())
     }
 
     pub fn differentiate(expr: &str, var: &str) -> Result<String, String> {
         let ctx = Context::new();
         let e = parse_in(&ctx, expr)?;
-        let v = ctx.symbol(var);
+        let v = sym(&ctx, var)?;
         Ok(e.diff(&v).to_string())
     }
 
     pub fn differentiate_latex(expr: &str, var: &str) -> Result<String, String> {
         let ctx = Context::new();
         let e = parse_in(&ctx, expr)?;
-        let v = ctx.symbol(var);
+        let v = sym(&ctx, var)?;
         Ok(e.diff(&v).to_latex())
     }
 
     pub fn integrate(expr: &str, var: &str) -> Result<String, String> {
         let ctx = Context::new();
         let e = parse_in(&ctx, expr)?;
-        let v = ctx.symbol(var);
+        let v = sym(&ctx, var)?;
         Ok(e.integrate(&v).to_string())
     }
 
     pub fn integrate_definite(expr: &str, var: &str, lo: &str, hi: &str) -> Result<String, String> {
         let ctx = Context::new();
         let e = parse_in(&ctx, expr)?;
-        let v = ctx.symbol(var);
+        let v = sym(&ctx, var)?;
         let lo = parse_in(&ctx, lo)?;
         let hi = parse_in(&ctx, hi)?;
         Ok(e.integrate_definite(&v, &lo, &hi).to_string())
@@ -113,7 +119,7 @@ mod core {
     pub fn solve(expr: &str, var: &str) -> Result<String, String> {
         let ctx = Context::new();
         let e = parse_in(&ctx, expr)?;
-        let v = ctx.symbol(var);
+        let v = sym(&ctx, var)?;
         let roots = e.solve(&v).map_err(|e| format!("Solve error: {e}"))?;
         Ok(json_strings(roots.iter().map(ToString::to_string)))
     }
@@ -121,7 +127,7 @@ mod core {
     pub fn limit(expr: &str, var: &str, point: &str) -> Result<String, String> {
         let ctx = Context::new();
         let e = parse_in(&ctx, expr)?;
-        let v = ctx.symbol(var);
+        let v = sym(&ctx, var)?;
         let p = parse_in(&ctx, point)?;
         Ok(e.limit(&v, &p).to_string())
     }
@@ -129,7 +135,7 @@ mod core {
     pub fn series(expr: &str, var: &str, point: &str, order: u32) -> Result<String, String> {
         let ctx = Context::new();
         let e = parse_in(&ctx, expr)?;
-        let v = ctx.symbol(var);
+        let v = sym(&ctx, var)?;
         let p = parse_in(&ctx, point)?;
         Ok(e.series(&v, &p, order).to_string())
     }
@@ -402,13 +408,13 @@ impl Session {
 
     fn diff_impl(&self, expr: &str, var: &str) -> Result<String, String> {
         let e = self.resolve(expr)?;
-        let v = self.ctx.symbol(var);
+        let v = sym(&self.ctx, var)?;
         Ok(e.diff(&v).to_string())
     }
 
     fn solve_impl(&self, expr: &str, var: &str) -> Result<String, String> {
         let e = self.resolve(expr)?;
-        let v = self.ctx.symbol(var);
+        let v = sym(&self.ctx, var)?;
         let roots = e.solve(&v).map_err(|e| format!("Solve error: {e}"))?;
         Ok(json_strings(roots.iter().map(ToString::to_string)))
     }
@@ -493,12 +499,15 @@ fn dh_param(ctx: &Context, v: f64) -> Result<Ex, String> {
 }
 
 fn build_dh(ctx: &Context, config: &DhConfig) -> Result<Vec<(Ex, Ex, Ex, Ex)>, String> {
+    if config.joints.is_empty() {
+        return Err("the DH configuration has no joints".into());
+    }
     config
         .joints
         .iter()
         .map(|j| {
             Ok((
-                ctx.symbol(&j.theta),
+                sym(ctx, &j.theta)?,
                 dh_param(ctx, j.d)?,
                 dh_param(ctx, j.a)?,
                 dh_param(ctx, j.alpha)?,
@@ -550,7 +559,7 @@ fn compute_jacobian_impl(dh_json: &str) -> Result<String, String> {
         })
         .collect();
     let (x, y, z) = symplex::robotics::fk_position(&dh_refs);
-    let theta_vars: Vec<Ex> = config.joints.iter().map(|j| ctx.symbol(&j.theta)).collect();
+    let theta_vars: Vec<Ex> = config.joints.iter().map(|j| sym(&ctx, &j.theta)).collect::<Result<_, _>>()?;
     let theta_refs: Vec<&Ex> = theta_vars.iter().collect();
     let jac = symplex::matrix::jacobian(&[&x, &y, &z], &theta_refs);
     Ok(matrix_latex_json(&jac))
@@ -570,7 +579,7 @@ fn generate_jacobian_code_impl(dh_json: &str) -> Result<String, String> {
         })
         .collect();
     let (x, y, z) = symplex::robotics::fk_position(&dh_refs);
-    let theta_vars: Vec<Ex> = config.joints.iter().map(|j| ctx.symbol(&j.theta)).collect();
+    let theta_vars: Vec<Ex> = config.joints.iter().map(|j| sym(&ctx, &j.theta)).collect::<Result<_, _>>()?;
     let theta_refs: Vec<&Ex> = theta_vars.iter().collect();
     let param_names: Vec<&str> = config.joints.iter().map(|j| j.theta.as_str()).collect();
     let jac = symplex::matrix::jacobian(&[&x, &y, &z], &theta_refs);
@@ -687,6 +696,23 @@ mod tests {
     #[test]
     fn decimals_are_exact() {
         assert_eq!(core::simplify("0.1 + 0.2").unwrap(), "3/10");
+    }
+
+    #[test]
+    fn empty_names_from_javascript_are_errors_not_panics() {
+        for r in [
+            core::differentiate("x^2", ""),
+            core::integrate("x", ""),
+            core::solve("x - 1", ""),
+            core::factor("x^2 - 1", ""),
+            core::limit("x", "", "0"),
+        ] {
+            let e = r.unwrap_err();
+            assert!(e.contains("empty"), "{e}");
+        }
+        let empty_joint = r#"{"joints": [{"theta": "", "d": 0, "a": 1, "alpha": 0}]}"#;
+        assert!(compute_fk_impl(empty_joint).is_err());
+        assert!(compute_jacobian_impl(r#"{"joints": []}"#).is_err());
     }
 
     #[test]

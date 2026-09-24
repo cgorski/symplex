@@ -36,7 +36,7 @@ Most answers come back fast (usually unevaluated).
 | `--out DIR` | output directory (default `results/`, `results/only/` with `--only`, `results/selftest/` with `--selftest`) |
 | `--selftest` | judge Rubi's *optimal* antiderivatives instead of symplex's (validates the translation and the checker) |
 | `--scan` | translate and parse every integrand (no integration) and print statistics |
-| `--probe EXPR [VAR]` | run one Maxima expression through the whole pipeline, verbosely |
+| `--probe EXPR [VAR]` | run one Maxima expression through the whole pipeline, verbosely; with `RUST_LOG` set it logs to stderr (`RUST_LOG=symplex::stage=debug` lists the steps that took ≥ 250 ms or created ≥ 200,000 nodes, see CONTRIBUTING.md) |
 
 ## Pipeline
 

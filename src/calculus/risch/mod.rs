@@ -34,7 +34,10 @@ use num_traits::{One, Signed};
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
+use crate::base::stage::stage;
 use crate::poly::dense::Poly;
+use crate::poly::generic::GenPoly;
+use crate::poly::ratfn::RationalFn;
 
 // Recursion guard: prevents try_risch_rational from re-entering itself
 // when it calls the heuristic integrator on an algebraic remainder.
@@ -75,6 +78,12 @@ impl Drop for RischRecursionGuard {
     }
 }
 
+/// Is a `try_risch_rational` call in progress on this thread (so that a
+/// nested one returns `None`)?  Part of the integrator's memo key.
+pub(crate) fn rational_guard_active() -> bool {
+    RISCH_GUARD.with(Cell::get)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Public result types
 // ═══════════════════════════════════════════════════════════════════════════
@@ -88,8 +97,15 @@ pub enum LogTerm {
     /// `Σ_{α: min_poly(α)=0} α * ln(gcd(denom, numer - α·denom'))`.
     ///
     /// Used when the resultant has irreducible factors of degree > 1
-    /// whose roots are algebraic numbers not in ℚ.
-    Algebraic { min_poly: Poly },
+    /// whose roots are algebraic numbers not in ℚ.  `log_arg` is
+    /// `S(t, x)` with `S(α, x) = gcd(denom, numer − α·denom')`: monic in
+    /// `x`, of degree the multiplicity of `min_poly` in the resultant, its
+    /// coefficients polynomials in `t` reduced modulo `min_poly`; `None`
+    /// if the remainder sequence had no member of that degree.
+    Algebraic {
+        min_poly: Poly,
+        log_arg: Option<GenPoly<RationalFn>>,
+    },
 }
 
 /// Result of the Risch integration.
@@ -195,45 +211,29 @@ pub(crate) fn try_risch_tower(
 // Arena ↔ Poly bridge
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Try to integrate a rational function `A(x)/D(x)` using Hermite reduction
-/// followed by Rothstein-Trager.
-///
-/// Returns `Some(result_expr_id)` if the expression is a rational function
-/// and integration succeeds.  Returns `None` if the expression is not a
-/// rational function or if algebraic log terms can't be represented.
-/// `p ∈ ℚ(t)[x]` scaled by a non-zero element of ℚ(t) so that its
-/// coefficients are polynomials in `t` with no common factor: clear the
-/// denominators (their lcm in `ℚ[t]`) and divide by the gcd of the numerators.
-fn primitive_over_q_t(
-    p: crate::poly::generic::GenPoly<crate::poly::ratfn::RationalFn>,
-) -> crate::poly::generic::GenPoly<crate::poly::ratfn::RationalFn> {
-    use crate::poly::ratfn::RationalFn;
-    let coeffs = &p.coeffs;
-    let mut lcm = Poly::from_int(1);
-    for c in coeffs {
-        let d = c.denom();
-        if !d.is_constant() {
-            let g = Poly::gcd(&lcm, d);
-            lcm = (&lcm * d).div(&g);
-        }
-    }
-    let numers: Vec<Poly> = coeffs
-        .iter()
-        .map(|c| (c.numer() * &lcm).div(c.denom()))
-        .collect();
-    let content = numers
-        .iter()
-        .filter(|n| !n.is_zero())
-        .fold(Poly::zero(), |g, n| Poly::gcd(&g, n));
-    if content.is_zero() {
-        return p;
-    }
-    crate::poly::generic::GenPoly::from_coeffs(
-        numers
-            .iter()
-            .map(|n| RationalFn::from_poly(n.div(&content)))
-            .collect(),
-    )
+/// The largest exponent `try_risch_rational` accepts on a power: larger
+/// ones would make `expr_to_poly` build a dense polynomial of that degree
+/// (`1/(x^1000000000 + 1)` asked for a billion coefficients).
+const MAX_RATIONAL_EXPONENT: i64 = 1000;
+
+/// Is `e` an element of `ℚ(x)` as written: built from rational numbers and
+/// `var` by sums, products and integer powers (of magnitude at most
+/// [`MAX_RATIONAL_EXPONENT`])?  Anything else — `i`, `π`, `√2`, a
+/// function, another symbol — is refused before any expansion: the
+/// integrator over `ℚ` cannot use it, and expanding it can be ruinous
+/// (0.24: the partial fractions of `x³/(x⁸+1)` over its complex roots,
+/// put over a common denominator, expanded towards 10⁸ terms).
+fn is_rational_function_over_q(arena: &Arena, e: ExprId, var: ExprId) -> bool {
+    crate::base::walk::post_order_ids(arena, e)
+        .into_iter()
+        .all(|id| match arena.node(id) {
+            ExprNode::Num(_) | ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) => true,
+            ExprNode::Pow(_, exp) => arena.as_num(*exp).is_some_and(|r| {
+                r.is_integer()
+                    && i64::try_from(r.to_integer()).is_ok_and(|n| n.abs() <= MAX_RATIONAL_EXPONENT)
+            }),
+            _ => id == var,
+        })
 }
 
 /// Does `e` contain `g^(−n)` (a negative integer power) of something that
@@ -252,7 +252,16 @@ fn has_negative_power_of(arena: &Arena, e: ExprId, var: ExprId) -> bool {
         })
 }
 
+/// Try to integrate a rational function `A(x)/D(x) ∈ ℚ(x)` using Hermite
+/// reduction followed by Rothstein–Trager / Lazard–Rioboo–Trager.
+///
+/// Returns `Some(result_expr_id)` if the expression is a rational function
+/// over `ℚ` and integration succeeds.  Returns `None` if it is not, or if
+/// the algebraic log terms cannot be represented.
 pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<ExprId> {
+    if !is_rational_function_over_q(arena, expr, var) {
+        return None;
+    }
     // Recursion guard: if we're already inside try_risch_rational
     // (integrating an algebraic remainder), skip to avoid infinite loop.
     // The RAII guard resets the flag on drop, even during panics.
@@ -290,9 +299,19 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
     // Expand and evaluate both numer and denom before converting to Poly.
     // This handles cases like (x²+1)² which need expansion to x⁴+2x²+1
     // before expr_to_poly can parse them as univariate polynomials.
-    let numer_exp = crate::transforms::expand::expand(arena, numer_id);
+    let numer_exp = stage!(
+        arena,
+        "expand_numer",
+        numer_id,
+        crate::transforms::expand::expand(arena, numer_id)
+    );
     let numer_expanded = crate::transforms::eval::eval(arena, numer_exp);
-    let denom_exp = crate::transforms::expand::expand(arena, denom_id);
+    let denom_exp = stage!(
+        arena,
+        "expand_denom",
+        denom_id,
+        crate::transforms::expand::expand(arena, denom_id)
+    );
     let denom_expanded = crate::transforms::eval::eval(arena, denom_exp);
 
     // Convert arena expressions to Poly using existing polybridge.
@@ -304,14 +323,77 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
         return None;
     }
 
+    integrate_rational_function(arena, &numer_poly, &denom_poly, var, expr)
+}
+
+/// `k ≥ 2` if `A/D = x^(k−1)·F(x^k)`: every exponent of `D` is a multiple of
+/// `k` and every exponent of `A` is `≡ k − 1 (mod k)`.  The largest such `k`.
+fn power_substitution_degree(a: &Poly, d: &Poly) -> Option<usize> {
+    let mut g = 0usize;
+    for (e, c) in d.coeffs().iter().enumerate() {
+        if !num_traits::Zero::is_zero(c) {
+            g = num_integer::gcd(g, e);
+        }
+    }
+    for (e, c) in a.coeffs().iter().enumerate() {
+        if !num_traits::Zero::is_zero(c) {
+            g = num_integer::gcd(g, e + 1);
+        }
+    }
+    (g >= 2).then_some(g)
+}
+
+/// The polynomial `Σ c_{k·j + shift}·u^j` of the coefficients of `p` at the
+/// exponents `≡ shift (mod k)`.
+fn compress_exponents(p: &Poly, k: usize, shift: usize) -> Poly {
+    Poly::from_coeffs(p.coeffs().iter().skip(shift).step_by(k).cloned().collect())
+}
+
+/// `∫ A/D dx` for `A, D ∈ ℚ[x]`, `D` not constant.  `label` only names the
+/// integrand in stage traces.
+fn integrate_rational_function(
+    arena: &mut Arena,
+    numer_poly: &Poly,
+    denom_poly: &Poly,
+    var: ExprId,
+    label: ExprId,
+) -> Option<ExprId> {
+    let expr = label;
+
+    // ── x^(k−1)·F(x^k): u = x^k gives ∫ F(u) du / k, of lower degree ──
+    // `∫ x³/(x⁸ + 1) dx = ¼ ∫ du/(u² + 1) = atan(x⁴)/4` instead of eight
+    // quadratic factors over ℚ(√(2 ± √2)) (SymPy's answer comes out the
+    // same way, through the degree-4 log argument).
+    if let Some(k) = power_substitution_degree(numer_poly, denom_poly) {
+        let k_q = Q::from_integer(k.into());
+        let a_u = compress_exponents(numer_poly, k, k - 1).scale(&k_q.recip());
+        let d_u = compress_exponents(denom_poly, k, 0);
+        let u = arena.symbol("__rr_u");
+        let f_u = integrate_rational_function(arena, &a_u, &d_u, u, label)?;
+        let k_id = arena.int(i64::try_from(k).ok()?);
+        let x_k = arena.pow(var, k_id);
+        let f_x = crate::transforms::subs::subs(arena, f_u, u, x_k);
+        return Some(crate::transforms::eval::eval(arena, f_x));
+    }
+
     // Phase 1: Hermite reduction.
-    let hr = hermite::hermite_reduce(&numer_poly, &denom_poly);
+    let hr = stage!(
+        arena,
+        "hermite",
+        expr,
+        hermite::hermite_reduce(numer_poly, denom_poly)
+    );
 
     // Phase 2: Rothstein-Trager on the square-free remainder.
     let log_result = if hr.h_numer.is_zero() {
         rothstein_trager::LogPartResult { terms: vec![] }
     } else {
-        rothstein_trager::logarithmic_part(&hr.h_numer, &hr.h_denom)
+        stage!(
+            arena,
+            "rothstein_trager",
+            expr,
+            rothstein_trager::logarithmic_part(&hr.h_numer, &hr.h_denom)
+        )
     };
 
     // Convert results back to arena expressions.
@@ -398,110 +480,74 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
     // After GCD cancellation, the reduced A_alg/D_reduced has only the
     // irreducible quadratic (or higher) factors in its denominator.
     if has_algebraic && !hr.h_numer.is_zero() {
-        // ── Try log_to_real first (Phase 4: Lazard-Rioboo-Trager) ──
+        // ── Algebraic factors: exact real forms (Lazard–Rioboo–Trager) ──
         //
-        // Compute the Euclidean PRS to get h(t,x), then call log_to_real
-        // for each irreducible algebraic factor of R(t).  If all factors
-        // are converted successfully, we get exact ln + atan terms with
-        // radical coefficients — no recursive integration or apart needed.
-        //
-        // If log_to_real fails (e.g., degree ≥ 5 non-solvable factor),
-        // fall back to the Phase 1 algebraic remainder path.
-        // Build D(x) and A(x) − t·D'(x) as GenPoly<RationalFn>.
-        let h_denom_deriv = hr.h_denom.derivative();
-        let d_gp = log_to_real::poly_to_genpoly_rf(&hr.h_denom);
-        let a_gp = log_to_real::poly_to_genpoly_rf(&hr.h_numer);
-        let dprime_t_gp = log_to_real::poly_to_genpoly_rf_times_t(&h_denom_deriv);
-        let b_gp = &a_gp - &dprime_t_gp;
-
-        // Compute the PRS down to its degree-1 member (all log_to_real
-        // needs), each remainder made primitive over ℚ[t]: Euclid over ℚ(t)
-        // grows the coefficients' degree in t at every step (the degree-2 → 1
-        // step of `∫ atan(√x − x³) dx` alone took 4 s).  The monic
-        // degree-1 member is the same.
-        let prs = crate::poly::generic::GenPoly::<crate::poly::ratfn::RationalFn>::euclidean_prs_normalized(
-            &d_gp,
-            &b_gp,
-            Some(1),
-            primitive_over_q_t,
+        // Every irreducible factor q of the resultant of degree > 1 comes
+        // with its log argument S(t, x) (`rothstein_trager::logarithmic_part`),
+        // and contributes Σ_{q(α)=0} α·ln(S(α, x)).  A quadratic q is
+        // converted exactly over ℚ[x] (`quadratic_log_to_real`); a q of
+        // higher degree with S linear in x through its radical roots
+        // (`log_to_real`).
+        type Factor<'a> = (
+            &'a Poly,
+            Option<&'a GenPoly<RationalFn>>,
+            Option<Vec<ExprId>>,
         );
-        let h_prs_opt: Option<crate::poly::generic::GenPoly<crate::poly::ratfn::RationalFn>> =
-            match prs.get(&1) {
-                Some(h) => {
-                    let monic: crate::poly::generic::GenPoly<crate::poly::ratfn::RationalFn> =
-                        h.make_monic();
-                    Some(monic)
-                }
-                None => {
-                    tracing::debug!(
-                        prs_degrees = ?prs.keys().collect::<Vec<_>>(),
-                        "try_risch_rational: no degree-1 PRS member for log_to_real"
-                    );
-                    None
-                }
+        let mut per_factor: Vec<Factor<'_>> = Vec::new();
+        for term in &log_result.terms {
+            let LogTerm::Algebraic { min_poly, log_arg } = term else {
+                continue;
             };
-
-        let log_to_real_terms: Option<Vec<ExprId>> = 'ltr: {
-            let h_prs = match h_prs_opt {
-                Some(ref h) => h,
-                None => break 'ltr None,
+            let log_arg = log_arg.as_ref();
+            let real_terms = match log_arg {
+                Some(s) if min_poly.degree() == Some(2) => stage!(
+                    arena,
+                    "quadratic_log_to_real",
+                    expr,
+                    log_to_real::quadratic_log_to_real(arena, var, min_poly, s)
+                ),
+                Some(s) if s.degree() == Some(1) => stage!(
+                    arena,
+                    "log_to_real",
+                    expr,
+                    log_to_real::log_to_real(arena, var, min_poly, s)
+                ),
+                _ => None,
             };
-
-            tracing::debug!("try_risch_rational: PRS computed, attempting log_to_real");
-
-            // Try log_to_real for each algebraic LogTerm.
-            let mut ltr_terms: Vec<ExprId> = Vec::new();
-            for term in &log_result.terms {
-                if let LogTerm::Algebraic { min_poly, .. } = term {
-                    match log_to_real::log_to_real(arena, var, min_poly, h_prs) {
-                        Some(real_terms) => {
-                            tracing::debug!(
-                                n_terms = real_terms.len(),
-                                min_poly_degree = ?min_poly.degree(),
-                                "try_risch_rational: log_to_real succeeded for algebraic factor"
-                            );
-                            ltr_terms.extend(real_terms);
-                        }
-                        None => {
-                            tracing::debug!(
-                                min_poly_degree = ?min_poly.degree(),
-                                "try_risch_rational: log_to_real failed for algebraic factor"
-                            );
-                            break 'ltr None;
-                        }
-                    }
-                }
+            if real_terms.is_none() {
+                tracing::debug!(
+                    min_poly_degree = ?min_poly.degree(),
+                    log_arg_degree = ?log_arg.and_then(GenPoly::degree),
+                    "try_risch_rational: no real form for algebraic factor"
+                );
             }
-            Some(ltr_terms)
-        };
+            per_factor.push((min_poly, log_arg, real_terms));
+        }
 
-        if let Some(ltr_terms) = log_to_real_terms {
-            // log_to_real succeeded for all algebraic factors.
-            tracing::debug!(
-                n_terms = ltr_terms.len(),
-                "try_risch_rational: log_to_real path complete — no recursive integration needed"
-            );
-            terms.extend(ltr_terms);
+        if per_factor.iter().all(|(_, _, t)| t.is_some()) {
+            for (_, _, real_terms) in per_factor {
+                terms.extend(real_terms.into_iter().flatten());
+            }
         } else {
             // ── Fallback: algebraic remainder path, then RootSum ───
             //
-            // log_to_real couldn't handle all algebraic terms.  Try the
-            // Phase 1 algebraic remainder path first (subtract rational
-            // contributions, GCD-cancel, recursively integrate).  This
-            // handles common cases like x/(x⁴+x²+1) via apart.
+            // Subtract the rational log contributions and integrate the
+            // remaining algebraic part with the heuristic integrator (its
+            // partial fractions over the roots may find a closed form, as
+            // for `1/(x⁸ + 1)`).  If that stays unevaluated, the factors
+            // without a real form become `RootSum`s — the exact answer in
+            // implicit form — next to the real forms of the others.
             //
-            // If the algebraic remainder integration still produces
-            // unevaluated integrals AND we have a PRS, emit RootSum
-            // nodes as the final fallback — these are the exact
-            // mathematical answer in implicit form.
+            // A_alg = h_numer − Σ c_i · v_i' · (h_denom / v_i): by the
+            // residue theorem Π v_i divides A_alg, and after cancelling the
+            // gcd only the algebraic factors remain in the denominator.
             tracing::debug!(
                 h_numer_degree = ?hr.h_numer.degree(),
                 h_denom_degree = ?hr.h_denom.degree(),
                 n_rational_to_subtract = rational_log_parts.len(),
-                "try_risch_rational: log_to_real failed, trying algebraic remainder path"
+                "try_risch_rational: trying the algebraic remainder path"
             );
 
-            // Compute A_alg = h_numer − Σ c_i · v_i' · (h_denom / v_i)
             let mut a_alg = hr.h_numer.clone();
             for (coeff, v_i) in &rational_log_parts {
                 let v_i_prime = v_i.derivative();
@@ -514,101 +560,47 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
                     "h_denom / v_i must be exact polynomial division"
                 );
                 let contribution = (&v_i_prime * &cofactor).scale(coeff);
-                tracing::trace!(
-                    coeff = %coeff,
-                    v_i_degree = ?v_i.degree(),
-                    cofactor_degree = ?cofactor.degree(),
-                    "try_risch_rational: subtracting rational contribution"
-                );
                 a_alg = &a_alg - &contribution;
             }
 
-            if !a_alg.is_zero() {
+            if a_alg.is_zero() {
+                tracing::debug!(
+                    "try_risch_rational: A_alg is zero — rational terms fully account for the integrand"
+                );
+            } else {
                 let g = Poly::gcd(&a_alg, &hr.h_denom);
                 let a_reduced = a_alg.div(&g);
                 let d_reduced = hr.h_denom.div(&g);
-
-                tracing::debug!(
-                    a_alg_degree = ?a_alg.degree(),
-                    gcd_degree = ?g.degree(),
-                    a_reduced_degree = ?a_reduced.degree(),
-                    d_reduced_degree = ?d_reduced.degree(),
-                    "try_risch_rational: algebraic remainder after GCD cancellation"
-                );
-
-                debug_assert!(
-                    {
-                        let (_, rem) = a_alg.div_rem(&g);
-                        rem.is_zero()
-                    },
-                    "A_alg must be divisible by gcd(A_alg, h_denom)"
-                );
 
                 let alg_num_id = crate::poly::polybridge::poly_to_expr(arena, &a_reduced, var);
                 let alg_den_id = crate::poly::polybridge::poly_to_expr(arena, &d_reduced, var);
                 let algebraic_remainder = arena.div(alg_num_id, alg_den_id);
 
-                tracing::debug!("try_risch_rational: recursively integrating algebraic remainder");
                 let alg_integral =
                     crate::transforms::integrate::integrate(arena, algebraic_remainder, var);
 
-                let alg_has_uneval = crate::base::walk::has_unevaluated(arena, alg_integral);
-                tracing::debug!(
-                    has_unevaluated = alg_has_uneval,
-                    "try_risch_rational: algebraic remainder integration complete"
-                );
-
-                if !alg_has_uneval {
-                    // Algebraic remainder fully integrated — use it.
+                if !crate::base::walk::has_unevaluated(arena, alg_integral) {
                     terms.push(alg_integral);
-                } else {
-                    // Algebraic remainder has unevaluated parts.
-                    // Try RootSum as a last resort (provides the exact
-                    // mathematical answer in implicit form, better than
-                    // an unevaluated Integral).
-                    let mut rootsum_emitted = false;
-                    if let Some(ref h_prs_val) = h_prs_opt
-                        && h_prs_val.degree() == Some(1)
-                    {
-                        let t_rs = arena.symbol("__rs_t");
-                        let h1 = h_prs_val.coeff(1);
-                        let h0 = h_prs_val.coeff(0);
-                        let h1_expr = crate::poly::polybridge::ratfn_to_expr(arena, &h1, t_rs);
-                        let h0_expr = crate::poly::polybridge::ratfn_to_expr(arena, &h0, t_rs);
-                        let h1_x = arena.mul(&[h1_expr, var]);
-                        let h_expr = arena.add(&[h1_x, h0_expr]);
-
-                        for term in &log_result.terms {
-                            if let LogTerm::Algebraic { min_poly, .. } = term {
-                                let poly_expr =
-                                    crate::poly::polybridge::poly_to_expr(arena, min_poly, t_rs);
-                                let ln_h = arena.ln(h_expr);
-                                let body = arena.mul(&[t_rs, ln_h]);
-                                let rootsum =
-                                    arena.intern(ExprNode::RootSum(poly_expr, body, t_rs));
+                } else if per_factor.iter().all(|(_, s, _)| s.is_some()) {
+                    for (min_poly, log_arg, real_terms) in per_factor {
+                        match (real_terms, log_arg) {
+                            (Some(real_terms), _) => terms.extend(real_terms),
+                            (None, Some(s)) => {
                                 tracing::debug!(
                                     min_poly_degree = ?min_poly.degree(),
                                     "try_risch_rational: emitting RootSum for algebraic factor"
                                 );
-                                terms.push(rootsum);
+                                terms.push(root_sum_term(arena, var, min_poly, s));
                             }
+                            (None, None) => {}
                         }
-                        rootsum_emitted = true;
                     }
-
-                    if !rootsum_emitted {
-                        // Neither RootSum nor full integration succeeded.
-                        // Keep the partially-evaluated algebraic integral.
-                        tracing::debug!(
-                            "try_risch_rational: RootSum not available, keeping unevaluated algebraic integral"
-                        );
-                        terms.push(alg_integral);
-                    }
+                } else {
+                    tracing::debug!(
+                        "try_risch_rational: no log argument for RootSum, keeping the unevaluated algebraic integral"
+                    );
+                    terms.push(alg_integral);
                 }
-            } else {
-                tracing::debug!(
-                    "try_risch_rational: A_alg is zero — rational terms fully account for the integrand"
-                );
             }
         }
     }
@@ -620,6 +612,33 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
     } else {
         Some(arena.add(&terms))
     }
+}
+
+/// `RootSum(q, t ↦ t·ln(S(t, x)))`, i.e. `Σ_{q(α)=0} α·ln(S(α, x))`: the
+/// logarithmic part of an algebraic factor in implicit form.
+fn root_sum_term(arena: &mut Arena, var: ExprId, q: &Poly, s: &GenPoly<RationalFn>) -> ExprId {
+    let t = arena.symbol("__rs_t");
+    let mut s_terms: Vec<ExprId> = Vec::new();
+    for (k, c) in s.coeffs.iter().enumerate() {
+        if c.numer().is_zero() {
+            continue;
+        }
+        let c_expr = crate::poly::polybridge::ratfn_to_expr(arena, c, t);
+        let x_k = match k {
+            0 => arena.one(),
+            1 => var,
+            _ => {
+                let k_id = arena.int(i64::try_from(k).unwrap_or(i64::MAX));
+                arena.pow(var, k_id)
+            }
+        };
+        s_terms.push(arena.mul(&[c_expr, x_k]));
+    }
+    let s_expr = arena.add(&s_terms);
+    let ln_s = arena.ln(s_expr);
+    let body = arena.mul(&[t, ln_s]);
+    let q_expr = crate::poly::polybridge::poly_to_expr(arena, q, t);
+    arena.intern(ExprNode::RootSum(q_expr, body, t))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

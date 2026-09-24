@@ -37,6 +37,7 @@ use num_traits::Zero;
 use crate::base::arena::{Arena, FN_CHI, FN_ERFI, FN_SHI};
 use crate::base::node::{ExprId, ExprNode, SymbolId};
 use crate::base::numeric::Q;
+use crate::base::stage::stage;
 use crate::poly::Poly;
 
 /// Integrate `expr` with respect to `var`.
@@ -44,19 +45,48 @@ use crate::poly::Poly;
 /// Returns the antiderivative. If integration cannot be performed,
 /// returns an unevaluated `Integral(expr, var)` node.
 pub(crate) fn integrate(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
-    // The outermost call owns the step budget; nested calls (substitutions
-    // re-entering the pipeline, `integrate_definite`) draw from it.
-    let outermost = NODE_BUDGET_DEPTH.with(|d| {
-        let depth = d.get();
-        d.set(depth + 1);
-        depth == 0
-    });
-    if outermost {
-        NODE_BUDGET_USED.with(|u| u.set(0));
+    let _call = IntegrateCall::enter(arena);
+    stage!(arena, "integrate", expr, integrate_impl(arena, expr, var))
+}
+
+/// One `integrate` call on this thread.  The outermost call owns the step
+/// and arena budgets and the memo; nested calls (substitutions re-entering
+/// the pipeline, `integrate_definite`) draw from them.  Dropping the guard
+/// — also when a panic unwinds through the call, as under the Rubi
+/// harness's `catch_unwind` — restores the nesting depth and, for the
+/// outermost call, clears the memo, so no later call on another arena can
+/// see its entries.
+struct IntegrateCall {
+    outermost: bool,
+}
+
+impl IntegrateCall {
+    fn enter(arena: &Arena) -> Self {
+        let outermost = NODE_BUDGET_DEPTH.with(|d| {
+            let depth = d.get();
+            d.set(depth + 1);
+            depth == 0
+        });
+        if outermost {
+            NODE_BUDGET_USED.with(|u| u.set(0));
+            ARENA_BUDGET_START.with(|s| s.set(arena.node_count()));
+            INTEGRATE_MEMO.with(|m| m.borrow_mut().clear());
+        }
+        IntegrateCall { outermost }
     }
-    let result = integrate_impl(arena, expr, var);
-    NODE_BUDGET_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
-    result
+}
+
+impl Drop for IntegrateCall {
+    fn drop(&mut self) {
+        let _ = NODE_BUDGET_DEPTH.try_with(|d| d.set(d.get().saturating_sub(1)));
+        if self.outermost {
+            let _ = INTEGRATE_MEMO.try_with(|m| {
+                if let Ok(mut m) = m.try_borrow_mut() {
+                    m.clear();
+                }
+            });
+        }
+    }
 }
 
 /// Upper bound on `integrate_node` calls for one top-level `integrate`.
@@ -67,9 +97,29 @@ pub(crate) fn integrate(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId 
 /// unevaluated, which the callers already treat as "no closed form".
 const INTEGRATE_NODE_BUDGET: usize = 20_000;
 
+/// Upper bound on the arena nodes one top-level `integrate` may create.
+/// Successful integrations of the Rubi suite and the test suite stay far
+/// below it; a search that keeps building larger candidates (as the
+/// complex partial fractions of `∫ x³/(x⁸ + 1) dx` did in 0.24, past 8 GB)
+/// stops here and leaves the remaining sub-integrals unevaluated, so no
+/// integrand can exhaust memory through the arena.
+const INTEGRATE_ARENA_BUDGET: usize = 2_000_000;
+
 thread_local! {
     static NODE_BUDGET_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static NODE_BUDGET_USED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static ARENA_BUDGET_START: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Has the outermost `integrate` created more than
+/// [`INTEGRATE_ARENA_BUDGET`] arena nodes?
+fn arena_budget_exhausted(arena: &Arena) -> bool {
+    let start = ARENA_BUDGET_START.with(std::cell::Cell::get);
+    let exhausted = arena.node_count().saturating_sub(start) > INTEGRATE_ARENA_BUDGET;
+    if exhausted {
+        tracing::debug!("integrate: arena budget exhausted");
+    }
+    exhausted
 }
 
 /// Charge one `integrate_node` step; `true` once the budget is spent.
@@ -89,6 +139,11 @@ fn integrate_impl(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
             return arena.intern(ExprNode::Integral(expr, var));
         }
     };
+    // Exact constants first: `ln 1`, `atan 0`, `tan 0` are zero but not
+    // structurally so, and a route that divides by a constant it cannot
+    // see is zero is wrong — `∫ ln(x)/(x² + ln 1) dx` came out as
+    // `atan(x/√(ln 1))`-terms (fuzz_integrate, 0.25).
+    let expr = crate::transforms::eval::eval(arena, expr);
 
     let result = integrate_node(arena, expr, var, var_sym, 20);
 
@@ -96,8 +151,12 @@ fn integrate_impl(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     // piecewise-defined integrands).  Each one re-enters the full pipeline
     // on the transformed integrand, bounded by `SUBST_DEPTH`.
     let result = if let ExprNode::Integral(_, _) = arena.node(result)
-        && let Some(r) = try_substitution_strategies(arena, expr, var, var_sym)
-    {
+        && let Some(r) = stage!(
+            arena,
+            "substitutions",
+            expr,
+            try_substitution_strategies(arena, expr, var, var_sym)
+        ) {
         r
     } else {
         result
@@ -107,7 +166,12 @@ fn integrate_impl(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     // try the Risch tower (exact method for exp/ln integrands) before
     // falling back to the heuristic integrator.
     let result = if let ExprNode::Integral(_, _) = arena.node(result) {
-        match crate::calculus::risch::try_risch_tower(arena, expr, var) {
+        match stage!(
+            arena,
+            "risch_tower",
+            expr,
+            crate::calculus::risch::try_risch_tower(arena, expr, var)
+        ) {
             // Checked like the other routes: a dropped coefficient in the
             // tower's θ-polynomial extraction once returned a wrong closed
             // form (0.22.3).
@@ -127,9 +191,12 @@ fn integrate_impl(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
             }
             crate::calculus::risch::TowerResult::NotApplicable => {
                 // Tower couldn't handle this — fall through to heurisch.
-                if let Some(heurisch_result) =
+                if let Some(heurisch_result) = stage!(
+                    arena,
+                    "heurisch",
+                    expr,
                     crate::transforms::heurisch::heurisch_integrate(arena, expr, var, var_sym)
-                {
+                ) {
                     heurisch_result
                 } else {
                     result
@@ -1073,9 +1140,8 @@ fn try_weierstrass_substitution(
     tracing::debug!("trying Weierstrass substitution");
 
     let t = arena.symbol("__wt");
-    let t_sym = match arena.node(t) {
-        ExprNode::Symbol(sid) => *sid,
-        _ => unreachable!(),
+    let ExprNode::Symbol(t_sym) = *arena.node(t) else {
+        return None;
     };
 
     let two = arena.int(2);
@@ -1269,8 +1335,91 @@ fn try_cyclic_ibp(
     None
 }
 
-/// Integrate a single node with respect to `var`.
+/// What one top-level `integrate` has learnt about a sub-integrand in a
+/// given search context (see [`MemoKey`]).
+#[derive(Clone, Copy)]
+enum MemoOutcome {
+    /// No closed form with this much remaining depth (or less).
+    Failed { depth: usize },
+    /// A fully evaluated antiderivative.
+    Solved(ExprId),
+}
+
+/// A sub-integrand in its search context.  The strategies that apply
+/// depend on whether `try_risch_rational` may run (its recursion guard) and
+/// on the nesting of substitution strategies, so both are part of the key;
+/// the arena's address keeps two arenas on one thread apart.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct MemoKey {
+    arena: usize,
+    expr: ExprId,
+    var: ExprId,
+    in_risch: bool,
+    subst_depth: u8,
+}
+
+thread_local! {
+    /// Outcomes of `integrate_node` during the current top-level
+    /// `integrate` (cleared when it starts).  A failing search reaches the
+    /// same sub-integrand again and again — by parts, substitution and
+    /// partial fractions lead to the same pieces: `∫ x^(3/2)/(sin(−1) −
+    /// 2x) dx` made 918 u-substitution attempts on 53 distinct integrands
+    /// (0.24).
+    static INTEGRATE_MEMO: std::cell::RefCell<FxHashMap<MemoKey, MemoOutcome>> =
+        std::cell::RefCell::new(FxHashMap::default());
+}
+
+/// Integrate a single node with respect to `var`, remembering the outcome
+/// for the rest of the top-level call: a sub-integrand that already failed
+/// with at least this much depth fails at once (less depth only prunes
+/// more), and a solved one returns its antiderivative.
 fn integrate_node(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+    depth: usize,
+) -> ExprId {
+    let key = MemoKey {
+        arena: std::ptr::from_ref::<Arena>(arena) as usize,
+        expr,
+        var,
+        in_risch: crate::calculus::risch::rational_guard_active(),
+        subst_depth: SUBST_DEPTH.with(std::cell::Cell::get),
+    };
+    match INTEGRATE_MEMO.with(|m| m.borrow().get(&key).copied()) {
+        Some(MemoOutcome::Solved(result)) => return result,
+        Some(MemoOutcome::Failed { depth: failed }) if depth <= failed => {
+            return arena.intern(ExprNode::Integral(expr, var));
+        }
+        _ => {}
+    }
+    let result = integrate_node_uncached(arena, expr, var, var_sym, depth);
+    let outcome = if matches!(arena.node(result), ExprNode::Integral(e, v) if *e == expr && *v == var)
+    {
+        Some(MemoOutcome::Failed { depth })
+    } else if !crate::base::walk::has_unevaluated(arena, result) {
+        Some(MemoOutcome::Solved(result))
+    } else {
+        None
+    };
+    if let Some(outcome) = outcome {
+        INTEGRATE_MEMO.with(|m| {
+            let mut m = m.borrow_mut();
+            let keep_old = matches!(
+                (m.get(&key), outcome),
+                (Some(MemoOutcome::Failed { depth: old }), MemoOutcome::Failed { depth: new }) if *old >= new
+            );
+            if !keep_old {
+                m.insert(key, outcome);
+            }
+        });
+    }
+    result
+}
+
+/// [`integrate_node`] without the memo.
+fn integrate_node_uncached(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
@@ -1279,7 +1428,7 @@ fn integrate_node(
 ) -> ExprId {
     tracing::trace!(depth = depth, "integrate_node entered");
 
-    if depth == 0 || node_budget_exhausted() {
+    if depth == 0 || node_budget_exhausted() || arena_budget_exhausted(arena) {
         return arena.intern(ExprNode::Integral(expr, var));
     }
 
@@ -1343,7 +1492,12 @@ fn integrate_node(
     // which recovers its coefficients from the same nested-radical roots
     // (and recurses deeply on them).  A wrong closed form is never returned
     // silently.
-    let risch_rejected = match crate::calculus::risch::try_risch_rational(arena, expr, var) {
+    let risch_rejected = match stage!(
+        arena,
+        "risch_rational",
+        expr,
+        crate::calculus::risch::try_risch_rational(arena, expr, var)
+    ) {
         Some(result) if !matches!(arena.node(result), ExprNode::Integral(_, _)) => {
             if !antiderivative_is_wrong(arena, expr, result, var, var_sym) {
                 return result;
@@ -1357,13 +1511,21 @@ fn integrate_node(
     // ── N(x)/(x⁴ + p·x² + q): explicit real factorisation ──────────────
     // Reached only when the general rational integrator could not produce
     // a verified answer, so the output of the cases it handles is unchanged.
-    if let Some(result) = try_biquadratic_rational(arena, expr, var, var_sym) {
+    if let Some(result) = stage!(
+        arena,
+        "biquadratic",
+        expr,
+        try_biquadratic_rational(arena, expr, var, var_sym)
+    ) {
         return result;
     }
     if risch_rejected {
         return arena.intern(ExprNode::Integral(expr, var));
     }
     if let Some(result) = try_poly_over_symbolic_linear(arena, expr, var, var_sym) {
+        return result;
+    }
+    if let Some(result) = try_poly_over_symbolic_quadratic(arena, expr, var, var_sym, depth) {
         return result;
     }
 
@@ -1597,7 +1759,12 @@ fn integrate_node(
 
             // ── Cyclic IBP: ∫ exp·sin, ∫ exp·cos, etc. ────────────
             if dependent.len() == 2
-                && let Some(result) = try_cyclic_ibp(arena, &dependent, var, var_sym, depth)
+                && let Some(result) = stage!(
+                    arena,
+                    "cyclic_ibp",
+                    expr,
+                    try_cyclic_ibp(arena, &dependent, var, var_sym, depth)
+                )
             {
                 if constants.is_empty() {
                     return result;
@@ -1631,8 +1798,12 @@ fn integrate_node(
 
             // ── Products of trig factors: product-to-sum, then retry ─────
             if dependent.len() >= 2
-                && let Some(result) =
+                && let Some(result) = stage!(
+                    arena,
+                    "trig_product_to_sum",
+                    expr,
                     try_trig_product_to_sum(arena, expr, &dependent, var, var_sym, depth)
+                )
             {
                 return result;
             }
@@ -1648,7 +1819,12 @@ fn integrate_node(
             {
                 let (_numer, denom) = crate::poly::polybridge::as_numer_denom(arena, expr);
                 if denom != arena.one {
-                    let decomposed = crate::transforms::apart::apart(arena, expr, var);
+                    let decomposed = stage!(
+                        arena,
+                        "apart",
+                        expr,
+                        crate::transforms::apart::apart(arena, expr, var)
+                    );
                     if decomposed != expr {
                         let result = integrate_node(arena, decomposed, var, var_sym, depth - 1);
                         if !matches!(arena.node(result), ExprNode::Integral(_, _))
@@ -1661,7 +1837,12 @@ fn integrate_node(
             }
 
             // ── Try general u-substitution ──────────────────────────────
-            if let Some(result) = try_u_substitution(arena, &dependent, var, var_sym, depth - 1) {
+            if let Some(result) = stage!(
+                arena,
+                "u_substitution",
+                expr,
+                try_u_substitution(arena, &dependent, var, var_sym, depth - 1)
+            ) {
                 if constants.is_empty() {
                     return result;
                 } else {
@@ -1680,9 +1861,12 @@ fn integrate_node(
             } else {
                 arena.mul(&dependent)
             };
-            if let Some(result) =
+            if let Some(result) = stage!(
+                arena,
+                "weierstrass",
+                dependent_product,
                 try_weierstrass_substitution(arena, dependent_product, var, var_sym, depth)
-            {
+            ) {
                 return wrap_with_constants(arena, result, &constants);
             }
 
@@ -1986,7 +2170,12 @@ fn integrate_node(
             {
                 let (_numer, denom) = crate::poly::polybridge::as_numer_denom(arena, expr);
                 if denom != arena.one {
-                    let decomposed = crate::transforms::apart::apart(arena, expr, var);
+                    let decomposed = stage!(
+                        arena,
+                        "apart",
+                        expr,
+                        crate::transforms::apart::apart(arena, expr, var)
+                    );
                     if decomposed != expr {
                         let result = integrate_node(arena, decomposed, var, var_sym, depth - 1);
                         if !matches!(arena.node(result), ExprNode::Integral(_, _))
@@ -2017,7 +2206,12 @@ fn integrate_node(
             }
 
             // ── Weierstrass substitution (Pow arm) ────────────────────
-            if let Some(result) = try_weierstrass_substitution(arena, expr, var, var_sym, depth) {
+            if let Some(result) = stage!(
+                arena,
+                "weierstrass",
+                expr,
+                try_weierstrass_substitution(arena, expr, var, var_sym, depth)
+            ) {
                 return result;
             }
 
@@ -3128,13 +3322,21 @@ const MAX_SUBST_DEPTH: u8 = 3;
 /// Run the full integration pipeline on a transformed integrand from
 /// inside a substitution strategy, with a re-entrancy bound.
 fn integrate_nested(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<ExprId> {
+    /// Restores the substitution depth on drop, also when a panic unwinds.
+    struct Restore(u8);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = SUBST_DEPTH.try_with(|d| d.set(self.0));
+        }
+    }
     let depth = SUBST_DEPTH.with(|d| d.get());
     if depth >= MAX_SUBST_DEPTH {
         return None;
     }
     SUBST_DEPTH.with(|d| d.set(depth + 1));
+    let restore = Restore(depth);
     let result = integrate(arena, expr, var);
-    SUBST_DEPTH.with(|d| d.set(depth));
+    drop(restore);
     if crate::base::walk::has_unevaluated(arena, result) {
         None
     } else {
@@ -3838,6 +4040,96 @@ fn try_poly_over_symbolic_linear(
     Some(result)
 }
 
+/// `∫ N(x)/(c·x² + d·x + e) dx` with `deg N ≥ 2` and constant coefficients
+/// that are not all rational (`∫ 2x⁴/(sin(−1) − 2x²) dx`, the radical
+/// substitution of `∫ x^(3/2)/(sin(−1) − 2x) dx`; `∫ x²·cos 4/(1 + cos²4·x²)`,
+/// by parts from `∫ x·atan(x·cos 4) dx`).  Divides `N` by the quadratic over
+/// the field of constant expressions, integrates the quotient termwise and
+/// hands the linear remainder over the quadratic back to the integrator
+/// (`try_linear_over_quadratic`).  The rational-coefficient case belongs
+/// to the rational integrator and is left to it.  Checked by
+/// differentiation.
+fn try_poly_over_symbolic_quadratic(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+    depth: usize,
+) -> Option<ExprId> {
+    /// Quotients of higher degree are left to the other routes.
+    const MAX_NUMERATOR_DEGREE: usize = 16;
+    let (num, den) = crate::poly::polybridge::as_numer_denom(arena, expr);
+    if !contains_var(arena, den, var_sym) {
+        return None;
+    }
+    if crate::poly::polybridge::expr_to_poly(arena, den, var).is_some()
+        && crate::poly::polybridge::expr_to_poly(arena, num, var).is_some()
+    {
+        return None;
+    }
+    let dense = |arena: &mut Arena, e: ExprId| -> Option<Vec<ExprId>> {
+        let terms = crate::poly::polybridge::symbolic_multipoly_terms(arena, e, &[var])?;
+        let degree = terms.iter().map(|(exps, _)| exps[0] as usize).max()?;
+        if degree > MAX_NUMERATOR_DEGREE {
+            return None;
+        }
+        let mut coeffs = vec![arena.zero; degree + 1];
+        for (exps, c) in terms {
+            if contains_var(arena, c, var_sym) {
+                return None;
+            }
+            coeffs[exps[0] as usize] = c;
+        }
+        Some(coeffs)
+    };
+    let d = dense(arena, den)?;
+    if d.len() != 3 || arena.is_zero_structural(d[2]) {
+        return None;
+    }
+    let mut rem = dense(arena, num)?;
+    if rem.len() < 3 {
+        return None;
+    }
+    // rem ← rem − q_k·x^k·(c x² + d x + e), from the top.
+    let mut quotient = vec![arena.zero; rem.len() - 2];
+    for k in (2..rem.len()).rev() {
+        let qk = arena.div(rem[k], d[2]);
+        let qk = crate::transforms::eval::eval(arena, qk);
+        quotient[k - 2] = qk;
+        for (j, &dj) in d.iter().enumerate().take(2) {
+            let prod = arena.mul(&[qk, dj]);
+            let diff = arena.sub(rem[k - 2 + j], prod);
+            rem[k - 2 + j] = crate::transforms::eval::eval(arena, diff);
+        }
+        rem[k] = arena.zero;
+    }
+    let mut terms: Vec<ExprId> = Vec::with_capacity(quotient.len() + 1);
+    for (j, &qj) in quotient.iter().enumerate() {
+        let e = arena.int(i64::try_from(j).ok()? + 1);
+        let xp = arena.pow(var, e);
+        let inv = arena.rational(1, i64::try_from(j).ok()? + 1);
+        terms.push(arena.mul(&[inv, qj, xp]));
+    }
+    let r1x = arena.mul(&[rem[1], var]);
+    let linear = arena.add(&[r1x, rem[0]]);
+    let linear = crate::transforms::eval::eval(arena, linear);
+    if !arena.is_zero_structural(linear) {
+        let inv_den = arena.pow(den, arena.neg_one());
+        let piece = arena.mul(&[linear, inv_den]);
+        let piece_integral = integrate_node(arena, piece, var, var_sym, depth.saturating_sub(1));
+        if crate::base::walk::has_unevaluated(arena, piece_integral) {
+            return None;
+        }
+        terms.push(piece_integral);
+    }
+    let result = arena.add(&terms);
+    let result = crate::transforms::eval::eval(arena, result);
+    if antiderivative_is_wrong(arena, expr, result, var, var_sym) {
+        return None;
+    }
+    Some(result)
+}
+
 /// Does `e` contain `nan`, `zoo` or `±∞`?
 fn contains_non_finite(arena: &Arena, e: ExprId) -> bool {
     crate::base::walk::post_order_ids(arena, e)
@@ -4308,8 +4600,9 @@ fn wrap_with_constants(arena: &mut Arena, result: ExprId, constants: &[ExprId]) 
 /// value — on the principal branch, and on the real line of the
 /// integration variable.
 ///
-/// The canon layer only merges integer exponents; for integration we want
-/// `((x²+1)^{1/2})^{-1} → (x²+1)^{-1/2}` as well.  `(g^m)^n = g^{m·n}` holds
+/// The canon layer merges an integer outer exponent `n` (since 0.25; before,
+/// only integer `m` and `n`); here also `−1 < m ≤ 1` and the real-line
+/// `|g|` forms.  `(g^m)^n = g^{m·n}` holds
 /// for every complex `g` when `n` is an integer or `−1 < m ≤ 1` (the
 /// condition of simplify's `pow_pow`); for `g` real on the real line and `m`
 /// an even integer, `g^m = |g|^m ≥ 0` and `(g^m)^n = |g|^{m·n}` (`√(x²) =
@@ -4374,6 +4667,21 @@ const FTC_CHECK_REL_TOL: f64 = 1e-20;
 /// those `evalf` evaluates to full working precision, which is what the
 /// tight tolerance relies on.
 fn antiderivative_is_wrong(
+    arena: &mut Arena,
+    f: ExprId,
+    big_f: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> bool {
+    stage!(
+        arena,
+        "verify",
+        big_f,
+        antiderivative_is_wrong_impl(arena, f, big_f, var, var_sym)
+    )
+}
+
+fn antiderivative_is_wrong_impl(
     arena: &mut Arena,
     f: ExprId,
     big_f: ExprId,

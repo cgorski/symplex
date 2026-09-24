@@ -202,17 +202,17 @@ fn fourier_series_of_x_exp_ax_matches_sympy_numerically() {
 //
 // `Ex::fourier_series` tries `fourier_series_on` first and only falls back
 // to the antiderivative expansion when a coefficient's definite integral
-// has no closed form.  With a free parameter that happens as soon as the
-// integrand is `exp(k·a·x)·sin(m·x)` with `k·m ≥ 2` — `exp(2ax)` at the
-// first harmonic, `exp(ax)` at the second — where the antiderivative
-// carries a `Piecewise` on the complex zero of `k²a² + m²`
-// (`a ≠ (−4)^(−1/2)`, i.e. `a ≠ −i/2`).  The mean-value tests below are
-// what can be checked exactly today; the two `#[ignore]`d tests pin the
-// values the whole partial sum should have.
+// has no closed form.  With a free parameter that happened (until 0.24) as
+// soon as the integrand was `exp(k·a·x)·sin(m·x)` with `k·m ≥ 2` —
+// `exp(2ax)` at the first harmonic, `exp(ax)` at the second — where the
+// antiderivative carries a `Piecewise` on the complex zero of `k²a² + m²`
+// (`a ≠ (−4)^(−1/2)`, i.e. `a ≠ −i/2`).  Since 0.25 those coefficients
+// have closed forms and the direct route succeeds; the tests below check
+// its value against SymPy and the mean-value property of the series.
 
 /// The mean of a truncated Fourier series over the period is `a₀/2 =
 /// (1/2π)∫f`, and the harmonics cancel on the equispaced sample `x = 0,
-/// π`.  For `exp(2·a·x)` (fallback path: `fourier_series_on` fails at
+/// π`.  For `exp(2·a·x)` (the fallback path until 0.24: `fourier_series_on` failed at
 /// `b₁`) with `a = 1/2` that is `sinh(π)/π` (mpmath 1.3, 30 digits:
 /// `3.67607791037497772069569749203`).
 #[test]
@@ -222,9 +222,24 @@ fn fourier_series_fallback_for_exp_2ax_has_the_mean_value_of_f() {
     let a = ctx.symbol("a");
     let pi = ctx.pi();
     let f = (2 * &a * &x).exp();
-    err_is_computation_failed(
-        &f.fourier_series_on(&x, &(-&pi), &pi, 1),
-        "fourier_series_on(exp(2 a x), 1)",
+    // Since 0.25 the coefficient integrals have closed forms and the direct
+    // route succeeds: at a = 1/2, x = 1/3 the one-harmonic partial sum of eˣ
+    // is 1.405135751056150642739163 (SymPy 1.14: a0/2 + a1*cos(1/3) +
+    // b1*sin(1/3) with the coefficients by `integrate(exp(x)*cos(k*x),
+    // (x, -pi, pi))/pi` etc., `N(…, 25)`).
+    let direct = f
+        .fourier_series_on(&x, &(-&pi), &pi, 1)
+        .expect("closed-form coefficients")
+        .truncate(1);
+    let v = direct
+        .subs(&a, &ctx.rational(1, 2))
+        .subs(&x, &ctx.rational(1, 3))
+        .eval();
+    assert!(
+        v.eval_decimal(25)
+            .unwrap()
+            .starts_with("1.40513575105615064273916"),
+        "{direct}"
     );
     let series = f.fourier_series(&x, 1);
     assert!(
@@ -240,7 +255,7 @@ fn fourier_series_fallback_for_exp_2ax_has_the_mean_value_of_f() {
 }
 
 /// Same property for the two-harmonic fallback series of `exp(a·x)`
-/// (`fourier_series_on` fails at `b₂`): the average over `x = 0, π/2, π,
+/// (`fourier_series_on` failed at `b₂` until 0.24): the average over `x = 0, π/2, π,
 /// 3π/2` kills harmonics 1 and 2 and leaves `a₀/2 = 2·sinh(π/2)/π` at
 /// `a = 1/2` (mpmath: `1.46505238333663487760917937411`).
 #[test]
@@ -250,9 +265,22 @@ fn fourier_series_fallback_for_exp_ax_two_harmonics_has_the_mean_value_of_f() {
     let a = ctx.symbol("a");
     let pi = ctx.pi();
     let f = (&a * &x).exp();
-    err_is_computation_failed(
-        &f.fourier_series_on(&x, &(-&pi), &pi, 2),
-        "fourier_series_on(exp(a x), 2)",
+    // The direct route succeeds since 0.25: at a = 1/2, x = 1/3 the
+    // two-harmonic partial sum of e^(x/2) is 1.003901872535325748017044
+    // (SymPy 1.14, as above).
+    let direct = f
+        .fourier_series_on(&x, &(-&pi), &pi, 2)
+        .expect("closed-form coefficients")
+        .truncate(2);
+    let v = direct
+        .subs(&a, &ctx.rational(1, 2))
+        .subs(&x, &ctx.rational(1, 3))
+        .eval();
+    assert!(
+        v.eval_decimal(25)
+            .unwrap()
+            .starts_with("1.00390187253532574801704"),
+        "{direct}"
     );
     let series = f.fourier_series(&x, 2);
     assert!(!series.has_unevaluated(), "{series}");

@@ -39,9 +39,18 @@ use crate::base::walk;
 // ExpandOpts
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// The most terms one product or power is expanded into.  A product or
+/// power whose expansion would have more terms is left as it is (it is
+/// still equal to its expansion); the limit exists so that no input can
+/// make `expand` exhaust memory: the partial fractions of `x³/(x⁸ + 1)`
+/// over its eight complex roots, put over a common denominator, asked for
+/// ~10⁸ terms and took the process past 8 GB in 3 s (0.24).
+pub const EXPAND_TERM_LIMIT: usize = 1_000_000;
+
 /// Hints controlling [`Ex::expand_with`](crate::api::expr::Ex::expand_with).
 ///
-/// Every rewrite is value-preserving.  The hints that are only valid
+/// Every rewrite is value-preserving.  A product or power whose expansion
+/// would have more than [`EXPAND_TERM_LIMIT`] terms is left unexpanded.  The hints that are only valid
 /// under side conditions (`power_base`, `power_exp`, `log`) are guarded by
 /// the assumption system unless [`force`](Self::force) is set:
 ///
@@ -611,6 +620,20 @@ fn expand_mul(arena: &mut Arena, factors: &[ExprId]) -> ExprId {
         return arena.mul(&all);
     }
 
+    let n_terms = symbolic_factors
+        .iter()
+        .fold(1usize, |n, &f| match arena.node(f) {
+            ExprNode::Add(ch) => n.saturating_mul(ch.len()),
+            _ => n,
+        });
+    if n_terms > EXPAND_TERM_LIMIT {
+        tracing::debug!(n_terms, "expand_mul: expansion too large, left unexpanded");
+        let mut all: SmallVec<[ExprId; 6]> = SmallVec::new();
+        all.extend_from_slice(&coeff_factors);
+        all.extend_from_slice(&symbolic_factors);
+        return arena.mul(&all);
+    }
+
     // Incremental distribution.
     // `terms` holds the running list of partially-multiplied summands.
     let mut terms: Vec<SmallVec<[ExprId; 4]>> = vec![coeff_factors.clone()];
@@ -717,6 +740,24 @@ fn try_multinomial_expand(arena: &mut Arena, base: ExprId, exp: ExprId) -> Optio
     let max_expand = arena.config.max_pow_exponent.min(200);
     if n > max_expand {
         return None;
+    }
+    // (x₁ + … + xₖ)^n has C(n + k − 1, k − 1) terms.
+    let k_minus_1 = children.len().saturating_sub(1);
+    let mut n_terms: usize = 1;
+    for j in 1..=k_minus_1.min(n) {
+        // C(n + k − 1, j) built incrementally; exact at every step.
+        n_terms = match n_terms.checked_mul(n + k_minus_1 + 1 - j) {
+            Some(v) => v / j,
+            None => usize::MAX,
+        };
+        if n_terms > EXPAND_TERM_LIMIT {
+            tracing::debug!(
+                n,
+                k = children.len(),
+                "expand_pow: expansion too large, left unexpanded"
+            );
+            return None;
+        }
     }
 
     tracing::debug!(
