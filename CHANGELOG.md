@@ -6,7 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
-## [Unreleased]
+## [0.28.0] - 2026-09-24
+
+Far tails of the symbolic distributions keep their digits.  0.27.0 listed
+this as a known issue: a tail built as `1 − F`, or from the classic
+closed forms, cancels in a far tail and evaluates to `0`.  No signature
+changed; `Family` gains two provided methods.
 
 ### Breaking (behaviour; no signature changed)
 
@@ -57,6 +62,13 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
     end as `P(X ≥ lo)`, and an interval inside the far upper tail as
     `S(lo) − S(hi)`.
   - The wrappers transport both forms.
+
+### Measured
+
+- `tests/v27/`: `v27_tails` (8 tests).
+- Rubi harness: unchanged (6,032 verified, 0 wrong).  Self-test: 55,044
+  verified, 0 wrong, 1,173 undecided.
+- Byte identity of the LP paths and the s42 Lean certificates: identical.
 
 ## [0.27.0] - 2026-09-24
 
