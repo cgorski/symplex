@@ -220,7 +220,7 @@ fn poisson_moments_touchard() {
 #[test]
 fn poisson_touchard_matches_mgf_derivatives() {
     let ctx = Context::new();
-    let lam = ctx.symbol_with("lambda", &[Assumption::Positive]);
+    let lam = ctx.symbol_with("lambda", &[Assumption::Positive]).unwrap();
     let x = rv(&ctx, "X", Distribution::poisson(lam));
     let t = ctx.symbol("t");
     let mut m = x.mgf(&t);

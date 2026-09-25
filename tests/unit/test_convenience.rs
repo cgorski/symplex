@@ -52,7 +52,7 @@ fn evalf_f64_rational() {
 #[test]
 fn assume_positive() {
     let ctx = Context::new();
-    let t = ctx.symbol("t").assume(Assumption::Positive);
+    let t = ctx.symbol("t").assume(Assumption::Positive).unwrap();
     assert_eq!(t.is_positive(), Some(true));
 }
 
@@ -62,7 +62,9 @@ fn assume_chained() {
     let t = ctx
         .symbol("t")
         .assume(Assumption::Positive)
-        .assume(Assumption::Real);
+        .unwrap()
+        .assume(Assumption::Real)
+        .unwrap();
     assert_eq!(t.is_positive(), Some(true));
     assert_eq!(t.is_real(), Some(true));
 }
@@ -70,7 +72,7 @@ fn assume_chained() {
 #[test]
 fn assume_integer() {
     let ctx = Context::new();
-    let n = ctx.symbol("n").assume(Assumption::Integer);
+    let n = ctx.symbol("n").assume(Assumption::Integer).unwrap();
     assert_eq!(n.is_integer(), Some(true));
     // Integer implies rational, real, complex by forward chaining
     assert_eq!(n.is_real(), Some(true));
@@ -81,7 +83,7 @@ fn assume_on_non_symbol_ignored() {
     let ctx = Context::new();
     let five = ctx.int(5);
     // Calling assume on a non-symbol should not panic
-    let result = five.assume(Assumption::Positive);
+    let result = five.assume(Assumption::Positive).unwrap();
     // The integer 5 is already positive via assumption handlers
     assert_eq!(result.is_positive(), Some(true));
 
@@ -94,7 +96,7 @@ fn assume_on_non_symbol_ignored() {
         "bare symbol should not be known positive"
     );
     // After assuming positive, it should be Some(true).
-    let y_pos = y.assume(Assumption::Positive);
+    let y_pos = y.assume(Assumption::Positive).unwrap();
     assert_eq!(
         y_pos.is_positive(),
         Some(true),

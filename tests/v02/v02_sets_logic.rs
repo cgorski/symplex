@@ -114,8 +114,8 @@ fn simplify_numeric_subexpressions() {
 #[test]
 fn eval_uses_assumptions() {
     let ctx = Context::new();
-    let t = ctx.symbol_with("t", &[Assumption::Positive]);
-    let n = ctx.symbol_with("n", &[Assumption::Negative]);
+    let t = ctx.symbol_with("t", &[Assumption::Positive]).unwrap();
+    let n = ctx.symbol_with("n", &[Assumption::Negative]).unwrap();
     let x = ctx.symbol("x");
     let zero = ctx.int(0);
     assert_eq!(s(&t.gt(&zero).eval()), "True");
@@ -258,8 +258,8 @@ fn relational_decisions_are_exact_over_the_reals() {
 #[test]
 fn decisions_respect_assumptions() {
     let ctx = Context::new();
-    let t = ctx.symbol_with("t", &[Assumption::Positive]);
-    let n = ctx.symbol_with("n", &[Assumption::Integer]);
+    let t = ctx.symbol_with("t", &[Assumption::Positive]).unwrap();
+    let n = ctx.symbol_with("n", &[Assumption::Integer]).unwrap();
     assert_eq!(t.gt(&ctx.int(0)).is_tautology(), Some(true));
     assert_eq!(t.gt(&ctx.int(-1)).is_tautology(), Some(true));
     assert_eq!(t.lt(&ctx.int(0)).satisfiable(), Some(false));
@@ -364,15 +364,19 @@ fn piecewise_simplify_cases() {
 #[test]
 fn extended_real_assumption() {
     let ctx = Context::new();
-    let r = ctx.symbol_with("r", &[Assumption::Real]);
+    let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
     assert_eq!(r.query(Props::EXTENDED_REAL), Some(true));
-    let e = ctx.symbol_with("e", &[Assumption::ExtendedReal]);
+    let e = ctx.symbol_with("e", &[Assumption::ExtendedReal]).unwrap();
     assert_eq!(e.query(Props::REAL), None);
-    let ef = ctx.symbol_with("f", &[Assumption::ExtendedReal, Assumption::Finite]);
+    let ef = ctx
+        .symbol_with("f", &[Assumption::ExtendedReal, Assumption::Finite])
+        .unwrap();
     assert_eq!(ef.query(Props::REAL), Some(true));
     assert_eq!(ctx.infinity().query(Props::EXTENDED_REAL), Some(true));
     assert_eq!(ctx.infinity().query(Props::REAL), Some(false));
-    let ne = ctx.symbol_with("g", &[Assumption::NotExtendedReal]);
+    let ne = ctx
+        .symbol_with("g", &[Assumption::NotExtendedReal])
+        .unwrap();
     assert_eq!(ne.query(Props::REAL), Some(false));
     assert_eq!(ne.query(Props::POSITIVE), Some(false));
 }
@@ -380,24 +384,26 @@ fn extended_real_assumption() {
 #[test]
 fn forward_chain_rules_via_symbols() {
     let ctx = Context::new();
-    let p = ctx.symbol_with("p", &[Assumption::Prime]);
+    let p = ctx.symbol_with("p", &[Assumption::Prime]).unwrap();
     assert_eq!(p.query(Props::INTEGER), Some(true));
     assert_eq!(p.query(Props::POSITIVE), Some(true));
-    let e = ctx.symbol_with("e", &[Assumption::Even]);
+    let e = ctx.symbol_with("e", &[Assumption::Even]).unwrap();
     assert_eq!(e.query(Props::INTEGER), Some(true));
-    let i = ctx.symbol_with("i", &[Assumption::Irrational]);
+    let i = ctx.symbol_with("i", &[Assumption::Irrational]).unwrap();
     assert_eq!(i.query(Props::REAL), Some(true));
     assert_eq!(i.query(Props::NONZERO), Some(true));
     assert_eq!(i.query(Props::INTEGER), Some(false));
-    let t = ctx.symbol_with("t", &[Assumption::Transcendental]);
+    let t = ctx.symbol_with("t", &[Assumption::Transcendental]).unwrap();
     assert_eq!(
         t.query(Props::IRRATIONAL),
         None,
         "complex transcendental numbers exist"
     );
-    let tr = ctx.symbol_with("u", &[Assumption::Transcendental, Assumption::Real]);
+    let tr = ctx
+        .symbol_with("u", &[Assumption::Transcendental, Assumption::Real])
+        .unwrap();
     assert_eq!(tr.query(Props::IRRATIONAL), Some(true));
-    let im = ctx.symbol_with("w", &[Assumption::Imaginary]);
+    let im = ctx.symbol_with("w", &[Assumption::Imaginary]).unwrap();
     assert_eq!(im.query(Props::NONZERO), Some(true));
     assert_eq!(im.query(Props::REAL), Some(false));
     assert_eq!(im.query(Props::COMPLEX), Some(true));

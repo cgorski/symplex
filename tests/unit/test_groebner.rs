@@ -96,7 +96,7 @@ fn buchberger_simple_2var() {
     // Both solutions should satisfy the original equations
     let half = rat_frac(1, 2);
     for p in &gb {
-        let val = p.eval(&[half.clone(), half.clone()]);
+        let val = p.eval(&[half.clone(), half.clone()]).unwrap();
         assert!(
             val.is_zero(),
             "poly {p} should vanish at (1/2,1/2), got {val}"
@@ -478,8 +478,8 @@ fn full_pipeline_two_conics() {
     // Verify all four solutions satisfy both original equations
     let solutions: Vec<(i64, i64)> = vec![(1, 2), (2, 1), (-1, -2), (-2, -1)];
     for (sx, sy) in &solutions {
-        let val1 = f1.eval(&[rat(*sx), rat(*sy)]);
-        let val2 = f2.eval(&[rat(*sx), rat(*sy)]);
+        let val1 = f1.eval(&[rat(*sx), rat(*sy)]).unwrap();
+        let val2 = f2.eval(&[rat(*sx), rat(*sy)]).unwrap();
         assert!(val1.is_zero(), "f1({sx},{sy}) = {val1}, expected 0");
         assert!(val2.is_zero(), "f2({sx},{sy}) = {val2}, expected 0");
     }
@@ -544,7 +544,7 @@ fn buchberger_lex_direct() {
     // Should encode x = 1/2, y = 1/2
     let half = rat_frac(1, 2);
     for p in &gb {
-        let val = p.eval(&[half.clone(), half.clone()]);
+        let val = p.eval(&[half.clone(), half.clone()]).unwrap();
         assert!(val.is_zero(), "poly {p} should vanish at (1/2, 1/2)");
     }
 }
@@ -614,7 +614,7 @@ fn buchberger_three_vars() {
     // x=1, y=1, z=1 should be the solution
     let one = rat(1);
     for p in &gb {
-        let val = p.eval(&[one.clone(), one.clone(), one.clone()]);
+        let val = p.eval(&[one.clone(), one.clone(), one.clone()]).unwrap();
         assert!(val.is_zero(), "{p} should vanish at (1,1,1), got {val}");
     }
 }
@@ -650,7 +650,7 @@ fn fglm_three_vars() {
     // Solution (1,1,1) should satisfy all lex GB elements
     let one = rat(1);
     for p in &lex_gb {
-        let val = p.eval(&[one.clone(), one.clone(), one.clone()]);
+        let val = p.eval(&[one.clone(), one.clone(), one.clone()]).unwrap();
         assert!(val.is_zero(), "{p} should vanish at (1,1,1), got {val}");
     }
 }

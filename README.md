@@ -149,7 +149,7 @@ let z = ctx.symbol("z");
 # use symplex::syms;
 let ctx = Context::new();
 syms!(ctx; k, x);
-let n = ctx.symbol_with("n", &[Assumption::Integer, Assumption::Positive]);
+let n = ctx.symbol_with("n", &[Assumption::Integer, Assumption::Positive]).unwrap();
 let (zero, one, inf) = (ctx.int(0), ctx.int(1), ctx.infinity());
 
 k.powi(5).summation(&k, &one, &n);                    // 1/6*n^6 + 1/2*n^5 + 5/12*n^4 - 1/12*n^2
@@ -197,8 +197,8 @@ Also: `minimum`, `is_decreasing`, `is_strictly_increasing`/`_decreasing`, `is_mo
 # use symplex::prelude::*;
 let ctx = Context::new();
 let z = ctx.symbol("z");
-let x = ctx.symbol_with("x", &[Assumption::Real]);
-let y = ctx.symbol_with("y", &[Assumption::Real]);
+let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
+let y = ctx.symbol_with("y", &[Assumption::Real]).unwrap();
 let i = ctx.i_unit();
 
 let w = &x + &i * &y;
@@ -592,7 +592,7 @@ Also: `prove_polyhedron_empty` (the same identity with goal `−1`: a cell is em
 # use symplex::syms;
 let ctx = Context::new();
 syms!(ctx; t, w, s, x);
-let a = ctx.symbol_with("a", &[Assumption::Positive]);
+let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
 
 (-&a * t.abs()).exp().fourier_transform(&t, &w);      // Ok(2*a/(a^2 + w^2))
 (-t.powi(2)).exp().fourier_transform(&t, &w);         // Ok(sqrt(pi)*exp(-1/4*w^2))
@@ -814,7 +814,7 @@ let velocity: Velocity = position.diff_wrt(&t_var);   // g·t [m/s]
 
 7. **One domain: ℂ, principal branch.** A symbol without assumptions may be complex, every multivalued function takes its principal branch (`∛(−8) = 1 + √3·i`; the real root is `real_root`), and a rewrite is applied only where it preserves the value: `ln x + ln y` stays unless the arguments are known positive, `√(x²)` is `|x|` only for real `x`. The table of identities and their conditions, and the one exception (generated `f64` code takes real odd roots), is in [Key Concepts](book/src/getting-started/key-concepts.md#the-domain-model). `fuzz_simplify` checks it at real and complex points every night.
 
-8. **No panics in library code.** Failure is a `Result`, absence an `Option`, invariants `debug_assert!`. The library never calls `unwrap`/`expect`/`panic!`/`unreachable!` on user data (ratchet `tests/unit/test_no_panics.rs`); the remaining `assert!`s on caller-supplied *shapes* (e.g. `Matrix::zeros(0, n)`, `Context::symbol("")`, a non-prime modulus to `legendre_symbol`) are documented under `# Panics` on each item and counted by the same ratchet — see CONTRIBUTING.md for the policy and why error plumbing costs nothing measurable.
+8. **No panics in library code.** Failure is a `Result`, absence an `Option`, invariants `debug_assert!`. The library never calls `unwrap`/`expect`/`panic!`/`unreachable!` on user data (ratchet `tests/unit/test_no_panics.rs`); the remaining `assert!`s on caller-supplied *shapes* (e.g. `Matrix::zeros(0, n)`, `Context::symbol("")`, a zero denominator to `RationalFn`) are documented under `# Panics` on each item and counted by the same ratchet — see CONTRIBUTING.md for the policy and why error plumbing costs nothing measurable.
 
 9. **One crate, no knobs.** There are no Cargo features to combine; every capability is always present. Compile time is not the constraint, capability is.
 

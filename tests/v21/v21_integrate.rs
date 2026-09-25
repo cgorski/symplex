@@ -705,7 +705,7 @@ fn assert_differentiates_back(f: &Ex, big_f: &Ex, x: &Ex) {
 fn polynomial_over_symbolic_linear_denominator() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
     for k in [ctx.pi(), ctx.int(2).sqrt(), ctx.int(2).sin()] {
         for f in [&x / (&x + &k), x.powi(3) / (2 * &x + &k), 1 / (&x - &k)] {
             let big_f = f.integrate(&x);

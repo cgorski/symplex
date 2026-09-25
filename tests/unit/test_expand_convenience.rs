@@ -61,8 +61,8 @@ fn expand_power_base_simple() {
     // side is -1.  Since 0.2 `expand` guards the rewrite with the
     // assumption system, so the symbols are declared positive here.
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Positive]);
-    let y = ctx.symbol_with("y", &[Assumption::Positive]);
+    let x = ctx.symbol_with("x", &[Assumption::Positive]).unwrap();
+    let y = ctx.symbol_with("y", &[Assumption::Positive]).unwrap();
     let a = ctx.symbol("a");
     // (x*y)^a should expand to x^a * y^a
     let expr = (&x * &y).pow(&a);
@@ -92,9 +92,9 @@ fn expand_power_base_blocked_for_unassumed_symbols() {
 #[test]
 fn expand_power_base_three_factors() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Positive]);
-    let y = ctx.symbol_with("y", &[Assumption::Positive]);
-    let z = ctx.symbol_with("z", &[Assumption::Positive]);
+    let x = ctx.symbol_with("x", &[Assumption::Positive]).unwrap();
+    let y = ctx.symbol_with("y", &[Assumption::Positive]).unwrap();
+    let z = ctx.symbol_with("z", &[Assumption::Positive]).unwrap();
     let n = ctx.symbol("n");
     // (x*y*z)^n → x^n * y^n * z^n
     let expr = (&x * &y * &z).pow(&n);

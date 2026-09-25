@@ -539,7 +539,9 @@ fn isqrt_consistency() {
 
 #[test]
 fn legendre_symbol_quadratic_residues_mod_11() {
-    let qr: Vec<i64> = (1..11).filter(|&a| legendre_symbol(a, 11) == 1).collect();
+    let qr: Vec<i64> = (1..11)
+        .filter(|&a| legendre_symbol(a, 11).unwrap() == 1)
+        .collect();
     assert_eq!(qr, vec![1, 3, 4, 5, 9]);
 }
 

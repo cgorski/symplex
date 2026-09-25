@@ -475,7 +475,9 @@ fn diff_constant_sum_is_zero() {
 #[test]
 fn diff_preserves_assumptions() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Positive, Assumption::Real]);
+    let x = ctx
+        .symbol_with("x", &[Assumption::Positive, Assumption::Real])
+        .unwrap();
     // d/dx(x^2) = 2*x — the result should still know x is positive.
     let deriv = x.powi(2).diff(&x);
     // The result is 2*x, which should be positive since x is positive.

@@ -151,7 +151,7 @@ impl Expr<Numeric> {
     /// assert_eq!(ctx.int(-8).real_root(3)?, ctx.int(-2));
     /// assert_eq!(ctx.rational(-1, 8).real_root(3)?, ctx.rational(-1, 2));
     /// assert_eq!(ctx.int(-4).real_root(2)?, ctx.int(-4).sqrt());       // 2*I: no real root
-    /// let r = ctx.symbol_with("r", &[Assumption::Real]);
+    /// let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
     /// assert_eq!(format!("{}", r.real_root(3)?), "cbrt(abs(r))*sign(r)");
     /// assert!((ctx.int(-2).real_root(3)?.eval_f64()? + 2f64.cbrt()).abs() < 1e-15);
     /// # Ok::<(), SymplexError>(())
@@ -1166,13 +1166,13 @@ impl Expr<Numeric> {
     /// symbol, the assumption is silently ignored.  The assumption is added
     /// to those already declared on the symbol.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the new assumption contradicts those already declared on
-    /// the symbol once their consequences are drawn (`Negative` on a
-    /// `Positive` symbol, `Irrational` on an `Integer` one, …): declaring
-    /// impossible facts about a symbol is a logic error.
-    /// [`try_assume`](Self::try_assume) returns an error instead.
+    /// [`SymplexError::ContradictoryAssumptions`] if the new assumption
+    /// contradicts those already declared on the symbol once their
+    /// consequences are drawn (`Negative` on a `Positive` symbol,
+    /// `Irrational` on an `Integer` one, …); the symbol is then left
+    /// unchanged.
     ///
     /// # Examples
     ///
@@ -1181,57 +1181,29 @@ impl Expr<Numeric> {
     ///
     /// let ctx = Context::new();
     /// let t = ctx.symbol("t")
-    ///     .assume(Assumption::Positive)
-    ///     .assume(Assumption::Real);
+    ///     .assume(Assumption::Positive)?
+    ///     .assume(Assumption::Real)?;
     /// assert_eq!(t.is_positive(), Some(true));
     /// assert_eq!(t.is_real(), Some(true));
-    /// ```
-    pub fn assume(self, assumption: Assumption) -> Ex {
-        use crate::base::node::ExprNode;
-        let mut inner = self.inner.write();
-        if let ExprNode::Symbol(sid) = inner.arena.node(self.raw_id()) {
-            let sid = *sid;
-            let (prop, value) = assumption.to_prop_value();
-            let mut a = inner.arena.symbol_assumptions(sid);
-            if value {
-                a.assert_true(prop);
-            } else {
-                a.assert_false(prop);
-            }
-            inner.arena.set_symbol_assumptions(sid, a);
-            inner
-                .assumptions
-                .lock()
-                .set_symbol_assumptions(self.raw_id(), a);
-        }
-        drop(inner);
-        self
-    }
-
-    /// [`assume`](Self::assume) for an assumption that may contradict the
-    /// symbol's (e.g. from user input).
-    ///
-    /// # Errors
-    ///
-    /// [`SymplexError::InvalidArgument`] if the assumption contradicts those
-    /// already declared on the symbol; the symbol is then left unchanged.
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    /// let ctx = Context::new();
-    /// let t = ctx.symbol("t").try_assume(Assumption::Positive).unwrap();
-    /// assert!(t.clone().try_assume(Assumption::Negative).is_err());
+    /// assert!(matches!(
+    ///     t.clone().assume(Assumption::Negative),
+    ///     Err(SymplexError::ContradictoryAssumptions { .. })
+    /// ));
     /// assert_eq!(t.is_positive(), Some(true));
+    /// # Ok::<(), SymplexError>(())
     /// ```
-    pub fn try_assume(self, assumption: Assumption) -> Result<Ex, SymplexError> {
+    pub fn assume(self, assumption: Assumption) -> Result<Ex, SymplexError> {
         use crate::base::node::ExprNode;
         let mut inner = self.inner.write();
         if let ExprNode::Symbol(sid) = inner.arena.node(self.raw_id()) {
             let sid = *sid;
-            let a = inner.arena.symbol_assumptions(sid).with(assumption);
             // Checked under the same lock as the update, so neither setter
             // below can meet a contradictory set.
-            a.check_declarable("Ex::assume")?;
+            let a = crate::base::assumptions::Assumptions::declare(
+                inner.arena.symbols.name(sid),
+                inner.arena.symbol_assumptions(sid),
+                &[assumption],
+            )?;
             inner.arena.set_symbol_assumptions(sid, a);
             inner
                 .assumptions
@@ -1965,7 +1937,7 @@ impl Expr<Numeric> {
     /// assert_eq!((&x * &y).ln().expand_log(), (&x * &y).ln());   // x = y = −1 would break it
     /// assert_eq!(format!("{}", (&x * 2).ln().expand_log()), "ln(2) + ln(x)");
     /// assert_eq!(format!("{}", x.sqrt().ln().expand_log()), "1/2*ln(x)");
-    /// let (p, q) = (ctx.symbol_with("p", &[Assumption::Positive]), ctx.symbol_with("q", &[Assumption::Positive]));
+    /// let (p, q) = (ctx.symbol_with("p", &[Assumption::Positive]).unwrap(), ctx.symbol_with("q", &[Assumption::Positive]).unwrap());
     /// assert_eq!(format!("{}", (&p * q.powi(2)).ln().expand_log()), "2*ln(q) + ln(p)");
     /// ```
     #[must_use = "returns the expanded form; does not modify in place"]
@@ -1996,7 +1968,7 @@ impl Expr<Numeric> {
     /// let e = &x.ln() + &y.ln();
     /// assert_eq!(e.log_combine(), e);                          // x = y = −1 would break it
     /// assert_eq!(format!("{}", (ctx.int(2).ln() + x.ln()).log_combine()), "ln(2*x)");
-    /// let p = ctx.symbol_with("p", &[Assumption::Positive]);
+    /// let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
     /// assert_eq!(format!("{}", (&p.ln() * 3).log_combine()), "ln(p^3)");
     /// ```
     #[must_use = "returns the combined form; does not modify in place"]
@@ -2064,7 +2036,7 @@ impl Expr<Numeric> {
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
-    /// let x = ctx.symbol("x").assume(Assumption::Positive);
+    /// let x = ctx.symbol("x").assume(Assumption::Positive).unwrap();
     /// let expr = x.abs();
     /// let refined = expr.refine();
     /// assert_eq!(format!("{refined}"), format!("{x}"));
@@ -2167,25 +2139,31 @@ impl Expr<Numeric> {
     /// let x = ctx.symbol("x");
     /// let expr = x.abs();
     /// // x has no permanent assumptions, but refine_with treats it as positive:
-    /// let refined = expr.refine_with(&[(&x, Assumption::Positive)]);
+    /// let refined = expr.refine_with(&[(&x, Assumption::Positive)]).unwrap();
     /// assert_eq!(format!("{refined}"), format!("{x}"));
     /// // Original x is unchanged — no permanent assumption was set:
     /// assert!(x.is_positive().is_none());
+    /// // Contradictory hypotheses are an error, and change nothing:
+    /// assert!(matches!(
+    ///     expr.refine_with(&[(&x, Assumption::Positive), (&x, Assumption::Negative)]),
+    ///     Err(SymplexError::ContradictoryAssumptions { .. })
+    /// ));
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::ContradictoryAssumptions`] if the temporary
+    /// assumptions contradict each other or a symbol's stored ones (`x`
+    /// positive and negative); the context is left unchanged.
     ///
     /// # Panics
     ///
-    /// Panics if a variable comes from another context, or if the temporary
-    /// assumptions contradict each other or a symbol's stored ones (`x`
-    /// positive and negative).  The context is left unchanged either way:
-    /// the stored assumptions are restored before the panic continues
-    /// (before 0.25 a contradiction on the second symbol left the first
-    /// one's temporary assumptions in place).
-    #[must_use = "returns the refined form; does not modify in place"]
+    /// Panics if a variable comes from another context (the crate-wide
+    /// cross-context logic error).
     pub fn refine_with(
         &self,
         temp_assumptions: &[(&Ex, crate::base::assumptions::Assumption)],
-    ) -> Ex {
+    ) -> Result<Ex, SymplexError> {
         use crate::base::assumptions::{AssumptionCache, Assumptions};
         use crate::base::node::{ExprNode, SymbolId};
 
@@ -2204,36 +2182,35 @@ impl Expr<Numeric> {
 
         // The stored assumptions of each symbol involved (once per symbol,
         // so two hypotheses on one symbol restore to the original), and the
-        // temporary set: the stored one plus every hypothesis on it.
+        // hypotheses on it.
         let mut saved: Vec<(SymbolId, Assumptions)> = Vec::new();
-        let mut temporary: Vec<(SymbolId, Assumptions)> = Vec::new();
+        let mut hypotheses: Vec<Vec<crate::base::assumptions::Assumption>> = Vec::new();
         for (i, (_var, assumption)) in temp_assumptions.iter().enumerate() {
             let ExprNode::Symbol(sid) = *arena.node(var_ids[i]) else {
                 continue;
             };
-            let slot = match temporary.iter().position(|(s, _)| *s == sid) {
+            let slot = match saved.iter().position(|(s, _)| *s == sid) {
                 Some(k) => k,
                 None => {
-                    let original = arena.symbol_assumptions(sid);
-                    saved.push((sid, original));
-                    temporary.push((sid, original));
-                    temporary.len() - 1
+                    saved.push((sid, arena.symbol_assumptions(sid)));
+                    hypotheses.push(Vec::new());
+                    saved.len() - 1
                 }
             };
-            let a = &mut temporary[slot].1;
-            let (prop, value) = assumption.to_prop_value();
-            if value {
-                a.assert_true(prop);
-            } else {
-                a.assert_false(prop);
-            }
+            hypotheses[slot].push(*assumption);
         }
-        // Apply the temporary sets (a contradictory one panics in
-        // `set_symbol_assumptions`) and refine with a fresh assumption cache;
-        // restore the stored sets whatever happens.
+        // The temporary sets, all validated before any is applied.
+        let temporary: Vec<(SymbolId, Assumptions)> = saved
+            .iter()
+            .zip(&hypotheses)
+            .map(|(&(sid, original), hyps)| {
+                Assumptions::declare(arena.symbols.name(sid), original, hyps).map(|a| (sid, a))
+            })
+            .collect::<Result<_, _>>()?;
+        // Apply them and refine with a fresh assumption cache; restore the
+        // stored sets whatever happens.
         let refined = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            for (sid, mut a) in temporary {
-                a.forward_chain();
+            for (sid, a) in temporary {
                 arena.set_symbol_assumptions(sid, a);
             }
             let mut temp_cache = AssumptionCache::new();
@@ -2251,7 +2228,7 @@ impl Expr<Numeric> {
 
         drop(inner);
         match refined {
-            Ok(id) => self.wrap(id),
+            Ok(id) => Ok(self.wrap(id)),
             Err(panic) => std::panic::resume_unwind(panic),
         }
     }
@@ -4102,6 +4079,7 @@ impl Expr<Numeric> {
     /// cross-context logic error, as when combining two such expressions
     /// with an operator.  (Replacements are built before the call, as in the
     /// example: the context stays write-locked while the closure runs.)
+    /// [`try_replace`](Self::try_replace) returns an error instead.
     ///
     /// # Examples
     ///
@@ -4134,6 +4112,57 @@ impl Expr<Numeric> {
             })
         };
         self.wrap(result_id)
+    }
+
+    /// [`replace`](Self::replace) for a closure that may return an
+    /// expression from another [`Context`](crate::api::context::Context).
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if the closure returns an
+    /// expression built in another context than `self`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// let expr = x.powi(2);
+    /// let replaced = expr.try_replace(|e| if e == &x { Some(y.clone()) } else { None }).unwrap();
+    /// assert_eq!(format!("{replaced}"), "y^2");
+    ///
+    /// let other = Context::new().symbol("y");
+    /// assert!(expr.try_replace(|e| if e == &x { Some(other.clone()) } else { None }).is_err());
+    /// ```
+    pub fn try_replace<F>(&self, f: F) -> Result<Ex, SymplexError>
+    where
+        F: Fn(crate::api::expr_view::ExprView<'_>) -> Option<Ex>,
+    {
+        let self_ctx_id = self.ctx_id;
+        // A foreign replacement keeps the node and is reported after the walk.
+        let foreign = std::cell::Cell::new(false);
+        let result_id = {
+            let mut guard = self.inner.write();
+            crate::base::walk::walk_and_rebuild(&mut guard.arena, self.raw_id(), &|arena, id| {
+                let view = crate::api::expr_view::ExprView { id, arena };
+                let ex = f(view)?;
+                if ex.ctx_id == self_ctx_id {
+                    Some(ex.raw_id())
+                } else {
+                    foreign.set(true);
+                    None
+                }
+            })
+        };
+        if foreign.get() {
+            return Err(SymplexError::invalid_argument(
+                "Ex::replace",
+                "the closure returned an expression from another context",
+            ));
+        }
+        Ok(self.wrap(result_id))
     }
 
     // ── Solver utilities ───────────────────────────────────────────

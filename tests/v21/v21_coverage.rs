@@ -1300,7 +1300,7 @@ fn one_of_each_node_kind(ctx: &Context) -> Vec<Ex> {
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
     let n = ctx.symbol("n");
-    let p = ctx.symbol_with("p", &[Assumption::Positive]);
+    let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
     vec![
         x.tanh(),
         x.asinh(),

@@ -9,11 +9,11 @@
 use symplex::prelude::*;
 
 fn real(ctx: &Context, name: &str) -> Ex {
-    ctx.symbol_with(name, &[Assumption::Real])
+    ctx.symbol_with(name, &[Assumption::Real]).unwrap()
 }
 
 fn positive(ctx: &Context, name: &str) -> Ex {
-    ctx.symbol_with(name, &[Assumption::Positive])
+    ctx.symbol_with(name, &[Assumption::Positive]).unwrap()
 }
 
 fn approx(a: f64, b: f64, tol: f64) -> bool {
@@ -104,7 +104,7 @@ fn real_symbol_folds() {
     assert!(p.arg().is_zero_structural());
     assert_eq!(format!("{}", (-&p).arg()), "pi");
     // Integer/positive imply real.
-    let n = ctx.symbol_with("n", &[Assumption::Integer]);
+    let n = ctx.symbol_with("n", &[Assumption::Integer]).unwrap();
     assert_eq!(n.re(), n);
     assert_eq!(n.conjugate(), n);
 }
@@ -112,7 +112,7 @@ fn real_symbol_folds() {
 #[test]
 fn imaginary_symbol_folds() {
     let ctx = Context::new();
-    let y = ctx.symbol_with("y", &[Assumption::Imaginary]);
+    let y = ctx.symbol_with("y", &[Assumption::Imaginary]).unwrap();
     assert!(y.re().is_zero_structural());
     assert_eq!(format!("{}", y.im()), "-y*I");
     assert_eq!(format!("{}", y.conjugate()), "-y");
@@ -281,7 +281,7 @@ fn assumptions_of_complex_nodes() {
     assert_eq!(z.is_real(), None);
     let x = real(&ctx, "x");
     // conjugate(x) folds to x, so build the node through a non-folding path
-    let n = ctx.symbol_with("n", &[Assumption::Integer]);
+    let n = ctx.symbol_with("n", &[Assumption::Integer]).unwrap();
     assert_eq!((&n + &z).conjugate().is_real(), None);
     assert_eq!(x.conjugate().is_real(), Some(true));
     assert_eq!(z.abs().is_real(), Some(true));

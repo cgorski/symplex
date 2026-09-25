@@ -93,18 +93,21 @@ Most answers come back fast (usually unevaluated).
 |---|---|
 | `unsupported` | integrand not translatable/parsable, or uses functions symplex lacks |
 | `verified` | `F′ = f` at every point where both evaluate, and at least one point evaluated |
-| `real_verified` | `F′ = f` at every point where `f` is real; `F′ ≠ f` only at points where `f` is complex; the integrand has no `%i` |
+| `real_verified` | `F′ = f` at every point where `f` is real, and at one such point at least; `F′ ≠ f` only at points where `f` is complex; the integrand has no `%i` |
 | `unevaluated` | the result `has_unevaluated()` (contains a formal `Integral`, …) |
 | `wrong` | `F′ ≠ f` at a point where `f` is real, or (integrand contains `%i`) at any point |
-| `undecided` | no point evaluated on both sides, or the check exceeded `--check-timeout` |
+| `undecided` | no point evaluated on both sides, or every point that did is a mismatch where `f` is complex, or the check exceeded `--check-timeout` |
 | `timeout` | parsing + integration exceeded `--timeout`, or the worker exceeded `--mem-limit-mb` |
 | `panic` | symplex panicked (caught), or the worker process died (e.g. stack overflow) |
 
-`real_verified` is vacuously true when `f` is complex at *every*
-evaluated point.  For example, `1/(a+x*sqrt(-a))` with `a = 6/5 > 0` has
-no real sample point, and symplex's `ln|…|` answer is only testable for
-`a < 0`.  Such cases are tagged "no real sample point evaluated" in
-`real_verified.txt` and counted separately in its header.
+A mismatch where `f` is complex is excused by the real-variable
+convention, but it is no evidence either: an answer that agrees at no
+point where `f` is real is `undecided` (reason "mismatch only where the
+integrand is complex, no agreement where it is real").  Up to 0.28 such
+answers were `real_verified` vacuously — six of them, among them
+symplex's `ln|x·√(−a) + a|/√(−a)` for `1/(a+x*sqrt(-a))`, whose
+derivative is the conjugate of the integrand at every point for
+`a = 6/5`.
 
 Every `wrong` entry in `results/wrong.txt` carries two triage aids:
 

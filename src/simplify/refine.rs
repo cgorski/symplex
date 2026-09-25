@@ -341,7 +341,7 @@ mod tests {
         assumption: Assumption,
     ) -> crate::api::expr::Ex {
         let v = ctx.symbol(name);
-        v.assume(assumption)
+        v.assume(assumption).unwrap()
     }
 
     /// Helper: run refine on an expression and return the result.

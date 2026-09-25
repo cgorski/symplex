@@ -1151,9 +1151,14 @@ impl Context {
     ///
     /// `args` may be a slice of `Ex` or of `&Ex`.
     ///
+    /// # Errors
+    ///
+    /// Returns [`SymplexError::InvalidArgument`] if `name` is empty.
+    ///
     /// # Panics
     ///
-    /// Panics if `name` is empty or any argument belongs to another context.
+    /// Panics if an argument belongs to another context (the crate-wide
+    /// cross-context logic error).
     ///
     /// # Examples
     ///
@@ -1162,22 +1167,28 @@ impl Context {
     ///
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
-    /// let f = ctx.apply("f", &[&x]);
+    /// let f = ctx.apply("f", &[&x]).unwrap();
     /// assert_eq!(format!("{f}"), "f(x)");
     /// assert_eq!(f.eval(), f);
     /// assert_eq!(format!("{}", f.diff(&x)), "Derivative(f(x), x)");
     /// // Chain rule on the argument:
-    /// let g = ctx.apply("g", &[x.powi(2)]);
+    /// let g = ctx.apply("g", &[x.powi(2)]).unwrap();
     /// assert_eq!(format!("{}", g.diff(&x)), "2*x*Derivative(g(x^2), x^2)");
+    /// assert!(ctx.apply("", &[&x]).is_err());
     /// ```
-    pub fn apply<T: AsRef<Ex>>(&self, name: &str, args: &[T]) -> Ex {
-        assert!(!name.is_empty(), "function name cannot be empty");
+    pub fn apply<T: AsRef<Ex>>(&self, name: &str, args: &[T]) -> Result<Ex, SymplexError> {
+        if name.is_empty() {
+            return Err(SymplexError::invalid_argument(
+                "Context::apply",
+                "function name cannot be empty",
+            ));
+        }
         let ids: SmallVec<[ExprId; 2]> = args.iter().map(|a| self.own_id(a.as_ref())).collect();
         let mut inner = self.inner.write();
         let sid = inner.arena.symbols.intern(name);
         let id = inner.arena.intern(ExprNode::Apply(sid, ids));
         drop(inner);
-        ctx_wrap(self, id)
+        Ok(ctx_wrap(self, id))
     }
 
     // ── Bulk arithmetic ────────────────────────────────────────────────
@@ -1456,7 +1467,7 @@ impl Ex {
     /// assert_eq!((&x + 1).compare_numeric(&x), Some(Ordering::Greater));
     /// assert_eq!(x.compare_numeric(&ctx.int(0)), None);
     ///
-    /// let p = ctx.symbol_with("p", &[Assumption::Positive]);
+    /// let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
     /// assert_eq!(p.compare_numeric(&ctx.int(0)), Some(Ordering::Greater));
     /// ```
     #[must_use]
@@ -1532,7 +1543,7 @@ impl Ex {
     /// let x = ctx.symbol("x");
     /// assert_eq!(x.is_less_than(&ctx.int(3)), None);
     /// // Assumptions help: x² ≥ 0 for real x, so x² < -1 is false.
-    /// let r = ctx.symbol_with("r", &[Assumption::Real]);
+    /// let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
     /// assert_eq!(r.powi(2).is_less_than(&ctx.int(-1)), Some(false));
     /// ```
     #[must_use]
@@ -2012,7 +2023,7 @@ mod tests {
         assert_eq!(idx, vec![ctx.symbol("t0"), ctx.symbol("t1")]);
 
         let x = ctx.symbol("x");
-        let f = ctx.apply("f", &[&x, &ctx.int(2)]);
+        let f = ctx.apply("f", &[&x, &ctx.int(2)]).unwrap();
         assert_eq!(format!("{f}"), "f(x, 2)");
         assert_eq!(f.expr_type(), crate::api::expr::ExprType::Apply);
         assert_eq!(f.eval(), f);
@@ -2024,9 +2035,9 @@ mod tests {
             Err(SymplexError::NotImplemented(_))
         ));
         // Owned-slice form and hash-consing.
-        let f2 = ctx.apply("f", &[x.clone(), ctx.int(2)]);
+        let f2 = ctx.apply("f", &[x.clone(), ctx.int(2)]).unwrap();
         assert_eq!(f, f2);
-        let g0 = ctx.apply::<Ex>("g", &[]);
+        let g0 = ctx.apply::<Ex>("g", &[]).unwrap();
         assert_eq!(format!("{g0}"), "g()");
     }
 
@@ -2142,11 +2153,11 @@ mod tests {
         assert_eq!((&x - 2).compare_numeric(&x), Some(Ordering::Less));
         assert_eq!(x.compare_numeric(&x), Some(Ordering::Equal));
         assert_eq!(x.compare_numeric(&ctx.int(1)), None);
-        let p = ctx.symbol_with("p", &[Assumption::Positive]);
-        let n = ctx.symbol_with("n", &[Assumption::Negative]);
+        let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
+        let n = ctx.symbol_with("n", &[Assumption::Negative]).unwrap();
         assert_eq!(p.compare_numeric(&n), Some(Ordering::Greater));
         assert_eq!(n.compare_numeric(&ctx.zero()), Some(Ordering::Less));
-        let r = ctx.symbol_with("r", &[Assumption::Real]);
+        let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
         assert_eq!(
             (&r.powi(2) + 1).compare_numeric(&ctx.zero()),
             Some(Ordering::Greater)
@@ -2162,7 +2173,7 @@ mod tests {
         assert_eq!(ctx.int(3).is_greater_than(&ctx.int(2)), Some(true));
         assert_eq!(x.is_less_than(&ctx.int(2)), None);
         assert_eq!(x.is_greater_than(&ctx.int(2)), None);
-        let r = ctx.symbol_with("r", &[Assumption::Real]);
+        let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
         // r² ≥ 0: not < 0 (known), but > 0 unknown (could be 0).
         assert_eq!(r.powi(2).is_less_than(&ctx.zero()), Some(false));
         assert_eq!(r.powi(2).is_greater_than(&ctx.zero()), None);

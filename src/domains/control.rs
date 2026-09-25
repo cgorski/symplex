@@ -46,16 +46,16 @@ fn poly_coeffs_symbolic(expr: &Ex, var: &Ex) -> Option<Vec<Ex>> {
 /// - `B` is the input matrix (n×m)
 /// - `C` is the output matrix (p×n)
 /// - `D` is the feedthrough matrix (p×m)
+///
+/// The fields are private: [`StateSpace::new`] is the only way in, so every
+/// model has conformant shapes.  Read them with [`a`](Self::a),
+/// [`b`](Self::b), [`c`](Self::c) and [`d`](Self::d).
 #[derive(Clone, Debug)]
 pub struct StateSpace {
-    /// State matrix (n×n)
-    pub a: Matrix,
-    /// Input matrix (n×m)
-    pub b: Matrix,
-    /// Output matrix (p×n)
-    pub c: Matrix,
-    /// Feedthrough matrix (p×m)
-    pub d: Matrix,
+    a: Matrix,
+    b: Matrix,
+    c: Matrix,
+    d: Matrix,
 }
 
 impl StateSpace {
@@ -66,53 +66,87 @@ impl StateSpace {
 
     /// Create a new state-space model from the four system matrices.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if dimensions are inconsistent:
+    /// Returns [`SymplexError::InvalidArgument`] if the dimensions are
+    /// inconsistent:
     /// - A must be n×n (square)
     /// - B must be n×m
     /// - C must be p×n
     /// - D must be p×m
-    pub fn new(a: Matrix, b: Matrix, c: Matrix, d: Matrix) -> Self {
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let ss = StateSpace::new(
+    ///     matrix![ctx, [0, 1], [-2, -3]],
+    ///     matrix![ctx, [0], [1]],
+    ///     matrix![ctx, [1, 0]],
+    ///     matrix![ctx, [0]],
+    /// )
+    /// .unwrap();
+    /// assert_eq!((ss.num_states(), ss.num_inputs(), ss.num_outputs()), (2, 1, 1));
+    /// // B has 1 row, A has 2.
+    /// assert!(
+    ///     StateSpace::new(
+    ///         matrix![ctx, [0, 1], [-2, -3]],
+    ///         matrix![ctx, [1]],
+    ///         matrix![ctx, [1, 0]],
+    ///         matrix![ctx, [0]],
+    ///     )
+    ///     .is_err()
+    /// );
+    /// ```
+    pub fn new(a: Matrix, b: Matrix, c: Matrix, d: Matrix) -> Result<Self, SymplexError> {
+        let bad = |reason: String| Err(SymplexError::invalid_argument("StateSpace::new", reason));
         let n = a.nrows();
-        assert_eq!(
-            a.ncols(),
-            n,
-            "A must be square: got {}×{}",
-            a.nrows(),
-            a.ncols()
-        );
-        assert_eq!(
-            b.nrows(),
-            n,
-            "B must have {} rows (same as A), got {}",
-            n,
-            b.nrows()
-        );
-        assert_eq!(
-            c.ncols(),
-            n,
-            "C must have {} cols (same as A), got {}",
-            n,
-            c.ncols()
-        );
-        let m = b.ncols();
-        let p = c.nrows();
-        assert_eq!(
-            d.nrows(),
-            p,
-            "D must have {} rows (same as C), got {}",
-            p,
-            d.nrows()
-        );
-        assert_eq!(
-            d.ncols(),
-            m,
-            "D must have {} cols (same as B), got {}",
-            m,
-            d.ncols()
-        );
-        StateSpace { a, b, c, d }
+        if a.ncols() != n {
+            return bad(format!("A must be square, got {}×{}", n, a.ncols()));
+        }
+        if b.nrows() != n {
+            return bad(format!(
+                "B must have {n} rows (same as A), got {}",
+                b.nrows()
+            ));
+        }
+        if c.ncols() != n {
+            return bad(format!(
+                "C must have {n} columns (same as A), got {}",
+                c.ncols()
+            ));
+        }
+        let (m, p) = (b.ncols(), c.nrows());
+        if d.shape() != (p, m) {
+            return bad(format!(
+                "D must be {p}×{m} (rows of C × columns of B), got {}×{}",
+                d.nrows(),
+                d.ncols()
+            ));
+        }
+        Ok(StateSpace { a, b, c, d })
+    }
+
+    /// State matrix `A` (n×n).
+    pub fn a(&self) -> &Matrix {
+        &self.a
+    }
+
+    /// Input matrix `B` (n×m).
+    pub fn b(&self) -> &Matrix {
+        &self.b
+    }
+
+    /// Output matrix `C` (p×n).
+    pub fn c(&self) -> &Matrix {
+        &self.c
+    }
+
+    /// Feedthrough matrix `D` (p×m).
+    pub fn d(&self) -> &Matrix {
+        &self.d
     }
 
     /// Number of states (dimension of the state vector).
@@ -140,10 +174,10 @@ impl StateSpace {
 
     /// Characteristic polynomial: det(sI - A).
     ///
-    /// Returns a polynomial expression in the given variable `s`.  The
-    /// determinant is undefined when `A` is not square (a model built as a
-    /// struct literal, bypassing [`StateSpace::new`]); such a model yields
-    /// NaN — use [`try_char_poly`](Self::try_char_poly) for the error.
+    /// Returns a polynomial expression in the given variable `s`, or NaN if
+    /// the determinant cannot be computed — use
+    /// [`try_char_poly`](Self::try_char_poly) for the error.  (`A` is
+    /// square: [`StateSpace::new`] validates it.)
     pub fn char_poly(&self, s: &Ex) -> Ex {
         self.try_char_poly(s).unwrap_or_else(|_| self.ctx().nan())
     }
@@ -152,7 +186,8 @@ impl StateSpace {
     ///
     /// # Errors
     ///
-    /// Returns an error if `A` is not square.
+    /// Returns an error if the determinant cannot be computed.  `A` is
+    /// square by construction, so a shape error cannot occur.
     pub fn try_char_poly(&self, s: &Ex) -> Result<Ex, SymplexError> {
         let n = self.num_states();
         let si = Matrix::identity(&self.ctx(), n).scale(s);
@@ -183,7 +218,8 @@ impl StateSpace {
     ///     matrix![ctx, [0], [1]],
     ///     matrix![ctx, [1, 0]],
     ///     matrix![ctx, [0]],
-    /// );
+    /// )
+    /// .unwrap();
     /// let g = ss.to_transfer_function(&s).unwrap();
     /// // G(s) = 1 / (s² + 3s + 2)
     /// assert_eq!(g.num, ctx.int(1));
@@ -216,8 +252,9 @@ impl StateSpace {
     ///
     /// # Errors
     ///
-    /// Returns an error if the shapes of `A` and `B` are inconsistent (a
-    /// model built as a struct literal, bypassing [`StateSpace::new`]).
+    /// Returns an error if a matrix product fails.  The shapes of `A` and
+    /// `B` are validated by [`StateSpace::new`], so a shape error cannot
+    /// occur.
     pub fn controllability_matrix(&self) -> Result<Matrix, SymplexError> {
         let n = self.num_states();
         let mut cols: Vec<Matrix> = vec![self.b.clone()];
@@ -237,8 +274,9 @@ impl StateSpace {
     ///
     /// # Errors
     ///
-    /// Returns an error if the shapes of `A` and `C` are inconsistent (a
-    /// model built as a struct literal, bypassing [`StateSpace::new`]).
+    /// Returns an error if a matrix product fails.  The shapes of `A` and
+    /// `C` are validated by [`StateSpace::new`], so a shape error cannot
+    /// occur.
     pub fn observability_matrix(&self) -> Result<Matrix, SymplexError> {
         let n = self.num_states();
         let mut rows: Vec<Matrix> = vec![self.c.clone()];
@@ -253,9 +291,8 @@ impl StateSpace {
 
     /// Check controllability: rank(controllability_matrix) == n.
     ///
-    /// Returns `true` if the system is fully state controllable.  A model
-    /// with inconsistent shapes is not a valid system and is reported as
-    /// not controllable.
+    /// Returns `true` if the system is fully state controllable, `false`
+    /// if it is not or the controllability matrix cannot be computed.
     pub fn is_controllable(&self) -> bool {
         self.controllability_matrix()
             .is_ok_and(|m| m.rank() == self.num_states())
@@ -263,9 +300,8 @@ impl StateSpace {
 
     /// Check observability: rank(observability_matrix) == n.
     ///
-    /// Returns `true` if the system is fully observable.  A model with
-    /// inconsistent shapes is not a valid system and is reported as not
-    /// observable.
+    /// Returns `true` if the system is fully observable, `false` if it is
+    /// not or the observability matrix cannot be computed.
     pub fn is_observable(&self) -> bool {
         self.observability_matrix()
             .is_ok_and(|m| m.rank() == self.num_states())
@@ -313,8 +349,9 @@ impl StateSpace {
     ///
     /// # Errors
     ///
-    /// Returns an error if the shapes of `A` and `B` are inconsistent (a
-    /// model built as a struct literal, bypassing [`StateSpace::new`]).
+    /// Returns an error if the matrix exponential series or a matrix
+    /// product fails.  The shapes of `A` and `B` are validated by
+    /// [`StateSpace::new`], so a shape error cannot occur.
     pub fn discretize_zoh(&self, dt: &Ex, order: usize) -> Result<StateSpace, SymplexError> {
         let n = self.num_states();
         let a_dt = self.a.scale(dt);
@@ -646,9 +683,9 @@ impl TransferFunction {
     /// let s = ctx.symbol("s");
     /// let g = TransferFunction::from_coeffs(&[1], &[2, 3, 1], &s); // 1/(s²+3s+2)
     /// let ss = g.to_state_space().unwrap();
-    /// assert_eq!(ss.a, matrix![ctx, [0, 1], [-2, -3]]);
-    /// assert_eq!(ss.b, matrix![ctx, [0], [1]]);
-    /// assert_eq!(ss.c, matrix![ctx, [1, 0]]);
+    /// assert_eq!(ss.a(), &matrix![ctx, [0, 1], [-2, -3]]);
+    /// assert_eq!(ss.b(), &matrix![ctx, [0], [1]]);
+    /// assert_eq!(ss.c(), &matrix![ctx, [1, 0]]);
     /// // Round trip
     /// let back = ss.to_transfer_function(&s).unwrap();
     /// assert_eq!(back.den, g.den.expand());
@@ -692,7 +729,7 @@ impl TransferFunction {
         let b = Matrix::from_fn(n, 1, |i, _| if i + 1 == n { ctx.one() } else { ctx.zero() });
         let c = Matrix::from_fn(1, n, |_, j| (&b_coef[j] - &(&a_coef[j] * &bn)).eval());
         let d = Matrix::new(vec![vec![bn]])?;
-        Ok(StateSpace::new(a, b, c, d))
+        StateSpace::new(a, b, c, d)
     }
 }
 
@@ -723,18 +760,33 @@ impl std::fmt::Display for TransferFunction {
 /// routh[i][j] = (routh[i-1][0] * routh[i-2][j+1] - routh[i-2][0] * routh[i-1][j+1]) / routh[i-1][0]
 /// ```
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `coeffs` is empty.
-pub fn routh_array(coeffs: &[Ex]) -> Vec<Vec<Ex>> {
-    assert!(
-        !coeffs.is_empty(),
-        "routh_array: coefficients must not be empty"
-    );
+/// Returns [`SymplexError::InvalidArgument`] if `coeffs` is empty.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::control::routh_array;
+///
+/// let ctx = Context::new();
+/// // s² + 3s + 2
+/// let table = routh_array(&[ctx.int(1), ctx.int(3), ctx.int(2)]).unwrap();
+/// assert_eq!(table.len(), 3);
+/// assert!(routh_array(&[]).is_err());
+/// ```
+pub fn routh_array(coeffs: &[Ex]) -> Result<Vec<Vec<Ex>>, SymplexError> {
+    let Some(lead) = coeffs.first() else {
+        return Err(SymplexError::invalid_argument(
+            "routh_array",
+            "coefficients must not be empty",
+        ));
+    };
 
     let n = coeffs.len();
     if n == 1 {
-        return vec![vec![coeffs[0].clone()]];
+        return Ok(vec![vec![lead.clone()]]);
     }
 
     // Number of columns in the Routh table
@@ -803,7 +855,7 @@ pub fn routh_array(coeffs: &[Ex]) -> Vec<Vec<Ex>> {
         table.push(new_row);
     }
 
-    table
+    Ok(table)
 }
 
 /// Check Routh-Hurwitz stability: all first-column entries must be positive
@@ -817,11 +869,10 @@ pub fn routh_array(coeffs: &[Ex]) -> Vec<Vec<Ex>> {
 /// unstable (sign changes detected), or `None` if stability cannot be
 /// determined symbolically.
 pub fn is_routh_stable(coeffs: &[Ex]) -> Option<bool> {
-    if coeffs.is_empty() {
+    // The only error is an empty coefficient list: no polynomial, not stable.
+    let Ok(table) = routh_array(coeffs) else {
         return Some(false);
-    }
-
-    let table = routh_array(coeffs);
+    };
 
     // Collect first-column entries
     let first_col: Vec<&Ex> = table.iter().map(|row| &row[0]).collect();
@@ -872,7 +923,7 @@ mod tests {
         let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
         let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
         let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
-        let ss = StateSpace::new(a, b, c, d);
+        let ss = StateSpace::new(a, b, c, d).unwrap();
         assert_eq!(ss.num_states(), 2);
         assert_eq!(ss.num_inputs(), 1);
         assert_eq!(ss.num_outputs(), 1);
@@ -895,7 +946,7 @@ mod tests {
         let ctx = crate::api::context::Context::new();
         // s^2 + 3s + 2 → 3 coefficients → 3 rows
         let coeffs = vec![ctx.int(1), ctx.int(3), ctx.int(2)];
-        let table = routh_array(&coeffs);
+        let table = routh_array(&coeffs).unwrap();
         assert_eq!(table.len(), 3);
     }
 }

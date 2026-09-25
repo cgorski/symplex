@@ -122,8 +122,8 @@ use symplex::prelude::*;
 fn main() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let pos = ctx.symbol_with("pos", &[Assumption::Positive]);
-    let t = ctx.symbol_with("t", &[Assumption::Real]);
+    let pos = ctx.symbol_with("pos", &[Assumption::Positive]).unwrap();
+    let t = ctx.symbol_with("t", &[Assumption::Real]).unwrap();
     println!("{}", pos.gt(&ctx.int(0)).eval());           // True
     println!("{}", pos.lt(&ctx.int(0)).eval());           // False
     println!("{}", t.powi(2).ge(&ctx.int(0)).eval());     // True

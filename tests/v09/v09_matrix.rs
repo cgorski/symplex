@@ -78,8 +78,8 @@ fn singular_values_diagonal_and_rectangular_match_sympy() {
 #[test]
 fn singular_values_symbolic_2x2_via_quadratic_formula() {
     let ctx = Context::new();
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
-    let b = ctx.symbol_with("b", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
+    let b = ctx.symbol_with("b", &[Assumption::Positive]).unwrap();
     let m = Matrix::diag(&[a.clone(), b.clone()]);
     let sv = m.singular_values().unwrap();
     assert_eq!(sv.len(), 2);
@@ -183,7 +183,7 @@ fn pinv_rank_deficient_rectangular_and_zero_matrix() {
 fn pinv_symbolic_rank_one() {
     // A = x·[[1, 1], [1, 1]]  →  A⁺ = (1/(4x))·[[1, 1], [1, 1]]
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Positive]);
+    let x = ctx.symbol_with("x", &[Assumption::Positive]).unwrap();
     let a = Matrix::new(vec![vec![x.clone(), x.clone()], vec![x.clone(), x.clone()]]).unwrap();
     let p = a.pinv().unwrap().simplify();
     let quarter_over_x = &ctx.rational(1, 4) / &x;

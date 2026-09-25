@@ -586,7 +586,10 @@ fn accessors() {
     assert_eq!(m.col(1), vec![ctx.int(2), ctx.int(5), ctx.int(8)]);
     assert_eq!(m.row(2), &[ctx.int(7), ctx.int(8), ctx.int(9)]);
     assert_eq!(m.diagonal(), vec![ctx.int(1), ctx.int(5), ctx.int(9)]);
-    assert_eq!(m.submatrix(1..3, 1..3), matrix![ctx, [5, 6], [8, 9]]);
+    assert_eq!(
+        m.submatrix(1..3, 1..3).unwrap(),
+        matrix![ctx, [5, 6], [8, 9]]
+    );
     assert_eq!(m.minor_matrix(0, 0).unwrap(), matrix![ctx, [5, 6], [8, 9]]);
     assert_eq!(m.minor(0, 0).unwrap(), ctx.int(-3));
     assert_eq!(m.cofactor(0, 1).unwrap(), ctx.int(6));

@@ -294,8 +294,8 @@ fn log_expand_product() {
     // ln(a*b) -> ln(a) + ln(b)
     let ctx = Context::new();
     // 0.23: the log identities need positive arguments (x = y = -1 breaks ln(x*y) = ln x + ln y).
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
-    let b = ctx.symbol_with("b", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
+    let b = ctx.symbol_with("b", &[Assumption::Positive]).unwrap();
     let expr = (&a * &b).ln();
     let expanded = expr.expand_log();
     let s = fmt(&expanded);
@@ -310,7 +310,7 @@ fn log_expand_power() {
     // ln(a^n) -> n*ln(a)
     let ctx = Context::new();
     // 0.23: the log identities need positive arguments (x = y = -1 breaks ln(x*y) = ln x + ln y).
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
     let expr = a.powi(3).ln();
     let expanded = expr.expand_log();
     let s = fmt(&expanded);
@@ -325,8 +325,8 @@ fn log_combine_sum() {
     // ln(a) + ln(b) -> ln(a*b)
     let ctx = Context::new();
     // 0.23: the log identities need positive arguments (x = y = -1 breaks ln(x*y) = ln x + ln y).
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
-    let b = ctx.symbol_with("b", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
+    let b = ctx.symbol_with("b", &[Assumption::Positive]).unwrap();
     let expr = &a.ln() + &b.ln();
     let combined = expr.log_combine();
     let s = fmt(&combined);
@@ -383,7 +383,7 @@ fn log_roundtrip_expand_combine() {
 fn log_exp_simplify() {
     // ln(exp(x)) should simplify to x (for real x)
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     let expr = x.exp().ln();
     let simplified = expr.simplify();
     assert_eq!(
@@ -467,9 +467,9 @@ fn log_expand_three_factors() {
     // ln(a*b*c) -> ln(a) + ln(b) + ln(c)
     let ctx = Context::new();
     // 0.23: the log identities need positive arguments (x = y = -1 breaks ln(x*y) = ln x + ln y).
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
-    let b = ctx.symbol_with("b", &[Assumption::Positive]);
-    let c = ctx.symbol_with("c", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
+    let b = ctx.symbol_with("b", &[Assumption::Positive]).unwrap();
+    let c = ctx.symbol_with("c", &[Assumption::Positive]).unwrap();
     let expr = (&a * &b * &c).ln();
     let expanded = expr.expand_log();
     let s = fmt(&expanded);
@@ -513,7 +513,7 @@ fn pow_x_squared_sqrt_no_assumption() {
 fn pow_x_squared_sqrt_positive_assumption() {
     // sqrt(x²) when x is positive -> x
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Positive]);
+    let x = ctx.symbol_with("x", &[Assumption::Positive]).unwrap();
     let expr = x.powi(2).sqrt();
     let refined = expr.refine();
     let s = fmt(&refined);
@@ -527,7 +527,7 @@ fn pow_x_squared_sqrt_positive_assumption() {
 fn pow_x_squared_sqrt_real_assumption() {
     // sqrt(x²) when x is real -> abs(x)
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     let expr = x.powi(2).sqrt();
     let refined = expr.refine();
     let s = fmt(&refined);
@@ -1091,7 +1091,7 @@ fn equals_zero_difference() {
 #[test]
 fn assume_positive_implies_real() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Positive]);
+    let x = ctx.symbol_with("x", &[Assumption::Positive]).unwrap();
     assert_eq!(x.is_positive(), Some(true));
     assert_eq!(x.is_real(), Some(true));
     assert_eq!(x.is_negative(), Some(false));
@@ -1100,7 +1100,7 @@ fn assume_positive_implies_real() {
 #[test]
 fn assume_negative_implies_real() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Negative]);
+    let x = ctx.symbol_with("x", &[Assumption::Negative]).unwrap();
     assert_eq!(x.is_negative(), Some(true));
     assert_eq!(x.is_real(), Some(true));
     assert_eq!(x.is_positive(), Some(false));
@@ -1109,7 +1109,7 @@ fn assume_negative_implies_real() {
 #[test]
 fn assume_integer_implies_rational_real() {
     let ctx = Context::new();
-    let n = ctx.symbol_with("n", &[Assumption::Integer]);
+    let n = ctx.symbol_with("n", &[Assumption::Integer]).unwrap();
     assert_eq!(ctx.query(&n, Props::INTEGER), Some(true));
     assert_eq!(ctx.query(&n, Props::RATIONAL), Some(true));
     assert_eq!(ctx.query(&n, Props::REAL), Some(true));
@@ -1119,7 +1119,7 @@ fn assume_integer_implies_rational_real() {
 fn refine_abs_positive() {
     // abs(x) when x > 0 -> x
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Positive]);
+    let x = ctx.symbol_with("x", &[Assumption::Positive]).unwrap();
     let expr = x.abs();
     let refined = expr.refine();
     assert_eq!(
@@ -1134,7 +1134,7 @@ fn refine_abs_positive() {
 fn refine_abs_negative() {
     // abs(x) when x < 0 -> -x
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Negative]);
+    let x = ctx.symbol_with("x", &[Assumption::Negative]).unwrap();
     let expr = x.abs();
     let refined = expr.refine();
     let s = fmt(&refined);
@@ -1152,7 +1152,7 @@ fn refine_with_temporary_assumptions() {
     // x has no permanent assumptions
     assert!(x.is_positive().is_none());
     let expr = x.abs();
-    let refined = expr.refine_with(&[(&x, Assumption::Positive)]);
+    let refined = expr.refine_with(&[(&x, Assumption::Positive)]).unwrap();
     assert_eq!(
         fmt(&refined),
         "x",
@@ -1167,7 +1167,7 @@ fn refine_with_temporary_assumptions() {
 fn refine_sqrt_x_squared_negative_x() {
     // sqrt(x²) when x is negative should be abs(x) = -x
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Negative]);
+    let x = ctx.symbol_with("x", &[Assumption::Negative]).unwrap();
     let expr = x.powi(2).sqrt();
     let refined = expr.refine();
     let s = fmt(&refined);
@@ -1184,7 +1184,9 @@ fn refine_sqrt_x_squared_negative_x() {
 #[test]
 fn assume_nonneg_and_nonpositive_implies_zero() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::NonNegative, Assumption::NonPositive]);
+    let x = ctx
+        .symbol_with("x", &[Assumption::NonNegative, Assumption::NonPositive])
+        .unwrap();
     assert_eq!(ctx.query(&x, Props::ZERO), Some(true));
 }
 
@@ -1341,8 +1343,8 @@ fn log_expand_nested_deep() {
     // ln(x^2 * y) should fully expand to 2*ln(x) + ln(y) after two passes
     let ctx = Context::new();
     // 0.23: the log identities need positive arguments (x = y = -1 breaks ln(x*y) = ln x + ln y).
-    let x = ctx.symbol_with("x", &[Assumption::Positive]);
-    let y = ctx.symbol_with("y", &[Assumption::Positive]);
+    let x = ctx.symbol_with("x", &[Assumption::Positive]).unwrap();
+    let y = ctx.symbol_with("y", &[Assumption::Positive]).unwrap();
     let expr = (&x.powi(2) * &y).ln();
     let expanded = expr.expand_log();
     let s = fmt(&expanded);
@@ -1559,7 +1561,7 @@ fn power_simplify_27_cbrt() {
 fn refine_floor_of_integer() {
     // floor(n) where n is integer -> n
     let ctx = Context::new();
-    let n = ctx.symbol_with("n", &[Assumption::Integer]);
+    let n = ctx.symbol_with("n", &[Assumption::Integer]).unwrap();
     let expr = n.floor();
     let refined = expr.refine();
     assert_eq!(
@@ -1742,8 +1744,8 @@ fn log_expand_respects_negative_exponents() {
     // ln(x/y) = ln(x * y^(-1)) — expand_log should give ln(x) - ln(y)
     let ctx = Context::new();
     // 0.23: the log identities need positive arguments (x = y = -1 breaks ln(x*y) = ln x + ln y).
-    let x = ctx.symbol_with("x", &[Assumption::Positive]);
-    let y = ctx.symbol_with("y", &[Assumption::Positive]);
+    let x = ctx.symbol_with("x", &[Assumption::Positive]).unwrap();
+    let y = ctx.symbol_with("y", &[Assumption::Positive]).unwrap();
     let expr = (&x / &y).ln();
     let expanded = expr.expand_log();
     let s = fmt(&expanded);
@@ -2102,8 +2104,8 @@ fn equals_subtraction_order() {
 #[test]
 fn assume_positive_sum_is_positive() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Positive]);
-    let y = ctx.symbol_with("y", &[Assumption::Positive]);
+    let x = ctx.symbol_with("x", &[Assumption::Positive]).unwrap();
+    let y = ctx.symbol_with("y", &[Assumption::Positive]).unwrap();
     let sum = &x + &y;
     assert_eq!(
         sum.is_positive(),
@@ -2115,8 +2117,8 @@ fn assume_positive_sum_is_positive() {
 #[test]
 fn assume_positive_times_negative_is_negative() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Positive]);
-    let y = ctx.symbol_with("y", &[Assumption::Negative]);
+    let x = ctx.symbol_with("x", &[Assumption::Positive]).unwrap();
+    let y = ctx.symbol_with("y", &[Assumption::Negative]).unwrap();
     let prod = &x * &y;
     assert_eq!(
         prod.is_negative(),
@@ -2128,7 +2130,7 @@ fn assume_positive_times_negative_is_negative() {
 #[test]
 fn assume_integer_squared_is_integer() {
     let ctx = Context::new();
-    let n = ctx.symbol_with("n", &[Assumption::Integer]);
+    let n = ctx.symbol_with("n", &[Assumption::Integer]).unwrap();
     let n2 = n.powi(2);
     assert_eq!(
         ctx.query(&n2, Props::INTEGER),
@@ -2140,7 +2142,7 @@ fn assume_integer_squared_is_integer() {
 #[test]
 fn assume_real_x_squared_is_nonneg() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     let x2 = x.powi(2);
     let result = ctx.query(&x2, Props::NONNEGATIVE);
     // x² ≥ 0 for real x — the assumption system should know this
@@ -2155,7 +2157,7 @@ fn assume_real_x_squared_is_nonneg() {
 fn refine_neg_one_to_even_power() {
     // (-1)^(2n) where n is integer -> 1
     let ctx = Context::new();
-    let n = ctx.symbol_with("n", &[Assumption::Integer]);
+    let n = ctx.symbol_with("n", &[Assumption::Integer]).unwrap();
     let two_n = &n * 2;
     let expr = ctx.int(-1).pow(&two_n);
     let refined = expr.refine();
@@ -2304,9 +2306,9 @@ fn log_combine_three_logs() {
     // ln(a) + ln(b) + ln(c) -> ln(a*b*c)
     let ctx = Context::new();
     // 0.23: the log identities need positive arguments (x = y = -1 breaks ln(x*y) = ln x + ln y).
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
-    let b = ctx.symbol_with("b", &[Assumption::Positive]);
-    let c = ctx.symbol_with("c", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
+    let b = ctx.symbol_with("b", &[Assumption::Positive]).unwrap();
+    let c = ctx.symbol_with("c", &[Assumption::Positive]).unwrap();
     let expr = &(&a.ln() + &b.ln()) + &c.ln();
     let combined = expr.log_combine();
     let s = fmt(&combined);
@@ -2431,7 +2433,7 @@ fn bug_neg1_to_even_power_not_refined() {
     // Fix: In compute_mul, if any factor is a known even integer (like 2)
     // and all other factors are integers, mark the product as EVEN.
     let ctx = Context::new();
-    let n = ctx.symbol_with("n", &[Assumption::Integer]);
+    let n = ctx.symbol_with("n", &[Assumption::Integer]).unwrap();
     let two_n = &n * 2;
     let expr = ctx.int(-1).pow(&two_n);
     let refined = expr.refine();
@@ -2607,7 +2609,7 @@ fn bug_x_squared_nonneg_not_inferred_for_real() {
     // The assumption system's compute_pow handles this: Pow(real, even) → NONNEG.
     // This test verifies the inference works correctly.
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     let x2 = x.powi(2);
     let result = ctx.query(&x2, Props::NONNEGATIVE);
     assert_eq!(

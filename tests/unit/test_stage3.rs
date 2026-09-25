@@ -398,12 +398,13 @@ fn syms_macro_trailing_comma() {
 // ─── sym! macro ───────────────────────────────────────────────────────────
 
 #[test]
-fn sym_macro_creates_symbol() {
+fn sym_macro_creates_symbol() -> Result<(), SymplexError> {
     let ctx = Context::new();
     sym!(ctx; t, Positive, Real);
     assert_eq!(format!("{t}"), "t");
     assert_eq!(ctx.query(&t, Props::POSITIVE), Some(true));
     assert_eq!(ctx.query(&t, Props::REAL), Some(true));
+    Ok(())
 }
 
 // ─── Complex expressions ──────────────────────────────────────────────────

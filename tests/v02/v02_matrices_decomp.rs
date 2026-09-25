@@ -78,7 +78,7 @@ fn qr_rectangular_and_radicals() {
 #[test]
 fn qr_symbolic_entries() {
     let ctx = Context::new();
-    let p = ctx.symbol_with("p", &[Assumption::Positive]);
+    let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
     let a = Matrix::new(vec![
         vec![p.clone(), ctx.int(0)],
         vec![ctx.int(0), ctx.int(1)],
@@ -108,14 +108,22 @@ fn gram_schmidt_orthogonal_and_normalized() {
     let q = gram_schmidt(&vs, true).unwrap();
     assert_eq!(q.len(), 3);
     for i in 0..3 {
-        assert_eq!(dot(&q[i], &q[i]).simplify(), ctx.int(1), "‖q{i}‖ = 1");
+        assert_eq!(
+            dot(&q[i], &q[i]).unwrap().simplify(),
+            ctx.int(1),
+            "‖q{i}‖ = 1"
+        );
         for j in (i + 1)..3 {
-            assert_eq!(dot(&q[i], &q[j]).simplify(), ctx.int(0), "q{i}·q{j} = 0");
+            assert_eq!(
+                dot(&q[i], &q[j]).unwrap().simplify(),
+                ctx.int(0),
+                "q{i}·q{j} = 0"
+            );
         }
     }
     let u = gram_schmidt(&vs, false).unwrap();
     assert_eq!(u[0], vs[0]);
-    assert_eq!(dot(&u[0], &u[1]).simplify(), ctx.int(0));
+    assert_eq!(dot(&u[0], &u[1]).unwrap().simplify(), ctx.int(0));
     // Dependent → Err; shape errors → Err
     let dep = vec![vs[0].clone(), &vs[0] * 3];
     assert!(gram_schmidt(&dep, true).is_err());
@@ -146,7 +154,7 @@ fn cholesky_result_semantics() {
     let err = undecidable.cholesky().unwrap_err();
     assert!(err.to_string().contains("cannot decide"), "{err}");
     // Assumptions unlock symbolic Cholesky
-    let a_pos = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a_pos = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
     let sym = Matrix::new(vec![
         vec![a_pos.clone(), ctx.int(0)],
         vec![ctx.int(0), &a_pos * 4],
@@ -233,7 +241,7 @@ fn predicates_three_valued() {
     let rot = Matrix::new(vec![vec![x.cos(), -&x.sin()], vec![x.sin(), x.cos()]]).unwrap();
     assert_eq!(rot.is_orthogonal(), Some(true));
     assert_eq!(rot.is_unitary(), None);
-    let r = ctx.symbol_with("r", &[Assumption::Real]);
+    let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
     let rot_real = Matrix::new(vec![vec![r.cos(), -&r.sin()], vec![r.sin(), r.cos()]]).unwrap();
     assert_eq!(rot_real.is_orthogonal(), Some(true));
     assert_eq!(rot_real.is_unitary(), Some(true));
@@ -300,7 +308,7 @@ fn definiteness_sylvester() {
     ])
     .unwrap();
     assert_eq!(m.is_positive_definite(), None);
-    let p = ctx.symbol_with("p", &[Assumption::Positive]);
+    let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
     let m = Matrix::new(vec![vec![p.clone(), ctx.int(0)], vec![ctx.int(0), &p + 1]]).unwrap();
     assert_eq!(m.is_positive_definite(), Some(true));
     // PD ⇒ Cholesky succeeds and ⇒ PSD
@@ -413,7 +421,7 @@ fn hessian_wronskian_and_jacobian() {
     let ctx = Context::new();
     let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
     let f = &(&x.powi(2) * &y.powi(2)) + &x.exp();
-    let h = hessian(&f, &[&x, &y]);
+    let h = hessian(&f, &[&x, &y]).unwrap();
     assert_eq!(h.is_symmetric(), Some(true));
     assert_eq!(h.get(0, 1), &(&(&x * &y) * 4));
     assert_eq!(h.get(1, 1), &(&x.powi(2) * 2));
@@ -421,7 +429,7 @@ fn hessian_wronskian_and_jacobian() {
     let q = mi(&ctx, &[&[2, 1], &[1, 3]]);
     let v = Matrix::new(vec![vec![x.clone()], vec![y.clone()]]).unwrap();
     let quad = (&(&v.transpose() * &q) * &v)[(0, 0)].clone() / 2;
-    assert_eq!(hessian(&quad, &[&x, &y]).expand(), q);
+    assert_eq!(hessian(&quad, &[&x, &y]).unwrap().expand(), q);
 
     // Wronskian of e^x, e^{2x}, e^{3x} = 2 e^{6x}
     let w = wronskian(&[&x.exp(), &(&x * 2).exp(), &(&x * 3).exp()], &x).simplify();

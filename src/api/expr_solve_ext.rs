@@ -309,7 +309,14 @@ pub(crate) fn fresh_symbol(ctx: &Context, base: &str, assumptions: &[Assumption]
             }
         }
     };
-    ctx.symbol_with(&name, assumptions)
+    // A fresh, non-empty name; `assumptions` are the crate's own constant,
+    // consistent lists.
+    let declared = assumptions
+        .iter()
+        .fold(crate::base::assumptions::Assumptions::default(), |a, &x| {
+            a.with(x)
+        });
+    ctx.declare_symbol(&name, declared)
 }
 
 impl Ex {
@@ -577,7 +584,7 @@ pub fn solve_numeric_system_with(
 
     let f_refs: Vec<&Ex> = eqs.iter().collect();
     let v_refs: Vec<&Ex> = vars.iter().collect();
-    let jac = crate::domains::matrix::jacobian(&f_refs, &v_refs);
+    let jac = crate::domains::matrix::jacobian(&f_refs, &v_refs)?;
 
     let f_eval: Vec<Evaluator> = eqs
         .iter()

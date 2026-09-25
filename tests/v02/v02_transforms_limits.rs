@@ -636,8 +636,8 @@ fn growth_at_negative_infinity() {
 fn symbolic_parameters_at_zero() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
-    let b = ctx.symbol_with("b", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
+    let b = ctx.symbol_with("b", &[Assumption::Positive]).unwrap();
     let z = ctx.int(0);
     let p = [(&a, 2), (&b, 5)];
     check_limit(&a, &x, &z, Side::Both, "a", &p);
@@ -657,8 +657,8 @@ fn symbolic_parameters_at_zero() {
 fn symbolic_parameters_at_infinity() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
-    let b = ctx.symbol_with("b", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
+    let b = ctx.symbol_with("b", &[Assumption::Positive]).unwrap();
     let inf = ctx.infinity();
     let p = [(&a, 2), (&b, 3)];
     check_limit(
@@ -680,10 +680,10 @@ fn symbolic_parameters_at_infinity() {
 fn decaying_exponential_with_positive_parameter() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
-    let c = ctx.symbol_with("c", &[Assumption::Negative]);
-    let n = ctx.symbol_with("n", &[Assumption::Positive]);
-    let eps = ctx.symbol_with("eps", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
+    let c = ctx.symbol_with("c", &[Assumption::Negative]).unwrap();
+    let n = ctx.symbol_with("n", &[Assumption::Positive]).unwrap();
+    let eps = ctx.symbol_with("eps", &[Assumption::Positive]).unwrap();
     let inf = ctx.infinity();
     check_limit(&((-&a * &x).exp()), &x, &inf, Side::Both, "0", &[(&a, 3)]);
     check_limit(&((&c * &x).exp()), &x, &inf, Side::Both, "0", &[(&c, -2)]);
@@ -816,7 +816,7 @@ fn right_only_logarithmic_forms_at_zero() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let z = ctx.int(0);
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
     right(&x.ln(), &x, &z, "-oo");
     right(&(x.ln() / &x), &x, &z, "-oo");
     right(&(x.pow(&(1 / &x))), &x, &z, "0");

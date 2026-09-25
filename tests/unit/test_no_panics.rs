@@ -39,38 +39,29 @@ const ALLOWLIST: &[(&str, usize)] = &[
 /// `# Panics` on its item; converting them to `Result`s is tracked as a
 /// follow-up, and this list may only shrink.  `debug_assert!` is not counted.
 const ASSERT_ALLOWLIST: &[(&str, usize)] = &[
-    // `Context::symbol` / `symbol_with`: an empty name.
-    ("api/context.rs", 2),
+    // `Context::symbol`: an empty name (`try_symbol` returns an error).
+    ("api/context.rs", 1),
     // `Ex::replace`: the user's closure returned an expression from another context (cross-context logic error).
     ("api/expr_funcs.rs", 1),
     // `impl Sum`/`Product for Ex` on an empty iterator (no context to build 0/1 in; `Context::sum`/`product`
-    // take one) and an empty function name.
-    ("api/expr_ops.rs", 5),
-    // Contradictory assumptions declared on one symbol (e.g. Positive and Negative).
-    ("base/arena.rs", 1),
-    ("base/assumptions.rs", 1),
+    // take one).
+    ("api/expr_ops.rs", 4),
     // Risch internals: a zero denominator handed in by the caller of the public reduction entry points.
     ("calculus/risch/hermite.rs", 1),
     ("calculus/risch/rde.rs", 2),
     ("calculus/risch/rothstein_trager.rs", 1),
     ("calculus/risch/tower_integrate.rs", 2),
-    // State-space matrix shapes (A square, B/C/D conformant) and an empty `routh_array` input.
-    ("domains/control.rs", 6),
     // Exact matrices: dimensions, index bounds, conformant shapes.
     ("domains/exact_matrix.rs", 10),
-    // `Matrix`: zero dimensions, index bounds, conformant shapes, non-empty jacobian/dot inputs.
-    ("domains/matrix.rs", 19),
-    // `hessian`: empty variable list.
-    ("domains/matrix_decomp.rs", 1),
-    // `legendre_symbol`: modulus must be an odd prime.
-    ("domains/ntheory.rs", 1),
-    // Vector calculus: field/variable shapes (curl needs 3-D), empty variable lists.
-    ("domains/vector.rs", 11),
-    // RK4 / plot sampling: step, interval and state preconditions.
-    ("plotting/rk4.rs", 3),
+    // `Matrix`: zero dimensions (`zeros`, `identity`, `from_fn`, `row_vector`, `col_vector`, `diag`) and index
+    // bounds (`get`, `get_mut`, `row`, `col`; `try_get` is the checked sibling).
+    ("domains/matrix.rs", 10),
+    // Plot sampling: interval precondition.
     ("plotting/sampling.rs", 1),
-    // `MultiPoly`: variable-count agreement, variable index, exponent overflow in `mul`/`pow` (`try_` twins exist).
-    ("poly/multipoly.rs", 11),
+    // `MultiPoly`: variable-count agreement and exponent overflow in `add`/`sub`/`mul`/`pow` (the bodies of the
+    // `+`/`-`/`*` operators, which cannot return an error; `try_add`/`try_sub`/`try_mul`/`try_pow` return `None`),
+    // variable index in `var`/`degree_in`/`partial_derivative`/`eval_var`/`substitute`, and `s_polynomial`.
+    ("poly/multipoly.rs", 10),
     // `RationalFn`: zero denominator, division by zero, inverse of zero.
     ("poly/ratfn.rs", 3),
 ];

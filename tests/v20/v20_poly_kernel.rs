@@ -360,19 +360,23 @@ fn multipoly_eval_equals_linear_power_route() {
         let vals: Vec<Q> = (0..nv)
             .map(|_| q(rng.below(21) as i64 - 10, rng.below(4) as i64 + 1))
             .collect();
-        assert_eq!(p.eval(&vals), ref_mp_eval(&p, &vals), "case {case}");
+        assert_eq!(
+            p.eval(&vals).unwrap(),
+            ref_mp_eval(&p, &vals),
+            "case {case}"
+        );
         // Integer points too (no denominator powers).
         let ints: Vec<Q> = (0..nv).map(|_| qi(rng.below(7) as i64 - 3)).collect();
         assert_eq!(
-            p.eval(&ints),
+            p.eval(&ints).unwrap(),
             ref_mp_eval(&p, &ints),
             "case {case} (integers)"
         );
     }
     let zero: MultiPoly<GrevLex> = MultiPoly::zero(2);
-    assert_eq!(zero.eval(&[q(1, 2), q(3, 4)]), qi(0));
+    assert_eq!(zero.eval(&[q(1, 2), q(3, 4)]).unwrap(), qi(0));
     let c: MultiPoly<GrevLex> = MultiPoly::from_int(0, 7);
-    assert_eq!(c.eval(&[]), qi(7));
+    assert_eq!(c.eval(&[]).unwrap(), qi(7));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -399,7 +403,7 @@ fn interpolation_reproduces_known_polynomials_through_n_plus_1_rational_points()
         let pts: Vec<(Ex, Ex)> = xs
             .iter()
             .map(|xk| {
-                let y = mp.eval(std::slice::from_ref(xk));
+                let y = mp.eval(std::slice::from_ref(xk)).unwrap();
                 (ctx.from_ratio(xk.clone()), ctx.from_ratio(y))
             })
             .collect();

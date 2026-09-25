@@ -43,7 +43,7 @@ fn main() {
     let c = matrix![ctx, [1, 0]];
     let d = matrix![ctx, [0]];
 
-    let sys = StateSpace::new(a.clone(), b.clone(), c.clone(), d.clone());
+    let sys = StateSpace::new(a.clone(), b.clone(), c.clone(), d.clone()).unwrap();
 
     println!("State-space matrices:");
     println!("  A = {a}");
@@ -167,7 +167,7 @@ fn main() {
     }
 
     // Print the Routh array
-    let routh = routh_array(&coeffs3);
+    let routh = routh_array(&coeffs3).unwrap();
     println!("\nRouth array for s³ + 2s² + 3s + 4:");
     for (i, row) in routh.iter().enumerate() {
         let entries: Vec<String> = row.iter().map(|e| format!("{e}")).collect();
@@ -258,11 +258,11 @@ fn main() {
 
     // Evaluate the discrete A matrix numerically
     println!("\nDiscrete A matrix (Ad):");
-    let ad = &discrete.a;
+    let ad = discrete.a();
     println!("  {ad}");
 
     println!("\nDiscrete B matrix (Bd):");
-    let bd = &discrete.b;
+    let bd = discrete.b();
     println!("  {bd}");
 
     // Check discrete-time stability: all eigenvalues strictly inside the
@@ -275,7 +275,7 @@ fn main() {
     // ~17-digit coefficients.
     let lambda = ctx.symbol("lambda");
     let disc_poles = discrete
-        .a
+        .a()
         .char_poly(&lambda)
         .unwrap()
         .solve_or_empty(&lambda);

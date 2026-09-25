@@ -20,12 +20,14 @@
 //! variants take an explicit coordinate system; the curvilinear systems
 //! are 3-D and require exactly three variables.
 //!
-//! # Shape preconditions
+//! # Errors
 //!
-//! Wrong field dimensions / variable counts are programming errors and
-//! **panic** (like slice indexing), consistent with the rest of this
-//! module.  Mathematical failure (e.g. a non-conservative field passed to
-//! [`scalar_potential`]) returns `Err`.
+//! Every operator returns a `Result`.  Wrong field dimensions / variable
+//! counts (an empty variable list, a curvilinear system without exactly
+//! three variables, a field that is not an `n×1` column with
+//! `n == vars.len()`) are [`SymplexError::InvalidArgument`]; mathematical
+//! failure (e.g. a non-conservative field passed to [`scalar_potential`])
+//! is [`SymplexError::ComputationFailed`].
 
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
@@ -50,46 +52,62 @@ pub enum CoordinateSystem {
 impl CoordinateSystem {
     /// Lamé scale factors `hᵢ` for the given variables.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if a curvilinear system is used with `vars.len() != 3`.
-    pub fn scale_factors(self, vars: &[&Ex]) -> Vec<Ex> {
-        match self {
-            CoordinateSystem::Cartesian => {
-                let one = vars[0].context().one();
-                vec![one; vars.len()]
+    /// Returns [`SymplexError::InvalidArgument`] if `vars` is empty, or a
+    /// curvilinear system is used with `vars.len() != 3`.
+    pub fn scale_factors(self, vars: &[&Ex]) -> Result<Vec<Ex>, SymplexError> {
+        self.scale_factors_for("CoordinateSystem::scale_factors", vars)
+    }
+
+    /// [`scale_factors`](Self::scale_factors), reporting errors as `op`.
+    fn scale_factors_for(self, op: &'static str, vars: &[&Ex]) -> Result<Vec<Ex>, SymplexError> {
+        let Some(&first) = vars.first() else {
+            return Err(SymplexError::invalid_argument(op, "vars must be non-empty"));
+        };
+        let one = first.context().one();
+        let need_three = |coords: &str| {
+            if vars.len() == 3 {
+                Ok(())
+            } else {
+                Err(SymplexError::invalid_argument(
+                    op,
+                    format!(
+                        "{coords} coordinates need exactly 3 variables, got {}",
+                        vars.len()
+                    ),
+                ))
             }
+        };
+        match self {
+            CoordinateSystem::Cartesian => Ok(vec![one; vars.len()]),
             CoordinateSystem::Cylindrical => {
-                assert_eq!(
-                    vars.len(),
-                    3,
-                    "cylindrical coordinates need exactly 3 variables (r, phi, z)"
-                );
-                let one = vars[0].context().one();
-                vec![one.clone(), vars[0].clone(), one]
+                need_three("cylindrical (r, phi, z)")?;
+                Ok(vec![one.clone(), first.clone(), one])
             }
             CoordinateSystem::Spherical => {
-                assert_eq!(
-                    vars.len(),
-                    3,
-                    "spherical coordinates need exactly 3 variables (r, theta, phi)"
-                );
-                let one = vars[0].context().one();
-                vec![one, vars[0].clone(), vars[0] * &vars[1].sin()]
+                need_three("spherical (r, theta, phi)")?;
+                Ok(vec![one, first.clone(), first * &vars[1].sin()])
             }
         }
     }
 }
 
-fn check_field(field: &Matrix, vars: &[&Ex], op: &str) {
-    assert_eq!(
-        field.nrows(),
-        vars.len(),
-        "{op}: field dimension ({}) must match variable count ({})",
-        field.nrows(),
-        vars.len()
-    );
-    assert_eq!(field.ncols(), 1, "{op}: field must be a column vector");
+/// `field` must be an `n×1` column with `n == vars.len()` (so `vars` is
+/// non-empty: a matrix has at least one row).
+fn check_field(field: &Matrix, vars: &[&Ex], op: &'static str) -> Result<(), SymplexError> {
+    if field.ncols() != 1 || field.nrows() != vars.len() {
+        return Err(SymplexError::invalid_argument(
+            op,
+            format!(
+                "field must be an n×1 column vector with n == vars.len() (got {}×{} and {} variables)",
+                field.nrows(),
+                field.ncols(),
+                vars.len()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -98,17 +116,21 @@ fn check_field(field: &Matrix, vars: &[&Ex], op: &str) {
 
 /// Gradient of a scalar field in Cartesian coordinates:
 /// `∇f = [∂f/∂x₁, …, ∂f/∂xₙ]ᵀ` (an `n×1` column vector).
-pub fn gradient(f: &Ex, vars: &[&Ex]) -> Matrix {
+///
+/// # Errors
+///
+/// Returns [`SymplexError::InvalidArgument`] if `vars` is empty.
+pub fn gradient(f: &Ex, vars: &[&Ex]) -> Result<Matrix, SymplexError> {
     gradient_in(f, vars, CoordinateSystem::Cartesian)
 }
 
 /// Gradient in the given coordinate system:
 /// `(∇f)ᵢ = (1/hᵢ) ∂f/∂qᵢ`.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `vars` is empty or a curvilinear system is used with
-/// `vars.len() != 3`.
+/// Returns [`SymplexError::InvalidArgument`] if `vars` is empty or a
+/// curvilinear system is used with `vars.len() != 3`.
 ///
 /// # Examples
 ///
@@ -120,14 +142,14 @@ pub fn gradient(f: &Ex, vars: &[&Ex]) -> Matrix {
 /// let (r, th, ph) = (ctx.symbol("r"), ctx.symbol("theta"), ctx.symbol("phi"));
 /// // ∇(r² sin θ) = (2r sin θ, r cos θ, 0) in spherical coordinates
 /// let f = &r.powi(2) * &th.sin();
-/// let g = gradient_in(&f, &[&r, &th, &ph], CoordinateSystem::Spherical).simplify();
+/// let g = gradient_in(&f, &[&r, &th, &ph], CoordinateSystem::Spherical).unwrap().simplify();
 /// assert_eq!(g[(0, 0)], &(&r * 2) * &th.sin());
 /// assert_eq!(g[(1, 0)], &r * &th.cos());
 /// assert!(g[(2, 0)].is_zero_structural());
+/// assert!(gradient_in(&f, &[&r, &th], CoordinateSystem::Spherical).is_err());
 /// ```
-pub fn gradient_in(f: &Ex, vars: &[&Ex], cs: CoordinateSystem) -> Matrix {
-    assert!(!vars.is_empty(), "gradient: vars must be non-empty");
-    let h = cs.scale_factors(vars);
+pub fn gradient_in(f: &Ex, vars: &[&Ex], cs: CoordinateSystem) -> Result<Matrix, SymplexError> {
+    let h = cs.scale_factors_for("gradient", vars)?;
     let partials: Vec<Ex> = vars
         .iter()
         .zip(h.iter())
@@ -136,23 +158,24 @@ pub fn gradient_in(f: &Ex, vars: &[&Ex], cs: CoordinateSystem) -> Matrix {
             if hi.is_one_structural() { d } else { &d / hi }
         })
         .collect();
-    Matrix::col_vector(partials)
+    Ok(Matrix::col_vector(partials))
 }
 
 /// Divergence of a vector field in Cartesian coordinates:
 /// `∇·F = Σᵢ ∂Fᵢ/∂xᵢ`.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `field` is not an `n×1` column vector with `n == vars.len()`.
-pub fn divergence(field: &Matrix, vars: &[&Ex]) -> Ex {
+/// Returns [`SymplexError::InvalidArgument`] if `field` is not an `n×1`
+/// column vector with `n == vars.len()`.
+pub fn divergence(field: &Matrix, vars: &[&Ex]) -> Result<Ex, SymplexError> {
     divergence_in(field, vars, CoordinateSystem::Cartesian)
 }
 
 /// Divergence in the given coordinate system:
 /// `∇·F = (1/(h₁h₂h₃)) Σᵢ ∂/∂qᵢ ( (h₁h₂h₃/hᵢ) Fᵢ )`.
 ///
-/// # Panics
+/// # Errors
 ///
 /// Same conditions as [`divergence`], plus 3 variables for curvilinear
 /// systems.
@@ -167,20 +190,24 @@ pub fn divergence(field: &Matrix, vars: &[&Ex]) -> Ex {
 /// let (r, th, ph) = (ctx.symbol("r"), ctx.symbol("theta"), ctx.symbol("phi"));
 /// // Radial field F = r r̂ has divergence 3 in spherical coordinates
 /// let f = Matrix::col_vector(vec![r.clone(), ctx.int(0), ctx.int(0)]);
-/// let d = divergence_in(&f, &[&r, &th, &ph], CoordinateSystem::Spherical).simplify();
+/// let d = divergence_in(&f, &[&r, &th, &ph], CoordinateSystem::Spherical).unwrap().simplify();
 /// assert_eq!(d, ctx.int(3));
 /// ```
-pub fn divergence_in(field: &Matrix, vars: &[&Ex], cs: CoordinateSystem) -> Ex {
-    check_field(field, vars, "divergence");
+pub fn divergence_in(
+    field: &Matrix,
+    vars: &[&Ex],
+    cs: CoordinateSystem,
+) -> Result<Ex, SymplexError> {
+    check_field(field, vars, "divergence")?;
+    let h = cs.scale_factors_for("divergence", vars)?;
     let ctx = vars[0].context();
     if cs == CoordinateSystem::Cartesian {
         let mut sum = ctx.zero();
         for (i, var) in vars.iter().enumerate() {
             sum = &sum + &field.get(i, 0).diff(var);
         }
-        return sum;
+        return Ok(sum);
     }
-    let h = cs.scale_factors(vars);
     let jac = &(&h[0] * &h[1]) * &h[2];
     let mut sum = ctx.zero();
     for (i, var) in vars.iter().enumerate() {
@@ -188,15 +215,16 @@ pub fn divergence_in(field: &Matrix, vars: &[&Ex], cs: CoordinateSystem) -> Ex {
         let term = (&weight * field.get(i, 0)).diff(var);
         sum = &sum + &term;
     }
-    &sum / &jac
+    Ok(&sum / &jac)
 }
 
 /// Curl of a 3-D vector field in Cartesian coordinates: `∇×F`.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `field` is not `3×1` or `vars.len() != 3`.
-pub fn curl(field: &Matrix, vars: &[&Ex]) -> Matrix {
+/// Returns [`SymplexError::InvalidArgument`] if `field` is not `3×1` or
+/// `vars.len() != 3`.
+pub fn curl(field: &Matrix, vars: &[&Ex]) -> Result<Matrix, SymplexError> {
     curl_in(field, vars, CoordinateSystem::Cartesian)
 }
 
@@ -206,9 +234,10 @@ pub fn curl(field: &Matrix, vars: &[&Ex]) -> Matrix {
 /// (∇×F)₁ = (1/(h₂h₃)) [ ∂(h₃F₃)/∂q₂ − ∂(h₂F₂)/∂q₃ ]   (and cyclic)
 /// ```
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `field` is not `3×1` or `vars.len() != 3`.
+/// Returns [`SymplexError::InvalidArgument`] if `field` is not `3×1` or
+/// `vars.len() != 3`.
 ///
 /// # Examples
 ///
@@ -220,15 +249,24 @@ pub fn curl(field: &Matrix, vars: &[&Ex]) -> Matrix {
 /// let (r, ph, z) = (ctx.symbol("r"), ctx.symbol("phi"), ctx.symbol("z"));
 /// // Rigid rotation F = r φ̂ has curl 2 ẑ in cylindrical coordinates
 /// let f = Matrix::col_vector(vec![ctx.int(0), r.clone(), ctx.int(0)]);
-/// let c = curl_in(&f, &[&r, &ph, &z], CoordinateSystem::Cylindrical).simplify();
+/// let c = curl_in(&f, &[&r, &ph, &z], CoordinateSystem::Cylindrical).unwrap().simplify();
 /// assert_eq!(c, matrix![ctx, [0], [0], [2]]);
+/// assert!(curl_in(&f, &[&r, &ph], CoordinateSystem::Cartesian).is_err());
 /// ```
-pub fn curl_in(field: &Matrix, vars: &[&Ex], cs: CoordinateSystem) -> Matrix {
-    assert_eq!(field.nrows(), 3, "curl requires 3D vector field");
-    assert_eq!(vars.len(), 3, "curl requires 3 variables");
-    assert_eq!(field.ncols(), 1, "field must be a column vector");
+pub fn curl_in(field: &Matrix, vars: &[&Ex], cs: CoordinateSystem) -> Result<Matrix, SymplexError> {
+    if field.shape() != (3, 1) || vars.len() != 3 {
+        return Err(SymplexError::invalid_argument(
+            "curl",
+            format!(
+                "curl needs a 3×1 field and 3 variables (got {}×{} and {})",
+                field.nrows(),
+                field.ncols(),
+                vars.len()
+            ),
+        ));
+    }
 
-    let h = cs.scale_factors(vars);
+    let h = cs.scale_factors_for("curl", vars)?;
     let hf: Vec<Ex> = (0..3).map(|i| &h[i] * field.get(i, 0)).collect();
     // Component i uses the cyclic pair (j, k).
     let comp = |j: usize, k: usize| {
@@ -240,18 +278,22 @@ pub fn curl_in(field: &Matrix, vars: &[&Ex], cs: CoordinateSystem) -> Matrix {
             &num / &denom
         }
     };
-    Matrix::col_vector(vec![comp(1, 2), comp(2, 0), comp(0, 1)])
+    Ok(Matrix::col_vector(vec![comp(1, 2), comp(2, 0), comp(0, 1)]))
 }
 
 /// Laplacian of a scalar field in Cartesian coordinates:
 /// `∇²f = Σᵢ ∂²f/∂xᵢ²`.
-pub fn laplacian(f: &Ex, vars: &[&Ex]) -> Ex {
+///
+/// # Errors
+///
+/// Returns [`SymplexError::InvalidArgument`] if `vars` is empty.
+pub fn laplacian(f: &Ex, vars: &[&Ex]) -> Result<Ex, SymplexError> {
     laplacian_in(f, vars, CoordinateSystem::Cartesian)
 }
 
 /// Laplacian `∇²f = ∇·(∇f)` in the given coordinate system.
 ///
-/// # Panics
+/// # Errors
 ///
 /// Same conditions as [`gradient_in`].
 ///
@@ -265,14 +307,14 @@ pub fn laplacian(f: &Ex, vars: &[&Ex]) -> Ex {
 /// let (r, th, ph) = (ctx.symbol("r"), ctx.symbol("theta"), ctx.symbol("phi"));
 /// // 1/r is harmonic away from the origin
 /// let f = ctx.int(1) / &r;
-/// let l = laplacian_in(&f, &[&r, &th, &ph], CoordinateSystem::Spherical).simplify();
+/// let l = laplacian_in(&f, &[&r, &th, &ph], CoordinateSystem::Spherical).unwrap().simplify();
 /// assert!(l.is_zero_structural());
 /// // ∇²(r²) = 6 in spherical coordinates
-/// let l2 = laplacian_in(&r.powi(2), &[&r, &th, &ph], CoordinateSystem::Spherical).simplify();
+/// let l2 = laplacian_in(&r.powi(2), &[&r, &th, &ph], CoordinateSystem::Spherical).unwrap().simplify();
 /// assert_eq!(l2, ctx.int(6));
 /// ```
-pub fn laplacian_in(f: &Ex, vars: &[&Ex], cs: CoordinateSystem) -> Ex {
-    let grad = gradient_in(f, vars, cs);
+pub fn laplacian_in(f: &Ex, vars: &[&Ex], cs: CoordinateSystem) -> Result<Ex, SymplexError> {
+    let grad = gradient_in(f, vars, cs)?;
     divergence_in(&grad, vars, cs)
 }
 
@@ -282,10 +324,10 @@ pub fn laplacian_in(f: &Ex, vars: &[&Ex], cs: CoordinateSystem) -> Ex {
 /// `d` is **not** normalised; pass a unit vector for the classical
 /// directional derivative.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `direction` is not an `n×1` column vector with
-/// `n == vars.len()`.
+/// Returns [`SymplexError::InvalidArgument`] if `direction` is not an
+/// `n×1` column vector with `n == vars.len()`.
 ///
 /// # Examples
 ///
@@ -297,11 +339,16 @@ pub fn laplacian_in(f: &Ex, vars: &[&Ex], cs: CoordinateSystem) -> Ex {
 /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
 /// let f = &x.powi(2) + &y.powi(2);
 /// let d = matrix![ctx, [1], [1]];
-/// assert_eq!(directional_derivative(&f, &[&x, &y], &d).expand(), &x * 2 + &y * 2);
+/// assert_eq!(directional_derivative(&f, &[&x, &y], &d).unwrap().expand(), &x * 2 + &y * 2);
+/// assert!(directional_derivative(&f, &[&x], &d).is_err());
 /// ```
-pub fn directional_derivative(f: &Ex, vars: &[&Ex], direction: &Matrix) -> Ex {
-    check_field(direction, vars, "directional_derivative");
-    let grad = gradient(f, vars);
+pub fn directional_derivative(
+    f: &Ex,
+    vars: &[&Ex],
+    direction: &Matrix,
+) -> Result<Ex, SymplexError> {
+    check_field(direction, vars, "directional_derivative")?;
+    let grad = gradient(f, vars)?;
     crate::domains::matrix::dot(&grad, direction)
 }
 
@@ -324,16 +371,16 @@ pub fn directional_derivative(f: &Ex, vars: &[&Ex], direction: &Matrix) -> Ex {
 ///
 /// let ctx = Context::new();
 /// let (x, y, z) = (ctx.symbol("x"), ctx.symbol("y"), ctx.symbol("z"));
-/// let f = gradient(&(&(&x * &y) + &z.powi(2)), &[&x, &y, &z]);
+/// let f = gradient(&(&(&x * &y) + &z.powi(2)), &[&x, &y, &z]).unwrap();
 /// assert_eq!(is_conservative(&f, &[&x, &y, &z]), Some(true));
 /// let rot = Matrix::col_vector(vec![-&y, x.clone(), ctx.int(0)]);
 /// assert_eq!(is_conservative(&rot, &[&x, &y, &z]), Some(false));
 /// ```
 pub fn is_conservative(field: &Matrix, vars: &[&Ex]) -> Option<bool> {
-    if field.nrows() != 3 || vars.len() != 3 || field.ncols() != 1 {
+    // `curl` fails exactly on the shapes that are not a 3-D field.
+    let Ok(c) = curl(field, vars) else {
         return Some(false);
-    }
-    let c = curl(field, vars);
+    };
     all3(c.iter().map(ex_is_zero))
 }
 
@@ -343,9 +390,10 @@ pub fn is_irrotational(field: &Matrix, vars: &[&Ex]) -> Option<bool> {
 }
 
 /// Is the vector field solenoidal (divergence-free)?  Three-valued, like
-/// [`is_conservative`].
+/// [`is_conservative`]: `Some(false)` for a field that is not an `n×1`
+/// column with `n == vars.len()`.
 pub fn is_solenoidal(field: &Matrix, vars: &[&Ex]) -> Option<bool> {
-    ex_is_zero(&divergence(field, vars))
+    divergence(field, vars).map_or(Some(false), |d| ex_is_zero(&d))
 }
 
 /// Scalar potential `φ` with `∇φ = F` for a conservative Cartesian field.
@@ -370,7 +418,7 @@ pub fn is_solenoidal(field: &Matrix, vars: &[&Ex]) -> Option<bool> {
 /// let ctx = Context::new();
 /// let (x, y, z) = (ctx.symbol("x"), ctx.symbol("y"), ctx.symbol("z"));
 /// let phi = &(&x * &y) * &z + &x.powi(2);
-/// let f = gradient(&phi, &[&x, &y, &z]);
+/// let f = gradient(&phi, &[&x, &y, &z]).unwrap();
 /// let recovered = scalar_potential(&f, &[&x, &y, &z]).unwrap();
 /// assert!((&recovered - &phi).expand().is_zero_structural());
 ///
@@ -442,9 +490,10 @@ fn definite(g: &Ex, t: &Ex, a: &Ex, b: &Ex) -> Ex {
 /// The result may contain an unevaluated `Integral` node if no closed
 /// form is found (check with [`Ex::has_unevaluated`]).
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `curve.len() != vars.len()` or `vars` is empty.
+/// Returns [`SymplexError::InvalidArgument`] if `vars` is empty or
+/// `curve.len() != vars.len()`.
 ///
 /// # Examples
 ///
@@ -456,21 +505,27 @@ fn definite(g: &Ex, t: &Ex, a: &Ex, b: &Ex) -> Ex {
 /// let (x, y, t) = (ctx.symbol("x"), ctx.symbol("y"), ctx.symbol("t"));
 /// // Arc length of the unit circle: ∫ 1 ds over t ∈ [0, 2π] = 2π
 /// let circle = [t.cos(), t.sin()];
-/// let len = line_integral_scalar(&ctx.int(1), &[&x, &y], &circle, &t, &ctx.int(0), &(ctx.pi() * 2));
+/// let len = line_integral_scalar(&ctx.int(1), &[&x, &y], &circle, &t, &ctx.int(0), &(ctx.pi() * 2)).unwrap();
 /// assert_eq!(len.simplify(), ctx.pi() * 2);
 /// ```
-pub fn line_integral_scalar(f: &Ex, vars: &[&Ex], curve: &[Ex], t: &Ex, a: &Ex, b: &Ex) -> Ex {
-    assert!(
-        !vars.is_empty(),
-        "line_integral_scalar: vars must be non-empty"
-    );
-    assert_eq!(
-        curve.len(),
-        vars.len(),
-        "line_integral_scalar: curve has {} components but {} variables",
-        curve.len(),
-        vars.len()
-    );
+pub fn line_integral_scalar(
+    f: &Ex,
+    vars: &[&Ex],
+    curve: &[Ex],
+    t: &Ex,
+    a: &Ex,
+    b: &Ex,
+) -> Result<Ex, SymplexError> {
+    if vars.is_empty() || curve.len() != vars.len() {
+        return Err(SymplexError::invalid_argument(
+            "line_integral_scalar",
+            format!(
+                "need a non-empty variable list and one curve component per variable (got {} components, {} variables)",
+                curve.len(),
+                vars.len()
+            ),
+        ));
+    }
     let ctx = t.context();
     let mut f_on_curve = f.clone();
     let mut speed_sq = ctx.zero();
@@ -479,7 +534,7 @@ pub fn line_integral_scalar(f: &Ex, vars: &[&Ex], curve: &[Ex], t: &Ex, a: &Ex, 
         speed_sq += c.diff(t).powi(2);
     }
     let integrand = (&f_on_curve * &speed_sq.simplify().sqrt()).simplify();
-    definite(&integrand, t, a, b)
+    Ok(definite(&integrand, t, a, b))
 }
 
 /// Vector line integral (work) `∫_C F·dr = ∫ₐᵇ F(r(t)) · r′(t) dt`.
@@ -488,9 +543,10 @@ pub fn line_integral_scalar(f: &Ex, vars: &[&Ex], curve: &[Ex], t: &Ex, a: &Ex, 
 /// gives `r(t)` component-wise.  The result may contain an unevaluated
 /// `Integral` node if no closed form is found.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `field` is not `n×1` with `n == vars.len() == curve.len()`.
+/// Returns [`SymplexError::InvalidArgument`] if `field` is not `n×1` with
+/// `n == vars.len() == curve.len()`.
 ///
 /// # Examples
 ///
@@ -503,7 +559,7 @@ pub fn line_integral_scalar(f: &Ex, vars: &[&Ex], curve: &[Ex], t: &Ex, a: &Ex, 
 /// // Circulation of F = (−y, x) around the unit circle = 2π
 /// let f = Matrix::col_vector(vec![-&y, x.clone()]);
 /// let circle = [t.cos(), t.sin()];
-/// let w = line_integral_vector(&f, &[&x, &y], &circle, &t, &ctx.int(0), &(ctx.pi() * 2));
+/// let w = line_integral_vector(&f, &[&x, &y], &circle, &t, &ctx.int(0), &(ctx.pi() * 2)).unwrap();
 /// assert_eq!(w.simplify(), ctx.pi() * 2);
 /// ```
 pub fn line_integral_vector(
@@ -513,15 +569,18 @@ pub fn line_integral_vector(
     t: &Ex,
     a: &Ex,
     b: &Ex,
-) -> Ex {
-    check_field(field, vars, "line_integral_vector");
-    assert_eq!(
-        curve.len(),
-        vars.len(),
-        "line_integral_vector: curve has {} components but {} variables",
-        curve.len(),
-        vars.len()
-    );
+) -> Result<Ex, SymplexError> {
+    check_field(field, vars, "line_integral_vector")?;
+    if curve.len() != vars.len() {
+        return Err(SymplexError::invalid_argument(
+            "line_integral_vector",
+            format!(
+                "curve has {} components but {} variables",
+                curve.len(),
+                vars.len()
+            ),
+        ));
+    }
     let ctx = t.context();
     let mut integrand = ctx.zero();
     for (i, c) in curve.iter().enumerate() {
@@ -531,7 +590,7 @@ pub fn line_integral_vector(
         }
         integrand += &fi * &c.diff(t);
     }
-    definite(&integrand.simplify(), t, a, b)
+    Ok(definite(&integrand.simplify(), t, a, b))
 }
 
 #[cfg(test)]
@@ -544,12 +603,12 @@ mod tests {
         let ctx = Context::new();
         let (x, y, z) = (ctx.symbol("x"), ctx.symbol("y"), ctx.symbol("z"));
         let f = &(&x.powi(2) * &y) + &z.powi(3);
-        let g = gradient(&f, &[&x, &y, &z]);
+        let g = gradient(&f, &[&x, &y, &z]).unwrap();
         assert_eq!(g.get(0, 0), &(&(&x * 2) * &y));
         assert_eq!(g.get(2, 0), &(&z.powi(2) * 3));
-        assert_eq!(laplacian(&f, &[&x, &y, &z]), &y * 2 + &z * 6);
+        assert_eq!(laplacian(&f, &[&x, &y, &z]).unwrap(), &y * 2 + &z * 6);
         let field = Matrix::col_vector(vec![x.clone(), y.clone(), z.clone()]);
-        assert_eq!(divergence(&field, &[&x, &y, &z]), ctx.int(3));
+        assert_eq!(divergence(&field, &[&x, &y, &z]).unwrap(), ctx.int(3));
         assert_eq!(is_conservative(&field, &[&x, &y, &z]), Some(true));
         assert_eq!(is_irrotational(&field, &[&x, &y, &z]), Some(true));
         assert_eq!(is_solenoidal(&field, &[&x, &y, &z]), Some(false));
@@ -565,15 +624,21 @@ mod tests {
         let (r, ph, z) = (ctx.symbol("r"), ctx.symbol("phi"), ctx.symbol("z"));
         let vars = [&r, &ph, &z];
         // ∇²(r²) = 4 (since r² = x² + y²)
-        let l = laplacian_in(&r.powi(2), &vars, CoordinateSystem::Cylindrical).simplify();
+        let l = laplacian_in(&r.powi(2), &vars, CoordinateSystem::Cylindrical)
+            .unwrap()
+            .simplify();
         assert_eq!(l, ctx.int(4));
         // ln r is harmonic in 2D
-        let l2 = laplacian_in(&r.ln(), &vars, CoordinateSystem::Cylindrical).simplify();
+        let l2 = laplacian_in(&r.ln(), &vars, CoordinateSystem::Cylindrical)
+            .unwrap()
+            .simplify();
         assert!(l2.is_zero_structural());
         // div(r r̂) = 2
         let f = Matrix::col_vector(vec![r.clone(), ctx.int(0), ctx.int(0)]);
         assert_eq!(
-            divergence_in(&f, &vars, CoordinateSystem::Cylindrical).simplify(),
+            divergence_in(&f, &vars, CoordinateSystem::Cylindrical)
+                .unwrap()
+                .simplify(),
             ctx.int(2)
         );
         // curl of a gradient vanishes
@@ -581,8 +646,11 @@ mod tests {
             &(&r.powi(2) * &ph.cos()),
             &vars,
             CoordinateSystem::Cylindrical,
-        );
-        let c = curl_in(&g, &vars, CoordinateSystem::Cylindrical).simplify();
+        )
+        .unwrap();
+        let c = curl_in(&g, &vars, CoordinateSystem::Cylindrical)
+            .unwrap()
+            .simplify();
         for i in 0..3 {
             assert!(
                 c.get(i, 0).is_zero_structural(),
@@ -592,7 +660,9 @@ mod tests {
         }
         // φ̂/r has zero curl (away from the axis)
         let vortex = Matrix::col_vector(vec![ctx.int(0), ctx.int(1) / &r, ctx.int(0)]);
-        let cv = curl_in(&vortex, &vars, CoordinateSystem::Cylindrical).simplify();
+        let cv = curl_in(&vortex, &vars, CoordinateSystem::Cylindrical)
+            .unwrap()
+            .simplify();
         assert!(cv.get(2, 0).is_zero_structural());
     }
 
@@ -602,28 +672,39 @@ mod tests {
         let (r, th, ph) = (ctx.symbol("r"), ctx.symbol("theta"), ctx.symbol("phi"));
         let vars = [&r, &th, &ph];
         assert_eq!(
-            CoordinateSystem::Spherical.scale_factors(&vars),
+            CoordinateSystem::Spherical.scale_factors(&vars).unwrap(),
             vec![ctx.one(), r.clone(), &r * &th.sin()]
         );
         // ∇²(1/r) = 0, ∇²(r²) = 6
-        let l = laplacian_in(&(ctx.int(1) / &r), &vars, CoordinateSystem::Spherical).simplify();
+        let l = laplacian_in(&(ctx.int(1) / &r), &vars, CoordinateSystem::Spherical)
+            .unwrap()
+            .simplify();
         assert!(l.is_zero_structural(), "{l}");
-        let l2 = laplacian_in(&r.powi(2), &vars, CoordinateSystem::Spherical).simplify();
+        let l2 = laplacian_in(&r.powi(2), &vars, CoordinateSystem::Spherical)
+            .unwrap()
+            .simplify();
         assert_eq!(l2, ctx.int(6));
         // ∇²(r cos θ) = 0 (it is z)
-        let l3 = laplacian_in(&(&r * &th.cos()), &vars, CoordinateSystem::Spherical).simplify();
+        let l3 = laplacian_in(&(&r * &th.cos()), &vars, CoordinateSystem::Spherical)
+            .unwrap()
+            .simplify();
         assert!(l3.is_zero_structural(), "{l3}");
         // div(r̂/r²) = 0
         let coulomb = Matrix::col_vector(vec![ctx.int(1) / r.powi(2), ctx.int(0), ctx.int(0)]);
-        let d = divergence_in(&coulomb, &vars, CoordinateSystem::Spherical).simplify();
+        let d = divergence_in(&coulomb, &vars, CoordinateSystem::Spherical)
+            .unwrap()
+            .simplify();
         assert!(d.is_zero_structural(), "{d}");
         // curl of gradient vanishes
         let g = gradient_in(
             &(&r.powi(3) * &(&th.sin() * &ph.cos())),
             &vars,
             CoordinateSystem::Spherical,
-        );
-        let c = curl_in(&g, &vars, CoordinateSystem::Spherical).simplify();
+        )
+        .unwrap();
+        let c = curl_in(&g, &vars, CoordinateSystem::Spherical)
+            .unwrap()
+            .simplify();
         for i in 0..3 {
             assert!(
                 c.get(i, 0).is_zero_structural(),
@@ -640,12 +721,12 @@ mod tests {
         let f = &x * &y;
         let d = Matrix::col_vector(vec![ctx.int(2), ctx.int(-1)]);
         assert_eq!(
-            directional_derivative(&f, &[&x, &y], &d).expand(),
+            directional_derivative(&f, &[&x, &y], &d).unwrap().expand(),
             &y * 2 - &x
         );
 
         let phi = &(&x.powi(2) * &y) + &(&y * &z.sin()) + &z.powi(3);
-        let field = gradient(&phi, &[&x, &y, &z]);
+        let field = gradient(&phi, &[&x, &y, &z]).unwrap();
         let back = scalar_potential(&field, &[&x, &y, &z]).unwrap();
         assert!(
             (&back - &phi).expand().simplify().is_zero_structural(),
@@ -666,27 +747,30 @@ mod tests {
         let (x, y, t) = (ctx.symbol("x"), ctx.symbol("y"), ctx.symbol("t"));
         // Length of the segment (0,0)→(3,4) is 5
         let seg = [&t * 3, &t * 4];
-        let len = line_integral_scalar(&ctx.int(1), &[&x, &y], &seg, &t, &ctx.int(0), &ctx.int(1));
+        let len = line_integral_scalar(&ctx.int(1), &[&x, &y], &seg, &t, &ctx.int(0), &ctx.int(1))
+            .unwrap();
         assert_eq!(len.simplify(), ctx.int(5));
         // ∫ (x + y) ds along the same segment = 5 · ∫₀¹ 7t dt = 35/2
-        let s = line_integral_scalar(&(&x + &y), &[&x, &y], &seg, &t, &ctx.int(0), &ctx.int(1));
+        let s = line_integral_scalar(&(&x + &y), &[&x, &y], &seg, &t, &ctx.int(0), &ctx.int(1))
+            .unwrap();
         assert_eq!(s.simplify(), ctx.rational(35, 2));
         // Work of a conservative field depends only on endpoints: F = ∇(xy) along the segment = 12
         let f = Matrix::col_vector(vec![y.clone(), x.clone()]);
-        let w = line_integral_vector(&f, &[&x, &y], &seg, &t, &ctx.int(0), &ctx.int(1));
+        let w = line_integral_vector(&f, &[&x, &y], &seg, &t, &ctx.int(0), &ctx.int(1)).unwrap();
         assert_eq!(w.simplify(), ctx.int(12));
         // Circulation of (−y, x) around the unit circle = 2π
         let rot = Matrix::col_vector(vec![-&y, x.clone()]);
         let circle = [t.cos(), t.sin()];
-        let circ = line_integral_vector(&rot, &[&x, &y], &circle, &t, &ctx.int(0), &(ctx.pi() * 2));
+        let circ = line_integral_vector(&rot, &[&x, &y], &circle, &t, &ctx.int(0), &(ctx.pi() * 2))
+            .unwrap();
         assert_eq!(circ.simplify(), ctx.pi() * 2);
     }
 
     #[test]
-    #[should_panic(expected = "exactly 3 variables")]
     fn cylindrical_needs_three_vars() {
         let ctx = Context::new();
         let (r, ph) = (ctx.symbol("r"), ctx.symbol("phi"));
-        let _ = gradient_in(&r, &[&r, &ph], CoordinateSystem::Cylindrical);
+        let err = gradient_in(&r, &[&r, &ph], CoordinateSystem::Cylindrical).unwrap_err();
+        assert!(err.to_string().contains("exactly 3 variables"), "{err}");
     }
 }

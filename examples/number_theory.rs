@@ -125,8 +125,8 @@ fn main() {
 
     // ── Legendre symbol ────────────────────────────────────────────────
     println!("\nLegendre symbol (a/p):");
-    println!("  (2/7) = {}", legendre_symbol(2, 7));
-    println!("  (3/7) = {}", legendre_symbol(3, 7));
+    println!("  (2/7) = {}", legendre_symbol(2, 7).unwrap());
+    println!("  (3/7) = {}", legendre_symbol(3, 7).unwrap());
 
     // ── Expression-level factorization ─────────────────────────────────
     println!("\nExpression-level factorization:");

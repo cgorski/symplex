@@ -11,8 +11,8 @@ use symplex::prelude::*;
 
 fn main() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
-    let y = ctx.symbol_with("y", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
+    let y = ctx.symbol_with("y", &[Assumption::Real]).unwrap();
     let z = ctx.symbol("z");          // may be complex
     let i = ctx.i_unit();
 
@@ -42,8 +42,8 @@ use symplex::prelude::*;
 
 fn main() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
-    let y = ctx.symbol_with("y", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
+    let y = ctx.symbol_with("y", &[Assumption::Real]).unwrap();
     let w = &x + &ctx.i_unit() * &y;
 
     let (re, im) = w.powi(2).as_real_imag();
@@ -112,7 +112,7 @@ use symplex::prelude::*;
 
 fn main() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
 
     println!("{}", ctx.int(1).digamma().eval());                     // -EulerGamma
     println!("{}", ctx.rational(1, 2).digamma().eval());             // -EulerGamma - 2*ln(2)

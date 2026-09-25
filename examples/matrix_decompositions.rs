@@ -203,7 +203,7 @@ fn main() {
     // ── 7. Calculus helpers and subspaces ───────────────────────────────
     println!("\n--- hessian / wronskian / least squares / subspaces ---");
     let f = &x.powi(3) * &y + &x * &y.powi(2);
-    println!("hessian of {f}: {}", hessian(&f, &[&x, &y]));
+    println!("hessian of {f}: {}", hessian(&f, &[&x, &y]).unwrap());
     println!(
         "W(sin x, cos x) = {},   W(eˣ, e²ˣ) = {}",
         wronskian(&[&x.sin(), &x.cos()], &x).simplify(),

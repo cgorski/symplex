@@ -2094,11 +2094,18 @@ fn refute(
         if values.len() != width {
             continue;
         }
-        let gv = goal.eval(&values);
+        // `values` has one entry per generator, as every polynomial here does;
+        // a failed evaluation is no evidence of a counterexample.
+        let Ok(gv) = goal.eval(&values) else {
+            continue;
+        };
         if !gv.is_negative() {
             continue;
         }
-        if hyps.iter().all(|h| !h.eval(&values).is_negative()) {
+        if hyps
+            .iter()
+            .all(|h| h.eval(&values).is_ok_and(|v| !v.is_negative()))
+        {
             let point: Vec<(Ex, Q)> = gens.iter().cloned().zip(values).collect();
             return Ok(Some((point, jv.clone(), gv)));
         }

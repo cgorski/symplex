@@ -1208,8 +1208,8 @@ impl Expr<Numeric> {
     /// let expr = (&x * &y).pow(&a);
     /// assert_eq!(format!("{}", expr.expand_power_base(false)), "(x*y)^a");
     /// assert_eq!(format!("{}", expr.expand_power_base(true)), "x^a*y^a");
-    /// let p = ctx.symbol_with("p", &[Assumption::Positive]);
-    /// let q = ctx.symbol_with("q", &[Assumption::Positive]);
+    /// let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
+    /// let q = ctx.symbol_with("q", &[Assumption::Positive]).unwrap();
     /// assert_eq!(format!("{}", (&p * &q).pow(&a).expand_power_base(false)), "p^a*q^a");
     /// ```
     #[must_use = "returns the expanded form; does not modify in place"]
@@ -1283,8 +1283,8 @@ impl Expr<Numeric> {
     /// let expr = (&x * &y).ln();
     /// assert_eq!(format!("{}", expr.expand_log_with(false)), "ln(x*y)");
     /// assert_eq!(format!("{}", expr.expand_log_with(true)), "ln(x) + ln(y)");
-    /// let p = ctx.symbol_with("p", &[Assumption::Positive]);
-    /// let q = ctx.symbol_with("q", &[Assumption::Positive]);
+    /// let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
+    /// let q = ctx.symbol_with("q", &[Assumption::Positive]).unwrap();
     /// assert_eq!(format!("{}", (&p * &q).ln().expand_log_with(false)), "ln(p) + ln(q)");
     /// ```
     #[must_use = "returns the expanded form; does not modify in place"]
@@ -1306,7 +1306,7 @@ impl Expr<Numeric> {
     /// let expr = &x.ln() + &y.ln();
     /// assert_eq!(format!("{}", expr.log_combine_with(false)), "ln(x) + ln(y)");
     /// assert_eq!(format!("{}", expr.log_combine_with(true)), "ln(x*y)");
-    /// let p = ctx.symbol_with("p", &[Assumption::Positive]);
+    /// let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
     /// assert_eq!(format!("{}", (&p.ln() * 2).log_combine_with(false)), "ln(p^2)");
     /// ```
     #[must_use = "returns the combined form; does not modify in place"]
@@ -1382,9 +1382,9 @@ impl Expr<Numeric> {
     /// assert_eq!(format!("{}", nested.powdenest(true)), "x^(a*b)");
     /// assert_eq!(format!("{}", x.pow(&a).powi(3).powdenest(false)), "x^(3*a)");
     /// assert_eq!(x.powi(2).sqrt().powdenest(false), x.powi(2).sqrt());   // x may be complex
-    /// let r = ctx.symbol_with("r", &[Assumption::Real]);
+    /// let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
     /// assert_eq!(format!("{}", r.powi(2).sqrt().powdenest(false)), "abs(r)");
-    /// let p = ctx.symbol_with("p", &[Assumption::Positive]);
+    /// let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
     /// assert_eq!(format!("{}", p.powi(2).sqrt().powdenest(false)), "p");
     /// ```
     #[must_use = "returns the denested form; does not modify in place"]

@@ -79,7 +79,7 @@ fn generic_call(ctx: &Context, f: LibFn) -> Ex {
     let Arity::Fixed(n) = f.arity() else {
         panic!("{f}: every registry function has a fixed arity");
     };
-    ctx.apply(f.name(), &syms[..n as usize])
+    ctx.apply(f.name(), &syms[..n as usize]).unwrap()
 }
 
 fn assert_rel(got: f64, want: f64, tol: f64, what: &str) {
@@ -221,22 +221,22 @@ fn eval_folds_exactly_as_before() {
 fn wrong_arity_is_left_unevaluated_and_unevaluable() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let one_arg_bessel = ctx.apply("besselj", &[&x]);
+    let one_arg_bessel = ctx.apply("besselj", &[&x]).unwrap();
     assert_eq!(one_arg_bessel.eval(), one_arg_bessel);
     assert_eq!(format!("{one_arg_bessel}"), "besselj(x)");
-    let fib2 = ctx.apply("fibonacci", &[ctx.int(5), ctx.int(6)]);
+    let fib2 = ctx.apply("fibonacci", &[ctx.int(5), ctx.int(6)]).unwrap();
     assert_eq!(fib2.eval(), fib2, "two-argument fibonacci is not folded");
     assert_eq!(
-        format!("{}", ctx.apply("fibonacci", &[ctx.int(5)]).eval()),
+        format!("{}", ctx.apply("fibonacci", &[ctx.int(5)]).unwrap().eval()),
         "5"
     );
     // evalf: a library name with the wrong number of arguments is an error,
     // never a value.
-    let erfi2 = ctx.apply("erfi", &[ctx.int(1), ctx.int(2)]);
+    let erfi2 = ctx.apply("erfi", &[ctx.int(1), ctx.int(2)]).unwrap();
     let err = erfi2.eval_f64().expect_err("erfi/2 has no value");
     assert!(err.to_string().contains("erfi"), "{err}");
     // A user function of the same shape stays a user function.
-    let user = ctx.apply("f", &[&x]);
+    let user = ctx.apply("f", &[&x]).unwrap();
     assert_eq!(user.eval(), user);
     assert!(user.eval_f64().is_err());
     // Substituted arguments are re-evaluated through the same fold.
@@ -297,7 +297,7 @@ fn diff_rules_unchanged_and_no_rule_functions_stay_formal() {
         LibFn::Harmonic,
         LibFn::PartitionCount,
     ] {
-        let e = ctx.apply(f.name(), &[&x]);
+        let e = ctx.apply(f.name(), &[&x]).unwrap();
         let d = e.diff(&x);
         assert_eq!(
             format!("{d}"),
@@ -346,10 +346,13 @@ fn display_and_latex_unchanged() {
     assert_eq!(n.fibonacci().to_latex(), r"fibonacci\left(n\right)");
     assert_eq!(x.legendre(&n).to_latex(), r"legendre\left(n, x\right)");
     assert_eq!(
-        ctx.apply("erfi", &[&x, &n]).to_latex(),
+        ctx.apply("erfi", &[&x, &n]).unwrap().to_latex(),
         r"erfi\left(x, n\right)"
     );
-    assert_eq!(ctx.apply("f", &[&x]).to_latex(), r"f\left(x\right)");
+    assert_eq!(
+        ctx.apply("f", &[&x]).unwrap().to_latex(),
+        r"f\left(x\right)"
+    );
 }
 
 #[test]
@@ -372,7 +375,7 @@ fn mathml_renders_every_library_function() {
         ) || xml.contains(&format!("<mi>{}</mi>", f.name()));
         assert!(visible, "{f}: {xml}");
     }
-    let user = ctx.apply("f", &[&x]).to_mathml().unwrap();
+    let user = ctx.apply("f", &[&x]).unwrap().to_mathml().unwrap();
     assert!(user.contains("<mi>f</mi>"), "{user}");
 }
 
@@ -595,7 +598,11 @@ fn codegen_py_names_the_scipy_routine_it_refuses() {
     let err = x.fibonacci().to_python().expect_err("refused");
     assert!(err.to_string().contains("fibonacci"), "{err}");
     assert!(!err.to_string().contains("scipy"), "{err}");
-    let err = ctx.apply("f", &[&x]).to_python().expect_err("refused");
+    let err = ctx
+        .apply("f", &[&x])
+        .unwrap()
+        .to_python()
+        .expect_err("refused");
     assert!(err.to_string().contains("`f`"), "{err}");
 }
 
@@ -704,9 +711,9 @@ fn names_are_resolved_from_text_not_pre_interned() {
         "one Apply node, no hidden symbols"
     );
     // The same name built two ways is the same node.
-    assert_eq!(ctx.apply("erfi", &[&x]), x.erfi());
+    assert_eq!(ctx.apply("erfi", &[&x]).unwrap(), x.erfi());
     assert_eq!(
-        ctx.apply("besselj", &[ctx.int(2), x.clone()]),
+        ctx.apply("besselj", &[ctx.int(2), x.clone()]).unwrap(),
         x.bessel_j(&ctx.int(2))
     );
 }

@@ -40,7 +40,9 @@ fn compact_preserves_expression_display() {
 #[test]
 fn compact_preserves_assumptions() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Positive, Assumption::Real]);
+    let x = ctx
+        .symbol_with("x", &[Assumption::Positive, Assumption::Real])
+        .unwrap();
 
     let (_new_ctx, new_exprs) = ctx.compact(std::slice::from_ref(&x));
     assert_eq!(new_exprs[0].is_positive(), Some(true));

@@ -24,8 +24,8 @@ Before the translation table, a few structural differences to be aware of:
 | `from sympy import *` | `use symplex::prelude::*;` |
 | `x, y, z = symbols('x y z')` | `symplex::syms!(ctx; x, y, z);` |
 | `x = Symbol('x')` | `let x = ctx.symbol("x");` |
-| `x = Symbol('x', positive=True)` | `let x = sym!(ctx; x, Positive);` |
-| `x = Symbol('x', integer=True)` | `let x = sym!(ctx; x, Integer);` |
+| `x = Symbol('x', positive=True)` | `sym!(ctx; x, Positive);` (declares `x`; propagates an error with `?`) |
+| `x = Symbol('x', integer=True)` | `sym!(ctx; x, Integer);` |
 
 ## Building Expressions
 

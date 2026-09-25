@@ -196,7 +196,7 @@ fn declared_positive_symbol_is_finite_and_real() {
     // must not derive `finite` from `positive` alone (otherwise `oo` would
     // be contradictory), so the declaration path adds `finite` explicitly.
     let ctx = fresh();
-    let x = ctx.symbol_with("x", &[Assumption::Positive]);
+    let x = ctx.symbol_with("x", &[Assumption::Positive]).unwrap();
     assert_eq!(ctx.query(&x, Props::POSITIVE), Some(true));
     assert_eq!(ctx.query(&x, Props::NONNEGATIVE), Some(true));
     assert_eq!(ctx.query(&x, Props::NONZERO), Some(true));
@@ -231,17 +231,19 @@ fn positive_and_infinite_is_consistent_in_the_lattice() {
 #[test]
 fn declared_extended_real_symbol_stays_agnostic_about_finiteness() {
     let ctx = fresh();
-    let e = ctx.symbol_with("e", &[Assumption::ExtendedReal]);
+    let e = ctx.symbol_with("e", &[Assumption::ExtendedReal]).unwrap();
     assert_eq!(ctx.query(&e, Props::EXTENDED_REAL), Some(true));
     assert_eq!(ctx.query(&e, Props::REAL), None);
     assert_eq!(ctx.query(&e, Props::FINITE), None);
     // An explicit Infinite is respected: `[Positive, Infinite]` is `+oo`.
-    let p = ctx.symbol_with("p", &[Assumption::Positive, Assumption::Infinite]);
+    let p = ctx
+        .symbol_with("p", &[Assumption::Positive, Assumption::Infinite])
+        .unwrap();
     assert_eq!(ctx.query(&p, Props::POSITIVE), Some(true));
     assert_eq!(ctx.query(&p, Props::FINITE), Some(false));
     assert_eq!(ctx.query(&p, Props::REAL), Some(false));
     // NotReal symbols are finite complex numbers by default: not positive.
-    let z = ctx.symbol_with("z", &[Assumption::NotReal]);
+    let z = ctx.symbol_with("z", &[Assumption::NotReal]).unwrap();
     assert_eq!(ctx.query(&z, Props::POSITIVE), Some(false));
     assert_eq!(ctx.query(&z, Props::FINITE), Some(true));
 }
@@ -249,12 +251,16 @@ fn declared_extended_real_symbol_stays_agnostic_about_finiteness() {
 #[test]
 fn assume_builder_and_refine_with_follow_the_same_convention() {
     let ctx = fresh();
-    let t = ctx.symbol("t").assume(Assumption::Positive);
+    let t = ctx.symbol("t").assume(Assumption::Positive).unwrap();
     assert_eq!(t.is_real(), Some(true));
     assert_eq!(t.is_finite(), Some(true));
     let x = ctx.symbol("x");
     // refine_with temporarily declares x positive → sqrt(x²) → x
-    let r = x.powi(2).sqrt().refine_with(&[(&x, Assumption::Positive)]);
+    let r = x
+        .powi(2)
+        .sqrt()
+        .refine_with(&[(&x, Assumption::Positive)])
+        .unwrap();
     assert_eq!(r, x);
 }
 
@@ -263,10 +269,12 @@ fn contradictory_symbol_assumptions_are_rejected() {
     let ctx = fresh();
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         ctx.symbol_with("bad", &[Assumption::Positive, Assumption::Negative])
+            .unwrap()
     }));
     assert!(r.is_err(), "positive ∧ negative must be rejected");
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         ctx.symbol_with("bad2", &[Assumption::Integer, Assumption::Irrational])
+            .unwrap()
     }));
     assert!(r.is_err(), "integer ∧ irrational must be rejected");
 }

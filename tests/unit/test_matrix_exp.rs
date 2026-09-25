@@ -312,7 +312,7 @@ fn discretize_zoh_simple() {
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     let dt = ctx.rational(1, 10); // dt = 0.1
     let ss_d = ss.discretize_zoh(&dt, 10).unwrap();
@@ -320,10 +320,10 @@ fn discretize_zoh_simple() {
     assert_eq!(ss_d.num_states(), 2);
     assert_eq!(ss_d.num_inputs(), 1);
     assert_eq!(ss_d.num_outputs(), 1);
-    assert_eq!(ss_d.a.nrows(), 2);
-    assert_eq!(ss_d.a.ncols(), 2);
-    assert_eq!(ss_d.b.nrows(), 2);
-    assert_eq!(ss_d.b.ncols(), 1);
+    assert_eq!(ss_d.a().nrows(), 2);
+    assert_eq!(ss_d.a().ncols(), 2);
+    assert_eq!(ss_d.b().nrows(), 2);
+    assert_eq!(ss_d.b().ncols(), 1);
 }
 
 #[test]
@@ -341,7 +341,7 @@ fn discretize_zoh_integrator() {
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     let dt = ctx.rational(1, 10); // dt = 0.1
     let ss_d = ss.discretize_zoh(&dt, 10).unwrap();
@@ -349,10 +349,10 @@ fn discretize_zoh_integrator() {
     let dt_val = 0.1_f64;
 
     // Check Aᵈ = [[1, 0.1], [0, 1]]
-    let ad_00 = ss_d.a.get(0, 0).eval().eval_f64().unwrap();
-    let ad_01 = ss_d.a.get(0, 1).eval().eval_f64().unwrap();
-    let ad_10 = ss_d.a.get(1, 0).eval().eval_f64().unwrap();
-    let ad_11 = ss_d.a.get(1, 1).eval().eval_f64().unwrap();
+    let ad_00 = ss_d.a().get(0, 0).eval().eval_f64().unwrap();
+    let ad_01 = ss_d.a().get(0, 1).eval().eval_f64().unwrap();
+    let ad_10 = ss_d.a().get(1, 0).eval().eval_f64().unwrap();
+    let ad_11 = ss_d.a().get(1, 1).eval().eval_f64().unwrap();
 
     assert!(
         common::approx_eq(ad_00, 1.0, 1e-10),
@@ -372,8 +372,8 @@ fn discretize_zoh_integrator() {
     );
 
     // Check Bᵈ = [[dt²/2], [dt]] = [[0.005], [0.1]]
-    let bd_00 = ss_d.b.get(0, 0).eval().eval_f64().unwrap();
-    let bd_10 = ss_d.b.get(1, 0).eval().eval_f64().unwrap();
+    let bd_00 = ss_d.b().get(0, 0).eval().eval_f64().unwrap();
+    let bd_10 = ss_d.b().get(1, 0).eval().eval_f64().unwrap();
 
     assert!(
         common::approx_eq(bd_00, dt_val * dt_val / 2.0, 1e-10),

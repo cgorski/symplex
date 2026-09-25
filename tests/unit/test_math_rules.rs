@@ -36,7 +36,7 @@ fn simplify_pow_pow_in_expression() {
 fn simplify_asinh_sinh() {
     let ctx = Context::new();
     // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     let expr = x.sinh().asinh();
     assert_eq!(format!("{}", expr.simplify()), "x");
 }
@@ -45,7 +45,7 @@ fn simplify_asinh_sinh() {
 fn simplify_acosh_cosh() {
     let ctx = Context::new();
     // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     let expr = x.cosh().acosh();
     assert_eq!(format!("{}", expr.simplify()), "abs(x)");
 }
@@ -54,7 +54,7 @@ fn simplify_acosh_cosh() {
 fn simplify_atanh_tanh() {
     let ctx = Context::new();
     // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     let expr = x.tanh().atanh();
     assert_eq!(format!("{}", expr.simplify()), "x");
 }
@@ -175,8 +175,8 @@ fn expand_log_product() {
     let ctx = Context::new();
     // 0.23: the log identities need positive arguments (x = y = -1 breaks ln(x*y) = ln x + ln y).
     let (x, y) = (
-        ctx.symbol_with("x", &[Assumption::Positive]),
-        ctx.symbol_with("y", &[Assumption::Positive]),
+        ctx.symbol_with("x", &[Assumption::Positive]).unwrap(),
+        ctx.symbol_with("y", &[Assumption::Positive]).unwrap(),
     );
     let expr = (&x * &y).ln();
     let expanded = expr.expand_log();
@@ -188,7 +188,7 @@ fn expand_log_product() {
 fn expand_log_power() {
     let ctx = Context::new();
     // 0.23: the log identities need positive arguments (x = y = -1 breaks ln(x*y) = ln x + ln y).
-    let x = ctx.symbol_with("x", &[Assumption::Positive]);
+    let x = ctx.symbol_with("x", &[Assumption::Positive]).unwrap();
     let expr = x.powi(2).ln();
     let expanded = expr.expand_log();
     let s = format!("{expanded}");
@@ -200,8 +200,8 @@ fn expand_log_quotient() {
     let ctx = Context::new();
     // 0.23: the log identities need positive arguments (x = y = -1 breaks ln(x*y) = ln x + ln y).
     let (x, y) = (
-        ctx.symbol_with("x", &[Assumption::Positive]),
-        ctx.symbol_with("y", &[Assumption::Positive]),
+        ctx.symbol_with("x", &[Assumption::Positive]).unwrap(),
+        ctx.symbol_with("y", &[Assumption::Positive]).unwrap(),
     );
     let expr = (&x / &y).ln();
     let expanded = expr.expand_log();
@@ -418,7 +418,7 @@ fn pos_exp_ln_with_macro() {
 fn pos_acosh_cosh_gives_abs() {
     let ctx = Context::new();
     // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     assert_simplifies_to!(x.cosh().acosh(), "abs(x)");
 }
 
@@ -440,7 +440,7 @@ fn pos_cos_acos_still_works() {
 fn pos_asinh_sinh_still_works() {
     let ctx = Context::new();
     // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     assert_simplifies_to!(x.sinh().asinh(), "x");
 }
 

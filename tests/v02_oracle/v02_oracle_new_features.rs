@@ -262,7 +262,7 @@ fn new_features_refine() {
             Ok(e) => e,
             Err(e) => return Status::NotImplemented(e),
         };
-        let r = e.refine_with(&[(&x, assumption)]);
+        let r = e.refine_with(&[(&x, assumption)]).unwrap();
         // Value must be preserved on the assumed domain …
         let status = compare_eval_points(ctx, &r, fx, "eval_points", TOL);
         if !matches!(status, Status::Pass) {

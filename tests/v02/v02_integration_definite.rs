@@ -158,7 +158,7 @@ fn symbolic_bounds_with_undecidable_pole_stay_unevaluated() {
     );
     assert!(f.integrate_definite(&x, &ctx.int(1), &t).has_unevaluated());
     // With t > 0 the pole at 0 is provably outside [1, t] (or [t, 1]).
-    let tp = ctx.symbol_with("tp", &[Assumption::Positive]);
+    let tp = ctx.symbol_with("tp", &[Assumption::Positive]).unwrap();
     let v = f.try_integrate_definite(&x, &ctx.int(1), &tp).unwrap();
     let shown = format!("{v}");
     assert!(shown == "ln(tp)" || shown == "ln(abs(tp))", "{shown}");
@@ -168,7 +168,7 @@ fn symbolic_bounds_with_undecidable_pole_stay_unevaluated() {
 fn symbolic_parameter_in_integrand() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
     // ∫₀^∞ e^{−a x} dx = 1/a
     let v = (-&(&a * &x))
         .exp()
@@ -626,7 +626,7 @@ fn table_gamma_family() {
         sqrt_pi / 2.0,
     );
     // symbolic s: ∫₀^∞ x^{s−1} e^{−x} = Γ(s)
-    let s = ctx.symbol_with("s", &[Assumption::Positive]);
+    let s = ctx.symbol_with("s", &[Assumption::Positive]).unwrap();
     let f = &x.pow(&(&s - 1)) * &(-&x).exp();
     let v = f
         .try_integrate_definite(&x, &ctx.int(0), &ctx.infinity())
@@ -753,7 +753,7 @@ fn table_rational_and_algebraic_half_line() {
         0.5,
     );
     // symbolic a > 0: ∫₀^∞ 1/(x²+a²) = π/(2a)
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
     let v = (&ctx.int(1) / &(&x.powi(2) + &a.powi(2)))
         .try_integrate_definite(&x, &ctx.int(0), &ctx.infinity())
         .unwrap();
@@ -1042,8 +1042,8 @@ fn table_beta_on_unit_interval() {
         0.5 * gamma(0.75) * gamma(0.5) / gamma(1.25),
     );
     // symbolic exponents: ∫₀¹ x^a (1−x)^b = B(a+1, b+1)
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
-    let b = ctx.symbol_with("b", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
+    let b = ctx.symbol_with("b", &[Assumption::Positive]).unwrap();
     let f = &x.pow(&a) * &one_minus_x.pow(&b);
     let v = f
         .try_integrate_definite(&x, &ctx.int(0), &ctx.int(1))
@@ -1600,7 +1600,7 @@ fn abs_with_symbolic_bounds_is_refused() {
     assert!(r.is_err(), "{r:?}");
     // …but a positive symbolic bound is fine: kink at 0 is outside (0, t]
     // no — 0 is the lower endpoint; still resolvable
-    let tp = ctx.symbol_with("tp", &[Assumption::Positive]);
+    let tp = ctx.symbol_with("tp", &[Assumption::Positive]).unwrap();
     let v = x.abs().try_integrate_definite(&x, &ctx.int(0), &tp);
     if let Ok(v) = v {
         let at2 = v.subs(&tp, &ctx.int(2)).eval().eval_f64().unwrap();
@@ -1644,7 +1644,7 @@ fn symbolic_exponent_at_singular_endpoint_needs_assumptions() {
         .pow(&a)
         .try_integrate_definite(&x, &ctx.int(0), &ctx.int(1));
     assert!(r.is_err(), "{r:?}");
-    let ap = ctx.symbol_with("ap", &[Assumption::Positive]);
+    let ap = ctx.symbol_with("ap", &[Assumption::Positive]).unwrap();
     let v = x
         .pow(&ap)
         .try_integrate_definite(&x, &ctx.int(0), &ctx.int(1))

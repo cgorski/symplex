@@ -5,6 +5,8 @@
 //! self-check, the logarithmic part's remainder sequence, radical
 //! canonicalisation, load-robust timing tests).
 
+#[path = "v27/v27_api.rs"]
+mod v27_api;
 #[path = "v27/v27_integrate.rs"]
 mod v27_integrate;
 #[path = "v27/v27_perf.rs"]

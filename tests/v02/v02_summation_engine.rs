@@ -323,7 +323,7 @@ fn infinite_geometric_divergent_and_symbolic_ratio() {
     assert!(s.has_unevaluated());
     assert!(x.pow(&k).try_summation(&k, &ctx.int(0), &inf).is_err());
     // Even a positive symbol is not enough (x = 2 would diverge)
-    let p = ctx.symbol_with("p", &[Assumption::Positive]);
+    let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
     assert!(p.pow(&k).summation(&k, &ctx.int(0), &inf).has_unevaluated());
 }
 

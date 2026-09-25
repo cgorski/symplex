@@ -93,7 +93,7 @@ fn fractional_and_symbolic_powers_via_gamma() {
     let ctx = Context::new();
     let t = ctx.symbol("t");
     let s = ctx.symbol("s");
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
     let pi = ctx.pi();
 
     let f = t.sqrt();
@@ -132,7 +132,7 @@ fn logarithm_delta_and_step() {
     let ctx = Context::new();
     let t = ctx.symbol("t");
     let s = ctx.symbol("s");
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
     let gamma = ctx.euler_gamma();
 
     let f = t.ln();
@@ -163,7 +163,7 @@ fn bessel_and_error_functions() {
     let ctx = Context::new();
     let t = ctx.symbol("t");
     let s = ctx.symbol("s");
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
 
     let f = t.bessel_j(&ctx.int(0));
     let big_f = lt(&f, &t, &s);
@@ -195,7 +195,7 @@ fn division_by_t() {
     let ctx = Context::new();
     let t = ctx.symbol("t");
     let s = ctx.symbol("s");
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
 
     let f = t.sin() / &t;
     let big_f = lt(&f, &t, &s);
@@ -228,7 +228,7 @@ fn delays_and_frequency_differentiation() {
     let ctx = Context::new();
     let t = ctx.symbol("t");
     let s = ctx.symbol("s");
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
 
     assert_eq!(
         lt(&((&t - 2).sin() * (&t - 2).heaviside()), &t, &s),
@@ -318,7 +318,7 @@ fn inverse_special_entries_and_delays() {
     let ctx = Context::new();
     let t = ctx.symbol("t");
     let s = ctx.symbol("s");
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
     let pi = ctx.pi();
 
     assert_eq!(

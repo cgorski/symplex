@@ -15,7 +15,7 @@ symplex has one error type, `SymplexError` (in the prelude; `#[non_exhaustive]`,
 | `NoSolution { operation, reason }` | | `solve` / `solve_general` on a contradiction or range violation (`sin x = 2`); `solve_ode_ivp` with contradictory initial conditions |
 | `InfiniteSolutions { operation, reason }` | | `solve` on an identity; `polysys::solve_system_ex` on a positive-dimensional system |
 | `InvalidArgument { operation, reason }` | | malformed input: a non-symbol variable, duplicate parameter names, wrong shapes (`cholesky` on a non-symmetric matrix, `norm_p` on a non-vector), `linsolve` with a non-linear equation, `Rule::try_new` with an unbound wildcard, `CompiledFn::try_call` with the wrong arity |
-| `ContradictoryAssumptions { symbol, a, b }` | | declaring a symbol both `Positive` and `Negative`, etc. |
+| `ContradictoryAssumptions { symbol, a, b }` | the two clashing facts | `Context::symbol_with`, `Ex::assume`, `Ex::refine_with` when the assumptions contradict each other once their consequences are drawn (`Positive` with `Negative`, `Integer` with `Irrational`, …); nothing is declared |
 
 Because the enum is `#[non_exhaustive]`, always include a wildcard arm when matching.
 

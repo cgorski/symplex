@@ -340,7 +340,7 @@ fn fk_jacobian_two_joint() {
     let (x, y, z) = fk_position(&params);
 
     // Jacobian of [x, y, z] w.r.t. [θ1, θ2]
-    let j = jacobian(&[&x, &y, &z], &[&theta1, &theta2]);
+    let j = jacobian(&[&x, &y, &z], &[&theta1, &theta2]).unwrap();
 
     assert_eq!(j.nrows(), 3);
     assert_eq!(j.ncols(), 2);

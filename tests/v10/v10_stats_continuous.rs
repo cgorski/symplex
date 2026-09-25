@@ -280,8 +280,8 @@ fn gamma_shape_3_scale_2() {
 fn gamma_symbolic_shape_moments_use_rising_factorial() {
     // E[Xⁿ] = θⁿ (k)ₙ = θⁿ Γ(k+n)/Γ(k).
     let ctx = Context::new();
-    let k = ctx.symbol_with("k", &[Assumption::Positive]);
-    let th = ctx.symbol_with("theta", &[Assumption::Positive]);
+    let k = ctx.symbol_with("k", &[Assumption::Positive]).unwrap();
+    let th = ctx.symbol_with("theta", &[Assumption::Positive]).unwrap();
     let g = RandomVariable::new(&ctx, "G", Distribution::gamma(k.clone(), th.clone()));
     assert_exact(&g.mean(), &(&k * &th), "mean kθ");
     assert_exact(&g.variance(), &(&k * th.powi(2)), "variance kθ²");
@@ -386,8 +386,8 @@ fn beta_2_3() {
 #[test]
 fn beta_symbolic_moments_are_rising_factorial_ratios() {
     let ctx = Context::new();
-    let a = ctx.symbol_with("alpha", &[Assumption::Positive]);
-    let bb = ctx.symbol_with("beta", &[Assumption::Positive]);
+    let a = ctx.symbol_with("alpha", &[Assumption::Positive]).unwrap();
+    let bb = ctx.symbol_with("beta", &[Assumption::Positive]).unwrap();
     let b = RandomVariable::new(&ctx, "B", Distribution::beta(a.clone(), bb.clone()));
     assert_exact(&b.mean(), &(&a / (&a + &bb)), "mean α/(α+β)");
     // E[X²] = α(α+1)/((α+β)(α+β+1)); at α = 2, β = 3 that is 6/30 = 1/5.
@@ -705,7 +705,7 @@ fn student_t_low_dof_has_no_mean_or_variance() {
         t2.family().variance().is_none(),
         "ν = 2 has infinite variance"
     );
-    let nu = ctx.symbol_with("nu", &[Assumption::Positive]);
+    let nu = ctx.symbol_with("nu", &[Assumption::Positive]).unwrap();
     let ts = Distribution::student_t(nu.clone());
     assert_exact(
         &ts.family().variance().unwrap(),
@@ -822,7 +822,7 @@ fn pareto_xm_1_alpha_3() {
     assert_exact(&pa2.moment(3), &ctx.int(20), "Pareto(2,5) E[X³]");
     assert_exact(&pa2.moment(4), &ctx.int(80), "Pareto(2,5) E[X⁴]");
     // Symbolic α: the formula is returned (valid for n < α).
-    let alpha = ctx.symbol_with("alpha", &[Assumption::Positive]);
+    let alpha = ctx.symbol_with("alpha", &[Assumption::Positive]).unwrap();
     let ps = Distribution::pareto(ctx.one(), alpha.clone());
     assert_exact(
         &ps.family().raw_moment(2).unwrap(),

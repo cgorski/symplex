@@ -344,7 +344,7 @@ impl Quaternion {
     /// use symplex::robotics::rot_z;
     ///
     /// let ctx = Context::new();
-    /// let th = ctx.symbol_with("theta", &[Assumption::Positive]);
+    /// let th = ctx.symbol_with("theta", &[Assumption::Positive]).unwrap();
     /// let q = Quaternion::from_rotation_matrix(&rot_z(&th)).unwrap();
     /// // Round trip back to the same rotation matrix
     /// let back = q.to_rotation_matrix().simplify();
@@ -710,7 +710,7 @@ impl Quaternion {
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
-    /// let th = ctx.symbol_with("theta", &[Assumption::Positive]);
+    /// let th = ctx.symbol_with("theta", &[Assumption::Positive]).unwrap();
     /// let half = &th / 2;
     /// let v = Quaternion::from_vector(&ctx.int(0), &ctx.int(0), &half);
     /// let q = v.exp().eval().simplify();
@@ -1173,7 +1173,7 @@ mod tests {
     #[test]
     fn from_rotation_matrix_symbolic_trace_branch() {
         let ctx = Context::new();
-        let th = ctx.symbol_with("theta", &[Assumption::Positive]);
+        let th = ctx.symbol_with("theta", &[Assumption::Positive]).unwrap();
         let qq = Quaternion::from_rotation_matrix(&rot_y(&th)).unwrap();
         // Compare numerically with from_axis_angle about y
         let expected = Quaternion::from_axis_angle(&ctx.int(0), &ctx.int(1), &ctx.int(0), &th);
@@ -1280,7 +1280,7 @@ mod tests {
     #[test]
     fn exp_ln_pow() {
         let ctx = Context::new();
-        let th = ctx.symbol_with("theta", &[Assumption::Positive]);
+        let th = ctx.symbol_with("theta", &[Assumption::Positive]).unwrap();
         let half = &th / 2;
         let v = Quaternion::from_vector(&ctx.int(0), &ctx.int(0), &half);
         let e = v.exp().eval().simplify();

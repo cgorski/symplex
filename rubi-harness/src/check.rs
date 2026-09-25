@@ -337,16 +337,24 @@ pub fn compare_at(ctx: &Context, lhs: &Ex, rhs: &Ex, x: &Ex, (p, q): (i64, i64))
 ///   the integrand contains `%i` (complex by construction, so `ln|u|` & co.
 ///   are genuine errors) and some point mismatches at all;
 /// - `RealVerified` if every mismatch is at a point where the integrand is
-///   complex (the real-variable convention);
+///   complex (the real-variable convention) and some point where it is
+///   real agrees;
 /// - `Verified` if every point where both sides evaluate agrees;
-/// - `Undecided` if no point evaluated on both sides.
+/// - `Undecided` if no point evaluated on both sides, or if the only
+///   points that did are mismatches where the integrand is complex.  The
+///   real-variable convention excuses such a mismatch, but it is no
+///   evidence either: up to 0.28 an answer with no agreeing point at all
+///   (`ln|x·√(−a) + a|/√(−a)` for `1/(a + x·√(−a))`, whose derivative is
+///   the conjugate of the integrand at every point) was `RealVerified`.
 pub fn verdict(reports: &[PointReport], integrand_has_i: bool) -> Status {
     let failed = || reports.iter().filter(|r| r.failed());
     if failed().next().is_some() {
         if integrand_has_i || failed().any(|r| r.integrand_real() == Some(true)) {
             Status::Wrong
-        } else {
+        } else if real_agreements(reports) > 0 {
             Status::RealVerified
+        } else {
+            Status::Undecided
         }
     } else if reports
         .iter()
@@ -494,6 +502,20 @@ mod tests {
         assert_eq!(verdict(&[ok_real(), fail_cplx()], true), Status::Wrong);
         assert_eq!(verdict(&[fail_cplx(), fail_real()], false), Status::Wrong);
         assert_eq!(verdict(&[skip(), skip()], false), Status::Undecided);
+        // Mismatches only where the integrand is complex, and no agreement
+        // where it is real: excused, but not evidence.
+        assert_eq!(
+            verdict(&[fail_cplx(), fail_cplx(), skip()], false),
+            Status::Undecided
+        );
+        let ok_cplx = || {
+            pt(Outcome::Ok {
+                lhs: cplx,
+                rhs: cplx,
+            })
+        };
+        assert_eq!(verdict(&[ok_cplx(), fail_cplx()], false), Status::Undecided);
+        assert_eq!(verdict(&[fail_cplx()], true), Status::Wrong);
         assert_eq!(real_agreements(&[ok_real(), fail_cplx()]), 1);
     }
 

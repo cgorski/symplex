@@ -902,7 +902,9 @@ fn perfect_numbers() {
 fn legendre_symbol_qr_count() {
     // Exactly (p−1)/2 quadratic residues mod odd prime p.
     for &p in &[3i64, 5, 7, 11, 13, 17, 19, 23, 29, 31] {
-        let qr: usize = (1..p).filter(|&a| legendre_symbol(a, p) == 1).count();
+        let qr: usize = (1..p)
+            .filter(|&a| legendre_symbol(a, p).unwrap() == 1)
+            .count();
         assert_eq!(qr, ((p - 1) / 2) as usize, "QR count mod {p}");
     }
 }
@@ -912,9 +914,9 @@ fn legendre_symbol_multiplicative() {
     let p = 13i64;
     for a in 1..p {
         for b in 1..p {
-            let ls_ab = legendre_symbol((a * b) % p, p);
-            let ls_a = legendre_symbol(a, p);
-            let ls_b = legendre_symbol(b, p);
+            let ls_ab = legendre_symbol((a * b) % p, p).unwrap();
+            let ls_a = legendre_symbol(a, p).unwrap();
+            let ls_b = legendre_symbol(b, p).unwrap();
             assert_eq!(ls_ab, ls_a * ls_b, "({a}·{b}/{p}) vs ({a}/{p})·({b}/{p})");
         }
     }
@@ -925,8 +927,8 @@ fn quadratic_reciprocity() {
     let primes = [3i64, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43];
     for (i, &p) in primes.iter().enumerate() {
         for &q in &primes[(i + 1)..] {
-            let pq = legendre_symbol(p, q) as i16;
-            let qp = legendre_symbol(q, p) as i16;
+            let pq = legendre_symbol(p, q).unwrap() as i16;
+            let qp = legendre_symbol(q, p).unwrap() as i16;
             let sign: i16 = if ((p - 1) / 2 * (q - 1) / 2) % 2 == 0 {
                 1
             } else {

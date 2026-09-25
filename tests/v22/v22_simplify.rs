@@ -51,8 +51,8 @@ fn simplify_keeps_a_sum_of_logs_of_unknown_sign() {
     let f = &x.ln() + &y.ln();
     assert_eq!(f.simplify(), f);
     let (p, q) = (
-        ctx.symbol_with("p", &[Assumption::Positive]),
-        ctx.symbol_with("q", &[Assumption::Positive]),
+        ctx.symbol_with("p", &[Assumption::Positive]).unwrap(),
+        ctx.symbol_with("q", &[Assumption::Positive]).unwrap(),
     );
     // SymPy: simplify(log(p) + log(q)) = log(p*q)
     assert_eq!(format!("{}", (&p.ln() + &q.ln()).simplify()), "ln(p*q)");
@@ -118,7 +118,7 @@ fn ln_of_exp_stays_for_a_complex_argument() {
         -2.2831853071795865,
         "ln(exp(1/3+4i))",
     );
-    let r = ctx.symbol_with("r", &[Assumption::Real]);
+    let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
     assert_eq!(r.exp().ln().simplify(), r);
 }
 
@@ -134,7 +134,7 @@ fn sqrt_of_a_square_stays_for_a_complex_argument() {
     for g in [&f / &x, &x * &f + &x, (&f - &x) / &x] {
         same_value(&g, &g.simplify(), &x, &v);
     }
-    let r = ctx.symbol_with("r", &[Assumption::Real]);
+    let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
     assert_eq!(format!("{}", r.powi(2).sqrt().simplify()), "abs(r)");
 }
 
@@ -157,7 +157,7 @@ fn inverse_hyperbolic_of_hyperbolic_stays_for_a_complex_argument() {
     }
     // For real arguments they simplify — further than SymPy 1.14, which
     // leaves asinh(sinh(r)), atanh(tanh(r)) and acosh(cosh(r)) as they are.
-    let r = ctx.symbol_with("r", &[Assumption::Real]);
+    let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
     assert_eq!(r.sinh().asinh().simplify(), r);
     assert_eq!(r.tanh().atanh().simplify(), r);
     assert_eq!(r.cosh().acosh().simplify(), r.abs());
@@ -179,7 +179,7 @@ fn a_power_of_exp_merges_only_on_the_principal_branch() {
         "sqrt(exp(4i))",
     );
     assert_eq!(x.exp().powi(2).eval(), (&x * 2).exp());
-    let r = ctx.symbol_with("r", &[Assumption::Real]);
+    let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
     assert_eq!(r.exp().pow(&y).eval(), (&r * &y).exp());
     // fuzz_simplify: sqrt(exp(x)·exp(cosh x)) at 1/3 + 4i.
     let g = (x.exp() * x.cosh().exp()).sqrt();
@@ -306,6 +306,6 @@ fn refine_rewrites_only_the_square_root_it_matched() {
         0.0,
         "cos(1/3)",
     );
-    let r = ctx.symbol_with("r", &[Assumption::Real]);
+    let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
     assert_eq!((r.powi(2).sqrt() + 1).refine(), r.abs() + 1);
 }

@@ -613,7 +613,7 @@ impl Expr<Boolean> {
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
-    /// let t = ctx.symbol_with("t", &[Assumption::Positive]);
+    /// let t = ctx.symbol_with("t", &[Assumption::Positive]).unwrap();
     /// assert_eq!(format!("{}", t.gt(&ctx.int(0)).eval()), "True");
     /// assert_eq!(format!("{}", t.le(&ctx.int(0)).eval()), "False");
     /// let x = ctx.symbol("x");
@@ -735,7 +735,7 @@ impl Expr<Boolean> {
     /// assert_eq!(x.gt(&ctx.int(1)).implies(&p).is_tautology(), Some(true));
     /// assert_eq!(p.is_tautology(), Some(false));
     /// // with an assumption, t > 0 holds everywhere t is defined:
-    /// let t = ctx.symbol_with("t", &[Assumption::Positive]);
+    /// let t = ctx.symbol_with("t", &[Assumption::Positive]).unwrap();
     /// assert_eq!(t.gt(&ctx.int(0)).is_tautology(), Some(true));
     /// ```
     #[must_use]

@@ -545,7 +545,7 @@ fn exp_of_ln_x_is_x() {
 fn ln_of_exp_x_is_x() {
     let ctx = Context::new();
     // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     let result = x.exp().ln();
     let simplified = result.simplify();
     assert_eq!(
@@ -1676,7 +1676,7 @@ fn assume_positive_affects_queries() {
     );
 
     // With assumption
-    let x_pos = x.assume(Assumption::Positive);
+    let x_pos = x.assume(Assumption::Positive).unwrap();
     assert_eq!(
         x_pos.is_positive(),
         Some(true),
@@ -1814,7 +1814,7 @@ fn simplify_double_negative() {
 #[test]
 fn sqrt_of_x_squared_positive() {
     let ctx = Context::new();
-    let x = ctx.symbol("x").assume(Assumption::Positive);
+    let x = ctx.symbol("x").assume(Assumption::Positive).unwrap();
 
     // For positive x: sqrt(x^2) should be x
     let result = x.powi(2).sqrt().simplify();

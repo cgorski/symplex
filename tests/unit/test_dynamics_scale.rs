@@ -528,7 +528,7 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
     println!("\nStep 4: Computing 3×6 position Jacobian...");
     let t0_jac = Instant::now();
 
-    let jac = jacobian(&[&px, &py, &pz], &[&q1, &q2, &q3, &q4, &q5, &q6]);
+    let jac = jacobian(&[&px, &py, &pz], &[&q1, &q2, &q3, &q4, &q5, &q6]).unwrap();
 
     let jac_time = t0_jac.elapsed();
     println!("  Jacobian computed in {:?}", jac_time);

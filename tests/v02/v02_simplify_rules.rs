@@ -349,7 +349,7 @@ fn guard_can_inspect_bindings_with_ex_methods() {
     });
     let rules = RuleSet::from_rules(vec![r]);
     assert_eq!(x.abs().rewrite(&rules), x.abs());
-    let p = ctx.symbol_with("p", &[Assumption::Positive]);
+    let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
     assert_eq!(p.abs().rewrite(&rules), p);
 }
 

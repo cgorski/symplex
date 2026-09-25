@@ -21,7 +21,7 @@ fn s<T: std::fmt::Display>(e: &T) -> String {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn monotonicity_is_refuted_by_a_pole_inside_the_domain() {
+fn monotonicity_is_refuted_by_a_pole_inside_the_domain() -> Result<(), SymplexError> {
     let ctx = Context::new();
     sym!(ctx; x, Real);
     let m1 = ctx.interval(&ctx.int(-1), &ctx.int(1), IntervalKind::Closed);
@@ -70,10 +70,11 @@ fn monotonicity_is_refuted_by_a_pole_inside_the_domain() {
     // Infinitely many poles that cannot be enumerated: undecided, never
     // a guess.  SymPy: is_increasing(tan(x), S.Reals, x) is True (wrong).
     assert_ne!(x.tan().is_increasing(&x, &ctx.reals()), Some(true));
+    Ok(())
 }
 
 #[test]
-fn convexity_inherits_the_pole_check() {
+fn convexity_inherits_the_pole_check() -> Result<(), SymplexError> {
     let ctx = Context::new();
     sym!(ctx; x, Real);
     let m1 = ctx.interval(&ctx.int(-1), &ctx.int(1), IntervalKind::Closed);
@@ -85,10 +86,11 @@ fn convexity_inherits_the_pole_check() {
     // SymPy: is_convex(1/x, x, domain=Interval.open(0, oo)) is True
     let pos = ctx.interval(&ctx.int(0), &ctx.infinity(), IntervalKind::Open);
     assert_eq!((ctx.int(1) / &x).is_convex(&x, &pos), Some(true));
+    Ok(())
 }
 
 #[test]
-fn monotonicity_with_real_and_positive_symbols() {
+fn monotonicity_with_real_and_positive_symbols() -> Result<(), SymplexError> {
     let ctx = Context::new();
     sym!(ctx; p, Positive);
     let pos = ctx.interval(&ctx.int(0), &ctx.infinity(), IntervalKind::Open);
@@ -110,6 +112,7 @@ fn monotonicity_with_real_and_positive_symbols() {
     assert_eq!((-p.ln()).is_convex(&p, &pos), Some(true));
     assert_eq!((ctx.int(1) / &p).is_convex(&p, &pos), Some(true));
     assert_eq!((ctx.int(1) / &p).is_increasing(&p, &pos), Some(false));
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -117,7 +120,7 @@ fn monotonicity_with_real_and_positive_symbols() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn extrema_of_abs_expressions() {
+fn extrema_of_abs_expressions() -> Result<(), SymplexError> {
     let ctx = Context::new();
     sym!(ctx; u, Real);
     let m12 = ctx.interval(&ctx.int(-1), &ctx.int(2), IntervalKind::Closed);
@@ -160,10 +163,11 @@ fn extrema_of_abs_expressions() {
     let two_pi = ctx.interval(&ctx.int(0), &(&ctx.pi() * 2), IntervalKind::Closed);
     assert_eq!(u.sin().abs().maximum(&u, &two_pi).unwrap(), ctx.int(1));
     assert_eq!(u.sin().abs().minimum(&u, &two_pi).unwrap(), ctx.int(0));
+    Ok(())
 }
 
 #[test]
-fn function_range_of_abs_expressions() {
+fn function_range_of_abs_expressions() -> Result<(), SymplexError> {
     let ctx = Context::new();
     sym!(ctx; x, Real);
     let m12 = ctx.interval(&ctx.int(-1), &ctx.int(2), IntervalKind::Closed);
@@ -182,10 +186,11 @@ fn function_range_of_abs_expressions() {
     // the images are [0, 4] on [-1, 2] and [1, oo) on ℝ.
     assert_eq!(r(&(x.abs() + &x), &m12), "[0, 4]");
     assert_eq!(r(&(x.abs() + (&x - 1).abs()), &ctx.reals()), "[1, oo)");
+    Ok(())
 }
 
 #[test]
-fn stationary_points_resolve_sign_factors_like_sympy() {
+fn stationary_points_resolve_sign_factors_like_sympy() -> Result<(), SymplexError> {
     let ctx = Context::new();
     sym!(ctx; x, Real);
     let m12 = ctx.interval(&ctx.int(-1), &ctx.int(2), IntervalKind::Closed);
@@ -200,10 +205,11 @@ fn stationary_points_resolve_sign_factors_like_sympy() {
     assert_eq!(sp(&(x.powi(2) - x.abs()), None), "{-1/2, 0, 1/2}");
     // SymPy: stationary_points(Abs(x) + x, x, Interval(-1, 2)) == Interval.Ropen(-1, 0)
     assert_eq!(sp(&(x.abs() + &x), Some(&m12)), "[-1, 0)");
+    Ok(())
 }
 
 #[test]
-fn constant_in_var_is_simplified_before_reporting() {
+fn constant_in_var_is_simplified_before_reporting() -> Result<(), SymplexError> {
     let ctx = Context::new();
     sym!(ctx; x, Real);
     let z1 = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
@@ -212,6 +218,7 @@ fn constant_in_var_is_simplified_before_reporting() {
     let one = &x.sin().powi(2) + &x.cos().powi(2);
     assert_eq!(s(&one.function_range(&x, &z1).unwrap()), "{1}");
     assert_eq!(one.maximum(&x, &z1).unwrap(), ctx.int(1));
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -199,13 +199,16 @@ impl Context {
     /// The assumptions replace any declared earlier on a symbol of the same
     /// name in this context.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `name` is empty, or if the assumptions contradict each
-    /// other once their consequences are drawn (`Positive` with `Negative`,
-    /// `Integer` with `Irrational`, `Positive` with `Zero`, …): declaring
-    /// impossible facts about a symbol is a logic error.
-    /// [`try_symbol_with`](Self::try_symbol_with) returns an error instead.
+    /// - [`SymplexError::InvalidArgument`](crate::base::errors::SymplexError::InvalidArgument)
+    ///   if `name` is empty;
+    /// - [`SymplexError::ContradictoryAssumptions`](crate::base::errors::SymplexError::ContradictoryAssumptions)
+    ///   if the assumptions contradict each other once their consequences
+    ///   are drawn (`Positive` with `Negative`, `Integer` with `Irrational`,
+    ///   `Positive` with `Zero`, …).
+    ///
+    /// Nothing is declared when an error is returned.
     ///
     /// # Examples
     ///
@@ -213,76 +216,56 @@ impl Context {
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
-    /// let t = ctx.symbol_with("t", &[Assumption::Positive, Assumption::Real]);
+    /// let t = ctx.symbol_with("t", &[Assumption::Positive, Assumption::Real]).unwrap();
     /// assert_eq!(ctx.query(&t, Props::POSITIVE), Some(true));
     /// assert_eq!(ctx.query(&t, Props::REAL), Some(true));
     /// // Inferred by forward-chaining:
     /// assert_eq!(ctx.query(&t, Props::COMPLEX), Some(true));
+    ///
+    /// let err = ctx.symbol_with("u", &[Assumption::Positive, Assumption::Negative]).unwrap_err();
+    /// assert_eq!(err.to_string(), "contradictory assumptions for 'u': cannot be both positive and negative");
+    /// assert!(matches!(ctx.symbol_with("", &[Assumption::Real]), Err(SymplexError::InvalidArgument { .. })));
     /// ```
-    pub fn symbol_with(&self, name: &str, assumptions: &[Assumption]) -> crate::api::expr::Ex {
-        assert!(!name.is_empty(), "symbol name cannot be empty");
+    pub fn symbol_with(
+        &self,
+        name: &str,
+        assumptions: &[Assumption],
+    ) -> Result<crate::api::expr::Ex, crate::base::errors::SymplexError> {
+        if name.is_empty() {
+            return Err(crate::base::errors::SymplexError::invalid_argument(
+                "Context::symbol_with",
+                "symbol name cannot be empty",
+            ));
+        }
+        let declared = crate::base::assumptions::Assumptions::declare(
+            name,
+            crate::base::assumptions::Assumptions::default(),
+            assumptions,
+        )?;
+        Ok(self.declare_symbol(name, declared))
+    }
 
+    /// Declare the symbol `name` with `assumptions`, replacing any earlier
+    /// declaration.  For the crate's own constant, consistent sets and a
+    /// non-empty name; [`symbol_with`](Self::symbol_with) validates both.
+    pub(crate) fn declare_symbol(
+        &self,
+        name: &str,
+        assumptions: crate::base::assumptions::Assumptions,
+    ) -> crate::api::expr::Ex {
         let mut inner = self.inner.write();
         let sym_id = inner.arena.symbols.intern(name);
         let expr_id = inner
             .arena
             .intern(crate::base::node::ExprNode::Symbol(sym_id));
-
-        // Build assumption set from the provided assumptions.
-        let mut a = crate::base::assumptions::Assumptions::default();
-        for assumption in assumptions {
-            let (prop, value) = assumption.to_prop_value();
-            if value {
-                a.assert_true(prop);
-            } else {
-                a.assert_false(prop);
-            }
-        }
-
-        // Store on the symbol table.
-        inner.arena.set_symbol_assumptions(sym_id, a);
-
-        // Also cache on the expression in the assumption cache.
-        inner.assumptions.lock().set_symbol_assumptions(expr_id, a);
-
+        // On the symbol table, and on the expression in the assumption cache.
+        inner.arena.set_symbol_assumptions(sym_id, assumptions);
+        inner
+            .assumptions
+            .lock()
+            .set_symbol_assumptions(expr_id, assumptions);
         drop(inner);
         self.make_ex(expr_id)
-    }
-
-    /// [`symbol_with`](Self::symbol_with) for a name or assumptions that
-    /// may be invalid (e.g. from user input).
-    ///
-    /// # Errors
-    ///
-    /// [`SymplexError::InvalidArgument`](crate::base::errors::SymplexError::InvalidArgument)
-    /// if `name` is empty or the assumptions contradict each other.
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    /// let ctx = Context::new();
-    /// let t = ctx.try_symbol_with("t", &[Assumption::Positive]).unwrap();
-    /// assert_eq!(t.is_positive(), Some(true));
-    /// assert!(ctx.try_symbol_with("u", &[Assumption::Positive, Assumption::Negative]).is_err());
-    /// assert!(ctx.try_symbol_with("", &[Assumption::Real]).is_err());
-    /// ```
-    pub fn try_symbol_with(
-        &self,
-        name: &str,
-        assumptions: &[Assumption],
-    ) -> Result<crate::api::expr::Ex, crate::base::errors::SymplexError> {
-        const OP: &str = "Context::symbol_with";
-        if name.is_empty() {
-            return Err(crate::base::errors::SymplexError::invalid_argument(
-                OP,
-                "symbol name cannot be empty",
-            ));
-        }
-        let mut declared = crate::base::assumptions::Assumptions::default();
-        for assumption in assumptions {
-            declared = declared.with(*assumption);
-        }
-        declared.check_declarable(OP)?;
-        Ok(self.symbol_with(name, assumptions))
     }
 
     /// Query a mathematical property of an expression.

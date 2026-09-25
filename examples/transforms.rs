@@ -22,7 +22,7 @@ fn main() {
 
     let ctx = Context::new();
     symplex::syms!(ctx; t, w, s, x, n, z);
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
     let i = ctx.i_unit();
     let zero = ctx.int(0);
 

@@ -32,7 +32,7 @@
 //!         DhLink { theta: &theta2, d: &zero, a: &l2, alpha: &zero },
 //!     ]);
 //!
-//!     let j = jacobian(&[&x, &y], &[&theta1, &theta2]);
+//!     let j = jacobian(&[&x, &y], &[&theta1, &theta2]).unwrap();
 //!
 //!     CodeGen::new()
 //!         .add_matrix_fn("jacobian", &j, &["theta1", "theta2"])
@@ -667,7 +667,7 @@ pub fn from_toml(path: impl AsRef<Path>) -> Result<CodeGen, Box<dyn std::error::
             "jacobian" => {
                 let (x, y, _z) = symplex::robotics::fk_position(&dh_params);
                 let theta_refs: Vec<&Ex> = theta_vars.iter().collect();
-                let j = symplex::matrix::jacobian(&[&x, &y], &theta_refs);
+                let j = symplex::matrix::jacobian(&[&x, &y], &theta_refs)?;
                 codegen = codegen.add_matrix_fn("jacobian", &j, &theta_names);
             }
             "fk_matrix" => {
@@ -731,12 +731,18 @@ pub fn robot_arm(joints: &[(&str, f64, f64, f64)]) -> RobotArmBuilder {
 /// Created by [`robot_arm()`]. Accumulates requested functions and then
 /// delegates to [`CodeGen`] for final output.  All symbolic work happens
 /// in a private [`Context`] owned by the builder.
+///
+/// A function that cannot be generated (a Jacobian for an arm without
+/// joints) is reported by [`write_to_out_dir`](Self::write_to_out_dir) /
+/// [`write_to_path`](Self::write_to_path); [`into_codegen`](Self::into_codegen)
+/// returns the functions that could be generated.
 pub struct RobotArmBuilder {
     ctx: Context,
     joints: Vec<(String, f64, f64, f64)>,
     codegen: CodeGen,
     generated_fk: bool,
     generated_jacobian: bool,
+    error: Option<symplex::errors::SymplexError>,
 }
 
 impl RobotArmBuilder {
@@ -747,6 +753,7 @@ impl RobotArmBuilder {
             codegen: CodeGen::new(),
             generated_fk: false,
             generated_jacobian: false,
+            error: None,
         }
     }
 
@@ -854,9 +861,10 @@ impl RobotArmBuilder {
         let theta_names: Vec<&str> = owned_names.iter().map(|s| s.as_str()).collect();
         let (x, y, _z) = symplex::robotics::fk_position(&dh);
         let theta_refs: Vec<&Ex> = thetas.iter().collect();
-        let j = symplex::matrix::jacobian(&[&x, &y], &theta_refs);
-
-        self.codegen = self.codegen.add_matrix_fn(name, &j, &theta_names);
+        match symplex::matrix::jacobian(&[&x, &y], &theta_refs) {
+            Ok(j) => self.codegen = self.codegen.add_matrix_fn(name, &j, &theta_names),
+            Err(e) => self.error = self.error.or(Some(e)),
+        }
         self.generated_jacobian = true;
         self
     }
@@ -882,12 +890,28 @@ impl RobotArmBuilder {
     }
 
     /// Write generated code to `$OUT_DIR/<filename>`.
+    ///
+    /// # Errors
+    ///
+    /// A function that could not be generated (see [`RobotArmBuilder`]), or
+    /// the error of [`CodeGen::write_to_out_dir`].
     pub fn write_to_out_dir(self, filename: &str) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(e) = self.error {
+            return Err(e.into());
+        }
         self.codegen.write_to_out_dir(filename)
     }
 
     /// Write generated code to an explicit path.
+    ///
+    /// # Errors
+    ///
+    /// A function that could not be generated (see [`RobotArmBuilder`]), or
+    /// the error of [`CodeGen::write_to_path`].
     pub fn write_to_path(self, path: impl AsRef<Path>) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(e) = self.error {
+            return Err(e.into());
+        }
         self.codegen.write_to_path(path)
     }
 

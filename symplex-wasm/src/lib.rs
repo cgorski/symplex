@@ -565,7 +565,8 @@ fn compute_jacobian_impl(dh_json: &str) -> Result<String, String> {
         .map(|j| sym(&ctx, &j.theta))
         .collect::<Result<_, _>>()?;
     let theta_refs: Vec<&Ex> = theta_vars.iter().collect();
-    let jac = symplex::matrix::jacobian(&[&x, &y, &z], &theta_refs);
+    let jac = symplex::matrix::jacobian(&[&x, &y, &z], &theta_refs)
+        .map_err(|e| format!("Jacobian error: {e}"))?;
     Ok(matrix_latex_json(&jac))
 }
 
@@ -590,7 +591,8 @@ fn generate_jacobian_code_impl(dh_json: &str) -> Result<String, String> {
         .collect::<Result<_, _>>()?;
     let theta_refs: Vec<&Ex> = theta_vars.iter().collect();
     let param_names: Vec<&str> = config.joints.iter().map(|j| j.theta.as_str()).collect();
-    let jac = symplex::matrix::jacobian(&[&x, &y, &z], &theta_refs);
+    let jac = symplex::matrix::jacobian(&[&x, &y, &z], &theta_refs)
+        .map_err(|e| format!("Jacobian error: {e}"))?;
     jac.to_rust_fn("jacobian", &param_names)
         .map_err(|e| format!("Codegen error: {e}"))
 }

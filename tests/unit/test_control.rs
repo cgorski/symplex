@@ -21,7 +21,7 @@ fn state_space_dimensions() {
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     assert_eq!(ss.num_states(), 2);
     assert_eq!(ss.num_inputs(), 1);
@@ -46,7 +46,7 @@ fn state_space_poles_2x2() {
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     let poles = ss.poles();
     assert_eq!(poles.len(), 2, "Expected 2 poles, got {}", poles.len());
@@ -77,7 +77,7 @@ fn state_space_char_poly() {
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     let s = ctx.symbol("s");
     let cp = ss.char_poly(&s);
@@ -115,7 +115,7 @@ fn state_space_controllability() {
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     assert!(ss.is_controllable(), "System should be controllable");
 }
@@ -137,7 +137,7 @@ fn state_space_not_controllable() {
     let b = Matrix::new(vec![vec![ctx.int(1)], vec![ctx.int(0)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     assert!(!ss.is_controllable(), "System should NOT be controllable");
 }
@@ -159,7 +159,7 @@ fn state_space_observability() {
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     assert!(ss.is_observable(), "System should be observable");
 }
@@ -180,7 +180,7 @@ fn state_space_stable() {
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     let stability = ss.is_stable();
     assert_eq!(stability, Some(true), "System should be stable");
@@ -202,7 +202,7 @@ fn state_space_unstable() {
     let b = Matrix::new(vec![vec![ctx.int(1)], vec![ctx.int(0)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     let stability = ss.is_stable();
     assert_eq!(stability, Some(false), "System should be unstable");
@@ -372,7 +372,7 @@ fn routh_array_stable() {
     // First column: [1, 2, 1, 4] — all positive → stable
     let coeffs = vec![ctx.int(1), ctx.int(2), ctx.int(3), ctx.int(4)];
 
-    let table = routh_array(&coeffs);
+    let table = routh_array(&coeffs).unwrap();
     assert_eq!(table.len(), 4, "Routh array should have 4 rows");
 
     // Verify first column entries are all positive
@@ -433,7 +433,7 @@ fn controllability_matrix_size() {
     .unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0), ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     let cm = ss.controllability_matrix().unwrap();
     assert_eq!(cm.nrows(), 3, "Controllability matrix should have 3 rows");
@@ -464,7 +464,7 @@ fn observability_matrix_size() {
     ])
     .unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     let om = ss.observability_matrix().unwrap();
     assert_eq!(om.nrows(), 4, "Observability matrix should have 2*2=4 rows");
@@ -568,7 +568,7 @@ fn routh_array_single_coeff() {
     let ctx = Context::new();
     // Constant polynomial: just [5]
     let coeffs = vec![ctx.int(5)];
-    let table = routh_array(&coeffs);
+    let table = routh_array(&coeffs).unwrap();
     assert_eq!(table.len(), 1);
     let stability = is_routh_stable(&coeffs);
     assert_eq!(stability, Some(true));
@@ -591,7 +591,7 @@ fn state_space_char_poly_nonzero_at_non_root() {
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     let s = ctx.symbol("s");
     let cp = ss.char_poly(&s);
@@ -615,7 +615,7 @@ fn state_space_1x1_system() {
     let b = Matrix::new(vec![vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     assert_eq!(ss.num_states(), 1);
     assert_eq!(ss.num_inputs(), 1);
@@ -661,7 +661,7 @@ fn state_space_display() {
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     let display = format!("{ss}");
     assert!(
@@ -706,7 +706,7 @@ fn state_space_not_observable() {
     let b = Matrix::new(vec![vec![ctx.int(1)], vec![ctx.int(0)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     assert!(!ss.is_observable(), "System should NOT be observable");
 }

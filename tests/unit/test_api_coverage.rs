@@ -32,7 +32,7 @@ fn is_negative_on_symbol() {
 #[test]
 fn is_negative_on_positive_symbol() {
     let ctx = Context::new();
-    let t = ctx.symbol_with("t", &[Assumption::Positive]);
+    let t = ctx.symbol_with("t", &[Assumption::Positive]).unwrap();
     assert_eq!(t.is_negative(), Some(false));
 }
 
@@ -74,7 +74,7 @@ fn is_integer_on_rational() {
 #[test]
 fn is_integer_on_symbol_with_assumption() {
     let ctx = Context::new();
-    let n = ctx.symbol_with("n", &[Assumption::Integer]);
+    let n = ctx.symbol_with("n", &[Assumption::Integer]).unwrap();
     assert_eq!(n.is_integer(), Some(true));
 }
 

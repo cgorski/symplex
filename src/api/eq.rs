@@ -106,7 +106,7 @@ impl Equation {
     ///
     /// let ctx = Context::new();
     /// // Real x: over ℂ, ln(eˣ) = x only for Im x ∈ (−π, π].
-    /// let x = ctx.symbol_with("x", &[Assumption::Real]);
+    /// let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     /// let eq = Equation::new(x.exp(), ctx.int(2)).apply(|s| s.ln());
     /// assert_eq!(format!("{}", eq.simplify()), "x = ln(2)");
     /// ```

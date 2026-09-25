@@ -165,8 +165,8 @@ fn main() {
 
     // ── 6. Relations fold through assumptions ───────────────────────────
     println!("\n--- BoolEx::eval with assumptions ---");
-    let pos = ctx.symbol_with("pos", &[Assumption::Positive]);
-    let t = ctx.symbol_with("t", &[Assumption::Real]);
+    let pos = ctx.symbol_with("pos", &[Assumption::Positive]).unwrap();
+    let t = ctx.symbol_with("t", &[Assumption::Real]).unwrap();
     println!("pos > 0   →  {}", pos.gt(&int(0)).eval());
     println!("pos < 0   →  {}", pos.lt(&int(0)).eval());
     println!("t² ≥ 0    →  {}   (t real)", t.powi(2).ge(&int(0)).eval());
@@ -196,7 +196,7 @@ fn main() {
     };
     println!("positive ⇒ nonnegative: {}", positive.implies(&nonneg));
     println!("negate(Positive) = {:?}", Assumption::Positive.negate());
-    let e = ctx.symbol_with("e", &[Assumption::ExtendedReal]);
+    let e = ctx.symbol_with("e", &[Assumption::ExtendedReal]).unwrap();
     println!(
         "ExtendedReal symbol e: is_real {:?}, is_finite {:?}  (may be ±∞)",
         e.is_real(),

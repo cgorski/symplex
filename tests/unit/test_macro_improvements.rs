@@ -291,7 +291,7 @@ fn workflow_matrix_jacobian() {
     let y = ctx.symbol("y");
     let f1 = expr!(ctx, x ^ 2 + y);
     let f2 = expr!(ctx, x * y);
-    let j = jacobian(&[&f1, &f2], &[&x, &y]);
+    let j = jacobian(&[&f1, &f2], &[&x, &y]).unwrap();
     assert_eq!(j.nrows(), 2);
     assert_eq!(j.ncols(), 2);
 }

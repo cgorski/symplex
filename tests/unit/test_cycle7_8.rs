@@ -892,14 +892,14 @@ fn i_squared_becomes_neg_one_which_is_real() {
 #[test]
 fn assume_positive() {
     let ctx = Context::new();
-    let t = ctx.symbol("t").assume(Assumption::Positive);
+    let t = ctx.symbol("t").assume(Assumption::Positive).unwrap();
     assert_eq!(t.is_positive(), Some(true));
 }
 
 #[test]
 fn assume_integer_implies_real() {
     let ctx = Context::new();
-    let n = ctx.symbol("n").assume(Assumption::Integer);
+    let n = ctx.symbol("n").assume(Assumption::Integer).unwrap();
     assert_eq!(n.is_integer(), Some(true));
     assert_eq!(n.is_real(), Some(true));
 }

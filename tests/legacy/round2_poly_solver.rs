@@ -40,7 +40,7 @@ fn sorted(mut sols: Vec<Vec<Ratio<BigInt>>>) -> Vec<Vec<Ratio<BigInt>>> {
 /// Verify that a point is a common zero of all polynomials.
 fn verify_solution(polys: &[MultiPoly<GrevLex>], point: &[Ratio<BigInt>]) {
     for (i, p) in polys.iter().enumerate() {
-        let val = p.eval(point);
+        let val = p.eval(point).unwrap();
         assert!(
             val.is_zero(),
             "poly {} evaluated to {} at {:?} (expected 0)",
@@ -78,8 +78,8 @@ fn gcd_coprime_polynomials() {
     let p2: MultiPoly<GrevLex> = &xm - &one; // x-1
 
     // Verify they have no common root: p1(1)=2 ≠ 0
-    assert_eq!(p1.eval(&[rat(1)]), rat(2));
-    assert_eq!(p2.eval(&[rat(1)]), rat(0));
+    assert_eq!(p1.eval(&[rat(1)]).unwrap(), rat(2));
+    assert_eq!(p2.eval(&[rat(1)]).unwrap(), rat(0));
 
     // x and y in 2 variables are coprime; GB should be {{x, y}}
     let x2 = MultiPoly::<GrevLex>::var(2, 0);
@@ -97,8 +97,8 @@ fn gcd_common_factor_via_groebner() {
     let p1: MultiPoly<GrevLex> = &x * &x - one; // (x-1)(x+1)
     let p2: MultiPoly<GrevLex> = &x * &x - x.clone(); // x(x-1)
 
-    assert_eq!(p1.eval(&[rat(1)]), rat(0));
-    assert_eq!(p2.eval(&[rat(1)]), rat(0));
+    assert_eq!(p1.eval(&[rat(1)]).unwrap(), rat(0));
+    assert_eq!(p2.eval(&[rat(1)]).unwrap(), rat(0));
 
     let sols = solve_polynomial_system(&[p1, p2]).unwrap();
     assert!(

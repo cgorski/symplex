@@ -19,17 +19,21 @@ fn empty_symbol_names_are_errors_on_the_fallible_paths() {
 fn a_contradiction_in_refine_with_leaves_the_context_unchanged() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let y = ctx.symbol_with("y", &[Assumption::Positive]);
+    let y = ctx.symbol_with("y", &[Assumption::Positive]).unwrap();
     let e = &x.abs() + &y.abs();
     // The hypothesis on x is fine; the one on y contradicts its stored
-    // assumption.  Before 0.25 the panic left x positive.
-    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        e.refine_with(&[(&x, Assumption::Positive), (&y, Assumption::Negative)])
-    }));
-    assert!(caught.is_err());
+    // assumption.  Before 0.25 the panic left x positive; since 0.29 it is
+    // an error, reported before anything is applied.
+    assert!(matches!(
+        e.refine_with(&[(&x, Assumption::Positive), (&y, Assumption::Negative)]),
+        Err(SymplexError::ContradictoryAssumptions { .. })
+    ));
     assert_eq!(x.is_positive(), None);
     assert_eq!(y.is_positive(), Some(true));
     // And the context still works normally.
-    assert_eq!(e.refine_with(&[(&x, Assumption::Positive)]), &x + &y);
+    assert_eq!(
+        e.refine_with(&[(&x, Assumption::Positive)]).unwrap(),
+        &x + &y
+    );
     assert_eq!(x.is_positive(), None);
 }

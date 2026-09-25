@@ -96,7 +96,7 @@ fn select_matches_submatrix_for_ranges() {
     let m = matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]];
     assert_eq!(
         m.extract(&[1, 2], &[0, 1]).unwrap(),
-        m.submatrix(1..3, 0..2)
+        m.submatrix(1..3, 0..2).unwrap()
     );
 }
 
@@ -187,7 +187,7 @@ fn is_zero_symbolic_identity_is_zero() {
 #[test]
 fn is_zero_positive_symbol_is_false() {
     let ctx = Context::new();
-    let p = ctx.symbol_with("p", &[Assumption::Positive]);
+    let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
     let m = Matrix::new(vec![vec![p]]).unwrap();
     assert_eq!(m.is_zero(), Some(false));
 }

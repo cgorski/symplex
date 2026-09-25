@@ -251,7 +251,7 @@ fn main() {
     let f1 = expr!(ctx, x ^ 2 + y);
     let f2 = expr!(ctx, x * y ^ 2);
 
-    let jac = jacobian(&[&f1, &f2], &[&x, &y]);
+    let jac = jacobian(&[&f1, &f2], &[&x, &y]).unwrap();
     println!("f = [x²+y, x·y²]");
     println!("J = {jac}");
     println!("det(J) = {}", jac.det().unwrap());
@@ -267,10 +267,10 @@ fn main() {
     let v1 = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
     let v2 = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]);
 
-    let dot_product = symplex::matrix::dot(&v1, &v2);
+    let dot_product = symplex::matrix::dot(&v1, &v2).unwrap();
     println!("v1 · v2 = {dot_product}"); // 1·4 + 2·5 + 3·6 = 32
 
-    let cross_product = symplex::matrix::cross(&v1, &v2);
+    let cross_product = symplex::matrix::cross(&v1, &v2).unwrap();
     println!("v1 × v2 = {cross_product}");
 
     // ── 14. Matrix Exponential (Series) ────────────────────────────

@@ -195,7 +195,7 @@ fn pow_pow_positive_base_collapses() {
     //   (xp**2)**Rational(3,2) == xp**3; sqrt(1/xp**2) == 1/xp;
     //   (xp**2)**Rational(1,4) == sqrt(xp)
     let ctx = Context::new();
-    let xp = ctx.symbol_with("xp", &[Assumption::Positive]);
+    let xp = ctx.symbol_with("xp", &[Assumption::Positive]).unwrap();
     let e = xp.powi(2).pow(&ctx.rational(3, 2));
     assert_eq!(
         e.simplify().id(),
@@ -221,7 +221,7 @@ fn pow_pow_negative_base_does_not_give_x_cubed() {
     // sympy, xn = Symbol('xn', negative=True): (xn**2)**Rational(3,2) == -xn**3,
     // and ((xn**2)**Rational(3,2)).subs(xn, -2) == 8.
     let ctx = Context::new();
-    let xn = ctx.symbol_with("xn", &[Assumption::Negative]);
+    let xn = ctx.symbol_with("xn", &[Assumption::Negative]).unwrap();
     let e = xn.powi(2).pow(&ctx.rational(3, 2));
     let s = e.simplify();
     assert_ne!(

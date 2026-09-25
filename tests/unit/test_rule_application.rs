@@ -174,7 +174,7 @@ fn rule_exp_ln_value_preserved() {
 #[test]
 fn rule_ln_exp_fires_for_real_symbol() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     let result = x.exp().ln().simplify();
     assert_eq!(format!("{result}"), "x");
 }
@@ -188,14 +188,14 @@ fn rule_ln_exp_stays_for_unassumed_symbol() {
     let x = ctx.symbol("x");
     let expr = x.exp().ln();
     assert_eq!(expr.simplify(), expr);
-    let r = ctx.symbol_with("r", &[Assumption::Real]);
+    let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
     assert_eq!(r.exp().ln().simplify(), r);
 }
 
 #[test]
 fn rule_ln_exp_trace_for_real() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     assert_trace_contains_rule!(x.exp().ln(), "ln_exp");
 }
 
@@ -241,7 +241,7 @@ fn rule_abs_abs_value_preserved() {
 fn rule_sqrt_sq_fires() {
     let ctx = Context::new();
     // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     assert_simplifies_to!(x.powi(2).sqrt(), "abs(x)");
 }
 
@@ -249,7 +249,7 @@ fn rule_sqrt_sq_fires() {
 fn rule_sqrt_sq_trace() {
     let ctx = Context::new();
     // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     assert_trace_contains_rule!(x.powi(2).sqrt(), "sqrt_sq");
 }
 
@@ -360,7 +360,7 @@ fn rule_pow_pow_blocked_both_fractional() {
 fn rule_asinh_sinh_fires() {
     let ctx = Context::new();
     // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     assert_simplifies_to!(x.sinh().asinh(), "x");
 }
 
@@ -368,7 +368,7 @@ fn rule_asinh_sinh_fires() {
 fn rule_asinh_sinh_trace() {
     let ctx = Context::new();
     // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     assert_trace_contains_rule!(x.sinh().asinh(), "asinh_sinh");
 }
 
@@ -388,7 +388,7 @@ fn rule_asinh_sinh_value_preserved() {
 fn rule_acosh_cosh_fires() {
     let ctx = Context::new();
     // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     assert_simplifies_to!(x.cosh().acosh(), "abs(x)");
 }
 
@@ -396,7 +396,7 @@ fn rule_acosh_cosh_fires() {
 fn rule_acosh_cosh_trace() {
     let ctx = Context::new();
     // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     assert_trace_contains_rule!(x.cosh().acosh(), "acosh_cosh");
 }
 
@@ -416,7 +416,7 @@ fn rule_acosh_cosh_value_preserved() {
 fn rule_atanh_tanh_fires() {
     let ctx = Context::new();
     // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     assert_simplifies_to!(x.tanh().atanh(), "x");
 }
 
@@ -424,7 +424,7 @@ fn rule_atanh_tanh_fires() {
 fn rule_atanh_tanh_trace() {
     let ctx = Context::new();
     // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     assert_trace_contains_rule!(x.tanh().atanh(), "atanh_tanh");
 }
 

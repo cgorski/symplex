@@ -1415,7 +1415,7 @@ fn simp_exp_ln() {
 fn simp_ln_exp() {
     let ctx = Context::new();
     use symplex::prelude::Assumption;
-    let x = ctx.symbol("x").assume(Assumption::Real);
+    let x = ctx.symbol("x").assume(Assumption::Real).unwrap();
     check(&x.exp().ln().simplify(), "x");
 }
 
@@ -1560,7 +1560,7 @@ fn simp_pow_pow() {
 fn simp_sqrt_of_square() {
     let ctx = Context::new();
     // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     check(&x.powi(2).sqrt().simplify(), "abs(x)");
 }
 
@@ -1904,7 +1904,7 @@ fn assume_rational_is_not_integer() {
 #[test]
 fn assume_symbol_with_assumption() {
     let ctx = Context::new();
-    let t = ctx.symbol("t").assume(Assumption::Positive);
+    let t = ctx.symbol("t").assume(Assumption::Positive).unwrap();
     assert_eq!(t.is_positive(), Some(true));
 }
 

@@ -395,10 +395,10 @@ internal invariants.
 
 A second, shrinking category is **runtime `assert!`/`assert_eq!`/`assert_ne!`
 on caller-supplied shapes and preconditions** — 82 sites in 19 files at 0.22,
-e.g. `Matrix::zeros(0, n)`, `Context::symbol("")`, contradictory assumptions
-on one symbol, a zero denominator to `RationalFn`, a non-prime modulus to
-`legendre_symbol`, exponent overflow in `MultiPoly::mul`/`pow` (whose `try_`
-twins return `None`).  Each is documented under `# Panics` on its item.  They
+46 in 12 at 0.29, e.g. `Matrix::zeros(0, n)`, `Context::symbol("")`, a zero
+denominator to `RationalFn`, exponent overflow in `MultiPoly::mul`/`pow`
+(the bodies of `*`, whose `try_` twins return `None`).  Each is documented
+under `# Panics` on its item.  They
 predate point 4 below and are debt, not precedent: new code returns a
 `Result` instead, and converting an existing one means removing it from the
 allowlist.

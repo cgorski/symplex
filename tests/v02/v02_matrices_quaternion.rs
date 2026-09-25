@@ -78,7 +78,7 @@ fn is_unit_three_valued() {
 /// that `Matrix::equals` must recognise as `cosθ`.
 fn rotation_round_trip_symbolic(rot: fn(&Ex) -> Matrix) {
     let ctx = Context::new();
-    let th = ctx.symbol_with("theta", &[Assumption::Positive]);
+    let th = ctx.symbol_with("theta", &[Assumption::Positive]).unwrap();
     let r = rot(&th);
     let q = Quaternion::from_rotation_matrix(&r).unwrap();
     assert_eq!(q.is_unit(), Some(true));
@@ -273,7 +273,7 @@ fn exp_ln_inverse_pair() {
             "exp(ln q) = q: {a:?} vs {b:?}"
         );
     }
-    let th = ctx.symbol_with("theta", &[Assumption::Positive]);
+    let th = ctx.symbol_with("theta", &[Assumption::Positive]).unwrap();
     let n = Quaternion::from_axis_angle(&ctx.int(0), &ctx.int(1), &ctx.int(0), &th);
     let l = n.ln().simplify();
     // ln of a unit rotation quaternion is (θ/2)·axis (for θ ∈ (0, 2π))

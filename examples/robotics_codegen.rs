@@ -126,7 +126,7 @@ fn main() {
 
     println!("\n--- Jacobian (2×3) ---");
     let t1 = Instant::now();
-    let jac = jacobian(&[&px, &py], &[&theta1, &theta2, &theta3]);
+    let jac = jacobian(&[&px, &py], &[&theta1, &theta2, &theta3]).unwrap();
     let jac_time = t1.elapsed();
     println!("Jacobian computed in {jac_time:?}");
     println!("\n{jac}");

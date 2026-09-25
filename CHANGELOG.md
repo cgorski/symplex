@@ -8,8 +8,59 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+### Breaking
+
+Panics on caller input become `Err` (CONTRIBUTING.md "No Panics
+ Rule"): the `ASSERT_ALLOWLIST` of runtime assertions drops from 82
+sites in 19 files to 46 in 12.  Migrate each call by adding `?` (or
+`.unwrap()` where the input is known to be valid).
+
+- **`StateSpace`'s fields are private:** `StateSpace::new` is the only
+  way to build one, so every model has conformant shapes.  Read the
+  matrices with `a()`, `b()`, `c()` and `d()`.
+- **These now return `Result<_, SymplexError>`:**
+  - `StateSpace::new`, `control::routh_array`;
+  - `ntheory::legendre_symbol`, `Context::apply` (empty name),
+    `MultiPoly::eval`;
+  - `matrix::jacobian`, `matrix::cross`, `matrix::dot`,
+    `Matrix::submatrix`, `matrix_decomp::hessian` (also re-exported as
+    `vector::hessian`);
+  - in `vector`: `CoordinateSystem::scale_factors`, `gradient` /
+    `gradient_in`, `divergence` / `divergence_in`, `curl` / `curl_in`,
+    `laplacian` / `laplacian_in`, `directional_derivative`,
+    `line_integral_scalar`, `line_integral_vector`.
+- **`Context::symbol_with`, `Ex::assume` and `Ex::refine_with` return
+  `Result`:** an empty name is `InvalidArgument`, and contradictory
+  assumptions (positive and negative, say) are
+  `SymplexError::ContradictoryAssumptions`.  `refine_with` checks every
+  temporary set before applying any.  `sym!` expands with `?`.
+- **`multipoly::monomial_mul`** returns `Option`.
+- **`MultiPoly::mul_monomial`** (and `reduce` and `s_polynomial` through
+  it) no longer wraps exponents in release builds.  It now fails loudly,
+  with a documented panic, where it used to give a silently wrong answer;
+  `try_mul_monomial` is the checked form.  `div_exact` returns `None` for
+  a ring mismatch, and `is_solenoidal` returns `Some(false)` for a bad
+  shape; both used to panic.
+- The dead `plotting/rk4.rs` is removed.
+
 ### Breaking (behaviour; no signature changed)
 
+- **`integrate` checks every closed form it returns.**  The numeric
+  self-check now sits at the exit of each stage (rule-based search,
+  substitutions, Risch tower, heurisch); a rejected answer falls through
+  to the next stage.  Before, by parts, the standard rules,
+  u-substitution and heurisch returned answers unchecked: with a hidden
+  zero `k = sin²1 + cos²1 − 1`, `∫ x·e^{kx} dx` returned `x·e^{kx}/k −
+  e^{kx}/k²`, which is undefined everywhere.
+- **`ln|u|` only where `u` is known to be real.**  Realness is decided
+  exactly (assumptions, with undeclared parameters taken as real) or
+  numerically with certified digits; otherwise the answer uses `ln u`.
+  `∫ dx/(x − √(1/2 − √5/2))` and `∫ dx/(a + x√(−a))` returned `ln|…|`,
+  whose derivative is the conjugate of the integrand.  `∫ dx/(x + √a)` is
+  now `ln(x + √a)`, which is right for either sign of `a`.
+- The integrator's dependence test respects binders:
+  `RootOf(x⁵ − x + 1, k)` is a constant.  `∫ dx/(x − RootOf(…))` now
+  integrates, where it stayed unevaluated.
 - **`integrate` accepts a candidate antiderivative only on evidence.**
   The self-check (`antiderivative_rejected`, which was
   `antiderivative_is_wrong`) used to pass a candidate whenever it could not
@@ -31,11 +82,16 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ### Added
 
-- `Context::try_symbol_with` and `Ex::try_assume`: fallible twins of
-  `symbol_with` and `assume`.  `# Panics` sections are now written on
-  `symbol_with`, `assume`, `replace` and `s_polynomial`.
+- `StateSpace::{a, b, c, d}`, `MultiPoly::{try_add, try_sub,
+  try_mul_monomial}` and `Ex::try_replace`.  `# Panics` sections are now
+  written on `replace` and `s_polynomial`.
 - `rubi-harness --negative-params` re-checks every verified parametric
   answer with the parameters negated: 2,558 answers re-checked, 0 wrong.
+- rubi-harness: `real_verified` needs at least one agreeing point where
+  the integrand is real.  Six vacuous cases are reclassified: five were
+  wrong answers (and are now verified, after the `ln|u|` fix), and
+  `3.5 #134` is undecided because no sample point lies in its real
+  domain.  Rubi: 6,037 verified, 71 real_verified, 0 wrong, 1 undecided.
 
 ### Fixed
 

@@ -9,7 +9,7 @@ use symplex::prelude::*;
 #[test]
 fn is_even_for_known_even() {
     let ctx = Context::new();
-    let x = ctx.symbol("x").assume(Assumption::Even);
+    let x = ctx.symbol("x").assume(Assumption::Even).unwrap();
     assert_eq!(x.is_even(), Some(true));
     // even implies not odd
     assert_eq!(x.is_odd(), Some(false));
@@ -18,7 +18,7 @@ fn is_even_for_known_even() {
 #[test]
 fn is_odd_for_known_odd() {
     let ctx = Context::new();
-    let x = ctx.symbol("x").assume(Assumption::Odd);
+    let x = ctx.symbol("x").assume(Assumption::Odd).unwrap();
     assert_eq!(x.is_odd(), Some(true));
     // odd implies not even
     assert_eq!(x.is_even(), Some(false));
@@ -88,7 +88,7 @@ fn is_algebraic_for_integer() {
 #[test]
 fn is_hermitian_for_real_symbol() {
     let ctx = Context::new();
-    let x = ctx.symbol("x").assume(Assumption::Real);
+    let x = ctx.symbol("x").assume(Assumption::Real).unwrap();
     // real values are hermitian
     assert_eq!(x.is_hermitian(), Some(true));
 }
@@ -107,7 +107,7 @@ fn is_even_unknown_for_bare_symbol() {
 #[test]
 fn is_hermitian_for_assumed_hermitian() {
     let ctx = Context::new();
-    let x = ctx.symbol("x").assume(Assumption::Hermitian);
+    let x = ctx.symbol("x").assume(Assumption::Hermitian).unwrap();
     assert_eq!(x.is_hermitian(), Some(true));
 }
 
@@ -118,7 +118,7 @@ fn is_hermitian_for_assumed_hermitian() {
 #[test]
 fn conjugate_of_real_is_itself() {
     let ctx = Context::new();
-    let x = ctx.symbol("x").assume(Assumption::Real);
+    let x = ctx.symbol("x").assume(Assumption::Real).unwrap();
     let conj = x.conjugate();
     // For real x, im(x) = 0 so conjugate = re(x) - 0*i = x
     let s = format!("{}", conj.simplify());

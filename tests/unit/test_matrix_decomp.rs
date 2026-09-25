@@ -236,7 +236,7 @@ fn cross_product_basic() {
     // i x j = k
     let i_vec = Matrix::col_vector(vec![ctx.int(1), ctx.int(0), ctx.int(0)]);
     let j_vec = Matrix::col_vector(vec![ctx.int(0), ctx.int(1), ctx.int(0)]);
-    let k_vec = cross(&i_vec, &j_vec);
+    let k_vec = cross(&i_vec, &j_vec).unwrap();
     assert_eq!(k_vec.nrows(), 3);
     assert_eq!(k_vec.ncols(), 1);
     assert_eq!(format!("{}", k_vec.get(0, 0)), "0"); // x-component
@@ -249,8 +249,8 @@ fn cross_product_anticommutative() {
     let ctx = Context::new();
     let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
     let b = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]);
-    let ab = cross(&a, &b).simplify();
-    let ba = cross(&b, &a).simplify();
+    let ab = cross(&a, &b).unwrap().simplify();
+    let ba = cross(&b, &a).unwrap().simplify();
     // a x b = -(b x a)
     for i in 0..3 {
         let sum = (ab.get(i, 0) + ba.get(i, 0)).simplify();
@@ -272,7 +272,7 @@ fn dot_product_basic() {
     let ctx = Context::new();
     let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
     let b = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]);
-    let result = dot(&a, &b);
+    let result = dot(&a, &b).unwrap();
     assert_eq!(format!("{result}"), "32"); // 4+10+18
 }
 

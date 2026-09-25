@@ -40,7 +40,7 @@ fn matrix_jacobian() {
     let y = ctx.symbol("y");
     let f1 = &x.powi(2) * &y;
     let f2 = &x + &y.powi(3);
-    let j = jacobian(&[&f1, &f2], &[&x, &y]);
+    let j = jacobian(&[&f1, &f2], &[&x, &y]).unwrap();
     assert_eq!(j.nrows(), 2);
     assert_eq!(j.ncols(), 2);
 

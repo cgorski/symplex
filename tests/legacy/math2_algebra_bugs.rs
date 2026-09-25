@@ -640,7 +640,7 @@ fn simplify_power_of_power() {
 fn simplify_sqrt_of_square_is_abs() {
     let ctx = Context::new();
     // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     // √(x²) should simplify to |x|
     let expr = x.powi(2).sqrt();
     let simplified = expr.simplify();

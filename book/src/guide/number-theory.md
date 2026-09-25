@@ -39,7 +39,8 @@ fn main() {
     println!("{:?}", discrete_log(3, 13, 17));           // Some(4): 3⁴ ≡ 13 (mod 17)
     println!("{:?}", primitive_root(17));                // Some(3)
     println!("{:?}", multiplicative_order(2, 7));        // Some(3)
-    println!("{} {:?} {}", legendre_symbol(2, 7), jacobi_symbol(1001, 9907), kronecker_symbol(3, 8));   // 1 Ok(-1) -1
+    println!("{:?} {:?} {}", legendre_symbol(2, 7), jacobi_symbol(1001, 9907), kronecker_symbol(3, 8));   // Ok(1) Ok(-1) -1
+    println!("{}", legendre_symbol(2, 9).is_err());     // true — 9 is not prime
 }
 ```
 

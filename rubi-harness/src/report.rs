@@ -212,31 +212,20 @@ pub fn write_real_verified(
     header_note: &str,
 ) -> std::io::Result<()> {
     let mut s = String::new();
-    let mut by_tag: BTreeMap<String, usize> = BTreeMap::new();
-    for r in files.iter().flat_map(|f| f.results.iter().flatten()) {
-        if r.status == Status::RealVerified {
-            let vacuous = r
-                .get("tag")
-                .is_some_and(|t| t.contains("no real sample point"));
-            let key = if vacuous {
-                "integrand complex at every evaluated point (vacuously real_verified)"
-            } else {
-                "agrees at one or more points where the integrand is real"
-            };
-            *by_tag.entry(key.to_string()).or_insert(0) += 1;
-        }
-    }
-    let n: usize = by_tag.values().sum();
+    let n = files
+        .iter()
+        .flat_map(|f| f.results.iter().flatten())
+        .filter(|r| r.status == Status::RealVerified)
+        .count();
     let _ = writeln!(s, "# {header_note}");
     let _ = writeln!(
         s,
-        "# {n} REAL_VERIFIED cases: F' = f at every sample point where f is real; F' differs \
-         from f only where f is complex (e.g. ln|u| for u'/u with u complex), and the \
-         integrand has no %i.  Not bugs under symplex's real-variable convention.  {REPRODUCE}"
+        "# {n} REAL_VERIFIED cases: F' = f at every sample point where f is real (one at \
+         least); F' differs from f only where f is complex (e.g. ln|u| for u'/u with u \
+         complex), and the integrand has no %i.  Not bugs under symplex's real-variable \
+         convention.  An answer that agrees at no point where f is real is undecided.  \
+         {REPRODUCE}"
     );
-    for (t, k) in &by_tag {
-        let _ = writeln!(s, "#   {k:>6}  {t}");
-    }
     let _ = writeln!(s);
     write_cases(&mut s, files, &[Status::RealVerified]);
     std::fs::write(path, s)

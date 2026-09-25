@@ -335,7 +335,7 @@ fn symbols_and_symbols_indexed() {
 fn apply_creates_generic_function_application() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let f = ctx.apply("f", &[&x]);
+    let f = ctx.apply("f", &[&x]).unwrap();
     assert_eq!(format!("{f}"), "f(x)");
     assert_eq!(f.expr_type(), ExprType::Apply);
     assert_eq!(f.free_symbols(), vec![x.clone()]);
@@ -345,24 +345,24 @@ fn apply_creates_generic_function_application() {
 fn apply_is_left_alone_by_eval_and_simplify() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let f = ctx.apply("f", &[&x]);
+    let f = ctx.apply("f", &[&x]).unwrap();
     assert_eq!(f.eval(), f);
     assert_eq!(f.simplify(), f);
     // Arguments are still evaluated.
-    let g = ctx.apply("g", &[&(&ctx.int(2) + 3)]);
-    assert_eq!(g, ctx.apply("g", &[ctx.int(5)]));
+    let g = ctx.apply("g", &[&(&ctx.int(2) + 3)]).unwrap();
+    assert_eq!(g, ctx.apply("g", &[ctx.int(5)]).unwrap());
 }
 
 #[test]
 fn apply_diff_yields_formal_derivative_with_chain_rule() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let f = ctx.apply("f", &[&x]);
+    let f = ctx.apply("f", &[&x]).unwrap();
     let d = f.diff(&x);
     assert_eq!(format!("{d}"), "Derivative(f(x), x)");
     assert!(d.has_unevaluated());
     assert!(f.try_diff(&x).is_err());
-    let chain = ctx.apply("f", &[x.powi(2)]).diff(&x);
+    let chain = ctx.apply("f", &[x.powi(2)]).unwrap().diff(&x);
     assert_eq!(format!("{chain}"), "2*x*Derivative(f(x^2), x^2)");
 }
 
@@ -370,7 +370,7 @@ fn apply_diff_yields_formal_derivative_with_chain_rule() {
 fn apply_cannot_be_evaluated_numerically() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let f = ctx.apply("f", &[&x]);
+    let f = ctx.apply("f", &[&x]).unwrap();
     assert!(matches!(
         f.compile(&["x"]),
         Err(SymplexError::NotImplemented(_))
@@ -382,10 +382,10 @@ fn apply_cannot_be_evaluated_numerically() {
 fn apply_multiple_args_and_zero_args() {
     let ctx = Context::new();
     let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
-    let h = ctx.apply("h", &[&x, &y, &ctx.int(3)]);
+    let h = ctx.apply("h", &[&x, &y, &ctx.int(3)]).unwrap();
     assert_eq!(format!("{h}"), "h(x, y, 3)");
     assert_eq!(h.args().len(), 3);
-    let k = ctx.apply::<Ex>("k", &[]);
+    let k = ctx.apply::<Ex>("k", &[]).unwrap();
     assert_eq!(format!("{k}"), "k()");
 }
 
@@ -393,7 +393,7 @@ fn apply_multiple_args_and_zero_args() {
 fn apply_survives_json_round_trip() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let f = ctx.apply("f", &[&x, &ctx.int(2)]);
+    let f = ctx.apply("f", &[&x, &ctx.int(2)]).unwrap();
     let back = ctx.from_json(&f.to_json().unwrap()).unwrap();
     assert_eq!(back, f);
 }

@@ -683,7 +683,7 @@ fn workflow_simplify_then_eval() {
 #[test]
 fn assumptions_through_expand() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Positive]);
+    let x = ctx.symbol_with("x", &[Assumption::Positive]).unwrap();
     let expr = (&x + 1).powi(2).expand();
     // x^2 + 2*x + 1 — all terms positive when x > 0.
     assert_eq!(
@@ -696,7 +696,9 @@ fn assumptions_through_expand() {
 #[test]
 fn assumptions_survive_diff() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Positive, Assumption::Real]);
+    let x = ctx
+        .symbol_with("x", &[Assumption::Positive, Assumption::Real])
+        .unwrap();
     let deriv = x.powi(2).diff(&x);
     // 2*x — should be positive since x > 0.
     assert_eq!(

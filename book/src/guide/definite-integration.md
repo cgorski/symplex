@@ -58,8 +58,8 @@ fn main() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
     let (zero, inf) = (ctx.int(0), ctx.infinity());
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
-    let n = ctx.symbol_with("n", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
+    let n = ctx.symbol_with("n", &[Assumption::Positive]).unwrap();
 
     println!("{}", (-(&a * &x)).exp().integrate_definite(&x, &zero, &inf));           // 1/a
     println!("{}", (-(&a * &x.powi(2))).exp().integrate_definite(&x, &ctx.neg_infinity(), &inf)); // sqrt(pi/a)

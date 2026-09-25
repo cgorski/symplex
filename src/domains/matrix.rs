@@ -845,10 +845,11 @@ impl Matrix {
 
     /// The sub-block with the given row and column ranges.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if either range is empty or extends past the matrix bounds,
-    /// mirroring slice indexing.
+    /// Returns [`SymplexError::InvalidArgument`] if either range is empty
+    /// (a matrix has at least one row and column) or extends past the
+    /// matrix bounds.
     ///
     /// # Examples
     ///
@@ -857,21 +858,29 @@ impl Matrix {
     ///
     /// let ctx = Context::new();
     /// let m = matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]];
-    /// assert_eq!(m.submatrix(1..3, 0..2), matrix![ctx, [4, 5], [7, 8]]);
+    /// assert_eq!(m.submatrix(1..3, 0..2).unwrap(), matrix![ctx, [4, 5], [7, 8]]);
+    /// assert!(m.submatrix(1..1, 0..2).is_err());
+    /// assert!(m.submatrix(0..4, 0..2).is_err());
     /// ```
-    pub fn submatrix(&self, rows: std::ops::Range<usize>, cols: std::ops::Range<usize>) -> Matrix {
-        assert!(
-            rows.start < rows.end && rows.end <= self.nrows,
-            "submatrix: row range {rows:?} invalid for {} rows",
-            self.nrows
-        );
-        assert!(
-            cols.start < cols.end && cols.end <= self.ncols,
-            "submatrix: column range {cols:?} invalid for {} columns",
-            self.ncols
-        );
+    pub fn submatrix(
+        &self,
+        rows: std::ops::Range<usize>,
+        cols: std::ops::Range<usize>,
+    ) -> Result<Matrix, SymplexError> {
+        if rows.start >= rows.end || rows.end > self.nrows {
+            return Err(SymplexError::invalid_argument(
+                "Matrix::submatrix",
+                format!("row range {rows:?} invalid for {} rows", self.nrows),
+            ));
+        }
+        if cols.start >= cols.end || cols.end > self.ncols {
+            return Err(SymplexError::invalid_argument(
+                "Matrix::submatrix",
+                format!("column range {cols:?} invalid for {} columns", self.ncols),
+            ));
+        }
         let data: Vec<Vec<Ex>> = rows.map(|i| self.rows[i][cols.clone()].to_vec()).collect();
-        Matrix::from_rows_unchecked(data)
+        Ok(Matrix::from_rows_unchecked(data))
     }
 
     /// Iterate over all entries in row-major order.
@@ -2958,17 +2967,38 @@ fn quadratic_sqrt(disc: &Ex) -> Ex {
 /// Build the Jacobian matrix of `funcs` with respect to `vars`:
 /// `J[i][j] = ∂funcs[i] / ∂vars[j]`.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `funcs` or `vars` is empty.
-pub fn jacobian(funcs: &[&Ex], vars: &[&Ex]) -> Matrix {
-    assert!(!funcs.is_empty(), "jacobian: funcs must be non-empty");
-    assert!(!vars.is_empty(), "jacobian: vars must be non-empty");
+/// Returns [`SymplexError::InvalidArgument`] if `funcs` or `vars` is empty.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::matrix::jacobian;
+///
+/// let ctx = Context::new();
+/// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+/// let j = jacobian(&[&(&x * &y), &(&x + &y)], &[&x, &y]).unwrap();
+/// assert_eq!(j, Matrix::new(vec![vec![y.clone(), x.clone()], vec![ctx.int(1), ctx.int(1)]]).unwrap());
+/// assert!(jacobian(&[], &[&x]).is_err());
+/// ```
+pub fn jacobian(funcs: &[&Ex], vars: &[&Ex]) -> Result<Matrix, SymplexError> {
+    if funcs.is_empty() || vars.is_empty() {
+        return Err(SymplexError::invalid_argument(
+            "jacobian",
+            format!(
+                "funcs and vars must be non-empty (got {} and {})",
+                funcs.len(),
+                vars.len()
+            ),
+        ));
+    }
     let rows: Vec<Vec<Ex>> = funcs
         .iter()
         .map(|fi| vars.iter().map(|vj| fi.diff(vj)).collect())
         .collect();
-    Matrix::from_rows_unchecked(rows)
+    Ok(Matrix::from_rows_unchecked(rows))
 }
 
 impl Matrix {
@@ -4455,51 +4485,80 @@ fn pick_independent_vec(
 
 /// Cross product of two 3×1 column vectors.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if either argument is not a 3×1 matrix.
-pub fn cross(a: &Matrix, b: &Matrix) -> Matrix {
-    assert!(
-        a.nrows() == 3 && a.ncols() == 1,
-        "cross: first argument must be a 3×1 column vector, got {}×{}",
-        a.nrows(),
-        a.ncols()
-    );
-    assert!(
-        b.nrows() == 3 && b.ncols() == 1,
-        "cross: second argument must be a 3×1 column vector, got {}×{}",
-        b.nrows(),
-        b.ncols()
-    );
+/// Returns [`SymplexError::InvalidArgument`] if either argument is not a
+/// 3×1 matrix.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::matrix::cross;
+///
+/// let ctx = Context::new();
+/// let (i, j) = (matrix![ctx, [1], [0], [0]], matrix![ctx, [0], [1], [0]]);
+/// assert_eq!(cross(&i, &j).unwrap(), matrix![ctx, [0], [0], [1]]);
+/// assert!(cross(&i, &matrix![ctx, [0], [1]]).is_err());
+/// ```
+pub fn cross(a: &Matrix, b: &Matrix) -> Result<Matrix, SymplexError> {
+    for (which, v) in [("first", a), ("second", b)] {
+        if v.shape() != (3, 1) {
+            return Err(SymplexError::invalid_argument(
+                "cross",
+                format!(
+                    "{which} argument must be a 3×1 column vector, got {}×{}",
+                    v.nrows(),
+                    v.ncols()
+                ),
+            ));
+        }
+    }
     let (a0, a1, a2) = (a.get(0, 0), a.get(1, 0), a.get(2, 0));
     let (b0, b1, b2) = (b.get(0, 0), b.get(1, 0), b.get(2, 0));
-    Matrix::col_vector(vec![
+    Ok(Matrix::col_vector(vec![
         a1 * b2 - a2 * b1,
         a2 * b0 - a0 * b2,
         a0 * b1 - a1 * b0,
-    ])
+    ]))
 }
 
 /// Dot product of two column vectors (n×1 matrices).
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if either argument is not a column vector or lengths differ.
-pub fn dot(a: &Matrix, b: &Matrix) -> Ex {
-    assert_eq!(a.ncols(), 1, "dot: first argument must be a column vector");
-    assert_eq!(b.ncols(), 1, "dot: second argument must be a column vector");
-    assert_eq!(
-        a.nrows(),
-        b.nrows(),
-        "dot: vectors must have the same length ({} vs {})",
-        a.nrows(),
-        b.nrows()
-    );
+/// Returns [`SymplexError::InvalidArgument`] if either argument is not a
+/// column vector or the lengths differ.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::matrix::dot;
+///
+/// let ctx = Context::new();
+/// assert_eq!(dot(&matrix![ctx, [1], [2]], &matrix![ctx, [3], [4]]).unwrap(), ctx.int(11));
+/// assert!(dot(&matrix![ctx, [1], [2]], &matrix![ctx, [3]]).is_err());
+/// assert!(dot(&matrix![ctx, [1, 2]], &matrix![ctx, [3, 4]]).is_err());
+/// ```
+pub fn dot(a: &Matrix, b: &Matrix) -> Result<Ex, SymplexError> {
+    if a.ncols() != 1 || b.ncols() != 1 || a.nrows() != b.nrows() {
+        return Err(SymplexError::invalid_argument(
+            "dot",
+            format!(
+                "arguments must be column vectors of equal length, got {}×{} and {}×{}",
+                a.nrows(),
+                a.ncols(),
+                b.nrows(),
+                b.ncols()
+            ),
+        ));
+    }
     let mut sum = a.get(0, 0) * b.get(0, 0);
     for i in 1..a.nrows() {
         sum += &(a.get(i, 0) * b.get(i, 0));
     }
-    sum
+    Ok(sum)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -4903,7 +4962,7 @@ mod tests {
     fn submatrix_and_minor_matrix() {
         let ctx = tctx();
         let m = Matrix::from_i64(&ctx, &[&[1, 2, 3], &[4, 5, 6], &[7, 8, 9]]).unwrap();
-        let s = m.submatrix(0..2, 1..3);
+        let s = m.submatrix(0..2, 1..3).unwrap();
         assert_eq!(s, Matrix::from_i64(&ctx, &[&[2, 3], &[5, 6]]).unwrap());
         let mm = m.minor_matrix(1, 1).unwrap();
         assert_eq!(mm, Matrix::from_i64(&ctx, &[&[1, 3], &[7, 9]]).unwrap());
@@ -5211,7 +5270,7 @@ mod tests {
         let y = ctx.symbol("y");
         let f1 = &x.powi(2) + &y;
         let f2 = &x * &y;
-        let j = jacobian(&[&f1, &f2], &[&x, &y]);
+        let j = jacobian(&[&f1, &f2], &[&x, &y]).unwrap();
         assert_eq!(j.shape(), (2, 2));
         assert_eq!(j.get(0, 0), &(&x * 2));
         assert_eq!(j.get(0, 1), &ctx.int(1));

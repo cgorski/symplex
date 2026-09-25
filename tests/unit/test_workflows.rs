@@ -352,7 +352,7 @@ fn workflow_jacobian_to_lambdify() {
     let f2 = &x * &y.powi(2);
 
     // Step 1: compute Jacobian
-    let jac = jacobian(&[&f1, &f2], &[&x, &y]);
+    let jac = jacobian(&[&f1, &f2], &[&x, &y]).unwrap();
     assert_eq!(jac.shape(), (2, 2));
 
     // J = [[2xy, x²], [y², 2xy]]

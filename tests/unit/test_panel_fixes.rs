@@ -17,7 +17,7 @@ use symplex::prelude::*;
 #[test]
 fn ln_exp_simplifies_when_real() {
     let ctx = Context::new();
-    let x = ctx.symbol("x").assume(Assumption::Real);
+    let x = ctx.symbol("x").assume(Assumption::Real).unwrap();
     let result = x.exp().ln().simplify();
     assert_eq!(format!("{result}"), "x");
 }
@@ -26,7 +26,7 @@ fn ln_exp_simplifies_when_real() {
 #[test]
 fn ln_exp_simplifies_when_real_via_context() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     let result = x.exp().ln().simplify();
     assert_eq!(format!("{result}"), "x");
 }
@@ -62,7 +62,7 @@ fn ln_exp_simplifies_for_zero() {
 #[test]
 fn ln_exp_simplifies_when_positive() {
     let ctx = Context::new();
-    let x = ctx.symbol("t").assume(Assumption::Positive);
+    let x = ctx.symbol("t").assume(Assumption::Positive).unwrap();
     let result = x.exp().ln().simplify();
     assert_eq!(format!("{result}"), "t");
 }
@@ -71,7 +71,7 @@ fn ln_exp_simplifies_when_positive() {
 #[test]
 fn ln_exp_simplifies_when_negative() {
     let ctx = Context::new();
-    let x = ctx.symbol("u").assume(Assumption::Negative);
+    let x = ctx.symbol("u").assume(Assumption::Negative).unwrap();
     let result = x.exp().ln().simplify();
     assert_eq!(format!("{result}"), "u");
 }
@@ -80,7 +80,7 @@ fn ln_exp_simplifies_when_negative() {
 #[test]
 fn ln_exp_simplifies_when_integer() {
     let ctx = Context::new();
-    let n = ctx.symbol("n").assume(Assumption::Integer);
+    let n = ctx.symbol("n").assume(Assumption::Integer).unwrap();
     let result = n.exp().ln().simplify();
     assert_eq!(format!("{result}"), "n");
 }
@@ -90,7 +90,7 @@ fn ln_exp_simplifies_when_integer() {
 /// Mathematically, ln(exp(x)) = x only when x is real (branch cuts for complex x).
 /// However, like SymPy, symplex simplifies ln(exp(x)) → x unconditionally.
 /// This is the pragmatic choice: the vast majority of users work with real
-/// variables, and requiring `.assume("real")` on every variable before basic
+/// variables, and requiring `.assume("real").unwrap()` on every variable before basic
 /// simplification works would be a terrible UX.
 ///
 /// If complex-aware simplification is needed in the future, it should be a
@@ -124,7 +124,7 @@ fn exp_ln_always_simplifies() {
 #[test]
 fn exp_ln_simplifies_with_real_assumption() {
     let ctx = Context::new();
-    let x = ctx.symbol("v").assume(Assumption::Real);
+    let x = ctx.symbol("v").assume(Assumption::Real).unwrap();
     let result = x.ln().exp().simplify();
     assert_eq!(format!("{result}"), "v");
 }
@@ -310,7 +310,7 @@ fn query_methods_return_values_for_unconstrained_symbol() {
 #[test]
 fn query_reflects_positive_assumption() {
     let ctx = Context::new();
-    let x = ctx.symbol("xp").assume(Assumption::Positive);
+    let x = ctx.symbol("xp").assume(Assumption::Positive).unwrap();
     assert_eq!(x.is_positive(), Some(true), "should be positive");
     assert_eq!(x.is_real(), Some(true), "positive ⇒ real");
     assert_eq!(x.is_negative(), Some(false), "positive ⇒ ¬negative");
@@ -321,7 +321,7 @@ fn query_reflects_positive_assumption() {
 #[test]
 fn query_reflects_real_assumption() {
     let ctx = Context::new();
-    let x = ctx.symbol("xr").assume(Assumption::Real);
+    let x = ctx.symbol("xr").assume(Assumption::Real).unwrap();
     assert_eq!(x.is_real(), Some(true));
     assert_eq!(x.is_complex(), Some(true), "real ⇒ complex");
 }
@@ -330,7 +330,7 @@ fn query_reflects_real_assumption() {
 #[test]
 fn query_reflects_integer_assumption() {
     let ctx = Context::new();
-    let n = ctx.symbol("n_int").assume(Assumption::Integer);
+    let n = ctx.symbol("n_int").assume(Assumption::Integer).unwrap();
     assert_eq!(n.is_integer(), Some(true));
     assert_eq!(n.is_rational(), Some(true), "integer ⇒ rational");
     assert_eq!(n.is_real(), Some(true), "integer ⇒ real");
@@ -362,7 +362,7 @@ fn query_for_zero() {
 #[test]
 fn query_generic_agrees_with_named() {
     let ctx = Context::new();
-    let x = ctx.symbol("xg").assume(Assumption::Positive);
+    let x = ctx.symbol("xg").assume(Assumption::Positive).unwrap();
     assert_eq!(x.query(Props::POSITIVE), x.is_positive());
     assert_eq!(x.query(Props::REAL), x.is_real());
     assert_eq!(x.query(Props::NEGATIVE), x.is_negative());

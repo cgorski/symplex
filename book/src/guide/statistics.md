@@ -122,14 +122,14 @@ use symplex::stats::{Distribution, RandomVariable};
 
 fn main() {
     let ctx = Context::new();
-    let k = ctx.symbol_with("k", &[Assumption::Positive]);
-    let theta = ctx.symbol_with("theta", &[Assumption::Positive]);
+    let k = ctx.symbol_with("k", &[Assumption::Positive]).unwrap();
+    let theta = ctx.symbol_with("theta", &[Assumption::Positive]).unwrap();
     let g = RandomVariable::new(&ctx, "G", Distribution::gamma(k.clone(), theta.clone()));
     println!("{}", g.mean());       // k*theta
     println!("{}", g.variance());   // k*theta^2
     println!("{}", g.moment(2));    // theta^2*rising_factorial(k, 2)   = θ² k(k+1)
 
-    let nu = ctx.symbol_with("nu", &[Assumption::Positive]);
+    let nu = ctx.symbol_with("nu", &[Assumption::Positive]).unwrap();
     let t = RandomVariable::new(&ctx, "T", Distribution::student_t(nu.clone()));
     println!("{}", t.variance());   // nu/(nu - 2)                        (valid for ν > 2)
 }

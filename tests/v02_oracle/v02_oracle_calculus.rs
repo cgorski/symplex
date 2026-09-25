@@ -42,7 +42,7 @@ fn integrand_and_bounds(ctx: &Context, fx: &Fixture) -> Result<(Ex, Ex, Ex, Ex),
                 Some("real") => vec![Assumption::Real],
                 _ => vec![],
             };
-            ctx.symbol_with(name, &props);
+            ctx.symbol_with(name, &props).unwrap();
         }
     }
     let f = parse(ctx, fx.str("input").ok_or("no input")?)?;

@@ -391,7 +391,7 @@ fn check_solution_definite_false() {
     assert_eq!(q.check_solution(&x, &ctx.i_unit()), Some(true));
     assert_eq!(q.check_solution(&x, &(&ctx.i_unit() * 2)), Some(false));
     // Provably nonzero symbolic residual via assumptions.
-    let p_sym = ctx.symbol_with("p", &[Assumption::Positive]);
+    let p_sym = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
     let r = &x - &p_sym;
     assert_eq!(r.check_solution(&x, &ctx.int(0)), Some(false));
     // Irrational exact root.

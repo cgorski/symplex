@@ -220,7 +220,7 @@ fn riccati_residual_setup() {
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     let p = Matrix::identity(&ctx, 2);
     let q = Matrix::identity(&ctx, 2);
@@ -245,7 +245,7 @@ fn riccati_residual_at_solution() {
     let b = Matrix::new(vec![vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     let p = Matrix::new(vec![vec![ctx.int(1)]]).unwrap();
     let q = Matrix::new(vec![vec![ctx.int(1)]]).unwrap();
@@ -279,7 +279,7 @@ fn ackermann_simple() {
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a.clone(), b.clone(), c, d);
+    let ss = StateSpace::new(a.clone(), b.clone(), c, d).unwrap();
 
     let desired_poles = vec![ctx.int(-1), ctx.int(-2)];
     let k = ss
@@ -327,7 +327,7 @@ fn ackermann_not_controllable_returns_err() {
     let b = Matrix::new(vec![vec![ctx.int(1)], vec![ctx.int(0)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     let desired_poles = vec![ctx.int(-1), ctx.int(-2)];
     assert!(
@@ -347,7 +347,7 @@ fn ackermann_wrong_pole_count_returns_err() {
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     let err = ss.ackermann(&[ctx.int(-1)]).unwrap_err();
     assert!(
@@ -372,7 +372,7 @@ fn ackermann_multi_input_returns_err() {
     .unwrap();
     let c = Matrix::identity(&ctx, 2);
     let d = Matrix::zeros(&ctx, 2, 2);
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     let desired_poles = vec![ctx.int(-1), ctx.int(-2)];
     assert!(

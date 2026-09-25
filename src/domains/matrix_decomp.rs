@@ -85,8 +85,8 @@ fn dot_vec(a: &[Ex], b: &[Ex]) -> Ex {
 /// let q = gram_schmidt(&[v1, v2], true).unwrap();
 /// // q0 = (1/√2, 1/√2), q1 = (1/√2, −1/√2)
 /// assert_eq!(q[0][(0, 0)].powi(2), ctx.rational(1, 2));
-/// assert_eq!(symplex::matrix::dot(&q[0], &q[1]), ctx.int(0));
-/// assert_eq!(symplex::matrix::dot(&q[1], &q[1]), ctx.int(1));
+/// assert_eq!(symplex::matrix::dot(&q[0], &q[1]).unwrap(), ctx.int(0));
+/// assert_eq!(symplex::matrix::dot(&q[1], &q[1]).unwrap(), ctx.int(1));
 /// ```
 pub fn gram_schmidt(vectors: &[Matrix], normalize: bool) -> Result<Vec<Matrix>, SymplexError> {
     if vectors.is_empty() {
@@ -534,7 +534,7 @@ impl Matrix {
         }
         let n = self.nrows();
         all3((1..=n).map(|k| {
-            let minor = self.submatrix(0..k, 0..k).det().ok()?;
+            let minor = self.submatrix(0..k, 0..k).ok()?.det().ok()?;
             ex_is_positive(&minor)
         }))
     }
@@ -859,9 +859,9 @@ impl Matrix {
 
 /// Hessian matrix `H[i][j] = ∂²f / ∂vars[i] ∂vars[j]`.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `vars` is empty.
+/// Returns [`SymplexError::InvalidArgument`] if `vars` is empty.
 ///
 /// # Examples
 ///
@@ -872,16 +872,21 @@ impl Matrix {
 /// let ctx = Context::new();
 /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
 /// let f = &x.powi(2) * &y + &y.powi(3);
-/// let h = hessian(&f, &[&x, &y]);
+/// let h = hessian(&f, &[&x, &y]).unwrap();
 /// assert_eq!(h[(0, 0)], &y * 2);
 /// assert_eq!(h[(0, 1)], &x * 2);
 /// assert_eq!(h[(1, 1)], &y * 6);
 /// assert_eq!(h.is_symmetric(), Some(true));
+/// assert!(hessian(&f, &[]).is_err());
 /// ```
-pub fn hessian(f: &Ex, vars: &[&Ex]) -> Matrix {
-    assert!(!vars.is_empty(), "hessian: vars must be non-empty");
+pub fn hessian(f: &Ex, vars: &[&Ex]) -> Result<Matrix, SymplexError> {
+    if vars.is_empty() {
+        return Err(invalid("hessian", "vars must be non-empty"));
+    }
     let firsts: Vec<Ex> = vars.iter().map(|v| f.diff(v)).collect();
-    Matrix::from_fn(vars.len(), vars.len(), |i, j| firsts[i].diff(vars[j]))
+    Ok(Matrix::from_fn(vars.len(), vars.len(), |i, j| {
+        firsts[i].diff(vars[j])
+    }))
 }
 
 /// Wronskian `W(f₁, …, fₙ)(x) = det[ fⱼ^(i) ]` of a list of functions.
@@ -986,7 +991,10 @@ mod tests {
         let v2 = ctxi(&ctx, &[&[1], &[0], &[1]]);
         let g = gram_schmidt(&[v1.clone(), v2], false).unwrap();
         assert_eq!(g[0], v1);
-        assert_eq!(crate::domains::matrix::dot(&g[0], &g[1]).eval(), ctx.int(0));
+        assert_eq!(
+            crate::domains::matrix::dot(&g[0], &g[1]).unwrap().eval(),
+            ctx.int(0)
+        );
         assert!(gram_schmidt(&[v1.clone(), &v1 * 2], false).is_err());
         assert!(gram_schmidt(&[], false).is_err());
     }
@@ -1016,7 +1024,7 @@ mod tests {
         .unwrap();
         assert!(sym.cholesky().is_err(), "undecidable pivot must be Err");
         // With a positivity assumption the symbolic factorization works.
-        let p = ctx.symbol_with("p", &[Assumption::Positive]);
+        let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
         let sym_p = Matrix::new(vec![
             vec![p.clone(), ctx.int(0)],
             vec![ctx.int(0), ctx.int(1)],
@@ -1121,7 +1129,7 @@ mod tests {
             ctxi(&ctx, &[&[0, 0], &[0, -1]]).is_positive_semidefinite(),
             Some(false)
         );
-        let p = ctx.symbol_with("p", &[Assumption::Positive]);
+        let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
         let m = Matrix::new(vec![
             vec![p.clone(), ctx.int(0)],
             vec![ctx.int(0), p.clone()],
@@ -1167,7 +1175,7 @@ mod tests {
         let ctx = Context::new();
         let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
         let f = &x.powi(3) + &(&x * &y.powi(2));
-        let h = hessian(&f, &[&x, &y]);
+        let h = hessian(&f, &[&x, &y]).unwrap();
         assert_eq!(h.get(0, 0), &(&x * 6));
         assert_eq!(h.get(0, 1), &(&y * 2));
         assert_eq!(h.get(1, 0), &(&y * 2));

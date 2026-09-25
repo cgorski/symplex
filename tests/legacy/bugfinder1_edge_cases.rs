@@ -1915,14 +1915,14 @@ fn cancel_non_polynomial_no_crash() {
 #[test]
 fn symbol_with_positive_assumption() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Positive]);
+    let x = ctx.symbol_with("x", &[Assumption::Positive]).unwrap();
     assert_eq!(x.is_positive(), Some(true));
 }
 
 #[test]
 fn symbol_with_real_assumption() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     assert_eq!(x.is_real(), Some(true));
     // Real says nothing about the sign.
     assert_eq!(x.is_positive(), None);
@@ -1932,7 +1932,7 @@ fn symbol_with_real_assumption() {
 #[test]
 fn symbol_with_integer_assumption() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Integer]);
+    let x = ctx.symbol_with("x", &[Assumption::Integer]).unwrap();
     let result = x.is_integer();
     eprintln!("is_integer(x with Integer) = {result:?}");
     assert_eq!(result, Some(true));
@@ -2172,7 +2172,7 @@ fn power_of_power_mixed() {
 #[test]
 fn power_of_power_mixed_positive_x() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Positive]);
+    let x = ctx.symbol_with("x", &[Assumption::Positive]).unwrap();
     let half = ctx.rational(1, 2);
     let result = x.powi(4).pow(&half).simplify();
     // For positive x: sqrt(x^4) = x^2.
@@ -2539,8 +2539,8 @@ fn integrate_x_exp_x() {
 #[test]
 fn ln_of_product_expand_log() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Positive]);
-    let y = ctx.symbol_with("y", &[Assumption::Positive]);
+    let x = ctx.symbol_with("x", &[Assumption::Positive]).unwrap();
+    let y = ctx.symbol_with("y", &[Assumption::Positive]).unwrap();
     let expr = (&x * &y).ln();
     let expanded = expr.expand_log();
     let s = format!("{expanded}");

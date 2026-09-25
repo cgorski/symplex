@@ -165,7 +165,7 @@ fn rationalize_integer_denom() {
 #[test]
 fn re_of_real() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     assert_eq!(format!("{}", x.re()), "x");
     let z = ctx.symbol("z");
     assert_eq!(format!("{}", z.re()), "re(z)");
@@ -174,7 +174,7 @@ fn re_of_real() {
 #[test]
 fn im_of_real() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     assert_eq!(format!("{}", x.im()), "0");
     let z = ctx.symbol("z");
     assert_eq!(format!("{}", z.im()), "im(z)");

@@ -57,7 +57,7 @@ impl Expr<Numeric> {
     /// assert_eq!(format!("{}", (&i * &w).re()), "-im(w)");
     ///
     /// // … unless assumed real.
-    /// let x = ctx.symbol_with("x", &[Assumption::Real]);
+    /// let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     /// assert_eq!(x.re(), x);
     /// ```
     #[must_use]
@@ -79,7 +79,7 @@ impl Expr<Numeric> {
     /// let z = &ctx.int(3) + &(&ctx.int(4) * &i);
     /// assert_eq!(format!("{}", z.im()), "4");
     ///
-    /// let x = ctx.symbol_with("x", &[Assumption::Real]);
+    /// let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     /// assert!(x.im().is_zero_structural());
     /// assert_eq!(format!("{}", (&x.exp() * &i).im()), "exp(x)");
     /// ```
@@ -137,7 +137,7 @@ impl Expr<Numeric> {
     /// assert_eq!(format!("{}", z.arg()), "1/4*pi");
     /// assert_eq!(format!("{}", ctx.int(-2).arg()), "pi");
     ///
-    /// let x = ctx.symbol_with("x", &[Assumption::Real]);
+    /// let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     /// assert_eq!(format!("{}", x.arg()), "arg(x)"); // sign unknown
     /// ```
     #[must_use]
@@ -157,7 +157,7 @@ impl Expr<Numeric> {
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
-    /// let x = ctx.symbol_with("x", &[Assumption::Real]);
+    /// let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     /// let z = (&ctx.i_unit() * &x).exp();          // e^{ix}
     /// let (re, im) = z.as_real_imag();
     /// assert_eq!(format!("{re}"), "cos(x)");
@@ -181,7 +181,7 @@ impl Expr<Numeric> {
     /// let z = ctx.symbol("z");
     /// assert_eq!(format!("{}", z.expand_complex()), "im(z)*I + re(z)");
     ///
-    /// let x = ctx.symbol_with("x", &[Assumption::Real]);
+    /// let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     /// let e = (&ctx.i_unit() * &x).exp().expand_complex();
     /// assert_eq!(format!("{e}"), "sin(x)*I + cos(x)");
     /// ```
@@ -270,7 +270,7 @@ impl Expr<Numeric> {
     /// assert_eq!((&ctx.int(3) + &i).is_real_valued(), Some(false));
     /// assert_eq!(ctx.symbol("z").is_real_valued(), None);
     /// assert_eq!(ctx.symbol("z").abs().is_real_valued(), Some(true));
-    /// let x = ctx.symbol_with("x", &[Assumption::Real]);
+    /// let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     /// assert_eq!((&x + &i).is_real_valued(), Some(false));
     /// ```
     #[must_use]

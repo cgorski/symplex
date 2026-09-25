@@ -226,6 +226,7 @@ You can declare properties of symbols to help the simplifier:
 # let ctx = Context::new();
 sym!(ctx; x, Positive);    // x > 0
 sym!(ctx; n, Integer);     // n ∈ ℤ
+# Ok::<(), SymplexError>(())
 ```
 
 With `x` declared positive, `sqrt(x²)` simplifies to `x`; declared `Real`, to `|x|`; without an assumption it stays `sqrt(x²)` (see the domain model below).
@@ -259,9 +260,9 @@ let ctx = Context::new();
 let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
 assert_eq!((&x.ln() + &y.ln()).simplify(), &x.ln() + &y.ln());   // x = y = −1: 2πi ≠ 0
 assert_eq!(x.powi(2).sqrt().simplify(), x.powi(2).sqrt());      // x = i:  i ≠ 1
-let r = ctx.symbol_with("r", &[Assumption::Real]);
+let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
 assert_eq!(r.powi(2).sqrt().simplify(), r.abs());
-let (p, q) = (ctx.symbol_with("p", &[Assumption::Positive]), ctx.symbol_with("q", &[Assumption::Positive]));
+let (p, q) = (ctx.symbol_with("p", &[Assumption::Positive]).unwrap(), ctx.symbol_with("q", &[Assumption::Positive]).unwrap());
 assert_eq!(format!("{}", (&p.ln() + &q.ln()).simplify()), "ln(p*q)");
 assert_eq!(format!("{}", (ctx.int(2).ln() + x.ln()).log_combine()), "ln(2*x)");
 assert_eq!(ctx.int(-8).real_root(3)?, ctx.int(-2));

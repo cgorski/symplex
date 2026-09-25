@@ -146,6 +146,16 @@ const PROP_NAMES: [(Props, &str); 24] = [
     (Props::EXTENDED_REAL, "extended_real"),
 ];
 
+/// `positive`, `not real`, …: an [`Assumption`] in the words of [`Props`].
+fn describe_assumption(assumption: Assumption) -> String {
+    let (prop, value) = assumption.to_prop_value();
+    if value {
+        prop.to_string()
+    } else {
+        format!("not {prop}")
+    }
+}
+
 impl std::fmt::Display for Props {
     /// Comma-separated lowercase property names in bit order
     /// (e.g. `positive, real, nonzero`); the empty set prints as `none`.
@@ -462,27 +472,82 @@ impl Assumptions {
         self
     }
 
-    /// `Ok` when `self` can be declared on a symbol: not contradictory once
-    /// [normalised](Self::normalize_declared), the condition under which
-    /// `Arena::set_symbol_assumptions` and
-    /// `AssumptionCache::set_symbol_assumptions` panic.
-    pub(crate) fn check_declarable(
-        &self,
-        operation: &'static str,
-    ) -> Result<(), crate::base::errors::SymplexError> {
+    /// The properties both asserted and denied once `self` is
+    /// [normalised](Self::normalize_declared) as a declaration on a symbol;
+    /// `None` when it can be declared.
+    pub(crate) fn declared_conflict(&self) -> Option<Props> {
         let mut normalised = *self;
         normalised.normalize_declared();
-        if normalised.is_contradictory() {
-            return Err(crate::base::errors::SymplexError::invalid_argument(
-                operation,
-                format!(
-                    "contradictory assumptions: {normalised} (properties {} are both asserted \
-                     and denied)",
-                    normalised.known_true & normalised.known_false
-                ),
-            ));
+        normalised
+            .is_contradictory()
+            .then(|| normalised.known_true & normalised.known_false)
+    }
+
+    /// `base` with every assumption of `extra` declared on top, in order,
+    /// provided the result can be declared on `symbol` (the condition the
+    /// symbol-assumption setters rely on).
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::ContradictoryAssumptions`](crate::base::errors::SymplexError::ContradictoryAssumptions)
+    /// when the result is contradictory once its consequences are drawn.
+    /// `b` names the first assumption of `extra` after which the set is
+    /// contradictory and `a` a fact it contradicts on its own (an earlier
+    /// assumption of `extra`, else a property of `base`), or the whole
+    /// earlier set when no single fact does.
+    pub(crate) fn declare(
+        symbol: &str,
+        base: Assumptions,
+        extra: &[Assumption],
+    ) -> Result<Assumptions, crate::base::errors::SymplexError> {
+        let full = extra.iter().fold(base, |acc, &x| acc.with(x));
+        let Some(conflict) = full.declared_conflict() else {
+            return Ok(full);
+        };
+        let contradiction =
+            |a: String, b: String| crate::base::errors::SymplexError::ContradictoryAssumptions {
+                symbol: symbol.to_string(),
+                a,
+                b,
+            };
+        // The whole set decided (normalisation adds `finite` only while
+        // finiteness is undetermined, so a prefix is not the test); this
+        // only names the culprit.  The last prefix is the whole set.
+        let mut prior = base;
+        for (j, &x) in extra.iter().enumerate() {
+            let next = prior.with(x);
+            if next.declared_conflict().is_none() {
+                prior = next;
+                continue;
+            }
+            let clashes = |fact: Assumptions| fact.with(x).declared_conflict().is_some();
+            let earlier = extra[..j]
+                .iter()
+                .find(|&&e| clashes(Assumptions::default().with(e)))
+                .map(|&e| describe_assumption(e));
+            let stored = || {
+                PROP_NAMES.iter().find_map(|&(flag, name)| {
+                    let mut t = Assumptions::default();
+                    t.assert_true(flag);
+                    let mut f = Assumptions::default();
+                    f.assert_false(flag);
+                    if prior.known_true.contains(flag) && clashes(t) {
+                        Some(name.to_string())
+                    } else if prior.known_false.contains(flag) && clashes(f) {
+                        Some(format!("not {name}"))
+                    } else {
+                        None
+                    }
+                })
+            };
+            let a = earlier.or_else(stored).unwrap_or_else(|| prior.to_string());
+            return Err(contradiction(a, describe_assumption(x)));
         }
-        Ok(())
+        // `base` itself was contradictory (a stored set never is).
+        Err(contradiction(
+            conflict.to_string(),
+            format!("not {conflict}"),
+        ))
     }
 
     /// Normalise a set of assumptions *declared on a symbol*.
@@ -1927,25 +1992,24 @@ impl AssumptionCache {
 
     /// Store user-supplied symbol assumptions in the cache.
     ///
-    /// The set is normalised with [`Assumptions::normalize_declared`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if the declared assumptions are self-contradictory (e.g.
-    /// `Positive` together with `Negative`, or `Integer` with
-    /// `Irrational`).  Declaring impossible facts about a symbol is a
-    /// programming error, on a par with mixing expressions from two
-    /// contexts.
+    /// The set is normalised with [`Assumptions::normalize_declared`].  A
+    /// self-contradictory set (e.g. `Positive` together with `Negative`)
+    /// is not stored: the public entry points (`Context::symbol_with`,
+    /// `Ex::assume`, `Ex::refine_with`) reject one with
+    /// [`SymplexError::ContradictoryAssumptions`](crate::base::errors::SymplexError::ContradictoryAssumptions)
+    /// before calling this, so meeting one here is an internal bug (a
+    /// `debug_assert!`).
     pub fn set_symbol_assumptions(&mut self, id: ExprId, assumptions: Assumptions) {
         let mut assumptions = assumptions;
         assumptions.normalize_declared();
-        assert!(
-            !assumptions.is_contradictory(),
-            "contradictory assumptions declared on symbol {id:?}: {assumptions} \
-             (properties {} are both asserted and denied)",
-            assumptions.known_true & assumptions.known_false
+        let consistent = !assumptions.is_contradictory();
+        debug_assert!(
+            consistent,
+            "contradictory assumptions declared on symbol {id:?}: {assumptions}"
         );
-        self.cache.insert(id, assumptions);
+        if consistent {
+            self.cache.insert(id, assumptions);
+        }
     }
 }
 

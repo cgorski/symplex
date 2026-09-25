@@ -1131,8 +1131,8 @@ fn named_type_expand_trig_and_trig_combine_round_trip() {
 fn named_type_expand_log_and_log_combine_round_trip() {
     let ctx = Context::new();
     let (a, b) = (
-        ctx.symbol_with("a", &[Assumption::Positive]),
-        ctx.symbol_with("b", &[Assumption::Positive]),
+        ctx.symbol_with("a", &[Assumption::Positive]).unwrap(),
+        ctx.symbol_with("b", &[Assumption::Positive]).unwrap(),
     );
     let e = Dimensionless::from_ex((&a * &b).ln());
     let want = &a.ln() + &b.ln();
@@ -1337,8 +1337,8 @@ fn qty_simplify_trig_powers_rational_forward_to_ex() {
 fn qty_expand_trig_log_and_combine_forward_to_ex() {
     let ctx = Context::new();
     let (a, b) = (
-        ctx.symbol_with("a", &[Assumption::Positive]),
-        ctx.symbol_with("b", &[Assumption::Positive]),
+        ctx.symbol_with("a", &[Assumption::Positive]).unwrap(),
+        ctx.symbol_with("b", &[Assumption::Positive]).unwrap(),
     );
     let s: Qty<DimensionlessDim> = Qty::from_ex((&a + &b).cos());
     let want = &(&a.cos() * &b.cos()) - &(&a.sin() * &b.sin());
@@ -1726,9 +1726,9 @@ fn infer_dimension_handles_constants_neg_pow_and_transcendentals() {
     // dimension.  `s` is a dimensionless parameter, `x` a Length.
     let s = ctx.symbol("s");
     let dims = dims.with("s", ConstDim::DIMENSIONLESS);
-    let f = ctx.apply("f", &[&s]);
+    let f = ctx.apply("f", &[&s]).unwrap();
     assert_eq!(infer_dimension(&f, &dims), Ok(ConstDim::DIMENSIONLESS));
-    let bad_apply = infer_dimension(&ctx.apply("g", &[&t]), &dims).unwrap_err();
+    let bad_apply = infer_dimension(&ctx.apply("g", &[&t]).unwrap(), &dims).unwrap_err();
     assert!(
         bad_apply.contains("Applied function argument 0 must be dimensionless, got Time"),
         "{bad_apply}"

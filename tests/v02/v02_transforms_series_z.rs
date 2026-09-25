@@ -225,7 +225,7 @@ fn z_transform_powers_of_n() {
     let ctx = Context::new();
     let n = ctx.symbol("n");
     let z = ctx.symbol("z");
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
 
     let x = n.powi(2);
     let big_x = zt(&x, &n, &z);
@@ -265,7 +265,7 @@ fn z_transform_trig_steps_deltas_binomials() {
     let ctx = Context::new();
     let n = ctx.symbol("n");
     let z = ctx.symbol("z");
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
 
     let x = ctx.rational(1, 2).pow(&n) * (2 * &n).cos();
     let big_x = zt(&x, &n, &z);
@@ -306,7 +306,7 @@ fn inverse_z_transform_rational_and_delays() {
     let ctx = Context::new();
     let n = ctx.symbol("n");
     let z = ctx.symbol("z");
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
 
     assert_eq!(format!("{}", izt(&(&z / (&z - 3)), &z, &n)), "3^n");
     assert_eq!(izt(&(&z / (&z - &a)), &z, &n), a.pow(&n));

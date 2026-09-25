@@ -31,7 +31,7 @@ fn codegen_2dof_no_trivial_temps() {
     ];
 
     let (px, py, _pz) = fk_position(&dh);
-    let jac = jacobian(&[&px, &py], &[&theta1, &theta2]);
+    let jac = jacobian(&[&px, &py], &[&theta1, &theta2]).unwrap();
     let code = jac
         .to_rust_fn("jacobian_2dof", &["theta1", "theta2", "L1", "L2"])
         .expect("codegen should succeed for 2-DOF Jacobian");
@@ -85,7 +85,7 @@ fn codegen_3dof_no_trivial_temps() {
     ];
 
     let (px, py, _pz) = fk_position(&dh);
-    let jac = jacobian(&[&px, &py], &[&theta1, &theta2, &theta3]);
+    let jac = jacobian(&[&px, &py], &[&theta1, &theta2, &theta3]).unwrap();
     let code = jac
         .to_rust_fn("jacobian_3dof", &["theta1", "theta2", "theta3"])
         .expect("codegen should succeed for 3-DOF Jacobian");
@@ -207,7 +207,7 @@ fn codegen_3dof_compiles() {
     ];
 
     let (px, py, _pz) = fk_position(&dh);
-    let jac = jacobian(&[&px, &py], &[&theta1, &theta2, &theta3]);
+    let jac = jacobian(&[&px, &py], &[&theta1, &theta2, &theta3]).unwrap();
     let code = jac
         .to_rust_fn("robot_jac", &["theta1", "theta2", "theta3"])
         .expect("codegen should succeed for 3-DOF Jacobian");

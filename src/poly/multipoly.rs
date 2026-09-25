@@ -24,6 +24,7 @@ use std::fmt;
 use std::ops;
 
 use super::zpoly::{self, ZPoly, pow_ratio};
+use crate::base::errors::SymplexError;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Monomial orderings
@@ -221,8 +222,27 @@ pub fn monomial_div(a: &[u32], b: &[u32]) -> Option<Vec<u32>> {
 }
 
 /// Multiply two monomials (component-wise addition).
-pub fn monomial_mul(a: &[u32], b: &[u32]) -> Vec<u32> {
-    a.iter().zip(b.iter()).map(|(&ai, &bi)| ai + bi).collect()
+///
+/// Returns `None` if the exponent vectors have different lengths or an
+/// exponent of the product would overflow `u32`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::multipoly::monomial_mul;
+///
+/// assert_eq!(monomial_mul(&[2, 1], &[1, 3]), Some(vec![3, 4]));
+/// assert_eq!(monomial_mul(&[u32::MAX], &[1]), None);
+/// assert_eq!(monomial_mul(&[1, 2], &[1]), None);
+/// ```
+pub fn monomial_mul(a: &[u32], b: &[u32]) -> Option<Vec<u32>> {
+    if a.len() != b.len() {
+        return None;
+    }
+    a.iter()
+        .zip(b.iter())
+        .map(|(&ai, &bi)| ai.checked_add(bi))
+        .collect()
 }
 
 /// Check if two monomials are coprime (no shared variable).
@@ -600,18 +620,30 @@ impl<O: MonomialOrd> MultiPoly<O> {
     /// Computed over a common denominator with a single reduction at the
     /// end (`zpoly::ZPoly::eval`).
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `values.len() != self.num_vars`.
-    pub fn eval(&self, values: &[Ratio<BigInt>]) -> Ratio<BigInt> {
-        assert_eq!(
-            values.len(),
-            self.num_vars,
-            "eval: expected {} values, got {}",
-            self.num_vars,
-            values.len()
-        );
-        ZPoly::from_multipoly(self).eval(values)
+    /// Returns [`SymplexError::InvalidArgument`] if
+    /// `values.len() != self.num_vars()`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::multipoly::MultiPoly;
+    /// use symplex::linprog::qi;
+    ///
+    /// let [x, y]: [MultiPoly; 2] = [MultiPoly::var(2, 0), MultiPoly::var(2, 1)];
+    /// let p = x.mul(&y).add(&x);                    // x·y + x
+    /// assert_eq!(p.eval(&[qi(2), qi(3)]).unwrap(), qi(8));
+    /// assert!(p.eval(&[qi(2)]).is_err());
+    /// ```
+    pub fn eval(&self, values: &[Ratio<BigInt>]) -> Result<Ratio<BigInt>, SymplexError> {
+        if values.len() != self.num_vars {
+            return Err(SymplexError::invalid_argument(
+                "MultiPoly::eval",
+                format!("expected {} values, got {}", self.num_vars, values.len()),
+            ));
+        }
+        Ok(ZPoly::from_multipoly(self).eval(values))
     }
 }
 
@@ -739,7 +771,9 @@ impl<O: MonomialOrd> MultiPoly<O> {
     ///
     /// # Panics
     ///
-    /// Panics if the polynomials have different numbers of variables.
+    /// Panics if the polynomials have different numbers of variables (this
+    /// is the body of `+`, which cannot return an error); use
+    /// [`try_add`](Self::try_add) to observe the mismatch.
     pub fn add(&self, other: &MultiPoly<O>) -> MultiPoly<O> {
         self.assert_compatible(other);
         let mut result = self.clone();
@@ -750,11 +784,19 @@ impl<O: MonomialOrd> MultiPoly<O> {
         result
     }
 
+    /// Add two polynomials; `None` if they have different numbers of
+    /// variables.
+    pub fn try_add(&self, other: &MultiPoly<O>) -> Option<MultiPoly<O>> {
+        (self.num_vars == other.num_vars).then(|| self.add(other))
+    }
+
     /// Subtract two polynomials.
     ///
     /// # Panics
     ///
-    /// Panics if the polynomials have different numbers of variables.
+    /// Panics if the polynomials have different numbers of variables (this
+    /// is the body of `-`, which cannot return an error); use
+    /// [`try_sub`](Self::try_sub) to observe the mismatch.
     pub fn sub(&self, other: &MultiPoly<O>) -> MultiPoly<O> {
         self.assert_compatible(other);
         let mut result = self.clone();
@@ -763,6 +805,12 @@ impl<O: MonomialOrd> MultiPoly<O> {
         }
         result.prune();
         result
+    }
+
+    /// Subtract two polynomials; `None` if they have different numbers of
+    /// variables.
+    pub fn try_sub(&self, other: &MultiPoly<O>) -> Option<MultiPoly<O>> {
+        (self.num_vars == other.num_vars).then(|| self.sub(other))
     }
 
     /// Negate the polynomial.
@@ -786,8 +834,9 @@ impl<O: MonomialOrd> MultiPoly<O> {
     /// # Panics
     ///
     /// Panics if the polynomials have different numbers of variables, or
-    /// if an exponent of the product overflows `u32` (use
-    /// [`try_mul`](Self::try_mul) to observe the overflow).
+    /// if an exponent of the product overflows `u32` (this is the body of
+    /// `*`, which cannot return an error; use [`try_mul`](Self::try_mul) to
+    /// observe either).
     pub fn mul(&self, other: &MultiPoly<O>) -> MultiPoly<O> {
         self.assert_compatible(other);
         let prod = self.try_mul(other);
@@ -860,23 +909,61 @@ impl<O: MonomialOrd> MultiPoly<O> {
         }
     }
 
-    /// Multiply by a single monomial: coeff * x^exp
+    /// Multiply by a single monomial: `coeff · x^exp`.
+    ///
+    /// Equivalent to `self.mul(&MultiPoly::monomial(coeff, exp))`, without
+    /// the general product.
+    ///
+    /// # Panics
+    ///
+    /// As [`mul`](Self::mul): panics if `exp.len() != self.num_vars()` or an
+    /// exponent of the product overflows `u32`; use
+    /// [`try_mul_monomial`](Self::try_mul_monomial) to observe either.
+    /// (Before 0.29 the exponent wrapped around in release builds.)
     pub fn mul_monomial(&self, coeff: &Ratio<BigInt>, exp: &[u32]) -> Self {
+        match self.try_mul_monomial(coeff, exp) {
+            Some(p) => p,
+            // Wrong length or overflow: `mul` reports it exactly as the
+            // general product would (its documented panic).
+            None => self.mul(&Self::monomial(coeff.clone(), exp.to_vec())),
+        }
+    }
+
+    /// Multiply by a single monomial: `coeff · x^exp`; `None` if
+    /// `exp.len() != self.num_vars()` or an exponent of the product would
+    /// overflow `u32`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::multipoly::MultiPoly;
+    /// use symplex::linprog::qi;
+    ///
+    /// let [x, y]: [MultiPoly; 2] = [MultiPoly::var(2, 0), MultiPoly::var(2, 1)];
+    /// let p = x.add(&y);
+    /// assert_eq!(p.try_mul_monomial(&qi(2), &[1, 0]), Some(x.mul(&p).scale(&qi(2))));
+    /// assert_eq!(p.try_mul_monomial(&qi(1), &[u32::MAX, 0]), None);
+    /// assert_eq!(p.try_mul_monomial(&qi(1), &[1]), None);
+    /// ```
+    pub fn try_mul_monomial(&self, coeff: &Ratio<BigInt>, exp: &[u32]) -> Option<Self> {
+        if exp.len() != self.num_vars {
+            return None;
+        }
         if coeff.is_zero() {
-            return Self::zero(self.num_vars);
+            return Some(Self::zero(self.num_vars));
         }
         let mut result = BTreeMap::new();
         for (key, c) in &self.terms {
-            let new_exp = monomial_mul(&key.exponents, exp);
+            let new_exp = monomial_mul(&key.exponents, exp)?;
             let new_coeff = c * coeff;
             if !new_coeff.is_zero() {
                 result.insert(MonoKey::new(new_exp), new_coeff);
             }
         }
-        MultiPoly {
+        Some(MultiPoly {
             num_vars: self.num_vars,
             terms: result,
-        }
+        })
     }
 
     // Removed: div_rem_univariate was a todo!() stub. Use reduce() for multivariate division.
@@ -1212,6 +1299,13 @@ impl<O: MonomialOrd> MultiPoly<O> {
 impl<O: MonomialOrd> MultiPoly<O> {
     /// Reduce this polynomial modulo a set of divisors.
     /// Returns the remainder after multivariate division.
+    ///
+    /// # Panics
+    ///
+    /// As [`mul_monomial`](Self::mul_monomial): panics if a divisor has a
+    /// different number of variables, or if an exponent of an intermediate
+    /// product `(lt/lt(d))·d` overflows `u32` (it wrapped around in release
+    /// builds before 0.29).
     pub fn reduce(&self, divisors: &[&MultiPoly<O>]) -> MultiPoly<O> {
         if self.is_zero() || divisors.is_empty() {
             return self.clone();
@@ -1258,8 +1352,11 @@ impl<O: MonomialOrd> MultiPoly<O> {
     ///
     /// Returns `Some(q)` with `self == q · divisor` when `divisor` divides
     /// `self` in ℚ[x₁, …, xₙ], and `None` otherwise (including for a zero
-    /// divisor).  Uses the multivariate division algorithm with one divisor,
-    /// for which the remainder vanishes iff the division is exact.
+    /// divisor, and a divisor with a different number of variables).  Uses
+    /// the multivariate division algorithm with one divisor, for which the
+    /// remainder vanishes iff the division is exact.  (An exact quotient
+    /// never needs an exponent above those of `self`, so an exponent
+    /// overflow along the way also means "does not divide".)
     ///
     /// # Examples
     ///
@@ -1273,7 +1370,9 @@ impl<O: MonomialOrd> MultiPoly<O> {
     /// assert_eq!(f.div_exact(&x), None);
     /// ```
     pub fn div_exact(&self, divisor: &MultiPoly<O>) -> Option<MultiPoly<O>> {
-        self.assert_compatible(divisor);
+        if self.num_vars != divisor.num_vars {
+            return None;
+        }
         let (div_lt_exp, div_lt_coeff) = divisor.leading_term()?;
         let div_lt_exp = div_lt_exp.to_vec();
         let div_lt_coeff = div_lt_coeff.clone();
@@ -1283,7 +1382,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
         while let Some((lt_exp, lt_coeff)) = p.leading_term() {
             let quot_exp = monomial_div(&div_lt_exp, lt_exp)?;
             let quot_coeff = lt_coeff / &div_lt_coeff;
-            let subtrahend = divisor.mul_monomial(&quot_coeff, &quot_exp);
+            let subtrahend = divisor.try_mul_monomial(&quot_coeff, &quot_exp)?;
             quotient.insert_term(quot_exp, quot_coeff);
             p = p.sub(&subtrahend);
         }
@@ -1326,11 +1425,11 @@ impl<O: MonomialOrd> MultiPoly<O> {
 /// # Panics
 ///
 /// Panics if `f` and `g` have different numbers of variables (as
-/// [`MultiPoly::sub`] does).  With overflow checks on (debug builds), also
-/// if an exponent of the result exceeds `u32::MAX`: with `L` the lcm of the
-/// leading monomials `F` of `f` and `G` of `g`, some term of `f` has
-/// `eᵢ + Lᵢ − Fᵢ > u32::MAX` in a variable `i`, or likewise for `g`
-/// (without overflow checks the exponent wraps).
+/// [`MultiPoly::sub`] does), or if an exponent of the result exceeds
+/// `u32::MAX` (as [`MultiPoly::mul_monomial`] does): with `L` the lcm of
+/// the leading monomials `F` of `f` and `G` of `g`, some term of `f` has
+/// `eᵢ + Lᵢ − Fᵢ > u32::MAX` in a variable `i`, or likewise for `g`.
+/// Before 0.29 the exponent wrapped around in release builds.
 pub fn s_polynomial<O: MonomialOrd>(f: &MultiPoly<O>, g: &MultiPoly<O>) -> MultiPoly<O> {
     assert_eq!(
         f.num_vars(),
@@ -1603,7 +1702,7 @@ mod tests {
         assert!(!c.is_zero());
         assert_eq!(c.num_terms(), 1);
         assert_eq!(c.total_degree(), Some(0));
-        assert_eq!(c.eval(&[rat(0), rat(0)]), rat(42));
+        assert_eq!(c.eval(&[rat(0), rat(0)]).unwrap(), rat(42));
     }
 
     // ── heuristic GCD ──────────────────────────────────────────────────────────────

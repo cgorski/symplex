@@ -21,7 +21,7 @@ fn always(ctx: &Context) -> BoolEx {
 #[test]
 fn piecewise_prunes_branch_true_under_positive_assumption() {
     let ctx = Context::new();
-    let pos = ctx.symbol_with("pos", &[Assumption::Positive]);
+    let pos = ctx.symbol_with("pos", &[Assumption::Positive]).unwrap();
     let zero = ctx.int(0);
     let always = always(&ctx);
     let neg = -&pos;
@@ -33,7 +33,7 @@ fn piecewise_prunes_branch_true_under_positive_assumption() {
 #[test]
 fn piecewise_drops_branch_false_under_assumption() {
     let ctx = Context::new();
-    let pos = ctx.symbol_with("pos", &[Assumption::Positive]);
+    let pos = ctx.symbol_with("pos", &[Assumption::Positive]).unwrap();
     let zero = ctx.int(0);
     let pw = Ex::piecewise(&[(&ctx.int(1), &pos.lt(&zero)), (&ctx.int(2), &pos.ge(&zero))]);
     assert_eq!(pw.piecewise_simplify(), ctx.int(2));
@@ -42,13 +42,13 @@ fn piecewise_drops_branch_false_under_assumption() {
 #[test]
 fn piecewise_with_negative_and_nonzero_assumptions() {
     let ctx = Context::new();
-    let neg = ctx.symbol_with("n", &[Assumption::Negative]);
+    let neg = ctx.symbol_with("n", &[Assumption::Negative]).unwrap();
     let zero = ctx.int(0);
     let minus = -&neg;
     let pw = Ex::piecewise(&[(&neg, &neg.gt(&zero)), (&minus, &neg.le(&zero))]);
     assert_eq!(pw.piecewise_simplify(), minus);
 
-    let nz = ctx.symbol_with("k", &[Assumption::NonZero]);
+    let nz = ctx.symbol_with("k", &[Assumption::NonZero]).unwrap();
     let pw = Ex::piecewise(&[
         (&ctx.int(0), &nz.eq_expr(&zero)),
         (&(ctx.int(1) / &nz), &nz.ne_expr(&zero)),
@@ -69,7 +69,7 @@ fn piecewise_without_assumptions_is_unchanged() {
 #[test]
 fn piecewise_assumption_folding_reaches_nested_piecewise() {
     let ctx = Context::new();
-    let pos = ctx.symbol_with("pos", &[Assumption::Positive]);
+    let pos = ctx.symbol_with("pos", &[Assumption::Positive]).unwrap();
     let zero = ctx.int(0);
     let inner = Ex::piecewise(&[(&ctx.int(1), &pos.gt(&zero)), (&ctx.int(0), &always(&ctx))]);
     let e = &inner * 3 + &pos;

@@ -104,7 +104,9 @@ fn summation() {
     println!("\n--- Summation, Products and Series ---");
     let ctx = Context::new();
     syms!(ctx; k, x);
-    let n = ctx.symbol_with("n", &[Assumption::Integer, Assumption::Positive]);
+    let n = ctx
+        .symbol_with("n", &[Assumption::Integer, Assumption::Positive])
+        .unwrap();
     let (zero, one, inf) = (ctx.int(0), ctx.int(1), ctx.infinity());
 
     let faul = k.powi(5).summation(&k, &one, &n);
@@ -148,8 +150,8 @@ fn complex_analysis() {
     println!("\n--- Complex Analysis and Special Functions ---");
     let ctx = Context::new();
     let z = ctx.symbol("z");
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
-    let y = ctx.symbol_with("y", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
+    let y = ctx.symbol_with("y", &[Assumption::Real]).unwrap();
     let i = ctx.i_unit();
 
     let w = &x + &i * &y;
@@ -721,7 +723,7 @@ fn transforms() {
     println!("\n--- Transforms ---");
     let ctx = Context::new();
     syms!(ctx; t, w, s, x);
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
 
     assert_eq!(
         (-&a * t.abs())

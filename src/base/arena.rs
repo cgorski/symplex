@@ -542,11 +542,13 @@ impl Arena {
     /// (a symbol declared with a sign is finite, hence real, unless its
     /// finiteness was declared explicitly).
     ///
-    /// # Panics
-    ///
-    /// Panics if the assumptions are self-contradictory (e.g. `positive`
-    /// together with `negative`).  This is a programming error in the
-    /// caller, like mixing expressions from two contexts.
+    /// A self-contradictory set (e.g. `positive` together with `negative`)
+    /// is not stored, and the symbol keeps its previous assumptions.  The
+    /// public entry points reject one with
+    /// `SymplexError::ContradictoryAssumptions` (via
+    /// `Assumptions::declare`) before calling this, and the crate's own
+    /// callers pass consistent sets, so meeting one here is an internal
+    /// bug (a `debug_assert!`).
     pub(crate) fn set_symbol_assumptions(
         &mut self,
         id: SymbolId,
@@ -554,14 +556,15 @@ impl Arena {
     ) {
         let mut a = a;
         a.normalize_declared();
-        assert!(
-            !a.is_contradictory(),
-            "contradictory assumptions declared on symbol `{}`: {a} \
-             (properties {} are both asserted and denied)",
-            self.symbols.name(id),
-            a.known_true & a.known_false
+        let consistent = !a.is_contradictory();
+        debug_assert!(
+            consistent,
+            "contradictory assumptions declared on symbol `{}`: {a}",
+            self.symbols.name(id)
         );
-        self.symbols.set_assumptions(id, a);
+        if consistent {
+            self.symbols.set_assumptions(id, a);
+        }
     }
 
     /// Returns the children of the node identified by `id`.

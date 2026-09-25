@@ -199,7 +199,7 @@ impl Expr<Numeric> {
     /// let ctx = Context::new();
     /// let t = ctx.symbol("t");
     /// let w = ctx.symbol("w");
-    /// let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    /// let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
     ///
     /// // e^{-a|t|}  →  2a/(a² + ω²)
     /// let f = (-&a * t.abs()).exp().fourier_transform(&t, &w).unwrap();

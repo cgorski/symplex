@@ -694,8 +694,8 @@ fn to_c_fn_rejects_the_node() {
 #[test]
 fn node_with_real_body_and_bounds_is_real() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
-    let t = ctx.symbol_with("t", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
+    let t = ctx.symbol_with("t", &[Assumption::Real]).unwrap();
     let node = x.sin().exp().definite_integral_node(&x, &ctx.int(0), &t);
     assert_eq!(node.is_real(), Some(true));
     // Unknown symbol: undecided, never asserted.

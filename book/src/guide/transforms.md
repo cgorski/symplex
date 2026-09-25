@@ -12,7 +12,7 @@ use symplex::prelude::*;
 fn main() {
     let ctx = Context::new();
     symplex::syms!(ctx; t, s);
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
 
     println!("{}", t.sin().laplace(&t, &s));                                  // 1/(s^2 + 1)
     println!("{}", (&t.powi(2) * &(&t * -3).exp()).laplace(&t, &s));          // 2*(s + 3)^(-3)
@@ -43,7 +43,7 @@ use symplex::prelude::*;
 fn main() {
     let ctx = Context::new();
     symplex::syms!(ctx; t, w, nu);
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
     let i = ctx.i_unit();
 
     println!("{}", (-&a * t.abs()).exp().fourier_transform(&t, &w).unwrap());   // 2*a/(a^2 + w^2)
@@ -114,7 +114,7 @@ use symplex::prelude::*;
 fn main() {
     let ctx = Context::new();
     symplex::syms!(ctx; n, z, w);
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
     println!("{}", a.pow(&n).z_transform(&n, &z).unwrap());          // z/(-a + z)
     println!("{}", n.powi(2).z_transform(&n, &z).unwrap());          // (z - 1)^(-3)*(z^2 + z)
     println!("{}", (&w * &n).cos().z_transform(&n, &z).unwrap());    // z*(z - cos(w))/(z^2 - 2*z*cos(w) + 1)

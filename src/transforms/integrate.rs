@@ -71,6 +71,7 @@ impl IntegrateCall {
             NODE_BUDGET_USED.with(|u| u.set(0));
             ARENA_BUDGET_START.with(|s| s.set(arena.node_count()));
             INTEGRATE_MEMO.with(|m| m.borrow_mut().clear());
+            VERDICT_MEMO.with(|m| m.borrow_mut().clear());
         }
         IntegrateCall { outermost }
     }
@@ -81,6 +82,11 @@ impl Drop for IntegrateCall {
         let _ = NODE_BUDGET_DEPTH.try_with(|d| d.set(d.get().saturating_sub(1)));
         if self.outermost {
             let _ = INTEGRATE_MEMO.try_with(|m| {
+                if let Ok(mut m) = m.try_borrow_mut() {
+                    m.clear();
+                }
+            });
+            let _ = VERDICT_MEMO.try_with(|m| {
                 if let Ok(mut m) = m.try_borrow_mut() {
                     m.clear();
                 }
@@ -145,7 +151,14 @@ fn integrate_impl(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     // `atan(x/√(ln 1))`-terms (fuzz_integrate, 0.25).
     let expr = crate::transforms::eval::eval(arena, expr);
 
+    // Every stage's closed form faces the same evidence rule before it is
+    // returned ([`accept_or_unevaluated`]); a rejected one counts as no answer,
+    // so the next stage still gets its chance.  Up to 0.28.0 only some
+    // routes inside the stages checked their candidates: by parts returned
+    // `x·e^{kx}/k − e^{kx}/k²` for `∫ x·e^{kx} dx` with a `k` that is 0
+    // without being so structurally — undefined everywhere.
     let result = integrate_node(arena, expr, var, var_sym, 20);
+    let result = accept_or_unevaluated(arena, expr, result, var, var_sym);
 
     // Substitution-based strategies (u = e^{ax}, x = s^q, hyperbolic → exp,
     // piecewise-defined integrands).  Each one re-enters the full pipeline
@@ -157,7 +170,7 @@ fn integrate_impl(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
             expr,
             try_substitution_strategies(arena, expr, var, var_sym)
         ) {
-        r
+        accept_or_unevaluated(arena, expr, r, var, var_sym)
     } else {
         result
     };
@@ -172,17 +185,10 @@ fn integrate_impl(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
             expr,
             crate::calculus::risch::try_risch_tower(arena, expr, var)
         ) {
-            // Checked like the other routes: a dropped coefficient in the
-            // tower's θ-polynomial extraction once returned a wrong closed
-            // form (0.22.3).
-            crate::calculus::risch::TowerResult::Elementary(id)
-                if !antiderivative_rejected(arena, expr, id, var, var_sym) =>
-            {
-                id
-            }
-            crate::calculus::risch::TowerResult::Elementary(_) => {
-                tracing::debug!("integrate: rejecting unverified Risch-tower closed form");
-                result
+            // A dropped coefficient in the tower's θ-polynomial extraction
+            // once returned a wrong closed form (0.22.3).
+            crate::calculus::risch::TowerResult::Elementary(id) => {
+                accept_or_unevaluated(arena, expr, id, var, var_sym)
             }
             crate::calculus::risch::TowerResult::NonElementary => {
                 // Proved non-elementary — keep the unevaluated Integral node.
@@ -197,7 +203,7 @@ fn integrate_impl(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
                     expr,
                     crate::transforms::heurisch::heurisch_integrate(arena, expr, var, var_sym)
                 ) {
-                    heurisch_result
+                    accept_or_unevaluated(arena, expr, heurisch_result, var, var_sym)
                 } else {
                     result
                 }
@@ -207,34 +213,200 @@ fn integrate_impl(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
         result
     };
 
-    // `ln|u|` is the real-variable antiderivative of `u′/u` only for real
-    // `u`; for a `u` with an explicit `i` (`∫ cosh x/(i + sinh x) dx`) it is
-    // `ln u` — the conjugate derivative came out before 0.24 (Rubi suite).
-    let result = analytic_log_of_complex_arguments(arena, result, var_sym);
-
     // Piecewise wrapping for parametric degenerate cases
     try_piecewise_wrap(arena, result, expr, var, var_sym)
 }
 
-/// Every `ln|u|` in `e` whose `u` depends on the variable and contains the
-/// imaginary unit becomes `ln u`.  `|u|` of a non-real `u` is not the
-/// real-variable device the integrator means by it (`d/dx ln|u| = Re(u′/u)
-/// ≠ u′/u`), while `ln u` is analytic along the real line as long as `u`
-/// avoids the negative real axis, which a `u` with a non-zero imaginary
-/// part does.
+/// A stage's answer `candidate` for `∫ f d(var)` in the form in which
+/// `integrate` returns it, or the unevaluated `Integral(f, var)` when that
+/// form is [`candidate_rejected`].  [`analytic_log_of_complex_arguments`]
+/// comes first, so the evidence rule judges the answer that would be
+/// returned.
+fn accept_or_unevaluated(
+    arena: &mut Arena,
+    f: ExprId,
+    candidate: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> ExprId {
+    let unevaluated = arena.intern(ExprNode::Integral(f, var));
+    if candidate == unevaluated {
+        return candidate;
+    }
+    let candidate = analytic_log_of_complex_arguments(arena, candidate, var_sym);
+    if candidate_rejected(arena, f, candidate, var, var_sym) {
+        tracing::debug!("integrate: rejecting an unverified closed form");
+        return unevaluated;
+    }
+    candidate
+}
+
+/// `true` when the candidate `big_f` for `∫ f d(var)` must not be used:
+/// [`antiderivative_rejected`], or it introduces a `RootOf` (one its
+/// integrand does not contain).  The routes that check their own
+/// candidates call it on the candidate as they built it; every stage of
+/// `integrate_impl` calls it through [`accept_or_unevaluated`].
+///
+/// Such a `RootOf` comes from `solve` in the root-based fallback of
+/// `apart`, and a sum of logarithms over those roots is the rational
+/// integrator's `RootSum` written out term by term.  It also names its
+/// polynomial in the integration (or substitution) variable, which the
+/// structural `subs` of a sample point or of a back-substitution rewrites
+/// along with the free occurrences (`RootOf(u⁸ − u⁶ + …, 0)` became
+/// `RootOf(e^{8x} − …, 0)`, which is no polynomial).  Such pieces had never
+/// been integrated before [`contains_var`] learned that the polynomial's
+/// variable is bound.
+fn candidate_rejected(
+    arena: &mut Arena,
+    f: ExprId,
+    big_f: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> bool {
+    if introduces_root_of(arena, f, big_f) {
+        tracing::debug!("integrate: rejecting a closed form over implicit roots");
+        return true;
+    }
+    antiderivative_rejected(arena, f, big_f, var, var_sym)
+}
+
+/// Does `big_f` contain a `RootOf` node that `f` does not?
+fn introduces_root_of(arena: &Arena, f: ExprId, big_f: ExprId) -> bool {
+    let root_ofs = |e: ExprId| -> Vec<ExprId> {
+        crate::base::walk::post_order_ids(arena, e)
+            .into_iter()
+            .filter(|&id| matches!(arena.node(id), ExprNode::RootOf(..)))
+            .collect()
+    };
+    let new = root_ofs(big_f);
+    !new.is_empty() && {
+        let old: FxHashSet<ExprId> = root_ofs(f).into_iter().collect();
+        new.iter().any(|id| !old.contains(id))
+    }
+}
+
+/// Every `ln|u|` in `e` whose `u` depends on the variable and is not known
+/// to be real ([`log_argument_is_real`]) becomes `ln u`.  `|u|` of a
+/// non-real `u` is not the real-variable device the integrator means by it
+/// (`d/dx ln|u| = Re(u′/u) ≠ u′/u`), while `ln u` is an antiderivative of
+/// `u′/u` for real and complex `u` alike (analytic along the real line as
+/// long as `u` avoids the negative real axis, which a `u` with a non-zero
+/// imaginary part does; a real `u` only adds the constant `iπ` where it is
+/// negative).  So `ln|u|` is kept only where realness is established.
+/// Up to 0.28.0 only an explicit `i` counted: `∫ dx/(x − √(1/2 − √5/2))`
+/// came out as `ln|x − √(1/2 − √5/2)|`, whose derivative is the conjugate
+/// of the integrand.
 fn analytic_log_of_complex_arguments(arena: &mut Arena, e: ExprId, var_sym: SymbolId) -> ExprId {
     let mut out = e;
+    let mut reals = crate::base::assumptions::AssumptionCache::new();
     for id in crate::base::walk::post_order_ids(arena, e) {
         if let ExprNode::Ln(inner) = arena.node(id).clone()
             && let ExprNode::Abs(u) = arena.node(inner).clone()
             && contains_var(arena, u, var_sym)
-            && crate::base::walk::contains(arena, u, arena.i_unit)
+            && !log_argument_is_real(arena, u, var_sym, &mut reals)
         {
             let plain = arena.ln(u);
             out = arena.subs_structural(out, id, plain);
         }
     }
     out
+}
+
+/// Is the argument `u` of an `ln|u|` real, as far as its constants go?
+///
+/// The variable-dependent structure of `u` is read with the real-variable
+/// convention (`√(x − 5)` is real where the integrand is); what is decided
+/// here is each maximal variable-free subexpression, by
+/// [`constant_is_real`].  A constant that is not known to be real makes
+/// `u` not known to be real.
+fn log_argument_is_real(
+    arena: &mut Arena,
+    u: ExprId,
+    var_sym: SymbolId,
+    reals: &mut crate::base::assumptions::AssumptionCache,
+) -> bool {
+    let mut stack = vec![u];
+    let mut seen: FxHashSet<ExprId> = FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if contains_var(arena, id, var_sym) {
+            arena.node(id).for_each_child(|c| stack.push(c));
+        } else if !constant_is_real(arena, id, reals) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Is the variable-free `c` known to be real, for real values of its
+/// parameters (the integrator's convention for a symbol without declared
+/// assumptions; a declared one keeps its declaration)?
+///
+/// Exactly where the assumption system decides it: `a + b`, `√2`, `ln 3`
+/// are real, `i`, `√(−2)` are not; `√a` and `√(−a)` are undecided, since
+/// a real `a` may have either sign.  Otherwise, for a constant without
+/// parameters, numerically: the value to [`FTC_CHECK_DIGITS`] correct
+/// digits with an imaginary part beyond them is not real
+/// (`√(1/2 − √5/2)`); if the imaginary part is within them, `im(c)` is
+/// evaluated on its own and `c` counts as real when that is 0
+/// (`√(3 − √5)`, which the assumption system leaves open).  `evalf`
+/// refuses a value it cannot certify (`PrecisionExhausted`), and so does
+/// this test: not known to be real.  So does a non-zero `im(c)`, even the
+/// rounding residue `evalf` (0.28) returns for the imaginary part of a real
+/// `RootOf` root; the answer then keeps `ln u`, which is still an
+/// antiderivative.
+fn constant_is_real(
+    arena: &mut Arena,
+    c: ExprId,
+    reals: &mut crate::base::assumptions::AssumptionCache,
+) -> bool {
+    use crate::base::assumptions::{Assumptions, Props};
+    match arena.node(c) {
+        ExprNode::Num(_)
+        | ExprNode::Pi
+        | ExprNode::E
+        | ExprNode::EulerGamma
+        | ExprNode::Catalan
+        | ExprNode::GoldenRatio => return true,
+        ExprNode::ImaginaryUnit => return false,
+        _ => {}
+    }
+    let params = crate::base::walk::free_symbols(arena, c);
+    for &s in &params {
+        if let ExprNode::Symbol(sid) = *arena.node(s)
+            && arena.symbol_assumptions(sid) == Assumptions::default()
+        {
+            let mut real = Assumptions::default();
+            real.known_true |= Props::REAL;
+            reals.set_symbol_assumptions(s, real);
+        }
+    }
+    if let Some(known) = reals.query(arena, c, Props::REAL) {
+        return known;
+    }
+    params.is_empty() && numerically_real(arena, c)
+}
+
+/// The numeric half of [`constant_is_real`] for a constant without free
+/// symbols.
+fn numerically_real(arena: &mut Arena, c: ExprId) -> bool {
+    let Ok(z) = crate::transforms::evalf::evalf_complex(arena, c, FTC_CHECK_DIGITS) else {
+        return false;
+    };
+    // An imaginary part beyond the digits of `z` (with two digits of
+    // margin) is certainly not 0.
+    if !crate::transforms::evalf::is_real_to_digits(&z, FTC_CHECK_DIGITS - 2) {
+        return false;
+    }
+    let im = arena.im(c);
+    let im = crate::transforms::eval::eval(arena, im);
+    if crate::base::walk::has_unevaluated(arena, im) {
+        return false;
+    }
+    crate::transforms::evalf::evalf_complex(arena, im, FTC_CHECK_DIGITS)
+        .is_ok_and(|w| w.0.is_zero() && w.1.is_zero())
 }
 
 /// Check whether `expr` is a suitable candidate for the `u` factor in
@@ -1191,7 +1363,7 @@ fn try_weierstrass_substitution(
     // before it is dressed up in tan(x/2) (the rational integrator's
     // nested-radical failures show up here as e.g. `atan(3·tan(x/2))` for
     // `∫ cos x/(sin²x + 1)`).
-    if antiderivative_rejected(arena, integrand_t, integral_t, t, t_sym) {
+    if candidate_rejected(arena, integrand_t, integral_t, t, t_sym) {
         tracing::debug!("weierstrass: closed form in t failed verification");
         return None;
     }
@@ -1499,7 +1671,7 @@ fn integrate_node_uncached(
         crate::calculus::risch::try_risch_rational(arena, expr, var)
     ) {
         Some(result) if !matches!(arena.node(result), ExprNode::Integral(_, _)) => {
-            if !antiderivative_rejected(arena, expr, result, var, var_sym) {
+            if !candidate_rejected(arena, expr, result, var, var_sym) {
                 return result;
             }
             tracing::debug!("integrate: rejecting unverified rational-function closed form");
@@ -1825,10 +1997,12 @@ fn integrate_node_uncached(
                         expr,
                         crate::transforms::apart::apart(arena, expr, var)
                     );
-                    if decomposed != expr {
+                    // Partial fractions over implicit roots could only give
+                    // a candidate `candidate_rejected` refuses.
+                    if decomposed != expr && !introduces_root_of(arena, expr, decomposed) {
                         let result = integrate_node(arena, decomposed, var, var_sym, depth - 1);
                         if !matches!(arena.node(result), ExprNode::Integral(_, _))
-                            && !antiderivative_rejected(arena, expr, result, var, var_sym)
+                            && !candidate_rejected(arena, expr, result, var, var_sym)
                         {
                             return result;
                         }
@@ -2176,10 +2350,10 @@ fn integrate_node_uncached(
                         expr,
                         crate::transforms::apart::apart(arena, expr, var)
                     );
-                    if decomposed != expr {
+                    if decomposed != expr && !introduces_root_of(arena, expr, decomposed) {
                         let result = integrate_node(arena, decomposed, var, var_sym, depth - 1);
                         if !matches!(arena.node(result), ExprNode::Integral(_, _))
-                            && !antiderivative_rejected(arena, expr, result, var, var_sym)
+                            && !candidate_rejected(arena, expr, result, var, var_sym)
                         {
                             return result;
                         }
@@ -2722,22 +2896,65 @@ fn integrate_node_uncached(
     }
 }
 
-/// Check if an expression contains the given symbol.
+/// Does `expr` depend on the symbol `var` — does `var` occur *free* in it?
+///
+/// Binders are respected exactly as by [`crate::base::walk::free_symbols`]:
+/// the variable of a `Sum`, `Product_` or `DefiniteIntegral` is bound in
+/// the body (not in the limits), that of a `RootSum` in its polynomial and
+/// body, that of a `ConditionSet` in its condition, and a `RootOf` whose
+/// polynomial has a single symbol binds it.  So `RootOf(x⁵ − x + 1, 0)` —
+/// the form in which `solve` returns a root of a polynomial in `x` — is a
+/// constant.  Up to 0.28.0 the test was structural, and
+/// `1/(x − RootOf(x⁵ − x + 1, 0))` did not look like `1/(x − c)`.
+/// An indefinite `Integral` or a `Derivative` does not bind: `∫ f dx` is a
+/// function of `x`.
 fn contains_var(arena: &Arena, expr: ExprId, var: SymbolId) -> bool {
+    let is_var = |id: ExprId| matches!(arena.node(id), ExprNode::Symbol(s) if *s == var);
     let mut stack: Vec<ExprId> = vec![expr];
-    let mut visited: FxHashMap<ExprId, ()> = FxHashMap::default();
+    let mut visited: FxHashSet<ExprId> = FxHashSet::default();
+    // Only one symbol is looked for, so a scope is either "`var` bound"
+    // (not entered at all) or not: a node that is entered is entered with
+    // `var` free, and per-node visited-ness is enough.
     while let Some(id) = stack.pop() {
-        if visited.contains_key(&id) {
+        if !visited.insert(id) {
             continue;
         }
-        visited.insert(id, ());
-        if let ExprNode::Symbol(sid) = arena.node(id)
-            && *sid == var
-        {
-            return true;
+        match arena.node(id) {
+            ExprNode::Symbol(sid) => {
+                if *sid == var {
+                    return true;
+                }
+            }
+            ExprNode::Sum(body, v, lo, hi)
+            | ExprNode::Product_(body, v, lo, hi)
+            | ExprNode::DefiniteIntegral(body, v, lo, hi) => {
+                stack.push(*lo);
+                stack.push(*hi);
+                if !is_var(*v) {
+                    stack.push(*body);
+                }
+            }
+            ExprNode::RootSum(poly, body, v) => {
+                if !is_var(*v) {
+                    stack.push(*poly);
+                    stack.push(*body);
+                }
+            }
+            ExprNode::ConditionSet(v, cond) => {
+                if !is_var(*v) {
+                    stack.push(*cond);
+                }
+            }
+            ExprNode::RootOf(poly, idx) => {
+                stack.push(*idx);
+                // A multivariate polynomial names no bound variable; like
+                // `free_symbols`, all its symbols then count as free.
+                if !matches!(crate::base::walk::all_symbols(arena, *poly)[..], [s] if is_var(s)) {
+                    stack.push(*poly);
+                }
+            }
+            node => node.for_each_child(|c| stack.push(c)),
         }
-        let children = arena.node(id).children();
-        stack.extend_from_slice(&children);
     }
     false
 }
@@ -3544,7 +3761,7 @@ fn try_radical_substitution(
     // through below the checks above — `(s⁻⁴)^{1/2}` flattened to `s⁻²` gave
     // `∫ cos(√x)/√(x⁻²) dx` a closed form whose derivative is wrong for
     // x < 0 (0.23, fuzz_integrate).
-    if antiderivative_rejected(arena, expr, result, var, var_sym) {
+    if candidate_rejected(arena, expr, result, var, var_sym) {
         tracing::debug!("integrate: rejecting unverified radical-substitution closed form");
         return None;
     }
@@ -4042,10 +4259,7 @@ fn try_poly_over_symbolic_linear(
     let inv_a = arena.pow(a, arena.neg_one());
     let result = arena.mul(&[inv_a, sum]);
     let result = crate::transforms::eval::eval(arena, result);
-    if antiderivative_rejected(arena, expr, result, var, var_sym) {
-        return None;
-    }
-    Some(result)
+    (!candidate_rejected(arena, expr, result, var, var_sym)).then_some(result)
 }
 
 /// `∫ N(x)/(c·x² + d·x + e) dx` with `deg N ≥ 2` and constant coefficients
@@ -4132,10 +4346,7 @@ fn try_poly_over_symbolic_quadratic(
     }
     let result = arena.add(&terms);
     let result = crate::transforms::eval::eval(arena, result);
-    if antiderivative_rejected(arena, expr, result, var, var_sym) {
-        return None;
-    }
-    Some(result)
+    (!candidate_rejected(arena, expr, result, var, var_sym)).then_some(result)
 }
 
 /// Does `e` contain `nan`, `zoo` or `±∞`?
@@ -4723,10 +4934,13 @@ enum FtcVerdict {
 /// ([`FTC_PARAMETER_VALUES`]) before sampling; up to 0.28.0 a parameter
 /// skipped the check altogether.
 ///
-/// Intended for candidates built from functions `evalf` evaluates to full
-/// working precision (rational functions and their `ln`/`atan`/radical
-/// antiderivatives, trigonometric rational functions), which is what the
-/// tight tolerance [`FTC_CHECK_REL_TOL`] relies on.
+/// Reached through [`candidate_rejected`], by the routes that check their own
+/// candidates and by every stage of `integrate_impl`, so that no closed form
+/// leaves `integrate` without facing this rule.  The tight tolerance
+/// [`FTC_CHECK_REL_TOL`] relies on the certified digits of `evalf`, which
+/// refuses a value it cannot certify (the point then says nothing).  On
+/// the Rubi suite (0.28) the stage answers came out 8,952 verified and 752
+/// untestable (670 of them partial answers), none wrong or undecided.
 fn antiderivative_rejected(
     arena: &mut Arena,
     f: ExprId,
@@ -4734,12 +4948,23 @@ fn antiderivative_rejected(
     var: ExprId,
     var_sym: SymbolId,
 ) -> bool {
-    let verdict = stage!(
-        arena,
-        "verify",
-        big_f,
-        check_antiderivative(arena, f, big_f, var, var_sym)
-    );
+    // A route's accepted candidate is usually its stage's answer too, and
+    // is then judged again at the stage's exit: the verdict is remembered
+    // for the rest of the top-level call (cleared with `INTEGRATE_MEMO`).
+    let key = (std::ptr::from_ref::<Arena>(arena) as usize, f, big_f, var);
+    let verdict = match VERDICT_MEMO.with(|m| m.borrow().get(&key).copied()) {
+        Some(verdict) => verdict,
+        None => {
+            let verdict = stage!(
+                arena,
+                "verify",
+                big_f,
+                check_antiderivative(arena, f, big_f, var, var_sym)
+            );
+            VERDICT_MEMO.with(|m| m.borrow_mut().insert(key, verdict));
+            verdict
+        }
+    };
     match verdict {
         FtcVerdict::Verified | FtcVerdict::Untestable => false,
         FtcVerdict::Wrong | FtcVerdict::Undecided => {
@@ -4747,6 +4972,13 @@ fn antiderivative_rejected(
             true
         }
     }
+}
+
+thread_local! {
+    /// [`check_antiderivative`] verdicts during the current top-level
+    /// `integrate`, by (arena, `f`, `F`, variable).
+    static VERDICT_MEMO: std::cell::RefCell<FxHashMap<(usize, ExprId, ExprId, ExprId), FtcVerdict>> =
+        std::cell::RefCell::new(FxHashMap::default());
 }
 
 /// Generic values for the free parameters of a checked candidate, handed
@@ -4798,10 +5030,84 @@ fn bind_parameters(
     let (mut f, mut big_f) = (f, big_f);
     for (&(_, s), &(p, q)) in params.iter().zip(FTC_PARAMETER_VALUES.iter()) {
         let value = arena.rational(p, q);
+        f = rename_bound(arena, f, s);
+        big_f = rename_bound(arena, big_f, s);
         f = crate::transforms::subs::subs(arena, f, s, value);
         big_f = crate::transforms::subs::subs(arena, big_f, s, value);
     }
     Some((f, big_f))
+}
+
+/// `e` with every binder of the symbol `sym` renamed to a dummy, so that a
+/// structural `subs` for `sym` afterwards replaces only its free
+/// occurrences.  The binders are those of [`contains_var`]; `subs` itself
+/// respects only `DefiniteIntegral`'s, and at `x = 1/3` turned
+/// `RootOf(x⁵ − x + 1, 0)` into `RootOf(325/243, 0)`, which does not
+/// evaluate.  Returns `e` itself when nothing binds `sym`.
+fn rename_bound(arena: &mut Arena, e: ExprId, sym: ExprId) -> ExprId {
+    let binds = |arena: &Arena, id: ExprId| match arena.node(id) {
+        ExprNode::Sum(_, v, _, _)
+        | ExprNode::Product_(_, v, _, _)
+        | ExprNode::DefiniteIntegral(_, v, _, _)
+        | ExprNode::RootSum(_, _, v)
+        | ExprNode::ConditionSet(v, _) => *v == sym,
+        ExprNode::RootOf(poly, _) => {
+            matches!(crate::base::walk::all_symbols(arena, *poly)[..], [s] if s == sym)
+        }
+        _ => false,
+    };
+    let order = crate::base::walk::post_order_ids(arena, e);
+    if !order.iter().any(|&id| binds(arena, id)) {
+        return e;
+    }
+    let dummy = arena.symbol("__bound");
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    for id in order {
+        let node = arena.node(id).clone();
+        let get = |c: ExprId| cache.get(&c).copied().unwrap_or(c);
+        let new = if binds(arena, id) {
+            // The bound part is renamed from the original node (a nested
+            // binder of `sym` inside it is renamed along with it); the
+            // unbound operands take their rebuilt form.
+            let rename = |arena: &mut Arena, part: ExprId| {
+                crate::transforms::subs::subs(arena, part, sym, dummy)
+            };
+            match node {
+                ExprNode::Sum(body, _, lo, hi) => {
+                    let body = rename(arena, body);
+                    arena.intern(ExprNode::Sum(body, dummy, get(lo), get(hi)))
+                }
+                ExprNode::Product_(body, _, lo, hi) => {
+                    let body = rename(arena, body);
+                    arena.intern(ExprNode::Product_(body, dummy, get(lo), get(hi)))
+                }
+                ExprNode::DefiniteIntegral(body, _, lo, hi) => {
+                    let body = rename(arena, body);
+                    arena.definite_integral(body, dummy, get(lo), get(hi))
+                }
+                ExprNode::RootSum(poly, body, _) => {
+                    let poly = rename(arena, poly);
+                    let body = rename(arena, body);
+                    arena.intern(ExprNode::RootSum(poly, body, dummy))
+                }
+                ExprNode::ConditionSet(_, cond) => {
+                    let cond = rename(arena, cond);
+                    arena.intern(ExprNode::ConditionSet(dummy, cond))
+                }
+                ExprNode::RootOf(poly, idx) => {
+                    let poly = rename(arena, poly);
+                    arena.intern(ExprNode::RootOf(poly, get(idx)))
+                }
+                _ => id,
+            }
+        } else if node.is_atom() {
+            id
+        } else {
+            crate::base::walk::rebuild_with_cache(arena, id, &cache)
+        };
+        cache.insert(id, new);
+    }
+    cache.get(&e).copied().unwrap_or(e)
 }
 
 /// The numeric FTC check behind [`antiderivative_rejected`]: `F′` against
@@ -4830,6 +5136,8 @@ fn check_antiderivative(
     let Some((f, big_f)) = bind_parameters(arena, f, big_f, var) else {
         return FtcVerdict::Untestable;
     };
+    let f = rename_bound(arena, f, var);
+    let big_f = rename_bound(arena, big_f, var);
     let d_big_f = crate::transforms::diff::diff(arena, big_f, var);
     if crate::base::walk::has_unevaluated(arena, d_big_f) {
         return FtcVerdict::Untestable;
@@ -5113,7 +5421,7 @@ fn try_biquadratic_rational(
     let result = crate::transforms::eval::eval(arena, result);
     // The closed form is exact by construction; the check guards the radical
     // arithmetic above (a wrong sign here would be a silent wrong answer).
-    if antiderivative_rejected(arena, expr, result, var, var_sym) {
+    if candidate_rejected(arena, expr, result, var, var_sym) {
         tracing::debug!("integrate: biquadratic closed form failed verification");
         return None;
     }
@@ -6077,5 +6385,71 @@ mod tests {
             ftc_verdict("sqrt(x - 5)", "2/3*(x - 5)^(3/2)"),
             FtcVerdict::Verified
         );
+    }
+
+    #[test]
+    fn ftc_check_samples_through_binders() {
+        // `subs` alone turns `RootOf(x⁵ − x + 1, 1)` into `RootOf(163/243,
+        // 1)` at `x = 1/3`, which does not evaluate; the check renames the
+        // bound `x` first.
+        let f = "1/(x - RootOf(x^5 - x + 1, 1))";
+        assert_eq!(
+            ftc_verdict(f, "ln(x - RootOf(x^5 - x + 1, 1))"),
+            FtcVerdict::Verified
+        );
+        assert_eq!(
+            ftc_verdict(f, "2*ln(x - RootOf(x^5 - x + 1, 1))"),
+            FtcVerdict::Undecided
+        );
+    }
+
+    #[test]
+    fn contains_var_respects_binders() {
+        let ctx = crate::api::context::Context::new();
+        let cases = [
+            ("RootOf(x^5 - x + 1, 0)", false),
+            ("x - RootOf(x^5 - x + 1, 0)", true),
+            ("RootOf(x^3 + a*x + 1, 0)", true),
+            ("Sum(x^k, k, 0, 3)", true),
+            ("Sum(k*x, x, 0, 3)", false),
+            ("Sum(k*x, x, 0, x)", true),
+            ("Integral(x, x)", true),
+        ];
+        for (src, expected) in cases {
+            let e = ctx.parse(src).unwrap().id();
+            let got = ctx.with_arena_mut(|a| {
+                let x = a.symbol("x");
+                let ExprNode::Symbol(x_sym) = *a.node(x) else {
+                    unreachable!()
+                };
+                contains_var(a, e, x_sym)
+            });
+            assert_eq!(got, expected, "contains_var({src}, x)");
+        }
+    }
+
+    #[test]
+    fn constant_realness_is_exact_or_certified() {
+        let ctx = crate::api::context::Context::new();
+        let cases = [
+            ("sqrt(2)", true),
+            ("a*b + 3", true),
+            ("ln(3)", true),
+            ("sqrt(3 - sqrt(5))", true),
+            ("sqrt(1/2 - sqrt(5)/2)", false),
+            ("exp(pi*I/8)", false),
+            ("RootOf(x^5 - x + 1, 1)", false),
+            // A real parameter of unknown sign.
+            ("sqrt(a)", false),
+            ("sqrt(-a)", false),
+        ];
+        for (src, expected) in cases {
+            let e = ctx.parse(src).unwrap().id();
+            let got = ctx.with_arena_mut(|a| {
+                let mut reals = crate::base::assumptions::AssumptionCache::new();
+                constant_is_real(a, e, &mut reals)
+            });
+            assert_eq!(got, expected, "constant_is_real({src})");
+        }
     }
 }

@@ -470,7 +470,7 @@ fn simplify_idempotent_sqrt_squared() {
 #[test]
 fn simplify_idempotent_ln_exp() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     let e = x.exp().ln();
     check_simplify_idempotent(&e, "ln(exp(x))");
 }

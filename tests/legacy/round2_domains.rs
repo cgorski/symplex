@@ -1755,7 +1755,7 @@ fn vector_dot_product_basic() {
     let ctx = Context::new();
     let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
     let b = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]);
-    let d = dot(&a, &b).eval();
+    let d = dot(&a, &b).unwrap().eval();
     // 1*4 + 2*5 + 3*6 = 4+10+18 = 32
     assert_close(d.eval_f64().unwrap(), 32.0, 1e-12, "dot product");
 }
@@ -1765,7 +1765,7 @@ fn vector_dot_product_orthogonal() {
     let ctx = Context::new();
     let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(0), ctx.int(0)]);
     let b = Matrix::col_vector(vec![ctx.int(0), ctx.int(1), ctx.int(0)]);
-    let d = dot(&a, &b).eval();
+    let d = dot(&a, &b).unwrap().eval();
     assert_close(d.eval_f64().unwrap(), 0.0, 1e-12, "orthogonal dot = 0");
 }
 
@@ -1773,7 +1773,7 @@ fn vector_dot_product_orthogonal() {
 fn vector_dot_product_self_is_norm_squared() {
     let ctx = Context::new();
     let a = Matrix::col_vector(vec![ctx.int(3), ctx.int(4)]);
-    let d = dot(&a, &a).eval();
+    let d = dot(&a, &a).unwrap().eval();
     assert_close(d.eval_f64().unwrap(), 25.0, 1e-12, "v·v = |v|²");
 }
 
@@ -1786,7 +1786,7 @@ fn vector_cross_product_basic() {
     let ctx = Context::new();
     let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(0), ctx.int(0)]);
     let b = Matrix::col_vector(vec![ctx.int(0), ctx.int(1), ctx.int(0)]);
-    let c = cross(&a, &b);
+    let c = cross(&a, &b).unwrap();
     // i × j = k
     assert_close(c.get(0, 0).eval_f64().unwrap(), 0.0, 1e-12, "cross x");
     assert_close(c.get(1, 0).eval_f64().unwrap(), 0.0, 1e-12, "cross y");
@@ -1799,8 +1799,8 @@ fn vector_cross_product_anticommutative() {
     let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
     let b = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]);
 
-    let ab = cross(&a, &b);
-    let ba = cross(&b, &a);
+    let ab = cross(&a, &b).unwrap();
+    let ba = cross(&b, &a).unwrap();
 
     for i in 0..3 {
         let val_ab = ab.get(i, 0).eval().eval_f64().unwrap();
@@ -1813,7 +1813,7 @@ fn vector_cross_product_anticommutative() {
 fn vector_cross_product_self_is_zero() {
     let ctx = Context::new();
     let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
-    let c = cross(&a, &a);
+    let c = cross(&a, &a).unwrap();
     for i in 0..3 {
         assert_close(
             c.get(i, 0).eval().eval_f64().unwrap(),
@@ -1832,8 +1832,8 @@ fn vector_cross_product_triple_scalar() {
     let b = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]);
     let c = Matrix::col_vector(vec![ctx.int(7), ctx.int(8), ctx.int(10)]);
 
-    let bc = cross(&b, &c);
-    let triple = dot(&a, &bc).eval().eval_f64().unwrap();
+    let bc = cross(&b, &c).unwrap();
+    let triple = dot(&a, &bc).unwrap().eval().eval_f64().unwrap();
 
     // det of the matrix formed by a, b, c as rows
     let m = Matrix::new(vec![
@@ -1858,7 +1858,7 @@ fn vector_gradient_polynomial() {
     let y = ctx.symbol("y");
     // f = x² + 2xy + y²
     let f = &x.powi(2) + &(&ctx.int(2) * &(&x * &y)) + &y.powi(2);
-    let g = gradient(&f, &[&x, &y]);
+    let g = gradient(&f, &[&x, &y]).unwrap();
     assert_eq!(g.shape(), (2, 1));
     // ∂f/∂x = 2x + 2y
     // ∂f/∂y = 2x + 2y
@@ -1888,7 +1888,7 @@ fn vector_divergence_basic() {
     let z = ctx.symbol("z");
     // F = [x², y², z²]
     let field = Matrix::col_vector(vec![x.powi(2), y.powi(2), z.powi(2)]);
-    let div = divergence(&field, &[&x, &y, &z]);
+    let div = divergence(&field, &[&x, &y, &z]).unwrap();
     // div F = 2x + 2y + 2z
     let val = div
         .subs(&x, &ctx.int(1))
@@ -1910,9 +1910,9 @@ fn vector_curl_of_gradient_is_zero() {
     let z = ctx.symbol("z");
     // f = x²y + y²z + z²x
     let f = &(&x.powi(2) * &y) + &(&y.powi(2) * &z) + &(&z.powi(2) * &x);
-    let g = gradient(&f, &[&x, &y, &z]);
+    let g = gradient(&f, &[&x, &y, &z]).unwrap();
     // curl(grad(f)) should be zero
-    let c = curl(&g, &[&x, &y, &z]);
+    let c = curl(&g, &[&x, &y, &z]).unwrap();
     for i in 0..3 {
         let val = c
             .get(i, 0)
@@ -1926,7 +1926,7 @@ fn vector_curl_of_gradient_is_zero() {
             val.eval_f64().unwrap(),
             0.0,
             1e-10,
-            &format!("curl(grad f)[{i}]"),
+            &format!("curl(grad f).unwrap()[{i}]"),
         );
     }
 }
@@ -1942,7 +1942,7 @@ fn vector_laplacian_quadratic() {
     let y = ctx.symbol("y");
     // f = x² + y²  →  ∇²f = 2 + 2 = 4
     let f = &x.powi(2) + &y.powi(2);
-    let lap = laplacian(&f, &[&x, &y]).eval();
+    let lap = laplacian(&f, &[&x, &y]).unwrap().eval();
     assert_close(lap.eval_f64().unwrap(), 4.0, 1e-10, "∇²(x²+y²)");
 }
 
@@ -1958,7 +1958,7 @@ fn vector_is_conservative_gradient_field() {
     let z = ctx.symbol("z");
     // F = grad(x²+y²+z²) = [2x, 2y, 2z] — conservative
     let f = &x.powi(2) + &y.powi(2) + &z.powi(2);
-    let field = gradient(&f, &[&x, &y, &z]);
+    let field = gradient(&f, &[&x, &y, &z]).unwrap();
     assert_eq!(
         is_conservative(&field, &[&x, &y, &z]),
         Some(true),
@@ -2170,7 +2170,7 @@ fn control_routh_array_size() {
     let ctx = Context::new();
     // s³ + 2s² + 3s + 4 → 4 coefficients → 4 rows
     let coeffs = vec![ctx.int(1), ctx.int(2), ctx.int(3), ctx.int(4)];
-    let table = routh_array(&coeffs);
+    let table = routh_array(&coeffs).unwrap();
     assert_eq!(table.len(), 4, "Routh table should have 4 rows");
 }
 
@@ -2190,7 +2190,7 @@ fn control_state_space_dimensions() {
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
 
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
     assert_eq!(ss.num_states(), 2);
     assert_eq!(ss.num_inputs(), 1);
     assert_eq!(ss.num_outputs(), 1);
@@ -2208,7 +2208,7 @@ fn control_state_space_controllability() {
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
 
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
     // System with A = [[0,1],[-2,-3]], B = [[0],[1]]
     // Controllability matrix = [B, AB] = [[0, 1], [1, -3]]
     // det = -1 ≠ 0 → controllable
@@ -2227,7 +2227,7 @@ fn control_state_space_observability() {
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
 
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
     // Observability matrix = [C; CA] = [[1,0],[0,1]] → rank 2 → observable
     assert!(ss.is_observable(), "system should be observable");
 }
@@ -2244,7 +2244,7 @@ fn control_state_space_stability() {
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
 
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
     // Eigenvalues of A: λ² + 3λ + 2 = 0 → λ = -1, -2 → stable
     let stable = ss.is_stable();
     assert_eq!(stable, Some(true), "system should be stable");
@@ -2261,7 +2261,7 @@ fn control_state_space_char_poly() {
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     let s = ctx.symbol("s");
     let cp = ss.char_poly(&s).eval().expand();
@@ -2287,7 +2287,7 @@ fn control_state_space_discretize() {
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
-    let ss = StateSpace::new(a, b, c, d);
+    let ss = StateSpace::new(a, b, c, d).unwrap();
 
     let dt = ctx.rational(1, 10); // dt = 0.1
     let sd = ss.discretize_zoh(&dt, 10).unwrap();

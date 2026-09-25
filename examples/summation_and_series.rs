@@ -24,7 +24,9 @@ fn main() {
     let k = ctx.symbol("k");
     let x = ctx.symbol("x");
     // A positive integer upper bound lets the engine use n! and 2^n freely.
-    let n = ctx.symbol_with("n", &[Assumption::Integer, Assumption::Positive]);
+    let n = ctx
+        .symbol_with("n", &[Assumption::Integer, Assumption::Positive])
+        .unwrap();
     let zero = ctx.int(0);
     let one = ctx.int(1);
     let inf = ctx.infinity();

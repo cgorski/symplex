@@ -26,7 +26,10 @@ fuzz_target!(|data: &[u8]| {
         6 => Assumption::Zero,
         _ => Assumption::NonZero,
     };
-    let x = x.assume(assumption);
+    // One assumption on a fresh symbol is always consistent.
+    let Ok(x) = x.assume(assumption) else {
+        return;
+    };
 
     // Build an expression based on shape byte
     let expr = match shape % 12 {
@@ -39,7 +42,7 @@ fuzz_target!(|data: &[u8]| {
         6 => (&x + &ctx.int(1)).abs(), // abs(x + 1)
         7 => x.sign().powi(2),         // sign(x)^2
         8 => {
-            let y = ctx.symbol("fuzz_y").assume(Assumption::Positive);
+            let y = ctx.symbol("fuzz_y").assume(Assumption::Positive).unwrap();
             (&x + &y).abs() // abs(x + y)
         }
         9 => {
@@ -62,6 +65,6 @@ fuzz_target!(|data: &[u8]| {
     // Also test refine_with (temporary assumptions)
     let y = ctx.symbol("fuzz_y2");
     let expr2 = y.abs();
-    let refined2 = expr2.refine_with(&[(&y, Assumption::Positive)]);
+    let refined2 = expr2.refine_with(&[(&y, Assumption::Positive)]).unwrap();
     let _ = format!("{refined2}");
 });

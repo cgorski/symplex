@@ -21,8 +21,8 @@ fn main() {
     let ctx = Context::new();
     let i = ctx.i_unit();
     let z = ctx.symbol("z"); // nothing assumed: may be complex
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
-    let y = ctx.symbol_with("y", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
+    let y = ctx.symbol_with("y", &[Assumption::Real]).unwrap();
 
     // ── 1. Real/imaginary parts with assumptions ────────────────────────
     println!("--- re / im / conjugate / arg (x, y real; z unknown) ---");

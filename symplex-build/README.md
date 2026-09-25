@@ -35,7 +35,7 @@ fn main() {
         DhLink { theta: &theta1, d: &zero, a: &l1, alpha: &zero },
         DhLink { theta: &theta2, d: &zero, a: &l2, alpha: &zero },
     ]);
-    let j = jacobian(&[&x, &y], &[&theta1, &theta2]);
+    let j = jacobian(&[&x, &y], &[&theta1, &theta2]).unwrap();
 
     // Optimized numerical Rust with CSE, `mul_add`, and a cfg-gated math module.
     CodeGen::new()

@@ -13,7 +13,7 @@ fn main() {
     let ctx = Context::new();
     symplex::syms!(ctx; k, x);
     // Assumptions on the bound let the engine use n! and 2^n freely.
-    let n = ctx.symbol_with("n", &[Assumption::Integer, Assumption::Positive]);
+    let n = ctx.symbol_with("n", &[Assumption::Integer, Assumption::Positive]).unwrap();
     let (zero, one) = (ctx.int(0), ctx.int(1));
 
     println!("{}", k.summation(&k, &one, &n));                       // 1/2*n^2 + 1/2*n
@@ -89,7 +89,7 @@ use symplex::prelude::*;
 fn main() {
     let ctx = Context::new();
     symplex::syms!(ctx; k);
-    let n = ctx.symbol_with("n", &[Assumption::Integer, Assumption::Positive]);
+    let n = ctx.symbol_with("n", &[Assumption::Integer, Assumption::Positive]).unwrap();
 
     println!("{}", k.product_over(&k, &ctx.int(1), &n));                  // n!
     println!("{}", (1 + 1 / &k).product_over(&k, &ctx.int(1), &n));       // n + 1

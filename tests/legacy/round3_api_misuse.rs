@@ -749,7 +749,7 @@ fn d7_series_constant() {
 fn e1_neg_of_positive_is_not_positive() {
     // Set x as positive. Check (-x).is_positive() — should be Some(false) or None
     let ctx = Context::new();
-    let x = ctx.symbol("x").assume(Assumption::Positive);
+    let x = ctx.symbol("x").assume(Assumption::Positive).unwrap();
     let neg_x = -&x;
     let result = neg_x.is_positive();
     assert_ne!(
@@ -764,7 +764,7 @@ fn e1_neg_of_positive_is_not_positive() {
 fn e2_twice_integer_is_even() {
     // Set x as integer. Check (2*x).is_even() — should be Some(true)
     let ctx = Context::new();
-    let x = ctx.symbol("x").assume(Assumption::Integer);
+    let x = ctx.symbol("x").assume(Assumption::Integer).unwrap();
     let two_x = &x * 2;
     let result = two_x.is_even();
     eprintln!("(2*x).is_even() when x is integer = {:?}", result);
@@ -781,7 +781,7 @@ fn e2_twice_integer_is_even() {
 fn e3_square_of_real_is_nonnegative() {
     // Set x as real. Check (x^2).is_nonnegative() — should be Some(true)
     let ctx = Context::new();
-    let x = ctx.symbol("x").assume(Assumption::Real);
+    let x = ctx.symbol("x").assume(Assumption::Real).unwrap();
     let x_sq = x.powi(2);
     let result = x_sq.is_nonnegative();
     eprintln!("(x^2).is_nonnegative() when x is real = {:?}", result);
@@ -796,7 +796,7 @@ fn e3_square_of_real_is_nonnegative() {
 fn e4_positive_implies_real() {
     // Setting x as positive should imply x is real and nonnegative
     let ctx = Context::new();
-    let x = ctx.symbol("x").assume(Assumption::Positive);
+    let x = ctx.symbol("x").assume(Assumption::Positive).unwrap();
     let is_real = x.is_real();
     let is_nn = x.is_nonnegative();
     let is_nz = x.is_nonzero();
@@ -828,7 +828,9 @@ fn e6_integer_positive_is_natural() {
     let x = ctx
         .symbol("x")
         .assume(Assumption::Integer)
-        .assume(Assumption::Positive);
+        .unwrap()
+        .assume(Assumption::Positive)
+        .unwrap();
     let result = x.is_nonnegative();
     assert_ne!(
         result,
@@ -841,8 +843,8 @@ fn e6_integer_positive_is_natural() {
 fn e7_sum_of_positives_is_positive() {
     // x, y both positive → x+y is positive
     let ctx = Context::new();
-    let x = ctx.symbol("x").assume(Assumption::Positive);
-    let y = ctx.symbol("y").assume(Assumption::Positive);
+    let x = ctx.symbol("x").assume(Assumption::Positive).unwrap();
+    let y = ctx.symbol("y").assume(Assumption::Positive).unwrap();
     let sum = &x + &y;
     let result = sum.is_positive();
     eprintln!("(x+y).is_positive() when both positive = {:?}", result);
@@ -858,8 +860,8 @@ fn e7_sum_of_positives_is_positive() {
 fn e8_product_of_positives_is_positive() {
     // x, y both positive → x*y is positive
     let ctx = Context::new();
-    let x = ctx.symbol("x").assume(Assumption::Positive);
-    let y = ctx.symbol("y").assume(Assumption::Positive);
+    let x = ctx.symbol("x").assume(Assumption::Positive).unwrap();
+    let y = ctx.symbol("y").assume(Assumption::Positive).unwrap();
     let prod = &x * &y;
     let result = prod.is_positive();
     eprintln!("(x*y).is_positive() when both positive = {:?}", result);

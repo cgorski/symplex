@@ -37,7 +37,7 @@ fn sorted(mut sols: Vec<Vec<Ratio<BigInt>>>) -> Vec<Vec<Ratio<BigInt>>> {
 /// Verify that `point` is a common root of all `polys` (each evaluates to 0).
 fn verify_solution(polys: &[MultiPoly<GrevLex>], point: &[Ratio<BigInt>]) {
     for (i, p) in polys.iter().enumerate() {
-        let val = p.eval(point);
+        let val = p.eval(point).unwrap();
         assert!(
             val.is_zero(),
             "polynomial {} evaluated to {} at {:?} (expected 0)",

@@ -95,7 +95,7 @@ fn exponentials_give_gamma() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let s = ctx.symbol("s");
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
 
     let f = (-&x).exp();
     let (big_f, strip) = mt(&f, &x, &s);
@@ -131,7 +131,7 @@ fn rational_functions_give_beta_and_cosecant() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let s = ctx.symbol("s");
-    let nu = ctx.symbol_with("nu", &[Assumption::Positive]);
+    let nu = ctx.symbol_with("nu", &[Assumption::Positive]).unwrap();
     let pi = ctx.pi();
 
     let f = 1 / (1 + &x);
@@ -176,7 +176,7 @@ fn step_windows_and_beta() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let s = ctx.symbol("s");
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
 
     let (big_f, strip) = mt(&(1 - &x).heaviside(), &x, &s);
     assert_eq!(big_f, 1 / &s);
@@ -251,7 +251,7 @@ fn power_scaling_and_linearity_rules() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let s = ctx.symbol("s");
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
 
     // x² e^{−3x} → 3^{−s−2} Γ(s + 2), Re s > −2
     let f = x.powi(2) * (&x * -3).exp();
@@ -355,8 +355,8 @@ fn inverse_table_and_round_trips() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let s = ctx.symbol("s");
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
-    let nu = ctx.symbol_with("nu", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
+    let nu = ctx.symbol_with("nu", &[Assumption::Positive]).unwrap();
     let pi = ctx.pi();
 
     let inv = |f: &Ex| {

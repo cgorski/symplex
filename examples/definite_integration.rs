@@ -92,8 +92,8 @@ fn main() {
     );
 
     // Symbolic parameters need assumptions: ∫₀^∞ e^(−a x) dx = 1/a needs a > 0.
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
-    let n = ctx.symbol_with("n", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
+    let n = ctx.symbol_with("n", &[Assumption::Positive]).unwrap();
     show(
         "∫₀^∞ e^(−a x) dx  (a > 0)",
         &(-(&a * &x)).exp(),

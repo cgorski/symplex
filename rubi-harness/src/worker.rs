@@ -274,10 +274,6 @@ fn entry_body(out: &Out, entry: &Entry, selftest: bool, negative_params: bool) -
             "mismatch only where the integrand is complex, but the integrand contains %i \
              (complex by construction, so not a real-variable convention)"
                 .to_string()
-        } else if real_ok == 0 {
-            "mismatch only where the integrand is complex; no real sample point evaluated \
-             (real-variable convention, vacuously)"
-                .to_string()
         } else {
             format!(
                 "mismatch only where the integrand is complex; agrees at {real_ok} real \
@@ -297,7 +293,14 @@ fn entry_body(out: &Out, entry: &Entry, selftest: bool, negative_params: bool) -
     if status == Status::Verified {
         return status;
     }
-    out.kv("reason", "no point evaluated on both sides");
+    out.kv(
+        "reason",
+        if reports.iter().any(check::PointReport::failed) {
+            "mismatch only where the integrand is complex, no agreement where it is real"
+        } else {
+            "no point evaluated on both sides"
+        },
+    );
     let why: Vec<String> = reports.iter().map(|r| r.describe(&var)).collect();
     out.kv("detail", &why.join("\n"));
     out.kv("F", &truncated(big_f.to_string()));

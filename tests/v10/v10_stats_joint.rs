@@ -582,7 +582,7 @@ fn entropy_of_normal_with_parameters() {
 fn entropy_of_symbolic_normal_is_half_ln_2_pi_e_sigma_squared() {
     let ctx = Context::new();
     let mu = ctx.symbol("mu");
-    let sigma = ctx.symbol_with("sigma", &[Assumption::Positive]);
+    let sigma = ctx.symbol_with("sigma", &[Assumption::Positive]).unwrap();
     let z = RandomVariable::new(&ctx, "Z", Distribution::normal(mu, sigma.clone()));
     let h = stats::entropy(&z);
     assert!(!h.has_unevaluated(), "{h}");

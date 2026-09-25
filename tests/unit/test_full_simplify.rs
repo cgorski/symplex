@@ -64,7 +64,7 @@ fn full_simplify_pythagorean_in_larger_sum() {
 fn simplify_sqrt_of_square() {
     let ctx = Context::new();
     // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     let expr = x.powi(2).sqrt();
     assert_eq!(format!("{}", expr.simplify()), "abs(x)");
 }
@@ -73,7 +73,7 @@ fn simplify_sqrt_of_square() {
 fn simplify_sqrt_of_square_in_sum() {
     let ctx = Context::new();
     // 0.23: the identity needs a real argument (a symbol without assumptions may be complex).
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     let expr = &x.powi(2).sqrt() + 1;
     let simplified = expr.simplify();
     let s = format!("{simplified}");

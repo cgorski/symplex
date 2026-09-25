@@ -99,7 +99,7 @@ fn two_sided_exponential_and_gaussian() {
     let ctx = Context::new();
     let t = ctx.symbol("t");
     let w = ctx.symbol("w");
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
 
     let f = (-t.abs()).exp();
     let big_f = ft(&f, &t, &w);
@@ -123,7 +123,7 @@ fn causal_exponentials_with_powers_of_t() {
     let ctx = Context::new();
     let t = ctx.symbol("t");
     let w = ctx.symbol("w");
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
 
     let i = ctx.i_unit();
     let zero = ctx.int(0);
@@ -162,7 +162,7 @@ fn rectangular_windows_and_sinc() {
     let ctx = Context::new();
     let t = ctx.symbol("t");
     let w = ctx.symbol("w");
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
 
     let rect = (&t + 1).heaviside() - (&t - 1).heaviside();
     let big_r = ft(&rect, &t, &w);
@@ -223,7 +223,7 @@ fn sinusoids_become_delta_pairs() {
     let ctx = Context::new();
     let t = ctx.symbol("t");
     let w = ctx.symbol("w");
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
 
     let pi = ctx.pi();
     let i = ctx.i_unit();
@@ -391,7 +391,7 @@ fn symbolic_parameters_are_gated_on_assumptions() {
     let t = ctx.symbol("t");
     let w = ctx.symbol("w");
     let b = ctx.symbol("b");
-    let n = ctx.symbol_with("n", &[Assumption::Negative]);
+    let n = ctx.symbol_with("n", &[Assumption::Negative]).unwrap();
 
     // Unknown sign → Err with a helpful message, never a guess.
     let err = (-&b * t.abs()).exp().fourier_transform(&t, &w).unwrap_err();
@@ -450,7 +450,7 @@ fn inverse_table() {
     let t = ctx.symbol("t");
     let w = ctx.symbol("w");
     let i = ctx.i_unit();
-    let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
 
     let pi = ctx.pi();
     assert_eq!(ift(&ctx.int(1), &w, &t), t.dirac_delta());

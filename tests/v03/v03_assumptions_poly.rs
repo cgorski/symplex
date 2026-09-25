@@ -16,8 +16,8 @@ fn signs(e: &Ex) -> (Option<bool>, Option<bool>, Option<bool>, Option<bool>) {
 #[test]
 fn positive_definite_quadratics_are_known_positive() {
     let ctx = Context::new();
-    let u = ctx.symbol_with("u", &[Assumption::NonNegative]);
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let u = ctx.symbol_with("u", &[Assumption::NonNegative]).unwrap();
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     // u ≥ 0: every coefficient positive, and one with a negative middle term.
     assert_eq!(
         signs(&(3 * &u.powi(2) + 2 * &u + 1)),
@@ -43,9 +43,9 @@ fn positive_definite_quadratics_are_known_positive() {
 #[test]
 fn zeros_inside_the_domain_are_respected() {
     let ctx = Context::new();
-    let u = ctx.symbol_with("u", &[Assumption::NonNegative]);
-    let p = ctx.symbol_with("p", &[Assumption::Positive]);
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let u = ctx.symbol_with("u", &[Assumption::NonNegative]).unwrap();
+    let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     // (x − 1)² ≥ 0 but touches zero: nonneg, not positive, not decided negative.
     assert_eq!(
         signs(&(&x.powi(2) - 2 * &x + 1)),
@@ -70,8 +70,8 @@ fn zeros_inside_the_domain_are_respected() {
 #[test]
 fn negative_domains_and_odd_polynomials() {
     let ctx = Context::new();
-    let n = ctx.symbol_with("n", &[Assumption::Negative]);
-    let m = ctx.symbol_with("m", &[Assumption::NonPositive]);
+    let n = ctx.symbol_with("n", &[Assumption::Negative]).unwrap();
+    let m = ctx.symbol_with("m", &[Assumption::NonPositive]).unwrap();
     // n³ − n = n(n − 1)(n + 1) changes sign at −1 inside n < 0.
     assert_eq!(signs(&(&n.powi(3) - &n)), (None, None, None, None));
     // n³ + n = n(n² + 1) < 0 for n < 0.
@@ -85,7 +85,7 @@ fn negative_domains_and_odd_polynomials() {
         (Some(false), None, None, Some(true))
     );
     // Odd degree over all of ℝ is never sign-definite.
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     assert_eq!(signs(&(&x.powi(3) + &x + 1)), (None, None, None, None));
 }
 
@@ -94,7 +94,10 @@ fn not_applied_without_realness_or_with_parameters() {
     let ctx = Context::new();
     let z = ctx.symbol("z"); // possibly complex
     assert_eq!(signs(&(&z.powi(2) + 1)), (None, None, None, None));
-    let (x, a) = (ctx.symbol_with("x", &[Assumption::Real]), ctx.symbol("a"));
+    let (x, a) = (
+        ctx.symbol_with("x", &[Assumption::Real]).unwrap(),
+        ctx.symbol("a"),
+    );
     // Two symbols: not a univariate polynomial with rational coefficients.
     assert_eq!(signs(&(&a * &x.powi(2) + 1)), (None, None, None, None));
     // Non-polynomial.
@@ -107,8 +110,8 @@ fn not_applied_without_realness_or_with_parameters() {
 #[test]
 fn downstream_simplifications_use_the_new_facts() {
     let ctx = Context::new();
-    let u = ctx.symbol_with("u", &[Assumption::NonNegative]);
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let u = ctx.symbol_with("u", &[Assumption::NonNegative]).unwrap();
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     let q = 3 * &u.powi(2) + 2 * &u + 1;
     assert_eq!(q.abs().simplify(), q);
     assert_eq!(q.powi(2).sqrt().simplify(), q);
@@ -129,7 +132,7 @@ fn downstream_simplifications_use_the_new_facts() {
 #[test]
 fn high_degree_is_decided_and_fast() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     // x^20 + x^10 + 1 > 0 on ℝ.
     let t = std::time::Instant::now();
     let p = &x.powi(20) + &x.powi(10) + 1;

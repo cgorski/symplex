@@ -75,9 +75,9 @@ fn equals_unknown_for_distinct_symbols() {
 #[test]
 fn equals_uses_assumptions_for_nonzero() {
     let ctx = Context::new();
-    let r = ctx.symbol_with("r", &[Assumption::Real]);
+    let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
     assert_eq!((&r.powi(2) + 1).equals(&ctx.zero()), Some(false));
-    let p = ctx.symbol_with("p", &[Assumption::Positive]);
+    let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
     assert_eq!(p.equals(&ctx.zero()), Some(false));
 }
 
@@ -189,8 +189,8 @@ fn compare_numeric_symbolic_via_difference() {
 #[test]
 fn compare_numeric_with_assumptions() {
     let ctx = Context::new();
-    let p = ctx.symbol_with("p", &[Assumption::Positive]);
-    let n = ctx.symbol_with("n", &[Assumption::Negative]);
+    let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
+    let n = ctx.symbol_with("n", &[Assumption::Negative]).unwrap();
     assert_eq!(p.compare_numeric(&ctx.zero()), Some(Ordering::Greater));
     assert_eq!(n.compare_numeric(&ctx.zero()), Some(Ordering::Less));
     assert_eq!(p.compare_numeric(&n), Some(Ordering::Greater));
@@ -215,7 +215,7 @@ fn is_less_than_and_is_greater_than() {
 #[test]
 fn is_less_than_uses_nonnegativity() {
     let ctx = Context::new();
-    let r = ctx.symbol_with("r", &[Assumption::Real]);
+    let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
     // r² ≥ 0, so r² < 0 is false even though r² > 0 is unknown.
     assert_eq!(r.powi(2).is_less_than(&ctx.zero()), Some(false));
     assert_eq!(r.powi(2).is_greater_than(&ctx.zero()), None);
@@ -293,8 +293,8 @@ fn probably_equal_none_when_nothing_evaluable() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     // An undefined function can never be evaluated at a sample point.
-    let f = ctx.apply("f", &[&x]);
-    let g = ctx.apply("g", &[&x]);
+    let f = ctx.apply("f", &[&x]).unwrap();
+    let g = ctx.apply("g", &[&x]).unwrap();
     assert_eq!(f.probably_equal(&g, 3), None);
 }
 

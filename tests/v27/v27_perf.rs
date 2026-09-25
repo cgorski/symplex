@@ -260,13 +260,13 @@ fn random_variable_transform_reports_bad_input_as_errors() {
     assert_eq!((y.mean(), y.variance()), (ctx.int(1), ctx.int(4)));
 }
 
-/// `symbol_with` panics on an empty name or contradictory assumptions
-/// (now documented); `try_symbol_with` reports both.
+/// `symbol_with` reports an empty name and contradictory assumptions
+/// (it panicked on both before 0.29).
 #[test]
-fn try_symbol_with_reports_what_symbol_with_panics_on() {
+fn symbol_with_reports_an_empty_name_and_contradictions() {
     let ctx = Context::new();
     let t = ctx
-        .try_symbol_with("t", &[Assumption::Positive])
+        .symbol_with("t", &[Assumption::Positive])
         .expect("consistent");
     assert_eq!(
         t.is_real(),
@@ -279,52 +279,38 @@ fn try_symbol_with_reports_what_symbol_with_panics_on() {
         vec![Assumption::Positive, Assumption::Zero],
     ] {
         assert!(matches!(
-            ctx.try_symbol_with("u", &bad),
-            Err(SymplexError::InvalidArgument { .. })
+            ctx.symbol_with("u", &bad),
+            Err(SymplexError::ContradictoryAssumptions { .. })
         ));
     }
-    assert!(ctx.try_symbol_with("", &[Assumption::Real]).is_err());
+    assert!(matches!(
+        ctx.symbol_with("", &[Assumption::Real]),
+        Err(SymplexError::InvalidArgument { .. })
+    ));
     // A refused declaration leaves the name free for a consistent one.
     let u = ctx
-        .try_symbol_with("u", &[Assumption::Negative])
+        .symbol_with("u", &[Assumption::Negative])
         .expect("consistent");
     assert_eq!(u.is_negative(), Some(true));
 }
 
+/// `assume` reports an assumption that contradicts the declared ones and
+/// leaves the symbol alone (it panicked before 0.29).
 #[test]
-#[should_panic(expected = "contradictory assumptions")]
-fn symbol_with_contradictory_assumptions_panics_as_documented() {
-    let ctx = Context::new();
-    let _ = ctx.symbol_with("t", &[Assumption::Positive, Assumption::Negative]);
-}
-
-/// `assume` panics when the new assumption contradicts the declared ones
-/// (now documented); `try_assume` reports it and leaves the symbol alone.
-#[test]
-fn try_assume_reports_a_contradiction_and_keeps_the_symbol() {
+fn assume_reports_a_contradiction_and_keeps_the_symbol() {
     let ctx = Context::new();
     let t = ctx
         .symbol("t")
-        .try_assume(Assumption::Positive)
+        .assume(Assumption::Positive)
         .expect("consistent");
     assert!(matches!(
-        t.clone().try_assume(Assumption::Negative),
-        Err(SymplexError::InvalidArgument { .. })
+        t.clone().assume(Assumption::Negative),
+        Err(SymplexError::ContradictoryAssumptions { .. })
     ));
     assert_eq!(t.is_positive(), Some(true));
-    // Not a symbol: ignored, as by `assume`.
-    let e = (&t + 1).try_assume(Assumption::Negative).expect("ignored");
+    // Not a symbol: ignored.
+    let e = (&t + 1).assume(Assumption::Negative).expect("ignored");
     assert_eq!(e, &t + 1);
-}
-
-#[test]
-#[should_panic(expected = "contradictory assumptions")]
-fn assume_contradiction_panics_as_documented() {
-    let ctx = Context::new();
-    let _ = ctx
-        .symbol("t")
-        .assume(Assumption::Positive)
-        .assume(Assumption::Negative);
 }
 
 #[test]

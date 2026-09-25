@@ -877,7 +877,7 @@ fn multi_var_gradient_of_sum_of_squares() {
     // f = x² + y² + z²  →  ∇f = [2x, 2y, 2z]
     symplex::syms!(ctx; x, y, z);
     let f = expr!(ctx, x ^ 2 + y ^ 2 + z ^ 2);
-    let grad = gradient(&f, &[&x, &y, &z]);
+    let grad = gradient(&f, &[&x, &y, &z]).unwrap();
 
     assert_eq!(grad.nrows(), 3);
     assert_eq!(grad.ncols(), 1);
@@ -939,7 +939,7 @@ fn multi_var_jacobian_2x2() {
     let y = ctx.symbol("y");
     let f1 = &x.powi(2) + &y;
     let f2 = &x * &y;
-    let j = jacobian(&[&f1, &f2], &[&x, &y]);
+    let j = jacobian(&[&f1, &f2], &[&x, &y]).unwrap();
 
     assert_eq!(j.nrows(), 2);
     assert_eq!(j.ncols(), 2);

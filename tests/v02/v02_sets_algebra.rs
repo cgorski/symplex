@@ -201,7 +201,7 @@ fn contains_and_is_in() {
     assert_eq!(ctx.empty_set().contains(&ctx.symbol("x")), Some(false));
     assert_eq!(ctx.universal_set().contains(&ctx.symbol("x")), Some(true));
     // real symbol is in ℝ; unconstrained symbol is unknown
-    let r = ctx.symbol_with("r", &[Assumption::Real]);
+    let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
     assert_eq!(ctx.reals().contains(&r), Some(true));
     assert_eq!(ctx.reals().contains(&ctx.symbol("z")), None);
     // infinities are never members of real sets

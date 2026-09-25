@@ -266,8 +266,8 @@ fn expand_log_hint_guarded_and_forced() {
     let forced = e.expand_with(&ExpandOpts::default().log(true).force(true));
     assert_eq!(s(&forced), "2*ln(y) + ln(x)");
     assert_same_value_positive(&e, &forced, "log forced");
-    let p = ctx.symbol_with("p", &[Assumption::Positive]);
-    let q = ctx.symbol_with("q", &[Assumption::Positive]);
+    let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
+    let q = ctx.symbol_with("q", &[Assumption::Positive]).unwrap();
     let g = (&p * &q).ln();
     assert_eq!(
         s(&g.expand_with(&ExpandOpts::default().log(true))),
@@ -299,8 +299,8 @@ fn expand_power_base_guard() {
     assert_eq!(s(&f.expand_power_base(false)), "x^(-3)*y^(-3)");
     assert_same_value(&f, &f.expand_power_base(false), "power_base int");
     // Positive symbols are fine.
-    let p = ctx.symbol_with("p", &[Assumption::Positive]);
-    let q = ctx.symbol_with("q", &[Assumption::Positive]);
+    let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
+    let q = ctx.symbol_with("q", &[Assumption::Positive]).unwrap();
     let g = (&p * &q).sqrt();
     assert_eq!(s(&g.expand_power_base(false)), "sqrt(p)*sqrt(q)");
     assert_same_value_positive(&g, &g.expand_power_base(false), "power_base positive");
@@ -333,8 +333,8 @@ fn expand_power_exp_exp_split() {
 fn expand_power_exp_integer_summands_via_assumptions() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let m = ctx.symbol_with("m", &[Assumption::Integer]);
-    let n = ctx.symbol_with("n", &[Assumption::Integer]);
+    let m = ctx.symbol_with("m", &[Assumption::Integer]).unwrap();
+    let n = ctx.symbol_with("n", &[Assumption::Integer]).unwrap();
     // x^(m+n) → x^m * x^n is valid, but canonicalisation re-merges; the
     // observable guarantee is that the result is value-equal.
     let e = x.pow(&(&m + &n));
@@ -544,8 +544,8 @@ fn powdenest_nested_symbolic_needs_force_or_assumptions() {
     let e = x.pow(&a).pow(&b);
     assert_eq!(e.powdenest(false), e);
     assert_eq!(s(&e.powdenest(true)), "x^(a*b)");
-    let p = ctx.symbol_with("p", &[Assumption::Positive]);
-    let r = ctx.symbol_with("r", &[Assumption::Real]);
+    let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
+    let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
     assert_eq!(s(&p.pow(&r).pow(&b).powdenest(false)), "p^(b*r)");
 }
 
@@ -572,13 +572,13 @@ fn powdenest_sqrt_of_square() {
     // 0.23: unassumed x may be complex (√(i²) = i ≠ |i|): only a known-real
     // argument gives |x|.
     assert_eq!(e.powdenest(false), e);
-    let r = ctx.symbol_with("r", &[Assumption::Real]);
+    let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
     assert_eq!(s(&r.powi(2).sqrt().powdenest(false)), "abs(r)");
     assert_eq!(s(&e.powdenest(true)), "x");
-    let p = ctx.symbol_with("p", &[Assumption::NonNegative]);
+    let p = ctx.symbol_with("p", &[Assumption::NonNegative]).unwrap();
     assert_eq!(s(&p.powi(2).sqrt().powdenest(false)), "p");
     let i = ctx.i_unit();
-    let z = ctx.symbol_with("z", &[Assumption::Imaginary]);
+    let z = ctx.symbol_with("z", &[Assumption::Imaginary]).unwrap();
     // Known non-real: sqrt(z²) is not |z| — untouched.
     assert_eq!(z.powi(2).sqrt().powdenest(false), z.powi(2).sqrt());
     let _ = i;
@@ -591,8 +591,8 @@ fn powdenest_product_base_via_assumptions() {
     let e = (&x * &y).pow(&a);
     assert_eq!(e.powdenest(false), e);
     assert_eq!(s(&e.powdenest(true)), "x^a*y^a");
-    let p = ctx.symbol_with("p", &[Assumption::Positive]);
-    let q = ctx.symbol_with("q", &[Assumption::Positive]);
+    let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
+    let q = ctx.symbol_with("q", &[Assumption::Positive]).unwrap();
     assert_eq!(s(&(&p * &q).pow(&a).powdenest(false)), "p^a*q^a");
 }
 
@@ -611,8 +611,8 @@ fn log_combine_with_guard_vs_force() {
     // 0.23: the default is the guarded form.
     assert_eq!(e.log_combine(), e);
     assert_same_value_positive(&e, &forced, "log_combine force");
-    let p = ctx.symbol_with("p", &[Assumption::Positive]);
-    let q = ctx.symbol_with("q", &[Assumption::Positive]);
+    let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
+    let q = ctx.symbol_with("q", &[Assumption::Positive]).unwrap();
     let g = &p.ln() + &q.ln() * 2;
     assert_eq!(s(&g.log_combine_with(false)), "ln(p*q^2)");
 }
@@ -621,8 +621,8 @@ fn log_combine_with_guard_vs_force() {
 fn log_combine_with_guard_mixes_known_and_unknown_terms() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let p = ctx.symbol_with("p", &[Assumption::Positive]);
-    let q = ctx.symbol_with("q", &[Assumption::Positive]);
+    let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
+    let q = ctx.symbol_with("q", &[Assumption::Positive]).unwrap();
     let e = &p.ln() + &q.ln() + &x.ln();
     let r = e.log_combine_with(false);
     // 0.23: logarithms of positive arguments also absorb one other
@@ -643,19 +643,19 @@ fn expand_log_with_guard_vs_force() {
     let e = x.pow(&n).ln();
     assert_eq!(e.expand_log_with(false), e);
     assert_eq!(s(&e.expand_log_with(true)), "n*ln(x)");
-    let p = ctx.symbol_with("p", &[Assumption::Positive]);
-    let r = ctx.symbol_with("r", &[Assumption::Real]);
+    let p = ctx.symbol_with("p", &[Assumption::Positive]).unwrap();
+    let r = ctx.symbol_with("r", &[Assumption::Real]).unwrap();
     assert_eq!(s(&p.pow(&r).ln().expand_log_with(false)), "r*ln(p)");
     // Positive base, non-real exponent: blocked.
-    let z = ctx.symbol_with("z", &[Assumption::Imaginary]);
+    let z = ctx.symbol_with("z", &[Assumption::Imaginary]).unwrap();
     assert_eq!(p.pow(&z).ln().expand_log_with(false), p.pow(&z).ln());
 }
 
 #[test]
 fn ln_exp_blocked_for_known_non_real_argument() {
     let ctx = Context::new();
-    let x = ctx.symbol_with("x", &[Assumption::Real]);
-    let z = ctx.symbol_with("z", &[Assumption::Imaginary]);
+    let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
+    let z = ctx.symbol_with("z", &[Assumption::Imaginary]).unwrap();
     // ln(exp(z)) with imaginary z: the principal log may differ by 2πi·k.
     let e = z.exp().ln();
     assert_eq!(e.simplify(), e);
@@ -673,7 +673,7 @@ fn ln_exp_blocked_for_known_non_real_argument() {
 #[test]
 fn exp_ln_fires_for_any_argument() {
     let ctx = Context::new();
-    let z = ctx.symbol_with("z", &[Assumption::Imaginary]);
+    let z = ctx.symbol_with("z", &[Assumption::Imaginary]).unwrap();
     assert_eq!(z.ln().exp().simplify(), z);
 }
 

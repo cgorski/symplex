@@ -84,7 +84,7 @@ fn complex_abs() {
 fn complex_expand_complex_with_real_symbols() {
     run_with_known_bugs("complex", "expand_complex", KNOWN_BUGS, |ctx, fx| {
         for name in fx.str_list("real_symbols") {
-            ctx.symbol_with(&name, &[Assumption::Real]);
+            ctx.symbol_with(&name, &[Assumption::Real]).unwrap();
         }
         let e = match parse(ctx, fx.str("input").unwrap_or("")) {
             Ok(e) => e,
@@ -312,7 +312,7 @@ fn trigsimp_preserves_value() {
 
 fn power_log_rewrite(ctx: &Context, fx: &Fixture) -> Status {
     for name in fx.str_list("positive_symbols") {
-        ctx.symbol_with(&name, &[Assumption::Positive]);
+        ctx.symbol_with(&name, &[Assumption::Positive]).unwrap();
     }
     let e = match parse(ctx, fx.str("input").unwrap_or("")) {
         Ok(e) => e,

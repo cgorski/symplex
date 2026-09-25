@@ -210,7 +210,7 @@ fn pow_checked(base: &MultiPoly<Lex>, n: u32) -> Option<MultiPoly<Lex>> {
 
 /// Exact value of `mp` at the rational point `vals` (one reduction at the
 /// end; see [`MultiPoly::eval`]).
-fn eval_exact(mp: &MultiPoly<Lex>, vals: &[Ratio<BigInt>]) -> Ratio<BigInt> {
+fn eval_exact(mp: &MultiPoly<Lex>, vals: &[Ratio<BigInt>]) -> Result<Ratio<BigInt>, SymplexError> {
     mp.eval(vals)
 }
 
@@ -1218,7 +1218,7 @@ impl Poly {
                     .zip(&vals)
                     .all(|(&d, v)| pow_within_limits(&config, v, d));
                 if within {
-                    return Ok(self.ctx.from_ratio(eval_exact(mp, &vals)));
+                    return Ok(self.ctx.from_ratio(eval_exact(mp, &vals)?));
                 }
             }
         }

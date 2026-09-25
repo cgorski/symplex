@@ -316,7 +316,7 @@ Conventions, the SymPy-compatible column HNF, unimodularity tests and lattice de
 
 ## Calculus helpers
 
-`matrix::jacobian(&funcs, &vars)`, `matrix_decomp::hessian(&f, &vars)`, `matrix_decomp::wronskian(&funcs, &x)`, and `Matrix::{diff, integrate}` element-wise.
+`matrix::jacobian(&funcs, &vars).unwrap()`, `matrix_decomp::hessian(&f, &vars).unwrap()`, `matrix_decomp::wronskian(&funcs, &x)`, and `Matrix::{diff, integrate}` element-wise.
 
 ```rust
 use symplex::prelude::*;
@@ -326,9 +326,9 @@ fn main() {
     let ctx = Context::new();
     symplex::syms!(ctx; x, y);
     let f = &x.powi(3) * &y + &x * &y.powi(2);
-    println!("{}", hessian(&f, &[&x, &y]));                       // [[6xy, 3x²+2y], [3x²+2y, 2x]]
+    println!("{}", hessian(&f, &[&x, &y]).unwrap());                       // [[6xy, 3x²+2y], [3x²+2y, 2x]]
     println!("{}", wronskian(&[&x.sin(), &x.cos()], &x).simplify());   // -1
-    println!("{}", symplex::matrix::jacobian(&[&f], &[&x, &y]));
+    println!("{}", symplex::matrix::jacobian(&[&f], &[&x, &y]).unwrap());
 }
 ```
 

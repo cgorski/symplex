@@ -2505,27 +2505,31 @@ pub fn primes_up_to(limit: i64) -> Vec<i64> {
 /// - `-1` if `a` is a non-residue mod `p`,
 /// - `0` if `a ≡ 0 (mod p)`.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `p` is not an odd prime.  Use [`jacobi_symbol`] for a
-/// non-panicking generalisation.
+/// `InvalidArgument` if `p` is not an odd prime.  [`jacobi_symbol`]
+/// generalises to odd composite moduli.
 ///
 /// # Examples
 ///
 /// ```
 /// use symplex::ntheory::legendre_symbol;
-/// assert_eq!(legendre_symbol(2, 7), 1);
-/// assert_eq!(legendre_symbol(3, 7), -1);
-/// assert_eq!(legendre_symbol(7, 7), 0);
+/// assert_eq!(legendre_symbol(2, 7).unwrap(), 1);
+/// assert_eq!(legendre_symbol(3, 7).unwrap(), -1);
+/// assert_eq!(legendre_symbol(7, 7).unwrap(), 0);
+/// assert!(legendre_symbol(2, 9).is_err()); // 9 is not prime
+/// assert!(legendre_symbol(1, 2).is_err()); // 2 is not odd
 /// ```
-pub fn legendre_symbol(a: impl Into<BigInt>, p: impl Into<BigInt>) -> i8 {
+pub fn legendre_symbol(a: impl Into<BigInt>, p: impl Into<BigInt>) -> Result<i8, SymplexError> {
     let a: BigInt = a.into();
     let p: BigInt = p.into();
-    assert!(
-        p > BigInt::from(2) && isprime_big_internal(&p),
-        "p must be an odd prime"
-    );
-    jacobi_big(&a, &p)
+    if p <= BigInt::from(2) || !isprime_big_internal(&p) {
+        return Err(SymplexError::InvalidArgument {
+            operation: "legendre_symbol",
+            reason: format!("modulus {p} must be an odd prime"),
+        });
+    }
+    Ok(jacobi_big(&a, &p))
 }
 
 /// Jacobi symbol `(a/n)` for odd positive `n`.
@@ -5150,9 +5154,9 @@ mod tests {
     // ── legendre_symbol ──────────────────────────────────────────────
     #[test]
     fn test_legendre_symbol() {
-        assert_eq!(legendre_symbol(2, 7), 1);
-        assert_eq!(legendre_symbol(3, 7), -1);
-        assert_eq!(legendre_symbol(7, 7), 0);
+        assert_eq!(legendre_symbol(2, 7).unwrap(), 1);
+        assert_eq!(legendre_symbol(3, 7).unwrap(), -1);
+        assert_eq!(legendre_symbol(7, 7).unwrap(), 0);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -5481,10 +5485,10 @@ mod tests {
             for a in -10..30i64 {
                 assert_eq!(
                     jacobi_symbol(a, p).unwrap(),
-                    legendre_symbol(a, p),
+                    legendre_symbol(a, p).unwrap(),
                     "({a}/{p})"
                 );
-                assert_eq!(kronecker_symbol(a, p), legendre_symbol(a, p));
+                assert_eq!(kronecker_symbol(a, p), legendre_symbol(a, p).unwrap());
             }
         }
         // Kronecker at 2, −1, 0.
