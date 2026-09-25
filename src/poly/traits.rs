@@ -165,6 +165,19 @@ pub trait Field: EuclideanDomain {
         let _ = (a, b);
         None
     }
+
+    /// A fast path for the resultant of two univariate polynomials with
+    /// `deg a ≥ deg b ≥ 1` (ascending coefficient slices, no trailing
+    /// zeros), or `None` to let
+    /// [`GenPoly::resultant`](super::generic::GenPoly::resultant) run
+    /// Euclid's algorithm over the field.  The resultant is a single
+    /// element, so an implementation must return exactly Euclid's value.
+    /// `Ratio<BigInt>` routes through the subresultant PRS in `ℤ[x]`
+    /// (`zpoly::resultant_via_z`).
+    fn poly_resultant(a: &[Self], b: &[Self]) -> Option<Self> {
+        let _ = (a, b);
+        None
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -312,6 +325,10 @@ impl Field for Ratio<BigInt> {
 
     fn poly_extended_gcd(a: &[Self], b: &[Self]) -> Option<num_integer::ExtendedGcd<Vec<Self>>> {
         super::zpoly::extended_gcd_via_z(a, b)
+    }
+
+    fn poly_resultant(a: &[Self], b: &[Self]) -> Option<Self> {
+        super::zpoly::resultant_via_z(a, b)
     }
 }
 

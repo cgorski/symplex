@@ -451,6 +451,40 @@ impl Assumptions {
         self.known_true.intersects(self.known_false)
     }
 
+    /// `self` with one more declared [`Assumption`], forward-chained.
+    pub(crate) fn with(mut self, assumption: Assumption) -> Self {
+        let (prop, value) = assumption.to_prop_value();
+        if value {
+            self.assert_true(prop);
+        } else {
+            self.assert_false(prop);
+        }
+        self
+    }
+
+    /// `Ok` when `self` can be declared on a symbol: not contradictory once
+    /// [normalised](Self::normalize_declared), the condition under which
+    /// `Arena::set_symbol_assumptions` and
+    /// `AssumptionCache::set_symbol_assumptions` panic.
+    pub(crate) fn check_declarable(
+        &self,
+        operation: &'static str,
+    ) -> Result<(), crate::base::errors::SymplexError> {
+        let mut normalised = *self;
+        normalised.normalize_declared();
+        if normalised.is_contradictory() {
+            return Err(crate::base::errors::SymplexError::invalid_argument(
+                operation,
+                format!(
+                    "contradictory assumptions: {normalised} (properties {} are both asserted \
+                     and denied)",
+                    normalised.known_true & normalised.known_false
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     /// Normalise a set of assumptions *declared on a symbol*.
     ///
     /// The sign properties (`positive`, `negative`, `nonnegative`,

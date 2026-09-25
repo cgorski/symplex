@@ -20,7 +20,7 @@
 //! `src/domains/exact_kernel.rs` (`kernels_report_a_failed_cell_operation`,
 //! `i128_division_rejects_inexact_operands`).
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -91,6 +91,14 @@ fn row_scaled(a: &QMatrix) -> (QMatrix, Vec<Q>) {
         .collect();
     let scaled = QMatrix::from_fn(a.nrows(), a.ncols(), |i, j| &a[(i, j)] * &scales[i]);
     (scaled, scales)
+}
+
+/// `f()`, with its wall-clock time added to `total`.
+fn clocked<T>(total: &mut Duration, f: impl FnOnce() -> T) -> T {
+    let t = Instant::now();
+    let out = f();
+    *total += t.elapsed();
+    out
 }
 
 /// Reference RREF: plain Gauss–Jordan over `Ratio<BigInt>`.
@@ -177,25 +185,43 @@ fn square_cases() -> Vec<(&'static str, QMatrix, u64)> {
     out
 }
 
+/// The timing guard compares the kernel with the naive oracle on the same
+/// matrices, measured case by case side by side, instead of bounding the
+/// wall clock: the oracle took ~1.1 s of the test's 1.3 s alone (debug
+/// build) and the test failed at 5.03 s under a loaded `cargo test`, while
+/// the kernel's share was ~0.18 s.  Seven kernel calls per matrix (RREF,
+/// rank and nullspace of `A` and `D·A`, rank of `Aᵀ`) cost ~1/6 of one
+/// plain Gauss–Jordan; a kernel that lost the fraction-free invariant or
+/// its fixed-width cells would cost several, and the 0.14 regression
+/// (hours) many thousands.
 #[test]
 fn rref_rank_nullspace_agree_with_bigint_only_and_naive_paths() {
-    let started = Instant::now();
+    let mut kernel = Duration::ZERO;
+    let mut oracle = Duration::ZERO;
     for (name, a) in rectangular_cases() {
-        let (r, pivots) = a.rref();
+        let (r, pivots) = clocked(&mut kernel, || a.rref());
         // Oracle 1: the invariant-free rational elimination.
-        let (nr, npivots) = naive_rref(&a);
+        let (nr, npivots) = clocked(&mut oracle, || naive_rref(&a));
         assert_eq!(pivots, npivots, "{name}: pivots vs naive");
         assert_eq!(r, nr, "{name}: rref vs naive");
         // Oracle 2: the row-scaled copy, which the kernel reduces on BigInt
         // cells from the first pivot; RREF, rank and nullspace are invariant.
         let (b, _) = row_scaled(&a);
-        let (rb, pb) = b.rref();
+        let (rb, pb) = clocked(&mut kernel, || b.rref());
         assert_eq!(pb, pivots, "{name}: pivots vs BigInt-only");
         assert_eq!(rb, r, "{name}: rref vs BigInt-only");
-        assert_eq!(a.rank(), pivots.len(), "{name}: rank");
-        assert_eq!(b.rank(), pivots.len(), "{name}: rank of scaled copy");
-        let ns = a.nullspace();
-        let nsb = b.nullspace();
+        assert_eq!(
+            clocked(&mut kernel, || a.rank()),
+            pivots.len(),
+            "{name}: rank"
+        );
+        assert_eq!(
+            clocked(&mut kernel, || b.rank()),
+            pivots.len(),
+            "{name}: rank of scaled copy"
+        );
+        let ns = clocked(&mut kernel, || a.nullspace());
+        let nsb = clocked(&mut kernel, || b.nullspace());
         assert_eq!(ns, nsb, "{name}: nullspace vs BigInt-only");
         assert_eq!(ns.len(), a.ncols() - pivots.len(), "{name}: nullity");
         for v in &ns {
@@ -210,15 +236,14 @@ fn rref_rank_nullspace_agree_with_bigint_only_and_naive_paths() {
         }
         // Transpose: rank is the same, and the row space of A^T is the column space of A.
         assert_eq!(
-            a.transpose().rank(),
+            clocked(&mut kernel, || a.transpose().rank()),
             pivots.len(),
             "{name}: rank of transpose"
         );
     }
     assert!(
-        started.elapsed().as_secs() < 5,
-        "kernel tests took {:?}",
-        started.elapsed()
+        kernel < oracle,
+        "kernel {kernel:?} (7 calls per matrix) vs naive Gauss–Jordan {oracle:?} (1 call)"
     );
 }
 
@@ -324,21 +349,22 @@ fn singular_and_degenerate_inputs() {
 
 /// A 34×41 single-digit matrix (the `qmatrix/rref/40` benchmark family,
 /// whose minors reach ~190 bits and so end on the 256-bit cells) reduces
-/// to the naive oracle's RREF, within the time bound even in a debug build.
+/// to the naive oracle's RREF, and much faster than the oracle.
 #[test]
 fn benchmark_shape_matches_naive_oracle() {
-    let started = Instant::now();
     let a = small(34, 41, 42);
-    let (r, pivots) = a.rref();
-    let (nr, npivots) = naive_rref(&a);
+    let (mut kernel, mut oracle) = (Duration::ZERO, Duration::ZERO);
+    let (r, pivots) = clocked(&mut kernel, || a.rref());
+    let (nr, npivots) = clocked(&mut oracle, || naive_rref(&a));
     assert_eq!(pivots, npivots);
     assert_eq!(r, nr);
-    // ~2.5 s alone in a debug build; the bound guards against the 0.14
-    // two-hour regression, with headroom for a fully loaded `cargo nextest`
-    // run (6.5 s observed at 0.22 with every binary running in parallel).
+    // Until 0.28 a 10 s wall-clock bound on both together (~2.5 s alone in
+    // a debug build, 6.5 s observed under a fully parallel `cargo nextest`),
+    // almost all of it the oracle's.  Measured side by side instead: the
+    // kernel takes 1/130 of the oracle (15 ms against 2.0 s, debug build),
+    // the 0.14 regression (two hours) thousands of times the oracle.
     assert!(
-        started.elapsed().as_secs() < 10,
-        "40×48 rref + oracle took {:?}",
-        started.elapsed()
+        kernel * 10 < oracle,
+        "kernel rref {kernel:?} vs naive Gauss–Jordan {oracle:?}"
     );
 }

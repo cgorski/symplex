@@ -15,6 +15,10 @@
 //!   through it ([`gcd_via_z`], the fast path behind
 //!   [`GenPoly::gcd`](super::generic::GenPoly::gcd) for rational
 //!   coefficients);
+//! - the subresultant PRS in `ℤ[t][x]` ([`ztx_subresultant_prs`]), behind
+//!   the Lazard–Rioboo–Trager logarithmic part and the resultant over ℚ
+//!   ([`resultant_via_z`], the fast path behind
+//!   [`GenPoly::resultant`](super::generic::GenPoly::resultant));
 //! - [`ZPoly`], a sparse multivariate polynomial over a common denominator
 //!   — the working form behind [`MultiPoly::mul`](super::multipoly::MultiPoly::mul),
 //!   [`MultiPoly::pow`](super::multipoly::MultiPoly::pow) and
@@ -559,6 +563,262 @@ impl<O: MonomialOrd> ZPoly<O> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Subresultant PRS in ℤ[t][x]
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A polynomial in `x` over `ℤ[t]`: entry `k` is the coefficient of `x^k`,
+/// itself a dense polynomial in `t` (ascending, normalised, empty for 0).
+/// The outer vector is normalised too (empty for the zero polynomial).
+pub(crate) type ZtxPoly = Vec<Vec<BigInt>>;
+
+fn zt_mul(a: &[BigInt], b: &[BigInt]) -> Vec<BigInt> {
+    if a.is_empty() || b.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![BigInt::zero(); a.len() + b.len() - 1];
+    for (i, ai) in a.iter().enumerate() {
+        if ai.is_zero() {
+            continue;
+        }
+        for (o, bj) in out[i..].iter_mut().zip(b) {
+            *o += ai * bj;
+        }
+    }
+    z_normalize(&mut out);
+    out
+}
+
+fn zt_sub(a: &[BigInt], b: &[BigInt]) -> Vec<BigInt> {
+    let mut out: Vec<BigInt> = (0..a.len().max(b.len()))
+        .map(|i| match (a.get(i), b.get(i)) {
+            (Some(x), Some(y)) => x - y,
+            (Some(x), None) => x.clone(),
+            (None, Some(y)) => -y,
+            (None, None) => BigInt::zero(),
+        })
+        .collect();
+    z_normalize(&mut out);
+    out
+}
+
+fn zt_neg(a: &[BigInt]) -> Vec<BigInt> {
+    a.iter().map(|c| -c).collect()
+}
+
+fn zt_pow(a: &[BigInt], mut n: usize) -> Vec<BigInt> {
+    let mut acc = vec![BigInt::one()];
+    let mut base = a.to_vec();
+    while n > 0 {
+        if n & 1 == 1 {
+            acc = zt_mul(&acc, &base);
+        }
+        n >>= 1;
+        if n > 0 {
+            base = zt_mul(&base, &base);
+        }
+    }
+    acc
+}
+
+/// `a / b` in `ℤ[t]` when `b` divides `a` exactly; `None` when it does not
+/// or `b` is zero.
+fn zt_div_exact(a: &[BigInt], b: &[BigInt]) -> Option<Vec<BigInt>> {
+    let lc_b = b.last()?;
+    if a.is_empty() {
+        return Some(Vec::new());
+    }
+    let m = b.len() - 1;
+    if a.len() <= m {
+        return None;
+    }
+    let mut r = a.to_vec();
+    let mut q = vec![BigInt::zero(); a.len() - m];
+    for k in (m..a.len()).rev() {
+        let rk = std::mem::take(&mut r[k]);
+        if rk.is_zero() {
+            continue;
+        }
+        let (qk, rem) = rk.div_rem(lc_b);
+        if !rem.is_zero() {
+            return None;
+        }
+        for (rj, bj) in r[k - m..k].iter_mut().zip(b) {
+            *rj -= &qk * bj;
+        }
+        q[k - m] = qk;
+    }
+    if r.iter().any(|c| !c.is_zero()) {
+        return None;
+    }
+    z_normalize(&mut q);
+    Some(q)
+}
+
+fn ztx_normalize(p: &mut ZtxPoly) {
+    while p.last().is_some_and(Vec::is_empty) {
+        p.pop();
+    }
+}
+
+/// `c · p` for `c ∈ ℤ[t]`.
+fn ztx_scale(p: &ZtxPoly, c: &[BigInt]) -> ZtxPoly {
+    let mut out: ZtxPoly = p.iter().map(|pk| zt_mul(pk, c)).collect();
+    ztx_normalize(&mut out);
+    out
+}
+
+/// `p / c` coefficient by coefficient, when `c ∈ ℤ[t]` divides every
+/// coefficient exactly.
+fn ztx_div_exact(p: &ZtxPoly, c: &[BigInt]) -> Option<ZtxPoly> {
+    p.iter().map(|pk| zt_div_exact(pk, c)).collect()
+}
+
+/// The pseudo-remainder `lc(g)^{deg f − deg g + 1} · f mod g` in `ℤ[t][x]`
+/// (`f` itself when `deg f < deg g`), computed without division (Knuth,
+/// *TAOCP* vol. 2, §4.6.1, Algorithm R); `None` for `g = 0`.
+fn ztx_prem(f: &ZtxPoly, g: &ZtxPoly) -> Option<ZtxPoly> {
+    let lc_g = g.last()?;
+    let dg = g.len() - 1;
+    let mut r = f.clone();
+    ztx_normalize(&mut r);
+    if r.len() <= dg {
+        return Some(r);
+    }
+    // Each pass lowers the degree of `r` by at least one.
+    let mut passes_left = r.len() - dg;
+    while r.len() > dg {
+        let top = r.len() - 1;
+        let lc_r = std::mem::take(&mut r[top]);
+        let shift = top - dg;
+        // r ← lc(g)·r − lc(r)·x^shift·g; the x^top terms cancel exactly.
+        r.pop();
+        for c in r.iter_mut() {
+            *c = zt_mul(c, lc_g);
+        }
+        for (rk, gk) in r[shift..].iter_mut().zip(&g[..dg]) {
+            *rk = zt_sub(rk, &zt_mul(&lc_r, gk));
+        }
+        ztx_normalize(&mut r);
+        passes_left = passes_left.saturating_sub(1);
+    }
+    if passes_left > 0 {
+        r = ztx_scale(&r, &zt_pow(lc_g, passes_left));
+    }
+    Some(r)
+}
+
+/// The subresultant chain of two polynomials in `ℤ[t][x]`: see
+/// [`ztx_subresultant_prs`].
+pub(crate) struct Subresultants {
+    /// The members of the subresultant PRS, keyed by degree in `x`.
+    pub(crate) members: BTreeMap<usize, ZtxPoly>,
+    /// `res_x(f, g) ∈ ℤ[t]` (empty when it is zero: `f` and `g` have a
+    /// common factor of positive degree in `x`).
+    pub(crate) resultant: Vec<BigInt>,
+}
+
+/// The subresultant polynomial remainder sequence of `f` and `g` in
+/// `ℤ[t][x]`, keyed by degree in `x`, and their resultant.  `f` and `g`
+/// are the first two members (swapped if `deg f < deg g`); every later
+/// member is `±` the subresultant `S_{d−1}(f, g)` whose index is one below
+/// the degree `d` of the member before it (Brown's fundamental theorem),
+/// so a member of degree `k` is a multiple of `S_k` by a factor that
+/// vanishes only where `S_k` itself degenerates.  The resultant is the
+/// last scalar subresultant when the sequence ends in a constant.
+///
+/// Unlike Euclid's algorithm over `ℚ(t)`, whose coefficients grow in
+/// degree with every step, the coefficients here are polynomials in `t`
+/// of bounded degree (the subresultant is a determinant in the inputs'
+/// coefficients), and each step costs one pseudo-remainder and one exact
+/// division — no gcd at all.
+///
+/// The structure follows SymPy's `dup_inner_subresultants` and
+/// `dup_prs_resultant` (`sympy/polys/euclidtools.py`, BSD-3), which
+/// implement W. S. Brown, "The subresultant PRS algorithm", *ACM TOMS* 4
+/// (1978) 237–249 (after G. E. Collins, "Subresultants and reduced
+/// polynomial remainder sequences", *J. ACM* 14 (1967) 128–142, and
+/// W. S. Brown & J. F. Traub, *J. ACM* 18 (1971) 505–514).  `None` if an
+/// exact division is not exact, which the theory rules out, or if `f` or
+/// `g` is zero.
+pub(crate) fn ztx_subresultant_prs(f: &ZtxPoly, g: &ZtxPoly) -> Option<Subresultants> {
+    let (mut f, mut g) = (f.clone(), g.clone());
+    ztx_normalize(&mut f);
+    ztx_normalize(&mut g);
+    if f.len() < g.len() {
+        std::mem::swap(&mut f, &mut g);
+    }
+    if g.is_empty() {
+        return None;
+    }
+    let mut members = BTreeMap::new();
+    members.insert(f.len() - 1, f.clone());
+    members.insert(g.len() - 1, g.clone());
+
+    let mut m = g.len() - 1;
+    let d = f.len() - g.len();
+    // h = (−1)^{d+1} prem(f, g)
+    let mut h = ztx_prem(&f, &g)?;
+    if d % 2 == 0 {
+        h = h.iter().map(|c| zt_neg(c)).collect();
+    }
+    let mut lc = g.last()?.clone();
+    // c is the negated scalar subresultant of the newest member `g`
+    // (SymPy's convention): −lc(g)^d to begin with.
+    let mut c = zt_neg(&zt_pow(&lc, d));
+    while !h.is_empty() {
+        let k = h.len() - 1;
+        members.insert(k, h.clone());
+        let d = m - k;
+        m = k;
+        f = std::mem::replace(&mut g, h);
+        let b = zt_neg(&zt_mul(&lc, &zt_pow(&c, d)));
+        h = ztx_div_exact(&ztx_prem(&f, &g)?, &b)?;
+        lc = g.last()?.clone();
+        c = if d > 1 {
+            zt_div_exact(&zt_pow(&zt_neg(&lc), d), &zt_pow(&c, d - 1))?
+        } else {
+            zt_neg(&lc)
+        };
+    }
+    let resultant = if g.len() == 1 { zt_neg(&c) } else { Vec::new() };
+    Some(Subresultants { members, resultant })
+}
+
+/// `res(a, b)` of two polynomials over ℚ with `deg a ≥ deg b ≥ 1`
+/// (ascending, no trailing zeros), through the subresultant PRS of their
+/// integer-scaled forms in `ℤ[x]` ([`ztx_subresultant_prs`] with constant
+/// coefficients): `res(λ·a, μ·b) = λ^{deg b}·μ^{deg a}·res(a, b)`.  Euclid
+/// over ℚ reduces a fraction by an integer gcd at every operation, 0.3 s
+/// per resultant of two degree-36 polynomials in a debug build.  `None`
+/// outside the degree precondition.
+pub(crate) fn resultant_via_z(a: &[Ratio<BigInt>], b: &[Ratio<BigInt>]) -> Option<Ratio<BigInt>> {
+    if b.len() < 2 || a.len() < b.len() || a.last()?.is_zero() || b.last()?.is_zero() {
+        return None;
+    }
+    let scale = |p: &[Ratio<BigInt>]| -> (BigInt, ZtxPoly) {
+        let den = denominator_lcm(p);
+        let z = p
+            .iter()
+            .map(|c| {
+                let n = scaled_numer(c, &den);
+                if n.is_zero() { Vec::new() } else { vec![n] }
+            })
+            .collect();
+        (den, z)
+    };
+    let (la, az) = scale(a);
+    let (lb, bz) = scale(b);
+    let res = ztx_subresultant_prs(&az, &bz)?
+        .resultant
+        .first()
+        .cloned()
+        .unwrap_or_default();
+    let (m, n) = (a.len() - 1, b.len() - 1);
+    let unscale = la.pow(u32::try_from(n).ok()?) * lb.pow(u32::try_from(m).ok()?);
+    Some(Ratio::new(res, unscale))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -630,6 +890,88 @@ mod tests {
             let b = if i % 11 == 0 { &b * &common } else { b };
             check(&a, &b);
             check(&b, &a);
+        }
+    }
+
+    /// The subresultant PRS in `ℤ[t][x]` against SymPy 1.14:
+    /// `subresultants(x**6 + t*x + 1, x**4 + 1, x)` gives
+    /// `[x**6 + t*x + 1, x**4 + 1, -t*x + x**2 - 1,`
+    /// `-t**3*x - t**2 - 2*t*x - 2, t**4 + 4*t**2 + 4]` and
+    /// `resultant(x**6 + t*x + 1, x**4 + 1, x)` gives `t**4 + 4*t**2 + 4`.
+    /// The degree drop 4 → 2 takes the abnormal branch.
+    #[test]
+    fn ztx_subresultant_prs_matches_sympy() {
+        let z = |v: &[i64]| -> Vec<BigInt> {
+            let mut c: Vec<BigInt> = v.iter().map(|&k| BigInt::from(k)).collect();
+            z_normalize(&mut c);
+            c
+        };
+        let f: ZtxPoly = vec![z(&[1]), z(&[0, 1]), z(&[]), z(&[]), z(&[]), z(&[]), z(&[1])];
+        let g: ZtxPoly = vec![z(&[1]), z(&[]), z(&[]), z(&[]), z(&[1])];
+        let chain = ztx_subresultant_prs(&f, &g).unwrap();
+        assert_eq!(
+            chain.members.keys().copied().collect::<Vec<_>>(),
+            [0, 1, 2, 4, 6]
+        );
+        assert_eq!(chain.members[&2], vec![z(&[-1]), z(&[0, -1]), z(&[1])]);
+        assert_eq!(chain.members[&1], vec![z(&[-2, 0, -1]), z(&[0, -2, 0, -1])]);
+        assert_eq!(chain.members[&0], vec![z(&[4, 0, 4, 0, 1])]);
+        assert_eq!(chain.resultant, z(&[4, 0, 4, 0, 1]));
+        // A common factor: the resultant is zero.
+        let h: ZtxPoly = vec![z(&[0, 1]), z(&[1])]; // x + t
+        let fh: ZtxPoly = vec![z(&[0, 1]), z(&[1]), z(&[0, 1]), z(&[1])]; // (x + t)(x² + 1)
+        assert!(ztx_subresultant_prs(&fh, &h).unwrap().resultant.is_empty());
+    }
+
+    /// `resultant_via_z` returns exactly Euclid's resultant over ℚ.  The
+    /// fixed pair is SymPy 1.14's `resultant(x**5 - 3*x**2 + Rational(7, 2)*x
+    /// - Rational(1, 3), Rational(2, 5)*x**3 + x - 4, x)` = `-47418733/84375`.
+    #[test]
+    fn resultant_via_z_matches_euclid() {
+        use crate::base::rng::SplitMix64;
+        use crate::poly::dense::Poly;
+        fn euclid(a: &Poly, b: &Poly) -> Ratio<BigInt> {
+            let (m, n) = (a.degree().unwrap(), b.degree().unwrap());
+            if n == 0 {
+                return pow_ratio(&b.coeff(0), m as u32);
+            }
+            let rem = a.rem(b);
+            if rem.is_zero() {
+                return Ratio::zero();
+            }
+            let s = rem.degree().unwrap();
+            let sign = if (m * n) % 2 == 0 { r(1, 1) } else { r(-1, 1) };
+            sign * pow_ratio(&b.coeff(n), (m - s) as u32) * euclid(b, &rem)
+        }
+        let a = [r(-1, 3), r(7, 2), r(-3, 1), r(0, 1), r(0, 1), r(1, 1)];
+        let b = [r(-4, 1), r(1, 1), r(0, 1), r(2, 5)];
+        assert_eq!(resultant_via_z(&a, &b), Some(r(-47418733, 84375)));
+        let mut rng = SplitMix64::new(20260924);
+        let mut rand_poly = |deg: usize| -> Poly {
+            let mut coeffs: Vec<Ratio<BigInt>> = (0..deg)
+                .map(|_| {
+                    r(
+                        (rng.next_u64() % 41) as i64 - 20,
+                        (rng.next_u64() % 5) as i64 + 1,
+                    )
+                })
+                .collect();
+            coeffs.push(r(
+                (rng.next_u64() % 9) as i64 + 1,
+                (rng.next_u64() % 3) as i64 + 1,
+            ));
+            Poly::from_coeffs(coeffs)
+        };
+        for i in 0..80 {
+            let n = 1 + i % 5;
+            let m = n + (i * 7) % 6;
+            let (a, b) = (rand_poly(m), rand_poly(n));
+            let (a, b) = if i % 9 == 0 { (&a * &b, b) } else { (a, b) };
+            assert_eq!(
+                resultant_via_z(a.coeffs(), b.coeffs()),
+                Some(euclid(&a, &b)),
+                "res({a:?}, {b:?})"
+            );
         }
     }
 

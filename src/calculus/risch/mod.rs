@@ -576,8 +576,17 @@ fn integrate_rational_function(
                 let alg_den_id = crate::poly::polybridge::poly_to_expr(arena, &d_reduced, var);
                 let algebraic_remainder = arena.div(alg_num_id, alg_den_id);
 
-                let alg_integral =
-                    crate::transforms::integrate::integrate(arena, algebraic_remainder, var);
+                let alg_integral = if heuristic_cannot_help(
+                    arena, &a_reduced, &d_reduced, alg_den_id, var,
+                ) {
+                    tracing::debug!(
+                        d_degree = ?d_reduced.degree(),
+                        "try_risch_rational: no explicit root of the algebraic denominator, skipping the heuristic integrator"
+                    );
+                    arena.intern(ExprNode::Integral(algebraic_remainder, var))
+                } else {
+                    crate::transforms::integrate::integrate(arena, algebraic_remainder, var)
+                };
 
                 if !crate::base::walk::has_unevaluated(arena, alg_integral) {
                     terms.push(alg_integral);
@@ -612,6 +621,60 @@ fn integrate_rational_function(
     } else {
         Some(arena.add(&terms))
     }
+}
+
+/// `true` when the heuristic integrator cannot improve on the `RootSum` for
+/// the algebraic remainder `n/d` (`d_id` is `d` in the arena).
+///
+/// What it can add are closed forms from partial fractions over roots of
+/// `d` that `solve` finds explicitly (as for `1/(x⁸ + 1)`), or from a
+/// substitution `u = h(x)` that turns `n/d` into a rational function of
+/// lower degree, which needs `d = g(h)` and `n = h′·m(h)`.  When no such
+/// substitution exists and every root `solve` returns is an implicit
+/// `RootOf`, a decomposition over those roots is the `RootSum` itself
+/// written term by term.  Trying anyway cost 5 of the 7 s of
+/// `∫ atan(√x − x⁹) dx` in a debug build (36 partial fractions, each
+/// through the whole pipeline).
+fn heuristic_cannot_help(arena: &mut Arena, n: &Poly, d: &Poly, d_id: ExprId, var: ExprId) -> bool {
+    if d.degree().is_none_or(|deg| deg < 3) || admits_substitution(n, d) {
+        return false;
+    }
+    let roots = crate::transforms::solve::solve(arena, d_id, var);
+    !roots.is_empty()
+        && roots.iter().all(|s| {
+            crate::base::walk::post_order_ids(arena, s.value)
+                .iter()
+                .any(|&id| matches!(arena.node(id), ExprNode::RootOf(..)))
+        })
+}
+
+/// Is `n/d = h′·m(h)/g(h)` for polynomials `g`, `m` and an inner component
+/// `h` (of degree ≥ 2) of a functional decomposition of `d`?  Then `u = h(x)`
+/// turns `∫ n/d dx` into `∫ m(u)/g(u) du`.
+fn admits_substitution(n: &Poly, d: &Poly) -> bool {
+    let components = d.decompose();
+    (1..components.len()).any(|j| {
+        // h = components[j] ∘ … ∘ components[last]
+        let Some((inner, rest)) = components[j..].split_last() else {
+            return false;
+        };
+        let h = rest.iter().rev().fold(inner.clone(), |h, c| c.compose(&h));
+        let h_prime = h.derivative();
+        let (mut m, rem) = n.div_rem(&h_prime);
+        if !rem.is_zero() {
+            return false;
+        }
+        // m must be a polynomial in h: every digit of its h-adic expansion
+        // is a constant.
+        while !m.is_zero() {
+            let (q, digit) = m.div_rem(&h);
+            if digit.degree().is_some_and(|deg| deg > 0) {
+                return false;
+            }
+            m = q;
+        }
+        true
+    })
 }
 
 /// `RootSum(q, t ↦ t·ln(S(t, x)))`, i.e. `Σ_{q(α)=0} α·ln(S(α, x))`: the

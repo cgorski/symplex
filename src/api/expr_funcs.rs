@@ -1163,7 +1163,16 @@ impl Expr<Numeric> {
     /// Set a mathematical assumption on this expression (must be a symbol).
     ///
     /// Returns `self` for fluent chaining. If this expression is not a
-    /// symbol, the assumption is silently ignored.
+    /// symbol, the assumption is silently ignored.  The assumption is added
+    /// to those already declared on the symbol.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the new assumption contradicts those already declared on
+    /// the symbol once their consequences are drawn (`Negative` on a
+    /// `Positive` symbol, `Irrational` on an `Integer` one, …): declaring
+    /// impossible facts about a symbol is a logic error.
+    /// [`try_assume`](Self::try_assume) returns an error instead.
     ///
     /// # Examples
     ///
@@ -1197,6 +1206,40 @@ impl Expr<Numeric> {
         }
         drop(inner);
         self
+    }
+
+    /// [`assume`](Self::assume) for an assumption that may contradict the
+    /// symbol's (e.g. from user input).
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] if the assumption contradicts those
+    /// already declared on the symbol; the symbol is then left unchanged.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// let ctx = Context::new();
+    /// let t = ctx.symbol("t").try_assume(Assumption::Positive).unwrap();
+    /// assert!(t.clone().try_assume(Assumption::Negative).is_err());
+    /// assert_eq!(t.is_positive(), Some(true));
+    /// ```
+    pub fn try_assume(self, assumption: Assumption) -> Result<Ex, SymplexError> {
+        use crate::base::node::ExprNode;
+        let mut inner = self.inner.write();
+        if let ExprNode::Symbol(sid) = inner.arena.node(self.raw_id()) {
+            let sid = *sid;
+            let a = inner.arena.symbol_assumptions(sid).with(assumption);
+            // Checked under the same lock as the update, so neither setter
+            // below can meet a contradictory set.
+            a.check_declarable("Ex::assume")?;
+            inner.arena.set_symbol_assumptions(sid, a);
+            inner
+                .assumptions
+                .lock()
+                .set_symbol_assumptions(self.raw_id(), a);
+        }
+        drop(inner);
+        Ok(self)
     }
 
     /// Mathematical equality: attempts to determine whether `self == other`
@@ -4051,6 +4094,14 @@ impl Expr<Numeric> {
     /// identity comparison with [`Ex`] but cannot acquire any locks.
     /// Return `Some(replacement)` to replace it, or `None` to keep it
     /// unchanged.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the closure returns an expression built in another
+    /// [`Context`](crate::api::context::Context) than `self` — the crate's
+    /// cross-context logic error, as when combining two such expressions
+    /// with an operator.  (Replacements are built before the call, as in the
+    /// example: the context stays write-locked while the closure runs.)
     ///
     /// # Examples
     ///

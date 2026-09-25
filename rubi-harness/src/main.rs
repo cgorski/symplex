@@ -36,6 +36,9 @@ usage: rubi-harness [options]
   --suite DIR           suite root (default: <crate>/suite)
   --selftest            judge Rubi's optimal antiderivatives instead of
                         symplex's (validates translation and checker)
+  --negative-params     also check every answer with parameters with the
+                        parameter values negated; a mismatch there counts as
+                        wrong (default output: results/negative)
   --scan                translate and parse only (no integration); print
                         statistics
   --probe EXPR [VAR]    integrate one Maxima expression in-process and show
@@ -62,6 +65,7 @@ struct Args {
     out: Option<PathBuf>,
     suite: PathBuf,
     selftest: bool,
+    negative_params: bool,
     scan: bool,
 }
 
@@ -82,6 +86,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         out: None,
         suite: crate_dir().join("suite"),
         selftest: false,
+        negative_params: false,
         scan: false,
     };
     let mut it = argv.iter();
@@ -107,6 +112,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--out" => a.out = Some(PathBuf::from(value(&mut it, arg)?)),
             "--suite" => a.suite = PathBuf::from(value(&mut it, arg)?),
             "--selftest" => a.selftest = true,
+            "--negative-params" => a.negative_params = true,
             "--scan" => a.scan = true,
             "-h" | "--help" => return Err(String::new()),
             other => return Err(format!("unknown argument: {other}")),
@@ -114,6 +120,9 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
     }
     if a.selftest && a.mode != Mode::Report {
         return Err("--selftest cannot be combined with --check/--update".into());
+    }
+    if a.negative_params && a.mode == Mode::Update {
+        return Err("--negative-params cannot be combined with --update".into());
     }
     Ok(a)
 }
@@ -147,7 +156,7 @@ fn main() -> ExitCode {
 
 fn worker_main(argv: &[String]) -> ExitCode {
     let (Some(file), Some(start), Some(end)) = (argv.first(), argv.get(1), argv.get(2)) else {
-        eprintln!("usage: rubi-harness --worker FILE START END [--selftest]");
+        eprintln!("usage: rubi-harness --worker FILE START END [--selftest] [--negative-params]");
         return ExitCode::from(2);
     };
     let (Ok(start), Ok(end)) = (start.parse(), end.parse()) else {
@@ -155,7 +164,8 @@ fn worker_main(argv: &[String]) -> ExitCode {
         return ExitCode::from(2);
     };
     let selftest = argv.iter().any(|a| a == "--selftest");
-    ExitCode::from(worker::main(Path::new(file), start, end, selftest) as u8)
+    let negative_params = argv.iter().any(|a| a == "--negative-params");
+    ExitCode::from(worker::main(Path::new(file), start, end, selftest, negative_params) as u8)
 }
 
 /// `--probe EXPR [VAR]`: the whole pipeline for one integrand, verbosely.
@@ -208,6 +218,21 @@ fn probe(argv: &[String]) -> ExitCode {
             check::verdict(&reports, src.contains("%i"))
         );
     }
+    if !env.is_empty() {
+        let mut env_neg = check::Env::negated();
+        env_neg.extend(&ctx, &x, &[&f, &big_f]);
+        println!("params:     {} (negated set)", env_neg.desc);
+        let reports_neg = check::check(&ctx, &f, &big_f, &x, &env_neg);
+        for r in &reports_neg {
+            println!("  {}", r.describe(var));
+        }
+        if !big_f.has_unevaluated() {
+            println!(
+                "verdict:    {} (negated set)",
+                check::verdict(&reports_neg, src.contains("%i"))
+            );
+        }
+    }
     ExitCode::SUCCESS
 }
 
@@ -253,6 +278,7 @@ fn run(args: &Args) -> Result<ExitCode, String> {
         chunk: args.chunk,
         mem_limit_mb: args.mem_limit_mb,
         selftest: args.selftest,
+        negative_params: args.negative_params,
     };
     let n_entries: usize = files.iter().map(|f| f.entries.len()).sum();
     eprintln!(
@@ -275,6 +301,8 @@ fn run(args: &Args) -> Result<ExitCode, String> {
         let base = crate_dir().join("results");
         if args.selftest {
             base.join("selftest")
+        } else if args.negative_params {
+            base.join("negative")
         } else if full_suite {
             base
         } else {
@@ -294,7 +322,11 @@ fn run(args: &Args) -> Result<ExitCode, String> {
         } else {
             ""
         }
-    );
+    ) + if cfg.negative_params {
+        ", every answer also checked with the parameter values negated"
+    } else {
+        ""
+    };
     let io = |r: std::io::Result<()>, what: &str| r.map_err(|e| format!("{what}: {e}"));
     io(
         report::write_summary(&out.join("summary.tsv"), &files, &note),

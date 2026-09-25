@@ -1094,9 +1094,73 @@ fn canon_radical(
 /// to spend at construction time.
 const RADICAL_FACTOR_MAX_BITS: u64 = 84;
 
+/// Integers with at most this many bits are not memoised in
+/// [`RADICAL_PARTS`]: trial division up to `√n < 2¹⁶` on machine words
+/// decomposes them in microseconds.
+const RADICAL_MEMO_MIN_BITS: u64 = 32;
+
+/// Entries kept in [`RADICAL_PARTS`] before it is emptied and refilled.
+const RADICAL_MEMO_CAPACITY: usize = 256;
+
+/// A squarefree decomposition `(parts, cofactor)` as returned by
+/// [`crate::domains::ntheory::squarefree_parts_bounded`].
+type RadicalParts = (Vec<(BigInt, u32)>, BigInt);
+
+thread_local! {
+    /// Squarefree decompositions of the integers whose radicals were
+    /// canonicalised on this thread, keyed by the integer.
+    ///
+    /// A radical is canonicalised again whenever a node holding it is
+    /// rebuilt, and `eval` extracts its powers once more: in 0.28.0
+    /// `√78243492961199594876179935 .simplify()` decomposed that integer 15
+    /// times (~1 s, debug build), `pearson_test` on 11 pairs of 28-bit
+    /// integers one 73-bit cofactor 45 times (~0.75 s).  The decomposition is a pure
+    /// function of the integer, so a warm entry is exactly what a cold
+    /// computation returns and canonical forms do not depend on the memo.
+    static RADICAL_PARTS: std::cell::RefCell<FxHashMap<BigInt, std::rc::Rc<RadicalParts>>> =
+        std::cell::RefCell::new(FxHashMap::default());
+}
+
+/// [`crate::domains::ntheory::squarefree_parts_bounded`] of `n > 1` at
+/// [`RADICAL_FACTOR_MAX_BITS`], through the thread's memo.
+fn radical_parts(n: &BigInt) -> std::rc::Rc<RadicalParts> {
+    let compute = || {
+        std::rc::Rc::new(crate::domains::ntheory::squarefree_parts_bounded(
+            n,
+            RADICAL_FACTOR_MAX_BITS,
+        ))
+    };
+    if n.bits() <= RADICAL_MEMO_MIN_BITS {
+        return compute();
+    }
+    let cached = RADICAL_PARTS
+        .try_with(|memo| memo.try_borrow().ok().and_then(|m| m.get(n).cloned()))
+        .ok()
+        .flatten();
+    if let Some(parts) = cached {
+        return parts;
+    }
+    let parts = compute();
+    // Best effort: a memo that cannot be reached (thread teardown) is skipped.
+    let _ = RADICAL_PARTS.try_with(|memo| {
+        if let Ok(mut memo) = memo.try_borrow_mut() {
+            if memo.len() >= RADICAL_MEMO_CAPACITY {
+                memo.clear();
+            }
+            memo.insert(n.clone(), std::rc::Rc::clone(&parts));
+        }
+    });
+    parts
+}
+
 /// Split a positive integer as `n = outside^k · inside` where `inside` has no
 /// prime factor with exponent `≥ k` among the factors found by the bounded
 /// factorisation ([`crate::domains::ntheory::factorint_bounded`]).
+///
+/// The factorisation itself is not needed, only the exponents: this reads
+/// them from the squarefree decomposition
+/// ([`crate::domains::ntheory::squarefree_parts_bounded`]), which carries
+/// the same exponents for the same primes, memoised per thread.
 ///
 /// Exact `k`-th powers are recognised first via an integer root, so
 /// `√(p²)` folds even for huge primes `p`.
@@ -1114,16 +1178,16 @@ pub(crate) fn split_perfect_power(n: &BigInt, k: u32) -> (BigInt, BigInt) {
     if NumPow::pow(root.clone(), k) == *n {
         return (root, BigInt::one());
     }
-    let (factors, cofactor) =
-        crate::domains::ntheory::factorint_bounded(n, RADICAL_FACTOR_MAX_BITS);
+    let parts = radical_parts(n);
+    let (pieces, cofactor) = &*parts;
     let mut outside = BigInt::one();
-    let mut inside = cofactor;
-    for (p, e) in factors {
-        if e >= k {
-            outside *= NumPow::pow(p.clone(), e / k);
+    let mut inside = cofactor.clone();
+    for (d, e) in pieces {
+        if *e >= k {
+            outside *= NumPow::pow(d.clone(), e / k);
         }
         if e % k > 0 {
-            inside *= NumPow::pow(p, e % k);
+            inside *= NumPow::pow(d.clone(), e % k);
         }
     }
     (outside, inside)
@@ -2443,5 +2507,79 @@ mod tests {
         let (o, i) = split_perfect_power(&(&p * &p * 3), 2);
         assert_eq!(o, p);
         assert_eq!(i, BigInt::from(3));
+    }
+
+    /// `split_perfect_power(n, k)` as of 0.28.0, from the full bounded
+    /// factorisation `(factors, cofactor)` of `n > 1`: the reference the
+    /// squarefree decomposition must reproduce exactly (canonical forms are
+    /// pinned byte for byte).
+    fn split_perfect_power_by_factorint(
+        n: &BigInt,
+        k: u32,
+        (factors, cofactor): &(Vec<(BigInt, u32)>, BigInt),
+    ) -> (BigInt, BigInt) {
+        let root = n.nth_root(k);
+        if NumPow::pow(root.clone(), k) == *n {
+            return (root, BigInt::one());
+        }
+        let mut outside = BigInt::one();
+        let mut inside = cofactor.clone();
+        for (p, e) in factors {
+            if *e >= k {
+                outside *= NumPow::pow(p.clone(), e / k);
+            }
+            if e % k > 0 {
+                inside *= NumPow::pow(p.clone(), e % k);
+            }
+        }
+        (outside, inside)
+    }
+
+    #[test]
+    fn split_perfect_power_matches_the_factorint_split() {
+        use crate::domains::ntheory::nextprime;
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut prime = |bits: u32| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let offset = BigInt::from(state) % (BigInt::one() << (bits - 2));
+            nextprime((BigInt::one() << (bits - 1)) + offset)
+        };
+        let mut inputs: Vec<BigInt> = Vec::new();
+        for _ in 0..4 {
+            let (a, b, c) = (prime(17), prime(24), prime(33));
+            let (d, e) = (prime(40), prime(44));
+            let big = prime(46) * prime(47); // 92-bit composite, never factored
+            inputs.extend([
+                &a * &b,
+                &a * &a * &b,
+                &a * &b * &b * 12,
+                NumPow::pow(&a, 3u32) * &b,
+                &a * &b * &c,
+                &c * &c * &a * 45,
+                (&a * &b).pow(2u32) * &c,
+                &d * &e,
+                &d * &e * 65_521,
+                &c * &d,
+                &c * &c * 7,
+                &big * 3,
+                &big * &big * 3,
+                NumPow::pow(&big, 3u32) * 4,
+                &c * &c * &big,
+                prime(90),
+                prime(90) * &a * &a,
+            ]);
+        }
+        for n in &inputs {
+            let factored = crate::domains::ntheory::factorint_bounded(n, RADICAL_FACTOR_MAX_BITS);
+            for k in [2, 3, 4, 6] {
+                assert_eq!(
+                    split_perfect_power(n, k),
+                    split_perfect_power_by_factorint(n, k, &factored),
+                    "n = {n}, k = {k}"
+                );
+            }
+        }
     }
 }

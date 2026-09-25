@@ -6,6 +6,63 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [Unreleased]
+
+### Breaking (behaviour; no signature changed)
+
+- **`integrate` accepts a candidate antiderivative only on evidence.**
+  The self-check (`antiderivative_rejected`, which was
+  `antiderivative_is_wrong`) used to pass a candidate whenever it could not
+  evaluate `F′ − f` at any sample point.  Since 0.26 (when `evalf` began
+  refusing a quotient by a difference that cancels to 0) that let answers
+  with a vanishing denominator through: with a hidden zero `k = sin²1 +
+  cos²1 − 1`, `∫ x/(kx + 1) dx` returned `(x − ln|kx+1|/k)/k`.  It now stays
+  unevaluated.  The verdicts are:
+  - *verified* (accept): `F′ = f` at a point where `F` evaluates;
+  - *wrong* (reject);
+  - *undecided* (reject, after a second round of points);
+  - *untestable* (accept only when `f` itself evaluates nowhere).
+
+  Free parameters are bound to generic values instead of skipping the
+  check.  The Rubi harness is unchanged.
+- **`RandomVariable::transform`, `probability`, `given`** return
+  `InvalidArgument` for an empty name or an expression from another
+  context, where they panicked.
+
+### Added
+
+- `Context::try_symbol_with` and `Ex::try_assume`: fallible twins of
+  `symbol_with` and `assume`.  `# Panics` sections are now written on
+  `symbol_with`, `assume`, `replace` and `s_polynomial`.
+- `rubi-harness --negative-params` re-checks every verified parametric
+  answer with the parameters negated: 2,558 answers re-checked, 0 wrong.
+
+### Fixed
+
+- **`∫ atan(√x − x⁹) dx`** runs in 2.3 s in a debug build; 0.25's profile
+  put it at about 27 s.  The answer is unchanged.  The changes:
+  - the Lazard–Rioboo–Trager logarithmic part takes `R(t)` and its log
+    arguments from one subresultant PRS in `ℤ[t][x]`
+    (`ztx_subresultant_prs`), replacing Euclid over `ℚ(t)`, whose
+    coefficients grew exponentially;
+  - resultants over `ℚ` go through `ℤ[x]`;
+  - root sets are cached per thread;
+  - the partial-fraction fallback is skipped when all it can do is
+    restate the `RootSum`.
+- **Radicals of mid-size integers:** `sqrt(78243492961199594876179935)
+  .simplify()` takes 18 ms in a debug build, where the hunt measured
+  0.9 s.  Two changes:
+  - the canonical form reads a memoised squarefree decomposition instead
+    of factoring the radicand up to 15 times;
+  - `factorint` splits 65–84-bit composites with one rho pass, then ECM
+    with a stage 2.
+
+  Canonical forms are byte-identical: 109,991 forms were checked against
+  0.28.0.  `pearson_test` on large integers speeds up with it.
+- Timing tests in `v02`, `v11` and `v19` compare side-by-side workloads
+  instead of wall-clock bounds, so they no longer fail on a loaded
+  machine.
+
 ## [0.28.0] - 2026-09-24
 
 Far tails of the symbolic distributions keep their digits.  0.27.0 listed

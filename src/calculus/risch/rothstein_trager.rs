@@ -17,9 +17,10 @@
 //!    - Emit `c · ln(v)`.
 //! 4. For each irreducible factor `q` of degree > 1 and multiplicity `i`
 //!    (Lazard–Rioboo–Trager): the log argument at a root `α` of `q` is
-//!    `gcd(D, A − α·D')`, of degree `i` in `x`, and equals `S_i(α, x)` for
-//!    the member `S_i` of degree `i` of the remainder sequence of `D` and
-//!    `A − t·D'` over `ℚ(t)`.  Emit an `Algebraic` term
+//!    `gcd(D, A − α·D')`, of degree `i` in `x`, and equals `S_i(α, x)` up to
+//!    a non-zero constant for the member `S_i` of degree `i` of the
+//!    subresultant remainder sequence of `D` and `A − t·D'` in `ℤ[t][x]`
+//!    (which also yields `R(t)` in step 1).  Emit an `Algebraic` term
 //!    `Σ_{q(α)=0} α·ln(S_i(α, x))`, with `S_i` made monic in `x` and its
 //!    coefficients reduced modulo `q`.
 //!
@@ -45,11 +46,12 @@
 
 use std::collections::BTreeMap;
 
+use num_bigint::BigInt;
 use num_rational::Ratio;
 use num_traits::Zero;
 
 use super::LogTerm;
-use super::log_to_real::{poly_to_genpoly_rf, poly_to_genpoly_rf_times_t};
+use super::log_to_real::poly_to_genpoly_rf;
 use crate::base::numeric::Q;
 use crate::poly::dense::Poly;
 use crate::poly::generic::GenPoly;
@@ -108,11 +110,15 @@ pub fn logarithmic_part(a: &Poly, d: &Poly) -> LogPartResult {
         };
     }
 
-    // R(t) = res_x(D, A − t·D')
-    //
-    // Poly::resultant_poly(f, g, h) computes res_x(f, g − t·h) as a
-    // polynomial in t via evaluation-interpolation.
-    let r_poly = Poly::resultant_poly(d, a, &d_prime);
+    // R(t) = res_x(D, A − t·D') and the subresultant sequence of D and
+    // A − t·D' in one computation, as in Bronstein's IntRationalLogPart.
+    // (`Poly::resultant_poly` is the evaluation–interpolation route; its
+    // scalar resultants run Euclid over ℚ, 10 s in a debug build for the
+    // degree-36 denominator of `∫ atan(√x − x⁹) dx`.)
+    let (r_poly, prs) = match lrt_subresultants(a, d, &d_prime) {
+        Some((r, prs)) => (r, Some(prs)),
+        None => (Poly::resultant_poly(d, a, &d_prime), None),
+    };
 
     if r_poly.is_zero() {
         // Degenerate case: resultant is identically zero.
@@ -124,15 +130,6 @@ pub fn logarithmic_part(a: &Poly, d: &Poly) -> LogPartResult {
     // Factor R(t) over ℤ.  A factor's multiplicity is the degree in x of
     // the log argument belonging to its roots.
     let (_content, r_factors) = r_poly.factor_over_z();
-
-    // The remainder sequence, down to the lowest degree an algebraic factor
-    // needs (the members below it are the expensive ones).
-    let lowest = r_factors
-        .iter()
-        .filter(|(f, _)| f.degree().is_some_and(|d| d >= 2))
-        .map(|(_, i)| *i as usize)
-        .min();
-    let prs = lowest.map(|i| lrt_prs(a, d, &d_prime, i));
 
     let mut terms: Vec<LogTerm> = Vec::new();
 
@@ -194,29 +191,73 @@ pub fn logarithmic_part(a: &Poly, d: &Poly) -> LogPartResult {
     LogPartResult { terms }
 }
 
-/// The Euclidean remainder sequence of `D` and `A − t·D'` over `ℚ(t)`,
-/// keyed by degree in `x`, stopping once the member of degree `stop_at` is
-/// produced.  Each remainder is made primitive over `ℚ[t]`: Euclid over
-/// `ℚ(t)` grows the coefficients' degree in `t` at every step (the degree
-/// 2 → 1 step of `∫ atan(√x − x³) dx` alone took 4 s), while a primitive
-/// member is the subresultant of its degree divided by its content, so it
-/// specialises at a root of the resultant to the same polynomial up to a
-/// non-zero constant.
-fn lrt_prs(
+/// `R(t) = res_x(D, A − t·D')` (up to a non-zero constant factor) and the
+/// subresultant remainder sequence of `D` and `A − t·D'`, keyed by degree
+/// in `x`, both computed in `ℤ[t][x]` after scaling `D` and `A − t·D'` to
+/// integer coefficients; each member as an element of `ℚ(t)[x]` with
+/// polynomial coefficients.
+///
+/// The member of degree `i` is a multiple of the subresultant `S_i` by a
+/// factor that does not vanish at a root `α` of a factor of multiplicity
+/// `i` of the resultant, so it specialises there to a non-zero multiple of
+/// `gcd(D, A − α·D')`, which is all [`reduce_log_arg`] needs (Lazard–Rioboo;
+/// Bronstein, *Symbolic Integration I*, §2.5, `IntRationalLogPart`, uses
+/// the same subresultant PRS for both).  Up to 0.28.0 the resultant came from
+/// evaluation–interpolation and the sequence was Euclid's over `ℚ(t)` with
+/// every member made primitive: each coefficient operation there
+/// normalises a rational function by a gcd in `ℚ[t]`, and for the
+/// degree-36 denominator of `∫ atan(√x − x⁹) dx` the sequence took 24 s of
+/// a 28 s integral (release).  `None` if the sequence fails (an inexact
+/// division, which theory rules out).
+fn lrt_subresultants(
     a: &Poly,
     d: &Poly,
     d_prime: &Poly,
-    stop_at: usize,
-) -> BTreeMap<usize, GenPoly<RationalFn>> {
-    let d_gp = poly_to_genpoly_rf(d);
-    let b_gp = &poly_to_genpoly_rf(a) - &poly_to_genpoly_rf_times_t(d_prime);
-    GenPoly::<RationalFn>::euclidean_prs_normalized(&d_gp, &b_gp, Some(stop_at), primitive_over_q_t)
+) -> Option<(Poly, BTreeMap<usize, GenPoly<RationalFn>>)> {
+    use crate::poly::zpoly::{denominator_lcm, integer_scaled, ztx_subresultant_prs};
+    let constant = |c: BigInt| if c.is_zero() { Vec::new() } else { vec![c] };
+    let d_z: Vec<Vec<BigInt>> = integer_scaled(d.coeffs())
+        .into_iter()
+        .map(constant)
+        .collect();
+    // B = A − t·D' over the common denominator of A and D'.
+    let den = denominator_lcm(a.coeffs().iter().chain(d_prime.coeffs()));
+    let len = a.coeffs().len().max(d_prime.coeffs().len());
+    let b_z: Vec<Vec<BigInt>> = (0..len)
+        .map(|k| {
+            let mut c = vec![
+                (a.coeff(k) * &den).to_integer(),
+                -(d_prime.coeff(k) * &den).to_integer(),
+            ];
+            crate::poly::zpoly::z_normalize(&mut c);
+            c
+        })
+        .collect();
+    let chain = ztx_subresultant_prs(&d_z, &b_z)?;
+    let to_poly =
+        |c: Vec<BigInt>| Poly::from_coeffs(c.into_iter().map(Ratio::from_integer).collect());
+    let members = chain
+        .members
+        .into_iter()
+        .map(|(deg, member)| {
+            let coeffs = member
+                .into_iter()
+                .map(|c| RationalFn::from_poly(to_poly(c)))
+                .collect();
+            (deg, GenPoly::from_coeffs(coeffs))
+        })
+        .collect();
+    Some((to_poly(chain.resultant), members))
 }
 
 /// `p ∈ ℚ(t)[x]` scaled by a non-zero element of ℚ(t) so that its
 /// coefficients are polynomials in `t` with no common factor: clear the
-/// denominators (their lcm in `ℚ[t]`) and divide by the gcd of the numerators.
-pub(super) fn primitive_over_q_t(p: GenPoly<RationalFn>) -> GenPoly<RationalFn> {
+/// denominators (their lcm in `ℚ[t]`) and divide by the gcd of the
+/// numerators.  The normalisation of the Euclidean sequence `lrt_prs` used
+/// up to 0.28.0, kept as the reference the subresultant sequence is tested
+/// against.
+#[cfg(test)]
+fn primitive_over_q_t(p: GenPoly<RationalFn>) -> GenPoly<RationalFn> {
     let coeffs = &p.coeffs;
     let mut lcm = Poly::from_int(1);
     for c in coeffs {
@@ -652,5 +693,78 @@ mod tests {
         // 3t - 1  →  root = 1/3
         let p = Poly::from_coeffs(vec![rat(-1, 1), rat(3, 1)]);
         assert_eq!(extract_linear_root(&p), rat(1, 3));
+    }
+
+    /// The subresultant chain gives exactly the resultant factors and the
+    /// reduced log arguments of the route used up to 0.28.0: the resultant by
+    /// evaluation–interpolation and Euclid's sequence over `ℚ(t)` with
+    /// primitive members.  Covers multiplicities 1–4, a cubic factor, and a
+    /// few seeded random denominators.
+    #[test]
+    fn subresultant_log_arguments_match_the_euclidean_route() {
+        use super::super::log_to_real::poly_to_genpoly_rf_times_t;
+        use crate::base::rng::SplitMix64;
+        let p = |c: &[i64]| Poly::from_coeffs(c.iter().map(|&k| rat(k, 1)).collect());
+        let as_pairs = |s: &GenPoly<RationalFn>| -> Vec<(Poly, Poly)> {
+            s.coeffs
+                .iter()
+                .map(|c| (c.numer().clone(), c.denom().clone()))
+                .collect()
+        };
+        let mut cases: Vec<(Poly, Poly)> = vec![
+            (p(&[1]), p(&[-2, 0, 0, 1])),                        // 1/(x³ − 2)
+            (p(&[0, 0, 0, 1]), p(&[1, 0, 0, 0, 0, 0, 0, 0, 1])), // x³/(x⁸ + 1)
+            (p(&[1]), p(&[1, 0, 0, 0, 1])),                      // 1/(x⁴ + 1)
+            (p(&[1, 0, 0, 0, 1]), p(&[1, 0, 0, 0, 0, 0, 1])),    // (x⁴ + 1)/(x⁶ + 1)
+            (p(&[0, 1]), p(&[1, 0, 0, 0, 1, 0, 0, 0, 1])),       // x/(x⁸ + x⁴ + 1)
+            (p(&[0, 0, 1]), p(&[1, 0, 1, 0, 0, -2, 0, 0, 1])),   // x²/((x − x⁴)² + 1)
+        ];
+        let mut rng = SplitMix64::new(20260924);
+        while cases.len() < 16 {
+            let mut rand = |deg: usize| {
+                let mut c: Vec<i64> = (0..deg).map(|_| (rng.next_u64() % 7) as i64 - 3).collect();
+                c.push(1);
+                p(&c)
+            };
+            let d = rand(3 + cases.len() % 5);
+            let a = rand(d.degree().unwrap_or(1) - 1);
+            if Poly::gcd(&d, &d.derivative()).degree() == Some(0)
+                && Poly::gcd(&a, &d).degree() == Some(0)
+            {
+                cases.push((a, d));
+            }
+        }
+        for (a, d) in &cases {
+            let d_prime = d.derivative();
+            let (r_new, prs_new) = lrt_subresultants(a, d, &d_prime).unwrap();
+            let r_old = Poly::resultant_poly(d, a, &d_prime);
+            let (_, factors) = r_old.factor_over_z();
+            assert_eq!(r_new.factor_over_z().1, factors, "R(t) for {a:?} / {d:?}");
+            let d_gp = poly_to_genpoly_rf(d);
+            let b_gp = &poly_to_genpoly_rf(a) - &poly_to_genpoly_rf_times_t(&d_prime);
+            let prs_old = GenPoly::<RationalFn>::euclidean_prs_normalized(
+                &d_gp,
+                &b_gp,
+                None,
+                primitive_over_q_t,
+            );
+            for (q, i) in factors.iter().filter(|(q, _)| q.degree() >= Some(2)) {
+                let i = *i as usize;
+                if d.degree() == Some(i) {
+                    continue;
+                }
+                let new = prs_new.get(&i).and_then(|s| reduce_log_arg(s, q));
+                let old = prs_old.get(&i).and_then(|s| reduce_log_arg(s, q));
+                assert!(
+                    new.is_some(),
+                    "no log argument of degree {i} for {a:?} / {d:?}"
+                );
+                assert_eq!(
+                    new.as_ref().map(as_pairs),
+                    old.as_ref().map(as_pairs),
+                    "log argument of degree {i} for {a:?} / {d:?}"
+                );
+            }
+        }
     }
 }

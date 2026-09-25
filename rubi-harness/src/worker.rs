@@ -96,8 +96,9 @@ impl Out {
     }
 }
 
-/// Entry point of `rubi-harness --worker FILE START END [--selftest]`.
-pub fn main(file: &Path, start: usize, end: usize, selftest: bool) -> i32 {
+/// Entry point of `rubi-harness --worker FILE START END [--selftest]
+/// [--negative-params]`.
+pub fn main(file: &Path, start: usize, end: usize, selftest: bool, negative_params: bool) -> i32 {
     install_panic_hook();
     let entries = match mac::read_file(file) {
         Ok(e) => e,
@@ -112,7 +113,7 @@ pub fn main(file: &Path, start: usize, end: usize, selftest: bool) -> i32 {
         .stack_size(STACK_BYTES)
         .spawn(move || {
             for (idx, entry) in entries.iter().enumerate().take(end).skip(start) {
-                run_entry(idx, entry, selftest);
+                run_entry(idx, entry, selftest, negative_params);
             }
         });
     match handle.map(|h| h.join()) {
@@ -144,13 +145,15 @@ fn inject_fault(idx: usize) {
     }
 }
 
-fn run_entry(idx: usize, entry: &Entry, selftest: bool) {
+fn run_entry(idx: usize, entry: &Entry, selftest: bool, negative_params: bool) {
     let out = Out {
         idx,
         stage: std::cell::Cell::new("startup"),
     };
     out.begin();
-    let status = match panic::catch_unwind(AssertUnwindSafe(|| entry_body(&out, entry, selftest))) {
+    let status = match panic::catch_unwind(AssertUnwindSafe(|| {
+        entry_body(&out, entry, selftest, negative_params)
+    })) {
         Ok(st) => st,
         Err(_) => {
             out.kv("reason", &format!("panic during {}", out.stage.get()));
@@ -181,7 +184,7 @@ fn parse_maxima(ctx: &Context, src: &str) -> Result<Ex, Unsupported> {
     })
 }
 
-fn entry_body(out: &Out, entry: &Entry, selftest: bool) -> Status {
+fn entry_body(out: &Out, entry: &Entry, selftest: bool, negative_params: bool) -> Status {
     out.stage("translate");
     inject_fault(out.idx);
     let tr = match translate::translate(entry.integrand()) {
@@ -230,10 +233,31 @@ fn entry_body(out: &Out, entry: &Entry, selftest: bool) -> Status {
     out.stage("check");
     let mut env = Env::new();
     env.extend(&ctx, &x, &[&f, &big_f]);
-    let reports = check::check(&ctx, &f, &big_f, &x, &env);
+    let mut reports = check::check(&ctx, &f, &big_f, &x, &env);
 
     let explicit_i = entry.integrand().contains("%i");
-    let status = check::verdict(&reports, explicit_i);
+    let mut status = check::verdict(&reports, explicit_i);
+    // `--negative-params`: an answer that passed with the table values must
+    // also pass with their negatives; a mismatch there is reported as wrong,
+    // with the negative values in `params`.
+    if negative_params
+        && !env.is_empty()
+        && matches!(status, Status::Verified | Status::RealVerified)
+    {
+        out.stage("check (negative parameters)");
+        let mut env_neg = Env::negated();
+        env_neg.extend(&ctx, &x, &[&f, &big_f]);
+        let reports_neg = check::check(&ctx, &f, &big_f, &x, &env_neg);
+        let status_neg = check::verdict(&reports_neg, explicit_i);
+        if status_neg == Status::Wrong {
+            status = Status::Wrong;
+            env = env_neg;
+            reports = reports_neg;
+        } else {
+            // Listed in entries.tsv: which answers the second set judged.
+            out.kv("reason", &format!("negated parameters: {status_neg}"));
+        }
+    }
     if matches!(status, Status::Wrong | Status::RealVerified) {
         // Sent first: a verdict survives a timeout while printing `F`.
         out.kv("verdict", status.as_str());

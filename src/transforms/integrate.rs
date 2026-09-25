@@ -176,7 +176,7 @@ fn integrate_impl(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
             // tower's θ-polynomial extraction once returned a wrong closed
             // form (0.22.3).
             crate::calculus::risch::TowerResult::Elementary(id)
-                if !antiderivative_is_wrong(arena, expr, id, var, var_sym) =>
+                if !antiderivative_rejected(arena, expr, id, var, var_sym) =>
             {
                 id
             }
@@ -1191,7 +1191,7 @@ fn try_weierstrass_substitution(
     // before it is dressed up in tan(x/2) (the rational integrator's
     // nested-radical failures show up here as e.g. `atan(3·tan(x/2))` for
     // `∫ cos x/(sin²x + 1)`).
-    if antiderivative_is_wrong(arena, integrand_t, integral_t, t, t_sym) {
+    if antiderivative_rejected(arena, integrand_t, integral_t, t, t_sym) {
         tracing::debug!("weierstrass: closed form in t failed verification");
         return None;
     }
@@ -1499,7 +1499,7 @@ fn integrate_node_uncached(
         crate::calculus::risch::try_risch_rational(arena, expr, var)
     ) {
         Some(result) if !matches!(arena.node(result), ExprNode::Integral(_, _)) => {
-            if !antiderivative_is_wrong(arena, expr, result, var, var_sym) {
+            if !antiderivative_rejected(arena, expr, result, var, var_sym) {
                 return result;
             }
             tracing::debug!("integrate: rejecting unverified rational-function closed form");
@@ -1828,7 +1828,7 @@ fn integrate_node_uncached(
                     if decomposed != expr {
                         let result = integrate_node(arena, decomposed, var, var_sym, depth - 1);
                         if !matches!(arena.node(result), ExprNode::Integral(_, _))
-                            && !antiderivative_is_wrong(arena, expr, result, var, var_sym)
+                            && !antiderivative_rejected(arena, expr, result, var, var_sym)
                         {
                             return result;
                         }
@@ -2179,7 +2179,7 @@ fn integrate_node_uncached(
                     if decomposed != expr {
                         let result = integrate_node(arena, decomposed, var, var_sym, depth - 1);
                         if !matches!(arena.node(result), ExprNode::Integral(_, _))
-                            && !antiderivative_is_wrong(arena, expr, result, var, var_sym)
+                            && !antiderivative_rejected(arena, expr, result, var, var_sym)
                         {
                             return result;
                         }
@@ -3185,6 +3185,14 @@ fn try_u_substitution(
                     }
                 }
             };
+            // `du` may be a constant that is zero without being so
+            // structurally, and `trigsimp` shows it: `u = k·x + 1` with
+            // `k = sin²1 + cos²1 − 1` gave the coefficient `zoo`, and
+            // `∫ x/u dx = zoo` once the self-check stopped passing the
+            // earlier candidate with the vanishing denominator `k`.
+            if contains_non_finite(arena, coeff) {
+                continue;
+            }
 
             // The factor must depend on `var` only through `u`: with `u`
             // replaced by a fresh symbol nothing of `var` may remain
@@ -3536,7 +3544,7 @@ fn try_radical_substitution(
     // through below the checks above — `(s⁻⁴)^{1/2}` flattened to `s⁻²` gave
     // `∫ cos(√x)/√(x⁻²) dx` a closed form whose derivative is wrong for
     // x < 0 (0.23, fuzz_integrate).
-    if antiderivative_is_wrong(arena, expr, result, var, var_sym) {
+    if antiderivative_rejected(arena, expr, result, var, var_sym) {
         tracing::debug!("integrate: rejecting unverified radical-substitution closed form");
         return None;
     }
@@ -4034,7 +4042,7 @@ fn try_poly_over_symbolic_linear(
     let inv_a = arena.pow(a, arena.neg_one());
     let result = arena.mul(&[inv_a, sum]);
     let result = crate::transforms::eval::eval(arena, result);
-    if antiderivative_is_wrong(arena, expr, result, var, var_sym) {
+    if antiderivative_rejected(arena, expr, result, var, var_sym) {
         return None;
     }
     Some(result)
@@ -4124,7 +4132,7 @@ fn try_poly_over_symbolic_quadratic(
     }
     let result = arena.add(&terms);
     let result = crate::transforms::eval::eval(arena, result);
-    if antiderivative_is_wrong(arena, expr, result, var, var_sym) {
+    if antiderivative_rejected(arena, expr, result, var, var_sym) {
         return None;
     }
     Some(result)
@@ -4641,9 +4649,17 @@ fn flatten_nested_pow(arena: &mut Arena, expr: ExprId, var_sym: SymbolId) -> Opt
 // Numeric verification of candidate antiderivatives
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Sample points for [`antiderivative_is_wrong`]: small rationals of both
+/// Sample points for [`check_antiderivative`]: small rationals of both
 /// signs, none of them a root of the denominators met in practice.
 const FTC_SAMPLE_POINTS: [(i64, i64); 6] = [(1, 3), (-5, 7), (13, 11), (-17, 5), (7, 5), (-2, 1)];
+
+/// The second round of sample points, tried only when the first found no
+/// point where `F′ = f`: nearer to 0 and farther out, for integrands that
+/// are real only on part of the line (`√(x − 5)` is complex at every
+/// point of the first round, and `F′` may legitimately differ from it
+/// there under the real-variable convention).
+const FTC_RETRY_POINTS: [(i64, i64); 6] =
+    [(1, 19), (-3, 23), (37, 4), (-29, 3), (211, 7), (-307, 9)];
 
 /// Decimal digits requested from `evalf` when checking `F′ − f`: the
 /// working precision behind 30 digits is ~50 digits, which separates an
@@ -4654,101 +4670,317 @@ const FTC_CHECK_DIGITS: u32 = 30;
 /// Tolerance on `|F′(x₀) − f(x₀)| / max(1, |f(x₀)|)` at [`FTC_CHECK_DIGITS`].
 const FTC_CHECK_REL_TOL: f64 = 1e-20;
 
-/// `true` when `big_f` is **definitely not** an antiderivative of `f`:
-/// `F′ − f` evaluates to a real number clearly different from zero at some
-/// sample point.  `false` when the check passes *or cannot be decided*
-/// (free parameters, unevaluated nodes, no evaluable sample point), so a
-/// caller that treats `true` as "reject" keeps every result it cannot
-/// disprove.
+/// What [`check_antiderivative`] found out about a candidate `F` for `∫ f`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FtcVerdict {
+    /// `F′ = f` at one sample point at least, where `F` evaluates too, and
+    /// `F′ ≠ f` at none where `f` is real.
+    Verified,
+    /// `F′ ≠ f` at a sample point where `f` is real, or `F′ − f` is a
+    /// non-zero constant.
+    Wrong,
+    /// `f` evaluates at some sample point, but `F′` agrees with it at none:
+    /// `F′` does not evaluate there, it differs from `f` only where `f` is
+    /// complex, or it agrees only where `F` itself does not evaluate.
+    Undecided,
+    /// No numeric test is possible: `F` or `F′` has an unevaluated node, a
+    /// parameter has declared assumptions, or `f` itself evaluates at no
+    /// sample point.
+    Untestable,
+}
+
+/// `true` when the candidate `big_f` for `∫ f d(var)` must not be returned.
 ///
-/// Intended for integrands whose only free symbol is `var` and whose
-/// candidates consist of elementary functions (rational functions of `var`
-/// and their `ln`/`atan`/radical antiderivatives, trig rational functions):
-/// those `evalf` evaluates to full working precision, which is what the
-/// tight tolerance relies on.
-fn antiderivative_is_wrong(
+/// A candidate is accepted on **evidence**, not for the lack of it.
+/// [`check_antiderivative`] compares `F′` with `f` at sample points, and:
+///
+/// - [`FtcVerdict::Verified`] — accepted.
+/// - [`FtcVerdict::Wrong`] — rejected.
+/// - [`FtcVerdict::Undecided`] — **rejected**.  `f` evaluates at some sample
+///   point but `F′` agrees with it at none, even after a second round of
+///   points ([`FTC_RETRY_POINTS`]).  That is what a quotient by a
+///   difference that cancels to 0 looks like: since 0.26 `evalf` refuses
+///   such a value with `PrecisionExhausted` instead of returning noise, and
+///   up to 0.28.0 such candidates passed unchecked, because "no point
+///   evaluates" counted as "not wrong".  An `F′` that is undefined at a
+///   generic point where `f` is defined is not the derivative of an
+///   antiderivative of `f` there; nor is an `F` that is undefined wherever
+///   its `F′` agrees with `f` (the vanishing denominator cancelled in
+///   `F′`) an antiderivative.  A difference only where `f` is complex is
+///   excused by the real-variable convention but verifies nothing:
+///   `ln|x − c|` for `∫ dx/(x − c)` with an imaginary `c` differs from
+///   `f` at every point.  A retry at higher precision would
+///   add nothing: `evalf` already re-evaluates up to twice the working
+///   precision plus 256 bits before it refuses.
+/// - [`FtcVerdict::Untestable`] — accepted.  When `f` itself evaluates at no
+///   sample point, `F` contains an unevaluated `Integral` (a partial
+///   answer, which says so), `F′` a derivative `diff` could not take, or a
+///   parameter carries declared assumptions generic values might violate,
+///   no candidate could ever be tested; the answer stands as the route
+///   derived it.
+///
+/// Free parameters are bound to generic positive rationals
+/// ([`FTC_PARAMETER_VALUES`]) before sampling; up to 0.28.0 a parameter
+/// skipped the check altogether.
+///
+/// Intended for candidates built from functions `evalf` evaluates to full
+/// working precision (rational functions and their `ln`/`atan`/radical
+/// antiderivatives, trigonometric rational functions), which is what the
+/// tight tolerance [`FTC_CHECK_REL_TOL`] relies on.
+fn antiderivative_rejected(
     arena: &mut Arena,
     f: ExprId,
     big_f: ExprId,
     var: ExprId,
     var_sym: SymbolId,
 ) -> bool {
-    stage!(
+    let verdict = stage!(
         arena,
         "verify",
         big_f,
-        antiderivative_is_wrong_impl(arena, f, big_f, var, var_sym)
-    )
+        check_antiderivative(arena, f, big_f, var, var_sym)
+    );
+    match verdict {
+        FtcVerdict::Verified | FtcVerdict::Untestable => false,
+        FtcVerdict::Wrong | FtcVerdict::Undecided => {
+            tracing::debug!(?verdict, "integrate: candidate antiderivative rejected");
+            true
+        }
+    }
 }
 
-fn antiderivative_is_wrong_impl(
+/// Generic values for the free parameters of a checked candidate, handed
+/// out in the order of the parameters' names: distinct, positive,
+/// non-integer, with pairwise different prime denominators, so that no
+/// accidental relation (`a = b`, `m + 1 = n`, `a·b = 1`) holds between
+/// them.  None is a value of the Rubi harness's parameter table, so the
+/// harness stays an independent check.
+const FTC_PARAMETER_VALUES: [(i64, i64); 8] = [
+    (17, 13),
+    (7, 11),
+    (23, 17),
+    (5, 19),
+    (31, 23),
+    (11, 29),
+    (41, 31),
+    (13, 37),
+];
+
+/// `f` and `big_f` with every free symbol other than `var` bound to a
+/// value of [`FTC_PARAMETER_VALUES`]; `None` when there are more
+/// parameters than values or a parameter carries declared assumptions (an
+/// `integer` or `negative` symbol must not be sampled at `17/13`).
+fn bind_parameters(
+    arena: &mut Arena,
+    f: ExprId,
+    big_f: ExprId,
+    var: ExprId,
+) -> Option<(ExprId, ExprId)> {
+    let mut params: Vec<(String, ExprId)> = Vec::new();
+    for root in [f, big_f] {
+        for s in crate::base::walk::free_symbols(arena, root) {
+            if s == var || params.iter().any(|&(_, p)| p == s) {
+                continue;
+            }
+            let ExprNode::Symbol(sid) = *arena.node(s) else {
+                return None;
+            };
+            if arena.symbol_assumptions(sid) != crate::base::assumptions::Assumptions::default() {
+                return None;
+            }
+            params.push((arena.symbol_name(sid).to_owned(), s));
+        }
+    }
+    if params.len() > FTC_PARAMETER_VALUES.len() {
+        return None;
+    }
+    params.sort();
+    let (mut f, mut big_f) = (f, big_f);
+    for (&(_, s), &(p, q)) in params.iter().zip(FTC_PARAMETER_VALUES.iter()) {
+        let value = arena.rational(p, q);
+        f = crate::transforms::subs::subs(arena, f, s, value);
+        big_f = crate::transforms::subs::subs(arena, big_f, s, value);
+    }
+    Some((f, big_f))
+}
+
+/// The numeric FTC check behind [`antiderivative_rejected`]: `F′` against
+/// `f` at [`FTC_SAMPLE_POINTS`], then, if no point agreed, at
+/// [`FTC_RETRY_POINTS`].
+///
+/// At each point `f` is evaluated first; a point where it does not
+/// evaluate says nothing.  Then `F′ − f` is evaluated as one expression
+/// (its exact cancellation to 0 is what `evalf`'s zero detection is built
+/// for) and, if that fails, `F′` on its own.  `|F′ − f| ≤ tol·max(1, |f|)`
+/// is an agreement, real or complex; a larger difference is
+/// [`FtcVerdict::Wrong`] where `f` is real and no evidence where it is
+/// complex (the real-variable convention: `ln|x|` for `∫ dx/x` differs
+/// from `1/x` for `x < 0` only in a complex continuation, and the
+/// continuation of `f` is what is compared there).
+fn check_antiderivative(
     arena: &mut Arena,
     f: ExprId,
     big_f: ExprId,
     var: ExprId,
     var_sym: SymbolId,
-) -> bool {
+) -> FtcVerdict {
     if crate::base::walk::has_unevaluated(arena, big_f) {
-        return false;
+        return FtcVerdict::Untestable;
     }
-    let free = crate::base::walk::free_symbols(arena, f);
-    if free.iter().any(|&s| s != var) {
-        return false;
-    }
-    let free_f = crate::base::walk::free_symbols(arena, big_f);
-    if free_f.iter().any(|&s| s != var) {
-        return false;
-    }
+    let Some((f, big_f)) = bind_parameters(arena, f, big_f, var) else {
+        return FtcVerdict::Untestable;
+    };
     let d_big_f = crate::transforms::diff::diff(arena, big_f, var);
     if crate::base::walk::has_unevaluated(arena, d_big_f) {
-        return false;
+        return FtcVerdict::Untestable;
     }
     let residual = arena.sub(d_big_f, f);
-    if !contains_var(arena, residual, var_sym) {
-        // Constant residual: exact zero is fine, anything else is a wrong
-        // constant term in F′.
-        return matches!(residual_value(arena, residual), Some(v) if v.abs() > FTC_CHECK_REL_TOL);
-    }
-    for &(p, q) in &FTC_SAMPLE_POINTS {
-        let point = arena.rational(p, q);
-        let f_at = crate::transforms::subs::subs(arena, f, var, point);
-        let f_at = crate::transforms::eval::eval(arena, f_at);
-        let Some(f_val) = crate::transforms::evalf::eval_const_f64(arena, f_at) else {
-            continue;
-        };
-        if !f_val.is_finite() {
-            continue;
+    if !contains_var(arena, residual, var_sym)
+        && let Some(r) = residual_abs(arena, residual)
+    {
+        // A constant residual: anything but zero is a wrong constant term
+        // in F′.  Zero (`F′ ≡ f`, often structurally) still needs an `F`
+        // that is defined somewhere.  One that does not evaluate is
+        // sampled below.
+        if r > FTC_CHECK_REL_TOL {
+            return FtcVerdict::Wrong;
         }
-        let r_at = crate::transforms::subs::subs(arena, residual, var, point);
-        let Some(r_val) = residual_value(arena, r_at) else {
-            continue;
+        return if evaluates_at_a_sample_point(arena, big_f, var) {
+            FtcVerdict::Verified
+        } else if evaluates_at_a_sample_point(arena, f, var) {
+            FtcVerdict::Undecided
+        } else {
+            FtcVerdict::Untestable
         };
-        if r_val.abs() > FTC_CHECK_REL_TOL * f_val.abs().max(1.0) {
-            tracing::debug!(
-                point = %arena.display(point),
-                residual = r_val,
-                "integrate: candidate antiderivative fails the numeric FTC check"
-            );
-            return true;
+    }
+    let mut integrand_evaluates = false;
+    for points in [&FTC_SAMPLE_POINTS, &FTC_RETRY_POINTS] {
+        let mut agrees = false;
+        for &(p, q) in points {
+            let point = arena.rational(p, q);
+            match ftc_point(arena, f, d_big_f, residual, var, point) {
+                FtcPoint::IntegrandUnevaluable => {}
+                FtcPoint::Agrees => {
+                    integrand_evaluates = true;
+                    // `F′ = f` proves nothing about an `F` that is undefined
+                    // (`x·e^{kx}/k − e^{kx}/k²` with a `k` that is 0 without
+                    // being so structurally has `F′ = x·e^{kx}` exactly).
+                    if !agrees {
+                        let big_f_at = crate::transforms::subs::subs(arena, big_f, var, point);
+                        agrees = numeric_value(arena, big_f_at).is_some();
+                    }
+                }
+                FtcPoint::DerivativeUnevaluable | FtcPoint::Differs { f_real: false } => {
+                    integrand_evaluates = true;
+                }
+                FtcPoint::Differs { f_real: true } => {
+                    tracing::debug!(
+                        point = %arena.display(point),
+                        "integrate: candidate antiderivative fails the numeric FTC check"
+                    );
+                    return FtcVerdict::Wrong;
+                }
+            }
+        }
+        if agrees {
+            return FtcVerdict::Verified;
         }
     }
-    false
+    if integrand_evaluates {
+        FtcVerdict::Undecided
+    } else {
+        FtcVerdict::Untestable
+    }
 }
 
-/// A variable-free `F′ − f` sample as a finite real `f64`, evaluated at
-/// [`FTC_CHECK_DIGITS`] so that a ~1e-13 discrepancy is not lost in the
-/// printed digits; `None` when it does not evaluate to a finite real.
-fn residual_value(arena: &mut Arena, residual: ExprId) -> Option<f64> {
+/// The comparison of `F′` with `f` at one sample point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FtcPoint {
+    /// `f` does not evaluate here: no information.
+    IntegrandUnevaluable,
+    /// `f` evaluates, `F′` (and `F′ − f`) does not.
+    DerivativeUnevaluable,
+    /// `|F′ − f| ≤ tol·max(1, |f|)`.
+    Agrees,
+    /// `|F′ − f| > tol·max(1, |f|)`, with `f` real or complex here.
+    Differs { f_real: bool },
+}
+
+fn ftc_point(
+    arena: &mut Arena,
+    f: ExprId,
+    d_big_f: ExprId,
+    residual: ExprId,
+    var: ExprId,
+    point: ExprId,
+) -> FtcPoint {
+    let f_at = crate::transforms::subs::subs(arena, f, var, point);
+    let Some(f_val) = numeric_value(arena, f_at) else {
+        return FtcPoint::IntegrandUnevaluable;
+    };
+    let Some(f_abs) = crate::transforms::evalf::abs_to_f64(&f_val).filter(|v| v.is_finite()) else {
+        return FtcPoint::IntegrandUnevaluable;
+    };
+    let r_at = crate::transforms::subs::subs(arena, residual, var, point);
+    let gap = match residual_abs(arena, r_at) {
+        Some(gap) => gap,
+        None => {
+            let d_at = crate::transforms::subs::subs(arena, d_big_f, var, point);
+            let Some(d_val) = numeric_value(arena, d_at) else {
+                return FtcPoint::DerivativeUnevaluable;
+            };
+            match crate::transforms::evalf::distance_to_f64(&d_val, &f_val) {
+                Some(gap) if !gap.is_nan() => gap,
+                _ => return FtcPoint::DerivativeUnevaluable,
+            }
+        }
+    };
+    if gap <= FTC_CHECK_REL_TOL * f_abs.max(1.0) {
+        FtcPoint::Agrees
+    } else {
+        FtcPoint::Differs {
+            f_real: crate::transforms::evalf::is_real_to_digits(&f_val, FTC_CHECK_DIGITS),
+        }
+    }
+}
+
+/// Does `e` (a function of `var` only) evaluate at one of the sample
+/// points?
+fn evaluates_at_a_sample_point(arena: &mut Arena, e: ExprId, var: ExprId) -> bool {
+    FTC_SAMPLE_POINTS
+        .iter()
+        .chain(FTC_RETRY_POINTS.iter())
+        .any(|&(p, q)| {
+            let point = arena.rational(p, q);
+            let e_at = crate::transforms::subs::subs(arena, e, var, point);
+            numeric_value(arena, e_at).is_some()
+        })
+}
+
+/// A variable-free expression evaluated to [`FTC_CHECK_DIGITS`] correct
+/// digits (after exact simplification); `None` when it does not evaluate
+/// to a finite complex number.
+fn numeric_value(arena: &mut Arena, e: ExprId) -> Option<crate::base::bigcomplex::Complex> {
+    let e = crate::transforms::eval::eval(arena, e);
+    if crate::base::walk::has_unevaluated(arena, e) {
+        return None;
+    }
+    crate::transforms::evalf::evalf_complex(arena, e, FTC_CHECK_DIGITS).ok()
+}
+
+/// `|r|` for a variable-free `F′ − f` sample, evaluated at
+/// [`FTC_CHECK_DIGITS`] so that a ~1e-13 discrepancy is not lost; `None`
+/// when it does not evaluate to a finite complex number.
+fn residual_abs(arena: &mut Arena, residual: ExprId) -> Option<f64> {
     let r = crate::transforms::eval::eval(arena, residual);
     if crate::base::walk::has_unevaluated(arena, r) {
         return None;
     }
     let v = if let Some(q) = arena.as_num(r) {
-        crate::base::numeric::ratio_to_f64(q)?
+        crate::base::numeric::ratio_to_f64(q)?.abs()
     } else {
-        let s = crate::transforms::evalf::evalf(arena, r, FTC_CHECK_DIGITS).ok()?;
-        // A complex value ("a + b*i") or `oo` does not parse: undecidable.
-        s.parse::<f64>().ok()?
+        let z = crate::transforms::evalf::evalf_complex(arena, r, FTC_CHECK_DIGITS).ok()?;
+        crate::transforms::evalf::abs_to_f64(&z)?
     };
     v.is_finite().then_some(v)
 }
@@ -4881,7 +5113,7 @@ fn try_biquadratic_rational(
     let result = crate::transforms::eval::eval(arena, result);
     // The closed form is exact by construction; the check guards the radical
     // arithmetic above (a wrong sign here would be a silent wrong answer).
-    if antiderivative_is_wrong(arena, expr, result, var, var_sym) {
+    if antiderivative_rejected(arena, expr, result, var, var_sym) {
         tracing::debug!("integrate: biquadratic closed form failed verification");
         return None;
     }
@@ -5772,6 +6004,78 @@ mod tests {
             &[(1, 4), (1, 2), (3, 4)],
             1e-8,
             "∫atanh(x)dx",
+        );
+    }
+
+    /// [`check_antiderivative`] of `big_f` for `∫ f dx`, both parsed; `K`
+    /// in either stands for `sin(1)² + cos(1)² − 1`, which is 0 without
+    /// being so structurally.
+    fn ftc_verdict(f: &str, big_f: &str) -> FtcVerdict {
+        let k = "(sin(1)^2 + cos(1)^2 - 1)";
+        let ctx = crate::api::context::Context::new();
+        let f = ctx.parse(&f.replace('K', k)).unwrap().id();
+        let big_f = ctx.parse(&big_f.replace('K', k)).unwrap().id();
+        ctx.with_arena_mut(|a| {
+            let x = a.symbol("x");
+            let ExprNode::Symbol(x_sym) = *a.node(x) else {
+                unreachable!()
+            };
+            check_antiderivative(a, f, big_f, x, x_sym)
+        })
+    }
+
+    #[test]
+    fn ftc_check_vanishing_denominator_is_undecided_not_passed() {
+        // Up to 0.28.0 no sample point evaluated `F′` (a quotient by K = 0)
+        // and "no evidence" counted as "not wrong".
+        assert_eq!(
+            ftc_verdict("x/(K*x + 1)", "(x - ln(abs(K*x + 1))/K)/K"),
+            FtcVerdict::Undecided
+        );
+        // `F′ = x·e^{Kx}` exactly, but `F` is undefined everywhere.
+        assert_eq!(
+            ftc_verdict("x*exp(K*x)", "x*exp(K*x)/K - exp(K*x)/K^2"),
+            FtcVerdict::Undecided
+        );
+        // `f` itself evaluates nowhere: nothing can be tested.
+        assert_eq!(ftc_verdict("x/K", "x^2/(2*K)"), FtcVerdict::Untestable);
+    }
+
+    #[test]
+    fn ftc_check_samples_parameters() {
+        // Up to 0.28.0 a free parameter skipped the check.
+        assert_eq!(
+            ftc_verdict("1/(x + a)", "ln(abs(x + a))"),
+            FtcVerdict::Verified
+        );
+        assert_eq!(
+            ftc_verdict("1/(x + a)", "ln(abs(x + a))/a"),
+            FtcVerdict::Wrong
+        );
+    }
+
+    #[test]
+    fn ftc_check_complex_integrand() {
+        // `c = √(1/2 − √5/2)` is imaginary: `f` is complex at every real
+        // `x`, the principal `ln(x − c)` agrees with it, `ln|x − c|` does
+        // not (its derivative is `Re f`).
+        let f = "1/(x - sqrt(1/2 - sqrt(5)/2))";
+        assert_eq!(
+            ftc_verdict(f, "ln(x - sqrt(1/2 - sqrt(5)/2))"),
+            FtcVerdict::Verified
+        );
+        assert_eq!(
+            ftc_verdict(f, "ln(abs(x - sqrt(1/2 - sqrt(5)/2)))"),
+            FtcVerdict::Undecided
+        );
+        // Real-variable convention: `ln|x|` differs from `1/x` nowhere
+        // where it is real; `√x·x` against `(2/5)·x^{5/2}` agrees at
+        // `x > 0` and in the principal continuation.
+        assert_eq!(ftc_verdict("1/x", "ln(abs(x))"), FtcVerdict::Verified);
+        assert_eq!(ftc_verdict("1/x", "ln(abs(x)) + x"), FtcVerdict::Wrong);
+        assert_eq!(
+            ftc_verdict("sqrt(x - 5)", "2/3*(x - 5)^(3/2)"),
+            FtcVerdict::Verified
         );
     }
 }

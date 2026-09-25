@@ -185,9 +185,16 @@ impl RandomVariable {
     ///
     /// # Errors
     ///
-    /// [`SymplexError::NotImplemented`] for an event of another shape.
+    /// [`SymplexError::NotImplemented`] for an event of another shape;
+    /// [`SymplexError::InvalidArgument`] for an event built in another
+    /// context than the variable (a panic in 0.28.0).
     pub fn event_region(&self, event: &BoolEx) -> Result<Support, SymplexError> {
-        let _ = self.symbol.checked_id(event);
+        if event.ctx_id != self.symbol.ctx_id {
+            return Err(SymplexError::invalid_argument(
+                "RandomVariable::event_region",
+                "the event lives in another context than the variable",
+            ));
+        }
         event_region(&self.symbol, event)
     }
 
@@ -205,7 +212,9 @@ impl RandomVariable {
     ///
     /// [`SymplexError::NotImplemented`] for events of another shape
     /// (non-linear or disjunctive with symbolic bounds), or when a listed
-    /// value's membership cannot be decided.
+    /// value's membership cannot be decided;
+    /// [`SymplexError::InvalidArgument`] for an event built in another
+    /// context than the variable.
     pub fn probability(&self, event: &BoolEx) -> Result<Ex, SymplexError> {
         let region = self.event_region(event)?;
         self.dist.probability_of(&region)
@@ -245,7 +254,9 @@ impl RandomVariable {
     ///
     /// # Errors
     ///
-    /// As [`Distribution::transformed`].
+    /// As [`Distribution::transformed`]; [`SymplexError::InvalidArgument`]
+    /// when `name` is empty or `g` was built in another context than the
+    /// variable (both panicked in 0.28.0).
     ///
     /// ```
     /// use symplex::prelude::*;
@@ -259,12 +270,15 @@ impl RandomVariable {
     /// # Ok::<(), SymplexError>(())
     /// ```
     pub fn transform(&self, name: &str, g: &Ex) -> Result<RandomVariable, SymplexError> {
-        let _ = self.symbol.checked_id(g);
+        if g.ctx_id != self.symbol.ctx_id {
+            return Err(SymplexError::invalid_argument(
+                "RandomVariable::transform",
+                "the expression lives in another context than the variable",
+            ));
+        }
+        let symbol = self.context().try_symbol(name)?;
         let dist = self.dist.transformed(&self.symbol, g)?;
-        Ok(RandomVariable::with_symbol(
-            self.context().symbol(name),
-            dist,
-        ))
+        Ok(RandomVariable::with_symbol(symbol, dist))
     }
 
     /// `n` samples as `f64`; see [`Distribution::sample`].  SymPy:

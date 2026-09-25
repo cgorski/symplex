@@ -66,7 +66,10 @@ pub(crate) fn poly_to_genpoly_rf(p: &Poly) -> GenPoly<RationalFn> {
 /// `GenPoly<RationalFn>` where each coefficient is multiplied by `t`.
 ///
 /// If `p(x) = Σ c_k · x^k`, this returns `Σ (c_k · t) · x^k` where
-/// `t` is the variable of the `RationalFn` coefficient type.
+/// `t` is the variable of the `RationalFn` coefficient type.  Only the tests
+/// build `A − t·D'` this way after 0.28.0 (the Lazard–Rioboo–Trager sequence
+/// works in `ℤ[t][x]`).
+#[cfg(test)]
 pub(crate) fn poly_to_genpoly_rf_times_t(p: &Poly) -> GenPoly<RationalFn> {
     let t_poly = Poly::from_coeffs(vec![
         Ratio::from_integer(BigInt::from(0)),

@@ -196,6 +196,17 @@ impl Context {
 
     /// Create a symbol with mathematical assumptions.
     ///
+    /// The assumptions replace any declared earlier on a symbol of the same
+    /// name in this context.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` is empty, or if the assumptions contradict each
+    /// other once their consequences are drawn (`Positive` with `Negative`,
+    /// `Integer` with `Irrational`, `Positive` with `Zero`, …): declaring
+    /// impossible facts about a symbol is a logic error.
+    /// [`try_symbol_with`](Self::try_symbol_with) returns an error instead.
+    ///
     /// # Examples
     ///
     /// ```
@@ -236,6 +247,42 @@ impl Context {
 
         drop(inner);
         self.make_ex(expr_id)
+    }
+
+    /// [`symbol_with`](Self::symbol_with) for a name or assumptions that
+    /// may be invalid (e.g. from user input).
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`](crate::base::errors::SymplexError::InvalidArgument)
+    /// if `name` is empty or the assumptions contradict each other.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// let ctx = Context::new();
+    /// let t = ctx.try_symbol_with("t", &[Assumption::Positive]).unwrap();
+    /// assert_eq!(t.is_positive(), Some(true));
+    /// assert!(ctx.try_symbol_with("u", &[Assumption::Positive, Assumption::Negative]).is_err());
+    /// assert!(ctx.try_symbol_with("", &[Assumption::Real]).is_err());
+    /// ```
+    pub fn try_symbol_with(
+        &self,
+        name: &str,
+        assumptions: &[Assumption],
+    ) -> Result<crate::api::expr::Ex, crate::base::errors::SymplexError> {
+        const OP: &str = "Context::symbol_with";
+        if name.is_empty() {
+            return Err(crate::base::errors::SymplexError::invalid_argument(
+                OP,
+                "symbol name cannot be empty",
+            ));
+        }
+        let mut declared = crate::base::assumptions::Assumptions::default();
+        for assumption in assumptions {
+            declared = declared.with(*assumption);
+        }
+        declared.check_declarable(OP)?;
+        Ok(self.symbol_with(name, assumptions))
     }
 
     /// Query a mathematical property of an expression.

@@ -21,8 +21,9 @@
 //!
 //! [`factorint`] combines trial division by all primes below 2¹⁶, a
 //! perfect-power check, Pollard–Brent rho (machine words for `n < 2⁶⁴`),
-//! and Lenstra's elliptic-curve method (Montgomery curves, stage 1) for
-//! larger composites.  Every factor returned is prime (verified with
+//! and Lenstra's elliptic-curve method (Montgomery curves, stage 1 and
+//! Montgomery's standard continuation as stage 2) for larger composites.
+//! Every factor returned is prime (verified with
 //! [`isprime`]); the algorithm never returns a composite as a "prime" —
 //! for pathological inputs it may simply take a long time.
 //!
@@ -794,10 +795,72 @@ fn pollard_brent_ring<R: ModRing>(
     if &g == n || g.is_one() { None } else { Some(g) }
 }
 
-/// One ECM stage-1 attempt on a Montgomery curve chosen by Suyama's
-/// parametrization with parameter `sigma`, over an abstract ring.
-/// Returns a non-trivial factor of `n` on success.
-fn ecm_stage1_ring<R: ModRing>(ring: &R, n: &BigInt, sigma: u64, b1: u64) -> Option<BigInt> {
+/// The curve-independent part of ECM stage 2 (the improved standard
+/// continuation of P. L. Montgomery, "Speeding the Pollard and elliptic
+/// curve methods of factorization", Math. Comp. 48, 1987; Crandall and
+/// Pomerance, *Prime Numbers*, 2nd ed., §7.4.2), laid out as in SymPy's
+/// `_ecm_one_factor` (`sympy/ntheory/ecm.py`, BSD-3).
+///
+/// Every prime `q ∈ [B1, B2]` is written `q = r ± (2δ + 1)` with `r` on the
+/// giant-step grid `B1 + 2D, B1 + 6D, …` and `0 ≤ δ < D`; the curve then
+/// tests `x(r·Q) = x((2δ+1)·Q)`, one multiplication per `(r, δ)`, since
+/// `x(P) = x(−P)` serves both signs at once.
+struct EcmStage2 {
+    /// Half-width `D` of the baby steps: `(2δ + 1)·Q` for `δ < D`.
+    half_width: u64,
+    /// `B1`, the stage-1 bound this plan continues.
+    b1: u64,
+    /// Per giant step `r`, the `δ` with `r + (2δ + 1)` or `r − (2δ + 1)` prime.
+    deltas: Vec<Vec<u32>>,
+}
+
+impl EcmStage2 {
+    /// The plan for the primes in `[b1, b2]`; `b1` even and at least 8.
+    fn new(b1: u64, b2: u64) -> Self {
+        let d = b2.isqrt().min(b1 / 2 - 1);
+        let sieve = BitSieve::new(b2 + 2 * d);
+        let mut deltas = Vec::new();
+        let mut seen = vec![false; d as usize];
+        let mut r = b1 + 2 * d;
+        while r < b2 + 2 * d {
+            let mut step: Vec<u32> = Vec::new();
+            seen.iter_mut().for_each(|s| *s = false);
+            // r is even, so every prime in (r − 2D, r + 2D) is r ± (2δ + 1).
+            let mut q = r - 2 * d + 1;
+            while q < r + 2 * d {
+                if sieve.is_prime(q) {
+                    let delta = q.abs_diff(r) >> 1;
+                    if let Some(s) = seen.get_mut(delta as usize)
+                        && !*s
+                    {
+                        *s = true;
+                        step.push(delta as u32);
+                    }
+                }
+                q += 2;
+            }
+            deltas.push(step);
+            r += 4 * d;
+        }
+        EcmStage2 {
+            half_width: d,
+            b1,
+            deltas,
+        }
+    }
+}
+
+/// One ECM attempt on a Montgomery curve chosen by Suyama's
+/// parametrization with parameter `sigma`, over an abstract ring: stage 1
+/// to `plan.b1`, then stage 2 by `plan`.  Returns a non-trivial factor of
+/// `n` on success.
+fn ecm_curve_ring<R: ModRing>(
+    ring: &R,
+    n: &BigInt,
+    sigma: u64,
+    plan: &EcmStage2,
+) -> Option<BigInt> {
+    let b1 = plan.b1;
     // Curve parameters computed once in BigInt, then moved into the ring.
     let sigma = BigInt::from(sigma);
     let u = (&sigma * &sigma - BigInt::from(5)).mod_floor(n);
@@ -892,25 +955,76 @@ fn ecm_stage1_ring<R: ModRing>(ring: &R, n: &BigInt, sigma: u64, b1: u64) -> Opt
         }
     }
     let g = ring.gcd_with_n(&z);
+    if !g.is_one() {
+        return if &g == n { None } else { Some(g) };
+    }
+
+    // Stage 2: baby steps S[δ] = (2δ + 1)·Q with β[δ] = X·Z.
+    let d = plan.half_width;
+    let (x2, z2) = dbl(&x, &z);
+    let mut sx: Vec<R::El> = vec![x.clone()];
+    let mut sz: Vec<R::El> = vec![z.clone()];
+    let (x3, z3) = dadd(&x2, &z2, &x, &z, &x, &z);
+    sx.push(x3);
+    sz.push(z3);
+    for i in 2..d as usize {
+        let (nx, nz) = dadd(&sx[i - 1], &sz[i - 1], &x2, &z2, &sx[i - 2], &sz[i - 2]);
+        sx.push(nx);
+        sz.push(nz);
+    }
+    let beta: Vec<R::El> = sx.iter().zip(&sz).map(|(a, b)| ring.mul(a, b)).collect();
+    // Giant steps R = r·Q, r = B1 + 2D + 4D·i, advanced by W = 4D·Q (T = R − W).
+    let (wx, wz) = ladder(4 * d, &x, &z);
+    let (mut tx, mut tz) = ladder(b1 - 2 * d, &x, &z);
+    let (mut rx, mut rz) = ladder(b1 + 2 * d, &x, &z);
+    let mut acc = ring.embed(&BigInt::one());
+    for step in &plan.deltas {
+        let alpha = ring.mul(&rx, &rz);
+        for &delta in step {
+            let i = delta as usize;
+            // X_R·Z_S − X_S·Z_R = (X_R − X_S)(Z_R + Z_S) − X_R·Z_R + X_S·Z_S
+            let f = ring.mul(&ring.sub(&rx, &sx[i]), &ring.add(&rz, &sz[i]));
+            let f = ring.add(&ring.sub(&f, &alpha), &beta[i]);
+            acc = ring.mul(&acc, &f);
+        }
+        let (nx, nz) = dadd(&rx, &rz, &wx, &wz, &tx, &tz);
+        tx = std::mem::replace(&mut rx, nx);
+        tz = std::mem::replace(&mut rz, nz);
+    }
+    let g = ring.gcd_with_n(&acc);
     if g.is_one() || &g == n { None } else { Some(g) }
 }
 
 /// ECM `B1` schedule: `(B1, number of curves)` tuned for roughly
-/// 15 / 20 / 25 / 30-digit factors.
+/// 15 / 20 / 25 / 30-digit factors.  Each curve continues to
+/// `B2 = ECM_B2_FACTOR · B1` in stage 2.
 const ECM_SCHEDULE: [(u64, u64); 4] = [(2_000, 40), (11_000, 120), (50_000, 400), (250_000, 1_000)];
 
-/// rho + ECM driver over a concrete ring.
+/// `B2 / B1` for ECM stage 2.  Stage 2 costs about two multiplications per
+/// prime in `[B1, B2]`, stage 1 about sixteen per unit of `B1`; on 66- to
+/// 84-bit semiprimes (debug build, 40 per size) 50 beat 100 and 200.
+const ECM_B2_FACTOR: u64 = 50;
+
+/// Iteration budget of the rho pass that precedes ECM: a factor below
+/// about `2²⁴` is found within it (`~√p` steps); for larger ones a curve
+/// with stage 2 is cheaper.  Up to 0.28.0 three passes of `2¹⁴` steps
+/// each ran first: ~20 ms (debug build) spent in vain on every 65- to
+/// 84-bit semiprime whose factors exceed `2³⁰`.
+const RHO_PASS_BUDGET: u64 = 1 << 13;
+
+/// rho + ECM driver over a concrete ring: one budgeted Pollard–Brent rho
+/// pass (J. M. Pollard, BIT 15, 1975; R. P. Brent, BIT 20, 1980), then
+/// ECM curves with both stages along [`ECM_SCHEDULE`].
 fn split_with_ring<R: ModRing>(ring: &R, n: &BigInt) -> BigInt {
     // Cheap rho pass for small factors.
-    for seed in 1..=3u64 {
-        if let Some(d) = pollard_brent_ring(ring, n, seed, 1 << 14) {
-            return d;
-        }
+    if let Some(d) = pollard_brent_ring(ring, n, 1, RHO_PASS_BUDGET) {
+        return d;
     }
     let mut sigma = 6u64;
     for (b1, curves) in ECM_SCHEDULE {
+        let plan = EcmStage2::new(b1, ECM_B2_FACTOR * b1);
         for _ in 0..curves {
-            if let Some(d) = ecm_stage1_ring(ring, n, sigma, b1) {
+            if let Some(d) = ecm_curve_ring(ring, n, sigma, &plan) {
                 return d;
             }
             sigma += 1;
@@ -1284,13 +1398,58 @@ pub fn factorint(n: impl Into<BigInt>) -> Vec<(BigInt, u32)> {
 /// assert_eq!(c, &p * &q);
 /// ```
 pub fn factorint_bounded(n: &BigInt, max_bits: u64) -> (Vec<(BigInt, u32)>, BigInt) {
-    let mut n = n.abs();
+    let n = n.abs();
     if n <= BigInt::one() {
         return (vec![], BigInt::one());
     }
-    let mut factors: Vec<(BigInt, u32)> = Vec::new();
+    let (mut factors, n) = strip_small_primes(n);
 
-    // Trial division by the primes below 2^16 (cheap on machine words).
+    if n.is_one() {
+        return (factors, n);
+    }
+
+    // Any remainder below 2^32 has no prime factor below 2^16, so it is prime.
+    if n < two_pow_32() {
+        merge_factors(&mut factors, vec![(n, 1)]);
+        return (factors, BigInt::one());
+    }
+    // Known-cheap to factor: finish the job.
+    if n.bits() <= max_bits {
+        merge_factors(&mut factors, factorint(n));
+        return (factors, BigInt::one());
+    }
+
+    // Large remainder: only the cheap structural checks.
+    if isprime_big_internal(&n) {
+        merge_factors(&mut factors, vec![(n, 1)]);
+        return (factors, BigInt::one());
+    }
+    if let Some((base, e)) = perfect_power_big(&n) {
+        let (inner, cof) = factorint_bounded(&base, max_bits);
+        merge_factors(
+            &mut factors,
+            inner.into_iter().map(|(p, k)| (p, k * e)).collect(),
+        );
+        // An unfactored cofactor of the base contributes `cof^e`.
+        return (factors, cof.pow(e));
+    }
+    (factors, n)
+}
+
+/// `2³²` — below it an integer with no prime factor under
+/// [`TRIAL_DIVISION_LIMIT`] `= 2¹⁶` is `1` or prime.
+fn two_pow_32() -> BigInt {
+    BigInt::from((TRIAL_DIVISION_LIMIT as u64) * (TRIAL_DIVISION_LIMIT as u64))
+}
+
+/// Trial division of `n > 1` by the primes below [`TRIAL_DIVISION_LIMIT`]:
+/// `(factors, rest)` with `n = ∏ pᵢ^{eᵢ} · rest`, the `pᵢ` ascending.
+///
+/// `rest` is `1`, a prime below `2³²`, or has no prime factor below `2¹⁶`
+/// (on machine words the division stops once `p² > rest`, which leaves
+/// `rest` prime or `1`).
+fn strip_small_primes(mut n: BigInt) -> (Vec<(BigInt, u32)>, BigInt) {
+    let mut factors: Vec<(BigInt, u32)> = Vec::new();
     if let Some(mut small) = n.to_u64() {
         for &p in small_primes() {
             let p = p as u64;
@@ -1319,37 +1478,135 @@ pub fn factorint_bounded(n: &BigInt, max_bits: u64) -> (Vec<(BigInt, u32)>, BigI
             }
         }
     }
-
-    if n.is_one() {
-        return (factors, n);
-    }
-
-    // Any remainder below 2^32 has no prime factor below 2^16, so it is prime.
-    if n < BigInt::from((TRIAL_DIVISION_LIMIT as u64) * (TRIAL_DIVISION_LIMIT as u64)) {
-        merge_factors(&mut factors, vec![(n, 1)]);
-        return (factors, BigInt::one());
-    }
-    // Known-cheap to factor: finish the job.
-    if n.bits() <= max_bits {
-        merge_factors(&mut factors, factorint(n));
-        return (factors, BigInt::one());
-    }
-
-    // Large remainder: only the cheap structural checks.
-    if isprime_big_internal(&n) {
-        merge_factors(&mut factors, vec![(n, 1)]);
-        return (factors, BigInt::one());
-    }
-    if let Some((base, e)) = perfect_power_big(&n) {
-        let (inner, cof) = factorint_bounded(&base, max_bits);
-        merge_factors(
-            &mut factors,
-            inner.into_iter().map(|(p, k)| (p, k * e)).collect(),
-        );
-        // An unfactored cofactor of the base contributes `cof^e`.
-        return (factors, cof.pow(e));
-    }
     (factors, n)
+}
+
+/// The squarefree decomposition behind radical extraction: the same
+/// bounded work as [`factorint_bounded`], except that a piece is split
+/// only as far as its square part requires.
+///
+/// Returns `(parts, cofactor)` with `|n| = ∏ dᵢ^{eᵢ} · cofactor`, where the
+/// `dᵢ > 1` are squarefree, pairwise coprime and coprime to `cofactor`.
+/// Replacing every `dᵢ` by its prime factors gives exactly the factors of
+/// `factorint_bounded(n, max_bits)` (and the same `cofactor`), so the
+/// exponent of each such prime is the `eᵢ` of its piece: `n^{1/k}` loses
+/// the same `k`-th powers either way.
+///
+/// What is saved is the splitting of pieces that are provably squarefree:
+/// every prime left after trial division exceeds `2¹⁶`, so a composite
+/// piece of at most 48 bits has exactly two prime factors, distinct unless
+/// the piece is a perfect square.  A piece is otherwise split with the
+/// machinery of [`factorint`] (Pollard–Brent rho, then ECM).
+///
+/// Returns `(vec![], 1)` for `n ∈ {-1, 0, 1}`.
+pub(crate) fn squarefree_parts_bounded(n: &BigInt, max_bits: u64) -> (Vec<(BigInt, u32)>, BigInt) {
+    let n = n.abs();
+    if n <= BigInt::one() {
+        return (vec![], BigInt::one());
+    }
+    let (mut parts, rest) = strip_small_primes(n);
+    if rest.is_one() {
+        return (parts, rest);
+    }
+    let (more, cofactor) = rough_squarefree_parts_bounded(rest, max_bits);
+    parts.extend(more);
+    (parts, cofactor)
+}
+
+/// [`squarefree_parts_bounded`] of `r > 1` with no prime factor below
+/// `2¹⁶` (the tail of [`factorint_bounded`], case by case).
+fn rough_squarefree_parts_bounded(r: BigInt, max_bits: u64) -> (Vec<(BigInt, u32)>, BigInt) {
+    if r < two_pow_32() || r.bits() <= max_bits {
+        return (rough_squarefree_parts(r), BigInt::one());
+    }
+    // Large remainder: only the cheap structural checks.
+    if isprime_big_internal(&r) {
+        return (vec![(r, 1)], BigInt::one());
+    }
+    if let Some((base, e)) = perfect_power_big(&r) {
+        let (inner, cof) = rough_squarefree_parts_bounded(base, max_bits);
+        // An unfactored cofactor of the base contributes `cof^e`.
+        return (
+            inner.into_iter().map(|(d, k)| (d, k * e)).collect(),
+            cof.pow(e),
+        );
+    }
+    (vec![], r)
+}
+
+/// Pairwise coprime squarefree `(dᵢ, eᵢ)` with `r = ∏ dᵢ^{eᵢ}`, for `r > 1`
+/// with no prime factor below `2¹⁶`; see [`squarefree_parts_bounded`].
+fn rough_squarefree_parts(r: BigInt) -> Vec<(BigInt, u32)> {
+    let two32 = two_pow_32();
+    // Invariant: all pieces in `todo` and `done` are pairwise coprime and
+    // their product (with multiplicity) is `r`.
+    let mut todo: Vec<(BigInt, u32)> = vec![(r, 1)];
+    let mut done: Vec<(BigInt, u32)> = Vec::new();
+    while let Some((d, e)) = todo.pop() {
+        if d.is_one() {
+            continue;
+        }
+        if d < two32 || isprime_big_internal(&d) {
+            done.push((d, e));
+            continue;
+        }
+        if let Some((base, k)) = perfect_power_big(&d) {
+            todo.push((base, e * k));
+            continue;
+        }
+        // Composite, not a perfect square, every prime factor > 2^16: at
+        // most 48 bits leaves room for two of them, so `d = p·q`, p ≠ q.
+        if d.bits() <= 48 {
+            done.push((d, e));
+            continue;
+        }
+        let g = split_rough_composite(&d);
+        let h = &d / &g;
+        todo.extend(coprime_base(g, h).into_iter().map(|(c, k)| (c, e * k)));
+    }
+    done
+}
+
+/// A non-trivial factor of `d`: composite, not a perfect power, no prime
+/// factor below `2¹⁶`.
+fn split_rough_composite(d: &BigInt) -> BigInt {
+    if let Some(u) = d.to_u64() {
+        let mut seed = 1u64;
+        loop {
+            if let Some(g) = pollard_brent_u64(u, seed) {
+                return BigInt::from(g);
+            }
+            seed += 1;
+        }
+    }
+    match d.to_u128() {
+        Some(du) if du < (1u128 << 127) => split_with_ring(&Mont128::new(du), d),
+        _ => split_with_ring(&BigRing { n: d.clone() }, d),
+    }
+}
+
+/// Factor refinement of `a·b` (Bach, Driscoll and Shallit, "Factor
+/// refinement", J. Algorithms 15, 1993): pairwise coprime `cᵢ > 1` with
+/// `a·b = ∏ cᵢ^{kᵢ}`.
+fn coprime_base(a: BigInt, b: BigInt) -> Vec<(BigInt, u32)> {
+    let mut pieces: Vec<(BigInt, u32)> = vec![(a, 1), (b, 1)];
+    'refine: loop {
+        pieces.retain(|(c, _)| !c.is_one());
+        for i in 0..pieces.len() {
+            for j in i + 1..pieces.len() {
+                let g = pieces[i].0.gcd(&pieces[j].0);
+                if g.is_one() {
+                    continue;
+                }
+                let (ki, kj) = (pieces[i].1, pieces[j].1);
+                pieces[i].0 /= &g;
+                pieces[j].0 /= &g;
+                pieces.push((g, ki + kj));
+                continue 'refine;
+            }
+        }
+        return pieces;
+    }
 }
 
 /// Merge `more` (sorted or not) into the sorted `(prime, exponent)` list.
@@ -4479,6 +4736,75 @@ pub fn continued_fraction_reduce_periodic_ex(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn squarefree_parts_refine_the_bounded_factorisation() {
+        let p = |s: &str| BigInt::parse_bytes(s.as_bytes(), 10).unwrap_or_default();
+        let (a, b) = (bi(65_537), bi(4_194_319)); // primes > 2^16
+        let (c, d) = (p("1099511627791"), p("4398046511191")); // 41- and 43-bit primes
+        let big = p("633825300114223350089361919699"); // 100-bit composite
+        let cases = [
+            &a * &b * 12,                                 // 48-bit piece kept whole
+            &a * &a * &b,                                 // p^2 q
+            (&a * &b).pow(3) * 5,                         // perfect cube of a squarefree piece
+            &c * &d,                                      // 84 bits: split
+            &c * &c * &d * 9,                             // square factor inside 125 bits
+            &big * &big * 3,                              // over the bound: cofactor big^2
+            big.pow(3) * &a * &a,                         // perfect power of an unfactored base
+            p("170141183460469231731687303715884105727"), // 2^127 - 1
+        ];
+        for n in cases {
+            let (parts, cofactor) = squarefree_parts_bounded(&n, 84);
+            let (factors, cofactor_ref) = factorint_bounded(&n, 84);
+            assert_eq!(cofactor, cofactor_ref, "{n}");
+            let mut expanded: Vec<(BigInt, u32)> = Vec::new();
+            for (i, (d, e)) in parts.iter().enumerate() {
+                for (q, _) in parts.iter().skip(i + 1) {
+                    assert!(d.gcd(q).is_one(), "{n}: parts {d}, {q} share a factor");
+                }
+                for (prime, k) in factorint(d.clone()) {
+                    assert_eq!(k, 1, "{n}: part {d} is not squarefree");
+                    expanded.push((prime, *e));
+                }
+            }
+            expanded.sort();
+            assert_eq!(expanded, factors, "{n}");
+        }
+    }
+
+    #[test]
+    fn coprime_base_refines_a_product() {
+        // 12 · 18 = 2^3 · 3^3 → {2^3, 3^3} with 2 and 3 as bases.
+        let mut got = coprime_base(bi(12), bi(18));
+        got.sort();
+        assert_eq!(got, vec![(bi(2), 3), (bi(3), 3)]);
+        let mut got = coprime_base(bi(35), bi(35));
+        got.sort();
+        assert_eq!(got, vec![(bi(35), 2)]);
+        assert_eq!(coprime_base(bi(7), bi(11)).len(), 2);
+    }
+
+    #[test]
+    fn ecm_stage_2_finds_what_stage_1_misses() {
+        // 1099511627791 · 4398046511191 (41- and 43-bit primes).
+        let n = BigInt::from(1_099_511_627_791u64) * BigInt::from(4_398_046_511_191u64);
+        let ring = Mont128::new(n.to_u128().unwrap_or(0));
+        let stage1_only = EcmStage2::new(2_000, 2_000);
+        let with_stage2 = EcmStage2::new(2_000, 100_000);
+        let (mut hits1, mut hits2) = (0, 0);
+        for sigma in 6..46 {
+            if let Some(g) = ecm_curve_ring(&ring, &n, sigma, &stage1_only) {
+                assert!((&n % &g).is_zero() && !g.is_one() && g != n);
+                hits1 += 1;
+            }
+            if let Some(g) = ecm_curve_ring(&ring, &n, sigma, &with_stage2) {
+                assert!((&n % &g).is_zero() && !g.is_one() && g != n);
+                hits2 += 1;
+            }
+        }
+        // Stage 2 only adds primes: every stage-1 hit is kept, and more.
+        assert!(hits2 > hits1, "stage 1: {hits1}, stage 2: {hits2}");
+    }
 
     /// Shorthand for BigInt::from.
     fn bi(n: i64) -> BigInt {

@@ -368,6 +368,54 @@ fn evalf_value(arena: &Arena, expr: ExprId, digits: u32) -> Result<Complex, Symp
     with_f64_consts(|cc| evaluate_adaptive(arena, expr, digits, rm, cc))
 }
 
+/// [`evalf_value`] for the rest of the crate: the variable-free `expr`
+/// evaluated to `digits` correct significant digits, as an
+/// arbitrary-precision complex value.  An `Ok` value is finite.
+///
+/// # Errors
+///
+/// As [`evalf`].
+pub(crate) fn evalf_complex(
+    arena: &Arena,
+    expr: ExprId,
+    digits: u32,
+) -> Result<Complex, SymplexError> {
+    evalf_value(arena, expr, digits)
+}
+
+/// `|z|` rounded to an `f64`: `+∞` beyond the `f64` range, `0.0` below it;
+/// `None` for NaN.
+pub(crate) fn abs_to_f64(z: &Complex) -> Option<f64> {
+    let rm = RoundingMode::ToEven;
+    bigfloat_to_f64_rounded(&crate::base::bigcomplex::c_abs(z, 128, rm), rm).ok()
+}
+
+/// `|a − b|` rounded to an `f64` (see [`abs_to_f64`]), the difference taken
+/// exactly enough that two values agreeing to their last digit give a
+/// difference at that digit, not 0 or noise from a coarser rounding.
+pub(crate) fn distance_to_f64(a: &Complex, b: &Complex) -> Option<f64> {
+    let prec = [&a.0, &a.1, &b.0, &b.1]
+        .iter()
+        .filter_map(|x| x.mantissa_max_bit_len())
+        .max()
+        .unwrap_or(128)
+        .max(128)
+        + 64;
+    abs_to_f64(&crate::base::bigcomplex::c_sub(
+        a,
+        b,
+        prec,
+        RoundingMode::ToEven,
+    ))
+}
+
+/// Is `z` real to `digits` digits — its imaginary part zero or negligible
+/// next to its real part, the criterion by which [`evalf`] prints a real
+/// number?
+pub(crate) fn is_real_to_digits(z: &Complex, digits: u32) -> bool {
+    is_negligible_part(&z.1, &z.0, digits)
+}
+
 /// One part of a complex result as an `f64`: `0.0` when it is negligible
 /// next to the other part (the criterion `format_complex` uses to print a
 /// real or a pure-imaginary number), otherwise the correctly rounded

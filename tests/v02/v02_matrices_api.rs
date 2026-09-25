@@ -243,6 +243,14 @@ fn jordan_form_two_nilpotent_blocks() {
 /// Irreducible cubic characteristic polynomial (casus irreducibilis):
 /// the Cardano forms would make `P⁻¹` swell without bound, so the eigen
 /// family must answer with `RootOf` values — quickly.
+///
+/// "Quickly" is checked by what makes it quick, not by the wall clock: the
+/// eigenvalues are `RootOf`s and the entries of `P` and `P⁻¹` stay small
+/// (at most 16 and 54 operations in 0.28).  The 2 s bound this replaces
+/// failed at 2.88 s under load; 0.6 s alone in a debug build, of which
+/// 0.38 s was the check `(PDP⁻¹ − A)ᵢⱼ → f64`, whose exact zeros send
+/// the adaptive evaluator to its precision cap (the entries are now
+/// evaluated one by one: 0.1 s).  A 30 s bound remains as a hang guard.
 #[test]
 fn cubic_eigenvalues_use_rootof_and_finish_fast() {
     let ctx = Context::new();
@@ -258,15 +266,24 @@ fn cubic_eigenvalues_use_rootof_and_finish_fast() {
         );
     }
     let Diagonalization { p, d } = m.diagonalize().unwrap();
-    let back = &(&p * &d) * &p.inv().unwrap();
+    let p_inv = p.inv().unwrap();
+    for (name, mat, max_ops) in [("P", &p, 40), ("P⁻¹", &p_inv, 150)] {
+        for i in 0..3 {
+            for j in 0..3 {
+                let ops = mat.get(i, j).count_ops();
+                assert!(ops <= max_ops, "{name}[{i},{j}] swelled: {ops} ops");
+            }
+        }
+    }
+    let back = &(&p * &d) * &p_inv;
     for i in 0..3 {
         for j in 0..3 {
-            let v = (back.get(i, j) - m.get(i, j)).eval_f64().unwrap();
+            let v = back.get(i, j).eval_f64().unwrap() - m.get(i, j).eval_f64().unwrap();
             assert!(v.abs() < 1e-9, "P D P⁻¹ ≠ A at ({i},{j}): {v}");
         }
     }
     assert!(
-        start.elapsed() < time_budget(2),
+        start.elapsed() < time_budget(30),
         "took {:?}",
         start.elapsed()
     );

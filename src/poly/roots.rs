@@ -318,7 +318,56 @@ pub(crate) fn aberth_roots(poly: &Poly, prec: usize, max_iter: usize) -> Vec<Com
     if poly.degree().is_none_or(|d| d == 0) {
         return vec![];
     }
+    if let Some(roots) = ABERTH_MEMO.with(|m| m.borrow_mut().get(poly, prec, max_iter)) {
+        return roots;
+    }
+    let roots = aberth_roots_uncached(poly, prec, max_iter);
+    ABERTH_MEMO.with(|m| m.borrow_mut().put(poly, prec, max_iter, &roots));
+    roots
+}
 
+/// How many `(polynomial, precision)` root sets [`ABERTH_MEMO`] keeps.
+const ABERTH_MEMO_CAPACITY: usize = 8;
+
+/// The last few results of [`aberth_roots`], most recent first.
+///
+/// The same polynomial is solved over and over: every `RootOf(p, k)` node
+/// is evaluated by computing all roots of `p` and picking the `k`-th, and
+/// a `RootSum` is re-solved at every point it is evaluated at.  The two
+/// self-checks of `∫ atan(√x − x⁹) dx` evaluate its degree-36 `RootSum`
+/// at each sample point: 13.0 s of 13.5 s in a debug build without the
+/// memo, 1.8 s with it.  The result is a pure function of the key, so a
+/// hit returns exactly what a recomputation would.
+struct AberthMemo {
+    entries: Vec<(Poly, usize, usize, Vec<Complex>)>,
+}
+
+impl AberthMemo {
+    fn get(&mut self, poly: &Poly, prec: usize, max_iter: usize) -> Option<Vec<Complex>> {
+        let pos = self
+            .entries
+            .iter()
+            .position(|(p, pr, it, _)| *pr == prec && *it == max_iter && p == poly)?;
+        let entry = self.entries.remove(pos);
+        let roots = entry.3.clone();
+        self.entries.insert(0, entry);
+        Some(roots)
+    }
+
+    fn put(&mut self, poly: &Poly, prec: usize, max_iter: usize, roots: &[Complex]) {
+        self.entries.truncate(ABERTH_MEMO_CAPACITY - 1);
+        self.entries
+            .insert(0, (poly.clone(), prec, max_iter, roots.to_vec()));
+    }
+}
+
+thread_local! {
+    /// Per-thread memo of [`aberth_roots`] (see [`AberthMemo`]).
+    static ABERTH_MEMO: std::cell::RefCell<AberthMemo> =
+        const { std::cell::RefCell::new(AberthMemo { entries: Vec::new() }) };
+}
+
+fn aberth_roots_uncached(poly: &Poly, prec: usize, max_iter: usize) -> Vec<Complex> {
     let rm = RoundingMode::None;
     let wp = prec + 64; // working precision with guard bits
 

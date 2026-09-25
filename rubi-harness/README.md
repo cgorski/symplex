@@ -33,8 +33,9 @@ Most answers come back fast (usually unevaluated).
 | `--check-timeout SECS` | limit for verifying one entry (default 30) |
 | `--mem-limit-mb MB` | resident memory limit per worker process (default 4000) |
 | `--chunk N` | entries per worker process (default 25) |
-| `--out DIR` | output directory (default `results/`, `results/only/` with `--only`, `results/selftest/` with `--selftest`) |
+| `--out DIR` | output directory (default `results/`, `results/only/` with `--only`, `results/selftest/` with `--selftest`, `results/negative/` with `--negative-params`) |
 | `--selftest` | judge Rubi's *optimal* antiderivatives instead of symplex's (validates the translation and the checker) |
+| `--negative-params` | check every verified answer that has parameters a second time with every parameter value negated (`a=-6/5, b=-3/4, …`); a mismatch there where the integrand is real counts as *wrong*, and `entries.tsv` records the second verdict as the reason (`negated parameters: verified`).  Not with `--update` |
 | `--scan` | translate and parse every integrand (no integration) and print statistics |
 | `--probe EXPR [VAR]` | run one Maxima expression through the whole pipeline, verbosely; with `RUST_LOG` set it logs to stderr (`RUST_LOG=symplex::stage=debug` lists the steps that took ≥ 250 ms or created ≥ 200,000 nodes, see CONTRIBUTING.md) |
 
@@ -69,7 +70,8 @@ Most answers come back fast (usually unevaluated).
 4. **Check** (`src/check.rs`).  Every free symbol other than `x` gets a fixed
    generic rational: `a=6/5, b=3/4, c=5/3, d=2/7, e=11/9, f=13/6, g=5/8,
    h=9/7, i=8/11, m=4/3, n=5/7, p=3/11, q=2/13, A=19/10, B=23/12, …` (see
-   `table_value`).  No value is a sample point.  Then `F′` (symplex's
+   `table_value`; `--negative-params` adds a second set with every value
+   negated).  No value is a sample point.  Then `F′` (symplex's
    `diff`) and `f` are evaluated at `x ∈ {1/3, 7/5, 13/4, −5/7, −13/4}`
    with `eval_decimal(30)`, as complex numbers with principal branches.
    They are compared with relative tolerance `1e-8`.  A mismatch is

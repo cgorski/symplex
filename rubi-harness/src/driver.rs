@@ -31,6 +31,8 @@ pub struct Config {
     pub chunk: usize,
     pub mem_limit_mb: u64,
     pub selftest: bool,
+    /// Also check every answer with the parameter values negated.
+    pub negative_params: bool,
 }
 
 /// One entry's result.
@@ -264,6 +266,9 @@ fn run_chunk(
             .arg(end.to_string());
         if cfg.selftest {
             cmd.arg("--selftest");
+        }
+        if cfg.negative_params {
+            cmd.arg("--negative-params");
         }
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())

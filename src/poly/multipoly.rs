@@ -1322,8 +1322,21 @@ impl<O: MonomialOrd> MultiPoly<O> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Compute the S-polynomial of f and g.
+///
+/// # Panics
+///
+/// Panics if `f` and `g` have different numbers of variables (as
+/// [`MultiPoly::sub`] does).  With overflow checks on (debug builds), also
+/// if an exponent of the result exceeds `u32::MAX`: with `L` the lcm of the
+/// leading monomials `F` of `f` and `G` of `g`, some term of `f` has
+/// `eᵢ + Lᵢ − Fᵢ > u32::MAX` in a variable `i`, or likewise for `g`
+/// (without overflow checks the exponent wraps).
 pub fn s_polynomial<O: MonomialOrd>(f: &MultiPoly<O>, g: &MultiPoly<O>) -> MultiPoly<O> {
-    assert_eq!(f.num_vars(), g.num_vars());
+    assert_eq!(
+        f.num_vars(),
+        g.num_vars(),
+        "s_polynomial: incompatible variable counts"
+    );
     // S(f, 0) = S(0, g) = 0: a zero operand has no leading term.
     let (Some((lm_f, lc_f)), Some((lm_g, lc_g))) = (f.leading_term(), g.leading_term()) else {
         return MultiPoly::zero(f.num_vars());

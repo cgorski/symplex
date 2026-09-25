@@ -29,6 +29,7 @@ their documentation:
 |---|---|---|
 | `src/calculus/gruntz.rs` (`SubsSet`, the sign and MRV routines) | `sympy/series/gruntz.py` | D. Gruntz, *On Computing Limits in a Symbolic Manipulation System*, PhD thesis, ETH Zürich, 1996 |
 | `src/calculus/risch/hermite.rs` | `hermite_reduce` in `sympy/integrals/risch.py` | M. Bronstein, *Symbolic Integration I*, §2.3 |
+| `src/domains/ntheory.rs` (`EcmStage2`, ECM stage 2 in `ecm_curve_ring`) | stage 2 of `_ecm_one_factor` in `sympy/ntheory/ecm.py` | P. L. Montgomery, *Math. Comp.* 48 (1987); R. Crandall, C. Pomerance, *Prime Numbers*, 2nd ed., §7.4.2 |
 | `src/domains/exact_matrix.rs` (LLL reduction order and rounding) | `DomainMatrix.lll` / `_ddm_lll` | A. K. Lenstra, H. W. Lenstra, L. Lovász, *Math. Ann.* 261 (1982) |
 | `src/plotting/textplot.rs` | `sympy/plotting/textplot.py` | — |
 | `src/transforms/pattern.rs` (`condition_pow_pow`) | the branch condition of `Pow._eval_power` | the principal branch of `z^a` |

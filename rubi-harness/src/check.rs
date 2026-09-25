@@ -103,6 +103,9 @@ pub struct Env {
     pub desc: String,
     names: BTreeSet<String>,
     pool_next: usize,
+    /// `1` for the table values, `-1` for their negatives
+    /// (`--negative-params`).
+    sign: i64,
 }
 
 impl Env {
@@ -112,7 +115,23 @@ impl Env {
             desc: String::new(),
             names: BTreeSet::new(),
             pool_next: 0,
+            sign: 1,
         }
+    }
+
+    /// The second parameter set: every value of [`table_value`] and
+    /// [`POOL`] negated.  Answers that are right only for positive
+    /// parameters (`√a` for `√(a²)`, `ln a` for `ln|a|`, a branch chosen
+    /// for `a > 0`) fail here.
+    pub fn negated() -> Env {
+        Env {
+            sign: -1,
+            ..Env::new()
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pairs.is_empty()
     }
 
     /// Add every free symbol of `exprs` other than `x` that is not bound yet.
@@ -137,6 +156,7 @@ impl Env {
                 self.pool_next += 1;
                 v
             });
+            let p = self.sign * p;
             if !self.desc.is_empty() {
                 self.desc.push_str(", ");
             }
@@ -401,6 +421,22 @@ mod tests {
                 .iter()
                 .all(PointReport::failed)
         );
+    }
+
+    #[test]
+    fn the_negated_set_catches_an_answer_right_only_for_positive_parameters() {
+        let ctx = Context::new();
+        let x = ctx.symbol("x");
+        let f = ctx.parse("sqrt(a^2)").unwrap();
+        let big_f = ctx.parse("a*x").unwrap();
+        let mut pos = Env::new();
+        pos.extend(&ctx, &x, &[&f, &big_f]);
+        let mut neg = Env::negated();
+        neg.extend(&ctx, &x, &[&f, &big_f]);
+        assert_eq!(neg.desc, "a=-6/5");
+        let judge = |env: &Env| verdict(&check(&ctx, &f, &big_f, &x, env), false);
+        assert_eq!(judge(&pos), Status::Verified);
+        assert_eq!(judge(&neg), Status::Wrong);
     }
 
     #[test]

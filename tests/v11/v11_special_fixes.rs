@@ -73,17 +73,41 @@ fn incomplete_gamma_at_zero_refuses_nonpositive_s() {
 // 2. Symbolic-parameter orthogonal polynomials
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Polynomial, not exponential, time in the degree — checked by the growth
+/// from `n = 7` to `n = 14`, both measured here, instead of a 5 s
+/// wall-clock bound (0.7 s alone in a debug build; it failed under load).
+/// The work tracks the output, `C(n+3, 3)` monomials in `a`, `b`, `x`, each
+/// gathered from up to `n + 1` summands: `t(14)/t(7) ≈ 13` (`~n^3.7`).
+/// Distributing the `2n`-factor product at once, the bug this guards
+/// against, grows like `4^n` (`t(14)/t(7) ≈ 16 000`).
+///
+/// The reference is a block of six `n = 7` expansions before and after the
+/// `n = 14` one, of about the same duration, so that both see the same
+/// machine load (a single short run beside one long one did not: 64
+/// concurrent test processes on 16 cores slowed the long run 6×, the short
+/// ones barely).  `t(14)` is ~2.2 blocks; the bound, 10 blocks, admits
+/// growth up to `~n^5.9`.
 #[test]
 fn jacobi_symbolic_parameters_expand_in_polynomial_time() {
-    let ctx = Context::new();
-    let (x, a, b) = (ctx.symbol("x"), ctx.symbol("a"), ctx.symbol("b"));
-    let t = Instant::now();
-    let p14 = x.jacobi(&ctx.int(14), &a, &b).eval();
-    let elapsed = t.elapsed();
+    const BLOCK: u32 = 6;
+    // Each expansion on a fresh context, so that none reuses another's nodes.
+    let expand = |n: i64| {
+        let ctx = Context::new();
+        let (x, a, b) = (ctx.symbol("x"), ctx.symbol("a"), ctx.symbol("b"));
+        let t = Instant::now();
+        let p = x.jacobi(&ctx.int(n), &a, &b).eval();
+        (t.elapsed(), p)
+    };
+    let block_of_7 = || -> Duration { (0..BLOCK).map(|_| expand(7).0).sum() };
+    let before = block_of_7();
+    let (t14, p14) = expand(14);
+    let block = (before + block_of_7()) / 2;
     assert!(
-        elapsed < Duration::from_secs(5),
-        "jacobi(14, a, b, x).eval() took {elapsed:?}"
+        t14 < block * 10,
+        "jacobi(n, a, b, x).eval(): n = 14 took {t14:?}, {BLOCK} × n = 7 {block:?} (expected ~2.2×)"
     );
+    let ctx = p14.context();
+    let (x, a, b) = (ctx.symbol("x"), ctx.symbol("a"), ctx.symbol("b"));
     assert!(
         !format!("{p14}").starts_with("jacobi("),
         "not expanded: {p14}"

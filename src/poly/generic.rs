@@ -934,6 +934,10 @@ impl<C: Field> GenPoly<C> {
             return Ring::mul(&sign, &Self::resultant(b, a));
         }
 
+        if let Some(res) = C::poly_resultant(&a.coeffs, &b.coeffs) {
+            return res;
+        }
+
         let r = a.rem(b);
         if r.is_zero() {
             return C::zero();
