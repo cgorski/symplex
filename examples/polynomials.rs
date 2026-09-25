@@ -104,7 +104,7 @@ fn main() -> Result<(), SymplexError> {
         .collect::<Result<_, _>>()?;
     println!("monomial basis: {basis:?}");
     println!("coefficient matrix (rows = monomials, cols = [h1, h2]):\n{m}");
-    match linsolve_matrix(&m, &Matrix::col_vector(rhs))? {
+    match linsolve_matrix(&m, &Matrix::col_vector(rhs).unwrap())? {
         LinearSolution::Unique(pairs) => {
             let lam: Vec<String> = pairs.iter().map(|(_, v)| v.to_string()).collect();
             println!("(x + 1)² = {}·(x + 1) + {}·(x² − 1)", lam[0], lam[1]);

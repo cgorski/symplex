@@ -131,7 +131,7 @@ fn cholesky_not_positive_definite() {
 fn cholesky_identity() {
     // I₃ → L = I₃
     let ctx = Context::new();
-    let eye = Matrix::identity(&ctx, 3);
+    let eye = Matrix::identity(&ctx, 3).unwrap();
     let l = eye.cholesky().expect("Cholesky of identity should succeed");
 
     // L should be the identity
@@ -222,8 +222,8 @@ fn riccati_residual_setup() {
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d).unwrap();
 
-    let p = Matrix::identity(&ctx, 2);
-    let q = Matrix::identity(&ctx, 2);
+    let p = Matrix::identity(&ctx, 2).unwrap();
+    let q = Matrix::identity(&ctx, 2).unwrap();
     let r = Matrix::new(vec![vec![ctx.int(1)]]).unwrap();
 
     let residual = ss
@@ -370,8 +370,8 @@ fn ackermann_multi_input_returns_err() {
         vec![ctx.int(0), ctx.int(1)],
     ])
     .unwrap();
-    let c = Matrix::identity(&ctx, 2);
-    let d = Matrix::zeros(&ctx, 2, 2);
+    let c = Matrix::identity(&ctx, 2).unwrap();
+    let d = Matrix::zeros(&ctx, 2, 2).unwrap();
     let ss = StateSpace::new(a, b, c, d).unwrap();
 
     let desired_poles = vec![ctx.int(-1), ctx.int(-2)];

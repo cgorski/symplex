@@ -63,8 +63,8 @@ fn main() {
         q.is_orthogonal(),
         q.matmul(&r).unwrap().simplify().equals(&m)
     );
-    let v1 = Matrix::col_vector(vec![ctx.int(1), ctx.int(1), ctx.int(0)]);
-    let v2 = Matrix::col_vector(vec![ctx.int(1), ctx.int(0), ctx.int(1)]);
+    let v1 = Matrix::col_vector(vec![ctx.int(1), ctx.int(1), ctx.int(0)]).unwrap();
+    let v2 = Matrix::col_vector(vec![ctx.int(1), ctx.int(0), ctx.int(1)]).unwrap();
     let basis = gram_schmidt(&[v1, v2], true).unwrap();
     println!("Gram–Schmidt of (1,1,0), (1,0,1):");
     for b in &basis {
@@ -196,6 +196,7 @@ fn main() {
     println!(
         "‖(3, 4)‖₃ = {}",
         Matrix::col_vector(vec![ctx.int(3), ctx.int(4)])
+            .unwrap()
             .norm_p(&ctx.int(3))
             .unwrap()
     );
@@ -210,7 +211,7 @@ fn main() {
         wronskian(&[&x.exp(), &(&x * 2).exp()], &x).simplify()
     );
     let a = matrix![ctx, [1, 1], [1, 2], [1, 3]];
-    let b = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(2)]);
+    let b = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(2)]).unwrap();
     println!(
         "least-squares fit of (1,1),(2,2),(3,2): {}",
         a.solve_least_squares(&b).unwrap().transpose()
@@ -237,7 +238,7 @@ fn main() {
     );
     println!(
         "block_diag(m, I₁) = {}",
-        Matrix::block_diag(&[&m, &Matrix::identity(&ctx, 1)]).unwrap()
+        Matrix::block_diag(&[&m, &Matrix::identity(&ctx, 1).unwrap()]).unwrap()
     );
     println!("m ∘ m (Hadamard) = {}", m.hadamard(&m).unwrap());
     println!(

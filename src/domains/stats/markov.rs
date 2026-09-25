@@ -57,14 +57,15 @@ fn failed(op: &'static str, reason: impl Into<String>) -> SymplexError {
 /// Square matrix product without the (impossible here) shape error.
 fn mul_square(a: &QMatrix, b: &QMatrix) -> QMatrix {
     let n = a.nrows();
-    QMatrix::from_fn(n, n, |i, j| {
+    // `n` ≥ 1: `a` is a matrix.
+    QMatrix::from_fn_unchecked(n, n, |i, j| {
         (0..n).fold(Q::zero(), |acc, k| acc + a.get(i, k) * b.get(k, j))
     })
 }
 
-/// The `rows × cols` submatrix picked out by two index lists (both
-/// non-empty).
-fn pick(m: &QMatrix, rows: &[usize], cols: &[usize]) -> QMatrix {
+/// The `rows × cols` submatrix picked out by two index lists (`Err` if
+/// either is empty).
+fn pick(m: &QMatrix, rows: &[usize], cols: &[usize]) -> Result<QMatrix, SymplexError> {
     QMatrix::from_fn(rows.len(), cols.len(), |i, j| {
         m.get(rows[i], cols[j]).clone()
     })
@@ -201,7 +202,7 @@ impl MarkovChain {
     /// # Ok::<(), SymplexError>(())
     /// ```
     pub fn n_step(&self, k: usize) -> QMatrix {
-        let mut result = QMatrix::identity(self.n_states());
+        let mut result = QMatrix::identity_unchecked(self.n_states());
         let mut base = self.p.clone();
         let mut e = k;
         while e > 0 {
@@ -411,9 +412,9 @@ impl MarkovChain {
         self.closed_classes()
             .iter()
             .filter_map(|class| {
-                let sub = pick(&self.p, class, class);
+                let sub = pick(&self.p, class, class).ok()?;
                 let m = class.len();
-                let a = sub.transpose().sub(&QMatrix::identity(m)).ok()?;
+                let a = sub.transpose().sub(&QMatrix::identity(m).ok()?).ok()?;
                 let basis = a.nullspace();
                 let v = basis.first()?.col(0);
                 let total = v.iter().fold(Q::zero(), |acc, x| acc + x);
@@ -528,8 +529,8 @@ impl MarkovChain {
     pub fn fundamental_matrix(&self) -> Result<QMatrix, SymplexError> {
         const OP: &str = "MarkovChain::fundamental_matrix";
         let (transient, _) = self.absorbing_split(OP)?;
-        let q = pick(&self.p, &transient, &transient);
-        QMatrix::identity(transient.len())
+        let q = pick(&self.p, &transient, &transient)?;
+        QMatrix::identity(transient.len())?
             .sub(&q)?
             .inv()
             .map_err(|e| failed(OP, format!("I − Q is singular: {e}")))
@@ -547,7 +548,7 @@ impl MarkovChain {
         let (transient, absorbing) =
             self.absorbing_split("MarkovChain::absorption_probabilities")?;
         let n = self.fundamental_matrix()?;
-        let r = pick(&self.p, &transient, &absorbing);
+        let r = pick(&self.p, &transient, &absorbing)?;
         n.matmul(&r)
     }
 
@@ -634,7 +635,7 @@ impl MarkovChain {
             return Ok(h);
         }
         // (I − P_UU) h_U = P_UT · 1
-        let a = QMatrix::identity(unknown.len()).sub(&pick(&self.p, &unknown, &unknown))?;
+        let a = QMatrix::identity(unknown.len())?.sub(&pick(&self.p, &unknown, &unknown)?)?;
         let b = QMatrix::col_vector(
             unknown
                 .iter()
@@ -644,7 +645,7 @@ impl MarkovChain {
                         .fold(Q::zero(), |acc, &t| acc + self.p.get(i, t))
                 })
                 .collect(),
-        );
+        )?;
         let sol = a.solve(&b).map_err(|e| {
             failed(
                 op,
@@ -702,8 +703,8 @@ impl MarkovChain {
             return Ok(k);
         }
         // (I − P_UU) k_U = 1
-        let a = QMatrix::identity(unknown.len()).sub(&pick(&self.p, &unknown, &unknown))?;
-        let b = QMatrix::col_vector(vec![Q::one(); unknown.len()]);
+        let a = QMatrix::identity(unknown.len())?.sub(&pick(&self.p, &unknown, &unknown)?)?;
+        let b = QMatrix::col_vector(vec![Q::one(); unknown.len()])?;
         let sol = a
             .solve(&b)
             .map_err(|e| failed(OP, format!("the hitting-time system is singular: {e}")))?;
@@ -733,8 +734,8 @@ impl MarkovChain {
         }
         let pi = self.stationary_distribution()?;
         let n = self.n_states();
-        let w = QMatrix::from_fn(n, n, |_, j| pi[j].clone());
-        QMatrix::identity(n)
+        let w = QMatrix::from_fn(n, n, |_, j| pi[j].clone())?;
+        QMatrix::identity(n)?
             .sub(&self.p)?
             .add(&w)?
             .inv()
@@ -755,13 +756,13 @@ impl MarkovChain {
         let z = self.fundamental_matrix_ergodic()?;
         let pi = self.stationary_distribution()?;
         let n = self.n_states();
-        Ok(QMatrix::from_fn(n, n, |i, j| {
+        QMatrix::from_fn(n, n, |i, j| {
             if i == j || pi[j].is_zero() {
                 Q::zero()
             } else {
                 (z.get(j, j) - z.get(i, j)) / &pi[j]
             }
-        }))
+        })
     }
 
     /// The mean recurrence times `1/πᵢ` of an irreducible chain.

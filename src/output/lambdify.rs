@@ -1009,10 +1009,11 @@ impl<'a> Emitter<'a> {
                 return Err(self.unsupported("InverseLaplaceTransform"));
             }
             ExprNode::Residue(_, _, _) => return Err(self.unsupported("Residue")),
-            ExprNode::RootOf(_, _) => return Err(self.unsupported("RootOf")),
+            ExprNode::RootOf(_, _, _) => return Err(self.unsupported("RootOf")),
             ExprNode::RootSum(_, _, _) => return Err(self.unsupported("RootSum")),
             ExprNode::DSolve(_, _, _) => return Err(self.unsupported("DSolve")),
             ExprNode::ConditionSet(_, _) => return Err(self.unsupported("ConditionSet")),
+            ExprNode::Subs(_, _, _) => return Err(self.unsupported("Subs")),
             ExprNode::EmptySet => return Err(self.unsupported("EmptySet")),
             ExprNode::UniversalSet => return Err(self.unsupported("UniversalSet")),
             ExprNode::Interval(_, _, _) => return Err(self.unsupported("Interval")),

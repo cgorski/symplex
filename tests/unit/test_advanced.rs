@@ -11,8 +11,8 @@ fn matrix_identity_times_vector() {
     use symplex::matrix::Matrix;
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let id = Matrix::identity(&ctx, 2);
-    let v = Matrix::col_vector(vec![x.clone(), y.clone()]);
+    let id = Matrix::identity(&ctx, 2).unwrap();
+    let v = Matrix::col_vector(vec![x.clone(), y.clone()]).unwrap();
     let result = id.matmul(&v).unwrap();
     assert_eq!(format!("{}", result.get(0, 0)), "x");
     assert_eq!(format!("{}", result.get(1, 0)), "y");

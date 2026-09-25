@@ -38,7 +38,7 @@ fn main() {
 
     // ── 2. The Hilbert matrix, exactly ──────────────────────────────────
     for n in [4usize, 8, 12] {
-        let h = QMatrix::from_fn(n, n, |i, j| q(1, (i + j + 1) as i64));
+        let h = QMatrix::from_fn(n, n, |i, j| q(1, (i + j + 1) as i64)).unwrap();
         let det = h.det().unwrap();
         let hinv = h.inv().unwrap();
         assert!(hinv.is_integer(), "the inverse Hilbert matrix is integral");
@@ -132,7 +132,7 @@ fn main() {
             .wrapping_add(1442695040888963407);
         ((seed >> 33) % 19) as i64 - 9
     };
-    let qm = QMatrix::from_fn(n, n, |_, _| q(next(), 1));
+    let qm = QMatrix::from_fn(n, n, |_, _| q(next(), 1)).unwrap();
     let mm = qm.to_matrix(&ctx);
     let t0 = Instant::now();
     let inv_q = qm.inv().unwrap();

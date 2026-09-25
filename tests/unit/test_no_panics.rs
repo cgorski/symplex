@@ -46,18 +46,12 @@ const ASSERT_ALLOWLIST: &[(&str, usize)] = &[
     // `impl Sum`/`Product for Ex` on an empty iterator (no context to build 0/1 in; `Context::sum`/`product`
     // take one).
     ("api/expr_ops.rs", 4),
-    // Risch internals: a zero denominator handed in by the caller of the public reduction entry points.
-    ("calculus/risch/hermite.rs", 1),
-    ("calculus/risch/rde.rs", 2),
-    ("calculus/risch/rothstein_trager.rs", 1),
-    ("calculus/risch/tower_integrate.rs", 2),
-    // Exact matrices: dimensions, index bounds, conformant shapes.
-    ("domains/exact_matrix.rs", 10),
-    // `Matrix`: zero dimensions (`zeros`, `identity`, `from_fn`, `row_vector`, `col_vector`, `diag`) and index
-    // bounds (`get`, `get_mut`, `row`, `col`; `try_get` is the checked sibling).
-    ("domains/matrix.rs", 10),
-    // Plot sampling: interval precondition.
-    ("plotting/sampling.rs", 1),
+    // Exact matrices: index bounds in `get`, `get_mut` (the bodies of `m[(i, j)]`), `row`, `col`; the checked
+    // siblings are `try_get`, `try_get_mut`, `try_row`, `try_col`.  The constructors return `Result` (0.29).
+    ("domains/exact_matrix.rs", 4),
+    // `Matrix`: index bounds in `get`, `get_mut` (the bodies of `m[(i, j)]`), `row`, `col`; the checked siblings are
+    // `try_get`, `try_get_mut`, `try_row`, `try_col`.  The constructors return `Result` (0.29).
+    ("domains/matrix.rs", 4),
     // `MultiPoly`: variable-count agreement and exponent overflow in `add`/`sub`/`mul`/`pow` (the bodies of the
     // `+`/`-`/`*` operators, which cannot return an error; `try_add`/`try_sub`/`try_mul`/`try_pow` return `None`),
     // variable index in `var`/`degree_in`/`partial_derivative`/`eval_var`/`substitute`, and `s_polynomial`.

@@ -122,13 +122,20 @@ fn integrate_rational(a: &Poly, d: &Poly) -> RischResult {
     }
 
     // Phase 1: Hermite reduction.
-    let hr = super::hermite::hermite_reduce(a, d);
+    // `d` is nonzero (checked above), and so is Hermite's square-free
+    // denominator.
+    let Some(hr) = super::hermite::hermite_reduce(a, d) else {
+        return RischResult::Failed("zero denominator".into());
+    };
 
     // Phase 2: Rothstein-Trager on the square-free remainder.
     let log_result = if hr.h_numer.is_zero() {
         super::rothstein_trager::LogPartResult { terms: vec![] }
     } else {
-        super::rothstein_trager::logarithmic_part(&hr.h_numer, &hr.h_denom)
+        let Some(lr) = super::rothstein_trager::logarithmic_part(&hr.h_numer, &hr.h_denom) else {
+            return RischResult::Failed("zero square-free denominator".into());
+        };
+        lr
     };
 
     RischResult::Elementary {
@@ -173,11 +180,15 @@ fn try_tower_rational_path(
     }
 
     // Tower Hermite reduction.
-    let hr = tower_hermite_reduce(&n_gp, &d_gp);
+    let Some(hr) = tower_hermite_reduce(&n_gp, &d_gp) else {
+        return RischResult::Failed("zero denominator in tower rational path".into());
+    };
 
     // Tower Rothstein-Trager on the square-free remainder.
     if !hr.h_numer.is_zero() {
-        let rt = tower_logarithmic_part(&hr.h_numer, &hr.h_denom);
+        let Some(rt) = tower_logarithmic_part(&hr.h_numer, &hr.h_denom) else {
+            return RischResult::Failed("zero square-free denominator in tower path".into());
+        };
         if rt.is_non_elementary {
             return RischResult::NonElementary;
         }

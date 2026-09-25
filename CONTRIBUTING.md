@@ -153,7 +153,7 @@ depend on layers below them but should not reach upward.
 
 ```
 src/
-├── base/         Expression nodes (node.rs, 92 variants), arena (hash-consing), symbol.rs (name
+├── base/         Expression nodes (node.rs, 93 variants), arena (hash-consing), symbol.rs (name
 │                 interning), tree traversal (walk.rs), canonicalization, assumptions, sort keys,
 │                 compaction, numeric.rs (exact f64 ↔ rational, the exact rational `Q`),
 │                 bigcomplex.rs (BigFloat complex pairs), bernoulli.rs, complex.rs (Complex64
@@ -285,7 +285,7 @@ extending the allowlist.
 
 | Type | Location | Purpose |
 |------|----------|---------|
-| `ExprNode` | `src/base/node.rs` | The expression tree — 92 variants (Add, Mul, Sin, Integral, Re/Im/Conjugate/Arg, Zeta, Polygamma, RootOf, RootSum, Interval, etc.) |
+| `ExprNode` | `src/base/node.rs` | The expression tree — 93 variants (Add, Mul, Sin, Integral, Re/Im/Conjugate/Arg, Zeta, Polygamma, RootOf, RootSum, Interval, etc.) |
 | `Arena` | `src/base/arena.rs` | Hash-consed expression storage. All nodes live here. |
 | `ExprId` | `src/base/node.rs` | A `u32` index into the arena. This is how expressions are referenced internally. |
 | `Context` | `src/api/context.rs` | User-facing entry point. Owns an arena + assumption cache. |
@@ -395,9 +395,11 @@ internal invariants.
 
 A second, shrinking category is **runtime `assert!`/`assert_eq!`/`assert_ne!`
 on caller-supplied shapes and preconditions** — 82 sites in 19 files at 0.22,
-46 in 12 at 0.29, e.g. `Matrix::zeros(0, n)`, `Context::symbol("")`, a zero
-denominator to `RationalFn`, exponent overflow in `MultiPoly::mul`/`pow`
-(the bodies of `*`, whose `try_` twins return `None`).  Each is documented
+27 in 7 at 0.29, e.g. `Context::symbol("")`, a zero denominator to
+`RationalFn`, exponent overflow in `MultiPoly::mul`/`pow` (the bodies of
+`*`, whose `try_` twins return `None`), an out-of-range index to
+`Matrix::get` (the body of `m[(i, j)]`; `try_get` is its twin).  The
+`Matrix` / `ExactMatrix` constructors return `Result` since 0.29.  Each is documented
 under `# Panics` on its item.  They
 predate point 4 below and are debt, not precedent: new code returns a
 `Result` instead, and converting an existing one means removing it from the
@@ -571,7 +573,7 @@ matrix.minor(i, j)    // Err if out of range
 
 ## Expression Nodes
 
-The `ExprNode` enum in `src/base/node.rs` has 92 variants. They fall into categories:
+The `ExprNode` enum in `src/base/node.rs` has 93 variants. They fall into categories:
 
 | Category | Examples | How they work |
 |----------|---------|---------------|
@@ -581,8 +583,8 @@ The `ExprNode` enum in `src/base/node.rs` has 92 variants. They fall into catego
 | **Functions** | `Sin(ExprId)`, `Exp(ExprId)`, `Gamma(ExprId)`, `Zeta`, `Si`/`Ci`/`Ei`/`Li`, `Polygamma(n, x)`, `KroneckerDelta(i, j)` | Unary or binary |
 | **Complex** | `Re`, `Im`, `Conjugate`, `Arg` | Only constructed when realness is unknown |
 | **Calculus** | `Derivative(body, var)`, `Integral(body, var)` | Formal/unevaluated |
-| **Unevaluated** | `Limit`, `Series`, `Sum`, `Product_`, `LaplaceTransform`, `Residue`, `DSolve`, `ConditionSet` | Formal results when computation can't produce a closed form |
-| **Algebraic answers** | `RootOf(poly, index)`, `RootSum(poly, body, var)` | Exact descriptions of algebraic numbers; *not* unevaluated |
+| **Unevaluated** | `Limit`, `Series`, `Sum`, `Product_`, `LaplaceTransform`, `Residue`, `DSolve`, `ConditionSet`, `Subs(body, var, point)` | Formal results when computation can't produce a closed form (`Subs`: a derivative at a point, `f′(0)` for an undefined `f`) |
+| **Algebraic answers** | `RootOf(poly, var, index)`, `RootSum(poly, body, var)` | Exact descriptions of algebraic numbers; *not* unevaluated |
 | **Boolean** | `BoolTrue`, `Gt`, `And`, `Or`, `Not` | For inequalities and logic |
 | **Sets** | `Interval`, `FiniteSet`, `SetUnion`, `SetIntersection`, `SetComplement`, `EmptySet`, `UniversalSet` | For solution sets; `transforms/sets.rs` computes the normal form |
 | **Piecewise** | `Piecewise(Vec<(value, condition)>)` | Conditional expressions |

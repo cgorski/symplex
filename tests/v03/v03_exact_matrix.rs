@@ -43,12 +43,12 @@ impl Lcg {
 
 fn random_q(n: usize, m: usize, seed: u64) -> QMatrix {
     let mut g = Lcg(seed);
-    QMatrix::from_fn(n, m, |_, _| g.rational(9, 4))
+    QMatrix::from_fn(n, m, |_, _| g.rational(9, 4)).unwrap()
 }
 
 fn random_z(n: usize, m: usize, seed: u64) -> ZMatrix {
     let mut g = Lcg(seed);
-    ZMatrix::from_fn(n, m, |_, _| BigInt::from(g.range(-9, 9)))
+    ZMatrix::from_fn(n, m, |_, _| BigInt::from(g.range(-9, 9))).unwrap()
 }
 
 /// Reference RREF: textbook Gauss–Jordan over `Ratio<BigInt>`.
@@ -105,10 +105,12 @@ fn constructors_validate_shape() {
         &[BigInt::from(4), BigInt::from(5), BigInt::from(6)]
     );
     assert_eq!(m.into_flat().len(), 6);
-    let e = ExactMatrix::<BigInt>::identity(2);
+    let e = ExactMatrix::<BigInt>::identity(2).unwrap();
     assert!(e.is_identity());
     assert_eq!(
-        ZMatrix::diag(&[BigInt::from(2), BigInt::from(3)]).diagonal(),
+        ZMatrix::diag(&[BigInt::from(2), BigInt::from(3)])
+            .unwrap()
+            .diagonal(),
         vec![BigInt::from(2), BigInt::from(3)]
     );
 }
@@ -131,7 +133,7 @@ fn arithmetic_operators_and_shape_errors() {
     let b = QMatrix::from_i64(&[&[0, 1], &[1, 0]]).unwrap();
     assert_eq!(&a * &b, QMatrix::from_i64(&[&[2, 1], &[4, 3]]).unwrap());
     assert_eq!(&a + &b - &b, a);
-    assert_eq!(-&a + &a, QMatrix::zeros(2, 2));
+    assert_eq!(-&a + &a, QMatrix::zeros(2, 2).unwrap());
     assert_eq!(
         &a * &q(1, 2),
         QMatrix::new(vec![vec![q(1, 2), qi(1)], vec![q(3, 2), qi(2)]]).unwrap()
@@ -152,7 +154,7 @@ fn arithmetic_operators_and_shape_errors() {
 
 #[test]
 fn indexing_out_of_bounds_panics_but_try_get_does_not() {
-    let a = ZMatrix::identity(2);
+    let a = ZMatrix::identity(2).unwrap();
     assert!(a.try_get(2, 0).is_none());
     assert_eq!(a.try_get(1, 1), Some(&BigInt::one()));
     let r = std::panic::catch_unwind(|| a[(2, 0)].clone());
@@ -199,8 +201,8 @@ fn qmatrix_rank_deficient_inputs() {
     assert_eq!(a.nullspace().len(), 2);
     assert_eq!(a.det().unwrap(), Q::zero());
     assert!(a.inv().is_err());
-    assert_eq!(QMatrix::zeros(3, 2).rank(), 0);
-    assert_eq!(QMatrix::identity(4).rref().1, vec![0, 1, 2, 3]);
+    assert_eq!(QMatrix::zeros(3, 2).unwrap().rank(), 0);
+    assert_eq!(QMatrix::identity(4).unwrap().rref().1, vec![0, 1, 2, 3]);
 }
 
 #[test]
@@ -232,7 +234,7 @@ fn qmatrix_det_inv_solve_identities() {
 #[test]
 fn qmatrix_det_of_fractional_matrix() {
     // Hilbert-like 4×4: det(H₄) = 1/6048000.
-    let h = QMatrix::from_fn(4, 4, |i, j| q(1, (i + j + 1) as i64));
+    let h = QMatrix::from_fn(4, 4, |i, j| q(1, (i + j + 1) as i64)).unwrap();
     assert_eq!(h.det().unwrap(), q(1, 6_048_000));
     let inv = h.inv().unwrap();
     assert!(inv.is_integer(), "the inverse Hilbert matrix is integral");
@@ -253,7 +255,7 @@ fn zmatrix_det_rank_content() {
         ZMatrix::from_i64(&[&[6, 9], &[3, 12]]).unwrap().content(),
         BigInt::from(3)
     );
-    assert_eq!(ZMatrix::zeros(2, 2).content(), BigInt::zero());
+    assert_eq!(ZMatrix::zeros(2, 2).unwrap().content(), BigInt::zero());
     for seed in 1..=10u64 {
         let z = random_z(6, 6, seed);
         assert_eq!(
@@ -302,12 +304,12 @@ fn matrix_det_inv_solve_route_through_qmatrix() {
         assert_eq!(d.as_rational().unwrap(), qa.det().unwrap());
         if d.is_zero_structural() {
             assert!(a.inv().is_err());
-            assert!(a.solve(&Matrix::identity(&ctx, 5)).is_err());
+            assert!(a.solve(&Matrix::identity(&ctx, 5).unwrap()).is_err());
             continue;
         }
         let inv = a.inv().unwrap();
         assert_eq!(QMatrix::try_from(&inv).unwrap(), qa.inv().unwrap());
-        assert_eq!((&a * &inv).eval(), Matrix::identity(&ctx, 5));
+        assert_eq!((&a * &inv).eval(), Matrix::identity(&ctx, 5).unwrap());
         let b = random_q(5, 1, seed + 90).to_matrix(&ctx);
         let x = a.solve(&b).unwrap();
         assert_eq!((&a * &x).eval(), b);
@@ -348,7 +350,7 @@ fn symbolic_matrices_still_take_the_symbolic_path() {
     assert_eq!(d, a.powi(2) - b.powi(2));
     let (r, p) = m.rref();
     assert_eq!(p, vec![0, 1]);
-    assert_eq!(r, Matrix::identity(&ctx, 2));
+    assert_eq!(r, Matrix::identity(&ctx, 2).unwrap());
     // Mixed: a single symbol disables the fast path but the answer matches
     // the numeric one after substitution.
     let mixed = Matrix::new(vec![
@@ -442,7 +444,7 @@ fn linsolve_numeric_parametric_and_inconsistent() {
 fn linsolve_matrix_numeric_rectangular() {
     let ctx = Context::new();
     let a = matrix![ctx, [1, 2, 3], [4, 5, 6]];
-    let b = Matrix::col_vector(vec![ctx.int(6), ctx.int(15)]);
+    let b = Matrix::col_vector(vec![ctx.int(6), ctx.int(15)]).unwrap();
     match linsolve_matrix(&a, &b).unwrap() {
         LinearSolution::Parametric { solution, free } => {
             assert_eq!(free.len(), 1);
@@ -452,7 +454,7 @@ fn linsolve_matrix_numeric_rectangular() {
         }
         other => panic!("expected parametric, got {other:?}"),
     }
-    let b_bad = Matrix::col_vector(vec![ctx.int(6), ctx.int(16)]);
+    let b_bad = Matrix::col_vector(vec![ctx.int(6), ctx.int(16)]).unwrap();
     let a_bad = matrix![ctx, [1, 2, 3], [2, 4, 6]];
     assert!(matches!(
         linsolve_matrix(&a_bad, &b_bad).unwrap(),

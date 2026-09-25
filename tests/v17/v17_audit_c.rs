@@ -2081,7 +2081,7 @@ mod markov_audit {
             c.stationary_distribution()?,
             vec![q(1, 3), q(1, 3), q(1, 3)]
         );
-        assert_eq!(c.n_step(3), QMatrix::identity(3));
+        assert_eq!(c.n_step(3), QMatrix::identity(3).unwrap());
         assert_eq!(c.n_step(4), *c.transition_matrix());
         assert_eq!(c.mean_recurrence_times()?, vec![qi(3), qi(3), qi(3)]);
         assert_eq!(c.expected_hitting_time(&[2])?, vec![qi(2), qi(1), qi(0)]);
@@ -2484,7 +2484,7 @@ mod multivariate_audit {
         // Σv = λv for each component
         let cov = matrix![ctx, [2, 0, 0], [0, 3, 1], [0, 1, 3]];
         for (lambda, v) in p3.eigenvalues.iter().zip(&p3.components) {
-            let sv = cov.matmul(&Matrix::col_vector(v.clone()))?;
+            let sv = cov.matmul(&Matrix::col_vector(v.clone()).unwrap())?;
             for (i, vi) in v.iter().enumerate() {
                 assert_eq!((sv.get(i, 0) - lambda * vi).simplify(), ctx.int(0));
             }

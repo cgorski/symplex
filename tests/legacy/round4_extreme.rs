@@ -1212,7 +1212,7 @@ fn cayley_hamilton_2x2() {
     let trace = a.trace().expect("trace");
     let det = a.det().expect("det");
     let a2 = &a * &a;
-    let ident = Matrix::identity(&ctx, 2);
+    let ident = Matrix::identity(&ctx, 2).unwrap();
 
     // A² - tr(A)·A + det(A)·I should be zero matrix
     let ta = &a * &trace; // tr(A)·A

@@ -77,15 +77,15 @@ pub struct LogPartResult {
 ///
 /// If `A` is zero, returns an empty result (no logarithmic part).
 ///
-/// # Panics
-///
-/// Panics if `D` is zero.
-pub fn logarithmic_part(a: &Poly, d: &Poly) -> LogPartResult {
-    assert!(
-        !d.is_zero(),
-        "logarithmic_part: denominator must be nonzero"
-    );
+/// `None` if `D` is zero.  The integrator passes the square-free
+/// denominator of a Hermite reduction, which is never zero; up to 0.28 this
+/// was a runtime `assert!`.
+pub fn logarithmic_part(a: &Poly, d: &Poly) -> Option<LogPartResult> {
+    (!d.is_zero()).then(|| logarithmic_part_nonzero(a, d))
+}
 
+/// [`logarithmic_part`] for a nonzero `d`.
+fn logarithmic_part_nonzero(a: &Poly, d: &Poly) -> LogPartResult {
     if a.is_zero() {
         return LogPartResult { terms: vec![] };
     }
@@ -392,7 +392,7 @@ mod tests {
         let a = Poly::from_int(1);
         let d = Poly::x(); // x
 
-        let result = logarithmic_part(&a, &d);
+        let result = logarithmic_part(&a, &d).unwrap();
         assert_eq!(result.terms.len(), 1, "should have one log term");
         match &result.terms[0] {
             LogTerm::Rational { coeff, argument } => {
@@ -410,7 +410,7 @@ mod tests {
         let a = Poly::from_int(1);
         let d = Poly::from_coeffs(vec![rat(-1, 1), rat(1, 1)]); // x - 1
 
-        let result = logarithmic_part(&a, &d);
+        let result = logarithmic_part(&a, &d).unwrap();
         assert_eq!(result.terms.len(), 1);
         match &result.terms[0] {
             LogTerm::Rational { coeff, argument } => {
@@ -430,7 +430,7 @@ mod tests {
         let a = Poly::from_int(1);
         let d = Poly::from_coeffs(vec![rat(-1, 1), rat(0, 1), rat(1, 1)]); // x^2 - 1
 
-        let result = logarithmic_part(&a, &d);
+        let result = logarithmic_part(&a, &d).unwrap();
         // Should have 2 rational log terms with coefficients ±1/2.
         let rational_count = result
             .terms
@@ -453,7 +453,7 @@ mod tests {
         let a = Poly::from_coeffs(vec![rat(0, 1), rat(2, 1)]); // 2x
         let d = Poly::from_coeffs(vec![rat(1, 1), rat(0, 1), rat(1, 1)]); // x^2 + 1
 
-        let result = logarithmic_part(&a, &d);
+        let result = logarithmic_part(&a, &d).unwrap();
         // Should produce 1 · ln(x^2 + 1)
         assert!(
             !result.terms.is_empty(),
@@ -472,7 +472,7 @@ mod tests {
         let a = Poly::from_int(1);
         let d = Poly::from_coeffs(vec![rat(1, 1), rat(0, 1), rat(1, 1)]); // x^2 + 1
 
-        let result = logarithmic_part(&a, &d);
+        let result = logarithmic_part(&a, &d).unwrap();
         // Should have an algebraic term (roots are ±i/2).
         let has_algebraic = result
             .terms
@@ -488,7 +488,7 @@ mod tests {
     fn log_part_zero_numerator() {
         let a = Poly::zero();
         let d = Poly::from_coeffs(vec![rat(-1, 1), rat(0, 1), rat(1, 1)]); // x^2 - 1
-        let result = logarithmic_part(&a, &d);
+        let result = logarithmic_part(&a, &d).unwrap();
         assert!(
             result.terms.is_empty(),
             "zero numerator should give empty result"
@@ -502,7 +502,7 @@ mod tests {
         let a = Poly::from_coeffs(vec![rat(5, 1), rat(3, 1)]); // 3x + 5
         let d = Poly::from_coeffs(vec![rat(2, 1), rat(3, 1), rat(1, 1)]); // x^2 + 3x + 2
 
-        let result = logarithmic_part(&a, &d);
+        let result = logarithmic_part(&a, &d).unwrap();
         verify_log_part(&a, &d, &result);
 
         // Should have exactly 2 rational log terms.
@@ -542,7 +542,7 @@ mod tests {
         let a = Poly::from_int(1);
         let d = Poly::from_coeffs(vec![rat(-1, 1), rat(0, 1), rat(0, 1), rat(1, 1)]); // x^3 - 1
 
-        let result = logarithmic_part(&a, &d);
+        let result = logarithmic_part(&a, &d).unwrap();
         // Should have at least one rational term (from the x-1 factor)
         // and possibly algebraic terms.
         assert!(!result.terms.is_empty(), "1/(x^3-1) should have log terms");
@@ -562,7 +562,7 @@ mod tests {
         let a = Poly::x(); // x
         let d = Poly::from_coeffs(vec![rat(-1, 1), rat(0, 1), rat(1, 1)]); // x^2 - 1
 
-        let result = logarithmic_part(&a, &d);
+        let result = logarithmic_part(&a, &d).unwrap();
         verify_log_part(&a, &d, &result);
 
         // Both log terms should have coefficient 1/2.
@@ -618,7 +618,7 @@ mod tests {
         // gcd(x⁸ + 1, x³ − α·8x⁷) = x⁴ + 8α.
         let a = poly(&[0, 0, 0, 1]);
         let d = poly(&[1, 0, 0, 0, 0, 0, 0, 0, 1]);
-        let result = logarithmic_part(&a, &d);
+        let result = logarithmic_part(&a, &d).unwrap();
         let alg = algebraic_terms(&result);
         assert_eq!(alg.len(), 1, "{:?}", result.terms);
         let (q, s) = &alg[0];
@@ -638,7 +638,7 @@ mod tests {
         // quadratic factor with log arguments of degree 2.
         let a = poly(&[0, 1]);
         let d = poly(&[1, 0, 0, 0, 0, 0, 1]);
-        let result = logarithmic_part(&a, &d);
+        let result = logarithmic_part(&a, &d).unwrap();
         let rational: Vec<_> = result
             .terms
             .iter()
@@ -662,7 +662,7 @@ mod tests {
         // SymPy's `ratint_logpart` docstring).
         let a = poly(&[1]);
         let d = poly(&[1, 1, 1]);
-        let alg = algebraic_terms(&logarithmic_part(&a, &d));
+        let alg = algebraic_terms(&logarithmic_part(&a, &d).unwrap());
         assert_eq!(alg.len(), 1);
         let (q, s) = &alg[0];
         assert_eq!(q.primitive_part(), poly(&[1, 0, 3]));

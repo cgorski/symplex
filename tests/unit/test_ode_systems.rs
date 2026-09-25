@@ -267,7 +267,7 @@ fn ode_system_3x3_coupled() {
 fn ode_system_identity_matrix() {
     let ctx = Context::new();
     let t = ctx.symbol("t");
-    let a = Matrix::identity(&ctx, 2);
+    let a = Matrix::identity(&ctx, 2).unwrap();
 
     let sol = symplex::ode::solve_ode_system(&a, &t).expect("should solve identity system");
 
@@ -389,7 +389,7 @@ fn ode_system_rejects_time_dependent() {
 fn ode_system_zero_matrix() {
     let ctx = Context::new();
     let t = ctx.symbol("t");
-    let a = Matrix::zeros(&ctx, 2, 2);
+    let a = Matrix::zeros(&ctx, 2, 2).unwrap();
 
     let sol = symplex::ode::solve_ode_system(&a, &t).expect("zero matrix should be solvable");
 
@@ -526,7 +526,7 @@ fn ode_system_solution_dimension_matches_matrix() {
     let t = ctx.symbol("t");
 
     for n in 1..=4 {
-        let a = Matrix::identity(&ctx, n);
+        let a = Matrix::identity(&ctx, n).unwrap();
         let sol = symplex::ode::solve_ode_system(&a, &t)
             .unwrap_or_else(|| panic!("should solve {n}x{n} identity system"));
         assert_eq!(

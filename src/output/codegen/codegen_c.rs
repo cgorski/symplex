@@ -630,10 +630,11 @@ impl<'a> CEmitter<'a> {
                 return Err(self.unsupported("InverseLaplaceTransform"));
             }
             ExprNode::Residue(_, _, _) => return Err(self.unsupported("Residue")),
-            ExprNode::RootOf(_, _) => return Err(self.unsupported("RootOf")),
+            ExprNode::RootOf(_, _, _) => return Err(self.unsupported("RootOf")),
             ExprNode::RootSum(_, _, _) => return Err(self.unsupported("RootSum")),
             ExprNode::DSolve(_, _, _) => return Err(self.unsupported("DSolve")),
             ExprNode::ConditionSet(_, _) => return Err(self.unsupported("ConditionSet")),
+            ExprNode::Subs(_, _, _) => return Err(self.unsupported("Subs")),
             ExprNode::EmptySet
             | ExprNode::UniversalSet
             | ExprNode::Interval(_, _, _)

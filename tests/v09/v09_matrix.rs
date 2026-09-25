@@ -80,7 +80,7 @@ fn singular_values_symbolic_2x2_via_quadratic_formula() {
     let ctx = Context::new();
     let a = ctx.symbol_with("a", &[Assumption::Positive]).unwrap();
     let b = ctx.symbol_with("b", &[Assumption::Positive]).unwrap();
-    let m = Matrix::diag(&[a.clone(), b.clone()]);
+    let m = Matrix::diag(&[a.clone(), b.clone()]).unwrap();
     let sv = m.singular_values().unwrap();
     assert_eq!(sv.len(), 2);
     // {√(a²), √(b²)} = {a, b} as a set (order is not decidable symbolically).
@@ -171,12 +171,12 @@ fn pinv_rank_deficient_rectangular_and_zero_matrix() {
     assert_eq!(pb, expected_b, "got {pb}");
     // Zero matrix: A⁺ = 0 of the transposed shape.
     assert_eq!(
-        Matrix::zeros(&ctx, 2, 3).pinv().unwrap(),
-        Matrix::zeros(&ctx, 3, 2)
+        Matrix::zeros(&ctx, 2, 3).unwrap().pinv().unwrap(),
+        Matrix::zeros(&ctx, 3, 2).unwrap()
     );
     // Full column rank keeps the classical formula.
     let c = matrix![ctx, [1, 0], [0, 1], [1, 1]];
-    assert_eq!(&c.pinv().unwrap() * &c, Matrix::identity(&ctx, 2));
+    assert_eq!(&c.pinv().unwrap() * &c, Matrix::identity(&ctx, 2).unwrap());
 }
 
 #[test]
@@ -241,7 +241,7 @@ fn hessenberg_needs_a_row_swap_when_the_subdiagonal_entry_is_zero() {
     let t = matrix![ctx, [1, 2, 3], [4, 5, 6], [0, 7, 8]];
     let Hessenberg { h: h2, p: p2 } = t.hessenberg().unwrap();
     assert_eq!(h2, t);
-    assert_eq!(p2, Matrix::identity(&ctx, 3));
+    assert_eq!(p2, Matrix::identity(&ctx, 3).unwrap());
     assert!(matrix![ctx, [1, 2, 3]].hessenberg().is_err());
 }
 
@@ -283,7 +283,7 @@ fn rank_decomposition_matches_sympy() {
     assert_eq!(f2, matrix![ctx, [1, 2]]);
     // Rank 0 has no representable factors.
     assert!(matches!(
-        Matrix::zeros(&ctx, 2, 2).rank_decomposition(),
+        Matrix::zeros(&ctx, 2, 2).unwrap().rank_decomposition(),
         Err(SymplexError::ComputationFailed { .. })
     ));
     // Symbolic path: rank 1 structurally.
@@ -310,7 +310,11 @@ fn companion_matrix_matches_sympy_and_has_the_right_char_poly() {
     let x = ctx.symbol("x");
     let expected = &x.powi(3) + &x.powi(2) * 2 + &x * 3 + 4;
     assert_eq!(-c.char_poly(&x).unwrap(), expected);
-    let xi_minus_c = Matrix::identity(&ctx, 3).scale(&x).sub(&c).unwrap();
+    let xi_minus_c = Matrix::identity(&ctx, 3)
+        .unwrap()
+        .scale(&x)
+        .sub(&c)
+        .unwrap();
     assert_eq!(xi_minus_c.det().unwrap().expand(), expected);
     // Degree 1 and symbolic coefficients (even degree: char_poly is +p).
     assert_eq!(
@@ -358,7 +362,7 @@ fn permanent_matches_sympy_and_symbolic_is_expanded() {
         ctx.int(450)
     );
     // Permanent of the all-ones n×n matrix is n!.
-    let ones = Matrix::from_fn(5, 5, |_, _| ctx.one());
+    let ones = Matrix::from_fn(5, 5, |_, _| ctx.one()).unwrap();
     assert_eq!(ones.permanent().unwrap(), ctx.int(120));
     // Rational entries and the exact-matrix entry point agree.
     let half = Matrix::new(vec![
@@ -407,10 +411,10 @@ fn permanent_matches_sympy_and_symbolic_is_expanded() {
         Err(SymplexError::InvalidArgument { .. })
     ));
     assert!(matches!(
-        Matrix::identity(&ctx, 21).permanent(),
+        Matrix::identity(&ctx, 21).unwrap().permanent(),
         Err(SymplexError::ComputationFailed { .. })
     ));
-    assert!(ZMatrix::identity(21).permanent().is_err());
+    assert!(ZMatrix::identity(21).unwrap().permanent().is_err());
 }
 
 #[test]
@@ -749,7 +753,10 @@ fn matrix_log_diagonalizable_and_defective() {
     let ctx = Context::new();
     // SymPy: Matrix([[2, 0], [0, 3]]).log() == Matrix([[log(2), 0], [0, log(3)]])
     let l = matrix![ctx, [2, 0], [0, 3]].matrix_log().unwrap();
-    assert_eq!(l, Matrix::diag(&[ctx.int(2).ln(), ctx.int(3).ln()]));
+    assert_eq!(
+        l,
+        Matrix::diag(&[ctx.int(2).ln(), ctx.int(3).ln()]).unwrap()
+    );
     // SymPy: simplify(Matrix([[4, 1], [0, 2]]).log()) == Matrix([[log(4), log(2)/2], [0, log(2)]])
     //   ≈ [[1.38629436111989, 0.346573590279973], [0, 0.693147180559945]]
     let la = matrix![ctx, [4, 1], [0, 2]].matrix_log().unwrap();

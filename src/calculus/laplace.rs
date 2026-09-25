@@ -166,9 +166,10 @@ fn do_forward(
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
-/// Check whether `expr` contains the variable `t`.
+/// Does `expr` depend on the variable `t`?  Only free occurrences count (a
+/// `Sum` over `t`, a `RootOf` in `t` are constants; see `walk::binder`).
 fn contains_var(arena: &Arena, expr: ExprId, t: ExprId) -> bool {
-    crate::base::walk::contains(arena, expr, t)
+    crate::base::walk::has_free_var(arena, expr, t)
 }
 
 /// Split `expr` into `(coefficient_independent_of_t, rest_depending_on_t)`.

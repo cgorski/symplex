@@ -28,22 +28,22 @@ fn main() {
     let a = matrix![ctx, [2, 1], [1, 3]];
     println!("A = {a}");
 
-    let eye = Matrix::identity(&ctx, 3);
+    let eye = Matrix::identity(&ctx, 3).unwrap();
     println!("I₃ = {eye}");
 
-    let z = Matrix::zeros(&ctx, 2, 3);
+    let z = Matrix::zeros(&ctx, 2, 3).unwrap();
     println!("Zeros(2×3) = {z}");
 
-    let d = Matrix::diag(&[ctx.int(1), ctx.int(2), ctx.int(3)]);
+    let d = Matrix::diag(&[ctx.int(1), ctx.int(2), ctx.int(3)]).unwrap();
     println!("diag(1,2,3) = {d}");
 
-    let built = Matrix::from_fn(3, 3, |i, j| ctx.int((i * 3 + j + 1) as i64));
+    let built = Matrix::from_fn(3, 3, |i, j| ctx.int((i * 3 + j + 1) as i64)).unwrap();
     println!("from_fn(3×3) = {built}");
 
-    let row = Matrix::row_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
+    let row = Matrix::row_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]).unwrap();
     println!("Row vector = {row}");
 
-    let col = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]);
+    let col = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]).unwrap();
     println!("Col vector = {col}");
 
     // ── 2. Basic operations ────────────────────────────────────────
@@ -264,8 +264,8 @@ fn main() {
     // ── 13. Dot and Cross Products ─────────────────────────────────
     println!("\n--- Dot & Cross Products ---");
 
-    let v1 = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
-    let v2 = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]);
+    let v1 = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]).unwrap();
+    let v2 = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]).unwrap();
 
     let dot_product = symplex::matrix::dot(&v1, &v2).unwrap();
     println!("v1 · v2 = {dot_product}"); // 1·4 + 2·5 + 3·6 = 32

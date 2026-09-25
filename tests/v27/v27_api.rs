@@ -185,7 +185,7 @@ fn vector_calculus_shapes_are_errors() {
     )));
     assert!(invalid(CoordinateSystem::Cylindrical.scale_factors(&[&x])));
 
-    let field2 = Matrix::col_vector(vec![y.clone(), x.clone()]);
+    let field2 = Matrix::col_vector(vec![y.clone(), x.clone()]).unwrap();
     assert!(invalid(divergence(&field2, &[&x, &y, &z])));
     assert!(invalid(curl(&field2, &[&x, &y])));
     assert!(invalid(directional_derivative(&f, &[&x], &field2)));

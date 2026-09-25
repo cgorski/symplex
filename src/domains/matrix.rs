@@ -454,13 +454,41 @@ impl Matrix {
         Matrix::with_shape(rows, nrows, ncols)
     }
 
+    /// Build the matrix written by the `matrix!` macro.  Not public API.
+    ///
+    /// The macro's parser rejects an empty literal or an empty row at
+    /// compile time and the array type makes the literal rectangular, so
+    /// this cannot fail; it exists so that the expansion needs no fallible
+    /// call.
+    #[doc(hidden)]
+    pub fn __from_literal<const R: usize, const C: usize>(rows: [[Ex; C]; R]) -> Matrix {
+        Matrix::from_rows_unchecked(rows.into_iter().map(Vec::from).collect())
+    }
+
     /// Create an `n × m` matrix of zeros.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `n == 0` or `m == 0`.
-    pub fn zeros(ctx: &Context, n: usize, m: usize) -> Self {
-        assert!(n > 0 && m > 0, "Matrix::zeros: dimensions must be positive");
+    /// [`SymplexError::InvalidArgument`] if `n == 0` or `m == 0` (a matrix
+    /// has at least one row and one column).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// assert_eq!(Matrix::zeros(&ctx, 2, 3).unwrap().shape(), (2, 3));
+    /// assert!(Matrix::zeros(&ctx, 0, 3).is_err());
+    /// ```
+    pub fn zeros(ctx: &Context, n: usize, m: usize) -> Result<Matrix, SymplexError> {
+        positive_shape("Matrix::zeros", n, m)?;
+        Ok(Matrix::zeros_unchecked(ctx, n, m))
+    }
+
+    /// [`zeros`](Self::zeros) for a shape known to be positive.
+    pub(crate) fn zeros_unchecked(ctx: &Context, n: usize, m: usize) -> Matrix {
+        debug_assert!(n > 0 && m > 0);
         let zero = ctx.zero();
         let rows = (0..n)
             .map(|_| (0..m).map(|_| zero.clone()).collect())
@@ -470,11 +498,27 @@ impl Matrix {
 
     /// Create an `n × n` identity matrix.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `n == 0`.
-    pub fn identity(ctx: &Context, n: usize) -> Self {
-        assert!(n > 0, "Matrix::identity: dimension must be positive");
+    /// [`SymplexError::InvalidArgument`] if `n == 0`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// assert_eq!(Matrix::identity(&ctx, 2).unwrap(), matrix![ctx, [1, 0], [0, 1]]);
+    /// assert!(Matrix::identity(&ctx, 0).is_err());
+    /// ```
+    pub fn identity(ctx: &Context, n: usize) -> Result<Matrix, SymplexError> {
+        positive_shape("Matrix::identity", n, n)?;
+        Ok(Matrix::identity_unchecked(ctx, n))
+    }
+
+    /// [`identity`](Self::identity) for a size known to be positive.
+    pub(crate) fn identity_unchecked(ctx: &Context, n: usize) -> Matrix {
+        debug_assert!(n > 0);
         let one = ctx.one();
         let zero = ctx.zero();
         let rows = (0..n)
@@ -489,42 +533,85 @@ impl Matrix {
 
     /// Create an `n × m` matrix from a closure `f(i, j)`.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `n == 0` or `m == 0`.
-    pub fn from_fn(n: usize, m: usize, mut f: impl FnMut(usize, usize) -> Ex) -> Self {
-        assert!(
-            n > 0 && m > 0,
-            "Matrix::from_fn: dimensions must be positive"
-        );
+    /// [`SymplexError::InvalidArgument`] if `n == 0` or `m == 0` (`f` is
+    /// then not called).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let m = Matrix::from_fn(2, 2, |i, j| ctx.int((i + j) as i64)).unwrap();
+    /// assert_eq!(m, matrix![ctx, [0, 1], [1, 2]]);
+    /// ```
+    pub fn from_fn(
+        n: usize,
+        m: usize,
+        f: impl FnMut(usize, usize) -> Ex,
+    ) -> Result<Matrix, SymplexError> {
+        positive_shape("Matrix::from_fn", n, m)?;
+        Ok(Matrix::from_fn_unchecked(n, m, f))
+    }
+
+    /// [`from_fn`](Self::from_fn) for a shape known to be positive.
+    pub(crate) fn from_fn_unchecked(
+        n: usize,
+        m: usize,
+        mut f: impl FnMut(usize, usize) -> Ex,
+    ) -> Matrix {
+        debug_assert!(n > 0 && m > 0);
         let rows = (0..n).map(|i| (0..m).map(|j| f(i, j)).collect()).collect();
         Matrix::with_shape(rows, n, m)
     }
 
     /// Create a 1×n row vector from a list of elements.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `elems` is empty.
-    pub fn row_vector(elems: Vec<Ex>) -> Self {
-        assert!(
-            !elems.is_empty(),
-            "Matrix::row_vector: need at least one element"
-        );
+    /// [`SymplexError::InvalidArgument`] if `elems` is empty.
+    pub fn row_vector(elems: Vec<Ex>) -> Result<Matrix, SymplexError> {
+        if elems.is_empty() {
+            return Err(invalid("Matrix::row_vector", "need at least one element"));
+        }
+        Ok(Matrix::row_vector_unchecked(elems))
+    }
+
+    /// [`row_vector`](Self::row_vector) for elements known to be non-empty.
+    pub(crate) fn row_vector_unchecked(elems: Vec<Ex>) -> Matrix {
+        debug_assert!(!elems.is_empty());
         let ncols = elems.len();
         Matrix::with_shape(vec![elems], 1, ncols)
     }
 
     /// Create an n×1 column vector from a list of elements.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `elems` is empty.
-    pub fn col_vector(elems: Vec<Ex>) -> Self {
-        assert!(
-            !elems.is_empty(),
-            "Matrix::col_vector: need at least one element"
-        );
+    /// [`SymplexError::InvalidArgument`] if `elems` is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let v = Matrix::col_vector(vec![ctx.int(1), ctx.int(2)]).unwrap();
+    /// assert_eq!(v.shape(), (2, 1));
+    /// assert!(Matrix::col_vector(vec![]).is_err());
+    /// ```
+    pub fn col_vector(elems: Vec<Ex>) -> Result<Matrix, SymplexError> {
+        if elems.is_empty() {
+            return Err(invalid("Matrix::col_vector", "need at least one element"));
+        }
+        Ok(Matrix::col_vector_unchecked(elems))
+    }
+
+    /// [`col_vector`](Self::col_vector) for elements known to be non-empty.
+    pub(crate) fn col_vector_unchecked(elems: Vec<Ex>) -> Matrix {
+        debug_assert!(!elems.is_empty());
         let nrows = elems.len();
         let rows = elems.into_iter().map(|e| vec![e]).collect();
         Matrix::with_shape(rows, nrows, 1)
@@ -535,13 +622,15 @@ impl Matrix {
     /// The accessor returning the diagonal of an existing matrix is
     /// [`diagonal`](Self::diagonal).
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `entries` is empty.
-    pub fn diag(entries: &[Ex]) -> Matrix {
+    /// [`SymplexError::InvalidArgument`] if `entries` is empty.
+    pub fn diag(entries: &[Ex]) -> Result<Matrix, SymplexError> {
+        let Some(first) = entries.first() else {
+            return Err(invalid("Matrix::diag", "entries must be non-empty"));
+        };
         let n = entries.len();
-        assert!(n > 0, "Matrix::diag: entries must be non-empty");
-        let zero = entries[0].context().zero();
+        let zero = first.context().zero();
         let rows: Vec<Vec<Ex>> = (0..n)
             .map(|i| {
                 (0..n)
@@ -555,7 +644,7 @@ impl Matrix {
                     .collect()
             })
             .collect();
-        Matrix::from_rows_unchecked(rows)
+        Ok(Matrix::from_rows_unchecked(rows))
     }
 
     /// Create a matrix of integer literals in the given context.
@@ -696,7 +785,7 @@ impl Matrix {
         let ctx = eigenvalue.context();
         let zero = ctx.zero();
         let one = ctx.one();
-        Ok(Matrix::from_fn(size, size, |i, j| {
+        Ok(Matrix::from_fn_unchecked(size, size, |i, j| {
             if i == j {
                 eigenvalue.clone()
             } else if j == i + 1 {
@@ -706,6 +795,17 @@ impl Matrix {
             }
         }))
     }
+}
+
+/// `Err` unless `n × m` is a valid matrix shape (both positive).
+fn positive_shape(operation: &'static str, n: usize, m: usize) -> Result<(), SymplexError> {
+    if n == 0 || m == 0 {
+        return Err(invalid(
+            operation,
+            format!("dimensions must be positive, got {n}×{m}"),
+        ));
+    }
+    Ok(())
 }
 
 impl TryFrom<Vec<Vec<Ex>>> for Matrix {
@@ -779,7 +879,9 @@ impl Matrix {
     ///
     /// # Panics
     ///
-    /// Panics if `i >= nrows` or `j >= ncols`.
+    /// Panics if `i >= nrows` or `j >= ncols`, like slice indexing (this is
+    /// the body of `m[(i, j)] = …`).  For a non-panicking alternative, see
+    /// [`try_get_mut`](Self::try_get_mut).
     #[inline]
     pub fn get_mut(&mut self, i: usize, j: usize) -> &mut Ex {
         assert!(
@@ -793,11 +895,37 @@ impl Matrix {
         &mut self.rows[i][j]
     }
 
+    /// Checked mutable reference to element `(i, j)`.
+    ///
+    /// Returns `None` if `i >= nrows` or `j >= ncols`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let mut m = matrix![ctx, [1, 2]];
+    /// *m.try_get_mut(0, 1).unwrap() = ctx.int(5);
+    /// assert_eq!(m, matrix![ctx, [1, 5]]);
+    /// assert!(m.try_get_mut(1, 0).is_none());
+    /// ```
+    #[inline]
+    pub fn try_get_mut(&mut self, i: usize, j: usize) -> Option<&mut Ex> {
+        if i < self.nrows && j < self.ncols {
+            self.exact.take();
+            Some(&mut self.rows[i][j])
+        } else {
+            None
+        }
+    }
+
     /// Overwrite element `(i, j)`.
     ///
     /// # Panics
     ///
-    /// Panics if `i >= nrows` or `j >= ncols`.
+    /// Panics if `i >= nrows` or `j >= ncols`; see
+    /// [`try_get_mut`](Self::try_get_mut).
     #[inline]
     pub fn set(&mut self, i: usize, j: usize, value: Ex) {
         *self.get_mut(i, j) = value;
@@ -807,7 +935,7 @@ impl Matrix {
     ///
     /// # Panics
     ///
-    /// Panics if `i >= nrows`.
+    /// Panics if `i >= nrows`; see [`try_row`](Self::try_row).
     #[inline]
     pub fn row(&self, i: usize) -> &[Ex] {
         assert!(
@@ -819,11 +947,17 @@ impl Matrix {
         &self.rows[i]
     }
 
+    /// Checked row `i`: `None` if `i >= nrows`.
+    #[inline]
+    pub fn try_row(&self, i: usize) -> Option<&[Ex]> {
+        self.rows.get(i).map(Vec::as_slice)
+    }
+
     /// Column `j` as an owned `Vec<Ex>`.
     ///
     /// # Panics
     ///
-    /// Panics if `j >= ncols`.
+    /// Panics if `j >= ncols`; see [`try_col`](Self::try_col).
     pub fn col(&self, j: usize) -> Vec<Ex> {
         assert!(
             j < self.ncols,
@@ -832,6 +966,23 @@ impl Matrix {
             self.ncols
         );
         self.rows.iter().map(|r| r[j].clone()).collect()
+    }
+
+    /// Checked column `j`: `None` if `j >= ncols`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let m = matrix![ctx, [1, 2], [3, 4]];
+    /// assert_eq!(m.try_col(1), Some(vec![ctx.int(2), ctx.int(4)]));
+    /// assert_eq!(m.try_row(0), Some(&[ctx.int(1), ctx.int(2)][..]));
+    /// assert!(m.try_col(2).is_none() && m.try_row(2).is_none());
+    /// ```
+    pub fn try_col(&self, j: usize) -> Option<Vec<Ex>> {
+        (j < self.ncols).then(|| self.rows.iter().map(|r| r[j].clone()).collect())
     }
 
     /// The main diagonal `[a₀₀, a₁₁, …]` (length `min(nrows, ncols)`).
@@ -1555,7 +1706,7 @@ impl Matrix {
     /// let ctx = Context::new();
     /// let a = matrix![ctx, [2, 1], [1, 1]];
     /// let inv = a.inv().unwrap();
-    /// assert_eq!(&a * &inv, Matrix::identity(&ctx, 2));
+    /// assert_eq!(&a * &inv, Matrix::identity(&ctx, 2).unwrap());
     /// assert!(matrix![ctx, [1, 2], [2, 4]].inv().is_err());
     /// ```
     pub fn inv(&self) -> Result<Matrix, SymplexError> {
@@ -1937,7 +2088,7 @@ impl Matrix {
         debug!(n, "eigenvects: computing for {}×{} matrix", n, n);
         let lam = self.fresh_symbol("lambda");
         let eigen_pairs = self.eigen_pairs(&lam)?;
-        let eye = Matrix::identity(&self.ctx(), n);
+        let eye = Matrix::identity(&self.ctx(), n)?;
 
         let mut result = Vec::new();
         for (eigenval, alg_mult) in &eigen_pairs {
@@ -2059,7 +2210,7 @@ impl Matrix {
         }
         let p = Matrix::hstack(&p_cols)?;
         p.check_budget("diagonalize")?;
-        let d = Matrix::diag(&diag_entries);
+        let d = Matrix::diag(&diag_entries)?;
         Ok(Diagonalization { p, d })
     }
 
@@ -2093,7 +2244,7 @@ impl Matrix {
         self.check_budget("jordan_form")?;
         let n = self.nrows;
         debug!(n, "jordan_form: computing for {}×{} matrix", n, n);
-        let eye = Matrix::identity(&self.ctx(), n);
+        let eye = Matrix::identity(&self.ctx(), n)?;
 
         let eigvs = self.eigenvects().map_err(|e| reop(e, "jordan_form"))?;
 
@@ -2231,12 +2382,12 @@ impl Matrix {
     pub fn powi(&self, n: u32) -> Result<Matrix, SymplexError> {
         self.require_square("powi")?;
         if n == 0 {
-            return Ok(Matrix::identity(&self.ctx(), self.nrows));
+            return Matrix::identity(&self.ctx(), self.nrows);
         }
         if n == 1 {
             return Ok(self.clone());
         }
-        let mut result = Matrix::identity(&self.ctx(), self.nrows);
+        let mut result = Matrix::identity(&self.ctx(), self.nrows)?;
         let mut base = self.clone();
         let mut exp = n;
         while exp > 0 {
@@ -2282,8 +2433,8 @@ impl Matrix {
         self.require_square("exp_series")?;
         let n = self.nrows;
         let ctx = self.ctx();
-        let mut result = Matrix::identity(&ctx, n);
-        let mut term = Matrix::identity(&ctx, n);
+        let mut result = Matrix::identity(&ctx, n)?;
+        let mut term = result.clone();
         for k in 1..=order {
             term = term.matmul(self)?;
             let inv_k = ctx.rational(1, k as i64);
@@ -2490,7 +2641,7 @@ impl Matrix {
     /// assert_eq!(&(&a * &p) * &a, a);            // A A⁺ A = A
     /// // Full column rank: the classical formula
     /// let b = matrix![ctx, [1, 0], [0, 1], [1, 1]];
-    /// assert_eq!(&b.pinv().unwrap() * &b, Matrix::identity(&ctx, 2));
+    /// assert_eq!(&b.pinv().unwrap() * &b, Matrix::identity(&ctx, 2).unwrap());
     /// ```
     pub fn pinv(&self) -> Result<Matrix, SymplexError> {
         let ctx = self.ctx();
@@ -2519,7 +2670,7 @@ impl Matrix {
         };
         let (r, pivots) = self.rref();
         if pivots.is_empty() {
-            return Ok(Matrix::zeros(&ctx, self.ncols, self.nrows));
+            return Matrix::zeros(&ctx, self.ncols, self.nrows);
         }
         let at = self.transpose();
         if pivots.len() == self.ncols {
@@ -3327,7 +3478,8 @@ impl Matrix {
             for (pivot_idx, &pivot_col) in pivots.iter().enumerate() {
                 entries[pivot_col] = -&rref_mat.rows[pivot_idx][free_col];
             }
-            basis.push(Matrix::col_vector(entries));
+            // `n` = `self.ncols` ≥ 1 (a matrix has a column).
+            basis.push(Matrix::col_vector_unchecked(entries));
         }
         basis
     }
@@ -3337,7 +3489,7 @@ impl Matrix {
         let (_, pivots) = self.rref();
         pivots
             .iter()
-            .map(|&col| Matrix::col_vector(self.col(col)))
+            .map(|&col| Matrix::col_vector_unchecked(self.col(col)))
             .collect()
     }
 
@@ -3345,7 +3497,7 @@ impl Matrix {
     pub fn rowspace(&self) -> Vec<Matrix> {
         let (rref_mat, pivots) = self.rref();
         (0..pivots.len())
-            .map(|i| Matrix::row_vector(rref_mat.rows[i].clone()))
+            .map(|i| Matrix::row_vector_unchecked(rref_mat.rows[i].clone()))
             .collect()
     }
 
@@ -3454,7 +3606,8 @@ impl Matrix {
                 entries.push(self.rows[i][j].clone());
             }
         }
-        Matrix::col_vector(entries)
+        // `nrows · ncols` ≥ 1 entries.
+        Matrix::col_vector_unchecked(entries)
     }
 }
 
@@ -4078,7 +4231,7 @@ impl Matrix {
     ///
     /// let ctx = Context::new();
     /// assert_eq!(matrix![ctx, [1, 0, 2], [0, 0, 3]].nnz(), 3);
-    /// assert_eq!(Matrix::identity(&ctx, 4).nnz(), 4);
+    /// assert_eq!(Matrix::identity(&ctx, 4).unwrap().nnz(), 4);
     /// ```
     pub fn nnz(&self) -> usize {
         self.iter().filter(|e| !e.is_zero_structural()).count()
@@ -4303,7 +4456,7 @@ fn eigvals_via_poly_factor(char_poly: &Ex, var: &Ex) -> Option<Vec<(Ex, usize)>>
                 degree,
                 "eigvals_via_poly_factor: irreducible factor without compact radicals → RootOf"
             );
-            (0..degree).map(|i| root_of(&factor_ex, i)).collect()
+            (0..degree).map(|i| root_of(&factor_ex, var, i)).collect()
         } else {
             factor_ex.solve_or_empty(var)
         };
@@ -4330,14 +4483,16 @@ fn eigvals_via_poly_factor(char_poly: &Ex, var: &Ex) -> Option<Vec<(Ex, usize)>>
     Some(eigen_pairs)
 }
 
-/// `RootOf(poly, index)` — the `index`-th root (Aberth ordering: by real
-/// part, then imaginary part) of the univariate polynomial `poly`.
-fn root_of(poly: &Ex, index: usize) -> Ex {
+/// `RootOf(poly, var, index)` — the `index`-th root (Aberth ordering: by
+/// real part, then imaginary part) of the polynomial `poly` in `var`.
+fn root_of(poly: &Ex, var: &Ex, index: usize) -> Ex {
     let mut inner = poly.inner.write();
     let idx = inner.arena.int(index as i64);
-    let id = inner
-        .arena
-        .intern(crate::base::node::ExprNode::RootOf(poly.raw_id(), idx));
+    let id = inner.arena.intern(crate::base::node::ExprNode::RootOf(
+        poly.raw_id(),
+        var.raw_id(),
+        idx,
+    ));
     drop(inner);
     poly.wrap(id)
 }
@@ -4521,11 +4676,11 @@ pub fn cross(a: &Matrix, b: &Matrix) -> Result<Matrix, SymplexError> {
     }
     let (a0, a1, a2) = (a.get(0, 0), a.get(1, 0), a.get(2, 0));
     let (b0, b1, b2) = (b.get(0, 0), b.get(1, 0), b.get(2, 0));
-    Ok(Matrix::col_vector(vec![
+    Matrix::col_vector(vec![
         a1 * b2 - a2 * b1,
         a2 * b0 - a0 * b2,
         a0 * b1 - a1 * b0,
-    ]))
+    ])
 }
 
 /// Dot product of two column vectors (n×1 matrices).
@@ -4865,7 +5020,7 @@ mod tests {
     #[test]
     fn identity_2x2() {
         let ctx = tctx();
-        let m = Matrix::identity(&ctx, 2);
+        let m = Matrix::identity(&ctx, 2).unwrap();
         assert_eq!(m.nrows(), 2);
         assert_eq!(m.ncols(), 2);
         assert_eq!(format!("{}", m.get(0, 0)), "1");
@@ -4877,7 +5032,7 @@ mod tests {
     #[test]
     fn identity_3x3() {
         let ctx = tctx();
-        let m = Matrix::identity(&ctx, 3);
+        let m = Matrix::identity(&ctx, 3).unwrap();
         assert_eq!(m.shape(), (3, 3));
         for i in 0..3 {
             for j in 0..3 {
@@ -4890,10 +5045,10 @@ mod tests {
     #[test]
     fn zeros_and_from_fn() {
         let ctx = tctx();
-        let z = Matrix::zeros(&ctx, 3, 3);
+        let z = Matrix::zeros(&ctx, 3, 3).unwrap();
         assert_eq!(format!("{}", z.get(1, 1)), "0");
 
-        let m = Matrix::from_fn(2, 2, |i, j| ctx.int((i * 2 + j + 1) as i64));
+        let m = Matrix::from_fn(2, 2, |i, j| ctx.int((i * 2 + j + 1) as i64)).unwrap();
         assert_eq!(format!("{}", m.get(0, 0)), "1");
         assert_eq!(format!("{}", m.get(0, 1)), "2");
         assert_eq!(format!("{}", m.get(1, 0)), "3");
@@ -4903,11 +5058,11 @@ mod tests {
     #[test]
     fn row_and_col_vectors() {
         let ctx = tctx();
-        let rv = Matrix::row_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
+        let rv = Matrix::row_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]).unwrap();
         assert_eq!(rv.shape(), (1, 3));
         assert_eq!(format!("{}", rv.get(0, 1)), "2");
 
-        let cv = Matrix::col_vector(vec![ctx.int(10), ctx.int(20)]);
+        let cv = Matrix::col_vector(vec![ctx.int(10), ctx.int(20)]).unwrap();
         assert_eq!(cv.shape(), (2, 1));
         assert_eq!(format!("{}", cv.get(1, 0)), "20");
     }
@@ -4928,8 +5083,8 @@ mod tests {
     #[test]
     fn block_diag_shapes() {
         let ctx = tctx();
-        let a = Matrix::identity(&ctx, 2);
-        let b = Matrix::row_vector(vec![ctx.int(5), ctx.int(6), ctx.int(7)]);
+        let a = Matrix::identity(&ctx, 2).unwrap();
+        let b = Matrix::row_vector(vec![ctx.int(5), ctx.int(6), ctx.int(7)]).unwrap();
         let bd = Matrix::block_diag(&[&a, &b]).unwrap();
         assert_eq!(bd.shape(), (3, 5));
         assert_eq!(bd.get(2, 4), &ctx.int(7));
@@ -4942,7 +5097,7 @@ mod tests {
     #[test]
     fn get_mut_and_set_work() {
         let ctx = tctx();
-        let mut m = Matrix::zeros(&ctx, 2, 2);
+        let mut m = Matrix::zeros(&ctx, 2, 2).unwrap();
         *m.get_mut(0, 1) = ctx.int(42);
         m.set(1, 0, ctx.int(7));
         m[(1, 1)] = ctx.int(9);
@@ -4978,7 +5133,7 @@ mod tests {
     #[test]
     fn try_get_works() {
         let ctx = tctx();
-        let m = Matrix::zeros(&ctx, 2, 2);
+        let m = Matrix::zeros(&ctx, 2, 2).unwrap();
         assert!(m.try_get(0, 0).is_some());
         assert!(m.try_get(1, 1).is_some());
         assert!(m.try_get(2, 0).is_none());
@@ -5078,7 +5233,7 @@ mod tests {
     #[test]
     fn scale() {
         let ctx = tctx();
-        let m = Matrix::identity(&ctx, 2);
+        let m = Matrix::identity(&ctx, 2).unwrap();
         let two = ctx.int(2);
         let scaled = m.scale(&two);
         assert_eq!(format!("{}", scaled.get(0, 0)), "2");
@@ -5115,7 +5270,7 @@ mod tests {
     #[test]
     fn matmul_2x2() {
         let ctx = tctx();
-        let m = Matrix::identity(&ctx, 2);
+        let m = Matrix::identity(&ctx, 2).unwrap();
         let a = ctx.symbol("a");
         let b = ctx.symbol("b");
         let c = ctx.symbol("c");
@@ -5129,8 +5284,8 @@ mod tests {
     #[test]
     fn matmul_non_square() {
         let ctx = tctx();
-        let rv = Matrix::row_vector(vec![ctx.int(2), ctx.int(3)]);
-        let cv = Matrix::col_vector(vec![ctx.int(4), ctx.int(5)]);
+        let rv = Matrix::row_vector(vec![ctx.int(2), ctx.int(3)]).unwrap();
+        let cv = Matrix::col_vector(vec![ctx.int(4), ctx.int(5)]).unwrap();
         let result = rv.matmul(&cv).unwrap();
         assert_eq!(result.shape(), (1, 1));
         assert_eq!(format!("{}", result.get(0, 0)), "23");
@@ -5335,7 +5490,7 @@ mod tests {
             a.char_poly_coeffs().unwrap(),
             vec![ctx.int(-2), ctx.int(-5), ctx.int(1)]
         );
-        let b = Matrix::diag(&[ctx.int(2), ctx.int(3), ctx.int(4)]);
+        let b = Matrix::diag(&[ctx.int(2), ctx.int(3), ctx.int(4)]).unwrap();
         // (2−λ)(3−λ)(4−λ) = −λ³ + 9λ² − 26λ + 24
         assert_eq!(
             b.char_poly_coeffs().unwrap(),
@@ -5370,7 +5525,8 @@ mod tests {
         let lam = ctx.symbol("lambda");
         let m = Matrix::from_fn(5, 5, |i, j| {
             ctx.int(((i * 7 + j * 3) % 5) as i64 + if i == j { 2 } else { 0 })
-        });
+        })
+        .unwrap();
         let start = std::time::Instant::now();
         let cp = m.char_poly(&lam).unwrap();
         assert!(start.elapsed().as_secs() < 5, "char_poly too slow");
@@ -5384,7 +5540,7 @@ mod tests {
         assert_eq!(p0, m.det().unwrap().eval());
         // Cayley–Hamilton: p(A) = 0
         let coeffs = m.char_poly_coeffs().unwrap();
-        let mut acc = Matrix::zeros(&ctx, 5, 5);
+        let mut acc = Matrix::zeros(&ctx, 5, 5).unwrap();
         for (k, c) in coeffs.iter().enumerate() {
             acc = &acc + &(&m.powi(k as u32).unwrap() * c);
         }
@@ -5451,7 +5607,7 @@ mod tests {
     #[test]
     fn eigenvects_diagonal_matrix() {
         let ctx = tctx();
-        let m = Matrix::diag(&[ctx.int(5), ctx.int(-3)]);
+        let m = Matrix::diag(&[ctx.int(5), ctx.int(-3)]).unwrap();
         let evs = m.eigenvects().unwrap();
         assert_eq!(evs.len(), 2);
         let vals: Vec<_> = evs.iter().map(|(v, _, _)| v.clone()).collect();
@@ -5576,7 +5732,7 @@ mod tests {
     #[test]
     fn is_diagonalizable_yes() {
         let ctx = tctx();
-        let m = Matrix::diag(&[ctx.int(1), ctx.int(2), ctx.int(3)]);
+        let m = Matrix::diag(&[ctx.int(1), ctx.int(2), ctx.int(3)]).unwrap();
         assert_eq!(m.is_diagonalizable(), Some(true));
     }
 
@@ -5585,7 +5741,7 @@ mod tests {
     #[test]
     fn jordan_form_diagonal() {
         let ctx = tctx();
-        let m = Matrix::diag(&[ctx.int(1), ctx.int(2), ctx.int(3)]);
+        let m = Matrix::diag(&[ctx.int(1), ctx.int(2), ctx.int(3)]).unwrap();
         let JordanForm { p, j } = m.jordan_form().unwrap();
         assert_eq!(j.nrows(), 3);
         let p_inv = p.inv().unwrap();
@@ -5619,7 +5775,7 @@ mod tests {
     #[test]
     fn matrix_exp_identity() {
         let ctx = tctx();
-        let m = Matrix::identity(&ctx, 2);
+        let m = Matrix::identity(&ctx, 2).unwrap();
         let result = m.matrix_exp().unwrap();
         assert_eq!(result.get(0, 0), &ctx.e());
         assert!(result.get(0, 1).is_zero_structural());
@@ -5628,9 +5784,9 @@ mod tests {
     #[test]
     fn matrix_exp_zero() {
         let ctx = tctx();
-        let m = Matrix::zeros(&ctx, 2, 2);
+        let m = Matrix::zeros(&ctx, 2, 2).unwrap();
         let result = m.matrix_exp().unwrap();
-        assert_eq!(result, Matrix::identity(&ctx, 2));
+        assert_eq!(result, Matrix::identity(&ctx, 2).unwrap());
     }
 
     #[test]
@@ -5711,7 +5867,7 @@ mod tests {
         let ctx = tctx();
         let a = Matrix::from_i64(&ctx, &[&[2, 1, 0], &[1, 3, 1], &[0, 1, 4]]).unwrap();
         let inv = a.inv().unwrap();
-        assert_eq!((&a * &inv).eval(), Matrix::identity(&ctx, 3));
+        assert_eq!((&a * &inv).eval(), Matrix::identity(&ctx, 3).unwrap());
     }
 
     #[test]
@@ -5766,7 +5922,7 @@ mod tests {
     #[test]
     fn row_vector_display() {
         let ctx = tctx();
-        let m = Matrix::row_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
+        let m = Matrix::row_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]).unwrap();
         assert_eq!(format!("{m}"), "[[1, 2, 3]]");
     }
 
@@ -5775,8 +5931,8 @@ mod tests {
     #[test]
     fn add_mismatched_shapes_returns_err() {
         let ctx = tctx();
-        let a = Matrix::zeros(&ctx, 2, 3);
-        let b = Matrix::zeros(&ctx, 3, 2);
+        let a = Matrix::zeros(&ctx, 2, 3).unwrap();
+        let b = Matrix::zeros(&ctx, 3, 2).unwrap();
         let result = a.add(&b);
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
@@ -5786,8 +5942,8 @@ mod tests {
     #[test]
     fn matmul_incompatible_returns_err() {
         let ctx = tctx();
-        let a = Matrix::zeros(&ctx, 2, 3);
-        let b = Matrix::zeros(&ctx, 2, 3);
+        let a = Matrix::zeros(&ctx, 2, 3).unwrap();
+        let b = Matrix::zeros(&ctx, 2, 3).unwrap();
         let result = a.matmul(&b);
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
@@ -5797,7 +5953,7 @@ mod tests {
     #[test]
     fn trace_non_square_returns_err() {
         let ctx = tctx();
-        let m = Matrix::zeros(&ctx, 2, 3);
+        let m = Matrix::zeros(&ctx, 2, 3).unwrap();
         let result = m.trace();
         assert!(result.is_err());
         assert!(format!("{}", result.unwrap_err()).contains("square"));
@@ -5806,7 +5962,7 @@ mod tests {
     #[test]
     fn det_non_square_returns_err() {
         let ctx = tctx();
-        let m = Matrix::zeros(&ctx, 2, 3);
+        let m = Matrix::zeros(&ctx, 2, 3).unwrap();
         let result = m.det();
         assert!(result.is_err());
         assert!(format!("{}", result.unwrap_err()).contains("square"));
@@ -5816,7 +5972,7 @@ mod tests {
     #[should_panic(expected = "out of bounds")]
     fn get_out_of_bounds_panics() {
         let ctx = Context::new();
-        let m = Matrix::zeros(&ctx, 2, 2);
+        let m = Matrix::zeros(&ctx, 2, 2).unwrap();
         let _ = m.get(2, 0);
     }
 
@@ -5824,7 +5980,7 @@ mod tests {
     #[should_panic(expected = "Matrix + Matrix")]
     fn operator_add_mismatch_panics() {
         let ctx = Context::new();
-        let _ = &Matrix::zeros(&ctx, 2, 2) + &Matrix::zeros(&ctx, 3, 3);
+        let _ = &Matrix::zeros(&ctx, 2, 2).unwrap() + &Matrix::zeros(&ctx, 3, 3).unwrap();
     }
 
     // ── constructor validation tests ───────────────────────────────────

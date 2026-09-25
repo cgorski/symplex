@@ -4072,6 +4072,16 @@ impl Expr<Numeric> {
     /// Return `Some(replacement)` to replace it, or `None` to keep it
     /// unchanged.
     ///
+    /// The walk is **structural**: it visits every node, bound variables
+    /// included, which makes it the tool to rename a bound variable
+    /// (`Sum(k*x, x, 0, 3)` with `x → j` is `Sum(k*j, j, 0, 3)`; use
+    /// [`subs`](Ex::subs) to replace only free occurrences).  Replacing the
+    /// variable of a binder (`Sum`, `Product`, `Integral`, `Derivative`,
+    /// `Limit`, `RootOf`, `Subs`, …) by anything but a symbol makes a
+    /// meaningless node — `Sum(k*x^2, x, 0, 3)` with `x → 1/3` is
+    /// `Sum(1/9*k, 1/3=0..3)`.  SymPy's `xreplace` raises there;
+    /// [`try_replace`](Self::try_replace) returns an error.
+    ///
     /// # Panics
     ///
     /// Panics if the closure returns an expression built in another
@@ -4114,13 +4124,17 @@ impl Expr<Numeric> {
         self.wrap(result_id)
     }
 
-    /// [`replace`](Self::replace) for a closure that may return an
-    /// expression from another [`Context`](crate::api::context::Context).
+    /// [`replace`](Self::replace), checked: for a closure that may return
+    /// an expression from another [`Context`](crate::api::context::Context)
+    /// or replace a bound variable by a non-symbol.
     ///
     /// # Errors
     ///
     /// [`SymplexError::InvalidArgument`] if the closure returns an
-    /// expression built in another context than `self`.
+    /// expression built in another context than `self`, or if the result
+    /// would have a binder whose variable is not a symbol
+    /// (`Sum(k*x^2, x, 0, 3)` with `x → 1/3`; SymPy's `xreplace` raises
+    /// "Invalid limits").  Renaming a bound variable to a symbol is fine.
     ///
     /// # Examples
     ///
@@ -4135,6 +4149,10 @@ impl Expr<Numeric> {
     ///
     /// let other = Context::new().symbol("y");
     /// assert!(expr.try_replace(|e| if e == &x { Some(other.clone()) } else { None }).is_err());
+    ///
+    /// let sum = ctx.parse("Sum(k*x^2, x, 0, 3)").unwrap();
+    /// let third = ctx.rational(1, 3);
+    /// assert!(sum.try_replace(|e| if e == &x { Some(third.clone()) } else { None }).is_err());
     /// ```
     pub fn try_replace<F>(&self, f: F) -> Result<Ex, SymplexError>
     where
@@ -4160,6 +4178,20 @@ impl Expr<Numeric> {
             return Err(SymplexError::invalid_argument(
                 "Ex::replace",
                 "the closure returned an expression from another context",
+            ));
+        }
+        let malformed = {
+            let inner = self.inner.read();
+            crate::base::walk::malformed_binder(&inner.arena, result_id, self.raw_id())
+                .map(|id| inner.arena.display(id).to_string())
+        };
+        if let Some(node) = malformed {
+            return Err(SymplexError::invalid_argument(
+                "Ex::replace",
+                format!(
+                    "the result `{node}` binds a variable that is not a symbol; a bound \
+                     variable can only be renamed (use `subs` to substitute a value)"
+                ),
             ));
         }
         Ok(self.wrap(result_id))
@@ -5247,7 +5279,7 @@ impl Expr<Numeric> {
             min_points,
             ..Default::default()
         };
-        let data = crate::plotting::sampling::sample_compiled(&*f, range, &excluded_points, &opts);
+        let data = crate::plotting::sampling::sample_compiled(&*f, range, &excluded_points, &opts)?;
         if !data.points.iter().any(|(_, y)| y.is_finite()) {
             return Err(SymplexError::ComputationFailed {
                 operation,

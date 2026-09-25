@@ -231,6 +231,17 @@ fn failed(operation: &'static str, reason: impl Into<String>) -> SymplexError {
     SymplexError::computation_failed(operation, reason)
 }
 
+/// `Err` unless `nrows × ncols` is a valid matrix shape (both positive).
+fn positive_shape(operation: &'static str, nrows: usize, ncols: usize) -> Result<(), SymplexError> {
+    if nrows == 0 || ncols == 0 {
+        return Err(invalid(
+            operation,
+            format!("dimensions must be positive, got {nrows}×{ncols}"),
+        ));
+    }
+    Ok(())
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Construction and access (generic)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -323,14 +334,37 @@ impl<T: ExactScalar> ExactMatrix<T> {
 
     /// Build an `nrows × ncols` matrix from `f(i, j)`.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `nrows == 0` or `ncols == 0`.
-    pub fn from_fn(nrows: usize, ncols: usize, mut f: impl FnMut(usize, usize) -> T) -> Self {
-        assert!(
-            nrows > 0 && ncols > 0,
-            "ExactMatrix::from_fn: dimensions must be positive"
-        );
+    /// [`SymplexError::InvalidArgument`] if `nrows == 0` or `ncols == 0`
+    /// (`f` is then not called).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::matrix::QMatrix;
+    /// use symplex::linprog::q;
+    ///
+    /// let m = QMatrix::from_fn(2, 2, |i, j| q((i + j) as i64, 1)).unwrap();
+    /// assert_eq!(m[(1, 1)], q(2, 1));
+    /// assert!(QMatrix::from_fn(0, 2, |_, _| q(0, 1)).is_err());
+    /// ```
+    pub fn from_fn(
+        nrows: usize,
+        ncols: usize,
+        f: impl FnMut(usize, usize) -> T,
+    ) -> Result<Self, SymplexError> {
+        positive_shape("ExactMatrix::from_fn", nrows, ncols)?;
+        Ok(Self::from_fn_unchecked(nrows, ncols, f))
+    }
+
+    /// [`from_fn`](Self::from_fn) for a shape known to be positive.
+    pub(crate) fn from_fn_unchecked(
+        nrows: usize,
+        ncols: usize,
+        mut f: impl FnMut(usize, usize) -> T,
+    ) -> Self {
+        debug_assert!(nrows > 0 && ncols > 0);
         let mut data = Vec::with_capacity(nrows * ncols);
         for i in 0..nrows {
             for j in 0..ncols {
@@ -342,14 +376,17 @@ impl<T: ExactScalar> ExactMatrix<T> {
 
     /// The `nrows × ncols` zero matrix.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `nrows == 0` or `ncols == 0`.
-    pub fn zeros(nrows: usize, ncols: usize) -> Self {
-        assert!(
-            nrows > 0 && ncols > 0,
-            "ExactMatrix::zeros: dimensions must be positive"
-        );
+    /// [`SymplexError::InvalidArgument`] if `nrows == 0` or `ncols == 0`.
+    pub fn zeros(nrows: usize, ncols: usize) -> Result<Self, SymplexError> {
+        positive_shape("ExactMatrix::zeros", nrows, ncols)?;
+        Ok(Self::zeros_unchecked(nrows, ncols))
+    }
+
+    /// [`zeros`](Self::zeros) for a shape known to be positive.
+    pub(crate) fn zeros_unchecked(nrows: usize, ncols: usize) -> Self {
+        debug_assert!(nrows > 0 && ncols > 0);
         Self {
             data: vec![<T as Zero>::zero(); nrows * ncols],
             nrows,
@@ -359,12 +396,26 @@ impl<T: ExactScalar> ExactMatrix<T> {
 
     /// The `n × n` identity matrix.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `n == 0`.
-    pub fn identity(n: usize) -> Self {
-        assert!(n > 0, "ExactMatrix::identity: dimension must be positive");
-        let mut m = Self::zeros(n, n);
+    /// [`SymplexError::InvalidArgument`] if `n == 0`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::matrix::QMatrix;
+    ///
+    /// assert!(QMatrix::identity(3).unwrap().is_square());
+    /// assert!(QMatrix::identity(0).is_err());
+    /// ```
+    pub fn identity(n: usize) -> Result<Self, SymplexError> {
+        positive_shape("ExactMatrix::identity", n, n)?;
+        Ok(Self::identity_unchecked(n))
+    }
+
+    /// [`identity`](Self::identity) for a size known to be positive.
+    pub(crate) fn identity_unchecked(n: usize) -> Self {
+        let mut m = Self::zeros_unchecked(n, n);
         for i in 0..n {
             m.data[i * n + i] = <T as One>::one();
         }
@@ -373,32 +424,39 @@ impl<T: ExactScalar> ExactMatrix<T> {
 
     /// Square matrix with `entries` on the diagonal.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `entries` is empty.
-    pub fn diag(entries: &[T]) -> Self {
-        assert!(
-            !entries.is_empty(),
-            "ExactMatrix::diag: need at least one entry"
-        );
+    /// [`SymplexError::InvalidArgument`] if `entries` is empty.
+    pub fn diag(entries: &[T]) -> Result<Self, SymplexError> {
+        if entries.is_empty() {
+            return Err(invalid("ExactMatrix::diag", "need at least one entry"));
+        }
         let n = entries.len();
-        let mut m = Self::zeros(n, n);
+        let mut m = Self::zeros_unchecked(n, n);
         for (i, e) in entries.iter().enumerate() {
             m.data[i * n + i] = e.clone();
         }
-        m
+        Ok(m)
     }
 
     /// A `1 × n` matrix.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `entries` is empty.
-    pub fn row_vector(entries: Vec<T>) -> Self {
-        assert!(
-            !entries.is_empty(),
-            "ExactMatrix::row_vector: need at least one entry"
-        );
+    /// [`SymplexError::InvalidArgument`] if `entries` is empty.
+    pub fn row_vector(entries: Vec<T>) -> Result<Self, SymplexError> {
+        if entries.is_empty() {
+            return Err(invalid(
+                "ExactMatrix::row_vector",
+                "need at least one entry",
+            ));
+        }
+        Ok(Self::row_vector_unchecked(entries))
+    }
+
+    /// [`row_vector`](Self::row_vector) for entries known to be non-empty.
+    pub(crate) fn row_vector_unchecked(entries: Vec<T>) -> Self {
+        debug_assert!(!entries.is_empty());
         let n = entries.len();
         Self {
             data: entries,
@@ -409,14 +467,22 @@ impl<T: ExactScalar> ExactMatrix<T> {
 
     /// An `n × 1` matrix.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `entries` is empty.
-    pub fn col_vector(entries: Vec<T>) -> Self {
-        assert!(
-            !entries.is_empty(),
-            "ExactMatrix::col_vector: need at least one entry"
-        );
+    /// [`SymplexError::InvalidArgument`] if `entries` is empty.
+    pub fn col_vector(entries: Vec<T>) -> Result<Self, SymplexError> {
+        if entries.is_empty() {
+            return Err(invalid(
+                "ExactMatrix::col_vector",
+                "need at least one entry",
+            ));
+        }
+        Ok(Self::col_vector_unchecked(entries))
+    }
+
+    /// [`col_vector`](Self::col_vector) for entries known to be non-empty.
+    pub(crate) fn col_vector_unchecked(entries: Vec<T>) -> Self {
+        debug_assert!(!entries.is_empty());
         let n = entries.len();
         Self {
             data: entries,
@@ -479,7 +545,8 @@ impl<T: ExactScalar> ExactMatrix<T> {
     ///
     /// # Panics
     ///
-    /// Panics if `i >= nrows` or `j >= ncols`.
+    /// Panics if `i >= nrows` or `j >= ncols`, like slice indexing (this is
+    /// the body of `m[(i, j)] = …`); see [`try_get_mut`](Self::try_get_mut).
     #[inline]
     pub fn get_mut(&mut self, i: usize, j: usize) -> &mut T {
         assert!(
@@ -491,11 +558,23 @@ impl<T: ExactScalar> ExactMatrix<T> {
         &mut self.data[i * self.ncols + j]
     }
 
+    /// Checked mutable reference to entry `(i, j)`: `None` if `i >= nrows`
+    /// or `j >= ncols`.
+    #[inline]
+    pub fn try_get_mut(&mut self, i: usize, j: usize) -> Option<&mut T> {
+        if i < self.nrows && j < self.ncols {
+            Some(&mut self.data[i * self.ncols + j])
+        } else {
+            None
+        }
+    }
+
     /// Overwrite entry `(i, j)`.
     ///
     /// # Panics
     ///
-    /// Panics if `i >= nrows` or `j >= ncols`.
+    /// Panics if `i >= nrows` or `j >= ncols`; see
+    /// [`try_get_mut`](Self::try_get_mut).
     #[inline]
     pub fn set(&mut self, i: usize, j: usize, value: T) {
         *self.get_mut(i, j) = value;
@@ -505,7 +584,7 @@ impl<T: ExactScalar> ExactMatrix<T> {
     ///
     /// # Panics
     ///
-    /// Panics if `i >= nrows`.
+    /// Panics if `i >= nrows`; see [`try_row`](Self::try_row).
     #[inline]
     pub fn row(&self, i: usize) -> &[T] {
         assert!(
@@ -516,11 +595,17 @@ impl<T: ExactScalar> ExactMatrix<T> {
         &self.data[i * self.ncols..(i + 1) * self.ncols]
     }
 
+    /// Checked row `i`: `None` if `i >= nrows`.
+    #[inline]
+    pub fn try_row(&self, i: usize) -> Option<&[T]> {
+        (i < self.nrows).then(|| &self.data[i * self.ncols..(i + 1) * self.ncols])
+    }
+
     /// Column `j` as an owned vector.
     ///
     /// # Panics
     ///
-    /// Panics if `j >= ncols`.
+    /// Panics if `j >= ncols`; see [`try_col`](Self::try_col).
     pub fn col(&self, j: usize) -> Vec<T> {
         assert!(
             j < self.ncols,
@@ -530,6 +615,29 @@ impl<T: ExactScalar> ExactMatrix<T> {
         (0..self.nrows)
             .map(|i| self.data[i * self.ncols + j].clone())
             .collect()
+    }
+
+    /// Checked column `j`: `None` if `j >= ncols`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::matrix::QMatrix;
+    /// use symplex::linprog::q;
+    ///
+    /// let mut m = QMatrix::from_i64(&[&[1, 2], &[3, 4]]).unwrap();
+    /// assert_eq!(m.try_col(0), Some(vec![q(1, 1), q(3, 1)]));
+    /// assert_eq!(m.try_row(1), Some(&[q(3, 1), q(4, 1)][..]));
+    /// *m.try_get_mut(0, 0).unwrap() = q(7, 1);
+    /// assert_eq!(m[(0, 0)], q(7, 1));
+    /// assert!(m.try_col(2).is_none() && m.try_row(2).is_none() && m.try_get_mut(2, 0).is_none());
+    /// ```
+    pub fn try_col(&self, j: usize) -> Option<Vec<T>> {
+        (j < self.ncols).then(|| {
+            (0..self.nrows)
+                .map(|i| self.data[i * self.ncols + j].clone())
+                .collect()
+        })
     }
 
     /// The diagonal entries `(0,0), (1,1), …` (length `min(nrows, ncols)`).
@@ -618,7 +726,7 @@ impl<T: ExactScalar> ExactMatrix<T> {
             ));
         }
         let (r0, c0) = (rows.start, cols.start);
-        Ok(Self::from_fn(rows.len(), cols.len(), |i, j| {
+        Ok(Self::from_fn_unchecked(rows.len(), cols.len(), |i, j| {
             self.data[(r0 + i) * self.ncols + c0 + j].clone()
         }))
     }
@@ -1129,7 +1237,7 @@ impl ZMatrix {
     fn row_hnf(&self) -> (ZMatrix, ZMatrix, Vec<usize>) {
         let (m, n) = (self.nrows, self.ncols);
         let mut h = self.clone();
-        let mut u = ZMatrix::identity(m);
+        let mut u = ZMatrix::identity_unchecked(m);
         let mut pivots = Vec::new();
         let mut r = 0usize;
         for col in 0..n {
@@ -1214,21 +1322,21 @@ impl ZMatrix {
     pub fn column_hermite_normal_form(&self) -> ZMatrix {
         // Reverse rows, row-HNF the transpose, transpose back, reverse both.
         let m = self.nrows;
-        let reversed = ZMatrix::from_fn(m, self.ncols, |i, j| {
+        let reversed = ZMatrix::from_fn_unchecked(m, self.ncols, |i, j| {
             self.data[(m - 1 - i) * self.ncols + j].clone()
         });
         let (h, _, _) = reversed.transpose().row_hnf();
         let ht = h.transpose();
         let (r, c) = (ht.nrows, ht.ncols);
-        ZMatrix::from_fn(r, c, |i, j| ht.data[(r - 1 - i) * c + (c - 1 - j)].clone())
+        ZMatrix::from_fn_unchecked(r, c, |i, j| ht.data[(r - 1 - i) * c + (c - 1 - j)].clone())
     }
 
     /// Smith normal form core: `(S, U, V)` with `S = U·A·V`.
     fn smith(&self) -> (ZMatrix, ZMatrix, ZMatrix) {
         let (m, n) = (self.nrows, self.ncols);
         let mut s = self.clone();
-        let mut u = ZMatrix::identity(m);
-        let mut v = ZMatrix::identity(n);
+        let mut u = ZMatrix::identity_unchecked(m);
+        let mut v = ZMatrix::identity_unchecked(n);
 
         for t in 0..m.min(n) {
             // Move the smallest non-zero |entry| of the trailing block to (t, t).
@@ -1332,14 +1440,15 @@ impl ZMatrix {
         let (m, n) = (self.nrows, self.ncols);
         // [Aᵀ | I]  (n × (m + n)); kernel rows are those whose Aᵀ part vanishes.
         let at = self.transpose();
-        let eye = ZMatrix::identity(n);
+        let eye = ZMatrix::identity_unchecked(n);
         let Ok(aug) = ZMatrix::hstack(&[&at, &eye]) else {
             return Vec::new();
         };
         let (h, _, pivots) = aug.row_hnf();
         let rank = pivots.iter().filter(|&&c| c < m).count();
         (rank..n)
-            .map(|i| ZMatrix::col_vector(h.row(i)[m..].to_vec()))
+            // `h.row(i)[m..]` has the `n` ≥ 1 entries of the `I` block.
+            .map(|i| ZMatrix::col_vector_unchecked(h.row(i)[m..].to_vec()))
             .collect()
     }
 
@@ -1880,7 +1989,7 @@ impl QMatrix {
                         v[pc] = -e.clone();
                     }
                 }
-                QMatrix::col_vector(v)
+                QMatrix::col_vector_unchecked(v)
             })
             .collect()
     }
@@ -1967,7 +2076,7 @@ impl QMatrix {
     /// ```
     pub fn inv(&self) -> Result<QMatrix, SymplexError> {
         self.require_square("inv")?;
-        self.solve(&QMatrix::identity(self.nrows))
+        self.solve(&QMatrix::identity(self.nrows)?)
             .map_err(|e| match e {
                 SymplexError::ComputationFailed { reason, .. } => failed("inv", reason),
                 other => other,
@@ -2088,8 +2197,8 @@ impl QMatrix {
         } = try_lu(z.into_flat(), n)
             .map_err(|e| kernel_failed("lu", e))?
             .ok_or_else(|| failed("lu", "matrix is singular (zero pivot column)"))?;
-        let mut l = QMatrix::identity(n);
-        let mut u = QMatrix::zeros(n, n);
+        let mut l = QMatrix::identity(n)?;
+        let mut u = QMatrix::zeros(n, n)?;
         for k in 0..n {
             // Row k of the buffer is pivot[k−1] · (row k of U_Z).
             let denom = match k {
@@ -2145,7 +2254,7 @@ impl QMatrix {
             return None;
         }
         let n = self.nrows;
-        let mut l = QMatrix::identity(n);
+        let mut l = QMatrix::identity_unchecked(n);
         let mut d: Vec<Q> = Vec::with_capacity(n);
         for k in 0..n {
             let mut dk = self.data[k * n + k].clone();
@@ -2191,7 +2300,7 @@ impl QMatrix {
         let (_, pivots) = self.rref();
         pivots
             .into_iter()
-            .map(|c| QMatrix::col_vector(self.col(c)))
+            .map(|c| QMatrix::col_vector_unchecked(self.col(c)))
             .collect()
     }
 
@@ -2199,7 +2308,7 @@ impl QMatrix {
     pub fn rowspace(&self) -> Vec<QMatrix> {
         let (r, pivots) = self.rref();
         (0..pivots.len())
-            .map(|i| QMatrix::row_vector(r.row(i).to_vec()))
+            .map(|i| QMatrix::row_vector_unchecked(r.row(i).to_vec()))
             .collect()
     }
 }
@@ -2217,7 +2326,7 @@ impl QMatrix {
         if rank == 0 {
             return None;
         }
-        let c = QMatrix::from_fn(self.nrows, rank, |i, k| {
+        let c = QMatrix::from_fn_unchecked(self.nrows, rank, |i, k| {
             self.data[i * self.ncols + pivots[k]].clone()
         });
         let f = r.submatrix(0..rank, 0..self.ncols).ok()?;
@@ -2282,7 +2391,7 @@ impl QMatrix {
     /// ```
     pub fn pinv(&self) -> Result<QMatrix, SymplexError> {
         let Some((c, f)) = self.rank_factors() else {
-            return Ok(QMatrix::zeros(self.ncols, self.nrows));
+            return QMatrix::zeros(self.ncols, self.nrows);
         };
         let internal = |e: SymplexError| match e {
             SymplexError::ComputationFailed { reason, .. }
@@ -2335,7 +2444,7 @@ impl QMatrix {
         self.require_square("hessenberg")?;
         let n = self.nrows;
         let mut h = self.clone();
-        let mut p = QMatrix::identity(n);
+        let mut p = QMatrix::identity(n)?;
         let swap_cols = |m: &mut QMatrix, a: usize, b: usize| {
             for i in 0..n {
                 m.data.swap(i * n + a, i * n + b);
@@ -2609,7 +2718,7 @@ mod tests {
 
     fn random_z(n: usize, m: usize, seed: u64) -> ZMatrix {
         let mut g = Lcg(seed);
-        ZMatrix::from_fn(n, m, |_, _| BigInt::from(g.next()))
+        ZMatrix::from_fn(n, m, |_, _| BigInt::from(g.next())).unwrap()
     }
 
     /// Reference RREF over `Ratio<BigInt>` (plain Gauss–Jordan).
@@ -2661,7 +2770,7 @@ mod tests {
         assert_eq!(m.transpose().transpose(), m);
         assert!(ZMatrix::new(vec![]).is_err());
         assert!(ZMatrix::from_flat(2, 2, vec![BigInt::zero(); 3]).is_err());
-        assert!(ZMatrix::identity(3).is_identity());
+        assert!(ZMatrix::identity(3).unwrap().is_identity());
         assert!(!z(&[&[1, 1], &[0, 1]]).is_identity());
         assert_eq!(
             format!("{:?}", z(&[&[1, 2], &[3, 4]])),
@@ -2680,7 +2789,7 @@ mod tests {
         let b = z(&[&[0, 1], &[1, 0]]);
         assert_eq!(&a * &b, z(&[&[2, 1], &[4, 3]]));
         assert_eq!(&a + &b, z(&[&[1, 3], &[4, 4]]));
-        assert_eq!(&a - &a, ZMatrix::zeros(2, 2));
+        assert_eq!(&a - &a, ZMatrix::zeros(2, 2).unwrap());
         assert_eq!(-&a, z(&[&[-1, -2], &[-3, -4]]));
         assert_eq!(a.scale(&BigInt::from(2)), z(&[&[2, 4], &[6, 8]]));
         assert_eq!(a.trace().unwrap(), BigInt::from(5));
@@ -2721,7 +2830,7 @@ mod tests {
         let (r2, _) = naive_rref(&a);
         assert_eq!(r, r2);
         assert!(r.row(2).iter().all(Zero::is_zero));
-        let zero = QMatrix::zeros(2, 3);
+        let zero = QMatrix::zeros(2, 3).unwrap();
         assert_eq!(zero.rref().1, Vec::<usize>::new());
         assert_eq!(zero.rank(), 0);
         assert_eq!(zero.nullspace().len(), 3);
@@ -2877,27 +2986,27 @@ mod tests {
         let psd = qm(&[&[4, 2, 0], &[2, 2, 1], &[0, 1, 1]]);
         let (l, d) = psd.ldl_psd().unwrap();
         assert!(d.iter().all(|v| !v.is_negative()));
-        let dm = QMatrix::diag(&d);
+        let dm = QMatrix::diag(&d).unwrap();
         assert_eq!(&(&l * &dm) * &l.transpose(), psd);
         assert!(psd.is_positive_semidefinite());
         // Rank-deficient PSD: Gram matrix of (1, 1, 1).
         let ones = qm(&[&[1, 1, 1], &[1, 1, 1], &[1, 1, 1]]);
         let (l, d) = ones.ldl_psd().unwrap();
         assert_eq!(d, vec![q(1, 1), Q::zero(), Q::zero()]);
-        assert_eq!(&(&l * &QMatrix::diag(&d)) * &l.transpose(), ones);
+        assert_eq!(&(&l * &QMatrix::diag(&d).unwrap()) * &l.transpose(), ones);
         // Zero pivot with a nonzero column entry: not PSD.
         assert!(qm(&[&[0, 1], &[1, 0]]).ldl_psd().is_none());
         assert!(qm(&[&[1, 2], &[2, 1]]).ldl_psd().is_none());
         assert!(qm(&[&[-1]]).ldl_psd().is_none());
         assert!(qm(&[&[1, 2], &[3, 4]]).ldl_psd().is_none()); // not symmetric
         assert!(qm(&[&[1, 2, 3]]).ldl_psd().is_none());
-        assert!(QMatrix::zeros(3, 3).is_positive_semidefinite());
+        assert!(QMatrix::zeros(3, 3).unwrap().is_positive_semidefinite());
         // Random Gram matrices BᵀB are PSD; BᵀB − εI is not for ε above λ_min.
         for seed in 1..=6u64 {
             let b = random_z(3, 5, seed).to_qmatrix();
             let g = &b.transpose() * &b;
             assert!(g.is_positive_semidefinite(), "seed {seed}");
-            let big = &g - &QMatrix::identity(5).scale(&q(1000, 1));
+            let big = &g - &QMatrix::identity(5).unwrap().scale(&q(1000, 1));
             assert!(!big.is_positive_semidefinite());
         }
     }

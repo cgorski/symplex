@@ -1731,19 +1731,12 @@ fn try_nth_order_reducible(
     })
 }
 
+/// Does `sym` occur free in `expr`?  Bound occurrences (a `Sum` index, a
+/// `RootOf` variable; see `walk::binder`) do not count.  Up to 0.28 this
+/// was a structural walk with no visited set, exponential on a DAG with
+/// shared sub-expressions.
 fn contains_sym(arena: &Arena, expr: ExprId, sym: SymbolId) -> bool {
-    let mut stack = vec![expr];
-    while let Some(id) = stack.pop() {
-        match arena.node(id) {
-            ExprNode::Symbol(s) => {
-                if *s == sym {
-                    return true;
-                }
-            }
-            other => other.for_each_child(|c| stack.push(c)),
-        }
-    }
-    false
+    crate::base::walk::has_free_symbol(arena, expr, sym)
 }
 
 /// `exp(Σ cᵢ·ln(fᵢ))` → `Π fᵢ^{cᵢ}` for integrating factors.
@@ -3884,7 +3877,7 @@ pub fn solve_ode_system_nonhomogeneous(
         .or_else(|_| neg_at.exp_series(12))
         .ok()?;
 
-    let b_col = Matrix::col_vector(b_vec.to_vec());
+    let b_col = Matrix::col_vector(b_vec.to_vec()).ok()?;
     let integrand_matrix = exp_neg_at.matmul(&b_col).ok()?.eval();
 
     // Integrate each component w.r.t. t
@@ -3892,7 +3885,7 @@ pub fn solve_ode_system_nonhomogeneous(
     for i in 0..n {
         integrated.push(integrand_matrix.get(i, 0).integrate(t_var).eval());
     }
-    let integrated_col = Matrix::col_vector(integrated);
+    let integrated_col = Matrix::col_vector(integrated).ok()?;
 
     // Multiply by exp(At)
     let at = a_matrix.scale(t_var);
@@ -3966,7 +3959,7 @@ fn solve_ode_system_series(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Option<Ve
     let m = a_matrix.scale(t_var);
     let exp_m = m.matrix_exp().or_else(|_| m.exp_series(12)).ok()?;
     let constants: Vec<Ex> = (1..=n).map(|i| ctx.symbol(&format!("C{i}"))).collect();
-    let c_vec = Matrix::col_vector(constants);
+    let c_vec = Matrix::col_vector(constants).ok()?;
     let result = exp_m.matmul(&c_vec).ok()?;
     Some((0..n).map(|i| result.get(i, 0).eval()).collect())
 }
@@ -4002,7 +3995,7 @@ fn solve_ode_system_eigen(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Option<Vec
     let i_unit = ctx.i_unit();
     let zero_ex = ctx.int(0);
     let neg_i = -&i_unit;
-    let identity = Matrix::identity(&ctx, n);
+    let identity = Matrix::identity(&ctx, n).ok()?;
 
     let mut solution: Vec<Ex> = (0..n).map(|_| ctx.int(0)).collect();
     let mut const_idx = 1_usize;

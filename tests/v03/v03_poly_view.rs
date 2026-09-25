@@ -860,7 +860,7 @@ fn certificate(goal: &Poly, hs: &[&Poly]) -> Option<Vec<Ex>> {
         .iter()
         .map(|mono| goal.coeff_monomial(mono).unwrap())
         .collect();
-    let b = Matrix::col_vector(rhs);
+    let b = Matrix::col_vector(rhs).unwrap();
     match linsolve_matrix(&m, &b).unwrap() {
         LinearSolution::Unique(pairs) => Some(pairs.into_iter().map(|(_, v)| v).collect()),
         LinearSolution::Parametric { .. } => None,

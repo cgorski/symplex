@@ -389,7 +389,7 @@ fn b13_char_poly_non_square() {
 fn b14_identity_matrix_inv() {
     // Identity matrix inverse should be itself
     let ctx = Context::new();
-    let id = Matrix::identity(&ctx, 3);
+    let id = Matrix::identity(&ctx, 3).unwrap();
     let inv = id.inv().unwrap();
     for i in 0..3 {
         for j in 0..3 {
@@ -1465,7 +1465,7 @@ fn g29_matrix_determinant_identity() {
     // det(I_n) should be 1 for various sizes
     let ctx = Context::new();
     for n in 1..=5 {
-        let id = Matrix::identity(&ctx, n);
+        let id = Matrix::identity(&ctx, n).unwrap();
         let d = id.det().unwrap();
         let val = d.eval_f64().unwrap();
         assert!(

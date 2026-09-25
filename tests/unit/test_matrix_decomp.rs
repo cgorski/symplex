@@ -10,7 +10,7 @@ use symplex::prelude::*;
 #[test]
 fn rref_identity() {
     let ctx = Context::new();
-    let m = Matrix::identity(&ctx, 3);
+    let m = Matrix::identity(&ctx, 3).unwrap();
     let (rref_mat, pivots) = m.rref();
     assert_eq!(pivots, vec![0, 1, 2]);
     // RREF of identity is identity
@@ -61,14 +61,14 @@ fn rref_rank_deficient() {
 #[test]
 fn rank_full() {
     let ctx = Context::new();
-    let m = Matrix::identity(&ctx, 3);
+    let m = Matrix::identity(&ctx, 3).unwrap();
     assert_eq!(m.rank(), 3);
 }
 
 #[test]
 fn rank_of_zero_matrix() {
     let ctx = Context::new();
-    let m = Matrix::zeros(&ctx, 3, 3);
+    let m = Matrix::zeros(&ctx, 3, 3).unwrap();
     assert_eq!(m.rank(), 0);
 }
 
@@ -90,7 +90,7 @@ fn rank_rectangular() {
 #[test]
 fn nullspace_identity_empty() {
     let ctx = Context::new();
-    let m = Matrix::identity(&ctx, 3);
+    let m = Matrix::identity(&ctx, 3).unwrap();
     assert!(m.nullspace().is_empty());
 }
 
@@ -139,7 +139,7 @@ fn nullspace_vector_is_in_kernel() {
 #[test]
 fn columnspace_identity() {
     let ctx = Context::new();
-    let m = Matrix::identity(&ctx, 3);
+    let m = Matrix::identity(&ctx, 3).unwrap();
     let cs = m.columnspace();
     assert_eq!(cs.len(), 3, "identity has full column rank");
     for v in &cs {
@@ -167,7 +167,7 @@ fn columnspace_rank_deficient() {
 #[test]
 fn lu_identity() {
     let ctx = Context::new();
-    let m = Matrix::identity(&ctx, 3);
+    let m = Matrix::identity(&ctx, 3).unwrap();
     let Lu { l, u, perm } = m.lu().expect("identity should have LU");
     // L and U should both be identity for an identity input
     for (i, &p) in perm.iter().enumerate() {
@@ -234,8 +234,8 @@ fn lu_singular_returns_none() {
 fn cross_product_basic() {
     let ctx = Context::new();
     // i x j = k
-    let i_vec = Matrix::col_vector(vec![ctx.int(1), ctx.int(0), ctx.int(0)]);
-    let j_vec = Matrix::col_vector(vec![ctx.int(0), ctx.int(1), ctx.int(0)]);
+    let i_vec = Matrix::col_vector(vec![ctx.int(1), ctx.int(0), ctx.int(0)]).unwrap();
+    let j_vec = Matrix::col_vector(vec![ctx.int(0), ctx.int(1), ctx.int(0)]).unwrap();
     let k_vec = cross(&i_vec, &j_vec).unwrap();
     assert_eq!(k_vec.nrows(), 3);
     assert_eq!(k_vec.ncols(), 1);
@@ -247,8 +247,8 @@ fn cross_product_basic() {
 #[test]
 fn cross_product_anticommutative() {
     let ctx = Context::new();
-    let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
-    let b = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]);
+    let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]).unwrap();
+    let b = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]).unwrap();
     let ab = cross(&a, &b).unwrap().simplify();
     let ba = cross(&b, &a).unwrap().simplify();
     // a x b = -(b x a)
@@ -270,8 +270,8 @@ fn cross_product_anticommutative() {
 #[test]
 fn dot_product_basic() {
     let ctx = Context::new();
-    let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
-    let b = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]);
+    let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]).unwrap();
+    let b = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]).unwrap();
     let result = dot(&a, &b).unwrap();
     assert_eq!(format!("{result}"), "32"); // 4+10+18
 }
@@ -283,7 +283,7 @@ fn dot_product_basic() {
 #[test]
 fn norm_identity() {
     let ctx = Context::new();
-    let m = Matrix::identity(&ctx, 2);
+    let m = Matrix::identity(&ctx, 2).unwrap();
     // Frobenius norm of 2x2 identity is sqrt(2)
     let n = m.norm();
     let v = n
@@ -302,7 +302,7 @@ fn norm_identity() {
 #[test]
 fn is_square_and_not() {
     let ctx = Context::new();
-    assert!(Matrix::identity(&ctx, 3).is_square());
+    assert!(Matrix::identity(&ctx, 3).unwrap().is_square());
     let rect = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2), ctx.int(3)],
         vec![ctx.int(4), ctx.int(5), ctx.int(6)],
@@ -336,8 +336,8 @@ fn is_symmetric_false() {
 #[test]
 fn hstack_two_matrices() {
     let ctx = Context::new();
-    let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2)]);
-    let b = Matrix::col_vector(vec![ctx.int(3), ctx.int(4)]);
+    let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2)]).unwrap();
+    let b = Matrix::col_vector(vec![ctx.int(3), ctx.int(4)]).unwrap();
     let h = Matrix::hstack(&[&a, &b]).unwrap();
     assert_eq!(h.nrows(), 2);
     assert_eq!(h.ncols(), 2);
@@ -350,8 +350,8 @@ fn hstack_two_matrices() {
 #[test]
 fn vstack_two_matrices() {
     let ctx = Context::new();
-    let a = Matrix::row_vector(vec![ctx.int(1), ctx.int(2)]);
-    let b = Matrix::row_vector(vec![ctx.int(3), ctx.int(4)]);
+    let a = Matrix::row_vector(vec![ctx.int(1), ctx.int(2)]).unwrap();
+    let b = Matrix::row_vector(vec![ctx.int(3), ctx.int(4)]).unwrap();
     let v = Matrix::vstack(&[&a, &b]).unwrap();
     assert_eq!(v.nrows(), 2);
     assert_eq!(v.ncols(), 2);

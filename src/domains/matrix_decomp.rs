@@ -113,7 +113,7 @@ pub fn gram_schmidt(vectors: &[Matrix], normalize: bool) -> Result<Vec<Matrix>, 
     }
     let cols: Vec<Vec<Ex>> = vectors.iter().map(|v| v.col(0)).collect();
     let (basis, _) = gram_schmidt_cols(&cols, normalize, "gram_schmidt")?;
-    Ok(basis.into_iter().map(Matrix::col_vector).collect())
+    basis.into_iter().map(Matrix::col_vector).collect()
 }
 
 /// Core Gram–Schmidt on raw columns.
@@ -210,7 +210,7 @@ impl Matrix {
     /// let a = matrix![ctx, [1, 1], [0, 1]];
     /// let Qr { q, r } = a.qr().unwrap();
     /// assert_eq!((&q * &r).simplify(), a);
-    /// assert_eq!((&q.transpose() * &q).simplify(), Matrix::identity(&ctx, 2));
+    /// assert_eq!((&q.transpose() * &q).simplify(), Matrix::identity(&ctx, 2).unwrap());
     /// assert!(r[(1, 0)].is_zero_structural());
     /// ```
     pub fn qr(&self) -> Result<Qr<Matrix>, SymplexError> {
@@ -227,7 +227,10 @@ impl Matrix {
         }
         let cols: Vec<Vec<Ex>> = (0..self.ncols()).map(|j| self.col(j)).collect();
         let (q_cols, r_rows) = gram_schmidt_cols(&cols, true, "qr")?;
-        let q_mats: Vec<Matrix> = q_cols.into_iter().map(Matrix::col_vector).collect();
+        let q_mats: Vec<Matrix> = q_cols
+            .into_iter()
+            .map(Matrix::col_vector)
+            .collect::<Result<_, _>>()?;
         let q_refs: Vec<&Matrix> = q_mats.iter().collect();
         let q = Matrix::hstack(&q_refs)?;
         let r = Matrix::new(r_rows)?;
@@ -388,7 +391,7 @@ impl Matrix {
         }
         Ok(Ldl {
             l: Matrix::new(l)?,
-            d: Matrix::diag(&d),
+            d: Matrix::diag(&d)?,
         })
     }
 
@@ -732,7 +735,7 @@ impl Matrix {
     /// let ctx = Context::new();
     /// // SymPy: Matrix([[2, 0], [0, 3]]).log() == [[log(2), 0], [0, log(3)]]
     /// let l = matrix![ctx, [2, 0], [0, 3]].matrix_log().unwrap();
-    /// assert_eq!(l, Matrix::diag(&[ctx.int(2).ln(), ctx.int(3).ln()]));
+    /// assert_eq!(l, Matrix::diag(&[ctx.int(2).ln(), ctx.int(3).ln()]).unwrap());
     /// // Defective: log [[1, 1], [0, 1]] = [[0, 1], [0, 0]]
     /// let n = matrix![ctx, [1, 1], [0, 1]];
     /// assert_eq!(n.matrix_log().unwrap(), matrix![ctx, [0, 1], [0, 0]]);
@@ -884,9 +887,7 @@ pub fn hessian(f: &Ex, vars: &[&Ex]) -> Result<Matrix, SymplexError> {
         return Err(invalid("hessian", "vars must be non-empty"));
     }
     let firsts: Vec<Ex> = vars.iter().map(|v| f.diff(v)).collect();
-    Ok(Matrix::from_fn(vars.len(), vars.len(), |i, j| {
-        firsts[i].diff(vars[j])
-    }))
+    Matrix::from_fn(vars.len(), vars.len(), |i, j| firsts[i].diff(vars[j]))
 }
 
 /// Wronskian `W(f₁, …, fₙ)(x) = det[ fⱼ^(i) ]` of a list of functions.
@@ -972,7 +973,10 @@ mod tests {
         assert_eq!(q.shape(), (3, 2));
         assert_eq!(r.shape(), (2, 2));
         assert_eq!((&q * &r).simplify(), a);
-        assert_eq!((&q.transpose() * &q).simplify(), Matrix::identity(&ctx, 2));
+        assert_eq!(
+            (&q.transpose() * &q).simplify(),
+            Matrix::identity(&ctx, 2).unwrap()
+        );
         assert_eq!(r.is_upper_triangular(), Some(true));
         assert_eq!(ex_is_positive(r.get(0, 0)), Some(true));
     }
@@ -1091,10 +1095,10 @@ mod tests {
         assert_eq!(up.is_upper_triangular(), Some(true));
         assert_eq!(up.is_lower_triangular(), Some(false));
         assert_eq!(up.transpose().is_lower_triangular(), Some(true));
-        assert_eq!(Matrix::identity(&ctx, 3).is_diagonal(), Some(true));
-        assert_eq!(Matrix::identity(&ctx, 3).is_identity(), Some(true));
+        assert_eq!(Matrix::identity(&ctx, 3).unwrap().is_diagonal(), Some(true));
+        assert_eq!(Matrix::identity(&ctx, 3).unwrap().is_identity(), Some(true));
         assert_eq!(up.is_identity(), Some(false));
-        assert_eq!(Matrix::zeros(&ctx, 2, 3).is_zero(), Some(true));
+        assert_eq!(Matrix::zeros(&ctx, 2, 3).unwrap().is_zero(), Some(true));
         assert_eq!(up.is_zero(), Some(false));
         assert_eq!(ctxi(&ctx, &[&[0, 1], &[0, 0]]).is_nilpotent(), Some(true));
         assert_eq!(up.is_nilpotent(), Some(false));

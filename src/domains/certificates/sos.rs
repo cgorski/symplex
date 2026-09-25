@@ -827,7 +827,7 @@ impl SosProblem {
                 } else {
                     v / Q::from_integer(BigInt::from(2))
                 }
-            });
+            })?;
             let bab = &(&b.transpose() * &a) * b; // r × r symmetric
             let mut coeffs = vec![Q::zero(); tri_r];
             for i in 0..r {
@@ -864,7 +864,7 @@ impl SosProblem {
             } else {
                 self.constraints[i].target.clone()
             }
-        });
+        })?;
         let (r, pivots) = aug.rref_limited(w);
         let rank = pivots.len();
         if (rank..m).any(|i| !r[(i, w)].is_zero()) {
@@ -1122,7 +1122,7 @@ impl SosProblem {
             })
             .collect();
         if residual.iter().all(Zero::is_zero) {
-            return Some(self.expand(&q));
+            return self.expand(&q);
         }
         // Δq = W⁻¹ Aᵀ ν with (A W⁻¹ Aᵀ) ν = r,  W = diag(1 on diag, 2 off).
         let winv = |k: usize| -> Q {
@@ -1142,8 +1142,9 @@ impl SosProblem {
                 }
             }
             s
-        });
-        let rhs = QMatrix::from_fn(m, 1, |i, _| residual[i].clone());
+        })
+        .ok()?;
+        let rhs = QMatrix::from_fn(m, 1, |i, _| residual[i].clone()).ok()?;
         let nu = gram.solve(&rhs).ok()?;
         for (k, qk) in q.iter_mut().enumerate() {
             let mut delta = Q::zero();
@@ -1157,16 +1158,18 @@ impl SosProblem {
                 *qk += delta * winv(k);
             }
         }
-        Some(self.expand(&q))
+        self.expand(&q)
     }
 
-    /// Upper-triangle vector → full symmetric `QMatrix`.
-    fn expand(&self, q: &[Q]) -> QMatrix {
+    /// Upper-triangle vector → full symmetric `QMatrix` (`None` for a
+    /// problem with an empty basis).
+    fn expand(&self, q: &[Q]) -> Option<QMatrix> {
         let n = self.n;
         QMatrix::from_fn(n, n, |i, j| {
             let (lo, hi) = if i <= j { (i, j) } else { (j, i) };
             q[tri_index(lo, hi, n)].clone()
         })
+        .ok()
     }
 }
 
@@ -1696,7 +1699,11 @@ fn rational_face_candidates(x: &[f64], n: usize, goal: &Poly, basis: &[Vec<u32>]
     }
     if cands.is_empty() {
         for rel in integer_relations(&rows, n, accuracy) {
-            let col = QMatrix::col_vector(rel.iter().map(|v| Q::from_integer(v.clone())).collect());
+            let Ok(col) =
+                QMatrix::col_vector(rel.iter().map(|v| Q::from_integer(v.clone())).collect())
+            else {
+                continue;
+            };
             // Keep only directions independent of those already chosen.
             let mut all: Vec<&QMatrix> = cands.iter().collect();
             all.push(&col);
@@ -1890,7 +1897,7 @@ pub fn prove_sos(goal: &Ex, vars: &[Ex], opts: &SosOpts) -> Result<SosOutcome, S
     }
     if goal_poly.is_zero() {
         let basis = vec![vec![0u32; vars.len()]];
-        let gram = QMatrix::zeros(1, 1);
+        let gram = QMatrix::zeros(1, 1)?;
         return Ok(SosOutcome::Proved(SosCertificate::from_gram(
             goal_poly, basis, gram,
         )?));
@@ -1931,7 +1938,7 @@ pub fn prove_sos(goal: &Ex, vars: &[Ex], opts: &SosOpts) -> Result<SosOutcome, S
             })
         } else {
             let basis = vec![vec![0u32; vars.len()]];
-            let gram = QMatrix::from_fn(1, 1, |_, _| c.clone());
+            let gram = QMatrix::from_fn(1, 1, |_, _| c.clone())?;
             Ok(SosOutcome::Proved(SosCertificate::from_gram(
                 goal_poly, basis, gram,
             )?))

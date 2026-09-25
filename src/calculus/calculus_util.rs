@@ -765,7 +765,10 @@ fn breakpoints_of_node(
             scan.complete = false;
             scan.opaque = true;
         }
-        ExprNode::RootOf(..) | ExprNode::RootSum(..) | ExprNode::LambertW(_)
+        ExprNode::RootOf(..)
+        | ExprNode::RootSum(..)
+        | ExprNode::LambertW(_)
+        | ExprNode::Subs(..)
             if node
                 .children()
                 .iter()
@@ -1102,6 +1105,7 @@ fn opaque_node_name(node: &ExprNode) -> Option<&'static str> {
         ExprNode::RootOf(..) => "RootOf",
         ExprNode::RootSum(..) => "RootSum",
         ExprNode::DSolve(..) => "DSolve",
+        ExprNode::Subs(..) => "Subs",
         ExprNode::Gt(..)
         | ExprNode::Ge(..)
         | ExprNode::Eq_(..)

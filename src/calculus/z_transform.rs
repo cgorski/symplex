@@ -447,9 +447,11 @@ fn neg_z_derivative(arena: &mut Arena, x: ExprId, z_var: ExprId) -> ExprId {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
-/// Check whether `expr` contains the variable `var`.
+/// Does `expr` depend on the variable `var`?  Only free occurrences count
+/// (a `Sum` over `var`, a `RootOf` in `var` are constants; see
+/// `walk::binder`).
 fn contains_var(arena: &Arena, expr: ExprId, var: ExprId) -> bool {
-    crate::base::walk::contains(arena, expr, var)
+    crate::base::walk::has_free_var(arena, expr, var)
 }
 
 /// Split `expr` into `(coefficient_independent_of_var, rest_depending_on_var)`.

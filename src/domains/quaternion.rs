@@ -138,7 +138,7 @@ impl Quaternion {
 
     /// The vector part `(x, y, z)` as a 3×1 column vector.
     pub fn vector(&self) -> Matrix {
-        Matrix::col_vector(vec![self.x.clone(), self.y.clone(), self.z.clone()])
+        Matrix::col_vector_unchecked(vec![self.x.clone(), self.y.clone(), self.z.clone()])
     }
 
     /// Components as `[w, x, y, z]`.
@@ -517,7 +517,7 @@ impl Quaternion {
             tidy(&self.x.eval() / &v_norm),
             tidy(&self.y.eval() / &v_norm),
             tidy(&self.z.eval() / &v_norm),
-        ]);
+        ])?;
         let w = self.w.eval();
         let half_angle = if ex_is_positive(&w) == Some(true) {
             (&v_norm / &w).atan()
@@ -1120,11 +1120,14 @@ mod tests {
         let ctx = Context::new();
         let th = ctx.symbol("theta");
         let qz = Quaternion::from_axis_angle(&ctx.int(0), &ctx.int(0), &ctx.int(1), &th);
-        let v = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
+        let v = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]).unwrap();
         let rv = qz.rotate_vector(&v).unwrap().simplify();
         let mv = (&qz.to_rotation_matrix() * &v).simplify();
         assert_eq!(rv.equals(&mv), Some(true));
-        assert!(qz.rotate_vector(&Matrix::identity(&ctx, 2)).is_err());
+        assert!(
+            qz.rotate_vector(&Matrix::identity(&ctx, 2).unwrap())
+                .is_err()
+        );
     }
 
     #[test]
@@ -1161,7 +1164,7 @@ mod tests {
             assert!(qq.w.eval_f64().unwrap() >= -1e-12, "canonical sign w ≥ 0");
             assert!(approx(qq.norm_squared().eval_f64().unwrap(), 1.0));
         }
-        assert!(Quaternion::from_rotation_matrix(&Matrix::identity(&ctx, 2)).is_err());
+        assert!(Quaternion::from_rotation_matrix(&Matrix::identity(&ctx, 2).unwrap()).is_err());
         assert!(
             Quaternion::from_rotation_matrix(
                 &Matrix::from_i64(&ctx, &[&[1, 1, 0], &[0, 1, 0], &[0, 0, 1]]).unwrap()

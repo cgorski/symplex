@@ -107,7 +107,7 @@ fn adjugate_2x2_numeric() {
 fn inverse_identity_is_identity() {
     let ctx = Context::new();
     for n in 1..=4 {
-        let id = Matrix::identity(&ctx, n);
+        let id = Matrix::identity(&ctx, n).unwrap();
         let inv = id.inv().expect("identity should be invertible");
         for i in 0..n {
             for j in 0..n {
@@ -221,7 +221,7 @@ fn char_poly_identity_2x2() {
     let ctx = Context::new();
     // det(I - λI) = det([1-λ, 0; 0, 1-λ]) = (1-λ)² = λ² - 2λ + 1
     let lambda = ctx.symbol("lambda");
-    let id = Matrix::identity(&ctx, 2);
+    let id = Matrix::identity(&ctx, 2).unwrap();
     let cp = id.char_poly(&lambda).unwrap();
     let s = format!("{cp}");
     // Should contain lambda^2
@@ -358,7 +358,7 @@ fn eigenvals_3x3_diagonal() {
 fn eigenvals_identity() {
     let ctx = Context::new();
     // I_2 → eigenvalue 1 (double)
-    let id = Matrix::identity(&ctx, 2);
+    let id = Matrix::identity(&ctx, 2).unwrap();
     let evals = id.eigenvals().unwrap();
     // The solver may return [1, 1] or just [1] depending on multiplicity handling.
     assert!(
@@ -446,7 +446,7 @@ fn eigenvector_satisfies_eigenvalue_equation() {
     assert_eq!(evals.len(), 2, "should have 2 eigenvalues");
 
     // Eigenvector for λ=1: v = [1, -1]
-    let v1 = Matrix::col_vector(vec![ctx.int(1), ctx.int(-1)]);
+    let v1 = Matrix::col_vector(vec![ctx.int(1), ctx.int(-1)]).unwrap();
     let av1 = a.matmul(&v1).unwrap().simplify();
     let lv1 = v1.scale(&ctx.int(1)).simplify(); // 1 * v1
     for i in 0..2 {
@@ -460,7 +460,7 @@ fn eigenvector_satisfies_eigenvalue_equation() {
     }
 
     // Eigenvector for λ=3: v = [1, 1]
-    let v3 = Matrix::col_vector(vec![ctx.int(1), ctx.int(1)]);
+    let v3 = Matrix::col_vector(vec![ctx.int(1), ctx.int(1)]).unwrap();
     let av3 = a.matmul(&v3).unwrap().simplify();
     let lv3 = v3.scale(&ctx.int(3)).simplify(); // 3 * v3
     for i in 0..2 {
@@ -710,7 +710,7 @@ fn solve_row_mismatch_returns_error() {
 fn solve_identity_returns_b() {
     // I * x = b → x = b
     let ctx = Context::new();
-    let eye = Matrix::identity(&ctx, 3);
+    let eye = Matrix::identity(&ctx, 3).unwrap();
     let b = matrix![ctx, [7], [11], [13]];
     let x = eye.solve(&b).expect("solve should succeed");
     assert_eq!(format!("{}", x.get(0, 0)), "7");
@@ -746,7 +746,7 @@ fn solve_symbolic_rhs() {
     // Solution: x = a, y = b
     let ctx = Context::new();
     symplex::syms!(ctx; a, b);
-    let eye = Matrix::identity(&ctx, 2);
+    let eye = Matrix::identity(&ctx, 2).unwrap();
     let rhs = Matrix::new(vec![vec![a.clone()], vec![b.clone()]]).unwrap();
     let x = eye.solve(&rhs).expect("solve should succeed");
     assert_eq!(format!("{}", x.get(0, 0)), "a");

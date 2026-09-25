@@ -131,7 +131,7 @@ fn main() {
     show_solution("symbolic coeffs ", &sol);
     // Matrix form A·x = b (unknowns are named x1, x2, …).
     let am = matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]];
-    let bm = Matrix::col_vector(vec![ctx.int(6), ctx.int(15), ctx.int(24)]);
+    let bm = Matrix::col_vector(vec![ctx.int(6), ctx.int(15), ctx.int(24)]).unwrap();
     show_solution("singular A·x = b", &linsolve_matrix(&am, &bm).unwrap());
     // Context::solve_system is the same solver.
     show_solution(

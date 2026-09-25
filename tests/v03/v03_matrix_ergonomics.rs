@@ -157,7 +157,7 @@ fn delete_row_then_col_equals_minor_matrix() {
 #[test]
 fn is_zero_literal_zero() {
     let ctx = Context::new();
-    assert_eq!(Matrix::zeros(&ctx, 2, 3).is_zero(), Some(true));
+    assert_eq!(Matrix::zeros(&ctx, 2, 3).unwrap().is_zero(), Some(true));
 }
 
 #[test]
@@ -338,8 +338,8 @@ fn from_f64_rows_integers_and_nan() {
 fn nnz_counts_structural_nonzeros() {
     let ctx = Context::new();
     assert_eq!(matrix![ctx, [1, 0, 2], [0, 0, 3]].nnz(), 3);
-    assert_eq!(Matrix::identity(&ctx, 5).nnz(), 5);
-    assert_eq!(Matrix::zeros(&ctx, 3, 3).nnz(), 0);
+    assert_eq!(Matrix::identity(&ctx, 5).unwrap().nnz(), 5);
+    assert_eq!(Matrix::zeros(&ctx, 3, 3).unwrap().nnz(), 0);
 }
 
 #[test]

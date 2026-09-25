@@ -138,7 +138,7 @@ Three-valued queries return `Option` — the answer might be yes, no, or "can't 
 # let other = x.powi(3);
 # let elem = ctx.int(1);
 # let set = ctx.reals();
-# let matrix = Matrix::identity(&ctx, 2);
+# let matrix = Matrix::identity(&ctx, 2).unwrap();
 expr.is_positive();        // Some(true), Some(false), or None
 expr.degree(&x);           // Some(3) or None (not a polynomial)
 expr.equals(&other);       // Some(true), Some(false), or None
@@ -154,8 +154,8 @@ Operations with structural requirements (e.g., matrix operations that require sp
 ```rust
 # use symplex::prelude::*;
 # let ctx = Context::new();
-# let matrix = Matrix::identity(&ctx, 2);
-# let other = Matrix::identity(&ctx, 2);
+# let matrix = Matrix::identity(&ctx, 2).unwrap();
+# let other = Matrix::identity(&ctx, 2).unwrap();
 matrix.det();           // Err if non-square
 matrix.inv();           // Err if singular
 matrix.matmul(&other);  // Err if dimensions don't match

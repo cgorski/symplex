@@ -307,7 +307,9 @@ fn characteristic_roots(coeffs: &[Ex], n: &Ex) -> Result<Vec<(Ex, usize)>, Sympl
                 let root = {
                     let mut inner = ctx.inner.write();
                     let idx = inner.arena.int(k as i64);
-                    inner.arena.intern(ExprNode::RootOf(f_expr, idx))
+                    inner
+                        .arena
+                        .intern(ExprNode::RootOf(f_expr, r.raw_id(), idx))
                 };
                 roots.push((r.wrap(root), mult));
             }

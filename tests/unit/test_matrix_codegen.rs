@@ -91,7 +91,7 @@ fn assert_balanced_brackets(code: &str) {
 #[test]
 fn matrix_codegen_2x2_identity() {
     let ctx = Context::new();
-    let m = Matrix::identity(&ctx, 2);
+    let m = Matrix::identity(&ctx, 2).unwrap();
     let code = m.to_rust_fn("identity2", &[]).unwrap();
 
     assert!(

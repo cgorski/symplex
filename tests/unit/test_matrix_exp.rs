@@ -15,9 +15,9 @@ use symplex::matrix::Matrix;
 fn matrix_exp_zero() {
     // exp(0) = I
     let ctx = Context::new();
-    let zero = Matrix::zeros(&ctx, 3, 3);
+    let zero = Matrix::zeros(&ctx, 3, 3).unwrap();
     let result = zero.exp_series(10).unwrap();
-    let ident = Matrix::identity(&ctx, 3);
+    let ident = Matrix::identity(&ctx, 3).unwrap();
     for i in 0..3 {
         for j in 0..3 {
             let val = result.get(i, j).eval_f64().unwrap();
@@ -37,7 +37,7 @@ fn matrix_exp_identity_scaled() {
     let t_val = 0.1_f64;
     let t = ctx.rational(1, 10); // exact 1/10
     let n = 3;
-    let ti = Matrix::identity(&ctx, n).scale(&t);
+    let ti = Matrix::identity(&ctx, n).unwrap().scale(&t);
     let result = ti.exp_series(15).unwrap();
 
     let expected_diag = t_val.exp(); // e^0.1 ≈ 1.10517...
@@ -186,8 +186,8 @@ fn matrix_exp_series_converges() {
 fn kronecker_dimensions() {
     let ctx = Context::new();
     // (2×3) ⊗ (4×5) → (8×15)
-    let a = Matrix::from_fn(2, 3, |_i, _j| ctx.int(1));
-    let b = Matrix::from_fn(4, 5, |_i, _j| ctx.int(1));
+    let a = Matrix::from_fn(2, 3, |_i, _j| ctx.int(1)).unwrap();
+    let b = Matrix::from_fn(4, 5, |_i, _j| ctx.int(1)).unwrap();
     let c = a.kronecker(&b);
     assert_eq!(c.nrows(), 8);
     assert_eq!(c.ncols(), 15);
@@ -203,7 +203,7 @@ fn kronecker_identity() {
         vec![ctx.int(3), ctx.int(4)],
     ])
     .unwrap();
-    let i2 = Matrix::identity(&ctx, 2);
+    let i2 = Matrix::identity(&ctx, 2).unwrap();
     let result = a.kronecker(&i2);
 
     assert_eq!(result.nrows(), 4);

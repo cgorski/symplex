@@ -267,8 +267,9 @@ fn remap_node(
         ExprNode::DSolve(a, b, c) => ExprNode::DSolve(m(a), m(b), m(c)),
         ExprNode::RootSum(a, b, c) => ExprNode::RootSum(m(a), m(b), m(c)),
         ExprNode::Series(a, b, c, d) => ExprNode::Series(m(a), m(b), m(c), m(d)),
-        ExprNode::RootOf(a, b) => ExprNode::RootOf(m(a), m(b)),
+        ExprNode::RootOf(a, b, c) => ExprNode::RootOf(m(a), m(b), m(c)),
         ExprNode::ConditionSet(a, b) => ExprNode::ConditionSet(m(a), m(b)),
+        ExprNode::Subs(a, b, c) => ExprNode::Subs(m(a), m(b), m(c)),
 
         // ── Unary nodes ──────────────────────────────────────────────────
         ExprNode::Neg(x) => ExprNode::Neg(m(x)),

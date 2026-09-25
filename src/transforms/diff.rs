@@ -727,13 +727,13 @@ fn diff_node(
 
             let mut terms: SmallVec<[ExprId; 4]> = SmallVec::new();
 
-            for &arg in &args_clone {
+            for (i, &arg) in args_clone.iter().enumerate() {
                 let d_arg = get_deriv(cache, arg, arena);
                 if arena.is_zero_structural(d_arg) {
                     continue;
                 }
-                // ∂f/∂(arg_i) — stays as formal Derivative since f is unknown
-                let partial = arena.intern(ExprNode::Derivative(id, arg));
+                // ∂f/∂(arg_i) — stays formal since f is unknown
+                let partial = slot_partial(arena, id, func_sym, &args_clone, i);
                 terms.push(arena.mul(&[partial, d_arg]));
             }
 
@@ -749,7 +749,11 @@ fn diff_node(
         }
 
         // ── Derivative: leave as higher-order derivative ───────────
+        // (zero in a variable it does not depend on: ∂/∂y f′(x) = 0).
         ExprNode::Derivative(_, _) => {
+            if !crate::base::walk::has_free_symbol(arena, id, var) {
+                return arena.zero;
+            }
             let v = var_expr(arena, var);
             arena.intern(ExprNode::Derivative(id, v))
         }
@@ -763,7 +767,11 @@ fn diff_node(
             {
                 return body;
             }
-            // Different variable — leave as unevaluated derivative.
+            // Different variable — zero if the integral does not depend
+            // on it, else leave as unevaluated derivative.
+            if !crate::base::walk::has_free_symbol(arena, id, var) {
+                return arena.zero;
+            }
             let v = var_expr(arena, var);
             arena.intern(ExprNode::Derivative(id, v))
         }
@@ -863,13 +871,53 @@ fn diff_node(
             }
         }
 
+        // ── Subs: chain rule through the point ──
+        // d/dx [g(v, x)]_{v=p(x)} = [∂g/∂v]_{v=p}·p′(x) + [∂g/∂x]_{v=p}
+        // (SymPy's `Subs._eval_derivative`); the second term is absent when
+        // x is `v`, which is bound in `g`.  `∂g/∂v` for `v ≠ x` is a second
+        // `diff` of `g`, taken only when `g` holds no `Subs` of its own, so
+        // that nesting cannot recurse; otherwise the derivative stays formal.
+        ExprNode::Subs(body, sub_var, point) => {
+            let formal = |arena: &mut Arena| {
+                let v = var_expr(arena, var);
+                arena.intern(ExprNode::Derivative(id, v))
+            };
+            let ExprNode::Symbol(sub_sym) = *arena.node(sub_var) else {
+                return formal(arena);
+            };
+            let mut terms: SmallVec<[ExprId; 2]> = SmallVec::new();
+            let d_point = get_deriv(cache, point, arena);
+            if !arena.is_zero_structural(d_point) {
+                let d_body_v = if sub_sym == var {
+                    get_deriv(cache, body, arena)
+                } else if contains_subs(arena, body) {
+                    return formal(arena);
+                } else {
+                    diff(arena, body, sub_var)
+                };
+                let at = arena.subs_structural(d_body_v, sub_var, point);
+                terms.push(arena.mul(&[at, d_point]));
+            }
+            if sub_sym != var {
+                let d_body_x = get_deriv(cache, body, arena);
+                if !arena.is_zero_structural(d_body_x) {
+                    terms.push(arena.subs_structural(d_body_x, sub_var, point));
+                }
+            }
+            match terms.len() {
+                0 => arena.zero,
+                1 => terms[0],
+                _ => arena.add(&terms),
+            }
+        }
+
         // ── Formal / unevaluated nodes: leave as unevaluated derivative ──
         ExprNode::Limit(_, _, _)
         | ExprNode::Series(_, _, _, _)
         | ExprNode::LaplaceTransform(_, _, _)
         | ExprNode::InverseLaplaceTransform(_, _, _)
         | ExprNode::Residue(_, _, _)
-        | ExprNode::RootOf(_, _)
+        | ExprNode::RootOf(_, _, _)
         | ExprNode::DSolve(_, _, _)
         | ExprNode::ConditionSet(_, _) => {
             // A node in which `var` is not free is a constant: its bound
@@ -887,11 +935,53 @@ fn diff_node(
     }
 }
 
+/// The partial derivative of the application `id` = `f(a₀, …, aₙ₋₁)` in
+/// its `i`-th argument slot, as a formal node (SymPy's form):
+///
+/// - `Derivative(f(…, x, …), x)` when `aᵢ` is a symbol `x` that no other
+///   argument mentions — the derivative in `x` is then the one in slot `i`;
+/// - `Subs(Derivative(f(…, ξ, …), ξ), ξ, aᵢ)` otherwise, for a fresh `ξ`:
+///   `∂f/∂u (x²)` is `f′` evaluated at `x²`.  Up to 0.28 this was
+///   `Derivative(f(x²), x²)`, a derivative in a non-symbol, which every
+///   later pass misread (substituting `x = 1` gave `Derivative(f(1), 1)`),
+///   and `f(x, x)′` was `2·Derivative(f(x, x), x)`, twice the total
+///   derivative.
+fn slot_partial(
+    arena: &mut Arena,
+    id: ExprId,
+    func: SymbolId,
+    args: &[ExprId],
+    i: usize,
+) -> ExprId {
+    let arg = args[i];
+    if let ExprNode::Symbol(s) = *arena.node(arg)
+        && args
+            .iter()
+            .enumerate()
+            .all(|(j, &a)| j == i || !crate::base::walk::has_free_symbol(arena, a, s))
+    {
+        return arena.intern(ExprNode::Derivative(id, arg));
+    }
+    let xi = crate::transforms::subs::fresh_symbol(arena, "_xi", args);
+    let mut slot_args: SmallVec<[ExprId; 2]> = SmallVec::from_slice(args);
+    slot_args[i] = xi;
+    let body = arena.intern(ExprNode::Apply(func, slot_args));
+    let d = arena.intern(ExprNode::Derivative(body, xi));
+    crate::base::walk::subs_node(arena, d, xi, arg)
+}
+
 /// Look up the derivative of `id` from the cache.
 /// Returns `arena.zero` if not found (shouldn't happen in correct usage).
 #[inline]
 fn get_deriv(cache: &FxHashMap<ExprId, ExprId>, id: ExprId, arena: &Arena) -> ExprId {
     cache.get(&id).copied().unwrap_or(arena.zero)
+}
+
+/// Does the tree rooted at `root` hold a `Subs` node?
+fn contains_subs(arena: &Arena, root: ExprId) -> bool {
+    crate::base::walk::post_order_ids(arena, root)
+        .into_iter()
+        .any(|id| matches!(arena.node(id), ExprNode::Subs(..)))
 }
 
 /// Reconstruct the Symbol ExprId for the variable.
@@ -1132,9 +1222,11 @@ fn diff_special_09(
 ) -> Option<ExprId> {
     // Formal derivative of the whole node: used when a parameter depends on
     // the variable (or the rule is unknown, e.g. η).
-    let formal = |arena: &mut Arena, arg: ExprId| -> ExprId {
-        let partial = arena.intern(ExprNode::Derivative(id, arg));
-        let d = get_deriv(cache, arg, arena);
+    // `slot` is the argument's position (see `slot_partial`).
+    let func = arena.symbols.intern(name.name());
+    let formal = |arena: &mut Arena, slot: usize| -> ExprId {
+        let partial = slot_partial(arena, id, func, args, slot);
+        let d = get_deriv(cache, args[slot], arena);
         arena.mul(&[partial, d])
     };
 
@@ -1237,7 +1329,7 @@ fn diff_special_09(
             if arena.is_zero_structural(df) {
                 return Some(arena.zero);
             }
-            Some(formal(arena, args[0]))
+            Some(formal(arena, 0))
         }
         // ── (parameter, x) functions ──
         (LibFn::ExpInt | LibFn::LowerGamma | LibFn::UpperGamma | LibFn::PolyLog, 2) => {
@@ -1247,9 +1339,9 @@ fn diff_special_09(
             if !arena.is_zero_structural(dp) {
                 // Parameter derivatives have no elementary form.
                 let mut terms: SmallVec<[ExprId; 2]> = SmallVec::new();
-                terms.push(formal(arena, p));
+                terms.push(formal(arena, 0));
                 if !arena.is_zero_structural(df) {
-                    terms.push(formal(arena, f));
+                    terms.push(formal(arena, 1));
                 }
                 return Some(arena.add(&terms));
             }
@@ -1297,7 +1389,7 @@ fn diff_special_09(
                 terms.push(arena.mul(&[outer, dphi]));
             }
             if !arena.is_zero_structural(dm) {
-                terms.push(formal(arena, m));
+                terms.push(formal(arena, 1));
             }
             Some(match terms.len() {
                 0 => arena.zero,
@@ -1358,10 +1450,10 @@ fn diff_special_09(
                 if !arena.is_zero_structural(dp) {
                     // Parameter depends on the variable: formal derivative.
                     let mut terms: SmallVec<[ExprId; 4]> = SmallVec::new();
-                    for &a in args {
+                    for (slot, &a) in args.iter().enumerate() {
                         let da = get_deriv(cache, a, arena);
                         if !arena.is_zero_structural(da) {
-                            terms.push(formal(arena, a));
+                            terms.push(formal(arena, slot));
                         }
                     }
                     return Some(arena.add(&terms));
@@ -1423,10 +1515,10 @@ fn diff_special_09(
             let dx2 = get_deriv(cache, x2, arena);
             let mut terms: SmallVec<[ExprId; 4]> = SmallVec::new();
             // Parameter derivatives have no elementary form.
-            for &p in &[a, b] {
+            for (slot, p) in [a, b].into_iter().enumerate() {
                 let dp = get_deriv(cache, p, arena);
                 if !arena.is_zero_structural(dp) {
-                    terms.push(formal(arena, p));
+                    terms.push(formal(arena, slot));
                 }
             }
             // ∂/∂x₂ = x₂^{a−1}(1−x₂)^{b−1} [/ B(a,b)],  ∂/∂x₁ = −(same at x₁).
@@ -1842,14 +1934,20 @@ mod tests {
     }
 
     #[test]
-    fn diff_integral_different_var_stays_unevaluated() {
+    fn diff_integral_different_var_is_zero_or_stays_unevaluated() {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
         let y = sym(&mut a, "y");
-        // d/dx(∫ y dy) stays as Derivative(Integral(y, y), x)
+        // d/dx(∫ y dy) = 0: the integral does not depend on x (SymPy 1.14:
+        // `Integral(y, y).diff(x)` is 0; up to 0.28 it stayed formal).
         let integral = a.intern(crate::base::node::ExprNode::Integral(y, y));
         let result = diff(&mut a, integral, x);
-        assert_eq!(display(&a, result), "Derivative(Integral(y, y), x)");
+        assert_eq!(display(&a, result), "0");
+        // d/dx(∫ x·y dy) stays as Derivative(Integral(x*y, y), x).
+        let xy = a.mul(&[x, y]);
+        let integral = a.intern(crate::base::node::ExprNode::Integral(xy, y));
+        let result = diff(&mut a, integral, x);
+        assert_eq!(display(&a, result), "Derivative(Integral(x*y, y), x)");
     }
 
     // ── Apply chain rule (Wave C) ───────────────────────────────────

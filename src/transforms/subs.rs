@@ -40,6 +40,34 @@
 //! k)` is `Sum(k**2, (k, 0, n))`, and likewise for `Lambda` and
 //! `ConditionSet`); the renaming is the standard capture-avoiding
 //! substitution (H. P. Barendregt, *The Lambda Calculus*, 1984, §2.1).
+//!
+//! **Variable slots.**  A `Derivative`, an indefinite `Integral`, a
+//! `Series` and a `DSolve` do not bind their variable `x` — `f′(x)` is a
+//! function of `x` — but they are not plain operators on their operands
+//! either ([`crate::base::walk::var_slot`]).  Replacements other than `x`
+//! itself go into the operands, as in SymPy (`Derivative(f(x), x)` with
+//! `f(x) ↦ sin(x)` is `Derivative(sin(x), x)`).  Replacing `x`:
+//!
+//! - by a symbol `t` that the operands do not mention renames the slot:
+//!   `Derivative(f(t), t)`, `Integral(t²y, t)`;
+//! - by anything else is evaluation at a point.  A `Derivative` whose
+//!   operand depends on `x` alone and that `diff` can now take is
+//!   differentiated and the point substituted into the result (a formal
+//!   `Derivative(y, x)` built for an ODE is kept: `y` stands for `y(x)`);
+//!   otherwise the node is wrapped:
+//!   `f′(x)` at `x = 0` is `Subs(Derivative(f(x), x), x, 0)`, where up to
+//!   0.28 it was the meaningless `Derivative(f(0), 0)`.  The same wrapping
+//!   applies when another replacement would bring a free `x` into the
+//!   operands (`Derivative(f(x, y), x)` with `y ↦ x` is `∂₁f(x, x)`,
+//!   `Subs(Derivative(f(x_1, x), x_1), x_1, x)`, not `Derivative(f(x, x),
+//!   x)`).
+//!
+//! This follows SymPy's `Derivative._eval_subs` (`sympy/core/function.py`,
+//! BSD-3) in outcome; SymPy keeps an indefinite integral at a point as
+//! `Integral(f, (x, a))` where symplex uses the same `Subs` node, and
+//! SymPy renames an integral's variable even to a symbol its integrand
+//! already contains (`Integral(y*f(x), x).subs(x, y)` is `Integral(y*f(y),
+//! y)`), which symplex does not.
 
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
@@ -78,7 +106,37 @@ pub(crate) fn subs(arena: &mut Arena, expr: ExprId, old: ExprId, new: ExprId) ->
     }
 
     let map: FxHashMap<ExprId, ExprId> = std::iter::once((old, new)).collect();
-    subs_scoped(arena, expr, &map)
+    subs_scoped(arena, expr, &map, true, None)
+}
+
+/// An algebraic rewrite of `old` into `new`: tried on every node, after
+/// its operands are rebuilt, in a scope where the replacement is in force.
+type Rewrite<'a> = (
+    ExprId,
+    ExprId,
+    &'a dyn Fn(&mut Arena, ExprId) -> Option<ExprId>,
+);
+
+/// Substitution of `old` by `new` that, besides exact occurrences, lets
+/// `rewrite` recognise `old` inside a node (`x²` inside `x⁴`; see
+/// `transforms::pattern::subs_algebraic`).  Binders and variable slots are
+/// handled exactly as by [`subs`]: under a binder of `v`, an `old` with
+/// `v` free is not rewritten.
+pub(crate) fn subs_with_rewrite(
+    arena: &mut Arena,
+    expr: ExprId,
+    old: ExprId,
+    new: ExprId,
+    rewrite: &dyn Fn(&mut Arena, ExprId) -> Option<ExprId>,
+) -> ExprId {
+    if old == new {
+        return expr;
+    }
+    if expr == old {
+        return new;
+    }
+    let map: FxHashMap<ExprId, ExprId> = std::iter::once((old, new)).collect();
+    subs_scoped(arena, expr, &map, true, Some((old, new, rewrite)))
 }
 
 /// Simultaneous substitution of multiple `(old, new)` pairs.
@@ -106,7 +164,7 @@ pub(crate) fn subs_map(
         return expr;
     }
 
-    subs_scoped(arena, expr, &map)
+    subs_scoped(arena, expr, &map, true, None)
 }
 
 /// The substitution maps in force in the scopes met during one
@@ -115,20 +173,35 @@ pub(crate) fn subs_map(
 struct Scopes {
     maps: Vec<FxHashMap<ExprId, ExprId>>,
     index: FxHashMap<Vec<(ExprId, ExprId)>, u32>,
+    /// Keys are matched algebraically (see [`subs_with_rewrite`]), so a
+    /// key may act on an operand that does not contain it as a node.
+    algebraic: bool,
 }
 
 impl Scopes {
     /// The scopes, and the scope of the caller's `map`.
-    fn new(map: &FxHashMap<ExprId, ExprId>) -> (Self, u32) {
+    fn new(map: &FxHashMap<ExprId, ExprId>, algebraic: bool) -> (Self, u32) {
         let mut scopes = Scopes {
             maps: vec![FxHashMap::default()],
             index: FxHashMap::default(),
+            algebraic,
         };
         scopes.index.insert(Vec::new(), 0);
         let mut pairs: Vec<(ExprId, ExprId)> = map.iter().map(|(&k, &v)| (k, v)).collect();
         pairs.sort_unstable();
         let top = scopes.intern(pairs);
         (scopes, top)
+    }
+
+    /// Can the key `k` act on the operand `c`?  A structural key only if
+    /// `c` contains it; an algebraic one (`x²` acts on `x⁴`) if `c`
+    /// contains every free symbol of `k`.
+    fn may_act(&self, arena: &Arena, c: ExprId, k: ExprId) -> bool {
+        crate::base::walk::contains(arena, c, k)
+            || (self.algebraic
+                && crate::base::walk::free_symbols(arena, k)
+                    .into_iter()
+                    .all(|s| crate::base::walk::contains(arena, c, s)))
     }
 
     fn intern(&mut self, pairs: Vec<(ExprId, ExprId)>) -> u32 {
@@ -157,9 +230,7 @@ impl Scopes {
             .map(|(&k, &v)| (k, v))
             .filter(|&(k, _)| {
                 !crate::base::walk::has_free_symbol(arena, k, var_sym)
-                    && b.scoped
-                        .iter()
-                        .any(|&c| crate::base::walk::contains(arena, c, k))
+                    && b.scoped.iter().any(|&c| self.may_act(arena, c, k))
             })
             .collect();
         if inner.is_empty() {
@@ -177,6 +248,139 @@ impl Scopes {
         };
         inner.sort_unstable();
         (self.intern(inner), var)
+    }
+
+    /// The plan for the variable-slot node `b` (see
+    /// [`crate::base::walk::var_slot`]) entered from scope `sc`: the
+    /// scope of its scoped operands, the variable it is rebuilt with, and
+    /// the point to evaluate it at (`None`: rebuild only).  See the module
+    /// documentation on variable slots.
+    fn enter_slot(&mut self, arena: &mut Arena, sc: u32, b: &Binder) -> SlotPlan {
+        let ExprNode::Symbol(var_sym) = *arena.node(b.var) else {
+            return SlotPlan::rebuild(0, b.var);
+        };
+        let map = &self.maps[sc as usize];
+        let point = map.get(&b.var).copied().unwrap_or(b.var);
+        let mut inner: Vec<(ExprId, ExprId)> = map
+            .iter()
+            .map(|(&k, &v)| (k, v))
+            .filter(|&(k, _)| k != b.var && b.scoped.iter().any(|&c| self.may_act(arena, c, k)))
+            .collect();
+        let brings = |arena: &Arena, inner: &[(ExprId, ExprId)], sym: SymbolId| {
+            inner.iter().any(|&(k, v)| {
+                crate::base::walk::has_free_symbol(arena, v, sym)
+                    && !crate::base::walk::has_free_symbol(arena, k, sym)
+            })
+        };
+        let captured = brings(arena, &inner, var_sym);
+        if point == b.var && !captured {
+            inner.sort_unstable();
+            return SlotPlan::rebuild(self.intern(inner), b.var);
+        }
+        // A clean rename to a symbol the operands and the replacements do
+        // not mention.
+        if let ExprNode::Symbol(to_sym) = *arena.node(point)
+            && !b
+                .scoped
+                .iter()
+                .any(|&c| crate::base::walk::has_free_symbol(arena, c, to_sym))
+            && !inner.iter().any(|&(_, v)| {
+                crate::base::walk::has_free_symbol(arena, v, to_sym)
+                    || crate::base::walk::has_free_symbol(arena, v, var_sym)
+            })
+        {
+            inner.push((b.var, point));
+            inner.sort_unstable();
+            return SlotPlan::rebuild(self.intern(inner), point);
+        }
+        // Evaluation at `point`: `Subs(node, var, point)` binds `var` in the
+        // whole node, so the variable is renamed if a replacement or an
+        // outer operand (a series' expansion point) would be captured.
+        let outer_mentions_var = b.outer.iter().any(|&o| {
+            crate::base::walk::has_free_symbol(arena, o, var_sym)
+                || map.iter().any(|(&k, &v)| {
+                    crate::base::walk::has_free_symbol(arena, v, var_sym)
+                        && crate::base::walk::contains(arena, o, k)
+                })
+        });
+        let var = if captured || outer_mentions_var {
+            let fresh = fresh_bound_variable(arena, var_sym, &b.scoped, &inner);
+            inner.push((b.var, fresh));
+            fresh
+        } else {
+            b.var
+        };
+        inner.sort_unstable();
+        SlotPlan {
+            inner: self.intern(inner),
+            var,
+            point: Some(point),
+        }
+    }
+}
+
+/// How a variable-slot node is rebuilt by [`subs_scoped`].
+#[derive(Clone, Copy)]
+struct SlotPlan {
+    /// The scope of the scoped operands.
+    inner: u32,
+    /// The variable the node is rebuilt with.
+    var: ExprId,
+    /// `Some(p)`: the rebuilt node is evaluated at `var = p`.
+    point: Option<ExprId>,
+}
+
+impl SlotPlan {
+    fn rebuild(inner: u32, var: ExprId) -> Self {
+        SlotPlan {
+            inner,
+            var,
+            point: None,
+        }
+    }
+}
+
+/// A node met by [`subs_scoped`] whose operands are not all in the same
+/// scope.
+enum Entered {
+    /// A binder: its scoped operands' scope and its (possibly renamed)
+    /// variable.
+    Binder(Binder, u32, ExprId),
+    /// A variable-slot node and its plan.
+    Slot(Binder, SlotPlan),
+}
+
+/// A symbol named `base`, `base_1`, `base_2`, … — the first that carries
+/// no assumptions and occurs in none of `avoid` (a name that has never been
+/// interned is created).  Used for the dummy variable of a `Subs` built by
+/// `diff`: `∂f/∂u` at `u = x²` is `Subs(Derivative(f(_xi), _xi), _xi, x²)`.
+/// The name is a function of the expression only, so equal inputs give
+/// equal nodes.
+pub(crate) fn fresh_symbol(arena: &mut Arena, base: &str, avoid: &[ExprId]) -> ExprId {
+    let mut n = 0usize;
+    loop {
+        let name = if n == 0 {
+            base.to_owned()
+        } else {
+            format!("{base}_{n}")
+        };
+        match arena.symbols.get(&name) {
+            None => return arena.symbol(&name),
+            Some(sid)
+                if arena.symbol_assumptions(sid)
+                    == crate::base::assumptions::Assumptions::default() =>
+            {
+                let candidate = arena.intern(ExprNode::Symbol(sid));
+                if !avoid
+                    .iter()
+                    .any(|&e| crate::base::walk::contains(arena, e, candidate))
+                {
+                    return candidate;
+                }
+            }
+            Some(_) => {}
+        }
+        n += 1;
     }
 }
 
@@ -223,22 +427,46 @@ fn fresh_bound_variable(
 }
 
 /// Bottom-up simultaneous substitution of `map` that replaces only free
-/// occurrences (see the module documentation on binders).
+/// occurrences (see the module documentation on binders and variable
+/// slots).
 ///
 /// The walk is over *(node, scope)* pairs, with an explicit stack: the
 /// arena is a hash-consed DAG, and the same node can occur both inside a
 /// binder and outside it (`x + Σ_{x=0}^{3} x`), where different
 /// replacements apply.  A node reached in the identity scope is its own
-/// result and is not visited.  Never recurses.
-fn subs_scoped(arena: &mut Arena, expr: ExprId, map: &FxHashMap<ExprId, ExprId>) -> ExprId {
-    let (mut scopes, top) = Scopes::new(map);
+/// result and is not visited.  Never recurses; `differentiate` lets a
+/// `Derivative` evaluated at a point be differentiated first, and is off
+/// in the one nested call that makes (so nesting is one level deep).
+/// `rewrite`, if given, is applied to every node (atoms included) in each
+/// scope where its replacement is in force.
+fn subs_scoped(
+    arena: &mut Arena,
+    expr: ExprId,
+    map: &FxHashMap<ExprId, ExprId>,
+    differentiate: bool,
+    rewrite: Option<Rewrite<'_>>,
+) -> ExprId {
+    let (mut scopes, top) = Scopes::new(map, rewrite.is_some());
+    // `r` after the algebraic rewrite, when one is in force in scope `sc`.
+    let rewritten = |arena: &mut Arena, scopes: &Scopes, sc: u32, r: ExprId| -> ExprId {
+        match rewrite {
+            Some((old, new, f)) if scopes.maps[sc as usize].get(&old) == Some(&new) => {
+                if r == old {
+                    new
+                } else {
+                    f(arena, r).unwrap_or(r)
+                }
+            }
+            _ => r,
+        }
+    };
     if top == 0 {
         return expr;
     }
     let mut cache: FxHashMap<(ExprId, u32), ExprId> = FxHashMap::default();
-    // For each binder visited: the scope of its scoped operands and the
-    // variable it is rebuilt with.
-    let mut entered: FxHashMap<(ExprId, u32), (Binder, u32, ExprId)> = FxHashMap::default();
+    // For each binder or variable slot visited: the scope of its scoped
+    // operands, the variable it is rebuilt with, and (a slot) the point.
+    let mut entered: FxHashMap<(ExprId, u32), Entered> = FxHashMap::default();
     let mut stack: Vec<(ExprId, u32, bool)> = vec![(expr, top, false)];
     let mut children: SmallVec<[(ExprId, u32); 6]> = SmallVec::new();
 
@@ -251,7 +479,7 @@ fn subs_scoped(arena: &mut Arena, expr: ExprId, map: &FxHashMap<ExprId, ExprId>)
             let leaf = if let Some(&new) = scopes.maps[sc as usize].get(&id) {
                 Some(new)
             } else if arena.node(id).is_atom() {
-                Some(id)
+                Some(rewritten(arena, &scopes, sc, id))
             } else {
                 None
             };
@@ -270,7 +498,14 @@ fn subs_scoped(arena: &mut Arena, expr: ExprId, map: &FxHashMap<ExprId, ExprId>)
                 if inner != 0 {
                     children.extend(b.scoped.iter().map(|&c| (c, inner)));
                 }
-                entered.insert((id, sc), (b, inner, var));
+                entered.insert((id, sc), Entered::Binder(b, inner, var));
+            } else if let Some(b) = crate::base::walk::var_slot(arena, id) {
+                let plan = scopes.enter_slot(arena, sc, &b);
+                children.extend(b.outer.iter().map(|&c| (c, sc)));
+                if plan.inner != 0 {
+                    children.extend(b.scoped.iter().map(|&c| (c, plan.inner)));
+                }
+                entered.insert((id, sc), Entered::Slot(b, plan));
             } else {
                 arena.node(id).for_each_child(|c| children.push((c, sc)));
             }
@@ -282,23 +517,74 @@ fn subs_scoped(arena: &mut Arena, expr: ExprId, map: &FxHashMap<ExprId, ExprId>)
         } else {
             stack.pop();
             let get = |c: ExprId, s: u32| cache.get(&(c, s)).copied().unwrap_or(c);
-            let rebuilt = if let Some((b, inner, var)) = entered.get(&(id, sc)) {
+            let operands = |b: &Binder, inner: u32| {
                 let scoped: SmallVec<[ExprId; 2]> =
-                    b.scoped.iter().map(|&c| get(c, *inner)).collect();
+                    b.scoped.iter().map(|&c| get(c, inner)).collect();
                 let outer: SmallVec<[ExprId; 2]> = b.outer.iter().map(|&c| get(c, sc)).collect();
-                if *var == b.var && scoped == b.scoped && outer == b.outer {
-                    id
-                } else {
-                    crate::base::walk::rebuild_binder(arena, id, *var, &scoped, &outer)
-                }
-            } else {
-                crate::base::walk::rebuild_with(arena, id, &|c| get(c, sc))
+                (scoped, outer)
             };
+            let rebuilt = match entered.get(&(id, sc)) {
+                Some(Entered::Binder(b, inner, var)) => {
+                    let (scoped, outer) = operands(b, *inner);
+                    if *var == b.var && scoped == b.scoped && outer == b.outer {
+                        id
+                    } else {
+                        crate::base::walk::rebuild_binder(arena, id, *var, &scoped, &outer)
+                    }
+                }
+                Some(Entered::Slot(b, plan)) => {
+                    let (scoped, outer) = operands(b, plan.inner);
+                    let node = if plan.var == b.var && scoped == b.scoped && outer == b.outer {
+                        id
+                    } else {
+                        crate::base::walk::rebuild_var_slot(arena, id, plan.var, &scoped, &outer)
+                    };
+                    match plan.point {
+                        None => node,
+                        Some(point) => at_point(arena, node, plan.var, point, differentiate),
+                    }
+                }
+                None => crate::base::walk::rebuild_with(arena, id, &|c| get(c, sc)),
+            };
+            let rebuilt = rewritten(arena, &scopes, sc, rebuilt);
             cache.insert((id, sc), rebuilt);
         }
     }
 
     cache.get(&(expr, top)).copied().unwrap_or(expr)
+}
+
+/// The variable-slot node `node` (a function of the symbol `var`)
+/// evaluated at `var = point`.  A `Derivative` that `diff` makes progress
+/// on (with `differentiate` on) is differentiated and `point` substituted
+/// into the result; anything else is `Subs(node, var, point)`.
+///
+/// Only an operand whose one free symbol is `var` is differentiated: a
+/// formal `Derivative(y, x)` built for an ODE declares that `y` depends on
+/// `x`, which `diff` (for which `y` is a constant) would turn into `0`.
+fn at_point(
+    arena: &mut Arena,
+    node: ExprId,
+    var: ExprId,
+    point: ExprId,
+    differentiate: bool,
+) -> ExprId {
+    if differentiate
+        && let ExprNode::Derivative(body, dvar) = *arena.node(node)
+        && crate::base::walk::free_symbols(arena, body)
+            .iter()
+            .all(|&s| s == dvar)
+    {
+        let d = crate::transforms::diff::diff(arena, body, dvar);
+        // Progress (the product rule on `x²·f(x)`, say) is enough: what
+        // stays formal in `d` is wrapped by the nested call, which does not
+        // differentiate again.
+        if d != node {
+            let map: FxHashMap<ExprId, ExprId> = std::iter::once((var, point)).collect();
+            return subs_scoped(arena, d, &map, false, None);
+        }
+    }
+    crate::base::walk::subs_node(arena, node, var, point)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -329,6 +615,14 @@ pub(crate) fn eval_derivatives(arena: &mut Arena, expr: ExprId) -> ExprId {
                 let new_var = cache.get(&var).copied().unwrap_or(var);
                 // Concretely differentiate.
                 let result = crate::transforms::diff::diff(arena, new_inner, new_var);
+                cache.insert(id, result);
+            }
+            // A derivative at a point: substitute the point into the
+            // evaluated derivative (it re-wraps what is still formal).
+            ExprNode::Subs(body, var, point) => {
+                let new_body = cache.get(&body).copied().unwrap_or(body);
+                let new_point = cache.get(&point).copied().unwrap_or(point);
+                let result = subs(arena, new_body, var, new_point);
                 cache.insert(id, result);
             }
             _ => {
@@ -617,7 +911,7 @@ mod tests {
             a.definite_integral(body, x, a.zero, three),
             a.intern(ExprNode::RootSum(poly, body, x)),
             a.intern(ExprNode::ConditionSet(x, body)),
-            a.intern(ExprNode::RootOf(poly, a.zero)),
+            a.intern(ExprNode::RootOf(poly, x, a.zero)),
             a.intern(ExprNode::Limit(body, x, a.zero)),
             a.intern(ExprNode::Residue(body, x, a.zero)),
             a.intern(ExprNode::LaplaceTransform(body, x, y)),

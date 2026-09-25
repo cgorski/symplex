@@ -80,9 +80,9 @@ Three-valued questions return `Option<bool>` (yes / no / cannot decide) and stru
 # let (other, g, e) = (x.powi(2) + 1, &x - 1, ctx.int(0));
 # let set = ctx.interval(&ctx.int(0), &ctx.int(1), IntervalKind::Closed);
 # let t = ctx.reals();
-# let matrix = Matrix::identity(&ctx, 2);
+# let matrix = Matrix::identity(&ctx, 2).unwrap();
 # let bool_ex = x.gt(&ctx.int(0));
-# let f = Matrix::col_vector(vec![y.clone(), x.clone()]);
+# let f = Matrix::col_vector(vec![y.clone(), x.clone()]).unwrap();
 # let vars = [&x, &y];
 expr.is_positive();  expr.is_real();  expr.is_integer();  expr.equals(&other);
 expr.is_convergent(&k);  expr.is_absolutely_convergent(&k);  expr.is_real_valued();
@@ -105,8 +105,8 @@ Operations whose input must have a particular shape:
 # use symplex::prelude::*;
 # let ctx = Context::new();
 # let x = ctx.symbol("x");
-# let matrix = Matrix::identity(&ctx, 2);
-# let other = Matrix::identity(&ctx, 2);
+# let matrix = Matrix::identity(&ctx, 2).unwrap();
+# let other = Matrix::identity(&ctx, 2).unwrap();
 # let (i, j) = (0, 0);
 # let rows = vec![vec![ctx.int(1), ctx.int(2)], vec![ctx.int(3), ctx.int(4)]];
 # let (lhs, rhs) = (x.sin().powi(2), 1 - x.cos().powi(2));

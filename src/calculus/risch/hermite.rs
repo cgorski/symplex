@@ -62,12 +62,14 @@ pub struct HermiteResult {
 /// to the remainder numerator (since `∫ poly dx` is trivially a
 /// polynomial and doesn't need Hermite reduction).
 ///
-/// # Panics
-///
-/// Panics if `d` is zero.
-pub fn hermite_reduce(a: &Poly, d: &Poly) -> HermiteResult {
-    assert!(!d.is_zero(), "hermite_reduce: denominator must be nonzero");
+/// `None` if `d` is zero.  The integrator never passes one (it rejects a
+/// zero denominator first); up to 0.28 this was a runtime `assert!`.
+pub fn hermite_reduce(a: &Poly, d: &Poly) -> Option<HermiteResult> {
+    (!d.is_zero()).then(|| hermite_reduce_nonzero(a, d))
+}
 
+/// [`hermite_reduce`] for a nonzero `d`.
+fn hermite_reduce_nonzero(a: &Poly, d: &Poly) -> HermiteResult {
     // Make d monic for consistent GCD computations (lc(d) is the last
     // coefficient; d is nonzero, so it exists).
     let d_lc = d.coeff(d.coeffs().len() - 1);
@@ -268,13 +270,26 @@ mod tests {
     }
 
     #[test]
+    fn a_zero_denominator_is_none_not_a_panic() {
+        // Up to 0.28 both asserted (a panic in release builds too).
+        let a = Poly::from_int(1);
+        assert!(hermite_reduce(&a, &Poly::zero()).is_none());
+        assert!(super::super::rothstein_trager::logarithmic_part(&a, &Poly::zero()).is_none());
+        let rde = super::super::rde::solve_risch_de_rational(&a, &Poly::zero(), &a, &a);
+        assert!(matches!(
+            rde,
+            super::super::rde::RdeResult::NotImplemented(_)
+        ));
+    }
+
+    #[test]
     fn hermite_reduce_already_squarefree() {
         // ∫ 1/(x^2 - 1) dx — denominator is already square-free.
         // Hermite reduction should be a no-op (g = 0).
         let a = Poly::from_int(1);
         let d = Poly::from_coeffs(vec![rat(-1, 1), rat(0, 1), rat(1, 1)]); // x^2 - 1
 
-        let result = hermite_reduce(&a, &d);
+        let result = hermite_reduce(&a, &d).unwrap();
         // h should still be 1/(x^2 - 1)
         assert_eq!(result.h_numer.degree(), Some(0));
         assert!(result.h_denom.degree().unwrap_or(0) >= 2);
@@ -289,7 +304,7 @@ mod tests {
         let a = Poly::from_int(1);
         let d = Poly::from_coeffs(vec![rat(0, 1), rat(0, 1), rat(1, 1)]); // x^2
 
-        let result = hermite_reduce(&a, &d);
+        let result = hermite_reduce(&a, &d).unwrap();
         // g should be -1/x: g_numer = -1, g_denom = x (or equivalent)
         // h should be 0/1 (no logarithmic part for 1/x^2)
         assert!(
@@ -308,7 +323,7 @@ mod tests {
         let a = Poly::from_int(1);
         let d = Poly::from_coeffs(vec![rat(1, 1), rat(2, 1), rat(1, 1)]); // x^2 + 2x + 1
 
-        let result = hermite_reduce(&a, &d);
+        let result = hermite_reduce(&a, &d).unwrap();
         // h should be zero (no logarithmic part).
         assert!(
             result.h_numer.is_zero(),
@@ -326,7 +341,7 @@ mod tests {
         let a = Poly::from_int(1);
         let d = Poly::from_coeffs(vec![rat(0, 1), rat(0, 1), rat(0, 1), rat(1, 1)]); // x^3
 
-        let result = hermite_reduce(&a, &d);
+        let result = hermite_reduce(&a, &d).unwrap();
         assert!(result.h_numer.is_zero(), "∫ 1/x^3: log part should be zero");
         verify_hermite(&a, &d, &result);
     }
@@ -338,7 +353,7 @@ mod tests {
         let a = Poly::from_int(1);
         let d = Poly::from_coeffs(vec![rat(1, 1), rat(0, 1), rat(2, 1), rat(0, 1), rat(1, 1)]); // x^4 + 2x^2 + 1
 
-        let result = hermite_reduce(&a, &d);
+        let result = hermite_reduce(&a, &d).unwrap();
         // Hermite should extract a rational part; remainder has denom (x^2+1).
         let h_deg = result.h_denom.degree().unwrap_or(0);
         assert!(
@@ -355,7 +370,7 @@ mod tests {
         let a = Poly::from_coeffs(vec![rat(3, 1), rat(2, 1)]); // 2x + 3
         let d = Poly::from_coeffs(vec![rat(1, 1), rat(3, 1), rat(3, 1), rat(1, 1)]); // x^3 + 3x^2 + 3x + 1
 
-        let result = hermite_reduce(&a, &d);
+        let result = hermite_reduce(&a, &d).unwrap();
         verify_hermite(&a, &d, &result);
     }
 
@@ -366,7 +381,7 @@ mod tests {
         let a = Poly::from_coeffs(vec![rat(0, 1), rat(0, 1), rat(0, 1), rat(1, 1)]); // x^3
         let d = Poly::from_coeffs(vec![rat(1, 1), rat(2, 1), rat(1, 1)]); // (x+1)^2
 
-        let result = hermite_reduce(&a, &d);
+        let result = hermite_reduce(&a, &d).unwrap();
         verify_hermite(&a, &d, &result);
     }
 
@@ -377,7 +392,7 @@ mod tests {
         let a = Poly::from_int(1);
         let d = Poly::from_coeffs(vec![rat(0, 1), rat(0, 1), rat(-1, 1), rat(1, 1)]); // x^3 - x^2
 
-        let result = hermite_reduce(&a, &d);
+        let result = hermite_reduce(&a, &d).unwrap();
         // Remainder denominator should be square-free part: x*(x-1) = x^2 - x
         let h_deg = result.h_denom.degree().unwrap_or(0);
         assert!(
@@ -439,7 +454,7 @@ mod tests {
         ];
 
         for (a, d) in &test_cases {
-            let result = hermite_reduce(a, d);
+            let result = hermite_reduce(a, d).unwrap();
             if !result.h_numer.is_zero() {
                 let h_d_prime = result.h_denom.derivative();
                 let g = Poly::gcd(&result.h_denom, &h_d_prime);

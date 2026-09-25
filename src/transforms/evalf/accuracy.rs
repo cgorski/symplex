@@ -17,9 +17,21 @@
 //! | `sin`, `cos`, `sinh`, `cosh` | `max(1, abs(f(z)))·err(z)` |
 //! | `tan`, `tanh` | `(1 + abs(f(z))²)·err(z)` |
 //! | `atan`, `asin`, `acos`, `asinh`, `acosh`, `atanh` | `err(z)·abs(f′(z))`, from `1 ± z²` |
-//! | `sign`, `floor`, `ceiling`, `heaviside` | exact, or unknown when the argument is within its error of the threshold |
+//! | `sign`, `floor`, `ceiling`, `heaviside`, `KroneckerDelta` | exact, or unknown when the argument (difference) is within its error of the threshold |
 //! | special functions | the arguments' relative error carries over, plus 4 bits |
-//! | sums, products, integrals, `RootSum`, `Piecewise` evaluated by their own routines | their rounding, plus 16 bits |
+//! | definite integrals (`f64` quadrature, see `evalf.rs`) | their rounding, plus 16 bits |
+//!
+//! Nodes whose evaluator sees more than its children's values report their
+//! own bound ([`reported`] adds the rounding, as [`node_error`] does):
+//!
+//! | node | error of the result |
+//! |---|---|
+//! | finite `Sum` / `Product` | the terms' bounds (evaluated with the index bound exactly), as for `+` / `·`, plus the rounding of every partial result |
+//! | infinite `Sum` of a hypergeometric term | the first term's relative error carried by the recurrence, the recurrence's roundings, and a rigorous geometric bound on the tail (`hypsum.rs`) |
+//! | `RootOf` | the radius of a certified inclusion disk of the root (`poly::roots::root_balls`); unknown when the disks do not isolate the roots |
+//! | `RootSum` | the body's bound at each root, the root bounded by its inclusion disk, as for `+` |
+//! | `Piecewise` | the chosen branch's bound when every condition up to it is decided with certainty (a comparison whose difference is outside its error ball, or of exact values); unknown otherwise, like `sign` at its threshold |
+//! | physical constants | their value's bound |
 //!
 //! Every result also carries its own rounding.  These are estimates, not
 //! proofs (interval arithmetic would need a rigorous bound for every special
@@ -47,6 +59,10 @@ pub(super) const EXACT: ErrExp = i64::MIN / 4;
 /// No bound is known: a division by a value indistinguishable from zero,
 /// or a decision (`sign`, `floor`) at its threshold.
 pub(super) const UNKNOWN: ErrExp = i64::MAX / 4;
+
+/// The bound of a value that underflowed to 0: below the smallest positive
+/// float.
+const UNDERFLOW: ErrExp = astro_float::EXPONENT_MIN as ErrExp;
 
 /// Is `e` the bound of an exact value (possibly after harmless arithmetic
 /// on [`EXACT`])?
@@ -108,11 +124,12 @@ pub(super) fn accurate_bits(z: &Complex, err: ErrExp) -> Option<i64> {
     (m > err).then_some(m - err)
 }
 
-fn rounding(z: &Complex, prec: usize) -> ErrExp {
+pub(super) fn rounding(z: &Complex, prec: usize) -> ErrExp {
     mag(z).map_or(EXACT, |m| m - prec as i64)
 }
 
-fn ceil_log2(n: usize) -> i64 {
+/// `⌈log₂ n⌉` (0 for `n ≤ 1`).
+pub(super) fn ceil_log2(n: usize) -> i64 {
     i64::from(usize::BITS - n.saturating_sub(1).leading_zeros())
 }
 
@@ -136,6 +153,44 @@ fn mag_of(z: &Complex, f: impl Fn(&Complex, &Complex) -> Complex) -> Option<i64>
     const P: usize = 64;
     let z2 = c_mul(z, z, P, RoundingMode::ToEven);
     mag(&f(&c_one(P), &z2))
+}
+
+/// The error bound of `value`, computed at working precision `prec` by a
+/// routine that bounds its own error by `2^err`: that bound plus the
+/// rounding of the result, finished as [`node_error`] finishes a propagated
+/// bound.
+pub(super) fn reported(value: &Complex, err: ErrExp, prec: usize) -> ErrExp {
+    if !is_finite(value) || is_unknown(err) {
+        return UNKNOWN;
+    }
+    if is_exact(err) && mag(value).is_none() {
+        return EXACT;
+    }
+    clamp(err.max(rounding(value, prec)).saturating_add(1))
+}
+
+/// The propagated bound of a product of factors `v ± 2^e`:
+/// `Σ err(aᵢ)·Π_{j≠i} abs(aⱼ)`, times the number of factors (the roundings of
+/// the partial products are the caller's).  An exact zero factor makes the
+/// product exact.
+pub(super) fn product_error<'a>(parts: impl IntoIterator<Item = (&'a Complex, ErrExp)>) -> ErrExp {
+    let mut bounds: Vec<(ErrExp, ErrExp)> = Vec::new();
+    for (v, e) in parts {
+        if is_unknown(e) {
+            return UNKNOWN;
+        }
+        if mag(v).is_none() && is_exact(e) {
+            return EXACT; // an exact zero factor
+        }
+        bounds.push((e, upper(v, e)));
+    }
+    let total: ErrExp = bounds.iter().map(|&(_, u)| u).sum();
+    let worst = bounds
+        .iter()
+        .map(|&(e, u)| if is_exact(e) { EXACT } else { e + total - u })
+        .max()
+        .unwrap_or(EXACT);
+    worst.saturating_add(ceil_log2(bounds.len()))
 }
 
 /// The error bound of the value `value` of node `id`, from the values
@@ -189,26 +244,14 @@ pub(super) fn node_error(
             }
         }
         ExprNode::Mul(children) => {
-            let mut parts: Vec<(ErrExp, ErrExp)> = Vec::with_capacity(children.len());
+            let mut parts: Vec<(&Complex, ErrExp)> = Vec::with_capacity(children.len());
             for &c in children.iter() {
-                let Some((v, e)) = child(c) else {
+                let Some(part) = child(c) else {
                     return UNKNOWN;
                 };
-                if is_unknown(e) {
-                    return UNKNOWN;
-                }
-                if mag(v).is_none() && is_exact(e) {
-                    return EXACT; // an exact zero factor
-                }
-                parts.push((e, upper(v, e)));
+                parts.push(part);
             }
-            let total: ErrExp = parts.iter().map(|&(_, u)| u).sum();
-            let worst = parts
-                .iter()
-                .map(|&(e, u)| if is_exact(e) { EXACT } else { e + total - u })
-                .max()
-                .unwrap_or(EXACT);
-            worst.saturating_add(ceil_log2(children.len()))
+            product_error(parts)
         }
         ExprNode::Pow(base, exp) => {
             let (Some((b, eb)), Some((ev, ee))) = (child(*base), child(*exp)) else {
@@ -220,8 +263,14 @@ pub(super) fn node_error(
             pow_error(arena.as_num(*exp), b, eb, ev, ee, ub_out)
         }
 
+        // `d exp z = exp z · dz`: the argument's absolute error is the
+        // result's relative error.  Before 0.29 the magnitude was clamped
+        // at 1 (`ub_out.max(0)`), so `exp(−260.1) ≈ 2⁻³⁷⁵` carried the
+        // absolute error of its argument, `2^(9 − prec)`: at the 384-bit cap
+        // that ball contained 0, `ln(exp(−260.1))` had no bound and was
+        // refused.
         ExprNode::Exp(c) => match child(*c) {
-            Some((_, e)) if !is_unknown(e) => e.saturating_add(ub_out.max(0)),
+            Some((_, e)) if !is_unknown(e) => e.saturating_add(ub_out),
             _ => return UNKNOWN,
         },
         ExprNode::Ln(c) => match child(*c) {
@@ -385,7 +434,21 @@ pub(super) fn node_error(
             }
             worst
         }
-        ExprNode::KroneckerDelta(..) => return EXACT,
+        // A decision on `i − j = 0`: exact when both are exact or their
+        // difference is outside its error ball.
+        ExprNode::KroneckerDelta(i, j) => {
+            let (Some((iv, ei)), Some((jv, ej))) = (child(*i), child(*j)) else {
+                return UNKNOWN;
+            };
+            if is_exact(ei) && is_exact(ej) {
+                return EXACT;
+            }
+            let d = c_sub(iv, jv, prec + 64, RoundingMode::ToEven);
+            if contains_zero(&d, ei.max(ej).saturating_add(1)) {
+                return UNKNOWN;
+            }
+            return EXACT;
+        }
 
         // Special functions: the arguments' relative error carries over.
         ExprNode::Gamma(_)
@@ -434,9 +497,28 @@ pub(super) fn node_error(
         return UNKNOWN;
     }
     if is_exact(propagated) && mag(value).is_none() {
-        return EXACT;
+        return if underflowed(arena, id, cache) {
+            UNDERFLOW
+        } else {
+            EXACT
+        };
     }
     clamp(propagated.max(rounding(value, prec)).saturating_add(1))
+}
+
+/// Is the zero value of node `id`, computed from exact children, an
+/// underflow?  `exp` is never 0, nor a product or a power of non-zero
+/// values.  (astro-float's `exp` returns 0 below its exponent range without
+/// flagging it inexact, and before 0.29 that zero counted as exact:
+/// `Piecewise((1, exp(−4·10⁹) > 0), (0, True))` came out `0`.)
+fn underflowed(arena: &Arena, id: ExprId, cache: &FxHashMap<ExprId, Complex>) -> bool {
+    let nonzero = |c: &ExprId| cache.get(c).is_some_and(|v| mag(v).is_some());
+    match arena.node(id) {
+        ExprNode::Exp(_) => true,
+        ExprNode::Mul(children) => children.iter().all(nonzero),
+        ExprNode::Pow(base, _) => nonzero(base),
+        _ => false,
+    }
 }
 
 /// The error bound of `b^x`, with `b ± 2^eb`, `x ± 2^ex`, the result's

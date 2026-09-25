@@ -128,6 +128,9 @@ const RANK_ROOTSUM: u8 = 163;
 /// Rank byte for ConditionSet nodes.
 const RANK_CONDITION_SET: u8 = 164;
 
+/// Rank byte for Subs nodes (evaluation at a point).
+const RANK_SUBS: u8 = 165;
+
 /// Rank byte for mathematical constants (Pi, E, ImaginaryUnit).
 const RANK_CONSTANT: u8 = 170;
 
@@ -933,10 +936,13 @@ pub fn compute_sort_key(
             key.extend(get_key(*point).as_bytes());
         }
 
-        ExprNode::RootOf(poly, index) => {
+        // The variable last: it is determined by the polynomial unless that
+        // has parameters, so it only breaks ties.
+        ExprNode::RootOf(poly, var, index) => {
             key.push(RANK_ROOTOF);
             key.extend(get_key(*poly).as_bytes());
             key.extend(get_key(*index).as_bytes());
+            key.extend(get_key(*var).as_bytes());
         }
 
         ExprNode::DSolve(expr, func, var) => {
@@ -957,6 +963,13 @@ pub fn compute_sort_key(
             key.push(RANK_CONDITION_SET);
             key.extend(get_key(*var).as_bytes());
             key.extend(get_key(*cond).as_bytes());
+        }
+
+        ExprNode::Subs(body, var, point) => {
+            key.push(RANK_SUBS);
+            key.extend(get_key(*body).as_bytes());
+            key.extend(get_key(*var).as_bytes());
+            key.extend(get_key(*point).as_bytes());
         }
     }
 

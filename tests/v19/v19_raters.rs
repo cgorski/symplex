@@ -1102,7 +1102,7 @@ fn limiting_distribution_of_a_periodic_chain_is_none() {
         vec![q(1, 2), q(1, 2)]
     );
     assert_eq!(chain.limiting_distribution().unwrap(), None);
-    assert_eq!(chain.n_step(50), QMatrix::identity(2));
+    assert_eq!(chain.n_step(50), QMatrix::identity(2).unwrap());
     assert_eq!(chain.n_step(51), p);
 }
 

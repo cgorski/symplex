@@ -131,7 +131,8 @@ fn prec_of(node: &ExprNode) -> u8 {
         | ExprNode::LaplaceTransform(_, _, _)
         | ExprNode::InverseLaplaceTransform(_, _, _)
         | ExprNode::Residue(_, _, _)
-        | ExprNode::RootOf(_, _)
+        | ExprNode::RootOf(_, _, _)
+        | ExprNode::Subs(_, _, _)
         | ExprNode::DSolve(_, _, _)
         | ExprNode::RootSum(_, _, _)
         | ExprNode::ConditionSet(_, _) => PREC_ATOM,
@@ -724,12 +725,29 @@ fn expand_expr(
         }
 
         // ── RootOf ─────────────────────────────────────────────────
-        ExprNode::RootOf(poly, index) => {
+        // `RootOf(poly, index)` when the variable is the polynomial's only
+        // symbol, `RootOf(poly, var, index)` otherwise (both parse back).
+        ExprNode::RootOf(poly, var, index) => {
             stack.push(WorkItem::Lit(")"));
             stack.push(WorkItem::Expr(index, 0));
             stack.push(WorkItem::Lit(", "));
+            if crate::base::walk::root_of_implied_var(arena, poly) != Some(var) {
+                stack.push(WorkItem::Expr(var, 0));
+                stack.push(WorkItem::Lit(", "));
+            }
             stack.push(WorkItem::Expr(poly, 0));
             stack.push(WorkItem::Lit("RootOf("));
+        }
+
+        // ── Subs (evaluation at a point) ───────────────────────────
+        ExprNode::Subs(body, var, point) => {
+            stack.push(WorkItem::Lit(")"));
+            stack.push(WorkItem::Expr(point, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(var, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(body, 0));
+            stack.push(WorkItem::Lit("Subs("));
         }
 
         // ── DSolve ─────────────────────────────────────────────────

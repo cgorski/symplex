@@ -305,5 +305,5 @@ fn kinematics_diff_matches_angular_velocity_formula() {
     let qdot = q.diff(&t);
     let kin = q.angular_velocity_derivative(&w, &ctx.int(0), &ctx.int(0));
     assert_eq!(qdot.simplify().equals(&kin.simplify()), Some(true));
-    let _ = Matrix::identity(&ctx, 1);
+    let _ = Matrix::identity(&ctx, 1).unwrap();
 }

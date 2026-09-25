@@ -3336,15 +3336,27 @@ fn ln_positive_ratio(q: &Q) -> f64 {
 /// evaluates to `0`: `γ(61, 1)/60!` (a Poisson(1) tail, `7.4·10⁻⁸⁵`) is
 /// `1 − e⁻¹ Σ_{k ≤ 60} 1/k!`, `γ(5, 10⁻³⁰)` loses 500 bits.
 fn lowergamma_closure_cancels(s: &Q, x: &Q) -> bool {
+    if !x.is_positive() || x >= s {
+        return false;
+    }
+    let Some(x_f) = x.to_f64() else {
+        return false;
+    };
+    lowergamma_closure_cancels_at(s, x_f, ln_positive_ratio(x))
+}
+
+/// [`lowergamma_closure_cancels`] for a real `0 < x < s` known as `x ≈ x_f`,
+/// `ln x ≈ ln_x` (`x_f` may underflow to 0).  Before 0.29 only a rational
+/// `x` was guarded: `γ(5, √2/10³⁰)` folded into a closed form that
+/// evaluated to `0` (true value `1.13·10⁻¹⁵⁰`).
+fn lowergamma_closure_cancels_at(s: &Q, x_f: f64, ln_x: f64) -> bool {
     let half_integer = s.denom() == &BigInt::from(2);
     if !(s.is_integer() || half_integer)
         || *s > Q::from_integer(BigInt::from(MAX_SPECIAL_EXPANSION))
-        || !x.is_positive()
-        || x >= s
     {
         return false;
     }
-    let (Some(s_f), Some(x_f)) = (s.to_f64(), x.to_f64()) else {
+    let Some(s_f) = s.to_f64() else {
         return false;
     };
     // ln Γ(s + 1) for an integer or half-integer s ≤ MAX_SPECIAL_EXPANSION.
@@ -3358,7 +3370,7 @@ fn lowergamma_closure_cancels(s: &Q, x: &Q) -> bool {
         ln_gamma += f64::ln(k);
         k += 1.0;
     }
-    let ln_p = s_f * ln_positive_ratio(x) - x_f - ln_gamma + ((s_f + 1.0) / (s_f + 1.0 - x_f)).ln();
+    let ln_p = s_f * ln_x - x_f - ln_gamma + ((s_f + 1.0) / (s_f + 1.0 - x_f)).ln();
     -ln_p / std::f64::consts::LN_2 > LOWERGAMMA_FOLD_MAX_LOSS_BITS
 }
 
@@ -3366,9 +3378,10 @@ fn lowergamma_closure_cancels(s: &Q, x: &Q) -> bool {
 ///
 /// `γ(s, 0) = 0` holds only for `s > 0` (`∫₀ˣ t^{s−1} e^{−t} dt` diverges at
 /// the lower end otherwise), so that fold is refused for `s` known to be `≤ 0`.
-/// The closed form is also refused at a rational `x` where it would cancel
-/// catastrophically ([`lowergamma_closure_cancels`]): `γ(s, x)` stays, and
-/// `evalf` computes it by its power series.
+/// The closed form is also refused at a real constant `x` where it would
+/// cancel catastrophically ([`lowergamma_closure_cancels`]): `γ(s, x)`
+/// stays, and `evalf` computes it by its power series.  An irrational `x`
+/// (`√2/10³⁰`, `π/10¹⁰`) is sized by a 16-digit evaluation.
 fn eval_lowergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
     if x == arena.zero {
         if known_nonpositive(arena, s) {
@@ -3383,8 +3396,13 @@ fn eval_lowergamma(arena: &mut Arena, s: ExprId, x: ExprId) -> Option<ExprId> {
     if !r.is_positive() {
         return None;
     }
-    if let Some(xr) = as_ratio(arena, x)
-        && lowergamma_closure_cancels(&r, &xr)
+    if let Some(xr) = as_ratio(arena, x) {
+        if lowergamma_closure_cancels(&r, &xr) {
+            return None;
+        }
+    } else if let Some(ln_x) = crate::transforms::evalf::ln_of_positive_constant(arena, x)
+        && r.to_f64().is_some_and(|s_f| ln_x < s_f.ln())
+        && lowergamma_closure_cancels_at(&r, ln_x.exp(), ln_x)
     {
         return None;
     }

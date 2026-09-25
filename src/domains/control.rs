@@ -190,7 +190,7 @@ impl StateSpace {
     /// square by construction, so a shape error cannot occur.
     pub fn try_char_poly(&self, s: &Ex) -> Result<Ex, SymplexError> {
         let n = self.num_states();
-        let si = Matrix::identity(&self.ctx(), n).scale(s);
+        let si = Matrix::identity(&self.ctx(), n)?.scale(s);
         si.sub(&self.a)?.det()
     }
 
@@ -237,7 +237,7 @@ impl StateSpace {
             });
         }
         let n = self.num_states();
-        let si_minus_a = Matrix::identity(&self.ctx(), n).scale(s).sub(&self.a)?;
+        let si_minus_a = Matrix::identity(&self.ctx(), n)?.scale(s).sub(&self.a)?;
         let den = si_minus_a.det()?.expand();
         let adj = si_minus_a.adjugate()?;
         let c_adj_b = self.c.matmul(&adj)?.matmul(&self.b)?;
@@ -359,9 +359,9 @@ impl StateSpace {
 
         // Bᵈ = (I·dt + A·dt²/2! + A²·dt³/3! + ...)B
         let ctx = self.ctx();
-        let ident = Matrix::identity(&ctx, n);
+        let ident = Matrix::identity(&ctx, n)?;
         let mut b_sum = ident.scale(dt);
-        let mut a_power = Matrix::identity(&ctx, n);
+        let mut a_power = ident.clone();
         for k in 2..=order {
             a_power = a_power.matmul(&self.a)?;
             let factorial: i64 = (1..=k as i64).product();
@@ -467,7 +467,7 @@ impl StateSpace {
         }
 
         // Evaluate p(A) = poly_coeffs[0]·Aⁿ + poly_coeffs[1]·Aⁿ⁻¹ + ··· + poly_coeffs[n]·I
-        let mut p_a = Matrix::zeros(&self.ctx(), n, n);
+        let mut p_a = Matrix::zeros(&self.ctx(), n, n)?;
         for (i, coeff) in poly_coeffs.iter().enumerate() {
             let power = (poly_coeffs.len() - 1 - i) as u32;
             let a_power = self.a.powi(power)?;
@@ -725,9 +725,9 @@ impl TransferFunction {
             } else {
                 -&a_coef[j]
             }
-        });
-        let b = Matrix::from_fn(n, 1, |i, _| if i + 1 == n { ctx.one() } else { ctx.zero() });
-        let c = Matrix::from_fn(1, n, |_, j| (&b_coef[j] - &(&a_coef[j] * &bn)).eval());
+        })?;
+        let b = Matrix::from_fn(n, 1, |i, _| if i + 1 == n { ctx.one() } else { ctx.zero() })?;
+        let c = Matrix::from_fn(1, n, |_, j| (&b_coef[j] - &(&a_coef[j] * &bn)).eval())?;
         let d = Matrix::new(vec![vec![bn]])?;
         StateSpace::new(a, b, c, d)
     }

@@ -17,6 +17,14 @@
 //! If a sub-expression cannot be evaluated (e.g., it contains free
 //! symbols), the function returns an error.
 //!
+//! # Sums
+//!
+//! A finite `Sum` or `Product` of at most 10,000 terms is evaluated term by
+//! term; an infinite `Sum` of a hypergeometric term by its term ratio, with
+//! a rigorous bound on the tail (`hypsum`, after SymPy's `hypsum`).  A
+//! divergent sum is [`SymplexError::Divergent`]; one that converges only
+//! polynomially, or whose term is not hypergeometric, is refused.
+//!
 //! # Definite integrals
 //!
 //! An unevaluated `DefiniteIntegral(body, var, lo, hi)` node is evaluated
@@ -44,6 +52,7 @@ use crate::base::walk;
 use tracing::debug;
 
 mod accuracy;
+mod hypsum;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Complex type
@@ -147,24 +156,125 @@ fn evaluate_once(
     rm: RoundingMode,
     cc: &mut Consts,
 ) -> Result<(Complex, accuracy::ErrExp), SymplexError> {
-    let mut cache: FxHashMap<ExprId, Complex> = FxHashMap::default();
-    let mut errs: FxHashMap<ExprId, accuracy::ErrExp> = FxHashMap::default();
-    for &id in post_order {
-        match eval_node(arena, id, &cache, prec, rm, cc) {
-            Ok(value) => {
-                let e = accuracy::node_error(arena, id, &value, &cache, &errs, prec);
+    evaluate_tree(arena, expr, post_order, None, false, prec, rm, cc)
+}
 
+/// The error bounds of the evaluated nodes (see [`accuracy`]).
+type ErrMap = FxHashMap<ExprId, accuracy::ErrExp>;
+
+/// A bound variable preset to a value with an error bound.
+type Seed = (ExprId, Complex, accuracy::ErrExp);
+
+/// Evaluate `root` bottom-up over `post_order` (its post-order) at `prec`
+/// bits: its value and error bound.  `seed` presets a bound variable (a
+/// `Sum` index, a `RootSum` root).  Conditions (relations, `And`, …) have no
+/// value and are skipped; `Piecewise` decides them from their operands.  A
+/// node that fails is skipped when `strict` is false (a parent `Sum`,
+/// `Piecewise`, … may not need it) and fails the evaluation when it is true.
+#[allow(clippy::too_many_arguments)]
+fn evaluate_tree(
+    arena: &Arena,
+    root: ExprId,
+    post_order: &[ExprId],
+    seed: Option<Seed>,
+    strict: bool,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<(Complex, accuracy::ErrExp), SymplexError> {
+    let mut cache: FxHashMap<ExprId, Complex> = FxHashMap::default();
+    let mut errs: ErrMap = FxHashMap::default();
+    if let Some((id, value, err)) = seed {
+        cache.insert(id, value);
+        errs.insert(id, err);
+    }
+    for &id in post_order {
+        if cache.contains_key(&id) || (id != root && is_condition(arena.node(id))) {
+            continue;
+        }
+        match eval_node_with_error(arena, id, &cache, &errs, prec, rm, cc) {
+            Ok((value, e)) => {
                 errs.insert(id, e);
                 cache.insert(id, value);
             }
-            Err(e) if id == expr => return Err(e),
+            Err(e) if strict || id == root => return Err(e),
             Err(_) => {}
         }
     }
-    let value = cache.remove(&expr).ok_or_else(|| {
+    let value = cache.remove(&root).ok_or_else(|| {
         SymplexError::NotImplemented("evalf: expression not found in cache".into())
     })?;
-    let err = errs.get(&expr).copied().unwrap_or(accuracy::UNKNOWN);
+    let err = errs.get(&root).copied().unwrap_or(accuracy::UNKNOWN);
+    Ok((value, err))
+}
+
+/// Is `node` a condition (a truth value, not a number)?
+fn is_condition(node: &ExprNode) -> bool {
+    matches!(
+        node,
+        ExprNode::BoolTrue
+            | ExprNode::BoolFalse
+            | ExprNode::Gt(_, _)
+            | ExprNode::Ge(_, _)
+            | ExprNode::Eq_(_, _)
+            | ExprNode::Ne(_, _)
+            | ExprNode::And(_)
+            | ExprNode::Or(_)
+            | ExprNode::Not(_)
+    )
+}
+
+/// Evaluate node `id` from its children's values (`cache`) and error bounds
+/// (`errs`): its value and error bound.
+///
+/// Most nodes are evaluated by [`eval_node`] and bounded from their
+/// children by [`accuracy::node_error`].  The nodes whose evaluator knows
+/// more than the children's values report their own bound: sums and
+/// products (their terms' bounds; an infinite sum's tail), `RootOf` and
+/// `RootSum` (certified inclusion disks of the roots), `Piecewise` (whether
+/// its conditions were decided with certainty) and physical constants
+/// (their value's bound).
+fn eval_node_with_error(
+    arena: &Arena,
+    id: ExprId,
+    cache: &FxHashMap<ExprId, Complex>,
+    errs: &ErrMap,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<(Complex, accuracy::ErrExp), SymplexError> {
+    let (value, err) = match arena.node(id) {
+        ExprNode::Sum(body, var, lo, hi) => {
+            eval_sum(arena, *body, *var, *lo, *hi, cache, prec, rm, cc)?
+        }
+        ExprNode::Product_(body, var, lo, hi) => {
+            eval_product(arena, *body, *var, *lo, *hi, cache, prec, rm, cc)?
+        }
+        ExprNode::Piecewise(pairs) => eval_piecewise(arena, pairs, cache, errs, prec, rm, cc)?,
+        ExprNode::RootOf(poly, var, index) => eval_rootof(arena, *poly, *var, *index, prec)?,
+        ExprNode::RootSum(poly, body, sumvar) => {
+            eval_rootsum(arena, *poly, *body, *sumvar, prec, rm, cc)?
+        }
+        ExprNode::PhysicalConstant(_, value_id) => match cache.get(value_id) {
+            // The constant is an atom to every tree walk, so its stored
+            // value (`h/(2π)` for ħ) was never visited: evaluate it as a
+            // subtree of its own unless it is a single already-cached node.
+            Some(v) => (
+                v.clone(),
+                errs.get(value_id).copied().unwrap_or(accuracy::UNKNOWN),
+            ),
+            None => {
+                let order = walk::post_order_ids(arena, *value_id);
+                evaluate_tree(arena, *value_id, &order, None, true, prec, rm, cc)?
+            }
+        },
+        _ => {
+            let value = eval_node(arena, id, cache, prec, rm, cc)?;
+            let err = accuracy::node_error(arena, id, &value, cache, errs, prec);
+            return Ok((value, err));
+        }
+    };
+    let err = accuracy::reported(&value, err, prec);
     Ok((value, err))
 }
 
@@ -177,9 +287,11 @@ fn evaluate_once(
 /// whole expression is re-evaluated at a higher precision (Ziv's strategy),
 /// up to twice the initial precision plus 256 bits (and the configured
 /// maximum), as SymPy's `evalf` retries an `Add` that lost its accuracy.
-/// Two successive values that agree to the requested digits are accepted
-/// as well: the bound is an estimate, and some nodes (`sin` of an exact
-/// huge integer, reduced exactly) are more accurate than it says.  Before
+/// Two successive nonzero values that agree to the requested digits are
+/// accepted as well: the bound is an estimate, and some nodes (`sin` of an
+/// exact huge integer, reduced exactly) are more accurate than it says.
+/// Two zeros are no such evidence (see [`agree`]): a value that is 0 to the
+/// working precision goes straight to the cap.  Before
 /// 0.26 the first value was returned whatever its accuracy: `exp(10⁻³⁰) −
 /// 1` came out `0`, and a quotient by a difference that is zero to the
 /// working precision came out as noise.
@@ -259,10 +371,13 @@ fn evaluate_adaptive(
                 achieved: u32::try_from(achieved).unwrap_or(0),
             });
         }
+        let known = !accuracy::is_unknown(err);
         let step = match acc {
-            Some(a) if !accuracy::is_unknown(err) && finite => {
-                usize::try_from((needed - a).max(0)).unwrap_or(prec) + 32
-            }
+            Some(a) if known && finite => usize::try_from((needed - a).max(0)).unwrap_or(prec) + 32,
+            // A value that is 0 to the working precision says nothing about
+            // the precision its first bit needs: go to the cap, where it is
+            // either resolved or returned as 0.
+            None if known && finite && accuracy::mag(&value).is_none() => cap - prec,
             _ => prec,
         };
         previous = Some((value, prec, err));
@@ -272,10 +387,18 @@ fn evaluate_adaptive(
 }
 
 /// Do `a` and `b` agree to `bits` significant bits (relative to the larger
-/// magnitude)?  Two zeros agree.
+/// magnitude)?
+///
+/// Two zeros do not: agreement relaxes the bound of a *nonzero* estimate,
+/// whose leading bits two precisions reproduce, but a value that rounds to
+/// exactly 0 at two precisions has no leading bits to compare — it only
+/// says the true value is below both error bounds.  (An exact zero is
+/// accepted before agreement is consulted.)  Before 0.29 two zeros agreed:
+/// `1 − e⁻¹·Σ_{k≤60} 1/k!` (`7.37·10⁻⁸⁵`) cancelled to exactly 0 at 128
+/// and 256 bits and `eval_f64` returned `0.0`; the 384-bit evaluation
+/// certifies it.
 fn agree(a: &Complex, b: &Complex, bits: i64, prec: usize, rm: RoundingMode) -> bool {
     let scale = match (accuracy::mag(a), accuracy::mag(b)) {
-        (None, None) => return true,
         (Some(x), Some(y)) => x.max(y),
         _ => return false,
     };
@@ -366,6 +489,22 @@ fn evalf_value(arena: &Arena, expr: ExprId, digits: u32) -> Result<Complex, Symp
 
     let rm = RoundingMode::ToEven;
     with_f64_consts(|cc| evaluate_adaptive(arena, expr, digits, rm, cc))
+}
+
+/// `ln x` for a positive real constant `x`, from a 16-digit evaluation;
+/// `None` when `x` has free symbols, does not evaluate, or is not a
+/// positive real number.  Accurate far beyond `f64` range (`x = 10⁻⁴⁰⁰`
+/// is fine), for callers that need a magnitude estimate.
+pub(crate) fn ln_of_positive_constant(arena: &Arena, x: ExprId) -> Option<f64> {
+    let z = evalf_value(arena, x, F64_DIGITS).ok()?;
+    if !z.0.is_positive() || !is_real_to_digits(&z, F64_DIGITS) {
+        return None;
+    }
+    let e = z.0.exponent()?;
+    let mut m = z.0.clone();
+    m.set_exponent(0); // m ∈ [1/2, 1)
+    let m = bigfloat_to_f64_rounded(&m, RoundingMode::ToEven).ok()?;
+    Some(m.ln() + f64::from(e) * std::f64::consts::LN_2)
 }
 
 /// [`evalf_value`] for the rest of the crate: the variable-free `expr`
@@ -706,25 +845,16 @@ fn eval_node(
             }
         }
 
-        ExprNode::PhysicalConstant(_, value_id) => {
-            // The constant is an atom to every tree walk, so its stored value
-            // (`h/(2π)` for ħ) was never visited: evaluate it as a subtree of
-            // its own unless it is a single already-cached node.
-            if let Some(v) = cache.get(value_id) {
-                return Ok(v.clone());
-            }
-            let mut sub_cache: FxHashMap<ExprId, Complex> = FxHashMap::default();
-            for id in walk::post_order_ids(arena, *value_id) {
-                if !sub_cache.contains_key(&id) {
-                    let v = eval_node(arena, id, &sub_cache, prec, rm, cc)?;
-                    sub_cache.insert(id, v);
-                }
-            }
-            sub_cache
-                .remove(value_id)
-                .ok_or_else(|| SymplexError::Unevaluable {
-                    reason: "physical constant value could not be evaluated".into(),
-                })
+        // Evaluated with their own error bounds by `eval_node_with_error`,
+        // which never hands them here; without the children's bounds a
+        // `Piecewise` decision is never certain.
+        ExprNode::PhysicalConstant(..)
+        | ExprNode::Sum(..)
+        | ExprNode::Product_(..)
+        | ExprNode::Piecewise(_)
+        | ExprNode::RootOf(..)
+        | ExprNode::RootSum(..) => {
+            eval_node_with_error(arena, id, cache, &ErrMap::default(), prec, rm, cc).map(|(v, _)| v)
         }
 
         ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity => {
@@ -1447,105 +1577,6 @@ fn eval_node(
             Ok((BigFloat::from_f64(value, prec), BigFloat::new(prec)))
         }
 
-        ExprNode::Sum(body_id, var_id, lo_id, hi_id) => {
-            debug!("evalf: Sum — attempting finite evaluation");
-            let lo_val = get_cached(cache, *lo_id)?;
-            let hi_val = get_cached(cache, *hi_id)?;
-            if !lo_val.1.is_zero() || !hi_val.1.is_zero() {
-                return Err(SymplexError::Unevaluable {
-                    reason: "Sum bounds must be real".into(),
-                });
-            }
-            let lo_f = bigfloat_to_f64(&lo_val.0, rm, cc)?;
-            let hi_f = bigfloat_to_f64(&hi_val.0, rm, cc)?;
-            let lo_i = lo_f.round() as i64;
-            let hi_i = hi_f.round() as i64;
-            if (lo_f - lo_i as f64).abs() > 1e-9 || (hi_f - hi_i as f64).abs() > 1e-9 {
-                return Err(SymplexError::Unevaluable {
-                    reason: "Sum bounds are not integers".into(),
-                });
-            }
-            if hi_i - lo_i > 10_000 {
-                return Err(SymplexError::Unevaluable {
-                    reason: "Sum range too large for numerical evaluation (> 10000 terms)".into(),
-                });
-            }
-            let mut acc = c_zero(prec);
-            for i in lo_i..=hi_i {
-                let sub_val = (BigFloat::from_f64(i as f64, prec), BigFloat::new(prec));
-                let term =
-                    evalf_subtree_with_sub(arena, *body_id, *var_id, &sub_val, prec, rm, cc)?;
-                acc = c_add(&acc, &term, prec, rm);
-            }
-            debug!(lo = lo_i, hi = hi_i, "evalf: Sum evaluated");
-            Ok(acc)
-        }
-
-        ExprNode::Product_(body_id, var_id, lo_id, hi_id) => {
-            debug!("evalf: Product — attempting finite evaluation");
-            let lo_val = get_cached(cache, *lo_id)?;
-            let hi_val = get_cached(cache, *hi_id)?;
-            if !lo_val.1.is_zero() || !hi_val.1.is_zero() {
-                return Err(SymplexError::Unevaluable {
-                    reason: "Product bounds must be real".into(),
-                });
-            }
-            let lo_f = bigfloat_to_f64(&lo_val.0, rm, cc)?;
-            let hi_f = bigfloat_to_f64(&hi_val.0, rm, cc)?;
-            let lo_i = lo_f.round() as i64;
-            let hi_i = hi_f.round() as i64;
-            if (lo_f - lo_i as f64).abs() > 1e-9 || (hi_f - hi_i as f64).abs() > 1e-9 {
-                return Err(SymplexError::Unevaluable {
-                    reason: "Product bounds are not integers".into(),
-                });
-            }
-            if hi_i - lo_i > 10_000 {
-                return Err(SymplexError::Unevaluable {
-                    reason: "Product range too large for numerical evaluation (> 10000 terms)"
-                        .into(),
-                });
-            }
-            let mut acc = c_one(prec);
-            for i in lo_i..=hi_i {
-                let sub_val = (BigFloat::from_f64(i as f64, prec), BigFloat::new(prec));
-                let term =
-                    evalf_subtree_with_sub(arena, *body_id, *var_id, &sub_val, prec, rm, cc)?;
-                acc = c_mul(&acc, &term, prec, rm);
-            }
-            debug!(lo = lo_i, hi = hi_i, "evalf: Product evaluated");
-            Ok(acc)
-        }
-
-        ExprNode::Piecewise(pairs) => {
-            debug!(
-                branches = pairs.len(),
-                "evalf: Piecewise — evaluating conditions"
-            );
-            // Branches are examined in order.  The first condition that is
-            // decidedly true selects its value; a decidedly false condition
-            // is skipped.  An *undecided* condition is an error — falling
-            // through to a later `True` branch would be silently wrong.
-            for &(value_id, cond_id) in pairs.iter() {
-                match decide_condition(arena, cond_id, cache, prec, rm) {
-                    Some(true) => {
-                        return eval_node_or_subtree(arena, value_id, cache, prec, rm, cc);
-                    }
-                    Some(false) => continue,
-                    None => {
-                        return Err(SymplexError::Unevaluable {
-                            reason: format!(
-                                "cannot evaluate piecewise: condition `{}` is undecided",
-                                arena.display(cond_id)
-                            ),
-                        });
-                    }
-                }
-            }
-            Err(SymplexError::Unevaluable {
-                reason: "cannot evaluate piecewise: every condition is false".into(),
-            })
-        }
-
         ExprNode::BoolTrue
         | ExprNode::BoolFalse
         | ExprNode::Gt(_, _)
@@ -1588,148 +1619,16 @@ fn eval_node(
             reason: "cannot numerically evaluate unevaluated Residue".into(),
         }),
 
-        ExprNode::RootOf(poly_id, idx_id) => {
-            // ── Extract the index as a non-negative integer ────────
-            let idx: usize = match arena.node(*idx_id) {
-                ExprNode::Num(nid) => {
-                    let r = arena.num(*nid);
-                    if r.is_integer() {
-                        let n = r.to_integer();
-                        // Convert BigInt → i64 → usize safely.
-                        let n_i64: i64 = n.try_into().map_err(|_| SymplexError::Unevaluable {
-                            reason: "RootOf index out of range".into(),
-                        })?;
-                        if n_i64 < 0 {
-                            return Err(SymplexError::Unevaluable {
-                                reason: "RootOf index must be non-negative".into(),
-                            });
-                        }
-                        n_i64 as usize
-                    } else {
-                        return Err(SymplexError::Unevaluable {
-                            reason: "RootOf index must be an integer".into(),
-                        });
-                    }
-                }
-                _ => {
-                    return Err(SymplexError::Unevaluable {
-                        reason: "RootOf index must be numeric".into(),
-                    });
-                }
-            };
-
-            // ── Identify the variable in the polynomial ───────────
-            let syms = walk::free_symbols(arena, *poly_id);
-            if syms.is_empty() {
-                return Err(SymplexError::Unevaluable {
-                    reason: "RootOf polynomial has no variables".into(),
-                });
-            }
-            let var_id = syms[0];
-
-            // ── Convert expression → dense Poly over ℚ ───────────
-            let poly = match crate::poly::polybridge::expr_to_poly(arena, *poly_id, var_id) {
-                Some(p) => p,
-                None => {
-                    return Err(SymplexError::Unevaluable {
-                        reason: "could not convert RootOf expression to polynomial".into(),
-                    });
-                }
-            };
-
-            // ── Find all roots via Aberth's method ────────────────
-            // Aberth handles both real and complex roots simultaneously
-            // with cubic convergence.  `rootof_roots` is the one definition
-            // of the (re, im) order a `RootOf` index refers to; `real_roots`
-            // derives its indices from the same call.
-            let roots = crate::poly::roots::rootof_roots(&poly, prec);
-
-            if idx >= roots.len() {
-                return Err(SymplexError::Unevaluable {
-                    reason: format!(
-                        "RootOf index {} exceeds the {} root(s) found",
-                        idx,
-                        roots.len()
-                    ),
-                });
-            }
-
-            let (re, im) = &roots[idx];
-            Ok((re.clone(), im.clone()))
-        }
-
-        // ── RootSum: numerical evaluation via root-finding + summation ──
-        //
-        // RootSum(poly, body, sumvar) = Σ_{α: poly(α)=0} body(α, x).
-        // We find the roots of poly numerically, substitute each into body,
-        // evaluate, and sum.  If the body contains free variables other than
-        // sumvar, this will fail (those variables must be substituted first).
-        ExprNode::RootSum(poly, body, sumvar) => {
-            // RootSum(poly, body, sumvar) = Σ_{α: poly(α)=0} body(α, x).
-            //
-            // Strategy:
-            // 1. Convert the polynomial expression to a Poly via expr_to_poly
-            //    (which takes &Arena — no mutation needed).
-            // 2. Find ALL roots numerically via Aberth's method.
-            // 3. For each root α_k, evaluate body with sumvar = α_k using
-            //    evalf_subtree_with_sub (same mechanism as Sum evaluation).
-            // 4. Sum all contributions.
-            //
-            // The imaginary parts should cancel for real-valued integrals.
-
-            let poly_id = *poly;
-            let body_id = *body;
-            let sumvar_id = *sumvar;
-
-            tracing::debug!("evalf: RootSum — attempting numerical evaluation via Aberth roots");
-
-            // Step 1: Convert polynomial expression to Poly.
-            let poly_obj = crate::poly::polybridge::expr_to_poly(arena, poly_id, sumvar_id)
-                .ok_or_else(|| SymplexError::Unevaluable {
-                    reason: "RootSum: cannot convert polynomial expression to Poly \
-                             (may contain free symbols)"
-                        .into(),
-                })?;
-
-            let poly_deg = poly_obj.degree().unwrap_or(0);
-            tracing::debug!(
-                degree = poly_deg,
-                "evalf: RootSum — polynomial extracted, finding roots"
-            );
-
-            // Step 2: Find all roots via Aberth's method.
-            // Use the same working precision as the rest of the evalf computation.
-            let roots = crate::poly::roots::aberth_roots(&poly_obj, prec, 200);
-
-            if roots.len() != poly_deg {
-                tracing::debug!(
-                    expected = poly_deg,
-                    found = roots.len(),
-                    "evalf: RootSum — Aberth returned fewer roots than expected"
-                );
-            }
-
-            // Step 3+4: Evaluate body at each root and sum.
-            let mut sum = c_zero(prec);
-            for (k, root) in roots.iter().enumerate() {
-                let term = evalf_subtree_with_sub(arena, body_id, sumvar_id, root, prec, rm, cc)?;
-                tracing::trace!(root_idx = k, "evalf: RootSum — evaluated body at root");
-                sum = c_add(&sum, &term, prec, rm);
-            }
-
-            tracing::debug!(
-                n_roots = roots.len(),
-                "evalf: RootSum — numerical evaluation complete"
-            );
-            Ok(sum)
-        }
-
         ExprNode::DSolve(_, _, _) => Err(SymplexError::Unevaluable {
             reason: "cannot numerically evaluate unevaluated DSolve".into(),
         }),
 
         ExprNode::ConditionSet(_, _) => Err(SymplexError::Unevaluable {
             reason: "cannot numerically evaluate ConditionSet".into(),
+        }),
+
+        ExprNode::Subs(_, _, _) => Err(SymplexError::Unevaluable {
+            reason: "cannot numerically evaluate unevaluated Subs".into(),
         }),
     }
 }
@@ -1780,110 +1679,307 @@ fn definite_bound_f64(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Sub-tree evaluation helpers (Sum, Product, Piecewise)
+// Sub-tree evaluation helpers (Sum, Product, Piecewise, RootOf, RootSum)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Evaluate a sub-expression with one variable replaced by a given numeric
-/// value.  Used by `Sum` and `Product_` to iterate over finite ranges.
-fn evalf_subtree_with_sub(
+/// Most terms of a finite `Sum` or `Product` evaluated numerically.
+const MAX_RANGE_TERMS: u32 = 10_000;
+
+/// The value and error bound of `expr` (with post-order `post_order`) at
+/// the integer `k` for the bound variable `var`: the index is exact when
+/// it fits the precision.
+#[allow(clippy::too_many_arguments)]
+fn evaluate_at_integer(
     arena: &Arena,
     expr: ExprId,
-    var_id: ExprId,
-    var_value: &Complex,
+    post_order: &[ExprId],
+    var: ExprId,
+    k: &BigInt,
     prec: usize,
     rm: RoundingMode,
     cc: &mut Consts,
-) -> Result<Complex, SymplexError> {
-    let post_order = walk::post_order_ids(arena, expr);
-    let mut sub_cache: FxHashMap<ExprId, Complex> = FxHashMap::default();
-    // Pre-load the substitution so `var_id` resolves to the numeric value.
-    sub_cache.insert(var_id, var_value.clone());
-
-    for &id in &post_order {
-        if sub_cache.contains_key(&id) {
-            continue; // already present (e.g. the substituted variable)
-        }
-        let value = eval_node(arena, id, &sub_cache, prec, rm, cc)?;
-        sub_cache.insert(id, value);
-    }
-
-    sub_cache
-        .get(&expr)
-        .cloned()
-        .ok_or_else(|| SymplexError::Unevaluable {
-            reason: "subtree evaluation with substitution failed".into(),
-        })
+) -> Result<(Complex, accuracy::ErrExp), SymplexError> {
+    let value = (
+        crate::base::numeric::bigint_to_bigfloat(k, prec),
+        BigFloat::new(prec),
+    );
+    let err = if k.bits() <= prec as u64 {
+        accuracy::EXACT
+    } else {
+        accuracy::rounding(&value, prec)
+    };
+    evaluate_tree(
+        arena,
+        expr,
+        post_order,
+        Some((var, value, err)),
+        true,
+        prec,
+        rm,
+        cc,
+    )
 }
 
-/// Decide a boolean condition numerically using already-evaluated operands.
+/// A bound of a `Sum` or `Product` range as an integer: an integer literal
+/// exactly, another value when it is real and within `10⁻⁹` of an integer.
+fn range_bound(
+    arena: &Arena,
+    cache: &FxHashMap<ExprId, Complex>,
+    id: ExprId,
+    what: &str,
+    rm: RoundingMode,
+) -> Result<BigInt, SymplexError> {
+    if let Some(q) = arena.as_num(id) {
+        if q.is_integer() {
+            return Ok(q.to_integer());
+        }
+        return Err(unevaluable(format!("{what} bounds are not integers")));
+    }
+    let v = get_cached(cache, id)?;
+    if !v.1.is_zero() {
+        return Err(unevaluable(format!("{what} bounds must be real")));
+    }
+    let f = bigfloat_to_f64_rounded(&v.0, rm)?;
+    let r = f.round();
+    if !r.is_finite() || (f - r).abs() > 1e-9 || r.abs() > 9.0e15 {
+        return Err(unevaluable(format!("{what} bounds are not integers")));
+    }
+    Ok(BigInt::from(r as i64))
+}
+
+/// The number of terms of `lo..=hi` (0 when empty), refused beyond
+/// [`MAX_RANGE_TERMS`].
+fn range_terms(lo: &BigInt, hi: &BigInt, what: &str) -> Result<u32, SymplexError> {
+    if hi < lo {
+        return Ok(0);
+    }
+    let n = hi - lo + 1;
+    match u32::try_from(n) {
+        Ok(n) if n <= MAX_RANGE_TERMS + 1 => Ok(n),
+        _ => Err(unevaluable(format!(
+            "{what} range too large for numerical evaluation (> {MAX_RANGE_TERMS} terms)"
+        ))),
+    }
+}
+
+/// A running sum of values with error bounds: the terms' bounds add, and
+/// every partial sum is rounded to the working precision.
+struct SumAcc {
+    value: Complex,
+    worst: accuracy::ErrExp,
+    peak: Option<i64>,
+    count: usize,
+    prec: usize,
+}
+
+impl SumAcc {
+    fn new(prec: usize) -> SumAcc {
+        SumAcc {
+            value: c_zero(prec),
+            worst: accuracy::EXACT,
+            peak: None,
+            count: 0,
+            prec,
+        }
+    }
+
+    fn add(&mut self, term: &Complex, err: accuracy::ErrExp, rm: RoundingMode) {
+        self.value = c_add(&self.value, term, self.prec, rm);
+        self.worst = self.worst.max(err);
+        self.peak = self.peak.max(accuracy::mag(&self.value));
+        self.count += 1;
+    }
+
+    /// The sum and its error bound.
+    fn finish(self) -> (Complex, accuracy::ErrExp) {
+        if accuracy::is_unknown(self.worst) {
+            return (self.value, accuracy::UNKNOWN);
+        }
+        let n = accuracy::ceil_log2(self.count);
+        let rounding = self
+            .peak
+            .map_or(accuracy::EXACT, |m| m - self.prec as i64 + n);
+        (self.value, self.worst.saturating_add(n).max(rounding))
+    }
+}
+
+/// `Σ_{var = lo}^{hi} body`: a finite range of at most [`MAX_RANGE_TERMS`]
+/// terms term by term, `hi = ∞` as a hypergeometric series ([`hypsum`]).
+/// The bound is the terms' bounds plus the roundings (before 0.29 it was
+/// the working precision whatever the terms lost, and an infinite sum was
+/// `Unevaluable`).
+#[allow(clippy::too_many_arguments)]
+fn eval_sum(
+    arena: &Arena,
+    body: ExprId,
+    var: ExprId,
+    lo: ExprId,
+    hi: ExprId,
+    cache: &FxHashMap<ExprId, Complex>,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<(Complex, accuracy::ErrExp), SymplexError> {
+    if matches!(arena.node(lo), ExprNode::NegInfinity) {
+        return Err(unevaluable("a Sum from −∞ is not evaluated numerically"));
+    }
+    let lo_i = range_bound(arena, cache, lo, "Sum", rm)?;
+    let post_order = walk::post_order_ids(arena, body);
+    if matches!(arena.node(hi), ExprNode::Infinity) {
+        debug!("evalf: Sum — infinite hypergeometric series");
+        let mut term =
+            |k: &BigInt, p: usize| evaluate_at_integer(arena, body, &post_order, var, k, p, rm, cc);
+        return hypsum::infinite_sum(arena, body, var, &lo_i, prec, rm, &mut term);
+    }
+    let hi_i = range_bound(arena, cache, hi, "Sum", rm)?;
+    let terms = range_terms(&lo_i, &hi_i, "Sum")?;
+    let mut sum = SumAcc::new(prec);
+    let mut k = lo_i.clone();
+    for _ in 0..terms {
+        let (term, err) = evaluate_at_integer(arena, body, &post_order, var, &k, prec, rm, cc)?;
+        sum.add(&term, err, rm);
+        k += 1;
+    }
+    debug!(lo = %lo_i, hi = %hi_i, "evalf: Sum evaluated");
+    Ok(sum.finish())
+}
+
+/// `∏_{var = lo}^{hi} body` over a finite range of at most
+/// [`MAX_RANGE_TERMS`] terms, bounded as a product of its terms.
+#[allow(clippy::too_many_arguments)]
+fn eval_product(
+    arena: &Arena,
+    body: ExprId,
+    var: ExprId,
+    lo: ExprId,
+    hi: ExprId,
+    cache: &FxHashMap<ExprId, Complex>,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<(Complex, accuracy::ErrExp), SymplexError> {
+    let lo_i = range_bound(arena, cache, lo, "Product", rm)?;
+    let hi_i = range_bound(arena, cache, hi, "Product", rm)?;
+    let terms = range_terms(&lo_i, &hi_i, "Product")?;
+    let post_order = walk::post_order_ids(arena, body);
+    let mut factors: Vec<(Complex, accuracy::ErrExp)> = Vec::with_capacity(terms as usize);
+    let mut acc = c_one(prec);
+    let mut k = lo_i.clone();
+    for _ in 0..terms {
+        let (term, err) = evaluate_at_integer(arena, body, &post_order, var, &k, prec, rm, cc)?;
+        acc = c_mul(&acc, &term, prec, rm);
+        factors.push((term, err));
+        k += 1;
+    }
+    let propagated = accuracy::product_error(factors.iter().map(|(v, e)| (v, *e)));
+    let rounding =
+        accuracy::rounding(&acc, prec).saturating_add(accuracy::ceil_log2(factors.len()));
+    debug!(lo = %lo_i, hi = %hi_i, "evalf: Product evaluated");
+    Ok((acc, propagated.max(rounding)))
+}
+
+/// A condition decided from the values of its operands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Decision {
+    /// The truth value read off the computed values.
+    value: bool,
+    /// Does it hold for the true values too?  Every comparison involved
+    /// was of exact values, or of a difference outside its error ball.
+    certain: bool,
+}
+
+/// Decide a boolean condition numerically from the evaluated operands and
+/// their error bounds.
 ///
-/// Relational nodes compare the cached real values of their operands;
-/// `And`/`Or`/`Not` are combined with three-valued logic.  Returns `None`
-/// when any needed operand is missing from the cache (free symbol, complex
-/// value, unsupported node), so the caller can refuse rather than guess.
+/// A relation compares the difference of its operands (`Gt`, `Ge` need
+/// both real); the decision is certain when both operands are exact (the
+/// sign of a rounded difference of exact values is exact) or the same
+/// expression, or when the difference is outside its error ball — as
+/// `sign` is decided (see [`accuracy`]).  So an equality of distinct
+/// inexact expressions is never certain.  `And`/`Or`/`Not` combine decisions; a certain `false`
+/// operand decides an `And` (a certain `true` an `Or`) whatever the others.
+/// `None` when an operand is missing from the cache (free symbol, complex
+/// value in an order, unsupported node).
 fn decide_condition(
     arena: &Arena,
     cond: ExprId,
     cache: &FxHashMap<ExprId, Complex>,
+    errs: &ErrMap,
     prec: usize,
     rm: RoundingMode,
-) -> Option<bool> {
-    // Real-valued difference `a - b` when both operands are cached reals.
-    let real_diff = |a: &ExprId, b: &ExprId| -> Option<BigFloat> {
+) -> Option<Decision> {
+    // `a − b`, the exponent of its error bound, and whether it is exact
+    // (both operands exact, or the same expression).
+    let difference = |a: &ExprId, b: &ExprId| -> Option<(Complex, accuracy::ErrExp, bool)> {
         let (av, bv) = (cache.get(a)?, cache.get(b)?);
-        if av.1.is_zero() && bv.1.is_zero() {
-            Some(av.0.sub(&bv.0, prec, rm))
-        } else {
-            None
+        if a == b {
+            return Some((c_zero(prec), accuracy::EXACT, true));
         }
+        let ea = errs.get(a).copied().unwrap_or(accuracy::UNKNOWN);
+        let eb = errs.get(b).copied().unwrap_or(accuracy::UNKNOWN);
+        let d = c_sub(av, bv, prec + 64, rm);
+        let exact = accuracy::is_exact(ea) && accuracy::is_exact(eb);
+        let e = if accuracy::is_unknown(ea) || accuracy::is_unknown(eb) {
+            accuracy::UNKNOWN
+        } else {
+            ea.max(eb).saturating_add(1)
+        };
+        Some((d, e, exact))
     };
-
-    // Equality needs no order, so it is decidable for complex operands too
-    // (`1/2 ≠ (−4)^(−1/2)` guards the `a = ±i/2` case of ∫ e^{2ax} cos x).
-    let complex_equal = |a: &ExprId, b: &ExprId| -> Option<bool> {
+    let away_from_zero = |d: &Complex, e: accuracy::ErrExp| {
+        !accuracy::is_unknown(e) && !accuracy::contains_zero(d, e)
+    };
+    let order = |a: &ExprId, b: &ExprId, strict: bool| -> Option<Decision> {
         let (av, bv) = (cache.get(a)?, cache.get(b)?);
-        let d_re = av.0.sub(&bv.0, prec, rm);
-        let d_im = av.1.sub(&bv.1, prec, rm);
-        Some(d_re.is_zero() && d_im.is_zero())
+        if !(av.1.is_zero() && bv.1.is_zero()) {
+            return None;
+        }
+        let (d, e, exact) = difference(a, b)?;
+        let value = d.0.is_positive() || (!strict && d.0.is_zero());
+        Some(Decision {
+            value,
+            certain: exact || away_from_zero(&d, e),
+        })
+    };
+    let equal = |a: &ExprId, b: &ExprId| -> Option<Decision> {
+        let (d, e, exact) = difference(a, b)?;
+        let value = d.0.is_zero() && d.1.is_zero();
+        Some(Decision {
+            value,
+            certain: exact || (!value && away_from_zero(&d, e)),
+        })
     };
 
-    let order = walk::post_order_ids(arena, cond);
-    let mut truth: FxHashMap<ExprId, Option<bool>> = FxHashMap::default();
-    for &id in &order {
-        let v: Option<bool> = match arena.node(id) {
-            ExprNode::BoolTrue => Some(true),
-            ExprNode::BoolFalse => Some(false),
-            ExprNode::Gt(a, b) => real_diff(a, b).map(|d| d.is_positive()),
-            ExprNode::Ge(a, b) => real_diff(a, b).map(|d| d.is_positive() || d.is_zero()),
-            ExprNode::Eq_(a, b) => complex_equal(a, b),
-            ExprNode::Ne(a, b) => complex_equal(a, b).map(|e| !e),
-            ExprNode::Not(inner) => truth.get(inner).copied().flatten().map(|b| !b),
-            ExprNode::And(kids) => {
-                let vals: Vec<Option<bool>> = kids
-                    .iter()
-                    .map(|k| truth.get(k).copied().flatten())
-                    .collect();
-                if vals.contains(&Some(false)) {
-                    Some(false)
-                } else if vals.iter().all(|v| *v == Some(true)) {
-                    Some(true)
-                } else {
-                    None
-                }
-            }
-            ExprNode::Or(kids) => {
-                let vals: Vec<Option<bool>> = kids
-                    .iter()
-                    .map(|k| truth.get(k).copied().flatten())
-                    .collect();
-                if vals.contains(&Some(true)) {
-                    Some(true)
-                } else if vals.iter().all(|v| *v == Some(false)) {
-                    Some(false)
-                } else {
-                    None
-                }
-            }
+    let post_order = walk::post_order_ids(arena, cond);
+    let mut truth: FxHashMap<ExprId, Option<Decision>> = FxHashMap::default();
+    for &id in &post_order {
+        let kids = |ids: &[ExprId]| -> Vec<Option<Decision>> {
+            ids.iter()
+                .map(|k| truth.get(k).copied().flatten())
+                .collect()
+        };
+        let v: Option<Decision> = match arena.node(id) {
+            ExprNode::BoolTrue => Some(Decision {
+                value: true,
+                certain: true,
+            }),
+            ExprNode::BoolFalse => Some(Decision {
+                value: false,
+                certain: true,
+            }),
+            ExprNode::Gt(a, b) => order(a, b, true),
+            ExprNode::Ge(a, b) => order(a, b, false),
+            ExprNode::Eq_(a, b) => equal(a, b),
+            ExprNode::Ne(a, b) => equal(a, b).map(|d| Decision {
+                value: !d.value,
+                ..d
+            }),
+            ExprNode::Not(inner) => truth.get(inner).copied().flatten().map(|d| Decision {
+                value: !d.value,
+                ..d
+            }),
+            ExprNode::And(ks) => combine(&kids(ks), false),
+            ExprNode::Or(ks) => combine(&kids(ks), true),
             // Numeric operands and anything else carry no truth value.
             _ => None,
         };
@@ -1892,19 +1988,174 @@ fn decide_condition(
     truth.get(&cond).copied().flatten()
 }
 
-/// Return the cached value for `id`, or fall back to calling `eval_node`.
-fn eval_node_or_subtree(
+/// `Or` (`absorbing = true`) or `And` (`false`) of decisions: a certain
+/// absorbing operand decides; otherwise every operand must be decided, and
+/// the result is certain when they all are.
+fn combine(operands: &[Option<Decision>], absorbing: bool) -> Option<Decision> {
+    let certain_absorbing = Decision {
+        value: absorbing,
+        certain: true,
+    };
+    if operands.contains(&Some(certain_absorbing)) {
+        return Some(certain_absorbing);
+    }
+    let decided: Option<Vec<Decision>> = operands.iter().copied().collect();
+    let decided = decided?;
+    Some(Decision {
+        value: if absorbing {
+            decided.iter().any(|d| d.value)
+        } else {
+            decided.iter().all(|d| d.value)
+        },
+        certain: decided.iter().all(|d| d.certain),
+    })
+}
+
+/// `Piecewise`: the value of the first branch whose condition is true.
+///
+/// Conditions are decided in order ([`decide_condition`]).  An undecidable
+/// condition is an error — falling through to a later `True` branch would
+/// be silently wrong.  A decision that is not certain (a difference within
+/// its error of 0) still picks a branch, but the result then has no bound,
+/// so the evaluation is repeated at a higher precision and refused when
+/// the budget is spent, as `sign` of such a difference is.  Before 0.29 the
+/// decision was read off the rounded values: `Piecewise((0, x < √2), (1,
+/// True))` at `x = √2 + 10⁻¹⁰⁰` came out `0`.
+fn eval_piecewise(
     arena: &Arena,
-    id: ExprId,
+    pairs: &[(ExprId, ExprId)],
     cache: &FxHashMap<ExprId, Complex>,
+    errs: &ErrMap,
     prec: usize,
     rm: RoundingMode,
     cc: &mut Consts,
-) -> Result<Complex, SymplexError> {
-    if let Some(val) = cache.get(&id) {
-        return Ok(val.clone());
+) -> Result<(Complex, accuracy::ErrExp), SymplexError> {
+    debug!(
+        branches = pairs.len(),
+        "evalf: Piecewise — evaluating conditions"
+    );
+    let mut certain = true;
+    for &(value_id, cond_id) in pairs {
+        let Some(decision) = decide_condition(arena, cond_id, cache, errs, prec, rm) else {
+            return Err(unevaluable(format!(
+                "cannot evaluate piecewise: condition `{}` is undecided",
+                arena.display(cond_id)
+            )));
+        };
+        certain &= decision.certain;
+        if !decision.value {
+            continue;
+        }
+        let (value, err) = match cache.get(&value_id) {
+            Some(v) => (
+                v.clone(),
+                errs.get(&value_id).copied().unwrap_or(accuracy::UNKNOWN),
+            ),
+            None => eval_node_with_error(arena, value_id, cache, errs, prec, rm, cc)?,
+        };
+        return Ok((value, if certain { err } else { accuracy::UNKNOWN }));
     }
-    eval_node(arena, id, cache, prec, rm, cc)
+    if !certain {
+        // A condition found false only to this precision may be true: no
+        // value is known yet.
+        return Ok((c_zero(prec), accuracy::UNKNOWN));
+    }
+    Err(unevaluable(
+        "cannot evaluate piecewise: every condition is false",
+    ))
+}
+
+/// The error bound of a root with certified radius `radius` (`None`: no
+/// bound).
+fn radius_error(radius: Option<&BigFloat>) -> accuracy::ErrExp {
+    match radius {
+        None => accuracy::UNKNOWN,
+        Some(r) if r.is_zero() => accuracy::EXACT,
+        Some(r) => r.exponent().map_or(accuracy::UNKNOWN, i64::from),
+    }
+}
+
+/// `RootOf(poly, var, index)`: the `index`-th entry of
+/// [`rootof_roots`](crate::poly::roots::rootof_roots) of `poly` as a
+/// polynomial in `var`, bounded by the radius of its certified inclusion
+/// disk ([`root_balls`](crate::poly::roots::root_balls)).  A root certified
+/// real has an exactly zero imaginary part; without an isolating disk there
+/// is no bound.
+fn eval_rootof(
+    arena: &Arena,
+    poly_id: ExprId,
+    var_id: ExprId,
+    idx_id: ExprId,
+    prec: usize,
+) -> Result<(Complex, accuracy::ErrExp), SymplexError> {
+    let idx: usize = match arena.as_num(idx_id) {
+        Some(r) if r.is_integer() => {
+            let n: i64 = r
+                .to_integer()
+                .try_into()
+                .map_err(|_| unevaluable("RootOf index out of range"))?;
+            usize::try_from(n).map_err(|_| unevaluable("RootOf index must be non-negative"))?
+        }
+        Some(_) => return Err(unevaluable("RootOf index must be an integer")),
+        None => return Err(unevaluable("RootOf index must be numeric")),
+    };
+    let poly = crate::poly::polybridge::expr_to_poly(arena, poly_id, var_id)
+        .ok_or_else(|| unevaluable("could not convert RootOf expression to polynomial"))?;
+    // `rootof_roots` is the one definition of the (re, im) order a `RootOf`
+    // index refers to; `real_roots` derives its indices from the same call.
+    let roots = crate::poly::roots::rootof_roots(&poly, prec);
+    if idx >= roots.len() {
+        return Err(unevaluable(format!(
+            "RootOf index {idx} exceeds the {} root(s) found",
+            roots.len()
+        )));
+    }
+    let ball = crate::poly::roots::root_balls(&poly, &roots, prec)
+        .into_iter()
+        .nth(idx)
+        .ok_or_else(|| unevaluable("RootOf root not found"))?;
+    Ok((ball.value, radius_error(ball.radius.as_ref())))
+}
+
+/// `RootSum(poly, body, sumvar) = Σ_{α: poly(α) = 0} body(α)`: the body at
+/// every root found by Aberth's method, each root bounded by its certified
+/// inclusion disk.  A body with other free variables fails.
+fn eval_rootsum(
+    arena: &Arena,
+    poly_id: ExprId,
+    body_id: ExprId,
+    sumvar_id: ExprId,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<(Complex, accuracy::ErrExp), SymplexError> {
+    debug!("evalf: RootSum — attempting numerical evaluation via Aberth roots");
+    let poly =
+        crate::poly::polybridge::expr_to_poly(arena, poly_id, sumvar_id).ok_or_else(|| {
+            unevaluable(
+                "RootSum: cannot convert polynomial expression to Poly (may contain free symbols)",
+            )
+        })?;
+    let degree = poly.degree().unwrap_or(0);
+    let roots = crate::poly::roots::aberth_roots(&poly, prec, 200);
+    if roots.len() != degree {
+        debug!(
+            expected = degree,
+            found = roots.len(),
+            "evalf: RootSum — Aberth returned fewer roots than expected"
+        );
+    }
+    let balls = crate::poly::roots::root_balls(&poly, &roots, prec);
+    let post_order = walk::post_order_ids(arena, body_id);
+    let mut sum = SumAcc::new(prec);
+    for ball in balls {
+        let err = radius_error(ball.radius.as_ref());
+        let seed = Some((sumvar_id, ball.value, err));
+        let (term, e) = evaluate_tree(arena, body_id, &post_order, seed, true, prec, rm, cc)?;
+        sum.add(&term, e, rm);
+    }
+    debug!(n_roots = roots.len(), "evalf: RootSum — evaluated");
+    Ok(sum.finish())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

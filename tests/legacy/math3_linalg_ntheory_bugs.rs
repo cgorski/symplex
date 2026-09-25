@@ -258,7 +258,7 @@ fn det_known_3x3() {
 fn det_identity_is_one() {
     let ctx = Context::new();
     for n in 1..=5 {
-        let id = Matrix::identity(&ctx, n);
+        let id = Matrix::identity(&ctx, n).unwrap();
         assert_eq!(format!("{}", id.det().unwrap().eval()), "1");
     }
 }
@@ -338,7 +338,7 @@ fn cayley_hamilton_2x2() {
         let tr = a.trace().unwrap().eval();
         let det = a.det().unwrap().eval();
         let a2 = a.powi(2).unwrap();
-        let id = Matrix::identity(&ctx, 2);
+        let id = Matrix::identity(&ctx, 2).unwrap();
         let result = &(&a2 - &(a * &tr)) + &(&id * &det);
         assert_is_zero_matrix(&result, &format!("Cayley-Hamilton 2×2 #{idx}"));
     }
@@ -352,7 +352,7 @@ fn cayley_hamilton_3x3_upper_triangular() {
     // char_poly det(A−λI) = (2−λ)(3−λ)(4−λ) = −λ³ + 9λ² − 26λ + 24.
     let a2 = a.powi(2).unwrap();
     let a3 = a.powi(3).unwrap();
-    let id = Matrix::identity(&ctx, 3);
+    let id = Matrix::identity(&ctx, 3).unwrap();
     // −A³ + 9A² − 26A + 24I = 0
     let result = &(&(&(&a3 * -1) + &(&a2 * 9)) + &(&a * -26)) + &(&id * 24);
     assert_is_zero_matrix(&result, "Cayley-Hamilton 3×3 upper-triangular");
@@ -378,7 +378,7 @@ fn eigenvalues_are_char_poly_roots_2x2() {
 #[test]
 fn eigenvalues_diagonal() {
     let ctx = Context::new();
-    let a = Matrix::diag(&[ctx.int(3), ctx.int(7), ctx.int(11)]);
+    let a = Matrix::diag(&[ctx.int(3), ctx.int(7), ctx.int(11)]).unwrap();
     let mut evs: Vec<String> = a
         .eigenvals()
         .unwrap()
@@ -449,8 +449,8 @@ fn matrix_power_consistency() {
 fn rank_nullity_theorem() {
     let ctx = Context::new();
     let matrices: Vec<Matrix> = vec![
-        Matrix::identity(&ctx, 3),
-        Matrix::zeros(&ctx, 3, 3),
+        Matrix::identity(&ctx, 3).unwrap(),
+        Matrix::zeros(&ctx, 3, 3).unwrap(),
         matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]],
         matrix![ctx, [1, 2, 3], [4, 5, 6], [5, 7, 9]],
     ];
@@ -1296,7 +1296,7 @@ fn char_poly_3x3_known_value() {
     // = −λ³+10λ²−31λ+30
     let ctx = Context::new();
     symplex::syms!(ctx; lam);
-    let a = Matrix::diag(&[ctx.int(2), ctx.int(3), ctx.int(5)]);
+    let a = Matrix::diag(&[ctx.int(2), ctx.int(3), ctx.int(5)]).unwrap();
     let cp = a.char_poly(&lam).unwrap();
     // p(0) = 30 = det(A)
     assert_eq!(format!("{}", cp.subs(&lam, &ctx.int(0)).eval()), "30");

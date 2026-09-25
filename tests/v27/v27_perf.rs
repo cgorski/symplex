@@ -330,3 +330,30 @@ fn s_polynomial_of_different_rings_panics_as_documented() {
     let g = MultiPoly::<GrevLex>::var(3, 1);
     let _ = s_polynomial(&f, &g);
 }
+
+// ── powers whose result is refused by the digit guard ─────────────────────
+
+/// `(999999999999999/10¹⁵)¹⁰⁰⁰` exceeds `max_result_digits`, so it stays a
+/// power.  Before 0.29 every construction of it computed two 50,000-bit
+/// integers, their gcd and their decimal strings (0.55 s, debug build) only
+/// to reject the result; the guard now refuses from a lower bound on the
+/// digit count.  Compared with building the same power at exponent 10,
+/// which is evaluated: interleaved, so machine load affects both sides.
+#[test]
+fn a_power_refused_by_the_digit_guard_is_not_computed() {
+    let ctx = Context::new();
+    let q = ctx.rational(999_999_999_999_999, 1_000_000_000_000_000);
+    let (refused, evaluated) =
+        interleaved_totals(5, |_| timed(|| q.powi(1000)).0, |_| timed(|| q.powi(10)).0);
+    let kept = q.powi(1000);
+    assert!(
+        kept.as_rational().is_none(),
+        "the power stays unevaluated: {kept}"
+    );
+    assert!(q.powi(10).as_rational().is_some());
+    // 0.28: refused/evaluated ≈ 10⁴; now ≈ 1.
+    assert!(
+        refused < evaluated * 50,
+        "refused power {refused:?} vs evaluated power {evaluated:?}"
+    );
+}

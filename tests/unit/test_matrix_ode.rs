@@ -10,7 +10,7 @@ use symplex::prelude::*;
 #[test]
 fn matrix_zeros() {
     let ctx = Context::new();
-    let m = Matrix::zeros(&ctx, 3, 3);
+    let m = Matrix::zeros(&ctx, 3, 3).unwrap();
     assert_eq!(m.nrows(), 3);
     assert_eq!(m.ncols(), 3);
     assert_eq!(format!("{}", m.get(1, 1)), "0");
@@ -19,7 +19,7 @@ fn matrix_zeros() {
 #[test]
 fn matrix_identity_3x3() {
     let ctx = Context::new();
-    let m = Matrix::identity(&ctx, 3);
+    let m = Matrix::identity(&ctx, 3).unwrap();
     assert_eq!(format!("{}", m.get(0, 0)), "1");
     assert_eq!(format!("{}", m.get(0, 1)), "0");
     assert_eq!(format!("{}", m.get(2, 2)), "1");
@@ -28,7 +28,7 @@ fn matrix_identity_3x3() {
 #[test]
 fn matrix_from_fn() {
     let ctx = Context::new();
-    let m = Matrix::from_fn(2, 3, |i, j| ctx.int((i * 3 + j + 1) as i64));
+    let m = Matrix::from_fn(2, 3, |i, j| ctx.int((i * 3 + j + 1) as i64)).unwrap();
     assert_eq!(format!("{}", m.get(0, 0)), "1");
     assert_eq!(format!("{}", m.get(0, 2)), "3");
     assert_eq!(format!("{}", m.get(1, 0)), "4");
@@ -38,11 +38,11 @@ fn matrix_from_fn() {
 #[test]
 fn matrix_row_col_vector() {
     let ctx = Context::new();
-    let r = Matrix::row_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
+    let r = Matrix::row_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]).unwrap();
     assert_eq!(r.nrows(), 1);
     assert_eq!(r.ncols(), 3);
 
-    let c = Matrix::col_vector(vec![ctx.int(1), ctx.int(2)]);
+    let c = Matrix::col_vector(vec![ctx.int(1), ctx.int(2)]).unwrap();
     assert_eq!(c.nrows(), 2);
     assert_eq!(c.ncols(), 1);
 }
@@ -54,7 +54,7 @@ fn matrix_row_col_vector() {
 #[test]
 fn matrix_transpose() {
     let ctx = Context::new();
-    let m = Matrix::from_fn(2, 3, |i, j| ctx.int((i * 3 + j) as i64));
+    let m = Matrix::from_fn(2, 3, |i, j| ctx.int((i * 3 + j) as i64)).unwrap();
     let t = m.transpose();
     assert_eq!(t.nrows(), 3);
     assert_eq!(t.ncols(), 2);
@@ -83,7 +83,7 @@ fn matrix_add() {
 #[test]
 fn matrix_scale() {
     let ctx = Context::new();
-    let m = Matrix::identity(&ctx, 2);
+    let m = Matrix::identity(&ctx, 2).unwrap();
     let scaled = m.scale(&ctx.int(5));
     assert_eq!(format!("{}", scaled.get(0, 0)), "5");
     assert_eq!(format!("{}", scaled.get(0, 1)), "0");
@@ -92,8 +92,8 @@ fn matrix_scale() {
 #[test]
 fn matrix_matmul_identity() {
     let ctx = Context::new();
-    let id = Matrix::identity(&ctx, 3);
-    let m = Matrix::from_fn(3, 3, |i, j| ctx.int((i * 3 + j + 1) as i64));
+    let id = Matrix::identity(&ctx, 3).unwrap();
+    let m = Matrix::from_fn(3, 3, |i, j| ctx.int((i * 3 + j + 1) as i64)).unwrap();
     let result = id.matmul(&m).unwrap();
     assert_eq!(format!("{}", result.get(0, 0)), format!("{}", m.get(0, 0)));
     assert_eq!(format!("{}", result.get(2, 2)), format!("{}", m.get(2, 2)));

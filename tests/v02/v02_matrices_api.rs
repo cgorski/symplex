@@ -383,7 +383,7 @@ fn budget_rejects_huge_inputs_quickly() {
 fn budget_passes_ordinary_symbolic_work() {
     let ctx = Context::new();
     let syms: Vec<Ex> = (0..25).map(|k| ctx.symbol(&format!("a{k}"))).collect();
-    let m = Matrix::from_fn(5, 5, |i, j| syms[i * 5 + j].clone());
+    let m = Matrix::from_fn(5, 5, |i, j| syms[i * 5 + j].clone()).unwrap();
     let start = std::time::Instant::now();
     let d = m.det().unwrap();
     assert_eq!(d.term_count(), 120);
@@ -413,7 +413,7 @@ fn matrix_exp_exact_and_exp_t() {
     // e^{A·0} = I
     assert_eq!(
         et.subs(&t, &ctx.int(0)).eval().simplify(),
-        Matrix::identity(&ctx, 2)
+        Matrix::identity(&ctx, 2).unwrap()
     );
     // Non-square → InvalidArgument
     let err = matrix![ctx, [1, 2, 3]].matrix_exp().unwrap_err();
@@ -436,7 +436,7 @@ fn char_poly_coeffs_ascending_and_consistent() {
         .fold(ctx.zero(), |acc, (k, c)| acc + c * &lam.powi(k as i64));
     assert!((&p - &rebuilt).expand().is_zero_structural());
     // Cayley–Hamilton
-    let mut ph = Matrix::zeros(&ctx, 3, 3);
+    let mut ph = Matrix::zeros(&ctx, 3, 3).unwrap();
     for (k, c) in coeffs.iter().enumerate() {
         ph = &ph + &(&m.powi(k as u32).unwrap() * c);
     }
@@ -560,7 +560,7 @@ fn operators_scalar_both_sides_and_div() {
     assert_eq!((&m / &ctx.int(4))[(0, 1)], ctx.rational(1, 2));
     assert_eq!(-&m, &m * -1);
     assert_eq!(&(&m + &m) - &m, m);
-    assert_eq!(&m * &Matrix::identity(&ctx, 2), m);
+    assert_eq!(&m * &Matrix::identity(&ctx, 2).unwrap(), m);
     let mut im = m.clone();
     im[(0, 0)] = ctx.int(9);
     assert_eq!(im[(0, 0)], ctx.int(9));
@@ -603,7 +603,10 @@ fn accessors() {
     s.set(1, 1, ctx.int(0));
     assert_eq!(s[(1, 1)], ctx.int(0));
     let indexed = m.map_indexed(|i, j, e| if i == j { e.clone() } else { ctx.zero() });
-    assert_eq!(indexed, Matrix::diag(&[ctx.int(1), ctx.int(5), ctx.int(9)]));
+    assert_eq!(
+        indexed,
+        Matrix::diag(&[ctx.int(1), ctx.int(5), ctx.int(9)]).unwrap()
+    );
     assert_eq!(m.vec().shape(), (9, 1));
     assert_eq!(m.vec()[(1, 0)], ctx.int(4));
     assert_eq!(m.context().int(3), ctx.int(3));
@@ -621,7 +624,10 @@ fn block_diag_and_stacking() {
     assert_eq!(h.shape(), (2, 4));
     let v = Matrix::vstack(&[&a, &a]).unwrap();
     assert_eq!(v.shape(), (4, 2));
-    assert_eq!(a.kronecker(&Matrix::identity(&ctx, 2)).shape(), (4, 4));
+    assert_eq!(
+        a.kronecker(&Matrix::identity(&ctx, 2).unwrap()).shape(),
+        (4, 4)
+    );
 }
 
 #[test]
@@ -644,7 +650,8 @@ fn det_symbolic_4x4_is_expanded_polynomial() {
         } else {
             ctx.int((i + j) as i64 % 3)
         }
-    });
+    })
+    .unwrap();
     let d = m.det().unwrap();
     assert!(d.is_polynomial(&x), "det must be a polynomial in x: {d}");
     assert_eq!(d.degree(&x), Some(4));

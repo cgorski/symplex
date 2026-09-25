@@ -1018,7 +1018,8 @@ fn skew3_cross_product() {
     let one = ctx.int(1);
     let zero = ctx.int(0);
     let s = symplex::robotics::skew3(&one, &zero, &zero);
-    let v = symplex::matrix::Matrix::col_vector(vec![zero.clone(), one.clone(), ctx.int(0)]);
+    let v =
+        symplex::matrix::Matrix::col_vector(vec![zero.clone(), one.clone(), ctx.int(0)]).unwrap();
     let result = s.matmul(&v).unwrap();
     assert_eq!(result.shape(), (3, 1));
     let r0 = result.get(0, 0).eval().eval_f64().unwrap();
@@ -1040,7 +1041,7 @@ fn skew3_cross_product() {
 fn homogeneous_identity() {
     let ctx = Context::new();
     let zero = ctx.int(0);
-    let i3 = symplex::matrix::Matrix::identity(&ctx, 3);
+    let i3 = symplex::matrix::Matrix::identity(&ctx, 3).unwrap();
     let pos = [zero.clone(), zero.clone(), zero.clone()];
     let h = symplex::robotics::homogeneous(&i3, &pos).unwrap();
     assert_eq!(h.shape(), (4, 4));
@@ -1059,7 +1060,7 @@ fn homogeneous_identity() {
 #[test]
 fn homogeneous_translation() {
     let ctx = Context::new();
-    let i3 = symplex::matrix::Matrix::identity(&ctx, 3);
+    let i3 = symplex::matrix::Matrix::identity(&ctx, 3).unwrap();
     let px = ctx.rational(4, 1);
     let py = ctx.rational(5, 1);
     let pz = ctx.rational(6, 1);
@@ -1079,7 +1080,7 @@ fn homogeneous_translation() {
 #[test]
 fn homogeneous_rejects_non_3x3_rotation() {
     let ctx = Context::new();
-    let i2 = symplex::matrix::Matrix::identity(&ctx, 2);
+    let i2 = symplex::matrix::Matrix::identity(&ctx, 2).unwrap();
     let pos = [ctx.int(0), ctx.int(0), ctx.int(0)];
     assert!(symplex::robotics::homogeneous(&i2, &pos).is_err());
 }

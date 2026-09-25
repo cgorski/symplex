@@ -2853,8 +2853,8 @@ fn integrate_node_uncached(
 ///
 /// [`crate::base::walk::has_free_symbol`], which reads the binder table
 /// shared with `free_symbols` and `subs`: the variable of a `Sum` is bound
-/// in its body (not in its limits), a `RootOf` whose polynomial has a
-/// single symbol binds it, and so on.  So `RootOf(x⁵ − x + 1, 0)` — the
+/// in its body (not in its limits), a `RootOf` binds its polynomial's
+/// variable, and so on.  So `RootOf(x⁵ − x + 1, 0)` — the
 /// form in which `solve` returns a root of a polynomial in `x` — is a
 /// constant.  Up to 0.28.0 the test was structural, and
 /// `1/(x − RootOf(x⁵ − x + 1, 0))` did not look like `1/(x − c)`.
@@ -6242,7 +6242,10 @@ mod tests {
         let cases = [
             ("RootOf(x^5 - x + 1, 0)", false),
             ("x - RootOf(x^5 - x + 1, 0)", true),
-            ("RootOf(x^3 + a*x + 1, 0)", true),
+            // A parametric `RootOf` binds its variable only (up to 0.28 it
+            // named none and bound nothing).
+            ("RootOf(x^3 + a*x + 1, x, 0)", false),
+            ("RootOf(x^3 + a*x + 1, a, 0)", true),
             ("Sum(x^k, k, 0, 3)", true),
             ("Sum(k*x, x, 0, 3)", false),
             ("Sum(k*x, x, 0, x)", true),

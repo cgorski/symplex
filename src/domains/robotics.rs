@@ -97,7 +97,8 @@ pub fn dh_matrix(theta: &Ex, d: &Ex, a: &Ex, alpha: &Ex) -> Matrix {
 /// size, so unlike [`Matrix::matmul`] there is no shape to check.
 fn mul_square(a: &Matrix, b: &Matrix) -> Matrix {
     let n = a.nrows();
-    Matrix::from_fn(n, n, |i, j| {
+    // `n` = `a.nrows()` ≥ 1.
+    Matrix::from_fn_unchecked(n, n, |i, j| {
         let mut acc = a.get(i, 0) * b.get(0, j);
         for k in 1..n {
             acc += a.get(i, k) * b.get(k, j);
@@ -175,7 +176,7 @@ pub fn fk_chain(links: &[DhLink<'_>]) -> Matrix {
     } else {
         crate::api::context::Context::new()
     };
-    let mut result = Matrix::identity(&ctx, 4);
+    let mut result = Matrix::identity_unchecked(&ctx, 4);
     for link in links {
         result = mul_square(&result, &dh_matrix(link.theta, link.d, link.a, link.alpha));
     }
@@ -231,7 +232,7 @@ pub fn fk_position(links: &[DhLink<'_>]) -> (Ex, Ex, Ex) {
 /// ```
 pub fn fk_rotation(links: &[DhLink<'_>]) -> Matrix {
     let t = fk_chain(links);
-    Matrix::from_fn(3, 3, |i, j| t.get(i, j).clone())
+    Matrix::from_fn_unchecked(3, 3, |i, j| t.get(i, j).clone())
 }
 
 /// Rotation matrix about the x-axis by angle θ.

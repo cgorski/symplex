@@ -54,7 +54,7 @@ fn divergence_of_position_field() {
     let ctx = Context::new();
     symplex::syms!(ctx; x, y, z);
     // F = [x, y, z], ∇·F = 3
-    let field = Matrix::col_vector(vec![x.clone(), y.clone(), z.clone()]);
+    let field = Matrix::col_vector(vec![x.clone(), y.clone(), z.clone()]).unwrap();
     let div = divergence(&field, &[&x, &y, &z]).unwrap();
     assert_eq!(format!("{div}"), "3");
 }
@@ -64,7 +64,7 @@ fn divergence_of_quadratic_field() {
     let ctx = Context::new();
     symplex::syms!(ctx; x, y);
     // F = [x², y²], ∇·F = 2x + 2y
-    let field = Matrix::col_vector(vec![expr!(ctx, x ^ 2), expr!(ctx, y ^ 2)]);
+    let field = Matrix::col_vector(vec![expr!(ctx, x ^ 2), expr!(ctx, y ^ 2)]).unwrap();
     let div = divergence(&field, &[&x, &y]).unwrap();
     let simplified = div.eval().simplify();
     let s = format!("{simplified}");
@@ -79,7 +79,7 @@ fn divergence_of_quadratic_field() {
 fn curl_of_position_is_zero() {
     let ctx = Context::new();
     symplex::syms!(ctx; x, y, z);
-    let field = Matrix::col_vector(vec![x.clone(), y.clone(), z.clone()]);
+    let field = Matrix::col_vector(vec![x.clone(), y.clone(), z.clone()]).unwrap();
     let c = curl(&field, &[&x, &y, &z]).unwrap();
     assert!(c.get(0, 0).eval().simplify().is_zero_structural());
     assert!(c.get(1, 0).eval().simplify().is_zero_structural());
@@ -93,7 +93,7 @@ fn curl_of_rotation_field() {
     let ctx = Context::new();
     symplex::syms!(ctx; x, y, z);
     // F = [-y, x, 0], curl = [0, 0, 2]
-    let field = Matrix::col_vector(vec![-&y, x.clone(), ctx.int(0)]);
+    let field = Matrix::col_vector(vec![-&y, x.clone(), ctx.int(0)]).unwrap();
     let c = curl(&field, &[&x, &y, &z]).unwrap();
     let c0 = c.get(0, 0).eval().simplify();
     let c1 = c.get(1, 0).eval().simplify();
@@ -161,7 +161,7 @@ fn divergence_free_field() {
     let ctx = Context::new();
     symplex::syms!(ctx; x, y, z);
     // F = [y*z, x*z, x*y] is solenoidal (div = 0)
-    let field = Matrix::col_vector(vec![&y * &z, &x * &z, &x * &y]);
+    let field = Matrix::col_vector(vec![&y * &z, &x * &z, &x * &y]).unwrap();
     assert_eq!(is_solenoidal(&field, &[&x, &y, &z]), Some(true));
 }
 
@@ -170,7 +170,7 @@ fn non_conservative_rotation_field() {
     let ctx = Context::new();
     symplex::syms!(ctx; x, y, z);
     // F = [-y, x, 0] has nonzero curl, so not conservative
-    let field = Matrix::col_vector(vec![-&y, x.clone(), ctx.int(0)]);
+    let field = Matrix::col_vector(vec![-&y, x.clone(), ctx.int(0)]).unwrap();
     assert_eq!(is_conservative(&field, &[&x, &y, &z]), Some(false));
 }
 
@@ -179,7 +179,7 @@ fn non_solenoidal_position_field() {
     let ctx = Context::new();
     symplex::syms!(ctx; x, y, z);
     // F = [x, y, z], div = 3, not solenoidal
-    let field = Matrix::col_vector(vec![x.clone(), y.clone(), z.clone()]);
+    let field = Matrix::col_vector(vec![x.clone(), y.clone(), z.clone()]).unwrap();
     assert_eq!(is_solenoidal(&field, &[&x, &y, &z]), Some(false));
 }
 
@@ -191,7 +191,7 @@ fn non_solenoidal_position_field() {
 fn divergence_dimension_mismatch_is_an_error() {
     let ctx = Context::new();
     symplex::syms!(ctx; x, y);
-    let field = Matrix::col_vector(vec![x.clone(), ctx.int(1), ctx.int(2)]);
+    let field = Matrix::col_vector(vec![x.clone(), ctx.int(1), ctx.int(2)]).unwrap();
     assert!(matches!(
         divergence(&field, &[&x, &y]),
         Err(SymplexError::InvalidArgument { .. })
@@ -202,7 +202,7 @@ fn divergence_dimension_mismatch_is_an_error() {
 fn curl_non_3d_is_an_error() {
     let ctx = Context::new();
     symplex::syms!(ctx; x, y);
-    let field = Matrix::col_vector(vec![x.clone(), y.clone()]);
+    let field = Matrix::col_vector(vec![x.clone(), y.clone()]).unwrap();
     assert!(matches!(
         curl(&field, &[&x, &y]),
         Err(SymplexError::InvalidArgument { .. })

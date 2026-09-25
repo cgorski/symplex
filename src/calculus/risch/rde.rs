@@ -74,9 +74,10 @@ pub enum RdeResult {
 /// 3. Set up a system of linear equations from the ansatz `y = N/D`.
 /// 4. Solve the system; if consistent, return the solution.
 ///
-/// # Panics
-///
-/// Panics if `f_denom` or `g_denom` is zero.
+/// A zero `f_denom` or `g_denom` (an equation the integrator never
+/// builds: its denominators come from `as_numer_denom`) is reported as
+/// [`RdeResult::NotImplemented`], so the caller falls back; up to 0.28 it
+/// was a runtime `assert!`.
 #[allow(dead_code)]
 pub fn solve_risch_de_rational(
     f_numer: &Poly,
@@ -84,8 +85,9 @@ pub fn solve_risch_de_rational(
     g_numer: &Poly,
     g_denom: &Poly,
 ) -> RdeResult {
-    assert!(!f_denom.is_zero(), "f denominator must be nonzero");
-    assert!(!g_denom.is_zero(), "g denominator must be nonzero");
+    if f_denom.is_zero() || g_denom.is_zero() {
+        return RdeResult::NotImplemented("Risch DE with a zero denominator".into());
+    }
 
     // Trivial case: if g = 0, then y = 0 is always a solution.
     if g_numer.is_zero() {
@@ -183,7 +185,9 @@ pub fn solve_risch_de(
 fn solve_y_prime_equals_g(g_numer: &Poly, g_denom: &Poly) -> RdeResult {
     // Use Hermite reduction: ∫g dx = rational_part + ∫(square-free remainder).
     // If the square-free remainder is zero, y = rational_part.
-    let hr = super::hermite::hermite_reduce(g_numer, g_denom);
+    let Some(hr) = super::hermite::hermite_reduce(g_numer, g_denom) else {
+        return RdeResult::NotImplemented("Risch DE with a zero denominator".into());
+    };
 
     if hr.h_numer.is_zero() {
         // No logarithmic part — y is purely rational.

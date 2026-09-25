@@ -400,7 +400,7 @@ fn matrix_lll_result_is_a_unimodular_transform_of_the_input() {
 #[test]
 fn matrix_lll_of_the_identity_is_the_identity() {
     let ctx = Context::new();
-    let id = Matrix::identity(&ctx, 3);
+    let id = Matrix::identity(&ctx, 3).unwrap();
     assert_eq!(id.lll(Ratio::new(3, 4)).unwrap(), id);
 }
 

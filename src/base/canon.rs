@@ -945,6 +945,23 @@ fn eval_numeric_pow(arena: &mut Arena, b: &Q, e: &Q) -> Option<ExprId> {
         Err(_) => return None,
     };
 
+    // A power the digit guard below would reject is not computed.  `b` is
+    // in lowest terms, so `numerⁿ/denomⁿ` is too and the guard counts
+    // exactly their digits (plus a sign); an integer of `k ≥ 1` bits has at
+    // least `⌊(k − 1)·log₁₀ 2⌋ + 1` digits, and `xⁿ` at least
+    // `n·(k − 1) + 1` bits.  So this lower bound exceeding the limit implies
+    // rejection, and the output is unchanged.  (Computing
+    // `(999999999999999/10¹⁵)¹⁰⁰⁰` — two 50,000-bit integers, their gcd
+    // and their decimal strings — only to reject it took 0.55 s in a debug
+    // build, at every construction of the power.)
+    let min_digits = |x: &BigInt| -> f64 {
+        let bits = x.bits().saturating_sub(1) as f64 * f64::from(exp_u32);
+        (bits * std::f64::consts::LOG10_2).floor() + 1.0
+    };
+    if min_digits(b.numer()) + min_digits(b.denom()) > arena.config.max_result_digits as f64 + 2.0 {
+        return None;
+    }
+
     // Compute |exp| power of numerator and denominator.
     let numer: BigInt = b.numer().clone();
     let denom: BigInt = b.denom().clone();

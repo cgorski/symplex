@@ -1196,7 +1196,7 @@ fn expr_to_rust_cse(
         ExprNode::Residue(_, _, _) => Err(SymplexError::NotImplemented(
             "cannot generate Rust code for unevaluated Residue".to_string(),
         )),
-        ExprNode::RootOf(_, _) => Err(SymplexError::NotImplemented(
+        ExprNode::RootOf(_, _, _) => Err(SymplexError::NotImplemented(
             "cannot generate Rust code for RootOf".to_string(),
         )),
         ExprNode::DSolve(_, _, _) => Err(SymplexError::NotImplemented(
@@ -1208,6 +1208,9 @@ fn expr_to_rust_cse(
         )),
         ExprNode::ConditionSet(_, _) => Err(SymplexError::NotImplemented(
             "cannot generate Rust code for ConditionSet".to_string(),
+        )),
+        ExprNode::Subs(_, _, _) => Err(SymplexError::NotImplemented(
+            "cannot generate Rust code for unevaluated Subs".to_string(),
         )),
         ExprNode::Piecewise(ref branches) => {
             codegen_piecewise(arena, branches, var_names, options, cse_constants)

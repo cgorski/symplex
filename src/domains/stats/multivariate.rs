@@ -388,7 +388,8 @@ impl MultivariateNormal {
                 .iter()
                 .map(|(i, v)| (v - &self.mean[*i]).simplify())
                 .collect(),
-        );
+        )
+        .map_err(wrap)?;
         let mean_shift = k.matmul(&shift).map_err(wrap)?;
         let mean = a
             .iter()
@@ -430,7 +431,7 @@ impl MultivariateNormal {
             ));
         }
         let wrap = |e: SymplexError| failed(OP, e.to_string());
-        let mu = Matrix::col_vector(self.mean.clone());
+        let mu = Matrix::col_vector(self.mean.clone()).map_err(wrap)?;
         let a_mu = a.matmul(&mu).map_err(wrap)?;
         let mean = b
             .iter()

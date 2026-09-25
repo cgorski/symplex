@@ -26,7 +26,7 @@ fn cartesian_functions_unchanged_and_curl_grad_zero() {
     assert_eq!(is_conservative(&g, &[&x, &y, &z]), Some(true));
     assert_eq!(is_irrotational(&g, &[&x, &y, &z]), Some(true));
     // div(curl F) = 0
-    let field = Matrix::col_vector(vec![&y * &z, &x * &z.powi(2), &x.exp() * &y]);
+    let field = Matrix::col_vector(vec![&y * &z, &x * &z.powi(2), &x.exp() * &y]).unwrap();
     let cf = curl(&field, &[&x, &y, &z]).unwrap();
     assert_eq!(is_solenoidal(&cf, &[&x, &y, &z]), Some(true));
     assert_eq!(
@@ -78,14 +78,14 @@ fn spherical_vs_cartesian_laplacian_of_r_squared_and_harmonics() {
     let g = gradient_in(&r, &vars, sph).unwrap();
     assert_eq!(g, matrix![ctx, [1], [0], [0]]);
     // div(r̂ / r²) = 0 (Coulomb field), div(r r̂) = 3
-    let coulomb = Matrix::col_vector(vec![ctx.int(1) / r.powi(2), ctx.int(0), ctx.int(0)]);
+    let coulomb = Matrix::col_vector(vec![ctx.int(1) / r.powi(2), ctx.int(0), ctx.int(0)]).unwrap();
     assert!(
         divergence_in(&coulomb, &vars, sph)
             .unwrap()
             .simplify()
             .is_zero_structural()
     );
-    let radial = Matrix::col_vector(vec![r.clone(), ctx.int(0), ctx.int(0)]);
+    let radial = Matrix::col_vector(vec![r.clone(), ctx.int(0), ctx.int(0)]).unwrap();
     assert_eq!(
         divergence_in(&radial, &vars, sph).unwrap().simplify(),
         ctx.int(3)
@@ -129,7 +129,7 @@ fn cylindrical_identities() {
             .is_zero_structural()
     );
     // Rigid rotation F = r φ̂: curl = 2 ẑ, divergence 0
-    let rot = Matrix::col_vector(vec![ctx.int(0), r.clone(), ctx.int(0)]);
+    let rot = Matrix::col_vector(vec![ctx.int(0), r.clone(), ctx.int(0)]).unwrap();
     assert_eq!(
         curl_in(&rot, &vars, cyl).unwrap().simplify(),
         matrix![ctx, [0], [0], [2]]
@@ -141,7 +141,7 @@ fn cylindrical_identities() {
             .is_zero_structural()
     );
     // Magnetic field of a wire B = φ̂ / r is curl-free away from the axis
-    let wire = Matrix::col_vector(vec![ctx.int(0), ctx.int(1) / &r, ctx.int(0)]);
+    let wire = Matrix::col_vector(vec![ctx.int(0), ctx.int(1) / &r, ctx.int(0)]).unwrap();
     assert_eq!(
         curl_in(&wire, &vars, cyl).unwrap().simplify().is_zero(),
         Some(true)
@@ -190,7 +190,7 @@ fn directional_derivative_and_potential() {
         "{back}"
     );
     // Rotational field: Err(ComputationFailed); wrong shape: Err(InvalidArgument)
-    let rot = Matrix::col_vector(vec![-&y, x.clone(), ctx.int(0)]);
+    let rot = Matrix::col_vector(vec![-&y, x.clone(), ctx.int(0)]).unwrap();
     assert!(matches!(
         scalar_potential(&rot, &[&x, &y, &z]),
         Err(SymplexError::ComputationFailed { .. })
@@ -246,7 +246,7 @@ fn line_integrals_scalar_and_vector() {
     assert_eq!(w_seg.simplify(), ctx.int(11));
     assert_eq!(w_arc.simplify(), ctx.int(11));
     // Circulation of (−y, x) around a circle of radius 2 = 2π·4 = 8π
-    let rot = Matrix::col_vector(vec![-&y, x.clone()]);
+    let rot = Matrix::col_vector(vec![-&y, x.clone()]).unwrap();
     let circle = [&t.cos() * 2, &t.sin() * 2];
     let circ =
         line_integral_vector(&rot, &[&x, &y], &circle, &t, &ctx.int(0), &(ctx.pi() * 2)).unwrap();

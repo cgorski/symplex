@@ -1087,42 +1087,26 @@ fn integer_multiple(arena: &mut Arena, f: ExprId, e: ExprId) -> Option<BigInt> {
 ///
 /// Every rewrite is an identity in `old`: substituting `old` back for
 /// `new` recovers a value-equal expression.  The walk is bottom-up.
+///
+/// Binders and variable slots are respected exactly as by structural
+/// substitution (the walk is [`crate::transforms::subs`]'s): under a `Sum`
+/// over `x`, `old = x²` is the bound `x` and is not rewritten, where up to
+/// 0.28 `Σ_{x=0}^{3} k·x²` with `x² → y` became `Σ_{x=0}^{3} k·y`.
 pub(crate) fn subs_algebraic(arena: &mut Arena, expr: ExprId, old: ExprId, new: ExprId) -> ExprId {
     if old == new {
         return expr;
     }
     let shape = classify_old(arena, old);
-    let post_order = walk::post_order_ids(arena, expr);
-    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
-
-    for &id in &post_order {
-        // An exact occurrence is replaced before its children are rebuilt
-        // (otherwise `√x → y` would first turn the inner `x` into `y²`).
-        if id == old {
-            cache.insert(id, new);
-            continue;
-        }
-        let rebuilt = if arena.node(id).is_atom() {
-            id
-        } else {
-            walk::rebuild_with_cache(arena, id, &cache)
-        };
-        let result = if rebuilt == old {
-            new
-        } else {
-            match &shape {
-                OldShape::Power { base, exp } => subs_power(arena, rebuilt, *base, *exp, new),
-                OldShape::Product { coeff, factors } => {
-                    subs_product(arena, rebuilt, coeff, factors, new)
-                }
-                OldShape::Sum => subs_sum(arena, rebuilt, old, new),
+    let rewrite = |arena: &mut Arena, rebuilt: ExprId| -> Option<ExprId> {
+        match &shape {
+            OldShape::Power { base, exp } => subs_power(arena, rebuilt, *base, *exp, new),
+            OldShape::Product { coeff, factors } => {
+                subs_product(arena, rebuilt, coeff, factors, new)
             }
-            .unwrap_or(rebuilt)
-        };
-        cache.insert(id, result);
-    }
-
-    cache.get(&expr).copied().unwrap_or(expr)
+            OldShape::Sum => subs_sum(arena, rebuilt, old, new),
+        }
+    };
+    crate::transforms::subs::subs_with_rewrite(arena, expr, old, new, &rewrite)
 }
 
 fn classify_old(arena: &mut Arena, old: ExprId) -> OldShape {

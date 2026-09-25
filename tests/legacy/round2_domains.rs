@@ -736,7 +736,7 @@ fn matrix_4x4_det_nonsingular() {
 #[test]
 fn matrix_5x5_identity_det() {
     let ctx = Context::new();
-    let m = Matrix::identity(&ctx, 5);
+    let m = Matrix::identity(&ctx, 5).unwrap();
     let d = m.det().unwrap().eval();
     assert_close(d.eval_f64().unwrap(), 1.0, 1e-12, "det(I_5) = 1");
 }
@@ -745,7 +745,7 @@ fn matrix_5x5_identity_det() {
 fn matrix_5x5_diagonal_det() {
     let ctx = Context::new();
     let diag = vec![ctx.int(2), ctx.int(3), ctx.int(4), ctx.int(5), ctx.int(6)];
-    let m = Matrix::diag(&diag);
+    let m = Matrix::diag(&diag).unwrap();
     let d = m.det().unwrap().eval();
     // det = 2 * 3 * 4 * 5 * 6 = 720
     assert_close(d.eval_f64().unwrap(), 720.0, 1e-8, "det of 5×5 diagonal");
@@ -754,7 +754,7 @@ fn matrix_5x5_diagonal_det() {
 #[test]
 fn matrix_6x6_identity_inv() {
     let ctx = Context::new();
-    let m = Matrix::identity(&ctx, 6);
+    let m = Matrix::identity(&ctx, 6).unwrap();
     let inv = m.inv().unwrap();
     // I⁻¹ = I
     for i in 0..6 {
@@ -1058,7 +1058,7 @@ fn matrix_pinv_square_nonsingular() {
 #[test]
 fn matrix_exp_zero_matrix() {
     let ctx = Context::new();
-    let z = Matrix::zeros(&ctx, 2, 2);
+    let z = Matrix::zeros(&ctx, 2, 2).unwrap();
     let result = z.matrix_exp().unwrap();
     // e^0 = I
     for i in 0..2 {
@@ -1073,7 +1073,7 @@ fn matrix_exp_zero_matrix() {
 #[test]
 fn matrix_exp_identity_matrix() {
     let ctx = Context::new();
-    let id = Matrix::identity(&ctx, 2);
+    let id = Matrix::identity(&ctx, 2).unwrap();
     let result = id.matrix_exp().unwrap();
     // e^I = e * I
     let e_val = std::f64::consts::E;
@@ -1159,7 +1159,7 @@ fn matrix_rank_deficient() {
 #[test]
 fn matrix_nullspace_of_identity_is_empty() {
     let ctx = Context::new();
-    let m = Matrix::identity(&ctx, 3);
+    let m = Matrix::identity(&ctx, 3).unwrap();
     let ns = m.nullspace();
     assert!(ns.is_empty(), "nullspace of identity should be empty");
 }
@@ -1265,7 +1265,7 @@ fn matrix_kronecker_2x2() {
         vec![ctx.int(3), ctx.int(4)],
     ])
     .unwrap();
-    let b = Matrix::identity(&ctx, 2);
+    let b = Matrix::identity(&ctx, 2).unwrap();
     let k = a.kronecker(&b);
     assert_eq!(k.shape(), (4, 4));
     // A ⊗ I₂ has 2×2 blocks: [[1·I, 2·I], [3·I, 4·I]]
@@ -1753,8 +1753,8 @@ use symplex::vector::{curl, divergence, gradient, is_conservative, is_solenoidal
 #[test]
 fn vector_dot_product_basic() {
     let ctx = Context::new();
-    let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
-    let b = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]);
+    let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]).unwrap();
+    let b = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]).unwrap();
     let d = dot(&a, &b).unwrap().eval();
     // 1*4 + 2*5 + 3*6 = 4+10+18 = 32
     assert_close(d.eval_f64().unwrap(), 32.0, 1e-12, "dot product");
@@ -1763,8 +1763,8 @@ fn vector_dot_product_basic() {
 #[test]
 fn vector_dot_product_orthogonal() {
     let ctx = Context::new();
-    let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(0), ctx.int(0)]);
-    let b = Matrix::col_vector(vec![ctx.int(0), ctx.int(1), ctx.int(0)]);
+    let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(0), ctx.int(0)]).unwrap();
+    let b = Matrix::col_vector(vec![ctx.int(0), ctx.int(1), ctx.int(0)]).unwrap();
     let d = dot(&a, &b).unwrap().eval();
     assert_close(d.eval_f64().unwrap(), 0.0, 1e-12, "orthogonal dot = 0");
 }
@@ -1772,7 +1772,7 @@ fn vector_dot_product_orthogonal() {
 #[test]
 fn vector_dot_product_self_is_norm_squared() {
     let ctx = Context::new();
-    let a = Matrix::col_vector(vec![ctx.int(3), ctx.int(4)]);
+    let a = Matrix::col_vector(vec![ctx.int(3), ctx.int(4)]).unwrap();
     let d = dot(&a, &a).unwrap().eval();
     assert_close(d.eval_f64().unwrap(), 25.0, 1e-12, "v·v = |v|²");
 }
@@ -1784,8 +1784,8 @@ fn vector_dot_product_self_is_norm_squared() {
 #[test]
 fn vector_cross_product_basic() {
     let ctx = Context::new();
-    let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(0), ctx.int(0)]);
-    let b = Matrix::col_vector(vec![ctx.int(0), ctx.int(1), ctx.int(0)]);
+    let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(0), ctx.int(0)]).unwrap();
+    let b = Matrix::col_vector(vec![ctx.int(0), ctx.int(1), ctx.int(0)]).unwrap();
     let c = cross(&a, &b).unwrap();
     // i × j = k
     assert_close(c.get(0, 0).eval_f64().unwrap(), 0.0, 1e-12, "cross x");
@@ -1796,8 +1796,8 @@ fn vector_cross_product_basic() {
 #[test]
 fn vector_cross_product_anticommutative() {
     let ctx = Context::new();
-    let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
-    let b = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]);
+    let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]).unwrap();
+    let b = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]).unwrap();
 
     let ab = cross(&a, &b).unwrap();
     let ba = cross(&b, &a).unwrap();
@@ -1812,7 +1812,7 @@ fn vector_cross_product_anticommutative() {
 #[test]
 fn vector_cross_product_self_is_zero() {
     let ctx = Context::new();
-    let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
+    let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]).unwrap();
     let c = cross(&a, &a).unwrap();
     for i in 0..3 {
         assert_close(
@@ -1828,9 +1828,9 @@ fn vector_cross_product_self_is_zero() {
 fn vector_cross_product_triple_scalar() {
     let ctx = Context::new();
     // a · (b × c) = det([a; b; c])
-    let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
-    let b = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]);
-    let c = Matrix::col_vector(vec![ctx.int(7), ctx.int(8), ctx.int(10)]);
+    let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]).unwrap();
+    let b = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]).unwrap();
+    let c = Matrix::col_vector(vec![ctx.int(7), ctx.int(8), ctx.int(10)]).unwrap();
 
     let bc = cross(&b, &c).unwrap();
     let triple = dot(&a, &bc).unwrap().eval().eval_f64().unwrap();
@@ -1887,7 +1887,7 @@ fn vector_divergence_basic() {
     let y = ctx.symbol("y");
     let z = ctx.symbol("z");
     // F = [x², y², z²]
-    let field = Matrix::col_vector(vec![x.powi(2), y.powi(2), z.powi(2)]);
+    let field = Matrix::col_vector(vec![x.powi(2), y.powi(2), z.powi(2)]).unwrap();
     let div = divergence(&field, &[&x, &y, &z]).unwrap();
     // div F = 2x + 2y + 2z
     let val = div
@@ -1973,7 +1973,7 @@ fn vector_is_solenoidal_constant_field() {
     let y = ctx.symbol("y");
     let z = ctx.symbol("z");
     // Constant field has zero divergence
-    let field = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
+    let field = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]).unwrap();
     assert_eq!(
         is_solenoidal(&field, &[&x, &y, &z]),
         Some(true),
@@ -2587,7 +2587,7 @@ fn robotics_skew3_is_antisymmetric() {
 #[test]
 fn robotics_homogeneous_from_identity_rotation() {
     let ctx = Context::new();
-    let r = Matrix::identity(&ctx, 3);
+    let r = Matrix::identity(&ctx, 3).unwrap();
     let pos = [ctx.int(1), ctx.int(2), ctx.int(3)];
     let t = homogeneous(&r, &pos).unwrap();
     assert_eq!(t.shape(), (4, 4));

@@ -73,7 +73,7 @@ fn bareiss_4x4_integer() {
 #[test]
 fn bareiss_5x5_identity() {
     let ctx = Context::new();
-    let m = Matrix::identity(&ctx, 5);
+    let m = Matrix::identity(&ctx, 5).unwrap();
     let d = m.det().unwrap();
     assert_eq!(format!("{d}"), "1");
 }
@@ -83,7 +83,7 @@ fn bareiss_5x5_identity() {
 #[test]
 fn bareiss_6x6_identity() {
     let ctx = Context::new();
-    let m = Matrix::identity(&ctx, 6);
+    let m = Matrix::identity(&ctx, 6).unwrap();
     let d = m.det().unwrap();
     assert_eq!(format!("{d}"), "1");
 }
@@ -213,7 +213,8 @@ fn bareiss_5x5_diagonal() {
         } else {
             ctx.int(0)
         }
-    });
+    })
+    .unwrap();
     let d = m.det().unwrap();
     let d_val = d.eval_f64().unwrap();
     assert!(

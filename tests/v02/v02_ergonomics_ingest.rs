@@ -362,8 +362,14 @@ fn apply_diff_yields_formal_derivative_with_chain_rule() {
     assert_eq!(format!("{d}"), "Derivative(f(x), x)");
     assert!(d.has_unevaluated());
     assert!(f.try_diff(&x).is_err());
+    // f′ at x² (SymPy 1.14: `f(x**2).diff(x)` is
+    // `2*x*Subs(Derivative(f(_xi_1), _xi_1), _xi_1, x**2)`); up to 0.28
+    // this was the derivative in the non-symbol x², `Derivative(f(x^2), x^2)`.
     let chain = ctx.apply("f", &[x.powi(2)]).unwrap().diff(&x);
-    assert_eq!(format!("{chain}"), "2*x*Derivative(f(x^2), x^2)");
+    assert_eq!(
+        format!("{chain}"),
+        "2*x*Subs(Derivative(f(_xi), _xi), _xi, x^2)"
+    );
 }
 
 #[test]

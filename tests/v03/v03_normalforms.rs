@@ -242,7 +242,7 @@ fn hnf_2x2_index_five() {
 #[test]
 fn hnf_identity_is_fixed() {
     let ctx = Context::new();
-    let i = Matrix::identity(&ctx, 4);
+    let i = Matrix::identity(&ctx, 4).unwrap();
     assert_eq!(assert_hnf_invariants(&i, "identity"), i);
 }
 
@@ -252,7 +252,7 @@ fn hnf_unimodular_matrix_becomes_identity() {
     let a = mi(&ctx, &[&[2, 1], &[1, 1]]);
     assert_eq!(
         assert_hnf_invariants(&a, "unimodular"),
-        Matrix::identity(&ctx, 2)
+        Matrix::identity(&ctx, 2).unwrap()
     );
 }
 
@@ -276,7 +276,7 @@ fn hnf_1x1_negative_becomes_positive() {
 #[test]
 fn hnf_zero_matrix_is_zero() {
     let ctx = Context::new();
-    let z = Matrix::zeros(&ctx, 2, 3);
+    let z = Matrix::zeros(&ctx, 2, 3).unwrap();
     assert_eq!(assert_hnf_invariants(&z, "zeros"), z);
 }
 
@@ -335,7 +335,7 @@ fn hnf_negative_entries() {
     // det = 15 − 14 = 1 → unimodular → identity.
     assert_eq!(
         assert_hnf_invariants(&a, "negatives"),
-        Matrix::identity(&ctx, 2)
+        Matrix::identity(&ctx, 2).unwrap()
     );
     let b = mi(&ctx, &[&[-4, 2], &[6, -9]]);
     assert_hnf_invariants(&b, "negatives 2");
@@ -581,7 +581,7 @@ fn snf_1x1_and_zero() {
         assert_snf_invariants(&mi(&ctx, &[&[0]]), "[0]"),
         mi(&ctx, &[&[0]])
     );
-    let z = Matrix::zeros(&ctx, 3, 2);
+    let z = Matrix::zeros(&ctx, 3, 2).unwrap();
     assert_eq!(assert_snf_invariants(&z, "zeros"), z);
 }
 
@@ -655,19 +655,19 @@ fn integer_nullspace_full_column_rank_is_empty() {
     let ctx = Context::new();
     let a = mi(&ctx, &[&[1, 0], &[0, 1], &[1, 1]]);
     assert!(assert_kernel_invariants(&a, "full rank").is_empty());
-    assert!(assert_kernel_invariants(&Matrix::identity(&ctx, 3), "identity").is_empty());
+    assert!(assert_kernel_invariants(&Matrix::identity(&ctx, 3).unwrap(), "identity").is_empty());
 }
 
 #[test]
 fn integer_nullspace_zero_matrix_is_standard_basis() {
     let ctx = Context::new();
-    let z = Matrix::zeros(&ctx, 2, 3);
+    let z = Matrix::zeros(&ctx, 2, 3).unwrap();
     let basis = assert_kernel_invariants(&z, "zeros");
     assert_eq!(basis.len(), 3);
     let k = Matrix::hstack(&basis.iter().collect::<Vec<_>>()).unwrap();
     assert_eq!(
         hermite_normal_form(&k.transpose()).unwrap(),
-        Matrix::identity(&ctx, 3)
+        Matrix::identity(&ctx, 3).unwrap()
     );
 }
 
@@ -709,7 +709,7 @@ fn integer_nullspace_spans_rational_nullspace() {
 #[test]
 fn is_unimodular_cases() {
     let ctx = Context::new();
-    assert!(is_unimodular(&Matrix::identity(&ctx, 3)).unwrap());
+    assert!(is_unimodular(&Matrix::identity(&ctx, 3).unwrap()).unwrap());
     assert!(is_unimodular(&mi(&ctx, &[&[2, 1], &[1, 1]]).transpose()).unwrap());
     assert!(is_unimodular(&mi(&ctx, &[&[-1]])).unwrap());
     assert!(is_unimodular(&mi(&ctx, &[&[1, 5, -3], &[0, 1, 4], &[0, 0, -1]])).unwrap());

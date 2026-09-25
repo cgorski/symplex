@@ -274,10 +274,11 @@ fn convert_node(
         | ExprNode::LaplaceTransform(_, _, _)
         | ExprNode::InverseLaplaceTransform(_, _, _)
         | ExprNode::Residue(_, _, _)
-        | ExprNode::RootOf(_, _)
+        | ExprNode::RootOf(_, _, _)
         | ExprNode::DSolve(_, _, _)
         | ExprNode::RootSum(_, _, _)
-        | ExprNode::ConditionSet(_, _) => None,
+        | ExprNode::ConditionSet(_, _)
+        | ExprNode::Subs(_, _, _) => None,
     }
 }
 

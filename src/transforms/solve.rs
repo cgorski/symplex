@@ -1709,7 +1709,7 @@ fn solve_rational_roots(arena: &mut Arena, var: ExprId, poly: &Poly) -> Vec<Solu
                         .map(|i| {
                             let idx = arena.int(i as i64);
                             Solution {
-                                value: arena.intern(ExprNode::RootOf(factor_expr, idx)),
+                                value: arena.intern(ExprNode::RootOf(factor_expr, var, idx)),
                             }
                         })
                         .collect()
@@ -2666,7 +2666,7 @@ mod tests {
         let sols = solve(&mut a, expr, x);
         assert_eq!(sols.len(), 5);
         for s in &sols {
-            assert!(!matches!(a.node(s.value), ExprNode::RootOf(_, _)));
+            assert!(!matches!(a.node(s.value), ExprNode::RootOf(..)));
         }
     }
 

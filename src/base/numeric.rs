@@ -225,45 +225,78 @@ pub fn ratio_to_f64(r: &Ratio<BigInt>) -> Option<f64> {
     v.is_finite().then_some(v)
 }
 
-/// Convert a `BigInt` to a `BigFloat`, exactly up to the final rounding
-/// to `prec` bits.
+/// Convert a `BigInt` to a `BigFloat`, correctly rounded (to nearest,
+/// ties to even) to `prec` bits.
 ///
 /// Values that fit in `i128` are converted directly.  Larger integers are
-/// accumulated limb-by-limb (`acc = acc·2⁶⁴ + limb`) at a working
-/// precision wide enough to hold every bit, then rounded once.
+/// handed to astro-float as their limbs — the float `0.limbs · 2^(64·len)`
+/// is the integer itself — and rounded once, in time linear in the size.
+/// Before 0.29 the limbs were accumulated one at a time (`acc·2⁶⁴ + limb`)
+/// at the full width of the integer, a full-width multiplication per limb:
+/// quadratic, 12 s (debug) for the 86,000-bit p-value of a binomial test,
+/// where `Ratio::to_f64` takes 70 µs.
 pub(crate) fn bigint_to_bigfloat(n: &BigInt, prec: usize) -> BigFloat {
     if let Some(v) = n.to_i128() {
-        return BigFloat::from_i128(v, prec);
+        // astro-float builds an `i128` only at 128 bits or more (NaN below).
+        let mut out = BigFloat::from_i128(v, prec.max(128));
+        if prec < 128 {
+            let _ = out.set_precision(prec, RoundingMode::ToEven);
+        }
+        return out;
     }
-    let (sign, limbs) = n.to_u64_digits();
-    let wp = (limbs.len() * 64 + 64).max(prec);
-    let rm = RoundingMode::ToEven;
-    let base = BigFloat::from_u64(1u64 << 32, wp).powi(2, wp, rm); // 2^64
-    let mut acc = BigFloat::new(wp);
-    for &limb in limbs.iter().rev() {
-        acc = acc
-            .mul(&base, wp, rm)
-            .add(&BigFloat::from_u64(limb, wp), wp, rm);
-    }
-    if sign == Sign::Minus {
-        acc = acc.neg();
-    }
-    let _ = acc.set_precision(prec, rm);
-    acc
+    // astro-float's `Word` is 32 or 64 bits depending on the target (and
+    // not always on `target_pointer_width` alone), so the words are packed
+    // from 32-bit digits for whichever width it is, little-endian.
+    let (sign, digits) = n.to_u32_digits();
+    let per_word = astro_float::WORD_BIT_SIZE / 32;
+    let words: Vec<astro_float::Word> = digits
+        .chunks(per_word)
+        .map(|chunk| {
+            chunk
+                .iter()
+                .enumerate()
+                .fold(0 as astro_float::Word, |w, (i, &d)| {
+                    w | (astro_float::Word::from(d) << (32 * i))
+                })
+        })
+        .collect();
+    let sign = if sign == Sign::Minus {
+        astro_float::Sign::Neg
+    } else {
+        astro_float::Sign::Pos
+    };
+    let exponent = words
+        .len()
+        .checked_mul(astro_float::WORD_BIT_SIZE)
+        .and_then(|b| astro_float::Exponent::try_from(b).ok());
+    let Some(exponent) = exponent else {
+        // Beyond astro-float's exponent range.
+        return if sign == astro_float::Sign::Neg {
+            astro_float::INF_NEG
+        } else {
+            astro_float::INF_POS
+        };
+    };
+    let mut out = BigFloat::from_words(&words, sign, exponent);
+    let _ = out.set_precision(prec, RoundingMode::ToEven);
+    out
 }
 
 /// Convert a `Ratio<BigInt>` to a `BigFloat` at `prec` bits: numerator and
-/// denominator are converted exactly (up to their own final rounding, see
-/// [`bigint_to_bigfloat`]) and divided with rounding mode `rm`.
+/// denominator are rounded to `prec + 64` bits (exact when they fit, as
+/// they do for every rational of moderate size; see [`bigint_to_bigfloat`])
+/// and divided with rounding mode `rm`, so the result is within
+/// `2^(−prec)` relative of the rational however large its parts.
 pub(crate) fn ratio_to_bigfloat(r: &Ratio<BigInt>, prec: usize, rm: RoundingMode) -> BigFloat {
     if r.is_zero() {
         return BigFloat::from_i32(0, prec);
     }
-    let n = bigint_to_bigfloat(r.numer(), prec);
     if r.denom().is_one() {
-        return n;
+        return bigint_to_bigfloat(r.numer(), prec);
     }
-    let d = bigint_to_bigfloat(r.denom(), prec);
+    let wp = prec + 64;
+    let n = bigint_to_bigfloat(r.numer(), wp);
+    let d = bigint_to_bigfloat(r.denom(), wp);
     n.div(&d, prec, rm)
 }
 

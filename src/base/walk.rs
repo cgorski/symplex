@@ -600,17 +600,29 @@ pub(crate) fn rebuild_with<F: Fn(ExprId) -> ExprId>(
             }
         }
 
-        // 2-field formal nodes
-        ExprNode::RootOf(a, b) => {
+        ExprNode::RootOf(a, b, c) => {
             let na = get(a);
             let nb = get(b);
-            if na == a && nb == b {
+            let nc = get(c);
+            if na == a && nb == b && nc == c {
                 id
             } else {
-                arena.intern(ExprNode::RootOf(na, nb))
+                arena.intern(ExprNode::RootOf(na, nb, nc))
             }
         }
 
+        ExprNode::Subs(a, b, c) => {
+            let na = get(a);
+            let nb = get(b);
+            let nc = get(c);
+            if na == a && nb == b && nc == c {
+                id
+            } else {
+                subs_node(arena, na, nb, nc)
+            }
+        }
+
+        // 2-field formal nodes
         ExprNode::ConditionSet(a, b) => {
             let na = get(a);
             let nb = get(b);
@@ -673,28 +685,6 @@ pub(crate) fn contains(arena: &Arena, haystack: ExprId, needle: ExprId) -> bool 
     false
 }
 
-/// Collect the [`ExprId`] of every symbol that appears anywhere in the
-/// expression tree, ignoring binders.  Each symbol appears at most once.
-///
-/// Uses an explicit stack — never recurses.
-pub(crate) fn all_symbols(arena: &Arena, root: ExprId) -> Vec<ExprId> {
-    let mut result = Vec::new();
-    let mut visited: FxHashSet<ExprId> = FxHashSet::default();
-    let mut stack: Vec<ExprId> = vec![root];
-
-    while let Some(id) = stack.pop() {
-        if !visited.insert(id) {
-            continue;
-        }
-        if matches!(arena.node(id), ExprNode::Symbol(_)) {
-            result.push(id);
-        }
-        arena.node(id).for_each_child(|c| stack.push(c));
-    }
-
-    result
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Binders
 // ═══════════════════════════════════════════════════════════════════════════
@@ -721,21 +711,22 @@ pub(crate) struct Binder {
 /// | `DefiniteIntegral(body, var, lo, hi)`  | `var`  | `body`        | `lo`, `hi` |
 /// | `RootSum(poly, body, var)`             | `var`  | `poly`, `body`| —          |
 /// | `ConditionSet(var, cond)`              | `var`  | `cond`        | —          |
-/// | `RootOf(poly, idx)`, `poly` in one symbol `s` | `s` | `poly`  | `idx`      |
+/// | `RootOf(poly, var, idx)`               | `var`  | `poly`        | `idx`      |
 /// | `Limit(body, var, point)`              | `var`  | `body`        | `point`    |
 /// | `Residue(body, var, point)`            | `var`  | `body`        | `point`    |
 /// | `LaplaceTransform(body, t, s)`         | `t`    | `body`        | `s`        |
 /// | `InverseLaplaceTransform(body, s, t)`  | `s`    | `body`        | `t`        |
+/// | `Subs(body, var, point)`               | `var`  | `body`        | `point`    |
 ///
-/// `lim_{x→a} f(x)`, `Res_{z=a} f`, `ℒ{f(t)}(s)` and `ℒ⁻¹{F(s)}(t)` are
-/// functions of `a`, `s`, `t` — not of the dummy (SymPy's `free_symbols`
-/// agrees for `Limit` and the integral transforms).  An indefinite
-/// `Integral(body, var)`, a `Derivative(body, var)`, a `Series(body, var,
-/// point, order)` and a `DSolve` do **not** bind: `∫ f dx`, `f′(x)`, a series
-/// in `x` and the solution `y(x)` are functions of `x`.  A `RootOf` whose
-/// polynomial has several symbols names no variable, and binds nothing
-/// (every symbol then counts as free).  A binder whose variable operand
-/// is not a symbol is malformed and binds nothing either.
+/// `lim_{x→a} f(x)`, `Res_{z=a} f`, `ℒ{f(t)}(s)`, `ℒ⁻¹{F(s)}(t)` and
+/// `f′(x)|_{x=a}` are functions of `a`, `s`, `t` — not of the dummy
+/// (SymPy's `free_symbols` agrees for `Limit`, `Subs` and the integral
+/// transforms).  An indefinite `Integral(body, var)`, a `Derivative(body,
+/// var)`, a `Series(body, var, point, order)` and a `DSolve` do **not**
+/// bind: `∫ f dx`, `f′(x)`, a series in `x` and the solution `y(x)` are
+/// functions of `x` (see [`var_slot`] for how substitution treats them).
+/// A binder whose variable operand is not a symbol is malformed and binds
+/// nothing.
 ///
 /// Every binder-aware pass — [`free_symbols`], [`has_free_symbol`],
 /// substitution (`transforms::subs`), the integrator's dependence test —
@@ -757,11 +748,10 @@ pub(crate) fn binder(arena: &Arena, id: ExprId) -> Option<Binder> {
         }
         ExprNode::RootSum(poly, body, var) if is_symbol(var) => Some(b(var, &[poly, body], &[])),
         ExprNode::ConditionSet(var, cond) if is_symbol(var) => Some(b(var, &[cond], &[])),
-        ExprNode::RootOf(poly, idx) => match all_symbols(arena, poly)[..] {
-            [var] => Some(b(var, &[poly], &[idx])),
-            _ => None,
-        },
-        ExprNode::Limit(body, var, point) | ExprNode::Residue(body, var, point)
+        ExprNode::RootOf(poly, var, idx) if is_symbol(var) => Some(b(var, &[poly], &[idx])),
+        ExprNode::Limit(body, var, point)
+        | ExprNode::Residue(body, var, point)
+        | ExprNode::Subs(body, var, point)
             if is_symbol(var) =>
         {
             Some(b(var, &[body], &[point]))
@@ -796,7 +786,8 @@ pub(crate) fn rebuild_binder(
         }
         (ExprNode::RootSum(..), &[poly, body], &[]) => ExprNode::RootSum(poly, body, var),
         (ExprNode::ConditionSet(..), &[cond], &[]) => ExprNode::ConditionSet(var, cond),
-        (ExprNode::RootOf(..), &[poly], &[idx]) => ExprNode::RootOf(poly, idx),
+        (ExprNode::RootOf(..), &[poly], &[idx]) => ExprNode::RootOf(poly, var, idx),
+        (ExprNode::Subs(..), &[body], &[point]) => return subs_node(arena, body, var, point),
         (ExprNode::Limit(..), &[body], &[point]) => ExprNode::Limit(body, var, point),
         (ExprNode::Residue(..), &[body], &[point]) => ExprNode::Residue(body, var, point),
         (ExprNode::LaplaceTransform(..), &[body], &[s]) => ExprNode::LaplaceTransform(body, var, s),
@@ -806,6 +797,128 @@ pub(crate) fn rebuild_binder(
         _ => return id,
     };
     arena.intern(node)
+}
+
+/// The variable slot of a node that is a function *of* its variable:
+/// `var` is bound in the `scoped` operands as for a binder, and free in
+/// the node itself.  `None` for any other node, or for a malformed one
+/// whose variable operand is not a symbol.
+///
+/// | Node                               | `var`  | in              | outer            |
+/// |------------------------------------|--------|-----------------|------------------|
+/// | `Derivative(body, var)`            | `var`  | `body`          | —                |
+/// | `Integral(body, var)`              | `var`  | `body`          | —                |
+/// | `Series(body, var, point, order)`  | `var`  | `body`          | `point`, `order` |
+/// | `DSolve(eq, func, var)`            | `var`  | `eq`, `func`    | —                |
+///
+/// `f′(x)` is `(λx. f′(x))` applied to `x`, so replacing `x` by a value `a`
+/// is not a rewrite of both operands (`Derivative(f(0), 0)` is
+/// meaningless) but the evaluation of that function at `a`:
+/// `Subs(Derivative(f(x), x), x, a)`.  The substitution pass
+/// (`transforms::subs`) reads this table to rename the variable when `a`
+/// is a fresh symbol, and to build the [`subs_node`] otherwise.  For every
+/// other pass the node binds nothing: [`free_symbols`] of `f′(x)` is `{x}`.
+pub(crate) fn var_slot(arena: &Arena, id: ExprId) -> Option<Binder> {
+    let is_symbol = |v: ExprId| matches!(arena.node(v), ExprNode::Symbol(_));
+    let b = |var: ExprId, scoped: &[ExprId], outer: &[ExprId]| Binder {
+        var,
+        scoped: SmallVec::from_slice(scoped),
+        outer: SmallVec::from_slice(outer),
+    };
+    match *arena.node(id) {
+        ExprNode::Derivative(body, var) | ExprNode::Integral(body, var) if is_symbol(var) => {
+            Some(b(var, &[body], &[]))
+        }
+        ExprNode::Series(body, var, point, order) if is_symbol(var) => {
+            Some(b(var, &[body], &[point, order]))
+        }
+        ExprNode::DSolve(eq, func, var) if is_symbol(var) => Some(b(var, &[eq, func], &[])),
+        _ => None,
+    }
+}
+
+/// The node `id` (for which [`var_slot`] is `Some`) rebuilt with variable
+/// `var` and the given `scoped` / `outer` operands, in the order
+/// [`var_slot`] lists them.  Returns `id` for any other node.
+pub(crate) fn rebuild_var_slot(
+    arena: &mut Arena,
+    id: ExprId,
+    var: ExprId,
+    scoped: &[ExprId],
+    outer: &[ExprId],
+) -> ExprId {
+    let node = match (arena.node(id), scoped, outer) {
+        (ExprNode::Derivative(..), &[body], &[]) => ExprNode::Derivative(body, var),
+        (ExprNode::Integral(..), &[body], &[]) => ExprNode::Integral(body, var),
+        (ExprNode::Series(..), &[body], &[point, order]) => {
+            ExprNode::Series(body, var, point, order)
+        }
+        (ExprNode::DSolve(..), &[eq, func], &[]) => ExprNode::DSolve(eq, func, var),
+        _ => return id,
+    };
+    arena.intern(node)
+}
+
+/// `Subs(body, var, point)`, with the folds that make it a normal form:
+/// `body` itself when `point` is `var` or when `var` is not free in
+/// `body`.  A `var` that is not a symbol is malformed and interned as it
+/// is.  (This is the node constructor; substituting `point` into `body`
+/// where that is possible is the substitution pass's business.)
+pub(crate) fn subs_node(arena: &mut Arena, body: ExprId, var: ExprId, point: ExprId) -> ExprId {
+    if let ExprNode::Symbol(sym) = *arena.node(var)
+        && (point == var || !has_free_symbol(arena, body, sym))
+    {
+        return body;
+    }
+    arena.intern(ExprNode::Subs(body, var, point))
+}
+
+/// The variable operand of a binder ([`binder`]) or variable-slot node
+/// ([`var_slot`]), whether or not it is a symbol; `None` for any other
+/// node.
+fn var_operand(node: &ExprNode) -> Option<ExprId> {
+    match *node {
+        ExprNode::Sum(_, v, _, _)
+        | ExprNode::Product_(_, v, _, _)
+        | ExprNode::DefiniteIntegral(_, v, _, _)
+        | ExprNode::Series(_, v, _, _)
+        | ExprNode::RootSum(_, _, v)
+        | ExprNode::DSolve(_, _, v)
+        | ExprNode::ConditionSet(v, _)
+        | ExprNode::RootOf(_, v, _)
+        | ExprNode::Limit(_, v, _)
+        | ExprNode::Residue(_, v, _)
+        | ExprNode::Subs(_, v, _)
+        | ExprNode::LaplaceTransform(_, v, _)
+        | ExprNode::InverseLaplaceTransform(_, v, _)
+        | ExprNode::Derivative(_, v)
+        | ExprNode::Integral(_, v) => Some(v),
+        _ => None,
+    }
+}
+
+/// A node of the tree rooted at `root` whose variable operand is not a
+/// symbol (`Sum(1/9*k, 1/3=0..3)`: a malformed binder), skipping the
+/// nodes of the tree rooted at `except`.  `None` if there is none.
+pub(crate) fn malformed_binder(arena: &Arena, root: ExprId, except: ExprId) -> Option<ExprId> {
+    let old: FxHashSet<ExprId> = post_order_ids(arena, except).into_iter().collect();
+    post_order_ids(arena, root).into_iter().find(|id| {
+        !old.contains(id)
+            && var_operand(arena.node(*id))
+                .is_some_and(|v| !matches!(arena.node(v), ExprNode::Symbol(_)))
+    })
+}
+
+/// The variable a `RootOf` of `poly` takes when none is written: the one
+/// free symbol of `poly`, or `None` when it has none or several (the
+/// variable is then ambiguous and must be given, as in `RootOf(x⁵ − a·x +
+/// 1, x, 0)`).  The printers write the variable exactly when this does
+/// not name it, and the parser reads the two-argument form through it.
+pub(crate) fn root_of_implied_var(arena: &Arena, poly: ExprId) -> Option<ExprId> {
+    match free_symbols(arena, poly)[..] {
+        [var] => Some(var),
+        _ => None,
+    }
 }
 
 /// Does the symbol `sym` occur *free* in the expression rooted at `root`?
@@ -843,6 +956,16 @@ pub(crate) fn has_free_symbol(arena: &Arena, root: ExprId, sym: SymbolId) -> boo
         }
     }
     false
+}
+
+/// [`has_free_symbol`] for a variable given as its `Symbol` node: does
+/// `var` occur free in the tree rooted at `root`?  A `var` that is not a
+/// symbol is looked for as a sub-expression.
+pub(crate) fn has_free_var(arena: &Arena, root: ExprId, var: ExprId) -> bool {
+    match *arena.node(var) {
+        ExprNode::Symbol(sym) => has_free_symbol(arena, root, sym),
+        _ => contains(arena, root, var),
+    }
 }
 
 /// Collect the [`ExprId`] of every *free* symbol that appears in the
@@ -916,7 +1039,8 @@ pub(crate) fn free_symbols(arena: &Arena, root: ExprId) -> Vec<ExprId> {
 /// Returns `true` if the expression tree rooted at `root` contains any
 /// unevaluated formal node: `Integral`, `DefiniteIntegral`, `Derivative`,
 /// `Limit`, `Series`, `LaplaceTransform`, `InverseLaplaceTransform`,
-/// `Residue`, `DSolve`, `ConditionSet`, formal `Sum`, or formal `Product_`.
+/// `Residue`, `DSolve`, `ConditionSet`, `Subs`, formal `Sum`, or formal
+/// `Product_`.
 ///
 /// `RootOf` and `RootSum` are **not** counted: they are complete algebraic
 /// answers (an exact description of a polynomial root / a sum over all
@@ -941,6 +1065,7 @@ pub(crate) fn has_unevaluated(arena: &Arena, root: ExprId) -> bool {
             | ExprNode::Residue(..)
             | ExprNode::DSolve(..)
             | ExprNode::ConditionSet(..)
+            | ExprNode::Subs(..)
             | ExprNode::Sum(..)
             | ExprNode::Product_(..) => return true,
             node => {
@@ -1168,11 +1293,11 @@ mod tests {
         let l3 = a.pow(lam, three);
         let neg_lam = a.neg(lam);
         let poly = a.add(&[l3, neg_lam, a.neg_one]);
-        let root = a.intern(ExprNode::RootOf(poly, a.zero));
+        let root = a.intern(ExprNode::RootOf(poly, lam, a.zero));
         assert!(free_symbols(&a, root).is_empty(), "RootOf is a constant");
         // Root index is not scoped.
         let n = sym(&mut a, "n");
-        let root_n = a.intern(ExprNode::RootOf(poly, n));
+        let root_n = a.intern(ExprNode::RootOf(poly, lam, n));
         assert_eq!(free_symbols(&a, root_n), vec![n]);
         // RootSum(poly(t), body(t, x), t): only x is free.
         let t = sym(&mut a, "t");
@@ -1186,7 +1311,9 @@ mod tests {
     }
 
     #[test]
-    fn free_symbols_rootof_multivariate_polynomial_is_conservative() {
+    fn free_symbols_rootof_multivariate_polynomial_binds_its_variable_only() {
+        // Up to 0.28 a `RootOf` did not record its variable, so one whose
+        // polynomial had a parameter bound nothing: `x` counted as free.
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
         let p = sym(&mut a, "p");
@@ -1194,12 +1321,8 @@ mod tests {
         let x5 = a.pow(x, five);
         let px = a.mul(&[p, x]);
         let poly = a.add(&[x5, px, a.one]);
-        let root = a.intern(ExprNode::RootOf(poly, a.zero));
-        let mut syms = free_symbols(&a, root);
-        syms.sort_unstable();
-        let mut expected = vec![x, p];
-        expected.sort_unstable();
-        assert_eq!(syms, expected);
+        let root = a.intern(ExprNode::RootOf(poly, x, a.zero));
+        assert_eq!(free_symbols(&a, root), vec![p]);
     }
 
     #[test]
@@ -1286,7 +1409,7 @@ mod tests {
         let x5 = a.pow(x, five);
         let neg_x = a.neg(x);
         let poly = a.add(&[x5, neg_x, a.one]);
-        let root = a.intern(ExprNode::RootOf(poly, a.zero));
+        let root = a.intern(ExprNode::RootOf(poly, x, a.zero));
         let sum_x = a.intern(ExprNode::Sum(xk, x, a.zero, three));
         let sum_k = a.intern(ExprNode::Sum(xk, k, a.zero, n));
         let sum_x_to_x = a.intern(ExprNode::Sum(xk, x, a.zero, x));
@@ -1329,7 +1452,7 @@ mod tests {
         let five = a.int(5);
         let x5 = a.pow(x, five);
         let poly = a.add(&[x5, x, a.one]);
-        let root = a.intern(ExprNode::RootOf(poly, a.zero));
+        let root = a.intern(ExprNode::RootOf(poly, x, a.zero));
         assert!(
             !has_unevaluated(&a, root),
             "RootOf is a complete algebraic answer"

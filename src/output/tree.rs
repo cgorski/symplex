@@ -512,10 +512,17 @@ pub enum ExprTree {
         /// The pole location.
         point: Box<ExprTree>,
     },
-    /// Root of a polynomial: RootOf(poly, index).
+    /// Root of a polynomial: RootOf(poly, index), or RootOf(poly, var,
+    /// index) when `poly` has symbols other than `var`.
     RootOf {
         /// The polynomial expression.
         poly: Box<ExprTree>,
+        /// The polynomial's variable, bound in `poly`.  `None` (and absent
+        /// from JSON) when it is the only symbol of `poly`.  A tree without
+        /// it whose polynomial has several symbols (written before 0.29)
+        /// takes the first symbol met in `poly`, as evaluation did then.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        var: Option<Box<ExprTree>>,
         /// The root index (0-based).
         index: Box<ExprTree>,
     },
@@ -543,6 +550,16 @@ pub enum ExprTree {
         var: Box<ExprTree>,
         /// The membership condition.
         condition: Box<ExprTree>,
+    },
+    /// Unevaluated substitution `body|_{var = point}`: Subs(body, var,
+    /// point), e.g. `f′(0)` for an undefined `f`.
+    Subs {
+        /// The expression, a function of `var`.
+        body: Box<ExprTree>,
+        /// The bound variable.
+        var: Box<ExprTree>,
+        /// The point `var` is set to.
+        point: Box<ExprTree>,
     },
 }
 
@@ -837,8 +854,10 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
             var: Box::new(expr_to_tree(arena, var)),
             point: Box::new(expr_to_tree(arena, point)),
         },
-        ExprNode::RootOf(poly, index) => ExprTree::RootOf {
+        ExprNode::RootOf(poly, var, index) => ExprTree::RootOf {
             poly: Box::new(expr_to_tree(arena, poly)),
+            var: (crate::base::walk::root_of_implied_var(arena, poly) != Some(var))
+                .then(|| Box::new(expr_to_tree(arena, var))),
             index: Box::new(expr_to_tree(arena, index)),
         },
         ExprNode::DSolve(expr, func, var) => ExprTree::DSolve {
@@ -854,6 +873,11 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
         ExprNode::ConditionSet(var, condition) => ExprTree::ConditionSet {
             var: Box::new(expr_to_tree(arena, var)),
             condition: Box::new(expr_to_tree(arena, condition)),
+        },
+        ExprNode::Subs(body, var, point) => ExprTree::Subs {
+            body: Box::new(expr_to_tree(arena, body)),
+            var: Box::new(expr_to_tree(arena, var)),
+            point: Box::new(expr_to_tree(arena, point)),
         },
     }
 }
@@ -1250,10 +1274,14 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             let p = tree_to_expr(arena, point);
             arena.intern(ExprNode::Residue(b, v, p))
         }
-        ExprTree::RootOf { poly, index } => {
+        ExprTree::RootOf { poly, var, index } => {
             let p = tree_to_expr(arena, poly);
+            let v = match var {
+                Some(v) => tree_to_expr(arena, v),
+                None => root_of_legacy_var(arena, p),
+            };
             let i = tree_to_expr(arena, index);
-            arena.intern(ExprNode::RootOf(p, i))
+            arena.intern(ExprNode::RootOf(p, v, i))
         }
         ExprTree::DSolve { expr, func, var } => {
             let e = tree_to_expr(arena, expr);
@@ -1272,6 +1300,24 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             let c = tree_to_expr(arena, condition);
             arena.intern(ExprNode::ConditionSet(v, c))
         }
+        ExprTree::Subs { body, var, point } => {
+            let b = tree_to_expr(arena, body);
+            let v = tree_to_expr(arena, var);
+            let p = tree_to_expr(arena, point);
+            crate::transforms::subs::subs(arena, b, v, p)
+        }
+    }
+}
+
+/// The variable of a `RootOf` tree that does not name one: the only
+/// symbol of `poly`; for a tree written before 0.29 whose polynomial has
+/// several, the first met (the one evaluation used then); for a constant
+/// polynomial, which has no roots, a symbol `x` (bound, so it cannot clash
+/// with an `x` outside).
+fn root_of_legacy_var(arena: &mut Arena, poly: ExprId) -> ExprId {
+    match crate::base::walk::free_symbols(arena, poly).first() {
+        Some(&v) => v,
+        None => arena.symbol("x"),
     }
 }
 
@@ -1433,7 +1479,16 @@ impl ExprTree {
             ExprTree::Residue { body, var, point } => {
                 ("Residue".to_string(), Some(vec![body, var, point]))
             }
-            ExprTree::RootOf { poly, index } => two("RootOf", poly, index),
+            ExprTree::RootOf {
+                poly,
+                var: None,
+                index,
+            } => two("RootOf", poly, index),
+            ExprTree::RootOf {
+                poly,
+                var: Some(var),
+                index,
+            } => ("RootOf".to_string(), Some(vec![poly, var, index])),
             ExprTree::DSolve { expr, func, var } => {
                 ("DSolve".to_string(), Some(vec![expr, func, var]))
             }
@@ -1441,6 +1496,9 @@ impl ExprTree {
                 ("RootSum".to_string(), Some(vec![poly, body, sumvar]))
             }
             ExprTree::ConditionSet { var, condition } => two("ConditionSet", var, condition),
+            ExprTree::Subs { body, var, point } => {
+                ("Subs".to_string(), Some(vec![body, var, point]))
+            }
         }
     }
 

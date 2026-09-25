@@ -594,7 +594,7 @@ fn r3_wls_influence_prediction_and_durbin_watson() -> R {
     close(o.upper, 15.413_145_447_344_478, 1e-9);
     // The hat matrix reproduces the fitted values: ŷ = H y.
     let h = fit.hat_matrix()?;
-    let hy = h.matmul(&QMatrix::col_vector(y.clone()))?;
+    let hy = h.matmul(&QMatrix::col_vector(y.clone()).unwrap())?;
     assert_eq!(hy.col(0), fit.fitted);
     assert_eq!(h.diagonal(), lev);
     Ok(())

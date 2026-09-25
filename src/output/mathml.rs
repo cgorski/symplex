@@ -780,6 +780,12 @@ pub(crate) fn render(arena: &Arena, expr: ExprId) -> Result<String, SymplexError
                 mrow(&format!("{}<mo>=</mo>{}", child(var)?, child(point)?)),
                 child(body)?
             )),
+            // `body|_{var=point}`, the evaluation bar.
+            ExprNode::Subs(body, var, point) => format!(
+                "<msub>{}{}</msub>",
+                mrow(&format!("{}<mo stretchy=\"true\">|</mo>", child(body)?)),
+                mrow(&format!("{}<mo>=</mo>{}", child(var)?, child(point)?))
+            ),
 
             // ── Relations and logic ────────────────────────────────────
             ExprNode::Gt(a, b) => relation(&child(a)?, "&gt;", &child(b)?),

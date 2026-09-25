@@ -150,7 +150,7 @@ fn linsolve_accepts_equations_and_rejects_nonlinear() {
 fn linsolve_matrix_form() {
     let ctx = Context::new();
     let a = symplex::matrix![ctx, [2, 1], [1, 3]];
-    let b = Matrix::col_vector(vec![ctx.int(3), ctx.int(5)]);
+    let b = Matrix::col_vector(vec![ctx.int(3), ctx.int(5)]).unwrap();
     match linsolve_matrix(&a, &b).unwrap() {
         LinearSolution::Unique(pairs) => {
             assert_eq!(format!("{}", pairs[0].1), "4/5");
@@ -160,16 +160,16 @@ fn linsolve_matrix_form() {
     }
     // Rank-deficient: [[1, 2], [2, 4]] x = [3, 6] → parametric
     let a = symplex::matrix![ctx, [1, 2], [2, 4]];
-    let b = Matrix::col_vector(vec![ctx.int(3), ctx.int(6)]);
+    let b = Matrix::col_vector(vec![ctx.int(3), ctx.int(6)]).unwrap();
     assert!(matches!(
         linsolve_matrix(&a, &b).unwrap(),
         LinearSolution::Parametric { .. }
     ));
     // Inconsistent: [[1, 2], [2, 4]] x = [3, 7]
-    let b = Matrix::col_vector(vec![ctx.int(3), ctx.int(7)]);
+    let b = Matrix::col_vector(vec![ctx.int(3), ctx.int(7)]).unwrap();
     assert!(linsolve_matrix(&a, &b).unwrap().is_inconsistent());
     // Shape mismatch.
-    let b = Matrix::col_vector(vec![ctx.int(3)]);
+    let b = Matrix::col_vector(vec![ctx.int(3)]).unwrap();
     assert!(linsolve_matrix(&a, &b).is_err());
 }
 

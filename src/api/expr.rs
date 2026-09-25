@@ -133,7 +133,7 @@ pub enum ExprType {
     /// A set expression (interval, finite set, union, intersection, complement).
     Set,
     /// A formal/unevaluated computation (DefiniteIntegral, Limit, Series,
-    /// LaplaceTransform, etc.)
+    /// LaplaceTransform, Subs — a derivative at a point — etc.)
     ///
     /// Every expression of this type also reports
     /// [`has_unevaluated`](Expr::has_unevaluated).  `RootOf`/`RootSum` are
@@ -519,7 +519,8 @@ impl<S: Sort> Expr<S> {
             | crate::base::node::ExprNode::InverseLaplaceTransform(..)
             | crate::base::node::ExprNode::Residue(..)
             | crate::base::node::ExprNode::DSolve(..)
-            | crate::base::node::ExprNode::ConditionSet(..) => ExprType::Unevaluated,
+            | crate::base::node::ExprNode::ConditionSet(..)
+            | crate::base::node::ExprNode::Subs(..) => ExprType::Unevaluated,
         }
     }
 
@@ -534,11 +535,16 @@ impl<S: Sort> Expr<S> {
     ///
     /// A bound variable is not free: the index of a `Sum` or `Product`,
     /// the variable of a definite `Integral`, a `Limit`, a `ConditionSet`,
-    /// a `RootSum`, or of a `RootOf` whose polynomial has one symbol, is
-    /// left alone (the limits of a `Sum` are substituted).  A binder that
-    /// would capture a free symbol of `new` is renamed first (`k` → `k_1`).
-    /// To rename every occurrence, bound ones included, use
-    /// [`replace`](Ex::replace).
+    /// a `RootSum`, a `RootOf` or a `Subs`, is left alone (the limits of a
+    /// `Sum` are substituted).  A binder that would capture a free symbol
+    /// of `new` is renamed first (`k` → `k_1`).  To rename every
+    /// occurrence, bound ones included, use [`replace`](Ex::replace).
+    ///
+    /// The variable of a `Derivative` or an indefinite `Integral` is free
+    /// (`f′(x)` is a function of `x`), but replacing it is evaluation at a
+    /// point: `f′(x)` at `x = 0` is `Subs(Derivative(f(x), x), x, 0)` —
+    /// or the value itself where the derivative can be taken — and
+    /// replacing it by a new symbol renames it (`Derivative(f(y), y)`).
     ///
     /// The result is re-canonicalized, so like-term collection and
     /// other invariants are maintained.
@@ -556,6 +562,8 @@ impl<S: Sort> Expr<S> {
     /// assert_eq!(root.subs(&x, &ctx.int(2)), root);
     /// let s = ctx.parse("Sum(x*k, k, 0, n)").unwrap();
     /// assert_eq!(s.subs(&x, &k).to_string(), "Sum(k*k_1, k_1=0..n)");
+    /// let df = ctx.apply("f", &[&x]).unwrap().diff(&x);
+    /// assert_eq!(df.subs_i64(&x, 0).to_string(), "Subs(Derivative(f(x), x), x, 0)");
     /// ```
     #[must_use = "returns a new expression with substitutions applied"]
     pub fn subs(&self, old: &Ex, new: &Ex) -> Expr<S> {

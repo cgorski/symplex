@@ -705,7 +705,7 @@ impl Expr<Numeric> {
                     let g_expr = *factor_ids[factor]
                         .get_or_insert_with(|| poly_to_expr(arena, &factors[factor], var_id));
                     let idx = arena.int(index as i64);
-                    arena.intern(ExprNode::RootOf(g_expr, idx))
+                    arena.intern(ExprNode::RootOf(g_expr, var_id, idx))
                 }
             })
             .collect()

@@ -1139,17 +1139,14 @@ fn generate_matrix(ctx: &Ident, input: &MatrixMacroInput) -> syn::Result<TokenSt
             let cell_expr = generate_expr_as_ex(ctx, cell)?;
             cell_codes.push(quote! { #cell_expr });
         }
-        row_codes.push(quote! { vec![#(#cell_codes),*] });
+        row_codes.push(quote! { [#(#cell_codes),*] });
     }
-    // The parser has checked the shape (non-empty, rectangular), so the
-    // literal is valid by construction: build it without a fallible call.
-    let nrows = input.rows.len();
-    let ncols = input.rows[0].len();
+    // The parser has checked the shape (non-empty, rectangular), and the
+    // nested array type keeps it rectangular, so the literal is valid by
+    // construction: build it with the infallible hidden constructor (the
+    // public constructors return `Result`).
     Ok(quote! {
-        {
-            let __rows: ::std::vec::Vec<::std::vec::Vec<::symplex::expr::Ex>> = vec![#(#row_codes),*];
-            ::symplex::matrix::Matrix::from_fn(#nrows, #ncols, |__i, __j| __rows[__i][__j].clone())
-        }
+        ::symplex::matrix::Matrix::__from_literal([#(#row_codes),*])
     })
 }
 

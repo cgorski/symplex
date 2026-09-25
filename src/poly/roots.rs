@@ -691,6 +691,243 @@ fn is_real_root_near(
     chain.count_roots_in_closed(&lo, &hi) >= 1
 }
 
+// ── Inclusion disks ──────────────────────────────────────────────────────────────────────────
+
+/// A computed root with a certified error bound (see [`root_balls`]).
+#[derive(Clone, Debug)]
+pub(crate) struct RootBall {
+    /// The root.  A root certified real has an exactly zero imaginary part.
+    pub(crate) value: Complex,
+    /// An upper bound on the distance from `value` to the root, a 64-bit
+    /// float; `None` when no disk isolating the root was certified.
+    pub(crate) radius: Option<BigFloat>,
+}
+
+/// Precision of the radius arithmetic in [`root_balls`].
+const BALL_PREC: usize = 64;
+
+/// `x · (1 + 2⁻⁴⁰)`: absorbs the round-to-nearest errors of a few
+/// [`BALL_PREC`]-bit operations in an upper bound.
+fn inflate(x: &BigFloat) -> BigFloat {
+    let rm = RoundingMode::ToEven;
+    let tiny = pow2(-40, BALL_PREC);
+    x.add(&x.abs().mul(&tiny, BALL_PREC, rm), BALL_PREC, rm)
+}
+
+/// `x · (1 − 2⁻⁴⁰)`, the lower-bound counterpart of [`inflate`].
+fn deflate(x: &BigFloat) -> BigFloat {
+    let rm = RoundingMode::ToEven;
+    let tiny = pow2(-40, BALL_PREC);
+    x.sub(&x.abs().mul(&tiny, BALL_PREC, rm), BALL_PREC, rm)
+}
+
+/// `2^e` at precision `p` (clamped to astro-float's exponent range).
+fn pow2(e: i64, p: usize) -> BigFloat {
+    let mut x = BigFloat::from_i32(1, p);
+    let e = e.saturating_add(1).clamp(
+        i64::from(astro_float::EXPONENT_MIN),
+        i64::from(astro_float::EXPONENT_MAX),
+    );
+    x.set_exponent(astro_float::Exponent::try_from(e).unwrap_or(0));
+    x
+}
+
+/// `|z|` at [`BALL_PREC`] bits.
+fn modulus(z: &Complex) -> BigFloat {
+    crate::base::bigcomplex::c_abs(z, BALL_PREC, RoundingMode::ToEven)
+}
+
+/// `p(z)` at `wp` bits by Horner's scheme, and `Σ |aᵢ|·|z|ⁱ` at
+/// [`BALL_PREC`] bits, which bounds the rounding error of the scheme.
+fn horner_with_scale(
+    coeffs: &[BigFloat],
+    abs_coeffs: &[BigFloat],
+    z: &Complex,
+    wp: usize,
+) -> (Complex, BigFloat) {
+    let rm = RoundingMode::ToEven;
+    let value = poly_eval_complex_bf(coeffs, z, wp, rm);
+    let r = modulus(z);
+    let mut scale = BigFloat::new(BALL_PREC);
+    for c in abs_coeffs.iter().rev() {
+        scale = scale.mul(&r, BALL_PREC, rm).add(c, BALL_PREC, rm);
+    }
+    (value, inflate(&scale))
+}
+
+/// Certified inclusion disks for the computed roots `roots` (all `deg p`
+/// of them, in their order) of `p`.
+///
+/// For any point `z`, `p′(z)/p(z) = Σⱼ 1/(z − rⱼ)` over the roots, so some
+/// root lies within `n·|p(z)/p′(z)|` of `z` (the classical Newton inclusion
+/// radius), with `|p(z)|` enlarged by the rounding error of its evaluation
+/// (Higham's bound for Horner's scheme, `≈ 2n·u·Σ|aᵢ||z|ⁱ`, taken
+/// generously) and `|p′(z)|` reduced by its own.  Each root is first
+/// polished by Newton steps at `prec + 64` bits: the Aberth iteration stops
+/// at corrections of [`ABERTH_TOLERANCE`], far above what a high precision
+/// asks for.
+///
+/// When the `n` disks are pairwise disjoint, each holds exactly one root:
+/// every disk holds at least one, and there are `n` roots (so `p` is then
+/// square-free as well).  A disk whose mirror image in the real axis meets
+/// no other disk holds a *real* root, since `p` has real coefficients: the
+/// conjugate of its root is a root in the mirror image, hence in no other
+/// disk, hence in this one, which holds only one.  Such a root is returned
+/// with an exactly zero imaginary part, and its real part is within the
+/// radius as well.  When some disks overlap (close or multiple roots) no
+/// radius is certified and the computed roots are returned unchanged.
+///
+/// Before 0.29 a `RootOf` was trusted to its working precision whatever
+/// the iteration left: `im(RootOf(y⁵ − y + 1, 0))` came out `−4·10⁻¹⁶¹`
+/// with 30 certified digits, for a real root.
+pub(crate) fn root_balls(poly: &Poly, roots: &[Complex], prec: usize) -> Vec<RootBall> {
+    let uncertified = || {
+        roots
+            .iter()
+            .map(|z| RootBall {
+                value: z.clone(),
+                radius: None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let n = match poly.degree() {
+        Some(d) if d >= 1 && d == roots.len() => d,
+        _ => return uncertified(),
+    };
+    if roots.iter().any(|z| !is_finite(z)) {
+        return uncertified();
+    }
+    let rm = RoundingMode::ToEven;
+    let wp = prec + 64;
+    let monic = poly.make_monic();
+    let deriv = monic.derivative();
+    let to_bf = |p: &Poly, bits: usize| -> Vec<BigFloat> {
+        p.coeffs()
+            .iter()
+            .map(|c| ratio_to_bigfloat(c, bits))
+            .collect()
+    };
+    let p_bf = to_bf(&monic, wp);
+    let d_bf = to_bf(&deriv, wp);
+    let p_abs: Vec<BigFloat> = to_bf(&monic, BALL_PREC).iter().map(BigFloat::abs).collect();
+    let d_abs: Vec<BigFloat> = to_bf(&deriv, BALL_PREC).iter().map(BigFloat::abs).collect();
+    // Relative rounding of a Horner evaluation, generously: (8n + 8)·u.
+    let n_bits = i64::from(usize::BITS - (8 * n + 8).leading_zeros());
+    let unit = pow2(
+        n_bits + 1 - i64::try_from(wp).unwrap_or(i64::MAX / 4),
+        BALL_PREC,
+    );
+    let n_bf = BigFloat::from_u64(n as u64, BALL_PREC);
+
+    let mut polished: Vec<Complex> = Vec::with_capacity(n);
+    let mut radii: Vec<BigFloat> = Vec::with_capacity(n);
+    for z0 in roots {
+        let z = newton_polish(&p_bf, &d_bf, z0, wp);
+        let (pz, p_scale) = horner_with_scale(&p_bf, &p_abs, &z, wp);
+        let (dz, d_scale) = horner_with_scale(&d_bf, &d_abs, &z, wp);
+        let p_err = p_scale.mul(&unit, BALL_PREC, rm);
+        let d_err = d_scale.mul(&unit, BALL_PREC, rm);
+        let numer = inflate(&modulus(&pz).add(&p_err, BALL_PREC, rm));
+        let denom = deflate(&deflate(&modulus(&dz)).sub(&p_err.max(&d_err), BALL_PREC, rm));
+        if !denom.is_positive() {
+            return uncertified();
+        }
+        let r = inflate(&n_bf.mul(&numer, BALL_PREC, rm).div(&denom, BALL_PREC, rm));
+        if r.is_inf() || r.is_nan() {
+            return uncertified();
+        }
+        polished.push(z);
+        radii.push(r);
+    }
+
+    // Is |a − b| > reach?  Compared squared (no square root), with the
+    // difference taken at `wp` bits and the rest rounded outwards.
+    let beyond = |a: &Complex, b: &Complex, reach: &BigFloat| -> bool {
+        let d = c_sub(a, b, wp, rm);
+        let re = d.0.mul(&d.0, BALL_PREC, rm);
+        let im = d.1.mul(&d.1, BALL_PREC, rm);
+        let d2 = deflate(&deflate(&re.add(&im, BALL_PREC, rm)));
+        let reach = inflate(reach);
+        d2.cmp(&inflate(&reach.mul(&reach, BALL_PREC, rm)))
+            .unwrap_or(-1)
+            > 0
+    };
+    // Pairwise disjoint: |zⱼ − zₖ| > rⱼ + rₖ.
+    for k in 0..n {
+        for j in (k + 1)..n {
+            let reach = radii[j].add(&radii[k], BALL_PREC, rm);
+            if !beyond(&polished[j], &polished[k], &reach) {
+                return uncertified();
+            }
+        }
+    }
+
+    let mut out = Vec::with_capacity(n);
+    for k in 0..n {
+        let z = &polished[k];
+        // A disk that misses the real axis holds a non-real root; one that
+        // meets it holds a real root when the mirror-symmetric disk around
+        // Re zₖ of radius |Im zₖ| + rₖ meets no other disk.
+        let centre = (z.0.clone(), BigFloat::new(wp));
+        let im = modulus(&(z.1.clone(), BigFloat::new(wp)));
+        let meets_axis = deflate(&im).cmp(&radii[k]).unwrap_or(-1) <= 0;
+        let mirror = z.1.abs().add(&radii[k], BALL_PREC, rm);
+        let real = meets_axis
+            && (0..n).filter(|&j| j != k).all(|j| {
+                let reach = mirror.add(&radii[j], BALL_PREC, rm);
+                beyond(&polished[j], &centre, &reach)
+            });
+        out.push(RootBall {
+            value: if real { centre } else { z.clone() },
+            radius: Some(radii[k].clone()),
+        });
+    }
+    out
+}
+
+fn is_finite(z: &Complex) -> bool {
+    !(z.0.is_nan() || z.0.is_inf() || z.1.is_nan() || z.1.is_inf())
+}
+
+/// Newton's iteration `z ← z − p(z)/p′(z)` at `wp` bits from `z0`, while the
+/// corrections shrink (at most 8 steps): an Aberth root is already in the
+/// region of quadratic convergence when it is isolated.  A step that does
+/// not shrink is not taken.
+fn newton_polish(p: &[BigFloat], d: &[BigFloat], z0: &Complex, wp: usize) -> Complex {
+    let rm = RoundingMode::ToEven;
+    let mag = |z: &Complex| -> Option<i64> {
+        let part = |x: &BigFloat| {
+            (!x.is_zero())
+                .then(|| x.exponent().map(i64::from))
+                .flatten()
+        };
+        match (part(&z.0), part(&z.1)) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        }
+    };
+    let mut z = z0.clone();
+    let mut previous: Option<i64> = None;
+    for _ in 0..8 {
+        let pz = poly_eval_complex_bf(p, &z, wp, rm);
+        let dz = poly_eval_complex_bf(d, &z, wp, rm);
+        if mag(&dz).is_none() {
+            break;
+        }
+        let w = c_div(&pz, &dz, wp, rm);
+        let Some(wm) = mag(&w) else { break };
+        if previous.is_some_and(|pm| wm >= pm) || !is_finite(&w) {
+            break;
+        }
+        z = c_sub(&z, &w, wp, rm);
+        previous = Some(wm);
+        if mag(&z).is_some_and(|zm| wm < zm - i64::try_from(wp).unwrap_or(i64::MAX / 4) + 2) {
+            break;
+        }
+    }
+    z
+}
+
 /// Convert a `BigFloat` to `f64` (best-effort).
 fn bigfloat_to_f64(bf: &BigFloat) -> f64 {
     // Try direct conversion via the Display trait
@@ -1016,6 +1253,29 @@ mod tests {
         for (i, r) in roots.iter().enumerate() {
             assert!((r.re - (i as f64 + 1.0)).abs() < 1e-8, "root {i}: {r:?}");
             assert!(r.im.abs() < 1e-8);
+        }
+    }
+
+    /// Inclusion disks isolate the roots of `y⁵ − y + 1` (one real, two
+    /// conjugate pairs) at a radius far below the working precision, and
+    /// the real root comes out with an exactly zero imaginary part (Aberth
+    /// leaves noise of about `10⁻¹⁶¹` there).
+    #[test]
+    fn root_balls_certify_radii_and_realness() {
+        let p = poly_from_coeffs(&[1, -1, 0, 0, 0, 1]);
+        let prec = 166;
+        let roots = rootof_roots(&p, prec);
+        let balls = root_balls(&p, &roots, prec);
+        assert_eq!(balls.len(), 5);
+        let reals: Vec<bool> = balls.iter().map(|b| b.value.1.is_zero()).collect();
+        assert_eq!(reals, [true, false, false, false, false], "{balls:?}");
+        for b in &balls {
+            let r = b.radius.as_ref().expect("certified radius");
+            assert!(
+                r.is_zero() || r.exponent().is_some_and(|e| i64::from(e) < -150),
+                "radius {r} for {:?}",
+                b.value
+            );
         }
     }
 }

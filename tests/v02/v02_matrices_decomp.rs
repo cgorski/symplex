@@ -39,7 +39,10 @@ fn qr_square_symbolic_reconstruction() {
     let Qr { q, r } = a.qr().unwrap();
     // Exact reconstruction after simplification
     assert_eq!((&q * &r).simplify(), a);
-    assert_eq!((&q.transpose() * &q).simplify(), Matrix::identity(&ctx, 3));
+    assert_eq!(
+        (&q.transpose() * &q).simplify(),
+        Matrix::identity(&ctx, 3).unwrap()
+    );
     assert_eq!(r.is_upper_triangular(), Some(true));
     // R has positive diagonal
     for i in 0..3 {
@@ -64,7 +67,10 @@ fn qr_rectangular_and_radicals() {
     assert_eq!(q.shape(), (3, 2));
     assert_eq!(r.shape(), (2, 2));
     assert_eq!((&q * &r).simplify(), a);
-    assert_eq!((&q.transpose() * &q).simplify(), Matrix::identity(&ctx, 2));
+    assert_eq!(
+        (&q.transpose() * &q).simplify(),
+        Matrix::identity(&ctx, 2).unwrap()
+    );
     // r_00 = ‖(1,3,5)‖ = √35 exactly
     assert_eq!(r.get(0, 0).eval(), ctx.int(35).sqrt().eval());
     // Simple radical case: [[1, 1], [1, -1]] → Q = (1/√2)[[1, 1], [1, -1]], R = √2 I
@@ -85,7 +91,7 @@ fn qr_symbolic_entries() {
     ])
     .unwrap();
     let Qr { q, r } = a.qr().unwrap();
-    assert_eq!(q.simplify(), Matrix::identity(&ctx, 2));
+    assert_eq!(q.simplify(), Matrix::identity(&ctx, 2).unwrap());
     assert_eq!(r.simplify(), a);
 }
 
@@ -258,12 +264,17 @@ fn predicates_three_valued() {
     assert_eq!(up.is_lower_triangular(), Some(false));
     assert_eq!(up.is_diagonal(), Some(false));
     assert_eq!(
-        Matrix::diag(&[x.clone(), ctx.int(2)]).is_diagonal(),
+        Matrix::diag(&[x.clone(), ctx.int(2)])
+            .unwrap()
+            .is_diagonal(),
         Some(true)
     );
-    assert_eq!(Matrix::identity(&ctx, 4).is_identity(), Some(true));
-    assert_eq!(Matrix::zeros(&ctx, 3, 2).is_zero(), Some(true));
-    assert_eq!(Matrix::zeros(&ctx, 3, 2).is_identity(), Some(false));
+    assert_eq!(Matrix::identity(&ctx, 4).unwrap().is_identity(), Some(true));
+    assert_eq!(Matrix::zeros(&ctx, 3, 2).unwrap().is_zero(), Some(true));
+    assert_eq!(
+        Matrix::zeros(&ctx, 3, 2).unwrap().is_identity(),
+        Some(false)
+    );
     let nil = mi(&ctx, &[&[0, 1, 2], &[0, 0, 3], &[0, 0, 0]]);
     assert_eq!(nil.is_nilpotent(), Some(true));
     assert_eq!(up.is_nilpotent(), Some(false));

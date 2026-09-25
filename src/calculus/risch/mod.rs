@@ -282,7 +282,7 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
             let n = crate::transforms::expand::expand(arena, numer_id);
             let n = crate::transforms::eval::eval(arena, n);
             let p = crate::poly::polybridge::expr_to_poly(arena, n, var)?;
-            let hr = hermite::hermite_reduce(&p, &Poly::from_int(1));
+            let hr = hermite::hermite_reduce(&p, &Poly::from_int(1))?;
             return Some(crate::poly::polybridge::poly_to_expr(
                 arena,
                 &hr.g_numer,
@@ -382,7 +382,7 @@ fn integrate_rational_function(
         "hermite",
         expr,
         hermite::hermite_reduce(numer_poly, denom_poly)
-    );
+    )?;
 
     // Phase 2: Rothstein-Trager on the square-free remainder.
     let log_result = if hr.h_numer.is_zero() {
@@ -393,7 +393,7 @@ fn integrate_rational_function(
             "rothstein_trager",
             expr,
             rothstein_trager::logarithmic_part(&hr.h_numer, &hr.h_denom)
-        )
+        )?
     };
 
     // Convert results back to arena expressions.

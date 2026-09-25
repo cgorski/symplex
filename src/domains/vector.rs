@@ -158,7 +158,7 @@ pub fn gradient_in(f: &Ex, vars: &[&Ex], cs: CoordinateSystem) -> Result<Matrix,
             if hi.is_one_structural() { d } else { &d / hi }
         })
         .collect();
-    Ok(Matrix::col_vector(partials))
+    Matrix::col_vector(partials)
 }
 
 /// Divergence of a vector field in Cartesian coordinates:
@@ -189,7 +189,7 @@ pub fn divergence(field: &Matrix, vars: &[&Ex]) -> Result<Ex, SymplexError> {
 /// let ctx = Context::new();
 /// let (r, th, ph) = (ctx.symbol("r"), ctx.symbol("theta"), ctx.symbol("phi"));
 /// // Radial field F = r r̂ has divergence 3 in spherical coordinates
-/// let f = Matrix::col_vector(vec![r.clone(), ctx.int(0), ctx.int(0)]);
+/// let f = Matrix::col_vector(vec![r.clone(), ctx.int(0), ctx.int(0)]).unwrap();
 /// let d = divergence_in(&f, &[&r, &th, &ph], CoordinateSystem::Spherical).unwrap().simplify();
 /// assert_eq!(d, ctx.int(3));
 /// ```
@@ -248,7 +248,7 @@ pub fn curl(field: &Matrix, vars: &[&Ex]) -> Result<Matrix, SymplexError> {
 /// let ctx = Context::new();
 /// let (r, ph, z) = (ctx.symbol("r"), ctx.symbol("phi"), ctx.symbol("z"));
 /// // Rigid rotation F = r φ̂ has curl 2 ẑ in cylindrical coordinates
-/// let f = Matrix::col_vector(vec![ctx.int(0), r.clone(), ctx.int(0)]);
+/// let f = Matrix::col_vector(vec![ctx.int(0), r.clone(), ctx.int(0)]).unwrap();
 /// let c = curl_in(&f, &[&r, &ph, &z], CoordinateSystem::Cylindrical).unwrap().simplify();
 /// assert_eq!(c, matrix![ctx, [0], [0], [2]]);
 /// assert!(curl_in(&f, &[&r, &ph], CoordinateSystem::Cartesian).is_err());
@@ -278,7 +278,7 @@ pub fn curl_in(field: &Matrix, vars: &[&Ex], cs: CoordinateSystem) -> Result<Mat
             &num / &denom
         }
     };
-    Ok(Matrix::col_vector(vec![comp(1, 2), comp(2, 0), comp(0, 1)]))
+    Matrix::col_vector(vec![comp(1, 2), comp(2, 0), comp(0, 1)])
 }
 
 /// Laplacian of a scalar field in Cartesian coordinates:
@@ -373,7 +373,7 @@ pub fn directional_derivative(
 /// let (x, y, z) = (ctx.symbol("x"), ctx.symbol("y"), ctx.symbol("z"));
 /// let f = gradient(&(&(&x * &y) + &z.powi(2)), &[&x, &y, &z]).unwrap();
 /// assert_eq!(is_conservative(&f, &[&x, &y, &z]), Some(true));
-/// let rot = Matrix::col_vector(vec![-&y, x.clone(), ctx.int(0)]);
+/// let rot = Matrix::col_vector(vec![-&y, x.clone(), ctx.int(0)]).unwrap();
 /// assert_eq!(is_conservative(&rot, &[&x, &y, &z]), Some(false));
 /// ```
 pub fn is_conservative(field: &Matrix, vars: &[&Ex]) -> Option<bool> {
@@ -423,7 +423,7 @@ pub fn is_solenoidal(field: &Matrix, vars: &[&Ex]) -> Option<bool> {
 /// assert!((&recovered - &phi).expand().is_zero_structural());
 ///
 /// // y x̂ − x ŷ is rotational: no potential
-/// let rot = Matrix::col_vector(vec![y.clone(), -&x, ctx.int(0)]);
+/// let rot = Matrix::col_vector(vec![y.clone(), -&x, ctx.int(0)]).unwrap();
 /// assert!(scalar_potential(&rot, &[&x, &y, &z]).is_err());
 /// ```
 pub fn scalar_potential(field: &Matrix, vars: &[&Ex]) -> Result<Ex, SymplexError> {
@@ -557,7 +557,7 @@ pub fn line_integral_scalar(
 /// let ctx = Context::new();
 /// let (x, y, t) = (ctx.symbol("x"), ctx.symbol("y"), ctx.symbol("t"));
 /// // Circulation of F = (−y, x) around the unit circle = 2π
-/// let f = Matrix::col_vector(vec![-&y, x.clone()]);
+/// let f = Matrix::col_vector(vec![-&y, x.clone()]).unwrap();
 /// let circle = [t.cos(), t.sin()];
 /// let w = line_integral_vector(&f, &[&x, &y], &circle, &t, &ctx.int(0), &(ctx.pi() * 2)).unwrap();
 /// assert_eq!(w.simplify(), ctx.pi() * 2);
@@ -607,14 +607,14 @@ mod tests {
         assert_eq!(g.get(0, 0), &(&(&x * 2) * &y));
         assert_eq!(g.get(2, 0), &(&z.powi(2) * 3));
         assert_eq!(laplacian(&f, &[&x, &y, &z]).unwrap(), &y * 2 + &z * 6);
-        let field = Matrix::col_vector(vec![x.clone(), y.clone(), z.clone()]);
+        let field = Matrix::col_vector(vec![x.clone(), y.clone(), z.clone()]).unwrap();
         assert_eq!(divergence(&field, &[&x, &y, &z]).unwrap(), ctx.int(3));
         assert_eq!(is_conservative(&field, &[&x, &y, &z]), Some(true));
         assert_eq!(is_irrotational(&field, &[&x, &y, &z]), Some(true));
         assert_eq!(is_solenoidal(&field, &[&x, &y, &z]), Some(false));
         // Undecidable: curl component `a` with no sign information.
         let a = ctx.symbol("a");
-        let unknown = Matrix::col_vector(vec![ctx.int(0), ctx.int(0), &a * &x]);
+        let unknown = Matrix::col_vector(vec![ctx.int(0), ctx.int(0), &a * &x]).unwrap();
         assert_eq!(is_conservative(&unknown, &[&x, &y, &z]), None);
     }
 
@@ -634,7 +634,7 @@ mod tests {
             .simplify();
         assert!(l2.is_zero_structural());
         // div(r r̂) = 2
-        let f = Matrix::col_vector(vec![r.clone(), ctx.int(0), ctx.int(0)]);
+        let f = Matrix::col_vector(vec![r.clone(), ctx.int(0), ctx.int(0)]).unwrap();
         assert_eq!(
             divergence_in(&f, &vars, CoordinateSystem::Cylindrical)
                 .unwrap()
@@ -659,7 +659,7 @@ mod tests {
             );
         }
         // φ̂/r has zero curl (away from the axis)
-        let vortex = Matrix::col_vector(vec![ctx.int(0), ctx.int(1) / &r, ctx.int(0)]);
+        let vortex = Matrix::col_vector(vec![ctx.int(0), ctx.int(1) / &r, ctx.int(0)]).unwrap();
         let cv = curl_in(&vortex, &vars, CoordinateSystem::Cylindrical)
             .unwrap()
             .simplify();
@@ -690,7 +690,8 @@ mod tests {
             .simplify();
         assert!(l3.is_zero_structural(), "{l3}");
         // div(r̂/r²) = 0
-        let coulomb = Matrix::col_vector(vec![ctx.int(1) / r.powi(2), ctx.int(0), ctx.int(0)]);
+        let coulomb =
+            Matrix::col_vector(vec![ctx.int(1) / r.powi(2), ctx.int(0), ctx.int(0)]).unwrap();
         let d = divergence_in(&coulomb, &vars, CoordinateSystem::Spherical)
             .unwrap()
             .simplify();
@@ -719,7 +720,7 @@ mod tests {
         let ctx = Context::new();
         let (x, y, z) = (ctx.symbol("x"), ctx.symbol("y"), ctx.symbol("z"));
         let f = &x * &y;
-        let d = Matrix::col_vector(vec![ctx.int(2), ctx.int(-1)]);
+        let d = Matrix::col_vector(vec![ctx.int(2), ctx.int(-1)]).unwrap();
         assert_eq!(
             directional_derivative(&f, &[&x, &y], &d).unwrap().expand(),
             &y * 2 - &x
@@ -732,12 +733,15 @@ mod tests {
             (&back - &phi).expand().simplify().is_zero_structural(),
             "{back}"
         );
-        let rot = Matrix::col_vector(vec![-&y, x.clone(), ctx.int(0)]);
+        let rot = Matrix::col_vector(vec![-&y, x.clone(), ctx.int(0)]).unwrap();
         assert!(scalar_potential(&rot, &[&x, &y, &z]).is_err());
         assert!(scalar_potential(&rot, &[&x, &y]).is_err());
         // 2-D works too
-        let p2 =
-            scalar_potential(&Matrix::col_vector(vec![y.clone(), x.clone()]), &[&x, &y]).unwrap();
+        let p2 = scalar_potential(
+            &Matrix::col_vector(vec![y.clone(), x.clone()]).unwrap(),
+            &[&x, &y],
+        )
+        .unwrap();
         assert!((&p2 - &(&x * &y)).expand().is_zero_structural());
     }
 
@@ -755,11 +759,11 @@ mod tests {
             .unwrap();
         assert_eq!(s.simplify(), ctx.rational(35, 2));
         // Work of a conservative field depends only on endpoints: F = ∇(xy) along the segment = 12
-        let f = Matrix::col_vector(vec![y.clone(), x.clone()]);
+        let f = Matrix::col_vector(vec![y.clone(), x.clone()]).unwrap();
         let w = line_integral_vector(&f, &[&x, &y], &seg, &t, &ctx.int(0), &ctx.int(1)).unwrap();
         assert_eq!(w.simplify(), ctx.int(12));
         // Circulation of (−y, x) around the unit circle = 2π
-        let rot = Matrix::col_vector(vec![-&y, x.clone()]);
+        let rot = Matrix::col_vector(vec![-&y, x.clone()]).unwrap();
         let circle = [t.cos(), t.sin()];
         let circ = line_integral_vector(&rot, &[&x, &y], &circle, &t, &ctx.int(0), &(ctx.pi() * 2))
             .unwrap();

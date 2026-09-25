@@ -945,7 +945,7 @@ mod tests {
         let x5 = a.pow(x, five);
         let neg_x = a.neg(x);
         let poly = a.add(&[x5, neg_x, a.one]);
-        let root = a.intern(ExprNode::RootOf(poly, a.zero));
+        let root = a.intern(ExprNode::RootOf(poly, x, a.zero));
         assert!(!contains_var(&a, root, x_sym));
         assert_eq!(
             heurisch_integrate(&mut a, root, x, x_sym),

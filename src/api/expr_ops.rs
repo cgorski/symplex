@@ -1171,9 +1171,9 @@ impl Context {
     /// assert_eq!(format!("{f}"), "f(x)");
     /// assert_eq!(f.eval(), f);
     /// assert_eq!(format!("{}", f.diff(&x)), "Derivative(f(x), x)");
-    /// // Chain rule on the argument:
+    /// // Chain rule on the argument: g′ evaluated at x².
     /// let g = ctx.apply("g", &[x.powi(2)]).unwrap();
-    /// assert_eq!(format!("{}", g.diff(&x)), "2*x*Derivative(g(x^2), x^2)");
+    /// assert_eq!(format!("{}", g.diff(&x)), "2*x*Subs(Derivative(g(_xi), _xi), _xi, x^2)");
     /// assert!(ctx.apply("", &[&x]).is_err());
     /// ```
     pub fn apply<T: AsRef<Ex>>(&self, name: &str, args: &[T]) -> Result<Ex, SymplexError> {

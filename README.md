@@ -451,7 +451,7 @@ Matrix::from_ratio(&ctx, &[vec![q(1, 2), q(3, 1)]]).unwrap();   // [[1/2, 3]]
 
 // 0.3.5: QMatrix / ZMatrix — plain exact matrices over ℚ / ℤ, no expression arena.
 // Fraction-free (Bareiss) elimination: a 30×30 rational inverse takes 10 ms, not 470.
-let h = QMatrix::from_fn(4, 4, |i, j| q(1, (i + j + 1) as i64));   // Hilbert matrix
+let h = QMatrix::from_fn(4, 4, |i, j| q(1, (i + j + 1) as i64)).unwrap();   // Hilbert matrix
 h.det().unwrap();                                     // 1/6048000
 assert_eq!(h.inv().unwrap()[(3, 3)], q(2800, 1));     // the inverse is integral
 let (r, pivots) = QMatrix::from_i64(&[&[1, 2, 3], &[4, 5, 6]]).unwrap().rref();

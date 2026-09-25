@@ -91,18 +91,20 @@ pub struct TowerLogPartResult {
 /// The algorithm is identical to Mack's linear version (see [`super::hermite`])
 /// but operates on `GenPoly<RationalFn>` instead of `Poly<Ratio<BigInt>>`.
 ///
-/// # Panics
-///
-/// Panics if `d` is zero.
+/// `None` if `d` is zero.  The integrator never passes one (it rejects a
+/// zero denominator first); up to 0.28 this was a runtime `assert!`.
 pub fn tower_hermite_reduce(
     a: &GenPoly<RationalFn>,
     d: &GenPoly<RationalFn>,
-) -> TowerHermiteResult {
-    assert!(
-        !d.is_zero(),
-        "tower_hermite_reduce: denominator must be nonzero"
-    );
+) -> Option<TowerHermiteResult> {
+    (!d.is_zero()).then(|| tower_hermite_reduce_nonzero(a, d))
+}
 
+/// [`tower_hermite_reduce`] for a nonzero `d`.
+fn tower_hermite_reduce_nonzero(
+    a: &GenPoly<RationalFn>,
+    d: &GenPoly<RationalFn>,
+) -> TowerHermiteResult {
     // Make d monic; lc(d) is the last coefficient (d is nonzero, so it exists).
     let d_monic = d.make_monic();
     let inv_lc = Field::inv(&d.coeff(d.coeffs().len() - 1));
@@ -246,18 +248,21 @@ fn integrate_tower_poly(p: &GenPoly<RationalFn>) -> GenPoly<RationalFn> {
 /// - Roots that are constants (elements of ℚ) → valid log terms
 /// - Roots that are non-constant (depend on x) → **non-elementary**
 ///
-/// # Panics
-///
-/// Panics if `D` is zero.
+/// `None` if `D` is zero.  The integrator passes the square-free
+/// denominator of a tower Hermite reduction, which is never zero; up to
+/// 0.28 this was a runtime `assert!`.
 pub fn tower_logarithmic_part(
     a: &GenPoly<RationalFn>,
     d: &GenPoly<RationalFn>,
-) -> TowerLogPartResult {
-    assert!(
-        !d.is_zero(),
-        "tower_logarithmic_part: denominator must be nonzero"
-    );
+) -> Option<TowerLogPartResult> {
+    (!d.is_zero()).then(|| tower_logarithmic_part_nonzero(a, d))
+}
 
+/// [`tower_logarithmic_part`] for a nonzero `d`.
+fn tower_logarithmic_part_nonzero(
+    a: &GenPoly<RationalFn>,
+    d: &GenPoly<RationalFn>,
+) -> TowerLogPartResult {
     if a.is_zero() {
         return TowerLogPartResult {
             terms: vec![],
@@ -436,13 +441,22 @@ mod tests {
     // ── Tower Hermite reduction ─────────────────────────────────────
 
     #[test]
+    fn a_zero_denominator_is_none_not_a_panic() {
+        // Up to 0.28 both asserted (a panic in release builds too).
+        let a = rp(&[rf_int(1)]);
+        let zero: GenPoly<RationalFn> = GenPoly::zero();
+        assert!(tower_hermite_reduce(&a, &zero).is_none());
+        assert!(tower_logarithmic_part(&a, &zero).is_none());
+    }
+
+    #[test]
     fn hermite_already_squarefree() {
         // A(θ)/D(θ) where D = θ² - 1 (square-free).
         // Hermite should be a no-op: g = 0, h = A/D.
         let a = rp(&[rf_int(1)]); // A = 1
         let d = rp(&[rf_int(-1), rf_int(0), rf_int(1)]); // D = θ² - 1
 
-        let result = tower_hermite_reduce(&a, &d);
+        let result = tower_hermite_reduce(&a, &d).unwrap();
         // h should still be 1/(θ² - 1)
         assert!(
             result.h_denom.degree().unwrap_or(0) >= 2,
@@ -457,7 +471,7 @@ mod tests {
         let a = rp(&[rf_int(1)]); // A = 1
         let d = rp(&[rf_int(0), rf_int(0), rf_int(1)]); // D = θ²
 
-        let result = tower_hermite_reduce(&a, &d);
+        let result = tower_hermite_reduce(&a, &d).unwrap();
         assert!(
             result.h_numer.is_zero(),
             "1/θ² should have no log remainder, got h = {}/{}",
@@ -474,7 +488,7 @@ mod tests {
         let a = rp(&[inv_x]); // A = 1/x
         let d = rp(&[rf_int(0), rf_int(0), rf_int(1)]); // D = θ²
 
-        let result = tower_hermite_reduce(&a, &d);
+        let result = tower_hermite_reduce(&a, &d).unwrap();
         assert!(
             result.h_numer.is_zero(),
             "(1/x)/θ² should have no log remainder"
@@ -488,7 +502,7 @@ mod tests {
         let a = rp(&[rf_int(1)]); // 1
         let d = rp(&[rf_int(1), rf_int(2), rf_int(1)]); // (θ+1)²
 
-        let result = tower_hermite_reduce(&a, &d);
+        let result = tower_hermite_reduce(&a, &d).unwrap();
 
         // d/dθ(g_numer / g_denom) = (g_n' · g_d - g_n · g_d') / g_d²
         let gn_prime = result.g_numer.derivative();
@@ -520,7 +534,7 @@ mod tests {
         let a = rp(&[rf_int(1)]); // 1
         let d = rp(&[rf_int(0), rf_int(1)]); // θ
 
-        let result = tower_logarithmic_part(&a, &d);
+        let result = tower_logarithmic_part(&a, &d).unwrap();
         assert!(!result.is_non_elementary, "1/θ should be elementary");
         assert_eq!(result.terms.len(), 1, "should have 1 log term");
         match &result.terms[0] {
@@ -544,7 +558,7 @@ mod tests {
         let a = rp(&[inv_x]); // A = 1/x
         let d = rp(&[rf_int(0), rf_int(1)]); // D = θ
 
-        let result = tower_logarithmic_part(&a, &d);
+        let result = tower_logarithmic_part(&a, &d).unwrap();
         // The coefficient of the log term is 1/x, which is non-constant.
         assert!(
             result.is_non_elementary,
@@ -559,7 +573,7 @@ mod tests {
         let a = rp(&[rf_int(1)]); // 1
         let d = rp(&[rf_int(-1), rf_int(0), rf_int(1)]); // θ² - 1
 
-        let result = tower_logarithmic_part(&a, &d);
+        let result = tower_logarithmic_part(&a, &d).unwrap();
         assert!(!result.is_non_elementary, "1/(θ²-1) should be elementary");
         // Should have log terms with constant coefficients ±1/2.
         let constant_count = result
@@ -577,7 +591,7 @@ mod tests {
     fn rt_zero_numerator() {
         let a = GenPoly::<RationalFn>::zero();
         let d = rp(&[rf_int(-1), rf_int(0), rf_int(1)]); // θ² - 1
-        let result = tower_logarithmic_part(&a, &d);
+        let result = tower_logarithmic_part(&a, &d).unwrap();
         assert!(result.terms.is_empty());
         assert!(!result.is_non_elementary);
     }
@@ -626,7 +640,7 @@ mod tests {
         let d = rp(&[rf_int(1), rf_int(-1), rf_int(-1), rf_int(1)]);
         let a = rp(&[rf_int(1)]); // A = 1
 
-        let hr = tower_hermite_reduce(&a, &d);
+        let hr = tower_hermite_reduce(&a, &d).unwrap();
         // h_denom should be square-free, degree ≤ 2.
         let h_deg = hr.h_denom.degree().unwrap_or(0);
         assert!(
@@ -636,7 +650,7 @@ mod tests {
 
         // If there's a remainder, check RT.
         if !hr.h_numer.is_zero() {
-            let rt = tower_logarithmic_part(&hr.h_numer, &hr.h_denom);
+            let rt = tower_logarithmic_part(&hr.h_numer, &hr.h_denom).unwrap();
             assert!(
                 !rt.is_non_elementary,
                 "1/((θ-1)²(θ+1)) should be elementary"

@@ -1063,7 +1063,7 @@ fn linprog_matrix_no_constraints_is_bounded_by_default_bounds() {
 /// Build the `n×k` matrix whose columns are the given `Ex` vectors.
 fn columns(cols: &[Vec<Ex>]) -> Matrix {
     let n = cols[0].len();
-    Matrix::from_fn(n, cols.len(), |i, j| cols[j][i].clone())
+    Matrix::from_fn(n, cols.len(), |i, j| cols[j][i].clone()).unwrap()
 }
 
 #[test]
@@ -1078,7 +1078,7 @@ fn nonnegative_combination_certificate_found() {
     let c = matrix![ctx, [0], [0], [0]];
     let sol = linprog_matrix(Objective::Minimize, &c, None, None, Some(&a), Some(&target)).unwrap();
     assert_eq!(sol.status, LpStatus::Optimal);
-    let mu = Matrix::col_vector(sol.x_ex(&ctx));
+    let mu = Matrix::col_vector(sol.x_ex(&ctx)).unwrap();
     assert_eq!((&a * &mu).eval(), target);
     assert!(sol.x.iter().all(|v| !v.is_negative()));
 }

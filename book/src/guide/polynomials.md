@@ -154,7 +154,7 @@ fn main() {
     let m = Poly::coefficient_matrix(&[&h1, &h2], &basis).unwrap();
     println!("{m}");
     let rhs: Vec<Ex> = basis.iter().map(|mono| goal.coeff_monomial(mono).unwrap()).collect();
-    match linsolve_matrix(&m, &Matrix::col_vector(rhs)).unwrap() {
+    match linsolve_matrix(&m, &Matrix::col_vector(rhs).unwrap()).unwrap() {
         LinearSolution::Unique(pairs) => {
             for (var, val) in pairs {
                 println!("{var} = {val}");                // x1 = 2, x2 = 1
@@ -167,7 +167,7 @@ fn main() {
     // x² + x + 1 is not in the span:
     let goal2 = (&x.powi(2) + &x + 1).as_poly(&[&x]).unwrap();
     let rhs2: Vec<Ex> = basis.iter().map(|mono| goal2.coeff_monomial(mono).unwrap()).collect();
-    println!("{:?}", linsolve_matrix(&m, &Matrix::col_vector(rhs2)).unwrap());   // Inconsistent
+    println!("{:?}", linsolve_matrix(&m, &Matrix::col_vector(rhs2).unwrap()).unwrap());   // Inconsistent
 }
 ```
 

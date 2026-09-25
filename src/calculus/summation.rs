@@ -105,8 +105,11 @@ fn rat_expr(arena: &mut Arena, r: Q) -> ExprId {
     arena.intern(ExprNode::Num(nid))
 }
 
+/// Does `e` depend on the summation variable `var`?  Only free occurrences
+/// count (the binder table of `walk::binder`): a nested `Sum` over `var`,
+/// or a `RootOf` in `var`, is a constant.
 fn depends_on(arena: &Arena, e: ExprId, var: ExprId) -> bool {
-    walk::contains(arena, e, var)
+    walk::has_free_var(arena, e, var)
 }
 
 fn as_rat(arena: &Arena, e: ExprId) -> Option<Q> {

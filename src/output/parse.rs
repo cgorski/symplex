@@ -386,6 +386,7 @@ const KNOWN_FUNCTIONS: &[&str] = &[
     "inverselaplacetransform",
     "residue",
     "dsolve",
+    "subs",
     // call_4
     "series",
     // variadic / binder forms
@@ -1251,6 +1252,17 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// The variable operand `var` of the binder `name` must be a symbol.
+    fn bound_symbol(&self, arena: &Arena, name: &str, var: ExprId) -> Result<(), ParseError> {
+        if matches!(arena.node(var), ExprNode::Symbol(_)) {
+            return Ok(());
+        }
+        Err(self.error(format!(
+            "the variable of '{name}' must be a symbol, got '{}'",
+            arena.display(var)
+        )))
+    }
+
     /// Build `Sum`/`Product` after validating that the index is a symbol.
     #[allow(clippy::too_many_arguments)]
     fn make_sum_product(
@@ -1348,12 +1360,23 @@ impl<'a> Parser<'a> {
             }
             "residue" => Ok(arena.intern(ExprNode::Residue(arg, arg2, arg3))),
             "dsolve" => Ok(arena.intern(ExprNode::DSolve(arg, arg2, arg3))),
+            // `RootOf(poly, var, index)`: the variable written out.
+            "rootof" => {
+                self.bound_symbol(arena, name, arg2)?;
+                Ok(arena.intern(ExprNode::RootOf(arg, arg2, arg3)))
+            }
+            // `Subs(body, var, point)`: `body` at `var = point`, which stays
+            // a `Subs` only where substitution cannot go (`f′(x)` at 0).
+            "subs" => {
+                self.bound_symbol(arena, name, arg2)?;
+                Ok(crate::transforms::subs::subs(arena, arg, arg2, arg3))
+            }
             // Orthogonal polynomials with a parameter: (n, param, x).
             _ => self.lib_call(arena, name_lower, &[arg, arg2, arg3], || {
                 format!(
                     "unknown 3-argument function '{}'. Supported: Limit, LaplaceTransform, \
-                     InverseLaplaceTransform, Residue, DSolve, min, max, gegenbauer, \
-                     assoc_legendre, assoc_laguerre",
+                     InverseLaplaceTransform, Residue, DSolve, RootOf, Subs, min, max, \
+                     gegenbauer, assoc_legendre, assoc_laguerre",
                     name
                 )
             }),
@@ -1375,7 +1398,22 @@ impl<'a> Parser<'a> {
                 let ln_base = arena.ln(arg2);
                 Ok(arena.div(ln_x, ln_base))
             }
-            "rootof" => Ok(arena.intern(ExprNode::RootOf(arg, arg2))),
+            // `RootOf(poly, index)`: the variable is the polynomial's only
+            // symbol; with several (or none) it is ambiguous and must be
+            // written, `RootOf(poly, var, index)` (SymPy's `CRootOf`
+            // likewise refuses a multivariate polynomial without a
+            // generator).
+            "rootof" => {
+                let Some(var) = crate::base::walk::root_of_implied_var(arena, arg) else {
+                    return Err(self.error(format!(
+                        "'{name}({}, {})': the polynomial does not have exactly one symbol; \
+                         name its variable: {name}(poly, var, index)",
+                        arena.display(arg),
+                        arena.display(arg2)
+                    )));
+                };
+                Ok(arena.intern(ExprNode::RootOf(arg, var, arg2)))
+            }
             "conditionset" => Ok(arena.intern(ExprNode::ConditionSet(arg, arg2))),
             // `Integral(f, x)` — the Display form of an indefinite integral.
             "integral" => Ok(arena.intern(ExprNode::Integral(arg, arg2))),

@@ -1023,12 +1023,27 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
         }
 
         // ── RootOf ─────────────────────────────────────────────────
-        ExprNode::RootOf(poly, index) => {
+        ExprNode::RootOf(poly, var, index) => {
             stack.push(LatexItem::Lit(r"\right)"));
             stack.push(LatexItem::Expr(index));
             stack.push(LatexItem::Lit(", "));
+            if crate::base::walk::root_of_implied_var(arena, poly) != Some(var) {
+                stack.push(LatexItem::Expr(var));
+                stack.push(LatexItem::Lit(", "));
+            }
             stack.push(LatexItem::Expr(poly));
             stack.push(LatexItem::Lit(r"\operatorname{RootOf}\left("));
+        }
+
+        // ── Subs: \left. body \right|_{var=point} (SymPy's notation) ──
+        ExprNode::Subs(body, var, point) => {
+            stack.push(LatexItem::Lit("}"));
+            stack.push(LatexItem::Expr(point));
+            stack.push(LatexItem::Lit("="));
+            stack.push(LatexItem::Expr(var));
+            stack.push(LatexItem::Lit(r" \right|_{"));
+            stack.push(LatexItem::Expr(body));
+            stack.push(LatexItem::Lit(r"\left. "));
         }
 
         // ── DSolve ─────────────────────────────────────────────────

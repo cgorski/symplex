@@ -104,8 +104,8 @@ fuzz_target!(|data: &[u8]| {
     // Cayley–Hamilton with the Berkowitz coefficients (ascending, det(A − λI)).
     let p = a.char_poly_coeffs().expect("square");
     assert_eq!(p.len(), n + 1);
-    let mut acc = QMatrix::zeros(n, n);
-    let mut power = QMatrix::identity(n);
+    let mut acc = QMatrix::zeros(n, n).unwrap();
+    let mut power = QMatrix::identity(n).unwrap();
     for c in &p {
         let term = QMatrix::new(
             (0..n)

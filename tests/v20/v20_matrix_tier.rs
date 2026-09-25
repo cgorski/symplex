@@ -67,12 +67,12 @@ impl Lcg {
 
 fn int_matrix(ctx: &Context, n: usize, m: usize, seed: u64) -> Matrix {
     let mut g = Lcg(seed);
-    Matrix::from_fn(n, m, |_, _| ctx.int(g.small()))
+    Matrix::from_fn(n, m, |_, _| ctx.int(g.small())).unwrap()
 }
 
 fn ratio_matrix(ctx: &Context, n: usize, m: usize, seed: u64) -> Matrix {
     let mut g = Lcg(seed);
-    Matrix::from_fn(n, m, |_, _| ctx.from_ratio(g.ratio()))
+    Matrix::from_fn(n, m, |_, _| ctx.from_ratio(g.ratio())).unwrap()
 }
 
 /// About 40 % zeros, so that LU has to swap rows.
@@ -85,11 +85,12 @@ fn sparse_matrix(ctx: &Context, n: usize, seed: u64) -> Matrix {
             ctx.from_ratio(g.ratio())
         }
     })
+    .unwrap()
 }
 
 fn ratio_qmatrix(n: usize, m: usize, seed: u64) -> QMatrix {
     let mut g = Lcg(seed);
-    QMatrix::from_fn(n, m, |_, _| g.ratio())
+    QMatrix::from_fn(n, m, |_, _| g.ratio()).unwrap()
 }
 
 fn display_rows(m: &Matrix) -> Vec<String> {
@@ -191,6 +192,7 @@ fn ref_matmul(a: &Matrix, b: &Matrix) -> Matrix {
         }
         acc
     })
+    .unwrap()
 }
 
 /// `Matrix::trace` as it was.
@@ -393,8 +395,8 @@ fn qmatrix_char_poly_coeffs_matches_a_plain_ratio_berkowitz() {
         assert_eq!(got, ref_q_char_poly(&a), "{n}×{n}");
         assert_eq!(got[0], a.det().unwrap());
         // Cayley–Hamilton: Σ cₖ Aᵏ = 0.
-        let mut power = QMatrix::identity(n);
-        let mut acc = QMatrix::zeros(n, n);
+        let mut power = QMatrix::identity(n).unwrap();
+        let mut acc = QMatrix::zeros(n, n).unwrap();
         for c in &got {
             acc = acc.add(&power.scale(c)).unwrap();
             power = power.matmul(&a).unwrap();
@@ -406,7 +408,8 @@ fn qmatrix_char_poly_coeffs_matches_a_plain_ratio_berkowitz() {
     let big = BigInt::from(1i64 << 50);
     let a = QMatrix::from_fn(6, 6, |i, j| {
         Ratio::from_integer(BigInt::from((i * 7 + j * 3) as i64 % 11 - 5) * &big)
-    });
+    })
+    .unwrap();
     let got = a.char_poly_coeffs().unwrap();
     assert_eq!(got, ref_q_char_poly(&a));
     assert!(
@@ -801,7 +804,7 @@ fn rational_paths_are_fast_enough() {
     let ctx = Context::new();
     let budget = std::time::Duration::from_secs(2);
 
-    let cov = QMatrix::from_fn(6, 6, |i, j| qi(if i == j { 3 } else { 1 }));
+    let cov = QMatrix::from_fn(6, 6, |i, j| qi(if i == j { 3 } else { 1 })).unwrap();
     let t = Instant::now();
     let p = pca(&ctx, &cov).unwrap();
     assert!(t.elapsed() < budget, "pca 6×6 took {:?}", t.elapsed());

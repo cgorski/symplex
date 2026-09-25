@@ -78,15 +78,23 @@ fn near_excluded(x: f64, excluded: &[f64], eps: f64) -> bool {
 /// `f` is the function to sample; `range` is the closed `[x_min, x_max]`;
 /// `excluded_points` lists x-values where the function is known to be undefined
 /// (e.g. from singularity analysis); `opts` controls sampling behaviour.
+///
+/// `InvalidArgument` unless `x_min < x_max` with a finite width (the plot
+/// entry points check the range first; up to 0.28 this was an `assert!`).
 pub(crate) fn sample_compiled(
     f: &dyn Fn(f64) -> f64,
     range: Interval<f64>,
     excluded_points: &[f64],
     opts: &SampleOptions,
-) -> PlotData {
+) -> Result<PlotData, crate::base::errors::SymplexError> {
     let (x_min, x_max) = (range.lower, range.upper);
     let interval = x_max - x_min;
-    assert!(interval > 0.0, "range must be non-empty (x_min < x_max)");
+    if !(interval > 0.0 && interval.is_finite()) {
+        return Err(crate::base::errors::SymplexError::invalid_argument(
+            "sample_compiled",
+            format!("the range must be non-empty and finite, got [{x_min}, {x_max}]"),
+        ));
+    }
 
     let n = opts.min_points.max(2);
     let eps = interval * 1e-9;
@@ -178,11 +186,11 @@ pub(crate) fn sample_compiled(
     }
     asymptotes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-    PlotData {
+    Ok(PlotData {
         points: final_points,
         asymptotes,
         excluded: recorded_excluded,
-    }
+    })
 }
 
 /// Compute the absolute y-range of finite sample values.

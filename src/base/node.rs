@@ -87,7 +87,7 @@ impl fmt::Debug for CtxId {
 ///   identified by name).
 /// * **Calculus / formal (unevaluated) forms** – `Derivative`, `Integral`,
 ///   `Sum`, `Product_`, `Limit`, `Series`, `LaplaceTransform`,
-///   `InverseLaplaceTransform`, `Residue`, `DSolve`, `ConditionSet`.
+///   `InverseLaplaceTransform`, `Residue`, `DSolve`, `ConditionSet`, `Subs`.
 /// * **Algebraic answers** – `RootOf`, `RootSum` (complete closed-form
 ///   descriptions of polynomial roots; *not* unevaluated).
 /// * **Sets** – `Interval`, `FiniteSet`, `SetUnion`, `SetIntersection`,
@@ -382,7 +382,15 @@ pub enum ExprNode {
     Residue(ExprId, ExprId, ExprId),
 
     /// Root of a polynomial: the index-th root of poly.
-    RootOf(ExprId, ExprId),
+    ///
+    /// `RootOf(poly, var, index)` where:
+    /// - `poly` is a polynomial in `var` (it may have other symbols as
+    ///   parameters: `RootOf(x⁵ − a·x + 1, x, 0)` is a function of `a`);
+    /// - `var` is the bound variable symbol, as for `RootSum` (SymPy's
+    ///   `CRootOf` likewise keeps its polynomial's generator);
+    /// - `index` selects the root (Aberth ordering: by real part, then
+    ///   imaginary part).
+    RootOf(ExprId, ExprId, ExprId),
 
     /// Sum over roots of a polynomial: Σ_{α: poly(α)=0} body(α, x).
     ///
@@ -423,6 +431,20 @@ pub enum ExprNode {
 
     /// Set complement (relative): A \ B.
     SetComplement(ExprId, ExprId),
+
+    // -- evaluation at a point (declared last: appending keeps the
+    //    discriminants, hence the hashes, of every older variant) ----------
+    /// Unevaluated substitution: `body` with `var` set to `point`.
+    ///
+    /// `Subs(body, var, point)` binds `var` in `body`; `point` is in the
+    /// enclosing scope.  It is the value at a point of a function of `var`
+    /// that cannot be substituted into directly: `f′(0)` for an undefined
+    /// `f` is `Subs(Derivative(f(x), x), x, 0)`, as in SymPy.  Substitution
+    /// builds one only around a `Derivative`, `Integral`, `Series` or
+    /// `DSolve` whose variable is replaced by something that is not a fresh
+    /// symbol, and `diff` for a partial derivative of an undefined function
+    /// in an argument that is not a lone symbol (`∂f/∂u` at `u = x²`).
+    Subs(ExprId, ExprId, ExprId),
 }
 
 /// Interval flag: left endpoint is open (excluded).
@@ -498,7 +520,6 @@ impl ExprNode {
             | ExprNode::Derivative(a, b)
             | ExprNode::Integral(a, b)
             | ExprNode::SetComplement(a, b)
-            | ExprNode::RootOf(a, b)
             | ExprNode::ConditionSet(a, b) => {
                 smallvec![*a, *b]
             }
@@ -514,7 +535,9 @@ impl ExprNode {
             | ExprNode::InverseLaplaceTransform(a, b, c)
             | ExprNode::Residue(a, b, c)
             | ExprNode::DSolve(a, b, c)
-            | ExprNode::RootSum(a, b, c) => smallvec![*a, *b, *c],
+            | ExprNode::RootSum(a, b, c)
+            | ExprNode::RootOf(a, b, c)
+            | ExprNode::Subs(a, b, c) => smallvec![*a, *b, *c],
 
             // 4-ary: Sum, Product_, Series, DefiniteIntegral
             ExprNode::Sum(a, b, c, d)
@@ -642,7 +665,6 @@ impl ExprNode {
             | ExprNode::Derivative(a, b)
             | ExprNode::Integral(a, b)
             | ExprNode::SetComplement(a, b)
-            | ExprNode::RootOf(a, b)
             | ExprNode::ConditionSet(a, b) => {
                 f(*a);
                 f(*b);
@@ -659,7 +681,9 @@ impl ExprNode {
             | ExprNode::InverseLaplaceTransform(a, b, c)
             | ExprNode::Residue(a, b, c)
             | ExprNode::DSolve(a, b, c)
-            | ExprNode::RootSum(a, b, c) => {
+            | ExprNode::RootSum(a, b, c)
+            | ExprNode::RootOf(a, b, c)
+            | ExprNode::Subs(a, b, c) => {
                 f(*a);
                 f(*b);
                 f(*c);
@@ -768,14 +792,15 @@ impl ExprNode {
             | ExprNode::Integral(..)
             | ExprNode::SetComplement(..)
             | ExprNode::Interval(..)
-            | ExprNode::RootOf(..)
             | ExprNode::ConditionSet(..) => 2,
             ExprNode::Limit(..)
             | ExprNode::LaplaceTransform(..)
             | ExprNode::InverseLaplaceTransform(..)
             | ExprNode::Residue(..)
             | ExprNode::DSolve(..)
-            | ExprNode::RootSum(..) => 3,
+            | ExprNode::RootSum(..)
+            | ExprNode::RootOf(..)
+            | ExprNode::Subs(..) => 3,
             ExprNode::Sum(..)
             | ExprNode::Product_(..)
             | ExprNode::Series(..)
@@ -1029,7 +1054,12 @@ impl fmt::Debug for ExprNode {
                 .field(var)
                 .field(point)
                 .finish(),
-            ExprNode::RootOf(poly, idx) => f.debug_tuple("RootOf").field(poly).field(idx).finish(),
+            ExprNode::RootOf(poly, var, idx) => f
+                .debug_tuple("RootOf")
+                .field(poly)
+                .field(var)
+                .field(idx)
+                .finish(),
             ExprNode::DSolve(expr, func, var) => f
                 .debug_tuple("DSolve")
                 .field(expr)
@@ -1046,6 +1076,12 @@ impl fmt::Debug for ExprNode {
                 .debug_tuple("ConditionSet")
                 .field(var)
                 .field(cond)
+                .finish(),
+            ExprNode::Subs(body, var, point) => f
+                .debug_tuple("Subs")
+                .field(body)
+                .field(var)
+                .field(point)
                 .finish(),
         }
     }

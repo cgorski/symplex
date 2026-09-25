@@ -26,7 +26,7 @@ impl Lcg {
 
 fn random_z(n: usize, m: usize, seed: u64) -> ZMatrix {
     let mut g = Lcg(seed);
-    ZMatrix::from_fn(n, m, |_, _| BigInt::from(g.range(-9, 9)))
+    ZMatrix::from_fn(n, m, |_, _| BigInt::from(g.range(-9, 9))).unwrap()
 }
 
 fn bench_qmatrix(c: &mut Criterion) {
@@ -69,6 +69,7 @@ fn random_wide(n: usize, m: usize, bits: u32, seed: u64) -> QMatrix {
         }
         if g.next() & 1 == 1 { -v } else { v }
     })
+    .unwrap()
     .to_qmatrix()
 }
 

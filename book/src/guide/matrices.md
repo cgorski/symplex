@@ -27,7 +27,7 @@ fn main() {
     println!("{}", &m + &m);
     println!("{}", -m.clone());
     println!("{}", m.hadamard(&m).unwrap());             // element-wise product
-    println!("{}", Matrix::block_diag(&[&m, &Matrix::identity(&ctx, 1)]).unwrap());
+    println!("{}", Matrix::block_diag(&[&m, &Matrix::identity(&ctx, 1).unwrap()]).unwrap());
     println!("{} {}", m.minor(0, 0).unwrap(), m.minor_matrix(0, 0).unwrap());   // 4 [[4]]
     println!("{:?}", m.eval_f64().unwrap());             // [[1.0, 7.0], [3.0, 4.0]]
     println!("{:?}", m.equals(&m));                      // Some(true)
@@ -158,8 +158,8 @@ fn main() {
     assert_eq!(q.is_orthogonal(), Some(true));
     assert_eq!(q.matmul(&r).unwrap().simplify().equals(&m), Some(true));
 
-    let v1 = Matrix::col_vector(vec![ctx.int(1), ctx.int(1), ctx.int(0)]);
-    let v2 = Matrix::col_vector(vec![ctx.int(1), ctx.int(0), ctx.int(1)]);
+    let v1 = Matrix::col_vector(vec![ctx.int(1), ctx.int(1), ctx.int(0)]).unwrap();
+    let v2 = Matrix::col_vector(vec![ctx.int(1), ctx.int(0), ctx.int(1)]).unwrap();
     for b in gram_schmidt(&[v1, v2], true).unwrap() {
         println!("{}", b.transpose());
     }
@@ -219,7 +219,7 @@ use symplex::prelude::*;
 fn main() {
     let ctx = Context::new();
     let a = matrix![ctx, [1, 1], [1, 2], [1, 3]];
-    let b = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(2)]);
+    let b = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(2)]).unwrap();
     println!("{}", a.solve_least_squares(&b).unwrap().transpose());     // [[2/3, 1/2]]
     let r1 = matrix![ctx, [1, 2], [2, 4]];
     println!("{} {} {}", r1.rank(), r1.rowspace()[0], r1.left_nullspace()[0].transpose());
@@ -245,7 +245,7 @@ fn main() {
     println!("{}", a.inv().unwrap());                        // [[3/5, -1/5], [-1/5, 2/5]]
 
     // The 4×4 Hilbert matrix: det = 1/6048000, integral inverse.
-    let h = QMatrix::from_fn(4, 4, |i, j| q(1, (i + j + 1) as i64));
+    let h = QMatrix::from_fn(4, 4, |i, j| q(1, (i + j + 1) as i64)).unwrap();
     println!("{} {}", h.det().unwrap(), h.inv().unwrap().is_integer());   // 1/6048000 true
 
     let s = QMatrix::from_i64(&[&[1, 2, 3], &[4, 5, 6], &[7, 8, 9]]).unwrap();

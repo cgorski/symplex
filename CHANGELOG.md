@@ -12,8 +12,23 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 Panics on caller input become `Err` (CONTRIBUTING.md "No Panics
  Rule"): the `ASSERT_ALLOWLIST` of runtime assertions drops from 82
-sites in 19 files to 46 in 12.  Migrate each call by adding `?` (or
+sites in 19 files to 27 in 7.  Migrate each call by adding `?` (or
 `.unwrap()` where the input is known to be valid).
+
+- **The `Matrix` and `ExactMatrix` (`QMatrix`, `ZMatrix`) constructors
+  return `Result<_, SymplexError>`:** `zeros`, `identity`, `from_fn`,
+  `row_vector`, `col_vector` and `diag`.  A zero dimension or an empty
+  entry list is `InvalidArgument`, where it panicked.  The `matrix!`
+  macro is unchanged for callers (its shape is checked at compile time);
+  it now expands to a hidden infallible constructor, so **`symplex-macros`
+  is at 0.3.4** and symplex requires it.  The index accessors `get`,
+  `get_mut`, `row`, `col` (the bodies of `m[(i, j)]`) still panic out of
+  range, like `Vec`, with the new checked twins `try_get_mut`, `try_row`
+  and `try_col` beside `try_get`.
+- **`ExprTree`:** `RootOf` has a `var: Option<Box<ExprTree>>` field
+  (absent from JSON when the polynomial has one symbol, so univariate
+  trees serialise as before and old JSON still reads), and there is a new
+  `Subs { body, var, point }` variant.  Exhaustive matches need an arm.
 
 - **`StateSpace`'s fields are private:** `StateSpace::new` is the only
   way to build one, so every model has conformant shapes.  Read the
@@ -45,6 +60,40 @@ sites in 19 files to 46 in 12.  Migrate each call by adding `?` (or
 
 ### Breaking (behaviour; no signature changed)
 
+- **Substituting into the variable of a `Derivative` or an indefinite
+  `Integral` evaluates it at a point.**  A new unevaluated node
+  `Subs(body, var, point)` (SymPy's `Subs`) carries what cannot be
+  evaluated: `f(x).diff(x).subs(x, 0)` is `Subs(Derivative(f(x), x), x,
+  0)`, and `Integral(x²y, x).subs(x, 1/3)` is `Subs(Integral(y*x^2, x),
+  x, 1/3)`.  A `Derivative` whose operand depends on the variable alone
+  is differentiated first where `diff` makes progress (`(x²f(x))′` at 0
+  is `0`); a formal `Derivative(y, x)` built for an ODE stays `y′(0)`.  Replacing the variable by a new symbol
+  renames it (`Derivative(f(y), y)`).  `Subs` binds its variable
+  (`free_symbols` of `f′(0)` is empty), prints and parses as `Subs(…)`,
+  renders as `\left. … \right|_{x=0}` in LaTeX, differentiates by the
+  chain rule, is resolved by `eval_derivatives`, and counts as
+  unevaluated (`has_unevaluated`, `ExprType::Unevaluated`).
+- **Partial derivatives of an undefined function in an argument that is
+  not a lone symbol are `Subs` forms**, as in SymPy: `f(x²)′` is
+  `2*x*Subs(Derivative(f(_xi), _xi), _xi, x^2)` (was
+  `2*x*Derivative(f(x^2), x^2)`), and `f(x, x)′` is the sum of the two
+  slot derivatives (was `2*Derivative(f(x, x), x)`, twice the total
+  derivative).  The same holds for library functions whose parameters
+  depend on the variable.  `d/dy` of a `Derivative` or `Integral` that
+  does not depend on `y` is `0` (was formal).
+- **A `RootOf` records its variable** (`RootOf(poly, var, index)`, as
+  `RootSum` does; SymPy's `CRootOf` keeps its generator).  It binds that
+  variable only, so a parametric root is a function of its parameters:
+  `RootOf(x^5 - a*x + 1, x, 0)` has the free symbol `a`, is unchanged by
+  `x ↦ 1/3` (was `RootOf(-1/3*a + 244/243, 0)`), and evaluates once `a`
+  is a number.  Display writes the variable only when the polynomial has
+  other symbols; `parse("RootOf(p, i)")` is an error when `p` does not
+  have exactly one symbol (SymPy refuses a multivariate `CRootOf` too).
+  The sort key appends the variable, which can reorder sums of `RootOf`s
+  whose keys are truncated (degree ≳ 20).
+- **`Ex::try_replace` refuses to make a bound variable a non-symbol**
+  (`Sum(k*x^2, x, 0, 3)` with `x → 1/3` was `Sum(1/9*k, 1/3=0..3)`;
+  SymPy's `xreplace` raises).  `replace` documents the case.
 - **`integrate` checks every closed form it returns.**  The numeric
   self-check now sits at the exit of each stage (rule-based search,
   substitutions, Risch tower, heurisch); a rejected answer falls through
@@ -82,6 +131,9 @@ sites in 19 files to 46 in 12.  Migrate each call by adding `?` (or
 
 ### Added
 
+- `Matrix::{try_get_mut, try_row, try_col}` and the same on
+  `ExactMatrix`.  The parser reads `Subs(body, var, point)` and
+  `RootOf(poly, var, index)`.
 - `StateSpace::{a, b, c, d}`, `MultiPoly::{try_add, try_sub,
   try_mul_monomial}` and `Ex::try_replace`.  `# Panics` sections are now
   written on `replace` and `s_polynomial`.
@@ -95,6 +147,47 @@ sites in 19 files to 46 in 12.  Migrate each call by adding `?` (or
 
 ### Fixed
 
+- **Numerical evaluation: error-bound fixes.**
+  - A value that rounds to exactly `0` at two precisions is no longer
+    taken as certified.  It goes on to the precision cap, where a true
+    zero is still `0`: `1 − e⁻¹Σ_{k≤60} 1/k!` was `0.0` and is now
+    `7.37e-85`.
+  - `err(exp z) = |exp z|·err(z)`: `ln(exp(−2601/10))` was
+    `PrecisionExhausted` and is now `−260.1`.  (The bound took the
+    argument's absolute error as the result's, so a tiny `exp` looked
+    indistinguishable from 0.)
+  - A value that underflows the exponent range is no longer an exact
+    zero, so a decision on it is refused instead of guessed.
+  - `Piecewise` and `KroneckerDelta` conditions count as decided only
+    when the difference is certified away from 0; otherwise the evaluator
+    retries, then refuses.  With `x = √2 + 10⁻¹⁰⁰`, `x < √2` took the
+    wrong branch.
+  - `RootOf` and `RootSum` roots are bounded by certified Newton
+    inclusion disks, and a root certified real has an imaginary part of
+    exactly 0.  `im(RootOf(y⁵−y+1, 0))` was `−4e-161`.
+  - An infinite `Sum` of a hypergeometric term is evaluated, with a
+    rigorous bound on the tail (following SymPy's `hypsum`).  A divergent
+    sum is `Divergent`; a polynomially convergent one is refused
+    honestly.  Before, all of them failed with "not in cache".
+  - Finite sums and products report their terms' error bounds.
+- **Big integers convert to floats in linear time**: the p-value of a
+  large exact binomial test evaluated in 12 s (debug build), now 0.4 ms.
+- **A power refused by the digit guard is no longer computed first:**
+  `(999999999999999/10¹⁵)¹⁰⁰⁰` took 0.55 s at every construction; now
+  microseconds, with byte-identical canonical forms.
+- **The `lowergamma` cancellation guard covers irrational arguments:**
+  `γ(5, √2/10³⁰)` was `0` and is now `1.13e-150`.
+- **`subs_algebraic` respects binders** through the same walk as `subs`:
+  `Σ_{x=0}^{3} k·x²` with `x² → y` became `Σ_{x=0}^{3} k·y`.
+- **More dependence tests respect binders** (`walk::has_free_symbol`):
+  summation, the Laplace and Z transforms, and the ODE solver (whose
+  structural walk had no visited set).  `ℒ{RootOf(t⁵−t+1, 0)}` is now
+  `RootOf(…)/s` (was unevaluated), and its Z transform `c·z/(z−1)` (was
+  an error).
+- The Risch reductions (`hermite_reduce`, `logarithmic_part` and their
+  tower forms) return `None` for a zero denominator instead of asserting;
+  they are crate-internal and the integrator never passes one.  Plot
+  sampling's range check is an error, not an assert.
 - **`subs` replaces only free occurrences, and never captures.** Every
   binder-aware pass (`free_symbols`, `subs`, `diff`, the integrator's and
   heurisch's dependence tests) now reads one binder table.  It covers

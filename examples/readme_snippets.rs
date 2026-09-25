@@ -514,7 +514,7 @@ fn linear_algebra() {
     assert_eq!((&m - &m.transpose()).is_zero(), Some(true));
 
     // 0.3.5: QMatrix / ZMatrix — plain exact matrices over ℚ / ℤ
-    let h = QMatrix::from_fn(4, 4, |i, j| q(1, (i + j + 1) as i64));
+    let h = QMatrix::from_fn(4, 4, |i, j| q(1, (i + j + 1) as i64)).unwrap();
     assert_eq!(h.det().unwrap(), q(1, 6_048_000));
     assert_eq!(h.inv().unwrap()[(3, 3)], q(2800, 1));
     let (r, pivots) = QMatrix::from_i64(&[&[1, 2, 3], &[4, 5, 6]]).unwrap().rref();

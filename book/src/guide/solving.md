@@ -120,7 +120,7 @@ fn main() {
     println!("{}", sol.get(&x).unwrap());         // (b + 1)/(a + 1)
 
     let am = matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]];
-    let bm = Matrix::col_vector(vec![ctx.int(6), ctx.int(15), ctx.int(24)]);
+    let bm = Matrix::col_vector(vec![ctx.int(6), ctx.int(15), ctx.int(24)]).unwrap();
     println!("{:?}", linsolve_matrix(&am, &bm).unwrap());   // Parametric: x1 = x3, x2 = -2*x3 + 3
 }
 ```

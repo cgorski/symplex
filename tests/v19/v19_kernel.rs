@@ -56,6 +56,7 @@ fn small(n: usize, m: usize, seed: u64) -> QMatrix {
             BigInt::from(g.range(-9, 9))
         }
     })
+    .unwrap()
     .to_qmatrix()
 }
 
@@ -72,6 +73,7 @@ fn wide(n: usize, m: usize, bits: u32, seed: u64) -> QMatrix {
         }
         if g.next() & 1 == 1 { -v } else { v }
     })
+    .unwrap()
     .to_qmatrix()
 }
 
@@ -89,7 +91,7 @@ fn row_scaled(a: &QMatrix) -> (QMatrix, Vec<Q>) {
             })
         })
         .collect();
-    let scaled = QMatrix::from_fn(a.nrows(), a.ncols(), |i, j| &a[(i, j)] * &scales[i]);
+    let scaled = QMatrix::from_fn(a.nrows(), a.ncols(), |i, j| &a[(i, j)] * &scales[i]).unwrap();
     (scaled, scales)
 }
 
@@ -265,17 +267,18 @@ fn inv_solve_det_agree_with_bigint_only_path() {
         // (D·A)⁻¹ = A⁻¹·D⁻¹  ⇒  (D·A)⁻¹·D = A⁻¹,  det(D·A) = det(D)·det(A).
         let (b, scales) = row_scaled(&a);
         let inv_b = b.inv().unwrap();
-        let inv_b_d = QMatrix::from_fn(n, n, |i, j| &inv_b[(i, j)] * &scales[j]);
+        let inv_b_d = QMatrix::from_fn(n, n, |i, j| &inv_b[(i, j)] * &scales[j]).unwrap();
         assert_eq!(inv_b_d, inv, "{name}: inv vs BigInt-only");
         let det_d: Q = scales.iter().product();
         assert_eq!(b.det().unwrap(), det_d * &det, "{name}: det vs BigInt-only");
         // A·X = B with a random 3-column right-hand side; (D·A)·X = D·B.
         let rhs = QMatrix::from_fn(n, 3, |_, _| {
             Ratio::from_integer(BigInt::from(g.range(-50, 50)))
-        });
+        })
+        .unwrap();
         let x = a.solve(&rhs).unwrap();
         assert_eq!(&a * &x, rhs, "{name}: A·X ≠ B");
-        let rhs_d = QMatrix::from_fn(n, 3, |i, j| &rhs[(i, j)] * &scales[i]);
+        let rhs_d = QMatrix::from_fn(n, 3, |i, j| &rhs[(i, j)] * &scales[i]).unwrap();
         assert_eq!(b.solve(&rhs_d).unwrap(), x, "{name}: solve vs BigInt-only");
         assert_eq!(&inv * &rhs, x, "{name}: A⁻¹·B ≠ X");
         // det via the inverse: det(A⁻¹) = 1/det(A) (the inverse's entries
@@ -329,9 +332,9 @@ fn singular_and_degenerate_inputs() {
     let det_d: Q = scales.iter().product();
     assert_eq!(perm_big.det().unwrap(), -det_d);
     // The zero matrix and 1×1.
-    assert_eq!(QMatrix::zeros(3, 3).rank(), 0);
-    assert_eq!(QMatrix::zeros(3, 3).det().unwrap(), Q::zero());
-    assert_eq!(QMatrix::zeros(3, 3).nullspace().len(), 3);
+    assert_eq!(QMatrix::zeros(3, 3).unwrap().rank(), 0);
+    assert_eq!(QMatrix::zeros(3, 3).unwrap().det().unwrap(), Q::zero());
+    assert_eq!(QMatrix::zeros(3, 3).unwrap().nullspace().len(), 3);
     let one = QMatrix::from_i64(&[&[7]]).unwrap();
     assert_eq!(
         one.inv().unwrap()[(0, 0)],

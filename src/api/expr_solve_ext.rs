@@ -218,7 +218,7 @@ fn wrap_linear_result(
 ///
 /// let ctx = Context::new();
 /// let a = matrix![ctx, [1, 1], [1, -1]];
-/// let b = Matrix::col_vector(vec![ctx.int(3), ctx.int(1)]);
+/// let b = Matrix::col_vector(vec![ctx.int(3), ctx.int(1)]).unwrap();
 /// match linsolve_matrix(&a, &b).unwrap() {
 ///     LinearSolution::Unique(pairs) => {
 ///         assert_eq!(format!("{}", pairs[0].1), "2");
