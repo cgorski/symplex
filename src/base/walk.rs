@@ -136,11 +136,24 @@ pub(crate) fn rebuild_with_cache(
     id: ExprId,
     cache: &FxHashMap<ExprId, ExprId>,
 ) -> ExprId {
+    rebuild_with(arena, id, &|c| cache.get(&c).copied().unwrap_or(c))
+}
+
+/// [`rebuild_with_cache`] with the rebuilt form of each child given by
+/// `get` (a child that `get` maps to itself is unchanged).  Every child
+/// operand is looked up, including the variable operand of a binder; a
+/// pass that treats binders specially (substitution) rebuilds them with
+/// [`rebuild_binder`] instead.
+pub(crate) fn rebuild_with<F: Fn(ExprId) -> ExprId>(
+    arena: &mut Arena,
+    id: ExprId,
+    get: &F,
+) -> ExprId {
     let node = arena.node(id).clone();
 
     macro_rules! rebuild_intern_unary {
-        ($arena:expr, $id:expr, $inner:expr, $cache:expr, $Variant:ident) => {{
-            let new_inner = $cache.get(&$inner).copied().unwrap_or($inner);
+        ($arena:expr, $id:expr, $inner:expr, $get:expr, $Variant:ident) => {{
+            let new_inner = ($get)($inner);
             if new_inner == $inner {
                 $id
             } else {
@@ -171,10 +184,7 @@ pub(crate) fn rebuild_with_cache(
 
         // N-ary: Add, Mul
         ExprNode::Add(ref children) => {
-            let new_children: SmallVec<[ExprId; 6]> = children
-                .iter()
-                .map(|&c| cache.get(&c).copied().unwrap_or(c))
-                .collect();
+            let new_children: SmallVec<[ExprId; 6]> = children.iter().map(|&c| get(c)).collect();
             if new_children == *children {
                 id
             } else {
@@ -183,10 +193,7 @@ pub(crate) fn rebuild_with_cache(
         }
 
         ExprNode::Mul(ref children) => {
-            let new_children: SmallVec<[ExprId; 6]> = children
-                .iter()
-                .map(|&c| cache.get(&c).copied().unwrap_or(c))
-                .collect();
+            let new_children: SmallVec<[ExprId; 6]> = children.iter().map(|&c| get(c)).collect();
             if new_children == *children {
                 id
             } else {
@@ -196,8 +203,8 @@ pub(crate) fn rebuild_with_cache(
 
         // Binary: Pow, Derivative, Integral
         ExprNode::Pow(base, exp) => {
-            let new_base = cache.get(&base).copied().unwrap_or(base);
-            let new_exp = cache.get(&exp).copied().unwrap_or(exp);
+            let new_base = get(base);
+            let new_exp = get(exp);
             if new_base == base && new_exp == exp {
                 id
             } else {
@@ -206,8 +213,8 @@ pub(crate) fn rebuild_with_cache(
         }
 
         ExprNode::Derivative(body, var) => {
-            let new_body = cache.get(&body).copied().unwrap_or(body);
-            let new_var = cache.get(&var).copied().unwrap_or(var);
+            let new_body = get(body);
+            let new_var = get(var);
             if new_body == body && new_var == var {
                 id
             } else {
@@ -216,8 +223,8 @@ pub(crate) fn rebuild_with_cache(
         }
 
         ExprNode::Integral(body, var) => {
-            let new_body = cache.get(&body).copied().unwrap_or(body);
-            let new_var = cache.get(&var).copied().unwrap_or(var);
+            let new_body = get(body);
+            let new_var = get(var);
             if new_body == body && new_var == var {
                 id
             } else {
@@ -226,10 +233,10 @@ pub(crate) fn rebuild_with_cache(
         }
 
         ExprNode::DefiniteIntegral(body, var, lo, hi) => {
-            let nb = cache.get(&body).copied().unwrap_or(body);
-            let nv = cache.get(&var).copied().unwrap_or(var);
-            let nl = cache.get(&lo).copied().unwrap_or(lo);
-            let nh = cache.get(&hi).copied().unwrap_or(hi);
+            let nb = get(body);
+            let nv = get(var);
+            let nl = get(lo);
+            let nh = get(hi);
             if nb == body && nv == var && nl == lo && nh == hi {
                 id
             } else {
@@ -238,58 +245,58 @@ pub(crate) fn rebuild_with_cache(
         }
 
         // Unary: Neg, Sin, Cos, Tan, Exp, Ln, Sqrt, Abs
-        ExprNode::Neg(inner) => rebuild_unary(arena, id, inner, cache, Arena::neg),
-        ExprNode::Sin(inner) => rebuild_unary(arena, id, inner, cache, Arena::sin),
-        ExprNode::Cos(inner) => rebuild_unary(arena, id, inner, cache, Arena::cos),
-        ExprNode::Tan(inner) => rebuild_unary(arena, id, inner, cache, Arena::tan),
-        ExprNode::Exp(inner) => rebuild_unary(arena, id, inner, cache, Arena::exp),
-        ExprNode::Ln(inner) => rebuild_unary(arena, id, inner, cache, Arena::ln),
-        ExprNode::Abs(inner) => rebuild_unary(arena, id, inner, cache, Arena::abs),
+        ExprNode::Neg(inner) => rebuild_unary(arena, id, inner, get, Arena::neg),
+        ExprNode::Sin(inner) => rebuild_unary(arena, id, inner, get, Arena::sin),
+        ExprNode::Cos(inner) => rebuild_unary(arena, id, inner, get, Arena::cos),
+        ExprNode::Tan(inner) => rebuild_unary(arena, id, inner, get, Arena::tan),
+        ExprNode::Exp(inner) => rebuild_unary(arena, id, inner, get, Arena::exp),
+        ExprNode::Ln(inner) => rebuild_unary(arena, id, inner, get, Arena::ln),
+        ExprNode::Abs(inner) => rebuild_unary(arena, id, inner, get, Arena::abs),
 
         // Unary: Asin, Acos, Atan, Sinh, Cosh, Tanh, Asinh, Acosh, Atanh
-        ExprNode::Asin(inner) => rebuild_intern_unary!(arena, id, inner, cache, Asin),
-        ExprNode::Acos(inner) => rebuild_intern_unary!(arena, id, inner, cache, Acos),
-        ExprNode::Atan(inner) => rebuild_intern_unary!(arena, id, inner, cache, Atan),
+        ExprNode::Asin(inner) => rebuild_intern_unary!(arena, id, inner, get, Asin),
+        ExprNode::Acos(inner) => rebuild_intern_unary!(arena, id, inner, get, Acos),
+        ExprNode::Atan(inner) => rebuild_intern_unary!(arena, id, inner, get, Atan),
         ExprNode::Atan2(y, x) => {
-            let ny = cache.get(&y).copied().unwrap_or(y);
-            let nx = cache.get(&x).copied().unwrap_or(x);
+            let ny = get(y);
+            let nx = get(x);
             if ny == y && nx == x {
                 id
             } else {
                 arena.atan2(ny, nx)
             }
         }
-        ExprNode::Sinh(inner) => rebuild_intern_unary!(arena, id, inner, cache, Sinh),
-        ExprNode::Cosh(inner) => rebuild_intern_unary!(arena, id, inner, cache, Cosh),
-        ExprNode::Tanh(inner) => rebuild_intern_unary!(arena, id, inner, cache, Tanh),
-        ExprNode::Asinh(inner) => rebuild_intern_unary!(arena, id, inner, cache, Asinh),
-        ExprNode::Acosh(inner) => rebuild_intern_unary!(arena, id, inner, cache, Acosh),
-        ExprNode::Atanh(inner) => rebuild_intern_unary!(arena, id, inner, cache, Atanh),
+        ExprNode::Sinh(inner) => rebuild_intern_unary!(arena, id, inner, get, Sinh),
+        ExprNode::Cosh(inner) => rebuild_intern_unary!(arena, id, inner, get, Cosh),
+        ExprNode::Tanh(inner) => rebuild_intern_unary!(arena, id, inner, get, Tanh),
+        ExprNode::Asinh(inner) => rebuild_intern_unary!(arena, id, inner, get, Asinh),
+        ExprNode::Acosh(inner) => rebuild_intern_unary!(arena, id, inner, get, Acosh),
+        ExprNode::Atanh(inner) => rebuild_intern_unary!(arena, id, inner, get, Atanh),
 
         ExprNode::Sign(inner) => {
-            let ni = cache.get(&inner).copied().unwrap_or(inner);
+            let ni = get(inner);
             if ni == inner { id } else { arena.sign(ni) }
         }
 
-        ExprNode::Heaviside(inner) => rebuild_intern_unary!(arena, id, inner, cache, Heaviside),
-        ExprNode::DiracDelta(inner) => rebuild_intern_unary!(arena, id, inner, cache, DiracDelta),
+        ExprNode::Heaviside(inner) => rebuild_intern_unary!(arena, id, inner, get, Heaviside),
+        ExprNode::DiracDelta(inner) => rebuild_intern_unary!(arena, id, inner, get, DiracDelta),
 
         // Complex analysis — go through the canonical constructors so that
         // e.g. `re(x)` with `x := 3 + 4i` collapses to `3`.
-        ExprNode::Re(inner) => rebuild_unary(arena, id, inner, cache, Arena::re),
-        ExprNode::Im(inner) => rebuild_unary(arena, id, inner, cache, Arena::im),
-        ExprNode::Conjugate(inner) => rebuild_unary(arena, id, inner, cache, Arena::conjugate),
-        ExprNode::Arg(inner) => rebuild_unary(arena, id, inner, cache, Arena::arg),
+        ExprNode::Re(inner) => rebuild_unary(arena, id, inner, get, Arena::re),
+        ExprNode::Im(inner) => rebuild_unary(arena, id, inner, get, Arena::im),
+        ExprNode::Conjugate(inner) => rebuild_unary(arena, id, inner, get, Arena::conjugate),
+        ExprNode::Arg(inner) => rebuild_unary(arena, id, inner, get, Arena::arg),
 
         // Special functions (0.2) — canonical constructors fold exact values.
-        ExprNode::Si(inner) => rebuild_unary(arena, id, inner, cache, Arena::si),
-        ExprNode::Ci(inner) => rebuild_unary(arena, id, inner, cache, Arena::ci),
-        ExprNode::Ei(inner) => rebuild_unary(arena, id, inner, cache, Arena::ei),
-        ExprNode::Li(inner) => rebuild_unary(arena, id, inner, cache, Arena::li),
-        ExprNode::Zeta(inner) => rebuild_unary(arena, id, inner, cache, Arena::zeta),
+        ExprNode::Si(inner) => rebuild_unary(arena, id, inner, get, Arena::si),
+        ExprNode::Ci(inner) => rebuild_unary(arena, id, inner, get, Arena::ci),
+        ExprNode::Ei(inner) => rebuild_unary(arena, id, inner, get, Arena::ei),
+        ExprNode::Li(inner) => rebuild_unary(arena, id, inner, get, Arena::li),
+        ExprNode::Zeta(inner) => rebuild_unary(arena, id, inner, get, Arena::zeta),
         ExprNode::Polygamma(n, x) => {
-            let nn = cache.get(&n).copied().unwrap_or(n);
-            let nx = cache.get(&x).copied().unwrap_or(x);
+            let nn = get(n);
+            let nx = get(x);
             if nn == n && nx == x {
                 id
             } else {
@@ -297,8 +304,8 @@ pub(crate) fn rebuild_with_cache(
             }
         }
         ExprNode::KroneckerDelta(i, j) => {
-            let ni = cache.get(&i).copied().unwrap_or(i);
-            let nj = cache.get(&j).copied().unwrap_or(j);
+            let ni = get(i);
+            let nj = get(j);
             if ni == i && nj == j {
                 id
             } else {
@@ -306,15 +313,15 @@ pub(crate) fn rebuild_with_cache(
             }
         }
 
-        ExprNode::Gamma(inner) => rebuild_intern_unary!(arena, id, inner, cache, Gamma),
-        ExprNode::LogGamma(inner) => rebuild_intern_unary!(arena, id, inner, cache, LogGamma),
-        ExprNode::Digamma(inner) => rebuild_intern_unary!(arena, id, inner, cache, Digamma),
-        ExprNode::Erf(inner) => rebuild_intern_unary!(arena, id, inner, cache, Erf),
-        ExprNode::Erfc(inner) => rebuild_intern_unary!(arena, id, inner, cache, Erfc),
-        ExprNode::LambertW(inner) => rebuild_intern_unary!(arena, id, inner, cache, LambertW),
+        ExprNode::Gamma(inner) => rebuild_intern_unary!(arena, id, inner, get, Gamma),
+        ExprNode::LogGamma(inner) => rebuild_intern_unary!(arena, id, inner, get, LogGamma),
+        ExprNode::Digamma(inner) => rebuild_intern_unary!(arena, id, inner, get, Digamma),
+        ExprNode::Erf(inner) => rebuild_intern_unary!(arena, id, inner, get, Erf),
+        ExprNode::Erfc(inner) => rebuild_intern_unary!(arena, id, inner, get, Erfc),
+        ExprNode::LambertW(inner) => rebuild_intern_unary!(arena, id, inner, get, LambertW),
         ExprNode::Beta(a, b) => {
-            let na = cache.get(&a).copied().unwrap_or(a);
-            let nb = cache.get(&b).copied().unwrap_or(b);
+            let na = get(a);
+            let nb = get(b);
             if na == a && nb == b {
                 id
             } else {
@@ -322,14 +329,11 @@ pub(crate) fn rebuild_with_cache(
             }
         }
 
-        ExprNode::Floor(inner) => rebuild_intern_unary!(arena, id, inner, cache, Floor),
-        ExprNode::Ceiling(inner) => rebuild_intern_unary!(arena, id, inner, cache, Ceiling),
+        ExprNode::Floor(inner) => rebuild_intern_unary!(arena, id, inner, get, Floor),
+        ExprNode::Ceiling(inner) => rebuild_intern_unary!(arena, id, inner, get, Ceiling),
 
         ExprNode::Min(ref children) => {
-            let new_children: SmallVec<[ExprId; 4]> = children
-                .iter()
-                .map(|&c| cache.get(&c).copied().unwrap_or(c))
-                .collect();
+            let new_children: SmallVec<[ExprId; 4]> = children.iter().map(|&c| get(c)).collect();
             if new_children == *children {
                 id
             } else {
@@ -338,10 +342,7 @@ pub(crate) fn rebuild_with_cache(
         }
 
         ExprNode::Max(ref children) => {
-            let new_children: SmallVec<[ExprId; 4]> = children
-                .iter()
-                .map(|&c| cache.get(&c).copied().unwrap_or(c))
-                .collect();
+            let new_children: SmallVec<[ExprId; 4]> = children.iter().map(|&c| get(c)).collect();
             if new_children == *children {
                 id
             } else {
@@ -350,10 +351,10 @@ pub(crate) fn rebuild_with_cache(
         }
 
         ExprNode::Sum(body, var, lo, hi) => {
-            let nb = cache.get(&body).copied().unwrap_or(body);
-            let nv = cache.get(&var).copied().unwrap_or(var);
-            let nl = cache.get(&lo).copied().unwrap_or(lo);
-            let nh = cache.get(&hi).copied().unwrap_or(hi);
+            let nb = get(body);
+            let nv = get(var);
+            let nl = get(lo);
+            let nh = get(hi);
             if nb == body && nv == var && nl == lo && nh == hi {
                 id
             } else {
@@ -362,10 +363,10 @@ pub(crate) fn rebuild_with_cache(
         }
 
         ExprNode::Product_(body, var, lo, hi) => {
-            let nb = cache.get(&body).copied().unwrap_or(body);
-            let nv = cache.get(&var).copied().unwrap_or(var);
-            let nl = cache.get(&lo).copied().unwrap_or(lo);
-            let nh = cache.get(&hi).copied().unwrap_or(hi);
+            let nb = get(body);
+            let nv = get(var);
+            let nl = get(lo);
+            let nh = get(hi);
             if nb == body && nv == var && nl == lo && nh == hi {
                 id
             } else {
@@ -375,10 +376,7 @@ pub(crate) fn rebuild_with_cache(
 
         // Apply: user-defined function
         ExprNode::Apply(func_id, ref args) => {
-            let new_args: SmallVec<[ExprId; 2]> = args
-                .iter()
-                .map(|&c| cache.get(&c).copied().unwrap_or(c))
-                .collect();
+            let new_args: SmallVec<[ExprId; 2]> = args.iter().map(|&c| get(c)).collect();
             if new_args == *args {
                 id
             } else {
@@ -387,10 +385,10 @@ pub(crate) fn rebuild_with_cache(
         }
 
         // Combinatorial: Factorial, Binomial
-        ExprNode::Factorial(inner) => rebuild_unary(arena, id, inner, cache, Arena::factorial),
+        ExprNode::Factorial(inner) => rebuild_unary(arena, id, inner, get, Arena::factorial),
         ExprNode::Binomial(n, k) => {
-            let new_n = cache.get(&n).copied().unwrap_or(n);
-            let new_k = cache.get(&k).copied().unwrap_or(k);
+            let new_n = get(n);
+            let new_k = get(k);
             if new_n == n && new_k == k {
                 id
             } else {
@@ -400,8 +398,8 @@ pub(crate) fn rebuild_with_cache(
 
         // Binary relational: Gt, Ge, Eq_, Ne
         ExprNode::Gt(a, b) => {
-            let na = cache.get(&a).copied().unwrap_or(a);
-            let nb = cache.get(&b).copied().unwrap_or(b);
+            let na = get(a);
+            let nb = get(b);
             if na == a && nb == b {
                 id
             } else {
@@ -409,8 +407,8 @@ pub(crate) fn rebuild_with_cache(
             }
         }
         ExprNode::Ge(a, b) => {
-            let na = cache.get(&a).copied().unwrap_or(a);
-            let nb = cache.get(&b).copied().unwrap_or(b);
+            let na = get(a);
+            let nb = get(b);
             if na == a && nb == b {
                 id
             } else {
@@ -418,8 +416,8 @@ pub(crate) fn rebuild_with_cache(
             }
         }
         ExprNode::Eq_(a, b) => {
-            let na = cache.get(&a).copied().unwrap_or(a);
-            let nb = cache.get(&b).copied().unwrap_or(b);
+            let na = get(a);
+            let nb = get(b);
             if na == a && nb == b {
                 id
             } else {
@@ -427,8 +425,8 @@ pub(crate) fn rebuild_with_cache(
             }
         }
         ExprNode::Ne(a, b) => {
-            let na = cache.get(&a).copied().unwrap_or(a);
-            let nb = cache.get(&b).copied().unwrap_or(b);
+            let na = get(a);
+            let nb = get(b);
             if na == a && nb == b {
                 id
             } else {
@@ -437,14 +435,11 @@ pub(crate) fn rebuild_with_cache(
         }
 
         // Unary logical: Not
-        ExprNode::Not(inner) => rebuild_unary(arena, id, inner, cache, Arena::not),
+        ExprNode::Not(inner) => rebuild_unary(arena, id, inner, get, Arena::not),
 
         // N-ary logical: And, Or
         ExprNode::And(ref children) => {
-            let new_children: SmallVec<[ExprId; 6]> = children
-                .iter()
-                .map(|&c| cache.get(&c).copied().unwrap_or(c))
-                .collect();
+            let new_children: SmallVec<[ExprId; 6]> = children.iter().map(|&c| get(c)).collect();
             if new_children == *children {
                 id
             } else {
@@ -452,10 +447,7 @@ pub(crate) fn rebuild_with_cache(
             }
         }
         ExprNode::Or(ref children) => {
-            let new_children: SmallVec<[ExprId; 6]> = children
-                .iter()
-                .map(|&c| cache.get(&c).copied().unwrap_or(c))
-                .collect();
+            let new_children: SmallVec<[ExprId; 6]> = children.iter().map(|&c| get(c)).collect();
             if new_children == *children {
                 id
             } else {
@@ -468,8 +460,8 @@ pub(crate) fn rebuild_with_cache(
             let new_pairs: SmallVec<[(ExprId, ExprId); 3]> = pairs
                 .iter()
                 .map(|&(val, cond)| {
-                    let nv = cache.get(&val).copied().unwrap_or(val);
-                    let nc = cache.get(&cond).copied().unwrap_or(cond);
+                    let nv = get(val);
+                    let nc = get(cond);
                     (nv, nc)
                 })
                 .collect();
@@ -482,8 +474,8 @@ pub(crate) fn rebuild_with_cache(
 
         // Set constructors
         ExprNode::Interval(a, b, flags) => {
-            let na = cache.get(&a).copied().unwrap_or(a);
-            let nb = cache.get(&b).copied().unwrap_or(b);
+            let na = get(a);
+            let nb = get(b);
             if na == a && nb == b {
                 id
             } else {
@@ -492,10 +484,7 @@ pub(crate) fn rebuild_with_cache(
         }
 
         ExprNode::FiniteSet(ref elems) => {
-            let new_elems: SmallVec<[ExprId; 4]> = elems
-                .iter()
-                .map(|&e| cache.get(&e).copied().unwrap_or(e))
-                .collect();
+            let new_elems: SmallVec<[ExprId; 4]> = elems.iter().map(|&e| get(e)).collect();
             if new_elems == *elems {
                 id
             } else {
@@ -504,10 +493,7 @@ pub(crate) fn rebuild_with_cache(
         }
 
         ExprNode::SetUnion(ref sets) => {
-            let new_sets: SmallVec<[ExprId; 4]> = sets
-                .iter()
-                .map(|&s| cache.get(&s).copied().unwrap_or(s))
-                .collect();
+            let new_sets: SmallVec<[ExprId; 4]> = sets.iter().map(|&s| get(s)).collect();
             if new_sets == *sets {
                 id
             } else {
@@ -516,10 +502,7 @@ pub(crate) fn rebuild_with_cache(
         }
 
         ExprNode::SetIntersection(ref sets) => {
-            let new_sets: SmallVec<[ExprId; 4]> = sets
-                .iter()
-                .map(|&s| cache.get(&s).copied().unwrap_or(s))
-                .collect();
+            let new_sets: SmallVec<[ExprId; 4]> = sets.iter().map(|&s| get(s)).collect();
             if new_sets == *sets {
                 id
             } else {
@@ -528,8 +511,8 @@ pub(crate) fn rebuild_with_cache(
         }
 
         ExprNode::SetComplement(a, b) => {
-            let na = cache.get(&a).copied().unwrap_or(a);
-            let nb = cache.get(&b).copied().unwrap_or(b);
+            let na = get(a);
+            let nb = get(b);
             if na == a && nb == b {
                 id
             } else {
@@ -539,9 +522,9 @@ pub(crate) fn rebuild_with_cache(
 
         // 3-field formal nodes
         ExprNode::Limit(a, b, c) => {
-            let na = cache.get(&a).copied().unwrap_or(a);
-            let nb = cache.get(&b).copied().unwrap_or(b);
-            let nc = cache.get(&c).copied().unwrap_or(c);
+            let na = get(a);
+            let nb = get(b);
+            let nc = get(c);
             if na == a && nb == b && nc == c {
                 id
             } else {
@@ -550,9 +533,9 @@ pub(crate) fn rebuild_with_cache(
         }
 
         ExprNode::LaplaceTransform(a, b, c) => {
-            let na = cache.get(&a).copied().unwrap_or(a);
-            let nb = cache.get(&b).copied().unwrap_or(b);
-            let nc = cache.get(&c).copied().unwrap_or(c);
+            let na = get(a);
+            let nb = get(b);
+            let nc = get(c);
             if na == a && nb == b && nc == c {
                 id
             } else {
@@ -561,9 +544,9 @@ pub(crate) fn rebuild_with_cache(
         }
 
         ExprNode::InverseLaplaceTransform(a, b, c) => {
-            let na = cache.get(&a).copied().unwrap_or(a);
-            let nb = cache.get(&b).copied().unwrap_or(b);
-            let nc = cache.get(&c).copied().unwrap_or(c);
+            let na = get(a);
+            let nb = get(b);
+            let nc = get(c);
             if na == a && nb == b && nc == c {
                 id
             } else {
@@ -572,9 +555,9 @@ pub(crate) fn rebuild_with_cache(
         }
 
         ExprNode::Residue(a, b, c) => {
-            let na = cache.get(&a).copied().unwrap_or(a);
-            let nb = cache.get(&b).copied().unwrap_or(b);
-            let nc = cache.get(&c).copied().unwrap_or(c);
+            let na = get(a);
+            let nb = get(b);
+            let nc = get(c);
             if na == a && nb == b && nc == c {
                 id
             } else {
@@ -583,9 +566,9 @@ pub(crate) fn rebuild_with_cache(
         }
 
         ExprNode::DSolve(a, b, c) => {
-            let na = cache.get(&a).copied().unwrap_or(a);
-            let nb = cache.get(&b).copied().unwrap_or(b);
-            let nc = cache.get(&c).copied().unwrap_or(c);
+            let na = get(a);
+            let nb = get(b);
+            let nc = get(c);
             if na == a && nb == b && nc == c {
                 id
             } else {
@@ -594,9 +577,9 @@ pub(crate) fn rebuild_with_cache(
         }
 
         ExprNode::RootSum(a, b, c) => {
-            let na = cache.get(&a).copied().unwrap_or(a);
-            let nb = cache.get(&b).copied().unwrap_or(b);
-            let nc = cache.get(&c).copied().unwrap_or(c);
+            let na = get(a);
+            let nb = get(b);
+            let nc = get(c);
             if na == a && nb == b && nc == c {
                 id
             } else {
@@ -606,10 +589,10 @@ pub(crate) fn rebuild_with_cache(
 
         // 4-field formal node
         ExprNode::Series(a, b, c, d) => {
-            let na = cache.get(&a).copied().unwrap_or(a);
-            let nb = cache.get(&b).copied().unwrap_or(b);
-            let nc = cache.get(&c).copied().unwrap_or(c);
-            let nd = cache.get(&d).copied().unwrap_or(d);
+            let na = get(a);
+            let nb = get(b);
+            let nc = get(c);
+            let nd = get(d);
             if na == a && nb == b && nc == c && nd == d {
                 id
             } else {
@@ -619,8 +602,8 @@ pub(crate) fn rebuild_with_cache(
 
         // 2-field formal nodes
         ExprNode::RootOf(a, b) => {
-            let na = cache.get(&a).copied().unwrap_or(a);
-            let nb = cache.get(&b).copied().unwrap_or(b);
+            let na = get(a);
+            let nb = get(b);
             if na == a && nb == b {
                 id
             } else {
@@ -629,8 +612,8 @@ pub(crate) fn rebuild_with_cache(
         }
 
         ExprNode::ConditionSet(a, b) => {
-            let na = cache.get(&a).copied().unwrap_or(a);
-            let nb = cache.get(&b).copied().unwrap_or(b);
+            let na = get(a);
+            let nb = get(b);
             if na == a && nb == b {
                 id
             } else {
@@ -643,14 +626,14 @@ pub(crate) fn rebuild_with_cache(
 /// Helper for rebuilding unary nodes — avoids repeating the same
 /// pattern 8 times.
 #[inline]
-fn rebuild_unary(
+fn rebuild_unary<F: Fn(ExprId) -> ExprId>(
     arena: &mut Arena,
     id: ExprId,
     inner: ExprId,
-    cache: &FxHashMap<ExprId, ExprId>,
+    get: &F,
     constructor: fn(&mut Arena, ExprId) -> ExprId,
 ) -> ExprId {
-    let new_inner = cache.get(&inner).copied().unwrap_or(inner);
+    let new_inner = get(inner);
     if new_inner == inner {
         id
     } else {
@@ -712,23 +695,163 @@ pub(crate) fn all_symbols(arena: &Arena, root: ExprId) -> Vec<ExprId> {
     result
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Binders
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A node that binds a variable: `var` is bound in the `scoped` operands
+/// and the `outer` operands belong to the enclosing scope.  See [`binder`].
+#[derive(Clone, Debug)]
+pub(crate) struct Binder {
+    /// The bound variable (a `Symbol` node).
+    pub(crate) var: ExprId,
+    /// The operands in which `var` is bound, in node order.
+    pub(crate) scoped: SmallVec<[ExprId; 2]>,
+    /// The operands in the enclosing scope, in node order.
+    pub(crate) outer: SmallVec<[ExprId; 2]>,
+}
+
+/// The binder table: which variable `id` binds, and where.  `None` for a
+/// node that binds nothing.
+///
+/// | Node                                   | Binds  | in            | outer      |
+/// |----------------------------------------|--------|---------------|------------|
+/// | `Sum(body, var, lo, hi)`               | `var`  | `body`        | `lo`, `hi` |
+/// | `Product_(body, var, lo, hi)`          | `var`  | `body`        | `lo`, `hi` |
+/// | `DefiniteIntegral(body, var, lo, hi)`  | `var`  | `body`        | `lo`, `hi` |
+/// | `RootSum(poly, body, var)`             | `var`  | `poly`, `body`| —          |
+/// | `ConditionSet(var, cond)`              | `var`  | `cond`        | —          |
+/// | `RootOf(poly, idx)`, `poly` in one symbol `s` | `s` | `poly`  | `idx`      |
+/// | `Limit(body, var, point)`              | `var`  | `body`        | `point`    |
+/// | `Residue(body, var, point)`            | `var`  | `body`        | `point`    |
+/// | `LaplaceTransform(body, t, s)`         | `t`    | `body`        | `s`        |
+/// | `InverseLaplaceTransform(body, s, t)`  | `s`    | `body`        | `t`        |
+///
+/// `lim_{x→a} f(x)`, `Res_{z=a} f`, `ℒ{f(t)}(s)` and `ℒ⁻¹{F(s)}(t)` are
+/// functions of `a`, `s`, `t` — not of the dummy (SymPy's `free_symbols`
+/// agrees for `Limit` and the integral transforms).  An indefinite
+/// `Integral(body, var)`, a `Derivative(body, var)`, a `Series(body, var,
+/// point, order)` and a `DSolve` do **not** bind: `∫ f dx`, `f′(x)`, a series
+/// in `x` and the solution `y(x)` are functions of `x`.  A `RootOf` whose
+/// polynomial has several symbols names no variable, and binds nothing
+/// (every symbol then counts as free).  A binder whose variable operand
+/// is not a symbol is malformed and binds nothing either.
+///
+/// Every binder-aware pass — [`free_symbols`], [`has_free_symbol`],
+/// substitution (`transforms::subs`), the integrator's dependence test —
+/// reads this one table.
+pub(crate) fn binder(arena: &Arena, id: ExprId) -> Option<Binder> {
+    let is_symbol = |v: ExprId| matches!(arena.node(v), ExprNode::Symbol(_));
+    let b = |var: ExprId, scoped: &[ExprId], outer: &[ExprId]| Binder {
+        var,
+        scoped: SmallVec::from_slice(scoped),
+        outer: SmallVec::from_slice(outer),
+    };
+    match *arena.node(id) {
+        ExprNode::Sum(body, var, lo, hi)
+        | ExprNode::Product_(body, var, lo, hi)
+        | ExprNode::DefiniteIntegral(body, var, lo, hi)
+            if is_symbol(var) =>
+        {
+            Some(b(var, &[body], &[lo, hi]))
+        }
+        ExprNode::RootSum(poly, body, var) if is_symbol(var) => Some(b(var, &[poly, body], &[])),
+        ExprNode::ConditionSet(var, cond) if is_symbol(var) => Some(b(var, &[cond], &[])),
+        ExprNode::RootOf(poly, idx) => match all_symbols(arena, poly)[..] {
+            [var] => Some(b(var, &[poly], &[idx])),
+            _ => None,
+        },
+        ExprNode::Limit(body, var, point) | ExprNode::Residue(body, var, point)
+            if is_symbol(var) =>
+        {
+            Some(b(var, &[body], &[point]))
+        }
+        ExprNode::LaplaceTransform(body, var, other)
+        | ExprNode::InverseLaplaceTransform(body, var, other)
+            if is_symbol(var) =>
+        {
+            Some(b(var, &[body], &[other]))
+        }
+        _ => None,
+    }
+}
+
+/// The binder `id` (for which [`binder`] is `Some`) rebuilt with bound
+/// variable `var` and the given `scoped` / `outer` operands, in the order
+/// [`binder`] lists them.  A `DefiniteIntegral` goes through its
+/// constructor (which applies the cheap folds); the other nodes are
+/// interned as they are.  Returns `id` for a node that is not a binder.
+pub(crate) fn rebuild_binder(
+    arena: &mut Arena,
+    id: ExprId,
+    var: ExprId,
+    scoped: &[ExprId],
+    outer: &[ExprId],
+) -> ExprId {
+    let node = match (arena.node(id), scoped, outer) {
+        (ExprNode::Sum(..), &[body], &[lo, hi]) => ExprNode::Sum(body, var, lo, hi),
+        (ExprNode::Product_(..), &[body], &[lo, hi]) => ExprNode::Product_(body, var, lo, hi),
+        (ExprNode::DefiniteIntegral(..), &[body], &[lo, hi]) => {
+            return arena.definite_integral(body, var, lo, hi);
+        }
+        (ExprNode::RootSum(..), &[poly, body], &[]) => ExprNode::RootSum(poly, body, var),
+        (ExprNode::ConditionSet(..), &[cond], &[]) => ExprNode::ConditionSet(var, cond),
+        (ExprNode::RootOf(..), &[poly], &[idx]) => ExprNode::RootOf(poly, idx),
+        (ExprNode::Limit(..), &[body], &[point]) => ExprNode::Limit(body, var, point),
+        (ExprNode::Residue(..), &[body], &[point]) => ExprNode::Residue(body, var, point),
+        (ExprNode::LaplaceTransform(..), &[body], &[s]) => ExprNode::LaplaceTransform(body, var, s),
+        (ExprNode::InverseLaplaceTransform(..), &[body], &[t]) => {
+            ExprNode::InverseLaplaceTransform(body, var, t)
+        }
+        _ => return id,
+    };
+    arena.intern(node)
+}
+
+/// Does the symbol `sym` occur *free* in the expression rooted at `root`?
+///
+/// Binders are those of [`binder`]: the variable of a `Sum` is bound in
+/// the body and free in the limits, a `RootOf(x⁵ − x + 1, 0)` is a
+/// constant, and so on.  Only one symbol is looked for, so a node is
+/// either entered with `sym` free or not entered at all, and per-node
+/// visited-ness suffices.
+///
+/// Uses an explicit stack — never recurses.
+pub(crate) fn has_free_symbol(arena: &Arena, root: ExprId, sym: SymbolId) -> bool {
+    let mut stack: Vec<ExprId> = vec![root];
+    let mut visited: FxHashSet<ExprId> = FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        match arena.node(id) {
+            ExprNode::Symbol(s) => {
+                if *s == sym {
+                    return true;
+                }
+            }
+            node if node.is_atom() => {}
+            node => match binder(arena, id) {
+                Some(b) => {
+                    stack.extend_from_slice(&b.outer);
+                    if !matches!(arena.node(b.var), ExprNode::Symbol(s) if *s == sym) {
+                        stack.extend_from_slice(&b.scoped);
+                    }
+                }
+                None => node.for_each_child(|c| stack.push(c)),
+            },
+        }
+    }
+    false
+}
+
 /// Collect the [`ExprId`] of every *free* symbol that appears in the
 /// expression tree.  Each symbol appears at most once.
 ///
-/// Binders hide their variable inside the sub-expression they scope over
-/// (the variable remains free in the other operands):
-///
-/// | Node                          | Bound in                                 |
-/// |-------------------------------|------------------------------------------|
-/// | `Sum(body, var, lo, hi)`      | `body` (not `lo`, `hi`)                  |
-/// | `Product_(body, var, lo, hi)` | `body` (not `lo`, `hi`)                  |
-/// | `DefiniteIntegral(body, var, lo, hi)` | `body` (not `lo`, `hi`)          |
-/// | `RootSum(poly, body, var)`    | `body` (`poly` is a polynomial in `var`) |
-/// | `ConditionSet(var, cond)`     | `cond`                                   |
-/// | `RootOf(poly, idx)`           | `poly`, when it has exactly one symbol   |
-///
-/// `Integral`, `Derivative`, `Limit`, `Series`, … do **not** bind: their
-/// variable is a genuine free symbol of the (anti)derivative / limit form.
+/// Binders (the table of [`binder`]) hide their variable inside the
+/// operands they scope over; the variable remains free in the other
+/// operands (`Σ_{k=1}^{k} f(k)` has the free symbol `k`, from its upper
+/// limit).
 ///
 /// Because the arena is a hash-consed DAG, the same node can occur both
 /// under a binder and outside it (`x + Σ_{x=0}^{3} x`), so visited-ness is
@@ -771,37 +894,19 @@ pub(crate) fn free_symbols(arena: &Arena, root: ExprId) -> Vec<ExprId> {
                     result.push(id);
                 }
             }
-            ExprNode::Sum(body, var, lo, hi)
-            | ExprNode::Product_(body, var, lo, hi)
-            | ExprNode::DefiniteIntegral(body, var, lo, hi) => {
-                stack.push((*lo, sc));
-                stack.push((*hi, sc));
-                let inner = extend_scope(&mut scopes, sc, *var);
-                stack.push((*body, inner));
-            }
-            ExprNode::RootSum(poly, body, var) => {
-                let inner = extend_scope(&mut scopes, sc, *var);
-                stack.push((*poly, inner));
-                stack.push((*body, inner));
-            }
-            ExprNode::ConditionSet(var, cond) => {
-                let inner = extend_scope(&mut scopes, sc, *var);
-                stack.push((*cond, inner));
-            }
-            ExprNode::RootOf(poly, idx) => {
-                stack.push((*idx, sc));
-                // The polynomial's variable is bound.  It is only
-                // well-defined when the polynomial is univariate; anything
-                // else is reported conservatively (all symbols free).
-                let poly_syms = all_symbols(arena, *poly);
-                let inner = if let [var] = poly_syms[..] {
-                    extend_scope(&mut scopes, sc, var)
-                } else {
-                    sc
-                };
-                stack.push((*poly, inner));
-            }
-            node => node.for_each_child(|c| stack.push((c, sc))),
+            node if node.is_atom() => {}
+            node => match binder(arena, id) {
+                Some(b) => {
+                    for &c in &b.outer {
+                        stack.push((c, sc));
+                    }
+                    let inner = extend_scope(&mut scopes, sc, b.var);
+                    for &c in &b.scoped {
+                        stack.push((c, inner));
+                    }
+                }
+                None => node.for_each_child(|c| stack.push((c, sc))),
+            },
         }
     }
 
@@ -1130,6 +1235,74 @@ mod tests {
         assert_eq!(free_symbols(&a, inner), vec![i]);
         let outer = a.intern(ExprNode::Sum(inner, i, a.one, n));
         assert_eq!(free_symbols(&a, outer), vec![n]);
+    }
+
+    #[test]
+    fn free_symbols_limit_residue_and_transforms_bind_their_dummy() {
+        // SymPy 1.14: `Limit(sin(x*y)/x, x, 0).free_symbols` is `{y}`,
+        // `LaplaceTransform(exp(a*t), t, s).free_symbols` is `{a, s}`.
+        let mut a = Arena::new();
+        let (x, y, t, s) = (
+            sym(&mut a, "x"),
+            sym(&mut a, "y"),
+            sym(&mut a, "t"),
+            sym(&mut a, "s"),
+        );
+        let xy = a.mul(&[x, y]);
+        let lim = a.intern(ExprNode::Limit(xy, x, a.zero));
+        assert_eq!(free_symbols(&a, lim), vec![y]);
+        let res = a.intern(ExprNode::Residue(xy, x, y));
+        assert_eq!(free_symbols(&a, res), vec![y]);
+        let ty = a.mul(&[t, y]);
+        let lt = a.intern(ExprNode::LaplaceTransform(ty, t, s));
+        let mut got = free_symbols(&a, lt);
+        got.sort_unstable();
+        let mut want = vec![y, s];
+        want.sort_unstable();
+        assert_eq!(got, want);
+        let ilt = a.intern(ExprNode::InverseLaplaceTransform(ty, t, s));
+        let mut got = free_symbols(&a, ilt);
+        got.sort_unstable();
+        assert_eq!(got, want);
+        // A limit point in the dummy is the outer variable.
+        let lim_x = a.intern(ExprNode::Limit(xy, x, x));
+        let mut got = free_symbols(&a, lim_x);
+        got.sort_unstable();
+        let mut want = vec![x, y];
+        want.sort_unstable();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn has_free_symbol_agrees_with_free_symbols() {
+        let mut a = Arena::new();
+        let (x, k, n) = (sym(&mut a, "x"), sym(&mut a, "k"), sym(&mut a, "n"));
+        let ExprNode::Symbol(x_sym) = *a.node(x) else {
+            unreachable!()
+        };
+        let three = a.int(3);
+        let xk = a.mul(&[x, k]);
+        let five = a.int(5);
+        let x5 = a.pow(x, five);
+        let neg_x = a.neg(x);
+        let poly = a.add(&[x5, neg_x, a.one]);
+        let root = a.intern(ExprNode::RootOf(poly, a.zero));
+        let sum_x = a.intern(ExprNode::Sum(xk, x, a.zero, three));
+        let sum_k = a.intern(ExprNode::Sum(xk, k, a.zero, n));
+        let sum_x_to_x = a.intern(ExprNode::Sum(xk, x, a.zero, x));
+        let integral = a.intern(ExprNode::Integral(xk, x));
+        let shared = a.add(&[x, sum_x]);
+        for (e, free) in [
+            (root, false),
+            (sum_x, false),
+            (sum_k, true),
+            (sum_x_to_x, true),
+            (integral, true),
+            (shared, true),
+        ] {
+            assert_eq!(has_free_symbol(&a, e, x_sym), free, "{}", display(&a, e));
+            assert_eq!(free_symbols(&a, e).contains(&x), free, "{}", display(&a, e));
+        }
     }
 
     // ── has_unevaluated ────────────────────────────────────────────────

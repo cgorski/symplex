@@ -357,13 +357,16 @@ fn collect_components(arena: &Arena, expr: ExprId, var_sym: SymbolId) -> Vec<Exp
                 stack.push(inner);
             }
 
-            _ => {
-                // For other nodes, recurse into children.
-                let children = arena.node(id).children();
-                for child in children {
-                    stack.push(child);
+            _ => match crate::base::walk::binder(arena, id) {
+                // Inside a binder of the variable (`RootOf(x⁵ − x + 1, 0)`,
+                // `Σ_{x=0}^{3} …`) nothing is a function of the outer `x`;
+                // only the operands in the enclosing scope can be.
+                Some(b) if matches!(arena.node(b.var), ExprNode::Symbol(s) if *s == var_sym) => {
+                    stack.extend_from_slice(&b.outer);
                 }
-            }
+                // For other nodes, recurse into children.
+                _ => arena.node(id).for_each_child(|c| stack.push(c)),
+            },
         }
     }
 
@@ -861,25 +864,13 @@ fn build_candidate(
 // Utility helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Check whether `expr` contains the variable `var_sym` anywhere in its tree.
+/// Does `expr` depend on `var` — does `var` occur *free* in it?  The
+/// binder-aware test the integrator uses
+/// ([`crate::base::walk::has_free_symbol`]).  Up to 0.28.0 this test was
+/// structural, and a `RootOf(x⁵ − x + 1, 0)` coefficient counted as a
+/// function of `x`.
 fn contains_var(arena: &Arena, expr: ExprId, var: SymbolId) -> bool {
-    let mut stack: Vec<ExprId> = vec![expr];
-    let mut visited: FxHashSet<ExprId> = FxHashSet::default();
-    while let Some(id) = stack.pop() {
-        if !visited.insert(id) {
-            continue;
-        }
-        if let ExprNode::Symbol(sid) = arena.node(id)
-            && *sid == var
-        {
-            return true;
-        }
-        let children = arena.node(id).children();
-        for c in children {
-            stack.push(c);
-        }
-    }
-    false
+    crate::base::walk::has_free_symbol(arena, expr, var)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -936,6 +927,42 @@ mod tests {
         // It will find 355/113 which is close enough for the tolerance.
         // That's fine — the symbolic verification step will catch it.
         assert!(r.is_some() || r.is_none()); // Accept either.
+    }
+
+    // ── Binders ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_root_of_a_polynomial_in_x_is_a_constant_for_heurisch() {
+        // Up to 0.28.0 the dependence test and the component collection
+        // were structural: the bound `x` of `RootOf(x⁵ − x + 1, 0)` made it
+        // a function of `x`, and `exp(x)` under `Σ_{x=0}^{3}` a component.
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let ExprNode::Symbol(x_sym) = *a.node(x) else {
+            unreachable!()
+        };
+        let five = a.int(5);
+        let x5 = a.pow(x, five);
+        let neg_x = a.neg(x);
+        let poly = a.add(&[x5, neg_x, a.one]);
+        let root = a.intern(ExprNode::RootOf(poly, a.zero));
+        assert!(!contains_var(&a, root, x_sym));
+        assert_eq!(
+            heurisch_integrate(&mut a, root, x, x_sym),
+            Some(a.mul(&[root, x]))
+        );
+
+        let three = a.int(3);
+        let ex = a.exp(x);
+        let sum = a.intern(ExprNode::Sum(ex, x, a.zero, three));
+        let sx = a.sin(x);
+        let e = a.add(&[sx, sum]);
+        let comps = collect_components(&a, e, x_sym);
+        assert!(comps.contains(&sx), "{comps:?}");
+        assert!(
+            !comps.contains(&ex),
+            "exp(x) is bound in the sum: {comps:?}"
+        );
     }
 
     // ── Component collection ────────────────────────────────────────

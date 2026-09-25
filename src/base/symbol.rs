@@ -64,6 +64,12 @@ impl SymbolTable {
         &self.names[id.0 as usize]
     }
 
+    /// The [`SymbolId`] of `name` if it has been interned, without
+    /// interning it.
+    pub fn get(&self, name: &str) -> Option<SymbolId> {
+        self.lookup.get(name).copied()
+    }
+
     /// Returns the number of interned symbols.
     pub fn len(&self) -> usize {
         self.names.len()

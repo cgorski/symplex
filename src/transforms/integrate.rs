@@ -341,72 +341,16 @@ fn log_argument_is_real(
 }
 
 /// Is the variable-free `c` known to be real, for real values of its
-/// parameters (the integrator's convention for a symbol without declared
-/// assumptions; a declared one keeps its declaration)?
-///
-/// Exactly where the assumption system decides it: `a + b`, `√2`, `ln 3`
-/// are real, `i`, `√(−2)` are not; `√a` and `√(−a)` are undecided, since
-/// a real `a` may have either sign.  Otherwise, for a constant without
-/// parameters, numerically: the value to [`FTC_CHECK_DIGITS`] correct
-/// digits with an imaginary part beyond them is not real
-/// (`√(1/2 − √5/2)`); if the imaginary part is within them, `im(c)` is
-/// evaluated on its own and `c` counts as real when that is 0
-/// (`√(3 − √5)`, which the assumption system leaves open).  `evalf`
-/// refuses a value it cannot certify (`PrecisionExhausted`), and so does
-/// this test: not known to be real.  So does a non-zero `im(c)`, even the
-/// rounding residue `evalf` (0.28) returns for the imaginary part of a real
-/// `RootOf` root; the answer then keeps `ln u`, which is still an
-/// antiderivative.
+/// parameters?  [`crate::transforms::realness::constant_realness`] to
+/// [`FTC_CHECK_DIGITS`] digits (`√(1/2 − √5/2)` is not, `√(3 − √5)` is,
+/// `√a` is undecided).  An undecided `c` is not known to be real: the
+/// answer then keeps `ln u`, which is still an antiderivative.
 fn constant_is_real(
     arena: &mut Arena,
     c: ExprId,
     reals: &mut crate::base::assumptions::AssumptionCache,
 ) -> bool {
-    use crate::base::assumptions::{Assumptions, Props};
-    match arena.node(c) {
-        ExprNode::Num(_)
-        | ExprNode::Pi
-        | ExprNode::E
-        | ExprNode::EulerGamma
-        | ExprNode::Catalan
-        | ExprNode::GoldenRatio => return true,
-        ExprNode::ImaginaryUnit => return false,
-        _ => {}
-    }
-    let params = crate::base::walk::free_symbols(arena, c);
-    for &s in &params {
-        if let ExprNode::Symbol(sid) = *arena.node(s)
-            && arena.symbol_assumptions(sid) == Assumptions::default()
-        {
-            let mut real = Assumptions::default();
-            real.known_true |= Props::REAL;
-            reals.set_symbol_assumptions(s, real);
-        }
-    }
-    if let Some(known) = reals.query(arena, c, Props::REAL) {
-        return known;
-    }
-    params.is_empty() && numerically_real(arena, c)
-}
-
-/// The numeric half of [`constant_is_real`] for a constant without free
-/// symbols.
-fn numerically_real(arena: &mut Arena, c: ExprId) -> bool {
-    let Ok(z) = crate::transforms::evalf::evalf_complex(arena, c, FTC_CHECK_DIGITS) else {
-        return false;
-    };
-    // An imaginary part beyond the digits of `z` (with two digits of
-    // margin) is certainly not 0.
-    if !crate::transforms::evalf::is_real_to_digits(&z, FTC_CHECK_DIGITS - 2) {
-        return false;
-    }
-    let im = arena.im(c);
-    let im = crate::transforms::eval::eval(arena, im);
-    if crate::base::walk::has_unevaluated(arena, im) {
-        return false;
-    }
-    crate::transforms::evalf::evalf_complex(arena, im, FTC_CHECK_DIGITS)
-        .is_ok_and(|w| w.0.is_zero() && w.1.is_zero())
+    crate::transforms::realness::constant_realness(arena, c, FTC_CHECK_DIGITS, reals) == Some(true)
 }
 
 /// Check whether `expr` is a suitable candidate for the `u` factor in
@@ -1704,6 +1648,15 @@ fn integrate_node_uncached(
     let node = arena.node(expr).clone();
 
     match node {
+        // ── Anything free of var → c * var ─────────────────────────
+        // A `RootOf(x⁵ − x + 1, 0)` (its `x` is bound), `sin a`, `Γ(a)`:
+        // up to 0.28.0 such a term of a sum fell through to the unevaluated
+        // form (`∫ (x + RootOf(a⁵ − a + 1, 0)) dx`).  A sum keeps its
+        // term-by-term split below.
+        _ if !matches!(node, ExprNode::Add(_)) && !contains_var(arena, expr, var_sym) => {
+            arena.mul(&[expr, var])
+        }
+
         // ── Constants (independent of var) → c * var ───────────────
         ExprNode::Num(_)
         | ExprNode::Pi
@@ -2898,65 +2851,17 @@ fn integrate_node_uncached(
 
 /// Does `expr` depend on the symbol `var` — does `var` occur *free* in it?
 ///
-/// Binders are respected exactly as by [`crate::base::walk::free_symbols`]:
-/// the variable of a `Sum`, `Product_` or `DefiniteIntegral` is bound in
-/// the body (not in the limits), that of a `RootSum` in its polynomial and
-/// body, that of a `ConditionSet` in its condition, and a `RootOf` whose
-/// polynomial has a single symbol binds it.  So `RootOf(x⁵ − x + 1, 0)` —
-/// the form in which `solve` returns a root of a polynomial in `x` — is a
+/// [`crate::base::walk::has_free_symbol`], which reads the binder table
+/// shared with `free_symbols` and `subs`: the variable of a `Sum` is bound
+/// in its body (not in its limits), a `RootOf` whose polynomial has a
+/// single symbol binds it, and so on.  So `RootOf(x⁵ − x + 1, 0)` — the
+/// form in which `solve` returns a root of a polynomial in `x` — is a
 /// constant.  Up to 0.28.0 the test was structural, and
 /// `1/(x − RootOf(x⁵ − x + 1, 0))` did not look like `1/(x − c)`.
 /// An indefinite `Integral` or a `Derivative` does not bind: `∫ f dx` is a
 /// function of `x`.
 fn contains_var(arena: &Arena, expr: ExprId, var: SymbolId) -> bool {
-    let is_var = |id: ExprId| matches!(arena.node(id), ExprNode::Symbol(s) if *s == var);
-    let mut stack: Vec<ExprId> = vec![expr];
-    let mut visited: FxHashSet<ExprId> = FxHashSet::default();
-    // Only one symbol is looked for, so a scope is either "`var` bound"
-    // (not entered at all) or not: a node that is entered is entered with
-    // `var` free, and per-node visited-ness is enough.
-    while let Some(id) = stack.pop() {
-        if !visited.insert(id) {
-            continue;
-        }
-        match arena.node(id) {
-            ExprNode::Symbol(sid) => {
-                if *sid == var {
-                    return true;
-                }
-            }
-            ExprNode::Sum(body, v, lo, hi)
-            | ExprNode::Product_(body, v, lo, hi)
-            | ExprNode::DefiniteIntegral(body, v, lo, hi) => {
-                stack.push(*lo);
-                stack.push(*hi);
-                if !is_var(*v) {
-                    stack.push(*body);
-                }
-            }
-            ExprNode::RootSum(poly, body, v) => {
-                if !is_var(*v) {
-                    stack.push(*poly);
-                    stack.push(*body);
-                }
-            }
-            ExprNode::ConditionSet(v, cond) => {
-                if !is_var(*v) {
-                    stack.push(*cond);
-                }
-            }
-            ExprNode::RootOf(poly, idx) => {
-                stack.push(*idx);
-                // A multivariate polynomial names no bound variable; like
-                // `free_symbols`, all its symbols then count as free.
-                if !matches!(crate::base::walk::all_symbols(arena, *poly)[..], [s] if is_var(s)) {
-                    stack.push(*poly);
-                }
-            }
-            node => node.for_each_child(|c| stack.push(c)),
-        }
-    }
-    false
+    crate::base::walk::has_free_symbol(arena, expr, var)
 }
 
 /// Check if an expression is a polynomial in the given variable.
@@ -5002,6 +4907,9 @@ const FTC_PARAMETER_VALUES: [(i64, i64); 8] = [
 /// value of [`FTC_PARAMETER_VALUES`]; `None` when there are more
 /// parameters than values or a parameter carries declared assumptions (an
 /// `integer` or `negative` symbol must not be sampled at `17/13`).
+/// `subs` replaces free occurrences only, so a `RootOf(a⁵ − a + 1, 0)` or a
+/// sum over `a` keeps its bound `a` (0.28.0 renamed such binders here
+/// first, when `subs` did not respect them).
 fn bind_parameters(
     arena: &mut Arena,
     f: ExprId,
@@ -5030,84 +4938,10 @@ fn bind_parameters(
     let (mut f, mut big_f) = (f, big_f);
     for (&(_, s), &(p, q)) in params.iter().zip(FTC_PARAMETER_VALUES.iter()) {
         let value = arena.rational(p, q);
-        f = rename_bound(arena, f, s);
-        big_f = rename_bound(arena, big_f, s);
         f = crate::transforms::subs::subs(arena, f, s, value);
         big_f = crate::transforms::subs::subs(arena, big_f, s, value);
     }
     Some((f, big_f))
-}
-
-/// `e` with every binder of the symbol `sym` renamed to a dummy, so that a
-/// structural `subs` for `sym` afterwards replaces only its free
-/// occurrences.  The binders are those of [`contains_var`]; `subs` itself
-/// respects only `DefiniteIntegral`'s, and at `x = 1/3` turned
-/// `RootOf(x⁵ − x + 1, 0)` into `RootOf(325/243, 0)`, which does not
-/// evaluate.  Returns `e` itself when nothing binds `sym`.
-fn rename_bound(arena: &mut Arena, e: ExprId, sym: ExprId) -> ExprId {
-    let binds = |arena: &Arena, id: ExprId| match arena.node(id) {
-        ExprNode::Sum(_, v, _, _)
-        | ExprNode::Product_(_, v, _, _)
-        | ExprNode::DefiniteIntegral(_, v, _, _)
-        | ExprNode::RootSum(_, _, v)
-        | ExprNode::ConditionSet(v, _) => *v == sym,
-        ExprNode::RootOf(poly, _) => {
-            matches!(crate::base::walk::all_symbols(arena, *poly)[..], [s] if s == sym)
-        }
-        _ => false,
-    };
-    let order = crate::base::walk::post_order_ids(arena, e);
-    if !order.iter().any(|&id| binds(arena, id)) {
-        return e;
-    }
-    let dummy = arena.symbol("__bound");
-    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
-    for id in order {
-        let node = arena.node(id).clone();
-        let get = |c: ExprId| cache.get(&c).copied().unwrap_or(c);
-        let new = if binds(arena, id) {
-            // The bound part is renamed from the original node (a nested
-            // binder of `sym` inside it is renamed along with it); the
-            // unbound operands take their rebuilt form.
-            let rename = |arena: &mut Arena, part: ExprId| {
-                crate::transforms::subs::subs(arena, part, sym, dummy)
-            };
-            match node {
-                ExprNode::Sum(body, _, lo, hi) => {
-                    let body = rename(arena, body);
-                    arena.intern(ExprNode::Sum(body, dummy, get(lo), get(hi)))
-                }
-                ExprNode::Product_(body, _, lo, hi) => {
-                    let body = rename(arena, body);
-                    arena.intern(ExprNode::Product_(body, dummy, get(lo), get(hi)))
-                }
-                ExprNode::DefiniteIntegral(body, _, lo, hi) => {
-                    let body = rename(arena, body);
-                    arena.definite_integral(body, dummy, get(lo), get(hi))
-                }
-                ExprNode::RootSum(poly, body, _) => {
-                    let poly = rename(arena, poly);
-                    let body = rename(arena, body);
-                    arena.intern(ExprNode::RootSum(poly, body, dummy))
-                }
-                ExprNode::ConditionSet(_, cond) => {
-                    let cond = rename(arena, cond);
-                    arena.intern(ExprNode::ConditionSet(dummy, cond))
-                }
-                ExprNode::RootOf(poly, idx) => {
-                    let poly = rename(arena, poly);
-                    arena.intern(ExprNode::RootOf(poly, get(idx)))
-                }
-                _ => id,
-            }
-        } else if node.is_atom() {
-            id
-        } else {
-            crate::base::walk::rebuild_with_cache(arena, id, &cache)
-        };
-        cache.insert(id, new);
-    }
-    cache.get(&e).copied().unwrap_or(e)
 }
 
 /// The numeric FTC check behind [`antiderivative_rejected`]: `F′` against
@@ -5136,8 +4970,7 @@ fn check_antiderivative(
     let Some((f, big_f)) = bind_parameters(arena, f, big_f, var) else {
         return FtcVerdict::Untestable;
     };
-    let f = rename_bound(arena, f, var);
-    let big_f = rename_bound(arena, big_f, var);
+
     let d_big_f = crate::transforms::diff::diff(arena, big_f, var);
     if crate::base::walk::has_unevaluated(arena, d_big_f) {
         return FtcVerdict::Untestable;

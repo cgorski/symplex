@@ -95,6 +95,43 @@ sites in 19 files to 46 in 12.  Migrate each call by adding `?` (or
 
 ### Fixed
 
+- **`subs` replaces only free occurrences, and never captures.** Every
+  binder-aware pass (`free_symbols`, `subs`, `diff`, the integrator's and
+  heurisch's dependence tests) now reads one binder table.  It covers
+  `Sum`, `Product`, definite `Integral`, `RootSum`, `ConditionSet`,
+  univariate `RootOf`, and now `Limit`, `Residue` and the Laplace
+  transforms.  A binder that would capture a variable is renamed to `v_1`.
+  - `RootOf(x⁵−x+1, 0).subs(x, 1/3)` was `RootOf(163/243, 0)`, which
+    failed to evaluate.
+  - `Σ_{x=0}^{3} k·x` with `x ↦ 1/3` became `Sum(1/3*k, 1/3=0..3)`.
+  - `Σ_{k=0}^{n} x·k` with `x ↦ k` became `Σ k²`.  SymPy 1.14 captures
+    here too; symplex now differs from it deliberately.
+  - `d/dx Σ_{k=0}^{x} k` was `0`; it now stays formal.
+  - `∫ (x + RootOf(x⁵−x+1, 0)) dx` was partly unevaluated.
+  - `Limit(sin(x·y)/x, x, 0).free_symbols()` is `[y]`.
+- **`apart` decides whether a root is real by its certified value**, not
+  by whether it contains an explicit `i`.  It pairs imaginary roots such
+  as `±√(−1/2 − √5/2)` into a real quadratic term: `1/(x⁴+x²−1)` has one
+  now, where before two of its four terms were complex.
+- **`quantile_f64` of a discrete distribution compared `F(k)` with
+  `p − 10⁻¹²`,** so every level below `10⁻¹²` and every level within
+  `10⁻¹²` of 1 was wrong.  `poisson(10⁶)` at `10⁻¹³` gave 962716 and
+  now gives 992660; `poisson(7/3)` at `1 − 2⁻⁵³` gave 20 and now gives 24
+  (scipy says 23; mpmath says 24).  Negative binomial, geometric and
+  finite tables were affected the same way.
+  - Binomial and Poisson pass `p` to the `f64` kernel unchanged.
+  - Every other lattice family decides `F(k) ≥ p` exactly, comparing the
+    smaller tail (`S(k) ≤ 1 − p` above ½).
+  - A hypergeometric quantile or CDF no longer searches for a symbolic
+    closed form: 4.5 s → milliseconds.
+- **More far tails keep their digits**, each of which evaluated to `0`:
+  - lower tails at irrational parameters for Exponential, Weibull, Pareto
+    and Geometric (`1 − e^{−y}` is now written `2e^{−y/2} sinh(y/2)`);
+  - Triangular and Binomial survival functions (`Binomial(1000, 1/e)
+    .sf(990) = 1.771e-411`);
+  - Cauchy with an undecidable sign.
+- symplex-build: an empty joint name, or a NaN or infinite DH parameter,
+  is an error from `write_to_*` / `from_toml`, where it panicked.
 - **`∫ atan(√x − x⁹) dx`** runs in 2.3 s in a debug build; 0.25's profile
   put it at about 27 s.  The answer is unchanged.  The changes:
   - the Lazard–Rioboo–Trager logarithmic part takes `R(t)` and its log

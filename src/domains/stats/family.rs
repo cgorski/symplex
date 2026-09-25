@@ -10,6 +10,7 @@
 //! calling the inner [`Distribution`]'s machinery.
 
 use std::any::Any;
+use std::cmp::Ordering;
 use std::fmt;
 use std::sync::Arc;
 
@@ -35,6 +36,146 @@ enum Tail {
     Lower,
     Upper,
     Neither,
+}
+
+/// Relative half-width (`2⁻⁴⁴`) of the band around a quantile level
+/// inside which an `f64` sum of masses does not decide on which side of
+/// the level it lies: each mass carries a few ulps from its evaluation and
+/// the compensated sum adds two more, so a sum outside the band is on the
+/// side it shows with a margin of hundreds; inside, the exact sum decides.
+/// (A band, not a tolerance: it never moves the answer.)
+const TIE_BAND: f64 = 1.0 / 17_592_186_044_416.0;
+
+/// The condition a discrete quantile at `p` looks for, on the smaller
+/// tail (as [`numdist`](super::numdist)'s lattice inversions do): `F(k) ≥
+/// p` for `p ≤ ½`, and `S(k) ≤ q` with `q = 1 − p` otherwise — the same
+/// condition, but only the small tail has digits left near its level.
+/// `1 − p` is exact for `p ≥ ½` (Sterbenz), so `q` is the exact
+/// complement of the double `p`.
+#[derive(Clone, Copy, Debug)]
+enum Level {
+    /// `F(k) ≥ p`.
+    Lower(f64),
+    /// `S(k) ≤ q`.
+    Upper(f64),
+}
+
+impl Level {
+    fn of(p: f64) -> Self {
+        if p <= 0.5 {
+            Level::Lower(p)
+        } else {
+            Level::Upper(1.0 - p)
+        }
+    }
+
+    /// Has the exact tail crossed the level?  The sign of `tail − level`,
+    /// the level read as the exact binary number it is, evaluated in
+    /// arbitrary precision; a tie (`F(k) = p`, `S(k) = q`) has crossed.
+    fn crossed(self, tail: &Ex) -> Result<bool, SymplexError> {
+        let (level, lower) = match self {
+            Level::Lower(p) => (p, true),
+            Level::Upper(q) => (q, false),
+        };
+        let d = (tail - tail.context().from_f64(level)?).eval_f64()?;
+        if d.is_nan() {
+            return Err(SymplexError::computation_failed(
+                "quantile_f64",
+                "the distribution function is not a number",
+            ));
+        }
+        Ok(if lower { d >= 0.0 } else { d <= 0.0 })
+    }
+
+    /// The same from an `f64` sum `t` of masses, when it lies outside
+    /// [`TIE_BAND`] around the level; `None` inside it, for a `NaN`, or for
+    /// a subnormal level (whose neighbourhood `f64` cannot resolve).
+    fn crossed_f64(self, t: f64) -> Option<bool> {
+        let (level, lower) = match self {
+            Level::Lower(p) => (p, true),
+            Level::Upper(q) => (q, false),
+        };
+        if level.is_nan() || level < f64::MIN_POSITIVE || t.is_nan() {
+            return None;
+        }
+        if t > level * (1.0 + TIE_BAND) {
+            Some(lower)
+        } else if t < level * (1.0 - TIE_BAND) {
+            Some(!lower)
+        } else {
+            None
+        }
+    }
+}
+
+/// A running sum with Neumaier's compensation (the improved Kahan–Babuška
+/// algorithm, Neumaier 1974): its rounding error stays within a couple of
+/// ulps however many terms are added.
+#[derive(Default)]
+struct CompensatedSum {
+    sum: f64,
+    carry: f64,
+}
+
+impl CompensatedSum {
+    fn add(&mut self, x: f64) {
+        let t = self.sum + x;
+        self.carry += if self.sum.abs() >= x.abs() {
+            (self.sum - t) + x
+        } else {
+            (x - t) + self.sum
+        };
+        self.sum = t;
+    }
+
+    fn value(&self) -> f64 {
+        self.sum + self.carry
+    }
+}
+
+/// The sign of `e`: the symbolic tests first, then, for a constant they
+/// cannot decide (`3 − √2 − 10⁻¹⁰⁰`, `10¹⁰⁰ − √2`), the sign of its value —
+/// which `evalf` gets right whenever the value is not `0` (read from its
+/// decimal expansion, which does not underflow as an `f64` would).
+/// `None` for a symbolic `e` of unknown sign, or a constant that evaluates
+/// to `0` without being known to be `0`.
+pub(crate) fn sign_of(e: &Ex) -> Option<Ordering> {
+    if e.is_zero() == Some(true) {
+        return Some(Ordering::Equal);
+    }
+    if e.is_positive() == Some(true) {
+        return Some(Ordering::Greater);
+    }
+    if e.is_negative() == Some(true) {
+        return Some(Ordering::Less);
+    }
+    if !e.free_symbols().is_empty() {
+        return None;
+    }
+    let digits = e.eval_decimal(5).ok()?;
+    let magnitude = digits.trim_start_matches('-');
+    if digits.contains('I')
+        || !magnitude.starts_with(|c: char| c.is_ascii_digit())
+        || magnitude.trim_start_matches(['0', '.']).is_empty()
+    {
+        return None;
+    }
+    Some(if digits.starts_with('-') {
+        Ordering::Less
+    } else {
+        Ordering::Greater
+    })
+}
+
+/// An end of a support piece as an `f64` (`±∞` for the infinities).
+fn lattice_end(e: &Ex) -> Result<f64, SymplexError> {
+    if is_neg_inf(e) {
+        Ok(f64::NEG_INFINITY)
+    } else if is_pos_inf(e) {
+        Ok(f64::INFINITY)
+    } else {
+        e.eval_f64()
+    }
 }
 
 /// A probability distribution family: its support and density, plus
@@ -437,15 +578,34 @@ impl Distribution {
     /// form of that tail is a difference of two numbers that may agree to
     /// hundreds of digits, and the family's non-cancelling form is used.
     /// (A classic far lower tail may itself evaluate to `0.0`: still in the
-    /// far lower tail.)
+    /// far lower tail.  One that cancels beyond `evalf`'s budget fails to
+    /// evaluate — `1 − (3 − x)²/(3 − √2)²` at `x = √2 + 10⁻¹⁰⁰` — and the
+    /// tail is then read off the non-cancelling forms themselves; 0.28 took
+    /// such a point for a central one and kept the classic form.)
     fn tail_of(&self, x: &Ex) -> Tail {
         if !x.free_symbols().is_empty() {
             return Tail::Neither;
         }
-        match self.0.cdf(x).and_then(|c| c.eval_f64().ok()) {
-            Some(p) if p.is_finite() && p < FAR_TAIL => Tail::Lower,
-            Some(p) if p.is_finite() && p > 1.0 - FAR_TAIL => Tail::Upper,
-            _ => Tail::Neither,
+        let Some(classic) = self.0.cdf(x) else {
+            return Tail::Neither;
+        };
+        match classic.eval_f64() {
+            Ok(p) if p.is_finite() && p < FAR_TAIL => Tail::Lower,
+            Ok(p) if p.is_finite() && p > 1.0 - FAR_TAIL => Tail::Upper,
+            Ok(_) => Tail::Neither,
+            Err(_) => {
+                let far = |form: Option<Ex>| {
+                    form.and_then(|f| f.eval_f64().ok())
+                        .is_some_and(|v| v.is_finite() && v < FAR_TAIL)
+                };
+                if far(self.0.cdf_lower(x)) {
+                    Tail::Lower
+                } else if far(self.0.sf(x)) {
+                    Tail::Upper
+                } else {
+                    Tail::Neither
+                }
+            }
         }
     }
 
@@ -493,10 +653,13 @@ impl Distribution {
             Some(iv) => iv.lower.clone(),
             None => ctx.neg_infinity(),
         };
-        // On the lattice `P(X ≤ x)` sums up to `⌊x⌋`.
+        // On the lattice `P(X ≤ x)` sums up to `⌊x⌋`, folded for a numeric
+        // `x`: the summation takes an unevaluated `floor(4)` for a symbolic
+        // bound and looks for a closed form (4.5 s for a hypergeometric
+        // `P(X ≤ 4)`, against 0.6 ms for the five terms).
         let hi = match support.kind() {
             Kind::Continuous => x.clone(),
-            Kind::Discrete => x.floor(),
+            Kind::Discrete => x.floor().eval(),
         };
         support.accumulate(&dens, &t, &lo, &hi)
     }
@@ -605,21 +768,25 @@ impl Distribution {
         let (lo, hi) = (&iv.lower, &iv.upper);
         let lo_finite = !is_neg_inf(lo);
         let hi_finite = !is_pos_inf(hi);
-        // Decide the branch for a numeric argument.
-        if lo_finite && (x - lo).is_negative() == Some(true) {
+        // Decide the branch for a numeric argument (`sign_of`: on its value
+        // where the symbolic test cannot, `3 − (√2 + 10⁻¹⁰⁰) > 0`, rather
+        // than leave a `Piecewise` whose conditions `evalf` cannot decide).
+        let from_lo = if lo_finite { sign_of(&(x - lo)) } else { None };
+        let to_hi = if hi_finite { sign_of(&(hi - x)) } else { None };
+        if from_lo == Some(Ordering::Less) {
             return ctx.zero();
         }
         // A density puts no mass on the lower end itself, and the closed
         // form need not fold there (`Φ(ln 0)` for a log-normal).
-        if lo_finite && support.kind() == Kind::Continuous && (x - lo).is_zero() == Some(true) {
+        if support.kind() == Kind::Continuous && from_lo == Some(Ordering::Equal) {
             return ctx.zero();
         }
-        if hi_finite && (x - hi).is_nonnegative() == Some(true) {
+        if matches!(to_hi, Some(Ordering::Less | Ordering::Equal)) {
             return ctx.one();
         }
         let on = self.cdf_on_support(x);
-        if (!lo_finite || (x - lo).is_nonnegative() == Some(true))
-            && (!hi_finite || (hi - x).is_positive() == Some(true))
+        if (!lo_finite || matches!(from_lo, Some(Ordering::Greater | Ordering::Equal)))
+            && (!hi_finite || to_hi == Some(Ordering::Greater))
         {
             // A numeric argument: fold `floor(2)`, `(3/4)^2`, … so the
             // value reads as a number.
@@ -674,18 +841,20 @@ impl Distribution {
         let (lo, hi) = (&iv.lower, &iv.upper);
         let lo_finite = !is_neg_inf(lo);
         let hi_finite = !is_pos_inf(hi);
-        if lo_finite && (x - lo).is_negative() == Some(true) {
+        let from_lo = if lo_finite { sign_of(&(x - lo)) } else { None };
+        let to_hi = if hi_finite { sign_of(&(hi - x)) } else { None };
+        if from_lo == Some(Ordering::Less) {
             return ctx.one();
         }
-        if lo_finite && support.kind() == Kind::Continuous && (x - lo).is_zero() == Some(true) {
+        if support.kind() == Kind::Continuous && from_lo == Some(Ordering::Equal) {
             return ctx.one();
         }
-        if hi_finite && (x - hi).is_nonnegative() == Some(true) {
+        if matches!(to_hi, Some(Ordering::Less | Ordering::Equal)) {
             return ctx.zero();
         }
         let on = self.sf_on_support(x);
-        if (!lo_finite || (x - lo).is_nonnegative() == Some(true))
-            && (!hi_finite || (hi - x).is_positive() == Some(true))
+        if (!lo_finite || matches!(from_lo, Some(Ordering::Greater | Ordering::Equal)))
+            && (!hi_finite || to_hi == Some(Ordering::Greater))
         {
             return if x.free_symbols().is_empty() {
                 on.eval()
@@ -749,16 +918,32 @@ impl Distribution {
     /// `ChiSquared`, `FDistribution`, `Beta`, `Gamma`, `Binomial` and
     /// `Poisson` with numeric parameters go through the `f64` kernel
     /// [`numdist`](super::numdist) (`scipy.stats.<dist>.ppf`, about
-    /// `1e-15`, microseconds).  Otherwise the closed form is evaluated when
-    /// the family has one, else the root of `F(x) = p` is found by Brent's
-    /// method on the compiled distribution function over a bracket grown
-    /// from the support's ends (a discrete distribution returns the
-    /// smallest lattice point with `F(x) ≥ p`).  A lattice family *without*
-    /// a closed CDF (`NegativeBinomial` with a non-integer `r`) is walked
-    /// instead: the pmf is accumulated from the support's lower end until
-    /// `p` is reached (`nbinom.ppf(0.9, 1.5, 1/3) = 7` in milliseconds;
-    /// Brent on the symbolic sum took seconds).  Parameters must evaluate
-    /// numerically.
+    /// `1e-15`, microseconds).  Otherwise a continuous distribution
+    /// evaluates its closed form when it has one, else finds the root of
+    /// `F(x) = p` by Brent's method on the compiled distribution function
+    /// over a bracket grown from the support's ends.
+    ///
+    /// A discrete distribution returns the smallest atom `k` with
+    /// `F(k) ≥ p`, `p` read as the exact binary number it is (a level that
+    /// equals a jump of `F` only up to rounding is decided by that number:
+    /// the double nearest `0.9` exceeds `9/10`).  For `p > ½` the same
+    /// condition is decided on the smaller tail, `S(k) ≤ q` with `q = 1 − p`
+    /// (exact in floating point), since `F(k)` next to `1` has no digits
+    /// left to compare.  Each candidate is decided exactly — the sign of
+    /// `F(k) − p` (or `S(k) − q`) through the family's non-cancelling
+    /// closed forms ([`cdf`](Self::cdf), [`sf`](Self::sf)), in arbitrary
+    /// precision — by a doubling search and bisection from a guess (the
+    /// closed-form quantile, a walk of the compiled mass function, the
+    /// mean).  A family without a closed form for that tail
+    /// (`NegativeBinomial` has a survival function but no CDF,
+    /// `Hypergeometric` neither) is walked instead: the mass function
+    /// accumulated from the end where the tail starts (upward from the
+    /// lower end for `F(k) ≥ p`, downward from a finite upper end for
+    /// `S(k) ≤ q`), summed exactly wherever the `f64` sum lies within
+    /// `2⁻⁴⁴` of the level.  An upper level on a lattice unbounded above
+    /// with neither closed form is walked upward and resolved only to the
+    /// rounding of the sum (`n·2⁻⁵³`).  A table of listed values is summed
+    /// like a walk.  Parameters must evaluate numerically.
     ///
     /// ```
     /// use symplex::prelude::*;
@@ -768,6 +953,10 @@ impl Distribution {
     /// // scipy: stats.t.ppf(0.975, 5) = 2.5705818356363146
     /// let t5 = Distribution::student_t(ctx.int(5));
     /// assert!((t5.quantile_f64(0.975)? - 2.570_581_835_636_314_6).abs() < 1e-14);
+    /// // S(k) = (2/3)^k: S(90) = 1.42e-16 > 2⁻⁵³ ≥ S(91) = 9.46e-17
+    /// // (mpmath; scipy's geom.ppf compares F(k) next to 1 and says 90).
+    /// let g = Distribution::geometric(ctx.rational(1, 3));
+    /// assert_eq!(g.quantile_f64(1.0 - f64::EPSILON / 2.0)?, 91.0);
     /// # Ok::<(), SymplexError>(())
     /// ```
     ///
@@ -786,6 +975,10 @@ impl Distribution {
         }
         if let Some(q) = self.kernel_quantile_f64(p) {
             return q;
+        }
+        let support = self.support();
+        if support.kind() == Kind::Discrete {
+            return self.discrete_quantile_f64(p, &support);
         }
         let ctx = self.context();
         if let Some(q) = self.0.quantile(&ctx.from_f64(p)?) {
@@ -807,48 +1000,11 @@ impl Distribution {
                     .unwrap_or(f64::NAN),
             }
         };
-        let support = self.support();
-        if let Some(values) = support.as_points() {
-            // Points: walk the cumulative sums.  A value listed twice (a
-            // mixture's shared atom) carries its whole mass once.
-            let mut seen: Vec<&Ex> = Vec::with_capacity(values.len());
-            let mut pts: Vec<(f64, f64)> = Vec::with_capacity(values.len());
-            for v in &values {
-                if seen.contains(&v) {
-                    continue;
-                }
-                seen.push(v);
-                pts.push((v.eval_f64()?, self.0.density(v).eval_f64()?));
-            }
-            pts.sort_by(|a, b| a.0.total_cmp(&b.0));
-            let mut acc = 0.0;
-            for (v, m) in pts {
-                acc += m;
-                if acc >= p - 1e-12 {
-                    return Ok(v);
-                }
-            }
-            return Err(SymplexError::computation_failed(
-                "quantile_f64",
-                "the masses do not reach p",
-            ));
-        }
         // The hull of the pieces (one interval, or a mixture's several).
         let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
         for piece in support.pieces() {
             let (a, b) = match piece {
-                Piece::Interval(iv) => (
-                    if is_neg_inf(&iv.lower) {
-                        f64::NEG_INFINITY
-                    } else {
-                        iv.lower.eval_f64()?
-                    },
-                    if is_pos_inf(&iv.upper) {
-                        f64::INFINITY
-                    } else {
-                        iv.upper.eval_f64()?
-                    },
-                ),
+                Piece::Interval(iv) => (lattice_end(&iv.lower)?, lattice_end(&iv.upper)?),
                 Piece::Point(v) => {
                     let v = v.eval_f64()?;
                     (v, v)
@@ -862,22 +1018,6 @@ impl Distribution {
                 "quantile_f64",
                 "unsupported support shape",
             ));
-        }
-        // A lattice family without a closed CDF (`NegativeBinomial` with a
-        // rational `r`, whose CDF is a symbolic `Sum`): walk the atoms from
-        // the lower end accumulating the pmf, rather than Brent on the sum
-        // (seconds per probe).
-        if support.kind() == Kind::Discrete
-            && lo.is_finite()
-            && self.0.cdf(&x).is_none()
-            && let Some(k) = self.lattice_quantile_walk(p, &support)?
-        {
-            return Ok(k);
-        }
-        // On a lattice the first atom may already carry p: the quantile
-        // is the support's lower end and no sign change exists to bracket.
-        if support.kind() == Kind::Discrete && lo.is_finite() && cdf(lo) >= p - 1e-12 {
-            return Ok(lo);
         }
         let g = |v: f64| cdf(v) - p;
         // Grow a bracket from a finite end (or from 0) until the sign changes.
@@ -905,32 +1045,23 @@ impl Distribution {
             }
         }
         let opts = crate::domains::optimize::RootOpts::default();
-        let root = crate::domains::optimize::brent_root(g, a, b, &opts)
-            .map_err(|e| SymplexError::computation_failed("quantile_f64", e.to_string()))?;
-        Ok(match support.kind() {
-            Kind::Continuous => root,
-            // Smallest lattice point at or above the crossing.
-            Kind::Discrete => {
-                let mut k = root.floor();
-                if cdf(k) < p - 1e-12 {
-                    k += 1.0;
-                }
-                k
-            }
-        })
+        crate::domains::optimize::brent_root(g, a, b, &opts)
+            .map_err(|e| SymplexError::computation_failed("quantile_f64", e.to_string()))
     }
 
     /// [`quantile_f64`](Self::quantile_f64) through the `f64` kernel
     /// [`numdist`](super::numdist) for the eight families it covers, when
     /// every parameter is numeric; `None` leaves it to the generic route.
-    /// The lattice families use the same `1e-12` slack on `F(k) ≥ p` as
-    /// the generic walk, so a level that equals a jump of `F` to rounding
-    /// picks the same atom either way.
+    /// `p` goes to the lattice kernels as given: their inversion already
+    /// decides `F(k) ≥ p` on the smaller tail.  (0.27 subtracted an
+    /// absolute slack of `10⁻¹²` from `p`, which turned every level below
+    /// `10⁻¹²` into the smallest normal double and every level within
+    /// `10⁻¹²` of `1` into a smaller one: `poisson(10⁶)` at `10⁻¹³` gave
+    /// 962716 and `poisson(7/3)` at `1 − 2⁻⁵³` gave 20, for 992660 and 24.)
     fn kernel_quantile_f64(&self, p: f64) -> Option<Result<f64, SymplexError>> {
         use super::continuous::{Beta, ChiSquared, FDistribution, Gamma, Normal, StudentT};
         use super::discrete::{Binomial, Poisson};
         use super::numdist;
-        const LATTICE_SLACK: f64 = 1e-12;
         let num = |e: &Ex| -> Option<f64> {
             if e.free_symbols().is_empty() {
                 e.eval_f64().ok().filter(|v| v.is_finite())
@@ -938,7 +1069,6 @@ impl Distribution {
                 None
             }
         };
-        let p_lattice = (p - LATTICE_SLACK).max(f64::MIN_POSITIVE);
         if let Some(d) = self.downcast_ref::<Normal>() {
             let (mean, std) = (num(&d.mean)?, num(&d.std)?);
             if std <= 0.0 {
@@ -966,60 +1096,319 @@ impl Distribution {
             if n.fract() != 0.0 {
                 return None;
             }
-            return Some(numdist::binom::ppf(p_lattice, n, prob));
+            return Some(numdist::binom::ppf(p, n, prob));
         }
         if let Some(d) = self.downcast_ref::<Poisson>() {
-            return Some(numdist::poisson::ppf(p_lattice, num(&d.rate)?));
+            return Some(numdist::poisson::ppf(p, num(&d.rate)?));
         }
         None
     }
 
-    /// The smallest lattice point `k ≥ lo` with `Σ_{lo ≤ j ≤ k} f(j) ≥ p`
-    /// (to `1e-12`), the pmf compiled to `f64` when every node has a
-    /// kernel and otherwise evaluated exactly at each atom (`eval_f64`);
-    /// `k = hi` when a finite support is exhausted first.  `None` when the
-    /// support is not a single interval with a finite lower end, or the
-    /// walk exceeds `LATTICE_WALK_LIMIT` atoms — the caller then brackets
-    /// as before.
-    fn lattice_quantile_walk(
-        &self,
-        p: f64,
-        support: &Support,
-    ) -> Result<Option<f64>, SymplexError> {
-        const LATTICE_WALK_LIMIT: usize = 100_000;
+    /// [`quantile_f64`](Self::quantile_f64) on a discrete support: the
+    /// smallest atom whose tail has crossed the level (see there).  Nothing
+    /// symbolic is built for the whole line: a CDF with a symbolic argument
+    /// is a `Sum` for a family without a closed form, and closing it
+    /// (`Hypergeometric`) took seconds.
+    fn discrete_quantile_f64(&self, p: f64, support: &Support) -> Result<f64, SymplexError> {
+        let level = Level::of(p);
+        if let Some(values) = support.as_points() {
+            return self.table_quantile_f64(level, &values);
+        }
+        let probe = self.fresh_var("x", &[]);
+        let closed = self.0.cdf(&probe).is_some()
+            || (matches!(level, Level::Upper(_)) && self.0.sf(&probe).is_some());
         let lattice = support.normalize_lattice();
         let Some(iv) = lattice.as_interval() else {
-            return Ok(None);
+            return self.pieces_quantile_f64(level, &lattice);
         };
-        if is_neg_inf(&iv.lower) {
-            return Ok(None);
+        let (lo, hi) = (lattice_end(&iv.lower)?, lattice_end(&iv.upper)?);
+        if closed {
+            let k0 = self.lattice_guess(p, level, lo, hi)?;
+            return self.lattice_search(level, k0, lo, hi);
+        }
+        if let Some(k) = self.lattice_walk(level, lo, hi, false)? {
+            return Ok(k);
+        }
+        // Neither a closed form nor a walk: decide each probe on the summed
+        // CDF (exact, and slow).
+        self.lattice_search(level, self.mean_f64().unwrap_or(f64::NAN), lo, hi)
+    }
+
+    /// The closed-form mean as a finite `f64`.
+    fn mean_f64(&self) -> Option<f64> {
+        self.0
+            .mean()
+            .and_then(|m| m.eval_f64().ok())
+            .filter(|v| v.is_finite())
+    }
+
+    /// Has the tail that `level` names, at the atom `x` of the support,
+    /// crossed the level?  `F(x) ≥ p` or `S(x) ≤ q`, from
+    /// [`cdf_on_support`](Self::cdf_on_support) /
+    /// [`sf_on_support`](Self::sf_on_support) (the non-cancelling form in a
+    /// far tail) and [`Level::crossed`].  Not the whole-line `cdf`/`sf`:
+    /// their `eval` of the numeric value would fold the exact form once
+    /// more (`1 − (1 − 10⁻¹⁵)¹⁰⁰⁰` is a 15 000-digit rational).
+    fn tail_crossed(&self, level: Level, x: &Ex) -> Result<bool, SymplexError> {
+        let tail = match level {
+            Level::Lower(_) => self.cdf_on_support(x),
+            Level::Upper(_) => self.sf_on_support(x),
+        };
+        level.crossed(&tail)
+    }
+
+    /// The smallest lattice point of `lo..=hi` whose tail has crossed
+    /// `level`, each probe decided exactly ([`tail_crossed`]), by
+    /// [`numdist`](super::numdist)'s doubling search and bisection from the
+    /// guess `k0` (the first finite one of `k0`, `lo`, `hi`, `0`).
+    ///
+    /// [`tail_crossed`]: Self::tail_crossed
+    fn lattice_search(&self, level: Level, k0: f64, lo: f64, hi: f64) -> Result<f64, SymplexError> {
+        if lo.is_nan() || hi.is_nan() || lo > hi {
+            return Err(SymplexError::computation_failed(
+                "quantile_f64",
+                format!("empty lattice {lo}..={hi}"),
+            ));
         }
         let ctx = self.context();
-        let lo = iv.lower.eval_f64()?;
-        let hi = if is_pos_inf(&iv.upper) {
-            f64::INFINITY
-        } else {
-            iv.upper.eval_f64()?
-        };
-        let k_var = self.fresh_var("k", &[]);
-        let pmf = self.0.density(&k_var);
-        let compiled = pmf.compile(&[k_var.to_string().as_str()]).ok();
-        let pmf_at = |k: f64| -> Result<f64, SymplexError> {
-            match &compiled {
-                Some(f) => Ok(f.call(&[k])),
-                None => self.0.density(&ctx.from_f64(k)?).eval_f64(),
+        let failure = std::cell::RefCell::new(None);
+        let crossed = |k: f64| match ctx.from_f64(k).and_then(|kx| self.tail_crossed(level, &kx)) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                failure.borrow_mut().get_or_insert(e);
+                None
             }
         };
-        let mut k = lo;
-        let mut mass = 0.0;
-        for _ in 0..LATTICE_WALK_LIMIT {
-            mass += pmf_at(k)?;
-            if mass >= p - 1e-12 || k >= hi {
-                return Ok(Some(k));
-            }
-            k += 1.0;
+        let k0 = [k0, lo, hi]
+            .into_iter()
+            .find(|v| v.is_finite())
+            .unwrap_or(0.0);
+        super::numdist::discrete_search("quantile_f64", crossed, k0, lo, hi)
+            .map_err(|e| failure.into_inner().unwrap_or(e))
+    }
+
+    /// A starting point for [`lattice_search`](Self::lattice_search): the
+    /// closed-form quantile (`DiscreteUniform`), else a walk of the
+    /// compiled mass function, else the mean; `NaN` when there is none.
+    fn lattice_guess(&self, p: f64, level: Level, lo: f64, hi: f64) -> Result<f64, SymplexError> {
+        let ctx = self.context();
+        if let Some(q) = self.0.quantile(&ctx.from_f64(p)?)
+            && let Ok(v) = q.eval_f64()
+            && v.is_finite()
+        {
+            return Ok(v);
         }
-        Ok(None)
+        if let Ok(Some(k)) = self.lattice_walk(level, lo, hi, true) {
+            return Ok(k);
+        }
+        Ok(self.mean_f64().unwrap_or(f64::NAN))
+    }
+
+    /// Walk the lattice `lo..=hi` accumulating the mass function from the
+    /// end where the tail named by `level` starts, to the first point
+    /// where it crosses: upward from a finite `lo` for `F(k) ≥ p`,
+    /// downward from a finite `hi` for `S(k) ≤ q`.  Both are sums of
+    /// positive terms, kept to a couple of ulps by compensated summation
+    /// beyond the few ulps of each compiled term; where the `f64` sum lies
+    /// within [`TIE_BAND`] of the level the decision is taken on the exact
+    /// sum of the masses instead.  An upper level on a lattice unbounded
+    /// above is walked upward comparing `F(k)` with `1 − q` — resolved only
+    /// to the sum's rounding, and stopped at `1 − 4·2⁻⁵²`.  The mass
+    /// function is compiled to `f64` when every node has a kernel, else (and
+    /// wherever a compiled value is not finite) evaluated exactly at each
+    /// atom.  A `guess` (for [`lattice_search`](Self::lattice_search), which
+    /// decides exactly) needs the compiled mass function and decides in
+    /// `f64` throughout.  `None` when no direction applies or the walk
+    /// exceeds `LATTICE_WALK_LIMIT` atoms.
+    fn lattice_walk(
+        &self,
+        level: Level,
+        lo: f64,
+        hi: f64,
+        guess: bool,
+    ) -> Result<Option<f64>, SymplexError> {
+        const LATTICE_WALK_LIMIT: usize = 100_000;
+        let ctx = self.context();
+        let k_var = self.fresh_var("k", &[]);
+        let compiled = self
+            .0
+            .density(&k_var)
+            .compile(&[k_var.to_string().as_str()])
+            .ok();
+        if compiled.is_none() && guess {
+            return Ok(None);
+        }
+        let exact_pmf =
+            |k: f64| -> Result<Ex, SymplexError> { Ok(self.0.density(&ctx.from_f64(k)?).eval()) };
+        let pmf = |k: f64| -> Result<f64, SymplexError> {
+            match compiled.as_ref().map(|f| f.call(&[k])) {
+                Some(v) if v.is_finite() => Ok(v),
+                _ => exact_pmf(k)?.eval_f64(),
+            }
+        };
+        // Has the tail crossed, from its `f64` sum `t` — or, within the
+        // band of a walk that answers, from the exact sum of f over a..=b?
+        let decide = |t: f64, a: f64, b: f64| -> Result<bool, SymplexError> {
+            if let Some(c) = level.crossed_f64(t) {
+                return Ok(c);
+            }
+            if guess {
+                return Ok(match level {
+                    Level::Lower(p) => t >= p,
+                    Level::Upper(q) => t <= q,
+                });
+            }
+            let mut acc = ctx.zero();
+            let mut j = a;
+            while j <= b {
+                acc += exact_pmf(j)?;
+                j += 1.0;
+            }
+            level.crossed(&acc)
+        };
+        let mut acc = CompensatedSum::default();
+        match level {
+            Level::Lower(_) if lo.is_finite() => {
+                let mut k = lo;
+                for _ in 0..LATTICE_WALK_LIMIT {
+                    acc.add(pmf(k)?);
+                    if decide(acc.value(), lo, k)? || k >= hi {
+                        return Ok(Some(k));
+                    }
+                    k += 1.0;
+                }
+                Ok(None)
+            }
+            Level::Upper(_) if hi.is_finite() => {
+                // S(hi) = 0 ≤ q; going down, S(k − 1) = S(k) + f(k).
+                let mut k = hi;
+                for _ in 0..LATTICE_WALK_LIMIT {
+                    if k <= lo {
+                        return Ok(Some(k));
+                    }
+                    acc.add(pmf(k)?);
+                    if !decide(acc.value(), k, hi)? {
+                        return Ok(Some(k));
+                    }
+                    k -= 1.0;
+                }
+                Ok(None)
+            }
+            Level::Upper(q) if lo.is_finite() => {
+                let target = (1.0 - q).min(1.0 - 4.0 * f64::EPSILON);
+                let mut k = lo;
+                for _ in 0..LATTICE_WALK_LIMIT {
+                    acc.add(pmf(k)?);
+                    if acc.value() >= target {
+                        return Ok(Some(k));
+                    }
+                    k += 1.0;
+                }
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// A distribution on listed values (a table, a mixture of tables): the
+    /// smallest value whose tail has crossed `level`, the masses summed in
+    /// `f64` from the end where the tail starts (from the bottom for
+    /// `F ≥ p`, from the top for `S ≤ q`) and exactly wherever the sum lies
+    /// within [`TIE_BAND`] of the level.  A value listed twice (a mixture's
+    /// shared atom) carries its whole mass once.  (0.27 compared the sum
+    /// from the bottom with `p − 10⁻¹²`.)
+    fn table_quantile_f64(&self, level: Level, values: &[Ex]) -> Result<f64, SymplexError> {
+        let mut seen: Vec<&Ex> = Vec::with_capacity(values.len());
+        let mut pts: Vec<(f64, Ex, f64)> = Vec::with_capacity(values.len());
+        for v in values {
+            if seen.contains(&v) {
+                continue;
+            }
+            seen.push(v);
+            let mass = self.0.density(v).eval();
+            let m = mass.eval_f64()?;
+            pts.push((v.eval_f64()?, mass, m));
+        }
+        pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let ctx = self.context();
+        let exact_sum = |range: &[(f64, Ex, f64)]| -> Ex {
+            range
+                .iter()
+                .fold(ctx.zero(), |acc, (_, mass, _)| acc + mass)
+        };
+        let mut acc = CompensatedSum::default();
+        match level {
+            Level::Lower(_) => {
+                for (i, (v, _, m)) in pts.iter().enumerate() {
+                    acc.add(*m);
+                    let crossed = match level.crossed_f64(acc.value()) {
+                        Some(c) => c,
+                        None => level.crossed(&exact_sum(&pts[..=i]))?,
+                    };
+                    if crossed {
+                        return Ok(*v);
+                    }
+                }
+                Err(SymplexError::computation_failed(
+                    "quantile_f64",
+                    "the masses do not reach p",
+                ))
+            }
+            Level::Upper(_) => {
+                // S(v_last) = 0 ≤ q; going down, S(vᵢ) = S(vᵢ₊₁) + mᵢ₊₁.
+                let Some(&(mut answer, _, _)) = pts.last() else {
+                    return Err(SymplexError::computation_failed(
+                        "quantile_f64",
+                        "no values listed",
+                    ));
+                };
+                for i in (1..pts.len()).rev() {
+                    acc.add(pts[i].2);
+                    let crossed = match level.crossed_f64(acc.value()) {
+                        Some(c) => c,
+                        None => level.crossed(&exact_sum(&pts[i..]))?,
+                    };
+                    if !crossed {
+                        break;
+                    }
+                    answer = pts[i - 1].0;
+                }
+                Ok(answer)
+            }
+        }
+    }
+
+    /// A discrete support of several pieces (a mixture of a lattice family
+    /// and a table): the smallest crossing atom of each piece — a lattice
+    /// interval searched as in [`lattice_search`](Self::lattice_search), a
+    /// listed value decided directly — and the least of those.
+    fn pieces_quantile_f64(&self, level: Level, lattice: &Support) -> Result<f64, SymplexError> {
+        let mut best: Option<f64> = None;
+        for piece in lattice.pieces() {
+            let found = match piece {
+                Piece::Point(v) => {
+                    if self.tail_crossed(level, v)? {
+                        Some(v.eval_f64()?)
+                    } else {
+                        None
+                    }
+                }
+                Piece::Interval(iv) => {
+                    let (a, b) = (lattice_end(&iv.lower)?, lattice_end(&iv.upper)?);
+                    if b.is_finite() && !self.tail_crossed(level, &iv.upper)? {
+                        None
+                    } else {
+                        Some(self.lattice_search(level, f64::NAN, a, b)?)
+                    }
+                }
+            };
+            if let Some(k) = found {
+                best = Some(best.map_or(k, |b| b.min(k)));
+            }
+        }
+        best.ok_or_else(|| {
+            SymplexError::computation_failed("quantile_f64", "the masses do not reach p")
+        })
     }
 
     /// Entropy in nats — differential (`−E[ln f(X)]`) for a continuous

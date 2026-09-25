@@ -814,21 +814,31 @@ fn diff_node(
         }
 
         // ── Sum: linearity — d/dx Sum(f, k, a, b) = Sum(d/dx f, k, a, b)
-        // assuming the summation variable k is not x.
+        // when the limits do not depend on x.  A sum whose limits depend
+        // on x is not differentiable term by term (its number of terms
+        // changes with x) and stays formal, as in SymPy; up to 0.28.0
+        // `d/dx Σ_{k=0}^{x} k` was `Σ 0`, i.e. 0.  The summation variable is
+        // bound in the body: when it is x, the body does not depend on the
+        // outer x at all.
         ExprNode::Sum(body, sum_var, lo, hi) => {
-            if let ExprNode::Symbol(sum_sym) = arena.node(sum_var)
-                && *sum_sym == var
-            {
-                // Differentiating w.r.t. the summation variable itself — leave unevaluated.
+            let limits_vary = crate::base::walk::has_free_symbol(arena, lo, var)
+                || crate::base::walk::has_free_symbol(arena, hi, var);
+            if limits_vary {
                 let v = var_expr(arena, var);
                 return arena.intern(ExprNode::Derivative(id, v));
+            }
+            if matches!(arena.node(sum_var), ExprNode::Symbol(s) if *s == var) {
+                return arena.zero;
             }
             let dbody = get_deriv(cache, body, arena);
             arena.intern(ExprNode::Sum(dbody, sum_var, lo, hi))
         }
 
-        // ── Product_: leave as unevaluated derivative ──────────────
+        // ── Product_: constant when x is not free in it, else formal ──
         ExprNode::Product_(_, _, _, _) => {
+            if !crate::base::walk::has_free_symbol(arena, id, var) {
+                return arena.zero;
+            }
             let v = var_expr(arena, var);
             arena.intern(ExprNode::Derivative(id, v))
         }
@@ -843,9 +853,9 @@ fn diff_node(
             if let ExprNode::Symbol(sum_sym) = arena.node(sumvar)
                 && *sum_sym == var
             {
-                // Differentiating w.r.t. the bound variable — leave formal.
-                let v = var_expr(arena, var);
-                arena.intern(ExprNode::Derivative(id, v))
+                // `var` is bound in the polynomial and the body, and a
+                // `RootSum` has no other operand: a constant.
+                arena.zero
             } else {
                 let dbody = get_deriv(cache, body, arena);
                 tracing::trace!("diff: RootSum — differentiating body w.r.t. outer variable");

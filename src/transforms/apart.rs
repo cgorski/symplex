@@ -339,8 +339,6 @@ fn try_root_based_apart(
         };
     }
 
-    let i_unit = arena.i_unit;
-
     let mut partial_terms: Vec<ExprId> = Vec::new();
     let mut used: Vec<bool> = vec![false; solutions.len()];
 
@@ -367,73 +365,74 @@ fn try_root_based_apart(
         }
     }
 
-    // ── Pass 2: Complex conjugate pairs ────────────────────────────────
+    // ── Pass 2: Irrational real roots and complex conjugate pairs ─────
+    //
+    // A root is classified by its value, not by its spelling: whether it
+    // contains an explicit `i` says nothing (`√(1/2 − √5/2)` is imaginary,
+    // a casus-irreducibilis root of a cubic is real), which up to 0.28.0
+    // is how it was decided.  A non-real root is paired with its conjugate,
+    // found by certified value ([`conjugate_by_value`]) or, failing that,
+    // as a root whose sum and product with it are known real
+    // ([`are_conjugates`]).  Any other root — real, or undecided — gets
+    // its own residue term, which is exact over ℂ whatever its realness.
+    let mut reals = crate::base::assumptions::AssumptionCache::new();
+    let realness: Vec<Option<bool>> = solutions
+        .iter()
+        .map(|s| {
+            crate::transforms::realness::constant_realness(
+                arena,
+                s.value,
+                REALNESS_DIGITS,
+                &mut reals,
+            )
+        })
+        .collect();
+    let values: Vec<Option<crate::base::bigcomplex::Complex>> = solutions
+        .iter()
+        .map(|s| crate::transforms::evalf::evalf_complex(arena, s.value, REALNESS_DIGITS).ok())
+        .collect();
     for idx in 0..solutions.len() {
         if used[idx] {
             continue;
         }
+        used[idx] = true;
         let root = solutions[idx].value;
-        let is_complex = crate::base::walk::contains(arena, root, i_unit);
-        if !is_complex {
-            // Irrational real root — compute residue symbolically.
-            if let Some(term) = try_symbolic_residue_term(arena, var, root, remainder, &denom_deriv)
-            {
-                partial_terms.push(term);
-            }
-            used[idx] = true;
-            continue;
-        }
-
-        // Find the conjugate partner.
-        let neg_i = arena.neg(i_unit);
-        let conj_root = crate::transforms::subs::subs(arena, root, i_unit, neg_i);
-        let conj_root = crate::transforms::eval::eval(arena, conj_root);
-
-        let mut conj_idx = None;
-        for j in (idx + 1)..solutions.len() {
-            if used[j] {
-                continue;
-            }
-            // Exact structural comparison.
-            if solutions[j].value == conj_root {
-                conj_idx = Some(j);
-                break;
-            }
-            // Robust fallback: two roots are conjugates iff their
-            // sum and product are both real (contain no imaginary unit).
-            let other = solutions[j].value;
-            if !crate::base::walk::contains(arena, other, i_unit) {
-                continue;
-            }
-            let pair_sum = arena.add(&[root, other]);
-            let pair_sum = crate::transforms::eval::eval(arena, pair_sum);
-            let pair_prod = arena.mul(&[root, other]);
-            let pair_prod = crate::transforms::eval::eval(arena, pair_prod);
-            if !crate::base::walk::contains(arena, pair_sum, i_unit)
-                && !crate::base::walk::contains(arena, pair_prod, i_unit)
-            {
-                conj_idx = Some(j);
-                break;
-            }
-        }
-
-        if let Some(j) = conj_idx {
-            used[idx] = true;
-            used[j] = true;
-
-            // Compute quadratic factor and (Ax+B) numerator from the
-            // conjugate pair.
-            if let Some(term) = build_conjugate_pair_term(arena, var, root, remainder, &denom_deriv)
-            {
-                partial_terms.push(term);
-            }
+        let partner = if realness[idx] == Some(false) {
+            conjugate_by_value(&values, idx)
+                .filter(|&j| !used[j])
+                .or_else(|| {
+                    ((idx + 1)..solutions.len()).find(|&j| {
+                        !used[j]
+                            && realness[j] == Some(false)
+                            && are_conjugates(arena, root, solutions[j].value, &mut reals)
+                    })
+                })
         } else {
-            // No conjugate found — try a plain symbolic residue.
-            if let Some(term) = try_symbolic_residue_term(arena, var, root, remainder, &denom_deriv)
+            None
+        };
+        if let Some(j) = partner {
+            used[j] = true;
+            let conj = solutions[j].value;
+            if let Some(term) = build_conjugate_pair_term(
+                arena,
+                var,
+                root,
+                conj,
+                remainder,
+                denom_poly,
+                &denom_deriv,
+            ) {
+                partial_terms.push(term);
+                continue;
+            }
+            // No real form: the two residue terms are exact all the same.
+            if let Some(term) = try_symbolic_residue_term(arena, var, conj, remainder, &denom_deriv)
             {
                 partial_terms.push(term);
             }
-            used[idx] = true;
+        }
+        if let Some(term) = try_symbolic_residue_term(arena, var, root, remainder, &denom_deriv) {
+            partial_terms.push(term);
         }
     }
 
@@ -450,6 +449,66 @@ fn try_root_based_apart(
     } else {
         arena.add(&partial_terms)
     }
+}
+
+/// Digits to which [`crate::transforms::realness::constant_realness`] decides
+/// whether a root is real (as the integrator's self-check does).
+const REALNESS_DIGITS: u32 = 30;
+
+/// Relative distance within which a root's certified value (to
+/// [`REALNESS_DIGITS`] digits) is taken to be the conjugate of another's.
+const CONJUGATE_TOL: f64 = 1e-20;
+
+/// The index of the root that is the conjugate of root `idx`, from the
+/// roots' certified values: `D` is real, so `conj(r)` is one of the roots,
+/// the one whose value agrees with `conj(r)` to [`CONJUGATE_TOL`].  `None`
+/// when a value is missing or the nearest root is not unique at that
+/// tolerance (roots closer together than the digits resolve).
+fn conjugate_by_value(
+    values: &[Option<crate::base::bigcomplex::Complex>],
+    idx: usize,
+) -> Option<usize> {
+    let z = values[idx].as_ref()?;
+    let conj = (z.0.clone(), crate::base::bigcomplex::c_neg(z).1);
+    let scale = crate::transforms::evalf::abs_to_f64(z)?.max(1.0);
+    let mut found = None;
+    for (k, v) in values.iter().enumerate() {
+        if k == idx {
+            continue;
+        }
+        let d = crate::transforms::evalf::distance_to_f64(&conj, v.as_ref()?)?;
+        if d <= CONJUGATE_TOL * scale {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(k);
+        }
+    }
+    found
+}
+
+/// Are the non-real roots `r` and `s` conjugate?  They are exactly when
+/// `r + s` and `r·s` are real: `r` and `s` are then the roots of
+/// `t² − (r + s)·t + r·s`, a real quadratic, whose non-real roots are
+/// conjugate.  Realness is established by
+/// [`crate::transforms::realness::constant_realness`]; undecided is not.
+fn are_conjugates(
+    arena: &mut Arena,
+    r: ExprId,
+    s: ExprId,
+    reals: &mut crate::base::assumptions::AssumptionCache,
+) -> bool {
+    let sum = arena.add(&[r, s]);
+    let sum = crate::transforms::eval::eval(arena, sum);
+    if crate::transforms::realness::constant_realness(arena, sum, REALNESS_DIGITS, reals)
+        != Some(true)
+    {
+        return false;
+    }
+    let product = arena.mul(&[r, s]);
+    let product = crate::transforms::eval::eval(arena, product);
+    crate::transforms::realness::constant_realness(arena, product, REALNESS_DIGITS, reals)
+        == Some(true)
 }
 
 /// Build a term `residue / (x - root)` where both residue and root
@@ -486,16 +545,147 @@ fn try_symbolic_residue_term(
     Some(arena.div(residue, factor))
 }
 
-/// Given a complex root `r` (with conjugate `r̄`), build the real
+/// The real term `(A·x + B)/Q` of the conjugate roots `r`, `s` of `D`,
+/// `Q = x² + p·x + q` with `p = −(r + s)`, `q = r·s` (real), computed
+/// without the residues: with `D = Q·S`, `(A·x + B)·S ≡ N (mod Q)`.
+/// Reducing `S ≡ s₁x + s₀` and `N ≡ n₁x + n₀` and using `x² ≡ −p·x − q`,
+/// that is the linear system
+///
+/// ```text
+/// (s₀ − p·s₁)·A + s₁·B = n₁
+///      −q·s₁·A + s₀·B = n₀
+/// ```
+///
+/// solved by Cramer's rule in exact expression arithmetic and checked
+/// with [`numerator_verifies_mod_quadratic`].  `None` if `Q` does not
+/// divide `D` exactly, the system is singular, or the check fails.
+fn build_pair_term_from_both_roots(
+    arena: &mut Arena,
+    var: ExprId,
+    r: ExprId,
+    s: ExprId,
+    remainder: &Poly,
+    denom_poly: &Poly,
+) -> Option<ExprId> {
+    let sum = arena.add(&[r, s]);
+    let neg_sum = arena.neg(sum);
+    let p = alg_normalize(arena, neg_sum);
+    let prod = arena.mul(&[r, s]);
+    let q = alg_normalize(arena, prod);
+    let (cofactor, rem_lin, rem_const) = div_by_monic_quadratic_alg(arena, denom_poly, p, q)?;
+    if !alg_is_zero(arena, rem_lin) || !alg_is_zero(arena, rem_const) {
+        return None;
+    }
+    let (s1, s0) = rem_by_monic_quadratic_alg(arena, cofactor.clone(), p, q);
+    let deg_n = remainder.degree()?;
+    let numer: Vec<ExprId> = (0..=deg_n)
+        .rev()
+        .map(|k| arena.num_ratio(remainder.coeff(k)))
+        .collect();
+    let (n1, n0) = rem_by_monic_quadratic_alg(arena, numer, p, q);
+    // m = s₀ − p·s₁;  det = m·s₀ + q·s₁².
+    let p_s1 = arena.mul(&[p, s1]);
+    let m = arena.sub(s0, p_s1);
+    let m = alg_normalize(arena, m);
+    let m_s0 = arena.mul(&[m, s0]);
+    let q_s1_s1 = arena.mul(&[q, s1, s1]);
+    let det = arena.add(&[m_s0, q_s1_s1]);
+    let det = alg_normalize(arena, det);
+    if alg_is_zero(arena, det) {
+        return None;
+    }
+    // A = (n₁·s₀ − n₀·s₁)/det;  B = (m·n₀ + q·s₁·n₁)/det.
+    let n1_s0 = arena.mul(&[n1, s0]);
+    let n0_s1 = arena.mul(&[n0, s1]);
+    let a_num = arena.sub(n1_s0, n0_s1);
+    let m_n0 = arena.mul(&[m, n0]);
+    let q_s1_n1 = arena.mul(&[q, s1, n1]);
+    let b_num = arena.add(&[m_n0, q_s1_n1]);
+    let a = arena.div(a_num, det);
+    let a = clean_coefficient(arena, a);
+    let b = arena.div(b_num, det);
+    let b = clean_coefficient(arena, b);
+    if !numerator_verifies_mod_quadratic(arena, remainder, &cofactor, a, b, p, q) {
+        return None;
+    }
+    let two = arena.int(2);
+    let x_sq = arena.pow(var, two);
+    let p_x = arena.mul(&[p, var]);
+    let quad = arena.add(&[x_sq, p_x, q]);
+    let a_x = arena.mul(&[a, var]);
+    let lin = arena.add(&[a_x, b]);
+    let lin = crate::transforms::eval::eval(arena, lin);
+    Some(arena.div(lin, quad))
+}
+
+/// An algebraic-number quotient in a canonical, denominator-free form
+/// where one is available: rationalised, then [`alg_normalize`]d.
+fn clean_coefficient(arena: &mut Arena, e: ExprId) -> ExprId {
+    let e = alg_normalize(arena, e);
+    let r = arena.rationalize_denom_expr(e);
+    alg_normalize(arena, r)
+}
+
+/// The remainder `r₁·x + r₀` of the polynomial with descending expression
+/// coefficients `coeffs` modulo `x² + p·x + q`, by synthetic division.
+fn rem_by_monic_quadratic_alg(
+    arena: &mut Arena,
+    mut coeffs: Vec<ExprId>,
+    p: ExprId,
+    q: ExprId,
+) -> (ExprId, ExprId) {
+    match coeffs.len() {
+        0 => return (arena.zero, arena.zero),
+        1 => return (arena.zero, coeffs[0]),
+        _ => {}
+    }
+    let n = coeffs.len();
+    for i in 0..(n - 2) {
+        let lead = coeffs[i];
+        if arena.is_zero_structural(lead) {
+            continue;
+        }
+        let lp = arena.mul(&[lead, p]);
+        let next = arena.sub(coeffs[i + 1], lp);
+        coeffs[i + 1] = alg_normalize(arena, next);
+        let lq = arena.mul(&[lead, q]);
+        let next2 = arena.sub(coeffs[i + 2], lq);
+        coeffs[i + 2] = alg_normalize(arena, next2);
+    }
+    (coeffs[n - 2], coeffs[n - 1])
+}
+
+/// Given a complex root `r` and its conjugate `conj`, build the real
 /// partial-fraction term `(2a·x − 2aα − 2bβ) / (x² − 2αx + α²+β²)`
 /// where `α + iβ = r` and `a + ib = residue(r)`.
+///
+/// When `r` does not split into explicit real and imaginary parts (`√`
+/// of a negative constant, say, which `as_real_imag` keeps as `re(…)`,
+/// `im(…)`), the term is built from the real quadratic `(x − r)(x − r̄)`
+/// instead, by [`build_pair_term_from_both_roots`], where that verifies;
+/// otherwise the `re(…)`/`im(…)` form, exact all the same, is kept.
+#[allow(clippy::too_many_arguments)]
 fn build_conjugate_pair_term(
     arena: &mut Arena,
     var: ExprId,
     root: ExprId,
+    conj: ExprId,
     remainder: &Poly,
+    denom_poly: &Poly,
     denom_deriv: &Poly,
 ) -> Option<ExprId> {
+    let (alpha, beta) = crate::base::complex::as_real_imag(arena, root);
+    let opaque = |arena: &Arena, e: ExprId| {
+        crate::base::walk::post_order_ids(arena, e)
+            .into_iter()
+            .any(|id| matches!(arena.node(id), ExprNode::Re(_) | ExprNode::Im(_)))
+    };
+    if (opaque(arena, alpha) || opaque(arena, beta))
+        && let Some(term) =
+            build_pair_term_from_both_roots(arena, var, root, conj, remainder, denom_poly)
+    {
+        return Some(term);
+    }
     // Evaluate the residue at the complex root symbolically.
     let numer_expr = polybridge::poly_to_expr(arena, remainder, var);
     let denom_deriv_expr = polybridge::poly_to_expr(arena, denom_deriv, var);
@@ -514,7 +704,6 @@ fn build_conjugate_pair_term(
     let residue = crate::transforms::eval::eval(arena, residue);
 
     // Split root and residue into real / imaginary parts.
-    let (alpha, beta) = crate::base::complex::as_real_imag(arena, root);
     let alpha = crate::transforms::eval::eval(arena, alpha);
     let beta = crate::transforms::eval::eval(arena, beta);
 

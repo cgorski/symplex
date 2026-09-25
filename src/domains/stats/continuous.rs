@@ -19,7 +19,9 @@ use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 
-use super::family::{Distribution, Family, Sampler, family_boilerplate};
+use std::cmp::Ordering;
+
+use super::family::{Distribution, Family, Sampler, family_boilerplate, sign_of};
 use super::sample::{self, Rng};
 use super::support::Support;
 
@@ -68,6 +70,28 @@ fn require_nonnegative(e: &Ex, what: &str) -> Result<(), SymplexError> {
         Some(true) => Err(invalid(format!("{what} must be non-negative, got `{e}`"))),
         _ => Ok(()),
     }
+}
+
+/// `1 − e^{−y}` for `y ≥ 0`, written `2 e^{−y/2} sinh(y/2)` so that it keeps
+/// its relative accuracy for a tiny `y` without an `expm1` node: `sinh` of
+/// a tiny argument evaluates to full relative precision, while
+/// `1 − exp(−y)` is a difference of two numbers next to `1` that `evalf`
+/// returns as `0` once its precision budget (about 256 bits beyond the
+/// digits asked for) is spent — `1 − e^{−√2·10⁻¹⁰⁰}` was `0`.  (scipy writes
+/// `-expm1(-y)` for the exponential and Weibull CDFs.)  `eval` and
+/// `simplify` keep the product as written.
+pub(crate) fn one_minus_exp_neg(y: &Ex) -> Ex {
+    let ctx = y.context();
+    let half = y / ctx.int(2);
+    ctx.int(2) * (-&half).exp() * half.sinh()
+}
+
+/// `ln(x/xₘ)` as `2 atanh((x − xₘ)/(x + xₘ))`: the difference `x − xₘ` is
+/// formed symbolically (exactly for `x = xₘ + 10⁻¹⁰⁰`), and `atanh` of a tiny
+/// argument keeps its relative accuracy, where `ln` of a number next to
+/// `1` evaluated to `0` (`ln(1 + 10⁻¹⁰⁰)`).
+fn ln_ratio(x: &Ex, x_m: &Ex) -> Ex {
+    x.context().int(2) * ((x - x_m) / (x + x_m)).atanh()
 }
 
 /// Does a moment that exists only for `param > bound` exist?  `false` only
@@ -292,11 +316,12 @@ impl Family for Exponential {
         Some(self.context().one() - (-(&self.rate * x)).exp())
     }
 
-    // γ(1, λx) = 1 − e^{−λx}, which `eval` leaves unfolded where the
-    // difference would cancel (λx rational and below 5·10⁻²⁰); `evalf`
-    // then sums its power series.
+    // 1 − e^{−λx} as 2 e^{−λx/2} sinh(λx/2) (`one_minus_exp_neg`).  0.28
+    // wrote γ(1, λx), which relied on `eval` not folding it into
+    // 1 − e^{−λx}: it does fold at an irrational λx, and
+    // Exponential(√2).cdf(10⁻¹⁰⁰) was 0.
     fn cdf_lower(&self, x: &Ex) -> Option<Ex> {
-        Some((&self.rate * x).lowergamma(&self.context().one()))
+        Some(one_minus_exp_neg(&(&self.rate * x)))
     }
 
     // e^{−λx}
@@ -361,7 +386,10 @@ impl Family for Gamma {
     }
 
     // γ(k, x/θ) / Γ(k); `eval` closes the incomplete gamma for integer and
-    // half-integer `k` (except where the closed form would cancel).
+    // half-integer `k` (except where the closed form would cancel, which
+    // it recognises for a rational x/θ only: at an irrational one the
+    // lower tail folds into a cancelling difference, Gamma(5, 1).cdf(√2·10⁻³⁰)
+    // evaluates to 0, and no elementary form avoids it).
     fn cdf(&self, x: &Ex) -> Option<Ex> {
         Some(((x / &self.scale).lowergamma(&self.shape) / self.shape.gamma()).eval())
     }
@@ -593,21 +621,24 @@ impl Family for Cauchy {
     }
 
     // −atan(γ/(x−x₀))/π for x < x₀ (atan z + atan(1/z) = −π/2 for z < 0),
-    // the classic form elsewhere.
+    // the classic form elsewhere.  The sign of x − x₀ is decided on its
+    // value when the symbolic test cannot (`sign_of`).
     fn cdf_lower(&self, x: &Ex) -> Option<Ex> {
         let d = x - &self.location;
-        if d.is_negative() != Some(true) {
+        if sign_of(&d) != Some(Ordering::Less) {
             return self.cdf(x);
         }
         Some(-(&self.scale / d).atan() / self.context().pi())
     }
 
     // atan(γ/(x−x₀))/π for x > x₀ (atan z + atan(1/z) = π/2 for z > 0),
-    // ½ − atan((x−x₀)/γ)/π elsewhere.
+    // ½ − atan((x−x₀)/γ)/π elsewhere.  0.28 decided x > x₀ symbolically
+    // only, so Cauchy(√2, π).sf(10¹⁰⁰) (`10¹⁰⁰ − √2 > 0` undecided) took
+    // the classic form and was 0.
     fn sf(&self, x: &Ex) -> Option<Ex> {
         let ctx = self.context();
         let d = x - &self.location;
-        if d.is_positive() == Some(true) {
+        if sign_of(&d) == Some(Ordering::Greater) {
             return Some((&self.scale / d).atan() / ctx.pi());
         }
         Some(ctx.rational(1, 2) - (d / &self.scale).atan() / ctx.pi())
@@ -1120,13 +1151,10 @@ impl Family for Weibull {
         Some(self.context().one() - (-((x / &self.scale).pow(&self.shape))).exp())
     }
 
-    // γ(1, (x/λ)ᵏ), as for the exponential.
+    // 1 − e^{−y}, y = (x/λ)ᵏ, as for the exponential: the γ(1, y) of 0.28
+    // folded at an irrational y, and Weibull(1, ½).cdf(2·10⁻²⁰⁰) was 0.
     fn cdf_lower(&self, x: &Ex) -> Option<Ex> {
-        Some(
-            (x / &self.scale)
-                .pow(&self.shape)
-                .lowergamma(&self.context().one()),
-        )
+        Some(one_minus_exp_neg(&(x / &self.scale).pow(&self.shape)))
     }
 
     // e^{−(x/λ)ᵏ}
@@ -1195,6 +1223,13 @@ impl Family for Pareto {
     // 1 − (x_m/x)^α
     fn cdf(&self, x: &Ex) -> Option<Ex> {
         Some(self.context().one() - (&self.scale / x).pow(&self.shape))
+    }
+
+    // 1 − e^{−y} with y = α ln(x/x_m) = 2α atanh((x − x_m)/(x + x_m)): next
+    // to x_m the classic form is a difference of two numbers next to 1
+    // (Pareto(1, √2).cdf(1 + 10⁻¹⁰⁰) was 0).
+    fn cdf_lower(&self, x: &Ex) -> Option<Ex> {
+        Some(one_minus_exp_neg(&(&self.shape * ln_ratio(x, &self.scale))))
     }
 
     // (x_m/x)^α
@@ -1305,6 +1340,33 @@ impl Family for Triangular {
         let width = &self.hi - &self.lo;
         let rising = (x - &self.lo).powi(2) / (&width * (&self.mode - &self.lo));
         let falling = ctx.one() - (&self.hi - x).powi(2) / (&width * (&self.hi - &self.mode));
+        Some(self.two_pieces(x, rising, falling))
+    }
+
+    // With the mode at the lower end the one piece is 1 − (b−x)²/(b−a)²,
+    // which cancels next to a: (x−a)(2b−a−x)/(b−a)² instead.  Otherwise the
+    // piece next to a is the rising one, already a square.
+    fn cdf_lower(&self, x: &Ex) -> Option<Ex> {
+        if !self.mode_at_lo() {
+            return None;
+        }
+        let (a, b) = (&self.lo, &self.hi);
+        Some((x - a) * (self.context().int(2) * b - a - x) / (b - a).powi(2))
+    }
+
+    // (b−x)²/((b−a)(b−c)) on (c, b], 1 − (x−a)²/((b−a)(c−a)) on [a, c]; with
+    // the mode at the upper end the one piece is (b−x)(b+x−2a)/(b−a)².  The
+    // generic 1 − F was 0 next to b for an irrational end
+    // (Triangular(0, √2, 1).sf(√2 − 10⁻³⁰)).
+    fn sf(&self, x: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let (a, b, c) = (&self.lo, &self.hi, &self.mode);
+        let width = b - a;
+        if self.mode_at_hi() {
+            return Some((b - x) * (b + x - ctx.int(2) * a) / width.powi(2));
+        }
+        let rising = ctx.one() - (x - a).powi(2) / (&width * (c - a));
+        let falling = (b - x).powi(2) / (&width * (b - c));
         Some(self.two_pieces(x, rising, falling))
     }
 

@@ -21,8 +21,8 @@ use crate::base::errors::SymplexError;
 use crate::base::numeric::Q;
 use crate::domains::combinatorics::stirling2;
 
-use super::continuous::sampler_positive;
-use super::family::{Distribution, Family, Sampler, family_boilerplate};
+use super::continuous::{one_minus_exp_neg, sampler_positive};
+use super::family::{Distribution, Family, Sampler, family_boilerplate, fresh_symbol};
 use super::sample::{self, Rng};
 use super::support::Support;
 
@@ -361,6 +361,25 @@ impl Family for Binomial {
     fn mgf(&self, t: &Ex) -> Option<Ex> {
         Some((self.context().one() - &self.p + &self.p * t.exp()).pow(&self.n))
     }
+
+    // Σ_{j=⌊k⌋+1}^{n} C(n, j) pʲ (1−p)ⁿ⁻ʲ: the upper sum itself, a sum of
+    // positive terms (SymPy's finite `BinomialDistribution` sums its table
+    // the same way; scipy's `binom._sf` is `bdtrc`).  The generic route
+    // wrote 1 − Σ_{j≤k}, exact for a rational p but a cancelling
+    // difference for any other: Binomial(1000, 1/e).sf(990) was 0.  Not
+    // the incomplete beta I_p(k+1, n−k), which `eval` expands, for integer
+    // parameters, into a polynomial in p with alternating coefficients.
+    fn sf(&self, k: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let t = fresh_symbol(&ctx, "j", &[k, &self.n, &self.p]);
+        // `⌊k⌋ + 1` folded for a numeric k (an unevaluated `floor` makes the
+        // summation look for a closed form).
+        let from = (k.floor() + ctx.one()).eval();
+        Some(
+            self.support()
+                .accumulate(&self.density(&t), &t, &from, &self.n),
+        )
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -408,7 +427,10 @@ impl Family for Poisson {
 
     // γ(⌊k⌋+1, λ) / ⌊k⌋! (the Poisson–gamma duality `P(X > k) = P(G ≤ λ)`,
     // `G ~ Gamma(k + 1, 1)`); `eval` keeps `γ` where its closed form
-    // `k! − Γ(k+1, λ)` would cancel.
+    // `k! − Γ(k+1, λ)` would cancel — for a rational λ.  At an irrational
+    // λ it folds, and the difference loses its digits once it cancels
+    // beyond `evalf`'s budget (Poisson(π·10⁻¹⁰).sf(10) does not evaluate);
+    // no elementary form avoids that, so the fold's guard has to.
     fn sf(&self, k: &Ex) -> Option<Ex> {
         let kf = k.floor();
         Some(self.rate.lowergamma(&(&kf + self.context().one())) / kf.factorial())
@@ -469,6 +491,16 @@ impl Family for Geometric {
     fn cdf(&self, k: &Ex) -> Option<Ex> {
         let ctx = self.context();
         Some(ctx.one() - (ctx.one() - &self.p).pow(&k.floor()))
+    }
+
+    // 1 − e^{−y} with y = −⌊k⌋ ln(1−p) = 2⌊k⌋ atanh(p/(2−p))
+    // (`one_minus_exp_neg`; scipy: `-expm1(log1p(-p)*k)`): for a tiny p
+    // the classic 1 − (1−p)^⌊k⌋ is a difference of two numbers next to 1,
+    // exact only for a rational p (Geometric(π·10⁻¹⁰⁰).cdf(5) was 0).
+    fn cdf_lower(&self, k: &Ex) -> Option<Ex> {
+        let ctx = self.context();
+        let z = &self.p / (ctx.int(2) - &self.p);
+        Some(one_minus_exp_neg(&(ctx.int(2) * k.floor() * z.atanh())))
     }
 
     // (1−p)^{⌊k⌋}

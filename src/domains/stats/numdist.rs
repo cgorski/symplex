@@ -1862,7 +1862,10 @@ fn check_lattice_param(op: &'static str, name: &str, v: f64) -> Result<(), Sympl
 /// the smallest representable point known to satisfy the predicate, is
 /// then the answer.  (The callers reject parameters above `2⁵³`, so this
 /// is reached only within a few standard deviations above that limit.)
-fn discrete_search(
+/// [`Distribution::quantile_f64`](super::Distribution::quantile_f64)
+/// searches the lattice of any discrete family with it too, deciding each
+/// point exactly.
+pub(crate) fn discrete_search(
     op: &'static str,
     done: impl Fn(f64) -> Option<bool>,
     k0: f64,

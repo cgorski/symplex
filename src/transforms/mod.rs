@@ -8,6 +8,7 @@ pub(crate) mod inequalities;
 pub(crate) mod integrate;
 pub mod logic;
 pub(crate) mod pattern;
+pub(crate) mod realness;
 pub mod rsolve;
 pub mod sets;
 pub(crate) mod solve;

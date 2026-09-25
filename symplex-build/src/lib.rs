@@ -621,25 +621,30 @@ pub fn from_toml(path: impl AsRef<Path>) -> Result<CodeGen, Box<dyn std::error::
     // All symbolic work for this robot lives in a single private context.
     let ctx = Context::new();
 
-    // Build DH parameters from config — create symbolic variables for each theta
-    let theta_vars: Vec<Ex> = config.joints.iter().map(|j| ctx.symbol(&j.theta)).collect();
+    // Build DH parameters from config — create symbolic variables for each
+    // theta (an empty name is an error, not a panic).
+    let theta_vars: Vec<Ex> = config
+        .joints
+        .iter()
+        .map(|j| joint_symbol(&ctx, &j.theta))
+        .collect::<Result<_, _>>()?;
 
     // Hold the numeric constants in vecs so the borrows below stay valid.
     let d_vals: Vec<Ex> = config
         .joints
         .iter()
         .map(|j| float_to_expr(&ctx, j.d))
-        .collect();
+        .collect::<Result<_, _>>()?;
     let a_vals: Vec<Ex> = config
         .joints
         .iter()
         .map(|j| float_to_expr(&ctx, j.a))
-        .collect();
+        .collect::<Result<_, _>>()?;
     let alpha_vals: Vec<Ex> = config
         .joints
         .iter()
         .map(|j| float_to_expr(&ctx, j.alpha))
-        .collect();
+        .collect::<Result<_, _>>()?;
 
     let dh_params: Vec<DhLink<'_>> = theta_vars
         .iter()
@@ -683,6 +688,22 @@ pub fn from_toml(path: impl AsRef<Path>) -> Result<CodeGen, Box<dyn std::error::
     Ok(codegen)
 }
 
+/// The joint variable named `name`.
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`](symplex::errors::SymplexError::InvalidArgument)
+/// for an empty name (a configuration error; [`Context::symbol`] would
+/// panic on it).
+fn joint_symbol(ctx: &Context, name: &str) -> Result<Ex, symplex::errors::SymplexError> {
+    ctx.try_symbol(name).map_err(|_| {
+        symplex::errors::SymplexError::invalid_argument(
+            "symplex-build",
+            "a joint's variable name must not be empty",
+        )
+    })
+}
+
 /// Convert an `f64` DH parameter to an exact symplex expression.
 ///
 /// Uses [`Context::from_f64_approx`] with a denominator bound of one
@@ -690,12 +711,19 @@ pub fn from_toml(path: impl AsRef<Path>) -> Result<CodeGen, Box<dyn std::error::
 /// spec almost always means (`0.3` → `3/10`, `0.25` → `1/4`, `2.0` → `2`)
 /// rather than the exact binary expansion of the float.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics on `NaN`: a DH table with a NaN entry is a configuration error.
-fn float_to_expr(ctx: &Context, v: f64) -> Ex {
+/// [`SymplexError::InvalidArgument`](symplex::errors::SymplexError::InvalidArgument)
+/// for a `NaN` or infinite entry: a configuration error (a `NaN`, which
+/// TOML can spell `nan`, used to panic here).
+fn float_to_expr(ctx: &Context, v: f64) -> Result<Ex, symplex::errors::SymplexError> {
+    if !v.is_finite() {
+        return Err(symplex::errors::SymplexError::invalid_argument(
+            "symplex-build",
+            format!("a DH parameter must be a finite number, got {v}"),
+        ));
+    }
     ctx.from_f64_approx(v, 1_000_000)
-        .unwrap_or_else(|e| panic!("symplex-build: invalid DH parameter {v}: {e}"))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -726,6 +754,28 @@ pub fn robot_arm(joints: &[(&str, f64, f64, f64)]) -> RobotArmBuilder {
     RobotArmBuilder::new(owned)
 }
 
+/// The symbolic DH table of a [`RobotArmBuilder`]: one entry per joint.
+#[derive(Default)]
+struct DhTable {
+    thetas: Vec<Ex>,
+    d: Vec<Ex>,
+    a: Vec<Ex>,
+    alpha: Vec<Ex>,
+}
+
+impl DhTable {
+    /// The links, borrowing the table.
+    fn links(&self) -> Vec<DhLink<'_>> {
+        self.thetas
+            .iter()
+            .zip(&self.d)
+            .zip(&self.a)
+            .zip(&self.alpha)
+            .map(|(((theta, d), a), alpha)| DhLink { theta, d, a, alpha })
+            .collect()
+    }
+}
+
 /// Builder for generating code for a serial robot arm.
 ///
 /// Created by [`robot_arm()`]. Accumulates requested functions and then
@@ -733,9 +783,12 @@ pub fn robot_arm(joints: &[(&str, f64, f64, f64)]) -> RobotArmBuilder {
 /// in a private [`Context`] owned by the builder.
 ///
 /// A function that cannot be generated (a Jacobian for an arm without
-/// joints) is reported by [`write_to_out_dir`](Self::write_to_out_dir) /
-/// [`write_to_path`](Self::write_to_path); [`into_codegen`](Self::into_codegen)
-/// returns the functions that could be generated.
+/// joints; any function of an arm with an empty joint name or a `NaN` or
+/// infinite DH parameter) is reported by
+/// [`write_to_out_dir`](Self::write_to_out_dir) /
+/// [`write_to_path`](Self::write_to_path);
+/// [`into_codegen`](Self::into_codegen) returns the functions that could
+/// be generated.
 pub struct RobotArmBuilder {
     ctx: Context,
     joints: Vec<(String, f64, f64, f64)>,
@@ -758,29 +811,36 @@ impl RobotArmBuilder {
     }
 
     /// Build the symbolic DH parameter tuples and theta variable list.
-    fn build_dh(&self) -> (Vec<Ex>, Vec<Ex>, Vec<Ex>, Vec<Ex>) {
+    ///
+    /// # Errors
+    ///
+    /// An empty joint name or a non-finite DH parameter (see
+    /// [`joint_symbol`], [`float_to_expr`]); the `generate_*` methods keep
+    /// it for [`write_to_out_dir`](Self::write_to_out_dir) /
+    /// [`write_to_path`](Self::write_to_path) to report.  (An empty name
+    /// panicked in `Context::symbol`.)
+    fn build_dh(&self) -> Result<DhTable, symplex::errors::SymplexError> {
         let ctx = &self.ctx;
-        let thetas: Vec<Ex> = self
-            .joints
-            .iter()
-            .map(|(name, _, _, _)| ctx.symbol(name))
-            .collect();
-        let d_vals: Vec<Ex> = self
-            .joints
-            .iter()
-            .map(|(_, d, _, _)| float_to_expr(ctx, *d))
-            .collect();
-        let a_vals: Vec<Ex> = self
-            .joints
-            .iter()
-            .map(|(_, _, a, _)| float_to_expr(ctx, *a))
-            .collect();
-        let alpha_vals: Vec<Ex> = self
-            .joints
-            .iter()
-            .map(|(_, _, _, alpha)| float_to_expr(ctx, *alpha))
-            .collect();
-        (thetas, d_vals, a_vals, alpha_vals)
+        let mut table = DhTable::default();
+        for (name, d, a, alpha) in &self.joints {
+            table.thetas.push(joint_symbol(ctx, name)?);
+            table.d.push(float_to_expr(ctx, *d)?);
+            table.a.push(float_to_expr(ctx, *a)?);
+            table.alpha.push(float_to_expr(ctx, *alpha)?);
+        }
+        Ok(table)
+    }
+
+    /// [`build_dh`](Self::build_dh), recording its error (the first one
+    /// wins) and returning `None` so the caller generates nothing.
+    fn dh_or_record(&mut self) -> Option<DhTable> {
+        match self.build_dh() {
+            Ok(table) => Some(table),
+            Err(e) => {
+                self.error = self.error.take().or(Some(e));
+                None
+            }
+        }
     }
 
     fn theta_names_owned(&self) -> Vec<String> {
@@ -792,17 +852,11 @@ impl RobotArmBuilder {
 
     /// Generate forward kinematics position functions (`fk_x`, `fk_y`, `fk_z`).
     pub fn generate_fk(mut self, name: &str) -> Self {
-        let (thetas, d_vals, a_vals, alpha_vals) = self.build_dh();
-        let dh: Vec<DhLink<'_>> = thetas
-            .iter()
-            .enumerate()
-            .map(|(i, t)| DhLink {
-                theta: t,
-                d: &d_vals[i],
-                a: &a_vals[i],
-                alpha: &alpha_vals[i],
-            })
-            .collect();
+        let Some(table) = self.dh_or_record() else {
+            self.generated_fk = true;
+            return self;
+        };
+        let dh = table.links();
         let owned_names = self.theta_names_owned();
         let theta_names: Vec<&str> = owned_names.iter().map(|s| s.as_str()).collect();
         let (x, y, z) = symplex::robotics::fk_position(&dh);
@@ -826,17 +880,10 @@ impl RobotArmBuilder {
     /// the last column of this matrix; the upper-left 3×3 block is the
     /// end-effector rotation.
     pub fn generate_fk_matrix(mut self, name: &str) -> Self {
-        let (thetas, d_vals, a_vals, alpha_vals) = self.build_dh();
-        let dh: Vec<DhLink<'_>> = thetas
-            .iter()
-            .enumerate()
-            .map(|(i, t)| DhLink {
-                theta: t,
-                d: &d_vals[i],
-                a: &a_vals[i],
-                alpha: &alpha_vals[i],
-            })
-            .collect();
+        let Some(table) = self.dh_or_record() else {
+            return self;
+        };
+        let dh = table.links();
         let owned_names = self.theta_names_owned();
         let theta_names: Vec<&str> = owned_names.iter().map(|s| s.as_str()).collect();
         let t = symplex::robotics::fk_chain(&dh);
@@ -846,21 +893,15 @@ impl RobotArmBuilder {
 
     /// Generate the Jacobian matrix function.
     pub fn generate_jacobian(mut self, name: &str) -> Self {
-        let (thetas, d_vals, a_vals, alpha_vals) = self.build_dh();
-        let dh: Vec<DhLink<'_>> = thetas
-            .iter()
-            .enumerate()
-            .map(|(i, t)| DhLink {
-                theta: t,
-                d: &d_vals[i],
-                a: &a_vals[i],
-                alpha: &alpha_vals[i],
-            })
-            .collect();
+        let Some(table) = self.dh_or_record() else {
+            self.generated_jacobian = true;
+            return self;
+        };
+        let dh = table.links();
         let owned_names = self.theta_names_owned();
         let theta_names: Vec<&str> = owned_names.iter().map(|s| s.as_str()).collect();
         let (x, y, _z) = symplex::robotics::fk_position(&dh);
-        let theta_refs: Vec<&Ex> = thetas.iter().collect();
+        let theta_refs: Vec<&Ex> = table.thetas.iter().collect();
         match symplex::matrix::jacobian(&[&x, &y], &theta_refs) {
             Ok(j) => self.codegen = self.codegen.add_matrix_fn(name, &j, &theta_names),
             Err(e) => self.error = self.error.or(Some(e)),
@@ -963,14 +1004,19 @@ mod tests {
     #[test]
     fn float_to_expr_is_exact_and_reduced() {
         let ctx = Context::new();
-        assert_eq!(format!("{}", float_to_expr(&ctx, 0.0)), "0");
-        assert_eq!(format!("{}", float_to_expr(&ctx, 2.0)), "2");
-        assert_eq!(format!("{}", float_to_expr(&ctx, -3.0)), "-3");
-        assert_eq!(format!("{}", float_to_expr(&ctx, 0.3)), "3/10");
-        assert_eq!(format!("{}", float_to_expr(&ctx, 0.25)), "1/4");
-        assert_eq!(format!("{}", float_to_expr(&ctx, 0.1 + 0.2)), "3/10");
-        assert_eq!(format!("{}", float_to_expr(&ctx, 1.0 / 3.0)), "1/3");
-        assert_eq!(format!("{}", float_to_expr(&ctx, 0.123456)), "1929/15625");
+        let show = |v: f64| format!("{}", float_to_expr(&ctx, v).unwrap());
+        assert_eq!(show(0.0), "0");
+        assert_eq!(show(2.0), "2");
+        assert_eq!(show(-3.0), "-3");
+        assert_eq!(show(0.3), "3/10");
+        assert_eq!(show(0.25), "1/4");
+        assert_eq!(show(0.1 + 0.2), "3/10");
+        assert_eq!(show(1.0 / 3.0), "1/3");
+        assert_eq!(show(0.123456), "1929/15625");
+        // A NaN or infinite entry is an error (a NaN panicked).
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(float_to_expr(&ctx, bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
@@ -998,7 +1044,10 @@ mod tests {
         let ctx = Context::new();
         let (q1, q2) = (ctx.symbol("q1"), ctx.symbol("q2"));
         let zero = ctx.int(0);
-        let (l1, l2) = (float_to_expr(&ctx, 0.3), float_to_expr(&ctx, 0.25));
+        let (l1, l2) = (
+            float_to_expr(&ctx, 0.3).unwrap(),
+            float_to_expr(&ctx, 0.25).unwrap(),
+        );
         let dh = [
             DhLink {
                 theta: &q1,
@@ -1227,6 +1276,58 @@ functions = ["dynamics"]
             .err()
             .expect("unknown function should error");
         assert!(err.to_string().contains("dynamics"), "{err}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// An empty joint name panicked in `build_dh` (`Context::symbol("")`)
+    /// from every `generate_*`; it is now the builder's error, reported by
+    /// `write_to_path`, and nothing is generated for the arm.  A `NaN` DH
+    /// parameter (which panicked in `float_to_expr`) likewise.
+    #[test]
+    fn robot_arm_reports_an_empty_joint_name_instead_of_panicking() {
+        let dir = std::env::temp_dir().join(format!("symplex_build_empty_{}", std::process::id()));
+        let path = dir.join("arm.rs");
+        let err = robot_arm(&[("q1", 0.0, 0.3, 0.0), ("", 0.0, 0.25, 0.0)])
+            .generate_all()
+            .generate_fk_matrix("fk_t")
+            .write_to_path(&path)
+            .expect_err("an empty joint name is an error");
+        assert!(err.to_string().contains("name must not be empty"), "{err}");
+        assert!(!path.exists(), "nothing is written");
+        let generated = robot_arm(&[("", 0.0, 0.3, 0.0)])
+            .generate_fk("fk")
+            .into_codegen();
+        assert!(generated.functions.is_empty());
+        let err = robot_arm(&[("q1", f64::NAN, 0.3, 0.0)])
+            .generate_jacobian("j")
+            .write_to_path(&path)
+            .expect_err("a NaN DH parameter is an error");
+        assert!(err.to_string().contains("finite"), "{err}");
+        assert!(!path.exists(), "nothing is written");
+    }
+
+    /// `from_toml` with `theta = ""` (or `d = nan`) panicked the same way;
+    /// it is now its error.
+    #[test]
+    fn from_toml_rejects_an_empty_joint_name_and_a_nan_parameter() {
+        let dir =
+            std::env::temp_dir().join(format!("symplex_build_empty_toml_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("robot.toml");
+        for (joint, needle) in [
+            ("theta = \"\"", "name must not be empty"),
+            ("theta = \"q\"\nd = nan", "finite"),
+        ] {
+            fs::write(
+                &path,
+                format!(
+                    "[robot]\nname = \"r\"\n[[joints]]\n{joint}\n[generate]\nfunctions = [\"fk\"]\n"
+                ),
+            )
+            .unwrap();
+            let err = from_toml(&path).err().expect("a bad joint is an error");
+            assert!(err.to_string().contains(needle), "{err}");
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 }

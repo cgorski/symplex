@@ -7,9 +7,13 @@
 
 #[path = "v27/v27_api.rs"]
 mod v27_api;
+#[path = "v27/v27_binders.rs"]
+mod v27_binders;
 #[path = "v27/v27_integrate.rs"]
 mod v27_integrate;
 #[path = "v27/v27_perf.rs"]
 mod v27_perf;
+#[path = "v27/v27_stats.rs"]
+mod v27_stats;
 #[path = "v27/v27_tails.rs"]
 mod v27_tails;

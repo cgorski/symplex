@@ -34,19 +34,12 @@ fn binom(n: u64, k: u64) -> BigInt {
     result
 }
 
-/// Check whether `expr` transitively contains a reference to `var_sym`.
+/// Does `expr` depend on `var_sym` — does it occur *free* in it?  The
+/// binder-aware test the integrator uses
+/// ([`crate::base::walk::has_free_symbol`]); up to 0.28.0 this one was
+/// structural (and, without a visited set, exponential on a shared DAG).
 fn contains_var(arena: &Arena, expr: ExprId, var_sym: SymbolId) -> bool {
-    let mut stack: Vec<ExprId> = vec![expr];
-    while let Some(id) = stack.pop() {
-        if let ExprNode::Symbol(sid) = arena.node(id)
-            && *sid == var_sym
-        {
-            return true;
-        }
-        let children = arena.node(id).children();
-        stack.extend_from_slice(&children);
-    }
-    false
+    crate::base::walk::has_free_symbol(arena, expr, var_sym)
 }
 
 /// Try to extract a [`Ratio<BigInt>`] as an `i64`.

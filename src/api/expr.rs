@@ -525,16 +525,38 @@ impl<S: Sort> Expr<S> {
 
     // ── Substitution ───────────────────────────────────────────────
 
-    /// Structural substitution: replace every occurrence of `old` with `new`.
+    /// Structural substitution: replace every free occurrence of `old`
+    /// with `new`.
     ///
     /// This is **structural** — only exact node matches are replaced.
     /// `(1/x).subs(x², 1)` returns `1/x` unchanged because `x²` does
     /// not appear as a node in `x⁻¹`.
     ///
+    /// A bound variable is not free: the index of a `Sum` or `Product`,
+    /// the variable of a definite `Integral`, a `Limit`, a `ConditionSet`,
+    /// a `RootSum`, or of a `RootOf` whose polynomial has one symbol, is
+    /// left alone (the limits of a `Sum` are substituted).  A binder that
+    /// would capture a free symbol of `new` is renamed first (`k` → `k_1`).
+    /// To rename every occurrence, bound ones included, use
+    /// [`replace`](Ex::replace).
+    ///
     /// The result is re-canonicalized, so like-term collection and
     /// other invariants are maintained.
     ///
     /// Returns `self` unchanged (same `Expr`) if `old` does not appear.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, k) = (ctx.symbol("x"), ctx.symbol("k"));
+    /// let root = ctx.parse("RootOf(x^5 - x + 1, 0)").unwrap();
+    /// assert_eq!(root.subs(&x, &ctx.int(2)), root);
+    /// let s = ctx.parse("Sum(x*k, k, 0, n)").unwrap();
+    /// assert_eq!(s.subs(&x, &k).to_string(), "Sum(k*k_1, k_1=0..n)");
+    /// ```
     #[must_use = "returns a new expression with substitutions applied"]
     pub fn subs(&self, old: &Ex, new: &Ex) -> Expr<S> {
         let old_id = self.checked_id(old);

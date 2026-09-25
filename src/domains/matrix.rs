@@ -1028,6 +1028,11 @@ impl Matrix {
     /// `RootOf` for an unsolvable characteristic polynomial) by the
     /// display-friendly bound variable `λ`.  If the matrix itself mentions
     /// `λ`, the expression is returned unchanged to avoid capture.
+    ///
+    /// The dummy is bound (the variable of a `RootOf`), so this is a
+    /// renaming of every occurrence — the structural
+    /// [`replace`](Ex::replace) — not a substitution, which leaves bound
+    /// occurrences alone.
     fn hide_dummy(&self, e: &Ex, dummy: &Ex) -> Ex {
         if !e.contains(dummy) {
             return e.clone();
@@ -1036,7 +1041,7 @@ impl Matrix {
         if self.contains(&lam) {
             return e.clone();
         }
-        e.subs(dummy, &lam)
+        e.replace(|v| (v == dummy).then(|| lam.clone()))
     }
 }
 
