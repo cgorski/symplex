@@ -1,0 +1,5 @@
+//! Tests written alongside the 0.30 changes (`tests/v29/*.rs`): the bug hunt
+//! after 0.29 — differential hunters (evalf against itself at two
+//! precisions, the calculus routines against numerical oracles), the local
+//! fuzz campaign, and the open items of the 0.29 hand-off.  Every reference
+//! value cites the oracle call that produced it.
