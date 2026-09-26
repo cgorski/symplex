@@ -20,21 +20,36 @@
 //! # Sums
 //!
 //! A finite `Sum` or `Product` of at most 10,000 terms is evaluated term by
-//! term; an infinite `Sum` of a hypergeometric term by its term ratio, with
-//! a rigorous bound on the tail (`hypsum`, after SymPy's `hypsum`).  A
-//! divergent sum is [`SymplexError::Divergent`]; one that converges only
-//! polynomially, or whose term is not hypergeometric, is refused.
+//! term.  An infinite `Sum` of a rational term (or `(−1)^k` times one) is
+//! summed directly up to a cut-off and its tail from the Laurent expansion
+//! of the term and the Hurwitz zeta function by Euler–Maclaurin, with a
+//! proven remainder (`emsum`); one of another hypergeometric term by its term
+//! ratio, with a rigorous bound on the tail (`hypsum`, after SymPy's
+//! `hypsum`).  A divergent sum is [`SymplexError::Divergent`]; a
+//! non-rational term that converges only polynomially, or a term that is
+//! not hypergeometric, is refused.
+//!
+//! # Error bounds and branch cuts
+//!
+//! Every value carries an error bound on each of its parts (`accuracy`),
+//! so an exactly real value is told apart from one whose imaginary part is
+//! only within its error of 0; the side of a branch cut is taken from a
+//! part outside its error ball, or by convention for an exact 0, and is
+//! otherwise undecidable (more precision, then a refusal).  A sum or
+//! product of complex-conjugate pairs is exactly real by its structure
+//! (`conjugate`).
 //!
 //! # Definite integrals
 //!
 //! An unevaluated `DefiniteIntegral(body, var, lo, hi)` node is evaluated
 //! by compiling `body` to an `f64` function and running the adaptive
-//! Gauss–Kronrod quadrature from [`crate::calculus::definite`].  That
-//! delivers double precision at best, so requests for more than
-//! [`QUADRATURE_MAX_DIGITS`] digits are refused with
-//! [`SymplexError::NotImplemented`] rather than padded with digits that
-//! carry no information.  `Ex::eval_f64` (16 digits) is served; a 30-digit
-//! `eval_decimal` is not.
+//! Gauss–Kronrod quadrature from [`crate::calculus::definite`].  Its error
+//! bound is the quadrature's own estimate plus the rounding of the `f64`
+//! integrand values (see `eval_definite_integral`), so digits beyond it
+//! are refused ([`SymplexError::PrecisionExhausted`]); requests for more
+//! than [`QUADRATURE_MAX_DIGITS`] digits are refused up front with
+//! [`SymplexError::NotImplemented`].  `Ex::eval_f64` serves such an
+//! expression when [`QUADRATURE_F64_DIGITS`] digits are certified.
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -52,6 +67,8 @@ use crate::base::walk;
 use tracing::debug;
 
 mod accuracy;
+mod conjugate;
+mod emsum;
 mod hypsum;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -155,15 +172,15 @@ fn evaluate_once(
     prec: usize,
     rm: RoundingMode,
     cc: &mut Consts,
-) -> Result<(Complex, accuracy::ErrExp), SymplexError> {
+) -> Result<(Complex, accuracy::Bound), SymplexError> {
     evaluate_tree(arena, expr, post_order, None, false, prec, rm, cc)
 }
 
 /// The error bounds of the evaluated nodes (see [`accuracy`]).
-type ErrMap = FxHashMap<ExprId, accuracy::ErrExp>;
+type ErrMap = FxHashMap<ExprId, accuracy::Bound>;
 
 /// A bound variable preset to a value with an error bound.
-type Seed = (ExprId, Complex, accuracy::ErrExp);
+type Seed = (ExprId, Complex, accuracy::Bound);
 
 /// Evaluate `root` bottom-up over `post_order` (its post-order) at `prec`
 /// bits: its value and error bound.  `seed` presets a bound variable (a
@@ -181,10 +198,12 @@ fn evaluate_tree(
     prec: usize,
     rm: RoundingMode,
     cc: &mut Consts,
-) -> Result<(Complex, accuracy::ErrExp), SymplexError> {
+) -> Result<(Complex, accuracy::Bound), SymplexError> {
     let mut cache: FxHashMap<ExprId, Complex> = FxHashMap::default();
     let mut errs: ErrMap = FxHashMap::default();
+    let mut sigs = conjugate::Sigs::new();
     if let Some((id, value, err)) = seed {
+        sigs.record_leaf(id, &value, err);
         cache.insert(id, value);
         errs.insert(id, err);
     }
@@ -193,7 +212,20 @@ fn evaluate_tree(
             continue;
         }
         match eval_node_with_error(arena, id, &cache, &errs, prec, rm, cc) {
-            Ok((value, e)) => {
+            Ok((mut value, mut e)) => {
+                // A sum or product of conjugate pairs and real terms is
+                // exactly real (see `conjugate`); its computed imaginary
+                // part is a rounding residue within its error of 0.
+                if let ExprNode::Add(children) | ExprNode::Mul(children) = arena.node(id)
+                    && !e.is_unknown()
+                    && !accuracy::exact_zero(&value.1, e.im)
+                    && accuracy::part_contains_zero(&value.1, e.im)
+                    && sigs.conjugates_pair_up(children, &cache, &errs)
+                {
+                    value.1 = BigFloat::new(prec);
+                    e.im = accuracy::EXACT;
+                }
+                sigs.record(arena, id, &value, e, &cache, &errs);
                 errs.insert(id, e);
                 cache.insert(id, value);
             }
@@ -204,7 +236,7 @@ fn evaluate_tree(
     let value = cache.remove(&root).ok_or_else(|| {
         SymplexError::NotImplemented("evalf: expression not found in cache".into())
     })?;
-    let err = errs.get(&root).copied().unwrap_or(accuracy::UNKNOWN);
+    let err = errs.get(&root).copied().unwrap_or(accuracy::Bound::UNKNOWN);
     Ok((value, err))
 }
 
@@ -228,12 +260,15 @@ fn is_condition(node: &ExprNode) -> bool {
 /// (`errs`): its value and error bound.
 ///
 /// Most nodes are evaluated by [`eval_node`] and bounded from their
-/// children by [`accuracy::node_error`].  The nodes whose evaluator knows
-/// more than the children's values report their own bound: sums and
-/// products (their terms' bounds; an infinite sum's tail), `RootOf` and
-/// `RootSum` (certified inclusion disks of the roots), `Piecewise` (whether
-/// its conditions were decided with certainty) and physical constants
-/// (their value's bound).
+/// children by [`accuracy::node_error`].  `+` and `·` are evaluated with
+/// their per-part bounds in one pass ([`accuracy::add_with_bound`],
+/// [`accuracy::mul_with_bound`]: the roundings of the partial results are
+/// part of the bound).  The nodes whose evaluator knows more than the
+/// children's values report their own bound: sums and products (their
+/// terms' bounds; an infinite sum's tail), `RootOf` and `RootSum` (certified
+/// inclusion disks of the roots), `Piecewise` (whether its conditions were
+/// decided with certainty), physical constants (their value's bound) and
+/// definite integrals (the quadrature's error estimate).
 fn eval_node_with_error(
     arena: &Arena,
     id: ExprId,
@@ -242,8 +277,20 @@ fn eval_node_with_error(
     prec: usize,
     rm: RoundingMode,
     cc: &mut Consts,
-) -> Result<(Complex, accuracy::ErrExp), SymplexError> {
+) -> Result<(Complex, accuracy::Bound), SymplexError> {
     let (value, err) = match arena.node(id) {
+        ExprNode::Add(children) | ExprNode::Mul(children) => {
+            let mut parts: Vec<(&Complex, accuracy::Bound)> = Vec::with_capacity(children.len());
+            for &c in children.iter() {
+                let v = get_cached(cache, c)?;
+                parts.push((v, errs.get(&c).copied().unwrap_or(accuracy::Bound::UNKNOWN)));
+            }
+            return Ok(if matches!(arena.node(id), ExprNode::Add(_)) {
+                accuracy::add_with_bound(&parts, prec, rm)
+            } else {
+                accuracy::mul_with_bound(&parts, prec, rm)
+            });
+        }
         ExprNode::Sum(body, var, lo, hi) => {
             eval_sum(arena, *body, *var, *lo, *hi, cache, prec, rm, cc)?
         }
@@ -255,13 +302,25 @@ fn eval_node_with_error(
         ExprNode::RootSum(poly, body, sumvar) => {
             eval_rootsum(arena, *poly, *body, *sumvar, prec, rm, cc)?
         }
+        ExprNode::DefiniteIntegral(body, var, lo, hi) => {
+            eval_definite_integral(arena, *body, *var, *lo, *hi, cache, errs, prec)?
+        }
+        node if inverse_identity(arena, node, cache).is_some() => {
+            let u = inverse_identity(arena, node, cache).unwrap_or(id);
+            return Ok((
+                get_cached(cache, u)?.clone(),
+                errs.get(&u).copied().unwrap_or(accuracy::Bound::UNKNOWN),
+            ));
+        }
         ExprNode::PhysicalConstant(_, value_id) => match cache.get(value_id) {
             // The constant is an atom to every tree walk, so its stored
             // value (`h/(2π)` for ħ) was never visited: evaluate it as a
             // subtree of its own unless it is a single already-cached node.
             Some(v) => (
                 v.clone(),
-                errs.get(value_id).copied().unwrap_or(accuracy::UNKNOWN),
+                errs.get(value_id)
+                    .copied()
+                    .unwrap_or(accuracy::Bound::UNKNOWN),
             ),
             None => {
                 let order = walk::post_order_ids(arena, *value_id);
@@ -269,13 +328,78 @@ fn eval_node_with_error(
             }
         },
         _ => {
-            let value = eval_node(arena, id, cache, prec, rm, cc)?;
+            let value = match eval_node(arena, id, cache, prec, rm, cc) {
+                Ok(value) => value,
+                // A domain error at 0 (`Ci(0)`, `arg(0)`) for an argument
+                // that is only 0 to the working precision says nothing
+                // about the true argument: no value is known yet, and the
+                // evaluation is repeated at a higher precision.  Before 0.29
+                // `Ci(−(exp(10⁻³⁰) − 1 − 10⁻³⁰))` was `Unevaluable: Ci(0) is
+                // −∞`.
+                Err(SymplexError::Unevaluable { .. })
+                    if inexact_zero_child(arena.node(id), cache, errs) =>
+                {
+                    return Ok((c_zero(prec), accuracy::Bound::UNKNOWN));
+                }
+                Err(e) => return Err(e),
+            };
             let err = accuracy::node_error(arena, id, &value, cache, errs, prec);
             return Ok((value, err));
         }
     };
     let err = accuracy::reported(&value, err, prec);
     Ok((value, err))
+}
+
+/// `f(g(u)) = u` for a function `f` and the principal branch `g` of its
+/// inverse — `sin∘asin`, `cos∘acos`, `tan∘atan`, `sinh∘asinh`, `cosh∘acosh`,
+/// `tanh∘atanh`, `exp∘ln` — an identity on all of ℂ (where `g(u)` is defined:
+/// the inner node must have evaluated): `u`, when `node` is such a
+/// composition.  The value is then `u`'s, with `u`'s bound.  Numerically
+/// `sin(asin(7/5·√2/√(24/25)))` is `sin(π/2 − 1.29i)`, whose imaginary part
+/// `cos(π/2)·sinh(−1.29)` is 0 only to within its error, and the square root
+/// of `1 − ½·sin²(…)` (a negative number) then had an undecidable side of its
+/// cut (Rubi's antiderivatives with `elliptic_f(asin(…), m)`).
+fn inverse_identity(
+    arena: &Arena,
+    node: &ExprNode,
+    cache: &FxHashMap<ExprId, Complex>,
+) -> Option<ExprId> {
+    let (outer, inner) = match node {
+        ExprNode::Sin(a)
+        | ExprNode::Cos(a)
+        | ExprNode::Tan(a)
+        | ExprNode::Sinh(a)
+        | ExprNode::Cosh(a)
+        | ExprNode::Tanh(a)
+        | ExprNode::Exp(a) => (node, *a),
+        _ => return None,
+    };
+    let u = match (outer, arena.node(inner)) {
+        (ExprNode::Sin(_), ExprNode::Asin(u))
+        | (ExprNode::Cos(_), ExprNode::Acos(u))
+        | (ExprNode::Tan(_), ExprNode::Atan(u))
+        | (ExprNode::Sinh(_), ExprNode::Asinh(u))
+        | (ExprNode::Cosh(_), ExprNode::Acosh(u))
+        | (ExprNode::Tanh(_), ExprNode::Atanh(u))
+        | (ExprNode::Exp(_), ExprNode::Ln(u)) => *u,
+        _ => return None,
+    };
+    (cache.contains_key(&inner) && cache.contains_key(&u)).then_some(u)
+}
+
+/// Does `node` have a child whose value is 0 without being exactly 0?
+fn inexact_zero_child(node: &ExprNode, cache: &FxHashMap<ExprId, Complex>, errs: &ErrMap) -> bool {
+    node.children().into_iter().any(|c| {
+        cache.get(&c).is_some_and(|v| {
+            accuracy::mag(v).is_none()
+                && !errs
+                    .get(&c)
+                    .copied()
+                    .unwrap_or(accuracy::Bound::UNKNOWN)
+                    .is_exact()
+        })
+    })
 }
 
 /// Evaluate `expr` to `digits` correct significant digits.
@@ -315,10 +439,16 @@ fn evaluate_adaptive(
     let cap = (2 * prec0).max(prec0 + 256).min(max_prec).max(prec0);
     let needed = i64::from(digits) * 3322 / 1000 + 4;
     let post_order = walk::post_order_ids(arena, expr);
+    // An `f64` quadrature returns the same value at every precision: its
+    // agreement with itself is no evidence.
+    let fixed = post_order
+        .iter()
+        .any(|&id| matches!(arena.node(id), ExprNode::DefiniteIntegral(..)));
     let mut prec = prec0;
     let mut previous: Option<(Complex, usize, accuracy::ErrExp)> = None;
     loop {
-        let (value, err) = evaluate_once(arena, expr, &post_order, prec, rm, cc)?;
+        let (value, bound) = evaluate_once(arena, expr, &post_order, prec, rm, cc)?;
+        let err = bound.joint();
         if value.0.is_nan() || value.1.is_nan() {
             return Err(SymplexError::PrecisionExhausted {
                 requested: digits,
@@ -327,7 +457,7 @@ fn evaluate_adaptive(
         }
         let finite = !(value.0.is_inf() || value.1.is_inf());
         let acc = accuracy::accurate_bits(&value, err);
-        let exact_zero = accuracy::mag(&value).is_none() && accuracy::is_exact(err);
+        let exact_zero = accuracy::mag(&value).is_none() && bound.is_exact();
         if finite && (exact_zero || acc.is_some_and(|a| a >= needed)) {
             return Ok(value);
         }
@@ -342,7 +472,8 @@ fn evaluate_adaptive(
         if let Some((prev, prev_prec, prev_err)) = &previous
             && finite
         {
-            if !accuracy::is_unknown(err)
+            if !fixed
+                && !accuracy::is_unknown(err)
                 && !accuracy::is_unknown(*prev_err)
                 && agree(&value, prev, needed, prec, rm)
             {
@@ -560,8 +691,8 @@ pub(crate) fn is_real_to_digits(z: &Complex, digits: u32) -> bool {
 /// real or a pure-imaginary number), otherwise the correctly rounded
 /// value; an infinite part is refused, as the decimal route refuses to
 /// parse `oo`.
-fn finite_part_to_f64(part: &BigFloat, other: &BigFloat) -> Result<f64, SymplexError> {
-    if is_negligible_part(part, other, F64_DIGITS) {
+fn finite_part_to_f64(part: &BigFloat, other: &BigFloat, digits: u32) -> Result<f64, SymplexError> {
+    if is_negligible_part(part, other, digits) {
         return Ok(0.0);
     }
     if part.is_inf() {
@@ -582,14 +713,23 @@ fn finite_part_to_f64(part: &BigFloat, other: &BigFloat) -> Result<f64, SymplexE
 /// The direct rounding is correct to the last bit; the decimal route
 /// rounded to 16 significant digits first, which can land one ulp away.
 ///
+/// An expression containing a definite integral is served when the `f64`
+/// quadrature certifies [`QUADRATURE_F64_DIGITS`] digits (it seldom
+/// certifies 16); the `f64` returned is then the quadrature's estimate.
+///
 /// # Errors
 ///
 /// As [`evalf`]; additionally [`SymplexError::Unevaluable`] when a part is
 /// infinite.
 pub(crate) fn evalf_complex64(arena: &Arena, expr: ExprId) -> Result<Complex64, SymplexError> {
-    let z = evalf_value(arena, expr, F64_DIGITS)?;
-    let re = finite_part_to_f64(&z.0, &z.1)?;
-    let im = finite_part_to_f64(&z.1, &z.0)?;
+    let digits = if contains_definite_integral(arena, expr) {
+        QUADRATURE_F64_DIGITS
+    } else {
+        F64_DIGITS
+    };
+    let z = evalf_value(arena, expr, digits)?;
+    let re = finite_part_to_f64(&z.0, &z.1, digits)?;
+    let im = finite_part_to_f64(&z.1, &z.0, digits)?;
     Ok(Complex64::new(re, im))
 }
 
@@ -853,7 +993,8 @@ fn eval_node(
         | ExprNode::Product_(..)
         | ExprNode::Piecewise(_)
         | ExprNode::RootOf(..)
-        | ExprNode::RootSum(..) => {
+        | ExprNode::RootSum(..)
+        | ExprNode::DefiniteIntegral(..) => {
             eval_node_with_error(arena, id, cache, &ErrMap::default(), prec, rm, cc).map(|(v, _)| v)
         }
 
@@ -1534,49 +1675,6 @@ fn eval_node(
             reason: "cannot evaluate unevaluated integral".into(),
         }),
 
-        // ── DefiniteIntegral: f64 Gauss–Kronrod quadrature ───────────────
-        // The body is compiled to a stack-VM function of the integration
-        // variable (no arena mutation), the bounds come from the cache
-        // (±∞ allowed), and the adaptive G7/K15 rule integrates it.  The
-        // result is an `f64` widened to the working precision — see the
-        // module docs for the precision contract.
-        ExprNode::DefiniteIntegral(body_id, var_id, lo_id, hi_id) => {
-            debug!("evalf: DefiniteIntegral — f64 Gauss–Kronrod quadrature");
-            let var_name = match arena.node(*var_id) {
-                ExprNode::Symbol(sid) => arena.symbol_name(*sid).to_string(),
-                _ => {
-                    return Err(SymplexError::Unevaluable {
-                        reason: "integration variable of a definite integral must be a symbol"
-                            .into(),
-                    });
-                }
-            };
-            let a = definite_bound_f64(arena, cache, *lo_id, rm, cc)?;
-            let b = definite_bound_f64(arena, cache, *hi_id, rm, cc)?;
-            let func = crate::output::lambdify::compile_raw(arena, *body_id, &[&var_name])
-                .map_err(|e| SymplexError::Unevaluable {
-                    reason: format!(
-                        "definite integral body cannot be compiled for quadrature: {e}"
-                    ),
-                })?;
-            let f = |t: f64| func(&[t]);
-            let opts = crate::calculus::definite::QuadOpts::default();
-            let crate::calculus::definite::QuadResult { value, error: err } =
-                crate::calculus::definite::quadrature(&f, a, b, &opts)?;
-            let tol = opts.abs_tol.max(opts.rel_tol * value.abs());
-            if err > 1e3 * tol {
-                return Err(SymplexError::ComputationFailed {
-                    operation: "evalf",
-                    reason: format!(
-                        "quadrature of the definite integral did not converge: estimate {value} \
-                         with error {err:e} (integral may diverge)"
-                    ),
-                });
-            }
-            debug!(value, err, "evalf: DefiniteIntegral evaluated");
-            Ok((BigFloat::from_f64(value, prec), BigFloat::new(prec)))
-        }
-
         ExprNode::BoolTrue
         | ExprNode::BoolFalse
         | ExprNode::Gt(_, _)
@@ -1654,18 +1752,19 @@ fn contains_definite_integral(arena: &Arena, root: ExprId) -> bool {
     false
 }
 
-/// An integration bound as `f64`: `±∞` nodes directly, anything else from
-/// the evaluated cache (must be real).
+/// An integration bound as `f64`, with a bound on its distance to the true
+/// bound (the rounding to `f64`, and the evaluated value's own error):
+/// `±∞` nodes directly (exact), anything else from the evaluated cache
+/// (must be real).
 fn definite_bound_f64(
     arena: &Arena,
     cache: &FxHashMap<ExprId, Complex>,
+    errs: &ErrMap,
     id: ExprId,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<f64, SymplexError> {
+) -> Result<(f64, f64), SymplexError> {
     match arena.node(id) {
-        ExprNode::Infinity => Ok(f64::INFINITY),
-        ExprNode::NegInfinity => Ok(f64::NEG_INFINITY),
+        ExprNode::Infinity => Ok((f64::INFINITY, 0.0)),
+        ExprNode::NegInfinity => Ok((f64::NEG_INFINITY, 0.0)),
         _ => {
             let v = get_cached(cache, id)?;
             if !v.1.is_zero() {
@@ -1673,9 +1772,169 @@ fn definite_bound_f64(
                     reason: "integration bounds of a definite integral must be real".into(),
                 });
             }
-            bigfloat_to_f64(&v.0, rm, cc)
+            let x = bigfloat_to_f64_rounded(&v.0, RoundingMode::ToEven)?;
+            let bound = errs.get(&id).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+            if bound.is_unknown() || !x.is_finite() {
+                return Err(SymplexError::PrecisionExhausted {
+                    requested: F64_DIGITS,
+                    achieved: 0,
+                });
+            }
+            let exp2 = |e: accuracy::ErrExp| {
+                if accuracy::is_exact(e) {
+                    0.0
+                } else {
+                    2f64.powi(i32::try_from(e.clamp(-1100, 1100)).unwrap_or(0))
+                }
+            };
+            // |x − v| ≤ ½ ulp(x) ≤ |x|·2⁻⁵³; exact when `v` is an `f64`.
+            let exact_in_f64 = BigFloat::from_f64(x, 64) == v.0;
+            let conversion = if exact_in_f64 {
+                0.0
+            } else {
+                x.abs() * f64::EPSILON / 2.0
+            };
+            Ok((x, conversion + exp2(bound.re) + exp2(bound.im)))
         }
     }
+}
+
+/// Multiple of `ε·∫|f|` (`ε = 2⁻⁵²`) that bounds the rounding of the `f64`
+/// integrand values in a quadrature sum: each value carries a few roundings
+/// of its own and the condition number of its evaluation (`sin(1/x)` near
+/// `x = 10⁻³` loses three digits to the rounding of `1/x`).
+const QUADRATURE_ROUNDING_FACTOR: f64 = 16.0;
+
+/// Decimal digits served by [`evalf_complex64`] (`eval_f64`,
+/// `eval_complex64`) for an expression containing a definite integral: the
+/// `f64` Gauss–Kronrod estimate is returned when its error bound certifies
+/// this many digits.  The quadrature seldom certifies the 16 digits of the
+/// rest of the `f64` route (its own rounding floor is `50ε` per segment),
+/// and before 0.29 it was served at a tolerance of `10⁻¹⁰`, accepted up to
+/// `10⁻⁷`, with no check at all.
+pub(crate) const QUADRATURE_F64_DIGITS: u32 = 8;
+
+/// `∫_lo^hi body d(var)` by adaptive `f64` Gauss–Kronrod quadrature
+/// ([`crate::calculus::definite::quadrature`]), with an honest error bound.
+///
+/// The body is compiled to a stack-VM function of the integration variable
+/// (no arena mutation) and the bounds come from the cache (`±∞` allowed).
+/// The quadrature is asked for the accuracy the working precision wants,
+/// down to `10⁻¹³` relative (below that it only runs into its own
+/// rounding floor).  The reported bound is the sum of
+///
+/// * the Gauss–Kronrod error estimate,
+/// * the rounding of the `f64` integrand values,
+///   [`QUADRATURE_ROUNDING_FACTOR`]`·ε·∫|f|` — `∫|f|`, not `|∫f|`, so an
+///   oscillating integrand whose integral cancels is not credited with
+///   digits its values do not have,
+/// * the rounding of finite bounds to `f64` (and their own error) times the
+///   largest integrand value seen,
+///
+/// so [`evaluate_adaptive`] refuses the digits the quadrature does not
+/// have.  Before 0.29 the result was trusted to the working precision less
+/// 16 bits: `eval_decimal(16)` of `∫₀¹ xˣ dx` printed
+/// `0.7834305107121128` (mpmath: `0.78343051071213441…`), three wrong
+/// digits.  A quadrature whose estimate is far above the default tolerance
+/// (`10⁻⁷` relative) is taken as divergent, as before.
+#[allow(clippy::too_many_arguments)]
+fn eval_definite_integral(
+    arena: &Arena,
+    body: ExprId,
+    var: ExprId,
+    lo: ExprId,
+    hi: ExprId,
+    cache: &FxHashMap<ExprId, Complex>,
+    errs: &ErrMap,
+    prec: usize,
+) -> Result<(Complex, accuracy::Bound), SymplexError> {
+    use crate::calculus::definite::{QuadOpts, QuadResult, quadrature};
+    debug!("evalf: DefiniteIntegral — f64 Gauss–Kronrod quadrature");
+    let var_name = match arena.node(var) {
+        ExprNode::Symbol(sid) => arena.symbol_name(*sid).to_string(),
+        _ => {
+            return Err(SymplexError::Unevaluable {
+                reason: "integration variable of a definite integral must be a symbol".into(),
+            });
+        }
+    };
+    let (a, a_err) = definite_bound_f64(arena, cache, errs, lo)?;
+    let (b, b_err) = definite_bound_f64(arena, cache, errs, hi)?;
+    let func = crate::output::lambdify::compile_raw(arena, body, &[&var_name]).map_err(|e| {
+        SymplexError::Unevaluable {
+            reason: format!("definite integral body cannot be compiled for quadrature: {e}"),
+        }
+    })?;
+    let peak = std::cell::Cell::new(0.0f64);
+    let f = |t: f64| {
+        let v = func(&[t]);
+        if v.is_finite() {
+            peak.set(peak.get().max(v.abs()));
+        }
+        v
+    };
+    // ∫|f|, to the accuracy a rounding estimate needs: the rounding floor
+    // of the quadrature sum, below which its tolerance is pointless.
+    let abs_f = |t: f64| func(&[t]).abs();
+    let loose = QuadOpts {
+        rel_tol: 1e-3,
+        abs_tol: 0.0,
+        max_subdivisions: 400,
+    };
+    let l1 = quadrature(&abs_f, a, b, &loose).map_or(f64::INFINITY, |r| r.value + r.error);
+    let floor = QUADRATURE_ROUNDING_FACTOR * f64::EPSILON * l1;
+    let default = QuadOpts::default();
+    let wanted = 2f64.powi(
+        -i32::try_from(prec.saturating_sub(64))
+            .unwrap_or(i32::MAX)
+            .min(1000),
+    );
+    let opts = QuadOpts {
+        rel_tol: wanted.max(1e-13).min(default.rel_tol),
+        abs_tol: if floor.is_finite() {
+            floor
+        } else {
+            default.abs_tol
+        },
+        ..default
+    };
+    let QuadResult { value, error } = quadrature(&f, a, b, &opts)?;
+    let tol = default.abs_tol.max(default.rel_tol * value.abs());
+    // A NaN estimate is not converged either.
+    let converged = error <= 1e3 * tol;
+    if !converged {
+        return Err(SymplexError::ComputationFailed {
+            operation: "evalf",
+            reason: format!(
+                "quadrature of the definite integral did not converge: estimate {value} \
+                 with error {error:e} (integral may diverge)"
+            ),
+        });
+    }
+    let rounding = QUADRATURE_ROUNDING_FACTOR * f64::EPSILON * l1.max(value.abs());
+    let endpoints = (a_err + b_err) * peak.get();
+    let total = error + rounding + endpoints;
+    debug!(
+        value,
+        error, rounding, endpoints, "evalf: DefiniteIntegral evaluated"
+    );
+    if !value.is_finite() || !total.is_finite() {
+        return Ok((
+            (BigFloat::from_f64(value, prec), BigFloat::new(prec)),
+            accuracy::Bound::UNKNOWN,
+        ));
+    }
+    // A zero bound (a zero integrand at every node) is no proof of an
+    // exact zero: the smallest subnormal.
+    let e = if total > 0.0 {
+        i64::from(total.log2().ceil() as i32)
+    } else {
+        -1074
+    };
+    Ok((
+        (BigFloat::from_f64(value, prec), BigFloat::new(prec)),
+        accuracy::Bound::real(e),
+    ))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1698,7 +1957,7 @@ fn evaluate_at_integer(
     prec: usize,
     rm: RoundingMode,
     cc: &mut Consts,
-) -> Result<(Complex, accuracy::ErrExp), SymplexError> {
+) -> Result<(Complex, accuracy::Bound), SymplexError> {
     let value = (
         crate::base::numeric::bigint_to_bigfloat(k, prec),
         BigFloat::new(prec),
@@ -1712,7 +1971,7 @@ fn evaluate_at_integer(
         arena,
         expr,
         post_order,
-        Some((var, value, err)),
+        Some((var, value, accuracy::Bound::real(err))),
         true,
         prec,
         rm,
@@ -1762,12 +2021,15 @@ fn range_terms(lo: &BigInt, hi: &BigInt, what: &str) -> Result<u32, SymplexError
     }
 }
 
-/// A running sum of values with error bounds: the terms' bounds add, and
-/// every partial sum is rounded to the working precision.
+/// A running sum of values with error bounds: per part, the terms' bounds
+/// add, and every partial sum is rounded to the working precision
+/// ([`accuracy::PartSum`]); a part that is an exact 0 in every term stays
+/// exact (a sum of real terms is real).
 struct SumAcc {
     value: Complex,
-    worst: accuracy::ErrExp,
-    peak: Option<i64>,
+    re: accuracy::PartSum,
+    im: accuracy::PartSum,
+    unknown: bool,
     count: usize,
     prec: usize,
 }
@@ -1776,30 +2038,32 @@ impl SumAcc {
     fn new(prec: usize) -> SumAcc {
         SumAcc {
             value: c_zero(prec),
-            worst: accuracy::EXACT,
-            peak: None,
+            re: accuracy::PartSum::new(),
+            im: accuracy::PartSum::new(),
+            unknown: false,
             count: 0,
             prec,
         }
     }
 
-    fn add(&mut self, term: &Complex, err: accuracy::ErrExp, rm: RoundingMode) {
+    fn add(&mut self, term: &Complex, err: accuracy::Bound, rm: RoundingMode) {
         self.value = c_add(&self.value, term, self.prec, rm);
-        self.worst = self.worst.max(err);
-        self.peak = self.peak.max(accuracy::mag(&self.value));
+        self.unknown |= err.is_unknown();
+        self.re.add(&term.0, err.re, &self.value.0);
+        self.im.add(&term.1, err.im, &self.value.1);
         self.count += 1;
     }
 
     /// The sum and its error bound.
-    fn finish(self) -> (Complex, accuracy::ErrExp) {
-        if accuracy::is_unknown(self.worst) {
-            return (self.value, accuracy::UNKNOWN);
+    fn finish(self) -> (Complex, accuracy::Bound) {
+        if self.unknown {
+            return (self.value, accuracy::Bound::UNKNOWN);
         }
-        let n = accuracy::ceil_log2(self.count);
-        let rounding = self
-            .peak
-            .map_or(accuracy::EXACT, |m| m - self.prec as i64 + n);
-        (self.value, self.worst.saturating_add(n).max(rounding))
+        let bound = accuracy::Bound {
+            re: self.re.bound(self.count, self.prec),
+            im: self.im.bound(self.count, self.prec),
+        };
+        (self.value, bound)
     }
 }
 
@@ -1819,13 +2083,17 @@ fn eval_sum(
     prec: usize,
     rm: RoundingMode,
     cc: &mut Consts,
-) -> Result<(Complex, accuracy::ErrExp), SymplexError> {
+) -> Result<(Complex, accuracy::Bound), SymplexError> {
     if matches!(arena.node(lo), ExprNode::NegInfinity) {
         return Err(unevaluable("a Sum from −∞ is not evaluated numerically"));
     }
     let lo_i = range_bound(arena, cache, lo, "Sum", rm)?;
     let post_order = walk::post_order_ids(arena, body);
     if matches!(arena.node(hi), ExprNode::Infinity) {
+        if let Some(result) = emsum::rational_sum(arena, body, var, &lo_i, prec) {
+            debug!("evalf: Sum — infinite sum of a rational term");
+            return result;
+        }
         debug!("evalf: Sum — infinite hypergeometric series");
         let mut term =
             |k: &BigInt, p: usize| evaluate_at_integer(arena, body, &post_order, var, k, p, rm, cc);
@@ -1857,25 +2125,29 @@ fn eval_product(
     prec: usize,
     rm: RoundingMode,
     cc: &mut Consts,
-) -> Result<(Complex, accuracy::ErrExp), SymplexError> {
+) -> Result<(Complex, accuracy::Bound), SymplexError> {
     let lo_i = range_bound(arena, cache, lo, "Product", rm)?;
     let hi_i = range_bound(arena, cache, hi, "Product", rm)?;
     let terms = range_terms(&lo_i, &hi_i, "Product")?;
     let post_order = walk::post_order_ids(arena, body);
-    let mut factors: Vec<(Complex, accuracy::ErrExp)> = Vec::with_capacity(terms as usize);
-    let mut acc = c_one(prec);
+    let mut factors: Vec<(Complex, accuracy::Bound)> = Vec::with_capacity(terms as usize);
     let mut k = lo_i.clone();
     for _ in 0..terms {
-        let (term, err) = evaluate_at_integer(arena, body, &post_order, var, &k, prec, rm, cc)?;
-        acc = c_mul(&acc, &term, prec, rm);
-        factors.push((term, err));
+        factors.push(evaluate_at_integer(
+            arena,
+            body,
+            &post_order,
+            var,
+            &k,
+            prec,
+            rm,
+            cc,
+        )?);
         k += 1;
     }
-    let propagated = accuracy::product_error(factors.iter().map(|(v, e)| (v, *e)));
-    let rounding =
-        accuracy::rounding(&acc, prec).saturating_add(accuracy::ceil_log2(factors.len()));
+    let parts: Vec<(&Complex, accuracy::Bound)> = factors.iter().map(|(v, e)| (v, *e)).collect();
     debug!(lo = %lo_i, hi = %hi_i, "evalf: Product evaluated");
-    Ok((acc, propagated.max(rounding)))
+    Ok(accuracy::mul_with_bound(&parts, prec, rm))
 }
 
 /// A condition decided from the values of its operands.
@@ -1896,7 +2168,9 @@ struct Decision {
 /// sign of a rounded difference of exact values is exact) or the same
 /// expression, or when the difference is outside its error ball — as
 /// `sign` is decided (see [`accuracy`]).  So an equality of distinct
-/// inexact expressions is never certain.  `And`/`Or`/`Not` combine decisions; a certain `false`
+/// inexact expressions is never certain, nor is an order between operands
+/// whose imaginary parts are only within their error of 0 (they may not be
+/// real).  `And`/`Or`/`Not` combine decisions; a certain `false`
 /// operand decides an `And` (a certain `true` an `Or`) whatever the others.
 /// `None` when an operand is missing from the cache (free symbol, complex
 /// value in an order, unsupported node).
@@ -1908,21 +2182,21 @@ fn decide_condition(
     prec: usize,
     rm: RoundingMode,
 ) -> Option<Decision> {
-    // `a − b`, the exponent of its error bound, and whether it is exact
-    // (both operands exact, or the same expression).
+    let bound_of = |a: &ExprId| errs.get(a).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+    // `a − b`, the exponent of its (joint) error bound, and whether it is
+    // exact (both operands exact, or the same expression).
     let difference = |a: &ExprId, b: &ExprId| -> Option<(Complex, accuracy::ErrExp, bool)> {
         let (av, bv) = (cache.get(a)?, cache.get(b)?);
         if a == b {
             return Some((c_zero(prec), accuracy::EXACT, true));
         }
-        let ea = errs.get(a).copied().unwrap_or(accuracy::UNKNOWN);
-        let eb = errs.get(b).copied().unwrap_or(accuracy::UNKNOWN);
+        let (ea, eb) = (bound_of(a), bound_of(b));
         let d = c_sub(av, bv, prec + 64, rm);
-        let exact = accuracy::is_exact(ea) && accuracy::is_exact(eb);
-        let e = if accuracy::is_unknown(ea) || accuracy::is_unknown(eb) {
+        let exact = ea.is_exact() && eb.is_exact();
+        let e = if ea.is_unknown() || eb.is_unknown() {
             accuracy::UNKNOWN
         } else {
-            ea.max(eb).saturating_add(1)
+            ea.joint().max(eb.joint()).saturating_add(1)
         };
         Some((d, e, exact))
     };
@@ -1934,11 +2208,13 @@ fn decide_condition(
         if !(av.1.is_zero() && bv.1.is_zero()) {
             return None;
         }
+        let real =
+            accuracy::exactly_real(av, bound_of(a)) && accuracy::exactly_real(bv, bound_of(b));
         let (d, e, exact) = difference(a, b)?;
         let value = d.0.is_positive() || (!strict && d.0.is_zero());
         Some(Decision {
             value,
-            certain: exact || away_from_zero(&d, e),
+            certain: exact || (real && away_from_zero(&d, e)),
         })
     };
     let equal = |a: &ExprId, b: &ExprId| -> Option<Decision> {
@@ -2029,7 +2305,7 @@ fn eval_piecewise(
     prec: usize,
     rm: RoundingMode,
     cc: &mut Consts,
-) -> Result<(Complex, accuracy::ErrExp), SymplexError> {
+) -> Result<(Complex, accuracy::Bound), SymplexError> {
     debug!(
         branches = pairs.len(),
         "evalf: Piecewise — evaluating conditions"
@@ -2049,29 +2325,44 @@ fn eval_piecewise(
         let (value, err) = match cache.get(&value_id) {
             Some(v) => (
                 v.clone(),
-                errs.get(&value_id).copied().unwrap_or(accuracy::UNKNOWN),
+                errs.get(&value_id)
+                    .copied()
+                    .unwrap_or(accuracy::Bound::UNKNOWN),
             ),
             None => eval_node_with_error(arena, value_id, cache, errs, prec, rm, cc)?,
         };
-        return Ok((value, if certain { err } else { accuracy::UNKNOWN }));
+        return Ok((
+            value,
+            if certain {
+                err
+            } else {
+                accuracy::Bound::UNKNOWN
+            },
+        ));
     }
     if !certain {
         // A condition found false only to this precision may be true: no
         // value is known yet.
-        return Ok((c_zero(prec), accuracy::UNKNOWN));
+        return Ok((c_zero(prec), accuracy::Bound::UNKNOWN));
     }
     Err(unevaluable(
         "cannot evaluate piecewise: every condition is false",
     ))
 }
 
-/// The error bound of a root with certified radius `radius` (`None`: no
-/// bound).
-fn radius_error(radius: Option<&BigFloat>) -> accuracy::ErrExp {
-    match radius {
-        None => accuracy::UNKNOWN,
+/// The error bound of a root ball: its certified radius on both parts of a
+/// non-real root, on the real part of a root certified real (whose
+/// imaginary part is exactly 0); no bound without a certified radius.
+fn radius_error(ball: &crate::poly::roots::RootBall) -> accuracy::Bound {
+    let e = match ball.radius.as_ref() {
+        None => return accuracy::Bound::UNKNOWN,
         Some(r) if r.is_zero() => accuracy::EXACT,
         Some(r) => r.exponent().map_or(accuracy::UNKNOWN, i64::from),
+    };
+    if ball.real {
+        accuracy::Bound::real(e)
+    } else {
+        accuracy::Bound::both(e)
     }
 }
 
@@ -2087,7 +2378,7 @@ fn eval_rootof(
     var_id: ExprId,
     idx_id: ExprId,
     prec: usize,
-) -> Result<(Complex, accuracy::ErrExp), SymplexError> {
+) -> Result<(Complex, accuracy::Bound), SymplexError> {
     let idx: usize = match arena.as_num(idx_id) {
         Some(r) if r.is_integer() => {
             let n: i64 = r
@@ -2101,20 +2392,18 @@ fn eval_rootof(
     };
     let poly = crate::poly::polybridge::expr_to_poly(arena, poly_id, var_id)
         .ok_or_else(|| unevaluable("could not convert RootOf expression to polynomial"))?;
-    // `rootof_roots` is the one definition of the (re, im) order a `RootOf`
-    // index refers to; `real_roots` derives its indices from the same call.
-    let roots = crate::poly::roots::rootof_roots(&poly, prec);
-    if idx >= roots.len() {
-        return Err(unevaluable(format!(
-            "RootOf index {idx} exceeds the {} root(s) found",
-            roots.len()
-        )));
-    }
-    let ball = crate::poly::roots::root_balls(&poly, &roots, prec)
-        .into_iter()
-        .nth(idx)
-        .ok_or_else(|| unevaluable("RootOf root not found"))?;
-    Ok((ball.value, radius_error(ball.radius.as_ref())))
+    // The roots with multiplicity in the (re, im) order of `rootof_roots`,
+    // the one definition of the order a `RootOf` index refers to
+    // (`real_roots` derives its indices from the same call).
+    let balls = crate::poly::roots::certified_roots(&poly, prec);
+    let found = balls.len();
+    let ball = balls.into_iter().nth(idx).ok_or_else(|| {
+        unevaluable(format!(
+            "RootOf index {idx} exceeds the {found} root(s) found"
+        ))
+    })?;
+    let err = radius_error(&ball);
+    Ok((ball.value, err))
 }
 
 /// `RootSum(poly, body, sumvar) = Σ_{α: poly(α) = 0} body(α)`: the body at
@@ -2128,7 +2417,7 @@ fn eval_rootsum(
     prec: usize,
     rm: RoundingMode,
     cc: &mut Consts,
-) -> Result<(Complex, accuracy::ErrExp), SymplexError> {
+) -> Result<(Complex, accuracy::Bound), SymplexError> {
     debug!("evalf: RootSum — attempting numerical evaluation via Aberth roots");
     let poly =
         crate::poly::polybridge::expr_to_poly(arena, poly_id, sumvar_id).ok_or_else(|| {
@@ -2137,24 +2426,27 @@ fn eval_rootsum(
             )
         })?;
     let degree = poly.degree().unwrap_or(0);
-    let roots = crate::poly::roots::aberth_roots(&poly, prec, 200);
-    if roots.len() != degree {
+    let balls = crate::poly::roots::certified_roots(&poly, prec);
+    if balls.len() != degree {
         debug!(
             expected = degree,
-            found = roots.len(),
-            "evalf: RootSum — Aberth returned fewer roots than expected"
+            found = balls.len(),
+            "evalf: RootSum — fewer roots than expected"
         );
+        return Err(unevaluable(
+            "RootSum: not every root of the polynomial was found",
+        ));
     }
-    let balls = crate::poly::roots::root_balls(&poly, &roots, prec);
+    let n_roots = balls.len();
     let post_order = walk::post_order_ids(arena, body_id);
     let mut sum = SumAcc::new(prec);
     for ball in balls {
-        let err = radius_error(ball.radius.as_ref());
+        let err = radius_error(&ball);
         let seed = Some((sumvar_id, ball.value, err));
         let (term, e) = evaluate_tree(arena, body_id, &post_order, seed, true, prec, rm, cc)?;
         sum.add(&term, e, rm);
     }
-    debug!(n_roots = roots.len(), "evalf: RootSum — evaluated");
+    debug!(n_roots, "evalf: RootSum — evaluated");
     Ok(sum.finish())
 }
 
@@ -8304,6 +8596,41 @@ mod tests {
         assert_evalf_starts_with(&a, arg_w, 15, "0.92729521800161");
         let s = evalf(&a, conj_w, 10).unwrap();
         assert!(s.contains('3') && s.contains('4') && s.contains('-'), "{s}");
+    }
+
+    /// A `RootSum` over a polynomial with repeated roots counts each root
+    /// with its multiplicity.  Before 0.29 it was `PrecisionExhausted`: the
+    /// inclusion disks of a repeated root overlap, so no root was certified.
+    #[test]
+    fn rootsum_over_repeated_roots_counts_multiplicity() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let two = a.int(2);
+        let three = a.int(3);
+        let minus_two = a.int(-2);
+        let minus_one = a.int(-1);
+        // (x² − 2)², body 1/(x + 3).
+        let x2 = a.pow(x, two);
+        let q = a.add(&[x2, minus_two]);
+        let poly = a.pow(q, two);
+        let xp3 = a.add(&[x, three]);
+        let body = a.pow(xp3, minus_one);
+        let rs = a.intern(ExprNode::RootSum(poly, body, x));
+        // mpmath: mp.dps=50; 2*(1/(3+sqrt(2)) + 1/(3-sqrt(2)))
+        //         = 1.71428571428571428571428571429
+        assert_evalf_eq(&a, rs, 20, "1.7142857142857142857");
+        // (x² + 1)²·(x − 3), body exp(x).
+        let one = a.int(1);
+        let x2p1 = a.add(&[x2, one]);
+        let sq = a.pow(x2p1, two);
+        let minus_three = a.int(-3);
+        let xm3 = a.add(&[x, minus_three]);
+        let poly = a.mul(&[sq, xm3]);
+        let body = a.intern(ExprNode::Exp(x));
+        let rs = a.intern(ExprNode::RootSum(poly, body, x));
+        // mpmath: mp.dps=50; 2*(exp(1j)+exp(-1j)) + exp(3)
+        //         = (22.2467461466602266105322760844 + 0.0j)
+        assert_evalf_eq(&a, rs, 20, "22.246746146660226611");
     }
 
     // ── 0.11.1 special-function fixes (direct numeric paths that `eval`

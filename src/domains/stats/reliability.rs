@@ -547,21 +547,22 @@ pub fn alpha_if_deleted(table: &RatingTable) -> Result<Vec<Q>, SymplexError> {
     const OP: &str = "alpha_if_deleted";
     let rows = score_matrix(OP, table)?;
     let (_, k) = check_scale(OP, &rows, 3)?;
-    (0..k)
-        .map(|j| {
-            let reduced: Vec<Vec<Q>> = rows
-                .iter()
-                .map(|r| {
-                    r.iter()
-                        .enumerate()
-                        .filter(|&(i, _)| i != j)
-                        .map(|(_, x)| x.clone())
-                        .collect()
-                })
-                .collect();
-            alpha_of_rows(OP, &reduced)
+    (0..k).map(|j| alpha_without(OP, &rows, j)).collect()
+}
+
+/// Cronbach's α of the complete matrix `rows` without item `j`.
+fn alpha_without(op: &'static str, rows: &[Vec<Q>], j: usize) -> Result<Q, SymplexError> {
+    let reduced: Vec<Vec<Q>> = rows
+        .iter()
+        .map(|r| {
+            r.iter()
+                .enumerate()
+                .filter(|&(i, _)| i != j)
+                .map(|(_, x)| x.clone())
+                .collect()
         })
-        .collect()
+        .collect();
+    alpha_of_rows(op, &reduced)
 }
 
 /// Guttman's λ₂ (Guttman 1945), a lower bound to reliability that is
@@ -866,10 +867,9 @@ pub fn item_response_summary(
 ) -> Result<Vec<ItemSummary>, SymplexError> {
     const OP: &str = "item_response_summary";
     let rows = score_matrix(OP, table)?;
-    check_scale(OP, &rows, 2)?;
+    let (_, k) = check_scale(OP, &rows, 2)?;
     let (upper, lower) = extreme_groups(OP, &rows)?;
     let totals = row_sums(&rows);
-    let deleted: Option<Vec<Q>> = alpha_if_deleted(table).ok();
     columns(&rows)
         .iter()
         .enumerate()
@@ -880,7 +880,13 @@ pub fn item_response_summary(
                 discrimination: group_mean(&rows, &upper, j)? - group_mean(&rows, &lower, j)?,
                 item_total: data::pearson(ctx, c, &totals).ok(),
                 corrected_item_total: data::pearson(ctx, c, &rest).ok(),
-                alpha_if_deleted: deleted.as_ref().and_then(|d| d.get(j).cloned()),
+                // Item by item: one item whose removal leaves a constant
+                // total must not blank the others (it did).
+                alpha_if_deleted: if k >= 3 {
+                    alpha_without(OP, &rows, j).ok()
+                } else {
+                    None
+                },
             })
         })
         .collect()

@@ -404,6 +404,12 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                     } else {
                         arena.bool_false
                     }
+                } else if let Some(holds) = order_against_zero(arena, na, nb, true) {
+                    if holds {
+                        arena.bool_true
+                    } else {
+                        arena.bool_false
+                    }
                 } else if na == a && nb == b {
                     id
                 } else {
@@ -415,6 +421,12 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 let nb = cache.get(&b).copied().unwrap_or(b);
                 if let (Some(ra), Some(rb)) = (arena.as_num(na), arena.as_num(nb)) {
                     if ra >= rb {
+                        arena.bool_true
+                    } else {
+                        arena.bool_false
+                    }
+                } else if let Some(holds) = order_against_zero(arena, na, nb, false) {
+                    if holds {
                         arena.bool_true
                     } else {
                         arena.bool_false
@@ -993,6 +1005,46 @@ fn eval_gamma(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     }
 
     None
+}
+
+/// `a > 0`, `0 > b` (`strict`) or `a ≥ 0`, `0 ≥ b` for a constant (free of
+/// symbols) `a` or `b` whose sign the assumption engine knows from its
+/// structure — `exp` of a real is positive, a square of a real is
+/// non-negative, … — decided before any numerical evaluation.  `None` when
+/// neither side is 0 or the sign is not known.
+///
+/// Before 0.29 only two rationals were compared: `Piecewise((1, exp(−4·10⁹)
+/// > 0), (0, True))` was left to `evalf`, whose `exp(−4·10⁹)` underflows, and
+/// was refused (`PrecisionExhausted`).
+fn order_against_zero(arena: &Arena, a: ExprId, b: ExprId, strict: bool) -> Option<bool> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    let is_zero = |id: ExprId| arena.as_num(id).is_some_and(Zero::is_zero);
+    // `x > 0` / `x ≥ 0` with the sign of `x`; `0 > x` is `−x > 0`.
+    let (x, flipped) = if is_zero(b) {
+        (a, false)
+    } else if is_zero(a) {
+        (b, true)
+    } else {
+        return None;
+    };
+    if !walk::free_symbols(arena, x).is_empty() {
+        return None;
+    }
+    let mut signs = AssumptionCache::new();
+    let mut known = |p: Props| signs.query(arena, x, p) == Some(true);
+    let (holds, fails) = match (strict, flipped) {
+        (true, false) => (Props::POSITIVE, Props::NONPOSITIVE),
+        (false, false) => (Props::NONNEGATIVE, Props::NEGATIVE),
+        (true, true) => (Props::NEGATIVE, Props::NONNEGATIVE),
+        (false, true) => (Props::NONPOSITIVE, Props::POSITIVE),
+    };
+    if known(holds) {
+        Some(true)
+    } else if known(fails) {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 /// LogGamma(n) for positive integer n → ln((n-1)!)
@@ -2304,22 +2356,15 @@ fn exp_pow_merges(arena: &Arena, f: ExprId, g: ExprId) -> bool {
         || cache.query(arena, f, crate::base::assumptions::Props::REAL) == Some(true)
 }
 
-/// Factor out the largest perfect q-th power from n.
-/// Returns (k, m) such that n = k^q * m and m has no q-th power factors
-/// (bounded factorisation — see [`crate::base::canon::split_perfect_power`]).
-fn extract_perfect_power(n: &BigInt, q: usize) -> Option<(BigInt, BigInt)> {
-    let q = u32::try_from(q).ok()?;
-    Some(crate::base::canon::split_perfect_power(n, q))
-}
-
-/// Evaluate `Pow(base, exp)` when the exponent is a fractional 1/2 (square root)
-/// and the base is a numeric value with a perfect square root.
+/// Evaluate `Pow(base, 1/n)` for a rational `base` and an integer `n ≥ 2`:
+/// the perfect `n`-th power factor of a positive base comes out
+/// ([`positive_root`]), and a negative base takes the principal branch.
 fn eval_pow_root(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<ExprId> {
     let base_r = arena.as_num(base)?.clone();
-    let exp_r = arena.as_num(exp)?.clone();
+    let exp_r = arena.as_num(exp)?;
 
     // exp must be 1/n for positive integer n ≥ 2
-    if *exp_r.numer() != BigInt::from(1) || exp_r.is_negative() {
+    if !exp_r.numer().is_one() {
         return None;
     }
     let n: u32 = exp_r.denom().to_u32()?;
@@ -2334,114 +2379,58 @@ fn eval_pow_root(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<ExprId>
     // the real root (∛(−8) → −2) while `evalf` took the principal one; the
     // real root is `Ex::real_root`.
     if base_r.is_negative() && base_r != -Ratio::from_integer(BigInt::from(1)) {
-        let abs_id = arena.num_ratio(-base_r.clone());
-        let abs_root = arena.pow(abs_id, exp);
-        let abs_root = eval(arena, abs_root);
+        let abs_r = -base_r;
+        // Before 0.29 `r^(1/k)` was built and handed to a fresh `eval`
+        // pass, which extracted its radical again (through this function).
+        let abs_root = positive_root(arena, &abs_r, exp, n).unwrap_or_else(|| {
+            let abs_id = arena.num_ratio(abs_r);
+            arena.pow(abs_id, exp)
+        });
         let neg_one_root = arena.pow(arena.neg_one, exp);
         return Some(arena.mul(&[abs_root, neg_one_root]));
     }
-
-    // For integer base
-    if base_r.is_integer() && base_r.is_positive() {
-        let base_int = base_r.to_integer();
-        if let Some(Some(r)) = integer_nth_root(&base_int, n) {
-            let nid = arena.intern_num(Ratio::from_integer(r));
-            return Some(arena.intern(ExprNode::Num(nid)));
-        }
-    }
-
-    // For rational base p/q, try root(p)/root(q)
-    if base_r.is_positive() && !base_r.is_integer() {
-        let numer = base_r.numer().clone();
-        let denom = base_r.denom().clone();
-        if let (Some(Some(rn)), Some(Some(rd))) =
-            (integer_nth_root(&numer, n), integer_nth_root(&denom, n))
-        {
-            let result = Ratio::new(rn, rd);
-            let nid = arena.intern_num(result);
-            return Some(arena.intern(ExprNode::Num(nid)));
-        }
-    }
-
-    // Partial extraction: n^(1/q) → k * m^(1/q) where n = k^q * m
-    if exp_r.numer().is_one() && !exp_r.denom().is_one() {
-        let q = exp_r.denom().clone();
-        let q_usize: usize = (&q).try_into().unwrap_or(0);
-        if q_usize >= 2 && base_r.is_integer() && base_r.is_positive() {
-            let n = base_r.to_integer();
-            if let Some((k, m)) = extract_perfect_power(&n, q_usize)
-                && !k.is_one()
-            {
-                // n^(1/q) = k * m^(1/q)
-                let k_id = arena.big_int(k);
-                if m.is_one() {
-                    return Some(k_id); // perfect power
-                }
-                let m_id = arena.big_int(m);
-                let root = arena.pow(m_id, exp);
-                return Some(arena.mul(&[k_id, root]));
-            }
-        }
-    }
-
-    // Handle base == 0 or base == 1 (which as_num covers)
-    if base_r.is_zero() {
-        return Some(arena.zero);
-    }
-    if base_r.is_one() {
-        return Some(arena.one);
-    }
-
-    None
+    positive_root(arena, &base_r, exp, n)
 }
 
-/// Try to find the exact integer nth root of `val`.
-///
-/// Returns `Some(Some(root))` if `val` is a perfect `n`th power,
-/// `Some(None)` if it is not a perfect power, and `None` if the input
-/// is invalid (e.g. negative).
-fn integer_nth_root(val: &BigInt, n: u32) -> Option<Option<BigInt>> {
-    if val.is_negative() {
+/// `r^(1/n)` (`exp` is the node `1/n`) for a non-negative rational `r`, when
+/// it simplifies: `0`, `1`, a perfect power (an exact rational), or an
+/// integer `k^n·m` with `k > 1` (`k·m^(1/n)`), each factor split once by
+/// [`crate::base::canon::split_perfect_power`] (which recognises exact
+/// powers by an integer root first).  `None` otherwise.
+fn positive_root(arena: &mut Arena, r: &Q, exp: ExprId, n: u32) -> Option<ExprId> {
+    use crate::base::canon::split_perfect_power;
+    if r.is_zero() {
+        return Some(arena.zero);
+    }
+    if r.is_one() {
+        return Some(arena.one);
+    }
+    if r.is_negative() {
         return None;
     }
-    if val.is_zero() {
-        return Some(Some(BigInt::from(0)));
-    }
-    if *val == BigInt::from(1) {
-        return Some(Some(BigInt::from(1)));
-    }
-
-    // Use Newton's method to find the integer nth root.
-    let mut x = val.clone();
-    let n_big = BigInt::from(n);
-    let n_minus_1 = BigInt::from(n - 1);
-
-    loop {
-        // x_new = ((n-1)*x + val / x^(n-1)) / n
-        let mut x_pow = BigInt::from(1);
-        for _ in 0..(n - 1) {
-            x_pow *= &x;
+    let (kn, mn) = split_perfect_power(r.numer(), n);
+    if r.is_integer() {
+        if mn.is_one() {
+            return Some(arena.big_int(kn)); // perfect power
         }
-        if x_pow.is_zero() {
-            return Some(None);
+        if kn.is_one() {
+            return None;
         }
-        let x_new = (&n_minus_1 * &x + val / &x_pow) / &n_big;
-        if x_new >= x {
-            break;
-        }
-        x = x_new;
+        // n^(1/q) = k · m^(1/q)
+        let k_id = arena.big_int(kn);
+        let m_id = arena.big_int(mn);
+        let root = arena.pow(m_id, exp);
+        return Some(arena.mul(&[k_id, root]));
     }
-
-    // Verify: x^n == val?
-    let mut check = BigInt::from(1);
-    for _ in 0..n {
-        check *= &x;
+    // p/q: only a perfect power of both folds.
+    if !mn.is_one() {
+        return None;
     }
-    if check == *val {
-        Some(Some(x))
-    } else {
-        Some(None)
+    let (kd, md) = split_perfect_power(r.denom(), n);
+    if !md.is_one() {
+        return None;
     }
+    Some(arena.num_ratio(Ratio::new(kn, kd)))
 }
 
 /// Evaluate `abs(inner)` for known numeric values.

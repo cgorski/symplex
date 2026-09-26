@@ -13,8 +13,8 @@
 //! tail through `uppergamma` — that the caller evaluates with
 //! [`Ex::eval_f64`] (or the `p_value_f64` helpers).  The studentized range
 //! distribution behind Tukey's HSD has no closed form and is integrated
-//! numerically in `f64` (about `1e-9`), so those p-values and limits are
-//! `f64` and say so.
+//! numerically in `f64` — each tail directly, to a relative `1e-14` down to
+//! underflow — so those p-values and limits are `f64` and say so.
 //!
 //! | Function | Design | Reference |
 //! |---|---|---|
@@ -50,7 +50,7 @@
 //! # Ok::<(), SymplexError>(())
 //! ```
 
-use std::f64::consts::PI;
+use std::f64::consts::{LN_2, PI, SQRT_2};
 
 use num_traits::{One, Signed, Zero};
 
@@ -59,7 +59,7 @@ use super::common::{
 };
 use super::data::{self, Q};
 use super::hypothesis::{self, Alternative, PValue, TestResult, p_value_accessors};
-use super::numdist::norm::{cdf as norm_cdf, pdf as norm_pdf};
+use super::numdist::norm::{pdf as norm_pdf, sf as norm_sf};
 use super::regression::ols;
 use crate::api::context::Context;
 use crate::api::expr::Ex;
@@ -68,7 +68,7 @@ use crate::base::interval::{Bounds, Interval};
 use crate::base::numeric::ratio_to_f64;
 use crate::domains::exact_matrix::QMatrix;
 use crate::domains::optimize::{RootOpts, brent_root, grow_bracket};
-use crate::output::codegen::numeric_rt::lgamma;
+use crate::output::codegen::numeric_rt::{erf, erfc};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Small helpers
@@ -522,8 +522,20 @@ impl TwoWayData {
         if rows.is_empty() {
             return Err(invalid(OP, "no observations"));
         }
-        let a_levels = rows.iter().map(|o| o.a).max().unwrap_or(0) + 1;
-        let b_levels = rows.iter().map(|o| o.b).max().unwrap_or(0) + 1;
+        // Every combination of levels needs an observation, so there are at
+        // most `rows.len()` of them: checked before `max + 1` (which
+        // overflowed at `usize::MAX`) and before the table is allocated.
+        let a_levels = rows.iter().map(|o| o.a).max().unwrap_or(0).checked_add(1);
+        let b_levels = rows.iter().map(|o| o.b).max().unwrap_or(0).checked_add(1);
+        let (a_levels, b_levels) = match (a_levels, b_levels) {
+            (Some(a), Some(b)) if a.checked_mul(b).is_some_and(|ab| ab <= rows.len()) => (a, b),
+            _ => {
+                return Err(invalid(
+                    OP,
+                    "more combinations of levels than observations: some combination has none",
+                ));
+            }
+        };
         let mut cells = vec![vec![Vec::new(); b_levels]; a_levels];
         for o in rows {
             // `o.a < a_levels` and `o.b < b_levels` by construction of the maxima.
@@ -925,10 +937,16 @@ pub struct Mauchly {
     pub chi_squared: Ex,
     /// `k(k − 1)/2 − 1`.
     pub df: usize,
-    /// The p-value with Box's second-order correction
-    /// `P₁ + ω₂ (P₂ − P₁)`, `Pᵢ` the χ² tails at `df` and `df + 4`, as an
-    /// exact expression (R's `mauchly.test`; for `k = 3` the correction
-    /// term vanishes).
+    /// The p-value with Box's (1949) second-order correction
+    /// `min(1, P₁ + ω₂ (P₂ − P₁))`, `Pᵢ` the χ² tails at `df` and `df + 4`,
+    /// `ω₂ = (d+2)(d−1)(d−2)(2d³ + 6d² + 3d + 2) / (288 (n−1)² d² ρ²)`, as
+    /// an exact expression (for `k = 3` the correction term vanishes).
+    /// This `ω₂` is the second coefficient of Box's expansion of the
+    /// moments `E[Wʰ]` (the `B₃` Bernoulli-polynomial term; checked
+    /// against that expansion in mpmath); `pingouin.sphericity` writes
+    /// `3k` for its `3d`, so its p-value differs for `k ≥ 4`.  The
+    /// truncated series can exceed `1` when `ω₂ > 1` (few subjects for
+    /// many conditions); it is capped there.
     pub p_value: Ex,
 }
 
@@ -1129,7 +1147,10 @@ fn mauchly(
     let chi_squared = ex(ctx, &(-(&n1 * &rho))) * ex(ctx, &w).ln();
     let p1 = chi_squared_sf(ctx, df, &chi_squared);
     let p2 = chi_squared_sf(ctx, df + 4, &chi_squared);
-    let p_value = &p1 + ex(ctx, &omega2) * (p2 - &p1);
+    // `p₂ > p₁` and `ω₂ ≥ 0`, so the expansion is at least `p₁ > 0`; but
+    // `ω₂` grows like `d²/n²` and past `ω₂ ≈ 1` the truncated series
+    // exceeds `1` near the mode of `χ²` (`d = 10`, `n = 11`: `1.0063`).
+    let p_value = (&p1 + ex(ctx, &omega2) * (p2 - &p1)).min_with(&ctx.one());
     Ok(Some(Mauchly {
         w,
         chi_squared,
@@ -1154,8 +1175,8 @@ fn mauchly(
 /// tr S̃²)`, the Huynh–Feldt `ε̃` from it, and the corrected p-values are the
 /// `F` tails with degrees of freedom `(k−1)ε` and `(k−1)(n−1)ε`
 /// (`pingouin.rm_anova(correction=True)`, `pingouin.epsilon`).  Mauchly's
-/// `W` is exact and its χ² approximation follows R's `mauchly.test`
-/// (`pingouin.sphericity` for `k = 3`; see [`Mauchly`]).
+/// `W` is exact and its χ² approximation is Box's (1949) second-order
+/// expansion (`pingouin.sphericity` for `k = 3`; see [`Mauchly`]).
 ///
 /// ```
 /// use symplex::prelude::*;
@@ -1348,16 +1369,17 @@ impl GaussLegendre {
         let mut weights = Vec::with_capacity(m);
         for i in 0..m {
             let mut x = (PI * (i as f64 + 0.75) / (m as f64 + 0.5)).cos();
-            let mut dp = 1.0;
             for _ in 0..100 {
                 let (p, d) = legendre(m, x);
-                dp = d;
                 let step = p / d;
                 x -= step;
                 if step.abs() < 1e-15 {
                     break;
                 }
             }
+            // `P_m′` at the final node: the derivative of the previous iterate
+            // is off by `P_m″ · step`, a relative `10⁻¹⁴` in the weight.
+            let (_, dp) = legendre(m, x);
             nodes.push(x);
             weights.push(2.0 / ((1.0 - x * x) * dp * dp));
         }
@@ -1396,33 +1418,172 @@ fn legendre(m: usize, x: f64) -> (f64, f64) {
     (p1, dp)
 }
 
-/// `P(range of k iid standard normals ≤ w) = k ∫ φ(z) (Φ(z + w) − Φ(z))^{k−1} dz`.
-fn normal_range_cdf(w: f64, k: usize, rule: &GaussLegendre) -> f64 {
-    if w <= 0.0 {
-        return 0.0;
-    }
-    let power = (k - 1) as i32;
-    let f = |z: f64| norm_pdf(z) * (norm_cdf(z + w) - norm_cdf(z)).powi(power);
-    // The integrand is bounded by φ(z), negligible beyond |z| = 9; its
-    // features sharpen like 1/√k as the power grows.
-    let panel_width = (3.0 / (k as f64).sqrt() * 1.5).min(3.0);
-    let panels = (18.0 / panel_width).ceil() as usize;
-    k as f64 * rule.integrate(&f, -9.0, 9.0, panels)
+/// Which tail of a distribution on `[0, ∞)` a quadrature computes.  Each
+/// tail is integrated directly, never as `1 −` the other: past `10⁻¹⁶` the
+/// complement of a CDF is rounding noise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tail {
+    /// `P(X ≤ x)`.
+    Lower,
+    /// `P(X > x)`.
+    Upper,
 }
 
-/// `ln Γ(x) − [(x − ½) ln x − x + ½ ln 2π]`, the remainder of Stirling's
-/// formula: `lgamma` directly below `x = 10`, the asymptotic series above
-/// (its next term, `691/(360360 x¹¹)`, is below `2e-14` there).
-fn stirling_remainder(x: f64) -> f64 {
-    if x < 10.0 {
-        lgamma(x) - ((x - 0.5) * x.ln() - x + 0.5 * (2.0 * PI).ln())
-    } else {
-        let x2 = x * x;
-        // 1/(12x) − 1/(360x³) + 1/(1260x⁵) − 1/(1680x⁷) + 1/(1188x⁹)
-        (1.0 / 12.0
-            - (1.0 / 360.0 - (1.0 / 1260.0 - (1.0 / 1680.0 - 1.0 / (1188.0 * x2)) / x2) / x2) / x2)
-            / x
+impl Tail {
+    /// The tail at `x = 0` (`Lower`: `0`, `Upper`: `1`); swapped at `x = ∞`.
+    fn at_zero(self) -> f64 {
+        match self {
+            Tail::Lower => 0.0,
+            Tail::Upper => 1.0,
+        }
     }
+
+    fn at_infinity(self) -> f64 {
+        1.0 - self.at_zero()
+    }
+}
+
+/// `P(a < Z ≤ a + w)` for a standard normal `Z` and `w ≥ 0`, without
+/// cancellation.  The interval is passed by its width: `a + w` rounds `w`
+/// away when `w ≪ |a|`.  A short interval (`h(|m| + 1) ≤ 0.1` with midpoint
+/// `m = a + h` and half-width `h = w/2`) by the series of `∫_{−h}^{h} e^{−my − y²/2} dy`
+/// through the Hermite generating function `e^{xt − t²/2} = Σ Heₙ(x) tⁿ/n!`:
+///
+/// `P = φ(m) · 2h · Σ_{j≥0} He_{2j}(m) h^{2j} / ((2j + 1)(2j)!)`,
+///
+/// whose terms fall by at least `(h(|m|+1))²/2` each; otherwise a
+/// difference of two tails on the same side of `0` (their ratio is then at
+/// most about `e^{−0.1}`, so only a few ulps are lost) or a sum of two
+/// `erf` values across `0`.
+fn norm_interval(a: f64, w: f64) -> f64 {
+    let h = 0.5 * w;
+    let m = a + h;
+    if h * (m.abs() + 1.0) <= 0.1 {
+        // He_{n+1} = m He_n − n He_{n−1}, two steps per term.
+        let (mut even, mut odd) = (1.0, m); // He_{2j−2}, He_{2j−1}
+        let (mut sum, mut hpow, mut fact) = (1.0, 1.0, 1.0);
+        for j in 1..=12 {
+            let n = (2 * j) as f64;
+            even = m * odd - (n - 1.0) * even; // He_{2j}
+            odd = m * even - n * odd; // He_{2j+1}
+            hpow *= h * h;
+            fact *= (n - 1.0) * n; // (2j)!
+            let term = even * hpow / ((n + 1.0) * fact);
+            sum += term;
+            if term.abs() <= 1e-17 * sum.abs() {
+                break;
+            }
+        }
+        return norm_pdf(m) * w * sum;
+    }
+    let b = a + w;
+    if a >= 0.0 {
+        0.5 * (erfc(a / SQRT_2) - erfc(b / SQRT_2))
+    } else if b <= 0.0 {
+        0.5 * (erfc(-b / SQRT_2) - erfc(-a / SQRT_2))
+    } else {
+        0.5 * (erf(b / SQRT_2) + erf(-a / SQRT_2))
+    }
+}
+
+/// `c = √(2 (ln k + 39.2))`: the minimum of `k` standard normals falls
+/// below `−c` with probability `k Φ(−c) ≤ k φ(c)/c < 10⁻¹⁸`.
+fn min_normal_cut(k: usize) -> f64 {
+    (2.0 * ((k as f64).ln() + 39.2)).sqrt()
+}
+
+/// One tail of the range `W` of `k ≥ 2` independent standard normals at
+/// `w ≥ 0`, by composite 16-point Gauss–Legendre quadrature over the
+/// position `z` of the minimum:
+///
+/// * `P(W ≤ w) = k ∫ φ(z) P(z < Z ≤ z + w)^{k−1} dz` ([`norm_interval`]);
+/// * `P(W > w) = k ∫ φ(z) Φ̄(z)^{k−1} [1 − (1 − r)^{k−1}] dz` with
+///   `r = Φ̄(z + w)/Φ̄(z)`: the density of the minimum times the chance that
+///   one of the other `k − 1` exceeds `z + w`, and `1 − (1 − r)^{k−1}` is
+///   `−expm1((k − 1) ln1p(−r))` — no difference of nearly equal numbers
+///   anywhere, so the upper tail keeps its relative accuracy down to
+///   underflow.
+///
+/// Windows: the upper-tail integrand is at most `k(k−1) φ(z) Φ̄(z + w)`,
+/// which peaks at `z = −w/2` and falls by `e^{−d²}` at distance `d`, and at
+/// most the density of the minimum, below `−c` ([`min_normal_cut`]) at
+/// total mass `10⁻¹⁸`: `[min(−w/2 − 7.5, −c), −w/2 + 7.5]`.  The lower-tail
+/// integrand is at most the density of the minimum and, for small `w`,
+/// `k w^{k−1} φ(z)^k`: `[−c, 8.5]`.  Panels are at most `2.8` widths of the
+/// integrand's features wide (`1/√k` for the lower tail at small `w`,
+/// `1/√(2 ln k)` — the spread of the minimum — for the upper tail).
+fn normal_range_tail(w: f64, k: usize, tail: Tail, rule: &GaussLegendre) -> f64 {
+    if w.is_nan() || w <= 0.0 {
+        return tail.at_zero();
+    }
+    if w == f64::INFINITY {
+        return tail.at_infinity();
+    }
+    let kf = k as f64;
+    let km1 = kf - 1.0;
+    let cut = min_normal_cut(k);
+    let integral = match tail {
+        Tail::Lower => {
+            let f = |z: f64| norm_pdf(z) * norm_interval(z, w).powf(km1);
+            let (a, b, width) = (-cut, 8.5, (2.8 / kf.sqrt()).min(2.0));
+            rule.integrate(&f, a, b, ((b - a) / width).ceil() as usize)
+        }
+        Tail::Upper => {
+            let f = |z: f64| {
+                let above = norm_sf(z);
+                if above <= 0.0 {
+                    return 0.0;
+                }
+                let r = norm_sf(z + w) / above;
+                let one_exceeds = -(km1 * (-r).ln_1p()).exp_m1();
+                norm_pdf(z) * above.powf(km1) * one_exceeds
+            };
+            let centre = -0.5 * w;
+            let (a, b) = ((centre - 7.5).min(-cut), centre + 7.5);
+            let width = (2.8 / (2.0 * kf.ln()).max(1.0).sqrt()).min(2.0);
+            rule.integrate(&f, a, b, ((b - a) / width).ceil() as usize)
+        }
+    };
+    (kf * integral).clamp(0.0, 1.0)
+}
+
+/// `R(x) = ln Γ(x) − [(x − ½) ln x − x + ½ ln 2π]`, the remainder of
+/// Stirling's formula, for `x ≥ ½`, to a few ulps.  From `x = 10` the
+/// asymptotic series `Σ B₂ₖ/(2k(2k−1) x^{2k−1})` through `k = 7` (DLMF
+/// 5.11.1; the next term is below `3·10⁻¹⁷` there); below, the shift
+/// `R(x) = R(x + 1) + (x + ½) ln(1 + 1/x) − 1` with the difference summed
+/// as the positive series `Σ_{j≥1} v^{2j}/(2j + 1)`, `v = 1/(2x + 1)` (from
+/// `ln(1 + 1/x) = ln((1 + v)/(1 − v))`), so nothing cancels.  (`ln Γ` in
+/// `f64` and a subtraction lose about `10⁻¹⁵` absolutely, which the
+/// density prefactor would carry as a relative error.)
+fn stirling_remainder(x: f64) -> f64 {
+    const B: [f64; 7] = [
+        1.0 / 12.0,
+        -1.0 / 360.0,
+        1.0 / 1260.0,
+        -1.0 / 1680.0,
+        1.0 / 1188.0,
+        -691.0 / 360_360.0,
+        1.0 / 156.0,
+    ];
+    let mut x = x;
+    let mut shift = 0.0;
+    while x < 10.0 {
+        let v2 = (1.0 / (2.0 * x + 1.0)).powi(2);
+        let (mut pow, mut sum) = (v2, 0.0);
+        for j in 1..=40 {
+            let term = pow / (2 * j + 1) as f64;
+            sum += term;
+            if term <= 1e-17 * sum {
+                break;
+            }
+            pow *= v2;
+        }
+        shift += sum;
+        x += 1.0;
+    }
+    let inv2 = 1.0 / (x * x);
+    shift + B.iter().rev().fold(0.0, |acc, &b| acc * inv2 + b) / x
 }
 
 /// `ln(1 + u) − u`, without the cancellation of the two terms for small `u`
@@ -1448,39 +1609,247 @@ fn ln1p_minus_u(u: f64) -> f64 {
     sum
 }
 
-/// The CDF of the studentized range `Q = range / s` for `k` groups and `ν`
-/// degrees of freedom, `∫₀^∞ f_ν(s) P(range ≤ q s) ds` with `f_ν` the density
-/// of `s = √(χ²_ν/ν)`.  Arguments are validated by the caller.
+/// Above this many degrees of freedom `S = √(χ²_ν/ν)` is `1` for every
+/// purpose of a double: the studentized range is the range of `k` normals
+/// up to a relative `O(q⁴/ν)` (the upper tail is `0` in `f64` past
+/// `q ≈ 55`).
+const NU_NORMAL_LIMIT: f64 = 1e30;
+
+/// The outer window ends where the log-integrand has fallen this far below
+/// its maximum; by log-concavity (see [`studentized_range_tail`]) the mass
+/// beyond is below `e^{−45} ≈ 3·10⁻²⁰` of the total.
+const OUTER_LOG_DROP: f64 = 45.0;
+
+/// The largest change of the log-integrand across one outer panel: a
+/// 16-point Gauss–Legendre panel integrates `e^{−12x}` on `[0, 1]` to a
+/// relative `10⁻²⁰`.
+const OUTER_PANEL_LOG_CHANGE: f64 = 12.0;
+
+/// A log-integrand maximum below which the outer integral underflows (see
+/// [`studentized_range_tail`]): `e^{−760} · 3000 < 4.9·10⁻³²⁴`.
+const UNDERFLOW_LOG_MODE: f64 = -760.0;
+
+/// Cap on the evaluations of each search loop of [`studentized_range_tail`]
+/// (each loop at least doubles a step, so a few hundred reach any double).
+const OUTER_SEARCH_CAP: usize = 4096;
+
+/// One tail of the studentized range `Q = W/S` for `k` groups and `ν`
+/// degrees of freedom (`W` the range of `k` standard normals, `S =
+/// √(χ²_ν/ν)` independent), computed directly — the upper tail is never
+/// `1 − P(Q ≤ q)`:
 ///
-/// The density `C s^{ν−1} e^{−νs²/2}` is evaluated at `s = 1 + u` with the
-/// `O(ν)` terms of `ln C`, `(ν − 1) ln s` and `νs²/2` cancelled analytically
-/// (`x = ν/2`):
+/// `P(Q ≤ q) = ∫₀^∞ f_ν(s) P(W ≤ qs) ds`, `P(Q > q) = ∫₀^∞ f_ν(s) P(W > qs) ds`
 ///
-/// `ln f = ln 2 + ½ ln(x/2π) − R(x) + 2x·[ln(1+u) − u] − ln(1+u) − x u²`
+/// with the range tails of [`normal_range_tail`].  Arguments are validated
+/// by the caller (`k ≥ 2`, `ν ≥ 1`, `q` not NaN).
 ///
-/// with `R` the Stirling remainder of `ln Γ(x)`; this stays accurate for
-/// any `ν` (the direct form loses everything past `ν ≈ 10⁷`).  Integrating
-/// in `u` rather than `s` keeps the abscissae resolved when `σ = 1/√(2ν)`
-/// drops below the spacing of doubles near `1`.
-fn studentized_range_cdf_impl(q: f64, k: usize, nu: f64) -> f64 {
-    if q <= 0.0 {
-        return 0.0;
+/// **Variable.**  The outer integral runs over `t = ln s`, with integrand
+/// `s f_ν(s) P(W ≶ qs)`: near `s = 1` the abscissae stay resolved when
+/// `1/√(2ν)` is below the spacing of doubles, and near `s = 0` (a far upper
+/// tail at small `ν`, where the mass sits at `s ≈ 1/q`) they keep their
+/// relative precision.  `ln(s f_ν(s))` is evaluated with the `O(ν)` terms
+/// cancelled analytically (`x = ν/2`, `u = e^t − 1`):
+///
+/// `ln(s f_ν(s)) = ln 2 + ½ ln(x/2π) − R(x) + 2x·(t − u) − x u²`
+///
+/// with `R` the Stirling remainder of `ln Γ(x)` and `t − u = ln(1+u) − u`
+/// by its series for small `u` ([`ln1p_minus_u`]).
+///
+/// **Window.**  `f_ν` is log-concave for `ν ≥ 1`, and so are both tails of
+/// `W` (the joint density of the minimum and maximum of normals is
+/// log-concave, and so are its linear images and their integrals —
+/// Prékopa), hence the integrand is log-concave in `s` and unimodal in
+/// `t`.  Its mode is bracketed from the estimate `s² ≈ ν/(ν + q²/2)`
+/// (upper tail; `P(W > w) ≈ e^{−w²/4}`) or `(ν + k − 1)/ν` (lower tail;
+/// `P(W ≤ w) ∝ w^{k−1}`) by doubling steps and refined by golden-section
+/// search; from there 16-point panels march outwards on each side, each
+/// twice the previous but halved until the log-integrand changes by at
+/// most [`OUTER_PANEL_LOG_CHANGE`] across it, until it is
+/// [`OUTER_LOG_DROP`] below the mode.
+///
+/// **Accuracy.**  Against mpmath (the same double integral at 25–45
+/// digits, with the range tail both in this non-cancelling form and as
+/// `1 − P(W ≤ w)` at high precision) and the exact `k = 2` case
+/// `P(Q > q) = 2 P(T_ν > q/√2)`: a relative `10⁻¹⁵` in the body, a few
+/// `10⁻¹⁴` in a far upper tail, where the complementary error function
+/// itself is that accurate.
+///
+/// Past [`NU_NORMAL_LIMIT`] the range tail itself is returned.
+fn studentized_range_tail(q: f64, k: usize, nu: f64, tail: Tail) -> Result<f64, SymplexError> {
+    const OP: &str = "studentized_range";
+    if q.is_nan() || q <= 0.0 {
+        return Ok(tail.at_zero());
+    }
+    if q == f64::INFINITY {
+        return Ok(tail.at_infinity());
     }
     let rule = GaussLegendre::new(16);
+    if nu >= NU_NORMAL_LIMIT {
+        return Ok(normal_range_tail(q, k, tail, &rule));
+    }
     let x = 0.5 * nu;
-    let log_prefactor =
-        std::f64::consts::LN_2 + 0.5 * (x / (2.0 * PI)).ln() - stirling_remainder(x);
-    let log_density = |u: f64| log_prefactor + 2.0 * x * ln1p_minus_u(u) - u.ln_1p() - x * u * u;
-    let f = |u: f64| log_density(u).exp() * normal_range_cdf(q * (1.0 + u), k, &rule);
-    // f_ν is concentrated around s = 1 with scale ≈ 1/√(2ν); the range factor
-    // varies in s on the scale 1/q.
-    let sigma = 1.0 / (2.0 * nu).sqrt();
-    let u_lo = (-12.0 * sigma).max(-1.0);
-    let u_hi = 12.0 * sigma;
-    let panel_width = (3.0 * sigma).min(3.0 / q);
-    let panels = ((u_hi - u_lo) / panel_width).ceil() as usize;
-    rule.integrate(&f, u_lo, u_hi, panels.clamp(1, 400))
-        .clamp(0.0, 1.0)
+    let log_prefactor = LN_2 + 0.5 * (x / (2.0 * PI)).ln() - stirling_remainder(x);
+    let log_weight = |t: f64| {
+        let u = t.exp_m1();
+        let t_minus_u = if u.abs() < 0.25 {
+            ln1p_minus_u(u)
+        } else {
+            t - u
+        };
+        log_prefactor + 2.0 * x * t_minus_u - x * u * u
+    };
+    let range_tail = |t: f64| normal_range_tail(q * t.exp(), k, tail, &rule);
+    let log_h = |t: f64| log_weight(t) + range_tail(t).ln();
+    let not_found = || {
+        failed(
+            OP,
+            format!(
+                "the studentized range quadrature found no window (q = {q}, k = {k}, df = {nu})"
+            ),
+        )
+    };
+
+    // 1. Bracket the mode, walking uphill with doubling steps from the
+    //    estimate.  Where the integrand is 0 (the range tail underflowed)
+    //    the mode lies towards smaller s for the upper tail, larger s for
+    //    the lower.
+    let scale = 1.0 / (2.0 * nu + 1.0).sqrt();
+    let (t0, default_dir) = match tail {
+        Tail::Upper => {
+            let r = q / (2.0 * nu).sqrt();
+            let t0 = if r > 1e100 {
+                -r.ln()
+            } else {
+                -0.5 * (r * r).ln_1p()
+            };
+            (t0, -1.0)
+        }
+        Tail::Lower => (0.5 * ((k - 1) as f64 / nu).ln_1p(), 1.0),
+    };
+    let l0 = log_h(t0);
+    let (l_right, l_left) = (log_h(t0 + scale), log_h(t0 - scale));
+    let dir = if l_right > l0 && l_right >= l_left {
+        1.0
+    } else if l_left > l0 {
+        -1.0
+    } else if l0 == f64::NEG_INFINITY {
+        default_dir
+    } else {
+        0.0
+    };
+    let (mut lo, mut mode, mut hi, mut l_mode) = (t0 - scale, t0, t0 + scale, l0);
+    if dir != 0.0 {
+        let l_first = if dir > 0.0 { l_right } else { l_left };
+        let (mut prev, mut cur, mut l_cur) = (t0, t0 + dir * scale, l_first);
+        let mut step = scale;
+        let mut bracketed = false;
+        for _ in 0..OUTER_SEARCH_CAP {
+            step *= 2.0;
+            let next = cur + dir * step;
+            if next.is_nan() || next.abs() >= 1500.0 {
+                // `e^t` is 0 or ∞ in `f64` from here on.  An integrand that
+                // underflowed everywhere on the way is a tail below the
+                // smallest double (the lower tail at a tiny `q`).
+                if l_cur == f64::NEG_INFINITY {
+                    return Ok(0.0);
+                }
+                break;
+            }
+            let l_next = log_h(next);
+            if l_next > l_cur || (l_next == f64::NEG_INFINITY && l_cur == f64::NEG_INFINITY) {
+                (prev, cur, l_cur) = (cur, next, l_next);
+            } else {
+                (lo, hi) = if dir > 0.0 {
+                    (prev, next)
+                } else {
+                    (next, prev)
+                };
+                (mode, l_mode) = (cur, l_cur);
+                bracketed = true;
+                break;
+            }
+        }
+        if !bracketed || !l_mode.is_finite() {
+            return Err(not_found());
+        }
+    }
+    // The integrand is unimodal and the window lies inside |t| < 1500, so
+    // the integral is below `3000 e^{l_mode}`: under `e^{−760}` that is
+    // below the smallest subnormal.  (Where the range tail underflows at
+    // the estimate — the lower tail at a tiny `q` — the walk can stop at a
+    // point where the density is `e^{−10¹²⁰}` and the march below could
+    // not resolve the integrand.)
+    if l_mode < UNDERFLOW_LOG_MODE {
+        return Ok(0.0);
+    }
+
+    // 2. Golden-section refinement (the mode need only be known to a small
+    //    fraction of the integrand's width, which is at least about
+    //    `scale/√k`).
+    let tol = 0.05 * scale / (k as f64).sqrt();
+    for _ in 0..OUTER_SEARCH_CAP {
+        if hi - lo <= tol {
+            break;
+        }
+        const GOLDEN: f64 = 0.381_966_011_250_105_1;
+        let left = mode - lo > hi - mode;
+        let probe = if left {
+            mode - GOLDEN * (mode - lo)
+        } else {
+            mode + GOLDEN * (hi - mode)
+        };
+        if probe == mode {
+            break;
+        }
+        let l_probe = log_h(probe);
+        match (l_probe > l_mode, left) {
+            (true, true) => (hi, mode, l_mode) = (mode, probe, l_probe),
+            (true, false) => (lo, mode, l_mode) = (mode, probe, l_probe),
+            (false, true) => lo = probe,
+            (false, false) => hi = probe,
+        }
+    }
+
+    // 3. March outwards from the mode, one 16-point panel at a time, until
+    //    the log-integrand is `OUTER_LOG_DROP` below the mode.  A panel
+    //    doubles the previous one but is halved until the log-integrand
+    //    changes by at most `OUTER_PANEL_LOG_CHANGE` across it: fine at the
+    //    peak, wide in an exponential tail (small ν), narrow where the
+    //    decay is super-exponential (large s).
+    let h = |t: f64| log_weight(t).exp() * range_tail(t);
+    let floor = l_mode - OUTER_LOG_DROP;
+    let first = 0.25 * scale / (k as f64).sqrt();
+    let mut total = 0.0;
+    for dir in [-1.0, 1.0] {
+        let (mut pos, mut l_pos, mut step) = (mode, l_mode, first);
+        let mut reached = false;
+        'march: for _ in 0..OUTER_SEARCH_CAP {
+            let (mut next, mut l_next) = (pos + dir * step, f64::NAN);
+            for _ in 0..OUTER_SEARCH_CAP {
+                next = pos + dir * step;
+                if !next.is_finite() || next == pos {
+                    break 'march;
+                }
+                l_next = log_h(next);
+                // An endpoint where the integrand underflowed ends the march
+                // (it is below any floor above the underflow threshold).
+                if (l_next - l_pos).abs() <= OUTER_PANEL_LOG_CHANGE || l_next == f64::NEG_INFINITY {
+                    break;
+                }
+                step *= 0.5;
+            }
+            total += rule.integrate(&h, pos.min(next), pos.max(next), 1);
+            if l_next < floor {
+                reached = true;
+                break;
+            }
+            (pos, l_pos, step) = (next, l_next, 2.0 * step);
+        }
+        if !reached {
+            return Err(not_found());
+        }
+    }
+    Ok(total.clamp(0.0, 1.0))
 }
 
 fn check_studentized_range_args(op: &'static str, k: usize, df: f64) -> Result<(), SymplexError> {
@@ -1498,8 +1867,11 @@ fn check_studentized_range_args(op: &'static str, k: usize, df: f64) -> Result<(
 
 /// `P(Q ≤ q)` for the studentized range distribution of `k` groups with `df`
 /// degrees of freedom, by composite Gauss–Legendre quadrature of the double
-/// integral (absolute accuracy about `1e-9`).
-/// `scipy.stats.studentized_range.cdf(q, k, df)`.
+/// integral (relative accuracy about `1e-14`, also in the lower tail as
+/// `q → 0`).  `scipy.stats.studentized_range.cdf(q, k, df)`.
+///
+/// `df` must be finite; from `df = 1e30` on the result is the `df = ∞`
+/// limit (the range of `k` standard normals) to double precision.
 ///
 /// ```
 /// use symplex::stats::anova::studentized_range_cdf;
@@ -1511,29 +1883,52 @@ fn check_studentized_range_args(op: &'static str, k: usize, df: f64) -> Result<(
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for `k < 2`, `df < 1` or a NaN `q`.
+/// [`SymplexError::InvalidArgument`] for `k < 2`, `df < 1`, a non-finite
+/// `df` or a NaN `q`; [`SymplexError::ComputationFailed`] if the quadrature
+/// finds no window (not expected).
 pub fn studentized_range_cdf(q: f64, k: usize, df: f64) -> Result<f64, SymplexError> {
     const OP: &str = "studentized_range_cdf";
     check_studentized_range_args(OP, k, df)?;
     if q.is_nan() {
         return Err(invalid(OP, "q must not be NaN"));
     }
-    Ok(studentized_range_cdf_impl(q, k, df))
+    studentized_range_tail(q, k, df, Tail::Lower)
 }
 
-/// `P(Q ≥ q) = 1 − cdf(q)` of the studentized range distribution.
-/// `scipy.stats.studentized_range.sf(q, k, df)`.
+/// `P(Q > q)` of the studentized range distribution, integrated directly
+/// from the upper tail of the range of `k` normals (never as `1 − cdf`), so
+/// it keeps its relative accuracy (about `1e-14`) down to underflow.
+/// `scipy.stats.studentized_range.sf(q, k, df)` — which *is* `1 − cdf`
+/// and is rounding noise below `10⁻¹⁵`.
+///
+/// ```
+/// use symplex::stats::anova::studentized_range_sf;
+///
+/// // mpmath (dps 25, the double integral with the non-cancelling range tail):
+/// //   P(Q > 40 | k = 4, df = 100) = 9.8157947218104339959e-49
+/// // scipy: studentized_range.sf(40, 4, 100) = 7.771561172376096e-16 (1 − cdf)
+/// let p = studentized_range_sf(40.0, 4, 100.0)?;
+/// assert!((p / 9.815_794_721_810_433_995_9e-49 - 1.0).abs() < 1e-13);
+/// # Ok::<(), symplex::prelude::SymplexError>(())
+/// ```
 ///
 /// # Errors
 ///
 /// As [`studentized_range_cdf`].
 pub fn studentized_range_sf(q: f64, k: usize, df: f64) -> Result<f64, SymplexError> {
-    studentized_range_cdf(q, k, df).map(|c| 1.0 - c)
+    const OP: &str = "studentized_range_sf";
+    check_studentized_range_args(OP, k, df)?;
+    if q.is_nan() {
+        return Err(invalid(OP, "q must not be NaN"));
+    }
+    studentized_range_tail(q, k, df, Tail::Upper)
 }
 
 /// The quantile `q_p` with `P(Q ≤ q_p) = p` of the studentized range
-/// distribution, by Brent's method on [`studentized_range_cdf`] (the Tukey
-/// critical value for `p = 1 − α`).
+/// distribution (the Tukey critical value for `p = 1 − α`), by Brent's
+/// method on the logarithm of the *smaller* tail in `ln q`: `ln P(Q ≤ q) =
+/// ln p` for `p ≤ ½`, `ln P(Q > q) = ln(1 − p)` above (`1 − p` is exact
+/// there), so levels near `0` and near `1` keep their relative accuracy.
 /// `scipy.stats.studentized_range.ppf(p, k, df)`.
 ///
 /// ```
@@ -1546,27 +1941,39 @@ pub fn studentized_range_sf(q: f64, k: usize, df: f64) -> Result<f64, SymplexErr
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for `k < 2`, `df < 1` or `p ∉ (0, 1)`;
-/// [`SymplexError::ComputationFailed`] if the root search fails.
+/// [`SymplexError::InvalidArgument`] for `k < 2`, `df < 1`, a non-finite
+/// `df` or `p ∉ (0, 1)`; [`SymplexError::ComputationFailed`] if the root
+/// search fails.
 pub fn studentized_range_quantile(p: f64, k: usize, df: f64) -> Result<f64, SymplexError> {
     const OP: &str = "studentized_range_quantile";
     check_studentized_range_args(OP, k, df)?;
     check_unit_open(OP, "p", p)?;
-    let g = |q: f64| studentized_range_cdf_impl(q, k, df) - p;
-    // `g(0) = −p`; the upper end doubles from 2 until `g ≥ 0`.
-    let bracket = grow_bracket(g, 0.0, 2.0, Bounds::at_least(0.0), 21).map_err(|e| {
+    let (tail, level) = if p <= 0.5 {
+        (Tail::Lower, p)
+    } else {
+        (Tail::Upper, 1.0 - p)
+    };
+    let ln_level = level.ln();
+    // In `x = ln q`; an underflowed tail is floored so `g` stays finite and
+    // monotone (`ln level ≥ ln 2⁻¹⁰⁷⁴ > −1e4`).
+    let g = |x: f64| match studentized_range_tail(x.exp(), k, df, tail) {
+        Ok(v) => v.ln().max(-1e4) - ln_level,
+        Err(_) => f64::NAN,
+    };
+    let bracket = grow_bracket(g, 0.0, 1.0, Bounds::free(), 64).map_err(|e| {
         failed(
             OP,
             format!("no bracket for the studentized range quantile: {e}"),
         )
     })?;
     let opts = RootOpts {
-        xtol: 1e-10,
+        xtol: 1e-14,
         ..RootOpts::default()
     };
     let root = brent_root(g, bracket.lower, bracket.upper, &opts)
-        .map_err(|e| failed(OP, e.to_string()))?;
-    if root.is_finite() {
+        .map_err(|e| failed(OP, e.to_string()))?
+        .exp();
+    if root.is_finite() && root > 0.0 {
         Ok(root)
     } else {
         Err(failed(
@@ -1594,8 +2001,9 @@ pub struct PairwiseComparison {
     /// `|diff| / se`, exact: the studentized range statistic.
     pub statistic: Ex,
     /// `P(Q_{k, N−k} ≥ statistic)`, the family-wise adjusted p-value
-    /// (`f64`: the studentized range distribution is integrated
-    /// numerically).
+    /// ([`studentized_range_sf`]; `f64`: the studentized range distribution
+    /// is integrated numerically, to a relative `1e-14` also in the far
+    /// tail).
     pub p_adj: f64,
     /// `diff ± q_{confidence, k, N−k} · se`.
     pub ci: Interval<f64>,
@@ -1610,7 +2018,10 @@ pub struct PairwiseComparison {
 /// `scipy.stats.tukey_hsd(*groups)` and `.confidence_interval(confidence)`.
 ///
 /// Differences, standard errors and statistics are exact; the p-values and
-/// interval limits are `f64` (about `1e-8`).
+/// interval limits are `f64`.  The p-values are the studentized range
+/// upper tail integrated directly ([`studentized_range_sf`]), so a wide
+/// separation gets its true tiny p-value (`scipy.stats.tukey_hsd` reports
+/// `1 − cdf`, rounding noise below `10⁻¹⁵`).
 ///
 /// ```
 /// use symplex::prelude::*;
@@ -1634,7 +2045,9 @@ pub struct PairwiseComparison {
 /// # Errors
 ///
 /// [`SymplexError::InvalidArgument`] for fewer than two groups, an empty
-/// group, `N ≤ k`, zero within-group variance, or `confidence ∉ (0, 1)`.
+/// group, `N ≤ k`, zero within-group variance, or `confidence ∉ (0, 1)`;
+/// [`SymplexError::ComputationFailed`] if a difference, standard error or
+/// statistic does not fit in an `f64` (the limits and p-values are `f64`).
 pub fn tukey_hsd(
     ctx: &Context,
     groups: &[Vec<Q>],
@@ -1677,7 +2090,7 @@ pub fn tukey_hsd(
             let statistic = ex(ctx, &diff.abs()) / &se;
             let (diff_f, se_f) = (to_f64(OP, &diff)?, to_f64(OP, &var)?.sqrt());
             let stat_f = to_f64(OP, &(&diff * &diff / &var))?.sqrt();
-            let p_adj = (1.0 - studentized_range_cdf_impl(stat_f, k, df_f)).max(0.0);
+            let p_adj = studentized_range_tail(stat_f, k, df_f, Tail::Upper)?;
             out.push(PairwiseComparison {
                 i,
                 j,

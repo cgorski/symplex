@@ -128,6 +128,24 @@ sites in 19 files to 27 in 7.  Migrate each call by adding `?` (or
 - **`RandomVariable::transform`, `probability`, `given`** return
   `InvalidArgument` for an empty name or an expression from another
   context, where they panicked.
+- **Definite integrals report only the digits the quadrature
+  certifies.**  The error bound of an `f64` Gauss–Kronrod value is its
+  error estimate plus the rounding of the integrand values (`16ε·∫|f|`)
+  and of the endpoints, no longer "working precision + 16 bits".
+  `eval_decimal(16)` of `∫₀¹ xˣ dx` printed `0.7834305107121128` (the
+  truth is `0.78343051071213441`); it is now refused, and 10 digits give
+  `0.7834305107`.  `eval_f64` / `eval_complex64` of an expression with a
+  definite integral need 8 certified digits.
+- **An undecidable side of a branch cut is refused, not guessed**
+  (`PrecisionExhausted`): `ln(−1 − i·(sin²1 + cos²1 − 1))` was `−iπ`.
+  See Fixed.
+- **Statistics on data:** `majority_vote` returns an empty `counts`
+  for labels too large to count densely (the winner and ties stay
+  exact); `posterior_entropy` returns `NaN` for a row containing `NaN`
+  or `+∞`; `Mauchly::p_value` is `min(…, 1)`.
+- **`Distribution::quantile_f64` of a symbolic continuous family
+  without a closed quantile** is `Unevaluable` up front, as documented
+  (the search could stop at a point where the tail folds to a number).
 
 ### Added
 
@@ -147,6 +165,85 @@ sites in 19 files to 27 in 7.  Migrate each call by adding `?` (or
 
 ### Fixed
 
+- **`numdist` quantiles of a tiny shape in the far subnormals.**
+  `f::isf(3.274381818895057e-36, 7.972220621509184e-39, 1.37e7)` was
+  `0` (whose tail is `1`); it is `2.5032e-319` (mpmath).  The nightly
+  `fuzz_numdist` crash.  Below `x = e⁻⁶⁹⁰` the F and gamma iterations
+  took the upper tail as `ln1p(−e^{ln P})`, `−∞` once `P = 1 − O(shape)`
+  rounds to 1; it is now `ln(−expm1(ln P))` (Mächler 2012), compared to
+  its level to `ε`, with `ln(a·B(a, b))` and `ln Γ(1 + k)` to their own
+  relative accuracy.  `gamma::isf(7.2e-37, 1e-39, 1)` and
+  `chi2::isf(7.2e-37, 2e-39)` were `2.69e-220` and `5.38e-220` (tails
+  30 % off the level); they are `1.141e-313` and `2.282e-313`.
+- **`Distribution::quantile_f64` near `p = 1` for a density without a
+  closed quantile or an `f64` kernel** (mixtures, order statistics,
+  transformed and wrapped families).  The generic route solved
+  `F_classic(x) = p` to an absolute `2·10⁻¹²`, and the classic CDF rounds
+  to 1 next to 1.  At `1 − 2⁻⁵³`, `2·T₃ + 1` gave `524287` (the tail
+  there is `6.1e-17`; truly `429906.996`), `3·Gamma(5/2)` gave `255`
+  (truly `126.29`), a mixture of exponentials `35.3537` (truly
+  `35.3505`).  At `10⁻¹²`, the minimum of five `Exp(1)` gave `0` (truly
+  `2.000000000001e-13`).  The smaller tail is now solved against its
+  level, relative to it, through the non-cancelling forms, to `4ε` of
+  `x`; an increasing affine map carries the inner quantile (2.7 s →
+  80 µs for `2·T₃ + 1`, debug build).
+- **Branch cuts are decided by certified signs.**  evalf keeps separate
+  error bounds on the real and imaginary parts.  The part across a cut
+  decides the side: exactly 0 gives the principal value, a nonzero part
+  outside its error gives its sign, and a part within its error is
+  refined, then refused.  Before, one bound per complex value could not
+  tell an exact 0 from a rounding residue.  With `h = e^(10⁻³⁰) − 1 −
+  10⁻³⁰ ≈ 5·10⁻⁶¹`:
+  - `arg(−1 − i·h)` was `+π` and is `−π`;
+  - `sqrt(−4 − i·h)` was `2i` and is `−2i`;
+  - `(−8 − i·h)^(1/3)` was `1 + 1.732i` and is `1 − 1.732i`;
+  - `asin(2 + i·h)` and `atan(2i − h)` had the wrong sign;
+  - `acos(1 + h)` was refused and is `1e-30·i`;
+  - `Ci(−h)` was `Unevaluable` and is `−138.27… + iπ`.
+
+  This covers `ln`, `arg`, `atan2`, `sqrt`, non-integer powers, the
+  inverse trigonometric and hyperbolic functions, and the special
+  functions with cuts.  A sum or product whose non-real terms pair up as
+  conjugates is exactly real; `sin(asin u)`-type compositions take `u`'s
+  value and bound.
+- **`RootOf` / `RootSum` of polynomials with repeated or clustered
+  roots** were `PrecisionExhausted`.  The roots come from the squarefree
+  factors (with multiplicity), clusters are refined at higher precision,
+  and roots with equal real parts are ordered by imaginary part:
+  `RootOf((x² − 2)², 1)` is `−√2`, `RootOf((x² + 1)²(x − 3), k)` is `±i`
+  or `3`.  A `RootSum` that finds fewer roots than its degree is an error.
+- **Polynomially convergent infinite sums of rational terms** (and
+  alternating ones) were `Unevaluable`.  They are summed directly up to
+  a cut-off, plus an Euler–Maclaurin tail with the classical proven
+  remainder: `Σ_{k≥0} 1/(k² + 1)` is `2.0766740474685811741…` (=
+  `(1 + π·coth π)/2`).  Hypergeometric terms with an irrational or
+  complex ratio constant (`√2ᵏ/k!`, `iᵏ/k!`) are summed too.
+- **`eval` decides `c > 0` for a constant of known sign:**
+  `Piecewise((1, exp(−4·10⁹) > 0), (0, True))` was `PrecisionExhausted`
+  and is `1`.
+- **Studentized range and Tukey HSD far tails.**  `studentized_range_sf`
+  and `tukey_hsd`'s adjusted p-values were `1 − cdf`, with a quadrature
+  good to about `10⁻⁹` absolute.  They are now integrated directly, in a
+  non-cancelling form, to about `10⁻¹⁴` relative in either tail:
+  `sf(40, 4, 100)` was `4.1e-15` and is `9.8158e-49` (mpmath).
+  `studentized_range_quantile` solves on the smaller tail:
+  `ppf(1 − 2⁻⁴⁰, 2, 1)` was `66454.6` (truly `9.899e11`), and
+  `ppf(1e-300, 2, 5)` was `0`.
+- **Mauchly's sphericity p-value** could exceed 1 (`1.0063`).
+- **Dawid–Skene, MAP Dawid–Skene and MACE** stay proper distributions
+  when finite inputs overflow a sum (starting posteriors `[f64::MAX,
+  f64::MAX]` gave priors `[½, 0]` and a log-likelihood of `−∞`,
+  "converged").  `posterior_entropy` of `[MAX, MAX]` was 0 bits; it is 1.
+- **`item_response_summary`** computes α-if-deleted per item: one
+  undefined value blanked every item's.
+- **No panics on counts or labels near `usize::MAX`** in
+  `majority_vote`, `weighted_vote`, `plurality`, `bradley_terry`,
+  `fleiss_kappa`, the Cohen's κ functions, `LabelTable::new`,
+  `category_metrics`, `wins_matrix` and `TwoWayData::from_long`
+  (`InvalidArgument`, or exact rational arithmetic).
+- **`dsolve`'s structural checks no longer recurse over the expression**
+  (`expr_contains`, `contains_sym_outside_deriv`, `collect_mul_factors`):
+  a deeply nested ODE could overflow the stack.
 - **Numerical evaluation: error-bound fixes.**
   - A value that rounds to exactly `0` at two precisions is no longer
     taken as certified.  It goes on to the precision cap, where a true

@@ -108,6 +108,63 @@ impl Level {
     }
 }
 
+/// A bracket `[a, b]` with `g(a) ≤ 0 ≤ g(b)` for an increasing `g` on the
+/// hull `[lo, hi]` of a support (`g` is negative at `lo` and positive at
+/// `hi`), grown geometrically outward from the estimate `x0` — a first
+/// step of `2⁻²⁶·|x0|` (`2⁻²⁶` from 0), quadrupling — or, without one,
+/// from the middle of a finite hull, from a unit (or `|end|`) inside a
+/// half-finite one, or from 0.
+fn grow_bracket(
+    g: &impl Fn(f64) -> f64,
+    x0: Option<f64>,
+    lo: f64,
+    hi: f64,
+) -> Result<(f64, f64), SymplexError> {
+    let fail = |why: String| SymplexError::computation_failed("quantile_f64", why);
+    let inside = |v: f64| v.is_finite() && v > lo && v < hi;
+    let s = match x0.filter(|&v| inside(v)) {
+        Some(v) => v,
+        None => match (lo.is_finite(), hi.is_finite()) {
+            (true, true) => lo + 0.5 * (hi - lo),
+            (true, false) => lo + 1.0_f64.max(lo.abs()),
+            (false, true) => hi - 1.0_f64.max(hi.abs()),
+            (false, false) => 0.0,
+        },
+    };
+    let gs = g(s);
+    if gs.is_nan() {
+        return Err(fail(format!(
+            "the distribution function is not a number at {s}"
+        )));
+    }
+    if gs == 0.0 {
+        return Ok((s, s));
+    }
+    let up = gs < 0.0;
+    let mut near = s;
+    let mut d = if s == 0.0 { 1.0 } else { s.abs() } * 2.0_f64.powi(-26);
+    for _ in 0..600 {
+        let far = if up { (s + d).min(hi) } else { (s - d).max(lo) };
+        let gf = g(far);
+        if gf.is_nan() {
+            return Err(fail(format!(
+                "the distribution function is not a number at {far}"
+            )));
+        }
+        if (gf >= 0.0) == up {
+            return Ok(if up { (near, far) } else { (far, near) });
+        }
+        if !far.is_finite() {
+            break;
+        }
+        near = far;
+        d *= 4.0;
+    }
+    Err(fail(format!(
+        "no bracket found for the level starting from {s}"
+    )))
+}
+
 /// A running sum with Neumaier's compensation (the improved Kahan–Babuška
 /// algorithm, Neumaier 1974): its rounding error stays within a couple of
 /// ulps however many terms are added.
@@ -984,22 +1041,42 @@ impl Distribution {
         if let Some(q) = self.0.quantile(&ctx.from_f64(p)?) {
             return q.eval_f64();
         }
-        let x = self.fresh_var("x", &[]);
-        let name = x.to_string();
-        let cdf_ex = self.cdf(&x);
-        // Compile the CDF when every node has an `f64` kernel; otherwise
-        // (`betainc_regularized`, …) evaluate the exact expression at each
-        // probe through the arbitrary-precision path.
-        let compiled = cdf_ex.compile(&[name.as_str()]).ok();
-        let cdf = |v: f64| -> f64 {
-            match &compiled {
-                Some(f) => f.call(&[v]),
-                None => ctx
-                    .from_f64(v)
-                    .and_then(|vv| cdf_ex.subs(&x, &vv).eval_f64())
-                    .unwrap_or(f64::NAN),
-            }
-        };
+        self.continuous_quantile_f64(p, &support)
+    }
+
+    /// [`quantile_f64`](Self::quantile_f64) of a density without a closed
+    /// quantile or an `f64` kernel: the root of the smaller tail against
+    /// its level ([`Level`]), `F(x) = p` for `p ≤ ½` and `S(x) = q` with
+    /// `q = 1 − p` otherwise, compared relative to the level — `(F − p)/p`,
+    /// `(q − S)/q` — and located to a relative `4ε` of `x` (no absolute
+    /// floor above the subnormals).  A probe of the tail is
+    /// [`cdf_on_support`](Self::cdf_on_support) /
+    /// [`sf_on_support`](Self::sf_on_support) at the numeric point, which
+    /// take the family's non-cancelling form in a far tail (not the
+    /// whole-line forms, whose `eval` would fold the exact value).  The
+    /// classic CDF, compiled to `f64` where every node has a kernel, only
+    /// supplies a starting estimate; it is `1 − S` rounded next to 1 and
+    /// `F` with an absolute error of order `ε` next to 0.
+    ///
+    /// 0.28 bracketed and solved `F_classic(x) − p` to an absolute `2·10⁻¹²`:
+    /// near `p = 1` the rounded CDF put the root anywhere it reads 1
+    /// (`2·T₃ + 1` at `1 − 2⁻⁵³`: `524287`, whose tail is `6.1·10⁻¹⁷`), and
+    /// small quantiles were decided to that absolute width (the minimum of
+    /// five `Exp(1)` at `10⁻¹²`: `0`, truly `2·10⁻¹³`).
+    fn continuous_quantile_f64(&self, p: f64, support: &Support) -> Result<f64, SymplexError> {
+        // A tail may still fold to a number at one point (`F(0) = ½` for a
+        // Student t of any ν), but not along the search.
+        if let Some((name, _)) = self
+            .parameters()
+            .into_iter()
+            .find(|(_, e)| !e.free_symbols().is_empty())
+        {
+            return Err(SymplexError::Unevaluable {
+                reason: format!("quantile_f64: the parameter {name} is symbolic"),
+            });
+        }
+        let ctx = self.context();
+        let level = Level::of(p);
         // The hull of the pieces (one interval, or a mixture's several).
         let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
         for piece in support.pieces() {
@@ -1019,8 +1096,59 @@ impl Distribution {
                 "unsupported support shape",
             ));
         }
-        let g = |v: f64| cdf(v) - p;
-        // Grow a bracket from a finite end (or from 0) until the sign changes.
+        // The level's tail at a numeric point, as a relative miss that
+        // increases with `v`: `(F − p)/p` or `(q − S)/q`.  At or beyond an
+        // end of the hull `F` is 0 or 1.
+        let g = |v: f64| -> f64 {
+            let (lvl, sign) = match level {
+                Level::Lower(p) => (p, 1.0),
+                Level::Upper(q) => (q, -1.0),
+            };
+            let t = if v.is_nan() {
+                f64::NAN
+            } else if v <= lo || v >= hi {
+                let below = v <= lo;
+                match level {
+                    Level::Lower(_) => f64::from(u8::from(!below)),
+                    Level::Upper(_) => f64::from(u8::from(below)),
+                }
+            } else {
+                let Ok(at) = ctx.from_f64(v) else {
+                    return f64::NAN;
+                };
+                let tail = match level {
+                    Level::Lower(_) => self.cdf_on_support(&at),
+                    Level::Upper(_) => self.sf_on_support(&at),
+                };
+                tail.eval_f64().unwrap_or(f64::NAN)
+            };
+            sign * (t - lvl) / lvl
+        };
+        let x0 = self.classic_quantile_estimate(p, lo, hi);
+        let (a, b) = grow_bracket(&g, x0, lo, hi)?;
+        if a == b {
+            return Ok(a);
+        }
+        let opts = crate::domains::optimize::RootOpts {
+            xtol: f64::MIN_POSITIVE,
+            rtol: 4.0 * f64::EPSILON,
+            max_iter: 1200,
+        };
+        crate::domains::optimize::brent_root(g, a, b, &opts)
+            .map_err(|e| SymplexError::computation_failed("quantile_f64", e.to_string()))
+    }
+
+    /// A starting point for [`continuous_quantile_f64`]: the root of the
+    /// classic CDF compiled to `f64`, when it compiles and brackets `p` on
+    /// `[lo, hi]` (grown from a finite end, or from `±1`).  Only an
+    /// estimate: see there.
+    ///
+    /// [`continuous_quantile_f64`]: Self::continuous_quantile_f64
+    fn classic_quantile_estimate(&self, p: f64, lo: f64, hi: f64) -> Option<f64> {
+        let x = self.fresh_var("x", &[]);
+        let name = x.to_string();
+        let compiled = self.cdf(&x).compile(&[name.as_str()]).ok()?;
+        let g = |v: f64| compiled.call(&[v]) - p;
         let (mut a, mut b) = match (lo.is_finite(), hi.is_finite()) {
             (true, true) => (lo, hi),
             (true, false) => (lo, lo + 1.0),
@@ -1028,25 +1156,32 @@ impl Distribution {
             (false, false) => (-1.0, 1.0),
         };
         let mut step = 1.0;
-        for _ in 0..200 {
-            if g(a) <= 0.0 && g(b) >= 0.0 {
-                break;
+        for _ in 0..1100 {
+            let (ga, gb) = (g(a), g(b));
+            if ga <= 0.0 && gb >= 0.0 {
+                let opts = crate::domains::optimize::RootOpts {
+                    xtol: f64::MIN_POSITIVE,
+                    ..Default::default()
+                };
+                return crate::domains::optimize::brent_root(g, a, b, &opts)
+                    .ok()
+                    .filter(|v| v.is_finite());
+            }
+            if (lo.is_finite() && ga > 0.0) || (hi.is_finite() && gb < 0.0) || ga.is_nan() {
+                return None;
             }
             step *= 2.0;
-            if g(a) > 0.0 && !lo.is_finite() {
+            if ga > 0.0 {
                 a -= step;
             }
-            if g(b) < 0.0 && !hi.is_finite() {
+            if gb < 0.0 {
                 b += step;
             }
-            if (lo.is_finite() && g(a) > 0.0) || (hi.is_finite() && g(b) < 0.0) {
-                // p lies outside what the CDF reaches on the support.
-                break;
+            if !(a.is_finite() && b.is_finite()) {
+                return None;
             }
         }
-        let opts = crate::domains::optimize::RootOpts::default();
-        crate::domains::optimize::brent_root(g, a, b, &opts)
-            .map_err(|e| SymplexError::computation_failed("quantile_f64", e.to_string()))
+        None
     }
 
     /// [`quantile_f64`](Self::quantile_f64) through the `f64` kernel
@@ -1100,6 +1235,18 @@ impl Distribution {
         }
         if let Some(d) = self.downcast_ref::<Poisson>() {
             return Some(numdist::poisson::ppf(p, num(&d.rate)?));
+        }
+        // `aX + b` of a density: the inner quantile at `p` (`a > 0`), or at
+        // `1 − p` (`a < 0`) where that is exact, `p ≥ ½` (Sterbenz); a
+        // lattice reflection is left to the lattice route (see
+        // `Affine::quantile`).
+        if let Some(d) = self.downcast_ref::<super::wrappers::Affine>()
+            && d.inner.kind() == Kind::Continuous
+            && (d.increasing || p >= 0.5)
+        {
+            let (a, b) = (num(&d.a)?, num(&d.b)?);
+            let at = if d.increasing { p } else { 1.0 - p };
+            return Some(d.inner.quantile_f64(at).map(|x| a * x + b));
         }
         None
     }

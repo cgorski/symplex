@@ -1571,6 +1571,37 @@ fn outside_float_range(
     }
 }
 
+/// `ln(1 − eˡ)` for `l ≤ 0`, without cancellation at either end (Mächler
+/// 2012, "Accurately computing log(1 − exp(−|a|))"): `ln(−expm1(l))` for
+/// `l > −ln 2`, where `eˡ` is near 1; `ln1p(−eˡ)` below.  The quantile
+/// iterations of 0.28 took `ln1p(−eˡ)` throughout, which is `ln` of a
+/// rounded difference near `l = 0` and `−∞` for `|l| < ε/2` — the upper
+/// tail of a tiny shape, whose lower tail is `1 − O(shape)`:
+/// `f::isf(3.27e-36, 7.97e-39, 1.37e7)` came out `0` (truly `2.503e-319`).
+fn ln_1m_exp(l: f64) -> f64 {
+    if l > -std::f64::consts::LN_2 {
+        (-l.exp_m1()).ln()
+    } else {
+        (-l.exp()).ln_1p()
+    }
+}
+
+/// The objective and slope of an upper-tail quantile iteration where the
+/// lower tail is its leading term `ln P = s·u + c`, exactly linear in the
+/// log variable `u` with slope `s`: `g = −ln(Q/q)` for `Q = 1 − P`, and
+/// `dg/du = s·P/Q`.  `Q = −expm1(ln P)` keeps its relative accuracy, so
+/// `g` is compared through [`log_ratio`] (resolution `ε`) rather than as
+/// `ln q − ln Q` (resolution `ε·|ln q|`, which a slope `s·P/Q` of
+/// `1.4·10⁻³` turns into `10⁻¹¹` of the quantile).
+fn upper_from_leading_lower(ln_lower: f64, slope: f64, target: f64, ln_target: f64) -> Eval {
+    let upper = -ln_lower.exp_m1();
+    let ln_upper = ln_1m_exp(ln_lower);
+    Eval {
+        g: -log_ratio(upper, ln_upper, target, ln_target),
+        dg: slope * (ln_lower - ln_upper).exp(),
+    }
+}
+
 /// `ln(value/target)` for a tail and its level, each given with its
 /// logarithm: `ln(1 + (value − target)/target)` while both are normal
 /// doubles, so that near the root the objective keeps the relative
@@ -2240,7 +2271,7 @@ pub mod gamma {
     use super::{
         Eval, Root, Side, Tails, check_level, check_positive, gammainc_tails, lgamma, lgamma1p,
         log_gamma_pref, log_ratio, nearest_tail, nearest_tail_upper, norm, outside_float_range,
-        snap_to_floats, solve_increasing,
+        snap_to_floats, solve_increasing, upper_from_leading_lower,
     };
     use crate::base::errors::SymplexError;
 
@@ -2320,21 +2351,25 @@ pub mod gamma {
         } else {
             (-ln_target).max(shape).ln()
         };
-        let ln_gamma_k1 = lgamma(shape + 1.0);
+        // ln Γ(k + 1) to its own relative accuracy: `lgamma(1 + k)` rounds
+        // `1 + k` to 1 for a tiny shape and returns 0 for a value of −γk.
+        let ln_gamma_k1 = if shape <= 1.0 {
+            lgamma1p(shape)
+        } else {
+            lgamma(shape + 1.0)
+        };
         let g = |u: f64| {
             if u < LOG_TINY {
                 // ln P(k, y) = k·u − ln Γ(k + 1) + O(y), exactly linear.
                 let ln_lower = shape * u - ln_gamma_k1;
-                let (gv, dg) = if lower {
-                    (ln_lower - ln_target, shape)
+                return if lower {
+                    Eval {
+                        g: ln_lower - ln_target,
+                        dg: shape,
+                    }
                 } else {
-                    let ln_upper = (-ln_lower.exp()).ln_1p();
-                    (
-                        ln_target - ln_upper,
-                        shape * ln_lower.exp() / ln_upper.exp(),
-                    )
+                    upper_from_leading_lower(ln_lower, shape, target, ln_target)
                 };
-                return Eval { g: gv, dg };
             }
             let x = u.exp();
             let tl = gammainc_tails(shape, x);
@@ -2728,8 +2763,8 @@ pub mod beta {
 pub mod f {
     use super::{
         EPS, Eval, Scaled, Side, Tails, beta, bratio, check_level, check_positive, inv_a_beta,
-        lbeta, log_beta_pref, log_ratio, nearest_tail, nearest_tail_upper, outside_float_range,
-        snap_to_floats, solve_increasing,
+        log_beta_pref, log_ratio, nearest_tail, nearest_tail_upper, outside_float_range,
+        snap_to_floats, solve_increasing, upper_from_leading_lower,
     };
     use crate::base::errors::SymplexError;
     use std::f64::consts::LN_2;
@@ -2904,20 +2939,24 @@ pub mod f {
             Side::Upper(q) => (q, false),
         };
         let ln_target = target.ln();
-        let (ln_r, ln_ab) = ((d2 / d1).ln(), a.ln() + lbeta(a, b));
+        // ln(a·B(a, b)) to its own relative accuracy: of order `a` for a tiny
+        // `a`, where `ln a + ln B(a, b)` cancels to an absolute error
+        // `ε·|ln a|` (88·ε at a = 4e-39, beside a value of 6.5e-38).
+        let (ln_r, ln_ab) = ((d2 / d1).ln(), -inv_a_beta(a, b).ln());
         let g = |u: f64| {
             if u < -690.0 && ln_r > u + 40.0 {
                 // `x = eᵘ` is at or below the subnormals and negligible
                 // beside r = d₂/d₁: ln I_z(a, b) = a·(u − ln r) − ln(a·B(a, b))
                 // + O(z), exactly linear in u (as for `gamma`).
                 let ln_lower = a * (u - ln_r) - ln_ab;
-                let (gv, dg) = if lower {
-                    (ln_lower - ln_target, a)
+                return if lower {
+                    Eval {
+                        g: ln_lower - ln_target,
+                        dg: a,
+                    }
                 } else {
-                    let ln_upper = (-ln_lower.exp()).ln_1p();
-                    (ln_target - ln_upper, a * ln_lower.exp() / ln_upper.exp())
+                    upper_from_leading_lower(ln_lower, a, target, ln_target)
                 };
-                return Eval { g: gv, dg };
             }
             let x = u.exp();
             let num = d1 * x;

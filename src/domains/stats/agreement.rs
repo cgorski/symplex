@@ -71,6 +71,12 @@ fn square(x: &Q) -> Q {
     x * x
 }
 
+/// A sum of counts, exactly: a `usize` sum of a caller's table can
+/// overflow (and panicked).
+fn count_sum<'a>(counts: impl IntoIterator<Item = &'a usize>) -> Q {
+    sum(counts.into_iter().map(|&c| qu(c)))
+}
+
 fn check_pair(op: &'static str, a: &[Q], b: &[Q]) -> Result<(), SymplexError> {
     if a.len() != b.len() {
         return Err(invalid(
@@ -549,22 +555,22 @@ pub fn kappa_from_confusion(
             "the confusion matrix must be square and non-empty",
         ));
     }
-    let n: usize = table.iter().flatten().sum();
-    if n == 0 {
+    let nq = count_sum(table.iter().flatten());
+    if nq.is_zero() {
         return Err(invalid(op, "the confusion matrix is empty"));
     }
     let w = weights.matrix(op, k)?;
-    let row: Vec<usize> = table.iter().map(|r| r.iter().sum()).collect();
-    let col: Vec<usize> = (0..k).map(|j| table.iter().map(|r| r[j]).sum()).collect();
-    let nq = qu(n);
+    // Margins and their products in `Q`: they overflow `usize`.
+    let row: Vec<Q> = table.iter().map(count_sum).collect();
+    let col: Vec<Q> = (0..k)
+        .map(|j| count_sum(table.iter().map(|r| &r[j])))
+        .collect();
     let mut d_obs = Q::zero();
     let mut d_exp = Q::zero();
     for (i, r) in table.iter().enumerate() {
         for (j, &cell) in r.iter().enumerate() {
             d_obs += &w[i][j] * qu(cell);
-            // In `Q`: the product of two margins overflows `usize` from
-            // `n ≈ 4·10⁹`.
-            d_exp += &w[i][j] * qu(row[i]) * qu(col[j]);
+            d_exp += &w[i][j] * &row[i] * &col[j];
         }
     }
     d_obs /= &nq;
@@ -706,26 +712,25 @@ pub fn fleiss_kappa(counts: &[Vec<usize>]) -> Result<Q, SymplexError> {
             "the count table must be rectangular and non-empty",
         ));
     }
-    let n: usize = counts[0].iter().sum();
-    if n < 2 {
+    // Exact arithmetic throughout: `Σ n_ij`, `n_ij²`, `n(n − 1)` and
+    // `N n` of a caller's counts overflow `usize` (and panicked).
+    let n = count_sum(&counts[0]);
+    if n < qi(2) {
         return Err(invalid(op, "needs at least two raters per item"));
     }
-    if counts.iter().any(|r| r.iter().sum::<usize>() != n) {
+    if counts.iter().any(|r| count_sum(r) != n) {
         return Err(invalid(
             op,
             "every item must be rated by the same number of raters",
         ));
     }
-    let per_item = qu(n * (n - 1));
+    let per_item = &n * (&n - Q::one());
     let p_bar = sum(counts.iter().map(|r| {
-        let sq: usize = r.iter().map(|&c| c * c).sum();
-        qu(sq - n) / &per_item
+        let sq = sum(r.iter().map(|&c| square(&qu(c))));
+        (sq - &n) / &per_item
     })) / qu(n_items);
-    let total = qu(n_items * n);
-    let p_e = sum((0..k).map(|j| {
-        let col: usize = counts.iter().map(|r| r[j]).sum();
-        square(&(qu(col) / &total))
-    }));
+    let total = qu(n_items) * &n;
+    let p_e = sum((0..k).map(|j| square(&(count_sum(counts.iter().map(|r| &r[j])) / &total))));
     let denom = Q::one() - &p_e;
     if denom.is_zero() {
         return Err(invalid(op, "a single category, κ is undefined"));
@@ -1181,11 +1186,10 @@ fn kappa_moments(op: &'static str, table: &[Vec<usize>]) -> Result<KappaMoments,
             "the confusion matrix must be square and non-empty",
         ));
     }
-    let n: usize = table.iter().flatten().sum();
-    if n == 0 {
+    let nq = count_sum(table.iter().flatten());
+    if nq.is_zero() {
         return Err(invalid(op, "the confusion matrix is empty"));
     }
-    let nq = qu(n);
     let p: Vec<Vec<Q>> = table
         .iter()
         .map(|r| r.iter().map(|&c| qu(c) / &nq).collect())

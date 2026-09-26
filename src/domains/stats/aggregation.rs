@@ -59,13 +59,18 @@ impl LabelTable {
     /// # Errors
     ///
     /// [`SymplexError::InvalidArgument`] if there is no item, no rater or
-    /// no category, the rows differ in length, or a label is
-    /// `≥ n_categories`.
+    /// no category, the rows differ in length, a label is
+    /// `≥ n_categories`, or `n_categories` is too large for a per-category
+    /// vector (past `isize::MAX` bytes: every function on the table
+    /// allocates one, which panicked).
     pub fn new(rows: Vec<Vec<Option<usize>>>, n_categories: usize) -> Result<Self, SymplexError> {
         let op = "LabelTable::new";
         if n_categories == 0 {
             return Err(invalid(op, "needs at least one category"));
         }
+        // `Q` is the largest per-category element any function on a table
+        // stores (`rater_confusion_from_gold`).
+        check_category_count::<Q>(op, n_categories)?;
         let n_raters = match rows.first() {
             Some(r) => r.len(),
             None => return Err(invalid(op, "a label table needs at least one item")),
@@ -200,6 +205,11 @@ fn vote_from_counts(counts: Vec<usize>) -> Vote {
 /// The category chosen by most raters (missing labels are ignored; the
 /// count vector runs to the largest label seen).
 ///
+/// A label so large that the count vector cannot exist (`usize::MAX`, or
+/// past `isize::MAX` bytes) is still tallied: `winner` and `tied` are
+/// exact, and `counts` is left empty (it panicked); [`plurality`] with a
+/// threshold of `0` is the same vote with an error instead.
+///
 /// ```
 /// use symplex::stats::aggregation::majority_vote;
 ///
@@ -207,14 +217,41 @@ fn vote_from_counts(counts: Vec<usize>) -> Vote {
 /// assert_eq!((v.winner, v.tied, v.counts), (Some(1), vec![1], vec![1, 2]));
 /// let tie = majority_vote(&[Some(0), Some(2)]);
 /// assert_eq!((tie.winner, tie.tied), (None, vec![0, 2]));
+/// let huge = majority_vote(&[Some(usize::MAX), Some(3), Some(usize::MAX)]);
+/// assert_eq!((huge.winner, huge.counts), (Some(usize::MAX), vec![]));
 /// ```
 pub fn majority_vote(labels: &[Option<usize>]) -> Vote {
-    let n = labels.iter().flatten().max().map_or(0, |m| m + 1);
+    let Ok(n) = dense_len::<usize>("majority_vote", labels) else {
+        return sparse_vote(labels);
+    };
     let mut counts = vec![0usize; n];
     for &l in labels.iter().flatten() {
         counts[l] += 1;
     }
     vote_from_counts(counts)
+}
+
+/// [`majority_vote`] without the per-category counts: the labels sorted
+/// and tallied run by run, so a label's size costs nothing.
+fn sparse_vote(labels: &[Option<usize>]) -> Vote {
+    let mut sorted: Vec<usize> = labels.iter().flatten().copied().collect();
+    sorted.sort_unstable();
+    let mut top = 0;
+    let mut tied = Vec::new();
+    for run in sorted.chunk_by(|a, b| a == b) {
+        if run.len() > top {
+            top = run.len();
+            tied.clear();
+        }
+        if run.len() == top {
+            tied.extend(run.first().copied());
+        }
+    }
+    Vote {
+        winner: (tied.len() == 1).then(|| tied[0]),
+        tied,
+        counts: Vec::new(),
+    }
 }
 
 /// The majority vote of every item of a [`LabelTable`] (counts have
@@ -243,6 +280,44 @@ pub fn majority_votes(table: &LabelTable) -> Vec<Vote> {
         .collect()
 }
 
+/// `n` categories fit a per-category vector of `T` (at most `isize::MAX`
+/// bytes; past that `Vec` panics with a capacity overflow).  Memory that
+/// merely runs out is not checked.
+fn check_category_count<T>(op: &'static str, n: usize) -> Result<(), SymplexError> {
+    let fits = n
+        .checked_mul(std::mem::size_of::<T>().max(1))
+        .is_some_and(|bytes| isize::try_from(bytes).is_ok());
+    if fits {
+        Ok(())
+    } else {
+        Err(invalid(
+            op,
+            format!("{n} categories are too many for a per-category vector"),
+        ))
+    }
+}
+
+/// The length `max label + 1` of a dense per-category vector of `T` over
+/// `labels` (`0` when no label is present), or an error when that vector
+/// cannot exist: `usize::MAX + 1` overflows, and a byte size past
+/// `isize::MAX` is a capacity overflow (both panicked).
+fn dense_len<T>(op: &'static str, labels: &[Option<usize>]) -> Result<usize, SymplexError> {
+    let Some(&top) = labels.iter().flatten().max() else {
+        return Ok(0);
+    };
+    let too_large = || {
+        invalid(
+            op,
+            format!(
+                "label {top} is too large for a per-category vector (labels are category indices)"
+            ),
+        )
+    };
+    let n = top.checked_add(1).ok_or_else(too_large)?;
+    check_category_count::<T>(op, n).map_err(|_| too_large())?;
+    Ok(n)
+}
+
 /// A plurality vote with a quorum: the top category wins only if it has
 /// at least `threshold` of the votes cast (`threshold` in `[0, 1]`).
 ///
@@ -258,11 +333,15 @@ pub fn majority_votes(table: &LabelTable) -> Vec<Vote> {
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for a threshold outside `[0, 1]`.
+/// [`SymplexError::InvalidArgument`] for a threshold outside `[0, 1]`, or
+/// a label so large that the per-category counts cannot be stored
+/// (`usize::MAX`, or past `isize::MAX` bytes).
 pub fn plurality(labels: &[Option<usize>], threshold: &Q) -> Result<Vote, SymplexError> {
+    const OP: &str = "plurality";
     if threshold < &Q::zero() || threshold > &Q::one() {
-        return Err(invalid("plurality", "the threshold must lie in [0, 1]"));
+        return Err(invalid(OP, "the threshold must lie in [0, 1]"));
     }
+    dense_len::<usize>(OP, labels)?;
     let mut vote = majority_vote(labels);
     if let Some(w) = vote.winner {
         let cast: usize = vote.counts.iter().sum();
@@ -309,8 +388,9 @@ pub struct WeightedVote {
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] if the lengths differ or a weight
-/// is negative.
+/// [`SymplexError::InvalidArgument`] if the lengths differ, a weight is
+/// negative, or a label is so large that the per-category scores cannot be
+/// stored (`usize::MAX`, or past `isize::MAX` bytes).
 pub fn weighted_vote(
     labels: &[Option<usize>],
     weights: &[Q],
@@ -322,7 +402,7 @@ pub fn weighted_vote(
     if weights.iter().any(|w| w < &Q::zero()) {
         return Err(invalid(op, "weights must be non-negative"));
     }
-    let n = labels.iter().flatten().max().map_or(0, |m| m + 1);
+    let n = dense_len::<Q>(op, labels)?;
     let mut scores = vec![Q::zero(); n];
     for (l, w) in labels.iter().zip(weights) {
         if let Some(l) = l {
@@ -426,45 +506,22 @@ fn ln_or_neg_inf(p: f64) -> f64 {
     if p > 0.0 { p.ln() } else { f64::NEG_INFINITY }
 }
 
+/// The maximum-likelihood M-step: [`ds_map_m_step`] with flat priors (all
+/// offsets zero).
 fn ds_m_step(
     counts: &[Vec<Vec<usize>>],
     t: &[Vec<f64>],
     j: usize,
     smoothing: f64,
 ) -> (Vec<f64>, Vec<Vec<Vec<f64>>>) {
-    let n_items = counts.len();
-    let n_raters = counts[0].len();
-    let priors: Vec<f64> = (0..j)
-        .map(|c| t.iter().map(|row| row[c]).sum::<f64>() / n_items as f64)
-        .collect();
-    let confusion = (0..n_raters)
-        .map(|k| {
-            (0..j)
-                .map(|c| {
-                    let mut num: Vec<f64> = (0..j)
-                        .map(|l| {
-                            counts
-                                .iter()
-                                .zip(t)
-                                .map(|(item, row)| row[c] * item[k][l] as f64)
-                                .sum::<f64>()
-                                + smoothing
-                        })
-                        .collect();
-                    let den: f64 = num.iter().sum();
-                    if den > 0.0 {
-                        for v in &mut num {
-                            *v /= den;
-                        }
-                        num
-                    } else {
-                        vec![1.0 / j as f64; j]
-                    }
-                })
-                .collect()
-        })
-        .collect();
-    (priors, confusion)
+    ds_map_m_step(
+        counts,
+        t,
+        j,
+        &vec![0.0; j],
+        &vec![vec![0.0; j]; j],
+        smoothing,
+    )
 }
 
 fn ds_log_posteriors(item: &[Vec<usize>], priors: &[f64], confusion: &[Vec<Vec<f64>>]) -> Vec<f64> {
@@ -526,12 +583,16 @@ fn ds_initial(
     j: usize,
     init: &DawidSkeneInit,
 ) -> Result<Vec<Vec<f64>>, SymplexError> {
-    let op = "dawid_skene";
     match init {
         DawidSkeneInit::MajorityVote => Ok(counts
             .iter()
             .map(|item| {
-                let totals: Vec<usize> = (0..j).map(|l| item.iter().map(|r| r[l]).sum()).collect();
+                // Saturating: a total past `usize::MAX` only has to keep its
+                // rank among the totals, which a count that large cannot
+                // lose to one that is not.
+                let totals: Vec<usize> = (0..j)
+                    .map(|l| item.iter().fold(0usize, |acc, r| acc.saturating_add(r[l])))
+                    .collect();
                 let v = vote_from_counts(totals);
                 if v.tied.is_empty() {
                     vec![1.0 / j as f64; j]
@@ -543,29 +604,7 @@ fn ds_initial(
                 }
             })
             .collect()),
-        DawidSkeneInit::Posteriors(t) => {
-            if t.len() != counts.len() || t.iter().any(|r| r.len() != j) {
-                return Err(invalid(
-                    op,
-                    "the initial posteriors must be items × categories",
-                ));
-            }
-            t.iter()
-                .map(|row| {
-                    if row.iter().any(|v| !v.is_finite() || *v < 0.0) {
-                        return Err(invalid(
-                            op,
-                            "initial posteriors must be finite and non-negative",
-                        ));
-                    }
-                    let s: f64 = row.iter().sum();
-                    if s <= 0.0 {
-                        return Err(invalid(op, "an initial posterior row sums to zero"));
-                    }
-                    Ok(row.iter().map(|v| v / s).collect())
-                })
-                .collect()
-        }
+        DawidSkeneInit::Posteriors(t) => normalised_posteriors("dawid_skene", t, counts.len(), j),
     }
 }
 
@@ -732,13 +771,14 @@ pub struct PairwiseOutcome {
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for a player index `≥ n` or a
-/// player beating itself.
+/// [`SymplexError::InvalidArgument`] for a player index `≥ n`, a player
+/// beating itself, or an `n` too large for a row of the matrix.
 pub fn wins_matrix(
     outcomes: &[PairwiseOutcome],
     n: usize,
 ) -> Result<Vec<Vec<usize>>, SymplexError> {
     let op = "wins_matrix";
+    check_category_count::<usize>(op, n)?;
     let mut w = vec![vec![0usize; n]; n];
     for outcome in outcomes {
         let (a, b) = (outcome.winner, outcome.loser);
@@ -825,9 +865,11 @@ pub fn bradley_terry(
             "the beat graph is not strongly connected (Ford 1957): the maximum-likelihood strengths do not exist",
         ));
     }
+    // Counts enter as `f64` before they are added: a `usize` sum (a row
+    // total, `wins[i][j] + wins[j][i]`) can overflow.
     let total_wins: Vec<f64> = wins
         .iter()
-        .map(|r| r.iter().sum::<usize>() as f64)
+        .map(|r| r.iter().map(|&w| w as f64).sum::<f64>())
         .collect();
     let mut p = vec![1.0 / n as f64; n];
     let mut iterations = 0;
@@ -837,7 +879,7 @@ pub fn bradley_terry(
             .map(|i| {
                 let denom: f64 = (0..n)
                     .filter(|&j| j != i)
-                    .map(|j| (wins[i][j] + wins[j][i]) as f64 / (p[i] + p[j]))
+                    .map(|j| (wins[i][j] as f64 + wins[j][i] as f64) / (p[i] + p[j]))
                     .sum();
                 total_wins[i] / denom
             })
@@ -948,8 +990,9 @@ pub struct CategoryMetrics {
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] if the lengths differ or a label or
-/// gold value is `≥ n_categories`.
+/// [`SymplexError::InvalidArgument`] if the lengths differ, a label or
+/// gold value is `≥ n_categories`, or `n_categories` is too large for the
+/// result vector.
 pub fn category_metrics(
     labels: &[Option<usize>],
     gold: &[usize],
@@ -959,6 +1002,7 @@ pub fn category_metrics(
     if labels.len() != gold.len() {
         return Err(invalid(op, "one gold label per item is needed"));
     }
+    check_category_count::<CategoryMetrics>(op, n_categories)?;
     if labels
         .iter()
         .flatten()
@@ -1098,13 +1142,24 @@ fn normalised_posteriors(
                     "initial posteriors must be finite and non-negative",
                 ));
             }
-            let s: f64 = row.iter().sum();
-            if s <= 0.0 {
-                return Err(invalid(op, "an initial posterior row sums to zero"));
-            }
-            Ok(row.iter().map(|v| v / s).collect())
+            normalised(row).ok_or_else(|| invalid(op, "an initial posterior row sums to zero"))
         })
         .collect()
+}
+
+/// A finite non-negative row scaled to sum to `1`, `None` when it is all
+/// zero.  The row is divided by its largest entry before it is summed, so
+/// finite entries whose sum overflows (`[f64::MAX, f64::MAX]`) still give
+/// a distribution (`[½, ½]`) instead of `x/∞ = 0` everywhere.
+fn normalised(row: &[f64]) -> Option<Vec<f64>> {
+    // `f64::max` skips NaN, so `top` is a number `≥ 0`.
+    let top = row.iter().copied().fold(0.0, f64::max);
+    if top <= 0.0 {
+        return None;
+    }
+    let scaled: Vec<f64> = row.iter().map(|v| v / top).collect();
+    let s: f64 = scaled.iter().sum();
+    Some(scaled.into_iter().map(|v| v / s).collect())
 }
 
 /// The `max_iter` / `tol` / `smoothing` checks shared by the EM models.
@@ -1210,10 +1265,13 @@ impl DawidSkenePriors {
 
 /// The MAP M-step: `p_j = (Σ_i T_ij + a_j) / (I + Σ_j a_j)` and
 /// `π^(k)_jl = (Σ_i T_ij n_ikl + b_jl + s) / Σ_l (…)` with the prior
-/// offsets `a = α − 1`, `b = β − 1` and the extra pseudo-count `s`.  A
-/// row whose denominator is zero (flat prior, no smoothing, a class the
-/// rater never saw) is uniform, as in [`ds_m_step`]; with all offsets
-/// zero the arithmetic is bit-identical to [`ds_m_step`].
+/// offsets `a = α − 1`, `b = β − 1` and the extra pseudo-count `s`; with
+/// all offsets zero it is the maximum-likelihood M-step [`ds_m_step`].
+/// Both are normalised by [`normalised`] (the numerators sum to the
+/// denominators because every posterior row sums to `1`), which cannot
+/// overflow: a huge but finite `α`, `β` or `s` gave `x/∞ = 0` for every
+/// prevalence.  A row whose numerators are all zero (flat prior, no
+/// smoothing, a class the rater never saw) is uniform.
 fn ds_map_m_step(
     counts: &[Vec<Vec<usize>>],
     t: &[Vec<f64>],
@@ -1222,17 +1280,17 @@ fn ds_map_m_step(
     conf_offset: &[Vec<f64>],
     smoothing: f64,
 ) -> (Vec<f64>, Vec<Vec<Vec<f64>>>) {
-    let n_items = counts.len();
-    let n_raters = counts[0].len();
-    let class_den = n_items as f64 + class_offset.iter().sum::<f64>();
-    let priors: Vec<f64> = (0..j)
-        .map(|c| (t.iter().map(|row| row[c]).sum::<f64>() + class_offset[c]) / class_den)
+    let n_raters = counts.first().map_or(0, Vec::len);
+    let uniform = || vec![1.0 / j as f64; j];
+    let class_num: Vec<f64> = (0..j)
+        .map(|c| t.iter().map(|row| row[c]).sum::<f64>() + class_offset[c])
         .collect();
+    let priors = normalised(&class_num).unwrap_or_else(uniform);
     let confusion = (0..n_raters)
         .map(|k| {
             (0..j)
                 .map(|c| {
-                    let mut num: Vec<f64> = (0..j)
+                    let num: Vec<f64> = (0..j)
                         .map(|l| {
                             counts
                                 .iter()
@@ -1243,15 +1301,7 @@ fn ds_map_m_step(
                                 + smoothing
                         })
                         .collect();
-                    let den: f64 = num.iter().sum();
-                    if den > 0.0 {
-                        for v in &mut num {
-                            *v /= den;
-                        }
-                        num
-                    } else {
-                        vec![1.0 / j as f64; j]
-                    }
+                    normalised(&num).unwrap_or_else(uniform)
                 })
                 .collect()
         })
@@ -1518,8 +1568,10 @@ fn mace_e_step(rows: &[Vec<Option<usize>>], k: usize, p: &MaceParams) -> MaceRes
 /// M-step with add-`δ` smoothing:
 /// `θ_r = (Σ_i (1 − ρ_ir) + δ) / (n_r + 2δ)` and
 /// `ξ_r(l) = (Σ_i ρ_ir [a_ir = l] + δ) / (Σ_i ρ_ir + Kδ)`, the sums over
-/// the items rater `r` labelled (`n_r` of them).  A zero denominator
-/// (`δ = 0`) gives `θ_r = 1/2`, respectively a uniform `ξ_r`.
+/// the items rater `r` labelled (`n_r` of them), both normalised by
+/// [`normalised`] so that a huge finite `δ` cannot overflow the
+/// denominators.  A zero denominator (`δ = 0`) gives `θ_r = 1/2`,
+/// respectively a uniform `ξ_r`.
 fn mace_m_step(
     rows: &[Vec<Option<usize>>],
     k: usize,
@@ -1540,26 +1592,12 @@ fn mace_m_step(
         }
     }
     let competence = (0..n_raters)
-        .map(|r| {
-            let den = copied[r] + spammed[r] + 2.0 * smoothing;
-            if den > 0.0 {
-                (copied[r] + smoothing) / den
-            } else {
-                0.5
-            }
-        })
+        .map(|r| normalised(&[copied[r] + smoothing, spammed[r] + smoothing]).map_or(0.5, |p| p[0]))
         .collect();
     let spam = (0..n_raters)
         .map(|r| {
-            let den = spammed[r] + k as f64 * smoothing;
-            if den > 0.0 {
-                spam_counts[r]
-                    .iter()
-                    .map(|c| (c + smoothing) / den)
-                    .collect()
-            } else {
-                vec![1.0 / k as f64; k]
-            }
+            let num: Vec<f64> = spam_counts[r].iter().map(|c| c + smoothing).collect();
+            normalised(&num).unwrap_or_else(|| vec![1.0 / k as f64; k])
         })
         .collect();
     MaceParams { competence, spam }
@@ -1737,26 +1775,28 @@ pub fn rater_confusion_from_gold(
 /// posterior table — `0` for a certain item, `log₂ K` for a uniform one —
 /// to rank items by how much the raters left undecided.  Each row is
 /// normalised by its positive mass first (entries `≤ 0` contribute
-/// nothing); a row without positive mass has entropy `0`.
+/// nothing; the row is scaled by its largest entry before it is summed,
+/// so finite entries whose sum overflows still count); a row without
+/// positive mass has entropy `0`, and a row with a NaN or `+∞` entry has
+/// entropy NaN.
 ///
 /// ```
 /// use symplex::stats::aggregation::posterior_entropy;
 ///
 /// let h = posterior_entropy(&[vec![1.0, 0.0], vec![0.5, 0.5], vec![0.5, 0.25, 0.25]]);
 /// assert_eq!(h, vec![0.0, 1.0, 1.5]);
+/// assert_eq!(posterior_entropy(&[vec![f64::MAX, f64::MAX]]), vec![1.0]);
+/// assert!(posterior_entropy(&[vec![f64::NAN, 1.0]])[0].is_nan());
 /// ```
 pub fn posterior_entropy(posteriors: &[Vec<f64>]) -> Vec<f64> {
     posteriors
         .iter()
         .map(|row| {
-            let mass: f64 = row.iter().filter(|v| **v > 0.0).sum();
-            if !(mass > 0.0 && mass.is_finite()) {
-                return 0.0;
+            if row.iter().any(|v| v.is_nan() || *v == f64::INFINITY) {
+                return f64::NAN;
             }
-            row.iter().filter(|v| **v > 0.0).fold(0.0, |h, v| {
-                let p = v / mass;
-                h - p * p.log2()
-            })
+            let positive: Vec<f64> = row.iter().copied().filter(|v| *v > 0.0).collect();
+            normalised(&positive).map_or(0.0, |p| p.iter().fold(0.0, |h, p| h - p * p.log2()))
         })
         .collect()
 }

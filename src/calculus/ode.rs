@@ -919,15 +919,23 @@ fn try_full_separable(
 /// If `expr` is `Neg(inner)`, return factors of inner with a `-1` prepended.
 /// Otherwise return `[expr]`.
 fn collect_mul_factors(arena: &mut Arena, expr: ExprId) -> Vec<ExprId> {
-    match arena.node(expr).clone() {
-        ExprNode::Mul(children) => children.to_vec(),
-        ExprNode::Neg(inner) => {
-            let neg_one = arena.int(-1);
-            let mut factors = vec![neg_one];
-            factors.extend(collect_mul_factors(arena, inner));
-            factors
+    let mut factors = Vec::new();
+    let mut expr = expr;
+    loop {
+        match arena.node(expr).clone() {
+            ExprNode::Mul(children) => {
+                factors.extend(children.iter().copied());
+                return factors;
+            }
+            ExprNode::Neg(inner) => {
+                factors.push(arena.int(-1));
+                expr = inner;
+            }
+            _ => {
+                factors.push(expr);
+                return factors;
+            }
         }
-        _ => vec![expr],
     }
 }
 
@@ -3575,45 +3583,41 @@ pub fn classify_ode(arena: &mut Arena, expr: ExprId, func: ExprId, var: ExprId) 
     OdeType::Unknown
 }
 
-/// Check if `haystack` contains the sub-expression `needle` anywhere.
+/// Check if `haystack` contains the sub-expression `needle` anywhere
+/// (iteratively: [`walk::contains`](crate::base::walk::contains)).
 fn expr_contains(arena: &Arena, haystack: ExprId, needle: ExprId) -> bool {
-    if haystack == needle {
-        return true;
-    }
-    let node = arena.node(haystack).clone();
-    for &child in node.children().iter() {
-        if expr_contains(arena, child, needle) {
-            return true;
-        }
-    }
-    false
+    crate::base::walk::contains(arena, haystack, needle)
 }
 
 /// Check if `expr` contains `sym` in a position that is NOT inside `deriv_node`.
 ///
 /// This detects whether `func` (as a bare symbol) appears outside derivative
-/// sub-expressions — i.e., `y` appears outside `dy/dx`.
+/// sub-expressions — i.e., `y` appears outside `dy/dx`.  An explicit stack
+/// over the shared DAG, each node visited once (0.28 recursed, and a deep
+/// ODE expression could overflow the stack).
 fn contains_sym_outside_deriv(
     arena: &Arena,
     expr: ExprId,
     sym: SymbolId,
     deriv_node: ExprId,
 ) -> bool {
-    if expr == deriv_node {
-        // Skip — this is the derivative node, don't look inside
-        return false;
-    }
-    match arena.node(expr).clone() {
-        ExprNode::Symbol(s) => s == sym,
-        other => {
-            for &child in other.children().iter() {
-                if contains_sym_outside_deriv(arena, child, sym, deriv_node) {
-                    return true;
-                }
-            }
-            false
+    let mut stack = vec![expr];
+    let mut seen = rustc_hash::FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        // The derivative node is skipped: don't look inside.
+        if id == deriv_node || !seen.insert(id) {
+            continue;
         }
+        let node = arena.node(id);
+        if let ExprNode::Symbol(s) = node {
+            if *s == sym {
+                return true;
+            }
+            continue;
+        }
+        node.for_each_child(|c| stack.push(c));
     }
+    false
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

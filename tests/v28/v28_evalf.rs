@@ -169,11 +169,12 @@ fn infinite_hypergeometric_sums_evaluate() {
     assert_eq!(s.eval_f64().unwrap(), 0.567_209_351_351_013_7);
 }
 
-/// A divergent sum is an error, not a number; a sum that converges only
-/// polynomially, or whose term is not hypergeometric, has no rigorous
-/// bound here and is refused.
+/// A divergent sum is an error, not a number; a sum whose term is neither
+/// hypergeometric nor rational has no rigorous bound here and is refused.
+/// (Polynomially convergent rational terms, refused here before, are
+/// summed by Euler–Maclaurin: `v28_evalf_cuts`.)
 #[test]
-fn divergent_and_slowly_converging_sums_are_refused() {
+fn divergent_and_non_hypergeometric_sums_are_refused() {
     let ctx = Context::new();
     let k = ctx.symbol("k");
     let oo = ctx.infinity();
@@ -190,12 +191,8 @@ fn divergent_and_slowly_converging_sums_are_refused() {
             s.eval_f64()
         );
     }
-    for body in [
-        ctx.one() / (k.powi(2) + ctx.one()),
-        ctx.int(-1).pow(&k) / (k.powi(2) + ctx.one()),
-        k.sin() / ctx.int(2).pow(&k),
-    ] {
-        let s = sum(body);
+    {
+        let s = sum(k.sin() / ctx.int(2).pow(&k));
         assert!(
             matches!(s.eval_f64(), Err(SymplexError::Unevaluable { .. })),
             "{s}: {:?}",
@@ -301,7 +298,8 @@ fn piecewise_decides_only_certified_conditions() {
 /// certain and wrong: `Piecewise((1, exp(−4·10⁹) > 0), (0, True))` was `0`
 /// and `sign(exp(−10²⁰) − exp(−3·10²⁰))` was `0`.  An underflow now has
 /// a bound (`2^EXPONENT_MIN`): the value alone is still `0` to the
-/// precision reached, the decision is refused.
+/// precision reached, a numerical decision on it is refused.  (`exp(…) > 0`
+/// itself is decided structurally, from the sign of `exp` of a real.)
 #[test]
 fn an_underflow_is_not_an_exact_zero() {
     let ctx = Context::new();
@@ -309,10 +307,7 @@ fn an_underflow_is_not_an_exact_zero() {
     assert_eq!(tiny.eval_decimal(20).unwrap(), "0");
     let (zero, one, t) = (ctx.zero(), ctx.one(), ctx.bool_true());
     let pw = Ex::piecewise(&[(&one, &tiny.gt(&zero)), (&zero, &t)]);
-    assert!(matches!(
-        pw.eval_decimal(20),
-        Err(SymplexError::PrecisionExhausted { .. })
-    ));
+    assert_eq!(pw.eval_decimal(20).unwrap(), "1");
     let s = ctx.parse("sign(exp(-10^20) - exp(-3*10^20))").unwrap();
     assert!(matches!(
         s.eval_decimal(20),

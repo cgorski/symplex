@@ -368,6 +368,18 @@ thread_local! {
 }
 
 fn aberth_roots_uncached(poly: &Poly, prec: usize, max_iter: usize) -> Vec<Complex> {
+    aberth_roots_to(poly, prec, max_iter, None)
+}
+
+/// [`aberth_roots`] iterating until every correction is below
+/// `2^tolerance_exp` times the Cauchy bound of the roots (`None`: below the
+/// absolute [`ABERTH_TOLERANCE`]).  Uncached.
+fn aberth_roots_to(
+    poly: &Poly,
+    prec: usize,
+    max_iter: usize,
+    tolerance_exp: Option<i64>,
+) -> Vec<Complex> {
     let rm = RoundingMode::None;
     let wp = prec + 64; // working precision with guard bits
 
@@ -398,7 +410,13 @@ fn aberth_roots_uncached(poly: &Poly, prec: usize, max_iter: usize) -> Vec<Compl
         }
     };
 
-    let mut nonzero = aberth_iterate(&monic, &deriv, n, wp, prec, max_iter, rm, &mut cc);
+    let threshold = match tolerance_exp {
+        None => BigFloat::from_f64(ABERTH_TOLERANCE, wp),
+        Some(e) => cauchy_bound(&monic, wp).mul(&pow2(e, wp), wp, rm),
+    };
+    let mut nonzero = aberth_iterate(
+        &monic, &deriv, n, wp, prec, max_iter, &threshold, rm, &mut cc,
+    );
     roots.append(&mut nonzero);
 
     // Sort by (real part, imaginary part) for stable indexing
@@ -441,6 +459,7 @@ fn aberth_iterate(
     wp: usize,
     prec: usize,
     max_iter: usize,
+    threshold: &BigFloat,
     rm: RoundingMode,
     cc: &mut Consts,
 ) -> Vec<Complex> {
@@ -458,8 +477,6 @@ fn aberth_iterate(
         .iter()
         .map(|c| ratio_to_bigfloat(c, wp))
         .collect();
-
-    let threshold = BigFloat::from_f64(ABERTH_TOLERANCE, wp);
 
     for _iter in 0..max_iter {
         let mut max_correction = BigFloat::new(wp);
@@ -526,7 +543,7 @@ fn aberth_iterate(
         }
 
         // Check convergence: max |correction|^2 < threshold^2
-        let threshold_sq = threshold.mul(&threshold, wp, rm);
+        let threshold_sq = threshold.mul(threshold, wp, rm);
         if max_correction.is_zero() || !max_correction.sub(&threshold_sq, prec, rm).is_positive() {
             break;
         }
@@ -701,6 +718,8 @@ pub(crate) struct RootBall {
     /// An upper bound on the distance from `value` to the root, a 64-bit
     /// float; `None` when no disk isolating the root was certified.
     pub(crate) radius: Option<BigFloat>,
+    /// Is the root certified real (its imaginary part exactly 0)?
+    pub(crate) real: bool,
 }
 
 /// Precision of the radius arithmetic in [`root_balls`].
@@ -787,6 +806,7 @@ pub(crate) fn root_balls(poly: &Poly, roots: &[Complex], prec: usize) -> Vec<Roo
             .map(|z| RootBall {
                 value: z.clone(),
                 radius: None,
+                real: false,
             })
             .collect::<Vec<_>>()
     };
@@ -880,6 +900,7 @@ pub(crate) fn root_balls(poly: &Poly, roots: &[Complex], prec: usize) -> Vec<Roo
         out.push(RootBall {
             value: if real { centre } else { z.clone() },
             radius: Some(radii[k].clone()),
+            real,
         });
     }
     out
@@ -887,6 +908,373 @@ pub(crate) fn root_balls(poly: &Poly, roots: &[Complex], prec: usize) -> Vec<Roo
 
 fn is_finite(z: &Complex) -> bool {
     !(z.0.is_nan() || z.0.is_inf() || z.1.is_nan() || z.1.is_inf())
+}
+
+// ── Certified roots with multiplicity ─────────────────────────────────────────────────────────
+
+/// How many times [`certified_roots`] doubles the precision of a
+/// square-free factor whose inclusion disks do not isolate its roots (a
+/// cluster closer than the working precision resolves).
+const CLUSTER_REFINEMENTS: u32 = 3;
+
+/// What is known exactly about the real part of a root, for its place in
+/// the `(re, im)` order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ReKey {
+    /// Exactly this rational.
+    Rational(Ratio<BigInt>),
+    /// Equal to its conjugate's: `(factor, pair)` numbers the pair.
+    Pair(usize, usize),
+}
+
+/// A distinct root of `poly` with its multiplicity and ball.
+#[derive(Clone, Debug)]
+struct DistinctRoot {
+    ball: RootBall,
+    multiplicity: usize,
+    key: Option<ReKey>,
+}
+
+/// Every root of `poly`, repeated by its multiplicity, in the (real part,
+/// imaginary part) order that `RootOf(poly, k)` indices refer to, each with
+/// a certified inclusion disk at about `prec` bits.
+///
+/// [`root_balls`] certifies disks only for a square-free polynomial whose
+/// roots the working precision separates, and before 0.29 a `RootOf` or
+/// `RootSum` of any other polynomial was refused: `RootOf((x² − 2)², 0)`
+/// was `PrecisionExhausted`.  Here the polynomial is first split into its
+/// square-free factors `aᵢ` of multiplicity `mᵢ` (Yun), whose roots are
+/// simple, and the roots of each factor are certified separately:
+///
+/// * a linear factor has its rational root, exact when it is a `prec`-bit
+///   float;
+/// * otherwise [`rootof_roots`] and [`root_balls`] at `prec`, and at `2p`,
+///   `4p`, `8p` bits while the disks overlap (a cluster of simple roots, which
+///   Newton's inclusion radius separates once the precision resolves the
+///   cluster).
+///
+/// The disks of a real factor come in mirror pairs, and the two roots of a
+/// non-real pair have equal real parts: their centres are made exact
+/// mirror images (the larger radius covers both), so their order is by the
+/// imaginary part, not by rounding noise in the real parts.  The order of
+/// two roots is certain when their real-part intervals are disjoint, or
+/// they are such a pair; any other pair leaves both roots (all their
+/// copies) without a radius, as does a factor whose disks still overlap at
+/// the last precision.  Each distinct root is then repeated `mᵢ` times.
+///
+/// The result is a pure function of `(poly, prec)`, memoised per thread
+/// (a `RootSum` is evaluated at every point of an integrator self-check).
+pub(crate) fn certified_roots(poly: &Poly, prec: usize) -> Vec<RootBall> {
+    if let Some(hit) = CERTIFIED_MEMO.with(|m| m.borrow_mut().get(poly, prec)) {
+        return hit;
+    }
+    let out = certified_roots_uncached(poly, prec);
+    CERTIFIED_MEMO.with(|m| m.borrow_mut().put(poly, prec, &out));
+    out
+}
+
+/// The last few results of [`certified_roots`], most recent first.
+struct CertifiedMemo {
+    entries: Vec<(Poly, usize, Vec<RootBall>)>,
+}
+
+impl CertifiedMemo {
+    fn get(&mut self, poly: &Poly, prec: usize) -> Option<Vec<RootBall>> {
+        let pos = self
+            .entries
+            .iter()
+            .position(|(p, pr, _)| *pr == prec && p == poly)?;
+        let entry = self.entries.remove(pos);
+        let out = entry.2.clone();
+        self.entries.insert(0, entry);
+        Some(out)
+    }
+
+    fn put(&mut self, poly: &Poly, prec: usize, balls: &[RootBall]) {
+        self.entries.truncate(ABERTH_MEMO_CAPACITY - 1);
+        self.entries.insert(0, (poly.clone(), prec, balls.to_vec()));
+    }
+}
+
+thread_local! {
+    /// Per-thread memo of [`certified_roots`].
+    static CERTIFIED_MEMO: std::cell::RefCell<CertifiedMemo> =
+        const { std::cell::RefCell::new(CertifiedMemo { entries: Vec::new() }) };
+}
+
+fn certified_roots_uncached(poly: &Poly, prec: usize) -> Vec<RootBall> {
+    let (_, factors) = poly.sqf_list();
+    let mut distinct: Vec<DistinctRoot> = Vec::new();
+    for (index, (factor, multiplicity)) in factors.iter().enumerate() {
+        let multiplicity = usize::try_from(*multiplicity).unwrap_or(usize::MAX);
+        for (ball, key) in factor_balls(factor, index, prec) {
+            distinct.push(DistinctRoot {
+                ball,
+                multiplicity,
+                key,
+            });
+        }
+    }
+    distinct.sort_by(compare_roots);
+    mark_ambiguous_order(&mut distinct, prec);
+    let mut out = Vec::with_capacity(poly.degree().unwrap_or(0));
+    for d in distinct {
+        for _ in 0..d.multiplicity {
+            out.push(d.ball.clone());
+        }
+    }
+    out
+}
+
+/// `(re, im)` lexicographic order of two roots: exact real parts compared
+/// exactly, the rest by their centres.
+fn compare_roots(a: &DistinctRoot, b: &DistinctRoot) -> std::cmp::Ordering {
+    let key = |x: &BigFloat, y: &BigFloat| x.cmp(y).unwrap_or(0).cmp(&0);
+    let (za, zb) = (&a.ball.value, &b.ball.value);
+    let re = match (&a.key, &b.key) {
+        (Some(ReKey::Rational(p)), Some(ReKey::Rational(q))) => p.cmp(q),
+        _ => key(&za.0, &zb.0),
+    };
+    re.then_with(|| key(&za.1, &zb.1))
+}
+
+/// The certified balls of the roots of the square-free factor number
+/// `index`, with what is known exactly about their real parts (see
+/// [`certified_roots`]).
+fn factor_balls(factor: &Poly, index: usize, prec: usize) -> Vec<(RootBall, Option<ReKey>)> {
+    let wp = prec + 64;
+    if factor.degree() == Some(1) {
+        let root = -(factor.coeff(0) / factor.coeff(1));
+        let value = ratio_to_bigfloat(&root, wp);
+        let d = root.denom();
+        let dyadic = (d & (d - BigInt::from(1))).is_zero();
+        let exact = root.is_zero() || (dyadic && root.numer().bits() <= wp as u64);
+        let radius = if exact {
+            BigFloat::new(BALL_PREC)
+        } else {
+            let m = value.exponent().map_or(0, i64::from);
+            pow2(m + 1 - i64::try_from(wp).unwrap_or(i64::MAX / 4), BALL_PREC)
+        };
+        let ball = RootBall {
+            value: (value, BigFloat::new(wp)),
+            radius: Some(radius),
+            real: true,
+        };
+        return vec![(ball, Some(ReKey::Rational(root)))];
+    }
+    let mut balls = root_balls(factor, &rootof_roots(factor, prec), prec);
+    let mut p = prec;
+    for _ in 0..CLUSTER_REFINEMENTS {
+        if balls.iter().all(|b| b.radius.is_some()) {
+            break;
+        }
+        // The default iteration stops at corrections of 10⁻³⁰, which does
+        // not separate a closer cluster at any precision: iterate until the
+        // corrections are below the precision itself.
+        p = p.saturating_mul(2);
+        let tolerance = -i64::try_from(p).unwrap_or(i64::MAX / 4) + 32;
+        let roots = aberth_roots_to(factor, p + 64, 400, Some(tolerance));
+        balls = root_balls(factor, &roots, p);
+    }
+    let mut keys: Vec<Option<ReKey>> = vec![None; balls.len()];
+    if balls.iter().all(|b| b.radius.is_some()) {
+        for (pair, (k, j)) in symmetrise_pairs(&mut balls).into_iter().enumerate() {
+            keys[k] = Some(ReKey::Pair(index, pair));
+            keys[j] = Some(ReKey::Pair(index, pair));
+        }
+        for (k, c) in on_symmetry_line(factor, &mut balls, wp) {
+            keys[k] = Some(ReKey::Rational(c));
+        }
+    }
+    balls.into_iter().zip(keys).collect()
+}
+
+/// The roots of `factor` certified to lie exactly on the line `Re z = c`
+/// (their centres moved onto it), for the centroid `c = −aₙ₋₁/(n·aₙ)` of
+/// the roots, when `factor(c + t)` is even or odd in `t`: its roots are then
+/// symmetric under `t → −t`, and with the conjugation under the
+/// reflection `z → 2c − z̄` in the line.  A disk that meets the line and
+/// whose reflection meets no other disk holds its root's reflection, so
+/// the root is on the line — as a disk whose mirror image in the real axis
+/// meets no other disk holds a real root ([`root_balls`]).  So the order of
+/// `±i` and `±2i` (roots of `x⁴ + 5x² + 4`, real parts exactly 0) is by
+/// their imaginary parts, not by the rounding noise in their real parts.
+fn on_symmetry_line(
+    factor: &Poly,
+    balls: &mut [RootBall],
+    wp: usize,
+) -> Vec<(usize, Ratio<BigInt>)> {
+    let rm = RoundingMode::ToEven;
+    let Some(n) = factor.degree().filter(|&n| n >= 2) else {
+        return Vec::new();
+    };
+    let c = -(factor.coeff(n - 1) / (factor.coeff(n) * Ratio::from_integer(BigInt::from(n))));
+    let shifted = factor.taylor_shift(&c);
+    let symmetric = shifted
+        .coeffs()
+        .iter()
+        .enumerate()
+        .all(|(i, a)| (n - i) % 2 == 0 || a.is_zero());
+    if !symmetric {
+        return Vec::new();
+    }
+    let c_bf = ratio_to_bigfloat(&c, wp);
+    let d = c.denom();
+    let c_exact =
+        c.is_zero() || ((d & (d - BigInt::from(1))).is_zero() && c.numer().bits() <= wp as u64);
+    let c_rounding = if c_exact {
+        BigFloat::new(BALL_PREC)
+    } else {
+        let m = c_bf.exponent().map_or(0, i64::from);
+        pow2(m + 1 - i64::try_from(wp).unwrap_or(i64::MAX / 4), BALL_PREC)
+    };
+    let mut on_line = Vec::new();
+    for k in 0..balls.len() {
+        let Some(rk) = balls[k].radius.clone() else {
+            continue;
+        };
+        let z = balls[k].value.clone();
+        let meets =
+            deflate(&z.0.sub(&c_bf, wp, rm).abs()) <= inflate(&rk.add(&c_rounding, BALL_PREC, rm));
+        if !meets {
+            continue;
+        }
+        let two_c = c_bf.add(&c_bf, wp, rm);
+        let reflected = (two_c.sub(&z.0, wp, rm), z.1.clone());
+        let alone = (0..balls.len()).filter(|&j| j != k).all(|j| {
+            balls[j].radius.as_ref().is_none_or(|rj| {
+                let reach = rk.add(rj, BALL_PREC, rm).add(&c_rounding, BALL_PREC, rm);
+                !within_reach(&reflected, &balls[j].value, &reach, wp)
+            })
+        });
+        if alone {
+            balls[k].value.0 = c_bf.clone();
+            balls[k].radius = Some(inflate(&rk.add(&c_rounding, BALL_PREC, rm)));
+            on_line.push((k, c.clone()));
+        }
+    }
+    on_line
+}
+
+/// Is `|a − b| ≤ reach`, the difference taken at `wp` bits and the rest
+/// rounded outwards?
+fn within_reach(a: &Complex, b: &Complex, reach: &BigFloat, wp: usize) -> bool {
+    let rm = RoundingMode::ToEven;
+    let d = c_sub(a, b, wp, rm);
+    let d2 = deflate(&deflate(&d.0.mul(&d.0, BALL_PREC, rm).add(
+        &d.1.mul(&d.1, BALL_PREC, rm),
+        BALL_PREC,
+        rm,
+    )));
+    let reach = inflate(reach);
+    d2.cmp(&inflate(&reach.mul(&reach, BALL_PREC, rm)))
+        .unwrap_or(1)
+        <= 0
+}
+
+/// Make the centres of each certified non-real mirror pair of disks exact
+/// mirror images, with the larger radius on both (see [`certified_roots`]).
+/// The conjugate of the root in disk `k` lies in the mirror image of disk
+/// `k`, and in exactly one disk: when the mirror image meets only disk `j`,
+/// the roots of `k` and `j` are conjugates.  Returns the pairs.
+fn symmetrise_pairs(balls: &mut [RootBall]) -> Vec<(usize, usize)> {
+    let rm = RoundingMode::ToEven;
+    let n = balls.len();
+    let mut done = vec![false; n];
+    let mut pairs = Vec::new();
+    for k in 0..n {
+        if done[k] || balls[k].real {
+            continue;
+        }
+        let Some(rk) = balls[k].radius.clone() else {
+            continue;
+        };
+        let wp = balls[k].value.0.mantissa_max_bit_len().unwrap_or(64) + 64;
+        let mirror = (balls[k].value.0.clone(), balls[k].value.1.neg());
+        let hits: Vec<usize> = (0..n)
+            .filter(|&j| {
+                j != k
+                    && balls[j].radius.as_ref().is_some_and(|rj| {
+                        within_reach(&mirror, &balls[j].value, &rk.add(rj, BALL_PREC, rm), wp)
+                    })
+            })
+            .collect();
+        let [j] = hits[..] else {
+            continue;
+        };
+        let Some(rj) = balls[j].radius.clone() else {
+            continue;
+        };
+        // A disk that meets the axis leaves the sign of its imaginary part
+        // open; only disks that miss it are paired.
+        let misses_axis = |b: &RootBall, r: &BigFloat| deflate(&b.value.1.abs()) > inflate(r);
+        if !misses_axis(&balls[k], &rk) || !misses_axis(&balls[j], &rj) {
+            continue;
+        }
+        let re =
+            balls[k]
+                .value
+                .0
+                .add(&balls[j].value.0, wp, rm)
+                .div(&BigFloat::from_i32(2, wp), wp, rm);
+        let im =
+            balls[k]
+                .value
+                .1
+                .sub(&balls[j].value.1, wp, rm)
+                .div(&BigFloat::from_i32(2, wp), wp, rm);
+        // |rē − Re r| ≤ max(rₖ, rⱼ), likewise for the imaginary parts.
+        let radius = inflate(&inflate(&rk.max(&rj)));
+        balls[k].value = (re.clone(), im.clone());
+        balls[j].value = (re, im.neg());
+        balls[k].radius = Some(radius.clone());
+        balls[j].radius = Some(radius);
+        done[k] = true;
+        done[j] = true;
+        pairs.push((k, j));
+    }
+    pairs
+}
+
+/// Drop the radius of every root (sorted by [`compare_roots`]) whose
+/// position in the `(re, im)` order is not certain: its real-part interval
+/// meets another root's, and the two real parts are not known to be
+/// exactly equal (see [`ReKey`]) — two roots with equal real parts are
+/// ordered by their imaginary parts, which their disjoint disks separate.
+fn mark_ambiguous_order(roots: &mut [DistinctRoot], prec: usize) {
+    let rm = RoundingMode::ToEven;
+    let wp = prec + 64;
+    let n = roots.len();
+    let mut ambiguous = vec![false; n];
+    for k in 0..n {
+        let Some(rk) = roots[k].ball.radius.clone() else {
+            ambiguous[k] = true;
+            continue;
+        };
+        for j in (k + 1)..n {
+            let Some(rj) = roots[j].ball.radius.clone() else {
+                continue;
+            };
+            let (a, c) = (&roots[k].ball.value, &roots[j].ball.value);
+            let gap = deflate(&c.0.sub(&a.0, wp, rm).abs());
+            if gap > inflate(&rk.add(&rj, BALL_PREC, rm)) {
+                continue;
+            }
+            let equal_re = roots[k].key.is_some() && roots[k].key == roots[j].key;
+            let separated_im =
+                deflate(&c.1.sub(&a.1, wp, rm).abs()) > inflate(&rk.add(&rj, BALL_PREC, rm));
+            if !(equal_re && separated_im) {
+                ambiguous[k] = true;
+                ambiguous[j] = true;
+            }
+        }
+    }
+    for (root, bad) in roots.iter_mut().zip(ambiguous) {
+        if bad {
+            root.ball.radius = None;
+            root.ball.real = false;
+        }
+    }
 }
 
 /// Newton's iteration `z ← z − p(z)/p′(z)` at `wp` bits from `z0`, while the
@@ -1002,6 +1390,7 @@ pub(crate) fn nroots_f64(poly: &Poly, prec_bits: usize) -> Vec<Complex64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use num_traits::One;
 
     fn poly_from_coeffs(coeffs: &[i64]) -> Poly {
