@@ -1242,7 +1242,18 @@ pub struct DawidSkenePriors {
 impl DawidSkenePriors {
     /// The same `class_alpha` for every class, `diag_alpha` on the
     /// diagonal of the confusion prior (a rater tends to give the true
-    /// label) and `off_diag_alpha` elsewhere.
+    /// label) and `off_diag_alpha` elsewhere, without validation (see
+    /// [`try_symmetric`](Self::try_symmetric); [`dawid_skene_map`] checks
+    /// the α's).
+    ///
+    /// # Panics
+    ///
+    /// Like `vec!`, on capacity overflow: when `n_categories` `f64`s (a
+    /// row of the `n_categories × n_categories` confusion prior) exceed
+    /// `isize::MAX` bytes, e.g. `1 << 61` categories.  (A size the
+    /// allocator cannot satisfy aborts.)  The fields are the materialised
+    /// vectors, so the allocation cannot be deferred;
+    /// [`try_symmetric`](Self::try_symmetric) returns an error instead.
     pub fn symmetric(
         n_categories: usize,
         class_alpha: f64,
@@ -1260,6 +1271,80 @@ impl DawidSkenePriors {
                 })
                 .collect(),
         }
+    }
+
+    /// [`symmetric`](Self::symmetric), checked: the α's must be finite
+    /// and `≥ 1` (the domain of [`dawid_skene_map`]'s posterior-mode
+    /// M-step), and the prior must be allocatable — its `n_categories²`
+    /// entries within `isize::MAX` bytes, and every vector granted by the
+    /// allocator (`Vec::try_reserve_exact`).
+    ///
+    /// ```
+    /// use symplex::stats::aggregation::DawidSkenePriors;
+    ///
+    /// let p = DawidSkenePriors::try_symmetric(3, 2.0, 5.0, 1.5)?;
+    /// assert_eq!(p, DawidSkenePriors::symmetric(3, 2.0, 5.0, 1.5));
+    /// assert!(DawidSkenePriors::try_symmetric(1 << 61, 1.0, 1.0, 1.0).is_err());
+    /// assert!(DawidSkenePriors::try_symmetric(3, 0.5, 1.0, 1.0).is_err());
+    /// # Ok::<(), symplex::prelude::SymplexError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::InvalidArgument`] for an α that is not a finite
+    /// number `≥ 1`, or a prior too large to allocate.
+    pub fn try_symmetric(
+        n_categories: usize,
+        class_alpha: f64,
+        diag_alpha: f64,
+        off_diag_alpha: f64,
+    ) -> Result<Self, SymplexError> {
+        let op = "DawidSkenePriors::try_symmetric";
+        if ![class_alpha, diag_alpha, off_diag_alpha]
+            .iter()
+            .all(|a| a.is_finite() && *a >= 1.0)
+        {
+            return Err(invalid(
+                op,
+                "every prior α must be a finite number ≥ 1 (the M-step is the posterior mode)",
+            ));
+        }
+        let k = n_categories;
+        let too_large = || {
+            invalid(
+                op,
+                format!("a {k} × {k} confusion prior is too large to allocate"),
+            )
+        };
+        let fits = k
+            .checked_mul(k)
+            .and_then(|n| n.checked_mul(std::mem::size_of::<f64>()))
+            .is_some_and(|bytes| isize::try_from(bytes).is_ok());
+        if !fits {
+            return Err(too_large());
+        }
+        let row = |j: Option<usize>| -> Result<Vec<f64>, SymplexError> {
+            let mut v = Vec::new();
+            v.try_reserve_exact(k).map_err(|_| too_large())?;
+            v.extend((0..k).map(|l| match j {
+                None => class_alpha,
+                Some(j) if j == l => diag_alpha,
+                Some(_) => off_diag_alpha,
+            }));
+            Ok(v)
+        };
+        let class_prior_alpha = row(None)?;
+        let mut confusion_alpha = Vec::new();
+        confusion_alpha
+            .try_reserve_exact(k)
+            .map_err(|_| too_large())?;
+        for j in 0..k {
+            confusion_alpha.push(row(Some(j))?);
+        }
+        Ok(Self {
+            class_prior_alpha,
+            confusion_alpha,
+        })
     }
 }
 

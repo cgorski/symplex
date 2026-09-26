@@ -46,12 +46,15 @@ enum Tail {
 /// (A band, not a tolerance: it never moves the answer.)
 const TIE_BAND: f64 = 1.0 / 17_592_186_044_416.0;
 
-/// The condition a discrete quantile at `p` looks for, on the smaller
-/// tail (as [`numdist`](super::numdist)'s lattice inversions do): `F(k) ≥
-/// p` for `p ≤ ½`, and `S(k) ≤ q` with `q = 1 − p` otherwise — the same
-/// condition, but only the small tail has digits left near its level.
-/// `1 − p` is exact for `p ≥ ½` (Sterbenz), so `q` is the exact
-/// complement of the double `p`.
+/// A quantile level, named by the tail it bounds: `Lower(p)` asks for
+/// the quantile at `p` ([`Distribution::quantile_f64`], the smallest atom
+/// with `F(k) ≥ p`), `Upper(q)` for the upper-tail quantile at `q`
+/// ([`Distribution::isf_f64`], the smallest atom with `S(k) ≤ q`).  The
+/// search routes decide on the smaller tail ([`nearest`](Self::nearest),
+/// as [`numdist`](super::numdist)'s lattice inversions do): `F(k) ≥ p`
+/// and `S(k) ≤ 1 − p` are the same condition, but only the small tail has
+/// digits left near its level.  `1 − v` is exact for `v ≥ ½` (Sterbenz),
+/// so the swapped level is the exact complement of the double given.
 #[derive(Clone, Copy, Debug)]
 enum Level {
     /// `F(k) ≥ p`.
@@ -61,23 +64,69 @@ enum Level {
 }
 
 impl Level {
-    fn of(p: f64) -> Self {
-        if p <= 0.5 {
-            Level::Lower(p)
-        } else {
-            Level::Upper(1.0 - p)
+    /// The same condition on the smaller tail: `Lower(p)` for `p ≤ ½`
+    /// and `Upper(1 − p)` otherwise; `Upper(q)` for `q ≤ ½` and
+    /// `Lower(1 − q)` otherwise.
+    fn nearest(self) -> Self {
+        match self {
+            Level::Lower(p) if p > 0.5 => Level::Upper(1.0 - p),
+            Level::Upper(q) if q > 0.5 => Level::Lower(1.0 - q),
+            level => level,
         }
     }
 
-    /// Has the exact tail crossed the level?  The sign of `tail − level`,
-    /// the level read as the exact binary number it is, evaluated in
-    /// arbitrary precision; a tie (`F(k) = p`, `S(k) = q`) has crossed.
+    /// The level read from the other end of the line, for a decreasing
+    /// map of a density: `P(−X ≤ x) = P(X ≥ −x)`, so the quantile at `p`
+    /// of `−X` is minus the upper quantile at `p` of `X`.
+    fn reflected(self) -> Self {
+        match self {
+            Level::Lower(p) => Level::Upper(p),
+            Level::Upper(q) => Level::Lower(q),
+        }
+    }
+
+    /// The lower-tail level `p` as the exact rational it names: the double
+    /// `p` itself, or `1 − q` formed exactly (never the rounded double,
+    /// which is `1` for `q ≤ 2⁻⁵⁴`).
+    fn lower_ex(self, ctx: &Context) -> Result<Ex, SymplexError> {
+        match self {
+            Level::Lower(p) => ctx.from_f64(p),
+            Level::Upper(q) => Ok(ctx.one() - ctx.from_f64(q)?),
+        }
+    }
+
+    /// The lower-tail level as a (rounded) double, for starting estimates
+    /// only.
+    fn lower_f64(self) -> f64 {
+        match self {
+            Level::Lower(p) => p,
+            Level::Upper(q) => 1.0 - q,
+        }
+    }
+
+    /// `ppf(p)` for a lower level, `isf(q)` for an upper one.
+    fn pick<R>(self, ppf: impl FnOnce(f64) -> R, isf: impl FnOnce(f64) -> R) -> R {
+        match self {
+            Level::Lower(p) => ppf(p),
+            Level::Upper(q) => isf(q),
+        }
+    }
+
+    /// Has the exact tail crossed the level?  The sign of
+    /// `(tail − level)/level`, the level read as the exact binary number
+    /// it is, evaluated in arbitrary precision; a tie (`F(k) = p`,
+    /// `S(k) = q`) has crossed.  Relative to the level, so that the
+    /// difference cannot underflow: next to a subnormal level `tail −
+    /// level` is below the least double (`(2/3)¹⁸³⁶ − 2⁻¹⁰⁷⁴ = 3·10⁻³²⁶`
+    /// read `0`, a tie, and put the geometric upper quantile at `5e-324`
+    /// one atom low).
     fn crossed(self, tail: &Ex) -> Result<bool, SymplexError> {
         let (level, lower) = match self {
             Level::Lower(p) => (p, true),
             Level::Upper(q) => (q, false),
         };
-        let d = (tail - tail.context().from_f64(level)?).eval_f64()?;
+        let at = tail.context().from_f64(level)?;
+        let d = ((tail - &at) / &at).eval_f64()?;
         if d.is_nan() {
             return Err(SymplexError::computation_failed(
                 "quantile_f64",
@@ -975,10 +1024,12 @@ impl Distribution {
     /// `ChiSquared`, `FDistribution`, `Beta`, `Gamma`, `Binomial` and
     /// `Poisson` with numeric parameters go through the `f64` kernel
     /// [`numdist`](super::numdist) (`scipy.stats.<dist>.ppf`, about
-    /// `1e-15`, microseconds).  Otherwise a continuous distribution
-    /// evaluates its closed form when it has one, else finds the root of
-    /// `F(x) = p` by Brent's method on the compiled distribution function
-    /// over a bracket grown from the support's ends.
+    /// `1e-15`, microseconds), and an affine map `aX + b` of a density
+    /// carries the inner quantile at `p` (for `a < 0` the inner upper
+    /// quantile at `p`, [`isf_f64`](Self::isf_f64)).  Otherwise a
+    /// continuous distribution evaluates its closed form when it has one,
+    /// else finds the root of `F(x) = p` (for `p > ½`, of `S(x) = 1 − p`)
+    /// by Brent's method over a bracket grown from the support's ends.
     ///
     /// A discrete distribution returns the smallest atom `k` with
     /// `F(k) ≥ p`, `p` read as the exact binary number it is (a level that
@@ -1024,32 +1075,106 @@ impl Distribution {
     /// symbolic parameters; [`SymplexError::ComputationFailed`] if no
     /// bracket is found.
     pub fn quantile_f64(&self, p: f64) -> Result<f64, SymplexError> {
-        if !(p > 0.0 && p < 1.0) {
+        self.quantile_at(Level::Lower(p))
+    }
+
+    /// The upper-tail quantile at `q ∈ (0, 1)` as an `f64`: the `x` with
+    /// `P(X > x) = q`, and for a discrete distribution the smallest atom
+    /// `k` with `P(X > k) ≤ q` (`scipy.stats.<dist>.isf(q)`).  The
+    /// counterpart of [`quantile_f64`](Self::quantile_f64) on the same
+    /// routes, with the level given as `q` itself rather than as the
+    /// quantile at `1 − q` — which rounds: `1 − q` carries an absolute
+    /// error of up to `2⁻⁵⁴`, a relative error of up to `6·10⁻⁵` in a `q`
+    /// of `10⁻¹²`, and is `1` (no quantile at all) for `q ≤ 2⁻⁵⁴`.
+    ///
+    /// The eight [`numdist`](super::numdist) families use its `isf`; a
+    /// closed-form quantile is evaluated at the exact rational `1 − q`; an
+    /// affine map `aX + b` of a density takes the inner upper quantile
+    /// (`a > 0`) or lower quantile (`a < 0`) at `q` itself; any other
+    /// density solves `S(x) = q` (for `q ≤ ½`; `F(x) = 1 − q` otherwise,
+    /// exact) through its non-cancelling forms, relative to the level; a
+    /// lattice, a table of listed values, a mixture decides `S(k) ≤ q`
+    /// exactly at each candidate, as the quantile does for `p > ½`.  (scipy
+    /// forms `ppf(1 − q)` for the families without their own `isf`:
+    /// `stats.geom.isf(2**-53, 1/3)` is `90`, whose tail `(2/3)⁹⁰ = 1.4·10⁻¹⁶`
+    /// exceeds `q`, and `stats.geom.isf(2**-54, 1/3)` is `inf`.)
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::stats::Distribution;
+    ///
+    /// let ctx = Context::new();
+    /// // scipy: stats.t.isf(1e-12, 5) = 393.9569595776037
+    /// let t5 = Distribution::student_t(ctx.int(5));
+    /// assert!((t5.isf_f64(1e-12)? / 393.956_959_577_603_7 - 1.0).abs() < 1e-14);
+    /// // scipy: stats.expon.isf(5e-324) = 744.4400719213812 (= -ln q; a closed
+    /// // quantile, evaluated at the exact 1 - q)
+    /// let e = Distribution::exponential(ctx.int(1));
+    /// assert!((e.isf_f64(5e-324)? / 744.440_071_921_381_2 - 1.0).abs() < 1e-15);
+    /// // S(k) = (2/3)^k ≤ 2⁻⁵⁴ from k = 93 on (mpmath); 1 - 2⁻⁵⁴ rounds to 1.
+    /// let g = Distribution::geometric(ctx.rational(1, 3));
+    /// assert_eq!(g.isf_f64(f64::EPSILON / 4.0)?, 93.0);
+    /// assert!(g.quantile_f64(1.0 - f64::EPSILON / 4.0).is_err());
+    /// // scipy: stats.randint(1, 7).isf(0.25) = 5.0
+    /// assert_eq!(Distribution::die(ctx.int(6)).isf_f64(0.25)?, 5.0);
+    /// # Ok::<(), SymplexError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// As [`quantile_f64`](Self::quantile_f64), for `q` outside `(0, 1)`.
+    pub fn isf_f64(&self, q: f64) -> Result<f64, SymplexError> {
+        self.quantile_at(Level::Upper(q)).map_err(|e| match e {
+            SymplexError::ComputationFailed {
+                operation: "quantile_f64",
+                reason,
+            } => SymplexError::computation_failed("isf_f64", reason),
+            other => other,
+        })
+    }
+
+    /// [`quantile_f64`](Self::quantile_f64) (`Level::Lower(p)`) and
+    /// [`isf_f64`](Self::isf_f64) (`Level::Upper(q)`): the kernels get the
+    /// level as given (their `ppf` or `isf`), a closed quantile the exact
+    /// lower level ([`Level::lower_ex`]), and the searches its smaller tail
+    /// ([`Level::nearest`]).
+    fn quantile_at(&self, level: Level) -> Result<f64, SymplexError> {
+        let (op, name, v) = match level {
+            Level::Lower(p) => ("quantile_f64", "p", p),
+            Level::Upper(q) => ("isf_f64", "q", q),
+        };
+        if !(v > 0.0 && v < 1.0) {
             return Err(SymplexError::invalid_argument(
-                "quantile_f64",
-                format!("p must lie strictly between 0 and 1, got {p}"),
+                op,
+                format!("{name} must lie strictly between 0 and 1, got {v}"),
             ));
         }
-        if let Some(q) = self.kernel_quantile_f64(p) {
-            return q;
+        if let Some(x) = self.kernel_quantile_f64(level) {
+            return x;
         }
         let support = self.support();
         if support.kind() == Kind::Discrete {
-            return self.discrete_quantile_f64(p, &support);
+            return self.discrete_quantile_f64(level, &support);
         }
         let ctx = self.context();
-        if let Some(q) = self.0.quantile(&ctx.from_f64(p)?) {
-            return q.eval_f64();
+        if let Some(x) = self.0.quantile(&level.lower_ex(&ctx)?) {
+            return x.eval_f64();
         }
-        self.continuous_quantile_f64(p, &support)
+        self.continuous_quantile_f64(level.nearest(), &support)
     }
 
-    /// [`quantile_f64`](Self::quantile_f64) of a density without a closed
-    /// quantile or an `f64` kernel: the root of the smaller tail against
-    /// its level ([`Level`]), `F(x) = p` for `p ≤ ½` and `S(x) = q` with
-    /// `q = 1 − p` otherwise, compared relative to the level — `(F − p)/p`,
+    /// [`quantile_f64`](Self::quantile_f64) / [`isf_f64`](Self::isf_f64)
+    /// of a density without a closed quantile or an `f64` kernel: the root
+    /// of the smaller tail against its level (`level` is already
+    /// [`nearest`](Level::nearest)), `F(x) = p` or `S(x) = q`, compared
+    /// relative to the level — `(F − p)/p`,
     /// `(q − S)/q` — and located to a relative `4ε` of `x` (no absolute
-    /// floor above the subnormals).  A probe of the tail is
+    /// floor above the subnormals).  At a subnormal level the miss is
+    /// formed in arbitrary precision, since the tail as a double has as few
+    /// bits as the level (the mixture `¼ Exp(1) + ¾ Exp(3)` reads its tail
+    /// as `5e-324` anywhere in `(742.65, 743.75)`, and a draft of
+    /// `isf_f64(5e-324)` answered `743.029` for `743.0538`).  A probe of the
+    /// tail is
     /// [`cdf_on_support`](Self::cdf_on_support) /
     /// [`sf_on_support`](Self::sf_on_support) at the numeric point, which
     /// take the family's non-cancelling form in a far tail (not the
@@ -1063,7 +1188,11 @@ impl Distribution {
     /// (`2·T₃ + 1` at `1 − 2⁻⁵³`: `524287`, whose tail is `6.1·10⁻¹⁷`), and
     /// small quantiles were decided to that absolute width (the minimum of
     /// five `Exp(1)` at `10⁻¹²`: `0`, truly `2·10⁻¹³`).
-    fn continuous_quantile_f64(&self, p: f64, support: &Support) -> Result<f64, SymplexError> {
+    fn continuous_quantile_f64(
+        &self,
+        level: Level,
+        support: &Support,
+    ) -> Result<f64, SymplexError> {
         // A tail may still fold to a number at one point (`F(0) = ½` for a
         // Student t of any ν), but not along the search.
         if let Some((name, _)) = self
@@ -1076,7 +1205,6 @@ impl Distribution {
             });
         }
         let ctx = self.context();
-        let level = Level::of(p);
         // The hull of the pieces (one interval, or a mixture's several).
         let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
         for piece in support.pieces() {
@@ -1098,20 +1226,24 @@ impl Distribution {
         }
         // The level's tail at a numeric point, as a relative miss that
         // increases with `v`: `(F − p)/p` or `(q − S)/q`.  At or beyond an
-        // end of the hull `F` is 0 or 1.
+        // end of the hull `F` is 0 or 1.  (Clamped to the finite doubles:
+        // `1/q` overflows for a subnormal `q`.)
+        let (lvl, sign) = match level {
+            Level::Lower(p) => (p, 1.0),
+            Level::Upper(q) => (q, -1.0),
+        };
+        let subnormal = lvl < f64::MIN_POSITIVE;
+        let lvl_ex = ctx.from_f64(lvl)?;
         let g = |v: f64| -> f64 {
-            let (lvl, sign) = match level {
-                Level::Lower(p) => (p, 1.0),
-                Level::Upper(q) => (q, -1.0),
-            };
-            let t = if v.is_nan() {
+            let miss = if v.is_nan() {
                 f64::NAN
             } else if v <= lo || v >= hi {
                 let below = v <= lo;
-                match level {
+                let t = match level {
                     Level::Lower(_) => f64::from(u8::from(!below)),
                     Level::Upper(_) => f64::from(u8::from(below)),
-                }
+                };
+                (t - lvl) / lvl
             } else {
                 let Ok(at) = ctx.from_f64(v) else {
                     return f64::NAN;
@@ -1120,11 +1252,15 @@ impl Distribution {
                     Level::Lower(_) => self.cdf_on_support(&at),
                     Level::Upper(_) => self.sf_on_support(&at),
                 };
-                tail.eval_f64().unwrap_or(f64::NAN)
+                if subnormal {
+                    ((tail - &lvl_ex) / &lvl_ex).eval_f64().unwrap_or(f64::NAN)
+                } else {
+                    (tail.eval_f64().unwrap_or(f64::NAN) - lvl) / lvl
+                }
             };
-            sign * (t - lvl) / lvl
+            (sign * miss).clamp(-f64::MAX, f64::MAX)
         };
-        let x0 = self.classic_quantile_estimate(p, lo, hi);
+        let x0 = self.classic_quantile_estimate(level.lower_f64(), lo, hi);
         let (a, b) = grow_bracket(&g, x0, lo, hi)?;
         if a == b {
             return Ok(a);
@@ -1184,16 +1320,18 @@ impl Distribution {
         None
     }
 
-    /// [`quantile_f64`](Self::quantile_f64) through the `f64` kernel
-    /// [`numdist`](super::numdist) for the eight families it covers, when
-    /// every parameter is numeric; `None` leaves it to the generic route.
-    /// `p` goes to the lattice kernels as given: their inversion already
-    /// decides `F(k) ≥ p` on the smaller tail.  (0.27 subtracted an
+    /// [`quantile_f64`](Self::quantile_f64) / [`isf_f64`](Self::isf_f64)
+    /// through the `f64` kernel [`numdist`](super::numdist) for the eight
+    /// families it covers (its `ppf` for `Level::Lower(p)`, its `isf` for
+    /// `Level::Upper(q)`), when every parameter is numeric; `None` leaves
+    /// it to the generic route.  The level goes to the lattice kernels as
+    /// given: their inversion already decides `F(k) ≥ p` / `S(k) ≤ q` on
+    /// the smaller tail.  (0.27 subtracted an
     /// absolute slack of `10⁻¹²` from `p`, which turned every level below
     /// `10⁻¹²` into the smallest normal double and every level within
     /// `10⁻¹²` of `1` into a smaller one: `poisson(10⁶)` at `10⁻¹³` gave
     /// 962716 and `poisson(7/3)` at `1 − 2⁻⁵³` gave 20, for 992660 and 24.)
-    fn kernel_quantile_f64(&self, p: f64) -> Option<Result<f64, SymplexError>> {
+    fn kernel_quantile_f64(&self, level: Level) -> Option<Result<f64, SymplexError>> {
         use super::continuous::{Beta, ChiSquared, FDistribution, Gamma, Normal, StudentT};
         use super::discrete::{Binomial, Poisson};
         use super::numdist;
@@ -1209,55 +1347,85 @@ impl Distribution {
             if std <= 0.0 {
                 return None;
             }
-            return Some(numdist::norm::ppf(p).map(|z| mean + std * z));
+            let z = level.pick(numdist::norm::ppf, numdist::norm::isf);
+            return Some(z.map(|z| mean + std * z));
         }
         if let Some(d) = self.downcast_ref::<StudentT>() {
-            return Some(numdist::t::ppf(p, num(&d.dof)?));
+            let dof = num(&d.dof)?;
+            return Some(level.pick(|p| numdist::t::ppf(p, dof), |q| numdist::t::isf(q, dof)));
         }
         if let Some(d) = self.downcast_ref::<ChiSquared>() {
-            return Some(numdist::chi2::ppf(p, num(&d.dof)?));
+            let dof = num(&d.dof)?;
+            return Some(level.pick(
+                |p| numdist::chi2::ppf(p, dof),
+                |q| numdist::chi2::isf(q, dof),
+            ));
         }
         if let Some(d) = self.downcast_ref::<FDistribution>() {
-            return Some(numdist::f::ppf(p, num(&d.d1)?, num(&d.d2)?));
+            let (d1, d2) = (num(&d.d1)?, num(&d.d2)?);
+            return Some(level.pick(
+                |p| numdist::f::ppf(p, d1, d2),
+                |q| numdist::f::isf(q, d1, d2),
+            ));
         }
         if let Some(d) = self.downcast_ref::<Beta>() {
-            return Some(numdist::beta::ppf(p, num(&d.alpha)?, num(&d.beta)?));
+            let (a, b) = (num(&d.alpha)?, num(&d.beta)?);
+            return Some(level.pick(
+                |p| numdist::beta::ppf(p, a, b),
+                |q| numdist::beta::isf(q, a, b),
+            ));
         }
         if let Some(d) = self.downcast_ref::<Gamma>() {
-            return Some(numdist::gamma::ppf(p, num(&d.shape)?, num(&d.scale)?));
+            let (shape, scale) = (num(&d.shape)?, num(&d.scale)?);
+            return Some(level.pick(
+                |p| numdist::gamma::ppf(p, shape, scale),
+                |q| numdist::gamma::isf(q, shape, scale),
+            ));
         }
         if let Some(d) = self.downcast_ref::<Binomial>() {
             let (n, prob) = (num(&d.n)?, num(&d.p)?);
             if n.fract() != 0.0 {
                 return None;
             }
-            return Some(numdist::binom::ppf(p, n, prob));
+            return Some(level.pick(
+                |p| numdist::binom::ppf(p, n, prob),
+                |q| numdist::binom::isf(q, n, prob),
+            ));
         }
         if let Some(d) = self.downcast_ref::<Poisson>() {
-            return Some(numdist::poisson::ppf(p, num(&d.rate)?));
+            let rate = num(&d.rate)?;
+            return Some(level.pick(
+                |p| numdist::poisson::ppf(p, rate),
+                |q| numdist::poisson::isf(q, rate),
+            ));
         }
-        // `aX + b` of a density: the inner quantile at `p` (`a > 0`), or at
-        // `1 − p` (`a < 0`) where that is exact, `p ≥ ½` (Sterbenz); a
-        // lattice reflection is left to the lattice route (see
-        // `Affine::quantile`).
+        // `aX + b` of a density: the inner quantile at the same level
+        // (`a > 0`), or at the reflected one (`a < 0`: `P(aX + b ≤ x) =
+        // P(X ≥ (x − b)/a)`, the inner upper quantile at `p`) — at the level
+        // itself, never at the rounded `1 − p`.  A lattice reflection is
+        // left to the lattice route (see `Affine::quantile`).
         if let Some(d) = self.downcast_ref::<super::wrappers::Affine>()
             && d.inner.kind() == Kind::Continuous
-            && (d.increasing || p >= 0.5)
         {
             let (a, b) = (num(&d.a)?, num(&d.b)?);
-            let at = if d.increasing { p } else { 1.0 - p };
-            return Some(d.inner.quantile_f64(at).map(|x| a * x + b));
+            let at = if d.increasing {
+                level
+            } else {
+                level.reflected()
+            };
+            return Some(d.inner.quantile_at(at).map(|x| a * x + b));
         }
         None
     }
 
-    /// [`quantile_f64`](Self::quantile_f64) on a discrete support: the
-    /// smallest atom whose tail has crossed the level (see there).  Nothing
-    /// symbolic is built for the whole line: a CDF with a symbolic argument
-    /// is a `Sum` for a family without a closed form, and closing it
-    /// (`Hypergeometric`) took seconds.
-    fn discrete_quantile_f64(&self, p: f64, support: &Support) -> Result<f64, SymplexError> {
-        let level = Level::of(p);
+    /// [`quantile_f64`](Self::quantile_f64) / [`isf_f64`](Self::isf_f64)
+    /// on a discrete support: the smallest atom whose tail has crossed the
+    /// level (see there), decided on its [`nearest`](Level::nearest) tail.
+    /// Nothing symbolic is built for the whole line: a CDF with a symbolic
+    /// argument is a `Sum` for a family without a closed form, and closing
+    /// it (`Hypergeometric`) took seconds.
+    fn discrete_quantile_f64(&self, asked: Level, support: &Support) -> Result<f64, SymplexError> {
+        let level = asked.nearest();
         if let Some(values) = support.as_points() {
             return self.table_quantile_f64(level, &values);
         }
@@ -1270,7 +1438,7 @@ impl Distribution {
         };
         let (lo, hi) = (lattice_end(&iv.lower)?, lattice_end(&iv.upper)?);
         if closed {
-            let k0 = self.lattice_guess(p, level, lo, hi)?;
+            let k0 = self.lattice_guess(asked, level, lo, hi)?;
             return self.lattice_search(level, k0, lo, hi);
         }
         if let Some(k) = self.lattice_walk(level, lo, hi, false)? {
@@ -1335,11 +1503,18 @@ impl Distribution {
     }
 
     /// A starting point for [`lattice_search`](Self::lattice_search): the
-    /// closed-form quantile (`DiscreteUniform`), else a walk of the
-    /// compiled mass function, else the mean; `NaN` when there is none.
-    fn lattice_guess(&self, p: f64, level: Level, lo: f64, hi: f64) -> Result<f64, SymplexError> {
+    /// closed-form quantile (`DiscreteUniform`) at the exact level asked,
+    /// else a walk of the compiled mass function on the nearest tail
+    /// `level`, else the mean; `NaN` when there is none.
+    fn lattice_guess(
+        &self,
+        asked: Level,
+        level: Level,
+        lo: f64,
+        hi: f64,
+    ) -> Result<f64, SymplexError> {
         let ctx = self.context();
-        if let Some(q) = self.0.quantile(&ctx.from_f64(p)?)
+        if let Some(q) = self.0.quantile(&asked.lower_ex(&ctx)?)
             && let Ok(v) = q.eval_f64()
             && v.is_finite()
         {

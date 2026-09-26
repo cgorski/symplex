@@ -28,8 +28,12 @@ mod v28_canon;
 mod v28_evalf;
 #[path = "v28/v28_evalf_cuts.rs"]
 mod v28_evalf_cuts;
+#[path = "v28/v28_evalf_sensitivity.rs"]
+mod v28_evalf_sensitivity;
 #[path = "v28/v28_integrate.rs"]
 mod v28_integrate;
+#[path = "v28/v28_leftovers.rs"]
+mod v28_leftovers;
 #[path = "v28/v28_perf.rs"]
 mod v28_perf;
 #[path = "v28/v28_quantiles.rs"]

@@ -6,7 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
-## [Unreleased]
+## [0.29.0] - 2026-09-26
+
+Every known bug of 0.28, resolved, and the statistics audit finished.
+The integrator checks each closed form it returns; substitution respects
+binders; the evaluator keeps separate real and imaginary error bounds,
+decides branch cuts by certified signs, and scales a special function's
+error by its sensitivity to each argument, so it no longer prints digits
+it does not have.  Every statistics module was differentially tested
+against scipy, statsmodels, pingouin, sklearn or mpmath (rounds 2a–4:
+regression, survival and Cox, ANOVA, agreement, reliability,
+aggregation, estimation, data, information, multivariate, Markov chains,
+sequential tests, and the two incomplete gamma/beta engines against each
+other); each bug found is pinned in `tests/v28/` against its oracle.
 
 ### Breaking
 
@@ -29,7 +41,8 @@ sites in 19 files to 23 in 7.  Migrate each call by adding `?` (or
   (absent from JSON when the polynomial has one symbol, so univariate
   trees serialise as before and old JSON still reads), and there is a new
   `Subs { body, var, point }` variant.  Exhaustive matches need an arm.
-
+- **`IntervalMethod::Jeffreys`** is a new variant (statsmodels'
+  `'jeffreys'` proportion interval); exhaustive matches need an arm.
 - **`StateSpace`'s fields are private:** `StateSpace::new` is the only
   way to build one, so every model has conformant shapes.  Read the
   matrices with `a()`, `b()`, `c()` and `d()`.
@@ -175,6 +188,23 @@ sites in 19 files to 23 in 7.  Migrate each call by adding `?` (or
   simultaneous rename of a derivative's variable with a function pattern
   now renames: `Derivative(f(x), x).subs_map([x → t, f(x) → g(x)])` is
   `Derivative(g(t), t)`, as doing the two one after the other gives.
+- **`evalf` refuses a value whose error ball grows with the precision.**
+  At the precision cap a value whose ball contains 0 was returned as 0;
+  now the ball must also have shrunk with the precision, as a true zero's
+  does.  `tan(π(1/2 − 10⁻³⁰⁰)).eval_f64()` was `0.0` (truly `3.18e299`)
+  and is now `PrecisionExhausted`.
+- **Special functions of large rational arguments stay symbolic beyond the
+  digit guard:** `gamma(p/q)`, `n!`, `gamma(n)`, `loggamma(n)`, `binomial`,
+  `rising_factorial` / `falling_factorial` expand exactly only up to
+  `max_result_digits`; `evalf` evaluates them beyond it.  Printed forms of
+  such huge values change (`gamma(3000 + 1/3)` stays `gamma(9001/3)`).
+- **The parser reads `Derivative(f, x)` and the undefined functions the
+  context already knows**, so the display of an expression with `f(x)`
+  parses back in its own context.  An unknown name in a fresh context is
+  still an error (a typo like `sni(x)` does not become a function).
+- **`spearman_brown` returns `nan` outside its domain** (it returned
+  `zoo` at the pole, `6/5` for `ρ = 3/2`); `try_spearman_brown` returns
+  the error, and `split_half` / `standardized_alpha` report the pole.
 - **`MultiPoly::degree_in`, `partial_derivative` and `eval_var` accept any
   variable index**: one the polynomial doesn't have gives 0, the zero
   polynomial, or the polynomial unchanged (as SymPy's `degree`).
@@ -189,6 +219,15 @@ sites in 19 files to 23 in 7.  Migrate each call by adding `?` (or
 
 ### Added
 
+- `Distribution::isf_f64(q)`, the upper-tail quantile
+  (`scipy.stats.<dist>.isf`), on the same routes as `quantile_f64`: the
+  `numdist` kernels' `isf`, closed quantiles at the exact `1 − q`, affine
+  maps (either sign), lattices and tables decided exactly on the level
+  itself.  `credible_interval` of a table, a die or a geometric law no
+  longer errors at `c = 1 − 2⁻⁵³`.
+- `DawidSkenePriors::try_symmetric` and `reliability::try_spearman_brown`
+  (checked twins).
+- `studentized_range_{cdf, sf, quantile}` accept `df = ∞` (as scipy).
 - `MultiPoly::{try_var, try_substitute}` and `multipoly::try_s_polynomial`
   (checked twins; `ASSERT_ALLOWLIST` for `poly/multipoly.rs` 10 → 6).
 - rubi-harness: when the five sample points decide nothing, up to three
@@ -318,6 +357,32 @@ sites in 19 files to 23 in 7.  Migrate each call by adding `?` (or
 - **`p_value_ln` / `p_value_log10`:** the decimal-expansion fallback is
   gone; the evaluator certifies these directly (786 p-values probed down
   to `1e-21718`).
+- **Special functions scale their arguments' errors by their
+  sensitivity.**  `evalf` bounded a special function by its arguments'
+  relative error plus 4 bits, whatever its condition number, so an
+  argument rounded to the working precision gave certified wrong digits:
+  `betainc_regularized(27/11, 1/26562500, 0, 1 − 3·10⁻³⁰).eval_f64()`
+  was `2.5118502017106955e-6` (truly `2.5118502017194425e-6`), `besselj(0,
+  x)` next to its zero was wrong from the second digit, and
+  `betainc_regularized(1/3, 1/7, 0, 1 − 10⁻⁶⁰)` was exactly `1`.  The bound
+  is now `Σ |∂f/∂xᵢ|·err(xᵢ)` over the inexact arguments, from closed-form
+  derivative bounds, the change over the error ball at a singular limit,
+  or a second evaluation (`evalf/sensitivity.rs`).  Probing the class also
+  fixed `digamma` (wrong from digit 46 at `1/3`: a truncated asymptotic
+  series), `loggamma(1 + 2⁻¹⁰⁰)` (from digit 13), `gamma`/`polygamma` near
+  their poles, parameters within `10⁻¹²` of an integer taken for it
+  (`binomial(2 + 10⁻¹³, 3)` was `0`; Bessel orders; polynomial degrees),
+  and a panic in `expint` of a huge order.
+- **`gamma(3000 + 1/3)`, `3000!`, `loggamma(3000)` hung in `eval()`** (an
+  unbounded exact expansion; `factorial(1500)` 5.5 s → 2 ms, debug).
+- **`quantile_f64` / `isf_f64` at subnormal levels:** the lattice tie test
+  formed `S − q` in `f64`, which underflows (`geometric(1/3)` at `5e-324`
+  was one atom low), and the continuous search read subnormal tails with
+  few bits (a mixture at `5e-324`: `743.029` for `743.0538`).
+- **`tukey_hsd` tabulates the range tail once per call**: 30 groups take
+  27 ms instead of 1.8 s (release), p-values unchanged to `10⁻¹⁴`.
+  `studentized_range_sf(1, 12, 1)` was `NaN` (a rounded tail ratio above
+  1 inside `ln1p(−r)`).
 - **Incomplete gamma and beta, cross-checked (evalf against numdist,
   mpmath as referee):** evalf printed certified wrong digits in four
   places.
@@ -496,6 +561,18 @@ sites in 19 files to 23 in 7.  Migrate each call by adding `?` (or
 - Timing tests in `v02`, `v11` and `v19` compare side-by-side workloads
   instead of wall-clock bounds, so they no longer fail on a loaded
   machine.
+
+### Measured
+
+- `tests/v28/`: 19 files, 228 tests.  nextest 13,179 tests (14 skipped),
+  doctests 1,305.
+- Rubi harness: 6,038 verified, 72 real_verified, 0 wrong, 0 undecided
+  (0.28: 6,032 verified, 1 undecided).  Self-test: 55,120 verified, 0
+  wrong, 1,097 undecided (0.28: 55,044 and 1,173).  `--negative-params`:
+  0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates: identical.
+- `fuzz_numdist` and `fuzz_parser` (the two nightly crashes): 50 s in fork
+  mode each, 0 crashes.
 
 ## [0.28.0] - 2026-09-24
 

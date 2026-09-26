@@ -1534,7 +1534,10 @@ fn normal_range_tail(w: f64, k: usize, tail: Tail, rule: &GaussLegendre) -> f64 
                 if above <= 0.0 {
                     return 0.0;
                 }
-                let r = norm_sf(z + w) / above;
+                // `r ≤ 1`, but two rounded tails a hair apart may give
+                // `1 + ε` (`ln1p(−1 − ε)` is NaN: 0.28's `P(Q > 1 | k = 12,
+                // df = 1)` was NaN).
+                let r = (norm_sf(z + w) / above).min(1.0);
                 let one_exceeds = -(km1 * (-r).ln_1p()).exp_m1();
                 norm_pdf(z) * above.powf(km1) * one_exceeds
             };
@@ -1545,6 +1548,154 @@ fn normal_range_tail(w: f64, k: usize, tail: Tail, rule: &GaussLegendre) -> f64 
         }
     };
     (kf * integral).clamp(0.0, 1.0)
+}
+
+/// Degree of the interpolant on each piece of a [`RangeUpperTable`]:
+/// `TABLE_DEGREE + 1` Chebyshev points of the second kind.
+const TABLE_DEGREE: usize = 20;
+
+/// Width of a piece of a [`RangeUpperTable`], in units of `1/√(2 ln k)`.
+const TABLE_PIECE: f64 = 1.5;
+
+/// `w²/4` above which `e^{w²/4}` is not formed (it overflows past 709.78):
+/// there `R` is below `10⁻³⁰⁰` and a subnormal or nearly so, and `ln R`
+/// is rounded as it stands.
+const TABLE_EXP_CAP: f64 = 700.0;
+
+/// The upper tail `R(w) = P(W > w)` of the range of `k` standard normals
+/// ([`normal_range_tail`]), tabulated for repeated use at one `k`: the
+/// studentized range tail of every pair of a [`tukey_hsd`] shares it, and
+/// only the χ weight of the outer integral depends on the statistic.
+///
+/// On `(0, w₀)` (see below) it interpolates `F(w) = ln(R(w) e^{w²/4})` — smooth
+/// and of moderate size: `0` at `w = 0`, and far out, where `R ≈
+/// k(k−1)Φ̄(w/√2)`, about `ln(k(k−1)/(w√π))` — by the second ("true")
+/// barycentric formula on `TABLE_DEGREE + 1` Chebyshev points of the
+/// second kind in each piece (Berrut & Trefethen, SIAM Review 46, 2004:
+/// weights `(−1)ʲ`, halved at the ends; forward stable there), pieces
+/// `TABLE_PIECE/√(2 ln k)` wide (the spread of the maximum of `k` normals
+/// sets the scale of `R`'s features), each built on first use from the
+/// direct quadrature.  `w²/4` is split exactly (`w² =
+/// hi + lo` by a fused multiply-add) and `e^{−hi/4}` applied as a separate
+/// factor, so no logarithm near `−600` (whose ulp is `10⁻¹³`) is ever
+/// rounded.  From `w₀ = 2√(ln(k(k−1)/2) + 1075 ln 2)` on it is `0`: by the
+/// union bound over the pairs, `R ≤ k(k−1)Φ̄(w/√2) ≤ ½ k(k−1) e^{−w²/4}
+/// < 2⁻¹⁰⁷⁵` (`w₀ = 54.8` for `k = 40`).  On a piece whose samples are
+/// not all finite (`R` underflowed just short of `w₀`) the direct
+/// quadrature answers.
+///
+/// Accuracy: with exact samples (`k = 2`, `R = erfc(w/2)`) the interpolant
+/// is within `5·10⁻¹⁵` relative of `R` over `(0, 50)` at any degree from
+/// 12 up; against the quadrature it differs by the quadrature's own noise
+/// (a few `10⁻¹⁵` in the body, up to `5·10⁻¹⁴` for `w > 30` or
+/// `k = 1000`), as much as a table of degree 40 on pieces a third as wide.
+/// (Past `w²/4 = TABLE_EXP_CAP`, `R < 10⁻³⁰⁰`, only to the precision of
+/// the quadrature's own near-subnormal values.)
+struct RangeUpperTable<'r> {
+    k: usize,
+    rule: &'r GaussLegendre,
+    width: f64,
+    /// `w₀`, from which `R` rounds to `0`.
+    zero_from: f64,
+    /// `cos(jπ/n)`, `j = 0..=n`.
+    points: Vec<f64>,
+    /// The barycentric weights `(−1)ʲ δⱼ` (`δ = ½` at the ends).
+    weights: Vec<f64>,
+    /// `F` at the points of each piece, once built (`None` inside: not all
+    /// finite, use the quadrature).
+    pieces: std::cell::RefCell<Vec<Option<Option<Vec<f64>>>>>,
+}
+
+impl<'r> RangeUpperTable<'r> {
+    fn new(k: usize, rule: &'r GaussLegendre) -> Self {
+        let n = TABLE_DEGREE;
+        let kf = k as f64;
+        let width = TABLE_PIECE / (2.0 * kf.ln()).max(1.0).sqrt();
+        let zero_from = 2.0 * ((0.5 * kf * (kf - 1.0)).ln() + 1075.0 * LN_2).sqrt();
+        let points = (0..=n).map(|j| (PI * j as f64 / n as f64).cos()).collect();
+        let weights = (0..=n)
+            .map(|j| {
+                let sign = if j % 2 == 0 { 1.0 } else { -1.0 };
+                if j == 0 || j == n { 0.5 * sign } else { sign }
+            })
+            .collect();
+        let count = (zero_from / width).ceil() as usize;
+        Self {
+            k,
+            rule,
+            width,
+            zero_from,
+            points,
+            weights,
+            pieces: std::cell::RefCell::new(vec![None; count]),
+        }
+    }
+
+    /// `(hi, lo)` with `hi + lo = w²` exactly.
+    fn square(w: f64) -> (f64, f64) {
+        let hi = w * w;
+        (hi, w.mul_add(w, -hi))
+    }
+
+    /// `F(v) = ln(R(v) e^{v²/4})` from the quadrature.
+    fn sample(&self, v: f64) -> f64 {
+        let (hi, lo) = Self::square(v);
+        let r = self.direct(v);
+        if 0.25 * hi < TABLE_EXP_CAP {
+            (r * (0.25 * hi).exp()).ln() + 0.25 * lo
+        } else {
+            r.ln() + 0.25 * hi + 0.25 * lo
+        }
+    }
+
+    fn direct(&self, w: f64) -> f64 {
+        normal_range_tail(w, self.k, Tail::Upper, self.rule)
+    }
+
+    /// `P(W > w)`.
+    fn upper(&self, w: f64) -> f64 {
+        if w >= self.zero_from {
+            return 0.0;
+        }
+        if w.is_nan() || w <= 0.0 {
+            return self.direct(w);
+        }
+        let pieces_len = self.pieces.borrow().len();
+        let index = ((w / self.width) as usize).min(pieces_len - 1);
+        let a = index as f64 * self.width;
+        if self.pieces.borrow()[index].is_none() {
+            let values: Vec<f64> = self
+                .points
+                .iter()
+                .map(|&x| self.sample(a + 0.5 * self.width * (1.0 + x)))
+                .collect();
+            let usable = values.iter().all(|f| f.is_finite());
+            self.pieces.borrow_mut()[index] = Some(usable.then_some(values));
+        }
+        let pieces = self.pieces.borrow();
+        let Some(Some(values)) = &pieces[index] else {
+            return self.direct(w);
+        };
+        let x = 2.0 * (w - a) / self.width - 1.0;
+        let (mut num, mut den) = (0.0, 0.0);
+        for ((&p, &c), &f) in self.points.iter().zip(&self.weights).zip(values) {
+            let d = x - p;
+            if d == 0.0 {
+                (num, den) = (f, 1.0);
+                break;
+            }
+            num += c * f / d;
+            den += c / d;
+        }
+        let (hi, lo) = Self::square(w);
+        let f = num / den - 0.25 * lo;
+        let r = if 0.25 * hi < TABLE_EXP_CAP {
+            f.exp() * (-0.25 * hi).exp()
+        } else {
+            (f - 0.25 * hi).exp()
+        };
+        r.clamp(0.0, 1.0)
+    }
 }
 
 /// `R(x) = ln Γ(x) − [(x − ½) ln x − x + ½ ln 2π]`, the remainder of
@@ -1676,6 +1827,20 @@ const OUTER_SEARCH_CAP: usize = 4096;
 ///
 /// Past [`NU_NORMAL_LIMIT`] the range tail itself is returned.
 fn studentized_range_tail(q: f64, k: usize, nu: f64, tail: Tail) -> Result<f64, SymplexError> {
+    let rule = GaussLegendre::new(16);
+    studentized_range_tail_by(q, k, nu, tail, &|w| normal_range_tail(w, k, tail, &rule))
+}
+
+/// [`studentized_range_tail`] with the range tail `P(W ≶ w)` supplied:
+/// the direct quadrature, or a [`RangeUpperTable`] shared by many
+/// statistics at one `k` (the outer integral is otherwise the same).
+fn studentized_range_tail_by(
+    q: f64,
+    k: usize,
+    nu: f64,
+    tail: Tail,
+    range_tail_at: &dyn Fn(f64) -> f64,
+) -> Result<f64, SymplexError> {
     const OP: &str = "studentized_range";
     if q.is_nan() || q <= 0.0 {
         return Ok(tail.at_zero());
@@ -1685,7 +1850,7 @@ fn studentized_range_tail(q: f64, k: usize, nu: f64, tail: Tail) -> Result<f64, 
     }
     let rule = GaussLegendre::new(16);
     if nu >= NU_NORMAL_LIMIT {
-        return Ok(normal_range_tail(q, k, tail, &rule));
+        return Ok(range_tail_at(q));
     }
     let x = 0.5 * nu;
     let log_prefactor = LN_2 + 0.5 * (x / (2.0 * PI)).ln() - stirling_remainder(x);
@@ -1698,7 +1863,7 @@ fn studentized_range_tail(q: f64, k: usize, nu: f64, tail: Tail) -> Result<f64, 
         };
         log_prefactor + 2.0 * x * t_minus_u - x * u * u
     };
-    let range_tail = |t: f64| normal_range_tail(q * t.exp(), k, tail, &rule);
+    let range_tail = |t: f64| range_tail_at(q * t.exp());
     let log_h = |t: f64| log_weight(t) + range_tail(t).ln();
     let not_found = || {
         failed(
@@ -1852,14 +2017,17 @@ fn studentized_range_tail(q: f64, k: usize, nu: f64, tail: Tail) -> Result<f64, 
     Ok(total.clamp(0.0, 1.0))
 }
 
+/// `k ≥ 2` and `df ≥ 1`, `df = +∞` included (the range of `k` standard
+/// normals, as `scipy.stats.studentized_range` takes `np.inf`); `NaN` is
+/// refused.
 fn check_studentized_range_args(op: &'static str, k: usize, df: f64) -> Result<(), SymplexError> {
     if k < 2 {
         return Err(invalid(op, format!("k must be at least 2, got {k}")));
     }
-    if !(df.is_finite() && df >= 1.0) {
+    if df.is_nan() || df < 1.0 {
         return Err(invalid(
             op,
-            format!("the degrees of freedom must be finite and at least 1, got {df}"),
+            format!("the degrees of freedom must be at least 1 (or +inf), got {df}"),
         ));
     }
     Ok(())
@@ -1870,22 +2038,27 @@ fn check_studentized_range_args(op: &'static str, k: usize, df: f64) -> Result<(
 /// integral (relative accuracy about `1e-14`, also in the lower tail as
 /// `q → 0`).  `scipy.stats.studentized_range.cdf(q, k, df)`.
 ///
-/// `df` must be finite; from `df = 1e30` on the result is the `df = ∞`
-/// limit (the range of `k` standard normals) to double precision.
+/// `df = f64::INFINITY` is the limit `P(Q ≤ q) = k∫φ(z)[Φ(z) − Φ(z − q)]^{k−1}dz`,
+/// the range of `k` standard normals (`scipy.stats.studentized_range.cdf(q,
+/// k, np.inf)`); from `df = 1e30` on the finite-`df` result equals it to
+/// double precision.
 ///
 /// ```
 /// use symplex::stats::anova::studentized_range_cdf;
 ///
 /// // scipy: studentized_range.cdf(3.0, 3, 12) = 0.8729674086442558
 /// assert!((studentized_range_cdf(3.0, 3, 12.0)? - 0.872_967_408_644_255_8).abs() < 1e-8);
+/// // scipy: studentized_range.cdf(3.0, 3, np.inf) = 0.9144574283450421
+/// let c = studentized_range_cdf(3.0, 3, f64::INFINITY)?;
+/// assert!((c - 0.914_457_428_345_042_1).abs() < 1e-14);
 /// # Ok::<(), symplex::prelude::SymplexError>(())
 /// ```
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for `k < 2`, `df < 1`, a non-finite
-/// `df` or a NaN `q`; [`SymplexError::ComputationFailed`] if the quadrature
-/// finds no window (not expected).
+/// [`SymplexError::InvalidArgument`] for `k < 2`, `df < 1`, a NaN `df` or
+/// a NaN `q`; [`SymplexError::ComputationFailed`] if the quadrature finds
+/// no window (not expected).
 pub fn studentized_range_cdf(q: f64, k: usize, df: f64) -> Result<f64, SymplexError> {
     const OP: &str = "studentized_range_cdf";
     check_studentized_range_args(OP, k, df)?;
@@ -1899,7 +2072,8 @@ pub fn studentized_range_cdf(q: f64, k: usize, df: f64) -> Result<f64, SymplexEr
 /// from the upper tail of the range of `k` normals (never as `1 − cdf`), so
 /// it keeps its relative accuracy (about `1e-14`) down to underflow.
 /// `scipy.stats.studentized_range.sf(q, k, df)` — which *is* `1 − cdf`
-/// and is rounding noise below `10⁻¹⁵`.
+/// and is rounding noise below `10⁻¹⁵`.  `df = f64::INFINITY` is the
+/// range of `k` standard normals (see [`studentized_range_cdf`]).
 ///
 /// ```
 /// use symplex::stats::anova::studentized_range_sf;
@@ -1939,24 +2113,44 @@ pub fn studentized_range_sf(q: f64, k: usize, df: f64) -> Result<f64, SymplexErr
 /// # Ok::<(), symplex::prelude::SymplexError>(())
 /// ```
 ///
+/// `df = f64::INFINITY` inverts the range of `k` standard normals (see
+/// [`studentized_range_cdf`]; scipy: `studentized_range.ppf(0.95, 3,
+/// np.inf) = 3.314493155398121`, the classic `q_{0.05; 3, ∞} = 3.314`).
+///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for `k < 2`, `df < 1`, a non-finite
-/// `df` or `p ∉ (0, 1)`; [`SymplexError::ComputationFailed`] if the root
-/// search fails.
+/// [`SymplexError::InvalidArgument`] for `k < 2`, `df < 1`, a NaN `df` or
+/// `p ∉ (0, 1)`; [`SymplexError::ComputationFailed`] if the root search
+/// fails.
 pub fn studentized_range_quantile(p: f64, k: usize, df: f64) -> Result<f64, SymplexError> {
+    check_studentized_range_args("studentized_range_quantile", k, df)?;
+    check_unit_open("studentized_range_quantile", "p", p)?;
+    studentized_range_root(p, k, df, None)
+}
+
+/// [`studentized_range_quantile`] for checked arguments, the upper tail of
+/// the range taken from `table` when one is given.
+fn studentized_range_root(
+    p: f64,
+    k: usize,
+    df: f64,
+    table: Option<&RangeUpperTable<'_>>,
+) -> Result<f64, SymplexError> {
     const OP: &str = "studentized_range_quantile";
-    check_studentized_range_args(OP, k, df)?;
-    check_unit_open(OP, "p", p)?;
     let (tail, level) = if p <= 0.5 {
         (Tail::Lower, p)
     } else {
         (Tail::Upper, 1.0 - p)
     };
+    let rule = GaussLegendre::new(16);
+    let range_tail_at = |w: f64| match table {
+        Some(t) if tail == Tail::Upper => t.upper(w),
+        _ => normal_range_tail(w, k, tail, &rule),
+    };
     let ln_level = level.ln();
     // In `x = ln q`; an underflowed tail is floored so `g` stays finite and
     // monotone (`ln level ≥ ln 2⁻¹⁰⁷⁴ > −1e4`).
-    let g = |x: f64| match studentized_range_tail(x.exp(), k, df, tail) {
+    let g = |x: f64| match studentized_range_tail_by(x.exp(), k, df, tail, &range_tail_at) {
         Ok(v) => v.ln().max(-1e4) - ln_level,
         Err(_) => f64::NAN,
     };
@@ -2021,7 +2215,13 @@ pub struct PairwiseComparison {
 /// interval limits are `f64`.  The p-values are the studentized range
 /// upper tail integrated directly ([`studentized_range_sf`]), so a wide
 /// separation gets its true tiny p-value (`scipy.stats.tukey_hsd` reports
-/// `1 − cdf`, rounding noise below `10⁻¹⁵`).
+/// `1 − cdf`, rounding noise below `10⁻¹⁵`).  All pairs and the critical
+/// value share one tabulation of the inner integral, the range tail
+/// `P(W > w)` of `k` normals, which depends on `k` alone (only the χ
+/// weight of the outer integral depends on the pair): 30 groups take
+/// about 30 ms (0.28 integrated each of the 435 pairs afresh, 1.8 s), and
+/// the p-values agree with [`studentized_range_sf`] of each statistic to
+/// its own accuracy (a relative `10⁻¹⁵`, `10⁻¹⁴` in a far tail).
 ///
 /// ```
 /// use symplex::prelude::*;
@@ -2080,7 +2280,12 @@ pub fn tukey_hsd(
     }
     let mse = ss_within / qu(df);
     let df_f = df as f64;
-    let q_crit = studentized_range_quantile(confidence, k, df_f)?;
+    // Every pair (and the critical value) integrates the same range tail
+    // `P(W > w)` of k normals against its own χ weight: tabulate it once.
+    let rule = GaussLegendre::new(16);
+    let table = RangeUpperTable::new(k, &rule);
+    let upper = |w: f64| table.upper(w);
+    let q_crit = studentized_range_root(confidence, k, df_f, Some(&table))?;
     let mut out = Vec::with_capacity(k * (k - 1) / 2);
     for i in 0..k {
         for j in i + 1..k {
@@ -2090,7 +2295,7 @@ pub fn tukey_hsd(
             let statistic = ex(ctx, &diff.abs()) / &se;
             let (diff_f, se_f) = (to_f64(OP, &diff)?, to_f64(OP, &var)?.sqrt());
             let stat_f = to_f64(OP, &(&diff * &diff / &var))?.sqrt();
-            let p_adj = studentized_range_tail(stat_f, k, df_f, Tail::Upper)?;
+            let p_adj = studentized_range_tail_by(stat_f, k, df_f, Tail::Upper, &upper)?;
             out.push(PairwiseComparison {
                 i,
                 j,

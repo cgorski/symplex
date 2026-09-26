@@ -875,25 +875,121 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
 // Special value tables
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Check if `id` is the constant `π`.
+// ── The digit guard of exact products ────────────────────────────────────
+//
+// `n!`, `Γ(p/q)` (a rising factorial times `Γ` of the fractional part),
+// `C(n, k)`, `(x)ₙ` and `x^(n)` are exact rationals of about `n·log₁₀ n`
+// digits.  They follow canon's policy for integer powers: a result beyond
+// `max_result_digits` digits is not computed and the node stays symbolic,
+// for `evalf` to evaluate numerically.  A lower bound on the digits refuses
+// before any multiplication; the exact count of the product decides at the
+// limit.  Before 0.29 nothing was bounded and every factor went through a
+// `Ratio` multiplication (a gcd per step): `Γ(1000 + 1/3)` took 2.9 s in
+// eval (debug), `Γ(3000 + 1/3)`, `3000!` and `ln Γ(3000)` more than a minute,
+// so `uppergamma(s, x)/gamma(s)` hung before `evalf` ran.
+
+/// A lower bound on `log₁₀ n!` (`n! ≥ (n/e)ⁿ`), for `n ≥ 0`.
+fn log10_factorial_lower(n: f64) -> f64 {
+    if n < 1.0 {
+        0.0
+    } else {
+        n * (n / std::f64::consts::E).log10().max(0.0)
+    }
+}
+
+/// Is an exact result of at least `digits` decimal digits (a lower bound)
+/// beyond the digit guard?  `NaN` and `∞` are.
+fn beyond_digit_guard(arena: &Arena, digits: f64) -> bool {
+    digits.is_nan() || digits > arena.config.max_result_digits as f64
+}
+
+/// `r` as a node when its numerator and denominator together have at most
+/// `max_result_digits` digits (canon's count), otherwise `None`.
+fn guarded_num(arena: &mut Arena, r: Q) -> Option<ExprId> {
+    let digits = r.numer().to_string().len() + r.denom().to_string().len();
+    if digits > arena.config.max_result_digits {
+        return None;
+    }
+    let nid = arena.intern_num(r);
+    Some(arena.intern(ExprNode::Num(nid)))
+}
+
+/// `∏_{i<n} (a + i·d)` for integers `a`, `d`.
+fn progression_product(a: &BigInt, d: &BigInt, n: u64) -> BigInt {
+    let mut acc = BigInt::one();
+    let mut term = a.clone();
+    for _ in 0..n {
+        acc *= &term;
+        term += d;
+    }
+    acc
+}
+
+/// A lower bound on the decimal digits of `∏_{i<n} |a + i·d|` (`d ≠ 0`, no
+/// factor zero): the factors are distinct non-zero integers `|d|` apart, so
+/// the `j`-th smallest of them is at least `|d|·⌊j/2⌋`, and when they all
+/// have the sign of `a` (`a·d > 0`) the `j`-th is at least `|d|·j` (`j ≥ 1`).
+fn progression_digits_lower(a: &BigInt, d: &BigInt, n: u64) -> f64 {
+    if n < 2 {
+        return 0.0;
+    }
+    let n = n as f64;
+    let log_d = d.abs().to_f64().unwrap_or(f64::INFINITY).log10();
+    if a.sign() == d.sign() {
+        log10_factorial_lower(n - 1.0) + (n - 1.0) * log_d
+    } else {
+        2.0 * log10_factorial_lower(((n - 1.0) / 2.0).floor()) + (n - 2.0).max(0.0) * log_d
+    }
+}
+
+/// `(p/q)ₙ = ∏_{i<n} (p/q + i) = ∏(p + i·q)/qⁿ` (`step = 1`) or the falling
+/// `∏_{i<n} (p/q − i)` (`step = −1`) exactly, `None` beyond the digit guard.
+/// Numerator and denominator are coprime (`gcd(p + i·q, q) = gcd(p, q) = 1`),
+/// so no gcd is taken.
+fn exact_factorial_power(arena: &mut Arena, x: &Q, n: u64, step: i32) -> Option<ExprId> {
+    let (p, q) = (x.numer(), x.denom());
+    let d = q * BigInt::from(step);
+    // A zero factor: x a non-positive (rising) or non-negative (falling)
+    // integer within n steps.
+    if x.is_integer() {
+        let reach = BigInt::from(n) - BigInt::one();
+        let hits_zero = if step > 0 {
+            !p.is_positive() && -p <= reach
+        } else {
+            !p.is_negative() && *p <= reach
+        };
+        if hits_zero {
+            return Some(arena.zero);
+        }
+    }
+    let q_digits = (n as f64) * q.to_f64().unwrap_or(f64::INFINITY).log10();
+    if beyond_digit_guard(arena, progression_digits_lower(p, &d, n) + q_digits) {
+        return None;
+    }
+    let numer = progression_product(p, &d, n);
+    let denom = num_traits::Pow::pow(q.clone(), n);
+    guarded_num(arena, Ratio::new_raw(numer, denom))
+}
+
+/// `n!` for a non-negative integer literal `n`, within the digit guard.
 fn eval_factorial(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     let r = arena.as_num(inner)?;
     if !r.is_integer() || r.is_negative() {
         return None;
     }
     let n: u64 = r.to_integer().try_into().ok()?;
-    // No artificial limit — BigInt handles arbitrary precision.
-    // EvalConfig guards against runaway computation at a higher level.
-    let mut result = num_rational::Ratio::<num_bigint::BigInt>::one();
-    for i in 2..=n {
-        result *= num_rational::Ratio::from_integer(num_bigint::BigInt::from(i));
+    if beyond_digit_guard(arena, log10_factorial_lower(n as f64)) {
+        return None;
     }
-    let nid = arena.intern_num(result);
-    Some(arena.intern(ExprNode::Num(nid)))
+    let result = Ratio::from_integer(crate::base::combinatorics::factorial(n));
+    guarded_num(arena, result)
 }
 
 /// Gamma(n) for positive integer n → (n-1)!
 /// Gamma(1/2) → √π
+///
+/// Every expansion is bounded by the digit guard (see
+/// [`beyond_digit_guard`]); beyond it the node stays symbolic.
 fn eval_gamma(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     let r = arena.as_num(inner)?.clone();
 
@@ -906,6 +1002,14 @@ fn eval_gamma(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         // k = (p - 1) / 2
         let k_big = (&p - BigInt::from(1)) / BigInt::from(2);
         let k: u64 = k_big.try_into().ok()?;
+        // (2k−1)!! ≥ k!, and the denominator 2^k.
+        let kf = k as f64;
+        if beyond_digit_guard(
+            arena,
+            log10_factorial_lower(kf) + kf * std::f64::consts::LOG10_2,
+        ) {
+            return None;
+        }
 
         // Compute (2k-1)!! = product of odd numbers 1, 3, 5, …, 2k-1.
         let mut double_fact = BigInt::from(1);
@@ -917,15 +1021,14 @@ fn eval_gamma(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         let two_pow_k = BigInt::from(1) << (k as usize);
         let coeff = Ratio::new(double_fact, two_pow_k);
 
-        let pi = arena.pi;
-        let sqrt_pi = arena.sqrt(pi);
-
         if coeff.is_one() {
-            return Some(sqrt_pi);
+            let pi = arena.pi;
+            return Some(arena.sqrt(pi));
         }
 
-        let coeff_id = arena.intern_num(coeff);
-        let coeff_node = arena.intern(ExprNode::Num(coeff_id));
+        let coeff_node = guarded_num(arena, coeff)?;
+        let pi = arena.pi;
+        let sqrt_pi = arena.sqrt(pi);
         let result = arena.mul(&[coeff_node, sqrt_pi]);
         return Some(result);
     }
@@ -933,12 +1036,11 @@ fn eval_gamma(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     // Positive integer: Gamma(n) = (n-1)!
     if r.is_integer() && r.is_positive() {
         let n: u64 = r.to_integer().try_into().ok()?;
-        let mut result = Ratio::<BigInt>::one();
-        for i in 2..n {
-            result *= Ratio::from_integer(BigInt::from(i));
+        if beyond_digit_guard(arena, log10_factorial_lower((n - 1) as f64)) {
+            return None;
         }
-        let nid = arena.intern_num(result);
-        return Some(arena.intern(ExprNode::Num(nid)));
+        let result = Ratio::from_integer(crate::base::combinatorics::factorial(n - 1));
+        return guarded_num(arena, result);
     }
 
     // Gamma recurrence for positive rationals > 1 with denom ∉ {1, 2}:
@@ -950,21 +1052,16 @@ fn eval_gamma(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
             let n: u64 = n_big.clone().try_into().ok()?;
             let frac = &r - Ratio::from_integer(n_big);
             // rising_factorial(frac, n) = frac * (frac+1) * … * (frac+n-1)
-            let mut product = Ratio::<BigInt>::one();
-            for i in 0..n {
-                product *= &frac + Ratio::from_integer(BigInt::from(i));
-            }
+            let prod_node = exact_factorial_power(arena, &frac, n, 1)?;
             let frac_id = {
                 let nid = arena.intern_num(frac);
                 arena.intern(ExprNode::Num(nid))
             };
             // Try to evaluate the inner Gamma (e.g. Gamma(1/2) → √π)
             let gamma_frac = eval_gamma(arena, frac_id).unwrap_or_else(|| arena.gamma(frac_id));
-            if product.is_one() {
+            if prod_node == arena.one {
                 return Some(gamma_frac);
             }
-            let prod_nid = arena.intern_num(product);
-            let prod_node = arena.intern(ExprNode::Num(prod_nid));
             return Some(arena.mul(&[prod_node, gamma_frac]));
         }
     }
@@ -983,13 +1080,12 @@ fn eval_gamma(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         };
         let m: u64 = m_big.clone().try_into().ok()?;
         let frac = &r + Ratio::from_integer(m_big); // frac ∈ (0, 1)
-        // Denominator product: x·(x+1)·…·(x+m-1)
-        let mut denom_product = Ratio::<BigInt>::one();
-        for i in 0..m {
-            denom_product *= &r + Ratio::from_integer(BigInt::from(i));
-        }
+        // Denominator product: x·(x+1)·…·(x+m-1), non-zero as r is not an
+        // integer.
+        let denom_node = exact_factorial_power(arena, &r, m, 1)?;
+        let denom_product = arena.as_num(denom_node)?.clone();
         if denom_product.is_zero() {
-            return None; // pole — should not happen since r is not an integer
+            return None;
         }
         let frac_id = {
             let nid = arena.intern_num(frac);
@@ -1054,17 +1150,16 @@ fn eval_log_gamma(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         return None;
     }
     let n: u64 = r.to_integer().try_into().ok()?;
-    // (n-1)!
-    let mut fact = Ratio::<BigInt>::one();
-    for i in 2..n {
-        fact *= Ratio::from_integer(BigInt::from(i));
+    // (n-1)!, within the digit guard (beyond it `ln Γ(n)` stays symbolic).
+    if beyond_digit_guard(arena, log10_factorial_lower((n - 1) as f64)) {
+        return None;
     }
+    let fact = Ratio::from_integer(crate::base::combinatorics::factorial(n - 1));
     // ln(1) = 0 — handle n=1 and n=2 where (n-1)! = 1
     if fact == Ratio::<BigInt>::one() {
         return Some(arena.zero);
     }
-    let nid = arena.intern_num(fact);
-    let fact_id = arena.intern(ExprNode::Num(nid));
+    let fact_id = guarded_num(arena, fact)?;
     Some(arena.ln(fact_id))
 }
 
@@ -1250,11 +1345,16 @@ fn eval_binomial(arena: &mut Arena, n: ExprId, k: ExprId) -> Option<ExprId> {
     }
     let n_u64: u64 = nr.to_integer().try_into().ok()?;
     let k_u64: u64 = kr.to_integer().try_into().ok()?;
+    // C(n, j) ≥ (n/j)^j for j = min(k, n − k): within the digit guard.
+    if k_u64 <= n_u64 {
+        let j = k_u64.min(n_u64 - k_u64) as f64;
+        if j >= 1.0 && beyond_digit_guard(arena, j * (n_u64 as f64 / j).log10()) {
+            return None;
+        }
+    }
     // `binomial` gives 0 for 0 ≤ n < k (SymPy: `binomial(1, 2) == 0`).
     let result = crate::base::combinatorics::binomial(n_u64, k_u64);
-    let ratio = Ratio::from_integer(result);
-    let nid = arena.intern_num(ratio);
-    Some(arena.intern(ExprNode::Num(nid)))
+    guarded_num(arena, Ratio::from_integer(result))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1495,19 +1595,27 @@ pub(crate) fn eval_polygamma(arena: &mut Arena, n: ExprId, x: ExprId) -> Option<
     }
     let n_usize: usize = nr.to_integer().try_into().ok()?;
     let xr = arena.as_num(x)?.clone();
+    if xr.is_integer() && !xr.is_positive() {
+        return Some(arena.complex_infinity);
+    }
+    // The shift to the base point: m − 1 terms 1/k^{n+1} (integer x = m) or
+    // m terms 2^{n+1}/(2k+1)^{n+1} (x = m + 1/2); anything else stays
+    // symbolic (and n! is not computed for it).
+    let half = *xr.denom() == BigInt::from(2);
+    let m: i64 = if xr.is_integer() || half {
+        xr.floor().to_integer().try_into().ok()?
+    } else {
+        return None;
+    };
+    if !(0..=MAX_POLYGAMMA_SHIFT).contains(&m) {
+        return None;
+    }
     let sign = if n_usize.is_multiple_of(2) { -1 } else { 1 }; // (−1)^{n+1}
     let n_fact = factorial_ratio(n_usize);
     let np1 = arena.int(n_usize as i64 + 1);
     let zeta_np1 = arena.zeta(np1);
 
     if xr.is_integer() {
-        let m: i64 = xr.to_integer().try_into().ok()?;
-        if m <= 0 {
-            return Some(arena.complex_infinity);
-        }
-        if m > MAX_POLYGAMMA_SHIFT {
-            return None;
-        }
         // ψ⁽ⁿ⁾(m) = ψ⁽ⁿ⁾(1) + (−1)ⁿ n! Σ_{k=1}^{m−1} 1/k^{n+1}
         let base_coeff = &n_fact * Ratio::from_integer(BigInt::from(sign));
         let nid = arena.intern_num(base_coeff);
@@ -1523,11 +1631,7 @@ pub(crate) fn eval_polygamma(arena: &mut Arena, n: ExprId, x: ExprId) -> Option<
         let shift_id = arena.intern(ExprNode::Num(nid));
         return Some(arena.add(&[base, shift_id]));
     }
-    if *xr.denom() == BigInt::from(2) {
-        let m: i64 = xr.floor().to_integer().try_into().ok()?;
-        if !(0..=MAX_POLYGAMMA_SHIFT).contains(&m) {
-            return None;
-        }
+    if half {
         // ψ⁽ⁿ⁾(1/2) = (−1)^{n+1} n! (2^{n+1} − 1) ζ(n+1)
         let two_pow = (BigInt::from(1) << (n_usize + 1)) - BigInt::from(1);
         let base_coeff =
@@ -1617,7 +1721,8 @@ fn eval_subfactorial(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 }
 
 /// Rising factorial (Pochhammer): (x)_n = x * (x+1) * ... * (x+n-1).
-/// Works for rational x; n must be a non-negative integer.
+/// Works for rational x; n must be a non-negative integer.  Within the
+/// digit guard (see [`beyond_digit_guard`]).
 fn eval_rising_factorial(arena: &mut Arena, x_id: ExprId, n_id: ExprId) -> Option<ExprId> {
     let xr = arena.as_num(x_id)?.clone();
     let nr = arena.as_num(n_id)?;
@@ -1625,16 +1730,12 @@ fn eval_rising_factorial(arena: &mut Arena, x_id: ExprId, n_id: ExprId) -> Optio
         return None;
     }
     let n: u64 = nr.to_integer().try_into().ok()?;
-    let mut result = Ratio::<BigInt>::one();
-    for i in 0..n {
-        result *= &xr + Ratio::from_integer(BigInt::from(i));
-    }
-    let nid = arena.intern_num(result);
-    Some(arena.intern(ExprNode::Num(nid)))
+    exact_factorial_power(arena, &xr, n, 1)
 }
 
 /// Falling factorial: x^(n) = x * (x-1) * ... * (x-n+1).
-/// Works for rational x; n must be a non-negative integer.
+/// Works for rational x; n must be a non-negative integer.  Within the
+/// digit guard (see [`beyond_digit_guard`]).
 fn eval_falling_factorial(arena: &mut Arena, x_id: ExprId, n_id: ExprId) -> Option<ExprId> {
     let xr = arena.as_num(x_id)?.clone();
     let nr = arena.as_num(n_id)?;
@@ -1642,12 +1743,7 @@ fn eval_falling_factorial(arena: &mut Arena, x_id: ExprId, n_id: ExprId) -> Opti
         return None;
     }
     let n: u64 = nr.to_integer().try_into().ok()?;
-    let mut result = Ratio::<BigInt>::one();
-    for i in 0..n {
-        result *= &xr - Ratio::from_integer(BigInt::from(i));
-    }
-    let nid = arena.intern_num(result);
-    Some(arena.intern(ExprNode::Num(nid)))
+    exact_factorial_power(arena, &xr, n, -1)
 }
 
 /// Fibonacci number F(n) using iterative computation.

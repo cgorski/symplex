@@ -50,6 +50,7 @@ use num_traits::{One, Zero};
 use super::agreement::RatingTable;
 use super::common::{ex, ex_usize, invalid, qu};
 use super::data::{self, Ddof, Q};
+use super::family::sign_of;
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
@@ -328,13 +329,17 @@ pub fn average_inter_item_correlation(
 ///
 /// # Errors
 ///
-/// As [`average_inter_item_correlation`].
+/// As [`average_inter_item_correlation`], and
+/// [`SymplexError::InvalidArgument`] when the standardized items sum to a
+/// constant (`1 + (k − 1) r̄ = 0`: the variance of their total, `k(1 + (k −
+/// 1) r̄)`, is zero — two items that are exact reversals of each other;
+/// 0.28 returned `zoo`).
 pub fn standardized_alpha(ctx: &Context, table: &RatingTable) -> Result<Ex, SymplexError> {
     const OP: &str = "standardized_alpha";
     let rows = score_matrix(OP, table)?;
     let k = rows[0].len();
     let r = mean_ex(ctx, inter_item_correlations(ctx, OP, &rows)?);
-    Ok(spearman_brown(&r, k))
+    prophecy(OP, &r, k)
 }
 
 /// The Kuder–Richardson formula 20 (Kuder & Richardson 1937) for
@@ -489,14 +494,17 @@ pub fn split_half_correlation(
 ///
 /// # Errors
 ///
-/// As [`split_half_correlation`].
+/// As [`split_half_correlation`], and [`SymplexError::InvalidArgument`]
+/// for halves with `r = −1`, the pole of `2r/(1 + r)` (their sum is
+/// constant; 0.28 returned `zoo`).
 pub fn split_half(
     ctx: &Context,
     table: &RatingTable,
     split: &SplitHalf,
 ) -> Result<Ex, SymplexError> {
+    const OP: &str = "split_half";
     let r = split_half_correlation(ctx, table, split)?;
-    Ok(spearman_brown(&r, 2))
+    prophecy(OP, &r, 2)
 }
 
 /// The Spearman–Brown prophecy formula: the reliability of a test
@@ -507,18 +515,92 @@ pub fn split_half(
 /// (`k = 2` steps a half-test correlation up to the full test).  The
 /// result lives in the context of `r`.
 ///
+/// Outside the formula's domain (see [`try_spearman_brown`], which returns
+/// the error) the result is `nan`, undefined: at `ρ = −1/(k − 1)` the
+/// lengthened test has zero variance (0.28 returned the pole's `zoo`, for
+/// a split-half correlation of `−1` too), beyond it the `k` parallel parts
+/// cannot exist, a `ρ` outside `[−1, 1]` is not a correlation and `k = 0`
+/// no test.  A symbolic `ρ` gets the formula.
+///
 /// ```
 /// use symplex::prelude::*;
 /// let ctx = Context::new();
 /// // A half-test correlation of 0.6 predicts 2·0.6/1.6 = 0.75 for the full test.
 /// let r = symplex::stats::reliability::spearman_brown(&ctx.rational(3, 5), 2);
 /// assert_eq!(r.simplify(), ctx.rational(3, 4));
+/// // The pole 2·(−1)/(1 − 1): undefined.
+/// assert_eq!(symplex::stats::reliability::spearman_brown(&ctx.int(-1), 2), ctx.nan());
 /// ```
 #[must_use]
 pub fn spearman_brown(r: &Ex, k: usize) -> Ex {
+    prophecy("spearman_brown", r, k).unwrap_or_else(|_| r.context().nan())
+}
+
+/// [`spearman_brown`] with its domain checked: `k ≥ 1`, and a numeric `ρ`
+/// a correlation (`−1 ≤ ρ ≤ 1`) with `1 + (k − 1)ρ > 0`.  The lengthened
+/// test is the sum of `k` parallel parts of variance `σ²` and pairwise
+/// correlation `ρ`, whose variance is `kσ²(1 + (k − 1)ρ)`: it vanishes at
+/// the formula's pole `ρ = −1/(k − 1)` (a reliability `0/0`), and below it
+/// the parts cannot exist (their correlation matrix is not positive
+/// semi-definite).  A negative `ρ` above the pole is allowed and gives a
+/// negative value, as the formula does (a split-half correlation can be
+/// negative).  A `ρ` with symbols is taken as it is unless its
+/// assumptions refute the domain.  (Neither statsmodels nor pingouin has
+/// the formula.)
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::reliability::try_spearman_brown;
+///
+/// let ctx = Context::new();
+/// assert_eq!(try_spearman_brown(&ctx.rational(3, 5), 2)?, ctx.rational(3, 4));
+/// assert_eq!(try_spearman_brown(&ctx.rational(-1, 5), 2)?, ctx.rational(-1, 2));
+/// assert!(try_spearman_brown(&ctx.int(-1), 2).is_err()); // the pole
+/// assert!(try_spearman_brown(&ctx.rational(-3, 4), 3).is_err()); // beyond it: 1 + 2·(−3/4) < 0
+/// assert!(try_spearman_brown(&ctx.rational(3, 5), 0).is_err());
+/// # Ok::<(), SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for `k = 0`, a numeric `ρ` outside
+/// `[−1, 1]`, or `1 + (k − 1)ρ ≤ 0`.
+pub fn try_spearman_brown(r: &Ex, k: usize) -> Result<Ex, SymplexError> {
+    prophecy("spearman_brown", r, k)
+}
+
+/// The checked prophecy formula of [`try_spearman_brown`], its errors
+/// reported under `op`.
+fn prophecy(op: &'static str, r: &Ex, k: usize) -> Result<Ex, SymplexError> {
+    use std::cmp::Ordering;
+    if k == 0 {
+        return Err(invalid(op, "the lengthening factor k must be at least 1"));
+    }
     let ctx = r.context();
+    let numeric = r.free_symbols().is_empty();
+    let negative = |e: &Ex| sign_of(e) == Some(Ordering::Less);
+    if negative(&(ctx.one() - r)) || negative(&(ctx.one() + r)) {
+        return Err(invalid(
+            op,
+            format!("a reliability is a correlation, in [-1, 1]; got {r}"),
+        ));
+    }
     let kq = ex_usize(&ctx, k);
-    (&kq * r / (ctx.one() + (kq - ctx.one()) * r)).simplify()
+    let composite = ctx.one() + (&kq - ctx.one()) * r;
+    // A numeric composite whose sign is undecided evaluates to 0: the pole.
+    let positive = match sign_of(&composite) {
+        Some(s) => s == Ordering::Greater,
+        None => !numeric,
+    };
+    if !positive {
+        return Err(invalid(
+            op,
+            format!(
+                "the lengthened test has variance kσ²(1 + (k − 1)ρ) ≤ 0 at ρ = {r}, k = {k}: ρ must exceed −1/(k − 1)"
+            ),
+        ));
+    }
+    Ok((&kq * r / composite).simplify())
 }
 
 /// Cronbach's α of the scale with each item removed in turn: entry `j`

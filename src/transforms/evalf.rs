@@ -70,6 +70,7 @@ mod accuracy;
 mod conjugate;
 mod emsum;
 mod hypsum;
+mod sensitivity;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Complex type
@@ -343,7 +344,9 @@ fn eval_node_with_error(
                 }
                 Err(e) => return Err(e),
             };
-            let err = accuracy::node_error(arena, id, &value, cache, errs, prec);
+            let err = accuracy::node_error(arena, id, &value, cache, errs, prec, || {
+                sensitivity::special_error(arena, id, &value, cache, errs, prec, rm, cc)
+            });
             return Ok((value, err));
         }
     };
@@ -421,8 +424,8 @@ fn inexact_zero_child(node: &ExprNode, cache: &FxHashMap<ExprId, Complex>, errs:
 /// working precision came out as noise.
 ///
 /// When the budget is spent, a value that is zero to the precision reached
-/// — its error ball contains 0, or it shrank with every increase in
-/// precision — is returned as 0 (SymPy returns a float with no significant
+/// — its error ball contains 0 and shrank with the precision, or the value
+/// itself shrank with every increase in precision — is returned as 0 (SymPy returns a float with no significant
 /// digits); any other value lacking the digits is refused with
 /// [`SymplexError::PrecisionExhausted`].  So is an infinite value: from
 /// finite inputs it can only come from a division by a difference that
@@ -488,9 +491,17 @@ fn evaluate_adaptive(
         }
         if prec >= cap {
             // Only with a bound: `sign` of a value that cancelled to 0 is 0
-            // at every precision, but its true value may be ±1.
+            // at every precision, but its true value may be ±1.  And only a
+            // ball that shrinks with the precision: a true zero's error falls
+            // about a bit per bit gained, while near a pole it grows with the
+            // value — `tan(π(1/2 − 10⁻³⁰⁰))` (truly `3.2·10²⁹⁹`) had a ball of
+            // `2³⁹⁶` around `10⁴⁰` noise, which contains 0, and came out `0`.
             let known = !accuracy::is_unknown(err);
-            let zero_ball = known && accuracy::contains_zero(&value, err);
+            let ball_shrinking = previous.as_ref().is_none_or(|(_, prev_prec, prev_err)| {
+                let gained = i64::try_from(prec - prev_prec).unwrap_or(0);
+                accuracy::is_exact(err) || err <= prev_err.saturating_sub(gained / 2)
+            });
+            let zero_ball = known && ball_shrinking && accuracy::contains_zero(&value, err);
             if finite && known && (zero_ball || shrinking) {
                 debug!(prec, err, "evalf: zero to the working precision");
                 return Ok(c_zero(prec0));
@@ -1017,7 +1028,9 @@ fn eval_node(
                 prec,
                 "evalf: factorial via arbitrary-precision Gamma(x + 1)"
             );
-            let x_plus_1 = x_val.0.add(&BigFloat::from_i32(1, prec), prec, rm);
+            let x_plus_1 = x_val
+                .0
+                .add(&BigFloat::from_i32(1, 64), exact_bits(&x_val.0, prec), rm);
             let r = arb_gamma_real(&x_plus_1, prec, rm, cc)?;
             Ok((r, BigFloat::new(prec)))
         }
@@ -1032,20 +1045,20 @@ fn eval_node(
                 });
             }
             // Integer `0 ≤ n < k`: C(n, k) = 0 (the Γ formula below would
-            // hit the pole of Γ(n − k + 1)).
-            if let (Some(n_i), Some(k_i)) =
-                (bf_as_int(&n_val.0, rm, cc)?, bf_as_int(&k_val.0, rm, cc)?)
-                && n_i >= 0
-                && k_i > n_i
-            {
+            // hit the pole of Γ(n − k + 1)).  Integers exactly: before 0.29
+            // `n` within 10⁻¹² of one counted, and `binomial(2 + 10⁻¹³, 3)`
+            // was 0 (truly 3.3·10⁻¹⁴).
+            if n_val.0.is_int() && k_val.0.is_int() && !n_val.0.is_negative() && k_val.0 > n_val.0 {
                 return Ok((BigFloat::new(prec), BigFloat::new(prec)));
             }
-            // C(n, k) = Gamma(n+1) / (Gamma(k+1) * Gamma(n-k+1))
-            let one_bf = BigFloat::from_i32(1, prec);
-            let n_plus_1 = n_val.0.add(&one_bf, prec, rm);
-            let k_plus_1 = k_val.0.add(&one_bf, prec, rm);
-            let n_minus_k = n_val.0.sub(&k_val.0, prec, rm);
-            let n_minus_k_plus_1 = n_minus_k.add(&one_bf, prec, rm);
+            // C(n, k) = Gamma(n+1) / (Gamma(k+1) * Gamma(n-k+1)), the shifted
+            // arguments exact.
+            let one_bf = BigFloat::from_i32(1, 64);
+            let p = exact_bits(&n_val.0, prec).max(exact_bits(&k_val.0, prec)) + 64;
+            let n_plus_1 = n_val.0.add(&one_bf, p, rm);
+            let k_plus_1 = k_val.0.add(&one_bf, p, rm);
+            let n_minus_k = n_val.0.sub(&k_val.0, p, rm);
+            let n_minus_k_plus_1 = n_minus_k.add(&one_bf, p, rm);
 
             let g_numer = arb_gamma_real(&n_plus_1, prec, rm, cc)?;
             let g_k = arb_gamma_real(&k_plus_1, prec, rm, cc)?;
@@ -1079,41 +1092,8 @@ fn eval_node(
                     reason: "LogGamma of complex argument not yet supported in evalf".into(),
                 });
             }
-            // Use arbitrary-precision Stirling series for log Γ(x).
-            // For positive x, compute directly; for negative x, use
-            // reflection: log Γ(x) = log(π) − log(sin(πx)) − log Γ(1−x).
-            let x_approx = bigfloat_to_f64(&val.0, rm, cc)?;
-            if x_approx <= 0.0 {
-                let rounded = x_approx.round();
-                if (rounded - x_approx).abs() < 1e-12 && rounded <= 0.0 {
-                    return Err(SymplexError::Unevaluable {
-                        reason: "LogGamma at non-positive integer pole".into(),
-                    });
-                }
-                // Reflection: ln Γ(x) = ln π − ln|sin(πx)| − ln Γ(1−x)
-                let one = BigFloat::from_i32(1, prec);
-                let one_minus_x = one.sub(&val.0, prec, rm);
-                let log_gamma_1mx = stirling_log_gamma(&one_minus_x, prec, rm, cc)?;
-                let pi_val = cc.pi(prec, rm).clone();
-                let pi_x = pi_val.mul(&val.0, prec, rm);
-                let sin_pi_x = pi_x.sin(prec, rm, cc);
-                let abs_sin = sin_pi_x.abs();
-                if abs_sin.is_zero() {
-                    return Err(SymplexError::Unevaluable {
-                        reason: "LogGamma at non-positive integer pole".into(),
-                    });
-                }
-                let ln_pi = cc.pi(prec, rm).clone().ln(prec, rm, cc);
-                let ln_abs_sin = abs_sin.ln(prec, rm, cc);
-                let result = ln_pi
-                    .sub(&ln_abs_sin, prec, rm)
-                    .sub(&log_gamma_1mx, prec, rm);
-                Ok((result, BigFloat::new(prec)))
-            } else {
-                debug!(prec, "evalf: LogGamma via Stirling series");
-                let result = stirling_log_gamma(&val.0, prec, rm, cc)?;
-                Ok((result, BigFloat::new(prec)))
-            }
+            debug!(prec, "evalf: LogGamma via Stirling series");
+            arb_log_gamma(&val.0, prec, rm, cc)
         }
 
         ExprNode::Digamma(inner) => {
@@ -1175,7 +1155,8 @@ fn eval_node(
             debug!(prec, "evalf: Beta via arbitrary-precision Gamma");
             let ga = arb_gamma_real(&a_val.0, prec, rm, cc)?;
             let gb = arb_gamma_real(&b_val.0, prec, rm, cc)?;
-            let a_plus_b = a_val.0.add(&b_val.0, prec, rm);
+            let p = exact_bits(&a_val.0, prec).max(exact_bits(&b_val.0, prec)) + 64;
+            let a_plus_b = a_val.0.add(&b_val.0, p, rm);
             let gab = arb_gamma_real(&a_plus_b, prec, rm, cc)?;
             if gab.is_zero() {
                 return Err(SymplexError::Unevaluable {
@@ -3002,136 +2983,216 @@ fn erf_f64(x: f64) -> f64 {
     }
 }
 
-/// Arbitrary-precision digamma (psi) function via recurrence + asymptotic series.
+/// `ln Γ(x)` for real `x` (not a pole), as the compiled back-ends' `lgamma`:
+/// `ln|Γ(x)|` for `x < 0` (SymPy's and mpmath's `loggamma` add `−iπ⌈−x⌉`
+/// there; `tests/v02/v02_backends_compile.rs` pins the real value).
 ///
-/// Algorithm:
-/// 1. For x < 0, use reflection: ψ(x) = ψ(1−x) − π·cot(πx)
-/// 2. Use recurrence ψ(x+1) = ψ(x) + 1/x to shift x to a large value
-/// 3. Asymptotic expansion: ψ(x) ~ ln(x) − 1/(2x) − Σ B_{2k}/(2k · x^{2k})
+/// * `x > 0`: Stirling's series ([`stirling_log_gamma`]).
+/// * `x < 0`: `ln π − ln|sin πd| − ln Γ(1 − x)`, `d = x − round(x)` exact.
+///
+/// Near a zero of `ln|Γ|` (`x = 1`, `2`, and two between consecutive poles
+/// left of 0) the terms summed are much larger than the value: the loss is
+/// measured against a bound on them and the evaluation repeated with that
+/// many more bits, up to [`cancellation_cap`].  Before 0.29 neither:
+/// `loggamma(1 + 2⁻¹⁰⁰)` was wrong from its 13th digit, `πx` was rounded
+/// before `sin`, and arguments within `10⁻¹²` of a pole (in `f64`) were
+/// refused as poles.
+fn arb_log_gamma(
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<Complex, SymplexError> {
+    if x.is_nan() || x.is_inf() {
+        return Err(unevaluable("LogGamma of special float value"));
+    }
+    if x.is_int() && !x.is_positive() {
+        return Err(unevaluable("LogGamma at non-positive integer pole"));
+    }
+    let exact = x.mantissa_max_bit_len().unwrap_or(prec).max(prec) + 64;
+    let cap = cancellation_cap(prec);
+    // The first attempt covers the terms' bits (a value of magnitude 2⁻⁸
+    // and up needs no second one).
+    let zs0 = bigfloat_to_f64(&x.abs(), rm, cc)?.min(1e300) + 0.2 * (prec + 48) as f64 + 3.0;
+    let mut extra = (24 + terms_bits(2.0 * zs0 * (zs0.ln() + 1.0)).max(0) as usize).min(cap);
+    loop {
+        let wp = prec + extra;
+        // The value and a bound on the terms summed.
+        let (value, largest) = if x.is_positive() {
+            // Stirling at z + s, s ‹ 0.2·wp: terms up to (z+s)·(|ln(z+s)| + 1),
+            // and the shift Σ ln(z + i) below that.
+            let v = stirling_log_gamma(x, wp, rm, cc)?;
+            let zs = bigfloat_to_f64(x, rm, cc)?.max(0.0) + 0.2 * wp as f64 + 2.0;
+            (v, 2.0 * zs * (zs.ln() + 1.0))
+        } else {
+            let n = x.add(&BigFloat::from_f64(0.5, 64), exact, rm).floor();
+            let d = x.sub(&n, exact, rm);
+            let pi = cc.pi(wp, rm).clone();
+            let ln_sin = pi.mul(&d, wp, rm).sin(wp, rm, cc).abs().ln(wp, rm, cc);
+            let one_minus_x = BigFloat::from_i32(1, 64).sub(x, exact, rm);
+            let lg1 = stirling_log_gamma(&one_minus_x, wp, rm, cc)?;
+            let ln_pi = pi.ln(wp, rm, cc);
+            let v = ln_pi.sub(&ln_sin, wp, rm).sub(&lg1, wp, rm);
+            let zs = bigfloat_to_f64(&one_minus_x, rm, cc)? + 0.2 * wp as f64 + 2.0;
+            let terms = 2.0 * zs * (zs.ln() + 1.0) + bigfloat_to_f64(&ln_sin, rm, cc)?.abs() + 2.0;
+            (v, terms)
+        };
+        let lost = match value.exponent() {
+            Some(e) => (terms_bits(largest) - i64::from(e)).max(0) as usize,
+            None => wp,
+        };
+        if lost + 16 <= extra {
+            return Ok((round_to(value, prec, rm), BigFloat::new(prec)));
+        }
+        if extra >= cap {
+            return Err(special_exhausted(prec));
+        }
+        extra = (lost + 32).max(2 * extra).min(cap);
+    }
+}
+
+/// A precision at which a sum or difference of `x` and a small integer is
+/// exact (or within `2^−64` of it relative to its larger operand's bits).
+fn exact_bits(x: &BigFloat, prec: usize) -> usize {
+    x.mantissa_max_bit_len().unwrap_or(prec).max(prec) + 64
+}
+
+/// `⌈log₂ v⌉ + 1` for a positive `f64` magnitude bound (`i64::MAX/4` beyond
+/// range).
+fn terms_bits(v: f64) -> i64 {
+    if v.is_finite() && v > 0.0 {
+        v.log2().ceil() as i64 + 1
+    } else {
+        i64::MAX / 4
+    }
+}
+
+/// `ψ(x)` for real `x` (not a pole) to a relative error of about `2^−prec`.
+///
+/// 1. `x < 0`: the reflection `ψ(x) = ψ(1 − x) − π cot(πd)`, `d = x − round(x)`
+///    exact (`cot` has period 1), so a pole is only an integer `x` and `πd`
+///    is rounded relative to `d`, not to `x`.
+/// 2. `x > 0`: `ψ(x) = ψ(x + N) − Σ_{k<N} 1/(x + k)` with `x + N ≥ wp/3`.
+/// 3. `ψ(y) ~ ln y − 1/(2y) − Σ_{k≥1} B_{2k}/(2k·y^{2k})` (DLMF 5.11.2), with
+///    exact Bernoulli numbers until a term is below the working precision
+///    (the smallest term, near `k ≈ πy`, is `~e^{−2πy}`).
+///
+/// Near a zero of `ψ` (`x₀ = 1.4616…`, and one between consecutive poles
+/// left of 0) the terms are much larger than the value: the loss, `log₂` of
+/// the largest term over the result, is measured and the evaluation
+/// repeated with that many more bits, up to [`cancellation_cap`].  Before
+/// 0.29 the series stopped after 12 terms and the loss went unmeasured:
+/// `digamma(1/3)` was wrong from its 46th digit, and `digamma` at a
+/// 33-digit rational next to `x₀` from its 5th; `πx` was rounded before
+/// `cot`, and poles were taken within `2^{−wp/2}`.
 fn arb_digamma(
     x: &BigFloat,
     prec: usize,
     rm: RoundingMode,
     cc: &mut Consts,
 ) -> Result<BigFloat, SymplexError> {
-    let guard = 20;
-    let wp = prec + guard;
-
     if x.is_nan() || x.is_inf_pos() || x.is_inf_neg() {
         return Err(SymplexError::Unevaluable {
             reason: "Digamma of special float value".into(),
         });
     }
+    let cap = cancellation_cap(prec);
+    let mut extra = 20;
+    loop {
+        let wp = prec + extra;
+        let (value, largest) = digamma_wp(x, wp, rm, cc)?;
+        let lost = match (largest.exponent(), value.exponent()) {
+            _ if value.is_zero() => wp,
+            (Some(l), Some(v)) => usize::try_from(i64::from(l) - i64::from(v)).unwrap_or(0),
+            _ => 0,
+        };
+        if lost + 16 <= extra {
+            return Ok(round_to(value, prec, rm));
+        }
+        if extra >= cap {
+            return Err(special_exhausted(prec));
+        }
+        extra = (lost + 32).max(2 * extra).min(cap);
+    }
+}
 
+/// `ψ(x)` at working precision `wp` (see [`arb_digamma`]), with the
+/// magnitude of the largest term summed: the absolute error is about
+/// `2^−wp` of it.
+fn digamma_wp(
+    x: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<(BigFloat, BigFloat), SymplexError> {
+    let pole = || SymplexError::Unevaluable {
+        reason: "Digamma at non-positive integer pole".into(),
+    };
+    let exact = x.mantissa_max_bit_len().unwrap_or(wp).max(wp) + 64;
     let one = BigFloat::from_i32(1, wp);
-
-    // Handle negative x via reflection: ψ(x) = ψ(1−x) − π·cot(πx)
     if x.is_negative() {
-        let pi_val = cc.pi(wp, rm).clone();
-        let pi_x = pi_val.mul(x, wp, rm);
-        let sin_val = pi_x.sin(wp, rm, cc);
-
-        // Check for pole at non-positive integers
-        if sin_val.is_zero() {
-            return Err(SymplexError::Unevaluable {
-                reason: "Digamma at non-positive integer pole".into(),
-            });
+        // x = n + d, n = round(x), |d| ≤ ½, both exact.
+        let n = x.add(&BigFloat::from_f64(0.5, 64), exact, rm).floor();
+        let d = x.sub(&n, exact, rm);
+        if d.is_zero() {
+            return Err(pole());
         }
-        if let Some(s_exp) = sin_val.exponent()
-            && (s_exp as i64) < -(wp as i64 / 2)
-        {
-            return Err(SymplexError::Unevaluable {
-                reason: "Digamma at non-positive integer pole".into(),
-            });
-        }
-
-        let cos_val = pi_x.cos(wp, rm, cc);
-        let cot_val = cos_val.div(&sin_val, wp, rm);
-        let one_minus_x = one.sub(x, wp, rm);
-        let psi_1mx = arb_digamma(&one_minus_x, prec, rm, cc)?;
-        let pi_cot = cc.pi(wp, rm).clone().mul(&cot_val, wp, rm);
-        return Ok(psi_1mx.sub(&pi_cot, wp, rm));
+        let pi = cc.pi(wp, rm).clone();
+        let pi_d = pi.mul(&d, wp, rm);
+        let pi_cot = pi.mul(
+            &pi_d.cos(wp, rm, cc).div(&pi_d.sin(wp, rm, cc), wp, rm),
+            wp,
+            rm,
+        );
+        let one_minus_x = BigFloat::from_i32(1, 64).sub(x, exact, rm);
+        let (psi, largest) = digamma_wp(&one_minus_x, wp, rm, cc)?;
+        let value = psi.sub(&pi_cot, wp, rm);
+        let largest = if pi_cot.abs() > largest {
+            pi_cot.abs()
+        } else {
+            largest
+        };
+        return Ok((value, largest));
     }
-
-    // Use recurrence ψ(x+1) = ψ(x) + 1/x to shift x >= threshold
-    let threshold_val = (wp as i32 / 3).max(10);
-    let threshold = BigFloat::from_i32(threshold_val, wp);
-    let mut result = BigFloat::new(wp); // 0
-    let mut x = x.clone();
-
-    while x.sub(&threshold, wp, rm).is_negative() {
-        // Check for pole at zero
-        if x.is_zero() {
-            return Err(SymplexError::Unevaluable {
-                reason: "Digamma at non-positive integer pole".into(),
-            });
-        }
-        if let Some(x_exp) = x.exponent()
-            && (x_exp as i64) < -(wp as i64 / 2)
-        {
-            return Err(SymplexError::Unevaluable {
-                reason: "Digamma at non-positive integer pole".into(),
-            });
-        }
-        let inv_x = one.div(&x, wp, rm);
-        result = result.sub(&inv_x, wp, rm);
-        x = x.add(&one, wp, rm);
+    if x.is_zero() {
+        return Err(pole());
     }
-
-    // Asymptotic expansion: ψ(x) ~ ln(x) − 1/(2x) − Σ_{k=1}^{N} B_{2k}/(2k · x^{2k})
-    let ln_x = x.ln(wp, rm, cc);
-    result = result.add(&ln_x, wp, rm);
-
+    // ψ(x) = ψ(y) − Σ_{k<N} 1/(x + k), y = x + N ≥ wp/3.
+    let threshold = BigFloat::from_i32(i32::try_from(wp / 3).unwrap_or(i32::MAX).max(10), wp);
+    let mut shift = BigFloat::new(wp);
+    let mut y = x.clone();
+    while bf_lt(&y, &threshold) {
+        shift = shift.add(&one.div(&y, wp, rm), wp, rm);
+        y = y.add(&one, exact, rm);
+    }
+    let ln_y = y.ln(wp, rm, cc);
+    let largest = if shift > ln_y.abs() {
+        shift.clone()
+    } else {
+        ln_y.abs()
+    };
     let two = BigFloat::from_i32(2, wp);
-    let half_inv_x = one.div(&x.mul(&two, wp, rm), wp, rm);
-    result = result.sub(&half_inv_x, wp, rm);
-
-    let x2 = x.mul(&x, wp, rm);
-    let mut x_pow = x2.clone(); // x^2
-
-    // Bernoulli numbers B_{2k} for k=1..12 as (numerator, denominator):
-    // B2=1/6, B4=−1/30, B6=1/42, B8=−1/30, B10=5/66, B12=−691/2730
-    // B14=7/6, B16=−3617/510, B18=43867/798, B20=−174611/330
-    // B22=854513/138, B24=−236364091/2730
-    let bernoulli_nums: &[(i128, i128)] = &[
-        (1, 6),
-        (-1, 30),
-        (1, 42),
-        (-1, 30),
-        (5, 66),
-        (-691, 2730),
-        (7, 6),
-        (-3617, 510),
-        (43867, 798),
-        (-174611, 330),
-        (854513, 138),
-        (-236364091, 2730),
-    ];
-
-    let n_terms = (prec / 6 + 2).min(bernoulli_nums.len());
-
-    for (k_idx, &(bn, bd)) in bernoulli_nums[..n_terms].iter().enumerate() {
-        let k = (k_idx + 1) as i128;
-        let two_k = 2 * k;
-        // Term = B_{2k} / (2k · x^{2k})
-        let coeff_n = BigFloat::from_i128(bn, wp);
-        let coeff_d = BigFloat::from_i128(bd * two_k, wp);
-        let coeff = coeff_n.div(&coeff_d, wp, rm);
-        let inv_xpow = one.div(&x_pow, wp, rm);
-        let term = coeff.mul(&inv_xpow, wp, rm);
-        result = result.sub(&term, wp, rm);
-
-        // Convergence check via binary exponents
-        if let (Some(t_exp), Some(r_exp)) = (term.exponent(), result.exponent())
-            && (r_exp as i64 - t_exp as i64) > wp as i64
-        {
-            break;
+    let mut result = ln_y
+        .sub(&one.div(&y.mul(&two, wp, rm), wp, rm), wp, rm)
+        .sub(&shift, wp, rm);
+    let y2 = y.mul(&y, wp, rm);
+    let mut y_pow = y2.clone();
+    let floor = largest.exponent().map_or(i64::MIN / 2, i64::from) - wp as i64 - 2;
+    let mut prev: Option<i32> = None;
+    for k in 1..=wp {
+        let b2k = crate::base::bernoulli::bernoulli(2 * k);
+        let denom = y_pow.mul(&BigFloat::from_i128(2 * k as i128, wp), wp, rm);
+        let term = ratio_to_bigfloat(&b2k, wp, rm).div(&denom, wp, rm);
+        match term.exponent() {
+            Some(te) if i64::from(te) < floor => break,
+            Some(te) if prev.is_some_and(|p| te > p + 2) => break, // diverging
+            Some(te) => prev = Some(te),
+            None => {}
         }
-
-        x_pow = x_pow.mul(&x2, wp, rm);
+        result = result.sub(&term, wp, rm);
+        y_pow = y_pow.mul(&y2, wp, rm);
     }
-
-    Ok(result)
+    Ok((result, largest))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3256,69 +3317,55 @@ fn stirling_log_gamma(
 ///
 /// For positive x, evaluates exp(stirling_log_gamma(x)).
 /// For negative non-integer x, applies the reflection formula
-/// Γ(z) = π / (sin(πz) · Γ(1 − z)).
+/// Γ(z) = π / (sin(πd) · (−1)ⁿ · Γ(1 − z)) with `z = n + d`, `n = round(z)`
+/// and `d` exact, so that `sin` is accurate next to a pole (before 0.29 `πz`
+/// was rounded first, losing `log₂(1/d)` bits, and arguments within
+/// `10⁻¹²` of a pole — in `f64` — or `2^{−prec/2}` were refused as poles).
 fn arb_gamma_real(
     x: &BigFloat,
     prec: usize,
     rm: RoundingMode,
     cc: &mut Consts,
 ) -> Result<BigFloat, SymplexError> {
-    // Pole at zero.
-    if x.is_zero() {
+    // The poles: the non-positive integers, exactly.
+    if x.is_zero() || (x.is_negative() && x.is_int()) {
         return Err(SymplexError::Unevaluable {
             reason: "Gamma at non-positive integer pole".into(),
         });
     }
 
-    let x_approx = bigfloat_to_f64(x, rm, cc)?;
-
-    // Detect non-positive integer poles via f64 approximation.  The sign is
-    // the BigFloat's: a positive argument below the f64 range (10⁻⁴⁰⁰) rounds
-    // to 0.0 and was refused as the pole at 0.
-    if x.is_negative() && x_approx <= 0.0 {
-        let rounded = x_approx.round();
-        if (rounded - x_approx).abs() < 1e-12 && rounded <= 0.0 {
-            return Err(SymplexError::Unevaluable {
-                reason: "Gamma at non-positive integer pole".into(),
-            });
-        }
-    }
-
     if !x.is_negative() {
         // Direct Stirling path.
-        tracing::debug!(x_approx, "arb_gamma_real: positive argument");
+        tracing::debug!(prec, "arb_gamma_real: positive argument");
         let log_gamma = stirling_log_gamma(x, prec, rm, cc)?;
         Ok(log_gamma.exp(prec, rm, cc))
     } else {
-        // Reflection: Γ(z) = π / (sin(πz) · Γ(1 − z))
-        tracing::debug!(x_approx, "arb_gamma_real: reflection formula");
-        let one = BigFloat::from_i32(1, prec);
-        let one_minus_x = one.sub(x, prec, rm);
-
+        tracing::debug!(prec, "arb_gamma_real: reflection formula");
+        let exact = x.mantissa_max_bit_len().unwrap_or(prec).max(prec) + 64;
+        let one_minus_x = BigFloat::from_i32(1, 64).sub(x, exact, rm);
         let log_gamma_1mx = stirling_log_gamma(&one_minus_x, prec, rm, cc)?;
         let gamma_1mx = log_gamma_1mx.exp(prec, rm, cc);
 
+        // sin(πz) = (−1)ⁿ sin(πd).
+        let n = x.add(&BigFloat::from_f64(0.5, 64), exact, rm).floor();
+        let d = x.sub(&n, exact, rm);
         let pi_val = cc.pi(prec, rm).clone();
-        let pi_x = pi_val.mul(x, prec, rm);
-        let sin_pi_x = pi_x.sin(prec, rm, cc);
-
-        // Guard against the pole (sin(πz) ≈ 0 for integer z).
-        if sin_pi_x.is_zero() {
-            return Err(SymplexError::Unevaluable {
-                reason: "Gamma at non-positive integer pole".into(),
-            });
+        let mut sin_pi_x = pi_val.mul(&d, prec, rm).sin(prec, rm, cc);
+        let odd = !n
+            .div(&BigFloat::from_i32(2, 64), exact, rm)
+            .fract()
+            .is_zero();
+        if odd {
+            sin_pi_x = sin_pi_x.neg();
         }
-        if let Some(s_exp) = sin_pi_x.exponent()
-            && (s_exp as i64) < -(prec as i64 / 2)
-        {
+        if sin_pi_x.is_zero() {
             return Err(SymplexError::Unevaluable {
                 reason: "Gamma at non-positive integer pole".into(),
             });
         }
 
         let denom = sin_pi_x.mul(&gamma_1mx, prec, rm);
-        let pi_val2 = cc.pi(prec, rm).clone();
-        Ok(pi_val2.div(&denom, prec, rm))
+        Ok(pi_val.div(&denom, prec, rm))
     }
 }
 
@@ -3869,9 +3916,11 @@ fn arb_bessel_j(
     let x_f64 = bigfloat_to_f64(x, rm, cc)?;
     let order_f64 = bigfloat_to_f64(order, rm, cc)?;
 
-    // Check for integer order (most common case).
+    // Check for integer order (most common case) — exactly: before 0.29 an
+    // order within 10⁻¹² of an integer was taken for it, and
+    // `besselj(2 + 10⁻¹⁴, 1)` was wrong from its 15th digit.
     let order_int = order_f64.round() as i64;
-    let is_int_order = (order_f64 - order_int as f64).abs() < 1e-12;
+    let is_int_order = order.is_int();
 
     // Negative integer order: J_{-n}(x) = (-1)^n J_n(x).
     if is_int_order && order_int < 0 {
@@ -3988,7 +4037,9 @@ fn arb_bessel_y(
     let x_f64 = bigfloat_to_f64(x, rm, cc)?;
     let order_f64 = bigfloat_to_f64(order, rm, cc)?;
     let order_int = order_f64.round() as i64;
-    let is_int_order = (order_f64 - order_int as f64).abs() < 1e-12;
+    // Exactly (see `arb_bessel_j`): a non-integer order near an integer is
+    // refused below the Hankel range rather than taken for the integer.
+    let is_int_order = order.is_int();
 
     // Negative integer order: Y_{-n}(x) = (-1)^n Y_n(x).
     if is_int_order && order_int < 0 {
@@ -4650,6 +4701,14 @@ fn arb_eta_borwein(
 ///    `ψ⁽ⁿ⁾(x) ~ (−1)^{n+1} [ (n−1)!/xⁿ + n!/(2x^{n+1}) + Σ_{k≥1} B₂ₖ (2k+n−1)!/((2k)! x^{2k+n}) ]`
 ///    with exact Bernoulli numbers, truncated when the terms fall below
 ///    the working precision (or start to diverge).
+///
+/// The shifted arguments `x + k` are exact, so a pole is only an integer
+/// `x ≤ 0`; left of 0 the terms change sign and cancel near the zeros of
+/// `ψ⁽ⁿ⁾` (for even `n`): the loss, the largest term over the value, is
+/// measured and the evaluation repeated with that many more bits, up to
+/// [`cancellation_cap`].  (Before 0.29 `x + k` was rounded at every step
+/// and an `x + k` below `2^{−wp/2}` was taken for a pole:
+/// `polygamma(1, −3 + √2·10⁻³⁰)` was refused at 16 digits.)
 fn arb_polygamma(
     n: u32,
     x: &BigFloat,
@@ -4662,8 +4721,34 @@ fn arb_polygamma(
             reason: "polygamma of special float value".into(),
         });
     }
-    let guard = 32;
-    let wp = prec + guard;
+    let cap = cancellation_cap(prec);
+    let mut extra = 32;
+    loop {
+        let (value, largest) = polygamma_wp(n, x, prec + extra, rm)?;
+        let lost = match (largest.exponent(), value.exponent()) {
+            _ if value.is_zero() => prec + extra,
+            (Some(l), Some(v)) => usize::try_from(i64::from(l) - i64::from(v)).unwrap_or(0),
+            _ => 0,
+        };
+        if lost + 16 <= extra {
+            return Ok(round_to(value, prec, rm));
+        }
+        if extra >= cap {
+            return Err(special_exhausted(prec));
+        }
+        extra = (lost + 32).max(2 * extra).min(cap);
+    }
+}
+
+/// `ψ⁽ⁿ⁾(x)` at working precision `wp` (see [`arb_polygamma`]) and the
+/// magnitude of the largest term summed.
+fn polygamma_wp(
+    n: u32,
+    x: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+) -> Result<(BigFloat, BigFloat), SymplexError> {
+    let exact = exact_bits(x, wp);
     let n_us = n as usize;
     let one = BigFloat::from_i32(1, wp);
 
@@ -4682,8 +4767,8 @@ fn arb_polygamma(
     let threshold_val = ((wp / 3).max(n_us) + 10) as i128;
     let threshold = BigFloat::from_i128(threshold_val, wp);
     let mut xw = x.clone();
-    let _ = xw.set_precision(wp, rm);
     let mut shift_sum = BigFloat::new(wp); // Σ 1/(x+k)^{n+1}
+    let mut largest_inv = BigFloat::new(wp);
     let mut steps: usize = 0;
     while xw.sub(&threshold, wp, rm).is_negative() {
         if xw.is_zero() {
@@ -4691,17 +4776,13 @@ fn arb_polygamma(
                 reason: "polygamma at non-positive integer pole".into(),
             });
         }
-        if let Some(x_exp) = xw.exponent()
-            && (x_exp as i64) < -(wp as i64 / 2)
-        {
-            return Err(SymplexError::Unevaluable {
-                reason: "polygamma at non-positive integer pole".into(),
-            });
-        }
         let p = xw.powi(n_us + 1, wp, rm);
         let inv = one.div(&p, wp, rm);
+        if inv.abs() > largest_inv {
+            largest_inv = inv.abs();
+        }
         shift_sum = shift_sum.add(&inv, wp, rm);
-        xw = xw.add(&one, wp, rm);
+        xw = xw.add(&one, exact, rm);
         steps += 1;
         if steps > 10 * wp + 1_000_000 {
             return Err(SymplexError::ComputationFailed {
@@ -4759,7 +4840,13 @@ fn arb_polygamma(
 
     let total = bracket.add(&shift_term, wp, rm);
     let result = if outer_sign_neg { total.neg() } else { total };
-    Ok(round_to(result, prec, rm))
+    let largest_shift = n_fact_bf.mul(&largest_inv, wp, rm);
+    let largest = if largest_shift > bracket.abs() {
+        largest_shift
+    } else {
+        bracket.abs()
+    };
+    Ok((result, largest))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -4783,7 +4870,8 @@ fn bessel_i_series(
     let x_half_sq = x_half.mul(&x_half, wp, rm);
     let order_f64 = bigfloat_to_f64(order, rm, cc)?;
     let order_int = order_f64.round() as i64;
-    let is_int_order = (order_f64 - order_int as f64).abs() < 1e-12;
+    // Exactly (see `arb_bessel_j`).
+    let is_int_order = order.is_int();
 
     if x.is_zero() {
         return if is_int_order && order_int == 0 {
@@ -4927,7 +5015,9 @@ fn arb_bessel_k(
     let x_f64 = bigfloat_to_f64(x, rm, cc)?;
     let order_f64 = bigfloat_to_f64(order, rm, cc)?;
     let order_int = order_f64.round() as i64;
-    let is_int_order = (order_f64 - order_int as f64).abs() < 1e-12;
+    // Exactly (see `arb_bessel_j`); a non-integer order near an integer is
+    // paid for with precision below.
+    let is_int_order = order.is_int();
     let order_abs = if is_int_order {
         BigFloat::from_i128(order_int.unsigned_abs() as i128, base_wp)
     } else {
@@ -4947,18 +5037,58 @@ fn arb_bessel_k(
     let _ = xw.set_precision(wp, rm);
 
     if !is_int_order {
-        // K_ν = (π/2)(I_{−ν} − I_ν)/sin(νπ)
+        // K_ν = (π/2)(I_{−ν} − I_ν)/sin(νπ), with sin(νπ) = (−1)ⁿ sin(dπ),
+        // ν = n + d exactly.  Near an integer order the difference cancels
+        // log₂(1/|d|) bits (and more against e^{x}): the loss is measured
+        // and the series repeated with that many more bits, up to
+        // `cancellation_cap`.  (Before 0.29 an order within 10⁻¹² of an
+        // integer was taken for it — `besselk(1 + 10⁻¹⁴, 1)` was wrong from
+        // its 15th digit — and one a little further lost its bits unseen.)
+        let exact = exact_bits(order, wp);
+        let n = order.add(&BigFloat::from_f64(0.5, 64), exact, rm).floor();
+        let d = order.sub(&n, exact, rm);
+        let odd = !n
+            .div(&BigFloat::from_i32(2, 64), exact, rm)
+            .fract()
+            .is_zero();
         let neg_order = order.neg();
-        let i_neg = bessel_i_series(&neg_order, &xw, wp, rm, cc)?;
-        let i_pos = bessel_i_series(order, &xw, wp, rm, cc)?;
-        let pi = cc.pi(wp, rm).clone();
-        let two = BigFloat::from_i32(2, wp);
-        let sin_nu_pi = order.mul(&pi, wp, rm).sin(wp, rm, cc);
-        let r = pi
-            .div(&two, wp, rm)
-            .mul(&i_neg.sub(&i_pos, wp, rm), wp, rm)
-            .div(&sin_nu_pi, wp, rm);
-        return Ok(round_to(r, prec, rm));
+        let cap = cancellation_cap(prec);
+        let mut extra = wp - prec;
+        loop {
+            let wq = prec + extra;
+            let mut xq = x.clone();
+            let _ = xq.set_precision(wq, rm);
+            let i_neg = bessel_i_series(&neg_order, &xq, wq, rm, cc)?;
+            let i_pos = bessel_i_series(order, &xq, wq, rm, cc)?;
+            let diff = i_neg.sub(&i_pos, wq, rm);
+            let big = if i_neg.abs() > i_pos.abs() {
+                i_neg.abs()
+            } else {
+                i_pos.abs()
+            };
+            let lost = match (big.exponent(), diff.exponent()) {
+                _ if diff.is_zero() => wq,
+                (Some(b), Some(e)) => usize::try_from(i64::from(b) - i64::from(e)).unwrap_or(0),
+                _ => 0,
+            };
+            if lost + 16 <= extra {
+                let pi = cc.pi(wq, rm).clone();
+                let two = BigFloat::from_i32(2, wq);
+                let mut sin_nu_pi = d.mul(&pi, wq, rm).sin(wq, rm, cc);
+                if odd {
+                    sin_nu_pi = sin_nu_pi.neg();
+                }
+                let r = pi
+                    .div(&two, wq, rm)
+                    .mul(&diff, wq, rm)
+                    .div(&sin_nu_pi, wq, rm);
+                return Ok(round_to(r, prec, rm));
+            }
+            if extra >= cap {
+                return Err(special_exhausted(prec));
+            }
+            extra = (lost + 48).max(2 * extra).min(cap);
+        }
     }
 
     let n = order_int.unsigned_abs() as usize;
@@ -5319,7 +5449,10 @@ fn eval_orthopoly(
     }
     let n_f = bigfloat_to_f64(&n_val.0, rm, cc)?;
     let n_round = n_f.round();
-    if (n_f - n_round).abs() > 1e-12 || !(0.0..=1.0e7).contains(&n_round) {
+    // An integer exactly: before 0.29 a degree within 10⁻¹² of one was taken
+    // for it, and `legendre(3 + 10⁻¹³, 1/3)` printed P₃(1/3) (wrong from the
+    // 14th digit).
+    if !n_val.0.is_int() || !(0.0..=1.0e7).contains(&n_round) {
         return Err(SymplexError::Unevaluable {
             reason: format!("{f}: degree must be a non-negative integer"),
         });
@@ -5922,8 +6055,20 @@ fn uppergamma_wp(
     if bigfloat_to_f64(x, rm, cc)? >= 1.0 {
         return uppergamma_cf(s, x, wp, rm, cc);
     }
+    // Far left of 0 the downward recurrence takes |s| steps, while the
+    // continued fraction's partial quotients are about −i/|s| for i ≪ |s|
+    // and it converges in a few steps.  (0.28 ran the recurrence for any
+    // s: `expint(10²⁰/3, 1/7)` overflowed `2·steps` — a panic in debug
+    // builds, an endless loop in release ones.)
+    if bigfloat_to_f64(s, rm, cc)? < -(DOWNWARD_MAX_STEPS as f64) {
+        return uppergamma_cf(s, x, wp, rm, cc);
+    }
     uppergamma_downward(s, x, wp, rm, cc)
 }
+
+/// The most steps of the downward recurrence for `Γ(s, x)`, `s ≤ 0`,
+/// `x < 1`; further left the continued fraction is used.
+const DOWNWARD_MAX_STEPS: usize = 256;
 
 /// `Γ(s, x)` for `s > 0`, `x > 0`: the continued fraction for
 /// `x ≥ s + 1`, [`uppergamma_by_difference`] below.
@@ -6006,7 +6151,7 @@ fn uppergamma_downward(
         (-s_f).ceil() as usize
     };
     let cap = cancellation_cap(wp);
-    let mut reserve = 32 + 2 * steps;
+    let mut reserve = steps.saturating_mul(2).saturating_add(32);
     loop {
         let wp2 = wp + reserve;
         let sw = at_precision(s, wp2, rm);
@@ -7793,8 +7938,10 @@ fn poly_degree(
     rm: RoundingMode,
     cc: &mut Consts,
 ) -> Result<u64, SymplexError> {
+    // An integer exactly: before 0.29 a degree within 10⁻¹² of one was
+    // taken for it (`jacobi(3 + 10⁻¹³, …)` evaluated the cubic).
     match bf_as_int(n, rm, cc)? {
-        Some(d) if (0..=10_000_000).contains(&d) => Ok(d as u64),
+        Some(d) if n.is_int() && (0..=10_000_000).contains(&d) => Ok(d as u64),
         _ => Err(unevaluable(format!(
             "{what}: degree must be a non-negative integer"
         ))),
@@ -7903,6 +8050,7 @@ fn arb_assoc_legendre(
 ) -> Result<BigFloat, SymplexError> {
     let deg = poly_degree(n, "assoc_legendre", rm, cc)? as i64;
     let order = bf_as_int(m, rm, cc)?
+        .filter(|_| m.is_int())
         .ok_or_else(|| unevaluable("assoc_legendre: order must be an integer"))?;
     if order.abs() > deg {
         return Ok(BigFloat::new(prec));

@@ -11,6 +11,24 @@
 //! - Atoms: integer literals, symbol names
 //! - Constants: `pi`, `e`, `I`, `inf`, `nan`
 //!
+//! # Undefined functions
+//!
+//! A call `f(x, …)` whose name is not a built-in or library function is
+//! the undefined function `f` (the node [`Context::apply`] builds) when
+//! the context already knows `f` as one — an `f(…)` built with
+//! [`Context::apply`], or occurring in any expression of this context —
+//! and an error ("unknown function") otherwise.  So the Display of an
+//! expression parses back in its own context (`f(x)`, `f(x, y)`,
+//! `Derivative(f(x), x)`, the chain rule's `Subs(Derivative(g(_xi), _xi),
+//! _xi, x^2)`), while a misspelt name (`sni(x)`) is still reported, not
+//! turned into a function that silently never evaluates.  SymPy's
+//! `sympify("f(x)")` creates `Function('f')` for any unknown name (and
+//! `sympify("sni(x)")` an undefined `sni`); here a new function is
+//! declared by applying it once, `ctx.apply("f", &[&x])`.  The name keeps
+//! its case and may take any number of arguments; a library function in
+//! the wrong arity (`besselj(x)`) stays an error.  [`parse_implicit`]
+//! still reads an unknown `f(x)` as a product.
+//!
 //! Three entry points share this grammar (SymPy: `sympify`, `parse_expr`):
 //!
 //! | Function | Result | Extra syntax |
@@ -39,7 +57,7 @@ use crate::api::context::Context;
 use crate::api::expr::{BoolEx, Ex};
 use crate::base::arena::Arena;
 use crate::base::libfn::LibFn;
-use crate::base::node::{ExprId, ExprNode};
+use crate::base::node::{ExprId, ExprNode, SymbolId};
 use crate::base::numeric::Q;
 
 /// Error returned when parsing fails.
@@ -65,7 +83,24 @@ impl std::error::Error for ParseError {}
 
 /// Parse a mathematical expression string into an `Ex`.
 ///
-/// Uses the provided context for symbol and number interning.
+/// Uses the provided context for symbol and number interning.  An
+/// undefined function parses only if the context already knows it (see
+/// the [module documentation](crate::parse#undefined-functions)), so the Display
+/// of any expression of `ctx` parses back to it.
+///
+/// ```
+/// use symplex::prelude::*;
+///
+/// let ctx = Context::new();
+/// let x = ctx.symbol("x");
+/// assert!(ctx.parse("f(x)").is_err()); // `f` is not known yet
+/// let f = ctx.apply("f", &[&x]).unwrap();
+/// let df0 = f.diff(&x).subs_i64(&x, 0);
+/// assert_eq!(df0.to_string(), "Subs(Derivative(f(x), x), x, 0)");
+/// assert_eq!(ctx.parse(&df0.to_string()).unwrap(), df0);
+/// assert_eq!(ctx.parse("f(y, 2)").unwrap().to_string(), "f(y, 2)");
+/// assert!(ctx.parse("sni(x)").is_err());
+/// ```
 ///
 /// # Errors
 ///
@@ -372,6 +407,7 @@ const KNOWN_FUNCTIONS: &[&str] = &[
     "rootof",
     "conditionset",
     "integral",
+    "derivative",
     "atan2",
     "polygamma",
     "kroneckerdelta",
@@ -405,6 +441,21 @@ fn is_known_function(name_lower: &str) -> bool {
 /// `Arena` does.
 fn lib_fn_by_name(name_lower: &str) -> Option<LibFn> {
     LibFn::from_name_ignore_ascii_case(name_lower).filter(|f| *f != LibFn::LambertW)
+}
+
+/// The head of the undefined function `name` (exact case) if the context
+/// already knows it as one: some `Apply` node of the arena is headed by
+/// it.  There is no separate registry — [`Context::apply`] interns the
+/// name as a symbol and the node — so a name also used as a variable
+/// (`ctx.symbol("f")`) is not a function by that alone.  A linear scan of
+/// the arena, made only for a call name no table knows.
+fn declared_function(arena: &Arena, name: &str) -> Option<SymbolId> {
+    let sid = arena.symbols.get(name)?;
+    let headed = |i: usize| {
+        u32::try_from(i)
+            .is_ok_and(|i| matches!(arena.node(ExprId(i)), ExprNode::Apply(s, _) if *s == sid))
+    };
+    (0..arena.node_count()).rev().any(headed).then_some(sid)
 }
 
 /// Textbook one-argument functions that [`parse_implicit`] applies without
@@ -1181,12 +1232,11 @@ impl<'a> Parser<'a> {
             2 => self.call_2(arena, name, &name_lower, args[0], args[1]),
             3 => self.call_3(arena, name, &name_lower, args[0], args[1], args[2]),
             4 => self.call_4(arena, name, &name_lower, args[0], args[1], args[2], args[3]),
-            n => Err(ParseError {
-                message: format!(
+            n => self.lib_call(arena, name, &name_lower, &args, || {
+                format!(
                     "unknown {n}-argument function '{}'. Only min and max take more than 4 arguments",
                     name
-                ),
-                position: self.lexer.pos,
+                )
             }),
         }
     }
@@ -1313,7 +1363,7 @@ impl<'a> Parser<'a> {
                 self.make_sum_product(arena, name, name_lower, arg, arg2, arg3, arg4)
             }
             // `jacobi(n, a, b, x)`, `betainc(a, b, x1, x2)`, `betainc_regularized(a, b, x1, x2)`.
-            _ => self.lib_call(arena, name_lower, &[arg, arg2, arg3, arg4], || {
+            _ => self.lib_call(arena, name, name_lower, &[arg, arg2, arg3, arg4], || {
                 format!(
                     "unknown 4-argument function '{}'. Supported: Series, Sum, Product, Integral, \
                      jacobi, betainc, betainc_regularized",
@@ -1325,22 +1375,40 @@ impl<'a> Parser<'a> {
 
     /// A library special function by its registry name, in the arity it
     /// declares (`besselj(n, x)`, `expint(n, x)`, `gegenbauer(n, a, x)`,
-    /// `jacobi(n, a, b, x)`, `fibonacci(n)`, …); otherwise the error the
-    /// call table would have reported.
+    /// `jacobi(n, a, b, x)`, `fibonacci(n)`, …); else, for a name that is
+    /// no library function, the undefined function the context knows by
+    /// that name ([`declared_function`]); otherwise the error the call
+    /// table would have reported.
     fn lib_call(
         &self,
         arena: &mut Arena,
+        name: &str,
         name_lower: &str,
         args: &[ExprId],
         unknown: impl FnOnce() -> String,
     ) -> Result<ExprId, ParseError> {
-        match lib_fn_by_name(name_lower) {
-            Some(f) if f.arity().accepts(args.len()) => Ok(arena.lib_apply(f, args)),
-            _ => Err(ParseError {
-                message: unknown(),
-                position: self.lexer.pos,
-            }),
+        let lib = lib_fn_by_name(name_lower);
+        if let Some(f) = lib
+            && f.arity().accepts(args.len())
+        {
+            return Ok(arena.lib_apply(f, args));
         }
+        if lib.is_none()
+            && let Some(sid) = declared_function(arena, name)
+        {
+            return Ok(arena.intern(ExprNode::Apply(sid, args.iter().copied().collect())));
+        }
+        let hint = if lib.is_none() {
+            format!(
+                " (an undefined function parses once this context knows it: Context::apply(\"{name}\", …))"
+            )
+        } else {
+            String::new()
+        };
+        Err(ParseError {
+            message: unknown() + &hint,
+            position: self.lexer.pos,
+        })
     }
 
     fn call_3(
@@ -1372,7 +1440,7 @@ impl<'a> Parser<'a> {
                 Ok(crate::transforms::subs::subs(arena, arg, arg2, arg3))
             }
             // Orthogonal polynomials with a parameter: (n, param, x).
-            _ => self.lib_call(arena, name_lower, &[arg, arg2, arg3], || {
+            _ => self.lib_call(arena, name, name_lower, &[arg, arg2, arg3], || {
                 format!(
                     "unknown 3-argument function '{}'. Supported: Limit, LaplaceTransform, \
                      InverseLaplaceTransform, Residue, DSolve, RootOf, Subs, min, max, \
@@ -1417,6 +1485,13 @@ impl<'a> Parser<'a> {
             "conditionset" => Ok(arena.intern(ExprNode::ConditionSet(arg, arg2))),
             // `Integral(f, x)` — the Display form of an indefinite integral.
             "integral" => Ok(arena.intern(ExprNode::Integral(arg, arg2))),
+            // `Derivative(f, x)` — the Display form of a formal derivative
+            // (`f(x).diff(x)`, `formal_diff`), kept unevaluated as SymPy's
+            // `sympify("Derivative(sin(x), x)")` is.
+            "derivative" => {
+                self.bound_symbol(arena, name, arg2)?;
+                Ok(arena.intern(ExprNode::Derivative(arg, arg2)))
+            }
             "atan2" => Ok(arena.atan2(arg, arg2)),
             "polygamma" => Ok(arena.polygamma(arg, arg2)),
             "kroneckerdelta" | "kronecker_delta" => Ok(arena.kronecker_delta(arg, arg2)),
@@ -1428,12 +1503,12 @@ impl<'a> Parser<'a> {
             // the display: Bessel `(order, x)`, `expint`/`lowergamma`/
             // `uppergamma`/`polylog` `(s, x)`, `elliptic_f`/`elliptic_pi`,
             // the classical orthogonal polynomials `(n, x)`, …
-            _ => self.lib_call(arena, name_lower, &[arg, arg2], || {
+            _ => self.lib_call(arena, name, name_lower, &[arg, arg2], || {
                 format!(
                     "unknown 2-argument function '{}'. Supported: log, atan2, polygamma, \
                      binomial, beta, besselj, bessely, besseli, besselk, expint, lowergamma, \
                      uppergamma, polylog, elliptic_f, elliptic_pi, min, max, KroneckerDelta, \
-                     RootOf, ConditionSet, Integral",
+                     RootOf, ConditionSet, Integral, Derivative",
                     name
                 )
             }),
@@ -1530,7 +1605,7 @@ impl<'a> Parser<'a> {
             // One-argument library functions: `erfi`, `erfinv`, `erfcinv`,
             // `Shi`, `Chi`, `fresnels`, `fresnelc`, `dirichlet_eta`, the Airy
             // functions, `elliptic_k`, `elliptic_e`, the integer sequences, …
-            _ => self.lib_call(arena, name_lower, &[arg], || {
+            _ => self.lib_call(arena, name, name_lower, &[arg], || {
                 format!(
                     "unknown function '{}'. Supported: sin, cos, tan, cot, sec, csc, exp, ln, log, \
                      sqrt, cbrt, abs, asin, acos, atan, acot, sinh, cosh, tanh, coth, sech, csch, \
@@ -1543,7 +1618,8 @@ impl<'a> Parser<'a> {
                      gegenbauer, jacobi, assoc_legendre, assoc_laguerre, betainc, \
                      betainc_regularized, min, max, \
                      KroneckerDelta, Limit, RootOf, ConditionSet, LaplaceTransform, \
-                     InverseLaplaceTransform, Residue, DSolve, Series, Sum, Product, Integral",
+                     InverseLaplaceTransform, Residue, DSolve, Series, Sum, Product, Integral, \
+                     Derivative",
                     name
                 )
             }),

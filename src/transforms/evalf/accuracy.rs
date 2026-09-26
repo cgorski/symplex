@@ -23,7 +23,45 @@
 //! | `tan`, `tanh` | `(1 + abs(f(z))²)·err(z)` |
 //! | `atan`, `asin`, `acos`, `asinh`, `acosh`, `atanh` | `err(z)·abs(f′(z))`, with `abs(f′)` from the distances to the two branch points; within a few error radii of a square-root branch point `p` the Hölder bound `4·√(abs(z − p) + err(z))`, and no bound near a logarithmic one |
 //! | `sign`, `floor`, `ceiling`, `heaviside`, `KroneckerDelta` | exact, or unknown when the argument (difference) is within its error of the threshold |
-//! | special functions | the arguments' relative error carries over, plus 4 bits |
+//! | special functions `f(x₁, …, xₙ)` | `2^(⌈log₂ k⌉ + 1)·maxᵢ abs(∂f/∂xᵢ)·err(xᵢ)` over the `k` distinct inexact arguments, `abs(∂f/∂xᵢ)` bounded over the argument's error ball (next table, `sensitivity.rs`); no bound when the ball reaches a pole or branch point (its radius above an eighth of the distance); exact arguments cost nothing |
+//!
+//! The sensitivity `abs(∂f/∂x)` of a special function — its condition number
+//! `abs(∂ ln f/∂ ln x)` times `abs(f/x)`, which can be huge: `I_x(a, b)` near
+//! `x = 1` for a small `b`, `Γ` near a pole, any function near a zero — comes
+//! from a closed-form bound where one is cheap, from a bound on the change
+//! over the ball where the derivative is unbounded but integrable, and
+//! otherwise from the function evaluated again at the working precision with
+//! the argument moved by its error (doubled):
+//!
+//! | function | argument | bound on `abs(∂f/∂x)` (`d`: distance to the nearest pole) |
+//! |---|---|---|
+//! | `Γ`, `x!`, `ln Γ`, `B(a, b)`, `C(n, k)` | each | `abs(f)·abs(ψ)` (`abs(ψ)` for `ln Γ`) with `abs(ψ(y)) ≤ 1/d + ln(1 + abs(y)) + γ`, and `abs(ψ(u) − ψ(v)) ≤ abs(u − v)·(1/m + 1/m²)` for `u, v > 0`, `m = min(u, v)` |
+//! | `ψ⁽ⁿ⁾` | `x` | `(n+1)!·Σₖ abs(x + k)^(−n−2)`, at most `x^(−p) + x^(1−p)/(p−1)` (`p = n + 2`), or `d^(−p) + 2^(p+2)` left of 0; the order is discrete |
+//! | `erf`, `erfc`; `erfi`; `erf⁻¹`, `erfc⁻¹` | `x` | `(2/√π)·e^(−x²)`; `(2/√π)·e^(x²)`; `(√π/2)·e^(f²)` |
+//! | `Si`, `Ci`, `Shi`, `Chi`, `Ei`, `li`, Fresnel | `x` | `min(1, 1/abs(x))`, `1/abs(x)`, `max(1.18, e^abs(x)/(2·abs(x)))`, `e^abs(x)/abs(x)`, `eˣ/abs(x)`, `1/abs(ln x)`, 1 |
+//! | `W` | `x` | `e^(−W)/abs(1 + W)`, with the first-order change below an eighth of `1 + W` |
+//! | `ζ`, `η` | `s ≥ 0` | `1/(s − 1)² + 1`, and `η = (1 − 2^(1−s))·ζ` |
+//! | `Li_s(z)` | `z` | `1/abs(1 − z)`, `abs(ln(1 − z)/z)`, 2 for an exact `s = 1`, 2, `≥ 3`; otherwise `m!/(1 − abs(z))^(m+1)`, `m = max(0, ⌈1 − s⌉)` |
+//! |  | `s` | `abs(z)·m!/(1 − abs(z))^(m+1)`, `m = max(0, ⌈2 − s⌉)` |
+//! | `Γ(s, x)`, `γ(s, x)` | `x` | `x^(s−1)·e^(−x)` |
+//! |  | `s` | `abs(f)·max(abs(ln x), ln E[T given T > x])`, resp. `abs(f)·e·(abs(ln x) + 1/s)` (`T ~ Gamma(s)`) |
+//! | `E_ν(x)` | `x`, `ν` | `abs(f)·E[T]`, `abs(f)·ln E[T]`, with `E[T] ≤ 1 + (max(0, −ν) + 1)/x` |
+//! | `I_(x₁, x₂)(a, b)`, `B_(x₁, x₂)(a, b)` | limits | the integrand `t^(a−1)·(1−t)^(b−1)` (over `B(a, b)`); within 8 radii of 0 or 1, its integral over the ball |
+//! |  | shapes | `abs(f)·abs(E[ln X given x₁ < X < x₂])` (minus `E[ln X]` regularised), and for a tail `abs(∂I_x/∂a) ≤ (1 − I_x)·(ψ(a+b) − ψ(a))` |
+//! | `J_ν`, `I_ν`, `K_ν` (`ν ≥ 0`) | `x` | `(ν/x)·abs(f) + min(1, (x/2)^(ν+1)/Γ(ν+2))`, `(1 + ν/x)·abs(f)`, `(1 + (ν+1)/x)·abs(f)` |
+//! |  | `ν` | from the series (`I`, `J` for `x ≤ 16`) and `K_ν = ∫ e^(−x cosh t)·cosh(νt) dt`: `(ν/x)·abs(f)` for `K` |
+//! | `Ai`, `Bi`, `Ai′`, `Bi′`, `K(m)`, `E(m)`, `F(φ, m)`, `Π(n, m)` | each | envelopes (`(√x + 1)·abs(f)`, `0.6·(abs(x)^(1/4) + 1)`, …) and the derivative formulas with `E ≤ π/2`, `K ≤ π/(2√(1 − m))` |
+//! | `Y_ν`; `ν` of `J_ν` beyond 16, orthogonal polynomials, `ζ` left of 0, the rest | — | `Y_(ν−1)` at 128 bits; numerically |
+//!
+//! Before 0.29 a special function carried its arguments' relative error
+//! over, plus 4 bits, whatever its condition number, and a rational argument
+//! rounded to the working precision printed wrong digits as certified:
+//! `betainc_regularized(27/11, 1/26562500, 0, 1 − 3·10⁻³⁰)` was
+//! `2.5118502017106955·10⁻⁶` in `eval_f64` (truly `…7194424·10⁻⁶`),
+//! `besselj(0, x)` at a 36-digit rational `x` next to its first zero
+//! `6.719·10⁻³⁸` (truly `6.450·10⁻³⁸`), and `betainc_regularized(1/3, 1/7, 0,
+//! 1 − 10⁻⁶⁰)` exactly `1` (the limit rounded to 1, where the integrand is
+//! infinite).
 //!
 //! `err(z)` of a complex argument is the joint bound `err(re) + err(im)`
 //! ([`Bound::joint`]).  A function that is real on an exactly real argument
@@ -889,7 +927,10 @@ fn is_integer_value(x: &BigFloat) -> bool {
 
 /// The error bound of the value `value` of node `id`, from the values
 /// (`cache`) and error bounds (`errs`) of its children, at working
-/// precision `prec`.  See the module documentation.
+/// precision `prec`.  See the module documentation.  `special` computes the
+/// propagated error of a special function, `Σ |∂f/∂xᵢ|·err(xᵢ)`
+/// (`sensitivity::special_error`); it is called only for such a node whose
+/// children all have a bound.
 pub(super) fn node_error(
     arena: &Arena,
     id: ExprId,
@@ -897,6 +938,7 @@ pub(super) fn node_error(
     cache: &FxHashMap<ExprId, Complex>,
     errs: &FxHashMap<ExprId, Bound>,
     prec: usize,
+    special: impl FnOnce() -> ErrExp,
 ) -> Bound {
     if !is_finite(value) {
         return Bound::UNKNOWN;
@@ -1129,7 +1171,11 @@ pub(super) fn node_error(
             return Bound::EXACT;
         }
 
-        // Special functions: the arguments' relative error carries over.
+        // Special functions: each argument's error times the function's
+        // sensitivity to it (`sensitivity.rs`).  Before 0.29 the arguments'
+        // relative error carried over plus 4 bits, whatever the condition
+        // number: `betainc_regularized(27/11, 1/26562500, 0, 1 − 3·10⁻³⁰)`
+        // lost 11 of the 16 digits it certified to the rounding of `x`.
         ExprNode::Gamma(_)
         | ExprNode::LogGamma(_)
         | ExprNode::Digamma(_)
@@ -1147,21 +1193,14 @@ pub(super) fn node_error(
         | ExprNode::Binomial(_, _)
         | ExprNode::Apply(_, _)
         | ExprNode::DiracDelta(_) => {
-            let mut worst = EXACT;
             let mut all_real = true;
             for c in node.children() {
                 let (v, b) = known_child!(c);
                 all_real &= exactly_real(v, b);
-                let e = b.joint();
-                if is_exact(e) {
-                    continue;
-                }
-                worst = worst.max(match mag(v) {
-                    // Relative error in, relative error out.
-                    Some(m) if m > e => ub_out + (e - m) + 4,
-                    // An argument indistinguishable from 0: absolute.
-                    _ => e + ub_out.max(0) + 4,
-                });
+            }
+            let worst = special();
+            if is_unknown(worst) {
+                return Bound::UNKNOWN;
             }
             if all_real && value.1.is_zero() {
                 Bound::real(worst)

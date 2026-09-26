@@ -784,7 +784,12 @@ fn studentized_range_edge_cases_and_invalid_arguments() {
     invalid(studentized_range_cdf(3.0, 3, 0.5));
     invalid(studentized_range_cdf(f64::NAN, 3, 10.0));
     invalid(studentized_range_quantile(1.0, 3, 10.0));
-    invalid(studentized_range_quantile(0.5, 3, f64::INFINITY));
+    // 0.29: `df = +inf` is accepted (the range of k standard normals, as
+    // scipy's studentized_range takes np.inf; this line pinned the refusal).
+    // NaN and -inf degrees of freedom are still refused.
+    assert!(studentized_range_quantile(0.5, 3, f64::INFINITY).is_ok());
+    invalid(studentized_range_quantile(0.5, 3, f64::NAN));
+    invalid(studentized_range_cdf(3.0, 3, f64::NEG_INFINITY));
     // Monotone in q.
     let a = studentized_range_cdf(2.0, 4, 8.0).unwrap();
     let b = studentized_range_cdf(3.0, 4, 8.0).unwrap();

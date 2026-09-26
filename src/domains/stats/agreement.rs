@@ -1384,10 +1384,12 @@ fn kappa_test_of(
     alt: Alternative,
 ) -> Result<TestResult, SymplexError> {
     let m = kappa_moments(op, table)?;
+    // Var₀ = 0 exactly when a rater uses one category or the raters share
+    // none; κ̂ is then 0 for any ratings with these margins (see `kappa_test`).
     if !m.var0.is_positive() {
         return Err(invalid(
             op,
-            "the null variance of κ is zero, the test is undefined",
+            "the null variance of κ is zero (a rater uses a single category, or the raters share none: the estimate is 0 whatever the ratings), the test is undefined",
         ));
     }
     Ok(normal_test(ctx, &m.kappa, &m.var0, alt))
@@ -1402,6 +1404,20 @@ fn kappa_test_of(
 /// (`κ/√Var₀`); `Greater` is the usual one-sided `κ > 0`.
 /// `statsmodels` `cohens_kappa(...).z_value`, `pvalue_one_sided`
 /// (`Greater`), `pvalue_two_sided`.
+///
+/// A **zero null variance** is an error, not `z = 0, p = 1`.  It occurs
+/// when one rater uses a single category or the raters share none
+/// (exhaustively the only cases on small tables); then `p_o = p_e` for
+/// every table with these margins, so `κ̂ = 0` identically, the null
+/// distribution is a point mass and `z = 0/0` — the data cannot speak to
+/// agreement at all, and a p-value would present that as evidence of
+/// none (a normal `p = ½` one-sided, or `1`).  [`cohen_kappa`] still
+/// reports `κ̂ = 0`.  statsmodels agrees where the variance is exactly
+/// zero: `cohens_kappa([[5, 3], [0, 0]], return_results=True)` has
+/// `var_kappa0 = 0.0`, `z_value = nan`, `pvalue_two_sided = nan` (with a
+/// runtime warning); its `z = 0, p = 1` arises only where rounding leaves
+/// `var_kappa0 = 3.3e-16` (`[[4, 0, 2], [0, 0, 0], [0, 0, 0]]`, with
+/// `pvalue_one_sided = 0.5`).
 ///
 /// ```
 /// use symplex::prelude::*;

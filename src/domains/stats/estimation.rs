@@ -816,21 +816,16 @@ pub fn dirichlet_multinomial_posterior(
 /// ([`Distribution::quantile_f64`], `scipy.stats.<dist>.ppf(t)`) and the
 /// upper end the `x` with `P(X > x) = t` (`scipy.stats.<dist>.isf(t)`).
 ///
-/// The upper end is solved on the upper tail itself, never as the
-/// quantile at the rounded level `1 − t`: that level carries an absolute
-/// error of up to `2⁻⁵⁴`, a relative error of `1.1·10⁻⁴` in `t` at
-/// `c = 1 − 10⁻¹²`, and at `c = 1 − 2⁻⁵³` it rounds to `1` (0.28 then
-/// returned an error; at `1 − 10⁻¹²` its `Beta(9, 6)` upper end was
-/// `0.99764814506449` for `0.9976481886981728`).  The families with an
-/// `f64` kernel ([`numdist`]: normal, Student-t, χ², F,
-/// beta, gamma, binomial, Poisson) use its `isf`; any other continuous
-/// law the lower quantile of `−X` (`x_U(X) = −x_L(−X)`, through
-/// [`Distribution::affine`]); any other discrete law — a
-/// [`Finite`](super::Finite) table, a die — still the quantile at `1 − t`,
-/// which differs only when a tail of the table lies within `2⁻⁵⁴` of `t`,
-/// and is an error at `c = 1 − 2⁻⁵³` (a reflection would change the
-/// lattice convention: the smallest `k` with `P(X > k) ≤ t` is `0` for a
-/// fair coin at `t = ½`, the largest `k` with `P(X ≥ k) ≥ t` is `1`).
+/// The upper end is solved on the upper tail itself
+/// ([`Distribution::isf_f64`]), never as the quantile at the rounded
+/// level `1 − t`: that level carries an absolute error of up to `2⁻⁵⁴`,
+/// a relative error of `1.1·10⁻⁴` in `t` at `c = 1 − 10⁻¹²`, and at
+/// `c = 1 − 2⁻⁵³` it rounds to `1` (0.28 then returned an error; at
+/// `1 − 10⁻¹²` its `Beta(9, 6)` upper end was `0.99764814506449` for
+/// `0.9976481886981728`).  For a discrete law the upper end is the
+/// smallest atom `k` with `P(X > k) ≤ t` (scipy's `isf` convention); a
+/// [`Finite`](super::Finite) table, a die, a geometric law at
+/// `c = 1 − 2⁻⁵³` were an error until 0.29.
 ///
 /// # Errors
 ///
@@ -850,6 +845,9 @@ pub fn dirichlet_multinomial_posterior(
 /// // c = 1 - 1e-12; scipy: stats.beta.isf((1 - c)/2, 9, 6) = 0.9976481886981728
 /// let ci = credible_interval(&Distribution::beta(ctx.int(9), ctx.int(6)), 1.0 - 1e-12)?;
 /// assert!((ci.upper - 0.9976481886981728).abs() < 1e-15);
+/// // c = 1 - 2^-53: t = 2^-54; a fair die has P(X > 5) = 1/6 > t >= P(X > 6) = 0
+/// let ci = credible_interval(&Distribution::die(ctx.int(6)), 1.0 - f64::EPSILON / 2.0)?;
+/// assert_eq!((ci.lower, ci.upper), (1.0, 6.0));
 /// # Ok::<(), SymplexError>(())
 /// ```
 pub fn credible_interval(
@@ -860,61 +858,8 @@ pub fn credible_interval(
     let tail = (1.0 - confidence) / 2.0;
     Ok(Interval::closed(
         dist.quantile_f64(tail)?,
-        upper_quantile_f64(dist, tail)?,
+        dist.isf_f64(tail)?,
     ))
-}
-
-/// The `x` with `P(X > x) = q` (for a lattice law the smallest atom with
-/// `P(X > x) ≤ q`), solved on the upper tail; see [`credible_interval`].
-/// The kernel table mirrors the one behind [`Distribution::quantile_f64`]
-/// (which has no upper-tail counterpart to call).
-fn upper_quantile_f64(dist: &Distribution, q: f64) -> Result<f64, SymplexError> {
-    use super::continuous::{Beta, ChiSquared, FDistribution, Gamma, Normal, StudentT};
-    use super::discrete::{Binomial, Poisson};
-    let num = |e: &Ex| -> Option<f64> {
-        if e.free_symbols().is_empty() {
-            e.eval_f64().ok().filter(|v| v.is_finite())
-        } else {
-            None
-        }
-    };
-    let kernel = || -> Option<Result<f64, SymplexError>> {
-        if let Some(d) = dist.downcast_ref::<Normal>() {
-            let (mean, std) = (num(&d.mean)?, num(&d.std)?);
-            return (std > 0.0).then(|| numdist::norm::isf(q).map(|z| mean + std * z));
-        }
-        if let Some(d) = dist.downcast_ref::<StudentT>() {
-            return Some(numdist::t::isf(q, num(&d.dof)?));
-        }
-        if let Some(d) = dist.downcast_ref::<ChiSquared>() {
-            return Some(numdist::chi2::isf(q, num(&d.dof)?));
-        }
-        if let Some(d) = dist.downcast_ref::<FDistribution>() {
-            return Some(numdist::f::isf(q, num(&d.d1)?, num(&d.d2)?));
-        }
-        if let Some(d) = dist.downcast_ref::<Beta>() {
-            return Some(numdist::beta::isf(q, num(&d.alpha)?, num(&d.beta)?));
-        }
-        if let Some(d) = dist.downcast_ref::<Gamma>() {
-            return Some(numdist::gamma::isf(q, num(&d.shape)?, num(&d.scale)?));
-        }
-        if let Some(d) = dist.downcast_ref::<Binomial>() {
-            let (n, p) = (num(&d.n)?, num(&d.p)?);
-            return (n.fract() == 0.0).then(|| numdist::binom::isf(q, n, p));
-        }
-        if let Some(d) = dist.downcast_ref::<Poisson>() {
-            return Some(numdist::poisson::isf(q, num(&d.rate)?));
-        }
-        None
-    };
-    if let Some(x) = kernel() {
-        return x;
-    }
-    if dist.is_continuous() {
-        let ctx = dist.context();
-        return Ok(-dist.affine(ctx.int(-1), ctx.zero())?.quantile_f64(q)?);
-    }
-    dist.quantile_f64(1.0 - q)
 }
 
 /// The posterior predictive of `n` further Bernoulli trials under a
@@ -1272,7 +1217,7 @@ pub fn proportion_interval(
     let (k, fails, n) = (successes as f64, (trials - successes) as f64, trials as f64);
     let beta_ppf = |a: f64, b: f64| numdist::beta::ppf(tail, a, b).map_err(renamed(OP));
     let beta_isf = |a: f64, b: f64| numdist::beta::isf(tail, a, b).map_err(renamed(OP));
-    let z = || upper_quantile_f64(&standard_normal(), tail).map_err(renamed(OP));
+    let z = || standard_normal().isf_f64(tail).map_err(renamed(OP));
     let p = k / n;
     let unit = Interval::closed(0.0, 1.0);
     let clip = |ci: Interval<f64>| ci.map(|v| unit.clamp_to_closure(v));
