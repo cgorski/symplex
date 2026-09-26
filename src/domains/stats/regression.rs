@@ -53,7 +53,7 @@ use num_traits::{One, Signed, Zero};
 
 use super::common::{
     WaldSummary, check_confidence, chi_squared_sf, ex, ex_usize, f_sf, information_cholesky,
-    invalid, normal_two_sided, qu, t_two_sided, wald_summary, z_two_sided,
+    invalid, normal_two_sided, qu, t_two_sided, z_two_sided,
 };
 use super::data::Q;
 use super::hypothesis::{self, Alternative, TestResult};
@@ -571,13 +571,10 @@ pub fn polyfit(x: &[Q], y: &[Q], degree: usize) -> Result<Vec<Q>, SymplexError> 
         ));
     }
     let n = x.len();
-    if n < degree + 1 {
+    if degree >= n {
         return Err(invalid(
             OP,
-            format!(
-                "degree {degree} needs at least {} points, got {n}",
-                degree + 1
-            ),
+            format!("degree {degree} needs more than {degree} points, got {n}"),
         ));
     }
     let rows: Vec<Vec<Q>> = x
@@ -1184,13 +1181,17 @@ impl BinaryOutcome for f64 {
     }
 }
 
-/// Options of [`logit`]'s Newton–Raphson iteration.
+/// Options of the Newton–Raphson iteration of [`logit`], [`mnlogit`] and
+/// [`ologit`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LogitOpts {
     /// Maximum number of Newton steps (default `100`; statsmodels `maxiter`).
     pub max_iter: usize,
-    /// Convergence when `max_j |Δβ_j| ≤ tol · max(1, max_j |β_j|)`
-    /// (default `1e-10`).
+    /// Convergence when an accepted full Newton step satisfies
+    /// `max_j |Δγ_j| ≤ tol · max(1, max_j |γ_j|)` (default `1e-10`), where
+    /// `γ` are the coefficients of the standardised design the iteration
+    /// runs on (see [`logit`]) — so the criterion does not depend on the
+    /// units of the regressors.  Must be finite and positive.
     pub tol: f64,
 }
 
@@ -1204,6 +1205,13 @@ impl Default for LogitOpts {
 }
 
 /// A fitted logistic regression (statsmodels `Logit(y, X).fit()`), in `f64`.
+///
+/// Like statsmodels, the null-model summaries assume the design contains a
+/// constant: `null_log_likelihood` is the intercept-only model and
+/// `df_model = p − 1` whatever the design.  Without a constant column the
+/// intercept-only model is not nested in the fit, so `llr` can be
+/// negative and [`llr_test`](Self::llr_test) is not a valid
+/// likelihood-ratio test (statsmodels reports it all the same).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Logit {
     /// `β̂`, the maximum-likelihood coefficients (`params`), intercept first
@@ -1217,8 +1225,9 @@ pub struct Logit {
     pub p_values: Vec<f64>,
     /// `ℓ(β̂) = Σ [yᵢ ln p̂ᵢ + (1 − yᵢ) ln(1 − p̂ᵢ)]` (`llf`).
     pub log_likelihood: f64,
-    /// Log-likelihood of the intercept-only model, `n[ȳ ln ȳ + (1−ȳ) ln(1−ȳ)]`
-    /// (`llnull`).
+    /// Log-likelihood of the intercept-only model, `s ln(s/n) + (n − s) ln((n − s)/n)`
+    /// for `s` successes (`llnull`, which statsmodels obtains by an
+    /// iterative fit of that model: it agrees to about `1e-10`).
     pub null_log_likelihood: f64,
     /// McFadden's `1 − ℓ/ℓ₀` (`prsquared`).
     pub pseudo_r_squared: f64,
@@ -1226,7 +1235,8 @@ pub struct Logit {
     pub deviance: f64,
     /// Newton steps taken.
     pub iterations: usize,
-    /// Whether the step criterion was met within `max_iter`.
+    /// Whether an accepted full Newton step met the step criterion within
+    /// `max_iter` ([`LogitOpts::tol`]).
     pub converged: bool,
     /// `p̂ᵢ = σ(xᵢᵀβ̂)` (`predict()`).
     pub fitted_probabilities: Vec<f64>,
@@ -1234,13 +1244,16 @@ pub struct Logit {
     pub cov_params: Vec<Vec<f64>>,
     /// Number of observations (`nobs`).
     pub nobs: usize,
-    /// `p − 1` (`df_model`).
+    /// `p − 1` (`df_model`; statsmodels' convention, which assumes a
+    /// constant column).
     pub df_model: usize,
     /// `n − p` (`df_resid`).
     pub df_resid: usize,
     added_intercept: bool,
 }
 
+/// `σ(η) = 1/(1 + e^{−η})`, accurate to a few ulps relative everywhere
+/// (`σ(−η)` is the accurate complement `1 − σ(η)`).
 fn sigmoid(eta: f64) -> f64 {
     if eta >= 0.0 {
         1.0 / (1.0 + (-eta).exp())
@@ -1259,13 +1272,28 @@ fn softplus(x: f64) -> f64 {
     }
 }
 
-/// Logistic regression `P(y = 1 | x) = σ(xᵀβ)` by Newton–Raphson
-/// (iteratively reweighted least squares) on the log-likelihood, from
-/// `β = 0`: `β ← β + (XᵀWX)⁻¹Xᵀ(y − p)`, `W = diag(pᵢ(1 − pᵢ))`.
+/// Logistic regression `P(y = 1 | x) = σ(xᵀβ)` by maximum likelihood.
 /// `statsmodels.api.Logit(y, add_constant(x)).fit()`.
 ///
 /// `y` is a slice of `bool`, or of `0`/`1` as `u8`, `i64` or `f64`
 /// ([`BinaryOutcome`]); `x` holds one row of regressors per observation.
+///
+/// The fit is [`mnlogit`]'s with two categories: Newton–Raphson with step
+/// halving (a step that lowers `ℓ` is halved, up to 40 times) from
+/// `β = 0`, `β ← β + t (XᵀWX)⁻¹Xᵀ(y − p)`, `W = diag(pᵢ(1 − pᵢ))`.  The
+/// iteration runs on a standardised design — every non-constant regressor
+/// centred on its mean (when the design has a constant column to absorb
+/// the shift) and divided by its root-mean-square deviation — and the
+/// estimate and its covariance are mapped back exactly
+/// (`β̂ = Aγ̂`, `cov β̂ = A cov γ̂ Aᵀ`): the maximum-likelihood fit is
+/// equivariant under that affine change, while the information matrix of
+/// a regressor with a large offset (a calendar year, a timestamp) is
+/// otherwise so ill-conditioned that the standard errors lose about
+/// `2 log₁₀(mean/sd)` digits (and statsmodels' Newton fit fails outright).
+/// The covariance is the inverse of the information accumulated in
+/// square-root form (Givens rotations of the rows `√wᵢ xᵢ`), never the
+/// inverse of the formed `XᵀWX`, so it carries the conditioning of the
+/// (standardised) design rather than its square.
 ///
 /// Perfect (complete or quasi-complete) separation — where the likelihood
 /// has no finite maximiser and statsmodels emits `PerfectSeparationWarning`
@@ -1294,7 +1322,9 @@ fn softplus(x: f64) -> f64 {
 ///
 /// - [`SymplexError::InvalidArgument`] for an empty or non-binary `y`, a
 ///   constant `y`, mismatched or ragged `x`, non-finite entries, `n ≤ p`,
-///   collinear regressors, or `max_iter = 0`.
+///   collinear regressors (numerically: the information matrix of the
+///   standardised design is singular to `1e-12` relative), `max_iter = 0`,
+///   or a `tol` that is not finite and positive.
 /// - [`SymplexError::ComputationFailed`] for perfect separation (see above).
 pub fn logit<B: BinaryOutcome>(
     y: &[B],
@@ -1307,193 +1337,54 @@ pub fn logit<B: BinaryOutcome>(
     if n == 0 {
         return Err(invalid(OP, "y is empty"));
     }
-    if opts.max_iter == 0 {
-        return Err(invalid(OP, "max_iter must be positive"));
-    }
-    if opts.tol.is_nan() || opts.tol <= 0.0 {
-        return Err(invalid(
-            OP,
-            format!("tol must be positive, got {}", opts.tol),
-        ));
-    }
-    let yb: Vec<f64> = y
+    check_logit_opts(OP, opts)?;
+    let classes: Vec<usize> = y
         .iter()
         .enumerate()
         .map(|(i, v)| {
             v.as_outcome()
-                .map(|b| if b { 1.0 } else { 0.0 })
+                .map(usize::from)
                 .ok_or_else(|| invalid(OP, format!("y[{i}] is not a 0/1 outcome")))
         })
         .collect::<Result<_, _>>()?;
-    let successes = yb.iter().filter(|v| **v == 1.0).count();
+    let successes = classes.iter().filter(|&&c| c == 1).count();
     if successes == 0 || successes == n {
         return Err(invalid(
             OP,
             "y is constant (all successes or all failures): the coefficients are not identified",
         ));
     }
-    if x.len() != n {
-        return Err(invalid(
-            OP,
-            format!("y has {n} observations but x has {} rows", x.len()),
-        ));
-    }
-    let k = x.first().map_or(0, Vec::len);
-    if let Some((i, r)) = x.iter().enumerate().find(|(_, r)| r.len() != k) {
-        return Err(invalid(
-            OP,
-            format!("row {i} of x has {} entries, expected {k}", r.len()),
-        ));
-    }
-    if let Some((i, j)) = x
-        .iter()
-        .enumerate()
-        .find_map(|(i, r)| r.iter().position(|v| !v.is_finite()).map(|j| (i, j)))
-    {
-        return Err(invalid(OP, format!("x[{i}][{j}] is not finite")));
-    }
-    let p = k + usize::from(add_intercept);
-    if p == 0 {
-        return Err(invalid(
-            OP,
-            "the design has no columns: pass at least one regressor or add_intercept = true",
-        ));
-    }
+    let data = categorical_data(OP, &classes, x, add_intercept, opts)?;
+    let p = data.design.first().map_or(0, Vec::len);
     if n <= p {
         return Err(invalid(
             OP,
             format!("need more observations than parameters: n = {n}, p = {p}"),
         ));
     }
-    let design: Vec<Vec<f64>> = x
+    let fit = fit_multinomial(OP, &data, add_intercept, opts, false)?;
+    let log_likelihood = fit.eval.ll;
+    let null_log_likelihood = categorical_null_log_likelihood(&data.counts);
+    // From the reported coefficients on the original rows, so that they
+    // are exactly `predict_proba` of those rows.
+    let fitted_probabilities = data
+        .design
         .iter()
-        .map(|r| {
-            let mut row = Vec::with_capacity(p);
-            if add_intercept {
-                row.push(1.0);
-            }
-            row.extend_from_slice(r);
-            row
-        })
+        .map(|row| sigmoid(dot_f64(row, &fit.params)))
         .collect();
-
-    // Gradient and Hessian (negated) of the log-likelihood at `beta`.
-    let score_and_information = |beta: &[f64], probs: &mut [f64]| {
-        let mut g = vec![0.0; p];
-        let mut h = vec![vec![0.0; p]; p];
-        for (i, row) in design.iter().enumerate() {
-            let pi = sigmoid(dot_f64(row, beta));
-            probs[i] = pi;
-            let r = yb[i] - pi;
-            let w = pi * (1.0 - pi);
-            for a in 0..p {
-                g[a] += row[a] * r;
-                for b in 0..p {
-                    h[a][b] += w * row[a] * row[b];
-                }
-            }
-        }
-        (g, h)
-    };
-
-    let mut beta = vec![0.0; p];
-    let mut probs = vec![0.5; n];
-    let mut converged = false;
-    let mut iterations = 0;
-    for iter in 1..=opts.max_iter {
-        iterations = iter;
-        let (g, h) = score_and_information(&beta, &mut probs);
-        let Some(l) = information_cholesky(&h) else {
-            return Err(if iter == 1 {
-                invalid(
-                    OP,
-                    "the design matrix is rank deficient: drop a collinear regressor",
-                )
-            } else {
-                failed(
-                    OP,
-                    "the Hessian became singular: complete or quasi-complete separation, the maximum-likelihood estimate does not exist",
-                )
-            });
-        };
-        let step = dense_f64::cholesky_solve(&l, p, &g);
-        for (b, s) in beta.iter_mut().zip(&step) {
-            *b += s;
-        }
-        if beta.iter().any(|b| !b.is_finite()) {
-            return Err(failed(
-                OP,
-                "the coefficients diverged: perfect separation, the maximum-likelihood estimate does not exist",
-            ));
-        }
-        // statsmodels' `_check_perfect_pred`: every observation predicted
-        // to within 1e-8 means the likelihood is maximised only at infinity.
-        let max_dev = probs
-            .iter()
-            .zip(&yb)
-            .fold(0.0_f64, |m, (pi, yi)| m.max((pi - yi).abs()));
-        if max_dev <= 1e-8 {
-            return Err(failed(
-                OP,
-                "perfect separation: every observation is predicted exactly (|p̂ − y| ≤ 1e-8), the maximum-likelihood estimate does not exist",
-            ));
-        }
-        let max_step = step.iter().fold(0.0_f64, |m, s| m.max(s.abs()));
-        let scale = beta.iter().fold(1.0_f64, |m, b| m.max(b.abs()));
-        if max_step <= opts.tol * scale {
-            converged = true;
-            break;
-        }
-    }
-
-    let (_, h) = score_and_information(&beta, &mut probs);
-    if !converged {
-        let degenerate = probs.iter().any(|pi| pi * (1.0 - pi) < 1e-10);
-        if degenerate {
-            return Err(failed(
-                OP,
-                format!(
-                    "no convergence in {} iterations while fitted probabilities reached 0 or 1: complete or quasi-complete separation, the maximum-likelihood estimate does not exist",
-                    opts.max_iter
-                ),
-            ));
-        }
-    }
-    let wald = wald_summary(&h, &beta).ok_or_else(|| {
-        failed(
-            OP,
-            "the Hessian at the estimate is singular: the standard errors are undefined",
-        )
-    })?;
-
-    let log_likelihood = design
-        .iter()
-        .zip(&yb)
-        .map(|(row, yi)| {
-            let eta = dot_f64(row, &beta);
-            if *yi == 1.0 {
-                -softplus(-eta)
-            } else {
-                -softplus(eta)
-            }
-        })
-        .sum::<f64>();
-    let ybar = successes as f64 / n as f64;
-    let null_log_likelihood = n as f64 * (ybar * ybar.ln() + (1.0 - ybar) * (1.0 - ybar).ln());
-
     Ok(Logit {
         pseudo_r_squared: 1.0 - log_likelihood / null_log_likelihood,
         deviance: -2.0 * log_likelihood,
-        coefficients: beta,
-        standard_errors: wald.se,
-        z_values: wald.z,
-        p_values: wald.p,
+        coefficients: fit.params,
+        standard_errors: fit.wald.se,
+        z_values: fit.wald.z,
+        p_values: fit.wald.p,
         log_likelihood,
         null_log_likelihood,
-        iterations,
-        converged,
-        fitted_probabilities: probs,
-        cov_params: wald.cov,
+        iterations: fit.iterations,
+        converged: fit.converged,
+        fitted_probabilities,
+        cov_params: fit.wald.cov,
         nobs: n,
         df_model: p - 1,
         df_resid: n - p,
@@ -1618,15 +1509,17 @@ pub trait LikelihoodFit {
     ///
     /// # Errors
     ///
-    /// [`SymplexError::InvalidArgument`] when the null model *is* the model
-    /// (`df_model = 0`; statsmodels reports `nan`), or for a `NaN`
+    /// [`SymplexError::InvalidArgument`] when the null model has as many
+    /// parameters as the model (`df_model = 0`: an intercept-only fit, or a
+    /// single-regressor [`Logit`] without a constant under statsmodels'
+    /// `p − 1` convention; statsmodels reports `nan`), or for a `NaN`
     /// statistic.
     fn llr_test(&self, ctx: &Context) -> Result<TestResult, SymplexError> {
         let df = self.df_model();
         if df == 0 {
             return Err(invalid(
                 "llr_test",
-                "the model has no regressors besides the constant (df_model = 0)",
+                "df_model = 0: the null model has as many parameters as the fit, there is nothing to test",
             ));
         }
         chi_squared_test_result(ctx, self.llr(), df, Alternative::Greater)
@@ -1854,28 +1747,39 @@ fn categorical_data(
     if n == 0 {
         return Err(invalid(op, "y is empty"));
     }
-    if opts.max_iter == 0 {
-        return Err(invalid(op, "max_iter must be positive"));
-    }
-    if opts.tol.is_nan() || opts.tol <= 0.0 {
-        return Err(invalid(
-            op,
-            format!("tol must be positive, got {}", opts.tol),
-        ));
-    }
+    check_logit_opts(op, opts)?;
     if x.len() != n {
         return Err(invalid(
             op,
             format!("y has {n} observations but x has {} rows", x.len()),
         ));
     }
-    let k = y.iter().max().map_or(0, |m| m + 1);
-    if k < 2 {
+    let max_label = y.iter().copied().max().unwrap_or(0);
+    if max_label == 0 {
         return Err(invalid(
             op,
             "y is constant (every observation is in category 0): need at least two categories",
         ));
     }
+    if max_label >= n {
+        // n observations cannot cover the max_label + 1 > n labels
+        // 0..=max_label, so some label below n is unused: name it without
+        // allocating (or overflowing) max_label + 1 counters.
+        let mut seen = vec![false; n];
+        for &c in y {
+            if c < n {
+                seen[c] = true;
+            }
+        }
+        let j = seen.iter().position(|s| !s).unwrap_or(n);
+        return Err(invalid(
+            op,
+            format!(
+                "category {j} has no observations: y must take every value in 0..={max_label} (statsmodels relabels the observed values with np.unique; an explicitly declared empty level fails there too)"
+            ),
+        ));
+    }
+    let k = max_label + 1;
     let mut counts = vec![0usize; k];
     for &c in y {
         counts[c] += 1;
@@ -1933,6 +1837,382 @@ fn categorical_data(
         design,
         rms,
     })
+}
+
+/// `max_iter ≥ 1` and a finite positive `tol` (an infinite one declared
+/// convergence after the first step).
+fn check_logit_opts(op: &'static str, opts: &LogitOpts) -> Result<(), SymplexError> {
+    if opts.max_iter == 0 {
+        return Err(invalid(op, "max_iter must be positive"));
+    }
+    if !(opts.tol > 0.0 && opts.tol.is_finite()) {
+        return Err(invalid(
+            op,
+            format!("tol must be finite and positive, got {}", opts.tol),
+        ));
+    }
+    Ok(())
+}
+
+/// The affine change of regressor columns the Newton iterations run in:
+/// column `a` becomes `(x_a − m_a)/s_a`.  A non-constant column is scaled
+/// by its root-mean-square deviation `s_a` and centred on its mean when
+/// the shift can be absorbed — by a constant column (an intercept) for
+/// [`logit`] / [`mnlogit`], by the thresholds for [`ologit`]; constant
+/// columns are left alone.  The likelihood is equivariant under the
+/// change, so the fit is exactly the same model, while the information
+/// matrix of the new columns is well conditioned whatever the regressors'
+/// offsets and units (an offset `m ≫ s` makes `XᵀWX` ill-conditioned like
+/// `(m/s)²`, and its inverse — the covariance — loses that many digits).
+struct Standardization {
+    center: Vec<f64>,
+    scale: Vec<f64>,
+    /// Index and value of the constant column that absorbs the centring.
+    constant: Option<(usize, f64)>,
+}
+
+impl Standardization {
+    /// The change for `design` (`n × p`, `n ≥ 1`); `thresholds_absorb_shift`
+    /// centres every non-constant column.
+    fn new(design: &[Vec<f64>], thresholds_absorb_shift: bool) -> Self {
+        let p = design.first().map_or(0, Vec::len);
+        let n = design.len() as f64;
+        let is_constant = |a: usize| design.iter().all(|r| r[a] == design[0][a]);
+        let constant = (0..p)
+            .find(|&a| design[0][a] != 0.0 && is_constant(a))
+            .map(|a| (a, design[0][a]));
+        let centre = thresholds_absorb_shift || constant.is_some();
+        let mut center = vec![0.0; p];
+        let mut scale = vec![1.0; p];
+        for a in 0..p {
+            if is_constant(a) {
+                continue;
+            }
+            // A running mean and a deviation scaled by its largest entry,
+            // so neither overflows nor underflows for entries near the
+            // ends of the float range.
+            let m = if centre {
+                design
+                    .iter()
+                    .enumerate()
+                    .fold(0.0, |m, (i, r)| m + (r[a] - m) / (i + 1) as f64)
+            } else {
+                0.0
+            };
+            let top = design.iter().fold(0.0_f64, |t, r| t.max((r[a] - m).abs()));
+            let s = top
+                * (design
+                    .iter()
+                    .map(|r| ((r[a] - m) / top).powi(2))
+                    .sum::<f64>()
+                    / n)
+                    .sqrt();
+            // A column this cannot rescale keeps its raw scale (the
+            // Cholesky factorisation then judges it).
+            if m.is_finite() && s > 0.0 && s.is_finite() && (1.0 / s).is_finite() {
+                center[a] = m;
+                scale[a] = s;
+            }
+        }
+        Self {
+            center,
+            scale,
+            constant,
+        }
+    }
+
+    fn apply(&self, design: &[Vec<f64>]) -> Vec<Vec<f64>> {
+        design
+            .iter()
+            .map(|r| {
+                r.iter()
+                    .zip(self.center.iter().zip(&self.scale))
+                    .map(|(v, (m, s))| (v - m) / s)
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// `A` with `β = Aγ` for one linear predictor `η = xᵀβ = x̃ᵀγ` over the
+    /// `p` columns: `β_a = γ_a/s_a`, and the constant column `c` (value
+    /// `v`) absorbs the centring, `β_c = γ_c − Σ_{a≠c} γ_a m_a/(s_a v)`.
+    fn linear_predictor_map(&self) -> Vec<Vec<f64>> {
+        let p = self.scale.len();
+        let mut a_map = vec![vec![0.0; p]; p];
+        for (a, (row, s)) in a_map.iter_mut().zip(&self.scale).enumerate() {
+            row[a] = 1.0 / s;
+        }
+        if let Some((c, v)) = self.constant {
+            let shifts = self.center.iter().zip(&self.scale).enumerate();
+            for (a, (m, s)) in shifts.filter(|&(a, _)| a != c) {
+                a_map[c][a] = -m / (s * v);
+            }
+        }
+        a_map
+    }
+
+    /// `A` with `(β, θ) = A(γ, τ)` for the ordered logit, whose cut points
+    /// absorb the centring: `θ_j − xᵀβ = τ_j − x̃ᵀγ` gives `β_a = γ_a/s_a`
+    /// and `θ_j = τ_j + Σ_a γ_a m_a/s_a`.
+    fn ordered_map(&self, n_thresholds: usize) -> Vec<Vec<f64>> {
+        let p = self.scale.len();
+        let q = p + n_thresholds;
+        let shifts: Vec<f64> = self
+            .center
+            .iter()
+            .zip(&self.scale)
+            .map(|(m, s)| m / s)
+            .collect();
+        let mut a_map = vec![vec![0.0; q]; q];
+        for (j, row) in a_map.iter_mut().enumerate() {
+            if j < p {
+                row[j] = 1.0 / self.scale[j];
+            } else {
+                row[j] = 1.0;
+                row[..p].copy_from_slice(&shifts);
+            }
+        }
+        a_map
+    }
+}
+
+/// `k` copies of the square `block` down the diagonal.
+fn block_diagonal(block: &[Vec<f64>], k: usize) -> Vec<Vec<f64>> {
+    let p = block.len();
+    let mut out = vec![vec![0.0; p * k]; p * k];
+    for e in 0..k {
+        for (a, row) in block.iter().enumerate() {
+            out[e * p + a][e * p..(e + 1) * p].copy_from_slice(row);
+        }
+    }
+    out
+}
+
+/// `A v`.
+fn map_vector(a_map: &[Vec<f64>], v: &[f64]) -> Vec<f64> {
+    a_map.iter().map(|row| dot_f64(row, v)).collect()
+}
+
+/// The upper-triangular square root `R` (`RᵀR = ZᵀZ`) of an information
+/// matrix `I = ZᵀZ` given by rows `z` of `Z`, accumulated by Givens
+/// rotations (Golub & Van Loan, *Matrix Computations*, 4th ed., §5.1.8 and
+/// §6.5.3, updating a QR factorisation by a row).  The covariance
+/// `I⁻¹ = R⁻¹R⁻ᵀ` then carries the conditioning of `Z`, where inverting
+/// the formed `ZᵀZ` squared it: the standard errors of a polynomial logit
+/// (`x, …, x⁸` on `[0, 1]`) kept only 6–7 correct digits.
+struct RootInformation {
+    r: Vec<Vec<f64>>,
+    /// `‖Z e_j‖²`, the diagonal of `I`, for the singularity test.
+    diag: Vec<f64>,
+}
+
+/// `R_jj ≤ this · √I_jj` marks `I` numerically singular — the same
+/// criterion as the Newton iteration's Cholesky pivot `R_jj² ≤ 10⁻¹² I_jj`
+/// ([`information_cholesky`]).
+const ROOT_PIVOT_REL_TOL: f64 = 1e-6;
+
+impl RootInformation {
+    fn new(q: usize) -> Self {
+        Self {
+            r: vec![vec![0.0; q]; q],
+            diag: vec![0.0; q],
+        }
+    }
+
+    /// Rotate the row `z` (consumed) into `R`.
+    fn add_row(&mut self, z: &mut [f64]) {
+        let q = self.diag.len();
+        for (d, v) in self.diag.iter_mut().zip(z.iter()) {
+            *d += v * v;
+        }
+        for j in 0..q {
+            if z[j] == 0.0 {
+                continue;
+            }
+            let row = &mut self.r[j];
+            let h = row[j].hypot(z[j]);
+            let (c, s) = (row[j] / h, z[j] / h);
+            row[j] = h;
+            for (rt, zt) in row[j + 1..].iter_mut().zip(&mut z[j + 1..]) {
+                let (r0, z0) = (*rt, *zt);
+                *rt = c * r0 + s * z0;
+                *zt = c * z0 - s * r0;
+            }
+        }
+    }
+
+    /// `B = A R⁻¹`, so that `A I⁻¹ Aᵀ = B Bᵀ`; `None` when `I` is
+    /// numerically singular.
+    fn covariance_factor(&self, a_map: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
+        let q = self.diag.len();
+        if (0..q).any(|j| {
+            let rjj = self.r[j][j];
+            !(rjj.is_finite() && rjj > ROOT_PIVOT_REL_TOL * self.diag[j].sqrt())
+        }) {
+            return None;
+        }
+        // Columns of R⁻¹ by back substitution on R x = e_c, stored as the
+        // rows of R⁻ᵀ (x_i = 0 for i > c).
+        let r_inv_t: Vec<Vec<f64>> = (0..q)
+            .map(|c| {
+                let mut x = vec![0.0; q];
+                for i in (0..=c).rev() {
+                    let e = if i == c { 1.0 } else { 0.0 };
+                    let s = e - dot_f64(&self.r[i][i + 1..=c], &x[i + 1..=c]);
+                    x[i] = s / self.r[i][i];
+                }
+                x
+            })
+            .collect();
+        Some(
+            a_map
+                .iter()
+                .map(|row| r_inv_t.iter().map(|col| dot_f64(row, col)).collect())
+                .collect(),
+        )
+    }
+}
+
+/// The Wald summary of `params = Aγ̂` from the square root `R` of the
+/// information of the standardised parameters `γ`: `cov = (AR⁻¹)(AR⁻¹)ᵀ`
+/// (symmetric, positive semi-definite by construction; each standard error
+/// is the norm of a row of `AR⁻¹`), then `z` and the two-sided normal
+/// p-values of `params`.
+fn mapped_wald_summary(
+    op: &'static str,
+    root: &RootInformation,
+    a_map: &[Vec<f64>],
+    params: &[f64],
+) -> Result<WaldSummary, SymplexError> {
+    let b = root.covariance_factor(a_map).ok_or_else(|| {
+        failed(
+            op,
+            "the Hessian at the estimate is singular: the standard errors are undefined",
+        )
+    })?;
+    let q = b.len();
+    let mut cov = vec![vec![0.0; q]; q];
+    for i in 0..q {
+        for j in 0..=i {
+            let v = dot_f64(&b[i], &b[j]);
+            cov[i][j] = v;
+            cov[j][i] = v;
+        }
+    }
+    // ‖row‖₂ scaled by its largest entry: a standard error of 1e-302 (or
+    // 1e299) is representable although its variance is not.
+    let se: Vec<f64> = b
+        .iter()
+        .map(|row| {
+            let top = row.iter().fold(0.0_f64, |t, v| t.max(v.abs()));
+            if top == 0.0 || !top.is_finite() {
+                return top;
+            }
+            top * row.iter().map(|v| (v / top).powi(2)).sum::<f64>().sqrt()
+        })
+        .collect();
+    let z: Vec<f64> = params.iter().zip(&se).map(|(b, s)| b / s).collect();
+    let p = z.iter().map(|z| normal_two_sided(*z)).collect();
+    Ok(WaldSummary { cov, se, z, p })
+}
+
+/// The square-root information of the multinomial logit at the flat
+/// (standardised) `beta`: per observation, the rows `L e_m ⊗ x` for the
+/// exact Cholesky factor `L` of `W = diag(π) − ππᵀ` over the `k − 1`
+/// non-reference categories (K. Tanabe and M. Sagae, "An exact Cholesky
+/// decomposition and the generalized inverse of the variance-covariance
+/// matrix of the multinomial distribution", *J. R. Stat. Soc. B* 54 (1992)
+/// 211–219; derived here from the Schur complements, which keep the form
+/// `diag(π') − π'π'ᵀ/t`): with the tail masses
+/// `t_j = π_0 + Σ_{m≥j} π_m` (sums of positives, no cancellation),
+/// `L_jj = √(π_j t_{j+1}/t_j)` and `L_ij = −π_i √(π_j/(t_j t_{j+1}))` for
+/// `i > j`, so that `Σ_m (L e_m)(L e_m)ᵀ ⊗ xxᵀ = W ⊗ xxᵀ` is the
+/// observation's information.
+fn mnlogit_root_information(design: &[Vec<f64>], k: usize, beta: &[f64]) -> RootInformation {
+    let p = design.first().map_or(0, Vec::len);
+    let m = (k - 1) * p;
+    let mut root = RootInformation::new(m);
+    let coefficients: Vec<Vec<f64>> = beta.chunks(p.max(1)).map(<[f64]>::to_vec).collect();
+    let mut z = vec![0.0; m];
+    let mut tail = vec![0.0; k + 1];
+    for row in design {
+        let pr = softmax_probabilities(&coefficients, row);
+        // tail[j] = π_0 + Σ_{m ≥ j} π_m for j = 1..k (tail[k] = π_0).
+        tail[k] = pr[0];
+        for j in (1..k).rev() {
+            tail[j] = tail[j + 1] + pr[j];
+        }
+        for col in 1..k {
+            if tail[col + 1] == 0.0 {
+                // Every later category (and the reference) has π = 0.
+                continue;
+            }
+            let root_share = (pr[col] / tail[col]).sqrt();
+            let root_next = tail[col + 1].sqrt();
+            z.fill(0.0);
+            for j in col..k {
+                let l_jc = if j == col {
+                    root_share * root_next
+                } else {
+                    -(pr[j] / root_next) * root_share
+                };
+                for (a, xa) in row.iter().enumerate() {
+                    z[(j - 1) * p + a] = l_jc * xa;
+                }
+            }
+            root.add_row(&mut z);
+        }
+    }
+    root
+}
+
+/// The square-root information of the ordered logit at `par = (β, θ)`:
+/// per observation ([`OrderedTerm`]) the rows `√(σ(u)σ(−u))·∂u`,
+/// `√(σ(l)σ(−l))·∂l` and `√q·(∂u − ∂l)` with `∂u = (−x, e_c)` and
+/// `∂l = (−x, e_{c−1})`, whose outer products sum to the observation's
+/// information `Jᵀ[[s_u + q, −q], [−q, s_l + q]]J`.
+fn ologit_root_information(
+    design: &[Vec<f64>],
+    y: &[usize],
+    k: usize,
+    par: &[f64],
+) -> RootInformation {
+    let p = design.first().map_or(0, Vec::len);
+    let q = p + k - 1;
+    let (beta, theta) = par.split_at(p);
+    let mut root = RootInformation::new(q);
+    let mut z = vec![0.0; q];
+    for (row, &c) in design.iter().zip(y) {
+        let eta = dot_f64(row, beta);
+        let has_upp = c < k - 1;
+        let has_low = c > 0;
+        let t = ordered_term(
+            has_low.then(|| theta[c - 1] - eta),
+            has_upp.then(|| theta[c] - eta),
+        );
+        for (weight, threshold) in [
+            (t.s_upp, has_upp.then_some(c)),
+            (t.s_low, has_low.then(|| c - 1)),
+        ] {
+            if let Some(j) = threshold {
+                let w = weight.sqrt();
+                z.fill(0.0);
+                for (a, xa) in row.iter().enumerate() {
+                    z[a] = -w * xa;
+                }
+                z[p + j] = w;
+                root.add_row(&mut z);
+            }
+        }
+        if has_upp && has_low && t.q > 0.0 {
+            let w = t.q.sqrt();
+            z.fill(0.0);
+            z[p + c] = w;
+            z[p + c - 1] = -w;
+            root.add_row(&mut z);
+        }
+    }
+    root
 }
 
 /// `Σ_j n_j ln(n_j / n)`: the log-likelihood of the model with no
@@ -2033,7 +2313,7 @@ fn newton_categorical(
             return Err(if iter == 1 {
                 invalid(
                     op,
-                    "the design matrix is rank deficient: drop a collinear regressor",
+                    "the design matrix is rank deficient (numerically: collinear or nearly collinear regressors): drop a collinear regressor",
                 )
             } else {
                 failed(
@@ -2113,20 +2393,6 @@ fn newton_categorical(
         eval: cur,
         iterations,
         converged,
-    })
-}
-
-/// [`wald_summary`] with this module's wording for a singular Hessian.
-fn wald_summary_or_singular(
-    op: &'static str,
-    info: &[Vec<f64>],
-    params: &[f64],
-) -> Result<WaldSummary, SymplexError> {
-    wald_summary(info, params).ok_or_else(|| {
-        failed(
-            op,
-            "the Hessian at the estimate is singular: the standard errors are undefined",
-        )
     })
 }
 
@@ -2219,7 +2485,9 @@ pub struct MnLogit {
     /// Number of observations (`nobs`).
     pub nobs: usize,
     /// `(k − 1)(p − 1)`: the slope count, statsmodels' `df_model` (which
-    /// assumes an intercept column).
+    /// assumes an intercept column: without one, the intercept-only null
+    /// model behind `null_log_likelihood`, `llr` and `llr_test` is not
+    /// nested in the fit, and the likelihood-ratio test is not valid).
     pub df_model: usize,
     /// `n − (k − 1)p` (`df_resid`).
     pub df_resid: usize,
@@ -2231,7 +2499,10 @@ pub struct MnLogit {
 }
 
 /// Log-likelihood, score and observed information of the multinomial logit
-/// at the flat `beta` (index `(j − 1)·p + a`).
+/// at the flat `beta` (index `(j − 1)·p + a`).  `1 − π_j` enters the
+/// score and the weights as `Σ_{m≠j} π_m`, not by subtraction: at a
+/// fitted probability near 1 the difference kept only its leading digits
+/// (`π = 1` exactly past `η ≈ 37`, where the weight became 0).
 fn mnlogit_evaluate(design: &[Vec<f64>], y: &[usize], k: usize, beta: &[f64]) -> CategoricalEval {
     let p = design.first().map_or(0, Vec::len);
     let m = (k - 1) * p;
@@ -2240,6 +2511,7 @@ fn mnlogit_evaluate(design: &[Vec<f64>], y: &[usize], k: usize, beta: &[f64]) ->
     let mut info = vec![vec![0.0; m]; m];
     let mut probs = Vec::with_capacity(design.len());
     let mut eta = vec![0.0; k];
+    let mut rest = vec![0.0; k];
     for (row, &c) in design.iter().zip(y) {
         eta[0] = 0.0;
         for j in 1..k {
@@ -2252,14 +2524,29 @@ fn mnlogit_evaluate(design: &[Vec<f64>], y: &[usize], k: usize, beta: &[f64]) ->
             *v /= s;
         }
         ll += eta[c] - mx - s.ln();
+        // rest[j] = Σ_{m≠j} π_m from prefix and suffix sums of positives.
+        let mut prefix = 0.0;
+        for j in 0..k {
+            rest[j] = prefix;
+            prefix += pr[j];
+        }
+        let mut suffix = 0.0;
+        for j in (0..k).rev() {
+            rest[j] += suffix;
+            suffix += pr[j];
+        }
         for j in 1..k {
-            let r = f64::from(u8::from(c == j)) - pr[j];
+            let r = if c == j { rest[j] } else { -pr[j] };
             let base = (j - 1) * p;
             for (a, xa) in row.iter().enumerate() {
                 score[base + a] += xa * r;
             }
             for l in 1..k {
-                let w = pr[j] * (f64::from(u8::from(j == l)) - pr[l]);
+                let w = if j == l {
+                    pr[j] * rest[j]
+                } else {
+                    -pr[j] * pr[l]
+                };
                 let base_l = (l - 1) * p;
                 for (a, xa) in row.iter().enumerate() {
                     for (b, xb) in row.iter().enumerate() {
@@ -2281,7 +2568,12 @@ fn mnlogit_evaluate(design: &[Vec<f64>], y: &[usize], k: usize, beta: &[f64]) ->
 /// Multinomial logistic regression `P(y = j | x) ∝ exp(xᵀβ_j)` with
 /// `β_0 = 0` (category `0` is the reference), fitted by Newton–Raphson with
 /// step halving on the full `(k − 1)p` parameter vector and the exact
-/// block Hessian `Xᵀ(diag(π_j) − π_j π_lᵀ)X`, from `β = 0`.
+/// block Hessian `Xᵀ(diag(π_j) − π_j π_lᵀ)X`, from `β = 0`, on the
+/// standardised design and mapped back exactly as described for [`logit`]
+/// (whose fit this is with `k = 2`).  The covariance is the inverse of the
+/// information accumulated in square-root form (never forming and
+/// inverting `XᵀWX`), so it carries the conditioning of the design rather
+/// than its square.
 /// `statsmodels.api.MNLogit(y, add_constant(x)).fit(method='newton')`.
 ///
 /// `y[i] ∈ 0..k` with every category observed at least once; `x` holds one
@@ -2320,7 +2612,7 @@ fn mnlogit_evaluate(design: &[Vec<f64>], y: &[usize], k: usize, beta: &[f64]) ->
 /// - [`SymplexError::InvalidArgument`] for an empty `y`, fewer than two
 ///   categories, a category in `0..k` with no observations, mismatched or
 ///   ragged `x`, non-finite entries, `n ≤ (k − 1)p`, collinear regressors,
-///   or `max_iter = 0` / `tol ≤ 0`.
+///   or `max_iter = 0` / a `tol` that is not finite and positive.
 /// - [`SymplexError::ComputationFailed`] for perfect separation (see above).
 pub fn mnlogit(
     y: &[usize],
@@ -2340,33 +2632,96 @@ pub fn mnlogit(
             format!("need more observations than parameters: n = {n}, (k − 1)·p = {m}"),
         ));
     }
-    let evaluate = |beta: &[f64]| Some(mnlogit_evaluate(&data.design, &data.y, k, beta));
-    let culprit = |beta: &[f64]| diverging_coefficient(beta, p, &data.rms, add_intercept, true);
-    let out = newton_categorical(OP, opts, &data.y, vec![0.0; m], &evaluate, &culprit)?;
-    let wald = wald_summary_or_singular(OP, &out.eval.info, &out.params)?;
+    let fit = fit_multinomial(OP, &data, add_intercept, opts, true)?;
     let by_category = |v: &[f64]| -> Vec<Vec<f64>> { v.chunks(p).map(<[f64]>::to_vec).collect() };
-    let log_likelihood = out.eval.ll;
+    let log_likelihood = fit.eval.ll;
     let null_log_likelihood = categorical_null_log_likelihood(&data.counts);
+    let coefficients = by_category(&fit.params);
+    // From the reported coefficients on the original rows, so that they
+    // are exactly `predict_proba` of those rows.
+    let fitted_probabilities = data
+        .design
+        .iter()
+        .map(|row| softmax_probabilities(&coefficients, row))
+        .collect();
     Ok(MnLogit {
-        coefficients: by_category(&out.params),
-        standard_errors: by_category(&wald.se),
-        z_values: by_category(&wald.z),
-        p_values: by_category(&wald.p),
+        coefficients,
+        standard_errors: by_category(&fit.wald.se),
+        z_values: by_category(&fit.wald.z),
+        p_values: by_category(&fit.wald.p),
         log_likelihood,
         null_log_likelihood,
         pseudo_r_squared: 1.0 - log_likelihood / null_log_likelihood,
-        iterations: out.iterations,
-        converged: out.converged,
-        cov_params: wald.cov,
+        iterations: fit.iterations,
+        converged: fit.converged,
+        cov_params: fit.wald.cov,
         n_categories: k,
         n_params: p,
-        fitted_probabilities: out.eval.probs,
+        fitted_probabilities,
         nobs: n,
         df_model: (k - 1) * (p - 1),
         df_resid: n - m,
         added_intercept: add_intercept,
-        flat_coefficients: out.params,
-        flat_standard_errors: wald.se,
+        flat_coefficients: fit.params,
+        flat_standard_errors: fit.wald.se,
+    })
+}
+
+/// A multinomial (or, with `k = 2`, binary) logit fit before it is
+/// dressed as [`MnLogit`] or [`Logit`]: the flat coefficients in the
+/// original units and their Wald summary, the final evaluation (fitted
+/// probabilities, `ℓ`), the iteration count and the convergence flag.
+struct MultinomialFit {
+    params: Vec<f64>,
+    wald: WaldSummary,
+    eval: CategoricalEval,
+    iterations: usize,
+    converged: bool,
+}
+
+/// The shared fit of [`logit`] and [`mnlogit`]: Newton–Raphson with step
+/// halving on the standardised design ([`Standardization`]), the estimate
+/// and its covariance mapped back to the original columns.  The caller has
+/// checked `n > (k − 1)p`.
+fn fit_multinomial(
+    op: &'static str,
+    data: &CategoricalData,
+    add_intercept: bool,
+    opts: &LogitOpts,
+    per_category: bool,
+) -> Result<MultinomialFit, SymplexError> {
+    let k = data.counts.len();
+    let p = data.design.first().map_or(0, Vec::len);
+    let change = Standardization::new(&data.design, false);
+    let design = change.apply(&data.design);
+    let a_map = block_diagonal(&change.linear_predictor_map(), k - 1);
+    let evaluate = |gamma: &[f64]| Some(mnlogit_evaluate(&design, &data.y, k, gamma));
+    let culprit = |gamma: &[f64]| {
+        diverging_coefficient(
+            &map_vector(&a_map, gamma),
+            p,
+            &data.rms,
+            add_intercept,
+            per_category,
+        )
+    };
+    let out = newton_categorical(
+        op,
+        opts,
+        &data.y,
+        vec![0.0; (k - 1) * p],
+        &evaluate,
+        &culprit,
+    )?;
+    let params = map_vector(&a_map, &out.params);
+    let root = mnlogit_root_information(&design, k, &out.params);
+    let wald = mapped_wald_summary(op, &root, &a_map, &params)?;
+    Ok(MultinomialFit {
+        params,
+        wald,
+        eval: out.eval,
+        iterations: out.iterations,
+        converged: out.converged,
     })
 }
 
@@ -2405,17 +2760,23 @@ impl WaldFit for MnLogit {
     }
 }
 
+/// `P(y = j | x)` of a multinomial logit with reference category `0` and
+/// one coefficient vector per other category (a max-shifted softmax).
+fn softmax_probabilities(coefficients: &[Vec<f64>], row: &[f64]) -> Vec<f64> {
+    let mut eta: Vec<f64> = std::iter::once(0.0)
+        .chain(coefficients.iter().map(|b| dot_f64(row, b)))
+        .collect();
+    let mx = eta.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    for e in &mut eta {
+        *e = (*e - mx).exp();
+    }
+    let s: f64 = eta.iter().sum();
+    eta.into_iter().map(|e| e / s).collect()
+}
+
 impl MnLogit {
     fn probabilities(&self, row: &[f64]) -> Vec<f64> {
-        let mut eta: Vec<f64> = std::iter::once(0.0)
-            .chain(self.coefficients.iter().map(|b| dot_f64(row, b)))
-            .collect();
-        let mx = eta.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        for e in &mut eta {
-            *e = (*e - mx).exp();
-        }
-        let s: f64 = eta.iter().sum();
-        eta.into_iter().map(|e| e / s).collect()
+        softmax_probabilities(&self.coefficients, row)
     }
 
     /// `P(y = j | x₀)` for `j = 0, …, k − 1` (`predict(x)`).
@@ -2554,13 +2915,96 @@ pub struct OrderedLogit {
     pub df_resid: usize,
 }
 
-/// `ln σ(z)` for `z = ±∞` handled: `ln P(Y ≤ j)`.
+/// `ln σ(z)`, stable for large `|z|`: `ln P(Y ≤ j)`.
 fn log_sigmoid(z: f64) -> f64 {
     -softplus(-z)
 }
 
+/// `ln(1 − e^{−a})` for `a > 0`: `ln(−expm1(−a))` for `a ≤ ln 2`, where
+/// `1 − e^{−a}` is small and `ln_1p(−e^{−a})` would take the logarithm of
+/// a cancelled difference, and `ln_1p(−e^{−a})` beyond (the switch point
+/// of M. Mächler, "Accurately computing log(1 − exp(−|a|))", 2012).
+fn log1mexp(a: f64) -> f64 {
+    if a <= std::f64::consts::LN_2 {
+        (-(-a).exp_m1()).ln()
+    } else {
+        (-(-a).exp()).ln_1p()
+    }
+}
+
+/// One observation of the ordered logit in category `c` with linear
+/// predictor `η`: bounds `u = θ_c − η` (absent for the top category) and
+/// `l = θ_{c−1} − η` (absent for the bottom one), probability
+/// `P = σ(u) − σ(l) = σ(u) σ(−l) (1 − e^{l−u})`.
+///
+/// With `r = 1/expm1(u − l)` (`0` unless both bounds exist),
+/// `ln P = ln σ(u) + ln σ(−l) + ln(1 − e^{−(u−l)})` has the derivatives
+/// `∂ln P/∂u = σ(−u) + r`, `∂ln P/∂l = −σ(l) − r` and the information
+/// `−∂²ln P = [[σ(u)σ(−u) + q, −q], [−q, σ(l)σ(−l) + q]]`, `q = r(1 + r)`:
+/// sums of same-signed terms, so neither cancels, and none divides by `P`
+/// (the old `∂P/P` forms were `0/0` once `P` underflowed, and lost digits
+/// when `l ≈ u`).
+struct OrderedTerm {
+    log_p: f64,
+    /// `∂ln P/∂u` (unused without `u`).
+    g_upp: f64,
+    /// `∂ln P/∂l` (unused without `l`).
+    g_low: f64,
+    /// `σ(−u) − σ(l) = −∂ln P/∂η` (the `r` terms cancel exactly).
+    d_eta: f64,
+    /// `σ(u)σ(−u)`, `0` without `u`.
+    s_upp: f64,
+    /// `σ(l)σ(−l)`, `0` without `l`.
+    s_low: f64,
+    /// `r(1 + r)`.
+    q: f64,
+}
+
+fn ordered_term(low: Option<f64>, upp: Option<f64>) -> OrderedTerm {
+    let (sig_neg_u, s_upp, log_upp) = upp.map_or((0.0, 0.0, 0.0), |u| {
+        let neg = sigmoid(-u);
+        (neg, sigmoid(u) * neg, log_sigmoid(u))
+    });
+    let (sig_l, s_low, log_low) = low.map_or((0.0, 0.0, 0.0), |l| {
+        let pos = sigmoid(l);
+        (pos, pos * sigmoid(-l), log_sigmoid(-l))
+    });
+    let (r, log_gap) = match (low, upp) {
+        (Some(l), Some(u)) => {
+            let a = u - l;
+            (1.0 / a.exp_m1(), log1mexp(a))
+        }
+        _ => (0.0, 0.0),
+    };
+    OrderedTerm {
+        log_p: log_upp + log_low + log_gap,
+        g_upp: sig_neg_u + r,
+        g_low: -(sig_l + r),
+        d_eta: sig_neg_u - sig_l,
+        s_upp,
+        s_low,
+        q: r * (1.0 + r),
+    }
+}
+
+/// `P = σ(u) σ(−l) (−expm1(l − u))` of one ordered category (a missing bound
+/// contributes the factor `1`): every factor is accurate to a few ulps and
+/// at most `1`, so the product is too — no `σ(u) − σ(l)` or `1 − σ(l)`
+/// subtraction, which returned `0` for a true `1e-20`.
+fn ordered_probability(low: Option<f64>, upp: Option<f64>) -> f64 {
+    let below_upp = upp.map_or(1.0, sigmoid);
+    let above_low = low.map_or(1.0, |l| sigmoid(-l));
+    let gap = match (low, upp) {
+        (Some(l), Some(u)) => -(l - u).exp_m1(),
+        _ => 1.0,
+    };
+    below_upp * above_low * gap
+}
+
 /// Log-likelihood, score and observed information of the ordered logit at
-/// `par = (β, θ)`; `None` when the thresholds are not strictly increasing.
+/// `par = (β, θ)` ([`OrderedTerm`] per observation, chained through
+/// `u = θ_c − xᵀβ`, `l = θ_{c−1} − xᵀβ`); `None` when the thresholds are
+/// not strictly increasing.
 fn ologit_evaluate(
     design: &[Vec<f64>],
     y: &[usize],
@@ -2570,9 +3014,10 @@ fn ologit_evaluate(
     let p = design.first().map_or(0, Vec::len);
     let q = p + k - 1;
     let (beta, theta) = par.split_at(p);
+    // `partial_cmp` rejects a NaN threshold too.
     if theta
         .windows(2)
-        .any(|w| w[1] <= w[0] || w[1].is_nan() || w[0].is_nan())
+        .any(|w| w[1].partial_cmp(&w[0]) != Some(std::cmp::Ordering::Greater))
     {
         return None;
     }
@@ -2580,76 +3025,42 @@ fn ologit_evaluate(
     let mut score = vec![0.0; q];
     let mut info = vec![vec![0.0; q]; q];
     let mut probs = Vec::with_capacity(design.len());
-    // dP/d(par) and d²P/d(par)² of one observation, then the chain rule
-    // ∂²ln P = ∂²P/P − (∂P)(∂P)ᵀ/P².
-    let mut dp = vec![0.0; q];
     for (row, &c) in design.iter().zip(y) {
         let eta = dot_f64(row, beta);
-        // Upper bound θ_c − η (c = k − 1: +∞) and lower bound θ_{c−1} − η
-        // (c = 0: −∞); densities and their derivatives vanish at ±∞.
-        let upp = (c < k - 1).then(|| theta[c] - eta);
-        let low = (c > 0).then(|| theta[c - 1] - eta);
-        let log_p = match (low, upp) {
-            (None, Some(u)) => log_sigmoid(u),
-            (Some(l), None) => log_sigmoid(-l),
-            // σ(u) − σ(l) = σ(u) σ(−l) (1 − e^{l−u}), all factors stable.
-            (Some(l), Some(u)) => log_sigmoid(u) + log_sigmoid(-l) + (-(l - u).exp()).ln_1p(),
-            (None, None) => 0.0,
-        };
-        let prob = log_p.exp();
-        ll += log_p;
-        let density = |z: Option<f64>| -> [f64; 2] {
-            z.map_or([0.0, 0.0], |z| {
-                let f = sigmoid(z);
-                let d = f * (1.0 - f);
-                [d, d * (1.0 - 2.0 * f)]
-            })
-        };
-        let [f_upp, df_upp] = density(upp);
-        let [f_low, df_low] = density(low);
-        // First derivatives of P.
-        dp.fill(0.0);
+        let has_upp = c < k - 1;
+        let has_low = c > 0;
+        let t = ordered_term(
+            has_low.then(|| theta[c - 1] - eta),
+            has_upp.then(|| theta[c] - eta),
+        );
+        ll += t.log_p;
+        let s_eta = t.s_upp + t.s_low;
         for (a, xa) in row.iter().enumerate() {
-            dp[a] = -xa * (f_upp - f_low);
-        }
-        if c < k - 1 {
-            dp[p + c] = f_upp;
-        }
-        if c > 0 {
-            dp[p + c - 1] = -f_low;
-        }
-        for (s, d) in score.iter_mut().zip(&dp) {
-            *s += d / prob;
-        }
-        // Second derivatives of P (sparse), accumulated as −∂²ln P.
-        let mut add = |r: usize, s: usize, d2p: f64| {
-            let h = d2p / prob - dp[r] * dp[s] / (prob * prob);
-            info[r][s] -= h;
-        };
-        for (a, xa) in row.iter().enumerate() {
+            score[a] -= xa * t.d_eta;
             for (b, xb) in row.iter().enumerate() {
-                add(a, b, xa * xb * (df_upp - df_low));
+                info[a][b] += xa * xb * s_eta;
             }
-            if c < k - 1 {
-                add(a, p + c, -xa * df_upp);
-                add(p + c, a, -xa * df_upp);
+            if has_upp {
+                info[a][p + c] -= xa * t.s_upp;
+                info[p + c][a] -= xa * t.s_upp;
             }
-            if c > 0 {
-                add(a, p + c - 1, xa * df_low);
-                add(p + c - 1, a, xa * df_low);
+            if has_low {
+                info[a][p + c - 1] -= xa * t.s_low;
+                info[p + c - 1][a] -= xa * t.s_low;
             }
         }
-        if c < k - 1 {
-            add(p + c, p + c, df_upp);
+        if has_upp {
+            score[p + c] += t.g_upp;
+            info[p + c][p + c] += t.s_upp + t.q;
         }
-        if c > 0 {
-            add(p + c - 1, p + c - 1, -df_low);
+        if has_low {
+            score[p + c - 1] += t.g_low;
+            info[p + c - 1][p + c - 1] += t.s_low + t.q;
         }
-        if c < k - 1 && c > 0 {
-            add(p + c, p + c - 1, 0.0);
-            add(p + c - 1, p + c, 0.0);
+        if has_upp && has_low {
+            info[p + c][p + c - 1] -= t.q;
+            info[p + c - 1][p + c] -= t.q;
         }
-        // Fitted probabilities of every category at this row.
         probs.push(ordered_probabilities(theta, eta));
     }
     Some(CategoricalEval {
@@ -2660,27 +3071,33 @@ fn ologit_evaluate(
     })
 }
 
-/// `P(y = j | η)` for `j = 0, …, k − 1` from the cumulative logistic.
+/// `P(y = j | η)` for `j = 0, …, k − 1` ([`ordered_probability`]).
 fn ordered_probabilities(theta: &[f64], eta: f64) -> Vec<f64> {
-    let mut out = Vec::with_capacity(theta.len() + 1);
-    let mut prev = 0.0;
-    for t in theta {
-        let cum = sigmoid(t - eta);
-        out.push((cum - prev).max(0.0));
-        prev = cum;
-    }
-    out.push((1.0 - prev).max(0.0));
-    out
+    let k = theta.len() + 1;
+    (0..k)
+        .map(|j| {
+            ordered_probability(
+                (j > 0).then(|| theta[j - 1] - eta),
+                (j < k - 1).then(|| theta[j] - eta),
+            )
+        })
+        .collect()
 }
 
 /// Ordinal (proportional-odds, cumulative-link) logistic regression
 /// `P(y ≤ j | x) = σ(θ_j − xᵀβ)`, `j = 0, …, k − 2`, fitted by
-/// Newton–Raphson with step halving directly on `(β, θ)` — the
-/// log-likelihood is concave there (Pratt 1981), a step that would
-/// disorder the thresholds is rejected and halved, and the starting point
-/// `β = 0`, `θ_j = logit(cumulative frequency of y ≤ j)` is feasible.
-/// Standard errors come from the observed information at the estimate in
-/// the same parametrisation (see [`OrderedLogit`]).
+/// Newton–Raphson with step halving on the cut points and slopes of the
+/// standardised design (every column centred and scaled to unit
+/// root-mean-square deviation, the centring absorbed by the cut points;
+/// see [`logit`]) — an affine reparametrisation of `(β, θ)`, so the
+/// log-likelihood stays concave (Pratt 1981).  A step that would disorder
+/// the thresholds is rejected and halved, and the starting point `β = 0`,
+/// `θ_j = logit(cumulative frequency of y ≤ j)` is feasible.  Each
+/// observation's log-likelihood `ln[σ(u) − σ(l)]` and its derivatives are
+/// evaluated without cancellation or division by the probability (see
+/// the source's `OrderedTerm`).  Standard errors come from the observed
+/// information at the estimate, mapped back to `(β, θ)` (see
+/// [`OrderedLogit`]).
 /// `statsmodels.miscmodels.ordinal_model.OrderedModel(y, x, distr='logit').fit()`.
 ///
 /// `y[i] ∈ 0..k` (ordered, every category observed at least once); `x`
@@ -2715,7 +3132,7 @@ fn ordered_probabilities(theta: &[f64], eta: f64) -> Vec<f64> {
 ///   silently relabels a numpy `y` with `np.unique`, and fails on an
 ///   explicitly declared empty level: its start value `ln 0 = −∞`),
 ///   mismatched or ragged `x`, non-finite entries, a constant column,
-///   `n ≤ p + k − 1`, collinear regressors, or `max_iter = 0` / `tol ≤ 0`.
+///   `n ≤ p + k − 1`, collinear regressors, or `max_iter = 0` / a `tol` that is not finite and positive.
 /// - [`SymplexError::ComputationFailed`] for perfect separation, as
 ///   [`mnlogit`].
 pub fn ologit(y: &[usize], x: &[Vec<f64>], opts: &LogitOpts) -> Result<OrderedLogit, SymplexError> {
@@ -2739,21 +3156,36 @@ pub fn ologit(y: &[usize], x: &[Vec<f64>], opts: &LogitOpts) -> Result<OrderedLo
             format!("need more observations than parameters: n = {n}, p + k − 1 = {q}"),
         ));
     }
-    // statsmodels' start_params: β = 0, θ_j = logit(F̂(j)).
+    // statsmodels' start_params: β = 0, θ_j = logit(F̂(j)) = ln(N_j/(n − N_j))
+    // for the cumulative count N_j; the standardised start (γ, τ) = (0, θ)
+    // is the same point.
     let mut start = vec![0.0; q];
     let mut cum = 0usize;
     for (j, &c) in data.counts.iter().take(k - 1).enumerate() {
         cum += c;
-        let f = cum as f64 / n as f64;
-        start[p + j] = (f / (1.0 - f)).ln();
+        start[p + j] = (cum as f64 / (n - cum) as f64).ln();
     }
-    let evaluate = |par: &[f64]| ologit_evaluate(&data.design, &data.y, k, par);
-    let culprit = |par: &[f64]| diverging_coefficient(&par[..p], p, &data.rms, false, false);
+    let change = Standardization::new(&data.design, true);
+    let design = change.apply(&data.design);
+    let a_map = change.ordered_map(k - 1);
+    let evaluate = |par: &[f64]| ologit_evaluate(&design, &data.y, k, par);
+    let culprit = |par: &[f64]| {
+        diverging_coefficient(&map_vector(&a_map, par)[..p], p, &data.rms, false, false)
+    };
     let out = newton_categorical(OP, opts, &data.y, start, &evaluate, &culprit)?;
-    let wald = wald_summary_or_singular(OP, &out.eval.info, &out.params)?;
+    let params = map_vector(&a_map, &out.params);
+    let root = ologit_root_information(&design, &data.y, k, &out.params);
+    let wald = mapped_wald_summary(OP, &root, &a_map, &params)?;
     let log_likelihood = out.eval.ll;
     let null_log_likelihood = categorical_null_log_likelihood(&data.counts);
-    let (beta, theta) = out.params.split_at(p);
+    let (beta, theta) = params.split_at(p);
+    // From the reported (β, θ) on the original rows, so that they are
+    // exactly `predict_proba` of those rows.
+    let fitted_probabilities = data
+        .design
+        .iter()
+        .map(|row| ordered_probabilities(theta, dot_f64(row, beta)))
+        .collect();
     Ok(OrderedLogit {
         thresholds: theta.to_vec(),
         coefficients: beta.to_vec(),
@@ -2766,7 +3198,7 @@ pub fn ologit(y: &[usize], x: &[Vec<f64>], opts: &LogitOpts) -> Result<OrderedLo
         iterations: out.iterations,
         converged: out.converged,
         cov_params: wald.cov,
-        fitted_probabilities: out.eval.probs,
+        fitted_probabilities,
         nobs: n,
         n_categories: k,
         df_model: p,
@@ -3008,6 +3440,39 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Between cut points `1` and `1 + 2⁻⁴⁰` the old score `f(u)/P` divided
+    /// a difference of densities by a cancelled `σ(u) − σ(l)`.
+    #[test]
+    fn ordered_term_between_nearly_tied_thresholds() {
+        let t = ordered_term(Some(1.0), Some(1.0 + 2f64.powi(-40)));
+        // mpmath (60 digits): u = 1 + 2^-40, l = 1: log(sigma(u) - sigma(l)) = -29.35241059743446819134034,
+        //   d/du = 1099511627775.76894142137, d/dl = -1099511627776.23105857863
+        let rel = |a: f64, b: f64| ((a - b) / b).abs();
+        assert!(rel(t.log_p, -29.352_410_597_434_468) < 1e-15, "{}", t.log_p);
+        assert!(rel(t.g_upp, 1_099_511_627_775.768_9) < 1e-12, "{}", t.g_upp);
+        assert!(rel(t.g_low, -1_099_511_627_776.231) < 1e-12, "{}", t.g_low);
+    }
+
+    /// An observation whose probability underflows (`P = e^{−800}`): the
+    /// old `∂P/P` and `∂P∂Pᵀ/P²` were `0/0`.
+    #[test]
+    fn ologit_derivatives_stay_finite_when_a_probability_underflows() {
+        let x = vec![vec![0.0], vec![1.0], vec![-800.0]];
+        let y = [0, 1, 1];
+        // Category 1 of 2 at η = −8000: l = θ₀ + 8000, P = σ(−l) = e^{−8000}.
+        let e = ologit_evaluate(&x, &y, 2, &[10.0, 0.0]).unwrap();
+        assert!(e.ll.is_finite() && e.ll < -7_999.0, "{}", e.ll);
+        assert!(e.score.iter().all(|v| v.is_finite()), "{:?}", e.score);
+        assert!(
+            e.info.iter().flatten().all(|v| v.is_finite()),
+            "{:?}",
+            e.info
+        );
+        // ∂ln P/∂θ₀ = −σ(l) = −1 for the underflowing observation.
+        let lone = ologit_evaluate(&x[2..], &y[2..], 2, &[10.0, 0.0]).unwrap();
+        assert_eq!(lone.score[1], -1.0);
     }
 
     #[test]

@@ -146,6 +146,20 @@ sites in 19 files to 27 in 7.  Migrate each call by adding `?` (or
 - **`Distribution::quantile_f64` of a symbolic continuous family
   without a closed quantile** is `Unevaluable` up front, as documented
   (the search could stop at a point where the tail folds to a number).
+- **`cox_ph` judges convergence in log-hazard-ratio units and by the
+  gain the Newton step predicts**, so the result no longer depends on the
+  covariates' units or offsets.  The ±25 divergence bound is gone, and
+  `CoxOpts::tol` measures the step in log hazard ratios.  Some fits that
+  errored now succeed, some that "converged" to an infinite estimate now
+  error, and the messages changed.
+- **`LogitOpts::tol` must be finite and positive**, and the convergence
+  test is measured on standardised coefficients: `iterations` and the
+  last digits of estimates may differ.
+- **`survival_function(d, t)` at a numeric `t` is `Distribution::sf(t)`**
+  (printed `½ erfc(…)` rather than `−½ erf(…) + ½`); a symbolic `t`
+  uses the family's survival form when it has one.
+  `KaplanMeier::quantile` / `quantile_strict` return `None` for `p`
+  outside `[0, 1]`.
 
 ### Added
 
@@ -241,6 +255,38 @@ sites in 19 files to 27 in 7.  Migrate each call by adding `?` (or
   `fleiss_kappa`, the Cohen's κ functions, `LabelTable::new`,
   `category_metrics`, `wins_matrix` and `TwoWayData::from_long`
   (`InvalidArgument`, or exact rational arithmetic).
+- **Ordered-logit probabilities in the tails:** `predict_proba`,
+  `predict` and `fitted_probabilities` were `σ(u) − σ(l)` and `1 − σ(l)`,
+  `0` for a true `2.63e-22` and `3·10⁻⁷` off between nearly tied
+  thresholds.  Each probability is now `σ(u)·σ(−l)·(−expm1(l − u))`; the
+  likelihood, score and information no longer cancel or divide by the
+  probability.
+- **`logit`, `mnlogit` and `ologit` standard errors lost digits like
+  `cond(X)²` while reporting `converged`**: a regressor offset by `10⁶`
+  gave a slope se `2.9·10⁻⁶` off (mpmath), a degree-8 polynomial design
+  `4·10⁻⁸` off, and offsets of `10⁸` were refused as rank deficient.  The
+  fits run on a standardised design and the covariance is computed in
+  square-root form (Givens rotations); `logit` shares `mnlogit`'s
+  step-halving Newton iteration.  No panic for category labels near
+  `usize::MAX` or `polyfit(…, usize::MAX)`; `LogitOpts { tol: ∞ }` no
+  longer claims convergence after one step.
+- **`cox_ph` reported an infinite estimate as converged:** on separated
+  data (`t = [0, 3, 3]`, events `[1, 0, 1]`, `x = [2, 4, 4]`) it returned
+  `β = −18.6`, `se = 2.4e7`.  It is now an error naming the covariate.
+  Standard errors with a large covariate offset cancelled (`x + 10⁶`:
+  `0.3809254` for `0.3809028`; `x + 10⁸` was refused): covariates are
+  centred internally.  Risk-set sums are shifted per risk set, so an
+  extreme covariate no longer breaks the fit; valid fits on small-scale
+  covariates are no longer refused as monotone.  Risk sets,
+  `martingale_residuals` and `concordance` are `O(n log n)` (6,000
+  subjects: 7.5 s, 3.5 s, 3.6 s → 39 ms, 4 ms, 18 ms, debug build).
+- **`survival_function` was `1 − F(t)`:** `S(26)` of `N(0, 1)` was `0`
+  (truly `2.476e-149`), and outside the support it extrapolated (`S(−1)
+  > 1` for an exponential, `S(3) = −½` for `U(0, 2)`).
+  `hazard_function` of `N(0, 1)` was `PrecisionExhausted` from `t = 20`.
+- **`p_value_ln` / `p_value_log10`:** the decimal-expansion fallback is
+  gone; the evaluator certifies these directly (786 p-values probed down
+  to `1e-21718`).
 - **`dsolve`'s structural checks no longer recurse over the expression**
   (`expr_contains`, `contains_sym_outside_deriv`, `collect_mul_factors`):
   a deeply nested ODE could overflow the stack.

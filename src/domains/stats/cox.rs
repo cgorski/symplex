@@ -60,10 +60,21 @@ use crate::base::dense_f64::{self, dot};
 use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
 
-/// A coefficient beyond this magnitude with the Newton step not yet small
-/// is taken as a monotone likelihood (`β → ±∞`): a hazard ratio of
-/// `e^25 ≈ 7 × 10¹⁰`.
-const DIVERGENCE_BOUND: f64 = 25.0;
+/// A Newton step that still moves the log hazard ratios of two subjects
+/// by at least this much ([`Centred::spread`]) while the quadratic model
+/// predicts a negligible gain in `ℓ` is a step along a flat direction.
+/// Along a monotone likelihood `ℓ ≈ sup ℓ − A·e^{−g}` in the separating
+/// gap `g`, so every Newton step moves `g` by `U/I → 1` and the spread by
+/// at least that; at a finite maximum the step shrinks quadratically.
+const FLAT_STEP: f64 = 0.5;
+
+/// "Negligible gain" for [`FLAT_STEP`]: `½ UᵀI⁻¹U ≤ FLAT_GAIN · max(1, |ℓ|)`.
+/// Fixed rather than the caller's `tol`, so that a loose tolerance cannot
+/// turn two large early steps of a finite fit into a diagnosis.
+const FLAT_GAIN: f64 = 1e-9;
+
+/// Consecutive flat steps that diagnose a monotone likelihood.
+const FLAT_RUN: usize = 2;
 
 /// Maximum number of step halvings per Newton iteration.
 const MAX_HALVINGS: u32 = 30;
@@ -174,8 +185,12 @@ struct EventTime {
 }
 
 /// The risk-set sums at one event time: `S0 = Σ_R wⱼ`, `S1 = Σ_R wⱼ xⱼ`,
-/// `S2 = Σ_R wⱼ xⱼ xⱼᵀ`, and the same over the failures `D` at that time.
+/// `S2 = Σ_R wⱼ xⱼ xⱼᵀ`, and the same over the failures `D` at that time,
+/// with `wⱼ = exp(ηⱼ − shift)` and `shift = max_{j∈R} ηⱼ`: every sum is
+/// scaled by the same `e^{−shift}`, so ratios of sums are exact and the
+/// true `Σ_R e^{ηⱼ}` is `e^{shift} · S0`.
 struct RiskSums {
+    shift: f64,
     s0: f64,
     s1: Vec<f64>,
     s2: Vec<Vec<f64>>,
@@ -193,49 +208,65 @@ struct Evaluation {
 
 /// The distinct event times of every stratum with their risk-set entries,
 /// ordered by stratum and then by *descending* time (the sweep order).
+///
+/// One sort by (stratum, descending time), then one pass: the risk set at
+/// `t` is everyone with `tᵢ ≥ t`, so a subject enters at the largest event
+/// time `≤ tᵢ`; subjects below the first event time of their stratum never
+/// enter.  (Filtering the sample once per event time was `O(n·T)`: seconds
+/// for a few thousand subjects.)
 fn build_table(obs: &[Observation], strata: &[usize]) -> Vec<EventTime> {
-    let mut labels: Vec<usize> = strata.to_vec();
-    labels.sort_unstable();
-    labels.dedup();
+    let mut order: Vec<usize> = (0..obs.len()).collect();
+    order.sort_by(|&a, &b| {
+        strata[a]
+            .cmp(&strata[b])
+            .then_with(|| obs[b].time.cmp(&obs[a].time))
+    });
     let mut table = Vec::new();
-    for s in labels {
-        let members: Vec<usize> = (0..obs.len()).filter(|&i| strata[i] == s).collect();
-        let mut times: Vec<Q> = members
+    let mut pending: Vec<usize> = Vec::new();
+    let mut start = 0;
+    while start < order.len() {
+        let first = order[start];
+        let end = order[start..]
             .iter()
-            .filter(|&&i| obs[i].event)
-            .map(|&i| obs[i].time.clone())
-            .collect();
-        times.sort();
-        times.dedup();
-        // Descending: the risk set at t is everyone with tᵢ ≥ t, so a
-        // subject enters at the largest event time ≤ tᵢ.
-        for (k, t) in times.iter().enumerate().rev() {
-            let upper = times.get(k + 1);
-            let enter = members
-                .iter()
-                .copied()
-                .filter(|&i| obs[i].time >= *t && upper.is_none_or(|u| obs[i].time < *u))
-                .collect();
-            let events = members
-                .iter()
-                .copied()
-                .filter(|&i| obs[i].event && obs[i].time == *t)
-                .collect();
+            .position(|&i| strata[i] != strata[first] || obs[i].time != obs[first].time)
+            .map_or(order.len(), |len| start + len);
+        if start == 0 || strata[order[start - 1]] != strata[first] {
+            pending.clear();
+        }
+        let group = &order[start..end];
+        pending.extend_from_slice(group);
+        if group.iter().any(|&i| obs[i].event) {
+            // Index order, as a filter over the sample would give (the
+            // risk-set sums are accumulated in this order).
+            let mut enter = std::mem::take(&mut pending);
+            enter.sort_unstable();
+            let mut events: Vec<usize> = group.iter().copied().filter(|&i| obs[i].event).collect();
+            events.sort_unstable();
             table.push(EventTime {
-                stratum: s,
-                time: t.clone(),
+                stratum: strata[first],
+                time: obs[first].time.clone(),
                 enter,
                 events,
             });
         }
+        start = end;
     }
     table
 }
 
-/// Sweep the risk sets given the weights `w = exp(η − max η)`, one
-/// [`RiskSums`] per table entry, in table order.
-fn sweep(table: &[EventTime], x: &[Vec<f64>], w: &[f64], p: usize) -> Vec<RiskSums> {
+/// Sweep the risk sets given the linear predictor `η`, one [`RiskSums`]
+/// per table entry, in table order.
+///
+/// The weights are shifted by the maximum of `η` over *each* risk set, a
+/// running log-sum-exp: the risk set only grows along the (descending)
+/// sweep, so when an entrant raises the maximum the running sums are
+/// rescaled by `e^{old − new}`.  A single global shift would underflow
+/// every later risk set whose members all have `η` more than ~745 below
+/// the global maximum (`S0 = 0`, `ℓ = −∞`), as happens with a subject
+/// censored before the first event that carries an extreme covariate.
+fn sweep(table: &[EventTime], x: &[Vec<f64>], eta: &[f64], p: usize) -> Vec<RiskSums> {
     let mut out = Vec::with_capacity(table.len());
+    let mut shift = f64::NEG_INFINITY;
     let mut s0 = 0.0;
     let mut s1 = vec![0.0; p];
     let mut s2 = vec![vec![0.0; p]; p];
@@ -243,12 +274,27 @@ fn sweep(table: &[EventTime], x: &[Vec<f64>], w: &[f64], p: usize) -> Vec<RiskSu
     for entry in table {
         if stratum != Some(entry.stratum) {
             stratum = Some(entry.stratum);
+            shift = f64::NEG_INFINITY;
             s0 = 0.0;
             s1.iter_mut().for_each(|v| *v = 0.0);
             s2.iter_mut().flatten().for_each(|v| *v = 0.0);
         }
+        let top = entry
+            .enter
+            .iter()
+            .map(|&i| eta[i])
+            .fold(f64::NEG_INFINITY, f64::max);
+        if top > shift {
+            // e^{−shift_old} → e^{−top}: `exp(−∞) = 0` on the first entrant
+            // of a stratum, when the sums are still empty.
+            let r = (shift - top).exp();
+            s0 *= r;
+            s1.iter_mut().for_each(|v| *v *= r);
+            s2.iter_mut().flatten().for_each(|v| *v *= r);
+            shift = top;
+        }
         for &i in &entry.enter {
-            let wi = w[i];
+            let wi = (eta[i] - shift).exp();
             s0 += wi;
             for a in 0..p {
                 s1[a] += wi * x[i][a];
@@ -261,7 +307,7 @@ fn sweep(table: &[EventTime], x: &[Vec<f64>], w: &[f64], p: usize) -> Vec<RiskSu
         let mut d1 = vec![0.0; p];
         let mut d2 = vec![vec![0.0; p]; p];
         for &i in &entry.events {
-            let wi = w[i];
+            let wi = (eta[i] - shift).exp();
             d0 += wi;
             for a in 0..p {
                 d1[a] += wi * x[i][a];
@@ -271,6 +317,7 @@ fn sweep(table: &[EventTime], x: &[Vec<f64>], w: &[f64], p: usize) -> Vec<RiskSu
             }
         }
         out.push(RiskSums {
+            shift,
             s0,
             s1: s1.clone(),
             s2: s2.clone(),
@@ -282,36 +329,141 @@ fn sweep(table: &[EventTime], x: &[Vec<f64>], w: &[f64], p: usize) -> Vec<RiskSu
     out
 }
 
-/// The linear predictor and the hazard weights at one `β`.
-struct LinearPredictor {
-    /// `ηᵢ = xᵢᵀβ`.
-    eta: Vec<f64>,
-    /// `maxᵢ ηᵢ`.
-    shift: f64,
-    /// `wᵢ = exp(ηᵢ − shift)`: the shift leaves `ℓ`, the score and the
-    /// information unchanged and keeps every risk-set sum finite.
-    w: Vec<f64>,
+/// Counts by rank with `O(log n)` insertion and prefix sums.
+struct Fenwick {
+    tree: Vec<usize>,
 }
 
-fn linear_predictor(x: &[Vec<f64>], beta: &[f64]) -> LinearPredictor {
-    let eta: Vec<f64> = x.iter().map(|row| dot(row, beta)).collect();
-    let shift = eta.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let w = eta.iter().map(|e| (e - shift).exp()).collect();
-    LinearPredictor { eta, shift, w }
+impl Fenwick {
+    fn new(n: usize) -> Self {
+        Self {
+            tree: vec![0; n + 1],
+        }
+    }
+
+    /// Count one more at rank `r` (`0`-based).
+    fn add(&mut self, r: usize) {
+        let mut k = r + 1;
+        while k < self.tree.len() {
+            self.tree[k] += 1;
+            k += k & k.wrapping_neg();
+        }
+    }
+
+    /// How many were counted at ranks `< r`.
+    fn prefix(&self, r: usize) -> usize {
+        let mut k = r.min(self.tree.len() - 1);
+        let mut sum = 0;
+        while k > 0 {
+            sum += self.tree[k];
+            k &= k - 1;
+        }
+        sum
+    }
+
+    fn total(&self) -> usize {
+        self.prefix(self.tree.len() - 1)
+    }
+}
+
+/// `ln(e^a + e^b)` without overflow; `−∞` is the empty sum.
+fn log_add_exp(a: f64, b: f64) -> f64 {
+    let (hi, lo) = if a >= b { (a, b) } else { (b, a) };
+    if hi == f64::NEG_INFINITY {
+        return hi;
+    }
+    hi + (lo - hi).exp().ln_1p()
+}
+
+/// `ηᵢ = xᵢᵀβ` for every row of `x`.
+fn linear_predictor(x: &[Vec<f64>], beta: &[f64]) -> Vec<f64> {
+    x.iter().map(|row| dot(row, beta)).collect()
+}
+
+/// The covariates centred at their mean over the *informative* subjects —
+/// those in at least one risk set — and the list of those subjects.
+///
+/// Replacing `xᵢ` by `xᵢ − c` adds the same `−cᵀβ` to every `ηᵢ`, which
+/// cancels between numerator and denominator of every factor of the
+/// partial likelihood: `ℓ`, the score and the information are unchanged
+/// *exactly*.  Numerically it is essential: the information is a sum of
+/// risk-set covariances `S2/S0 − (S1/S0)(S1/S0)ᵀ`, which for a covariate
+/// with a large offset (a calendar year, `10⁶ + small`) cancels to noise —
+/// uncentred, `x + 10⁶` gave a standard error wrong in the fifth digit and
+/// `x + 10⁸` a spurious singular information matrix.
+struct Centred {
+    x: Vec<Vec<f64>>,
+    informative: Vec<usize>,
+    /// `max − min` of each covariate over the informative subjects.
+    range: Vec<f64>,
+}
+
+fn centre_covariates(x: &[Vec<f64>], table: &[EventTime], p: usize) -> Centred {
+    let mut informative: Vec<usize> = table.iter().flat_map(|e| e.enter.iter().copied()).collect();
+    informative.sort_unstable();
+    informative.dedup();
+    let m = informative.len().max(1) as f64;
+    let centre: Vec<f64> = (0..p)
+        .map(|j| informative.iter().map(|&i| x[i][j]).sum::<f64>() / m)
+        .collect();
+    let range = (0..p)
+        .map(|j| {
+            let (lo, hi) = informative
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &i| {
+                    (lo.min(x[i][j]), hi.max(x[i][j]))
+                });
+            (hi - lo).max(0.0)
+        })
+        .collect();
+    let x = x
+        .iter()
+        .map(|row| row.iter().zip(&centre).map(|(v, c)| v - c).collect())
+        .collect();
+    Centred {
+        x,
+        informative,
+        range,
+    }
+}
+
+impl Centred {
+    /// `maxᵢ xᵢᵀv − minᵢ xᵢᵀv` over the informative subjects: how far apart
+    /// the coefficient change `v` moves the log hazard ratios of any two
+    /// subjects that share a risk set.  Invariant to rescaling or shifting
+    /// a covariate, unlike `|v|` itself.
+    fn spread(&self, v: &[f64]) -> f64 {
+        let (lo, hi) =
+            self.informative
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &i| {
+                    let e = dot(&self.x[i], v);
+                    (lo.min(e), hi.max(e))
+                });
+        (hi - lo).max(0.0)
+    }
+
+    /// The covariate contributing most to [`spread`](Self::spread)`(v)`.
+    fn dominant(&self, v: &[f64]) -> usize {
+        (0..v.len())
+            .max_by(|&a, &b| (v[a].abs() * self.range[a]).total_cmp(&(v[b].abs() * self.range[b])))
+            .unwrap_or(0)
+    }
 }
 
 fn evaluate(table: &[EventTime], x: &[Vec<f64>], beta: &[f64], ties: Ties) -> Evaluation {
     let p = beta.len();
-    let lp = linear_predictor(x, beta);
-    let sums = sweep(table, x, &lp.w, p);
+    let eta = linear_predictor(x, beta);
+    let sums = sweep(table, x, &eta, p);
     let mut ll = 0.0;
     let mut score = vec![0.0; p];
     let mut info = vec![vec![0.0; p]; p];
     for (entry, s) in table.iter().zip(&sums) {
         let d = entry.events.len();
         for &i in &entry.events {
-            // ηᵢ − shift: the shifts cancel against the ln S0 terms below.
-            ll += lp.eta[i] - lp.shift;
+            // ηᵢ − shift: the d shifts cancel against the d ln S0 terms
+            // below, whose sums are all scaled by e^{−shift}.
+            ll += eta[i] - s.shift;
             for a in 0..p {
                 score[a] += x[i][a];
             }
@@ -400,11 +552,37 @@ fn validate(
 }
 
 /// Fit `h(t | x) = h₀(t) exp(xᵀβ)` by Newton–Raphson on Cox's log partial
-/// likelihood from `β = 0`: `β ← β + I(β)⁻¹ U(β)` with the analytic score
-/// `U` and information `I`, the step halved while `ℓ` would decrease, until
-/// both `max_j |Δβ_j| ≤ tol · max(1, max_j |β_j|)` and
-/// `|Δℓ| ≤ tol · max(1, |ℓ|)`.  `x[i]` is the covariate row of `obs[i]`;
-/// there is no intercept.  `PHReg(time, x, status=event, ties=…).fit()`.
+/// likelihood from `β = 0`: `β ← β + λ·d` with the Newton step
+/// `d = I(β)⁻¹ U(β)` (analytic score `U` and information `I`) and `λ`
+/// halved while `ℓ` would decrease.  `x[i]` is the covariate row of
+/// `obs[i]`; there is no intercept.  Only the order of the times matters
+/// (negative times are accepted).  `PHReg(time, x, status=event,
+/// ties=…).fit()`.
+///
+/// **Convergence** is judged on the full Newton step `d` at the current
+/// `β`, in units that do not depend on how the covariates are scaled or
+/// shifted (as long as their squared spreads stay inside the `f64` range,
+/// about `10±¹⁵⁴`): it is reached when `d` moves the log hazard ratios of the
+/// subjects by at most `tol · max(1, spread of xᵢᵀβ)` — the spread being
+/// `maxᵢ xᵢᵀv − minᵢ xᵢᵀv` over the subjects in some risk set — and the
+/// quadratic model predicts a gain `½ UᵀI⁻¹U ≤ tol · max(1, |ℓ|)`; the
+/// step is then taken and the fit returned.  Internally the covariates are
+/// centred and the risk-set sums shifted per risk set (both leave the
+/// partial likelihood unchanged exactly) so that large offsets and large
+/// `|xᵀβ|` cost no accuracy.
+///
+/// **Monotone likelihood** (`β̂` infinite: the subjects are separated —
+/// every subject with a larger value of some linear combination of the
+/// covariates fails before every subject with a smaller one) is diagnosed
+/// by its signature rather than by a size of `β`: on two successive
+/// iterations the predicted gain falls below `10⁻⁹ · max(1, |ℓ|)` while
+/// the Newton step still moves the log hazard ratios by `≥ ½` (at a
+/// finite maximum the step shrinks quadratically; along a flat direction
+/// it stays near `1`).  It is an error, naming the covariate that
+/// dominates the diverging step, never a "converged" fit with a huge `β`
+/// and standard error (`PHReg` returns one silently).  A quasi-separation
+/// whose finite maximum lies further out than that gain can resolve is
+/// reported the same way.
 ///
 /// ```
 /// use symplex::prelude::*;
@@ -433,12 +611,13 @@ fn validate(
 /// - [`SymplexError::InvalidArgument`] for no observations, mismatched or
 ///   ragged `x`, no covariates, a non-finite covariate, a constant
 ///   covariate column, no events, or `max_iter = 0` / `tol ≤ 0`.
-/// - [`SymplexError::ComputationFailed`] when the information matrix is
-///   singular (collinear covariates), when the likelihood is monotone — a
-///   coefficient passes `±25` while the Newton step is still large, as
-///   when every subject with the larger covariate value fails before every
-///   subject with the smaller one; `coxph` warns "beta may be infinite" —
-///   naming the covariate, or when `max_iter` steps do not converge.
+/// - [`SymplexError::ComputationFailed`] when the information matrix at
+///   `β = 0` is singular (collinear covariates, or a covariate constant
+///   within every risk set) or not representable (a covariate whose
+///   squared spread overflows or underflows `f64`), when the likelihood is
+///   monotone (see above;
+///   the message names the covariate), or when `max_iter` steps do not
+///   converge.
 pub fn cox_ph(
     obs: &[Observation],
     x: &[Vec<f64>],
@@ -477,79 +656,137 @@ fn fit(
     let p = validate(op, obs, x, strata, opts)?;
     let table = build_table(obs, strata);
     let ties = opts.ties;
+    let design = centre_covariates(x, &table, p);
+    let xc = &design.x;
 
     let mut beta = vec![0.0; p];
-    let mut current = evaluate(&table, x, &beta, ties);
+    let mut current = evaluate(&table, xc, &beta, ties);
     let null_log_likelihood = current.ll;
     let singular_at_start = || {
-        failed(
-            op,
-            "the information matrix at β = 0 is singular: a covariate is collinear with the others or constant within every risk set",
-        )
+        // The information holds squared spreads: name a covariate whose
+        // square leaves the f64 range before blaming collinearity.
+        let unrepresentable = design.range.iter().position(|&r| {
+            let r2 = r * r;
+            r > 0.0 && (r2 == 0.0 || !r2.is_finite())
+        });
+        match unrepresentable {
+            Some(j) => failed(
+                op,
+                format!(
+                    "the information matrix at β = 0 is not representable: the squared spread of covariate {j} ({:e}²) leaves the f64 range; rescale it",
+                    design.range[j]
+                ),
+            ),
+            None => failed(
+                op,
+                "the information matrix at β = 0 is singular: a covariate is collinear with the others or constant within every risk set",
+            ),
+        }
     };
     let l0 = information_cholesky(&current.info).ok_or_else(singular_at_start)?;
     let score_statistic = dense_f64::quadratic_form(&l0, p, &current.score);
 
+    let monotone = |j: usize, beta_j: f64, detail: String| {
+        failed(
+            op,
+            format!(
+                "monotone likelihood: the partial likelihood has no finite maximiser ({detail}); the subjects are separated along a direction dominated by covariate {j} (β = {beta_j:.4e} and running off): every subject with a larger value of that combination of the covariates fails before every subject with a smaller one, or the reverse, so the estimate is infinite"
+            ),
+        )
+    };
+
+    let mut factor = Some(l0);
+    let mut last_direction: Option<Vec<f64>> = None;
+    let mut flat_run = 0usize;
+    let mut last_step = f64::NAN;
+    let mut last_gain = f64::NAN;
     let mut iterations = 0;
     let mut converged = false;
     for iter in 1..=opts.max_iter {
         iterations = iter;
-        let l = if iter == 1 {
-            l0.clone()
-        } else {
-            information_cholesky(&current.info).ok_or_else(|| {
-                failed(
-                    op,
-                    "the information matrix became singular: the partial likelihood has no finite maximiser",
+        let l = match factor.take() {
+            Some(l) => l,
+            None => information_cholesky(&current.info).ok_or_else(|| {
+                // Exact singularity does not depend on β (the weights are
+                // positive), so a matrix that was regular at β = 0 and turns
+                // singular has had its weights concentrate on separated
+                // subjects as the coefficients ran off.
+                let j = last_direction.as_deref().map_or(0, |d| design.dominant(d));
+                monotone(
+                    j,
+                    beta[j],
+                    "the information matrix became numerically singular as the coefficients grew"
+                        .to_string(),
                 )
-            })?
+            })?,
         };
         let direction = dense_f64::cholesky_solve(&l, p, &current.score);
+        let step = design.spread(&direction);
+        let gain = 0.5 * dot(&current.score, &direction);
+        let ll_scale = current.ll.abs().max(1.0);
+        let flat = gain <= FLAT_GAIN * ll_scale && step >= FLAT_STEP;
+        // A step moving log hazard ratios by ½ or more is never negligible,
+        // whatever `tol` says.
+        let small = step < FLAT_STEP
+            && step <= opts.tol * design.spread(&beta).max(1.0)
+            && gain <= opts.tol * ll_scale;
+        flat_run = if flat { flat_run + 1 } else { 0 };
+        last_step = step;
+        last_gain = gain;
+        let flat_detail = || {
+            format!(
+                "each Newton step still moves the log hazard ratios by {step:.3} while the predicted gain in ℓ is {gain:.1e}"
+            )
+        };
+        if flat_run >= FLAT_RUN {
+            let j = design.dominant(&direction);
+            return Err(monotone(j, beta[j], flat_detail()));
+        }
         // Step-halving: shrink the Newton step while ℓ would decrease.
         let mut lambda = 1.0;
-        let mut halvings = 0;
-        let (next_beta, next) = loop {
+        let mut accepted = None;
+        for _ in 0..=MAX_HALVINGS {
             let candidate: Vec<f64> = beta
                 .iter()
                 .zip(&direction)
                 .map(|(b, d)| b + lambda * d)
                 .collect();
-            let eval = evaluate(&table, x, &candidate, ties);
-            let acceptable =
-                eval.ll.is_finite() && eval.ll >= current.ll - 1e-12 * current.ll.abs();
-            if acceptable || halvings >= MAX_HALVINGS {
-                break (candidate, eval);
+            let eval = evaluate(&table, xc, &candidate, ties);
+            if eval.ll.is_finite() && eval.ll >= current.ll - 1e-12 * current.ll.abs() {
+                accepted = Some((candidate, eval));
+                break;
             }
             lambda *= 0.5;
-            halvings += 1;
-        };
-        let max_step = direction
-            .iter()
-            .fold(0.0_f64, |m, d| m.max((lambda * d).abs()));
-        let delta_ll = (next.ll - current.ll).abs();
-        beta = next_beta;
-        current = next;
-        if beta.iter().any(|b| !b.is_finite()) || !current.ll.is_finite() {
+        }
+        match accepted {
+            Some((next_beta, next)) => {
+                beta = next_beta;
+                current = next;
+            }
+            // No step improves ℓ but the full step is negligible: β is at
+            // the maximum to rounding.
+            None if small => {}
+            None if flat => {
+                let j = design.dominant(&direction);
+                return Err(monotone(j, beta[j], flat_detail()));
+            }
+            None => {
+                return Err(failed(
+                    op,
+                    format!(
+                        "no step along the Newton direction increases the partial likelihood (step {step:.3e} in log hazard ratio, predicted gain {gain:.3e}): the information matrix is too ill-conditioned for the maximiser to be located"
+                    ),
+                ));
+            }
+        }
+        if beta.iter().any(|b| !b.is_finite()) {
             return Err(failed(
                 op,
                 "the coefficients diverged: the partial likelihood has no finite maximiser",
             ));
         }
-        let scale = beta.iter().fold(1.0_f64, |m, b| m.max(b.abs()));
-        let step_small = max_step <= opts.tol * scale;
-        let runaway = (0..p)
-            .filter(|&j| beta[j].abs() > DIVERGENCE_BOUND)
-            .max_by(|&a, &b| beta[a].abs().total_cmp(&beta[b].abs()));
-        if let (false, Some(j)) = (step_small, runaway) {
-            return Err(failed(
-                op,
-                format!(
-                    "monotone likelihood: the coefficient of covariate {j} passed {} (β = {:.3}) with the Newton step still large, so the partial likelihood has no finite maximiser (every subject with a larger value of covariate {j} fails before every subject with a smaller one, or the reverse; if the covariate is merely on a tiny scale, rescale it)",
-                    DIVERGENCE_BOUND, beta[j]
-                ),
-            ));
-        }
-        if step_small && delta_ll <= opts.tol * current.ll.abs().max(1.0) {
+        last_direction = Some(direction);
+        if small {
             converged = true;
             break;
         }
@@ -558,7 +795,7 @@ fn fit(
         return Err(failed(
             op,
             format!(
-                "no convergence in {} Newton steps (last |Δβ| criterion not met); raise max_iter or rescale the covariates",
+                "no convergence in {} Newton steps (the last step moved the log hazard ratios by {last_step:.3e} with a predicted gain in ℓ of {last_gain:.3e}); raise max_iter",
                 opts.max_iter
             ),
         ));
@@ -807,7 +1044,7 @@ impl CoxModel {
     /// `ηᵢ = xᵢᵀβ̂` for every fitted observation, in observation order.
     #[must_use]
     pub fn linear_predictors(&self) -> Vec<f64> {
-        linear_predictor(&self.x, &self.coefficients).eta
+        linear_predictor(&self.x, &self.coefficients)
     }
 
     /// Harrell's concordance index, exactly.  A pair `(i, j)` is *usable*
@@ -824,25 +1061,54 @@ impl CoxModel {
     /// [`SymplexError::ComputationFailed`] when no pair is usable (every
     /// event is at the last observed time of its stratum).
     pub fn concordance(&self) -> Result<Q, SymplexError> {
-        let eta = self.linear_predictors();
+        // `+ 0.0` maps −0 to +0, so that ranking by `total_cmp` agrees with `==`.
+        let eta: Vec<f64> = self.linear_predictors().iter().map(|e| e + 0.0).collect();
         let n = self.obs.len();
+        // Rank the linear predictors (equal values share a rank).
+        let mut sorted = eta.clone();
+        sorted.sort_by(f64::total_cmp);
+        sorted.dedup();
+        let rank: Vec<usize> = eta
+            .iter()
+            .map(|e| sorted.partition_point(|v| v.total_cmp(e).is_lt()))
+            .collect();
+        // Descending in time within each stratum; each block of equal times
+        // queries the subjects with strictly larger times (a Fenwick tree of
+        // counts by rank), then joins them: O(n log n), not all n² pairs.
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|&a, &b| {
+            self.strata[a]
+                .cmp(&self.strata[b])
+                .then_with(|| self.obs[b].time.cmp(&self.obs[a].time))
+        });
+        let mut tree = Fenwick::new(sorted.len());
         let mut usable = 0usize;
         let mut twice_concordant = 0usize;
-        for i in 0..n {
-            if !self.obs[i].event {
-                continue;
+        let mut start = 0;
+        while start < n {
+            let first = order[start];
+            if start > 0 && self.strata[order[start - 1]] != self.strata[first] {
+                tree = Fenwick::new(sorted.len());
             }
-            for j in 0..n {
-                if self.strata[i] != self.strata[j] || self.obs[i].time >= self.obs[j].time {
-                    continue;
-                }
-                usable += 1;
-                if eta[i] > eta[j] {
-                    twice_concordant += 2;
-                } else if eta[i] == eta[j] {
-                    twice_concordant += 1;
-                }
+            let end = order[start..]
+                .iter()
+                .position(|&i| {
+                    self.strata[i] != self.strata[first] || self.obs[i].time != self.obs[first].time
+                })
+                .map_or(n, |len| start + len);
+            let later = tree.total();
+            for &i in order[start..end].iter().filter(|&&i| self.obs[i].event) {
+                // Usable pairs (i, j): every j with tⱼ > tᵢ in the stratum;
+                // concordant when ηⱼ < ηᵢ, half when ηⱼ = ηᵢ.
+                let below = tree.prefix(rank[i]);
+                let equal = tree.prefix(rank[i] + 1) - below;
+                usable += later;
+                twice_concordant += 2 * below + equal;
             }
+            for &i in &order[start..end] {
+                tree.add(rank[i]);
+            }
+            start = end;
         }
         if usable == 0 {
             return Err(failed(
@@ -863,11 +1129,10 @@ impl CoxModel {
     /// differs at tied event times.
     #[must_use]
     pub fn baseline_hazard(&self) -> Vec<BaselineHazardRow> {
-        let p = self.n_params();
-        let lp = linear_predictor(&self.x, &self.coefficients);
-        // `w` is exp(η − shift); undo the shift so the hazard is absolute.
-        let unshift = (-lp.shift).exp();
-        let sums = sweep(&self.table, &self.x, &lp.w, p);
+        // Only S0 is needed (p = 0 skips S1, S2); η uncentred, since the
+        // baseline is the hazard at x = 0.
+        let eta = linear_predictor(&self.x, &self.coefficients);
+        let sums = sweep(&self.table, &self.x, &eta, 0);
         // The table runs descending in time within each stratum; emit
         // ascending with the cumulative sum.
         let mut rows: Vec<BaselineHazardRow> = Vec::with_capacity(self.table.len());
@@ -879,7 +1144,10 @@ impl CoxModel {
                 .unwrap_or(self.table.len());
             let mut cumulative = 0.0;
             for k in (start..end).rev() {
-                let hazard = self.table[k].events.len() as f64 * unshift / sums[k].s0;
+                // d / Σ_R e^η = d / (e^shift · S0), in logs so that neither
+                // e^shift nor its reciprocal overflows on the way.
+                let hazard =
+                    ((self.table[k].events.len() as f64 / sums[k].s0).ln() - sums[k].shift).exp();
                 cumulative += hazard;
                 rows.push(BaselineHazardRow {
                     stratum,
@@ -897,15 +1165,20 @@ impl CoxModel {
     /// rows of `obs` with `event = true`, in order), `p` columns:
     /// `xᵢ − x̄(tᵢ)` where `x̄(t) = Σ_{j∈R_t} wⱼ xⱼ / Σ_{j∈R_t} wⱼ` is the
     /// hazard-weighted covariate mean over the risk set at the event time,
-    /// `wⱼ = exp(xⱼᵀβ̂)`.  They sum to zero over the events (the score
-    /// equation) and, plotted against time, should show no trend if the
-    /// hazards are proportional.  `PHReg.fit().schoenfeld_residuals` (its
-    /// censored rows, `NaN` there, are omitted here).
+    /// `wⱼ = exp(xⱼᵀβ̂)` — under either tie correction, as
+    /// `PHReg.fit().schoenfeld_residuals` computes them (its censored rows,
+    /// `NaN` there, are omitted here).  Plotted against time they should
+    /// show no trend if the hazards are proportional.  Their sum over the
+    /// events is the *Breslow* score at `β̂`: zero for a [`Ties::Breslow`]
+    /// fit or when no event times are tied, but not for a [`Ties::Efron`]
+    /// fit with tied events, whose score equation averages the risk-set
+    /// mean over the `d` Efron steps at each tied time.
     #[must_use]
     pub fn schoenfeld_residuals(&self) -> Vec<Vec<f64>> {
         let p = self.n_params();
-        let lp = linear_predictor(&self.x, &self.coefficients);
-        let sums = sweep(&self.table, &self.x, &lp.w, p);
+        let design = centre_covariates(&self.x, &self.table, p);
+        let eta = linear_predictor(&design.x, &self.coefficients);
+        let sums = sweep(&self.table, &design.x, &eta, p);
         // Event index → table entry.
         let mut entry_of = vec![usize::MAX; self.obs.len()];
         for (k, entry) in self.table.iter().enumerate() {
@@ -916,8 +1189,9 @@ impl CoxModel {
         (0..self.obs.len())
             .filter(|&i| self.obs[i].event)
             .map(|i| {
+                // xᵢ − x̄(tᵢ) in centred coordinates: the centre cancels.
                 let s = &sums[entry_of[i]];
-                (0..p).map(|a| self.x[i][a] - s.s1[a] / s.s0).collect()
+                (0..p).map(|a| design.x[i][a] - s.s1[a] / s.s0).collect()
             })
             .collect()
     }
@@ -931,22 +1205,33 @@ impl CoxModel {
     /// type = "martingale")` agrees under Breslow ties.
     #[must_use]
     pub fn martingale_residuals(&self) -> Vec<f64> {
-        let p = self.n_params();
-        let lp = linear_predictor(&self.x, &self.coefficients);
-        let w = &lp.w;
-        let sums = sweep(&self.table, &self.x, w, p);
-        // exp(ηᵢ) · d_k / S0_k = wᵢ · d_k / S0_k(shifted): the shift cancels.
+        let design = centre_covariates(&self.x, &self.table, self.n_params());
+        let eta = linear_predictor(&design.x, &self.coefficients);
+        let sums = sweep(&self.table, &design.x, &eta, 0);
+        // ln Λ̂₀(t_k) (centred), t_k included, per table entry: within each
+        // stratum the table descends in time, so accumulate from its end.
+        // In logs, since Λ̂₀ itself may overflow when η is far below 0;
+        // ηᵢ + ln Λ̂₀(tᵢ) ≤ ln(events) for every subject at risk.
+        let mut log_cum = vec![f64::NEG_INFINITY; self.table.len()];
+        let mut running = f64::NEG_INFINITY;
+        for k in (0..self.table.len()).rev() {
+            if k + 1 == self.table.len() || self.table[k + 1].stratum != self.table[k].stratum {
+                running = f64::NEG_INFINITY;
+            }
+            let term = (self.table[k].events.len() as f64 / sums[k].s0).ln() - sums[k].shift;
+            running = log_add_exp(running, term);
+            log_cum[k] = running;
+        }
         let mut resid: Vec<f64> = self
             .obs
             .iter()
             .map(|o| if o.event { 1.0 } else { 0.0 })
             .collect();
+        // A subject enters the risk sets at the largest event time ≤ tᵢ and
+        // stays in every earlier one; subjects that never enter keep δᵢ.
         for (k, entry) in self.table.iter().enumerate() {
-            let increment = entry.events.len() as f64 / sums[k].s0;
-            for i in 0..self.obs.len() {
-                if self.strata[i] == entry.stratum && self.obs[i].time >= entry.time {
-                    resid[i] -= w[i] * increment;
-                }
+            for &i in &entry.enter {
+                resid[i] -= (eta[i] + log_cum[k]).exp();
             }
         }
         resid

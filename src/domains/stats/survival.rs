@@ -24,15 +24,17 @@
 //! # Ok::<(), symplex::prelude::SymplexError>(())
 //! ```
 
-use num_traits::{One, Zero};
+use num_traits::{One, Signed, Zero};
 
-use super::common::{check_confidence, ex_usize, invalid, norm_ppf, q_to_f64, qi, qu};
+use super::common::{
+    check_confidence, chi_squared_sf_q, ex_usize, invalid, norm_ppf, q_to_f64, qi, qu,
+};
 use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
 use crate::domains::stats::data::Q;
-use crate::domains::stats::family::Distribution;
+use crate::domains::stats::family::{Distribution, sign_of};
 use crate::domains::stats::hypothesis::{Alternative, TestResult};
 
 /// One subject: the time observed and whether the event occurred then
@@ -131,7 +133,10 @@ pub struct LifeTableRow {
     /// `S(time)`: the Kaplan–Meier estimate just after `time`.
     pub survival: Q,
     /// Greenwood's variance of `S(time)`:
-    /// `S² · Σ_{tᵢ ≤ t} dᵢ / (nᵢ (nᵢ − dᵢ))`.
+    /// `S² · Σ_{tᵢ ≤ t} dᵢ / (nᵢ (nᵢ − dᵢ))`.  At a time where every
+    /// subject at risk fails (`d = n`, the last event time) the term is
+    /// infinite but `S = 0`, and the variance is taken as `0` (the term is
+    /// skipped); `SurvfuncRight.surv_prob_se` reports `NaN` there.
     pub variance: Q,
     /// The Nelson–Aalen cumulative hazard `Σ_{tᵢ ≤ t} dᵢ / nᵢ`.
     pub cumulative_hazard: Q,
@@ -154,6 +159,25 @@ struct Censoring {
     count: usize,
 }
 
+/// `0 ≤ p ≤ 1`.
+fn unit_closed(p: &Q) -> bool {
+    !p.is_negative() && *p <= Q::one()
+}
+
+/// `ln S` for an exact `0 < S < 1`, accurate to rounding however close `S`
+/// is to `1`: `ln(1 − u)` with `u = 1 − S` formed exactly when `S > ½`
+/// (rounding `S` to `f64` first would cost `1 − S` about `−log₁₀(1 − S)`
+/// of its digits).  A positive Kaplan–Meier `S` is at least `1/n`, far
+/// from the `f64` underflow.
+fn ln_survival(s: &Q) -> f64 {
+    let half = Q::new(1.into(), 2.into());
+    if *s > half {
+        (-q_to_f64(&(Q::one() - s))).ln_1p()
+    } else {
+        q_to_f64(s).ln()
+    }
+}
+
 fn validate(op: &'static str, obs: &[Observation]) -> Result<(), SymplexError> {
     if obs.is_empty() {
         return Err(invalid(op, "at least one observation is required"));
@@ -164,19 +188,24 @@ fn validate(op: &'static str, obs: &[Observation]) -> Result<(), SymplexError> {
     Ok(())
 }
 
-/// The distinct times, ascending, with `(events, censored)` counts at each.
+/// The distinct times, ascending, with `(events, censored)` counts at each:
+/// one sort, then one pass (not a scan of the sample per distinct time).
 fn tally(obs: &[Observation]) -> Vec<(Q, usize, usize)> {
-    let mut times: Vec<Q> = obs.iter().map(|o| o.time.clone()).collect();
-    times.sort();
-    times.dedup();
-    times
-        .into_iter()
-        .map(|t| {
-            let events = obs.iter().filter(|o| o.time == t && o.event).count();
-            let censored = obs.iter().filter(|o| o.time == t && !o.event).count();
-            (t, events, censored)
-        })
-        .collect()
+    let mut order: Vec<usize> = (0..obs.len()).collect();
+    order.sort_by(|&a, &b| obs[a].time.cmp(&obs[b].time));
+    let mut out: Vec<(Q, usize, usize)> = Vec::new();
+    for i in order {
+        let o = &obs[i];
+        let (e, c) = (usize::from(o.event), usize::from(!o.event));
+        match out.last_mut() {
+            Some(last) if last.0 == o.time => {
+                last.1 += e;
+                last.2 += c;
+            }
+            _ => out.push((o.time.clone(), e, c)),
+        }
+    }
+    out
 }
 
 impl KaplanMeier {
@@ -306,12 +335,19 @@ impl KaplanMeier {
     }
 
     /// The `p`-quantile of the survival time: the smallest event time at
-    /// which `S(t) ≤ 1 − p` (`None` when the curve never falls that far —
-    /// the last observation was censored above it).  This is R's
-    /// `survfit` convention; `SurvfuncRight.quantile` uses the strict
-    /// `S(t) < 1 − p`, so the two differ only when the curve lands exactly
-    /// on `1 − p` (four events at `1, 2, 3, 4`: median `2` here, `3` there).
+    /// which `S(t) ≤ 1 − p`, i.e. the generalised inverse
+    /// `inf{t : F̂(t) ≥ p}` of `F̂ = 1 − Ŝ` (Brookmeyer & Crowley 1982 for
+    /// the median).  `None` when the curve never falls that far — the last
+    /// observation was censored above it — and for `p` outside `[0, 1]`.
+    /// `SurvfuncRight.quantile` uses the strict `S(t) < 1 − p`
+    /// ([`quantile_strict`](Self::quantile_strict)), so the two differ only
+    /// when the curve lands exactly on `1 − p` (four events at `1, 2, 3, 4`:
+    /// median `2` here, `3` there); the sample-median convention would take
+    /// the midpoint `5/2` of such a flat stretch.
     pub fn quantile(&self, p: &Q) -> Option<Q> {
+        if !unit_closed(p) {
+            return None;
+        }
         let target = Q::one() - p;
         self.rows
             .iter()
@@ -319,10 +355,16 @@ impl KaplanMeier {
             .map(|r| r.time.clone())
     }
 
-    /// The `p`-quantile with statsmodels' strict convention: the smallest
-    /// event time at which `S(t) < 1 − p` (`SurvfuncRight.quantile`), so it
-    /// differs from [`quantile`](Self::quantile) exactly when the curve
-    /// lands on `1 − p`.
+    /// The `p`-quantile with the strict convention of
+    /// `SurvfuncRight.quantile` (and SAS): the smallest event time at which
+    /// `S(t) < 1 − p`, so it differs from [`quantile`](Self::quantile)
+    /// exactly when the curve lands on `1 − p`; `None` for `p` outside
+    /// `[0, 1]`.  The comparison here is exact.  statsmodels compares a
+    /// floating-point `S = exp(Σ ln(1 − d/n))`, which can land a rounding
+    /// below an exact `1 − p` (`0.49999999999999994` for `S = ½`), and then
+    /// returns the non-strict answer of [`quantile`](Self::quantile).
+    ///
+    /// # Examples
     ///
     /// ```
     /// use symplex::linprog::{q, qi};
@@ -335,6 +377,9 @@ impl KaplanMeier {
     /// # Ok::<(), symplex::prelude::SymplexError>(())
     /// ```
     pub fn quantile_strict(&self, p: &Q) -> Option<Q> {
+        if !unit_closed(p) {
+            return None;
+        }
         let target = Q::one() - p;
         self.rows
             .iter()
@@ -347,11 +392,19 @@ impl KaplanMeier {
         self.quantile(&Q::new(1.into(), 2.into()))
     }
 
-    /// A pointwise confidence interval for `S(t)`, in `f64`: the plain
-    /// (linear) interval `S ± z·√Var`, clamped to `[0, 1]`, or the
-    /// log-log interval `S^{exp(±z·√Var / (S ln S))}` (Kalbfleisch–Prentice;
-    /// `SurvfuncRight.simultaneous_cb`'s pointwise cousin), which stays
-    /// inside `(0, 1)`.
+    /// A pointwise confidence interval for `S(t)`, in `f64`, from Greenwood's
+    /// variance ([`variance_at`](Self::variance_at)) and `z = Φ⁻¹((1 + c)/2)`:
+    /// the plain (linear) interval `S ± z·√Var`, clamped to `[0, 1]`, or the
+    /// log-log interval, `u = ln(−ln S) ± z·√Var / |S ln S|` mapped back by
+    /// `S = exp(−e^u)`, i.e. `S^{exp(±z·√Var / (S ln S))}` (Kalbfleisch &
+    /// Prentice 1980), which stays inside `(0, 1)`: the transform of
+    /// `SurvfuncRight.quantile_ci(method="cloglog")` and of
+    /// `simultaneous_cb(transform="log")`.  statsmodels 0.15 has no pointwise
+    /// interval for `S(t)` itself.  `ln S` is taken from the exact `S` (as
+    /// `ln(1 − (1 − S))` with `1 − S` exact when `S > ½`), so the interval
+    /// keeps its digits as `S → 1`.  Where the variance is `0` — before the
+    /// first event (`S = 1`) and once `S = 0` — both intervals are the
+    /// point `[S, S]`.
     ///
     /// # Errors
     ///
@@ -363,18 +416,23 @@ impl KaplanMeier {
         method: CiMethod,
     ) -> Result<Interval<f64>, SymplexError> {
         check_confidence("KaplanMeier::confidence_interval", confidence)?;
-        let z = norm_ppf(0.5 + confidence / 2.0);
-        let s = q_to_f64(&self.survival_at(t));
+        // z = −Φ⁻¹((1 − c)/2): `1 − c` is exact for c ≥ ½, while the
+        // `0.5 + c/2` of the upper tail rounds away the digits of 1 − c.
+        let z = -norm_ppf((1.0 - confidence) / 2.0);
+        let exact = self.survival_at(t);
+        let s = q_to_f64(&exact);
         let se = q_to_f64(&self.variance_at(t)).sqrt();
         Ok(match method {
             CiMethod::Linear => Interval::closed((s - z * se).max(0.0), (s + z * se).min(1.0)),
             CiMethod::LogLog => {
-                if s <= 0.0 || s >= 1.0 {
+                if !exact.is_positive() || exact >= Q::one() || se == 0.0 {
                     Interval::closed(s, s)
                 } else {
-                    let theta = z * se / (s * s.ln());
-                    let lo = s.powf(theta.exp());
-                    let hi = s.powf((-theta).exp());
+                    let ln_s = ln_survival(&exact);
+                    let theta = z * se / (s * ln_s);
+                    // S^{e^{±θ}} = exp(e^{±θ} ln S), without rounding S first.
+                    let lo = (theta.exp() * ln_s).exp();
+                    let hi = ((-theta).exp() * ln_s).exp();
                     Interval::closed(lo.min(hi), lo.max(hi))
                 }
             }
@@ -417,12 +475,22 @@ pub enum CiMethod {
 /// `e_g = d·n_g/n` events; the statistic is `(O − E)ᵀ V⁻¹ (O − E)` over
 /// `k − 1` groups with the hypergeometric covariance
 /// `V_{gh} = Σ_t d (n − d) / (n − 1) · (n_g/n) (δ_{gh} − n_h/n)`, an exact
-/// rational, referred to `χ²(k − 1)`.  `statsmodels.duration.survfunc.survdiff`.
+/// rational, referred to `χ²(k − 1)`: the p-value is the upper tail
+/// `Γ(ν/2, x/2)/Γ(ν/2)` itself, never `1 − cdf`, so it keeps its digits
+/// far below `10⁻¹⁶`.  The statistic is `statsmodels.duration.survfunc.
+/// survdiff`'s (whose p-value, `1 − chi2.cdf`, is `0` below about
+/// `10⁻¹⁶`; compare `chi2.sf`).  Groups are labelled `0..k`.
 ///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] for fewer than two groups, mismatched
-/// lengths, an empty group, or no events at all.
+/// - [`SymplexError::InvalidArgument`] for an empty sample, a negative
+///   time, fewer than two groups, mismatched lengths, a label in `0..k`
+///   with no observations, or no events at all.
+/// - [`SymplexError::ComputationFailed`] when the covariance matrix is
+///   singular: some group has nobody at risk at any event time (all of it
+///   censored before the first event), so its `O − E` is identically `0`
+///   and the `χ²(k − 1)` reference does not apply (`survdiff` raises
+///   `LinAlgError`); drop that group.
 ///
 /// ```
 /// use symplex::prelude::*;
@@ -459,35 +527,40 @@ pub fn log_rank_test(
             return Err(invalid(OP, format!("group {g} has no observations")));
         }
     }
+    // Per distinct time (descending): each group's events and its subjects
+    // leaving after that time, so the risk sets are running sums.
+    let mut order: Vec<usize> = (0..obs.len()).collect();
+    order.sort_by(|&a, &b| obs[b].time.cmp(&obs[a].time));
     // O − E and V over the first k − 1 groups.
     let m = k - 1;
     let mut diff = vec![Q::zero(); m];
     let mut v = vec![vec![Q::zero(); m]; m];
     let mut any_event = false;
-    for (time, events, _) in tally(obs) {
+    let mut at_risk = vec![0usize; k];
+    let mut start = 0;
+    while start < order.len() {
+        let time = &obs[order[start]].time;
+        let end = order[start..]
+            .iter()
+            .position(|&i| obs[i].time != *time)
+            .map_or(order.len(), |len| start + len);
+        let mut observed = vec![0usize; k];
+        for &i in &order[start..end] {
+            at_risk[groups[i]] += 1;
+            observed[groups[i]] += usize::from(obs[i].event);
+        }
+        start = end;
+        let events: usize = observed.iter().sum();
         if events == 0 {
             continue;
         }
         any_event = true;
-        let at_risk: Vec<usize> = (0..k)
-            .map(|g| {
-                obs.iter()
-                    .zip(groups)
-                    .filter(|(o, gg)| **gg == g && o.time >= time)
-                    .count()
-            })
-            .collect();
         let n: usize = at_risk.iter().sum();
         let d = qu(events);
         let nn = qu(n);
         for g in 0..m {
-            let observed = obs
-                .iter()
-                .zip(groups)
-                .filter(|(o, gg)| **gg == g && o.time == time && o.event)
-                .count();
             let expected = &d * qu(at_risk[g]) / &nn;
-            diff[g] += qu(observed) - expected;
+            diff[g] += qu(observed[g]) - expected;
         }
         if n > 1 {
             // Hypergeometric variance of the events in group g at this time:
@@ -520,9 +593,8 @@ pub fn log_rank_test(
     for (g, d) in diff.iter().enumerate() {
         stat += d * x.get(g, 0);
     }
+    let p_value = chi_squared_sf_q(ctx, m, &stat);
     let statistic = ctx.from_ratio(stat);
-    let chi = Distribution::chi_squared(ex_usize(ctx, m));
-    let p_value = (ctx.one() - chi.cdf(&statistic)).simplify();
     Ok(TestResult {
         statistic,
         p_value,
@@ -532,7 +604,7 @@ pub fn log_rank_test(
 }
 
 /// The exponential hazard rate estimate `λ̂ = events / total time at risk`
-/// (the MLE under right censoring), exactly, with the number of events.
+/// (the MLE under right censoring), exactly.
 ///
 /// # Errors
 ///
@@ -550,6 +622,11 @@ pub fn exponential_rate(obs: &[Observation]) -> Result<Q, SymplexError> {
 
 /// The mean of the uncensored event times (a naive summary; biased under
 /// censoring — prefer [`KaplanMeier::restricted_mean`]).
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for an empty sample, a negative time,
+/// or no events.
 pub fn mean_event_time(obs: &[Observation]) -> Result<Q, SymplexError> {
     const OP: &str = "mean_event_time";
     validate(OP, obs)?;
@@ -565,17 +642,46 @@ pub fn mean_event_time(obs: &[Observation]) -> Result<Q, SymplexError> {
     Ok(events.into_iter().fold(Q::zero(), |a, t| a + t) / qu(n))
 }
 
-/// The survival function of a [`Distribution`] as an expression:
-/// `S(t) = 1 − F(t)`, using the family's closed-form CDF on the support
-/// when it has one (so `Exponential(λ)` gives `e^{−λt}`), else the
-/// whole-line CDF.
+/// The survival function `S(t) = P(T > t)` of a [`Distribution`] as an
+/// expression.
+///
+/// * For a numeric `t` it is [`Distribution::sf`]: `1` below the support,
+///   `0` at or above its upper end, and on the support the family's
+///   non-cancelling upper tail (`½ erfc(t/√2)` for a normal), so that
+///   `S(26) = 2.476… × 10⁻¹⁴⁹` for `N(0, 1)` rather than the `0` of
+///   `1 − Φ(26)`.
+/// * For a symbolic `t` it is the closed form on the support: the family's
+///   survival function when it has one (`e^{−λt}` for `Exponential(λ)`),
+///   else `1 − F(t)` with the family's (or the whole-line) CDF.
 pub fn survival_function(dist: &Distribution, t: &Ex) -> Ex {
+    if t.free_symbols().is_empty() {
+        return dist.sf(t);
+    }
+    if let Some(sf) = dist.family().sf(t) {
+        return sf.simplify();
+    }
     let cdf = dist.family().cdf(t).unwrap_or_else(|| dist.cdf(t));
     (dist.context().one() - cdf).simplify()
 }
 
-/// The hazard function of a continuous [`Distribution`]:
-/// `h(t) = f(t) / S(t)`, as an expression valid on the support.
+/// The hazard function `h(t) = f(t) / S(t)` of a continuous
+/// [`Distribution`] as an expression, with `S` from
+/// [`survival_function`].  A symbolic `t` gets the formula valid on the
+/// support.  A numeric `t` gets `0` below the support (where `f = 0`,
+/// `S = 1`) and the tail-safe ratio on it (`h(40) = 40.0249…` for
+/// `N(0, 1)`, where `f/(1 − Φ)` is `0/0`); at or above the upper end of
+/// a bounded support `S = 0` and the hazard is undefined.
 pub fn hazard_function(dist: &Distribution, t: &Ex) -> Ex {
+    if t.free_symbols().is_empty() {
+        let support = dist.support();
+        let below = support.contains(t) == Some(false)
+            && support
+                .as_interval()
+                .and_then(|iv| sign_of(&(t - &iv.lower)))
+                == Some(std::cmp::Ordering::Less);
+        if below {
+            return dist.context().zero();
+        }
+    }
     (dist.density(t) / survival_function(dist, t)).simplify()
 }

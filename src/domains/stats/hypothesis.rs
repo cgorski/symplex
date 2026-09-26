@@ -295,11 +295,10 @@ fn rational_decimal(q: &Q, digits: u32) -> Option<String> {
 /// and fail to parse, hence the exact check first.)
 ///
 /// The logarithm is expanded first (`ln(c·e^{−x}) = ln c − x`, the even-df
-/// χ² tails), and when the evaluator still cannot certify `ln(p)` — its
-/// error bound for `exp(−x)` is absolute, so `ln(exp(−2601/10))` was
-/// `PrecisionExhausted` although `p = 1.1e-113` evaluates fine — `ln p` is
-/// read off the certified decimal expansion `m·10^e` of `p` as `ln m + e
-/// ln 10`.
+/// χ² tails).  The evaluator certifies `ln(exp(−x))` since its bound for
+/// `exp` became relative (`err(e^z) = |e^z|·err(z)`), so the decimal-expansion
+/// fallback the absolute bound once needed (`ln(exp(−2601/10))` was
+/// `PrecisionExhausted`) is gone.
 pub(crate) fn p_value_ln_of(p: &Ex) -> Result<f64, SymplexError> {
     let reduced = p.eval();
     match reduced.as_rational() {
@@ -308,10 +307,7 @@ pub(crate) fn p_value_ln_of(p: &Ex) -> Result<f64, SymplexError> {
         Some(q) if q.is_positive() => return Ok(ln_of_rational(&q)),
         _ => {}
     }
-    match reduced.ln().expand_log().eval_f64() {
-        Err(err @ SymplexError::PrecisionExhausted { .. }) => ln_from_decimal(&reduced).ok_or(err),
-        other => other,
-    }
+    reduced.ln().expand_log().eval_f64()
 }
 
 /// `p` as an `f64`: an exact rational converted directly ([`q_to_f64`],
@@ -336,19 +332,6 @@ fn ln_of_rational(q: &Q) -> f64 {
     let shift = den.bits().saturating_sub(num.bits());
     let scaled = Q::new_raw(num << shift, den.clone());
     q_to_f64(&scaled).ln() - shift as f64 * std::f64::consts::LN_2
-}
-
-/// `ln p = ln m + e·ln 10` from the decimal expansion `m·10^e` of a
-/// positive `p` ([`Ex::eval_decimal`], which certifies its digits);
-/// `None` if `p` does not evaluate or is not positive.
-fn ln_from_decimal(p: &Ex) -> Option<f64> {
-    let s = p.eval_decimal(20).ok()?;
-    let (mantissa, exponent) = match s.split_once('e') {
-        Some((m, e)) => (m, e.parse::<i64>().ok()?),
-        None => (s.as_str(), 0),
-    };
-    let m: f64 = mantissa.parse().ok()?;
-    (m > 0.0 && m.is_finite()).then(|| m.ln() + exponent as f64 * LN_10)
 }
 
 /// `log10 p = ln p / ln 10`, with `ln p` from [`p_value_ln_of`].

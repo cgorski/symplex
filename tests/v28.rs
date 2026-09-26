@@ -8,6 +8,10 @@
 
 #[path = "v28/v28_api.rs"]
 mod v28_api;
+#[path = "v28/v28_audit_2a.rs"]
+mod v28_audit_2a;
+#[path = "v28/v28_audit_2b.rs"]
+mod v28_audit_2b;
 #[path = "v28/v28_audit_3a.rs"]
 mod v28_audit_3a;
 #[path = "v28/v28_binders.rs"]
