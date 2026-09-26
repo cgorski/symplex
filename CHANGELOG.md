@@ -160,6 +160,21 @@ sites in 19 files to 27 in 7.  Migrate each call by adding `?` (or
   uses the family's survival form when it has one.
   `KaplanMeier::quantile` / `quantile_strict` return `None` for `p`
   outside `[0, 1]`.
+- **Critical values come from the small tail:** proportion intervals
+  (Wald, Wilson, Agresti–Coull), `confidence_interval_mean`, the upper
+  end of `credible_interval`, `Ols::conf_int` / the regression intervals
+  and `power_t_test_two_sample` invert `α/2` itself instead of the
+  rounded `1 − α/2`.  Endpoints change in their last digits, and
+  substantially near `c = 1`.  New `IntervalMethod::Jeffreys`
+  (statsmodels `'jeffreys'`; the symbolic and exact variants refuse it).
+- **Markov chains and the multivariate normal:** `limiting_distribution`
+  is `Some(π)` for any chain with a single aperiodic closed class (it was
+  `None` for every reducible chain); `with_labels` rejects duplicate
+  labels; `correlation_matrix` rejects a single constant variable; the
+  accessors of an unchecked `MultivariateNormal::new` return
+  `InvalidArgument` for an asymmetric or indefinite covariance (a density
+  of `exp(1/6)/√(−12π²)` before); `pca_f64` refuses `NaN` entries and a
+  non-positive trace, and tests symmetry relative to the largest entry.
 
 ### Added
 
@@ -287,6 +302,45 @@ sites in 19 files to 27 in 7.  Migrate each call by adding `?` (or
 - **`p_value_ln` / `p_value_log10`:** the decimal-expansion fallback is
   gone; the evaluator certifies these directly (786 p-values probed down
   to `1e-21718`).
+- **Proportion intervals near `c = 1`:** `z` came from the rounded level
+  `1 − α/2` (the Wilson lower end of `(5, 5)` at `c = 1 − 10⁻¹⁵` was
+  `0.071773`, truly `0.072013`; `c = 1 − 2⁻⁵³` was an error), and the same
+  for the t interval of the mean, the upper end of `credible_interval`,
+  and the regression `conf_int` (the intercept of a six-point line at
+  `1 − 10⁻¹²` was `−1414.34074` for `−1414.38001`).  Clopper–Pearson
+  comes from Beta quantiles: `O(1)` in `n` (it never finished at `3·10⁹`
+  trials) and accurate to about `10⁻¹⁵`.  The Wilson lower end no longer
+  cancels (exactly 0 at `k = 0`).
+- **`kendall_tau` overflowed `i64` from about 78,000 untied pairs** (a
+  wrapped `τ` in release builds); concordance counts are `O(n log n)`
+  (Knight 1966) and `τ_b` is formed exactly.  `kendall_test` uses them
+  too, with exact tie sums (20,000 pairs: 0.4 s in a debug build).
+  `goodman_kruskal_gamma`, `somers_d` and `kendall_tau_c` get faster.
+- **`normalized_mutual_information` (`Min`/`Max`)** chose the normaliser
+  from entropies summed in `f64`, which cancel: `0.495` for a true
+  `0.980`.  It compares them exactly (or by certified sign).
+- **`aic` / `bic` with counts beyond `i64::MAX`:** `bic(−3, 1,
+  usize::MAX)` was `πi + 6`.  No panic in `joint_from_counts`,
+  `probability_vector`, `Distribution::sample(usize::MAX)`,
+  `MultivariateNormal::sample`, `MarkovChain::sample_path`.
+  `posterior_predictive_beta_binomial` is `O(n)` (22.4 s → 0.5 s at
+  `n = 300`, debug).
+- **Wald's SPRT operating characteristic and average sample number:**
+  an absolute drift cut-off `|E[Z]| < 10⁻¹³` made `L = 0.562` for a true
+  `0.00117` between close hypotheses; `E[N]` cancelled near zero drift
+  (`−2.4·10⁷` for a true `23.57`); small `p` gave `NaN` or "could not
+  bracket"; log-likelihood increments rounded `p₁/p₀` first, and
+  `p₁ = 1 − 10⁻⁴⁰⁰` gave a `NaN` ratio, so the test never stopped.
+  `wald_boundaries` is accurate as `α + β → 1`.  The docs label Wald's
+  approximations, with simulated errors of the ASN (3–32 % low).
+- **Symmetric eigenvalues at extreme scales:** the Jacobi sweeps' relative
+  test formed sums of squares, which underflow at `10⁻¹⁷⁰`, and returned
+  the unrotated diagonal (`pca_f64` of `[[2, 1], [1, 2]]·10⁻¹⁷⁰` gave `2, 2`
+  for `3, 1` times the scale).  The matrix is first scaled by a power of
+  two, as LAPACK does.  The exact `pca` orders eigenvalues exactly
+  (`diag(1, 1 − 10⁻²⁰)` came out reversed).
+- **`MarkovChain::sample_path`** froze in state 0 when the transition
+  probabilities were huge rationals (`inf/inf`).
 - **`dsolve`'s structural checks no longer recurse over the expression**
   (`expr_contains`, `contains_sym_outside_deriv`, `collect_mul_factors`):
   a deeply nested ODE could overflow the stack.

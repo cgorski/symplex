@@ -67,7 +67,7 @@ use num_traits::{One, Pow, Signed, ToPrimitive, Zero};
 use super::common::{
     check_alpha, check_confidence, check_finite, check_sample, check_unit_open, chi_squared_sf,
     chi_squared_sf_q, ex, invalid, norm_cdf, norm_isf, norm_sf, q_to_f64, qi, qu,
-    student_t_quantile_f64, usize_to_i64,
+    student_t_isf_f64, usize_to_i64,
 };
 use super::data::{self, Ddof, Q};
 use super::family::Distribution;
@@ -3143,30 +3143,25 @@ pub fn kendall_test(
     check_same_len(OP, x, y)?;
     check_sample(OP, "the paired sample", x, 2)?;
     let n = x.len();
-    let (mut con, mut dis) = (0usize, 0usize);
-    for i in 0..n {
-        for j in i + 1..n {
-            let (sx, sy) = (x[i].cmp(&x[j]), y[i].cmp(&y[j]));
-            if sx == Ordering::Equal || sy == Ordering::Equal {
-                continue;
-            }
-            if sx == sy {
-                con += 1;
-            } else {
-                dis += 1;
-            }
-        }
-    }
-    let tot = n * (n - 1) / 2;
-    let tie_stats = |t: &[usize]| -> (usize, Q, Q) {
+    // O(n log n) (Knight 1966); 0.28 compared every pair.
+    let counts = data::concordance_counts(x, y)?;
+    let (con, dis) = (counts.concordant, counts.discordant);
+    // Pair and tie sums exactly: t(t−1)(2t+5) overflows `usize` for a tie
+    // group of two million.
+    let nq = qu(n);
+    let tot = &nq * (&nq - Q::one()) / qi(2);
+    let tie_stats = |t: &[usize]| -> (Q, Q, Q) {
         // (pairs tied, Σ t(t−1)(t−2), Σ t(t−1)(2t+5))
-        t.iter().fold((0, Q::zero(), Q::zero()), |(p, a, b), &t| {
-            (
-                p + t * (t - 1) / 2,
-                a + qu(t * (t - 1) * (t - 2)),
-                b + qu(t * (t - 1) * (2 * t + 5)),
-            )
-        })
+        t.iter()
+            .fold((Q::zero(), Q::zero(), Q::zero()), |(p, a, b), &t| {
+                let t = qu(t);
+                let t1 = &t * (&t - Q::one());
+                (
+                    p + &t1 / qi(2),
+                    a + &t1 * (&t - qi(2)),
+                    b + &t1 * (qi(2) * &t + qi(5)),
+                )
+            })
     };
     let (xtie, x0, x1) = tie_stats(&data::tie_sizes(x));
     let (ytie, y0, y1) = tie_stats(&data::tie_sizes(y));
@@ -3175,10 +3170,11 @@ pub fn kendall_test(
     }
     let tau = data::kendall_tau(ctx, x, y)?;
     if !exact {
-        let m = qu(n * (n - 1));
-        let mut var = (&m * qu(2 * n + 5) - &x1 - &y1) / qi(18) + qi(2) * qu(xtie * ytie) / &m;
+        let m = &nq * (&nq - Q::one());
+        let mut var =
+            (&m * (qi(2) * &nq + qi(5)) - &x1 - &y1) / qi(18) + qi(2) * &xtie * &ytie / &m;
         if !x0.is_zero() && !y0.is_zero() {
-            var += &x0 * &y0 / (qi(9) * &m * qu(n - 2));
+            var += &x0 * &y0 / (qi(9) * &m * (&nq - qi(2)));
         }
         if !var.is_positive() {
             return Err(invalid(OP, "the variance of the statistic is zero"));
@@ -3194,11 +3190,13 @@ pub fn kendall_test(
             alternative: alt,
         });
     }
-    if xtie > 0 || ytie > 0 {
+    if xtie.is_positive() || ytie.is_positive() {
         return Err(invalid(OP, "the exact method needs samples without ties"));
     }
     // scipy: c = concordant count; work in the left tail of the symmetric
-    // distribution of the inversion count.
+    // distribution of the inversion count.  Without ties every pair is
+    // concordant or discordant.
+    let tot = con + dis;
     let c = tot - dis;
     let in_right_tail = c >= tot - c;
     let cmin = c.min(tot - c);
@@ -4189,7 +4187,7 @@ pub fn power_t_test_two_sample(
     let n = n_per_group as f64;
     let df = 2.0 * n - 2.0;
     let delta = effect_size * (n / 2.0).sqrt();
-    let t_crit = student_t_quantile_f64(OP, df, 1.0 - alpha / 2.0)?;
+    let t_crit = student_t_isf_f64(OP, df, alpha / 2.0)?;
     let density = chi_squared_density(df);
     let integrand = move |v: f64| -> f64 {
         let scale = (v / df).sqrt();

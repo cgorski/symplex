@@ -55,14 +55,13 @@ use crate::api::context::Context;
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 use crate::base::interval::Interval;
-use crate::domains::optimize::{RootOpts, bisect};
 
 use super::common::{
-    check_confidence, check_sample, ex_usize, invalid, q_to_f64, qu, standard_normal, t_two_sided,
-    z_two_sided,
+    check_confidence, check_sample, ex_usize, invalid, q_to_f64, qu, standard_normal, z_two_sided,
 };
 use super::data::{self, Ddof, Q};
 use super::family::{Distribution, fresh_symbol};
+use super::numdist;
 
 /// `data` non-empty, for the function `op`.
 fn nonempty(op: &'static str, data: &[Q]) -> Result<(), SymplexError> {
@@ -428,7 +427,7 @@ pub fn fit_log_normal(ctx: &Context, data: &[Q]) -> Result<Distribution, Symplex
     if range.lower == range.upper {
         return Err(invalid(OP, "constant data give σ̂ = 0"));
     }
-    let n = ctx.int(data.len() as i64);
+    let n = ex_usize(ctx, data.len());
     let logs: Vec<Ex> = data.iter().map(|x| ln_q(ctx, x)).collect();
     let mu = (logs.iter().fold(ctx.zero(), |acc, l| acc + l) / &n).simplify();
     let var = (logs
@@ -598,16 +597,37 @@ pub fn log_likelihood(dist: &Distribution, data: &[Q]) -> Ex {
 
 /// Akaike's information criterion `AIC = 2k − 2ℓ` for a model with `k`
 /// free parameters and maximised log-likelihood `ℓ`.
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::estimation::aic;
+///
+/// let ctx = Context::new();
+/// assert_eq!(aic(&ctx.int(-3), 2), ctx.int(10));
+/// // 2 (2⁶⁴ − 1) + 6; 0.28 formed `2 * k as i64`, -2 for usize::MAX, and said 4.
+/// assert_eq!(aic(&ctx.int(-3), usize::MAX).to_string(), "36893488147419103236");
+/// ```
 pub fn aic(log_lik: &Ex, k: usize) -> Ex {
     let ctx = log_lik.context();
-    (ctx.int(2 * k as i64) - ctx.int(2) * log_lik).simplify()
+    (ctx.int(2) * ex_usize(&ctx, k) - ctx.int(2) * log_lik).simplify()
 }
 
 /// The Bayesian information criterion `BIC = k ln n − 2ℓ` for `k` free
 /// parameters, `n` observations and maximised log-likelihood `ℓ`.
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::estimation::bic;
+///
+/// let ctx = Context::new();
+/// // 0.28 took `n as i64` (-1 for usize::MAX): `iπ + 6`.
+/// let b = bic(&ctx.int(-3), 1, usize::MAX);
+/// assert!(b.free_symbols().is_empty() && (b.eval_f64()? - (6.0 + (usize::MAX as f64).ln())).abs() < 1e-12);
+/// # Ok::<(), SymplexError>(())
+/// ```
 pub fn bic(log_lik: &Ex, k: usize, n: usize) -> Ex {
     let ctx = log_lik.context();
-    (ctx.int(k as i64) * ctx.int(n as i64).ln() - ctx.int(2) * log_lik).simplify()
+    (ex_usize(&ctx, k) * ex_usize(&ctx, n).ln() - ctx.int(2) * log_lik).simplify()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -792,8 +812,25 @@ pub fn dirichlet_multinomial_posterior(
 }
 
 /// The equal-tailed credible interval of `dist` at level `confidence`:
-/// `[F⁻¹((1 − c)/2), F⁻¹(1 − (1 − c)/2)]` through
-/// [`Distribution::quantile_f64`].  `scipy.stats.<dist>.ppf`.
+/// with `t = (1 − c)/2`, the lower end is `F⁻¹(t)`
+/// ([`Distribution::quantile_f64`], `scipy.stats.<dist>.ppf(t)`) and the
+/// upper end the `x` with `P(X > x) = t` (`scipy.stats.<dist>.isf(t)`).
+///
+/// The upper end is solved on the upper tail itself, never as the
+/// quantile at the rounded level `1 − t`: that level carries an absolute
+/// error of up to `2⁻⁵⁴`, a relative error of `1.1·10⁻⁴` in `t` at
+/// `c = 1 − 10⁻¹²`, and at `c = 1 − 2⁻⁵³` it rounds to `1` (0.28 then
+/// returned an error; at `1 − 10⁻¹²` its `Beta(9, 6)` upper end was
+/// `0.99764814506449` for `0.9976481886981728`).  The families with an
+/// `f64` kernel ([`numdist`]: normal, Student-t, χ², F,
+/// beta, gamma, binomial, Poisson) use its `isf`; any other continuous
+/// law the lower quantile of `−X` (`x_U(X) = −x_L(−X)`, through
+/// [`Distribution::affine`]); any other discrete law — a
+/// [`Finite`](super::Finite) table, a die — still the quantile at `1 − t`,
+/// which differs only when a tail of the table lies within `2⁻⁵⁴` of `t`,
+/// and is an error at `c = 1 − 2⁻⁵³` (a reflection would change the
+/// lattice convention: the smallest `k` with `P(X > k) ≤ t` is `0` for a
+/// fair coin at `t = ½`, the largest `k` with `P(X ≥ k) ≥ t` is `1`).
 ///
 /// # Errors
 ///
@@ -810,6 +847,9 @@ pub fn dirichlet_multinomial_posterior(
 /// let ci = credible_interval(&Distribution::beta(ctx.int(9), ctx.int(6)), 0.95)?;
 /// assert!((ci.lower - 0.3513801106159917).abs() < 1e-9);
 /// assert!((ci.upper - 0.8233889100178821).abs() < 1e-9);
+/// // c = 1 - 1e-12; scipy: stats.beta.isf((1 - c)/2, 9, 6) = 0.9976481886981728
+/// let ci = credible_interval(&Distribution::beta(ctx.int(9), ctx.int(6)), 1.0 - 1e-12)?;
+/// assert!((ci.upper - 0.9976481886981728).abs() < 1e-15);
 /// # Ok::<(), SymplexError>(())
 /// ```
 pub fn credible_interval(
@@ -820,8 +860,61 @@ pub fn credible_interval(
     let tail = (1.0 - confidence) / 2.0;
     Ok(Interval::closed(
         dist.quantile_f64(tail)?,
-        dist.quantile_f64(1.0 - tail)?,
+        upper_quantile_f64(dist, tail)?,
     ))
+}
+
+/// The `x` with `P(X > x) = q` (for a lattice law the smallest atom with
+/// `P(X > x) ≤ q`), solved on the upper tail; see [`credible_interval`].
+/// The kernel table mirrors the one behind [`Distribution::quantile_f64`]
+/// (which has no upper-tail counterpart to call).
+fn upper_quantile_f64(dist: &Distribution, q: f64) -> Result<f64, SymplexError> {
+    use super::continuous::{Beta, ChiSquared, FDistribution, Gamma, Normal, StudentT};
+    use super::discrete::{Binomial, Poisson};
+    let num = |e: &Ex| -> Option<f64> {
+        if e.free_symbols().is_empty() {
+            e.eval_f64().ok().filter(|v| v.is_finite())
+        } else {
+            None
+        }
+    };
+    let kernel = || -> Option<Result<f64, SymplexError>> {
+        if let Some(d) = dist.downcast_ref::<Normal>() {
+            let (mean, std) = (num(&d.mean)?, num(&d.std)?);
+            return (std > 0.0).then(|| numdist::norm::isf(q).map(|z| mean + std * z));
+        }
+        if let Some(d) = dist.downcast_ref::<StudentT>() {
+            return Some(numdist::t::isf(q, num(&d.dof)?));
+        }
+        if let Some(d) = dist.downcast_ref::<ChiSquared>() {
+            return Some(numdist::chi2::isf(q, num(&d.dof)?));
+        }
+        if let Some(d) = dist.downcast_ref::<FDistribution>() {
+            return Some(numdist::f::isf(q, num(&d.d1)?, num(&d.d2)?));
+        }
+        if let Some(d) = dist.downcast_ref::<Beta>() {
+            return Some(numdist::beta::isf(q, num(&d.alpha)?, num(&d.beta)?));
+        }
+        if let Some(d) = dist.downcast_ref::<Gamma>() {
+            return Some(numdist::gamma::isf(q, num(&d.shape)?, num(&d.scale)?));
+        }
+        if let Some(d) = dist.downcast_ref::<Binomial>() {
+            let (n, p) = (num(&d.n)?, num(&d.p)?);
+            return (n.fract() == 0.0).then(|| numdist::binom::isf(q, n, p));
+        }
+        if let Some(d) = dist.downcast_ref::<Poisson>() {
+            return Some(numdist::poisson::isf(q, num(&d.rate)?));
+        }
+        None
+    };
+    if let Some(x) = kernel() {
+        return x;
+    }
+    if dist.is_continuous() {
+        let ctx = dist.context();
+        return Ok(-dist.affine(ctx.int(-1), ctx.zero())?.quantile_f64(q)?);
+    }
+    dist.quantile_f64(1.0 - q)
 }
 
 /// The posterior predictive of `n` further Bernoulli trials under a
@@ -830,6 +923,13 @@ pub fn credible_interval(
 /// exact [`Finite`](super::Finite) table (the Beta ratios reduce to
 /// rising factorials `α⁽ᵏ⁾ β⁽ⁿ⁻ᵏ⁾ / (α + β)⁽ⁿ⁾`, so rational `α, β` give
 /// rational masses).  `scipy.stats.betabinom.pmf(k, n, α, β)`.
+///
+/// The masses follow from `P(0) = β⁽ⁿ⁾ / (α + β)⁽ⁿ⁾` by the ratio
+/// `P(k+1)/P(k) = (n − k)(α + k) / ((k + 1)(β + n − k − 1))`, `O(n)`
+/// exact operations; the table (the distinct values `0..=n`, masses
+/// summing to exactly `1`) is valid by construction and is not re-checked.
+/// (0.28 formed three rising factorials per mass and then compared every
+/// pair of values: 22 s at `n = 300`.)
 ///
 /// # Errors
 ///
@@ -856,22 +956,29 @@ pub fn posterior_predictive_beta_binomial(
     const OP: &str = "posterior_predictive_beta_binomial";
     require_positive_param(OP, prior_alpha, "α")?;
     require_positive_param(OP, prior_beta, "β")?;
-    let denom = rising_factorial(&(prior_alpha + prior_beta), n);
-    let table: Vec<(Ex, Ex)> = (0..=n)
-        .map(|k| {
-            let mass = data::binomial_q(n, k)
-                * rising_factorial(prior_alpha, k)
-                * rising_factorial(prior_beta, n - k)
-                / &denom;
-            (ex_usize(ctx, k), ctx.from_ratio(mass))
-        })
-        .collect();
-    Distribution::try_finite(ctx, table)
+    let mut mass =
+        rising_factorial(prior_beta, n) / rising_factorial(&(prior_alpha + prior_beta), n);
+    let mut table: Vec<(Ex, Ex)> = Vec::new();
+    for k in 0..n {
+        // One small factor per step, so the big mass is reduced once.
+        let ratio =
+            qu(n - k) * (prior_alpha + qu(k)) / ((qu(k) + Q::one()) * (prior_beta + qu(n - k - 1)));
+        let next = &mass * ratio;
+        table.push((
+            ex_usize(ctx, k),
+            ctx.from_ratio(std::mem::replace(&mut mass, next)),
+        ));
+    }
+    table.push((ex_usize(ctx, n), ctx.from_ratio(mass)));
+    Ok(Distribution::finite(ctx, table))
 }
 
-/// `a⁽ᵐ⁾ = a (a + 1) ⋯ (a + m − 1)`, the rising factorial (`1` for `m = 0`).
+/// `a⁽ᵐ⁾ = a (a + 1) ⋯ (a + m − 1)`, the rising factorial (`1` for `m = 0`):
+/// with `a = p/q`, `Π (p + i q) / qᵐ`, reduced once.
 fn rising_factorial(a: &Q, m: usize) -> Q {
-    (0..m).fold(Q::one(), |acc, i| acc * (a + qu(i)))
+    let (p, q) = (a.numer(), a.denom());
+    let numer = (0..m).fold(BigInt::one(), |acc, i| acc * (p + q * BigInt::from(i)));
+    Q::new(numer, num_traits::pow(q.clone(), m))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -897,9 +1004,14 @@ pub fn standard_error_mean(ctx: &Context, sigma: &Q, n: usize) -> Result<Ex, Sym
 }
 
 /// The `confidence` interval for the mean with unknown `σ`,
-/// `x̄ ± t_{(1+c)/2, n−1} · s/√n`, with the Student-t quantile found by
-/// Brent's method on the exact CDF expression (evaluated numerically).
-/// `scipy.stats.t.interval(c, n−1, loc=mean, scale=sem)`.
+/// `x̄ ± t_{(1+c)/2, n−1} · s/√n`, with the critical value solved on the
+/// upper tail, `P(T > t) = (1 − c)/2` ([`numdist::t`]'s `isf`,
+/// `scipy.stats.t.isf`).  `scipy.stats.t.interval(c, n−1, loc=mean,
+/// scale=sem)` agrees except near `c = 1`, where it takes the upper end
+/// from the quantile at the rounded level `1 − (1 − c)/2` (and so did 0.28
+/// for both ends: at `c = 1 − 10⁻¹²` the half-width below was `1.1·10⁻⁵`
+/// relatively too small, and `c = 1 − 2⁻⁵³` was an error).  A constant
+/// sample gives the degenerate interval `[x̄, x̄]`.
 ///
 /// ```
 /// use symplex::prelude::*;
@@ -925,7 +1037,7 @@ pub fn confidence_interval_mean(x: &[Q], confidence: f64) -> Result<Interval<f64
     let n = x.len();
     let mean = q_to_f64(&data::mean(x)?);
     let sem = q_to_f64(&(data::variance(x, Ddof::Sample)? / qu(n))).sqrt();
-    let t = t_two_sided(OP, (n - 1) as f64, confidence)?;
+    let t = numdist::t::isf((1.0 - confidence) / 2.0, (n - 1) as f64).map_err(renamed(OP))?;
     Ok(Interval::closed(mean - t * sem, mean + t * sem))
 }
 
@@ -1053,43 +1165,20 @@ pub enum IntervalMethod {
     AgrestiCoull,
     /// Wald / normal approximation (`'normal'`).
     Wald,
+    /// Jeffreys' equal-tailed Bayesian interval, the Beta quantiles of the
+    /// posterior under the `Beta(½, ½)` prior (`'jeffreys'`).
+    Jeffreys,
 }
 
-/// `P(X ≥ k)` (`upper`) or `P(X ≤ k)` for `X ~ Binomial(n, p)`, each
-/// summed directly from log-binomial coefficients (never as `1 −` the
-/// other tail, which would lose a small tail to cancellation).  At `p = 0`
-/// and `p = 1` the mass sits entirely on `0` or `n`.
-fn binomial_tail(n: usize, k: usize, p: f64, upper: bool) -> f64 {
-    let indicator = |c: bool| if c { 1.0 } else { 0.0 };
-    if p <= 0.0 {
-        return if upper { indicator(k == 0) } else { 1.0 };
-    }
-    if p >= 1.0 {
-        return if upper { 1.0 } else { indicator(k == n) };
-    }
-    let (lp, lq) = (p.ln(), (1.0 - p).ln());
-    let mut log_c = 0.0; // ln C(n, i), built up from i = 0
-    let mut tail = 0.0;
-    for i in 0..=n {
-        if i > 0 {
-            log_c += ((n - i + 1) as f64).ln() - (i as f64).ln();
+/// A [`numdist`] quantile's error renamed to the calling operation `op`.
+fn renamed(op: &'static str) -> impl Fn(SymplexError) -> SymplexError {
+    move |e| match e {
+        SymplexError::InvalidArgument { reason, .. } => invalid(op, reason),
+        SymplexError::ComputationFailed { reason, .. } => {
+            SymplexError::computation_failed(op, reason)
         }
-        if if upper { i >= k } else { i <= k } {
-            tail += (log_c + i as f64 * lp + (n - i) as f64 * lq).exp();
-        }
+        other => other,
     }
-    tail.min(1.0)
-}
-
-/// The `p ∈ [0, 1]` with `f(p) = 0` for a monotone `f` with a sign change
-/// over `[0, 1]`, by bisection to the last bits.
-fn bisect_unit(op: &'static str, f: impl Fn(f64) -> f64) -> Result<f64, SymplexError> {
-    let tight = RootOpts {
-        xtol: 0.0,
-        max_iter: 200,
-        ..RootOpts::default()
-    };
-    bisect(f, 0.0, 1.0, &tight).map_err(|e| SymplexError::computation_failed(op, e.to_string()))
 }
 
 fn check_trials(op: &'static str, successes: usize, trials: usize) -> Result<(), SymplexError> {
@@ -1115,17 +1204,38 @@ fn check_confidence_q(op: &'static str, confidence: &Q) -> Result<(), SymplexErr
 
 /// A two-sided confidence interval for the success probability behind
 /// `successes` out of `trials`, at level `confidence` (e.g. `0.95`).
-/// With `p̂ = k/n`, `α = 1 − confidence` and `z = Φ⁻¹(1 − α/2)`:
+/// With `p̂ = k/n`, `α = 1 − confidence` and `z = Φ⁻¹(1 − α/2)`, computed
+/// as the upper-tail quantile `Φ̄⁻¹(α/2)` (`scipy.stats.norm.isf`):
 ///
 /// * Wald: `p̂ ± z √(p̂(1−p̂)/n)`;
-/// * Wilson: `(p̂ + z²/2n ± z √(p̂(1−p̂)/n + z²/4n²)) / (1 + z²/n)`;
+/// * Wilson: `(p̂ + z²/2n ± z √(p̂(1−p̂)/n + z²/4n²)) / (1 + z²/n)`, the
+///   two roots of `(p̂ − p)² = z² p(1 − p)/n`; the upper one is formed
+///   as that sum and the lower one as `p̂² / ((1 + z²/n) · upper)` (the
+///   product of the roots), since the difference cancels — to rounding
+///   noise at `k = 0`, where the end is exactly `0`;
 /// * Agresti–Coull: Wald around `p̃ = (k + z²/2)/(n + z²)` with `ñ = n + z²`;
-/// * Clopper–Pearson (1934): the `p_L`, `p_U` with `P(Bin(n, p_L) ≥ k) = α/2`
-///   and `P(Bin(n, p_U) ≤ k) = α/2` — equivalently the Beta quantiles
-///   `Beta(k, n−k+1)⁻¹(α/2)` and `Beta(k+1, n−k)⁻¹(1−α/2)` — found by
-///   bisection on the binomial tail (`0` / `1` at `k = 0` / `k = n`).
+/// * Clopper–Pearson (*Biometrika* 26 (1934) 404–413): the `p_L`, `p_U`
+///   with `P(Bin(n, p_L) ≥ k) = α/2` and `P(Bin(n, p_U) ≤ k) = α/2`,
+///   which are the Beta quantiles
+///   `p_L = Beta(k, n−k+1)⁻¹(α/2)` and `p_U` with
+///   `P(Beta(k+1, n−k) > p_U) = α/2` (`0` / `1` at `k = 0` / `k = n`),
+///   through [`numdist::beta`]'s `ppf` and `isf` — statsmodels' `'beta'`
+///   formulas, `O(1)` in `n`;
+/// * Jeffreys (Brown, Cai & DasGupta, *Statist. Sci.* 16 (2001)
+///   101–133): the quantiles `Beta(k+½, n−k+½)⁻¹(α/2)` and the `x` with
+///   `P(Beta(k+½, n−k+½) > x) = α/2`, as statsmodels (no special case at
+///   `k = 0` or `k = n`, where Brown, Cai & DasGupta put the end at `0` or
+///   `1`).
 ///
-/// The first three are clipped to `[0, 1]`, as in statsmodels.
+/// Wald, Wilson and Agresti–Coull are clipped to `[0, 1]`, as in statsmodels.
+///
+/// 0.28 took `z` from the quantile at the rounded level `1 − α/2`
+/// (relative error up to `2⁻⁵⁴/(α/2)` in the tail: the Wilson lower end of
+/// `(5, 5)` at `1 − 10⁻¹⁵` was `0.071773` for `0.072013`, and
+/// `c = 1 − 2⁻⁵³` was an error), and Clopper–Pearson by bisection on a
+/// binomial sum over all `n + 1` terms per step (hours at `n = 10⁹`,
+/// relative error `10⁻¹²` at `n = 10⁵` from the accumulated
+/// `ln C(n, i)`).
 ///
 /// ```
 /// use symplex::stats::estimation::{IntervalMethod, proportion_interval};
@@ -1135,6 +1245,11 @@ fn check_confidence_q(op: &'static str, confidence: &Q) -> Result<(), SymplexErr
 /// let ci = proportion_interval(3, 10, 0.95, IntervalMethod::Wilson)?;
 /// assert!((ci.lower - 0.10779126740630104).abs() < 1e-12);
 /// assert!((ci.upper - 0.6032218525388546).abs() < 1e-12);
+/// // statsmodels: proportion_confint(3, 10, alpha=0.05, method='jeffreys')
+/// //   = (0.09269459393815319, 0.6058183181486713)
+/// let ci = proportion_interval(3, 10, 0.95, IntervalMethod::Jeffreys)?;
+/// assert!((ci.lower - 0.09269459393815319).abs() < 1e-15);
+/// assert!((ci.upper - 0.6058183181486713).abs() < 1e-15);
 /// # Ok::<(), symplex::prelude::SymplexError>(())
 /// ```
 ///
@@ -1151,49 +1266,56 @@ pub fn proportion_interval(
     const OP: &str = "proportion_interval";
     check_trials(OP, successes, trials)?;
     check_confidence(OP, confidence)?;
-    let alpha = 1.0 - confidence;
-    let (k, n) = (successes as f64, trials as f64);
+    // α/2: `1 − c` is exact for c ≥ ½ (Sterbenz), the halving always.
+    let tail = (1.0 - confidence) / 2.0;
+    // The failures `n − k`, as a double (`n − k + 1` overflows a usize).
+    let (k, fails, n) = (successes as f64, (trials - successes) as f64, trials as f64);
+    let beta_ppf = |a: f64, b: f64| numdist::beta::ppf(tail, a, b).map_err(renamed(OP));
+    let beta_isf = |a: f64, b: f64| numdist::beta::isf(tail, a, b).map_err(renamed(OP));
+    let z = || upper_quantile_f64(&standard_normal(), tail).map_err(renamed(OP));
+    let p = k / n;
     let unit = Interval::closed(0.0, 1.0);
     let clip = |ci: Interval<f64>| ci.map(|v| unit.clamp_to_closure(v));
-    if method == IntervalMethod::ClopperPearson {
-        let half = alpha / 2.0;
-        let lo = if successes == 0 {
-            0.0
-        } else {
-            // P(X ≥ k) grows with p, from 0 to 1.
-            bisect_unit(OP, |p| binomial_tail(trials, successes, p, true) - half)?
-        };
-        let hi = if successes == trials {
-            1.0
-        } else {
-            // P(X ≤ k) falls with p, from 1 to 0.
-            bisect_unit(OP, |p| binomial_tail(trials, successes, p, false) - half)?
-        };
-        return Ok(Interval::closed(lo, hi));
-    }
-    let z = standard_normal().quantile_f64(1.0 - alpha / 2.0)?;
-    let p = k / n;
-    Ok(clip(match method {
+    Ok(match method {
+        IntervalMethod::ClopperPearson => {
+            let lo = if successes == 0 {
+                0.0
+            } else {
+                beta_ppf(k, fails + 1.0)?
+            };
+            let hi = if successes == trials {
+                1.0
+            } else {
+                beta_isf(k + 1.0, fails)?
+            };
+            Interval::closed(lo, hi)
+        }
+        IntervalMethod::Jeffreys => {
+            let (a, b) = (k + 0.5, fails + 0.5);
+            Interval::closed(beta_ppf(a, b)?, beta_isf(a, b)?)
+        }
         IntervalMethod::Wald => {
-            let half = z * (p * (1.0 - p) / n).sqrt();
-            Interval::closed(p - half, p + half)
+            let half = z()? * (p * (1.0 - p) / n).sqrt();
+            clip(Interval::closed(p - half, p + half))
         }
         IntervalMethod::Wilson => {
+            let z = z()?;
             let z2 = z * z;
             let denom = 1.0 + z2 / n;
             let centre = (p + z2 / (2.0 * n)) / denom;
             let half = z * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt() / denom;
-            Interval::closed(centre - half, centre + half)
+            let upper = centre + half;
+            clip(Interval::closed(p * p / (denom * upper), upper))
         }
         IntervalMethod::AgrestiCoull => {
+            let z = z()?;
             let z2 = z * z;
             let n_t = n + z2;
             let p_t = (k + z2 / 2.0) / n_t;
             let half = z * (p_t * (1.0 - p_t) / n_t).sqrt();
-            Interval::closed(p_t - half, p_t + half)
+            clip(Interval::closed(p_t - half, p_t + half))
         }
-        IntervalMethod::ClopperPearson => Interval::closed(0.0, 1.0),
-    }))
+    })
 }
 
 /// The two-sided standard-normal quantile of a confidence level, exactly:
@@ -1240,7 +1362,10 @@ pub fn z_for_confidence(ctx: &Context, confidence: &Q) -> Result<Ex, SymplexErro
 /// has a negative lower end), and for a symbolic `z` whether it does is
 /// not decidable.  Clip the evaluated numbers yourself if statsmodels
 /// parity is wanted.  Clopper–Pearson has no closed form in `z`; its exact
-/// endpoints are in [`proportion_interval_exact`].
+/// endpoints are in [`proportion_interval_exact`].  Jeffreys has none
+/// either (its ends are Beta quantiles at half-integer shapes).  The lower
+/// Wilson end is the difference `(centre − half)` here — exact, so
+/// nothing cancels until it is evaluated.
 ///
 /// ```
 /// use symplex::prelude::*;
@@ -1267,7 +1392,7 @@ pub fn z_for_confidence(ctx: &Context, confidence: &Q) -> Result<Ex, SymplexErro
 /// # Errors
 ///
 /// [`SymplexError::InvalidArgument`] for `trials = 0`,
-/// `successes > trials` or `method = ClopperPearson`.
+/// `successes > trials` or `method` `ClopperPearson` or `Jeffreys`.
 pub fn proportion_interval_symbolic(
     ctx: &Context,
     successes: usize,
@@ -1303,6 +1428,12 @@ pub fn proportion_interval_symbolic(
             return Err(invalid(
                 OP,
                 "Clopper–Pearson has no closed form in z; use proportion_interval_exact",
+            ));
+        }
+        IntervalMethod::Jeffreys => {
+            return Err(invalid(
+                OP,
+                "the Jeffreys interval has no closed form in z; use proportion_interval",
             ));
         }
     })
@@ -1409,7 +1540,9 @@ fn binomial_tail_root(
 /// # Errors
 ///
 /// [`SymplexError::InvalidArgument`] for `trials = 0`,
-/// `successes > trials` or a confidence outside `(0, 1)`;
+/// `successes > trials`, a confidence outside `(0, 1)` or
+/// `method = Jeffreys` (its ends are Beta quantiles at half-integer
+/// shapes, which are not algebraic numbers);
 /// [`SymplexError::ComputationFailed`] if a Clopper–Pearson root cannot be
 /// named (see above).
 pub fn proportion_interval_exact(
@@ -1422,9 +1555,19 @@ pub fn proportion_interval_exact(
     const OP: &str = "proportion_interval_exact";
     check_trials(OP, successes, trials)?;
     check_confidence_q(OP, confidence)?;
-    if method != IntervalMethod::ClopperPearson {
-        let z = z_for_confidence(ctx, confidence)?;
-        return proportion_interval_symbolic(ctx, successes, trials, &z, method);
+    match method {
+        IntervalMethod::ClopperPearson => {}
+        IntervalMethod::Jeffreys => {
+            return Err(invalid(
+                OP,
+                "the Jeffreys ends are Beta quantiles at half-integer shapes, not algebraic \
+                 numbers; use proportion_interval",
+            ));
+        }
+        IntervalMethod::Wald | IntervalMethod::Wilson | IntervalMethod::AgrestiCoull => {
+            let z = z_for_confidence(ctx, confidence)?;
+            return proportion_interval_symbolic(ctx, successes, trials, &z, method);
+        }
     }
     let half_alpha = (Q::one() - confidence) / qu(2);
     let lower = if successes == 0 {

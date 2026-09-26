@@ -20,10 +20,15 @@
 //! * [`Ddof`] chooses the divisor of a variance: `Population` (`n`) or
 //!   `Sample` (`n − 1`, the unbiased estimator; `statistics.variance`,
 //!   `numpy.var(ddof=1)`).
-//! * [`QuantileMethod`] chooses the interpolation of a quantile:
-//!   `Exclusive` (`statistics.quantiles` default, `numpy` `weibull`) and
-//!   `Inclusive` (`statistics.quantiles(method='inclusive')`, `numpy`
-//!   `linear`, R type 7).
+//! * [`QuantileMethod`] chooses the interpolation of a quantile, two of
+//!   Hyndman & Fan's (1996) nine definitions: `Exclusive` (their
+//!   definition 6; `numpy.quantile(method='weibull')`) and `Inclusive`
+//!   (definition 7; `numpy` default `'linear'`,
+//!   `statistics.quantiles(method='inclusive')`).  Python's default
+//!   `statistics.quantiles` is definition 6 only between the extreme
+//!   levels `1/(n+1)` and `n/(n+1)`: beyond them it extrapolates
+//!   linearly, where definition 6 (and this module) stops at the sample
+//!   minimum and maximum.
 //! * Ties in ranks take the average rank (`scipy.stats.rankdata`).
 
 use num_bigint::BigInt;
@@ -69,14 +74,21 @@ impl Ddof {
     }
 }
 
-/// How a quantile between two order statistics is interpolated.
+/// How a quantile between two order statistics is interpolated: the
+/// order statistics `x₍₁₎ ≤ … ≤ x₍ₙ₎` joined linearly at a 1-based
+/// position `h` (Hyndman & Fan 1996).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum QuantileMethod {
-    /// Position `p·(n + 1)` (R type 6; `statistics.quantiles` default;
-    /// numpy `weibull`).  Extrapolates by clamping to the extremes.
+    /// `h = p·(n + 1)`, clamped to `[1, n]` (Hyndman & Fan's definition 6;
+    /// `numpy.quantile(method='weibull')`): a level below `1/(n + 1)` gives
+    /// the minimum and one above `n/(n + 1)` the maximum.
+    /// `statistics.quantiles` (default `method='exclusive'`) agrees between
+    /// those levels and extrapolates beyond them instead
+    /// (`statistics.quantiles([1, 2, 3], n=100)[0] = 1/25`, where this gives
+    /// `1`).
     Exclusive,
-    /// Position `1 + p·(n − 1)` (R type 7; `statistics.quantiles(method=
-    /// 'inclusive')`; numpy default `linear`).
+    /// `h = 1 + p·(n − 1)` (definition 7; numpy's default `'linear'`,
+    /// `statistics.quantiles(method='inclusive')`); always inside the data.
     Inclusive,
 }
 
@@ -202,7 +214,9 @@ pub fn median(data: &[Q]) -> Result<Q, SymplexError> {
 }
 
 /// The `p`-quantile (`0 ≤ p ≤ 1`) by linear interpolation between order
-/// statistics, exactly.  `statistics.quantiles` / `numpy.quantile`.
+/// statistics, exactly.  `numpy.quantile(data, p, method=…)` with
+/// `'weibull'` / `'linear'` (see [`QuantileMethod`] for
+/// `statistics.quantiles`).
 ///
 /// ```
 /// use symplex::stats::data::{quantile, QuantileMethod, Q};
@@ -247,7 +261,10 @@ pub fn quantile(data: &[Q], p: &Q, method: QuantileMethod) -> Result<Q, SymplexE
 }
 
 /// The `n − 1` cut points dividing the data into `n` equal-probability
-/// groups (`statistics.quantiles(data, n=n, method=…)`).
+/// groups: [`quantile`] at `1/n, …, (n−1)/n`.
+/// `statistics.quantiles(data, n=n, method=…)`, except that
+/// `Exclusive` clamps the cut points outside `[1/(len+1), len/(len+1)]` to
+/// the extremes where Python extrapolates (see [`QuantileMethod`]).
 pub fn quantiles(data: &[Q], n: usize, method: QuantileMethod) -> Result<Vec<Q>, SymplexError> {
     if n < 2 {
         return Err(invalid("quantiles", "quantiles need n ≥ 2 groups"));
@@ -380,45 +397,56 @@ pub fn spearman(ctx: &Context, x: &[Q], y: &[Q]) -> Result<Ex, SymplexError> {
     pearson(ctx, &ranks(x), &ranks(y))
 }
 
-/// Kendall's τ-b: `(concordant − discordant) / √((n₀ − n₁)(n₀ − n₂))` with
-/// the tie corrections `n₁`, `n₂`, as an exact expression.
-/// `scipy.stats.kendalltau` (default `variant='b'`).
+/// Kendall's τ-b: `(C − D) / √((n₀ − n₁)(n₀ − n₂))` with `C`, `D` the
+/// concordant and discordant pairs, `n₀ = n(n−1)/2` and the tie
+/// corrections `n₁`, `n₂` (the pairs tied on `x`, on `y`), as an exact
+/// expression.  `scipy.stats.kendalltau` (default `variant='b'`).  The
+/// pairs are counted by [`concordance_counts`] in `O(n log n)` and the
+/// denominator formed in big integers: 0.28 multiplied the two factors in
+/// `i64`, which overflows from `n ≈ 78 000` untied pairs on (a panic, or
+/// a wrapped denominator), after an `O(n²)` count.
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::stats::data::{from_i64, kendall_tau};
+///
+/// let ctx = Context::new();
+/// let x = from_i64(&[1, 2, 2, 3]);
+/// let y = from_i64(&[1, 1, 2, 3]);
+/// // C = 4, D = 0, n₀ − n₁ = n₀ − n₂ = 5; scipy: kendalltau(x, y).statistic = 0.8
+/// assert_eq!(kendall_tau(&ctx, &x, &y)?, ctx.rational(4, 5));
+/// # Ok::<(), SymplexError>(())
+/// ```
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] for unequal lengths, fewer than two
+/// pairs, or a constant sample.
 pub fn kendall_tau(ctx: &Context, x: &[Q], y: &[Q]) -> Result<Ex, SymplexError> {
     const OP: &str = "kendall_tau";
     if x.len() != y.len() {
         return Err(invalid(OP, "Kendall's τ of samples of different sizes"));
     }
-    let n = x.len();
-    if n < 2 {
+    if x.len() < 2 {
         return Err(invalid(OP, "Kendall's τ needs at least two pairs"));
     }
-    let (mut conc, mut disc) = (0i64, 0i64);
-    for i in 0..n {
-        for j in i + 1..n {
-            let sx = x[i].cmp(&x[j]);
-            let sy = y[i].cmp(&y[j]);
-            if sx == std::cmp::Ordering::Equal || sy == std::cmp::Ordering::Equal {
-                continue;
-            }
-            if sx == sy {
-                conc += 1;
-            } else {
-                disc += 1;
-            }
-        }
-    }
-    let pairs = |t: &[usize]| -> i64 { t.iter().map(|&k| (k * (k - 1) / 2) as i64).sum() };
-    let n0 = (n * (n - 1) / 2) as i64;
-    let n1 = pairs(&tie_sizes(x));
-    let n2 = pairs(&tie_sizes(y));
-    let denom = (n0 - n1) * (n0 - n2);
-    if denom <= 0 {
+    let c = count_pairs(x, y);
+    let untied = BigInt::from(c.concordant) + BigInt::from(c.discordant);
+    // n₀ − n₁ (pairs not tied on x) and n₀ − n₂ (not tied on y).
+    let not_tied_x = &untied + BigInt::from(c.ties_y);
+    let not_tied_y = &untied + BigInt::from(c.ties_x);
+    if not_tied_x.is_zero() || not_tied_y.is_zero() {
         return Err(invalid(
             OP,
             "Kendall's τ with a constant sample is undefined",
         ));
     }
-    Ok((ctx.int(conc - disc) / ctx.int(denom).sqrt()).simplify())
+    let diff = BigInt::from(c.concordant) - BigInt::from(c.discordant);
+    if not_tied_x == not_tied_y {
+        return Ok(ctx.from_ratio(Q::new(diff, not_tied_x)));
+    }
+    let denom = ctx.from_bigint(not_tied_x * not_tied_y).sqrt();
+    Ok((ctx.from_bigint(diff) / denom).simplify())
 }
 
 /// The sample skewness `m₃ / m₂^{3/2}` with population moments (biased;
@@ -667,31 +695,102 @@ pub fn concordance_counts(x: &[Q], y: &[Q]) -> Result<ConcordanceCounts, Symplex
             ),
         ));
     }
-    let n = x.len();
-    if n < 2 {
+    if x.len() < 2 {
         return Err(invalid(OP, "needs at least two observations"));
     }
-    let mut c = ConcordanceCounts {
-        concordant: 0,
-        discordant: 0,
-        ties_x: 0,
-        ties_y: 0,
-        ties_both: 0,
-    };
-    for i in 0..n {
-        for j in i + 1..n {
-            let sx = x[i].cmp(&x[j]);
-            let sy = y[i].cmp(&y[j]);
-            match (sx, sy) {
-                (std::cmp::Ordering::Equal, std::cmp::Ordering::Equal) => c.ties_both += 1,
-                (std::cmp::Ordering::Equal, _) => c.ties_x += 1,
-                (_, std::cmp::Ordering::Equal) => c.ties_y += 1,
-                _ if sx == sy => c.concordant += 1,
-                _ => c.discordant += 1,
-            }
+    Ok(count_pairs(x, y))
+}
+
+/// `t(t − 1)/2`, the pairs within a group of `t`, halving the even factor
+/// first so that nothing larger than the result is formed.
+fn pairs_within(t: usize) -> usize {
+    if t.is_multiple_of(2) {
+        (t / 2) * t.saturating_sub(1)
+    } else {
+        t * ((t - 1) / 2)
+    }
+}
+
+/// The sum of [`pairs_within`] over the runs of equal keys of an
+/// iterator sorted by that key.
+fn tied_pairs<T: PartialEq>(sorted: impl Iterator<Item = T>) -> usize {
+    let mut total = 0;
+    let mut run = 0;
+    let mut prev: Option<T> = None;
+    for key in sorted {
+        if prev.as_ref() == Some(&key) {
+            run += 1;
+        } else {
+            total += pairs_within(run);
+            run = 1;
+            prev = Some(key);
         }
     }
-    Ok(c)
+    total + pairs_within(run)
+}
+
+/// The strict inversions of `v` (pairs `i < j` with `vᵢ > vⱼ`; equal
+/// values are not inverted) by a bottom-up merge sort, which leaves `v`
+/// sorted.
+fn sort_counting_inversions(v: &mut Vec<&Q>) -> usize {
+    let n = v.len();
+    let mut out: Vec<&Q> = Vec::with_capacity(n);
+    let mut inversions = 0;
+    let mut width = 1;
+    while width < n {
+        out.clear();
+        let mut start = 0;
+        while start < n {
+            let mid = n.min(start + width);
+            let end = n.min(mid + width);
+            let (mut i, mut j) = (start, mid);
+            while i < mid && j < end {
+                if v[j] < v[i] {
+                    // v[j] precedes every remaining v[i..mid].
+                    inversions += mid - i;
+                    out.push(v[j]);
+                    j += 1;
+                } else {
+                    out.push(v[i]);
+                    i += 1;
+                }
+            }
+            out.extend_from_slice(&v[i..mid]);
+            out.extend_from_slice(&v[j..end]);
+            start = end;
+        }
+        std::mem::swap(v, &mut out);
+        width *= 2;
+    }
+    inversions
+}
+
+/// [`concordance_counts`] of two validated samples in `O(n log n)`, by
+/// Knight's algorithm (W. R. Knight, "A computer method for calculating
+/// Kendall's tau with ungrouped data", *JASA* 61 (1966) 436–439), the
+/// method of `scipy.stats.kendalltau`: sort the pairs by `(x, y)`; the
+/// runs of equal `x` give the pairs tied on `x` (`n₁`) and the runs of
+/// equal `(x, y)` those tied on both (`n₃`); in that order a pair not tied
+/// on `x` is discordant exactly when its `y`s are inverted, so a merge
+/// sort of the `y`s counts `D`; the sorted `y`s give the pairs tied on
+/// `y` (`n₂`).  Then `T_xy = n₃`, `T_x = n₁ − n₃`, `T_y = n₂ − n₃` and
+/// `C = n₀ − n₁ − n₂ + n₃ − D`.
+fn count_pairs(x: &[Q], y: &[Q]) -> ConcordanceCounts {
+    let mut order: Vec<usize> = (0..x.len()).collect();
+    order.sort_by(|&a, &b| x[a].cmp(&x[b]).then_with(|| y[a].cmp(&y[b])));
+    let tied_x = tied_pairs(order.iter().map(|&i| &x[i]));
+    let tied_both = tied_pairs(order.iter().map(|&i| (&x[i], &y[i])));
+    let mut ys: Vec<&Q> = order.iter().map(|&i| &y[i]).collect();
+    let discordant = sort_counting_inversions(&mut ys);
+    let tied_y = tied_pairs(ys.into_iter());
+    let (ties_x, ties_y) = (tied_x - tied_both, tied_y - tied_both);
+    ConcordanceCounts {
+        concordant: pairs_within(x.len()) - ties_x - tied_y - discordant,
+        discordant,
+        ties_x,
+        ties_y,
+        ties_both: tied_both,
+    }
 }
 
 /// Goodman and Kruskal's γ (1954): `(C − D) / (C + D)`, the ordinal
@@ -770,9 +869,9 @@ pub fn somers_d(x: &[Q], y: &[Q], dependent: Dependent) -> Result<Q, SymplexErro
     let diff = qu(c.concordant) - qu(c.discordant);
     let untied = c.concordant + c.discordant;
     let denom = match dependent {
-        Dependent::Y => qu(untied + c.ties_y),
-        Dependent::X => qu(untied + c.ties_x),
-        Dependent::Symmetric => qu(2 * untied + c.ties_x + c.ties_y) / qi(2),
+        Dependent::Y => qu(untied) + qu(c.ties_y),
+        Dependent::X => qu(untied) + qu(c.ties_x),
+        Dependent::Symmetric => qu(untied) + (qu(c.ties_x) + qu(c.ties_y)) / qi(2),
     };
     if denom.is_zero() {
         return Err(invalid(
@@ -811,7 +910,7 @@ pub fn kendall_tau_c(x: &[Q], y: &[Q]) -> Result<Q, SymplexError> {
             "a constant variable has no rank correlation",
         ));
     }
-    let n = x.len();
+    let n = qu(x.len());
     let diff = qu(c.concordant) - qu(c.discordant);
-    Ok(qu(2 * m) * diff / (qu(n * n) * qu(m - 1)))
+    Ok(qi(2) * qu(m) * diff / (&n * &n * qu(m - 1)))
 }

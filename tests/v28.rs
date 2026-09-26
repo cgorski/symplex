@@ -14,6 +14,10 @@ mod v28_audit_2a;
 mod v28_audit_2b;
 #[path = "v28/v28_audit_3a.rs"]
 mod v28_audit_3a;
+#[path = "v28/v28_audit_3b1.rs"]
+mod v28_audit_3b1;
+#[path = "v28/v28_audit_3b2.rs"]
+mod v28_audit_3b2;
 #[path = "v28/v28_binders.rs"]
 mod v28_binders;
 #[path = "v28/v28_evalf.rs"]

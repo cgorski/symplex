@@ -42,10 +42,11 @@
 //! * [`conditional_entropy`] with [`Given::Row`] is `H(column | row)`:
 //!   the entropy left in the column variable once the row is known.
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use num_bigint::BigInt;
-use num_traits::{One, Signed, ToPrimitive, Zero};
+use num_traits::{One, Signed, Zero};
 
 use crate::api::context::Context;
 use crate::api::expr::Ex;
@@ -54,7 +55,7 @@ use crate::domains::ntheory::factorint_bounded;
 
 use super::common::invalid;
 use super::data::Q;
-use super::family::Distribution;
+use super::family::{Distribution, sign_of};
 
 /// The unit of an entropy: natural logarithms (nats, `scipy` default) or
 /// base-2 logarithms (bits, shannons).
@@ -190,13 +191,21 @@ impl LogSum {
             Base::Bits => self.to_bits(ctx),
         }
     }
+}
 
-    /// The value as a float (for comparisons only).
-    fn to_f64(&self) -> f64 {
-        self.nonzero()
-            .map(|(b, c)| c.to_f64().unwrap_or(f64::NAN) * b.to_f64().unwrap_or(f64::NAN).ln())
-            .sum()
-    }
+/// `a ≤ b` for two constant log-sums: exactly when they coincide, else by
+/// the sign of the exact difference `a − b` as [`sign_of`] decides it
+/// (`evalf` to the precision the cancellation needs).  A difference that
+/// evaluates to `0` without being known to be `0` counts as equal: either
+/// side is then the same number to that precision.
+///
+/// 0.28 compared `Σ c_q ln q` summed in `f64`, whose terms cancel: the
+/// entropy `7.0·10⁻²⁹` of `(1 − 10⁻³⁰, 10⁻³⁰)` is a sum of terms near
+/// `±69`, so the comparison read rounding noise, and a prime cofactor
+/// beyond `f64::MAX` made a term infinite.
+fn log_sum_le(ctx: &Context, a: &LogSum, b: &LogSum) -> bool {
+    let diff = a.clone().plus(&b.clone().negated());
+    diff.is_zero() || sign_of(&diff.to_nats(ctx)) != Some(Ordering::Greater)
 }
 
 /// `num / den` for two log-sums: the exact rational `c_n / c_d` when both
@@ -399,8 +408,14 @@ pub fn probability_vector(dist: &Distribution) -> Result<Vec<Q>, SymplexError> {
     let values: Vec<Ex> = if let Some(points) = support.as_points() {
         points
     } else if let Some(iv) = support.as_interval() {
+        // `hi − lo` checked: a support spanning more than `i64::MAX` (0.28
+        // subtracted and overflowed, a panic) is not a finite table either.
         match (iv.lower.eval().as_i64(), iv.upper.eval().as_i64()) {
-            (Some(lo), Some(hi)) if lo <= hi && hi - lo < 1_000_000 => {
+            (Some(lo), Some(hi))
+                if hi
+                    .checked_sub(lo)
+                    .is_some_and(|span| (0..1_000_000).contains(&span)) =>
+            {
                 let ctx = dist.context();
                 (lo..=hi).map(|v| ctx.int(v)).collect()
             }
@@ -560,7 +575,20 @@ pub fn hellinger(ctx: &Context, p: &[Q], q: &[Q]) -> Result<Ex, SymplexError> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// A joint probability table from a contingency table of counts:
-/// `pᵢⱼ = nᵢⱼ / Σ n`.
+/// `pᵢⱼ = nᵢⱼ / Σ n`, the total summed exactly (0.28 summed in `usize`,
+/// which panicked — or, unchecked, wrapped to an "all zeros" error — once
+/// the counts passed `usize::MAX`).
+///
+/// ```
+/// use symplex::linprog::q;
+/// use symplex::stats::information::joint_from_counts;
+///
+/// let j = joint_from_counts(&[vec![usize::MAX, 1]])?;
+/// // Fraction(2**64 - 1, 2**64), Fraction(1, 2**64)
+/// assert_eq!(j[0][1], "1/18446744073709551616".parse().unwrap());
+/// assert_eq!(&j[0][0] + &j[0][1], q(1, 1));
+/// # Ok::<(), symplex::prelude::SymplexError>(())
+/// ```
 ///
 /// # Errors
 ///
@@ -578,11 +606,14 @@ pub fn joint_from_counts(counts: &[Vec<usize>]) -> Result<Vec<Vec<Q>>, SymplexEr
             format!("count row {i} has {} entries, expected {c}", row.len()),
         ));
     }
-    let total: usize = counts.iter().flatten().sum();
-    if total == 0 {
+    let total = counts
+        .iter()
+        .flatten()
+        .fold(BigInt::zero(), |acc, &n| acc + BigInt::from(n));
+    if total.is_zero() {
         return Err(invalid(OP, "the count table is all zeros"));
     }
-    let total = Q::from_integer(total.into());
+    let total = Q::from_integer(total);
     Ok(counts
         .iter()
         .map(|row| {
@@ -764,16 +795,15 @@ pub fn normalized_mutual_information(
     Ok(match norm {
         Norm::Arithmetic => ratio_of(ctx, &i, &hx.clone().plus(&hy).scaled(&half)),
         Norm::Geometric => geometric_ratio(ctx, &i, &hx, &hy),
-        // Both entropies are constants: the comparison is numeric.
         Norm::Min => {
-            if hx.to_f64() <= hy.to_f64() {
+            if log_sum_le(ctx, &hx, &hy) {
                 ratio_of(ctx, &i, &hx)
             } else {
                 ratio_of(ctx, &i, &hy)
             }
         }
         Norm::Max => {
-            if hx.to_f64() >= hy.to_f64() {
+            if log_sum_le(ctx, &hy, &hx) {
                 ratio_of(ctx, &i, &hx)
             } else {
                 ratio_of(ctx, &i, &hy)

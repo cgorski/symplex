@@ -74,6 +74,67 @@ fn gamma_and_chi2_isf_of_a_tiny_shape_meet_their_level() {
     assert!(((back - 7.2e-37) / 7.2e-37).abs() < 1e-13, "{back:e}");
 }
 
+/// Before: the two-sided t critical value inverted the rounded level
+/// `1 − (1 − c)/2`: the OLS intercept interval of a six-point line at
+/// `c = 1 − 10⁻¹²` was `(−1414.34074, 1415.14074)`, and `c = 1 − 2⁻⁵³`
+/// was refused (the level rounded to 1).  It is now the upper quantile of
+/// `(1 − c)/2`, the small tail itself.
+#[test]
+fn ols_conf_int_takes_its_t_value_from_the_small_tail() {
+    use num_bigint::BigInt;
+    use num_rational::Ratio;
+    use symplex::stats::regression::ols;
+    let q = |v: i64| Ratio::from_integer(BigInt::from(v));
+    let y: Vec<_> = [1, 3, 2, 5, 4, 6].iter().map(|&v| q(v)).collect();
+    let x: Vec<Vec<_>> = (1..=6).map(|i| vec![q(i)]).collect();
+    let fit = ols(&y, &x, true).unwrap();
+    // Intercept 2/5, variance 143/175, 4 residual df.  mpmath (dps 50):
+    //   sf = lambda t: betainc(2, mpf(1)/2, 0, 4/(4 + t*t), regularized=True)/2
+    //   t = findroot(lambda t: log(sf(t)) - log(mpf(lvl)), 1e3), lvl the double
+    //   (1 - c)/2; 2/5 ∓ t*sqrt(mpf(143)/175)
+    //   c = 1 - 1e-12:   -1414.3800050707637, 1415.1800050707637
+    //   c = 1 - 2**-53:  -13782.298197376739, 13783.098197376739
+    let c = fit.conf_int(1.0 - 1e-12).unwrap();
+    assert_rel(c[0].lower, -1_414.380_005_070_763_7, 1e-14, "lower");
+    assert_rel(c[0].upper, 1_415.180_005_070_763_6, 1e-14, "upper");
+    let c = fit.conf_int(1.0 - f64::EPSILON / 2.0).unwrap();
+    assert_rel(c[0].lower, -13_782.298_197_376_738, 1e-14, "lower, 2^-53");
+    assert_rel(c[0].upper, 13_783.098_197_376_74, 1e-14, "upper, 2^-53");
+}
+
+/// Before: `kendall_test` compared every pair (2·10⁸ exact comparisons at
+/// `n = 20 000`) and formed its tie sums `t(t−1)(2t+5)` in `usize`, which
+/// overflows for a tie group of two million.  It now takes the counts from
+/// `data::concordance_counts` (Knight's O(n log n)) and the sums exactly.
+#[test]
+fn kendall_test_scales_to_large_samples() {
+    use symplex::stats::hypothesis::{Alternative, kendall_test};
+    let ctx = Context::new();
+    let n = 20_000_i64;
+    let x: Vec<i64> = (0..n).map(|i| (i * 7919) % 1000).collect();
+    let y: Vec<i64> = (0..n)
+        .map(|i| (i * 104_729 + 3 * x[i as usize]) % 997)
+        .collect();
+    let xs = symplex::stats::data::from_i64(&x);
+    let ys = symplex::stats::data::from_i64(&y);
+    let r = kendall_test(&ctx, &xs, &ys, Alternative::TwoSided, false).unwrap();
+    // scipy: n = 20000; x = [(i*7919) % 1000 for i in range(n)];
+    //   y = [(i*104729 + 3*x[i]) % 997 for i in range(n)]; kendalltau(x, y)
+    //   = (-6.19621796673e-05, pvalue 0.9895236820113492)
+    assert_rel(
+        r.statistic.eval_f64().unwrap(),
+        -6.196_217_966_73e-5,
+        1e-11,
+        "tau",
+    );
+    assert_rel(
+        r.p_value_f64().unwrap(),
+        0.989_523_682_011_349_2,
+        1e-13,
+        "p",
+    );
+}
+
 /// `|x/reference − 1| ≤ tol`.
 fn assert_rel(x: f64, reference: f64, tol: f64, what: &str) {
     assert!(

@@ -1793,10 +1793,16 @@ impl Distribution {
     /// [`SymplexError::NotImplemented`] if the family has no route;
     /// [`SymplexError::Unevaluable`] if a parameter is symbolic;
     /// [`SymplexError::InvalidArgument`] if a numeric parameter is outside
-    /// the family's domain (an unchecked constructor accepted it).
+    /// the family's domain (an unchecked constructor accepted it), or if `n`
+    /// samples cannot be allocated.
     pub fn sample(&self, n: usize, rng: &mut Rng) -> Result<Vec<f64>, SymplexError> {
         let mut sampler = self.sampler()?;
-        Ok((0..n).map(|_| sampler(rng)).collect())
+        let mut out = Vec::new();
+        out.try_reserve_exact(n).map_err(|_| {
+            SymplexError::invalid_argument("sample", format!("cannot allocate {n} samples"))
+        })?;
+        out.extend((0..n).map(|_| sampler(rng)));
+        Ok(out)
     }
 
     /// One sample; see [`sample`](Self::sample).

@@ -267,7 +267,41 @@ impl std::fmt::Display for DenseError {
 /// (Golub & Van Loan, *Matrix Computations*, Algorithm 8.5.1): each sweep
 /// visits every pair `p < q` and rotates it to zero `a_pq`; the tolerance
 /// is tested before each sweep.
+///
+/// Under a [`EigenTol::RelativeFrobenius`] tolerance a matrix whose largest
+/// entry lies outside `[2⁻⁴⁵⁰, 2⁴⁵⁰]` is first scaled by a power of two
+/// (exact) to largest entry near 1, and the eigenvalues scaled back, as
+/// LAPACK's `dsyev` scales its input: the test forms sums of squares,
+/// which underflow to 0 (or overflow to ∞) beyond about `10±¹⁵⁴`, and
+/// 0.28 then declared an unrotated matrix converged — `[[2, 1], [1, 2]]·10⁻¹⁷⁰`
+/// had "eigenvalues" `2·10⁻¹⁷⁰, 2·10⁻¹⁷⁰` for `3·10⁻¹⁷⁰, 10⁻¹⁷⁰`.  An
+/// [`EigenTol::Absolute`] tolerance is the caller's own scale and is used
+/// as given.
 pub(crate) fn sym_eigen(a: &[f64], n: usize, opts: &EigenOpts) -> Result<SymEigen, DenseError> {
+    const SAFE: i32 = 450;
+    let amax = a.iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+    // 2^e ≤ amax < 2^(e+1), subnormals included (|e| ≤ 1075).
+    let e = if amax.is_finite() && amax > 0.0 {
+        amax.log2().floor() as i32
+    } else {
+        0
+    };
+    if !matches!(opts.tol, EigenTol::RelativeFrobenius(_)) || (-SAFE..=SAFE).contains(&e) {
+        return sym_eigen_unscaled(a, n, opts);
+    }
+    // Two factors, so that neither 2^±e alone under- or overflows.
+    let (h1, h2) = (e / 2, e - e / 2);
+    let down = |v: f64| v * 2f64.powi(-h1) * 2f64.powi(-h2);
+    let scaled: Vec<f64> = a.iter().map(|&v| down(v)).collect();
+    let mut r = sym_eigen_unscaled(&scaled, n, opts)?;
+    for v in &mut r.values {
+        *v = *v * 2f64.powi(h1) * 2f64.powi(h2);
+    }
+    Ok(r)
+}
+
+/// [`sym_eigen`] on the matrix as given.
+fn sym_eigen_unscaled(a: &[f64], n: usize, opts: &EigenOpts) -> Result<SymEigen, DenseError> {
     let mut m = a.to_vec();
     let mut v = vec![0.0; n * n];
     for i in 0..n {
@@ -626,6 +660,20 @@ mod tests {
             &values,
             &[1.3770948783558645, 2.6824555614434478, 4.940449560200685],
         );
+    }
+
+    /// Before: the relative test's sums of squares underflowed (overflowed)
+    /// at `10∓¹⁷⁰`, and the unrotated diagonal came back as the eigenvalues.
+    #[test]
+    fn jacobi_eigen_at_extreme_scales() {
+        for scale in [1e-170, 1e-300, 1e170, 1e300] {
+            let a = [2.0 * scale, scale, scale, 2.0 * scale];
+            let mut values = sym_eigen(&a, 2, &EIGEN_STRICT).unwrap().values;
+            values.sort_by(f64::total_cmp);
+            // Exactly 1 and 3 times the scale (numpy.linalg.eigh agrees).
+            assert!((values[0] / scale - 1.0).abs() < 1e-14, "{values:?}");
+            assert!((values[1] / scale - 3.0).abs() < 1e-14, "{values:?}");
+        }
     }
 
     #[test]

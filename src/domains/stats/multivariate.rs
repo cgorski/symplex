@@ -58,6 +58,18 @@ fn failed(op: &'static str, reason: impl Into<String>) -> SymplexError {
     SymplexError::computation_failed(op, reason)
 }
 
+/// What [`MultivariateNormal::check_parameters`] does with a singular
+/// positive-semidefinite covariance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Singular {
+    /// Refuse it (`try_new`: the distribution has no density).
+    Refuse,
+    /// Let it through for the caller's inverse, determinant or Cholesky
+    /// factor to report (`ComputationFailed`), or to give the limit (the
+    /// entropy `−∞`).
+    Defer,
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // MultivariateNormal
 // ═══════════════════════════════════════════════════════════════════════════
@@ -101,16 +113,42 @@ impl MultivariateNormal {
     /// ```
     pub fn try_new(mean: Vec<Ex>, cov: Matrix) -> Result<Self, SymplexError> {
         const OP: &str = "MultivariateNormal::try_new";
-        let k = mean.len();
+        let mvn = MultivariateNormal { mean, cov };
+        mvn.check_parameters(OP, Singular::Refuse)?;
+        Ok(mvn)
+    }
+
+    /// `N_k(μ, Σ)` without validation (see [`try_new`](Self::try_new)).
+    /// The accessors that need a valid covariance —
+    /// [`precision`](Self::precision), [`mahalanobis`](Self::mahalanobis),
+    /// [`density`](Self::density), [`entropy`](Self::entropy),
+    /// [`sample`](Self::sample) — run `try_new`'s checks themselves and
+    /// refuse an asymmetric or indefinite `Σ` with
+    /// [`SymplexError::InvalidArgument`], rather than return, say, the
+    /// imaginary "density" `exp(1/6)/√(−12π²)` of `Σ = [[1, 2], [2, 1]]`;
+    /// a singular positive-semidefinite `Σ` (a degenerate [`affine`](Self::affine)
+    /// image) fails them with [`SymplexError::ComputationFailed`] as before.
+    pub fn new(mean: Vec<Ex>, cov: Matrix) -> Self {
+        MultivariateNormal { mean, cov }
+    }
+
+    /// [`try_new`](Self::try_new)'s checks on the current parameters: a
+    /// `k × k` covariance (`k ≥ 1`), not provably asymmetric, and positive
+    /// definite — exactly (`L·D·Lᵀ`) when rational, by Sylvester's criterion
+    /// otherwise (an undecidable sign is the caller's promise).  With
+    /// [`Singular::Defer`] a singular `Σ` that is not provably indefinite
+    /// passes, for the caller's inverse or factorisation to report.
+    fn check_parameters(&self, op: &'static str, singular: Singular) -> Result<(), SymplexError> {
+        let (k, cov) = (self.dim(), &self.cov);
         if k == 0 {
             return Err(invalid(
-                OP,
+                op,
                 "the mean vector must have at least one coordinate",
             ));
         }
         if cov.shape() != (k, k) {
             return Err(invalid(
-                OP,
+                op,
                 format!(
                     "the covariance must be {k}×{k} for a mean of length {k}, got {}×{}",
                     cov.nrows(),
@@ -119,33 +157,32 @@ impl MultivariateNormal {
             ));
         }
         if cov.is_symmetric() == Some(false) {
-            return Err(invalid(OP, "the covariance matrix must be symmetric"));
+            return Err(invalid(op, "the covariance matrix must be symmetric"));
         }
-        match QMatrix::try_from(&cov) {
+        let defer = singular == Singular::Defer;
+        match QMatrix::try_from(cov) {
             Ok(q) => match q.ldl_psd() {
-                Some((_, d)) if d.iter().all(|v| v.is_positive()) => {}
-                _ => {
-                    return Err(invalid(
-                        OP,
-                        "the covariance matrix must be positive definite (exact L·D·Lᵀ test failed)",
-                    ));
-                }
+                Some((_, d)) if defer || d.iter().all(|v| v.is_positive()) => Ok(()),
+                _ => Err(invalid(
+                    op,
+                    "the covariance matrix must be positive definite (exact L·D·Lᵀ test failed)",
+                )),
             },
             Err(_) => {
-                if cov.is_positive_definite() == Some(false) {
+                if cov.is_positive_definite() == Some(false)
+                    && !(defer
+                        && cov
+                            .det()
+                            .is_ok_and(|d| d.simplify().is_zero() == Some(true)))
+                {
                     return Err(invalid(
-                        OP,
+                        op,
                         "the covariance matrix must be positive definite (a leading minor is not positive)",
                     ));
                 }
+                Ok(())
             }
         }
-        Ok(MultivariateNormal { mean, cov })
-    }
-
-    /// `N_k(μ, Σ)` without validation (see [`try_new`](Self::try_new)).
-    pub fn new(mean: Vec<Ex>, cov: Matrix) -> Self {
-        MultivariateNormal { mean, cov }
     }
 
     /// The dimension `k`.
@@ -176,19 +213,25 @@ impl MultivariateNormal {
     ///
     /// # Errors
     ///
-    /// [`SymplexError::ComputationFailed`] if `Σ` is singular.
+    /// [`SymplexError::InvalidArgument`] if the parameters fail
+    /// [`try_new`](Self::try_new)'s checks (an unchecked
+    /// [`new`](Self::new) accepted them); [`SymplexError::ComputationFailed`]
+    /// if `Σ` is singular.
     pub fn precision(&self) -> Result<Matrix, SymplexError> {
-        self.cov.inv().map_err(|e| {
-            failed(
-                "MultivariateNormal::precision",
-                format!("the covariance matrix is not invertible: {e}"),
-            )
-        })
+        self.precision_for("MultivariateNormal::precision")
+    }
+
+    /// [`precision`](Self::precision) with errors naming `op`.
+    fn precision_for(&self, op: &'static str) -> Result<Matrix, SymplexError> {
+        self.check_parameters(op, Singular::Defer)?;
+        self.cov
+            .inv()
+            .map_err(|e| failed(op, format!("the covariance matrix is not invertible: {e}")))
     }
 
     /// The quadratic form `(x−μ)ᵀ Σ⁻¹ (x−μ)`, simplified.
-    fn quadratic_form(&self, x: &[Ex]) -> Result<Ex, SymplexError> {
-        let prec = self.precision()?;
+    fn quadratic_form(&self, op: &'static str, x: &[Ex]) -> Result<Ex, SymplexError> {
+        let prec = self.precision_for(op)?;
         let d: Vec<Ex> = x.iter().zip(&self.mean).map(|(xi, mi)| xi - mi).collect();
         let mut acc = self.context().zero();
         for (i, di) in d.iter().enumerate() {
@@ -203,11 +246,13 @@ impl MultivariateNormal {
     ///
     /// # Errors
     ///
-    /// [`SymplexError::InvalidArgument`] if `x` has the wrong length;
+    /// [`SymplexError::InvalidArgument`] if `x` has the wrong length or the
+    /// parameters fail [`try_new`](Self::try_new)'s checks;
     /// [`SymplexError::ComputationFailed`] if `Σ` is singular.
     pub fn mahalanobis_squared(&self, x: &[Ex]) -> Result<Ex, SymplexError> {
-        self.check_point("MultivariateNormal::mahalanobis_squared", x)?;
-        self.quadratic_form(x)
+        const OP: &str = "MultivariateNormal::mahalanobis_squared";
+        self.check_point(OP, x)?;
+        self.quadratic_form(OP, x)
     }
 
     /// The Mahalanobis distance `√((x−μ)ᵀ Σ⁻¹ (x−μ))` of a point.
@@ -249,13 +294,15 @@ impl MultivariateNormal {
     ///
     /// # Errors
     ///
-    /// [`SymplexError::InvalidArgument`] if `x` has the wrong length;
+    /// [`SymplexError::InvalidArgument`] if `x` has the wrong length or the
+    /// parameters fail [`try_new`](Self::try_new)'s checks (an unchecked
+    /// [`new`](Self::new) accepted an indefinite or asymmetric `Σ`);
     /// [`SymplexError::ComputationFailed`] if `Σ` is singular.
     pub fn density(&self, x: &[Ex]) -> Result<Ex, SymplexError> {
         const OP: &str = "MultivariateNormal::density";
         self.check_point(OP, x)?;
         let ctx = self.context();
-        let quad = self.quadratic_form(x)?;
+        let quad = self.quadratic_form(OP, x)?;
         let det = self
             .cov
             .det()
@@ -270,10 +317,12 @@ impl MultivariateNormal {
     ///
     /// # Errors
     ///
-    /// [`SymplexError::ComputationFailed`] if the determinant cannot be
-    /// computed.
+    /// [`SymplexError::InvalidArgument`] if the parameters fail
+    /// [`try_new`](Self::try_new)'s checks; [`SymplexError::ComputationFailed`]
+    /// if the determinant cannot be computed.
     pub fn entropy(&self) -> Result<Ex, SymplexError> {
         const OP: &str = "MultivariateNormal::entropy";
+        self.check_parameters(OP, Singular::Defer)?;
         let ctx = self.context();
         let det = self
             .cov
@@ -454,10 +503,15 @@ impl MultivariateNormal {
     ///
     /// # Errors
     ///
+    /// [`SymplexError::InvalidArgument`] if the parameters fail
+    /// [`try_new`](Self::try_new)'s checks, or `n` rows cannot be stored
+    /// (more memory than the allocator grants);
     /// [`SymplexError::Unevaluable`] if a parameter is symbolic;
     /// [`SymplexError::ComputationFailed`] if `Σ` is not numerically
     /// positive definite.
     pub fn sample(&self, n: usize, rng: &mut Rng) -> Result<Vec<Vec<f64>>, SymplexError> {
+        const OP: &str = "MultivariateNormal::sample";
+        self.check_parameters(OP, Singular::Defer)?;
         let k = self.dim();
         let mean: Vec<f64> = self
             .mean
@@ -465,15 +519,13 @@ impl MultivariateNormal {
             .map(Ex::eval_f64)
             .collect::<Result<_, _>>()?;
         let cov = self.cov.eval_f64()?;
-        let l = dense_f64::cholesky(&dense_f64::flatten(&cov), k, 0.0).ok_or_else(|| {
-            failed(
-                "MultivariateNormal::sample",
-                "the covariance is not numerically positive definite",
-            )
-        })?;
+        let l = dense_f64::cholesky(&dense_f64::flatten(&cov), k, 0.0)
+            .ok_or_else(|| failed(OP, "the covariance is not numerically positive definite"))?;
         let ctx = self.context();
         let mut z = Distribution::normal(ctx.zero(), ctx.one()).sampler()?;
-        let mut out = Vec::with_capacity(n);
+        let mut out = Vec::new();
+        out.try_reserve_exact(n)
+            .map_err(|e| invalid(OP, format!("cannot store {n} samples: {e}")))?;
         for _ in 0..n {
             let zs: Vec<f64> = (0..k).map(|_| z(rng)).collect();
             let x: Vec<f64> = (0..k)
@@ -556,10 +608,19 @@ pub fn covariance_matrix(data: &[Vec<Q>], ddof: Ddof) -> Result<QMatrix, Symplex
 /// # Errors
 ///
 /// [`SymplexError::InvalidArgument`] if `data` is empty or jagged, or a
-/// variable is constant (its correlation is undefined).
+/// variable is constant (its correlation is undefined — even with itself,
+/// so a single constant variable is refused too rather than given the
+/// diagonal `1`; `numpy.corrcoef` returns `nan`).
 pub fn correlation_matrix(ctx: &Context, data: &[Vec<Q>]) -> Result<Matrix, SymplexError> {
-    let (_, p) = check_data("correlation_matrix", data)?;
+    const OP: &str = "correlation_matrix";
+    let (_, p) = check_data(OP, data)?;
     let cols: Vec<Vec<Q>> = (0..p).map(|j| column(data, j)).collect();
+    if let Some(j) = cols.iter().position(|c| c.iter().all(|v| v == &c[0])) {
+        return Err(invalid(
+            OP,
+            format!("variable {j} is constant, so its correlations are undefined"),
+        ));
+    }
     let mut rows = vec![vec![ctx.one(); p]; p];
     for i in 0..p {
         for j in (i + 1)..p {
@@ -644,7 +705,10 @@ pub fn pca(ctx: &Context, cov: &QMatrix) -> Result<Pca, SymplexError> {
     let eigen = m
         .eigenvects()
         .map_err(|e| failed(OP, format!("eigen-decomposition failed: {e}")))?;
-    let mut items: Vec<(f64, Ex, Vec<Ex>)> = Vec::with_capacity(n);
+    // Decreasing eigenvalue, decided exactly by insertion: `f64`
+    // approximations would tie `1` and `1 − 10⁻²⁰` and leave them in
+    // `eigenvects`' order (ascending, for that pair).
+    let mut items: Vec<(Ex, Vec<Ex>)> = Vec::with_capacity(n);
     for (value, mult, vecs) in eigen {
         if vecs.len() != mult {
             return Err(failed(
@@ -655,12 +719,26 @@ pub fn pca(ctx: &Context, cov: &QMatrix) -> Result<Pca, SymplexError> {
                 ),
             ));
         }
-        let approx = value
+        value
             .eval_f64()
             .map_err(|e| failed(OP, format!("cannot order eigenvalue {value}: {e}")))?;
         let raw: Vec<Vec<Ex>> = vecs.iter().map(|v| v.col(0)).collect();
         for v in gram_schmidt(ctx, &raw) {
-            items.push((approx, value.clone(), v));
+            let mut pos = items.len();
+            while pos > 0 {
+                let before = &items[pos - 1].0;
+                match before.compare_numeric(&value) {
+                    Some(std::cmp::Ordering::Less) => pos -= 1,
+                    Some(_) => break,
+                    None => {
+                        return Err(failed(
+                            OP,
+                            format!("cannot order the eigenvalues {before} and {value}"),
+                        ));
+                    }
+                }
+            }
+            items.insert(pos, (value.clone(), v));
         }
     }
     if items.len() != n {
@@ -669,15 +747,14 @@ pub fn pca(ctx: &Context, cov: &QMatrix) -> Result<Pca, SymplexError> {
             format!("found {} eigenvectors for dimension {n}", items.len()),
         ));
     }
-    items.sort_by(|a, b| b.0.total_cmp(&a.0));
     let trace_ex = ctx.from_ratio(trace);
     Ok(Pca {
         explained_variance_ratio: items
             .iter()
-            .map(|(_, v, _)| (v / &trace_ex).simplify())
+            .map(|(v, _)| (v / &trace_ex).simplify())
             .collect(),
-        eigenvalues: items.iter().map(|(_, v, _)| v.clone()).collect(),
-        components: items.into_iter().map(|(_, _, c)| c).collect(),
+        eigenvalues: items.iter().map(|(v, _)| v.clone()).collect(),
+        components: items.into_iter().map(|(_, c)| c).collect(),
     })
 }
 
@@ -748,11 +825,23 @@ pub struct PcaF64 {
 /// suited to the dimensions where the exact [`pca`] no longer closes.
 /// `numpy.linalg.eigh(cov)` up to ordering and signs.
 ///
+/// The matrix is first scaled by a power of two (exact) so that its
+/// largest entry is near `1`, as LAPACK's `dsyev` scales outside a safe
+/// range: the sweeps' Frobenius-norm test squares the entries, which
+/// underflowed to `0` for a covariance of order `10⁻¹⁷⁰` (or overflowed
+/// for `10¹⁷⁰`) and returned the unrotated diagonal as the eigenvalues.
+/// The explained variance ratios are `λᵢ / tr Σ`; an indefinite matrix
+/// (a covariance assembled from rounded pieces) is not projected, so its
+/// negative eigenvalues give negative ratios.
+///
 /// # Errors
 ///
-/// [`SymplexError::InvalidArgument`] if `cov` is empty, not square, not
-/// symmetric (to `1e-12` relative), or has a non-finite entry;
-/// [`SymplexError::ComputationFailed`] if the sweeps do not converge.
+/// [`SymplexError::InvalidArgument`] if `cov` is empty, not square, has a
+/// non-finite entry, is not symmetric (to `1e-12` relative to its largest
+/// entry), or has a trace `≤ 0` (no total variance to take ratios of —
+/// the zero matrix, as for [`pca`]); [`SymplexError::ComputationFailed`]
+/// if the sweeps do not converge or an eigenvalue overflows `f64` when
+/// scaled back.
 pub fn pca_f64(cov: &[Vec<f64>]) -> Result<PcaF64, SymplexError> {
     const OP: &str = "pca_f64";
     let n = cov.len();
@@ -762,14 +851,10 @@ pub fn pca_f64(cov: &[Vec<f64>]) -> Result<PcaF64, SymplexError> {
     if cov.iter().any(|r| r.len() != n) {
         return Err(invalid(OP, "the matrix must be square"));
     }
-    let scale = cov
-        .iter()
-        .flatten()
-        .fold(0.0_f64, |m, v| m.max(v.abs()))
-        .max(1.0);
-    if !scale.is_finite() {
-        return Err(invalid(OP, "non-finite entry"));
+    if let Some(v) = cov.iter().flatten().find(|v| !v.is_finite()) {
+        return Err(invalid(OP, format!("non-finite entry {v}")));
     }
+    let scale = cov.iter().flatten().fold(0.0_f64, |m, v| m.max(v.abs()));
     for (i, row) in cov.iter().enumerate() {
         for (j, &below) in row.iter().enumerate().take(i) {
             let above = cov[j][i];
@@ -781,12 +866,29 @@ pub fn pca_f64(cov: &[Vec<f64>]) -> Result<PcaF64, SymplexError> {
             }
         }
     }
+    // 2^-e with 2^(e-1) ≤ scale < 2^e; the zero matrix fails the trace test.
+    let e = if scale > 0.0 {
+        scale.log2().floor() as i32 + 1
+    } else {
+        0
+    };
+    let to_unit = |v: f64| v * 2f64.powi(-e / 2) * 2f64.powi(-(e - e / 2));
+    let scaled: Vec<f64> = cov.iter().flatten().map(|&v| to_unit(v)).collect();
+    let trace: f64 = (0..n).map(|i| scaled[i * n + i]).sum();
+    if trace <= 0.0 {
+        return Err(invalid(
+            OP,
+            format!(
+                "the trace (total variance) must be positive, got {}",
+                trace * 2f64.powi(e)
+            ),
+        ));
+    }
     let dense_f64::SymEigen { values, vectors } =
-        dense_f64::sym_eigen(&dense_f64::flatten(cov), n, &PCA_EIGEN)
-            .map_err(|e| failed(OP, e.to_string()))?;
+        dense_f64::sym_eigen(&scaled, n, &PCA_EIGEN).map_err(|e| failed(OP, e.to_string()))?;
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by(|&a, &b| values[b].total_cmp(&values[a]));
-    let total: f64 = values.iter().sum();
+    let from_unit = |v: f64| v * 2f64.powi(e / 2) * 2f64.powi(e - e / 2);
     let mut eigenvalues = Vec::with_capacity(n);
     let mut components = Vec::with_capacity(n);
     let mut ratio = Vec::with_capacity(n);
@@ -800,13 +902,16 @@ pub fn pca_f64(cov: &[Vec<f64>]) -> Result<PcaF64, SymplexError> {
                 *c = -*c;
             }
         }
-        eigenvalues.push(values[idx]);
+        let value = from_unit(values[idx]);
+        if !value.is_finite() {
+            return Err(failed(
+                OP,
+                format!("an eigenvalue ({} · 2^{e}) overflows f64", values[idx]),
+            ));
+        }
+        eigenvalues.push(value);
         components.push(v);
-        ratio.push(if total != 0.0 {
-            values[idx] / total
-        } else {
-            f64::NAN
-        });
+        ratio.push(values[idx] / trace);
     }
     Ok(PcaF64 {
         eigenvalues,

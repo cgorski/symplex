@@ -40,13 +40,13 @@ use std::fmt;
 use std::sync::OnceLock;
 
 use num_integer::Integer;
-use num_traits::{One, Signed, ToPrimitive, Zero};
+use num_traits::{One, Signed, Zero};
 
 use crate::base::errors::SymplexError;
 use crate::base::graph::strongly_connected_components;
 use crate::domains::exact_matrix::QMatrix;
 
-use super::common::invalid;
+use super::common::{invalid, q_to_f64};
 use super::data::Q;
 use super::sample::Rng;
 
@@ -140,12 +140,23 @@ impl MarkovChain {
     /// # Errors
     ///
     /// As [`new`](Self::new), plus [`SymplexError::InvalidArgument`] if
-    /// there is not exactly one label per state.
+    /// there is not exactly one label per state or two states share a
+    /// label ([`state_index`](Self::state_index) could not tell them
+    /// apart).
     pub fn with_labels(p: QMatrix, labels: Vec<String>) -> Result<Self, SymplexError> {
+        const OP: &str = "MarkovChain::with_labels";
         if labels.len() != p.nrows() {
             return Err(invalid(
-                "MarkovChain::with_labels",
+                OP,
                 format!("{} labels for {} states", labels.len(), p.nrows()),
+            ));
+        }
+        let mut sorted: Vec<&String> = labels.iter().collect();
+        sorted.sort_unstable();
+        if let Some(pair) = sorted.windows(2).find(|w| w[0] == w[1]) {
+            return Err(invalid(
+                OP,
+                format!("the label {:?} names two states", pair[0]),
             ));
         }
         let mut chain = Self::new(p)?;
@@ -188,7 +199,10 @@ impl MarkovChain {
     // ── Transitions ──────────────────────────────────────────────────────
 
     /// The `k`-step transition matrix `Pᵏ` (`P⁰ = I`), by repeated
-    /// squaring.
+    /// squaring.  Exact, so the entries' denominators can grow like `dᵏ`
+    /// (`d` the common denominator of `P`): about `log₂ k` squarings of
+    /// matrices whose entries reach `k·log₂ d` bits.  For the long-run
+    /// behaviour use [`limiting_distribution`](Self::limiting_distribution).
     ///
     /// ```
     /// use symplex::prelude::*;
@@ -790,49 +804,58 @@ impl MarkovChain {
     /// sampled row by row with the deterministic generator `rng`; the
     /// result has `steps + 1` states and begins with `initial`.
     ///
+    /// The thresholds are the exact cumulative row sums, each rounded to
+    /// the nearest `f64` once (the last positive one is exactly `1`), so
+    /// a uniform `u ∈ [0, 1)` always lands on a state of positive
+    /// probability and no entry is lost to its numerator or denominator
+    /// overflowing `f64` on its own.
+    ///
     /// # Errors
     ///
-    /// [`SymplexError::InvalidArgument`] if `initial` is out of range.
+    /// [`SymplexError::InvalidArgument`] if `initial` is out of range, or
+    /// the `steps + 1` states cannot be stored (`steps = usize::MAX`, or
+    /// more memory than the allocator grants).
     pub fn sample_path(
         &self,
         initial: usize,
         steps: usize,
         rng: &mut Rng,
     ) -> Result<Vec<usize>, SymplexError> {
-        self.check_state("MarkovChain::sample_path", initial)?;
-        let n = self.n_states();
-        let rows: Vec<Vec<f64>> = self
+        const OP: &str = "MarkovChain::sample_path";
+        self.check_state(OP, initial)?;
+        let len = steps
+            .checked_add(1)
+            .ok_or_else(|| invalid(OP, format!("a path of {steps} steps has too many states")))?;
+        let mut path = Vec::new();
+        path.try_reserve_exact(len)
+            .map_err(|e| invalid(OP, format!("cannot store a path of {len} states: {e}")))?;
+        // Per row: (state, P(next ≤ state)) over the positive entries.
+        let thresholds: Vec<Vec<(usize, f64)>> = self
             .p
             .rows()
             .map(|row| {
+                let mut cumulative = Q::zero();
                 row.iter()
-                    .map(|q| q.numer().to_f64().unwrap_or(0.0) / q.denom().to_f64().unwrap_or(1.0))
+                    .enumerate()
+                    .filter(|(_, pj)| pj.is_positive())
+                    .map(|(j, pj)| {
+                        cumulative += pj;
+                        (j, q_to_f64(&cumulative))
+                    })
                     .collect()
             })
             .collect();
-        let mut path = Vec::with_capacity(steps + 1);
         let mut state = initial;
         path.push(state);
         for _ in 0..steps {
             let u = rng.next_f64();
-            let row = &rows[state];
-            let mut acc = 0.0;
-            let mut next = None;
-            for (j, &pj) in row.iter().enumerate() {
-                if pj <= 0.0 {
-                    continue;
-                }
-                acc += pj;
-                if u < acc {
-                    next = Some(j);
-                    break;
-                }
-            }
-            // Rounding left u above the last cumulative sum: take the last
-            // state with positive probability.
-            state = next
-                .or_else(|| (0..n).rev().find(|&j| row[j] > 0.0))
-                .unwrap_or(state);
+            let row = &thresholds[state];
+            // Every row sums to exactly 1, so its last threshold is 1.0 > u.
+            state = row
+                .iter()
+                .find(|&&(_, c)| u < c)
+                .or(row.last())
+                .map_or(state, |&(j, _)| j);
             path.push(state);
         }
         Ok(path)
@@ -841,22 +864,27 @@ impl MarkovChain {
     // ── Limits ──────────────────────────────────────────────────────────────────
 
     /// The limiting distribution `lim_{n→∞} Pⁿ[i][·]`, the same for every
-    /// start `i`: `Some(π)` iff the chain is irreducible **and**
-    /// aperiodic ([`is_regular`](Self::is_regular)), when every row of
-    /// `Pⁿ` converges to the unique stationary distribution `π`;
-    /// `None` otherwise.
+    /// start `i`: `Some(π)` iff the chain has a **single closed class and
+    /// that class is aperiodic**, when every row of `Pⁿ` converges to the
+    /// unique stationary distribution `π` (transient states, if any, lose
+    /// their mass geometrically and get `πᵢ = 0`); `None` otherwise.  Every [`is_regular`](Self::is_regular) chain
+    /// qualifies, and so does, for example, an absorbing chain with one
+    /// absorbing state (`P = [[½, ½], [0, 1]]` has `Pⁿ → [[0, 1], [0, 1]]`).
     ///
-    /// * *Periodic* irreducible chains (a period-2 walk on two states)
-    ///   have a stationary distribution but `Pⁿ` oscillates and does not
+    /// * A *periodic* closed class (a period-2 walk on two states) has a
+    ///   stationary distribution but `Pⁿ` oscillates and does not
     ///   converge.
-    /// * *Reducible* chains — including every absorbing chain — may well
-    ///   have `Pⁿ` converge, but the limit row depends on the starting
-    ///   state (the gambler ruined from `1` and from `3` end up in
-    ///   different places), so there is no single limiting distribution:
+    /// * With *several* closed classes — the gambler's ruin with its two
+    ///   absorbing ends — `Pⁿ` may converge, but the limit row depends on
+    ///   the starting state, so there is no single limiting distribution:
     ///   see [`absorption_probabilities`](Self::absorption_probabilities)
     ///   for the start-dependent limit and
     ///   [`stationary_distributions`](Self::stationary_distributions)
     ///   for the extreme stationary vectors.
+    ///
+    /// (Before 0.29 this was `None` for every reducible chain, including
+    /// those with a single aperiodic closed class, whose `Pⁿ` does converge
+    /// to one row.)
     ///
     /// ```
     /// use symplex::prelude::*;
@@ -867,15 +895,21 @@ impl MarkovChain {
     /// assert_eq!(ergodic.limiting_distribution()?, Some(vec![q(1, 3), q(2, 3)]));
     /// let periodic = MarkovChain::new(QMatrix::new(vec![vec![qi(0), qi(1)], vec![qi(1), qi(0)]])?)?;
     /// assert_eq!(periodic.limiting_distribution()?, None);
+    /// let absorbed = MarkovChain::new(QMatrix::new(vec![vec![q(1, 2), q(1, 2)], vec![qi(0), qi(1)]])?)?;
+    /// assert_eq!(absorbed.limiting_distribution()?, Some(vec![qi(0), qi(1)]));
     /// # Ok::<(), SymplexError>(())
     /// ```
     ///
     /// # Errors
     ///
     /// [`SymplexError::ComputationFailed`] if the stationary distribution
-    /// of a regular chain cannot be computed (it always exists).
+    /// of the closed class cannot be computed (it always exists).
     pub fn limiting_distribution(&self) -> Result<Option<Vec<Q>>, SymplexError> {
-        if !self.is_regular() {
+        let closed = self.closed_classes();
+        let [class] = closed.as_slice() else {
+            return Ok(None);
+        };
+        if self.class_period(class) != Some(1) {
             return Ok(None);
         }
         self.stationary_distribution().map(Some)

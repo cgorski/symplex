@@ -185,26 +185,30 @@ pub(crate) fn z_two_sided(confidence: f64) -> f64 {
     norm_isf((1.0 - confidence) / 2.0)
 }
 
-/// The Student-t quantile `t_{p, ν}` ([`numdist::t::ppf`]), its errors
-/// renamed to the calling operation `op`.
-pub(crate) fn student_t_quantile_f64(
-    op: &'static str,
-    df: f64,
-    p: f64,
-) -> Result<f64, SymplexError> {
-    numdist::t::ppf(p, df).map_err(|e| match e {
+/// The upper-tail Student-t quantile, `x` with `P(T > x) = q`
+/// ([`numdist::t::isf`]), its errors renamed to `op`: a critical value from
+/// the small tail itself, never from the rounded level `1 − q`.
+pub(crate) fn student_t_isf_f64(op: &'static str, df: f64, q: f64) -> Result<f64, SymplexError> {
+    numdist::t::isf(q, df).map_err(|e| rename_op(op, e))
+}
+
+fn rename_op(op: &'static str, e: SymplexError) -> SymplexError {
+    match e {
         SymplexError::InvalidArgument { reason, .. } => SymplexError::invalid_argument(op, reason),
         SymplexError::ComputationFailed { reason, .. } => {
             SymplexError::computation_failed(op, reason)
         }
         other => other,
-    })
+    }
 }
 
 /// The two-sided Student-t critical value `t_{α/2, ν}` for a confidence
-/// level.
+/// level: the upper quantile of `α/2 = (1 − c)/2`.  (0.28 inverted the
+/// rounded level `1 − α/2`: at `c = 1 − 10⁻¹²` the OLS intercept interval
+/// of a six-point line was 3·10⁻⁵ relative too narrow, and at
+/// `c = 1 − 2⁻⁵³` the level rounded to 1 and was refused.)
 pub(crate) fn t_two_sided(op: &'static str, df: f64, confidence: f64) -> Result<f64, SymplexError> {
-    student_t_quantile_f64(op, df, 1.0 - (1.0 - confidence) / 2.0)
+    student_t_isf_f64(op, df, (1.0 - confidence) / 2.0)
 }
 
 /// A standard normal in a private context, for numeric quantiles.
@@ -269,7 +273,7 @@ mod tests {
         // scipy.stats.t.ppf(0.975, 5) = 2.5705818356363146
         assert!((t_two_sided("test", 5.0, 0.95).unwrap() - 2.5705818356363146).abs() < 1e-14);
         // Errors are renamed to the caller's operation.
-        match student_t_quantile_f64("caller", -1.0, 0.5) {
+        match student_t_isf_f64("caller", -1.0, 0.5) {
             Err(SymplexError::InvalidArgument { operation, .. }) => assert_eq!(operation, "caller"),
             other => panic!("expected an invalid-argument error, got {other:?}"),
         }
