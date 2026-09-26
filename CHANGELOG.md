@@ -343,6 +343,14 @@ sites in 19 files to 23 in 7.  Migrate each call by adding `?` (or
   tails at shapes near `10¹⁵` were `3.3·10⁻⁸` off and gamma far tails
   `10⁻¹²`; over 7,521 tails the worst is now `3.5·10⁻¹³` (the module's
   accuracy table is restated from these measurements).
+- **Rational powers at the digit guard:** `2/9991999999^589.99919999`
+  overflowed the stack while parsing (the nightly `fuzz_parser` crash).
+  `n^(−a/b)` is rationalised as `n^(−k−1)·n^((b−s)/b)`; when the digit
+  guard refused to fold `n^(k+1)`, the product added the exponents back
+  and the rewrite recursed without end.  And `(10¹⁰⁰⁰ + 7)^(1999/2)`
+  built the million-digit integer part `n⁹⁹⁹` (15.9 s, release build)
+  without consulting the guard.  Both rewrites now apply only within the
+  guard; beyond it the power keeps its exponent.
 - **Capture-avoiding renaming renames the replacements too:** `d/dx
   (y·f(x))` at `x = 0` with `{f(x) ↦ sin x, y ↦ x}` was `0`; it is `x`.
 - **Proportion intervals near `c = 1`:** `z` came from the rounded level

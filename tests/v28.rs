@@ -22,6 +22,8 @@ mod v28_audit_3b2;
 mod v28_audit_4;
 #[path = "v28/v28_binders.rs"]
 mod v28_binders;
+#[path = "v28/v28_canon.rs"]
+mod v28_canon;
 #[path = "v28/v28_evalf.rs"]
 mod v28_evalf;
 #[path = "v28/v28_evalf_cuts.rs"]

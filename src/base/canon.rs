@@ -954,11 +954,9 @@ fn eval_numeric_pow(arena: &mut Arena, b: &Q, e: &Q) -> Option<ExprId> {
     // `(999999999999999/10¹⁵)¹⁰⁰⁰` — two 50,000-bit integers, their gcd
     // and their decimal strings — only to reject it took 0.55 s in a debug
     // build, at every construction of the power.)
-    let min_digits = |x: &BigInt| -> f64 {
-        let bits = x.bits().saturating_sub(1) as f64 * f64::from(exp_u32);
-        (bits * std::f64::consts::LOG10_2).floor() + 1.0
-    };
-    if min_digits(b.numer()) + min_digits(b.denom()) > arena.config.max_result_digits as f64 + 2.0 {
+    if min_pow_digits(b.numer(), exp_u32) + min_pow_digits(b.denom(), exp_u32)
+        > arena.config.max_result_digits as f64 + 2.0
+    {
         return None;
     }
 
@@ -988,6 +986,20 @@ fn eval_numeric_pow(arena: &mut Arena, b: &Q, e: &Q) -> Option<ExprId> {
 
     let nid = arena.intern_num(result);
     Some(arena.intern(ExprNode::Num(nid)))
+}
+
+/// A lower bound on the decimal digits of `xⁿ`: an integer of `k ≥ 1` bits
+/// has at least `⌊(k − 1)·log₁₀ 2⌋ + 1` digits, and `xⁿ` at least
+/// `n·(k − 1) + 1` bits.
+fn min_pow_digits(x: &BigInt, n: u32) -> f64 {
+    let bits = x.bits().saturating_sub(1) as f64 * f64::from(n);
+    (bits * std::f64::consts::LOG10_2).floor() + 1.0
+}
+
+/// Would the integer power `xⁿ` certainly exceed the digit guard
+/// (`max_result_digits`, as [`eval_numeric_pow`] applies it)?
+fn pow_exceeds_digit_guard(arena: &Arena, x: &BigInt, n: u32) -> bool {
+    min_pow_digits(x, n) > arena.config.max_result_digits as f64 + 1.0
 }
 
 /// Normal form of `r^(a/b)` for a positive rational `r` and a non-integer
@@ -1056,6 +1068,13 @@ fn canon_radical(
             arena.intern(ExprNode::Num(nid))
         };
         let coeff = canon_pow(arena, base, int_exp);
+        // The exponent bound above is necessary but not sufficient: the
+        // digit guard of `eval_numeric_pow` also refuses a power with too
+        // many digits (`9991999999^590`, ~5,900 digits), and then the same
+        // endless recursion followed (`2/9991999999^589.99919999`, found by
+        // `fuzz_parser` as a stack overflow).  Rationalise only when the
+        // coefficient did fold.
+        arena.as_num(coeff)?;
         let radical = canon_pow(arena, base, pos_exp);
         return Some(arena.mul(&[coeff, radical]));
     }
@@ -1070,7 +1089,13 @@ fn canon_radical(
         // it).  Before 0.26 `15^(3/2)` and `15·√15` were different
         // canonical forms of one number, so equal coefficients did not
         // combine (and a `polylog` term that should cancel stayed).
-        if a > b && (a / b) <= arena.config.max_pow_exponent as u32 {
+        // The integer part must fold within the digit guard, as any power
+        // does: `(10¹⁰⁰⁰ + 7)^(1999/2)` built a million-digit `n⁹⁹⁹` here
+        // (15.9 s in a release build) before the guard ever saw it.
+        if a > b
+            && (a / b) <= arena.config.max_pow_exponent as u32
+            && !pow_exceeds_digit_guard(arena, &n, a / b)
+        {
             let k = a / b;
             let s = a % b;
             let integer_part = arena.big_int(NumPow::pow(n.clone(), k));
@@ -1084,7 +1109,7 @@ fn canon_radical(
         return None;
     }
     // outside^a must fold to a number of bounded size (a can be ~4·10⁹).
-    if a > arena.config.max_pow_exponent as u32 {
+    if a > arena.config.max_pow_exponent as u32 || pow_exceeds_digit_guard(arena, &outside, a) {
         return None;
     }
     tracing::trace!("canon_radical: extracted perfect power factor");
