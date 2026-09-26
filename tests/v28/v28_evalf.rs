@@ -97,7 +97,7 @@ fn huge_ratio() -> Q {
 /// `binomial_test(2600, 20000, 3/20)` took 12 s (debug) where
 /// `Ratio::to_f64` takes 70 µs.  The integer is now handed over as its
 /// limbs and rounded once.  Timed against `Ratio::to_f64` of the same
-/// rational over interleaved rounds (see `v27_perf.rs` for why): about 5×
+/// rational over interleaved rounds (see `v28_perf.rs` for why): about 5×
 /// now, four orders of magnitude before; bound 100×.
 #[test]
 fn a_huge_rational_converts_in_linear_time() {
