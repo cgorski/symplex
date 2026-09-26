@@ -12,7 +12,7 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 Panics on caller input become `Err` (CONTRIBUTING.md "No Panics
  Rule"): the `ASSERT_ALLOWLIST` of runtime assertions drops from 82
-sites in 19 files to 27 in 7.  Migrate each call by adding `?` (or
+sites in 19 files to 23 in 7.  Migrate each call by adding `?` (or
 `.unwrap()` where the input is known to be valid).
 
 - **The `Matrix` and `ExactMatrix` (`QMatrix`, `ZMatrix`) constructors
@@ -167,6 +167,17 @@ sites in 19 files to 27 in 7.  Migrate each call by adding `?` (or
   rounded `1 − α/2`.  Endpoints change in their last digits, and
   substantially near `c = 1`.  New `IntervalMethod::Jeffreys`
   (statsmodels `'jeffreys'`; the symbolic and exact variants refuse it).
+- **`subs` of an undefined function's application goes under binders**
+  (`Subs`, `Sum`, `Integral`, `Limit`, …), read as defining the function
+  (SymPy's rule for undefined functions):
+  `Subs(Derivative(f(x), x), x, 0).subs(f(x), sin(x))` is
+  `Subs(Derivative(sin(x), x), x, 0)` (it came back unchanged).  A
+  simultaneous rename of a derivative's variable with a function pattern
+  now renames: `Derivative(f(x), x).subs_map([x → t, f(x) → g(x)])` is
+  `Derivative(g(t), t)`, as doing the two one after the other gives.
+- **`MultiPoly::degree_in`, `partial_derivative` and `eval_var` accept any
+  variable index**: one the polynomial doesn't have gives 0, the zero
+  polynomial, or the polynomial unchanged (as SymPy's `degree`).
 - **Markov chains and the multivariate normal:** `limiting_distribution`
   is `Some(π)` for any chain with a single aperiodic closed class (it was
   `None` for every reducible chain); `with_labels` rejects duplicate
@@ -178,6 +189,11 @@ sites in 19 files to 27 in 7.  Migrate each call by adding `?` (or
 
 ### Added
 
+- `MultiPoly::{try_var, try_substitute}` and `multipoly::try_s_polynomial`
+  (checked twins; `ASSERT_ALLOWLIST` for `poly/multipoly.rs` 10 → 6).
+- rubi-harness: when the five sample points decide nothing, up to three
+  points where the integrand is real are taken from a fixed log-spaced
+  list.  `3.5 #134` (`1/(x√(ln²x − 3))`) is `real_verified`.
 - `Matrix::{try_get_mut, try_row, try_col}` and the same on
   `ExactMatrix`.  The parser reads `Subs(body, var, point)` and
   `RootOf(poly, var, index)`.
@@ -302,6 +318,33 @@ sites in 19 files to 27 in 7.  Migrate each call by adding `?` (or
 - **`p_value_ln` / `p_value_log10`:** the decimal-expansion fallback is
   gone; the evaluator certifies these directly (786 p-values probed down
   to `1e-21718`).
+- **Incomplete gamma and beta, cross-checked (evalf against numdist,
+  mpmath as referee):** evalf printed certified wrong digits in four
+  places.
+  - `betainc_regularized` above its switch point computed `1 − I_{1−x}(b,
+    a)` assuming one bit lost; for a small `b` everything cancels.
+    `betainc_regularized(1/3, 10⁻¹⁰⁰, 0, 9/10)` printed `1.2766e-82` at 50
+    digits for `4.7878e-100`.  Both tails are now computed directly, and
+    a measured cancellation is paid for with precision or refused.
+  - `uppergamma` guarded for `x`, not for the cancellation of `Γ(s) −
+    γ(s, x)`: `uppergamma(10⁻¹⁰⁰, 1/2)` printed `0.56498…` for `0.55977…`
+    (and `1.69e18` at 30 digits).  The loss is bounded by `log₂(1/min(1,
+    s)) + 5` bits; `x ≈ 7·10⁶` no longer hangs on 10⁷ guard bits.
+  - The `s ≤ 0` recurrence reserved 16 bits per step and snapped an `s`
+    within `10⁻¹²` of an integer to it: `expint(3 + 10⁻¹⁴, 1/3)` was wrong
+    from the 14th digit.
+  - The two-limit `betainc_regularized` returned its third attempt
+    whatever it had lost: `(10⁻³⁰⁰, 1; 1/10, 1)` was `−8.56e-256` at 50
+    digits (truly `2.3026e-300`).
+
+  `B(a, b)` is formed in logarithms (shapes near `10⁸` were refused), and
+  `Γ(10⁻⁴⁰⁰)` is no longer taken for the pole at 0.  numdist forms `(a +
+  b)x − a` exactly and keeps Loader's `bd0` series up to `|v| = ½`: beta
+  tails at shapes near `10¹⁵` were `3.3·10⁻⁸` off and gamma far tails
+  `10⁻¹²`; over 7,521 tails the worst is now `3.5·10⁻¹³` (the module's
+  accuracy table is restated from these measurements).
+- **Capture-avoiding renaming renames the replacements too:** `d/dx
+  (y·f(x))` at `x = 0` with `{f(x) ↦ sin x, y ↦ x}` was `0`; it is `x`.
 - **Proportion intervals near `c = 1`:** `z` came from the rounded level
   `1 − α/2` (the Wilson lower end of `(5, 5)` at `c = 1 − 10⁻¹⁵` was
   `0.071773`, truly `0.072013`; `c = 1 − 2⁻⁵³` was an error), and the same

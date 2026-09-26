@@ -32,6 +32,20 @@
 //!   binder of `v` renames the binder first, to `v_1` (or the first `v_n`
 //!   that is not in use): `Σ_{k=0}^{n} x·k` with `x ↦ k` is
 //!   `Σ_{k_1=0}^{n} k·k_1`, not `Σ k²`.
+//! - *Function patterns.*  An `old` that applies an undefined function,
+//!   `f(a₁, …, aₙ)`, defines `f := λ(a₁, …, aₙ). new`, which means the
+//!   same in every scope; so it is replaced under a binder of `v` too, even
+//!   with `v` among its arguments, provided `new` has `v` free only where
+//!   `v` is itself an argument.  `∫₀¹ f(x) dx` with `f(x) ↦ x²` is
+//!   `∫₀¹ x² dx`; `f′(0)`, `Subs(Derivative(f(x), x), x, 0)`, with
+//!   `f(x) ↦ sin(x)` is `Subs(Derivative(sin(x), x), x, 0)`, which
+//!   [`eval_derivatives`] takes to `cos(0)`.  The node is rebuilt, not
+//!   evaluated, like every binder.  Anything else in `v` — `sin(k)`, a
+//!   library `besselj(0, k)`, `x·f(x)`, or `f(x + 1) ↦ sin(x)` (not a
+//!   function of the argument) — names the outer `v` and is shadowed.  If
+//!   the binder is renamed (another replacement is captured), `new` is
+//!   renamed with the operand it replaces: `∫₀¹ f(x)·y dx` with
+//!   `f(x) ↦ sin(x), y ↦ x` is `∫₀¹ x·sin(x₁) dx₁`.
 //!
 //! The first rule is SymPy's behaviour (`ExprWithLimits._eval_subs` in
 //! `sympy/concrete/expr_with_limits.py`: no substitution into the function
@@ -40,6 +54,18 @@
 //! k)` is `Sum(k**2, (k, 0, n))`, and likewise for `Lambda` and
 //! `ConditionSet`); the renaming is the standard capture-avoiding
 //! substitution (H. P. Barendregt, *The Lambda Calculus*, 1984, §2.1).
+//! The function-pattern rule follows the same SymPy method (an
+//! `AppliedUndef` `old` goes into the function when the limit variables of
+//! `new` are among the arguments of `old`; otherwise SymPy raises "cannot
+//! create dummy dependencies", where symplex leaves the body alone), for
+//! every binder of the table.  SymPy's `Subs._eval_subs`
+//! (`sympy/core/function.py`) substitutes *any* `old` into the expression,
+//! which symplex does not follow: `Subs(Derivative(sin(x), x), x,
+//! 0).subs(sin(x), cos(x))` is `0` there after `doit`, though the node is
+//! `cos(0) = 1` whatever `sin(x)` is replaced by, and `Subs(x + y, x,
+//! 0).subs(y, x)` captures (`0`, truly `x`).  SymPy's `ConditionSet` takes
+//! a function pattern into its condition only when `new` is a symbol, an
+//! applied undefined function or a derivative (`_diff_wrt`).
 //!
 //! **Variable slots.**  A `Derivative`, an indefinite `Integral`, a
 //! `Series` and a `DSolve` do not bind their variable `x` — `f′(x)` is a
@@ -81,8 +107,9 @@ use crate::base::walk::Binder;
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Replace every free occurrence of `old` with `new` in the expression
-/// rooted at `expr` (bound occurrences are left alone and binders are
-/// renamed rather than capture — see the module documentation).
+/// rooted at `expr` (bound occurrences are left alone, except in an
+/// application of an undefined function, and binders are renamed rather
+/// than capture — see the module documentation).
 ///
 /// This is **structural** substitution: only exact `ExprId` matches are
 /// replaced.  The result is re-canonicalized through the normal
@@ -217,31 +244,31 @@ impl Scopes {
     /// The scope inside binder `b` entered from scope `sc`, and the bound
     /// variable the rebuilt binder uses.
     ///
-    /// A replacement survives if its `old` does not have the bound
-    /// variable free (shadowing) and occurs in a scoped operand at all.
-    /// If a surviving `new` has the bound variable free, the binder is
-    /// renamed to a fresh variable, by the same simultaneous substitution.
-    fn enter(&mut self, arena: &mut Arena, sc: u32, b: &Binder) -> (u32, ExprId) {
+    /// A replacement survives if it occurs in a scoped operand at all and
+    /// its `old` does not have the bound variable free (shadowing) — or is
+    /// a function-application pattern ([`function_pattern`]).  If a
+    /// surviving `new` brings in a free bound variable that its `old` does
+    /// not have, the binder is renamed to a fresh variable
+    /// ([`rename_bound`], which may rename `b.scoped` in place).
+    fn enter(&mut self, arena: &mut Arena, sc: u32, b: &mut Binder) -> (u32, ExprId) {
         let ExprNode::Symbol(var_sym) = *arena.node(b.var) else {
             return (0, b.var);
         };
         let mut inner: Vec<(ExprId, ExprId)> = self.maps[sc as usize]
             .iter()
             .map(|(&k, &v)| (k, v))
-            .filter(|&(k, _)| {
-                !crate::base::walk::has_free_symbol(arena, k, var_sym)
+            .filter(|&(k, v)| {
+                (!crate::base::walk::has_free_symbol(arena, k, var_sym)
+                    || function_pattern(arena, k, v, b.var, var_sym))
                     && b.scoped.iter().any(|&c| self.may_act(arena, c, k))
             })
             .collect();
         if inner.is_empty() {
             return (0, b.var);
         }
-        let captured = inner
-            .iter()
-            .any(|&(_, v)| crate::base::walk::has_free_symbol(arena, v, var_sym));
-        let var = if captured {
+        let var = if brings(arena, &inner, var_sym) {
             let fresh = fresh_bound_variable(arena, var_sym, &b.scoped, &inner);
-            inner.push((b.var, fresh));
+            rename_bound(arena, &mut b.scoped, &mut inner, b.var, var_sym, fresh);
             fresh
         } else {
             b.var
@@ -253,9 +280,10 @@ impl Scopes {
     /// The plan for the variable-slot node `b` (see
     /// [`crate::base::walk::var_slot`]) entered from scope `sc`: the
     /// scope of its scoped operands, the variable it is rebuilt with, and
-    /// the point to evaluate it at (`None`: rebuild only).  See the module
-    /// documentation on variable slots.
-    fn enter_slot(&mut self, arena: &mut Arena, sc: u32, b: &Binder) -> SlotPlan {
+    /// the point to evaluate it at (`None`: rebuild only).  A renamed
+    /// variable may rename `b.scoped` in place ([`rename_bound`]).  See the
+    /// module documentation on variable slots.
+    fn enter_slot(&mut self, arena: &mut Arena, sc: u32, b: &mut Binder) -> SlotPlan {
         let ExprNode::Symbol(var_sym) = *arena.node(b.var) else {
             return SlotPlan::rebuild(0, b.var);
         };
@@ -266,30 +294,38 @@ impl Scopes {
             .map(|(&k, &v)| (k, v))
             .filter(|&(k, _)| k != b.var && b.scoped.iter().any(|&c| self.may_act(arena, c, k)))
             .collect();
-        let brings = |arena: &Arena, inner: &[(ExprId, ExprId)], sym: SymbolId| {
-            inner.iter().any(|&(k, v)| {
-                crate::base::walk::has_free_symbol(arena, v, sym)
-                    && !crate::base::walk::has_free_symbol(arena, k, sym)
-            })
-        };
         let captured = brings(arena, &inner, var_sym);
         if point == b.var && !captured {
             inner.sort_unstable();
             return SlotPlan::rebuild(self.intern(inner), b.var);
         }
         // A clean rename to a symbol the operands and the replacements do
-        // not mention.
+        // not mention.  A replacement whose `old` has the variable free is
+        // renamed with it (`Derivative(f(x), x)` with `x ↦ t, f(x) ↦ g(x)` is
+        // `Derivative(g(t), t)`), which `rename_bound` does by α-converting
+        // the operands first; that keeps the substitution simultaneous only
+        // if `t` occurs nowhere at all (`t ↦ 5` must not reach the renamed
+        // `x`), else the node is evaluated at `t` below.
+        let mentions_var = inner
+            .iter()
+            .any(|&(k, _)| crate::base::walk::has_free_symbol(arena, k, var_sym));
         if let ExprNode::Symbol(to_sym) = *arena.node(point)
+            && !captured
             && !b
                 .scoped
                 .iter()
                 .any(|&c| crate::base::walk::has_free_symbol(arena, c, to_sym))
-            && !inner.iter().any(|&(_, v)| {
-                crate::base::walk::has_free_symbol(arena, v, to_sym)
-                    || crate::base::walk::has_free_symbol(arena, v, var_sym)
-            })
+            && !inner
+                .iter()
+                .any(|&(_, v)| crate::base::walk::has_free_symbol(arena, v, to_sym))
+            && (!mentions_var
+                || !b
+                    .scoped
+                    .iter()
+                    .chain(inner.iter().flat_map(|(k, v)| [k, v]))
+                    .any(|&e| crate::base::walk::contains(arena, e, point)))
         {
-            inner.push((b.var, point));
+            rename_bound(arena, &mut b.scoped, &mut inner, b.var, var_sym, point);
             inner.sort_unstable();
             return SlotPlan::rebuild(self.intern(inner), point);
         }
@@ -305,7 +341,7 @@ impl Scopes {
         });
         let var = if captured || outer_mentions_var {
             let fresh = fresh_bound_variable(arena, var_sym, &b.scoped, &inner);
-            inner.push((b.var, fresh));
+            rename_bound(arena, &mut b.scoped, &mut inner, b.var, var_sym, fresh);
             fresh
         } else {
             b.var
@@ -316,6 +352,82 @@ impl Scopes {
             var,
             point: Some(point),
         }
+    }
+}
+
+/// Is the replacement `old ↦ new`, whose `old` has the bound variable
+/// `var` (the symbol `var_sym`) free, a function-application pattern that
+/// applies under a binder of `var`?  That is the case when `old` is an
+/// application `f(a₁, …, aₙ)` of an undefined function and `new` has
+/// `var` free only if `var` is one of the `aᵢ` itself: the replacement is
+/// then the definition `f := λ(a₁, …, aₙ). new`, which reads the same in
+/// every scope (`∫₀¹ f(x) dx` with `f(x) ↦ x²` is `∫₀¹ x² dx`).  A
+/// defined function (`sin(x)`, a library `besselj(0, x)`) or any other
+/// expression in `var` refers to the outer `var` and stays shadowed, as does
+/// `f(x + 1) ↦ sin(x)` (not a function of the argument slot).  See the
+/// module documentation.
+fn function_pattern(
+    arena: &Arena,
+    old: ExprId,
+    new: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> bool {
+    let ExprNode::Apply(head, args) = arena.node(old) else {
+        return false;
+    };
+    arena.lib_fn(*head).is_none()
+        && (args.contains(&var) || !crate::base::walk::has_free_symbol(arena, new, var_sym))
+}
+
+/// Does a replacement of `inner` bring a free `sym` into the scope of a
+/// binder (or variable slot) of `sym`, i.e. have `sym` free in its `new`
+/// but not in its `old`?  Such a `new` would be captured.
+fn brings(arena: &Arena, inner: &[(ExprId, ExprId)], sym: SymbolId) -> bool {
+    inner.iter().any(|&(k, v)| {
+        crate::base::walk::has_free_symbol(arena, v, sym)
+            && !crate::base::walk::has_free_symbol(arena, k, sym)
+    })
+}
+
+/// Rename the variable `var` (the symbol `var_sym`) of a binder or
+/// variable slot to `to`, for the replacements `inner` in force in its
+/// `scoped` operands.
+///
+/// When no replacement's `old` has `var` free, the renaming is one more
+/// replacement of the same simultaneous substitution: `var ↦ to` joins
+/// `inner`.  One that has (a function pattern `f(x) ↦ sin(x)`, or any
+/// replacement in a variable slot) must meet the operands' free `var` as
+/// `to` — `f(x₁) ↦ sin(x₁)` — but still meet a nested binder of `var`,
+/// which keeps its own `var`, as `f(x) ↦ sin(x)`.  So the operands are
+/// α-converted first and both forms of those replacements are kept.  The
+/// caller guarantees that in that case `to` occurs nowhere in the operands
+/// or the replacements, so no replacement can act on the renamed `var`;
+/// the α-conversion is a nested substitution of one symbol by another,
+/// whose one key is not an application, so it never comes back here.
+fn rename_bound(
+    arena: &mut Arena,
+    scoped: &mut SmallVec<[ExprId; 2]>,
+    inner: &mut Vec<(ExprId, ExprId)>,
+    var: ExprId,
+    var_sym: SymbolId,
+    to: ExprId,
+) {
+    let mentioning: SmallVec<[(ExprId, ExprId); 2]> = inner
+        .iter()
+        .copied()
+        .filter(|&(k, _)| crate::base::walk::has_free_symbol(arena, k, var_sym))
+        .collect();
+    if mentioning.is_empty() {
+        inner.push((var, to));
+        return;
+    }
+    for c in scoped.iter_mut() {
+        *c = subs(arena, *c, var, to);
+    }
+    for (k, v) in mentioning {
+        let renamed = (subs(arena, k, var, to), subs(arena, v, var, to));
+        inner.push(renamed);
     }
 }
 
@@ -492,15 +604,15 @@ fn subs_scoped(
                 top.2 = true;
             }
             children.clear();
-            if let Some(b) = crate::base::walk::binder(arena, id) {
-                let (inner, var) = scopes.enter(arena, sc, &b);
+            if let Some(mut b) = crate::base::walk::binder(arena, id) {
+                let (inner, var) = scopes.enter(arena, sc, &mut b);
                 children.extend(b.outer.iter().map(|&c| (c, sc)));
                 if inner != 0 {
                     children.extend(b.scoped.iter().map(|&c| (c, inner)));
                 }
                 entered.insert((id, sc), Entered::Binder(b, inner, var));
-            } else if let Some(b) = crate::base::walk::var_slot(arena, id) {
-                let plan = scopes.enter_slot(arena, sc, &b);
+            } else if let Some(mut b) = crate::base::walk::var_slot(arena, id) {
+                let plan = scopes.enter_slot(arena, sc, &mut b);
                 children.extend(b.outer.iter().map(|&c| (c, sc)));
                 if plan.inner != 0 {
                     children.extend(b.scoped.iter().map(|&c| (c, plan.inner)));

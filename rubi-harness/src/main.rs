@@ -208,7 +208,7 @@ fn probe(argv: &[String]) -> ExitCode {
     let mut env = check::Env::new();
     env.extend(&ctx, &x, &[&f, &big_f]);
     println!("params:     {}", env.desc);
-    let reports = check::check(&ctx, &f, &big_f, &x, &env);
+    let reports = check::check(&ctx, &f, &big_f, &x, &env, src.contains("%i"));
     for r in &reports {
         println!("  {}", r.describe(var));
     }
@@ -222,7 +222,7 @@ fn probe(argv: &[String]) -> ExitCode {
         let mut env_neg = check::Env::negated();
         env_neg.extend(&ctx, &x, &[&f, &big_f]);
         println!("params:     {} (negated set)", env_neg.desc);
-        let reports_neg = check::check(&ctx, &f, &big_f, &x, &env_neg);
+        let reports_neg = check::check(&ctx, &f, &big_f, &x, &env_neg, src.contains("%i"));
         for r in &reports_neg {
             println!("  {}", r.describe(var));
         }

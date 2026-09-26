@@ -16,8 +16,8 @@
 //!
 //! | function | method | relative accuracy |
 //! |---|---|---|
-//! | [`betainc_regularized_f64`] | the dispatch of TOMS 708 (DiDonato & Morris 1992): power series `bpser`, the recurrence `bup`, the asymptotic expansion `bgrat` for a large first and small second parameter, the continued fraction `bfrac`, and the two-large-parameter expansion `basym` (both shapes above 100 and `x` within `3 %` of the mean, in `λ = a − (a + b)x`); each tail computed directly where it is the smaller one.  A shape below 1 is kept as a factor, never as `ln` of it in an exponent: `1/(a B(a, b))` from `ln Γ(1 + t)` (through `gam1`, the Taylor series of `1/Γ(1 + t)`, DLMF 5.7.1) and `ln Γ(a + b) − ln Γ(a)` without cancellation (the `algdiv` of DiDonato & Morris) | ≈ 1e-15 typical, ≤ 1e-13 for `a + b ≤ 1e6` away from the far tail, also for shapes down to `1e-300`; in the far tail (`1e-100` and below) with shapes ≥ 1e4 expect ≈ 1e-11 — the conditioning of the `f64` argument, one ulp of which moves such a tail by that much; for `a, b` both ≈ 1e7 or more the conditioning of `(a + b)·x` in double limits it to ≈ 1e-12.  `a + b` must be a double (`NaN` beyond) |
-//! | [`gammainc_lower_regularized_f64`], [`gammainc_upper_regularized_f64`] | a dispatch on `a`: below 1, the Taylor route of DiDonato & Morris (1986, §2) for `x < 1.1` (each tail formed where it is the smaller one) and Legendre's continued fraction beyond, with the prefactor `a(1 + gam1(a))·e^{a ln x − x}`; below `GAMMA_TEMME_MIN_A = 1e6`, or for `x` beyond both 40 standard deviations and `a/2` from `a`, the power series for `x < a + 1` and Lentz's continued fraction otherwise (rescaled by `x` beyond `10¹⁰⁰`), with the prefactor `xᵃe⁻ˣ/Γ(a)` directly for `a ≤ 10` and through Loader's `bd0` and the Stirling remainder above (no cancellation for large `a`); from `a = 1e6` on and within that window, Temme's uniform asymptotic expansion (DLMF 8.12) truncated after `c₁/a`, its `½ erfc(z)` and correction term sharing one exponential so the tail stays correct into the subnormal range | ≈ 1e-15, also for `a` down to `1e-300`; ≈ 1e-12 at `a = 5e7` (the conditioning of the `f64` argument) |
+//! | [`betainc_regularized_f64`] | the dispatch of TOMS 708 (DiDonato & Morris 1992): power series `bpser`, the recurrence `bup`, the asymptotic expansion `bgrat` for a large first and small second parameter, the continued fraction `bfrac`, and the two-large-parameter expansion `basym` (both shapes above 100 and `x` within `3 %` of the mean, in `λ = a − (a + b)x`); each tail computed directly where it is the smaller one.  A shape below 1 is kept as a factor, never as `ln` of it in an exponent: `1/(a B(a, b))` from `ln Γ(1 + t)` (through `gam1`, the Taylor series of `1/Γ(1 + t)`, DLMF 5.7.1) and `ln Γ(a + b) − ln Γ(a)` without cancellation (the `algdiv` of DiDonato & Morris).  The distance from the mean, `(a + b)x − a`, is formed without rounding `a + b` or the product (two-sum and a fused multiply-add) | ≈ 1e-15 typical, ≤ 3e-14 for a tail ≥ 1e-10 (shapes from `1e-300` to `1e16`: largest measured 2e-14); in a smaller tail `P` the rounding of its logarithm, up to ≈ 8·ε·\|ln P\| (1e-13 at 1e-100, 3.5e-13 at 1e-277).  Measured on 4600 random and extreme cases against mpmath at ≥ 35 digits (positive-term series where its hypergeometric route fails).  `a + b` must be a double (`NaN` beyond) |
+//! | [`gammainc_lower_regularized_f64`], [`gammainc_upper_regularized_f64`] | a dispatch on `a`: below 1, the Taylor route of DiDonato & Morris (1986, §2) for `x < 1.1` (each tail formed where it is the smaller one) and Legendre's continued fraction beyond, with the prefactor `a(1 + gam1(a))·e^{a ln x − x}`; below `GAMMA_TEMME_MIN_A = 1e6`, or for `x` beyond both 40 standard deviations and `a/2` from `a`, the power series for `x < a + 1` and Lentz's continued fraction otherwise (rescaled by `x` beyond `10¹⁰⁰`), with the prefactor `xᵃe⁻ˣ/Γ(a)` directly for `a ≤ 10` and through Loader's `bd0` and the Stirling remainder above (no cancellation for large `a`); from `a = 1e6` on and within that window, Temme's uniform asymptotic expansion (DLMF 8.12) truncated after `c₁/a`, its `½ erfc(z)` and correction term sharing one exponential so the tail stays correct into the subnormal range | ≈ 1e-15 for `a ≤ 1e4`, also for `a` down to `1e-300`; rising as `√a·ε` to ≈ 3e-14 just below `a = 1e6` (the rounding of the `O(√a)` terms of the series and fraction), ≈ 6e-15 in Temme's range (to `a = 1e15`), all for a tail ≥ 1e-10; in a smaller tail `P` the rounding of its logarithm, up to ≈ 5·ε·\|ln P\| (2.3e-13 at 1e-241) |
 //! | `norm` | Cody's `erfc`, continued by `erfcx(x)·e^{−x²}` where Cody's approximation stops (`x > 26.5`, the subnormal range: `Φ(x)` is non-zero down to `x ≈ −38.5`) / the crate's `erfcinv` | ≈ 1e-16 (the precision of a subnormal result in the subnormal range) |
 //! | `t` | `½ I_{ν/(ν + x²)}(ν/2, ½)`; once `ν/x² < 1e-290` (so for `|x|` beyond `≈ 1e145`, where `x²` would soon overflow) the power law `½ (ν/x²)^{ν/2} / ((ν/2) B(ν/2, ½))`, the power as `ν^{ν/2}·|x|^{−ν}` while that is a normal double and from `ln(ν/x²)` below, so the tail is right up to `|x| = f64::MAX` (`P(T > 1e200) = 3.2e-101` for `ν = ½`) | ≈ 1e-15; ≈ 1e-13 in the power-law region where the tail is subnormal (`|ν/2 · ln(ν/x²)| · ε`) |
 //! | `f` | `I_z(d₁/2, d₂/2)` with `z = d₁x/(d₁x + d₂)`, `y = 1 − z` formed directly; where `z` or `y` is below the normal range (`d₁x` under- or overflows, or a shape is extreme) the power series of the small tail from `ln z` (`ln y`) and `d₂z` (`d₁y`), never from the subnormal argument, and the other tail as `−expm1` of its logarithm | as the incomplete beta |
@@ -402,14 +402,23 @@ fn rlog1(x: f64) -> f64 {
 }
 
 /// `k ln(k/m) + m − k` (`bd0` in Loader 2000) given `diff = k − m` exactly and
-/// `ln_ratio = ln(k/m)`: the series in `v = diff/(k + m)` when `k ≈ m`
-/// (where the direct formula cancels), the direct formula otherwise.
+/// `ln_ratio = ln(k/m)`: the series in `v = diff/(k + m)`,
+/// `diff·v + 2k Σ_{j≥1} v^{2j+1}/(2j + 1)`, for `|v| < ½` (`k/m` between ⅓
+/// and 3), the direct formula otherwise.
+///
+/// The series has no cancellation there (its correction terms are at most
+/// `|v|/3` of `diff·v` against it, and of one sign) and needs 27 terms at
+/// `|v| = ½`.  Loader switches at `|v| = 0.1`, and just beyond that the
+/// direct formula cancels a factor `1/v`: its error `|k ln(k/m)|·ε` was
+/// `10⁻¹²` of `e^{−bd0}` in a far tail — `Q(24128.47, 30411.25) = 2.7·10⁻³⁰⁶`
+/// (the exponent 698.6 from `−5584 + 6283`) came out `10⁻¹²` off.  From
+/// `k/m = 3` on the direct formula loses less than two bits.
 fn bd0_with(k: f64, m: f64, diff: f64, ln_ratio: f64) -> f64 {
-    // `0.1k + 0.1m` and the halved quotient: `k + m` overflows near
+    // `0.5k + 0.5m` and the halved quotient: `k + m` overflows near
     // f64::MAX, and 0.26 then took the series branch for any pair
     // (`bd0(1e300, 1.8e308) = 0`, and `gamma::sf(1.8e308, 1e300)` came out
     // `2.2e-159` instead of 0).
-    if diff.abs() < 0.1 * k + 0.1 * m {
+    if diff.abs() < 0.5 * k + 0.5 * m {
         let v = (0.5 * diff) / (0.5 * k + 0.5 * m);
         let v2 = v * v;
         let mut s = diff * v;
@@ -441,12 +450,30 @@ fn bd0(k: f64, m: f64) -> f64 {
     bd0_with(k, m, k - m, ln_ratio)
 }
 
+/// `(a + b)·s − c` without rounding `a + b` or the product first: `a + b`
+/// as the exact pair `n + n_lo` (Knuth's two-sum), `n·s` as the exact pair
+/// `p + p_lo` (a fused multiply-add), and then `(p − c) + (p_lo + n_lo·s)`,
+/// whose leading difference is exact near the mean (Sterbenz).  This is the
+/// distance `λ` of the argument from the mean in the units of the shapes;
+/// formed as `(a + b)·x − a` in plain doubles it carries an absolute error
+/// `ε·a`, which the tail's exponent (`≈ λ²/2a`) turns into a relative error
+/// `ε·|λ|` — `3·10⁻⁸` for `I_{0.107}(3.7·10¹⁴, 3.1·10¹⁵)` 31 standard
+/// deviations out (0.28), `10⁻¹¹` at shapes near `3·10⁷`.
+fn mean_offset(a: f64, b: f64, s: f64, c: f64) -> f64 {
+    let n = a + b;
+    let bb = n - a;
+    let n_lo = (a - (n - bb)) + (b - bb);
+    let p = n * s;
+    let p_lo = n.mul_add(s, -p);
+    (p - c) + (p_lo + n_lo * s)
+}
+
 /// `ln(xᵃ yᵇ / B(a, b))` for `x + y = 1`, the smaller of `x`, `y` taken
 /// as exact (the other is `1 −` it, never rounded): with `n = a + b`,
 /// `−bd0(a, nx) − bd0(b, ny) − [stirlerr(a) + stirlerr(b) − stirlerr(n)]
 /// + ½ ln(ab/(2πn))`, in which the two `bd0` differences `nx − a` and
-/// `ny − b` are the same number up to sign and are formed once.  `−∞`
-/// when `x` or `y` is `0`.
+/// `ny − b` are the same number up to sign and are formed once, without
+/// rounding ([`mean_offset`]).  `−∞` when `x` or `y` is `0`.
 fn log_beta_pref(a: f64, b: f64, x: f64, y: f64) -> f64 {
     if x <= 0.0 || y <= 0.0 {
         return f64::NEG_INFINITY;
@@ -455,7 +482,7 @@ fn log_beta_pref(a: f64, b: f64, x: f64, y: f64) -> f64 {
     let (s, small, large) = if y <= x { (y, b, a) } else { (x, a, b) };
     let ln_l = (-s).ln_1p();
     let ns = n * s;
-    let d = ns - small;
+    let d = mean_offset(a, b, s, small);
     let t_small = bd0_with(small, ns, -d, (small / n).ln() - s.ln());
     let nl = n - ns;
     let t_large = bd0_with(large, nl, d, (large / n).ln() - ln_l);
@@ -1373,11 +1400,15 @@ fn bratio_route(a: f64, b: f64, x: f64, y: f64) -> Option<(Direct, bool)> {
         };
         (side, swap)
     } else {
-        // λ = a y − b x: positive when x is below the mean a/(a + b).
-        let lambda = if a > b {
-            (a + b) * y - b
+        // λ = a y − b x = a − (a + b)x = (a + b)y − b: positive when x is
+        // below the mean a/(a + b); from the exact one of x, y (the smaller)
+        // without rounding (a + b) or its product ([`mean_offset`]) — basym's
+        // exponent is ≈ λ²/2 (1/a + 1/b), so an error ε·a in λ was 10⁻¹¹ of
+        // the tail at shapes near 3·10⁷ (0.28 chose by a > b).
+        let lambda = if x <= y {
+            -mean_offset(a, b, x, a)
         } else {
-            a - (a + b) * x
+            mean_offset(a, b, y, b)
         };
         let swap = lambda < 0.0;
         let (a0, b0, x0, y0, lambda) = if swap {

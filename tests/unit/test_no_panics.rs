@@ -39,7 +39,7 @@ const ALLOWLIST: &[(&str, usize)] = &[
 /// `# Panics` on its item; converting them to `Result`s is tracked as a
 /// follow-up, and this list may only shrink.  `debug_assert!` is not counted.
 const ASSERT_ALLOWLIST: &[(&str, usize)] = &[
-    // `Context::symbol`: an empty name (`try_symbol` returns an error).
+    // `Context::symbol` (and its alias `var`): an empty name (`try_symbol` returns an error).
     ("api/context.rs", 1),
     // `Ex::replace`: the user's closure returned an expression from another context (cross-context logic error).
     ("api/expr_funcs.rs", 1),
@@ -54,9 +54,11 @@ const ASSERT_ALLOWLIST: &[(&str, usize)] = &[
     ("domains/matrix.rs", 4),
     // `MultiPoly`: variable-count agreement and exponent overflow in `add`/`sub`/`mul`/`pow` (the bodies of the
     // `+`/`-`/`*` operators, which cannot return an error; `try_add`/`try_sub`/`try_mul`/`try_pow` return `None`),
-    // variable index in `var`/`degree_in`/`partial_derivative`/`eval_var`/`substitute`, and `s_polynomial`.
-    ("poly/multipoly.rs", 10),
-    // `RationalFn`: zero denominator, division by zero, inverse of zero.
+    // the variable index in `var`/`substitute` (`try_var`/`try_substitute`), and `s_polynomial`
+    // (`try_s_polynomial`).  `degree_in`/`partial_derivative`/`eval_var` are total since 0.29.
+    ("poly/multipoly.rs", 6),
+    // `RationalFn`: zero denominator in `new`, division by zero and inverse of zero in `Field::div`/`inv` (the
+    // trait cannot return an error); `try_new`/`try_div`/`try_inv` return `None`.
     ("poly/ratfn.rs", 3),
 ];
 

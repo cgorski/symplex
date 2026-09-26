@@ -3272,8 +3272,10 @@ fn arb_gamma_real(
 
     let x_approx = bigfloat_to_f64(x, rm, cc)?;
 
-    // Detect non-positive integer poles via f64 approximation.
-    if x_approx <= 0.0 {
+    // Detect non-positive integer poles via f64 approximation.  The sign is
+    // the BigFloat's: a positive argument below the f64 range (10⁻⁴⁰⁰) rounds
+    // to 0.0 and was refused as the pole at 0.
+    if x.is_negative() && x_approx <= 0.0 {
         let rounded = x_approx.round();
         if (rounded - x_approx).abs() < 1e-12 && rounded <= 0.0 {
             return Err(SymplexError::Unevaluable {
@@ -3282,7 +3284,7 @@ fn arb_gamma_real(
         }
     }
 
-    if x_approx > 0.0 {
+    if !x.is_negative() {
         // Direct Stirling path.
         tracing::debug!(x_approx, "arb_gamma_real: positive argument");
         let log_gamma = stirling_log_gamma(x, prec, rm, cc)?;
@@ -5676,6 +5678,105 @@ fn arb_erfcinv(
 
 // ── Incomplete gamma / exponential integrals ───────────────────────────────────
 
+/// `v > 0`: astro-float's `is_positive` is the sign bit alone, true for
+/// `+0` (`expint(1 + 10⁻²⁰⁰, ⅓)` rounds its order to 1 and `s = 1 − n` to
+/// `+0`, which must take the integer route, not `Γ(0)`).
+fn bf_strictly_positive(v: &BigFloat) -> bool {
+    v.is_positive() && !v.is_zero()
+}
+
+/// `⌈log₂ v⌉` for `v > 1`, `0` for `v ≤ 1`, 1100 for a non-finite `v`: the
+/// guard bits a quantity of magnitude `v` needs for its *absolute* error to
+/// stay at the unit of the working precision (an exponent `s ln x ≈ 10⁹`
+/// needs 30 bits more than the relative precision of its exponential).
+fn magnitude_bits(v: f64) -> usize {
+    if !v.is_finite() {
+        1100
+    } else if v > 1.0 {
+        v.log2().ceil() as usize
+    } else {
+        0
+    }
+}
+
+/// `⌈log₂(1/s)⌉` for `0 < s < 1`, from the binary exponent (so also for an
+/// `s` below the `f64` range); `0` for `s ≥ 1`.
+fn inverse_bits(s: &BigFloat) -> usize {
+    match s.exponent() {
+        Some(e) if e < 1 => usize::try_from(1 - i64::from(e)).unwrap_or(0),
+        _ => 0,
+    }
+}
+
+/// Guard bits for `ln Γ(s)`, `s > 0`, whose magnitude is below
+/// `s·|ln s| + s + 2` for `s ≥ 1` and `|ln s| + 2` below.
+fn lngamma_bits(s: &BigFloat, s_f: f64) -> usize {
+    if s_f >= 1.0 {
+        magnitude_bits(s_f * s_f.ln() + s_f + 2.0)
+    } else {
+        magnitude_bits(inverse_bits(s) as f64 * std::f64::consts::LN_2 + 2.0)
+    }
+}
+
+/// The most bits of cancellation a special function pays for with working
+/// precision before it refuses: `4·wp + 1024` (a shape of `10⁻³⁰⁰` costs
+/// about 1000, and is evaluated; one of `10⁻¹⁰⁰⁰` is refused at 16 and 50
+/// digits — `ln Γ` by Stirling's series at 3500 bits takes seconds).
+fn cancellation_cap(wp: usize) -> usize {
+    wp.saturating_mul(4).saturating_add(1024)
+}
+
+/// The refusal of a special function whose cancellation exceeds
+/// [`cancellation_cap`]: [`SymplexError::PrecisionExhausted`] at the digits
+/// the working precision `prec` stands for (the inverse of
+/// `working_precision`).  The routines below `arb_*` raise it at their own
+/// working precision; [`requested_at`] restates it at the caller's.
+fn special_exhausted(prec: usize) -> SymplexError {
+    SymplexError::PrecisionExhausted {
+        requested: u32::try_from(prec.saturating_sub(64) * 10 / 34).unwrap_or(u32::MAX),
+        achieved: 0,
+    }
+}
+
+/// A [`SymplexError::PrecisionExhausted`] from inside a special function,
+/// restated at the precision `prec` its caller asked for (other errors
+/// pass through).
+fn requested_at(prec: usize) -> impl Fn(SymplexError) -> SymplexError {
+    move |e| match e {
+        SymplexError::PrecisionExhausted { .. } => special_exhausted(prec),
+        other => other,
+    }
+}
+
+/// `v` at precision `p` (a copy; the value is unchanged when `p` is larger).
+fn at_precision(v: &BigFloat, p: usize, rm: RoundingMode) -> BigFloat {
+    let mut w = v.clone();
+    let _ = w.set_precision(p, rm);
+    w
+}
+
+/// `x^s e^{−x}` for `x > 0`, as `exp(s ln x − x)` with the exponent formed
+/// to an absolute error of `2^−wp` (the relative error of the result): it
+/// carries the bits of its magnitude as guard.  0.28 multiplied `e^{−x}` by
+/// `x^s`, two factors near the ends of the exponent range for `s ≈ x ≈ 10⁸`.
+fn gamma_prefactor(
+    s: &BigFloat,
+    x: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let s_f = bigfloat_to_f64(s, rm, cc)?.abs();
+    let x_f = bigfloat_to_f64(x, rm, cc)?;
+    // |ln x| from the binary exponent when x is outside the f64 range.
+    let ln_x = x
+        .exponent()
+        .map_or(0.0, |e| (f64::from(e).abs() + 1.0) * std::f64::consts::LN_2);
+    let wpe = wp + magnitude_bits(s_f * ln_x + x_f) + 8;
+    let e = s.mul(&x.ln(wpe, rm, cc), wpe, rm).sub(x, wpe, rm);
+    Ok(e.exp(wp, rm, cc))
+}
+
 /// Legendre's continued fraction for `Γ(s, x)`, `x > 0` (modified Lentz):
 ///
 /// ```text
@@ -5683,7 +5784,14 @@ fn arb_erfcinv(
 /// ```
 ///
 /// Converges for every `x > 0` and every real `s`; it is the method of
-/// choice for `x ≥ max(1, s + 1)`.
+/// choice for `x ≥ max(1, s + 1)`.  At `x = s + 1` it needs about
+/// `27·s^{1/3}` steps to 266 bits (573 at `s = 10⁴`, 5779 at `s = 10⁷`) and a
+/// few hundred from `x = s + 10√s` on, so the budget is
+/// `40·wp + 2000 + 64·s^{1/3}` (0.28's `40·wp + 2000` fell short near
+/// `s = 10⁸`), the last term at most `2·10⁶` (seconds; beyond, from
+/// `s ≈ 3·10¹⁷`, the fraction is refused rather than run for minutes); the
+/// fraction is evaluated with `log₂(budget) + 8` guard bits for the
+/// roundings of its steps.
 fn uppergamma_cf(
     s: &BigFloat,
     x: &BigFloat,
@@ -5691,6 +5799,10 @@ fn uppergamma_cf(
     rm: RoundingMode,
     cc: &mut Consts,
 ) -> Result<BigFloat, SymplexError> {
+    let s_f = bigfloat_to_f64(s, rm, cc)?;
+    let max_iter = (40 * wp + 2000).saturating_add((64.0 * s_f.abs().cbrt()).min(2e6) as usize);
+    let wp = wp + magnitude_bits(max_iter as f64) + 8;
+    let (s, x) = (&at_precision(s, wp, rm), &at_precision(x, wp, rm));
     let one = BigFloat::from_i32(1, wp);
     let two = BigFloat::from_i32(2, wp);
     // "tiny" replaces exact zeros in Lentz's algorithm.
@@ -5704,7 +5816,6 @@ fn uppergamma_cf(
         one.div(&b, wp, rm)
     };
     let mut h = d.clone();
-    let max_iter = 40 * wp + 2000;
     let mut converged = false;
     for i in 1..=max_iter {
         let i_bf = BigFloat::from_i128(i as i128, wp);
@@ -5731,16 +5842,22 @@ fn uppergamma_cf(
     if !converged {
         return Err(SymplexError::ComputationFailed {
             operation: "evalf",
-            reason: "continued fraction for the incomplete gamma function did not converge".into(),
+            reason: format!(
+                "continued fraction for the incomplete gamma function did not converge in \
+                 {max_iter} steps"
+            ),
         });
     }
-    let e_neg_x = x.neg().exp(wp, rm, cc);
-    let x_pow_s = bf_pow(x, s, wp, rm, cc);
-    Ok(e_neg_x.mul(&x_pow_s, wp, rm).mul(&h, wp, rm))
+    let pref = gamma_prefactor(s, x, wp, rm, cc)?;
+    Ok(pref.mul(&h, wp, rm))
 }
 
 /// Series for `γ(s, x) = x^s e^{−x} Σ_{k≥0} x^k / (s (s+1) … (s+k))`,
-/// `s > 0`, `x ≥ 0` (all terms positive).
+/// `s > 0`, `x ≥ 0`: positive terms, decreasing from `k ≈ x − s` on.  Near
+/// `x ≈ s` about `√(2s·wp·ln 2)` of them are needed (60 000 at `s = 10⁷`),
+/// each term rounding its predecessor's error once more, so the sum carries
+/// `log₂(budget) + 8` guard bits.  The budget `2x + wp + 50` is capped at
+/// `10⁷` terms (a refusal beyond, for shapes near `10¹³` and above).
 fn lowergamma_series(
     s: &BigFloat,
     x: &BigFloat,
@@ -5751,11 +5868,13 @@ fn lowergamma_series(
     if x.is_zero() {
         return Ok(BigFloat::new(wp));
     }
-    let one = BigFloat::from_i32(1, wp);
     let x_f = bigfloat_to_f64(x, rm, cc)?;
+    let max_terms = ((2.0 * x_f).min(1e7) as usize).saturating_add(wp + 50);
+    let wp = wp + magnitude_bits(max_terms as f64) + 8;
+    let (s, x) = (&at_precision(s, wp, rm), &at_precision(x, wp, rm));
+    let one = BigFloat::from_i32(1, wp);
     let mut term = one.div(s, wp, rm);
     let mut sum = term.clone();
-    let max_terms = (2.0 * x_f) as usize + wp + 50;
     let mut converged = false;
     for k in 1..=max_terms {
         let s_plus_k = s.add(&BigFloat::from_i128(k as i128, wp), wp, rm);
@@ -5769,20 +5888,46 @@ fn lowergamma_series(
     if !converged {
         return Err(series_did_not_converge("lowergamma", max_terms));
     }
-    let e_neg_x = x.neg().exp(wp, rm, cc);
-    let x_pow_s = bf_pow(x, s, wp, rm, cc);
-    Ok(x_pow_s.mul(&e_neg_x, wp, rm).mul(&sum, wp, rm))
+    let pref = gamma_prefactor(s, x, wp, rm, cc)?;
+    Ok(pref.mul(&sum, wp, rm))
 }
 
-/// `Γ(s, x)` at working precision `wp` for real `s`, `x > 0`.
+/// `Γ(s, x)` at working precision `wp` for real `s`, `x > 0`, to a relative
+/// error of about `2^−wp`:
 ///
-/// * `x ≥ max(1, s+1)`: continued fraction.
-/// * `s > 0`, smaller `x`: `Γ(s) − γ(s, x)` (series), with guard bits for
-///   the cancellation when `Γ(s, x) ≪ Γ(s)`.
-/// * `s = 0`, `x < 1`: `Γ(0, x) = E₁(x) = −Ei(−x)`.
-/// * `s < 0`, `x < 1`: shift `s` into `(0, 1]` (or to `0` for integers) by
-///   `Γ(s, x) = (Γ(s+1, x) − x^s e^{−x}) / s`, downward from the base value.
+/// * `x ≥ max(1, s + 1)`: the continued fraction [`uppergamma_cf`];
+/// * `s > 0`, smaller `x`: `Γ(s) − γ(s, x)` ([`uppergamma_by_difference`]);
+/// * `s ≤ 0`, `x < 1`: the downward recurrence ([`uppergamma_downward`]).
 fn uppergamma_wp(
+    s: &BigFloat,
+    x: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    // |s| below the working precision, 0 < x < 2: Γ(s, x) = E₁(x) + δ with
+    // |δ| = |∫_x^∞ (t^s − 1) e^{−t}/t dt| ≤ 2|s|((ln x)²/2 + 1) and E₁(x) ≥
+    // E₁(2) = 0.0489, so δ is below 2^{−wp} of the value once
+    // log₂(1/|s|) ≥ wp + 8 + 2·log₂(|ln x| + 1).  (0.28 reached this limit
+    // only when s underflowed f64, by taking it for the integer 0.)
+    if !s.is_zero()
+        && bigfloat_to_f64(x, rm, cc)? < 2.0
+        && inverse_bits(&s.abs()) >= wp + 8 + 2 * magnitude_bits(ln_magnitude(x) + 1.0)
+    {
+        return Ok(arb_ei(&x.neg(), wp, rm, cc)?.neg());
+    }
+    if bf_strictly_positive(s) {
+        return uppergamma_positive(s, x, wp, rm, cc);
+    }
+    if bigfloat_to_f64(x, rm, cc)? >= 1.0 {
+        return uppergamma_cf(s, x, wp, rm, cc);
+    }
+    uppergamma_downward(s, x, wp, rm, cc)
+}
+
+/// `Γ(s, x)` for `s > 0`, `x > 0`: the continued fraction for
+/// `x ≥ s + 1`, [`uppergamma_by_difference`] below.
+fn uppergamma_positive(
     s: &BigFloat,
     x: &BigFloat,
     wp: usize,
@@ -5791,53 +5936,116 @@ fn uppergamma_wp(
 ) -> Result<BigFloat, SymplexError> {
     let s_f = bigfloat_to_f64(s, rm, cc)?;
     let x_f = bigfloat_to_f64(x, rm, cc)?;
-    if x_f >= (s_f + 1.0).max(1.0) {
+    if x_f >= s_f + 1.0 {
         return uppergamma_cf(s, x, wp, rm, cc);
     }
-    if s_f > 0.0 {
-        // Γ(s, x)/Γ(s) is not tiny here (x < s + 1), so a fixed guard suffices.
-        let wp2 = wp + 32 + cancellation_guard_bits(x_f);
-        let mut sw = s.clone();
-        let _ = sw.set_precision(wp2, rm);
-        let mut xw = x.clone();
-        let _ = xw.set_precision(wp2, rm);
-        let g = arb_gamma_real(&sw, wp2, rm, cc)?;
-        let lower = lowergamma_series(&sw, &xw, wp2, rm, cc)?;
-        return Ok(round_to(g.sub(&lower, wp2, rm), wp, rm));
+    uppergamma_by_difference(s, s_f, x, wp, rm, cc)
+}
+
+/// `Γ(s, x) = Γ(s) − γ(s, x)` for `s > 0`, `x < s + 1` (the region of the
+/// series).  The difference cancels `log₂(1/Q(s, x))` bits, and there
+/// `Q(s, x) ≥ Q(s, s + 1)`, which is at least `e^{−2}` for `s ≥ 1` (it rises
+/// from `Q(1, 2) = e^{−2}` towards ½) and at least
+/// `Γ(s, 2)/Γ(s) ≥ E₁(2)·s > 0.048·s` for `s < 1` (`t^{s−1} ≥ 1/t` on
+/// `[2, ∞)`, and `Γ(s) ≤ 1/s`; mpmath finds `min Q(s, s + 1)/s = e^{−2}`
+/// over `s ≤ 1`): at most `log₂(1/min(1, s)) + 5` bits, added to the working
+/// precision up front, with the bits of `ln Γ(s)` for the relative accuracy
+/// of `Γ(s)` itself.  0.28 assumed `Q` was never small here and added
+/// guard bits for `x` instead — `1.44·x` of them (10⁷ bits, a hang, at
+/// `x ≈ 7·10⁶`) and none for a small `s`: `uppergamma(10⁻¹⁰⁰, ½)` came out
+/// `0.5649…`, truly `0.5597…`.
+fn uppergamma_by_difference(
+    s: &BigFloat,
+    s_f: f64,
+    x: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if inverse_bits(s) > cancellation_cap(wp) {
+        return Err(special_exhausted(wp));
     }
-    // s ≤ 0, x < 1.  Each downward step `Γ(s−1) = (Γ(s) − x^{s−1}e^{−x})/(s−1)`
-    // may cancel a few bits; reserve 16 per step.
-    let s_int = bf_as_int(s, rm, cc)?;
-    let steps = match s_int {
-        Some(k) => (-k) as usize,
-        None => (-s_f).ceil() as usize,
+    let wp2 = wp + 8 + inverse_bits(s) + lngamma_bits(s, s_f);
+    let sw = at_precision(s, wp2, rm);
+    let xw = at_precision(x, wp2, rm);
+    let g = arb_gamma_real(&sw, wp2, rm, cc)?;
+    let lower = lowergamma_series(&sw, &xw, wp2, rm, cc)?;
+    Ok(round_to(g.sub(&lower, wp2, rm), wp, rm))
+}
+
+/// `Γ(s, x)` for `s ≤ 0`, `0 < x < 1`: from `Γ(s₀, x)` with
+/// `s₀ = s + n ∈ (0, 1)` (or from `Γ(0, x) = E₁(x)` for an integer
+/// `s = −n`) by `n` downward steps `Γ(σ − 1, x) = (t − Γ(σ, x))/(1 − σ)`,
+/// `t = x^{σ−1}e^{−x}`.  Each step subtracts two positive numbers, and for
+/// `x ≤ 1`
+///
+/// ```text
+/// t − Γ(σ, x) = t·∫₀^∞ (1 − (1 + u/x)^{σ−1}) e^{−u} du ≥ 0.40·min(1, 1 − σ)·t
+/// ```
+///
+/// (convexity in the exponent, and `∫₀^∞ u/(1 + u) e^{−u} du = 1 − e·E₁(1)
+/// = 0.4037`), so a step loses at most `log₂(1/min(1, 1 − σ)) + 1.4` bits —
+/// many in the first step when `s` sits just below an integer.  The losses
+/// are measured as they occur and the evaluation is repeated with a larger
+/// reserve when they exceed it.  0.28 reserved 16 bits per step and took an
+/// `s` within `10⁻¹²` of an integer for that integer:
+/// `expint(3 + 10⁻¹⁴, ⅓)` was wrong from its 14th digit,
+/// `uppergamma(−2 + 10⁻¹⁵, ½)` from its 16th.
+fn uppergamma_downward(
+    s: &BigFloat,
+    x: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let s_f = bigfloat_to_f64(s, rm, cc)?;
+    let integer = s.is_int();
+    let steps = if integer {
+        (-s_f).round() as usize
+    } else {
+        (-s_f).ceil() as usize
     };
-    let wp2 = wp + 16 * steps + 32;
-    let mut sw = s.clone();
-    let _ = sw.set_precision(wp2, rm);
-    let mut xw = x.clone();
-    let _ = xw.set_precision(wp2, rm);
-    let e_neg_x = xw.neg().exp(wp2, rm, cc);
-    // Base point: Γ(0, x) = E₁(x) = −Ei(−x) for integer s; otherwise
-    // Γ(s₀, x) = Γ(s₀) − γ(s₀, x) with s₀ = s + steps ∈ (0, 1).
-    let (mut cur_s, mut val) = match s_int {
-        Some(_) => (BigFloat::new(wp2), arb_ei(&xw.neg(), wp2, rm, cc)?.neg()),
-        None => {
+    let cap = cancellation_cap(wp);
+    let mut reserve = 32 + 2 * steps;
+    loop {
+        let wp2 = wp + reserve;
+        let sw = at_precision(s, wp2, rm);
+        let xw = at_precision(x, wp2, rm);
+        // Base point: Γ(0, x) = E₁(x) = −Ei(−x) for an integer s; otherwise
+        // Γ(s₀, x) with s₀ = s + steps ∈ (0, 1).
+        let (mut cur_s, mut val) = if integer {
+            (BigFloat::new(wp2), arb_ei(&xw.neg(), wp2, rm, cc)?.neg())
+        } else {
             let s0 = sw.add(&BigFloat::from_i128(steps as i128, wp2), wp2, rm);
-            let g = arb_gamma_real(&s0, wp2, rm, cc)?;
-            let lower = lowergamma_series(&s0, &xw, wp2, rm, cc)?;
-            (s0, g.sub(&lower, wp2, rm))
+            let v = uppergamma_positive(&s0, &xw, wp2, rm, cc)?;
+            (s0, v)
+        };
+        let one = BigFloat::from_i32(1, wp2);
+        let mut lost = 0usize;
+        for _ in 0..steps {
+            let next_s = cur_s.sub(&one, wp2, rm);
+            let t = gamma_prefactor(&next_s, &xw, wp2, rm, cc)?;
+            let diff = t.sub(&val, wp2, rm);
+            match (t.exponent(), diff.exponent()) {
+                (Some(et), Some(ed)) if bf_strictly_positive(&diff) => {
+                    lost += usize::try_from(i64::from(et) - i64::from(ed)).unwrap_or(0);
+                }
+                _ => {
+                    lost = wp2;
+                    break;
+                }
+            }
+            val = diff.div(&next_s.neg(), wp2, rm);
+            cur_s = next_s;
         }
-    };
-    let one = BigFloat::from_i32(1, wp2);
-    for _ in 0..steps {
-        let next_s = cur_s.sub(&one, wp2, rm);
-        let x_pow = bf_pow(&xw, &next_s, wp2, rm, cc);
-        let t = x_pow.mul(&e_neg_x, wp2, rm);
-        val = val.sub(&t, wp2, rm).div(&next_s, wp2, rm);
-        cur_s = next_s;
+        if lost + 16 <= reserve {
+            return Ok(round_to(val, wp, rm));
+        }
+        if reserve >= cap {
+            return Err(special_exhausted(wp));
+        }
+        reserve = (lost + 32).max(2 * reserve).min(cap);
     }
-    Ok(round_to(val, wp, rm))
 }
 
 /// Upper incomplete gamma `Γ(s, x)` for real `s`, `x ≥ 0`.
@@ -5861,16 +6069,21 @@ fn arb_uppergamma(
     }
     let wp = prec + 32;
     if x.is_zero() {
-        if !s.is_positive() {
+        if !bf_strictly_positive(s) {
             return Err(unevaluable("uppergamma(s, 0) diverges for s ≤ 0"));
         }
+        let s_f = bigfloat_to_f64(s, rm, cc)?;
+        let wp = wp + lngamma_bits(s, s_f);
         return Ok(round_to(arb_gamma_real(s, wp, rm, cc)?, prec, rm));
     }
-    let r = uppergamma_wp(s, x, wp, rm, cc)?;
+    let r = uppergamma_wp(s, x, wp, rm, cc).map_err(requested_at(prec))?;
     Ok(round_to(r, prec, rm))
 }
 
-/// Lower incomplete gamma `γ(s, x)` for real `s > 0`, `x ≥ 0`.
+/// Lower incomplete gamma `γ(s, x)` for real `s > 0`, `x ≥ 0`: the series
+/// for `x < s + 1`, `Γ(s) − Γ(s, x)` beyond, where `P(s, x) ≥ P(s, s + 1)
+/// > 0.51` (mpmath, over `s` from `10⁻²⁷` to `10³`, rising towards ½ + … for
+/// larger `s`) and at most a bit cancels.
 fn arb_lowergamma(
     s: &BigFloat,
     x: &BigFloat,
@@ -5881,7 +6094,7 @@ fn arb_lowergamma(
     if x.is_nan() || s.is_nan() || s.is_inf() || x.is_inf_neg() {
         return Err(unevaluable("lowergamma of special float value"));
     }
-    if !s.is_positive() {
+    if !bf_strictly_positive(s) {
         return Err(unevaluable(
             "lowergamma requires s > 0 for numerical evaluation",
         ));
@@ -5891,17 +6104,18 @@ fn arb_lowergamma(
             "lowergamma of negative argument not yet supported in evalf",
         ));
     }
+    let s_f = bigfloat_to_f64(s, rm, cc)?;
     let wp = prec + 32;
     if x.is_inf_pos() {
+        let wp = wp + lngamma_bits(s, s_f);
         return Ok(round_to(arb_gamma_real(s, wp, rm, cc)?, prec, rm));
     }
-    let s_f = bigfloat_to_f64(s, rm, cc)?;
     let x_f = bigfloat_to_f64(x, rm, cc)?;
     if x_f < s_f + 1.0 {
-        let r = lowergamma_series(s, x, wp, rm, cc)?;
+        let r = lowergamma_series(s, x, wp, rm, cc).map_err(requested_at(prec))?;
         return Ok(round_to(r, prec, rm));
     }
-    // γ = Γ(s) − Γ(s, x); Γ(s, x) ≤ Γ(s) here so the difference is benign.
+    let wp = wp + 4 + lngamma_bits(s, s_f);
     let g = arb_gamma_real(s, wp, rm, cc)?;
     let upper = uppergamma_cf(s, x, wp, rm, cc)?;
     Ok(round_to(g.sub(&upper, wp, rm), prec, rm))
@@ -5937,7 +6151,7 @@ fn arb_expint(
         ));
     }
     let s = one.sub(n, wp, rm);
-    let g = uppergamma_wp(&s, x, wp, rm, cc)?;
+    let g = uppergamma_wp(&s, x, wp, rm, cc).map_err(requested_at(prec))?;
     let x_pow = bf_pow(x, &n.sub(&one, wp, rm), wp, rm, cc);
     Ok(round_to(x_pow.mul(&g, wp, rm), prec, rm))
 }
@@ -6167,8 +6381,52 @@ fn arb_fresnel(
 
 // ── Incomplete beta ───────────────────────────────────────────────────────────────
 
-/// `B(a, b) = Γ(a)Γ(b)/Γ(a+b)` at working precision `wp` for `a, b > 0`
-/// (all factors positive, so no cancellation).
+/// `|ln v|` bounded from the binary exponent of `v > 0` (so for any
+/// magnitude, and never below `ln 2`).
+fn ln_magnitude(v: &BigFloat) -> f64 {
+    v.exponent()
+        .map_or(0.0, |e| (f64::from(e).abs() + 1.0) * std::f64::consts::LN_2)
+}
+
+/// A bound on `|ln Γ(s)|` for `s > 0` (see [`lngamma_bits`]).
+fn lngamma_magnitude(s: &BigFloat, s_f: f64) -> f64 {
+    if s_f >= 1.0 {
+        s_f * s_f.ln() + s_f + 2.0
+    } else {
+        ln_magnitude(s) + 2.0
+    }
+}
+
+/// `ln B(a, b) = ln Γ(a) + ln Γ(b) − ln Γ(a + b)` for `a, b > 0` to an
+/// absolute error of about `2^−wp`: each `ln Γ` carries the bits of the
+/// largest magnitude as guard (they are `≈ 1.7·10⁹` for shapes near `10⁸`
+/// and cancel to the size of `ln B`), which also covers the rounding of
+/// `a + b`.
+fn ln_beta_wp(
+    a: &BigFloat,
+    b: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let a_f = bigfloat_to_f64(a, rm, cc)?;
+    let b_f = bigfloat_to_f64(b, rm, cc)?;
+    let ab_f = a_f + b_f;
+    let mag = lngamma_magnitude(a, a_f)
+        .max(lngamma_magnitude(b, b_f))
+        .max(ab_f * ab_f.ln().abs() + ab_f + 2.0);
+    let p = wp + magnitude_bits(mag) + 8;
+    let a_plus_b = a.add(b, p, rm);
+    let la = stirling_log_gamma(a, p, rm, cc)?;
+    let lb = stirling_log_gamma(b, p, rm, cc)?;
+    let lab = stirling_log_gamma(&a_plus_b, p, rm, cc)?;
+    Ok(la.add(&lb, p, rm).sub(&lab, p, rm))
+}
+
+/// `B(a, b) = Γ(a)Γ(b)/Γ(a+b)` at working precision `wp` for `a, b > 0`, as
+/// `exp(ln B(a, b))`: the three gamma values need not be representable
+/// (`Γ(10⁸)` is beyond the exponent range, `B(10⁸, 10⁸) = 2^{−2·10⁸}` is
+/// not).
 fn beta_wp(
     a: &BigFloat,
     b: &BigFloat,
@@ -6176,18 +6434,12 @@ fn beta_wp(
     rm: RoundingMode,
     cc: &mut Consts,
 ) -> Result<BigFloat, SymplexError> {
-    let ga = arb_gamma_real(a, wp, rm, cc)?;
-    let gb = arb_gamma_real(b, wp, rm, cc)?;
-    let a_plus_b = a.add(b, wp, rm);
-    let gab = arb_gamma_real(&a_plus_b, wp, rm, cc)?;
-    if gab.is_zero() {
-        return Err(unevaluable("betainc: Gamma(a + b) is zero"));
-    }
-    Ok(ga.mul(&gb, wp, rm).div(&gab, wp, rm))
+    Ok(ln_beta_wp(a, b, wp, rm, cc)?.exp(wp, rm, cc))
 }
 
 /// The continued fraction of the regularised incomplete beta function
-/// (DLMF 8.17.22, Numerical Recipes `betacf`; modified Lentz):
+/// (DLMF 8.17.22; evaluated by the modified Lentz algorithm of Thompson &
+/// Barnett, J. Comput. Phys. 64 (1986) 490):
 ///
 /// ```text
 /// I_x(a, b) = x^a (1−x)^b / (a B(a, b)) · 1/(1 + d₁/(1 + d₂/(1 + …)))
@@ -6196,7 +6448,11 @@ fn beta_wp(
 /// ```
 ///
 /// Returns the fraction `1/(1 + d₁/…)` only (the prefactor is applied by
-/// the caller).  Converges quickly for `x < (a+1)/(a+b+2)`.
+/// the caller).  Converges quickly for `x < (a+1)/(a+b+2)`.  Evaluated with
+/// `log₂(2·budget) + 8` guard bits for the roundings of its steps; the
+/// shape-dependent part of the budget, `10·√(a + b)`, is capped at `2·10⁶`
+/// steps (seconds; shapes near `10¹⁴` still converge within it, and
+/// beyond it the fraction is refused rather than run for minutes).
 fn betainc_cf(
     a: &BigFloat,
     b: &BigFloat,
@@ -6205,6 +6461,16 @@ fn betainc_cf(
     rm: RoundingMode,
     cc: &mut Consts,
 ) -> Result<BigFloat, SymplexError> {
+    let ab_f = bigfloat_to_f64(&a.add(b, 64, rm), rm, cc)?;
+    // The number of steps grows like √(max(a, b)) before the linear
+    // convergence phase; budget generously.
+    let max_iter = (40 * wp + 2000).saturating_add((10.0 * ab_f.abs().sqrt()).min(2e6) as usize);
+    let wp = wp + magnitude_bits(2.0 * max_iter as f64) + 8;
+    let (a, b, x) = (
+        &at_precision(a, wp, rm),
+        &at_precision(b, wp, rm),
+        &at_precision(x, wp, rm),
+    );
     let one = BigFloat::from_i32(1, wp);
     // "tiny" replaces exact zeros in Lentz's algorithm.
     let mut tiny = BigFloat::from_i32(1, wp);
@@ -6219,10 +6485,6 @@ fn betainc_cf(
     }
     d = one.div(&d, wp, rm);
     let mut h = d.clone();
-    // The number of steps grows like √(max(a, b)) before the linear
-    // convergence phase; budget generously.
-    let ab_f = bigfloat_to_f64(&qab, rm, cc)?;
-    let max_iter = 40 * wp + 2000 + (10.0 * ab_f.abs().sqrt()).ceil() as usize;
     let mut converged = false;
     // One Lentz step with partial numerator `aa`; returns `del = d·c`.
     let step = |aa: &BigFloat, c: &mut BigFloat, d: &mut BigFloat| -> BigFloat {
@@ -6274,6 +6536,42 @@ fn betainc_cf(
     Ok(h)
 }
 
+/// `x^a y^b / (a B(a, b))` for `0 < x < 1`, `y = 1 − x`, as one
+/// exponential of `a ln x + b ln y − ln a − ln B(a, b)`: the exponent is
+/// formed with the bits of its magnitude as guard, so that its absolute
+/// error — the relative error of the result — is `2^−wp`, and `ln B` comes
+/// from [`ln_beta_wp`].  0.28 formed `x^a`, `y^b` and
+/// `B(a, b) = Γ(a)Γ(b)/Γ(a + b)` separately: `Γ(10⁸)` is beyond the exponent
+/// range, and `betainc_regularized(10⁸ + ⅓, 10⁸ + 1/7, 0, ½)` was refused.
+fn betainc_prefactor(
+    a: &BigFloat,
+    b: &BigFloat,
+    x: &BigFloat,
+    y: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let a_f = bigfloat_to_f64(a, rm, cc)?;
+    let b_f = bigfloat_to_f64(b, rm, cc)?;
+    let ab_f = a_f + b_f;
+    let mag = a_f * ln_magnitude(x)
+        + b_f * ln_magnitude(y)
+        + ln_magnitude(a)
+        + lngamma_magnitude(a, a_f)
+        + lngamma_magnitude(b, b_f)
+        + ab_f * ab_f.ln().abs()
+        + ab_f
+        + 2.0;
+    let p = wp + magnitude_bits(mag) + 8;
+    let e = a
+        .mul(&x.ln(p, rm, cc), p, rm)
+        .add(&b.mul(&y.ln(p, rm, cc), p, rm), p, rm)
+        .sub(&a.ln(p, rm, cc), p, rm)
+        .sub(&ln_beta_wp(a, b, p, rm, cc)?, p, rm);
+    Ok(e.exp(wp, rm, cc))
+}
+
 /// `I_x(a, b)` for `x ≤ (a+1)/(a+b+2)` (`one_minus_x = 1 − x` is passed in
 /// so that it is exact): continued fraction times `x^a (1−x)^b / (a B(a, b))`.
 fn betainc_reg_direct(
@@ -6286,15 +6584,12 @@ fn betainc_reg_direct(
     cc: &mut Consts,
 ) -> Result<BigFloat, SymplexError> {
     let h = betainc_cf(a, b, x, wp, rm, cc)?;
-    let xa = bf_pow(x, a, wp, rm, cc);
-    let yb = bf_pow(one_minus_x, b, wp, rm, cc);
-    let beta = beta_wp(a, b, wp, rm, cc)?;
-    let denom = a.mul(&beta, wp, rm);
-    Ok(xa.mul(&yb, wp, rm).div(&denom, wp, rm).mul(&h, wp, rm))
+    let pref = betainc_prefactor(a, b, x, one_minus_x, wp, rm, cc)?;
+    Ok(pref.mul(&h, wp, rm))
 }
 
 /// The switch point `(a+1)/(a+b+2)` of the continued fraction: below it
-/// `I_x(a, b)` is computed directly, above it through `1 − I_{1−x}(b, a)`.
+/// `I_x(a, b)` is computed directly, above it `I_{1−x}(b, a)`.
 fn betainc_switch_point(a: &BigFloat, b: &BigFloat, wp: usize, rm: RoundingMode) -> BigFloat {
     let one = BigFloat::from_i32(1, wp);
     let two = BigFloat::from_i32(2, wp);
@@ -6303,41 +6598,98 @@ fn betainc_switch_point(a: &BigFloat, b: &BigFloat, wp: usize, rm: RoundingMode)
     a_plus_1.div(&a_plus_b_plus_2, wp, rm)
 }
 
-/// Regularised incomplete beta `I_x(a, b)` at working precision `wp` for
-/// `a, b > 0` and `0 ≤ x ≤ 1`, via the continued fraction and the symmetry
-/// `I_x(a, b) = 1 − I_{1−x}(b, a)` for `x > (a+1)/(a+b+2)` (where the
-/// subtracted value is at most about `1/2`, so at most one bit is lost).
-fn betainc_reg_wp(
+/// `(I_x(a, b), I_{1−x}(b, a))` for `a, b > 0`, `0 < x < 1`: both tails of
+/// the regularised incomplete beta function, each to a relative error of
+/// about `2^−wp`.
+///
+/// The continued fraction converges fast on the side of the smaller
+/// argument: it gives `I_x(a, b)` directly for `x ≤ (a+1)/(a+b+2)` and
+/// `I_{1−x}(b, a)` above, and the other tail is `1 −` it.  That difference
+/// cancels when the directly computed tail is close to 1: a small first
+/// shape piles the mass against 0 (`I_{1/10}(10⁻⁶⁰, ⅓) = 1 − 4.8·10⁻⁶⁰`).
+/// 0.28 assumed at most a bit was lost there and printed garbage as
+/// certified digits: `betainc_regularized(⅓, 10⁻¹⁰⁰, 0, 9/10)` was
+/// `1.28·10⁻⁸²`, truly `4.79·10⁻¹⁰⁰`.  The loss is measured instead: the
+/// direct tail `d`, computed to a relative `2^−p`, leaves `1 − d` with an
+/// absolute error of `2^−p`, i.e. `p − log₂(1/(1 − d))` correct bits, and
+/// `d` is recomputed at a precision covering the loss (a first shape
+/// `s < 1` costs about `log₂(1/s)` bits, which are added up front), up to
+/// [`cancellation_cap`].
+fn betainc_tails_wp(
     a: &BigFloat,
     b: &BigFloat,
     x: &BigFloat,
     wp: usize,
     rm: RoundingMode,
     cc: &mut Consts,
-) -> Result<BigFloat, SymplexError> {
-    if x.is_zero() {
-        return Ok(BigFloat::new(wp));
+) -> Result<(BigFloat, BigFloat), SymplexError> {
+    let direct_lower = !bf_gt(x, &betainc_switch_point(a, b, wp, rm));
+    let first = if direct_lower { a } else { b };
+    let ab_bits = magnitude_bits(bigfloat_to_f64(&a.add(b, 64, rm), rm, cc)?);
+    let cap = cancellation_cap(wp);
+    // The loss is about log₂(1/s) for a first shape s < 1 (less by at most
+    // log₂|ln x|): beyond the cap, refuse before computing at that precision.
+    let mut extra = 16 + inverse_bits(first);
+    if extra > cap {
+        return Err(special_exhausted(wp));
     }
+    loop {
+        let p = wp + extra;
+        // 1 − x: exact for x ≥ ½ (the argument's own bits); rounded far
+        // below the unit of `b ln y` otherwise.
+        let py = p + 64 + ab_bits;
+        let y = BigFloat::from_i32(1, py).sub(x, py, rm);
+        let d = if direct_lower {
+            betainc_reg_direct(a, b, x, &y, p, rm, cc)?
+        } else {
+            betainc_reg_direct(b, a, &y, x, p, rm, cc)?
+        };
+        let c = BigFloat::from_i32(1, p).sub(&d, p, rm);
+        let lost = match c.exponent() {
+            Some(e) if bf_strictly_positive(&c) => usize::try_from(1 - i64::from(e)).unwrap_or(0),
+            _ => p,
+        };
+        if lost + 8 <= extra {
+            let (d, c) = (round_to(d, wp, rm), round_to(c, wp, rm));
+            return Ok(if direct_lower { (d, c) } else { (c, d) });
+        }
+        if extra >= cap {
+            return Err(special_exhausted(wp));
+        }
+        extra = (lost + 16).max(2 * extra).min(cap);
+    }
+}
+
+/// Both tails at a limit `t ∈ [0, 1]` (exact at the ends).
+fn betainc_tails_at(
+    a: &BigFloat,
+    b: &BigFloat,
+    t: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<(BigFloat, BigFloat), SymplexError> {
     let one = BigFloat::from_i32(1, wp);
-    let one_minus_x = one.sub(x, wp, rm);
-    if one_minus_x.is_zero() {
-        return Ok(one);
+    if t.is_zero() {
+        return Ok((BigFloat::new(wp), one));
     }
-    if bf_gt(x, &betainc_switch_point(a, b, wp, rm)) {
-        let v = betainc_reg_direct(b, a, &one_minus_x, x, wp, rm, cc)?;
-        return Ok(one.sub(&v, wp, rm));
+    if t.cmp(&one) == Some(0) {
+        return Ok((one, BigFloat::new(wp)));
     }
-    betainc_reg_direct(a, b, x, &one_minus_x, wp, rm, cc)
+    betainc_tails_wp(a, b, t, wp, rm, cc)
 }
 
 /// `I_{hi}(a, b) − I_{lo}(a, b)` for `0 ≤ lo < hi ≤ 1` at working precision
 /// `wp`, together with the number of bits lost to cancellation in the
 /// subtraction (`wp` when the difference vanished entirely).
 ///
-/// When both limits lie above the switch point the difference is mirrored
-/// to `I_{1−lo}(b, a) − I_{1−hi}(b, a)`, so that no `1 − …` is formed and
-/// tiny upper-tail probabilities (both limits near `1`) keep their relative
-/// accuracy.
+/// Both tails are known at each limit ([`betainc_tails_at`]), so the
+/// difference is `L(hi) − L(lo) = U(lo) − U(hi)` with `L(t) = I_t(a, b)`
+/// and `U(t) = I_{1−t}(b, a)`, and the form whose larger term is the smaller
+/// is taken: no `1 − …` is formed here, so a lower tail (`lo = 0`) or an
+/// upper one (`hi = 1`) is a single directly computed tail, and limits near
+/// 1 keep their relative accuracy.  What remains is the cancellation of
+/// close limits, which the caller covers with precision.
 fn betainc_reg_diff_wp(
     a: &BigFloat,
     b: &BigFloat,
@@ -6347,27 +6699,20 @@ fn betainc_reg_diff_wp(
     rm: RoundingMode,
     cc: &mut Consts,
 ) -> Result<(BigFloat, usize), SymplexError> {
-    let one = BigFloat::from_i32(1, wp);
-    let (p, q) = if bf_gt(lo, &betainc_switch_point(a, b, wp, rm)) {
-        let y_lo = one.sub(hi, wp, rm); // 1 − hi
-        let y_hi = one.sub(lo, wp, rm); // 1 − lo
-        let p = betainc_reg_direct(b, a, &y_hi, lo, wp, rm, cc)?;
-        let q = if y_lo.is_zero() {
-            BigFloat::new(wp)
-        } else {
-            betainc_reg_direct(b, a, &y_lo, hi, wp, rm, cc)?
-        };
-        (p, q)
+    let (l_lo, u_lo) = betainc_tails_at(a, b, lo, wp, rm, cc)?;
+    let (l_hi, u_hi) = betainc_tails_at(a, b, hi, wp, rm, cc)?;
+    let (p, q) = if bf_gt(&l_hi, &u_lo) {
+        (u_lo, u_hi)
     } else {
-        let p = betainc_reg_wp(a, b, hi, wp, rm, cc)?;
-        let q = betainc_reg_wp(a, b, lo, wp, rm, cc)?;
-        (p, q)
+        (l_hi, l_lo)
     };
     let diff = p.sub(&q, wp, rm);
     let lost = match (p.exponent(), q.exponent(), diff.exponent()) {
         _ if q.is_zero() => 0,
-        _ if diff.is_zero() => wp,
-        (Some(ep), Some(eq), Some(ed)) => (ep.max(eq) as i64 - ed as i64).max(0) as usize,
+        _ if !bf_strictly_positive(&diff) => wp,
+        (Some(ep), Some(eq), Some(ed)) => {
+            usize::try_from(i64::from(ep.max(eq)) - i64::from(ed)).unwrap_or(0)
+        }
         _ => 0,
     };
     Ok((diff, lost))
@@ -6377,9 +6722,11 @@ fn betainc_reg_diff_wp(
 /// (or `I_{(x1, x2)}(a, b) = B_{(x1, x2)}(a, b)/B(a, b)` when `regularized`)
 /// for real `a, b > 0` and `0 ≤ x1, x2 ≤ 1`.
 ///
-/// Computed as `I_{x2}(a, b) − I_{x1}(a, b)`; when the two values nearly
-/// cancel (`x1 ≈ x2`) the working precision is raised by the number of
-/// bits lost and the difference recomputed.
+/// Computed as `I_{x2}(a, b) − I_{x1}(a, b)` ([`betainc_reg_diff_wp`]); when
+/// the two values nearly cancel (`x1 ≈ x2`) the working precision is raised
+/// by the number of bits lost and the difference recomputed, until the
+/// loss is covered — or refused beyond [`cancellation_cap`].  0.28 returned
+/// its third attempt whatever it had lost.
 #[allow(clippy::too_many_arguments)]
 fn arb_betainc(
     a: &BigFloat,
@@ -6399,7 +6746,7 @@ fn arb_betainc(
     if [a, b, x1, x2].iter().any(|v| v.is_nan() || v.is_inf()) {
         return Err(unevaluable(format!("{name} of special float value")));
     }
-    if !a.is_positive() || !b.is_positive() {
+    if !bf_strictly_positive(a) || !bf_strictly_positive(b) {
         return Err(unevaluable(format!(
             "{name} requires a, b > 0 for numerical evaluation"
         )));
@@ -6416,19 +6763,20 @@ fn arb_betainc(
         Some(c) if c > 0 => (x2, x1, true),
         _ => return Ok(BigFloat::new(prec)),
     };
+    let cap = prec + cancellation_cap(prec);
     let mut wp = prec + 32;
-    let mut diff;
-    let mut attempts = 0;
-    loop {
-        let (d, lost) = betainc_reg_diff_wp(a, b, lo, hi, wp, rm, cc)?;
-        diff = d;
-        attempts += 1;
-        // Stop once the guard bits cover the cancellation (16 to spare).
-        if lost + prec + 16 <= wp || attempts >= 3 {
-            break;
+    let mut diff = loop {
+        let (d, lost) =
+            betainc_reg_diff_wp(a, b, lo, hi, wp, rm, cc).map_err(requested_at(prec))?;
+        // Done once the guard bits cover the cancellation (16 to spare).
+        if lost + prec + 16 <= wp {
+            break d;
         }
-        wp = prec + 32 + lost;
-    }
+        if wp >= cap {
+            return Err(special_exhausted(prec));
+        }
+        wp = (prec + 32 + lost).min(cap);
+    };
     if !regularized {
         let beta = beta_wp(a, b, wp, rm, cc)?;
         diff = diff.mul(&beta, wp, rm);

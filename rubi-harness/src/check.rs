@@ -10,7 +10,11 @@
 //!
 //! [`verdict`] then applies symplex's real-variable convention: only points
 //! where the integrand is real count against an answer, unless the
-//! integrand contains `%i`.
+//! integrand contains `%i`.  When the five points decide nothing (the
+//! integrand of `1/(x·√(ln²x − 3))` is real only for `x > e^√3 ≈ 5.65`
+//! and `0 < x < e^−√3 ≈ 0.18`, and none of them lies there), [`check`]
+//! scans the wider, log-spaced [`EXTRA_POINTS`] for points where the
+//! integrand is real and compares up to [`EXTRA_WANTED`] of them.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -24,6 +28,36 @@ use crate::translate::original_name;
 /// Negative points exercise the other side of `x = 0` (`ln|x|`, `sign x`,
 /// even roots of odd powers).
 pub const X_POINTS: [(i64, i64); 5] = [(1, 3), (7, 5), (13, 4), (-5, 7), (-13, 4)];
+/// Points tried, in this order, when [`X_POINTS`] give no evidence
+/// ([`verdict`] is `Undecided`): magnitudes about half a decade apart from
+/// 10⁻² to 10² (`4/7, 9/4` next to the base points, then `≈ 0.1, 6.3, 0.03,
+/// 10, 0.01, 31, 100`), each followed by its negative, so that an integrand
+/// real only for small or only for large `|x|`, on either side of 0, is met
+/// early.  Non-integers, distinct from the sample points and from every
+/// parameter value (see the test).
+pub const EXTRA_POINTS: [(i64, i64); 18] = [
+    (4, 7),
+    (-4, 7),
+    (9, 4),
+    (-9, 4),
+    (7, 67),
+    (-7, 67),
+    (19, 3),
+    (-19, 3),
+    (3, 97),
+    (-3, 97),
+    (31, 3),
+    (-31, 3),
+    (1, 97),
+    (-1, 97),
+    (157, 5),
+    (-157, 5),
+    (199, 2),
+    (-199, 2),
+];
+/// How many points of [`EXTRA_POINTS`] where the integrand is real and both
+/// sides evaluate are compared at most.
+pub const EXTRA_WANTED: usize = 3;
 /// Relative tolerance on `|F′ − f| / max(|F′|, |f|)`.
 pub const REL_TOL: f64 = 1e-8;
 /// Digits for the first evaluation and for the re-evaluation of a mismatch.
@@ -374,18 +408,50 @@ pub fn real_agreements(reports: &[PointReport]) -> usize {
         .count()
 }
 
-/// `F′` against `f` at every sample point.  Both are functions of `x` and
-/// the parameters bound by `env`.
-pub fn check(ctx: &Context, f: &Ex, big_f: &Ex, x: &Ex, env: &Env) -> Vec<PointReport> {
+/// `F′` against `f` at every sample point of [`X_POINTS`] and, if those
+/// give no evidence ([`verdict`] with `integrand_has_i` is `Undecided`), at
+/// up to [`EXTRA_WANTED`] points of [`EXTRA_POINTS`], in order, where the
+/// integrand is real and both sides evaluate.  Both are functions of `x`
+/// and the parameters bound by `env`.  Deterministic: the points depend on
+/// the integrand only.
+pub fn check(
+    ctx: &Context,
+    f: &Ex,
+    big_f: &Ex,
+    x: &Ex,
+    env: &Env,
+    integrand_has_i: bool,
+) -> Vec<PointReport> {
     let f_s = env.apply(f);
     let d = env.apply(big_f).diff(x);
-    X_POINTS
+    let mut reports: Vec<PointReport> = X_POINTS
         .iter()
         .map(|&pt| PointReport {
             x: pt,
             outcome: compare_at(ctx, &d, &f_s, x, pt),
         })
-        .collect()
+        .collect();
+    if verdict(&reports, integrand_has_i) != Status::Undecided {
+        return reports;
+    }
+    let mut compared = 0;
+    for &(p, q) in &EXTRA_POINTS {
+        if compared == EXTRA_WANTED {
+            break;
+        }
+        // The integrand first: it is cheaper than `F′`, and a point where it
+        // is complex would be no evidence either.
+        if !matches!(eval_at(&f_s, x, &ctx.rational(p, q), DIGITS), Ok(c) if c.is_real()) {
+            continue;
+        }
+        let outcome = compare_at(ctx, &d, &f_s, x, (p, q));
+        if matches!(outcome, Outcome::Skip(_)) {
+            continue;
+        }
+        compared += 1;
+        reports.push(PointReport { x: (p, q), outcome });
+    }
+    reports
 }
 
 #[cfg(test)]
@@ -420,15 +486,64 @@ mod tests {
         env.extend(&ctx, &x, &[&f, &good]);
         assert_eq!(env.desc, "a=6/5");
         assert!(
-            check(&ctx, &f, &good, &x, &env)
+            check(&ctx, &f, &good, &x, &env, false)
                 .iter()
                 .all(|r| matches!(r.outcome, Outcome::Ok { .. }))
         );
         assert!(
-            check(&ctx, &f, &bad, &x, &env)
+            check(&ctx, &f, &bad, &x, &env, false)
                 .iter()
                 .all(PointReport::failed)
         );
+    }
+
+    #[test]
+    fn an_integrand_real_away_from_the_sample_points_gets_real_evidence() {
+        // Rubi 3.5 #134: 1/(x·√(ln²x − 3)) is real only for x > e^√3 and
+        // 0 < x < e^−√3; at the five sample points it is complex and the
+        // answer ln|√(ln²x − 3) + ln x| (right on the real domain) mismatches,
+        // so the case was undecided.
+        let ctx = Context::new();
+        let x = ctx.symbol("x");
+        let f = ctx.parse("1/(x*sqrt(ln(x)^2 - 3))").unwrap();
+        let good = ctx.parse("ln(abs(sqrt(ln(x)^2 - 3) + ln(x)))").unwrap();
+        let env = Env::new();
+        let r = check(&ctx, &f, &good, &x, &env, false);
+        assert_eq!(r.len(), X_POINTS.len() + EXTRA_WANTED, "{r:?}");
+        let extra: Vec<(i64, i64)> = r[X_POINTS.len()..].iter().map(|r| r.x).collect();
+        assert_eq!(extra, vec![(7, 67), (19, 3), (3, 97)]);
+        assert_eq!(real_agreements(&r), EXTRA_WANTED);
+        assert_eq!(verdict(&r, false), Status::RealVerified);
+        // A wrong answer is now caught where the integrand is real.
+        let bad = ctx.parse("ln(abs(sqrt(ln(x)^2 - 3) - ln(x)))").unwrap();
+        let r = check(&ctx, &f, &bad, &x, &env, false);
+        assert_eq!(verdict(&r, false), Status::Wrong);
+        // Decided by the sample points: nothing more is evaluated.
+        let f = ctx.parse("sin(x)").unwrap();
+        let r = check(&ctx, &f, &ctx.parse("-cos(x)").unwrap(), &x, &env, false);
+        assert_eq!(r.len(), X_POINTS.len());
+        // Complex everywhere: the scan finds no point and adds none.
+        let f = ctx.parse("sqrt(-1 - x^2)").unwrap();
+        let r = check(&ctx, &f, &ctx.parse("x").unwrap(), &x, &env, false);
+        assert_eq!(r.len(), X_POINTS.len());
+        assert_eq!(verdict(&r, false), Status::Undecided);
+    }
+
+    #[test]
+    fn extra_points_avoid_the_sample_points_and_the_parameter_values() {
+        let same = |(p, q): (i64, i64), (r, s): (i64, i64)| p * s == r * q;
+        let params: Vec<(i64, i64)> = (b'a'..=b'z')
+            .chain(b'A'..=b'Z')
+            .filter_map(|c| table_value(&(c as char).to_string()))
+            .chain(POOL)
+            .flat_map(|(p, q)| [(p, q), (-p, q)])
+            .collect();
+        for (i, &pt) in EXTRA_POINTS.iter().enumerate() {
+            assert!(pt.0 % pt.1 != 0, "{pt:?} is an integer");
+            assert!(!X_POINTS.iter().any(|&b| same(b, pt)), "{pt:?}");
+            assert!(!params.iter().any(|&v| same(v, pt)), "{pt:?}");
+            assert!(!EXTRA_POINTS[..i].iter().any(|&e| same(e, pt)), "{pt:?}");
+        }
     }
 
     #[test]
@@ -442,7 +557,7 @@ mod tests {
         let mut neg = Env::negated();
         neg.extend(&ctx, &x, &[&f, &big_f]);
         assert_eq!(neg.desc, "a=-6/5");
-        let judge = |env: &Env| verdict(&check(&ctx, &f, &big_f, &x, env), false);
+        let judge = |env: &Env| verdict(&check(&ctx, &f, &big_f, &x, env, false), false);
         assert_eq!(judge(&pos), Status::Verified);
         assert_eq!(judge(&neg), Status::Wrong);
     }
@@ -528,7 +643,7 @@ mod tests {
         let f = ctx.parse("1/sqrt(1 - x^2)").unwrap();
         let big_f = ctx.parse("asin(x)").unwrap();
         let env = Env::new();
-        let r = check(&ctx, &f, &big_f, &x, &env);
+        let r = check(&ctx, &f, &big_f, &x, &env, false);
         assert!(r.iter().all(|r| !r.failed()), "{r:?}");
     }
 }

@@ -79,6 +79,11 @@ Most answers come back fast (usually unevaluated).
    difference shrank by 20 orders of magnitude (rounding noise around a
    common zero).  A point where either side does not evaluate is skipped.
    The integrand counts as *real* at a point if `|Im f| ≤ 1e-12·|f|`.
+   If these five points decide nothing, up to three points where `f` is
+   real are taken, in order, from `check::EXTRA_POINTS` (`±4/7, ±9/4,
+   ±7/67, ±19/3, ±3/97, ±31/3, ±1/97, ±157/5, ±199/2`), so that an
+   integrand real only on part of the line (`1/(x√(ln²x − 3))`, real for
+   `x > e^√3`) still gets real evidence.
 5. **Verdict** (`check::verdict`).  symplex promises that `F′ = f` on
    every real interval where `f` is real and continuous.  Where `f` is
    complex for real `x` (e.g. `1/sqrt(x²−1)` on `(−1, 1)`), `ln|u|`-style

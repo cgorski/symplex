@@ -21,7 +21,12 @@
 //! After every arithmetic operation, the result is reduced:
 //! 1. Cancel `gcd(numer, denom)` from both.
 //! 2. Make `denom` monic (leading coefficient = 1).
-//! 3. If `denom` is zero, panic (division by zero).
+//!
+//! A zero denominator — [`RationalFn::new`] with `denom = 0`, a division by
+//! zero, the inverse of zero — panics (the `Field` trait's `div` / `inv`
+//! cannot return an error); [`RationalFn::try_new`],
+//! [`RationalFn::try_div`] and [`RationalFn::try_inv`] return `None`
+//! instead.
 
 use std::fmt;
 
@@ -54,12 +59,42 @@ impl RationalFn {
     ///
     /// # Panics
     ///
-    /// Panics if `denom` is zero.
+    /// Panics if `denom` is zero; [`try_new`](Self::try_new) returns `None`
+    /// instead.
     pub fn new(numer: Poly, denom: Poly) -> Self {
-        assert!(!denom.is_zero(), "RationalFn: denominator must be nonzero");
+        let rf = Self::try_new(numer, denom);
+        assert!(rf.is_some(), "RationalFn: denominator must be nonzero");
+        rf.unwrap_or_else(<Self as Ring>::zero)
+    }
+
+    /// [`new`](Self::new): `numer / denom` in canonical form; `None` if
+    /// `denom` is zero.
+    pub fn try_new(numer: Poly, denom: Poly) -> Option<Self> {
+        if denom.is_zero() {
+            return None;
+        }
         let mut rf = RationalFn { numer, denom };
         rf.reduce();
-        rf
+        Some(rf)
+    }
+
+    /// `self / other`, as [`Field::div`]; `None` if `other` is zero.
+    pub fn try_div(&self, other: &Self) -> Option<Self> {
+        // (a/b) / (c/d) = (a*d) / (b*c)
+        if other.is_zero() {
+            return None;
+        }
+        let numer = &self.numer * &other.denom;
+        let denom = &self.denom * &other.numer;
+        Self::try_new(numer, denom)
+    }
+
+    /// `1 / self`, as [`Field::inv`]; `None` if `self` is zero.
+    pub fn try_inv(&self) -> Option<Self> {
+        if self.is_zero() {
+            return None;
+        }
+        Self::try_new(self.denom.clone(), self.numer.clone())
     }
 
     /// Create from a polynomial (denominator = 1).
@@ -239,18 +274,22 @@ impl EuclideanDomain for RationalFn {
 // Field implementation
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// # Panics
+///
+/// `div` panics if `other` is zero and `inv` if `self` is zero (the trait's
+/// signatures cannot return an error); [`RationalFn::try_div`] and
+/// [`RationalFn::try_inv`] return `None` instead.
 impl Field for RationalFn {
     fn div(&self, other: &Self) -> Self {
-        // (a/b) / (c/d) = (a*d) / (b*c)
-        assert!(!other.is_zero(), "RationalFn: division by zero");
-        let numer = &self.numer * &other.denom;
-        let denom = &self.denom * &other.numer;
-        RationalFn::new(numer, denom)
+        let q = self.try_div(other);
+        assert!(q.is_some(), "RationalFn: division by zero");
+        q.unwrap_or_else(<Self as Ring>::zero)
     }
 
     fn inv(&self) -> Self {
-        assert!(!self.is_zero(), "RationalFn: inverse of zero");
-        RationalFn::new(self.denom.clone(), self.numer.clone())
+        let r = self.try_inv();
+        assert!(r.is_some(), "RationalFn: inverse of zero");
+        r.unwrap_or_else(<Self as Ring>::zero)
     }
 }
 
@@ -550,6 +589,27 @@ mod tests {
         let (quot, rem) = EuclideanDomain::div_rem(&a, &b);
         assert_eq!(quot, Field::div(&a, &b));
         assert!(Ring::is_zero(&rem));
+    }
+
+    #[test]
+    fn checked_twins_refuse_a_zero_denominator() {
+        // Up to 0.28 only the panicking `new` / `div` / `inv` existed.
+        let a = rf(&[1, 1], &[0, 1]); // (x+1)/x
+        let n = Poly::from_coeffs(vec![r(2, 1), r(2, 1)]); // 2x + 2
+        let d = Poly::from_coeffs(vec![r(0, 1), r(2, 1)]); // 2x
+        assert_eq!(RationalFn::try_new(n.clone(), d), Some(a.clone()));
+        assert_eq!(RationalFn::try_new(n, Poly::zero()), None);
+        assert_eq!(a.try_div(&a), Some(rfone()));
+        assert_eq!(a.try_div(&rfzero()), None);
+        assert_eq!(rfzero().try_div(&a), Some(rfzero()));
+        assert_eq!(a.try_inv(), Some(Field::inv(&a)));
+        assert_eq!(rfzero().try_inv(), None);
+        for bad in [
+            std::panic::catch_unwind(|| Field::div(&rf_int(1), &rfzero())),
+            std::panic::catch_unwind(|| Field::inv(&rfzero())),
+        ] {
+            assert!(bad.is_err());
+        }
     }
 
     // ── is_constant_rational / to_rational ──────────────────────────

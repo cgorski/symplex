@@ -18,6 +18,8 @@ mod v28_audit_3a;
 mod v28_audit_3b1;
 #[path = "v28/v28_audit_3b2.rs"]
 mod v28_audit_3b2;
+#[path = "v28/v28_audit_4.rs"]
+mod v28_audit_4;
 #[path = "v28/v28_binders.rs"]
 mod v28_binders;
 #[path = "v28/v28_evalf.rs"]
@@ -30,6 +32,8 @@ mod v28_integrate;
 mod v28_perf;
 #[path = "v28/v28_quantiles.rs"]
 mod v28_quantiles;
+#[path = "v28/v28_semantics.rs"]
+mod v28_semantics;
 #[path = "v28/v28_stats.rs"]
 mod v28_stats;
 #[path = "v28/v28_subs_matrix.rs"]

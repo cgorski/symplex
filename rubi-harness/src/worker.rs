@@ -233,9 +233,8 @@ fn entry_body(out: &Out, entry: &Entry, selftest: bool, negative_params: bool) -
     out.stage("check");
     let mut env = Env::new();
     env.extend(&ctx, &x, &[&f, &big_f]);
-    let mut reports = check::check(&ctx, &f, &big_f, &x, &env);
-
     let explicit_i = entry.integrand().contains("%i");
+    let mut reports = check::check(&ctx, &f, &big_f, &x, &env, explicit_i);
     let mut status = check::verdict(&reports, explicit_i);
     // `--negative-params`: an answer that passed with the table values must
     // also pass with their negatives; a mismatch there is reported as wrong,
@@ -247,7 +246,7 @@ fn entry_body(out: &Out, entry: &Entry, selftest: bool, negative_params: bool) -
         out.stage("check (negative parameters)");
         let mut env_neg = Env::negated();
         env_neg.extend(&ctx, &x, &[&f, &big_f]);
-        let reports_neg = check::check(&ctx, &f, &big_f, &x, &env_neg);
+        let reports_neg = check::check(&ctx, &f, &big_f, &x, &env_neg, explicit_i);
         let status_neg = check::verdict(&reports_neg, explicit_i);
         if status_neg == Status::Wrong {
             status = Status::Wrong;

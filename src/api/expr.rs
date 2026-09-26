@@ -536,9 +536,14 @@ impl<S: Sort> Expr<S> {
     /// A bound variable is not free: the index of a `Sum` or `Product`,
     /// the variable of a definite `Integral`, a `Limit`, a `ConditionSet`,
     /// a `RootSum`, a `RootOf` or a `Subs`, is left alone (the limits of a
-    /// `Sum` are substituted).  A binder that would capture a free symbol
-    /// of `new` is renamed first (`k` → `k_1`).  To rename every
-    /// occurrence, bound ones included, use [`replace`](Ex::replace).
+    /// `Sum` are substituted).  An application of an undefined function is
+    /// the exception: replacing `f(x)` defines `f`, so it is also replaced
+    /// where `x` is bound (`Subs(Derivative(f(x), x), x, 0).subs(f(x),
+    /// sin(x))` is `Subs(Derivative(sin(x), x), x, 0)`), provided `new`
+    /// mentions the bound variable only where it is an argument of `f`
+    /// (SymPy's rule for undefined functions).  A binder that would capture
+    /// a free symbol of `new` is renamed first (`k` → `k_1`).  To rename
+    /// every occurrence, bound ones included, use [`replace`](Ex::replace).
     ///
     /// The variable of a `Derivative` or an indefinite `Integral` is free
     /// (`f′(x)` is a function of `x`), but replacing it is evaluation at a

@@ -163,6 +163,11 @@ impl Context {
     }
 
     /// Create a symbolic variable (alias for [`symbol`](Context::symbol)).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` is empty, as [`symbol`](Self::symbol) does;
+    /// [`try_symbol`](Self::try_symbol) returns an error instead.
     pub fn var(&self, name: &str) -> crate::api::expr::Ex {
         self.symbol(name)
     }

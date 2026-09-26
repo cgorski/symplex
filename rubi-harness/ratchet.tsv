@@ -65,7 +65,7 @@ path	min_verified	max_wrong_panic
 3 Logarithms/3.2.3 u log(e (f (a+b x)^p (c+d x)^q)^r)^s.mac	0	0
 3 Logarithms/3.3 u (a+b log(c (d+e x)^n))^p.mac	3	0
 3 Logarithms/3.4 u (a+b log(c (d+e x^m)^n))^p.mac	1	0
-3 Logarithms/3.5 Logarithm functions.mac	42	0
+3 Logarithms/3.5 Logarithm functions.mac	43	0
 4 Trig functions/4.1 Sine/4.1.0 (a sin)^m (b trg)^n.mac	29	0
 4 Trig functions/4.1 Sine/4.1.1.1 (a+b sin)^n.mac	0	0
 4 Trig functions/4.1 Sine/4.1.1.2 (g cos)^p (a+b sin)^m.mac	31	0
@@ -213,7 +213,7 @@ path	min_verified	max_wrong_panic
 8 Special functions/8.3 Exponential integral functions.mac	0	0
 8 Special functions/8.4 Trig integral functions.mac	0	0
 8 Special functions/8.5 Hyperbolic integral functions.mac	0	0
-8 Special functions/8.6 Gamma functions.mac	15	0
+8 Special functions/8.6 Gamma functions.mac	16	0
 8 Special functions/8.7 Zeta function.mac	0	0
 8 Special functions/8.8 Polylogarithm function.mac	0	0
 8 Special functions/8.9 Product logarithm function.mac	0	0

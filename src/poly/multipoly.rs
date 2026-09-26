@@ -282,7 +282,8 @@ impl<O: MonomialOrd> MultiPoly<O> {
     ///
     /// # Panics
     ///
-    /// Panics if `var_index >= num_vars`.
+    /// Panics if `var_index >= num_vars`; [`try_var`](Self::try_var)
+    /// returns `None` instead.
     pub fn var(num_vars: usize, var_index: usize) -> Self {
         assert!(
             var_index < num_vars,
@@ -293,6 +294,20 @@ impl<O: MonomialOrd> MultiPoly<O> {
         let mut terms = BTreeMap::new();
         terms.insert(MonoKey::new(exp), Ratio::one());
         MultiPoly { num_vars, terms }
+    }
+
+    /// The `var_index`-th variable (0-indexed) of the ring in `num_vars`
+    /// variables, as [`var`](Self::var); `None` if `var_index >= num_vars`.
+    ///
+    /// ```
+    /// use symplex::multipoly::MultiPoly;
+    ///
+    /// let y = MultiPoly::<symplex::multipoly::GrevLex>::try_var(2, 1);
+    /// assert_eq!(y, Some(MultiPoly::var(2, 1)));
+    /// assert_eq!(MultiPoly::<symplex::multipoly::GrevLex>::try_var(2, 2), None);
+    /// ```
+    pub fn try_var(num_vars: usize, var_index: usize) -> Option<Self> {
+        (var_index < num_vars).then(|| Self::var(num_vars, var_index))
     }
 
     /// Create a monomial: `c · x₀^e₀ · x₁^e₁ · …`
@@ -490,20 +505,22 @@ impl<O: MonomialOrd> MultiPoly<O> {
 
     /// Degree in a specific variable.
     ///
-    /// Returns 0 for the zero polynomial.
+    /// Returns 0 for the zero polynomial, and for `var_index >= num_vars`:
+    /// a polynomial in `x₀, …, xₙ₋₁` does not involve any other `xₖ`
+    /// (as [`coeff`](Self::coeff) reports an exponent vector of the wrong
+    /// length as absent).  Before 0.29 an index out of range panicked.
     ///
-    /// # Panics
+    /// ```
+    /// use symplex::multipoly::MultiPoly;
     ///
-    /// Panics if `var_index >= num_vars`.
+    /// let [x, y]: [MultiPoly; 2] = [MultiPoly::var(2, 0), MultiPoly::var(2, 1)];
+    /// let p = x.mul(&x).mul(&y);                   // x²y
+    /// assert_eq!((p.degree_in(0), p.degree_in(1), p.degree_in(2)), (2, 1, 0));
+    /// ```
     pub fn degree_in(&self, var_index: usize) -> u32 {
-        assert!(
-            var_index < self.num_vars,
-            "var_index {var_index} out of range for {} variables",
-            self.num_vars
-        );
         self.terms
             .keys()
-            .map(|k| k.exponents[var_index])
+            .filter_map(|k| k.exponents.get(var_index).copied())
             .max()
             .unwrap_or(0)
     }
@@ -654,15 +671,23 @@ impl<O: MonomialOrd> MultiPoly<O> {
 impl<O: MonomialOrd> MultiPoly<O> {
     /// Partial derivative with respect to variable `var_index`.
     ///
-    /// # Panics
+    /// For `var_index >= num_vars` it is the zero polynomial (in the same
+    /// `num_vars` variables): the polynomial does not involve that variable
+    /// ([`degree_in`](Self::degree_in) is 0).  Before 0.29 an index out of
+    /// range panicked.
     ///
-    /// Panics if `var_index >= num_vars`.
+    /// ```
+    /// use symplex::multipoly::MultiPoly;
+    ///
+    /// let [x, y]: [MultiPoly; 2] = [MultiPoly::var(2, 0), MultiPoly::var(2, 1)];
+    /// let p = x.mul(&x).mul(&y);                   // x²y
+    /// assert_eq!(p.partial_derivative(0), x.mul(&y).scale(&symplex::linprog::qi(2)));
+    /// assert_eq!(p.partial_derivative(2), MultiPoly::zero(2));
+    /// ```
     pub fn partial_derivative(&self, var_index: usize) -> MultiPoly<O> {
-        assert!(
-            var_index < self.num_vars,
-            "partial_derivative: var_index {var_index} out of range for {} variables",
-            self.num_vars
-        );
+        if var_index >= self.num_vars {
+            return Self::zero(self.num_vars);
+        }
         let mut result = Self::zero(self.num_vars);
         for (key, coeff) in &self.terms {
             let e_i = key.exponents[var_index];
@@ -693,17 +718,17 @@ impl<O: MonomialOrd> MultiPoly<O> {
     /// let at3 = p.eval_var(0, &qi(3));
     /// assert_eq!(at3.num_vars(), 2);
     /// assert_eq!(at3.affine_form(), Some((vec![qi(0), qi(3)], qi(9))));
+    /// // A variable the ring does not have does not occur: unchanged.
+    /// assert_eq!(p.eval_var(2, &qi(3)), p);
     /// ```
     ///
-    /// # Panics
-    ///
-    /// Panics if `var_index >= num_vars`.
+    /// For `var_index >= num_vars` the polynomial is returned unchanged (it
+    /// does not involve that variable).  Before 0.29 an index out of range
+    /// panicked.
     pub fn eval_var(&self, var_index: usize, value: &Ratio<BigInt>) -> MultiPoly<O> {
-        assert!(
-            var_index < self.num_vars,
-            "eval_var: var_index {var_index} out of range for {} variables",
-            self.num_vars
-        );
+        if var_index >= self.num_vars {
+            return self.clone();
+        }
         let mut result = Self::zero(self.num_vars);
         for (key, coeff) in &self.terms {
             let e_i = key.exponents[var_index];
@@ -728,16 +753,14 @@ impl<O: MonomialOrd> MultiPoly<O> {
     ///
     /// # Panics
     ///
-    /// Panics if `var_index >= num_vars` or `num_vars == 0`.
+    /// Panics if `var_index >= num_vars` (in particular if `num_vars == 0`);
+    /// [`try_substitute`](Self::try_substitute) returns `None` instead.
     pub fn substitute(&self, var_index: usize, value: &Ratio<BigInt>) -> MultiPoly<O> {
+        // `var_index < num_vars` also makes `num_vars - 1` well defined.
         assert!(
             var_index < self.num_vars,
             "substitute: var_index {var_index} out of range for {} variables",
             self.num_vars
-        );
-        assert!(
-            self.num_vars > 0,
-            "substitute: cannot reduce below 0 variables"
         );
         let new_num_vars = self.num_vars - 1;
         let mut result = Self::zero(new_num_vars);
@@ -759,6 +782,23 @@ impl<O: MonomialOrd> MultiPoly<O> {
         }
         result.prune();
         result
+    }
+
+    /// [`substitute`](Self::substitute): a value for one variable, which
+    /// is dropped from the ring; `None` if `var_index >= num_vars`.
+    ///
+    /// ```
+    /// use symplex::multipoly::MultiPoly;
+    /// use symplex::linprog::qi;
+    ///
+    /// let [j, x]: [MultiPoly; 2] = [MultiPoly::var(2, 0), MultiPoly::var(2, 1)];
+    /// let p = j.mul(&x).add(&j.mul(&j));           // j·x + j²
+    /// let at3 = p.try_substitute(0, &qi(3)).unwrap();
+    /// assert_eq!(at3, MultiPoly::var(1, 0).scale(&qi(3)) + 9);
+    /// assert_eq!(p.try_substitute(2, &qi(3)), None);
+    /// ```
+    pub fn try_substitute(&self, var_index: usize, value: &Ratio<BigInt>) -> Option<MultiPoly<O>> {
+        (var_index < self.num_vars).then(|| self.substitute(var_index, value))
     }
 }
 
@@ -1430,6 +1470,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
 /// the leading monomials `F` of `f` and `G` of `g`, some term of `f` has
 /// `eᵢ + Lᵢ − Fᵢ > u32::MAX` in a variable `i`, or likewise for `g`.
 /// Before 0.29 the exponent wrapped around in release builds.
+/// [`try_s_polynomial`] returns `None` in either case.
 pub fn s_polynomial<O: MonomialOrd>(f: &MultiPoly<O>, g: &MultiPoly<O>) -> MultiPoly<O> {
     assert_eq!(
         f.num_vars(),
@@ -1437,8 +1478,54 @@ pub fn s_polynomial<O: MonomialOrd>(f: &MultiPoly<O>, g: &MultiPoly<O>) -> Multi
         "s_polynomial: incompatible variable counts"
     );
     // S(f, 0) = S(0, g) = 0: a zero operand has no leading term.
-    let (Some((lm_f, lc_f)), Some((lm_g, lc_g))) = (f.leading_term(), g.leading_term()) else {
+    let Some([(quot_f, coeff_f), (quot_g, coeff_g)]) = s_polynomial_cofactors(f, g) else {
         return MultiPoly::zero(f.num_vars());
+    };
+
+    let scaled_f = f.mul_monomial(&coeff_f, &quot_f);
+    let scaled_g = g.mul_monomial(&coeff_g, &quot_g);
+
+    scaled_f.sub(&scaled_g)
+}
+
+/// The S-polynomial of `f` and `g`, as [`s_polynomial`]; `None` if `f`
+/// and `g` have different numbers of variables or an exponent of the
+/// result would exceed `u32::MAX`.
+///
+/// ```
+/// use symplex::multipoly::{MultiPoly, try_s_polynomial};
+///
+/// let [x, y]: [MultiPoly; 2] = [MultiPoly::var(2, 0), MultiPoly::var(2, 1)];
+/// // S(x² + y, xy) = y·(x² + y) − x·(xy) = y²
+/// let s = try_s_polynomial(&x.mul(&x).add(&y), &x.mul(&y));
+/// assert_eq!(s, Some(y.mul(&y)));
+/// assert_eq!(try_s_polynomial(&x, &MultiPoly::var(3, 0)), None);
+/// ```
+pub fn try_s_polynomial<O: MonomialOrd>(
+    f: &MultiPoly<O>,
+    g: &MultiPoly<O>,
+) -> Option<MultiPoly<O>> {
+    if f.num_vars() != g.num_vars() {
+        return None;
+    }
+    let Some([(quot_f, coeff_f), (quot_g, coeff_g)]) = s_polynomial_cofactors(f, g) else {
+        return Some(MultiPoly::zero(f.num_vars()));
+    };
+    let scaled_f = f.try_mul_monomial(&coeff_f, &quot_f)?;
+    let scaled_g = g.try_mul_monomial(&coeff_g, &quot_g)?;
+    scaled_f.try_sub(&scaled_g)
+}
+
+/// The monomial cofactors `(L/F, 1/lc(f))` and `(L/G, 1/lc(g))` of the
+/// S-polynomial of `f` and `g` (`L` the lcm of their leading monomials `F`
+/// and `G`); `None` if either is zero (it has no leading term, and the
+/// S-polynomial is 0).
+fn s_polynomial_cofactors<O: MonomialOrd>(
+    f: &MultiPoly<O>,
+    g: &MultiPoly<O>,
+) -> Option<[(Vec<u32>, Ratio<BigInt>); 2]> {
+    let (Some((lm_f, lc_f)), Some((lm_g, lc_g))) = (f.leading_term(), g.leading_term()) else {
+        return None;
     };
 
     let lcm = monomial_lcm(lm_f, lm_g);
@@ -1451,10 +1538,7 @@ pub fn s_polynomial<O: MonomialOrd>(f: &MultiPoly<O>, g: &MultiPoly<O>) -> Multi
     let coeff_f = Ratio::one() / lc_f;
     let coeff_g = Ratio::one() / lc_g;
 
-    let scaled_f = f.mul_monomial(&coeff_f, &quot_f);
-    let scaled_g = g.mul_monomial(&coeff_g, &quot_g);
-
-    scaled_f.sub(&scaled_g)
+    Some([(quot_f, coeff_f), (quot_g, coeff_g)])
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
