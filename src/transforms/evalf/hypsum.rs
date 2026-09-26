@@ -457,10 +457,10 @@ pub(super) fn infinite_sum(
     let r0 = (r0, BigFloat::new(wp));
     let predicted = c_mul(&t0, &r0, wp, rm);
     let e_pred = accuracy::product_error([(&t0, e0), (&r0, accuracy::rounding(&r0, wp))]);
-    let slack = e1
-        .max(e_pred)
-        .max(accuracy::rounding(&predicted, prec))
-        .saturating_add(4);
+    let slack = accuracy::shift(
+        e1.max(e_pred).max(accuracy::rounding(&predicted, prec)),
+        4.0,
+    );
     if !accuracy::is_unknown(slack)
         && !accuracy::contains_zero(&c_sub(&t1, &predicted, wp, rm), slack)
     {
@@ -472,8 +472,10 @@ pub(super) fn infinite_sum(
 
     let f = (f, BigFloat::new(wp));
     let series = c_mul(&t0, &f, prec, rm);
-    let series_err = accuracy::product_error([(&t0, e0), (&f, f_err)])
-        .max(accuracy::rounding(&series, prec).saturating_add(1));
+    let series_err = accuracy::lsum(
+        accuracy::product_error([(&t0, e0), (&f, f_err)]),
+        accuracy::rounding(&series, prec),
+    );
     // `F` is real: the series is real when its first term is.
     let series_bound = if accuracy::exactly_real(&t0, b0) {
         Bound::real(series_err)
@@ -537,7 +539,7 @@ fn scaled_series(
         } else if accuracy::is_exact(e) {
             Some(-(wp as i64))
         } else {
-            Some((e - m + 1).max(-(wp as i64)))
+            Some(((e - m as f64 + 1.0).ceil() as i64).max(-(wp as i64)))
         }
     };
     let (Some(r0), Some(r1)) = (rel(t0, b0), rel(&t1, b1)) else {
@@ -570,10 +572,12 @@ fn scaled_series(
         wp,
     );
     let predicted = c_mul(&c_mul(&t1, &c, wp, rm), &r1q, wp, rm);
-    let slack = accuracy::mag(&predicted)
-        .map_or(accuracy::UNKNOWN, |m| m + eps_c + 4)
-        .max(b2.joint())
-        .saturating_add(2);
+    let slack = accuracy::shift(
+        accuracy::mag(&predicted)
+            .map_or(accuracy::UNKNOWN, |m| (m + eps_c + 4) as f64)
+            .max(b2.joint()),
+        2.0,
+    );
     if !accuracy::is_unknown(slack)
         && !accuracy::contains_zero(&c_sub(&t2, &predicted, wp, rm), slack)
     {
@@ -641,9 +645,9 @@ fn scaled_series(
         if let Some((pp, qm)) = tail_parts(p, q, &k) {
             let rho = c_hi * ratio_up(&pp, &qm);
             if rho < 1.0 {
-                let factor = (rho / (1.0 - rho)).log2().ceil() as i64;
-                let tail = um + factor.max(-1_000_000) + 1;
-                if tail <= peak - prec as i64 - 8 {
+                let factor = (rho / (1.0 - rho)).log2().max(-1e6);
+                let tail = um as f64 + factor + 1.0;
+                if tail <= (peak - prec as i64 - 8) as f64 {
                     break tail;
                 }
             }
@@ -672,17 +676,15 @@ fn scaled_series(
     }
     let wp_i = wp as i64;
     let n = accuracy::ceil_log2(usize::try_from(steps).unwrap_or(usize::MAX).max(1));
-    let recurrence = mag(&abs_sum).unwrap_or(0) + n + 3 - wp_i;
-    let rounding = peak + n - wp_i;
-    let from_c = mag(&weighted).map_or(accuracy::EXACT, |m| m + eps_c + 1);
-    let f_err = recurrence
-        .max(rounding)
-        .max(tail)
-        .max(from_c)
-        .saturating_add(1);
+    let recurrence = (mag(&abs_sum).unwrap_or(0) + n + 3 - wp_i) as f64;
+    let rounding = (peak + n - wp_i) as f64;
+    let from_c = mag(&weighted).map_or(accuracy::EXACT, |m| (m + eps_c + 1) as f64);
+    let f_err = accuracy::shift(recurrence.max(rounding).max(tail).max(from_c), 1.0);
     let series = c_mul(t0, &f, prec, rm);
-    let err = accuracy::product_error([(t0, b0.joint()), (&f, f_err)])
-        .max(accuracy::rounding(&series, prec).saturating_add(1));
+    let err = accuracy::lsum(
+        accuracy::product_error([(t0, b0.joint()), (&f, f_err)]),
+        accuracy::rounding(&series, prec),
+    );
     tracing::debug!(
         steps,
         err,
@@ -809,11 +811,11 @@ fn normalised_series(
             // |u_j| < 2^um carries a relative error far below 1: +1.
             let tail = um + tf + 1;
             if tail <= peak - prec as i64 - 8 {
-                break tail;
+                break tail as f64;
             }
         }
         if steps >= MAX_SERIES_TERMS {
-            break tail_factor.map_or(accuracy::UNKNOWN, |tf| um + tf + 1);
+            break tail_factor.map_or(accuracy::UNKNOWN, |tf| (um + tf + 1) as f64);
         }
         let pk = bigint_to_bigfloat(&eval_int(p, &k), wp);
         let qk = bigint_to_bigfloat(&eval_int(q, &k), wp);
@@ -838,9 +840,9 @@ fn normalised_series(
     // each partial sum one rounding.
     let wp_i = wp as i64;
     let n = accuracy::ceil_log2(usize::try_from(steps).unwrap_or(usize::MAX).max(1));
-    let recurrence = mag(&abs_sum).unwrap_or(0) + n + 2 - wp_i;
-    let rounding = peak + n - wp_i;
-    let err = recurrence.max(rounding).max(tail).saturating_add(1);
+    let recurrence = (mag(&abs_sum).unwrap_or(0) + n + 2 - wp_i) as f64;
+    let rounding = (peak + n - wp_i) as f64;
+    let err = accuracy::shift(recurrence.max(rounding).max(tail), 1.0);
     tracing::debug!(steps, err, "evalf: hypergeometric series summed");
     Ok((f, err))
 }

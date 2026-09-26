@@ -42,6 +42,11 @@
 //! negative powers).  No `O(·)` term is appended — the truncation order is
 //! implicit in the `order` parameter: all terms with exponent `< order` are
 //! present and exact.
+//!
+//! A coefficient that is a sum of constants is tested for a hidden zero
+//! (`asinh 2 − ln(2 + √5)`) numerically as it forms
+//! ([`settle_constant`]): the valuation of a series, and so every division
+//! by it, depends on knowing which leading coefficients vanish.
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -56,11 +61,15 @@ use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::walk;
+use crate::calculus::calculus_util::settle_constant;
 use crate::transforms::{eval, subs};
 
 /// Maximum number of sub-expressions expanded by differentiation before the
 /// engine gives up on per-node fallbacks (the root is always tried).
 const MAX_FALLBACK_NODES: usize = 4;
+
+/// Largest derivative (tree size) the differentiation fallback evaluates.
+const MAX_FALLBACK_SIZE: usize = 1_500;
 
 /// Maximum integer exponent expanded by repeated multiplication; larger
 /// exponents use the binomial series.
@@ -327,7 +336,13 @@ impl TSeries {
             let ca = a.coeff_at(arena, e);
             let cb = b.coeff_at(arena, e);
             let s = arena.add(&[ca, cb]);
-            coeffs.push(eval::eval(arena, s));
+            coeffs.push(
+                if arena.is_zero_structural(ca) || arena.is_zero_structural(cb) {
+                    eval::eval(arena, s)
+                } else {
+                    settle_constant(arena, s)
+                },
+            );
         }
         TSeries {
             shift,
@@ -380,12 +395,14 @@ impl TSeries {
                 }
                 terms.push(arena.mul(&[ca, cb]));
             }
-            let s = match terms.len() {
+            coeffs.push(match terms.len() {
                 0 => arena.zero,
-                1 => terms[0],
-                _ => arena.add(&terms),
-            };
-            coeffs.push(eval::eval(arena, s));
+                1 => eval::eval(arena, terms[0]),
+                _ => {
+                    let s = arena.add(&terms);
+                    settle_constant(arena, s)
+                }
+            });
         }
         TSeries {
             shift,
@@ -430,7 +447,7 @@ impl TSeries {
                 _ => arena.add(&terms),
             };
             let ns = arena.neg(s);
-            b.push(eval::eval(arena, ns));
+            b.push(settle_constant(arena, ns));
         }
         let coeffs = b
             .iter()
@@ -987,6 +1004,8 @@ fn structural_series(
             apply_fn(arena, FnKind::Exp, &prod)
         }
         ExprNode::Abs(a) => return abs_series(arena, &child(cache, a)?, side),
+        ExprNode::Sign(a) => return sign_series(arena, &child(cache, a)?, side, false),
+        ExprNode::Heaviside(a) => return sign_series(arena, &child(cache, a)?, side, true),
         ExprNode::Exp(a) => apply_fn(arena, FnKind::Exp, &child(cache, a)?),
         ExprNode::Sin(a) => apply_fn(arena, FnKind::Sin, &child(cache, a)?),
         ExprNode::Cos(a) => apply_fn(arena, FnKind::Cos, &child(cache, a)?),
@@ -1047,9 +1066,54 @@ fn abs_series(arena: &mut Arena, g: &TSeries, side: Side) -> Result<TSeries, Obs
     Ok(if positive { g } else { TSeries::neg(arena, &g) })
 }
 
+/// `sign(g)` (or `H(g)` when `heaviside`) for a series `g` whose leading
+/// term `c·x^k` has a real constant `c` of known sign and whose visible
+/// coefficients are real: near `0` the sign of `g` is that of `c·x^k` (see
+/// [`abs_series`] for the sides), a constant `±1` (`1` or `0`) exact to any
+/// order.
+///
+/// Anything else is a definite [`Obstruction::NoExpansion`]: the
+/// differentiation fallback evaluates `sign(g(0)) = sign(0) = 0` and
+/// `d sign(g) = 0`, the wrong polynomial `0` — `atanh(x²)·sign(x²)` expanded
+/// to `0` instead of `x²`.
+fn sign_series(
+    arena: &mut Arena,
+    g: &TSeries,
+    side: Side,
+    heaviside: bool,
+) -> Result<TSeries, Obstruction> {
+    let g = g.clone().normalized(arena);
+    let k = g.leading_exponent(arena).ok_or(Obstruction::NoExpansion)?;
+    let c = g.coeff_at(arena, k);
+    // A non-zero constant term of unknown sign: `sign(a + x)` is
+    // `sign(a)` near 0, which the differentiation fallback finds.
+    let Some(c_positive) = constant_sign(arena, c) else {
+        return Err(if k == 0 {
+            Obstruction::Unknown
+        } else {
+            Obstruction::NoExpansion
+        });
+    };
+    if !g.coeffs.iter().all(|&co| is_known_real(arena, co)) {
+        return Err(Obstruction::NoExpansion);
+    }
+    let flip_below = k.rem_euclid(2) == 1;
+    let positive = match side {
+        Side::Both if flip_below => return Err(Obstruction::Kink),
+        Side::Below if flip_below => !c_positive,
+        Side::Both | Side::Above | Side::Below => c_positive,
+    };
+    let value = match (positive, heaviside) {
+        (true, _) => arena.one,
+        (false, false) => arena.neg_one,
+        (false, true) => arena.zero,
+    };
+    Ok(TSeries::constant(arena, value, g.known.max(1)))
+}
+
 /// `Some(true)` if the var-free constant `c` is known positive, `Some(false)`
 /// if known negative, `None` if zero or of unknown sign.
-fn constant_sign(arena: &Arena, c: ExprId) -> Option<bool> {
+fn constant_sign(arena: &mut Arena, c: ExprId) -> Option<bool> {
     if let Some(r) = arena.as_num(c) {
         return if r.is_zero() {
             None
@@ -1064,7 +1128,13 @@ fn constant_sign(arena: &Arena, c: ExprId) -> Option<bool> {
     if cache.query(arena, c, Props::NEGATIVE) == Some(true) {
         return Some(false);
     }
-    None
+    // A real constant the assumption system leaves open (`ln 3`,
+    // `cos(3/2)`): its certified value decides.
+    match crate::calculus::limit::const_sign(arena, c) {
+        Some(1) => Some(true),
+        Some(-1) => Some(false),
+        _ => None,
+    }
 }
 
 /// Is the var-free constant `c` known to be real?
@@ -1076,7 +1146,7 @@ fn is_known_real(arena: &Arena, c: ExprId) -> bool {
 }
 
 fn is_zero_const(arena: &mut Arena, c: ExprId) -> bool {
-    let v = eval::eval(arena, c);
+    let v = settle_constant(arena, c);
     arena.is_zero_structural(v) || arena.as_num(v).is_some_and(|r| r.is_zero())
 }
 
@@ -1269,10 +1339,59 @@ fn taylor_by_differentiation(
     let mut coeffs = Vec::with_capacity(n.max(0) as usize);
     let mut current = expr;
     let mut factorial = Q::one();
-    for k in 0..n {
-        let at0 = subs::subs(arena, current, var, zero);
-        let value = eval::eval(arena, at0);
-        let value = if is_finite_constant(arena, value, var) {
+    // At a discontinuity of `sign`, `H`, `⌊·⌋`, … the value at the point is
+    // not the one-sided limit: `tan(sign x)` substituted `sign 0 = 0` and
+    // expanded to `0` from both sides.  With such nodes every coefficient
+    // is the limit from the side of the expansion.
+    let directional = crate::calculus::limit::has_directional_nodes(arena, expr, var);
+    // Coefficients `0..n` are claimed exact up to `O(xⁿ)`, which needs the
+    // `n`-th derivative bounded near the point (Taylor's remainder): its
+    // limit is taken too and must be finite.  Without it `1/ln x` "expanded"
+    // to `0` (`f(0⁺) = 0`, but `1/ln x` is not `O(x)`), and
+    // `−2 − (x − 3/4)/ln x` to `−2`.
+    for k in 0..=n {
+        // A derivative that stays formal (`d re(u)/dx` for a variable not
+        // declared real) has no value at the point; asking `limit` for one
+        // sent Gruntz after `Subs(Derivative(…))` for seconds.
+        if walk::has_unevaluated(arena, current) {
+            return None;
+        }
+        // Derivatives of nested functions grow exponentially; the limit
+        // taken of each (below) expands them, and `atanh(acosh x)³` at
+        // `x = −1` never returned.
+        if crate::transforms::pattern::tree_size_capped(arena, current, MAX_FALLBACK_SIZE + 1)
+            > MAX_FALLBACK_SIZE
+        {
+            return None;
+        }
+        // `safe_substitute` refuses a singular sub-expression instead of
+        // letting canonicalisation fold `0·sinh(ln 0)` to `0` (the series
+        // of `x·sinh(ln x)` lost its constant term −1/2 that way).
+        let value =
+            crate::calculus::limit::safe_substitute(arena, current, var, zero).unwrap_or(arena.nan);
+        if k == n {
+            // Only a definitely unbounded `n`-th derivative refuses; one whose
+            // limit cannot be determined (`d³(x·Γ(x))`) is given the benefit
+            // of the doubt, as before.
+            if !directional && is_finite_constant(arena, value, var) {
+                break;
+            }
+            use crate::calculus::limit::Direction;
+            let dirs: &[Direction] = match side {
+                Side::Above => &[Direction::Right],
+                Side::Below => &[Direction::Left],
+                Side::Both => &[Direction::Right, Direction::Left],
+            };
+            for &dir in dirs {
+                if let Ok(lim) = crate::calculus::limit::limit_dir(arena, current, var, zero, dir)
+                    && !is_finite_constant(arena, lim, var)
+                {
+                    return None;
+                }
+            }
+            break;
+        }
+        let value = if !directional && is_finite_constant(arena, value, var) {
             value
         } else {
             let dir = match side {
@@ -1294,10 +1413,8 @@ fn taylor_by_differentiation(
             eval::eval(arena, p)
         };
         coeffs.push(coeff);
-        if k + 1 < n {
-            current = crate::transforms::diff::diff(arena, current, var);
-            factorial *= rat_i(k + 1);
-        }
+        current = crate::transforms::diff::diff(arena, current, var);
+        factorial *= rat_i(k + 1);
     }
     Some(TSeries {
         shift: 0,

@@ -1405,6 +1405,55 @@ fn lcm_periods(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<ExprId> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Zero constants that canonicalisation does not see
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Digits at which [`is_hidden_zero`] evaluates a constant sum.
+const HIDDEN_ZERO_DIGITS: u32 = 30;
+
+/// Is the evaluated constant `c` a sum that is zero although canonical
+/// forms do not cancel — two spellings of one number (`asinh 2` and
+/// `ln(2 + √5)`, which appear side by side once one of them has been
+/// rewritten or expanded), `sin²1 + cos²1 − 1`?
+///
+/// Only a sum free of symbols is examined (a product or function of
+/// non-zero factors is non-zero; with a free parameter nothing is decided
+/// here), and then by evaluation: `evalf` returns an exact 0 only when the
+/// value vanishes to its working precision (twice the requested precision
+/// plus 256 bits, relative to its terms), otherwise certified digits.
+/// This is the numerical zero test every CAS uses for constants; a value
+/// below `10^-80` or so relative to its terms counts as 0.
+///
+/// Series coefficients and Gruntz's leading coefficients must be decided
+/// this way: a structural test takes `asinh(2 + x) − ln(2 + √5)`'s constant
+/// term for a non-zero leading coefficient, and the series of
+/// `x/(asinh(x + 2) − ln(2 + √5))` became `x/0` (and `lim_{x→0}` of
+/// `x/(asinh(x + 2) − asinh 2)` became `0`, from Gruntz's `ln` rewrite).
+pub(crate) fn is_hidden_zero(arena: &Arena, c: ExprId) -> bool {
+    if !matches!(arena.node(c), ExprNode::Add(_)) || !walk::free_symbols(arena, c).is_empty() {
+        return false;
+    }
+    if walk::has_unevaluated(arena, c) {
+        return false;
+    }
+    matches!(
+        evalf::evalf_complex(arena, c, HIDDEN_ZERO_DIGITS),
+        Ok(z) if z.0.is_zero() && z.1.is_zero()
+    )
+}
+
+/// `c` after `eval`, with a hidden zero (see [`is_hidden_zero`]) replaced
+/// by `0`.
+pub(crate) fn settle_constant(arena: &mut Arena, c: ExprId) -> ExprId {
+    let v = eval::eval(arena, c);
+    if is_hidden_zero(arena, v) {
+        arena.zero
+    } else {
+        v
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 

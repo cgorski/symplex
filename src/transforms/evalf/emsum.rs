@@ -268,10 +268,8 @@ impl ErrSum {
         } else if self.0.is_inf() || self.0.is_nan() {
             accuracy::UNKNOWN
         } else {
-            // |x| < 2^e, and one more for the 64-bit roundings.
-            self.0
-                .exponent()
-                .map_or(accuracy::UNKNOWN, |e| i64::from(e) + 1)
+            // The sum was accumulated rounding up: its logarithm, rounded up.
+            accuracy::part_lg(&self.0)
         }
     }
 }

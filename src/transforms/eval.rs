@@ -906,9 +906,20 @@ fn beyond_digit_guard(arena: &Arena, digits: f64) -> bool {
 /// `r` as a node when its numerator and denominator together have at most
 /// `max_result_digits` digits (canon's count), otherwise `None`.
 fn guarded_num(arena: &mut Arena, r: Q) -> Option<ExprId> {
-    let digits = r.numer().to_string().len() + r.denom().to_string().len();
-    if digits > arena.config.max_result_digits {
+    // A b-bit integer has ⌊b·log₁₀2⌋ or one more digits: the bit counts
+    // decide unless the total is within two digits of the limit, where the
+    // decimal strings are counted (they cost more than the arithmetic for
+    // the thousand coefficients of a degree-1000 polynomial).
+    let limit = arena.config.max_result_digits as f64;
+    let est = (r.numer().bits() + r.denom().bits()) as f64 * std::f64::consts::LOG10_2;
+    if est > limit + 2.0 {
         return None;
+    }
+    if est >= limit - 2.0 {
+        let digits = r.numer().to_string().len() + r.denom().to_string().len();
+        if digits > arena.config.max_result_digits {
+            return None;
+        }
     }
     let nid = arena.intern_num(r);
     Some(arena.intern(ExprNode::Num(nid)))
@@ -1302,36 +1313,29 @@ fn eval_erfc(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     None
 }
 
-/// Beta(a,b) for positive integers → (a-1)!(b-1)!/(a+b-1)!
+/// `B(a, b)` for positive integers: `(a−1)!(b−1)!/(a+b−1)! =
+/// 1/(b·C(a+b−1, b))`, the binomial taken with `j = min(a−1, b)` factors
+/// and within the digit guard (`C(n, j) ≥ (n/j)^j`).
+///
+/// Before 0.30 the three factorials were multiplied out (a `Ratio` product
+/// of `a + b` factors): `beta(6, 10^7)`, `beta(10^12, 3)`, `beta(10^8, 17)`
+/// and `beta(8, 14!)` never returned, though each is a small rational.
 fn eval_beta(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<ExprId> {
     let ra = arena.as_num(a)?.clone();
     let rb = arena.as_num(b)?.clone();
     if !ra.is_integer() || !ra.is_positive() || !rb.is_integer() || !rb.is_positive() {
         return None;
     }
-    let a_u64: u64 = ra.to_integer().try_into().ok()?;
-    let b_u64: u64 = rb.to_integer().try_into().ok()?;
-
-    // B(a,b) = (a-1)!(b-1)! / (a+b-1)!
-    let mut numer = Ratio::<BigInt>::one();
-    for i in 2..a_u64 {
-        numer *= Ratio::from_integer(BigInt::from(i));
+    let a_int = ra.to_integer();
+    let b_int = rb.to_integer();
+    let n = &a_int + &b_int - BigInt::one();
+    let j = (&a_int - BigInt::one()).min(b_int.clone());
+    let (nf, jf) = (n.to_f64()?, j.to_f64()?);
+    if jf >= 1.0 && beyond_digit_guard(arena, jf * (nf / jf).log10()) {
+        return None;
     }
-    let mut b_fact = Ratio::<BigInt>::one();
-    for i in 2..b_u64 {
-        b_fact *= Ratio::from_integer(BigInt::from(i));
-    }
-    numer *= b_fact;
-
-    let ab = a_u64.checked_add(b_u64)?;
-    let mut denom = Ratio::<BigInt>::one();
-    for i in 2..ab {
-        denom *= Ratio::from_integer(BigInt::from(i));
-    }
-
-    let result = numer / denom;
-    let nid = arena.intern_num(result);
-    Some(arena.intern(ExprNode::Num(nid)))
+    let c = crate::base::combinatorics::binomial(n, j);
+    guarded_num(arena, Ratio::new(BigInt::one(), c * b_int))
 }
 
 /// `C(n, k)` for non-negative integer literals.  A negative `n` is left
@@ -1496,10 +1500,11 @@ pub(crate) fn eval_zeta(arena: &mut Arena, s: ExprId) -> Option<ExprId> {
         if m.is_multiple_of(2) {
             return Some(arena.zero);
         }
-        let b = crate::base::bernoulli::bernoulli(m + 1);
+        // Within the digit guard of `B_{m+1}` (`zeta(−10^5)` ran the
+        // quadratic rational recurrence for minutes).
+        let b = exact_bernoulli(arena, m as u64 + 1)?;
         let val = -b / Ratio::from_integer(BigInt::from(m as i64 + 1));
-        let nid = arena.intern_num(val);
-        return Some(arena.intern(ExprNode::Num(nid)));
+        return guarded_num(arena, val);
     }
     if n % 2 == 0 && n <= MAX_EXACT_ZETA_EVEN {
         // ζ(2k) = |B_{2k}| · 2^{2k−1} · π^{2k} / (2k)!
@@ -1523,6 +1528,11 @@ pub(crate) fn eval_zeta(arena: &mut Arena, s: ExprId) -> Option<ExprId> {
 /// Largest integer / half-integer shift handled exactly by the polygamma
 /// and digamma recurrences.
 const MAX_POLYGAMMA_SHIFT: i64 = 64;
+
+/// Most bits the exact shifted form of `ψ⁽ⁿ⁾` may cancel (see
+/// [`eval_polygamma`]); `evalf` recovers a few hundred bits of cancellation
+/// within its precision search.
+const MAX_POLYGAMMA_CANCEL_BITS: f64 = 200.0;
 
 /// `n!` as a rational.
 fn factorial_ratio(n: usize) -> Q {
@@ -1610,6 +1620,23 @@ pub(crate) fn eval_polygamma(arena: &mut Arena, n: ExprId, x: ExprId) -> Option<
     if !(0..=MAX_POLYGAMMA_SHIFT).contains(&m) {
         return None;
     }
+    // n! is within the digit guard, and the shifted form does not cancel:
+    // ψ⁽ⁿ⁾(m) = (−1)^{n+1} n! (ζ(n+1) − Σ_{k<m} k^{−n−1}) is ≈ n!·m^{−n−1}
+    // while its terms are ≈ n!, and ψ⁽ⁿ⁾(m + 1/2) ≈ n!·(m + 1/2)^{−n−1}
+    // while its terms are ≈ n!·2^{n+1}, so (n+1)·log₂ m (resp.
+    // (n+1)·log₂(2m+1)) bits cancel.  `polygamma(3000, 3/2)` cancelled
+    // 4757 bits, beyond what `evalf` searches, and printed 0
+    // (mpmath: −1.47269444412519507002495959e8602); beyond the bound the
+    // node stays symbolic for `evalf`.
+    if beyond_digit_guard(arena, log10_factorial_lower(n_usize as f64)) {
+        return None;
+    }
+    let shifted_from = if half { 2 * m + 1 } else { m };
+    if shifted_from >= 2
+        && (n_usize as f64 + 1.0) * (shifted_from as f64).log2() > MAX_POLYGAMMA_CANCEL_BITS
+    {
+        return None;
+    }
     let sign = if n_usize.is_multiple_of(2) { -1 } else { 1 }; // (−1)^{n+1}
     let n_fact = factorial_ratio(n_usize);
     let np1 = arena.int(n_usize as i64 + 1);
@@ -1673,8 +1700,40 @@ pub(crate) fn eval_kronecker_delta(arena: &mut Arena, i: ExprId, j: ExprId) -> O
 // Combinatorial helper functions
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ── The digit guard of the integer sequences ─────────────────────────────
+//
+// `n!!`, `!n`, `Fₙ`, `Lₙ`, `Bₙ`, `Hₙ`, `Cₙ`, Bell and Euler numbers,
+// Stirling numbers and `p(n)` follow the policy of `n!` above: a lower
+// bound on the digits of the result refuses before any arithmetic, the
+// exact count decides at the limit ([`guarded_num`]), and beyond it the
+// node stays symbolic for `evalf`.  Up to 0.29 none was bounded:
+// `fibonacci(10^7)`, `bernoulli(10^5)`, `harmonic(10^6)`, `catalan(10^6)`,
+// `bell(10^4)`, `euler_number(10^4)`, `stirling2(10^4, 5000)` and
+// `partition_count(10^7)` each ran for more than 20 s (release), and
+// `subfactorial(10^5)` built a 456 574-digit integer in 4 s.  The Stirling
+// triangle and the pentagonal recurrence of `p(n)` are also bounded in
+// work, since their cost outgrows the digits of the result.
+
+/// `log₁₀ φ` of the golden ratio.
+const LOG10_PHI: f64 = 0.208_987_640_249_978_73;
+
+/// A non-negative integer argument that fits in a `u64`.
+fn nonneg_int_arg(arena: &Arena, id: ExprId) -> Option<u64> {
+    let r = arena.as_num(id)?;
+    if !r.is_integer() || r.is_negative() {
+        return None;
+    }
+    r.to_integer().try_into().ok()
+}
+
+/// An integer as a guarded node (see [`guarded_num`]).
+fn guarded_int(arena: &mut Arena, n: BigInt) -> Option<ExprId> {
+    guarded_num(arena, Ratio::from_integer(n))
+}
+
 /// Double factorial: n!! = n * (n-2) * (n-4) * ... * 1 (or 2).
-/// 0!! = 1, 1!! = 1, (-1)!! = 1.
+/// 0!! = 1, 1!! = 1, (-1)!! = 1.  Within the digit guard: `n!! ≥ (2m)!! =
+/// 2^m·m!` for `m = ⌊n/2⌋`.
 fn eval_factorial2(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     let r = arena.as_num(inner)?;
     if !r.is_integer() {
@@ -1684,25 +1743,30 @@ fn eval_factorial2(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     if n < -1 {
         return None;
     }
+    let m = (n.max(0) / 2) as f64;
+    if beyond_digit_guard(
+        arena,
+        m * std::f64::consts::LOG10_2 + log10_factorial_lower(m),
+    ) {
+        return None;
+    }
     let mut result = BigInt::from(1);
     let mut k = n;
     while k > 1 {
         result *= BigInt::from(k);
         k -= 2;
     }
-    let ratio = Ratio::from_integer(result);
-    let nid = arena.intern_num(ratio);
-    Some(arena.intern(ExprNode::Num(nid)))
+    guarded_int(arena, result)
 }
 
 /// Subfactorial (derangement count): !n.
 /// Uses recurrence: !0 = 1, !1 = 0, !n = (n-1)(!(n-1) + !(n-2)).
+/// Within the digit guard: `!n = round(n!/e) ≥ n!/3` for `n ≥ 4`.
 fn eval_subfactorial(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
-    let r = arena.as_num(inner)?;
-    if !r.is_integer() || r.is_negative() {
+    let n = nonneg_int_arg(arena, inner)?;
+    if n >= 4 && beyond_digit_guard(arena, log10_factorial_lower(n as f64) - 3f64.log10()) {
         return None;
     }
-    let n: u64 = r.to_integer().try_into().ok()?;
     let result = if n == 0 {
         BigInt::from(1)
     } else {
@@ -1715,9 +1779,7 @@ fn eval_subfactorial(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         }
         curr
     };
-    let ratio = Ratio::from_integer(result);
-    let nid = arena.intern_num(ratio);
-    Some(arena.intern(ExprNode::Num(nid)))
+    guarded_int(arena, result)
 }
 
 /// Rising factorial (Pochhammer): (x)_n = x * (x+1) * ... * (x+n-1).
@@ -1747,13 +1809,13 @@ fn eval_falling_factorial(arena: &mut Arena, x_id: ExprId, n_id: ExprId) -> Opti
 }
 
 /// Fibonacci number F(n) using iterative computation.
-/// F(0) = 0, F(1) = 1, F(n) = F(n-1) + F(n-2).
+/// F(0) = 0, F(1) = 1, F(n) = F(n-1) + F(n-2).  Within the digit guard:
+/// `Fₙ ≥ φ^(n−2)`.
 fn eval_fibonacci(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
-    let r = arena.as_num(inner)?;
-    if !r.is_integer() || r.is_negative() {
+    let n = nonneg_int_arg(arena, inner)?;
+    if beyond_digit_guard(arena, (n as f64 - 2.0) * LOG10_PHI) {
         return None;
     }
-    let n: u64 = r.to_integer().try_into().ok()?;
     let result = if n == 0 {
         BigInt::from(0)
     } else {
@@ -1766,19 +1828,17 @@ fn eval_fibonacci(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         }
         b
     };
-    let ratio = Ratio::from_integer(result);
-    let nid = arena.intern_num(ratio);
-    Some(arena.intern(ExprNode::Num(nid)))
+    guarded_int(arena, result)
 }
 
 /// Lucas number L(n) using iterative computation.
-/// L(0) = 2, L(1) = 1, L(n) = L(n-1) + L(n-2).
+/// L(0) = 2, L(1) = 1, L(n) = L(n-1) + L(n-2).  Within the digit guard:
+/// `Lₙ ≥ φ^(n−1)`.
 fn eval_lucas(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
-    let r = arena.as_num(inner)?;
-    if !r.is_integer() || r.is_negative() {
+    let n = nonneg_int_arg(arena, inner)?;
+    if beyond_digit_guard(arena, (n as f64 - 1.0) * LOG10_PHI) {
         return None;
     }
-    let n: u64 = r.to_integer().try_into().ok()?;
     let result = if n == 0 {
         BigInt::from(2)
     } else {
@@ -1791,122 +1851,211 @@ fn eval_lucas(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         }
         b
     };
-    let ratio = Ratio::from_integer(result);
-    let nid = arena.intern_num(ratio);
-    Some(arena.intern(ExprNode::Num(nid)))
+    guarded_int(arena, result)
 }
 
-/// Bernoulli number B(n).
-/// B(0) = 1, and for n >= 1:
-///   B(n) = -1/(n+1) * sum_{k=0}^{n-1} C(n+1, k) * B(k)
-fn eval_bernoulli(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
-    let r = arena.as_num(inner)?;
-    if !r.is_integer() || r.is_negative() {
+/// The Bernoulli number `Bₙ` exactly, or `None` beyond the digit guard.
+///
+/// `|Bₙ| = 2·n!·ζ(n)/(2π)ⁿ ≥ 2·n!/(2π)ⁿ` for even `n ≥ 2` bounds the
+/// digits first.  Even indices come from the tangent numbers,
+/// `B₂ₘ = (−1)^(m−1)·2m·Tₘ/(2^(2m)·(2^(2m) − 1))`, computed by Brent and
+/// Harvey's integer recurrence ("Fast computation of Bernoulli, Tangent
+/// and Secant numbers", 2011, Algorithm TangentNumbers): `O(m²)`
+/// small-integer multiplications and additions and one final gcd, where
+/// the rational recurrence `Bₘ = −Σ C(m+1, k)·Bₖ/(m+1)` took a gcd per
+/// term (`bernoulli(2000)` inside the guard would have taken minutes).
+pub(crate) fn exact_bernoulli(arena: &Arena, n: u64) -> Option<Q> {
+    match n {
+        0 => return Some(Ratio::one()),
+        1 => return Some(Ratio::new(BigInt::from(-1), BigInt::from(2))),
+        _ if n % 2 == 1 => return Some(Ratio::zero()),
+        _ => {}
+    }
+    let nf = n as f64;
+    let lower = std::f64::consts::LOG10_2 + log10_factorial_lower(nf)
+        - nf * (2.0 * std::f64::consts::PI).log10();
+    if beyond_digit_guard(arena, lower) {
         return None;
     }
-    let n: u64 = r.to_integer().try_into().ok()?;
-    // Build table of B(0)..B(n)
-    let mut b_vals: Vec<Q> = Vec::with_capacity((n + 1) as usize);
-    b_vals.push(Ratio::one()); // B(0) = 1
-    for m in 1..=n {
-        // B(m) = -1/(m+1) * sum_{k=0}^{m-1} C(m+1, k) * B(k)
-        let mut sum = Ratio::<BigInt>::zero();
-        let mut binom = BigInt::from(1); // C(m+1, 0) = 1
-        for k in 0..m {
-            sum += Ratio::from_integer(binom.clone()) * &b_vals[k as usize];
-            // C(m+1, k+1) = C(m+1, k) * (m+1-k) / (k+1)
-            binom *= BigInt::from(m + 1 - k);
-            binom /= BigInt::from(k + 1);
-        }
-        let result = -sum / Ratio::from_integer(BigInt::from(m + 1));
-        b_vals.push(result);
+    let m = (n / 2) as usize;
+    let t = tangent_numbers(m);
+    let two_2m = BigInt::one() << (2 * m);
+    let den = &two_2m * (&two_2m - BigInt::one());
+    let num = BigInt::from(2 * m as u64) * &t[m];
+    let b = Ratio::new(num, den);
+    let r = if m % 2 == 1 { b } else { -b };
+    let digits = r.numer().to_string().len() + r.denom().to_string().len();
+    (digits <= arena.config.max_result_digits).then_some(r)
+}
+
+/// The tangent numbers `T₁, …, Tₘ` (index 0 unused), by Brent and
+/// Harvey's in-place recurrence (Algorithm TangentNumbers of the paper
+/// cited at [`exact_bernoulli`]).
+fn tangent_numbers(m: usize) -> Vec<BigInt> {
+    let mut t = vec![BigInt::zero(); m + 1];
+    if m == 0 {
+        return t;
     }
-    let ratio = b_vals.pop()?;
-    let nid = arena.intern_num(ratio);
-    Some(arena.intern(ExprNode::Num(nid)))
+    t[1] = BigInt::one();
+    for k in 2..=m {
+        t[k] = &t[k - 1] * BigInt::from(k as u64 - 1);
+    }
+    for k in 2..=m {
+        for j in k..=m {
+            let a = &t[j - 1] * BigInt::from((j - k) as u64);
+            let b = &t[j] * BigInt::from((j - k + 2) as u64);
+            t[j] = a + b;
+        }
+    }
+    t
+}
+
+/// Bernoulli number B(n), within the digit guard ([`exact_bernoulli`]).
+fn eval_bernoulli(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    let n = nonneg_int_arg(arena, inner)?;
+    let b = exact_bernoulli(arena, n)?;
+    guarded_num(arena, b)
+}
+
+/// A lower bound on the decimal digits of the reduced denominator of
+/// `Hₙ`: every prime `p ∈ (n/2, n]` divides it (`1/p` is the only term
+/// with a factor `p`), so it is at least `e^(θ(n) − θ(n/2))`, and Rosser
+/// and Schoenfeld's bounds (1962, Theorem 4 and its corollary:
+/// `θ(x) > x(1 − 1/ln x)` for `x ≥ 41`, `θ(x) < x(1 + 1/(2 ln x))` for
+/// `x > 1`) bound the difference.
+fn harmonic_digits_lower(n: u64) -> f64 {
+    if n < 82 {
+        return 0.0;
+    }
+    let x = n as f64;
+    let h = x / 2.0;
+    let theta_diff = x * (1.0 - 1.0 / x.ln()) - h * (1.0 + 1.0 / (2.0 * h.ln()));
+    (theta_diff / std::f64::consts::LN_10).max(0.0)
 }
 
 /// Harmonic number H(n) = 1 + 1/2 + 1/3 + ... + 1/n.
-/// H(0) = 0.
+/// H(0) = 0.  Within the digit guard ([`harmonic_digits_lower`]); the sum
+/// is taken over the common denominator `lcm(1, …, n)` and reduced once,
+/// where a gcd per term made `Hₙ` quadratic in its digits.
 fn eval_harmonic(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
-    let r = arena.as_num(inner)?;
-    if !r.is_integer() || r.is_negative() {
+    let n = nonneg_int_arg(arena, inner)?;
+    if beyond_digit_guard(arena, harmonic_digits_lower(n)) {
         return None;
     }
-    let n: u64 = r.to_integer().try_into().ok()?;
-    let mut result = Ratio::<BigInt>::zero();
+    let mut lcm = BigInt::one();
     for k in 1..=n {
-        result += Ratio::new(BigInt::from(1), BigInt::from(k));
+        let kb = BigInt::from(k);
+        let g = num_integer::Integer::gcd(&(&lcm % &kb), &kb);
+        lcm *= kb / g;
     }
-    let nid = arena.intern_num(result);
-    Some(arena.intern(ExprNode::Num(nid)))
+    let mut numer = BigInt::zero();
+    for k in 1..=n {
+        numer += &lcm / BigInt::from(k);
+    }
+    guarded_num(arena, Ratio::new(numer, lcm))
 }
 
-/// Catalan number C(n) = (2n)! / ((n+1)! * n!).
+/// Catalan number C(n) = (2n)! / ((n+1)! * n!).  Within the digit guard:
+/// `Cₙ ≥ 4ⁿ/((2n + 1)(n + 1))`.
 fn eval_catalan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
-    let r = arena.as_num(inner)?;
-    if !r.is_integer() || r.is_negative() {
+    let n = nonneg_int_arg(arena, inner)?;
+    let nf = n as f64;
+    if beyond_digit_guard(
+        arena,
+        nf * 4f64.log10() - ((2.0 * nf + 1.0) * (nf + 1.0)).log10(),
+    ) {
         return None;
     }
-    let n: u64 = r.to_integer().try_into().ok()?;
     // C(n) = C(2n, n) / (n+1) — compute using incremental binomial
     let mut binom = BigInt::from(1); // C(2n, n) built incrementally
     for i in 0..n {
         binom *= BigInt::from(2 * n - i);
         binom /= BigInt::from(i + 1);
     }
-    let result = Ratio::new(binom, BigInt::from(n + 1));
-    let nid = arena.intern_num(result);
-    Some(arena.intern(ExprNode::Num(nid)))
+    guarded_num(arena, Ratio::new(binom, BigInt::from(n + 1)))
 }
 
-/// Stirling number of the second kind S(n, k).
-/// Delegates to `combinatorics::stirling2` which returns `Option<BigInt>`.
-/// `None` propagates → the expression node stays unevaluated.
+/// Largest `n·k·limbs` of the Stirling triangle (`O(n·k)` big-integer
+/// operations on numbers of the result's size) computed exactly.
+const MAX_STIRLING_WORK: f64 = 2.0e8;
+
+/// `(n, k)` of a Stirling number within the digit guard and the work
+/// bound: `S(n, k) ≥ k^(n−k)` (the first `k` elements in distinct blocks,
+/// the others anywhere), and `|s(n, k)| ≥ S(n, k)` (every partition into
+/// `k` blocks gives a permutation with `k` cycles), `|s(n, 1)| = (n − 1)!`.
+/// The closed forms of `combinatorics` for `k ≤ 2` (second kind),
+/// `k = 1` (first kind) and `k ≥ n − 1` cost no triangle.
+fn stirling_args(
+    arena: &Arena,
+    n_id: ExprId,
+    k_id: ExprId,
+    first_kind: bool,
+) -> Option<(u64, u64)> {
+    let n = nonneg_int_arg(arena, n_id)?;
+    let k = nonneg_int_arg(arena, k_id)?;
+    if k == 0 || k > n {
+        return Some((n, k));
+    }
+    let (nf, kf) = (n as f64, k as f64);
+    let mut lower = (nf - kf) * kf.log10();
+    if first_kind && k == 1 {
+        lower = log10_factorial_lower(nf - 1.0);
+    }
+    if beyond_digit_guard(arena, lower) {
+        return None;
+    }
+    let closed_form = k + 1 >= n || k == 1 || (!first_kind && k == 2);
+    if !closed_form && nf * kf * (1.0 + lower / 19.0) > MAX_STIRLING_WORK {
+        return None;
+    }
+    Some((n, k))
+}
+
+/// Stirling number of the second kind S(n, k), within the digit guard and
+/// the work bound ([`stirling_args`]).
 fn eval_stirling2(arena: &mut Arena, n_id: ExprId, k_id: ExprId) -> Option<ExprId> {
-    let n_r = arena.as_num(n_id)?;
-    let k_r = arena.as_num(k_id)?;
-    if !n_r.is_integer() || !k_r.is_integer() || n_r.is_negative() || k_r.is_negative() {
-        return None;
-    }
-    let result = crate::domains::combinatorics::stirling2(n_r.to_integer(), k_r.to_integer())?;
-    let nid = arena.intern_num(Ratio::from_integer(result));
-    Some(arena.intern(ExprNode::Num(nid)))
+    let (n, k) = stirling_args(arena, n_id, k_id, false)?;
+    let result = crate::domains::combinatorics::stirling2(n, k)?;
+    guarded_int(arena, result)
 }
 
-/// Signed Stirling number of the first kind s(n, k).
-/// Delegates to `combinatorics::stirling1` which returns `Option<BigInt>`.
+/// Signed Stirling number of the first kind s(n, k), within the digit guard
+/// and the work bound ([`stirling_args`]).
 fn eval_stirling1(arena: &mut Arena, n_id: ExprId, k_id: ExprId) -> Option<ExprId> {
-    let n_r = arena.as_num(n_id)?;
-    let k_r = arena.as_num(k_id)?;
-    if !n_r.is_integer() || !k_r.is_integer() || n_r.is_negative() || k_r.is_negative() {
-        return None;
-    }
-    let result = crate::domains::combinatorics::stirling1(n_r.to_integer(), k_r.to_integer())?;
-    let nid = arena.intern_num(Ratio::from_integer(result));
-    Some(arena.intern(ExprNode::Num(nid)))
+    let (n, k) = stirling_args(arena, n_id, k_id, true)?;
+    let result = crate::domains::combinatorics::stirling1(n, k)?;
+    guarded_int(arena, result)
 }
 
-/// Number of integer partitions p(n).
-/// Delegates to `combinatorics::partition_count` which returns `Option<BigInt>`.
+/// Largest `n` whose partition count is computed exactly: the pentagonal
+/// recurrence costs `O(n^{3/2})` additions and keeps all `p(k)`, `k ≤ n`
+/// (`p(40000)` has 218 digits, far inside the digit guard, and takes
+/// about half a second in release).
+const MAX_PARTITION_N: u64 = 40_000;
+
+/// Number of integer partitions p(n), for `n ≤` [`MAX_PARTITION_N`].
 fn eval_partition_count(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
-    let r = arena.as_num(inner)?;
-    if !r.is_integer() || r.is_negative() {
+    let n = nonneg_int_arg(arena, inner)?;
+    if n > MAX_PARTITION_N {
         return None;
     }
-    let result = crate::domains::combinatorics::partition_count(r.to_integer())?;
-    let nid = arena.intern_num(Ratio::from_integer(result));
-    Some(arena.intern(ExprNode::Num(nid)))
+    let result = crate::domains::combinatorics::partition_count(n)?;
+    guarded_int(arena, result)
 }
 
 /// Bell number B(n) using the Bell triangle.
 /// B(0) = 1, B(1) = 1, B(2) = 2, B(3) = 5, B(4) = 15, B(5) = 52.
+/// Within the digit guard: `Bₙ ≥ S(n, k) ≥ k^(n−k)` for any `k`, taken at
+/// `k ≈ n/ln n`.
 fn eval_bell(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
-    let r = arena.as_num(inner)?;
-    if !r.is_integer() || r.is_negative() {
-        return None;
+    let n = nonneg_int_arg(arena, inner)?;
+    if n >= 3 {
+        let nf = n as f64;
+        let k = (nf / nf.ln()).round().clamp(1.0, nf);
+        if beyond_digit_guard(arena, (nf - k) * k.log10()) {
+            return None;
+        }
     }
-    let n: u64 = r.to_integer().try_into().ok()?;
     if n == 0 {
         let nid = arena.intern_num(Ratio::from_integer(BigInt::from(1)));
         return Some(arena.intern(ExprNode::Num(nid)));
@@ -1924,24 +2073,28 @@ fn eval_bell(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     }
     // B(n) = last element of the nth row
     let result = row.pop()?;
-    let ratio = Ratio::from_integer(result);
-    let nid = arena.intern_num(ratio);
-    Some(arena.intern(ExprNode::Num(nid)))
+    guarded_int(arena, result)
 }
 
 /// Euler number E(n). Odd indices give 0.
 /// E(0) = 1, E(2) = -1, E(4) = 5, E(6) = -61, ...
 /// Recurrence for even n >= 2: E(n) = -sum_{k=0,2,4,...,n-2} C(n, k) * E(k).
+///
+/// Within the digit guard: `|Eₙ| = 2^(n+2)·n!·β(n+1)/π^(n+1)` with the
+/// Dirichlet beta `β(s) ≥ 1 − 3^(−s) ≥ 2/3`.
 fn eval_euler_number(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
-    let r = arena.as_num(inner)?;
-    if !r.is_integer() || r.is_negative() {
-        return None;
-    }
-    let n: u64 = r.to_integer().try_into().ok()?;
+    let n = nonneg_int_arg(arena, inner)?;
     // Odd Euler numbers are 0
     if n % 2 == 1 {
         let nid = arena.intern_num(Ratio::from_integer(BigInt::from(0)));
         return Some(arena.intern(ExprNode::Num(nid)));
+    }
+    let nf = n as f64;
+    let lower = log10_factorial_lower(nf) + (nf + 2.0) * std::f64::consts::LOG10_2
+        - (nf + 1.0) * std::f64::consts::PI.log10()
+        + (2.0f64 / 3.0).log10();
+    if n >= 2 && beyond_digit_guard(arena, lower) {
+        return None;
     }
     // Build table of E(0), E(2), E(4), ..., E(n)
     let half = (n / 2) as usize;
@@ -1966,9 +2119,7 @@ fn eval_euler_number(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         e_vals.push(-sum);
     }
     let result = e_vals.pop()?;
-    let ratio = Ratio::from_integer(result);
-    let nid = arena.intern_num(ratio);
-    Some(arena.intern(ExprNode::Num(nid)))
+    guarded_int(arena, result)
 }
 
 fn is_pi(arena: &Arena, id: ExprId) -> bool {
@@ -2012,8 +2163,11 @@ fn as_pi_multiple(arena: &Arena, id: ExprId) -> Option<Q> {
 /// Evaluate `sin(inner)` for known special values.
 fn eval_sin(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     // Odd function: sin(-x) = -sin(x)
+    // The special value of the positive argument is taken too: returning
+    // `−sin(π)` left `eval(sin(−π))` non-zero to structural tests (Gruntz
+    // took it for a leading coefficient, and `lim_{x→0⁺} x/sin(x − π)` was 0).
     if let Some(pos_inner) = as_negated(arena, inner) {
-        let sin_pos = arena.sin(pos_inner);
+        let sin_pos = eval_sin(arena, pos_inner).unwrap_or_else(|| arena.sin(pos_inner));
         return Some(arena.neg(sin_pos));
     }
 
@@ -2123,7 +2277,7 @@ fn eval_sin(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 fn eval_cos(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     // Even function: cos(-x) = cos(x)
     if let Some(pos_inner) = as_negated(arena, inner) {
-        return Some(arena.cos(pos_inner));
+        return Some(eval_cos(arena, pos_inner).unwrap_or_else(|| arena.cos(pos_inner)));
     }
 
     // cos(i*x) = cosh(x) — trig-hyperbolic bridge
@@ -2229,7 +2383,7 @@ fn eval_cos(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 fn eval_tan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     // Odd function: tan(-x) = -tan(x)
     if let Some(pos_inner) = as_negated(arena, inner) {
-        let tan_pos = arena.tan(pos_inner);
+        let tan_pos = eval_tan(arena, pos_inner).unwrap_or_else(|| arena.tan(pos_inner));
         return Some(arena.neg(tan_pos));
     }
 
@@ -2755,7 +2909,7 @@ pub(crate) fn eval_atan2(arena: &mut Arena, y: ExprId, x: ExprId) -> Option<Expr
 fn eval_sinh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     // Odd function: sinh(-x) = -sinh(x)
     if let Some(pos_inner) = as_negated(arena, inner) {
-        let sinh_pos = arena.sinh(pos_inner);
+        let sinh_pos = eval_sinh(arena, pos_inner).unwrap_or_else(|| arena.sinh(pos_inner));
         return Some(arena.neg(sinh_pos));
     }
 
@@ -2768,7 +2922,7 @@ fn eval_sinh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 fn eval_cosh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     // Even function: cosh(-x) = cosh(x)
     if let Some(pos_inner) = as_negated(arena, inner) {
-        return Some(arena.cosh(pos_inner));
+        return Some(eval_cosh(arena, pos_inner).unwrap_or_else(|| arena.cosh(pos_inner)));
     }
 
     if inner == arena.zero {
@@ -2780,7 +2934,7 @@ fn eval_cosh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 fn eval_tanh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     // Odd function: tanh(-x) = -tanh(x)
     if let Some(pos_inner) = as_negated(arena, inner) {
-        let tanh_pos = arena.tanh(pos_inner);
+        let tanh_pos = eval_tanh(arena, pos_inner).unwrap_or_else(|| arena.tanh(pos_inner));
         return Some(arena.neg(tanh_pos));
     }
 
@@ -2879,12 +3033,286 @@ fn mod_positive(a: &Q, m: &Q) -> Q {
     result
 }
 
+// ── Explicit coefficients of the classical orthogonal polynomials ─────────
+//
+// Up to 0.29 `p_n(x)` was built by its three-term recurrence, each step
+// expanded and re-canonicalised: `O(n)` canonicalisations of polynomials
+// with `O(n)` big coefficients.  `legendre(300, x)` took 6 s in `eval`, and
+// `legendre(1000, x)`, `hermite(1000, x)`, `gegenbauer(1000, 1/3, x)`,
+// `assoc_legendre(1000, 3, x)`, `jacobi(1000, 1/3, 1/5, x)` did not finish
+// within a minute.  The coefficients have closed forms (hypergeometric sums,
+// DLMF §18.5): each follows from the previous one by a rational factor, so
+// the whole polynomial costs `O(n)` rational operations (Jacobi, written in
+// powers of `(x − 1)/2`, needs an `O(n²)` change of basis for a symbolic
+// `x`).  Every coefficient, and a numeric value, is within the digit guard.
+
+/// A family of [`ortho_coeffs`], with its numeric parameters.
+#[derive(Clone, Debug)]
+enum OrthoFamily {
+    Legendre,
+    ChebyshevT,
+    ChebyshevU,
+    Hermite,
+    Laguerre,
+    /// `C_n^{(α)}`
+    Gegenbauer(Q),
+    /// `L_n^{(α)}`
+    AssocLaguerre(Q),
+}
+
+fn q_int(n: i64) -> Q {
+    Ratio::from_integer(BigInt::from(n))
+}
+
+/// Is the rational `r` within the digit guard (numerator and denominator
+/// bits, a cheap count)?
+fn within_guard_bits(arena: &Arena, r: &Q) -> bool {
+    let bits = r.numer().bits() + r.denom().bits();
+    (bits as f64) * std::f64::consts::LOG10_2 <= arena.config.max_result_digits as f64 + 2.0
+}
+
+/// The coefficients `c[i]` of `xⁱ` (`i = 0..=n`) of the family's `p_n`,
+/// from the explicit sums (DLMF 18.5.10–18.5.13, 18.5.12 for Laguerre):
+///
+/// * `P_n = 2⁻ⁿ Σ_k (−1)^k C(n, k) C(2n − 2k, n) x^{n−2k}`
+/// * `T_n = (n/2) Σ_k (−1)^k (n−k−1)!/(k!(n−2k)!) (2x)^{n−2k}` (`n ≥ 1`)
+/// * `U_n = Σ_k (−1)^k C(n−k, k) (2x)^{n−2k}`
+/// * `H_n = n! Σ_k (−1)^k (2x)^{n−2k}/(k!(n−2k)!)`
+/// * `C_n^{(α)} = Σ_k (−1)^k (α)_{n−k}/(k!(n−2k)!) (2x)^{n−2k}`
+/// * `L_n^{(α)} = Σ_k (−1)^k C(n+α, n−k) x^k/k!`
+///
+/// `None` beyond the digit guard, or when a ratio would divide by zero
+/// (`α` a non-positive integer, where the recurrences degenerate).
+fn ortho_coeffs(arena: &Arena, family: &OrthoFamily, n: usize) -> Option<Vec<Q>> {
+    let mut c = vec![Q::zero(); n + 1];
+    let ni = n as i64;
+    let even_family = !matches!(
+        family,
+        OrthoFamily::Laguerre | OrthoFamily::AssocLaguerre(_)
+    );
+    if even_family {
+        // Leading coefficient, then c[n−2k−2] = c[n−2k] · ratio(k).
+        let mut lead = match family {
+            OrthoFamily::Legendre => {
+                // C(2n, n)/2ⁿ
+                Ratio::new(
+                    crate::base::combinatorics::binomial(2 * n as u64, n as u64),
+                    BigInt::one() << n,
+                )
+            }
+            OrthoFamily::ChebyshevT => {
+                if n == 0 {
+                    Q::one()
+                } else {
+                    Ratio::from_integer(BigInt::one() << (n - 1))
+                }
+            }
+            OrthoFamily::ChebyshevU | OrthoFamily::Hermite => {
+                Ratio::from_integer(BigInt::one() << n)
+            }
+            OrthoFamily::Gegenbauer(a) => {
+                // (α)_n 2ⁿ/n!
+                let mut acc = Q::one();
+                for j in 0..ni {
+                    acc *= a + q_int(j);
+                    acc /= q_int(j + 1);
+                    acc *= q_int(2);
+                }
+                acc
+            }
+            OrthoFamily::Laguerre | OrthoFamily::AssocLaguerre(_) => return None,
+        };
+        if matches!(family, OrthoFamily::ChebyshevT) && n == 0 {
+            c[0] = Q::one();
+            return Some(c);
+        }
+        for k in 0..=(ni / 2) {
+            if !within_guard_bits(arena, &lead) {
+                return None;
+            }
+            c[(ni - 2 * k) as usize] = lead.clone();
+            if 2 * k + 2 > ni {
+                break;
+            }
+            let (m, m1) = (q_int(ni - 2 * k), q_int(ni - 2 * k - 1));
+            let kp1 = q_int(k + 1);
+            let den = match family {
+                OrthoFamily::Legendre => q_int(2) * &kp1 * q_int(2 * ni - 2 * k - 1),
+                OrthoFamily::ChebyshevT => q_int(4) * &kp1 * q_int(ni - k - 1),
+                OrthoFamily::ChebyshevU => q_int(4) * &kp1 * q_int(ni - k),
+                OrthoFamily::Hermite => q_int(4) * &kp1,
+                OrthoFamily::Gegenbauer(a) => q_int(4) * &kp1 * (q_int(ni - k - 1) + a),
+                OrthoFamily::Laguerre | OrthoFamily::AssocLaguerre(_) => return None,
+            };
+            if den.is_zero() {
+                return None;
+            }
+            lead = -(lead * m * m1) / den;
+        }
+        return Some(c);
+    }
+    // Laguerre families: c[0] = C(n+α, n), c[k+1] = −c[k]·(n−k)/((k+1)(α+k+1)).
+    let alpha = match family {
+        OrthoFamily::AssocLaguerre(a) => a.clone(),
+        _ => Q::zero(),
+    };
+    let mut term = Q::one();
+    for j in 0..ni {
+        term *= &alpha + q_int(j + 1);
+        term /= q_int(j + 1);
+    }
+    for k in 0..=ni {
+        if !within_guard_bits(arena, &term) {
+            return None;
+        }
+        c[k as usize] = term.clone();
+        if k == ni {
+            break;
+        }
+        let den = q_int(k + 1) * (&alpha + q_int(k + 1));
+        if den.is_zero() {
+            return None;
+        }
+        term = -(term * q_int(ni - k)) / den;
+    }
+    Some(c)
+}
+
+/// The Jacobi coefficients `d[ℓ]` of `((x − 1)/2)^ℓ` in `P_n^{(α,β)}`
+/// (DLMF 18.5.8): `d_ℓ = (n+α+β+1)_ℓ (α+ℓ+1)_{n−ℓ}/(ℓ!(n−ℓ)!)`,
+/// `d_{ℓ+1} = d_ℓ (n+α+β+1+ℓ)(n−ℓ)/((ℓ+1)(α+ℓ+1))`.
+fn jacobi_shifted_coeffs(arena: &Arena, n: usize, a: &Q, b: &Q) -> Option<Vec<Q>> {
+    let ni = n as i64;
+    let mut d = Vec::with_capacity(n + 1);
+    // d_0 = (α+1)_n/n!
+    let mut term = Q::one();
+    for j in 0..ni {
+        term *= a + q_int(j + 1);
+        term /= q_int(j + 1);
+    }
+    for l in 0..=ni {
+        if !within_guard_bits(arena, &term) {
+            return None;
+        }
+        d.push(term.clone());
+        if l == ni {
+            break;
+        }
+        let den = q_int(l + 1) * (a + q_int(l + 1));
+        if den.is_zero() {
+            return None;
+        }
+        term = term * (q_int(ni + 1 + l) + a + b) * q_int(ni - l) / den;
+    }
+    Some(d)
+}
+
+/// `Σ c[i] tⁱ` by Horner's rule, refused (`None`) as soon as the partial
+/// value outgrows twice the digit guard (`chebyshev_t(1000, 1/10^20)` built
+/// 20 000-digit intermediates for 11 s before the final guard refused).
+fn horner(arena: &Arena, c: &[Q], t: &Q) -> Option<Q> {
+    let limit_bits =
+        2.0 * arena.config.max_result_digits as f64 / std::f64::consts::LOG10_2 + 256.0;
+    let mut acc = Q::zero();
+    for ci in c.iter().rev() {
+        acc = acc * t + ci;
+        if (acc.numer().bits() + acc.denom().bits()) as f64 > limit_bits {
+            return None;
+        }
+    }
+    Some(acc)
+}
+
+/// `Σ c[i] xⁱ` as an expression; expanded when `x` is a compound (the
+/// recurrences expanded at every step, so `legendre(2, y + 1)` is
+/// `3/2·y² + 3y + 1`).  `None` if a coefficient is beyond the digit guard.
+fn poly_from_coeffs(arena: &mut Arena, c: &[Q], x: ExprId) -> Option<ExprId> {
+    let mut terms = Vec::with_capacity(c.len());
+    for (i, ci) in c.iter().enumerate() {
+        if ci.is_zero() {
+            continue;
+        }
+        let coeff = guarded_num(arena, ci.clone())?;
+        let term = match i {
+            0 => coeff,
+            1 => arena.mul(&[coeff, x]),
+            _ => {
+                let e = arena.int(i as i64);
+                let p = arena.pow(x, e);
+                arena.mul(&[coeff, p])
+            }
+        };
+        terms.push(term);
+    }
+    let sum = match terms.len() {
+        0 => arena.zero,
+        1 => terms[0],
+        _ => arena.add(&terms),
+    };
+    if matches!(arena.node(x), ExprNode::Symbol(_)) {
+        Some(sum)
+    } else {
+        Some(expand_eval(arena, sum))
+    }
+}
+
+/// `p_n(x)` of `family` from its coefficients: the exact value for a
+/// rational `x`, else the explicit polynomial.
+fn ortho_value(arena: &mut Arena, family: &OrthoFamily, n: usize, x: ExprId) -> Option<ExprId> {
+    let c = ortho_coeffs(arena, family, n)?;
+    if let Some(xr) = arena.as_num(x).cloned() {
+        let v = horner(arena, &c, &xr)?;
+        return guarded_num(arena, v);
+    }
+    poly_from_coeffs(arena, &c, x)
+}
+
+/// `P_n^{(α,β)}(x)` for numeric `α`, `β`: Horner in `(x − 1)/2` for a
+/// rational `x`, else the monomial coefficients
+/// `Σ_{ℓ≥j} d_ℓ 2^{−ℓ} C(ℓ, j) (−1)^{ℓ−j}` of `xʲ`.
+fn jacobi_value(arena: &mut Arena, n: usize, a: &Q, b: &Q, x: ExprId) -> Option<ExprId> {
+    let d = jacobi_shifted_coeffs(arena, n, a, b)?;
+    if let Some(xr) = arena.as_num(x).cloned() {
+        let y = (xr - Q::one()) / q_int(2);
+        let v = horner(arena, &d, &y)?;
+        return guarded_num(arena, v);
+    }
+    // With u = x − 1, Σ d_ℓ (u/2)^ℓ = Σ e_ℓ u^ℓ (e_ℓ = d_ℓ/2^ℓ); over a
+    // common denominator the Taylor shift u = x − 1 is `O(n²)` integer
+    // subtractions (Knuth's scheme: a_j −= a_{j+1} for j = n−1 … i).
+    let e: Vec<Q> = d
+        .iter()
+        .enumerate()
+        .map(|(l, dl)| dl / Ratio::from_integer(BigInt::one() << l))
+        .collect();
+    let mut den = BigInt::one();
+    for el in &e {
+        den = num_integer::Integer::lcm(&den, el.denom());
+    }
+    let mut a: Vec<BigInt> = e
+        .iter()
+        .map(|el| el.numer() * (&den / el.denom()))
+        .collect();
+    for i in 0..n {
+        for j in (i..n).rev() {
+            let next = a[j + 1].clone();
+            a[j] -= next;
+        }
+    }
+    let c: Vec<Q> = a
+        .into_iter()
+        .map(|aj| Ratio::new(aj, den.clone()))
+        .collect();
+    poly_from_coeffs(arena, &c, x)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Orthogonal polynomial evaluation via recurrence relations
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Legendre polynomial P_n(x) via Bonnet's recurrence.
 /// P_0(x) = 1, P_1(x) = x, (k+1)·P_{k+1} = (2k+1)·x·P_k − k·P_{k-1}
+#[cfg(test)]
 fn eval_legendre(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
     if n == 0 {
         return arena.one;
@@ -2919,6 +3347,7 @@ fn eval_legendre(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
 
 /// Chebyshev polynomial of the first kind T_n(x) via recurrence.
 /// T_0(x) = 1, T_1(x) = x, T_{k+1} = 2·x·T_k − T_{k-1}
+#[cfg(test)]
 fn eval_chebyshev_t(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
     if n == 0 {
         return arena.one;
@@ -2947,6 +3376,7 @@ fn eval_chebyshev_t(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
 
 /// Chebyshev polynomial of the second kind U_n(x) via recurrence.
 /// U_0(x) = 1, U_1(x) = 2x, U_{k+1} = 2·x·U_k − U_{k-1}
+#[cfg(test)]
 fn eval_chebyshev_u(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
     if n == 0 {
         return arena.one;
@@ -2975,6 +3405,7 @@ fn eval_chebyshev_u(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
 
 /// Physicist's Hermite polynomial H_n(x) via recurrence.
 /// H_0(x) = 1, H_1(x) = 2x, H_{k+1} = 2·x·H_k − 2k·H_{k-1}
+#[cfg(test)]
 fn eval_hermite(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
     if n == 0 {
         return arena.one;
@@ -3005,6 +3436,7 @@ fn eval_hermite(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
 
 /// Laguerre polynomial L_n(x) via recurrence.
 /// L_0(x) = 1, L_1(x) = 1−x, (k+1)·L_{k+1} = (2k+1−x)·L_k − k·L_{k-1}
+#[cfg(test)]
 fn eval_laguerre(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
     if n == 0 {
         return arena.one;
@@ -3071,11 +3503,11 @@ fn eval_lib_fn(arena: &mut Arena, f: LibFn, args: &[ExprId]) -> Option<ExprId> {
         LibFn::BesselY | LibFn::BesselK => None,
 
         // ── Classical orthogonal polynomials of small explicit degree ──
-        LibFn::Legendre => eval_orthopoly(arena, args[0], args[1], eval_legendre),
-        LibFn::ChebyshevT => eval_orthopoly(arena, args[0], args[1], eval_chebyshev_t),
-        LibFn::ChebyshevU => eval_orthopoly(arena, args[0], args[1], eval_chebyshev_u),
-        LibFn::Hermite => eval_orthopoly(arena, args[0], args[1], eval_hermite),
-        LibFn::Laguerre => eval_orthopoly(arena, args[0], args[1], eval_laguerre),
+        LibFn::Legendre => eval_orthopoly(arena, args[0], args[1], OrthoFamily::Legendre),
+        LibFn::ChebyshevT => eval_orthopoly(arena, args[0], args[1], OrthoFamily::ChebyshevT),
+        LibFn::ChebyshevU => eval_orthopoly(arena, args[0], args[1], OrthoFamily::ChebyshevU),
+        LibFn::Hermite => eval_orthopoly(arena, args[0], args[1], OrthoFamily::Hermite),
+        LibFn::Laguerre => eval_orthopoly(arena, args[0], args[1], OrthoFamily::Laguerre),
 
         // ── More special functions (0.9) ──
         LibFn::Erfi => eval_erfi(arena, args[0]),
@@ -3130,12 +3562,7 @@ fn eval_bessel_regular_at_zero(arena: &mut Arena, order: ExprId, x: ExprId) -> O
 
 /// A classical orthogonal polynomial `p_n(x)` expanded by `expand` when `n`
 /// is a non-negative integer no larger than the configured power limit.
-fn eval_orthopoly(
-    arena: &mut Arena,
-    n: ExprId,
-    x: ExprId,
-    expand: fn(&mut Arena, usize, ExprId) -> ExprId,
-) -> Option<ExprId> {
+fn eval_orthopoly(arena: &mut Arena, n: ExprId, x: ExprId, family: OrthoFamily) -> Option<ExprId> {
     let n_num = arena.as_num(n)?;
     if !n_num.is_integer() || n_num.is_negative() {
         return None;
@@ -3144,7 +3571,7 @@ fn eval_orthopoly(
     if n_int > arena.config.max_pow_exponent as u64 {
         return None;
     }
-    Some(expand(arena, n_int as usize, x))
+    ortho_value(arena, &family, n_int as usize, x)
 }
 
 /// Intern `f(args)` as a library `Apply` node (no folding).
@@ -3782,6 +4209,22 @@ fn as_param_poly_degree(arena: &Arena, n: ExprId, params: &[ExprId]) -> Option<u
     (numeric || deg <= MAX_SYMBOLIC_PARAM_DEGREE).then_some(deg)
 }
 
+/// The degree for the recurrence path of the parametrised polynomials:
+/// symbolic parameters (see [`as_param_poly_degree`]) or numeric ones
+/// where the explicit coefficients degenerate (a non-positive integer
+/// Gegenbauer `α`, a negative integer Laguerre / Jacobi `α`), capped at
+/// [`MAX_DEGENERATE_DEGREE`] for the latter since the recurrence
+/// re-expands the polynomial at every step.
+fn degenerate_param_degree(arena: &Arena, n: ExprId, params: &[ExprId]) -> Option<usize> {
+    let deg = as_param_poly_degree(arena, n, params)?;
+    let numeric = params.iter().all(|&p| arena.as_num(p).is_some());
+    (!numeric || deg <= MAX_DEGENERATE_DEGREE).then_some(deg)
+}
+
+/// Largest degree expanded by the recurrences for degenerate numeric
+/// parameters (see [`degenerate_param_degree`]).
+const MAX_DEGENERATE_DEGREE: usize = 64;
+
 /// Expand and fold one recurrence step.
 fn expand_eval(arena: &mut Arena, e: ExprId) -> ExprId {
     let e = crate::transforms::expand::expand(arena, e);
@@ -3799,7 +4242,12 @@ fn expand_mul2(arena: &mut Arena, p: ExprId, q: ExprId) -> ExprId {
 /// `(k+1) C_{k+1} = 2(k+a) x C_k − (k+2a−1) C_{k−1}`; `C_n^{(1/2)} = P_n`,
 /// `C_n^{(1)} = U_n`.
 fn eval_gegenbauer(arena: &mut Arena, n: ExprId, a: ExprId, x: ExprId) -> Option<ExprId> {
-    if let Some(deg) = as_param_poly_degree(arena, n, &[a]) {
+    if let (Some(deg), Some(alpha)) = (as_poly_degree(arena, n), as_ratio(arena, a))
+        && !(alpha.is_integer() && !alpha.is_positive())
+    {
+        return ortho_value(arena, &OrthoFamily::Gegenbauer(alpha), deg, x);
+    }
+    if let Some(deg) = degenerate_param_degree(arena, n, &[a]) {
         if deg == 0 {
             return Some(arena.one);
         }
@@ -3859,7 +4307,15 @@ fn expanded_powers(arena: &mut Arena, p: ExprId, n: usize) -> Vec<ExprId> {
 /// terms are merged at each step; distributing the whole `2n`-factor
 /// product at once is exponential in `n`.
 fn eval_jacobi(arena: &mut Arena, n: ExprId, a: ExprId, b: ExprId, x: ExprId) -> Option<ExprId> {
-    if let Some(deg) = as_param_poly_degree(arena, n, &[a, b]) {
+    if let (Some(deg), Some(ar), Some(br)) = (
+        as_poly_degree(arena, n),
+        as_ratio(arena, a),
+        as_ratio(arena, b),
+    ) && !(ar.is_integer() && ar.is_negative())
+    {
+        return jacobi_value(arena, deg, &ar, &br, x);
+    }
+    if let Some(deg) = degenerate_param_degree(arena, n, &[a, b]) {
         if deg == 0 {
             return Some(arena.one);
         }
@@ -3930,7 +4386,7 @@ fn eval_assoc_legendre(arena: &mut Arena, n: ExprId, m: ExprId, x: ExprId) -> Op
         }
     };
     if order == 0 {
-        return Some(eval_legendre(arena, deg, x));
+        return ortho_value(arena, &OrthoFamily::Legendre, deg, x);
     }
     let mu = order.unsigned_abs() as usize;
     // (1 − x²)^{μ/2}
@@ -3939,37 +4395,34 @@ fn eval_assoc_legendre(arena: &mut Arena, n: ExprId, m: ExprId, x: ExprId) -> Op
     let one_minus_x2 = arena.sub(arena.one, x2);
     let half_mu = arena.rational(mu as i64, 2);
     let root_pow = arena.pow(one_minus_x2, half_mu);
-    // (−1)^μ (2μ−1)!!
-    let mut dfact = BigInt::one();
-    for j in 1..=mu {
-        dfact *= BigInt::from((2 * j - 1) as u64);
+    // P_n^μ = (−1)^μ (1 − x²)^{μ/2} d^μP_n/dx^μ (Condon–Shortley, DLMF
+    // 14.6.1 with Ferrers' sign): the polynomial part from the explicit
+    // Legendre coefficients, c[i]·i!/(i−μ)! at x^{i−μ}.
+    let c = ortho_coeffs(arena, &OrthoFamily::Legendre, deg)?;
+    let mut r = vec![Q::zero(); deg - mu + 1];
+    let mut falling = factorial_ratio(mu); // i!/(i−μ)! at i = μ
+    for i in mu..=deg {
+        if i > mu {
+            falling = falling * q_int(i as i64) / q_int((i - mu) as i64);
+        }
+        let mut v = &c[i] * &falling;
+        if mu % 2 == 1 {
+            v = -v;
+        }
+        if !within_guard_bits(arena, &v) {
+            return None;
+        }
+        r[i - mu] = v;
     }
-    if mu % 2 == 1 {
-        dfact = -dfact;
-    }
-    let c = arena.intern_num(Ratio::from_integer(dfact));
-    let c = arena.intern(ExprNode::Num(c));
-    let mut prev = arena.mul(&[c, root_pow]); // P_μ^μ
-    let mut curr = if deg > mu {
-        let two_mu_p1 = arena.int(2 * mu as i64 + 1);
-        let p = arena.mul(&[two_mu_p1, x, prev]);
-        expand_eval(arena, p)
-    } else {
-        prev
+    let poly = match arena.as_num(x).cloned() {
+        Some(xr) => {
+            let v = horner(arena, &r, &xr)?;
+            guarded_num(arena, v)?
+        }
+        None => poly_from_coeffs(arena, &r, x)?,
     };
-    for k in (mu + 1)..deg {
-        let two_k_p1 = arena.int(2 * k as i64 + 1);
-        let t1 = arena.mul(&[two_k_p1, x, curr]);
-        let k_plus_mu = arena.int((k + mu) as i64);
-        let t2 = arena.mul(&[k_plus_mu, prev]);
-        let numer = arena.sub(t1, t2);
-        let denom = arena.int((k - mu + 1) as i64);
-        let next = arena.div(numer, denom);
-        let next = expand_eval(arena, next);
-        prev = curr;
-        curr = next;
-    }
-    let value = expand_eval(arena, curr);
+    let prod = arena.mul(&[poly, root_pow]);
+    let value = expand_eval(arena, prod);
     if order < 0 {
         // P_n^{−μ} = (−1)^μ (n−μ)!/(n+μ)! P_n^μ
         let mut ratio = factorial_ratio(deg - mu) / factorial_ratio(deg + mu);
@@ -3987,7 +4440,12 @@ fn eval_assoc_legendre(arena: &mut Arena, n: ExprId, m: ExprId, x: ExprId) -> Op
 /// Generalised Laguerre `L_n^{(a)}(x)` for integer `n ≥ 0` via
 /// `(k+1) L_{k+1} = (2k+1+a−x) L_k − (k+a) L_{k−1}`; `L_n^{(0)} = L_n`.
 fn eval_assoc_laguerre(arena: &mut Arena, n: ExprId, a: ExprId, x: ExprId) -> Option<ExprId> {
-    if let Some(deg) = as_param_poly_degree(arena, n, &[a]) {
+    if let (Some(deg), Some(alpha)) = (as_poly_degree(arena, n), as_ratio(arena, a))
+        && !(alpha.is_integer() && alpha.is_negative())
+    {
+        return ortho_value(arena, &OrthoFamily::AssocLaguerre(alpha), deg, x);
+    }
+    if let Some(deg) = degenerate_param_degree(arena, n, &[a]) {
         if deg == 0 {
             return Some(arena.one);
         }
@@ -5078,5 +5536,47 @@ mod tests {
         let sub = a.subs_structural(re_z, z, w);
         let folded = eval(&mut a, sub);
         assert_eq!(folded, three);
+    }
+
+    #[test]
+    fn explicit_orthogonal_coefficients_match_the_recurrences() {
+        // The coefficient formulas (DLMF §18.5) against the three-term
+        // recurrences they replace, symbolically and at rational points.
+        type Old = fn(&mut Arena, usize, ExprId) -> ExprId;
+        let families: [(OrthoFamily, Old); 5] = [
+            (OrthoFamily::Legendre, eval_legendre),
+            (OrthoFamily::ChebyshevT, eval_chebyshev_t),
+            (OrthoFamily::ChebyshevU, eval_chebyshev_u),
+            (OrthoFamily::Hermite, eval_hermite),
+            (OrthoFamily::Laguerre, eval_laguerre),
+        ];
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let pts = [a.rational(1, 3), a.rational(-7, 5), a.int(2)];
+        for (family, old) in families {
+            for n in 0..=14 {
+                let new = ortho_value(&mut a, &family, n, x).unwrap();
+                let reference = old(&mut a, n, x);
+                assert_eq!(new, reference, "{family:?} n = {n}");
+                for &p in &pts {
+                    let new = ortho_value(&mut a, &family, n, p).unwrap();
+                    let reference = old(&mut a, n, p);
+                    let reference = eval(&mut a, reference);
+                    assert_eq!(new, reference, "{family:?} n = {n} at {}", display(&a, p));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tangent_numbers_give_the_bernoulli_numbers() {
+        // Brent–Harvey tangent numbers against the cached rational
+        // recurrence of `base::bernoulli`.
+        let a = Arena::new();
+        for n in 0..=120u64 {
+            let fast = exact_bernoulli(&a, n).unwrap();
+            let slow = crate::base::bernoulli::bernoulli(n as usize);
+            assert_eq!(fast, slow, "B_{n}");
+        }
     }
 }

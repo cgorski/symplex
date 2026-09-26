@@ -708,6 +708,56 @@ pub(crate) fn is_hypergeometric(arena: &mut Arena, term: ExprId, k: ExprId) -> O
 // Full Gosper summation
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Largest `m` for which `C(k + a, m)` is treated as the polynomial
+/// `(k + a)(k + a − 1)⋯(k + a − m + 1)/m!` by [`split_polynomial_factor`].
+const MAX_BINOMIAL_POLY_DEGREE: i64 = 32;
+
+/// `f = P(k)·H(k)` with `P` the product of the factors of `f` that are
+/// polynomials in `k` over ℚ (a `C(k + a, m)` with a literal `m` is one),
+/// `H` the rest.
+fn split_polynomial_factor(arena: &mut Arena, f: ExprId, k: ExprId) -> (Poly, ExprId) {
+    let factors: Vec<ExprId> = match arena.node(f) {
+        ExprNode::Mul(cs) => cs.to_vec(),
+        _ => vec![f],
+    };
+    let mut poly = Poly::from_int(1);
+    let mut rest = Vec::new();
+    for fac in factors {
+        if !crate::base::walk::contains(arena, fac, k) {
+            rest.push(fac);
+            continue;
+        }
+        if let Some(p) = polybridge::expr_to_poly(arena, fac, k) {
+            poly = &poly * &p;
+            continue;
+        }
+        if let ExprNode::Binomial(top, m) = *arena.node(fac)
+            && let Some(mr) = arena.as_num(m)
+            && mr.is_integer()
+            && let Some(mi) = num_traits::ToPrimitive::to_i64(&mr.to_integer())
+            && (0..=MAX_BINOMIAL_POLY_DEGREE).contains(&mi)
+            && let Some(t) = polybridge::expr_to_poly(arena, top, k)
+        {
+            // C(t, m) = t(t − 1)⋯(t − m + 1)/m!
+            let mut p = Poly::from_int(1);
+            let mut fact = BigInt::from(1);
+            for i in 0..mi {
+                p = &p * &(&t - &Poly::from_int(i));
+                fact *= BigInt::from(i + 1);
+            }
+            poly = &poly * &p.scale(&Ratio::new(BigInt::from(1), fact));
+            continue;
+        }
+        rest.push(fac);
+    }
+    let rest = match rest.len() {
+        0 => arena.one,
+        1 => rest[0],
+        _ => arena.mul(&rest),
+    };
+    (poly, rest)
+}
+
 /// Attempt to find a closed form for `Σ_{k=lower}^{upper} f(k)`.
 ///
 /// Returns the evaluated definite sum `g(upper+1) − g(lower)` where `g` is
@@ -752,8 +802,17 @@ pub(crate) fn gosper_sum(
 
     // Step 3: construct the antidifference.
     //   g(k) = b(k−1) · x(k) · f(k) / c(k)
+    //
+    // `c(k)` collects the polynomial factors of `f`, so `c(k)` and `f(k)`
+    // share zeros: `(4 − k)·(2/3)^k` has `c(k) = k − 4`, and `g(n + 1)`
+    // came out with an uncancelled `(3 − n)/(n − 3)` (NaN at `n = 3`);
+    // `g(lo)` at such a zero was `0/0` for the whole sum
+    // (`Σ_{k≥1} (2k − 2)(−1/3)^k = NaN`, `Σ_{k≥0} C(k+1, 3)/5^k = zoo`).
+    // The polynomial factors of `f` (with `C(k + a, m)` as the polynomial
+    // it is) join the numerator before the gcd with `c` is divided out.
+    let (f_poly, f_rest) = split_polynomial_factor(arena, f_expr, k_var);
     let b_m1 = poly_shift(&b, -1);
-    let bm1_x = &b_m1 * &x;
+    let bm1_x = &(&b_m1 * &x) * &f_poly;
 
     // Cancel common polynomial factors between bm1·x and c.
     let common = Poly::gcd(&bm1_x, &c);
@@ -771,12 +830,12 @@ pub(crate) fn gosper_sum(
     let numer_expr2 = polybridge::poly_to_expr(arena, &numer_poly, k_var);
     let denom_expr2 = polybridge::poly_to_expr(arena, &denom_poly, k_var);
 
-    // g(k) = (numer_poly / denom_poly) * f(k)
+    // g(k) = (numer_poly / denom_poly) * (f(k) without its polynomial factor)
     let g_k = if denom_poly.is_constant() && denom_poly.coeff(0).is_one() {
-        arena.mul(&[numer_expr2, f_expr])
+        arena.mul(&[numer_expr2, f_rest])
     } else {
         let frac = arena.div(numer_expr2, denom_expr2);
-        arena.mul(&[frac, f_expr])
+        arena.mul(&[frac, f_rest])
     };
 
     // Definite sum: g(upper + 1) − g(lower).

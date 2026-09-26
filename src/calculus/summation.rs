@@ -376,6 +376,9 @@ pub(crate) fn summation(
         return SumOutcome::Unevaluated;
     }
     tracing::debug!("summation: dispatching");
+    if let Some(outcome) = pole_in_range(arena, body, var, lower, upper) {
+        return outcome;
+    }
     match (classify_bound(arena, lower), classify_bound(arena, upper)) {
         (Extended::Finite(lo), Extended::Finite(hi)) => finite_sum(arena, body, var, lo, hi),
         (Extended::Finite(lo), Extended::PosInf) => infinite_sum(arena, body, var, lo),
@@ -398,6 +401,69 @@ pub(crate) fn summation(
         }
         _ => SumOutcome::Unevaluated,
     }
+}
+
+/// A term with a pole at an integer `k₀` of the summation range makes the
+/// sum undefined wherever the range reaches `k₀`:
+///
+/// * a concrete range `[lo, hi] ∋ k₀` sums to `zoo`, as the terms do
+///   one by one (and as SymPy 1.14's `summation(1/(3 - k), (k, 1, 5))`);
+/// * a symbolic upper bound `n` gives a sum defined only for `n < k₀`, and
+///   an infinite range none at all: the sum stays unevaluated (SymPy leaves
+///   `Sum(1/(3 - k), (k, 1, n))` and `(k, 1, oo)` unevaluated too).
+///
+/// Before 0.30 `Σ_{k=1}^{n} 1/(3 − k)` came out `−H(n − 3) + H(−3)`, which
+/// evaluates nowhere, `Σ_{k=1}^{n} 1/((k − 3)(k − 4))` as
+/// `−1/(n − 3) − 1/3`, `Σ_{k=0}^{n} 1/k` as `H(n) − H(−1)`, and
+/// `Σ_{k=1}^{∞} 1/(3 − k)` "diverged to −∞".
+///
+/// Only rational terms are examined (the integer roots of the reduced
+/// denominator), and only with an integer lower bound; `None` leaves the
+/// sum to the other strategies.
+fn pole_in_range(
+    arena: &mut Arena,
+    body: ExprId,
+    var: ExprId,
+    lower: ExprId,
+    upper: ExprId,
+) -> Option<SumOutcome> {
+    let lo = as_i64(arena, lower)?;
+    let hi = match arena.node(upper) {
+        ExprNode::Infinity => None,
+        _ => match as_i64(arena, upper) {
+            Some(h) => Some(h),
+            None if !crate::base::walk::free_symbols(arena, upper).is_empty() => None,
+            None => return None,
+        },
+    };
+    if hi.is_some_and(|h| h < lo) {
+        return None;
+    }
+    let reduced = crate::poly::polybridge::cancel(arena, body, var);
+    let (_, den) = crate::poly::polybridge::as_numer_denom(arena, reduced);
+    if !crate::base::walk::contains(arena, den, var) {
+        return None;
+    }
+    let poly = crate::poly::polybridge::expr_to_poly(arena, den, var)?;
+    let den_poly = poly_expr(arena, &poly, var);
+    let roots = crate::transforms::solve::solve(arena, den_poly, var);
+    let pole = roots
+        .iter()
+        .filter_map(|s| as_i64(arena, s.value))
+        .any(|k0| k0 >= lo && hi.is_none_or(|h| k0 <= h));
+    if !pole {
+        return None;
+    }
+    Some(if hi.is_some() {
+        SumOutcome::Closed(arena.complex_infinity())
+    } else {
+        SumOutcome::Unevaluated
+    })
+}
+
+/// `poly` as an expression in `var`.
+fn poly_expr(arena: &mut Arena, poly: &crate::poly::Poly, var: ExprId) -> ExprId {
+    crate::poly::polybridge::poly_to_expr(arena, poly, var)
 }
 
 /// Combine two independent partial results by addition.

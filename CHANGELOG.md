@@ -6,6 +6,109 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [Unreleased]
+
+Differential hunts.  Two new in-house oracles ran over hundreds of
+thousands of random expressions: `evalf` against itself (the digits it
+certifies at 16 and 30 digits must agree with its 60-digit value) and the
+calculus routines against numerical ones (definite integrals against
+quadrature, limits against sequences, series against Taylor coefficients,
+sums against partial sums, `solve` by substitution, `diff` against finite
+differences).  Every class they found is fixed and pinned in `tests/v29/`.
+
+### Breaking (behaviour; no signature changed)
+
+- **Only the error bound certifies digits.**  Two precisions that agree
+  no longer count as certified: agreement is no evidence when an input
+  rounds the same way at both.  `(1 + 10⁻¹⁵⁰)^(10¹⁵⁰)` printed `1` at 16
+  and 30 digits (truly `e`).  Every part of a complex value that is
+  printed carries its digits; `eval_f64` refuses a value whose imaginary
+  part is not negligible next to its real part (`sqrt(−10⁻⁴⁰)` was
+  `0.0`).
+- **A value that is zero to the precision cap is pursued 1,024 bits
+  further** before it is returned as `0`, and only a ball that contains 0
+  with a value that is itself noise becomes `0`; a steady value in a wide
+  ball is refused.  `(1/2 − erf(13√2)/2).eval_f64()` was `0.0` (truly
+  `2.476e-149`).
+- **`is_zero_checked` / `sign_checked`** (the integrator's zero and sign
+  tests) decide from certified digits and return `None` rather than
+  "zero" for a value that is zero only to the precision reached (an f64
+  test called `exp(−40)` zero); `∫ dx/(x² + 2x + 1 + e⁻⁴⁰)` now integrates.
+  Its `log_to_real` callers decline on `None` instead of dividing by an
+  undecided value.
+- **`diff(|f|)` and `diff(sign f)` for a complex-valued `f`** are
+  `re(conj(f)·f′)/|f|` (and 0); `sign(f)·f′` only where `f` is provably
+  real (an undeclared symbol counts as real).
+- **`solve`** returns every root of a power equation (`x⁻² = 3` lost
+  `−1/√3`; `(x²)⁻³ = 1/2` lost 5 of 6 roots, complex ones included) and
+  substitutes every candidate of a non-polynomial equation back, SymPy
+  `checksol`-style: `asin(2x) = π` gave `[0]`, `1/√x = −2` gave `[1/4]`,
+  `atan x = 2` gave `[tan 2]`; each is now `NoSolution`.  `√x = x − 2` is
+  solved (`[4]`).
+- **`limit`** declines at a branch cut approached from the side, and for
+  `|u|`/`sign u` rewrites of a non-real `u`, where it returned a wrong
+  value; `integrate_definite` with `|·|`/`sign`/Heaviside declines where it
+  cannot locate a sign change.
+- **Summation over a range through a pole of the term** is `zoo` for a
+  concrete range and unevaluated otherwise (SymPy's behaviour):
+  `Σ_{k=1}^{n} 1/(3 − k)` was `−H(n−3) + H(−3)`.
+- **Exact integer sequences and special values stay symbolic beyond the
+  digit guard**: `factorial2`, `subfactorial`, `fibonacci`, `lucas`,
+  `bernoulli`, `harmonic`, `catalan`, `bell`, `euler_number`,
+  `stirling1/2`, `partition_count`, `zeta(−n)`, `beta` of integers, and
+  `polygamma(n, p/q)` when its closed form would cancel more than 200 bits.
+
+### Fixed
+
+- **evalf printed certified wrong digits** (found by the self-consistency
+  hunt: 388 disagreements on the first 19,201 expressions, 0 on the last
+  217,000).  Beyond the two policies above:
+  - Bessel functions: a half-integer order's terminating Hankel expansion
+    was not seen to terminate (`besselj(5/2, 10²⁵)` printed `3.8e10527`,
+    truly `1.879e-13`); `I_ν` had no large-argument expansion (garbage or
+    hangs); the `K_ν` asymptotic sum stopped at its first growing term
+    (`besselk(20, 60)`: `6.14e-27` for `3.748e-26`); `J_ν(x < 0)` with a
+    non-integer `ν` was real (it is complex).
+  - Fresnel and Airy asymptotic phases lost their integer bits (`airyai`
+    of a large negative argument wrong from the 13th digit); `Ei(x < 0)`
+    had half its guard bits (`Ei(−196)` wrong from the 24th digit).
+  - A special function that underflows to 0 was an exact zero
+    (`sign(erfc(10⁵))` was `0`); complex `asin`/`atan`/`asinh`/`atanh` of a
+    small argument lost `log₂(1/|z|)` bits; `binomial(10⁻⁷⁰, 6)` was wrong
+    from the 8th digit; `tan`'s error ball could reach its pole (a
+    `Piecewise` took the wrong branch); `zeta`/`dirichlet_eta` next to
+    1 and 0 (`zeta(1 + 10⁻⁴⁵)` was "pole"); `Si`/Fresnel of huge arguments
+    hung.
+  - Error bounds are base-2 logarithms with a fractional part, combined
+    exactly with the known factors: a node no longer adds a bit, so
+    `sin(⋯sin(0) + 1⋯) + 1` nested 2,000 deep certifies its 16 digits at
+    the first precision.  Special-function sensitivities use the actual
+    error ball, not its widest case.
+  - `Γ`, `ψ` and `ζ` are 5–300× faster at high precision (`Γ(1/3)` at
+    1,200 digits: 20 s → 0.07 s).
+- **Calculus** (found by the calculus hunt):
+  - Limits and series took a zero constant that doesn't simplify for a
+    leading term: `lim x/(asinh(x + 2) − asinh 2)` was `0` (truly `√5`).
+  - `eval(sin(−π))` stayed `−sin(π)` (and `lim x/sin(x − π)` at 0⁺ was
+    `0`, truly `−1`); Gruntz ranked irrational exponents as 0
+    (`lim (x^π + x)/x^π` was `0`), took `exp`/`cosh` of a non-real constant
+    as positive, folded `0^g` to 1, and never simplified `exp(k·ln u)`.
+  - The series fallback: sign/abs by one-sided limits, unbounded next
+    derivatives (`1/ln x` "expanded" to 0), minutes-long expansions bounded.
+  - `diff(|sinh x − (−1)^(−1/3)|)` was complex.
+  - `integrate_definite` trusted `solve` for the kinks of `|·|`/sign/
+    Heaviside: `∫_{−1/2}^{3/2} |asinh x| dx` was `0.8668` (truly `1.1119`),
+    `∫_{−1}^{2} x·sign(1/x) dx` was `3/2` (truly `5/2`).
+  - Gosper did not cancel the term's polynomial factors:
+    `Σ C(k + 1, 3)/5ᵏ` was `zoo` (truly `25/256`).
+- **Hangs in `eval`**: `beta(6, 10⁷)`, `beta(10¹², 3)` (a binomial with
+  `min(a − 1, b)` factors now), `fibonacci(10⁷)`, `bernoulli(10⁵)` (tangent
+  numbers), `harmonic(10⁶)`, `catalan(10⁶)`, `bell(10⁴)`,
+  `polygamma(10⁵, 1/2)`; orthogonal polynomials use explicit coefficients
+  (DLMF §18.5): `legendre(1000, x)` took over a minute, now 0.2 s.
+- **Local fuzz campaign:** all nine targets, 5 minutes each in fork mode:
+  0 crashes.
+
 ## [0.29.0] - 2026-09-26
 
 Every known bug of 0.28, resolved, and the statistics audit finished.

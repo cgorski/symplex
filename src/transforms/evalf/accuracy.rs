@@ -10,20 +10,31 @@
 //! known to lie within its error of 0.  That difference decides branch cuts
 //! (below).
 //!
-//! | node | error of each part |
+//! Bounds are `log₂` values with a fractional part ([`ErrExp`]), and the
+//! error of a node is its propagated bound **plus** its own rounding, the two
+//! added exactly (`log₂(2^a + 2^b)`, [`lsum`]) — not their maximum rounded up
+//! to the next power of two, which before 0.30 cost about a bit per node of
+//! a perfectly conditioned chain.  The rounding of a result is two units in
+//! its last place (a faithful rounding, with a margin for the transcendental
+//! functions).  `r` below is the error radius of the argument, and every
+//! derivative is bounded over the whole ball, not only at its centre.
+//!
+//! | node | propagated error of each part |
 //! |---|---|
-//! | exact rational (dyadic, fits the precision), `i` | 0 |
-//! | other rational, `π`, `e`, constants | rounding: `2^(mag − prec)`; the imaginary part is exact |
-//! | `a₁ + … + aₙ` | per part `Σ err(aᵢ)` plus the rounding of the partial sums — absolute errors add, so cancellation shows as a result much smaller than its error; exact when every term's part is exact and no partial sum was rounded |
+//! | exact rational (dyadic, fits the precision), `i` | 0, and no rounding |
+//! | other rational, `π`, `e`, constants | 0 (the rounding only); the imaginary part is exact |
+//! | `−a`, `conj a`, `re a`, `im a`, `min`, `max` | the argument's bound, no rounding |
+//! | `a₁ + … + aₙ` | per part `Σ err(aᵢ)` plus one ulp of every partial sum after the first — absolute errors add, so cancellation shows as a result much smaller than its error; exact when every term's part is exact and no partial sum was rounded |
 //! | `a₁ · … · aₙ` | per part, from `(a + bi)(c + di) = (ac − bd) + (ad + bc)i`: each product `x·y` contributes `abs(x)·err(y) + abs(y)·err(x) + err(x)·err(y)` and its rounding, and none at all when a factor is an exact 0 |
-//! | `b^n`, `b^p`, `b^e` | relative errors scale by the exponent, plus `abs(ln b)·err(e)`; a positive power `p` of a value indistinguishable from 0 is bounded by `2·(abs(b) + err(b))^p`, a negative one has no bound |
-//! | `exp z` | `abs(exp z)·err(z)` |
-//! | `ln z`, `arg z` | `err(z)/abs(z)`; no bound when `z` is indistinguishable from 0 |
-//! | `sin`, `cos`, `sinh`, `cosh` | `max(1, abs(f(z)))·err(z)` |
-//! | `tan`, `tanh` | `(1 + abs(f(z))²)·err(z)` |
-//! | `atan`, `asin`, `acos`, `asinh`, `acosh`, `atanh` | `err(z)·abs(f′(z))`, with `abs(f′)` from the distances to the two branch points; within a few error radii of a square-root branch point `p` the Hölder bound `4·√(abs(z − p) + err(z))`, and no bound near a logarithmic one |
+//! | `b^q` (rational literal `q`) | `abs(b^q)·abs(q)·ρ·(1 − ρ)^(−abs(q − 1))`, `ρ = r/abs(b)` (the mean value theorem, for every `q`); a positive power of a value indistinguishable from 0 is bounded by `2·(2r)^q`, a negative one has no bound |
+//! | `b^e` | `abs(b^e)·(e^(r_w) − 1)` with `r_w` the error of `e·ln b` |
+//! | `exp z` | `abs(exp z)·(e^r − 1)`, no bound beyond `r = 512` |
+//! | `ln z`, `arg z`, `atan2` | `r/(abs(z) − r)`; no bound when `z` is indistinguishable from 0; `arg` of an exactly real, certainly positive `z` is exactly 0 |
+//! | `sin`, `cos` / `sinh`, `cosh` | `r·cosh(abs(im z) + r)` / `r·cosh(abs(re z) + r)` — exactly `r` for `sin`, `cos` of a real argument; `r` of a rational `abs(q) ≥ 1` under `sin`, `cos`, `tan` is its rounding at `prec + log₂ abs(q)` bits (it is converted again, `evalf::trig_arg`) |
+//! | `tan`, `tanh` | `r·(1 + w²)`, `w = (T + t)/(1 − T·t)`, `T = abs(f(z))`, `t = tan r`; no bound when `r·T > 1/8` (the ball reaches an eighth of the distance to a pole); `r` for a real `tanh` |
+//! | `atan`, `asin`, `acos`, `asinh`, `acosh`, `atanh` | `r·Π(dᵢ − r)^(−k)` with the distances `dᵢ` to the two branch points (`abs(f′) = Π abs(z − pᵢ)^(−k)`); within a few error radii of a square-root branch point `p` the Hölder bound `2.06·√(2·(abs(z − p) + r))`, and no bound near a logarithmic one |
 //! | `sign`, `floor`, `ceiling`, `heaviside`, `KroneckerDelta` | exact, or unknown when the argument (difference) is within its error of the threshold |
-//! | special functions `f(x₁, …, xₙ)` | `2^(⌈log₂ k⌉ + 1)·maxᵢ abs(∂f/∂xᵢ)·err(xᵢ)` over the `k` distinct inexact arguments, `abs(∂f/∂xᵢ)` bounded over the argument's error ball (next table, `sensitivity.rs`); no bound when the ball reaches a pole or branch point (its radius above an eighth of the distance); exact arguments cost nothing |
+//! | special functions `f(x₁, …, xₙ)` | `2·Σᵢ abs(∂f/∂xᵢ)·err(xᵢ)` over the distinct inexact arguments, `abs(∂f/∂xᵢ)` bounded over the argument's error ball (next table, `sensitivity.rs`); no bound when the ball reaches a pole or branch point (its radius above an eighth of the distance); exact arguments cost nothing; a 0 from exact nonzero arguments is an underflow for the functions that vanish at no rational point (`erfc`, `Γ`, `Ei`, `Ai`, `Bi`, `I_ν`, `K_ν`, `Γ(s, x)`, `E_ν`), exact otherwise |
 //!
 //! The sensitivity `abs(∂f/∂x)` of a special function — its condition number
 //! `abs(∂ ln f/∂ ln x)` times `abs(f/x)`, which can be huge: `I_x(a, b)` near
@@ -38,7 +49,7 @@
 //! | `Γ`, `x!`, `ln Γ`, `B(a, b)`, `C(n, k)` | each | `abs(f)·abs(ψ)` (`abs(ψ)` for `ln Γ`) with `abs(ψ(y)) ≤ 1/d + ln(1 + abs(y)) + γ`, and `abs(ψ(u) − ψ(v)) ≤ abs(u − v)·(1/m + 1/m²)` for `u, v > 0`, `m = min(u, v)` |
 //! | `ψ⁽ⁿ⁾` | `x` | `(n+1)!·Σₖ abs(x + k)^(−n−2)`, at most `x^(−p) + x^(1−p)/(p−1)` (`p = n + 2`), or `d^(−p) + 2^(p+2)` left of 0; the order is discrete |
 //! | `erf`, `erfc`; `erfi`; `erf⁻¹`, `erfc⁻¹` | `x` | `(2/√π)·e^(−x²)`; `(2/√π)·e^(x²)`; `(√π/2)·e^(f²)` |
-//! | `Si`, `Ci`, `Shi`, `Chi`, `Ei`, `li`, Fresnel | `x` | `min(1, 1/abs(x))`, `1/abs(x)`, `max(1.18, e^abs(x)/(2·abs(x)))`, `e^abs(x)/abs(x)`, `eˣ/abs(x)`, `1/abs(ln x)`, 1 |
+//! | `Si`, `Ci`, `Shi`, `Chi`, `Ei`, `li`, Fresnel | `x` | `min(1, 1/abs(x))`, `1/abs(x)`, `max(1.18, e^abs(x)/(2·abs(x)))`, `e^abs(x)/abs(x)`, `eˣ/abs(x)`, `1/abs(ln x)`, 1, and a change below `2/abs(x)` over a ball around `abs(x) > 2` (`abs(S − 1/2) < 0.43/abs(x)`, DLMF 7.12) |
 //! | `W` | `x` | `e^(−W)/abs(1 + W)`, with the first-order change below an eighth of `1 + W` |
 //! | `ζ`, `η` | `s ≥ 0` | `1/(s − 1)² + 1`, and `η = (1 − 2^(1−s))·ζ` |
 //! | `Li_s(z)` | `z` | `1/abs(1 − z)`, `abs(ln(1 − z)/z)`, 2 for an exact `s = 1`, 2, `≥ 3`; otherwise `m!/(1 − abs(z))^(m+1)`, `m = max(0, ⌈1 − s⌉)` |
@@ -127,49 +138,94 @@ use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 
-/// Base-2 exponent `e` of an absolute error bound: `|error| ≤ 2^e`.
-pub(super) type ErrExp = i64;
+/// Base-2 logarithm `e` of an absolute error bound, `|error| ≤ 2^e`, with a
+/// fractional part: the bounds of a long computation are combined exactly
+/// (`log₂(2^a + 2^b)`, [`lsum`]) and multiplied by the exact factors that
+/// are known, not rounded up to a power of two at every node.  Before 0.30
+/// the exponent was an integer, every node added about a bit (`max(e,
+/// rounding) + 1`, `2^⌈log₂ n⌉` for a sum of `n` terms, `2·|f(z)|` for
+/// `sin`), and `sin(⋯ sin(0) + 1 ⋯) + 1` nested 800 deep — a computation
+/// whose true error grows like the logarithm of its depth — had a bound of
+/// `2^1595` at 3,200 bits.
+pub(super) type ErrExp = f64;
 
 /// The value is exact.
-pub(super) const EXACT: ErrExp = i64::MIN / 4;
+pub(super) const EXACT: ErrExp = f64::NEG_INFINITY;
 
 /// No bound is known: a division by a value indistinguishable from zero,
 /// a decision (`sign`, `floor`, the side of a branch cut) at its threshold.
-pub(super) const UNKNOWN: ErrExp = i64::MAX / 4;
+pub(super) const UNKNOWN: ErrExp = f64::INFINITY;
 
 /// The bound of a value that underflowed to 0: below the smallest positive
 /// float.
 const UNDERFLOW: ErrExp = astro_float::EXPONENT_MIN as ErrExp;
 
-/// Is `e` the bound of an exact value (possibly after harmless arithmetic
-/// on [`EXACT`])?
+/// Bounds beyond this are [`UNKNOWN`].  Only near the end of the `f64`
+/// range: a bound of `2^(10¹¹²)` (`(1 + 10⁻¹⁵⁰)^(10¹⁵⁰)` at 128 bits, whose
+/// rounded base is raised to a huge power) is useless as a bound but still
+/// says how it shrinks with the precision, and the evaluation is repeated.
+const LIMIT: ErrExp = 1e300;
+
+/// Is `e` the bound of an exact value?
 pub(super) fn is_exact(e: ErrExp) -> bool {
-    e < EXACT / 2
+    e == EXACT
 }
 
-/// Is `e` [`UNKNOWN`] (possibly after arithmetic)?
+/// Is `e` [`UNKNOWN`] (or NaN from arithmetic on it)?
 pub(super) fn is_unknown(e: ErrExp) -> bool {
-    e > UNKNOWN / 2
+    e.is_nan() || e > LIMIT
 }
 
+/// Is `e` the bound of a value that underflowed ([`UNDERFLOW`], possibly
+/// after arithmetic): at the bottom of the exponent range, where it cannot
+/// shrink with the precision?
+pub(super) fn is_underflow(e: ErrExp) -> bool {
+    !is_exact(e) && e < UNDERFLOW / 2.0
+}
+
+/// `e` normalised: NaN or beyond [`LIMIT`] is [`UNKNOWN`], below `−LIMIT`
+/// (but not exact) is kept finite.
 fn clamp(e: ErrExp) -> ErrExp {
-    e.clamp(EXACT, UNKNOWN)
+    if is_unknown(e) {
+        UNKNOWN
+    } else if is_exact(e) {
+        EXACT
+    } else {
+        e.max(-LIMIT)
+    }
 }
 
-/// `e + k`: exact stays exact, unknown stays unknown.
-fn shift(e: ErrExp, k: i64) -> ErrExp {
+/// `e + k` (`log₂` of `2^e·2^k`): exact stays exact, unknown stays unknown.
+pub(super) fn shift(e: ErrExp, k: f64) -> ErrExp {
     if is_exact(e) {
         EXACT
-    } else if is_unknown(e) {
+    } else if is_unknown(e) || k.is_nan() {
         UNKNOWN
     } else {
-        clamp(e.saturating_add(k))
+        clamp(e + k)
     }
+}
+
+/// `log₂(2^a + 2^b)`, exactly (to `f64` rounding, rounded up by a relative
+/// `2⁻⁴⁰` so that the sum stays an upper bound); exact and unknown operands
+/// behave as 0 and ∞.
+pub(super) fn lsum(a: ErrExp, b: ErrExp) -> ErrExp {
+    if is_unknown(a) || is_unknown(b) {
+        return UNKNOWN;
+    }
+    if is_exact(a) {
+        return b;
+    }
+    if is_exact(b) {
+        return a;
+    }
+    let (hi, lo) = if a >= b { (a, b) } else { (b, a) };
+    clamp(up(hi + (lo - hi).exp2().ln_1p() * std::f64::consts::LOG2_E))
 }
 
 /// The error bounds of the two parts of a complex value `re + i·im`:
 /// `|Δre| ≤ 2^re`, `|Δim| ≤ 2^im` (see the module documentation).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Bound {
     /// Exponent of the bound on the real part's error.
     pub(super) re: ErrExp,
@@ -206,12 +262,7 @@ impl Bound {
         if self.is_unknown() {
             return UNKNOWN;
         }
-        match (is_exact(self.re), is_exact(self.im)) {
-            (true, true) => EXACT,
-            (true, false) => self.im,
-            (false, true) => self.re,
-            (false, false) => clamp(self.re.max(self.im).saturating_add(1)),
-        }
+        lsum(self.re, self.im)
     }
 
     /// Is either part unbounded?
@@ -226,12 +277,56 @@ impl Bound {
 }
 
 /// `m` with `2^(m−1) ≤ |x| < 2^m`; `None` for zero.
-fn part_mag(x: &BigFloat) -> Option<i64> {
+pub(super) fn part_mag(x: &BigFloat) -> Option<i64> {
     if x.is_zero() {
         None
     } else {
         x.exponent().map(i64::from)
     }
+}
+
+/// `log₂|x|`, rounded up by a hair (`−∞` for 0, `+∞` for a non-finite
+/// value): an upper bound on the magnitude, a fraction of a bit tighter than
+/// the binary exponent.
+pub(super) fn part_lg(x: &BigFloat) -> f64 {
+    if x.is_zero() {
+        return f64::NEG_INFINITY;
+    }
+    if x.is_nan() || x.is_inf() {
+        return f64::INFINITY;
+    }
+    let e = f64::from(x.exponent().unwrap_or(0));
+    // The leading 53 bits of the (normalised) mantissa, read in place: this
+    // runs for every node, and a copy of the number cost a fifth of the
+    // evaluation time.  The mantissa is below `(top + 1)·2⁻⁵³`.
+    if let Some(&top) = x.mantissa_digits().and_then(|w| w.last()) {
+        // (`Word` is `u64` here, `u32` on 32-bit targets.)
+        #[allow(clippy::useless_conversion)]
+        let top = u64::from(top) << (64 - astro_float::Word::BITS);
+        if top >> 63 == 1 {
+            let m_up = ((top >> 11) as f64 + 1.0) * f64::EPSILON / 2.0;
+            return up(e + m_up.log2());
+        }
+    }
+    // A subnormal mantissa (not normalised): at most 1.
+    up(e)
+}
+
+/// `x` rounded up by more than the `f64` rounding of the logarithms it came
+/// from (`|x|·2⁻⁵⁰ + 10⁻¹²`).
+fn up(x: f64) -> f64 {
+    x + x.abs() * 1e-15 + 1e-12
+}
+
+/// `x` rounded down likewise.
+fn down(x: f64) -> f64 {
+    x - x.abs() * 1e-15 - 1e-12
+}
+
+/// `log₂|x|` rounded down (a lower bound on the magnitude).
+pub(super) fn part_lg_low(x: &BigFloat) -> f64 {
+    let l = part_lg(x);
+    if l.is_finite() { down(down(l)) } else { l }
 }
 
 fn is_finite(z: &Complex) -> bool {
@@ -247,26 +342,43 @@ pub(super) fn mag(z: &Complex) -> Option<i64> {
     }
 }
 
-/// An exponent bounding the *true* value: its magnitude or its error.
+/// `log₂ |z|` rounded up (`−∞` for 0), `|z|² = re² + im²`.
+pub(super) fn lg_abs(z: &Complex) -> f64 {
+    let (a, b) = (part_lg(&z.0), part_lg(&z.1));
+    if a == f64::NEG_INFINITY {
+        return b;
+    }
+    if b == f64::NEG_INFINITY {
+        return a;
+    }
+    let (hi, lo) = if a >= b { (a, b) } else { (b, a) };
+    up(hi + 0.5 * (2.0 * (lo - hi)).exp2().ln_1p() * std::f64::consts::LOG2_E)
+}
+
+/// `log₂ |z|` rounded down: a lower bound on the magnitude.
+pub(super) fn lg_abs_low(z: &Complex) -> f64 {
+    let l = lg_abs(z);
+    if l.is_finite() {
+        down(down(down(l)))
+    } else {
+        l
+    }
+}
+
+/// An exponent bounding the *true* value: its magnitude plus its error.
 fn upper(z: &Complex, err: ErrExp) -> ErrExp {
-    mag(z).map_or(err, |m| m.max(err))
+    lsum(lg_abs(z), err)
 }
 
 /// Does the ball `z ± 2^err` contain 0?
 pub(super) fn contains_zero(z: &Complex, err: ErrExp) -> bool {
-    match mag(z) {
-        None => true,
-        Some(m) => m <= err.saturating_add(1),
-    }
+    mag(z).is_none() || lg_abs_low(z) <= err
 }
 
 /// Does the interval `x ± 2^e` contain 0?  (An exact part only when it is
 /// 0.)
 pub(super) fn part_contains_zero(x: &BigFloat, e: ErrExp) -> bool {
-    match part_mag(x) {
-        None => true,
-        Some(m) => m <= e.saturating_add(1),
-    }
+    x.is_zero() || part_lg_low(x) <= e
 }
 
 /// Is the part `x ± 2^e` exactly 0?
@@ -280,35 +392,39 @@ pub(super) fn exactly_real(z: &Complex, b: Bound) -> bool {
 }
 
 /// The accurate bits of `z ± 2^err` relative to `|z|` (`None` for a value
-/// that is zero or indistinguishable from zero).
-pub(super) fn accurate_bits(z: &Complex, err: ErrExp) -> Option<i64> {
-    let m = mag(z)?;
+/// that is zero or indistinguishable from zero): `log₂(|z|/2^err)`, from a
+/// lower bound on `|z|`.
+pub(super) fn accurate_bits(z: &Complex, err: ErrExp) -> Option<f64> {
+    mag(z)?;
     if is_exact(err) {
-        return Some(i64::MAX / 8);
+        return Some(f64::INFINITY);
     }
-    (m > err).then_some(m - err)
+    let l = lg_abs_low(z);
+    (l > err).then_some(l - err)
+}
+
+/// The rounding of a `prec`-bit result at the magnitude `m` of its
+/// exponent: two units in the last place, the error of a faithfully
+/// rounded operation with a margin for astro-float's transcendental
+/// functions (the same allowance as before 0.30, when it came from the
+/// `+1` of every node).
+fn ulp2(m: i64, prec: usize) -> ErrExp {
+    (m - prec as i64 + 1) as f64
 }
 
 /// The rounding of `z` to `prec` bits, at its magnitude.
 pub(super) fn rounding(z: &Complex, prec: usize) -> ErrExp {
-    mag(z).map_or(EXACT, |m| m - prec as i64)
+    mag(z).map_or(EXACT, |m| ulp2(m, prec))
 }
 
 /// The rounding of one part to `prec` bits, at its own magnitude.
 fn part_rounding(x: &BigFloat, prec: usize) -> ErrExp {
-    part_mag(x).map_or(EXACT, |m| m - prec as i64)
+    part_mag(x).map_or(EXACT, |m| ulp2(m, prec))
 }
 
 /// `⌈log₂ n⌉` (0 for `n ≤ 1`).
 pub(super) fn ceil_log2(n: usize) -> i64 {
     i64::from(usize::BITS - n.saturating_sub(1).leading_zeros())
-}
-
-/// `⌈log₂|q|⌉`, for a non-zero rational (approximately).
-fn log2_abs(q: &Q) -> i64 {
-    i64::try_from(q.numer().bits()).unwrap_or(i64::MAX / 8)
-        - i64::try_from(q.denom().bits()).unwrap_or(0)
-        + 1
 }
 
 /// Is the rational exactly representable as a `prec`-bit binary float?
@@ -320,8 +436,7 @@ fn exactly_representable(q: &Q, prec: usize) -> bool {
 
 /// The error bound of `value`, computed at working precision `prec` by a
 /// routine that bounds its own error by `err`: that bound plus the rounding
-/// of each part, finished as [`node_error`] finishes a propagated bound.  A
-/// part that is 0 with an exact bound stays exact.
+/// of each part.  A part that is 0 with an exact bound stays exact.
 pub(super) fn reported(value: &Complex, err: Bound, prec: usize) -> Bound {
     if !is_finite(value) || err.is_unknown() {
         return Bound::UNKNOWN;
@@ -330,7 +445,7 @@ pub(super) fn reported(value: &Complex, err: Bound, prec: usize) -> Bound {
         if exact_zero(x, e) {
             EXACT
         } else {
-            clamp(e.max(part_rounding(x, prec)).saturating_add(1))
+            lsum(e, part_rounding(x, prec))
         }
     };
     Bound {
@@ -340,11 +455,18 @@ pub(super) fn reported(value: &Complex, err: Bound, prec: usize) -> Bound {
 }
 
 /// The propagated bound of a product of factors `v ± 2^e` (joint bounds):
-/// `Σ err(aᵢ)·Π_{j≠i} abs(aⱼ)`, times the number of factors (the roundings of
-/// the partial products are the caller's).  An exact zero factor makes the
+/// `|Π(vᵢ + δᵢ) − Π vᵢ| ≤ Π(|vᵢ| + 2^eᵢ) − Π|vᵢ|` (the roundings of the
+/// partial products are the caller's).  An exact zero factor makes the
 /// product exact.
 pub(super) fn product_error<'a>(parts: impl IntoIterator<Item = (&'a Complex, ErrExp)>) -> ErrExp {
-    let mut bounds: Vec<(ErrExp, ErrExp)> = Vec::new();
+    // Π(|vᵢ| + rᵢ) − Π|vᵢ| = Π|vᵢ|·(Π(1 + ρᵢ) − 1), `ρᵢ = rᵢ/|vᵢ|`, with the
+    // last factor from `expm1(Σ ln(1 + ρᵢ))` — accurate for a tiny relative
+    // error, where a difference of logarithms is not.
+    let mut lmag = 0.0; // log₂ Π|vᵢ|, an upper bound
+    let mut log1p_sum = 0.0; // Σ ln(1 + ρᵢ)
+    let mut high = 0.0; // log₂ Π(|vᵢ| + rᵢ), for an inexact zero factor
+    let mut any_inexact = false;
+    let mut zero_factor = false;
     for (v, e) in parts {
         if is_unknown(e) {
             return UNKNOWN;
@@ -352,58 +474,82 @@ pub(super) fn product_error<'a>(parts: impl IntoIterator<Item = (&'a Complex, Er
         if mag(v).is_none() && is_exact(e) {
             return EXACT; // an exact zero factor
         }
-        bounds.push((e, upper(v, e)));
+        high += upper(v, e);
+        if is_exact(e) {
+            lmag += lg_abs(v);
+            continue;
+        }
+        any_inexact = true;
+        if mag(v).is_none() {
+            zero_factor = true;
+            continue;
+        }
+        lmag += lg_abs(v);
+        let rho = e - lg_abs_low(v);
+        log1p_sum += if rho > 60.0 {
+            rho * std::f64::consts::LN_2
+        } else {
+            rho.exp2().ln_1p()
+        };
     }
-    let total: ErrExp = bounds.iter().map(|&(_, u)| u).sum();
-    let worst = bounds
-        .iter()
-        .map(|&(e, u)| if is_exact(e) { EXACT } else { e + total - u })
-        .max()
-        .unwrap_or(EXACT);
-    worst.saturating_add(ceil_log2(bounds.len()))
+    if !any_inexact {
+        return EXACT;
+    }
+    if zero_factor {
+        return clamp(high);
+    }
+    let factor = if log1p_sum > 40.0 {
+        log1p_sum * std::f64::consts::LOG2_E
+    } else {
+        log1p_sum.exp_m1().log2()
+    };
+    clamp(up(lmag + factor))
 }
 
 // ── Sums and products: value and bound together ────────────────────────────
 
-/// One part of a running sum: the worst term bound, the largest partial
-/// sum, and whether any term's part was not an exact 0.
+/// One part of a running sum: the sum of the terms' bounds, the sum of the
+/// roundings of the partial sums, and whether any term's part was not an
+/// exact 0.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PartSum {
-    worst: ErrExp,
-    peak: Option<i64>,
+    terms: ErrExp,
+    roundings: ErrExp,
     nonzero: bool,
 }
 
 impl PartSum {
     pub(super) const fn new() -> PartSum {
         PartSum {
-            worst: EXACT,
-            peak: None,
+            terms: EXACT,
+            roundings: EXACT,
             nonzero: false,
         }
     }
 
     /// Account for a term's part `term ± 2^err`, after which the partial
-    /// sum's part is `partial`.
-    pub(super) fn add(&mut self, term: &BigFloat, err: ErrExp, partial: &BigFloat) {
-        self.worst = self.worst.max(err);
-        self.nonzero |= !exact_zero(term, err);
-        self.peak = self.peak.max(part_mag(partial));
+    /// sum's part is `partial` (rounded to `prec` bits unless the term's
+    /// part is an exact 0 or the partial sum is still the first term).
+    pub(super) fn add(&mut self, term: &BigFloat, err: ErrExp, partial: &BigFloat, prec: usize) {
+        let first = !self.nonzero;
+        self.terms = lsum(self.terms, err);
+        let exact_zero_term = exact_zero(term, err);
+        self.nonzero |= !exact_zero_term;
+        if !first && !term.is_zero() {
+            // The addition rounds to within an ulp of the partial sum.
+            let r = part_mag(partial).map_or(EXACT, |m| (m - prec as i64) as f64);
+            self.roundings = lsum(self.roundings, r);
+        }
     }
 
-    /// The bound of this part of a sum of `count` terms: the terms' bounds
-    /// plus the rounding of the partial sums (at the largest of them), and
-    /// exact when every term's part was an exact 0.
-    pub(super) fn bound(&self, count: usize, prec: usize) -> ErrExp {
+    /// The bound of this part of the sum: the terms' bounds plus the
+    /// roundings of the partial sums, exact when every term's part was an
+    /// exact 0.
+    pub(super) fn bound(&self) -> ErrExp {
         if !self.nonzero {
             return EXACT;
         }
-        if is_unknown(self.worst) {
-            return UNKNOWN;
-        }
-        let n = ceil_log2(count);
-        let rounding = self.peak.map_or(EXACT, |m| m - prec as i64 + n);
-        shift(self.worst, n).max(rounding)
+        lsum(self.terms, self.roundings)
     }
 }
 
@@ -444,18 +590,18 @@ pub(super) fn add_with_bound(
     for &(v, b) in terms {
         unknown |= b.is_unknown();
         sum = c_add(&sum, v, prec, rm);
-        re.add(&v.0, b.re, &sum.0);
-        im.add(&v.1, b.im, &sum.1);
+        re.add(&v.0, b.re, &sum.0, prec);
+        im.add(&v.1, b.im, &sum.1, prec);
     }
     if unknown {
         return (sum, Bound::UNKNOWN);
     }
     let finish = |acc: &PartSum, exact_terms: bool, parts: &mut dyn Iterator<Item = &BigFloat>| {
-        let e = acc.bound(terms.len(), prec);
+        let e = acc.bound();
         if is_exact(e) || (exact_terms && exact_sum(parts, prec, rm)) {
             EXACT
         } else {
-            clamp(e.saturating_add(1))
+            e
         }
     };
     let re_exact = terms.iter().all(|&(_, b)| is_exact(b.re));
@@ -469,34 +615,12 @@ pub(super) fn add_with_bound(
 
 /// `log₂` of an error bound (`−∞` for an exact one).
 fn lg(e: ErrExp) -> f64 {
-    if is_exact(e) {
-        f64::NEG_INFINITY
-    } else {
-        e as f64
-    }
+    e
 }
 
 /// The error exponent of a `log₂` bound.
 fn from_lg(x: f64) -> ErrExp {
-    if x == f64::NEG_INFINITY {
-        EXACT
-    } else if x.is_nan() || x > 1e15 {
-        UNKNOWN
-    } else {
-        clamp(x.max(-1e15).ceil() as i64)
-    }
-}
-
-/// `log₂(2^a + 2^b)`.
-fn lsum(a: f64, b: f64) -> f64 {
-    if a == f64::NEG_INFINITY {
-        return b;
-    }
-    if b == f64::NEG_INFINITY {
-        return a;
-    }
-    let (hi, lo) = if a >= b { (a, b) } else { (b, a) };
-    hi + (1.0 + (lo - hi).exp2()).log2()
+    clamp(x)
 }
 
 /// A factor's part in a product step: its value and the `log₂` of its
@@ -714,12 +838,12 @@ enum BranchPoint {
 /// of the ball (radius `2^j`, centre within `2^(j+3)` of `p`) has
 /// `|w − p| < 2^(j+4)`, and `|f(w) − f(p)| ≤ 1.03·√(2·|w − p|)` for the
 /// inverse trigonometric and hyperbolic functions while `|w − p| ≤ 1/4`, so
-/// two values differ by at most `2^(2 + ⌈(j + 4)/2⌉)`.
+/// two values differ by at most `2·1.03·2^((j + 5)/2)`.
 fn holder(j: ErrExp) -> ErrExp {
-    if j > -8 {
+    if j > -8.0 {
         UNKNOWN
     } else {
-        (j + 5).div_euclid(2) + 2
+        up((j + 5.0) / 2.0 + 2.06f64.log2())
     }
 }
 
@@ -775,33 +899,37 @@ fn inverse_error(node: &ExprNode, z: &Complex, b: Bound, prec: usize) -> Bound {
     }
     let j = b.joint();
     let hp = z.0.mantissa_max_bit_len().unwrap_or(prec).max(prec) + 64;
-    let mut distance = [0i64; 2];
+    let mut distance = [0.0f64; 2];
     for (slot, &((pr, pi), kind)) in distance.iter_mut().zip(points.iter()) {
         let p = (BigFloat::from_i32(pr, 64), BigFloat::from_i32(pi, 64));
-        match mag(&c_sub(z, &p, hp, RoundingMode::ToEven)) {
-            Some(m) if m > j.saturating_add(3) => *slot = m,
-            _ => {
-                return match kind {
-                    Log => Bound::UNKNOWN,
-                    Root => result(holder(j)),
-                    RootOnCut if !exactly_real(z, b) && cut_undecided(z, b, cut) => Bound::UNKNOWN,
-                    RootOnCut => result(holder(j)),
-                };
-            }
+        let d = c_sub(z, &p, hp, RoundingMode::ToEven);
+        let ld = lg_abs_low(&d);
+        if mag(&d).is_some() && ld > j + 3.0 {
+            *slot = ld;
+        } else {
+            return match kind {
+                Log => Bound::UNKNOWN,
+                Root => result(holder(j)),
+                RootOnCut if !exactly_real(z, b) && cut_undecided(z, b, cut) => Bound::UNKNOWN,
+                RootOnCut => result(holder(j)),
+            };
         }
     }
     if cut_undecided(z, b, cut) {
         return Bound::UNKNOWN;
     }
-    // |z − pᵢ| ≥ 2^(mᵢ − 1), and over the ball (radius at most 1/8 of each
-    // distance) |f′| grows by less than 2.
-    let log_w = distance[0] + distance[1] - 2;
-    let amplification = if halve {
-        (1 - log_w).div_euclid(2)
-    } else {
-        -log_w
-    };
-    result(shift(j, amplification.max(0) + 2))
+    // `|f′(w)| = Π|w − pᵢ|^(−k)` exactly, and over the ball `|w − pᵢ| ≥
+    // dᵢ − r`: the error is at most `r·Π(dᵢ − r)^(−k)`.  Far from both points
+    // it is small (`|atan′ z| = 1/|z² + 1|`): before 0.30 the amplification
+    // was at least 1, `atan(polygamma(1792, E))` (an argument of
+    // `−1.2·10⁴²⁷⁵` with its relative error) had a ball of `2^10341` around
+    // `−π/2`, which contains 0, and came out `0`.
+    let k = if halve { 0.5 } else { 1.0 };
+    let log_w: f64 = distance
+        .iter()
+        .map(|&ld| ld + (-(j - ld).exp2()).ln_1p() * std::f64::consts::LOG2_E)
+        .sum();
+    result(shift(j, up(-k * log_w)))
 }
 
 /// The branch cut of a special function on the real axis, in one of its
@@ -913,7 +1041,7 @@ fn meets_cut(x: &BigFloat, e: ErrExp, cut: RealCut) -> bool {
                 RoundingMode::Up,
             );
             let d = x.add(&c, p, RoundingMode::ToEven);
-            sign_of(&d) <= 0 || part_contains_zero(&d, e.saturating_add(1))
+            sign_of(&d) <= 0 || part_contains_zero(&d, shift(e, 1.0))
         }
     }
 }
@@ -958,14 +1086,16 @@ pub(super) fn node_error(
             }
         };
     }
-    let ub_out = mag(value).unwrap_or(EXACT);
+    // `log₂` of an upper bound on the value's magnitude.
+    let lv = lg_abs(value);
     let node = arena.node(id);
     let propagated: Bound = match node {
+        // Exact inputs: only the node's own rounding ([`finish`]).
         ExprNode::Num(nid) => {
             if exactly_representable(arena.num(*nid), prec) {
                 return Bound::EXACT;
             }
-            Bound::real(rounding(value, prec))
+            Bound::real(EXACT)
         }
         ExprNode::ImaginaryUnit | ExprNode::BoolTrue | ExprNode::BoolFalse => return Bound::EXACT,
         ExprNode::Pi
@@ -973,7 +1103,7 @@ pub(super) fn node_error(
         | ExprNode::EulerGamma
         | ExprNode::Catalan
         | ExprNode::GoldenRatio
-        | ExprNode::PhysicalConstant(..) => Bound::real(rounding(value, prec)),
+        | ExprNode::PhysicalConstant(..) => Bound::real(EXACT),
 
         // Evaluated with their bound by `add_with_bound` / `mul_with_bound`
         // (`eval_node_with_error`); recomputed here for completeness.
@@ -992,22 +1122,16 @@ pub(super) fn node_error(
                 mul_with_bound(&parts, prec, rm).1
             };
         }
-        ExprNode::Neg(c) | ExprNode::Conjugate(c) => match child(*c) {
-            Some((_, b)) => b,
-            None => return Bound::UNKNOWN,
-        },
-        ExprNode::Re(c) => match child(*c) {
-            Some((_, b)) => Bound::real(b.re),
-            None => return Bound::UNKNOWN,
-        },
-        ExprNode::Im(c) => match child(*c) {
-            Some((_, b)) => Bound::real(b.im),
-            None => return Bound::UNKNOWN,
-        },
+        // Exact operations: the child's bound, no rounding.
+        ExprNode::Neg(c) | ExprNode::Conjugate(c) => {
+            return child(*c).map_or(Bound::UNKNOWN, |(_, b)| b);
+        }
+        ExprNode::Re(c) => return child(*c).map_or(Bound::UNKNOWN, |(_, b)| Bound::real(b.re)),
+        ExprNode::Im(c) => return child(*c).map_or(Bound::UNKNOWN, |(_, b)| Bound::real(b.im)),
         ExprNode::Pow(base, exp) => {
             let (b, eb) = known_child!(*base);
             let (x, ex) = known_child!(*exp);
-            pow_bound(arena.as_num(*exp), b, eb, x, ex, ub_out)
+            pow_bound(arena.as_num(*exp), b, eb, x, ex, lv)
         }
 
         // `d exp z = exp z · dz`: the argument's absolute error is the
@@ -1018,7 +1142,21 @@ pub(super) fn node_error(
         // refused.
         ExprNode::Exp(c) => {
             let (z, b) = known_child!(*c);
-            let e = shift(b.joint(), ub_out);
+            // `|e^(z+δ) − e^z| ≤ |e^z|·(e^|δ| − 1)`: the first-order `|e^z|·|δ|`
+            // only for a small `δ`; `(e^r − 1)/r` for a radius `r` from 1/8
+            // (before 0.30 always the first order, `e^1000·10` for
+            // `exp(1000 ± 10)`, whose values reach `e^1010`).
+            let j = b.joint();
+            let e = if is_exact(j) {
+                EXACT
+            } else if j < -30.0 {
+                // `e^r − 1 ≤ r·e^r`.
+                shift(j, up(lv + j.exp2() * std::f64::consts::LOG2_E))
+            } else if j <= 9.0 {
+                clamp(up(lv + j.exp2().exp_m1().log2()))
+            } else {
+                return Bound::UNKNOWN;
+            };
             if exactly_real(z, b) {
                 Bound::real(e)
             } else {
@@ -1029,6 +1167,19 @@ pub(super) fn node_error(
             let (z, b) = known_child!(*c);
             let is_arg = matches!(node, ExprNode::Arg(_));
             let real = is_arg || (exactly_real(z, b) && sign_of(&z.0) > 0);
+            // The argument of an exactly real number that is certainly
+            // positive is exactly 0.  Before 0.30 it carried the child's
+            // relative error: `arg(expint(1, √22))` was a 0 with a bound,
+            // only zero to the precision reached (and the deep zero search
+            // would pursue it for seconds).
+            if is_arg
+                && exactly_real(z, b)
+                && !part_contains_zero(&z.0, b.re)
+                && sign_of(&z.0) > 0
+                && value.0.is_zero()
+            {
+                return Bound::EXACT;
+            }
             if b.is_exact() {
                 if real {
                     Bound::real(EXACT)
@@ -1040,13 +1191,39 @@ pub(super) fn node_error(
                 if contains_zero(z, j) || cut_undecided(z, b, Cut::NegativeReal) {
                     return Bound::UNKNOWN;
                 }
-                let e = j - mag(z).unwrap_or(0) + 1;
+                // `|ln(z + δ) − ln z| ≤ r/(|z| − r)` (and `arg` likewise).
+                let e = log_ball(j, lg_abs_low(z));
                 if real { Bound::real(e) } else { Bound::both(e) }
             }
         }
         ExprNode::Sin(c) | ExprNode::Cos(c) | ExprNode::Sinh(c) | ExprNode::Cosh(c) => {
             let (z, b) = known_child!(*c);
-            let e = shift(b.joint(), ub_out.max(0) + 1);
+            let j = trig_arg_error(arena, node, *c, z, b, prec);
+            // The derivative over the ball: `|cos w|, |sin w| ≤ cosh(Im w)`,
+            // `|cosh w|, |sinh w| ≤ cosh(Re w)` — exactly 1 for `sin`, `cos`
+            // of a real argument, which are Lipschitz with constant 1
+            // (before 0.30 `2·max(1, |f(z)|)`, a bit per `sin` of a chain).
+            let across = if matches!(node, ExprNode::Sin(_) | ExprNode::Cos(_)) {
+                (&z.1, b.im)
+            } else {
+                (&z.0, b.re)
+            };
+            let factor = if exact_zero(across.0, across.1) {
+                0.0
+            } else {
+                let t = part_lg(across.0).exp2()
+                    + if is_exact(across.1) {
+                        0.0
+                    } else {
+                        across.1.exp2()
+                    };
+                if !j.is_finite() && !is_exact(j) {
+                    UNKNOWN
+                } else {
+                    log2_cosh(t + if is_exact(j) { 0.0 } else { j.exp2() })
+                }
+            };
+            let e = shift(j, factor);
             if exactly_real(z, b) {
                 Bound::real(e)
             } else {
@@ -1055,7 +1232,31 @@ pub(super) fn node_error(
         }
         ExprNode::Tan(c) | ExprNode::Tanh(c) => {
             let (z, b) = known_child!(*c);
-            let e = shift(b.joint(), (2 * ub_out).max(0) + 1);
+            let arg_err = trig_arg_error(arena, node, *c, z, b, prec);
+            // The first-order bound holds on a ball well inside the
+            // distance to the nearest pole, about `1/|tan z|` there: no
+            // bound beyond an eighth of it.  Before 0.30 the ball of
+            // `tan(π/2·(1 − 10⁻⁸⁰))` at 128 bits (its argument rounded onto
+            // the pole) was `±3·10³⁹` around a value of `10³⁹` — the true
+            // value is `6.4·10⁷⁹` — and `Piecewise` decided `3.8·10⁵⁰ > tan(…)`
+            // on it.
+            // (A real `tanh` has no pole and a derivative below 1.)
+            let poles = matches!(node, ExprNode::Tan(_)) || !exactly_real(z, b);
+            if poles && !is_exact(arg_err) && arg_err + lv.max(0.0) > -3.0 {
+                return Bound::UNKNOWN;
+            }
+            // `f(z + δ) = (f(z) ± g(δ))/(1 ∓ f(z)·g(δ))` with `|g(δ)| ≤ tan r`,
+            // and `|f′(w)| ≤ 1 + |f(w)|²` over the ball; 1 for a real `tanh`.
+            let factor = if !poles || is_exact(arg_err) {
+                0.0
+            } else {
+                let r = arg_err.exp2();
+                let t = r * (1.0 + r * r);
+                let big_t = lv.exp2();
+                let w = (big_t + t) / (1.0 - big_t * t);
+                (1.0 + w * w).log2()
+            };
+            let e = shift(arg_err, up(factor));
             if exactly_real(z, b) {
                 Bound::real(e)
             } else {
@@ -1096,7 +1297,7 @@ pub(super) fn node_error(
                 if contains_zero(&z, j) || cut_undecided(&z, b, Cut::NegativeReal) {
                     return Bound::UNKNOWN;
                 }
-                Bound::real(j - mag(&z).unwrap_or(0) + 1)
+                Bound::real(log_ball(j, lg_abs_low(&z)))
             }
         }
 
@@ -1116,7 +1317,8 @@ pub(super) fn node_error(
             if matches!(node, ExprNode::Heaviside(_)) || contains_zero(z, j) {
                 return Bound::UNKNOWN;
             }
-            Bound::both(j - mag(z).unwrap_or(0) + 1)
+            // `|w/|w| − z/|z|| ≤ 2r/|z|` for `|w − z| ≤ r`.
+            Bound::both(shift(log_ball(j, lg_abs_low(z)), 1.0))
         }
         ExprNode::Floor(c) | ExprNode::Ceiling(c) => {
             let (z, b) = known_child!(*c);
@@ -1130,15 +1332,14 @@ pub(super) fn node_error(
             // to the next one.
             let p = 64 + prec;
             let rm = RoundingMode::ToEven;
-            let d1 = part_mag(&z.0.sub(&value.0, p, rm));
+            let d1 = z.0.sub(&value.0, p, rm);
             let one = BigFloat::from_i32(1, p);
             let next = match node {
                 ExprNode::Floor(_) => value.0.add(&one, p, rm),
                 _ => value.0.sub(&one, p, rm),
             };
-            let d2 = part_mag(&next.sub(&z.0, p, rm));
-            let margin = d1.unwrap_or(i64::MIN).min(d2.unwrap_or(i64::MIN));
-            if d1.is_none() || d2.is_none() || margin <= b.re + 1 {
+            let d2 = next.sub(&z.0, p, rm);
+            if part_contains_zero(&d1, b.re) || part_contains_zero(&d2, b.re) {
                 return Bound::UNKNOWN;
             }
             return Bound::EXACT; // an integer
@@ -1152,7 +1353,8 @@ pub(super) fn node_error(
                 }
                 worst = worst.max(b.re);
             }
-            Bound::real(worst)
+            // A copy of one of the arguments.
+            return Bound::real(worst);
         }
         // A decision on `i − j = 0`: exact when both are exact or their
         // difference is outside its error box.
@@ -1163,8 +1365,8 @@ pub(super) fn node_error(
                 return Bound::EXACT;
             }
             let d = c_sub(iv, jv, prec + 64, RoundingMode::ToEven);
-            let re = shift(ei.re.max(ej.re), 1);
-            let im = shift(ei.im.max(ej.im), 1);
+            let re = lsum(ei.re, ej.re);
+            let im = lsum(ei.im, ej.im);
             if part_contains_zero(&d.0, re) && part_contains_zero(&d.1, im) {
                 return Bound::UNKNOWN;
             }
@@ -1234,6 +1436,36 @@ pub(super) fn node_error(
     finish(arena, id, value, cache, errs, propagated, prec)
 }
 
+/// The joint error of the argument `c` (value `z ± b`) of the node `node`
+/// as the node uses it.  `sin`, `cos` and `tan` of a rational literal
+/// `|r| ≥ 1` convert it again with `log₂|r|` extra bits before reducing it
+/// modulo 2π (`evalf::trig_arg`), so its error is the rounding at
+/// `prec + log₂|r|` bits, about `2^−prec`, not the child's rounding at
+/// `prec` bits.  Before 0.30 the bound used the latter (`sin(10¹⁰⁰)` had
+/// a ball of `2^(333−prec)`) and only the agreement of two precisions,
+/// which proves nothing, accepted the value.
+fn trig_arg_error(
+    arena: &Arena,
+    node: &ExprNode,
+    c: ExprId,
+    z: &Complex,
+    b: Bound,
+    prec: usize,
+) -> ErrExp {
+    let reconverted = matches!(node, ExprNode::Sin(_) | ExprNode::Cos(_) | ExprNode::Tan(_))
+        && matches!(arena.node(c), ExprNode::Num(_))
+        && z.1.is_zero()
+        && z.0.inexact()
+        && z.0
+            .exponent()
+            .is_some_and(|e| e > 0 && i64::from(e) <= i64::from(arena.config.max_evalf_precision));
+    if reconverted {
+        1.0 - prec as f64
+    } else {
+        b.joint()
+    }
+}
+
 /// The final bound of node `id`: the propagated bound plus the rounding of
 /// the result (at its magnitude) on each part, except a part that is 0 with
 /// an exact propagated bound, which is exact — or, for a whole value of 0
@@ -1272,7 +1504,7 @@ fn finish(
         if is_exact(e) && x.is_zero() {
             EXACT
         } else {
-            clamp(e.max(round).saturating_add(1))
+            lsum(e, round)
         }
     };
     Bound {
@@ -1286,19 +1518,45 @@ fn finish(
 /// values.  (astro-float's `exp` returns 0 below its exponent range without
 /// flagging it inexact, and before 0.29 that zero counted as exact:
 /// `Piecewise((1, exp(−4·10⁹) > 0), (0, True))` came out `0`.)
+///
+/// Nor are the special functions that decay exponentially and vanish at
+/// no nonzero rational point — `erfc`, `Γ`, `x!`, `Ei`, `Ai`, `Bi` and
+/// their derivatives, `I_ν`, `K_ν`, `Γ(s, x)`, `E_ν(x)` — at nonzero
+/// arguments (their zeros, where they have any, are irrational).  Before
+/// 0.30 their underflow was an exact 0 as well: `sign(airyai(10¹⁰))`,
+/// `sign(erfc(10⁵))` and `sign(besselk(0, 10¹⁰))` were `0`, truly `1`.
 fn underflowed(arena: &Arena, id: ExprId, cache: &FxHashMap<ExprId, Complex>) -> bool {
     let nonzero = |c: &ExprId| cache.get(c).is_some_and(|v| mag(v).is_some());
     match arena.node(id) {
         ExprNode::Exp(_) => true,
         ExprNode::Mul(children) => children.iter().all(nonzero),
         ExprNode::Pow(base, _) => nonzero(base),
+        ExprNode::Erfc(c) | ExprNode::Gamma(c) | ExprNode::Factorial(c) | ExprNode::Ei(c) => {
+            nonzero(c)
+        }
+        // The variable is the last argument (the order or parameter may be 0).
+        ExprNode::Apply(sid, args) => {
+            matches!(
+                arena.lib_fn(*sid),
+                Some(
+                    LibFn::AiryAi
+                        | LibFn::AiryAiPrime
+                        | LibFn::AiryBi
+                        | LibFn::AiryBiPrime
+                        | LibFn::BesselI
+                        | LibFn::BesselK
+                        | LibFn::UpperGamma
+                        | LibFn::ExpInt
+                )
+            ) && args.last().is_some_and(nonzero)
+        }
         _ => false,
     }
 }
 
 /// The bound of `b^x` for `b ± eb`, `x ± ex` (`x_literal`: the exponent's
-/// exact value when it is a rational literal), the result's magnitude
-/// exponent being `ub_out`.
+/// exact value when it is a rational literal), `lv` bounding the result's
+/// magnitude (`log₂`).
 ///
 /// A non-integer power has the cut of `ln` on the negative real axis: an
 /// undecidable side has no bound.  The result is real (exact imaginary
@@ -1312,7 +1570,7 @@ fn pow_bound(
     eb: Bound,
     x: &Complex,
     ex: Bound,
-    ub_out: ErrExp,
+    lv: f64,
 ) -> Bound {
     let integer_exponent = match x_literal {
         Some(q) => q.is_integer(),
@@ -1322,7 +1580,7 @@ fn pow_bound(
     {
         return Bound::UNKNOWN;
     }
-    let e = pow_error(x_literal, b, eb.joint(), x, ex.joint(), ub_out);
+    let e = pow_error(x_literal, b, eb.joint(), x, ex.joint(), lv);
     let base_real = exactly_real(b, eb);
     let base_sign = if part_contains_zero(&b.0, eb.re) {
         0
@@ -1339,16 +1597,31 @@ fn pow_bound(
     }
 }
 
-/// The joint error bound of `b^x`, with `b ± 2^eb`, `x ± 2^ex`, the
-/// result's magnitude exponent `ub_out` and `x`'s exact value when it is a
+/// `log₂ |q|` of a rational (to `f64` precision, beyond its range from the
+/// bit lengths).
+fn lg_q(q: &Q) -> f64 {
+    let (n, d) = (q.numer().abs(), q.denom().clone());
+    match (n.to_f64(), d.to_f64()) {
+        (Some(a), Some(b)) if a.is_finite() && b.is_finite() && a > 0.0 => a.log2() - b.log2(),
+        _ => n.bits() as f64 - d.bits() as f64 + 1.0,
+    }
+}
+
+/// The joint error bound of `b^x`, with `b ± 2^eb`, `x ± 2^ex`, `lv`
+/// bounding the result's magnitude and `x`'s exact value when it is a
 /// rational literal.
+///
+/// A literal `q`: `(b + δ)^q = b^q·(1 + ε)^q` with `|ε| ≤ ρ = 2^eb/|b|`, and by
+/// the mean value theorem `|(1 + ε)^q − 1| ≤ |q|·ρ·(1 − ρ)^(−|q−1|)`, an
+/// upper bound for every `q` (not only to first order: `(1 + 10⁻¹⁵⁰)^(10¹⁵⁰)`
+/// at 128 bits has none, `ρ·q` being huge).
 fn pow_error(
     x_literal: Option<&Q>,
     b: &Complex,
     eb: ErrExp,
     x: &Complex,
     ex: ErrExp,
-    ub_out: ErrExp,
+    lv: f64,
 ) -> ErrExp {
     if let Some(q) = x_literal {
         if q.is_zero() {
@@ -1357,50 +1630,87 @@ fn pow_error(
         if is_exact(eb) {
             return EXACT; // only the rounding of the result
         }
-        // Relative error scales by |q|: rel_out = |q|·rel_b.
-        let log_q = log2_abs(q);
+        let log_q = lg_q(q);
         if contains_zero(b, eb) {
             // A positive power of a value near 0 stays near 0: every point
-            // of the ball has |w| < 2^(eb + 2), so |w^q| < 2^(q·(eb + 2)),
-            // and two values differ by at most twice that.  (Before 0.29
-            // this was 2^(eb/2 + 1), too small for q < ½: a cube root.)  A
-            // negative power is unbounded.
+            // of the ball has |w| ≤ |b| + 2^eb ≤ 2^(eb + 1), so |w^q| ≤
+            // 2^(q·(eb + 1)), and two values differ by at most twice that.
+            // A negative power is unbounded.
             if !q.is_positive() {
                 return UNKNOWN;
             }
             let qf = q.numer().to_f64().unwrap_or(f64::INFINITY)
                 / q.denom().to_f64().unwrap_or(f64::INFINITY);
-            let bound = qf * (eb.saturating_add(2)) as f64;
-            return if bound.is_finite() && bound < 1e15 {
-                clamp(bound.max(-1e15).ceil() as i64 + 1)
+            let bound = qf * (eb + 1.0 + 1e-9) + 1.0;
+            return if bound.is_finite() && bound < LIMIT {
+                clamp(up(bound))
             } else {
                 UNKNOWN
             };
         }
-        let rel_b = eb - mag(b).unwrap_or(0);
-        return ub_out.saturating_add(rel_b + log_q + 1);
+        let rho = eb - lg_abs_low(b); // log₂ ρ < 0
+        let q1 = (q - Q::one()).abs();
+        let q1f = q1.numer().to_f64().unwrap_or(f64::INFINITY) / q1.denom().to_f64().unwrap_or(1.0);
+        let growth = if q1f == 0.0 {
+            0.0
+        } else {
+            -q1f * (-rho.exp2()).ln_1p() * std::f64::consts::LOG2_E
+        };
+        if !growth.is_finite() || growth > LIMIT {
+            return UNKNOWN;
+        }
+        return clamp(up(lv + log_q + rho + growth));
     }
-    // General exponent: b^x = exp(x·ln b), so
-    // rel_out ≈ |x|·rel_b + |ln b|·err(x).
+    // General exponent: b^x = exp(x·ln b).  The error of `w = x·ln b` is
+    // `r_w ≤ |x|·r_ln + |ln b|·2^ex + r_ln·2^ex` with `r_ln = 2^eb/(|b| −
+    // 2^eb)`, and `|e^(w+δ) − e^w| ≤ |e^w|·(e^r_w − 1)`.
     if contains_zero(b, eb) && !is_exact(eb) {
         return UNKNOWN;
     }
-    let rel_b = if is_exact(eb) {
+    let r_ln = if is_exact(eb) {
         EXACT
     } else {
-        eb - mag(b).unwrap_or(0)
+        log_ball(eb, lg_abs_low(b))
     };
-    let term_b = rel_b.saturating_add(upper(x, ex).max(0));
-    // |ln b| ≤ |ln|b|| + π; ln|b| ≈ mag(b)·ln 2.
-    let log_ln_b = {
-        let m = mag(b).unwrap_or(0).unsigned_abs();
-        let bound = (m as f64 * std::f64::consts::LN_2).max(std::f64::consts::PI) + 1.0;
-        bound.log2().ceil() as i64
-    };
-    let term_x = if is_exact(ex) {
-        EXACT
+    let lx = upper(x, EXACT);
+    // |ln b| ≤ |ln|b|| + π.
+    let ln_b = (lg_abs(b).abs().max(lg_abs_low(b).abs()) * std::f64::consts::LN_2
+        + std::f64::consts::PI)
+        .log2();
+    let r_w = lsum(lsum(shift(r_ln, lx), shift(ex, ln_b)), shift(r_ln, ex));
+    if is_exact(r_w) {
+        return EXACT;
+    }
+    if r_w > 9.0 {
+        return UNKNOWN;
+    }
+    let factor = if r_w < -30.0 {
+        r_w + r_w.exp2() * std::f64::consts::LOG2_E
     } else {
-        ex.saturating_add(log_ln_b)
+        r_w.exp2().exp_m1().log2()
     };
-    ub_out.saturating_add(term_b.max(term_x) + 1)
+    clamp(up(lv + factor))
+}
+
+/// `log₂(r/(|z| − r))` for `r = 2^j < |z|` (`lz` a lower bound on
+/// `log₂|z|`): the change of `ln` (and `arg`, and `sign`'s `1/|z|`) over the
+/// ball.
+fn log_ball(j: ErrExp, lz: f64) -> ErrExp {
+    if is_exact(j) {
+        return EXACT;
+    }
+    let rho = j - lz;
+    if rho >= 0.0 {
+        return UNKNOWN;
+    }
+    clamp(up(rho - (-rho.exp2()).ln_1p() * std::f64::consts::LOG2_E))
+}
+
+/// `log₂ cosh t` for `t ≥ 0` (`+∞` beyond `f64`).
+fn log2_cosh(t: f64) -> f64 {
+    if !t.is_finite() {
+        return f64::INFINITY;
+    }
+    let t = t.abs();
+    up(t * std::f64::consts::LOG2_E - 1.0 + (-2.0 * t).exp().ln_1p() * std::f64::consts::LOG2_E)
 }

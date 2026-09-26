@@ -60,7 +60,7 @@ use crate::base::interval::Interval;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::walk;
-use crate::calculus::calculus_util::{self, BreakKind, BreakScan, LinearCoeffs};
+use crate::calculus::calculus_util::{self, BreakKind, BreakScan, Breakpoint, LinearCoeffs};
 use crate::transforms::{eval, evalf, expand, subs};
 
 /// Maximum nesting of interval splits before giving up.
@@ -826,10 +826,6 @@ fn numeric_guard(
     hi: f64,
     scan: &BreakScan,
 ) -> Option<bool> {
-    let x_name = match arena.node(x) {
-        ExprNode::Symbol(sid) => arena.symbol_name(*sid).to_string(),
-        _ => return None,
-    };
     let mut watched: Vec<ExprId> = Vec::new();
     let mut stack = vec![f];
     let mut seen = rustc_hash::FxHashSet::default();
@@ -858,13 +854,33 @@ fn numeric_guard(
         }
         arena.node(id).for_each_child(|c| stack.push(c));
     }
+    let known: Vec<f64> = scan.points.iter().filter_map(|bp| bp.value).collect();
+    sign_changes_explained(arena, &watched, x, lo, hi, &known)
+}
+
+/// Sample each of the `watched` functions of `x` on `[lo, hi]` and look
+/// for a sign change that none of the `known` points explains.
+///
+/// Returns `Some(true)` if all sign changes are explained, `Some(false)`
+/// if an unexplained one exists, `None` if the check could not run.
+fn sign_changes_explained(
+    arena: &mut Arena,
+    watched: &[ExprId],
+    x: ExprId,
+    lo: f64,
+    hi: f64,
+    known: &[f64],
+) -> Option<bool> {
     if watched.is_empty() {
         return Some(true);
     }
-    let known: Vec<f64> = scan.points.iter().filter_map(|bp| bp.value).collect();
+    let x_name = match arena.node(x) {
+        ExprNode::Symbol(sid) => arena.symbol_name(*sid).to_string(),
+        _ => return None,
+    };
     let grid = guard_grid(lo, hi);
     let mut all_ok = true;
-    for w in watched {
+    for &w in watched {
         let w_eval = safe_eval(arena, w);
         if !walk::free_symbols(arena, w_eval).iter().all(|&s| s == x) {
             return None; // parametric — cannot sample
@@ -2119,13 +2135,60 @@ fn split_piecewise_like(
 ) -> Result<ExprId, SymplexError> {
     let range = numeric_range(arena, a, b);
     let scan = calculus_util::scan_breakpoints(arena, f, x, finite_scan_range(range));
+    if scan.opaque {
+        return Err(failed(
+            "the integrand contains a function whose breakpoints cannot be analysed",
+        ));
+    }
 
-    // Only kinks matter here; singularities are handled downstream.
-    let mut points: Vec<(ExprId, Option<f64>)> = Vec::new();
-    for bp in &scan.points {
-        if bp.kind != BreakKind::Kink {
-            continue;
+    // The pieces are where every argument of |·|, sign and H keeps its
+    // sign: between its zeros (the kinks) and its own poles (`sign(1/x)`).
+    // `solve` may miss zeros (it knew no inverse of `asinh`, and returns
+    // one branch of `x·eˣ = c`); then each piece was resolved at its test
+    // point as if the sign never changed, and `∫_{−1/2}^{3/2} |asinh x| dx`
+    // came out as `∫ asinh x dx`.  The arguments are sampled as the
+    // singularity path samples denominators, and an unexplained sign
+    // change refuses the split.
+    let args = kink_arguments(arena, f, x);
+    let mut breaks: Vec<Breakpoint> = scan
+        .points
+        .iter()
+        .filter(|bp| bp.kind == BreakKind::Kink)
+        .cloned()
+        .collect();
+    let mut complete = scan.complete;
+    for &g in &args {
+        let s = calculus_util::scan_breakpoints(arena, g, x, finite_scan_range(range));
+        complete &= s.complete && !s.opaque;
+        breaks.extend(
+            s.points
+                .into_iter()
+                .filter(|bp| bp.kind == BreakKind::Singular),
+        );
+    }
+    let known: Vec<f64> = breaks.iter().filter_map(|bp| bp.value).collect();
+    let guard = match range {
+        Some(r) => sign_changes_explained(arena, &args, x, r.lower, r.upper, &known),
+        None => None,
+    };
+    match guard {
+        Some(false) => {
+            return Err(failed(
+                "an argument of |·|, sign or Heaviside changes sign inside the interval at a point the solver could not locate",
+            ));
         }
+        None if !complete => {
+            return Err(failed(
+                "could not determine where the arguments of |·|, sign or Heaviside change sign",
+            ));
+        }
+        _ => {}
+    }
+
+    // Singularities other than sign changes of those arguments are handled
+    // downstream.
+    let mut points: Vec<(ExprId, Option<f64>)> = Vec::new();
+    for bp in &breaks {
         match position_in(arena, bp.point, a, b) {
             Position::Inside if !points.iter().any(|(p, _)| *p == bp.point) => {
                 points.push((bp.point, bp.value));
@@ -2176,6 +2239,22 @@ fn split_piecewise_like(
     }
     let s = arena.add(&total);
     Ok(safe_eval(arena, s))
+}
+
+/// The `x`-dependent arguments of the `|·|`, `sign` and `Heaviside` nodes
+/// of `f`, whose sign changes split the interval in
+/// [`split_piecewise_like`].
+fn kink_arguments(arena: &Arena, f: ExprId, x: ExprId) -> Vec<ExprId> {
+    let mut out = Vec::new();
+    for id in walk::post_order_ids(arena, f) {
+        if let ExprNode::Abs(g) | ExprNode::Sign(g) | ExprNode::Heaviside(g) = *arena.node(id)
+            && walk::contains(arena, g, x)
+            && !out.contains(&g)
+        {
+            out.push(g);
+        }
+    }
+    out
 }
 
 /// A rational point strictly inside `(lo, hi)` (infinite ends allowed).

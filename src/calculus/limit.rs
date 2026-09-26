@@ -49,6 +49,7 @@ use crate::base::errors::SymplexError;
 use crate::base::extended::Extended;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
+use crate::calculus::calculus_util::is_hidden_zero;
 
 /// Maximum L'Hôpital iterations to prevent infinite loops.
 const MAX_LHOPITAL: usize = 5;
@@ -328,12 +329,12 @@ fn same_value(arena: &mut Arena, a: ExprId, b: ExprId) -> bool {
     }
     let diff = arena.sub(a, b);
     let diff = crate::transforms::eval::eval(arena, diff);
-    if arena.is_zero_structural(diff) {
+    if arena.is_zero_structural(diff) || is_hidden_zero(arena, diff) {
         return true;
     }
     let simplified = crate::transforms::expand::expand(arena, diff);
     let simplified = crate::transforms::eval::eval(arena, simplified);
-    arena.is_zero_structural(simplified)
+    arena.is_zero_structural(simplified) || is_hidden_zero(arena, simplified)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -437,7 +438,40 @@ pub(crate) fn safe_substitute(
             ExprNode::Piecewise(_) => return None,
             ExprNode::Ln(a) | ExprNode::LogGamma(a) => {
                 let av = val_of(arena, &values, a);
-                if arena.is_zero_structural(av) || !is_definite_constant(arena, av) {
+                if is_zero_value(arena, av) || !is_definite_constant(arena, av) {
+                    return None;
+                }
+                if on_branch_cut(arena, BranchCut::NegativeReals, av) && !inner_known_real(arena, a)
+                {
+                    return None;
+                }
+            }
+            ExprNode::Asin(a) | ExprNode::Acos(a) | ExprNode::Acosh(a) | ExprNode::Atanh(a) => {
+                let av = val_of(arena, &values, a);
+                let cut = if matches!(node, ExprNode::Acosh(_)) {
+                    BranchCut::BelowOne
+                } else {
+                    BranchCut::BeyondOne
+                };
+                if on_branch_cut(arena, cut, av) && !inner_known_real(arena, a) {
+                    return None;
+                }
+                if let ExprNode::Atanh(_) = node {
+                    let one = arena.one();
+                    let minus = arena.sub(av, one);
+                    let plus = arena.add(&[av, one]);
+                    let (minus, plus) = (
+                        crate::transforms::eval::eval(arena, minus),
+                        crate::transforms::eval::eval(arena, plus),
+                    );
+                    if is_zero_value(arena, minus) || is_zero_value(arena, plus) {
+                        return None;
+                    }
+                }
+            }
+            ExprNode::Asinh(a) | ExprNode::Atan(a) => {
+                let av = val_of(arena, &values, a);
+                if on_branch_cut(arena, BranchCut::ImaginaryAxis, av) {
                     return None;
                 }
             }
@@ -460,19 +494,28 @@ pub(crate) fn safe_substitute(
                 let av = val_of(arena, &values, a);
                 let c = arena.cos(av);
                 let c = crate::transforms::eval::eval(arena, c);
-                if arena.is_zero_structural(c) {
+                if is_zero_value(arena, c) {
                     return None;
                 }
             }
             ExprNode::Pow(b, e) => {
                 let bv = val_of(arena, &values, b);
                 let ev = val_of(arena, &values, e);
-                if arena.is_zero_structural(bv) {
+                if is_zero_value(arena, bv) {
                     // 0^e is continuous only for a definite positive exponent.
                     match arena.as_num(ev) {
                         Some(r) if r.is_positive() => {}
                         _ => return None,
                     }
+                }
+                // A fractional power at a point of its cut: continuous only
+                // along the cut (a real base); `√(−1 − i·x)` at `x → 0⁺`
+                // tends to `−i`, not to `√(−1) = i`.
+                if arena.as_num(e).is_none_or(|r| !r.is_integer())
+                    && on_branch_cut(arena, BranchCut::NegativeReals, bv)
+                    && !inner_known_real(arena, b)
+                {
+                    return None;
                 }
                 // 1^∞ / ∞^0 forms are caught by the singular check below
                 // because the offending sub-expression evaluates to ∞.
@@ -491,14 +534,6 @@ pub(crate) fn safe_substitute(
                     _ => return None,
                 }
             }
-            ExprNode::Atanh(a) => {
-                let av = val_of(arena, &values, a);
-                if let Some(r) = arena.as_num(av)
-                    && r.abs() == Ratio::from_integer(BigInt::from(1))
-                {
-                    return None;
-                }
-            }
             _ => {}
         }
 
@@ -511,6 +546,50 @@ pub(crate) fn safe_substitute(
     }
 
     values.get(&expr).copied()
+}
+
+/// Largest tree the one-sided Gruntz preprocessing expands.
+const MAX_EXPAND_SIZE: usize = 400;
+
+/// Largest [`expansion_cost_estimate`] the one-sided Gruntz preprocessing
+/// expands.
+const MAX_EXPANSION_COST: f64 = 4_000.0;
+
+/// The number of terms `expand` would produce, summed over the nodes of
+/// `e`: a sum has the terms of its children, a product their product, a
+/// positive integer power `bⁿ` the `n`-th power of `b`'s (an upper bound
+/// on the multinomial count), anything else one.  A small tree can expand
+/// to an enormous one (`(1/w − 1/2)³⁰`).
+fn expansion_cost_estimate(arena: &Arena, e: ExprId) -> f64 {
+    let post = crate::base::walk::post_order_ids(arena, e);
+    let mut terms: FxHashMap<ExprId, f64> = FxHashMap::default();
+    let mut cost = 0.0;
+    for &id in &post {
+        let t = |c: ExprId| terms.get(&c).copied().unwrap_or(1.0);
+        let v = match arena.node(id) {
+            ExprNode::Add(cs) => cs.iter().map(|&c| t(c)).sum(),
+            ExprNode::Mul(cs) => cs.iter().map(|&c| t(c)).product(),
+            ExprNode::Pow(b, n) => match arena.as_num(*n) {
+                Some(r) if r.is_integer() && r.is_positive() => {
+                    let k = num_traits::ToPrimitive::to_f64(r).unwrap_or(f64::INFINITY);
+                    t(*b).powf(k)
+                }
+                _ => 1.0,
+            },
+            _ => 1.0,
+        };
+        let v: f64 = v.min(1e12);
+        cost += v;
+        terms.insert(id, v);
+    }
+    cost
+}
+
+/// Is the value `v` zero, structurally or as a sum of constants that
+/// cancels numerically (`asinh 2 − ln(2 + √5)`)?  A structural test let
+/// `x/(asinh(x + 2) − ln(2 + √5))` substitute to `0·(1/0) = 0` at `x = 0`.
+fn is_zero_value(arena: &Arena, v: ExprId) -> bool {
+    arena.is_zero_structural(v) || is_hidden_zero(arena, v)
 }
 
 /// A "definite" constant: numeric, or a symbolic constant with a known sign.
@@ -581,12 +660,22 @@ fn const_sign_depth(arena: &mut Arena, e: ExprId, depth: usize) -> Option<i32> {
                 if sign == 0 {
                     sign = s;
                 } else if sign != s {
-                    return assumption_sign(arena, e);
+                    return assumption_sign(arena, e).or_else(|| numeric_sign(arena, e));
                 }
             }
             Some(sign)
         }
-        ExprNode::Exp(_) | ExprNode::Cosh(_) => Some(1),
+        // Positive for a real argument only: `cosh(acos 4) = cos(acosh 4)`
+        // is −0.47, and `exp` of a non-real number is not positive either.
+        // (Taking both for positive turned `lim_{x→−∞} (asinh x − 2x)·cosh(acos 4)`
+        // into `+∞`.)  A constant with a known sign is real.
+        ExprNode::Exp(a) | ExprNode::Cosh(a) => {
+            if const_sign_depth(arena, a, depth + 1).is_some() {
+                Some(1)
+            } else {
+                assumption_sign(arena, e).or_else(|| numeric_sign(arena, e))
+            }
+        }
         ExprNode::Abs(inner) => {
             let s = const_sign_depth(arena, inner, depth + 1)?;
             Some(if s == 0 { 0 } else { 1 })
@@ -609,7 +698,12 @@ fn const_sign_depth(arena: &mut Arena, e: ExprId, depth: usize) -> Option<i32> {
                 }
                 return None;
             }
-            if bs > 0 { Some(1) } else { None }
+            // b^e > 0 for b > 0 needs a real exponent (`2^i` is not real).
+            if bs > 0 && const_sign_depth(arena, exp, depth + 1).is_some() {
+                Some(1)
+            } else {
+                assumption_sign(arena, e).or_else(|| numeric_sign(arena, e))
+            }
         }
         ExprNode::Ln(inner) => {
             let r = arena.as_num(inner).cloned()?;
@@ -625,9 +719,43 @@ fn const_sign_depth(arena: &mut Arena, e: ExprId, depth: usize) -> Option<i32> {
                 -1
             })
         }
-        _ => assumption_sign(arena, e),
+        _ => assumption_sign(arena, e).or_else(|| numeric_sign(arena, e)),
     }
 }
+
+/// Sign of a constant free of symbols by certified evaluation: the value
+/// must be real (see [`constant_realness`]), and then its digits decide;
+/// an exact 0 from `evalf` (a sum cancelling to its working precision) is
+/// 0.  `None` for a non-real or unevaluable constant.
+///
+/// [`constant_realness`]: crate::transforms::realness::constant_realness
+fn numeric_sign(arena: &mut Arena, e: ExprId) -> Option<i32> {
+    if !crate::base::walk::free_symbols(arena, e).is_empty()
+        || crate::base::walk::has_unevaluated(arena, e)
+    {
+        return None;
+    }
+    let z = crate::transforms::evalf::evalf_complex(arena, e, NUMERIC_SIGN_DIGITS).ok()?;
+    if z.0.is_zero() && z.1.is_zero() {
+        return Some(0);
+    }
+    let mut reals = crate::base::assumptions::AssumptionCache::new();
+    let real =
+        crate::transforms::realness::constant_realness(arena, e, NUMERIC_SIGN_DIGITS, &mut reals);
+    if real != Some(true) {
+        return None;
+    }
+    if z.0.is_positive() {
+        Some(1)
+    } else if z.0.is_negative() {
+        Some(-1)
+    } else {
+        None
+    }
+}
+
+/// Digits at which [`numeric_sign`] evaluates a constant.
+const NUMERIC_SIGN_DIGITS: u32 = 20;
 
 fn sign_of_ratio(r: &Q) -> i32 {
     if r.is_positive() {
@@ -776,10 +904,17 @@ fn try_compose(
                             _ => None,
                         };
                     }
-                    if const_sign(arena, l).is_none() && k.as_ref().is_none_or(|r| !r.is_integer())
-                    {
+                    let fractional = k.as_ref().is_none_or(|r| !r.is_integer());
+                    let l_sign = const_sign(arena, l);
+                    if l_sign.is_none() && fractional {
                         // Symbolic base of unknown sign with a non-integer
                         // exponent — could be complex; leave to Gruntz.
+                        return None;
+                    }
+                    // A negative limit of the base lies on the cut of a
+                    // fractional power: the principal value there is the
+                    // limit only for a real base (see `limit_on_branch_cut`).
+                    if l_sign == Some(-1) && fractional && !inner_known_real(arena, base) {
                         return None;
                     }
                     let p = arena.pow(l, exp);
@@ -931,6 +1066,7 @@ fn try_compose(
         }
         ExprNode::Atan(a) => unary_with_asymptotes(
             arena,
+            BranchCut::ImaginaryAxis,
             a,
             var,
             &inner_limit,
@@ -944,6 +1080,7 @@ fn try_compose(
         ),
         ExprNode::Erf(a) => unary_with_asymptotes(
             arena,
+            BranchCut::None,
             a,
             var,
             &inner_limit,
@@ -952,6 +1089,7 @@ fn try_compose(
         ),
         ExprNode::Erfc(a) => unary_with_asymptotes(
             arena,
+            BranchCut::None,
             a,
             var,
             &inner_limit,
@@ -960,6 +1098,7 @@ fn try_compose(
         ),
         ExprNode::Tanh(a) => unary_with_asymptotes(
             arena,
+            BranchCut::None,
             a,
             var,
             &inner_limit,
@@ -968,6 +1107,7 @@ fn try_compose(
         ),
         ExprNode::Sinh(a) => unary_with_asymptotes(
             arena,
+            BranchCut::None,
             a,
             var,
             &inner_limit,
@@ -982,6 +1122,7 @@ fn try_compose(
         ),
         ExprNode::Cosh(a) => unary_with_asymptotes(
             arena,
+            BranchCut::None,
             a,
             var,
             &inner_limit,
@@ -990,6 +1131,7 @@ fn try_compose(
         ),
         ExprNode::Asinh(a) => unary_with_asymptotes(
             arena,
+            BranchCut::ImaginaryAxis,
             a,
             var,
             &inner_limit,
@@ -1004,6 +1146,7 @@ fn try_compose(
         ),
         ExprNode::Acosh(a) => unary_with_asymptotes(
             arena,
+            BranchCut::BelowOne,
             a,
             var,
             &inner_limit,
@@ -1012,6 +1155,7 @@ fn try_compose(
         ),
         ExprNode::Abs(a) => unary_with_asymptotes(
             arena,
+            BranchCut::None,
             a,
             var,
             &inner_limit,
@@ -1020,6 +1164,7 @@ fn try_compose(
         ),
         ExprNode::Sin(a) => unary_with_asymptotes(
             arena,
+            BranchCut::None,
             a,
             var,
             &inner_limit,
@@ -1028,6 +1173,7 @@ fn try_compose(
         ),
         ExprNode::Cos(a) => unary_with_asymptotes(
             arena,
+            BranchCut::None,
             a,
             var,
             &inner_limit,
@@ -1036,6 +1182,7 @@ fn try_compose(
         ),
         ExprNode::Asin(a) => unary_with_asymptotes(
             arena,
+            BranchCut::BeyondOne,
             a,
             var,
             &inner_limit,
@@ -1044,6 +1191,7 @@ fn try_compose(
         ),
         ExprNode::Acos(a) => unary_with_asymptotes(
             arena,
+            BranchCut::BeyondOne,
             a,
             var,
             &inner_limit,
@@ -1162,6 +1310,7 @@ fn split_by_var(arena: &Arena, children: &[ExprId], var: ExprId) -> (Vec<ExprId>
 /// `None` when no such limit exists) and `build` constructing `F(l)`.
 fn unary_with_asymptotes(
     arena: &mut Arena,
+    cut: BranchCut,
     inner: ExprId,
     var: ExprId,
     inner_limit: &dyn Fn(&mut Arena, ExprId) -> Option<ExprId>,
@@ -1172,6 +1321,9 @@ fn unary_with_asymptotes(
     match classify(arena, l) {
         Ext::Finite(_) => {
             let v = build(arena, l);
+            if limit_on_branch_cut(arena, cut, l, inner) {
+                return None;
+            }
             finite_candidate(arena, v, var).map(Ok)
         }
         Ext::PosInf => match at_inf(arena, true) {
@@ -1187,6 +1339,85 @@ fn unary_with_asymptotes(
             ))),
         },
     }
+}
+
+/// Does the composition `f(g) → f(l)` (with `v = f(l)` built) take `f` at a
+/// point `l` of its branch cut, where `f` is continuous only from one side?
+/// `asinh` and `atan` have their cuts on the imaginary axis beyond `±i`,
+/// `acosh` on `(−∞, 1)`, `asin`, `acos`, `atanh` beyond `±1`.  A real `g`
+/// approaching a real point of a real-axis cut stays on the cut, where the
+/// principal values are continuous along it; a non-real `g` may approach
+/// from the other side: `atanh(1 − x) → iπ/2` from `Re < 0` as `x → ∞`,
+/// and `lim asinh(atanh(1 − x))` is `−acosh(π/2) + iπ/2`, not the value
+/// `asinh(iπ/2) = acosh(π/2) + iπ/2` on the cut.  Such limits are left to
+/// the one-sided analysis.
+fn limit_on_branch_cut(arena: &mut Arena, cut: BranchCut, l: ExprId, g: ExprId) -> bool {
+    match cut {
+        BranchCut::ImaginaryAxis => on_branch_cut(arena, cut, l),
+        _ => on_branch_cut(arena, cut, l) && !inner_known_real(arena, g),
+    }
+}
+
+/// Is the constant `l` on the branch cut `cut`?  (`NegativeReals` is the
+/// cut of `ln` and of fractional powers.)
+pub(crate) fn on_branch_cut(arena: &mut Arena, cut: BranchCut, l: ExprId) -> bool {
+    if cut == BranchCut::None || !crate::base::walk::free_symbols(arena, l).is_empty() {
+        return false;
+    }
+    let re = arena.re(l);
+    let re = crate::transforms::eval::eval(arena, re);
+    let im = arena.im(l);
+    let im = crate::transforms::eval::eval(arena, im);
+    let (Ok(re), Ok(im)) = (
+        crate::transforms::evalf::evalf_complex(arena, re, 20),
+        crate::transforms::evalf::evalf_complex(arena, im, 20),
+    ) else {
+        return false;
+    };
+    let is_zero = |x: &crate::base::bigcomplex::Complex| x.0.is_zero() && x.1.is_zero();
+    let magnitude = |x: &crate::base::bigcomplex::Complex| {
+        crate::transforms::evalf::abs_to_f64(x).unwrap_or(0.0)
+    };
+    match cut {
+        BranchCut::None => false,
+        BranchCut::ImaginaryAxis => is_zero(&re) && magnitude(&im) >= 1.0,
+        BranchCut::NegativeReals => is_zero(&im) && re.0.is_negative(),
+        BranchCut::BelowOne => is_zero(&im) && (re.0.is_negative() || magnitude(&re) < 1.0),
+        BranchCut::BeyondOne => is_zero(&im) && magnitude(&re) > 1.0,
+    }
+}
+
+/// Where a function composed in [`unary_with_asymptotes`] has its branch
+/// cut (see [`limit_on_branch_cut`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BranchCut {
+    /// Continuous everywhere it is finite.
+    None,
+    /// `iy` with `|y| ≥ 1` (`asinh`, `atan`).
+    ImaginaryAxis,
+    /// Negative reals (`ln`, fractional powers).
+    NegativeReals,
+    /// Reals below 1 (`acosh`).
+    BelowOne,
+    /// Reals beyond ±1 (`asin`, `acos`).
+    BeyondOne,
+}
+
+/// Is `g` real for real values of its symbols (undeclared ones count as
+/// real)?
+pub(crate) fn inner_known_real(arena: &Arena, g: ExprId) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Assumptions, Props};
+    let mut cache = AssumptionCache::new();
+    for s in crate::base::walk::free_symbols(arena, g) {
+        if let ExprNode::Symbol(sid) = *arena.node(s)
+            && arena.symbol_assumptions(sid) == Assumptions::default()
+        {
+            let mut real = Assumptions::default();
+            real.known_true |= Props::REAL;
+            cache.set_symbol_assumptions(s, real);
+        }
+    }
+    cache.query(arena, g, Props::REAL) == Some(true)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1213,8 +1444,18 @@ fn one_sided_gruntz(
     let e = crate::poly::polybridge::together(arena, e);
     let e = crate::poly::polybridge::cancel(arena, e, w);
     let e = crate::transforms::eval::eval(arena, e);
-    let e = crate::transforms::expand::expand(arena, e);
-    let e = crate::transforms::eval::eval(arena, e);
+    // Expanding is a convenience, and on a large expression (a high
+    // derivative from the series fallback: `acosh((x − 1/2)·sign x)`)
+    // it multiplied out powers of sums for minutes.
+    let e = if crate::transforms::pattern::tree_size_capped(arena, e, MAX_EXPAND_SIZE + 1)
+        <= MAX_EXPAND_SIZE
+        && expansion_cost_estimate(arena, e) <= MAX_EXPANSION_COST
+    {
+        let e = crate::transforms::expand::expand(arena, e);
+        crate::transforms::eval::eval(arena, e)
+    } else {
+        e
+    };
 
     let side = if right { "+" } else { "-" };
     tracing::debug!(side, expr = %arena.display(e).to_string(), "limit: one-sided Gruntz");

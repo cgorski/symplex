@@ -67,6 +67,29 @@ const LN2: f64 = std::f64::consts::LN_2;
 /// whose radius is an eighth of `d`.
 const BALL: f64 = 0.192_645_077_942_396_2;
 
+/// `log₂(1/(1 − 2^x))`: how much `1/d` grows over a ball of radius `2^x·d`
+/// (`x = e − log₂ d`), at most [`BALL`] for the widest ball admitted
+/// (`x ≤ −3`), 0 for an exact argument.  The worst case `BALL` itself is
+/// only for single factors: raised to a power `p` it inflates the bound by
+/// `(8/7)^p` whatever the radius (before 0.30 `x^(s−1)` in the sensitivity
+/// of `Γ(s, x)` to `x` was taken at `9x/8`: `2^(1.16·10⁶)` for `s ≈ 6.8·10⁶`).
+fn shrink(x: f64) -> f64 {
+    if x == f64::NEG_INFINITY {
+        0.0
+    } else {
+        -(-x.exp2()).ln_1p() * LOG2E
+    }
+}
+
+/// `log₂(1 + 2^x)`: how much `d` grows over a ball of radius `2^x·d`.
+fn swell(x: f64) -> f64 {
+    if x == f64::NEG_INFINITY {
+        0.0
+    } else {
+        x.exp2().ln_1p() * LOG2E
+    }
+}
+
 /// `log₂(2/√π)`.
 const LOG2_TWO_OVER_SQRT_PI: f64 = 0.176_656_383_560_998_7;
 
@@ -262,7 +285,7 @@ fn psi_abs(x: &BigFloat, e: f64) -> Option<f64> {
         return None;
     }
     Some(lsum(
-        -ld + BALL,
+        -ld + shrink(e - ld),
         (ln1p_abs(x) + 1.0 + EULER_GAMMA_UP).log2(),
     ))
 }
@@ -276,7 +299,7 @@ fn psi_diff(u: &BigFloat, v: &BigFloat, h: &BigFloat, e: f64) -> Option<f64> {
     let crude = lsum(psi_abs(u, e)?, psi_abs(v, e)?);
     if pos(u) && pos(v) {
         let lm = lg(u).min(lg(v));
-        let mvt = lg(h) + lsum(-lm, -2.0 * lm) + 2.0 * BALL;
+        let mvt = lg(h) + lsum(-lm, -2.0 * lm) + 2.0 * shrink(e - lm);
         return Some(crude.min(mvt));
     }
     Some(crude)
@@ -299,7 +322,12 @@ fn polygamma_deriv(n: f64, x: &BigFloat, e: f64) -> Sens {
     } else {
         lsum(-p * ld, p + 2.0)
     };
-    Sens::Deriv(log2_factorial(n + 1.0) + sum + p * BALL)
+    // Over the ball `|x + k|^(−p)` grows by at most `(1 − r/d)^(−p)` (`r`
+    // the radius, `d` the distance), `(8/7)^p` only for the widest ball
+    // admitted: 329 bits for `polygamma(1708, √22)`, whose argument is
+    // known to `2^−265`, and three evaluations instead of one.
+    let growth = -p * (1.0 - (e - ld).exp2()).log2();
+    Sens::Deriv(log2_factorial(n + 1.0) + sum + growth.min(p * BALL))
 }
 
 /// A discrete parameter (an order or degree the routine takes as an
@@ -329,11 +357,8 @@ struct Args<'a> {
 }
 
 fn radius(e: ErrExp) -> f64 {
-    if accuracy::is_exact(e) {
-        f64::NEG_INFINITY
-    } else {
-        e as f64
-    }
+    // An exact bound is already `−∞`.
+    e
 }
 
 /// The sensitivity of node `node` to its argument number `i`.
@@ -394,8 +419,11 @@ fn analytic(arena: &Arena, node: &ExprNode, i: usize, a: &Args<'_>, cc: &mut Con
         }
         ExprNode::Si(_) => Sens::Deriv((-lg(x)).min(0.0)),
         // Ci′ = cos x/x, Ei′ = eˣ/x: logarithmic singularities at 0.
-        ExprNode::Ci(_) => deriv_if(inside(lg(x), e), -lg(x) + BALL),
-        ExprNode::Ei(_) => deriv_if(inside(lg(x), e), (f(x) + e.exp2()) * LOG2E - lg(x) + BALL),
+        ExprNode::Ci(_) => deriv_if(inside(lg(x), e), -lg(x) + shrink(e - lg(x))),
+        ExprNode::Ei(_) => deriv_if(
+            inside(lg(x), e),
+            (f(x) + e.exp2()) * LOG2E - lg(x) + shrink(e - lg(x)),
+        ),
         // li′ = 1/ln x: singular at 1, and the ball must not reach 0.
         ExprNode::Li(_) => {
             let u = diff(x, &int(1));
@@ -415,8 +443,23 @@ fn analytic(arena: &Arena, node: &ExprNode, i: usize, a: &Args<'_>, cc: &mut Con
             if neg(x) {
                 return Sens::Numeric;
             }
+            // For `σ ≥ 3` on the ball, `|ζ′(σ)| ≤ ln 2·2^−σ + ∫₂^∞ ln t·t^−σ dt
+            // ≤ 1.9·2^−σ < 2^(1−σ)`.  Before 0.30 the bound was at least 1:
+            // `zeta(720·polygamma(1669, E))` (an argument of `10⁴⁰⁰⁰` known to
+            // its relative error, and a value of 1) had a ball containing 0
+            // and came out `0`.
+            // (The low end of the ball: at least `7x/8` when its radius is
+            // at most `x/8`, which also holds beyond the `f64` range.)
+            let low = if pos(x) && inside(lg(x), e) {
+                (f(x) - e.exp2()).max(0.875 * lg(x).exp2())
+            } else {
+                f(x) - e.exp2()
+            };
+            if low >= 3.0 {
+                return Sens::Deriv(1.0 - low);
+            }
             let lu = lg(&diff(x, &int(1)));
-            deriv_if(inside(lu, e), lsum(-2.0 * lu, 0.0) + 2.0 * BALL)
+            deriv_if(inside(lu, e), lsum(-2.0 * (lu - shrink(e - lu)), 0.0))
         }
         ExprNode::DiracDelta(_) => Sens::Zero,
         ExprNode::Apply(sid, _) => match arena.lib_fn(*sid) {
@@ -462,9 +505,22 @@ fn lib_sens(fun: LibFn, i: usize, a: &Args<'_>, cc: &mut Consts) -> Sens {
         }
         LibFn::Chi => deriv_if(
             inside(lg(x), e),
-            (f(x).abs() + e.exp2()) * LOG2E - lg(x) + BALL,
+            (f(x).abs() + e.exp2()) * LOG2E - lg(x) + shrink(e - lg(x)),
         ),
-        LibFn::FresnelS | LibFn::FresnelC => Sens::Deriv(0.0),
+        // |S′|, |C′| ≤ 1; and for |y| ≥ 1, |S(y) − ½|, |C(y) − ½| ≤ f + g ≤
+        // 1/(π|y|) + 1/(π²|y|³) < 0.43/|y| (DLMF 7.12.2, 7.12.3: `f`, `g`
+        // positive and below their first terms), so over a ball of
+        // radius at most |x|/8 the value moves by less than `2/|x|`.  Before
+        // 0.30 only the derivative bound: `fresnels(erfi(335))` had a ball
+        // of `2^(161900 − prec)` around its value ½.
+        LibFn::FresnelS | LibFn::FresnelC => {
+            let lx = lg(x);
+            if lx > 1.0 && inside(lx, e) && 1.0 - lx < e {
+                Sens::Change(1.0 - lx)
+            } else {
+                Sens::Deriv(0.0)
+            }
+        }
         LibFn::UpperGamma | LibFn::LowerGamma => incomplete_gamma(fun, i, a),
         LibFn::ExpInt => {
             // E_ν(x) = ∫₁^∞ e^{−xt} t^{−ν} dt: E_ν′ = −E_{ν−1} = −E_ν·E[T] and
@@ -611,7 +667,7 @@ fn polylog_sens(i: usize, a: &Args<'_>) -> Sens {
             return Sens::Numeric;
         }
         let m = (2.0 - sf).ceil().max(0.0);
-        return Sens::Deriv(lg(z) + log2_factorial(m) - (m + 1.0) * (lg(&w) - BALL));
+        return Sens::Deriv(lg(z) + log2_factorial(m) - (m + 1.0) * (lg(&w) - shrink(e - lg(&w))));
     }
     let u = one_minus(z);
     let exact_int = s.is_int() && a.e[0] == f64::NEG_INFINITY;
@@ -623,7 +679,7 @@ fn polylog_sens(i: usize, a: &Args<'_>) -> Sens {
             return Sens::Deriv(1.0);
         }
         // |ln(1 − z)/z|, and ln u moves by at most 8/7·r/u.
-        let ln_u = (lg(&u) * LN2).abs() + (e - lg(&u)).exp2() * 8.0 / 7.0;
+        let ln_u = (lg(&u) * LN2).abs() + shrink(e - lg(&u)) * LN2;
         return Sens::Deriv(ln_u.max(f64::MIN_POSITIVE).log2() - lg(z) + 0.2);
     }
     if exact_int && sf >= 3.0 && lg(z) <= 0.0 {
@@ -634,7 +690,7 @@ fn polylog_sens(i: usize, a: &Args<'_>) -> Sens {
         return Sens::Numeric;
     }
     let m = (1.0 - sf).ceil().max(0.0);
-    Sens::Deriv(log2_factorial(m) - (m + 1.0) * (lg(&w) - BALL))
+    Sens::Deriv(log2_factorial(m) - (m + 1.0) * (lg(&w) - shrink(e - lg(&w))))
 }
 
 /// `η(s) = (1 − 2^{1−s})ζ(s)` for `s ≥ 0`: `|η′| ≤ 2^{1−s} ln 2·|ζ| + |1 −
@@ -683,7 +739,10 @@ fn elliptic_f_sens(i: usize, a: &Args<'_>, cc: &mut Consts) -> Sens {
     if i == 0 {
         let d = at_phi.filter(pos).unwrap_or(d_min);
         // Over the ball 1 − m sin²φ moves by at most |m|·r.
-        return deriv_if(lg(&d) > lg(m) + e + 3.0, -0.5 * lg(&d) + 0.5 * BALL);
+        return deriv_if(
+            lg(&d) > lg(m) + e + 3.0,
+            -0.5 * (lg(&d) - shrink(lg(m) + e - lg(&d))),
+        );
     }
     let lphi = lg(phi);
     deriv_if(lg(&d_min) > e + 3.0, lphi - 1.0 - 1.5 * (lg(&d_min) - BALL))
@@ -707,7 +766,7 @@ fn elliptic_pi_sens(i: usize, a: &Args<'_>) -> Sens {
         let two_minus_n = (1.0 + f(&un)).log2();
         return deriv_if(
             inside(lun, a.e[0]),
-            quarter_pi + two_minus_n - 1.5 * (lun - BALL) - 0.5 * lc,
+            quarter_pi + two_minus_n - 1.5 * (lun - shrink(a.e[0] - lun)) - 0.5 * lc,
         );
     }
     deriv_if(
@@ -738,8 +797,12 @@ fn incomplete_gamma(fun: LibFn, i: usize, a: &Args<'_>) -> Sens {
         }
         let r = a.e[1].exp2();
         let xf = f(x);
-        // x^{s−1} over the ball: at x·7/8 when s < 1, x·9/8 otherwise.
-        let lxb = if sf < 1.0 { lx - BALL } else { lx + 0.17 };
+        // x^{s−1} over the ball: at x − r when s < 1, x + r otherwise.
+        let lxb = if sf < 1.0 {
+            lx - shrink(a.e[1] - lx)
+        } else {
+            lx + swell(a.e[1] - lx)
+        };
         return Sens::Deriv((sf - 1.0) * lxb - (xf - r) * LOG2E);
     }
     if a.v.is_zero() {
@@ -787,14 +850,14 @@ fn bessel_x(fun: LibFn, a: &Args<'_>, cc: &mut Consts) -> Sens {
         let ratio = if an == 0.0 {
             f64::NEG_INFINITY
         } else {
-            an.log2() - lx + BALL
+            an.log2() - lx + shrink(a.e[1] - lx)
         };
         return Sens::Deriv(match fun {
-            LibFn::BesselK => lsum(0.0, (an + 1.0).log2() - lx + BALL) + lv + 0.2,
+            LibFn::BesselK => lsum(0.0, (an + 1.0).log2() - lx + shrink(a.e[1] - lx)) + lv + 0.2,
             LibFn::BesselI => lsum(0.0, ratio) + lv + 0.2,
             _ => {
                 let (lg_g, err) = ln_gamma_f64(&sum(&int(2), &nu.abs()));
-                let small = (an + 1.0) * (lx + 0.2 - 1.0) - (lg_g - err) * LOG2E;
+                let small = (an + 1.0) * (lx + swell(a.e[1] - lx) - 1.0) - (lg_g - err) * LOG2E;
                 lsum(small.min(0.0), ratio + lv) + 0.2
             }
         });
@@ -863,9 +926,12 @@ fn betainc_sens(regularized: bool, i: usize, a: &Args<'_>) -> Sens {
             };
             return Sens::Change(first * ls - first.log2() + rest - norm + 1.0);
         }
-        let r = e.exp2();
+        // ln of the largest ratio of the integrand over the ball:
+        // `|p − 1|·|ln(1 − r/t)| + |q − 1|·|ln(1 − r/(1 − t))|` exactly
+        // (before 0.30 `r·(8/7)·(|p − 1|/t + …)`, the widest ball's factor
+        // multiplied into an exponent).
         let variation =
-            r * 8.0 / 7.0 * ((pf - 1.0).abs() * (-lt).exp2() + (qf - 1.0).abs() * (-lu).exp2());
+            ((pf - 1.0).abs() * shrink(e - lt) + (qf - 1.0).abs() * shrink(e - lu)) * LN2;
         return Sens::Deriv((pf - 1.0) * lt + (qf - 1.0) * lu - norm + variation * LOG2E);
     }
     let (lo, hi) = if x1.cmp(x2).is_some_and(|c| c > 0) {
@@ -962,10 +1028,14 @@ fn numeric_change(
     cc: &mut Consts,
 ) -> Option<ErrExp> {
     let v = cache.get(&child)?;
-    let floor = accuracy::mag(v).map_or(e, |m| m - prec as i64 + 2);
-    let pe = e.max(floor);
+    let floor = accuracy::mag(v).map_or(e, |m| (m - prec as i64 + 2) as f64);
+    // The move: `2^pe` with `pe` an integer at least the radius.
+    let pe = e.max(floor).ceil();
+    if !pe.is_finite() || pe.abs() > 2e9 {
+        return None;
+    }
     let mut delta = BigFloat::from_i32(1, LP);
-    delta.set_exponent(i32::try_from(pe.saturating_add(1)).ok()?);
+    delta.set_exponent(i32::try_from(pe as i64 + 1).ok()?);
     let mut local: FxHashMap<ExprId, Complex> = FxHashMap::default();
     for c in arena.node(id).children() {
         local.insert(c, cache.get(&c)?.clone());
@@ -978,7 +1048,12 @@ fn numeric_change(
             }
             let hp = prec + 64;
             let d = c_sub(&w, value, hp, rm);
-            return Some(accuracy::mag(&d).map_or(EXACT, |md| md - (pe - e) + 1));
+            // Scaled back from the move to the radius, doubled.
+            return Some(if accuracy::mag(&d).is_none() {
+                EXACT
+            } else {
+                accuracy::lg_abs(&d) - (pe - e) + 1.0
+            });
         }
     }
     None
@@ -1062,13 +1137,10 @@ pub(super) fn special_error(
         if !l.is_finite() || l > 1e15 {
             return UNKNOWN;
         }
-        contributions.push((l.ceil() as ErrExp).max(EXACT));
+        contributions.push(l);
     }
-    match contributions.iter().copied().max() {
-        None => EXACT,
-        Some(worst) if accuracy::is_exact(worst) => EXACT,
-        Some(worst) => worst
-            .saturating_add(accuracy::ceil_log2(contributions.len()) + 1)
-            .min(UNKNOWN),
-    }
+    // Twice the sum of the contributions (the factor 2 of the module
+    // documentation; before 0.30 `2^(⌈log₂ k⌉ + 1)` times the largest).
+    let total = contributions.into_iter().fold(EXACT, accuracy::lsum);
+    accuracy::shift(total, 1.0)
 }

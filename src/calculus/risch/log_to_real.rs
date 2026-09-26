@@ -121,8 +121,10 @@ pub(crate) fn log_to_atan_deg1(
 ) -> Option<ExprId> {
     let two = arena.int(2);
 
-    // Check if b1 = 0 (B is constant — the common case).
-    let b1_is_zero = crate::poly::algebraic::is_zero_checked(arena, b1).unwrap_or(false);
+    // Check if b1 = 0 (B is constant — the common case).  An undecided
+    // zero test (`None`: the value is 0 to the evaluator's precision cap
+    // without a proof) declines: taking it for nonzero divides by `b₁`.
+    let b1_is_zero = crate::poly::algebraic::is_zero_checked(arena, b1)?;
 
     if b1_is_zero {
         tracing::debug!("log_to_atan_deg1: b1 ≈ 0, B is constant → single atan");
@@ -152,7 +154,7 @@ pub(crate) fn log_to_atan_deg1(
     let r = arena.sub(a0, q_b0);
     let r = crate::transforms::eval::eval(arena, r);
 
-    let r_is_zero = crate::poly::algebraic::is_zero_checked(arena, r).unwrap_or(false);
+    let r_is_zero = crate::poly::algebraic::is_zero_checked(arena, r)?;
 
     if r_is_zero {
         // Division is exact: F = 2 · atan(q)
@@ -182,7 +184,7 @@ pub(crate) fn log_to_atan_deg1(
     let det = arena.sub(a1_b0, b1_a0);
     let det = crate::transforms::eval::eval(arena, det);
 
-    if crate::poly::algebraic::is_zero_checked(arena, det).unwrap_or(false) {
+    if crate::poly::algebraic::is_zero_checked(arena, det) != Some(false) {
         tracing::debug!("log_to_atan_deg1: determinant ≈ 0 (A and B proportional) → None");
         return None;
     }
@@ -466,8 +468,8 @@ pub(crate) fn log_to_real(
         let u_val = crate::transforms::eval::eval(arena, re_raw);
         let v_val = crate::transforms::eval::eval(arena, im_raw);
 
-        // Check imaginary part: cross-checked zero test.
-        let v_is_zero = crate::poly::algebraic::is_zero_checked(arena, v_val).unwrap_or(false);
+        // Check imaginary part: cross-checked zero test (undecided: decline).
+        let v_is_zero = crate::poly::algebraic::is_zero_checked(arena, v_val)?;
 
         if v_is_zero {
             // Real (irrational) root α: contributes α·ln|h(α, x)|.  Before
@@ -636,11 +638,13 @@ pub(crate) fn log_to_real(
 
         // ln term: u_j · ln(|h|²)
         // ── Check if u_j = 0 (pure imaginary root) ────────────────
-        let u_is_zero = crate::poly::algebraic::is_zero_checked(arena, *u_j).unwrap_or(false);
+        // (An undecided zero test declines: dropping or keeping a term on a
+        // guess would give a wrong antiderivative.)
+        let u_is_zero = crate::poly::algebraic::is_zero_checked(arena, *u_j)?;
 
         // ── Check if B(x) = 0 (imaginary part vanishes) ───────────
-        let im_h1_is_zero = crate::poly::algebraic::is_zero_checked(arena, im_h1).unwrap_or(false);
-        let im_h0_is_zero = crate::poly::algebraic::is_zero_checked(arena, im_h0).unwrap_or(false);
+        let im_h1_is_zero = crate::poly::algebraic::is_zero_checked(arena, im_h1)?;
+        let im_h0_is_zero = crate::poly::algebraic::is_zero_checked(arena, im_h0)?;
         let b_is_zero = im_h1_is_zero && im_h0_is_zero;
 
         if u_is_zero && b_is_zero {

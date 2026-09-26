@@ -34,7 +34,6 @@
 //! *identity* (every value is a solution) and *no solution* outcomes.
 
 use num_bigint::BigInt;
-use num_integer::Integer;
 use num_rational::Ratio;
 use num_traits::{One, Signed, Zero};
 
@@ -131,10 +130,84 @@ fn solve_impl(
     period: Option<ExprId>,
 ) -> SolveOutcome {
     match solve_raw(arena, expr, var, period) {
-        SolveOutcome::Solutions(s) => finalize_solutions(arena, s),
+        SolveOutcome::Solutions(s) => {
+            let had_candidates = !s.is_empty();
+            let s = drop_certain_non_roots(arena, expr, var, s);
+            if had_candidates && s.is_empty() {
+                return SolveOutcome::NoSolution(
+                    "every candidate solution fails the equation (a principal branch does not reach the right-hand side)"
+                        .into(),
+                );
+            }
+            finalize_solutions(arena, s)
+        }
         other => other,
     }
 }
+
+/// Remove the candidates that certainly do not solve `expr = 0`.
+///
+/// Inversion peeling takes principal branches (`asin(f) = c → f = sin c`,
+/// `ln f = c → f = e^c`, `f^(p/q) = c → f = u^q`), and a branch reproduces
+/// `c` only when `c` lies in the range of the inverted function: `asin x = π`
+/// gave `x = 0`, `√x = −2` gave `4`, `atan x = 2` gave `tan 2`,
+/// `ln(atan x) = 1` gave `tan e`.  Rather than a range rule per function
+/// (and per composition), every candidate of a non-polynomial equation is
+/// substituted back, as SymPy's `solve` does with `checksol`: one at which
+/// the equation evaluates to a certified non-zero number, or is undefined
+/// (`|x|/x = 0` at `x = 0`), is dropped.  Candidates with free parameters,
+/// and equations `evalf` cannot decide, are kept.  Polynomial equations
+/// over ℚ are solved exactly and are not re-checked.
+fn drop_certain_non_roots(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    solutions: Vec<Solution>,
+) -> Vec<Solution> {
+    if solutions.is_empty() || polybridge::expr_to_poly(arena, expr, var).is_some() {
+        return solutions;
+    }
+    solutions
+        .into_iter()
+        .filter(|s| !certainly_not_a_root(arena, expr, var, s.value))
+        .collect()
+}
+
+/// Tolerance of [`certainly_not_a_root`]: a residual certified beyond it
+/// is not a rounding residue.
+const ROOT_CHECK_TOLERANCE: f64 = 1e-10;
+
+/// Does `expr` at `var = candidate` certainly not vanish?  `true` when the
+/// substituted equation, free of symbols, is undefined (`zoo`, `NaN`, `±∞`)
+/// or evaluates to a number of magnitude above [`ROOT_CHECK_TOLERANCE`];
+/// `false` when it cannot be decided.
+fn certainly_not_a_root(arena: &mut Arena, expr: ExprId, var: ExprId, candidate: ExprId) -> bool {
+    use crate::base::walk;
+    if !walk::free_symbols(arena, candidate).is_empty() || walk::has_unevaluated(arena, candidate) {
+        return false;
+    }
+    let at = crate::transforms::subs::subs(arena, expr, var, candidate);
+    let at = crate::transforms::eval::eval(arena, at);
+    if !walk::free_symbols(arena, at).is_empty() || walk::has_unevaluated(arena, at) {
+        return false;
+    }
+    let undefined = walk::post_order_ids(arena, at).into_iter().any(|id| {
+        matches!(
+            arena.node(id),
+            ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity | ExprNode::NaN
+        )
+    });
+    if undefined {
+        return true;
+    }
+    match crate::transforms::evalf::evalf_complex(arena, at, ROOT_CHECK_DIGITS) {
+        Ok(z) => crate::transforms::evalf::abs_to_f64(&z).is_some_and(|m| m > ROOT_CHECK_TOLERANCE),
+        Err(_) => false,
+    }
+}
+
+/// Digits at which [`certainly_not_a_root`] evaluates a residual.
+const ROOT_CHECK_DIGITS: u32 = 20;
 
 /// Strategy dispatch without the final clean-up pass (see [`solve_impl`]).
 fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId>) -> SolveOutcome {
@@ -220,6 +293,13 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
     // Step 4: change-of-variable: if expression is polynomial in f(x) for
     // some f, substitute t = f(x), solve the polynomial, back-substitute.
     if let Some(solutions) = try_change_of_variable(arena, expr, var, period)
+        && !solutions.is_empty()
+    {
+        return SolveOutcome::Solutions(solutions);
+    }
+
+    // Step 4b: radicals of the variable itself (`√x = x − 2`).
+    if let Some(solutions) = try_radical_substitution(arena, expr, var)
         && !solutions.is_empty()
     {
         return SolveOutcome::Solutions(solutions);
@@ -816,21 +896,8 @@ fn solve_by_peeling(
             if let Some(n) = arena.as_num(inner_exp) {
                 let n = n.clone();
                 if !n.is_zero() {
-                    let is_even_positive =
-                        n.is_integer() && n.is_positive() && n.to_integer().is_even();
-                    let inv_n = Ratio::one() / n;
-                    let inv_n_id = {
-                        let nid = arena.intern_num(inv_n);
-                        arena.intern(ExprNode::Num(nid))
-                    };
-                    let pos_rhs = arena.pow(rhs, inv_n_id);
-
-                    if is_even_positive {
-                        let neg_rhs = arena.neg(pos_rhs);
-                        return peel_two_branches(arena, inner_base, pos_rhs, neg_rhs, var, period);
-                    } else {
-                        return solve_by_peeling(arena, inner_base, pos_rhs, var, period);
-                    }
+                    let branches = power_preimages(arena, rhs, &n)?;
+                    return peel_branches(arena, inner_base, &branches, var, period);
                 }
             }
 
@@ -927,6 +994,24 @@ fn solve_by_peeling(
             let new_rhs = arena.atanh(rhs);
             solve_by_peeling(arena, inner, new_rhs, var, period)
         }
+        // asinh(f) = rhs → f = sinh(rhs), acosh(f) = rhs → f = cosh(rhs),
+        // atanh(f) = rhs → f = tanh(rhs): valid when rhs lies in the range
+        // of the principal branch, which the final check of every candidate
+        // decides (`acosh x = −1` has no solution: `cosh(−1)` gives
+        // `acosh(cosh 1) = 1`).  Without these the kinks of `|asinh x|`
+        // were invisible to the definite integrator.
+        ExprNode::Asinh(inner) => {
+            let new_rhs = arena.sinh(rhs);
+            solve_by_peeling(arena, inner, new_rhs, var, period)
+        }
+        ExprNode::Acosh(inner) => {
+            let new_rhs = arena.cosh(rhs);
+            solve_by_peeling(arena, inner, new_rhs, var, period)
+        }
+        ExprNode::Atanh(inner) => {
+            let new_rhs = arena.tanh(rhs);
+            solve_by_peeling(arena, inner, new_rhs, var, period)
+        }
         // ── Abs peeling ───────────────────────────────────────────
         // |f(x)| = rhs → f(x) = rhs OR f(x) = -rhs (when rhs ≥ 0)
         ExprNode::Abs(inner) => {
@@ -940,6 +1025,103 @@ fn solve_by_peeling(
             peel_two_branches(arena, inner, rhs, neg_rhs, var, period)
         }
         _ => None,
+    }
+}
+
+/// Largest `|p|` for which `f^(p/q) = c` with a numeric `c` is inverted
+/// through all `|p|` roots of `u^p = c` (beyond it, the principal
+/// candidate only).
+const MAX_POWER_PREIMAGES: i64 = 24;
+
+/// The values `f` with `f^n = c` (`n ≠ 0` rational) that peeling continues
+/// with; `Some(vec![])` when there is none (`f^(−k) = 0`).
+///
+/// * Integer `n`: every root of `f^|n| = c^(sign n)` (`binomial_roots`), as
+///   the polynomial route returns all roots of `xⁿ = c`.  Before 0.30 only
+///   `c^(1/n)` (and its negative for a positive even `n`) came back:
+///   `x^(−2) = 3` lost `−1/√3`, `(x²)^(−3) = 1/2` lost `−2^(1/6)`.
+/// * `n = p/q` in lowest terms, `q > 1`: `f^(p/q) = (f^(1/q))^p` with the
+///   principal `u = f^(1/q)` in the sector `−π/q < arg u ≤ π/q`, so the
+///   candidates are `u^q` for the roots `u` of `u^p = c`; those outside the
+///   sector are spurious (`√x = −2` has none, `x^(1/3) = −3/4` neither)
+///   and are dropped by the check of every candidate against the equation
+///   ([`certainly_not_a_root`]).  For a `c` with free symbols that check
+///   cannot run, and only the principal candidate `c^(q/p)` is kept, as
+///   before.
+fn power_preimages(arena: &mut Arena, c: ExprId, n: &Q) -> Option<Vec<ExprId>> {
+    let p = n.numer().clone();
+    let q = n.denom().clone();
+    let c_zero = arena.is_zero_structural(c);
+    if c_zero {
+        // f^n = 0: f = 0 for n > 0, nothing for n < 0.
+        return Some(if n.is_positive() {
+            vec![arena.zero]
+        } else {
+            vec![]
+        });
+    }
+    let symbolic = !crate::base::walk::free_symbols(arena, c).is_empty();
+    let p_abs: i64 = num_traits::ToPrimitive::to_i64(&p.abs()).unwrap_or(i64::MAX);
+    if q.is_one() || (!symbolic && p_abs <= MAX_POWER_PREIMAGES) {
+        // u^|p| = c^(sign p), then f = u^q.
+        let base = if p.is_negative() {
+            let m1 = arena.neg_one;
+            let inv = arena.pow(c, m1);
+            crate::transforms::eval::eval(arena, inv)
+        } else {
+            c
+        };
+        if p_abs > MAX_INT_POWER_ROOTS {
+            return None;
+        }
+        let roots = binomial_roots(arena, base, p_abs as usize);
+        let q_id = arena.big_int(q);
+        let mut out = Vec::with_capacity(roots.len());
+        for r in roots {
+            let f = arena.pow(r.value, q_id);
+            let f = crate::transforms::expand::expand(arena, f);
+            let f = crate::transforms::eval::eval(arena, f);
+            if !out.contains(&f) {
+                out.push(f);
+            }
+        }
+        return Some(out);
+    }
+    // Principal candidate only: f = c^(1/n).
+    let inv_n = Ratio::one() / n.clone();
+    let inv_n_id = arena.num_ratio(inv_n);
+    Some(vec![arena.pow(c, inv_n_id)])
+}
+
+/// Largest integer exponent `|n|` whose `n` roots are listed when peeling
+/// `f^n = c`.
+const MAX_INT_POWER_ROOTS: i64 = 64;
+
+/// Continue peeling `inner` against each of several right-hand sides and
+/// merge the (deduplicated) results (see [`peel_two_branches`]).
+fn peel_branches(
+    arena: &mut Arena,
+    inner: ExprId,
+    rhss: &[ExprId],
+    var: ExprId,
+    period: Option<ExprId>,
+) -> Option<Vec<Solution>> {
+    let mut solutions: Vec<Solution> = Vec::new();
+    let mut saw_some = rhss.is_empty();
+    for &rhs in rhss {
+        if let Some(sols) = solve_by_peeling(arena, inner, rhs, var, period) {
+            saw_some = true;
+            for sol in sols {
+                if !solutions.iter().any(|s| s.value == sol.value) {
+                    solutions.push(sol);
+                }
+            }
+        }
+    }
+    if solutions.is_empty() {
+        if saw_some { Some(vec![]) } else { None }
+    } else {
+        Some(solutions)
     }
 }
 
@@ -1910,6 +2092,78 @@ fn try_change_of_variable(
 
     None
 }
+
+/// Equations in `x` and rational powers `x^(p/q)` of `x` itself
+/// (`√x = x − 2`, `x^(2/3) + x^(1/3) = 2`): with `L` the lcm of the
+/// denominators and `t = x^(1/L)` (principal), `x^(p/q) = t^(pL/q)` and
+/// `x = t^L`, so the equation becomes one in `t` alone; each root `t₀`
+/// gives the candidate `x = t₀^L`.  The identity holds only for `t` in the
+/// principal sector (`−π/L < arg t ≤ π/L`), so a root outside it yields a
+/// spurious `x` (`t = −1` gives `x = 1`, where `√1 = 1 ≠ 1 − 2`); the
+/// check of every candidate against the equation removes those.
+///
+/// `None` when `x` occurs other than bare or as the base of a rational
+/// power, or when no power has a denominator.
+fn try_radical_substitution(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<Vec<Solution>> {
+    let post = crate::base::walk::post_order_ids(arena, expr);
+    let mut lcm = BigInt::one();
+    let mut powers: Vec<(ExprId, Q)> = Vec::new();
+    for &id in &post {
+        if !expr_contains_var(arena, id, var) {
+            continue;
+        }
+        match arena.node(id) {
+            ExprNode::Pow(b, e) if *b == var => {
+                let r = arena.as_num(*e)?.clone();
+                if !r.is_integer() {
+                    lcm = num_integer::Integer::lcm(&lcm, r.denom());
+                }
+                powers.push((id, r));
+            }
+            // `x` elsewhere must be bare: a power's exponent or a function
+            // argument that is not `x` or `x^(p/q)` is not handled here.
+            ExprNode::Pow(_, e) if expr_contains_var(arena, *e, var) => return None,
+            ExprNode::Symbol(_)
+            | ExprNode::Add(_)
+            | ExprNode::Mul(_)
+            | ExprNode::Neg(_)
+            | ExprNode::Pow(..) => {}
+            _ => return None,
+        }
+    }
+    if lcm.is_one() || lcm > BigInt::from(MAX_RADICAL_INDEX) {
+        return None;
+    }
+    let t = arena.symbol("__t_radical");
+    let l_id = arena.big_int(lcm.clone());
+    let mut substituted = expr;
+    for (pow_id, r) in &powers {
+        let k = r * Ratio::from_integer(lcm.clone());
+        let k_id = arena.num_ratio(k);
+        let tk = arena.pow(t, k_id);
+        substituted = arena.subs_structural(substituted, *pow_id, tk);
+    }
+    let t_l = arena.pow(t, l_id);
+    substituted = crate::transforms::subs::subs(arena, substituted, var, t_l);
+    let substituted = crate::transforms::eval::eval(arena, substituted);
+    if expr_contains_var(arena, substituted, var) {
+        return None;
+    }
+    let t_solutions = solve(arena, substituted, t);
+    let mut out: Vec<Solution> = Vec::new();
+    for ts in t_solutions {
+        let x0 = arena.pow(ts.value, l_id);
+        let x0 = crate::transforms::expand::expand(arena, x0);
+        let x0 = crate::transforms::eval::eval(arena, x0);
+        if !out.iter().any(|s| s.value == x0) {
+            out.push(Solution { value: x0 });
+        }
+    }
+    Some(out)
+}
+
+/// Largest root index `L` of [`try_radical_substitution`].
+const MAX_RADICAL_INDEX: i64 = 12;
 
 /// Collect candidate generator functions: exp(x), sin(x), cos(x), ln(x), x^(k), etc.
 fn collect_generators(arena: &Arena, expr: ExprId, var: ExprId, var_sym: SymbolId) -> Vec<ExprId> {

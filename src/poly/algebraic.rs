@@ -32,15 +32,16 @@
 //!   than a guess.  The expression is first converted to the
 //!   arena-independent [`AlgExpr`] tree, so the computation itself needs
 //!   no arena access (and no arena lock).
-//! - [`exact_is_zero`] / [`exact_sign`] — given the minimal polynomial,
-//!   isolate the real root nearest to the `f64` value of the expression with
-//!   a [`SturmChain`] and decide zero-ness/sign from the isolating interval.
+//! - [`exact_is_zero`] — the number is 0 exactly when its (irreducible)
+//!   minimal polynomial is `t`; [`exact_sign`] — that zero test, else the
+//!   sign of the value certified by `evalf` with its deep zero search.
 //! - [`is_zero_checked`] / [`sign_checked`] — the production entry points
-//!   (used by `log_to_real.rs` and `integrate.rs`).  They evaluate with
-//!   [`eval_const_f64`](crate::transforms::evalf::eval_const_f64) first and
-//!   only fall back to the exact machinery inside the ambiguous zone
-//!   `|v| < 1e-10`; if the two methods disagree a warning is logged and the
-//!   exact answer wins.
+//!   (used by `log_to_real.rs` and `integrate.rs`).  They decide from a
+//!   value with certified digits (`evalf`), fall back to the exact machinery
+//!   only for a value that is zero to the precision reached, and leave
+//!   undecided (`None`) what neither settles.  Before 0.30 they took an
+//!   `f64` value, and `|v| < 10⁻¹⁴` was zero when the exact test did not
+//!   apply.
 //!
 //! There is **no** `AlgNum` element type in this module: arithmetic in
 //! `ℚ(α) = ℚ[t]/(m(t))` is not implemented here.  Everything operates on
@@ -70,52 +71,10 @@ use num_traits::{One, Signed, Zero};
 
 use super::dense::Poly;
 use super::generic::GenPoly;
-use super::sturm::{SturmChain, cauchy_bound};
 use crate::base::arena::Arena;
 use crate::base::bigcomplex::{c_add, c_div, c_from_real, c_mul, c_one, c_zero};
-use crate::base::interval::Interval;
 use crate::base::node::{ExprId, ExprNode};
-use crate::base::numeric::{self, Q};
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Sign determination helpers
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Isolate the real root of `poly` nearest to `approx` into a rational
-/// half-open interval `(lo, hi]` containing exactly one root (see
-/// [`SturmChain::isolate_roots_in`]).
-///
-/// Returns `None` if `poly` has no real roots.
-fn isolate_root_near(poly: &Poly, approx: f64) -> Option<Interval<Q>> {
-    let chain = SturmChain::new(poly);
-    if chain.has_no_real_roots() {
-        return None;
-    }
-
-    // Start with a wide interval and narrow toward the approximate root.
-    let cauchy = cauchy_bound(poly);
-    let neg_bound = -cauchy.clone();
-
-    let intervals = chain.isolate_roots_in(&neg_bound, &cauchy, 60);
-    if intervals.is_empty() {
-        return None;
-    }
-
-    // Find the interval closest to approx.
-    let approx_rat = f64_to_rational_approx(approx);
-    let mut best = &intervals[0];
-    let mut best_dist = rational_dist_to_interval(&approx_rat, &best.lower, &best.upper);
-
-    for interval in &intervals[1..] {
-        let dist = rational_dist_to_interval(&approx_rat, &interval.lower, &interval.upper);
-        if dist < best_dist {
-            best = interval;
-            best_dist = dist;
-        }
-    }
-
-    Some(best.clone())
-}
+use crate::base::numeric;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Arena-free algebraic expressions
@@ -658,61 +617,36 @@ pub fn exact_is_zero(
     // Compute minimal polynomial.
     let mp = minimal_polynomial(arena, expr)?;
 
-    // If m(0) ≠ 0, the expression is definitely nonzero.
+    // `m` is irreducible over ℚ (`minimal_polynomial` certifies it), so
+    // `m(0) = 0` means `m = c·t`: the number is 0.  Otherwise it is not.
+    // (Before 0.30 a zero `m(0)` was followed by an `f64` root isolation
+    // and, when that was inconclusive, by "trust the numerical
+    // approximation" — dead code for an irreducible `m`, and a guess.)
     let m_at_zero = mp.eval(&rat(0, 1));
     if !m_at_zero.is_zero() {
         tracing::trace!("exact_is_zero: m(0) ≠ 0 → definitely nonzero");
         return Some(false);
     }
-
-    // m(0) = 0, so 0 is a root of m.  But is the EXPRESSION equal to 0,
-    // or is it a different root of m?
-    // Use numerical approximation + Sturm root isolation to determine
-    // which root of m the expression corresponds to.
-    let approx = crate::transforms::evalf::eval_const_f64(arena, expr)?;
-
-    // Fast path: if numerically far from zero, it's a different root of m.
-    if approx.abs() > 1e-10 {
-        tracing::trace!("exact_is_zero: m(0)=0 but |expr|={approx} > 1e-10 → nonzero root");
-        return Some(false);
+    if mp.degree() == Some(1) {
+        tracing::trace!("exact_is_zero: m = c·t → zero");
+        return Some(true);
     }
-
-    // Numerically near zero.  Use Sturm root isolation to rigorously verify.
-    // Isolate the root of m nearest to the numerical approximation.
-    if let Some(interval) = isolate_root_near(&mp, approx) {
-        // If the interval is entirely positive or entirely negative,
-        // the expression corresponds to a nonzero root.  (The cell is
-        // `(lo, hi]`, so `lo == 0` would exclude 0 too; testing `lo > 0`
-        // is merely conservative and falls through to the count below.)
-        if interval.lower.is_positive() || interval.upper.is_negative() {
-            tracing::trace!("exact_is_zero: isolated root interval excludes 0 → nonzero");
-            return Some(false);
-        }
-        // Interval straddles zero.  Check that 0 is the only root in it.
-        let chain = SturmChain::new(&mp);
-        let zero_rat = rat(0, 1);
-        let roots_in_neg = chain.count_roots_in(&interval.lower, &zero_rat);
-        let roots_in_pos = chain.count_roots_in(&zero_rat, &interval.upper);
-        if roots_in_neg == 0 && roots_in_pos == 0 {
-            // 0 is the only root in this interval — expression is zero.
-            tracing::trace!("exact_is_zero: isolated interval contains only 0 → zero");
-            return Some(true);
-        }
-        // Other roots share the interval with 0 — cannot fully resolve
-        // via isolation alone.  Fall through to numerical heuristic.
-        tracing::trace!("exact_is_zero: interval has roots besides 0, relying on numerical approx");
-    }
-
-    // Fallback: trust the numerical approximation (correct for all practical
-    // cases from integration, where algebraic numbers have well-separated roots).
-    tracing::trace!("exact_is_zero: m(0)=0 and |expr| < 1e-10 → zero (numerical fallback)");
-    Some(true)
+    tracing::warn!("exact_is_zero: m(0) = 0 for a minimal polynomial of degree > 1");
+    None
 }
 
-/// Exact sign test for a constant real algebraic arena expression.
+/// Sign of a constant real arena expression that is zero to the precision
+/// of a plain evaluation: `Some(0)` when it is exactly zero (its minimal
+/// polynomial is `t`, see [`exact_is_zero`]), otherwise the sign of its
+/// value certified with the deep zero search of
+/// [`evalf`](crate::transforms::evalf) (a tiny number hidden by
+/// cancellation), `None` when neither decides (a value that is still zero to
+/// the precision reached, or not real).
 ///
-/// Returns `Some(1)` for positive, `Some(-1)` for negative, `Some(0)` for
-/// zero, or `None` if the sign cannot be determined.
+/// Before 0.30 the root of the minimal polynomial nearest to the `f64`
+/// value was isolated and, when its interval straddled 0, the sign of the
+/// `f64` value was taken — `−1` for a positive number that evaluated to
+/// `0.0`.
 pub fn exact_sign(
     arena: &mut crate::base::arena::Arena,
     expr: crate::base::node::ExprId,
@@ -730,51 +664,13 @@ pub fn exact_sign(
             0
         });
     }
-
-    // Compute minimal polynomial.
-    let mp = minimal_polynomial(arena, expr)?;
-
-    // Get numerical approximation.
-    let approx = crate::transforms::evalf::eval_const_f64(arena, expr)?;
-
-    // Isolate the root nearest to the approximation.
-    let interval = isolate_root_near(&mp, approx)?;
-
-    // The expression is the root of mp in this interval.
-    // The sign of the root can be determined from the interval bounds.
-    if interval.lower.is_positive() {
-        Some(1)
-    } else if interval.upper.is_negative() {
-        Some(-1)
-    } else {
-        // Interval contains zero — the root might be zero.
-        // Check m(0).
-        let m_at_zero = mp.eval(&rat(0, 1));
-        if m_at_zero.is_zero() {
-            // 0 is a root.  Is it THE root in this interval?
-            let chain = SturmChain::new(&mp);
-            // Count roots in (lo, 0] and (0, hi]
-            let zero_rat = rat(0, 1);
-            let roots_left = chain.count_roots_in(&interval.lower, &zero_rat);
-            let roots_right = chain.count_roots_in(&zero_rat, &interval.upper);
-            if roots_left == 0 && roots_right == 0 {
-                // The only root in the interval is at 0.
-                Some(0)
-            } else {
-                // There's another root — refine further.
-                // Use numerical approximation as tiebreaker.
-                if approx > 1e-15 {
-                    Some(1)
-                } else if approx < -1e-15 {
-                    Some(-1)
-                } else {
-                    Some(0)
-                }
-            }
-        } else {
-            // 0 is not a root, so the root in this interval is nonzero.
-            if approx > 0.0 { Some(1) } else { Some(-1) }
-        }
+    if exact_is_zero(arena, expr) == Some(true) {
+        return Some(0);
+    }
+    match certified(arena, expr, crate::transforms::evalf::ZeroSearch::Deep) {
+        Certified::Zero => Some(0),
+        Certified::Nonzero { real_sign } => real_sign,
+        Certified::Unresolved => None,
     }
 }
 
@@ -782,21 +678,85 @@ pub fn exact_sign(
 // Production cross-checked zero / sign tests
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Digits of the certified evaluation behind [`is_zero_checked`] and
+/// [`sign_checked`]: a value is nonzero once one digit is certified, and
+/// the 16 of `eval_f64` cost nothing more.
+const CHECK_DIGITS: u32 = 16;
+
+/// What a certified evaluation says about a constant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Certified {
+    /// Exactly zero (its bound is exact).
+    Zero,
+    /// Nonzero, with the sign of its real part when it is real to the
+    /// digits evaluated (`None` for a value that is not real).
+    Nonzero { real_sign: Option<i8> },
+    /// Zero to the precision reached, or not evaluable.
+    Unresolved,
+}
+
+/// Evaluate the constant `expr` (after exact simplification) to
+/// [`CHECK_DIGITS`] certified digits with the zero search `search`.
+fn certified(
+    arena: &mut crate::base::arena::Arena,
+    expr: crate::base::node::ExprId,
+    search: crate::transforms::evalf::ZeroSearch,
+) -> Certified {
+    use crate::transforms::evalf::{self, Settled};
+    let expr = crate::transforms::eval::eval(arena, expr);
+    if let Some(r) = arena.as_num(expr) {
+        return if r.is_zero() {
+            Certified::Zero
+        } else {
+            Certified::Nonzero {
+                real_sign: Some(if r.is_positive() { 1 } else { -1 }),
+            }
+        };
+    }
+    match evalf::evalf_settled(arena, expr, CHECK_DIGITS, search) {
+        Ok((z, Settled::Certified)) => {
+            if z.0.is_zero() && z.1.is_zero() {
+                return Certified::Zero;
+            }
+            let real_sign = evalf::is_real_to_digits(&z, CHECK_DIGITS).then(|| {
+                if z.0.is_zero() {
+                    0
+                } else if z.0.is_negative() {
+                    -1
+                } else {
+                    1
+                }
+            });
+            Certified::Nonzero { real_sign }
+        }
+        Ok((_, Settled::ZeroToPrecision)) | Err(_) => Certified::Unresolved,
+    }
+}
+
 /// Cross-checked zero test for production use.
 ///
-/// **Primary**: `eval_const_f64` (fast, battle-tested).
-/// **Fallback**: `exact_is_zero` (Sturm-based) when the f64 value is
-/// ambiguous (within `1e-10` of zero).
+/// The value is evaluated with certified digits (`evalf`, which re-evaluates
+/// at a higher precision until its error bound covers them): a value with
+/// a certified digit is nonzero, an exact zero is zero.  A value that is
+/// only zero to the precision reached goes to the exact test for algebraic
+/// numbers ([`exact_is_zero`]), then to the deep zero search of `evalf`
+/// (thousands of bits more), which resolves a tiny number hidden by
+/// cancellation.  What is still zero to the precision reached is
+/// **undecided**: `None`, never `Some(true)` — callers must treat `None`
+/// conservatively.
 ///
-/// If both methods produce a result and they **disagree**, a warning is
-/// logged and the `eval_const_f64` result is trusted.
+/// Before 0.30 the value was an `f64` and, when the exact test did not
+/// apply, `|v| < 10⁻¹⁴` counted as zero: `exp(−40) ≈ 4.2·10⁻¹⁸` was
+/// "zero", and a value that `evalf` returned as `0` to its precision cap
+/// was zero too.
 ///
 /// Returns `Some(true)` if zero, `Some(false)` if nonzero, `None` if
-/// the test is inconclusive.
+/// undecided.
 pub fn is_zero_checked(
     arena: &mut crate::base::arena::Arena,
     expr: crate::base::node::ExprId,
 ) -> Option<bool> {
+    use crate::transforms::evalf::ZeroSearch;
     // Quick structural check.
     if expr == arena.zero {
         return Some(true);
@@ -804,55 +764,37 @@ pub fn is_zero_checked(
     if let Some(r) = arena.as_num(expr) {
         return Some(r.is_zero());
     }
-
-    // Primary: numerical evaluation.
-    let f64_val = crate::transforms::evalf::eval_const_f64(arena, expr);
-
-    match f64_val {
-        Some(v) if v.abs() >= 1e-10 => {
-            // Clearly nonzero — no need for exact methods.
-            Some(false)
-        }
-        Some(v) => {
-            // Ambiguous zone: |v| < 1e-10.  Try exact method.
-            let f64_says_zero = v.abs() < 1e-14;
-            match exact_is_zero(arena, expr) {
-                Some(exact_answer) => {
-                    if exact_answer != f64_says_zero {
-                        tracing::warn!(
-                            f64_val = v,
-                            exact_answer,
-                            "is_zero_checked: eval_const_f64 and exact_is_zero DISAGREE — trusting exact"
-                        );
-                    }
-                    // In the ambiguous zone, trust the exact answer when available.
-                    Some(exact_answer)
-                }
-                None => {
-                    // Exact method inconclusive — fall back to f64 tolerance.
-                    tracing::trace!(
-                        f64_val = v,
-                        "is_zero_checked: exact_is_zero returned None, using f64 tolerance"
-                    );
-                    Some(f64_says_zero)
-                }
-            }
-        }
-        None => {
-            // eval_const_f64 failed entirely — try exact method alone.
-            exact_is_zero(arena, expr)
+    match certified(arena, expr, ZeroSearch::Cap) {
+        Certified::Zero => return Some(true),
+        Certified::Nonzero { .. } => return Some(false),
+        Certified::Unresolved => {}
+    }
+    if let Some(exact) = exact_is_zero(arena, expr) {
+        return Some(exact);
+    }
+    match certified(arena, expr, ZeroSearch::Deep) {
+        Certified::Zero => Some(true),
+        Certified::Nonzero { .. } => Some(false),
+        Certified::Unresolved => {
+            tracing::debug!("is_zero_checked: zero to the precision reached, undecided");
+            None
         }
     }
 }
 
-/// Cross-checked sign test for production use.
+/// Cross-checked sign test for production use (see [`is_zero_checked`]).
 ///
-/// **Primary**: `eval_const_f64` (fast, battle-tested).
-/// **Fallback**: `exact_sign` (Sturm-based) when the f64 value is
-/// ambiguous (within `1e-10` of zero).
+/// The sign of a real value with a certified digit is certain; a value that
+/// is only zero to the precision reached is decided by [`exact_sign`]
+/// (exactly zero, or the sign found by the deep zero search) or left
+/// undecided.  A value that is not real has no sign (`None`).
+///
+/// Before 0.30 an `f64` value in `(−10⁻¹⁰, 10⁻¹⁰)` that the exact test
+/// could not settle had sign 0 for `|v| ≤ 10⁻¹⁴`: the discriminant
+/// `4·exp(−40)` of `x² + 2x + 1 + exp(−40)` was 0.
 ///
 /// Returns `Some(1)` for positive, `Some(-1)` for negative, `Some(0)`
-/// for zero, or `None` if inconclusive.
+/// for zero, or `None` if undecided.
 pub fn sign_checked(
     arena: &mut crate::base::arena::Arena,
     expr: crate::base::node::ExprId,
@@ -870,47 +812,10 @@ pub fn sign_checked(
             0
         });
     }
-
-    // Primary: numerical evaluation.
-    let f64_val = crate::transforms::evalf::eval_const_f64(arena, expr);
-
-    match f64_val {
-        Some(v) if v > 1e-10 => Some(1),
-        Some(v) if v < -1e-10 => Some(-1),
-        Some(v) => {
-            // Ambiguous zone: |v| < 1e-10.  Try exact method.
-            let f64_sign: i8 = if v > 1e-14 {
-                1
-            } else if v < -1e-14 {
-                -1
-            } else {
-                0
-            };
-            match exact_sign(arena, expr) {
-                Some(exact_answer) => {
-                    if exact_answer != f64_sign {
-                        tracing::warn!(
-                            f64_val = v,
-                            exact_sign = exact_answer,
-                            f64_sign,
-                            "sign_checked: eval_const_f64 and exact_sign DISAGREE — trusting exact"
-                        );
-                    }
-                    Some(exact_answer)
-                }
-                None => {
-                    tracing::trace!(
-                        f64_val = v,
-                        "sign_checked: exact_sign returned None, using f64"
-                    );
-                    Some(f64_sign)
-                }
-            }
-        }
-        None => {
-            // eval_const_f64 failed — try exact method alone.
-            exact_sign(arena, expr)
-        }
+    match certified(arena, expr, crate::transforms::evalf::ZeroSearch::Cap) {
+        Certified::Zero => Some(0),
+        Certified::Nonzero { real_sign } => real_sign,
+        Certified::Unresolved => exact_sign(arena, expr),
     }
 }
 
@@ -1036,26 +941,11 @@ fn binomial_rational(n: usize, k: usize) -> Ratio<BigInt> {
     result
 }
 
-/// Convert an `f64` to the exact rational it represents (for root
-/// isolation).  Non-finite inputs map to `0`, which only affects which
-/// isolating interval is picked as "nearest" — never correctness.
+/// Convert an `f64` to the exact rational it represents.  Non-finite
+/// inputs map to `0`.
+#[cfg(test)]
 fn f64_to_rational_approx(x: f64) -> Ratio<BigInt> {
     crate::base::numeric::f64_to_ratio_exact(x).unwrap_or_else(Ratio::zero)
-}
-
-/// Distance from a point to an interval (0 if inside).
-fn rational_dist_to_interval(
-    point: &Ratio<BigInt>,
-    lo: &Ratio<BigInt>,
-    hi: &Ratio<BigInt>,
-) -> Ratio<BigInt> {
-    if point < lo {
-        lo - point
-    } else if point > hi {
-        point - hi
-    } else {
-        Ratio::zero()
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2045,6 +1935,46 @@ mod tests {
         let cbrt2 = arena.pow(n2, third);
         let neg = arena.neg(cbrt2);
         assert_eq!(sign_checked(&mut arena, neg), Some(-1));
+    }
+
+    /// Before 0.30: `exp(−40) ≈ 4.2·10⁻¹⁸` was zero (`|v| < 10⁻¹⁴` with no
+    /// exact method for a transcendental number) and its sign 0.  Decided
+    /// from certified digits now; a value that stays zero to the precision
+    /// reached is undecided, never zero.
+    #[test]
+    fn zero_and_sign_of_a_tiny_transcendental_number() {
+        let mut arena = crate::base::arena::Arena::new();
+        let m40 = arena.int(-40);
+        let tiny = arena.exp(m40);
+        assert_eq!(is_zero_checked(&mut arena, tiny), Some(false));
+        assert_eq!(sign_checked(&mut arena, tiny), Some(1));
+        let neg = arena.neg(tiny);
+        assert_eq!(sign_checked(&mut arena, neg), Some(-1));
+        // sin(1)² + cos(1)² − 1: zero, but not provably so here.
+        let one = arena.int(1);
+        let two = arena.int(2);
+        let s = arena.sin(one);
+        let c = arena.cos(one);
+        let s2 = arena.pow(s, two);
+        let c2 = arena.pow(c, two);
+        let sum = arena.add(&[s2, c2]);
+        let zero = arena.sub(sum, one);
+        assert_eq!(is_zero_checked(&mut arena, zero), None);
+        assert_eq!(sign_checked(&mut arena, zero), None);
+        // √2·√3 − √6: zero, proved by its minimal polynomial.
+        let half = arena.rational(1, 2);
+        let n2 = arena.int(2);
+        let n3 = arena.int(3);
+        let n6 = arena.int(6);
+        let r2 = arena.pow(n2, half);
+        let r3 = arena.pow(n3, half);
+        let r6 = arena.pow(n6, half);
+        let prod = arena.mul(&[r2, r3]);
+        let diff = arena.sub(prod, r6);
+        if diff != arena.zero {
+            assert_eq!(is_zero_checked(&mut arena, diff), Some(true));
+            assert_eq!(sign_checked(&mut arena, diff), Some(0));
+        }
     }
 
     // ══════════════════════════════════════════════════════════════════

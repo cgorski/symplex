@@ -67,6 +67,7 @@ use crate::base::walk;
 use tracing::debug;
 
 mod accuracy;
+mod bernoulli;
 mod conjugate;
 mod emsum;
 mod hypsum;
@@ -93,6 +94,17 @@ pub(crate) const QUADRATURE_MAX_DIGITS: u32 = 16;
 /// Returns the decimal string representation of the result, or an error
 /// if the expression contains free symbols, infinities, or NaN.
 pub(crate) fn evalf(arena: &Arena, expr: ExprId, digits: u32) -> Result<String, SymplexError> {
+    evalf_with(arena, expr, digits, ZeroSearch::Deep)
+}
+
+/// [`evalf`] with the [`ZeroSearch`] `search` for a value that is zero to
+/// the working precision.
+fn evalf_with(
+    arena: &Arena,
+    expr: ExprId,
+    digits: u32,
+    search: ZeroSearch,
+) -> Result<String, SymplexError> {
     // Convert decimal digits to binary precision with guard bits.
     // log2(10) ≈ 3.3219, so we use digits * 3.4 + 64 extra bits.
     let binary_prec = (digits as usize) * 34 / 10 + 64;
@@ -152,7 +164,7 @@ pub(crate) fn evalf(arena: &Arena, expr: ExprId, digits: u32) -> Result<String, 
         SymplexError::NotImplemented(format!("astro-float constants init failed: {e:?}"))
     })?;
 
-    let result = evaluate_adaptive(arena, expr, digits, rm, &mut cc)?;
+    let (result, _) = evaluate_adaptive(arena, expr, digits, search, rm, &mut cc)?;
     format_complex(&result, digits, prec, rm, &mut cc)
 }
 
@@ -336,9 +348,12 @@ fn eval_node_with_error(
                 // about the true argument: no value is known yet, and the
                 // evaluation is repeated at a higher precision.  Before 0.29
                 // `Ci(−(exp(10⁻³⁰) − 1 − 10⁻³⁰))` was `Unevaluable: Ci(0) is
-                // −∞`.
+                // −∞`.  Nor does a pole met by an inexact argument that
+                // rounded onto it (`ζ(1 + 10⁻⁴⁵)`: `1 + 10⁻⁴⁵` is 1 at 128
+                // bits).
                 Err(SymplexError::Unevaluable { .. })
-                    if inexact_zero_child(arena.node(id), cache, errs) =>
+                    if inexact_zero_child(arena.node(id), cache, errs)
+                        || rounded_onto_pole(arena.node(id), cache, errs) =>
                 {
                     return Ok((c_zero(prec), accuracy::Bound::UNKNOWN));
                 }
@@ -391,6 +406,31 @@ fn inverse_identity(
     (cache.contains_key(&inner) && cache.contains_key(&u)).then_some(u)
 }
 
+/// Is `node` a function with poles at integers (`Γ`, `ζ`, …) whose
+/// argument is an integer at the working precision without being exact?
+fn rounded_onto_pole(node: &ExprNode, cache: &FxHashMap<ExprId, Complex>, errs: &ErrMap) -> bool {
+    let poles = matches!(
+        node,
+        ExprNode::Gamma(_)
+            | ExprNode::LogGamma(_)
+            | ExprNode::Digamma(_)
+            | ExprNode::Polygamma(_, _)
+            | ExprNode::Zeta(_)
+            | ExprNode::Factorial(_)
+            | ExprNode::Beta(_, _)
+            | ExprNode::Binomial(_, _)
+    );
+    poles
+        && node.children().into_iter().any(|c| {
+            cache.get(&c).is_some_and(|v| v.1.is_zero() && v.0.is_int())
+                && !errs
+                    .get(&c)
+                    .copied()
+                    .unwrap_or(accuracy::Bound::UNKNOWN)
+                    .is_exact()
+        })
+}
+
 /// Does `node` have a child whose value is 0 without being exactly 0?
 fn inexact_zero_child(node: &ExprNode, cache: &FxHashMap<ExprId, Complex>, errs: &ErrMap) -> bool {
     node.children().into_iter().any(|c| {
@@ -405,48 +445,107 @@ fn inexact_zero_child(node: &ExprNode, cache: &FxHashMap<ExprId, Complex>, errs:
     })
 }
 
+/// How far [`evaluate_adaptive`] pursues a value that is zero to the working
+/// precision (its error ball contains 0 and shrinks with the precision, or
+/// the value itself falls with every increase in precision) before it is
+/// returned as 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ZeroSearch {
+    /// To the cap of every evaluation, twice the working precision plus 256
+    /// bits: the internal callers of [`evalf_complex`] and
+    /// [`eval_const_f64`], which compare the value against a tolerance (the
+    /// integrator's `F′ − f` check) and meet true zeros all the time.
+    Cap,
+    /// [`ZERO_SEARCH_BITS`] beyond the working precision: results read as
+    /// numbers ([`evalf`], `Ex::eval_f64`, `Ex::eval_complex64`), where a 0
+    /// that is really `2.5·10⁻¹⁴⁹` is a wrong answer.
+    Deep,
+}
+
+/// Bits beyond the working precision to which [`ZeroSearch::Deep`] pursues
+/// a value that is zero to the precision reached (≈ 308 decimal digits of
+/// cancellation).  A tiny value hidden by the cancellation of larger terms
+/// has no digits until the precision exceeds the depth of the
+/// cancellation, `mag(terms) − mag(value)`, and nothing before that
+/// distinguishes it from a true zero; the search doubles the precision.
+/// A true zero — met all the time, by every `solve` candidate check — pays
+/// one evaluation at about this many bits, which bounds the budget: 3,072
+/// bits made one `solve_general` fixture of the SymPy oracle (17 true-zero
+/// checks) take 6 s in a debug build.  Deeper cancellations are avoided
+/// at their source (`eval` keeps `polygamma(n, p/q)` symbolic when its
+/// closed form would cancel more than 200 bits).  Before 0.30 the search
+/// stopped at the cap of the digits: `1/2 − erf(13√2)/2` (`2.476·10⁻¹⁴⁹`,
+/// 493 bits of cancellation) was `0.0` from `eval_f64`.
+pub(crate) const ZERO_SEARCH_BITS: usize = 1024;
+
+/// How a value returned by [`evaluate_adaptive`] was settled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Settled {
+    /// Every part the value shows carries the requested digits (an exact
+    /// zero included).
+    Certified,
+    /// Zero to the precision reached: the true value is within the error
+    /// bound of the last evaluation, and not known to be 0.
+    ZeroToPrecision,
+}
+
 /// Evaluate `expr` to `digits` correct significant digits.
 ///
 /// The value is computed at [`working_precision`] with an error bound
 /// ([`accuracy`]).  It is accepted when the bound covers the requested
-/// digits; otherwise — catastrophic cancellation, amplification by `exp`
-/// or a division by a small difference, or just a pessimistic bound — the
-/// whole expression is re-evaluated at a higher precision (Ziv's strategy),
-/// up to twice the initial precision plus 256 bits (and the configured
-/// maximum), as SymPy's `evalf` retries an `Add` that lost its accuracy.
-/// Two successive nonzero values that agree to the requested digits are
-/// accepted as well: the bound is an estimate, and some nodes (`sin` of an
-/// exact huge integer, reduced exactly) are more accurate than it says.
-/// Two zeros are no such evidence (see [`agree`]): a value that is 0 to the
-/// working precision goes straight to the cap.  Before
-/// 0.26 the first value was returned whatever its accuracy: `exp(10⁻³⁰) −
-/// 1` came out `0`, and a quotient by a difference that is zero to the
-/// working precision came out as noise.
+/// digits of every part it shows ([`settle`]); otherwise — catastrophic
+/// cancellation, amplification by `exp` or a division by a small
+/// difference, or just a pessimistic bound — the whole expression is
+/// re-evaluated at a higher precision (Ziv's strategy), up to twice the
+/// initial precision plus 256 bits (and the configured maximum), as SymPy's
+/// `evalf` retries an `Add` that lost its accuracy.  Before 0.26 the first
+/// value was returned whatever its accuracy: `exp(10⁻³⁰) − 1` came out `0`,
+/// and a quotient by a difference that is zero to the working precision
+/// came out as noise.
 ///
-/// When the budget is spent, a value that is zero to the precision reached
-/// — its error ball contains 0 and shrank with the precision, or the value
-/// itself shrank with every increase in precision — is returned as 0 (SymPy returns a float with no significant
-/// digits); any other value lacking the digits is refused with
-/// [`SymplexError::PrecisionExhausted`].  So is an infinite value: from
-/// finite inputs it can only come from a division by a difference that
-/// cancelled to 0, whose true value is unknown.
+/// Only the bound certifies digits.  Before 0.30 two successive nonzero
+/// values that agreed to the requested digits were accepted too, and
+/// agreement is no evidence when an input rounds to the same value at both
+/// precisions: `(1 + 10⁻¹⁵⁰)^(10¹⁵⁰)` (truly `e`) was `1` at 16 and 30
+/// digits (`1 + 10⁻¹⁵⁰` is 1 at 128 and at 256 bits), and
+/// `exp(11/15·10⁻⁴⁰) − (1 + 11/15·10⁻⁴⁰) + I₅₀(1)` lost its first term
+/// (`2.7·10⁻⁸¹`, below both precisions) and printed `2.934…·10⁻⁸⁰` for
+/// `3.204…·10⁻⁸⁰`.  The nodes that are more accurate than their propagated
+/// bound report their own (`sin` of an exact huge rational, reduced from
+/// its exact value: see `accuracy::node_error`).
+///
+/// A value that is zero to the precision reached — its error ball contains
+/// 0 and shrank with the precision, or the value itself shrank with every
+/// increase in precision — is pursued further, doubling the precision up
+/// to the limit of `search` (see [`ZeroSearch`], [`ZERO_SEARCH_BITS`]):
+/// a tiny value hidden by cancellation is resolved there.  So is a value
+/// whose bound shrinks with the precision without covering the digits yet
+/// (`(1 + 10⁻¹⁵⁰)^(10¹⁵⁰)` needs about 560 bits at 16 digits), unless the
+/// bound says the digits need more than the limit (refused at once).  At the limit a
+/// ball that still contains 0 is returned as 0 ([`Settled::ZeroToPrecision`];
+/// SymPy returns a float with no significant digits).  Any other value
+/// lacking the digits is refused with [`SymplexError::PrecisionExhausted`]:
+/// a value whose magnitude fell with the precision but whose ball excludes
+/// 0 (before 0.30 it was 0 too), or an infinite value — from finite inputs
+/// it can only come from a division by a difference that cancelled to 0,
+/// whose true value is unknown.
 fn evaluate_adaptive(
     arena: &Arena,
     expr: ExprId,
     digits: u32,
+    search: ZeroSearch,
     rm: RoundingMode,
     cc: &mut Consts,
-) -> Result<Complex, SymplexError> {
+) -> Result<(Complex, Settled), SymplexError> {
     let prec0 = working_precision(digits);
     let max_prec = arena.config.max_evalf_precision as usize;
     let cap = (2 * prec0).max(prec0 + 256).min(max_prec).max(prec0);
+    let deep = match search {
+        ZeroSearch::Cap => cap,
+        ZeroSearch::Deep => (prec0 + ZERO_SEARCH_BITS).min(max_prec).max(cap),
+    };
     let needed = i64::from(digits) * 3322 / 1000 + 4;
     let post_order = walk::post_order_ids(arena, expr);
-    // An `f64` quadrature returns the same value at every precision: its
-    // agreement with itself is no evidence.
-    let fixed = post_order
-        .iter()
-        .any(|&id| matches!(arena.node(id), ExprNode::DefiniteIntegral(..)));
     let mut prec = prec0;
     let mut previous: Option<(Complex, usize, accuracy::ErrExp)> = None;
     loop {
@@ -459,93 +558,159 @@ fn evaluate_adaptive(
             });
         }
         let finite = !(value.0.is_inf() || value.1.is_inf());
+        if finite && let Some(v) = settle(&value, bound, digits, needed, prec) {
+            return Ok((v, Settled::Certified));
+        }
         let acc = accuracy::accurate_bits(&value, err);
-        let exact_zero = accuracy::mag(&value).is_none() && bound.is_exact();
-        if finite && (exact_zero || acc.is_some_and(|a| a >= needed)) {
-            return Ok(value);
-        }
-        // Ziv: two evaluations at different precisions that agree — but
-        // only to relax a finite bound.  Without one (a division by a
-        // value indistinguishable from 0) agreement proves nothing: in
-        // `cos/(D·s) − cos/(D·L)` with `D = s − L` a rounding residue, the
-        // two huge terms scale together and their difference came out as
-        // the same wrong −64 at every precision (Rubi's answer to
-        // ∫ cot(x)/ln(e^sin x) dx).
-        let mut shrinking = false;
-        if let Some((prev, prev_prec, prev_err)) = &previous
-            && finite
-        {
-            if !fixed
-                && !accuracy::is_unknown(err)
-                && !accuracy::is_unknown(*prev_err)
-                && agree(&value, prev, needed, prec, rm)
-            {
-                return Ok(value);
-            }
-            let gained = i64::try_from(prec - prev_prec).unwrap_or(0);
-            shrinking = match (accuracy::mag(&value), accuracy::mag(prev)) {
-                (None, _) => true,
-                (Some(m), Some(pm)) => m <= pm - gained / 2,
-                (Some(_), None) => false,
-            };
-        }
-        if prec >= cap {
-            // Only with a bound: `sign` of a value that cancelled to 0 is 0
-            // at every precision, but its true value may be ±1.  And only a
-            // ball that shrinks with the precision: a true zero's error falls
-            // about a bit per bit gained, while near a pole it grows with the
-            // value — `tan(π(1/2 − 10⁻³⁰⁰))` (truly `3.2·10²⁹⁹`) had a ball of
-            // `2³⁹⁶` around `10⁴⁰` noise, which contains 0, and came out `0`.
-            let known = !accuracy::is_unknown(err);
-            let ball_shrinking = previous.as_ref().is_none_or(|(_, prev_prec, prev_err)| {
+        // Only with a bound: `sign` of a value that cancelled to 0 is 0 at
+        // every precision, but its true value may be ±1.  And only a ball
+        // that shrinks with the precision: a true zero's error falls about
+        // a bit per bit gained, while near a pole it grows with the value —
+        // `tan(π(1/2 − 10⁻³⁰⁰))` (truly `3.2·10²⁹⁹`) had a ball of `2³⁹⁶`
+        // around `10⁴⁰` noise, which contains 0, and came out `0`.
+        //
+        // And only a value that is itself noise: 0, or falling with the
+        // precision as the rounding residue of a cancellation does.  A
+        // value that stays put inside a ball that contains 0 has a
+        // pessimistic bound, not a zero: `zeta(720·polygamma(1669, E))` is
+        // 1 at every precision, its argument (`≈ 10⁴⁰⁰⁰`) is known to its
+        // relative error, the bound of `ζ′` was at least 1, so the ball held
+        // 0 — and the value was `0` before 0.30.
+        let known = finite && !accuracy::is_unknown(err);
+        let (ball_shrinking, value_shrinking) = match &previous {
+            None => (true, accuracy::mag(&value).is_none()),
+            Some((prev, prev_prec, prev_err)) => {
                 let gained = i64::try_from(prec - prev_prec).unwrap_or(0);
-                accuracy::is_exact(err) || err <= prev_err.saturating_sub(gained / 2)
-            });
-            let zero_ball = known && ball_shrinking && accuracy::contains_zero(&value, err);
-            if finite && known && (zero_ball || shrinking) {
-                debug!(prec, err, "evalf: zero to the working precision");
-                return Ok(c_zero(prec0));
+                // (An underflow's ball is the bottom of the exponent range.)
+                let half = (gained / 2) as f64;
+                let ball = accuracy::is_exact(err)
+                    || accuracy::is_underflow(err)
+                    || err <= *prev_err - half;
+                // Against the previous value, or its ball when it was 0.
+                let value = match (accuracy::mag(&value), accuracy::mag(prev)) {
+                    (None, _) => true,
+                    (Some(m), Some(pm)) => m <= pm - gained / 2,
+                    (Some(m), None) => m as f64 <= *prev_err - half,
+                };
+                (ball, value)
             }
-            debug!(prec, err, ?acc, "evalf: precision exhausted");
-            let achieved = acc.map_or(0, |a| (a.max(0) * 301 / 1000).min(i64::from(digits)));
+        };
+        let noise = known && value_shrinking;
+        let zero_ball = noise && ball_shrinking && accuracy::contains_zero(&value, err);
+        // Past the cap only a value that is noise, or whose bound falls with
+        // the precision (the precision it needs is then predictable), is
+        // pursued, to the end of the search — not an underflow: below the
+        // exponent range no precision resolves it.  (`(1 + 10⁻¹⁵⁰)^(10¹⁵⁰)`
+        // needs about 560 bits at 16 digits, past the cap of 384.)
+        let converging = known && ball_shrinking && previous.is_some();
+        let pursue = (noise || converging) && !accuracy::is_underflow(err);
+        let limit = if pursue || prec > cap { deep } else { cap };
+        // A bound that says the digits need more than the search allows is
+        // refused now rather than after an evaluation at its limit.
+        if let Some(a) = acc
+            && known
+            && !noise
+            && prec < limit
+            && prec as f64 + (needed as f64 - a) > deep as f64
+        {
+            debug!(
+                prec,
+                err,
+                ?acc,
+                "evalf: the bound needs more than the search allows"
+            );
             return Err(SymplexError::PrecisionExhausted {
                 requested: digits,
-                achieved: u32::try_from(achieved).unwrap_or(0),
+                achieved: achieved_digits(Some(a), digits),
             });
         }
-        let known = !accuracy::is_unknown(err);
+        if prec >= limit {
+            if zero_ball {
+                debug!(prec, err, "evalf: zero to the working precision");
+                return Ok((c_zero(prec0), Settled::ZeroToPrecision));
+            }
+            debug!(prec, err, ?acc, "evalf: precision exhausted");
+            return Err(SymplexError::PrecisionExhausted {
+                requested: digits,
+                achieved: achieved_digits(acc, digits),
+            });
+        }
         let step = match acc {
-            Some(a) if known && finite => usize::try_from((needed - a).max(0)).unwrap_or(prec) + 32,
+            Some(a) if known => (needed as f64 - a).clamp(0.0, prec as f64).ceil() as usize + 32,
             // A value that is 0 to the working precision says nothing about
-            // the precision its first bit needs: go to the cap, where it is
-            // either resolved or returned as 0.
-            None if known && finite && accuracy::mag(&value).is_none() => cap - prec,
+            // the precision its first bit needs: go to the cap, and from
+            // there double.
+            None if known && accuracy::mag(&value).is_none() && prec < cap => cap - prec,
             _ => prec,
         };
         previous = Some((value, prec, err));
-        prec = (prec + step.max(64)).min(cap);
+        prec = (prec + step.max(64)).min(limit);
+        // Within a quarter of the limit, the limit: the search for a zero
+        // would otherwise end with two evaluations of nearly the same cost
+        // (3,072 and 3,200 bits at 16 digits).
+        if prec > cap && 4 * (limit - prec) < limit {
+            prec = limit;
+        }
         debug!(prec, ?acc, "evalf: re-evaluating at a higher precision");
     }
 }
 
-/// Do `a` and `b` agree to `bits` significant bits (relative to the larger
-/// magnitude)?
+/// The decimal digits `acc` accurate bits stand for, at most `digits`.
+fn achieved_digits(acc: Option<f64>, digits: u32) -> u32 {
+    acc.map_or(0.0, |a| (a.max(0.0) * 0.301).min(f64::from(digits))) as u32
+}
+
+/// `value ± bound` as a result certified to `digits` digits (`needed`
+/// bits), or `None` when it is not yet.
 ///
-/// Two zeros do not: agreement relaxes the bound of a *nonzero* estimate,
-/// whose leading bits two precisions reproduce, but a value that rounds to
-/// exactly 0 at two precisions has no leading bits to compare — it only
-/// says the true value is below both error bounds.  (An exact zero is
-/// accepted before agreement is consulted.)  Before 0.29 two zeros agreed:
-/// `1 − e⁻¹·Σ_{k≤60} 1/k!` (`7.37·10⁻⁸⁵`) cancelled to exactly 0 at 128
-/// and 256 bits and `eval_f64` returned `0.0`; the 384-bit evaluation
-/// certifies it.
-fn agree(a: &Complex, b: &Complex, bits: i64, prec: usize, rm: RoundingMode) -> bool {
-    let scale = match (accuracy::mag(a), accuracy::mag(b)) {
-        (Some(x), Some(y)) => x.max(y),
-        _ => return false,
+/// The printer shows each part of a complex value with `digits`
+/// significant digits of its own unless it is negligible next to the
+/// other part ([`is_negligible_part`]), so a part that is shown must carry
+/// `needed` bits relative to its own magnitude, not only relative to `|z|`.
+/// A part whose error ball contains 0 is below the precision of the result
+/// (the joint bound holds) and is set to 0: its digits are noise.  Before
+/// 0.30 only the joint accuracy was required, and the smaller part printed
+/// uncertified digits: `ln(W(−1/e + 10⁻³⁵))` was `−7.373338…·10⁻¹⁸ + πi`
+/// at 16 digits (truly `−7.373306…·10⁻¹⁸`), `Ci(x) + i·(e^(10⁻¹⁶) − 1 −
+/// 10⁻¹⁶)` printed an imaginary part `5.00000000000000016666666671757·10⁻³³`
+/// at 30 digits (truly `…6666666666667·10⁻³³`).
+fn settle(
+    value: &Complex,
+    bound: accuracy::Bound,
+    digits: u32,
+    needed: i64,
+    prec: usize,
+) -> Option<Complex> {
+    if accuracy::mag(value).is_none() {
+        return bound.is_exact().then(|| value.clone());
+    }
+    if accuracy::accurate_bits(value, bound.joint())? < needed as f64 {
+        return None;
+    }
+    // `Some(true)`: set the part to 0; `Some(false)`: keep it; `None`: it
+    // lacks digits.
+    let part = |p: &BigFloat, e: accuracy::ErrExp, other: &BigFloat| -> Option<bool> {
+        if accuracy::exact_zero(p, e) {
+            return Some(false);
+        }
+        if accuracy::part_contains_zero(p, e) {
+            return Some(true);
+        }
+        if is_negligible_part(p, other, digits) || accuracy::is_exact(e) {
+            return Some(false);
+        }
+        (accuracy::part_lg_low(p) - e >= needed as f64).then_some(false)
     };
-    let diff = crate::base::bigcomplex::c_sub(a, b, prec + 64, rm);
-    accuracy::mag(&diff).is_none_or(|d| d <= scale - bits)
+    let zero_re = part(&value.0, bound.re, &value.1)?;
+    let zero_im = part(&value.1, bound.im, &value.0)?;
+    let mut out = value.clone();
+    if zero_re {
+        out.0 = BigFloat::new(prec);
+    }
+    if zero_im {
+        out.1 = BigFloat::new(prec);
+    }
+    Some(out)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -596,12 +761,18 @@ fn with_f64_consts<T>(
 
 /// Evaluate `expr` to an arbitrary-precision complex value at the working
 /// precision [`evalf`] uses for `digits` decimal digits — the evaluation
-/// half of [`evalf`], without the decimal formatting.
+/// half of [`evalf`], without the decimal formatting — and how it was
+/// settled (`search`: see [`ZeroSearch`]).
 ///
 /// Errors as [`evalf`]: [`SymplexError::PrecisionExhausted`] when the
 /// precision exceeds the configured maximum or the result is NaN,
 /// [`SymplexError::FreeSymbol`] for an unbound symbol.
-fn evalf_value(arena: &Arena, expr: ExprId, digits: u32) -> Result<Complex, SymplexError> {
+fn evalf_value(
+    arena: &Arena,
+    expr: ExprId,
+    digits: u32,
+    search: ZeroSearch,
+) -> Result<(Complex, Settled), SymplexError> {
     let prec = ((digits as usize) * 34 / 10 + 64).max(128);
     let max_prec = arena.config.max_evalf_precision as usize;
     if prec > max_prec {
@@ -630,7 +801,25 @@ fn evalf_value(arena: &Arena, expr: ExprId, digits: u32) -> Result<Complex, Symp
     }
 
     let rm = RoundingMode::ToEven;
-    with_f64_consts(|cc| evaluate_adaptive(arena, expr, digits, rm, cc))
+    with_f64_consts(|cc| evaluate_adaptive(arena, expr, digits, search, rm, cc))
+}
+
+/// [`evalf_value`] for the zero and sign tests of the rest of the crate
+/// (`poly::algebraic::is_zero_checked`): the value of the variable-free
+/// `expr` to `digits` digits with the [`ZeroSearch`] `search`, and whether
+/// it is certified or only zero to the precision reached — a distinction
+/// [`evalf_complex`] does not make.
+///
+/// # Errors
+///
+/// As [`evalf`].
+pub(crate) fn evalf_settled(
+    arena: &Arena,
+    expr: ExprId,
+    digits: u32,
+    search: ZeroSearch,
+) -> Result<(Complex, Settled), SymplexError> {
+    evalf_value(arena, expr, digits, search)
 }
 
 /// `ln x` for a positive real constant `x`, from a 16-digit evaluation;
@@ -638,8 +827,10 @@ fn evalf_value(arena: &Arena, expr: ExprId, digits: u32) -> Result<Complex, Symp
 /// positive real number.  Accurate far beyond `f64` range (`x = 10⁻⁴⁰⁰`
 /// is fine), for callers that need a magnitude estimate.
 pub(crate) fn ln_of_positive_constant(arena: &Arena, x: ExprId) -> Option<f64> {
-    let z = evalf_value(arena, x, F64_DIGITS).ok()?;
-    if !z.0.is_positive() || !is_real_to_digits(&z, F64_DIGITS) {
+    // A value that is only zero to the precision reached has no logarithm
+    // (astro-float's `is_positive` is the sign bit, true for `+0`).
+    let (z, _) = evalf_value(arena, x, F64_DIGITS, ZeroSearch::Cap).ok()?;
+    if !bf_strictly_positive(&z.0) || !is_real_to_digits(&z, F64_DIGITS) {
         return None;
     }
     let e = z.0.exponent()?;
@@ -651,7 +842,10 @@ pub(crate) fn ln_of_positive_constant(arena: &Arena, x: ExprId) -> Option<f64> {
 
 /// [`evalf_value`] for the rest of the crate: the variable-free `expr`
 /// evaluated to `digits` correct significant digits, as an
-/// arbitrary-precision complex value.  An `Ok` value is finite.
+/// arbitrary-precision complex value.  An `Ok` value is finite.  A value
+/// that is zero to the precision is pursued only to the cap of the digits
+/// ([`ZeroSearch::Cap`]): the callers compare against a tolerance and meet
+/// true zeros all the time (the integrator's `F′ − f`).
 ///
 /// # Errors
 ///
@@ -661,7 +855,7 @@ pub(crate) fn evalf_complex(
     expr: ExprId,
     digits: u32,
 ) -> Result<Complex, SymplexError> {
-    evalf_value(arena, expr, digits)
+    evalf_value(arena, expr, digits, ZeroSearch::Cap).map(|(z, _)| z)
 }
 
 /// `|z|` rounded to an `f64`: `+∞` beyond the `f64` range, `0.0` below it;
@@ -738,31 +932,41 @@ pub(crate) fn evalf_complex64(arena: &Arena, expr: ExprId) -> Result<Complex64, 
     } else {
         F64_DIGITS
     };
-    let z = evalf_value(arena, expr, digits)?;
+    let (z, _) = evalf_value(arena, expr, digits, ZeroSearch::Deep)?;
     let re = finite_part_to_f64(&z.0, &z.1, digits)?;
     let im = finite_part_to_f64(&z.1, &z.0, digits)?;
     Ok(Complex64::new(re, im))
 }
 
 /// Evaluate `expr` to an `f64` at the precision behind `Ex::eval_f64`
-/// (see [`evalf_complex64`]).
+/// (see [`evalf_complex64`]): the real value `evalf(expr, 16)` prints.
 ///
 /// # Errors
 ///
 /// As [`evalf_complex64`]; [`SymplexError::ComputationFailed`] when the
-/// imaginary part exceeds `1e-15` in magnitude.
+/// value is not real to the digits evaluated — its imaginary part is not
+/// negligible next to its real part (the criterion by which [`evalf`]
+/// prints a real number), however small it is.  Before 0.30 an imaginary
+/// part up to `1e-15` in absolute value was dropped: `sqrt(−10⁻⁴⁰)`
+/// (`10⁻²⁰·i`) was `0.0`, and `ln(1 + 6·10⁻¹⁶)·(1 + 2·10⁻¹²·i)` lost
+/// an imaginary part of `2·10⁻¹²` of its value.
 pub(crate) fn evalf_f64(arena: &Arena, expr: ExprId) -> Result<f64, SymplexError> {
-    let z = evalf_complex64(arena, expr)?;
-    if z.im.abs() > 1e-15 {
+    let digits = if contains_definite_integral(arena, expr) {
+        QUADRATURE_F64_DIGITS
+    } else {
+        F64_DIGITS
+    };
+    let (z, _) = evalf_value(arena, expr, digits, ZeroSearch::Deep)?;
+    if !is_negligible_part(&z.1, &z.0, digits) {
+        let im = bigfloat_to_f64_rounded(&z.1, RoundingMode::ToEven).unwrap_or(f64::NAN);
         return Err(SymplexError::ComputationFailed {
             operation: "eval_f64",
             reason: format!(
-                "expression has nonzero imaginary part (im={}); use eval_complex64() for complex results",
-                z.im
+                "expression has nonzero imaginary part (im={im}); use eval_complex64() for complex results"
             ),
         });
     }
-    Ok(z.re)
+    finite_part_to_f64(&z.0, &z.1, digits)
 }
 
 /// Evaluate a constant (variable-free) arena expression to `f64`.
@@ -789,7 +993,7 @@ pub(crate) fn eval_const_f64(arena: &mut Arena, expr: ExprId) -> Option<f64> {
     // then parse the resulting string.  The `evalf` call takes `&Arena`
     // (immutable), which Rust allows via automatic reborrowing of our
     // `&mut Arena`.
-    match evalf(arena, evaled, 16) {
+    match evalf_with(arena, evaled, 16, ZeroSearch::Cap) {
         Ok(s) => {
             let result = s.parse::<f64>().ok();
             tracing::trace!(?result, decimal_str = %s, "eval_const_f64: evalf path");
@@ -1765,7 +1969,7 @@ fn definite_bound_f64(
                 if accuracy::is_exact(e) {
                     0.0
                 } else {
-                    2f64.powi(i32::try_from(e.clamp(-1100, 1100)).unwrap_or(0))
+                    e.clamp(-1100.0, 1100.0).exp2()
                 }
             };
             // |x − v| ≤ ½ ulp(x) ≤ |x|·2⁻⁵³; exact when `v` is an `f64`.
@@ -1908,9 +2112,9 @@ fn eval_definite_integral(
     // A zero bound (a zero integrand at every node) is no proof of an
     // exact zero: the smallest subnormal.
     let e = if total > 0.0 {
-        i64::from(total.log2().ceil() as i32)
+        total.log2() + 1e-12
     } else {
-        -1074
+        -1074.0
     };
     Ok((
         (BigFloat::from_f64(value, prec), BigFloat::new(prec)),
@@ -2011,7 +2215,6 @@ struct SumAcc {
     re: accuracy::PartSum,
     im: accuracy::PartSum,
     unknown: bool,
-    count: usize,
     prec: usize,
 }
 
@@ -2022,7 +2225,6 @@ impl SumAcc {
             re: accuracy::PartSum::new(),
             im: accuracy::PartSum::new(),
             unknown: false,
-            count: 0,
             prec,
         }
     }
@@ -2030,9 +2232,8 @@ impl SumAcc {
     fn add(&mut self, term: &Complex, err: accuracy::Bound, rm: RoundingMode) {
         self.value = c_add(&self.value, term, self.prec, rm);
         self.unknown |= err.is_unknown();
-        self.re.add(&term.0, err.re, &self.value.0);
-        self.im.add(&term.1, err.im, &self.value.1);
-        self.count += 1;
+        self.re.add(&term.0, err.re, &self.value.0, self.prec);
+        self.im.add(&term.1, err.im, &self.value.1, self.prec);
     }
 
     /// The sum and its error bound.
@@ -2041,8 +2242,8 @@ impl SumAcc {
             return (self.value, accuracy::Bound::UNKNOWN);
         }
         let bound = accuracy::Bound {
-            re: self.re.bound(self.count, self.prec),
-            im: self.im.bound(self.count, self.prec),
+            re: self.re.bound(),
+            im: self.im.bound(),
         };
         (self.value, bound)
     }
@@ -2177,7 +2378,11 @@ fn decide_condition(
         let e = if ea.is_unknown() || eb.is_unknown() {
             accuracy::UNKNOWN
         } else {
-            ea.joint().max(eb.joint()).saturating_add(1)
+            // The operands' errors add; the difference rounds at `prec + 64`.
+            accuracy::lsum(
+                accuracy::lsum(ea.joint(), eb.joint()),
+                accuracy::rounding(&d, prec + 64),
+            )
         };
         Some((d, e, exact))
     };
@@ -2338,7 +2543,7 @@ fn radius_error(ball: &crate::poly::roots::RootBall) -> accuracy::Bound {
     let e = match ball.radius.as_ref() {
         None => return accuracy::Bound::UNKNOWN,
         Some(r) if r.is_zero() => accuracy::EXACT,
-        Some(r) => r.exponent().map_or(accuracy::UNKNOWN, i64::from),
+        Some(r) => accuracy::part_lg(r),
     };
     if ball.real {
         accuracy::Bound::real(e)
@@ -2550,7 +2755,41 @@ fn c_sqrt(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Comple
 
 // ── Inverse trig (complex) ─────────────────────────────────────────
 
+/// `asin`, `atan`, `asinh` and `atanh` of a complex `z` are `z·(1 + O(z²))`,
+/// but their logarithmic formulas take `ln(1 + O(z))`: rounding `1 ± iz`
+/// to `prec` bits is an absolute error of `2^−prec`, `log₂(1/|z|)` bits of
+/// the value that the node's bound (its rounding at the value's magnitude)
+/// does not know of.  `f(z, prec)` is evaluated with that many more bits and
+/// rounded; below `2^−prec` the value is `z` itself.  Before 0.30 neither:
+/// `atan(i·10⁻³⁰)` was `9.99999998762973·10⁻³¹·i` at 16 digits (truly
+/// `1·10⁻³⁰·i`).
+fn small_argument(
+    z: &Complex,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+    f: fn(&Complex, usize, RoundingMode, &mut Consts) -> Complex,
+) -> Complex {
+    let m = accuracy::mag(z).unwrap_or(0);
+    if m >= 0 {
+        return f(z, prec, rm, cc);
+    }
+    let lost = usize::try_from(-m).unwrap_or(usize::MAX);
+    if lost > prec + 8 {
+        return (
+            round_to(z.0.clone(), prec, rm),
+            round_to(z.1.clone(), prec, rm),
+        );
+    }
+    let v = f(z, prec + lost + 16, rm, cc);
+    (round_to(v.0, prec, rm), round_to(v.1, prec, rm))
+}
+
 fn c_asin(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+    small_argument(z, prec, rm, cc, c_asin_at)
+}
+
+fn c_asin_at(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
     // asin(z) = −i·ln(iz + √(1 − z²)).  In half the plane the two terms
     // nearly cancel for large |z|; there the sum is taken as 1/(√(1 − z²) −
     // iz), the same number ((iz + s)(s − iz) = 1), without the cancellation.
@@ -2587,6 +2826,10 @@ fn c_acos(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Comple
 }
 
 fn c_atan(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+    small_argument(z, prec, rm, cc, c_atan_at)
+}
+
+fn c_atan_at(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
     // atan(z) = (i/2)·(ln(1 − iz) − ln(1 + iz)).  The quotient form
     // (i/2)·ln((i + z)/(i − z)) differs from it by π on the cut
     // z ∈ i·(1, ∞) (atan(2i) would be −π/2 + …, mpmath says +π/2 + …).
@@ -2606,6 +2849,10 @@ fn c_atan(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Comple
 // ── Inverse hyperbolic (complex) ──────────────────────────────────
 
 fn c_asinh(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+    small_argument(z, prec, rm, cc, c_asinh_at)
+}
+
+fn c_asinh_at(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
     // asinh(z) = ln(z + √(z² + 1)), the sum taken without cancellation
     // (it cancels for Re z < 0 and large |z|).
     let one = c_one(prec);
@@ -2628,6 +2875,10 @@ fn c_acosh(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Compl
 }
 
 fn c_atanh(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+    small_argument(z, prec, rm, cc, c_atanh_at)
+}
+
+fn c_atanh_at(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
     // atanh(z) = (ln(1 + z) − ln(1 − z))/2.  The quotient form
     // ln((1 + z)/(1 − z))/2 differs from it by πi on the cut z ∈ (1, ∞).
     let one = c_one(prec);
@@ -3013,16 +3264,16 @@ fn arb_log_gamma(
     let cap = cancellation_cap(prec);
     // The first attempt covers the terms' bits (a value of magnitude 2⁻⁸
     // and up needs no second one).
-    let zs0 = bigfloat_to_f64(&x.abs(), rm, cc)?.min(1e300) + 0.2 * (prec + 48) as f64 + 3.0;
+    let zs0 = bigfloat_to_f64(&x.abs(), rm, cc)?.min(1e300) + 0.5 * (prec + 48) as f64 + 3.0;
     let mut extra = (24 + terms_bits(2.0 * zs0 * (zs0.ln() + 1.0)).max(0) as usize).min(cap);
     loop {
         let wp = prec + extra;
         // The value and a bound on the terms summed.
         let (value, largest) = if x.is_positive() {
-            // Stirling at z + s, s ‹ 0.2·wp: terms up to (z+s)·(|ln(z+s)| + 1),
+            // Stirling at z + s, s ‹ 0.5·wp: terms up to (z+s)·(|ln(z+s)| + 1),
             // and the shift Σ ln(z + i) below that.
             let v = stirling_log_gamma(x, wp, rm, cc)?;
-            let zs = bigfloat_to_f64(x, rm, cc)?.max(0.0) + 0.2 * wp as f64 + 2.0;
+            let zs = bigfloat_to_f64(x, rm, cc)?.max(0.0) + 0.5 * wp as f64 + 2.0;
             (v, 2.0 * zs * (zs.ln() + 1.0))
         } else {
             let n = x.add(&BigFloat::from_f64(0.5, 64), exact, rm).floor();
@@ -3033,7 +3284,7 @@ fn arb_log_gamma(
             let lg1 = stirling_log_gamma(&one_minus_x, wp, rm, cc)?;
             let ln_pi = pi.ln(wp, rm, cc);
             let v = ln_pi.sub(&ln_sin, wp, rm).sub(&lg1, wp, rm);
-            let zs = bigfloat_to_f64(&one_minus_x, rm, cc)? + 0.2 * wp as f64 + 2.0;
+            let zs = bigfloat_to_f64(&one_minus_x, rm, cc)? + 0.5 * wp as f64 + 2.0;
             let terms = 2.0 * zs * (zs.ln() + 1.0) + bigfloat_to_f64(&ln_sin, rm, cc)?.abs() + 2.0;
             (v, terms)
         };
@@ -3054,7 +3305,18 @@ fn arb_log_gamma(
 /// A precision at which a sum or difference of `x` and a small integer is
 /// exact (or within `2^−64` of it relative to its larger operand's bits).
 fn exact_bits(x: &BigFloat, prec: usize) -> usize {
-    x.mantissa_max_bit_len().unwrap_or(prec).max(prec) + 64
+    // The lowest bit of `x` is at `e − m`; `x + c` for `|c| < 2^62` reaches
+    // up to `max(e, 62)`.  Before 0.30 only `m + 64` bits: a tiny `x` lost
+    // its bits in `x − k + 1`, and `binomial(10⁻⁷⁰, 6)` — `Γ` next to its
+    // pole at `−5` — was wrong from its 8th digit.
+    // (At most 2¹⁶ bits for the offset: beyond, `x + c` rounds to `c`, and
+    // a pole of `Γ` there is refused rather than met with a million-bit
+    // number.)
+    let m = x.mantissa_max_bit_len().unwrap_or(prec).max(prec);
+    let below = x.exponent().map_or(0, |e| {
+        usize::try_from(64 - i64::from(e)).unwrap_or(0).min(1 << 16)
+    });
+    m + below + 64
 }
 
 /// `⌈log₂ v⌉ + 1` for a positive `f64` magnitude bound (`i64::MAX/4` beyond
@@ -3180,7 +3442,7 @@ fn digamma_wp(
     let floor = largest.exponent().map_or(i64::MIN / 2, i64::from) - wp as i64 - 2;
     let mut prev: Option<i32> = None;
     for k in 1..=wp {
-        let b2k = crate::base::bernoulli::bernoulli(2 * k);
+        let b2k = bernoulli::even(k);
         let denom = y_pow.mul(&BigFloat::from_i128(2 * k as i128, wp), wp, rm);
         let term = ratio_to_bigfloat(&b2k, wp, rm).div(&denom, wp, rm);
         match term.exponent() {
@@ -3202,11 +3464,16 @@ fn digamma_wp(
 /// Compute log Γ(z) for real z > 0 using the Stirling asymptotic series.
 ///
 /// Algorithm:
-/// 1. Argument reduction — shift z by integer r until z + r ≥ 0.2 · p.
+/// 1. Argument reduction — shift z by integer r until z + r ≥ 0.5 · p.
 /// 2. Stirling series:
 ///    log Γ(z) = (z − ½) ln(z) − z + ½ ln(2π) + Σ B₂ₖ / [2k(2k−1) z^{2k−1}].
 /// 3. Undo shift:
-///    log Γ(z) = log Γ(z + r) − Σ_{i=0}^{r−1} ln(z + i).
+///    log Γ(z) = log Γ(z + r) − ln Π_{i=0}^{r−1} (z + i).
+///
+/// The series' smallest term is about `e^{−2π(z+r)}`; at `z + r ≥ 0.5·p`
+/// it is far below `2^{−p}` after about `0.2·p` terms (the Bernoulli
+/// numbers `B₂ₖ`, exact rationals, dominate the cost: at `0.2·p` they took
+/// `0.35·p` terms, and `Γ(1/3)` at 1,200 digits 20 s before 0.30).
 fn stirling_log_gamma(
     z: &BigFloat,
     prec: usize,
@@ -3220,7 +3487,7 @@ fn stirling_log_gamma(
 
     // Determine how far to shift z for convergence.
     let z_approx = bigfloat_to_f64(z, rm, cc)?;
-    let threshold = ((wp as f64) * 0.2).ceil() as i64;
+    let threshold = ((wp as f64) * 0.5).ceil() as i64;
     let shift = if z_approx < threshold as f64 {
         (threshold - z_approx.floor() as i64).max(0) as usize
     } else {
@@ -3263,7 +3530,7 @@ fn stirling_log_gamma(
     let mut prev_term_exp: Option<i32> = None;
 
     for k in 1..=max_terms {
-        let b2k = crate::base::bernoulli::bernoulli(2 * k);
+        let b2k = bernoulli::even(k);
         if b2k.is_zero() {
             continue;
         }
@@ -3303,11 +3570,18 @@ fn stirling_log_gamma(
     }
 
     // Undo argument reduction:
-    //   log Γ(z) = log Γ(z+shift) − Σ_{i=0}^{shift−1} ln(z + i)
-    for i in 0..shift {
-        let z_plus_i = z.add(&BigFloat::from_i128(i as i128, wp), wp, rm);
-        let log_zi = z_plus_i.ln(wp, rm, cc);
-        result = result.sub(&log_zi, wp, rm);
+    //   log Γ(z) = log Γ(z+shift) − ln Π_{i=0}^{shift−1} (z + i),
+    // one logarithm of the product instead of one per factor (850
+    // logarithms at 4,000 bits took a second).  The product carries the
+    // roundings of its factors, `shift·2^−wp` relative, as the sum of
+    // logarithms did.
+    if shift > 0 {
+        let mut product = BigFloat::from_i32(1, wp);
+        for i in 0..shift {
+            let z_plus_i = z.add(&BigFloat::from_i128(i as i128, wp), wp, rm);
+            product = product.mul(&z_plus_i, wp, rm);
+        }
+        result = result.sub(&product.ln(wp, rm, cc), wp, rm);
     }
 
     Ok(result)
@@ -3751,6 +4025,17 @@ fn hankel_pq(
             let k_bf = BigFloat::from_i32(k as i32, prec);
             let denom = eight.mul(&k_bf, prec, rm);
             a_k = a_k.mul(&numer, prec, rm).div(&denom, prec, rm);
+            // A half-integer order ends the expansion: `4ν² = (2k−1)²`
+            // exactly, and every later coefficient has the factor 0 — the
+            // sums are complete (spherical Bessel functions).  Before 0.30
+            // the zero terms never met the convergence test, the expansion
+            // was reported as failing, and the power series took over
+            // with `1.44·x` guard bits: `besselj(5/2, 10²⁵)` printed
+            // `3.8·10¹⁰⁵²⁷`, `besselj(−3/2, 12!)` hung.
+            if a_k.is_zero() {
+                converged = true;
+                break;
+            }
 
             // Update z_power: multiply by 1/z each step.
             z_power = z_power.mul(&z_inv, prec, rm);
@@ -3835,7 +4120,8 @@ fn bessel_jy_hankel(
     cc: &mut Consts,
 ) -> Option<BigFloat> {
     // The phase ω = x − νπ/2 − π/4 loses the leading `log2 x` bits of x to
-    // cancellation, so the trigonometric part needs that many extra bits.
+    // cancellation, so the trigonometric part needs that many extra bits
+    // (the caller refuses beyond `cancellation_cap`).
     let wp = wp + x.exponent().unwrap_or(0).max(0) as usize;
     let mut xw = x.clone();
     let _ = xw.set_precision(wp, rm);
@@ -3913,6 +4199,15 @@ fn arb_bessel_j(
         };
     }
 
+    refuse_bessel_argument(x, prec)?;
+    // `(x/2)^ν` of a negative `x` is complex for a non-integer order.
+    // Before 0.30 the power series took `|x/2|^ν` and returned a real
+    // number: `besselj(−1/2, −1)` was `0.431…`, truly `−0.431…·i`.
+    if x.is_negative() && !order.is_int() {
+        return Err(SymplexError::Unevaluable {
+            reason: "BesselJ of negative argument with non-integer order is complex".into(),
+        });
+    }
     let x_f64 = bigfloat_to_f64(x, rm, cc)?;
     let order_f64 = bigfloat_to_f64(order, rm, cc)?;
 
@@ -3949,7 +4244,7 @@ fn arb_bessel_j(
     // ── Ascending series with cancellation guard bits ──────────────────
     // J_ν(x) = (x/2)^ν · Σ_{k=0}^N (-1)^k · (x/2)^{2k} / (k! · Γ(ν+k+1))
     {
-        let wp = wp + cancellation_guard_bits(x_f64.abs());
+        let wp = wp + series_guard_bits(x_f64.abs(), prec)?;
         let mut xw = x.clone();
         let _ = xw.set_precision(wp, rm);
         let mut order_w = order.clone();
@@ -4034,6 +4329,7 @@ fn arb_bessel_y(
         });
     }
 
+    refuse_bessel_argument(x, prec)?;
     let x_f64 = bigfloat_to_f64(x, rm, cc)?;
     let order_f64 = bigfloat_to_f64(order, rm, cc)?;
     let order_int = order_f64.round() as i64;
@@ -4074,7 +4370,7 @@ fn arb_bessel_y(
         });
     }
     let n = order_int as usize;
-    let wp = wp + cancellation_guard_bits(x_f64);
+    let wp = wp + series_guard_bits(x_f64, prec)?;
     let mut xw = x.clone();
     let _ = xw.set_precision(wp, rm);
 
@@ -4230,6 +4526,30 @@ fn cancellation_guard_bits(x_abs: f64) -> usize {
     (x_abs * std::f64::consts::LOG2_E).ceil() as usize + 32
 }
 
+/// [`cancellation_guard_bits`] for the power series of `J_ν` and `Y_n` at
+/// `|x|`, refused beyond [`cancellation_cap`]: the series also takes about
+/// `|x|` terms.  Before 0.30 nothing bounded them — `besselj(5/2, 10²⁵)`
+/// asked for `1.4·10²⁵` bits and printed garbage (`3.8·10¹⁰⁵²⁷`).
+fn series_guard_bits(x_abs: f64, prec: usize) -> Result<usize, SymplexError> {
+    let guard = cancellation_guard_bits(x_abs);
+    if !x_abs.is_finite() || guard > cancellation_cap(prec) {
+        return Err(special_exhausted(prec));
+    }
+    Ok(guard)
+}
+
+/// Refuse a Bessel argument whose Hankel phase `x − νπ/2 − π/4` would
+/// need more than [`cancellation_cap`] extra bits (`log₂|x|` of them, see
+/// [`bessel_jy_hankel`]): `besselj(−5, erfi(1210))`, an argument of
+/// `2^(2·10⁶)`, ran for minutes.
+fn refuse_bessel_argument(x: &BigFloat, prec: usize) -> Result<(), SymplexError> {
+    let cap = i64::try_from(cancellation_cap(prec)).unwrap_or(i64::MAX);
+    if x.is_inf() || x.exponent().is_some_and(|e| i64::from(e) > cap) {
+        return Err(special_exhausted(prec));
+    }
+    Ok(())
+}
+
 /// Auxiliary functions `f(x)`, `g(x)` of the asymptotic expansions
 ///
 /// ```text
@@ -4324,6 +4644,28 @@ fn arb_si_ci(
         });
     }
 
+    // Far out `f`, `g` are below `2^−wp` next to π/2: `Si(x) = ±π/2`; `Ci(x)
+    // ≈ sin(x)/x` needs `x` reduced modulo 2π, refused beyond
+    // `cancellation_cap` bits (before 0.30 both reduced any `x`, and
+    // `Si(erfi(765))`, `x ≈ 2^844000`, hung).
+    let e = usize::try_from(x.exponent().map_or(0, i64::from).max(0)).unwrap_or(0);
+    if e > base_wp + 2 {
+        if !want_si {
+            if e > cancellation_cap(prec) {
+                return Err(special_exhausted(prec));
+            }
+        } else {
+            let half_pi = cc
+                .pi(base_wp, rm)
+                .div(&BigFloat::from_i32(2, base_wp), base_wp, rm);
+            let si = if x.is_negative() {
+                half_pi.neg()
+            } else {
+                half_pi
+            };
+            return Ok((round_to(si, prec, rm), BigFloat::new(prec)));
+        }
+    }
     let switch = (base_wp as f64) * std::f64::consts::LN_2;
     if x_abs > switch {
         // ── Asymptotic expansion ──
@@ -4465,32 +4807,54 @@ fn arb_ei(
     }
 
     // ── Power series ──
-    let wp = if x.is_negative() {
-        base_wp + cancellation_guard_bits(x_abs)
+    // For x < 0 the terms reach `~e^{|x|}` and `Ei(x) ~ e^{−|x|}/|x|`: the
+    // sum cancels about `2|x|·log₂e` bits, and the value near the zero
+    // `x ≈ 0.3725` more.  The loss is measured (the largest term against
+    // the value) and the series repeated with that many more bits, up to
+    // `cancellation_cap`.  Before 0.30 the guard was `|x|·log₂e`, half
+    // of it: `Ei(−196)` at 60 digits was wrong from its 24th digit.
+    let cap = cancellation_cap(prec);
+    let mut extra = if x.is_negative() {
+        cancellation_guard_bits(2.0 * x_abs)
     } else {
-        base_wp
+        32
     };
-    let mut xw = x.clone();
-    let _ = xw.set_precision(wp, rm);
-    let gamma = arb_euler_gamma(wp, rm, cc)?;
-    let ln_abs_x = xw.abs().ln(wp, rm, cc);
-    let mut v = BigFloat::from_i32(1, wp); // x^k/k!
-    let mut sum = BigFloat::new(wp);
-    let max_terms = (x_abs * 3.0) as usize + wp + 40;
-    for k in 1..max_terms {
-        let k_bf = BigFloat::from_i128(k as i128, wp);
-        v = v.mul(&xw, wp, rm).div(&k_bf, wp, rm);
-        let term = v.div(&k_bf, wp, rm);
-        sum = sum.add(&term, wp, rm);
-        if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent())
-            && (s_exp as i64 - t_exp as i64) > wp as i64
-            && (k as f64) > x_abs
-        {
-            break;
+    loop {
+        let wp = prec + extra;
+        let mut xw = x.clone();
+        let _ = xw.set_precision(wp, rm);
+        let gamma = arb_euler_gamma(wp, rm, cc)?;
+        let ln_abs_x = xw.abs().ln(wp, rm, cc);
+        let mut largest = gamma.abs().max(&ln_abs_x.abs());
+        let mut v = BigFloat::from_i32(1, wp); // x^k/k!
+        let mut sum = BigFloat::new(wp);
+        let max_terms = (x_abs * 3.0) as usize + wp + 40;
+        for k in 1..max_terms {
+            let k_bf = BigFloat::from_i128(k as i128, wp);
+            v = v.mul(&xw, wp, rm).div(&k_bf, wp, rm);
+            let term = v.div(&k_bf, wp, rm);
+            sum = sum.add(&term, wp, rm);
+            largest = largest.max(&term.abs()).max(&sum.abs());
+            if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent())
+                && (s_exp as i64 - t_exp as i64) > wp as i64
+                && (k as f64) > x_abs
+            {
+                break;
+            }
         }
+        let r = gamma.add(&ln_abs_x, wp, rm).add(&sum, wp, rm);
+        let lost = match (largest.exponent(), r.exponent()) {
+            (Some(l), Some(v)) if !r.is_zero() => (i64::from(l) - i64::from(v)).max(0) as usize,
+            _ => wp,
+        };
+        if lost + 32 <= extra {
+            return Ok(round_to(r, prec, rm));
+        }
+        if extra >= cap {
+            return Err(special_exhausted(prec));
+        }
+        extra = (lost + 64).min(cap).max(extra + 32);
     }
-    let r = gamma.add(&ln_abs_x, wp, rm).add(&sum, wp, rm);
-    Ok(round_to(r, prec, rm))
 }
 
 /// Round a `BigFloat` down to `prec` bits (no-op on failure).
@@ -4557,7 +4921,8 @@ fn arb_zeta(
         return Ok(BigFloat::from_f64(-0.5, prec));
     }
     let s_f64 = bigfloat_to_f64(s, rm, cc)?;
-    if (s_f64 - 1.0).abs() < 1e-300 {
+    // The pole exactly (before 0.30 in `f64`, where `1 + 10⁻⁴⁵` is 1).
+    if *s == BigFloat::from_i32(1, 64) {
         return Err(SymplexError::Unevaluable {
             reason: "zeta(1) is a pole".into(),
         });
@@ -4575,13 +4940,16 @@ fn arb_zeta(
                 return Ok(BigFloat::new(prec));
             }
         }
-        // ζ(s) = 2^s π^{s−1} sin(π s/2) Γ(1−s) ζ(1−s)
+        // ζ(s) = 2^s π^{s−1} sin(π s/2) Γ(1−s) ζ(1−s), `1 − s` exact: next
+        // to 0 the factors `sin(πs/2) ≈ πs/2` and `ζ(1 − s) ≈ −1/s` are both
+        // relative to `s` (before 0.30 `1 − s` was rounded, and `ζ(−10⁻⁶⁰)`
+        // printed `−0.499999999999999999141761477346` at 30 digits).
         let mut sw = s.clone();
         let _ = sw.set_precision(wp, rm);
         let one = BigFloat::from_i32(1, wp);
         let two = BigFloat::from_i32(2, wp);
         let pi = cc.pi(wp, rm).clone();
-        let one_minus_s = one.sub(&sw, wp, rm);
+        let one_minus_s = BigFloat::from_i32(1, 64).sub(s, exact_bits(s, wp), rm);
         let two_pow_s = bf_pow(&two, &sw, wp, rm, cc);
         let s_minus_1 = sw.sub(&one, wp, rm);
         let pi_pow = bf_pow(&pi, &s_minus_1, wp, rm, cc);
@@ -4610,18 +4978,41 @@ fn arb_zeta_borwein(
     cc: &mut Consts,
 ) -> Result<BigFloat, SymplexError> {
     let eta = arb_eta_borwein(s, wp, rm, cc)?;
-    // 1 − 2^{1−s}
-    let one = BigFloat::from_i32(1, wp);
-    let two = BigFloat::from_i32(2, wp);
-    let one_minus_s = one.sub(s, wp, rm);
-    let two_pow = bf_pow(&two, &one_minus_s, wp, rm, cc);
-    let denom_factor = one.sub(&two_pow, wp, rm);
+    // 1 − 2^{1−s} = −expm1((1 − s)·ln 2), with `1 − s` exact: next to the
+    // pole the difference `1 − 2^{1−s}` cancels `log₂(1/|1 − s|)` bits, and
+    // before 0.30 both were rounded (`ζ(1 + 10⁻⁴⁵)` was "a pole").
+    let one_minus_s = BigFloat::from_i32(1, 64).sub(s, exact_bits(s, wp), rm);
+    let denom_factor = one_minus_pow2(&one_minus_s, wp, rm, cc);
     if denom_factor.is_zero() {
         return Err(SymplexError::Unevaluable {
             reason: "zeta(1) is a pole".into(),
         });
     }
     Ok(eta.div(&denom_factor, wp, rm))
+}
+
+/// `1 − 2^t` to `wp` bits relative, also for a tiny `t` (where the
+/// difference cancels): `−Σ_{k≥1} u^k/k!` with `u = t·ln 2` for `|u| < 1/4`.
+fn one_minus_pow2(t: &BigFloat, wp: usize, rm: RoundingMode, cc: &mut Consts) -> BigFloat {
+    if t.is_zero() {
+        return BigFloat::new(wp);
+    }
+    let u = cc.ln_2(wp + 8, rm).mul(t, wp + 8, rm);
+    if u.exponent().is_some_and(|e| e > -2) {
+        return BigFloat::from_i32(1, wp).sub(&u.exp(wp + 8, rm, cc), wp, rm);
+    }
+    let mut term = u.clone();
+    let mut sum = u.clone();
+    for k in 2..(wp + 16) {
+        term = term
+            .mul(&u, wp + 8, rm)
+            .div(&BigFloat::from_i128(k as i128, wp + 8), wp + 8, rm);
+        sum = sum.add(&term, wp + 8, rm);
+        if negligible(&term, &sum, wp + 8) {
+            break;
+        }
+    }
+    round_to(sum.neg(), wp, rm)
 }
 
 /// Borwein's accelerated alternating sum for the Dirichlet eta function
@@ -4670,13 +5061,43 @@ fn arb_eta_borwein(
     } else {
         0
     };
+    // A non-integer power `m^s` costs a logarithm and an exponential, and
+    // there are `0.39·wp` of them; `m^s = p^s·(m/p)^s` for the smallest
+    // prime factor `p` of `m` leaves them to the primes (a seventh of
+    // them at 4,000 bits, where `ζ` took seconds), each composite a product
+    // of at most `log₂ m` roundings.
+    let powers: Vec<BigFloat> = if s_is_int {
+        Vec::new()
+    } else {
+        let mut spf = vec![0usize; n + 1];
+        let mut table: Vec<BigFloat> = Vec::with_capacity(n + 1);
+        table.push(BigFloat::new(wp));
+        for m in 1..=n {
+            if m >= 2 && spf[m] == 0 {
+                for multiple in (m..=n).step_by(m) {
+                    if spf[multiple] == 0 {
+                        spf[multiple] = m;
+                    }
+                }
+            }
+            let v = if m == 1 {
+                BigFloat::from_i32(1, wp)
+            } else if spf[m] == m {
+                bf_pow(&BigFloat::from_i128(m as i128, wp), s, wp + 8, rm, cc)
+            } else {
+                table[spf[m]].mul(&table[m / spf[m]], wp + 8, rm)
+            };
+            table.push(v);
+        }
+        table
+    };
     for k in 0..n {
         let coeff = ratio_to_bigfloat(&(&d[k] - &d[n]), wp, rm);
         let kp1 = BigFloat::from_i128(k as i128 + 1, wp);
         let kp1_pow_s = if s_is_int {
             kp1.powi(s_int, wp, rm)
         } else {
-            bf_pow(&kp1, s, wp, rm, cc)
+            powers[k + 1].clone()
         };
         let term = coeff.div(&kp1_pow_s, wp, rm);
         if k % 2 == 0 {
@@ -4766,6 +5187,17 @@ fn polygamma_wp(
     // ── Step 1: shift x upward ──
     let threshold_val = ((wp / 3).max(n_us) + 10) as i128;
     let threshold = BigFloat::from_i128(threshold_val, wp);
+    // Far left of 0 the shift would take `|x|` steps: refused up front (a
+    // refusal, not a failure — before 0.30 a million steps were taken and
+    // then `ComputationFailed` raised, for `polygamma(100, erfi(−5))`).
+    let max_steps = 10 * wp + 1_000_000;
+    if bf_lt(x, &BigFloat::from_i128(-(max_steps as i128), wp)) {
+        return Err(SymplexError::NotImplemented(
+            "polygamma of an argument far left of 0 (the argument shift would take more \
+             than a million steps)"
+                .into(),
+        ));
+    }
     let mut xw = x.clone();
     let mut shift_sum = BigFloat::new(wp); // Σ 1/(x+k)^{n+1}
     let mut largest_inv = BigFloat::new(wp);
@@ -4784,11 +5216,10 @@ fn polygamma_wp(
         shift_sum = shift_sum.add(&inv, wp, rm);
         xw = xw.add(&one, exact, rm);
         steps += 1;
-        if steps > 10 * wp + 1_000_000 {
-            return Err(SymplexError::ComputationFailed {
-                operation: "polygamma",
-                reason: "argument shift did not terminate".into(),
-            });
+        if steps > max_steps {
+            return Err(SymplexError::NotImplemented(
+                "polygamma: the argument shift did not terminate".into(),
+            ));
         }
     }
     // ψ⁽ⁿ⁾(x) = ψ⁽ⁿ⁾(x+N) + (−1)^{n+1} n! Σ 1/(x+k)^{n+1}
@@ -4818,7 +5249,7 @@ fn polygamma_wp(
             ratio_fact *= Ratio::new(a, b);
             x_pow = x_pow.mul(&x2, wp, rm);
         }
-        let b2k = crate::base::bernoulli::bernoulli(2 * k);
+        let b2k = bernoulli::even(k);
         let coeff = ratio_to_bigfloat(&(&b2k * &ratio_fact), wp, rm);
         let term = coeff.div(&x_pow, wp, rm);
         if let Some(t_exp) = term.exponent() {
@@ -4928,7 +5359,86 @@ fn bessel_i_series(
     Ok(prefix.mul(&sum, wp, rm))
 }
 
+/// Asymptotic expansion of `I_ν(x)` for large `x > 0` (DLMF 10.40.1):
+///
+/// ```text
+/// I_ν(x) ~ e^x/√(2πx) · Σ_k (−1)^k a_k(ν)/x^k,
+/// a_k(ν) = (4ν² − 1²)(4ν² − 3²)⋯(4ν² − (2k−1)²) / (k!·8^k),
+/// ```
+///
+/// the coefficients of [`hankel_pq`].  The part it leaves out is `~e^{−2x}`
+/// relative to the value, below `2^{−wp}` from [`hankel_threshold`] on;
+/// the sum stops at a term below `2^{−wp}` relative (or ends, for a
+/// half-integer order).  `None` when the terms start growing first (an
+/// order large next to `x`).
+fn bessel_i_asymptotic(
+    order: &BigFloat,
+    x: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Option<BigFloat> {
+    let one = BigFloat::from_i32(1, wp);
+    let eight = BigFloat::from_i32(8, wp);
+    let four_nu_sq = BigFloat::from_i32(4, wp).mul(&order.mul(order, wp, rm), wp, rm);
+    let inv_x = one.div(x, wp, rm);
+    let mut a = one.clone(); // a_k/x^k
+    let mut sum = one.clone();
+    let mut prev = one.clone();
+    let mut converged = false;
+    for k in 1..(4 * wp + 100) {
+        let two_km1 = BigFloat::from_i128(2 * k as i128 - 1, wp);
+        let numer = four_nu_sq.sub(&two_km1.mul(&two_km1, wp, rm), wp, rm);
+        let denom = eight.mul(&BigFloat::from_i128(k as i128, wp), wp, rm);
+        a = a
+            .mul(&numer, wp, rm)
+            .div(&denom, wp, rm)
+            .mul(&inv_x, wp, rm);
+        if a.is_zero() {
+            converged = true;
+            break;
+        }
+        // A growing term, or one beyond the leading 1: an alternating sum
+        // that would cancel bits the working precision does not carry.
+        let size = a.abs();
+        if size.cmp(&prev).is_some_and(|c| c > 0) || size.exponent().is_some_and(|e| e > 0) {
+            break;
+        }
+        sum = if k % 2 == 1 {
+            sum.sub(&a, wp, rm)
+        } else {
+            sum.add(&a, wp, rm)
+        };
+        if let (Some(t), Some(s)) = (a.exponent(), sum.exponent())
+            && i64::from(s) - i64::from(t) > wp as i64
+        {
+            converged = true;
+            break;
+        }
+        prev = size;
+    }
+    if !converged {
+        return None;
+    }
+    let two_pi_x = cc
+        .pi(wp, rm)
+        .mul(&BigFloat::from_i32(2, wp), wp, rm)
+        .mul(x, wp, rm);
+    let amplitude = two_pi_x.sqrt(wp, rm).reciprocal(wp, rm);
+    Some(x.exp(wp, rm, cc).mul(&amplitude, wp, rm).mul(&sum, wp, rm))
+}
+
 /// Modified Bessel function of the first kind `I_ν(x)` (real `ν`, `x`).
+///
+/// * `|x|` from [`hankel_threshold`] on: the asymptotic expansion
+///   ([`bessel_i_asymptotic`]), with `I_n(−x) = (−1)ⁿ I_n(x)`;
+/// * otherwise, or where the expansion does not converge, the ascending
+///   series ([`bessel_i_series`], about `|x| + wp` terms), refused beyond
+///   [`cancellation_cap`] terms.
+///
+/// Before 0.30 the series served every `x`: `besseli(5/2, 5.2·10⁷⁰)`
+/// printed `2.18·10⁴⁴⁸⁵⁷` (truly beyond the exponent range),
+/// `besseli(2, 10¹⁶)` and `besseli(0, 32/15·10⁸)` hung.
 fn arb_bessel_i(
     order: &BigFloat,
     x: &BigFloat,
@@ -4937,6 +5447,32 @@ fn arb_bessel_i(
     cc: &mut Consts,
 ) -> Result<BigFloat, SymplexError> {
     let wp = prec + 32;
+    if x.is_inf() {
+        return Err(special_exhausted(prec));
+    }
+    let x_abs = bigfloat_to_f64(x, rm, cc)?.abs();
+    let order_f64 = bigfloat_to_f64(order, rm, cc)?;
+    if x_abs >= hankel_threshold(wp, order_f64.abs()) {
+        if x.is_negative() {
+            if !order.is_int() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "BesselI of negative argument with non-integer order is complex".into(),
+                });
+            }
+            let v = arb_bessel_i(order, &x.abs(), prec, rm, cc)?;
+            return Ok(if (order_f64.round() as i64) % 2 == 0 {
+                v
+            } else {
+                v.neg()
+            });
+        }
+        if let Some(v) = bessel_i_asymptotic(order, x, wp, rm, cc) {
+            return Ok(round_to(v, prec, rm));
+        }
+        if !x_abs.is_finite() || x_abs > cancellation_cap(prec) as f64 {
+            return Err(special_exhausted(prec));
+        }
+    }
     let r = bessel_i_series(order, x, wp, rm, cc)?;
     Ok(round_to(r, prec, rm))
 }
@@ -4944,13 +5480,23 @@ fn arb_bessel_i(
 /// Asymptotic expansion for `K_ν(x)`, large `x > 0` (DLMF 10.40.2):
 /// `K_ν(x) ~ √(π/(2x)) e^{−x} Σ_k a_k(ν)/x^k`,
 /// `a_k(ν) = ∏_{j=1}^{k} (4ν² − (2j−1)²) / (k! 8^k)`.
+///
+/// While `(2k−1)² < 4ν²` the terms are positive and may grow (an order
+/// large next to `x`); past that they alternate, and the first one that
+/// grows marks the divergence of the expansion.  `None` when the terms do
+/// not fall below `2^{−wp}` relative before that (the caller uses the
+/// series); a half-integer order ends the expansion exactly.  Before 0.30
+/// the first growing term stopped the sum, whatever the order, and the
+/// partial sum was returned: `besselk(20, 60)` was `6.14·10⁻²⁷` (truly
+/// `3.75·10⁻²⁶`), `besselk(50, 100)` `6.29·10⁻⁴⁴` (truly
+/// `9.27·10⁻⁴⁰`), both certified.
 fn bessel_k_asymptotic(
     order: &BigFloat,
     x: &BigFloat,
     wp: usize,
     rm: RoundingMode,
     cc: &mut Consts,
-) -> BigFloat {
+) -> Option<BigFloat> {
     let one = BigFloat::from_i32(1, wp);
     let four = BigFloat::from_i32(4, wp);
     let eight = BigFloat::from_i32(8, wp);
@@ -4959,16 +5505,24 @@ fn bessel_k_asymptotic(
     let mut a_k = one.clone();
     let mut sum = one.clone();
     let mut prev: Option<BigFloat> = None;
+    let mut converged = false;
     let max_terms = wp * 2 + 100;
     for k in 1..max_terms {
-        let two_km1 = BigFloat::from_i32((2 * k as i32) - 1, wp);
-        let numer = four_nu_sq.sub(&two_km1.mul(&two_km1, wp, rm), wp, rm);
-        let denom = eight.mul(&BigFloat::from_i32(k as i32, wp), wp, rm);
+        let two_km1 = BigFloat::from_i128(2 * k as i128 - 1, wp);
+        let two_km1_sq = two_km1.mul(&two_km1, wp, rm);
+        let numer = four_nu_sq.sub(&two_km1_sq, wp, rm);
+        let denom = eight.mul(&BigFloat::from_i128(k as i128, wp), wp, rm);
         a_k = a_k
             .mul(&numer, wp, rm)
             .div(&denom, wp, rm)
             .mul(&inv_x, wp, rm);
-        if let Some(ref p) = prev
+        if a_k.is_zero() {
+            converged = true;
+            break;
+        }
+        let alternating = two_km1_sq.cmp(&four_nu_sq).is_some_and(|c| c > 0);
+        if alternating
+            && let Some(ref p) = prev
             && a_k.abs().cmp(p).is_some_and(|c| c > 0)
         {
             break;
@@ -4977,15 +5531,19 @@ fn bessel_k_asymptotic(
         if let (Some(t_exp), Some(s_exp)) = (a_k.exponent(), sum.exponent())
             && (s_exp as i64 - t_exp as i64) > wp as i64
         {
+            converged = true;
             break;
         }
         prev = Some(a_k.abs());
+    }
+    if !converged {
+        return None;
     }
     let pi = cc.pi(wp, rm).clone();
     let two = BigFloat::from_i32(2, wp);
     let amp = pi.div(&two.mul(x, wp, rm), wp, rm).sqrt(wp, rm);
     let e_neg_x = x.neg().exp(wp, rm, cc);
-    amp.mul(&e_neg_x, wp, rm).mul(&sum, wp, rm)
+    Some(amp.mul(&e_neg_x, wp, rm).mul(&sum, wp, rm))
 }
 
 /// Modified Bessel function of the second kind `K_ν(x)`, `x > 0`.
@@ -5025,14 +5583,15 @@ fn arb_bessel_k(
     };
 
     // Large x: asymptotic (relative truncation error ~ e^{-2x}).
-    if 2.0 * x_f64 > (base_wp as f64) * std::f64::consts::LN_2 {
-        let r = bessel_k_asymptotic(&order_abs, x, base_wp, rm, cc);
+    if 2.0 * x_f64 > (base_wp as f64) * std::f64::consts::LN_2
+        && let Some(r) = bessel_k_asymptotic(&order_abs, x, base_wp, rm, cc)
+    {
         return Ok(round_to(r, prec, rm));
     }
 
     // Series: guard against e^{x} cancellation (two exponentially large
     // terms of opposite sign nearly cancel).
-    let wp = base_wp + 2 * cancellation_guard_bits(x_f64);
+    let wp = base_wp + 2 * series_guard_bits(x_f64, prec)?;
     let mut xw = x.clone();
     let _ = xw.set_precision(wp, rm);
 
@@ -6418,7 +6977,15 @@ fn arb_fresnel(
     let x_f = bigfloat_to_f64(&ax, rm, cc)?;
     let arg_f = std::f64::consts::FRAC_PI_2 * x_f * x_f;
 
-    let r = if arg_f > (base_wp as f64) * std::f64::consts::LN_2 {
+    // `x = 2^(e−1)… 2^e`: the auxiliary functions are `~1/(πx)`, and the
+    // phase `πx²/2` has `2e` bits before the point.
+    let e = usize::try_from(ax.exponent().map_or(0, i64::from).max(0)).unwrap_or(0);
+    let r = if e > base_wp + 2 {
+        // `f cos + g sin` is below `2^−wp` next to 1/2: before 0.30 the
+        // phase was reduced anyway (`fresnels(erfi(335))`, `x ≈ 2^161900`,
+        // asked for π to 323,800 bits and hung).
+        BigFloat::from_f64(0.5, base_wp)
+    } else if arg_f > (base_wp as f64) * std::f64::consts::LN_2 {
         let wp = base_wp;
         let mut xw = ax.clone();
         let _ = xw.set_precision(wp, rm);
@@ -6462,7 +7029,19 @@ fn arb_fresnel(
         let f = f_sum.div(&pi_x, wp, rm);
         let g = g_sum.div(&pi_x, wp, rm);
         let two = BigFloat::from_i32(2, wp);
-        let theta = pi_x2.div(&two, wp, rm);
+        // The phase to an absolute `2^−wp`: `2e` more bits.  Before 0.30 it
+        // was formed at `wp` bits, an absolute error of `2^(2e−wp)` times
+        // the amplitude `2^−e` — wrong digits once `e` passed the guard
+        // bits: `fresnels(10⁴⁵)` at 60 digits ended `…816212`, truly
+        // `…816209`.
+        let wt = wp + 2 * e;
+        let mut xt = ax.clone();
+        let _ = xt.set_precision(wt, rm);
+        let theta =
+            cc.pi(wt, rm)
+                .mul(&xt, wt, rm)
+                .mul(&xt, wt, rm)
+                .div(&BigFloat::from_i32(2, wt), wt, rm);
         let s = theta.sin(wp, rm, cc);
         let c = theta.cos(wp, rm, cc);
         let half = one.div(&two, wp, rm);
@@ -7300,7 +7879,10 @@ fn arb_eta(
     rm: RoundingMode,
     cc: &mut Consts,
 ) -> Result<BigFloat, SymplexError> {
-    if s.is_positive() {
+    // Strictly: `+0` has the sign bit of a positive number, and Borwein's sum at
+    // `s = 0` is not `η(0) = 1/2` (before 0.30 `dirichlet_eta` of an argument
+    // that cancelled to `+0` printed `0.4913903202446295`).
+    if bf_strictly_positive(s) {
         return arb_eta_borwein(s, wp, rm, cc);
     }
     let one = BigFloat::from_i32(1, wp);
@@ -7366,6 +7948,12 @@ fn arb_airy(
     let zeta_f = 2.0 / 3.0 * ax_f.powf(1.5);
 
     if 2.0 * zeta_f > (base_wp as f64) * std::f64::consts::LN_2 {
+        // The phase `(2/3)|x|^{3/2}` needs its bits before the point.
+        let z_bits = 3 * x.exponent().map_or(0, i64::from).max(0) / 2;
+        if !zeta_f.is_finite() || z_bits > i64::try_from(cancellation_cap(prec)).unwrap_or(i64::MAX)
+        {
+            return Err(special_exhausted(prec));
+        }
         return Ok(round_to(
             airy_asymptotic(x, kind, base_wp, rm, cc),
             prec,
@@ -7459,10 +8047,19 @@ fn airy_asymptotic(
     let ax = x.abs();
     let sqrt_ax = ax.sqrt(wp, rm);
     let x_quarter = sqrt_ax.sqrt(wp, rm); // |x|^{1/4}
-    let zeta = two
-        .mul(&ax, wp, rm)
-        .mul(&sqrt_ax, wp, rm)
-        .div(&BigFloat::from_i32(3, wp), wp, rm);
+    // `ζ = (2/3)|x|^{3/2}` enters `e^{±ζ}` and the phase `ζ + π/4` through
+    // its absolute error: it is formed with the `Z` bits it has before the
+    // point as guard (the caller refuses beyond `cancellation_cap`).
+    // Before 0.30 it was formed at `wp` bits: `airyai(−467·10⁴⁰)` was wrong
+    // from its 13th digit at 30, `airyai(−29/16·10⁷⁰)` entirely.
+    let wz =
+        wp + usize::try_from(3 * ax.exponent().map_or(0, i64::from).max(0) / 2 + 8).unwrap_or(0);
+    let ax_z = at_precision(&ax, wz, rm);
+    let zeta = two.mul(&ax_z, wz, rm).mul(&ax_z.sqrt(wz, rm), wz, rm).div(
+        &BigFloat::from_i32(3, wz),
+        wz,
+        rm,
+    );
     let inv_zeta = one.div(&zeta, wp, rm);
     let sqrt_pi = cc.pi(wp, rm).clone().sqrt(wp, rm);
     let derivative = matches!(kind, AiryKind::AiPrime | AiryKind::BiPrime);
@@ -7550,8 +8147,8 @@ fn airy_asymptotic(
             target.add(c, wp, rm)
         };
     }
-    let pi = cc.pi(wp, rm).clone();
-    let theta = zeta.add(&pi.div(&BigFloat::from_i32(4, wp), wp, rm), wp, rm);
+    let pi = cc.pi(wz, rm).clone();
+    let theta = zeta.add(&pi.div(&BigFloat::from_i32(4, wz), wz, rm), wz, rm);
     let s = theta.sin(wp, rm, cc);
     let c = theta.cos(wp, rm, cc);
     let sp_minus_cq = s.mul(&p, wp, rm).sub(&c.mul(&q, wp, rm), wp, rm);

@@ -103,6 +103,41 @@ pub(crate) fn diff_with_deps(
     cache.get(&expr).copied().unwrap_or(arena.zero)
 }
 
+/// Is `f` real for real values of its symbols?  A symbol without declared
+/// assumptions counts as real (the variable of differentiation is real,
+/// and so are undeclared parameters, the convention of the integrator);
+/// a declared one keeps its declaration.
+///
+/// `d|f|/dx = sign(f)·f'` and `d sign(f)/dx = 0` hold only for a real `f`:
+/// for `f = sinh x − (−1)^(−1/3)` the old rule gave a complex derivative of
+/// the real function `|f|`, and for `f = 1/(2√x)` at `x < 0` (where `f` is
+/// imaginary) the wrong sign.
+fn real_for_real_symbols(arena: &Arena, f: ExprId) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Assumptions, Props};
+    let mut cache = AssumptionCache::new();
+    for s in crate::base::walk::free_symbols(arena, f) {
+        if let ExprNode::Symbol(sid) = *arena.node(s)
+            && arena.symbol_assumptions(sid) == Assumptions::default()
+        {
+            let mut real = Assumptions::default();
+            real.known_true |= Props::REAL;
+            cache.set_symbol_assumptions(s, real);
+        }
+    }
+    cache.query(arena, f, Props::REAL) == Some(true)
+}
+
+/// `d|f|/dx = re(conj(f)·f')/|f|` along a real `x`, for any complex `f`
+/// (`|f|² = f·conj(f)`, so `2|f|·d|f| = 2·re(conj(f)·f')`; this is
+/// SymPy's `Abs._eval_derivative` for an argument not known to be real).
+/// `abs_f` is the node `|f|`.
+fn abs_derivative(arena: &mut Arena, abs_f: ExprId, f: ExprId, df: ExprId) -> ExprId {
+    let conj_f = arena.conjugate(f);
+    let prod = arena.mul(&[conj_f, df]);
+    let re = arena.re(prod);
+    arena.div(re, abs_f)
+}
+
 /// Compute the derivative of a single node, assuming all children's
 /// derivatives are already available in `cache`.
 fn diff_node(
@@ -319,15 +354,37 @@ fn diff_node(
             arena.div(di, inner)
         }
 
-        // d/dx(|f|) = sign(f) * f'
+        // d/dx(|f|) = sign(f)·f' for a real f; re(conj(f)·f')/|f| in general.
         ExprNode::Abs(inner) => {
             let inner_diff = cache.get(&inner).copied().unwrap_or(arena.zero);
-            let sign_f = arena.sign(inner);
-            arena.mul(&[sign_f, inner_diff])
+            if arena.is_zero_structural(inner_diff) {
+                return arena.zero;
+            }
+            if real_for_real_symbols(arena, inner) {
+                let sign_f = arena.sign(inner);
+                arena.mul(&[sign_f, inner_diff])
+            } else {
+                abs_derivative(arena, id, inner, inner_diff)
+            }
         }
 
-        // d/dx(sign(f)) = 0 (piecewise, but zero almost everywhere)
-        ExprNode::Sign(_) => arena.zero,
+        // d/dx(sign(f)) = 0 for a real f (piecewise constant, zero almost
+        // everywhere); for a complex f, sign f = f/|f| and
+        // d(f/|f|) = f'/|f| − f·(d|f|)/|f|².
+        ExprNode::Sign(inner) => {
+            let inner_diff = cache.get(&inner).copied().unwrap_or(arena.zero);
+            if arena.is_zero_structural(inner_diff) || real_for_real_symbols(arena, inner) {
+                return arena.zero;
+            }
+            let abs_f = arena.abs(inner);
+            let d_abs = abs_derivative(arena, abs_f, inner, inner_diff);
+            let first = arena.div(inner_diff, abs_f);
+            let two = arena.int(2);
+            let abs_sq = arena.pow(abs_f, two);
+            let f_d_abs = arena.mul(&[inner, d_abs]);
+            let second = arena.div(f_d_abs, abs_sq);
+            arena.sub(first, second)
+        }
 
         // d/dx(H(f)) = δ(f) · f'
         ExprNode::Heaviside(inner) => {
