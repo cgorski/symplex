@@ -970,8 +970,13 @@ fn eval_numeric_pow(arena: &mut Arena, b: &Q, e: &Q) -> Option<ExprId> {
     // `(999999999999999/10¹⁵)¹⁰⁰⁰` — two 50,000-bit integers, their gcd
     // and their decimal strings — only to reject it took 0.55 s in a debug
     // build, at every construction of the power.)
-    if min_pow_digits(b.numer(), exp_u32) + min_pow_digits(b.denom(), exp_u32)
-        > arena.config.max_result_digits as f64 + 2.0
+    // `b^(±1)` has exactly the digits of `b`: exempt, since a rational
+    // already beyond the guard (from a literal, or a product of numbers)
+    // must still invert (0.29 kept `Pow(q, −1)` for such a `q`, a form a
+    // re-parse of its display folded; found by `fuzz_roundtrip`).
+    if exp_u32 != 1
+        && min_pow_digits(b.numer(), exp_u32) + min_pow_digits(b.denom(), exp_u32)
+            > arena.config.max_result_digits as f64 + 2.0
     {
         return None;
     }
@@ -995,9 +1000,11 @@ fn eval_numeric_pow(arena: &mut Arena, b: &Q, e: &Q) -> Option<ExprId> {
     };
 
     // Check the digit count doesn't exceed the guard.
-    let digit_count = result.numer().to_string().len() + result.denom().to_string().len();
-    if digit_count > arena.config.max_result_digits {
-        return None;
+    if exp_u32 != 1 {
+        let digit_count = result.numer().to_string().len() + result.denom().to_string().len();
+        if digit_count > arena.config.max_result_digits {
+            return None;
+        }
     }
 
     let nid = arena.intern_num(result);

@@ -7,10 +7,13 @@
 //! `const double tN = …;` temporaries for common subexpressions.
 //!
 //! Functions available in `<math.h>` are used directly (`sin`, `exp`, `pow`,
-//! `tgamma`, `lgamma`, `erf`, `erfc`, `fma`, `fmin`, `fmax`, `expm1`,
-//! `log1p`, …).  The helpers mirror the algorithms of the shared Rust runtime
-//! (`numeric_rt`) so that `compile()`, `to_rust_fn()`
-//! and `to_c_fn()` agree.
+//! `tgamma`, `lgamma`, `erf`, `erfc`, `fma`, `expm1`, `log1p`, …).  The
+//! helpers mirror the algorithms of the shared Rust runtime (`numeric_rt`)
+//! so that `compile()`, `to_rust_fn()` and `to_c_fn()` agree; `min`/`max`
+//! are the NaN-propagating `symplex_min`/`symplex_max` (`fmin` returns the
+//! other operand of a NaN).  Constants whose formula would not evaluate to
+//! their real value are folded to literals and non-real constants refused
+//! (`fold_constants_for_emission` in `output/codegen.rs`).
 //!
 //! The emitter walks the expression with an explicit stack (no recursion).
 
@@ -48,6 +51,8 @@ pub(crate) fn to_c_fn_with_options(
     options: &CodegenOptions,
 ) -> Result<String, SymplexError> {
     let ty = c_type(options.precision);
+    let folds = super::fold_constants_for_emission(arena, expr, "to_c_fn")?;
+    let expr = folds.expr;
 
     let (bindings, final_expr) = if options.cse {
         let r = crate::output::cse::cse(arena, expr);
@@ -62,13 +67,13 @@ pub(crate) fn to_c_fn_with_options(
 
     let mut body: Vec<String> = Vec::new();
     for (i, (_, value)) in bindings.iter().enumerate() {
-        let code = emit_expr(arena, *value, args, &cse_slots, options)?;
+        let code = emit_expr(arena, *value, args, &cse_slots, &folds.values, options)?;
         body.push(format!(
             "    const {ty} t{i} = {};",
             strip_outer_parens(&code)
         ));
     }
-    let result = emit_expr(arena, final_expr, args, &cse_slots, options)?;
+    let result = emit_expr(arena, final_expr, args, &cse_slots, &folds.values, options)?;
     body.push(format!("    return {};", strip_outer_parens(&result)));
 
     let params = if args.is_empty() {
@@ -164,7 +169,7 @@ enum Plan {
         exp: String,
     },
     PowF,
-    /// `fmin`/`fmax` fold over `n` children.
+    /// `symplex_min`/`symplex_max` fold over `n` children.
     MinMax(&'static str, usize),
     /// Ternary chain over `n` (cond, value) pairs.
     Piecewise(usize),
@@ -193,6 +198,8 @@ struct CEmitter<'a> {
     arena: &'a Arena,
     args: &'a [&'a str],
     cse_slots: &'a FxHashMap<ExprId, usize>,
+    /// Folded constants: symbol → value.
+    folds: &'a FxHashMap<ExprId, f64>,
     options: &'a CodegenOptions,
     suffix: &'static str,
     work: Vec<Frame>,
@@ -204,12 +211,14 @@ fn emit_expr(
     root: ExprId,
     args: &[&str],
     cse_slots: &FxHashMap<ExprId, usize>,
+    folds: &FxHashMap<ExprId, f64>,
     options: &CodegenOptions,
 ) -> Result<String, SymplexError> {
     let mut em = CEmitter {
         arena,
         args,
         cse_slots,
+        folds,
         options,
         suffix: match options.precision {
             Precision::F64 => "",
@@ -307,6 +316,9 @@ impl<'a> CEmitter<'a> {
             ExprNode::Symbol(sid) => {
                 if let Some(&slot) = self.cse_slots.get(&id) {
                     self.values.push(format!("t{slot}"));
+                } else if let Some(&value) = self.folds.get(&id) {
+                    let s = self.lit(value);
+                    self.values.push(s);
                 } else {
                     let name = arena.symbol_name(sid);
                     if self.args.contains(&name) {
@@ -549,7 +561,7 @@ impl<'a> CEmitter<'a> {
                     return Ok(());
                 }
                 let kids: Vec<(ExprId, Kind)> = ch.iter().map(|&c| (c, v)).collect();
-                self.schedule(id, Plan::MinMax("fmin", kids.len()), &kids);
+                self.schedule(id, Plan::MinMax("min", kids.len()), &kids);
             }
             ExprNode::Max(ch) => {
                 if ch.is_empty() {
@@ -557,7 +569,7 @@ impl<'a> CEmitter<'a> {
                     return Ok(());
                 }
                 let kids: Vec<(ExprId, Kind)> = ch.iter().map(|&c| (c, v)).collect();
-                self.schedule(id, Plan::MinMax("fmax", kids.len()), &kids);
+                self.schedule(id, Plan::MinMax("max", kids.len()), &kids);
             }
             ExprNode::Gamma(x) => self.schedule(id, Plan::Unary("tgamma"), &[(x, v)]),
             ExprNode::LogGamma(x) => self.schedule(id, Plan::Unary("lgamma"), &[(x, v)]),
@@ -855,11 +867,13 @@ impl<'a> CEmitter<'a> {
                 let be = self.pop_n(2);
                 format!("{}({}, {})", self.mf("pow"), be[0], be[1])
             }
+            // `symplex_min`/`symplex_max` propagate NaN like `compile()`
+            // (`fmin`/`fmax` return the other operand).
             Plan::MinMax(f, n) => {
                 let vals = self.pop_n(n);
                 let mut acc = vals[0].clone();
                 for v in &vals[1..] {
-                    acc = format!("{}({acc}, {v})", self.mf(f));
+                    acc = self.rt_call(f, None, &[acc, v.clone()]);
                 }
                 acc
             }
@@ -1122,6 +1136,20 @@ static inline int symplex_is_gamma_pole(double x) { return x <= 0.0 && symplex_i
         deps: &[],
         src: r#"
 static inline double symplex_sign(double x) { return x > 0.0 ? 1.0 : (x < 0.0 ? -1.0 : (x == 0.0 ? 0.0 : x)); }
+"#,
+    },
+    CHelper {
+        name: "min",
+        deps: &[],
+        src: r#"
+static inline double symplex_min(double a, double b) { return (a <= b || isnan(a)) ? a : b; }
+"#,
+    },
+    CHelper {
+        name: "max",
+        deps: &[],
+        src: r#"
+static inline double symplex_max(double a, double b) { return (a >= b || isnan(a)) ? a : b; }
 "#,
     },
     CHelper {

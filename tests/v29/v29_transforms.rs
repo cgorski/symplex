@@ -84,23 +84,21 @@ fn a_residue_needs_an_analytic_numerator_not_a_finite_value() {
     //   z*exp(1/z) at 0              -> 0.5
     //   z**2*sin(1/z) at 0           -> -0.166666666666666666666666666667
     //   z*cos(1/(2*(z-1))) at 1      -> -0.125
-    // which the pole formulas cannot produce: refuse honestly.
+    // which the pole formulas cannot produce.  They were then refused; the
+    // residue theorem on the sphere now computes them (v29_leftovers).
     let ctx = Context::new();
     let z = ctx.symbol("z");
     let zero = ctx.int(0);
-    for (f, point) in [
-        ("z*exp(1/z)", ctx.int(0)),
-        ("z^2*sin(1/z)", ctx.int(0)),
-        ("z*cos(1/2/(z - 1))", ctx.int(1)),
+    for (f, point, expected) in [
+        ("z*exp(1/z)", ctx.int(0), ctx.rational(1, 2)),
+        ("z^2*sin(1/z)", ctx.int(0), ctx.rational(-1, 6)),
+        ("z*cos(1/2/(z - 1))", ctx.int(1), ctx.rational(-1, 8)),
     ] {
         let e = ctx.parse(f).unwrap();
-        assert!(
-            e.try_residue(&z, &point).is_err(),
-            "Res({f}) must not be a number"
-        );
-        assert!(
-            e.residue(&z, &point).has_unevaluated(),
-            "Res({f}) stays formal"
+        assert_eq!(
+            e.try_residue(&z, &point).unwrap(),
+            expected,
+            "Res({f}) is not 0"
         );
     }
     // Poles keep working: Res(e^z/z², 0) = 1 (the documented example).

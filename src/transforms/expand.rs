@@ -229,8 +229,67 @@ fn algebraic_skeleton(arena: &Arena, root: ExprId) -> FxHashSet<ExprId> {
     set
 }
 
+/// Upper bound on the extra passes of [`expand_with`].  Each pass removes
+/// one level of the nesting that makes them necessary (a sum under a square
+/// root that a distributed power squares out), so a few suffice.
+const MAX_EXTRA_EXPAND_PASSES: usize = 4;
+
 /// Expand with explicit hints — see [`ExpandOpts`].
+///
+/// One bottom-up pass ([`expand_pass`]) distributes every product and power
+/// it visits, but the canonical constructors fold the *new* terms it builds:
+/// in `(x + √(4 − √5))⁴` the term `6x²·(√(4 − √5))²` becomes
+/// `6x²·(4 − √5)` and `(√(4 − √5))⁴` becomes `(4 − √5)²`, a product
+/// with a sum factor and an integer power of a sum that the pass does not
+/// revisit.  Up to 0.29 they stayed, so `expand` was not idempotent (the
+/// second call expanded them) and its result was not the sum of products
+/// [`expand`] promises.  Further passes run while such a node remains and
+/// the last pass changed something (a product left alone for its size stays
+/// as it is).
 pub(crate) fn expand_with(arena: &mut Arena, expr: ExprId, opts: &ExpandOpts) -> ExprId {
+    let mut cur = expand_pass(arena, expr, opts);
+    for _ in 0..MAX_EXTRA_EXPAND_PASSES {
+        if !has_unexpanded_node(arena, cur, opts) {
+            break;
+        }
+        let next = expand_pass(arena, cur, opts);
+        if next == cur {
+            break;
+        }
+        cur = next;
+    }
+    cur
+}
+
+/// Does `root` still contain, where [`expand_pass`] would act, a product
+/// with a sum factor (`mul`) or a positive integer power of a sum
+/// (`multinomial`)?
+fn has_unexpanded_node(arena: &Arena, root: ExprId, opts: &ExpandOpts) -> bool {
+    let nodes: Vec<ExprId> = if opts.deep {
+        walk::post_order_ids(arena, root)
+    } else {
+        algebraic_skeleton(arena, root).into_iter().collect()
+    };
+    nodes.into_iter().any(|id| match arena.node(id) {
+        ExprNode::Mul(ch) => {
+            opts.mul
+                && ch
+                    .iter()
+                    .any(|&c| matches!(arena.node(c), ExprNode::Add(_)))
+        }
+        ExprNode::Pow(b, e) => {
+            opts.multinomial
+                && matches!(arena.node(*b), ExprNode::Add(_))
+                && arena
+                    .as_num(*e)
+                    .is_some_and(|n| n.is_integer() && n.is_positive())
+        }
+        _ => false,
+    })
+}
+
+/// One bottom-up expansion pass of [`expand_with`].
+fn expand_pass(arena: &mut Arena, expr: ExprId, opts: &ExpandOpts) -> ExprId {
     // Bottom-up: expand children first, then handle the current node.
     let post_order = walk::post_order_ids(arena, expr);
     let mut cache = rustc_hash::FxHashMap::<ExprId, ExprId>::default();

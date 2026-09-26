@@ -297,15 +297,18 @@ fn powdenest_pow(arena: &mut Arena, original: ExprId, base: ExprId, exp: ExprId)
     // Check safety: exponent must be integer, OR all factors nonneg.
     let exp_is_integer = arena.as_num(exp).is_some_and(|r| r.is_integer());
     let all_factors_nonneg = children.iter().all(|&c| {
-        // A factor is nonneg if it's a positive rational number or a Pow
-        // with a positive rational base (e.g., √5 = Pow(5, 1/2)).
+        // A factor is nonneg if it's a positive rational number or a
+        // positive rational to a rational power (e.g., √5 = Pow(5, 1/2)).
+        // A non-real exponent makes the power complex: `2^x` for
+        // `x = 2i` is `e^{2i ln 2}`, and `√(2^x·3^x)` was split into
+        // `√(2^x)·√(3^x)`, the negative of the value at `x = −1/100 + 2i`.
         if let Some(r) = arena.as_num(c) {
             return !r.is_negative();
         }
-        if let ExprNode::Pow(inner_base, _) = arena.node(c)
+        if let ExprNode::Pow(inner_base, inner_exp) = arena.node(c)
             && let Some(r) = arena.as_num(*inner_base)
         {
-            return r.is_positive();
+            return r.is_positive() && arena.as_num(*inner_exp).is_some();
         }
         false
     });

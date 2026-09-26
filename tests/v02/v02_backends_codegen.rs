@@ -404,9 +404,11 @@ fn piecewise_booleans_and_elementary_nodes() {
         + x.dirac_delta();
     let code = e.to_rust_fn("elem", &["x", "y"]).unwrap();
     assert_valid_rust(&code, "elem");
+    // min/max propagate NaN like `compile()` (0.30): `f64::min`/`max` drop
+    // a NaN operand, so they are emitted as comparisons with a NaN test.
     for needle in [
-        ".min(",
-        ".max(",
+        "if m0 <= m1 || m0.is_nan() { m0 } else { m1 }",
+        "if m0 >= m1 || m0.is_nan() { m0 } else { m1 }",
         "if x > 0.0_f64 { 1.0_f64 }",
         ".floor()",
         ".ceil()",

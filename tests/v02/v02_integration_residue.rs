@@ -76,12 +76,20 @@ fn more_higher_order_poles() {
 
 #[test]
 fn essential_singularity_stays_formal() {
+    // Res(e^{1/z}, 0) = 1, the coefficient of 1/z in Σ z^{-n}/n!; this
+    // was kept formal until the residue theorem on the sphere computed it
+    // (mpmath 1.3.0: quad(lambda th: exp(1/expj(th))*expj(th), [0, 2*pi])
+    // /(2*pi) -> 1.0).
     let ctx = Context::new();
     let z = ctx.symbol("z");
     let f = (&ctx.int(1) / &z).exp();
-    let r = f.residue(&z, &ctx.int(0));
+    assert_eq!(f.try_residue(&z, &ctx.int(0)).unwrap(), ctx.int(1));
+    // e^z·e^{1/z} is essential at ∞ too (its residue is the Bessel value
+    // I₁(2), not produced): formal.
+    let g = &f * &z.exp();
+    let r = g.residue(&z, &ctx.int(0));
     assert!(r.has_unevaluated(), "{r}");
-    assert!(f.try_residue(&z, &ctx.int(0)).is_err());
+    assert!(g.try_residue(&z, &ctx.int(0)).is_err());
 }
 
 #[test]
@@ -102,9 +110,12 @@ fn residue_at_infinity() {
     let rinf = f.residue_at_infinity(&z);
     let total = (&(&r0 + &r1) + &rinf).eval();
     assert_eq!(format!("{total}"), "0");
-    // residue at ∞ of a function without a Laurent tail → formal node
+    // An entire function has residue 0 at ∞ (∮ over a large circle
+    // vanishes); e^{z²} was kept formal before the essential-singularity
+    // route.  A branch point at ∞ stays formal.
     let g = (&z * &z).exp();
-    assert!(g.residue_at_infinity(&z).has_unevaluated());
+    assert_eq!(format!("{}", g.residue_at_infinity(&z)), "0");
+    assert!(z.sqrt().residue_at_infinity(&z).has_unevaluated());
 }
 
 #[test]

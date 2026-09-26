@@ -413,3 +413,21 @@ fn a_product_regroups_factors_that_come_to_share_a_base() {
     assert_eq!(e, c);
     assert_eq!(ctx.parse(&e.to_string()).unwrap(), e);
 }
+
+/// Before: the reciprocal of a rational beyond the digit guard stayed
+/// `Pow(q, −1)` (the guard refused `q^(−1)`, although it has exactly the
+/// digits of `q`), while the display `1/q` parsed back as the rational
+/// `1/q`: not canonical (found by `fuzz_roundtrip`).  `q^(±1)` is exempt
+/// from the guard.
+#[test]
+fn the_reciprocal_of_a_rational_beyond_the_digit_guard_folds() {
+    let ctx = Context::new();
+    let digits = format!("7{}1", "0".repeat(6000));
+    let q = ctx.parse(&digits).unwrap();
+    assert!(q.as_rational().is_some());
+    let r = ctx.int(1) / &q;
+    assert!(r.as_rational().is_some(), "{}", r.to_srepr().len());
+    assert_eq!(ctx.parse(&r.to_string()).unwrap(), r);
+    // Powers other than ±1 beyond the guard still stay symbolic.
+    assert!(q.powi(2).as_rational().is_none());
+}

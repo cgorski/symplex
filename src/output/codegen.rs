@@ -20,6 +20,134 @@ pub(crate) mod numeric_rt;
 pub(crate) mod rt_embed;
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Constants the emitted formula cannot compute
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Folded constants are named `__cse_{FOLD_INDEX_BASE + k}`: far above any
+/// CSE binding index, so the Rust emitter's lookup of CSE symbols resolved
+/// to constants prints them as literals.
+pub(crate) const FOLD_INDEX_BASE: usize = usize::MAX / 2;
+
+/// An expression prepared for emission by [`fold_constants_for_emission`].
+pub(crate) struct EmissionFolds {
+    /// The expression, each folded constant replaced by a fresh symbol.
+    pub(crate) expr: ExprId,
+    /// Folded symbol → its `f64` value.
+    pub(crate) values: FxHashMap<ExprId, f64>,
+    /// The same values by the index `k + FOLD_INDEX_BASE` in the symbol's
+    /// name (the Rust emitter's CSE-constant table).
+    pub(crate) by_index: FxHashMap<usize, f64>,
+}
+
+/// Replace every symbol-free subexpression whose formula the emitted code
+/// would evaluate to a non-finite value by its value from the certified
+/// evaluator, as `compile()` does (`abs(atanh(9))` = 1.5747… went through
+/// the complex `atanh(9)`: `math.atanh(9)` raised `ValueError` in Python,
+/// C and Rust returned NaN), and refuse a constant that is not real.
+///
+/// A maximal symbol-free compound subexpression is lowered operation by
+/// operation by the real `f64` VM ([`compile_raw`], the semantics shared by
+/// the back ends); when that gives a finite value its formula is kept
+/// (`math.sqrt(2)`, `math.pi/2`, the real odd root of a negative constant),
+/// otherwise the evaluator decides: a real value is folded to a literal
+/// (also where no back end has the function: `zeta(3)`), a non-real one
+/// (`atanh(9)`, `asin(2)`, `ln(−1)`) is an error, anything else keeps its
+/// formula and its parts are examined.  Iterative (explicit stack).
+///
+/// [`compile_raw`]: crate::output::lambdify::compile_raw
+pub(crate) fn fold_constants_for_emission(
+    arena: &mut Arena,
+    root: ExprId,
+    operation: &str,
+) -> Result<EmissionFolds, SymplexError> {
+    // Symbol-freeness of every node, bottom-up.
+    let mut has_symbol: FxHashMap<ExprId, bool> = FxHashMap::default();
+    for id in crate::base::walk::post_order_ids(arena, root) {
+        let node = arena.node(id);
+        let mut any = matches!(node, ExprNode::Symbol(_));
+        node.for_each_child(|c| any |= has_symbol.get(&c).copied().unwrap_or(true));
+        has_symbol.insert(id, any);
+    }
+    let mut replacements: Vec<(ExprId, ExprId)> = Vec::new();
+    let mut values: FxHashMap<ExprId, f64> = FxHashMap::default();
+    let mut by_index: FxHashMap<usize, f64> = FxHashMap::default();
+    let mut stack = vec![root];
+    let mut seen = rustc_hash::FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let node = arena.node(id).clone();
+        let atom = matches!(
+            node,
+            ExprNode::Num(_)
+                | ExprNode::Symbol(_)
+                | ExprNode::Pi
+                | ExprNode::E
+                | ExprNode::EulerGamma
+                | ExprNode::Catalan
+                | ExprNode::GoldenRatio
+                | ExprNode::Infinity
+                | ExprNode::NegInfinity
+                | ExprNode::NaN
+                | ExprNode::ComplexInfinity
+                | ExprNode::ImaginaryUnit
+        );
+        let boolean = matches!(
+            node,
+            ExprNode::BoolTrue
+                | ExprNode::BoolFalse
+                | ExprNode::Gt(_, _)
+                | ExprNode::Ge(_, _)
+                | ExprNode::Eq_(_, _)
+                | ExprNode::Ne(_, _)
+                | ExprNode::And(_)
+                | ExprNode::Or(_)
+                | ExprNode::Not(_)
+        );
+        if atom || boolean || has_symbol.get(&id).copied().unwrap_or(true) {
+            node.for_each_child(|c| stack.push(c));
+            continue;
+        }
+        let naive = crate::output::lambdify::compile_raw(arena, id, &[])
+            .ok()
+            .map(|f| f.call(&[]));
+        if naive.is_some_and(f64::is_finite) {
+            continue;
+        }
+        match crate::transforms::evalf::evalf_f64(arena, id) {
+            Ok(v) if v.is_finite() => {
+                let k = FOLD_INDEX_BASE + replacements.len();
+                let sym = arena.symbol(&format!("__cse_{k}"));
+                replacements.push((id, sym));
+                values.insert(sym, v);
+                by_index.insert(k, v);
+            }
+            Ok(_) => {}
+            Err(_) => match crate::transforms::evalf::evalf_complex64(arena, id) {
+                Ok(z) if z.im != 0.0 && z.re.is_finite() && z.im.is_finite() => {
+                    return Err(SymplexError::NotImplemented(format!(
+                        "{operation}: the constant `{}` is not real ({} {} {}i); \
+                         a real-valued function cannot represent it",
+                        arena.display(id),
+                        z.re,
+                        if z.im < 0.0 { '-' } else { '+' },
+                        z.im.abs()
+                    )));
+                }
+                _ => node.for_each_child(|c| stack.push(c)),
+            },
+        }
+    }
+    let expr = crate::transforms::subs::subs_map(arena, root, &replacements);
+    Ok(EmissionFolds {
+        expr,
+        values,
+        by_index,
+    })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // CodegenOptions types
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -432,6 +560,8 @@ pub(crate) fn to_rust_fn_with_options(
     options: &CodegenOptions,
 ) -> Result<String, SymplexError> {
     let float_type = options.precision.type_name();
+    let folds = fold_constants_for_emission(arena, expr, "to_rust_fn")?;
+    let expr = folds.expr;
 
     // Run CSE if requested
     let (bindings_list, final_expr) = if options.cse {
@@ -442,7 +572,7 @@ pub(crate) fn to_rust_fn_with_options(
     };
 
     // Post-CSE constant propagation: evaluate pure-constant bindings
-    let mut cse_constants: FxHashMap<usize, f64> = FxHashMap::default();
+    let mut cse_constants: FxHashMap<usize, f64> = folds.by_index;
     let mut kept_bindings: Vec<(usize, ExprId)> = Vec::new();
     for (i, (_, binding_expr)) in bindings_list.iter().enumerate() {
         if is_pure_constant(arena, *binding_expr, &cse_constants)
@@ -586,6 +716,23 @@ pub(crate) fn matrix_to_rust_fn(
 ) -> Result<String, SymplexError> {
     let float_type = options.precision.type_name();
     let total = nrows * ncols;
+    let mut folded_entries: Vec<ExprId> = Vec::with_capacity(entries.len());
+    let mut folded_values: FxHashMap<usize, f64> = FxHashMap::default();
+    for &e in entries {
+        let folds = fold_constants_for_emission(arena, e, "matrix_to_rust_fn")?;
+        // Renumber so the symbols of different entries stay distinct.
+        let mut renames: Vec<(ExprId, ExprId)> = Vec::new();
+        for (&sym, &v) in &folds.values {
+            let k = FOLD_INDEX_BASE + folded_values.len();
+            let fresh = arena.symbol(&format!("__cse_{k}"));
+            renames.push((sym, fresh));
+            folded_values.insert(k, v);
+        }
+        folded_entries.push(crate::transforms::subs::subs_map(
+            arena, folds.expr, &renames,
+        ));
+    }
+    let entries = &folded_entries[..];
 
     // Run multi-expression CSE if requested
     let (bindings_list, final_entries) = if options.cse {
@@ -596,7 +743,7 @@ pub(crate) fn matrix_to_rust_fn(
     };
 
     // Post-CSE constant propagation: evaluate pure-constant bindings
-    let mut cse_constants: FxHashMap<usize, f64> = FxHashMap::default();
+    let mut cse_constants: FxHashMap<usize, f64> = folded_values;
     let mut kept_bindings: Vec<(usize, ExprId)> = Vec::new();
     for (i, (_, binding_expr)) in bindings_list.iter().enumerate() {
         if is_pure_constant(arena, *binding_expr, &cse_constants)
@@ -737,10 +884,10 @@ fn append_cfg_gated_module(lines: &mut Vec<String>, precision: Precision) {
         "    #[inline] pub fn powi(base: {ft}, exp: i32) -> {ft} {{ base.powi(exp) }}"
     ));
     lines.push(format!(
-        "    #[inline] pub fn min(a: {ft}, b: {ft}) -> {ft} {{ a.min(b) }}"
+        "    #[inline] pub fn min(a: {ft}, b: {ft}) -> {ft} {{ if a <= b || a.is_nan() {{ a }} else {{ b }} }}"
     ));
     lines.push(format!(
-        "    #[inline] pub fn max(a: {ft}, b: {ft}) -> {ft} {{ a.max(b) }}"
+        "    #[inline] pub fn max(a: {ft}, b: {ft}) -> {ft} {{ if a >= b || a.is_nan() {{ a }} else {{ b }} }}"
     ));
     lines.push(format!(
         "    #[inline] pub fn expm1(x: {ft}) -> {ft} {{ x.exp_m1() }}"
@@ -789,10 +936,10 @@ fn append_cfg_gated_module(lines: &mut Vec<String>, precision: Precision) {
         "    #[inline] pub fn powi(base: {ft}, exp: i32) -> {ft} {{ libm::pow(base as f64, exp as f64) as {ft} }}"
     ));
     lines.push(format!(
-        "    #[inline] pub fn min(a: {ft}, b: {ft}) -> {ft} {{ libm::fmin(a as f64, b as f64) as {ft} }}"
+        "    #[inline] pub fn min(a: {ft}, b: {ft}) -> {ft} {{ if a <= b || a.is_nan() {{ a }} else {{ b }} }}"
     ));
     lines.push(format!(
-        "    #[inline] pub fn max(a: {ft}, b: {ft}) -> {ft} {{ libm::fmax(a as f64, b as f64) as {ft} }}"
+        "    #[inline] pub fn max(a: {ft}, b: {ft}) -> {ft} {{ if a >= b || a.is_nan() {{ a }} else {{ b }} }}"
     ));
     lines.push(format!(
         "    #[inline] pub fn expm1(x: {ft}) -> {ft} {{ libm::expm1(x as f64) as {ft} }}"
@@ -2351,25 +2498,26 @@ fn emit_atan2(
 }
 
 /// Emit a min call.
+///
+/// NaN propagates, as in `compile()` and the other back ends: `f64::min`
+/// and `libm::fmin` return the other operand (IEEE `minNum`), so
+/// `min(x, NaN)` was `x` here and NaN in the VM.  Each operand is
+/// evaluated once.
 fn emit_min(a_code: &str, b_code: &str, options: &CodegenOptions) -> String {
     match options.math_backend {
-        MathBackend::Std => format!("{}.min({b_code})", receiver(a_code)),
-        MathBackend::Libm => {
-            let ft = options.precision.type_name();
-            format!("libm::fmin({a_code} as f64, {b_code} as f64) as {ft}")
-        }
+        MathBackend::Std | MathBackend::Libm => format!(
+            "{{ let (m0, m1) = ({a_code}, {b_code}); if m0 <= m1 || m0.is_nan() {{ m0 }} else {{ m1 }} }}"
+        ),
         MathBackend::CfgGated => format!("math::min({a_code}, {b_code})"),
     }
 }
 
-/// Emit a max call.
+/// Emit a max call (NaN-propagating, see [`emit_min`]).
 fn emit_max(a_code: &str, b_code: &str, options: &CodegenOptions) -> String {
     match options.math_backend {
-        MathBackend::Std => format!("{}.max({b_code})", receiver(a_code)),
-        MathBackend::Libm => {
-            let ft = options.precision.type_name();
-            format!("libm::fmax({a_code} as f64, {b_code} as f64) as {ft}")
-        }
+        MathBackend::Std | MathBackend::Libm => format!(
+            "{{ let (m0, m1) = ({a_code}, {b_code}); if m0 >= m1 || m0.is_nan() {{ m0 }} else {{ m1 }} }}"
+        ),
         MathBackend::CfgGated => format!("math::max({a_code}, {b_code})"),
     }
 }

@@ -19,10 +19,26 @@
 //!    `D`) must be *analytic* at `t = 0`.  That is certified structurally
 //!    ([`analytic_at_zero`]); a finite value `N(0)` is not enough —
 //!    `t·e^{1/t}` is `0` at `t = 0` after `0·x → 0`, and `t²·sin(1/t)` has
-//!    real limits although `t = 0` is an essential singularity (residues
-//!    `1/2` and `−1/6`, which were reported as `0`).  If the certificate
-//!    fails or nothing above succeeds, an error is returned and the caller
-//!    keeps a formal `Residue` node.
+//!    real limits although `t = 0` is an essential singularity.
+//! 5. When the certificate fails, `t = 0` may be an essential singularity.
+//!    If `g` is single-valued and analytic on the Riemann sphere except at
+//!    `0` and finitely many poles — rational functions of `t` times entire
+//!    functions (`exp`, `sin`, `cos`, `sinh`, `cosh`, `erf`, `erfc`, `c^w`)
+//!    of Laurent polynomials in `1/t` ([`singular_polys_off_origin`]) —
+//!    the residue theorem on the sphere gives
+//!    `Res₀ g = −Res_∞ g − Σ_{p ≠ 0} Res_p g`, where the other poles `p` are
+//!    the (explicitly solved) roots of the polynomial denominators and
+//!    `Res_∞`, `Res_p` are residues at poles of finite order (steps 2–3).
+//!    This is the coefficient of `t⁻¹` of the product of the Laurent
+//!    series: for `g = P(t)·h(1/t)` with `P` a polynomial it is the finite
+//!    sum `Σₙ pₙ₋₁ hₙ` (`Res(z²e^{1/z}, 0) = 1/6`, `Res(z²sin(1/z), 0) =
+//!    −1/6`); for a rational `P` with other poles the infinite series sums
+//!    to the closed form (`Res(e^{1/z}/(z − 1), 0) = 1 − e`).  When the
+//!    series does not close this way (`e^z·e^{1/z}`: `∞` is essential too,
+//!    the value is `I₁(2)`), the residue is refused.
+//!
+//! If nothing above succeeds, an error is returned and the caller keeps a
+//! formal `Residue` node.
 
 use num_bigint::BigInt;
 use num_traits::One;
@@ -52,13 +68,26 @@ pub(crate) fn residue(
     var: ExprId,
     point: ExprId,
 ) -> Result<ExprId, SymplexError> {
+    residue_with(arena, expr, var, point, true)
+}
+
+/// [`residue`], with the essential-singularity route (module step 5)
+/// enabled or not.  The route itself computes residues at poles only
+/// (`essential = false`), so the mutual calls stop after one level.
+fn residue_with(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    essential: bool,
+) -> Result<ExprId, SymplexError> {
     if !matches!(arena.node(var), ExprNode::Symbol(_)) {
         return Err(failed("residue variable must be a symbol"));
     }
     if point == arena.infinity() {
-        return residue_at_infinity(arena, expr, var);
+        return residue_at_infinity_with(arena, expr, var, essential);
     }
-    let result = residue_inner(arena, expr, var, point)?;
+    let result = residue_inner(arena, expr, var, point, essential)?;
     // The limit engine can leak internal dummy symbols into a half-finished
     // result; a residue may only mention symbols of the input.
     let mut allowed: Vec<ExprId> = walk::free_symbols(arena, expr);
@@ -78,6 +107,7 @@ fn residue_inner(
     expr: ExprId,
     var: ExprId,
     point: ExprId,
+    essential: bool,
 ) -> Result<ExprId, SymplexError> {
     // Shift the pole to the origin: g(t) = f(point + t).
     let t = arena.symbol("__res_t");
@@ -90,6 +120,29 @@ fn residue_inner(
         return Ok(arena.zero());
     }
 
+    match residue_at_pole(arena, g, t) {
+        Err(pole_err) if essential => essential_residue(arena, g, t).map_err(|e| {
+            failed(format!(
+                "{}; as an essential singularity: {}",
+                pole_reason(&pole_err),
+                pole_reason(&e)
+            ))
+        }),
+        other => other,
+    }
+}
+
+/// The reason text of a [`failed`] error (the whole message otherwise).
+fn pole_reason(e: &SymplexError) -> String {
+    match e {
+        SymplexError::ComputationFailed { reason, .. } => reason.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// Residue of `g` at `t = 0` when it is a pole of finite order (module
+/// steps 2–4); an error for anything else.
+fn residue_at_pole(arena: &mut Arena, g: ExprId, t: ExprId) -> Result<ExprId, SymplexError> {
     // Clear nested fractions (e.g. from f(1/t)) so that the denominator is a
     // genuine polynomial whenever f is rational.
     let g = crate::transforms::integrate::clear_nested_fractions(arena, g, t);
@@ -204,11 +257,197 @@ fn residue_by_limits(arena: &mut Arena, g: ExprId, t: ExprId) -> Result<ExprId, 
     ))
 }
 
+/// Residue at an essential singularity at `t = 0` by the residue theorem
+/// on the Riemann sphere (module step 5):
+/// `Res₀ g = −Res_∞ g − Σ_{p ≠ 0} Res_p g`.
+///
+/// Valid because [`singular_polys_off_origin`] certifies that `g` is
+/// analytic on `ℂ ∖ {0}` except at the roots of the returned polynomials,
+/// all of which are found explicitly ([`nonzero_roots`]); the residues at
+/// those roots and at `∞` are computed with the pole formulas only, which
+/// refuse anything but a pole of finite order (so a second essential
+/// singularity, at `∞` or elsewhere, makes the whole computation refuse).
+fn essential_residue(arena: &mut Arena, g: ExprId, t: ExprId) -> Result<ExprId, SymplexError> {
+    let polys = singular_polys_off_origin(arena, g, t).ok_or_else(|| {
+        failed("not a rational function times entire functions of polynomials in 1/(z − z0)")
+    })?;
+    let roots = nonzero_roots(arena, &polys, t)
+        .ok_or_else(|| failed("the other poles could not all be found exactly"))?;
+    let mut parts: Vec<ExprId> = Vec::with_capacity(roots.len() + 1);
+    parts.push(residue_at_infinity_with(arena, g, t, false)?);
+    for p in roots {
+        parts.push(residue_inner(arena, g, t, p, false)?);
+    }
+    let sum = arena.add(&parts);
+    let neg = arena.neg(sum);
+    let res = eval::eval(arena, neg);
+    if !is_finite_constant(arena, res, t) {
+        return Err(failed(
+            "the residues of the other singularities are not finite",
+        ));
+    }
+    Ok(res)
+}
+
+/// Certify that `g` is single-valued and analytic on `ℂ ∖ {0}` except at
+/// the roots of finitely many polynomials in `t`, and return those
+/// polynomials (the bases of negative integer powers).
+///
+/// Every subexpression depending on `t` is checked with an explicit stack:
+/// sums, products and non-negative integer powers; the entire functions
+/// `exp`, `sin`, `cos`, `sinh`, `cosh`, `erf`, `erfc` and `c^w` (`c ≠ 0`
+/// free of `t`); negative integer powers of products of polynomials in `t`
+/// (poles at their roots) and of exponentials (which never vanish).
+/// Anything else — fractional powers of `t`, `ln`, `tan`, `1/(e^{1/t} − 1)`
+/// (poles accumulating at 0) — gives `None`.
+fn singular_polys_off_origin(arena: &mut Arena, g: ExprId, t: ExprId) -> Option<Vec<ExprId>> {
+    let mut polys: Vec<ExprId> = Vec::new();
+    let mut stack = vec![g];
+    let mut seen = rustc_hash::FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) || !walk::contains(arena, id, t) {
+            continue;
+        }
+        let node = arena.node(id).clone();
+        let ok = match node {
+            ExprNode::Symbol(_) | ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) => true,
+            ExprNode::Exp(_)
+            | ExprNode::Sin(_)
+            | ExprNode::Cos(_)
+            | ExprNode::Sinh(_)
+            | ExprNode::Cosh(_)
+            | ExprNode::Erf(_)
+            | ExprNode::Erfc(_) => true,
+            ExprNode::Pow(b, x) => {
+                let int_exp = arena.as_num(x).filter(|q| q.is_integer()).cloned();
+                match int_exp {
+                    Some(q) if !num_traits::Signed::is_negative(&q) => true,
+                    Some(_) => {
+                        let factors: Vec<ExprId> = match arena.node(b) {
+                            ExprNode::Mul(fs) => fs.to_vec(),
+                            _ => vec![b],
+                        };
+                        let mut all = true;
+                        for f in factors {
+                            if !walk::contains(arena, f, t)
+                                || matches!(arena.node(f), ExprNode::Exp(_))
+                            {
+                                continue;
+                            }
+                            if calculus_util::poly_coeffs_symbolic(arena, f, t).is_some() {
+                                polys.push(f);
+                            } else {
+                                all = false;
+                                break;
+                            }
+                        }
+                        all
+                    }
+                    // c^w = exp(w·ln c) is entire in w for a constant c ≠ 0.
+                    None => {
+                        !walk::contains(arena, b, t) && {
+                            let pv = point_value(arena, b);
+                            pv.nonzero
+                        }
+                    }
+                }
+            }
+            _ => false,
+        };
+        if !ok {
+            return None;
+        }
+        node.for_each_child(|c| stack.push(c));
+    }
+    Some(polys)
+}
+
+/// All distinct nonzero roots of the polynomials `polys` in `t`, or `None`
+/// unless they are certainly all found.
+///
+/// Polynomials with rational coefficients are multiplied together and made
+/// square-free, so a root shared by two factors or repeated is counted
+/// once; the solver's distinct roots are complete exactly when their
+/// number is the degree.  A polynomial with symbolic coefficients (at most
+/// one) must have as many distinct roots found as its degree.
+fn nonzero_roots(arena: &mut Arena, polys: &[ExprId], t: ExprId) -> Option<Vec<ExprId>> {
+    use crate::poly::Poly;
+    let mut rational = Poly::from_coeffs(vec![num_rational::Ratio::one()]);
+    let mut symbolic: Vec<ExprId> = Vec::new();
+    for &p in polys {
+        let coeffs = calculus_util::poly_coeffs_symbolic(arena, p, t)?;
+        // Divide out the root at 0: p̃(t) = p(t)/t^m.
+        let m = coeffs.iter().position(|&c| !arena.is_zero_structural(c))?;
+        let tail = &coeffs[m..];
+        if tail.len() <= 1 {
+            continue;
+        }
+        let nums: Option<Vec<num_rational::Ratio<BigInt>>> =
+            tail.iter().map(|&c| arena.as_num(c).cloned()).collect();
+        if let Some(nums) = nums {
+            rational = rational.mul(&Poly::from_coeffs(nums));
+        } else {
+            let mut terms: Vec<ExprId> = Vec::with_capacity(tail.len());
+            for (k, &c) in tail.iter().enumerate() {
+                let e = arena.int(k as i64);
+                let tk = arena.pow(t, e);
+                terms.push(arena.mul(&[c, tk]));
+            }
+            let q = arena.add(&terms);
+            if !symbolic.contains(&q) {
+                symbolic.push(q);
+            }
+        }
+    }
+    if symbolic.len() > 1 {
+        return None;
+    }
+    let mut roots: Vec<ExprId> = Vec::new();
+    let mut solve_all = |arena: &mut Arena, q: ExprId, degree: usize| -> Option<()> {
+        let found = crate::transforms::solve::solve(arena, q, t);
+        if found.len() != degree {
+            return None;
+        }
+        for s in found {
+            let v = eval::eval(arena, s.value);
+            if arena.is_zero_structural(v) || walk::contains(arena, v, t) {
+                return None;
+            }
+            if !roots.contains(&v) {
+                roots.push(v);
+            }
+        }
+        Some(())
+    };
+    let sqf = rational.square_free_part();
+    let degree = sqf.degree().unwrap_or(0);
+    if degree > 0 {
+        let q = crate::poly::polybridge::poly_to_expr(arena, &sqf, t);
+        solve_all(arena, q, degree)?;
+    }
+    if let Some(&q) = symbolic.first() {
+        let degree = calculus_util::poly_coeffs_symbolic(arena, q, t)?.len() - 1;
+        solve_all(arena, q, degree)?;
+    }
+    Some(roots)
+}
+
 /// Residue at infinity: `Res_{z=∞} f = −Res_{t=0} f(1/t)/t²`.
 pub(crate) fn residue_at_infinity(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
+) -> Result<ExprId, SymplexError> {
+    residue_at_infinity_with(arena, expr, var, true)
+}
+
+/// [`residue_at_infinity`] with the essential-singularity route enabled or
+/// not (see [`residue_with`]).
+fn residue_at_infinity_with(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    essential: bool,
 ) -> Result<ExprId, SymplexError> {
     if !matches!(arena.node(var), ExprNode::Symbol(_)) {
         return Err(failed("residue variable must be a symbol"));
@@ -222,7 +461,7 @@ pub(crate) fn residue_at_infinity(
     let h = arena.mul(&[f_inv, t_m2]);
     let h = eval::eval(arena, h);
     let zero = arena.zero();
-    let r = residue(arena, h, t, zero)?;
+    let r = residue_with(arena, h, t, zero, essential)?;
     let neg = arena.neg(r);
     Ok(eval::eval(arena, neg))
 }
@@ -540,13 +779,20 @@ mod tests {
     }
 
     #[test]
-    fn essential_singularity_fails() {
+    fn essential_singularity_by_the_residue_theorem() {
+        // Res(e^{1/z}, 0) = 1, the coefficient of 1/z in Σ z^{-n}/n! (this
+        // was refused; before that it was 0).
         let mut a = Arena::new();
         let z = a.symbol("z");
         let inv = a.pow(z, a.neg_one());
         let f = a.exp(inv);
         let zero = a.zero();
-        assert!(residue(&mut a, f, z, zero).is_err());
+        let r = residue(&mut a, f, z, zero).unwrap();
+        assert_eq!(show(&a, r), "1");
+        // e^z·e^{1/z}: ∞ is essential too (the residue is I₁(2)): refused.
+        let ez = a.exp(z);
+        let g = a.mul(&[ez, f]);
+        assert!(residue(&mut a, g, z, zero).is_err());
     }
 
     #[test]

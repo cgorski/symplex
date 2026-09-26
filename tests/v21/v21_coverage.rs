@@ -982,12 +982,10 @@ fn latex_of_formal_limit_and_residue_nodes() {
     let lim = (1 / &x).limit(&x, &ctx.int(0));
     assert!(lim.has_unevaluated());
     assert_eq!(lim.to_latex(), r"\lim_{x \to 0} \frac{1}{x}");
-    let res = (1 / &x).exp().residue(&x, &ctx.int(0));
+    // (A branch point: `exp(1/x)`, used here before, now has residue 1.)
+    let res = x.sqrt().residue(&x, &ctx.int(0));
     assert!(res.has_unevaluated());
-    assert_eq!(
-        res.to_latex(),
-        r"\operatorname{Res}_{x=0} \exp\left(\frac{1}{x}\right)"
-    );
+    assert_eq!(res.to_latex(), r"\operatorname{Res}_{x=0} \sqrt{x}");
 }
 
 /// A Laplace transform with no table entry is kept as
@@ -1246,13 +1244,11 @@ fn mathml_of_formal_limit_and_residue_nodes() {
         mathml_body(&lim),
         "<mrow><munder><mo>lim</mo><mrow><mi>x</mi><mo>&#x2192;</mo><mn>0</mn></mrow></munder><mfrac><mn>1</mn><mi>x</mi></mfrac></mrow>"
     );
-    let res = (1 / &x).exp().residue(&x, &ctx.int(0));
+    // (A branch point: `exp(1/x)`, used here before, now has residue 1.)
+    let res = x.sqrt().residue(&x, &ctx.int(0));
     assert_eq!(
         mathml_body(&res),
-        format!(
-            "<mrow><munder><mi>Res</mi><mrow><mi>x</mi><mo>=</mo><mn>0</mn></mrow></munder>{}</mrow>",
-            mathml_apply("<mi>exp</mi>", "<mfrac><mn>1</mn><mi>x</mi></mfrac>")
-        )
+        "<mrow><munder><mi>Res</mi><mrow><mi>x</mi><mo>=</mo><mn>0</mn></mrow></munder><msqrt><mi>x</mi></msqrt></mrow>"
     );
 }
 

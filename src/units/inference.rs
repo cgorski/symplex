@@ -10,7 +10,14 @@
 
 use std::collections::HashMap;
 
+use num_traits::{One, ToPrimitive};
+use rustc_hash::FxHashMap;
+
 use super::dim::ConstDim;
+use crate::base::arena::Arena;
+use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
+use crate::base::walk;
 use crate::prelude::Ex;
 
 // ---------------------------------------------------------------------------
@@ -107,18 +114,26 @@ impl core::fmt::Display for ConstDim {
 ///
 /// # Dimension Rules
 ///
-/// | Operation         | Rule                                                   |
-/// |-------------------|--------------------------------------------------------|
-/// | Number            | Dimensionless                                          |
-/// | Symbol            | Look up in `DimMap`                                    |
-/// | Constant (π, e)   | Dimensionless                                          |
-/// | Add(a, b)         | `a` and `b` must have same dimension                   |
-/// | Mul(a, b)         | Dimensions multiply (exponents add)                    |
-/// | Pow(base, exp)    | `exp` must be dimensionless; base dimension scaled     |
-/// | Neg(a)            | Same dimension as `a`                                  |
-/// | sin, cos, exp, ln | Argument must be dimensionless; result is dimensionless |
-/// | Derivative(f, x)  | `dim(f) / dim(x)`                                     |
-/// | Integral(f, x)    | `dim(f) × dim(x)`                                     |
+/// | Operation                   | Rule                                                        |
+/// |-----------------------------|-------------------------------------------------------------|
+/// | Number, π, e, i, ∞          | Dimensionless                                               |
+/// | Symbol                      | Look up in `DimMap`                                         |
+/// | Physical constant, `f(x)`   | Looked up by display name in `DimMap`, else as below        |
+/// | Add, Min, Max, Piecewise    | All operands (values) must have the same dimension          |
+/// | Mul                         | Dimensions multiply (exponents add)                         |
+/// | Pow(base, p/q)              | Exponent dimensionless; every exponent of `base` times `p/q` must be whole (`√(k/m)` is a frequency) |
+/// | Neg, abs, re, im, conj      | Same dimension as the argument                              |
+/// | sign, Heaviside             | Any argument; dimensionless                                 |
+/// | DiracDelta(a)               | `1 / dim(a)`                                                |
+/// | atan2(y, x), relations      | Operands of one dimension; dimensionless                    |
+/// | sin, exp, ln, floor, …      | Argument must be dimensionless; result is dimensionless     |
+/// | Derivative(f, x)            | `dim(f) / dim(x)`                                           |
+/// | Integral(f, x), ∫ₐᵇ f dx    | `dim(f) × dim(x)` (bounds of the dimension of `x`)          |
+/// | Sum(f, k, a, b), Limit, Subs| `dim(f)` (index and bounds dimensionless)                   |
+///
+/// Exponents that leave the range of `i8` are an error (they used to
+/// overflow: a panic in debug builds, a wrapped dimension in release).
+/// The walk is iterative, so deep expressions do not exhaust the stack.
 ///
 /// # Examples
 ///
@@ -136,163 +151,262 @@ impl core::fmt::Display for ConstDim {
 /// assert!(d.eq(ConstDim::FORCE));
 /// ```
 pub fn infer_dimension(expr: &Ex, dims: &DimMap) -> Result<ConstDim, String> {
-    use crate::prelude::ExprType;
+    let inner = expr.inner.read();
+    infer_in_arena(&inner.arena, expr.raw_id(), dims)
+}
 
-    match expr.expr_type() {
-        ExprType::Number => Ok(ConstDim::DIMENSIONLESS),
-
-        ExprType::Symbol => {
-            let name = format!("{}", expr);
-            dims.get(&name)
-                .copied()
-                .ok_or_else(|| format!("Unknown variable '{}' — not in dimension map", name))
+/// `d` raised to the rational power `r`, when every exponent stays whole
+/// and within `i8`.
+fn dim_pow(d: ConstDim, r: &Q) -> Result<ConstDim, String> {
+    let scale = |e: i8| -> Result<i8, String> {
+        let v = Q::from_integer(e.into()) * r;
+        if !v.is_integer() {
+            return Err(format!(
+                "Non-integer power of dimensioned quantity: ({d})^{r} is not a whole dimension"
+            ));
         }
+        v.to_integer()
+            .to_i8()
+            .ok_or_else(|| format!("Dimension exponent overflow in ({d})^{r}"))
+    };
+    Ok(ConstDim {
+        l: scale(d.l)?,
+        m: scale(d.m)?,
+        t: scale(d.t)?,
+        i: scale(d.i)?,
+        th: scale(d.th)?,
+        n: scale(d.n)?,
+        j: scale(d.j)?,
+    })
+}
 
-        ExprType::Constant => {
-            // Physical constants (c, h, k_B, …) display as their symbol name.
-            // Check the DimMap first so callers can assign dimensions to them.
-            let name = format!("{}", expr);
-            if let Some(&dim) = dims.get(&name) {
-                return Ok(dim);
-            }
-            // π, e, i, ∞ — all dimensionless
-            Ok(ConstDim::DIMENSIONLESS)
-        }
+/// `a·b` (exponents added), refusing an exponent outside `i8`.
+fn dim_mul(a: ConstDim, b: ConstDim) -> Result<ConstDim, String> {
+    let add = |x: i8, y: i8| {
+        x.checked_add(y)
+            .ok_or_else(|| format!("Dimension exponent overflow in ({a})·({b})"))
+    };
+    Ok(ConstDim {
+        l: add(a.l, b.l)?,
+        m: add(a.m, b.m)?,
+        t: add(a.t, b.t)?,
+        i: add(a.i, b.i)?,
+        th: add(a.th, b.th)?,
+        n: add(a.n, b.n)?,
+        j: add(a.j, b.j)?,
+    })
+}
 
-        ExprType::Add => {
-            let args = expr.args();
-            if args.is_empty() {
-                return Ok(ConstDim::DIMENSIONLESS);
-            }
-            let first_dim = infer_dimension(&args[0], dims)?;
-            for (i, arg) in args[1..].iter().enumerate() {
-                let arg_dim = infer_dimension(arg, dims)?;
-                if !first_dim.eq(arg_dim) {
-                    return Err(format!(
-                        "Dimension mismatch in addition: term 0 has dimension {} \
-                         but term {} has dimension {}",
-                        first_dim,
-                        i + 1,
-                        arg_dim,
-                    ));
-                }
-            }
-            Ok(first_dim)
-        }
+/// `a/b`, refusing an exponent outside `i8`.
+fn dim_div(a: ConstDim, b: ConstDim) -> Result<ConstDim, String> {
+    dim_mul(a, dim_pow(b, &-Q::one())?)
+}
 
-        ExprType::Mul => {
-            let args = expr.args();
-            let mut result = ConstDim::DIMENSIONLESS;
-            for arg in &args {
-                let arg_dim = infer_dimension(arg, dims)?;
-                result = result.mul(arg_dim);
-            }
-            Ok(result)
-        }
-
-        ExprType::Pow => {
-            let args = expr.args();
-            if args.len() != 2 {
-                return Err(format!(
-                    "Pow must have exactly 2 arguments, got {}",
-                    args.len()
-                ));
-            }
-            let base_dim = infer_dimension(&args[0], dims)?;
-            let exp_dim = infer_dimension(&args[1], dims)?;
-
-            // Exponent must be dimensionless
-            if !exp_dim.eq(ConstDim::DIMENSIONLESS) {
-                return Err(format!("Exponent must be dimensionless, got {}", exp_dim,));
-            }
-
-            // If the base is already dimensionless, short-circuit
-            if base_dim.eq(ConstDim::DIMENSIONLESS) {
-                return Ok(ConstDim::DIMENSIONLESS);
-            }
-
-            // Try to extract an integer exponent for dimension scaling
-            if let Ok(val) = args[1].eval_f64() {
-                let n = val.round() as i8;
-                if (val - f64::from(n)).abs() < 1e-10 {
-                    return Ok(base_dim.pow(n));
-                }
-            }
-
-            // Non-integer power of a dimensioned quantity — not allowed
-            Err(format!(
-                "Non-integer power of dimensioned quantity (base dimension: {})",
-                base_dim,
-            ))
-        }
-
-        ExprType::Neg => {
-            let args = expr.args();
-            if args.is_empty() {
-                return Ok(ConstDim::DIMENSIONLESS);
-            }
-            infer_dimension(&args[0], dims)
-        }
-
-        ExprType::Function => {
-            // sin, cos, tan, exp, ln, abs, etc.
-            // Argument(s) must be dimensionless; result is dimensionless.
-            let args = expr.args();
-            for (i, arg) in args.iter().enumerate() {
-                let dim = infer_dimension(arg, dims)?;
-                if !dim.eq(ConstDim::DIMENSIONLESS) {
-                    return Err(format!(
-                        "Function argument {} must be dimensionless, got {} \
-                         (in expression {})",
-                        i, dim, expr,
-                    ));
-                }
-            }
-            Ok(ConstDim::DIMENSIONLESS)
-        }
-
-        ExprType::Apply => {
-            // User-defined function application — treat like Function
-            let args = expr.args();
-            for (i, arg) in args.iter().enumerate() {
-                let dim = infer_dimension(arg, dims)?;
-                if !dim.eq(ConstDim::DIMENSIONLESS) {
-                    return Err(format!(
-                        "Applied function argument {} must be dimensionless, got {}",
-                        i, dim,
-                    ));
-                }
-            }
-            Ok(ConstDim::DIMENSIONLESS)
-        }
-
-        ExprType::Derivative => {
-            // d(body)/d(var) → dim(body) / dim(var)
-            let args = expr.args();
-            if args.len() >= 2 {
-                let body_dim = infer_dimension(&args[0], dims)?;
-                let var_dim = infer_dimension(&args[1], dims)?;
-                Ok(body_dim.div(var_dim))
-            } else {
-                Err("Derivative must have at least body and variable".to_string())
-            }
-        }
-
-        ExprType::Integral => {
-            // ∫ body d(var) → dim(body) × dim(var)
-            let args = expr.args();
-            if args.len() >= 2 {
-                let body_dim = infer_dimension(&args[0], dims)?;
-                let var_dim = infer_dimension(&args[1], dims)?;
-                Ok(body_dim.mul(var_dim))
-            } else {
-                Err("Integral must have at least body and variable".to_string())
-            }
-        }
-
-        // Set expressions and any future variants — treat as dimensionless
-        _ => Ok(ConstDim::DIMENSIONLESS),
+/// The exact rational value of an exponent node (`p/q`, or `−p/q` as a
+/// negation), else an integer value certified by the evaluator.
+fn exponent_value(arena: &Arena, e: ExprId) -> Option<Q> {
+    if let Some(r) = arena.as_num(e) {
+        return Some(r.clone());
     }
+    if let ExprNode::Neg(inner) = arena.node(e)
+        && let Some(r) = arena.as_num(*inner)
+    {
+        return Some(-r.clone());
+    }
+    let v = crate::transforms::evalf::evalf_f64(arena, e).ok()?;
+    let n = v.round();
+    ((v - n).abs() < 1e-10 && n.abs() < 1e6).then(|| Q::from_integer((n as i64).into()))
+}
+
+/// [`infer_dimension`] on the arena: one bottom-up pass over the post-order
+/// of `root` (no recursion).
+fn infer_in_arena(arena: &Arena, root: ExprId, dims: &DimMap) -> Result<ConstDim, String> {
+    let dimensionless = ConstDim::DIMENSIONLESS;
+    let mut dim_of: FxHashMap<ExprId, ConstDim> = FxHashMap::default();
+    for id in walk::post_order_ids(arena, root) {
+        let get = |c: &ExprId| -> Result<ConstDim, String> {
+            dim_of
+                .get(c)
+                .copied()
+                .ok_or_else(|| "internal error: operand without a dimension".to_string())
+        };
+        // All operands of one dimension (Add, Min, Max, relations, bounds,
+        // …).  `0` and the infinities fit every dimension (`t > 0`,
+        // `∫₀^T`, `max(x, 0)`, `x → ∞`).
+        let polymorphic = |c: ExprId| {
+            arena.is_zero_structural(c)
+                || matches!(
+                    arena.node(c),
+                    ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity
+                )
+        };
+        let same = |ops: &[ExprId], what: &str| -> Result<ConstDim, String> {
+            let mut first: Option<(usize, ConstDim)> = None;
+            for (i, &c) in ops.iter().enumerate() {
+                if polymorphic(c) {
+                    continue;
+                }
+                let d = get(&c)?;
+                match first {
+                    None => first = Some((i, d)),
+                    Some((i0, d0)) if !d0.eq(d) => {
+                        return Err(format!(
+                            "Dimension mismatch in {what}: term {i0} has dimension {d0} \
+                             but term {i} has dimension {d}"
+                        ));
+                    }
+                    Some(_) => {}
+                }
+            }
+            Ok(first.map_or(dimensionless, |(_, d)| d))
+        };
+        let node = arena.node(id);
+        let d = match node {
+            ExprNode::Num(_) => dimensionless,
+            ExprNode::Symbol(sid) => {
+                let name = arena.symbol_name(*sid);
+                *dims
+                    .get(name)
+                    .ok_or_else(|| format!("Unknown variable '{name}' — not in dimension map"))?
+            }
+            // Physical constants (c, h, k_B, …) display as their symbol
+            // name; the map may give them a dimension.
+            ExprNode::PhysicalConstant(..) => dims
+                .get(&arena.display(id).to_string())
+                .copied()
+                .unwrap_or(dimensionless),
+            ExprNode::Add(ops) => same(ops, "addition")?,
+            ExprNode::Min(ops) | ExprNode::Max(ops) => same(ops, "min/max")?,
+            ExprNode::Mul(ops) => {
+                let mut acc = dimensionless;
+                for c in ops.iter() {
+                    acc = dim_mul(acc, get(c)?)?;
+                }
+                acc
+            }
+            ExprNode::Pow(b, e) => {
+                let exp_dim = get(e)?;
+                if !exp_dim.eq(dimensionless) {
+                    return Err(format!("Exponent must be dimensionless, got {exp_dim}"));
+                }
+                let base_dim = get(b)?;
+                if base_dim.eq(dimensionless) {
+                    dimensionless
+                } else {
+                    let r = exponent_value(arena, *e).ok_or_else(|| {
+                        format!(
+                            "Non-constant power of a dimensioned quantity (base dimension: {base_dim})"
+                        )
+                    })?;
+                    dim_pow(base_dim, &r)?
+                }
+            }
+            ExprNode::Neg(a)
+            | ExprNode::Abs(a)
+            | ExprNode::Re(a)
+            | ExprNode::Im(a)
+            | ExprNode::Conjugate(a) => get(a)?,
+            ExprNode::Sign(a) | ExprNode::Heaviside(a) => {
+                get(a)?;
+                dimensionless
+            }
+            ExprNode::DiracDelta(a) => dim_div(dimensionless, get(a)?)?,
+            ExprNode::Atan2(y, x) => {
+                same(&[*y, *x], "atan2")?;
+                dimensionless
+            }
+            ExprNode::Gt(a, b) | ExprNode::Ge(a, b) | ExprNode::Eq_(a, b) | ExprNode::Ne(a, b) => {
+                same(&[*a, *b], "a relation")?;
+                dimensionless
+            }
+            ExprNode::And(_)
+            | ExprNode::Or(_)
+            | ExprNode::Not(_)
+            | ExprNode::BoolTrue
+            | ExprNode::BoolFalse => dimensionless,
+            ExprNode::Piecewise(pieces) => {
+                let values: Vec<ExprId> = pieces.iter().map(|&(v, _)| v).collect();
+                same(&values, "a piecewise expression")?
+            }
+            ExprNode::Derivative(f, x) => dim_div(get(f)?, get(x)?)?,
+            ExprNode::Integral(f, x) => dim_mul(get(f)?, get(x)?)?,
+            ExprNode::DefiniteIntegral(f, x, lo, hi) => {
+                same(&[*x, *lo, *hi], "the bounds of an integral")?;
+                dim_mul(get(f)?, get(x)?)?
+            }
+            ExprNode::Sum(f, k, lo, hi) => {
+                for c in [k, lo, hi] {
+                    let d = get(c)?;
+                    if !d.eq(dimensionless) {
+                        return Err(format!(
+                            "Summation index and bounds must be dimensionless, got {d}"
+                        ));
+                    }
+                }
+                get(f)?
+            }
+            ExprNode::Limit(f, x, point) => {
+                same(&[*x, *point], "a limit point")?;
+                get(f)?
+            }
+            ExprNode::Subs(f, x, value) => {
+                same(&[*x, *value], "a substitution")?;
+                get(f)?
+            }
+            ExprNode::Apply(..) if dims.get(&arena.display(id).to_string()).is_some() => *dims
+                .get(&arena.display(id).to_string())
+                .unwrap_or(&dimensionless),
+            // Constants, sets and the remaining forms: dimensionless.
+            ExprNode::Pi
+            | ExprNode::E
+            | ExprNode::ImaginaryUnit
+            | ExprNode::EulerGamma
+            | ExprNode::Catalan
+            | ExprNode::GoldenRatio
+            | ExprNode::Infinity
+            | ExprNode::NegInfinity
+            | ExprNode::ComplexInfinity
+            | ExprNode::NaN
+            | ExprNode::EmptySet
+            | ExprNode::UniversalSet
+            | ExprNode::Interval(..)
+            | ExprNode::FiniteSet(_)
+            | ExprNode::SetUnion(_)
+            | ExprNode::SetIntersection(_)
+            | ExprNode::SetComplement(..)
+            | ExprNode::ConditionSet(..) => dimensionless,
+            // Every other function (sin, exp, ln, floor, Γ, f(x), …): its
+            // arguments must be dimensionless.
+            other => {
+                let mut bad: Option<(usize, ConstDim)> = None;
+                let mut k = 0usize;
+                other.for_each_child(|c| {
+                    let d = dim_of.get(&c).copied().unwrap_or(dimensionless);
+                    if bad.is_none() && !d.eq(dimensionless) {
+                        bad = Some((k, d));
+                    }
+                    k += 1;
+                });
+                if let Some((i, d)) = bad {
+                    return Err(if matches!(other, ExprNode::Apply(..)) {
+                        format!("Applied function argument {i} must be dimensionless, got {d}")
+                    } else {
+                        format!(
+                            "Function argument {i} must be dimensionless, got {d} \
+                             (in expression {})",
+                            arena.display(id)
+                        )
+                    });
+                }
+                dimensionless
+            }
+        };
+        dim_of.insert(id, d);
+    }
+    dim_of
+        .get(&root)
+        .copied()
+        .ok_or_else(|| "internal error: no dimension for the expression".to_string())
 }
 
 // ---------------------------------------------------------------------------

@@ -9,6 +9,17 @@ use symplex::prelude::*;
 use v02_oracle_common::*;
 
 /// Library bugs surfaced by this file (strict xfail — see common module).
+///
+/// Oracle bugs are corrected in the fixture instead, with an
+/// `oracle_correction` field giving SymPy's output and the source of the
+/// value used:
+/// - `residue: z**2*exp(1/z) @ 0` — SymPy 1.14's
+///   `residue(z**2*exp(1/z), z, 0)` returns `0`; `z = 0` is an essential
+///   singularity and the coefficient of `1/z` in `Σ z^(2−n)/n!` is
+///   `1/3! = 1/6`, confirmed by mpmath 1.3.0 (dps 30)
+///   `quad(lambda th: f(expj(th))*expj(th), [0, 2*pi])/(2*pi)` on `|z| = 1`
+///   → `0.1666666666666666666666667`.  (The fixture held `0`; symplex
+///   returned `0` too until 0.29, then refused, now `1/6`.)
 const KNOWN_BUGS: &[KnownBug] = &[];
 
 /// Regression: `series_at_infinity(atan(x))` used to return the garbage

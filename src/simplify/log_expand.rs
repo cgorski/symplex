@@ -132,8 +132,21 @@ pub(crate) fn expand_ln_node_guarded(
                     } else if c != arena.neg_one
                         && assumptions.query(arena, c, Props::NEGATIVE) == Some(true)
                     {
+                        // `−c > 0`: a negative number becomes a positive one
+                        // that may split further; any other `−c` is the
+                        // product `(−1)·c`, which would come back here
+                        // unchanged, so its logarithm is a finished term
+                        // (as in the `is_negative` branch of SymPy's
+                        // `log._eval_expand_log`, which appends `log(-x)`
+                        // unexpanded).  Pushing it back made
+                        // `expand_log(ln(−w))` loop forever for `w < 0`.
                         let neg_c = arena.neg(c);
-                        work.push((coeff, neg_c));
+                        if arena.as_num(neg_c).is_some() {
+                            work.push((coeff, neg_c));
+                        } else {
+                            let ln_neg_c = arena.ln(neg_c);
+                            terms.push(arena.mul(&[coeff, ln_neg_c]));
+                        }
                         rest.push(arena.neg_one);
                         split = true;
                     } else {

@@ -189,6 +189,11 @@ impl<C: Ring> GenPoly<C> {
         if self.is_zero() || rhs.is_zero() {
             return Self::zero();
         }
+        if let Some(coeffs) = C::poly_mul(&self.coeffs, &rhs.coeffs) {
+            let mut p = GenPoly { coeffs };
+            p.normalize();
+            return p;
+        }
         let len = self.coeffs.len() + rhs.coeffs.len() - 1;
         let mut coeffs = vec![C::zero(); len];
         for (i, a) in self.coeffs.iter().enumerate() {
@@ -276,6 +281,11 @@ impl<C: Ring> GenPoly<C> {
         let Some(lc) = self.coeffs.last() else {
             return Self::zero();
         };
+        if let Some(coeffs) = C::poly_compose(&self.coeffs, &g.coeffs) {
+            let mut p = GenPoly { coeffs };
+            p.normalize();
+            return p;
+        }
         let mut result = Self::constant(lc.clone());
         for c in self.coeffs.iter().rev().skip(1) {
             result = result.mul(g).add(&Self::constant(c.clone()));

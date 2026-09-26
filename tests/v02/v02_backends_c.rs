@@ -85,13 +85,17 @@ fn math_h_functions_and_powers() {
     assert!(code.contains("log1p(y)"), "{code}");
     let code = y.atan2(&x).to_c_fn("a", &["x", "y"]).unwrap();
     assert!(code.contains("atan2(y, x)"), "{code}");
+    // min/max propagate NaN like `compile()` (0.30): `fmin`/`fmax` return
+    // the other operand of a NaN, so they became the `symplex_min` /
+    // `symplex_max` helpers.
     let code = (x.min_with(&y) + x.max_with(&y))
         .to_c_fn("m", &["x", "y"])
         .unwrap();
     assert!(
-        code.contains("fmin(x, y)") && code.contains("fmax(x, y)"),
+        code.contains("symplex_min(x, y)") && code.contains("symplex_max(x, y)"),
         "{code}"
     );
+    assert!(!code.contains("fmin(") && !code.contains("fmax("), "{code}");
 }
 
 #[test]

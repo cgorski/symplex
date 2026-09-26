@@ -32,11 +32,14 @@ their documentation:
 | `src/domains/ntheory.rs` (`EcmStage2`, ECM stage 2 in `ecm_curve_ring`) | stage 2 of `_ecm_one_factor` in `sympy/ntheory/ecm.py` | P. L. Montgomery, *Math. Comp.* 48 (1987); R. Crandall, C. Pomerance, *Prime Numbers*, 2nd ed., §7.4.2 |
 | `src/domains/exact_matrix.rs` (LLL reduction order and rounding) | `DomainMatrix.lll` / `_ddm_lll` | A. K. Lenstra, H. W. Lenstra, L. Lovász, *Math. Ann.* 261 (1982) |
 | `src/plotting/textplot.rs` | `sympy/plotting/textplot.py` | — |
+| `src/api/expr_algebraic_ext.rs` (`multipoly_resultant`: the subresultant PRS over `ℚ[params][x]`) | `dup_inner_subresultants`, `dup_prs_resultant` in `sympy/polys/euclidtools.py` | W. S. Brown, "The subresultant PRS algorithm", *ACM TOMS* 4 (1978) 237–249 |
 | `src/poly/zpoly.rs` (`z_subresultant_prs`: the signed subresultant chain of the Sturm sequences and `z_gcd`) | `dup_inner_subresultants` in `sympy/polys/euclidtools.py` | W. S. Brown, "The subresultant PRS algorithm", *ACM TOMS* 4 (1978) 237–249 |
 | `src/transforms/solve.rs` (the Lambert-form equations and their real branches) | `_solve_lambert` / `_lambert` in `sympy/solvers/bivariate.py` | R. M. Corless et al., "On the Lambert W function", *Adv. Comput. Math.* 5 (1996) 329–359 |
 | `src/poly/multipoly.rs` (`heugcd_z`, `heugcd_attempt`: the evaluation-point bound and the three candidates per point) | `dmp_zz_heu_gcd` in `sympy/polys/euclidtools.py` | B. W. Char, K. O. Geddes, G. H. Gonnet, "GCDHEU: Heuristic polynomial GCD algorithm based on integer GCD computation", *J. Symbolic Comput.* 7 (1989) 31–48 |
 | `src/transforms/evalf/hypsum.rs` (convergence classification, the direct hypergeometric summation) | `check_convergence` and `hypsum` in `sympy/core/evalf.py` | the term-ratio test for hypergeometric series |
 | `src/transforms/pattern.rs` (`condition_pow_pow`) | the branch condition of `Pow._eval_power` | the principal branch of `z^a` |
+| `src/base/assumptions.rs` (`compute_mul`: a real factor that may vanish keeps `real · imaginary` undecided) | `Mul._eval_real_imag` / `Mul._eval_is_imaginary` in `sympy/core/mul.py` | — |
+| `src/simplify/log_expand.rs` (`expand_ln_node_guarded`: a known-negative factor becomes the finished term `ln(−f)`) | the `is_negative` branch of `log._eval_expand_log` in `sympy/functions/elementary/exponential.py` | — |
 
 To the extent any of these is a derivative of SymPy, SymPy's licence
 applies to that part, and its notice is reproduced here as clause (a)

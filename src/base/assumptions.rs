@@ -1136,6 +1136,10 @@ impl Assumptions {
 #[derive(Debug, Default)]
 pub struct AssumptionCache {
     cache: FxHashMap<ExprId, Assumptions>,
+    /// The sets stored by [`set_symbol_assumptions`](Self::set_symbol_assumptions),
+    /// which take precedence over the arena's declarations; kept apart so
+    /// that the derived entries can be dropped when one of them changes.
+    declared: FxHashMap<ExprId, Assumptions>,
 }
 
 impl AssumptionCache {
@@ -1547,11 +1551,16 @@ impl AssumptionCache {
             a.known_true |= Props::REAL;
         }
         // Handle mix of real and imaginary factors.
-        // real * imaginary = imaginary; imaginary * imaginary = real
+        // imaginary * imaginary = real; real * imaginary = imaginary only for
+        // real factors that are all non-zero: `imaginary` excludes 0 (it
+        // implies non-zero and non-real), so `r·i` with a real `r` that may be
+        // 0 is undecided (SymPy's `Mul._eval_real_imag`).  Up to 0.29 it was
+        // imaginary, hence non-zero and non-real: `(r·i).is_real()` was
+        // `Some(false)` and `|m·i|²` positive, both wrong at `r = m = 0`.
         if imaginary_count > 0 && real_count + imaginary_count == args.len() {
             if imaginary_count.is_multiple_of(2) {
                 a.known_true |= Props::REAL;
-            } else {
+            } else if all_nonzero {
                 a.known_true |= Props::IMAGINARY;
             }
         }
@@ -2007,9 +2016,17 @@ impl AssumptionCache {
             consistent,
             "contradictory assumptions declared on symbol {id:?}: {assumptions}"
         );
-        if consistent {
-            self.cache.insert(id, assumptions);
+        if !consistent || self.declared.get(&id) == Some(&assumptions) {
+            return;
         }
+        // Every derived entry may depend on this symbol: `z + 1` cached as
+        // "sign unknown" stayed so after `z.assume(Positive)` (up to 0.29),
+        // since a cached entry is returned without recomputation.  Drop
+        // them all and keep only the stored declarations.
+        self.declared.insert(id, assumptions);
+        self.cache.clear();
+        self.cache
+            .extend(self.declared.iter().map(|(&k, &v)| (k, v)));
     }
 }
 

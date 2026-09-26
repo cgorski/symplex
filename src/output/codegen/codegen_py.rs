@@ -16,8 +16,19 @@
 //! Rust and C back ends and `compile()`: `x^(1/3)` is `math.copysign(abs(x)**(1/3), x)`
 //! / `numpy.cbrt(x)` / `cbrt(x)`, and `x^(p/q)` is `copysign(abs(x)**(p/q), x)`
 //! for odd `p` or `abs(x)**(p/q)` for even `p` (a bare `x**(1/3)` is complex
-//! for negative `x` in Python).  `x!` is `math.gamma(x + 1)` in Python
-//! (`math.factorial` rejects non-integers).
+//! for negative `x` in Python).  An even denominator has no real value for
+//! a negative base: NaN, as in the other `f64` back ends —
+//! `(lambda b: b**(3/2) if b >= 0 else math.nan)(x)` /
+//! `numpy.power(x, (3/2))` / `(b -> b >= 0 ? b^(3/2) : NaN)(x)` (Python's
+//! bare `(-1.0)**(3/2)` is a complex number, Julia's a `DomainError`).
+//! `min`/`max` propagate NaN like `compile()`: Python's builtins keep the
+//! first operand of a comparison with NaN (`min(2, nan)` is `2`), so they
+//! get the key `(v == v, v)` / `(v != v, v)` that ranks NaN first.
+//! `x!` is `math.gamma(x + 1)` in Python
+//! (`math.factorial` rejects non-integers).  Constants whose formula would
+//! not evaluate to their real value (`abs(atanh(9))`) are printed as
+//! literals, and non-real constants (`atanh(9)`) refused
+//! (`fold_constants_for_emission` in `output/codegen.rs`).
 //! Nothing is emitted for a node the target cannot express (Bessel
 //! functions, `digamma`, `LambertW`, `zeta`, unevaluated integrals, sets,
 //! `I`) — those return [`SymplexError::NotImplemented`] instead of a guess.
@@ -211,6 +222,19 @@ struct Emitter<'a> {
     params: Option<&'a [&'a str]>,
     /// CSE binding symbols → temporary index.
     cse_slots: &'a FxHashMap<ExprId, usize>,
+    /// Folded constants: symbol → value.
+    folds: &'a FxHashMap<ExprId, f64>,
+}
+
+/// An `f64` literal in Python / Julia syntax (shortest round trip, with a
+/// decimal point or exponent).
+fn float_literal(v: f64) -> String {
+    let s = format!("{v:?}");
+    if s.contains('.') || s.contains('e') || s.contains("inf") || s.contains("NaN") {
+        s
+    } else {
+        format!("{s}.0")
+    }
 }
 
 impl Emitter<'_> {
@@ -368,7 +392,18 @@ impl Emitter<'_> {
                 mag
             };
         }
-        Rendered::new(self.pow_text(b, &self.number(r)), PREC_POW)
+        // Even denominator: NaN for a negative (or NaN) base, the base
+        // evaluated once.
+        let param = Rendered::atom("b");
+        let body = self.pow_text(&param, &self.number(r));
+        match self.target {
+            Target::Python => Rendered::atom(format!(
+                "(lambda b: {body} if b >= 0 else math.nan)({})",
+                b.at(0)
+            )),
+            Target::NumPy => self.call("numpy.power", &[b, &self.number(r)]),
+            Target::Julia => Rendered::atom(format!("(b -> b >= 0 ? {body} : NaN)({})", b.at(0))),
+        }
     }
 
     fn render_pow(
@@ -559,6 +594,13 @@ impl Emitter<'_> {
                 ExprNode::Symbol(sid) => {
                     if let Some(&slot) = self.cse_slots.get(&id) {
                         Rendered::atom(format!("t{slot}"))
+                    } else if let Some(&value) = self.folds.get(&id) {
+                        let text = float_literal(value);
+                        if value < 0.0 {
+                            Rendered::new(text, PREC_NEG)
+                        } else {
+                            Rendered::atom(text)
+                        }
                     } else {
                         let name = arena.symbol_name(*sid);
                         if let Some(params) = self.params
@@ -671,6 +713,14 @@ impl Emitter<'_> {
                             acc = self.call(f, &[&acc, p]);
                         }
                         acc
+                    } else if self.target == Target::Python && parts.len() > 1 {
+                        let list: Vec<String> = parts.iter().map(|p| p.at(0)).collect();
+                        let (f, key) = if is_min {
+                            ("min", "(v == v, v)")
+                        } else {
+                            ("max", "(v != v, v)")
+                        };
+                        Rendered::atom(format!("{f}({}, key=lambda v: {key})", list.join(", ")))
                     } else {
                         let refs: Vec<&Rendered> = parts.iter().collect();
                         self.call(if is_min { "min" } else { "max" }, &refs)
@@ -855,18 +905,20 @@ pub(crate) fn scipy_spelling(f: LibFn) -> Option<&'static str> {
 
 /// The expression alone, every symbol printed by name.
 pub(crate) fn to_expr_code(
-    arena: &Arena,
+    arena: &mut Arena,
     expr: ExprId,
     target: Target,
 ) -> Result<String, SymplexError> {
+    let folds = super::fold_constants_for_emission(arena, expr, target.name())?;
     let slots = FxHashMap::default();
     let em = Emitter {
         arena,
         target,
         params: None,
         cse_slots: &slots,
+        folds: &folds.values,
     };
-    Ok(em.render(expr)?.text)
+    Ok(em.render(folds.expr)?.text)
 }
 
 /// A function definition with CSE temporaries.
@@ -877,7 +929,13 @@ pub(crate) fn to_fn_code(
     args: &[&str],
     target: Target,
 ) -> Result<String, SymplexError> {
-    let cse = crate::output::cse::cse(arena, expr);
+    let fn_name = match target {
+        Target::Python => "to_python_fn",
+        Target::NumPy => "to_numpy_fn",
+        Target::Julia => "to_julia_fn",
+    };
+    let folds = super::fold_constants_for_emission(arena, expr, fn_name)?;
+    let cse = crate::output::cse::cse(arena, folds.expr);
     let mut cse_slots: FxHashMap<ExprId, usize> = FxHashMap::default();
     for (i, (name_id, _)) in cse.bindings.iter().enumerate() {
         cse_slots.insert(*name_id, i);
@@ -887,6 +945,7 @@ pub(crate) fn to_fn_code(
         target,
         params: Some(args),
         cse_slots: &cse_slots,
+        folds: &folds.values,
     };
     let mut lines: Vec<String> = Vec::new();
     for (i, (_, value)) in cse.bindings.iter().enumerate() {
@@ -954,8 +1013,8 @@ impl<S: Sort> Expr<S> {
     /// assert!(x.bessel_j(&ctx.int(0)).to_python().is_err());
     /// ```
     pub fn to_python(&self) -> Result<String, SymplexError> {
-        let inner = self.inner.read();
-        to_expr_code(&inner.arena, self.raw_id(), Target::Python)
+        let mut inner = self.inner.write();
+        to_expr_code(&mut inner.arena, self.raw_id(), Target::Python)
     }
 
     /// A vectorised Python expression using `numpy.` (SymPy:
@@ -986,8 +1045,8 @@ impl<S: Sort> Expr<S> {
     /// assert!(x.gamma().to_numpy().is_err());
     /// ```
     pub fn to_numpy(&self) -> Result<String, SymplexError> {
-        let inner = self.inner.read();
-        to_expr_code(&inner.arena, self.raw_id(), Target::NumPy)
+        let mut inner = self.inner.write();
+        to_expr_code(&mut inner.arena, self.raw_id(), Target::NumPy)
     }
 
     /// A Julia expression (SymPy: `julia_code`).
@@ -1013,8 +1072,8 @@ impl<S: Sort> Expr<S> {
     /// assert_eq!((ctx.e() * &x).to_julia().unwrap(), "x*ℯ");
     /// ```
     pub fn to_julia(&self) -> Result<String, SymplexError> {
-        let inner = self.inner.read();
-        to_expr_code(&inner.arena, self.raw_id(), Target::Julia)
+        let mut inner = self.inner.write();
+        to_expr_code(&mut inner.arena, self.raw_id(), Target::Julia)
     }
 
     /// A Python function `def name(args): …` with common subexpressions
@@ -1125,7 +1184,12 @@ mod tests {
         assert_eq!(py("x - y"), "x - y");
         assert_eq!(py("1 - x/2"), "-x/2 + 1");
         assert_eq!(py("x^(-2)"), "x**(-2)");
-        assert_eq!(py("x^(3/2)"), "x**(3/2)");
+        // An even denominator: NaN for a negative base (was `x**(3/2)`,
+        // complex in Python), as in the other f64 back ends.
+        assert_eq!(
+            py("x^(3/2)"),
+            "(lambda b: b**(3/2) if b >= 0 else math.nan)(x)"
+        );
         assert_eq!(py("x^y"), "x**y");
         assert_eq!(py("(x+1)^2"), "(x + 1)**2");
         assert_eq!(py("2^x"), "2**x");
@@ -1148,7 +1212,9 @@ mod tests {
         assert_eq!(py("gamma(x) + erf(x)"), "math.gamma(x) + math.erf(x)");
         assert_eq!(py("loggamma(x)"), "math.lgamma(x)");
         assert_eq!(py("atan2(y, x)"), "math.atan2(y, x)");
-        assert_eq!(py("min(x, y)"), "min(x, y)");
+        // NaN-propagating like `compile()` (`min(2, nan)` is 2 in Python).
+        assert_eq!(py("min(x, y)"), "min(x, y, key=lambda v: (v == v, v))");
+        assert_eq!(py("max(x, y)"), "max(x, y, key=lambda v: (v != v, v))");
         // 0.11.1: `math.factorial` is integer-only; Γ(x + 1) matches Rust/C.
         assert_eq!(py("x!"), "math.gamma(x + 1)");
         assert_eq!(py("(x - y)!"), "math.gamma(x - y + 1)");
@@ -1245,9 +1311,17 @@ mod tests {
         assert_eq!(py("x^(-1/3)"), "math.copysign(abs(x)**(-1/3), x)");
         assert_eq!(py("y*x^(-1/3)"), "y/math.copysign(abs(x)**(1/3), x)");
         assert_eq!(py("y/sqrt(x)"), "y/math.sqrt(x)");
-        // Even denominators are left alone (complex for negative bases anyway).
-        assert_eq!(py("x^(3/2)"), "x**(3/2)");
-        assert_eq!(py("x^(1/4)"), "x**(1/4)");
+        // Even denominators: NaN for negative bases, as `compile()` (they
+        // were left bare, complex in Python for a negative base).
+        assert_eq!(
+            py("x^(3/2)"),
+            "(lambda b: b**(3/2) if b >= 0 else math.nan)(x)"
+        );
+        assert_eq!(
+            py("x^(1/4)"),
+            "(lambda b: b**(1/4) if b >= 0 else math.nan)(x)"
+        );
+        assert_eq!(np("x^(1/4)"), "numpy.power(x, (1/4))");
         assert_eq!(np("cbrt(x)"), "numpy.cbrt(x)");
         assert_eq!(np("x^(3/5)"), "numpy.copysign(numpy.abs(x)**(3/5), x)");
         assert_eq!(np("x^(2/5)"), "numpy.abs(x)**(2/5)");
@@ -1266,19 +1340,19 @@ mod tests {
         let empty_min = a.intern(ExprNode::Min(smallvec::smallvec![]));
         let empty_max = a.intern(ExprNode::Max(smallvec::smallvec![]));
         assert_eq!(
-            to_expr_code(&a, empty_min, Target::Python).unwrap(),
+            to_expr_code(&mut a, empty_min, Target::Python).unwrap(),
             "math.inf"
         );
         assert_eq!(
-            to_expr_code(&a, empty_max, Target::Python).unwrap(),
+            to_expr_code(&mut a, empty_max, Target::Python).unwrap(),
             "(-math.inf)"
         );
         assert_eq!(
-            to_expr_code(&a, empty_min, Target::NumPy).unwrap(),
+            to_expr_code(&mut a, empty_min, Target::NumPy).unwrap(),
             "numpy.inf"
         );
         assert_eq!(
-            to_expr_code(&a, empty_max, Target::Julia).unwrap(),
+            to_expr_code(&mut a, empty_max, Target::Julia).unwrap(),
             "(-Inf)"
         );
         // A one-factor product keeps the factor's precedence: `Mul([x^2])`
@@ -1289,7 +1363,10 @@ mod tests {
         let x2 = a.intern(ExprNode::Pow(x, two));
         let one_factor = a.intern(ExprNode::Mul(smallvec::smallvec![x2]));
         let p = a.intern(ExprNode::Pow(one_factor, y));
-        assert_eq!(to_expr_code(&a, p, Target::Python).unwrap(), "(x**2)**y");
+        assert_eq!(
+            to_expr_code(&mut a, p, Target::Python).unwrap(),
+            "(x**2)**y"
+        );
     }
 
     #[test]

@@ -137,9 +137,11 @@ fn rust_negative_receivers_are_parenthesised() {
         rust_body(&((-&x * &y).exp() - 1), args),
         "(-(x * y)).exp_m1()"
     );
+    // `min` is no longer a method call: `f64::min` drops a NaN operand, and
+    // the NaN-propagating form binds both operands first (0.30).
     assert_eq!(
         rust_body(&ctx.int(-2).min_with(&x), args),
-        "(-2_f64).min(x)"
+        "{ let (m0, m1) = (-2_f64, x); if m0 <= m1 || m0.is_nan() { m0 } else { m1 } }"
     );
     assert_eq!(rust_body(&ctx.int(-2).atan2(&x), args), "(-2_f64).atan2(x)");
     // The FMA chain: `-2*x*y + z` fused with a negative first factor.
@@ -253,8 +255,22 @@ fn python_family_emits_real_roots() {
         "copysign(abs(x)^(3/5), x)"
     );
     assert_eq!(two_fifths.to_julia().unwrap(), "abs(x)^(2/5)");
-    // Even denominators are unchanged (complex for negative bases anyway).
-    assert_eq!(x.pow(&ctx.rational(3, 2)).to_python().unwrap(), "x**(3/2)");
+    // Even denominators have no real value for a negative base: NaN, as in
+    // `compile()`, C `pow` and Rust `powf`.  They were printed bare,
+    // `x**(3/2)`, which Python evaluates to a complex number for x < 0
+    // (and Julia's `x^(3/2)` throws a DomainError).
+    assert_eq!(
+        x.pow(&ctx.rational(3, 2)).to_python().unwrap(),
+        "(lambda b: b**(3/2) if b >= 0 else math.nan)(x)"
+    );
+    assert_eq!(
+        x.pow(&ctx.rational(3, 2)).to_numpy().unwrap(),
+        "numpy.power(x, (3/2))"
+    );
+    assert_eq!(
+        x.pow(&ctx.rational(3, 2)).to_julia().unwrap(),
+        "(b -> b >= 0 ? b^(3/2) : NaN)(x)"
+    );
     assert_eq!(x.sqrt().to_python().unwrap(), "math.sqrt(x)");
 }
 

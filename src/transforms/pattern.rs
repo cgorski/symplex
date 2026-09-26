@@ -1439,8 +1439,12 @@ fn rule_pow_pow(arena: &mut Arena) -> Rule {
 /// 1. `outer` is an integer `n`: `(z^a)^n = z^(a·n)` for every complex `z`
 ///    (`exp(w)^n = exp(n·w)` for integer `n`).
 /// 2. `base` is known non-negative (`Positive` / `NonNegative` assumption
-///    or a non-negative numeric literal): `log(base)` is real, so all the
-///    principal branches agree.
+///    or a non-negative numeric literal) and `inner` is known real:
+///    `log(base)` is real, so `inner·log(base)` is real and is the
+///    logarithm of `base^inner`.  A non-real `inner` is not enough:
+///    `(256^(3i/2))^x` is not `256^(3ix/2)`: `Im(3i/2·ln 256) ≈ 8.3 > π`, so
+///    the logarithm of the inner power is `3i/2·ln 256 − 2πi` and the two
+///    differ by the factor `e^{−2πix}` (`e^{−2πi/3}` at `x = 1/3`).
 /// 3. `inner` is a real number `a` with `-1 < a ≤ 1`: then
 ///    `arg(z^a) = a·arg(z) ∈ (-π, π]`, so `log(z^a) = a·log(z)` and the
 ///    identity holds for every complex `z` and every `outer`.
@@ -1473,7 +1477,14 @@ fn condition_pow_pow(arena: &Arena, subs: &Substitution) -> bool {
             cache.query(arena, *base, Props::NONNEGATIVE) == Some(true)
         }
     };
-    if base_nonneg {
+    let inner_real = match arena.node(*inner) {
+        ExprNode::Num(_) => true,
+        _ => {
+            let mut cache = crate::base::assumptions::AssumptionCache::new();
+            cache.query(arena, *inner, Props::REAL) == Some(true)
+        }
+    };
+    if base_nonneg && inner_real {
         return true;
     }
 

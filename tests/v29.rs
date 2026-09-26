@@ -14,7 +14,11 @@ mod v29_calculus;
 mod v29_evalf;
 #[path = "v29/v29_functions.rs"]
 mod v29_functions;
+#[path = "v29/v29_leftovers.rs"]
+mod v29_leftovers;
 #[path = "v29/v29_output_ntheory.rs"]
 mod v29_output_ntheory;
+#[path = "v29/v29_rewrites.rs"]
+mod v29_rewrites;
 #[path = "v29/v29_transforms.rs"]
 mod v29_transforms;

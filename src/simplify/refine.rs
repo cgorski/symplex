@@ -235,40 +235,37 @@ fn refine_mutable(arena: &mut Arena, assumptions: &mut AssumptionCache, root: Ex
         let node = arena.node(id).clone();
         let replacement = match node {
             // ── abs(x) where x < 0  →  -x ─────────────────────────
-            ExprNode::Abs(inner) => {
-                let inner = cache.get(&inner).copied().unwrap_or(inner);
+            ExprNode::Abs(original) => {
+                let inner = cache.get(&original).copied().unwrap_or(original);
                 let is_neg = assumptions.query(arena, inner, Props::NEGATIVE);
                 if is_neg == Some(true) {
                     tracing::debug!("refine: abs(x) -> -x (negative)");
                     Some(arena.neg(inner))
                 } else {
-                    // If children changed, rebuild; otherwise keep.
-                    if cache.contains_key(&inner) {
-                        Some(arena.abs(inner))
-                    } else {
-                        None
-                    }
+                    // If the child changed, rebuild; otherwise keep.  (The
+                    // test was `cache.contains_key(&inner)` on the *new*
+                    // child, which is not a key: `refine(|√(r²)|)` dropped
+                    // the child's `|r|` and returned the input.)
+                    (inner != original).then(|| arena.abs(inner))
                 }
             }
 
             // ── sign(x) where x < 0  →  -1 ────────────────────────
-            ExprNode::Sign(inner) => {
-                let inner = cache.get(&inner).copied().unwrap_or(inner);
+            ExprNode::Sign(original) => {
+                let inner = cache.get(&original).copied().unwrap_or(original);
                 let is_neg = assumptions.query(arena, inner, Props::NEGATIVE);
                 if is_neg == Some(true) {
                     tracing::debug!("refine: sign(x) -> -1 (negative)");
                     Some(arena.neg_one)
-                } else if cache.contains_key(&inner) {
-                    Some(arena.sign(inner))
                 } else {
-                    None
+                    (inner != original).then(|| arena.sign(inner))
                 }
             }
 
             // ── sqrt(x²) where x ∈ ℝ  →  abs(x) ──────────────────
-            ExprNode::Pow(base, exp) => {
-                let base = cache.get(&base).copied().unwrap_or(base);
-                let exp = cache.get(&exp).copied().unwrap_or(exp);
+            ExprNode::Pow(orig_base, orig_exp) => {
+                let base = cache.get(&orig_base).copied().unwrap_or(orig_base);
+                let exp = cache.get(&orig_exp).copied().unwrap_or(orig_exp);
 
                 let half = Ratio::new(BigInt::from(1), BigInt::from(2));
                 let two = Ratio::from(BigInt::from(2));
@@ -296,11 +293,7 @@ fn refine_mutable(arena: &mut Arena, assumptions: &mut AssumptionCache, root: Ex
                 }
 
                 // Rebuild if children changed.
-                if cache.contains_key(&base) || cache.contains_key(&exp) {
-                    Some(arena.pow(base, exp))
-                } else {
-                    None
-                }
+                (base != orig_base || exp != orig_exp).then(|| arena.pow(base, exp))
             }
 
             // Any other node: rebuild it when a child was rewritten.

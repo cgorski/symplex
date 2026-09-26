@@ -304,6 +304,181 @@ fn sylvester_resultant(ctx: &crate::api::context::Context, f: &[Ex], g: &[Ex]) -
     if n == 0 {
         return Some(g[0].powi(m as i64));
     }
+    if let Some(r) = parametric_resultant(f, g) {
+        return Some(r);
+    }
+    sylvester_determinant(ctx, f, g)
+}
+
+/// Two polynomials in the main variable with coefficients in `ℚ[gens]`.
+struct ParametricPair {
+    /// Coefficients of `f`, ascending in the main variable.
+    f: Vec<MultiPoly<GrevLex>>,
+    /// Coefficients of `g`, ascending in the main variable.
+    g: Vec<MultiPoly<GrevLex>>,
+    /// The parameters, variable index `i` of the `MultiPoly`s.
+    gens: Vec<ExprId>,
+}
+
+/// The coefficients `f`, `g` (highest degree first, of one context) as
+/// polynomials over ℚ in their free symbols, ascending in the main
+/// variable, and those symbols; `None` unless every coefficient is such a
+/// polynomial.
+fn coefficient_multipolys(f: &[Ex], g: &[Ex]) -> Option<ParametricPair> {
+    let probe = f.first()?;
+    let inner = probe.inner.read();
+    let arena = &inner.arena;
+    let ids: Vec<ExprId> = f.iter().chain(g).map(|c| probe.checked_id(c)).collect();
+    let gens = shared_generators(arena, &ids);
+    let convert = |cs: &[ExprId]| -> Option<Vec<MultiPoly<GrevLex>>> {
+        cs.iter()
+            .rev()
+            .map(|&c| expr_to_multipoly(arena, c, &gens))
+            .collect()
+    };
+    let fp = convert(&ids[..f.len()])?;
+    let gp = convert(&ids[f.len()..])?;
+    Some(ParametricPair { f: fp, g: gp, gens })
+}
+
+/// `res(f, g)` for coefficients that are polynomials over ℚ in the other
+/// symbols (highest degree first, both of degree ≥ 1), by the subresultant
+/// PRS in `ℚ[params][x]` ([`multipoly_resultant`]).  The Berkowitz
+/// determinant of the Sylvester matrix over `Ex` took 5 s (release) for
+/// a trivariate pair of degrees 8 and 7.  The resultant is the same
+/// polynomial, printed in the same expanded canonical form.  `None` when a
+/// coefficient is not such a polynomial.
+fn parametric_resultant(f: &[Ex], g: &[Ex]) -> Option<Ex> {
+    let pair = coefficient_multipolys(f, g)?;
+    let r = multipoly_resultant(&pair.f, &pair.g)?;
+    let probe = f.first()?;
+    let id = {
+        let mut inner = probe.inner.write();
+        multipoly_to_expr(&mut inner.arena, &r, &pair.gens)
+    };
+    Some(probe.wrap(id))
+}
+
+/// Drop trailing zero coefficients.
+fn mp_normalize(p: &mut Vec<MultiPoly<GrevLex>>) {
+    while p.last().is_some_and(MultiPoly::is_zero) {
+        p.pop();
+    }
+}
+
+/// `−p` coefficient by coefficient.
+fn mp_neg(p: &[MultiPoly<GrevLex>]) -> Vec<MultiPoly<GrevLex>> {
+    p.iter().map(MultiPoly::neg).collect()
+}
+
+/// The pseudo-remainder `lc(g)^{deg f − deg g + 1}·f mod g` in
+/// `ℚ[params][x]` (ascending in `x`; `f` itself when `deg f < deg g`),
+/// division-free (Knuth, *TAOCP* vol. 2, §4.6.1, Algorithm R).  `None` for
+/// `g = 0` or an exponent overflow.
+fn mp_prem(f: &[MultiPoly<GrevLex>], g: &[MultiPoly<GrevLex>]) -> Option<Vec<MultiPoly<GrevLex>>> {
+    let lc_g = g.last()?;
+    let dg = g.len() - 1;
+    let mut r = f.to_vec();
+    mp_normalize(&mut r);
+    if r.len() <= dg {
+        return Some(r);
+    }
+    let mut passes_left = r.len() - dg;
+    while r.len() > dg {
+        let top = r.len() - 1;
+        let lc_r = r.pop()?;
+        let shift = top - dg;
+        // r ← lc(g)·r − lc(r)·x^shift·g; the x^top terms cancel exactly.
+        for c in r.iter_mut() {
+            *c = c.try_mul(lc_g)?;
+        }
+        for (rk, gk) in r[shift..].iter_mut().zip(&g[..dg]) {
+            *rk = rk.try_sub(&lc_r.try_mul(gk)?)?;
+        }
+        mp_normalize(&mut r);
+        passes_left = passes_left.saturating_sub(1);
+    }
+    if passes_left > 0 {
+        let s = lc_g.try_pow(u32::try_from(passes_left).ok()?)?;
+        for c in r.iter_mut() {
+            *c = c.try_mul(&s)?;
+        }
+    }
+    Some(r)
+}
+
+/// `res(f, g)` of two polynomials in `ℚ[params][x]` (ascending in `x`, no
+/// trailing zeros, degrees ≥ 1) by the subresultant PRS: one
+/// pseudo-remainder and one exact division per step, with coefficients of
+/// bounded degree in the parameters (they are subdeterminants of the
+/// Sylvester matrix).  `res(f, g) = (−1)^{deg f·deg g}·res(g, f)` orders
+/// the pair by degree.
+///
+/// The recurrence is that of [`crate::poly::zpoly`]'s
+/// `ztx_subresultant_prs`, which follows SymPy's `dup_inner_subresultants`
+/// and `dup_prs_resultant` (`sympy/polys/euclidtools.py`, BSD-3) — W. S.
+/// Brown, "The subresultant PRS algorithm", *ACM TOMS* 4 (1978) 237–249 —
+/// over `ℚ[params]` instead of `ℤ[t]`.  `None` if an exact division is not
+/// exact (ruled out by the theory) or an exponent overflows.
+fn multipoly_resultant(
+    f: &[MultiPoly<GrevLex>],
+    g: &[MultiPoly<GrevLex>],
+) -> Option<MultiPoly<GrevLex>> {
+    let (mut f, mut g) = (f.to_vec(), g.to_vec());
+    mp_normalize(&mut f);
+    mp_normalize(&mut g);
+    if f.len() < 2 || g.len() < 2 {
+        return None;
+    }
+    let nv = f[0].num_vars();
+    let mut swap_sign = false;
+    if f.len() < g.len() {
+        swap_sign = (f.len() - 1) * (g.len() - 1) % 2 == 1;
+        std::mem::swap(&mut f, &mut g);
+    }
+    let pow = |p: &MultiPoly<GrevLex>, k: usize| p.try_pow(u32::try_from(k).ok()?);
+    let mut m = g.len() - 1;
+    let d = f.len() - g.len();
+    // h = (−1)^{d+1} prem(f, g)
+    let mut h = mp_prem(&f, &g)?;
+    if d % 2 == 0 {
+        h = mp_neg(&h);
+    }
+    let mut lc = g.last()?.clone();
+    // c is the negated scalar subresultant of the newest member `g`.
+    let mut c = pow(&lc, d)?.neg();
+    while !h.is_empty() {
+        let k = h.len() - 1;
+        let d = m - k;
+        m = k;
+        f = std::mem::replace(&mut g, h);
+        let b = lc.try_mul(&pow(&c, d)?)?.neg();
+        h = mp_prem(&f, &g)?
+            .iter()
+            .map(|p| p.div_exact(&b))
+            .collect::<Option<Vec<_>>>()?;
+        mp_normalize(&mut h);
+        lc = g.last()?.clone();
+        c = if d > 1 {
+            pow(&lc.neg(), d)?.div_exact(&pow(&c, d - 1)?)?
+        } else {
+            lc.neg()
+        };
+    }
+    let r = if g.len() == 1 {
+        c.neg()
+    } else {
+        MultiPoly::zero(nv)
+    };
+    Some(if swap_sign { r.neg() } else { r })
+}
+
+/// The determinant of the Sylvester matrix over `Ex`, expanded (degrees
+/// ≥ 1): the route for coefficients that are not polynomials over ℚ
+/// (`√2`, `sin a`, …).
+fn sylvester_determinant(ctx: &crate::api::context::Context, f: &[Ex], g: &[Ex]) -> Option<Ex> {
+    let m = f.len().checked_sub(1)?;
+    let n = g.len().checked_sub(1)?;
     let size = m + n;
     let zero = ctx.zero();
     let mut rows: Vec<Vec<Ex>> = Vec::with_capacity(size);
@@ -989,5 +1164,48 @@ impl Expr<Numeric> {
         } else {
             det
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::context::Context;
+
+    /// The subresultant PRS gives exactly the expanded Sylvester
+    /// determinant (the same `Ex`), in both argument orders, for zero
+    /// resultants and for rational coefficients.
+    #[test]
+    fn parametric_resultant_is_the_sylvester_determinant() {
+        let ctx = Context::new();
+        let (a, b, c) = (ctx.symbol("a"), ctx.symbol("b"), ctx.symbol("c"));
+        let x = ctx.symbol("x");
+        let one = ctx.int(1);
+        let pairs: Vec<(Ex, Ex)> = vec![
+            (&x.powi(3) + &(&a * &x) + &b, &(&x.powi(2) * &c) - &one),
+            (&(&x * &a) - &b, &(&x.powi(4) * 3) + &(&a * &x.powi(2)) + &c),
+            // a common factor (x − a): resultant 0
+            (&(&x - &a) * &(&x + &b), &(&x - &a) * &(&x.powi(2) + &c)),
+            (&x.powi(3) - 2, &(&x.powi(2) * 5) + &(&x * 7) - 1),
+            (
+                &(&(&a * &b) * &x.powi(2)) + &(&c * &x) - &a.powi(2),
+                &(&x.powi(3) * &b) - &(&c * &x) + &(&a * &c),
+            ),
+        ];
+        for (f, g) in pairs {
+            for (p, q) in [(&f, &g), (&g, &f)] {
+                let pc = crate::api::poly_ex::Poly::new(p, &[&x])
+                    .unwrap()
+                    .all_coeffs()
+                    .unwrap();
+                let qc = crate::api::poly_ex::Poly::new(q, &[&x])
+                    .unwrap()
+                    .all_coeffs()
+                    .unwrap();
+                let fast = parametric_resultant(&pc, &qc).expect("polynomial coefficients");
+                let slow = sylvester_determinant(&ctx, &pc, &qc).unwrap();
+                assert_eq!(fast, slow, "res({p}, {q})");
+            }
+        }
     }
 }

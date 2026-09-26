@@ -42,6 +42,10 @@
 //! - `sinh(-x)` → `-sinh(x)` (odd function)
 //! - `cosh(-x)` → `cosh(x)` (even function)
 //! - `tanh(-x)` → `-tanh(x)` (odd function)
+//! - `acos(√2/2)` → `π/4`, `asin(√(2+√3)/2)` → `5π/12`, `atan(2 − √3)` →
+//!   `π/12`, `atan2(√3/2, 1/2)` → `π/3`: the inverse functions of
+//!   `±cos(kπ/n)` and `±tan(kπ/n)`, `n ∈ {1, 2, 3, 4, 5, 6, 8, 10, 12}`, in
+//!   any radical form (see `special_angle_of`)
 //!
 //! # Design
 //!
@@ -2934,7 +2938,10 @@ fn eval_asin(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
             return Some(arena.mul(&[neg_sixth, arena.pi]));
         }
     }
-    None
+    // asin(v) = π/2 − acos(v) = s·(1/2 − q)·π for |v| = cos(qπ).
+    let (s, q) = special_angle_of(arena, inner, SpecialTable::Cos)?;
+    let half = Ratio::new(BigInt::from(1), BigInt::from(2));
+    Some(pi_times(arena, (half - q) * s))
 }
 
 fn eval_acos(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
@@ -2963,7 +2970,10 @@ fn eval_acos(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
             return Some(arena.mul(&[two_thirds, arena.pi]));
         }
     }
-    None
+    // acos(±cos(qπ)) = qπ or (1 − q)π (principal range [0, π]).
+    let (s, q) = special_angle_of(arena, inner, SpecialTable::Cos)?;
+    let angle = if s.is_negative() { Ratio::one() - q } else { q };
+    Some(pi_times(arena, angle))
 }
 
 fn eval_atan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
@@ -2980,9 +2990,205 @@ fn eval_atan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         let neg_quarter = arena.rational(-1, 4);
         return Some(arena.mul(&[neg_quarter, arena.pi]));
     }
-    // atan(1) is already handled (= π/4)
-    // atan(-1) is already handled (= -π/4) via odd function
-    None
+    // atan(±tan(qπ)) = ±qπ (principal range (−π/2, π/2)).
+    let (s, q) = special_angle_of(arena, inner, SpecialTable::Tan)?;
+    Some(pi_times(arena, q * s))
+}
+
+/// `r·π` as a canonical node.
+fn pi_times(arena: &mut Arena, r: Q) -> ExprId {
+    if r.is_zero() {
+        return arena.zero;
+    }
+    let c = arena.num_ratio(r);
+    arena.mul(&[c, arena.pi])
+}
+
+/// Which trigonometric function a [`SPECIAL_COS`] / [`SPECIAL_TAN`] lookup
+/// inverts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SpecialTable {
+    Cos,
+    Tan,
+}
+
+/// A value `(a + b·√m)/d`, or `√(a + b·√m)/d` when `root`, of a
+/// trigonometric function at the angle `kπ/n`.
+struct SpecialValue {
+    k: i64,
+    n: i64,
+    a: i64,
+    b: i64,
+    m: i64,
+    d: i64,
+    root: bool,
+}
+
+const fn sv(k: i64, n: i64, a: i64, b: i64, m: i64, d: i64, root: bool) -> SpecialValue {
+    SpecialValue {
+        k,
+        n,
+        a,
+        b,
+        m,
+        d,
+        root,
+    }
+}
+
+/// `cos(kπ/n)` for `0 ≤ k/n ≤ 1/2`, `n ∈ {1, 2, 3, 4, 5, 6, 8, 10, 12}`
+/// (the angles whose cosines are square-root towers of degree ≤ 4).
+const SPECIAL_COS: &[SpecialValue] = &[
+    sv(0, 1, 1, 0, 0, 1, false),   // 1
+    sv(1, 12, 2, 1, 3, 2, true),   // √(2 + √3)/2 = (√6 + √2)/4
+    sv(1, 10, 10, 2, 5, 4, true),  // √(10 + 2√5)/4
+    sv(1, 8, 2, 1, 2, 2, true),    // √(2 + √2)/2
+    sv(1, 6, 0, 1, 3, 2, false),   // √3/2
+    sv(1, 5, 1, 1, 5, 4, false),   // (1 + √5)/4
+    sv(1, 4, 0, 1, 2, 2, false),   // √2/2
+    sv(3, 10, 10, -2, 5, 4, true), // √(10 − 2√5)/4
+    sv(1, 3, 1, 0, 0, 2, false),   // 1/2
+    sv(3, 8, 2, -1, 2, 2, true),   // √(2 − √2)/2
+    sv(2, 5, -1, 1, 5, 4, false),  // (√5 − 1)/4
+    sv(5, 12, 2, -1, 3, 2, true),  // √(2 − √3)/2 = (√6 − √2)/4
+    sv(1, 2, 0, 0, 0, 1, false),   // 0
+];
+
+/// `tan(kπ/n)` for `0 ≤ k/n < 1/2`, the same denominators.
+const SPECIAL_TAN: &[SpecialValue] = &[
+    sv(0, 1, 0, 0, 0, 1, false),    // 0
+    sv(1, 12, 2, -1, 3, 1, false),  // 2 − √3
+    sv(1, 10, 25, -10, 5, 5, true), // √(25 − 10√5)/5
+    sv(1, 8, -1, 1, 2, 1, false),   // √2 − 1
+    sv(1, 6, 0, 1, 3, 3, false),    // √3/3
+    sv(1, 5, 5, -2, 5, 1, true),    // √(5 − 2√5)
+    sv(1, 4, 1, 0, 0, 1, false),    // 1
+    sv(3, 10, 25, 10, 5, 5, true),  // √(25 + 10√5)/5
+    sv(1, 3, 0, 1, 3, 1, false),    // √3
+    sv(3, 8, 1, 1, 2, 1, false),    // 1 + √2
+    sv(2, 5, 5, 2, 5, 1, true),     // √(5 + 2√5)
+    sv(5, 12, 2, 1, 3, 1, false),   // 2 + √3
+];
+
+/// Least common multiple of the table denominators.
+const SPECIAL_LCM: i64 = 120;
+
+/// Build the arena node of a table value.
+fn special_value_node(arena: &mut Arena, e: &SpecialValue) -> ExprId {
+    let a = arena.int(e.a);
+    let mut inner = if e.b == 0 {
+        a
+    } else {
+        let m = arena.int(e.m);
+        let half = arena.rational(1, 2);
+        let sqrt_m = arena.pow(m, half);
+        let b = arena.int(e.b);
+        let b_sqrt_m = arena.mul(&[b, sqrt_m]);
+        arena.add(&[a, b_sqrt_m])
+    };
+    if e.root {
+        let half = arena.rational(1, 2);
+        inner = arena.pow(inner, half);
+    }
+    let inv_d = arena.rational(1, e.d);
+    let v = arena.mul(&[inv_d, inner]);
+    eval(arena, v)
+}
+
+/// Is `id` a real constant built from rationals, `φ` and square roots
+/// (`+ − ×`, integer and half-integer powers), with at least one square
+/// root and at most 64 nodes?  The table values are of this form; anything
+/// else (symbols, `π`, `i`, cube roots, functions) cannot be one.
+fn is_square_root_tower(arena: &Arena, id: ExprId) -> bool {
+    // Explicit stack, stopping at the first node that disqualifies (the
+    // common case: an argument with a symbol) or past 64 nodes.
+    let mut stack = vec![id];
+    let mut visited = 0usize;
+    let mut irrational = false;
+    while let Some(n) = stack.pop() {
+        visited += 1;
+        if visited > 64 {
+            return false;
+        }
+        match arena.node(n) {
+            ExprNode::Num(_) => {}
+            ExprNode::Add(cs) | ExprNode::Mul(cs) => stack.extend(cs.iter().copied()),
+            ExprNode::Neg(a) => stack.push(*a),
+            ExprNode::GoldenRatio => irrational = true,
+            ExprNode::Pow(b, e) => {
+                match arena.as_num(*e) {
+                    Some(q) if q.is_integer() => {}
+                    Some(q) if *q.denom() == BigInt::from(2) => irrational = true,
+                    _ => return false,
+                }
+                stack.push(*b);
+            }
+            _ => return false,
+        }
+    }
+    irrational
+}
+
+/// Monic minimal polynomial over ℚ of an algebraic constant.
+fn monic_minimal_polynomial(arena: &mut Arena, id: ExprId) -> Option<crate::poly::Poly> {
+    let p = crate::poly::algebraic::minimal_polynomial(arena, id)?;
+    (!p.is_zero()).then(|| p.make_monic())
+}
+
+/// Recognise `v = s·f(qπ)` for a table angle `q ∈ [0, 1/2]` (`f = cos`) or
+/// `q ∈ [0, 1/2)` (`f = tan`) and a sign `s = ±1`; returns `(s, q)`.
+///
+/// The candidate angle comes from the certified `f64` value of `v` (the
+/// nearest multiple of `π/120`, within `10⁻⁶` of a step); it is accepted
+/// only when `|v|` is exactly the table value: structurally equal after
+/// [`eval`], or with the same minimal polynomial over ℚ.  Equal minimal
+/// polynomials and close values identify the number, because the
+/// the roots of every table polynomial are more than `0.3` apart (they are
+/// the conjugates `±f(jqπ)`, `gcd(j, n) = 1`) while the tolerance allows at
+/// most `4·10⁻⁷` (`tan` at `5π/12`).  So the reduction does not depend
+/// on the radical form of the input: `(√6 + √2)/4`, `√(2 + √3)/2` and
+/// `1/(√6 − √2)` all give `acos = π/12`.
+fn special_angle_of(arena: &mut Arena, v: ExprId, table: SpecialTable) -> Option<(Q, Q)> {
+    if !is_square_root_tower(arena, v) {
+        return None;
+    }
+    let x = crate::transforms::evalf::evalf_f64(arena, v).ok()?;
+    if !x.is_finite() || x.abs() < 1e-12 {
+        return None;
+    }
+    let theta = match table {
+        SpecialTable::Cos if x.abs() <= 1.0 => x.abs().acos(),
+        SpecialTable::Cos => return None,
+        SpecialTable::Tan => x.abs().atan(),
+    } / std::f64::consts::PI;
+    let steps = theta * SPECIAL_LCM as f64;
+    let r = steps.round();
+    if (steps - r).abs() > 1e-6 {
+        return None;
+    }
+    let q = Ratio::new(BigInt::from(r as i64), BigInt::from(SPECIAL_LCM));
+    let entries = match table {
+        SpecialTable::Cos => SPECIAL_COS,
+        SpecialTable::Tan => SPECIAL_TAN,
+    };
+    let entry = entries
+        .iter()
+        .find(|e| Ratio::new(BigInt::from(e.k), BigInt::from(e.n)) == q)?;
+    let abs_v = if x < 0.0 {
+        let neg = arena.neg(v);
+        eval(arena, neg)
+    } else {
+        v
+    };
+    let target = special_value_node(arena, entry);
+    if abs_v != target {
+        let p = monic_minimal_polynomial(arena, abs_v)?;
+        if monic_minimal_polynomial(arena, target)? != p {
+            return None;
+        }
+    }
+    let s: Q = if x < 0.0 { -Ratio::one() } else { Ratio::one() };
+    Some((s, q))
 }
 
 /// Evaluate `atan2(y, x)` with quadrant-aware logic.
@@ -3038,8 +3244,57 @@ pub(crate) fn eval_atan2(arena: &mut Arena, y: ExprId, x: ExprId) -> Option<Expr
                 Some(arena.add(&[atan_val, neg_pi]))
             }
         }
-        _ => None,
+        _ => eval_atan2_special(arena, y, x),
     }
+}
+
+/// `atan2(y, x)` for real square-root towers (at least one irrational) whose
+/// quotient is a special tangent: the quadrant from the certified signs,
+/// the angle from [`eval_atan`] of `y/x` (`atan2(√3/2, 1/2) = π/3`,
+/// `atan2(−√2, −√6) = −5π/6`).  `None` unless the angle is a rational
+/// multiple of `π`.
+fn eval_atan2_special(arena: &mut Arena, y: ExprId, x: ExprId) -> Option<ExprId> {
+    let tower_or_rational =
+        |arena: &Arena, id: ExprId| arena.as_num(id).is_some() || is_square_root_tower(arena, id);
+    if !tower_or_rational(arena, y) || !tower_or_rational(arena, x) {
+        return None;
+    }
+    let sign_of = |arena: &Arena, id: ExprId| -> Option<i8> {
+        if let Some(r) = arena.as_num(id) {
+            return Some(if r.is_zero() {
+                0
+            } else if r.is_negative() {
+                -1
+            } else {
+                1
+            });
+        }
+        // An irrational tower is not zero; its sign is certified at 1e-12.
+        let v = crate::transforms::evalf::evalf_f64(arena, id).ok()?;
+        (v.is_finite() && v.abs() >= 1e-12).then_some(if v < 0.0 { -1 } else { 1 })
+    };
+    let sy = sign_of(arena, y)?;
+    let sx = sign_of(arena, x)?;
+    let half = Ratio::new(BigInt::from(1), BigInt::from(2));
+    let angle: Q = match (sy, sx) {
+        (0, 0) => return None,
+        (0, 1) => Ratio::zero(),
+        (0, _) => Ratio::one(),
+        (1, 0) => half,
+        (_, 0) => -half,
+        _ => {
+            let ratio = arena.div(y, x);
+            let ratio = eval(arena, ratio);
+            let a = eval_atan(arena, ratio)?;
+            let q = as_pi_multiple(arena, a)?;
+            match (sy, sx) {
+                (_, 1) => q,
+                (1, _) => q + Ratio::one(),
+                _ => q - Ratio::one(),
+            }
+        }
+    };
+    Some(pi_times(arena, angle))
 }
 
 fn eval_sinh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
@@ -5363,6 +5618,59 @@ mod tests {
     }
 
     // ── inverse trig ────────────────────────────────────────────────
+
+    /// Every table value is `cos(kπ/n)` / `tan(kπ/n)` (to 1e-14), and the
+    /// inverse function of it and of its negative reduces to the angle.
+    #[test]
+    fn special_angle_tables_are_right_and_invert() {
+        use std::f64::consts::PI;
+        for (table, entries) in [
+            (SpecialTable::Cos, SPECIAL_COS),
+            (SpecialTable::Tan, SPECIAL_TAN),
+        ] {
+            for e in entries {
+                let mut a = Arena::new();
+                let v = special_value_node(&mut a, e);
+                let angle = PI * e.k as f64 / e.n as f64;
+                let exact = match table {
+                    SpecialTable::Cos => angle.cos(),
+                    SpecialTable::Tan => angle.tan(),
+                };
+                let got = crate::transforms::evalf::evalf_f64(&a, v).unwrap();
+                assert!(
+                    (got - exact).abs() < 1e-14,
+                    "{}/{}: {got} vs {exact}",
+                    e.k,
+                    e.n
+                );
+                let q = Ratio::new(BigInt::from(e.k), BigInt::from(e.n));
+                let neg = a.neg(v);
+                let neg = eval(&mut a, neg);
+                let (f_pos, f_neg, want_pos, want_neg) = match table {
+                    SpecialTable::Cos => {
+                        (a.acos(v), a.acos(neg), q.clone(), Ratio::one() - q.clone())
+                    }
+                    SpecialTable::Tan => (a.atan(v), a.atan(neg), q.clone(), -q.clone()),
+                };
+                let got_pos = eval(&mut a, f_pos);
+                let got_neg = eval(&mut a, f_neg);
+                assert_eq!(
+                    as_pi_multiple(&a, got_pos),
+                    Some(want_pos),
+                    "{}/{}",
+                    e.k,
+                    e.n
+                );
+                assert_eq!(
+                    as_pi_multiple(&a, got_neg),
+                    Some(want_neg),
+                    "-{}/{}",
+                    e.k,
+                    e.n
+                );
+            }
+        }
+    }
 
     #[test]
     fn eval_asin_half() {

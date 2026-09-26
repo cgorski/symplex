@@ -72,6 +72,31 @@ pub trait Ring: Clone + PartialEq + fmt::Debug + Sized {
     /// Additive inverse.
     fn neg(&self) -> Self;
 
+    /// A fast path for the product of two univariate polynomials given as
+    /// non-empty ascending coefficient slices, or `None` to let
+    /// [`GenPoly::mul`](super::generic::GenPoly::mul) run the schoolbook
+    /// product over the ring.  An implementation must return exactly the
+    /// schoolbook coefficients (`a.len() + b.len() − 1` of them, before
+    /// trailing zeros are stripped).  `Ratio<BigInt>` multiplies the integer
+    /// numerators over the two common denominators and reduces each
+    /// coefficient once.
+    fn poly_mul(a: &[Self], b: &[Self]) -> Option<Vec<Self>> {
+        let _ = (a, b);
+        None
+    }
+
+    /// A fast path for the composition `f(g)` of two univariate polynomials
+    /// given as ascending coefficient slices, or `None` to let
+    /// [`GenPoly::compose`](super::generic::GenPoly::compose) run Horner's
+    /// rule over the ring.  An implementation must return exactly Horner's
+    /// coefficients (before trailing zeros are stripped).
+    /// `Ratio<BigInt>` runs Horner's rule on the integer numerators and
+    /// reduces once at the end.
+    fn poly_compose(f: &[Self], g: &[Self]) -> Option<Vec<Self>> {
+        let _ = (f, g);
+        None
+    }
+
     /// Repeated multiplication: `self^n` for non-negative integer `n`.
     ///
     /// Default implementation uses binary exponentiation.
@@ -268,18 +293,32 @@ impl Ring for Ratio<BigInt> {
         One::is_one(self)
     }
 
+    // Integer operands skip the reduction of `num-rational`, which calls
+    // `num-integer`'s binary gcd — O(bits × words) even against the
+    // denominator 1 (three times per product): composing two degree-25
+    // polynomials with 30-digit integer coefficients took 6.4 s.  The
+    // results are the same reduced fractions.
     #[inline]
     fn add(&self, rhs: &Self) -> Self {
+        if One::is_one(self.denom()) && One::is_one(rhs.denom()) {
+            return Ratio::from_integer(self.numer() + rhs.numer());
+        }
         self + rhs
     }
 
     #[inline]
     fn sub(&self, rhs: &Self) -> Self {
+        if One::is_one(self.denom()) && One::is_one(rhs.denom()) {
+            return Ratio::from_integer(self.numer() - rhs.numer());
+        }
         self - rhs
     }
 
     #[inline]
     fn mul(&self, rhs: &Self) -> Self {
+        if One::is_one(self.denom()) && One::is_one(rhs.denom()) {
+            return Ratio::from_integer(self.numer() * rhs.numer());
+        }
         self * rhs
     }
 
@@ -287,6 +326,116 @@ impl Ring for Ratio<BigInt> {
     fn neg(&self) -> Self {
         -self
     }
+
+    /// `a·b = (A/dₐ)(B/d_b)` with `A`, `B` the numerators over the common
+    /// denominators: an integer convolution and one reduction per
+    /// coefficient (`reduce_over`), instead of a reduced fraction (three
+    /// gcds) for each of the `len(a)·len(b)` products and each sum.
+    fn poly_mul(a: &[Self], b: &[Self]) -> Option<Vec<Self>> {
+        if a.len() < 2 || b.len() < 2 {
+            return None;
+        }
+        let (an, ad) = over_common_denominator(a);
+        let (bn, bd) = over_common_denominator(b);
+        let den = ad * bd;
+        let out = integer_convolution(&an, &bn);
+        Some(out.into_iter().map(|c| reduce_over(c, &den)).collect())
+    }
+
+    /// With `f = F/d_f`, `g = G/d_g` over common denominators, Horner's
+    /// `Rᵢ = Rᵢ₊₁·g + fᵢ` is `Hᵢ/(d_f·d_g^{n−i})` for the integer
+    /// `Hᵢ = Hᵢ₊₁·G + Fᵢ·d_g^{n−i}`, `Hₙ = Fₙ`: no fraction is formed
+    /// until the last step.
+    fn poly_compose(f: &[Self], g: &[Self]) -> Option<Vec<Self>> {
+        if f.len() < 2 || g.len() < 2 {
+            return None;
+        }
+        let (fnum, fd) = over_common_denominator(f);
+        let (gnum, gd) = over_common_denominator(g);
+        let n = f.len() - 1;
+        let mut h = vec![fnum[n].clone()];
+        let mut gd_pow = <BigInt as One>::one();
+        for fi in fnum[..n].iter().rev() {
+            gd_pow *= &gd;
+            h = integer_convolution(&h, &gnum);
+            h[0] += fi * &gd_pow;
+        }
+        let den = fd * gd_pow;
+        Some(h.into_iter().map(|c| reduce_over(c, &den)).collect())
+    }
+}
+
+/// The product of two integer polynomials (ascending, non-empty).
+fn integer_convolution(a: &[BigInt], b: &[BigInt]) -> Vec<BigInt> {
+    let mut out = vec![<BigInt as Zero>::zero(); a.len() + b.len() - 1];
+    for (i, x) in a.iter().enumerate() {
+        if Zero::is_zero(x) {
+            continue;
+        }
+        for (j, y) in b.iter().enumerate() {
+            if !Zero::is_zero(y) {
+                out[i + j] += x * y;
+            }
+        }
+    }
+    out
+}
+
+/// `gcd(a, b) ≥ 0`, with a first Euclidean step when one operand is
+/// shorter: `num-integer`'s binary gcd costs O(bits × words) of the longer
+/// operand even when the other is small (or `1`); a remainder costs
+/// O(words) and leaves two short operands.
+fn gcd_unbalanced(a: &BigInt, b: &BigInt) -> BigInt {
+    use num_traits::Signed;
+    let (long, short) = if a.bits() >= b.bits() { (a, b) } else { (b, a) };
+    if Zero::is_zero(short) {
+        return long.abs();
+    }
+    if One::is_one(&short.abs()) {
+        return <BigInt as One>::one();
+    }
+    let r = long % short;
+    if Zero::is_zero(&r) {
+        return short.abs();
+    }
+    short.gcd(&r)
+}
+
+/// `c/den` as a reduced fraction, for `den > 0`.
+fn reduce_over(c: BigInt, den: &BigInt) -> Ratio<BigInt> {
+    if One::is_one(den) {
+        return Ratio::from_integer(c);
+    }
+    let g = gcd_unbalanced(&c, den);
+    if One::is_one(&g) {
+        Ratio::new_raw(c, den.clone())
+    } else {
+        Ratio::new_raw(c / &g, den / &g)
+    }
+}
+
+/// The integer numerators of `c` over the positive least common multiple
+/// of its denominators, and that multiple.
+fn over_common_denominator(c: &[Ratio<BigInt>]) -> (Vec<BigInt>, BigInt) {
+    let mut den = <BigInt as One>::one();
+    for x in c {
+        let d = x.denom();
+        if !One::is_one(d) && !Zero::is_zero(&(&den % d)) {
+            let g = gcd_unbalanced(&den, d);
+            den = den / g * d;
+        }
+    }
+    let nums = c
+        .iter()
+        .map(|x| {
+            if One::is_one(x.denom()) {
+                x.numer() * &den
+            } else {
+                x.numer() * (&den / x.denom())
+            }
+        })
+        .collect();
+    (nums, den)
 }
 
 impl EuclideanDomain for Ratio<BigInt> {
@@ -475,6 +624,65 @@ mod tests {
 
     fn q(n: i64, d: i64) -> Q {
         Ratio::new(BigInt::from(n), BigInt::from(d))
+    }
+
+    /// Schoolbook product with `num-rational` arithmetic (the reference).
+    fn schoolbook(a: &[Q], b: &[Q]) -> Vec<Q> {
+        let mut out = vec![Q::from_integer(BigInt::from(0)); a.len() + b.len() - 1];
+        for (i, x) in a.iter().enumerate() {
+            for (j, y) in b.iter().enumerate() {
+                out[i + j] = &out[i + j] + x * y;
+            }
+        }
+        out
+    }
+
+    /// The `Ratio` fast paths return exactly the reduced fractions of the
+    /// schoolbook product and of Horner's rule (same numerators and
+    /// denominators, not just equal values), for integer, mixed, zero and
+    /// negative coefficients.
+    #[test]
+    fn ratio_poly_mul_and_compose_match_the_reference() {
+        let mut s = 7u64;
+        let mut next = |den_max: i64| -> Q {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let n = ((s >> 20) % 2001) as i64 - 1000;
+            let d = ((s >> 40) % den_max as u64) as i64 + 1;
+            if n % 5 == 0 {
+                q(0, 1)
+            } else {
+                q(n * 1_000_003, d)
+            }
+        };
+        for (la, lb, den) in [
+            (2, 2, 1),
+            (5, 3, 1),
+            (6, 7, 12),
+            (9, 4, 1_000_000_007),
+            (3, 11, 6),
+        ] {
+            let a: Vec<Q> = (0..la).map(|_| next(den)).chain([q(3, 7)]).collect();
+            let b: Vec<Q> = (0..lb).map(|_| next(den)).chain([q(-5, 1)]).collect();
+            let want = schoolbook(&a, &b);
+            let got = <Q as Ring>::poly_mul(&a, &b).unwrap();
+            assert_eq!(got.len(), want.len());
+            for (g, w) in got.iter().zip(&want) {
+                assert_eq!((g.numer(), g.denom()), (w.numer(), w.denom()));
+            }
+            // Horner with num-rational arithmetic.
+            let mut horner = vec![a[a.len() - 1].clone()];
+            for c in a[..a.len() - 1].iter().rev() {
+                horner = schoolbook(&horner, &b);
+                horner[0] = &horner[0] + c;
+            }
+            let got = <Q as Ring>::poly_compose(&a, &b).unwrap();
+            assert_eq!(got.len(), horner.len());
+            for (g, w) in got.iter().zip(&horner) {
+                assert_eq!((g.numer(), g.denom()), (w.numer(), w.denom()));
+            }
+        }
     }
 
     // Disambiguated helpers — avoid collision between Ring::zero and num_traits::Zero::zero

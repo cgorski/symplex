@@ -84,6 +84,27 @@ differences).  Every class they found is fixed and pinned in `tests/v29/`.
   argument lies in `(−1/e, 0)`: `exp(x) − 2x − π = 0` lost `1.9526`
   (SymPy 1.14 misses such roots too, e.g. of `exp(x) − 3x`).  It also
   solves `x·ln x = c`, `ln x + cx + d = 0` and `x^x = c`.
+- **Residues at essential singularities are computed** by the residue
+  theorem on the Riemann sphere (`Res(z²e^{1/z}, 0) = 1/6`, `Res(e^{1/z}/(z
+  − 1), 0) = 1 − e`; SymPy 1.14 gives 0 for the first, and the SymPy
+  fixture that encoded it is corrected), and refused when ∞ is essential
+  too (they were `0`, then refused).
+- **`eval` reduces inverse trigonometric functions of special algebraic
+  values**: `asin`, `acos`, `atan`, `atan2` of `±cos(kπ/n)` and
+  `±tan(kπ/n)` for `n ∈ {1, 2, 3, 4, 5, 6, 8, 10, 12}`, in any radical form
+  (`acos(√(2 + √3)/2) = π/12`), decided by minimal polynomial.
+- **Emitted code:** `min`/`max` propagate `NaN` in every back end; a power
+  with an even denominator is `NaN` for a negative base in Python, NumPy
+  and Julia too (Python returned a complex number); a constant whose
+  formula does not evaluate in `f64` is emitted as a literal, and a
+  non-real constant (`atanh(9)`) is refused.
+- **`infer_dimension`** accepts rational powers (`√(k/m)` is a frequency),
+  `abs`/`min`/`max`/`re`/`sign`/Heaviside/Dirac/`atan2`, definite
+  integrals, sums and limits.
+- **Assumptions:** `r·i` for a real `r` that may be 0 is no longer known
+  imaginary (so not known non-zero or non-real); a query after `assume`
+  sees the new assumption (cached derived answers were stale); `refine`
+  keeps rewrites below `abs`, `sign` and powers.
 - **`ctx.apply("lambertw", [x])` is the native `W(x)` node** (it was an
   opaque application the back ends refused).
 - **`routh_array`** decides zeros exactly, with a symbolic `ε` and the
@@ -197,6 +218,21 @@ differences).  Every class they found is fixed and pinned in `tests/v29/`.
   bound was huge (the bisection depth was capped at 256); Sturm chains
   are signed subresultant PRS with a floating-point sign filter (degree
   40, 100-digit coefficients: 2.1 s → 0.1 s).
+- **Rewrites over ℂ** (found by a rewrite hunt at complex points):
+  `powdenest` split `√(2^x·3^x)` into `√(2^x)·√(3^x)` (a positive base to
+  a non-real power is not non-negative: wrong at `x = −1/100 + 2i`);
+  `simplify` flattened `(exp(3/2·ln 256·i))^x` to `256^(3ix/2)` (its
+  `pow_pow` rule needs a real inner exponent); `expand_log(ln(−w))` for a
+  negative `w` looped forever; `expand` left `(4 − √5)²` unexpanded in a
+  distributed power (not idempotent).
+- **`infer_dimension` of `x^127·y` panicked** (i8 overflow) in debug
+  builds and gave a wrong dimension in release.
+- **`poly_compose` is about 80× faster** (degree 25 ∘ 25 with 30-digit
+  coefficients: 6.5 s → 0.08 s) and `resultant_symbolic` about 5×
+  (subresultant PRS over `ℚ[params]`); outputs unchanged.
+- **Canonical products** (found by `fuzz_roundtrip`): the reciprocal of a
+  rational beyond the digit guard stayed `q^(−1)` while its display
+  parsed as the rational `1/q`.
 - **`erfinv` of a tiny argument and `erfinv(erf(−9))` at 60 digits**
   failed to converge (found by the new `fuzz_evalf` in its first 10
   minutes).
