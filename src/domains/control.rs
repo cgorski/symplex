@@ -760,9 +760,26 @@ impl std::fmt::Display for TransferFunction {
 /// routh[i][j] = (routh[i-1][0] * routh[i-2][j+1] - routh[i-2][0] * routh[i-1][j+1]) / routh[i-1][0]
 /// ```
 ///
+/// Leading zero coefficients are dropped (they do not change the
+/// polynomial).  Zero tests are exact.  The two special cases follow the
+/// textbook rules:
+///
+/// * a row that vanishes entirely is replaced by the coefficients of the
+///   derivative of the auxiliary polynomial formed from the row above it
+///   (roots symmetric about the origin, e.g. on the imaginary axis);
+/// * a zero first entry in an otherwise nonzero row is replaced by the
+///   symbol `ε` (primed if the coefficients already use that name), a
+///   positive infinitesimal: the entries below are rational functions of
+///   `ε` whose signs are read as `ε → 0⁺`.
+///
+/// (Before 0.30 zeros were detected with an `f64` threshold of `10⁻³⁰`
+/// and replaced by the number `10⁻⁹`, which gave wrong sign patterns when
+/// the coefficients were small, and leading zeros were kept.)
+///
 /// # Errors
 ///
-/// Returns [`SymplexError::InvalidArgument`] if `coeffs` is empty.
+/// Returns [`SymplexError::InvalidArgument`] if `coeffs` is empty or all
+/// coefficients are zero.
 ///
 /// # Examples
 ///
@@ -777,16 +794,46 @@ impl std::fmt::Display for TransferFunction {
 /// assert!(routh_array(&[]).is_err());
 /// ```
 pub fn routh_array(coeffs: &[Ex]) -> Result<Vec<Vec<Ex>>, SymplexError> {
-    let Some(lead) = coeffs.first() else {
+    routh_table(coeffs).map(|t| t.rows)
+}
+
+/// The Routh table and whether a special case occurred in it.
+struct RouthTable {
+    rows: Vec<Vec<Ex>>,
+    /// A zero first entry, or an entirely zero row: the polynomial has a
+    /// root with non-negative real part.
+    degenerate: bool,
+}
+
+fn is_exact_zero(e: &Ex) -> bool {
+    crate::domains::matrix::ex_is_zero(e) == Some(true)
+}
+
+fn routh_table(coeffs: &[Ex]) -> Result<RouthTable, SymplexError> {
+    if coeffs.is_empty() {
         return Err(SymplexError::invalid_argument(
             "routh_array",
             "coefficients must not be empty",
         ));
+    }
+    // Leading zeros do not change the polynomial.
+    let first_nonzero = coeffs.iter().position(|c| !is_exact_zero(c));
+    let Some(start) = first_nonzero else {
+        return Err(SymplexError::invalid_argument(
+            "routh_array",
+            "the zero polynomial has no Routh array",
+        ));
     };
+    let coeffs = &coeffs[start..];
+    let lead = &coeffs[0];
+    let ctx = lead.context();
 
     let n = coeffs.len();
     if n == 1 {
-        return Ok(vec![vec![lead.clone()]]);
+        return Ok(RouthTable {
+            rows: vec![vec![lead.clone()]],
+            degenerate: false,
+        });
     }
 
     // Number of columns in the Routh table
@@ -813,23 +860,49 @@ pub fn routh_array(coeffs: &[Ex]) -> Result<Vec<Vec<Ex>>, SymplexError> {
     }
 
     let mut table: Vec<Vec<Ex>> = vec![row0, row1];
+    let mut degenerate = false;
+    // The infinitesimal of the ε method, named apart from the input's symbols.
+    let epsilon = {
+        let used: Vec<String> = coeffs
+            .iter()
+            .flat_map(|c| c.free_symbols())
+            .map(|s| s.to_string())
+            .collect();
+        let mut name = String::from("ε");
+        while used.contains(&name) {
+            name.push('\'');
+        }
+        ctx.symbol(&name)
+    };
 
-    // Build subsequent rows
+    // Build subsequent rows (row i belongs to the power s^(n-1-i)).
     let total_rows = n;
-    for i in 2..total_rows {
+    for i in 2..=total_rows {
+        // Special cases in row i − 1 (the row about to become the pivot).
+        let last = i - 1;
+        if table[last].iter().all(is_exact_zero) {
+            // Auxiliary polynomial A(s) = Σₖ row[k]·s^(d−2k) of the row
+            // above, d = n − 1 − (last − 1); replace the zero row by A′.
+            degenerate = true;
+            let d = (n - 1 - (last - 1)) as i64;
+            let above = table[last - 1].clone();
+            let deriv: Vec<Ex> = above
+                .iter()
+                .enumerate()
+                .map(|(k, c)| (c * (d - 2 * k as i64)).eval())
+                .collect();
+            table[last] = deriv;
+        }
+        if is_exact_zero(&table[last][0]) {
+            degenerate = true;
+            table[last][0] = epsilon.clone();
+        }
+        if i == total_rows {
+            break;
+        }
         let prev = &table[i - 1];
         let prev2 = &table[i - 2];
-        let mut pivot = prev[0].clone();
-
-        // Epsilon method: if pivot is zero, check if entire row is zero
-        let pivot_is_zero = pivot.eval_f64().map(|v| v.abs() < 1e-30).unwrap_or(false);
-
-        if pivot_is_zero {
-            // Epsilon method: replace zero pivot with small ε to preserve
-            // sign information. This handles both the "only pivot is zero"
-            // case and the "entire row is zero" (auxiliary polynomial) case.
-            pivot = coeffs[0].context().rational(1, 1_000_000_000);
-        }
+        let pivot = prev[0].clone();
 
         let mut new_row: Vec<Ex> = Vec::with_capacity(num_cols);
         for j in 0..(num_cols - 1) {
@@ -845,7 +918,10 @@ pub fn routh_array(coeffs: &[Ex]) -> Result<Vec<Vec<Ex>>, SymplexError> {
             };
             // routh[i][j] = (pivot * prev2[j+1] - prev2[0] * prev[j+1]) / pivot
             let numerator = &(&pivot * &prev2_j1) - &(&prev2[0] * &prev_j1);
-            let entry = (&numerator / &pivot).eval();
+            let mut entry = (&numerator / &pivot).eval();
+            if entry.contains(&epsilon) {
+                entry = entry.ratsimp();
+            }
             new_row.push(entry);
         }
         // Last column is always zero (or not needed), pad if row is too short
@@ -855,7 +931,10 @@ pub fn routh_array(coeffs: &[Ex]) -> Result<Vec<Vec<Ex>>, SymplexError> {
         table.push(new_row);
     }
 
-    Ok(table)
+    Ok(RouthTable {
+        rows: table,
+        degenerate,
+    })
 }
 
 /// Check Routh-Hurwitz stability: all first-column entries must be positive
@@ -866,45 +945,35 @@ pub fn routh_array(coeffs: &[Ex]) -> Result<Vec<Vec<Ex>>, SymplexError> {
 /// array and checks for sign changes in the first column.
 ///
 /// Returns `Some(true)` if stable (no sign changes), `Some(false)` if
-/// unstable (sign changes detected), or `None` if stability cannot be
-/// determined symbolically.
+/// unstable (sign changes, or a zero first-column entry / zero row, which
+/// means a root with non-negative real part), or `None` if stability cannot
+/// be determined symbolically.  Leading zero coefficients are ignored; an
+/// empty or all-zero coefficient list is `Some(false)`.
 pub fn is_routh_stable(coeffs: &[Ex]) -> Option<bool> {
-    // The only error is an empty coefficient list: no polynomial, not stable.
-    let Ok(table) = routh_array(coeffs) else {
+    // The only errors are an empty or zero coefficient list: not stable.
+    let Ok(table) = routh_table(coeffs) else {
         return Some(false);
     };
-
-    // Collect first-column entries
-    let first_col: Vec<&Ex> = table.iter().map(|row| &row[0]).collect();
-
-    // Try to evaluate each entry numerically
-    let mut values: Vec<f64> = Vec::with_capacity(first_col.len());
-    for entry in &first_col {
-        if let Ok(val) = entry.eval_f64() {
-            values.push(val);
-        } else {
-            return None; // Can't evaluate symbolically
-        }
+    if table.degenerate {
+        return Some(false);
     }
 
-    // Check for sign changes
-    if values.is_empty() {
-        return None;
-    }
-
-    // All entries must be of the same sign (all positive or all negative)
-    let first_sign = values[0] > 0.0;
-    for &val in &values[1..] {
-        if val == 0.0 {
-            // A zero in the first column indicates marginal stability or
-            // requires special handling — treat as unstable for simplicity
-            return Some(false);
+    // All first-column entries must have the same sign; the signs are
+    // decided exactly (certified evaluation), not by an f64 threshold.
+    let mut first_sign: Option<bool> = None;
+    for row in &table.rows {
+        let entry = &row[0];
+        // `None`: can't decide symbolically.
+        let positive = crate::domains::matrix::ex_is_positive(entry)?;
+        if !positive && crate::domains::matrix::ex_is_zero(entry) != Some(false) {
+            return None;
         }
-        if (val > 0.0) != first_sign {
-            return Some(false); // Sign change → unstable
+        match first_sign {
+            None => first_sign = Some(positive),
+            Some(s) if s != positive => return Some(false), // Sign change → unstable
+            Some(_) => {}
         }
     }
-
     Some(true)
 }
 

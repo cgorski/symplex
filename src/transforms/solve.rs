@@ -2251,13 +2251,23 @@ fn rewrite_exp_powers(arena: &mut Arena, expr: ExprId, var: ExprId, gen_exp_x: E
 // LambertW solving for mixed polynomial-exponential equations
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Try to solve equations involving mixed polynomial and exponential terms
-/// using the LambertW function.
+/// Try to solve equations involving mixed polynomial and exponential or
+/// logarithmic terms with the Lambert W function (after SymPy's
+/// `_solve_lambert` / `_lambert`, `sympy/solvers/bivariate.py`, BSD):
 ///
-/// Recognizes forms like:
-/// - `x·exp(x) = c`  →  `x = W(c)`
-/// - `x·exp(a·x) = c`  →  `x = W(a·c)/a`
-/// - `a·exp(b·x) + c·x + d = 0`  →  rearrange to Lambert form
+/// - `A·x·exp(B·x) + D = 0`  →  `x = W_k(−B·D/A)/B`
+/// - `A·exp(B·x) + C·x + D = 0`  →  `x = −W_k(A·B/(C·exp(B·D/C)))/B − D/C`
+/// - `A·x·ln(B·x) + C·x + D = 0`  →  `x = exp(W_k(−(B·D/A)·exp(C/A)) − C/A)/B`
+/// - `A·ln(B·x) + C·x + D = 0`  →  `x = (A/C)·W_k((C/(A·B))·exp(−D/A))`
+/// - `A·x^x + D = 0`  →  `x = exp(W_k(ln(−D/A)))`
+///
+/// (with `ln(B·x)` for a constant `B` solved in `B·x`).  The branches
+/// `W_k` returned are those of [`lambert_branches`]: the principal one, and
+/// `W₋₁` as well when the argument lies in `(−1/e, 0)`, where both are real
+/// and the equation has two real roots.  Before 0.30 only `W₀` was taken:
+/// `solve(exp(x) − 2x − π, x)` gave `−1.4540` and missed `1.9526`
+/// (`−π/2 − W₋₁(−e^{−π/2}/2)`), and the logarithmic forms and `x^x` were
+/// not recognised at all.
 fn try_solve_lambert(
     arena: &mut Arena,
     expr: ExprId,
@@ -2275,8 +2285,11 @@ fn try_solve_lambert(
     // Classify each term into categories
     let mut constant_terms: Vec<ExprId> = Vec::new();
     let mut linear_coeffs: Vec<ExprId> = Vec::new(); // A for A*var
-    let mut exp_terms: Vec<(ExprId, ExprId)> = Vec::new(); // (A, B) for A*exp(B*var)
-    let mut var_exp_terms: Vec<(ExprId, ExprId)> = Vec::new(); // (A, B) for A*var*exp(B*var)
+    let mut exp_terms: Vec<LambertExp> = Vec::new(); // A*exp(B*var)
+    let mut var_exp_terms: Vec<LambertExp> = Vec::new(); // A*var*exp(B*var)
+    let mut var_ln_terms: Vec<LambertLn> = Vec::new(); // A*var*ln(B*var)
+    let mut ln_terms: Vec<LambertLn> = Vec::new(); // A*ln(B*var)
+    let mut pow_terms: Vec<ExprId> = Vec::new(); // A for A*var^var
 
     for &term in &terms {
         if !expr_contains_var(arena, term, var) {
@@ -2286,12 +2299,11 @@ fn try_solve_lambert(
 
         match classify_lambert_term(arena, term, var) {
             Some(LambertTermClass::Linear(coeff)) => linear_coeffs.push(coeff),
-            Some(LambertTermClass::ExpVar(coeff, exp_coeff)) => {
-                exp_terms.push((coeff, exp_coeff));
-            }
-            Some(LambertTermClass::VarExpVar(coeff, exp_coeff)) => {
-                var_exp_terms.push((coeff, exp_coeff));
-            }
+            Some(LambertTermClass::ExpVar(e)) => exp_terms.push(e),
+            Some(LambertTermClass::VarExpVar(e)) => var_exp_terms.push(e),
+            Some(LambertTermClass::VarLnVar(ln)) => var_ln_terms.push(ln),
+            Some(LambertTermClass::LnVar(ln)) => ln_terms.push(ln),
+            Some(LambertTermClass::PowVarVar(coeff)) => pow_terms.push(coeff),
             None => return None,
         }
     }
@@ -2302,54 +2314,158 @@ fn try_solve_lambert(
         1 => constant_terms[0],
         _ => arena.add(&constant_terms),
     };
+    let c = match linear_coeffs.len() {
+        0 => None,
+        1 => Some(linear_coeffs[0]),
+        _ => Some(arena.add(&linear_coeffs)),
+    };
+    let counts = (
+        exp_terms.len(),
+        var_exp_terms.len(),
+        var_ln_terms.len(),
+        ln_terms.len(),
+        pow_terms.len(),
+    );
 
-    // ── Pattern 1: A*var*exp(B*var) + D = 0 ──────────────────────────
-    // One mixed term, no exp-only or linear terms.
-    //   A*var*exp(B*var) = -D
-    //   var*exp(B*var) = -D/A
-    //   B*var*exp(B*var) = -B*D/A
-    //   B*var = W(-B*D/A)
-    //   var = W(-B*D/A) / B
-    if var_exp_terms.len() == 1 && exp_terms.is_empty() && linear_coeffs.is_empty() {
-        let (a, b) = var_exp_terms[0];
-        let neg_d = arena.neg(d);
-        let neg_d_over_a = arena.div(neg_d, a);
-        let b_arg = arena.mul(&[b, neg_d_over_a]);
-        let w = arena.lambertw(b_arg);
-        let solution = arena.div(w, b);
-        let solution = crate::transforms::eval::eval(arena, solution);
-        return Some(vec![Solution { value: solution }]);
+    let solutions: Vec<ExprId> = match (counts, c) {
+        // ── A*var*exp(B*var) + D = 0 ─────────────────────────────────
+        //   B*var*exp(B*var) = -B*D/A  →  var = W(-B*D/A)/B
+        ((0, 1, 0, 0, 0), None) => {
+            let LambertExp { coeff: a, rate: b } = var_exp_terms[0];
+            let neg_d = arena.neg(d);
+            let neg_d_over_a = arena.div(neg_d, a);
+            let b_arg = arena.mul(&[b, neg_d_over_a]);
+            lambert_branches(arena, b_arg)
+                .into_iter()
+                .map(|w| arena.div(w, b))
+                .collect()
+        }
+        // ── A*exp(B*var) + C*var + D = 0 ─────────────────────────────
+        //   u = -(B*var + B*D/C):  u·exp(u) = A·B/(C·exp(B·D/C))
+        //   var = -W(…)/B - D/C
+        ((1, 0, 0, 0, 0), Some(c)) => {
+            let LambertExp {
+                coeff: a_exp,
+                rate: b,
+            } = exp_terms[0];
+            let b_d = arena.mul(&[b, d]);
+            let b_d_over_c = arena.div(b_d, c);
+            let exp_bd_c = arena.exp(b_d_over_c);
+            let c_exp_bd_c = arena.mul(&[c, exp_bd_c]);
+            let a_b = arena.mul(&[a_exp, b]);
+            let w_arg = arena.div(a_b, c_exp_bd_c);
+            let d_over_c = arena.div(d, c);
+            lambert_branches(arena, w_arg)
+                .into_iter()
+                .map(|w| {
+                    let neg_w = arena.neg(w);
+                    let neg_w_over_b = arena.div(neg_w, b);
+                    arena.sub(neg_w_over_b, d_over_c)
+                })
+                .collect()
+        }
+        // ── A*var*ln(B*var) + C*var + D = 0 ──────────────────────────
+        //   B*var = e^t:  (t + C/A)·e^{t + C/A} = -(B·D/A)·e^{C/A}
+        //   var = exp(W(-(B·D/A)·e^{C/A}) - C/A)/B
+        ((0, 0, 1, 0, 0), c) => {
+            let LambertLn { coeff: a, scale: b } = var_ln_terms[0];
+            let c_over_a = match c {
+                Some(c) => arena.div(c, a),
+                None => arena.zero,
+            };
+            let neg_bd = arena.mul(&[arena.neg_one, b, d]);
+            let neg_bd_over_a = arena.div(neg_bd, a);
+            let exp_c_a = arena.exp(c_over_a);
+            let w_arg = arena.mul(&[neg_bd_over_a, exp_c_a]);
+            lambert_branches(arena, w_arg)
+                .into_iter()
+                .map(|w| {
+                    let t = arena.sub(w, c_over_a);
+                    let y = arena.exp(t);
+                    arena.div(y, b)
+                })
+                .collect()
+        }
+        // ── A*ln(B*var) + C*var + D = 0 ──────────────────────────────
+        //   var·e^{(C/A)·var} = e^{-D/A}/B
+        //   var = (A/C)·W((C/(A·B))·e^{-D/A})
+        ((0, 0, 0, 1, 0), Some(c)) => {
+            let LambertLn { coeff: a, scale: b } = ln_terms[0];
+            let ab = arena.mul(&[a, b]);
+            let c_over_ab = arena.div(c, ab);
+            let a_over_c = arena.div(a, c);
+            let neg_d = arena.neg(d);
+            let neg_d_over_a = arena.div(neg_d, a);
+            let exp_part = arena.exp(neg_d_over_a);
+            let w_arg = arena.mul(&[c_over_ab, exp_part]);
+            lambert_branches(arena, w_arg)
+                .into_iter()
+                .map(|w| arena.mul(&[a_over_c, w]))
+                .collect()
+        }
+        // ── A*var^var + D = 0 ────────────────────────────────────────
+        //   var·ln(var) = ln(-D/A)  →  var = exp(W(ln(-D/A)))
+        ((0, 0, 0, 0, 1), None) => {
+            let a = pow_terms[0];
+            let neg_d = arena.neg(d);
+            let r = arena.div(neg_d, a);
+            let ln_r = arena.ln(r);
+            lambert_branches(arena, ln_r)
+                .into_iter()
+                .map(|w| arena.exp(w))
+                .collect()
+        }
+        _ => return None,
+    };
+    Some(
+        solutions
+            .into_iter()
+            .map(|s| Solution {
+                value: crate::transforms::eval::eval(arena, s),
+            })
+            .collect(),
+    )
+}
+
+/// The Lambert W values `W_k(arg)` a Lambert solution takes: the principal
+/// branch, and `W₋₁(arg)` as well when `arg` is certainly in `(−1/e, 0)`,
+/// where both branches are real (SymPy's `_lambert` keeps `k = −1` only
+/// when `LambertW(arg, -1)` is known to be real; here the interval is
+/// decided with certified signs).  At `arg = −1/e` the two coincide, and
+/// for `arg ≥ 0` or a symbolic `arg` only `W₀` is taken — the other
+/// branches give the complex roots, infinitely many, which `solve` does
+/// not enumerate.
+fn lambert_branches(arena: &mut Arena, arg: ExprId) -> Vec<ExprId> {
+    let arg = crate::transforms::eval::eval(arena, arg);
+    let principal = arena.lambertw(arg);
+    let mut out = vec![principal];
+    if crate::base::walk::free_symbols(arena, arg).is_empty()
+        && crate::poly::algebraic::sign_checked(arena, arg) == Some(-1)
+    {
+        let neg_one = arena.neg_one;
+        let inv_e = arena.exp(neg_one);
+        let shifted = arena.add(&[arg, inv_e]);
+        if crate::poly::algebraic::sign_checked(arena, shifted) == Some(1) {
+            out.push(arena.lambertw_branch(arg, neg_one));
+        }
     }
+    out
+}
 
-    // ── Pattern 2: A*exp(B*var) + C*var + D = 0 ──────────────────────
-    // One exp term, one (aggregate) linear coefficient, no mixed terms.
-    //   A*exp(B*var) = -(C*var + D)
-    //   let u = -(B*var + B*D/C):
-    //     u·exp(u) = A·B / (C·exp(B·D/C))
-    //     u = W(A·B / (C·exp(B·D/C)))
-    //     var = -W(…)/B - D/C
-    if exp_terms.len() == 1 && var_exp_terms.is_empty() && !linear_coeffs.is_empty() {
-        let (a_exp, b) = exp_terms[0];
-        let c = match linear_coeffs.len() {
-            1 => linear_coeffs[0],
-            _ => arena.add(&linear_coeffs),
-        };
-        let b_d = arena.mul(&[b, d]);
-        let b_d_over_c = arena.div(b_d, c);
-        let exp_bd_c = arena.exp(b_d_over_c);
-        let c_exp_bd_c = arena.mul(&[c, exp_bd_c]);
-        let a_b = arena.mul(&[a_exp, b]);
-        let w_arg = arena.div(a_b, c_exp_bd_c);
-        let w = arena.lambertw(w_arg);
-        let neg_w = arena.neg(w);
-        let neg_w_over_b = arena.div(neg_w, b);
-        let d_over_c = arena.div(d, c);
-        let solution = arena.sub(neg_w_over_b, d_over_c);
-        let solution = crate::transforms::eval::eval(arena, solution);
-        return Some(vec![Solution { value: solution }]);
-    }
+/// `A·exp(B·var)` (and `A·var·exp(B·var)`): the coefficient `A` and the
+/// rate `B`.
+#[derive(Clone, Copy)]
+struct LambertExp {
+    coeff: ExprId,
+    rate: ExprId,
+}
 
-    None
+/// `A·ln(B·var)` (and `A·var·ln(B·var)`): the coefficient `A` and the
+/// scale `B`.
+#[derive(Clone, Copy)]
+struct LambertLn {
+    coeff: ExprId,
+    scale: ExprId,
 }
 
 /// Classification of a single additive term for LambertW analysis.
@@ -2357,95 +2473,89 @@ enum LambertTermClass {
     /// `A * var` — linear in the solve variable.
     Linear(ExprId),
     /// `A * exp(B * var)` — exponential in the solve variable.
-    ExpVar(ExprId, ExprId),
+    ExpVar(LambertExp),
     /// `A * var * exp(B * var)` — mixed polynomial-exponential.
-    VarExpVar(ExprId, ExprId),
+    VarExpVar(LambertExp),
+    /// `A * var * ln(B * var)`.
+    VarLnVar(LambertLn),
+    /// `A * ln(B * var)`.
+    LnVar(LambertLn),
+    /// `A * var^var`.
+    PowVarVar(ExprId),
 }
 
 /// Classify a single additive term (known to contain `var`) into a
 /// LambertW-relevant category, or return `None` if unrecognizable.
 fn classify_lambert_term(arena: &mut Arena, term: ExprId, var: ExprId) -> Option<LambertTermClass> {
-    // Bare var
-    if term == var {
-        return Some(LambertTermClass::Linear(arena.one));
-    }
-
-    // Bare exp(B*var)
-    if let ExprNode::Exp(inner) = arena.node(term).clone() {
-        if let Some(b) = extract_var_coeff_in_product(arena, inner, var) {
-            return Some(LambertTermClass::ExpVar(arena.one, b));
+    // `-(inner)`: classify `inner` and negate the coefficient.  This
+    // handles cases like `-(x*exp(x))` that remain as Neg nodes rather than
+    // being absorbed into a Mul with -1.
+    let (term, negate) = match arena.node(term).clone() {
+        ExprNode::Neg(inner) => (inner, true),
+        _ => (term, false),
+    };
+    let factors: Vec<ExprId> = match arena.node(term).clone() {
+        ExprNode::Mul(children) => children.to_vec(),
+        _ => vec![term],
+    };
+    let mut const_factors: Vec<ExprId> = Vec::new();
+    let mut has_var = false;
+    let mut exp_inner: Option<ExprId> = None;
+    let mut ln_inner: Option<ExprId> = None;
+    let mut pow_var_var = false;
+    for &child in &factors {
+        if !expr_contains_var(arena, child, var) {
+            const_factors.push(child);
+            continue;
         }
-        return None;
-    }
-
-    // Neg(inner) — classify inner and negate the coefficient.
-    // This handles cases like `-(x*exp(x))` that remain as Neg nodes
-    // rather than being absorbed into a Mul with -1.
-    if let ExprNode::Neg(inner) = arena.node(term).clone() {
-        match classify_lambert_term(arena, inner, var)? {
-            LambertTermClass::Linear(c) => {
-                let neg_c = arena.neg(c);
-                return Some(LambertTermClass::Linear(neg_c));
+        if child == var {
+            if has_var {
+                return None; // var appears twice → var²
             }
-            LambertTermClass::ExpVar(c, b) => {
-                let neg_c = arena.neg(c);
-                return Some(LambertTermClass::ExpVar(neg_c, b));
+            has_var = true;
+            continue;
+        }
+        match arena.node(child).clone() {
+            ExprNode::Exp(inner) if exp_inner.is_none() => exp_inner = Some(inner),
+            ExprNode::Ln(inner) if ln_inner.is_none() => ln_inner = Some(inner),
+            ExprNode::Pow(base, exp) if base == var && exp == var && !pow_var_var => {
+                pow_var_var = true;
             }
-            LambertTermClass::VarExpVar(c, b) => {
-                let neg_c = arena.neg(c);
-                return Some(LambertTermClass::VarExpVar(neg_c, b));
-            }
+            _ => return None, // unrecognized var-dependent factor
         }
     }
-
-    // Mul(factors...)
-    if let ExprNode::Mul(children) = arena.node(term).clone() {
-        let mut const_factors: Vec<ExprId> = Vec::new();
-        let mut has_var = false;
-        let mut exp_inner: Option<ExprId> = None;
-
-        for &child in &children {
-            if !expr_contains_var(arena, child, var) {
-                const_factors.push(child);
-            } else if child == var {
-                if has_var {
-                    return None;
-                } // var appears twice → var²
-                has_var = true;
+    let mut coeff = match const_factors.len() {
+        0 => arena.one,
+        1 => const_factors[0],
+        _ => arena.mul(&const_factors),
+    };
+    if negate {
+        coeff = arena.neg(coeff);
+    }
+    let class = match (has_var, exp_inner, ln_inner, pow_var_var) {
+        (true, None, None, false) => LambertTermClass::Linear(coeff),
+        (has_var, Some(inner), None, false) => {
+            let rate = extract_var_coeff_in_product(arena, inner, var)?;
+            let e = LambertExp { coeff, rate };
+            if has_var {
+                LambertTermClass::VarExpVar(e)
             } else {
-                match arena.node(child).clone() {
-                    ExprNode::Exp(inner) if expr_contains_var(arena, inner, var) => {
-                        if exp_inner.is_some() {
-                            return None;
-                        } // two exp factors
-                        exp_inner = Some(inner);
-                    }
-                    _ => return None, // unrecognized var-dependent factor
-                }
+                LambertTermClass::ExpVar(e)
             }
         }
-
-        let coeff = match const_factors.len() {
-            0 => arena.one,
-            1 => const_factors[0],
-            _ => arena.mul(&const_factors),
-        };
-
-        match (has_var, exp_inner) {
-            (true, Some(inner)) => {
-                let b = extract_var_coeff_in_product(arena, inner, var)?;
-                Some(LambertTermClass::VarExpVar(coeff, b))
+        (has_var, None, Some(inner), false) => {
+            let scale = extract_var_coeff_in_product(arena, inner, var)?;
+            let l = LambertLn { coeff, scale };
+            if has_var {
+                LambertTermClass::VarLnVar(l)
+            } else {
+                LambertTermClass::LnVar(l)
             }
-            (true, None) => Some(LambertTermClass::Linear(coeff)),
-            (false, Some(inner)) => {
-                let b = extract_var_coeff_in_product(arena, inner, var)?;
-                Some(LambertTermClass::ExpVar(coeff, b))
-            }
-            (false, None) => None, // shouldn't happen (term contains var)
         }
-    } else {
-        None
-    }
+        (false, None, None, true) => LambertTermClass::PowVarVar(coeff),
+        _ => return None,
+    };
+    Some(class)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

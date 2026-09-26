@@ -896,6 +896,13 @@ pub(crate) fn render(arena: &Arena, expr: ExprId) -> Result<String, SymplexError
 /// call unless it is given a notation here.
 fn render_apply(lib: Option<LibFn>, name: &str, args: &[String]) -> String {
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    // The branch `k` of Lambert W, `W_k(x)`.
+    if lib == Some(LibFn::LambertW) {
+        if let [x, k] = refs.as_slice() {
+            return apply(&format!("<msub>{}{k}</msub>", mi("W")), &[x]);
+        }
+        return apply(&mi("W"), &refs);
+    }
     let bessel = match lib {
         Some(LibFn::BesselJ) => Some("J"),
         Some(LibFn::BesselY) => Some("Y"),

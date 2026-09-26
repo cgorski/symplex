@@ -498,6 +498,7 @@ impl Program {
                 Instruction::Erfinv => un!(rt::erfinv),
                 Instruction::Erfcinv => un!(rt::erfcinv),
                 Instruction::LambertW => un!(rt::lambert_w0),
+                Instruction::LambertWm1 => un!(rt::lambert_wm1),
                 Instruction::Factorial => un!(rt::factorial),
                 Instruction::Binomial => bin!(rt::binomial),
                 Instruction::Beta => bin!(rt::beta),
@@ -601,6 +602,8 @@ enum Instruction {
     Erfinv,
     Erfcinv,
     LambertW,
+    /// The lower real branch `W₋₁` (`lambertw(x, -1)`).
+    LambertWm1,
     Factorial,
     /// `binomial(second, top)`.
     Binomial,
@@ -1162,6 +1165,14 @@ impl<'a> Emitter<'a> {
                 args.len()
             ))
         };
+        if f == LibFn::LambertW {
+            let inst = match crate::output::codegen::lambert_rt_helper(self.arena, args)? {
+                "lambert_wm1" => Instruction::LambertWm1,
+                _ => Instruction::LambertW,
+            };
+            self.unary(args[0], inst);
+            return Ok(());
+        }
         match vm_lowering(f) {
             // (order, x) families with compile-time integer order.
             VmLowering::Ordered(make) => {

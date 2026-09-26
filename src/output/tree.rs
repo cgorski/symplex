@@ -232,7 +232,8 @@ pub enum ExprTree {
         /// The function argument.
         arg: Box<ExprTree>,
     },
-    /// Lambert W function (principal branch): W(x)·exp(W(x)) = x.
+    /// Lambert W function (principal branch): W(x)·exp(W(x)) = x.  The
+    /// other branches `W_k(x)` are `Apply { name: "lambertw", args: [x, k] }`.
     LambertW {
         /// The function argument.
         arg: Box<ExprTree>,
@@ -1118,6 +1119,12 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             let k = tree_to_expr(arena, &args[1]);
             arena.binomial(n, k)
         }
+        // The branch `k` of Lambert W (`W(x, 0)` is the principal-branch node).
+        ExprTree::Apply { name, args } if name == "lambertw" && args.len() == 2 => {
+            let x = tree_to_expr(arena, &args[0]);
+            let k = tree_to_expr(arena, &args[1]);
+            arena.lambertw_branch(x, k)
+        }
         ExprTree::Apply { name, args } => {
             let sym_id = arena.symbols.intern(name);
             let arg_ids: Vec<ExprId> = args.iter().map(|a| tree_to_expr(arena, a)).collect();
@@ -1429,6 +1436,8 @@ impl ExprTree {
                 "Piecewise".to_string(),
                 Some(pieces.iter().flat_map(|(v, c)| [v, c]).collect()),
             ),
+            // SymPy's head for the branch `k` of Lambert W, `LambertW(x, k)`.
+            ExprTree::Apply { name, args } if name == "lambertw" => many("LambertW", args),
             ExprTree::Apply { name, args } => many(name, args),
             ExprTree::Derivative { body, var } => two("Derivative", body, var),
             ExprTree::Integral { body, var } => two("Integral", body, var),

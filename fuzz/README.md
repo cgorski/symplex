@@ -39,6 +39,9 @@ a mutated byte changes one choice.  A failure panics with the case and
 both values; `FUZZ_SHOW=1 $B/<target> <input>` prints the decoded case and
 its verdict (`ok`, or why it was skipped) instead of needing `print_expr`,
 and `-runs=0` over a corpus directory shows the whole corpus that way.
+`fuzz_roundtrip` also takes `FUZZ_TRACE=1`: every subexpression is
+printed as it is built, which locates the construction step that left a
+non-canonical form (and `FUZZ_SHOW=1` prints a relation's tree).
 They check self-consistency (`fuzz_evalf`) or agreement with an oracle,
 which cannot see an error every route shares: evalf's `erfcinv` tail was
 wrong at every precision (0.30), found by `compile()`, not by `fuzz_evalf`.

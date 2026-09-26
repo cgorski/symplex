@@ -50,7 +50,6 @@
 //! | `ψ⁽ⁿ⁾` | `x` | `(n+1)!·Σₖ abs(x + k)^(−n−2)`, at most `x^(−p) + x^(1−p)/(p−1)` (`p = n + 2`), or `d^(−p) + 2^(p+2)` left of 0; the order is discrete |
 //! | `erf`, `erfc`; `erfi`; `erf⁻¹`, `erfc⁻¹` | `x` | `(2/√π)·e^(−x²)`; `(2/√π)·e^(x²)`; `(√π/2)·e^(f²)` |
 //! | `Si`, `Ci`, `Shi`, `Chi`, `Ei`, `li`, Fresnel | `x` | `min(1, 1/abs(x))`, `1/abs(x)`, `max(1.18, e^abs(x)/(2·abs(x)))`, `e^abs(x)/abs(x)`, `eˣ/abs(x)`, `1/abs(ln x)`, 1, and a change below `2/abs(x)` over a ball around `abs(x) > 2` (`abs(S − 1/2) < 0.43/abs(x)`, DLMF 7.12) |
-//! | `W` | `x` | `e^(−W)/abs(1 + W)`, with the first-order change below an eighth of `1 + W` |
 //! | `ζ`, `η` | `s ≥ 0` | `1/(s − 1)² + 1`, and `η = (1 − 2^(1−s))·ζ` |
 //! | `Li_s(z)` | `z` | `1/abs(1 − z)`, `abs(ln(1 − z)/z)`, 2 for an exact `s = 1`, 2, `≥ 3`; otherwise `m!/(1 − abs(z))^(m+1)`, `m = max(0, ⌈1 − s⌉)` |
 //! |  | `s` | `abs(z)·m!/(1 − abs(z))^(m+1)`, `m = max(0, ⌈2 − s⌉)` |
@@ -90,6 +89,7 @@
 //! | `RootSum` | the body's bound at each root, the root bounded by its inclusion disk, as for `+` |
 //! | `Piecewise` | the chosen branch's bound when every condition up to it is decided with certainty (a comparison whose difference is outside its error ball, or of exact values); unknown otherwise, like `sign` at its threshold |
 //! | physical constants | their value's bound |
+//! | Lambert W, `W_k(z)` on every branch (`lambertw.rs`) | `2·abs(W′)·r` over the ball, `abs(W′) = abs(e^(−W)/(1 + W))`, while the first-order change is below a sixteenth of `min(1, abs(1 + W))`; unknown when the side of the branch's cut is undecidable |
 //! | definite integrals (`f64` quadrature, see `evalf.rs`) | the Gauss–Kronrod error estimate plus the rounding of the `f64` integrand values times the length of the interval |
 //!
 //! # Branch cuts
@@ -946,8 +946,6 @@ enum RealCut {
     OutsideUnit,
     /// `(−∞, 0] ∪ [2, ∞)`.
     OutsideZeroTwo,
-    /// `(−∞, −1/e]` (the principal branch of Lambert's W).
-    BelowMinusInvE,
 }
 
 /// Where a special function is not analytic, as far as the error bound of
@@ -967,7 +965,7 @@ enum Analytic {
 
 fn analyticity(arena: &Arena, node: &ExprNode) -> Analytic {
     use Analytic::{Everywhere, OffCut, Unknown};
-    use RealCut::{AboveOne, BelowMinusInvE, BelowOne, BelowZero, OutsideUnit, OutsideZeroTwo};
+    use RealCut::{AboveOne, BelowOne, BelowZero, OutsideUnit, OutsideZeroTwo};
     match node {
         ExprNode::Gamma(_)
         | ExprNode::Digamma(_)
@@ -982,7 +980,6 @@ fn analyticity(arena: &Arena, node: &ExprNode) -> Analytic {
         | ExprNode::DiracDelta(_) => Everywhere,
         ExprNode::LogGamma(_) | ExprNode::Ci(_) | ExprNode::Ei(_) => OffCut(0, BelowZero),
         ExprNode::Li(_) => OffCut(0, BelowOne),
-        ExprNode::LambertW(_) => OffCut(0, BelowMinusInvE),
         ExprNode::Apply(sid, _) => match arena.lib_fn(*sid) {
             Some(
                 LibFn::Erfi
@@ -1032,17 +1029,6 @@ fn meets_cut(x: &BigFloat, e: ErrExp, cut: RealCut) -> bool {
         RealCut::AboveOne => meets_at_least(x, e, 1),
         RealCut::OutsideUnit => meets_at_most(x, e, -1) || meets_at_least(x, e, 1),
         RealCut::OutsideZeroTwo => meets_at_most(x, e, 0) || meets_at_least(x, e, 2),
-        RealCut::BelowMinusInvE => {
-            // −1/e < −0.3678: (−∞, −0.3678] covers the cut.
-            let p = x.mantissa_max_bit_len().unwrap_or(64).max(64) + 64;
-            let c = BigFloat::from_i32(3678, 64).div(
-                &BigFloat::from_i32(10_000, 64),
-                64,
-                RoundingMode::Up,
-            );
-            let d = x.add(&c, p, RoundingMode::ToEven);
-            sign_of(&d) <= 0 || part_contains_zero(&d, shift(e, 1.0))
-        }
     }
 }
 
@@ -1383,7 +1369,6 @@ pub(super) fn node_error(
         | ExprNode::Digamma(_)
         | ExprNode::Erf(_)
         | ExprNode::Erfc(_)
-        | ExprNode::LambertW(_)
         | ExprNode::Beta(_, _)
         | ExprNode::Si(_)
         | ExprNode::Ci(_)

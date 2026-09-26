@@ -270,6 +270,11 @@ fn generated_c_compiles_and_matches_compile() {
             &(&x.gamma() + &x.log_gamma()) + &x.digamma(),
         ),
         ("erf_family", &(&x.erf() * &y.erfc()) + &(&x + 1).lambertw()),
+        // W₋₁ on (−1/e, 0): −x·e^{−x} at every probe point (x ≠ 1).
+        (
+            "lambert_wm1",
+            (-&x * (-&x).exp()).lambertw_branch(&ctx.int(-1)),
+        ),
         // erfinv on (0, 1), erfcinv on (0, 2) at every probe point.
         ("erf_inverses", &(&x / 10).erfinv() + &(&y / 10).erfcinv()),
         (

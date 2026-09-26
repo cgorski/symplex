@@ -15,9 +15,14 @@
 //! 3. Otherwise (transcendental denominators such as `1/sin t`), the order
 //!    is probed with `lim tᵏ g(t)` for `k = 1, …, 6` and the same derivative
 //!    formula is evaluated as a limit.
-//! 4. If `N(0)` is not finite (essential singularity like `e^{1/t}`) or
-//!    nothing above succeeds, an error is returned and the caller keeps a
-//!    formal `Residue` node.
+//! 4. Both formulas presuppose a pole of finite order: `N` (and, in step 3,
+//!    `D`) must be *analytic* at `t = 0`.  That is certified structurally
+//!    ([`analytic_at_zero`]); a finite value `N(0)` is not enough —
+//!    `t·e^{1/t}` is `0` at `t = 0` after `0·x → 0`, and `t²·sin(1/t)` has
+//!    real limits although `t = 0` is an essential singularity (residues
+//!    `1/2` and `−1/6`, which were reported as `0`).  If the certificate
+//!    fails or nothing above succeeds, an error is returned and the caller
+//!    keeps a formal `Residue` node.
 
 use num_bigint::BigInt;
 use num_traits::One;
@@ -94,6 +99,14 @@ fn residue_inner(
         return residue_polynomial_denominator(arena, numer, &coeffs, t);
     }
 
+    // The real-axis limits below determine the order of a *pole*; they say
+    // nothing about an essential singularity (`sin(1/t)` is bounded on the
+    // real axis).  Require a quotient of functions analytic at 0.
+    if !analytic_at_zero(arena, numer, t) || !analytic_at_zero(arena, denom, t) {
+        return Err(failed(
+            "not a quotient of functions analytic at the point (essential singularity or branch point?)",
+        ));
+    }
     residue_by_limits(arena, g, t)
 }
 
@@ -118,12 +131,13 @@ fn residue_polynomial_denominator(
         return Err(failed("denominator is identically zero"));
     }
 
-    // Numerator must be analytic at t = 0.
+    // Numerator must be analytic at t = 0 (a finite value N(0) is not
+    // enough: t·e^{1/t} evaluates to 0 there).
     let n0 = subs::subs(arena, numer, t, arena.zero());
     let n0 = eval::eval(arena, n0);
-    if !is_finite_constant(arena, n0, t) {
+    if !is_finite_constant(arena, n0, t) || !analytic_at_zero(arena, numer, t) {
         return Err(failed(
-            "numerator is not analytic at the point (essential singularity?)",
+            "numerator is not analytic at the point (essential singularity or branch point?)",
         ));
     }
 
@@ -251,6 +265,154 @@ fn is_provably_zero(arena: &mut Arena, c: ExprId) -> bool {
     let opts = crate::simplify::simplify_engine::SimplifyOpts::default();
     let r = crate::simplify::simplify_engine::unified_simplify(arena, expanded, &opts);
     arena.is_zero_structural(r.expr)
+}
+
+/// What is known about a constant `v` (the value of a subexpression at the
+/// expansion point).
+struct PointValue {
+    /// Provably nonzero (or, with free parameters, not structurally zero —
+    /// the generic case).
+    nonzero: bool,
+    /// The complex value, when `v` is a finite number.
+    value: Option<num_complex::Complex64>,
+}
+
+fn point_value(arena: &mut Arena, v: ExprId) -> PointValue {
+    let v = eval::eval(arena, v);
+    if arena.is_zero_structural(v) {
+        return PointValue {
+            nonzero: false,
+            value: Some(num_complex::Complex64::new(0.0, 0.0)),
+        };
+    }
+    if !walk::free_symbols(arena, v).is_empty() {
+        // Symbolic parameter: generic position, as for every other
+        // parameter-dependent residue.
+        return PointValue {
+            nonzero: true,
+            value: None,
+        };
+    }
+    match crate::transforms::evalf::evalf_complex64(arena, v) {
+        Ok(z) if z.re.is_finite() && z.im.is_finite() => PointValue {
+            nonzero: !is_provably_zero(arena, v),
+            value: Some(z),
+        },
+        _ => PointValue {
+            nonzero: false,
+            value: None,
+        },
+    }
+}
+
+/// Is `e` provably analytic (holomorphic) in a neighbourhood of `t = 0`?
+///
+/// Every subexpression depending on `t` is checked with an explicit stack
+/// (no recursion over the tree): sums, products and non-negative integer
+/// powers of analytic functions are analytic, as are the entire functions
+/// (`exp`, `sin`, `cos`, `sinh`, `cosh`, `erf`, `erfc`) of analytic
+/// arguments.  Negative powers need a nonzero base at 0; fractional powers,
+/// logarithms and the inverse functions additionally need the argument at 0
+/// off their branch cuts; `tan`/`tanh`/`Γ`/`ψ` need to avoid their poles.
+/// Anything else (`|·|`, `re`, `conj`, `sign`, `H`, `floor`, …) is not
+/// certified.  With symbolic parameters the value at 0 is taken in generic
+/// position (nonzero unless structurally zero).
+pub(crate) fn analytic_at_zero(arena: &mut Arena, e: ExprId, t: ExprId) -> bool {
+    use num_complex::Complex64;
+    let zero = arena.zero();
+    let mut stack = vec![e];
+    let mut seen = rustc_hash::FxHashSet::default();
+    // Value of a child at t = 0.
+    let at0 = |arena: &mut Arena, c: ExprId| -> PointValue {
+        let v = subs::subs(arena, c, t, zero);
+        point_value(arena, v)
+    };
+    // Off the negative real axis (principal branch cut of ln / powers).
+    let off_negative_axis = |z: Option<Complex64>| match z {
+        Some(z) => z.re > 0.0 || z.im.abs() > 1e-12 * z.norm(),
+        None => true,
+    };
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) || !walk::contains(arena, id, t) {
+            continue;
+        }
+        let node = arena.node(id).clone();
+        let ok = match node {
+            ExprNode::Symbol(_) => true,
+            ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) => true,
+            ExprNode::Exp(_)
+            | ExprNode::Sin(_)
+            | ExprNode::Cos(_)
+            | ExprNode::Sinh(_)
+            | ExprNode::Cosh(_)
+            | ExprNode::Erf(_)
+            | ExprNode::Erfc(_) => true,
+            ExprNode::Pow(b, x) => {
+                let nonneg_int = arena
+                    .as_num(x)
+                    .is_some_and(|q| q.is_integer() && !num_traits::Signed::is_negative(q));
+                let neg_int = arena
+                    .as_num(x)
+                    .is_some_and(|q| q.is_integer() && num_traits::Signed::is_negative(q));
+                if nonneg_int {
+                    true
+                } else if !walk::contains(arena, b, t) {
+                    // c^x(t) = exp(x(t)·ln c): entire in x for c ≠ 0.
+                    at0(arena, b).nonzero
+                } else {
+                    let pv = at0(arena, b);
+                    pv.nonzero && (neg_int || off_negative_axis(pv.value))
+                }
+            }
+            ExprNode::Ln(a) => {
+                let pv = at0(arena, a);
+                pv.nonzero && off_negative_axis(pv.value)
+            }
+            ExprNode::Tan(a) => {
+                let c = arena.cos(a);
+                at0(arena, c).nonzero
+            }
+            ExprNode::Tanh(a) => {
+                let c = arena.cosh(a);
+                at0(arena, c).nonzero
+            }
+            ExprNode::Asin(a) | ExprNode::Acos(a) | ExprNode::Atanh(a) => {
+                // cuts: real |x| ≥ 1
+                match at0(arena, a).value {
+                    Some(z) => z.im.abs() > 1e-12 * z.norm() || z.re.abs() < 1.0,
+                    None => true,
+                }
+            }
+            ExprNode::Atan(a) | ExprNode::Asinh(a) => {
+                // cuts: imaginary |y| ≥ 1
+                match at0(arena, a).value {
+                    Some(z) => z.re.abs() > 1e-12 * z.norm() || z.im.abs() < 1.0,
+                    None => true,
+                }
+            }
+            ExprNode::Acosh(a) => {
+                // cut: real x ≤ 1
+                match at0(arena, a).value {
+                    Some(z) => z.im.abs() > 1e-12 * z.norm() || z.re > 1.0,
+                    None => true,
+                }
+            }
+            ExprNode::Gamma(a) | ExprNode::Digamma(a) => match at0(arena, a).value {
+                Some(z) => {
+                    !(z.im.abs() <= 1e-12 * z.norm().max(1.0)
+                        && z.re <= 0.5
+                        && (z.re - z.re.round()).abs() < 1e-12)
+                }
+                None => true,
+            },
+            _ => false,
+        };
+        if !ok {
+            return false;
+        }
+        arena.node(id).clone().for_each_child(|c| stack.push(c));
+    }
+    true
 }
 
 /// Is `v` a finite value free of `t`, infinities and formal nodes?

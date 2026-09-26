@@ -485,11 +485,14 @@ fn gamma_of_a_large_rational_is_evaluated_numerically() {
         let e = ctx.parse(src).expect("parse").eval();
         assert!(e.as_rational().is_none(), "{src} expanded to {e}");
     }
-    // A rising factorial beyond the guard stays symbolic (and evalf has no
-    // routine for it): an error, promptly.
+    // A rising factorial beyond the guard stays symbolic, and evalf
+    // evaluates it numerically (since 0.30, through a Γ quotient in log
+    // space; it was an error).  mpmath (dps 60, 120):
+    //   rf(mpf(1)/3, 3000) = 7.44597208021948398785705484736e+9127
     let t = Instant::now();
     let e = ctx.parse("rising_factorial(1/3, 3000)").expect("parse");
-    assert!(e.eval_decimal(16).is_err());
+    assert!(e.eval().as_rational().is_none());
+    assert_eq!(e.eval_decimal(16).unwrap(), "7.445972080219484e9127");
     assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
 }
 

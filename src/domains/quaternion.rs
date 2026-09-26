@@ -566,8 +566,11 @@ impl Quaternion {
     ///
     /// Uses `atan2` throughout, so the angles lie in the principal ranges
     /// (`theta ∈ [−π/2, π/2]` for ZYX/XYZ, `theta ∈ [0, π]` for ZXZ).  At
-    /// gimbal lock (`|theta|` at the range boundary) `phi` and `psi` are
-    /// not unique; the returned pair is still a valid factorisation.
+    /// gimbal lock (`|theta|` at the range boundary, decided exactly) `phi`
+    /// and `psi` are not unique: `psi = 0` is returned and `phi` carries the
+    /// whole remaining rotation, so the triple is still a valid
+    /// factorisation.  (Before 0.30 both came out as `atan2(0, 0) = 0`: a
+    /// quarter turn about `z` gave the identity in the ZXZ convention.)
     ///
     /// Assumes a unit quaternion.  Symbolic results are simplified;
     /// constant ones (angles given as numbers) are only constant-folded,
@@ -591,17 +594,38 @@ impl Quaternion {
         let r = self.to_rotation_matrix();
         let e = |i: usize, j: usize| r.get(i, j).clone();
         let hyp = |a: Ex, b: Ex| (a.powi(2) + b.powi(2)).sqrt();
+        // Gimbal lock: the two entries fixing the middle angle's cosine
+        // (ZYX/XYZ) or sine (ZXZ) vanish, and with them both atan2 pairs.
+        let locked = |a: Ex, b: Ex| ex_is_zero(&a) == Some(true) && ex_is_zero(&b) == Some(true);
+        let zero = self.context().int(0);
         let (phi, theta, psi) = match convention {
+            // R = Rz(φ)·Ry(θ)·Rx(ψ); at cos θ = 0 with ψ = 0:
+            // R₀₁ = −sin φ, R₁₁ = cos φ.
+            EulerConvention::ZYX if locked(e(0, 0), e(1, 0)) => (
+                (-e(0, 1)).atan2(&e(1, 1)),
+                (-e(2, 0)).atan2(&zero),
+                zero.clone(),
+            ),
             EulerConvention::ZYX => (
                 e(1, 0).atan2(&e(0, 0)),
                 (-e(2, 0)).atan2(&hyp(e(0, 0), e(1, 0))),
                 e(2, 1).atan2(&e(2, 2)),
             ),
+            // R = Rx(φ)·Ry(θ)·Rz(ψ); at cos θ = 0 with ψ = 0:
+            // R₂₁ = sin φ, R₁₁ = cos φ.
+            EulerConvention::XYZ if locked(e(0, 0), e(0, 1)) => {
+                (e(2, 1).atan2(&e(1, 1)), e(0, 2).atan2(&zero), zero.clone())
+            }
             EulerConvention::XYZ => (
                 (-e(1, 2)).atan2(&e(2, 2)),
                 e(0, 2).atan2(&hyp(e(0, 0), e(0, 1))),
                 (-e(0, 1)).atan2(&e(0, 0)),
             ),
+            // R = Rz(φ)·Rx(θ)·Rz(ψ); at sin θ = 0 with ψ = 0:
+            // R₁₀ = sin φ, R₀₀ = cos φ.
+            EulerConvention::ZXZ if locked(e(2, 0), e(2, 1)) => {
+                (e(1, 0).atan2(&e(0, 0)), zero.atan2(&e(2, 2)), zero.clone())
+            }
             EulerConvention::ZXZ => (
                 e(0, 2).atan2(&(-e(1, 2))),
                 hyp(e(2, 0), e(2, 1)).atan2(&e(2, 2)),

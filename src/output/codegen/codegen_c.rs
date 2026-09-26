@@ -14,7 +14,7 @@
 //!
 //! The emitter walks the expression with an explicit stack (no recursion).
 
-use super::{CodegenOptions, Precision, RtLowering, rt_lowering};
+use super::{CodegenOptions, Precision, RtLowering, lambert_rt_helper, rt_lowering};
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
 use crate::base::libfn::LibFn;
@@ -657,6 +657,11 @@ impl<'a> CEmitter<'a> {
                 args.len()
             ))
         };
+        if f == LibFn::LambertW {
+            let helper = lambert_rt_helper(self.arena, args)?;
+            self.schedule(id, Plan::RtUnary(helper), &[(args[0], v)]);
+            return Ok(());
+        }
         match rt_lowering(f) {
             RtLowering::Ordered(helper) => {
                 let [order, x] = args else {
@@ -891,6 +896,8 @@ impl<'a> CEmitter<'a> {
                 let call = self.rt_call(h, None, std::slice::from_ref(&a));
                 if self.options.checked_domain && h == "lambert_w0" {
                     format!("(assert({a} >= -0.36787944117144233), {call})")
+                } else if self.options.checked_domain && h == "lambert_wm1" {
+                    format!("(assert({a} >= -0.36787944117144233 && {a} < 0.0), {call})")
                 } else {
                     call
                 }
@@ -1179,6 +1186,38 @@ static inline double symplex_lambert_w0(double x) {
         double dw = f / denom;
         w -= dw;
         if (fabs(dw) <= 2.0 * 2.220446049250313e-16 * (fabs(w) + 1e-300)) break;
+    }
+    return w;
+}
+"#,
+    },
+    CHelper {
+        name: "lambert_wm1",
+        deps: &[],
+        src: r#"
+/* Lower real branch W_{-1} of the Lambert W function, -1/e <= x < 0, mirroring
+   numeric_rt::lambert_wm1 (branch-point series / ln(-x) asymptotics + Halley). */
+static inline double symplex_lambert_wm1(double x) {
+    const double neg_inv_e = -0.36787944117144233;
+    if (isnan(x) || x < neg_inv_e || x > 0.0) return NAN;
+    if (x == 0.0) return -INFINITY;
+    if (x == neg_inv_e) return -1.0;
+    double w;
+    if (x < -0.25) {
+        double p = -sqrt(2.0 * (2.718281828459045 * x + 1.0));
+        w = -1.0 + p * (1.0 - p * (1.0/3.0 - p * (11.0/72.0 - p * (43.0/540.0 - p * (769.0/17280.0
+            - p * (221.0/8505.0 - p * (680863.0/43545600.0 - p * (1963.0/204120.0))))))));
+        if (p > -0.02) return w;
+    } else {
+        double l1 = log(-x), l2 = log(-l1);
+        w = l1 - l2 + l2 / l1;
+    }
+    for (int iter = 0; iter < 40; iter++) {
+        double ew = exp(w), f = w * ew - x, wp1 = w + 1.0;
+        double denom = ew * wp1 - (w + 2.0) * f / (2.0 * wp1);
+        double dw = f / denom;
+        w -= dw;
+        if (fabs(dw) <= 2.0 * 2.220446049250313e-16 * fabs(w)) break;
     }
     return w;
 }

@@ -1061,8 +1061,9 @@ fn var_is_real(arena: &mut Arena, var: SymbolId) -> bool {
 ///
 /// Exhaustive over [`LibFn`].  The integer sequences and combinatorial
 /// counts (`factorial2`, `fibonacci`, `stirling2`, …) are functions of an
-/// integer argument and have no derivative rule; `lambertw` is registered
-/// for its name only (the arena builds `ExprNode::LambertW`).
+/// integer argument and have no derivative rule; `lambertw(x, k)` is
+/// differentiated on its branch (the principal branch is the dedicated
+/// `ExprNode::LambertW` node).
 fn diff_lib_fn(
     arena: &mut Arena,
     id: ExprId,
@@ -1119,9 +1120,35 @@ fn diff_lib_fn(
         | LibFn::EulerNumber
         | LibFn::Stirling1
         | LibFn::Stirling2
-        | LibFn::PartitionCount
-        | LibFn::LambertW => None,
+        | LibFn::PartitionCount => None,
+        LibFn::LambertW => diff_lambertw_call(arena, args, cache),
     }
+}
+
+/// `d/dx W_k(f) = W_k(f)/(f·(1 + W_k(f)))·f′` on every branch `k` (SymPy's
+/// `LambertW.fdiff`), for `lambertw(f)` and `lambertw(f, k)`; `None` (a
+/// formal derivative) when the branch index depends on the variable.
+fn diff_lambertw_call(
+    arena: &mut Arena,
+    args: &[ExprId],
+    cache: &FxHashMap<ExprId, ExprId>,
+) -> Option<ExprId> {
+    let f = args[0];
+    let k = args.get(1).copied().unwrap_or(arena.zero);
+    let dk = get_deriv(cache, k, arena);
+    if !arena.is_zero_structural(dk) {
+        return None;
+    }
+    let df = get_deriv(cache, f, arena);
+    if arena.is_zero_structural(df) {
+        return Some(arena.zero);
+    }
+    let w = arena.lambertw_branch(f, k);
+    let one = arena.one;
+    let one_plus_w = arena.add(&[one, w]);
+    let denom = arena.mul(&[f, one_plus_w]);
+    let frac = arena.div(w, denom);
+    Some(arena.mul(&[frac, df]))
 }
 
 /// Derivative rules for library `Apply` functions whose derivative has a

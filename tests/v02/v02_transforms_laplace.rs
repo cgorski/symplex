@@ -359,12 +359,16 @@ fn inverse_special_entries_and_delays() {
         (&a * &t).cos()
     );
     assert_eq!(ilt(&(1 / (&s + &a).powi(2)), &s, &t), &t * (-&a * &t).exp());
-    // Still out of reach → unevaluated node, never a wrong answer.
-    assert!(
-        (1 / (s.powi(2) + 2 * &s + 5).powi(2))
-            .inverse_laplace(&s, &t)
-            .has_unevaluated()
+    // Repeated complex poles (out of reach before 0.30, solved by the exact
+    // rational inverse).  SymPy: inverse_laplace_transform(1/(s**2+2*s+5)**2, s, t)
+    //   = (sin(2t) - 2t cos(2t)) e^{-t}/16 for t > 0 (SymPy writes it with
+    //   cos(2t) ± i sin(2t) pairs).
+    assert_same(
+        &ilt(&(1 / (s.powi(2) + 2 * &s + 5).powi(2)), &s, &t),
+        &((&(2 * &t).sin() - &(2 * &t * (2 * &t).cos())) * (-&t).exp() / 16),
+        "L^-1 1/(s^2+2s+5)^2",
     );
+    // Still out of reach → unevaluated node, never a wrong answer.
     assert!(s.ln().inverse_laplace(&s, &t).has_unevaluated());
 }
 

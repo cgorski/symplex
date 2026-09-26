@@ -170,8 +170,16 @@ pub(crate) fn pseudo_rem_pos(a: &[BigInt], b: &[BigInt]) -> Vec<BigInt> {
     r
 }
 
-/// `gcd(a, b)` in `ℤ\[x\]` by the primitive PRS, primitive with positive
-/// leading coefficient (`[1]` when coprime; empty when both are zero).
+/// `gcd(a, b)` in `ℤ\[x\]`, primitive with positive leading coefficient
+/// (`[1]` when coprime; empty when both are zero): the primitive part of
+/// the last member of the subresultant PRS ([`z_subresultant_prs`]).
+///
+/// Before 0.30 this was the primitive PRS, which strips the integer content
+/// after every step: the gcds of the coefficients (thousands of bits by
+/// the end of the sequence, and `num-integer`'s binary gcd is quadratic)
+/// took 98% of the time, 2 s for `gcd(p, p′)` of a degree-40 polynomial
+/// with 100-digit coefficients.  The subresultant PRS divides by a known
+/// exact factor instead, and only the last member is made primitive.
 pub(crate) fn z_gcd(a: &[BigInt], b: &[BigInt]) -> Vec<BigInt> {
     let mut a = a.to_vec();
     let mut b = b.to_vec();
@@ -180,18 +188,212 @@ pub(crate) fn z_gcd(a: &[BigInt], b: &[BigInt]) -> Vec<BigInt> {
     if a.len() < b.len() {
         std::mem::swap(&mut a, &mut b);
     }
-    while !b.is_empty() {
-        let r = z_primitive(&pseudo_rem_pos(&a, &b));
-        a = b;
-        b = r;
+    let last = if b.is_empty() {
+        a
+    } else {
+        match z_subresultant_prs(&a, &b) {
+            Some(prs) => prs
+                .members
+                .last()
+                .map(|m| m.poly.clone())
+                .unwrap_or_default(),
+            // Not reached (the divisions are exact); the primitive PRS.
+            None => {
+                while !b.is_empty() {
+                    let r = z_primitive(&pseudo_rem_pos(&a, &b));
+                    a = b;
+                    b = r;
+                }
+                a
+            }
+        }
+    };
+    if last.len() == 1 {
+        return vec![BigInt::one()];
     }
-    let mut g = z_primitive(&a);
+    let mut g = z_primitive(&last);
     if g.last().is_some_and(Signed::is_negative) {
         for c in &mut g {
             *c = -std::mem::take(c);
         }
     }
     g
+}
+
+/// `lc(g)^{deg f − deg g + 1}·f mod g` in `ℤ[x]` (ascending, normalised;
+/// `f` itself when `deg f < deg g`), without division.  `g` must be
+/// non-zero and normalised.
+fn z_prem(f: &[BigInt], g: &[BigInt]) -> Vec<BigInt> {
+    let mut r = f.to_vec();
+    z_normalize(&mut r);
+    let Some(lc_g) = g.last() else {
+        return r;
+    };
+    let m = g.len() - 1;
+    if r.len() <= m {
+        return r;
+    }
+    let mut steps_left = r.len() - m;
+    while r.len() > m {
+        let k = r.len() - 1;
+        // r ← lc(g)·r − r_k·x^{k−m}·g   (kills the x^k term)
+        let rk = std::mem::take(&mut r[k]);
+        r.pop();
+        for c in &mut r {
+            *c *= lc_g;
+        }
+        for (rj, gj) in r[k - m..].iter_mut().zip(&g[..m]) {
+            *rj -= &rk * gj;
+        }
+        z_normalize(&mut r);
+        steps_left -= 1;
+    }
+    if steps_left > 0 {
+        let s = lc_g.pow(u32::try_from(steps_left).unwrap_or(u32::MAX));
+        for c in &mut r {
+            *c *= &s;
+        }
+    }
+    r
+}
+
+/// `p / b` coefficient by coefficient; `None` unless every division is
+/// exact.
+fn z_div_exact_scalar(p: &[BigInt], b: &BigInt) -> Option<Vec<BigInt>> {
+    if b.is_one() {
+        return Some(p.to_vec());
+    }
+    p.iter()
+        .map(|c| {
+            let (q, r) = c.div_rem(b);
+            r.is_zero().then_some(q)
+        })
+        .collect()
+}
+
+/// A member `R_j` of the subresultant PRS in `ℤ[x]`, with the sign of the
+/// exact divisor `b_j` it was obtained with: `R_{j+1} = prem(R_{j−1},
+/// R_j)/b_j` (`+1` for the first two members, which are the inputs).
+pub(crate) struct ZPrsMember {
+    pub(crate) poly: Vec<BigInt>,
+    pub(crate) divisor_sign: i8,
+}
+
+/// The subresultant PRS of two polynomials in `ℤ[x]` ([`ZPrsMember`]s).
+pub(crate) struct ZPrs {
+    pub(crate) members: Vec<ZPrsMember>,
+}
+
+/// The subresultant polynomial remainder sequence `R₀ = f`, `R₁ = g`,
+/// `R_{j+1} = prem(R_{j−1}, R_j)/b_j` in `ℤ[x]` (`deg f ≥ deg g`, both
+/// non-zero), up to its last non-zero member: Brown's algorithm with the
+/// divisors of [`ztx_subresultant_prs`] (SymPy's `dup_inner_subresultants`,
+/// BSD-3; W. S. Brown, *ACM TOMS* 4 (1978) 237–249) for constant
+/// coefficients, each member kept with the sign of its divisor.  Every
+/// division is exact and no gcd is taken, so the coefficients stay the
+/// size of the subresultants (determinants in the inputs' coefficients).
+/// `None` if a division is not exact, which the theory rules out, or an
+/// input is zero.
+pub(crate) fn z_subresultant_prs(f: &[BigInt], g: &[BigInt]) -> Option<ZPrs> {
+    let (mut f, mut g) = (f.to_vec(), g.to_vec());
+    z_normalize(&mut f);
+    z_normalize(&mut g);
+    if f.len() < g.len() || g.is_empty() {
+        return None;
+    }
+    let mut members = vec![
+        ZPrsMember {
+            poly: f.clone(),
+            divisor_sign: 1,
+        },
+        ZPrsMember {
+            poly: g.clone(),
+            divisor_sign: 1,
+        },
+    ];
+    let mut m = g.len() - 1;
+    let d = f.len() - g.len();
+    // R₂ = (−1)^{d+1}·prem(f, g): the divisor is (−1)^{d+1}.
+    let mut h = z_prem(&f, &g);
+    let mut b_sign: i8 = if d % 2 == 0 { -1 } else { 1 };
+    if b_sign < 0 {
+        for c in &mut h {
+            *c = -std::mem::take(c);
+        }
+    }
+    let mut lc = g.last()?.clone();
+    // c: the negated scalar subresultant of the newest member (SymPy's
+    // convention), −lc(g)^d to begin with.
+    let mut c = -lc.pow(u32::try_from(d).ok()?);
+    while !h.is_empty() {
+        let k = h.len() - 1;
+        members.push(ZPrsMember {
+            poly: h.clone(),
+            divisor_sign: b_sign,
+        });
+        let d = m - k;
+        m = k;
+        f = std::mem::replace(&mut g, h);
+        let d32 = u32::try_from(d).ok()?;
+        let b = -(&lc * c.pow(d32));
+        b_sign = if b.is_negative() { -1 } else { 1 };
+        h = z_div_exact_scalar(&z_prem(&f, &g), &b)?;
+        lc = g.last()?.clone();
+        c = if d > 1 {
+            let (q, r) = (-&lc).pow(d32).div_rem(&c.pow(d32 - 1));
+            if !r.is_zero() {
+                return None;
+            }
+            q
+        } else {
+            -&lc
+        };
+    }
+    Some(ZPrs { members })
+}
+
+/// The Sturm sequence of `p0` and `p1` in `ℤ[x]`: `S₀ = p0`, `S₁ = p1`,
+/// each later `S_{j+1}` a positive multiple of `−rem(S_{j−1}, S_j)`, up to
+/// the last non-zero one — so its sign variations at every point are
+/// those of the classical sequence, and of its primitive form.  The members
+/// are the subresultant PRS's ([`z_subresultant_prs`]) with their signs
+/// fixed: `R_{j+1} = lc(R_j)^{d_j+1}·rem(R_{j−1}, R_j)/b_j` gives `S_{j+1} =
+/// s_{j+1}·R_{j+1}` with `s_{j+1} = −s_{j−1}·sign(b_j)·sign(lc R_j)^{d_j+1}`.
+/// `None` when `deg p0 < deg p1` or either is zero.
+pub(crate) fn z_sturm_sequence(p0: &[BigInt], p1: &[BigInt]) -> Option<Vec<Vec<BigInt>>> {
+    let prs = z_subresultant_prs(p0, p1)?;
+    let mut out: Vec<Vec<BigInt>> = Vec::with_capacity(prs.members.len());
+    let mut signs: Vec<i8> = Vec::with_capacity(prs.members.len());
+    for (j, member) in prs.members.into_iter().enumerate() {
+        let s = if j < 2 {
+            1
+        } else {
+            let prev = &out[j - 1];
+            let d = out[j - 2].len() - prev.len();
+            // lc(R_{j−1}): `out[j − 1]` is `s_{j−1}·R_{j−1}`.
+            let stored: i8 = if prev.last().is_some_and(Signed::is_negative) {
+                -1
+            } else {
+                1
+            };
+            let lc_sign = stored * signs[j - 1];
+            let lc_pow = if (d + 1).is_multiple_of(2) {
+                1
+            } else {
+                lc_sign
+            };
+            -signs[j - 2] * member.divisor_sign * lc_pow
+        };
+        let mut poly = member.poly;
+        if s < 0 {
+            for c in &mut poly {
+                *c = -std::mem::take(c);
+            }
+        }
+        signs.push(s);
+        out.push(poly);
+    }
+    Some(out)
 }
 
 /// The monic `gcd(a, b)` over ℚ of two coefficient vectors (ascending

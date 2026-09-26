@@ -396,3 +396,20 @@ fn number_theory_agrees_with_sympy_on_the_hunter_edge_cases() {
     let x = nt::discrete_log(6, 67_246, 147_878).expect("a solution exists");
     assert_eq!(nt::mod_pow(6, x, 147_878), BigInt::from(67_246));
 }
+
+/// Before: `(1/3125·10⁻²¹·W^(−1/3)·(x·y)^(3/2)) / W^(−4/3)` with
+/// `W = (x·y)^(−3/2)` stayed `c·(x·y)^(−3/2)·(x·y)^(3/2)`, not canonical:
+/// `W^(−1/3)/W^(−4/3)` combines to `W` itself, a power of the base `x·y`
+/// that another factor has, and the product was not regrouped; its display
+/// parsed back as `c` (found by `fuzz_roundtrip`).  The product is now
+/// regrouped when two of its factors share a base.
+#[test]
+fn a_product_regroups_factors_that_come_to_share_a_base() {
+    let ctx = Context::new();
+    let w = ctx.parse("(x*y)^(-3/2)").unwrap();
+    let c = ctx.parse("1/3125000000000000000000000").unwrap();
+    let q = ctx.parse("(x*y)^(3/2)").unwrap();
+    let e = &(&(&c * &w.pow(&ctx.rational(-1, 3))) * &q) / &w.pow(&ctx.rational(-4, 3));
+    assert_eq!(e, c);
+    assert_eq!(ctx.parse(&e.to_string()).unwrap(), e);
+}

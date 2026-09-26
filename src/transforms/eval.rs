@@ -1289,7 +1289,143 @@ fn eval_lambertw(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         }
     }
 
+    // W(w·e^w) = w for the real w ≥ −1 the principal branch reaches.
+    if let Some(w) = lambert_fixed_point(arena, inner, LambertRealBranch::Principal) {
+        tracing::debug!("eval: LambertW(w*exp(w)) = w");
+        return Some(w);
+    }
+
     None
+}
+
+/// The two branches of Lambert's W that are real on part of the real axis:
+/// `W₀` (values `≥ −1`) and `W₋₁` (values `≤ −1`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LambertRealBranch {
+    Principal,
+    MinusOne,
+}
+
+/// The exact `w` with `w·e^w = x` on `branch` (`w ≥ −1` for `W₀`, `w ≤ −1`
+/// for `W₋₁`), when `x` is visibly of that form: `c·exp(c)` for a rational
+/// `c` (`W₋₁(−2e⁻²) = −2`, `W₀(3e³) = 3`), or `t·p^t·ln p` for an integer
+/// `p ≥ 2` and a small integer `t` (`w = t·ln p`: `W₀(−ln(2)/2) = −ln 2`,
+/// `W₋₁(−ln(2)/2) = −2·ln 2`, `W₀(3·ln 3) = ln 3`).
+fn lambert_fixed_point(arena: &mut Arena, x: ExprId, branch: LambertRealBranch) -> Option<ExprId> {
+    let on_branch = |w_plus_one: std::cmp::Ordering| match branch {
+        LambertRealBranch::Principal => w_plus_one.is_ge(),
+        LambertRealBranch::MinusOne => w_plus_one.is_le(),
+    };
+    let ExprNode::Mul(factors) = arena.node(x).clone() else {
+        return None;
+    };
+    let [a, b] = factors[..] else {
+        return None;
+    };
+    let q = arena.as_num(a)?.clone();
+    match arena.node(b).clone() {
+        // c·exp(c)
+        ExprNode::Exp(c) => {
+            let c = arena.as_num(c)?.clone();
+            if c != q {
+                return None;
+            }
+            let w_plus_one = (&c + Q::from_integer(BigInt::from(1))).cmp(&Q::zero());
+            on_branch(w_plus_one).then(|| arena.num_ratio(c))
+        }
+        // t·p^t·ln p, w = t·ln p
+        ExprNode::Ln(p_id) => {
+            let p = arena.as_num(p_id)?.clone();
+            if !p.is_integer() || p <= Q::from_integer(BigInt::from(1)) {
+                return None;
+            }
+            let base = p.to_integer();
+            let ln_p = base.to_f64()?.ln();
+            // `q = t·p^t`: for `t > 0` the numerator of `q` has the bits of
+            // `p^t`, for `t < 0` its denominator does; the powers stop once
+            // they outgrow them.
+            for negative in [false, true] {
+                let limit = if negative { q.denom() } else { q.numer() }.bits() + 8;
+                let mut power = BigInt::from(1);
+                for t_abs in 1i32..=64 {
+                    power *= &base;
+                    if power.bits() > limit {
+                        break;
+                    }
+                    let t = if negative { -t_abs } else { t_abs };
+                    let candidate = if negative {
+                        Q::new(BigInt::from(t), power.clone())
+                    } else {
+                        Q::from_integer(BigInt::from(t) * &power)
+                    };
+                    if candidate != q {
+                        continue;
+                    }
+                    // `t·ln p + 1` is never 0 (`e^{−1/t}` is not an integer).
+                    let w_plus_one = (f64::from(t) * ln_p + 1.0)
+                        .partial_cmp(&0.0)
+                        .unwrap_or(std::cmp::Ordering::Equal);
+                    if on_branch(w_plus_one) {
+                        let t_id = arena.int(i64::from(t));
+                        let ln_id = arena.ln(p_id);
+                        return Some(arena.mul(&[t_id, ln_id]));
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Exact values of `lambertw(x)` and `lambertw(x, k)` (SymPy's
+/// `LambertW.eval`): the principal branch, `k = 0` or no `k`, is the
+/// `ExprNode::LambertW` node with its rules ([`eval_lambertw`]); every other
+/// branch is `−∞` at 0 (logarithmic singularity), and `W₋₁` has
+/// `W₋₁(−1/e) = −1`, `W₋₁(−π/2) = −iπ/2` and `W₋₁(w·e^w) = w` for the
+/// real `w ≤ −1` of [`lambert_fixed_point`].  A branch index that is not an
+/// integer is left alone.
+fn eval_lambertw_call(arena: &mut Arena, args: &[ExprId]) -> Option<ExprId> {
+    let x = args[0];
+    let principal =
+        |arena: &mut Arena| eval_lambertw(arena, x).unwrap_or_else(|| arena.lambertw(x));
+    let Some(&k) = args.get(1) else {
+        return Some(principal(arena));
+    };
+    let kq = arena.as_num(k)?.clone();
+    if !kq.is_integer() {
+        return None;
+    }
+    if kq.is_zero() {
+        return Some(principal(arena));
+    }
+    if arena.as_num(x).is_some_and(|q| q.is_zero()) {
+        tracing::debug!("eval: LambertW(0, k) = -oo for k != 0");
+        return Some(arena.neg_infinity);
+    }
+    if kq != Q::from_integer(BigInt::from(-1)) {
+        return None;
+    }
+    // W₋₁(−1/e) = −1.
+    let e = arena.e_const;
+    let neg1 = arena.neg_one;
+    let neg_inv_e = arena.div(neg1, e);
+    let exp_neg1 = arena.exp(neg1);
+    let neg_exp_neg1 = arena.neg(exp_neg1);
+    if x == neg_inv_e || x == neg_exp_neg1 {
+        tracing::debug!("eval: LambertW(-1/e, -1) = -1");
+        return Some(neg1);
+    }
+    // W₋₁(−π/2) = −iπ/2.
+    let pi = arena.pi;
+    let neg_half = arena.rational(-1, 2);
+    let neg_pi_2 = arena.mul(&[neg_half, pi]);
+    if x == neg_pi_2 {
+        tracing::debug!("eval: LambertW(-pi/2, -1) = -i*pi/2");
+        let i = arena.i_unit;
+        return Some(arena.mul(&[neg_half, i, pi]));
+    }
+    lambert_fixed_point(arena, x, LambertRealBranch::MinusOne)
 }
 
 fn eval_erfc(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
@@ -3495,8 +3631,8 @@ fn eval_lib_fn(arena: &mut Arena, f: LibFn, args: &[ExprId]) -> Option<ExprId> {
         LibFn::Stirling1 => eval_stirling1(arena, args[0], args[1]),
         LibFn::Stirling2 => eval_stirling2(arena, args[0], args[1]),
         LibFn::PartitionCount => eval_partition_count(arena, args[0]),
-        // The arena builds `ExprNode::LambertW`, which has its own rules.
-        LibFn::LambertW => None,
+        // `lambertw(x)` and `lambertw(x, 0)` become `ExprNode::LambertW`.
+        LibFn::LambertW => eval_lambertw_call(arena, args),
 
         // ── Bessel functions: J and I at the origin; Y and K diverge there ──
         LibFn::BesselJ | LibFn::BesselI => eval_bessel_regular_at_zero(arena, args[0], args[1]),

@@ -492,6 +492,22 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
         }
     }
 
+    // A factor whose exponents combined can also expose a base another
+    // factor has: `W^(−1/3)·W^(4/3) → W` for `W = (x·y)^(−3/2)`, next to
+    // `(x·y)^(3/2)` — the two are powers of `x·y`, and the product is 1.
+    // (Before 0.30 such a product stayed `(x·y)^(−3/2)·(x·y)^(3/2)`,
+    // which is not canonical: its display parsed back as 1; found by
+    // `fuzz_roundtrip`.)  Regroup once when two factors share a base.
+    if !has_nested_mul && result_args.len() > 1 {
+        let mut seen: FxHashSet<ExprId> = FxHashSet::default();
+        for &r in &result_args {
+            if !seen.insert(arena.as_base_exp(r).0) {
+                has_nested_mul = true;
+                break;
+            }
+        }
+    }
+
     // A factor can turn out to be a *product*: `canon_pow` performs radical
     // extraction after exponent grouping (`√6·√3 → 18^(1/2) → 3·√2`),
     // handles negative bases (`(-4)^(1/2) → 2·i`), distributes integer

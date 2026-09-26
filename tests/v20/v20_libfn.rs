@@ -76,8 +76,11 @@ fn generic_call(ctx: &Context, f: LibFn) -> Ex {
         ctx.symbol("c"),
         ctx.symbol("d"),
     ];
-    let Arity::Fixed(n) = f.arity() else {
-        panic!("{f}: every registry function has a fixed arity");
+    // The one optional argument (`lambertw`'s branch, since 0.30) is left
+    // out: the generic call is the principal branch.
+    let n = match f.arity() {
+        Arity::Fixed(n) => n,
+        Arity::Range { min, .. } => min,
     };
     ctx.apply(f.name(), &syms[..n as usize]).unwrap()
 }
@@ -121,7 +124,6 @@ fn arity_table() {
         (LibFn::Factorial2, 1),
         (LibFn::RisingFactorial, 2),
         (LibFn::Stirling2, 2),
-        (LibFn::LambertW, 1),
         (LibFn::BesselJ, 2),
         (LibFn::Legendre, 2),
         (LibFn::Erfi, 1),
@@ -149,9 +151,13 @@ fn arity_table() {
     for &f in LibFn::ALL {
         match f.arity() {
             Arity::Fixed(n) => assert!((1..=4).contains(&n), "{f}: arity {n}"),
+            // `lambertw(x, k)`: the optional branch index (SymPy's
+            // `LambertW(x, k)`, since 0.30).
+            Arity::Range { min: 1, max: 2 } if f == LibFn::LambertW => {}
             Arity::Range { .. } => panic!("{f}: unexpected variadic arity"),
         }
     }
+    assert_eq!(LibFn::LambertW.arity(), Arity::Range { min: 1, max: 2 });
     let counts: Vec<usize> = (1..=4)
         .map(|k| {
             LibFn::ALL
@@ -160,7 +166,7 @@ fn arity_table() {
                 .count()
         })
         .collect();
-    assert_eq!(counts, [25, 19, 3, 3]);
+    assert_eq!(counts, [24, 19, 3, 3]);
     assert!(Arity::Range { min: 1, max: 3 }.accepts(2));
     assert!(!Arity::Range { min: 1, max: 3 }.accepts(4));
 }
@@ -369,10 +375,12 @@ fn mathml_renders_every_library_function() {
     for &f in LibFn::ALL {
         let e = generic_call(&ctx, f);
         let xml = e.to_mathml().unwrap_or_else(|err| panic!("{f}: {err}"));
+        // `lambertw(a)` by name is the native `W(a)` node since 0.30.
         let visible = matches!(
             f,
             LibFn::BesselJ | LibFn::BesselY | LibFn::BesselI | LibFn::BesselK
-        ) || xml.contains(&format!("<mi>{}</mi>", f.name()));
+        ) || xml.contains(&format!("<mi>{}</mi>", f.name()))
+            || (f == LibFn::LambertW && xml.contains("<mi>W</mi>"));
         assert!(visible, "{f}: {xml}");
     }
     let user = ctx.apply("f", &[&x]).unwrap().to_mathml().unwrap();
@@ -620,7 +628,8 @@ fn numeric_back_ends_refuse_the_same_functions() {
         LibFn::Stirling1,
         LibFn::Stirling2,
         LibFn::PartitionCount,
-        LibFn::LambertW,
+        // (`lambertw(a)` by name is the native principal-branch node since
+        // 0.30, which every back end evaluates.)
         LibFn::Erfi,
         LibFn::ExpInt,
         LibFn::Shi,

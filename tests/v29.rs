@@ -12,5 +12,9 @@ mod v29_algebra;
 mod v29_calculus;
 #[path = "v29/v29_evalf.rs"]
 mod v29_evalf;
+#[path = "v29/v29_functions.rs"]
+mod v29_functions;
 #[path = "v29/v29_output_ntheory.rs"]
 mod v29_output_ntheory;
+#[path = "v29/v29_transforms.rs"]
+mod v29_transforms;

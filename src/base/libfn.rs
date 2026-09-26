@@ -24,9 +24,8 @@ use std::fmt;
 pub enum Arity {
     /// Exactly `n` arguments.
     Fixed(u8),
-    /// Between `min` and `max` arguments, inclusive.  No function in the
-    /// current registry is variadic; the variant is here so that
-    /// [`Arity::accepts`] is the one arity check every consumer shares.
+    /// Between `min` and `max` arguments, inclusive: Lambert W, `lambertw(x)`
+    /// or `lambertw(x, k)` (the branch `k`, SymPy's `LambertW(x, k)`).
     Range {
         /// Fewest arguments accepted.
         min: u8,
@@ -44,6 +43,8 @@ impl Arity {
     /// assert!(LibFn::BesselJ.arity().accepts(2));
     /// assert!(!LibFn::BesselJ.arity().accepts(1));
     /// assert_eq!(LibFn::Jacobi.arity(), Arity::Fixed(4));
+    /// assert!(LibFn::LambertW.arity().accepts(1) && LibFn::LambertW.arity().accepts(2));
+    /// assert!(!LibFn::LambertW.arity().accepts(3));
     /// ```
     pub const fn accepts(self, n: usize) -> bool {
         match self {
@@ -54,7 +55,16 @@ impl Arity {
 }
 
 macro_rules! lib_fns {
-    ($( $(#[$doc:meta])* $variant:ident = $name:literal / $arity:literal ; )*) => {
+    (@arity $n:literal) => {
+        Arity::Fixed($n)
+    };
+    (@arity $min:literal, $max:literal) => {
+        Arity::Range {
+            min: $min,
+            max: $max,
+        }
+    };
+    ($( $(#[$doc:meta])* $variant:ident = $name:literal / $arity:literal $(..= $max:literal)? ; )*) => {
         /// A library special function carried as `Apply(name, args)`.
         ///
         /// The variant order is the declaration order of the historical
@@ -92,7 +102,7 @@ macro_rules! lib_fns {
             /// The number of arguments the function takes; a call of any
             /// other length is left unevaluated by every consumer.
             pub const fn arity(self) -> Arity {
-                match self { $( LibFn::$variant => Arity::Fixed($arity), )* }
+                match self { $( LibFn::$variant => lib_fns!(@arity $arity $(, $max)?), )* }
             }
         }
     };
@@ -128,11 +138,12 @@ lib_fns! {
     Stirling2 = "stirling2" / 2;
     /// Integer partition count `p(n)`.
     PartitionCount = "partition_count" / 1;
-    /// Lambert W (principal branch).  The arena builds the dedicated
-    /// `ExprNode::LambertW` node instead; the name is registered so that an
-    /// externally built `Apply("lambertw", x)` is recognised as a library
-    /// function rather than a user function.
-    LambertW = "lambertw" / 1;
+    /// Lambert W, `lambertw(x, k)`: the branch `W_k` (`k` an integer) of the
+    /// inverse of `w·eʷ`, as SymPy's `LambertW(x, k)`.  The principal branch
+    /// `k = 0` is the dedicated `ExprNode::LambertW(x)` node, which
+    /// `Arena::lambertw_branch` and `eval` build for `lambertw(x)` and
+    /// `lambertw(x, 0)`; an `Apply` carries only the other branches.
+    LambertW = "lambertw" / 1 ..= 2;
 
     // ── Bessel functions `(order, x)` ─────────────────────────────────────
     /// Bessel function of the first kind `J_ν(x)`.

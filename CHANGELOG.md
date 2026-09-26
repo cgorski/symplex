@@ -8,6 +8,19 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+### Added
+
+- **Lambert W on every branch:** `lambertw(x, k)` / `Ex::lambertw_branch`
+  (SymPy's `LambertW(x, k)`; `W(x, 0)` is the existing `W(x)` node, so
+  every canonical form is unchanged), with display (`W(x, -1)`), parse,
+  LaTeX, MathML, tree, `diff`, a compiled `W₋₁`, and evalf over ℂ for
+  every branch (mpmath's algorithm).  `lambertw(x)` of a real `x < −1/e`
+  is its complex principal value (it was refused).
+- evalf evaluates harmonic numbers and rising/falling factorials at
+  non-integers, binomial coefficients at the poles of `Γ`
+  (`binomial(−7, 2500) = 341942019002818626`), and polygamma of order
+  above `10⁴`.
+
 Differential hunts.  Two new in-house oracles ran over hundreds of
 thousands of random expressions: `evalf` against itself (the digits it
 certifies at 16 and 30 digits must agree with its 60-digit value) and the
@@ -67,6 +80,17 @@ differences).  Every class they found is fixed and pinned in `tests/v29/`.
   `linsolve`** decide rational-function pivots exactly (with a documented
   Schwartz–Zippel fallback beyond 4,000 terms); `ldl` accepts a zero
   pivot over a zero column.
+- **`solve` returns both real roots of a Lambert-form equation** when the
+  argument lies in `(−1/e, 0)`: `exp(x) − 2x − π = 0` lost `1.9526`
+  (SymPy 1.14 misses such roots too, e.g. of `exp(x) − 3x`).  It also
+  solves `x·ln x = c`, `ln x + cx + d = 0` and `x^x = c`.
+- **`ctx.apply("lambertw", [x])` is the native `W(x)` node** (it was an
+  opaque application the back ends refused).
+- **`routh_array`** decides zeros exactly, with a symbolic `ε` and the
+  auxiliary-polynomial rule (special-case rows used to hold `1e-9`
+  artefacts), drops leading zero coefficients and refuses an all-zero
+  input.
+- **Residues at essential singularities are refused** (they were `0`).
 - **Exact integer sequences and special values stay symbolic beyond the
   digit guard**: `factorial2`, `subfactorial`, `fibonacci`, `lucas`,
   `bernoulli`, `harmonic`, `catalan`, `bell`, `euler_number`,
@@ -153,6 +177,29 @@ differences).  Every class they found is fixed and pinned in `tests/v29/`.
   rational constants were `NaN`.
 - **`polynomial_congruence` modulo a prime ≥ 2⁶³** found no roots
   (number theory against SymPy, 13,931 cases).
+- **Transforms, recurrences, residues, control** (found by a hunt with
+  numerical oracles):
+  - `Res(z·e^{1/z}, 0)` and `Res(z²·sin(1/z), 0)` were `0` (truly `1/2`
+    and `−1/6`): a numerator that folds to a finite value at the point
+    was taken as analytic.
+  - `rsolve_linear` ignored initial values when the lowest coefficients
+    vanish (`a(n+1) = 3n·3ⁿ, a(0) = 3` gave `a(0) = −1`), and hung or
+    returned unevaluable forms for complex, repeated or cubic
+    characteristic roots; `rsolve_first_order` returned `3·Γ(n)/Γ(0)`.
+  - Inverse Laplace refused `1/(s² + 4)²` and `1/(2s + 1)³`, inverse Z
+    refused `1/(z² + 1)`: every proper rational function with rational
+    coefficients is now inverted.  Forward Laplace failed its documented
+    time-shift rule for every trig/hyperbolic function (`L{sin(3t + 3)}`).
+  - Routh–Hurwitz called `s³ + εs² + s + 2ε` (`ε = 10⁻³²`) stable (two
+    right-half-plane roots) and `0·s² + s + 2` unstable.
+  - `Quaternion::to_euler` at gimbal lock returned the identity.
+- **Real-root isolation** returned 2 intervals for 20 roots when the root
+  bound was huge (the bisection depth was capped at 256); Sturm chains
+  are signed subresultant PRS with a floating-point sign filter (degree
+  40, 100-digit coefficients: 2.1 s → 0.1 s).
+- **`erfinv` of a tiny argument and `erfinv(erf(−9))` at 60 digits**
+  failed to converge (found by the new `fuzz_evalf` in its first 10
+  minutes).
 - **Fuzzing:** three new nightly targets — `fuzz_evalf` (evalf
   self-consistency), `fuzz_calculus` (calculus against numerical oracles)
   and `fuzz_roundtrip` (display/parse); the local campaign ran all nine

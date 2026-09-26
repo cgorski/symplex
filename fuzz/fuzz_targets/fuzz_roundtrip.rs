@@ -31,6 +31,8 @@ struct G<'a, 'b> {
     y: Ex,
     z: Ex,
     k: Ex,
+    /// `FUZZ_TRACE=1`: print every subexpression as it is built.
+    trace: bool,
 }
 
 fn digits(r: &mut Src, n: usize) -> String {
@@ -263,6 +265,14 @@ impl G<'_, '_> {
     }
 
     fn e(&mut self, depth: u32) -> Ex {
+        let v = self.e_inner(depth);
+        if self.trace {
+            eprintln!("  built: {v}");
+        }
+        v
+    }
+
+    fn e_inner(&mut self, depth: u32) -> Ex {
         if depth == 0 || self.r.chance(0.15) {
             return self.leaf();
         }
@@ -419,6 +429,7 @@ fuzz_target!(|data: &[u8]| {
         y: ctx.symbol("y"),
         z: ctx.symbol("z"),
         k: ctx.symbol("k"),
+        trace: std::env::var_os("FUZZ_TRACE").is_some(),
     };
     let depth = 1 + g.r.below(4) as u32;
     let show = std::env::var_os("FUZZ_SHOW").is_some();
@@ -426,7 +437,7 @@ fuzz_target!(|data: &[u8]| {
         let b = g.cond(depth);
         let s = b.to_string();
         if show {
-            eprintln!("fuzz_roundtrip (relation): {s}");
+            eprintln!("fuzz_roundtrip (relation): {s}\n  tree: {:?}", b.to_tree());
         }
         match ctx.parse_bool(&s) {
             Ok(back) => assert!(

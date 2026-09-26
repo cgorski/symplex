@@ -2003,6 +2003,9 @@ fn domain_condition(func: &str, v: &str, suffix: &str) -> Option<String> {
         "atanh" => format!("({v}).abs() < 1.0{suffix}"),
         "ln_1p" | "log1p" => format!("{v} > -1.0{suffix}"),
         "lambert_w0" => format!("{v} >= -0.36787944117144233{suffix}"),
+        "lambert_wm1" => {
+            format!("({v} >= -0.36787944117144233{suffix} && {v} < 0.0{suffix})")
+        }
         "bessel_y" | "bessel_k" => format!("{v} > 0.0{suffix}"),
         "gamma" | "lgamma" | "digamma" | "factorial" => {
             let shift = if func == "factorial" { " + 1.0" } else { "" };
@@ -2037,6 +2040,7 @@ fn eval_rt_unary(func: &str, v: f64) -> Option<f64> {
         "erf" => rt::erf(v),
         "erfc" => rt::erfc(v),
         "lambert_w0" => rt::lambert_w0(v),
+        "lambert_wm1" => rt::lambert_wm1(v),
         "factorial" => rt::factorial(v),
         _ => return None,
     })
@@ -2137,6 +2141,40 @@ pub(crate) enum RtLowering {
     Unsupported,
 }
 
+/// The shared-runtime helper of a Lambert W call `lambertw(x[, k])`, which
+/// the numeric back ends lower by its branch (`rt_lowering` has no single
+/// helper for it): `lambert_w0` for the principal branch, `lambert_wm1` for
+/// `k = −1`.  Every other branch is complex-valued on the whole real axis
+/// and has no `f64` code.
+pub(crate) fn lambert_rt_helper(
+    arena: &Arena,
+    args: &[ExprId],
+) -> Result<&'static str, SymplexError> {
+    let k = match args {
+        [_] => Some(0),
+        [_, k] => arena
+            .as_num(*k)
+            .filter(|q| q.is_integer())
+            .and_then(|q| q.to_integer().to_i64()),
+        _ => None,
+    };
+    match k {
+        Some(0) => Ok("lambert_w0"),
+        Some(-1) => Ok("lambert_wm1"),
+        _ => Err(SymplexError::NotImplemented(match args.get(1) {
+            Some(&k) => format!(
+                "cannot generate real (f64) code for the Lambert W branch k = {}: only W₀ and W₋₁ \
+                 are real on part of the real axis",
+                arena.display(k)
+            ),
+            None => format!(
+                "cannot generate code for `lambertw` with {} arguments",
+                args.len()
+            ),
+        })),
+    }
+}
+
 /// The runtime lowering of `f`; every back end consults this one table.
 pub(crate) fn rt_lowering(f: LibFn) -> RtLowering {
     match f {
@@ -2158,9 +2196,9 @@ pub(crate) fn rt_lowering(f: LibFn) -> RtLowering {
         LibFn::RisingFactorial => RtLowering::Binary("rising_factorial"),
         LibFn::FallingFactorial => RtLowering::Binary("falling_factorial"),
         // No `f64` routine in `numeric_rt` (yet): the exact combinatorial
-        // counts, `lambertw` as an `Apply` (the `LambertW` node compiles),
-        // and the 0.9 special functions other than the inverse error
-        // functions.
+        // counts and the 0.9 special functions other than the inverse error
+        // functions.  (`lambertw(x, k)` is lowered by its branch,
+        // `lambert_rt_helper`.)
         LibFn::Subfactorial
         | LibFn::Bernoulli
         | LibFn::Catalan
@@ -2214,6 +2252,10 @@ fn emit_rt_apply(
             args.len()
         ))
     };
+    if f == LibFn::LambertW {
+        let helper = lambert_rt_helper(arena, args)?;
+        return emit_rt_unary(arena, args[0], helper, var_names, options, cse_constants);
+    }
     match rt_lowering(f) {
         RtLowering::Ordered(helper) => {
             let [order, x] = args else {

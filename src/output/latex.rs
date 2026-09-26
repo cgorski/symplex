@@ -469,6 +469,18 @@ fn push_lib_fn_latex(name: LibFn, args: &[ExprId], stack: &mut Vec<LatexItem>) -
         LibFn::AiryBiPrime => r"\operatorname{Bi}^\prime",
         LibFn::EllipticK => "K",
         LibFn::EllipticE => "E",
+        // The branch `k` of Lambert W, `\operatorname{W}_{k}\left(x\right)`.
+        LibFn::LambertW => {
+            if let [x, k] = args {
+                stack.push(LatexItem::Lit(r"\right)"));
+                stack.push(LatexItem::Expr(*x));
+                stack.push(LatexItem::Lit(r"}\left("));
+                stack.push(LatexItem::Expr(*k));
+                stack.push(LatexItem::Lit(r"\operatorname{W}_{"));
+                return true;
+            }
+            r"\operatorname{W}"
+        }
         // head_{param}\left(x\right)
         LibFn::ExpInt | LibFn::PolyLog => {
             let head = if name == LibFn::ExpInt {
@@ -557,7 +569,6 @@ fn push_lib_fn_latex(name: LibFn, args: &[ExprId], stack: &mut Vec<LatexItem>) -
         | LibFn::Stirling1
         | LibFn::Stirling2
         | LibFn::PartitionCount
-        | LibFn::LambertW
         | LibFn::BesselJ
         | LibFn::BesselY
         | LibFn::BesselI

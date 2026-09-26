@@ -15,6 +15,7 @@
 //! | cos(ωt) | s/(s²+ω²) |
 //! | sinh(at) | a/(s²-a²) |
 //! | cosh(at) | s/(s²-a²) |
+//! | sin(ωt + φ), cos(ωt + φ), sinh(at + b), cosh(at + b) | by the addition formulas |
 //! | t^ν (ν > −1) | Γ(ν+1)/s^(ν+1) |
 //! | ln t | −(γ + ln s)/s |
 //! | δ(t − a), H(t − a) | e^(−as), e^(−as)/s |
@@ -25,10 +26,18 @@
 //! Plus linearity, frequency shift (exp(at)·f(t) → F(s-a)), time shift
 //! (f(t−a)H(t−a) → e^(−as)F(s)), frequency differentiation
 //! (tⁿ f(t) → (−1)ⁿ F⁽ⁿ⁾(s)) and division by t (f(t)/t → ∫_s^∞ F(u) du).
+//! When no rule applies, powers `sinⁿ`/`cosⁿ` are linearised, products of
+//! sines and cosines turned into sums, `sinh`/`cosh` next to other factors
+//! written as exponentials and the product expanded, and the rules tried
+//! once more.
 //!
-//! The inverse handles arbitrary proper rational functions through partial
-//! fractions (repeated and complex roots), `e^(−as)F(s)` (delay), `s^(−ν)`,
-//! `1/√(s²+a²)`, `atan(a/s)`, `1/(s√(s+a²))` and constants (`δ`).
+//! The inverse handles rational functions through partial fractions and
+//! the table; a rational function with rational coefficients that the
+//! table does not cover (repeated complex poles, non-monic factors, …) is
+//! inverted exactly as the solution of `D(d/dt) f = 0` whose initial
+//! derivatives are read off the expansion of `F` at infinity.  Also
+//! `e^(−as)F(s)` (delay), `s^(−ν)`, `1/√(s²+a²)`, `atan(a/s)`,
+//! `1/(s√(s+a²))` and constants (`δ`).
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -74,8 +83,143 @@ pub(crate) fn laplace_transform(
     do_forward(arena, expr, t, t_sym, s)
 }
 
-/// Internal recursive forward transform (s is always the original symbol).
+/// Internal recursive forward transform (s is always the original symbol):
+/// the rules, then — only if they fail — once more on the expression
+/// rewritten into table-friendly form ([`rewrite_for_table`]).
 fn do_forward(
+    arena: &mut Arena,
+    expr: ExprId,
+    t: ExprId,
+    t_sym: SymbolId,
+    s: ExprId,
+) -> Result<ExprId, SymplexError> {
+    let ruled = do_forward_rules(arena, expr, t, t_sym, s);
+    if ruled.is_ok() {
+        return ruled;
+    }
+    let rewritten = rewrite_for_table(arena, expr, t);
+    if rewritten == expr {
+        return ruled;
+    }
+    do_forward_rules(arena, rewritten, t, t_sym, s).or(ruled)
+}
+
+/// `f(t)` rewritten towards sums of `tⁿ·e^{at}·{1, sin bt, cos bt}`, the
+/// shapes the table, frequency shift and frequency differentiation cover:
+/// `sinⁿ`/`cosⁿ` linearised, products of two sines/cosines by the
+/// product-to-sum formulas, `sinh`/`cosh` next to other factors of `t` as
+/// exponentials, `e^{at+b} = e^b·e^{at}`, and the result expanded (so the
+/// time-shift rule's `(t + a)ⁿ` becomes a polynomial).  Only the top-level
+/// factors are rewritten.  (`cos² t`, `sinh(t)·sin(t)`, `t³·H(t − 1/2)`
+/// and `e^{−t−2}·sin 2t` were refused.)
+fn rewrite_for_table(arena: &mut Arena, expr: ExprId, t: ExprId) -> ExprId {
+    let factors: Vec<ExprId> = match arena.node(expr) {
+        ExprNode::Mul(ch) => ch.to_vec(),
+        _ => vec![expr],
+    };
+    let n_dep = factors
+        .iter()
+        .filter(|&&f| contains_var(arena, f, t))
+        .count();
+    let mut out: Vec<ExprId> = Vec::with_capacity(factors.len());
+    let mut trig: Vec<ExprId> = Vec::new();
+    let half = arena.rational(1, 2);
+    for f in factors {
+        let node = arena.node(f).clone();
+        match node {
+            ExprNode::Pow(b, e)
+                if matches!(arena.node(b), ExprNode::Sin(_) | ExprNode::Cos(_))
+                    && arena.as_num(e).is_some_and(|q| {
+                        q.is_integer()
+                            && q.is_positive()
+                            && *q <= Ratio::from_integer(BigInt::from(8))
+                    }) =>
+            {
+                let n: u32 = arena
+                    .as_num(e)
+                    .and_then(|q| q.to_integer().try_into().ok())
+                    .unwrap_or(1);
+                let lin = match arena.node(b).clone() {
+                    ExprNode::Sin(a) => crate::simplify::fu::linearize_sin_power(arena, a, n),
+                    ExprNode::Cos(a) => crate::simplify::fu::linearize_cos_power(arena, a, n),
+                    _ => f,
+                };
+                out.push(lin);
+            }
+            ExprNode::Sin(_) | ExprNode::Cos(_) if contains_var(arena, f, t) => trig.push(f),
+            ExprNode::Sinh(a) | ExprNode::Cosh(a) if n_dep > 1 && contains_var(arena, a, t) => {
+                // (e^a ∓ e^{−a})/2
+                let ea = arena.exp(a);
+                let na = arena.neg(a);
+                let ena = arena.exp(na);
+                let pair = if matches!(node, ExprNode::Sinh(_)) {
+                    arena.sub(ea, ena)
+                } else {
+                    arena.add(&[ea, ena])
+                };
+                out.push(arena.mul(&[half, pair]));
+            }
+            ExprNode::Exp(a) => match linear_in(arena, a, t) {
+                Some((k, b)) if !arena.is_zero_structural(b) && !arena.is_zero_structural(k) => {
+                    let kt = arena.mul(&[k, t]);
+                    let e1 = arena.exp(b);
+                    let e2 = arena.exp(kt);
+                    out.push(e1);
+                    out.push(e2);
+                }
+                _ => out.push(f),
+            },
+            _ => out.push(f),
+        }
+    }
+    // Product-to-sum on pairs of sines/cosines.
+    while trig.len() >= 2 {
+        let (x, y) = (trig.remove(0), trig.remove(0));
+        let arg = |arena: &Arena, id: ExprId| match arena.node(id) {
+            ExprNode::Sin(a) => (true, *a),
+            ExprNode::Cos(a) => (false, *a),
+            _ => (false, id),
+        };
+        let ((sx, a), (sy, b)) = (arg(arena, x), arg(arena, y));
+        let sum = arena.add(&[a, b]);
+        let diff = arena.sub(a, b);
+        let combined = match (sx, sy) {
+            // sin a sin b = ½[cos(a − b) − cos(a + b)]
+            (true, true) => {
+                let c1 = arena.cos(diff);
+                let c2 = arena.cos(sum);
+                arena.sub(c1, c2)
+            }
+            // cos a cos b = ½[cos(a − b) + cos(a + b)]
+            (false, false) => {
+                let c1 = arena.cos(diff);
+                let c2 = arena.cos(sum);
+                arena.add(&[c1, c2])
+            }
+            // sin a cos b = ½[sin(a + b) + sin(a − b)]
+            (true, false) => {
+                let s1 = arena.sin(sum);
+                let s2 = arena.sin(diff);
+                arena.add(&[s1, s2])
+            }
+            // cos a sin b = ½[sin(a + b) − sin(a − b)]
+            (false, true) => {
+                let s1 = arena.sin(sum);
+                let s2 = arena.sin(diff);
+                arena.sub(s1, s2)
+            }
+        };
+        let combined = crate::transforms::eval::eval(arena, combined);
+        out.push(arena.mul(&[half, combined]));
+    }
+    out.extend(trig);
+    let product = arena.mul(&out);
+    let expanded = crate::transforms::expand::expand(arena, product);
+    crate::transforms::eval::eval(arena, expanded)
+}
+
+/// The table-and-rules forward transform.
+fn do_forward_rules(
     arena: &mut Arena,
     expr: ExprId,
     t: ExprId,
@@ -372,6 +516,64 @@ fn try_table_forward(
 
         _ => None,
     }
+    .or_else(|| phase_shifted_forward(arena, expr, t, s))
+}
+
+/// Rules 4–7 with an affine argument `a·t + b` (`b ≠ 0` free of `t`), by
+/// the addition formulas:
+///
+/// | `f(t)` | `F(s)` |
+/// |---|---|
+/// | `sin(at + b)` | `(a cos b + s sin b)/(s² + a²)` |
+/// | `cos(at + b)` | `(s cos b − a sin b)/(s² + a²)` |
+/// | `sinh(at + b)` | `(a cosh b + s sinh b)/(s² − a²)` |
+/// | `cosh(at + b)` | `(s cosh b + a sinh b)/(s² − a²)` |
+///
+/// The time-shift rule `H(t − c)·f(t) → e^{−cs}·L{f(t + c)}` produces these
+/// arguments (`H(t − 1)·sin(3t)` needs `L{sin(3t + 3)}`), so without them it
+/// failed for every trigonometric or hyperbolic `f`.
+fn phase_shifted_forward(arena: &mut Arena, expr: ExprId, t: ExprId, s: ExprId) -> Option<ExprId> {
+    let (arg, kind) = match arena.node(expr) {
+        ExprNode::Sin(a) => (*a, 0u8),
+        ExprNode::Cos(a) => (*a, 1),
+        ExprNode::Sinh(a) => (*a, 2),
+        ExprNode::Cosh(a) => (*a, 3),
+        _ => return None,
+    };
+    let (a, b) = linear_in(arena, arg, t)?;
+    if arena.is_zero_structural(a) || arena.is_zero_structural(b) {
+        return None;
+    }
+    let a2 = arena.mul(&[a, a]);
+    let s2 = arena.mul(&[s, s]);
+    let (num, den) = if kind < 2 {
+        let (cb, sb) = (arena.cos(b), arena.sin(b));
+        let den = arena.add(&[s2, a2]);
+        let num = if kind == 0 {
+            let x = arena.mul(&[a, cb]);
+            let y = arena.mul(&[s, sb]);
+            arena.add(&[x, y])
+        } else {
+            let x = arena.mul(&[s, cb]);
+            let y = arena.mul(&[a, sb]);
+            arena.sub(x, y)
+        };
+        (num, den)
+    } else {
+        let (cb, sb) = (arena.cosh(b), arena.sinh(b));
+        let den = arena.sub(s2, a2);
+        let num = if kind == 2 {
+            let x = arena.mul(&[a, cb]);
+            let y = arena.mul(&[s, sb]);
+            arena.add(&[x, y])
+        } else {
+            let x = arena.mul(&[s, cb]);
+            let y = arena.mul(&[a, sb]);
+            arena.add(&[x, y])
+        };
+        (num, den)
+    };
+    Some(arena.div(num, den))
 }
 
 // ─── Time-shift rule ─────────────────────────────────────────────────────
@@ -1085,8 +1287,55 @@ pub(crate) fn inverse_laplace_transform(
     do_inverse(arena, expr, s, t, 0)
 }
 
-/// Internal recursive inverse transform with a recursion guard.
+/// Internal recursive inverse transform: the table and rules, then the exact
+/// rational-function inverse when they fail.
 fn do_inverse(
+    arena: &mut Arena,
+    expr: ExprId,
+    s: ExprId,
+    t: ExprId,
+    depth: u32,
+) -> Result<ExprId, SymplexError> {
+    let ruled = do_inverse_rules(arena, expr, s, t, depth);
+    if ruled.is_ok() {
+        return ruled;
+    }
+    match inverse_rational_exact(arena, expr, s, t) {
+        Some(f) => Ok(f),
+        None => ruled,
+    }
+}
+
+/// `L⁻¹` of a rational `F(s)` with rational coefficients, for every
+/// denominator: the proper part solves `D(d/dt) f = 0` with
+/// `f⁽ᵏ⁾(0⁺)` read off the expansion of `F` at infinity (repeated complex
+/// poles `1/(s² + 4)²` and non-monic factors `1/(2s + 1)³` were refused
+/// by the partial-fraction table); a constant polynomial part is `c·δ(t)`.
+fn inverse_rational_exact(arena: &mut Arena, expr: ExprId, s: ExprId, t: ExprId) -> Option<ExprId> {
+    let (numer, denom) = crate::poly::polybridge::as_numer_denom(arena, expr);
+    let np = crate::poly::polybridge::expr_to_poly(arena, numer, s)?;
+    let dp = crate::poly::polybridge::expr_to_poly(arena, denom, s)?;
+    if dp.degree()? == 0 {
+        return None;
+    }
+    let (q, r) = np.div_rem(&dp);
+    if q.degree().is_some_and(|k| k > 0) {
+        // sᵏ with k ≥ 1 would need derivatives of δ.
+        return None;
+    }
+    let proper = crate::transforms::rsolve::rational_inverse_into(arena, &r, &dp, t, true)?;
+    if q.is_zero() {
+        return Some(proper);
+    }
+    let nid = arena.intern_num(q.coeff(0));
+    let c = arena.intern(ExprNode::Num(nid));
+    let d = arena.dirac_delta(t);
+    let cd = arena.mul(&[c, d]);
+    Some(arena.add(&[cd, proper]))
+}
+
+/// The table-and-rules inverse transform, with a recursion guard.
+fn do_inverse_rules(
     arena: &mut Arena,
     expr: ExprId,
     s: ExprId,

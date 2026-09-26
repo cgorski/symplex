@@ -27,7 +27,10 @@
 //! The inverse handles rational `X(z)` through partial fractions (terms
 //! `z/(z−a)ᵐ → C(n, m−1) a^(n−m+1)`, `1/(z−a)ᵐ` via the delay rule),
 //! constants (`δ\[n\]`), `z⁻ᵏ` (`δ\[n−k\]`), `z⁻ᵏ X(z)` (delay) and the
-//! trigonometric forms.
+//! trigonometric forms.  A causal rational `X(z)` with rational
+//! coefficients that these do not cover (complex or repeated poles,
+//! non-monic factors) is inverted exactly: `x[n]` solves the recurrence of
+//! the denominator from the first coefficients of the expansion in `1/z`.
 //!
 //! Unit samples in inverse results are `KroneckerDelta(n, k)`; on input both
 //! `KroneckerDelta(n, k)` and `DiracDelta(n − k)` are accepted.
@@ -857,8 +860,45 @@ pub(crate) fn inverse_z_transform(
     do_inverse(arena, expr, z_var, n_var, 0)
 }
 
-/// Internal recursive inverse transform with a recursion guard.
+/// Internal recursive inverse transform: the table and rules, then the exact
+/// rational-function inverse when they fail.
 fn do_inverse(
+    arena: &mut Arena,
+    expr: ExprId,
+    z_var: ExprId,
+    n_var: ExprId,
+    depth: u32,
+) -> Result<ExprId, SymplexError> {
+    let ruled = do_inverse_rules(arena, expr, z_var, n_var, depth);
+    if ruled.is_ok() {
+        return ruled;
+    }
+    match inverse_rational_exact(arena, expr, z_var, n_var) {
+        Some(x) => Ok(x),
+        None => ruled,
+    }
+}
+
+/// `Z⁻¹` of a causal rational `X(z)` (`deg N ≤ deg D`, rational
+/// coefficients) for every denominator: `x[n]` is the coefficient of
+/// `z^{−n}`, obtained from the recurrence of `D` and the first values of the
+/// expansion at infinity (complex poles `1/(z² + 1)`, repeated ones and
+/// non-monic factors `(2z + 1)⁻³` were refused by the partial-fraction
+/// table).
+fn inverse_rational_exact(
+    arena: &mut Arena,
+    expr: ExprId,
+    z_var: ExprId,
+    n_var: ExprId,
+) -> Option<ExprId> {
+    let (numer, denom) = crate::poly::polybridge::as_numer_denom(arena, expr);
+    let np = crate::poly::polybridge::expr_to_poly(arena, numer, z_var)?;
+    let dp = crate::poly::polybridge::expr_to_poly(arena, denom, z_var)?;
+    crate::transforms::rsolve::rational_inverse_into(arena, &np, &dp, n_var, false)
+}
+
+/// The table-and-rules inverse transform, with a recursion guard.
+fn do_inverse_rules(
     arena: &mut Arena,
     expr: ExprId,
     z_var: ExprId,

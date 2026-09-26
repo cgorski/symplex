@@ -32,6 +32,8 @@ their documentation:
 | `src/domains/ntheory.rs` (`EcmStage2`, ECM stage 2 in `ecm_curve_ring`) | stage 2 of `_ecm_one_factor` in `sympy/ntheory/ecm.py` | P. L. Montgomery, *Math. Comp.* 48 (1987); R. Crandall, C. Pomerance, *Prime Numbers*, 2nd ed., §7.4.2 |
 | `src/domains/exact_matrix.rs` (LLL reduction order and rounding) | `DomainMatrix.lll` / `_ddm_lll` | A. K. Lenstra, H. W. Lenstra, L. Lovász, *Math. Ann.* 261 (1982) |
 | `src/plotting/textplot.rs` | `sympy/plotting/textplot.py` | — |
+| `src/poly/zpoly.rs` (`z_subresultant_prs`: the signed subresultant chain of the Sturm sequences and `z_gcd`) | `dup_inner_subresultants` in `sympy/polys/euclidtools.py` | W. S. Brown, "The subresultant PRS algorithm", *ACM TOMS* 4 (1978) 237–249 |
+| `src/transforms/solve.rs` (the Lambert-form equations and their real branches) | `_solve_lambert` / `_lambert` in `sympy/solvers/bivariate.py` | R. M. Corless et al., "On the Lambert W function", *Adv. Comput. Math.* 5 (1996) 329–359 |
 | `src/poly/multipoly.rs` (`heugcd_z`, `heugcd_attempt`: the evaluation-point bound and the three candidates per point) | `dmp_zz_heu_gcd` in `sympy/polys/euclidtools.py` | B. W. Char, K. O. Geddes, G. H. Gonnet, "GCDHEU: Heuristic polynomial GCD algorithm based on integer GCD computation", *J. Symbolic Comput.* 7 (1989) 31–48 |
 | `src/transforms/evalf/hypsum.rs` (convergence classification, the direct hypergeometric summation) | `check_convergence` and `hypsum` in `sympy/core/evalf.py` | the term-ratio test for hypergeometric series |
 | `src/transforms/pattern.rs` (`condition_pow_pow`) | the branch condition of `Pow._eval_power` | the principal branch of `z^a` |
@@ -57,6 +59,46 @@ modification, are permitted provided that the following conditions are met:
      may be used to endorse or promote products derived from this software
      without specific prior written permission.
 
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
+DAMAGE.
+```
+
+**Implementations that follow mpmath's.**
+
+| symplex | follows | algorithm published in |
+|---|---|---|
+| `src/transforms/evalf/lambertw.rs` (every branch over ℂ: branch-point and asymptotic starting values, Halley iteration), and the `lambert_wm1` start values of the `f64` runtime | `lambertw`, `_lambertw_series`, `_lambertw_approx_hybrid` in `mpmath/functions/functions.py` | R. M. Corless, G. H. Gonnet, D. E. G. Hare, D. J. Jeffrey, D. E. Knuth, "On the Lambert W function", *Adv. Comput. Math.* 5 (1996) 329–359 |
+| `src/transforms/evalf/factorials.rs` (`gamma_ratio`: a quotient of Γ values with poles cancelled in the limit) | `gammaprod` in `mpmath/functions/factorials.py` | — |
+
+To the extent these are derivatives of mpmath, mpmath's licence applies
+to those parts, and its notice is reproduced here:
+
+```text
+Copyright (c) 2005-2021 Fredrik Johansson and mpmath contributors
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+  a. Redistributions of source code must retain the above copyright notice,
+     this list of conditions and the following disclaimer.
+  b. Redistributions in binary form must reproduce the above copyright
+     notice, this list of conditions and the following disclaimer in the
+     documentation and/or other materials provided with the distribution.
+  c. Neither the name of the copyright holder nor the names of its
+     contributors may be used to endorse or promote products derived
+     from this software without specific prior written permission.
 
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE

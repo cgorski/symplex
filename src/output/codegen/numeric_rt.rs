@@ -26,6 +26,7 @@
 //! | `erf`, `erfc` | W. J. Cody's rational Chebyshev approximations | ≈ 1e-16, `erfc` keeps relative accuracy for large x |
 //! | `erfinv`, `erfcinv` | Maclaurin / Winitzki start + Halley on `erf`/`erfc`, Newton on `ln erfc` via erfcx in the deep tail | ≤ 3e-16 (relative accuracy kept down to subnormal `erfcinv` arguments) |
 //! | `lambert_w0` | branch-point series + Halley iteration | ≈ 1e-15 (ill-conditioned near −1/e) |
+//! | `lambert_wm1` | branch-point series / `ln(−x)` asymptotics + Halley iteration | ≈ 1e-15 (ill-conditioned near −1/e) |
 //! | `bessel_j/y` | power series, Miller backward recurrence, Hankel asymptotics | ≈ 1e-14 (absolute near zeros) |
 //! | `bessel_i` | power series / asymptotic expansion | ≈ 1e-14 |
 //! | `bessel_k` | trapezoidal integral representation / asymptotic expansion | ≈ 1e-14 |
@@ -647,6 +648,61 @@ pub fn lambert_w0(x: f64) -> f64 {
     w
 }
 // @@end lambert_w0
+
+// @@begin lambert_wm1
+/// Lower real branch of the Lambert W function, W₋₁(x)·exp(W₋₁(x)) = x.
+///
+/// Defined for −1/e ≤ x < 0 (NaN otherwise; −∞ at x = 0, the limit from
+/// the left).  Starting values after mpmath's `lambertw` (BSD): the
+/// branch-point series in p = −√(2(e·x + 1)) for x < −0.25, and
+/// `L₁ − L₂ + L₂/L₁` with `L₁ = ln(−x)`, `L₂ = ln(−L₁)` nearer 0; then
+/// Halley iteration.  Ill-conditioned near −1/e, as `lambert_w0` is.
+pub fn lambert_wm1(x: f64) -> f64 {
+    const NEG_INV_E: f64 = -0.36787944117144233;
+    if x.is_nan() || x < NEG_INV_E || x > 0.0 {
+        return f64::NAN;
+    }
+    if x == 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    if x == NEG_INV_E {
+        return -1.0;
+    }
+    let mut w;
+    if x < -0.25 {
+        let p = -p_sqrt(2.0 * (E * x + 1.0));
+        w = -1.0
+            + p * (1.0
+                - p * (1.0 / 3.0
+                    - p * (11.0 / 72.0
+                        - p * (43.0 / 540.0
+                            - p * (769.0 / 17280.0
+                                - p * (221.0 / 8505.0
+                                    - p * (680863.0 / 43545600.0 - p * (1963.0 / 204120.0))))))));
+        if p > -0.02 {
+            return w;
+        }
+    } else {
+        let l1 = p_ln(-x);
+        let l2 = p_ln(-l1);
+        w = l1 - l2 + l2 / l1;
+    }
+    let mut iter = 0;
+    while iter < 40 {
+        let ew = p_exp(w);
+        let f = w * ew - x;
+        let wp1 = w + 1.0;
+        let denom = ew * wp1 - (w + 2.0) * f / (2.0 * wp1);
+        let dw = f / denom;
+        w -= dw;
+        if p_abs(dw) <= 2.0 * EPS * p_abs(w) {
+            break;
+        }
+        iter += 1;
+    }
+    w
+}
+// @@end lambert_wm1
 
 // @@begin beta
 /// Beta function B(a, b) = Γ(a)Γ(b)/Γ(a+b).
@@ -1723,6 +1779,62 @@ mod tests {
         let x = -0.3678;
         let w = lambert_w0(x);
         assert_rel(w * w.exp(), x, 1e-12, "W(-0.3678) e^W");
+    }
+
+    #[test]
+    fn lambert_wm1_known_values() {
+        // mpmath: lambertw(mpf(x), -1) at 30 digits.
+        assert_rel(
+            lambert_wm1(-0.2),
+            -2.54264135777352642429,
+            1e-15,
+            "W-1(-0.2)",
+        );
+        assert_rel(
+            lambert_wm1(-0.3),
+            -1.78133702342162761197,
+            1e-15,
+            "W-1(-0.3)",
+        );
+        assert_rel(
+            lambert_wm1(-0.25),
+            -2.15329236411034964917,
+            1e-15,
+            "W-1(-0.25)",
+        );
+        assert_rel(
+            lambert_wm1(-0.36),
+            -1.22277013397850595314,
+            1e-14,
+            "W-1(-0.36)",
+        );
+        assert_rel(
+            lambert_wm1(-1e-3),
+            -9.11800647040274012126,
+            1e-15,
+            "W-1(-1e-3)",
+        );
+        assert_rel(
+            lambert_wm1(-1e-300),
+            -697.322776295460160995,
+            1e-15,
+            "W-1(-1e-300)",
+        );
+        assert_rel(
+            lambert_wm1(-0.3678),
+            -1.02092723940942755374,
+            1e-9,
+            "W-1(-0.3678)",
+        );
+        assert_eq!(lambert_wm1(-1.0 / E), -1.0);
+        assert_eq!(lambert_wm1(0.0), f64::NEG_INFINITY);
+        assert!(lambert_wm1(-0.5).is_nan());
+        assert!(lambert_wm1(0.1).is_nan());
+        for &x in &[-0.367, -0.3, -0.1, -1e-3, -1e-100] {
+            let w = lambert_wm1(x);
+            assert!(w <= -1.0, "W-1({x}) = {w}");
+            assert_rel(w * w.exp(), x, 1e-13, &format!("W-1({x}) e^W"));
+        }
     }
 
     #[test]

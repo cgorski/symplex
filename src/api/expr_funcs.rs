@@ -918,6 +918,36 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
+    /// The branch `W_k` of the Lambert W function (SymPy's `LambertW(x, k)`):
+    /// `W_k(x)·exp(W_k(x)) = x` for an integer `k`.  `W₀` is the principal
+    /// branch [`Ex::lambertw`] (`k = 0` builds the same node);
+    /// `W₀` and `W₋₁` are the two branches real on part of the real axis
+    /// (`W₋₁` on `[−1/e, 0)`).  Displayed `W(x, k)`, parsed from
+    /// `W(x, k)`, `lambertw(x, k)` or `LambertW(x, k)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let w = ctx.rational(-1, 5).lambertw_branch(&ctx.int(-1));
+    /// assert_eq!(w.to_string(), "W(-1/5, -1)");
+    /// // mpmath: lambertw(mpf(-1)/5, -1) = -2.5426413577735264...
+    /// assert!((w.eval_f64().unwrap() + 2.542_641_357_773_526).abs() < 1e-14);
+    /// assert_eq!(ctx.symbol("x").lambertw_branch(&ctx.int(0)), ctx.symbol("x").lambertw());
+    /// ```
+    #[must_use]
+    pub fn lambertw_branch(&self, k: &Ex) -> Ex {
+        let k_id = self.checked_id(k);
+        let id = self
+            .inner
+            .write()
+            .arena
+            .lambertw_branch(self.raw_id(), k_id);
+        self.wrap(id)
+    }
+
     // ── Relational operators (return BoolEx) ───────────────────────
 
     /// Greater than: `self > other`.

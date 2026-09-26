@@ -438,8 +438,8 @@ fn is_known_function(name_lower: &str) -> bool {
 }
 
 /// The library function a (lower-cased) call name denotes.  `lambertw` is
-/// excluded: the parser builds the dedicated `LambertW` node for it, as the
-/// `Arena` does.
+/// excluded: the parser builds the dedicated `LambertW` node for `lambertw(x)`
+/// and `Arena::lambertw_branch` for `lambertw(x, k)`.
 fn lib_fn_by_name(name_lower: &str) -> Option<LibFn> {
     LibFn::from_name_ignore_ascii_case(name_lower).filter(|f| *f != LibFn::LambertW)
 }
@@ -1592,6 +1592,9 @@ impl<'a> Parser<'a> {
                 Ok(arena.intern(ExprNode::Derivative(arg, arg2)))
             }
             "atan2" => Ok(arena.atan2(arg, arg2)),
+            // The branch `k` of Lambert W, `W(x, k)` (SymPy's `LambertW(x, k)`);
+            // `W(x, 0)` is the principal branch `W(x)`.
+            "lambertw" | "w" => Ok(arena.lambertw_branch(arg, arg2)),
             "polygamma" => Ok(arena.polygamma(arg, arg2)),
             "kroneckerdelta" | "kronecker_delta" => Ok(arena.kronecker_delta(arg, arg2)),
             // Combinatorics / special functions (`C(n, k)` and `B(a, b)` are
@@ -1604,8 +1607,8 @@ impl<'a> Parser<'a> {
             // the classical orthogonal polynomials `(n, x)`, …
             _ => self.lib_call(arena, name, name_lower, &[arg, arg2], || {
                 format!(
-                    "unknown 2-argument function '{}'. Supported: log, atan2, polygamma, \
-                     binomial, beta, besselj, bessely, besseli, besselk, expint, lowergamma, \
+                    "unknown 2-argument function '{}'. Supported: log, atan2, lambertw, \
+                     polygamma, binomial, beta, besselj, bessely, besseli, besselk, expint, lowergamma, \
                      uppergamma, polylog, elliptic_f, elliptic_pi, min, max, KroneckerDelta, \
                      RootOf, ConditionSet, Integral, Derivative",
                     name

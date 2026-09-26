@@ -70,7 +70,9 @@ mod accuracy;
 mod bernoulli;
 mod conjugate;
 mod emsum;
+mod factorials;
 mod hypsum;
+mod lambertw;
 mod sensitivity;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -214,6 +216,7 @@ fn evaluate_tree(
 ) -> Result<(Complex, accuracy::Bound), SymplexError> {
     let mut cache: FxHashMap<ExprId, Complex> = FxHashMap::default();
     let mut errs: ErrMap = FxHashMap::default();
+    let mut failed: FxHashMap<ExprId, SymplexError> = FxHashMap::default();
     let mut sigs = conjugate::Sigs::new();
     if let Some((id, value, err)) = seed {
         sigs.record_leaf(id, &value, err);
@@ -242,8 +245,13 @@ fn evaluate_tree(
                 errs.insert(id, e);
                 cache.insert(id, value);
             }
-            Err(e) if strict || id == root => return Err(e),
-            Err(_) => {}
+            Err(e) => {
+                let e = root_cause(arena.node(id), e, &failed);
+                if strict || id == root {
+                    return Err(e);
+                }
+                failed.insert(id, e);
+            }
         }
     }
     let value = cache.remove(&root).ok_or_else(|| {
@@ -251,6 +259,58 @@ fn evaluate_tree(
     })?;
     let err = errs.get(&root).copied().unwrap_or(accuracy::Bound::UNKNOWN);
     Ok((value, err))
+}
+
+/// The error of node `node`, which failed with `e`: when `e` is only the
+/// absence of a child's value (a child that failed and was skipped, see
+/// [`evaluate_tree`]), the child's own error.  Before 0.30 the parent
+/// reported the cache miss: `harmonic(7/2) + 1` was "sub-expression e22 not
+/// in cache (likely contains free symbols)".
+fn root_cause(
+    node: &ExprNode,
+    e: SymplexError,
+    failed: &FxHashMap<ExprId, SymplexError>,
+) -> SymplexError {
+    if let SymplexError::Unevaluable { reason } = &e {
+        for c in node.children() {
+            if let Some(child_error) = failed.get(&c)
+                && *reason == not_evaluated_reason(c)
+            {
+                return duplicate_error(child_error);
+            }
+        }
+    }
+    e
+}
+
+/// A copy of an evaluation error (`SymplexError` is not `Clone`): the
+/// variants `evalf` raises field for field, any other by its message.
+fn duplicate_error(e: &SymplexError) -> SymplexError {
+    match e {
+        SymplexError::PrecisionExhausted {
+            requested,
+            achieved,
+        } => SymplexError::PrecisionExhausted {
+            requested: *requested,
+            achieved: *achieved,
+        },
+        SymplexError::FreeSymbol { name } => SymplexError::FreeSymbol { name: name.clone() },
+        SymplexError::Unevaluable { reason } => SymplexError::Unevaluable {
+            reason: reason.clone(),
+        },
+        SymplexError::ComputationFailed { operation, reason } => SymplexError::ComputationFailed {
+            operation,
+            reason: reason.clone(),
+        },
+        SymplexError::NotImplemented(s) => SymplexError::NotImplemented(s.clone()),
+        SymplexError::Divergent { operation, reason } => SymplexError::Divergent {
+            operation,
+            reason: reason.clone(),
+        },
+        other => SymplexError::Unevaluable {
+            reason: other.to_string(),
+        },
+    }
 }
 
 /// Is `node` a condition (a truth value, not a number)?
@@ -325,6 +385,26 @@ fn eval_node_with_error(
                 errs.get(&u).copied().unwrap_or(accuracy::Bound::UNKNOWN),
             ));
         }
+        // Lambert W reports its own bound (complex arguments, every branch).
+        node if lambertw::lambert_parts(arena, node).is_some() => {
+            let value = match eval_node(arena, id, cache, prec, rm, cc) {
+                Ok(value) => value,
+                // `W_k(0)` for `k ≠ 0` at an argument only 0 to the working
+                // precision: no value yet (as in the arm below).
+                Err(SymplexError::Unevaluable { .. }) if inexact_zero_child(node, cache, errs) => {
+                    return Ok((c_zero(prec), accuracy::Bound::UNKNOWN));
+                }
+                Err(e) => return Err(e),
+            };
+            let err = match lambertw::lambert_parts(arena, node) {
+                Some(Ok((x, k))) => {
+                    let bz = errs.get(&x).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+                    lambertw::error_bound(get_cached(cache, x)?, bz, &value, k, prec)
+                }
+                _ => accuracy::Bound::UNKNOWN,
+            };
+            (value, err)
+        }
         ExprNode::PhysicalConstant(_, value_id) => match cache.get(value_id) {
             // The constant is an atom to every tree walk, so its stored
             // value (`h/(2π)` for ħ) was never visited: evaluate it as a
@@ -353,7 +433,7 @@ fn eval_node_with_error(
                 // bits).
                 Err(SymplexError::Unevaluable { .. })
                     if inexact_zero_child(arena.node(id), cache, errs)
-                        || rounded_onto_pole(arena.node(id), cache, errs) =>
+                        || rounded_onto_pole(arena, arena.node(id), cache, errs) =>
                 {
                     return Ok((c_zero(prec), accuracy::Bound::UNKNOWN));
                 }
@@ -408,18 +488,27 @@ fn inverse_identity(
 
 /// Is `node` a function with poles at integers (`Γ`, `ζ`, …) whose
 /// argument is an integer at the working precision without being exact?
-fn rounded_onto_pole(node: &ExprNode, cache: &FxHashMap<ExprId, Complex>, errs: &ErrMap) -> bool {
-    let poles = matches!(
-        node,
+fn rounded_onto_pole(
+    arena: &Arena,
+    node: &ExprNode,
+    cache: &FxHashMap<ExprId, Complex>,
+    errs: &ErrMap,
+) -> bool {
+    let poles = match node {
         ExprNode::Gamma(_)
-            | ExprNode::LogGamma(_)
-            | ExprNode::Digamma(_)
-            | ExprNode::Polygamma(_, _)
-            | ExprNode::Zeta(_)
-            | ExprNode::Factorial(_)
-            | ExprNode::Beta(_, _)
-            | ExprNode::Binomial(_, _)
-    );
+        | ExprNode::LogGamma(_)
+        | ExprNode::Digamma(_)
+        | ExprNode::Polygamma(_, _)
+        | ExprNode::Zeta(_)
+        | ExprNode::Factorial(_)
+        | ExprNode::Beta(_, _)
+        | ExprNode::Binomial(_, _) => true,
+        ExprNode::Apply(sid, _) => matches!(
+            arena.lib_fn(*sid),
+            Some(LibFn::RisingFactorial | LibFn::FallingFactorial | LibFn::Harmonic)
+        ),
+        _ => false,
+    };
     poles
         && node.children().into_iter().any(|c| {
             cache.get(&c).is_some_and(|v| v.1.is_zero() && v.0.is_int())
@@ -1171,10 +1260,23 @@ fn eval_node(
             }
             let n_f = bigfloat_to_f64(&n_val.0, rm, cc)?;
             let n_round = n_f.round();
-            if (n_f - n_round).abs() > 1e-12 || !(0.0..=10_000.0).contains(&n_round) {
+            if (n_f - n_round).abs() > 1e-12 || n_round < 0.0 {
                 return Err(SymplexError::Unevaluable {
                     reason: "polygamma order must be a non-negative integer".into(),
                 });
+            }
+            // A large order: `(−1)^{n+1}·n!·ζ(n + 1, x)` in log space (before
+            // 0.30 refused beyond 10⁴, "order must be a non-negative integer",
+            // although `eval` leaves `polygamma(10⁵, 1/2)` symbolic).
+            if n_round > 10_000.0 {
+                debug!(
+                    prec,
+                    n = n_round,
+                    "evalf: polygamma of large order via Hurwitz zeta"
+                );
+                let n_exact = BigFloat::from_f64(n_round, 64);
+                let r = factorials::polygamma_large(&n_exact, &x_val.0, prec, rm, cc)?;
+                return Ok((r, BigFloat::new(prec)));
             }
             let n = n_round as u32;
             if n == 0 {
@@ -1254,6 +1356,14 @@ fn eval_node(
             // was 0 (truly 3.3·10⁻¹⁴).
             if n_val.0.is_int() && k_val.0.is_int() && !n_val.0.is_negative() && k_val.0 > n_val.0 {
                 return Ok((BigFloat::new(prec), BigFloat::new(prec)));
+            }
+            // Where the Γ formula meets a pole, its limit (mpmath's
+            // `gammaprod`): before 0.30 `binomial(−7, 2500)` was refused,
+            // "Gamma at non-positive integer pole", although it is
+            // `C(2506, 6)`.
+            if factorials::binomial_meets_pole(&n_val.0, &k_val.0, prec, rm) {
+                let r = factorials::binomial(&n_val.0, &k_val.0, prec, rm, cc)?;
+                return Ok((r, BigFloat::new(prec)));
             }
             // C(n, k) = Gamma(n+1) / (Gamma(k+1) * Gamma(n-k+1)), the shifted
             // arguments exact.
@@ -1335,17 +1445,7 @@ fn eval_node(
             Ok((result, BigFloat::new(prec)))
         }
 
-        ExprNode::LambertW(inner) => {
-            let val = get_cached(cache, *inner)?;
-            if !val.1.is_zero() {
-                return Err(SymplexError::Unevaluable {
-                    reason: "LambertW of complex argument not yet supported in evalf".into(),
-                });
-            }
-            debug!(prec, "evalf: LambertW via Halley iteration");
-            let result = arb_lambert_w(&val.0, prec, rm, cc)?;
-            Ok((result, BigFloat::new(prec)))
-        }
+        ExprNode::LambertW(_) => eval_lambertw_node(arena, node, cache, prec, rm, cc),
 
         ExprNode::Beta(a_id, b_id) => {
             let a_val = get_cached(cache, *a_id)?;
@@ -1848,6 +1948,7 @@ fn eval_node(
         ExprNode::Apply(sid, args) => {
             let name = arena.symbol_name(*sid);
             match arena.lib_fn(*sid) {
+                Some(LibFn::LambertW) => eval_lambertw_node(arena, node, cache, prec, rm, cc),
                 Some(f) if f.arity().accepts(args.len()) => {
                     eval_lib_fn(f, args, cache, prec, rm, cc)
                 }
@@ -3783,113 +3884,6 @@ fn arb_erf(
             Ok(erf_val)
         }
     }
-}
-
-/// Arbitrary-precision Lambert W function (principal branch) via Halley iteration.
-///
-/// Solves w·exp(w) = x for w, using cubic-convergent Halley steps.
-fn arb_lambert_w(
-    x: &BigFloat,
-    prec: usize,
-    rm: RoundingMode,
-    cc: &mut Consts,
-) -> Result<BigFloat, SymplexError> {
-    // Work with extra guard bits for intermediate rounding.
-    let wp = prec + 32;
-
-    // Handle x = 0 exactly.
-    if x.is_zero() {
-        return Ok(BigFloat::new(prec));
-    }
-
-    // Handle negative x near -1/e boundary.
-    // The principal branch is defined for x >= -1/e.
-    let neg_inv_e = {
-        let e_val = cc.e(wp, rm).clone();
-        let one = BigFloat::from_i32(1, wp);
-        one.div(&e_val, wp, rm).neg()
-    };
-
-    let diff = x.sub(&neg_inv_e, wp, rm);
-    if diff.is_negative() {
-        return Err(SymplexError::Unevaluable {
-            reason: "LambertW: argument < -1/e, outside principal branch domain".into(),
-        });
-    }
-
-    // Initial guess.
-    let mut w = if x.is_negative() {
-        // Near -1/e: use series w ≈ -1 + sqrt(2(1 + ex))
-        let e_val = cc.e(wp, rm).clone();
-        let ex = e_val.mul(x, wp, rm);
-        let one = BigFloat::from_i32(1, wp);
-        let two = BigFloat::from_i32(2, wp);
-        let inner = one.add(&ex, wp, rm).mul(&two, wp, rm);
-        if inner.is_negative() || inner.is_zero() {
-            BigFloat::from_i32(-1, wp)
-        } else {
-            let sq = inner.sqrt(wp, rm);
-            BigFloat::from_i32(-1, wp).add(&sq, wp, rm)
-        }
-    } else {
-        // For small positive x, w ≈ x is a good start.
-        // For large x, w ≈ ln(x) - ln(ln(x)).
-        let threshold = BigFloat::from_f64(2.5, wp);
-        if x.sub(&threshold, wp, rm).is_negative() {
-            x.clone()
-        } else {
-            let ln_x = x.ln(wp, rm, cc);
-            let ln_ln_x = ln_x.ln(wp, rm, cc);
-            ln_x.sub(&ln_ln_x, wp, rm)
-        }
-    };
-
-    // Halley iteration: cubically convergent.
-    //
-    // Given f(w) = w·e^w − x, f'(w) = (w+1)·e^w, f''(w) = (w+2)·e^w,
-    // the Halley step is:
-    //   δ = f / (f' − f·f'' / (2·f'))
-    //     = (w·e^w − x) / ((w+1)·e^w − (w+2)·(w·e^w − x) / (2·(w+1)))
-    let max_iter = 100;
-    for _ in 0..max_iter {
-        let ew = w.exp(wp, rm, cc);
-        let wew = w.mul(&ew, wp, rm);
-        let residual = wew.sub(x, wp, rm); // w·e^w − x
-
-        let w_plus_1 = w.add(&BigFloat::from_i32(1, wp), wp, rm);
-        let denom_base = w_plus_1.mul(&ew, wp, rm); // (w+1)·e^w
-
-        // Halley denominator: (w+1)·e^w − (w+2)·residual / (2·(w+1))
-        let w_plus_2 = w.add(&BigFloat::from_i32(2, wp), wp, rm);
-        let two_w_plus_1 = w_plus_1.mul(&BigFloat::from_i32(2, wp), wp, rm);
-
-        let correction_numer = w_plus_2.mul(&residual, wp, rm);
-        let correction = if two_w_plus_1.is_zero() {
-            BigFloat::new(wp)
-        } else {
-            correction_numer.div(&two_w_plus_1, wp, rm)
-        };
-        let denom = denom_base.sub(&correction, wp, rm);
-
-        if denom.is_zero() {
-            break;
-        }
-
-        let delta = residual.div(&denom, wp, rm);
-        w = w.sub(&delta, wp, rm);
-
-        // Check convergence: |delta| exponent is far below working precision.
-        if delta.is_zero() {
-            break;
-        }
-        if let (Some(d_exp), Some(w_e)) = (delta.exponent(), w.exponent())
-            && (d_exp as i64) < (w_e as i64) - (wp as i64)
-        {
-            break;
-        }
-    }
-
-    Ok(w)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -5950,22 +5944,54 @@ fn eval_lib_fn(
         | LibFn::AssocLaguerre
         | LibFn::BetaInc
         | LibFn::BetaIncRegularized => eval_special_09(f, args, cache, prec, rm, cc),
+        LibFn::RisingFactorial | LibFn::FallingFactorial | LibFn::Harmonic => {
+            let v = real_args(f.name(), args, cache)?;
+            debug!(prec, name = f.name(), "evalf: Gamma quotient / digamma");
+            let r = match f {
+                LibFn::RisingFactorial => factorials::rising_factorial(&v[0], &v[1], prec, rm, cc)?,
+                LibFn::FallingFactorial => {
+                    factorials::falling_factorial(&v[0], &v[1], prec, rm, cc)?
+                }
+                _ => factorials::harmonic(&v[0], prec, rm, cc)?,
+            };
+            Ok((r, BigFloat::new(prec)))
+        }
         LibFn::Factorial2
         | LibFn::Subfactorial
-        | LibFn::RisingFactorial
-        | LibFn::FallingFactorial
         | LibFn::Fibonacci
         | LibFn::Lucas
         | LibFn::Bernoulli
-        | LibFn::Harmonic
         | LibFn::Catalan
         | LibFn::Bell
         | LibFn::EulerNumber
         | LibFn::Stirling1
         | LibFn::Stirling2
-        | LibFn::PartitionCount
-        | LibFn::LambertW => Err(unevaluable(format!("cannot evaluate function '{f}'"))),
+        | LibFn::PartitionCount => Err(unevaluable(format!(
+            "evalf has no numerical routine for '{f}' (eval folds it exactly at integer arguments)"
+        ))),
+        // Evaluated from its node, which carries the branch index literal.
+        LibFn::LambertW => Err(unevaluable("lambertw is evaluated from its node")),
     }
+}
+
+/// `W_k(z)` of a Lambert W node (`LambertW(x)`, `lambertw(x, k)`) over ℂ,
+/// on every integer branch (`evalf::lambertw`).
+fn eval_lambertw_node(
+    arena: &Arena,
+    node: &ExprNode,
+    cache: &FxHashMap<ExprId, Complex>,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<Complex, SymplexError> {
+    let (x, k) = lambertw::lambert_parts(arena, node)
+        .unwrap_or_else(|| Err(unevaluable("not a Lambert W node")))?;
+    let z = get_cached(cache, x)?;
+    debug!(
+        prec,
+        k, "evalf: LambertW via Halley iteration (mpmath's starting values)"
+    );
+    lambertw::lambert_w(z, k, prec, rm, cc)
 }
 
 /// A Bessel function `(order, x)` of real arguments through `arb`.
@@ -6301,18 +6327,25 @@ fn erf_inverse_halley(
         } else {
             g.div(&denom, wp, rm)
         };
+        // Converged to `prec + 8` bits (the working precision carries 32
+        // guard bits, of which the last few are rounding noise in `f`, so
+        // demanding all of them never ends: `erfinv(erf(−9))` at 60
+        // digits stalled on a one-ulp bracket).
+        let tol = prec + 8;
         let width = hi.sub(&lo, wp, rm);
         let candidate = x.sub(&delta, wp, rm);
         let inside = bf_gt(&candidate, &lo) && bf_lt(&candidate, &hi);
         let halves = bf_lt(&delta.abs().mul(&two, wp, rm), &width);
         if inside && halves {
             x = candidate;
-            if negligible(&delta, &x, wp) {
+            if negligible(&delta, &x, tol) {
                 return Ok(round_to(x, prec, rm));
             }
         } else {
-            x = lo.add(&hi, wp, rm).div(&two, wp, rm);
-            if negligible(&width, &x, wp) {
+            let mid = lo.add(&hi, wp, rm).div(&two, wp, rm);
+            let stuck = mid == lo || mid == hi;
+            x = mid;
+            if stuck || negligible(&width, &x, tol) {
                 return Ok(round_to(x, prec, rm));
             }
         }
@@ -6342,6 +6375,20 @@ fn arb_erfinv(
     let one_minus_ay = one.sub(&ay, wp, rm);
     if one_minus_ay.is_zero() || one_minus_ay.is_negative() {
         return Err(unevaluable("erfinv: argument must satisfy |y| < 1"));
+    }
+    // A tiny argument: erfinv(y) = (√π/2)·y·(1 + πy²/12 + …), whose
+    // correction is below the working precision once |y| < 2^(−wp/2).  (The
+    // bracketed iteration starts from (−½, ½) and cannot bisect down to
+    // `erfinv(sech(8!)) ≈ 3·10⁻¹⁷⁵¹¹`.)
+    if let Some(e) = y.exponent()
+        && i64::from(e) < -(wp as i64) / 2 - 4
+    {
+        let half_sqrt_pi =
+            cc.pi(wp, rm)
+                .clone()
+                .sqrt(wp, rm)
+                .div(&BigFloat::from_i32(2, wp), wp, rm);
+        return Ok(round_to(y.mul(&half_sqrt_pi, wp, rm), prec, rm));
     }
     let y_f = bigfloat_to_f64(y, rm, cc)?;
     let r = if y_f.abs() > 0.5 {
@@ -8795,9 +8842,16 @@ fn arb_assoc_laguerre(
     Ok(round_to(curr, prec, rm))
 }
 
+/// The reason of the error [`get_cached`] raises for a sub-expression
+/// with no value ([`root_cause`] replaces it by the sub-expression's own
+/// error).
+fn not_evaluated_reason(id: ExprId) -> String {
+    format!("sub-expression {id:?} has no numerical value")
+}
+
 fn get_cached(cache: &FxHashMap<ExprId, Complex>, id: ExprId) -> Result<&Complex, SymplexError> {
     cache.get(&id).ok_or_else(|| SymplexError::Unevaluable {
-        reason: format!("sub-expression {id:?} not in cache (likely contains free symbols)"),
+        reason: not_evaluated_reason(id),
     })
 }
 

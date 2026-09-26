@@ -16,14 +16,17 @@
 //! that a root hit exactly by a bisection point is reported as the closed
 //! singleton [`Interval::point`].
 
+use astro_float::{BigFloat, RoundingMode};
 use num_bigint::BigInt;
 use num_rational::Ratio;
 use num_traits::{Signed, Zero};
 
+use crate::base::numeric::{bigint_to_bigfloat, ratio_to_bigfloat};
+
 use crate::base::interval::{Interval, IntervalKind};
 use crate::base::numeric::Q;
 use crate::poly::Poly;
-use crate::poly::zpoly::{integer_scaled, powers, pseudo_rem_pos, z_primitive};
+use crate::poly::zpoly::{integer_scaled, powers, pseudo_rem_pos, z_primitive, z_sturm_sequence};
 
 /// A Sturm chain built from a polynomial.
 #[derive(Debug, Clone)]
@@ -36,7 +39,13 @@ pub(crate) struct SturmChain {
     /// evaluation instead of `Ratio<BigInt>` arithmetic (which would
     /// normalise a gcd after every operation).
     int_chain: Vec<Vec<BigInt>>,
+    /// `int_chain` rounded to [`FILTER_PREC`] bits: the floating-point
+    /// filter of [`signs_at`](Self::signs_at).
+    float_chain: Vec<Vec<BigFloat>>,
 }
+
+/// Precision of the floating-point sign filter.
+const FILTER_PREC: usize = 128;
 
 #[allow(dead_code)] // Used indirectly via Ex::count_real_roots() bridge; will be exposed publicly later
 impl SturmChain {
@@ -45,48 +54,89 @@ impl SturmChain {
     /// The input is first made square-free so that the chain correctly
     /// counts *distinct* real roots.
     ///
-    /// The remainders are computed in `ℤ[x]` as primitive pseudo-remainders
-    /// (the primitive PRS), which yields exactly the polynomials
-    /// `-rem(P_{i-1}, P_i).primitive_part()` of the definition — a
-    /// pseudo-remainder is a positive multiple of the remainder when the
-    /// leading coefficient is taken in absolute value, and the primitive
-    /// part is invariant under positive scaling — without the gcd that
-    /// `Ratio<BigInt>` arithmetic performs after every operation.
+    /// The remainders are the subresultant PRS of `P_0` and `P_1` in `ℤ[x]`
+    /// with their signs fixed ([`z_sturm_sequence`]): each is a positive
+    /// multiple of `-rem(P_{i-1}, P_i)`, so every sign — and every count and
+    /// isolating interval — is that of the definition.  Before 0.30 they were
+    /// the primitive PRS, whose integer content stripped at every step (a
+    /// gcd of thousand-bit coefficients, quadratic in `num-integer`) took
+    /// 98% of the time: 2 s for a degree-40 polynomial with 100-digit
+    /// coefficients (release build), twice over with the gcd behind the
+    /// square-free part.  The sequence of `p` and `p′` also decides
+    /// square-freeness: when it ends in a constant, `p` is its own
+    /// square-free part and the sequence is the chain.
     pub fn new(p: &Poly) -> Self {
         if p.is_zero() {
             return Self::from_chain(vec![Poly::zero()]);
         }
-
+        if p.derivative().is_zero() {
+            // Constant (degree 0) — no roots.
+            return Self::from_chain(vec![p.clone()]);
+        }
+        let ip = integer_scaled(p.coeffs());
+        let ip1 = integer_scaled(p.derivative().coeffs());
+        if let Some(seq) = z_sturm_sequence(&ip, &ip1)
+            && seq.last().is_some_and(|s| s.len() == 1)
+        {
+            return Self::from_sequence(p.clone(), seq);
+        }
         let p0 = p.square_free_part();
         let p1 = p0.derivative();
-
         if p1.is_zero() {
-            // Constant (degree 0) — no roots.
             return Self::from_chain(vec![p0]);
         }
-
-        let mut chain = vec![p0.clone(), p1.clone()];
-        let mut int_chain = vec![integer_scaled(p0.coeffs()), integer_scaled(p1.coeffs())];
-
-        loop {
-            let n = int_chain.len();
-            let rem = pseudo_rem_pos(&int_chain[n - 2], &int_chain[n - 1]);
-            if rem.is_empty() {
-                break;
+        let i0 = integer_scaled(p0.coeffs());
+        let i1 = integer_scaled(p1.coeffs());
+        match z_sturm_sequence(&i0, &i1) {
+            Some(seq) => Self::from_sequence(p0, seq),
+            // Not reached (the subresultant divisions are exact): the
+            // primitive PRS.
+            None => {
+                let mut int_chain = vec![i0, i1];
+                loop {
+                    let n = int_chain.len();
+                    let rem = pseudo_rem_pos(&int_chain[n - 2], &int_chain[n - 1]);
+                    if rem.is_empty() {
+                        break;
+                    }
+                    int_chain.push(z_primitive(
+                        &rem.into_iter().map(|c| -c).collect::<Vec<_>>(),
+                    ));
+                }
+                Self::from_sequence(p0, int_chain)
             }
-            let next = z_primitive(&rem.into_iter().map(|c| -c).collect::<Vec<_>>());
-            chain.push(Poly::from_coeffs(
-                next.iter().cloned().map(Ratio::from_integer).collect(),
-            ));
-            int_chain.push(next);
         }
+    }
 
-        SturmChain { chain, int_chain }
+    /// The chain of `p0` (square-free) from its integer Sturm sequence
+    /// `seq` (`seq[0]`, `seq[1]` the integer-scaled `p0`, `p0′`).
+    fn from_sequence(p0: Poly, seq: Vec<Vec<BigInt>>) -> Self {
+        let p1 = p0.derivative();
+        let mut chain = Vec::with_capacity(seq.len());
+        chain.push(p0);
+        chain.push(p1);
+        for s in seq.iter().skip(2) {
+            chain.push(Poly::from_coeffs(
+                s.iter().cloned().map(Ratio::from_integer).collect(),
+            ));
+        }
+        let float_chain = float_forms(&seq);
+        SturmChain {
+            chain,
+            int_chain: seq,
+            float_chain,
+        }
     }
 
     fn from_chain(chain: Vec<Poly>) -> Self {
-        let int_chain = chain.iter().map(|p| integer_scaled(p.coeffs())).collect();
-        SturmChain { chain, int_chain }
+        let int_chain: Vec<Vec<BigInt>> =
+            chain.iter().map(|p| integer_scaled(p.coeffs())).collect();
+        let float_chain = float_forms(&int_chain);
+        SturmChain {
+            chain,
+            int_chain,
+            float_chain,
+        }
     }
 
     /// Largest degree among the chain polynomials.
@@ -101,13 +151,35 @@ impl SturmChain {
     /// The sign of every chain polynomial at `x` (`+1`, `-1` or `0`), in
     /// chain order.  `signs[0]` is the sign of the square-free part of the
     /// original polynomial, so `signs[0] == 0` iff `x` is a root.
+    ///
+    /// Each sign is first taken from a floating-point Horner evaluation at
+    /// [`FILTER_PREC`] bits with a rigorous bound on its rounding error
+    /// ([`float_sign`]), and computed exactly in `ℤ` only where that bound
+    /// does not decide it (at or next to a zero of the polynomial).  The
+    /// signs are the exact ones either way.  Before 0.30 every sign was an
+    /// exact evaluation, `Σ cᵢ aⁱ b^{n−i}` with the chain's thousand-bit
+    /// coefficients, at every bisection point.
     fn signs_at(&self, x: &Ratio<BigInt>) -> Vec<i8> {
-        let (a, b) = numer_denom(x);
-        let b_pows = powers(&b, self.max_degree());
-        self.int_chain
-            .iter()
-            .map(|c| int_sign_at(c, &a, &b, &b_pows))
-            .collect()
+        let xf = ratio_to_bigfloat(x, FILTER_PREC, RoundingMode::ToEven);
+        let mut signs = Vec::with_capacity(self.int_chain.len());
+        let mut undecided = Vec::new();
+        for (i, c) in self.float_chain.iter().enumerate() {
+            match float_sign(c, &xf) {
+                Some(s) => signs.push(s),
+                None => {
+                    signs.push(0);
+                    undecided.push(i);
+                }
+            }
+        }
+        if !undecided.is_empty() {
+            let (a, b) = numer_denom(x);
+            let b_pows = powers(&b, self.max_degree());
+            for i in undecided {
+                signs[i] = int_sign_at(&self.int_chain[i], &a, &b, &b_pows);
+            }
+        }
+        signs
     }
 
     /// Is `x` a root of the (square-free part of the) polynomial?
@@ -249,7 +321,8 @@ impl SturmChain {
         }
         let bound = cauchy_bound(p) + Ratio::from_integer(BigInt::from(1));
         let neg_bound = -bound.clone();
-        let raw = self.isolate_roots_in(&neg_bound, &bound, 256);
+        let depth = self.isolation_depth(&bound);
+        let raw = self.isolate_roots_in(&neg_bound, &bound, depth);
         raw.into_iter()
             .map(|iv| {
                 if self.is_root(&iv.upper) {
@@ -259,6 +332,31 @@ impl SturmChain {
                 }
             })
             .collect()
+    }
+
+    /// Bisection levels that certainly separate the roots in `[−B, B]`:
+    /// `log₂(2B)` down to width 1, then `log₂(1/sep)` with Mahler's bound on
+    /// the root separation of a square-free integer polynomial of degree
+    /// `n`, `sep > √3·n^{−(n+2)/2}·‖p‖₂^{1−n}` (its discriminant is a non-zero
+    /// integer), plus a margin.  Before 0.30 the depth was 256 whatever the
+    /// bound: the Cauchy bound of `Π (bᵢx − aᵢ)` with 20-digit roots is
+    /// `~2⁶⁶⁰`, and 20 roots came back in 2 "isolating" cells.
+    fn isolation_depth(&self, bound: &Q) -> u32 {
+        let Some(p) = self.int_chain.first() else {
+            return 0;
+        };
+        let n = p.len().saturating_sub(1) as f64;
+        let log2_int = |x: &BigInt| x.bits() as f64;
+        let max_coeff = p.iter().map(log2_int).fold(0.0, f64::max);
+        let norm = max_coeff + 0.5 * (n + 1.0).log2();
+        let sep_bits = (n + 2.0) / 2.0 * n.max(1.0).log2() + (n - 1.0).max(0.0) * norm;
+        let bound_bits = log2_int(bound.numer()) - log2_int(bound.denom()) + 2.0;
+        let total = bound_bits.max(0.0) + sep_bits + 16.0;
+        if total > f64::from(u32::MAX / 2) {
+            u32::MAX / 2
+        } else {
+            (total.ceil() as u32).max(256)
+        }
     }
 
     /// Shrink an isolating interval by bisection until its width is at
@@ -280,8 +378,17 @@ impl SturmChain {
         // bisections (when the root is in the right half `lo` moves to the
         // midpoint, whose variations were just computed).
         let mut var_lo: Option<usize> = None;
-        // Guard against pathological inputs: at most 512 halvings.
-        for _ in 0..512 {
+        // Every halving halves the width: `log₂(width/max_width)` of them
+        // reach it (before 0.30 at most 512, short of it for a cell wider
+        // than `2⁵¹²·max_width`, which a Cauchy bound of 2⁶⁶⁰ produces).
+        let halvings = if max_width.is_positive() && hi > lo {
+            let ratio = (&hi - &lo) / max_width;
+            let bits = ratio.numer().bits() as i64 - ratio.denom().bits() as i64 + 2;
+            usize::try_from(bits).unwrap_or(0).max(512)
+        } else {
+            512
+        };
+        for _ in 0..halvings {
             if &hi - &lo <= *max_width || lo == hi {
                 break;
             }
@@ -372,6 +479,51 @@ fn int_sign_at(c: &[BigInt], a: &BigInt, b: &BigInt, b_pows: &[BigInt]) -> i8 {
         num_bigint::Sign::Plus => 1,
         num_bigint::Sign::Minus => -1,
         num_bigint::Sign::NoSign => 0,
+    }
+}
+
+/// The integer polynomials `c` rounded to [`FILTER_PREC`] bits.
+fn float_forms(c: &[Vec<BigInt>]) -> Vec<Vec<BigFloat>> {
+    c.iter()
+        .map(|p| {
+            p.iter()
+                .map(|ci| bigint_to_bigfloat(ci, FILTER_PREC))
+                .collect()
+        })
+        .collect()
+}
+
+/// The sign of the integer polynomial whose coefficients rounded to `p =
+/// FILTER_PREC` bits are `c` (ascending) at the rational whose rounding is
+/// `x`, when floating-point Horner decides it: `None` otherwise.  With the
+/// unit roundoff `u = 2^{−p}` and `n = deg`, the coefficients, `x` and each
+/// of the `2n` Horner operations contribute a relative error `u` per
+/// factor, so the computed value is within `γ_{3n+2}·Σ|cᵢ||x|ⁱ` of the exact
+/// one (Higham, *Accuracy and Stability of Numerical Algorithms*, §5.1),
+/// `γ_k = k·u/(1 − k·u)`; the sum is itself computed alongside (another
+/// `γ_{2n}`), and the sign is taken only when `|v| ≥ 2^{e_v − 1}` exceeds
+/// four times the bound.
+fn float_sign(c: &[BigFloat], x: &BigFloat) -> Option<i8> {
+    let (lead, rest) = c.split_last()?;
+    let rm = RoundingMode::ToEven;
+    let p = FILTER_PREC;
+    let ax = x.abs();
+    let mut v = lead.clone();
+    let mut s = lead.abs();
+    for ci in rest.iter().rev() {
+        v = v.mul(x, p, rm).add(ci, p, rm);
+        s = s.mul(&ax, p, rm).add(&ci.abs(), p, rm);
+    }
+    if v.is_zero() || v.is_nan() || v.is_inf() || s.is_nan() || s.is_inf() {
+        return None;
+    }
+    let ops = 3 * rest.len() as i64 + 4;
+    let k = 64 - i64::from(ops.leading_zeros());
+    let (ev, es) = (i64::from(v.exponent()?), i64::from(s.exponent()?));
+    if ev - 1 > es + k + 2 - p as i64 {
+        Some(if v.is_negative() { -1 } else { 1 })
+    } else {
+        None
     }
 }
 
@@ -507,8 +659,18 @@ mod tests {
         }
     }
 
-    /// The integer primitive-PRS chain equals the definition computed over
-    /// `ℚ`: `P_{i+1} = -rem(P_{i-1}, P_i).primitive_part()`.
+    /// Is `a` a positive rational multiple of `b`?
+    fn positive_multiple(a: &Poly, b: &Poly) -> bool {
+        let (Some(la), Some(lb)) = (a.leading_coeff(), b.leading_coeff()) else {
+            return a.is_zero() && b.is_zero();
+        };
+        a.degree() == b.degree() && (la / lb).is_positive() && a.scale(lb) == b.scale(la)
+    }
+
+    /// The integer chain is, member for member, a positive multiple of the
+    /// definition computed over `ℚ`: `P_{i+1} = -rem(P_{i-1}, P_i)`
+    /// (before 0.30 it was exactly the primitive part; since, the members
+    /// past `P_1` are the subresultants with their signs fixed).
     #[test]
     fn integer_chain_matches_rational_definition() {
         for seed in 1..=12u64 {
@@ -525,7 +687,10 @@ mod tests {
                 }
                 expected.push((-&rem).primitive_part());
             }
-            assert_eq!(chain.chain, expected, "seed {seed}");
+            assert_eq!(chain.chain.len(), expected.len(), "seed {seed}");
+            for (i, (got, want)) in chain.chain.iter().zip(&expected).enumerate() {
+                assert!(positive_multiple(got, want), "seed {seed}, member {i}");
+            }
             // The integer copies have the sign of the rational entries.
             for (q, z) in chain.chain.iter().zip(&chain.int_chain) {
                 let x = Ratio::new(BigInt::from(-7), BigInt::from(3));
@@ -533,6 +698,189 @@ mod tests {
                 assert_eq!(q.eval(&x).is_positive(), zq.eval(&x).is_positive());
                 assert_eq!(q.eval(&x).is_zero(), zq.eval(&x).is_zero());
             }
+        }
+    }
+
+    /// A pseudo-random integer polynomial with coefficients of about
+    /// `bits` bits.
+    fn big_random_poly(seed: u64, degree: usize, bits: u32) -> Poly {
+        let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut word = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let coeffs: Vec<Ratio<BigInt>> = (0..=degree)
+            .map(|_| {
+                let mut c = BigInt::from(0);
+                for _ in 0..bits.div_ceil(64) {
+                    c = (c << 64) + BigInt::from(word());
+                }
+                c >>= (64 * bits.div_ceil(64) - bits) as usize;
+                if word() % 2 == 0 {
+                    c = -c;
+                }
+                Ratio::from_integer(c)
+            })
+            .collect();
+        Poly::from_coeffs(coeffs)
+    }
+
+    /// The primitive PRS of 0.29 (`pseudo_rem_pos` and `z_primitive` at
+    /// every step) from the square-free part: the reference chain.
+    fn primitive_prs_chain(p: &Poly) -> Vec<Vec<BigInt>> {
+        let p0 = p.square_free_part();
+        let mut chain = vec![
+            integer_scaled(p0.coeffs()),
+            integer_scaled(p0.derivative().coeffs()),
+        ];
+        loop {
+            let n = chain.len();
+            let rem = pseudo_rem_pos(&chain[n - 2], &chain[n - 1]);
+            if rem.is_empty() {
+                break;
+            }
+            chain.push(z_primitive(
+                &rem.into_iter().map(|c| -c).collect::<Vec<_>>(),
+            ));
+        }
+        chain
+    }
+
+    fn exact_signs(chain: &[Vec<BigInt>], x: &Q) -> Vec<i8> {
+        let (a, b) = numer_denom(x);
+        let n = chain.iter().map(|c| c.len()).max().unwrap_or(1);
+        let b_pows = powers(&b, n);
+        chain
+            .iter()
+            .map(|c| int_sign_at(c, &a, &b, &b_pows))
+            .collect()
+    }
+
+    /// The subresultant chain (0.30) and the filtered signs give, at every
+    /// point, exactly the signs of the primitive PRS chain with exact
+    /// evaluation (0.29) — so every count and every isolating interval is
+    /// unchanged — for degrees 3–18 with coefficients of 8–120 bits, square
+    /// and square-free, at dyadic bisection points, roots, and points next
+    /// to roots.
+    #[test]
+    fn subresultant_chain_signs_match_the_primitive_prs() {
+        let mut checked = 0usize;
+        for seed in 1..=18u64 {
+            let degree = 3 + (seed as usize * 7) % 16;
+            let bits = [8u32, 40, 120][seed as usize % 3];
+            let base = big_random_poly(seed, degree, bits);
+            let p = if seed % 5 == 0 {
+                let q = big_random_poly(seed + 1000, 2, bits);
+                &(&base * &q) * &q
+            } else {
+                base
+            };
+            if p.degree().unwrap_or(0) < 1 {
+                continue;
+            }
+            let chain = SturmChain::new(&p);
+            let reference = primitive_prs_chain(&p);
+            assert_eq!(chain.int_chain.len(), reference.len(), "seed {seed}");
+            for (i, (got, want)) in chain.int_chain.iter().zip(&reference).enumerate() {
+                let to_poly = |c: &[BigInt]| {
+                    Poly::from_coeffs(c.iter().cloned().map(Ratio::from_integer).collect())
+                };
+                assert!(
+                    positive_multiple(&to_poly(got), &to_poly(want)),
+                    "seed {seed}, member {i}"
+                );
+            }
+            // Points: dyadic bisection points of the Cauchy interval, the
+            // real roots' isolating endpoints, rational roots of the chain
+            // members' linear factors, and neighbours at 2^-200.
+            let bound = cauchy_bound(&chain.chain[0]) + r(1);
+            let mut xs: Vec<Q> = Vec::new();
+            for k in 0..24i64 {
+                let t = Ratio::new(BigInt::from(2 * k - 23), BigInt::from(24));
+                xs.push(&bound * t);
+            }
+            for iv in chain.isolate_all_real_roots() {
+                xs.push(iv.lower.clone());
+                xs.push(iv.upper.clone());
+                let tiny = Ratio::new(BigInt::from(1), BigInt::from(1) << 200);
+                xs.push(&iv.upper + &tiny);
+                xs.push(&iv.upper - &tiny);
+            }
+            for x in &xs {
+                assert_eq!(
+                    chain.signs_at(x),
+                    exact_signs(&reference, x),
+                    "seed {seed}, x = {x}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 450, "{checked}");
+    }
+
+    /// Roots hit exactly by a bisection point, and the chain members'
+    /// own zeros: the filter defers to the exact evaluation there.
+    #[test]
+    fn filtered_signs_are_exact_at_zeros() {
+        // (x − 1/2)(x + 3)(8x − 5)(x² − 2)·(big coefficients)
+        let big = BigInt::from(10).pow(60) + BigInt::from(7);
+        let lin = |a: i64, b: i64| Poly::from_coeffs(vec![r(-a), r(b)]);
+        let p = &(&(&lin(1, 2) * &lin(-3, 1)) * &lin(5, 8))
+            * &Poly::from_coeffs(vec![r(-2), r(0), r(1)]);
+        let p = p.scale(&Ratio::from_integer(big));
+        let chain = SturmChain::new(&p);
+        for x in [
+            Ratio::new(BigInt::from(1), BigInt::from(2)),
+            r(-3),
+            Ratio::new(BigInt::from(5), BigInt::from(8)),
+            r(0),
+        ] {
+            let s = chain.signs_at(&x);
+            assert_eq!(s, exact_signs(&chain.int_chain, &x), "{x}");
+            assert_eq!(s[0] == 0, p.eval(&x).is_zero(), "{x}");
+        }
+    }
+
+    /// Before 0.30 the bisection stopped at depth 256 whatever the Cauchy
+    /// bound, and `Π (bᵢx − aᵢ)` with 20-digit `aᵢ` and 10-digit `bᵢ` (bound
+    /// `~2⁶⁶⁰`) came back as 2 "isolating" intervals holding all 20 roots;
+    /// the refinement stopped at 512 halvings, short of width 1/1024.
+    #[test]
+    fn isolation_separates_roots_under_a_huge_cauchy_bound() {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = |m: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % m
+        };
+        let mut p = Poly::from_coeffs(vec![r(1)]);
+        let mut roots: Vec<Q> = Vec::new();
+        for _ in 0..20 {
+            let a = BigInt::from(next(10_000_000_000)) * BigInt::from(10_000_000_000u64)
+                + BigInt::from(next(10_000_000_000));
+            let a = if next(2) == 0 { -a } else { a };
+            let b = BigInt::from(next(10_000_000_000) + 1);
+            roots.push(Ratio::new(a.clone(), b.clone()));
+            p = &p * &Poly::from_coeffs(vec![Ratio::from_integer(-a), Ratio::from_integer(b)]);
+        }
+        roots.sort();
+        roots.dedup();
+        let chain = SturmChain::new(&p);
+        assert_eq!(chain.count_real_roots(), roots.len());
+        let ivs = chain.isolate_all_real_roots();
+        assert_eq!(ivs.len(), roots.len());
+        let width = Ratio::new(BigInt::from(1), BigInt::from(1024));
+        for (iv, root) in ivs.iter().zip(&roots) {
+            let fine = chain.refine_interval(iv, &width);
+            assert!(&fine.upper - &fine.lower <= width, "{fine:?}");
+            assert!(
+                fine.lower <= *root && *root <= fine.upper,
+                "{root} not in {fine:?}"
+            );
+            assert!(iv.lower <= *root && *root <= iv.upper);
         }
     }
 

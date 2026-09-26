@@ -632,7 +632,12 @@ fn expand_expr(
 
         // ── Apply (user-defined function) ──────────────────────────
         ExprNode::Apply(sym_id, ref args) => {
-            let name = arena.symbol_name(sym_id).to_owned();
+            // `lambertw(x, k)` prints as the principal branch does, `W(x, k)`
+            // (the parser reads both back).
+            let name = match arena.lib_fn(sym_id) {
+                Some(crate::base::libfn::LibFn::LambertW) => "W".to_owned(),
+                _ => arena.symbol_name(sym_id).to_owned(),
+            };
             // Push in reverse: name ( arg1 , arg2 , ... )
             stack.push(WorkItem::Lit(")"));
             for (i, &arg) in args.iter().enumerate().rev() {

@@ -391,7 +391,18 @@ fn analytic(arena: &Arena, node: &ExprNode, i: usize, a: &Args<'_>, cc: &mut Con
         // C(n, k) = Γ(n+1)/(Γ(k+1)Γ(n−k+1)).
         ExprNode::Binomial(..) => {
             if a.v.is_zero() {
-                return Sens::Unbounded;
+                // C(n, k) = 0 on the whole ball when an exact negative
+                // integer k puts a pole of Γ(k + 1) below and the ball of n
+                // meets no pole of Γ(n + 1) above (`binomial(√2, −3)`).
+                let (n, k) = (a.x[0], a.x[1]);
+                let k_pole = a.e[1] == f64::NEG_INFINITY && k.is_int() && neg(k);
+                let n1 = sum(n, &int(1));
+                let n_clear = pole_distance(&n1).is_some_and(|ld| inside(ld, a.e[0]));
+                return if k_pole && n_clear {
+                    Sens::Zero
+                } else {
+                    Sens::Unbounded
+                };
             }
             let (n, k) = (a.x[0], a.x[1]);
             let one = int(1);
@@ -409,13 +420,6 @@ fn analytic(arena: &Arena, node: &ExprNode, i: usize, a: &Args<'_>, cc: &mut Con
         ExprNode::Erf(_) | ExprNode::Erfc(_) => {
             let lo = (f(x).abs() - e.exp2()).max(0.0);
             Sens::Deriv(LOG2_TWO_OVER_SQRT_PI - lo * lo * LOG2E)
-        }
-        // W′ = e^{−W}/(1 + W), singular at the branch point −1/e (W = −1):
-        // the first-order change must stay below an eighth of 1 + W.
-        ExprNode::LambertW(_) => {
-            let w1 = sum(a.v, &int(1));
-            let d = -f(a.v) * LOG2E - lg(&w1) + BALL;
-            deriv_if(d + e <= lg(&w1) - 3.0, d)
         }
         ExprNode::Si(_) => Sens::Deriv((-lg(x)).min(0.0)),
         // Ci′ = cos x/x, Ei′ = eˣ/x: logarithmic singularities at 0.
@@ -612,6 +616,31 @@ fn lib_sens(fun: LibFn, i: usize, a: &Args<'_>, cc: &mut Consts) -> Sens {
             } else {
                 Sens::Numeric
             }
+        }
+        // H′(z) = ψ′(z + 1).
+        LibFn::Harmonic => polygamma_deriv(0.0, &sum(x, &int(1)), e),
+        // ∂ ln rf(x, n)/∂x = ψ(x + n) − ψ(x), ∂/∂n = ψ(x + n); ff(x, n) =
+        // Γ(x + 1)/Γ(x − n + 1) likewise.  At a zero (a pole of the lower
+        // Γ) numerically.
+        LibFn::RisingFactorial | LibFn::FallingFactorial => {
+            if a.v.is_zero() {
+                return Sens::Numeric;
+            }
+            let (xv, nv) = (a.x[0], a.x[1]);
+            let one = int(1);
+            let (upper, lower) = if fun == LibFn::RisingFactorial {
+                (sum(xv, nv), xv.clone())
+            } else {
+                (sum(xv, &one), sum(&diff(xv, nv), &one))
+            };
+            let d = if i == 0 {
+                psi_diff(&upper, &lower, nv, e)
+            } else if fun == LibFn::RisingFactorial {
+                psi_abs(&upper, e)
+            } else {
+                psi_abs(&lower, e)
+            };
+            d.map_or(Sens::Unbounded, |d| Sens::Deriv(lv + d))
         }
         _ => Sens::Numeric,
     }

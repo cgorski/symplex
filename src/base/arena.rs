@@ -1626,6 +1626,18 @@ impl Arena {
         self.intern(ExprNode::LambertW(arg))
     }
 
+    /// Creates the branch `W_k(x)` of the Lambert W function (SymPy's
+    /// `LambertW(x, k)`): `W_k(x)·exp(W_k(x)) = x`, `k` an integer.  The
+    /// principal branch `k = 0` is the dedicated `ExprNode::LambertW(x)`
+    /// node (so `lambertw_branch(x, 0) == lambertw(x)`); every other `k` is
+    /// the library call `lambertw(x, k)`.
+    pub fn lambertw_branch(&mut self, arg: ExprId, k: ExprId) -> ExprId {
+        if self.as_num(k).is_some_and(|q| q.is_zero()) {
+            return self.lambertw(arg);
+        }
+        self.lib_apply(LibFn::LambertW, &[arg, k])
+    }
+
     // ── Bessel functions (Apply-based) ─────────────────────────────
 
     /// Creates a `besselj` (Bessel function of the first kind) node: J_ν(x).
