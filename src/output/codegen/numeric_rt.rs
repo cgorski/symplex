@@ -46,6 +46,10 @@ fn p_ln(x: f64) -> f64 {
     x.ln()
 }
 #[inline(always)]
+fn p_ln1p(x: f64) -> f64 {
+    x.ln_1p()
+}
+#[inline(always)]
 fn p_sin(x: f64) -> f64 {
     x.sin()
 }
@@ -255,14 +259,16 @@ fn lgamma_pos(x: f64) -> f64 {
     if x < 20.0 {
         return p_ln(gamma(x));
     }
+    (x - 0.5) * p_ln(x) - x + LN_SQRT_2PI + stirling_corr(x)
+}
+/// The Stirling correction ln Γ(x) − [(x − ½) ln x − x + ln √(2π)]
+/// through x⁻⁹ (truncation error < 1e-17 for x ≥ 20).
+fn stirling_corr(x: f64) -> f64 {
     let inv = 1.0 / x;
     let inv2 = inv * inv;
-    let series = inv
-        * (1.0 / 12.0
-            - inv2
-                * (1.0 / 360.0
-                    - inv2 * (1.0 / 1260.0 - inv2 * (1.0 / 1680.0 - inv2 * (1.0 / 1188.0)))));
-    (x - 0.5) * p_ln(x) - x + LN_SQRT_2PI + series
+    inv * (1.0 / 12.0
+        - inv2
+            * (1.0 / 360.0 - inv2 * (1.0 / 1260.0 - inv2 * (1.0 / 1680.0 - inv2 * (1.0 / 1188.0)))))
 }
 // @@end lgamma
 
@@ -646,6 +652,8 @@ pub fn lambert_w0(x: f64) -> f64 {
 /// Beta function B(a, b) = Γ(a)Γ(b)/Γ(a+b).
 ///
 /// Poles of Γ(a) or Γ(b) return NaN; a pole of Γ(a+b) alone returns 0.
+/// Small arguments use Γ directly; once the larger argument is ≥ 20 (and
+/// a + b ≥ 20), `beta_stirling`.
 pub fn beta(a: f64, b: f64) -> f64 {
     if a.is_nan() || b.is_nan() {
         return f64::NAN;
@@ -657,11 +665,36 @@ pub fn beta(a: f64, b: f64) -> f64 {
     if is_gamma_pole(s) {
         return 0.0;
     }
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    if hi >= 20.0 && s >= 20.0 && lo > -20.0 {
+        return beta_stirling(lo, hi);
+    }
     if a > 0.0 && b > 0.0 && s < 171.0 {
         return gamma(a) * gamma(b) / gamma(s);
     }
     let sign = gamma_sign(a) * gamma_sign(b) * gamma_sign(s);
     sign * p_exp(lgamma(a) + lgamma(b) - lgamma(s))
+}
+/// B(a, b) for a ≤ b with b ≥ 20, a + b ≥ 20 and a > −20 (not a pole).
+///
+/// `exp(ln Γ(a) + ln Γ(b) − ln Γ(a + b))` cancels terms of size
+/// `(a + b)·ln(a + b)`: a relative error of 1e-9 at B(e, 3·10⁶), of 3e-10
+/// at B(−9.6e-15, 318464).  Stirling's series gives the difference
+/// directly:
+///
+/// ln Γ(b) − ln Γ(s) = −(b − ½)·ln(1 + a/b) − a·ln s + a + c(b) − c(s),
+///
+/// `c` the Stirling correction.  For a < 20, B = Γ(a)·s⁻ᵃ·exp(t + a) with
+/// t + a small (≈ a²/2b), good to a few ulps; for a ≥ 20,
+/// ln B = a·ln(a/s) − ½ ln a − (b − ½)·ln(1 + a/b) + ln √(2π) + c(a) + c(b) − c(s),
+/// leaving only the rounding of `exp` (≈ |ln B|·ε).
+fn beta_stirling(a: f64, b: f64) -> f64 {
+    let s = a + b;
+    let tail = -(b - 0.5) * p_ln1p(a / b) + stirling_corr(b) - stirling_corr(s);
+    if a < 20.0 {
+        return gamma(a) * p_exp(tail + a) * p_powf(s, -a);
+    }
+    p_exp(-a * p_ln1p(b / a) - 0.5 * p_ln(a) + tail + LN_SQRT_2PI + stirling_corr(a))
 }
 // @@end beta
 
@@ -676,11 +709,15 @@ pub fn factorial(x: f64) -> f64 {
 /// Generalised binomial coefficient C(n, k) = Γ(n+1)/(Γ(k+1)Γ(n−k+1)).
 ///
 /// Integer k ≥ 0 uses the (exact for integer n) multiplicative formula,
-/// negative integer k gives 0, other cases go through Γ/ln Γ.
+/// negative integer k gives 0, other cases go through
+/// C(n, k) = 1/((n + 1)·B(k + 1, n − k + 1)) (any signs), Γ or ln Γ;
+/// a larger integer k with n < 0 through C(n, k) = (−1)ᵏ·C(k − n − 1, k).
 pub fn binomial(n: f64, k: f64) -> f64 {
     if n.is_nan() || k.is_nan() {
         return f64::NAN;
     }
+    let mut n = n;
+    let mut sign = 1.0;
     if is_int(k) {
         if k < 0.0 {
             return 0.0;
@@ -703,6 +740,12 @@ pub fn binomial(n: f64, k: f64) -> f64 {
             }
             return acc;
         }
+        if n < 0.0 {
+            // All of k + 1, k − n, −n positive below (ln Γ cancelled 1.7e-11
+            // of C(−3/2, 26656)).
+            sign = if is_even(k) { 1.0 } else { -1.0 };
+            n = k - n - 1.0;
+        }
     }
     let a = n + 1.0;
     let b = k + 1.0;
@@ -713,11 +756,24 @@ pub fn binomial(n: f64, k: f64) -> f64 {
     if is_gamma_pole(a) {
         return f64::NAN;
     }
-    if a > 0.0 && b > 0.0 && c > 0.0 && a < 171.0 {
-        return gamma(a) / (gamma(b) * gamma(c));
+    if a > 0.0 && b > 0.0 && c > 0.0 && a < 20.0 {
+        return sign * gamma(a) / (gamma(b) * gamma(c));
     }
-    let sign = gamma_sign(a) * gamma_sign(b) * gamma_sign(c);
-    sign * p_exp(lgamma(a) - lgamma(b) - lgamma(c))
+    // C(n, k) = 1/((n + 1)·B(k + 1, n − k + 1)) wherever B takes its
+    // Stirling form, without the ln Γ cancellation (see `beta`); a
+    // subnormal B falls through.
+    let (lo, hi) = if b <= c { (b, c) } else { (c, b) };
+    if hi >= 20.0 && b + c >= 20.0 && lo > -20.0 {
+        let bb = beta(b, c);
+        if p_abs(bb) >= f64::MIN_POSITIVE && bb.is_finite() {
+            return sign / (a * bb);
+        }
+    }
+    if a > 0.0 && b > 0.0 && c > 0.0 && a < 171.0 {
+        return sign * gamma(a) / (gamma(b) * gamma(c));
+    }
+    let s = sign * gamma_sign(a) * gamma_sign(b) * gamma_sign(c);
+    s * p_exp(lgamma(a) - lgamma(b) - lgamma(c))
 }
 // @@end binomial
 
@@ -869,9 +925,18 @@ fn bessel_hankel(n: i32, x: f64) -> Option<(f64, f64)> {
     if !converged && prev > 1e-15 {
         return None;
     }
-    let chi = x - (0.5 * n as f64 + 0.25) * PI;
-    let c = p_cos(chi);
-    let s = p_sin(chi);
+    // cos and sin of χ = x − (2n + 1)π/4 from cos x and sin x (reduced
+    // exactly by the math library) and cos, sin of (2n + 1)π/4 = ±√½:
+    // rounding χ itself costs ulp(x) absolutely (1e-11 relative at 4e5).
+    let (cx, sx) = (p_cos(x), p_sin(x));
+    let (cphi, sphi) = match n.rem_euclid(4) {
+        0 => (1.0, 1.0),
+        1 => (-1.0, 1.0),
+        2 => (-1.0, -1.0),
+        _ => (1.0, -1.0),
+    };
+    let c = core::f64::consts::FRAC_1_SQRT_2 * (cx * cphi + sx * sphi);
+    let s = core::f64::consts::FRAC_1_SQRT_2 * (sx * cphi - cx * sphi);
     let pref = p_sqrt(2.0 / (PI * x));
     Some((pref * (p * c - q * s), pref * (p * s + q * c)))
 }
@@ -1422,6 +1487,11 @@ pub fn rising_factorial(x: f64, n: f64) -> f64 {
     if is_int(n) && p_abs(n) <= 1000.0 {
         let mut acc = 1.0;
         if n >= 0.0 {
+            // A factor x + i is zero: the product is 0 even where the
+            // factors before it overflow (inf·0 was NaN: (−949)₅₅₀).
+            if is_int(x) && x <= 0.0 && x + n - 1.0 >= 0.0 {
+                return 0.0;
+            }
             let mut i = 0.0;
             while i < n {
                 acc *= x + i;

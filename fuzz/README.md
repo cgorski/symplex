@@ -17,6 +17,9 @@ wrong answer, a hang or a crash, never noise:
 | `fuzz_integrate` | when `integrate` returns a closed form `F`, `F′ = f` at the sample points |
 | `fuzz_parser` | parsing never panics; what parses displays, re-parses and prints as LaTeX |
 | `fuzz_refine`, `fuzz_eigenvects`, `fuzz_lambertw` | `refine` under assumptions, `A·v = λv` for eigenvectors, `W(x)·e^{W(x)} = x` |
+| `fuzz_evalf` | evalf self-consistency on constant expressions (special functions, sums, `RootOf`, complex arguments, cancellation, huge/tiny scales): every digit `eval_decimal` certifies at 16 and 30 digits agrees with the 60-digit value to one unit in the last place, a part printed `0` is negligible, `eval_f64`/`eval_complex64` are within one ulp and `eval_f64` refuses a non-negligible imaginary part, no non-refusal error at one precision while another evaluates |
+| `fuzz_calculus` | the calculus routines against independent numerical oracles (`calc/mod.rs`): `integrate_definite` vs adaptive Gauss–Legendre quadrature (or `Divergent` where the quadrature converges), `limit` vs the function at `p ± 10⁻ᵏ`, `series` residual `O(hⁿ)`, `diff` vs central differences, every `solve` solution satisfies the equation and no real root is missed, infinite sums vs Richardson-extrapolated partial sums and finite sums vs the partial sums, `dsolve` by substitution |
+| `fuzz_roundtrip` | API-built expressions (special functions, `Piecewise`, `Derivative`, `Integral`, `Sum`/`Product`, `Limit`, `Subs`, `RootOf`, huge/tiny rationals, `I`, `oo`, `zoo`, `nan`) display as text that `parse` reads back to the **same tree** (relations through `parse_bool`); `to_latex`, `pretty`, `pretty_ascii`, `to_mathml` do not panic |
 
 `fuzz_simplify`, `fuzz_integrate` and `fuzz_poly` decode their input with
 `fuzz_targets/common/mod.rs`: elementary expressions of depth ≤ 4 in one
@@ -27,6 +30,22 @@ compares real values at real points: the integrator's antiderivatives are
 the real-variable ones (`∫ dx/x = ln|x|`).  `print_expr` is not a target:
 it prints the expression an input decodes to (`depth 4:` is the
 `fuzz_simplify` tree, `depth 3:` the `fuzz_integrate` one).
+
+`fuzz_evalf`, `fuzz_calculus` and `fuzz_roundtrip` are the in-house
+differential hunters of 0.30 made permanent.  Their generators decode the
+input through `fuzz_targets/common/choose.rs` (`Src`: one decision per
+byte, or a few for a wide range; zero bytes past the end pick leaves), so
+a mutated byte changes one choice.  A failure panics with the case and
+both values; `FUZZ_SHOW=1 $B/<target> <input>` prints the decoded case and
+its verdict (`ok`, or why it was skipped) instead of needing `print_expr`,
+and `-runs=0` over a corpus directory shows the whole corpus that way.
+They check self-consistency (`fuzz_evalf`) or agreement with an oracle,
+which cannot see an error every route shares: evalf's `erfcinv` tail was
+wrong at every precision (0.30), found by `compile()`, not by `fuzz_evalf`.
+`fuzz_calculus` skips what its oracles cannot decide (non-convergent
+quadrature, domain problems, unevaluated results) — a failure is a wrong
+answer.  Typical rates: `fuzz_evalf` ~500 exec/s, `fuzz_calculus` ~100,
+`fuzz_roundtrip` several thousand.
 
 To keep fuzzing past the first finding and collect every failing input,
 run in fork mode: `$B/fuzz_simplify -fork=6 -ignore_crashes=1

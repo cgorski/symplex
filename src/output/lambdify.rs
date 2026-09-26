@@ -24,7 +24,7 @@ use crate::base::errors::SymplexError;
 use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode, SymbolId};
 use crate::output::codegen::numeric_rt as rt;
-use num_traits::{One, ToPrimitive, Zero};
+use num_traits::{One, Signed, ToPrimitive, Zero};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use std::fmt;
@@ -244,6 +244,8 @@ pub(crate) fn compile_raw(
     var_names: &[&str],
 ) -> Result<CompiledFn, SymplexError> {
     check_params(var_names)?;
+    // No constant folding here: `evalf` itself compiles integrand bodies
+    // through this entry point.
     let mut em = Emitter::new(arena, var_names, FxHashMap::default());
     em.lower(expr)?;
     em.emit(Instruction::StoreOut(0));
@@ -332,6 +334,7 @@ fn compile_program(
     }
 
     let mut em = Emitter::new(arena, var_names, locals);
+    em.fold_constants = true;
     for (i, (_, value)) in cse.bindings.iter().enumerate() {
         em.lower(*value)?;
         em.emit(Instruction::StoreLocal(i));
@@ -451,27 +454,42 @@ impl Program {
                 Instruction::Asinh => un!(|a: f64| a.asinh()),
                 Instruction::Acosh => un!(|a: f64| a.acosh()),
                 Instruction::Atanh => un!(|a: f64| a.atanh()),
+                // An undefined (NaN) argument stays undefined: `sign(sqrt(-1))`
+                // was 0 and `heaviside(asin(2))` 0.5 before 0.30.
                 Instruction::Sign => un!(|a: f64| if a > 0.0 {
                     1.0
                 } else if a < 0.0 {
                     -1.0
-                } else {
+                } else if a == 0.0 {
                     0.0
+                } else {
+                    f64::NAN
                 }),
                 Instruction::Heaviside => un!(|a: f64| if a > 0.0 {
                     1.0
                 } else if a < 0.0 {
                     0.0
-                } else {
+                } else if a == 0.0 {
                     0.5
+                } else {
+                    f64::NAN
                 }),
                 // Distributional: pointwise evaluation is 0 everywhere (see docs).
                 Instruction::DiracDelta => un!(|a: f64| if a.is_nan() { f64::NAN } else { 0.0 }),
                 Instruction::Atan2 => bin!(|y: f64, x: f64| y.atan2(x)),
                 Instruction::Floor => un!(|a: f64| a.floor()),
                 Instruction::Ceiling => un!(|a: f64| a.ceil()),
-                Instruction::Min2 => bin!(|a: f64, b: f64| a.min(b)),
-                Instruction::Max2 => bin!(|a: f64, b: f64| a.max(b)),
+                // NaN-propagating (`f64::min` returns the other operand).
+                Instruction::Min2 => bin!(|a: f64, b: f64| if a.is_nan() || b.is_nan() {
+                    f64::NAN
+                } else {
+                    a.min(b)
+                }),
+                Instruction::Max2 => bin!(|a: f64, b: f64| if a.is_nan() || b.is_nan() {
+                    f64::NAN
+                } else {
+                    a.max(b)
+                }),
                 Instruction::Gamma => un!(rt::gamma),
                 Instruction::LogGamma => un!(rt::lgamma),
                 Instruction::Digamma => un!(rt::digamma),
@@ -647,6 +665,11 @@ struct Emitter<'a> {
     /// (a label may point here).
     barrier: usize,
     work: Vec<Task>,
+    /// Evaluate symbol-free subexpressions once, at compile time, with the
+    /// certified evaluator (see [`Emitter::constant_value`]).
+    fold_constants: bool,
+    /// Does the subtree at an id contain a symbol (memo for folding)?
+    has_symbol: FxHashMap<ExprId, bool>,
 }
 
 impl<'a> Emitter<'a> {
@@ -661,7 +684,65 @@ impl<'a> Emitter<'a> {
             fixups: Vec::new(),
             barrier: 0,
             work: Vec::new(),
+            fold_constants: false,
+            has_symbol: FxHashMap::default(),
         }
+    }
+
+    /// The `f64` value of a symbol-free compound subexpression, from the
+    /// certified evaluator, when it is real.
+    ///
+    /// Lowered operation by operation, a real constant can pass through a
+    /// complex intermediate the real VM cannot hold: `abs(atanh(9))` (1.576)
+    /// compiled to NaN, `re(sqrt(-2))`, `zeta(3)` and `polygamma(1, 2)` did
+    /// not compile at all.  Folding also rounds such constants once.  A
+    /// complex or unevaluable constant is lowered as before (NaN, or the
+    /// documented real odd root of a negative base).
+    fn constant_value(&mut self, id: ExprId) -> Option<f64> {
+        let arena = self.arena;
+        if !self.fold_constants || is_bool_valued(arena, id) {
+            return None;
+        }
+        let compound = !matches!(
+            arena.node(id),
+            ExprNode::Num(_)
+                | ExprNode::Symbol(_)
+                | ExprNode::Pi
+                | ExprNode::E
+                | ExprNode::EulerGamma
+                | ExprNode::Catalan
+                | ExprNode::GoldenRatio
+                | ExprNode::Infinity
+                | ExprNode::NegInfinity
+                | ExprNode::NaN
+                | ExprNode::ComplexInfinity
+                | ExprNode::ImaginaryUnit
+        );
+        if !compound || self.subtree_has_symbol(id) {
+            return None;
+        }
+        crate::transforms::evalf::evalf_f64(arena, id)
+            .ok()
+            .filter(|v| v.is_finite())
+    }
+
+    /// Does the subtree at `id` contain a symbol?  Bottom-up over the
+    /// post-order of `id`, memoised across calls (no recursion).
+    fn subtree_has_symbol(&mut self, id: ExprId) -> bool {
+        if let Some(&known) = self.has_symbol.get(&id) {
+            return known;
+        }
+        let arena = self.arena;
+        for n in crate::base::walk::post_order_ids(arena, id) {
+            if self.has_symbol.contains_key(&n) {
+                continue;
+            }
+            let node = arena.node(n);
+            let mut any = matches!(node, ExprNode::Symbol(_));
+            node.for_each_child(|c| any |= self.has_symbol.get(&c).copied().unwrap_or(true));
+            self.has_symbol.insert(n, any);
+        }
+        self.has_symbol.get(&id).copied().unwrap_or(true)
     }
 
     fn new_label(&mut self) -> usize {
@@ -779,12 +860,21 @@ impl<'a> Emitter<'a> {
 
     fn lower_node(&mut self, id: ExprId) -> Result<(), SymplexError> {
         let arena = self.arena;
+        if let Some(v) = self.constant_value(id) {
+            self.emit(Instruction::PushConst(v));
+            return Ok(());
+        }
         match arena.node(id).clone() {
             ExprNode::Num(nid) => {
+                // Correctly rounded: `numer as f64 / denom as f64` was
+                // inf/inf = NaN for 10^400/(10^400 + 1).
                 let r = arena.num(nid);
-                let n = r.numer().to_f64().unwrap_or(f64::NAN);
-                let d = r.denom().to_f64().unwrap_or(f64::NAN);
-                self.emit(Instruction::PushConst(n / d));
+                let v = crate::base::numeric::ratio_to_f64(r).unwrap_or(if r.is_negative() {
+                    f64::NEG_INFINITY
+                } else {
+                    f64::INFINITY
+                });
+                self.emit(Instruction::PushConst(v));
             }
             ExprNode::Symbol(sid) => {
                 if let Some(&slot) = self.locals.get(&sid) {
@@ -1219,6 +1309,22 @@ fn is_neg_one(arena: &Arena, id: ExprId) -> bool {
 /// Check if a node is the constant 1.
 fn is_one(arena: &Arena, id: ExprId) -> bool {
     arena.as_num(id).is_some_and(|r| r.is_one())
+}
+
+/// Is the node a truth value, relation or connective (lowered to 0.0/1.0)?
+fn is_bool_valued(arena: &Arena, id: ExprId) -> bool {
+    matches!(
+        arena.node(id),
+        ExprNode::BoolTrue
+            | ExprNode::BoolFalse
+            | ExprNode::Gt(..)
+            | ExprNode::Ge(..)
+            | ExprNode::Eq_(..)
+            | ExprNode::Ne(..)
+            | ExprNode::And(_)
+            | ExprNode::Or(_)
+            | ExprNode::Not(_)
+    )
 }
 
 #[cfg(test)]

@@ -1114,14 +1114,14 @@ static inline int symplex_is_gamma_pole(double x) { return x <= 0.0 && symplex_i
         name: "sign",
         deps: &[],
         src: r#"
-static inline double symplex_sign(double x) { return x > 0.0 ? 1.0 : (x < 0.0 ? -1.0 : 0.0); }
+static inline double symplex_sign(double x) { return x > 0.0 ? 1.0 : (x < 0.0 ? -1.0 : (x == 0.0 ? 0.0 : x)); }
 "#,
     },
     CHelper {
         name: "heaviside",
         deps: &[],
         src: r#"
-static inline double symplex_heaviside(double x) { return x > 0.0 ? 1.0 : (x < 0.0 ? 0.0 : 0.5); }
+static inline double symplex_heaviside(double x) { return x > 0.0 ? 1.0 : (x < 0.0 ? 0.0 : (x == 0.0 ? 0.5 : x)); }
 "#,
     },
     CHelper {
@@ -1390,8 +1390,14 @@ static inline int symplex_bessel_hankel(int n, double x, double *j_out, double *
         if (prev < 1e-17) { converged = 1; break; }
     }
     if (!converged && prev > 1e-15) return 0;
-    double chi = x - (0.5 * (double)n + 0.25) * 3.141592653589793;
-    double c = cos(chi), s = sin(chi), pref = sqrt(2.0 / (3.141592653589793 * x));
+    /* cos, sin of chi = x - (2n+1)pi/4 from cos x, sin x (exactly reduced)
+       and cos, sin of (2n+1)pi/4 = +-sqrt(1/2); rounding chi costs ulp(x). */
+    int m = ((n % 4) + 4) % 4;
+    double cphi = (m == 0 || m == 3) ? 1.0 : -1.0, sphi = (m <= 1) ? 1.0 : -1.0;
+    double cx = cos(x), sx = sin(x);
+    double c = 0.7071067811865476 * (cx * cphi + sx * sphi);
+    double s = 0.7071067811865476 * (sx * cphi - cx * sphi);
+    double pref = sqrt(2.0 / (3.141592653589793 * x));
     *j_out = pref * (p * c - q * s);
     *y_out = pref * (p * s + q * c);
     return 1;

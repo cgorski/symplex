@@ -1462,7 +1462,16 @@ fn atom_to_set(
     if is_eq {
         let sols = crate::transforms::solve::solve(arena, d, var);
         let roots: Vec<ExprId> = sols.into_iter().map(|s| s.value).collect();
-        if roots.is_empty() && crate::poly::polybridge::expr_to_poly(arena, d, var).is_none() {
+        // No root is an answer for a rational function (the solver finds
+        // every root of a polynomial numerator); before 0.30 only for a
+        // polynomial, so `−1/(x² + 7x + 12) = 0` was an error.
+        let rational = {
+            let combined = crate::poly::polybridge::together(arena, d);
+            let (n, den) = crate::poly::polybridge::as_numer_denom(arena, combined);
+            crate::poly::polybridge::expr_to_poly(arena, n, var).is_some()
+                && crate::poly::polybridge::expr_to_poly(arena, den, var).is_some()
+        };
+        if roots.is_empty() && !rational {
             return Err(SymplexError::ComputationFailed {
                 operation: "reduce_inequalities",
                 reason: "could not solve the equation".into(),
@@ -1484,6 +1493,12 @@ fn atom_to_set(
 ///
 /// Each condition may be any combination of `And`/`Or`/`Not` over
 /// relational atoms (`>`, `>=`, `<`, `<=`, `=`, `!=`) involving `var`.
+///
+/// A relation holds only where both sides are defined, and so does its
+/// negation: `a ≠ b` is `a > b ∨ a < b`, and `Not` is pushed down to the
+/// atoms (`¬(a > b)` is `a ≤ b`, De Morgan through `And`/`Or`), as SymPy
+/// negates relationals.  Before 0.30 both were set complements, so
+/// `(x + 2)/(x − 4) ≠ 0` and `¬(1/x > 0)` contained the pole.
 pub(crate) fn reduce_inequalities(
     arena: &mut Arena,
     conds: &[ExprId],
@@ -1500,73 +1515,81 @@ pub(crate) fn reduce_inequalities(
 
     let mut sets: Vec<ExprId> = Vec::with_capacity(conds.len());
     for &cond in conds {
-        // Post-order over the boolean structure.
-        let mut order: Vec<ExprId> = Vec::new();
-        let mut visited: FxHashSet<ExprId> = FxHashSet::default();
-        let mut stack: Vec<(ExprId, bool)> = vec![(cond, false)];
-        while let Some((id, expanded)) = stack.pop() {
-            if visited.contains(&id) {
+        // Post-order over the boolean structure; a node is visited with
+        // the parity of the `Not`s above it (`negated`).
+        let mut order: Vec<(ExprId, bool)> = Vec::new();
+        let mut visited: FxHashSet<(ExprId, bool)> = FxHashSet::default();
+        let mut stack: Vec<((ExprId, bool), bool)> = vec![((cond, false), false)];
+        while let Some((key, expanded)) = stack.pop() {
+            if visited.contains(&key) {
                 continue;
             }
             if expanded {
-                visited.insert(id);
-                order.push(id);
+                visited.insert(key);
+                order.push(key);
                 continue;
             }
-            stack.push((id, true));
+            stack.push((key, true));
+            let (id, negated) = key;
             match arena.node(id) {
                 ExprNode::And(ch) | ExprNode::Or(ch) => {
                     for &c in ch.iter().rev() {
-                        stack.push((c, false));
+                        stack.push(((c, negated), false));
                     }
                 }
-                ExprNode::Not(x) => stack.push((*x, false)),
+                ExprNode::Not(x) => stack.push(((*x, !negated), false)),
                 _ => {}
             }
         }
 
-        let mut memo: FxHashMap<ExprId, ExprId> = FxHashMap::default();
-        for &id in &order {
-            let s = match arena.node(id).clone() {
-                ExprNode::BoolTrue => arena.universal_set,
-                ExprNode::BoolFalse => arena.empty_set,
-                ExprNode::Gt(a, b) => atom_to_set(arena, a, b, Relation::Gt, false, var)?,
-                ExprNode::Ge(a, b) => atom_to_set(arena, a, b, Relation::Ge, false, var)?,
-                ExprNode::Eq_(a, b) => atom_to_set(arena, a, b, Relation::Ge, true, var)?,
-                ExprNode::Ne(a, b) => {
-                    let eq = atom_to_set(arena, a, b, Relation::Ge, true, var)?;
-                    let u = arena.universal_set;
-                    arena.set_complement(u, eq)
+        let mut memo: FxHashMap<(ExprId, bool), ExprId> = FxHashMap::default();
+        for &(id, negated) in &order {
+            let s = match (arena.node(id).clone(), negated) {
+                (ExprNode::BoolTrue, false) | (ExprNode::BoolFalse, true) => arena.universal_set,
+                (ExprNode::BoolFalse, false) | (ExprNode::BoolTrue, true) => arena.empty_set,
+                (ExprNode::Gt(a, b), false) => atom_to_set(arena, a, b, Relation::Gt, false, var)?,
+                (ExprNode::Gt(a, b), true) => atom_to_set(arena, b, a, Relation::Ge, false, var)?,
+                (ExprNode::Ge(a, b), false) => atom_to_set(arena, a, b, Relation::Ge, false, var)?,
+                (ExprNode::Ge(a, b), true) => atom_to_set(arena, b, a, Relation::Gt, false, var)?,
+                (ExprNode::Eq_(a, b), false) | (ExprNode::Ne(a, b), true) => {
+                    atom_to_set(arena, a, b, Relation::Ge, true, var)?
                 }
-                ExprNode::And(ch) => {
+                (ExprNode::Ne(a, b), false) | (ExprNode::Eq_(a, b), true) => {
+                    let above = atom_to_set(arena, a, b, Relation::Gt, false, var)?;
+                    let below = atom_to_set(arena, b, a, Relation::Gt, false, var)?;
+                    arena.set_union(&[above, below])
+                }
+                (ExprNode::And(ch), _) | (ExprNode::Or(ch), _) => {
+                    // `Not` over `And` is `Or` of the negations and vice versa.
+                    let is_and = matches!(arena.node(id), ExprNode::And(_)) != negated;
+                    let default = if is_and {
+                        arena.universal_set
+                    } else {
+                        arena.empty_set
+                    };
                     let parts: Vec<ExprId> = ch
                         .iter()
-                        .map(|c| memo.get(c).copied().unwrap_or(arena.universal_set))
+                        .map(|c| memo.get(&(*c, negated)).copied().unwrap_or(default))
                         .collect();
-                    arena.set_intersection(&parts)
+                    if is_and {
+                        arena.set_intersection(&parts)
+                    } else {
+                        arena.set_union(&parts)
+                    }
                 }
-                ExprNode::Or(ch) => {
-                    let parts: Vec<ExprId> = ch
-                        .iter()
-                        .map(|c| memo.get(c).copied().unwrap_or(arena.empty_set))
-                        .collect();
-                    arena.set_union(&parts)
+                (ExprNode::Not(x), _) => {
+                    memo.get(&(x, !negated)).copied().unwrap_or(arena.empty_set)
                 }
-                ExprNode::Not(x) => {
-                    let inner = memo.get(&x).copied().unwrap_or(arena.empty_set);
-                    let u = arena.universal_set;
-                    arena.set_complement(u, inner)
-                }
-                other => {
+                (other, _) => {
                     return Err(SymplexError::InvalidArgument {
                         operation: "reduce_inequalities",
                         reason: format!("not a relational condition: {other:?}"),
                     });
                 }
             };
-            memo.insert(id, s);
+            memo.insert((id, negated), s);
         }
-        if let Some(&s) = memo.get(&cond) {
+        if let Some(&s) = memo.get(&(cond, false)) {
             sets.push(s);
         }
     }

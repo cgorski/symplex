@@ -155,15 +155,19 @@ fn entry_is_zero(e: &Ex) -> bool {
     if is_number(e) {
         return false;
     }
+    // A rational function of the symbols is decided exactly.
+    if let Some(b) = crate::domains::matrix::rational_function_is_zero(e) {
+        return b;
+    }
     let s = e.simplify();
     if s.is_zero_structural() {
         return true;
     }
-    // Purely numeric (no free symbols) but not folded: decide numerically.
-    if s.free_symbols().is_empty()
-        && let Ok(z) = s.eval_complex64()
-    {
-        return z.norm() < 1e-12;
+    // Purely numeric (no free symbols) but not folded: the certified zero
+    // test (before 0.30, `|f64 value| < 10⁻¹²` counted as zero).
+    if s.free_symbols().is_empty() && s.eval_complex64().is_ok() {
+        let mut inner = s.inner.write();
+        return crate::poly::algebraic::is_zero_checked(&mut inner.arena, s.raw_id()) == Some(true);
     }
     false
 }

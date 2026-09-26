@@ -59,6 +59,21 @@ path = "fuzz_targets/fuzz_integrate.rs"
 doc = false
 
 [[bin]]
+name = "fuzz_evalf"
+path = "fuzz_targets/fuzz_evalf.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_calculus"
+path = "fuzz_targets/fuzz_calculus.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_roundtrip"
+path = "fuzz_targets/fuzz_roundtrip.rs"
+doc = false
+
+[[bin]]
 name = "print_expr"
 path = "fuzz_targets/print_expr.rs"
 doc = false

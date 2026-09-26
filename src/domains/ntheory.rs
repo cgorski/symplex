@@ -4081,12 +4081,12 @@ pub fn is_nthpow_residue(a: impl Into<BigInt>, n: impl Into<BigInt>, m: impl Int
 /// binomial `xⁿ − a` through [`nthroot_mod`]; both work for any modulus
 /// that can be factored.  Any other polynomial is solved modulo each
 /// prime factor `p` of `m` — brute force for `p ≤ 2¹⁶`, otherwise
-/// `gcd(f, xᵖ − x)` followed by Cantor–Zassenhaus splitting, which needs
-/// `p < 2⁶³` — lifted to the prime power by Hensel's lemma and combined
-/// with the Chinese Remainder Theorem.  **Limit:** in that general case a
-/// prime factor `p ≥ 2⁶³` of `m` is not supported and yields an empty
-/// vector.  If the polynomial vanishes identically modulo some prime
-/// `p | m`, all `p` residues are roots and are enumerated.
+/// `gcd(f, xᵖ − x)` followed by Cantor–Zassenhaus splitting (machine words
+/// below `2⁶³`, `BigInt` coefficients above) — lifted to the prime power
+/// by Hensel's lemma and combined with the Chinese Remainder Theorem.  If
+/// the polynomial vanishes identically modulo some prime `p | m`, all `p`
+/// residues are roots and are enumerated (not possible, and left out, for
+/// `p ≥ 2⁶³`).
 ///
 /// # Examples
 ///
@@ -4230,14 +4230,11 @@ fn poly_eval_mod(c: &[BigInt], x: &BigInt, m: &BigInt) -> BigInt {
 const BRUTE_FORCE_ROOT_LIMIT: u64 = 1 << 16;
 
 /// Sorted roots of `c` (highest degree first, non-zero leading
-/// coefficient over ℤ) modulo the prime `p`.  Empty for `p ≥ 2⁶³`.
+/// coefficient over ℤ) modulo the prime `p`.
 fn poly_roots_mod_prime(c: &[BigInt], p: &BigInt) -> Vec<BigInt> {
-    let Some(pu) = p.to_u64() else {
-        return vec![];
+    let Some(pu) = p.to_u64().filter(|&pu| pu < 1 << 63) else {
+        return big_prime_poly_roots(c, p);
     };
-    if pu >= 1 << 63 {
-        return vec![];
-    }
     let cu: Vec<u64> = c
         .iter()
         .map(|x| x.mod_floor(p).to_u64().unwrap_or(0))
@@ -4260,6 +4257,136 @@ fn poly_roots_mod_prime(c: &[BigInt], p: &BigInt) -> Vec<BigInt> {
         return (0..pu).map(BigInt::from).collect();
     }
     f.roots().into_iter().map(BigInt::from).collect()
+}
+
+/// A polynomial over `𝔽ₚ` with `BigInt` coefficients, lowest degree
+/// first, without trailing zeros (the zero polynomial is empty).
+type BigModPoly = Vec<BigInt>;
+
+fn bmp_trim(mut a: BigModPoly) -> BigModPoly {
+    while a.last().is_some_and(Zero::is_zero) {
+        a.pop();
+    }
+    a
+}
+
+/// `a mod b` over `𝔽ₚ` (`b` non-zero and trimmed), with the quotient.
+fn bmp_div_rem(a: &[BigInt], b: &[BigInt], p: &BigInt) -> (BigModPoly, BigModPoly) {
+    let mut r: BigModPoly = a.iter().map(|x| x.mod_floor(p)).collect();
+    r = bmp_trim(r);
+    let db = b.len() - 1;
+    let Some(inv) = b.last().and_then(|l| mod_inverse(l.clone(), p.clone())) else {
+        return (vec![], r);
+    };
+    let mut q = vec![BigInt::zero(); r.len().saturating_sub(db).max(1)];
+    while r.len() > db {
+        let shift = r.len() - 1 - db;
+        let Some(lead) = r.last() else { break };
+        let t = (lead * &inv).mod_floor(p);
+        for (i, bi) in b.iter().enumerate() {
+            r[shift + i] = (&r[shift + i] - &t * bi).mod_floor(p);
+        }
+        q[shift] = t;
+        r = bmp_trim(r);
+    }
+    (bmp_trim(q), r)
+}
+
+/// `a·b mod f` over `𝔽ₚ`.
+fn bmp_mul_mod(a: &[BigInt], b: &[BigInt], f: &[BigInt], p: &BigInt) -> BigModPoly {
+    if a.is_empty() || b.is_empty() {
+        return vec![];
+    }
+    let mut prod = vec![BigInt::zero(); a.len() + b.len() - 1];
+    for (i, ai) in a.iter().enumerate() {
+        for (j, bj) in b.iter().enumerate() {
+            prod[i + j] += ai * bj;
+        }
+    }
+    bmp_div_rem(&prod, f, p).1
+}
+
+/// `base^e mod f` over `𝔽ₚ`, square-and-multiply over the bits of `e`.
+fn bmp_pow_mod(base: &[BigInt], e: &BigInt, f: &[BigInt], p: &BigInt) -> BigModPoly {
+    let mut acc: BigModPoly = vec![BigInt::one()];
+    for i in (0..e.bits()).rev() {
+        acc = bmp_mul_mod(&acc, &acc, f, p);
+        if e.bit(i) {
+            acc = bmp_mul_mod(&acc, base, f, p);
+        }
+    }
+    acc
+}
+
+/// The monic gcd over `𝔽ₚ`.
+fn bmp_gcd(a: &[BigInt], b: &[BigInt], p: &BigInt) -> BigModPoly {
+    let mut x = bmp_trim(a.to_vec());
+    let mut y = bmp_trim(b.iter().map(|v| v.mod_floor(p)).collect());
+    while !y.is_empty() {
+        let r = bmp_div_rem(&x, &y, p).1;
+        x = y;
+        y = r;
+    }
+    match x.last().and_then(|l| mod_inverse(l.clone(), p.clone())) {
+        Some(inv) => x.iter().map(|v| (v * &inv).mod_floor(p)).collect(),
+        None => x,
+    }
+}
+
+/// Sorted roots modulo a prime `p ≥ 2⁶³` of `c` (highest degree first):
+/// `g = gcd(f, xᵖ − x)` is the product of `x − r` over the roots `r`,
+/// split by Cantor–Zassenhaus — `gcd(h, (x + a)^((p−1)/2) − 1)` separates
+/// the roots `r` with `r + a` a quadratic residue from the others — for
+/// `a = 1, 2, …` (each splits a factor with probability about ½; an
+/// explicit stack, no recursion).  The machine-word ring of `poly::modpoly`
+/// stops at `2⁶³`, and these roots were reported as none (SymPy finds
+/// them).  A polynomial vanishing identically modulo `p` has `p` roots,
+/// which cannot be listed; that case stays empty.
+fn big_prime_poly_roots(c: &[BigInt], p: &BigInt) -> Vec<BigInt> {
+    let f = bmp_trim(c.iter().rev().map(|x| x.mod_floor(p)).collect());
+    if f.len() < 2 {
+        return vec![];
+    }
+    let x = vec![BigInt::zero(), BigInt::one()];
+    let xp = bmp_pow_mod(&x, p, &f, p);
+    let mut xp_minus_x = xp;
+    xp_minus_x.resize(xp_minus_x.len().max(2), BigInt::zero());
+    xp_minus_x[1] = (&xp_minus_x[1] - BigInt::one()).mod_floor(p);
+    let g = bmp_gcd(&f, &bmp_trim(xp_minus_x), p);
+    let half = (p - 1) / 2;
+    let mut roots = Vec::new();
+    let mut stack = vec![g];
+    while let Some(h) = stack.pop() {
+        match h.len() {
+            0 | 1 => {}
+            2 => roots.push((-&h[0]).mod_floor(p)),
+            n => {
+                let mut split = false;
+                for a in 1..=256u32 {
+                    let shifted = vec![BigInt::from(a), BigInt::one()];
+                    let mut t = bmp_pow_mod(&shifted, &half, &h, p);
+                    if t.is_empty() {
+                        t.push(BigInt::zero());
+                    }
+                    t[0] = (&t[0] - BigInt::one()).mod_floor(p);
+                    let d = bmp_gcd(&h, &bmp_trim(t), p);
+                    if d.len() > 1 && d.len() < n {
+                        let q = bmp_div_rem(&h, &d, p).0;
+                        stack.push(d);
+                        stack.push(q);
+                        split = true;
+                        break;
+                    }
+                }
+                if !split {
+                    return vec![];
+                }
+            }
+        }
+    }
+    roots.sort();
+    roots.dedup();
+    roots
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

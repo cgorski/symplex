@@ -169,6 +169,7 @@ fn prim_section(backend: MathBackend) -> String {
     const PRIMS: &[(&str, u8, &str, &str)] = &[
         ("p_exp", 1, "x.exp()", "libm::exp(x)"),
         ("p_ln", 1, "x.ln()", "libm::log(x)"),
+        ("p_ln1p", 1, "x.ln_1p()", "libm::log1p(x)"),
         ("p_sin", 1, "x.sin()", "libm::sin(x)"),
         ("p_cos", 1, "x.cos()", "libm::cos(x)"),
         ("p_sqrt", 1, "x.sqrt()", "libm::sqrt(x)"),

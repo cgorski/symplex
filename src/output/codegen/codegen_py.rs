@@ -603,26 +603,28 @@ impl Emitter<'_> {
                 }
                 ExprNode::Pow(base, exp) => self.render_pow(*base, *exp, &cache)?,
 
+                // A NaN argument gives NaN (`copysign(1, nan)` is ±1 and the
+                // Heaviside chains ended in 1.0), as in `compile()`.
                 ExprNode::Sign(a) if self.target == Target::Python => {
                     let r = child(a)?;
                     Rendered::atom(format!(
-                        "(0.0 if {} == 0 else math.copysign(1, {}))",
-                        r.at(PREC_ADD),
-                        r.at(0)
+                        "(0.0 if {a} == 0 else math.copysign(1, {b}) if {a} == {a} else math.nan)",
+                        a = r.at(PREC_ADD),
+                        b = r.at(0)
                     ))
                 }
                 ExprNode::Heaviside(a) => {
                     let r = child(a)?;
                     match self.target {
                         Target::Python => Rendered::atom(format!(
-                            "(0.0 if {a} < 0 else (0.5 if {a} == 0 else 1.0))",
+                            "(0.0 if {a} < 0 else (0.5 if {a} == 0 else (1.0 if {a} > 0 else math.nan)))",
                             a = r.at(PREC_ADD)
                         )),
                         Target::NumPy => {
                             self.call("numpy.heaviside", &[&r, &Rendered::atom("0.5")])
                         }
                         Target::Julia => Rendered::atom(format!(
-                            "({a} < 0 ? 0.0 : ({a} == 0 ? 0.5 : 1.0))",
+                            "({a} < 0 ? 0.0 : ({a} == 0 ? 0.5 : ({a} > 0 ? 1.0 : NaN)))",
                             a = r.at(PREC_ADD)
                         )),
                     }
@@ -1151,7 +1153,11 @@ mod tests {
         assert_eq!(py("x!"), "math.gamma(x + 1)");
         assert_eq!(py("(x - y)!"), "math.gamma(x - y + 1)");
         assert_eq!(py("ln(x)"), "math.log(x)");
-        assert_eq!(py("sign(x)"), "(0.0 if x == 0 else math.copysign(1, x))");
+        // 0.30: NaN stays NaN (`math.copysign(1, nan)` is ±1).
+        assert_eq!(
+            py("sign(x)"),
+            "(0.0 if x == 0 else math.copysign(1, x) if x == x else math.nan)"
+        );
     }
 
     #[test]

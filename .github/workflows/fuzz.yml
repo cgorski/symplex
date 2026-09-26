@@ -4,7 +4,9 @@ name: Fuzz
 # target, so a failure names its target and carries only its own artifact.
 # The targets check exact identities (exact_matrix, poly), probability
 # invariants (numdist), value preservation (simplify) and F′ = f
-# (integrate) — see fuzz/README.md.  A failing job uploads the crashing
+# (integrate), evalf self-consistency (evalf), the calculus routines
+# against numerical oracles (calculus) and the display/parse round trip
+# (roundtrip) — see fuzz/README.md.  A failing job uploads the crashing
 # input; reproduce it with the commands printed in the job summary.
 
 on:
@@ -41,6 +43,9 @@ jobs:
           - fuzz_refine
           - fuzz_eigenvects
           - fuzz_lambertw
+          - fuzz_evalf
+          - fuzz_calculus
+          - fuzz_roundtrip
     env:
       SECONDS_PER_TARGET: ${{ github.event.inputs.seconds || '600' }}
       # cargo-fuzz defaults `--target` to the triple it was built for, and
@@ -84,6 +89,9 @@ jobs:
             echo "::group::$f"
             base64 -w0 "$f"; echo
             cargo fuzz run --target "$FUZZ_TARGET_TRIPLE" print_expr "$f" 2>/dev/null | grep '^depth' || true
+            # The differential targets print their decoded case and message.
+            FUZZ_SHOW=1 cargo fuzz run --target "$FUZZ_TARGET_TRIPLE" ${{ matrix.target }} "$f" 2>&1 \
+              | grep -E '^fuzz_|panicked|^  ' | head -40 || true
             echo "::endgroup::"
           done
           {

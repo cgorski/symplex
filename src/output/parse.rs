@@ -430,6 +430,7 @@ const KNOWN_FUNCTIONS: &[&str] = &[
     "max",
     "sum",
     "product",
+    "piecewise",
 ];
 
 fn is_known_function(name_lower: &str) -> bool {
@@ -837,6 +838,9 @@ fn starts_operand(token: &Token) -> bool {
     )
 }
 
+/// The factors of a product chain `a*b/c…`, built into one n-ary product.
+type Factors = SmallVec<[ExprId; 6]>;
+
 struct Parser<'a> {
     lexer: Lexer<'a>,
     current: Token,
@@ -845,6 +849,15 @@ struct Parser<'a> {
     /// Inside the parenthesis-free argument of `sin x`: a following
     /// function name ends the argument instead of multiplying into it.
     app_arg: bool,
+    /// Inside the value of a `Piecewise` branch: the keyword `if` ends it.
+    piecewise_value: u32,
+    /// The product chain the last [`Parser::parse_expr`] call built, with
+    /// its factors, if its whole result was one (read by the parenthesis
+    /// rule right after the inner call returns).
+    last_chain: Option<(ExprId, Factors)>,
+    /// The factors of the last parenthesised product chain `(a*b…)`, for a
+    /// division `x/(a*b…)` to invert them one by one.
+    paren_chain: Option<(ExprId, Factors)>,
 }
 
 impl<'a> Parser<'a> {
@@ -857,6 +870,9 @@ impl<'a> Parser<'a> {
             depth: 0,
             mode,
             app_arg: false,
+            piecewise_value: 0,
+            last_chain: None,
+            paren_chain: None,
         }
     }
 
@@ -997,6 +1013,17 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse an expression with minimum binding power `min_bp`.
+    ///
+    /// A product chain `f₁*f₂/f₃…` (explicit, implicit or after a prefix
+    /// `-`, which is its factor `-1`) is built as **one** n-ary product of
+    /// all its factors, not folded pairwise: the arena distributes a number
+    /// over a sum in a two-factor product (`2*(x + 1)` is `2*x + 2`), so
+    /// pairwise folding read `-3*(x + 1)*y` — the display of
+    /// `Mul(-3, x + 1, y)` — as `(-3*x - 3)*y`, and `-(a + b)*c` as
+    /// `(-a - b)*c`.  A divisor that is a parenthesised chain divides by
+    /// each of its factors (`p/(q*(x + y))` is `p·q⁻¹·(x + y)⁻¹`, the
+    /// display of `Mul(p/q, (x + y)⁻¹)`; `1/(x*x^I)` keeps `x⁻¹` and
+    /// `(x^I)⁻¹` apart, as displayed), for the same reason.
     fn parse_expr(&mut self, arena: &mut Arena, min_bp: u8) -> Result<ExprId, ParseError> {
         self.depth += 1;
         if self.depth > 128 {
@@ -1006,8 +1033,26 @@ impl<'a> Parser<'a> {
             });
         }
 
-        // Prefix (atom or unary)
-        let mut lhs = self.parse_prefix(arena)?;
+        // Prefix (atom or unary).  The operand of a prefix `-` is tighter
+        // than `*` and looser than `^` (`-x^2` is `-(x^2)`); a product that
+        // follows it continues the chain it starts.
+        let mut neg_operand: Option<ExprId> = None;
+        let mut lhs = if self.current == Token::Minus {
+            self.advance()?;
+            let operand = self.parse_expr(arena, BP_NEG)?;
+            if is_bool_node(arena, operand) {
+                return Err(self.error(format!(
+                    "'-' needs a numeric operand, but '{}' is a Boolean expression",
+                    arena.display(operand)
+                )));
+            }
+            neg_operand = Some(operand);
+            arena.neg(operand)
+        } else {
+            self.parse_prefix(arena)?
+        };
+        // The pending factors of a product chain (empty: `lhs` is complete).
+        let mut chain: Factors = SmallVec::new();
 
         // Infix loop
         loop {
@@ -1015,6 +1060,8 @@ impl<'a> Parser<'a> {
             // `2^3!` is `2^(3!)` and `x!^2` is `(x!)^2`.
             if self.current == Token::Bang {
                 self.advance()?;
+                lhs = Self::fold_chain(arena, &mut chain, lhs);
+                neg_operand = None;
                 lhs = arena.intern(ExprNode::Factorial(lhs));
                 continue;
             }
@@ -1037,6 +1084,8 @@ impl<'a> Parser<'a> {
                 Token::Pipe if relations => (Infix::Or, BP_OR, false),
                 Token::Ident(name) if relations && name == "and" => (Infix::And, BP_AND, false),
                 Token::Ident(name) if relations && name == "or" => (Infix::Or, BP_OR, false),
+                // `Piecewise(value if condition, …)`: `if` ends the value.
+                Token::Ident(name) if self.piecewise_value > 0 && name == "if" => break,
                 // `sin x cos y`: the argument of `sin` ends at the next
                 // function name (which then multiplies `sin x` as a whole).
                 Token::Ident(name)
@@ -1059,12 +1108,67 @@ impl<'a> Parser<'a> {
             if !implicit {
                 self.advance()?;
             }
+            if matches!(op, Infix::Mul | Infix::Div) {
+                self.paren_chain = None;
+                let rhs = self.parse_expr(arena, r_bp)?;
+                let (text, inverse) = match op {
+                    Infix::Div => ("/", true),
+                    _ => ("*", false),
+                };
+                if chain.is_empty() {
+                    self.numeric_operands(arena, text, lhs, rhs)?;
+                    match neg_operand.take() {
+                        Some(operand) => chain.extend([arena.neg_one, operand]),
+                        None => chain.push(lhs),
+                    }
+                } else {
+                    self.numeric_operands(arena, text, rhs, rhs)?;
+                }
+                if !inverse {
+                    chain.push(rhs);
+                } else if let Some((_, group)) = self
+                    .paren_chain
+                    .take()
+                    // Inverting the folded group is not the same: the arena
+                    // distributes `q*(x + y)` and merges `x*x^I` into
+                    // `x^(1 + I)`, which its display keeps apart.
+                    .filter(|(id, _)| *id == rhs)
+                {
+                    for f in group {
+                        let inv = arena.pow(f, arena.neg_one);
+                        chain.push(inv);
+                    }
+                } else {
+                    let inv = arena.pow(rhs, arena.neg_one);
+                    chain.push(inv);
+                }
+                continue;
+            }
+            lhs = Self::fold_chain(arena, &mut chain, lhs);
+            neg_operand = None;
             let rhs = self.parse_expr(arena, r_bp)?;
             lhs = self.combine(arena, op, lhs, rhs)?;
         }
 
+        self.last_chain = None;
+        if !chain.is_empty() {
+            let factors = chain.clone();
+            lhs = Self::fold_chain(arena, &mut chain, lhs);
+            self.last_chain = Some((lhs, factors));
+        }
         self.depth -= 1;
         Ok(lhs)
+    }
+
+    /// The product of the pending chain (emptied), or `lhs` if there is none.
+    fn fold_chain(arena: &mut Arena, chain: &mut Factors, lhs: ExprId) -> ExprId {
+        if chain.is_empty() {
+            lhs
+        } else {
+            let product = arena.mul(chain);
+            chain.clear();
+            product
+        }
     }
 
     /// Parse a prefix expression (atom, unary minus, function call, parens).
@@ -1118,17 +1222,7 @@ impl<'a> Parser<'a> {
                     None => Ok(arena.symbol(&name)),
                 }
             }
-            Token::Minus => {
-                self.advance()?;
-                let operand = self.parse_expr(arena, BP_NEG)?;
-                if is_bool_node(arena, operand) {
-                    return Err(self.error(format!(
-                        "'-' needs a numeric operand, but '{}' is a Boolean expression",
-                        arena.display(operand)
-                    )));
-                }
-                Ok(arena.neg(operand))
-            }
+            // (A prefix `-` is read by `parse_expr`: it starts a product chain.)
             Token::Tilde | Token::Bang if self.mode.relations => {
                 self.advance()?;
                 self.parse_not(arena)
@@ -1136,7 +1230,9 @@ impl<'a> Parser<'a> {
             Token::LParen => {
                 self.advance()?;
                 let inner = self.outside_app_arg(|p| p.parse_expr(arena, 0))?;
+                let chain = self.last_chain.take().filter(|(id, _)| *id == inner);
                 self.expect(&Token::RParen)?;
+                self.paren_chain = chain;
                 Ok(inner)
             }
             other => Err(ParseError {
@@ -1170,6 +1266,9 @@ impl<'a> Parser<'a> {
 
         // Case-insensitive function name matching for SymPy compatibility
         let name_lower = name.to_ascii_lowercase();
+        if name_lower == "piecewise" {
+            return self.parse_piecewise(arena);
+        }
         let mut args: Vec<ExprId> = vec![self.parse_expr(arena, 0)?];
 
         // `Sum(body, k=lo..hi)` / `Product(body, k=lo..hi)` — the display form.
@@ -1515,6 +1614,53 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// The branches of `Piecewise(v₁ if c₁, v₂ if c₂, …)` — the display
+    /// form — after the opening parenthesis.  Each value is numeric; each
+    /// condition is a relation or a Boolean combination of relations, read
+    /// with the relational grammar of [`parse_bool`] in every mode (so
+    /// `Piecewise(x if x > 0, -x if True)` parses with [`parse`] too).
+    fn parse_piecewise(&mut self, arena: &mut Arena) -> Result<ExprId, ParseError> {
+        let mut pairs: Vec<(ExprId, ExprId)> = Vec::new();
+        loop {
+            self.piecewise_value += 1;
+            let value = self.parse_expr(arena, 0);
+            self.piecewise_value -= 1;
+            let value = value?;
+            if is_bool_node(arena, value) {
+                return Err(self.error(format!(
+                    "the value of a Piecewise branch must be numeric, but '{}' is a Boolean expression",
+                    arena.display(value)
+                )));
+            }
+            if !matches!(&self.current, Token::Ident(k) if k == "if") {
+                return Err(self.error(format!(
+                    "expected 'if' after the Piecewise value '{}', got {:?}",
+                    arena.display(value),
+                    self.current
+                )));
+            }
+            self.advance()?;
+            let saved_mode = self.mode;
+            let saved_value = std::mem::replace(&mut self.piecewise_value, 0);
+            self.mode = Mode {
+                relations: true,
+                ..saved_mode
+            };
+            let cond = self.parse_expr(arena, 0);
+            self.mode = saved_mode;
+            self.piecewise_value = saved_value;
+            let cond = cond?;
+            self.boolean_operand(arena, "Piecewise", cond)?;
+            pairs.push((value, cond));
+            if self.current == Token::Comma {
+                self.advance()?;
+                continue;
+            }
+            self.expect(&Token::RParen)?;
+            return Ok(arena.piecewise(&pairs));
+        }
+    }
+
     fn call_1(
         &self,
         arena: &mut Arena,
@@ -1522,6 +1668,12 @@ impl<'a> Parser<'a> {
         name_lower: &str,
         arg: ExprId,
     ) -> Result<ExprId, ParseError> {
+        // `H(x)`, the display name of Heaviside (exact case, and only while
+        // the context has no undefined function `H`: `h(x)` stays free for
+        // one, unlike the case-insensitive `C`/`B`/`W` aliases).
+        if name == "H" && declared_function(arena, name).is_none() {
+            return Ok(arena.intern(crate::base::node::ExprNode::Heaviside(arg)));
+        }
         match name_lower {
             "sin" => Ok(arena.sin(arg)),
             "cos" => Ok(arena.cos(arg)),
@@ -2664,6 +2816,8 @@ mod tests {
                 format!("{name}(x, y)"),
                 format!("{name}(x, y, z)"),
                 format!("{name}(x, y, z, w)"),
+                // `Piecewise(value if condition, …)`
+                format!("{name}(x if True)"),
             ]
             .iter()
             .any(|s| parse(&ctx, s).is_ok());

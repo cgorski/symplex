@@ -490,3 +490,50 @@ fn a_tiny_discriminant_has_a_certified_sign() {
         }
     }
 }
+
+/// Before: `erfcinv(941/2³⁴)` was `−10573.05207841054…`, certified (truly
+/// `3.84317…`): the `f64` refinement of the starting point stepped on
+/// `1 − erf_f64(x)`, a Taylor sum whose truncation near `x = 4` is `10⁻⁶`,
+/// and diverged, and the Halley iteration had neither a bracket nor a
+/// convergence check, so it returned its 200th iterate wherever it had
+/// drifted.  `erfcinv(5/10⁸)` failed with a NaN conversion error.  The
+/// iteration is now bracketed (bisection when a step leaves the bracket or
+/// fails to halve it) and refuses when it does not converge.
+#[test]
+fn erfcinv_is_bracketed() {
+    let ctx = Context::new();
+    // mpmath: mp.dps = 400; erfinv(1 - u) (the complement cancels at low dps)
+    for (s, want) in [
+        ("erfcinv(941/2^34)", "3.84317834241453940921902236214"),
+        ("erfcinv(1/10^20)", "6.60158062235514256151639163242"),
+        ("erfcinv(5/10^8)", "3.85465857695354534639989654279"),
+        ("erfcinv(1/10^300)", "26.2094699605161238859984387378"),
+        ("erfcinv(3/2)", "-0.476936276204469873381418353643"),
+        ("erfinv(1 - 1/10^30)", "8.14861622316986460738456666065"),
+    ] {
+        assert_eq!(ctx.parse(s).unwrap().eval_decimal(30).unwrap(), want, "{s}");
+    }
+}
+
+/// Before: `(−2)^(−exp(10⁶))` never finished: the general complex power
+/// `exp(e·ln b)` reduced its angle `Im(e·ln b) ≈ 10⁴³⁴²⁹⁴` mod 2π, which
+/// needs π to half a million digits; `exp` of a complex argument refused
+/// such an angle, the power did not.  It is now refused the same way.
+#[test]
+fn a_complex_power_with_a_huge_angle_is_refused() {
+    let ctx = Context::new();
+    let e = ctx.parse("(-2)^(-exp(10^6))").unwrap();
+    assert!(matches!(
+        e.eval_decimal(16),
+        Err(SymplexError::PrecisionExhausted { .. })
+    ));
+    // mpmath: mp.dps = 30; power(-2, mpf(1)/3 + 1j)
+    //   = (-0.00918708926810953... + 0.0536654259983410...j)
+    assert_eq!(
+        ctx.parse("(-2)^(1/3 + I)")
+            .unwrap()
+            .eval_decimal(16)
+            .unwrap(),
+        "-0.00918708926810953 + 0.05366542599834102*i"
+    );
+}

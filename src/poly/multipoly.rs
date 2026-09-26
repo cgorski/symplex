@@ -1046,6 +1046,16 @@ const HEUGCD_MAX_TRIES: usize = 6;
 
 /// Symmetric remainder of `c` modulo `m`: the representative of `c mod m`
 /// in `(-m/2, m/2]`.
+/// Outcome of one evaluation point of the heuristic GCD.
+enum Attempt<P> {
+    /// `(h, cff, cfg)`, verified.
+    Found(P, P, P),
+    /// This point did not work; try the next one.
+    Retry,
+    /// The recursion below failed: give up the heuristic.
+    Failed,
+}
+
 fn symmetric_mod(c: &BigInt, m: &BigInt) -> BigInt {
     use num_integer::Integer;
     let r = c.mod_floor(m);
@@ -1141,9 +1151,13 @@ impl<O: MonomialOrd> MultiPoly<O> {
     /// the remaining variables (integer GCD in the univariate case), and
     /// reconstructs the candidate by symmetric ξ-adic expansion; the
     /// candidate is verified by exact division of both inputs, so a wrong
-    /// answer is never returned.  If every evaluation point fails (which
-    /// does not happen for inputs of realistic size), the constant `1` is
-    /// returned, meaning "no common factor found".
+    /// answer is never returned.  If every evaluation point fails, the GCD
+    /// is computed by the recursive primitive PRS (contents in the main
+    /// variable, primitive pseudo-remainders), which always succeeds.
+    /// Before 0.30 the constant `1` was returned then ("no common factor
+    /// found"), and that happens for inputs of modest size: the GCD of two
+    /// products sharing the factor `7z + 34` in four variables with
+    /// six-digit coefficients was `1`.
     ///
     /// # Examples
     ///
@@ -1170,16 +1184,111 @@ impl<O: MonomialOrd> MultiPoly<O> {
         }
         let (_, az) = a.clear_denominators();
         let (_, bz) = b.clear_denominators();
-        match Self::heugcd_z(&az, &bz, 0) {
-            Some(h) => {
-                if h.leading_is_negative() {
-                    h.neg()
-                } else {
-                    h
-                }
-            }
-            None => Self::from_int(a.num_vars, 1),
+        let h = match Self::heugcd_z(&az, &bz) {
+            Some((h, _, _)) => h,
+            None => Self::gcd_prs(&az, &bz),
+        };
+        if h.leading_is_negative() { h.neg() } else { h }
+    }
+
+    /// GCD in ℤ[x₁, …, xₙ] of two integer polynomials by the recursive
+    /// primitive PRS: in the highest variable `v` present, split each input
+    /// into its content (the GCD of its coefficients in `v`, a polynomial in
+    /// the other variables, by [`gcd`](Self::gcd)) and primitive part; the
+    /// GCD is the GCD of the contents times the last nonzero term of the
+    /// primitive pseudo-remainder sequence of the primitive parts (Knuth,
+    /// TAOCP vol. 2, §4.6.1, Algorithm E; Geddes–Czapor–Labahn,
+    /// *Algorithms for Computer Algebra*, §7.3).  The fallback of
+    /// [`gcd`](Self::gcd) when every heuristic evaluation point fails.
+    fn gcd_prs(f: &Self, g: &Self) -> Self {
+        let nv = f.num_vars;
+        if f.is_zero() {
+            return g.normalized_over_z();
         }
+        if g.is_zero() {
+            return f.normalized_over_z();
+        }
+        let mut present = f.variables_present();
+        present.extend(g.variables_present());
+        let Some(v) = present.into_iter().max() else {
+            // Two integer constants.
+            let c = num_integer::gcd(f.integer_content(), g.integer_content());
+            return Self::constant(nv, Ratio::from_integer(c));
+        };
+        let (cf, pf) = f.content_in(v);
+        let (cg, pg) = g.content_in(v);
+        let c = Self::gcd(&cf, &cg);
+        let (mut a, mut b) = if pf.degree_in(v) >= pg.degree_in(v) {
+            (pf, pg)
+        } else {
+            (pg, pf)
+        };
+        while !b.is_zero() {
+            if b.degree_in(v) == 0 {
+                // Primitive and constant in `v`: a unit, so the primitive
+                // parts are coprime.
+                a = Self::from_int(nv, 1);
+                break;
+            }
+            let r = a.prem_in(&b, v);
+            a = b;
+            b = if r.is_zero() { r } else { r.content_in(v).1 };
+        }
+        let h = c.mul(&a);
+        if h.leading_is_negative() { h.neg() } else { h }
+    }
+
+    /// The coefficient of `v^k` as a polynomial in the other variables.
+    fn coeff_in(&self, v: usize, k: u32) -> Self {
+        let mut out = Self::zero(self.num_vars);
+        for (e, c) in self.terms() {
+            if e[v] == k {
+                let mut e = e.to_vec();
+                e[v] = 0;
+                out.insert_term(e, c.clone());
+            }
+        }
+        out.prune();
+        out
+    }
+
+    /// `(content, primitive part)` with respect to the variable `v`: the
+    /// content is the GCD over ℤ of the coefficients in `v` (with positive
+    /// leading coefficient), and `self = content · primitive part`.
+    fn content_in(&self, v: usize) -> (Self, Self) {
+        let mut content = Self::zero(self.num_vars);
+        for k in 0..=self.degree_in(v) {
+            let c = self.coeff_in(v, k);
+            if !c.is_zero() {
+                content = Self::gcd(&content, &c);
+            }
+        }
+        if content.leading_is_negative() {
+            content = content.neg();
+        }
+        match self.div_exact(&content) {
+            Some(p) => (content, p),
+            // The content divides every coefficient; unreachable.
+            None => (Self::from_int(self.num_vars, 1), self.clone()),
+        }
+    }
+
+    /// Pseudo-remainder of `self` by `b` in the variable `v`:
+    /// `lc(b)^(deg a − deg b + 1)·self` reduced modulo `b`, with leading
+    /// coefficients taken in `v` (polynomials in the other variables).
+    fn prem_in(&self, b: &Self, v: usize) -> Self {
+        let db = b.degree_in(v);
+        let lcb = b.coeff_in(v, db);
+        let one = Ratio::from_integer(BigInt::one());
+        let mut r = self.clone();
+        while !r.is_zero() && r.degree_in(v) >= db {
+            let dr = r.degree_in(v);
+            let lcr = r.coeff_in(v, dr);
+            let mut e = vec![0u32; self.num_vars];
+            e[v] = dr - db;
+            r = r.mul(&lcb).sub(&b.mul(&lcr).mul_monomial(&one, &e));
+        }
+        r
     }
 
     /// Least common multiple `a · b / gcd(a, b)` (integer-normalised like
@@ -1210,55 +1319,93 @@ impl<O: MonomialOrd> MultiPoly<O> {
     }
 
     /// Heuristic GCD over ℤ for nonzero integer-coefficient inputs with the
-    /// same number of variables.  Returns the full GCD (including integer
-    /// content), or `None` if every evaluation point failed.
-    fn heugcd_z(f: &Self, g: &Self, depth: usize) -> Option<Self> {
+    /// same number of variables: `(h, cff, cfg)` with `f = h·cff`,
+    /// `g = h·cfg` and `h` the full GCD (including the integer content), or
+    /// `None` if the heuristic fails (then [`gcd_prs`](Self::gcd_prs)
+    /// decides).
+    ///
+    /// Follows SymPy's `dmp_zz_heu_gcd` (`sympy/polys/euclidtools.py`,
+    /// BSD-3; Char, Geddes & Gonnet, "GCDHEU", *J. Symbolic Comput.* 7
+    /// (1989)): only the content common to both inputs is extracted, the
+    /// evaluation point is `max(min(B, 99√B), 2·min(‖f‖/|lc f|, ‖g‖/|lc g|)
+    /// + 4)` with `B = 2·min(‖f‖, ‖g‖) + 29`, and every point tries three
+    /// candidates — the interpolated GCD and the quotients by the two
+    /// interpolated cofactors; a failure of the recursion below fails the
+    /// whole attempt (no nested retries).  Before 0.30 only the GCD
+    /// candidate was tried and every level retried its own points, which
+    /// failed on modest four-variable inputs (the GCD then came out `1`)
+    /// and cost `6^variables` attempts doing so.
+    fn heugcd_z(f: &Self, g: &Self) -> Option<(Self, Self, Self)> {
         let nv = f.num_vars;
-        // Integer content.
+        // Content common to both inputs.
         let cf = f.integer_content();
         let cg = g.integer_content();
         if cf.is_zero() || cg.is_zero() {
             return None;
         }
-        let c = num_integer::gcd(cf.clone(), cg.clone());
-        let inv_cf = Ratio::new(BigInt::one(), cf);
-        let inv_cg = Ratio::new(BigInt::one(), cg);
-        let f = f.scale(&inv_cf);
-        let g = g.scale(&inv_cg);
-        let c_rat = Ratio::from_integer(c);
+        let c = num_integer::gcd(cf, cg);
+        let c_rat = Ratio::from_integer(c.clone());
+        let inv_c = Ratio::new(BigInt::one(), c);
+        let f = f.scale(&inv_c);
+        let g = g.scale(&inv_c);
+        let one = Self::from_int(nv, 1);
 
         if nv == 0 {
-            // Both are ±1 after content removal.
-            return Some(Self::constant(0, c_rat));
+            let a = f.as_constant()?.to_integer();
+            let b = g.as_constant()?.to_integer();
+            let h = num_integer::gcd(a.clone(), b.clone());
+            if h.is_zero() {
+                return None;
+            }
+            return Some((
+                Self::constant(0, Ratio::from_integer(&h * c_rat.to_integer())),
+                Self::constant(0, Ratio::from_integer(a / &h)),
+                Self::constant(0, Ratio::from_integer(b / &h)),
+            ));
         }
-        // A primitive constant is ±1: the GCD is the content GCD.
+        // A constant: the GCD is an integer (the GCD of the contents).
         if f.total_degree() == Some(0) || g.total_degree() == Some(0) {
-            return Some(Self::constant(nv, c_rat));
-        }
-        if f == g || f == g.neg() {
-            return Some(f.scale(&c_rat));
+            let k = num_integer::gcd(f.integer_content(), g.integer_content());
+            let inv_k = Ratio::new(BigInt::one(), k.clone());
+            return Some((
+                Self::constant(nv, Ratio::from_integer(k) * &c_rat),
+                f.scale(&inv_k),
+                g.scale(&inv_k),
+            ));
         }
         // Cheap exact-division shortcuts.
-        if g.div_exact(&f).is_some() {
-            return Some(f.scale(&c_rat));
+        if let Some(q) = g.div_exact_z(&f) {
+            return Some((f.scale(&c_rat), one, q));
         }
-        if f.div_exact(&g).is_some() {
-            return Some(g.scale(&c_rat));
+        if let Some(q) = f.div_exact_z(&g) {
+            return Some((g.scale(&c_rat), q, one));
         }
-        // Guard against pathological recursion depth (one level per variable).
-        if depth > nv + 1 {
-            return None;
-        }
-
+        // Every level evaluates one variable away, so the recursion depth is
+        // the number of variables.  (Before 0.30 a guard `depth > nv + 1`,
+        // with `nv` the variables left, failed every attempt at the
+        // univariate level of a four-variable input: `depth + nv` is the
+        // original number of variables.)
         let var = nv - 1;
         let f_norm = f.max_norm();
         let g_norm = g.max_norm();
         let two = BigInt::from(2);
-        let mut xi: BigInt = &two * f_norm.min(g_norm) + BigInt::from(29);
+        let b = &two * f_norm.clone().min(g_norm.clone()) + BigInt::from(29);
+        let lc_ratio = |norm: &BigInt, p: &Self| -> BigInt {
+            let lc = p
+                .leading_coeff()
+                .map(|c| num_traits::Signed::abs(c.numer()))
+                .filter(|c| !c.is_zero())
+                .unwrap_or_else(BigInt::one);
+            norm / lc
+        };
+        let mut xi = (b.clone().min(BigInt::from(99) * b.sqrt()))
+            .max(&two * lc_ratio(&f_norm, &f).min(lc_ratio(&g_norm, &g)) + BigInt::from(4));
 
         for _ in 0..HEUGCD_MAX_TRIES {
-            if let Some(h) = Self::heugcd_attempt(&f, &g, var, &xi, depth) {
-                return Some(h.scale(&c_rat));
+            match Self::heugcd_attempt(&f, &g, var, &xi) {
+                Attempt::Found(h, cff, cfg) => return Some((h.scale(&c_rat), cff, cfg)),
+                Attempt::Retry => {}
+                Attempt::Failed => return None,
             }
             xi = Self::next_xi(&xi);
         }
@@ -1272,32 +1419,54 @@ impl<O: MonomialOrd> MultiPoly<O> {
         (BigInt::from(73794) * xi * root4) / BigInt::from(27011)
     }
 
-    /// One evaluation/interpolation round of the heuristic GCD for primitive
-    /// inputs `f`, `g` in variable `var` at the point `xi`.  Returns the
-    /// verified GCD candidate or `None`.
-    fn heugcd_attempt(f: &Self, g: &Self, var: usize, xi: &BigInt, depth: usize) -> Option<Self> {
+    /// One evaluation/interpolation round of the heuristic GCD for inputs
+    /// `f`, `g` without common integer content, in variable `var` at the
+    /// point `xi`: the GCD and cofactors of the values are computed
+    /// recursively and interpolated, and each of the three candidates is
+    /// verified by exact division.
+    fn heugcd_attempt(f: &Self, g: &Self, var: usize, xi: &BigInt) -> Attempt<Self> {
         let xi_rat = Ratio::from_integer(xi.clone());
         let ff = f.substitute(var, &xi_rat);
         let gg = g.substitute(var, &xi_rat);
         if ff.is_zero() || gg.is_zero() {
-            return None;
+            return Attempt::Retry;
         }
-        let h = Self::heugcd_z(&ff, &gg, depth + 1)?;
+        let Some((h, cff, cfg)) = Self::heugcd_z(&ff, &gg) else {
+            return Attempt::Failed;
+        };
+        // Candidate 1: the interpolated GCD, made primitive.
         let h = Self::interpolate_xi(&h, xi, var);
-        if h.is_zero() {
-            return None;
-        }
-        // Make primitive (the content of the true GCD is 1 here).
         let content = h.integer_content();
-        if content.is_zero() {
-            return None;
+        if !h.is_zero() && !content.is_zero() {
+            let h = h.scale(&Ratio::new(BigInt::one(), content));
+            if let (Some(cf), Some(cg)) = (f.div_exact_z(&h), g.div_exact_z(&h)) {
+                return Attempt::Found(h, cf, cg);
+            }
         }
-        let h = h.scale(&Ratio::new(BigInt::one(), content));
-        if f.div_exact(&h).is_some() && g.div_exact(&h).is_some() {
-            Some(h)
-        } else {
-            None
+        // Candidate 2: f divided by the interpolated cofactor of f.
+        let cff = Self::interpolate_xi(&cff, xi, var);
+        if !cff.is_zero()
+            && let Some(h) = f.div_exact_z(&cff)
+            && let Some(cg) = g.div_exact_z(&h)
+        {
+            return Attempt::Found(h, cff, cg);
         }
+        // Candidate 3: g divided by the interpolated cofactor of g.
+        let cfg = Self::interpolate_xi(&cfg, xi, var);
+        if !cfg.is_zero()
+            && let Some(h) = g.div_exact_z(&cfg)
+            && let Some(cf) = f.div_exact_z(&h)
+        {
+            return Attempt::Found(h, cf, cfg);
+        }
+        Attempt::Retry
+    }
+
+    /// Exact division in ℤ[x₁, …, xₙ]: the quotient of
+    /// [`div_exact`](Self::div_exact) when it has integer coefficients.
+    fn div_exact_z(&self, divisor: &Self) -> Option<Self> {
+        self.div_exact(divisor)
+            .filter(|q| q.terms().all(|(_, c)| c.is_integer()))
     }
 
     /// Reconstruct a polynomial in variable `var` from its value `h` at
@@ -1892,9 +2061,11 @@ mod tests {
     #[test]
     fn gcd_first_evaluation_point_fails_then_retry_succeeds() {
         // gcd = (x + 1)⁸ has a coefficient 70, but the inputs have max-norms
-        // 28 and 112, so the first evaluation point ξ = 2·28 + 29 = 85 cannot
-        // represent 70 as a symmetric digit: the first attempt must fail and
-        // the next ξ must recover the answer.
+        // 28 and 112, so at the evaluation point ξ = 2·28 + 29 = 85 the GCD
+        // cannot be recovered from its value (70 is not a symmetric digit
+        // mod 85), nor can the cofactors (gcd(f(85), g(85)) carries the
+        // spurious factor gcd(84, 7226) = 2): the attempt must fail and the
+        // next ξ must recover the answer.
         let x: MultiPoly<GrevLex> = MultiPoly::var(1, 0);
         let one = MultiPoly::from_int(1, 1);
         let h = pow(&x.add(&one), 8);
@@ -1903,14 +2074,55 @@ mod tests {
         assert_eq!(f.max_norm(), BigInt::from(28));
         assert_eq!(g.max_norm(), BigInt::from(112));
         let xi0 = BigInt::from(85);
-        assert!(MultiPoly::heugcd_attempt(&f, &g, 0, &xi0, 0).is_none());
+        assert!(matches!(
+            MultiPoly::heugcd_attempt(&f, &g, 0, &xi0),
+            Attempt::Retry
+        ));
         let xi1 = MultiPoly::<GrevLex>::next_xi(&xi0);
         assert!(xi1 > BigInt::from(140), "next ξ = {xi1}");
-        assert_eq!(
-            MultiPoly::heugcd_attempt(&f, &g, 0, &xi1, 0),
-            Some(h.clone())
-        );
+        match MultiPoly::heugcd_attempt(&f, &g, 0, &xi1) {
+            Attempt::Found(hh, cff, cfg) => {
+                assert_eq!(hh, h);
+                assert_eq!(cff, x.sub(&one));
+                assert_eq!(cfg, x.mul(&x).add(&one));
+            }
+            _ => panic!("ξ = {xi1} should recover the GCD"),
+        }
         assert_eq!(MultiPoly::gcd(&f, &g), h);
+    }
+
+    #[test]
+    fn gcd_of_four_variable_products_is_not_one() {
+        // Hunter mpolybig: f = 996·(7z + 34)(47z + 83)(165w + 13x + z + 49),
+        // g = −1464·(7z + 34)(2w² + x³ − 100x + yz − 11).  SymPy
+        // `gcd(f, g)` = 84z + 408.  Before 0.30 the heuristic failed at
+        // every point and the GCD was 1.
+        let v: Vec<MultiPoly<GrevLex>> = (0..4).map(|i| MultiPoly::var(4, i)).collect();
+        let (x, y, z, w) = (&v[0], &v[1], &v[2], &v[3]);
+        let c = |n: i64| MultiPoly::<GrevLex>::from_int(4, n);
+        let h = z.scale(&rat(7)).add(&c(34));
+        // f/h and g/h (SymPy `expand(cancel(f/h))`, `expand(cancel(g/h))`).
+        let fa = w
+            .mul(z)
+            .scale(&rat(7_723_980))
+            .add(&w.scale(&rat(13_640_220)))
+            .add(&x.mul(z).scale(&rat(608_556)))
+            .add(&x.scale(&rat(1_074_684)))
+            .add(&z.mul(z).scale(&rat(46_812)))
+            .add(&z.scale(&rat(2_376_456)))
+            .add(&c(4_050_732));
+        let ga = w
+            .mul(w)
+            .scale(&rat(-2928))
+            .add(&x.mul(x).mul(x).scale(&rat(-1464)))
+            .add(&x.scale(&rat(146_400)))
+            .add(&y.mul(z).scale(&rat(-1464)))
+            .add(&c(16_104));
+        let f = h.mul(&fa);
+        let g = h.mul(&ga);
+        let want = z.scale(&rat(84)).add(&c(408));
+        assert_eq!(MultiPoly::gcd(&f, &g), want);
+        assert_eq!(MultiPoly::gcd_prs(&f, &g), want);
     }
 
     #[test]

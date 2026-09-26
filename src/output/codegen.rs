@@ -777,7 +777,7 @@ fn append_cfg_gated_module(lines: &mut Vec<String>, precision: Precision) {
         ));
     }
     lines.push(format!(
-        "    #[inline] pub fn signum(x: {ft}) -> {ft} {{ if x > 0.0 {{ 1.0 }} else if x < 0.0 {{ -1.0 }} else {{ 0.0 }} }}"
+        "    #[inline] pub fn signum(x: {ft}) -> {ft} {{ if x > 0.0 {{ 1.0 }} else if x < 0.0 {{ -1.0 }} else if x == 0.0 {{ 0.0 }} else {{ x }} }}"
     ));
     lines.push(format!(
         "    #[inline] pub fn atan2(y: {ft}, x: {ft}) -> {ft} {{ libm::atan2(y as f64, x as f64) as {ft} }}"
@@ -1076,18 +1076,21 @@ fn expr_to_rust_cse(
         ExprNode::Asinh(x) => emit_unary(arena, x, "asinh", var_names, options, cse_constants),
         ExprNode::Acosh(x) => emit_unary(arena, x, "acosh", var_names, options, cse_constants),
         ExprNode::Atanh(x) => emit_unary(arena, x, "atanh", var_names, options, cse_constants),
+        // A NaN argument gives NaN (it gave 0 and 0.5), as in `compile()`.
         ExprNode::Sign(x) => {
             let code = expr_to_rust_cse(arena, x, var_names, options, cse_constants)?;
             let s = options.precision.suffix();
+            let nan = options.precision.nan();
             Ok(format!(
-                "(if {code} > 0.0{s} {{ 1.0{s} }} else if {code} < 0.0{s} {{ -1.0{s} }} else {{ 0.0{s} }})"
+                "(if {code} > 0.0{s} {{ 1.0{s} }} else if {code} < 0.0{s} {{ -1.0{s} }} else if {code} == 0.0{s} {{ 0.0{s} }} else {{ {nan} }})"
             ))
         }
         ExprNode::Heaviside(x) => {
             let code = expr_to_rust_cse(arena, x, var_names, options, cse_constants)?;
             let s = options.precision.suffix();
+            let nan = options.precision.nan();
             Ok(format!(
-                "(if {code} > 0.0{s} {{ 1.0{s} }} else if {code} < 0.0{s} {{ 0.0{s} }} else {{ 0.5{s} }})"
+                "(if {code} > 0.0{s} {{ 1.0{s} }} else if {code} < 0.0{s} {{ 0.0{s} }} else if {code} == 0.0{s} {{ 0.5{s} }} else {{ {nan} }})"
             ))
         }
         ExprNode::DiracDelta(_x) => {

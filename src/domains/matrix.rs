@@ -162,15 +162,17 @@ pub(crate) fn ex_is_zero(e: &Ex) -> Option<bool> {
         return Some(b);
     }
     // Numeric constants (including `RootOf`, whose bound variable
-    // `is_constant` would report as free): decide by evaluation.
-    if let Ok(z) = s.eval_complex64() {
-        if z.re == 0.0 && z.im == 0.0 {
-            return Some(true);
-        }
-        if z.re.abs() > 1e-12 || z.im.abs() > 1e-12 {
-            return Some(false);
-        }
-        return None;
+    // `is_constant` would report as free): a single `RootOf` over ℚ is
+    // decided exactly in its number field; anything else by the certified
+    // test (certified digits, the exact test for algebraic numbers, the
+    // deep zero search) — undecided stays `None`.  Before 0.30 an `f64`
+    // value of exactly `0.0` was zero and one above `10⁻¹²` nonzero.
+    if let Some(b) = rootof_field_is_zero(&s) {
+        return Some(b);
+    }
+    if s.eval_complex64().is_ok() {
+        let mut inner = s.inner.write();
+        return crate::poly::algebraic::is_zero_checked(&mut inner.arena, s.raw_id());
     }
     // Symbolic with fractions: bring over a common denominator and retry.
     // Skipped when radicals are present: `together` then routes through a
@@ -188,6 +190,392 @@ pub(crate) fn ex_is_zero(e: &Ex) -> Option<bool> {
         }
     }
     None
+}
+
+/// Exact zero test for a constant built from rationals and one `RootOf(g,
+/// k)` node by `+`, `·` and integer powers, with `g` irreducible over ℚ:
+/// the expression is evaluated in the number field `ℚ[t]/(g)` (`RootOf ↦
+/// t`), where it is zero iff its residue is — for every root of `g`, so
+/// the index `k` does not matter.  `None` for any other shape (another
+/// atom, two different `RootOf`s, a reducible or linear `g`, a division
+/// by an expression that vanishes).
+///
+/// This is the zero test of Gaussian elimination on `A − λI` for a
+/// rational `A` and an eigenvalue `λ = RootOf(g, k)`: every entry is such
+/// an expression.  Before 0.30 those entries were decided by an `f64`
+/// evaluation with an absolute threshold, so a matrix with small entries
+/// had pivots of size `10⁻¹⁵` taken for zero (two "eigenvectors" for a
+/// simple eigenvalue, none for another, `Av ≠ λv`).
+pub(crate) fn rootof_field_is_zero(e: &Ex) -> Option<bool> {
+    use crate::base::node::{ExprId, ExprNode};
+    use crate::poly::dense::Poly;
+    let inner = e.inner.read();
+    let arena = &inner.arena;
+    // Pass 1: the shape, and the single `RootOf` atom.
+    let mut root: Option<ExprId> = None;
+    let mut stack = vec![e.raw_id()];
+    let mut seen = rustc_hash::FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        match arena.node(id) {
+            ExprNode::RootOf(..) => {
+                if root.is_some_and(|r| r != id) {
+                    return None;
+                }
+                root = Some(id);
+            }
+            ExprNode::Num(_) => {}
+            ExprNode::Add(ch) | ExprNode::Mul(ch) => stack.extend(ch.iter().copied()),
+            ExprNode::Pow(b, x) => {
+                if !arena.as_num(*x).is_some_and(|r| r.is_integer()) {
+                    return None;
+                }
+                stack.push(*b);
+            }
+            _ => return None,
+        }
+    }
+    let root = root?;
+    let ExprNode::RootOf(p, v, _) = arena.node(root) else {
+        return None;
+    };
+    let g = crate::poly::polybridge::expr_to_poly(arena, *p, *v)?;
+    if g.degree()? < 2 || !irreducible_cached(&g) {
+        return None;
+    }
+    let reduce = |a: Poly| a.rem(&g);
+    let invert = |a: &Poly| -> Option<Poly> {
+        if a.is_zero() {
+            return None;
+        }
+        let e = Poly::extended_gcd(a, &g);
+        // `g` irreducible and `a ≢ 0`: the gcd is a nonzero constant.
+        let c = e.gcd.leading_coeff()?.clone();
+        if e.gcd.degree() != Some(0) {
+            return None;
+        }
+        Some(reduce(e.x.scale(&(Q::from_integer(1.into()) / c))))
+    };
+    // Pass 2: post-order evaluation in ℚ[t]/(g).
+    let mut val: rustc_hash::FxHashMap<ExprId, Poly> = rustc_hash::FxHashMap::default();
+    let mut stack = vec![(e.raw_id(), false)];
+    while let Some((id, ready)) = stack.pop() {
+        if val.contains_key(&id) {
+            continue;
+        }
+        let node = arena.node(id);
+        let children: Vec<ExprId> = match node {
+            ExprNode::Add(ch) | ExprNode::Mul(ch) => ch.to_vec(),
+            ExprNode::Pow(b, _) => vec![*b],
+            _ => vec![],
+        };
+        if !ready && !children.is_empty() {
+            stack.push((id, true));
+            stack.extend(children.into_iter().map(|c| (c, false)));
+            continue;
+        }
+        let r = match node {
+            ExprNode::Num(_) => Poly::constant(arena.as_num(id)?.clone()),
+            ExprNode::RootOf(..) => reduce(Poly::x()),
+            ExprNode::Add(ch) => {
+                let mut acc = Poly::zero();
+                for c in ch {
+                    acc = acc.add(val.get(c)?);
+                }
+                acc
+            }
+            ExprNode::Mul(ch) => {
+                let mut acc = Poly::one();
+                for c in ch {
+                    acc = reduce(acc.mul(val.get(c)?));
+                }
+                acc
+            }
+            ExprNode::Pow(b, x) => {
+                let n = arena.as_num(*x)?.to_integer();
+                let base = val.get(b)?;
+                let mut base = if n < 0.into() {
+                    invert(base)?
+                } else {
+                    base.clone()
+                };
+                let mut k = num_traits::Signed::abs(&n);
+                let mut acc = Poly::one();
+                let two = BigInt::from(2);
+                while k > 0.into() {
+                    if (&k % &two) == 1.into() {
+                        acc = reduce(acc.mul(&base));
+                    }
+                    k /= &two;
+                    if k > 0.into() {
+                        base = reduce(base.mul(&base));
+                    }
+                }
+                acc
+            }
+            _ => return None,
+        };
+        val.insert(id, r);
+    }
+    Some(val.get(&e.raw_id())?.is_zero())
+}
+
+/// Is `e` identically zero as a rational function over ℚ of its free
+/// symbols?  `e` must be built from rationals and symbols by sums,
+/// products and integer powers (read by explicit post-order walks);
+/// `None` for any other node (a function, a radical, a constant such as
+/// `π`).
+///
+/// `e` is first evaluated exactly at up to [`RF_POINTS`] fixed rational
+/// points of large height: a nonzero value proves `e ≢ 0` (the common
+/// case, linear in the size of the expression DAG).  When a value is zero
+/// the numerator `P` of `e = P/Q` is expanded exactly and `e ≡ 0` iff
+/// `P = 0`; only if that expansion exceeds [`RF_TERM_BUDGET`] terms is the
+/// answer taken from the values at all the points (zero at every point:
+/// zero — a nonzero `P` of degree `d` vanishes at a point of height `h`
+/// with probability about `d/h`, Schwartz–Zippel).
+///
+/// The pivots of symbolic Gaussian elimination are such rational
+/// functions.  Before 0.30 `linsolve` decided them by `simplify`, which
+/// does not always bring an identically-zero combination to `0` (it then
+/// divided by zero: a "unique" solution of `nan`s for a rank-deficient
+/// system, or a consistent system reported inconsistent), and
+/// `rref`/`rank`/`nullspace` only structurally (`rank` of
+/// `[[2t − 2, 3t − 3], [6, 9]]` was 2, and null-space vectors were not in
+/// the kernel).
+pub(crate) fn rational_function_is_zero(e: &Ex) -> Option<bool> {
+    use num_traits::Zero;
+    let inner = e.inner.read();
+    let arena = &inner.arena;
+    let syms = crate::base::walk::free_symbols(arena, e.raw_id());
+    let mut zero_at_all = true;
+    for k in 0..RF_POINTS {
+        match rf_value_at(arena, e.raw_id(), &syms, k)? {
+            Some(v) if !v.is_zero() => return Some(false),
+            Some(_) => {}
+            // A denominator vanishes at this point: no information.
+            None => zero_at_all = false,
+        }
+        // A zero value: settle it exactly (below) unless it is too big.
+        if let Some(b) = rf_numerator_is_zero(arena, e.raw_id(), &syms) {
+            return Some(b);
+        }
+    }
+    zero_at_all.then_some(true)
+}
+
+/// Number of evaluation points of [`rational_function_is_zero`].
+const RF_POINTS: u64 = 3;
+
+/// Largest intermediate polynomial (in terms) that
+/// [`rational_function_is_zero`] expands exactly.
+const RF_TERM_BUDGET: usize = 4000;
+
+/// The rational value of `root` with symbol `syms[i]` set to point `k`'s
+/// `i`-th coordinate.  `None` for a node that is not rational-function
+/// arithmetic; `Some(None)` when a division by zero occurs.
+fn rf_value_at(
+    arena: &crate::base::arena::Arena,
+    root: crate::base::node::ExprId,
+    syms: &[crate::base::node::ExprId],
+    k: u64,
+) -> Option<Option<Q>> {
+    use crate::base::node::{ExprId, ExprNode};
+    use num_traits::Zero;
+    let point = |i: usize| -> Q {
+        // Fixed, reproducible coordinates of height about 2⁴⁰.
+        let mut z = (i as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ k.wrapping_mul(0xD1B5_4A32_D192_ED03);
+        let mut next = || {
+            z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut x = z;
+            x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            x ^ (x >> 31)
+        };
+        let num = BigInt::from(next() >> 23) - BigInt::from(1u64 << 40);
+        let den = BigInt::from((next() >> 24) | 1);
+        Q::new(num, den)
+    };
+    let index: rustc_hash::FxHashMap<ExprId, usize> =
+        syms.iter().enumerate().map(|(i, &s)| (s, i)).collect();
+    let mut val: rustc_hash::FxHashMap<ExprId, Q> = rustc_hash::FxHashMap::default();
+    let mut stack = vec![(root, false)];
+    while let Some((id, ready)) = stack.pop() {
+        if val.contains_key(&id) {
+            continue;
+        }
+        let node = arena.node(id);
+        let children: Vec<ExprId> = match node {
+            ExprNode::Add(ch) | ExprNode::Mul(ch) => ch.to_vec(),
+            ExprNode::Pow(b, _) | ExprNode::Neg(b) => vec![*b],
+            _ => vec![],
+        };
+        if !ready && !children.is_empty() {
+            stack.push((id, true));
+            stack.extend(children.into_iter().map(|c| (c, false)));
+            continue;
+        }
+        let v = match node {
+            ExprNode::Num(_) => arena.as_num(id)?.clone(),
+            ExprNode::Symbol(_) => point(*index.get(&id)?),
+            ExprNode::Neg(b) => -val.get(b)?.clone(),
+            ExprNode::Add(ch) => {
+                let mut acc = Q::zero();
+                for c in ch {
+                    acc += val.get(c)?;
+                }
+                acc
+            }
+            ExprNode::Mul(ch) => {
+                let mut acc = Q::from_integer(BigInt::from(1));
+                for c in ch {
+                    acc *= val.get(c)?;
+                }
+                acc
+            }
+            ExprNode::Pow(b, x) => {
+                let n = arena.as_num(*x)?;
+                if !n.is_integer() {
+                    return None;
+                }
+                let n = num_traits::ToPrimitive::to_i32(&n.to_integer())?;
+                if !(-64..=64).contains(&n) {
+                    return None;
+                }
+                let b = val.get(b)?;
+                if n < 0 && b.is_zero() {
+                    return Some(None);
+                }
+                num_traits::Pow::pow(b, n)
+            }
+            _ => return None,
+        };
+        val.insert(id, v);
+    }
+    Some(val.get(&root).cloned())
+}
+
+/// Is the numerator of `root = P/Q` (over ℚ in `syms`) the zero
+/// polynomial?  `None` when an intermediate polynomial exceeds
+/// [`RF_TERM_BUDGET`] terms, when a denominator is the zero polynomial, or
+/// for a node that is not rational-function arithmetic.
+fn rf_numerator_is_zero(
+    arena: &crate::base::arena::Arena,
+    root: crate::base::node::ExprId,
+    syms: &[crate::base::node::ExprId],
+) -> Option<bool> {
+    use crate::base::node::{ExprId, ExprNode};
+    use crate::poly::multipoly::{GrevLex, MultiPoly};
+    type Mp = MultiPoly<GrevLex>;
+    let nv = syms.len();
+    let index: rustc_hash::FxHashMap<ExprId, usize> =
+        syms.iter().enumerate().map(|(i, &s)| (s, i)).collect();
+    let mut val: rustc_hash::FxHashMap<ExprId, (Mp, Mp)> = rustc_hash::FxHashMap::default();
+    let mut stack = vec![(root, false)];
+    while let Some((id, ready)) = stack.pop() {
+        if val.contains_key(&id) {
+            continue;
+        }
+        let node = arena.node(id);
+        let children: Vec<ExprId> = match node {
+            ExprNode::Add(ch) | ExprNode::Mul(ch) => ch.to_vec(),
+            ExprNode::Pow(b, _) | ExprNode::Neg(b) => vec![*b],
+            _ => vec![],
+        };
+        if !ready && !children.is_empty() {
+            stack.push((id, true));
+            stack.extend(children.into_iter().map(|c| (c, false)));
+            continue;
+        }
+        let r = match node {
+            ExprNode::Num(_) => (
+                Mp::constant(nv, arena.as_num(id)?.clone()),
+                Mp::from_int(nv, 1),
+            ),
+            ExprNode::Symbol(_) => (Mp::var(nv, *index.get(&id)?), Mp::from_int(nv, 1)),
+            ExprNode::Neg(b) => {
+                let (n, d) = val.get(b)?;
+                (n.neg(), d.clone())
+            }
+            ExprNode::Add(ch) => {
+                let (mut n, mut d) = (Mp::zero(nv), Mp::from_int(nv, 1));
+                for c in ch {
+                    let (cn, cd) = val.get(c)?;
+                    if *cd == d {
+                        n = n.add(cn);
+                    } else {
+                        n = n.mul(cd).add(&cn.mul(&d));
+                        d = d.mul(cd);
+                    }
+                    if n.num_terms().max(d.num_terms()) > RF_TERM_BUDGET {
+                        return None;
+                    }
+                }
+                (n, d)
+            }
+            ExprNode::Mul(ch) => {
+                let (mut n, mut d) = (Mp::from_int(nv, 1), Mp::from_int(nv, 1));
+                for c in ch {
+                    let (cn, cd) = val.get(c)?;
+                    n = n.mul(cn);
+                    d = d.mul(cd);
+                    if n.num_terms().max(d.num_terms()) > RF_TERM_BUDGET {
+                        return None;
+                    }
+                }
+                (n, d)
+            }
+            ExprNode::Pow(b, x) => {
+                let k = arena.as_num(*x)?;
+                if !k.is_integer() {
+                    return None;
+                }
+                let k = num_traits::ToPrimitive::to_i64(&k.to_integer())?;
+                let e = u32::try_from(k.unsigned_abs()).ok().filter(|&e| e <= 64)?;
+                let (bn, bd) = val.get(b)?;
+                let (n, d) = if k >= 0 {
+                    (bn.pow(e), bd.pow(e))
+                } else {
+                    if bn.is_zero() {
+                        return None;
+                    }
+                    (bd.pow(e), bn.pow(e))
+                };
+                if n.num_terms().max(d.num_terms()) > RF_TERM_BUDGET {
+                    return None;
+                }
+                (n, d)
+            }
+            _ => return None,
+        };
+        if r.1.is_zero() {
+            return None;
+        }
+        val.insert(id, r);
+    }
+    Some(val.get(&root)?.0.is_zero())
+}
+
+/// `is_irreducible_z(g) == Some(true)`, remembering the last polynomial
+/// asked about (an elimination asks about the same `g` for every entry).
+fn irreducible_cached(g: &crate::poly::dense::Poly) -> bool {
+    use std::cell::RefCell;
+    thread_local! {
+        static LAST: RefCell<Option<(crate::poly::dense::Poly, bool)>> = const { RefCell::new(None) };
+    }
+    if let Some(b) = LAST.with(|c| {
+        c.borrow()
+            .as_ref()
+            .and_then(|(p, b)| (p == g).then_some(*b))
+    }) {
+        return b;
+    }
+    let b = crate::poly::factor_zassenhaus::is_irreducible_z(g) == Some(true);
+    LAST.with(|c| *c.borrow_mut() = Some((g.clone(), b)));
+    b
 }
 
 /// Does `e` contain a power with a numeric non-integer exponent (a radical)?
@@ -2093,7 +2481,13 @@ impl Matrix {
         let mut result = Vec::new();
         for (eigenval, alg_mult) in &eigen_pairs {
             let a_minus_lambda_i = self.sub(&eye.scale(eigenval))?;
-            let vecs = a_minus_lambda_i.nullspace_semantic();
+            let field = self
+                .as_qmatrix()
+                .and_then(|q| Some((q, eigenvalue_minimal_polynomial(eigenval)?)));
+            let vecs = match field {
+                Some((q, g)) => a_minus_lambda_i.nullspace_in_field(q, &g),
+                None => a_minus_lambda_i.nullspace_semantic(),
+            };
             trace!(
                 alg_mult,
                 geom_mult = vecs.len(),
@@ -3378,13 +3772,23 @@ impl Matrix {
 
     /// Row-reduced echelon form via Gauss–Jordan elimination.
     ///
-    /// Returns `(rref_matrix, pivot_columns)`.  Uses exact arithmetic;
-    /// pivots are the first *structurally* non-zero entries, so symbolic
-    /// entries are always treated as non-zero.  (The eigen-family uses a
-    /// simplifying zero test internally so that irrational eigenvalues
-    /// still yield eigenvectors.)
+    /// Returns `(rref_matrix, pivot_columns)`.  Uses exact arithmetic.
+    /// An entry that is a rational function of the symbols is a pivot iff
+    /// it is not identically zero (decided exactly); any other symbolic
+    /// entry (a radical, a function) is a pivot unless it is structurally
+    /// zero, i.e. assumed non-zero (generic rank).  Before 0.30 every
+    /// structurally non-zero entry was a pivot, so `[[2t − 2, 3t − 3],
+    /// [6, 9]]` had rank 2.  (The eigen-family uses a simplifying zero test
+    /// internally so that irrational eigenvalues still yield eigenvectors.)
     pub fn rref(&self) -> (Matrix, Vec<usize>) {
-        self.rref_by(&|e: &Ex| e.is_zero_structural())
+        if let Some(q) = self.as_qmatrix() {
+            let (r, pivots) = q.rref();
+            return (r.to_matrix(&self.ctx()), pivots);
+        }
+        self.rref_core(&mut ClosureOracle {
+            test: &pivot_is_zero,
+            clean: true,
+        })
     }
 
     /// RREF with a caller-supplied zero test for pivot selection.
@@ -3395,6 +3799,15 @@ impl Matrix {
             let (r, pivots) = q.rref();
             return (r.to_matrix(&self.ctx()), pivots);
         }
+        self.rref_core(&mut ClosureOracle {
+            test: is_zero,
+            clean: false,
+        })
+    }
+
+    /// Gauss–Jordan elimination with the zero decisions taken by `oracle`,
+    /// which is told every row operation (see [`PivotOracle`]).
+    fn rref_core(&self, oracle: &mut dyn PivotOracle) -> (Matrix, Vec<usize>) {
         let nrows = self.nrows;
         let ncols = self.ncols;
         let mut rows: Vec<Vec<Ex>> = self.rows.clone();
@@ -3407,7 +3820,7 @@ impl Matrix {
             }
             let mut found = None;
             for i in pivot_row..nrows {
-                if !is_zero(&rows[i][col]) {
+                if !oracle.is_zero(i, col, &rows[i][col]) {
                     found = Some(i);
                     break;
                 }
@@ -3416,25 +3829,39 @@ impl Matrix {
 
             if found != pivot_row {
                 rows.swap(pivot_row, found);
+                oracle.swap(pivot_row, found);
             }
             let pivot_val = rows[pivot_row][col].clone();
             for j in 0..ncols {
                 rows[pivot_row][j] = &rows[pivot_row][j] / &pivot_val;
             }
+            oracle.normalize(pivot_row, col);
             for i in 0..nrows {
                 if i == pivot_row {
                     continue;
                 }
-                if !is_zero(&rows[i][col]) {
+                if !oracle.is_zero(i, col, &rows[i][col]) {
                     let factor = rows[i][col].clone();
                     for j in 0..ncols {
                         let term = &factor * &rows[pivot_row][j];
                         rows[i][j] = &rows[i][j] - &term;
                     }
+                    oracle.eliminate(i, pivot_row, col);
                 }
             }
             pivots.push(col);
             pivot_row += 1;
+        }
+        // The rows below the rank were found zero entry by entry; show them
+        // as zeros (an entry can be zero without being structurally so).
+        if oracle.clean_zero_rows() {
+            for (i, row) in rows.iter_mut().enumerate().skip(pivot_row) {
+                for (j, e) in row.iter_mut().enumerate() {
+                    if !e.is_zero_structural() && oracle.is_zero(i, j, e) {
+                        *e = e.context().zero();
+                    }
+                }
+            }
         }
 
         (Matrix::with_shape(rows, nrows, ncols), pivots)
@@ -3453,10 +3880,10 @@ impl Matrix {
 
     /// Null space (kernel): basis vectors for `Ax = 0`, as column vectors.
     ///
-    /// Empty for a full-column-rank matrix.  Uses structural pivoting like
+    /// Empty for a full-column-rank matrix.  Uses the pivoting of
     /// [`rref`](Self::rref).
     pub fn nullspace(&self) -> Vec<Matrix> {
-        self.nullspace_by(&|e: &Ex| e.is_zero_structural())
+        self.nullspace_by(&pivot_is_zero)
     }
 
     /// Null space using the simplifying zero test (for eigen computations).
@@ -3466,6 +3893,23 @@ impl Matrix {
 
     fn nullspace_by(&self, is_zero: &dyn Fn(&Ex) -> bool) -> Vec<Matrix> {
         let (rref_mat, pivots) = self.rref_by(is_zero);
+        self.nullspace_from_rref(&rref_mat, &pivots)
+    }
+
+    /// Null space of `self = A − λI` for a rational `A` (`a`) and an
+    /// eigenvalue `λ` with minimal polynomial `g` over ℚ (degree ≥ 2):
+    /// the elimination on the expressions is shadowed by the same
+    /// elimination on `A − tI` over the number field `ℚ[t]/(g)`, which
+    /// takes every zero decision exactly — whatever form `λ` has
+    /// (radicals or `RootOf`), and with one minimal polynomial per
+    /// eigenvalue instead of one exact zero test per entry.
+    fn nullspace_in_field(&self, a: &QMatrix, g: &crate::poly::dense::Poly) -> Vec<Matrix> {
+        let mut oracle = FieldShadow::new(a, g);
+        let (rref_mat, pivots) = self.rref_core(&mut oracle);
+        self.nullspace_from_rref(&rref_mat, &pivots)
+    }
+
+    fn nullspace_from_rref(&self, rref_mat: &Matrix, pivots: &[usize]) -> Vec<Matrix> {
         let n = self.ncols;
 
         let pivot_set: std::collections::HashSet<usize> = pivots.iter().copied().collect();
@@ -4574,6 +5018,143 @@ fn eigvals_via_derivative(char_poly: &Ex, var: &Ex) -> Vec<(Ex, usize)> {
 /// The numeric fallback is sound here because `λ` is an exact eigenvalue:
 /// `A − λI` *is* singular, so a pivot candidate that evaluates to ~1e-15
 /// is a radical expression for zero, not a genuinely tiny constant.
+/// The zero decisions of [`Matrix::rref_core`], told each row operation as
+/// it is applied to the expressions (so a shadow copy can follow it).
+trait PivotOracle {
+    /// Is the current entry `(i, j)`, whose expression is `e`, zero?
+    fn is_zero(&mut self, i: usize, j: usize, e: &Ex) -> bool;
+    /// Rows `a` and `b` were swapped.
+    fn swap(&mut self, _a: usize, _b: usize) {}
+    /// Row `row` was divided by its entry in column `col`.
+    fn normalize(&mut self, _row: usize, _col: usize) {}
+    /// Row `row` had `entry(row, col)` times row `pivot_row` subtracted.
+    fn eliminate(&mut self, _row: usize, _pivot_row: usize, _col: usize) {}
+    /// Replace the (zero) entries of the rows below the rank by `0`?
+    fn clean_zero_rows(&self) -> bool {
+        false
+    }
+}
+
+/// A zero test on the expression alone; `clean` asks for the zero rows of
+/// the result to be written as zeros (the public `rref`).
+struct ClosureOracle<'a> {
+    test: &'a dyn Fn(&Ex) -> bool,
+    clean: bool,
+}
+
+impl PivotOracle for ClosureOracle<'_> {
+    fn is_zero(&mut self, _i: usize, _j: usize, e: &Ex) -> bool {
+        (self.test)(e)
+    }
+    fn clean_zero_rows(&self) -> bool {
+        self.clean
+    }
+}
+
+/// `A − tI` over `ℚ[t]/(g)` (`g` irreducible), eliminated in lockstep with
+/// the expressions of `A − λI` for a root `λ` of `g`: the two are the same
+/// numbers, so the residue decides each zero test exactly.
+struct FieldShadow {
+    rows: Vec<Vec<crate::poly::dense::Poly>>,
+    g: crate::poly::dense::Poly,
+}
+
+impl FieldShadow {
+    fn new(a: &QMatrix, g: &crate::poly::dense::Poly) -> Self {
+        use crate::poly::dense::Poly;
+        let rows = a
+            .to_rows()
+            .into_iter()
+            .enumerate()
+            .map(|(i, row)| {
+                row.into_iter()
+                    .enumerate()
+                    .map(|(j, c)| {
+                        let c = Poly::constant(c);
+                        if i == j { c.sub(&Poly::x()) } else { c }
+                    })
+                    .collect()
+            })
+            .collect();
+        FieldShadow { rows, g: g.clone() }
+    }
+
+    /// Inverse of a nonzero residue (`g` irreducible, so the extended gcd
+    /// is a nonzero constant).
+    fn inverse(&self, a: &crate::poly::dense::Poly) -> crate::poly::dense::Poly {
+        use crate::poly::dense::Poly;
+        let e = Poly::extended_gcd(a, &self.g);
+        match e.gcd.leading_coeff() {
+            Some(c) if e.gcd.degree() == Some(0) => {
+                e.x.scale(&(Q::from_integer(BigInt::from(1)) / c))
+                    .rem(&self.g)
+            }
+            // Unreachable for a nonzero residue and an irreducible `g`;
+            // a zero residue is never a pivot.
+            _ => Poly::zero(),
+        }
+    }
+}
+
+impl PivotOracle for FieldShadow {
+    fn is_zero(&mut self, i: usize, j: usize, _e: &Ex) -> bool {
+        self.rows[i][j].is_zero()
+    }
+    fn swap(&mut self, a: usize, b: usize) {
+        self.rows.swap(a, b);
+    }
+    fn normalize(&mut self, row: usize, col: usize) {
+        let inv = self.inverse(&self.rows[row][col]);
+        let g = &self.g;
+        for c in &mut self.rows[row] {
+            *c = c.mul(&inv).rem(g);
+        }
+    }
+    fn eliminate(&mut self, row: usize, pivot_row: usize, col: usize) {
+        let f = self.rows[row][col].clone();
+        let pivot = self.rows[pivot_row].clone();
+        let g = &self.g;
+        for (c, p) in self.rows[row].iter_mut().zip(&pivot) {
+            *c = c.sub(&f.mul(p)).rem(g);
+        }
+    }
+}
+
+/// Minimal polynomial over ℚ of an eigenvalue of a rational matrix, when it
+/// has degree ≥ 2 and can be certified: the (irreducible) polynomial of a
+/// `RootOf`, or the verified minimal polynomial of a radical expression.
+/// `None` for rational eigenvalues (their `A − λI` is rational) and for
+/// anything else.
+fn eigenvalue_minimal_polynomial(lam: &Ex) -> Option<crate::poly::dense::Poly> {
+    use crate::base::node::ExprNode;
+    if lam.expr_type() == ExprType::Number {
+        return None;
+    }
+    let mut inner = lam.inner.write();
+    let arena = &mut inner.arena;
+    let g = match arena.node(lam.raw_id()) {
+        ExprNode::RootOf(p, v, _) => {
+            let (p, v) = (*p, *v);
+            let g = crate::poly::polybridge::expr_to_poly(arena, p, v)?;
+            irreducible_cached(&g).then_some(g)?
+        }
+        _ => crate::poly::algebraic::minimal_polynomial(arena, lam.raw_id())?,
+    };
+    (g.degree()? >= 2).then_some(g)
+}
+
+/// Zero test of the pivots of [`Matrix::rref`] (and `rank`, `nullspace`,
+/// …): structural, exact for rational functions of the symbols.
+fn pivot_is_zero(e: &Ex) -> bool {
+    if e.is_zero_structural() {
+        return true;
+    }
+    if e.expr_type() == ExprType::Number {
+        return false;
+    }
+    rational_function_is_zero(e) == Some(true)
+}
+
 fn eigen_zero_test(e: &Ex) -> bool {
     if e.is_zero_structural() {
         return true;
@@ -4581,12 +5162,14 @@ fn eigen_zero_test(e: &Ex) -> bool {
     if e.expr_type() == ExprType::Number {
         return false;
     }
-    match ex_is_zero(e) {
-        Some(b) => b,
-        None => {
-            matches!(e.eval_complex64(), Ok(z) if z.re.abs() < 1e-10 && z.im.abs() < 1e-10)
-        }
+    // Exact for the entries of `A − λI` with rational `A` and `λ =
+    // RootOf(g, k)`; certified for other constants (see `ex_is_zero`).
+    // Before 0.30 an undecided entry was zero when its `f64` value was
+    // below `10⁻¹⁰` in absolute value (see `rootof_field_is_zero`).
+    if let Some(b) = rootof_field_is_zero(e) {
+        return b;
     }
+    ex_is_zero(e) == Some(true)
 }
 
 /// Compute nullspace of `(a_minus_lambda)^power`.

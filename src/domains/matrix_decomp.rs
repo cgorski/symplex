@@ -331,7 +331,10 @@ impl Matrix {
     /// - [`SymplexError::InvalidArgument`] if the matrix is not square or
     ///   provably not symmetric.
     /// - [`SymplexError::ComputationFailed`] if a zero pivot is
-    ///   encountered (no pivoting is performed).
+    ///   encountered with a nonzero entry below it (no pivoting is
+    ///   performed).  A zero pivot whose column is zero below it needs no
+    ///   division and is kept (`d_j = 0`, `l_ij = 0`): `[[0]]` and
+    ///   `[[1, 1], [1, 1]]` decompose (before 0.30 they were errors).
     ///
     /// # Examples
     ///
@@ -373,20 +376,30 @@ impl Matrix {
                 acc += &l[j][k].powi(2) * &d[k];
             }
             let dj = (self.get(j, j) - &acc).simplify();
+            // l_ij = (a_ij − Σ_{k<j} l_ik l_jk d_k) / d_j
+            let numerators: Vec<Ex> = ((j + 1)..n)
+                .map(|i| {
+                    let mut acc = zero.clone();
+                    for k in 0..j {
+                        acc += &(&l[i][k] * &l[j][k]) * &d[k];
+                    }
+                    self.get(i, j) - &acc
+                })
+                .collect();
             if ex_is_zero(&dj) == Some(true) {
+                if numerators.iter().all(|u| ex_is_zero(u) == Some(true)) {
+                    // Nothing to divide: the column below is zero too.
+                    d[j] = zero.clone();
+                    continue;
+                }
                 return Err(failed(
                     "ldl",
                     format!("zero pivot at position {j}; matrix needs pivoting or is singular"),
                 ));
             }
             d[j] = dj;
-            // l_ij = (a_ij − Σ_{k<j} l_ik l_jk d_k) / d_j
-            for i in (j + 1)..n {
-                let mut acc = zero.clone();
-                for k in 0..j {
-                    acc += &(&l[i][k] * &l[j][k]) * &d[k];
-                }
-                l[i][j] = (&(self.get(i, j) - &acc) / &d[j]).simplify();
+            for (i, u) in ((j + 1)..n).zip(numerators) {
+                l[i][j] = (&u / &d[j]).simplify();
             }
         }
         Ok(Ldl {

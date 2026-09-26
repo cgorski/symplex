@@ -59,16 +59,21 @@ pub(crate) const PREC_MUL: u8 = 60;
 /// Addition / subtraction (lowest precedence for composed expressions).
 pub(crate) const PREC_ADD: u8 = 40;
 
-/// Does a numeric literal need parentheses when it is the base of a power?
+/// Does a literal need parentheses when it is the base of a power (or the
+/// operand of a postfix `!`)?
 ///
 /// `-2^x` re-parses as `-(2^x)` and `2/3^x` as `2/(3^x)`, so negative and
-/// non-integer rationals must be wrapped: `(-2)^x`, `(2/3)^x`.
+/// non-integer rationals must be wrapped: `(-2)^x`, `(2/3)^x`; so must
+/// `-oo`, which prints with its sign (`(-oo)^(1/3)`, not `-oo^(1/3)`, which
+/// is `-(oo^(1/3))`).
 fn num_base_needs_parens(arena: &Arena, id: ExprId) -> bool {
-    if let ExprNode::Num(nid) = arena.node(id) {
-        let r = arena.num(*nid);
-        r.is_negative() || !r.is_integer()
-    } else {
-        false
+    match arena.node(id) {
+        ExprNode::Num(nid) => {
+            let r = arena.num(*nid);
+            r.is_negative() || !r.is_integer()
+        }
+        ExprNode::NegInfinity => true,
+        _ => false,
     }
 }
 
@@ -232,7 +237,7 @@ fn expand_expr(
     // which bind like a product: `x^(1/y)` printed as `x^1/y` (re-parsing
     // as `x/y`) before 0.25.
     let my_prec = match node {
-        ExprNode::Pow(_, e) if exponent_prints_as_quotient(arena, *e) => PREC_MUL,
+        ExprNode::Pow(b, e) if exponent_prints_as_quotient(arena, *b, *e) => PREC_MUL,
         _ => prec_of(node),
     };
     let need_parens = my_prec < parent_prec;
@@ -411,9 +416,11 @@ fn expand_expr(
             } else {
                 false
             };
-            // x^(-1/2) → "1/sqrt(x)".
+            // x^(-1/2) → "1/sqrt(x)" (not for a negative number, see
+            // `sqrt_shorthand`).
             let is_neg_half_exp = if let ExprNode::Num(nid) = arena.node(exp) {
                 *arena.num(*nid) == Ratio::new(BigInt::from(-1), BigInt::from(2))
+                    && sqrt_shorthand(arena, base)
             } else {
                 false
             };
@@ -602,8 +609,10 @@ fn expand_expr(
 
         // ── Combinatorial ──────────────────────────────────────────
         ExprNode::Factorial(inner) => {
-            // Display as "inner!" with parentheses if inner is compound
-            let needs_parens = !arena.node(inner).is_atom();
+            // Display as "inner!" with parentheses if inner is compound or
+            // a signed / fractional literal (`(-12/7)!`: `-12/7!` re-parses
+            // as `-12/(7!)`).
+            let needs_parens = !arena.node(inner).is_atom() || num_base_needs_parens(arena, inner);
             if needs_parens {
                 stack.push(WorkItem::Lit(")!"));
                 stack.push(WorkItem::Expr(inner, 0));
@@ -1076,12 +1085,20 @@ fn render_mul_with_coeff(arena: &Arena, coeff: Option<Q>, factors: &[ExprId]) ->
     out
 }
 
-/// Does a power with exponent `exp` print as a quotient (`1/b`,
-/// `1/sqrt(b)`)?
-fn exponent_prints_as_quotient(arena: &Arena, exp: ExprId) -> bool {
+/// Does the power `base^exp` print as a quotient (`1/b`, `1/sqrt(b)`)?
+fn exponent_prints_as_quotient(arena: &Arena, base: ExprId, exp: ExprId) -> bool {
     arena.as_num(exp).is_some_and(|e| {
-        *e == Ratio::from(BigInt::from(-1)) || *e == Ratio::new(BigInt::from(-1), BigInt::from(2))
+        *e == Ratio::from(BigInt::from(-1))
+            || (*e == Ratio::new(BigInt::from(-1), BigInt::from(2)) && sqrt_shorthand(arena, base))
     })
+}
+
+/// May `b^(-1/2)` print as `1/sqrt(b)`?  Not for a negative number: the
+/// arena keeps `(-16/7)^(-1/2)` as a power but evaluates `sqrt(-16/7)` to
+/// `4/7*sqrt(7)*I`, so `1/sqrt(-16/7)` re-parses as `-1/4*sqrt(7)*I`, a
+/// different tree.  Such a power prints as `(-16/7)^(-1/2)`.
+fn sqrt_shorthand(arena: &Arena, base: ExprId) -> bool {
+    arena.as_num(base).is_none_or(|b| !b.is_negative())
 }
 
 /// A factor of a product that is printed in the denominator: `b` for
@@ -1103,7 +1120,7 @@ fn as_denominator(arena: &Arena, f: ExprId) -> Option<Denominator> {
     let e = arena.num(*nid);
     if *e == Ratio::from(BigInt::from(-1)) {
         Some(Denominator::Base(*base))
-    } else if *e == Ratio::new(BigInt::from(-1), BigInt::from(2)) {
+    } else if *e == Ratio::new(BigInt::from(-1), BigInt::from(2)) && sqrt_shorthand(arena, *base) {
         Some(Denominator::Sqrt(*base))
     } else {
         None

@@ -52,6 +52,21 @@ differences).  Every class they found is fixed and pinned in `tests/v29/`.
 - **Summation over a range through a pole of the term** is `zoo` for a
   concrete range and unevaluated otherwise (SymPy's behaviour):
   `Σ_{k=1}^{n} 1/(3 − k)` was `−H(n−3) + H(−3)`.
+- **`parse` builds a chain of factors as one product**: `2*(y+1)*x`
+  stays `2*x*(y + 1)` instead of distributing into `(2*y + 2)*x`, so
+  displays round-trip.  `parse` reads `Piecewise(v if c, …)` and `H(x)`
+  (Heaviside, unless the context has its own `H`).
+- **Compiled kernels and emitted code:** `sign` and `heaviside` of `NaN`
+  are `NaN` (were `0` and `0.5`), the VM's `min`/`max` propagate `NaN`,
+  and `compile()` folds constant subexpressions through the certified
+  evaluator (`abs(atanh(9))`, `zeta(3)*x` now compile).
+- **`reduce_inequalities` / `solve_for`:** `≠` is `> ∪ <` and `¬` is pushed
+  to the relations, so poles stay excluded (`(x+2)/(x−4) ≠ 0` contained
+  4); a non-polynomial `≠` without a sign chart is an error.
+- **Symbolic `rref`/`rank`/`nullspace`/`columnspace`/`rowspace` and
+  `linsolve`** decide rational-function pivots exactly (with a documented
+  Schwartz–Zippel fallback beyond 4,000 terms); `ldl` accepts a zero
+  pivot over a zero column.
 - **Exact integer sequences and special values stay symbolic beyond the
   digit guard**: `factorial2`, `subfactorial`, `fibonacci`, `lucas`,
   `bernoulli`, `harmonic`, `catalan`, `bell`, `euler_number`,
@@ -106,8 +121,43 @@ differences).  Every class they found is fixed and pinned in `tests/v29/`.
   numbers), `harmonic(10⁶)`, `catalan(10⁶)`, `bell(10⁴)`,
   `polygamma(10⁵, 1/2)`; orthogonal polynomials use explicit coefficients
   (DLMF §18.5): `legendre(1000, x)` took over a minute, now 0.2 s.
-- **Local fuzz campaign:** all nine targets, 5 minutes each in fork mode:
-  0 crashes.
+- **Exact algebra** (found by an algebra hunt with exact oracles, about
+  410,000 cases):
+  - `Matrix::eigenvects` (and `diagonalize`, `jordan_form`) zero-tested
+    pivots in `f64`: a rational matrix with entries between `10⁻³⁰` and
+    `10⁻¹¹` got two "eigenvectors" for three eigenvalues and none for the
+    fourth.  Elimination on `A − λI` now runs in the eigenvalue's number
+    field `ℚ[t]/(g)`.
+  - Symbolic `rank([[2t−2, 3t−3], [6, 9], [−6, −9]])` was 2 (truly 1);
+    `linsolve` returned `NaN` "unique" solutions, called a consistent
+    system inconsistent, and parametrised an inconsistent one.
+  - `MultiPoly::gcd` of polynomials in four or more variables was 1 (a
+    recursion guard counted the variables left, not those eliminated),
+    which also made `solve_system_ex` hang; it now follows SymPy's
+    heuristic GCD with a primitive-PRS fallback.
+  - `f = 0` for a rational function without roots was an error (now
+    empty).
+- **`erfcinv` returned certified wrong values**: `erfcinv(941/2³⁴)` was
+  `−10573.05` (truly `3.8432`), `erfcinv(10⁻²⁰)` wrong from the 13th digit.
+  The inverse error function iteration is bracketed and refuses when it
+  does not converge.
+- **`(−2)^(−exp(10⁶))` never finished** (a complex power reduced a huge
+  angle mod 2π); it is refused as `exp` of such an angle is.
+- **Display ⇄ parse round trip** (512 failures in the first 3,000 random
+  expressions, 0 in the next 600,000): `(−12/7)!`, `(−oo)^r` and
+  `(−16/7)^(−1/2)` print re-parseably.
+- **Compiled kernels against `eval_f64`** (127,000 points): `beta` and
+  `binomial` at large arguments lost digits to cancellation (`1.3·10⁻⁹`
+  at `B(5, 666624)`), large-argument Bessel `J`/`Y` rounded their phase
+  (`10⁻¹¹` at `J₂(421888)`), `falling_factorial(0, 950)` was `NaN`, huge
+  rational constants were `NaN`.
+- **`polynomial_congruence` modulo a prime ≥ 2⁶³** found no roots
+  (number theory against SymPy, 13,931 cases).
+- **Fuzzing:** three new nightly targets — `fuzz_evalf` (evalf
+  self-consistency), `fuzz_calculus` (calculus against numerical oracles)
+  and `fuzz_roundtrip` (display/parse); the local campaign ran all nine
+  existing targets 5 minutes each (0 crashes) and each new one 5 minutes
+  (0 crashes after the fixes).
 
 ## [0.29.0] - 2026-09-26
 

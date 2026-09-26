@@ -1474,8 +1474,16 @@ fn eval_node(
                 return Ok((BigFloat::new(prec), im));
             }
 
-            // General complex power: b^e = exp(e * ln(b)).
-            Ok(c_pow(b, e, prec, rm, cc))
+            // General complex power: b^e = exp(e * ln(b)), with the angle
+            // `Im(e·ln b)` checked as `exp` checks its argument's: reducing
+            // a huge inexact angle mod 2π needs π to as many bits, and
+            // `(−2)^(−exp(10⁶))` (angle `≈ 10⁴³⁴²⁹⁴`) never finished.
+            if (b.0.is_zero() && b.1.is_zero()) || (e.0.is_zero() && e.1.is_zero()) {
+                return Ok(c_pow(b, e, prec, rm, cc));
+            }
+            let product = c_mul(e, &c_ln(b, prec, rm, cc), prec, rm);
+            check_trig_arg(&product.1, 0, prec, arena)?;
+            Ok(c_exp(&product, prec, rm, cc))
         }
 
         // ── Neg ────────────────────────────────────────────────────
@@ -6222,13 +6230,25 @@ fn arb_erfc(
 }
 
 /// Halley iteration for `erf(x) = y` (`solve_erfc == false`) or
-/// `erfc(x) = y` (`solve_erfc == true`) from the starting point `x0`.
+/// `erfc(x) = y` (`solve_erfc == true`) from the starting point `x0`,
+/// safeguarded by the bracket `[lo, hi]` that contains the root (both
+/// functions are monotone): a step that leaves the bracket, or does not at
+/// least halve it, is replaced by bisection, and the bracket shrinks with
+/// every evaluation.  An iteration that does not converge is refused.
 ///
 /// With `g = f/f'`, the Halley step for both equations is
 /// `x ← x − g / (1 + x g)` (since `f'' = −2x f'`).
+///
+/// Before 0.30 there was no bracket and no convergence check: from a poor
+/// start the iteration drifted to where `erfc` saturates at 2 and returned
+/// its 200th iterate, `erfcinv(941/2³⁴) = −10573.05…` (truly `3.84317…`),
+/// certified.
+#[allow(clippy::too_many_arguments)]
 fn erf_inverse_halley(
     y: &BigFloat,
     x0: f64,
+    lo: f64,
+    hi: f64,
     solve_erfc: bool,
     prec: usize,
     rm: RoundingMode,
@@ -6243,13 +6263,32 @@ fn erf_inverse_halley(
         .sqrt(wp, rm)
         .div(&BigFloat::from_i32(2, wp), wp, rm);
     let one = BigFloat::from_i32(1, wp);
-    let mut x = BigFloat::from_f64(x0, wp);
-    for _ in 0..200 {
+    let two = BigFloat::from_i32(2, wp);
+    let (mut lo, mut hi) = (BigFloat::from_f64(lo, wp), BigFloat::from_f64(hi, wp));
+    let mut x = BigFloat::from_f64(x0.clamp(lo_f(&lo), hi_f(&hi)), wp);
+    fn lo_f(v: &BigFloat) -> f64 {
+        bigfloat_to_f64_rounded(v, RoundingMode::ToEven).unwrap_or(f64::NEG_INFINITY)
+    }
+    fn hi_f(v: &BigFloat) -> f64 {
+        bigfloat_to_f64_rounded(v, RoundingMode::ToEven).unwrap_or(f64::INFINITY)
+    }
+    for _ in 0..(4 * wp + 200) {
         let f = if solve_erfc {
             arb_erfc(&x, wp, rm, cc)?.sub(&yw, wp, rm)
         } else {
             arb_erf(&x, wp, rm, cc)?.sub(&yw, wp, rm)
         };
+        if f.is_zero() {
+            return Ok(round_to(x, prec, rm));
+        }
+        // erf increases, erfc decreases: the root is above x when
+        // erf(x) < y or erfc(x) > y.
+        let root_above = f.is_negative() != solve_erfc;
+        if root_above {
+            lo = x.clone();
+        } else {
+            hi = x.clone();
+        }
         // f' = ±(2/√π) e^{−x²}  ⇒  g = f/f' = ±f (√π/2) e^{x²}
         let x_sq = x.mul(&x, wp, rm);
         let g = f
@@ -6262,12 +6301,26 @@ fn erf_inverse_halley(
         } else {
             g.div(&denom, wp, rm)
         };
-        x = x.sub(&delta, wp, rm);
-        if negligible(&delta, &x, wp) {
-            break;
+        let width = hi.sub(&lo, wp, rm);
+        let candidate = x.sub(&delta, wp, rm);
+        let inside = bf_gt(&candidate, &lo) && bf_lt(&candidate, &hi);
+        let halves = bf_lt(&delta.abs().mul(&two, wp, rm), &width);
+        if inside && halves {
+            x = candidate;
+            if negligible(&delta, &x, wp) {
+                return Ok(round_to(x, prec, rm));
+            }
+        } else {
+            x = lo.add(&hi, wp, rm).div(&two, wp, rm);
+            if negligible(&width, &x, wp) {
+                return Ok(round_to(x, prec, rm));
+            }
         }
     }
-    Ok(round_to(x, prec, rm))
+    Err(SymplexError::computation_failed(
+        "evalf",
+        "the inverse error function iteration did not converge",
+    ))
 }
 
 /// `erfinv(y)` for `|y| < 1`: Winitzki's closed-form approximation refined
@@ -6303,7 +6356,8 @@ fn arb_erfinv(
             let f = erf_f64(x0) - y_f;
             x0 -= f * (std::f64::consts::PI.sqrt() / 2.0) * (x0 * x0).exp();
         }
-        erf_inverse_halley(y, x0, false, prec, rm, cc)?
+        // |y| ≤ 1/2 < erf(1/2): the root lies in (−1/2, 1/2).
+        erf_inverse_halley(y, x0, -0.5, 0.5, false, prec, rm, cc)?
     };
     Ok(if y.is_negative() && !r.is_negative() && y_f.abs() > 0.5 {
         r.neg()
@@ -6314,7 +6368,11 @@ fn arb_erfinv(
 
 /// `erfcinv(u)` for `0 < u ≤ 1/2`, Halley iteration on `erfc`.  The initial
 /// guess inverts the leading asymptotic `erfc(x) ≈ e^{−x²}/(x√π)`, which
-/// also covers `u` far below the `f64` range.
+/// also covers `u` far below the `f64` range; the root lies in
+/// `(0, max(√L, 1)]` with `L = −ln u` (`erfc(0) = 1 > u`, and
+/// `erfc(x) < e^{−x²}/(x√π) ≤ u` there).  (0.29 refined the guess by `f64`
+/// Newton steps on `1 − erf_f64(x)`, a 50-term Taylor sum whose truncation
+/// near `x = 4` is `10⁻⁶`: the steps diverged.)
 fn arb_erfcinv_small(
     u: &BigFloat,
     prec: usize,
@@ -6331,14 +6389,8 @@ fn arb_erfcinv_small(
         let v = l_f - (x0 * std::f64::consts::PI.sqrt()).ln();
         x0 = v.max(0.25).sqrt();
     }
-    let u_f = bigfloat_to_f64(u, rm, cc)?;
-    if u_f > 1e-300 {
-        for _ in 0..3 {
-            let f = (1.0 - erf_f64(x0)) - u_f;
-            x0 += f * (std::f64::consts::PI.sqrt() / 2.0) * (x0 * x0).exp();
-        }
-    }
-    erf_inverse_halley(u, x0, true, prec, rm, cc)
+    let hi = l_f.max(0.0).sqrt().max(1.0) * (1.0 + f64::EPSILON * 16.0);
+    erf_inverse_halley(u, x0, 0.0, hi, true, prec, rm, cc)
 }
 
 /// `erfcinv(u)` for `0 < u < 2`: `erfcinv(u) = −erfcinv(2 − u)` maps to
