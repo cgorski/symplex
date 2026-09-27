@@ -292,14 +292,22 @@ fn zero_test_of_principal_roots() {
 fn zeta_of_a_huge_negative_argument_is_refused_at_once() {
     let ctx = Context::new();
     let t = std::time::Instant::now();
-    assert!(ctx.parse("zeta(erfi(-1000))").unwrap().eval_decimal(16).is_err());
+    assert!(
+        ctx.parse("zeta(erfi(-1000))")
+            .unwrap()
+            .eval_decimal(16)
+            .is_err()
+    );
     assert!(t.elapsed().as_secs() < 5, "took {:?}", t.elapsed());
     assert_eq!(
         ctx.parse("zeta(-101/2)").unwrap().eval_decimal(16).unwrap(),
         "2.399094238135732e24"
     );
     assert_eq!(
-        ctx.parse("zeta(-10^6 - 1/2)").unwrap().eval_decimal(16).unwrap(),
+        ctx.parse("zeta(-10^6 - 1/2)")
+            .unwrap()
+            .eval_decimal(16)
+            .unwrap(),
         "-1.004786893919289e4767531"
     );
 }
