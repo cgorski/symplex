@@ -8,5 +8,9 @@
 mod v30_hunts;
 #[path = "v30/v30_integrate.rs"]
 mod v30_integrate;
+#[path = "v30/v30_integrate2.rs"]
+mod v30_integrate2;
+#[path = "v30/v30_linalg.rs"]
+mod v30_linalg;
 #[path = "v30/v30_poly.rs"]
 mod v30_poly;

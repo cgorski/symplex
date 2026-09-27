@@ -2058,8 +2058,16 @@ fn harmonic_digits_lower(n: u64) -> f64 {
 /// Harmonic number H(n) = 1 + 1/2 + 1/3 + ... + 1/n.
 /// H(0) = 0.  Within the digit guard ([`harmonic_digits_lower`]); the sum
 /// is taken over the common denominator `lcm(1, …, n)` and reduced once,
-/// where a gcd per term made `Hₙ` quadratic in its digits.
+/// where a gcd per term made `Hₙ` quadratic in its digits.  A negative
+/// integer is a pole of `H(z) = ψ(z + 1) + γ`: `zoo` (SymPy:
+/// `harmonic(-1)` → zoo; before 0.31 it stayed unevaluated).
 fn eval_harmonic(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    if arena
+        .as_num(inner)
+        .is_some_and(|r| r.is_integer() && r.is_negative())
+    {
+        return Some(arena.complex_infinity);
+    }
     let n = nonneg_int_arg(arena, inner)?;
     if beyond_digit_guard(arena, harmonic_digits_lower(n)) {
         return None;

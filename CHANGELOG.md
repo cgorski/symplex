@@ -28,11 +28,13 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   parameters at values that satisfy their declaration (they made a
   candidate untestable).
 - **`integrate_definite` refuses a Newton–Leibniz difference across a
-  branch cut of the antiderivative**: `∫₀¹ atan(x + a) dx` stays
+  branch cut of the antiderivative, and a pole whose position on the
+  path depends on a complex parameter**: `∫₀¹ atan(x + a) dx` stays
   unevaluated for an unassumed `a` (it was `2.3128i` at `a = −1/2 +
-  3i/2`, truly `0.0096 + 0.7420i`), and `atan` of a line with a real slope
-  becomes logarithms: `∫₀¹ dx/(x² + 2ax + a² + 1)` is SymPy's log form (it
-  was `atan(a + 1) − atan(a)`, `2.5536` against `−0.5880`).
+  3i/2`, truly `0.0096 + 0.7420i`), as do `∫₀¹ dx/(x² + 2ax + a² + 1)`
+  (it was `atan(a + 1) − atan(a)`, `2.5536` against `−0.5880`) and
+  `∫₀¹ dx/(x + a − i)` (finite for every `a`, though the pole is on the
+  path at `a = −1/2 + i`); a declared-real `a` gets the closed forms.
 - **`d ln|g|/dx = g′/g`, `d|g|/dx = sign(g)·g′` and `d sign(g)/dx = 0`
   need a `g` real under the declared assumptions**: an undeclared
   parameter counted as real, so `d ln|a·x + 1|/dx` was `a/(a·x + 1)`
@@ -56,6 +58,28 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ### Added
 
+- **Rational functions with parameters integrate over ℚ(p₁, …)**:
+  Hermite reduction and the logarithmic part run over the parameters'
+  field (`src/calculus/risch/param_rational.rs`).  Principal logarithms
+  with monic arguments, `atan` only where the quadratic is provably real,
+  generic answers as SymPy's `ratint`, degenerate cases as `Piecewise`
+  branches.  `∫ dx/((x + a)(x + b))`, `∫ dx/(x² + a·x + b)`,
+  `∫ dx/(x·(a + b·x))`, `∫ dx/(x² + a)²` and `∫ x·(1 + a²x²)·atan(a·x)`
+  were unevaluated; `∫ dx/(x² − a²)` was `atan(x/√(−a²))/√(−a²)`.  A
+  hunter over 2,800 cases: 1,077 that SymPy closes were unevaluated, 1
+  now; 0 wrong at real and complex parameter values.  **Rubi: 6,168 →
+  9,085 verified**, 0 wrong (all 2,917 moves from unevaluated).
+- **Exact linear algebra over `ℚ(√2, √3, …, i)(params)`**: the pivots of
+  `linsolve`, `rref`, `rank`, `nullspace`, `lu` and `inv` are decided by
+  an exact zero test for rational functions with radicals and `i`, and
+  systems with square roots are solved fraction-free (a 4×4 system in
+  `√2, a, b`: 22 s → 30 ms).
+- **`solve`**: rational equations, exponentials of one rate or base,
+  `sin`/`cos` of one angle (half-angle substitution, keeping `x = π`),
+  sums of logarithms: `sin x + cos x = 1` → `[0, π/2]`,
+  `2^(2x) − 5·2^x + 6 = 0` → `[1, ln 3/ln 2]`, `ln x + ln(x + 1) = ln 6` →
+  `[2]` (all refused), and `sin 2x − sin x = 0` includes `π` (SymPy
+  misses it).
 - **`Piecewise` inputs in every transform**: Laplace (with `H(c − t)` and
   `|t − c| < r` conditions; the inverse handles `e^{−as+b}` delays and
   `(1 − e^{−s})²/s²`), Fourier of compactly supported functions, Z of
@@ -67,6 +91,25 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ### Fixed
 
+- **Wrong linear algebra with algebraic entries** (found by a hunter over
+  symbolic and algebraic matrices: 178 wrong answers in 1,650 cases, 0
+  now): the pivot zero test understood only rationals and symbols, so
+  `linsolve` of a consistent 4×3 system with `√2` and a symbol said
+  "Inconsistent", `rank([[√2 − 3, −2], [3√3 − √6, 2√3]])` was 2, `inv`
+  divided by a hidden zero determinant and `lu` pivoted on a hidden zero;
+  complex 2×2 matrices had no eigenvectors (block-triangular matrices are
+  now split first, `diag(1, 2i)` → `{1, 2i}`, as in SymPy); QR gave
+  `Q·R = −A` in a column whose squared norm is negative.  Eigenvectors of
+  rational matrices are polynomials in the eigenvalue (`c₀ + c₁λ + …`),
+  so the one for `λ ≈ −10⁻⁴⁰` evaluates (`PrecisionExhausted`).
+- **`together`, `as_numer_denom` and `integrate` panicked** on a
+  denominator that vanishes identically
+  (`1/(x·(−x/(x + 1) + x·(−x/(x + 1) + 1)))`): `together` gives `zoo`
+  (as SymPy's `cancel`), `cancel` returns its input.
+- **`harmonic(n)` is `zoo` at negative integers** (it stayed unevaluated).
+- **The degenerate-parameter wrapper no longer nests implied
+  conditions** (`∫ dx/((x + a)(x + b)(x + c))`: 3 `Piecewise` levels, was
+  6).
 - **Polynomial systems keep every exact solution**: a candidate whose
   residual is exactly zero made evalf refuse (`PrecisionExhausted`), and
   the check dropped it: `(y³ − 3)² = 0` with `x` linear in `y`, in shifted

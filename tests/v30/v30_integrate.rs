@@ -209,6 +209,12 @@ fn square_root_of_a_square_with_a_complex_parameter_is_not_an_absolute_value() {
 /// SymPy: `integrate((2*x + a)/(x**2 + a*x - 2), x)` →
 /// `log(a*x + x**2 - 2)`; the second checked by differentiation at
 /// complex `a`.
+///
+/// Updated in 0.31 (the rational integrator over the parameters' field):
+/// the second term, pinned unevaluated here before, now integrates —
+/// SymPy: `integrate(1/(x*((a + 1)*x + a)), x)` →
+/// `(log(x) - log(a/(a + 1) + x))/a`, with the degenerate cases `a = 0`,
+/// `a = −1` as branches; checked by differentiation at complex `a`.
 #[test]
 fn degenerate_parameter_values_are_constants() {
     let ctx = Context::new();
@@ -217,8 +223,12 @@ fn degenerate_parameter_values_are_constants() {
     let big_f = f.integrate(&x);
     assert_eq!(
         big_f.to_string(),
-        "ln(a*x + x^2 - 2) + Integral(1/(x*(a + x*(a + 1))), x)"
+        "Piecewise(Piecewise(-ln(a/(a + 1) + x)/a + ln(abs(x))/a + ln(a*x + x^2 - 2) if a != 0, \
+         -1/x + ln(abs(x^2 - 2)) if True) if a != -1, -ln(abs(x)) + ln(abs(x^2 - x - 2)) if True)"
     );
+    for binding in &COMPLEX_BINDINGS {
+        assert_antiderivative_at(&ctx, &f, &big_f, &x, binding, &POINTS);
+    }
     let f = p(&ctx, "(a + 2 - a*x)^(-2) + sin(a*x)*cos(x)");
     let big_f = f.integrate(&x);
     assert!(!big_f.to_string().contains("(x - 1)"), "{big_f}");
@@ -247,23 +257,36 @@ fn degenerate_parameter_values_are_constants() {
 /// `a = mpc(7/5, 3/11)` → `0.217547831573327492628767158175 -
 /// 0.0508761242001240039558645667798j`; `atan(a + 1) - atan(a)` at
 /// `a = mpc(-1/2, 3/2)` → `2.55359005004222568721703230265`.
+///
+/// Updated in 0.31 (second pass): for an unassumed `a` the integral is now
+/// refused — the poles `x = −a ± i` are real where `Im a = ±1` (at
+/// `a = −1/2 + i` one is `x = 1/2`, on the path), and the singularity scan
+/// no longer drops them as non-real.  The same `a` values are checked
+/// through `a = c + (3/2)i`, `c + (3/11)i` with `c` declared real.
 #[test]
 fn definite_arctangent_of_a_complex_line_becomes_logarithms() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let a = ctx.symbol("a");
     let f = p(&ctx, "1/(x^2 + 2*a*x + a^2 + 1)");
     let v = f.integrate_definite(&x, &ctx.int(0), &ctx.int(1));
-    assert!(!v.has_unevaluated(), "{v}");
-    for (value, re, im) in [
-        ("-1/2 + 3/2*I", -0.588002603547567551245611080625, 0.0),
+    assert!(v.has_unevaluated(), "{v}");
+    let ctx = Context::new();
+    let c = ctx.symbol_with("c", &[Assumption::Real]).unwrap();
+    let x = ctx.symbol("x");
+    for (im_a, value, re, im) in [
+        ("3/2", "-1/2", -0.588002603547567551245611080625, 0.0),
         (
-            "7/5 + 3/11*I",
+            "3/11",
+            "7/5",
             0.217547831573327492628767158175,
             -0.0508761242001240039558645667798,
         ),
     ] {
-        let z = v.subs(&a, &p(&ctx, value)).eval_complex64().unwrap();
+        let a = format!("(c + {im_a}*I)");
+        let f = p(&ctx, &format!("1/(x^2 + 2*{a}*x + {a}^2 + 1)"));
+        let v = f.integrate_definite(&x, &ctx.int(0), &ctx.int(1));
+        assert!(!v.has_unevaluated(), "{v}");
+        let z = v.subs(&c, &p(&ctx, value)).eval_complex64().unwrap();
         assert!(
             (z.re - re).abs() < 1e-12 && (z.im - im).abs() < 1e-12,
             "{v} at a = {value}: {z}"
@@ -308,22 +331,34 @@ fn definite_integral_refused_where_a_cut_may_be_crossed() {
 }
 
 /// A logarithm whose argument has an imaginary part independent of `x`
-/// never crosses its cut along the real path: `∫₀¹ dx/(x + a + i)` is the
-/// Newton–Leibniz difference for every complex `a`.
+/// never crosses its cut along the real path: `∫₀¹ dx/(x + c − i)` is the
+/// Newton–Leibniz difference.
+///
+/// Updated in 0.31 (second pass): this was asserted for an unassumed `a` in
+/// `∫₀¹ dx/(x + a + i)`, but the pole `x = −a − i` is real where
+/// `Im a = −1` (on the path for `a = −1/2 − i`), so for a possibly complex
+/// `a` the integral is refused now; with `c` declared real the pole is never
+/// real and the difference stands.
 ///
 /// SymPy: `integrate(1/(x + a + I), (x, 0, 1))` →
-/// `-log(a + I) + log(a + 1 + I)`.  mpmath (`mp.dps = 30`):
-/// `quad(lambda t: 1/(t + a + 1j), [0, 1])` at `a = mpc(-3/2, -2)` →
+/// `-log(a + I) + log(a + 1 + I)`.  mpmath (`mp.dps = 30`, 40 agrees):
+/// `quad(lambda t: 1/(t + a + 1j), [0, 1])` at `a = mpc(-3/2, -2)` (that is
+/// `t − 3/2 − i`, `c = −3/2` below) →
 /// `-0.47775572251371818072636405417 + 0.519146114246522951771454379553j`.
 #[test]
 fn definite_logarithm_with_constant_imaginary_part_is_kept() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let a = ctx.symbol("a");
     let f = p(&ctx, "1/(x + a + I)");
     let v = f.integrate_definite(&x, &ctx.int(0), &ctx.int(1));
-    assert_eq!(v.to_string(), "-ln(a + I) + ln(a + 1 + I)");
-    let z = v.subs(&a, &p(&ctx, "-3/2 - 2*I")).eval_complex64().unwrap();
+    assert!(v.has_unevaluated(), "{v}");
+    let ctx = Context::new();
+    let a = ctx.symbol_with("c", &[Assumption::Real]).unwrap();
+    let x = ctx.symbol("x");
+    let f = p(&ctx, "1/(x + c - I)");
+    let v = f.integrate_definite(&x, &ctx.int(0), &ctx.int(1));
+    assert_eq!(v.to_string(), "-ln(c - I) + ln(c - I + 1)");
+    let z = v.subs(&a, &p(&ctx, "-3/2")).eval_complex64().unwrap();
     assert!(
         (z.re + 0.47775572251371818072636405417).abs() < 1e-12
             && (z.im - 0.519146114246522951771454379553).abs() < 1e-12,

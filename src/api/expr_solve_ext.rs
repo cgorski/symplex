@@ -131,8 +131,15 @@ impl LinearSolution {
 ///
 /// Each element of `eqs` is either an [`Ex`] (meaning `expr = 0`) or an
 /// [`Equation`].  Coefficients may be symbolic; the solver performs
-/// reduced row-echelon elimination, preferring numeric pivots and
-/// treating a symbolic pivot as nonzero (generic solution).
+/// reduced row-echelon elimination.  Coefficients that are rational
+/// functions of the parameters over `ℚ` or over `ℚ(√2, √3, …, i)` are
+/// eliminated exactly (fraction-free over `ℚ(…)[params]` when algebraic
+/// numbers occur), so every zero test is exact.  The answer is the
+/// **generic** solution, as SymPy's `linsolve`: a pivot that vanishes only
+/// for special values of the parameters is taken as nonzero (`a·x = 1`
+/// gives `x = 1/a`, not a case split on `a = 0`).  Coefficients with other
+/// functions of the parameters fall back to elimination on expressions,
+/// where a pivot not recognised as zero is also taken as nonzero.
 ///
 /// Under-determined systems return [`LinearSolution::Parametric`],
 /// over-determined but consistent systems return

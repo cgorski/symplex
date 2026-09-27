@@ -40,6 +40,9 @@ their documentation:
 | `src/transforms/pattern.rs` (`condition_pow_pow`) | the branch condition of `Pow._eval_power` | the principal branch of `z^a` |
 | `src/base/assumptions.rs` (`compute_mul`: a real factor that may vanish keeps `real · imaginary` undecided) | `Mul._eval_real_imag` / `Mul._eval_is_imaginary` in `sympy/core/mul.py` | — |
 | `src/simplify/log_expand.rs` (`expand_ln_node_guarded`: a known-negative factor becomes the finished term `ln(−f)`) | the `is_negative` branch of `log._eval_expand_log` in `sympy/functions/elementary/exponential.py` | — |
+| `src/calculus/gruntz.rs` (`asymptotic_rewrite`: `erf`, `erfc`, `Ei`, `li` at ±∞ with their exponential factor explicit, `Γ` at ∞ as `exp(ln Γ)`, `ln ω` as a leading-term coefficient) | `_eval_rewrite_as_tractable` of `erf`, `erfc`, `Ei`, `gamma`, the helpers `_erfs`, `_eis` in `sympy/functions/special/error_functions.py` and `gamma_functions.py`; `logx` in `sympy/series/gruntz.py` | D. Gruntz, PhD thesis, ETH Zürich 1996; DLMF 7.12.1, 6.12.2, 5.11.1 |
+| `src/domains/linalg.rs` (`rref_solve_algebraic`: fraction-free Gauss–Jordan elimination) | `ddm_irref_den` in `sympy/polys/matrices/dense.py` | G. C. Nakos, P. R. Turner, R. M. Williams, "Fraction-free algorithms for linear and polynomial equations", *ACM SIGSAM Bull.* 31 (1997) |
+| `src/domains/matrix.rs` (`eigen_pairs`: eigenvalues block by block of a block-triangular matrix) | `_eigenvals_dict` in `sympy/matrices/eigen.py` | — |
 
 To the extent any of these is a derivative of SymPy, SymPy's licence
 applies to that part, and its notice is reproduced here as clause (a)
@@ -82,6 +85,7 @@ DAMAGE.
 |---|---|---|
 | `src/transforms/evalf/lambertw.rs` (every branch over ℂ: branch-point and asymptotic starting values, Halley iteration), and the `lambert_wm1` start values of the `f64` runtime | `lambertw`, `_lambertw_series`, `_lambertw_approx_hybrid` in `mpmath/functions/functions.py` | R. M. Corless, G. H. Gonnet, D. E. G. Hare, D. J. Jeffrey, D. E. Knuth, "On the Lambert W function", *Adv. Comput. Math.* 5 (1996) 329–359 |
 | `src/transforms/evalf/factorials.rs` (`gamma_ratio`: a quotient of Γ values with poles cancelled in the limit) | `gammaprod` in `mpmath/functions/factorials.py` | — |
+| `src/transforms/evalf/loggamma.rs` (complex `loggamma`: reflection left of `Re z = ½`, the shifted Stirling series, the branch of the shifted product fixed by an `f64` estimate of its imaginary part) | `mpc_loggamma` / `mpc_gamma` in `mpmath/libmp/gammazeta.py` | DLMF 5.11(ii) (Stirling remainder bound) |
 
 To the extent these are derivatives of mpmath, mpmath's licence applies
 to those parts, and its notice is reproduced here:

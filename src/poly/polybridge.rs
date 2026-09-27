@@ -822,9 +822,11 @@ pub(crate) fn cancel(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
         Some(p) => p,
         None => return expr,
     };
+    // An identically vanishing denominator is not a rational function:
+    // `gcd(0, 0) = 0` would be the divisor below.
     let denom_poly = match expr_to_poly(arena, denom, var) {
-        Some(p) => p,
-        None => return expr,
+        Some(p) if !p.is_zero() => p,
+        _ => return expr,
     };
 
     // Compute polynomial GCD and divide out common factors.
@@ -1140,6 +1142,13 @@ fn try_together_poly_lcm(
     let mut denom_poly_map: Vec<(ExprId, Poly)> = Vec::new();
     for &d in unique_denoms {
         let p = expr_to_poly(arena, d, var)?;
+        // A denominator that vanishes identically (`x(x + 1) − x² − x`, or
+        // the literal 0 of `1/(x/(x + 1) − x/(x + 1))`, whose inner sum
+        // cancelled) has no LCM and divides nothing: keep the product form,
+        // where the arena folds a literal zero denominator into `zoo`.
+        if p.is_zero() {
+            return None;
+        }
         denom_poly_map.push((d, p));
     }
 

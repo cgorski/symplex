@@ -24,6 +24,16 @@ impl Expr<Numeric> {
     /// [`try_integrate_definite`](Self::try_integrate_definite) to
     /// distinguish "diverges" from "could not compute".
     ///
+    /// With parameters, a closed form is returned only where it holds for
+    /// every allowed value of them: no principal branch in the
+    /// antiderivative (`ln`, `atan`, powers) can jump along `[lo, hi]`, and
+    /// no pole of the integrand can lie on it.  A parameter is what its
+    /// assumptions say, so an unassumed one may be complex (decision D4):
+    /// `∫₀¹ dx/(x + a − i)` stays unevaluated, since the pole `x = −a + i`
+    /// is on `[0, 1]` for `a = −1/2 + i`, while for a declared-real `a` it
+    /// is `ln(a − i + 1) − ln(a − i)`.  Where that cannot be decided the
+    /// integral is left unevaluated rather than split into cases.
+    ///
     /// If `self` is, or contains, such a node, the inner integrals are
     /// evaluated first (innermost out), so nested integrals can be built up
     /// with repeated calls.

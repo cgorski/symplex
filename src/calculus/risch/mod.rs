@@ -22,6 +22,7 @@
 pub mod hermite;
 pub mod integrate;
 pub mod log_to_real;
+mod param_rational;
 pub mod rde;
 pub mod rothstein_trager;
 pub mod tower;
@@ -315,8 +316,31 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
     let denom_expanded = crate::transforms::eval::eval(arena, denom_exp);
 
     // Convert arena expressions to Poly using existing polybridge.
-    let numer_poly = crate::poly::polybridge::expr_to_poly(arena, numer_expanded, var)?;
-    let denom_poly = crate::poly::polybridge::expr_to_poly(arena, denom_expanded, var)?;
+    let (numer_poly, denom_poly) = match (
+        crate::poly::polybridge::expr_to_poly(arena, numer_expanded, var),
+        crate::poly::polybridge::expr_to_poly(arena, denom_expanded, var),
+    ) {
+        (Some(n), Some(d)) => (n, d),
+        // A nested fraction left in the numerator or the denominator
+        // (`1/(x·(−x/(x + 2) + x·(−x/(x + 2) + 1)))`, which is `(x + 2)/x²`):
+        // combine over a common denominator and convert again (0.31, the
+        // parametric-rational hunt; only inputs that failed here take it).
+        _ if has_negative_power_of(arena, numer_expanded, var)
+            || has_negative_power_of(arena, denom_expanded, var) =>
+        {
+            let combined = crate::poly::polybridge::together_deep(arena, expr);
+            let (n, d) = crate::poly::polybridge::as_numer_denom(arena, combined);
+            let n = crate::transforms::expand::expand(arena, n);
+            let n = crate::transforms::eval::eval(arena, n);
+            let d = crate::transforms::expand::expand(arena, d);
+            let d = crate::transforms::eval::eval(arena, d);
+            (
+                crate::poly::polybridge::expr_to_poly(arena, n, var)?,
+                crate::poly::polybridge::expr_to_poly(arena, d, var)?,
+            )
+        }
+        _ => return None,
+    };
 
     // Skip if denominator is constant (not a rational function integration problem).
     if denom_poly.is_constant() {
@@ -324,6 +348,23 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
     }
 
     integrate_rational_function(arena, &numer_poly, &denom_poly, var, expr)
+}
+
+/// `∫ expr d(var)` for a rational function of `var` whose coefficients are
+/// polynomials in other symbols (parameters), over `ℚ(p₁, …, p_k)`: the
+/// same Hermite reduction and logarithmic part as [`try_risch_rational`],
+/// with the generic-case answer (see `param_rational`).  `None` when the
+/// integrand is not such a rational function, is a sum, is a polynomial in
+/// `var` over one linear factor (left to the `(a·x + b)ⁿ` routes), or is
+/// too large; also inside another rational integration (the recursion
+/// guard).  The caller checks the answer.
+pub(crate) fn try_risch_rational_params(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+) -> Option<ExprId> {
+    let _guard = RischRecursionGuard::enter()?;
+    param_rational::integrate_param_rational(arena, expr, var)
 }
 
 /// `k ≥ 2` if `A/D = x^(k−1)·F(x^k)`: every exponent of `D` is a multiple of
@@ -351,7 +392,7 @@ fn compress_exponents(p: &Poly, k: usize, shift: usize) -> Poly {
 
 /// `∫ A/D dx` for `A, D ∈ ℚ[x]`, `D` not constant.  `label` only names the
 /// integrand in stage traces.
-fn integrate_rational_function(
+pub(super) fn integrate_rational_function(
     arena: &mut Arena,
     numer_poly: &Poly,
     denom_poly: &Poly,

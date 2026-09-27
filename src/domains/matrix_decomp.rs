@@ -21,7 +21,7 @@
 //!   [`Matrix::matrix_log`] (any Jordan form with non-zero eigenvalues).
 //! * **Calculus:** [`hessian`], [`wronskian`], [`Matrix::casoratian`].
 
-use crate::api::expr::{Ex, ExprType};
+use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
 use crate::domains::decompositions::{Diagonalization, JordanForm, Ldl, Qr};
 use crate::domains::matrix::{
@@ -159,7 +159,14 @@ fn gram_schmidt_cols(
         budget_check(u.iter(), op)?;
         let u: Vec<Ex> = u.into_iter().map(tidy).collect();
         let norm_sq = tidy(dot_vec(&u, &u));
-        if ex_is_zero(&norm_sq) == Some(true) {
+        // The exact test of a rational function over ℚ(radicals, i) first:
+        // `ex_is_zero` would `simplify` a norm that is not identically zero,
+        // which swelled for 3×3 symbolic matrices with radicals (> 10 s).
+        let dependent = match crate::domains::matrix::rational_function_is_zero(&norm_sq) {
+            Some(b) => b,
+            None => ex_is_zero(&norm_sq) == Some(true),
+        };
+        if dependent {
             return Err(failed(
                 op,
                 format!(
@@ -170,10 +177,15 @@ fn gram_schmidt_cols(
         if normalize {
             let norm = norm_sq.sqrt();
             let one = cols[0][0].context().one();
-            // `√(1/n)` displays nicely for rational `n` and cancels against
-            // `√n` structurally (canonical numeric radicals); for symbolic
-            // `n` only `n^(-1/2)` is guaranteed to cancel.
-            let inv_norm = if norm_sq.expr_type() == ExprType::Number {
+            // `√(1/n)` displays nicely for rational `n > 0` and cancels
+            // against `√n` structurally (canonical numeric radicals); for
+            // symbolic `n` only `n^(-1/2)` is guaranteed to cancel.  For
+            // `n < 0` the principal `√(1/n)` is `−1/√n` (before 0.31 the
+            // column of `Q·R` was then `−aⱼ`: `[0, 1/2, −i]` has `n = −3/4`).
+            let positive_rational = norm_sq
+                .as_rational()
+                .is_some_and(|q| num_traits::Signed::is_positive(&q));
+            let inv_norm = if positive_rational {
                 (&one / &norm_sq).sqrt()
             } else {
                 &one / &norm

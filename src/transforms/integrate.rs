@@ -1707,6 +1707,20 @@ fn integrate_node_uncached(
     if let Some(result) = try_poly_over_symbolic_linear(arena, expr, var, var_sym) {
         return result;
     }
+    // ── Rational functions over ℚ(p₁, …, p_k): parameters as coefficients ──
+    // The rational integrator over the field of the parameters (0.31):
+    // `∫ dx/((x + a)(x + b))`, `∫ dx/(x² + a·x + b)`, `∫ dx/(a² − x²)` were
+    // unevaluated, `∫ dx/(x² − a²)` was `atan(x/√(−a²))/√(−a²)`.  A
+    // rejected candidate falls through to the routes below.
+    if let Some(result) = stage!(
+        arena,
+        "risch_rational_params",
+        expr,
+        crate::calculus::risch::try_risch_rational_params(arena, expr, var)
+    ) && !candidate_rejected(arena, expr, result, var, var_sym)
+    {
+        return result;
+    }
     if let Some(result) = try_poly_over_symbolic_quadratic(arena, expr, var, var_sym, depth) {
         return result;
     }
@@ -1983,6 +1997,14 @@ fn integrate_node_uncached(
             if dependent.len() == 3
                 && let Some(result) =
                     try_by_parts_poly_times_pair(arena, &dependent, var, var_sym, depth)
+            {
+                return wrap_with_constants(arena, result, &constants);
+            }
+
+            // ── Several polynomial factors: multiply them out, then retry ──
+            if dependent.len() >= 3
+                && let Some(result) =
+                    try_merge_polynomial_factors(arena, &dependent, var, var_sym, depth)
             {
                 return wrap_with_constants(arena, result, &constants);
             }
@@ -4149,6 +4171,32 @@ fn try_by_parts_poly_times_pair(
     Some(arena.sub(uv, rest))
 }
 
+/// `∫ P₁(x)·P₂(x)·…·g(x) dx` with two or more polynomial factors: their
+/// product multiplied out, and the integrand with one polynomial factor
+/// retried.  `∫ x·(1 + a²x²)·atan(a·x) dx` (even `∫ x·(1 + x²)·atan x dx`)
+/// stayed unevaluated: the three-factor rule takes `u = x`, while by parts
+/// needs `dv = x·(1 + a²x²)` (0.31, the complex-parameter hunt).
+fn try_merge_polynomial_factors(
+    arena: &mut Arena,
+    dependent: &[ExprId],
+    var: ExprId,
+    var_sym: SymbolId,
+    depth: usize,
+) -> Option<ExprId> {
+    let (polys, mut rest): (Vec<ExprId>, Vec<ExprId>) = dependent
+        .iter()
+        .partition(|&&d| is_polynomial_in(arena, d, var, var_sym));
+    if polys.len() < 2 || rest.is_empty() {
+        return None;
+    }
+    let p = arena.mul(&polys);
+    let p = crate::transforms::expand::expand(arena, p);
+    rest.push(p);
+    let merged = arena.mul(&rest);
+    let r = integrate_node(arena, merged, var, var_sym, depth - 1);
+    (!crate::base::walk::has_unevaluated(arena, r)).then_some(r)
+}
+
 /// Rewrite products of `sin`/`cos` factors via product-to-sum identities
 /// and retry (e.g. `x·sin x·cos x = x·sin(2x)/2`).
 fn try_trig_product_to_sum(
@@ -4602,6 +4650,8 @@ fn try_piecewise_wrap(
 
     let mut wrapped = result;
     let mut handled: Vec<(ExprId, ExprId)> = Vec::new();
+    // The handled pairs with the denominator they came from.
+    let mut handled_by_denom: Vec<(ExprId, ExprId, ExprId)> = Vec::new();
 
     for denom in &denoms {
         let denom_syms = crate::base::walk::free_symbols(arena, *denom);
@@ -4641,6 +4691,16 @@ fn try_piecewise_wrap(
                 {
                     continue;
                 }
+                // Nor for a value whose points are already covered: `b = a`
+                // after `a = b` (the denominator `a − b` solved for either
+                // symbol), `b = a²/4` after `a = ±2√b`.  Each such wrap nested
+                // an unreachable copy of the whole case analysis: the
+                // parametric rational integrator's `∫ dx/((x + a)(x + b)(x + c))`
+                // came out six levels deep (0.31).
+                if degenerate_value_covered(arena, &handled_by_denom, *denom, *sym_expr, degen_val)
+                {
+                    continue;
+                }
 
                 // Filter: skip if substituting this value makes the original
                 // integrand singular (these are poles of the problem, not
@@ -4660,8 +4720,11 @@ fn try_piecewise_wrap(
                 let degen_result = integrate(arena, integrand_at_degen, var);
                 let degen_result = crate::transforms::eval::eval(arena, degen_result);
 
-                // Skip if re-integration returned unevaluated.
-                if matches!(arena.node(degen_result), ExprNode::Integral(_, _)) {
+                // Skip if re-integration returned unevaluated, also in part:
+                // `x²/2 + ∫ 1/(−x/(x + 1) + x·(−x/(x + 1) + 1)) dx` (an integrand
+                // undefined at the degenerate value) made the whole answer
+                // unevaluated (0.31, the parametric-rational hunt).
+                if crate::base::walk::has_unevaluated(arena, degen_result) {
                     continue;
                 }
 
@@ -4671,11 +4734,46 @@ fn try_piecewise_wrap(
                 wrapped = arena.piecewise(&[(wrapped, condition), (degen_result, true_cond)]);
 
                 handled.push((*sym_expr, degen_val));
+                handled_by_denom.push((*denom, *sym_expr, degen_val));
             }
         }
     }
 
     wrapped
+}
+
+/// Is every point with `sym = val` already a handled degenerate case of
+/// [`try_piecewise_wrap`]: does `p − v` vanish there for one handled pair
+/// `(p, v)`, or the product of `p − v` over the pairs handled for the same
+/// denominator `denom` (its solutions for one symbol cover its zero set)?
+fn degenerate_value_covered(
+    arena: &mut Arena,
+    handled: &[(ExprId, ExprId, ExprId)],
+    denom: ExprId,
+    sym: ExprId,
+    val: ExprId,
+) -> bool {
+    let vanishes_at = |arena: &mut Arena, e: ExprId| {
+        let at = crate::transforms::subs::subs(arena, e, sym, val);
+        let at = crate::transforms::expand::expand(arena, at);
+        let at = crate::transforms::eval::eval(arena, at);
+        arena.is_zero_structural(at)
+    };
+    let mut same_denom: Vec<ExprId> = Vec::new();
+    for &(d, p, v) in handled {
+        let diff = arena.sub(p, v);
+        if vanishes_at(arena, diff) {
+            return true;
+        }
+        if d == denom {
+            same_denom.push(diff);
+        }
+    }
+    if same_denom.len() >= 2 {
+        let product = arena.mul(&same_denom);
+        return vanishes_at(arena, product);
+    }
+    false
 }
 
 /// Collect all denominator sub-expressions from an expression tree.

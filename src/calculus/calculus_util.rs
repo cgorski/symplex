@@ -383,8 +383,21 @@ fn push_point(arena: &mut Arena, point: ExprId, kind: BreakKind, scan: &mut Brea
         }
         // Structural non-reality: an explicit `I`, or an even root of a
         // provably negative quantity (e.g. √(−a²) from x² + a² = 0).
+        // A reading for real parameters only: with a parameter that is not
+        // declared real (decision D4, 0.31) `−a + i` is real where
+        // `Im a = 1`, and a pole there may lie on the path.  The point used
+        // to be dropped, and `∫₀¹ dx/(x + a − i)` came out finite for
+        // `a = −1/2 + i`, where the integrand has a pole at `x = 1/2`.
+        let declared_real = walk::free_symbols(arena, point).iter().all(|&s| {
+            matches!(*arena.node(s), ExprNode::Symbol(sid)
+                if crate::transforms::realness::symbol_declared_real(arena, sid))
+        });
         let mut nonreal = false;
-        let mut stack = vec![point];
+        let mut stack = if declared_real {
+            vec![point]
+        } else {
+            Vec::new()
+        };
         while let Some(id) = stack.pop() {
             match arena.node(id).clone() {
                 ExprNode::ImaginaryUnit => {

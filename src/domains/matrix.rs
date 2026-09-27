@@ -151,6 +151,15 @@ pub(crate) fn ex_is_zero(e: &Ex) -> Option<bool> {
     if e.is_zero_structural() {
         return Some(true);
     }
+    // A rational function over ℚ(radicals, i) that vanishes identically is
+    // zero for every value of its symbols; a constant one is decided
+    // exactly either way.  (Before 0.31 `det` of `[[√2, 2], [a, √2·a]]`
+    // was not recognised as zero and `inv` divided by it.)
+    if let Some(b) = rational_function_is_zero(e)
+        && (b || e.free_symbols().is_empty())
+    {
+        return Some(b);
+    }
     if let Some(b) = e.is_zero() {
         return Some(b);
     }
@@ -345,7 +354,21 @@ pub(crate) fn rootof_field_is_zero(e: &Ex) -> Option<bool> {
 /// `rref`/`rank`/`nullspace` only structurally (`rank` of
 /// `[[2t − 2, 3t − 3], [6, 9]]` was 2, and null-space vectors were not in
 /// the kernel).
+///
+/// Expressions that also contain radicals of rationals, the golden ratio or
+/// `i` are decided exactly over `ℚ(radicals, i)` by
+/// [`algebraic_function_is_zero`](crate::domains::linalg::algebraic_function_is_zero):
+/// before 0.31 they returned `None` here, and `linsolve` then decided a
+/// pivot mixing `√2` and a symbol by `simplify` (a consistent system was
+/// "Inconsistent"), `rank`/`rref`/`nullspace` structurally (`rank` of
+/// `[[√2 − 3, −2], [3√3 − √6, 2√3]]` was 2).
 pub(crate) fn rational_function_is_zero(e: &Ex) -> Option<bool> {
+    rational_function_is_zero_q(e).or_else(|| crate::domains::linalg::algebraic_function_is_zero(e))
+}
+
+/// [`rational_function_is_zero`] for rational functions over ℚ (no
+/// algebraic constants).
+fn rational_function_is_zero_q(e: &Ex) -> Option<bool> {
     use num_traits::Zero;
     let inner = e.inner.read();
     let arena = &inner.arena;
@@ -367,11 +390,11 @@ pub(crate) fn rational_function_is_zero(e: &Ex) -> Option<bool> {
 }
 
 /// Number of evaluation points of [`rational_function_is_zero`].
-const RF_POINTS: u64 = 3;
+pub(crate) const RF_POINTS: u64 = 3;
 
 /// Largest intermediate polynomial (in terms) that
 /// [`rational_function_is_zero`] expands exactly.
-const RF_TERM_BUDGET: usize = 4000;
+pub(crate) const RF_TERM_BUDGET: usize = 4000;
 
 /// The rational value of `root` with symbol `syms[i]` set to point `k`'s
 /// `i`-th coordinate.  `None` for a node that is not rational-function
@@ -384,21 +407,7 @@ fn rf_value_at(
 ) -> Option<Option<Q>> {
     use crate::base::node::{ExprId, ExprNode};
     use num_traits::Zero;
-    let point = |i: usize| -> Q {
-        // Fixed, reproducible coordinates of height about 2⁴⁰.
-        let mut z = (i as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15)
-            ^ k.wrapping_mul(0xD1B5_4A32_D192_ED03);
-        let mut next = || {
-            z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
-            let mut x = z;
-            x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-            x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-            x ^ (x >> 31)
-        };
-        let num = BigInt::from(next() >> 23) - BigInt::from(1u64 << 40);
-        let den = BigInt::from((next() >> 24) | 1);
-        Q::new(num, den)
-    };
+    let point = |i: usize| rf_sample_point(i, k);
     let index: rustc_hash::FxHashMap<ExprId, usize> =
         syms.iter().enumerate().map(|(i, &s)| (s, i)).collect();
     let mut val: rustc_hash::FxHashMap<ExprId, Q> = rustc_hash::FxHashMap::default();
@@ -456,6 +465,24 @@ fn rf_value_at(
         val.insert(id, v);
     }
     Some(val.get(&root).cloned())
+}
+
+/// Coordinate `i` of the `k`-th sample point of the generic zero tests
+/// ([`rational_function_is_zero`]): fixed, reproducible rationals of height
+/// about 2⁴⁰.
+pub(crate) fn rf_sample_point(i: usize, k: u64) -> Q {
+    let mut z =
+        (i as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ k.wrapping_mul(0xD1B5_4A32_D192_ED03);
+    let mut next = || {
+        z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut x = z;
+        x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        x ^ (x >> 31)
+    };
+    let num = BigInt::from(next() >> 23) - BigInt::from(1u64 << 40);
+    let den = BigInt::from((next() >> 24) | 1);
+    Q::new(num, den)
 }
 
 /// Is the numerator of `root = P/Q` (over ℚ in `syms`) the zero
@@ -598,6 +625,46 @@ fn has_radical(e: &Ex) -> bool {
         stack.extend(arena.node(id).children());
     }
     false
+}
+
+/// `exp(a·t + b·t + c)` → `exp(t·(a + b) + c)` throughout `e`: the
+/// exponents of `matrix_exp_t` collected in `t` (`simplify` distributes
+/// `t·(1/2 + √37/2)`; the integrator reads the collected form, and the
+/// variation-of-parameters integrals of `solve_ode_system_nonhomogeneous`
+/// stayed unevaluated otherwise).
+fn collect_exponents(e: &Ex, t: &Ex) -> Ex {
+    use crate::base::node::{ExprId, ExprNode};
+    let mut inner = e.inner.write();
+    let arena = &mut inner.arena;
+    let t_id = t.raw_id();
+    let targets: Vec<(ExprId, ExprId)> = crate::base::walk::post_order_ids(arena, e.raw_id())
+        .into_iter()
+        .filter_map(|id| match arena.node(id) {
+            ExprNode::Exp(arg) if crate::base::walk::contains(arena, *arg, t_id) => {
+                Some((id, *arg))
+            }
+            _ => None,
+        })
+        .collect();
+    let mut out = e.raw_id();
+    for (exp_id, arg) in targets {
+        let Some(coeffs) = crate::transforms::solve::symbolic_poly_coeffs(arena, arg, t_id) else {
+            continue;
+        };
+        if coeffs.len() != 2 {
+            continue;
+        }
+        let slope = crate::transforms::eval::eval(arena, coeffs[1]);
+        let lin = arena.mul(&[slope, t_id]);
+        let new_arg = arena.add(&[lin, coeffs[0]]);
+        if new_arg == arg {
+            continue;
+        }
+        let new_exp = arena.exp(new_arg);
+        out = arena.subs_structural(out, exp_id, new_exp);
+    }
+    drop(inner);
+    e.wrap(out)
 }
 
 /// Rewrite `sin(−c)` → `−sin(c)` and `cos(−c)` → `cos(c)` for *numeric*
@@ -2357,7 +2424,53 @@ impl Matrix {
     }
 
     /// Internal: eigenvalue/multiplicity pairs expressed with the dummy `lam`.
+    ///
+    /// A matrix with symbolic or algebraic entries is split first into the
+    /// diagonal blocks of its block-triangular form (the strongly connected
+    /// components of the graph of its nonzero off-diagonal entries, as
+    /// SymPy's `eigenvals`): the characteristic polynomial is the product of
+    /// theirs, and a 1×1 block is its own eigenvalue.  Before 0.31 the
+    /// eigenvalues of `diag(1, 2i)` came from the quadratic formula as
+    /// `√(−3 − 4i)/2 + 1/2 + i` and its conjugate, whose `A − λI` had no
+    /// decidable zero pivot (no eigenvectors).
     fn eigen_pairs(&self, lam: &Ex) -> Result<Vec<(Ex, usize)>, SymplexError> {
+        let n = self.nrows;
+        if n > 1 && self.as_qmatrix().is_none() {
+            let adj: Vec<Vec<usize>> = (0..n)
+                .map(|i| {
+                    (0..n)
+                        .filter(|&j| j != i && !pivot_is_zero(&self.rows[i][j]))
+                        .collect()
+                })
+                .collect();
+            let comps = crate::base::graph::strongly_connected_components(&adj);
+            if comps.len() > 1 {
+                let mut out: Vec<(Ex, usize)> = Vec::new();
+                for c in &comps {
+                    let pairs = if let [k] = c.as_slice() {
+                        vec![(self.rows[*k][*k].eval(), 1)]
+                    } else {
+                        self.extract(c, c)?.eigen_pairs_irreducible(lam)?
+                    };
+                    for (v, m) in pairs {
+                        match out
+                            .iter_mut()
+                            .find(|(w, _)| *w == v || pivot_is_zero(&(w.clone() - v.clone())))
+                        {
+                            Some((_, k)) => *k += m,
+                            None => out.push((v, m)),
+                        }
+                    }
+                }
+                return Ok(out);
+            }
+        }
+        self.eigen_pairs_irreducible(lam)
+    }
+
+    /// [`eigen_pairs`](Self::eigen_pairs) from the whole characteristic
+    /// polynomial.
+    fn eigen_pairs_irreducible(&self, lam: &Ex) -> Result<Vec<(Ex, usize)>, SymplexError> {
         let n = self.nrows;
         let coeffs = self.char_poly_coeffs()?;
         let cp = {
@@ -2485,7 +2598,7 @@ impl Matrix {
                 .as_qmatrix()
                 .and_then(|q| Some((q, eigenvalue_minimal_polynomial(eigenval)?)));
             let vecs = match field {
-                Some((q, g)) => a_minus_lambda_i.nullspace_in_field(q, &g),
+                Some((q, g)) => a_minus_lambda_i.nullspace_in_field(q, &g, eigenval),
                 None => a_minus_lambda_i.nullspace_semantic(),
             };
             trace!(
@@ -2988,13 +3101,27 @@ impl Matrix {
             // Complex-conjugate eigenvalue pairs: Euler's formula turns
             // `½e^{iωt} + ½e^{−iωt}` into `cos(ωt)` (valid for any complex
             // argument, so no realness assumption is needed).
-            if s.contains(&i_unit) {
+            let s = if s.contains(&i_unit) {
                 fix_trig_parity(&s.rewrite_as_trig())
                     .expand()
                     .eval()
                     .simplify()
             } else {
                 s
+            };
+            match t {
+                // Products distributed over sums (not inside functions) and
+                // exponents collected in `t`: every entry a sum of
+                // `c·tᵏ·e^(λt)` (times `sin`/`cos`), each term of which the
+                // integrator takes (`solve_ode_system_nonhomogeneous`
+                // integrates `e^(−At)·b`; `t·(sin t + cos t)·eᵗ` stayed
+                // an unevaluated `Integral`).
+                Some(t) => {
+                    let mut opts = crate::transforms::expand::ExpandOpts::none().with_mul(true);
+                    opts.deep = false;
+                    collect_exponents(&s.expand_with(&opts), t)
+                }
+                None => s,
             }
         }))
     }
@@ -3463,6 +3590,15 @@ fn low_degree_roots(coeffs: &[Ex]) -> Vec<(Ex, usize)> {
             let ctx = c0.context();
             let two = ctx.int(2);
             let disc = (&c1.powi(2) - &(&(&ctx.int(4) * c2) * c0)).expand();
+            // A constant of ℚ(√…, i) in normal form: its imaginary part is
+            // then exactly 0 when it vanishes (`8/(1 + i) + 4i` is `4`), and
+            // `√` of a negative real number evaluates (before 0.31 `evalf`
+            // refused an eigenvalue whose radicand cancelled only
+            // numerically onto the branch cut).
+            let disc =
+                crate::domains::linalg::algebraic_constant_normal_form(&disc).unwrap_or(disc);
+            let c1 = &crate::domains::linalg::algebraic_constant_normal_form(c1)
+                .unwrap_or_else(|| c1.clone());
             let denom = &two * c2;
             if ex_is_zero(&disc) == Some(true) {
                 let root = (-c1 / &denom).eval();
@@ -3475,6 +3611,17 @@ fn low_degree_roots(coeffs: &[Ex]) -> Vec<(Ex, usize)> {
         }
         _ => Vec::new(),
     }
+}
+
+/// `√q` when it is rational.
+fn rational_sqrt_q(q: &Q) -> Option<Q> {
+    use num_traits::Signed;
+    if q.is_negative() {
+        return None;
+    }
+    let n = q.numer().sqrt();
+    let d = q.denom().sqrt();
+    (&n * &n == *q.numer() && &d * &d == *q.denom()).then(|| Q::new(n, d))
 }
 
 /// A square root of `disc` for the quadratic formula.
@@ -3490,7 +3637,32 @@ fn low_degree_roots(coeffs: &[Ex]) -> Vec<(Ex, usize)> {
 /// 0]]` work without sign assumptions on `ω`.  Falls back to `disc.sqrt()`.
 fn quadratic_sqrt(disc: &Ex) -> Ex {
     use crate::base::node::ExprNode;
+    use num_traits::{Signed, Zero};
     let ctx = disc.context();
+    // A Gaussian rational `a + bi` with `a² + b² = s²` a rational square:
+    // `√((s + a)/2) + sign(b)·i·√((s − a)/2)` (radicals of rationals, and
+    // rational for `√(−3 − 4i) = 1 − 2i`).  Before 0.31 it stayed nested
+    // and the eigenvalues of `[[−1, 0], [1 + i, i]]` were
+    // `√(2i)/2 + i/2 − 1/2` and its conjugate.
+    if let Some(crate::domains::linalg::GaussianRational { re: a, im: b }) =
+        crate::domains::linalg::gaussian_rational_parts(disc)
+        && !b.is_zero()
+        && let Some(s) = rational_sqrt_q(&(&a * &a + &b * &b))
+    {
+        let two = Q::from_integer(BigInt::from(2));
+        let re = ctx.from_ratio((&s + &a) / &two).sqrt();
+        let im = ctx.from_ratio((&s - &a) / &two).sqrt();
+        let im = if b.is_negative() { -im } else { im };
+        return (&re + &(&ctx.i_unit() * &im)).eval();
+    }
+    // A root in ℚ(radicals, i) found by denesting, checked exactly.
+    let denested = disc.sqrt().sqrtdenest();
+    if crate::domains::linalg::algebraic_function_is_zero(&(&denested.powi(2) - disc).expand())
+        == Some(true)
+        && crate::domains::linalg::algebraic_function_is_zero(&denested).is_some()
+    {
+        return denested;
+    }
     let strip_abs = |e: &Ex| {
         e.replace(|v| match v.node() {
             ExprNode::Abs(inner) => Some(e.wrap(*inner)),
@@ -3727,10 +3899,15 @@ impl Matrix {
             })
             .collect();
 
+        // Pivots are decided by the exact test of `rref` (before 0.31
+        // structurally: the zero `1/(√2 − 1) − √2 − 1` was a pivot and `L`
+        // had the entry `5/0`).
         for k in 0..n {
             let mut pivot_row = None;
             for i in k..n {
-                if !u[i][k].is_zero_structural() {
+                if pivot_is_zero(&u[i][k]) {
+                    u[i][k] = zero.clone();
+                } else {
                     pivot_row = Some(i);
                     break;
                 }
@@ -3750,7 +3927,8 @@ impl Matrix {
             }
 
             for i in (k + 1)..n {
-                if u[i][k].is_zero_structural() {
+                if pivot_is_zero(&u[i][k]) {
+                    u[i][k] = zero.clone();
                     continue;
                 }
                 let factor = &u[i][k] / &u[k][k];
@@ -3773,10 +3951,12 @@ impl Matrix {
     /// Row-reduced echelon form via Gauss–Jordan elimination.
     ///
     /// Returns `(rref_matrix, pivot_columns)`.  Uses exact arithmetic.
-    /// An entry that is a rational function of the symbols is a pivot iff
-    /// it is not identically zero (decided exactly); any other symbolic
-    /// entry (a radical, a function) is a pivot unless it is structurally
-    /// zero, i.e. assumed non-zero (generic rank).  Before 0.30 every
+    /// An entry that is a rational function of the symbols over
+    /// `ℚ(radicals of rationals, i)` is a pivot iff it is not identically
+    /// zero (decided exactly; since 0.31 also with `√2`, `√3`, `i`, … —
+    /// `[[√2 − 3, −2], [3√3 − √6, 2√3]]` had rank 2); any other symbolic
+    /// entry (a function, a radical of a symbol) is a pivot unless it is
+    /// structurally zero, i.e. assumed non-zero (generic rank).  Before 0.30 every
     /// structurally non-zero entry was a pivot, so `[[2t − 2, 3t − 3],
     /// [6, 9]]` had rank 2.  (The eigen-family uses a simplifying zero test
     /// internally so that irrational eigenvalues still yield eigenvectors.)
@@ -3903,10 +4083,68 @@ impl Matrix {
     /// takes every zero decision exactly — whatever form `λ` has
     /// (radicals or `RootOf`), and with one minimal polynomial per
     /// eigenvalue instead of one exact zero test per entry.
-    fn nullspace_in_field(&self, a: &QMatrix, g: &crate::poly::dense::Poly) -> Vec<Matrix> {
-        let mut oracle = FieldShadow::new(a, g);
-        let (rref_mat, pivots) = self.rref_core(&mut oracle);
-        self.nullspace_from_rref(&rref_mat, &pivots)
+    ///
+    /// The vectors are read off the shadow: each entry is the residue
+    /// `r(t)` (degree `< deg g`) evaluated at `λ`, i.e. `c₀ + c₁λ + …`
+    /// (SymPy's form).  Before 0.31 they were the expressions of the
+    /// elimination on `A − λI`, nested quotients in `λ` in which, for
+    /// `λ ≈ −10⁻⁴⁰` (`[[3, −3, 3], [6 + 10⁻³⁹, −6, 6], [5, 4, −3]]`), a
+    /// difference cancelled 40 digits and `eval_complex64` failed.
+    fn nullspace_in_field(
+        &self,
+        a: &QMatrix,
+        g: &crate::poly::dense::Poly,
+        lam: &Ex,
+    ) -> Vec<Matrix> {
+        use crate::poly::dense::Poly;
+        use num_traits::Zero;
+
+        let mut shadow = FieldShadow::new(a, g);
+        let n = self.ncols;
+        let nr = self.nrows;
+        let mut pivots: Vec<usize> = Vec::new();
+        let mut pr = 0usize;
+        for col in 0..n {
+            if pr >= nr {
+                break;
+            }
+            let Some(f) = (pr..nr).find(|&i| !shadow.rows[i][col].is_zero()) else {
+                continue;
+            };
+            shadow.swap(pr, f);
+            shadow.normalize(pr, col);
+            for i in 0..nr {
+                if i != pr && !shadow.rows[i][col].is_zero() {
+                    shadow.eliminate(i, pr, col);
+                }
+            }
+            pivots.push(col);
+            pr += 1;
+        }
+        let ctx = self.ctx();
+        let lam_pows: Vec<Ex> = (0..g.degree().unwrap_or(1))
+            .map(|k| lam.powi(k as i64))
+            .collect();
+        let to_ex = |r: &Poly| -> Ex {
+            let terms: Vec<Ex> = (0..lam_pows.len())
+                .filter_map(|k| {
+                    let c = r.coeff(k);
+                    (!c.is_zero()).then(|| &ctx.from_ratio(c) * &lam_pows[k])
+                })
+                .collect();
+            Ex::sum_of(&ctx, terms).expand().eval()
+        };
+        let pivot_set: std::collections::HashSet<usize> = pivots.iter().copied().collect();
+        let mut basis = Vec::new();
+        for free_col in (0..n).filter(|c| !pivot_set.contains(c)) {
+            let mut entries = vec![self.ctx_zero(); n];
+            entries[free_col] = self.ctx_one();
+            for (pivot_idx, &pivot_col) in pivots.iter().enumerate() {
+                entries[pivot_col] = to_ex(&shadow.rows[pivot_idx][free_col].neg());
+            }
+            basis.push(Matrix::col_vector_unchecked(entries));
+        }
+        basis
     }
 
     fn nullspace_from_rref(&self, rref_mat: &Matrix, pivots: &[usize]) -> Vec<Matrix> {

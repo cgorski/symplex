@@ -164,9 +164,19 @@ fn integrate_exp_ax_numeric_check() {
 
 #[test]
 fn integrate_inv_x2_plus_a2() {
+    // Since 0.31 the arctangent needs `x² + a²` to be real: `a` is declared
+    // real here.  For an unassumed (possibly complex) `a` the answer is the
+    // pair of principal logarithms, as SymPy's
+    // `integrate(1/(x**2 + a**2), x)` → `(-I*log(-I*a + x)/2 + I*log(I*a + x)/2)/a`
+    // (until 0.30 it was `atan(x/√(a²))/√(a²)` for every `a`).
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let a = ctx.symbol("a");
+    let unassumed = (x.powi(2) + ctx.symbol("c").powi(2)).powi(-1).integrate(&x);
+    assert!(
+        !unassumed.has_unevaluated() && unassumed.to_string().contains("ln"),
+        "{unassumed}"
+    );
+    let a = ctx.symbol_with("a", &[Assumption::Real]).unwrap();
 
     // Build 1/(x² + a²) = (x² + a²)^(-1)
     let x2 = x.powi(2);
