@@ -2590,8 +2590,14 @@ fn eval_exp(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         return Some(arena.e_const);
     }
     // exp(ln w) = w for every w ≠ 0 on the principal branch (the logarithm
-    // is defined exactly there), as SymPy folds it.
-    if let ExprNode::Ln(w) = *arena.node(inner) {
+    // is defined exactly there), as SymPy folds it.  A symbolic `w` is
+    // generic (`x/x = 1` likewise); a constant one must be known non-zero:
+    // `ln 0 = zoo` and `exp(zoo)` has no value, and before 0.30
+    // `exp(ln((1 + √2)² − 3 − 2√2))` (a zero the canonical form does not
+    // see) evaluated to 0.
+    if let ExprNode::Ln(w) = *arena.node(inner)
+        && (!walk::free_symbols(arena, w).is_empty() || constant_is_nonzero(arena, w))
+    {
         return Some(w);
     }
 
@@ -2651,6 +2657,25 @@ fn eval_exp(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     }
 
     None
+}
+
+/// Is the constant (symbol-free) `w` provably non-zero: by the assumption
+/// engine, or by a certified 16-digit value whose error ball excludes 0?
+fn constant_is_nonzero(arena: &Arena, w: ExprId) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    if AssumptionCache::new().query(arena, w, Props::NONZERO) == Some(true) {
+        return true;
+    }
+    matches!(
+        crate::transforms::evalf::evalf_settled(
+            arena,
+            w,
+            16,
+            crate::transforms::evalf::ZeroSearch::Cap
+        ),
+        Ok((ref z, crate::transforms::evalf::Settled::Certified))
+            if !(z.0.is_zero() && z.1.is_zero())
+    )
 }
 
 /// Check if `id` is of the form `i * k * π` for some rational `k`.
@@ -2980,6 +3005,12 @@ fn eval_atan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     if inner == arena.zero {
         return Some(arena.zero);
     } // atan(0) = 0
+    // atan(±∞) = ±π/2 (SymPy: `atan(oo)` → pi/2).  Before 0.30 it stayed,
+    // and `evalf` refused it (an infinite argument).
+    if inner == arena.infinity || inner == arena.neg_infinity {
+        let half = arena.rational(if inner == arena.infinity { 1 } else { -1 }, 2);
+        return Some(arena.mul(&[half, arena.pi]));
+    }
     if inner == arena.one {
         // atan(1) = π/4
         let quarter = arena.rational(1, 4);
@@ -3210,8 +3241,10 @@ pub(crate) fn eval_atan2(arena: &mut Arena, y: ExprId, x: ExprId) -> Option<Expr
             let x_neg = xv.is_negative();
 
             if y_zero && x_zero {
-                // atan2(0, 0) = 0 (convention)
-                Some(arena.zero)
+                // atan2(0, 0) is the argument of 0: undefined (SymPy: nan),
+                // as `arg(0)` is.  Before 0.30 it was 0 "by convention", and
+                // `atan2(sin(π/4) − cos(π/4), 0)` evaluated to 0.
+                Some(arena.nan)
             } else if y_zero && x_pos {
                 // atan2(0, x>0) = 0
                 Some(arena.zero)
@@ -3353,6 +3386,14 @@ fn eval_atanh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     if inner == arena.zero {
         return Some(arena.zero);
     } // atanh(0) = 0
+    // atanh(±∞) = ∓iπ/2, the limit along the real axis, where the
+    // principal value is `atanh(x) = acoth(x) ∓ iπ/2` for `±x > 1` (mpmath:
+    // `atanh(2)` = 0.549… − 1.5708…j; SymPy: `atanh(oo)` → -I*pi/2).
+    // Before 0.30 it stayed, and `evalf` refused it.
+    if inner == arena.infinity || inner == arena.neg_infinity {
+        let half = arena.rational(if inner == arena.infinity { -1 } else { 1 }, 2);
+        return Some(arena.mul(&[half, arena.i_unit, arena.pi]));
+    }
     None
 }
 

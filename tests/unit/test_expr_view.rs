@@ -93,10 +93,18 @@ fn expr_view_partial_eq_ref_variant() {
 
     let pi = ctx.pi();
 
-    let result = expr.replace(|view| if view == x { Some(pi.clone()) } else { None });
-    // sin(x) → sin(pi); the sin constructor does not auto-evaluate
+    let quarter_pi = &pi / 4;
+    let result = expr.replace(|view| {
+        if view == x {
+            Some(quarter_pi.clone())
+        } else {
+            None
+        }
+    });
+    // sin(x) → sin(pi/4), an irrational value left for eval (a rational one
+    // such as sin(pi) = 0 folds when built, since 0.30).
     let s = format!("{result}");
-    assert!(s.contains("pi"), "should have replaced x with pi: {s}");
+    assert!(s.contains("pi"), "should have replaced x with pi/4: {s}");
 }
 
 #[test]
@@ -289,7 +297,9 @@ fn expr_view_is_atom_for_pi() {
     let ctx = Context::new();
     use symplex::__macro_support::ExprNode;
     let pi = ctx.pi();
-    let expr = pi.sin(); // sin(pi): pi is atom, sin is not
+    // sin(pi/4): pi is an atom, sin is not (sin(pi) itself folds to 0 when
+    // built, since 0.30).
+    let expr = (&pi / 4).sin();
 
     let pi_is_atom = Cell::new(false);
     let _ = expr.replace(|view| {

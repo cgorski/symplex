@@ -22,10 +22,20 @@
 //! 4. Numeric coefficient placed first if ≠ 1.
 //! 5. Remaining factors sorted by [`SortKey`](crate::base::sort_key::SortKey).
 //! 6. Zero propagation: any zero factor ⟹ result is `0`, except that
-//!    `0 × (±∞ | zoo | nan) ⟹ NaN` regardless of argument order.  Function
-//!    applications of unknown finiteness (`Γ(zoo)`, `exp(-∞)`) count as
-//!    finite here because construction never evaluates them.
+//!    `0 × (±∞ | zoo | nan) ⟹ NaN` regardless of argument order.  A function
+//!    application at an exact argument where it is infinite (`ln(0)`,
+//!    `exp(∞)`) never reaches here: it is folded when interned (see
+//!    *Function applications* below).  Other applications (`Γ(zoo)`,
+//!    `f(x)`) count as finite.
 //! 7. `NaN` propagation.
+//!
+//! ## Function applications
+//!
+//! [`canon_function`], consulted by `Arena::intern` for every node, folds
+//! an application at an exact constant argument whose value is rational,
+//! `±∞`, `zoo` or `nan`: `sin(0) → 0`, `cos(π) → −1`, `ln(0) → zoo`,
+//! `tan(π/2) → zoo`, `Γ(0) → zoo`, `exp(−∞) → 0`.  Irrational special
+//! values (`sin(π/4)`, `exp(1)`) are left to `eval`.
 //!
 //! ## Pow
 //!
@@ -38,6 +48,8 @@
 //! - `Neg(Neg(x)) → x`, `Neg(Num(n)) → Num(−n)`.
 //! - `Neg(Add(…))` distributes: `−(a+b) → (−a)+(−b)`.
 //! - Otherwise normalises to `Mul(−1, x)`.
+
+use std::cmp::Ordering;
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -215,9 +227,10 @@ pub(crate) fn canon_add(arena: &mut Arena, args: &[ExprId]) -> ExprId {
 ///   inside a nested `Mul`, `Neg`, or (non-canonical) `Add` among the
 ///   factors that have not been processed yet, or among the bases already
 ///   collected;
-/// * otherwise `0 × anything → 0`.  This includes function applications of
-///   unknown finiteness such as `Γ(zoo)` or `exp(-∞)`: construction never
-///   evaluates functions, so they are treated as finite here.
+/// * otherwise `0 × anything → 0`.  Applications at exact arguments where
+///   they are infinite (`ln(0)`, `exp(∞)`, `Γ(−1)`) were folded to `zoo`/`∞`
+///   when interned ([`canon_function`]); any other application (`Γ(zoo)`,
+///   `f(x)`) is treated as finite here.
 ///
 /// `saw_infinity` reports whether an infinity was already consumed from the
 /// factor list before the coefficient became zero.
@@ -457,6 +470,18 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     // Set when `canon_pow` hands back a product (see below).
     let mut has_nested_mul = false;
 
+    // A combined factor can also be an infinity or `nan` —
+    // `(−∞)^(1/2)·(−∞)^(1/2) → −∞` — which only the flattening pass knows how
+    // to multiply (the sign of the other factors, `0·∞ = nan`); before 0.30
+    // it stayed an ordinary factor, `x·sin(f(x))·(−∞)`, whose display parsed
+    // as a different expression (found by `fuzz_roundtrip`).  Such a factor
+    // triggers the re-flattening below.
+    let singular = |arena: &Arena, id: ExprId| {
+        matches!(
+            arena.node(id),
+            ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity | ExprNode::NaN
+        )
+    };
     for (base, exp) in factors {
         if exp == arena.one {
             // If the base is itself a numeric literal, absorb it into the
@@ -464,6 +489,9 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
             if let Some(val) = arena.as_num(base) {
                 coeff *= val.clone();
                 continue;
+            }
+            if singular(arena, base) {
+                has_nested_mul = true;
             }
             // Exponents that sum to 1 on a `Pow(Mul(…), e)` base expose the
             // product itself: `√(-ω²)·√(-ω²) → -ω²`.
@@ -485,7 +513,7 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
                 coeff *= val.clone();
                 continue;
             }
-            if matches!(arena.node(pow_id), ExprNode::Mul(_)) {
+            if matches!(arena.node(pow_id), ExprNode::Mul(_)) || singular(arena, pow_id) {
                 has_nested_mul = true;
             }
             result_args.push(pow_id);
@@ -544,9 +572,24 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
         result_args.insert(0, arena.intern(ExprNode::Num(nid)));
     }
 
-    // If infinity was seen and coefficient is nonzero.
+    // If infinity was seen and coefficient is nonzero: `±∞` absorbs the
+    // factors whose sign is known (a positive one keeps the direction, a
+    // negative one reverses it); a factor of unknown sign or not real (`x`,
+    // `i`, `exp(z)`) leaves the direction unknown, and the product is `zoo`
+    // (as `x·zoo` is).  Before 0.30 every factor was absorbed: `x·∞` was
+    // `∞` (so `(x·∞)` at `x = −1` was `∞`, not `−∞`) and `i·∞` was `∞`.
+    // SymPy keeps such factors (`oo*x`); symplex keeps no infinity inside a
+    // product, so it records only that the value is infinite.
     if saw_infinity {
-        if coeff.is_negative() {
+        let mut negative = coeff.is_negative();
+        for &f in result_args.iter().filter(|&&f| arena.as_num(f).is_none()) {
+            match known_sign(arena, f) {
+                Some(Ordering::Greater) => {}
+                Some(Ordering::Less) => negative = !negative,
+                _ => return arena.complex_infinity,
+            }
+        }
+        if negative {
             return arena.neg_infinity;
         }
         return arena.infinity;
@@ -608,6 +651,25 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
         verify_canonical_shallow(arena, result)
     );
     result
+}
+
+/// The sign of a real factor, when it is known: from the assumption engine
+/// (`π`, a positive symbol, `exp` of a real), else, for a real constant, from
+/// a certified numeric value (`ln 2`, `√2 − 1`); `None` for a factor that
+/// may be zero, negative or complex.
+fn known_sign(arena: &Arena, f: ExprId) -> Option<Ordering> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    let mut cache = AssumptionCache::new();
+    if cache.query(arena, f, Props::POSITIVE) == Some(true) {
+        return Some(Ordering::Greater);
+    }
+    if cache.query(arena, f, Props::NEGATIVE) == Some(true) {
+        return Some(Ordering::Less);
+    }
+    if cache.query(arena, f, Props::REAL) != Some(true) {
+        return None;
+    }
+    arena.sign_of_real_constant(f)
 }
 
 /// Helper for `Mul` when `zoo` (ComplexInfinity) is encountered.
@@ -832,6 +894,12 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
     if base == arena.zero && exp == arena.complex_infinity {
         return arena.nan;
     }
+    // 0^z for a non-numeric exponent whose real part has a known sign.
+    if base == arena.zero
+        && let Some(value) = zero_power(arena, exp)
+    {
+        return value;
+    }
 
     // ── Positive infinity base ─────────────────────────────────────
     // ∞^(positive numeric) → ∞.
@@ -932,6 +1000,50 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
         }
     }
     result
+}
+
+/// `0^z` for a non-numeric exponent `z`: `0` for a real `z > 0`, `zoo` for a
+/// real `z < 0` (the limits along every path), and `nan` for a non-real `z`
+/// (`0^z = e^(z·ln 0)` has no value), as SymPy (`0**pi`, `0**(-pi)`,
+/// `0**I`, `0**(1+I)`) and mpmath (`mpc(0)**mpc(1, 1)` is `nan`) define it.
+/// `None` when the exponent's sign or realness is not known (`0^x` for an
+/// unknown `x` stays).  Before 0.30 `0^I`, `0^π` and `0^(−1 + i)` stayed
+/// as atoms, and `evalf` gave `0` for the first and the last.
+fn zero_power(arena: &mut Arena, exp: ExprId) -> Option<ExprId> {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    if arena.as_num(exp).is_some() {
+        return None;
+    }
+    // The real part: the exponent without its imaginary-multiple terms.
+    let terms: SmallVec<[ExprId; 6]> = match arena.node(exp) {
+        ExprNode::Add(t) => t.clone(),
+        _ => smallvec![exp],
+    };
+    let is_imaginary_multiple =
+        |id: ExprId| matches!(classify_arg(arena, id), Arg::ImaginaryMultiple(_));
+    let real: SmallVec<[ExprId; 6]> = terms
+        .iter()
+        .copied()
+        .filter(|&t| !is_imaginary_multiple(t))
+        .collect();
+    let has_imaginary = real.len() < terms.len();
+    let re = canon_add(arena, &real);
+    let mut cache = AssumptionCache::new();
+    if re == arena.zero || cache.query(arena, re, Props::REAL) != Some(true) {
+        // `re + q·i` with a real `re` and a non-zero `q` (canonical terms
+        // have non-zero coefficients) is not real.
+        return (has_imaginary && re == arena.zero).then_some(arena.nan);
+    }
+    if has_imaginary {
+        return Some(arena.nan);
+    }
+    if cache.query(arena, re, Props::POSITIVE) == Some(true) {
+        Some(arena.zero)
+    } else if cache.query(arena, re, Props::NEGATIVE) == Some(true) {
+        Some(arena.complex_infinity)
+    } else {
+        None
+    }
 }
 
 /// Try to evaluate `b ^ e` when both are rational, returning `None` if the
@@ -1335,6 +1447,641 @@ pub(crate) fn canon_neg(arena: &mut Arena, expr: ExprId) -> ExprId {
         }
     }
     result
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Function applications at exact special arguments
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A value that a function application folds to at construction.
+enum Folded {
+    Rational(Q),
+    /// `q·i` for a non-zero rational `q`.
+    Imaginary(Q),
+    Infinity,
+    NegInfinity,
+    ComplexInfinity,
+    NaN,
+}
+
+impl Folded {
+    fn int(n: i64) -> Self {
+        Folded::Rational(Q::from_integer(BigInt::from(n)))
+    }
+
+    fn ratio(n: i64, d: i64) -> Self {
+        Folded::Rational(Q::new(BigInt::from(n), BigInt::from(d)))
+    }
+}
+
+/// The exact constant an argument stands for, as far as the tables of
+/// [`canon_function`] need it (the canonical spellings of `q`, `q·π`,
+/// `q·π·i`, `q·i`, `e` and the special atoms).
+enum Arg {
+    Rational(Q),
+    PiMultiple(Q),
+    ImaginaryPiMultiple(Q),
+    ImaginaryMultiple(Q),
+    E,
+    Infinity,
+    NegInfinity,
+    ComplexInfinity,
+    NaN,
+    Other,
+}
+
+fn classify_arg(arena: &Arena, id: ExprId) -> Arg {
+    if let Some(q) = inverse_trig_pi_multiple(arena, id) {
+        return Arg::PiMultiple(q);
+    }
+    match arena.node(id) {
+        ExprNode::Num(n) => Arg::Rational(arena.num(*n).clone()),
+        // ln(−1) = iπ on the principal branch.
+        ExprNode::Ln(w) if *w == arena.neg_one => Arg::ImaginaryPiMultiple(Q::one()),
+        ExprNode::Pi => Arg::PiMultiple(Q::one()),
+        ExprNode::ImaginaryUnit => Arg::ImaginaryMultiple(Q::one()),
+        ExprNode::E => Arg::E,
+        ExprNode::Infinity => Arg::Infinity,
+        ExprNode::NegInfinity => Arg::NegInfinity,
+        ExprNode::ComplexInfinity => Arg::ComplexInfinity,
+        ExprNode::NaN => Arg::NaN,
+        ExprNode::Mul(children) => {
+            let (q, rest) = match children.first().map(|&c| arena.node(c)) {
+                Some(ExprNode::Num(n)) => (arena.num(*n).clone(), &children[1..]),
+                _ => (Q::one(), &children[..]),
+            };
+            let (pi, i) = (arena.pi, arena.i_unit);
+            match *rest {
+                [a] if a == pi => Arg::PiMultiple(q),
+                [a] if inverse_trig_pi_multiple(arena, a).is_some() => {
+                    Arg::PiMultiple(q * inverse_trig_pi_multiple(arena, a).unwrap_or_default())
+                }
+                [a] if matches!(arena.node(a), ExprNode::Ln(w) if *w == arena.neg_one) => {
+                    Arg::ImaginaryPiMultiple(q)
+                }
+                [a] if a == i => Arg::ImaginaryMultiple(q),
+                [a, b] if (a == pi && b == i) || (a == i && b == pi) => Arg::ImaginaryPiMultiple(q),
+                _ => Arg::Other,
+            }
+        }
+        _ => Arg::Other,
+    }
+}
+
+/// `q` when `id` is an inverse trigonometric function at a point where its
+/// principal value is `q·π`: `asin(±1) = ±π/2`, `asin(±1/2) = ±π/6`,
+/// `acos(0) = π/2`, `acos(−1) = π`, `acos(±1/2) = π/3, 2π/3`,
+/// `atan(±1) = ±π/4`, `atan(±∞) = ±π/2`.  These atoms keep their form (the
+/// value is irrational), but a function of them folds: `tan(2·atan(1))` is
+/// `tan(π/2) = zoo`, `sin(2·asin(1)) = 0`.
+fn inverse_trig_pi_multiple(arena: &Arena, id: ExprId) -> Option<Q> {
+    let (a, table): (ExprId, &[(i64, i64, i64, i64)]) = match *arena.node(id) {
+        // (argument p/q, value r/s · π)
+        ExprNode::Asin(a) => (
+            a,
+            &[(1, 1, 1, 2), (-1, 1, -1, 2), (1, 2, 1, 6), (-1, 2, -1, 6)],
+        ),
+        ExprNode::Acos(a) => (
+            a,
+            &[(0, 1, 1, 2), (-1, 1, 1, 1), (1, 2, 1, 3), (-1, 2, 2, 3)],
+        ),
+        ExprNode::Atan(a) => {
+            if a == arena.infinity {
+                return Some(Q::new(BigInt::from(1), BigInt::from(2)));
+            }
+            if a == arena.neg_infinity {
+                return Some(Q::new(BigInt::from(-1), BigInt::from(2)));
+            }
+            (a, &[(1, 1, 1, 4), (-1, 1, -1, 4)])
+        }
+        _ => return None,
+    };
+    let v = arena.as_num(a)?;
+    table.iter().find_map(|&(p, q, r, s)| {
+        (*v == Q::new(BigInt::from(p), BigInt::from(q)))
+            .then(|| Q::new(BigInt::from(r), BigInt::from(s)))
+    })
+}
+
+/// `q mod m` in `[0, m)`.
+fn mod_rational(q: &Q, m: i64) -> Q {
+    let m = Q::from_integer(BigInt::from(m));
+    q - (q / &m).floor() * &m
+}
+
+/// `q` as a multiple of `1/n` (`q·n` when that is an integer).
+fn in_units(q: &Q, n: i64) -> Option<i64> {
+    let t = q * Q::from_integer(BigInt::from(n));
+    if t.is_integer() {
+        t.to_integer().to_i64()
+    } else {
+        None
+    }
+}
+
+/// `sin(q·π)` when it is rational.
+fn sin_pi(q: &Q) -> Option<Folded> {
+    Some(match in_units(&mod_rational(q, 2), 6)? {
+        0 | 6 => Folded::int(0),
+        1 | 5 => Folded::ratio(1, 2),
+        3 => Folded::int(1),
+        7 | 11 => Folded::ratio(-1, 2),
+        9 => Folded::int(-1),
+        _ => return None,
+    })
+}
+
+/// `cos(q·π)` when it is rational.
+fn cos_pi(q: &Q) -> Option<Folded> {
+    Some(match in_units(&mod_rational(q, 2), 6)? {
+        0 => Folded::int(1),
+        2 | 10 => Folded::ratio(1, 2),
+        3 | 9 => Folded::int(0),
+        4 | 8 => Folded::ratio(-1, 2),
+        6 => Folded::int(-1),
+        _ => return None,
+    })
+}
+
+/// `tan(q·π)` when it is rational or a pole.
+fn tan_pi(q: &Q) -> Option<Folded> {
+    Some(match in_units(&mod_rational(q, 1), 4)? {
+        0 => Folded::int(0),
+        1 => Folded::int(1),
+        2 => Folded::ComplexInfinity,
+        3 => Folded::int(-1),
+        _ => return None,
+    })
+}
+
+/// Is `q` an integer `≤ 0` (a pole of Γ)?
+fn is_nonpositive_int(q: &Q) -> bool {
+    q.is_integer() && !q.is_positive()
+}
+
+/// The canonical value of a function application at an exact constant
+/// argument, when that value is a **rational number (or a rational multiple
+/// of `i`), `±∞`, `zoo` or `nan`**;
+/// `None` for every other node (including every application whose value is
+/// irrational, such as `sin(π/4)`, `exp(1)` or `acos(0)`, which stay for
+/// `eval` to rewrite).
+///
+/// [`Arena::intern`] consults this for every node it is asked to create,
+/// so no function application with such a value ever exists in an arena,
+/// whichever path builds it (the constructors, substitution, parsing,
+/// differentiation, …).  This is what makes the canonical arithmetic sound
+/// at constants: `x·x⁻¹ → 1`, `x − x → 0`, `x⁰ → 1` and `0·x → 0` hold only
+/// for a finite non-zero `x`, so before 0.30 `sin(0)/sin(0)` was `1`,
+/// `ln(0) − ln(0)` was `0`, `(sin(8n)/(8·sin n))` at `n = 0` was `1/8` (the
+/// limit, not the value) and `(1 − cos x)/x²` at `x = 0` was `zoo` (the
+/// hidden zero `1 − cos 0` times `0⁻²`).  With the atom folded they are
+/// `0·zoo = nan`, like SymPy's (whose `Function.eval` classmethods fold
+/// the same special values when the application is built).
+///
+/// Rational values are folded, not only zeros and poles, because a
+/// rational-valued atom is a non-canonical spelling of a number — like an
+/// unreduced fraction — that hides zeros from the arithmetic: `1 − cos 0`,
+/// `ln(cos 0)`, `sinh(iπ/2) − i`.  The tables are exact and structural (no
+/// evaluation, no recursion): `sin`/`cos`/`tan` at rational multiples of `π`
+/// with rational values (the argument may be `asin(1)`, `acos(½)`,
+/// `atan(1)`, … times a rational: `tan(2·atan(1))` is `tan(π/2) = zoo`),
+/// the hyperbolic functions at `0` and at `i·π·q` (`ln(−1) = iπ`),
+/// `exp(0)`, `exp(iπk/2) = iᵏ`, `ln(0) = zoo`, `ln(1)`, `ln(e)`, the inverse functions at
+/// their zeros and poles, `Γ`/`ln Γ`/`ψ`/`n!`/`B(a, b)` at their poles and
+/// `ln Γ(1) = ln Γ(2) = 0`, `C(n, k)` where it vanishes,
+/// `erf`/`erfc`/`W`/`⌊·⌋`/`⌈·⌉`/`H`/`δ` at numbers, `|·|` and `sign` of
+/// numbers and of `π`, `e`, …, the values at `±∞` that are infinite or
+/// rational, `f(nan) = nan`, and the zeros and poles of the library
+/// functions (`J_ν(0)`, `erfinv(±1)`, …).  The positive-integer values of
+/// `Γ`, `n!`, `C(n, k)` and `B(a, b)` (numbers that can be huge) are left
+/// to `eval`, which bounds them by the digit guard of exact results.
+pub(crate) fn canon_function(arena: &mut Arena, node: &ExprNode) -> Option<ExprId> {
+    // |c| = c for the positive constants π, e, γ, G, φ (`abs(π)` stayed an
+    // atom and hid `sin(|π|/2) = 1` from the tables).
+    if let ExprNode::Abs(a) = *node
+        && is_positive_constant(arena, a)
+    {
+        return Some(a);
+    }
+    if let ExprNode::Sign(a) = *node
+        && is_positive_constant(arena, a)
+    {
+        return Some(arena.one);
+    }
+    // |i^q| = |(−1)^q| = |e^(iπq)| = 1 for a rational q; |∏ cⱼ| = ∏ |cⱼ|
+    // for a product of such units, numbers, positive constants and their
+    // rational powers (`|π·i| = π`).
+    if let ExprNode::Abs(a) = *node {
+        let is_unit = |c: ExprId| match *arena.node(c) {
+            ExprNode::ImaginaryUnit => true,
+            ExprNode::Pow(b, e) => {
+                let unit_base = b == arena.i_unit
+                    || b == arena.neg_one
+                    || matches!(classify_arg(arena, b), Arg::ImaginaryMultiple(q) if (-&q).is_one());
+                unit_base && arena.as_num(e).is_some()
+            }
+            ExprNode::Exp(x) => matches!(classify_arg(arena, x), Arg::ImaginaryPiMultiple(_)),
+            _ => false,
+        };
+        let is_positive = |c: ExprId| match *arena.node(c) {
+            ExprNode::Pow(b, e) => {
+                (is_positive_constant(arena, b) || arena.as_num(b).is_some_and(|q| q.is_positive()))
+                    && arena.as_num(e).is_some()
+            }
+            _ => is_positive_constant(arena, c),
+        };
+        if is_unit(a) {
+            return Some(arena.one);
+        }
+        if let ExprNode::Mul(children) = arena.node(a) {
+            // (factor, |factor|): a number by its magnitude, a positive
+            // factor by itself, a unit by 1; `None` for any other factor.
+            let mut kept: SmallVec<[(ExprId, Option<Q>); 6]> = SmallVec::new();
+            let mut all_known = true;
+            for &c in children.iter() {
+                if let Some(q) = arena.as_num(c) {
+                    kept.push((c, Some(q.abs())));
+                } else if is_positive(c) {
+                    kept.push((c, None));
+                } else if !is_unit(c) {
+                    all_known = false;
+                    break;
+                }
+            }
+            if all_known {
+                let factors: SmallVec<[ExprId; 6]> = kept
+                    .into_iter()
+                    .map(|(c, q)| match q {
+                        Some(q) => {
+                            let nid = arena.intern_num(q);
+                            arena.intern(ExprNode::Num(nid))
+                        }
+                        None => c,
+                    })
+                    .collect();
+                return Some(canon_mul(arena, &factors));
+            }
+        }
+    }
+    let folded = match *node {
+        ExprNode::Sin(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) if q.is_zero() => Folded::int(0),
+            Arg::PiMultiple(q) => sin_pi(&q)?,
+            Arg::ComplexInfinity | Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Cos(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) if q.is_zero() => Folded::int(1),
+            Arg::PiMultiple(q) => cos_pi(&q)?,
+            Arg::ComplexInfinity | Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Tan(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) if q.is_zero() => Folded::int(0),
+            Arg::PiMultiple(q) => tan_pi(&q)?,
+            Arg::ComplexInfinity | Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Exp(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) if q.is_zero() => Folded::int(1),
+            // e^{iπk/2} = i^k: 1, i, −1, −i.
+            Arg::ImaginaryPiMultiple(q) => match in_units(&mod_rational(&q, 2), 2)? {
+                0 => Folded::int(1),
+                1 => Folded::Imaginary(Q::one()),
+                2 => Folded::int(-1),
+                3 => Folded::Imaginary(-Q::one()),
+                _ => return None,
+            },
+            Arg::Infinity => Folded::Infinity,
+            Arg::NegInfinity => Folded::int(0),
+            Arg::ComplexInfinity | Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Ln(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) if q.is_zero() => Folded::ComplexInfinity,
+            Arg::Rational(q) if q.is_one() => Folded::int(0),
+            Arg::E => Folded::int(1),
+            Arg::Infinity | Arg::NegInfinity => Folded::Infinity,
+            Arg::ComplexInfinity => Folded::ComplexInfinity,
+            Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Sinh(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) if q.is_zero() => Folded::int(0),
+            // sinh(iπq) = i·sin(πq).
+            Arg::ImaginaryPiMultiple(q) => times_i(sin_pi(&q)?)?,
+            Arg::Infinity => Folded::Infinity,
+            Arg::NegInfinity => Folded::NegInfinity,
+            Arg::ComplexInfinity | Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Cosh(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) if q.is_zero() => Folded::int(1),
+            // cosh(iπq) = cos(πq).
+            Arg::ImaginaryPiMultiple(q) => cos_pi(&q)?,
+            Arg::Infinity | Arg::NegInfinity => Folded::Infinity,
+            Arg::ComplexInfinity | Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Tanh(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) if q.is_zero() => Folded::int(0),
+            // tanh(iπq) = i·tan(πq).
+            Arg::ImaginaryPiMultiple(q) => times_i(tan_pi(&q)?)?,
+            Arg::Infinity => Folded::int(1),
+            Arg::NegInfinity => Folded::int(-1),
+            Arg::ComplexInfinity | Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Asin(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) if q.is_zero() => Folded::int(0),
+            // asin(±∞) = ∓i∞: infinite, recorded without its direction.
+            Arg::Infinity | Arg::NegInfinity | Arg::ComplexInfinity => Folded::ComplexInfinity,
+            Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Acos(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) if q.is_one() => Folded::int(0),
+            Arg::Infinity | Arg::NegInfinity | Arg::ComplexInfinity => Folded::ComplexInfinity,
+            Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Atan(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) if q.is_zero() => Folded::int(0),
+            // The logarithmic branch points atan(±i) = ±i∞.
+            Arg::ImaginaryMultiple(q) if q.is_one() || (-&q).is_one() => Folded::ComplexInfinity,
+            Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Asinh(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) if q.is_zero() => Folded::int(0),
+            Arg::Infinity => Folded::Infinity,
+            Arg::NegInfinity => Folded::NegInfinity,
+            Arg::ComplexInfinity => Folded::ComplexInfinity,
+            Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Acosh(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) if q.is_one() => Folded::int(0),
+            Arg::Infinity | Arg::NegInfinity => Folded::Infinity,
+            Arg::ComplexInfinity => Folded::ComplexInfinity,
+            Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Atanh(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) if q.is_zero() => Folded::int(0),
+            Arg::Rational(q) if q.is_one() => Folded::Infinity,
+            Arg::Rational(q) if (-&q).is_one() => Folded::NegInfinity,
+            Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Atan2(y, x) => match (classify_arg(arena, y), classify_arg(arena, x)) {
+            (Arg::NaN, _) | (_, Arg::NaN) => Folded::NaN,
+            // atan2(0, 0) is undefined (SymPy: nan); atan2(0, x > 0) = 0.
+            (Arg::Rational(y), Arg::Rational(x)) if y.is_zero() && x.is_zero() => Folded::NaN,
+            (Arg::Rational(y), Arg::Rational(x)) if y.is_zero() && x.is_positive() => {
+                Folded::int(0)
+            }
+            _ => return None,
+        },
+        ExprNode::Gamma(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) if is_nonpositive_int(&q) => Folded::ComplexInfinity,
+            Arg::Infinity => Folded::Infinity,
+            Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::LogGamma(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) if is_nonpositive_int(&q) => Folded::Infinity,
+            Arg::Rational(q) if q.is_one() || in_units(&q, 1) == Some(2) => Folded::int(0),
+            Arg::Infinity => Folded::Infinity,
+            Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Digamma(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) if is_nonpositive_int(&q) => Folded::ComplexInfinity,
+            Arg::Infinity => Folded::Infinity,
+            Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Erf(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) if q.is_zero() => Folded::int(0),
+            Arg::Infinity => Folded::int(1),
+            Arg::NegInfinity => Folded::int(-1),
+            Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Erfc(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) if q.is_zero() => Folded::int(1),
+            Arg::Infinity => Folded::int(0),
+            Arg::NegInfinity => Folded::int(2),
+            Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::LambertW(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) if q.is_zero() => Folded::int(0),
+            Arg::E => Folded::int(1),
+            Arg::Infinity => Folded::Infinity,
+            Arg::NaN => Folded::NaN,
+            // W(−1/e) = −1: the argument is `−exp(−1)`.
+            Arg::Other if is_minus_inverse_e(arena, a) => Folded::int(-1),
+            _ => return None,
+        },
+        ExprNode::Floor(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) => Folded::Rational(q.floor()),
+            Arg::Infinity => Folded::Infinity,
+            Arg::NegInfinity => Folded::NegInfinity,
+            Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Ceiling(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) => Folded::Rational(q.ceil()),
+            Arg::Infinity => Folded::Infinity,
+            Arg::NegInfinity => Folded::NegInfinity,
+            Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Heaviside(a) => match classify_arg(arena, a) {
+            // H(0) = 1/2, the convention of `eval`.
+            Arg::Rational(q) if q.is_zero() => Folded::ratio(1, 2),
+            Arg::Rational(q) if q.is_positive() => Folded::int(1),
+            Arg::Rational(_) | Arg::NegInfinity => Folded::int(0),
+            Arg::Infinity => Folded::int(1),
+            Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::DiracDelta(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) if !q.is_zero() => Folded::int(0),
+            Arg::Infinity | Arg::NegInfinity => Folded::int(0),
+            Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Abs(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) => Folded::Rational(q.abs()),
+            Arg::Infinity | Arg::NegInfinity | Arg::ComplexInfinity => Folded::Infinity,
+            Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Sign(a) => match classify_arg(arena, a) {
+            Arg::Rational(q) => Folded::Rational(q.signum()),
+            Arg::Infinity => Folded::int(1),
+            Arg::NegInfinity => Folded::int(-1),
+            Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Factorial(a) => match classify_arg(arena, a) {
+            // n! = Γ(n + 1): poles at the negative integers.
+            Arg::Rational(q) if q.is_integer() && q.is_negative() => Folded::ComplexInfinity,
+            Arg::Infinity => Folded::Infinity,
+            Arg::NaN => Folded::NaN,
+            _ => return None,
+        },
+        ExprNode::Binomial(n, k) => match (classify_arg(arena, n), classify_arg(arena, k)) {
+            (Arg::NaN, _) | (_, Arg::NaN) => Folded::NaN,
+            (Arg::Rational(n), Arg::Rational(k)) if k.is_integer() => {
+                // C(n, k) = Γ(n+1)/(Γ(k+1)·Γ(n−k+1)).  For n ≥ 0 an integer
+                // the value is 0 unless 0 ≤ k ≤ n; for a non-integer n,
+                // 1/Γ(k+1) = 0 at a negative k.  A negative integer n is left
+                // alone (the pole of Γ(n+1) makes it a limit; see `eval`).
+                let vanishes = if n.is_integer() {
+                    !n.is_negative() && (k.is_negative() || k > n)
+                } else {
+                    k.is_negative()
+                };
+                if !vanishes {
+                    return None;
+                }
+                Folded::int(0)
+            }
+            _ => return None,
+        },
+        ExprNode::Beta(a, b) => match (classify_arg(arena, a), classify_arg(arena, b)) {
+            (Arg::NaN, _) | (_, Arg::NaN) => Folded::NaN,
+            (Arg::Rational(a), Arg::Rational(b)) if beta_has_pole(&a, &b) => {
+                Folded::ComplexInfinity
+            }
+            _ => return None,
+        },
+        ExprNode::Apply(head, ref args) => lib_function_value(arena, head, args)?,
+        _ => return None,
+    };
+    Some(match folded {
+        Folded::Rational(q) => {
+            if q.is_zero() {
+                arena.zero
+            } else if q.is_one() {
+                arena.one
+            } else {
+                let nid = arena.intern_num(q);
+                arena.intern(ExprNode::Num(nid))
+            }
+        }
+        Folded::Imaginary(q) => {
+            let i = arena.i_unit;
+            if q.is_one() {
+                i
+            } else {
+                let nid = arena.intern_num(q);
+                let c = arena.intern(ExprNode::Num(nid));
+                canon_mul(arena, &[c, i])
+            }
+        }
+        Folded::Infinity => arena.infinity,
+        Folded::NegInfinity => arena.neg_infinity,
+        Folded::ComplexInfinity => arena.complex_infinity,
+        Folded::NaN => arena.nan,
+    })
+}
+
+/// Is `a` one of the positive real constants `π`, `e`, `γ`, `G`, `φ`?
+fn is_positive_constant(arena: &Arena, a: ExprId) -> bool {
+    matches!(
+        arena.node(a),
+        ExprNode::Pi
+            | ExprNode::E
+            | ExprNode::EulerGamma
+            | ExprNode::Catalan
+            | ExprNode::GoldenRatio
+    )
+}
+
+/// `i·v` for a folded real value `v` (0, a rational, or a pole).
+fn times_i(v: Folded) -> Option<Folded> {
+    match v {
+        Folded::Rational(q) if q.is_zero() => Some(Folded::int(0)),
+        Folded::Rational(q) => Some(Folded::Imaginary(q)),
+        Folded::ComplexInfinity => Some(Folded::ComplexInfinity),
+        _ => None,
+    }
+}
+
+/// Is `id` the canonical `−exp(−1)`, i.e. `−1/e`?
+fn is_minus_inverse_e(arena: &Arena, id: ExprId) -> bool {
+    let ExprNode::Mul(children) = arena.node(id) else {
+        return false;
+    };
+    matches!(**children, [c, e] if c == arena.neg_one
+        && matches!(arena.node(e), ExprNode::Exp(m) if *m == arena.neg_one))
+}
+
+/// Is `B(a, b) = Γ(a)Γ(b)/Γ(a+b)` at rationals a pole: exactly one of
+/// `Γ(a)`, `Γ(b)` has one and `Γ(a+b)` does not?
+fn beta_has_pole(a: &Q, b: &Q) -> bool {
+    is_nonpositive_int(a) != is_nonpositive_int(b) && !is_nonpositive_int(&(a + b))
+}
+
+/// The zeros, poles and `nan`s of the library functions at exact numbers
+/// (their other values are left to `eval`): `J_ν(0) = I_ν(0) = 0` for
+/// `ν > 0`, `Y_ν(0)` and `K_ν(0)` infinite (`−∞`/`∞` for `ν = 0`, `zoo`
+/// otherwise, as SymPy's `bessely.eval`/`besselk.eval`), `erfi(0)`,
+/// `erfinv(0)`, `erfinv(±1) = ±∞`, `erfcinv(1) = 0`, `erfcinv(0) = ∞`,
+/// `erfcinv(2) = −∞`, `Shi(0)`, `Chi(0) = −∞`, `S(0) = C(0) = 0`,
+/// `K(1) = zoo`, `Li_s(0) = 0`, and `nan` for a `nan` argument.
+fn lib_function_value(
+    arena: &Arena,
+    head: crate::base::node::SymbolId,
+    args: &[ExprId],
+) -> Option<Folded> {
+    use crate::base::libfn::LibFn;
+    // Cheap filter before the name lookup: some argument must be a number
+    // or a special atom.
+    let special = |id: ExprId| {
+        matches!(
+            arena.node(id),
+            ExprNode::Num(_)
+                | ExprNode::NaN
+                | ExprNode::Infinity
+                | ExprNode::NegInfinity
+                | ExprNode::ComplexInfinity
+        )
+    };
+    if !args.iter().any(|&a| special(a)) {
+        return None;
+    }
+    let f = arena.lib_fn(head)?;
+    if args.contains(&arena.nan) {
+        return Some(Folded::NaN);
+    }
+    let num = |i: usize| args.get(i).and_then(|&a| arena.as_num(a));
+    let is = |i: usize, v: i64| num(i).is_some_and(|q| *q == Q::from_integer(BigInt::from(v)));
+    Some(match f {
+        LibFn::BesselJ | LibFn::BesselI if is(1, 0) && num(0)?.is_positive() => Folded::int(0),
+        LibFn::BesselY if is(1, 0) && num(0)?.is_zero() => Folded::NegInfinity,
+        LibFn::BesselK if is(1, 0) && num(0)?.is_zero() => Folded::Infinity,
+        LibFn::BesselY | LibFn::BesselK if is(1, 0) && num(0).is_some() => Folded::ComplexInfinity,
+        LibFn::Erfi | LibFn::ErfInv | LibFn::Shi | LibFn::FresnelS | LibFn::FresnelC
+            if is(0, 0) =>
+        {
+            Folded::int(0)
+        }
+        LibFn::ErfInv if is(0, 1) => Folded::Infinity,
+        LibFn::ErfInv if is(0, -1) => Folded::NegInfinity,
+        LibFn::ErfcInv if is(0, 1) => Folded::int(0),
+        LibFn::ErfcInv if is(0, 0) => Folded::Infinity,
+        LibFn::ErfcInv if is(0, 2) => Folded::NegInfinity,
+        LibFn::Chi if is(0, 0) => Folded::NegInfinity,
+        LibFn::EllipticK if is(0, 1) => Folded::ComplexInfinity,
+        LibFn::PolyLog if is(1, 0) => Folded::int(0),
+        _ => return None,
+    })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2229,19 +2976,37 @@ mod tests {
     }
 
     #[test]
-    fn no_auto_eval_sin() {
-        // sin(0) should NOT auto-evaluate to 0.
+    fn constant_applications_with_rational_or_singular_values_fold() {
+        // Before 0.30 construction kept `sin(0)`, `cos(π)` and `ln(0)` as
+        // atoms, and `sin(0)/sin(0)` was 1.  Values: SymPy 1.14 `sin(0)`,
+        // `cos(pi)`, `log(0)`, `tan(pi/2)`, `gamma(0)` → 0, -1, zoo, zoo, zoo.
         let mut a = Arena::new();
-        let result = a.sin(a.zero);
-        assert_eq!(display(&a, result), "sin(0)");
+        let r = a.sin(a.zero);
+        assert_eq!(r, a.zero);
+        let r = a.cos(a.pi);
+        assert_eq!(r, a.neg_one);
+        let r = a.ln(a.zero);
+        assert_eq!(r, a.complex_infinity);
+        let half = a.rational(1, 2);
+        let half_pi = a.mul(&[half, a.pi]);
+        let r = a.tan(half_pi);
+        assert_eq!(r, a.complex_infinity);
+        let r = a.gamma(a.zero);
+        assert_eq!(r, a.complex_infinity);
+        let s = a.sin(a.zero);
+        let inv = a.pow(s, a.neg_one);
+        let q = a.mul(&[s, inv]);
+        assert_eq!(q, a.nan, "sin(0)/sin(0) is 0/0");
     }
 
     #[test]
-    fn no_auto_eval_cos_pi() {
-        // cos(pi) should NOT auto-evaluate to -1.
+    fn irrational_special_values_stay_for_eval() {
+        // sin(π/4) = √2/2 is not folded at construction (eval does it).
         let mut a = Arena::new();
-        let result = a.cos(a.pi);
-        assert_eq!(display(&a, result), "cos(pi)");
+        let quarter = a.rational(1, 4);
+        let arg = a.mul(&[quarter, a.pi]);
+        let result = a.sin(arg);
+        assert_eq!(display(&a, result), "sin(1/4*pi)");
     }
 
     #[test]

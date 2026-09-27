@@ -398,7 +398,18 @@ impl Arena {
     /// existing [`ExprId`] is returned.  Otherwise the node is appended to
     /// the arena, a sort key is computed, and the new [`ExprId`] is recorded
     /// in the dedup map.
+    ///
+    /// A function application at an exact special argument whose value is
+    /// rational, infinite or `nan` is never stored: its value is returned
+    /// instead (`sin(0)` → `0`, `ln(0)` → `zoo`, `Γ(−2)` → `zoo`; see
+    /// [`canon_function`](crate::base::canon::canon_function)).  Every path
+    /// that builds nodes — the constructors, substitution, parsing, the
+    /// algorithms that intern directly — passes through here, so canonical
+    /// arithmetic never meets such an atom (`sin(0)/sin(0)` is `nan`, not 1).
     pub(crate) fn intern(&mut self, node: ExprNode) -> ExprId {
+        if let Some(value) = crate::base::canon::canon_function(self, &node) {
+            return value;
+        }
         let hash = Self::hash_node(&node);
 
         // Check the dedup map for an existing equivalent node.
@@ -1782,6 +1793,26 @@ impl Arena {
         order: u32,
     ) -> Result<ExprId, crate::base::errors::SymplexError> {
         crate::calculus::series::laurent_series(self, expr, var, point, order)
+    }
+
+    /// The sign of the real, symbol-free `expr` from a certified 16-digit
+    /// value (its error ball excludes 0); `None` for anything else.  Used by
+    /// canonical multiplication to orient `±∞` (`ln(2)·∞ = ∞`).
+    pub(crate) fn sign_of_real_constant(&self, expr: ExprId) -> Option<std::cmp::Ordering> {
+        use crate::transforms::evalf::{Settled, ZeroSearch, evalf_settled};
+        if !crate::base::walk::free_symbols(self, expr).is_empty() {
+            return None;
+        }
+        match evalf_settled(self, expr, 16, ZeroSearch::Cap) {
+            Ok((z, Settled::Certified)) if z.1.is_zero() && !z.0.is_zero() => {
+                Some(if z.0.is_negative() {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                })
+            }
+            _ => None,
+        }
     }
 
     /// Evaluate `expr` numerically to `digits` decimal digits of precision.

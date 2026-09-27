@@ -3064,7 +3064,12 @@ mod tests {
             !code.contains(".cos()"),
             "should constant-fold cos(0): {code}"
         );
-        assert!(code.contains("1.0"), "should produce 1.0: {code}");
+        // `cos(0)` folds when it is built (since 0.30), so the literal is
+        // the integer 1.
+        assert!(
+            code.contains("1.0") || code.contains("1_f64"),
+            "should produce 1: {code}"
+        );
     }
 
     #[test]
@@ -3077,7 +3082,12 @@ mod tests {
             !code.contains(".sin()"),
             "should constant-fold sin(0): {code}"
         );
-        assert!(code.contains("0.0"), "should produce 0.0: {code}");
+        // `sin(0)` folds when it is built (since 0.30), so the literal is
+        // the integer 0.
+        assert!(
+            code.contains("0.0") || code.contains("0_f64"),
+            "should produce 0: {code}"
+        );
     }
 
     #[test]
@@ -3090,7 +3100,12 @@ mod tests {
             !code.contains(".exp()"),
             "should constant-fold exp(0): {code}"
         );
-        assert!(code.contains("1.0"), "should produce 1.0: {code}");
+        // `exp(0)` folds when it is built (since 0.30), so the literal is
+        // the integer 1.
+        assert!(
+            code.contains("1.0") || code.contains("1_f64"),
+            "should produce 1: {code}"
+        );
     }
 
     #[test]

@@ -276,6 +276,9 @@ fn z_div_exact_scalar(p: &[BigInt], b: &BigInt) -> Option<Vec<BigInt>> {
 /// R_j)/b_j` (`+1` for the first two members, which are the inputs).
 pub(crate) struct ZPrsMember {
     pub(crate) poly: Vec<BigInt>,
+    /// Read by the Sturm sequence (`z_sturm_sequence`, test-only since
+    /// root isolation moved to the Descartes method).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) divisor_sign: i8,
 }
 
@@ -360,6 +363,10 @@ pub(crate) fn z_subresultant_prs(f: &[BigInt], g: &[BigInt]) -> Option<ZPrs> {
 /// fixed: `R_{j+1} = lc(R_j)^{d_j+1}·rem(R_{j−1}, R_j)/b_j` gives `S_{j+1} =
 /// s_{j+1}·R_{j+1}` with `s_{j+1} = −s_{j−1}·sign(b_j)·sign(lc R_j)^{d_j+1}`.
 /// `None` when `deg p0 < deg p1` or either is zero.
+///
+/// Real-root isolation used this chain until 0.30 (it is now the Descartes
+/// method, `sturm.rs`); kept as the reference its tests replay.
+#[cfg(test)]
 pub(crate) fn z_sturm_sequence(p0: &[BigInt], p1: &[BigInt]) -> Option<Vec<Vec<BigInt>>> {
     let prs = z_subresultant_prs(p0, p1)?;
     let mut out: Vec<Vec<BigInt>> = Vec::with_capacity(prs.members.len());

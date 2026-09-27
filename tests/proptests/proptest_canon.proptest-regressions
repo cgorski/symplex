@@ -8,3 +8,5 @@ cc 260bf15d9e8a2698f6104c92b72e6c1afd8ebdd2b7febedec619c35f13a81b96 # shrinks to
 cc 50528a13fa9e115b6b8ec51b1ebd3c528fe7086e62b53198fb67257a5d81c9de # shrinks to a = Int(-1), b = Mul(Int(-1), Int(1)), n = 2
 cc 45571a50f83facc7b73daf61f027490616aba293cc47731a91ef753662769651 # shrinks to desc = Mul(Add(Int(1), Add(Int(0), Sym(0))), Neg(Int(1)))
 cc 2610882c6f1b1f9a93bdbe9b807ef0c8ad7ac07f6da3e5d73111c69f65ac70da # shrinks to desc = Mul(Neg(Int(1)), Add(Sym(0), Int(-1)))
+cc bd98c7e6e58171bf7734adb990c20c39abf40714dc24198f61c221ef7311f726 # shrinks to desc = Mul(Mul(Int(0), Int(0)), Int(0))
+cc 31dd5dec7a3875286f64fd70f0b68995998134e3ebe74891b1b4c78413850859 # shrinks to desc = Int(0)

@@ -31,6 +31,25 @@ differences).  Every class they found is fixed and pinned in `tests/v29/`.
 
 ### Breaking (behaviour; no signature changed)
 
+- **Singular and rational constants fold when they are built** (SymPy's
+  convention): a function application at an exact argument whose value
+  is rational, a rational multiple of `i`, infinite or undefined is
+  folded on every construction path, substitution included.  `sin(0)` is
+  `0`, `cos(π)` is `−1`, `e^{iπ}` is `−1`, `ln(0)` is `zoo`, `(−3)!` is
+  `zoo`, `bessely(0, 0)` is `−oo`, `abs(π)` is `π`.  So substitution gives
+  the value, not the limit: `sin(8n)/(8·sin n)` at `n = 0` is `nan` (was
+  `1/8`), `ln(0)/ln(0)` is `nan` (was `1`).  Irrational values
+  (`sin(π/4)`) are still left for `eval()`.  `0^z` follows SymPy (`0^π =
+  0`, `0^i = nan`); `±∞` times a factor of unknown sign is `zoo` (`x·∞`
+  was `∞`, wrong at `x = −1`); `atan2(0, 0)` is `nan`.
+- **`d/dx ln|g| = g′/g`** for a real `g` (was `sign(g)·g′/|g|`):
+  `checkodesol` rejected every `ln|x|` solution, and the integrator's
+  self-check now verifies 20 more Rubi antiderivatives.
+- **`compile()` refuses a non-real constant** (`atanh(9)·x` compiled to
+  a function returning `NaN` everywhere), as the code emitters do.
+- **A limit with one symbolic parameter** checks the parameter values
+  that make a coefficient vanish: `lim_{x→0} x²/(a + x²)` is
+  `Piecewise((1, a = 0), (0, True))` (it was `0` even for `a = 0`).
 - **Only the error bound certifies digits.**  Two precisions that agree
   no longer count as certified: agreement is no evidence when an input
   rounds the same way at both.  `(1 + 10⁻¹⁵⁰)^(10¹⁵⁰)` printed `1` at 16
@@ -218,6 +237,28 @@ differences).  Every class they found is fixed and pinned in `tests/v29/`.
   bound was huge (the bisection depth was capped at 256); Sturm chains
   are signed subresultant PRS with a floating-point sign filter (degree
   40, 100-digit coefficients: 2.1 s → 0.1 s).
+- **evalf printed `0` for a zero ball wider than the requested digits**:
+  `exp(exp(2ix)).rewrite_as_trig()` at `x = 1/3 + 4i` (about `1.00026 +
+  0.00021i`) cancels 3,400 bits and came out `0`; the search now goes on
+  to the precision limit and refuses if still unresolved.  `exp(ln w)` of
+  a hidden constant zero is refused, not `0`.
+- **dsolve** (found by an ODE hunt, every solution verified by
+  substitution): systems `x′ = Ax` with defective or complex-eigenvalue
+  matrices returned a degree-12 Taylor polynomial as the "general
+  solution" (now the exact matrix exponential, real modes for complex
+  pairs); `y′ = k·y`-type separable equations missed every solution
+  `y ≤ 0` (`exp(∫f + C1)` → `C1·exp(∫f)`); reducible equations leaked the
+  internal variable `__p` and lost a constant; exact equations dropped
+  `C1` from implicit solutions.  Forced Cauchy–Euler equations, linear
+  equations with a coefficient on `y′`, homogeneous quotients and more
+  integrating factors now solve.
+- **Series of Bessel functions at 0:** `Y₀`/`K₀` came back as polynomials
+  in `Y₀(0) = −∞`; integer orders of `J`/`I` are exact and `Y`/`K`
+  refused.
+- **Real-root isolation** runs the Descartes method (Collins–Akritas) on
+  the square-free integer polynomial and reproduces the old intervals
+  exactly (degree 40 with 30-digit rational coefficients: 66.7 s → 0.13 s
+  in a debug build).
 - **Rewrites over ℂ** (found by a rewrite hunt at complex points):
   `powdenest` split `√(2^x·3^x)` into `√(2^x)·√(3^x)` (a positive base to
   a non-real power is not non-negative: wrong at `x = −1/100 + 2i`);
@@ -232,7 +273,9 @@ differences).  Every class they found is fixed and pinned in `tests/v29/`.
   (subresultant PRS over `ℚ[params]`); outputs unchanged.
 - **Canonical products** (found by `fuzz_roundtrip`): the reciprocal of a
   rational beyond the digit guard stayed `q^(−1)` while its display
-  parsed as the rational `1/q`.
+  parsed as the rational `1/q`; factors that combined to an infinity
+  (`sqrt(−oo)·sqrt(−oo) = −oo`) stayed ordinary factors of the product
+  (`x·sin(f(x))·(−oo)`, whose display parsed as `zoo`).
 - **`erfinv` of a tiny argument and `erfinv(erf(−9))` at 60 digits**
   failed to converge (found by the new `fuzz_evalf` in its first 10
   minutes).

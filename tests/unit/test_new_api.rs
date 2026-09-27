@@ -554,18 +554,16 @@ fn binomial_symmetry_large() {
 }
 
 #[test]
-fn factorial_negative_stays_unevaluated() {
+fn factorial_negative_is_complex_infinity() {
+    // (−5)! = Γ(−4), a pole: zoo (SymPy 1.14: `factorial(-5)` = zoo); folded
+    // when built since 0.30.
     let ctx = Context::new();
     ctx.with_arena_mut(|arena| {
         let n = arena.int(-5);
         let expr = arena.factorial(n);
         let result = arena.eval_expr(expr);
-        // Negative factorial has no standard value — should stay as (-5)!
         let s = arena.display(result).to_string();
-        assert!(
-            s.contains("!"),
-            "negative factorial should stay unevaluated: {s}"
-        );
+        assert_eq!(s, "zoo", "negative factorial: {s}");
     });
 }
 

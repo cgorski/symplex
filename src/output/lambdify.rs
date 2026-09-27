@@ -16,6 +16,12 @@
 //! the Rust code generator, so `compile()` and `to_rust_fn()` agree bit for
 //! bit on those routines.
 //!
+//! Symbol-free subexpressions are decided at compile time like the code
+//! emitters decide them: a real constant is folded to its certified `f64`
+//! value, and a constant that is not real (`atanh(9)`, `asin(2)`) is an
+//! error (`NotImplemented`, "the constant … is not real"), since a
+//! real-valued function cannot represent it.
+//!
 //! The compiler never recurses over the expression tree — it uses an
 //! explicit work stack — so arbitrarily deep expressions are safe.
 
@@ -323,8 +329,12 @@ fn compile_program(
         })
         .collect();
 
+    // Constants are decided before CSE, which would otherwise split a real
+    // constant around a shared non-real part.
+    let (folded, constants) = fold_constants_before_cse(arena, &evaled, var_names)?;
+
     // Shared CSE across all outputs.
-    let cse = crate::output::cse::cse_multi(arena, &evaled);
+    let cse = crate::output::cse::cse_multi(arena, &folded);
 
     let mut locals: FxHashMap<SymbolId, usize> = FxHashMap::default();
     for (i, (name_id, _)) in cse.bindings.iter().enumerate() {
@@ -334,6 +344,7 @@ fn compile_program(
     }
 
     let mut em = Emitter::new(arena, var_names, locals);
+    em.constants = constants;
     em.fold_constants = true;
     for (i, (_, value)) in cse.bindings.iter().enumerate() {
         em.lower(*value)?;
@@ -351,6 +362,116 @@ fn compile_program(
         n_locals: cse.bindings.len(),
         n_outputs: exprs.len(),
     })
+}
+
+/// Decide every maximal symbol-free compound subexpression of `exprs`
+/// before CSE, with the rule of the code emitters
+/// (`codegen::fold_constants_for_emission`): a real value from the
+/// certified evaluator is folded (replaced by a placeholder symbol bound to
+/// that `f64`, so CSE treats it as an atom); a formula the real VM already
+/// evaluates to a finite value is kept (the real odd root of a negative
+/// base, `(-8)^(1/3)` = −2); a constant that is not real is refused with
+/// the emitters' error; anything else keeps its formula and its parts are
+/// examined.  Iterative (explicit stack).
+///
+/// Before, a non-real constant (`atanh(9)·x`, `asin(2) + x`) compiled to a
+/// function returning NaN everywhere while `to_rust_fn`, `to_c_fn` and the
+/// Python emitters refused it, and a real constant sharing a non-real part
+/// with another (`|atanh(9)| + |atanh(9) + 1|·x`) was split by CSE around
+/// the shared `atanh(9)` and compiled to NaN too.
+fn fold_constants_before_cse(
+    arena: &mut Arena,
+    exprs: &[ExprId],
+    var_names: &[&str],
+) -> Result<(Vec<ExprId>, FxHashMap<SymbolId, f64>), SymplexError> {
+    // Symbol-freeness of every node, and the names in use, bottom-up.
+    let mut has_symbol: FxHashMap<ExprId, bool> = FxHashMap::default();
+    let mut names: rustc_hash::FxHashSet<String> =
+        var_names.iter().map(|s| (*s).to_string()).collect();
+    for &root in exprs {
+        for id in crate::base::walk::post_order_ids(arena, root) {
+            if has_symbol.contains_key(&id) {
+                continue;
+            }
+            let node = arena.node(id);
+            if let ExprNode::Symbol(sid) = node {
+                names.insert(arena.symbol_name(*sid).to_string());
+            }
+            let mut any = matches!(node, ExprNode::Symbol(_));
+            node.for_each_child(|c| any |= has_symbol.get(&c).copied().unwrap_or(true));
+            has_symbol.insert(id, any);
+        }
+    }
+    let mut replacements: Vec<(ExprId, ExprId)> = Vec::new();
+    let mut values: FxHashMap<SymbolId, f64> = FxHashMap::default();
+    let mut seen = rustc_hash::FxHashSet::default();
+    let mut stack: Vec<ExprId> = exprs.to_vec();
+    let mut next_index = 0usize;
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let node = arena.node(id).clone();
+        let atom = matches!(
+            node,
+            ExprNode::Num(_)
+                | ExprNode::Symbol(_)
+                | ExprNode::Pi
+                | ExprNode::E
+                | ExprNode::EulerGamma
+                | ExprNode::Catalan
+                | ExprNode::GoldenRatio
+                | ExprNode::Infinity
+                | ExprNode::NegInfinity
+                | ExprNode::NaN
+                | ExprNode::ComplexInfinity
+                | ExprNode::ImaginaryUnit
+        );
+        if atom || is_bool_valued(arena, id) || has_symbol.get(&id).copied().unwrap_or(true) {
+            node.for_each_child(|c| stack.push(c));
+            continue;
+        }
+        match crate::transforms::evalf::evalf_f64(arena, id) {
+            Ok(v) if v.is_finite() => {
+                let name = loop {
+                    let candidate = format!("__compile_const_{next_index}");
+                    next_index += 1;
+                    if !names.contains(&candidate) {
+                        break candidate;
+                    }
+                };
+                let sym = arena.symbol(&name);
+                if let ExprNode::Symbol(sid) = arena.node(sym) {
+                    values.insert(*sid, v);
+                    replacements.push((id, sym));
+                }
+                continue;
+            }
+            _ => {}
+        }
+        let naive = compile_raw(arena, id, &[]).ok().map(|f| f.call(&[]));
+        if naive.is_some_and(f64::is_finite) {
+            continue;
+        }
+        match crate::transforms::evalf::evalf_complex64(arena, id) {
+            Ok(z) if z.im != 0.0 && z.re.is_finite() && z.im.is_finite() => {
+                return Err(SymplexError::NotImplemented(format!(
+                    "compile: the constant `{}` is not real ({} {} {}i); \
+                     a real-valued function cannot represent it",
+                    arena.display(id),
+                    z.re,
+                    if z.im < 0.0 { '-' } else { '+' },
+                    z.im.abs()
+                )));
+            }
+            _ => node.for_each_child(|c| stack.push(c)),
+        }
+    }
+    let folded = exprs
+        .iter()
+        .map(|&e| crate::transforms::subs::subs_map(arena, e, &replacements))
+        .collect();
+    Ok((folded, values))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -673,6 +794,9 @@ struct Emitter<'a> {
     fold_constants: bool,
     /// Does the subtree at an id contain a symbol (memo for folding)?
     has_symbol: FxHashMap<ExprId, bool>,
+    /// Placeholder symbols of the constants folded before CSE
+    /// ([`fold_constants_before_cse`]) and their values.
+    constants: FxHashMap<SymbolId, f64>,
 }
 
 impl<'a> Emitter<'a> {
@@ -689,6 +813,7 @@ impl<'a> Emitter<'a> {
             work: Vec::new(),
             fold_constants: false,
             has_symbol: FxHashMap::default(),
+            constants: FxHashMap::default(),
         }
     }
 
@@ -698,9 +823,11 @@ impl<'a> Emitter<'a> {
     /// Lowered operation by operation, a real constant can pass through a
     /// complex intermediate the real VM cannot hold: `abs(atanh(9))` (1.576)
     /// compiled to NaN, `re(sqrt(-2))`, `zeta(3)` and `polygamma(1, 2)` did
-    /// not compile at all.  Folding also rounds such constants once.  A
-    /// complex or unevaluable constant is lowered as before (NaN, or the
-    /// documented real odd root of a negative base).
+    /// not compile at all.  Folding also rounds such constants once.  The
+    /// maximal constants were decided before CSE ([`fold_constants_before_cse`]:
+    /// a non-real one is refused there); this folds the parts of a formula
+    /// kept there (the real odd root of a negative base) and of CSE bindings.
+    /// An unevaluable constant is lowered operation by operation.
     fn constant_value(&mut self, id: ExprId) -> Option<f64> {
         let arena = self.arena;
         if !self.fold_constants || is_bool_valued(arena, id) {
@@ -880,7 +1007,9 @@ impl<'a> Emitter<'a> {
                 self.emit(Instruction::PushConst(v));
             }
             ExprNode::Symbol(sid) => {
-                if let Some(&slot) = self.locals.get(&sid) {
+                if let Some(&v) = self.constants.get(&sid) {
+                    self.emit(Instruction::PushConst(v));
+                } else if let Some(&slot) = self.locals.get(&sid) {
                     self.emit(Instruction::LoadLocal(slot));
                 } else {
                     let name = arena.symbol_name(sid);

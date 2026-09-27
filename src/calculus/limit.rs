@@ -96,21 +96,43 @@ fn fail(reason: impl Into<String>) -> SymplexError {
 // Entry points
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Compute the two-sided limit of `expr` as `var` approaches `point`.
+/// Compute the two-sided limit of `expr` as `var` approaches `point`, for
+/// generic values of any other symbols (see [`limit_dir_generic`]).
 pub(crate) fn limit(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
     point: ExprId,
 ) -> Result<ExprId, SymplexError> {
-    limit_dir(arena, expr, var, point, Direction::Both)
+    limit_dir_generic(arena, expr, var, point, Direction::Both)
 }
 
 /// Compute the limit of `expr` as `var` approaches `point` from `dir`.
 ///
 /// Returns `Err` when the limit does not exist (e.g. the one-sided limits
-/// differ, or the expression oscillates) or cannot be determined.
+/// differ, or the expression oscillates) or cannot be determined.  With
+/// one free parameter, the values of it that make a coefficient vanish are
+/// checked and get their own `Piecewise` case when the limit differs there
+/// ([`guard_degenerate_parameters`]); the internal callers use
+/// [`limit_dir_generic`].
 pub(crate) fn limit_dir(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    dir: Direction,
+) -> Result<ExprId, SymplexError> {
+    let value = limit_dir_generic(arena, expr, var, point, dir)?;
+    Ok(guard_degenerate_parameters(
+        arena, expr, var, point, dir, value,
+    ))
+}
+
+/// [`limit_dir`] for a generic value of every other symbol: a symbolic
+/// coefficient is taken to be non-zero (`x²/(a + x²) → 0`), as the
+/// definite integrator, the residue and transform code and the series
+/// engine expect.
+pub(crate) fn limit_dir_generic(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
@@ -124,6 +146,136 @@ pub(crate) fn limit_dir(
         });
     }
     limit_impl(arena, expr, var, point, dir, 0)
+}
+
+/// Most parameter values [`guard_degenerate_parameters`] re-examines.
+const MAX_DEGENERATE_VALUES: usize = 4;
+
+/// The limit `value` of `expr`, computed for a generic value of its one
+/// free parameter `p` (every method treats a symbolic coefficient as
+/// non-zero), checked at the values of `p` that make a coefficient vanish:
+/// the zeros of the maximal `var`-free sub-expressions containing `p`, and
+/// of the `var`-free part of every sum.  Where the limit there differs
+/// from `value` evaluated there, the answer becomes a `Piecewise`
+/// (`(Lᵥ, p = v)` for a limit found there, and `value` under `p ≠ v` for
+/// one that does not exist or cannot be found).  Before, `x²/(a + x²)` at
+/// `0` was `0` also for `a = 0` (the limit is `1`), and `(a·x + 1)/(a·x + 2)`
+/// at `∞` was `1` also for `a = 0` (it is `1/2`).  A value that is
+/// undefined at `p = v` (`1/a`) claims nothing there and is kept.
+fn guard_degenerate_parameters(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    dir: Direction,
+    value: ExprId,
+) -> ExprId {
+    let params: Vec<ExprId> = crate::base::walk::free_symbols(arena, expr)
+        .into_iter()
+        .filter(|&s| s != var)
+        .filter(|&s| match arena.node(s) {
+            ExprNode::Symbol(sid) => !arena.symbol_name(*sid).starts_with('_'),
+            _ => false,
+        })
+        .collect();
+    let [p] = params.as_slice() else {
+        return value;
+    };
+    let p = *p;
+    let p_sym = match arena.node(p) {
+        ExprNode::Symbol(s) => *s,
+        _ => return value,
+    };
+    // Coefficient-like sub-expressions: maximal var-free subtrees in p, and
+    // the var-free part of each sum that depends on var.
+    let mut candidates: Vec<ExprId> = Vec::new();
+    for id in crate::base::walk::post_order_ids(arena, expr) {
+        if !crate::base::walk::contains(arena, id, var) {
+            continue;
+        }
+        let node = arena.node(id).clone();
+        let mut free_part: Vec<ExprId> = Vec::new();
+        node.for_each_child(|c| {
+            if !crate::base::walk::contains(arena, c, var)
+                && crate::base::walk::has_free_symbol(arena, c, p_sym)
+            {
+                candidates.push(c);
+                if matches!(node, ExprNode::Add(_)) {
+                    free_part.push(c);
+                }
+            }
+        });
+        if let ExprNode::Add(children) = &node {
+            let constant: Vec<ExprId> = children
+                .iter()
+                .copied()
+                .filter(|&c| !crate::base::walk::contains(arena, c, var))
+                .collect();
+            if free_part.len() < constant.len() && !free_part.is_empty() {
+                let s = arena.add(&constant);
+                candidates.push(s);
+            }
+        }
+    }
+    candidates.sort_unstable();
+    candidates.dedup();
+    let mut values: Vec<ExprId> = Vec::new();
+    for c in candidates {
+        for s in crate::transforms::solve::solve(arena, c, p) {
+            let v = crate::transforms::eval::eval(arena, s.value);
+            if crate::base::walk::free_symbols(arena, v).is_empty()
+                && is_valid_limit_value(arena, v, var)
+                && v != arena.infinity()
+                && v != arena.neg_infinity()
+                && !values.contains(&v)
+            {
+                values.push(v);
+            }
+        }
+        if values.len() >= MAX_DEGENERATE_VALUES {
+            break;
+        }
+    }
+    values.truncate(MAX_DEGENERATE_VALUES);
+    let mut special: Vec<(ExprId, ExprId)> = Vec::new();
+    let mut excluded: Vec<ExprId> = Vec::new();
+    for v in values {
+        // A value of p the assumptions exclude needs no case.
+        let diff = arena.sub(p, v);
+        let diff = crate::transforms::eval::eval(arena, diff);
+        let mut cache = crate::base::assumptions::AssumptionCache::new();
+        if cache.query(arena, diff, crate::base::assumptions::Props::NONZERO) == Some(true) {
+            continue;
+        }
+        let claimed = crate::transforms::subs::subs(arena, value, p, v);
+        let claimed = crate::transforms::eval::eval(arena, claimed);
+        if !is_valid_limit_value(arena, claimed, var) {
+            continue;
+        }
+        let at_v = crate::transforms::subs::subs(arena, expr, p, v);
+        let at_v = crate::transforms::eval::eval(arena, at_v);
+        match limit_impl(arena, at_v, var, point, dir, 1) {
+            Ok(actual) if same_value(arena, actual, claimed) => {}
+            Ok(actual) => special.push((actual, v)),
+            Err(_) => excluded.push(v),
+        }
+    }
+    if special.is_empty() && excluded.is_empty() {
+        return value;
+    }
+    let mut pairs: Vec<(ExprId, ExprId)> = Vec::with_capacity(special.len() + 1);
+    for (actual, v) in special {
+        let cond = arena.eq_(p, v);
+        pairs.push((actual, cond));
+    }
+    let generic = if excluded.is_empty() {
+        arena.bool_true()
+    } else {
+        let conds: Vec<ExprId> = excluded.iter().map(|&v| arena.ne_(p, v)).collect();
+        arena.and(&conds)
+    };
+    pairs.push((value, generic));
+    arena.piecewise(&pairs)
 }
 
 fn limit_impl(

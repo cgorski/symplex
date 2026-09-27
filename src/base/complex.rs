@@ -160,7 +160,8 @@ fn real_parts(arena: &Arena, id: ExprId) -> Parts {
     }
 }
 
-/// `exp(x)` with `exp(0) = 1` folded (the arena constructor only interns).
+/// `exp(x)` with `exp(0) = 1` folded (the interner folds it too since
+/// 0.30, see `canon::canon_function`; the short cut skips the lookup).
 fn fexp(arena: &mut Arena, x: ExprId) -> ExprId {
     if x == arena.zero {
         arena.one

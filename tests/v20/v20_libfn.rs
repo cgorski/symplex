@@ -197,7 +197,9 @@ fn eval_folds_exactly_as_before() {
         (ctx.int(0).bessel_j(&ctx.int(0)), "1"),
         (ctx.int(0).bessel_j(&ctx.int(3)), "0"),
         (ctx.int(0).bessel_i(&ctx.int(0)), "1"),
-        (ctx.int(0).bessel_y(&ctx.int(0)), "bessely(0, 0)"),
+        // Y₀ has a logarithmic pole at 0: −∞ (SymPy 1.14 `bessely(0, 0)`),
+        // folded when built since 0.30.
+        (ctx.int(0).bessel_y(&ctx.int(0)), "-oo"),
         (x.legendre(&ctx.int(2)), "3/2*x^2 - 1/2"),
         (x.chebyshev_t(&ctx.int(3)), "4*x^3 - 3*x"),
         (x.hermite(&ctx.int(2)), "4*x^2 - 2"),

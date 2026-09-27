@@ -351,6 +351,17 @@ fn diff_node(
             if arena.is_zero_structural(di) {
                 return arena.zero;
             }
+            // d/dx ln|g| = g′/g for a real g ≠ 0: the rule for |·| below
+            // gives sign(g)·g′/|g|, which is that (sign(g)/|g| = 1/g) but
+            // which nothing downstream reduces — `x·(ln|x|)′ − 1` stayed
+            // `x·sign(x)/|x| − 1`, and `checkodesol` rejected every solution
+            // with a `ln|x|`.
+            if let ExprNode::Abs(g) = arena.node(inner).clone()
+                && real_for_real_symbols(arena, g)
+            {
+                let dg = get_deriv(cache, g, arena);
+                return arena.div(dg, g);
+            }
             arena.div(di, inner)
         }
 

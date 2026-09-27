@@ -115,6 +115,14 @@ fn arb_expr() -> BoxedStrategy<TreeDesc> {
 }
 
 /// Small expressions for tests that build multiple.
+/// Does `e` contain an infinity or `nan`?  Since 0.30 singular constants
+/// fold when they are built (`ln(0)` is `zoo`, `0^(-1)` was already), and
+/// the identities below (`a·0 = 0`, `a − a = 0`) hold only for finite `a`.
+fn singular(e: &Ex) -> bool {
+    let s = e.to_string();
+    s.contains("oo") || s.contains("nan")
+}
+
 fn arb_small() -> BoxedStrategy<TreeDesc> {
     arb_tree(2)
 }
@@ -227,12 +235,13 @@ proptest! {
 
     /// Zero is the multiplicative annihilator: `a * 0 == 0`.
     ///
-    /// Note: this doesn't hold if `a` is NaN or infinity, but our
-    /// random generator doesn't produce those.
+    /// Note: this doesn't hold if `a` is NaN or infinity, which the
+    /// generator can build (`ln(0)`): those are skipped.
     #[test]
     fn mul_zero_annihilator(desc in arb_expr()) {
         let ctx = Context::new();
         let expr = build(&ctx, &desc);
+        prop_assume!(!singular(&expr));
         let zero = ctx.int(0);
         let result = &expr * &zero;
         prop_assert!(result.is_zero_structural(),
@@ -258,6 +267,7 @@ proptest! {
     fn self_subtraction_is_zero(desc in arb_small()) {
         let ctx = Context::new();
         let expr = build(&ctx, &desc);
+        prop_assume!(!singular(&expr));
         let result = &expr - &expr;
         prop_assert!(result.is_zero_structural(),
             "a - a should be zero, got: {}", result);
@@ -313,6 +323,7 @@ proptest! {
     fn add_neg_cancels(desc in arb_small()) {
         let ctx = Context::new();
         let expr = build(&ctx, &desc);
+        prop_assume!(!singular(&expr));
         let neg_expr = -&expr;
         let result = &expr + &neg_expr;
         prop_assert!(result.is_zero_structural(),
@@ -391,8 +402,11 @@ proptest! {
     /// sin(x) stays as sin(x), never auto-evaluates.
     #[test]
     fn no_auto_eval_sin(desc in arb_small()) {
+        // A symbolic argument: an exact constant with a rational value
+        // (sin(0)) folds when built since 0.30.
         let ctx = Context::new();
         let expr = build(&ctx, &desc);
+        prop_assume!(!expr.free_symbols().is_empty() && !singular(&expr));
         let result = expr.sin();
         let s = format!("{result}");
         prop_assert!(s.starts_with("sin("),

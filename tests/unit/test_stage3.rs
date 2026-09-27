@@ -370,11 +370,15 @@ fn no_auto_distribute_symbolic_via_operators() {
 }
 
 #[test]
-fn no_auto_eval_sin_zero() {
+fn sin_zero_folds_at_construction() {
+    // Since 0.30 an application whose value at an exact argument is rational
+    // or infinite folds when it is built (SymPy's convention), so that
+    // substitution gives values, not limits: (sin(8n)/(8 sin n)) at n = 0 was
+    // 1/8.
     let ctx = Context::new();
     let zero = ctx.int(0);
     let result = zero.sin();
-    assert_eq!(format!("{result}"), "sin(0)");
+    assert_eq!(format!("{result}"), "0");
 }
 
 // ─── syms! macro ──────────────────────────────────────────────────────────

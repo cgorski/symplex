@@ -181,18 +181,16 @@ fn factorial_21_evaluates() {
 }
 
 #[test]
-fn factorial_negative_stays_unevaluated() {
-    // Factorial of negative integer stays unevaluated
+fn factorial_negative_is_complex_infinity() {
+    // Γ has a pole at every non-positive integer, so (−3)! = Γ(−2) is zoo
+    // (SymPy 1.14: `factorial(-3)` = zoo); folded when built since 0.30.
     let ctx = Context::new();
     ctx.with_arena_mut(|arena| {
         let neg = arena.int(-3);
         let expr = arena.factorial(neg);
         let result = arena.eval_expr(expr);
         let s = arena.display(result).to_string();
-        assert!(
-            s.contains("!"),
-            "factorial(-3) should stay unevaluated: {s}"
-        );
+        assert_eq!(s, "zoo", "factorial(-3): {s}");
     });
 }
 

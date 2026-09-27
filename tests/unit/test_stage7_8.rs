@@ -346,25 +346,21 @@ fn eval_abs_symbolic_stays() {
 // ── No auto-evaluation in constructors ──────────────────────────────────
 
 #[test]
-fn constructors_do_not_eval_sin_zero() {
+fn constructors_fold_sin_zero() {
+    // Rational and infinite values fold at construction since 0.30.
     let ctx = Context::new();
     let expr = ctx.int(0).sin();
-    assert_eq!(
-        format!("{expr}"),
-        "sin(0)",
-        "sin(0) should NOT auto-evaluate"
-    );
+    assert_eq!(format!("{expr}"), "0", "sin(0) folds when built");
 }
 
 #[test]
-fn constructors_do_not_eval_cos_pi() {
+fn constructors_fold_cos_pi() {
+    // Rational values fold at construction since 0.30 (an irrational one,
+    // such as cos(pi/4), is left for eval).
     let ctx = Context::new();
     let expr = ctx.pi().cos();
-    assert_eq!(
-        format!("{expr}"),
-        "cos(pi)",
-        "cos(pi) should NOT auto-evaluate"
-    );
+    assert_eq!(format!("{expr}"), "-1", "cos(pi) folds when built");
+    assert_eq!(format!("{}", (&ctx.pi() / 4).cos()), "cos(1/4*pi)");
 }
 
 #[test]

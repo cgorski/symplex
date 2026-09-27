@@ -10,12 +10,16 @@
 mod v29_algebra;
 #[path = "v29/v29_calculus.rs"]
 mod v29_calculus;
+#[path = "v29/v29_complex.rs"]
+mod v29_complex;
 #[path = "v29/v29_evalf.rs"]
 mod v29_evalf;
 #[path = "v29/v29_functions.rs"]
 mod v29_functions;
 #[path = "v29/v29_leftovers.rs"]
 mod v29_leftovers;
+#[path = "v29/v29_ode_series.rs"]
+mod v29_ode_series;
 #[path = "v29/v29_output_ntheory.rs"]
 mod v29_output_ntheory;
 #[path = "v29/v29_rewrites.rs"]

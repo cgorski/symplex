@@ -384,12 +384,9 @@ fn parse_log_two_args() {
 #[test]
 fn parse_euler_formula() {
     let ctx = Context::new();
+    // e^{iπ} = −1 folds when it is built (since 0.30, as in SymPy).
     let result = symplex::parse::parse(&ctx, "exp(I*pi)").unwrap();
-    let s = format!("{result}");
-    assert!(
-        s.contains("I") && s.contains("pi"),
-        "exp(I*pi) should parse correctly: {s}"
-    );
+    assert_eq!(result, ctx.int(-1), "exp(I*pi) should parse correctly");
 }
 
 #[test]

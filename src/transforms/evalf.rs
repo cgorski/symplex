@@ -378,8 +378,8 @@ fn eval_node_with_error(
         ExprNode::DefiniteIntegral(body, var, lo, hi) => {
             eval_definite_integral(arena, *body, *var, *lo, *hi, cache, errs, prec)?
         }
-        node if inverse_identity(arena, node, cache).is_some() => {
-            let u = inverse_identity(arena, node, cache).unwrap_or(id);
+        node if inverse_identity(arena, node, cache, errs, prec, rm).is_some() => {
+            let u = inverse_identity(arena, node, cache, errs, prec, rm).unwrap_or(id);
             return Ok((
                 get_cached(cache, u)?.clone(),
                 errs.get(&u).copied().unwrap_or(accuracy::Bound::UNKNOWN),
@@ -458,10 +458,19 @@ fn eval_node_with_error(
 /// `cos(π/2)·sinh(−1.29)` is 0 only to within its error, and the square root
 /// of `1 − ½·sin²(…)` (a negative number) then had an undecidable side of its
 /// cut (Rubi's antiderivatives with `elliptic_f(asin(…), m)`).
+///
+/// Where the inner function has a singular point the identity needs `u`'s
+/// error ball to exclude it: `ln 0`, `atan(±i)` and `atanh(±1)` are
+/// infinite, and `exp(ln 0) = exp(zoo)` has no value.  Before 0.30
+/// `exp(ln((1 + √2)² − 3 − 2√2))` (a zero the canonical form does not see)
+/// took the value of the zero ball and printed `0`.
 fn inverse_identity(
     arena: &Arena,
     node: &ExprNode,
     cache: &FxHashMap<ExprId, Complex>,
+    errs: &ErrMap,
+    prec: usize,
+    rm: RoundingMode,
 ) -> Option<ExprId> {
     let (outer, inner) = match node {
         ExprNode::Sin(a)
@@ -483,7 +492,37 @@ fn inverse_identity(
         | (ExprNode::Exp(_), ExprNode::Ln(u)) => *u,
         _ => return None,
     };
-    (cache.contains_key(&inner) && cache.contains_key(&u)).then_some(u)
+    if !cache.contains_key(&inner) {
+        return None;
+    }
+    let uv = cache.get(&u)?;
+    let singular: &[(i32, i32)] = match outer {
+        ExprNode::Exp(_) => &[(0, 0)],
+        ExprNode::Tan(_) => &[(0, 1), (0, -1)],
+        ExprNode::Tanh(_) => &[(1, 0), (-1, 0)],
+        _ => &[],
+    };
+    if !singular.is_empty() {
+        let err = errs
+            .get(&u)
+            .copied()
+            .unwrap_or(accuracy::Bound::UNKNOWN)
+            .joint();
+        if accuracy::is_unknown(err) {
+            return None;
+        }
+        for &(a, b) in singular {
+            let d = (
+                uv.0.sub(&BigFloat::from_i32(a, prec), prec, rm),
+                uv.1.sub(&BigFloat::from_i32(b, prec), prec, rm),
+            );
+            // One bit for the rounding of the difference.
+            if accuracy::contains_zero(&d, accuracy::shift(err, 1.0)) {
+                return None;
+            }
+        }
+    }
+    Some(u)
 }
 
 /// Is `node` a function with poles at integers (`Γ`, `ζ`, …) whose
@@ -686,6 +725,21 @@ fn evaluate_adaptive(
         };
         let noise = known && value_shrinking;
         let zero_ball = noise && ball_shrinking && accuracy::contains_zero(&value, err);
+        // A zero ball is returned as 0 only when its radius is below the
+        // requested digits in absolute terms, `2^err ≤ 2^−needed`: the 0
+        // loses the radius, and only then is it right to those digits
+        // whatever the true value.  A wider ball says nothing (it holds
+        // numbers of every size up to its radius): the cancellation is
+        // deeper than the search so far.  A result read as a number
+        // ([`ZeroSearch::Deep`]) pursues it to the configured maximum
+        // precision; the internal tolerance checks ([`ZeroSearch::Cap`]) stop
+        // at their cap.  Then it is refused.  Before 0.30 any zero ball at
+        // the end of the search was 0: `(i·sin s + cos s)·e^(cos 2x)` with
+        // `s = sin 2x` at `x = 1/3 + 4i` (the trigonometric form of
+        // `exp(exp(2ix))`, truly `1.000263649 + 0.000207495i`) cancels about
+        // 3,400 bits and was `0` with a ball of radius `2²²²⁷` at 1,152 bits.
+        let small_zero = zero_ball && err <= -(needed as f64);
+        let wide_zero = zero_ball && !small_zero;
         // Past the cap only a value that is noise, or whose bound falls with
         // the precision (the precision it needs is then predictable), is
         // pursued, to the end of the search — not an underflow: below the
@@ -693,7 +747,13 @@ fn evaluate_adaptive(
         // needs about 560 bits at 16 digits, past the cap of 384.)
         let converging = known && ball_shrinking && previous.is_some();
         let pursue = (noise || converging) && !accuracy::is_underflow(err);
-        let limit = if pursue || prec > cap { deep } else { cap };
+        let limit = if wide_zero && search == ZeroSearch::Deep {
+            max_prec.max(deep)
+        } else if pursue || prec > cap {
+            deep
+        } else {
+            cap
+        };
         // A bound that says the digits need more than the search allows is
         // refused now rather than after an evaluation at its limit.
         if let Some(a) = acc
@@ -714,7 +774,7 @@ fn evaluate_adaptive(
             });
         }
         if prec >= limit {
-            if zero_ball {
+            if small_zero {
                 debug!(prec, err, "evalf: zero to the working precision");
                 return Ok((c_zero(prec0), Settled::ZeroToPrecision));
             }
@@ -1543,6 +1603,23 @@ fn eval_node(
                         return Ok(c_div(&one_c, &pow_pos, prec, rm));
                     }
                 }
+            }
+
+            // 0^e: 0 for a real e > 0, infinite for a real e < 0, no value
+            // for a non-real e (SymPy's `0**I`, mpmath's `mpc(0)**mpc(1,1)`:
+            // nan), as `canon_pow` folds it.  Before 0.30 `0^i` and
+            // `0^(−1 + i)` printed `0` (and `0^π` was refused).
+            if b.0.is_zero() && b.1.is_zero() && !(e.0.is_zero() && e.1.is_zero()) {
+                if e.1.is_zero() && !e.0.is_zero() && e.0.is_positive() {
+                    return Ok(c_zero(prec));
+                }
+                return Err(SymplexError::Unevaluable {
+                    reason: if e.1.is_zero() {
+                        "cannot evaluate infinity to finite precision".into()
+                    } else {
+                        "0 to a non-real power has no value".into()
+                    },
+                });
             }
 
             // Real positive base with real exponent: exp(e·ln b).

@@ -1006,6 +1006,9 @@ fn structural_series(
         ExprNode::Abs(a) => return abs_series(arena, &child(cache, a)?, side),
         ExprNode::Sign(a) => return sign_series(arena, &child(cache, a)?, side, false),
         ExprNode::Heaviside(a) => return sign_series(arena, &child(cache, a)?, side, true),
+        ExprNode::Apply(f, ref args) if args.len() == 2 && is_bessel(arena, f) => {
+            return bessel_series(arena, f, args[0], &child(cache, args[1])?, var);
+        }
         ExprNode::Exp(a) => apply_fn(arena, FnKind::Exp, &child(cache, a)?),
         ExprNode::Sin(a) => apply_fn(arena, FnKind::Sin, &child(cache, a)?),
         ExprNode::Cos(a) => apply_fn(arena, FnKind::Cos, &child(cache, a)?),
@@ -1023,6 +1026,71 @@ fn structural_series(
         _ => None,
     };
     analytic.ok_or(Obstruction::Unknown)
+}
+
+fn is_bessel(arena: &Arena, f: crate::base::node::SymbolId) -> bool {
+    use crate::base::libfn::LibFn;
+    matches!(
+        arena.lib_fn(f),
+        Some(LibFn::BesselJ | LibFn::BesselY | LibFn::BesselI | LibFn::BesselK)
+    )
+}
+
+/// A Bessel function of the series `u` at a zero of `u`: `J_n(u)` and
+/// `I_n(u)` of integer order from `J_n(z) = Σ_k (−1)^k (z/2)^{2k+n}/(k!(k+n)!)`
+/// (`I_n` without the signs; `J_{−n} = (−1)ⁿ J_n`, `I_{−n} = I_n`); `Y_ν`,
+/// `K_ν` (logarithmic singularity) and `J_ν`, `I_ν` of any other order (a
+/// fractional power, or unknown) have no Laurent expansion there.  Before,
+/// the differentiation fallback returned the coefficients of `Y₀` in terms
+/// of `Y₀(0) = −∞` as if they were finite.  An argument with a pole is an
+/// essential singularity; elsewhere the fallback (finite values) applies.
+fn bessel_series(
+    arena: &mut Arena,
+    f: crate::base::node::SymbolId,
+    order: ExprId,
+    u: &TSeries,
+    var: ExprId,
+) -> Result<TSeries, Obstruction> {
+    use crate::base::libfn::LibFn;
+    let u = u.clone().normalized(arena);
+    let Some(k) = u.leading_exponent(arena) else {
+        return Err(Obstruction::NoExpansion);
+    };
+    if k < 0 {
+        return Err(Obstruction::NoExpansion);
+    }
+    if k == 0 {
+        return Err(Obstruction::Unknown);
+    }
+    let lib = arena.lib_fn(f).ok_or(Obstruction::Unknown)?;
+    if walk::contains(arena, order, var) || !matches!(lib, LibFn::BesselJ | LibFn::BesselI) {
+        return Err(Obstruction::NoExpansion);
+    }
+    let n = arena
+        .as_num(order)
+        .filter(|r| r.is_integer())
+        .and_then(|r| r.to_integer().to_i64())
+        .ok_or(Obstruction::NoExpansion)?;
+    let alternate = lib == LibFn::BesselJ;
+    let reflect_sign = alternate && n < 0 && n % 2 != 0;
+    let n = n.unsigned_abs();
+    let coefficient = move |ar: &mut Arena, m: usize| -> ExprId {
+        let m = m as u64;
+        if m < n || (m - n) % 2 == 1 {
+            return ar.zero;
+        }
+        let kk = (m - n) / 2;
+        let denom = factorial(kk) * factorial(kk + n) * (BigInt::one() << (2 * kk + n));
+        let mut c = Q::new(BigInt::one(), denom);
+        if alternate && kk % 2 == 1 {
+            c = -c;
+        }
+        if reflect_sign {
+            c = -c;
+        }
+        rat_expr(ar, c)
+    };
+    Ok(TSeries::compose(arena, &coefficient, &u))
 }
 
 /// `|g|` for a series `g` with leading term `c·x^k`, `c` a real constant of
@@ -1383,7 +1451,8 @@ fn taylor_by_differentiation(
                 Side::Both => &[Direction::Right, Direction::Left],
             };
             for &dir in dirs {
-                if let Ok(lim) = crate::calculus::limit::limit_dir(arena, current, var, zero, dir)
+                if let Ok(lim) =
+                    crate::calculus::limit::limit_dir_generic(arena, current, var, zero, dir)
                     && !is_finite_constant(arena, lim, var)
                 {
                     return None;
@@ -1399,7 +1468,8 @@ fn taylor_by_differentiation(
                 Side::Below => crate::calculus::limit::Direction::Left,
                 Side::Both => crate::calculus::limit::Direction::Both,
             };
-            let lim = crate::calculus::limit::limit_dir(arena, current, var, zero, dir).ok()?;
+            let lim =
+                crate::calculus::limit::limit_dir_generic(arena, current, var, zero, dir).ok()?;
             if !is_finite_constant(arena, lim, var) {
                 return None;
             }

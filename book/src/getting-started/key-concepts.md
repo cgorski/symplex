@@ -75,7 +75,7 @@ Operations where "unchanged" or "unevaluated" is a valid result. These never fai
 # let expr = x.sin();
 expr.simplify();       // might return input unchanged
 expr.expand();         // might return input unchanged
-expr.eval();           // sin(0) → 0; symbolic expr → unchanged
+expr.eval();           // sin(pi/4) → sqrt(2)/2; symbolic expr → unchanged
 expr.diff(&x);         // might return Derivative(expr, x) if it can't differentiate
 expr.integrate(&x);    // might return Integral(expr, x) if no closed form
 expr.limit(&x, &a);    // might return Limit(expr, x, a)

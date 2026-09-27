@@ -108,8 +108,9 @@ fn abs_fold_leaves_symbolic_and_real_arguments_alone() {
     let x = ctx.symbol("x");
     let z = (&x + &i).abs();
     assert_eq!(z.eval(), z, "abs(x + i) must stay symbolic");
-    // A real constant is not rewritten as √(π²).
-    assert_eq!(format!("{}", ctx.pi().abs().eval()), "abs(pi)");
+    // A positive constant's modulus is itself (folded when built since
+    // 0.30), never rewritten as √(π²).
+    assert_eq!(format!("{}", ctx.pi().abs().eval()), "pi");
     // Transcendental parts are not expanded into √(sin² + cos²).
     assert_eq!(format!("{}", i.exp().abs().eval()), "abs(exp(I))");
 }

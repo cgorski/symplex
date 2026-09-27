@@ -2,16 +2,25 @@
 //!
 //! Solves first-order and second-order ODEs:
 //!
-//! - **Full separable:** `dy/dx = f(x) * g(y)` → `∫ 1/g(y) dy = ∫ f(x) dx`
-//! - **Simple separable:** `dy/dx = f(x)` (no y dependence)
-//! - **First-order linear (variable coefficient):** `y' + P(x)*y = Q(x)`
+//! - **Full separable:** `dy/dx = f(x) * g(y)` → `∫ 1/g(y) dy = ∫ f(x) dx`,
+//!   solved for `y` when that has one solution
+//! - **Simple separable:** `a(x)·dy/dx = f(x)` (no y dependence)
+//! - **First-order linear (variable coefficient):** `a(x)·y' + P(x)*y = Q(x)`
 //!   → `y = (1/μ) * [∫ Q(x)*μ dx + C1]` where `μ = exp(∫ P(x) dx)`
+//!   (after dividing by `a`)
 //! - **First-order linear constant-coefficient:** `y' + a*y = f(x)`
 //!   → `y = e^(-ax) * ∫ f(x)*e^(ax) dx`
+//! - **Exact** `M + N·y' = 0` (`∂M/∂y = ∂N/∂x`, decided as a rational
+//!   function) and with an **integrating factor** `μ(x)` or `μ(y)`
+//! - **Bernoulli:** `y' + P·y = Q·yⁿ`
 //! - **Second-order linear constant-coefficient:** `y'' + b*y' + c*y = 0`
 //!   → characteristic equation `r² + b*r + c = 0`, solution based on roots
+//! - **Cauchy–Euler:** `a·x²y'' + b·x·y' + c·y = g(x)` (for `x > 0`; a
+//!   forcing term through `x = eᵗ` and the constant-coefficient solvers)
+//! - **Variation of parameters** for `y'' + b·y' + c·y = g(x)`
 //! - **Homogeneous coefficient:** `y' = f(y/x)` — substitution `v = y/x`
-//! - **nth-order reducible:** `F(y, y', y'') = 0` (no `x`) — substitution `p = y'`
+//! - **nth-order reducible:** `F(y, y', y'') = 0` (no `x`) — substitution
+//!   `p(y) = y'`; `F(x, y', y'') = 0` (no `y`) — `p(x) = y'`, `y = ∫ p dx`
 //! - **nth-order linear constant-coefficient:** `Σ a_k y^(k) = g(x)` for any
 //!   order via the characteristic polynomial (repeated roots → `x^k e^{rx}`,
 //!   complex pairs → `e^{ax}(cos bx, sin bx)`), with undetermined coefficients
@@ -20,9 +29,30 @@
 //! - **Riccati:** `y' = q₀ + q₁·y + q₂·y²` given a particular solution
 //!   ([`solve_riccati`])
 //! - **Constant-coefficient systems:** `ẋ = A·x` → `x(t) = exp(A·t)·c`
-//!   via eigendecomposition (exact) or matrix exponential series (fallback),
-//!   with initial values via [`solve_ode_system_ivp`]
+//!   via the eigenvectors (real modes for complex pairs) or the exact matrix
+//!   exponential of the Jordan form, with initial values via
+//!   [`solve_ode_system_ivp`]
 //! - **Non-homogeneous systems:** `ẋ = A·x + b(t)` → variation of parameters
+//!
+//! # Implicit solutions
+//!
+//! A solution that could not be solved for `y` is returned as an expression
+//! `G(x, y, C1, …)` whose zero set is the family (`G = 0`); it still
+//! contains `y`.  [`dsolve`] prefers an explicit solution found by a later
+//! method to an implicit one found by an earlier one.
+//!
+//! # Branches
+//!
+//! One expression is returned, so where the general solution has several
+//! branches only one is.  In particular a Bernoulli equation whose `1/(1−n)`
+//! has an even denominator returns `y = v^{1/(1−n)}` with `v` the solution
+//! of the linear equation: `y' = y³` gives `y = (C1 − 2x)^{−1/2}`, and the
+//! negative family `−(C1 − 2x)^{−1/2}` (SymPy returns both) is missing;
+//! `y'' = y'³` inherits it through its reduction.  A formula is a solution
+//! where it is real on the principal branch: `y' = √y` gives
+//! `(x/2 + C1/2)²`, a solution for `x + C1 ≥ 0` only, and the singular
+//! solution `y = 0` is not included.  Cauchy–Euler solutions are for
+//! `x > 0` (`ln x`, `x^r`).
 
 use crate::api::expr::Ex;
 use crate::base::arena::Arena;
@@ -66,83 +96,89 @@ pub fn dsolve(
         _ => return None,
     };
 
-    // Try to detect the ODE type
+    // Try to detect the ODE type.  An implicit solution (one still in
+    // `func`) is kept while the later methods get a chance to find an
+    // explicit one: the integrating factor of `y′ = y − y²` gave
+    // `x − ln|y| + ln|y − 1| − C1`, Bernoulli gives `y` itself.
+    let mut implicit: Option<OdeResult> = None;
+    macro_rules! attempt {
+        ($result:expr) => {
+            if let Some(result) = $result {
+                if contains_sym(arena, result.solution, func_sym) {
+                    if implicit.is_none() {
+                        implicit = Some(result);
+                    }
+                } else {
+                    return Some(result);
+                }
+            }
+        };
+    }
 
     // Type 1: Second-order constant-coefficient: a*y'' + b*y' + c*y = 0
-    if let Some(result) = try_second_order_const_coeff(arena, expr, func, var, func_sym, var_sym) {
-        return Some(result);
-    }
+    attempt!(try_second_order_const_coeff(
+        arena, expr, func, var, func_sym, var_sym
+    ));
 
     // Type 1b: Second-order CC nonhomogeneous: a*y'' + b*y' + c*y = f(x)
-    if let Some(result) =
-        try_second_order_cc_nonhomogeneous(arena, expr, func, var, func_sym, var_sym)
-    {
-        return Some(result);
-    }
+    attempt!(try_second_order_cc_nonhomogeneous(
+        arena, expr, func, var, func_sym, var_sym
+    ));
 
     // Type 1c: Euler-Cauchy: a·x²·y'' + b·x·y' + c·y = 0
-    if let Some(result) = try_euler_cauchy(arena, expr, func, var, func_sym, var_sym) {
-        return Some(result);
-    }
+    attempt!(try_euler_cauchy(arena, expr, func, var, func_sym, var_sym));
 
     // Type 1e: nth-order linear constant-coefficient (any order ≥ 2),
     // forcing = poly × exp × {sin, cos} via undetermined coefficients.
-    if let Some(result) = try_nth_order_linear_const_coeff(arena, expr, func, var, func_sym) {
-        return Some(result);
-    }
+    attempt!(try_nth_order_linear_const_coeff(
+        arena, expr, func, var, func_sym
+    ));
 
     // Type 1d: Variation of parameters: y'' + p·y' + q·y = g(x) (fallback)
-    if let Some(result) = try_variation_of_parameters(arena, expr, func, var, func_sym, var_sym) {
-        return Some(result);
-    }
+    attempt!(try_variation_of_parameters(
+        arena, expr, func, var, func_sym, var_sym
+    ));
 
     // Type 1f: Clairaut: y = x·y' + f(y')
-    if let Some(result) = try_clairaut(arena, expr, func, var, func_sym, var_sym) {
-        return Some(result);
-    }
+    attempt!(try_clairaut(arena, expr, func, var, func_sym, var_sym));
 
     // Type 2: General first-order linear (variable P(x)): y' + P(x)*y = Q(x)
-    if let Some(result) = try_first_order_linear_general(arena, expr, func, var, func_sym, var_sym)
-    {
-        return Some(result);
-    }
+    attempt!(try_first_order_linear_general(
+        arena, expr, func, var, func_sym, var_sym
+    ));
 
     // Type 2b: Exact first-order ODE: M(x,y) + N(x,y)·y' = 0 with ∂M/∂y = ∂N/∂x
-    if let Some(result) = try_exact_ode(arena, expr, func, var, func_sym, var_sym) {
-        return Some(result);
-    }
+    attempt!(try_exact_ode(arena, expr, func, var, func_sym, var_sym));
 
     // Type 2c: Non-exact ODE with integrating factor μ(x) or μ(y)
-    if let Some(result) = try_integrating_factor_ode(arena, expr, func, var, func_sym, var_sym) {
-        return Some(result);
-    }
+    attempt!(try_integrating_factor_ode(
+        arena, expr, func, var, func_sym, var_sym
+    ));
 
     // Type 2d: Bernoulli: y' + P(x)·y = Q(x)·y^n (n ≠ 0, 1)
-    if let Some(result) = try_bernoulli(arena, expr, func, var, func_sym, var_sym) {
-        return Some(result);
-    }
+    attempt!(try_bernoulli(arena, expr, func, var, func_sym, var_sym));
 
     // Type 2e: Homogeneous coefficient: y' = f(y/x)
-    if let Some(result) = try_homogeneous_coefficient(arena, expr, func, var, func_sym, var_sym) {
-        return Some(result);
-    }
+    attempt!(try_homogeneous_coefficient(
+        arena, expr, func, var, func_sym, var_sym
+    ));
 
     // Type 2f: nth-order reducible: F(y, y', y'') = 0, no explicit x
-    if let Some(result) = try_nth_order_reducible(arena, expr, func, var, func_sym, var_sym) {
-        return Some(result);
-    }
+    attempt!(try_nth_order_reducible(
+        arena, expr, func, var, func_sym, var_sym
+    ));
 
     // Type 3: Full separable: y' = f(x)*g(y)
-    if let Some(result) = try_full_separable(arena, expr, func, var, func_sym, var_sym) {
-        return Some(result);
-    }
+    attempt!(try_full_separable(
+        arena, expr, func, var, func_sym, var_sym
+    ));
 
     // Type 4: Simple separable: y' = f(x) (no y dependence) — fallback
-    if let Some(result) = try_simple_separable(arena, expr, func, var, func_sym, var_sym) {
-        return Some(result);
-    }
+    attempt!(try_simple_separable(
+        arena, expr, func, var, func_sym, var_sym
+    ));
 
-    None
+    implicit
 }
 
 /// Solve y' = f(x) (simplest separable: no y dependence).
@@ -162,31 +198,49 @@ fn try_simple_separable(
 
     // Check if expr is Add containing dy_dx
     if let ExprNode::Add(ref children) = arena.node(expr).clone() {
-        let mut has_deriv = false;
-        let mut _deriv_coeff = None;
+        // a(x)·y′ + f(x) = 0 with a(x) free of y (before, only a = 1:
+        // `2y′ = e⁻ˣ` and `(1 + x²)y′ = x²` were not solved at all).
+        let mut deriv_coeffs: Vec<ExprId> = Vec::new();
         let mut other_terms: Vec<ExprId> = Vec::new();
 
         for &child in children {
-            if child == dy_dx {
-                has_deriv = true;
-                _deriv_coeff = Some(arena.one);
+            let (coeff, term) = arena.as_coeff_term(child);
+            if term == dy_dx {
+                deriv_coeffs.push(ode_ratio_to_expr(arena, &coeff));
             } else if !contains_sym(arena, child, func_sym) {
                 other_terms.push(child);
+            } else if let ExprNode::Mul(factors) = arena.node(term).clone()
+                && factors.iter().filter(|&&f| f == dy_dx).count() == 1
+                && factors
+                    .iter()
+                    .all(|&f| f == dy_dx || !contains_sym(arena, f, func_sym))
+            {
+                let mut rest: Vec<ExprId> =
+                    factors.iter().copied().filter(|&f| f != dy_dx).collect();
+                rest.push(ode_ratio_to_expr(arena, &coeff));
+                deriv_coeffs.push(arena.mul(&rest));
             } else {
                 // Term contains y — not simple separable
                 return None;
             }
         }
 
-        if has_deriv {
-            // y' + other_terms = 0 → y' = -other_terms → y = -∫ other_terms dx + C
+        if !deriv_coeffs.is_empty() {
+            let a = arena.add(&deriv_coeffs);
+            let a = crate::transforms::eval::eval(arena, a);
+            if arena.is_zero_structural(a) {
+                return None;
+            }
+            // a·y' + other_terms = 0 → y' = -other_terms/a → y = -∫ other_terms/a dx + C
             let rhs = if other_terms.is_empty() {
                 arena.zero
             } else {
                 let sum = arena.add(&other_terms);
-                arena.neg(sum)
+                let neg = arena.neg(sum);
+                let q = arena.div(neg, a);
+                crate::transforms::eval::eval(arena, q)
             };
-            let integral = crate::transforms::integrate::integrate(arena, rhs, var);
+            let integral = integrate_forms(arena, rhs, var);
             let c1 = arena.symbol("C1");
             let solution = arena.add(&[integral, c1]);
             return Some(OdeResult {
@@ -855,34 +909,17 @@ fn try_full_separable(
         arena.mul(&y_factors)
     };
 
-    // Common case: g(y) = y → solution is y = C1·exp(∫f(x)dx)
-    if g_y == func {
-        let integral_fx = crate::transforms::integrate::integrate(arena, f_x, var);
-        let c1 = arena.symbol("C1");
-        let exponent = arena.add(&[integral_fx, c1]);
-        let solution = arena.exp(exponent);
-        return Some(OdeResult {
-            solution,
-            constants: vec![c1],
-        });
-    }
-
-    // Check if g(y) is a constant times y (e.g., 2*y or -y)
+    // g(y) = k·y: y = C1·exp(k·∫f(x)dx).  Before, `exp(k·∫f dx + C1)`,
+    // which is never zero or negative: the solutions y ≤ 0 were missing.
     {
         let (coeff, base) = arena.as_coeff_term(g_y);
         if base == func {
-            // g(y) = coeff * y → ∫(1/(coeff*y))dy = (1/coeff)*ln(y)
-            // (1/coeff)*ln(y) = ∫f(x)dx + C1 → ln(y) = coeff*∫f(x)dx + C1
-            // → y = exp(coeff*∫f(x)dx + C1) = C1*exp(coeff*∫f(x)dx)
-            let coeff_id = {
-                let nid = arena.intern_num(coeff);
-                arena.intern(ExprNode::Num(nid))
-            };
+            let coeff_id = ode_ratio_to_expr(arena, &coeff);
             let scaled_fx = arena.mul(&[coeff_id, f_x]);
             let integral_fx = crate::transforms::integrate::integrate(arena, scaled_fx, var);
             let c1 = arena.symbol("C1");
-            let exponent = arena.add(&[integral_fx, c1]);
-            let solution = arena.exp(exponent);
+            let growth = arena.exp(integral_fx);
+            let solution = arena.mul(&[c1, growth]);
             return Some(OdeResult {
                 solution,
                 constants: vec![c1],
@@ -890,26 +927,37 @@ fn try_full_separable(
         }
     }
 
-    // General case: ∫(1/g(y))dy = ∫f(x)dx + C1 (implicit solution)
-    // Build 1/g(y) as g(y)^(-1)
+    // General case: ∫ dy/g(y) = ∫ f(x) dx + C1, solved for y when it has
+    // one solution, else the implicit `∫ dy/g(y) − ∫ f(x) dx − C1` (= 0).
+    // Before, `∫ dy/g(y)` was never attempted (a formal `Integral` was
+    // returned even for `y′ = 1 + y²`).
     let neg_one = arena.int(-1);
     let inv_gy = arena.pow(g_y, neg_one);
-
-    // We can't easily integrate w.r.t. y in this framework (integration variable
-    // must be the independent variable). Return an implicit form using Integral nodes.
-    let lhs_integral = arena.intern(ExprNode::Integral(inv_gy, func));
+    let inv_gy = crate::transforms::eval::eval(arena, inv_gy);
+    let lhs_attempt = integrate_forms(arena, inv_gy, func);
+    let lhs_integral = if integral_failed(arena, lhs_attempt) {
+        arena.intern(ExprNode::Integral(inv_gy, func))
+    } else {
+        lhs_attempt
+    };
     let rhs_integral = crate::transforms::integrate::integrate(arena, f_x, var);
     let c1 = arena.symbol("C1");
-    // Solution expressed as: ∫(1/g(y))dy = ∫f(x)dx + C1
-    // We store the implicit solution as: ∫(1/g(y))dy - ∫f(x)dx - C1 = 0
-    // but for the user, return the RHS: ∫f(x)dx + C1
-    // Actually, we should try to solve for y. For now, if we can't get explicit,
-    // return the implicit equation as the "solution" expression (LHS - RHS).
     let neg_rhs = arena.neg(rhs_integral);
     let neg_c1 = arena.neg(c1);
-    let solution = arena.add(&[lhs_integral, neg_rhs, neg_c1]);
+    let implicit = arena.add(&[lhs_integral, neg_rhs, neg_c1]);
+    let implicit = crate::transforms::eval::eval(arena, implicit);
+    if !integral_failed(arena, implicit) {
+        let solutions = crate::transforms::solve::solve(arena, implicit, func);
+        if solutions.len() == 1 && !contains_sym(arena, solutions[0].value, func_sym) {
+            let solution = crate::transforms::eval::eval(arena, solutions[0].value);
+            return Some(OdeResult {
+                solution,
+                constants: vec![c1],
+            });
+        }
+    }
     Some(OdeResult {
-        solution,
+        solution: implicit,
         constants: vec![c1],
     })
 }
@@ -973,12 +1021,29 @@ fn try_first_order_linear_general(
     let mut dy_coeff_rational = num_rational::Ratio::<num_bigint::BigInt>::zero();
     let mut y_terms: Vec<ExprId> = Vec::new(); // terms that contain func (y)
     let mut free_terms: Vec<ExprId> = Vec::new(); // terms free of func
+    // Coefficients a(x) of `y′` that are not plain numbers (`x·y′`).
+    let mut dy_coeff_terms: Vec<ExprId> = Vec::new();
 
     for &child in &children {
         let (coeff, term) = arena.as_coeff_term(child);
         if term == dy_dx {
             has_dy = true;
             dy_coeff_rational += coeff;
+        } else if expr_contains(arena, child, dy_dx) {
+            // a(x)·y′ with a(x) free of y.
+            let ExprNode::Mul(factors) = arena.node(term).clone() else {
+                return None;
+            };
+            let (with_dy, rest): (Vec<ExprId>, Vec<ExprId>) =
+                factors.iter().copied().partition(|&f| f == dy_dx);
+            if with_dy.len() != 1 || rest.iter().any(|&f| contains_sym(arena, f, func_sym)) {
+                return None;
+            }
+            has_dy = true;
+            let c = ode_ratio_to_expr(arena, &coeff);
+            let mut parts = vec![c];
+            parts.extend(rest);
+            dy_coeff_terms.push(arena.mul(&parts));
         } else if contains_sym(arena, child, func_sym) {
             y_terms.push(child);
         } else {
@@ -987,7 +1052,28 @@ fn try_first_order_linear_general(
     }
 
     use num_traits::Zero;
-    if !has_dy || dy_coeff_rational.is_zero() {
+    if !has_dy {
+        return None;
+    }
+    // A coefficient a(x) of y′ that is not a number: divide through by it.
+    let dy_coeff_expr: Option<ExprId> = if dy_coeff_terms.is_empty() {
+        None
+    } else {
+        let mut parts = dy_coeff_terms.clone();
+        if !dy_coeff_rational.is_zero() {
+            parts.push(ode_ratio_to_expr(arena, &dy_coeff_rational));
+        }
+        let a = arena.add(&parts);
+        let a = crate::transforms::eval::eval(arena, a);
+        match arena.as_num(a) {
+            Some(r) => {
+                dy_coeff_rational = r.clone();
+                None
+            }
+            None => Some(a),
+        }
+    };
+    if dy_coeff_expr.is_none() && dy_coeff_rational.is_zero() {
         return None;
     }
 
@@ -1009,7 +1095,24 @@ fn try_first_order_linear_general(
     }
 
     // Normalize by dy_coeff: divide P(x) and Q(x) by the coefficient of y'
-    if !dy_coeff_rational.is_one() {
+    if let Some(a) = dy_coeff_expr {
+        let neg_one = arena.int(-1);
+        let inv_a = arena.pow(a, neg_one);
+        p_x_terms = p_x_terms
+            .iter()
+            .map(|&p| {
+                let t = arena.mul(&[inv_a, p]);
+                crate::transforms::eval::eval(arena, t)
+            })
+            .collect();
+        free_terms = free_terms
+            .iter()
+            .map(|&f| {
+                let t = arena.mul(&[inv_a, f]);
+                crate::transforms::eval::eval(arena, t)
+            })
+            .collect();
+    } else if !dy_coeff_rational.is_one() {
         let inv_coeff = num_rational::Ratio::<num_bigint::BigInt>::one() / &dy_coeff_rational;
         let inv_id = {
             let nid = arena.intern_num(inv_coeff);
@@ -1045,9 +1148,24 @@ fn try_first_order_linear_general(
     // Try the constant-coefficient path first for efficiency — if P(x) is a
     // pure rational number, delegate to the existing constant-coefficient solver
     // which handles the nonhomogeneous case (y' + a*y = Q(x)).
-    if let Some(_num_val) = arena.as_num(p_x) {
-        // P(x) is constant — let try_first_order_linear handle this
-        return try_first_order_linear(arena, expr, func, var, func_sym, var_sym);
+    // The constant-coefficient solver wants `y′ + a·y + f(x)` with a unit
+    // coefficient on `y′`: the normalised equation is built for it (before,
+    // `2y′ + y = cos x` was handed over as is, refused there, and not
+    // solved at all).
+    let p_x = crate::transforms::eval::eval(arena, p_x);
+    if arena.as_num(p_x).is_some() {
+        let normalised = if dy_coeff_expr.is_none() && dy_coeff_rational.is_one() {
+            expr
+        } else {
+            let py = arena.mul(&[p_x, func]);
+            let mut parts = vec![dy_dx, py];
+            parts.extend(free_terms.iter().copied());
+            let e = arena.add(&parts);
+            crate::transforms::eval::eval(arena, e)
+        };
+        if let Some(r) = try_first_order_linear(arena, normalised, func, var, func_sym, var_sym) {
+            return Some(r);
+        }
     }
 
     // Check that P(x) actually depends on x — if it's constant, it would have
@@ -1067,7 +1185,7 @@ fn try_first_order_linear_general(
     let int_px = crate::transforms::integrate::integrate(arena, p_x, var);
 
     // Check if integration failed (returned an unevaluated Integral node)
-    if let ExprNode::Integral(_, _) = arena.node(int_px).clone() {
+    if integral_failed(arena, int_px) {
         // Integration of P(x) failed — we can't compute the integrating factor
         return None;
     }
@@ -1093,7 +1211,7 @@ fn try_first_order_linear_general(
     let integrand = arena.mul(&[q_x, mu]);
     // Simplify products of exponentials before integrating
     let integrand = crate::transforms::eval::eval(arena, integrand);
-    let integral = crate::transforms::integrate::integrate(arena, integrand, var);
+    let integral = integrate_forms(arena, integrand, var);
 
     let inner = arena.add(&[integral, c1]);
     let solution = arena.mul(&[inv_mu, inner]);
@@ -1313,14 +1431,14 @@ fn try_exact_ode(
     let diff_expanded = crate::transforms::expand::expand(arena, diff_eval);
     let diff_simplified = crate::transforms::eval::eval(arena, diff_expanded);
 
-    if diff_simplified != arena.zero {
+    if diff_simplified != arena.zero && !rational_zero(arena, diff_simplified) {
         return None; // Not exact
     }
 
     // ── Build potential function F(x,y) ───────────────────────────
     // Step 1: F_partial = ∫ M dx  (treating y as constant)
     let integral_m = crate::transforms::integrate::integrate(arena, m_expr, var);
-    if matches!(arena.node(integral_m), ExprNode::Integral(_, _)) {
+    if integral_failed(arena, integral_m) {
         return None; // Integration of M w.r.t. x failed
     }
 
@@ -1338,7 +1456,7 @@ fn try_exact_ode(
 
     // Step 3: g(y) = ∫ g'(y) dy
     let g_y = crate::transforms::integrate::integrate(arena, g_prime, func);
-    if matches!(arena.node(g_y), ExprNode::Integral(_, _)) {
+    if integral_failed(arena, g_y) {
         return None;
     }
 
@@ -1359,9 +1477,12 @@ fn try_exact_ode(
         });
     }
 
-    // Return the implicit solution F(x,y) (the equation is F = C1).
+    // The implicit solution `F(x, y) − C1` (= 0), in the form of the other
+    // implicit solutions.  Before, `F` alone was returned: the constant was
+    // missing from the answer (`2xy + (x² + 3y²)y′ = 0` gave `y³ + x²y`).
+    let implicit = crate::transforms::eval::eval(arena, f_minus_c1);
     Some(OdeResult {
-        solution: potential,
+        solution: implicit,
         constants: vec![c1],
     })
 }
@@ -1402,7 +1523,7 @@ fn try_integrating_factor_ode(
     let diff_expanded = crate::transforms::expand::expand(arena, diff_eval);
     let diff_simplified = crate::transforms::eval::eval(arena, diff_expanded);
 
-    if diff_simplified == arena.zero {
+    if diff_simplified == arena.zero || rational_zero(arena, diff_simplified) {
         // Already exact — delegate.
         return try_exact_ode(arena, expr, func, var, func_sym, var_sym);
     }
@@ -1413,11 +1534,15 @@ fn try_integrating_factor_ode(
         let ratio = crate::transforms::eval::eval(arena, ratio);
         let ratio = crate::transforms::expand::expand(arena, ratio);
         let ratio = crate::transforms::eval::eval(arena, ratio);
-        let ratio_cancelled = arena.cancel_expr(ratio, var);
+        // Multivariate normal form: the univariate `cancel` in `x` could
+        // not cancel `x + 2y` from `(x + 2y)/x² · x/(x + 2y)` (coefficients
+        // in `y`), so μ = x of `(2x + y)/x + ((2y + x)/x)·y′` was missed.
+        let ratio_cancelled = crate::simplify::ratsimp::ratsimp(arena, ratio);
+        let ratio_cancelled = crate::transforms::eval::eval(arena, ratio_cancelled);
 
         if !contains_sym(arena, ratio_cancelled, func_sym) {
             let int_ratio = crate::transforms::integrate::integrate(arena, ratio_cancelled, var);
-            if !matches!(arena.node(int_ratio), ExprNode::Integral(_, _)) {
+            if !integral_failed(arena, int_ratio) {
                 let mu = exp_of_log_sum(arena, int_ratio);
 
                 // New M' = μ·M,  N' = μ·N
@@ -1443,11 +1568,12 @@ fn try_integrating_factor_ode(
         let ratio = crate::transforms::eval::eval(arena, ratio);
         let ratio = crate::transforms::expand::expand(arena, ratio);
         let ratio = crate::transforms::eval::eval(arena, ratio);
-        let ratio_cancelled = arena.cancel_expr(ratio, func);
+        let ratio_cancelled = crate::simplify::ratsimp::ratsimp(arena, ratio);
+        let ratio_cancelled = crate::transforms::eval::eval(arena, ratio_cancelled);
 
         if !contains_sym(arena, ratio_cancelled, var_sym) {
             let int_ratio = crate::transforms::integrate::integrate(arena, ratio_cancelled, func);
-            if !matches!(arena.node(int_ratio), ExprNode::Integral(_, _)) {
+            if !integral_failed(arena, int_ratio) {
                 let mu = exp_of_log_sum(arena, int_ratio);
 
                 let new_m = arena.mul(&[mu, m_expr]);
@@ -1571,18 +1697,22 @@ fn try_homogeneous_coefficient(
         return None;
     }
 
-    // Verify homogeneity of degree 0: RHS(x, v·x) must reduce to f(v) —
-    // i.e. be free of x after cancellation.  Without this check any
-    // polynomial RHS (e.g. y² + x², degree 2) would be misclassified.
+    // Verify homogeneity of degree 0: RHS(x, v·x) must reduce to f(v).
+    // Without this check any polynomial RHS (e.g. y² + x², degree 2)
+    // would be misclassified.  The difference is brought to the
+    // multivariate rational normal form (`ratsimp`): the univariate
+    // `cancel` in `x` it used could not cancel `x` from `(3vx − x)/(vx + x)`
+    // (coefficients in `v`), so every homogeneous RHS that is a quotient of
+    // sums (`(3y − x)/(x + y)`, `2xy/(x² − y²)`) was refused.
     {
         let vx = arena.mul(&[v, var]);
         let probe = crate::transforms::subs::subs(arena, rhs, func, vx);
         let probe = crate::transforms::eval::eval(arena, probe);
-        let probe = crate::transforms::expand::expand(arena, probe);
-        let probe = crate::transforms::eval::eval(arena, probe);
-        let probe = arena.cancel_expr(probe, var);
-        let probe = crate::transforms::eval::eval(arena, probe);
-        if contains_sym(arena, probe, var_sym) {
+        let diff = arena.sub(probe, rhs_sub);
+        let diff = crate::transforms::eval::eval(arena, diff);
+        let diff = crate::simplify::ratsimp::ratsimp(arena, diff);
+        let diff = crate::transforms::eval::eval(arena, diff);
+        if !arena.is_zero_structural(diff) {
             return None;
         }
     }
@@ -1590,6 +1720,8 @@ fn try_homogeneous_coefficient(
     // Now we have:  v + x*v' = f(v)  →  dv/(f(v) - v) = dx/x
     // Integrate:  ∫ dv/(f(v) - v) = ln|x| + C1
     let f_v_minus_v = arena.sub(rhs_sub, v);
+    let f_v_minus_v = crate::transforms::eval::eval(arena, f_v_minus_v);
+    let f_v_minus_v = crate::simplify::ratsimp::ratsimp(arena, f_v_minus_v);
     let f_v_minus_v = crate::transforms::eval::eval(arena, f_v_minus_v);
 
     if f_v_minus_v == arena.zero {
@@ -1604,10 +1736,10 @@ fn try_homogeneous_coefficient(
 
     let neg_one = arena.int(-1);
     let inv_fv = arena.pow(f_v_minus_v, neg_one);
-    let lhs_integral = crate::transforms::integrate::integrate(arena, inv_fv, v);
+    let lhs_integral = integrate_forms(arena, inv_fv, v);
 
     // If integration of 1/(f(v)-v) failed, bail out.
-    if matches!(arena.node(lhs_integral), ExprNode::Integral(_, _)) {
+    if integral_failed(arena, lhs_integral) {
         return None;
     }
 
@@ -1677,12 +1809,55 @@ fn try_nth_order_reducible(
     let d1_placeholder = arena.symbol("__d1");
     let stripped = crate::transforms::subs::subs(arena, expr, d2y_dx2, d2_placeholder);
     let stripped = crate::transforms::subs::subs(arena, stripped, dy_dx, d1_placeholder);
-    if contains_sym(arena, stripped, var_sym) {
-        return None; // x appears explicitly
+    let has_x = contains_sym(arena, stripped, var_sym);
+    let has_y = contains_sym(arena, stripped, _func_sym);
+    if has_x && has_y {
+        return None; // neither reduction applies
+    }
+    let p = arena.symbol("__p");
+    let p_sym = match arena.node(p) {
+        ExprNode::Symbol(s) => *s,
+        _ => return None,
+    };
+    let c2 = arena.symbol("C2");
+
+    // The reduced first-order solution `p = f(·, C1)` must be explicit and
+    // carry its constant.  Before, an implicit one (still in `p`, and
+    // without its constant) was integrated as if it were `p`: `y″ + 2y′²
+    // = 0` gave `−1/4·ln(−2·__p²·(C2 + x))`.
+    let usable = |arena: &Arena, r: &OdeResult| {
+        !contains_sym(arena, r.solution, p_sym)
+            && r.constants.len() == 1
+            && expr_contains(arena, r.solution, r.constants[0])
+            && !crate::base::walk::has_unevaluated(arena, r.solution)
+    };
+
+    // F(x, y′, y″) = 0 (no y): p(x) = y′ gives F(x, p, p′) = 0, and
+    // y = ∫ p dx + C2 is explicit.
+    if !has_y {
+        let dp_dx = arena.intern(ExprNode::Derivative(p, var));
+        let reduced = crate::transforms::subs::subs(arena, expr, d2y_dx2, dp_dx);
+        let reduced = crate::transforms::subs::subs(arena, reduced, dy_dx, p);
+        let reduced = crate::transforms::eval::eval(arena, reduced);
+        if let Some(pr) = dsolve(arena, reduced, p, var)
+            && usable(arena, &pr)
+        {
+            let integral = crate::transforms::integrate::integrate(arena, pr.solution, var);
+            if !integral_failed(arena, integral) {
+                let solution = arena.add(&[integral, c2]);
+                let solution = crate::transforms::eval::eval(arena, solution);
+                return Some(OdeResult {
+                    solution,
+                    constants: vec![pr.constants[0], c2],
+                });
+            }
+        }
+        if has_x {
+            return None;
+        }
     }
 
     // Now perform the reduction: let p = dy/dx, then d²y/dx² = p·dp/dy
-    let p = arena.symbol("__p");
     let dp_dy = arena.intern(ExprNode::Derivative(p, func));
     let p_dp_dy = arena.mul(&[p, dp_dy]);
 
@@ -1690,16 +1865,19 @@ fn try_nth_order_reducible(
     let reduced = crate::transforms::subs::subs(arena, expr, d2y_dx2, p_dp_dy);
     let reduced = crate::transforms::subs::subs(arena, reduced, dy_dx, p);
     let reduced = crate::transforms::eval::eval(arena, reduced);
+    // A factor `p` common to every term is divided out (it only carries
+    // the constant solutions `y′ = 0`): `y·y″ − y′²` becomes `y·p′ − p`,
+    // linear in `p(y)`.
+    let reduced = divide_common_factor(arena, reduced, p).unwrap_or(reduced);
 
     // Now `reduced` is a first-order ODE in p(y) with independent var = y.
-    // Try to solve it.
     let p_result = dsolve(arena, reduced, p, func)?;
+    if !usable(arena, &p_result) {
+        return None;
+    }
 
     // p_result.solution gives p = f(y, C1).
     // Now solve dy/dx = p(y) — this is separable: ∫ dy/p(y) = x + C2.
-    let c2 = arena.symbol("C2");
-
-    // Check if p_result.solution is simple enough
     let p_sol = p_result.solution;
 
     // Set up: dy/dx - p_sol = 0  →  ∫ 1/p_sol dy = x + C2
@@ -1709,7 +1887,7 @@ fn try_nth_order_reducible(
     let inv_p = crate::transforms::eval::eval(arena, inv_p);
     let lhs_integral = crate::transforms::integrate::integrate(arena, inv_p, func);
 
-    if matches!(arena.node(lhs_integral), ExprNode::Integral(_, _)) {
+    if integral_failed(arena, lhs_integral) {
         return None; // Can't integrate 1/p(y)
     }
 
@@ -1745,6 +1923,96 @@ fn try_nth_order_reducible(
 /// shared sub-expressions.
 fn contains_sym(arena: &Arena, expr: ExprId, sym: SymbolId) -> bool {
     crate::base::walk::has_free_symbol(arena, expr, sym)
+}
+
+/// `∫ e d(var)`, trying equivalent forms of `e` until one integrates: as
+/// given, with products of exponentials merged (`powsimp`: variation of
+/// parameters builds `x·e⁻ˣ·e⁻ˣ/x²/e⁻²ˣ`, which is `1/x`), as one
+/// fraction (`ratsimp`), and expanded.  The first attempt's result (with its
+/// formal `Integral`) when none does.
+fn integrate_forms(arena: &mut Arena, e: ExprId, var: ExprId) -> ExprId {
+    let first = crate::transforms::integrate::integrate(arena, e, var);
+    if !integral_failed(arena, first) {
+        return first;
+    }
+    let merged = crate::simplify::powsimp::powsimp(arena, e);
+    let merged = crate::transforms::eval::eval(arena, merged);
+    let fraction = crate::simplify::ratsimp::ratsimp(arena, merged);
+    let fraction = crate::transforms::eval::eval(arena, fraction);
+    let expanded = crate::transforms::expand::expand(arena, merged);
+    let expanded = crate::transforms::eval::eval(arena, expanded);
+    for form in [merged, fraction, expanded] {
+        if form == e {
+            continue;
+        }
+        let r = crate::transforms::integrate::integrate(arena, form, var);
+        if !integral_failed(arena, r) {
+            return r;
+        }
+    }
+    first
+}
+
+/// Is `e` zero as a rational function of its symbols and opaque
+/// subexpressions (`ratsimp`)?  Catches `∂M/∂y − ∂N/∂x` of quotients
+/// that `expand` leaves as unreduced fractions.
+fn rational_zero(arena: &mut Arena, e: ExprId) -> bool {
+    let r = crate::simplify::ratsimp::ratsimp(arena, e);
+    let r = crate::transforms::eval::eval(arena, r);
+    arena.is_zero_structural(r)
+}
+
+/// `expr / p` when `p` is a factor of every term of `expand(expr)`
+/// (`None` otherwise).
+fn divide_common_factor(arena: &mut Arena, expr: ExprId, p: ExprId) -> Option<ExprId> {
+    let expanded = crate::transforms::expand::expand(arena, expr);
+    let terms: Vec<ExprId> = match arena.node(expanded) {
+        ExprNode::Add(c) => c.to_vec(),
+        _ => vec![expanded],
+    };
+    let has_factor = |arena: &Arena, t: ExprId| -> bool {
+        let is_power_of_p = |f: ExprId| -> bool {
+            f == p
+                || matches!(arena.node(f), ExprNode::Pow(b, e) if *b == p
+                    && arena.as_num(*e).is_some_and(|r| r.is_integer() && r.is_positive()))
+        };
+        match arena.node(t) {
+            ExprNode::Mul(fs) => fs.iter().any(|&f| is_power_of_p(f)),
+            ExprNode::Neg(inner) => match arena.node(*inner) {
+                ExprNode::Mul(fs) => fs.iter().any(|&f| is_power_of_p(f)),
+                _ => is_power_of_p(*inner),
+            },
+            _ => is_power_of_p(t),
+        }
+    };
+    if terms.is_empty() || !terms.iter().all(|&t| has_factor(arena, t)) {
+        return None;
+    }
+    let quotient = arena.div(expanded, p);
+    let quotient = crate::transforms::eval::eval(arena, quotient);
+    let quotient = crate::transforms::expand::expand(arena, quotient);
+    Some(crate::transforms::eval::eval(arena, quotient))
+}
+
+/// Did an antiderivative fail anywhere in `id`?  The integrator returns a
+/// formal `Integral` node for the part it cannot do, not necessarily at
+/// the top: `∫ 2·sin(y)/cos(y) dy` came back as `2·Integral(…)`, which
+/// the top-level checks let through into an integrating factor (and a
+/// `Piecewise` of nested integrals was returned as the "solution").
+fn integral_failed(arena: &Arena, id: ExprId) -> bool {
+    let mut stack = vec![id];
+    let mut seen = rustc_hash::FxHashSet::default();
+    while let Some(n) = stack.pop() {
+        if !seen.insert(n) {
+            continue;
+        }
+        let node = arena.node(n);
+        if matches!(node, ExprNode::Integral(..)) {
+            return true;
+        }
+        node.for_each_child(|c| stack.push(c));
+    }
+    false
 }
 
 /// `exp(Σ cᵢ·ln(fᵢ))` → `Π fᵢ^{cᵢ}` for integrating factors.
@@ -2273,6 +2541,11 @@ fn extract_bernoulli_term(
 /// - Distinct real roots r₁, r₂: y = C1·x^r₁ + C2·x^r₂
 /// - Repeated root r: y = (C1 + C2·ln(x))·x^r
 /// - Complex roots α ± βi: y = x^α·(C1·cos(β·ln(x)) + C2·sin(β·ln(x)))
+///
+/// A forcing term `g(x)` is handled by `x = eᵗ` (for `x > 0`, like the
+/// homogeneous solutions): `a·Y″ + (b − a)·Y′ + c·Y = g(eᵗ)` has constant
+/// coefficients, and its solution with `t = ln x` is the answer.  Before,
+/// every forced Cauchy–Euler equation was refused.
 fn try_euler_cauchy(
     arena: &mut Arena,
     expr: ExprId,
@@ -2302,13 +2575,14 @@ fn try_euler_cauchy(
 
     let two_id = arena.int(2);
     let x_sq = arena.pow(var, two_id);
+    let mut forcing: Vec<ExprId> = Vec::new();
 
     for &child in &children {
         let (coeff, term) = arena.as_coeff_term(child);
         if term == func {
             c_coeff += coeff;
         } else if !contains_sym(arena, child, func_sym) {
-            return None; // Forcing term — only homogeneous supported
+            forcing.push(child);
         } else if let ExprNode::Mul(ref factors) = arena.node(term).clone() {
             let has_d2 = factors.contains(&d2y_dx2);
             let has_d1 = factors.contains(&dy_dx);
@@ -2351,6 +2625,10 @@ fn try_euler_cauchy(
 
     if a_coeff.is_zero() {
         return None;
+    }
+
+    if !forcing.is_empty() {
+        return euler_cauchy_forced(arena, &a_coeff, &b_coeff, &c_coeff, &forcing, var, var_sym);
     }
 
     // Characteristic equation: a·r² + (b−a)·r + c = 0
@@ -2436,6 +2714,82 @@ fn try_euler_cauchy(
             constants: vec![c1, c2],
         })
     }
+}
+
+/// `a·x²·y″ + b·x·y′ + c·y + Σ forcing = 0` by `x = eᵗ` (see
+/// [`try_euler_cauchy`]).
+fn euler_cauchy_forced(
+    arena: &mut Arena,
+    a: &Q,
+    b: &Q,
+    c: &Q,
+    forcing: &[ExprId],
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<OdeResult> {
+    let t = arena.symbol("__t");
+    let big_y = arena.symbol("__Y");
+    let (t_sym, y_sym) = match (arena.node(t), arena.node(big_y)) {
+        (ExprNode::Symbol(ts), ExprNode::Symbol(ys)) => (*ts, *ys),
+        _ => return None,
+    };
+    let d1 = arena.intern(ExprNode::Derivative(big_y, t));
+    let d2 = arena.intern(ExprNode::Derivative(d1, t));
+    let exp_t = arena.exp(t);
+    let ln_x = arena.ln(var);
+    let mut parts = Vec::with_capacity(3 + forcing.len());
+    let a_id = ode_ratio_to_expr(arena, a);
+    parts.push(arena.mul(&[a_id, d2]));
+    let bma = ode_ratio_to_expr(arena, &(b - a));
+    parts.push(arena.mul(&[bma, d1]));
+    let c_id = ode_ratio_to_expr(arena, c);
+    parts.push(arena.mul(&[c_id, big_y]));
+    for &f in forcing {
+        // ln x = t first (x > 0), then x = eᵗ.
+        let g = crate::transforms::subs::subs(arena, f, ln_x, t);
+        let g = crate::transforms::subs::subs(arena, g, var, exp_t);
+        parts.push(crate::transforms::eval::eval(arena, g));
+    }
+    let ode_t = arena.add(&parts);
+    let ode_t = crate::transforms::eval::eval(arena, ode_t);
+    if contains_sym(arena, ode_t, var_sym) {
+        return None;
+    }
+    let res = dsolve(arena, ode_t, big_y, t)?;
+    if contains_sym(arena, res.solution, y_sym)
+        || res.constants.len() != 2
+        || crate::base::walk::has_unevaluated(arena, res.solution)
+    {
+        return None;
+    }
+    // e^{k·t + m} = x^k·e^m, then t = ln x.
+    let mut replacements: Vec<(ExprId, ExprId)> = Vec::new();
+    for id in crate::base::walk::post_order_ids(arena, res.solution) {
+        let ExprNode::Exp(arg) = arena.node(id).clone() else {
+            continue;
+        };
+        let Some(coeffs) = arena.coefficients_of(arg, t) else {
+            continue;
+        };
+        if coeffs.len() != 2 || contains_sym(arena, coeffs[1], t_sym) {
+            continue;
+        }
+        let x_k = arena.pow(var, coeffs[1]);
+        let rest = arena.exp(coeffs[0]);
+        let r = arena.mul(&[x_k, rest]);
+        let r = crate::transforms::eval::eval(arena, r);
+        replacements.push((id, r));
+    }
+    let solution = crate::transforms::subs::subs_map(arena, res.solution, &replacements);
+    let solution = crate::transforms::subs::subs(arena, solution, t, ln_x);
+    let solution = crate::transforms::eval::eval(arena, solution);
+    if contains_sym(arena, solution, t_sym) {
+        return None;
+    }
+    Some(OdeResult {
+        solution,
+        constants: res.constants,
+    })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2550,16 +2904,16 @@ fn try_variation_of_parameters(
     let y2_g = arena.mul(&[y2, g_x]);
     let integrand1 = arena.div(y2_g, wronskian);
     let integrand1 = crate::transforms::eval::eval(arena, integrand1);
-    let integral1 = crate::transforms::integrate::integrate(arena, integrand1, var);
-    if matches!(arena.node(integral1), ExprNode::Integral(_, _)) {
+    let integral1 = integrate_forms(arena, integrand1, var);
+    if integral_failed(arena, integral1) {
         return None;
     }
 
     let y1_g = arena.mul(&[y1, g_x]);
     let integrand2 = arena.div(y1_g, wronskian);
     let integrand2 = crate::transforms::eval::eval(arena, integrand2);
-    let integral2 = crate::transforms::integrate::integrate(arena, integrand2, var);
-    if matches!(arena.node(integral2), ExprNode::Integral(_, _)) {
+    let integral2 = integrate_forms(arena, integrand2, var);
+    if integral_failed(arena, integral2) {
         return None;
     }
 
@@ -3699,13 +4053,21 @@ pub fn checkodesol(
 /// 3. For general matrices, computes eigenvalues and eigenvectors:
 ///    - Real eigenvalue λ with eigenvector v → `Cₖ·exp(λt)·v`
 ///    - Complex conjugate pair α±βi → trig form with `cos(βt)`, `sin(βt)`
-/// 4. Falls back to matrix exponential series ([`Matrix::exp_series`]) when
-///    eigendecomposition does not produce enough eigenvalues.
+/// 4. Otherwise (repeated or defective eigenvalues, eigenvalues the
+///    eigenvector route cannot split into real and imaginary parts) uses
+///    the exact matrix exponential `e^{At}·c` from the Jordan form
+///    ([`Matrix::matrix_exp_t`]).
+///
+/// Before 0.30 step 4 was the Taylor polynomial of `e^{At}` to degree 12
+/// ([`Matrix::exp_series`]), returned as if it were the solution: every
+/// defective matrix (`[[−1, 1], [0, −1]]`) and several diagonalisable ones
+/// got a polynomial that does not satisfy the system.
 ///
 /// # Returns
 ///
 /// `Some(vec)` with the solution vector, or `None` if the matrix is not
-/// square, empty, or contains entries that depend on `t_var`.
+/// square, empty, contains entries that depend on `t_var`, or its
+/// eigenvalues have no closed form.
 ///
 /// # Examples
 ///
@@ -3746,8 +4108,8 @@ pub fn solve_ode_system(a_matrix: &Matrix, t_var: &Ex) -> Option<Vec<Ex>> {
         return Some(sol);
     }
 
-    // Fallback: truncated matrix exponential series
-    solve_ode_system_series(a_matrix, t_var, n)
+    // Otherwise the exact matrix exponential.
+    solve_ode_system_expm(a_matrix, t_var, n)
 }
 
 /// Solve the initial-value problem `dx/dt = A·x`, `x(0) = x0`.
@@ -3850,13 +4212,18 @@ pub fn solve_ode_system_ivp(
 ///
 /// `x_p = exp(At) · ∫ exp(−At) · b(t) dt`
 ///
-/// The matrix exponentials in the particular integral are computed with
-/// [`Matrix::exp_series`], so the result is a truncated approximation
-/// unless `b(t)` is polynomial.
+/// The matrix exponentials `e^{±At}` are the exact ones from the Jordan
+/// form ([`Matrix::matrix_exp_t`]); an antiderivative the integrator cannot
+/// find stays a formal `Integral`.  Before 0.30 they were Taylor
+/// polynomials of degree 12 ([`Matrix::exp_series`]) whenever the exact
+/// exponential of the symbolic `∓A·t` failed — which was always — so the
+/// "particular solution" did not satisfy the system even for constant
+/// `b(t)`.
 ///
 /// # Returns
 ///
-/// `None` if the homogeneous part cannot be solved or dimensions mismatch.
+/// `None` if the homogeneous part cannot be solved, the matrix
+/// exponential has no closed form, or dimensions mismatch.
 pub fn solve_ode_system_nonhomogeneous(
     a_matrix: &Matrix,
     b_vec: &[Ex],
@@ -3872,14 +4239,8 @@ pub fn solve_ode_system_nonhomogeneous(
 
     // Particular solution via variation of parameters:
     //   x_p = exp(At) · ∫ exp(-At) · b(t) dt
-    let ctx = t_var.context();
-    let neg_one = ctx.int(-1);
-    let neg_a = a_matrix.scale(&neg_one);
-    let neg_at = neg_a.scale(t_var);
-    let exp_neg_at = neg_at
-        .matrix_exp()
-        .or_else(|_| neg_at.exp_series(12))
-        .ok()?;
+    let neg_a = a_matrix.scale(&t_var.context().int(-1));
+    let exp_neg_at = neg_a.matrix_exp_t(t_var).ok()?;
 
     let b_col = Matrix::col_vector(b_vec.to_vec()).ok()?;
     let integrand_matrix = exp_neg_at.matmul(&b_col).ok()?.eval();
@@ -3892,8 +4253,7 @@ pub fn solve_ode_system_nonhomogeneous(
     let integrated_col = Matrix::col_vector(integrated).ok()?;
 
     // Multiply by exp(At)
-    let at = a_matrix.scale(t_var);
-    let exp_at = at.matrix_exp().or_else(|_| at.exp_series(12)).ok()?;
+    let exp_at = a_matrix.matrix_exp_t(t_var).ok()?;
     let particular = exp_at.matmul(&integrated_col).ok()?.eval();
 
     // Combine: x = x_h + x_p
@@ -3955,168 +4315,104 @@ fn solve_ode_system_diagonal(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Vec<Ex>
         .collect()
 }
 
-/// Fallback: approximate solution via truncated matrix exponential series.
-///
-/// `None` only if `a_matrix` is not `n×n` (the callers check this first).
-fn solve_ode_system_series(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Option<Vec<Ex>> {
+/// `e^{At}·c` with the exact matrix exponential ([`Matrix::matrix_exp_t`],
+/// from the Jordan form), `c = (C1, …, Cn)`.  `None` when the Jordan form
+/// is not available in closed form.
+fn solve_ode_system_expm(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Option<Vec<Ex>> {
     let ctx = t_var.context();
-    let m = a_matrix.scale(t_var);
-    let exp_m = m.matrix_exp().or_else(|_| m.exp_series(12)).ok()?;
+    let exp_m = a_matrix.matrix_exp_t(t_var).ok()?;
     let constants: Vec<Ex> = (1..=n).map(|i| ctx.symbol(&format!("C{i}"))).collect();
     let c_vec = Matrix::col_vector(constants).ok()?;
     let result = exp_m.matmul(&c_vec).ok()?;
     Some((0..n).map(|i| result.get(i, 0).eval()).collect())
 }
 
-/// Eigenvalue-based exact solver for constant-coefficient systems.
+/// Eigenvector-based exact solver for diagonalisable constant-coefficient
+/// systems, with the eigenvectors of [`Matrix::eigenvects`] (computed in
+/// the eigenvalue's number field):
+/// - **Real λ** with eigenvector `v`: the mode `C·exp(λt)·v`;
+/// - **Complex λ = α + βi** (`β > 0`; the conjugate gives nothing new) with
+///   `v = u + i·w`: the real modes `exp(αt)·(cos(βt)·u − sin(βt)·w)` and
+///   `exp(αt)·(sin(βt)·u + cos(βt)·w)`, with `u`, `w` the real and
+///   imaginary parts of the entries ([`Ex::as_real_imag`]).
 ///
-/// Computes eigenvalues of `A`, then for each:
-/// - **Real λ**: finds eigenvector v via `null(A − λI)` and adds `C·exp(λt)·v`
-/// - **Complex α±βi**: builds two real modes using `cos(βt)` and `sin(βt)`
-///
-/// Returns `None` if fewer than `n` eigenvalues are found or if any
-/// eigenvector computation fails.
+/// `None` when `A` is not diagonalisable, a part cannot be separated, or
+/// the modes do not number `n` (the caller falls back to the matrix
+/// exponential).  Before 0.30 the eigenvectors came from `null(A − λI)`,
+/// which is empty for every complex or irrational `λ` (its entries are not
+/// recognised as zero), and the real part of an entry was taken by
+/// substituting `I → 0`, which is wrong for `1/(1 − I)` (real part `1/2`).
 fn solve_ode_system_eigen(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Option<Vec<Ex>> {
     let ctx = t_var.context();
-    let eigenvalues = match a_matrix.eigenvals() {
-        Ok(ev) => ev,
-        Err(_) => return None,
-    };
-
-    // Need at least n eigenvalues (counting algebraic multiplicity from solver)
-    if eigenvalues.len() < n {
+    let i_unit = ctx.i_unit();
+    let eigen = a_matrix.eigenvects().ok()?;
+    if eigen.iter().map(|(_, _, vs)| vs.len()).sum::<usize>() != n
+        || eigen.iter().any(|(_, m, vs)| *m != vs.len())
+    {
         return None;
     }
-    // Repeated eigenvalues may be defective (fewer eigenvectors than
-    // multiplicity); this path takes one eigenvector per eigenvalue, so
-    // defer to the Jordan-form based matrix exponential instead.
-    for i in 0..eigenvalues.len() {
-        if eigenvalues[i + 1..].contains(&eigenvalues[i]) {
-            return None;
-        }
-    }
-
-    let i_unit = ctx.i_unit();
-    let zero_ex = ctx.int(0);
-    let neg_i = -&i_unit;
-    let identity = Matrix::identity(&ctx, n).ok()?;
-
+    // Real and imaginary part of a constant, both free of `I`.
+    let split = |e: &Ex| -> Option<(Ex, Ex)> {
+        let (re, im) = e.as_real_imag();
+        let (re, im) = (re.eval().simplify(), im.eval().simplify());
+        let clean = |p: &Ex| {
+            !p.contains(&i_unit) && !p.to_string().contains("re(") && !p.to_string().contains("im(")
+        };
+        (clean(&re) && clean(&im)).then_some((re, im))
+    };
     let mut solution: Vec<Ex> = (0..n).map(|_| ctx.int(0)).collect();
     let mut const_idx = 1_usize;
-    let mut used = vec![false; eigenvalues.len()];
-
-    for idx in 0..eigenvalues.len() {
-        if used[idx] {
-            continue;
-        }
-        used[idx] = true;
-
-        let ev = &eigenvalues[idx];
-
-        if ev.contains(&i_unit) {
-            // ── Complex eigenvalue α + βi ─────────────────────────────
-            // Extract real part: substitute I → 0
-            let alpha = ev.subs(&i_unit, &zero_ex).eval().simplify();
-            // Extract imaginary coefficient: (λ − α) · (−i) = β
-            let ev_minus_alpha = ev - &alpha;
-            let beta = (&ev_minus_alpha * &neg_i).eval().simplify();
-
-            // Find and mark the conjugate eigenvalue as processed
-            for j in (idx + 1)..eigenvalues.len() {
-                if !used[j] && eigenvalues[j].contains(&i_unit) {
-                    let alpha_j = eigenvalues[j].subs(&i_unit, &zero_ex).eval().simplify();
-                    let ej_diff = &eigenvalues[j] - &alpha_j;
-                    let beta_j = (&ej_diff * &neg_i).eval().simplify();
-                    let beta_sum = (&beta + &beta_j).eval().simplify();
-                    if beta_sum.is_zero_structural() {
-                        used[j] = true;
-                        break;
-                    }
-                }
-            }
-
-            // Eigenvector via null(A − λI)
-            let ev_identity = identity.scale(ev);
-            let a_shifted = a_matrix.sub(&ev_identity).ok()?.eval().simplify();
-            let null_basis = a_shifted.nullspace();
-            if null_basis.is_empty() {
-                return None;
-            }
-
-            // Decompose eigenvector into real and imaginary parts:
-            //   Re(v_i) = v_i with I → 0
-            //   Im(v_i) = (v_i − Re(v_i)) · (−I)
-            let mut u_re = Vec::with_capacity(n);
-            let mut w_im = Vec::with_capacity(n);
-            for row in 0..n {
-                let vi = null_basis[0].get(row, 0).eval().simplify();
-                let re = vi.subs(&i_unit, &zero_ex).eval().simplify();
-                let vi_minus_re = &vi - &re;
-                let im = (&vi_minus_re * &neg_i).eval().simplify();
-                u_re.push(re);
-                w_im.push(im);
-            }
-
-            // Two real-valued solution modes from the conjugate pair
-            let c_a = ctx.symbol(&format!("C{const_idx}"));
-            let c_b = ctx.symbol(&format!("C{}", const_idx + 1));
-            const_idx += 2;
-
-            let exp_alpha_t = if alpha.is_zero_structural() {
+    for (ev, _, vectors) in &eigen {
+        let (alpha, beta) = split(ev)?;
+        if beta.is_zero_structural() {
+            let exp_ev_t = if alpha.is_zero_structural() {
                 ctx.int(1)
             } else {
                 (&alpha * t_var).exp()
             };
-            let cos_beta_t = (&beta * t_var).cos();
-            let sin_beta_t = (&beta * t_var).sin();
-
-            for row in 0..n {
-                // mode1[row] = e^(αt) · (cos(βt)·u[row] − sin(βt)·w[row])
-                // mode2[row] = e^(αt) · (sin(βt)·u[row] + cos(βt)·w[row])
-                let cu = &cos_beta_t * &u_re[row];
-                let sw = &sin_beta_t * &w_im[row];
-                let su = &sin_beta_t * &u_re[row];
-                let cw = &cos_beta_t * &w_im[row];
-
-                let m1 = &exp_alpha_t * &(&cu - &sw);
-                let m2 = &exp_alpha_t * &(&su + &cw);
-
-                let ca_m1 = &c_a * &m1;
-                let cb_m2 = &c_b * &m2;
-                let contrib = &ca_m1 + &cb_m2;
-                solution[row] = &solution[row] + &contrib;
-            }
-        } else {
-            // ── Real eigenvalue ──────────────────────────────────────────────────
-            let ev_identity = identity.scale(ev);
-            let a_shifted = a_matrix.sub(&ev_identity).ok()?.eval().simplify();
-            let null_basis = a_shifted.nullspace();
-            if null_basis.is_empty() {
-                return None;
-            }
-
-            let ci = ctx.symbol(&format!("C{const_idx}"));
-            const_idx += 1;
-
-            let exp_ev_t = if ev.is_zero_structural() {
-                ctx.int(1)
-            } else {
-                (ev * t_var).exp()
-            };
-
-            for (row, sol_row) in solution.iter_mut().enumerate().take(n) {
-                let vi = null_basis[0].get(row, 0).eval().simplify();
-                if !vi.is_zero_structural() {
-                    let exp_vi = &exp_ev_t * &vi;
-                    let ci_exp_vi = &ci * &exp_vi;
-                    *sol_row = &*sol_row + &ci_exp_vi;
+            for v in vectors {
+                let ci = ctx.symbol(&format!("C{const_idx}"));
+                const_idx += 1;
+                for (row, sol_row) in solution.iter_mut().enumerate() {
+                    let (vr, vi) = split(v.get(row, 0))?;
+                    if !vi.is_zero_structural() {
+                        return None;
+                    }
+                    if !vr.is_zero_structural() {
+                        *sol_row = &*sol_row + &(&ci * &(&exp_ev_t * &vr));
+                    }
                 }
+            }
+            continue;
+        }
+        // One of each conjugate pair: β > 0.
+        let b = beta.eval_f64().ok()?;
+        if b < 0.0 {
+            continue;
+        }
+        let exp_alpha_t = if alpha.is_zero_structural() {
+            ctx.int(1)
+        } else {
+            (&alpha * t_var).exp()
+        };
+        let cos_bt = (&beta * t_var).cos();
+        let sin_bt = (&beta * t_var).sin();
+        for v in vectors {
+            let c_a = ctx.symbol(&format!("C{const_idx}"));
+            let c_b = ctx.symbol(&format!("C{}", const_idx + 1));
+            const_idx += 2;
+            for (row, sol_row) in solution.iter_mut().enumerate() {
+                let (u, w) = split(v.get(row, 0))?;
+                let m1 = &exp_alpha_t * &(&(&cos_bt * &u) - &(&sin_bt * &w));
+                let m2 = &exp_alpha_t * &(&(&sin_bt * &u) + &(&cos_bt * &w));
+                *sol_row = &*sol_row + &(&(&c_a * &m1) + &(&c_b * &m2));
             }
         }
     }
-
-    let solution: Vec<Ex> = solution.into_iter().map(|s| s.eval()).collect();
-    Some(solution)
+    if const_idx != n + 1 {
+        return None;
+    }
+    Some(solution.into_iter().map(|s| s.eval()).collect())
 }
 
 #[cfg(test)]

@@ -494,14 +494,16 @@ fn integrate_then_simplify_sin_over_cos() {
 
 #[test]
 fn eval_then_check_expr_type() {
-    // After eval, trig of special angles become numbers
+    // After eval, trig of special angles become exact values.  (A rational
+    // value such as sin(pi/6) = 1/2 is folded when the expression is built,
+    // since 0.30; sin(pi/4) = sqrt(2)/2 is left for eval.)
     let ctx = Context::new();
     let angle = &ctx.pi() / 6;
-    let raw = angle.sin();
+    assert_eq!(angle.sin().expr_type(), ExprType::Number);
+    let raw = (&ctx.pi() / 4).sin();
     assert_eq!(raw.expr_type(), ExprType::Function);
     let evaled = raw.eval();
-    // 1/2 is a number
-    assert_eq!(evaled.expr_type(), ExprType::Number);
+    assert_eq!(evaled, ctx.int(2).sqrt() / 2);
 }
 
 #[test]
