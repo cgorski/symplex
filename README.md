@@ -6,7 +6,7 @@ Symbolic mathematics for Rust.
 [![docs.rs](https://docs.rs/symplex/badge.svg)](https://docs.rs/symplex)
 [![License](https://img.shields.io/crates/l/symplex.svg)](LICENSE-MIT)
 
-> **Pre-release (0.29).** The API is stabilising but not stable: 0.7.0 reshaped the
+> **Pre-release (0.30).** The API is stabilising but not stable: 0.7.0 reshaped the
 > certificate API and 0.10.0 added variants to three fresh enums/structs; every
 > breaking change is listed first, under `### Breaking`, in the release's entry in
 > [CHANGELOG.md](CHANGELOG.md), and the larger ones have a one-line fix in the book's
@@ -812,7 +812,7 @@ let velocity: Velocity = position.diff_wrt(&t_var);   // g·t [m/s]
 
 6. **Never silently wrong.** Numerical evaluation returns `Result`. Operations that can't produce a closed form return unevaluated symbolic nodes — `∫x^x dx` returns `Integral(x^x, x)`, not garbage. `∫₋₁¹ dx/x²` is `Err(Divergent)`, not `−2`. `re(z)` stays `re(z)` unless `z` is known to be real. A certificate prover says `Unknown` with what it tried, never a wrong `Proved`.
 
-7. **One domain: ℂ, principal branch.** A symbol without assumptions may be complex, every multivalued function takes its principal branch (`∛(−8) = 1 + √3·i`; the real root is `real_root`), and a rewrite is applied only where it preserves the value: `ln x + ln y` stays unless the arguments are known positive, `√(x²)` is `|x|` only for real `x`. The table of identities and their conditions, and the one exception (generated `f64` code takes real odd roots), is in [Key Concepts](book/src/getting-started/key-concepts.md#the-domain-model). `fuzz_simplify` checks it at real and complex points every night.
+7. **One domain: ℂ, principal branch.** A symbol without assumptions may be complex, every multivalued function takes its principal branch (`∛(−8) = 1 + √3·i`; the real root is `real_root`), and a rewrite is applied only where it preserves the value: `ln x + ln y` stays unless the arguments are known positive, `√(x²)` is `|x|` only for real `x`. Generated `f64` code follows the same meaning: it computes `eval_f64`'s value, or `NaN` where that value is not real. The table of identities and their conditions is in [Key Concepts](book/src/getting-started/key-concepts.md#the-domain-model). `fuzz_simplify` checks it at real and complex points every night.
 
 8. **No panics in library code.** Failure is a `Result`, absence an `Option`, invariants `debug_assert!`. The library never calls `unwrap`/`expect`/`panic!`/`unreachable!` on user data (ratchet `tests/unit/test_no_panics.rs`); the remaining `assert!`s on caller-supplied *shapes* (e.g. `Matrix::zeros(0, n)`, `Context::symbol("")`, a zero denominator to `RationalFn`) are documented under `# Panics` on each item and counted by the same ratchet — see CONTRIBUTING.md for the policy and why error plumbing costs nothing measurable.
 
@@ -862,7 +862,7 @@ Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`, 
 
 ## Comparison with SymPy
 
-| Feature | symplex 0.29 | SymPy 1.14 |
+| Feature | symplex 0.30 | SymPy 1.14 |
 |---------|--------------|------------|
 | Arithmetic | Exact `Ratio<BigInt>` | Exact (similar) |
 | Differentiation | Complete, incl. Bessel/Airy/orthogonal/polygamma/erf family | Complete |
@@ -1022,7 +1022,7 @@ Companion crates: [`symplex-build`](symplex-build/README.md) (build-time codegen
 
 ## Requirements
 
-Rust 1.93+ (Edition 2024). No Cargo features by design; pure Rust on every platform Rust targets, including `wasm32-unknown-unknown`. ~13,200 tests (`cargo nextest run`), ~1,300 doctests — every Rust block in this README and in the book is compiled and run as a doctest too (`cargo test --doc -- doctests::`); every emitted Lean shape is pinned to text compiled against Mathlib (Lean 4.30). `integrate` is also run on the 72,254 integrands of the [Rubi](https://rulebasedintegration.org/) test suite and every answer is checked by differentiation ([`rubi-harness/`](rubi-harness/README.md): 0 wrong at 0.29, with a per-file ratchet); `fuzz/` checks properties nightly.
+Rust 1.93+ (Edition 2024). No Cargo features by design; pure Rust on every platform Rust targets, including `wasm32-unknown-unknown`. ~13,400 tests (`cargo nextest run`), ~1,300 doctests — every Rust block in this README and in the book is compiled and run as a doctest too (`cargo test --doc -- doctests::`); every emitted Lean shape is pinned to text compiled against Mathlib (Lean 4.30). `integrate` is also run on the 72,254 integrands of the [Rubi](https://rulebasedintegration.org/) test suite and every answer is checked by differentiation ([`rubi-harness/`](rubi-harness/README.md): 0 wrong at 0.30, with a per-file ratchet); `fuzz/` checks properties nightly.
 
 ## License
 

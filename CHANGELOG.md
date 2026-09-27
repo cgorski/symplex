@@ -6,61 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
-## [Unreleased]
+## [0.30.0] - 2026-09-27
+
+The differential-hunt release.  In-house oracles ran over hundreds of
+thousands of random cases: `evalf` against itself (the digits it
+certifies at 16 and 30 digits must agree with its 60-digit value), the
+calculus routines against numerical ones (quadrature, sequences, Taylor
+coefficients, partial sums, substitution, finite differences), exact
+algebra against exact identities, display against parse, compiled code
+against evalf, number theory against SymPy, transforms and recurrences
+against numerics, rewrites at complex points, limits against
+high-precision sequences.  They found over a hundred root causes; each is
+fixed and pinned in `tests/v29/` against its oracle, and three of the
+hunters became nightly fuzz targets (`fuzz_evalf`, `fuzz_calculus`,
+`fuzz_roundtrip`).
+
+One principle decides the branch questions: symplex is a CAS over ℂ
+with principal branches and SymPy as its reference, and a derived route
+(compiled and emitted code, series) either agrees with that meaning or
+refuses.  So singular constants fold
+when they are built, `x·∞` keeps its direction, `loggamma` is the
+analytic continuation, compiled code has no real-root exception, and
+`series` is the real asymptotic expansion.  New: Lambert W on every
+branch, every family of an ODE's general solution, one-sided series, and
+expansions of special functions at their singular points.
 
 ### Breaking
 
 - **`ode::OdeResult` has a new public field `branches`** (the other
   families of the general solution, see `Ex::solve_ode_all` below); code
   that builds an `OdeResult` literal must add `branches: Vec::new()`.
-
-### Added
-
-- **`Ex::solve_ode_all`**: every family of the general solution of an
-  ODE (`y′ = y³` has `(C1 − 2x)^(−1/2)` and `−(C1 − 2x)^(−1/2)`;
-  `solve_ode` keeps returning the first).  Separable equations return
-  every explicit root (up to eight), Bernoulli equations with an even
-  denominator in `1/(1 − n)` the negative branch too, and `solve_ode_ivp`
-  fits the initial conditions against each family in turn: `y′ = y³`,
-  `y(0) = −1` is `−1/√(1 − 2x)` (it failed to fit).
-- **`Ex::series_dir` / `Ex::try_series_dir`**: one-sided expansions at a
-  finite point (`exp(−1/x)` from the right is `0 + O(xⁿ)`, from the left
-  it has none).  Expansions from the right and at `±∞` may contain
-  `ln x` (`Ei(x) = γ + ln x + x + …`).
-- **Series of special functions at their singular points**: `Γ`, `ψ` and
-  `ψ⁽ᵐ⁾` at their poles (`Γ(x) = 1/x − γ + …`), `ζ` at 1 (leading
-  terms), Stirling's series for `ln Γ`, `ψ`, `ψ⁽ᵐ⁾` at `∞`, and `Ei`,
-  `Ci`, `Chi`, `li`, `Si`, `Shi`, `K₀`, `Y₀` at 0.  So limits such as
-  `Γ(x) − 1/x → −γ`, `ζ(x) − 1/(x − 1) → γ`, `Ei(x) − ln x → γ`,
-  `K₀(x) + ln(x/2) → −γ`, `W(x)/x → 1`, `erfc(x)·x·e^{x²} → 1/√π` and
-  `Γ(x + 1/2)/(Γ(x)·√x) → 1` evaluate (they were refused).
-- **Linear ODEs with symbolic constant coefficients**: `y″ + a·y = 0` is
-  `C1·e^{−x√(−a)} + C2·e^{x√(−a)}` (SymPy's form; it was refused); a
-  forcing term goes through variation of parameters, and the particular
-  solution is returned only if it verifies.
-- **evalf of `loggamma` at complex arguments** (the continuation below;
-  certified error bounds).
-- **`compile()` and every code emitter handle `re` and `im`**, so
-  `real_root(x, 3)` of a symbol not known to be real compiles.
-
-- **Lambert W on every branch:** `lambertw(x, k)` / `Ex::lambertw_branch`
-  (SymPy's `LambertW(x, k)`; `W(x, 0)` is the existing `W(x)` node, so
-  every canonical form is unchanged), with display (`W(x, -1)`), parse,
-  LaTeX, MathML, tree, `diff`, a compiled `W₋₁`, and evalf over ℂ for
-  every branch (mpmath's algorithm).  `lambertw(x)` of a real `x < −1/e`
-  is its complex principal value (it was refused).
-- evalf evaluates harmonic numbers and rising/falling factorials at
-  non-integers, binomial coefficients at the poles of `Γ`
-  (`binomial(−7, 2500) = 341942019002818626`), and polygamma of order
-  above `10⁴`.
-
-Differential hunts.  Two new in-house oracles ran over hundreds of
-thousands of random expressions: `evalf` against itself (the digits it
-certifies at 16 and 30 digits must agree with its 60-digit value) and the
-calculus routines against numerical ones (definite integrals against
-quadrature, limits against sequences, series against Taylor coefficients,
-sums against partial sums, `solve` by substitution, `diff` against finite
-differences).  Every class they found is fixed and pinned in `tests/v29/`.
 
 ### Breaking (behaviour; no signature changed)
 
@@ -209,6 +184,47 @@ differences).  Every class they found is fixed and pinned in `tests/v29/`.
   `bernoulli`, `harmonic`, `catalan`, `bell`, `euler_number`,
   `stirling1/2`, `partition_count`, `zeta(−n)`, `beta` of integers, and
   `polygamma(n, p/q)` when its closed form would cancel more than 200 bits.
+
+### Added
+
+- **`Ex::solve_ode_all`**: every family of the general solution of an
+  ODE (`y′ = y³` has `(C1 − 2x)^(−1/2)` and `−(C1 − 2x)^(−1/2)`;
+  `solve_ode` keeps returning the first).  Separable equations return
+  every explicit root (up to eight), Bernoulli equations with an even
+  denominator in `1/(1 − n)` the negative branch too, and `solve_ode_ivp`
+  fits the initial conditions against each family in turn: `y′ = y³`,
+  `y(0) = −1` is `−1/√(1 − 2x)` (it failed to fit).
+- **`Ex::series_dir` / `Ex::try_series_dir`**: one-sided expansions at a
+  finite point (`exp(−1/x)` from the right is `0 + O(xⁿ)`, from the left
+  it has none).  Expansions from the right and at `±∞` may contain
+  `ln x` (`Ei(x) = γ + ln x + x + …`).
+- **Series of special functions at their singular points**: `Γ`, `ψ` and
+  `ψ⁽ᵐ⁾` at their poles (`Γ(x) = 1/x − γ + …`), `ζ` at 1 (leading
+  terms), Stirling's series for `ln Γ`, `ψ`, `ψ⁽ᵐ⁾` at `∞`, and `Ei`,
+  `Ci`, `Chi`, `li`, `Si`, `Shi`, `K₀`, `Y₀` at 0.  So limits such as
+  `Γ(x) − 1/x → −γ`, `ζ(x) − 1/(x − 1) → γ`, `Ei(x) − ln x → γ`,
+  `K₀(x) + ln(x/2) → −γ`, `W(x)/x → 1`, `erfc(x)·x·e^{x²} → 1/√π` and
+  `Γ(x + 1/2)/(Γ(x)·√x) → 1` evaluate (they were refused).
+- **Linear ODEs with symbolic constant coefficients**: `y″ + a·y = 0` is
+  `C1·e^{−x√(−a)} + C2·e^{x√(−a)}` (SymPy's form; it was refused); a
+  forcing term goes through variation of parameters, and the particular
+  solution is returned only if it verifies.
+- **evalf of `loggamma` at complex arguments** (the continuation below;
+  certified error bounds).
+- **`compile()` and every code emitter handle `re` and `im`**, so
+  `real_root(x, 3)` of a symbol not known to be real compiles.
+- **Lambert W on every branch:** `lambertw(x, k)` / `Ex::lambertw_branch`
+  (SymPy's `LambertW(x, k)`; `W(x, 0)` is the existing `W(x)` node, so
+  every canonical form is unchanged), with display (`W(x, -1)`), parse,
+  LaTeX, MathML, tree, `diff`, a compiled `W₋₁`, and evalf over ℂ for
+  every branch (mpmath's algorithm).  `lambertw(x)` of a real `x < −1/e`
+  is its complex principal value (it was refused).  `LibFn::LambertW`
+  accepts one or two arguments (`arity()` was `Arity::Fixed(1)`; code
+  that matches on the arity sees `Arity::Range`).
+- evalf evaluates harmonic numbers and rising/falling factorials at
+  non-integers, binomial coefficients at the poles of `Γ`
+  (`binomial(−7, 2500) = 341942019002818626`), and polygamma of order
+  above `10⁴`.
 
 ### Fixed
 
@@ -420,6 +436,27 @@ differences).  Every class they found is fixed and pinned in `tests/v29/`.
   existing targets 5 minutes each (0 crashes) and each new one 5 minutes
   (0 crashes after the fixes); a second campaign ran all twelve 4 minutes
   each (0 crashes, 0 timeouts).
+
+### Measured
+
+- `tests/v29/`: 14 files, 195 tests.  nextest 13,387 tests (14 skipped),
+  doctests 1,311.
+- Rubi harness: 6,133 verified, 72 real_verified, 0 wrong, 0 undecided
+  (0.29: 6,038 verified).  Self-test: 55,120 verified, 0 wrong, 1,097
+  undecided (unchanged).  `--negative-params`: 0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates: identical.
+- `cargo semver-checks` against 0.29.0: one failure,
+  `OdeResult.branches` (listed under Breaking).
+- Hunters: evalf self-consistency on about 320,000 expressions (0
+  disagreements on the last 217,000); exact algebra about 410,000 cases;
+  compiled code against evalf 180,000 points (0 finite values where evalf
+  is not real); limits and series 1,021 cases (0 wrong, from 67 wrong at
+  0.29).
+- Fuzzing: on the release code all twelve targets ran 3 minutes each in
+  fork mode, 0 crashes, 0 timeouts, 0 out-of-memory (from 15,000 inputs
+  for `fuzz_integrate` to 19 million for `fuzz_numdist`; `fuzz_simplify`
+  replayed its 3,821-input corpus and 101 new inputs).  The nightly
+  `fuzz_parser` crash of 2026-09-26 replays clean (fixed in 0.29.0).
 
 ## [0.29.0] - 2026-09-26
 
