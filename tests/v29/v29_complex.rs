@@ -148,9 +148,10 @@ fn constant_applications_fold_at_construction() {
     ] {
         assert_eq!(show(&p(&ctx, s)), want, "{s}");
     }
-    // `atan(±i)` is infinite (SymPy: `atan(I)` → `oo*I`); symplex keeps no
-    // directed imaginary infinity and records it as `zoo`.
-    assert_eq!(show(&p(&ctx, "atan(I)")), "zoo");
+    // `atan(±i)` is infinite (SymPy: `atan(I)` → `oo*I`); since the 0.30
+    // leftovers it keeps its direction (it was `zoo`; see
+    // `v29_leftovers2::directed_infinities_*`).
+    assert_eq!(show(&p(&ctx, "atan(I)")), "I*oo");
     // Irrational special values are left to `eval` (sin(π/4) = √2/2), and so
     // are the positive-integer values of Γ (numbers that can be huge).
     let s = p(&ctx, "sin(pi/4)");
@@ -315,16 +316,17 @@ fn zero_to_a_non_numeric_power() {
 fn infinity_times_a_factor_of_unknown_sign_is_complex_infinity() {
     // Canonical multiplication absorbed every factor into `±∞`: `x·∞` was
     // `∞`, so at `x = −1` it was `∞` (SymPy: `(x*oo).subs(x, -1)` → -oo),
-    // and `i·∞` was `∞` (SymPy: `I*oo` → `oo*I`).  symplex keeps no infinity
-    // inside a product; a factor of unknown sign or not real now leaves the
-    // direction unknown: `zoo`.  Factors of known sign still orient it.
+    // and `i·∞` was `∞` (SymPy: `I*oo` → `oo*I`).  A factor of unknown sign
+    // or not real now carries the direction: the product stays `x·∞`, `i·∞`
+    // (it was `zoo` in between; see `v29_leftovers2::directed_infinities_*`).
+    // Factors of known sign still orient it.
     // SymPy: `log(2)*oo` → oo, `(3-pi)*oo` → -oo, `pi*oo` → oo.
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let oo = ctx.infinity();
-    assert_eq!(show(&(&x * &oo)), "zoo");
-    assert_ne!(show(&(&x * &oo).subs(&x, &ctx.int(-1))), "oo");
-    assert_eq!(show(&(ctx.i_unit() * &oo)), "zoo");
+    assert_eq!(show(&(&x * &oo)), "x*oo");
+    assert_eq!(show(&(&x * &oo).subs(&x, &ctx.int(-1))), "-oo");
+    assert_eq!(show(&(ctx.i_unit() * &oo)), "I*oo");
     assert_eq!(show(&p(&ctx, "ln(2)*oo")), "oo");
     assert_eq!(show(&p(&ctx, "(3-pi)*oo")), "-oo");
     assert_eq!(show(&p(&ctx, "pi*oo")), "oo");
@@ -373,7 +375,9 @@ fn a_combined_infinite_factor_is_multiplied_like_a_written_one() {
     let f = ctx.apply("f", &[&x]).unwrap();
     let s = ctx.neg_infinity().sqrt();
     let e = &s * &(&(&x * &f.sin()) * &s);
-    assert_eq!(e, ctx.complex_infinity());
+    // `√(−∞) = i·∞` and the product is the directed infinity `−x·sin(f(x))·∞`
+    // since the 0.30 leftovers (it was `zoo`).
+    assert_eq!(e, -(&x * &f.sin() * ctx.infinity()));
     assert_eq!(ctx.parse(&e.to_string()).unwrap(), e);
     // sqrt(−oo)² = −oo, with a positive coefficient kept.
     assert_eq!(&(&ctx.int(2) * &s) * &s, ctx.neg_infinity());

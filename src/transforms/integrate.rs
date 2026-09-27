@@ -151,6 +151,23 @@ fn integrate_impl(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     // `atan(x/√(ln 1))`-terms (fuzz_integrate, 0.25).
     let expr = crate::transforms::eval::eval(arena, expr);
 
+    // Linearity first (see `integrate_node_uncached`): every stage below —
+    // the substitutions, the Risch tower, heurisch — then sees the
+    // integrand without its constant factors.  Before 0.30 they saw `c·f`:
+    // `∫ a/cosh x`, `∫ π·e^x/(e^{2x} + 1)`, `∫ √2/(e^x + 1)` stayed
+    // unevaluated although `∫ f` had a closed form.
+    if let Some((constants, f)) = split_constant_factors(arena, expr, var_sym) {
+        let big_f = integrate_stages(arena, f, var, var_sym);
+        if matches!(arena.node(big_f), ExprNode::Integral(..)) {
+            return arena.intern(ExprNode::Integral(expr, var));
+        }
+        return wrap_with_constants(arena, big_f, &constants);
+    }
+    integrate_stages(arena, expr, var, var_sym)
+}
+
+/// The stages of [`integrate_impl`] on an evaluated integrand.
+fn integrate_stages(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolId) -> ExprId {
     // Every stage's closed form faces the same evidence rule before it is
     // returned ([`accept_or_unevaluated`]); a rejected one counts as no answer,
     // so the next stage still gets its chance.  Up to 0.28.0 only some
@@ -1546,6 +1563,30 @@ fn integrate_node_uncached(
 
     if depth == 0 || node_budget_exhausted() || arena_budget_exhausted(arena) {
         return arena.intern(ExprNode::Integral(expr, var));
+    }
+
+    // ── Linearity first: ∫ c·f = c·∫ f for factors c free of the variable ──
+    // Every rule below then sees the integrand without its constant
+    // factors.  Before 0.30 only the `Mul` arm split them off, after the
+    // whole-expression rules had run on `c·f`: the trig-power rule handed
+    // back `2·∫ sin/cos` (its unevaluated result with the constant
+    // re-attached, which the check for an `Integral` node did not see), so
+    // `∫ 2·sin x/cos x`, `∫ −sin x/cos x` and `∫ 2·cos x/sin x` stayed
+    // unevaluated while `∫ sin x/cos x` worked (and variation of parameters
+    // failed on `y″ + y = tan x`).
+    if let Some((constants, f)) = split_constant_factors(arena, expr, var_sym) {
+        // `f` has fewer factors than `expr`, so the same depth cannot loop,
+        // unless rebuilding the product exposed a constant factor again.
+        let d = if split_constant_factors(arena, f, var_sym).is_some() {
+            depth - 1
+        } else {
+            depth
+        };
+        let big_f = integrate_node(arena, f, var, var_sym, d);
+        if matches!(arena.node(big_f), ExprNode::Integral(..)) {
+            return arena.intern(ExprNode::Integral(expr, var));
+        }
+        return wrap_with_constants(arena, big_f, &constants);
     }
 
     // Try trig power/product integration first (sin^n, cos^n, sin^m*cos^n)
@@ -2956,6 +2997,7 @@ fn symbolic_linear_coeff_of(
         let mut has_var = false;
         let mut other_factors: SmallVec<[ExprId; 4]> = SmallVec::new();
         let mut var_count = 0u32;
+        let mut nontrivial = false;
 
         for &child in children {
             if child == var {
@@ -2965,13 +3007,13 @@ fn symbolic_linear_coeff_of(
                 }
                 has_var = true;
             } else if contains_var(arena, child, var_sym) {
-                return None; // Non-trivial var dependence
+                nontrivial = true; // Non-trivial var dependence (see 3b)
             } else {
                 other_factors.push(child);
             }
         }
 
-        if has_var && var_count == 1 {
+        if has_var && var_count == 1 && !nontrivial {
             let coeff = match other_factors.len() {
                 0 => arena.one,
                 1 => other_factors[0],
@@ -2979,10 +3021,48 @@ fn symbolic_linear_coeff_of(
             };
             return Some((coeff, arena.zero));
         }
+
+        // Case 3b: c·(a·x + b) — constant factors times one linear sum.
+        // `∫ a·a^x = ∫ a^(x+1)` is rewritten `∫ e^{(x+1)·ln a}`, whose
+        // exponent is such a product (before 0.30 it stayed unevaluated
+        // while `∫ a^x` worked).
+        let dependent: SmallVec<[ExprId; 2]> = children
+            .iter()
+            .copied()
+            .filter(|&c| contains_var(arena, c, var_sym))
+            .collect();
+        if let [sum] = dependent[..]
+            && matches!(arena.node(sum), ExprNode::Add(_))
+            && let Some((a, b)) = linear_sum_parts(arena, sum, var, var_sym)
+        {
+            let c: SmallVec<[ExprId; 4]> = children.iter().copied().filter(|&f| f != sum).collect();
+            let c = arena.mul(&c);
+            let a = arena.mul(&[c, a]);
+            let b = arena.mul(&[c, b]);
+            return Some((a, b));
+        }
     }
 
     // Case 4: Add → separate var-containing and var-free terms
-    if let ExprNode::Add(ref children) = arena.node(expr).clone() {
+    if matches!(arena.node(expr), ExprNode::Add(_)) {
+        return linear_sum_parts(arena, expr, var, var_sym);
+    }
+
+    None
+}
+
+/// `(a, b)` for a sum `expr = a·var + b` with `a`, `b` free of `var` (the
+/// sum case of [`symbolic_linear_coeff_of`]).
+fn linear_sum_parts(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<(ExprId, ExprId)> {
+    {
+        let ExprNode::Add(ref children) = arena.node(expr).clone() else {
+            return None;
+        };
         let mut var_terms: SmallVec<[ExprId; 4]> = SmallVec::new();
         let mut const_terms: SmallVec<[ExprId; 4]> = SmallVec::new();
 
@@ -3053,10 +3133,8 @@ fn symbolic_linear_coeff_of(
             return None;
         }
 
-        return Some((coeff, constant));
+        Some((coeff, constant))
     }
-
-    None
 }
 
 /// Extract symbolic quadratic coefficients from `cx² + dx + e`.
@@ -4703,6 +4781,29 @@ fn partition_factors(
         }
     }
     (constants, dependent)
+}
+
+/// `(c, f)` with `expr = c·f` when `expr` is a product with factors `c` free
+/// of the variable and at least one factor `f` that depends on it (nested
+/// powers flattened as in [`partition_factors`]); `None` otherwise.
+fn split_constant_factors(
+    arena: &mut Arena,
+    expr: ExprId,
+    var_sym: SymbolId,
+) -> Option<(SmallVec<[ExprId; 4]>, ExprId)> {
+    let ExprNode::Mul(children) = arena.node(expr).clone() else {
+        return None;
+    };
+    let (constants, dependent) = partition_factors(arena, &children, var_sym);
+    if constants.is_empty() || dependent.is_empty() {
+        return None;
+    }
+    let f = if dependent.len() == 1 {
+        dependent[0]
+    } else {
+        arena.mul(&dependent)
+    };
+    Some((constants, f))
 }
 
 /// Multiply a result by constant factors (if any).

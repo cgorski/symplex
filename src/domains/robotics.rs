@@ -1,5 +1,5 @@
 //! Robotics kinematics helpers: DH parameters, forward kinematics, Jacobian,
-//! and algebraic inverse kinematics.
+//! and closed-form inverse kinematics of the planar 2-link arm.
 //!
 //! # Denavit-Hartenberg Convention
 //!
@@ -17,13 +17,9 @@
 //! (`Angle`/`Length`); both name the four parameters so `d` and `a` — two
 //! lengths — cannot be transposed silently.
 
-use crate::base::numeric::Q;
 use crate::domains::matrix::Matrix;
-use crate::poly::multipoly::{GrevLex, MultiPoly};
-use crate::poly::polysys;
 use crate::prelude::*;
 use crate::units::si::{Angle, Length};
-use num_traits::ToPrimitive;
 
 /// Build the standard Denavit-Hartenberg transformation matrix for one joint.
 ///
@@ -401,15 +397,19 @@ pub fn rot_euler(phi: &Ex, theta: &Ex, psi: &Ex, convention: EulerConvention) ->
 // 2-DOF Planar Inverse Kinematics
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Best rational approximation of an `f64` with denominator ≤ 10⁶
-/// (continued-fraction convergents), so `0.1 → 1/10` and `1/3` round-trips.
-///
-/// Returns `None` for NaN / ±∞.
-fn f64_to_ratio(v: f64) -> Option<Q> {
-    crate::base::numeric::f64_to_ratio_approx(v, 1_000_000)
+/// Relative tolerance of the reachability tests of
+/// [`inverse_kinematics_2dof`], in units of the `f64` epsilon: covers the
+/// rounding of the inputs themselves (`0.8` is not `4/5`, so `1 + 0.8` is
+/// not `1.8`) and of the few operations that combine them.
+const IK_TOLERANCE_ULPS: f64 = 64.0;
+
+/// Is `a = b` within the tolerance, relative to the magnitude `scale` of
+/// the terms they were computed from?
+fn ik_equal(a: f64, b: f64, scale: f64) -> bool {
+    (a - b).abs() <= IK_TOLERANCE_ULPS * f64::EPSILON * scale
 }
 
-/// Solve 2-DOF planar inverse kinematics algebraically.
+/// Solve 2-DOF planar inverse kinematics in closed form.
 ///
 /// Given link lengths (`l1`, `l2`) and a target end-effector position
 /// (`target_x`, `target_y`), finds all joint angle pairs (θ₁, θ₂)
@@ -420,93 +420,107 @@ fn f64_to_ratio(v: f64) -> Option<Q> {
 ///   l1·sin(θ₁) + l2·sin(θ₁+θ₂) = target_y
 /// ```
 ///
-/// Uses the sin/cos ring approach with Gröbner bases. Introduces four
-/// polynomial variables `(s₁, c₁, s₂, c₂)` representing `sin(θ₁)`,
-/// `cos(θ₁)`, `sin(θ₂)`, `cos(θ₂)`, together with Pythagorean
-/// constraints `s₁²+c₁²=1` and `s₂²+c₂²=1`.
+/// By the law of cosines `cos θ₂ = (r² − l1² − l2²)/(2·l1·l2)` with
+/// `r² = x² + y²`, and then the target is the vector `(l1 + l2·cos θ₂,
+/// l2·sin θ₂)` rotated by `θ₁`, which gives `θ₁` by `atan2`.  An interior
+/// target has the two solutions `θ₂ = ±acos(…)` (elbow up and down), a
+/// target on the boundary of the workspace (`r = |l1 ± l2|`, the arm
+/// stretched or folded) has one, an unreachable one none.  Reachability is
+/// decided with a tolerance of a few dozen ulps of the inputs, so that
+/// `(1.8, 0)` with links `1` and `0.8` counts as the stretched arm.
 ///
-/// The angle-addition identities expand the FK equations:
-/// ```text
-///   cos(θ₁+θ₂) = c₁·c₂ − s₁·s₂
-///   sin(θ₁+θ₂) = s₁·c₂ + c₁·s₂
+/// Where the solutions form a continuum — the target at the origin with
+/// `|l1| = |l2|` (any `θ₁`), or a link of length zero (the angle of the
+/// other joint is free) — one representative is returned, with the free
+/// angle `0`.
+///
+/// Angles are in radians, in `(−π, π]`, sorted by `(θ₁, θ₂)`.  Returns
+/// an empty vec if the target is unreachable or any input is not a finite
+/// number.  (Up to 0.29 this solved a Gröbner system over ℚ, which finds
+/// only the solutions whose sines and cosines are rational: a reachable
+/// target such as `(1.5, 0.5)` with unit links came back empty.)
+///
+/// # Examples
+///
 /// ```
+/// use symplex::robotics::inverse_kinematics_2dof;
 ///
-/// Returns all solution branches as `(θ₁, θ₂)` pairs in radians.
-/// Returns an empty vec if the target is unreachable or any input is
-/// not a finite number.
+/// let sols = inverse_kinematics_2dof(1.0, 1.0, 1.5, 0.5);
+/// assert_eq!(sols.len(), 2);
+/// for (t1, t2) in sols {
+///     assert!((t1.cos() + (t1 + t2).cos() - 1.5).abs() < 1e-12);
+///     assert!((t1.sin() + (t1 + t2).sin() - 0.5).abs() < 1e-12);
+/// }
+/// assert_eq!(inverse_kinematics_2dof(1.0, 0.8, 1.8, 0.0), vec![(0.0, 0.0)]);
+/// assert!(inverse_kinematics_2dof(1.0, 1.0, 2.5, 0.0).is_empty());
+/// ```
 pub fn inverse_kinematics_2dof(l1: f64, l2: f64, target_x: f64, target_y: f64) -> Vec<(f64, f64)> {
-    // Variables: 0=s1, 1=c1, 2=s2, 3=c2
-    let nv = 4;
-
-    let (Some(rl1), Some(rl2), Some(rtx), Some(rty)) = (
-        f64_to_ratio(l1),
-        f64_to_ratio(l2),
-        f64_to_ratio(target_x),
-        f64_to_ratio(target_y),
-    ) else {
+    if ![l1, l2, target_x, target_y].iter().all(|v| v.is_finite()) {
         return vec![];
-    };
-
-    let s1 = MultiPoly::<GrevLex>::var(nv, 0);
-    let c1 = MultiPoly::<GrevLex>::var(nv, 1);
-    let s2 = MultiPoly::<GrevLex>::var(nv, 2);
-    let c2 = MultiPoly::<GrevLex>::var(nv, 3);
-    let one = MultiPoly::<GrevLex>::from_int(nv, 1);
-
-    // Pythagorean constraints: s1^2 + c1^2 - 1 = 0, s2^2 + c2^2 - 1 = 0
-    let pyth1 = &(&s1 * &s1) + &(&c1 * &c1) - one.clone();
-    let pyth2 = &(&s2 * &s2) + &(&c2 * &c2) - one;
-
-    // FK x-equation: l1*c1 + l2*(c1*c2 - s1*s2) - tx = 0
-    let fk_x = {
-        let term1 = c1.scale(&rl1);
-        let cos12 = &(&c1 * &c2) - &(&s1 * &s2); // c1*c2 - s1*s2
-        let term2 = cos12.scale(&rl2);
-        let target_poly = MultiPoly::<GrevLex>::constant(nv, rtx.clone());
-        &(&term1 + &term2) - &target_poly
-    };
-
-    // FK y-equation: l1*s1 + l2*(s1*c2 + c1*s2) - ty = 0
-    let fk_y = {
-        let term1 = s1.scale(&rl1);
-        let sin12 = &(&s1 * &c2) + &(&c1 * &s2); // s1*c2 + c1*s2
-        let term2 = sin12.scale(&rl2);
-        let target_poly = MultiPoly::<GrevLex>::constant(nv, rty.clone());
-        &(&term1 + &term2) - &target_poly
-    };
-
-    let system = vec![fk_x, fk_y, pyth1, pyth2];
-
-    let solutions = match polysys::solve_polynomial_system(&system) {
-        Ok(sols) => sols,
-        Err(_) => return vec![],
-    };
-
-    // Convert (s1, c1, s2, c2) → (θ₁, θ₂)
-    let mut angles = Vec::new();
-    for sol in &solutions {
-        if sol.len() != 4 {
-            continue;
-        }
-        let s1_val = sol[0].to_f64().unwrap_or(0.0);
-        let c1_val = sol[1].to_f64().unwrap_or(0.0);
-        let s2_val = sol[2].to_f64().unwrap_or(0.0);
-        let c2_val = sol[3].to_f64().unwrap_or(0.0);
-
-        let theta1 = s1_val.atan2(c1_val);
-        let theta2 = s2_val.atan2(c2_val);
-
-        angles.push((theta1, theta2));
     }
-
-    // Deduplicate solutions that are numerically close
-    angles.sort_by(|a, b| {
-        a.0.partial_cmp(&b.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-    });
-    angles.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 1e-6);
-
+    // The angles are scale-invariant: normalise to avoid overflow and
+    // underflow in the squares.
+    let scale = [l1, l2, target_x, target_y]
+        .iter()
+        .fold(0.0_f64, |m, v| m.max(v.abs()));
+    if scale == 0.0 {
+        // Two zero-length links at the origin: every pair is a solution.
+        return vec![(0.0, 0.0)];
+    }
+    let (l1, l2, x, y) = (l1 / scale, l2 / scale, target_x / scale, target_y / scale);
+    let r2 = x * x + y * y;
+    let mut angles: Vec<(f64, f64)> = Vec::new();
+    // The angle of the target seen through a link of signed length `l`.
+    let direction = |l: f64| (l.signum() * y).atan2(l.signum() * x);
+    if l1 == 0.0 || l2 == 0.0 {
+        // One free joint: reachable iff r = |l| for the other link.
+        let l = if l1 == 0.0 { l2 } else { l1 };
+        if l == 0.0 {
+            return vec![];
+        }
+        if !ik_equal(r2, l * l, r2 + l * l) {
+            return vec![];
+        }
+        let phi = direction(l);
+        return vec![if l1 == 0.0 { (0.0, phi) } else { (phi, 0.0) }];
+    }
+    let num = r2 - l1 * l1 - l2 * l2;
+    let den = 2.0 * l1 * l2;
+    let mag = r2 + l1 * l1 + l2 * l2;
+    // cos θ₂ = num/den, classified against ±1 without dividing.
+    let cos_t2 = if ik_equal(num, den.abs(), mag) {
+        den.signum()
+    } else if ik_equal(num, -den.abs(), mag) {
+        -den.signum()
+    } else if num.abs() > den.abs() {
+        return vec![];
+    } else {
+        num / den
+    };
+    if cos_t2.abs() == 1.0 {
+        // Stretched or folded: θ₂ ∈ {0, π}, one solution.
+        let t2 = if cos_t2 > 0.0 {
+            0.0
+        } else {
+            std::f64::consts::PI
+        };
+        let k1 = l1 + l2 * cos_t2;
+        if ik_equal(k1, 0.0, l1.abs() + l2.abs()) {
+            // Folded onto the origin (|l1| = |l2|, r = 0): θ₁ is free.
+            angles.push((0.0, t2));
+        } else {
+            angles.push((direction(k1), t2));
+        }
+    } else {
+        let sin_abs = (1.0 - cos_t2 * cos_t2).sqrt();
+        for sin_t2 in [sin_abs, -sin_abs] {
+            let (k1, k2) = (l1 + l2 * cos_t2, l2 * sin_t2);
+            // (x, y) = R(θ₁)·(k1, k2)
+            let t1 = (k1 * y - k2 * x).atan2(k1 * x + k2 * y);
+            angles.push((t1, sin_t2.atan2(cos_t2)));
+        }
+    }
+    angles.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
     angles
 }
 

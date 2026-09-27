@@ -171,6 +171,13 @@ pub enum RewriteStrategy {
     /// Root first: rules are applied at a node (repeatedly, until none
     /// fires) *before* its children are visited.  Passes repeat until no
     /// rule fires.
+    ///
+    /// Within one pass, the sub-terms of a replacement are visited (and
+    /// rewritten) in turn, down to a nesting of eight replacements along
+    /// any path; deeper redexes are left for the next pass.  Without that
+    /// bound a rule whose right-hand side contains a new redex, such as
+    /// `sin(2·a_) → 2·sin(a_)·cos(a_)` (which matches `sin(9x)` with
+    /// `a_ = 9x/2`), would make a single pass descend forever.
     TopDown,
     /// Innermost-first normalisation: like [`BottomUp`](Self::BottomUp),
     /// but every replacement is itself fully normalised before the walk
@@ -243,7 +250,9 @@ pub const MAX_REWRITE_OPS: usize = 100_000;
 /// the `TopDown` / `Innermost` strategies before the walk moves on.
 const MAX_NODE_REWRITES: usize = 32;
 
-/// Maximum nesting of replacement normalisation in the `Innermost` strategy.
+/// Maximum nesting of replacements followed within one pass: the
+/// normalisation of replacements in the `Innermost` strategy, and the
+/// descent into replacements in the `TopDown` strategy.
 const MAX_INNERMOST_NESTING: usize = 8;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -862,10 +871,25 @@ impl Driver<'_> {
 
     /// One innermost-first pass: like bottom-up, but every replacement is
     /// normalised (bounded nesting) before the walk moves on.
-    fn pass_innermost(&mut self, root: ExprId, nesting: usize) -> ExprId {
+    ///
+    /// `memo` holds, for the whole pass, the normal form of every node
+    /// already processed at a given nesting: the nested normalisations of
+    /// the replacements meet the same sub-terms over and over (`sin(a_) →
+    /// sin(a_)·sin(a_ + 1)·sin(a_ + 2)` meets `sin(x)` in each of them), and
+    /// recomputing them made the work a product over the nesting levels.
+    fn pass_innermost(
+        &mut self,
+        root: ExprId,
+        nesting: usize,
+        memo: &mut FxHashMap<(ExprId, usize), ExprId>,
+    ) -> ExprId {
         let post_order = self.with_arena(|a| walk::post_order_ids(a, root));
         let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
         for &id in &post_order {
+            if let Some(&done) = memo.get(&(id, nesting)) {
+                cache.insert(id, done);
+                continue;
+            }
             let rebuilt = self.with_arena_mut(|a| {
                 if a.node(id).is_atom() {
                     id
@@ -882,30 +906,44 @@ impl Driver<'_> {
                     break;
                 }
                 current = if nesting < MAX_INNERMOST_NESTING {
-                    self.pass_innermost(new, nesting + 1)
+                    self.pass_innermost(new, nesting + 1, memo)
                 } else {
                     new
                 };
             }
+            memo.insert((id, nesting), current);
             cache.insert(id, current);
         }
         cache.get(&root).copied().unwrap_or(root)
     }
 
     /// One top-down pass (iterative, explicit stack).
+    ///
+    /// Every node carries its *nesting*: the number of replacements on the
+    /// path from the root that produced it.  A node reached with nesting
+    /// `MAX_INNERMOST_NESTING` is not rewritten in this pass (nor is
+    /// anything below it), so a pass is finite however the rules grow the
+    /// expression; the redexes left over are met by the next pass.
     fn pass_top_down(&mut self, root: ExprId) -> ExprId {
-        // original id → root-rewritten id
-        let mut root_rw: FxHashMap<ExprId, ExprId> = FxHashMap::default();
-        // root-rewritten id → fully processed id
-        let mut done: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+        // (original id, nesting) → (root-rewritten id, nesting of its children)
+        let mut root_rw: FxHashMap<(ExprId, usize), (ExprId, usize)> = FxHashMap::default();
+        // (root-rewritten id, nesting of its children) → fully processed id
+        let mut done: FxHashMap<(ExprId, usize), ExprId> = FxHashMap::default();
 
-        let r0 = self.rewrite_at_fixpoint(root);
-        root_rw.insert(root, r0);
-        let mut stack: Vec<(ExprId, bool)> = vec![(r0, false)];
+        let r0 = self.top_down_visit(root, 0);
+        root_rw.insert((root, 0), r0);
+        let mut stack: Vec<((ExprId, usize), bool)> = vec![(r0, false)];
 
-        while let Some(&(rid, expanded)) = stack.last() {
-            if done.contains_key(&rid) {
+        while let Some(&(key, expanded)) = stack.last() {
+            if done.contains_key(&key) {
                 stack.pop();
+                continue;
+            }
+            let (rid, nesting) = key;
+            if nesting > MAX_INNERMOST_NESTING {
+                // Frozen for this pass: left as it is.
+                stack.pop();
+                done.insert(key, rid);
                 continue;
             }
             if !expanded {
@@ -914,11 +952,11 @@ impl Driver<'_> {
                 }
                 let children = self.with_arena(|a| a.children(rid));
                 for &c in children.iter().rev() {
-                    let rc = match root_rw.get(&c) {
+                    let rc = match root_rw.get(&(c, nesting)) {
                         Some(&rc) => rc,
                         None => {
-                            let rc = self.rewrite_at_fixpoint(c);
-                            root_rw.insert(c, rc);
+                            let rc = self.top_down_visit(c, nesting);
+                            root_rw.insert((c, nesting), rc);
                             rc
                         }
                     };
@@ -931,8 +969,8 @@ impl Driver<'_> {
                 let children = self.with_arena(|a| a.children(rid));
                 let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
                 for &c in &children {
-                    let rc = root_rw.get(&c).copied().unwrap_or(c);
-                    let fc = done.get(&rc).copied().unwrap_or(rc);
+                    let rc = root_rw.get(&(c, nesting)).copied().unwrap_or((c, nesting));
+                    let fc = done.get(&rc).copied().unwrap_or(rc.0);
                     cache.insert(c, fc);
                 }
                 let rebuilt = self.with_arena_mut(|a| {
@@ -942,10 +980,21 @@ impl Driver<'_> {
                         walk::rebuild_with_cache(a, rid, &cache)
                     }
                 });
-                done.insert(rid, rebuilt);
+                done.insert(key, rebuilt);
             }
         }
-        done.get(&r0).copied().unwrap_or(r0)
+        done.get(&r0).copied().unwrap_or(r0.0)
+    }
+
+    /// A node `id` met by the top-down pass with nesting `nesting`: rewritten
+    /// at its root to a fixpoint (unless the nesting is exhausted), with the
+    /// nesting its children are visited at — one more when a rule fired.
+    fn top_down_visit(&mut self, id: ExprId, nesting: usize) -> (ExprId, usize) {
+        if nesting >= MAX_INNERMOST_NESTING {
+            return (id, nesting + 1);
+        }
+        let r = self.rewrite_at_fixpoint(id);
+        (r, if r == id { nesting } else { nesting + 1 })
     }
 
     fn run(&mut self, root: ExprId, opts: &RewriteOpts) -> ExprId {
@@ -955,7 +1004,9 @@ impl Driver<'_> {
             let next = match opts.strategy {
                 RewriteStrategy::BottomUp => self.pass_bottom_up(current),
                 RewriteStrategy::TopDown => self.pass_top_down(current),
-                RewriteStrategy::Innermost => self.pass_innermost(current, 0),
+                RewriteStrategy::Innermost => {
+                    self.pass_innermost(current, 0, &mut FxHashMap::default())
+                }
             };
             if next == current {
                 break;

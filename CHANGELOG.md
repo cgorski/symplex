@@ -8,7 +8,21 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+### Breaking
+
+- **`ode::OdeResult` has a new public field `branches`** (the other
+  families of the general solution, see `Ex::solve_ode_all` below); code
+  that builds an `OdeResult` literal must add `branches: Vec::new()`.
+
 ### Added
+
+- **`Ex::solve_ode_all`**: every family of the general solution of an
+  ODE (`y′ = y³` has `(C1 − 2x)^(−1/2)` and `−(C1 − 2x)^(−1/2)`;
+  `solve_ode` keeps returning the first).  Separable equations return
+  every explicit root (up to eight), Bernoulli equations with an even
+  denominator in `1/(1 − n)` the negative branch too, and `solve_ode_ivp`
+  fits the initial conditions against each family in turn: `y′ = y³`,
+  `y(0) = −1` is `−1/√(1 − 2x)` (it failed to fit).
 
 - **Lambert W on every branch:** `lambertw(x, k)` / `Ex::lambertw_branch`
   (SymPy's `LambertW(x, k)`; `W(x, 0)` is the existing `W(x)` node, so
@@ -40,8 +54,20 @@ differences).  Every class they found is fixed and pinned in `tests/v29/`.
   the value, not the limit: `sin(8n)/(8·sin n)` at `n = 0` is `nan` (was
   `1/8`), `ln(0)/ln(0)` is `nan` (was `1`).  Irrational values
   (`sin(π/4)`) are still left for `eval()`.  `0^z` follows SymPy (`0^π =
-  0`, `0^i = nan`); `±∞` times a factor of unknown sign is `zoo` (`x·∞`
-  was `∞`, wrong at `x = −1`); `atan2(0, 0)` is `nan`.
+  0`, `0^i = nan`); `atan2(0, 0)` is `nan`.
+- **Directed infinities:** `±∞` times a factor of unknown sign or not
+  real stays a product (`x·∞`, `i·∞`; `x·∞` was `∞`, wrong at `x = −1`),
+  so substitution decides the direction as in SymPy: `x·∞` at `x = 2`,
+  `−1`, `i`, `0` is `∞`, `−∞`, `i·∞`, `nan`; `x·∞ − x·∞` is `nan`; finite
+  terms are absorbed.  Functions at the directed infinities fold as in
+  SymPy: `asin(∞) = −i·∞`, `acos(∞) = i·∞`, `atan(±i) = ±i·∞`,
+  `√(−∞) = i·∞`, `(−∞)^(1/3) = (−1)^(1/3)·∞`, `cos(i·∞) = ∞`,
+  `tan(i·∞) = i`, `exp(i·∞) = nan`, `|i·∞| = ∞`.
+- **`Ci(0)` and `Chi(0)` are `zoo`** (they were `−∞`): the singularity of
+  `ln z`, as SymPy; `Ei(0)` stays `−∞` (real on both sides).
+  `besselj(n, 0)` and `besseli(n, 0)` fold to 0 for every integer
+  `n ≠ 0` (negative orders included) and to `zoo` for a negative
+  non-integer order.
 - **`d/dx ln|g| = g′/g`** for a real `g` (was `sign(g)·g′/|g|`):
   `checkodesol` rejected every `ln|x|` solution, and the integrator's
   self-check now verifies 20 more Rubi antiderivatives.
@@ -279,11 +305,46 @@ differences).  Every class they found is fixed and pinned in `tests/v29/`.
 - **`erfinv` of a tiny argument and `erfinv(erf(−9))` at 60 digits**
   failed to converge (found by the new `fuzz_evalf` in its first 10
   minutes).
+- **Integrals with a constant factor** (found by a hunt of 116 integrands
+  times 7 constants: 37 unevaluated before, 0 after): the integrator
+  takes constant factors out first, at the top level and inside every
+  stage, so `∫2·sin x/cos x`, `∫−sin x/cos x`, `∫c/cosh x`,
+  `∫c·eˣ/(e²ˣ + 1)`, `∫c·x⁵·e^(x³)`, `∫a^(x+1)` and `∫2^(x+1/2)` evaluate
+  (a constant times an unevaluated trigonometric-power integral hid it
+  from the next stage).  `sinᵐx·cosⁿx` integrates for every pair of
+  integer exponents (negative ones included) and `tanᵏx` in products;
+  trigonometric powers above 256 stay unevaluated (a huge exponent
+  recursed without bound).  Rubi: 75 more antiderivatives verified.
+- **Initial-value problems with nonlinear conditions** fit the constants
+  equation by equation, the one with the fewest unknowns first, trying
+  every root: `y″ + 2y′² = 0`, `y(1/3) = 2/3`, `y′(1/3) = 5/4` solves
+  ("could not solve for C2").
+- **`rewrite` with the `TopDown` and `Innermost` strategies terminates**
+  on rules whose replacement contains a new redex
+  (`sin(2·a_) → 2·sin(a_)·cos(a_)` on `sin(18x)` never finished a pass;
+  a self-reproducing rule took over 20 s under `Innermost`).
+- **`is_polynomial` of the zero polynomial is `true`** (`x − x` and
+  `(x + 1)² − (x² + 2x + 1)` were not polynomials).  `Poly::eval` at 1 of
+  a polynomial of degree `2³² − 1` no longer tabulates `2³²` powers.
+- **`inverse_kinematics_2dof`** solves by the law of cosines: a reachable
+  target whose joint angles have irrational sines and cosines returned no
+  solution (the Gröbner route found only rational points).
+- **`manipulator_equation`** includes the gyroscopic matrix and the
+  velocity-free part of the kinetic energy (`T = ½·q̇ᵀMq̇ + b(q)ᵀq̇ +
+  T₀(q)`), so `M·q̈ + C·q̇ + G` equals the Euler–Lagrange equations (the
+  terms were silently dropped); a kinetic energy not quadratic in the
+  velocities is refused.
+- **`domains::combinatorics` size guards:** `catalan(2⁶³)` overflowed
+  (panic) and `stirling2(u64::MAX, 2)` aborted on allocation; they and
+  `stirling1`, `derangements`, `bell` and `partition_count` return `None`
+  for a result (or table) beyond 2³² bits, decided on a lower bound of
+  its size.
 - **Fuzzing:** three new nightly targets — `fuzz_evalf` (evalf
   self-consistency), `fuzz_calculus` (calculus against numerical oracles)
   and `fuzz_roundtrip` (display/parse); the local campaign ran all nine
   existing targets 5 minutes each (0 crashes) and each new one 5 minutes
-  (0 crashes after the fixes).
+  (0 crashes after the fixes); a second campaign ran all twelve 4 minutes
+  each (0 crashes, 0 timeouts).
 
 ## [0.29.0] - 2026-09-26
 

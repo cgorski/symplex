@@ -405,20 +405,28 @@ pub fn gravity_vector(potential_energy: &Ex, q_vars: &[&Ex]) -> Vec<Ex> {
 /// M(q)·q̈ + C(q, q̇)·q̇ + G(q) = τ
 /// ```
 ///
-/// as returned by [`manipulator_equation`], for `n` generalized coordinates.
-/// `G` is the gradient of the potential, so for the same energies the
-/// left-hand side evaluates to exactly what [`euler_lagrange`] returns.
+/// as returned by [`manipulator_equation`], for `n` generalized coordinates
+/// and a kinetic energy of the general natural form
+/// `T = ½·q̇ᵀM(q)q̇ + b(q)ᵀq̇ + T₀(q)` (the last two terms appear in
+/// rotating frames: gyroscopic and centrifugal-potential terms).  For the
+/// same energies the left-hand side evaluates to exactly what
+/// [`euler_lagrange`] returns.
 #[derive(Clone, Debug)]
 pub struct ManipulatorEquation {
     /// `M(q)` — the `n×n` mass (inertia) matrix, `Mᵢⱼ = ∂²T/∂q̇ᵢ∂q̇ⱼ`
     /// ([`mass_matrix`]).
     pub mass: Matrix,
-    /// `C(q, q̇)` — the `n×n` Coriolis/centrifugal matrix built from the
-    /// Christoffel symbols of the first kind, `Cᵢⱼ = Σₖ Γᵢⱼₖ·q̇ₖ`; it
-    /// multiplies `q̇` ([`coriolis_matrix`]).
+    /// `C(q, q̇)` — the `n×n` matrix that multiplies `q̇`: the
+    /// Coriolis/centrifugal matrix built from the Christoffel symbols of the
+    /// first kind, `Σₖ Γᵢⱼₖ·q̇ₖ` ([`coriolis_matrix`]), plus the
+    /// gyroscopic matrix `∂bᵢ/∂qⱼ − ∂bⱼ/∂qᵢ` of the part of `T` linear
+    /// in `q̇` (zero for `T = ½·q̇ᵀMq̇`).  The gyroscopic matrix is
+    /// skew-symmetric, so `Ṁ − 2C` stays skew-symmetric.
     pub coriolis: Matrix,
-    /// `G(q)` — the `n` generalized gravity forces, `Gᵢ = ∂V/∂qᵢ`
-    /// ([`gravity_vector`]).
+    /// `G(q)` — the `n` generalized conservative forces,
+    /// `Gᵢ = ∂(V − T₀)/∂qᵢ`: the gradient of the potential
+    /// ([`gravity_vector`]) less that of the velocity-independent part of
+    /// `T` (zero for `T = ½·q̇ᵀMq̇`).
     pub gravity: Vec<Ex>,
 }
 
@@ -429,8 +437,13 @@ pub struct ManipulatorEquation {
 ///
 /// M(q)q̈ + C(q, q̇)q̇ + G(q) = τ
 ///
-/// This is a convenience function that calls [`mass_matrix`],
-/// [`coriolis_matrix`], and [`gravity_vector`].
+/// with the left-hand side equal to the [`euler_lagrange`] equations.
+/// For `T = ½·q̇ᵀM(q)q̇` this is [`mass_matrix`], [`coriolis_matrix`] and
+/// [`gravity_vector`].  A kinetic energy with terms linear in the
+/// velocities or free of them, `T = ½·q̇ᵀMq̇ + b(q)ᵀq̇ + T₀(q)`, adds the
+/// gyroscopic matrix to `C` and `−∇T₀` to `G` (see
+/// [`ManipulatorEquation`]); up to 0.29 those terms were silently dropped,
+/// so that `M·q̈ + C·q̇ + G` disagreed with the Euler–Lagrange equations.
 ///
 /// # Parameters
 /// - `kinetic_energy`: T(q, q̇)
@@ -447,7 +460,10 @@ pub struct ManipulatorEquation {
 /// # Errors
 ///
 /// Returns [`SymplexError::InvalidArgument`] if `q_vars` and `qdot_vars`
-/// differ in length or are empty.
+/// differ in length or are empty, or if `T` is not of degree at most two
+/// in the velocities (some `∂²T/∂q̇ᵢ∂q̇ⱼ` still depends on a velocity, as
+/// for a relativistic `T`): the equations of motion are then not of the
+/// form `M(q)·q̈ + C(q, q̇)·q̇ + G(q)`; [`euler_lagrange`] still applies.
 ///
 /// # Examples
 ///
@@ -474,12 +490,46 @@ pub fn manipulator_equation(
     q_vars: &[&Ex],
     qdot_vars: &[&Ex],
 ) -> Result<ManipulatorEquation, SymplexError> {
+    const OP: &str = "dynamics::manipulator_equation";
     let m = mass_matrix(kinetic_energy, qdot_vars)?;
+    let n = qdot_vars.len();
+    for i in 0..n {
+        for j in 0..n {
+            let entry = m.get(i, j);
+            if let Some(v) = qdot_vars.iter().find(|v| entry.free_symbols().contains(v)) {
+                return Err(invalid(
+                    OP,
+                    format!(
+                        "the kinetic energy is not of degree at most two in the velocities: \
+                         ∂²T/∂{}∂{} = {entry} depends on {v}",
+                        qdot_vars[i], qdot_vars[j]
+                    ),
+                ));
+            }
+        }
+    }
     let c = coriolis_matrix(&m, q_vars, qdot_vars)?;
-    let g = gravity_vector(potential_energy, q_vars);
+    // T = ½ q̇ᵀMq̇ + bᵀq̇ + T₀ exactly, as its Hessian in q̇ is free of q̇:
+    // bᵢ = ∂T/∂q̇ᵢ and T₀ = T at q̇ = 0.
+    let ctx = kinetic_energy.context();
+    let zero = ctx.int(0);
+    let at_rest: Vec<(&Ex, &Ex)> = qdot_vars.iter().map(|v| (*v, &zero)).collect();
+    let b: Vec<Ex> = qdot_vars
+        .iter()
+        .map(|v| kinetic_energy.diff(v).subs_map(&at_rest).eval())
+        .collect();
+    let t0 = kinetic_energy.subs_map(&at_rest).eval();
+    let c = Matrix::from_fn_unchecked(n, n, |i, j| {
+        let gyro = &b[i].diff(q_vars[j]) - &b[j].diff(q_vars[i]);
+        (c.get(i, j) + &gyro).eval()
+    });
+    let g = q_vars
+        .iter()
+        .map(|qi| (&potential_energy.diff(qi) - &t0.diff(qi)).eval())
+        .collect();
     Ok(ManipulatorEquation {
         mass: m.eval(),
-        coriolis: c.eval(),
-        gravity: g.into_iter().map(|e| e.eval()).collect(),
+        coriolis: c,
+        gravity: g,
     })
 }

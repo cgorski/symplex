@@ -185,6 +185,18 @@ fn pow_within_limits(config: &EvalConfig, base: &Ratio<BigInt>, exp: u32) -> boo
             .is_some_and(|d| d <= config.max_result_digits)
 }
 
+/// May the exact evaluation fast path ([`MultiPoly::eval`] /
+/// [`MultiPoly::substitute`]) take the value `v` for a variable of degree
+/// `d`?  Those tabulate every power `v⁰, …, vᵈ`, so besides the result
+/// staying within the `pow` guards ([`pow_within_limits`]) the degree must
+/// be one the arena would fold for any base: `1` folds `1ⁿ` at once for
+/// every `n`, but a table of `2³²` entries for `x^(2³² − 1)` at `x = 1`
+/// did not finish.  Larger degrees take the expression path, where `1ⁿ`
+/// folds without a table.
+fn exact_eval_within_limits(config: &EvalConfig, v: &Ratio<BigInt>, d: u32) -> bool {
+    d as usize <= config.max_pow_exponent.max(1) && pow_within_limits(config, v, d)
+}
+
 /// Maximum exponent of each variable (all zeros for the zero polynomial).
 fn degree_list_of(mp: &MultiPoly<Lex>) -> Vec<u32> {
     let mut out = vec![0u32; mp.num_vars()];
@@ -1216,7 +1228,7 @@ impl Poly {
                 let within = degree_list_of(mp)
                     .iter()
                     .zip(&vals)
-                    .all(|(&d, v)| pow_within_limits(&config, v, d));
+                    .all(|(&d, v)| exact_eval_within_limits(&config, v, d));
                 if within {
                     return Ok(self.ctx.from_ratio(eval_exact(mp, &vals)?));
                 }
@@ -1278,7 +1290,7 @@ impl Poly {
         // Fast path: exact polynomial at a rational value of the generator.
         if let Some(mp) = self.exact()
             && let Some(v) = value.as_rational()
-            && pow_within_limits(&self.eval_config(), &v, mp.degree_in(i))
+            && exact_eval_within_limits(&self.eval_config(), &v, mp.degree_in(i))
         {
             return Ok(Self::from_exact(&self.ctx, remaining, mp.substitute(i, &v)));
         }

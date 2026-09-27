@@ -8,6 +8,8 @@
 
 #[path = "v29/v29_algebra.rs"]
 mod v29_algebra;
+#[path = "v29/v29_api_domains.rs"]
+mod v29_api_domains;
 #[path = "v29/v29_calculus.rs"]
 mod v29_calculus;
 #[path = "v29/v29_complex.rs"]
@@ -18,6 +20,8 @@ mod v29_evalf;
 mod v29_functions;
 #[path = "v29/v29_leftovers.rs"]
 mod v29_leftovers;
+#[path = "v29/v29_leftovers2.rs"]
+mod v29_leftovers2;
 #[path = "v29/v29_ode_series.rs"]
 mod v29_ode_series;
 #[path = "v29/v29_output_ntheory.rs"]

@@ -1547,7 +1547,13 @@ pub(crate) fn eval_si(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
     None
 }
 
-/// Exact values of the cosine integral: `Ci(∞) = 0`, `Ci(0) = −∞`.
+/// Exact values of the cosine integral: `Ci(∞) = 0`, `Ci(0) = zoo`.
+///
+/// `Ci(z) = γ + ln z + ∫₀ᶻ (cos t − 1)/t dt` has the singularity of `ln z`
+/// at 0 and takes its value, `ln 0 = zoo` (SymPy: `Ci(0)` → zoo; along the
+/// negative reals the value is `Ci(|x|) + iπ`).  Before 0.30 it was `−∞`,
+/// the limit along the positive reals only.  `Ei(0) = li(1) = −∞` keep
+/// theirs: those functions are real on both sides.
 ///
 /// `Ci(−x) = Ci(x) + iπ` (for `x > 0`) is *not* applied automatically
 /// because it changes the real/complex character of the expression.
@@ -1556,7 +1562,7 @@ pub(crate) fn eval_ci(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
         return Some(arena.zero);
     }
     if x == arena.zero {
-        return Some(arena.neg_infinity);
+        return Some(arena.complex_infinity);
     }
     if x == arena.nan {
         return Some(arena.nan);
@@ -3975,8 +3981,12 @@ fn eval_lib_fn(arena: &mut Arena, f: LibFn, args: &[ExprId]) -> Option<ExprId> {
     }
 }
 
-/// `J_0(0) = I_0(0) = 1` and `J_n(0) = I_n(0) = 0` for integer `n > 0`, when
-/// both order and argument are numbers.
+/// `J_0(0) = I_0(0) = 1`; `J_ν(0) = I_ν(0) = 0` for `ν > 0` and for every
+/// integer `ν ≠ 0` (`J_{−n} = (−1)ⁿ J_n`, `I_{−n} = I_n`); `zoo` for a
+/// negative non-integer `ν` (SymPy: `besselj(-3, 0)` → 0,
+/// `besselj(-1/2, 0)` → zoo), when both order and argument are numbers.
+/// Before 0.30 a negative order stayed.  (The zeros and poles fold when the
+/// application is built; see `canon_function`.)
 fn eval_bessel_regular_at_zero(arena: &mut Arena, order: ExprId, x: ExprId) -> Option<ExprId> {
     let order_num = arena.as_num(order)?;
     let arg_num = arena.as_num(x)?;
@@ -3985,10 +3995,10 @@ fn eval_bessel_regular_at_zero(arena: &mut Arena, order: ExprId, x: ExprId) -> O
     }
     if order_num.is_zero() {
         Some(arena.one)
-    } else if order_num.is_positive() && order_num.is_integer() {
+    } else if order_num.is_positive() || order_num.is_integer() {
         Some(arena.zero)
     } else {
-        None
+        Some(arena.complex_infinity)
     }
 }
 
@@ -4126,10 +4136,11 @@ fn eval_shi(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
     None
 }
 
-/// `Chi(0) = −∞`, `Chi(∞) = ∞`.
+/// `Chi(0) = zoo` (the singularity of `ln z`, as `Ci(0)`; before 0.30
+/// `−∞`), `Chi(∞) = ∞`.
 fn eval_chi(arena: &mut Arena, x: ExprId) -> Option<ExprId> {
     if x == arena.zero {
-        return Some(arena.neg_infinity);
+        return Some(arena.complex_infinity);
     }
     if x == arena.infinity {
         return Some(arena.infinity);

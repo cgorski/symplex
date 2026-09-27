@@ -4,9 +4,13 @@
 //!
 //! **Unified API** — every function accepts arbitrary-precision integers via
 //! `impl Into<BigInt>`.  Returns `Option<BigInt>` where `None` means the
-//! input doesn't fit in a machine-sized integer (and thus the computation
-//! cannot proceed).  For inputs that do fit, the function always returns
-//! the exact result — there are no artificial resource limits.
+//! input doesn't fit in a machine-sized integer, or that the exact result
+//! would have more than [`MAX_RESULT_BITS`] bits (half a gigabyte), which
+//! is decided from a proven lower bound on its size — such a value cannot
+//! be built in memory (up to 0.29 `stirling2(u64::MAX, 2)` aborted the
+//! process on the allocation, and `catalan(2⁶³)` overflowed `2n`: a panic,
+//! or `0` in a release build).  Otherwise the function returns the exact
+//! result; the time it takes is that of the documented algorithm.
 //!
 //! At the CAS expression layer, `None` causes the node to remain in
 //! unevaluated symbolic form (e.g. the user sees `stirling2(n, k)`),
@@ -39,6 +43,36 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 // this module is their public home.
 pub use crate::base::combinatorics::{binomial, factorial, multinomial};
 
+/// Largest result, in bits, that the functions of this module compute
+/// (`2³²` bits, 512 MiB); beyond it they return `None`.  The test is made
+/// on a lower bound of the result's size, so a `None` is never returned for
+/// a value that would have fitted.
+pub const MAX_RESULT_BITS: u64 = 1 << 32;
+
+/// `log₂ n!` from below: `n! ≥ (n/e)ⁿ`.
+fn log2_factorial_lower(n: u64) -> f64 {
+    if n < 3 {
+        return 0.0;
+    }
+    let nf = n as f64;
+    nf * (nf / std::f64::consts::E).log2()
+}
+
+/// `log₂ S(n, k)` from below, for `1 ≤ k ≤ n`: `S(n, k) ≥ k^(n−k)` (put
+/// `1, …, k` in separate blocks, then each other element in any of them).
+/// Also bounds `|s(n, k)| ≥ S(n, k)` and `Bₙ ≥ S(n, k)`.
+fn log2_stirling2_lower(n: u64, k: u64) -> f64 {
+    if k < 2 || k > n {
+        return 0.0;
+    }
+    (n - k) as f64 * (k as f64).log2()
+}
+
+/// Is a result whose size is at least `2^log2_lower` beyond [`MAX_RESULT_BITS`]?
+fn too_large(log2_lower: f64) -> bool {
+    log2_lower > MAX_RESULT_BITS as f64
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Stirling numbers of the second kind: S(n, k)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -52,7 +86,8 @@ pub use crate::base::combinatorics::{binomial, factorial, multinomial};
 /// base cases `S(0, 0) = 1` and `S(n, 0) = S(0, k) = 0` for `n, k > 0`.
 ///
 /// Returns `Some(0)` for negative inputs or when `k > n`.
-/// Returns `None` if the inputs don't fit in `u64`.
+/// Returns `None` if the inputs don't fit in `u64` or the result would
+/// exceed [`MAX_RESULT_BITS`].
 ///
 /// # Examples
 ///
@@ -63,6 +98,7 @@ pub use crate::base::combinatorics::{binomial, factorial, multinomial};
 /// assert_eq!(stirling2(0, 0), Some(BigInt::from(1)));
 /// assert_eq!(stirling2(4, 2), Some(BigInt::from(7)));
 /// assert_eq!(stirling2(5, 3), Some(BigInt::from(25)));
+/// assert_eq!(stirling2(u64::MAX, 2), None); // 2⁶³ bits
 /// ```
 pub fn stirling2(n: impl Into<BigInt>, k: impl Into<BigInt>) -> Option<BigInt> {
     let n = n.into();
@@ -72,6 +108,9 @@ pub fn stirling2(n: impl Into<BigInt>, k: impl Into<BigInt>) -> Option<BigInt> {
     }
     let n: u64 = n.try_into().ok()?;
     let k: u64 = k.try_into().ok()?;
+    if too_large(log2_stirling2_lower(n, k)) {
+        return None;
+    }
     Some(stirling2_u64(n, k))
 }
 
@@ -137,7 +176,8 @@ fn stirling2_u64(n: u64, k: u64) -> BigInt {
 /// powers: `x^{(n)} = Σ_k s(n, k) x^k`.
 ///
 /// Returns `Some(0)` for negative inputs or when `k > n`.
-/// Returns `None` if the inputs don't fit in `u64`.
+/// Returns `None` if the inputs don't fit in `u64` or the result would
+/// exceed [`MAX_RESULT_BITS`].
 ///
 /// # Examples
 ///
@@ -148,6 +188,7 @@ fn stirling2_u64(n: u64, k: u64) -> BigInt {
 /// assert_eq!(stirling1(0, 0), Some(BigInt::from(1)));
 /// assert_eq!(stirling1(3, 1), Some(BigInt::from(2)));
 /// assert_eq!(stirling1(4, 1), Some(BigInt::from(-6)));
+/// assert_eq!(stirling1(u64::MAX, 1), None); // (2⁶⁴ − 2)!
 /// ```
 pub fn stirling1(n: impl Into<BigInt>, k: impl Into<BigInt>) -> Option<BigInt> {
     let n = n.into();
@@ -157,6 +198,15 @@ pub fn stirling1(n: impl Into<BigInt>, k: impl Into<BigInt>) -> Option<BigInt> {
     }
     let n: u64 = n.try_into().ok()?;
     let k: u64 = k.try_into().ok()?;
+    // |s(n, 1)| = (n − 1)!, and |s(n, k)| ≥ S(n, k).
+    let lower = if k == 1 && n >= 1 {
+        log2_factorial_lower(n - 1)
+    } else {
+        log2_stirling2_lower(n, k)
+    };
+    if too_large(lower) {
+        return None;
+    }
     Some(stirling1_u64(n, k))
 }
 
@@ -227,7 +277,9 @@ fn stirling1_u64(n: u64, k: u64) -> BigInt {
 /// with `p(0) = 1` and `p(n) = 0` for `n < 0`.
 ///
 /// Returns `Some(0)` for negative inputs, `Some(1)` for `n = 0`.
-/// Returns `None` if `n` doesn't fit in `usize`.
+/// Returns `None` if `n` doesn't fit in `usize`, or if the table of
+/// `p(0), …, p(n)` the recurrence keeps would exceed [`MAX_RESULT_BITS`]
+/// (`n` beyond about 10⁶; `p(n)` has `≈ 3.7·√n` bits).
 ///
 /// # Examples
 ///
@@ -248,6 +300,14 @@ pub fn partition_count(n: impl Into<BigInt>) -> Option<BigInt> {
         return Some(BigInt::one());
     }
     let n: usize = n.try_into().ok()?;
+    // log₂ p(n) < π·√(2n/3)/ln 2 (Hardy–Ramanujan), so the table holds
+    // fewer than n·(that + 1) bits; refuse when even half of that bound
+    // (the table's size to within a factor of two) is too large.
+    let nf = n as f64;
+    let bits_pn = std::f64::consts::PI * (2.0 * nf / 3.0).sqrt() / std::f64::consts::LN_2;
+    if too_large(nf * (bits_pn + 1.0) / 2.0) {
+        return None;
+    }
     Some(partition_count_usize(n))
 }
 
@@ -391,7 +451,7 @@ pub fn partitions(n: u64) -> PartitionIter {
 ///
 /// Computed with the Bell triangle in `O(n²)` big-integer additions.
 /// Returns `Some(0)` for negative `n`; `None` if `n` doesn't fit in
-/// `usize`.
+/// `usize` or the result would exceed [`MAX_RESULT_BITS`].
 ///
 /// # Examples
 ///
@@ -412,6 +472,16 @@ pub fn bell(n: impl Into<BigInt>) -> Option<BigInt> {
     if n == 0 {
         return Some(BigInt::one());
     }
+    // Bₙ ≥ S(n, k) for every k; k ≈ n/ln n nearly maximises the bound.
+    let nf = n as f64;
+    let k = if n >= 3 {
+        (nf / nf.ln()).round().clamp(2.0, nf) as u64
+    } else {
+        1
+    };
+    if too_large(log2_stirling2_lower(n as u64, k)) {
+        return None;
+    }
     // Bell triangle: row[0] = last element of the previous row,
     // row[i] = row[i-1] + prev[i-1].  B_n = first element of row n.
     let mut prev = vec![BigInt::one()];
@@ -429,7 +499,8 @@ pub fn bell(n: impl Into<BigInt>) -> Option<BigInt> {
 
 /// Catalan number `Cₙ = (2n)! / ((n+1)! n!)` (`1, 1, 2, 5, 14, 42, …`).
 ///
-/// Returns `Some(0)` for negative `n`; `None` if `n` doesn't fit in `u64`.
+/// Returns `Some(0)` for negative `n`; `None` if `n` doesn't fit in `u64`
+/// or the result would exceed [`MAX_RESULT_BITS`].
 ///
 /// # Examples
 ///
@@ -440,6 +511,7 @@ pub fn bell(n: impl Into<BigInt>) -> Option<BigInt> {
 /// assert_eq!(catalan(0), Some(BigInt::from(1)));
 /// assert_eq!(catalan(5), Some(BigInt::from(42)));
 /// assert_eq!(catalan(15), Some(BigInt::from(9_694_845)));
+/// assert_eq!(catalan(1u64 << 63), None); // about 2⁶⁴ bits
 /// ```
 pub fn catalan(n: impl Into<BigInt>) -> Option<BigInt> {
     let n: BigInt = n.into();
@@ -447,6 +519,11 @@ pub fn catalan(n: impl Into<BigInt>) -> Option<BigInt> {
         return Some(BigInt::zero());
     }
     let n = n.to_u64()?;
+    // Cₙ ≥ 4ⁿ/((2n + 1)(n + 1)); this also keeps 2n inside u64.
+    let nf = n as f64;
+    if too_large(2.0 * nf - ((2.0 * nf + 1.0) * (nf + 1.0)).log2()) {
+        return None;
+    }
     Some(binomial(2 * n, n) / BigInt::from(n + 1))
 }
 
@@ -454,7 +531,8 @@ pub fn catalan(n: impl Into<BigInt>) -> Option<BigInt> {
 /// `1, 0, 1, 2, 9, 44, 265, …`.
 ///
 /// Uses the recurrence `!n = (n − 1)(!(n−1) + !(n−2))`.  Returns
-/// `Some(0)` for negative `n`; `None` if `n` doesn't fit in `u64`.
+/// `Some(0)` for negative `n`; `None` if `n` doesn't fit in `u64` or the
+/// result would exceed [`MAX_RESULT_BITS`].
 ///
 /// # Examples
 ///
@@ -475,6 +553,10 @@ pub fn derangements(n: impl Into<BigInt>) -> Option<BigInt> {
     let n = n.to_u64()?;
     if n == 0 {
         return Some(BigInt::one());
+    }
+    // !n = round(n!/e) ≥ n!/3 for n ≥ 2.
+    if too_large(log2_factorial_lower(n) - 2.0) {
+        return None;
     }
     let mut a = BigInt::one(); // !0
     let mut b = BigInt::zero(); // !1

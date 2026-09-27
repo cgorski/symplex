@@ -43,16 +43,27 @@
 //!
 //! # Branches
 //!
-//! One expression is returned, so where the general solution has several
-//! branches only one is.  In particular a Bernoulli equation whose `1/(1−n)`
-//! has an even denominator returns `y = v^{1/(1−n)}` with `v` the solution
-//! of the linear equation: `y' = y³` gives `y = (C1 − 2x)^{−1/2}`, and the
-//! negative family `−(C1 − 2x)^{−1/2}` (SymPy returns both) is missing;
-//! `y'' = y'³` inherits it through its reduction.  A formula is a solution
-//! where it is real on the principal branch: `y' = √y` gives
-//! `(x/2 + C1/2)²`, a solution for `x + C1 ≥ 0` only, and the singular
-//! solution `y = 0` is not included.  Cauchy–Euler solutions are for
-//! `x > 0` (`ln x`, `x^r`).
+//! Where the general solution has several families, [`OdeResult::solution`]
+//! is the first and [`OdeResult::branches`] holds the others, as SymPy's
+//! list of solutions: a Bernoulli equation whose `1/(1−n)` has an even
+//! denominator gives `y = ±v^{1/(1−n)}` with `v` the solution of the linear
+//! equation (`y' = y³`: `(C1 − 2x)^{−1/2}` and `−(C1 − 2x)^{−1/2}`), a
+//! separable equation every explicit root of `∫ dy/g(y) = ∫ f dx + C1`, and
+//! `y'' = F(y')` (no `y`) one family per family of `y'` (`y'' = y'³`:
+//! `C2 ∓ √(C1 − 2x)`).  Before 0.30 only the first family was returned.
+//! [`Ex::solve_ode`](crate::api::expr::Ex::solve_ode) returns the first
+//! family, `Ex::solve_ode_all` all of them, and `Ex::solve_ode_ivp` fits the
+//! initial conditions on each family in turn (`y' = y³`, `y(0) = −1` is on
+//! the negative one).
+//!
+//! A formula is a solution where it is real on the principal branch:
+//! `y' = √y` gives `(x/2 + C1/2)²`, a solution for `x + C1 ≥ 0` only (for
+//! `x + C1 < 0` its derivative is negative while `√y ≥ 0`; the global
+//! solution is `0` there, the parabola after), and the singular solution
+//! `y = 0` is not included; `solve_ode_ivp` keeps only constants for which
+//! the ODE holds at the initial point (`y(0) = 1` gives `C1 = 2`, not the
+//! other root `C1 = −2`).  Cauchy–Euler solutions are for `x > 0` (`ln x`,
+//! `x^r`).
 
 use crate::api::expr::Ex;
 use crate::base::arena::Arena;
@@ -63,6 +74,10 @@ use crate::domains::matrix::Matrix;
 use num_traits::One;
 use num_traits::Signed;
 
+/// Most families [`try_full_separable`] returns (roots of `∫ dy/g(y) =
+/// ∫ f dx + C1`); more stay implicit.
+const MAX_BRANCHES: usize = 8;
+
 /// An ODE representation: f(x, y, y', y'', ...) = 0
 /// For now, we support limited forms detected by pattern matching.
 pub struct OdeResult {
@@ -70,6 +85,11 @@ pub struct OdeResult {
     pub solution: ExprId,
     /// Names of the arbitrary constants
     pub constants: Vec<ExprId>,
+    /// The other families of the general solution, in the same constants:
+    /// with `solution` they form the complete set (`y′ = y³` has
+    /// `(C1 − 2x)^(−1/2)` and `−(C1 − 2x)^(−1/2)`).  Empty when `solution`
+    /// is the whole family.  See *Branches* in the module docs.
+    pub branches: Vec<ExprId>,
 }
 
 /// Attempt to solve a first-order or second-order ODE.
@@ -246,6 +266,7 @@ fn try_simple_separable(
             return Some(OdeResult {
                 solution,
                 constants: vec![c1],
+                branches: Vec::new(),
             });
         }
     }
@@ -257,6 +278,7 @@ fn try_simple_separable(
         return Some(OdeResult {
             solution: c1,
             constants: vec![c1],
+            branches: Vec::new(),
         });
     }
 
@@ -351,6 +373,7 @@ fn try_second_order_const_coeff(
                 Some(OdeResult {
                     solution,
                     constants: vec![c1, c2],
+                    branches: Vec::new(),
                 })
             } else {
                 // Distinct roots: y = C1*e^(r1*x) + C2*e^(r2*x)
@@ -364,6 +387,7 @@ fn try_second_order_const_coeff(
                 Some(OdeResult {
                     solution,
                     constants: vec![c1, c2],
+                    branches: Vec::new(),
                 })
             }
         }
@@ -378,6 +402,7 @@ fn try_second_order_const_coeff(
             Some(OdeResult {
                 solution,
                 constants: vec![c1, c2],
+                branches: Vec::new(),
             })
         }
         _ => None,
@@ -432,6 +457,7 @@ fn solve_characteristic_equation(arena: &mut Arena, b: Q, c: Q, var: ExprId) -> 
                 Some(OdeResult {
                     solution,
                     constants: vec![c1, c2],
+                    branches: Vec::new(),
                 })
             } else {
                 // Distinct roots: y = C1*e^(r1*x) + C2*e^(r2*x)
@@ -445,6 +471,7 @@ fn solve_characteristic_equation(arena: &mut Arena, b: Q, c: Q, var: ExprId) -> 
                 Some(OdeResult {
                     solution,
                     constants: vec![c1, c2],
+                    branches: Vec::new(),
                 })
             }
         }
@@ -459,6 +486,7 @@ fn solve_characteristic_equation(arena: &mut Arena, b: Q, c: Q, var: ExprId) -> 
             Some(OdeResult {
                 solution,
                 constants: vec![c1, c2],
+                branches: Vec::new(),
             })
         }
         _ => None,
@@ -581,6 +609,7 @@ fn try_second_order_cc_nonhomogeneous(
     Some(OdeResult {
         solution,
         constants: homo_result.constants,
+        branches: Vec::new(),
     })
 }
 
@@ -759,6 +788,7 @@ fn try_first_order_linear(
         return Some(OdeResult {
             solution,
             constants: vec![c1],
+            branches: Vec::new(),
         });
     }
 
@@ -787,6 +817,7 @@ fn try_first_order_linear(
     Some(OdeResult {
         solution,
         constants: vec![c1],
+        branches: Vec::new(),
     })
 }
 
@@ -923,12 +954,14 @@ fn try_full_separable(
             return Some(OdeResult {
                 solution,
                 constants: vec![c1],
+                branches: Vec::new(),
             });
         }
     }
 
-    // General case: ∫ dy/g(y) = ∫ f(x) dx + C1, solved for y when it has
-    // one solution, else the implicit `∫ dy/g(y) − ∫ f(x) dx − C1` (= 0).
+    // General case: ∫ dy/g(y) = ∫ f(x) dx + C1, solved for y (every
+    // explicit root is a family: `solution` and `branches`), else the
+    // implicit `∫ dy/g(y) − ∫ f(x) dx − C1` (= 0).
     // Before, `∫ dy/g(y)` was never attempted (a formal `Integral` was
     // returned even for `y′ = 1 + y²`).
     let neg_one = arena.int(-1);
@@ -948,17 +981,28 @@ fn try_full_separable(
     let implicit = crate::transforms::eval::eval(arena, implicit);
     if !integral_failed(arena, implicit) {
         let solutions = crate::transforms::solve::solve(arena, implicit, func);
-        if solutions.len() == 1 && !contains_sym(arena, solutions[0].value, func_sym) {
-            let solution = crate::transforms::eval::eval(arena, solutions[0].value);
+        if !solutions.is_empty()
+            && solutions.len() <= MAX_BRANCHES
+            && solutions
+                .iter()
+                .all(|s| !contains_sym(arena, s.value, func_sym))
+        {
+            let mut families: Vec<ExprId> = solutions
+                .iter()
+                .map(|s| crate::transforms::eval::eval(arena, s.value))
+                .collect();
+            let solution = families.remove(0);
             return Some(OdeResult {
                 solution,
                 constants: vec![c1],
+                branches: families,
             });
         }
     }
     Some(OdeResult {
         solution: implicit,
         constants: vec![c1],
+        branches: Vec::new(),
     })
 }
 
@@ -1204,6 +1248,7 @@ fn try_first_order_linear_general(
         return Some(OdeResult {
             solution,
             constants: vec![c1],
+            branches: Vec::new(),
         });
     }
 
@@ -1219,6 +1264,7 @@ fn try_first_order_linear_general(
     Some(OdeResult {
         solution,
         constants: vec![c1],
+        branches: Vec::new(),
     })
 }
 
@@ -1474,6 +1520,7 @@ fn try_exact_ode(
         return Some(OdeResult {
             solution: solutions[0].value,
             constants: vec![c1],
+            branches: Vec::new(),
         });
     }
 
@@ -1484,6 +1531,7 @@ fn try_exact_ode(
     Some(OdeResult {
         solution: implicit,
         constants: vec![c1],
+        branches: Vec::new(),
     })
 }
 
@@ -1731,6 +1779,7 @@ fn try_homogeneous_coefficient(
         return Some(OdeResult {
             solution,
             constants: vec![c1],
+            branches: Vec::new(),
         });
     }
 
@@ -1765,6 +1814,7 @@ fn try_homogeneous_coefficient(
         return Some(OdeResult {
             solution: sol,
             constants: vec![c1],
+            branches: Vec::new(),
         });
     }
 
@@ -1772,6 +1822,7 @@ fn try_homogeneous_coefficient(
     Some(OdeResult {
         solution: implicit,
         constants: vec![c1],
+        branches: Vec::new(),
     })
 }
 
@@ -1842,13 +1893,27 @@ fn try_nth_order_reducible(
         if let Some(pr) = dsolve(arena, reduced, p, var)
             && usable(arena, &pr)
         {
-            let integral = crate::transforms::integrate::integrate(arena, pr.solution, var);
-            if !integral_failed(arena, integral) {
-                let solution = arena.add(&[integral, c2]);
-                let solution = crate::transforms::eval::eval(arena, solution);
+            // One family of `y` per family of `p` (`y″ = y′³`: `p = ±(C1 −
+            // 2x)^(−1/2)`; before 0.30 only the first).
+            let antiderivative = |arena: &mut Arena, p_family: ExprId| {
+                let integral = crate::transforms::integrate::integrate(arena, p_family, var);
+                (!integral_failed(arena, integral)).then(|| {
+                    let s = arena.add(&[integral, c2]);
+                    crate::transforms::eval::eval(arena, s)
+                })
+            };
+            if let Some(solution) = antiderivative(arena, pr.solution) {
+                let mut branches = Vec::new();
+                for &b in &pr.branches {
+                    match antiderivative(arena, b) {
+                        Some(y_b) => branches.push(y_b),
+                        None => tracing::debug!("ode: a family of y' has no closed antiderivative"),
+                    }
+                }
                 return Some(OdeResult {
                     solution,
                     constants: vec![pr.constants[0], c2],
+                    branches,
                 });
             }
         }
@@ -1905,6 +1970,7 @@ fn try_nth_order_reducible(
         return Some(OdeResult {
             solution: sol,
             constants,
+            branches: Vec::new(),
         });
     }
 
@@ -1914,6 +1980,7 @@ fn try_nth_order_reducible(
     Some(OdeResult {
         solution: implicit,
         constants,
+        branches: Vec::new(),
     })
 }
 
@@ -2121,6 +2188,7 @@ fn build_trig_homogeneous_solution(
     Some(OdeResult {
         solution,
         constants: vec![c1, c2],
+        branches: Vec::new(),
     })
 }
 
@@ -2440,15 +2508,25 @@ fn try_bernoulli(
     let v_result = try_first_order_linear_general(arena, linear_expr, v, var, v_sym, var_sym)
         .or_else(|| try_simple_separable(arena, linear_expr, v, var, v_sym, var_sym))?;
 
-    // Recover y = v^(1/(1−n))
+    // Recover y = v^(1/(1−n)); for an even denominator (`y⁻² = v`) the
+    // negative root `−v^(1/(1−n))` is a family too (before 0.30 it was
+    // missing: `y′ = y³` with `y(0) = −1` had no solution).
     let inv_one_minus_n = num_rational::Ratio::<num_bigint::BigInt>::one() / &one_minus_n;
     let inv_id = ode_ratio_to_expr(arena, &inv_one_minus_n);
     let solution = arena.pow(v_result.solution, inv_id);
     let solution = crate::transforms::eval::eval(arena, solution);
+    let two = num_bigint::BigInt::from(2);
+    let branches = if inv_one_minus_n.denom() % &two == num_bigint::BigInt::from(0) {
+        let negative = arena.neg(solution);
+        vec![crate::transforms::eval::eval(arena, negative)]
+    } else {
+        Vec::new()
+    };
 
     Some(OdeResult {
         solution,
         constants: v_result.constants,
+        branches,
     })
 }
 
@@ -2663,6 +2741,7 @@ fn try_euler_cauchy(
             Some(OdeResult {
                 solution,
                 constants: vec![c1, c2],
+                branches: Vec::new(),
             })
         } else {
             None
@@ -2680,6 +2759,7 @@ fn try_euler_cauchy(
         Some(OdeResult {
             solution,
             constants: vec![c1, c2],
+            branches: Vec::new(),
         })
     } else {
         // Complex roots α ± βi: α = −p/2, β = √(−disc)/2
@@ -2712,6 +2792,7 @@ fn try_euler_cauchy(
         Some(OdeResult {
             solution,
             constants: vec![c1, c2],
+            branches: Vec::new(),
         })
     }
 }
@@ -2789,6 +2870,7 @@ fn euler_cauchy_forced(
     Some(OdeResult {
         solution,
         constants: res.constants,
+        branches: Vec::new(),
     })
 }
 
@@ -2929,6 +3011,7 @@ fn try_variation_of_parameters(
     Some(OdeResult {
         solution,
         constants: homo.constants,
+        branches: Vec::new(),
     })
 }
 
@@ -3442,6 +3525,7 @@ fn try_nth_order_linear_const_coeff(
     Some(OdeResult {
         solution,
         constants,
+        branches: Vec::new(),
     })
 }
 
@@ -3516,6 +3600,7 @@ fn try_clairaut(
     Some(OdeResult {
         solution,
         constants: vec![c1],
+        branches: Vec::new(),
     })
 }
 
@@ -3615,6 +3700,7 @@ pub fn solve_riccati(
     Some(OdeResult {
         solution,
         constants: v_res.constants,
+        branches: Vec::new(),
     })
 }
 

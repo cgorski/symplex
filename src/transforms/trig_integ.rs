@@ -100,6 +100,34 @@ fn extract_cos_power(arena: &Arena, factor: ExprId, var: ExprId) -> Option<i64> 
     }
 }
 
+/// Try to decompose `factor` into a tan-power of `var`: `Tan(var)` → 1,
+/// `Pow(Tan(var), n)` → n for an integer `n`.
+fn extract_tan_power(arena: &Arena, factor: ExprId, var: ExprId) -> Option<i64> {
+    match arena.node(factor).clone() {
+        ExprNode::Tan(inner) if is_var(arena, inner, var) => Some(1),
+        ExprNode::Pow(base, exp) => {
+            if let ExprNode::Tan(inner) = arena.node(base).clone()
+                && is_var(arena, inner, var)
+            {
+                return as_i64(arena, exp);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Largest `|m|`, `|n|` for which `∫ sin^m·cos^n` is expanded: the closed
+/// forms have `O(|m| + |n|)` terms (`O(|m|·|n|)` intermediate pairs when both
+/// are negative) and the reduction formulas recurse once per step of 2.
+const MAX_TRIG_POWER: i64 = 256;
+
+/// Are both exponents within [`MAX_TRIG_POWER`]?
+fn within_power_bound(m: i64, n: i64) -> bool {
+    m.checked_abs().is_some_and(|a| a <= MAX_TRIG_POWER)
+        && n.checked_abs().is_some_and(|a| a <= MAX_TRIG_POWER)
+}
+
 /// Try to decompose `factor` into a sinh-power of `var`.
 ///
 /// Returns `Some(exponent)` for:
@@ -324,99 +352,44 @@ pub(crate) fn sin_cos_integrate(arena: &mut Arena, m: i64, n: i64, var: ExprId) 
         return sin_pow_integrate(arena, m, var);
     }
 
-    // Negative exponents: leave unevaluated for now.
-    if m < 0 || n < 0 {
-        let sin_x = arena.sin(var);
-        let cos_x = arena.cos(var);
-        let m_id = arena.int(m);
-        let n_id = arena.int(n);
-        let sin_pow = if m == 1 {
-            sin_x
-        } else {
-            arena.pow(sin_x, m_id)
-        };
-        let cos_pow = if n == 1 {
-            cos_x
-        } else {
-            arena.pow(cos_x, n_id)
-        };
-        let integrand = arena.mul(&[sin_pow, cos_pow]);
-        return arena.intern(ExprNode::Integral(integrand, var));
-    }
-
-    // ── m is odd: u = cos(x), sin²(x) = 1 − u² ───────────────────
+    // ── m is odd and positive: u = cos(x), sin²(x) = 1 − u² ───────────────
     //
-    // ∫ sin^(2k+1)(x) · cos^n(x) dx
+    // ∫ sin^(2k+1)(x) · cos^n(x) dx          (any integer n)
     //   = −∫ (1−u²)^k · u^n du       where u = cos(x)
-    //   = −Σ_{j=0}^{k} C(k,j)·(−1)^j · u^(n+2j+1) / (n+2j+1)
-    //   = −Σ_{j=0}^{k} C(k,j)·(−1)^j · cos^(n+2j+1)(x) / (n+2j+1)
-    if m % 2 != 0 {
-        let k = (m - 1) / 2; // m = 2k + 1
+    //   = −Σ_{j=0}^{k} C(k,j)·(−1)^j · ∫ u^(n+2j) du
+    if m > 0 && m % 2 != 0 {
         let cos_x = arena.cos(var);
-        let mut terms: Vec<ExprId> = Vec::new();
-
-        for j in 0..=k {
-            let c = binom(k as u64, j as u64);
-            // sign: overall −1 from substitution, then (−1)^j from binomial
-            // combined sign = (−1)^(j+1)
-            let sign: i64 = if (j + 1) % 2 == 0 { 1 } else { -1 };
-            let power = n + 2 * j + 1;
-
-            // coefficient: sign * C(k,j) / power
-            let numer = BigInt::from(sign) * c;
-            let ratio = Ratio::new(numer, BigInt::from(power));
-            let num_id = arena.intern_num(ratio);
-            let coeff = arena.intern(ExprNode::Num(num_id));
-
-            // cos^power(x)
-            let cos_term = if power == 1 {
-                cos_x
-            } else {
-                let pow_id = arena.int(power);
-                arena.pow(cos_x, pow_id)
-            };
-
-            let term = arena.mul(&[coeff, cos_term]);
-            terms.push(term);
-        }
-
-        return arena.add(&terms);
+        return odd_power_substitution(arena, (m - 1) / 2, n, cos_x, true);
     }
 
-    // ── n is odd: u = sin(x), cos²(x) = 1 − u² ───────────────────
+    // ── n is odd and positive: u = sin(x), cos²(x) = 1 − u² ───────────────
     //
-    // ∫ sin^m(x) · cos^(2k+1)(x) dx
+    // ∫ sin^m(x) · cos^(2k+1)(x) dx          (any integer m)
     //   = ∫ u^m · (1−u²)^k du        where u = sin(x)
-    //   = Σ_{j=0}^{k} C(k,j)·(−1)^j · u^(m+2j+1) / (m+2j+1)
-    //   = Σ_{j=0}^{k} C(k,j)·(−1)^j · sin^(m+2j+1)(x) / (m+2j+1)
-    if n % 2 != 0 {
-        let k = (n - 1) / 2; // n = 2k + 1
+    //   = Σ_{j=0}^{k} C(k,j)·(−1)^j · ∫ u^(m+2j) du
+    if n > 0 && n % 2 != 0 {
         let sin_x = arena.sin(var);
-        let mut terms: Vec<ExprId> = Vec::new();
+        return odd_power_substitution(arena, (n - 1) / 2, m, sin_x, false);
+    }
 
-        for j in 0..=k {
-            let c = binom(k as u64, j as u64);
-            let sign: i64 = if j % 2 == 0 { 1 } else { -1 };
-            let power = m + 2 * j + 1;
+    // ── One exponent even and positive, the other negative ──────────────
+    //
+    // cos^n = (1 − sin²)^(n/2):  ∫ sin^m·cos^n = Σ_j C(n/2, j)(−1)^j ∫ sin^(m+2j)
+    // sin^m = (1 − cos²)^(m/2):  ∫ sin^m·cos^n = Σ_j C(m/2, j)(−1)^j ∫ cos^(n+2j)
+    // (the single powers are integrated for every integer exponent).
+    if n >= 2 && m < 0 {
+        return even_power_expansion(arena, n / 2, m, var, sin_pow_integrate);
+    }
+    if m >= 2 && n < 0 {
+        return even_power_expansion(arena, m / 2, n, var, cos_pow_integrate);
+    }
 
-            let numer = BigInt::from(sign) * c;
-            let ratio = Ratio::new(numer, BigInt::from(power));
-            let num_id = arena.intern_num(ratio);
-            let coeff = arena.intern(ExprNode::Num(num_id));
-
-            // sin^power(x)
-            let sin_term = if power == 1 {
-                sin_x
-            } else {
-                let pow_id = arena.int(power);
-                arena.pow(sin_x, pow_id)
-            };
-
-            let term = arena.mul(&[coeff, sin_term]);
-            terms.push(term);
-        }
-
-        return arena.add(&terms);
+    // ── Both negative: sin² + cos² = 1 raises one exponent at a time ────
+    //
+    // ∫ sin^m·cos^n = ∫ sin^(m+2)·cos^n + ∫ sin^m·cos^(n+2), until one
+    // exponent is 0 or 1 (a case above).
+    if m < 0 && n < 0 {
+        return both_negative_powers(arena, m, n, var);
     }
 
     // ── Both m and n are even: use reduction formula on m ──────────
@@ -457,6 +430,90 @@ pub(crate) fn sin_cos_integrate(arena: &mut Arena, m: i64, n: i64, var: ExprId) 
     let second_term = arena.mul(&[coeff, recursive]);
 
     arena.add(&[first_term, second_term])
+}
+
+/// `s·Σ_{j=0}^{k} C(k, j)·(−1)^j · ∫ u^(e+2j) du` for `u = cos x`
+/// (`negate`, `s = −1`) or `u = sin x` (`s = 1`): the substitution for an
+/// odd positive power `2k + 1` of the other function.  A term with
+/// `e + 2j = −1` integrates to `ln|u|` (before 0.30 it divided by zero,
+/// and every negative exponent was left unevaluated).
+fn odd_power_substitution(arena: &mut Arena, k: i64, e: i64, u: ExprId, negate: bool) -> ExprId {
+    let mut terms: Vec<ExprId> = Vec::new();
+    for j in 0..=k {
+        let mut c = binom(k as u64, j as u64);
+        if (j % 2 != 0) != negate {
+            c = -c;
+        }
+        let power = e + 2 * j + 1;
+        let term = if power == 0 {
+            let abs_u = arena.abs(u);
+            let ln = arena.ln(abs_u);
+            let coeff = arena.intern_num(Ratio::from_integer(c));
+            let coeff = arena.intern(ExprNode::Num(coeff));
+            arena.mul(&[coeff, ln])
+        } else {
+            let ratio = Ratio::new(c, BigInt::from(power));
+            let coeff = arena.intern_num(ratio);
+            let coeff = arena.intern(ExprNode::Num(coeff));
+            let pow_id = arena.int(power);
+            let u_pow = arena.pow(u, pow_id);
+            arena.mul(&[coeff, u_pow])
+        };
+        terms.push(term);
+    }
+    arena.add(&terms)
+}
+
+/// `Σ_{j=0}^{h} C(h, j)·(−1)^j · single(e + 2j)`: `∫ sin^e·cos^(2h)` with
+/// `single = sin_pow_integrate`, or `∫ sin^(2h)·cos^e` with
+/// `single = cos_pow_integrate`.
+fn even_power_expansion(
+    arena: &mut Arena,
+    h: i64,
+    e: i64,
+    var: ExprId,
+    single: fn(&mut Arena, i64, ExprId) -> ExprId,
+) -> ExprId {
+    let mut terms: Vec<ExprId> = Vec::new();
+    for j in 0..=h {
+        let mut c = binom(h as u64, j as u64);
+        if j % 2 != 0 {
+            c = -c;
+        }
+        let integral = single(arena, e + 2 * j, var);
+        let coeff = arena.intern_num(Ratio::from_integer(c));
+        let coeff = arena.intern(ExprNode::Num(coeff));
+        terms.push(arena.mul(&[coeff, integral]));
+    }
+    arena.add(&terms)
+}
+
+/// `∫ sin^m·cos^n` for `m, n < 0`: `1 = sin² + cos²` gives
+/// `I(m, n) = I(m + 2, n) + I(m, n + 2)`; the pairs are expanded with
+/// multiplicities (a worklist, no recursion) until one exponent is `0` or
+/// `1`, where [`sin_cos_integrate`] has a closed form.  `∫ 1/(sin x·cos x)`
+/// is `ln|sin x| − ln|cos x|`.
+fn both_negative_powers(arena: &mut Arena, m: i64, n: i64, var: ExprId) -> ExprId {
+    use std::collections::BTreeMap;
+    let mut open: BTreeMap<(i64, i64), BigInt> = BTreeMap::new();
+    let mut done: BTreeMap<(i64, i64), BigInt> = BTreeMap::new();
+    open.insert((m, n), BigInt::one());
+    while let Some(((a, b), c)) = open.pop_first() {
+        if a >= 0 || b >= 0 {
+            *done.entry((a, b)).or_insert_with(BigInt::zero) += c;
+            continue;
+        }
+        *open.entry((a + 2, b)).or_insert_with(BigInt::zero) += &c;
+        *open.entry((a, b + 2)).or_insert_with(BigInt::zero) += c;
+    }
+    let mut terms: Vec<ExprId> = Vec::new();
+    for ((a, b), c) in done {
+        let integral = sin_cos_integrate(arena, a, b, var);
+        let coeff = arena.intern_num(Ratio::from_integer(c));
+        let coeff = arena.intern(ExprNode::Num(coeff));
+        terms.push(arena.mul(&[coeff, integral]));
+    }
+    arena.add(&terms)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -501,7 +558,9 @@ pub(crate) fn cosh_squared_integrate(arena: &mut Arena, var: ExprId) -> ExprId {
 /// Recognises:
 /// - `sin(x)^n`  (or bare `sin(x)` → n=1)
 /// - `cos(x)^n`  (or bare `cos(x)` → n=1)
-/// - products containing `sin(x)^m` and/or `cos(x)^n`
+/// - products containing `sin(x)^m`, `cos(x)^n` and `tan(x)^k` (for every
+///   integer exponent, `|m|, |n| ≤` [`MAX_TRIG_POWER`] after `tan^k` is
+///   written `sin^k·cos^(−k)`), and `tan(x)^k` for `k < 0`
 ///
 /// Returns `None` when the expression does not match any trig-power pattern.
 pub(crate) fn try_trig_power_integral(
@@ -514,7 +573,7 @@ pub(crate) fn try_trig_power_integral(
 
     // ── Single factor: Pow(Sin(var), n) or Pow(Cos(var), n) ────────
     if let Some(n) = extract_sin_power(arena, expr, var) {
-        if !(0..2).contains(&n) {
+        if !(0..2).contains(&n) && within_power_bound(n, 0) {
             return Some(sin_pow_integrate(arena, n, var));
         }
         // n == 1 is handled by the main integrator already.
@@ -522,7 +581,7 @@ pub(crate) fn try_trig_power_integral(
     }
 
     if let Some(n) = extract_cos_power(arena, expr, var) {
-        if !(0..2).contains(&n) {
+        if !(0..2).contains(&n) && within_power_bound(n, 0) {
             return Some(cos_pow_integrate(arena, n, var));
         }
         return None;
@@ -544,20 +603,38 @@ pub(crate) fn try_trig_power_integral(
     }
     // Other cosh powers not yet handled
 
-    // ── Product: Mul(...) containing sin/cos powers ────────────────
+    // ── Single factor: tan(var)^k for k < 0, i.e. cot^|k| = sin^k·cos^(−k) ──
+    // (`∫ 1/tan v dv = ln|sin v|`; positive powers of tan have their own
+    // rules in the integrator).
+    if let Some(k) = extract_tan_power(arena, expr, var)
+        && k < 0
+        && within_power_bound(k, -k)
+    {
+        return Some(sin_cos_integrate(arena, k, -k, var));
+    }
+
+    // ── Product: Mul(...) containing sin/cos/tan powers ────────────────
     if let ExprNode::Mul(ref children) = node {
         let mut sin_exp: i64 = 0;
         let mut cos_exp: i64 = 0;
         let mut other_factors: Vec<ExprId> = Vec::new();
         let mut found_trig = false;
+        let mut found_tan = false;
 
         for &child in children.iter() {
             if let Some(s) = extract_sin_power(arena, child, var) {
-                sin_exp += s;
+                sin_exp = sin_exp.checked_add(s)?;
                 found_trig = true;
             } else if let Some(c) = extract_cos_power(arena, child, var) {
-                cos_exp += c;
+                cos_exp = cos_exp.checked_add(c)?;
                 found_trig = true;
+            } else if let Some(t) = extract_tan_power(arena, child, var) {
+                // tan^t = sin^t·cos^(−t): `∫ sin x·tan x dx` (before 0.30
+                // unevaluated) is `∫ sin²x/cos x`.
+                sin_exp = sin_exp.checked_add(t)?;
+                cos_exp = cos_exp.checked_sub(t)?;
+                found_trig = true;
+                found_tan = true;
             } else if contains_var(arena, child, var_sym) {
                 // A var-dependent factor that isn't a sin/cos power — bail.
                 return None;
@@ -576,7 +653,10 @@ pub(crate) fn try_trig_power_integral(
         // single sin(x) and cos(x), so only fire when the combined
         // problem is genuinely a "power" integral.
         let dominated_by_basic = sin_exp == 0 && cos_exp == 1 || sin_exp == 1 && cos_exp == 0;
-        if dominated_by_basic {
+        if dominated_by_basic && !found_tan {
+            return None;
+        }
+        if !within_power_bound(sin_exp, cos_exp) {
             return None;
         }
 

@@ -2992,7 +2992,9 @@ impl Expr<Numeric> {
 
     /// Returns `true` if this expression is a polynomial in `var`.
     ///
-    /// Equivalent to `self.degree(var).is_some()`.
+    /// Equivalent to `self.coeffs(var).is_some()`: the zero polynomial is a
+    /// polynomial (SymPy: `S(0).is_polynomial(x)` is `True`), although its
+    /// [`degree`](Self::degree) is `None`.
     ///
     /// # Examples
     ///
@@ -3003,10 +3005,11 @@ impl Expr<Numeric> {
     /// let x = ctx.symbol("x");
     /// assert!((&x.powi(2) + 1).is_polynomial(&x));
     /// assert!(!x.sin().is_polynomial(&x));
+    /// assert!(ctx.int(0).is_polynomial(&x));
     /// ```
     #[must_use]
     pub fn is_polynomial(&self, var: &Ex) -> bool {
-        self.degree(var).is_some()
+        self.coeffs(var).is_some()
     }
 
     /// Compute the polynomial GCD of `self` and `other` with respect to `var`.

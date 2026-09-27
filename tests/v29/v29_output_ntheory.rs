@@ -144,8 +144,13 @@ fn signed_and_fractional_literals_are_parenthesised() {
     assert_round_trip(&ctx, &g, &g.to_string());
     // (-oo)^(1/3) displayed as `-oo^(1/3)`, which is -(oo^(1/3)) = -oo.
     let r = ctx.parse("373365/377922687763463334998784083").unwrap();
+    // Since the 0.30 leftovers the power is the directed infinity
+    // `(-1)^q*oo` (SymPy: `(-oo)**Rational(1, 3)` → `oo*(-1)**(1/3)`); the
+    // signed base is still parenthesised.
     let p = ctx.neg_infinity().pow(&r);
-    assert_round_trip(&ctx, &p, "(-oo)^(373365/377922687763463334998784083)");
+    assert_round_trip(&ctx, &p, "(-1)^(373365/377922687763463334998784083)*oo");
+    let a = ctx.neg_infinity().pow(&x);
+    assert_round_trip(&ctx, &a, "(-oo)^x");
 }
 
 #[test]

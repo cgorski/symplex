@@ -1249,7 +1249,7 @@ fn eval_node(
             }
             if val.0.is_zero() {
                 return Err(SymplexError::Unevaluable {
-                    reason: "Ci(0) is -∞".into(),
+                    reason: "Ci(0) is zoo".into(),
                 });
             }
             debug!(prec, "evalf: Ci via series/asymptotic");
@@ -4713,7 +4713,7 @@ fn arb_si_ci(
             Ok((BigFloat::new(prec), BigFloat::new(prec)))
         } else {
             Err(SymplexError::Unevaluable {
-                reason: "Ci(0) is -∞".into(),
+                reason: "Ci(0) is zoo".into(),
             })
         };
     }
@@ -6160,7 +6160,7 @@ fn eval_special_09(
         LibFn::Shi => real(arb_shi_chi(&v[0], true, prec, rm, cc)?),
         LibFn::Chi => {
             if v[0].is_zero() {
-                return Err(unevaluable("Chi(0) is -∞"));
+                return Err(unevaluable("Chi(0) is zoo"));
             }
             let chi = arb_shi_chi(&v[0].abs(), false, prec, rm, cc)?;
             if v[0].is_negative() {
@@ -7056,7 +7056,7 @@ fn arb_shi_chi(
         return if want_shi {
             Ok(BigFloat::new(prec))
         } else {
-            Err(unevaluable("Chi(0) is -∞"))
+            Err(unevaluable("Chi(0) is zoo"))
         };
     }
     let wp = prec + 32;

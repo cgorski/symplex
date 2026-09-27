@@ -696,9 +696,14 @@ impl Ex {
     /// The general solution is found with [`solve_ode`](Ex::solve_ode),
     /// then the integration constants `C1, C2, …` are determined by
     /// substituting the conditions and solving the resulting (usually
-    /// linear) system with [`linsolve`]; nonlinear constant equations are
-    /// handled one at a time with [`solve`](Ex::solve).  Constants not
-    /// pinned down by the conditions remain in the result.
+    /// linear) system with [`linsolve`]; a system nonlinear in the constants
+    /// is solved in triangular order (the condition with the fewest
+    /// constants first), trying every root, and a fit is kept only if the
+    /// ODE holds at the initial points.  When the general solution has
+    /// several families ([`solve_ode_all`](Ex::solve_ode_all)) the first on
+    /// which the conditions can be met is used (`y′ = y³`, `y(0) = −1` is on
+    /// `−(C1 − 2x)^(−1/2)`).  Constants not pinned down by the conditions
+    /// remain in the result.
     ///
     /// # Errors
     ///
@@ -734,49 +739,152 @@ impl Ex {
         var: &Ex,
         ics: &[InitialCondition],
     ) -> Result<Ex, SymplexError> {
-        let func_id = self.checked_id(func);
-        let var_id = self.checked_id(var);
         for ic in ics {
             let _ = self.checked_id(&ic.x);
             let _ = self.checked_id(&ic.value);
         }
-
-        let (general, constants): (Ex, Vec<Ex>) = {
-            let mut inner = self.inner.write();
-            match crate::calculus::ode::dsolve(&mut inner.arena, self.raw_id(), func_id, var_id) {
-                Some(res) => {
-                    let sol = res.solution;
-                    let consts = res.constants.clone();
-                    drop(inner);
-                    (
-                        self.wrap(sol),
-                        consts.into_iter().map(|c| self.wrap(c)).collect(),
-                    )
-                }
-                None => {
-                    drop(inner);
-                    return Err(SymplexError::ComputationFailed {
-                        operation: "solve_ode_ivp",
-                        reason: "could not find the general solution of the ODE".into(),
-                    });
-                }
+        let (families, constants) = self.ode_families(func, var, "solve_ode_ivp")?;
+        let accept = |candidate: &Ex| ode_holds_at(self, candidate, func, var, ics);
+        let mut last_error: Option<SymplexError> = None;
+        for general in &families {
+            if general.has_unevaluated() {
+                last_error = Some(SymplexError::ComputationFailed {
+                    operation: "solve_ode_ivp",
+                    reason: format!("general solution contains unevaluated forms: {general}"),
+                });
+                continue;
             }
-        };
-        if general.has_unevaluated() {
-            return Err(SymplexError::ComputationFailed {
-                operation: "solve_ode_ivp",
-                reason: format!("general solution contains unevaluated forms: {general}"),
-            });
+            // Implicit solutions (still mentioning `func`) cannot be fitted.
+            if general.contains(func) {
+                last_error = Some(SymplexError::ComputationFailed {
+                    operation: "solve_ode_ivp",
+                    reason: format!("general solution is implicit in {func}: {general}"),
+                });
+                continue;
+            }
+            match apply_initial_conditions(general, &constants, var, ics, "solve_ode_ivp", &accept)
+            {
+                Ok(sol) => return Ok(sol),
+                Err(e) => last_error = Some(e),
+            }
         }
-        // Implicit solutions (still mentioning `func`) cannot be fitted.
-        if general.contains(func) {
-            return Err(SymplexError::ComputationFailed {
+        Err(
+            last_error.unwrap_or_else(|| SymplexError::ComputationFailed {
                 operation: "solve_ode_ivp",
-                reason: format!("general solution is implicit in {func}: {general}"),
-            });
-        }
-        apply_initial_conditions(&general, &constants, var, ics, "solve_ode_ivp")
+                reason: "could not find the general solution of the ODE".into(),
+            }),
+        )
     }
+
+    /// Every family of the general solution of the ODE `self = 0` for
+    /// `func(var)`: SymPy's list of solutions.  [`solve_ode`](Ex::solve_ode)
+    /// returns the first; together they are the complete set (`y′ = y³` has
+    /// `(C1 − 2x)^(−1/2)` and `−(C1 − 2x)^(−1/2)`, `y″ = y′³` has
+    /// `C2 ∓ √(C1 − 2x)`).  An implicit family still contains `func` (its
+    /// zero set is the family; see [`solve_ode`](Ex::solve_ode)).
+    ///
+    /// # Errors
+    ///
+    /// [`SymplexError::ComputationFailed`] if the ODE cannot be solved or its
+    /// solution contains unevaluated forms.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// // y' = y³: y = ±(C1 − 2x)^(−1/2)
+    /// let ode = &y.formal_diff(&x) - &y.powi(3);
+    /// let all = ode.solve_ode_all(&y, &x).unwrap();
+    /// assert_eq!(all.len(), 2);
+    /// assert!(all.iter().all(|s| ode.check_ode_solution(s, &y, &x)));
+    /// assert_eq!(all[1], -&all[0]);
+    /// ```
+    pub fn solve_ode_all(&self, func: &Ex, var: &Ex) -> Result<Vec<Ex>, SymplexError> {
+        let (families, _) = self.ode_families(func, var, "solve_ode_all")?;
+        if let Some(bad) = families.iter().find(|f| f.has_unevaluated()) {
+            return Err(SymplexError::ComputationFailed {
+                operation: "solve_ode_all",
+                reason: format!("general solution contains unevaluated forms: {bad}"),
+            });
+        }
+        Ok(families)
+    }
+
+    /// The families of the general solution (`solution`, then `branches`)
+    /// and the integration constants.
+    fn ode_families(
+        &self,
+        func: &Ex,
+        var: &Ex,
+        operation: &'static str,
+    ) -> Result<(Vec<Ex>, Vec<Ex>), SymplexError> {
+        let func_id = self.checked_id(func);
+        let var_id = self.checked_id(var);
+        let mut inner = self.inner.write();
+        let Some(res) =
+            crate::calculus::ode::dsolve(&mut inner.arena, self.raw_id(), func_id, var_id)
+        else {
+            return Err(SymplexError::ComputationFailed {
+                operation,
+                reason: "could not find the general solution of the ODE".into(),
+            });
+        };
+        drop(inner);
+        let families = std::iter::once(res.solution)
+            .chain(res.branches)
+            .map(|id| self.wrap(id))
+            .collect();
+        let constants = res.constants.into_iter().map(|c| self.wrap(c)).collect();
+        Ok((families, constants))
+    }
+}
+
+/// Highest derivative order [`ode_holds_at`] looks for.
+const MAX_ODE_ORDER: usize = 12;
+
+/// Does `candidate` satisfy the ODE `ode = 0` (in `func(var)`) at the points
+/// of the initial conditions?  Decided numerically; a candidate that cannot
+/// be evaluated there (free constants, a singular point) is not rejected.
+/// This keeps a root of the constants' equations that fits the conditions
+/// but not the equation: `y′ = √y`, `y(0) = 1` has `C1 = ±2` for the family
+/// `(x/2 + C1/2)²`, and only `C1 = 2` gives `y′(0) = √y(0)`.
+fn ode_holds_at(ode: &Ex, candidate: &Ex, func: &Ex, var: &Ex, ics: &[InitialCondition]) -> bool {
+    let mut chain = vec![func.clone()];
+    let mut max_order = 0;
+    for k in 1..=MAX_ODE_ORDER {
+        let next = chain[k - 1].formal_diff(var);
+        if ode.contains(&next) {
+            max_order = k;
+        }
+        chain.push(next);
+    }
+    let mut derivs = vec![candidate.clone()];
+    for k in 1..=max_order {
+        derivs.push(derivs[k - 1].diff(var));
+    }
+    let mut residual = ode.clone();
+    for k in (0..=max_order).rev() {
+        residual = residual.subs(&chain[k], &derivs[k]);
+    }
+    let mut points: Vec<&Ex> = Vec::new();
+    for ic in ics {
+        if !points.contains(&&ic.x) {
+            points.push(&ic.x);
+        }
+    }
+    points.into_iter().all(|x0| {
+        let r = residual.subs(var, x0).eval_complex64();
+        let s = candidate.subs(var, x0).eval_complex64();
+        match (r, s) {
+            (Ok(r), Ok(s)) if r.re.is_finite() && r.im.is_finite() => {
+                r.norm() <= 1e-8 * (1.0 + s.norm())
+            }
+            _ => true,
+        }
+    })
 }
 
 impl Ex {
@@ -847,13 +955,15 @@ impl Ex {
     }
 }
 
-/// Fit integration constants to initial conditions `y^(order)(x) = value`.
+/// Fit integration constants to initial conditions `y^(order)(x) = value`;
+/// `accept` vets each candidate (see [`fit_constants_with`]).
 pub(crate) fn apply_initial_conditions(
     general: &Ex,
     constants: &[Ex],
     var: &Ex,
     ics: &[InitialCondition],
     operation: &'static str,
+    accept: &dyn Fn(&Ex) -> bool,
 ) -> Result<Ex, SymplexError> {
     if ics.is_empty() || constants.is_empty() {
         return Ok(general.clone());
@@ -868,16 +978,29 @@ pub(crate) fn apply_initial_conditions(
         let at = d.subs(var, &ic.x).eval();
         eqs.push((&at - &ic.value).eval());
     }
-    fit_constants(general, constants, &eqs, operation)
+    fit_constants_with(general, constants, &eqs, operation, accept)
 }
 
-/// Solve `eqs = 0` for `constants` (linear first, then one-at-a-time) and
-/// substitute into `general`.
+/// Solve `eqs = 0` for `constants` (linear first, then in triangular
+/// order; see [`fit_nonlinear`]) and substitute into `general`.
 pub(crate) fn fit_constants(
     general: &Ex,
     constants: &[Ex],
     eqs: &[Ex],
     operation: &'static str,
+) -> Result<Ex, SymplexError> {
+    fit_constants_with(general, constants, eqs, operation, &|_| true)
+}
+
+/// [`fit_constants`], keeping only a fit that `accept` approves (the
+/// substituted solution before simplification); a rejected root of a
+/// nonlinear system makes way for the next one.
+pub(crate) fn fit_constants_with(
+    general: &Ex,
+    constants: &[Ex],
+    eqs: &[Ex],
+    operation: &'static str,
+    accept: &dyn Fn(&Ex) -> bool,
 ) -> Result<Ex, SymplexError> {
     // Only constants that actually appear matter.
     let present: Vec<Ex> = constants
@@ -898,6 +1021,12 @@ pub(crate) fn fit_constants(
             for (c, v) in &pairs {
                 sol = sol.subs(c, v);
             }
+            if !accept(&sol) {
+                return Err(SymplexError::NoSolution {
+                    operation,
+                    reason: format!("the fitted solution {sol} does not satisfy the equation"),
+                });
+            }
             // Substituting algebraic constants can swell the expression;
             // bound the work before simplifying.
             crate::domains::matrix::budget_check([&sol], operation)?;
@@ -916,45 +1045,152 @@ pub(crate) fn fit_constants(
             Ok(sol.eval().simplify())
         }
         Err(_) => {
-            // Nonlinear in the constants: solve sequentially.
-            let mut sol = general.clone();
-            let mut remaining: Vec<Ex> = eqs.to_vec();
-            let mut unsolved: Vec<Ex> = present.clone();
-            while let Some(pos) = remaining.iter().position(|e| !e.is_zero_structural()) {
-                let eq = remaining.remove(pos);
-                let eq = eq.eval();
-                if eq.is_zero_structural() {
-                    continue;
-                }
-                let target = unsolved
-                    .iter()
-                    .position(|c| eq.contains(c))
-                    .ok_or_else(|| SymplexError::NoSolution {
-                        operation,
-                        reason: format!("initial conditions are contradictory: {eq} = 0"),
-                    })?;
-                let c = unsolved.remove(target);
-                let roots = eq.solve(&c).map_err(|e| SymplexError::ComputationFailed {
-                    operation,
-                    reason: format!("could not solve for {c}: {e}"),
-                })?;
-                let value =
-                    roots
-                        .first()
-                        .cloned()
-                        .ok_or_else(|| SymplexError::ComputationFailed {
-                            operation,
-                            reason: format!("no value of {c} satisfies {eq} = 0"),
-                        })?;
-                sol = sol.subs(&c, &value);
-                remaining = remaining
-                    .iter()
-                    .map(|e| e.subs(&c, &value).eval())
-                    .collect();
-            }
+            let sol = fit_nonlinear(general, eqs, &present, operation, accept)?;
             Ok(sol.eval().simplify())
         }
     }
+}
+
+/// Most partial assignments [`fit_nonlinear`] explores before giving up.
+const MAX_FIT_BRANCHES: usize = 64;
+
+/// One partial assignment of [`fit_nonlinear`]: `general` with some
+/// constants substituted, the equations still to satisfy and the constants
+/// still free.
+struct FitState {
+    sol: Ex,
+    remaining: Vec<Ex>,
+    unsolved: Vec<Ex>,
+}
+
+/// Is the constant-free residual `eq` zero?  `Some(true)`/`Some(false)` when
+/// decided exactly or by a clear numerical value, `None` otherwise.
+fn residual_is_zero(eq: &Ex) -> Option<bool> {
+    if eq.is_zero_structural() {
+        return Some(true);
+    }
+    let s = eq.simplify();
+    if s.is_zero_structural() {
+        return Some(true);
+    }
+    let v = s.eval_complex64().ok()?;
+    if !v.re.is_finite() || !v.im.is_finite() {
+        return Some(false);
+    }
+    Some(v.norm() <= 1e-10)
+}
+
+/// Solve the equations `eqs = 0`, nonlinear in `constants`, and substitute
+/// the values into `general`.
+///
+/// The system is solved in triangular order: at each step the equation with
+/// the fewest free constants is solved for one of them (an initial condition
+/// on `y'` usually involves fewer constants than one on `y`), and the value
+/// is substituted into the rest.  Every root is a branch; a branch whose
+/// remaining equations lose all their constants without vanishing is
+/// inconsistent and the next root is tried (depth first, at most
+/// [`MAX_FIT_BRANCHES`] partial assignments).  Before 0.30 the first
+/// equation was solved for its first constant and the first root kept:
+/// `y″ + 2y′² = 0` with `y(1/3) = 2/3`, `y′(1/3) = 5/4` solved
+/// `ln(2/3 + C1)/2 + C2 = 2/3` for `C1` and then failed on `C2`.
+fn fit_nonlinear(
+    general: &Ex,
+    eqs: &[Ex],
+    constants: &[Ex],
+    operation: &'static str,
+    accept: &dyn Fn(&Ex) -> bool,
+) -> Result<Ex, SymplexError> {
+    let mut stack = vec![FitState {
+        sol: general.clone(),
+        remaining: eqs.iter().map(Ex::eval).collect(),
+        unsolved: constants.to_vec(),
+    }];
+    let mut last_error: Option<SymplexError> = None;
+    let mut explored = 0usize;
+    'states: while let Some(state) = stack.pop() {
+        explored += 1;
+        if explored > MAX_FIT_BRANCHES {
+            break;
+        }
+        // Equations without free constants must vanish; the others are
+        // ordered by how many constants they involve.
+        let mut open: Vec<(usize, Ex)> = Vec::new();
+        for eq in &state.remaining {
+            let n = state.unsolved.iter().filter(|c| eq.contains(c)).count();
+            if n > 0 {
+                open.push((n, eq.clone()));
+                continue;
+            }
+            if residual_is_zero(eq) != Some(true) {
+                last_error = Some(SymplexError::NoSolution {
+                    operation,
+                    reason: format!("initial conditions are contradictory: {eq} = 0"),
+                });
+                continue 'states;
+            }
+        }
+        if open.is_empty() {
+            // Constants the conditions do not pin down stay free.
+            if accept(&state.sol) {
+                return Ok(state.sol);
+            }
+            last_error = Some(SymplexError::NoSolution {
+                operation,
+                reason: format!(
+                    "the fitted solution {} does not satisfy the equation",
+                    state.sol
+                ),
+            });
+            continue;
+        }
+        open.sort_by_key(|(n, _)| *n);
+        for (idx, (_, eq)) in open.iter().enumerate() {
+            for c in state.unsolved.iter().filter(|c| eq.contains(c)) {
+                let roots = match eq.solve(c) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        last_error = Some(SymplexError::ComputationFailed {
+                            operation,
+                            reason: format!("could not solve {eq} = 0 for {c}: {e}"),
+                        });
+                        continue;
+                    }
+                };
+                let roots: Vec<Ex> = roots.into_iter().filter(|r| !r.contains(c)).collect();
+                if roots.is_empty() {
+                    last_error = Some(SymplexError::ComputationFailed {
+                        operation,
+                        reason: format!("no value of {c} satisfies {eq} = 0"),
+                    });
+                    continue;
+                }
+                let unsolved: Vec<Ex> =
+                    state.unsolved.iter().filter(|u| *u != c).cloned().collect();
+                let others: Vec<&Ex> = open
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != idx)
+                    .map(|(_, (_, e))| e)
+                    .collect();
+                // Depth first, the first root on top.
+                for value in roots.iter().rev() {
+                    stack.push(FitState {
+                        sol: state.sol.subs(c, value),
+                        remaining: others.iter().map(|e| e.subs(c, value).eval()).collect(),
+                        unsolved: unsolved.clone(),
+                    });
+                }
+                continue 'states;
+            }
+        }
+        // No open equation could be solved for any of its constants.
+    }
+    Err(
+        last_error.unwrap_or_else(|| SymplexError::ComputationFailed {
+            operation,
+            reason: "could not solve for the integration constants".into(),
+        }),
+    )
 }
 
 #[cfg(test)]

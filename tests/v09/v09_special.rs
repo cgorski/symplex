@@ -253,7 +253,9 @@ fn shi_and_chi() {
     // exact values
     assert_eq!(format!("{}", ctx.int(0).shi().eval()), "0");
     assert_eq!(format!("{}", (-&x).shi().eval()), "-Shi(x)");
-    assert_eq!(format!("{}", ctx.int(0).chi().eval()), "-oo");
+    // `zoo` since the 0.30 leftovers (the singularity of `ln z`, as `Ci(0)`;
+    // SymPy: `Chi(0)` → zoo); it was `-oo`.
+    assert_eq!(format!("{}", ctx.int(0).chi().eval()), "zoo");
     // rendering + parse (SymPy spells these `Shi`, `Chi`)
     assert_eq!(format!("{}", x.shi()), "Shi(x)");
     assert_eq!(format!("{}", x.chi()), "Chi(x)");

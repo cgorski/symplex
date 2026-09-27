@@ -59,7 +59,9 @@ fn ci_ei_li_exact_values() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     assert!(ctx.infinity().ci().is_zero_structural());
-    assert_eq!(ctx.zero().ci(), ctx.neg_infinity());
+    // `zoo` since the 0.30 leftovers (the singularity of `ln z`; SymPy:
+    // `Ci(0)` → zoo); it was `-oo`.  `Ei(0)` stays `-oo` (real on both sides).
+    assert_eq!(ctx.zero().ci(), ctx.complex_infinity());
     assert!(ctx.neg_infinity().ei().is_zero_structural());
     assert_eq!(ctx.infinity().ei(), ctx.infinity());
     assert_eq!(ctx.zero().ei(), ctx.neg_infinity());

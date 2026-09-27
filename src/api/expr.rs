@@ -327,7 +327,10 @@ impl<S: Sort> Expr<S> {
     /// Count the number of operations (non-atom nodes) in this expression.
     ///
     /// Atoms (numbers, symbols, constants) count as 0.
-    /// Each operator or function application counts as 1.
+    /// Each operator or function application counts as 1.  A repeated
+    /// sub-expression counts once: this is the size of the expression DAG
+    /// (the measure the simplifier minimises), so `sin(x)^2 + sin(x)` has 3
+    /// operations, where SymPy's `count_ops`, which counts the tree, says 4.
     ///
     /// # Examples
     ///
@@ -339,6 +342,7 @@ impl<S: Sort> Expr<S> {
     /// assert_eq!(x.count_ops(), 0);           // atom
     /// assert_eq!((&x + 1).count_ops(), 1);    // one Add
     /// assert_eq!(x.sin().powi(2).count_ops(), 2); // Sin + Pow
+    /// assert_eq!((x.sin().powi(2) + x.sin()).count_ops(), 3); // sin(x) once
     /// ```
     #[must_use]
     pub fn count_ops(&self) -> usize {
