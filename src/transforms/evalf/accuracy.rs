@@ -23,6 +23,7 @@
 //! |---|---|
 //! | exact rational (dyadic, fits the precision), `i` | 0, and no rounding |
 //! | other rational, `π`, `e`, constants | 0 (the rounding only); the imaginary part is exact |
+//! | `+`, `·`, `−`, integer powers, `conj`, `re`, `im` of rationals and `i` only | their exact complex-rational value rounded once (`exact.rs`): the rounding of each part only, and an exact 0 part where the value has one |
 //! | `−a`, `conj a`, `re a`, `im a`, `min`, `max` | the argument's bound, no rounding |
 //! | `a₁ + … + aₙ` | per part `Σ err(aᵢ)` plus one ulp of every partial sum after the first — absolute errors add, so cancellation shows as a result much smaller than its error; exact when every term's part is exact and no partial sum was rounded |
 //! | `a₁ · … · aₙ` | per part, from `(a + bi)(c + di) = (ac − bd) + (ad + bc)i`: each product `x·y` contributes `abs(x)·err(y) + abs(y)·err(x) + err(x)·err(y)` and its rounding, and none at all when a factor is an exact 0 |
@@ -432,6 +433,16 @@ fn exactly_representable(q: &Q, prec: usize) -> bool {
     let d = q.denom();
     let power_of_two = (d & (d - BigInt::one())).is_zero();
     power_of_two && q.numer().bits() <= prec as u64
+}
+
+/// The bound of the part `x`, the rational `q` rounded to `prec` bits: exact
+/// when `q` is 0 or exactly representable, otherwise its rounding.
+pub(super) fn rational_part(q: &Q, x: &BigFloat, prec: usize) -> ErrExp {
+    if q.is_zero() || exactly_representable(q, prec) {
+        EXACT
+    } else {
+        part_rounding(x, prec)
+    }
 }
 
 /// The error bound of `value`, computed at working precision `prec` by a

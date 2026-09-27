@@ -328,7 +328,15 @@ fn log2_psi_bound(x: f64, y: f64, r: f64) -> Option<f64> {
     let b = y.abs() + r;
     let b_lo = (y.abs() - r).max(0.0);
     let pi = std::f64::consts::PI;
-    let cot = (pi * b).cosh() / (2.0 * d.min(0.5)).max((pi * b_lo).sinh());
+    // Far from the real axis `cosh(πb)/sinh(πb_lo)` is taken as
+    // `e^{π(b − b_lo)}·(1 + e^{−2πb})/(1 − e^{−2πb_lo})`: both overflow `f64`
+    // from `b ≈ 226`, and before 0.31 their quotient, NaN, left
+    // `loggamma(−6/17 + 10⁸i)` without a bound at every precision.
+    let cot = if pi * b_lo > 20.0 {
+        (pi * (b - b_lo)).exp() * (1.0 + (-2.0 * pi * b).exp()) / (1.0 - (-2.0 * pi * b_lo).exp())
+    } else {
+        (pi * b).cosh() / (2.0 * d.min(0.5)).max((pi * b_lo).sinh())
+    };
     let psi_mirror = right(1.0 - x, y);
     let total = psi_mirror + pi * cot;
     total.is_finite().then(|| total.log2())

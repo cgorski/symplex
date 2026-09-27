@@ -91,6 +91,48 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ### Fixed
 
+- **An integrand that integrated in one form stayed unevaluated in an
+  equivalent one** (a normal-form hunter: 1,349 form gaps and 137 base
+  gaps in 2,000 cases → 0, 0 wrong at real and complex parameters):
+  exponentials with an irrational rate written as a sum
+  (`∫ e^{−t√37/2 − t/2}`), a sum times an exponential
+  (`∫ (sin t + cos t)·eᵗ = eᵗ·sin t`), products of exponentials
+  (`∫ eˣ⁻²·e⁻ˣ = x·e⁻²`), `exp(x)^c`, trigonometric powers of a linear
+  argument (`∫ cos(2x)²`), a trigonometric power times an exponential,
+  fractions with a common factor (`(x² cos x + cos x)/(x² + 1)`),
+  parametric denominators with a hidden factorisation
+  (`∫ (x² + 1)/(x³ + a·x)`, `x/(x² + 2ax + a²)`); `∫ 1/(x³ + a)` is a
+  `RootSum`, as in SymPy.  **Rubi: 9,085 → 14,117 verified**, 0 wrong
+  (the harness's wall time rose from about 18 s to 33 s, almost all of it
+  spent on the 5,032 new answers).
+- **evalf refused values it can certify** (the self-consistency hunter,
+  extended: refusals where a 60-digit value exists fell from 368 to 13
+  per 20,000 expressions; 0 wrong digits): a quotient of two differences
+  that are both 0 at the working precision
+  (`(e^ε − 1)/(e^{2ε} − 1)`, `ε = 10⁻⁴⁵`) was `NaN` and refused at once,
+  and a function whose argument cancelled (`erfc⁻¹(sin(1 + 10⁻¹⁵⁰) −
+  sin 1)`) or rounded onto a singular point (`polylog(1/3, 1 − 10⁻⁴⁰)`)
+  stopped at the cap; both are now pursued like a root that is zero to
+  the working precision, within the same 1,024-bit search.
+  Sub-expressions of rationals and `i` take their exact value, so
+  `√(8/(1 + i) + 4i − 5)` is `i` (refused at every precision).
+  `loggamma(−6/17 + 10⁸i)` had no bound and `binomial(10⁵⁰, 2)` was
+  `NaN`.
+- **A value beyond the exponent range is reported as such**: `Γ(10²⁰/3)`,
+  `exp(10¹⁶)` and `Γ(10⁸ + 1)/Γ(10⁸)/10⁸` say "overflows the
+  arbitrary-precision exponent range" (they said `PrecisionExhausted`);
+  `ζ(s)` at an `s` whose parity is unknown at the working precision is
+  refused at once (`zeta(erfi(−1000))` ran for minutes; found by
+  `fuzz_evalf`).
+- **`minimal_polynomial` of a root of a negative or non-real number** is
+  the factor of `m(xⁿ)` that vanishes at the principal root (it was
+  `None`): `√(−4i − 3)` → `x² − 2x + 5`, `(−8)^(1/3)` → `x² − 2x + 4`, so
+  zero tests decide `(−2)^(1/3) − 2^(1/3)·(1/2 + √3·i/2) = 0`.
+- **`ratsimp` of an identically vanishing denominator** gives `zoo`
+  (`nan` for `0/0`), as `together` does; it returned its input.
+- **Products of real factors of non-strict sign**: `4a² ≥ 0`,
+  `a²b² ≥ 0` and `4a² + b² + 1 > 0` for real `a`, `b` (only strict signs
+  counted), so `oo·(4a² + b² + 1)` is `oo`.
 - **Wrong linear algebra with algebraic entries** (found by a hunter over
   symbolic and algebraic matrices: 178 wrong answers in 1,650 cases, 0
   now): the pivot zero test understood only rationals and symbols, so

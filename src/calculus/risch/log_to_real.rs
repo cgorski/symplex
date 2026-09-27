@@ -888,12 +888,30 @@ pub(crate) fn vieta_rootsum_poly_body(
 /// ```
 ///
 /// The result can then be simplified via `eval` / `as_real_imag` / etc.
+///
+/// A polynomial with parameters (the parametric rational integrator's
+/// `RootSum(t³ + a, …)`) is not expanded: its radical roots (`∛(−a)`,
+/// Cardano's formula in the parameters) multiply the size by the degree,
+/// and by parts then integrated such a sum term by term — a 300-term,
+/// 6 s antiderivative of `x¹⁹/(a + b·x⁵)` while the `RootSum` route was
+/// being added (0.31).  SymPy keeps it as well; once the parameters have
+/// values the sum is expanded like any other.
 pub(crate) fn rootsum_doit(
     arena: &mut Arena,
     poly_id: ExprId,
     body_id: ExprId,
     sumvar_id: ExprId,
 ) -> Option<ExprId> {
+    let ExprNode::Symbol(sumvar_sym) = *arena.node(sumvar_id) else {
+        return None;
+    };
+    let parametric = crate::base::walk::free_symbols(arena, poly_id)
+        .iter()
+        .any(|&s| !matches!(arena.node(s), ExprNode::Symbol(t) if *t == sumvar_sym));
+    if parametric {
+        tracing::debug!("rootsum_doit: the polynomial has parameters, keeping RootSum");
+        return None;
+    }
     // Solve the polynomial for roots.
     let roots = crate::transforms::solve::solve(arena, poly_id, sumvar_id);
 

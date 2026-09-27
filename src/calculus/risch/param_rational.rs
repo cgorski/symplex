@@ -60,8 +60,11 @@ type GP = GenPoly<PFrac>;
 
 /// At most this many parameters (the multivariate gcds grow quickly).
 const MAX_PARAMS: usize = 4;
-/// Largest integer exponent accepted in the integrand.
-const MAX_EXPONENT: i64 = 16;
+/// Largest integer exponent accepted in the integrand: that of the
+/// numerator's degree (up to 0.31 it was 16, and `x²³/(a + b·x³)³`,
+/// `x¹⁹/(a + b·x⁵)` were refused although their degrees are within the
+/// limits below).
+const MAX_EXPONENT: i64 = 24;
 /// Largest degree in `x` of the denominator after cancellation.
 const MAX_DENOM_DEGREE: usize = 10;
 /// Largest degree in `x` of the numerator.
@@ -871,13 +874,16 @@ pub(crate) fn integrate_param_rational(
     }
     // One linear factor, written as one, with a numerator in ℚ[x]
     // (`1/(a·x + 1)`, `x/(a + b·x)²`): the `(a·x + b)ⁿ` routes keep their
-    // forms.  (`(2a·x − 2)⁻²·(1 − a·x)⁻¹` is written with two, and
-    // `1/((a + 1)/x + 1)` as a nested fraction, which those routes miss.)
+    // forms.  (`(2a·x − 2)⁻²·(1 − a·x)⁻¹` is written with two,
+    // `1/((a + 1)/x + 1)` as a nested fraction, and `x/(x² + 2a·x + a²)`
+    // multiplied out, which those routes miss: up to 0.31 the last stayed
+    // unevaluated while `x/(x + a)²` worked.)
     let cands = syntactic_factors(arena, d_id, &ctx);
     let d_sqf = div_exact(&d, &ctx.gcd(&d, &deriv(&d))?)?;
     if d_sqf.degree()? < 2
         && numerator_param_free
         && cands.len() <= 1
+        && cands.iter().all(|c| c.degree() == Some(1))
         && !has_nested_fraction(arena, expr)
     {
         return None;
@@ -1056,8 +1062,37 @@ fn solve_bezout(f: &GP, g: &GP, c: &GP) -> Option<(GP, GP)> {
     Some((s, t))
 }
 
+/// Largest number of terms of a parametric basis element that
+/// [`split_parametric`] factors.
+const MAX_SPLIT_TERMS: usize = 40;
+
+/// The factors of positive degree in `x` of a parametric basis element
+/// `e` of degree ≥ 3 (monic, square-free) in `ℚ[x, p₁, …]`
+/// ([`crate::poly::factor_zassenhaus::factor_multivariate`]: the monomial
+/// content, then Kronecker's substitution), each made monic in `x`; `None`
+/// when `e` does not split.  Only degree ≥ 3 is factored: a parametric
+/// quadratic is split by its discriminant in [`quadratic_log_part`], and
+/// a larger factor's logarithmic part is otherwise written only when
+/// `aₑ = c·e′` ([`higher_log_part`]).  Up to 0.31 the denominator
+/// `x³ + a·x` was one such factor, so `∫ (x² + 1)/(x³ + a·x) dx` stayed
+/// unevaluated while `∫ (x² + 1)/(x·(x² + a)) dx` worked.
+fn split_parametric(ctx: &Ctx, e: &GP) -> Option<Vec<GP>> {
+    let mp = ctx.to_mp(e)?;
+    if mp.num_terms() > MAX_SPLIT_TERMS {
+        return None;
+    }
+    let (_, factors) = crate::poly::factor_zassenhaus::factor_multivariate(&mp)?;
+    let pieces = factors
+        .iter()
+        .filter(|(f, _)| f.degree_in(0) > 0)
+        .map(|(f, _)| ctx.to_gp(f).map(|g| g.make_monic()))
+        .collect::<Option<Vec<GP>>>()?;
+    (pieces.len() >= 2).then_some(pieces)
+}
+
 /// A coprime factorisation of the square-free, monic `d`: `d` split by
-/// gcds with the candidate factors, parameter-free pieces split over `ℚ`.
+/// gcds with the candidate factors, parameter-free pieces split over `ℚ`,
+/// parametric pieces of degree ≥ 3 by [`split_parametric`].
 fn coprime_basis(ctx: &Ctx, d: &GP, cands: &[GP]) -> Option<Vec<GP>> {
     let mut basis = vec![d.make_monic()];
     for c in cands {
@@ -1095,6 +1130,10 @@ fn coprime_basis(ctx: &Ctx, d: &GP, cands: &[GP]) -> Option<Vec<GP>> {
                     }
                 }
             }
+            None if e.degree().is_some_and(|k| k >= 3) => match split_parametric(ctx, &e) {
+                Some(pieces) => out.extend(pieces),
+                None => out.push(e),
+            },
             _ => out.push(e),
         }
     }
@@ -1302,9 +1341,10 @@ fn quadratic_log_part(arena: &mut Arena, ctx: &Ctx, a_e: &GP, e: &GP) -> Option<
 
 /// Is `c ∈ ℚ(p₁, …)` non-negative for all real values of its parameters,
 /// under their declared assumptions (which make them real)?  `c = σ²·ρ`
-/// ([`split_square`]) with `σ` real, so it is decided on the primitive part
-/// of `ρ` after a positive integer content: the assumption system proves
-/// `a² ≥ 0` for a real `a` but not `4a² ≥ 0`.
+/// ([`split_square`]) with `σ` real, so it is decided on `ρ` by the
+/// assumption system (which proves `4a² + 3b² ≥ 0` for real `a`, `b` since
+/// 0.31; before, this route divided out the integer content of `ρ` to get
+/// `a²` from `4a²`).
 fn nonnegative(arena: &mut Arena, ctx: &Ctx, c: &PFrac) -> bool {
     use crate::base::assumptions::{AssumptionCache, Props};
     if let Some(q) = c.as_const() {
@@ -1314,21 +1354,15 @@ fn nonnegative(arena: &mut Arena, ctx: &Ctx, c: &PFrac) -> bool {
     if let Some(q) = rho.as_constant() {
         return !q.is_negative();
     }
-    let content = Q::from_integer(rho.integer_content());
-    let primitive = if content.is_zero() || rho.leading_coeff().is_some_and(Signed::is_negative) {
-        rho
-    } else {
-        rho.scale(&content.recip())
-    };
-    let e = ctx.mp_expr(arena, &primitive);
+    let e = ctx.mp_expr(arena, &rho);
     let mut cache = AssumptionCache::new();
     cache.query(arena, e, Props::NONNEGATIVE) == Some(true)
-        || cache.query(arena, e, Props::POSITIVE) == Some(true)
 }
 
 /// `∫ aₑ/e` for a factor of degree ≥ 3: over `ℚ` coefficientwise when `e`
-/// has no parameters, else only the single logarithm `c·ln|e|` when
-/// `aₑ = c·e′`.
+/// has no parameters, else the single logarithm `c·ln|e|` when
+/// `aₑ = c·e′`, and otherwise the sum over the roots of `e`
+/// ([`root_sum_log_part`]).
 fn higher_log_part(
     arena: &mut Arena,
     ctx: &Ctx,
@@ -1344,7 +1378,9 @@ fn higher_log_part(
         let ln = ln_abs(arena, e_id);
         return Some(arena.mul(&[c_id, ln]));
     }
-    let e_q = to_q_poly(e)?;
+    let Some(e_q) = to_q_poly(e) else {
+        return root_sum_log_part(arena, ctx, a_e, e);
+    };
     let mut terms = Vec::new();
     for (j, cj) in a_e.coeffs().iter().enumerate() {
         if cj.is_zero() {
@@ -1370,6 +1406,42 @@ fn higher_log_part(
         1 => terms[0],
         _ => arena.add(&terms),
     })
+}
+
+/// `Σ_{e(r) = 0} c(r)·ln(x − r)` as a `RootSum` for a parametric factor
+/// `e` (monic, square-free, of degree ≥ 3, not split by
+/// [`split_parametric`]), with `c = aₑ/e′ mod e` the residue of `aₑ/e` at
+/// the root `r` (Bronstein, *Symbolic Integration I*, §2.5: the residues
+/// are the roots of the Rothstein–Trager resultant `resₓ(e, aₑ − t·e′)`,
+/// and `x − r` is the logarithm's argument; SymPy's `ratint` writes the
+/// same sum over the roots `t = c(r)` of that resultant).  Its derivative
+/// is `Σ c(r)/(x − r) = aₑ/e` by partial fractions.  Up to 0.31
+/// `∫ dx/(x³ + a)` stayed unevaluated (SymPy: `RootSum(27t³a² − 1,
+/// t ↦ t·ln(3ta + x))`; here `RootSum(r³ + a, r ↦ −r·ln(x − r)/(3a))`).
+fn root_sum_log_part(arena: &mut Arena, ctx: &Ctx, a_e: &GP, e: &GP) -> Option<ExprId> {
+    let ep = deriv(e);
+    let eg = GP::extended_gcd(&ep, e);
+    if eg.gcd.degree()? != 0 {
+        return None;
+    }
+    let inv = eg.gcd.leading_coeff()?.inv();
+    let (_, c) = a_e.mul(&eg.x.scale(&inv)).try_div_rem(e)?;
+    if budget_exceeded() || c.is_zero() {
+        return None;
+    }
+    let r = arena.symbol("__rs_t");
+    let ctx_r = Ctx {
+        var: r,
+        params: ctx.params.clone(),
+    };
+    // The polynomial with its coefficients' denominators cleared.
+    let (e_r, _) = factored_expr(arena, &ctx_r, e, std::slice::from_ref(e));
+    let c_r = ctx_r.poly_expr(arena, &c);
+    let neg_r = arena.neg(r);
+    let lin = arena.add(&[ctx.var, neg_r]);
+    let ln = arena.ln(lin);
+    let body = arena.mul(&[c_r, ln]);
+    Some(arena.intern(ExprNode::RootSum(e_r, body, r)))
 }
 
 #[cfg(test)]

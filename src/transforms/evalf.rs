@@ -70,6 +70,7 @@ mod accuracy;
 pub(crate) mod bernoulli;
 mod conjugate;
 mod emsum;
+mod exact;
 mod factorials;
 mod hypsum;
 mod lambertw;
@@ -188,8 +189,17 @@ fn evaluate_once(
     prec: usize,
     rm: RoundingMode,
     cc: &mut Consts,
-) -> Result<(Complex, accuracy::Bound), SymplexError> {
-    evaluate_tree(arena, expr, post_order, None, false, prec, rm, cc)
+) -> Result<Evaluated, SymplexError> {
+    evaluate_tree_full(arena, expr, post_order, None, false, prec, rm, cc)
+}
+
+/// One evaluation of a whole expression: the value, its bound, and whether
+/// some node lacked a value or a bound only for want of precision in its
+/// arguments ([`precision_limited`]).
+struct Evaluated {
+    value: Complex,
+    bound: accuracy::Bound,
+    precision_limited: bool,
 }
 
 /// The error bounds of the evaluated nodes (see [`accuracy`]).
@@ -215,9 +225,36 @@ fn evaluate_tree(
     rm: RoundingMode,
     cc: &mut Consts,
 ) -> Result<(Complex, accuracy::Bound), SymplexError> {
+    evaluate_tree_full(arena, root, post_order, seed, strict, prec, rm, cc)
+        .map(|ev| (ev.value, ev.bound))
+}
+
+/// [`evaluate_tree`], and whether a node was [`precision_limited`].
+///
+/// A composite node of rationals and `i` takes its exact value
+/// ([`exact`]); a node whose value overflows the exponent range, or is the
+/// reciprocal of one that underflowed, fails with that reason
+/// ([`exponent_range_error`]) rather than passing `±∞` up to a
+/// `PrecisionExhausted` that no precision would cure.
+#[allow(clippy::too_many_arguments)]
+fn evaluate_tree_full(
+    arena: &Arena,
+    root: ExprId,
+    post_order: &[ExprId],
+    seed: Option<Seed>,
+    strict: bool,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<Evaluated, SymplexError> {
     let mut cache: FxHashMap<ExprId, Complex> = FxHashMap::default();
     let mut errs: ErrMap = FxHashMap::default();
     let mut failed: FxHashMap<ExprId, SymplexError> = FxHashMap::default();
+    let mut exact_values = exact::ExactMap::default();
+    let mut limited = false;
+    // The nodes that are, or depend on, a node without a value or a bound
+    // for want of precision in its arguments ([`precision_limited`]).
+    let mut tainted: rustc_hash::FxHashSet<ExprId> = rustc_hash::FxHashSet::default();
     let mut sigs = conjugate::Sigs::new();
     if let Some((id, value, err)) = seed {
         sigs.record_leaf(id, &value, err);
@@ -228,8 +265,50 @@ fn evaluate_tree(
         if cache.contains_key(&id) || (id != root && is_condition(arena.node(id))) {
             continue;
         }
-        match eval_node_with_error(arena, id, &cache, &errs, prec, rm, cc) {
+        let exact_z = exact::exact_value(arena, id, &exact_values);
+        let evaluated =
+            eval_node_with_error(arena, id, &cache, &errs, prec, rm, cc).and_then(|(value, e)| {
+                match exponent_range_error(arena, id, &value, &cache, &errs) {
+                    Some(err) => Err(err),
+                    None => Ok((value, e)),
+                }
+            });
+        let evaluated = match (exact_z, evaluated) {
+            (Some(z), evaluated) => {
+                let refined = match evaluated {
+                    Ok((value, e)) => exact::refine(&z, value, e, prec, rm),
+                    Err(_) => exact::to_value(&z, prec, rm),
+                };
+                exact_values.insert(id, z);
+                Ok(refined)
+            }
+            (None, evaluated) => evaluated,
+        };
+        let tainted_child = || {
+            arena
+                .node(id)
+                .children()
+                .iter()
+                .any(|c| tainted.contains(c))
+        };
+        // A domain error of a function whose argument is ±∞ or 0 only
+        // because an argument lacked precision (`loggamma` of `atanh(1 −
+        // 2·10⁻⁵⁰)³`, infinite at 128 bits): no value yet, as in
+        // `eval_node_with_error` for an inexact zero.
+        let evaluated = match evaluated {
+            Err(SymplexError::Unevaluable { .. }) if tainted_child() => {
+                Ok((c_zero(prec), accuracy::Bound::UNKNOWN))
+            }
+            other => other,
+        };
+        match evaluated {
             Ok((mut value, mut e)) => {
+                if precision_limited(arena.node(id), &value, e, &cache, &errs)
+                    || (e.is_unknown() && tainted_child())
+                {
+                    limited = true;
+                    tainted.insert(id);
+                }
                 // A sum or product of conjugate pairs and real terms is
                 // exactly real (see `conjugate`); its computed imaginary
                 // part is a rounding residue within its error of 0.
@@ -259,7 +338,153 @@ fn evaluate_tree(
         SymplexError::NotImplemented("evalf: expression not found in cache".into())
     })?;
     let err = errs.get(&root).copied().unwrap_or(accuracy::Bound::UNKNOWN);
-    Ok((value, err))
+    Ok(Evaluated {
+        value,
+        bound: err,
+        precision_limited: limited,
+    })
+}
+
+/// Is the node `node`, evaluated to `value ± e`, without a value or a bound
+/// only because its arguments' error balls are too wide — its bound unknown
+/// or its value not finite while every argument has a finite value with a
+/// bound, at least one of them inexact?  Such a node needs more precision in
+/// its arguments, not in itself: a quotient of two differences that are 0
+/// at the working precision (`(e^ε − 1)/(e^{2ε} − 1)`, `ε = 10⁻⁴⁵`), a
+/// function at an argument that cancelled to 0 or onto a pole
+/// (`erfc⁻¹(sin(1 + 10⁻¹⁵⁰) − sin 1)`), the side of a branch cut decided
+/// by a part within its error of 0, a condition at its threshold.  An
+/// argument that underflowed is not: below the exponent range no precision
+/// resolves it.  (See [`evaluate_adaptive`], which pursues such a value as
+/// it pursues a root that is zero to the working precision.)
+fn precision_limited(
+    node: &ExprNode,
+    value: &Complex,
+    e: accuracy::Bound,
+    cache: &FxHashMap<ExprId, Complex>,
+    errs: &ErrMap,
+) -> bool {
+    let finite = |z: &Complex| !(z.0.is_inf() || z.0.is_nan() || z.1.is_inf() || z.1.is_nan());
+    if !e.is_unknown() && finite(value) {
+        return false;
+    }
+    let mut inexact = false;
+    for c in node.children() {
+        let (Some(v), Some(b)) = (cache.get(&c), errs.get(&c)) else {
+            continue;
+        };
+        if b.is_unknown() || !finite(v) || accuracy::is_underflow(b.joint()) {
+            return false;
+        }
+        inexact |= !b.is_exact();
+    }
+    inexact
+}
+
+/// The error of a node whose value `value` has an infinite part although
+/// its arguments are finite: the value overflows the exponent range of
+/// `BigFloat` (`Γ(10²⁰/3)`, `exp(10¹⁶)`, a product of such numbers), or is
+/// the reciprocal of an argument that underflowed below it.  `None` when
+/// the value is finite, or infinite for another reason (a division by an
+/// argument that is only 0 to the working precision, which more precision
+/// may resolve, see [`precision_limited`]).  Before 0.31 the infinite value
+/// propagated to a `PrecisionExhausted`: `Γ(10²⁰/3)` "achieved 0 digits",
+/// while `uppergamma(10²⁰/3, 10²⁰/3)` reported its overflow.
+fn exponent_range_error(
+    arena: &Arena,
+    id: ExprId,
+    value: &Complex,
+    cache: &FxHashMap<ExprId, Complex>,
+    errs: &ErrMap,
+) -> Option<SymplexError> {
+    if !(value.0.is_inf() || value.1.is_inf()) {
+        return None;
+    }
+    let node = arena.node(id);
+    let what = match node {
+        ExprNode::Exp(_) => "exp",
+        ExprNode::Pow(..) => "a power",
+        ExprNode::Mul(_) => "a product",
+        ExprNode::Add(_) => "a sum",
+        ExprNode::Gamma(_) => "Gamma",
+        ExprNode::Factorial(_) => "factorial",
+        ExprNode::Binomial(..) => "binomial",
+        ExprNode::Beta(..) => "beta",
+        ExprNode::Sinh(_) => "sinh",
+        ExprNode::Cosh(_) => "cosh",
+        ExprNode::Ei(_) => "Ei",
+        // The functions that grow like an exponential or a factorial, and
+        // have no pole at a finite nonzero argument.
+        ExprNode::Apply(sid, _) => match arena.lib_fn(*sid) {
+            Some(LibFn::Erfi) => "erfi",
+            Some(LibFn::Shi) => "Shi",
+            Some(LibFn::Chi) => "Chi",
+            Some(LibFn::BesselI) => "besseli",
+            Some(LibFn::AiryBi) => "airybi",
+            Some(LibFn::AiryBiPrime) => "airybiprime",
+            Some(LibFn::RisingFactorial) => "rising_factorial",
+            Some(LibFn::Subfactorial) => "subfactorial",
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let mut lg_sum = 0.0f64;
+    for c in node.children() {
+        let Some(v) = cache.get(&c) else {
+            continue;
+        };
+        if v.0.is_inf() || v.0.is_nan() || v.1.is_inf() || v.1.is_nan() {
+            return None;
+        }
+        if accuracy::mag(v).is_none() {
+            let b = errs.get(&c).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+            // An exact 0 is a parameter (`besseli(0, x)`); an inexact one
+            // may be a division by a difference that cancelled, which more
+            // precision resolves (`precision_limited`).
+            if b.is_exact() {
+                continue;
+            }
+            let underflow = accuracy::is_underflow(b.joint());
+            return underflow.then(|| SymplexError::Unevaluable {
+                reason: format!(
+                    "{what}: an argument underflows the arbitrary-precision exponent range \
+                     (below 2^{:e}), and its reciprocal overflows it",
+                    f64::from(astro_float::EXPONENT_MIN)
+                ),
+            });
+        }
+        lg_sum += accuracy::lg_abs(v);
+    }
+    // The magnitude where it is cheap to estimate.
+    let lg = match node {
+        ExprNode::Exp(a) => cache
+            .get(a)
+            .and_then(|v| bigfloat_to_f64_rounded(&v.0, RoundingMode::ToEven).ok())
+            .map(|x| x * std::f64::consts::LOG2_E),
+        ExprNode::Gamma(a) | ExprNode::Factorial(a) => cache
+            .get(a)
+            .and_then(|v| bigfloat_to_f64_rounded(&v.0, RoundingMode::ToEven).ok())
+            .filter(|x| *x > 1.0)
+            .map(|x| {
+                let x = if matches!(node, ExprNode::Factorial(_)) {
+                    x + 1.0
+                } else {
+                    x
+                };
+                ((x - 0.5) * x.ln() - x) * std::f64::consts::LOG2_E
+            }),
+        ExprNode::Mul(_) => Some(lg_sum),
+        _ => None,
+    }
+    .filter(|lg| lg.is_finite() && *lg > f64::from(astro_float::EXPONENT_MAX) / 2.0);
+    Some(SymplexError::Unevaluable {
+        reason: match lg {
+            Some(lg) => format!(
+                "{what}: the value (about 2^{lg:.3e}) overflows the arbitrary-precision exponent range"
+            ),
+            None => format!("{what}: the value overflows the arbitrary-precision exponent range"),
+        },
+    })
 }
 
 /// The error of node `node`, which failed with `e`: when `e` is only the
@@ -536,12 +761,44 @@ fn inverse_identity(
 
 /// Is `node` a function with poles at integers (`Γ`, `ζ`, …) whose
 /// argument is an integer at the working precision without being exact?
+/// Or one with a singular point elsewhere — `Li_s(1)`, `K(1)`, `Π(1, m)`,
+/// `Π(n, 1)`, `erfc⁻¹(2)`, `erf⁻¹(±1)` — met by an argument that rounded
+/// onto it (before 0.31 `polylog(1/3, 1 − 10⁻⁴⁰)` was "`polylog(s, 1)`
+/// diverges" at 16 digits: `1 − 10⁻⁴⁰` is 1 at 128 bits)?
 fn rounded_onto_pole(
     arena: &Arena,
     node: &ExprNode,
     cache: &FxHashMap<ExprId, Complex>,
     errs: &ErrMap,
 ) -> bool {
+    if let ExprNode::Apply(sid, _) = node {
+        let args = node.children();
+        // Is argument `k` an inexact real value equal to one of `points`?
+        let at = |k: usize, points: &[i32]| -> bool {
+            args.get(k).is_some_and(|c| {
+                let inexact = !errs
+                    .get(c)
+                    .copied()
+                    .unwrap_or(accuracy::Bound::UNKNOWN)
+                    .is_exact();
+                inexact
+                    && cache.get(c).is_some_and(|v| {
+                        v.1.is_zero()
+                            && points
+                                .iter()
+                                .any(|&p| v.0.cmp(&BigFloat::from_i32(p, 64)) == Some(0))
+                    })
+            })
+        };
+        match arena.lib_fn(*sid) {
+            Some(LibFn::PolyLog) => return at(1, &[1]),
+            Some(LibFn::EllipticK) => return at(0, &[1]),
+            Some(LibFn::EllipticPi) => return at(0, &[1]) || at(1, &[1]),
+            Some(LibFn::ErfcInv) => return at(0, &[2]),
+            Some(LibFn::ErfInv) => return at(0, &[-1, 1]),
+            _ => {}
+        }
+    }
     let poles = match node {
         ExprNode::Gamma(_)
         | ExprNode::LogGamma(_)
@@ -666,6 +923,20 @@ pub(crate) enum Settled {
 /// 0 (before 0.30 it was 0 too), or an infinite value — from finite inputs
 /// it can only come from a division by a difference that cancelled to 0,
 /// whose true value is unknown.
+///
+/// The zero search is not only for the root.  A value without a bound, or
+/// without a finite value (NaN, `±∞`), because some node's *arguments* are
+/// too imprecise ([`precision_limited`]: a quotient of two differences that
+/// are both 0 at the working precision, a function at an argument that
+/// cancelled to 0 or onto a pole, the side of a cut decided by a part within
+/// its error of 0) is pursued the same way, to the same limit: the
+/// arguments' balls shrink with the precision.  Before 0.31 such a value
+/// stopped at the cap (NaN at once): `(e^ε − 1)/(e^{2ε} − 1)` at `ε = 10⁻⁴⁵`
+/// was refused at 16 digits and `erfc⁻¹(sin(1 + 10⁻¹⁵⁰) − sin 1)` at 16 and
+/// 30 digits.  The internal tolerance checks ([`ZeroSearch::Cap`]) are not
+/// affected (their search ends at the cap), and an infinite value that no
+/// precision cures — beyond the exponent range — fails where it arises
+/// ([`exponent_range_error`]).
 fn evaluate_adaptive(
     arena: &Arena,
     expr: ExprId,
@@ -686,15 +957,29 @@ fn evaluate_adaptive(
     let mut prec = prec0;
     let mut previous: Option<(Complex, usize, accuracy::ErrExp)> = None;
     loop {
-        let (value, bound) = evaluate_once(arena, expr, &post_order, prec, rm, cc)?;
+        let Evaluated {
+            value,
+            bound,
+            precision_limited,
+        } = evaluate_once(arena, expr, &post_order, prec, rm, cc)?;
         let err = bound.joint();
-        if value.0.is_nan() || value.1.is_nan() {
+        let nan = value.0.is_nan() || value.1.is_nan();
+        let finite = !(nan || value.0.is_inf() || value.1.is_inf());
+        // A value without a bound (or without a finite value) because some
+        // node's arguments are too imprecise — not because the root is zero
+        // to the working precision — is pursued as such a root is, to the end
+        // of the zero search: the arguments' balls shrink with the precision
+        // (`precision_limited`).  Before 0.31 it stopped at the cap: `(e^ε −
+        // 1)/(e^{2ε} − 1)` at `ε = 10⁻⁴⁵` (`0/0` at 128 bits, NaN) was refused
+        // at once at 16 digits, and `erfc⁻¹(sin(1 + 10⁻¹⁵⁰) − sin 1)` (its
+        // argument needs about 600 bits) at 16 and 30 digits.
+        let limited = precision_limited && (!finite || accuracy::is_unknown(err));
+        if nan && !limited {
             return Err(SymplexError::PrecisionExhausted {
                 requested: digits,
                 achieved: 0,
             });
         }
-        let finite = !(value.0.is_inf() || value.1.is_inf());
         if finite && let Some(v) = settle(&value, bound, digits, needed, prec) {
             return Ok((v, Settled::Certified));
         }
@@ -755,7 +1040,7 @@ fn evaluate_adaptive(
         // exponent range no precision resolves it.  (`(1 + 10⁻¹⁵⁰)^(10¹⁵⁰)`
         // needs about 560 bits at 16 digits, past the cap of 384.)
         let converging = known && ball_shrinking && previous.is_some();
-        let pursue = (noise || converging) && !accuracy::is_underflow(err);
+        let pursue = (noise || converging || limited) && !accuracy::is_underflow(err);
         let limit = if wide_zero && search == ZeroSearch::Deep {
             max_prec.max(deep)
         } else if pursue || prec > cap {
@@ -1453,6 +1738,29 @@ fn eval_node(
                 });
             }
             let result = g_numer.div(&g_denom, prec, rm);
+            // `Γ(n + 1)` and `Γ(n − k + 1)` beyond the exponent range for a
+            // huge `n` (their quotient NaN, and before 0.31
+            // `lambertw(binomial(10⁵⁰, 2), −1)` was refused): for a small
+            // integer `k ≥ 0`, `n(n − 1)⋯(n − k + 1)/k!` instead.
+            if (result.is_nan() || result.is_inf())
+                && (k_val.0.is_zero() || k_val.0.is_int())
+                && !k_val.0.is_negative()
+                && let Some(k) = bigfloat_to_f64_rounded(&k_val.0, rm)
+                    .ok()
+                    .filter(|k| *k <= 64.0)
+            {
+                let k = k as i32;
+                let wp = prec + 16;
+                let mut product = BigFloat::from_i32(1, wp);
+                for j in 0..k {
+                    let factor = n_val.0.sub(&BigFloat::from_i32(j, 64), p, rm);
+                    product = product.mul(&factor, wp, rm);
+                }
+                let k_factorial = (1..=k).fold(BigFloat::from_i32(1, wp), |acc, j| {
+                    acc.mul(&BigFloat::from_i32(j, 64), wp, rm)
+                });
+                return Ok((product.div(&k_factorial, prec, rm), BigFloat::new(prec)));
+            }
             Ok((result, BigFloat::new(prec)))
         }
 
@@ -5050,6 +5358,14 @@ fn arb_zeta(
             if diff.is_zero() {
                 return Ok(BigFloat::new(prec));
             }
+        }
+        // An `s` whose unit in the last place at the working precision is
+        // 2 or more has no known parity: `sin(πs/2)` is undetermined (and
+        // `ζ(s)` is a trivial zero or far beyond the exponent range).  The
+        // argument reduction of that `sin` for `s ≈ −2^(1.4·10⁶)` ran for
+        // minutes (`zeta(erfi(−1000))`, found by fuzz_evalf in 0.31).
+        if s.exponent().is_some_and(|e| i64::from(e) > wp as i64) {
+            return Err(special_exhausted(prec));
         }
         // ζ(s) = 2^s π^{s−1} sin(π s/2) Γ(1−s) ζ(1−s), `1 − s` exact: next
         // to 0 the factors `sin(πs/2) ≈ πs/2` and `ζ(1 − s) ≈ −1/s` are both

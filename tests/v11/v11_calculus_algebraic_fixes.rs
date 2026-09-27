@@ -371,24 +371,23 @@ fn minimal_polynomial_is_verified_and_irreducible() {
 fn minimal_polynomial_none_when_unverifiable() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    // A fractional power of a negative rational: the branch is not decided
-    // here, so nothing is guessed.  (SymPy 1.14: minimal_polynomial
-    // ((-8)**Rational(1, 3), x) == x**3 + 8 with the default compose=True —
-    // reducible, (x + 2)(x**2 - 2*x + 4) — and x**2 - 2*x + 4 with
-    // compose=False, the polynomial of its principal value 1 + √3·i.)
-    assert!(
-        ctx.int(-8)
-            .pow(&ctx.rational(1, 3))
-            .minimal_polynomial(&x)
-            .is_none()
+    // Updated in 0.31: a fractional power of a negative (or non-real) number
+    // is its principal value, the branch `evalf` takes, and the factor of
+    // `m(xⁿ)` vanishing there is its minimal polynomial (up to 0.30 this
+    // test pinned `None`, "the branch is not decided here").  SymPy 1.14:
+    // minimal_polynomial((-8)**Rational(1, 3), x) == x**3 + 8 with the
+    // default compose=True — reducible, (x + 2)(x**2 - 2*x + 4) — and
+    // x**2 - 2*x + 4 with compose=False, the polynomial of the principal
+    // value 1 + √3·i.
+    assert_eq!(
+        ctx.int(-8).pow(&ctx.rational(1, 3)).minimal_polynomial(&x),
+        Some(&x.powi(2) - &(&x * 2) + 4)
     );
-    // A square root of a negative algebraic number (√2 − 2 < 0): likewise.
-    // (SymPy: minimal_polynomial(sqrt(sqrt(2) - 2), x) == x**4 + 4*x**2 + 2.)
-    assert!(
-        (ctx.int(2).sqrt() - 2)
-            .sqrt()
-            .minimal_polynomial(&x)
-            .is_none()
+    // A square root of a negative algebraic number (√2 − 2 < 0).
+    // SymPy: minimal_polynomial(sqrt(sqrt(2) - 2), x) == x**4 + 4*x**2 + 2.
+    assert_eq!(
+        (ctx.int(2).sqrt() - 2).sqrt().minimal_polynomial(&x),
+        Some(&(&x.powi(4) + &(&x.powi(2) * 4)) + 2)
     );
     // Transcendental input is still `None`.
     assert!(ctx.pi().minimal_polynomial(&x).is_none());

@@ -156,6 +156,17 @@ pub(crate) fn try_risch_tower(
     expr: crate::base::node::ExprId,
     var: crate::base::node::ExprId,
 ) -> TowerResult {
+    // A `RootSum` binds its summation variable: the logarithms of its body
+    // (`ln(x − t)` at the roots `t`) are no extensions of `ℚ(x)`, and a
+    // tower built from them recursed without end (`∫ ln(c + d·x)/(a + b·x³)`
+    // overflowed the stack once `∫ dx/(a + b·x³)` became a `RootSum`,
+    // 0.31: each coefficient integral nested a larger one).
+    if crate::base::walk::post_order_ids(arena, expr)
+        .iter()
+        .any(|&id| matches!(arena.node(id), ExprNode::RootSum(..)))
+    {
+        return TowerResult::NotApplicable;
+    }
     // Build the differential extension tower.
     let mut de = match tower::build_tower(arena, expr, var) {
         Ok(de) => de,
@@ -365,6 +376,49 @@ pub(crate) fn try_risch_rational_params(
 ) -> Option<ExprId> {
     let _guard = RischRecursionGuard::enter()?;
     param_rational::integrate_param_rational(arena, expr, var)
+}
+
+/// The integrand `expr = N/D` as a polynomial in its transcendental
+/// subexpressions that depend on `var` (`sin x`, `e^{2x}`, `ln(a·x + 2)`)
+/// whose coefficients are reduced fractions in `ℚ(x, parameters, …)` —
+/// the normal form Risch's algorithm starts from, `Σ aⱼ·θʲ` with `aⱼ` in
+/// the lower field ([`crate::simplify::ratsimp::collect_reduced_terms`]) —
+/// or `None` when `expr` is not a product with a sum and a negative power
+/// that both depend on `var`, a transcendental generator occurs in `D`,
+/// or nothing is gained.  `∫ (x²·cos x + cos x)/(x² + 1) dx` and the
+/// integral of that fraction written over a common denominator with
+/// `3/((x + a)(x + b))` stayed unevaluated up to 0.31: no stage cancels
+/// `x² + 1` or splits the sum again (the integrator's `integrate_stages`
+/// retries with this form).
+pub(crate) fn reduced_fraction_terms(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+) -> Option<ExprId> {
+    let ExprNode::Symbol(var_sym) = *arena.node(var) else {
+        return None;
+    };
+    let ExprNode::Mul(factors) = arena.node(expr) else {
+        return None;
+    };
+    let depends =
+        |arena: &Arena, id: ExprId| crate::base::walk::has_free_symbol(arena, id, var_sym);
+    let has_sum = factors
+        .iter()
+        .any(|&f| matches!(arena.node(f), ExprNode::Add(_)) && depends(arena, f));
+    let has_denominator = factors.iter().any(|&f| {
+        matches!(arena.node(f), ExprNode::Pow(b, e)
+            if arena.as_num(*e).is_some_and(|q| q.is_integer() && q.is_negative())
+                && depends(arena, *b))
+    });
+    if !has_sum || !has_denominator {
+        return None;
+    }
+    let transcendental = |arena: &Arena, g: ExprId| {
+        !matches!(arena.node(g), ExprNode::Symbol(_))
+            && crate::base::walk::has_free_symbol(arena, g, var_sym)
+    };
+    crate::simplify::ratsimp::collect_reduced_terms(arena, expr, transcendental)
 }
 
 /// `k ≥ 2` if `A/D = x^(k−1)·F(x^k)`: every exponent of `D` is a multiple of

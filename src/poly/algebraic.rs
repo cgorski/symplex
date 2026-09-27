@@ -20,7 +20,9 @@
 //!   - `a · b` → likewise with `res_y(m_a(y), y^{deg m_b} m_b(t / y))`;
 //!   - `−a` → `m_a(−t)`;
 //!   - `a^{p/q}` for algebraic `a` → the factor of `m_a(t^q)` vanishing at
-//!     the real value (`a > 0` when `q > 1`), reversed for `p < 0`, then
+//!     the real root for `a > 0`, at the principal root `exp(Log(a)/q)`
+//!     otherwise (the side of the negative real axis proved by root
+//!     separation, see `principal_root`), reversed for `p < 0`, then
 //!     folded `|p|` times with the product rule.
 //!
 //!   Resultants are computed by evaluation/interpolation over
@@ -106,9 +108,10 @@ impl AlgExpr {
     ///
     /// `None` when some node is not one of the recognised shapes: `π`, `e`,
     /// free symbols, transcendental functions, a power with a non-rational
-    /// exponent, or a power of a *negative or zero* rational base with a
-    /// fractional exponent (the numeric route below would not know which
-    /// branch the arena's evaluator takes).
+    /// exponent, or a power of a zero base with a fractional exponent.  A
+    /// fractional power of a negative (or non-real) base is its principal
+    /// value, as `evalf` and SymPy take it (see `principal_root`); before
+    /// 0.31 it was not recognised.
     pub(crate) fn from_arena(arena: &Arena, expr: ExprId) -> Option<AlgExpr> {
         match arena.node(expr) {
             ExprNode::Num(nid) => Some(AlgExpr::Rat(arena.num(*nid).clone())),
@@ -118,7 +121,7 @@ impl AlgExpr {
             ExprNode::Pow(base, exp) => {
                 let exp_r = arena.as_num(*exp)?.clone();
                 if let Some(base_r) = arena.as_num(*base) {
-                    if !base_r.is_positive() && !exp_r.is_integer() {
+                    if base_r.is_zero() && !exp_r.is_integer() {
                         return None;
                     }
                     return Some(AlgExpr::Pow(Box::new(AlgExpr::Rat(base_r.clone())), exp_r));
@@ -391,16 +394,17 @@ fn minpoly_pow(base: &AlgExpr, exp: &Ratio<BigInt>, cc: &mut Consts) -> Option<(
     let (mut mp, mut alpha) = if q == 1 {
         (mp_base, base_val)
     } else {
-        if !is_real_positive(&base_val, prec) {
-            return None;
-        }
-        let root = base_val.0.pow(
-            &BigFloat::from_i32(1, prec).div(&BigFloat::from_i64(q as i64, prec), prec, rm),
-            prec,
-            rm,
-            cc,
-        );
-        let root = c_from_real(root, prec);
+        let root = if is_real_positive(&base_val, prec) {
+            let root = base_val.0.pow(
+                &BigFloat::from_i32(1, prec).div(&BigFloat::from_i64(q as i64, prec), prec, rm),
+                prec,
+                rm,
+                cc,
+            );
+            c_from_real(root, prec)
+        } else {
+            principal_root(&mp_base, &base_val, q, cc)?
+        };
         let deg = mp_base.degree()?;
         let mut coeffs = vec![Ratio::zero(); deg * q + 1];
         for (i, c) in mp_base.coeffs().iter().enumerate() {
@@ -432,6 +436,137 @@ fn minpoly_pow(base: &AlgExpr, exp: &Ratio<BigInt>, cc: &mut Consts) -> Option<(
         acc = minpoly_mul(&acc, &mp, &acc_val)?;
     }
     Some((acc, acc_val))
+}
+
+/// The principal `q`-th root `exp(Log(z)/q)` (`q ≥ 2`) of the algebraic
+/// number `z` with minimal polynomial `mp` and 320-bit value `z` — the
+/// branch `evalf` and SymPy take, `arg z ∈ (−π, π]` — for a `z` that is not
+/// a positive real number (those take the real root, in [`minpoly_pow`]).
+///
+/// Only the side of the cut on the negative real axis needs a decision: an
+/// imaginary part beyond [`BRANCH_NOISE_BITS`] of the scale is taken as
+/// computed; one below it is proved 0 by root separation ([`proved_real`]),
+/// and `arg z = π` (the principal value on the cut).  Anything in between,
+/// and `z = 0`, is undecided: `None`.  (The minimal polynomial alone would
+/// not care — the roots `r^{1/q}·e^{±iπ/q}` are conjugate and have the same
+/// one — but the value is what the enclosing sums and products select their
+/// factors by.)  Before 0.31 every such base gave `None`: the zero test of
+/// `√(−4i − 3) − 1 + 2i` was undecided.
+fn principal_root(mp: &Poly, z: &Complex, q: usize, cc: &mut Consts) -> Option<Complex> {
+    let prec = VERIFY_PREC_BITS;
+    let rm = RoundingMode::None;
+    let (re, im) = z;
+    if re.is_nan() || im.is_nan() || re.is_inf() || im.is_inf() || q < 2 {
+        return None;
+    }
+    let abs = re
+        .mul(re, prec, rm)
+        .add(&im.mul(im, prec, rm), prec, rm)
+        .sqrt(prec, rm);
+    if abs.is_zero() {
+        return None;
+    }
+    let one = BigFloat::from_i32(1, prec);
+    let noise = abs.max(&one).mul(
+        &BigFloat::from_i32(2, prec)
+            .powi(BRANCH_NOISE_BITS, prec, rm)
+            .reciprocal(prec, rm),
+        prec,
+        rm,
+    );
+    let im_clear = im.abs().cmp(&noise).is_some_and(|c| c > 0);
+    let real = !im_clear && (mp.degree() == Some(1) || proved_real(mp, z, &noise));
+    if !im_clear && !real {
+        return None;
+    }
+    let re_clear = re.abs().cmp(&noise).is_some_and(|c| c > 0);
+    let pi = cc.pi(prec, rm).clone();
+    let theta = if real {
+        if !re_clear {
+            return None;
+        }
+        if re.is_positive() {
+            BigFloat::new(prec)
+        } else {
+            pi
+        }
+    } else if re_clear && re.is_positive() {
+        im.div(re, prec, rm).atan(prec, rm, cc)
+    } else if re_clear {
+        // Left half-plane: atan(im/re) ± π by the sign of the imaginary part.
+        let a = im.div(re, prec, rm).atan(prec, rm, cc);
+        if im.is_negative() {
+            a.sub(&pi, prec, rm)
+        } else {
+            a.add(&pi, prec, rm)
+        }
+    } else {
+        let half_pi = pi.div(&BigFloat::from_i32(2, prec), prec, rm);
+        if im.is_negative() {
+            half_pi.neg()
+        } else {
+            half_pi
+        }
+    };
+    let q_bf = BigFloat::from_i64(i64::try_from(q).ok()?, prec);
+    // |z|^{1/q} through exp(ln|z|/q): `BigFloat::pow` can hang on an exactly
+    // representable result (see `evalf::bf_pow`).
+    let magnitude = if q == 2 {
+        abs.sqrt(prec, rm)
+    } else {
+        abs.ln(prec, rm, cc).div(&q_bf, prec, rm).exp(prec, rm, cc)
+    };
+    let phi = theta.div(&q_bf, prec, rm);
+    Some((
+        magnitude.mul(&phi.cos(prec, rm, cc), prec, rm),
+        magnitude.mul(&phi.sin(prec, rm, cc), prec, rm),
+    ))
+}
+
+/// Bits below the scale `max(1, |z|)` under which the imaginary part of a
+/// 320-bit value is not trusted to show the side of the negative real axis:
+/// the [`VERIFY_TOLERANCE_BITS`] slack of the factor selection.
+const BRANCH_NOISE_BITS: usize = VERIFY_TOLERANCE_BITS as usize;
+
+/// Is the algebraic number `z` (minimal polynomial `mp`, value `z` with an
+/// imaginary part within `noise` of 0) certainly real?  A non-real root of
+/// `mp` has its conjugate as another root, `2·|Im z|` away, and distinct
+/// roots of a squarefree integer polynomial `f` of degree `d` are more than
+/// `√3·d^{−(d+2)/2}·‖f‖₂^{−(d−1)}` apart (Mahler 1964, with `|disc f| ≥ 1`
+/// and `M(f) ≤ ‖f‖₂`): an imaginary part below half of that, error
+/// included, is 0.
+fn proved_real(mp: &Poly, z: &Complex, noise: &BigFloat) -> bool {
+    use num_integer::Integer;
+    let Some(d) = mp.degree() else {
+        return false;
+    };
+    if d <= 1 {
+        return true;
+    }
+    let lcm = mp
+        .coeffs()
+        .iter()
+        .fold(BigInt::one(), |acc, c| acc.lcm(c.denom()));
+    let max_bits = mp
+        .coeffs()
+        .iter()
+        .map(|c| (c * Ratio::from_integer(lcm.clone())).to_integer().bits())
+        .max()
+        .unwrap_or(0);
+    let df = d as f64;
+    let log2_norm = max_bits as f64 + 0.5 * (df + 1.0).log2();
+    let separation = 0.5 * 3f64.log2() - (df + 2.0) / 2.0 * df.log2() - (df - 1.0) * log2_norm;
+    // log₂(2·|Im z| + noise), rounded up.
+    let prec = VERIFY_PREC_BITS;
+    let rm = RoundingMode::None;
+    let lhs =
+        z.1.abs()
+            .mul(&BigFloat::from_i32(2, prec), prec, rm)
+            .add(noise, prec, rm);
+    let Some(e) = lhs.exponent() else {
+        return false;
+    };
+    f64::from(e) < separation - 1.0
 }
 
 /// Compute minimal polynomial of `r · α` where `r ∈ ℚ` and `α` has

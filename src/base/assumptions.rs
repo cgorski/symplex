@@ -1477,9 +1477,23 @@ impl AssumptionCache {
         let mut real_count: usize = 0;
         let mut any_even: bool = false;
         let mut all_odd: bool = true;
+        // Non-strict signs: factors known `≤ 0` (negative or non-positive)
+        // flip the sign; a factor of unknown sign ends the deduction.
+        let mut weak_flips = 0u32;
+        let mut weak_sign_known = true;
 
         for &child in args.iter() {
             let child_a = self.compute(arena, child);
+
+            if child_a.query(Props::POSITIVE) == Some(true) {
+                // no flip
+            } else if child_a.query(Props::NEGATIVE) == Some(true)
+                || child_a.query(Props::NONPOSITIVE) == Some(true)
+            {
+                weak_flips += 1;
+            } else if child_a.query(Props::NONNEGATIVE) != Some(true) {
+                weak_sign_known = false;
+            }
 
             if child_a.query(Props::INTEGER) != Some(true) {
                 all_integer = false;
@@ -1588,6 +1602,18 @@ impl AssumptionCache {
                 a.known_true |= Props::POSITIVE;
             } else {
                 a.known_true |= Props::NEGATIVE;
+            }
+        }
+        // A product of real factors of known non-strict sign (`4a²`, `a²b²`,
+        // `−a²·b` for `b > 0`) is `≥ 0` or `≤ 0` by the number of factors
+        // `≤ 0`, as in SymPy's `Mul._eval_pos_neg`.  Up to 0.31 only strict
+        // signs counted: `a² ≥ 0` was proved for a real `a`, `4a² ≥ 0` and
+        // `4a² + b² ≥ 0` were not.
+        if all_real && weak_sign_known {
+            if weak_flips.is_multiple_of(2) {
+                a.known_true |= Props::NONNEGATIVE;
+            } else {
+                a.known_true |= Props::NONPOSITIVE;
             }
         }
 

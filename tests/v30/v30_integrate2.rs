@@ -228,9 +228,13 @@ fn parametric_rational_forms() {
             "1/((x + a)*(x + b))",
             "Piecewise(-ln(a + x)/(a - b) + ln(b + x)/(a - b) if b != a, -1/(a + x) if True)",
         ),
+        // With the degenerate branch since 0.31: at `b = a²/4` the integrand
+        // `1/(x² + a·x + a²/4)` is no longer left to the `(a·x + b)ⁿ` routes,
+        // which miss a square written multiplied out, so the branch the
+        // wrapper looks for integrates.
         (
             "1/(x^2 + a*x + b)",
-            "(-ln(1/2*a + x + 1/2*sqrt(a^2 - 4*b)) + ln(1/2*a + x - 1/2*sqrt(a^2 - 4*b)))/sqrt(a^2 - 4*b)",
+            "Piecewise((-ln(1/2*a + x + 1/2*sqrt(a^2 - 4*b)) + ln(1/2*a + x - 1/2*sqrt(a^2 - 4*b)))/sqrt(a^2 - 4*b) if b != 1/4*a^2, -1/(1/2*a + x) if True)",
         ),
     ];
     for (src, want) in cases {

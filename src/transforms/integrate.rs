@@ -45,9 +45,21 @@ use crate::poly::Poly;
 /// Returns the antiderivative. If integration cannot be performed,
 /// returns an unevaluated `Integral(expr, var)` node.
 pub(crate) fn integrate(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
-    let _call = IntegrateCall::enter(arena);
+    let call = IntegrateCall::enter(arena);
+    if call.depth > MAX_INTEGRATE_NESTING {
+        tracing::debug!("integrate: nesting limit reached");
+        return arena.intern(ExprNode::Integral(expr, var));
+    }
     stage!(arena, "integrate", expr, integrate_impl(arena, expr, var))
 }
+
+/// Largest nesting of `integrate` calls (a substitution or a Risch tower
+/// level re-enters it); a deeper call stays unevaluated.  A safety net
+/// against a strategy that keeps nesting larger integrands: before 0.31's
+/// guard in [`crate::calculus::risch::try_risch_tower`], the tower's
+/// coefficient integrals of `∫ ln(c + d·x)/(a + b·x³) dx` nested 1,100
+/// deep and overflowed the stack.
+const MAX_INTEGRATE_NESTING: usize = 48;
 
 /// One `integrate` call on this thread.  The outermost call owns the step
 /// and arena budgets and the memo; nested calls (substitutions re-entering
@@ -58,22 +70,25 @@ pub(crate) fn integrate(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId 
 /// see its entries.
 struct IntegrateCall {
     outermost: bool,
+    /// Enclosing `integrate` calls on this thread.
+    depth: usize,
 }
 
 impl IntegrateCall {
     fn enter(arena: &Arena) -> Self {
-        let outermost = NODE_BUDGET_DEPTH.with(|d| {
+        let depth = NODE_BUDGET_DEPTH.with(|d| {
             let depth = d.get();
             d.set(depth + 1);
-            depth == 0
+            depth
         });
+        let outermost = depth == 0;
         if outermost {
             NODE_BUDGET_USED.with(|u| u.set(0));
             ARENA_BUDGET_START.with(|s| s.set(arena.node_count()));
             INTEGRATE_MEMO.with(|m| m.borrow_mut().clear());
             VERDICT_MEMO.with(|m| m.borrow_mut().clear());
         }
-        IntegrateCall { outermost }
+        IntegrateCall { outermost, depth }
     }
 }
 
@@ -151,6 +166,18 @@ fn integrate_impl(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     // `atan(x/√(ln 1))`-terms (fuzz_integrate, 0.25).
     let expr = crate::transforms::eval::eval(arena, expr);
 
+    // A `RootSum` that depends on the variable (an earlier answer, met by
+    // by parts or a Risch coefficient) has no route here: every strategy
+    // would take its body's `ln(x − t)` for a function of `x` alone.
+    if crate::base::walk::post_order_ids(arena, expr)
+        .iter()
+        .any(|&id| {
+            matches!(arena.node(id), ExprNode::RootSum(..)) && contains_var(arena, id, var_sym)
+        })
+    {
+        return arena.intern(ExprNode::Integral(expr, var));
+    }
+
     // Linearity first (see `integrate_node_uncached`): every stage below —
     // the substitutions, the Risch tower, heurisch — then sees the
     // integrand without its constant factors.  Before 0.30 they saw `c·f`:
@@ -166,8 +193,40 @@ fn integrate_impl(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     integrate_stages(arena, expr, var, var_sym)
 }
 
-/// The stages of [`integrate_impl`] on an evaluated integrand.
+/// The stages of [`integrate_impl`] on an evaluated integrand, then — when
+/// they leave it unevaluated — once more on its normal form as a fraction:
+/// a polynomial in its transcendental subexpressions with reduced
+/// rational coefficients ([`crate::calculus::risch::reduced_fraction_terms`];
+/// `(x²·cos x + cos x)/(x² + 1)` is `cos x`, `(eˣ·x·(x + 1) + 1)/(x + 1)`
+/// is `x·eˣ + 1/(x + 1)`), and the degenerate parameter values in
+/// `Piecewise`.  The normal form is its own normal form, so this retries
+/// at most once.
 fn integrate_stages(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolId) -> ExprId {
+    let result = integrate_stages_once(arena, expr, var, var_sym);
+    let result = if let ExprNode::Integral(_, _) = arena.node(result)
+        && let Some(reduced) = crate::calculus::risch::reduced_fraction_terms(arena, expr, var)
+    {
+        let r = integrate_stages_once(arena, reduced, var, var_sym);
+        if crate::base::walk::has_unevaluated(arena, r) {
+            result
+        } else {
+            accept_or_unevaluated(arena, expr, r, var, var_sym)
+        }
+    } else {
+        result
+    };
+
+    // Piecewise wrapping for parametric degenerate cases
+    try_piecewise_wrap(arena, result, expr, var, var_sym)
+}
+
+/// One pass of the stages of [`integrate_stages`].
+fn integrate_stages_once(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> ExprId {
     // Every stage's closed form faces the same evidence rule before it is
     // returned ([`accept_or_unevaluated`]); a rejected one counts as no answer,
     // so the next stage still gets its chance.  Up to 0.28.0 only some
@@ -195,7 +254,7 @@ fn integrate_stages(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: Symbo
     // If the rule-based integrator returned an unevaluated Integral node,
     // try the Risch tower (exact method for exp/ln integrands) before
     // falling back to the heuristic integrator.
-    let result = if let ExprNode::Integral(_, _) = arena.node(result) {
+    if let ExprNode::Integral(_, _) = arena.node(result) {
         match stage!(
             arena,
             "risch_tower",
@@ -228,10 +287,7 @@ fn integrate_stages(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: Symbo
         }
     } else {
         result
-    };
-
-    // Piecewise wrapping for parametric degenerate cases
-    try_piecewise_wrap(arena, result, expr, var, var_sym)
+    }
 }
 
 /// A stage's answer `candidate` for `∫ f d(var)` in the form in which
@@ -1783,6 +1839,24 @@ fn integrate_node_uncached(
                 return arena.mul(&[expr, var]);
             }
 
+            // ── A product of polynomials: multiplied out ──
+            if let Some(expanded) = expand_polynomial_product(arena, &dependent, var_sym) {
+                let expanded = wrap_with_constants(arena, expanded, &constants);
+                let result = integrate_node(arena, expanded, var, var_sym, depth - 1);
+                if !crate::base::walk::has_unevaluated(arena, result) {
+                    return result;
+                }
+            }
+
+            // ── Collect exponents: exp(u)·exp(v) → exp(u + v) ──
+            if let Some(merged) = merge_exponential_factors(arena, &dependent, var, var_sym) {
+                let merged = wrap_with_constants(arena, merged, &constants);
+                let result = integrate_node(arena, merged, var, var_sym, depth - 1);
+                if !crate::base::walk::has_unevaluated(arena, result) {
+                    return result;
+                }
+            }
+
             if !constants.is_empty() && dependent.len() == 1 {
                 // c * f(x) → c * ∫ f(x) dx
                 let inner_integral = integrate_node(arena, dependent[0], var, var_sym, depth - 1);
@@ -2067,6 +2141,31 @@ fn integrate_node_uncached(
                 }
             }
 
+            // ── sin(u)ᵐ·cos(u)ⁿ times other factors: power reduction ──
+            // `e^{x/2}·cos²(3x/2) = e^{x/2}/2 + e^{x/2}·cos(3x)/2`; up to 0.31
+            // a trigonometric power times an exponential stayed unevaluated
+            // (by parts and the cyclic rule need single factors).
+            if dependent.len() >= 2
+                && let Some(linear) = crate::transforms::trig_integ::linearize_trig_powers(
+                    arena, &dependent, var, var_sym,
+                )
+            {
+                let result = integrate_node(arena, linear, var, var_sym, depth - 1);
+                if !crate::base::walk::has_unevaluated(arena, result) {
+                    return wrap_with_constants(arena, result, &constants);
+                }
+            }
+
+            // ── Distribute a sum factor: ∫ (s₁ + … + s_k)·g = Σ ∫ sᵢ·g ──
+            if let Some(result) = stage!(
+                arena,
+                "distribute_sum_factor",
+                expr,
+                try_distribute_sum_factor(arena, &dependent, var, var_sym, depth)
+            ) {
+                return wrap_with_constants(arena, result, &constants);
+            }
+
             // ── Weierstrass substitution for rational trig functions ──
             // The constant factors were split off above and are re-applied
             // here, so the substitution must see only the dependent part
@@ -2112,6 +2211,7 @@ fn integrate_node_uncached(
             // standard-form / completing-the-square handlers, and √(x²) is
             // |x| for the real integration variable.
             if let Some(flattened) = flatten_nested_pow(arena, expr, var_sym)
+                .or_else(|| exp_power_as_exp(arena, expr, var_sym))
                 && flattened != expr
             {
                 return integrate_node(arena, flattened, var, var_sym, depth - 1);
@@ -3100,6 +3200,11 @@ fn symbolic_linear_coeff_of(
 
 /// `(a, b)` for a sum `expr = a·var + b` with `a`, `b` free of `var` (the
 /// sum case of [`symbolic_linear_coeff_of`]).
+///
+/// Every term with the variable must be `cᵢ·var` (or `var`); `a = Σ cᵢ`.
+/// The canonical sum keeps `−t·√37/2 − t/2` as two terms (only rational
+/// multiples of one term merge), so up to 0.31 `∫ e^{−t·√37/2 − t/2} dt`
+/// stayed unevaluated while `∫ e^{−t·(√37 + 1)/2} dt` worked.
 fn linear_sum_parts(
     arena: &mut Arena,
     expr: ExprId,
@@ -3125,44 +3230,44 @@ fn linear_sum_parts(
             return None; // No var dependence — not linear in var
         }
 
-        // The var-containing part should be a single term of the form c*var
-        let var_part = if var_terms.len() == 1 {
-            var_terms[0]
-        } else {
-            arena.add(&var_terms)
-        };
-
-        // Try to extract coefficient from var_part (should be c*var)
-        let coeff = if var_part == var {
-            arena.one
-        } else if let ExprNode::Mul(ref mul_children) = arena.node(var_part).clone() {
-            let mut has_v = false;
-            let mut other: SmallVec<[ExprId; 4]> = SmallVec::new();
+        // Each var-containing term must be c*var; the coefficient is the
+        // sum of the c's.
+        let mut coeffs: SmallVec<[ExprId; 4]> = SmallVec::new();
+        for &term in &var_terms {
+            if term == var {
+                coeffs.push(arena.one);
+                continue;
+            }
+            let ExprNode::Mul(ref mul_children) = arena.node(term).clone() else {
+                return None; // Can't decompose
+            };
             let mut vc = 0u32;
+            let mut other: SmallVec<[ExprId; 4]> = SmallVec::new();
             for &mc in mul_children {
                 if mc == var {
                     vc += 1;
-                    if vc > 1 {
-                        return None;
-                    }
-                    has_v = true;
                 } else if contains_var(arena, mc, var_sym) {
                     return None;
                 } else {
                     other.push(mc);
                 }
             }
-            if !has_v || vc != 1 {
+            if vc != 1 {
                 return None;
             }
-            match other.len() {
+            coeffs.push(match other.len() {
                 0 => arena.one,
                 1 => other[0],
                 _ => arena.mul(&other),
-            }
-        } else {
-            return None; // Can't decompose
+            });
+        }
+        let coeff = match coeffs.len() {
+            1 => coeffs[0],
+            _ => arena.add(&coeffs),
         };
+        if coeff == arena.zero {
+            return None;
+        }
 
         // Verify coefficient is free of var
         if contains_var(arena, coeff, var_sym) {
@@ -3416,6 +3521,12 @@ fn try_u_substitution(
 
             // Try the raw quotient first; fall back to polynomial cancellation,
             // then to trigonometric simplification (e.g. sec²/(1 + tan²) = 1).
+            // A quotient that depends on `var` only through `u` joins the
+            // factor: `∫ g(u)·h(u)·u′ dx` (up to 0.31 only a constant
+            // quotient counted, and `∫ cos³x·(a + b·cos²x)³·sin x dx` came
+            // out of the Weierstrass substitution with `tan(x/2)⁴²`).
+            let placeholder = arena.symbol("__usub_u");
+            let mut through_u: Option<ExprId> = None;
             let coeff = if !contains_var(arena, quotient, var_sym) {
                 quotient
             } else {
@@ -3428,7 +3539,17 @@ fn try_u_substitution(
                     if !contains_var(arena, trig, var_sym) {
                         trig
                     } else {
-                        continue;
+                        // (For a linear `u` this is a renaming that adds
+                        // nothing: every rule takes linear arguments.)
+                        if !contains_var(arena, du, var_sym) {
+                            continue;
+                        }
+                        let q_in_u = arena.subs_structural(quotient, u_expr, placeholder);
+                        if contains_var(arena, q_in_u, var_sym) {
+                            continue;
+                        }
+                        through_u = Some(quotient);
+                        arena.one
                     }
                 }
             };
@@ -3444,7 +3565,10 @@ fn try_u_substitution(
             // The factor must depend on `var` only through `u`: with `u`
             // replaced by a fresh symbol nothing of `var` may remain
             // (otherwise `g(var)` below would silently absorb it).
-            let placeholder = arena.symbol("__usub_u");
+            let factor = match through_u {
+                Some(q) => arena.mul(&[factor, q]),
+                None => factor,
+            };
             let factor_in_u = arena.subs_structural(factor, u_expr, placeholder);
             if contains_var(arena, factor_in_u, var_sym) {
                 continue;
@@ -4197,6 +4321,89 @@ fn try_merge_polynomial_factors(
     (!crate::base::walk::has_unevaluated(arena, r)).then_some(r)
 }
 
+/// `∫ (s₁ + … + s_k)·g dx = Σ ∫ sᵢ·g dx` for a product with a sum factor
+/// (or a square to fourth power of a non-polynomial sum, multiplied out),
+/// when every piece has a closed form (the first piece without one ends
+/// the attempt).  A sum that is not a polynomial in the variable is taken
+/// first: polynomial factors are the `u` of by parts.  Linearity only split
+/// sums at the top: `∫ (sin t + cos t)·eᵗ dt` stayed unevaluated (by parts
+/// wants a polynomial or a logarithm for `u`, and the cyclic rule does not
+/// see `(−cos t − sin t)·eᵗ` as `−1` times the integrand) while
+/// `∫ (eᵗ·sin t + eᵗ·cos t) dt` worked (0.31, normal-form hunt).
+fn try_distribute_sum_factor(
+    arena: &mut Arena,
+    dependent: &[ExprId],
+    var: ExprId,
+    var_sym: SymbolId,
+    depth: usize,
+) -> Option<ExprId> {
+    if dependent.len() < 2 || depth < 2 {
+        return None;
+    }
+    // A radical of the variable (`√(sec x)`, `(a + b·x)^m`) makes every
+    // piece as hard as the product, whose substitutions see it whole: on
+    // the Rubi suite such attempts cost 30 s and found almost nothing.
+    let radical = dependent.iter().any(|&d| {
+        crate::base::walk::post_order_ids(arena, d)
+            .iter()
+            .any(|&id| {
+                matches!(arena.node(id), ExprNode::Pow(b, e)
+                if !arena.as_num(*e).is_some_and(|q| q.is_integer())
+                    && contains_var(arena, *b, var_sym))
+            })
+    });
+    if radical {
+        return None;
+    }
+    // A rational function over ℚ is the rational integrator's (Hermite and
+    // Rothstein–Trager are complete there); its pieces only repeat that
+    // work — inside the algebraic-remainder fallback of
+    // `try_risch_rational`, five nested splittings made `∫ sinh x·tanh 4x`
+    // twenty times slower.
+    let product = arena.mul(dependent);
+    let (numer, denom) = crate::poly::polybridge::as_numer_denom(arena, product);
+    if crate::poly::polybridge::expr_to_poly(arena, numer, var).is_some()
+        && crate::poly::polybridge::expr_to_poly(arena, denom, var).is_some()
+    {
+        return None;
+    }
+    let is_sum = |arena: &Arena, d: ExprId| matches!(arena.node(d), ExprNode::Add(_));
+    // A small power of a sum that is not a polynomial, `(a + b·sin u)³`,
+    // multiplied out is a sum as well.
+    let is_power_of_sum = |arena: &Arena, d: ExprId| {
+        matches!(arena.node(d), ExprNode::Pow(b, n)
+        if is_sum(arena, *b)
+            && !is_polynomial_in(arena, *b, var, var_sym)
+            && arena.as_num(*n).is_some_and(|q| {
+                q.is_integer() && *q >= Q::from_integer(2.into()) && *q <= Q::from_integer(4.into())
+            }))
+    };
+    let idx = dependent
+        .iter()
+        .position(|&d| is_sum(arena, d) && !is_polynomial_in(arena, d, var, var_sym))
+        .or_else(|| dependent.iter().position(|&d| is_sum(arena, d)))
+        .or_else(|| dependent.iter().position(|&d| is_power_of_sum(arena, d)))?;
+    let sum = if is_sum(arena, dependent[idx]) {
+        dependent[idx]
+    } else {
+        crate::transforms::expand::expand(arena, dependent[idx])
+    };
+    let ExprNode::Add(terms) = arena.node(sum).clone() else {
+        return None;
+    };
+    let rest = remaining_product(arena, dependent, idx);
+    let mut parts: SmallVec<[ExprId; 6]> = SmallVec::new();
+    for &term in terms.iter() {
+        let piece = arena.mul(&[term, rest]);
+        let big_f = integrate_node(arena, piece, var, var_sym, depth - 1);
+        if crate::base::walk::has_unevaluated(arena, big_f) {
+            return None;
+        }
+        parts.push(big_f);
+    }
+    Some(arena.add(&parts))
+}
+
 /// Rewrite products of `sin`/`cos` factors via product-to-sum identities
 /// and retry (e.g. `x·sin x·cos x = x·sin(2x)/2`).
 fn try_trig_product_to_sum(
@@ -4680,7 +4887,16 @@ fn try_piecewise_wrap(
                 // substituting it made a zero denominator in disguise that
                 // panicked the rational integrator (found by the
                 // complex-parameter hunter, 0.31).
-                if contains_var(arena, degen_val, var_sym) {
+                if contains_var(arena, degen_val, var_sym) || contains_non_finite(arena, degen_val)
+                {
+                    continue;
+                }
+                // Nor a value in a symbol the integrand does not have: the
+                // bound variable of a `RootSum` in a denominator of its body.
+                if crate::base::walk::free_symbols(arena, degen_val)
+                    .iter()
+                    .any(|&s| !crate::base::walk::contains(arena, original_integrand, s))
+                {
                     continue;
                 }
 
@@ -4917,12 +5133,173 @@ fn partition_factors(
     let mut dependent: SmallVec<[ExprId; 4]> = SmallVec::new();
     for &child in children {
         if contains_var(arena, child, var_sym) {
-            dependent.push(flatten_nested_pow(arena, child, var_sym).unwrap_or(child));
+            let flat = flatten_nested_pow(arena, child, var_sym)
+                .or_else(|| exp_power_as_exp(arena, child, var_sym))
+                .unwrap_or(child);
+            dependent.push(flat);
         } else {
             constants.push(child);
         }
     }
     (constants, dependent)
+}
+
+/// `exp(u)^c` as `exp(c·u)` (`c` free of the variable), which holds for
+/// an integer `c`, and for every `c` when `u` is real at every real value
+/// of the variable ([`real_for_real_variable`]): then `ln(eᵘ) = u`.  The
+/// canonical form keeps `exp(x)^√37` (for a complex `x` the identity
+/// fails), and up to 0.31 `∫ exp(x)^√37·cos 3x dx` stayed unevaluated
+/// while `∫ e^{√37·x}·cos 3x dx` worked (normal-form hunt).
+fn exp_power_as_exp(arena: &mut Arena, expr: ExprId, var_sym: SymbolId) -> Option<ExprId> {
+    let ExprNode::Pow(base, c) = arena.node(expr).clone() else {
+        return None;
+    };
+    let ExprNode::Exp(u) = arena.node(base).clone() else {
+        return None;
+    };
+    if contains_var(arena, c, var_sym) {
+        return None;
+    }
+    let integer = arena.as_num(c).is_some_and(|q| q.is_integer());
+    if !integer && !real_for_real_variable(arena, u, var_sym) {
+        return None;
+    }
+    let cu = arena.mul(&[c, u]);
+    Some(arena.exp(cu))
+}
+
+/// Is `u` real at every real value of the variable?  Its variable-dependent
+/// nodes must be real-to-real operations defined on the whole line (those
+/// of [`real_on_reals`]); its maximal variable-free subexpressions are
+/// decided by [`constant_is_real`] (`√37`, a declared-real `a`).
+fn real_for_real_variable(arena: &mut Arena, u: ExprId, var_sym: SymbolId) -> bool {
+    let mut reals = crate::base::assumptions::AssumptionCache::new();
+    let mut stack = vec![u];
+    let mut seen: FxHashSet<ExprId> = FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if !contains_var(arena, id, var_sym) {
+            if !constant_is_real(arena, id, &mut reals) {
+                return false;
+            }
+            continue;
+        }
+        let whole_line = match arena.node(id) {
+            ExprNode::Symbol(s) => *s == var_sym,
+            ExprNode::Add(_)
+            | ExprNode::Mul(_)
+            | ExprNode::Sin(_)
+            | ExprNode::Cos(_)
+            | ExprNode::Exp(_)
+            | ExprNode::Atan(_)
+            | ExprNode::Sinh(_)
+            | ExprNode::Cosh(_)
+            | ExprNode::Tanh(_)
+            | ExprNode::Abs(_) => true,
+            ExprNode::Pow(_, exp) => arena
+                .as_num(*exp)
+                .is_some_and(|r| r.is_integer() && !r.is_negative()),
+            _ => false,
+        };
+        if !whole_line {
+            return false;
+        }
+        arena.node(id).for_each_child(|c| stack.push(c));
+    }
+    true
+}
+
+/// Largest degree of a product that [`expand_polynomial_product`] expands.
+const MAX_EXPANDED_DEGREE: u32 = 64;
+
+/// The product of `dependent` multiplied out when every factor is a
+/// polynomial in the variable (sums, products and non-negative integer
+/// powers of it and of constants) and one is a power of a sum, `(a +
+/// b·x²)³` — a sum of monomials integrates term by term.  Up to 0.31
+/// `∫ x³·(a + b·x²)³ dx` went through by parts three times (a nested
+/// answer), and the substitution `u = cos x` of `∫ cos³x·(a + b·cos²x)³·sin x`
+/// did not finish within its depth.  `None` otherwise or beyond
+/// [`MAX_EXPANDED_DEGREE`].
+fn expand_polynomial_product(
+    arena: &mut Arena,
+    dependent: &[ExprId],
+    var_sym: SymbolId,
+) -> Option<ExprId> {
+    if dependent.len() < 2 {
+        return None;
+    }
+    let mut has_power_of_sum = false;
+    let mut degree: u32 = 0;
+    for &d in dependent {
+        // (the degree of the factor, bounded by exponent products)
+        let mut stack: Vec<(ExprId, u32)> = vec![(d, 1)];
+        let mut factor_degree: u32 = 0;
+        while let Some((id, mult)) = stack.pop() {
+            if !contains_var(arena, id, var_sym) {
+                continue;
+            }
+            match arena.node(id) {
+                ExprNode::Symbol(_) => factor_degree = factor_degree.max(mult),
+                ExprNode::Add(ch) => stack.extend(ch.iter().map(|&c| (c, mult))),
+                ExprNode::Mul(ch) => {
+                    // A product's degree is at most the sum over its factors:
+                    // bound it by the factor count times the largest.
+                    let k = u32::try_from(ch.len()).ok()?;
+                    stack.extend(ch.iter().map(|&c| (c, mult.saturating_mul(k))));
+                }
+                ExprNode::Pow(b, n) => {
+                    let k = arena
+                        .as_num(*n)
+                        .filter(|q| q.is_integer() && !q.is_negative())?;
+                    let k = u32::try_from(k.to_integer()).ok()?;
+                    if matches!(arena.node(*b), ExprNode::Add(_)) && k >= 2 {
+                        has_power_of_sum = true;
+                    }
+                    stack.push((*b, mult.saturating_mul(k)));
+                }
+                _ => return None,
+            }
+        }
+        degree = degree.saturating_add(factor_degree);
+    }
+    if !has_power_of_sum || degree > MAX_EXPANDED_DEGREE {
+        return None;
+    }
+    let product = arena.mul(dependent);
+    let expanded = crate::transforms::expand::expand(arena, product);
+    (expanded != product).then_some(expanded)
+}
+
+/// The product of `dependent` with its exponential factors whose exponents
+/// are polynomials in the variable merged into one, `exp(u)·exp(v) =
+/// exp(u + v)` (true for all complex `u`, `v`); `None` when fewer than two
+/// such factors.  The canonical form keeps `exp(x − 2)·exp(−x)` and
+/// `exp(√5·x)·exp(−x/3 − 1)`, whose integrals stayed unevaluated up to 0.31
+/// (the first is the constant `e⁻²`).  Exponentials of other exponents
+/// stay apart: `exp(x)·exp(exp(x))` is the substitution `u = eˣ`.
+fn merge_exponential_factors(
+    arena: &mut Arena,
+    dependent: &[ExprId],
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<ExprId> {
+    let mut exponents: SmallVec<[ExprId; 4]> = SmallVec::new();
+    let mut rest: SmallVec<[ExprId; 4]> = SmallVec::new();
+    for &d in dependent {
+        match arena.node(d) {
+            ExprNode::Exp(u) if is_polynomial_in(arena, *u, var, var_sym) => exponents.push(*u),
+            _ => rest.push(d),
+        }
+    }
+    if exponents.len() < 2 {
+        return None;
+    }
+    let sum = arena.add(&exponents);
+    let merged = arena.exp(sum);
+    rest.push(merged);
+    Some(arena.mul(&rest))
 }
 
 /// `(c, f)` with `expr = c·f` when `expr` is a product with factors `c` free

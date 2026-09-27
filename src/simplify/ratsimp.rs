@@ -40,8 +40,14 @@ const MAX_DEGREE: u32 = 1 << 20;
 /// Rational-function normal form of `expr` (see the module docs).
 ///
 /// Returns `expr` unchanged when it contains `±∞`, `zoo`, `NaN` or an
-/// unevaluated node, when a division by a polynomial that is identically
-/// zero occurs, or when an intermediate polynomial exceeds the size budget.
+/// unevaluated node, or when an intermediate polynomial exceeds the size
+/// budget.  A negative power of a subexpression that is identically zero
+/// (a zero polynomial in the generators) is a fraction with denominator
+/// `0`, carried through the arithmetic like any other: the result is
+/// `zoo` for `P/0` with `P ≠ 0` and `nan` for `0/0`, as SymPy's `ratsimp`
+/// and [`together`](crate::poly::polybridge::together) give.  Up to 0.31
+/// `ratsimp(1/(x·(−x/(x + 1) + x·(−x/(x + 1) + 1))))` returned its
+/// input while `together` gave `zoo`.
 pub(crate) fn ratsimp(arena: &mut Arena, expr: ExprId) -> ExprId {
     if !is_admissible(arena, expr) {
         return expr;
@@ -51,6 +57,74 @@ pub(crate) fn ratsimp(arena: &mut Arena, expr: ExprId) -> ExprId {
         return expr;
     };
     rebuild(arena, &p, &q, &gens).unwrap_or(expr)
+}
+
+/// The rational normal form `P/Q` of `expr` over its generators (as for
+/// [`ratsimp`]) written as `Σₘ m·(Pₘ/Qₘ)`: the monomials `m` of the
+/// generators in `keys` (for the integrator, the transcendental
+/// subexpressions that depend on the variable, `sin x`, `e^{2x}`,
+/// `ln(a·x + 2)`) collected, and each coefficient `Pₘ/Q` reduced by its own
+/// gcd.  `None` when `Q` involves a key generator, when there is a single
+/// monomial whose coefficient has no common factor with `Q` (the form
+/// would only be `ratsimp`'s expanded fraction), or when `ratsimp` would
+/// return `expr` unchanged, or when `Q` is a constant.
+/// `(x²·cos x + cos x)/(x² + 1)` is `cos x`;
+/// `(−10·ln(a·x + 2)·(x + a)(x + b) + 3)/((x + a)(x + b))` is
+/// `−10·ln(a·x + 2) + 3/((x + a)(x + b))`.
+pub(crate) fn collect_reduced_terms(
+    arena: &mut Arena,
+    expr: ExprId,
+    keys: impl Fn(&Arena, ExprId) -> bool,
+) -> Option<ExprId> {
+    if !is_admissible(arena, expr) {
+        return None;
+    }
+    let gens = collect_generators(arena, expr);
+    let (p, q) = to_rational_function(arena, expr, &gens)?;
+    if p.is_zero() || q.is_zero() {
+        return None;
+    }
+    let key: Vec<bool> = gens.iter().map(|&g| keys(arena, g)).collect();
+    let has_key = |exp: &[u32]| exp.iter().zip(&key).any(|(&e, &k)| k && e > 0);
+    if q.terms().any(|(exp, _)| has_key(exp)) {
+        return None;
+    }
+    // Numerator terms grouped by their key monomial.
+    let mut groups: Vec<(Vec<u32>, RatPoly)> = Vec::new();
+    for (exp, c) in p.terms() {
+        let key_exp: Vec<u32> = exp
+            .iter()
+            .zip(&key)
+            .map(|(&e, &k)| if k { e } else { 0 })
+            .collect();
+        let rest_exp: Vec<u32> = exp
+            .iter()
+            .zip(&key)
+            .map(|(&e, &k)| if k { 0 } else { e })
+            .collect();
+        let term = RatPoly::monomial(c.clone(), rest_exp);
+        match groups.iter_mut().find(|(m, _)| *m == key_exp) {
+            Some((_, acc)) => *acc = acc.add(&term),
+            None => groups.push((key_exp, term)),
+        }
+    }
+    if q.total_degree().unwrap_or(0) == 0
+        || (groups.len() == 1 && RatPoly::gcd(&groups[0].1, &q).total_degree().unwrap_or(0) == 0)
+    {
+        return None;
+    }
+    groups.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut terms: Vec<ExprId> = Vec::with_capacity(groups.len());
+    for (key_exp, coeff) in groups {
+        let reduced = rebuild(arena, &coeff, &q, &gens)?;
+        let monomial = multipoly_to_expr(arena, &RatPoly::monomial(Q::one(), key_exp), &gens);
+        terms.push(arena.mul(&[monomial, reduced]));
+    }
+    let out = match terms.len() {
+        1 => terms[0],
+        _ => arena.add(&terms),
+    };
+    (out != expr).then_some(out)
 }
 
 /// No infinities, NaN or unevaluated nodes anywhere in the tree.
@@ -157,10 +231,14 @@ fn pow(base: &RatPoly, mut n: u64) -> Option<RatPoly> {
     Some(result)
 }
 
-/// `p1/q1 + p2/q2` over the least common multiple of the denominators.
+/// `p1/q1 + p2/q2` over the least common multiple of the denominators (a
+/// zero denominator has none: the product is used).
 fn add_fractions(p1: &RatPoly, q1: &RatPoly, p2: &RatPoly, q2: &RatPoly) -> (RatPoly, RatPoly) {
     if q1 == q2 {
         return (p1.add(p2), q1.clone());
+    }
+    if q1.is_zero() || q2.is_zero() {
+        return (p1.mul(q2).add(&p2.mul(q1)), q1.mul(q2));
     }
     if is_one(q1) {
         return (p1.mul(q2).add(p2), q2.clone());
@@ -254,9 +332,7 @@ fn to_rational_function(
                 if n >= 0 {
                     (pow(p, n.unsigned_abs())?, pow(q, n.unsigned_abs())?)
                 } else {
-                    if p.is_zero() {
-                        return None;
-                    }
+                    // A zero `p` gives the denominator 0 (see `ratsimp`).
                     (pow(q, n.unsigned_abs())?, pow(p, n.unsigned_abs())?)
                 }
             }
@@ -281,10 +357,15 @@ fn lex_leading_coeff(p: &RatPoly) -> Option<Q> {
     best.map(|(_, c)| c.clone())
 }
 
-/// Cancel, normalise to integer-primitive parts and rebuild `P / Q`.
+/// Cancel, normalise to integer-primitive parts and rebuild `P / Q`
+/// (`zoo` for `P/0`, `nan` for `0/0`).
 fn rebuild(arena: &mut Arena, p: &RatPoly, q: &RatPoly, gens: &[ExprId]) -> Option<ExprId> {
     if q.is_zero() {
-        return None;
+        return Some(if p.is_zero() {
+            arena.nan
+        } else {
+            arena.complex_infinity
+        });
     }
     if p.is_zero() {
         return Some(arena.zero);

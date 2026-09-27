@@ -55,66 +55,81 @@ fn as_i64(arena: &Arena, id: ExprId) -> Option<i64> {
     i64::try_from(&big).ok()
 }
 
-/// Detect whether `inner` is exactly the variable `var`.
-fn is_var(_arena: &Arena, inner: ExprId, var: ExprId) -> bool {
-    inner == var
+/// A trigonometric or hyperbolic power `f(u)^n` of an argument `u`.
+#[derive(Clone, Copy)]
+struct TrigPower {
+    arg: ExprId,
+    exp: i64,
 }
 
-/// Try to decompose `factor` into a sin-power of `var`.
-///
-/// Returns `Some(exponent)` for:
-/// - `Sin(var)` → 1
-/// - `Pow(Sin(var), n)` → n  (when n is an integer)
-fn extract_sin_power(arena: &Arena, factor: ExprId, var: ExprId) -> Option<i64> {
-    match arena.node(factor).clone() {
-        ExprNode::Sin(inner) if is_var(arena, inner, var) => Some(1),
+/// Decompose `factor` into a power of the function `func` picks out:
+/// `f(u)` → `(u, 1)`, `Pow(f(u), n)` → `(u, n)` for an integer `n`.
+fn extract_power(
+    arena: &Arena,
+    factor: ExprId,
+    func: fn(&ExprNode) -> Option<ExprId>,
+) -> Option<TrigPower> {
+    if let Some(arg) = func(arena.node(factor)) {
+        return Some(TrigPower { arg, exp: 1 });
+    }
+    match arena.node(factor) {
         ExprNode::Pow(base, exp) => {
-            if let ExprNode::Sin(inner) = arena.node(base).clone()
-                && is_var(arena, inner, var)
-            {
-                return as_i64(arena, exp);
-            }
-            None
+            let arg = func(arena.node(*base))?;
+            Some(TrigPower {
+                arg,
+                exp: as_i64(arena, *exp)?,
+            })
         }
         _ => None,
     }
 }
 
-/// Try to decompose `factor` into a cos-power of `var`.
-///
-/// Returns `Some(exponent)` for:
-/// - `Cos(var)` → 1
-/// - `Pow(Cos(var), n)` → n  (when n is an integer)
-fn extract_cos_power(arena: &Arena, factor: ExprId, var: ExprId) -> Option<i64> {
-    match arena.node(factor).clone() {
-        ExprNode::Cos(inner) if is_var(arena, inner, var) => Some(1),
-        ExprNode::Pow(base, exp) => {
-            if let ExprNode::Cos(inner) = arena.node(base).clone()
-                && is_var(arena, inner, var)
-            {
-                return as_i64(arena, exp);
-            }
-            None
-        }
+fn sin_arg(node: &ExprNode) -> Option<ExprId> {
+    match node {
+        ExprNode::Sin(u) => Some(*u),
         _ => None,
     }
 }
 
-/// Try to decompose `factor` into a tan-power of `var`: `Tan(var)` → 1,
-/// `Pow(Tan(var), n)` → n for an integer `n`.
-fn extract_tan_power(arena: &Arena, factor: ExprId, var: ExprId) -> Option<i64> {
-    match arena.node(factor).clone() {
-        ExprNode::Tan(inner) if is_var(arena, inner, var) => Some(1),
-        ExprNode::Pow(base, exp) => {
-            if let ExprNode::Tan(inner) = arena.node(base).clone()
-                && is_var(arena, inner, var)
-            {
-                return as_i64(arena, exp);
-            }
-            None
-        }
+fn cos_arg(node: &ExprNode) -> Option<ExprId> {
+    match node {
+        ExprNode::Cos(u) => Some(*u),
         _ => None,
     }
+}
+
+fn tan_arg(node: &ExprNode) -> Option<ExprId> {
+    match node {
+        ExprNode::Tan(u) => Some(*u),
+        _ => None,
+    }
+}
+
+fn sinh_arg(node: &ExprNode) -> Option<ExprId> {
+    match node {
+        ExprNode::Sinh(u) => Some(*u),
+        _ => None,
+    }
+}
+
+fn cosh_arg(node: &ExprNode) -> Option<ExprId> {
+    match node {
+        ExprNode::Cosh(u) => Some(*u),
+        _ => None,
+    }
+}
+
+/// `du/dx` for an argument `u = a·x + b` (`a` free of `x`, not
+/// structurally zero), or `None` when `u` is not linear in `x`.
+fn linear_rate(arena: &mut Arena, u: ExprId, var: ExprId, var_sym: SymbolId) -> Option<ExprId> {
+    if u == var {
+        return Some(arena.one);
+    }
+    if !contains_var(arena, u, var_sym) {
+        return None;
+    }
+    let a = crate::transforms::diff::diff(arena, u, var);
+    (a != arena.zero && !contains_var(arena, a, var_sym)).then_some(a)
 }
 
 /// Largest `|m|`, `|n|` for which `∫ sin^m·cos^n` is expanded: the closed
@@ -128,43 +143,185 @@ fn within_power_bound(m: i64, n: i64) -> bool {
         && n.checked_abs().is_some_and(|a| a <= MAX_TRIG_POWER)
 }
 
-/// Try to decompose `factor` into a sinh-power of `var`.
-///
-/// Returns `Some(exponent)` for:
-/// - `Sinh(var)` → 1
-/// - `Pow(Sinh(var), n)` → n  (when n is an integer)
-fn extract_sinh_power(arena: &Arena, factor: ExprId, var: ExprId) -> Option<i64> {
-    match arena.node(factor).clone() {
-        ExprNode::Sinh(inner) if is_var(arena, inner, var) => Some(1),
-        ExprNode::Pow(base, exp) => {
-            if let ExprNode::Sinh(inner) = arena.node(base).clone()
-                && is_var(arena, inner, var)
-            {
-                return as_i64(arena, exp);
-            }
-            None
-        }
-        _ => None,
-    }
+/// `sin(var)^n` → `n` (the tests' view of [`extract_power`]).
+#[cfg(test)]
+fn extract_sin_power(arena: &Arena, factor: ExprId, var: ExprId) -> Option<i64> {
+    extract_power(arena, factor, sin_arg)
+        .filter(|p| p.arg == var)
+        .map(|p| p.exp)
 }
 
-/// Try to decompose `factor` into a cosh-power of `var`.
-///
-/// Returns `Some(exponent)` for:
-/// - `Cosh(var)` → 1
-/// - `Pow(Cosh(var), n)` → n  (when n is an integer)
-fn extract_cosh_power(arena: &Arena, factor: ExprId, var: ExprId) -> Option<i64> {
-    match arena.node(factor).clone() {
-        ExprNode::Cosh(inner) if is_var(arena, inner, var) => Some(1),
-        ExprNode::Pow(base, exp) => {
-            if let ExprNode::Cosh(inner) = arena.node(base).clone()
-                && is_var(arena, inner, var)
-            {
-                return as_i64(arena, exp);
+/// `cos(var)^n` → `n` (the tests' view of [`extract_power`]).
+#[cfg(test)]
+fn extract_cos_power(arena: &Arena, factor: ExprId, var: ExprId) -> Option<i64> {
+    extract_power(arena, factor, cos_arg)
+        .filter(|p| p.arg == var)
+        .map(|p| p.exp)
+}
+
+/// Largest `m + n` that [`linearize_sin_cos`] expands.
+const MAX_LINEARIZE_DEGREE: u32 = 12;
+
+/// `sin(u)^m·cos(u)^n` (`m, n ≥ 0`, `m + n ≤` [`MAX_LINEARIZE_DEGREE`]) as
+/// `Σₖ (αₖ·cos(k·u) + βₖ·sin(k·u))` with rational `αₖ`, `βₖ`: one factor
+/// at a time by the product-to-sum identities `cos(ku)·cos u =
+/// (cos((k+1)u) + cos((k−1)u))/2` and its three siblings (Fu's `TRpower`
+/// for a product).  `None` beyond the degree bound.
+pub(crate) fn linearize_sin_cos(arena: &mut Arena, u: ExprId, m: u32, n: u32) -> Option<ExprId> {
+    use std::collections::BTreeMap;
+    if m + n > MAX_LINEARIZE_DEGREE {
+        return None;
+    }
+    let half = Ratio::new(BigInt::one(), BigInt::from(2));
+    // k ↦ (αₖ, βₖ); β₀ is always 0.
+    let mut terms: BTreeMap<u32, (Ratio<BigInt>, Ratio<BigInt>)> = BTreeMap::new();
+    terms.insert(0, (Ratio::one(), Ratio::zero()));
+    let zero = || (Ratio::<BigInt>::zero(), Ratio::<BigInt>::zero());
+    for step in 0..m + n {
+        let by_sin = step < m;
+        let mut next: BTreeMap<u32, (Ratio<BigInt>, Ratio<BigInt>)> = BTreeMap::new();
+        for (k, (a, b)) in terms {
+            let (ah, bh) = (&a * &half, &b * &half);
+            if by_sin {
+                // cos(ku)·sin u = (sin((k+1)u) − sin((k−1)u))/2,
+                // sin(ku)·sin u = (cos((k−1)u) − cos((k+1)u))/2.
+                let up = next.entry(k + 1).or_insert_with(zero);
+                up.1 += &ah;
+                up.0 -= &bh;
+                let down = next.entry(k.abs_diff(1)).or_insert_with(zero);
+                // sin(−u) = −sin u; sin 0 = 0.
+                if k >= 1 {
+                    down.1 -= &ah;
+                } else {
+                    down.1 += &ah;
+                }
+                down.0 += &bh;
+            } else {
+                // cos(ku)·cos u = (cos((k+1)u) + cos((k−1)u))/2,
+                // sin(ku)·cos u = (sin((k+1)u) + sin((k−1)u))/2.
+                let up = next.entry(k + 1).or_insert_with(zero);
+                up.0 += &ah;
+                up.1 += &bh;
+                let down = next.entry(k.abs_diff(1)).or_insert_with(zero);
+                down.0 += &ah;
+                if k >= 1 {
+                    down.1 += &bh;
+                } else {
+                    down.1 -= &bh;
+                }
             }
-            None
         }
-        _ => None,
+        terms = next;
+    }
+    let mut out: Vec<ExprId> = Vec::new();
+    for (k, (a, b)) in terms {
+        if k == 0 {
+            if !a.is_zero() {
+                out.push(arena.num_ratio(a));
+            }
+            continue;
+        }
+        let k_id = arena.int(i64::from(k));
+        let ku = arena.mul(&[k_id, u]);
+        for (c, is_sin) in [(a, false), (b, true)] {
+            if c.is_zero() {
+                continue;
+            }
+            let g = if is_sin { arena.sin(ku) } else { arena.cos(ku) };
+            let c_id = arena.num_ratio(c);
+            out.push(arena.mul(&[c_id, g]));
+        }
+    }
+    Some(match out.len() {
+        0 => arena.zero,
+        1 => out[0],
+        _ => arena.add(&out),
+    })
+}
+
+/// Is `e` a polynomial in the variable and in `exp(u)`, `sin(u)`, `cos(u)`
+/// for arguments `u` linear in the variable (non-negative integer powers,
+/// sums and products only)?  Products of such factors become sums of
+/// terms `xᵏ·e^{ℓ(x)}·sin/cos(ℓ′(x))` by power reduction and
+/// product-to-sum, each of which by parts and the cyclic rule integrate.
+fn trig_exp_polynomial(arena: &mut Arena, e: ExprId, var: ExprId, var_sym: SymbolId) -> bool {
+    let mut arguments: Vec<ExprId> = Vec::new();
+    let mut stack = vec![e];
+    let mut seen: rustc_hash::FxHashSet<ExprId> = rustc_hash::FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) || !contains_var(arena, id, var_sym) {
+            continue;
+        }
+        match arena.node(id) {
+            ExprNode::Symbol(_) => {}
+            ExprNode::Add(ch) | ExprNode::Mul(ch) => stack.extend(ch.iter().copied()),
+            ExprNode::Pow(b, n) if as_i64(arena, *n).is_some_and(|k| k >= 0) => stack.push(*b),
+            ExprNode::Exp(u) | ExprNode::Sin(u) | ExprNode::Cos(u) => arguments.push(*u),
+            _ => return false,
+        }
+    }
+    arguments
+        .into_iter()
+        .all(|u| linear_rate(arena, u, var, var_sym).is_some())
+}
+
+/// The product of `factors` with its `sin(u)^m·cos(u)^n` factors (`m, n ≥
+/// 0`, `m + n ≥ 2`) for one argument `u` linear in the variable replaced
+/// by their [`linearize_sin_cos`] form; `None` when there is no such group,
+/// a sine or cosine factor has a negative power, or a factor is not a
+/// polynomial in the variable, `exp`, `sin` and `cos` of linear arguments
+/// ([`trig_exp_polynomial`]: with a radical or a denominator the reduced
+/// powers rarely help, and on the Rubi suite the attempts cost more than
+/// the whole rest of the step).
+pub(crate) fn linearize_trig_powers(
+    arena: &mut Arena,
+    factors: &[ExprId],
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<ExprId> {
+    let mut groups: Vec<(ExprId, u32, u32)> = Vec::new();
+    for &f in factors {
+        let found = match extract_power(arena, f, sin_arg) {
+            Some(p) => Some((p, true)),
+            None => extract_power(arena, f, cos_arg).map(|p| (p, false)),
+        };
+        let Some((p, is_sin)) = found else {
+            continue;
+        };
+        let e = u32::try_from(p.exp).ok()?;
+        match groups.iter_mut().find(|g| g.0 == p.arg) {
+            Some(g) if is_sin => g.1 += e,
+            Some(g) => g.2 += e,
+            None => groups.push(if is_sin { (p.arg, e, 0) } else { (p.arg, 0, e) }),
+        }
+    }
+    let &(u, m, n) = groups.iter().find(|g| g.1 + g.2 >= 2)?;
+    for &f in factors {
+        if !trig_exp_polynomial(arena, f, var, var_sym) {
+            return None;
+        }
+    }
+    let is_group_member = |arena: &Arena, f: ExprId| {
+        extract_power(arena, f, sin_arg)
+            .or_else(|| extract_power(arena, f, cos_arg))
+            .is_some_and(|p| p.arg == u)
+    };
+    let mut rest: Vec<ExprId> = factors
+        .iter()
+        .copied()
+        .filter(|&f| !is_group_member(arena, f))
+        .collect();
+    let linear = linearize_sin_cos(arena, u, m, n)?;
+    rest.push(linear);
+    Some(arena.mul(&rest))
+}
+
+/// `F(u)/a`: an antiderivative in `u = a·x + b` as one in `x`.
+fn over_rate(arena: &mut Arena, big_f: ExprId, rate: ExprId) -> ExprId {
+    if rate == arena.one {
+        big_f
+    } else {
+        arena.div(big_f, rate)
     }
 }
 
@@ -555,12 +712,18 @@ pub(crate) fn cosh_squared_integrate(arena: &mut Arena, var: ExprId) -> ExprId {
 /// Try to recognise a trigonometric power integrand and compute the
 /// antiderivative.
 ///
-/// Recognises:
-/// - `sin(x)^n`  (or bare `sin(x)` → n=1)
-/// - `cos(x)^n`  (or bare `cos(x)` → n=1)
-/// - products containing `sin(x)^m`, `cos(x)^n` and `tan(x)^k` (for every
+/// Recognises, for one argument `u = a·x + b` linear in the variable
+/// (integrated in `u`, then divided by `a`):
+/// - `sin(u)^n`  (or bare `sin(u)` → n=1)
+/// - `cos(u)^n`  (or bare `cos(u)` → n=1)
+/// - products containing `sin(u)^m`, `cos(u)^n` and `tan(u)^k` (for every
 ///   integer exponent, `|m|, |n| ≤` [`MAX_TRIG_POWER`] after `tan^k` is
-///   written `sin^k·cos^(−k)`), and `tan(x)^k` for `k < 0`
+///   written `sin^k·cos^(−k)`), and `tan(u)^k` for `k < 0`
+/// - `sinh(u)²`, `cosh(u)²`
+///
+/// Up to 0.31 only `u = x` was recognised: `∫ cos(2x)² dx`,
+/// `∫ sin(x/3)³ dx` and `∫ (cos²(3x/2) − sin²(3x/2)) dx` stayed
+/// unevaluated (normal-form hunt).
 ///
 /// Returns `None` when the expression does not match any trig-power pattern.
 pub(crate) fn try_trig_power_integral(
@@ -571,69 +734,83 @@ pub(crate) fn try_trig_power_integral(
 ) -> Option<ExprId> {
     let node = arena.node(expr).clone();
 
-    // ── Single factor: Pow(Sin(var), n) or Pow(Cos(var), n) ────────
-    if let Some(n) = extract_sin_power(arena, expr, var) {
-        if !(0..2).contains(&n) && within_power_bound(n, 0) {
-            return Some(sin_pow_integrate(arena, n, var));
-        }
+    // ── Single factor: Pow(Sin(u), n) or Pow(Cos(u), n) ────────
+    if let Some(p) = extract_power(arena, expr, sin_arg) {
         // n == 1 is handled by the main integrator already.
-        return None;
-    }
-
-    if let Some(n) = extract_cos_power(arena, expr, var) {
-        if !(0..2).contains(&n) && within_power_bound(n, 0) {
-            return Some(cos_pow_integrate(arena, n, var));
+        if (0..2).contains(&p.exp) || !within_power_bound(p.exp, 0) {
+            return None;
         }
-        return None;
+        let rate = linear_rate(arena, p.arg, var, var_sym)?;
+        let big_f = sin_pow_integrate(arena, p.exp, p.arg);
+        return Some(over_rate(arena, big_f, rate));
     }
 
-    // ── Single factor: Pow(Sinh(var), n) — handle n=2 via half-angle ──
-    if let Some(n) = extract_sinh_power(arena, expr, var)
-        && n == 2
+    if let Some(p) = extract_power(arena, expr, cos_arg) {
+        if (0..2).contains(&p.exp) || !within_power_bound(p.exp, 0) {
+            return None;
+        }
+        let rate = linear_rate(arena, p.arg, var, var_sym)?;
+        let big_f = cos_pow_integrate(arena, p.exp, p.arg);
+        return Some(over_rate(arena, big_f, rate));
+    }
+
+    // ── Single factor: sinh(u)², cosh(u)² via half-angle ──
+    // (other hyperbolic powers are not handled here).
+    if let Some(p) = extract_power(arena, expr, sinh_arg)
+        && p.exp == 2
     {
-        return Some(sinh_squared_integrate(arena, var));
+        let rate = linear_rate(arena, p.arg, var, var_sym)?;
+        let big_f = sinh_squared_integrate(arena, p.arg);
+        return Some(over_rate(arena, big_f, rate));
     }
-    // Other sinh powers not yet handled
-
-    // ── Single factor: Pow(Cosh(var), n) — handle n=2 via half-angle ──
-    if let Some(n) = extract_cosh_power(arena, expr, var)
-        && n == 2
+    if let Some(p) = extract_power(arena, expr, cosh_arg)
+        && p.exp == 2
     {
-        return Some(cosh_squared_integrate(arena, var));
+        let rate = linear_rate(arena, p.arg, var, var_sym)?;
+        let big_f = cosh_squared_integrate(arena, p.arg);
+        return Some(over_rate(arena, big_f, rate));
     }
-    // Other cosh powers not yet handled
 
-    // ── Single factor: tan(var)^k for k < 0, i.e. cot^|k| = sin^k·cos^(−k) ──
+    // ── Single factor: tan(u)^k for k < 0, i.e. cot^|k| = sin^k·cos^(−k) ──
     // (`∫ 1/tan v dv = ln|sin v|`; positive powers of tan have their own
     // rules in the integrator).
-    if let Some(k) = extract_tan_power(arena, expr, var)
-        && k < 0
-        && within_power_bound(k, -k)
+    if let Some(p) = extract_power(arena, expr, tan_arg)
+        && p.exp < 0
+        && within_power_bound(p.exp, -p.exp)
     {
-        return Some(sin_cos_integrate(arena, k, -k, var));
+        let rate = linear_rate(arena, p.arg, var, var_sym)?;
+        let big_f = sin_cos_integrate(arena, p.exp, -p.exp, p.arg);
+        return Some(over_rate(arena, big_f, rate));
     }
 
-    // ── Product: Mul(...) containing sin/cos/tan powers ────────────────
+    // ── Product: Mul(...) containing sin/cos/tan powers of one argument ──
     if let ExprNode::Mul(ref children) = node {
         let mut sin_exp: i64 = 0;
         let mut cos_exp: i64 = 0;
         let mut other_factors: Vec<ExprId> = Vec::new();
-        let mut found_trig = false;
         let mut found_tan = false;
+        let mut arg: Option<ExprId> = None;
+        let mut same_arg = |p: TrigPower| -> bool { *arg.get_or_insert(p.arg) == p.arg };
 
         for &child in children.iter() {
-            if let Some(s) = extract_sin_power(arena, child, var) {
-                sin_exp = sin_exp.checked_add(s)?;
-                found_trig = true;
-            } else if let Some(c) = extract_cos_power(arena, child, var) {
-                cos_exp = cos_exp.checked_add(c)?;
-                found_trig = true;
-            } else if let Some(t) = extract_tan_power(arena, child, var) {
+            if let Some(p) = extract_power(arena, child, sin_arg) {
+                if !same_arg(p) {
+                    return None;
+                }
+                sin_exp = sin_exp.checked_add(p.exp)?;
+            } else if let Some(p) = extract_power(arena, child, cos_arg) {
+                if !same_arg(p) {
+                    return None;
+                }
+                cos_exp = cos_exp.checked_add(p.exp)?;
+            } else if let Some(p) = extract_power(arena, child, tan_arg) {
+                if !same_arg(p) {
+                    return None;
+                }
                 // tan^t = sin^t·cos^(−t): `∫ sin x·tan x dx` (before 0.30
                 // unevaluated) is `∫ sin²x/cos x`.
-                sin_exp = sin_exp.checked_add(t)?;
-                cos_exp = cos_exp.checked_sub(t)?;
-                found_trig = true;
+                sin_exp = sin_exp.checked_add(p.exp)?;
+                cos_exp = cos_exp.checked_sub(p.exp)?;
                 found_tan = true;
             } else if contains_var(arena, child, var_sym) {
                 // A var-dependent factor that isn't a sin/cos power — bail.
@@ -644,9 +821,7 @@ pub(crate) fn try_trig_power_integral(
             }
         }
 
-        if !found_trig {
-            return None;
-        }
+        let u = arg?;
 
         // We need at least one exponent ≥ 2 to be interesting, or a
         // mixed sin·cos product.  The main integrator already handles
@@ -659,9 +834,11 @@ pub(crate) fn try_trig_power_integral(
         if !within_power_bound(sin_exp, cos_exp) {
             return None;
         }
+        let rate = linear_rate(arena, u, var, var_sym)?;
 
         // Compute the trig-power integral.
-        let trig_result = sin_cos_integrate(arena, sin_exp, cos_exp, var);
+        let trig_result = sin_cos_integrate(arena, sin_exp, cos_exp, u);
+        let trig_result = over_rate(arena, trig_result, rate);
 
         // Re-attach any constant prefactors.
         if other_factors.is_empty() {

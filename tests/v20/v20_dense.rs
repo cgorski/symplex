@@ -267,10 +267,18 @@ fn heurisch_outcomes_unchanged() {
     let x = ctx.symbol("x");
     // These reach heurisch's least-squares stage (table and Risch pass) and
     // are left unevaluated, exactly as before the switch to Householder.
-    for e in [x.ln().sin(), x.exp() * x.cos().powi(2), x.exp() * x.tan()] {
+    for e in [x.ln().sin(), x.exp() * x.tan()] {
         let s = e.integrate(&x).to_string();
         assert!(s.starts_with("Integral("), "{e}: {s}");
     }
+    // `∫ eˣ·cos²x dx` was a third case until 0.31, whose integrator reduces
+    // the power to `(1 + cos 2x)/2` before heurisch is reached (SymPy:
+    // `integrate(exp(x)*cos(x)**2, x)` → `exp(x)*sin(x)**2/5 +
+    // 2*exp(x)*sin(x)*cos(x)/5 + 3*exp(x)*cos(x)**2/5`).
+    assert_eq!(
+        (x.exp() * x.cos().powi(2)).integrate(&x).to_string(),
+        "1/10*cos(2*x)*exp(x) + 1/2*exp(x) + 1/5*sin(2*x)*exp(x)"
+    );
     // …while the surrounding pipeline still closes ordinary integrands.
     assert_eq!(
         (&x * x.exp()).integrate(&x).to_string(),
