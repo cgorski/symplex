@@ -196,6 +196,45 @@ fn rat(n: i64) -> Ratio<BigInt> {
     Ratio::from_integer(BigInt::from(n))
 }
 
+// ── Rational arithmetic with integer fast paths ──
+//
+// `num_rational` reduces every sum and product by `gcd(numerator,
+// denominator)`, also when the denominator is 1, and `num_bigint`'s binary
+// gcd of an `n`-bit number and 1 takes about `n/2` shift-and-subtract
+// rounds: `O(n²)` for what is an `O(n)` integer addition (two 10⁴-bit
+// integers: 94 µs against 0.2 µs).  The parametric resultant spent most of
+// its time there.  Integers stay integers, so these give the same values.
+
+/// `a += b`.
+fn q_add_assign(a: &mut Ratio<BigInt>, b: Ratio<BigInt>) {
+    if a.is_integer() && b.is_integer() {
+        let sum = a.numer() + b.numer();
+        *a = Ratio::from_integer(sum);
+    } else {
+        *a += b;
+    }
+}
+
+/// `a · b`.
+fn q_mul(a: &Ratio<BigInt>, b: &Ratio<BigInt>) -> Ratio<BigInt> {
+    if a.is_integer() && b.is_integer() {
+        Ratio::from_integer(a.numer() * b.numer())
+    } else {
+        a * b
+    }
+}
+
+/// `a / b` for `b ≠ 0`: an exact integer quotient without a gcd.
+fn q_div(a: &Ratio<BigInt>, b: &Ratio<BigInt>) -> Ratio<BigInt> {
+    if a.is_integer() && b.is_integer() {
+        let (q, r) = num_integer::Integer::div_rem(a.numer(), b.numer());
+        if r.is_zero() {
+            return Ratio::from_integer(q);
+        }
+    }
+    a / b
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Monomial helper functions
 // ═══════════════════════════════════════════════════════════════════════════
@@ -333,7 +372,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
             .terms
             .entry(key)
             .or_insert_with(|| Ratio::from_integer(BigInt::from(0)));
-        *entry += coeff;
+        q_add_assign(entry, coeff);
     }
 
     /// Look up the coefficient of a given exponent vector.
@@ -941,7 +980,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
         let terms = self
             .terms
             .iter()
-            .map(|(k, coeff)| (k.clone(), coeff * c))
+            .map(|(k, coeff)| (k.clone(), q_mul(coeff, c)))
             .collect();
         MultiPoly {
             num_vars: self.num_vars,
@@ -995,7 +1034,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
         let mut result = BTreeMap::new();
         for (key, c) in &self.terms {
             let new_exp = monomial_mul(&key.exponents, exp)?;
-            let new_coeff = c * coeff;
+            let new_coeff = q_mul(c, coeff);
             if !new_coeff.is_zero() {
                 result.insert(MonoKey::new(new_exp), new_coeff);
             }
@@ -1590,10 +1629,23 @@ impl<O: MonomialOrd> MultiPoly<O> {
         let mut p = self.clone();
         while let Some((lt_exp, lt_coeff)) = p.leading_term() {
             let quot_exp = monomial_div(&div_lt_exp, lt_exp)?;
-            let quot_coeff = lt_coeff / &div_lt_coeff;
+            let quot_coeff = q_div(lt_coeff, &div_lt_coeff);
             let subtrahend = divisor.try_mul_monomial(&quot_coeff, &quot_exp)?;
             quotient.insert_term(quot_exp, quot_coeff);
-            p = p.sub(&subtrahend);
+            // `p −= subtrahend` in place (`sub` cloned all of `p` per step).
+            for (key, c) in subtrahend.terms {
+                match p.terms.entry(key) {
+                    std::collections::btree_map::Entry::Occupied(mut e) => {
+                        q_add_assign(e.get_mut(), -c);
+                        if e.get().is_zero() {
+                            e.remove();
+                        }
+                    }
+                    std::collections::btree_map::Entry::Vacant(v) => {
+                        v.insert(-c);
+                    }
+                }
+            }
         }
         Some(quotient)
     }

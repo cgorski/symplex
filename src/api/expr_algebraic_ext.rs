@@ -359,6 +359,89 @@ fn parametric_resultant(f: &[Ex], g: &[Ex]) -> Option<Ex> {
     Some(probe.wrap(id))
 }
 
+/// `disc(f) = (−1)^{n(n−1)/2}·res(f, f′)/lc(f)` for a polynomial of degree
+/// `n ≥ 2` whose coefficients (`coeffs`, highest degree first; `deriv` those
+/// of `f′`) are polynomials over ℚ in the other symbols: the subresultant
+/// resultant ([`multipoly_resultant`]) divided exactly by `lc(f)` in
+/// `ℚ[params]`.  The same polynomial as the Sylvester route, printed in the
+/// same expanded canonical form; before 0.31 every discriminant took the
+/// Berkowitz determinant over `Ex`.  `None` when a coefficient is not such
+/// a polynomial.
+fn parametric_discriminant(coeffs: &[Ex], deriv: &[Ex], n: usize) -> Option<Ex> {
+    let pair = coefficient_multipolys(coeffs, deriv)?;
+    let res = multipoly_resultant(&pair.f, &pair.g)?;
+    let quotient = res.div_exact(pair.f.last()?)?;
+    let disc = if (n * (n - 1) / 2) % 2 == 1 {
+        quotient.neg()
+    } else {
+        quotient
+    };
+    let probe = coeffs.first()?;
+    let id = {
+        let mut inner = probe.inner.write();
+        multipoly_to_expr(&mut inner.arena, &disc, &pair.gens)
+    };
+    Some(probe.wrap(id))
+}
+
+/// The discriminant of a polynomial of degree `n ≥ 2` (`coeffs` highest
+/// degree first, `deriv` those of `f′`) from the Sylvester matrix over
+/// `Ex`: the route for coefficients that are not polynomials over ℚ.
+fn sylvester_discriminant(
+    ctx: &crate::api::context::Context,
+    coeffs: &[Ex],
+    deriv: &[Ex],
+    n: usize,
+) -> Option<Ex> {
+    // Sylvester matrix of f (n + 1 coefficients) and f′ (n coefficients):
+    // (2n − 1) × (2n − 1), with n − 1 rows of f above n rows of f′.
+    // The first column is a_n at row 0 and n·a_n at row n − 1; the row
+    // operation R_{n−1} ← R_{n−1} − n·R_0 leaves a_n alone in the
+    // column, so det = a_n · det(minor) and the minor gives disc up to
+    // the sign (−1)^{n(n−1)/2}.
+    let size = 2 * n - 1;
+    let zero = ctx.zero();
+    let mut rows: Vec<Vec<Ex>> = Vec::with_capacity(size);
+    for i in 0..n - 1 {
+        let mut row = vec![zero.clone(); size];
+        for (j, c) in coeffs.iter().enumerate() {
+            row[i + j] = c.clone();
+        }
+        rows.push(row);
+    }
+    for i in 0..n {
+        let mut row = vec![zero.clone(); size];
+        for (j, c) in deriv.iter().enumerate() {
+            row[i + j] = c.clone();
+        }
+        rows.push(row);
+    }
+    // R_{n−1} − n·R_0 = [0, −a_{n−1}, −2a_{n−2}, …, −n·a_0, 0, …]:
+    // entry j is −j · coeffs[j] for 1 ≤ j ≤ n.
+    for (j, (slot, c)) in rows[n - 1].iter_mut().zip(coeffs.iter()).enumerate() {
+        *slot = -&(c * (j as i64));
+    }
+    // Drop row 0 and column 0.
+    let minor: Vec<Vec<Ex>> = rows[1..].iter().map(|row| row[1..].to_vec()).collect();
+    // Invariant: `minor` is a square `(2n − 2) × (2n − 2)` matrix with
+    // `n ≥ 2`, so construction and `det` cannot fail; an `Err` would be
+    // an internal error, folded into `None` because the return type
+    // cannot carry it (see `sylvester_resultant`).
+    let matrix = crate::domains::matrix::Matrix::new(minor);
+    debug_assert!(
+        matrix.is_ok(),
+        "discriminant minor is square by construction"
+    );
+    let det = matrix.ok()?.det();
+    debug_assert!(det.is_ok(), "determinant of a square matrix over Ex");
+    let det = det.ok()?.expand();
+    Some(if (n * (n - 1) / 2) % 2 == 1 {
+        -det
+    } else {
+        det
+    })
+}
+
 /// Drop trailing zero coefficients.
 fn mp_normalize(p: &mut Vec<MultiPoly<GrevLex>>) {
     while p.last().is_some_and(MultiPoly::is_zero) {
@@ -1077,13 +1160,15 @@ impl Expr<Numeric> {
     /// Discriminant of `self` as a polynomial in `var` with possibly
     /// symbolic coefficients (SymPy `discriminant(f, var)`).
     ///
-    /// `disc(f) = (−1)^{n(n−1)/2} · res(f, f′) / lc(f)`, evaluated
-    /// division-free: the leading coefficient is eliminated from the
-    /// Sylvester matrix of `f` and `f′` by one row operation before taking
-    /// the determinant, so the result is an expanded polynomial in the
-    /// parameters (`b² − 4ac` for `ax² + bx + c`).  Returns `None` for
-    /// non-polynomial or constant input; a linear polynomial has
-    /// discriminant `1`.
+    /// `disc(f) = (−1)^{n(n−1)/2} · res(f, f′) / lc(f)`, an expanded
+    /// polynomial in the parameters (`b² − 4ac` for `ax² + bx + c`).
+    /// Coefficients that are polynomials over ℚ in the other symbols take
+    /// the subresultant PRS in `ℚ[params][x]` and one exact division, as
+    /// [`resultant_symbolic`](Self::resultant_symbolic) does; others
+    /// (`√2`, `sin a`) the Sylvester matrix of `f` and `f′`, with the
+    /// leading coefficient eliminated by one row operation before the
+    /// determinant (division-free).  Returns `None` for non-polynomial or
+    /// constant input; a linear polynomial has discriminant `1`.
     ///
     /// # Examples
     ///
@@ -1112,58 +1197,13 @@ impl Expr<Numeric> {
         if n == 1 {
             return Some(ctx.one());
         }
-        // Sylvester matrix of f (n + 1 coefficients) and f′ (n coefficients):
-        // (2n − 1) × (2n − 1), with n − 1 rows of f above n rows of f′.
-        // The first column is a_n at row 0 and n·a_n at row n − 1; the row
-        // operation R_{n−1} ← R_{n−1} − n·R_0 leaves a_n alone in the
-        // column, so det = a_n · det(minor) and the minor gives disc up to
-        // the sign (−1)^{n(n−1)/2}.
         let deriv: Vec<Ex> = coeffs[..n]
             .iter()
             .enumerate()
             .map(|(j, c)| c * ((n - j) as i64))
             .collect();
-        let size = 2 * n - 1;
-        let zero = ctx.zero();
-        let mut rows: Vec<Vec<Ex>> = Vec::with_capacity(size);
-        for i in 0..n - 1 {
-            let mut row = vec![zero.clone(); size];
-            for (j, c) in coeffs.iter().enumerate() {
-                row[i + j] = c.clone();
-            }
-            rows.push(row);
-        }
-        for i in 0..n {
-            let mut row = vec![zero.clone(); size];
-            for (j, c) in deriv.iter().enumerate() {
-                row[i + j] = c.clone();
-            }
-            rows.push(row);
-        }
-        // R_{n−1} − n·R_0 = [0, −a_{n−1}, −2a_{n−2}, …, −n·a_0, 0, …]:
-        // entry j is −j · coeffs[j] for 1 ≤ j ≤ n.
-        for (j, (slot, c)) in rows[n - 1].iter_mut().zip(coeffs.iter()).enumerate() {
-            *slot = -&(c * (j as i64));
-        }
-        // Drop row 0 and column 0.
-        let minor: Vec<Vec<Ex>> = rows[1..].iter().map(|row| row[1..].to_vec()).collect();
-        // Invariant: `minor` is a square `(2n − 2) × (2n − 2)` matrix with
-        // `n ≥ 2`, so construction and `det` cannot fail; an `Err` would be
-        // an internal error, folded into `None` because the return type
-        // cannot carry it (see `sylvester_resultant`).
-        let matrix = crate::domains::matrix::Matrix::new(minor);
-        debug_assert!(
-            matrix.is_ok(),
-            "discriminant minor is square by construction"
-        );
-        let det = matrix.ok()?.det();
-        debug_assert!(det.is_ok(), "determinant of a square matrix over Ex");
-        let det = det.ok()?.expand();
-        Some(if (n * (n - 1) / 2) % 2 == 1 {
-            -det
-        } else {
-            det
-        })
+        parametric_discriminant(&coeffs, &deriv, n)
+            .or_else(|| sylvester_discriminant(&ctx, &coeffs, &deriv, n))
     }
 }
 
@@ -1206,6 +1246,41 @@ mod tests {
                 let slow = sylvester_determinant(&ctx, &pc, &qc).unwrap();
                 assert_eq!(fast, slow, "res({p}, {q})");
             }
+        }
+    }
+
+    /// `res(f, f′)/lc(f)` by the subresultant PRS is exactly the Sylvester
+    /// route's discriminant (the same `Ex`), for every degree parity of the
+    /// sign `(−1)^{n(n−1)/2}`, repeated roots and rational coefficients.
+    #[test]
+    fn parametric_discriminant_is_the_sylvester_discriminant() {
+        let ctx = Context::new();
+        let (a, b, c) = (ctx.symbol("a"), ctx.symbol("b"), ctx.symbol("c"));
+        let x = ctx.symbol("x");
+        let polys: Vec<Ex> = vec![
+            &(&a * &x.powi(2)) + &(&b * &x) + &c,
+            &x.powi(3) + &(&a * &x) + &b,
+            &(&x.powi(4) * &a) - &(&x.powi(2) * &b) + &(&x * &c) - 7,
+            &(&x.powi(5) * 3) + &(&x.powi(3) * &a.powi(2)) - &(&b * &c),
+            // a double root at x = a: discriminant 0
+            &(&x - &a).powi(2) * &(&x + &b),
+            &(&x.powi(6) * &ctx.rational(2, 3)) - &(&x * &a) + &(&b * &c),
+            &(&x.powi(3) * &a) + &(&x.powi(2) * &b) + &(&x * &c) + &(&a * &b),
+        ];
+        for f in polys {
+            let coeffs = crate::api::poly_ex::Poly::new(&f, &[&x])
+                .unwrap()
+                .all_coeffs()
+                .unwrap();
+            let n = coeffs.len() - 1;
+            let deriv: Vec<Ex> = coeffs[..n]
+                .iter()
+                .enumerate()
+                .map(|(j, c)| c * ((n - j) as i64))
+                .collect();
+            let fast = parametric_discriminant(&coeffs, &deriv, n).expect("polynomial");
+            let slow = sylvester_discriminant(&ctx, &coeffs, &deriv, n).unwrap();
+            assert_eq!(fast, slow, "disc({f})");
         }
     }
 }
