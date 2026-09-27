@@ -3993,6 +3993,9 @@ impl Matrix {
         let mut rows: Vec<Vec<Ex>> = self.rows.clone();
         let mut pivots = Vec::new();
         let mut pivot_row = 0;
+        // The public `rref` writes an entry found zero as `0` (it can be
+        // zero without being structurally so: `∛(−2) − ∛2·(1/2 + √3·i/2)`).
+        let clean = oracle.clean_zero_rows();
 
         for col in 0..ncols {
             if pivot_row >= nrows {
@@ -4003,6 +4006,9 @@ impl Matrix {
                 if !oracle.is_zero(i, col, &rows[i][col]) {
                     found = Some(i);
                     break;
+                }
+                if clean && !rows[i][col].is_zero_structural() {
+                    rows[i][col] = rows[i][col].context().zero();
                 }
             }
             let Some(found) = found else { continue };
@@ -4027,6 +4033,8 @@ impl Matrix {
                         rows[i][j] = &rows[i][j] - &term;
                     }
                     oracle.eliminate(i, pivot_row, col);
+                } else if clean && !rows[i][col].is_zero_structural() {
+                    rows[i][col] = rows[i][col].context().zero();
                 }
             }
             pivots.push(col);
@@ -5382,7 +5390,10 @@ fn eigenvalue_minimal_polynomial(lam: &Ex) -> Option<crate::poly::dense::Poly> {
 }
 
 /// Zero test of the pivots of [`Matrix::rref`] (and `rank`, `nullspace`,
-/// …): structural, exact for rational functions of the symbols.
+/// `lu`, `solve`, the block split of the eigenvalues): structural, exact for
+/// rational functions of the symbols over `ℚ(radicals, i)`, and for any
+/// other constant [`constant_is_zero`].  A symbolic entry that is neither
+/// is a pivot unless structurally zero (the generic rank).
 fn pivot_is_zero(e: &Ex) -> bool {
     if e.is_zero_structural() {
         return true;
@@ -5390,7 +5401,35 @@ fn pivot_is_zero(e: &Ex) -> bool {
     if e.expr_type() == ExprType::Number {
         return false;
     }
-    rational_function_is_zero(e) == Some(true)
+    if let Some(b) = rational_function_is_zero(e) {
+        return b;
+    }
+    constant_is_zero(e) == Some(true)
+}
+
+/// Zero test of a constant that is not a rational function over
+/// `ℚ(radicals of rationals, i)` — a root of a negative number of index
+/// above 2, a nested radical, a `RootOf`, `π`: exactly in its number field
+/// for a single `RootOf` ([`rootof_field_is_zero`]), otherwise the certified
+/// test (a certified digit is nonzero; a value zero to the precision goes to
+/// the minimal polynomial of an algebraic number, then the deep zero
+/// search; undecided stays `None`).  `None` for an expression with free
+/// symbols.
+///
+/// Before 0.31 the pivots of `rref` never reached it (only `ex_is_zero`,
+/// behind `inv` and the eigenvectors, did): the entry `∛(−2) −
+/// ∛2·(1/2 + √3·i/2)`, exactly 0 (`(−2)^(1/3) = 2^(1/3)·e^(iπ/3)`), was a
+/// pivot, so `rank` of `[[it, 0], [0, 1]]` was 2, its null space empty and
+/// `lu` returned a "factorization" with that zero as a pivot.
+fn constant_is_zero(e: &Ex) -> Option<bool> {
+    if !e.free_symbols().is_empty() {
+        return None;
+    }
+    if let Some(b) = rootof_field_is_zero(e) {
+        return Some(b);
+    }
+    let mut inner = e.inner.write();
+    crate::poly::algebraic::is_zero_checked(&mut inner.arena, e.raw_id())
 }
 
 fn eigen_zero_test(e: &Ex) -> bool {

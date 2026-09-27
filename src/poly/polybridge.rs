@@ -1078,9 +1078,28 @@ pub(crate) fn fraction_parts(arena: &mut Arena, expr: ExprId) -> (ExprId, ExprId
 /// canonicalisation (`(3x + 2)/6` is stored as `1/2*x + 1/3`), so for such
 /// inputs the result prints like the input; `fraction_parts` still reports
 /// `(3x + 2, 6)`.
+///
+/// A denominator that cancels to `0` (`−x/(x + 1) + x·(−x/(x + 1) + 1)`)
+/// gives `zoo` for a numerator that does not vanish and `nan` for one that
+/// vanishes identically as a polynomial in its generators (`x·(x + 1) −
+/// x² − x`), as `ratsimp` does: `0/0` is undefined for every value of the
+/// variables.  Up to 0.31 such a quotient was `zoo` here (the numerator
+/// was not multiplied out) and `nan` from `ratsimp` (SymPy 1.14 gives
+/// `nan` from `together` but `0` from `ratsimp` and `cancel`, which return
+/// a zero numerator before they look at the denominator).
 pub(crate) fn together_deep(arena: &mut Arena, expr: ExprId) -> ExprId {
     let (n, d) = fraction_parts(arena, expr);
-    if d == arena.one { n } else { arena.div(n, d) }
+    if d == arena.one {
+        return n;
+    }
+    if arena.is_zero_structural(d) && !arena.is_zero_structural(n) {
+        let expanded = crate::transforms::expand::expand(arena, n);
+        let expanded = crate::transforms::eval::eval(arena, expanded);
+        if arena.is_zero_structural(expanded) {
+            return arena.nan;
+        }
+    }
+    arena.div(n, d)
 }
 
 fn product_or_one(arena: &mut Arena, factors: &[ExprId]) -> ExprId {

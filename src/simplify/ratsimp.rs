@@ -64,9 +64,13 @@ pub(crate) fn ratsimp(arena: &mut Arena, expr: ExprId) -> ExprId {
 /// generators in `keys` (for the integrator, the transcendental
 /// subexpressions that depend on the variable, `sin x`, `e^{2x}`,
 /// `ln(a·x + 2)`) collected, and each coefficient `Pₘ/Q` reduced by its own
-/// gcd.  `None` when `Q` involves a key generator, when there is a single
-/// monomial whose coefficient has no common factor with `Q` (the form
-/// would only be `ratsimp`'s expanded fraction), or when `ratsimp` would
+/// gcd.  When `Q` involves a key generator nothing is collected, and the
+/// result is `P/Q` with `gcd(P, Q)` cancelled if that gcd is not a
+/// constant: `(cosh x·x² + cosh x)/((x² + 1)·tanh 4x)` is `cosh x/tanh 4x`
+/// (up to 0.31 it was `None`, and `∫ cosh x·coth 4x dx` multiplied and
+/// divided by `x² + 1` stayed unevaluated).  `None` when there is a
+/// single monomial whose coefficient has no common factor with `Q` (the
+/// form would only be `ratsimp`'s expanded fraction), when `ratsimp` would
 /// return `expr` unchanged, or when `Q` is a constant.
 /// `(x²·cos x + cos x)/(x² + 1)` is `cos x`;
 /// `(−10·ln(a·x + 2)·(x + a)(x + b) + 3)/((x + a)(x + b))` is
@@ -87,7 +91,11 @@ pub(crate) fn collect_reduced_terms(
     let key: Vec<bool> = gens.iter().map(|&g| keys(arena, g)).collect();
     let has_key = |exp: &[u32]| exp.iter().zip(&key).any(|(&e, &k)| k && e > 0);
     if q.terms().any(|(exp, _)| has_key(exp)) {
-        return None;
+        if RatPoly::gcd(&p, &q).total_degree().unwrap_or(0) == 0 {
+            return None;
+        }
+        let out = rebuild(arena, &p, &q, &gens)?;
+        return (out != expr).then_some(out);
     }
     // Numerator terms grouped by their key monomial.
     let mut groups: Vec<(Vec<u32>, RatPoly)> = Vec::new();

@@ -58,8 +58,23 @@ use crate::poly::traits::{EuclideanDomain, Field, Ring};
 type MP = MultiPoly<GrevLex>;
 type GP = GenPoly<PFrac>;
 
-/// At most this many parameters (the multivariate gcds grow quickly).
+/// At most this many parameters in the denominator (the multivariate gcds
+/// grow quickly).
 const MAX_PARAMS: usize = 4;
+/// At most this many parameters in all.  Those beyond [`MAX_PARAMS`] must
+/// occur in the numerator only: the steps below divide by coefficients of
+/// the denominator and its factors, never by one of the numerator's, so
+/// such a parameter stays in the numerators of the coefficient field
+/// (linearly, as in the integrand) and adds nothing to the degrees that
+/// bound its gcds ([`gcd_affordable`]).  Up to 0.31 the limit was four in
+/// all, and `∫ x²(d + e·x² + f·x⁴ + g·x⁶)/(a + b·x² + c·x⁴)² dx`
+/// (seven parameters) went through by parts and the distribution of the
+/// numerator's sum, whose pieces were each integrated and checked: 1 s,
+/// and a 56 KB answer with a separate `RootSum` for every piece.  Eight,
+/// the number of generic values the integrator's self-check binds
+/// parameters to: an answer with more would pass it untested (an integrand
+/// with more keeps the piecewise route, whose pieces it can test).
+const MAX_ALL_PARAMS: usize = 8;
 /// Largest integer exponent accepted in the integrand: that of the
 /// numerator's degree (up to 0.31 it was 16, and `x²³/(a + b·x³)³`,
 /// `x¹⁹/(a + b·x⁵)` were refused although their degrees are within the
@@ -753,8 +768,8 @@ impl Ctx {
 
 /// The parameters of `expr` (its symbols other than `var`, sorted), when
 /// `expr` is built from rational numbers, `var` and at most
-/// [`MAX_PARAMS`] parameters by sums, products and integer powers; `None`
-/// otherwise or when there is no parameter.
+/// [`MAX_ALL_PARAMS`] parameters by sums, products and integer powers;
+/// `None` otherwise or when there is no parameter.
 fn parameters(arena: &Arena, expr: ExprId, var: ExprId) -> Option<Vec<ExprId>> {
     let mut params = Vec::new();
     let mut has_var = false;
@@ -777,7 +792,7 @@ fn parameters(arena: &Arena, expr: ExprId, var: ExprId) -> Option<Vec<ExprId>> {
     }
     params.sort_by_key(|id| id.0);
     params.dedup();
-    (has_var && !params.is_empty() && params.len() <= MAX_PARAMS).then_some(params)
+    (has_var && !params.is_empty() && params.len() <= MAX_ALL_PARAMS).then_some(params)
 }
 
 /// Numerator and denominator of `expr` over a common denominator, nested
@@ -834,11 +849,21 @@ pub(crate) fn integrate_param_rational(
     let params = parameters(arena, expr, var)?;
     tracing::debug!(integrand = %arena.display(expr), "param_rational: attempt");
     reset_budget();
-    let ctx = Ctx { var, params };
     let (n_id, d_id) = numer_denom(arena, expr);
     if d_id == arena.one() {
         return None;
     }
+
+    if params.len() > MAX_PARAMS
+        && params
+            .iter()
+            .filter(|&&p| crate::base::walk::contains(arena, d_id, p))
+            .count()
+            > MAX_PARAMS
+    {
+        return None;
+    }
+    let ctx = Ctx { var, params };
     let mut vars = vec![var];
     vars.extend(&ctx.params);
     let n_mp = crate::poly::polybridge::expr_to_multipoly(arena, n_id, &vars)?;

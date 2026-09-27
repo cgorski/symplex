@@ -685,7 +685,8 @@ fn bessel_order(fun: LibFn, a: &Args<'_>) -> Sens {
 /// ≤ Σ |z|^{k−1} k^m ≤ m!/(1 − |z|)^{m+1}` with `m = max(0, ⌈1 − s⌉)`
 /// (`k^m ≤ k(k+1)⋯(k+m−1)`).  In `s`: `|∂Li_s/∂s| = |Σ z^k ln k/k^s| ≤
 /// Σ |z|^k k^{1−s} ≤ |z|·m′!/(1 − |z|)^{m′+1}`, `m′ = max(0, ⌈2 − s⌉)`
-/// (`ln k ≤ k`).  For `|z| ≥ 1`, numerically.
+/// (`ln k ≤ k`).  For `|z| = 1`, numerically.  (A non-real `z` or `|z| > 1`
+/// is evaluated by `polylog.rs`, which reports its own bound.)
 fn polylog_sens(i: usize, a: &Args<'_>) -> Sens {
     let (s, z) = (a.x[0], a.x[1]);
     let e = a.e[1];

@@ -220,10 +220,10 @@ pub(super) fn to_value(z: &Gauss, prec: usize, rm: RoundingMode) -> (Complex, Bo
 /// value, rounded once (the same sign, a tighter bound); a nonzero part
 /// whose ball contains 0 keeps its floating-point value and bound.  That
 /// last part is below the working precision, as a cancellation left it: a
-/// real routine may serve a function that is analytic there (`polylog(2,
-/// 29/(5 + 2i) + (2 + 10⁻³⁰⁰)i − 11/16 − 5)`, whose argument `−11/16 +
-/// 10⁻³⁰⁰·i` has an imaginary part that is 0 within its error at 128 bits;
-/// `evalf` does not take polylog of a complex argument), and the side of a
+/// function of it is evaluated off the real axis (`polylog(2, 29/(5 + 2i) +
+/// (2 + 10⁻³⁰⁰)i − 11/16 − 5)`, whose argument `−11/16 + 10⁻³⁰⁰·i` has an
+/// imaginary part that is 0 within its error at 128 bits; before 0.31
+/// `evalf` did not take polylog of a complex argument), and the side of a
 /// cut that it decides is found at the precision that resolves it.
 pub(super) fn refine(
     z: &Gauss,

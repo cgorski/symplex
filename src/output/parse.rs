@@ -392,6 +392,16 @@ const KNOWN_FUNCTIONS: &[&str] = &[
     "csch",
     "acot",
     "arccot",
+    "asec",
+    "arcsec",
+    "acsc",
+    "arccsc",
+    "acoth",
+    "arccoth",
+    "asech",
+    "arcsech",
+    "acsch",
+    "arccsch",
     "re",
     "im",
     "conjugate",
@@ -481,6 +491,11 @@ fn is_implicit_unary_function(name_lower: &str) -> bool {
             | "acos"
             | "atan"
             | "acot"
+            | "asec"
+            | "acsc"
+            | "acoth"
+            | "asech"
+            | "acsch"
             | "arcsin"
             | "arccos"
             | "arctan"
@@ -1740,6 +1755,29 @@ impl<'a> Parser<'a> {
             "acot" | "arccot" => {
                 let inv = arena.div(arena.one, arg);
                 Ok(arena.atan(inv))
+            }
+            // The other inverse reciprocal functions, by SymPy's principal
+            // definitions (`asec(x).rewrite(acos)` → `acos(1/x)`, …); before
+            // 0.31 they did not parse.
+            "asec" | "arcsec" => {
+                let inv = arena.div(arena.one, arg);
+                Ok(arena.acos(inv))
+            }
+            "acsc" | "arccsc" => {
+                let inv = arena.div(arena.one, arg);
+                Ok(arena.asin(inv))
+            }
+            "acoth" | "arccoth" => {
+                let inv = arena.div(arena.one, arg);
+                Ok(arena.atanh(inv))
+            }
+            "asech" | "arcsech" => {
+                let inv = arena.div(arena.one, arg);
+                Ok(arena.acosh(inv))
+            }
+            "acsch" | "arccsch" => {
+                let inv = arena.div(arena.one, arg);
+                Ok(arena.asinh(inv))
             }
             // Complex analysis
             "re" => Ok(arena.re(arg)),

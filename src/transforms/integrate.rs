@@ -84,6 +84,7 @@ impl IntegrateCall {
         let outermost = depth == 0;
         if outermost {
             NODE_BUDGET_USED.with(|u| u.set(0));
+            NODE_BUDGET_CAP.with(|c| c.set(usize::MAX));
             ARENA_BUDGET_START.with(|s| s.set(arena.node_count()));
             INTEGRATE_MEMO.with(|m| m.borrow_mut().clear());
             VERDICT_MEMO.with(|m| m.borrow_mut().clear());
@@ -130,6 +131,37 @@ thread_local! {
     static NODE_BUDGET_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static NODE_BUDGET_USED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static ARENA_BUDGET_START: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The step count at which the current [`StepCap`] ends (`usize::MAX`:
+    /// none).
+    static NODE_BUDGET_CAP: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+}
+
+/// A bound of `steps` further `integrate_node` steps on a nested
+/// computation, within the top-level budget; the previous bound is
+/// restored on drop (also when a panic unwinds).  While one is active, a
+/// failure is not remembered in `INTEGRATE_MEMO`: it may be the bound's.
+struct StepCap(usize);
+
+impl StepCap {
+    fn enter(steps: usize) -> Self {
+        let used = NODE_BUDGET_USED.with(std::cell::Cell::get);
+        let old = NODE_BUDGET_CAP.with(|c| {
+            let old = c.get();
+            c.set(old.min(used.saturating_add(steps)));
+            old
+        });
+        StepCap(old)
+    }
+
+    fn active() -> bool {
+        NODE_BUDGET_CAP.with(std::cell::Cell::get) != usize::MAX
+    }
+}
+
+impl Drop for StepCap {
+    fn drop(&mut self) {
+        let _ = NODE_BUDGET_CAP.try_with(|c| c.set(self.0));
+    }
 }
 
 /// Has the outermost `integrate` created more than
@@ -148,7 +180,7 @@ fn node_budget_exhausted() -> bool {
     NODE_BUDGET_USED.with(|u| {
         let used = u.get() + 1;
         u.set(used);
-        used > INTEGRATE_NODE_BUDGET
+        used > INTEGRATE_NODE_BUDGET || used > NODE_BUDGET_CAP.with(std::cell::Cell::get)
     })
 }
 
@@ -206,7 +238,12 @@ fn integrate_stages(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: Symbo
     let result = if let ExprNode::Integral(_, _) = arena.node(result)
         && let Some(reduced) = crate::calculus::risch::reduced_fraction_terms(arena, expr, var)
     {
-        let r = integrate_stages_once(arena, reduced, var, var_sym);
+        let r = stage!(
+            arena,
+            "reduced_fraction_retry",
+            reduced,
+            integrate_stages_once(arena, reduced, var, var_sym)
+        );
         if crate::base::walk::has_unevaluated(arena, r) {
             result
         } else {
@@ -217,7 +254,12 @@ fn integrate_stages(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: Symbo
     };
 
     // Piecewise wrapping for parametric degenerate cases
-    try_piecewise_wrap(arena, result, expr, var, var_sym)
+    stage!(
+        arena,
+        "piecewise_wrap",
+        result,
+        try_piecewise_wrap(arena, result, expr, var, var_sym)
+    )
 }
 
 /// One pass of the stages of [`integrate_stages`].
@@ -1600,7 +1642,20 @@ fn integrate_node(
         }
         _ => {}
     }
-    let result = integrate_node_uncached(arena, expr, var, var_sym, depth);
+    // `∫ f(ln x)`-type integrands (`sin(ln x)`, `x²·cos(a + b·ln(c·xⁿ))`)
+    // wherever they occur — also as a term of a sum, which the stage-level
+    // substitutions never see on its own — and before by parts, which
+    // would otherwise take `u = x²` and nest itself ten deep on the
+    // substitution's `dv` (`∫ x·cos(ln(x)/3) dx` came out correct but with
+    // coefficients such as `1463942969757/3700000000000`).
+    let result = if depth > 0
+        && !matches!(arena.node(expr), ExprNode::Add(_))
+        && let Some(r) = try_log_substitution(arena, expr, var, var_sym)
+    {
+        r
+    } else {
+        integrate_node_uncached(arena, expr, var, var_sym, depth)
+    };
     // Every intermediate result in the form the stage exit gives it: a
     // route that continues from one (by parts differentiates `u`, which
     // may be an earlier `∫`) must not meet `ln|a²x² + 1|` for an
@@ -1611,7 +1666,7 @@ fn integrate_node(
     let result = analytic_log_of_complex_arguments(arena, result, var_sym);
     let outcome = if matches!(arena.node(result), ExprNode::Integral(e, v) if *e == expr && *v == var)
     {
-        Some(MemoOutcome::Failed { depth })
+        (!StepCap::active()).then_some(MemoOutcome::Failed { depth })
     } else if !crate::base::walk::has_unevaluated(arena, result) {
         Some(MemoOutcome::Solved(result))
     } else {
@@ -1971,69 +2026,15 @@ fn integrate_node_uncached(
             // Try when there are exactly 2 dependent factors:
             // one that's a by-parts candidate (u), and one that's directly
             // integrable (dv).
-            if dependent.len() == 2 {
-                // Try LIATE-preferred ordering: factor with lower LIATE rank as u first.
-                let orderings = {
-                    let r0 = liate_rank(arena, dependent[0], var, var_sym);
-                    let r1 = liate_rank(arena, dependent[1], var, var_sym);
-                    tracing::debug!(u_rank = r0, dv_rank = r1, "by-parts LIATE ordering");
-                    if r0 <= r1 {
-                        [(0usize, 1usize), (1, 0)]
-                    } else {
-                        [(1, 0), (0, 1)]
-                    }
-                };
-                for (u_idx, dv_idx) in orderings {
-                    let u = dependent[u_idx];
-                    let dv = dependent[dv_idx];
-
-                    // Check that u is a by-parts candidate (polynomial or ln)
-                    if !is_by_parts_candidate(arena, u, var, var_sym) {
-                        continue;
-                    }
-
-                    // Check that dv is directly integrable (deep check: reject
-                    // results that contain nested unevaluated Integral nodes,
-                    // e.g. Add(Integral(..), Integral(..)) which has a non-
-                    // Integral top node but is still not fully evaluated).
-                    let v = integrate_node(arena, dv, var, var_sym, depth - 1);
-                    if crate::base::walk::has_unevaluated(arena, v) {
-                        tracing::trace!(
-                            "by-parts: v = ∫dv has unevaluated nodes, skipping this ordering"
-                        );
-                        continue; // dv not integrable
-                    }
-
-                    // Compute du = d(u)/dx
-                    let du = crate::transforms::diff::diff(arena, u, var);
-
-                    // Compute ∫ v·du dx
-                    let v_du = arena.mul(&[v, du]);
-                    let integral_v_du = integrate_node(arena, v_du, var, var_sym, depth - 1);
-
-                    // Check if the remaining integral was resolved (deep check:
-                    // an Add of unevaluated Integrals should not be accepted).
-                    if crate::base::walk::has_unevaluated(arena, integral_v_du) {
-                        tracing::trace!(
-                            "by-parts: ∫v·du has unevaluated nodes, skipping this ordering"
-                        );
-                        continue; // Remaining integral not solvable
-                    }
-
-                    // Success: ∫ u·dv = u·v - ∫ v·du
-                    tracing::debug!("integration by parts succeeded");
-                    let u_v = arena.mul(&[u, v]);
-                    let result = arena.sub(u_v, integral_v_du);
-
-                    // Re-include constant factors if any
-                    if constants.is_empty() {
-                        return result;
-                    } else {
-                        let mut all = constants.clone();
-                        all.push(result);
-                        return arena.mul(&all);
-                    }
-                }
+            if dependent.len() == 2
+                && let Some(result) = stage!(
+                    arena,
+                    "by_parts",
+                    expr,
+                    try_by_parts_pair(arena, &dependent, var, var_sym, depth)
+                )
+            {
+                return wrap_with_constants(arena, result, &constants);
             }
 
             // ── Cyclic IBP: ∫ exp·sin, ∫ exp·cos, etc. ────────────
@@ -3534,8 +3535,16 @@ fn try_u_substitution(
                 if !contains_var(arena, cancelled, var_sym) {
                     cancelled
                 } else {
-                    let trig = arena.trigsimp_expr(cancelled);
-                    let trig = crate::transforms::eval::eval(arena, trig);
+                    // No rewriting of `sin`, `cos`, … can make a quotient
+                    // that provably depends on `var` constant.
+                    let varies = var_outside_trig_arguments(arena, cancelled, var_sym)
+                        || varies_numerically(arena, cancelled, var);
+                    let trig = if varies {
+                        cancelled
+                    } else {
+                        let trig = arena.trigsimp_expr(cancelled);
+                        crate::transforms::eval::eval(arena, trig)
+                    };
                     if !contains_var(arena, trig, var_sym) {
                         trig
                     } else {
@@ -3591,6 +3600,87 @@ fn try_u_substitution(
         }
     }
     None
+}
+
+/// Does `var` occur in `q` outside the arguments of its trigonometric and
+/// hyperbolic functions (`x²·sin x`, `eˣ/cos x`)?  `trigsimp` rewrites
+/// those functions only, so it cannot make such a `q` free of `var`: on a
+/// sample of the Rubi suite (0.31) none of 4,550 such quotients became
+/// constant (the canonical form already cancels equal factors).
+fn var_outside_trig_arguments(arena: &Arena, q: ExprId, var_sym: SymbolId) -> bool {
+    let mut stack = vec![q];
+    let mut seen: FxHashSet<ExprId> = FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        match arena.node(id) {
+            ExprNode::Sin(_)
+            | ExprNode::Cos(_)
+            | ExprNode::Tan(_)
+            | ExprNode::Sinh(_)
+            | ExprNode::Cosh(_)
+            | ExprNode::Tanh(_) => {}
+            ExprNode::Symbol(s) if *s == var_sym => return true,
+            node => node.for_each_child(|c| stack.push(c)),
+        }
+    }
+    false
+}
+
+/// Sample points for [`varies_numerically`].
+const VARIES_POINTS: [(i64, i64); 2] = [(3, 7), (5, 11)];
+
+/// Does `q` provably depend on `var`: does it take clearly different
+/// values (to 15 digits) at two sample points, with its other free symbols
+/// at the generic values of [`FTC_PARAMETER_VALUES`]?  `false` when it
+/// does not evaluate at both points or the values agree.  No rewriting
+/// can then make `q` free of `var`, and [`try_u_substitution`] skips
+/// `trigsimp`, which tries seven strategies on each quotient and found a
+/// constant in 1 of 9,500 calls on a sample of the Rubi suite (0.31;
+/// `sin 2x/(8 sin x cos x) = 1/4`), while taking 50 % of the time of the
+/// integrands that stay unevaluated.
+fn varies_numerically(arena: &mut Arena, q: ExprId, var: ExprId) -> bool {
+    let mut params: Vec<(String, ExprId)> = Vec::new();
+    for s in crate::base::walk::free_symbols(arena, q) {
+        if s == var {
+            continue;
+        }
+        let ExprNode::Symbol(sid) = *arena.node(s) else {
+            return false;
+        };
+        params.push((arena.symbol_name(sid).to_owned(), s));
+    }
+    if params.len() > FTC_PARAMETER_VALUES.len() {
+        return false;
+    }
+    params.sort();
+    let mut bound = q;
+    for (k, &(_, s)) in params.iter().enumerate() {
+        let (p, d) = FTC_PARAMETER_VALUES[k];
+        let value = arena.rational(p, d);
+        bound = crate::transforms::subs::subs(arena, bound, s, value);
+    }
+    let mut values = Vec::with_capacity(VARIES_POINTS.len());
+    for &(p, d) in &VARIES_POINTS {
+        let point = arena.rational(p, d);
+        let at = crate::transforms::subs::subs(arena, bound, var, point);
+        let at = crate::transforms::eval::eval(arena, at);
+        if crate::base::walk::has_unevaluated(arena, at) {
+            return false;
+        }
+        let Ok(v) = crate::transforms::evalf::evalf_complex(arena, at, 15) else {
+            return false;
+        };
+        values.push(v);
+    }
+    let (Some(scale), Some(gap)) = (
+        crate::transforms::evalf::abs_to_f64(&values[0]),
+        crate::transforms::evalf::distance_to_f64(&values[0], &values[1]),
+    ) else {
+        return false;
+    };
+    scale.is_finite() && gap.is_finite() && gap > 1e-8 * scale.max(1.0)
 }
 
 /// Collect candidate `u`-expressions from a single factor.
@@ -3740,6 +3830,204 @@ fn try_substitution_strategies(
         return Some(r);
     }
     None
+}
+
+/// `(c, n)` with `g = c·xⁿ` for `c`, `n` free of `x`, `n ≠ 0` (`x` itself,
+/// `xⁿ`, `c·x`, `c·xⁿ`).
+fn monomial_parts(
+    arena: &mut Arena,
+    g: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<(ExprId, ExprId)> {
+    let power = |arena: &Arena, f: ExprId| -> Option<ExprId> {
+        if f == var {
+            return Some(arena.one);
+        }
+        match arena.node(f) {
+            ExprNode::Pow(b, e)
+                if *b == var
+                    && !contains_var(arena, *e, var_sym)
+                    && !arena.is_zero_structural(*e) =>
+            {
+                Some(*e)
+            }
+            _ => None,
+        }
+    };
+    if let Some(n) = power(arena, g) {
+        return Some((arena.one, n));
+    }
+    let ExprNode::Mul(factors) = arena.node(g).clone() else {
+        return None;
+    };
+    let mut n: Option<ExprId> = None;
+    let mut rest: SmallVec<[ExprId; 4]> = SmallVec::new();
+    for f in factors {
+        if let Some(k) = power(arena, f) {
+            if n.replace(k).is_some() {
+                return None;
+            }
+        } else if contains_var(arena, f, var_sym) {
+            return None;
+        } else {
+            rest.push(f);
+        }
+    }
+    let c = match rest.len() {
+        0 => arena.one,
+        1 => rest[0],
+        _ => arena.mul(&rest),
+    };
+    Some((c, n?))
+}
+
+/// `∫ h(x, L) dx` for `L = ln(c·xⁿ)` inside a trigonometric, hyperbolic or
+/// exponential function (`sin(ln x)`, `x²·cos(a + b·ln(c·xⁿ))²`,
+/// `sinh(ln x)`), `x` occurring elsewhere only in powers: with `w = L`,
+/// `x = K·e^{w/n}` (`K = c^{−1/n}`) and `dx = x/n·dw`, the integral is
+/// `∫ h(K·e^{w/n}, w)·K·e^{w/n}/n dw`, an exponential times trigonometric
+/// functions of `w`.  Every term of the integrand and of its answer
+/// carries `Kᵐ` with `e^{m·w/n}`, and `Kᵐ·e^{m·w/n} = xᵐ`: the answer in
+/// `x` and `L` is the same for every `K`, so it is computed with `K = 1`
+/// and brought back with `e^{q·w} = x^{q·n}` (it satisfies `F′ = h` along
+/// the curve of every `K`, whatever `c` and `n` are; the self-check
+/// confirms it).  Up to 0.31 `∫ sin(ln x) dx` stayed unevaluated; SymPy:
+/// `x·sin(log x)/2 − x·cos(log x)/2`.
+fn try_log_substitution(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<ExprId> {
+    let order = crate::base::walk::post_order_ids(arena, expr);
+    // The logarithm: one `ln(g)` of `x`, no other.
+    let mut log: Option<(ExprId, ExprId)> = None;
+    for &id in &order {
+        if let ExprNode::Ln(g) = *arena.node(id)
+            && contains_var(arena, g, var_sym)
+        {
+            match log {
+                Some((l, _)) if l != id => return None,
+                _ => log = Some((id, g)),
+            }
+        }
+    }
+    let (ln_node, g) = log?;
+    let inside_function = order.iter().any(|&id| {
+        matches!(arena.node(id),
+            ExprNode::Sin(a) | ExprNode::Cos(a) | ExprNode::Tan(a) | ExprNode::Sinh(a)
+            | ExprNode::Cosh(a) | ExprNode::Tanh(a) | ExprNode::Exp(a)
+            if crate::base::walk::contains(arena, *a, ln_node))
+    });
+    if !inside_function {
+        return None;
+    }
+    let w = arena.symbol("__lw");
+    let ExprNode::Symbol(w_sym) = *arena.node(w) else {
+        return None;
+    };
+    let Some((_, n)) = monomial_parts(arena, g, var, var_sym) else {
+        return log_of_linear_substitution(arena, expr, ln_node, g, w, var, var_sym);
+    };
+    // x^m → e^{m·w/n}, x → e^{w/n}.
+    let x_power = |arena: &mut Arena, m: ExprId| -> ExprId {
+        let mw = arena.mul(&[m, w]);
+        let mwn = arena.div(mw, n);
+        arena.exp(mwn)
+    };
+    let mut sub = arena.subs_structural(expr, ln_node, w);
+    for id in crate::base::walk::post_order_ids(arena, sub) {
+        if let ExprNode::Pow(b, m) = *arena.node(id)
+            && b == var
+            && !contains_var(arena, m, var_sym)
+        {
+            let r = x_power(arena, m);
+            sub = arena.subs_structural(sub, id, r);
+        }
+    }
+    let one = arena.one;
+    let x_w = x_power(arena, one);
+    sub = arena.subs_structural(sub, var, x_w);
+    if contains_var(arena, sub, var_sym) {
+        return None;
+    }
+    let integrand = arena.mul(&[sub, x_w]);
+    let integrand = arena.div(integrand, n);
+    let integrand = crate::transforms::eval::eval(arena, integrand);
+    let res = integrate_nested(arena, integrand, w)?;
+    // e^{q·w + r} → e^r·x^{q·n}.
+    let mut back = res;
+    for id in crate::base::walk::post_order_ids(arena, res) {
+        if let ExprNode::Exp(arg) = *arena.node(id)
+            && crate::base::walk::has_free_symbol(arena, arg, w_sym)
+        {
+            let (q, r) = symbolic_linear_coeff_of(arena, arg, w, w_sym)?;
+            let qn = arena.mul(&[q, n]);
+            let x_qn = arena.pow(var, qn);
+            let e_r = arena.exp(r);
+            let repl = arena.mul(&[e_r, x_qn]);
+            back = arena.subs_structural(back, id, repl);
+        }
+    }
+    let back = crate::transforms::eval::eval(arena, back);
+    let back = arena.subs_structural(back, w, ln_node);
+    let back = crate::transforms::eval::eval(arena, back);
+    if candidate_rejected(arena, expr, back, var, var_sym) {
+        tracing::debug!("integrate: rejecting unverified logarithmic-substitution closed form");
+        return None;
+    }
+    Some(back)
+}
+
+/// [`try_log_substitution`] for `L = ln(g)` with `g = α·x + β` linear
+/// (`β ≠ 0`) and `x` nowhere outside `L` (`sin(ln(a + b·x))`): `w = L`,
+/// `dx = e^w/α·dw`, and the answer comes back with `e^{q·w} = g^q`.
+fn log_of_linear_substitution(
+    arena: &mut Arena,
+    expr: ExprId,
+    ln_node: ExprId,
+    g: ExprId,
+    w: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<ExprId> {
+    let ExprNode::Symbol(w_sym) = *arena.node(w) else {
+        return None;
+    };
+    let (alpha, beta) = symbolic_linear_coeff_of(arena, g, var, var_sym)?;
+    if arena.is_zero_structural(beta) {
+        return None;
+    }
+    let sub = arena.subs_structural(expr, ln_node, w);
+    if contains_var(arena, sub, var_sym) {
+        return None;
+    }
+    let e_w = arena.exp(w);
+    let integrand = arena.mul(&[sub, e_w]);
+    let integrand = arena.div(integrand, alpha);
+    let integrand = crate::transforms::eval::eval(arena, integrand);
+    let res = integrate_nested(arena, integrand, w)?;
+    let mut back = res;
+    for id in crate::base::walk::post_order_ids(arena, res) {
+        if let ExprNode::Exp(arg) = *arena.node(id)
+            && crate::base::walk::has_free_symbol(arena, arg, w_sym)
+        {
+            let (q, r) = symbolic_linear_coeff_of(arena, arg, w, w_sym)?;
+            let g_q = arena.pow(g, q);
+            let e_r = arena.exp(r);
+            let repl = arena.mul(&[e_r, g_q]);
+            back = arena.subs_structural(back, id, repl);
+        }
+    }
+    let back = crate::transforms::eval::eval(arena, back);
+    let back = arena.subs_structural(back, w, ln_node);
+    let back = crate::transforms::eval::eval(arena, back);
+    if candidate_rejected(arena, expr, back, var, var_sym) {
+        tracing::debug!("integrate: rejecting unverified logarithmic-substitution closed form");
+        return None;
+    }
+    Some(back)
 }
 
 /// Collect the `exp(k·x)` nodes of `expr` (with numeric `k`).  Returns
@@ -4293,6 +4581,68 @@ fn try_by_parts_poly_times_pair(
     }
     let uv = arena.mul(&[u, v]);
     Some(arena.sub(uv, rest))
+}
+
+/// Integration by parts for a product of two dependent factors, one a
+/// by-parts candidate `u` (a polynomial, a logarithm or an inverse
+/// trigonometric function) and the other `dv` with a closed form:
+/// `∫ u·dv = u·v − ∫ v·du`.  The LIATE-preferred ordering is tried first.
+fn try_by_parts_pair(
+    arena: &mut Arena,
+    dependent: &[ExprId],
+    var: ExprId,
+    var_sym: SymbolId,
+    depth: usize,
+) -> Option<ExprId> {
+    let orderings = {
+        let r0 = liate_rank(arena, dependent[0], var, var_sym);
+        let r1 = liate_rank(arena, dependent[1], var, var_sym);
+        tracing::debug!(u_rank = r0, dv_rank = r1, "by-parts LIATE ordering");
+        if r0 <= r1 {
+            [(0usize, 1usize), (1, 0)]
+        } else {
+            [(1, 0), (0, 1)]
+        }
+    };
+    for (u_idx, dv_idx) in orderings {
+        let u = dependent[u_idx];
+        let dv = dependent[dv_idx];
+
+        // Check that u is a by-parts candidate (polynomial or ln)
+        if !is_by_parts_candidate(arena, u, var, var_sym) {
+            continue;
+        }
+
+        // Check that dv is directly integrable (deep check: reject
+        // results that contain nested unevaluated Integral nodes,
+        // e.g. Add(Integral(..), Integral(..)) which has a non-
+        // Integral top node but is still not fully evaluated).
+        let v = integrate_node(arena, dv, var, var_sym, depth - 1);
+        if crate::base::walk::has_unevaluated(arena, v) {
+            tracing::trace!("by-parts: v = ∫dv has unevaluated nodes, skipping this ordering");
+            continue; // dv not integrable
+        }
+
+        // Compute du = d(u)/dx
+        let du = crate::transforms::diff::diff(arena, u, var);
+
+        // Compute ∫ v·du dx
+        let v_du = arena.mul(&[v, du]);
+        let integral_v_du = integrate_node(arena, v_du, var, var_sym, depth - 1);
+
+        // Check if the remaining integral was resolved (deep check:
+        // an Add of unevaluated Integrals should not be accepted).
+        if crate::base::walk::has_unevaluated(arena, integral_v_du) {
+            tracing::trace!("by-parts: ∫v·du has unevaluated nodes, skipping this ordering");
+            continue; // Remaining integral not solvable
+        }
+
+        // Success: ∫ u·dv = u·v - ∫ v·du
+        tracing::debug!("integration by parts succeeded");
+        let u_v = arena.mul(&[u, v]);
+        return Some(arena.sub(u_v, integral_v_du));
+    }
+    None
 }
 
 /// `∫ P₁(x)·P₂(x)·…·g(x) dx` with two or more polynomial factors: their
@@ -4849,14 +5199,30 @@ fn try_piecewise_wrap(
         return result;
     }
 
+    // A result that is already such a case analysis — from the wrap of a
+    // nested `integrate`, as a substitution re-enters the pipeline — keeps
+    // it: its degenerate values count as handled, and only its generic
+    // branch is searched for denominators.  `∫ sin(a·ln x) dx` came out with
+    // the cases `a = i` and `a = −i` nested twice each (0.31).
+    let mut generic = result;
+    let mut handled: Vec<(ExprId, ExprId)> = Vec::new();
+    while let ExprNode::Piecewise(pairs) = arena.node(generic).clone()
+        && pairs.len() == 2
+        && pairs[1].1 == arena.bool_true
+        && let ExprNode::Ne(p, v) = *arena.node(pairs[0].1)
+    {
+        handled.push((p, v));
+        handled.push((v, p));
+        generic = pairs[0].0;
+    }
+
     // Collect denominator expressions from the result.
-    let denoms = collect_denominators(arena, result);
+    let denoms = collect_denominators(arena, generic);
     if denoms.is_empty() {
         return result;
     }
 
     let mut wrapped = result;
-    let mut handled: Vec<(ExprId, ExprId)> = Vec::new();
     // The handled pairs with the denominator they came from.
     let mut handled_by_denom: Vec<(ExprId, ExprId, ExprId)> = Vec::new();
 
@@ -4917,6 +5283,16 @@ fn try_piecewise_wrap(
                 {
                     continue;
                 }
+                // Nor for a value that an enclosing degenerate case rules
+                // out: inside the branch `c = b²/(4a)` the parameter `a` is
+                // not 0.  Its integrand at `a = 0` came out as `0` (the
+                // `1/(b²x⁴/(4·0) + …)²` of the substituted denominator is
+                // `1/zoo²`), and `∫ x²(d + e·x² + f·x⁴ + g·x⁶)/(a + b·x² +
+                // c·x⁴)² dx` carried an unreachable `Piecewise(…, (0, True))`
+                // (0.31).
+                if excluded_by_enclosing_case(arena, *sym_expr, degen_val) {
+                    continue;
+                }
 
                 // Filter: skip if substituting this value makes the original
                 // integrand singular (these are poles of the problem, not
@@ -4933,7 +5309,21 @@ fn try_piecewise_wrap(
                     integrand = %arena.display(integrand_at_degen),
                     "try_piecewise_wrap: integrating a degenerate case"
                 );
-                let degen_result = integrate(arena, integrand_at_degen, var);
+                let nonzero = NonzeroInCase::enter(arena, collect_denominators(arena, degen_val));
+                // A value that real parameters cannot take (`b = 3i/n`, the
+                // resonance of `∫ x²·sin(a + b·ln(c·xⁿ)) dx`) gets a small
+                // step budget: on the Rubi suite (0.31) such cases were 2,932
+                // failed re-integrations taking 34 s (SymPy leaves them
+                // unevaluated too) and 223 successes of at most 18 steps.
+                let _cap = (!real_at_generic_values(arena, degen_val))
+                    .then(|| StepCap::enter(NONREAL_CASE_STEPS));
+                let degen_result = stage!(
+                    arena,
+                    "degenerate_case",
+                    integrand_at_degen,
+                    integrate(arena, integrand_at_degen, var)
+                );
+                drop(nonzero);
                 let degen_result = crate::transforms::eval::eval(arena, degen_result);
 
                 // Skip if re-integration returned unevaluated, also in part:
@@ -4956,6 +5346,100 @@ fn try_piecewise_wrap(
     }
 
     wrapped
+}
+
+/// The step budget ([`StepCap`]) of a degenerate case whose value is not
+/// real at real parameter values.
+const NONREAL_CASE_STEPS: usize = 20;
+
+/// Is the parameter value `val` real for some real values of its own
+/// parameters: the generic values of [`FTC_PARAMETER_VALUES`] (in name
+/// order) with every combination of signs (`sqrt(−a/b)` is real for
+/// `a/b < 0`; `3i/n`, `(−1/2 + i√3/2)·∛(−a/b)` are real for none)?
+/// `true` when it does not evaluate, or has more than three parameters.
+fn real_at_generic_values(arena: &mut Arena, val: ExprId) -> bool {
+    let mut params: Vec<(String, ExprId)> = Vec::new();
+    for s in crate::base::walk::free_symbols(arena, val) {
+        let ExprNode::Symbol(sid) = *arena.node(s) else {
+            return true;
+        };
+        params.push((arena.symbol_name(sid).to_owned(), s));
+    }
+    if params.len() > 3 {
+        return true;
+    }
+    params.sort();
+    for signs in 0u32..(1 << params.len()) {
+        let mut bound = val;
+        for (k, &(_, s)) in params.iter().enumerate() {
+            let (p, q) = FTC_PARAMETER_VALUES[k];
+            let p = if signs & (1 << k) == 0 { p } else { -p };
+            let value = arena.rational(p, q);
+            bound = crate::transforms::subs::subs(arena, bound, s, value);
+        }
+        let bound = crate::transforms::eval::eval(arena, bound);
+        match crate::transforms::evalf::evalf_complex(arena, bound, 15) {
+            Ok(v) if !crate::transforms::evalf::is_real_to_digits(&v, 12) => {}
+            _ => return true,
+        }
+    }
+    false
+}
+
+thread_local! {
+    /// The denominators of the degenerate values of the enclosing
+    /// [`try_piecewise_wrap`] cases on this thread (`a` for `c = b²/(4a)`):
+    /// non-zero wherever the case's answer applies.
+    static NONZERO_IN_CASE: std::cell::RefCell<Vec<(usize, ExprId)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The denominators of a degenerate value pushed onto [`NONZERO_IN_CASE`]
+/// for the re-integration of its case; popped on drop, also when a panic
+/// unwinds.
+struct NonzeroInCase(usize);
+
+impl NonzeroInCase {
+    fn enter(arena: &Arena, denominators: Vec<ExprId>) -> Self {
+        let key = std::ptr::from_ref::<Arena>(arena) as usize;
+        NONZERO_IN_CASE.with(|s| {
+            let mut s = s.borrow_mut();
+            let len = s.len();
+            s.extend(denominators.into_iter().map(|d| (key, d)));
+            NonzeroInCase(len)
+        })
+    }
+}
+
+impl Drop for NonzeroInCase {
+    fn drop(&mut self) {
+        let _ = NONZERO_IN_CASE.try_with(|s| {
+            if let Ok(mut s) = s.try_borrow_mut() {
+                s.truncate(self.0);
+            }
+        });
+    }
+}
+
+/// Does `sym = val` make one of the enclosing cases' non-zero
+/// denominators ([`NONZERO_IN_CASE`]) vanish?
+fn excluded_by_enclosing_case(arena: &mut Arena, sym: ExprId, val: ExprId) -> bool {
+    let key = std::ptr::from_ref::<Arena>(arena) as usize;
+    let nonzero: Vec<ExprId> = NONZERO_IN_CASE.with(|s| {
+        s.borrow()
+            .iter()
+            .filter(|&&(k, _)| k == key)
+            .map(|&(_, d)| d)
+            .collect()
+    });
+    nonzero.into_iter().any(|d| {
+        crate::base::walk::contains(arena, d, sym) && {
+            let at = crate::transforms::subs::subs(arena, d, sym, val);
+            let at = crate::transforms::expand::expand(arena, at);
+            let at = crate::transforms::eval::eval(arena, at);
+            arena.is_zero_structural(at)
+        }
+    })
 }
 
 /// Is every point with `sym = val` already a handled degenerate case of
@@ -5695,6 +6179,16 @@ fn check_antiderivative(
     if verdict != FtcVerdict::Verified || !bound.may_be_complex {
         return verdict;
     }
+    // The complex round tells apart forms that are not analytic in the
+    // parameters; an `f` and `F` built from analytic functions of them
+    // alone agree there as they do at the real values (the continuation
+    // argument of [`complex_round_differs`]).  It was half of the cost of
+    // the check (0.31: 4.5 of 9.7 s on a sample of the Rubi suite's
+    // answers, and none of its 72,000 integrands met a candidate the
+    // round rejected that is analytic in this sense).
+    if analytic_in_parameters(arena, f, var_sym) && analytic_in_parameters(arena, big_f, var_sym) {
+        return verdict;
+    }
     let Some(complex) = bind_parameters(arena, f, big_f, var, ParameterValues::Complex) else {
         return verdict;
     };
@@ -5708,6 +6202,66 @@ fn check_antiderivative(
         return FtcVerdict::Wrong;
     }
     verdict
+}
+
+/// Is `e` analytic in its parameters (the free symbols other than the
+/// variable): does every node that is not an analytic function of its
+/// arguments — `|·|`, `sign`, `re`, `arg`, `Piecewise`, a relation, an
+/// unknown function, … — have no parameter below it?  (`ln|x|` is;
+/// `ln|a·x + 1|` and `sign(a)` are not.)  Elementary functions, `erf`,
+/// `Ei`, `li`, `Si`, `Ci`, `Γ`, `ζ` and `RootSum` (a symmetric function of
+/// the roots) count as analytic: their principal branches are analytic off
+/// their cuts, and crossing a cut changes `F` by a constant, not `F′`.
+fn analytic_in_parameters(arena: &Arena, e: ExprId, var_sym: SymbolId) -> bool {
+    let mut has_param: FxHashMap<ExprId, bool> = FxHashMap::default();
+    for id in crate::base::walk::post_order_ids(arena, e) {
+        let node = arena.node(id);
+        let mut below = matches!(node, ExprNode::Symbol(s) if *s != var_sym);
+        node.for_each_child(|c| below |= has_param.get(&c).copied().unwrap_or(false));
+        let analytic = matches!(
+            node,
+            ExprNode::Num(_)
+                | ExprNode::Symbol(_)
+                | ExprNode::Pi
+                | ExprNode::E
+                | ExprNode::ImaginaryUnit
+                | ExprNode::EulerGamma
+                | ExprNode::Catalan
+                | ExprNode::GoldenRatio
+                | ExprNode::Add(_)
+                | ExprNode::Mul(_)
+                | ExprNode::Pow(..)
+                | ExprNode::Neg(_)
+                | ExprNode::Sin(_)
+                | ExprNode::Cos(_)
+                | ExprNode::Tan(_)
+                | ExprNode::Exp(_)
+                | ExprNode::Ln(_)
+                | ExprNode::Asin(_)
+                | ExprNode::Acos(_)
+                | ExprNode::Atan(_)
+                | ExprNode::Sinh(_)
+                | ExprNode::Cosh(_)
+                | ExprNode::Tanh(_)
+                | ExprNode::Asinh(_)
+                | ExprNode::Acosh(_)
+                | ExprNode::Atanh(_)
+                | ExprNode::Gamma(_)
+                | ExprNode::Erf(_)
+                | ExprNode::Erfc(_)
+                | ExprNode::Si(_)
+                | ExprNode::Ci(_)
+                | ExprNode::Ei(_)
+                | ExprNode::Li(_)
+                | ExprNode::Zeta(_)
+                | ExprNode::RootSum(..)
+        );
+        if below && !analytic {
+            return false;
+        }
+        has_param.insert(id, below);
+    }
+    true
 }
 
 /// The points of [`FTC_SAMPLE_POINTS`] and [`FTC_RETRY_POINTS`] where the
@@ -5935,10 +6489,31 @@ fn evaluates_at_a_sample_point(arena: &mut Arena, e: ExprId, var: ExprId) -> boo
         })
 }
 
+/// `e` with every `RootSum` whose polynomial and body are numeric and whose
+/// body is a rational function of the root replaced by its exact value
+/// ([`crate::calculus::risch::log_to_real::numeric_rootsum_rational_body`]):
+/// the derivative of a `RootSum` answer at a sample point.  `eval` would
+/// solve the polynomial in radicals at every point instead.
+fn exact_numeric_root_sums(arena: &mut Arena, e: ExprId) -> ExprId {
+    let order = crate::base::walk::post_order_ids(arena, e);
+    let mut out = e;
+    for id in order {
+        if let ExprNode::RootSum(poly, body, sumvar) = *arena.node(id)
+            && let Some(value) = crate::calculus::risch::log_to_real::numeric_rootsum_rational_body(
+                arena, poly, body, sumvar,
+            )
+        {
+            out = arena.subs_structural(out, id, value);
+        }
+    }
+    out
+}
+
 /// A variable-free expression evaluated to [`FTC_CHECK_DIGITS`] correct
 /// digits (after exact simplification); `None` when it does not evaluate
 /// to a finite complex number.
 fn numeric_value(arena: &mut Arena, e: ExprId) -> Option<crate::base::bigcomplex::Complex> {
+    let e = exact_numeric_root_sums(arena, e);
     let e = crate::transforms::eval::eval(arena, e);
     if crate::base::walk::has_unevaluated(arena, e) {
         return None;
@@ -5950,7 +6525,8 @@ fn numeric_value(arena: &mut Arena, e: ExprId) -> Option<crate::base::bigcomplex
 /// [`FTC_CHECK_DIGITS`] so that a ~1e-13 discrepancy is not lost; `None`
 /// when it does not evaluate to a finite complex number.
 fn residual_abs(arena: &mut Arena, residual: ExprId) -> Option<f64> {
-    let r = crate::transforms::eval::eval(arena, residual);
+    let r = exact_numeric_root_sums(arena, residual);
+    let r = crate::transforms::eval::eval(arena, r);
     if crate::base::walk::has_unevaluated(arena, r) {
         return None;
     }
@@ -7138,6 +7714,34 @@ mod tests {
                 constant_is_real(a, e, &mut reals)
             });
             assert_eq!(got, expected, "constant_is_real({src})");
+        }
+    }
+
+    /// Which candidates the complex round of the self-check can tell apart
+    /// from their real-parameter look-alikes: those with a non-analytic
+    /// function of a parameter (`|a·x + 1|`, `sign(a)`); `|x|` alone, and
+    /// analytic functions of the parameters, cannot differ there.
+    #[test]
+    fn analytic_in_parameters_finds_real_parameter_forms() {
+        let ctx = crate::api::context::Context::new();
+        for (src, analytic) in [
+            ("ln(a*x + 1)/a", true),
+            ("ln(abs(x)) + a*x", true),
+            ("atan(x/sqrt(a))/sqrt(a) + exp(b*x)*sin(x)", true),
+            ("ln(abs(a*x + 1))/a", false),
+            ("sign(a)*x", false),
+            ("abs(a)*x^2/2", false),
+            ("re(a)*x", false),
+        ] {
+            let e = ctx.parse(src).unwrap().id();
+            let got = ctx.with_arena_mut(|a| {
+                let x = a.symbol("x");
+                let ExprNode::Symbol(x_sym) = *a.node(x) else {
+                    unreachable!()
+                };
+                analytic_in_parameters(a, e, x_sym)
+            });
+            assert_eq!(got, analytic, "{src}");
         }
     }
 

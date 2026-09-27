@@ -58,6 +58,20 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ### Added
 
+- **`polylog(s, z)` of a real order at non-real `z` and real `|z| > 1`**
+  (every order, integers included): the defining series, the expansion
+  in `ln z` (DLMF 25.12.12) and the inversion formula with the Hurwitz
+  zeta function (DLMF 25.12.13), every truncation bounded; on the cut
+  `z > 1` the limit from below, as SymPy and mpmath.
+  `polylog(3/2, −3/16 − 5/18·i)`, `polylog(2, 3)`, `polylog(1/3, −5)` were
+  "not yet supported".  A hunter over 6,000 cases at 16/30/60 digits
+  against mpmath: 0 wrong; 6,699 refusals where mpmath is stable → 0.
+  Complex orders are still refused.  Rubi self-test: 55,120 → 55,475
+  verified (undecided 1,097 → 742), 0 wrong.
+- **`asec`, `acsc`, `acoth`, `asech`, `acsch`** (and `arc…`) parse, to
+  SymPy's principal definitions (`asec(x) = acos(1/x)`, …).
+- **`∫ f(ln x)`**: `∫ sin(ln x) dx = x·sin(ln x)/2 − x·cos(ln x)/2`, also
+  `x^m·trig(a + b·ln(c·xⁿ))^p`, `sinh(ln x)`, `sin(ln(a + b·x))`.
 - **Rational functions with parameters integrate over ℚ(p₁, …)**:
   Hermite reduction and the logarithmic part run over the parameters'
   field (`src/calculus/risch/param_rational.rs`).  Principal logarithms
@@ -91,6 +105,22 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ### Fixed
 
+- **The integrator spends less than half its former time** (Rubi harness
+  72,121 integrands: 510 → 231 CPU s): parameters that occur only in a
+  numerator stay in the rational integrator's coefficient field (up to
+  eight): `∫ x²(d + e·x² + f·x⁴ + g·x⁶)/(a + b·x² + c·x⁴)² dx` takes
+  0.03 s and is one `RootSum` (1 s and 56 KB piece by piece); the
+  self-check sums numeric `RootSum`s exactly and skips its
+  complex-parameter round for candidates analytic in the parameters;
+  u-substitution calls `trigsimp` only on quotients that could be
+  constant; degenerate cases skip values an enclosing case rules out.
+  `∫ sinh x·tanh 4x dx` is about 400 characters (it was 140 KB of
+  `cos(π/8)` products: a closed form over 2,000 nodes gives way to its
+  `RootSum`).  **Rubi: 14,117 → 14,336 verified**, 0 wrong.
+- **Matrix pivots at algebraic numbers outside ℚ(radicals, i)** reach the
+  certified test and the minimal polynomial: `rank` of
+  `[[∛(−2) − ∛2·(1/2 + √3·i/2), 0], [0, 1]]` was 2.  `together` of `0/0`
+  is `nan` (it was `zoo`).
 - **An integrand that integrated in one form stayed unevaluated in an
   equivalent one** (a normal-form hunter: 1,349 form gaps and 137 base
   gaps in 2,000 cases → 0, 0 wrong at real and complex parameters):

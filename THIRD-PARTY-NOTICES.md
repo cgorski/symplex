@@ -85,6 +85,7 @@ DAMAGE.
 |---|---|---|
 | `src/transforms/evalf/lambertw.rs` (every branch over ℂ: branch-point and asymptotic starting values, Halley iteration), and the `lambert_wm1` start values of the `f64` runtime | `lambertw`, `_lambertw_series`, `_lambertw_approx_hybrid` in `mpmath/functions/functions.py` | R. M. Corless, G. H. Gonnet, D. E. G. Hare, D. J. Jeffrey, D. E. Knuth, "On the Lambert W function", *Adv. Comput. Math.* 5 (1996) 329–359 |
 | `src/transforms/evalf/factorials.rs` (`gamma_ratio`: a quotient of Γ values with poles cancelled in the limit) | `gammaprod` in `mpmath/functions/factorials.py` | — |
+| `src/transforms/evalf/polylog.rs` (`polylog` of a real order off `[−1, 1]`: the series, the `ln z` expansion, the inversion formula with the Hurwitz argument `½ + ln(−z)/(2πi)`) | `polylog`, `polylog_series`, `polylog_general` in `mpmath/functions/zeta.py` | DLMF 25.12.12, 25.12.13; the Euler–Maclaurin remainder as in F. Johansson, "Rigorous high-precision computation of the Hurwitz zeta function and its derivatives", *Numer. Algorithms* 69 (2015) |
 | `src/transforms/evalf/loggamma.rs` (complex `loggamma`: reflection left of `Re z = ½`, the shifted Stirling series, the branch of the shifted product fixed by an `f64` estimate of its imaginary part) | `mpc_loggamma` / `mpc_gamma` in `mpmath/libmp/gammazeta.py` | DLMF 5.11(ii) (Stirling remainder bound) |
 
 To the extent these are derivatives of mpmath, mpmath's licence applies

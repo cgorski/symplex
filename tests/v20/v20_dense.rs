@@ -265,12 +265,18 @@ fn newton_system_solves_through_partial_pivoting() {
 fn heurisch_outcomes_unchanged() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    // These reach heurisch's least-squares stage (table and Risch pass) and
-    // are left unevaluated, exactly as before the switch to Householder.
-    for e in [x.ln().sin(), x.exp() * x.tan()] {
-        let s = e.integrate(&x).to_string();
-        assert!(s.starts_with("Integral("), "{e}: {s}");
-    }
+    // This reaches heurisch's least-squares stage (table and Risch pass) and
+    // is left unevaluated, exactly as before the switch to Householder.
+    let e = x.exp() * x.tan();
+    let s = e.integrate(&x).to_string();
+    assert!(s.starts_with("Integral("), "{e}: {s}");
+    // `∫ sin(ln x) dx` was a second such case until 0.31, whose integrator
+    // substitutes `x = e^w` before heurisch is reached (SymPy:
+    // `integrate(sin(log(x)), x)` → `x*sin(log(x))/2 - x*cos(log(x))/2`).
+    assert_eq!(
+        x.ln().sin().integrate(&x).to_string(),
+        "-1/2*x*cos(ln(x)) + 1/2*x*sin(ln(x))"
+    );
     // `∫ eˣ·cos²x dx` was a third case until 0.31, whose integrator reduces
     // the power to `(1 + cos 2x)/2` before heurisch is reached (SymPy:
     // `integrate(exp(x)*cos(x)**2, x)` → `exp(x)*sin(x)**2/5 +

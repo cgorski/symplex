@@ -616,14 +616,12 @@ fn log_normal_1_2() {
         l.distribution().family().mgf(&ctx.symbol("t")).is_none(),
         "no mgf"
     );
-    // The crate's exact integrator does not close ∫₀^∞ of this density, so
-    // the generic `probability` stays an integral; the density does
-    // integrate to 1 numerically.
+    // Since 0.31 the exact integrator closes ∫₀^∞ of this density (the
+    // substitution `w = ln x`), and the total mass is exactly 1; up to 0.30
+    // it stayed an unevaluated integral.  It also integrates to 1
+    // numerically.
     let mass = total_mass(&l);
-    assert!(
-        mass.has_unevaluated(),
-        "expected an unevaluated integral, got `{mass}`"
-    );
+    assert_eq!(mass, ctx.one(), "total mass `{mass}`");
     let numeric = l
         .density(&v)
         .integrate_numeric(&v, &ctx.zero(), &ctx.infinity())

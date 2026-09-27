@@ -91,6 +91,7 @@
 //! | `Piecewise` | the chosen branch's bound when every condition up to it is decided with certainty (a comparison whose difference is outside its error ball, or of exact values); unknown otherwise, like `sign` at its threshold |
 //! | physical constants | their value's bound |
 //! | Lambert W, `W_k(z)` on every branch (`lambertw.rs`) | `2·abs(W′)·r` over the ball, `abs(W′) = abs(e^(−W)/(1 + W))`, while the first-order change is below a sixteenth of `min(1, abs(1 + W))`; unknown when the side of the branch's cut is undecidable |
+//! | `Li_s(z)` for a real `s` and `z` off `[−1, 1]` (`polylog.rs`) | the routine's own `2^(−prec−12)·abs(Li_s)` (every truncation bounded), plus `2·abs(Li_(s−1)(z)/z)·r` (at 128 bits, grown by `(1 − r/d)^(−max(1, abs(s − 2)))`, `d = abs(z − 1)`) and `2·abs(∂Li_s/∂s)·r_s` (a forward difference at 128 bits); unknown when `r > d/8` or the ball meets the cut `[1, ∞)` with an imaginary part only within its error of 0; the imaginary part is exact for an exactly real `z < −1` |
 //! | definite integrals (`f64` quadrature, see `evalf.rs`) | the Gauss–Kronrod error estimate plus the rounding of the `f64` integrand values times the length of the interval |
 //!
 //! # Branch cuts

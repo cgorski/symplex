@@ -683,9 +683,20 @@ pub(super) fn integrate_rational_function(
                     crate::transforms::integrate::integrate(arena, algebraic_remainder, var)
                 };
 
-                if !crate::base::walk::has_unevaluated(arena, alg_integral) {
+                let root_sums_available = per_factor.iter().all(|(_, s, _)| s.is_some());
+                let oversized = root_sums_available
+                    && !crate::base::walk::has_unevaluated(arena, alg_integral)
+                    && {
+                        let size = tree_size(arena, alg_integral);
+                        tracing::debug!(
+                            size,
+                            "try_risch_rational: algebraic remainder's closed form"
+                        );
+                        size > MAX_REMAINDER_SIZE
+                    };
+                if !crate::base::walk::has_unevaluated(arena, alg_integral) && !oversized {
                     terms.push(alg_integral);
-                } else if per_factor.iter().all(|(_, s, _)| s.is_some()) {
+                } else if root_sums_available {
                     for (min_poly, log_arg, real_terms) in per_factor {
                         match (real_terms, log_arg) {
                             (Some(real_terms), _) => terms.extend(real_terms),
@@ -717,6 +728,30 @@ pub(super) fn integrate_rational_function(
         Some(arena.add(&terms))
     }
 }
+
+/// The number of nodes of `e` written out as a tree (shared subexpressions
+/// counted at every occurrence, as printed), saturating.
+fn tree_size(arena: &Arena, e: ExprId) -> usize {
+    let mut size: rustc_hash::FxHashMap<ExprId, usize> = rustc_hash::FxHashMap::default();
+    for id in crate::base::walk::post_order_ids(arena, e) {
+        let mut s: usize = 1;
+        arena
+            .node(id)
+            .for_each_child(|c| s = s.saturating_add(size.get(&c).copied().unwrap_or(1)));
+        size.insert(id, s);
+    }
+    size.get(&e).copied().unwrap_or(1)
+}
+
+/// Largest closed form (nodes written out, [`tree_size`]) of the algebraic
+/// remainder that [`integrate_rational_function`] takes over its
+/// `RootSum`s.  The heuristic integrator's partial fractions over the
+/// roots of `x⁸ + 1` (`cos(π/8)`, `sin(π/8)` and their products, never
+/// collected) turned `∫ (x² − 1)(x⁸ − 1)/(2x²(x⁸ + 1)) dx`, the `u = eˣ`
+/// form of `∫ sinh x·tanh 4x dx`, into a 140 KB sum (59,000 nodes written
+/// out, 290 distinct; 0.31); the closed forms it finds that are worth
+/// having (`∫ dx/(x⁸ + 1)`, a few hundred nodes) stay far below.
+const MAX_REMAINDER_SIZE: usize = 2_000;
 
 /// `true` when the heuristic integrator cannot improve on the `RootSum` for
 /// the algebraic remainder `n/d` (`d_id` is `d` in the arena).

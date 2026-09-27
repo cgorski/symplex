@@ -867,6 +867,251 @@ pub(crate) fn vieta_rootsum_poly_body(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Numeric RootSum with a rational body: exact trace
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A Gaussian rational `re + im·i`: the coefficients of a numeric
+/// `RootSum` once the parameters of an antiderivative are bound to the
+/// complex values of the integrator's self-check.
+#[derive(Clone, Debug, PartialEq)]
+struct GaussQ {
+    re: Q,
+    im: Q,
+}
+
+impl GaussQ {
+    fn real(re: Q) -> Self {
+        GaussQ {
+            re,
+            im: Q::from_integer(BigInt::from(0)),
+        }
+    }
+
+    fn from_usize(n: usize) -> Self {
+        GaussQ::real(Q::from_integer(BigInt::from(n)))
+    }
+}
+
+impl Ring for GaussQ {
+    fn zero() -> Self {
+        GaussQ::real(Q::from_integer(BigInt::from(0)))
+    }
+    fn one() -> Self {
+        GaussQ::real(Q::from_integer(BigInt::from(1)))
+    }
+    fn is_zero(&self) -> bool {
+        num_traits::Zero::is_zero(&self.re) && num_traits::Zero::is_zero(&self.im)
+    }
+    fn add(&self, rhs: &Self) -> Self {
+        GaussQ {
+            re: &self.re + &rhs.re,
+            im: &self.im + &rhs.im,
+        }
+    }
+    fn sub(&self, rhs: &Self) -> Self {
+        GaussQ {
+            re: &self.re - &rhs.re,
+            im: &self.im - &rhs.im,
+        }
+    }
+    fn mul(&self, rhs: &Self) -> Self {
+        GaussQ {
+            re: &self.re * &rhs.re - &self.im * &rhs.im,
+            im: &self.re * &rhs.im + &self.im * &rhs.re,
+        }
+    }
+    fn neg(&self) -> Self {
+        GaussQ {
+            re: -&self.re,
+            im: -&self.im,
+        }
+    }
+}
+
+impl crate::poly::traits::EuclideanDomain for GaussQ {
+    fn div_rem(&self, other: &Self) -> (Self, Self) {
+        (crate::poly::traits::Field::div(self, other), GaussQ::zero())
+    }
+}
+
+impl crate::poly::traits::Field for GaussQ {
+    fn div(&self, other: &Self) -> Self {
+        self.mul(&other.inv())
+    }
+    /// `(a + b·i)⁻¹ = (a − b·i)/(a² + b²)`; callers only invert non-zero
+    /// elements (leading coefficients, a gcd's constant), and a zero one
+    /// gives zero rather than a panic.
+    fn inv(&self) -> Self {
+        let norm = &self.re * &self.re + &self.im * &self.im;
+        if num_traits::Zero::is_zero(&norm) {
+            return GaussQ::zero();
+        }
+        GaussQ {
+            re: &self.re / &norm,
+            im: -&self.im / &norm,
+        }
+    }
+}
+
+type GaussPoly = GenPoly<GaussQ>;
+
+/// Largest degree in the root variable [`gauss_fraction`] builds.
+const MAX_GAUSS_DEGREE: usize = 64;
+
+/// `e` as a quotient `(P, Q)` of polynomials in `t` over `ℚ(i)`, when it
+/// is built from rational numbers, `i` and `t` by sums, products and
+/// integer powers (`None` for anything else: another symbol, `√2`, `π`).
+/// Nothing is cancelled.
+fn gauss_fraction(arena: &Arena, e: ExprId, t: ExprId) -> Option<(GaussPoly, GaussPoly)> {
+    let mut cache: rustc_hash::FxHashMap<ExprId, (GaussPoly, GaussPoly)> =
+        rustc_hash::FxHashMap::default();
+    let one = GaussPoly::one();
+    for id in crate::base::walk::post_order_ids(arena, e) {
+        let value = match arena.node(id) {
+            ExprNode::Num(_) => {
+                let q = arena.as_num(id)?.clone();
+                (GaussPoly::constant(GaussQ::real(q)), one.clone())
+            }
+            ExprNode::ImaginaryUnit => {
+                let i = GaussQ {
+                    re: Q::from_integer(BigInt::from(0)),
+                    im: Q::from_integer(BigInt::from(1)),
+                };
+                (GaussPoly::constant(i), one.clone())
+            }
+            ExprNode::Symbol(_) if id == t => (GaussPoly::x(), one.clone()),
+            ExprNode::Add(children) => {
+                let mut acc = (GaussPoly::zero(), one.clone());
+                for c in children.iter() {
+                    let (p, q) = cache.get(c)?;
+                    acc = if *q == acc.1 {
+                        (acc.0.add(p), acc.1)
+                    } else {
+                        (acc.0.mul(q).add(&p.mul(&acc.1)), acc.1.mul(q))
+                    };
+                }
+                acc
+            }
+            ExprNode::Mul(children) => {
+                let mut acc = (one.clone(), one.clone());
+                for c in children.iter() {
+                    let (p, q) = cache.get(c)?;
+                    acc = (acc.0.mul(p), acc.1.mul(q));
+                }
+                acc
+            }
+            ExprNode::Neg(inner) => {
+                let (p, q) = cache.get(inner)?;
+                (p.neg(), q.clone())
+            }
+            ExprNode::Pow(base, exp) => {
+                let n = arena.as_num(*exp)?;
+                if !n.is_integer() {
+                    return None;
+                }
+                let n = i64::try_from(n.to_integer()).ok()?;
+                let k = usize::try_from(n.unsigned_abs()).ok()?;
+                let (p, q) = cache.get(base)?;
+                if k.saturating_mul(p.degree().unwrap_or(0).max(q.degree().unwrap_or(0)))
+                    > MAX_GAUSS_DEGREE
+                {
+                    return None;
+                }
+                if n >= 0 {
+                    (p.pow(k), q.pow(k))
+                } else {
+                    if p.is_zero() {
+                        return None;
+                    }
+                    (q.pow(k), p.pow(k))
+                }
+            }
+            _ => return None,
+        };
+        if value.0.degree().unwrap_or(0) > MAX_GAUSS_DEGREE
+            || value.1.degree().unwrap_or(0) > MAX_GAUSS_DEGREE
+            || value.1.is_zero()
+        {
+            return None;
+        }
+        cache.insert(id, value);
+    }
+    cache.remove(&e)
+}
+
+/// The exact value of `RootSum(poly, body, sumvar)` = `Σ_{poly(r) = 0}
+/// body(r)` when `poly` and `body` have no free symbol but `sumvar`, their
+/// coefficients are Gaussian rationals, `poly` is square-free and `body` is
+/// a rational function of the root without a pole at one: `body ≡ S mod
+/// poly` with `deg S < deg poly` (the inverse of the body's denominator
+/// modulo `poly` by the extended Euclidean algorithm), and `Σ S(r) =
+/// Σₖ sₖ·pₖ` with the power sums `pₖ = Σ rᵏ` of the roots from
+/// Newton's identities.  `None` otherwise.
+///
+/// The integrator's self-check meets such sums at every sample point: the
+/// derivative of `RootSum(e, c(t)·ln(x − t))` is `RootSum(e, c(t)/(x − t))`,
+/// numeric once `x` and the parameters are bound.  Solving `e` in radicals
+/// (as `rootsum_doit` does for `eval`) and evaluating the radical
+/// expression to 30 digits took most of the check's time (0.31: 8 ms per
+/// check of a `RootSum` answer, most of the cost of the Rubi entries
+/// `∫ P(x)/(a + b·x² + c·x⁴)² dx`); the trace is exact rational arithmetic.
+pub(crate) fn numeric_rootsum_rational_body(
+    arena: &mut Arena,
+    poly_id: ExprId,
+    body_id: ExprId,
+    sumvar_id: ExprId,
+) -> Option<ExprId> {
+    use crate::poly::traits::Field;
+    let (e_num, e_den) = gauss_fraction(arena, poly_id, sumvar_id)?;
+    if e_den.degree()? != 0 {
+        return None;
+    }
+    let n = e_num.degree()?;
+    if n == 0 {
+        return None;
+    }
+    let e = e_num.make_monic();
+    if GaussPoly::gcd(&e, &e.derivative()).degree()? != 0 {
+        return None;
+    }
+    let (p, q) = gauss_fraction(arena, body_id, sumvar_id)?;
+    let q_mod = q.rem(&e);
+    if q_mod.is_zero() {
+        return None;
+    }
+    let eg = GaussPoly::extended_gcd(&q_mod, &e);
+    if eg.gcd.degree()? != 0 {
+        return None;
+    }
+    let inv = eg.gcd.leading_coeff()?.inv();
+    let s = p.mul(&eg.x.scale(&inv)).rem(&e);
+    // Newton: pₖ = −k·a_{n−k} − Σ_{i<k} a_{n−i}·p_{k−i} for the monic
+    // e = tⁿ + a_{n−1}·tⁿ⁻¹ + … + a₀.
+    let a = e.coeffs();
+    let mut power_sums: Vec<GaussQ> = Vec::with_capacity(n);
+    power_sums.push(GaussQ::from_usize(n));
+    for k in 1..n {
+        let mut pk = a[n - k].mul(&GaussQ::from_usize(k)).neg();
+        for i in 1..k {
+            pk = pk.sub(&a[n - i].mul(&power_sums[k - i]));
+        }
+        power_sums.push(pk);
+    }
+    let mut value = GaussQ::zero();
+    for (k, sk) in s.coeffs().iter().enumerate() {
+        value = value.add(&sk.mul(power_sums.get(k)?));
+    }
+    let re = arena.num_ratio(value.re);
+    if num_traits::Zero::is_zero(&value.im) {
+        return Some(re);
+    }
+    let im = arena.num_ratio(value.im);
+    let i = arena.i_unit();
+    let im_i = arena.mul(&[im, i]);
+    Some(arena.add(&[re, im_i]))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // rootsum_doit — expand RootSum when the polynomial is solvable
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1069,6 +1314,48 @@ mod tests {
             Some(r(5, 1)),
             "sum of squares of roots of t²+3t+2 should be 5"
         );
+    }
+
+    /// The exact trace of a numeric `RootSum` with a rational body, over
+    /// `ℚ` and over `ℚ(i)`; `None` for a body with a pole at a root.
+    #[test]
+    fn numeric_rootsum_with_a_rational_body() {
+        let mut arena = Arena::new();
+        let t = arena.symbol("t");
+        let two = arena.int(2);
+        let three = arena.int(3);
+        let t2 = arena.pow(t, two);
+        let three_t = arena.mul(&[three, t]);
+        // t² + 3t + 2 = (t + 1)(t + 2): Σ 1/(r + 3) = 1/2 + 1 = 3/2.
+        let q = arena.add(&[t2, three_t, two]);
+        let t_plus_3 = arena.add(&[t, three]);
+        let neg_one = arena.int(-1);
+        let body = arena.pow(t_plus_3, neg_one);
+        let v = numeric_rootsum_rational_body(&mut arena, q, body, t).unwrap();
+        assert_eq!(display(&arena, v), "3/2");
+        // A pole at a root (1/(t + 1)): no value.
+        let one = arena.one;
+        let t_plus_1 = arena.add(&[t, one]);
+        let pole = arena.pow(t_plus_1, neg_one);
+        assert!(numeric_rootsum_rational_body(&mut arena, q, pole, t).is_none());
+        // t² + 1 (roots ±i): Σ 1/(r − i·2) = 1/(−i) + 1/(−3i) = 4i/3.
+        let t2_plus_1 = arena.add(&[t2, one]);
+        let i = arena.i_unit();
+        let two_i = arena.mul(&[two, i]);
+        let neg_two_i = arena.neg(two_i);
+        let shifted = arena.add(&[t, neg_two_i]);
+        let body = arena.pow(shifted, neg_one);
+        let v = numeric_rootsum_rational_body(&mut arena, t2_plus_1, body, t).unwrap();
+        assert_eq!(display(&arena, v), "4/3*I");
+        // A parameter: no value.
+        let a = arena.symbol("a");
+        let t_plus_a = arena.add(&[t, a]);
+        let body = arena.pow(t_plus_a, neg_one);
+        assert!(numeric_rootsum_rational_body(&mut arena, q, body, t).is_none());
+    }
+
+    fn display(arena: &Arena, id: ExprId) -> String {
+        arena.display(id).to_string()
     }
 
     #[test]

@@ -75,6 +75,7 @@ mod factorials;
 mod hypsum;
 mod lambertw;
 mod loggamma;
+mod polylog;
 mod sensitivity;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -637,6 +638,34 @@ fn eval_node_with_error(
             let value = eval_node(arena, id, cache, prec, rm, cc)?;
             let bz = errs.get(c).copied().unwrap_or(accuracy::Bound::UNKNOWN);
             let err = loggamma::error_bound(get_cached(cache, *c)?, bz, &value, prec);
+            (value, err)
+        }
+        // `polylog` off the real interval [−1, 1] reports its own bound (the
+        // sensitivity rules are for real arguments; `polylog.rs`).
+        node @ ExprNode::Apply(_, args) if polylog::is_general(arena, node, cache) => {
+            let value = match eval_node(arena, id, cache, prec, rm, cc) {
+                Ok(value) => value,
+                // An argument that cancelled to 0 or rounded onto 1 (as in
+                // the arm below).
+                Err(SymplexError::Unevaluable { .. })
+                    if inexact_zero_child(node, cache, errs)
+                        || rounded_onto_pole(arena, node, cache, errs) =>
+                {
+                    return Ok((c_zero(prec), accuracy::Bound::UNKNOWN));
+                }
+                Err(e) => return Err(e),
+            };
+            let bound = |c: ExprId| errs.get(&c).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+            let err = polylog::error_bound(
+                &get_cached(cache, args[0])?.0,
+                bound(args[0]),
+                get_cached(cache, args[1])?,
+                bound(args[1]),
+                &value,
+                prec,
+                rm,
+                cc,
+            );
             (value, err)
         }
         ExprNode::PhysicalConstant(_, value_id) => match cache.get(value_id) {
@@ -6355,7 +6384,6 @@ fn eval_lib_fn(
         | LibFn::FresnelC
         | LibFn::LowerGamma
         | LibFn::UpperGamma
-        | LibFn::PolyLog
         | LibFn::DirichletEta
         | LibFn::AiryAi
         | LibFn::AiryBi
@@ -6371,6 +6399,7 @@ fn eval_lib_fn(
         | LibFn::AssocLaguerre
         | LibFn::BetaInc
         | LibFn::BetaIncRegularized => eval_special_09(f, args, cache, prec, rm, cc),
+        LibFn::PolyLog => eval_polylog(args, cache, prec, rm, cc),
         LibFn::RisingFactorial | LibFn::FallingFactorial | LibFn::Harmonic => {
             let v = real_args(f.name(), args, cache)?;
             debug!(prec, name = f.name(), "evalf: Gamma quotient / digamma");
@@ -6399,6 +6428,31 @@ fn eval_lib_fn(
         // Evaluated from its node, which carries the branch index literal.
         LibFn::LambertW => Err(unevaluable("lambertw is evaluated from its node")),
     }
+}
+
+/// `polylog(s, z)` for a real order: `arb_polylog` for a real `z ∈ [−1, 1]`,
+/// `polylog::polylog_general` for a non-real `z` or `|z| > 1` (before 0.31
+/// these were "not yet supported" for every order: `polylog(3/2, −3/16 −
+/// 5/18·i)`, `polylog(2, 3)`, `polylog(1/3, −5)`).
+fn eval_polylog(
+    args: &[ExprId],
+    cache: &FxHashMap<ExprId, Complex>,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<Complex, SymplexError> {
+    let s = get_cached(cache, args[0])?;
+    let z = get_cached(cache, args[1])?;
+    if !s.1.is_zero() {
+        return Err(unevaluable(
+            "polylog of complex order not yet supported in evalf",
+        ));
+    }
+    if polylog::off_unit_interval(z) {
+        return polylog::polylog_general(&s.0, z, prec, rm, cc);
+    }
+    debug!(prec, "evalf: polylog on [-1, 1]");
+    Ok((arb_polylog(&s.0, &z.0, prec, rm, cc)?, BigFloat::new(prec)))
 }
 
 /// `W_k(z)` of a Lambert W node (`LambertW(x)`, `lambertw(x, k)`) over ℂ,
@@ -6524,7 +6578,6 @@ fn eval_special_09(
         LibFn::FresnelC => real(arb_fresnel(&v[0], false, prec, rm, cc)?),
         LibFn::LowerGamma => real(arb_lowergamma(&v[0], &v[1], prec, rm, cc)?),
         LibFn::UpperGamma => real(arb_uppergamma(&v[0], &v[1], prec, rm, cc)?),
-        LibFn::PolyLog => real(arb_polylog(&v[0], &v[1], prec, rm, cc)?),
         LibFn::DirichletEta => real(arb_dirichlet_eta(&v[0], prec, rm, cc)?),
         LibFn::AiryAi => real(arb_airy(&v[0], AiryKind::Ai, prec, rm, cc)?),
         LibFn::AiryBi => real(arb_airy(&v[0], AiryKind::Bi, prec, rm, cc)?),
@@ -6563,6 +6616,7 @@ fn eval_special_09(
         | LibFn::Stirling2
         | LibFn::PartitionCount
         | LibFn::LambertW
+        | LibFn::PolyLog
         | LibFn::BesselJ
         | LibFn::BesselY
         | LibFn::BesselI
@@ -8220,6 +8274,12 @@ fn polylog_series_raw(
     Ok((sum, lost))
 }
 
+/// The Stirling number of the second kind `S(n, k)` (`None` on overflow);
+/// for `polylog.rs`, through this module's existing dependency.
+fn stirling2(n: u64, k: u64) -> Option<BigInt> {
+    crate::domains::combinatorics::stirling2(n, k)
+}
+
 /// `Li_{−n}(z)` for integer `n ≥ 0` and any real `z ≠ 1`:
 /// `Σ_{k=0}^{n} k! S(n+1, k+1) (z/(1−z))^{k+1}`.
 fn polylog_nonpositive(
@@ -8643,6 +8703,7 @@ fn polylog_unit_interval(
 
 /// Polylogarithm `Li_s(z)` for real `s` and real `−1 ≤ z ≤ 1` (any real
 /// `z ≠ 1` when `s` is a non-positive integer, where `Li_s` is rational).
+/// A non-real `z` or `|z| > 1` is `polylog::polylog_general`.
 fn arb_polylog(
     s: &BigFloat,
     z: &BigFloat,
