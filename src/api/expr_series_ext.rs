@@ -5,12 +5,31 @@
 //! * [`Ex::hypergeometric_ratio`] — the term ratio `t(k+1)/t(k)`
 //! * [`Ex::is_absolutely_convergent`] — absolute convergence of `Σ t(k)`
 //! * [`Ex::series_at_infinity`] / [`Ex::series_at_neg_infinity`] — asymptotic expansions
+//! * [`Ex::series_dir`] / [`Ex::try_series_dir`] — one-sided expansions
+//!
+//! # What a series is
+//!
+//! [`Ex::series`] and the methods here compute the **asymptotic expansion
+//! as `var → point` through real values** (two-sided for `series`, one-sided
+//! for [`Ex::series_dir`] and at `±∞`), in the same sense as
+//! [`Ex::limit`]: every term of exponent `< order` is present and exact, and
+//! the remainder is `O((var − point)^order)` along the reals.  It is not a
+//! Laurent series over the complex plane: `exp(−1/x²)` expands to `0` at
+//! `0` (SymPy: `O(x**4)`), `exp(−1/x)` has no two-sided expansion there
+//! (`0` from the right, none from the left).  One-sided expansions from the
+//! right and those at `±∞` may contain logarithms (`ln Γ(x)` at `∞` is
+//! Stirling's series, `Ei(x)` at `0⁺` is `γ + ln x + x + …`).  Where no
+//! such expansion exists or it cannot be established, a formal `Series`
+//! node is returned (`try_*` variants: `Err`).  Use
+//! [`Ex::residue`] for residues: a series is not a Laurent expansion at an
+//! essential singularity.
 
 use tracing::debug_span;
 
 use crate::api::expr::{Ex, Expr, Numeric};
 use crate::base::errors::SymplexError;
 use crate::base::node::ExprNode;
+use crate::calculus::limit::Direction;
 use crate::calculus::summation::{self, SumOutcome};
 
 impl Expr<Numeric> {
@@ -287,12 +306,15 @@ impl Expr<Numeric> {
 
     // ── Asymptotic expansions ──────────────────────────────────────
 
-    /// Asymptotic expansion of `self` as `var → +∞`, with `n_terms` terms
-    /// in powers of `1/var`.
+    /// Asymptotic expansion of `self` as `var → +∞`, with every term of
+    /// exponent `< n_terms` in `1/var` (what a series is: see
+    /// [`series_dir`](Self::series_dir)).
     ///
-    /// Internally substitutes `var = 1/t`, expands (Laurent-)series at
-    /// `t = 0`, and substitutes back.  Returns a formal `Series` node when
-    /// the expansion cannot be computed.
+    /// Internally substitutes `var = 1/t`, expands at `t → 0⁺`, and
+    /// substitutes back; coefficients may contain `ln(var)` (Stirling's
+    /// series `ln Γ(x) = x ln x − x − ½ ln x + ½ ln 2π + 1/(12x) + …`).
+    /// Returns a formal `Series` node when the expansion cannot be
+    /// computed.
     ///
     /// # Examples
     ///
@@ -326,6 +348,88 @@ impl Expr<Numeric> {
             Err(SymplexError::ComputationFailed {
                 operation: "series_at_infinity",
                 reason: "could not compute asymptotic expansion".into(),
+            })
+        } else {
+            Ok(r)
+        }
+    }
+
+    /// The expansion of `self` as `var → point` from the side `dir`, with
+    /// every term of exponent `< order` in `var − point`.
+    ///
+    /// Like [`series`](Self::series) (which is `series_dir` with
+    /// [`Direction::Both`]) this is the **asymptotic expansion as
+    /// `var → point` through real values**, in the same sense as
+    /// [`limit_dir`](Self::limit_dir): every term of exponent `< order` is
+    /// present and exact, and the remainder is `O((var − point)^order)` as
+    /// `var` approaches `point` from the side(s) in question.  It is not a
+    /// Laurent series over the complex plane: `exp(−1/x²)` expands to `0` at
+    /// `0` (SymPy: `O(x**4)`), `exp(−1/x)` has no two-sided expansion there
+    /// (`0` from the right, none from the left).  From the right, and at
+    /// `±∞` (where the side is implied and `dir` is ignored), the expansion
+    /// may contain logarithms: `Ei(x) = γ + ln x + x + …` for `x → 0⁺`,
+    /// Stirling's series for `ln Γ(x)` at `∞`.  Where no such expansion
+    /// exists or it cannot be established, a formal `Series` node is
+    /// returned.  For residues use [`residue`](Self::residue): at an
+    /// essential singularity a series is not the Laurent expansion.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let f = (-(1 / &x)).exp(); // exp(−1/x)
+    /// let zero = ctx.int(0);
+    /// // O(x⁴) from the right, no expansion from the left or two-sided
+    /// assert_eq!(f.series_dir(&x, &zero, 4, Direction::Right).to_string(), "0");
+    /// assert!(f.series_dir(&x, &zero, 4, Direction::Left).has_unevaluated());
+    /// assert!(f.series(&x, &zero, 4).has_unevaluated());
+    /// // Ei(x) = γ + ln x + x + x²/4 + … for x → 0⁺
+    /// let ei = x.ei().series_dir(&x, &zero, 3, Direction::Right);
+    /// assert!(ei.to_string().contains("ln(x)"), "{ei}");
+    /// ```
+    #[must_use = "returns the expansion; does not modify in place"]
+    pub fn series_dir(&self, var: &Ex, point: &Ex, order: u32, dir: Direction) -> Ex {
+        let var_id = self.checked_id(var);
+        let point_id = self.checked_id(point);
+        let _span = debug_span!("series_dir", expr = ?self.raw_id(), order = order).entered();
+        let mut inner = self.inner.write();
+        let id = match crate::calculus::series::series_dir(
+            &mut inner.arena,
+            self.raw_id(),
+            var_id,
+            point_id,
+            order,
+            dir,
+        ) {
+            Ok(id) => id,
+            Err(_) => {
+                let order_id = inner.arena.int(order as i64);
+                inner
+                    .arena
+                    .intern(ExprNode::Series(self.raw_id(), var_id, point_id, order_id))
+            }
+        };
+        drop(inner);
+        self.wrap(id)
+    }
+
+    /// Like [`series_dir`](Self::series_dir), but returns `Err` if there
+    /// is no expansion.
+    pub fn try_series_dir(
+        &self,
+        var: &Ex,
+        point: &Ex,
+        order: u32,
+        dir: Direction,
+    ) -> Result<Ex, SymplexError> {
+        let r = self.series_dir(var, point, order, dir);
+        if r.has_unevaluated() {
+            Err(SymplexError::ComputationFailed {
+                operation: "series_dir",
+                reason: "no expansion from this side".into(),
             })
         } else {
             Ok(r)

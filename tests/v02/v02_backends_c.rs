@@ -50,9 +50,12 @@ fn math_h_functions_and_powers() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let code = (x.gamma() + x.log_gamma() + x.erf() + y.erfc() + x.abs() + x.floor() + y.ceiling())
-        .to_c_fn("g", &["x", "y"])
-        .unwrap();
+    // 0.30: `lgamma` (ln|Γ|) is `ln(abs(gamma(x)))`; SymPy's `loggamma` is
+    // the helper `symplex_loggamma` (NaN left of 0), checked below.
+    let code =
+        (x.gamma() + x.gamma().abs().ln() + x.erf() + y.erfc() + x.abs() + x.floor() + y.ceiling())
+            .to_c_fn("g", &["x", "y"])
+            .unwrap();
     for needle in [
         "tgamma(x)",
         "lgamma(x)",
@@ -68,6 +71,8 @@ fn math_h_functions_and_powers() {
         !code.contains("static inline"),
         "no helpers needed:\n{code}"
     );
+    let code = x.log_gamma().to_c_fn("lg", &["x"]).unwrap();
+    assert!(code.contains("return symplex_loggamma(x);"), "{code}");
     let code = (x.powi(3) + x.powi(-2) + x.powi(9) + x.sqrt() + x.pow(&ctx.rational(1, 3)))
         .to_c_fn("p", &["x"])
         .unwrap();
@@ -75,7 +80,10 @@ fn math_h_functions_and_powers() {
     assert!(code.contains("1.0 / (x * x)"), "{code}");
     assert!(code.contains("pow(x, 9.0)"), "{code}");
     assert!(code.contains("sqrt(x)"), "{code}");
-    assert!(code.contains("cbrt(x)"), "{code}");
+    // 0.30: the principal cube root, NaN for x < 0 (C's `cbrt` is the real
+    // root, used for x ≥ 0 only).
+    assert!(code.contains("symplex_cbrt(x)"), "{code}");
+    assert!(code.contains("x < 0.0 ? NAN : cbrt(x)"), "{code}");
     let code = (&x / &y).to_c_fn("d", &["x", "y"]).unwrap();
     assert!(code.contains("return x / y;"), "{code}");
     let code = (x.exp() - 1 + (&y + 1).ln())
@@ -315,10 +323,25 @@ fn generated_c_compiles_and_matches_compile() {
             &(&x.pow(&ctx.rational(1, 3)) + &x.sqrt()) + &(&x / &(&y + 1)),
         ),
         ("neg_gamma", (-&x).gamma() * (&ctx.zero() - &y).erf()),
+        // 0.30: odd-denominator powers of a negative base are NaN (they were
+        // the real roots, `pow(fabs(b), e)` / `copysign(…, b)`, where
+        // `evalf` is not real); the real root is `real_root` (a `Piecewise`
+        // on `im(−x) = 0` for a symbol not known to be real).
         (
-            "real_roots",
+            "principal_powers",
             &(-&x).pow(&ctx.rational(2, 5)) + &(-&x).pow(&ctx.rational(3, 5)),
         ),
+        (
+            "real_roots",
+            &(-&x).real_root(3).unwrap() + &(-&y).real_root(5).unwrap().powi(2),
+        ),
+        // ln|Γ| is `lgamma`; SymPy's `loggamma` is `lgamma` right of 0 and
+        // NaN left of 0 (away from the poles).
+        (
+            "log_gamma",
+            &(-&x).gamma().abs().ln() + &(&y + &ctx.rational(1, 2)).log_gamma(),
+        ),
+        ("loggamma_neg", (-&x).log_gamma() * &y),
     ];
     let points: &[(f64, f64)] = &[
         (0.5, 2.0),

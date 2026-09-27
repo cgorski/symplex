@@ -120,8 +120,9 @@ impl Expr<Numeric> {
     /// Principal cube root: `self^(1/3)`.
     ///
     /// Like every power, this is the principal branch: `∛(−8) = 2·(−1)^(1/3)
-    /// = 1 + √3·i` (SymPy's `cbrt`).  For the real cube root of a negative
-    /// real use [`real_root`](Self::real_root).
+    /// = 1 + √3·i` (SymPy's `cbrt`), and compiled or emitted code gives NaN
+    /// for a negative argument, where the value is not real.  For the real
+    /// cube root of a negative real use [`real_root`](Self::real_root).
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn cbrt(&self) -> Ex {
         let id = self.inner.write().arena.cbrt(self.raw_id());
@@ -136,7 +137,9 @@ impl Expr<Numeric> {
     /// principal root, real exactly when `self ≥ 0`.  When `self` is not
     /// known to be real the odd case is
     /// `Piecewise((sign(x)·|x|^(1/n), im(x) = 0), (x^(1/n), True))`, as in
-    /// SymPy.
+    /// SymPy.  [`compile`](Self::compile) and the code generators evaluate
+    /// both forms (every compiled value is real, so `im(x) = 0` holds): −2
+    /// at −8, where `x^(1/3)` compiles to NaN.
     ///
     /// # Errors
     ///
@@ -600,9 +603,36 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
-    /// Log-gamma function: ln(Γ(self)).
+    /// Log-gamma function (SymPy's `loggamma`): the analytic continuation
+    /// of `ln Γ` from `x > 0`, holomorphic on `ℂ ∖ (−∞, 0]`.  It is real
+    /// for `x > 0`, and on the negative axis `ln|Γ(x)| − iπ⌈−x⌉` (the limit
+    /// from above the cut; mpmath and Mathematica's `LogGamma` agree).  It is
+    /// not `ln(Γ(x))` of the principal logarithm off the positive axis
+    /// (`ln Γ(−5/2)` is `ln|Γ(−5/2)| + iπ`, `loggamma(−5/2)` subtracts `3πi`),
+    /// and not the real `ln|Γ(x)|` either: that is `ln(abs(gamma(x)))`, which
+    /// [`compile`](Self::compile) and the code generators evaluate with the
+    /// overflow-safe `lgamma`.  Compiled `loggamma` is NaN for a negative
+    /// non-integer argument (its value is not real there).
     ///
-    /// For positive integer arguments, `.eval()` computes `ln((n-1)!)`.
+    /// `loggamma(0) = loggamma(−3) = oo` and `loggamma(1) = loggamma(2) = 0`
+    /// fold at construction; for other positive integers `.eval()` computes
+    /// `ln((n-1)!)`; other arguments stay unevaluated, as in SymPy.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.rational(-5, 2);
+    /// // mpmath: loggamma(-2.5) = -0.0562437164976740 - 9.42477796076938j
+    /// assert_eq!(
+    ///     x.log_gamma().eval_decimal(15)?,
+    ///     "-0.0562437164976741 - 9.42477796076938*i"
+    /// );
+    /// assert_eq!(x.gamma().abs().ln().eval_decimal(15)?, "-0.0562437164976741");
+    /// # Ok::<(), SymplexError>(())
+    /// ```
     #[must_use]
     pub fn log_gamma(&self) -> Ex {
         let id = self.inner.write().arena.log_gamma(self.raw_id());
@@ -1520,16 +1550,24 @@ impl Expr<Numeric> {
         }
     }
 
-    /// Compute the Taylor / Laurent series around `point` with every term
-    /// of exponent `< order` in `(var − point)`.
+    /// Compute the series of `self` around `point` with every term of
+    /// exponent `< order` in `var − point`: the **asymptotic expansion as
+    /// `var → point` through real values, two-sided** (use
+    /// [`series_dir`](Self::series_dir) for one side), in the same sense as
+    /// [`limit`](Self::limit) — not a Laurent series over the complex plane.
     ///
-    /// Poles at `point` give negative powers (`1/sin x = 1/x + x/6 + …`);
-    /// `point = ±∞` gives the asymptotic expansion in `1/var` (see
+    /// Every term is exact and the remainder is `O((var − point)^order)`
+    /// along the reals.  Poles give negative powers (`1/sin x = 1/x + x/6 +
+    /// …`, `Γ(x) = 1/x − γ + …`); `exp(−1/x²)` expands to `0` at `0` (as in
+    /// SymPy); a function whose one-sided expansions differ (`exp(−1/x)`,
+    /// `|x|`) or with a fractional-power or logarithmic singularity at the
+    /// point has no two-sided expansion.  `point = ±∞` gives the expansion
+    /// in `1/var`, which may contain `ln var` (Stirling's series; see
     /// [`series_at_infinity`](Self::series_at_infinity)).  Elementary
     /// functions use closed-form coefficients, so high orders stay fast.
-    /// If no Laurent expansion exists (fractional-power or logarithmic
-    /// singularity, essential singularity) a formal `Series` node is
-    /// returned; see [`try_series`](Self::try_series).
+    /// When no such expansion exists or it cannot be established, a formal
+    /// `Series` node is returned; see [`try_series`](Self::try_series).  For
+    /// residues use [`residue`](Self::residue).
     ///
     /// # Examples
     ///
@@ -3668,8 +3706,11 @@ impl Expr<Numeric> {
     /// # Errors
     ///
     /// Returns the same errors as [`eval_decimal`](Ex::eval_decimal), plus a
-    /// [`SymplexError::ComputationFailed`] if the value has an imaginary
-    /// part above `1e-15` in magnitude.
+    /// [`SymplexError::ComputationFailed`] if the value is not real to the
+    /// digits evaluated: its imaginary part is not negligible next to its
+    /// real part (below the 16th digit of the real part), however small it
+    /// is in absolute terms (`sqrt(−10⁻⁴⁰)` is refused).  Use
+    /// [`eval_complex64`](Ex::eval_complex64) for complex values.
     ///
     /// # Examples
     ///
@@ -3733,14 +3774,25 @@ impl Expr<Numeric> {
     /// The expression is constant-folded (`eval()`) and common
     /// subexpressions are shared before lowering to a stack-VM program.
     /// Every numerically evaluable node is supported, including the
-    /// special functions (`gamma`, `lgamma`, `digamma`, `erf`, `erfc`,
+    /// special functions (`gamma`, `loggamma`, `digamma`, `erf`, `erfc`,
     /// `lambertw`, `beta`, `factorial`, `binomial`), Bessel functions and
     /// orthogonal polynomials with constant integer order, `fibonacci`,
     /// `lucas`, `harmonic`, `factorial2`, rising/falling factorials,
-    /// `min`/`max`/`floor`/`ceiling`/`sign`/`heaviside`/`atan2`, and
-    /// `piecewise` with relational and boolean conditions.  `DiracDelta`
-    /// evaluates to `0.0` everywhere (its pointwise value away from the
-    /// support); `Heaviside(0)` is `0.5`.
+    /// `min`/`max`/`floor`/`ceiling`/`sign`/`heaviside`/`atan2`, `re`/`im`
+    /// (of the real values the function computes), and `piecewise` with
+    /// relational and boolean conditions.  `DiracDelta` evaluates to `0.0`
+    /// everywhere (its pointwise value away from the support);
+    /// `Heaviside(0)` is `0.5`.
+    ///
+    /// The compiled function computes the value [`eval_f64`](Self::eval_f64)
+    /// gives — principal branches over ℂ, SymPy's meaning — or NaN where
+    /// that value is not real.  There is no exception: `x^(1/3)` and every
+    /// other non-integer rational power is NaN for `x < 0` (the principal
+    /// `(−8)^(1/3)` is `1 + √3·i`; before 0.30 the compiled value was the
+    /// real root −2), and [`log_gamma`](Self::log_gamma) is NaN for a
+    /// negative non-integer argument.  The real root is
+    /// [`real_root`](Self::real_root), and the real `ln|Γ(x)|` is
+    /// `ln(abs(gamma(x)))`, evaluated with the overflow-safe `lgamma`.
     ///
     /// # Errors
     ///
@@ -3749,6 +3801,10 @@ impl Expr<Numeric> {
     ///   (`ImaginaryUnit`, unevaluated `Integral`/`Derivative`/`Sum`, sets,
     ///   user-defined `Apply` nodes, Bessel/orthogonal-polynomial nodes whose
     ///   order is not a constant integer).  The message names the node.
+    /// * [`SymplexError::NotImplemented`] for a constant subexpression whose
+    ///   value is not real ("the constant … is not real": `asin(2)`,
+    ///   `atanh(9)`, `(−8)^(1/3)`, `loggamma(−5/2)`), which a real-valued
+    ///   function cannot represent.
     /// * [`SymplexError::InvalidArgument`] for duplicate parameter names.
     ///
     /// # Examples
@@ -3763,6 +3819,11 @@ impl Expr<Numeric> {
     /// assert!((func(&[3.0]) - 10.0).abs() < 1e-10);
     /// assert_eq!(func.arity(), 1);
     ///
+    /// // One rule: `evalf`'s value, or NaN where it is not real.
+    /// assert!(x.cbrt().compile(&["x"])?.call(&[-8.0]).is_nan());
+    /// assert_eq!(x.real_root(3)?.compile(&["x"])?.call(&[-8.0]), -2.0);
+    /// assert!(ctx.int(-8).cbrt().compile(&[]).is_err()); // 1 + √3·i
+    ///
     /// // Special functions are supported too.
     /// let g = x.gamma().compile(&["x"]).unwrap();
     /// assert!((g.call(&[5.0]) - 24.0).abs() < 1e-12);
@@ -3770,6 +3831,7 @@ impl Expr<Numeric> {
     /// // Free symbols are an error, not a silent NaN.
     /// let y = ctx.symbol("y");
     /// assert!(matches!((&x + &y).compile(&["x"]), Err(SymplexError::FreeSymbol { .. })));
+    /// # Ok::<(), SymplexError>(())
     /// ```
     pub fn compile(
         &self,

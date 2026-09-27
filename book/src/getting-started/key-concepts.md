@@ -274,7 +274,18 @@ assert_eq!(ctx.int(-8).real_root(3)?, ctx.int(-2));
 - *Limits* approach along the real axis: the limit variable is a positive dummy inside the Gruntz algorithm (as in SymPy), so `lim_{x→∞} e^x^(1/x) = e`.
 - *Integration* is over a real variable, with the real-variable antiderivative `∫ dx/x = ln|x|`: an antiderivative is valid on each real interval where the integrand is continuous, and `√(x²)` is `|x|` for the integration variable itself.
 
-**The one documented exception is generated numeric code.**  `compile()` and the Rust, C, Python, NumPy and Julia back ends work in `f64` reals, so `x^(p/q)` with an odd denominator `q` is the *real* root there (`sign(x)·|x|^(p/q)` for odd `p`, `|x|^(p/q)` for even `p`), as it has been since 0.11.1 — a principal-branch value would be complex, which an `f64` cannot hold.  Even denominators follow `f64` semantics (`NaN` for a negative base).
+**Generated numeric code follows the same meaning.**  `compile()` and the Rust, C, Python, NumPy and Julia back ends work in `f64` reals, under one rule without exceptions: they compute the value `eval_f64` gives, or `NaN` where that value is not real.  So `x^(p/q)` of a negative `x` is `NaN` for every non-integer exponent — odd denominators included, since `(−8)^(1/3)` is `1 + √3·i` (from 0.11.1 to 0.29 the generated code took the real root there, a different function: a Cardano formula from `solve`, compiled, picked another root).  The real root is spelled out: `x.real_root(3)?` (`sign(x)·|x|^(1/3)`) compiles to −2 at −8.  Likewise `loggamma(x)` (SymPy's, `ln|Γ(x)| − iπ⌈−x⌉` left of 0) compiles to `NaN` for a negative non-integer `x`; the real `ln|Γ(x)|` is `ln(abs(gamma(x)))`, which the back ends evaluate with the overflow-safe `lgamma`.  A constant that is not real (`(−8)^(1/3)`, `asin(2)`) is refused at compile time.
+
+```rust
+# use symplex::prelude::*;
+let ctx = Context::new();
+let x = ctx.symbol("x");
+assert!(x.cbrt().compile(&["x"])?.call(&[-8.0]).is_nan());          // 1 + √3·i is not real
+assert_eq!(x.real_root(3)?.compile(&["x"])?.call(&[-8.0]), -2.0);   // the real root, spelled out
+let ln_abs_gamma = x.gamma().abs().ln().compile(&["x"])?;
+assert!((ln_abs_gamma.call(&[200.0]) - 857.933669825857).abs() < 1e-9); // Γ(200) overflows an f64
+# Ok::<(), SymplexError>(())
+```
 
 Before 0.23 some of these rewrites fired for every symbol not known to be *non*-real, `expand_log`/`log_combine` were the forced forms, and `eval` took the real odd root; the changelog lists every change.
 

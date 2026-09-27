@@ -1,8 +1,48 @@
-//! Taylor / Laurent series expansion.
+//! Taylor / Laurent / asymptotic series expansion.
 //!
 //! [`series`] computes the truncated expansion of an expression around a
 //! point (Maclaurin when the point is `0`, asymptotic when the point is
-//! `±∞` via [`series_at_infinity`]).
+//! `±∞` via [`series_at_infinity`]); [`series_dir`] from one side.
+//!
+//! # Contract
+//!
+//! `series(f, x, x0, n)` is the **asymptotic expansion of `f` as `x → x0`
+//! through real values** — two-sided unless a direction is given
+//! ([`series_dir`]; at `±∞` the side is implied) — in the same sense as
+//! `limit` and the Gruntz algorithm: the result `S` contains every term of
+//! exponent `< n` in `x − x0` (in `1/x` at `±∞`), each exact, and
+//! `f − S = O((x − x0)ⁿ)` as `x` approaches `x0` along the reals from the
+//! side(s) in question.  It is **not** a Laurent series over the complex
+//! plane:
+//!
+//! * `exp(−1/x²)` at `0` is `0` to every order (all real Taylor
+//!   coefficients vanish; SymPy: `series(exp(-1/x**2), x, 0, 4) = O(x**4)`),
+//!   although `0` is an essential singularity;
+//! * `exp(−1/x)` at `0` has no two-sided expansion (it is `O(xⁿ)` from the
+//!   right and unbounded from the left) and is refused; from the right it
+//!   is `0`, from the left it is refused (SymPy's default `dir='+'` gives
+//!   `O(x**4)`, `dir='-'` returns `exp(-1/x)` unexpanded);
+//! * a two-sided kink (`|x|`) is refused unless both sides agree
+//!   (`cos|x| = cos x`);
+//! * expansions from the right and at `±∞` are *log-extended*: a
+//!   coefficient may contain `ln(x − x0)` (`ln x` at `±∞`), as in
+//!   Stirling's series `ln Γ(x) = x ln x − x − ½ ln x + ½ ln 2π +
+//!   1/(12x) + …` or `Ei(x) = γ + ln x + x + …` for `x → 0⁺`; the
+//!   remainder is then `O((x − x0)ⁿ·|ln(x − x0)|ᵏ)`.  Two-sided
+//!   expansions refuse logarithmic singularities.
+//!
+//! When no such expansion exists, or it cannot be established (a
+//! fractional power two-sided, an oscillation, an unknown function whose
+//! derivatives are singular at the point, the Stieltjes constants that
+//! `ζ(x)` needs beyond `1/(x − 1) + γ`), the result is `Err` and the public
+//! API keeps a formal `Series` node.
+//!
+//! Consumers that need the complex-analytic (Laurent) expansion —
+//! residues, Laurent coefficients, inverse transforms — must not take it
+//! from [`series`] for a function that may have an essential singularity at
+//! the point: [`laurent_series`] runs the engine without limits and refuses
+//! an essential singularity, and residues have their own structural route
+//! ([`residue`](crate::calculus::residue)).
 //!
 //! # Algorithm
 //!
@@ -18,6 +58,11 @@
 //!   closed-form Maclaurin coefficients (Bernoulli numbers for `tan`/`tanh`,
 //!   central binomials for `asin`, `(−n)^{n−1}/n!` for `W`) rather than
 //!   repeated differentiation, so high orders stay fast.
+//! * `Γ`, `ψ`, `ψ⁽ᵐ⁾` at their poles, `ζ` at `1`, `ln Γ` and `ψ` at `+∞`
+//!   (Stirling), `Ei`, `Ci`, `Chi`, `li`, `Si`, `Shi`, `K₀`, `Y₀` at the
+//!   zeros of their arguments — closed forms at the points where
+//!   differentiation has nothing to evaluate (see *Special functions at
+//!   their singular points* below).
 //! * Any other `var`-dependent sub-expression falls back to Taylor
 //!   coefficients by differentiation, evaluated at the expansion point.
 //!
@@ -86,21 +131,131 @@ const MAX_PRECISION_ATTEMPTS: usize = 3;
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Compute the series of `expr` in `var` around `point` with all terms of
-/// exponent `< order` (in `var − point`).
+/// exponent `< order` (in `var − point`): the two-sided real asymptotic
+/// expansion of the [contract](self#contract).
 ///
 /// For `point = 0` this is the Maclaurin series; for `point = ±∞` an
 /// asymptotic expansion in `1/var` (see [`series_at_infinity`]).  Poles at
-/// the expansion point produce negative powers (Laurent series).
+/// the expansion point produce negative powers.
 ///
-/// Returns `Err` when no Laurent expansion exists (fractional-power or
-/// logarithmic singularity, essential singularity, or an unsupported
-/// sub-expression whose derivatives are singular at the point).
+/// Returns `Err` when no such expansion exists or cannot be established
+/// (fractional-power or logarithmic singularity, the two sides differing,
+/// an unsupported sub-expression whose derivatives are singular at the
+/// point).
 pub(crate) fn series(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
     point: ExprId,
     order: u32,
+) -> Result<ExprId, SymplexError> {
+    let mode = Mode {
+        side: Side::Both,
+        log_var: None,
+        limits: true,
+        partial: false,
+    };
+    series_with_pole_retry(arena, expr, var, point, order, mode)
+}
+
+/// [`series`] as `var → point` from one side: [`Direction::Right`]
+/// (`var > point`, log-extended: the result may contain `ln(var − point)`,
+/// `Ei(x) = γ + ln x + x + x²/4 + …`) or [`Direction::Left`];
+/// [`Direction::Both`] is [`series`].  At `±∞` the direction is implied.
+///
+/// `exp(−1/x)` at `0` is `0` to every order from the right and has no
+/// expansion from the left (nor a two-sided one).
+///
+/// [`Direction::Right`]: crate::calculus::limit::Direction::Right
+/// [`Direction::Left`]: crate::calculus::limit::Direction::Left
+/// [`Direction::Both`]: crate::calculus::limit::Direction::Both
+pub(crate) fn series_dir(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    order: u32,
+    dir: crate::calculus::limit::Direction,
+) -> Result<ExprId, SymplexError> {
+    use crate::calculus::limit::Direction;
+    let mode = match dir {
+        Direction::Both => return series(arena, expr, var, point, order),
+        Direction::Right => Mode {
+            side: Side::Above,
+            log_var: Some(arena.symbol(LOG_PLACEHOLDER)),
+            limits: true,
+            partial: false,
+        },
+        Direction::Left => Mode {
+            side: Side::Below,
+            log_var: None,
+            limits: true,
+            partial: false,
+        },
+    };
+    series_with_pole_retry(arena, expr, var, point, order, mode)
+}
+
+/// Stand-in for `ln t` during a log-extended expansion (replaced before the
+/// result is returned).
+const LOG_PLACEHOLDER: &str = "__series_ln_t";
+
+/// [`series_in_mode`], retried as `(x − a)⁻ᵏ·series((x − a)ᵏ·f)` for
+/// `k = 1..=5` when the direct expansion fails: a pole of a function the
+/// engine only knows through the differentiation fallback (`sinh(ln x) =
+/// (x − 1/x)/2`) is invisible to Taylor coefficients.  For the real
+/// asymptotic expansion this is exact: `xᵏ·f = S + O(xⁿ⁺ᵏ)` gives
+/// `f = S/xᵏ + O(xⁿ)` for `x ≠ 0`.  (Before, this retry lived only in
+/// [`laurent_series`], reached as `series`'s fallback, which is now
+/// restricted to meromorphic functions.)
+fn series_with_pole_retry(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    order: u32,
+    mode: Mode,
+) -> Result<ExprId, SymplexError> {
+    let err = match series_in_mode(arena, expr, var, point, order, mode) {
+        Ok(s) => return Ok(s),
+        Err(e) => e,
+    };
+    if matches!(
+        arena.node(point),
+        ExprNode::Infinity | ExprNode::NegInfinity
+    ) || !matches!(arena.node(var), ExprNode::Symbol(_))
+        || order == 0
+    {
+        return Err(err);
+    }
+    let x_minus_a = if arena.is_zero_structural(point) {
+        var
+    } else {
+        arena.sub(var, point)
+    };
+    for k in 1u32..=5 {
+        let k_id = arena.int(k as i64);
+        let multiplier = arena.pow(x_minus_a, k_id);
+        let modified = arena.mul(&[expr, multiplier]);
+        if let Ok(ts) = series_in_mode(arena, modified, var, point, order + k, mode) {
+            let neg_k = arena.int(-(k as i64));
+            let divisor = arena.pow(x_minus_a, neg_k);
+            let result = arena.mul(&[ts, divisor]);
+            let result = crate::transforms::expand::expand(arena, result);
+            return Ok(eval::eval(arena, result));
+        }
+    }
+    Err(err)
+}
+
+/// The expansion at a finite `point` (or `±∞`) in the given [`Mode`].
+fn series_in_mode(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    order: u32,
+    mode: Mode,
 ) -> Result<ExprId, SymplexError> {
     if order == 0 {
         return Ok(arena.zero);
@@ -124,15 +279,29 @@ pub(crate) fn series(
         let t_plus_a = arena.add(&[var, point]);
         subs::subs(arena, expr, var, t_plus_a)
     };
-    let ts = expand_maclaurin(arena, shifted, var, order as i64, false)?;
-    let poly = ts.to_expr(arena, var, order as i64);
-    if at_zero {
-        Ok(poly)
+    let ts = expand_with_mode(arena, shifted, var, order as i64, mode)?;
+    let mut poly = ts.to_expr(arena, var, order as i64);
+    if let Some(l) = mode.log_var {
+        let ln_t = arena.ln(var);
+        poly = subs::subs(arena, poly, l, ln_t);
+        poly = eval::eval(arena, poly);
+    }
+    let result = if at_zero {
+        poly
     } else {
         let x_minus_a = arena.sub(var, point);
         let back = subs::subs(arena, poly, var, x_minus_a);
-        Ok(eval::eval(arena, back))
+        eval::eval(arena, back)
+    };
+    if mode.log_var.is_some()
+        && (contains_singular_atom(arena, result) || walk::has_unevaluated(arena, result))
+    {
+        return Err(SymplexError::ComputationFailed {
+            operation: "series",
+            reason: "a coefficient of the one-sided expansion is singular".into(),
+        });
     }
+    Ok(result)
 }
 
 /// Asymptotic expansion of `expr` as `var → +∞` (or `−∞` when `negative`),
@@ -154,9 +323,16 @@ pub(crate) fn series_at_infinity(
     let inv_t = arena.div(one, t);
     let inv_t = if negative { arena.neg(inv_t) } else { inv_t };
     let in_t = subs::subs(arena, expr, var, inv_t);
-    // t = 1/x → 0⁺ only, so fractional powers of t^(even) are single-valued.
-    let ts = expand_maclaurin(arena, in_t, t, order as i64, true)?;
+    // t = ±1/x → 0⁺ only, so fractional powers of t^(even) are
+    // single-valued, and `ln t` is real: the expansion is log-extended, with
+    // `ln t = −ln(±x)` (Stirling's `x ln x − x − ½ ln x + …`).
+    let log_t = arena.symbol(LOG_PLACEHOLDER);
+    let ts = expand_log_extended(arena, in_t, t, order as i64, log_t, true)?;
     let poly = ts.to_expr(arena, t, order as i64);
+    let ln_arg = if negative { arena.neg(var) } else { var };
+    let ln_x = arena.ln(ln_arg);
+    let minus_ln_x = arena.neg(ln_x);
+    let poly = subs::subs(arena, poly, log_t, minus_ln_x);
     let inv_x = arena.div(one, var);
     let inv_x = if negative { arena.neg(inv_x) } else { inv_x };
     let back = subs::subs(arena, poly, t, inv_x);
@@ -185,9 +361,14 @@ fn contains_singular_atom(arena: &Arena, id: ExprId) -> bool {
 
 /// Compute a Laurent series expansion of `expr` in `var` around `point`.
 ///
-/// Kept for API compatibility: the main [`series`] engine already produces
-/// Laurent expansions.  As a last resort this multiplies by `(x − a)^k`,
-/// `k = 1..=5`, and divides back.
+/// Unlike [`series`] (a real asymptotic expansion) this is the
+/// complex-analytic Laurent series, so it exists only where `expr` is
+/// meromorphic at the point: the engine runs without taking limits in its
+/// differentiation fallback, and an essential singularity is refused —
+/// before, `exp(−1/x²)` had the "Laurent series" `0` (its real Taylor
+/// series; the Laurent series has infinitely many negative powers).  As a
+/// last resort this multiplies by `(x − a)^k`, `k = 1..=5`, and divides
+/// back.
 pub(crate) fn laurent_series(
     arena: &mut Arena,
     expr: ExprId,
@@ -195,7 +376,25 @@ pub(crate) fn laurent_series(
     point: ExprId,
     order: u32,
 ) -> Result<ExprId, SymplexError> {
-    if let Ok(ts) = series(arena, expr, var, point, order) {
+    let mode = Mode {
+        side: Side::Both,
+        log_var: None,
+        limits: false,
+        partial: false,
+    };
+    let series = |arena: &mut Arena, e: ExprId, order: u32| {
+        if matches!(
+            arena.node(point),
+            ExprNode::Infinity | ExprNode::NegInfinity
+        ) {
+            return Err(SymplexError::ComputationFailed {
+                operation: "laurent_series",
+                reason: "a Laurent series is taken at a finite point".into(),
+            });
+        }
+        series_in_mode(arena, e, var, point, order, mode)
+    };
+    if let Ok(ts) = series(arena, expr, order) {
         return Ok(ts);
     }
     let x_minus_a = if arena.is_zero_structural(point) {
@@ -207,7 +406,7 @@ pub(crate) fn laurent_series(
         let k_id = arena.int(k as i64);
         let multiplier = arena.pow(x_minus_a, k_id);
         let modified = arena.mul(&[expr, multiplier]);
-        if let Ok(ts) = series(arena, modified, var, point, order + k) {
+        if let Ok(ts) = series(arena, modified, order + k) {
             let neg_k = arena.int(-(k as i64));
             let divisor = arena.pow(x_minus_a, neg_k);
             let result = arena.mul(&[ts, divisor]);
@@ -496,6 +695,13 @@ impl TSeries {
     /// `Σ_n f_n · w^n` for a series `w` with valuation ≥ 1.
     fn compose(arena: &mut Arena, f: &dyn Fn(&mut Arena, usize) -> ExprId, w: &TSeries) -> TSeries {
         let known = w.known;
+        if known <= 0 {
+            return TSeries {
+                shift: known,
+                known,
+                coeffs: Vec::new(),
+            };
+        }
         let mut acc = Self::constant(arena, arena.zero, known);
         let f0 = f(arena, 0);
         acc.coeffs[0] = f0;
@@ -765,8 +971,38 @@ enum Side {
     /// From above only (`x → 0⁺`; used for `x → ±∞` via `t = 1/x`).
     Above,
     /// From below only (`x → 0⁻`; used to cross-check `|g|` with odd
-    /// valuation, see [`expand_maclaurin`]).
+    /// valuation, see [`expand_with_mode`]).
     Below,
+}
+
+/// How one expansion is carried out.
+#[derive(Clone, Copy, Debug)]
+struct Mode {
+    side: Side,
+    /// With `Some(l)` (only for [`Side::Above`]) the expansion is
+    /// *log-extended*: `l` is a `var`-free stand-in for `ln(var)`, and `ln`
+    /// of a series with a non-zero valuation `v` is `v·l + ln c + ln(1 + …)`
+    /// instead of a refusal.  Coefficients may then be polynomials in `l`;
+    /// a term `c(l)·varᵏ` is still "of order `k`" (it is `o(var^(k−ε))`), as
+    /// in Gruntz's algorithm, where `l = ln ω` belongs to a lower
+    /// comparability class.  `exp`, `sinh`, `cosh` of an argument whose
+    /// constant term contains `l` (`exp(2 ln t) = t²`) are refused: that
+    /// coefficient would not be of lower order.
+    log_var: Option<ExprId>,
+    /// May the differentiation fallback take limits of derivatives that
+    /// cannot be substituted?  Off inside Gruntz (the limit engine calling
+    /// itself through the series fallback has no overall budget).
+    limits: bool,
+    /// Accept a result exact to fewer terms than requested (its `known`
+    /// says how many): Gruntz only needs the leading term, and `ζ(1 + w)`
+    /// is known only to `O(w)`.
+    partial: bool,
+}
+
+impl Mode {
+    fn with_side(self, side: Side) -> Self {
+        Mode { side, ..self }
+    }
 }
 
 /// Why a structural expansion step produced no series.
@@ -787,30 +1023,121 @@ enum Obstruction {
     Kink,
 }
 
-/// Expand `expr` around `var = 0` with all exponents `< order` exact.
+/// [`expand_with_mode`] for a function that must be *meromorphic* at `0`
+/// (a Laurent series in the complex sense, for [`laurent_series`] and
+/// formal power series): two-sided, and the differentiation fallback takes
+/// no limits, so an essential singularity (`exp(−1/x²)`, whose real
+/// Taylor coefficients all vanish) is refused.
+pub(crate) fn expand_meromorphic(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    order: i64,
+) -> Result<TSeries, SymplexError> {
+    expand_with_mode(
+        arena,
+        expr,
+        var,
+        order,
+        Mode {
+            side: Side::Both,
+            log_var: None,
+            limits: false,
+            partial: false,
+        },
+    )
+}
+
+/// Log-extended expansion as `var → 0⁺` (see [`Mode::log_var`]): `log_var`
+/// stands for `ln(var)` and may appear (polynomially) in the coefficients.
+/// `limits` allows the differentiation fallback to take limits.
 ///
-/// `one_sided` marks expansions where the variable only approaches `0`
-/// from above (used for `x → ±∞` via `t = 1/x`); this permits
-/// `(t^v)^α = t^{vα}` for every integer `vα`, which is not valid two-sided
-/// (`√(x²) = |x|`).
+/// Used by [`series_at_infinity`] (`var = 1/x`, `log_var` a placeholder).
+pub(crate) fn expand_log_extended(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    order: i64,
+    log_var: ExprId,
+    limits: bool,
+) -> Result<TSeries, SymplexError> {
+    expand_with_mode(
+        arena,
+        expr,
+        var,
+        order,
+        Mode {
+            side: Side::Above,
+            log_var: Some(log_var),
+            limits,
+            partial: false,
+        },
+    )
+}
+
+/// [`expand_log_extended`] for a leading term: no limits in the
+/// differentiation fallback, and a result exact to fewer than `order` terms
+/// is returned rather than refused (its [`TSeries::known`] tells how far
+/// it is exact).  Used by Gruntz's leading-term extraction (`var = ω`,
+/// `log_var = ln ω`).
+pub(crate) fn expand_leading(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    order: i64,
+    log_var: ExprId,
+) -> Result<TSeries, SymplexError> {
+    expand_with_mode(
+        arena,
+        expr,
+        var,
+        order,
+        Mode {
+            side: Side::Above,
+            log_var: Some(log_var),
+            limits: false,
+            partial: true,
+        },
+    )
+}
+
+/// Expand `expr` around `var = 0` with all exponents `< order` exact, in the
+/// given [`Mode`].
+///
+/// From above ([`Side::Above`], used for `x → ±∞` via `t = 1/x`)
+/// `(t^v)^α = t^{vα}` holds for every integer `vα`, which is not valid
+/// two-sided (`√(x²) = |x|`).
 ///
 /// A two-sided expansion that fails only because of `|g|` with odd
 /// valuation (`|x|`, `|sin x|`) is retried from each side separately and
 /// accepted when both sides agree (`cos|x| = cos x`); otherwise there is
 /// no two-sided expansion and the error is returned.
-pub(crate) fn expand_maclaurin(
+fn expand_with_mode(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
     order: i64,
-    one_sided: bool,
+    mode: Mode,
 ) -> Result<TSeries, SymplexError> {
-    let side = if one_sided { Side::Above } else { Side::Both };
     let mut kink = false;
-    match expand_from_side(arena, expr, var, order, side, &mut kink) {
+    match expand_from_side(arena, expr, var, order, mode, &mut kink) {
         Err(_) if kink => {
-            let above = expand_from_side(arena, expr, var, order, Side::Above, &mut false)?;
-            let below = expand_from_side(arena, expr, var, order, Side::Below, &mut false)?;
+            let above = expand_from_side(
+                arena,
+                expr,
+                var,
+                order,
+                mode.with_side(Side::Above),
+                &mut false,
+            )?;
+            let below = expand_from_side(
+                arena,
+                expr,
+                var,
+                order,
+                mode.with_side(Side::Below),
+                &mut false,
+            )?;
             if TSeries::same(arena, &above, &below, order) {
                 Ok(above)
             } else {
@@ -827,7 +1154,7 @@ pub(crate) fn expand_maclaurin(
     }
 }
 
-/// [`expand_maclaurin`] for one [`Side`], with the precision-escalation loop.
+/// [`expand_with_mode`] for one [`Side`], with the precision-escalation loop.
 /// Sets `kink` when the failure was an odd-valuation `|g|` in a two-sided
 /// expansion.
 fn expand_from_side(
@@ -835,7 +1162,7 @@ fn expand_from_side(
     expr: ExprId,
     var: ExprId,
     order: i64,
-    side: Side,
+    mode: Mode,
     kink: &mut bool,
 ) -> Result<TSeries, SymplexError> {
     // Work with at least a few terms so that the valuation of every
@@ -843,13 +1170,17 @@ fn expand_from_side(
     // truncate to nothing and `1/x` could not be expanded).
     let mut working = order.max(MIN_WORKING_ORDER);
     let mut last_err = None;
+    let mut best: Option<TSeries> = None;
     for _attempt in 0..MAX_PRECISION_ATTEMPTS {
         let mut hidden_valuation = false;
-        match expand_with_precision(arena, expr, var, working, side, &mut hidden_valuation, kink) {
+        match expand_with_precision(arena, expr, var, working, mode, &mut hidden_valuation, kink) {
             Ok(ts) if ts.known >= order => return Ok(ts.truncate_known(order)),
             Ok(ts) => {
                 // Precision was lost through poles; increase and retry.
                 working += order - ts.known + 1;
+                if mode.partial && best.as_ref().is_none_or(|b| b.known < ts.known) {
+                    best = Some(ts);
+                }
             }
             Err(e) if hidden_valuation && !*kink => {
                 // A sub-expression's leading term lay beyond the working
@@ -859,6 +1190,9 @@ fn expand_from_side(
             }
             Err(e) => return Err(e),
         }
+    }
+    if let Some(ts) = best {
+        return Ok(ts);
     }
     Err(last_err.unwrap_or(SymplexError::ComputationFailed {
         operation: "series",
@@ -875,7 +1209,7 @@ fn expand_with_precision(
     expr: ExprId,
     var: ExprId,
     n: i64,
-    side: Side,
+    mode: Mode,
     hidden_valuation: &mut bool,
     kink: &mut bool,
 ) -> Result<TSeries, SymplexError> {
@@ -891,12 +1225,12 @@ fn expand_with_precision(
         } else if id == var {
             Some(TSeries::var(arena, n))
         } else {
-            match structural_series(arena, id, var, side, &cache) {
+            match structural_series(arena, id, var, mode, &cache) {
                 Ok(s) => Some(s),
                 Err(Obstruction::Unknown) => {
                     if id == expr || fallbacks_used < MAX_FALLBACK_NODES {
                         fallbacks_used += 1;
-                        taylor_by_differentiation(arena, id, var, n, side)
+                        taylor_by_differentiation(arena, id, var, n, mode)
                     } else {
                         None
                     }
@@ -951,9 +1285,10 @@ fn structural_series(
     arena: &mut Arena,
     id: ExprId,
     var: ExprId,
-    side: Side,
+    mode: Mode,
     cache: &FxHashMap<ExprId, Option<TSeries>>,
 ) -> Result<TSeries, Obstruction> {
+    let side = mode.side;
     let node = arena.node(id).clone();
     let analytic = match node {
         ExprNode::Add(ref ch) => {
@@ -999,21 +1334,44 @@ fn structural_series(
             }
             // b^e with var-dependent exponent: exp(e · ln b).
             let e = child(cache, exp)?;
-            let lnb = apply_ln(arena, &b).ok_or(Obstruction::Unknown)?;
+            let lnb = apply_ln(arena, &b, mode)?;
             let prod = TSeries::mul(arena, &e, &lnb);
-            apply_fn(arena, FnKind::Exp, &prod)
+            apply_exp_like(arena, FnKind::Exp, &prod, mode)
         }
         ExprNode::Abs(a) => return abs_series(arena, &child(cache, a)?, side),
         ExprNode::Sign(a) => return sign_series(arena, &child(cache, a)?, side, false),
         ExprNode::Heaviside(a) => return sign_series(arena, &child(cache, a)?, side, true),
         ExprNode::Apply(f, ref args) if args.len() == 2 && is_bessel(arena, f) => {
-            return bessel_series(arena, f, args[0], &child(cache, args[1])?, var);
+            let u = child(cache, args[1])?;
+            if let Some(s) = log_bessel_series(arena, f, args[0], &u, var, mode)? {
+                return Ok(s);
+            }
+            return bessel_series(arena, f, args[0], &u, var);
         }
-        ExprNode::Exp(a) => apply_fn(arena, FnKind::Exp, &child(cache, a)?),
+        ExprNode::Gamma(_)
+        | ExprNode::LogGamma(_)
+        | ExprNode::Digamma(_)
+        | ExprNode::Polygamma(..)
+        | ExprNode::Zeta(_)
+        | ExprNode::Ei(_)
+        | ExprNode::Ci(_)
+        | ExprNode::Si(_)
+        | ExprNode::Li(_)
+        | ExprNode::Erfc(_) => return special_series(arena, &node, mode, cache),
+        ExprNode::Apply(f, ref args)
+            if args.len() == 1
+                && (matches!(
+                    arena.lib_fn(f),
+                    Some(crate::base::libfn::LibFn::Shi | crate::base::libfn::LibFn::Chi)
+                ) || matches!(arena.symbol_name(f), ERFCX_ASYMPTOTIC | EI_ASYMPTOTIC)) =>
+        {
+            return special_series(arena, &node, mode, cache);
+        }
+        ExprNode::Exp(a) => apply_exp_like(arena, FnKind::Exp, &child(cache, a)?, mode),
         ExprNode::Sin(a) => apply_fn(arena, FnKind::Sin, &child(cache, a)?),
         ExprNode::Cos(a) => apply_fn(arena, FnKind::Cos, &child(cache, a)?),
-        ExprNode::Sinh(a) => apply_fn(arena, FnKind::Sinh, &child(cache, a)?),
-        ExprNode::Cosh(a) => apply_fn(arena, FnKind::Cosh, &child(cache, a)?),
+        ExprNode::Sinh(a) => apply_exp_like(arena, FnKind::Sinh, &child(cache, a)?, mode),
+        ExprNode::Cosh(a) => apply_exp_like(arena, FnKind::Cosh, &child(cache, a)?, mode),
         ExprNode::Tan(a) => apply_fn(arena, FnKind::Tan, &child(cache, a)?),
         ExprNode::Tanh(a) => apply_fn(arena, FnKind::Tanh, &child(cache, a)?),
         ExprNode::Atan(a) => apply_fn(arena, FnKind::Atan, &child(cache, a)?),
@@ -1022,10 +1380,23 @@ fn structural_series(
         ExprNode::Asinh(a) => apply_fn(arena, FnKind::Asinh, &child(cache, a)?),
         ExprNode::Erf(a) => apply_fn(arena, FnKind::Erf, &child(cache, a)?),
         ExprNode::LambertW(a) => apply_fn(arena, FnKind::LambertW, &child(cache, a)?),
-        ExprNode::Ln(a) => apply_ln(arena, &child(cache, a)?),
+        ExprNode::Ln(a) => return apply_ln(arena, &child(cache, a)?, mode),
         _ => None,
     };
     analytic.ok_or(Obstruction::Unknown)
+}
+
+/// `exp`, `sinh`, `cosh` of `a`, refused in a log-extended expansion when
+/// the constant term of `a` contains the stand-in for `ln(var)` (see
+/// [`Mode::log_var`]).
+fn apply_exp_like(arena: &mut Arena, kind: FnKind, a: &TSeries, mode: Mode) -> Option<TSeries> {
+    if let Some(l) = mode.log_var {
+        let u0 = a.coeff_at(arena, 0);
+        if walk::contains(arena, u0, l) {
+            return None;
+        }
+    }
+    apply_fn(arena, kind, a)
 }
 
 fn is_bessel(arena: &Arena, f: crate::base::node::SymbolId) -> bool {
@@ -1305,13 +1676,45 @@ fn apply_fn(arena: &mut Arena, kind: FnKind, a: &TSeries) -> Option<TSeries> {
     }
 }
 
-/// `ln(a)` — requires a non-zero constant term.
-fn apply_ln(arena: &mut Arena, a: &TSeries) -> Option<TSeries> {
-    let a = a.clone().normalized(arena);
-    if a.leading_exponent(arena)? != 0 {
-        return None; // logarithmic singularity
+/// `ln(a)` — requires a non-zero constant term, except in a log-extended
+/// expansion ([`Mode::log_var`]), where `a = c·var^v·(1 + …)` with `c` real
+/// of known sign and real visible coefficients gives
+/// `ln c + v·ln(var) + ln(1 + …)` (for `var > 0` the argument of `var^v`
+/// is 0, so no multiple of `2πi` is lost).
+///
+/// A constant term on the cut (negative real) with a non-real correction is
+/// a definite [`Obstruction::NoExpansion`]: `ln(−1 + i·x)` tends to `iπ`
+/// from `x > 0` and to `−iπ` from `x < 0` (before, the series was
+/// `iπ − i·x + …` on both sides).
+fn apply_ln(arena: &mut Arena, a: &TSeries, mode: Mode) -> Result<TSeries, Obstruction> {
+    let mut a = a.clone().normalized(arena);
+    let v = a.leading_exponent(arena).ok_or(Obstruction::Unknown)?;
+    let mut log_shift = None;
+    if v != 0 {
+        // logarithmic singularity
+        let l = mode.log_var.ok_or(Obstruction::Unknown)?;
+        if mode.side != Side::Above {
+            return Err(Obstruction::Unknown);
+        }
+        let c = a.coeff_at(arena, v);
+        match constant_sign(arena, c) {
+            Some(true) => {}
+            Some(false) if a.coeffs.iter().all(|&co| is_known_real(arena, co)) => {}
+            _ => return Err(Obstruction::Unknown),
+        }
+        a.shift -= v;
+        a.known -= v;
+        let vl = {
+            let ve = arena.int(v);
+            let p = arena.mul(&[ve, l]);
+            eval::eval(arena, p)
+        };
+        log_shift = Some(vl);
     }
     let (u0, w) = a.split_constant(arena);
+    if approaches_cut(arena, u0, &w) {
+        return Err(Obstruction::NoExpansion);
+    }
     // ln(u0 + w) = ln u0 + ln(1 + w/u0)
     let inv_u0 = {
         let m1 = arena.neg_one;
@@ -1324,14 +1727,43 @@ fn apply_ln(arena: &mut Arena, a: &TSeries) -> Option<TSeries> {
         &|ar: &mut Arena, i: usize| FnKind::Ln1p.coefficient(ar, i),
         &w_over,
     );
-    let ln_u0 = arena.ln(u0);
-    let ln_u0 = eval::eval(arena, ln_u0);
+    let mut ln_u0 = ln_of_constant(arena, u0);
+    if let Some(vl) = log_shift {
+        let sum = arena.add(&[ln_u0, vl]);
+        ln_u0 = eval::eval(arena, sum);
+    }
     if !arena.is_zero_structural(ln_u0) && !s.coeffs.is_empty() && s.shift <= 0 {
         let idx = (-s.shift) as usize;
         let c = arena.add(&[s.coeffs[idx], ln_u0]);
         s.coeffs[idx] = eval::eval(arena, c);
     }
-    Some(s)
+    Ok(s)
+}
+
+/// `ln c` of a constant, with `ln(p/q) = ln p − ln q` for a positive
+/// rational, so that the constant cancels structurally against one spelled
+/// with integers (the `ln 2` of K₀'s expansion against
+/// `ln(x/2) = ln x + ln(1/2)`).
+pub(crate) fn ln_of_constant(arena: &mut Arena, c: ExprId) -> ExprId {
+    let l = match arena.as_num(c).cloned() {
+        Some(r) if r.is_positive() && !r.is_integer() => {
+            let p = rat_expr(arena, Q::from_integer(r.numer().clone()));
+            let q = rat_expr(arena, Q::from_integer(r.denom().clone()));
+            let lp = arena.ln(p);
+            let lq = arena.ln(q);
+            arena.sub(lp, lq)
+        }
+        _ => arena.ln(c),
+    };
+    eval::eval(arena, l)
+}
+
+/// Does `u0 + w` approach the negative real axis (the cut of `ln` and of
+/// fractional powers) with a correction `w` that is not known to be real?
+fn approaches_cut(arena: &mut Arena, u0: ExprId, w: &TSeries) -> bool {
+    is_known_real(arena, u0)
+        && constant_sign(arena, u0) == Some(false)
+        && !w.coeffs.iter().all(|&c| is_known_real(arena, c))
 }
 
 /// `a^α` for a var-free non-integer exponent: `u0^α · Σ C(α,n) (w/u0)^n`.
@@ -1370,6 +1802,9 @@ fn pow_rational(
         a.known -= v;
     }
     let (u0, w) = a.split_constant(arena);
+    if arena.as_num(alpha).is_none_or(|r| !r.is_integer()) && approaches_cut(arena, u0, &w) {
+        return Err(Obstruction::NoExpansion);
+    }
     let inv_u0 = {
         let m1 = arena.neg_one;
         let p = arena.pow(u0, m1);
@@ -1389,6 +1824,723 @@ fn pow_rational(
     Ok(r)
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Special functions at their singular points
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Where the argument of `Γ`, `ψ`, `ψ⁽ᵐ⁾`, `ζ`, `ln Γ`, `Ei`, `Ci`, `Chi`,
+// `li`, `K₀`, `Y₀` tends to a pole, a logarithmic singularity or `+∞`, the
+// differentiation fallback has nothing to evaluate; these rules give the
+// expansion there in closed form (DLMF 5.7.1, 5.7.4, 5.11.1, 5.11.2, 5.15.1,
+// 6.6.2, 6.6.5, 6.6.6, 6.2.8, 10.31.2, 10.8.2, 25.2.4; the recurrences
+// Γ(z+1) = zΓ(z), ψ(z+1) = ψ(z) + 1/z).  Elsewhere they answer
+// [`Obstruction::Unknown`] and the fallback applies as before.  Logarithmic
+// singularities need a log-extended expansion ([`Mode::log_var`]); without
+// one they are a definite [`Obstruction::NoExpansion`].
+
+/// Most poles `Γ(−n)`, `ψ(−n)` unwound by the recurrence.
+const MAX_POLE_SHIFT: i64 = 64;
+
+/// Head of Gruntz's internal `erfcx(z) = e^{z²} erfc(z)` for `z → +∞`
+/// (SymPy's `_erfs`), with the asymptotic series
+/// `(1/√π) Σ (−1)ᵏ (2k−1)!!/(2ᵏ z^{2k+1})` (DLMF 7.12.1).  It exists only
+/// inside a limit computation.
+pub(crate) const ERFCX_ASYMPTOTIC: &str = "__erfcx_asym";
+
+/// Head of Gruntz's internal `e^{−z} Ei(z)` for `z → ±∞` (SymPy's
+/// `_eis`), with the asymptotic series `Σ k!/z^{k+1}` (DLMF 6.12.2).
+pub(crate) const EI_ASYMPTOTIC: &str = "__ei_asym";
+
+/// Most terms of an asymptotic (Stirling-type) series.
+const MAX_ASYMPTOTIC_TERMS: i64 = 40;
+
+/// The argument series `a` as `u0 + w` with `w` of valuation `≥ 1`, if `a`
+/// has no pole.  `Err(NoExpansion)` when `a` has no visible term (a hidden
+/// valuation: the caller widens the window).
+fn split_regular(arena: &mut Arena, a: &TSeries) -> Result<Option<(ExprId, TSeries)>, Obstruction> {
+    let a = a.clone().normalized(arena);
+    if a.coeffs.is_empty() {
+        return Err(Obstruction::NoExpansion);
+    }
+    if a.shift < 0 {
+        return Ok(None);
+    }
+    let (u0, w) = a.split_constant(arena);
+    Ok(Some((settle_constant(arena, u0), w)))
+}
+
+/// `n` if the constant `u0` is the integer `−n ≤ 0`.
+fn nonpositive_integer(arena: &Arena, u0: ExprId) -> Option<i64> {
+    if arena.is_zero_structural(u0) {
+        return Some(0);
+    }
+    let r = arena.as_num(u0)?;
+    if r.is_integer() && !r.is_positive() {
+        r.to_integer().to_i64().map(|n| -n)
+    } else {
+        None
+    }
+}
+
+fn is_one_const(arena: &Arena, u0: ExprId) -> bool {
+    arena.as_num(u0).is_some_and(|r| r.is_one())
+}
+
+/// `ζ(k)` for an integer `k ≥ 2` (`π²/6`, `ζ(3)`, …).
+fn zeta_int(arena: &mut Arena, k: usize) -> ExprId {
+    let ke = arena.int(k as i64);
+    let z = arena.zeta(ke);
+    eval::eval(arena, z)
+}
+
+/// `c·s` for a rational `c`.
+fn scale_rat(arena: &mut Arena, s: &TSeries, c: Q) -> TSeries {
+    let ce = rat_expr(arena, c);
+    TSeries::scale(arena, s, ce)
+}
+
+/// The constant series `c` with the precision of `like`.
+fn constant_like(arena: &Arena, c: ExprId, like: &TSeries) -> TSeries {
+    TSeries::constant(arena, c, like.known)
+}
+
+/// `(w + s)^(−power)` for an integer shift `s`.
+fn recip_shifted(arena: &mut Arena, w: &TSeries, s: i64, power: i64) -> Option<TSeries> {
+    let se = arena.int(s);
+    let c = constant_like(arena, se, w);
+    let base = TSeries::add(arena, w, &c);
+    TSeries::pow_int(arena, &base, -power)
+}
+
+/// `ln Γ(1 + w) = −γw + Σ_{k≥2} (−1)ᵏ ζ(k) wᵏ/k` (DLMF 5.7.3).
+fn ln_gamma_one_plus(arena: &mut Arena, w: &TSeries) -> TSeries {
+    TSeries::compose(
+        arena,
+        &|ar: &mut Arena, k: usize| match k {
+            0 => ar.zero,
+            1 => {
+                let g = ar.euler_gamma;
+                ar.neg(g)
+            }
+            _ => {
+                let z = zeta_int(ar, k);
+                let sign = if k.is_multiple_of(2) { 1 } else { -1 };
+                let c = rat_expr(ar, Q::new(BigInt::from(sign), BigInt::from(k)));
+                let p = ar.mul(&[c, z]);
+                eval::eval(ar, p)
+            }
+        },
+        w,
+    )
+}
+
+/// `Γ(1 + w)` from the Taylor coefficients `gₙ` of `exp(ln Γ(1 + w))`,
+/// `g₀ = 1`, `n·gₙ = Σ_{k=1}^{n} k·c_k·g_{n−k}` with `c_k` those of
+/// [`ln_gamma_one_plus`].  The coefficients are built once as closed forms
+/// (polynomials in `γ`, `ζ(k)`; none vanishes, `gₙ ≈ (−1)ⁿ`), so the
+/// series arithmetic of `exp` — with a numerical zero test of every sum of
+/// `ζ` values — is avoided.
+fn gamma_one_plus(arena: &mut Arena, w: &TSeries) -> TSeries {
+    // `TSeries::compose` asks for coefficients up to `w.known + 1`.
+    let n_max = w.known.max(1) as usize + 2;
+    let mut c: Vec<ExprId> = Vec::with_capacity(n_max + 1);
+    c.push(arena.zero);
+    for k in 1..=n_max {
+        c.push(if k == 1 {
+            let g = arena.euler_gamma;
+            arena.neg(g)
+        } else {
+            let z = zeta_int(arena, k);
+            let sign = if k.is_multiple_of(2) { 1 } else { -1 };
+            let q = rat_expr(arena, Q::new(BigInt::from(sign), BigInt::from(k)));
+            let p = arena.mul(&[q, z]);
+            eval::eval(arena, p)
+        });
+    }
+    let mut g: Vec<ExprId> = Vec::with_capacity(n_max + 1);
+    g.push(arena.one);
+    for n in 1..=n_max {
+        let mut terms = Vec::with_capacity(n);
+        for k in 1..=n {
+            let kq = rat_expr(arena, Q::new(BigInt::from(k), BigInt::from(n)));
+            terms.push(arena.mul(&[kq, c[k], g[n - k]]));
+        }
+        let s = arena.add(&terms);
+        let s = crate::transforms::expand::expand(arena, s);
+        g.push(eval::eval(arena, s));
+    }
+    TSeries::compose(
+        arena,
+        &move |ar: &mut Arena, n: usize| g.get(n).copied().unwrap_or(ar.zero),
+        w,
+    )
+}
+
+/// `ψ⁽ᵐ⁾(1 + w) = Σ_j (−1)^{m+j+1} (m+j)!/j! ζ(m+j+1) wʲ` (`ψ(1) = −γ`),
+/// the derivatives of [`ln_gamma_one_plus`].
+fn polygamma_one_plus(arena: &mut Arena, m: usize, w: &TSeries) -> TSeries {
+    TSeries::compose(
+        arena,
+        &move |ar: &mut Arena, j: usize| {
+            if m == 0 && j == 0 {
+                let g = ar.euler_gamma;
+                return ar.neg(g);
+            }
+            let z = zeta_int(ar, m + j + 1);
+            let mut c =
+                Q::from_integer(factorial((m + j) as u64)) / Q::from_integer(factorial(j as u64));
+            if (m + j + 1) % 2 == 1 {
+                c = -c;
+            }
+            let ce = rat_expr(ar, c);
+            let p = ar.mul(&[ce, z]);
+            eval::eval(ar, p)
+        },
+        w,
+    )
+}
+
+/// For an argument `a → +∞` in a log-extended expansion from above (a pole
+/// with a positive leading coefficient): `(ln a, 1/a, p)` with `p` the
+/// valuation of `1/a`.
+fn at_plus_infinity(arena: &mut Arena, a: &TSeries, mode: Mode) -> Option<(TSeries, TSeries, i64)> {
+    mode.log_var?;
+    if mode.side != Side::Above {
+        return None;
+    }
+    let a = a.clone().normalized(arena);
+    let v = a.leading_exponent(arena)?;
+    if v >= 0 {
+        return None;
+    }
+    let c = a.coeff_at(arena, v);
+    if constant_sign(arena, c) != Some(true) {
+        return None;
+    }
+    let ln_a = apply_ln(arena, &a, mode).ok()?;
+    let inv = TSeries::inverse(arena, &a)?;
+    Some((ln_a, inv, -v))
+}
+
+/// For an argument `a → +∞` in an expansion from above (a pole with a
+/// positive leading coefficient): `(1/a, p)` with `p` the valuation of
+/// `1/a` (no logarithm needed).
+fn pole_to_plus_infinity(arena: &mut Arena, a: &TSeries, mode: Mode) -> Option<(TSeries, i64)> {
+    if mode.side != Side::Above {
+        return None;
+    }
+    let a = a.clone().normalized(arena);
+    let v = a.leading_exponent(arena)?;
+    if v >= 0 || constant_sign(arena, a.coeff_at(arena, v)) != Some(true) {
+        return None;
+    }
+    let inv = TSeries::inverse(arena, &a)?;
+    Some((inv, -v))
+}
+
+/// Number of terms `K` of an asymptotic series in `1/a` (valuation `p`) so
+/// that its remainder lies beyond the working precision `target`.
+fn asymptotic_terms(target: i64, p: i64) -> i64 {
+    (target.max(1) / (2 * p) + 2).min(MAX_ASYMPTOTIC_TERMS)
+}
+
+/// `Σ_{k=1}^{K} c_k·inv^(2k+offset)` with `c_k = coeff(k)`.
+fn odd_even_sum(
+    arena: &mut Arena,
+    inv: &TSeries,
+    k_max: i64,
+    offset: i64,
+    coeff: &dyn Fn(usize) -> Q,
+) -> Option<TSeries> {
+    let inv2 = TSeries::mul(arena, inv, inv);
+    let mut power = TSeries::pow_int(arena, inv, 2 + offset)?;
+    let mut acc: Option<TSeries> = None;
+    for k in 1..=k_max {
+        let c = coeff(k as usize);
+        if !c.is_zero() {
+            let term = scale_rat(arena, &power, c);
+            acc = Some(match acc {
+                None => term,
+                Some(s) => TSeries::add(arena, &s, &term),
+            });
+        }
+        power = TSeries::mul(arena, &power, &inv2);
+    }
+    acc
+}
+
+/// Expansion of a special function whose argument tends to one of its
+/// singular points (see the section comment).
+fn special_series(
+    arena: &mut Arena,
+    node: &ExprNode,
+    mode: Mode,
+    cache: &FxHashMap<ExprId, Option<TSeries>>,
+) -> Result<TSeries, Obstruction> {
+    use crate::base::libfn::LibFn;
+    let unknown = Err(Obstruction::Unknown);
+    match *node {
+        ExprNode::Erfc(a) => {
+            let e = apply_fn(arena, FnKind::Erf, &child(cache, a)?).ok_or(Obstruction::Unknown)?;
+            let one = constant_like(arena, arena.one, &e);
+            let ne = TSeries::neg(arena, &e);
+            Ok(TSeries::add(arena, &one, &ne))
+        }
+        ExprNode::Gamma(a) | ExprNode::Digamma(a) => {
+            let a = child(cache, a)?;
+            if matches!(node, ExprNode::Digamma(_))
+                && let Some((ln_a, inv, p)) = at_plus_infinity(arena, &a, mode)
+            {
+                // ψ(a) = ln a − 1/(2a) − Σ B₂ₖ/(2k a^{2k}) (DLMF 5.11.2)
+                let k_max = asymptotic_terms(a.known - a.shift, p);
+                let half = scale_rat(arena, &inv, Q::new(BigInt::from(-1), BigInt::from(2)));
+                let mut acc = TSeries::add(arena, &ln_a, &half);
+                let tail = odd_even_sum(arena, &inv, k_max, 0, &|k| {
+                    -bernoulli(2 * k) / rat_i(2 * k as i64)
+                })
+                .ok_or(Obstruction::Unknown)?;
+                acc = TSeries::add(arena, &acc, &tail);
+                return Ok(acc.truncate_known(p * (2 * k_max + 2)));
+            }
+            let Some((u0, w)) = split_regular(arena, &a)? else {
+                return unknown;
+            };
+            let Some(n) = nonpositive_integer(arena, u0) else {
+                return unknown;
+            };
+            if n > MAX_POLE_SHIFT || w.coeffs.is_empty() {
+                return Err(Obstruction::NoExpansion);
+            }
+            if matches!(node, ExprNode::Gamma(_)) {
+                // Γ(−n + w) = Γ(1 + w) / Π_{k=0}^{n} (w − n + k)
+                let mut acc = gamma_one_plus(arena, &w);
+                for k in 0..=n {
+                    let r = recip_shifted(arena, &w, k - n, 1).ok_or(Obstruction::NoExpansion)?;
+                    acc = TSeries::mul(arena, &acc, &r);
+                }
+                Ok(acc)
+            } else {
+                // ψ(−n + w) = ψ(1 + w) − Σ_{k=0}^{n} 1/(w − n + k)
+                let mut acc = polygamma_one_plus(arena, 0, &w);
+                for k in 0..=n {
+                    let r = recip_shifted(arena, &w, k - n, 1).ok_or(Obstruction::NoExpansion)?;
+                    let nr = TSeries::neg(arena, &r);
+                    acc = TSeries::add(arena, &acc, &nr);
+                }
+                Ok(acc)
+            }
+        }
+        ExprNode::Polygamma(m, a) => {
+            let Some(m) = arena
+                .as_num(m)
+                .filter(|r| r.is_integer() && r.is_positive())
+                .and_then(|r| r.to_integer().to_usize())
+                .filter(|&m| m <= MAX_INT_POWER as usize)
+            else {
+                return unknown;
+            };
+            let a = child(cache, a)?;
+            if let Some((inv, p)) = pole_to_plus_infinity(arena, &a, mode) {
+                // ψ⁽ᵐ⁾(a) = (−1)^{m+1} [(m−1)!/a^m + m!/(2a^{m+1})
+                //   + Σ B₂ₖ (2k+m−1)!/((2k)! a^{2k+m})]  (DLMF 5.15.8)
+                let k_max = asymptotic_terms(a.known - a.shift, p);
+                let mi = m as i64;
+                let sign = if m % 2 == 1 { Q::one() } else { -Q::one() };
+                let lead = TSeries::pow_int(arena, &inv, mi).ok_or(Obstruction::Unknown)?;
+                let lead = scale_rat(
+                    arena,
+                    &lead,
+                    &sign * Q::from_integer(factorial(m as u64 - 1)),
+                );
+                let second = TSeries::pow_int(arena, &inv, mi + 1).ok_or(Obstruction::Unknown)?;
+                let second = scale_rat(
+                    arena,
+                    &second,
+                    &sign * Q::from_integer(factorial(m as u64)) / rat_i(2),
+                );
+                let mut acc = TSeries::add(arena, &lead, &second);
+                let tail = odd_even_sum(arena, &inv, k_max, mi, &|k| {
+                    &sign * bernoulli(2 * k) * Q::from_integer(factorial((2 * k + m - 1) as u64))
+                        / Q::from_integer(factorial(2 * k as u64))
+                })
+                .ok_or(Obstruction::Unknown)?;
+                acc = TSeries::add(arena, &acc, &tail);
+                return Ok(acc.truncate_known(p * (2 * k_max + 2 + mi)));
+            }
+            let Some((u0, w)) = split_regular(arena, &a)? else {
+                return unknown;
+            };
+            let Some(n) = nonpositive_integer(arena, u0) else {
+                return unknown;
+            };
+            if n > MAX_POLE_SHIFT || w.coeffs.is_empty() {
+                return Err(Obstruction::NoExpansion);
+            }
+            // ψ⁽ᵐ⁾(−n + w) = ψ⁽ᵐ⁾(1 + w) − (−1)ᵐ m! Σ_{k=0}^{n} (w − n + k)^{−m−1}
+            let mut acc = polygamma_one_plus(arena, m, &w);
+            let mut c = Q::from_integer(factorial(m as u64));
+            if m.is_multiple_of(2) {
+                c = -c;
+            }
+            for k in 0..=n {
+                let r = recip_shifted(arena, &w, k - n, m as i64 + 1)
+                    .ok_or(Obstruction::NoExpansion)?;
+                let t = scale_rat(arena, &r, c.clone());
+                acc = TSeries::add(arena, &acc, &t);
+            }
+            Ok(acc)
+        }
+        ExprNode::Zeta(a) => {
+            let a = child(cache, a)?;
+            let Some((u0, w)) = split_regular(arena, &a)? else {
+                return unknown;
+            };
+            if !is_one_const(arena, u0) {
+                return unknown;
+            }
+            // ζ(1 + w) = 1/w + γ + O(w): the higher coefficients are
+            // Stieltjes constants, which have no representation here, so
+            // the expansion is exact only below the valuation of w.
+            let v = w.leading_exponent(arena).ok_or(Obstruction::NoExpansion)?;
+            let inv = TSeries::inverse(arena, &w).ok_or(Obstruction::NoExpansion)?;
+            let g = TSeries::constant(arena, arena.euler_gamma, v);
+            Ok(TSeries::add(arena, &inv, &g).truncate_known(v))
+        }
+        ExprNode::LogGamma(a) => {
+            let a = child(cache, a)?;
+            if let Some((ln_a, inv, p)) = at_plus_infinity(arena, &a, mode) {
+                // Stirling: (a − ½) ln a − a + ½ ln 2π + Σ B₂ₖ/(2k(2k−1) a^{2k−1})
+                let k_max = asymptotic_terms(a.known - a.shift, p);
+                let half = rat_expr(arena, Q::new(BigInt::from(-1), BigInt::from(2)));
+                let hc = constant_like(arena, half, &a);
+                let a_half = TSeries::add(arena, &a, &hc);
+                let main = TSeries::mul(arena, &a_half, &ln_a);
+                let na = TSeries::neg(arena, &a);
+                // ½ ln 2π, spelled ½ ln 2 + ½ ln π (SymPy's form in limits),
+                // so that its exponential simplifies to √2·√π.
+                let two_pi = {
+                    let two = arena.int(2);
+                    let pi = arena.pi;
+                    let l2 = arena.ln(two);
+                    let lp = arena.ln(pi);
+                    let s = arena.add(&[l2, lp]);
+                    let h = rat_expr(arena, Q::new(BigInt::one(), BigInt::from(2)));
+                    let p = arena.mul(&[h, s]);
+                    let p = crate::transforms::expand::expand(arena, p);
+                    eval::eval(arena, p)
+                };
+                let c = constant_like(arena, two_pi, &main);
+                let mut acc = TSeries::add(arena, &main, &na);
+                acc = TSeries::add(arena, &acc, &c);
+                let tail = odd_even_sum(arena, &inv, k_max, -1, &|k| {
+                    bernoulli(2 * k) / rat_i((2 * k * (2 * k - 1)) as i64)
+                })
+                .ok_or(Obstruction::Unknown)?;
+                acc = TSeries::add(arena, &acc, &tail);
+                return Ok(acc.truncate_known(p * (2 * k_max + 1)));
+            }
+            let Some((u0, _)) = split_regular(arena, &a)? else {
+                return unknown;
+            };
+            if !arena.is_zero_structural(u0) {
+                return unknown;
+            }
+            // ln Γ(a) = ln Γ(1 + a) − ln a for a → 0⁺.
+            let a_n = a.clone().normalized(arena);
+            let lead = a_n
+                .leading_exponent(arena)
+                .ok_or(Obstruction::NoExpansion)?;
+            let c = a_n.coeff_at(arena, lead);
+            if mode.log_var.is_none() || constant_sign(arena, c) != Some(true) {
+                return Err(Obstruction::NoExpansion);
+            }
+            let ln_a = apply_ln(arena, &a_n, mode).map_err(|_| Obstruction::NoExpansion)?;
+            let lg = ln_gamma_one_plus(arena, &a_n);
+            let nl = TSeries::neg(arena, &ln_a);
+            Ok(TSeries::add(arena, &lg, &nl))
+        }
+        ExprNode::Si(a) | ExprNode::Ei(a) | ExprNode::Ci(a) => {
+            let a = child(cache, a)?;
+            let Some((u0, _)) = split_regular(arena, &a)? else {
+                return unknown;
+            };
+            if !arena.is_zero_structural(u0) {
+                return unknown;
+            }
+            let kind = match node {
+                ExprNode::Si(_) => IntegralKind::Si,
+                ExprNode::Ei(_) => IntegralKind::Ei,
+                _ => IntegralKind::Ci,
+            };
+            integral_at_zero(arena, kind, &a, mode)
+        }
+        ExprNode::Apply(f, ref args)
+            if args.len() == 1
+                && matches!(arena.symbol_name(f), ERFCX_ASYMPTOTIC | EI_ASYMPTOTIC) =>
+        {
+            let erfcx = arena.symbol_name(f) == ERFCX_ASYMPTOTIC;
+            let a = child(cache, args[0])?.normalized(arena);
+            let v = a.leading_exponent(arena).ok_or(Obstruction::NoExpansion)?;
+            if v == 0
+                && a.coeffs
+                    .iter()
+                    .skip(1)
+                    .all(|&c| arena.is_zero_structural(c))
+            {
+                // A constant argument `c + O(ωᴷ)` (in a log-extended
+                // expansion `ln(1/ω)` is the constant `−ln ω`): the function
+                // is `f(c) + O(ωᴷ)`, its derivative being bounded away from
+                // the logarithmic singularity of `e^{−z} Ei z` at `0`.
+                let c0 = a.coeffs[0];
+                if erfcx || !is_zero_const(arena, c0) {
+                    let c = arena.intern(ExprNode::Apply(f, smallvec::smallvec![c0]));
+                    return Ok(TSeries::constant(arena, c, a.known));
+                }
+                return unknown;
+            }
+            if v >= 0 || mode.side != Side::Above {
+                return unknown;
+            }
+            let positive = constant_sign(arena, a.coeff_at(arena, v));
+            if positive != Some(true) && (erfcx || positive.is_none()) {
+                return unknown;
+            }
+            let inv = TSeries::inverse(arena, &a).ok_or(Obstruction::NoExpansion)?;
+            let p = -v;
+            let k_max = if erfcx {
+                asymptotic_terms(a.known - a.shift, p)
+            } else {
+                ((a.known - a.shift).max(1) / p + 2).min(MAX_ASYMPTOTIC_TERMS)
+            };
+            let mut acc: Option<TSeries> = None;
+            let mut power = inv.clone();
+            let step = if erfcx {
+                TSeries::mul(arena, &inv, &inv)
+            } else {
+                inv.clone()
+            };
+            let mut c = Q::one();
+            for k in 0..=k_max {
+                if k > 0 {
+                    c = if erfcx {
+                        -c * rat_i(2 * k - 1) / rat_i(2)
+                    } else {
+                        c * rat_i(k)
+                    };
+                }
+                let term = scale_rat(arena, &power, c.clone());
+                acc = Some(match acc {
+                    None => term,
+                    Some(s) => TSeries::add(arena, &s, &term),
+                });
+                power = TSeries::mul(arena, &power, &step);
+            }
+            let mut s = acc.ok_or(Obstruction::Unknown)?;
+            // Remainder: the first omitted term.
+            let omitted = if erfcx { 2 * k_max + 3 } else { k_max + 2 };
+            s = s.truncate_known(p * omitted);
+            if erfcx {
+                let rsp = {
+                    let pi = arena.pi;
+                    let sp = arena.sqrt(pi);
+                    let one = arena.one;
+                    let q = arena.div(one, sp);
+                    eval::eval(arena, q)
+                };
+                s = TSeries::scale(arena, &s, rsp);
+            }
+            Ok(s)
+        }
+        ExprNode::Apply(f, ref args) => {
+            let kind = match arena.lib_fn(f) {
+                Some(LibFn::Shi) => IntegralKind::Shi,
+                Some(LibFn::Chi) => IntegralKind::Chi,
+                _ => return unknown,
+            };
+            let a = child(cache, args[0])?;
+            let Some((u0, _)) = split_regular(arena, &a)? else {
+                return unknown;
+            };
+            if !arena.is_zero_structural(u0) {
+                return unknown;
+            }
+            integral_at_zero(arena, kind, &a, mode)
+        }
+        ExprNode::Li(a) => {
+            let a = child(cache, a)?;
+            let Some((u0, _)) = split_regular(arena, &a)? else {
+                return unknown;
+            };
+            if !is_one_const(arena, u0) {
+                return unknown;
+            }
+            // li(a) = Ei(ln a), ln a → 0.
+            let l = apply_ln(arena, &a, mode)?;
+            integral_at_zero(arena, IntegralKind::Ei, &l, mode)
+        }
+        _ => unknown,
+    }
+}
+
+/// The integral functions expanded at a zero of their argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IntegralKind {
+    Si,
+    Shi,
+    Ei,
+    Ci,
+    Chi,
+}
+
+/// `Si`, `Shi` (entire), `Ei(a) = γ + ln|a| + Σ aᵏ/(k·k!)`,
+/// `Ci(a) = γ + ln a + Σ (−1)ᵐ a²ᵐ/(2m·(2m)!)`, `Chi` likewise without the
+/// signs, for `a → 0` (DLMF 6.6.2, 6.6.5, 6.6.6; SymPy's `Ci(−x) = Ci(x) + iπ`
+/// is the principal `ln` of a negative `a`, and `Ei` of a real argument is
+/// real).  The logarithmic ones need a log-extended expansion.
+fn integral_at_zero(
+    arena: &mut Arena,
+    kind: IntegralKind,
+    a: &TSeries,
+    mode: Mode,
+) -> Result<TSeries, Obstruction> {
+    let a = a.clone().normalized(arena);
+    if a.coeffs.is_empty() {
+        return Err(Obstruction::NoExpansion);
+    }
+    let coefficient = move |ar: &mut Arena, k: usize| -> ExprId {
+        let kq = rat_i(k as i64);
+        let fact = Q::from_integer(factorial(k as u64));
+        let odd = k % 2 == 1;
+        let m = k / 2;
+        let alt = if m.is_multiple_of(2) {
+            Q::one()
+        } else {
+            -Q::one()
+        };
+        let c = match kind {
+            IntegralKind::Si if odd => alt / (kq * fact),
+            IntegralKind::Shi if odd => Q::one() / (kq * fact),
+            IntegralKind::Ei if k > 0 => Q::one() / (kq * fact),
+            IntegralKind::Ci if k > 0 && !odd => alt / (kq * fact),
+            IntegralKind::Chi if k > 0 && !odd => Q::one() / (kq * fact),
+            IntegralKind::Ei | IntegralKind::Ci | IntegralKind::Chi if k == 0 => {
+                return ar.euler_gamma;
+            }
+            _ => Q::zero(),
+        };
+        rat_expr(ar, c)
+    };
+    let series = TSeries::compose(arena, &coefficient, &a);
+    if matches!(kind, IntegralKind::Si | IntegralKind::Shi) {
+        return Ok(series);
+    }
+    if mode.log_var.is_none() {
+        return Err(Obstruction::NoExpansion);
+    }
+    let log_arg = if kind == IntegralKind::Ei {
+        abs_series(arena, &a, mode.side)?
+    } else {
+        a
+    };
+    let ln = apply_ln(arena, &log_arg, mode).map_err(|_| Obstruction::NoExpansion)?;
+    Ok(TSeries::add(arena, &series, &ln))
+}
+
+/// `K₀(u)` and `Y₀(u)` at a zero of `u` in a log-extended expansion (DLMF
+/// 10.31.2, 10.8.2):
+/// `K₀(z) = −(ln(z/2) + γ) I₀(z) + Σ_{k≥1} H_k (z/2)^{2k}/(k!)²`,
+/// `Y₀(z) = (2/π)[(ln(z/2) + γ) J₀(z) + Σ_{k≥1} (−1)^{k+1} H_k (z/2)^{2k}/(k!)²]`,
+/// for `u → 0⁺` (positive leading coefficient).  `Ok(None)` when the rule
+/// does not apply.
+fn log_bessel_series(
+    arena: &mut Arena,
+    f: crate::base::node::SymbolId,
+    order: ExprId,
+    u: &TSeries,
+    var: ExprId,
+    mode: Mode,
+) -> Result<Option<TSeries>, Obstruction> {
+    use crate::base::libfn::LibFn;
+    let lib = arena.lib_fn(f);
+    let is_k = match lib {
+        Some(LibFn::BesselK) => true,
+        Some(LibFn::BesselY) => false,
+        _ => return Ok(None),
+    };
+    if mode.log_var.is_none()
+        || walk::contains(arena, order, var)
+        || !arena.is_zero_structural(order)
+    {
+        return Ok(None);
+    }
+    let u = u.clone().normalized(arena);
+    let Some(k) = u.leading_exponent(arena) else {
+        return Err(Obstruction::NoExpansion);
+    };
+    if k <= 0 {
+        return Ok(None);
+    }
+    if constant_sign(arena, u.coeff_at(arena, k)) != Some(true) {
+        return Err(Obstruction::NoExpansion);
+    }
+    let alternate = !is_k;
+    let bessel0 = move |ar: &mut Arena, m: usize| -> ExprId {
+        if m % 2 == 1 {
+            return ar.zero;
+        }
+        let kk = (m / 2) as u64;
+        let f = factorial(kk);
+        let mut c = Q::new(BigInt::one(), &f * &f * (BigInt::one() << (2 * kk)));
+        if alternate && kk % 2 == 1 {
+            c = -c;
+        }
+        rat_expr(ar, c)
+    };
+    let tail = move |ar: &mut Arena, m: usize| -> ExprId {
+        if m % 2 == 1 || m == 0 {
+            return ar.zero;
+        }
+        let kk = (m / 2) as u64;
+        let h: Q = (1..=kk)
+            .map(|j| Q::new(BigInt::one(), BigInt::from(j)))
+            .sum();
+        let f = factorial(kk);
+        let mut c = h / Q::from_integer(&f * &f * (BigInt::one() << (2 * kk)));
+        if alternate && kk.is_multiple_of(2) {
+            c = -c;
+        }
+        rat_expr(ar, c)
+    };
+    let i0 = TSeries::compose(arena, &bessel0, &u);
+    let s = TSeries::compose(arena, &tail, &u);
+    let ln_u = apply_ln(arena, &u, mode).map_err(|_| Obstruction::NoExpansion)?;
+    // ln(u/2) + γ
+    let shift = {
+        let two = arena.int(2);
+        let l2 = arena.ln(two);
+        let g = arena.euler_gamma;
+        let nl2 = arena.neg(l2);
+        let s = arena.add(&[g, nl2]);
+        eval::eval(arena, s)
+    };
+    let sc = constant_like(arena, shift, &ln_u);
+    let lg = TSeries::add(arena, &ln_u, &sc);
+    let prod = TSeries::mul(arena, &lg, &i0);
+    if is_k {
+        let np = TSeries::neg(arena, &prod);
+        Ok(Some(TSeries::add(arena, &np, &s)))
+    } else {
+        let sum = TSeries::add(arena, &prod, &s);
+        let two_over_pi = {
+            let two = arena.int(2);
+            let pi = arena.pi;
+            let q = arena.div(two, pi);
+            eval::eval(arena, q)
+        };
+        Ok(Some(TSeries::scale(arena, &sum, two_over_pi)))
+    }
+}
+
 /// Taylor coefficients by repeated differentiation at `0`.
 ///
 /// When direct substitution of `0` into a derivative is singular or
@@ -1401,8 +2553,9 @@ fn taylor_by_differentiation(
     expr: ExprId,
     var: ExprId,
     n: i64,
-    side: Side,
+    mode: Mode,
 ) -> Option<TSeries> {
+    let side = mode.side;
     let zero = arena.zero;
     let mut coeffs = Vec::with_capacity(n.max(0) as usize);
     let mut current = expr;
@@ -1444,6 +2597,9 @@ fn taylor_by_differentiation(
             if !directional && is_finite_constant(arena, value, var) {
                 break;
             }
+            if !mode.limits {
+                return None;
+            }
             use crate::calculus::limit::Direction;
             let dirs: &[Direction] = match side {
                 Side::Above => &[Direction::Right],
@@ -1463,6 +2619,9 @@ fn taylor_by_differentiation(
         let value = if !directional && is_finite_constant(arena, value, var) {
             value
         } else {
+            if !mode.limits {
+                return None;
+            }
             let dir = match side {
                 Side::Above => crate::calculus::limit::Direction::Right,
                 Side::Below => crate::calculus::limit::Direction::Left,
@@ -1837,7 +2996,7 @@ mod tests {
         // (the pole of order 65 forces the precision-escalation retry)
         let em65 = a.int(-65);
         let f = a.pow(base, em65);
-        let ts = expand_maclaurin(&mut a, f, x, 1, false).unwrap();
+        let ts = expand_meromorphic(&mut a, f, x, 1).unwrap();
         assert_eq!(ts.shift(), -65);
         assert!(ts.known() >= 1);
         let c = ts.coefficient(&a, -65);

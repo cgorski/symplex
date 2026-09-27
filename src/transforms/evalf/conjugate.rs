@@ -207,7 +207,8 @@ impl Sigs {
             let symmetric = match node {
                 ExprNode::Add(_) => true,
                 ExprNode::Pow(_, e) if arena.as_num(*e).is_some_and(|q| q.is_integer()) => true,
-                ExprNode::Pow(b, _) | ExprNode::Ln(b) => off_cut(b),
+                // `loggamma(z̄) = conj(loggamma(z))` off its cut (−∞, 0], as `ln`.
+                ExprNode::Pow(b, _) | ExprNode::Ln(b) | ExprNode::LogGamma(b) => off_cut(b),
                 ExprNode::Exp(_)
                 | ExprNode::Sin(_)
                 | ExprNode::Cos(_)

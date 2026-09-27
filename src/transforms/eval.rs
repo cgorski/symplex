@@ -2010,6 +2010,9 @@ fn eval_lucas(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 /// small-integer multiplications and additions and one final gcd, where
 /// the rational recurrence `Bₘ = −Σ C(m+1, k)·Bₖ/(m+1)` took a gcd per
 /// term (`bernoulli(2000)` inside the guard would have taken minutes).
+/// The numbers are those of the asymptotic series of `evalf`, one cached
+/// implementation (`evalf::bernoulli`; before 0.30 this file had its own
+/// copy of the recurrence).
 pub(crate) fn exact_bernoulli(arena: &Arena, n: u64) -> Option<Q> {
     match n {
         0 => return Some(Ratio::one()),
@@ -2023,37 +2026,10 @@ pub(crate) fn exact_bernoulli(arena: &Arena, n: u64) -> Option<Q> {
     if beyond_digit_guard(arena, lower) {
         return None;
     }
-    let m = (n / 2) as usize;
-    let t = tangent_numbers(m);
-    let two_2m = BigInt::one() << (2 * m);
-    let den = &two_2m * (&two_2m - BigInt::one());
-    let num = BigInt::from(2 * m as u64) * &t[m];
-    let b = Ratio::new(num, den);
-    let r = if m % 2 == 1 { b } else { -b };
+    let m = usize::try_from(n / 2).ok()?;
+    let r = crate::transforms::evalf::bernoulli::even(m);
     let digits = r.numer().to_string().len() + r.denom().to_string().len();
     (digits <= arena.config.max_result_digits).then_some(r)
-}
-
-/// The tangent numbers `T₁, …, Tₘ` (index 0 unused), by Brent and
-/// Harvey's in-place recurrence (Algorithm TangentNumbers of the paper
-/// cited at [`exact_bernoulli`]).
-fn tangent_numbers(m: usize) -> Vec<BigInt> {
-    let mut t = vec![BigInt::zero(); m + 1];
-    if m == 0 {
-        return t;
-    }
-    t[1] = BigInt::one();
-    for k in 2..=m {
-        t[k] = &t[k - 1] * BigInt::from(k as u64 - 1);
-    }
-    for k in 2..=m {
-        for j in k..=m {
-            let a = &t[j - 1] * BigInt::from((j - k) as u64);
-            let b = &t[j] * BigInt::from((j - k + 2) as u64);
-            t[j] = a + b;
-        }
-    }
-    t
 }
 
 /// Bernoulli number B(n), within the digit guard ([`exact_bernoulli`]).

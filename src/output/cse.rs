@@ -101,12 +101,26 @@ pub(crate) fn cse_multi(arena: &mut Arena, exprs: &[ExprId]) -> CseMultiResult {
             }
         }
     }
+    // `ln(abs(gamma(u)))` is kept whole: the back ends evaluate it as
+    // `lgamma(u)`, which does not overflow (`Γ(200)` does), and a shared
+    // `gamma(u)` or `abs(gamma(u))` bound to a temporary would split it.
+    let protected: FxHashSet<ExprId> = combined_post_order
+        .iter()
+        .filter_map(|&id| match arena.node(id) {
+            ExprNode::Ln(a) => match arena.node(*a) {
+                ExprNode::Abs(g) if matches!(arena.node(*g), ExprNode::Gamma(_)) => Some([*a, *g]),
+                _ => None,
+            },
+            _ => None,
+        })
+        .flatten()
+        .collect();
     let extract: Vec<ExprId> = combined_post_order
         .iter()
         .copied()
         .filter(|&id| {
             let count = ref_count.get(&id).copied().unwrap_or(0);
-            count >= min_uses(arena, id)
+            count >= min_uses(arena, id) && !protected.contains(&id)
         })
         .collect();
 

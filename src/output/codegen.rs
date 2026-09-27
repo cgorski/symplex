@@ -48,11 +48,18 @@ pub(crate) struct EmissionFolds {
 /// A maximal symbol-free compound subexpression is lowered operation by
 /// operation by the real `f64` VM ([`compile_raw`], the semantics shared by
 /// the back ends); when that gives a finite value its formula is kept
-/// (`math.sqrt(2)`, `math.pi/2`, the real odd root of a negative constant),
-/// otherwise the evaluator decides: a real value is folded to a literal
-/// (also where no back end has the function: `zeta(3)`), a non-real one
-/// (`atanh(9)`, `asin(2)`, `ln(−1)`) is an error, anything else keeps its
-/// formula and its parts are examined.  Iterative (explicit stack).
+/// (`math.sqrt(2)`, `math.pi/2`), otherwise the evaluator decides: a real
+/// value is folded to a literal (also where no back end has the function:
+/// `zeta(3)`), a non-real one (`atanh(9)`, `asin(2)`, `ln(−1)`, the
+/// principal `(−8)^(1/3)`) is an error, anything else keeps its formula and
+/// its parts are examined.  Iterative (explicit stack).
+///
+/// The back ends follow one rule: the emitted code computes the value
+/// `evalf` gives, or NaN where that value is not real — `x^(p/q)` of a
+/// negative `x` is NaN for every non-integer exponent (before 0.30 an odd
+/// denominator took the real root; that is `real_root`,
+/// `sign(x)·|x|^(1/q)`), and `loggamma(x)` is NaN for a negative
+/// non-integer `x` (`ln(abs(gamma(x)))` is the real `lgamma`).
 ///
 /// [`compile_raw`]: crate::output::lambdify::compile_raw
 pub(crate) fn fold_constants_for_emission(
@@ -1176,24 +1183,18 @@ fn expr_to_rust_cse(
                 if *r.numer() == 1.into() && *r.denom() == 2.into() {
                     return emit_unary_call(&b, "sqrt", options);
                 }
-                // cbrt: exponent == 1/3
+                // cbrt: exponent == 1/3, the principal root, as `compile()`:
+                // NaN for a negative base (its value `1 + √3·i` for −8 is
+                // not real).  Any other rational exponent is `powf`, NaN for
+                // a negative base; before 0.30 an odd denominator was the
+                // real root (`real_root` builds that: `sign(x)·|x|^(1/q)`).
                 if *r.numer() == 1.into() && *r.denom() == 3.into() {
-                    return emit_unary_call(&b, "cbrt", options);
-                }
-                // Odd denominator q: real root b^(p/q) = (sign(b)|b|^(1/q))^p.
-                // Matches `compile()`: |b|^e, with the sign of b for odd p.
-                let two = num_bigint::BigInt::from(2);
-                if (r.denom() % &two) != num_bigint::BigInt::from(0) {
-                    let odd_numer = (r.numer() % &two) != num_bigint::BigInt::from(0);
-                    let e = expr_to_rust_cse(arena, exp, var_names, options, cse_constants)?;
-                    let abs_b = emit_unary_call(&format!("({b})"), "abs", options)?;
-                    let mag = emit_powf(&abs_b, &e, options)?;
                     let s = options.precision.suffix();
-                    return Ok(if odd_numer {
-                        format!("((if {b} < 0.0{s} {{ -1.0{s} }} else {{ 1.0{s} }}) * {mag})")
-                    } else {
-                        mag
-                    });
+                    let nan = options.precision.nan();
+                    let root = emit_unary_call("__b", "cbrt", options)?;
+                    return Ok(format!(
+                        "({{ let __b = {b}; if __b < 0.0{s} {{ {nan} }} else {{ {root} }} }})"
+                    ));
                 }
             }
             let e = expr_to_rust_cse(arena, exp, var_names, options, cse_constants)?;
@@ -1207,7 +1208,11 @@ fn expr_to_rust_cse(
         ExprNode::Cos(x) => emit_unary(arena, x, "cos", var_names, options, cse_constants),
         ExprNode::Tan(x) => emit_unary(arena, x, "tan", var_names, options, cse_constants),
         ExprNode::Exp(x) => emit_unary(arena, x, "exp", var_names, options, cse_constants),
-        ExprNode::Ln(x) => emit_unary(arena, x, "ln", var_names, options, cse_constants),
+        // ln|Γ(u)| is the runtime's `lgamma`, which does not overflow.
+        ExprNode::Ln(x) => match abs_gamma_arg(arena, x) {
+            Some(u) => emit_rt_unary(arena, u, "lgamma", var_names, options, cse_constants),
+            None => emit_unary(arena, x, "ln", var_names, options, cse_constants),
+        },
         ExprNode::Abs(x) => emit_unary(arena, x, "abs", var_names, options, cse_constants),
         ExprNode::Asin(x) => emit_unary(arena, x, "asin", var_names, options, cse_constants),
         ExprNode::Acos(x) => emit_unary(arena, x, "acos", var_names, options, cse_constants),
@@ -1270,8 +1275,9 @@ fn expr_to_rust_cse(
         }
         // Special functions → shared runtime helpers
         ExprNode::Gamma(x) => emit_rt_unary(arena, x, "gamma", var_names, options, cse_constants),
+        // SymPy's `loggamma`: NaN for a negative non-integer argument.
         ExprNode::LogGamma(x) => {
-            emit_rt_unary(arena, x, "lgamma", var_names, options, cse_constants)
+            emit_rt_unary(arena, x, "loggamma", var_names, options, cse_constants)
         }
         ExprNode::Digamma(x) => {
             emit_rt_unary(arena, x, "digamma", var_names, options, cse_constants)
@@ -1301,9 +1307,19 @@ fn expr_to_rust_cse(
         ExprNode::ImaginaryUnit => Err(SymplexError::NotImplemented(
             "cannot generate Rust code for imaginary unit".to_string(),
         )),
-        ExprNode::Re(_)
-        | ExprNode::Im(_)
-        | ExprNode::Conjugate(_)
+        // Every value is real (NaN standing for one that is not): `re` is
+        // the value, `im` is 0 — as in `compile()` (`real_root` of a symbol
+        // not known to be real is a `Piecewise` on `im(x) = 0`).
+        ExprNode::Re(x) => expr_to_rust_cse(arena, x, var_names, options, cse_constants),
+        ExprNode::Im(x) => {
+            let code = expr_to_rust_cse(arena, x, var_names, options, cse_constants)?;
+            let s = options.precision.suffix();
+            let nan = options.precision.nan();
+            Ok(format!(
+                "(if ({code}).is_nan() {{ {nan} }} else {{ 0.0{s} }})"
+            ))
+        }
+        ExprNode::Conjugate(_)
         | ExprNode::Arg(_)
         | ExprNode::Si(_)
         | ExprNode::Ci(_)
@@ -1312,7 +1328,7 @@ fn expr_to_rust_cse(
         | ExprNode::Zeta(_)
         | ExprNode::Polygamma(_, _)
         | ExprNode::KroneckerDelta(_, _) => Err(SymplexError::NotImplemented(
-            "cannot generate Rust code for re/im/conjugate/arg, Si/Ci/Ei/li, zeta, polygamma, \
+            "cannot generate Rust code for conjugate/arg, Si/Ci/Ei/li, zeta, polygamma, \
              or KroneckerDelta yet"
                 .to_string(),
         )),
@@ -1699,6 +1715,8 @@ fn eval_unary_f64(func: &str, val: f64) -> Option<f64> {
         "floor" => val.floor(),
         "ceil" => val.ceil(),
         "sqrt" => val.sqrt(),
+        // The principal cube root (`x^(1/3)`): not real for x < 0.
+        "cbrt" if val < 0.0 => f64::NAN,
         "cbrt" => val.cbrt(),
         _ => return None,
     })
@@ -2154,7 +2172,7 @@ fn domain_condition(func: &str, v: &str, suffix: &str) -> Option<String> {
             format!("({v} >= -0.36787944117144233{suffix} && {v} < 0.0{suffix})")
         }
         "bessel_y" | "bessel_k" => format!("{v} > 0.0{suffix}"),
-        "gamma" | "lgamma" | "digamma" | "factorial" => {
+        "gamma" | "lgamma" | "loggamma" | "digamma" | "factorial" => {
             let shift = if func == "factorial" { " + 1.0" } else { "" };
             format!("!(({v}{shift}) <= 0.0{suffix} && ({v}{shift}).fract() == 0.0{suffix})")
         }
@@ -2177,12 +2195,25 @@ fn wrap_domain_check(call: &str, arg_code: &str, func: &str, options: &CodegenOp
     }
 }
 
+/// `u` when `a` is `abs(gamma(u))`: `ln(a)` is then `ln|Γ(u)|`, the
+/// overflow-safe `lgamma(u)` of the back ends.
+pub(crate) fn abs_gamma_arg(arena: &Arena, a: ExprId) -> Option<ExprId> {
+    let ExprNode::Abs(g) = arena.node(a) else {
+        return None;
+    };
+    match arena.node(*g) {
+        ExprNode::Gamma(u) => Some(*u),
+        _ => None,
+    }
+}
+
 /// Constant-fold a unary runtime helper when its argument is known.
 fn eval_rt_unary(func: &str, v: f64) -> Option<f64> {
     use numeric_rt as rt;
     Some(match func {
         "gamma" => rt::gamma(v),
         "lgamma" => rt::lgamma(v),
+        "loggamma" => rt::loggamma(v),
         "digamma" => rt::digamma(v),
         "erf" => rt::erf(v),
         "erfc" => rt::erfc(v),
@@ -2559,7 +2590,11 @@ fn codegen_piecewise(
         }
     }
     parts.push(format!("else {{ {} }}", options.precision.nan()));
-    Ok(parts.join(" "))
+    // Parenthesised: an `if` expression at the start of a statement is a
+    // statement in Rust, so `if c { a } else { b } + y` did not compile
+    // (a `Piecewise` term first in a sum, e.g. `real_root` of a symbol not
+    // known to be real).
+    Ok(format!("({})", parts.join(" ")))
 }
 
 /// Convert a boolean expression node to Rust source code.

@@ -114,10 +114,18 @@ fn compile_refuses_constants_that_are_not_real() {
         "{}",
         f(&[1.0])
     );
-    // The real odd root of a negative constant is still the documented real
-    // value, and real constants still fold.
-    let odd = ctx.parse("(-8)^(1/3)*x").unwrap().compile(&["x"]).unwrap();
-    assert_eq!(odd(&[1.0]), -2.0);
+    // 0.30 (decision D2): the odd root of a negative constant is its
+    // principal value, `(-8)^(1/3)` = 1 + √3·i, not real, and refused like
+    // the others (it compiled to the real root −2 before); the real root is
+    // `real_root`.  Real constants still fold.
+    let err = ctx
+        .parse("(-8)^(1/3)*x")
+        .unwrap()
+        .compile(&["x"])
+        .expect_err("(-8)^(1/3) is not real");
+    assert!(err.to_string().contains("is not real"), "{err}");
+    let odd = ctx.int(-8).real_root(3).unwrap() * ctx.symbol("x");
+    assert_eq!(odd.compile(&["x"]).unwrap()(&[1.0]), -2.0);
     let abs = ctx
         .parse("abs(atanh(9))*x")
         .unwrap()

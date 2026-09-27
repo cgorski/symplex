@@ -346,6 +346,10 @@ fn expand_expr(
                         format!("{}/{}", pos_r.numer(), pos_r.denom())
                     };
                     stack.push(WorkItem::Owned(format!(" - {abs_str}")));
+                } else if matches!(child_node, ExprNode::NegInfinity) && i > 0 {
+                    // `x*oo + -oo` as `x*oo - oo` (which parses back to the
+                    // same sum: `a - oo` is `a + (-1)·oo = a + (-oo)`).
+                    stack.push(WorkItem::Lit(" - oo"));
                 } else if i == 0 {
                     stack.push(WorkItem::Expr(arg, PREC_ADD));
                 } else {

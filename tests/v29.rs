@@ -14,6 +14,8 @@ mod v29_api_domains;
 mod v29_calculus;
 #[path = "v29/v29_complex.rs"]
 mod v29_complex;
+#[path = "v29/v29_decisions.rs"]
+mod v29_decisions;
 #[path = "v29/v29_evalf.rs"]
 mod v29_evalf;
 #[path = "v29/v29_functions.rs"]
@@ -22,6 +24,8 @@ mod v29_functions;
 mod v29_leftovers;
 #[path = "v29/v29_leftovers2.rs"]
 mod v29_leftovers2;
+#[path = "v29/v29_limits_series.rs"]
+mod v29_limits_series;
 #[path = "v29/v29_ode_series.rs"]
 mod v29_ode_series;
 #[path = "v29/v29_output_ntheory.rs"]

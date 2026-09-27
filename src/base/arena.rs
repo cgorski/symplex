@@ -868,12 +868,16 @@ impl Arena {
         crate::transforms::integrate::integrate(self, expr, var)
     }
 
-    /// Compute the Taylor series of `expr` in `var` around `point`
-    /// to the given `order` (number of terms).
+    /// The series of `expr` in `var` around `point` with every term of
+    /// exponent `< order`: the real two-sided asymptotic expansion (the
+    /// contract in [`series::series`](crate::calculus::series::series),
+    /// which handles poles itself).
     ///
-    /// Returns `Err` if the series cannot be computed (e.g., pole at the
-    /// expansion point).
-    /// Delegates to [`series::series`](crate::calculus::series::series).
+    /// Returns `Err` if no such expansion exists or it cannot be
+    /// established.  The fallback to
+    /// [`laurent_series`](crate::calculus::series::laurent_series) only
+    /// succeeds for a function meromorphic at `point`, whose Laurent series
+    /// is that expansion too.
     pub fn series_expr(
         &mut self,
         expr: ExprId,
@@ -885,7 +889,7 @@ impl Arena {
         match crate::calculus::series::series(self, expr, var, point, order) {
             Ok(result) => Ok(result),
             Err(_) => {
-                // Taylor failed (likely a pole). Try Laurent series as fallback.
+                // A meromorphic function's Laurent series is its real expansion.
                 crate::calculus::series::laurent_series(self, expr, var, point, order)
             }
         }

@@ -59,7 +59,7 @@ use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::walk;
-use crate::calculus::series::{FnKind, TSeries, expand_maclaurin};
+use crate::calculus::series::{FnKind, TSeries, expand_meromorphic};
 use crate::transforms::eval;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -704,7 +704,11 @@ impl FormalPowerSeries {
                 let need = k as i64 + 1;
                 if guard.as_ref().is_none_or(|ts| ts.known() < need) {
                     let order = need.max(guard.as_ref().map_or(8, |ts| ts.known() * 2));
-                    *guard = expand_maclaurin(arena, *expr, self.var, order, false).ok();
+                    // A formal power series stands for `f`, so `f` must be
+                    // meromorphic at the point: the real asymptotic
+                    // expansion of `series` would give `exp(−1/x²)` the
+                    // coefficients 0, 0, 0, … (see the series contract).
+                    *guard = expand_meromorphic(arena, *expr, self.var, order).ok();
                 }
                 match guard.as_ref() {
                     Some(ts) if ts.known() >= need => ts.coefficient(arena, k as i64),

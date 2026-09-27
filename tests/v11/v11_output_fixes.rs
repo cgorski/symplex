@@ -5,7 +5,7 @@
 //! ```text
 //! >>> (-8) ** (1/3)                       # Python: complex principal root
 //! (1.0000000000000002+1.7320508075688772j)
-//! >>> math.copysign(abs(-8) ** (1/3), -8)  # real root, as numpy.cbrt / Rust .cbrt()
+//! >>> math.copysign(abs(-8) ** (1/3), -8)  # real root (`real_root`), as numpy.cbrt / Rust .cbrt()
 //! -2.0
 //! >>> pycode(Min())
 //! math.inf
@@ -127,9 +127,13 @@ fn rust_negative_receivers_are_parenthesised() {
         rust_body(&ctx.int(-3).pow(&(&x + 1)), args),
         "(-3_f64).powf((1_f64 + x))"
     );
-    assert_eq!(
-        rust_body(&ctx.int(-2).pow(&ctx.rational(1, 3)), args),
-        "(-2_f64).cbrt()"
+    // 0.30: `(-2)^(1/3)` is a non-real constant (the principal root), so
+    // `to_rust_fn` refuses it (it was `(-2_f64).cbrt()`, the real root).
+    assert!(
+        ctx.int(-2)
+            .pow(&ctx.rational(1, 3))
+            .to_rust_fn("f", args)
+            .is_err()
     );
     assert_eq!(rust_body(&(-&x * &y).exp(), args), "(-(x * y)).exp()");
     assert_eq!(rust_body(&(-&x * &y).pow(&z), args), "(-(x * y)).powf(z)");
@@ -151,7 +155,15 @@ fn rust_negative_receivers_are_parenthesised() {
     );
     // Positive receivers are untouched.
     assert_eq!(rust_body(&ctx.int(2).pow(&x), args), "x.exp2()");
-    assert_eq!(rust_body(&x.pow(&ctx.rational(1, 3)), args), "x.cbrt()");
+    // 0.30: the principal cube root, NaN for a negative base (was `x.cbrt()`).
+    assert_eq!(
+        rust_body(&x.pow(&ctx.rational(1, 3)), args),
+        "{ let __b = x; if __b < 0.0_f64 { f64::NAN } else { __b.cbrt() } }"
+    );
+    assert_eq!(
+        rust_body(&(-&x * &y).pow(&ctx.rational(1, 3)), args),
+        "{ let __b = -(x * y); if __b < 0.0_f64 { f64::NAN } else { __b.cbrt() } }"
+    );
     assert_eq!(rust_body(&(-&x).exp(), args), "(-x).exp()");
 }
 
@@ -169,7 +181,9 @@ fn rust_negative_receivers_compile_and_match_compile() {
         ("neg_prod_expm1", (-&x * &y).exp() - 1),
         ("neg_min", ctx.int(-2).min_with(&x)),
         ("neg_fma", -2 * &x * &y + &z),
-        ("neg_root", ctx.int(-2).pow(&ctx.rational(3, 5)) * &x),
+        // 0.30: `(-2)^(3/5)` is not real and refused; the principal power
+        // of a negative variable base is NaN in both.
+        ("neg_root", (-&x * &y).pow(&ctx.rational(3, 5))),
     ];
     let opts = CodegenOptions {
         emit_runtime: false,
@@ -220,41 +234,39 @@ fn rust_negative_receivers_compile_and_match_compile() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 2. Python / NumPy / Julia: real roots for odd denominators
+// 2. Python / NumPy / Julia: rational powers of a negative base
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// 0.30 (breaking): the emitted code computes `evalf`'s value or NaN where
+/// it is not real, with no exception for odd denominators.  0.11.1 to 0.29
+/// emitted the real root (`math.copysign(abs(x)**(1/3), x)`,
+/// `numpy.cbrt(x)`, `cbrt(x)`, `abs(x)**(2/5)`), a different function from
+/// the principal power (`(-8)^(1/3)` is `1 + √3·i` in SymPy and `evalf`).
+/// The real root is `real_root`, `sign(x)·|x|^(1/q)`.
 #[test]
-fn python_family_emits_real_roots() {
+fn python_family_emits_principal_powers() {
     let ctx = Context::new();
     let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
     let cbrt = x.pow(&ctx.rational(1, 3));
     let three_fifths = x.pow(&ctx.rational(3, 5));
     let two_fifths = x.pow(&ctx.rational(2, 5));
-    // Python (`math`): copysign(|x|^(p/q), x) for odd p, |x|^(p/q) for even p.
-    assert_eq!(cbrt.to_python().unwrap(), "math.copysign(abs(x)**(1/3), x)");
-    assert_eq!(
-        three_fifths.to_python().unwrap(),
-        "math.copysign(abs(x)**(3/5), x)"
-    );
-    assert_eq!(two_fifths.to_python().unwrap(), "abs(x)**(2/5)");
+    let py_nan = |p: &str| format!("(lambda b: b**({p}) if b >= 0 else math.nan)(x)");
+    let jl_nan = |p: &str| format!("(b -> b >= 0 ? b^({p}) : NaN)(x)");
+    assert_eq!(cbrt.to_python().unwrap(), py_nan("1/3"));
+    assert_eq!(three_fifths.to_python().unwrap(), py_nan("3/5"));
+    assert_eq!(two_fifths.to_python().unwrap(), py_nan("2/5"));
     // … also when the power sits in a denominator.
     assert_eq!(
         (&y / &cbrt).to_python().unwrap(),
-        "y/math.copysign(abs(x)**(1/3), x)"
+        format!("y/{}", py_nan("1/3"))
     );
-    // NumPy and Julia.
-    assert_eq!(cbrt.to_numpy().unwrap(), "numpy.cbrt(x)");
-    assert_eq!(
-        three_fifths.to_numpy().unwrap(),
-        "numpy.copysign(numpy.abs(x)**(3/5), x)"
-    );
-    assert_eq!(two_fifths.to_numpy().unwrap(), "numpy.abs(x)**(2/5)");
-    assert_eq!(cbrt.to_julia().unwrap(), "cbrt(x)");
-    assert_eq!(
-        three_fifths.to_julia().unwrap(),
-        "copysign(abs(x)^(3/5), x)"
-    );
-    assert_eq!(two_fifths.to_julia().unwrap(), "abs(x)^(2/5)");
+    // NumPy (`numpy.power` is NaN for a negative base) and Julia.
+    assert_eq!(cbrt.to_numpy().unwrap(), "numpy.power(x, (1/3))");
+    assert_eq!(three_fifths.to_numpy().unwrap(), "numpy.power(x, (3/5))");
+    assert_eq!(two_fifths.to_numpy().unwrap(), "numpy.power(x, (2/5))");
+    assert_eq!(cbrt.to_julia().unwrap(), jl_nan("1/3"));
+    assert_eq!(three_fifths.to_julia().unwrap(), jl_nan("3/5"));
+    assert_eq!(two_fifths.to_julia().unwrap(), jl_nan("2/5"));
     // Even denominators have no real value for a negative base: NaN, as in
     // `compile()`, C `pow` and Rust `powf`.  They were printed bare,
     // `x**(3/2)`, which Python evaluates to a complex number for x < 0
@@ -274,16 +286,17 @@ fn python_family_emits_real_roots() {
     assert_eq!(x.sqrt().to_python().unwrap(), "math.sqrt(x)");
 }
 
-/// Executed: `x^(1/3)` at x = −8 is −2.0 (Python's bare `(-8)**(1/3)` is
-/// `1+1.73j`), and the odd-denominator idiom agrees with `compile()` (the
-/// real-root semantics shared by the Rust and C back ends; `eval_f64` takes
-/// the principal complex root and refuses).
+/// Executed: `x^(1/3)` at x = −8 is NaN (0.30; it was −2.0, the real root,
+/// where `eval_f64` takes the principal complex root `1 + 1.73i` and
+/// refuses), in agreement with `compile()`; `real_root(x, 3)` is −2.0.
 #[test]
-fn python_real_roots_execute_to_real_values() {
+fn python_rational_powers_execute_like_compile() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
+    let real_ctx = Context::new();
+    let xr = real_ctx.symbol_with("x", &[Assumption::Real]).unwrap();
     let cases: Vec<Ex> = vec![
-        x.pow(&ctx.rational(1, 3)),
+        xr.real_root(3).unwrap(),
         x.pow(&ctx.rational(3, 5)),
         x.pow(&ctx.rational(2, 5)),
         x.pow(&ctx.rational(-1, 3)),
@@ -304,7 +317,11 @@ fn python_real_roots_execute_to_real_values() {
         .unwrap();
     program.push_str(&def);
     program.push_str("print(repr(float(cbrt(x))))\n");
-    expected.push(-2.0);
+    expected.push(f64::NAN);
+    assert_eq!(expected[0], -2.0, "real_root(-8, 3) compiled");
+    for e in &expected[1..] {
+        assert!(e.is_nan(), "compiled principal power at -8: {e}");
+    }
     let Some(out) = run_python(&program) else {
         return;
     };
@@ -316,14 +333,13 @@ fn python_real_roots_execute_to_real_values() {
     assert_eq!(
         got[0],
         -2.0,
-        "cbrt(-8) via {}",
+        "real_root(-8, 3) via {}",
         cases[0].to_python().unwrap()
     );
-    for ((g, e), c) in got.iter().zip(&expected).zip(&cases) {
+    for (g, e) in got.iter().zip(&expected) {
         assert!(
-            (g - e).abs() <= 1e-12 * e.abs().max(1.0),
-            "python {g} vs symplex {e} for {}",
-            c.to_python().unwrap()
+            (g.is_nan() && e.is_nan()) || (g - e).abs() <= 1e-12 * e.abs().max(1.0),
+            "python {g} vs symplex {e}\n{program}"
         );
     }
 }

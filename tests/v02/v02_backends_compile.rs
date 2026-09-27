@@ -103,6 +103,12 @@ fn gamma_poles_and_integers() {
     assert_eq!(f(&[200.0]), f64::INFINITY);
 }
 
+/// 0.30 (breaking): `loggamma` is SymPy's, the analytic continuation of
+/// ln Γ from x > 0 — `ln|Γ(x)| − iπ⌈−x⌉` for a negative non-integer x, not
+/// real, so the compiled value is NaN there (it was `ln|Γ(x)|`, while
+/// `evalf` now gives the complex value; mpmath: `loggamma(-0.5)` =
+/// `1.2655 − 3.1416i`).  Right of 0 the two agree, and the real `ln|Γ(x)|`
+/// is `ln(abs(gamma(x)))`, compiled to the same overflow-safe `lgamma`.
 #[test]
 fn loggamma_matches_evalf() {
     check_unary_vs_evalf(
@@ -115,9 +121,21 @@ fn loggamma_matches_evalf() {
             (25.5, 1e-15),
             (100.5, 1e-15),
             (1000.25, 1e-15),
-            (-0.5, 1e-14),
-            (-4.5, 1e-14),
         ],
+    );
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let f = x.log_gamma().compile(&["x"]).unwrap();
+    for p in [-0.5, -4.5, -1e-300, -171.5] {
+        assert!(f(&[p]).is_nan(), "loggamma({p}) compiled: {}", f(&[p]));
+    }
+    // The poles are SymPy's `loggamma(0) = loggamma(-3) = oo`.
+    assert_eq!(f(&[0.0]), f64::INFINITY);
+    assert_eq!(f(&[-3.0]), f64::INFINITY);
+    check_unary_vs_evalf(
+        "ln|gamma|",
+        |x| x.gamma().abs().ln(),
+        &[(0.5, 1e-14), (25.5, 1e-15), (-0.5, 1e-14), (-4.5, 1e-14)],
     );
 }
 
@@ -726,15 +744,22 @@ fn numerical_precision_patterns() {
     // ln(1 + x) → ln_1p
     let g = (&x + 1).ln().compile(&["x"]).unwrap();
     assert_close(g(&[1e-10]), 1e-10 - 5e-21, 1e-12, "ln_1p");
-    // odd roots of negatives are real
+    // 0.30 (breaking): a non-integer power of a negative base is its
+    // principal value, not real, so NaN — odd denominators included (they
+    // were the real roots: −2, 4, −8 below; `evalf` gives `1 + √3·i` for
+    // (−8)^(1/3)).  The real root is `real_root`.
     let h = x.pow(&ctx.rational(1, 3)).compile(&["x"]).unwrap();
-    assert_eq!(h(&[-8.0]), -2.0);
-    // Real roots with odd denominator: (-32)^(2/5) = ((-32)^(1/5))^2 = 4,
-    // (-32)^(3/5) = -8.
+    assert!(h(&[-8.0]).is_nan());
+    assert_eq!(h(&[8.0]), 2.0);
     let k = x.pow(&ctx.rational(2, 5)).compile(&["x"]).unwrap();
-    assert_close(k(&[-32.0]), 4.0, 1e-15, "(-32)^(2/5)");
+    assert!(k(&[-32.0]).is_nan());
+    assert_close(k(&[32.0]), 4.0, 1e-15, "32^(2/5)");
     let k3 = x.pow(&ctx.rational(3, 5)).compile(&["x"]).unwrap();
-    assert_close(k3(&[-32.0]), -8.0, 1e-15, "(-32)^(3/5)");
+    assert!(k3(&[-32.0]).is_nan());
+    let rr = x.real_root(3).unwrap().compile(&["x"]).unwrap();
+    assert_eq!(rr(&[-8.0]), -2.0);
+    let rr5 = x.real_root(5).unwrap().powi(3).compile(&["x"]).unwrap();
+    assert_close(rr5(&[-32.0]), -8.0, 1e-15, "real_root(-32, 5)^3");
     // division peephole: exactly one rounding
     let d = (&x / &ctx.int(3)).compile(&["x"]).unwrap();
     assert_eq!(d(&[1.0]), 1.0 / 3.0);

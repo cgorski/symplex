@@ -939,7 +939,12 @@ fn no_limit_unbounded_functions_of_oscillation() {
     );
     no_limit(&(1 / (&x * x.sin())), &x, &inf);
     no_limit(&((2 + x.sin()).ln() / &x), &x, &inf);
-    no_limit(&x.erf().pow(&x), &x, &inf);
+    // `erf(x)^x` is not an oscillation: `x·ln erf x ≈ −e^{−x²}/√π → 0`.
+    // It was pinned as "no limit" while the engine could not expand `erf`
+    // at `∞`; with `erf x = 1 − e^{−x²}·erfcx(x)` the limit is `1`
+    // (SymPy: `limit(erf(x)**x, x, oo)` → 1; mpmath at 60 digits:
+    // `erf(10)**10 = 1 − 2.09e−44`).
+    assert_eq!(x.erf().pow(&x).limit(&x, &inf).to_string(), "1");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

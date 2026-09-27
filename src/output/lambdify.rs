@@ -18,9 +18,20 @@
 //!
 //! Symbol-free subexpressions are decided at compile time like the code
 //! emitters decide them: a real constant is folded to its certified `f64`
-//! value, and a constant that is not real (`atanh(9)`, `asin(2)`) is an
-//! error (`NotImplemented`, "the constant … is not real"), since a
-//! real-valued function cannot represent it.
+//! value, and a constant that is not real (`atanh(9)`, `asin(2)`,
+//! `(-8)^(1/3)`) is an error (`NotImplemented`, "the constant … is not
+//! real"), since a real-valued function cannot represent it.
+//!
+//! One rule, no exceptions: a compiled function returns the value `evalf`
+//! gives (principal branches over ℂ, SymPy's meaning), or NaN where that
+//! value is not real.  So `x^(p/q)` of a negative `x` is NaN for every
+//! non-integer `p/q` — odd denominators included (the principal
+//! `(-8)^(1/3)` is `1 + √3·i`; before 0.30 the compiled value was the real
+//! root −2, and a Cardano formula from `solve` compiled to a different root);
+//! the real root is `real_root` (`sign(x)·|x|^(1/q)`), which compiles to −2.
+//! `loggamma(x)` is NaN for a negative non-integer `x` (its value there is
+//! `ln|Γ(x)| − iπ⌈−x⌉`); the real `ln|Γ(x)|` is `ln(abs(gamma(x)))`, lowered
+//! to the overflow-safe `lgamma`.
 //!
 //! The compiler never recurses over the expression tree — it uses an
 //! explicit work stack — so arbitrarily deep expressions are safe.
@@ -30,7 +41,7 @@ use crate::base::errors::SymplexError;
 use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode, SymbolId};
 use crate::output::codegen::numeric_rt as rt;
-use num_traits::{One, Signed, ToPrimitive, Zero};
+use num_traits::{One, Signed, ToPrimitive};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use std::fmt;
@@ -369,9 +380,9 @@ fn compile_program(
 /// (`codegen::fold_constants_for_emission`): a real value from the
 /// certified evaluator is folded (replaced by a placeholder symbol bound to
 /// that `f64`, so CSE treats it as an atom); a formula the real VM already
-/// evaluates to a finite value is kept (the real odd root of a negative
-/// base, `(-8)^(1/3)` = −2); a constant that is not real is refused with
-/// the emitters' error; anything else keeps its formula and its parts are
+/// evaluates to a finite value is kept; a constant that is not real
+/// (`(-8)^(1/3)`, the principal cube root `1 + √3·i`) is refused with the
+/// emitters' error; anything else keeps its formula and its parts are
 /// examined.  Iterative (explicit stack).
 ///
 /// Before, a non-real constant (`atanh(9)·x`, `asin(2) + x`) compiled to a
@@ -557,7 +568,8 @@ impl Program {
                 Instruction::Pow => bin!(|a: f64, b: f64| a.powf(b)),
                 Instruction::Powi(n) => un!(|a: f64| a.powi(n)),
                 Instruction::Sqrt => un!(|a: f64| a.sqrt()),
-                Instruction::Cbrt => un!(|a: f64| a.cbrt()),
+                // The principal cube root: not real for a negative argument.
+                Instruction::Cbrt => un!(|a: f64| if a < 0.0 { f64::NAN } else { a.cbrt() }),
                 Instruction::ExpM1 => un!(|a: f64| a.exp_m1()),
                 Instruction::Ln1p => un!(|a: f64| a.ln_1p()),
                 Instruction::Sin => un!(|a: f64| a.sin()),
@@ -612,7 +624,10 @@ impl Program {
                     a.max(b)
                 }),
                 Instruction::Gamma => un!(rt::gamma),
-                Instruction::LogGamma => un!(rt::lgamma),
+                Instruction::LogGamma => un!(rt::loggamma),
+                Instruction::LnAbsGamma => un!(rt::lgamma),
+                Instruction::Re => un!(|a: f64| a),
+                Instruction::Im => un!(|a: f64| if a.is_nan() { f64::NAN } else { 0.0 }),
                 Instruction::Digamma => un!(rt::digamma),
                 Instruction::Erf => un!(rt::erf),
                 Instruction::Erfc => un!(rt::erfc),
@@ -688,6 +703,7 @@ enum Instruction {
     Pow,
     Powi(i32),
     Sqrt,
+    /// The principal cube root: NaN for a negative argument.
     Cbrt,
     ExpM1,
     Ln1p,
@@ -716,7 +732,15 @@ enum Instruction {
     Min2,
     Max2,
     Gamma,
+    /// SymPy's `loggamma`: NaN left of 0 except at the poles (`+∞`).
     LogGamma,
+    /// `ln|Γ(x)|` (`lgamma`), for the pattern `ln(abs(gamma(x)))`.
+    LnAbsGamma,
+    /// `re` of a real value.
+    Re,
+    /// `im` of a real value: 0 (NaN for NaN, which stands for a value that
+    /// is not real or not defined).
+    Im,
     Digamma,
     Erf,
     Erfc,
@@ -826,7 +850,7 @@ impl<'a> Emitter<'a> {
     /// not compile at all.  Folding also rounds such constants once.  The
     /// maximal constants were decided before CSE ([`fold_constants_before_cse`]:
     /// a non-real one is refused there); this folds the parts of a formula
-    /// kept there (the real odd root of a negative base) and of CSE bindings.
+    /// kept there and of CSE bindings.
     /// An unevaluable constant is lowered operation by operation.
     fn constant_value(&mut self, id: ExprId) -> Option<f64> {
         let arena = self.arena;
@@ -1043,8 +1067,12 @@ impl<'a> Emitter<'a> {
             // This VM is real-valued: intrinsically complex nodes have no f64
             // value.  Use `eval_complex64` for complex evaluation.
             ExprNode::ImaginaryUnit => return Err(self.unsupported("ImaginaryUnit")),
-            ExprNode::Re(_) => return Err(self.unsupported("re")),
-            ExprNode::Im(_) => return Err(self.unsupported("im")),
+            // Every value the VM holds is real (or NaN, standing for a value
+            // that is not): `re` is the value itself, `im` is 0.  Needed by
+            // `real_root` of a symbol not known to be real, a `Piecewise` on
+            // `im(x) = 0`.
+            ExprNode::Re(x) => self.unary(x, Instruction::Re),
+            ExprNode::Im(x) => self.unary(x, Instruction::Im),
             ExprNode::Conjugate(_) => return Err(self.unsupported("conjugate")),
             ExprNode::Arg(_) => return Err(self.unsupported("arg")),
             ExprNode::Si(_) => return Err(self.unsupported("Si")),
@@ -1103,32 +1131,12 @@ impl<'a> Emitter<'a> {
                             return Ok(());
                         }
                     }
-                    // Odd denominator q: the real root b^(p/q) = (sign(b)|b|^(1/q))^p,
-                    // i.e. |b|^e with the sign of b restored only for odd p.
-                    let two = num_bigint::BigInt::from(2);
-                    if (r.denom() % &two) != Zero::zero() {
-                        let odd_numer = (r.numer() % &two) != Zero::zero();
-                        if odd_numer {
-                            self.push_seq(&[
-                                Task::Node(base),
-                                Task::Emit(Instruction::Sign),
-                                Task::Node(base),
-                                Task::Emit(Instruction::Abs),
-                                Task::Node(exp),
-                                Task::Emit(Instruction::Pow),
-                                Task::Emit(Instruction::Mul),
-                            ]);
-                        } else {
-                            self.push_seq(&[
-                                Task::Node(base),
-                                Task::Emit(Instruction::Abs),
-                                Task::Node(exp),
-                                Task::Emit(Instruction::Pow),
-                            ]);
-                        }
-                        return Ok(());
-                    }
                 }
+                // Any other exponent, a non-integer rational with an odd
+                // denominator included, is `powf`: NaN for a negative base,
+                // whose principal power is not real.  (Before 0.30 an odd
+                // denominator took the real root, `(-8)^(1/3)` = −2 where
+                // `evalf` gives `1 + √3·i`; the real root is `real_root`.)
                 self.binary(base, exp, Instruction::Pow);
             }
             ExprNode::Neg(x) => self.unary(x, Instruction::Neg),
@@ -1139,6 +1147,12 @@ impl<'a> Emitter<'a> {
             ExprNode::Tan(x) => self.unary(x, Instruction::Tan),
             ExprNode::Exp(x) => self.unary(x, Instruction::Exp),
             ExprNode::Ln(x) => {
+                // ln|Γ(u)| → lgamma(u), which does not overflow (Γ(200) does);
+                // CSE keeps the pattern whole (`output::cse`).
+                if let Some(u) = crate::output::codegen::abs_gamma_arg(arena, x) {
+                    self.unary(u, Instruction::LnAbsGamma);
+                    return Ok(());
+                }
                 // ln(1 + y) → ln_1p(y)
                 if let ExprNode::Add(ref ch) = arena.node(x).clone()
                     && ch.len() == 2

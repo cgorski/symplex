@@ -14,6 +14,9 @@
 //! ```text
 //! B₂ₖ = (−1)^(k−1) · 2k · Tₖ / (2^(2k) · (2^(2k) − 1)).
 //! ```
+//!
+//! The exact evaluator's `bernoulli(n)` (`eval::exact_bernoulli`) takes its
+//! even numbers from here too: one implementation of the recurrence.
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -45,7 +48,7 @@ fn tangent_numbers(n: usize) -> Vec<BigInt> {
 }
 
 /// `B₂ₖ` for `k ≥ 1` (`B₀ = 1` for `k = 0`).
-pub(super) fn even(k: usize) -> Q {
+pub(crate) fn even(k: usize) -> Q {
     if k == 0 {
         return Q::one();
     }

@@ -23,6 +23,25 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   denominator in `1/(1 − n)` the negative branch too, and `solve_ode_ivp`
   fits the initial conditions against each family in turn: `y′ = y³`,
   `y(0) = −1` is `−1/√(1 − 2x)` (it failed to fit).
+- **`Ex::series_dir` / `Ex::try_series_dir`**: one-sided expansions at a
+  finite point (`exp(−1/x)` from the right is `0 + O(xⁿ)`, from the left
+  it has none).  Expansions from the right and at `±∞` may contain
+  `ln x` (`Ei(x) = γ + ln x + x + …`).
+- **Series of special functions at their singular points**: `Γ`, `ψ` and
+  `ψ⁽ᵐ⁾` at their poles (`Γ(x) = 1/x − γ + …`), `ζ` at 1 (leading
+  terms), Stirling's series for `ln Γ`, `ψ`, `ψ⁽ᵐ⁾` at `∞`, and `Ei`,
+  `Ci`, `Chi`, `li`, `Si`, `Shi`, `K₀`, `Y₀` at 0.  So limits such as
+  `Γ(x) − 1/x → −γ`, `ζ(x) − 1/(x − 1) → γ`, `Ei(x) − ln x → γ`,
+  `K₀(x) + ln(x/2) → −γ`, `W(x)/x → 1`, `erfc(x)·x·e^{x²} → 1/√π` and
+  `Γ(x + 1/2)/(Γ(x)·√x) → 1` evaluate (they were refused).
+- **Linear ODEs with symbolic constant coefficients**: `y″ + a·y = 0` is
+  `C1·e^{−x√(−a)} + C2·e^{x√(−a)}` (SymPy's form; it was refused); a
+  forcing term goes through variation of parameters, and the particular
+  solution is returned only if it verifies.
+- **evalf of `loggamma` at complex arguments** (the continuation below;
+  certified error bounds).
+- **`compile()` and every code emitter handle `re` and `im`**, so
+  `real_root(x, 3)` of a symbol not known to be real compiles.
 
 - **Lambert W on every branch:** `lambertw(x, k)` / `Ex::lambertw_branch`
   (SymPy's `LambertW(x, k)`; `W(x, 0)` is the existing `W(x)` node, so
@@ -45,6 +64,34 @@ differences).  Every class they found is fixed and pinned in `tests/v29/`.
 
 ### Breaking (behaviour; no signature changed)
 
+- **Compiled and emitted code have a single rule: evalf's value, or
+  `NaN` where that value is not real.**  The last exception is gone:
+  `x^(p/q)` with an odd `q` is `NaN` for `x < 0` in `compile()` and in the
+  Rust, C, Python, NumPy and Julia back ends (it was the real root, while
+  evalf's principal value is complex: Cardano formulas from `solve`
+  compiled to a different root of the cubic), and a constant such as
+  `(−8)^(1/3)` is refused as non-real.  The real root is explicit:
+  `Ex::real_root(n)` (`sign(x)·|x|^(1/n)`), which compiles to `−2` at `−8`.
+- **`loggamma` is the analytic continuation of `ln Γ` from `x > 0`**
+  (SymPy's, mpmath's and Mathematica's `LogGamma`): on the negative axis
+  it is the limit from above the cut, `ln|Γ(x)| − iπ⌈−x⌉`
+  (`loggamma(−5/2) = −0.05624… − 9.42478…i`; it was the real `ln|Γ|`,
+  which is neither side's limit).  Compiled and emitted `loggamma` is
+  `lgamma` for `x > 0` and `NaN` for `x < 0`; `eval_f64` refuses it
+  there.  The real `ln|Γ(x)|` is `ln(abs(gamma(x)))`, which compiles to
+  the overflow-safe `lgamma` (`x = 200` gave `inf`).
+- **`series` is the real asymptotic expansion** as `x → x₀` through real
+  values, two-sided unless a direction is given — the sense of `limit`,
+  not a Laurent series (the contract is now documented).  A two-sided
+  expansion approaching a branch cut from off the real axis is refused
+  (`ln(−1 + ix)` gave `iπ − ix` on both sides, wrong for `x < 0`);
+  Laurent and formal power series refuse essential singularities
+  (`exp(−1/x²)` had the "Laurent series" `0`; its formal-series
+  coefficients are now `NaN`).
+- **Limits at `∞` of functions of unknown growth are refused** instead
+  of answered: `Chi(x)·x·e⁻ˣ`, `Shi`, `I₀(x)·√x·e⁻ˣ` and
+  `erfi(x)·x·e^{−x²}` were `0` (truly `1/2`, `1/2`, `1/√(2π)`, `1/√π`;
+  SymPy 1.14 also answers `0` for `Chi`).
 - **Singular and rational constants fold when they are built** (SymPy's
   convention): a function application at an exact argument whose value
   is rational, a rational multiple of `i`, infinite or undefined is
@@ -305,6 +352,34 @@ differences).  Every class they found is fixed and pinned in `tests/v29/`.
 - **`erfinv` of a tiny argument and `erfinv(erf(−9))` at 60 digits**
   failed to converge (found by the new `fuzz_evalf` in its first 10
   minutes).
+- **Wrong limits at `∞`** (found by a limit hunt against high-precision
+  sequences): functions of exponential growth were treated like powers
+  of `x`, so `Ei(kx)·kx·e^{−kx}`, `Γ(x)/eˣ` and Stirling's ratio were `0`
+  (truly `1`, `∞`, `1`) and `x·(Ei(x)·x·e⁻ˣ − 1)` was `−∞` (truly `1`).
+  Gruntz now rewrites `erf`, `erfc`, `Ei`, `li` and `Γ` with their
+  exponential factor explicit (as SymPy does) and refuses a function
+  whose growth it does not know.  `exp(x − e⁻ˣ) − eˣ` depended on
+  hash-map order (now `−1`); `Γ(x + 1)/(x·Γ(x))` and `x!/xˣ` looped.
+- **`(sin x/x)^(1/x²)` at 0** is `e^(−1/6)` (Gruntz split the power into
+  two exponentials of one class and ran out of depth).
+- **`check_ode_solution` false negatives**: the Bernoulli solution
+  `1/√((C1 + e^{−2x})·e^{2x})` of `y′ + y = y³` and the variation-of-
+  parameters solution of `y″ + y = tan x` were rejected (radical bases
+  not combined; `sin² + cos² = 1` over a common denominator).  Every
+  route is a chain of identities, so `true` remains a proof.
+- **Compiled code** (found by the compile-versus-evalf hunter, 180,000
+  points): `harmonic` at tiny arguments was off by up to 100 %,
+  `rising_factorial`/`falling_factorial` overflowed at large ones; the
+  Rust emitter printed a `Piecewise` first in a sum without parentheses
+  (the generated code did not compile).
+- **evalf:** `polylog` of an order within `10⁻¹²` of an integer took the
+  integer order (`polylog(2 + 10⁻²⁰, 999/1000)` wrong from its 20th
+  digit) and is up to 4× faster near `±1`; `erfcinv` of a tiny argument
+  at 60 digits took 7.5 s (6 ms now: a converged Halley step that
+  rounded onto the bracket end started a bisection); `uppergamma(10²⁰/3,
+  10²⁰/3)` ran 20 s before failing (it overflows the exponent range and
+  says so at once).  One Bernoulli-number implementation instead of two.
+- **Display:** `x*oo - oo` (was `x*oo + -oo`).
 - **Integrals with a constant factor** (found by a hunt of 116 integrands
   times 7 constants: 37 unevaluated before, 0 after): the integrator
   takes constant factors out first, at the top level and inside every

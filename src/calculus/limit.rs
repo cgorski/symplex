@@ -1130,6 +1130,36 @@ fn try_compose(
             }
         }
 
+        // ── f^g with both parts variable: exp(g·ln f) ──
+        // The principal power is `exp(g·Log f)` for every `f ≠ 0`; with a
+        // positive (or `+∞`) limit of `f` the logarithm is continuous there,
+        // so the limit is `exp` of the limit of `g·ln f`.  Handing the whole
+        // power to Gruntz instead split `(sin x/x)^(1/x²)` into
+        // `x^(−x⁻²)·sin(x)^(x⁻²)`, two exponentials of the same class whose
+        // cancellation exhausted the recursion depth (`e^(−1/6)`).
+        ExprNode::Pow(base, exp) => {
+            let lb = inner_limit(arena, base)?;
+            let positive = match classify(arena, lb) {
+                Ext::PosInf => true,
+                Ext::Finite(_) => const_sign(arena, lb) == Some(1),
+                Ext::NegInf => false,
+            };
+            if !positive {
+                return None;
+            }
+            let ln_b = arena.ln(base);
+            let prod = arena.mul(&[exp, ln_b]);
+            let l = inner_limit(arena, prod)?;
+            match classify(arena, l) {
+                Ext::Finite(_) => {
+                    let p = arena.exp(l);
+                    finite_candidate(arena, p, var).map(Ok)
+                }
+                Ext::PosInf => Some(Ok(arena.infinity())),
+                Ext::NegInf => Some(Ok(arena.zero())),
+            }
+        }
+
         // ── Min / Max: continuous, extended to ±∞ ──
         ExprNode::Min(ref args) | ExprNode::Max(ref args) => {
             let is_min = matches!(node, ExprNode::Min(_));

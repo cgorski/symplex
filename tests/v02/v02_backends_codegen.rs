@@ -71,7 +71,10 @@ fn special_functions_use_shared_runtime() {
     let y = ctx.symbol("y");
     let cases: Vec<(&str, Ex, &str)> = vec![
         ("gamma", x.gamma(), "symplex_rt::gamma(x)"),
-        ("lgamma", x.log_gamma(), "symplex_rt::lgamma(x)"),
+        // 0.30: SymPy's `loggamma` (NaN left of 0 except at the poles) is
+        // `loggamma`; `lgamma` (ln|Γ|) is `ln(abs(gamma(x)))`.
+        ("loggamma", x.log_gamma(), "symplex_rt::loggamma(x)"),
+        ("lgamma", x.gamma().abs().ln(), "symplex_rt::lgamma(x)"),
         ("digamma", x.digamma(), "symplex_rt::digamma(x)"),
         ("erf", x.erf(), "symplex_rt::erf(x)"),
         ("erfc", x.erfc(), "symplex_rt::erfc(x)"),
@@ -288,6 +291,7 @@ fn emit_runtime_false_and_runtime_module_api() {
     for helper in [
         "gamma",
         "lgamma",
+        "loggamma",
         "digamma",
         "erf",
         "erfc",
@@ -559,6 +563,21 @@ fn battery(ctx: &Context) -> Vec<Case> {
         Case {
             name: "neg_gamma",
             expr: (-&x).gamma() * (&zero - &y).erf(),
+        },
+        // 0.30: the real root is `real_root` (a `Piecewise` on `im(−x) = 0`
+        // for a symbol not known to be real), ln|Γ| is `ln(abs(gamma))`;
+        // the principal `(−x)^(1/3)` and `loggamma(−x)` are NaN for x > 0.
+        Case {
+            name: "real_root",
+            expr: (-&x).real_root(3).unwrap() + (-&y).real_root(5).unwrap(),
+        },
+        Case {
+            name: "ln_abs_gamma",
+            expr: (-&x).gamma().abs().ln() + &y.gamma().abs().ln(),
+        },
+        Case {
+            name: "principal_neg",
+            expr: (-&x).pow(&ctx.rational(1, 3)) + (-&y).log_gamma(),
         },
     ]
 }

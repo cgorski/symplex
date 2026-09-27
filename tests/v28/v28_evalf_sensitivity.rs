@@ -385,19 +385,27 @@ fn gamma_family_routines_measure_their_own_cancellation() {
     }
 }
 
-/// `loggamma` left of 0 (`ln|Γ|`, the compiled back-ends' convention) next
-/// to a pole: the reflection took `sin` of a rounded `πx`, and an argument
-/// within `10⁻¹²` of a pole (in `f64`) was refused as the pole.  Before:
-/// `loggamma(−3 + 2⁻¹²⁶)` was `Unevaluable`.
+/// `loggamma` left of 0 next to a pole: the reflection took `sin` of a
+/// rounded `πx`, and an argument within `10⁻¹²` of a pole (in `f64`) was
+/// refused as the pole.  Before: `loggamma(−3 + 2⁻¹²⁶)` was
+/// `Unevaluable`.  (0.30: the value is SymPy's, `ln|Γ(x)| − iπ⌈−x⌉`; it
+/// was the real `ln|Γ(x)|`, now its real part.)
 #[test]
 fn loggamma_next_to_a_pole() {
     let ctx = Context::new();
     // mpmath: loggamma(-3 + mpf(2)**-126).real, dps 60 and 120
     certified_at(
         &ctx,
-        "loggamma(-3 + 2^-126)",
+        "re(loggamma(-3 + 2^-126))",
         &[16, 30, 50],
         "85.5447852813250539857587699453495453048047918294412537601834",
+    );
+    // mpmath: loggamma(-3 + mpf(2)**-126).imag (= -3*pi), dps 60 and 120
+    certified_at(
+        &ctx,
+        "im(loggamma(-3 + 2^-126))",
+        &[16, 30, 50],
+        "-9.42477796076937971538793014983850865259150819812531746292483",
     );
 }
 

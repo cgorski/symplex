@@ -21,7 +21,8 @@
 //! | function | method | accuracy |
 //! |----------|--------|----------|
 //! | `gamma` | exact products (integers, half-integers), Lanczos (g=607/128, n=15), reflection | ≤ 2e-15 |
-//! | `lgamma` | ln Γ for 0.5 ≤ x < 20, Stirling for x ≥ 20, reflection | ≈ 1e-15 absolute; relative accuracy degrades near the zeros x = 1, 2 |
+//! | `lgamma` | ln Γ for 0.5 ≤ x < 20, Stirling for x ≥ 20, reflection (`ln\|Γ(x)\|` for x < 0) | ≈ 1e-15 absolute; relative accuracy degrades near the zeros x = 1, 2 |
+//! | `loggamma` | `lgamma` for x > 0 and at the poles, NaN for other x < 0 (SymPy's `loggamma` is not real there) | as `lgamma` |
 //! | `digamma` | recurrence to x ≥ 10, asymptotic series through x⁻¹⁴ | ≈ 1e-15 absolute |
 //! | `erf`, `erfc` | W. J. Cody's rational Chebyshev approximations | ≈ 1e-16, `erfc` keeps relative accuracy for large x |
 //! | `erfinv`, `erfcinv` | Maclaurin / Winitzki start + Halley on `erf`/`erfc`, Newton on `ln erfc` via erfcx in the deep tail | ≤ 3e-16 (relative accuracy kept down to subnormal `erfcinv` arguments) |
@@ -32,7 +33,7 @@
 //! | `bessel_k` | trapezoidal integral representation / asymptotic expansion | ≈ 1e-14 |
 //! | orthogonal polynomials | three-term recurrences | a few ulps per step |
 //! | `fibonacci`, `lucas` | fast doubling (exact ≤ 2⁵³), Binet beyond | exact / ≈ 1e-15 |
-//! | `harmonic` | direct sum (n ≤ 100), ψ(n+1)+γ beyond | ≈ 1e-15 |
+//! | `harmonic` | direct sum (n ≤ 100), Maclaurin series (\|n\| ≤ ½), ψ(n+1)+γ beyond | ≈ 1e-15 |
 
 #![allow(clippy::excessive_precision)]
 #![allow(clippy::manual_range_contains)]
@@ -272,6 +273,20 @@ fn stirling_corr(x: f64) -> f64 {
             * (1.0 / 360.0 - inv2 * (1.0 / 1260.0 - inv2 * (1.0 / 1680.0 - inv2 * (1.0 / 1188.0)))))
 }
 // @@end lgamma
+
+// @@begin loggamma
+/// SymPy's `loggamma` (the analytic continuation of ln Γ from x > 0) on
+/// the real line: [`lgamma`] for x > 0, +∞ at the poles x = 0, −1, −2, …
+/// (SymPy's `loggamma(-3) = oo`), NaN for any other x < 0, where the value
+/// ln|Γ(x)| − iπ⌈−x⌉ is not real.
+pub fn loggamma(x: f64) -> f64 {
+    if x > 0.0 || is_gamma_pole(x) {
+        lgamma(x)
+    } else {
+        f64::NAN
+    }
+}
+// @@end loggamma
 
 // @@begin digamma
 /// Digamma function ψ(x) = Γ'(x)/Γ(x).
@@ -1474,8 +1489,9 @@ pub fn lucas(n: f64) -> f64 {
 // @@begin harmonic
 /// Harmonic number H_n = Σ_{k=1}^{n} 1/k, extended to real n as ψ(n+1) + γ.
 ///
-/// Direct (reverse-order) summation for integer 0 ≤ n ≤ 100, digamma beyond.
-/// Negative integers are poles and return NaN.
+/// Direct (reverse-order) summation for integer 0 ≤ n ≤ 100, the series
+/// [`harmonic_small`] for |n| ≤ ½, digamma beyond.  Negative integers are
+/// poles and return NaN.
 pub fn harmonic(n: f64) -> f64 {
     if n.is_nan() {
         return f64::NAN;
@@ -1497,7 +1513,59 @@ pub fn harmonic(n: f64) -> f64 {
             return sum;
         }
     }
+    if p_abs(n) <= 0.5 {
+        return harmonic_small(n);
+    }
     digamma(n + 1.0) + EULER_GAMMA
+}
+/// ζ(k) − 1 for k = 2 … 33.
+const ZETA_MINUS_ONE: [f64; 32] = [
+    0.6449340668482264,
+    0.2020569031595943,
+    0.08232323371113819,
+    0.03692775514336993,
+    0.01734306198444914,
+    0.008349277381922827,
+    0.00407735619794434,
+    0.0020083928260822143,
+    0.0009945751278180853,
+    0.0004941886041194645,
+    0.0002460865533080483,
+    0.00012271334757848915,
+    6.124813505870483e-05,
+    3.058823630702049e-05,
+    1.528225940865187e-05,
+    7.637197637899763e-06,
+    3.81729326499984e-06,
+    1.908212716553939e-06,
+    9.539620338727962e-07,
+    4.769329867878064e-07,
+    2.38450502727733e-07,
+    1.1921992596531106e-07,
+    5.960818905125948e-08,
+    2.980350351465228e-08,
+    1.4901554828365043e-08,
+    7.45071178983543e-09,
+    3.725334024788457e-09,
+    1.862659723513049e-09,
+    9.313274324196682e-10,
+    4.656629065033784e-10,
+    2.3283118336765053e-10,
+    1.164155017270052e-10,
+];
+/// H(x) for |x| ≤ ½: the Maclaurin series of ψ(1 + x) + γ,
+/// Σ_{k≥1} (−1)^{k+1} ζ(k+1) x^k, as x/(1 + x) + Σ (−1)^{k+1} (ζ(k+1) − 1) x^k
+/// (terms below 4⁻ᵏ), accurate relative to H(x) ≈ ζ(2)x.  ψ(1 + x) + γ
+/// cancels there: `harmonic(10⁻⁹)` was off by 6·10⁻⁸, and `harmonic` of a
+/// number below 10⁻¹⁶ was 4.4·10⁻¹⁶ (one ulp of γ).
+fn harmonic_small(x: f64) -> f64 {
+    let mut acc = 0.0;
+    let mut k = ZETA_MINUS_ONE.len();
+    while k > 0 {
+        k -= 1;
+        acc = ZETA_MINUS_ONE[k] - x * acc;
+    }
+    x / (1.0 + x) + x * acc
 }
 // @@end harmonic
 
@@ -1569,11 +1637,32 @@ pub fn rising_factorial(x: f64, n: f64) -> f64 {
     if is_gamma_pole(top) {
         return f64::NAN;
     }
+    if x >= 20.0 && top >= 20.0 && top.is_finite() {
+        // ln Γ(x + n) − ln Γ(x) by Stirling's series, the difference formed
+        // without cancellation: `lgamma(top) − lgamma(x)` lost `|ln Γ|·ε`,
+        // 3e-11 relative at (2628 − 15.6)₍₁₅.₆₎.
+        return p_exp(
+            (x - 0.5) * p_ln1p(n / x) + n * p_ln(top) - n + stirling_corr(top) - stirling_corr(x),
+        );
+    }
     let sign = gamma_sign(top) * gamma_sign(x);
     sign * p_exp(lgamma(top) - lgamma(x))
 }
 /// Falling factorial x^(n) = x(x−1)···(x−n+1) = Γ(x+1)/Γ(x−n+1).
+///
+/// For `u = x + 1 ≥ 20` and `u − n ≥ 20` (and a non-integer or large `n`)
+/// `ln Γ(u) − ln Γ(u − n) = n ln u − (u − n − ½)·ln(1 − n/u) − n + c(u) −
+/// c(u − n)`, where `u − n` only enters a coefficient: forming `x − n + 1`
+/// first rounded it away for `x ≫ n` (`falling_factorial(2.7·10¹⁷, 11.7)`
+/// was 1, truly 2.2·10²⁰⁴).
 pub fn falling_factorial(x: f64, n: f64) -> f64 {
+    let u = x + 1.0;
+    if !(is_int(n) && p_abs(n) <= 1000.0) && u >= 20.0 && u - n >= 20.0 && u.is_finite() {
+        return p_exp(
+            n * p_ln(u) - (u - n - 0.5) * p_ln1p(-n / u) - n + stirling_corr(u)
+                - stirling_corr(u - n),
+        );
+    }
     rising_factorial(x - n + 1.0, n)
 }
 // @@end pochhammer
@@ -1638,6 +1727,17 @@ mod tests {
         assert_eq!(lgamma(2.0), 0.0);
         assert!(lgamma(-3.0).is_infinite());
         assert_rel(lgamma(1e-300), 690.77552789821370521, 1e-14, "lnΓ(1e-300)");
+        // SymPy's `loggamma`: real right of 0, +∞ at the poles, NaN elsewhere
+        // left of 0 (mpmath: loggamma(-0.5) = 1.2655 - 3.1416j).
+        assert_eq!(loggamma(100.0), lgamma(100.0));
+        assert_eq!(loggamma(f64::INFINITY), f64::INFINITY);
+        assert!(loggamma(-0.5).is_nan());
+        assert!(loggamma(-1e-300).is_nan());
+        assert!(loggamma(f64::NEG_INFINITY).is_nan());
+        assert!(loggamma(f64::NAN).is_nan());
+        assert_eq!(loggamma(0.0), f64::INFINITY);
+        assert_eq!(loggamma(-0.0), f64::INFINITY);
+        assert_eq!(loggamma(-3.0), f64::INFINITY);
     }
 
     #[test]
@@ -1993,6 +2093,19 @@ mod tests {
         assert_rel(harmonic(100.0), 5.1873775176396202608, 1e-15, "H100");
         assert_rel(harmonic(1000.0), 7.4854708605503449127, 1e-15, "H1000");
         assert_rel(harmonic(0.5), 0.61370563888010938117, 1e-14, "H(1/2)");
+        // Small arguments, relative to H(x) ≈ ζ(2)x (ψ(1 + x) + γ cancels).
+        // mpmath (dps 40): harmonic(mpf(10)**-9), harmonic(-mpf(1)/4),
+        // harmonic(mpf(1)/1000); zeta(2)*mpf(10)**-300 (harmonic itself
+        // cancels to noise there at that precision).
+        assert_rel(harmonic(1e-9), 1.6449340656461695e-9, 1e-15, "H(1e-9)");
+        assert_rel(
+            harmonic(1e-300),
+            1.6449340668482264e-300,
+            1e-15,
+            "H(1e-300)",
+        );
+        assert_rel(harmonic(-0.25), -0.5086452148849393, 2e-15, "H(-1/4)");
+        assert_rel(harmonic(0.001), 0.0016437330912323891, 1e-15, "H(1/1000)");
         assert_eq!(factorial2(7.0), 105.0);
         assert_eq!(factorial2(8.0), 384.0);
         assert_eq!(factorial2(0.0), 1.0);

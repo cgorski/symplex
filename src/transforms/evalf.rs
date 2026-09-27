@@ -67,12 +67,13 @@ use crate::base::walk;
 use tracing::debug;
 
 mod accuracy;
-mod bernoulli;
+pub(crate) mod bernoulli;
 mod conjugate;
 mod emsum;
 mod factorials;
 mod hypsum;
 mod lambertw;
+mod loggamma;
 mod sensitivity;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -403,6 +404,14 @@ fn eval_node_with_error(
                 }
                 _ => accuracy::Bound::UNKNOWN,
             };
+            (value, err)
+        }
+        // `loggamma` of a non-real argument reports its own bound (the
+        // sensitivity rules are for real arguments).
+        ExprNode::LogGamma(c) if cache.get(c).is_some_and(|v| !v.1.is_zero()) => {
+            let value = eval_node(arena, id, cache, prec, rm, cc)?;
+            let bz = errs.get(c).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+            let err = loggamma::error_bound(get_cached(cache, *c)?, bz, &value, prec);
             (value, err)
         }
         ExprNode::PhysicalConstant(_, value_id) => match cache.get(value_id) {
@@ -1459,12 +1468,15 @@ fn eval_node(
             Ok((result, BigFloat::new(prec)))
         }
 
+        // The analytic continuation of ln Γ (SymPy's `loggamma`): off the
+        // real axis by `loggamma`, on it by `arb_log_gamma` (real for
+        // x > 0, `ln|Γ(x)| − iπ⌈−x⌉` on the cut).  Before 0.30 a complex
+        // argument was refused and the value left of 0 was `ln|Γ(x)|`.
         ExprNode::LogGamma(inner) => {
             let val = get_cached(cache, *inner)?;
             if !val.1.is_zero() {
-                return Err(SymplexError::Unevaluable {
-                    reason: "LogGamma of complex argument not yet supported in evalf".into(),
-                });
+                debug!(prec, "evalf: LogGamma of a complex argument");
+                return loggamma::loggamma_complex(val, prec, rm, cc);
             }
             debug!(prec, "evalf: LogGamma via Stirling series");
             arb_log_gamma(&val.0, prec, rm, cc)
@@ -3420,12 +3432,16 @@ fn erf_f64(x: f64) -> f64 {
     }
 }
 
-/// `ln Γ(x)` for real `x` (not a pole), as the compiled back-ends' `lgamma`:
-/// `ln|Γ(x)|` for `x < 0` (SymPy's and mpmath's `loggamma` add `−iπ⌈−x⌉`
-/// there; `tests/v02/v02_backends_compile.rs` pins the real value).
+/// `loggamma(x)` for real `x` (not a pole): the analytic continuation of
+/// `ln Γ` from `x > 0` (SymPy's and mpmath's `loggamma`), real for `x > 0`
+/// and on the cut `x < 0` its limit from above, `ln|Γ(x)| − iπ⌈−x⌉`
+/// (mpmath: `loggamma(-2.5) = −0.0562 − 3πi`).  Before 0.30 the value left
+/// of 0 was the real `ln|Γ(x)|` (the compiled back-ends' `lgamma`, which is
+/// now `ln(abs(gamma(x)))`).
 ///
 /// * `x > 0`: Stirling's series ([`stirling_log_gamma`]).
-/// * `x < 0`: `ln π − ln|sin πd| − ln Γ(1 − x)`, `d = x − round(x)` exact.
+/// * `x < 0`: real part `ln π − ln|sin πd| − ln Γ(1 − x)`, `d = x − round(x)`
+///   exact; imaginary part `−π·⌈−x⌉ = π·⌊x⌋`.
 ///
 /// Near a zero of `ln|Γ|` (`x = 1`, `2`, and two between consecutive poles
 /// left of 0) the terms summed are much larger than the value: the loss is
@@ -3443,11 +3459,18 @@ fn arb_log_gamma(
     if x.is_nan() || x.is_inf() {
         return Err(unevaluable("LogGamma of special float value"));
     }
-    if x.is_int() && !x.is_positive() {
+    if (x.is_int() || x.is_zero()) && !bf_strictly_positive(x) {
         return Err(unevaluable("LogGamma at non-positive integer pole"));
     }
     let exact = x.mantissa_max_bit_len().unwrap_or(prec).max(prec) + 64;
     let cap = cancellation_cap(prec);
+    // On the cut: −π·⌈−x⌉ = π·⌊x⌋, the limit from the upper half-plane.
+    let imaginary = if bf_strictly_positive(x) {
+        BigFloat::new(prec)
+    } else {
+        let pi = cc.pi(prec + 16, rm).clone();
+        round_to(pi.mul(&x.floor(), prec + 16, rm), prec, rm)
+    };
     // The first attempt covers the terms' bits (a value of magnitude 2⁻⁸
     // and up needs no second one).
     let zs0 = bigfloat_to_f64(&x.abs(), rm, cc)?.min(1e300) + 0.5 * (prec + 48) as f64 + 3.0;
@@ -3455,7 +3478,7 @@ fn arb_log_gamma(
     loop {
         let wp = prec + extra;
         // The value and a bound on the terms summed.
-        let (value, largest) = if x.is_positive() {
+        let (value, largest) = if bf_strictly_positive(x) {
             // Stirling at z + s, s ‹ 0.5·wp: terms up to (z+s)·(|ln(z+s)| + 1),
             // and the shift Σ ln(z + i) below that.
             let v = stirling_log_gamma(x, wp, rm, cc)?;
@@ -3474,12 +3497,21 @@ fn arb_log_gamma(
             let terms = 2.0 * zs * (zs.ln() + 1.0) + bigfloat_to_f64(&ln_sin, rm, cc)?.abs() + 2.0;
             (v, terms)
         };
-        let lost = match value.exponent() {
+        // The loss relative to the whole value: on the cut its imaginary
+        // part, at least π, bounds it below (a zero of ln|Γ| there costs no
+        // extra bits).
+        let magnitude = match (value.exponent(), imaginary.exponent()) {
+            _ if value.is_zero() && imaginary.is_zero() => None,
+            (Some(e), Some(i)) if !value.is_zero() && !imaginary.is_zero() => Some(e.max(i)),
+            (Some(e), _) if !value.is_zero() => Some(e),
+            (_, i) => i,
+        };
+        let lost = match magnitude {
             Some(e) => (terms_bits(largest) - i64::from(e)).max(0) as usize,
             None => wp,
         };
         if lost + 16 <= extra {
-            return Ok((round_to(value, prec, rm), BigFloat::new(prec)));
+            return Ok((round_to(value, prec, rm), imaginary));
         }
         if extra >= cap {
             return Err(special_exhausted(prec));
@@ -5958,16 +5990,18 @@ fn bf_lt(a: &BigFloat, b: &BigFloat) -> bool {
     a.cmp(b).is_some_and(|c| c < 0)
 }
 
-/// Nearest integer to a `BigFloat`, if it is one (to within `1e-12`) and
-/// fits in an `i64`.
+/// A `BigFloat` that is an integer exactly, as an `i64` when it fits.
+///
+/// Before 0.30 a value within `10⁻¹²` of an integer counted (in `f64`),
+/// and `polylog(2 + 10⁻²⁰, 999/1000)` was `Li₂(999/1000)`, wrong from its
+/// 20th digit at 30 and 60 digits (the degree and order callers already
+/// asked for an exact integer as well).
 fn bf_as_int(x: &BigFloat, rm: RoundingMode, cc: &mut Consts) -> Result<Option<i64>, SymplexError> {
-    let f = bigfloat_to_f64(x, rm, cc)?;
-    let r = f.round();
-    if (f - r).abs() < 1e-12 && r.abs() < 9.0e15 {
-        Ok(Some(r as i64))
-    } else {
-        Ok(None)
+    if !(x.is_zero() || x.is_int()) {
+        return Ok(None);
     }
+    let r = bigfloat_to_f64(x, rm, cc)?.round();
+    Ok((r.abs() < 9.0e15).then_some(r as i64))
 }
 
 /// Numeric value of the library function `f` on `args` (of the arity `f`
@@ -6304,6 +6338,11 @@ fn arb_erfi(
 ///
 /// * `x² log₂ e ≥ wp + 8`: the asymptotic expansion alone (relative error
 ///   `≈ e^{−x²}`) already delivers `wp` bits.
+/// * `x ≥ 5/4`: `erfc(x) = Γ(½, x²)/√π` by Legendre's continued fraction
+///   ([`uppergamma_cf`], in its regime `x² ≥ max(1, ½ + 1)`), which cancels
+///   nothing.  Before 0.30 this range took `1 − erf(x)` with `x² log₂ e`
+///   extra bits, a Taylor series of some `e·x²` terms at that precision
+///   (`erfc(18.5)` at 300 digits: 11 ms, now 2 ms).
 /// * otherwise `1 − erf(x)` with `x² log₂ e + 8` extra bits to survive the
 ///   cancellation (`erfc(x) ≈ e^{−x²}/(x√π)`).
 fn arb_erfc(
@@ -6324,6 +6363,16 @@ fn arb_erfc(
     if x_sq_bits >= wp + 8 {
         let _ = xw.set_precision(wp, rm);
         return Ok(round_to(erfc_asymptotic(&xw, wp, rm, cc), prec, rm));
+    }
+    if x_f >= 1.25 {
+        // x² to a relative 2^−(wp + log₂ x² + 8): e^{−x²} to 2^−(wp + 8).
+        let p = wp + magnitude_bits(x_f * x_f) + 8;
+        let _ = xw.set_precision(p, rm);
+        let x_sq = xw.mul(&xw, p, rm);
+        let half = BigFloat::from_f64(0.5, 64);
+        let g = uppergamma_cf(&half, &x_sq, p, rm, cc)?;
+        let sqrt_pi = cc.pi(wp, rm).clone().sqrt(wp, rm);
+        return Ok(round_to(g.div(&sqrt_pi, wp, rm), prec, rm));
     }
     let wp2 = wp + x_sq_bits + 8;
     let _ = xw.set_precision(wp2, rm);
@@ -6411,6 +6460,15 @@ fn erf_inverse_halley(
         let tol = prec + 8;
         let width = hi.sub(&lo, wp, rm);
         let candidate = x.sub(&delta, wp, rm);
+        // A step below the tolerance is convergence, before the bracket is
+        // consulted: below an ulp of x the candidate rounds onto x, which is
+        // now an end of the bracket, and "leaving the bracket" sent a
+        // converged iteration into bisection from its last bracket down to
+        // the tolerance (0.29: some 260 halvings, `erfcinv(sin(1 + 10⁻¹⁵⁰)
+        // − sin(1))` at 60 digits evaluated `erfc` 1,104 times).
+        if negligible(&delta, &x, tol) {
+            return Ok(round_to(candidate, prec, rm));
+        }
         let inside = bf_gt(&candidate, &lo) && bf_lt(&candidate, &hi);
         let halves = bf_lt(&delta.abs().mul(&two, wp, rm), &width);
         if inside && halves {
@@ -6815,11 +6873,36 @@ fn uppergamma_positive(
     cc: &mut Consts,
 ) -> Result<BigFloat, SymplexError> {
     let s_f = bigfloat_to_f64(s, rm, cc)?;
-    let x_f = bigfloat_to_f64(x, rm, cc)?;
-    if x_f >= s_f + 1.0 {
+    // x ≥ s + 1 exactly (in f64, s + 1 is s from 2⁵³ on, and a huge s = x
+    // went to the fraction, which needs ~27·s^{1/3} steps there).
+    if !bf_lt(x, &s.add(&BigFloat::from_i32(1, 64), exact_bits(s, wp), rm)) {
         return uppergamma_cf(s, x, wp, rm, cc);
     }
     uppergamma_by_difference(s, s_f, x, wp, rm, cc)
+}
+
+/// A refusal when `Γ(s) > 2^{EXPONENT_MAX + 3}` (`s ≥ 1`): the incomplete
+/// gamma functions `Γ(s, x)` for `x ≤ s + 1` (at least `e^{−2}·Γ(s)`,
+/// see [`uppergamma_by_difference`]) and `γ(s, x)` for `x ≥ s` (at least
+/// `Γ(s)/2`, `P(s, s) > ½`) overflow the arbitrary-precision exponent
+/// range.  Before 0.30 `uppergamma(10²⁰/3, 10²⁰/3)` (about `10^(6.3·10²⁰)`)
+/// ran the continued fraction for two million steps (20 s in a debug
+/// build) and failed to converge.
+fn incomplete_gamma_overflows(s: &BigFloat, what: &str) -> Result<(), SymplexError> {
+    let Ok(s_f) = bigfloat_to_f64_rounded(s, RoundingMode::ToEven) else {
+        return Ok(());
+    };
+    if s_f.is_nan() || s_f < 1.0 {
+        return Ok(());
+    }
+    // log₂ Γ(s) ≥ ((s − ½) ln s − s)/ln 2 (Stirling, the rest positive).
+    let lg = ((s_f - 0.5) * s_f.ln() - s_f) * std::f64::consts::LOG2_E;
+    if lg - 3.0 > f64::from(astro_float::EXPONENT_MAX) {
+        return Err(unevaluable(format!(
+            "{what}: the value (about 2^{lg:.3e}) overflows the arbitrary-precision exponent range"
+        )));
+    }
+    Ok(())
 }
 
 /// `Γ(s, x) = Γ(s) − γ(s, x)` for `s > 0`, `x < s + 1` (the region of the
@@ -6948,6 +7031,10 @@ fn arb_uppergamma(
         ));
     }
     let wp = prec + 32;
+    let one = BigFloat::from_i32(1, 64);
+    if bf_strictly_positive(s) && !bf_gt(x, &s.add(&one, exact_bits(s, wp), rm)) {
+        incomplete_gamma_overflows(s, "uppergamma")?;
+    }
     if x.is_zero() {
         if !bf_strictly_positive(s) {
             return Err(unevaluable("uppergamma(s, 0) diverges for s ≤ 0"));
@@ -6990,8 +7077,10 @@ fn arb_lowergamma(
         let wp = wp + lngamma_bits(s, s_f);
         return Ok(round_to(arb_gamma_real(s, wp, rm, cc)?, prec, rm));
     }
-    let x_f = bigfloat_to_f64(x, rm, cc)?;
-    if x_f < s_f + 1.0 {
+    if !bf_lt(x, s) {
+        incomplete_gamma_overflows(s, "lowergamma")?;
+    }
+    if bf_lt(x, &s.add(&BigFloat::from_i32(1, 64), exact_bits(s, wp), rm)) {
         let r = lowergamma_series(s, x, wp, rm, cc).map_err(requested_at(prec))?;
         return Ok(round_to(r, prec, rm));
     }
@@ -7850,6 +7939,14 @@ fn polylog_nonpositive(
 /// * integer `s = n ≥ 1`:
 ///   `Li_n(e^μ) = μ^{n−1}/(n−1)! (H_{n−1} − ln(−μ)) + Σ_{k≥0, k≠n−1} ζ(n−k) μ^k/k!`
 /// * non-integer `s`: `Li_s(e^μ) = Γ(1−s)(−μ)^{s−1} + Σ_{k≥0} ζ(s−k) μ^k/k!`
+///
+/// For `s` next to an integer `n` the first term and the term `k = n − 1`
+/// have opposite poles (`Γ(1 − s)` and `ζ(s − n + 1)`, about `1/|s − n|`)
+/// that cancel: the loss, the largest term over the sum, is measured and
+/// the expansion repeated with that many more bits (up to
+/// [`cancellation_cap`]).  Before 0.30 it went unmeasured, and
+/// `polylog(2 + 10⁻²⁰, 999/1000)` was wrong from its 20th digit at 60
+/// digits (`polylog(1 + 10⁻³⁰, 95/100)` from its 29th).
 fn polylog_near_one(
     s: &BigFloat,
     s_int: Option<i64>,
@@ -7858,6 +7955,190 @@ fn polylog_near_one(
     rm: RoundingMode,
     cc: &mut Consts,
 ) -> Result<BigFloat, SymplexError> {
+    // The caller's `wp` carries 32 guard bits; a loss within 24 of them
+    // costs nothing.
+    let cap = cancellation_cap(wp);
+    let mut extra = 0usize;
+    loop {
+        let p = wp + extra;
+        let (sum, largest) = polylog_near_one_at(s, s_int, z, p, rm, cc)?;
+        let lost = match (largest, sum.exponent()) {
+            (Some(l), Some(e)) if !sum.is_zero() => usize::try_from(l - i64::from(e)).unwrap_or(0),
+            (Some(_), _) => p,
+            _ => 0,
+        };
+        if lost <= extra + 24 {
+            return Ok(round_to(sum, wp, rm));
+        }
+        if extra >= cap {
+            return Err(special_exhausted(wp));
+        }
+        extra = (lost + 16).max(2 * extra).min(cap);
+    }
+}
+
+/// `ζ(σ₁), ζ(σ₁ − 1), ζ(σ₁ − 2), …` for a non-integer `σ₁ < −1`: the
+/// terms of the `μ`-expansion of [`polylog_near_one`] left of 0, where each
+/// used to cost a whole `ζ` evaluation (a `Γ` by Stirling's series and a
+/// Borwein sum with its exact coefficients rebuilt: `polylog(1/3, −1 +
+/// 10⁻¹²)` spent 0.35 s on some 25 of them at 60 digits).  By the
+/// functional equation `ζ(σ) = 2^σ π^{σ−1} sin(πσ/2) Γ(1−σ) ζ(1−σ)`
+/// every factor follows from the previous one: `2^σ π^{σ−1}` divided by
+/// `2π`, the sine a quarter period on, `Γ(t)` times `t` (`t = 1 − σ`), and
+/// `ζ(t) = η(t)/(1 − 2^{1−t})` for `t ≥ 2` by one Borwein sum (Algorithm 2
+/// of the paper cited at [`arb_eta_borwein`]) whose coefficients are built
+/// once and whose powers `m^{−t}` are divided by `m` from one `t` to the
+/// next.  The working precision carries 16 guard bits for the roundings
+/// that accumulate over the steps.
+struct ZetaLeft {
+    wp: usize,
+    /// `2^σ π^{σ−1}`.
+    scale: BigFloat,
+    inv_two_pi: BigFloat,
+    /// `sin(πσ/2)`, `cos(πσ/2)`.
+    sin: BigFloat,
+    cos: BigFloat,
+    /// `Γ(t)` and `t = 1 − σ`.
+    gamma: BigFloat,
+    t: BigFloat,
+    /// Borwein's `(−1)^k (d_k − d_n)/d_n`, `k < n`.
+    coeffs: Vec<BigFloat>,
+    /// `m^{−t}`, `m = 1 … n` (index `m − 1`).
+    powers: Vec<BigFloat>,
+    /// `1/m`.
+    inverses: Vec<BigFloat>,
+    /// `2^{1−t}`.
+    two_pow: BigFloat,
+}
+
+impl ZetaLeft {
+    fn new(
+        sigma: &BigFloat,
+        wp: usize,
+        rm: RoundingMode,
+        cc: &mut Consts,
+    ) -> Result<Self, SymplexError> {
+        let wp = wp + 16;
+        let one = BigFloat::from_i32(1, 64);
+        let t = one.sub(sigma, exact_bits(sigma, wp), rm);
+        let pi = cc.pi(wp, rm).clone();
+        let two = BigFloat::from_i32(2, 64);
+        let scale = bf_pow(&two, sigma, wp, rm, cc).mul(
+            &bf_pow(&pi, &sigma.sub(&one, wp, rm), wp, rm, cc),
+            wp,
+            rm,
+        );
+        let half_pi_sigma = pi.mul(sigma, wp, rm).div(&two, wp, rm);
+        let gamma = arb_gamma_real(&t, wp, rm, cc)?;
+        let n =
+            ((wp as f64) * std::f64::consts::LN_2 / (3.0 + 8f64.sqrt()).ln()).ceil() as usize + 4;
+        let mut d: Vec<Ratio<BigInt>> = Vec::with_capacity(n + 1);
+        let mut acc = Ratio::<BigInt>::zero();
+        let mut term = Ratio::from_integer(BigInt::from(1));
+        for i in 0..=n {
+            if i > 0 {
+                let numer = BigInt::from((n + i - 1) as u64)
+                    * BigInt::from(4u64)
+                    * BigInt::from((n - i + 1) as u64);
+                let denom = BigInt::from((2 * i - 1) as u64) * BigInt::from((2 * i) as u64);
+                term *= Ratio::new(numer, denom);
+            }
+            acc += &term;
+            d.push(acc.clone());
+        }
+        let coeffs = (0..n)
+            .map(|k| {
+                let c = ratio_to_bigfloat(&((&d[k] - &d[n]) / &d[n]), wp, rm);
+                if k % 2 == 0 { c } else { c.neg() }
+            })
+            .collect();
+        // m^{−t}: a power for each prime, products for the composites.
+        let neg_t = t.neg();
+        let mut spf = vec![0usize; n + 1];
+        let mut powers: Vec<BigFloat> = Vec::with_capacity(n);
+        for m in 1..=n {
+            if m >= 2 && spf[m] == 0 {
+                for multiple in (m..=n).step_by(m) {
+                    if spf[multiple] == 0 {
+                        spf[multiple] = m;
+                    }
+                }
+            }
+            let v = if m == 1 {
+                BigFloat::from_i32(1, wp)
+            } else if spf[m] == m {
+                bf_pow(&BigFloat::from_u64(m as u64, 64), &neg_t, wp, rm, cc)
+            } else {
+                powers[spf[m] - 1].mul(&powers[m / spf[m] - 1], wp, rm)
+            };
+            powers.push(v);
+        }
+        let inverses = (1..=n)
+            .map(|m| one.div(&BigFloat::from_u64(m as u64, 64), wp, rm))
+            .collect();
+        let two_pow = bf_pow(&two, &one.sub(&t, wp, rm), wp, rm, cc);
+        Ok(ZetaLeft {
+            wp,
+            scale,
+            inv_two_pi: one.div(&pi.mul(&two, wp, rm), wp, rm),
+            sin: half_pi_sigma.sin(wp, rm, cc),
+            cos: half_pi_sigma.cos(wp, rm, cc),
+            gamma,
+            t,
+            coeffs,
+            powers,
+            inverses,
+            two_pow,
+        })
+    }
+
+    /// `ζ(σ)` at the current `σ`, then a step to `σ − 1`.
+    fn next(&mut self, rm: RoundingMode) -> BigFloat {
+        let wp = self.wp;
+        let mut eta = BigFloat::new(wp);
+        for (c, p) in self.coeffs.iter().zip(self.powers.iter()) {
+            eta = eta.add(&c.mul(p, wp, rm), wp, rm);
+        }
+        let one = BigFloat::from_i32(1, 64);
+        let zeta_t = eta.neg().div(&one.sub(&self.two_pow, wp, rm), wp, rm);
+        let value = self
+            .scale
+            .mul(&self.sin, wp, rm)
+            .mul(&self.gamma, wp, rm)
+            .mul(&zeta_t, wp, rm);
+        // σ → σ − 1, t → t + 1.
+        self.scale = self.scale.mul(&self.inv_two_pi, wp, rm);
+        let (s, c) = (self.cos.neg(), self.sin.clone());
+        self.sin = s;
+        self.cos = c;
+        self.gamma = self.gamma.mul(&self.t, wp, rm);
+        self.t = self.t.add(&one, wp, rm);
+        for (p, inv) in self.powers.iter_mut().zip(self.inverses.iter()) {
+            *p = p.mul(inv, wp, rm);
+        }
+        self.two_pow = self.two_pow.div(&BigFloat::from_i32(2, 64), wp, rm);
+        value
+    }
+}
+
+/// One evaluation of [`polylog_near_one`] at working precision `wp`, and
+/// the binary exponent of the largest term summed.
+fn polylog_near_one_at(
+    s: &BigFloat,
+    s_int: Option<i64>,
+    z: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<(BigFloat, Option<i64>), SymplexError> {
+    let mut largest: Option<i64> = None;
+    let mut note = |v: &BigFloat| {
+        if !v.is_zero()
+            && let Some(e) = v.exponent()
+        {
+            largest = Some(largest.map_or(i64::from(e), |m| m.max(i64::from(e))));
+        }
+    };
     let one = BigFloat::from_i32(1, wp);
     let mu = z.ln(wp, rm, cc); // negative
     let neg_mu = mu.neg();
@@ -7893,6 +8174,7 @@ fn polylog_near_one(
                     }
                     let ln_neg_mu = neg_mu.ln(wp, rm, cc);
                     let t = mu_pow_over_fact.mul(&h.sub(&ln_neg_mu, wp, rm), wp, rm);
+                    note(&t);
                     sum = sum.add(&t, wp, rm);
                     continue;
                 }
@@ -7903,6 +8185,7 @@ fn polylog_near_one(
                     arb_zeta(&BigFloat::from_i128(arg as i128, wp), wp, rm, cc)?
                 };
                 let term = zeta.mul(&mu_pow_over_fact, wp, rm);
+                note(&term);
                 sum = sum.add(&term, wp, rm);
                 if k >= n {
                     if negligible(&term, &sum, wp) {
@@ -7919,13 +8202,20 @@ fn polylog_near_one(
             if !converged {
                 return Err(not_converged());
             }
-            Ok(sum)
+            Ok((sum, largest))
         }
         _ => {
-            let one_minus_s = one.sub(s, wp, rm);
+            // `1 − s` exact, as `s − k` below: next to an integer the poles of
+            // `Γ(1 − s)` and `ζ(s − n + 1)` cancel only for the same `s` (a
+            // rounded `1 − s` moves `1/|s − n|` by its rounding over
+            // `(s − n)²`).
+            let one_minus_s = BigFloat::from_i32(1, 64).sub(s, exact_bits(s, wp), rm);
             let g = arb_gamma_real(&one_minus_s, wp, rm, cc)?;
             let s_minus_1 = s.sub(&one, wp, rm);
             let lead = g.mul(&bf_pow(&neg_mu, &s_minus_1, wp, rm, cc), wp, rm);
+            note(&lead);
+            let minus_one = BigFloat::from_i32(-1, 64);
+            let mut left: Option<ZetaLeft> = None;
             for k in 0..max_terms {
                 if k > 0 {
                     mu_pow_over_fact = mu_pow_over_fact.mul(&mu, wp, rm).div(
@@ -7934,9 +8224,21 @@ fn polylog_near_one(
                         rm,
                     );
                 }
-                let arg = s.sub(&BigFloat::from_i128(k as i128, wp), wp, rm);
-                let zeta = arb_zeta(&arg, wp, rm, cc)?;
+                let arg = s.sub(&BigFloat::from_i128(k as i128, wp), exact_bits(s, wp), rm);
+                // Left of −1 from the sequence (see [`ZetaLeft`]).
+                let zeta = if left.is_some() || bf_lt(&arg, &minus_one) {
+                    if left.is_none() {
+                        left = Some(ZetaLeft::new(&arg, wp, rm, cc)?);
+                    }
+                    match left.as_mut() {
+                        Some(l) => l.next(rm),
+                        None => arb_zeta(&arg, wp, rm, cc)?,
+                    }
+                } else {
+                    arb_zeta(&arg, wp, rm, cc)?
+                };
                 let term = zeta.mul(&mu_pow_over_fact, wp, rm);
+                note(&term);
                 sum = sum.add(&term, wp, rm);
                 if k >= 2 {
                     if negligible(&term, &sum, wp) {
@@ -7953,20 +8255,24 @@ fn polylog_near_one(
             if !converged {
                 return Err(not_converged());
             }
-            Ok(lead.add(&sum, wp, rm))
+            Ok((lead.add(&sum, wp, rm), largest))
         }
     }
 }
 
 /// Largest `|z|` for which the direct series is used.  For integer `s` the
 /// `μ`-expansion is cheap (Bernoulli numbers), so it takes over at `1/2`;
-/// for non-integer `s` every term of that expansion costs a `ζ` evaluation,
-/// and the direct series stays cheaper until `|z|` is very close to `1`.
+/// for non-integer `s` its terms `ζ(s − k)` come from one incremental
+/// sequence left of −1 ([`ZetaLeft`]), a few multiplications per Borwein
+/// term, and it takes over at `3/4`, where the direct series needs
+/// `wp·ln 2/ln(4/3)` terms of a non-integer power each.  (Before 0.30 every
+/// `ζ(s − k)` was a full evaluation and the direct series ran up to `0.95`:
+/// 1,800 powers for `polylog(1/3, −95/100)` at 60 digits, 0.57 s.)
 fn polylog_series_limit(s_int: Option<i64>, wp: usize) -> BigFloat {
     if s_int.is_some() {
         BigFloat::from_f64(0.5, wp)
     } else {
-        BigFloat::from_f64(0.95, wp)
+        BigFloat::from_f64(0.75, wp)
     }
 }
 
@@ -7985,15 +8291,36 @@ fn polylog_unit_interval(
         return polylog_series(s, s_int, z, wp, rm, cc);
     }
     if z.is_negative() {
-        // Li_s(−x) = 2^{1−s} Li_s(x²) − Li_s(x)
-        let one = BigFloat::from_i32(1, wp);
-        let x2 = az.mul(&az, wp, rm);
-        let a = polylog_unit_interval(s, s_int, &x2, wp, rm, cc)?;
-        let b = polylog_near_one(s, s_int, &az, wp, rm, cc)?;
-        let two = BigFloat::from_i32(2, wp);
-        let one_minus_s = one.sub(s, wp, rm);
-        let scale = bf_pow(&two, &one_minus_s, wp, rm, cc);
-        return Ok(scale.mul(&a, wp, rm).sub(&b, wp, rm));
+        // Li_s(−x) = 2^{1−s} Li_s(x²) − Li_s(x).  The difference cancels
+        // where Li_s(−x) is small next to its terms (next to a zero of
+        // η(s) = −Li_s(−1), s ≈ −2, −4, …): the loss is measured and the
+        // difference formed again with that many more bits.
+        let cap = cancellation_cap(wp);
+        let mut extra = 0usize;
+        loop {
+            let p = wp + extra;
+            let one = BigFloat::from_i32(1, p);
+            let x2 = az.mul(&az, 2 * p, rm);
+            let a = polylog_unit_interval(s, s_int, &x2, p, rm, cc)?;
+            let b = polylog_near_one(s, s_int, &az, p, rm, cc)?;
+            let two = BigFloat::from_i32(2, p);
+            let one_minus_s = one.sub(s, exact_bits(s, p), rm);
+            let scale = bf_pow(&two, &one_minus_s, p, rm, cc);
+            let first = scale.mul(&a, p, rm);
+            let r = first.sub(&b, p, rm);
+            let largest = first.exponent().max(b.exponent()).map_or(0, i64::from);
+            let lost = match r.exponent() {
+                Some(e) if !r.is_zero() => usize::try_from(largest - i64::from(e)).unwrap_or(0),
+                _ => p,
+            };
+            if lost <= extra + 24 {
+                return Ok(round_to(r, wp, rm));
+            }
+            if extra >= cap {
+                return Err(special_exhausted(wp));
+            }
+            extra = (lost + 16).max(2 * extra).min(cap);
+        }
     }
     polylog_near_one(s, s_int, z, wp, rm, cc)
 }

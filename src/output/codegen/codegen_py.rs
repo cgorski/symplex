@@ -7,20 +7,22 @@
 //! |--------|-----------|-----------|-------|-------------------|
 //! | Python | `math.sin`, `math.exp`, `math.sqrt`, `math.gamma`, `math.erf`, … ; `abs`, `min`, `max` | `math.pi`, `math.e`, `math.inf`, `math.nan` | `**` | `>`, `and`, `or`, `not`; `(v if c else …)` |
 //! | NumPy  | `numpy.sin`, `numpy.sqrt`, `numpy.floor`, `numpy.sign`, `numpy.minimum`, … | `numpy.pi`, `numpy.e`, `numpy.inf`, `numpy.nan` | `**` | `numpy.greater`, `numpy.logical_and`, `numpy.select` |
-//! | Julia  | `sin`, `exp`, `sqrt`, `cbrt`, `abs`, `floor`, `sign`, `min`, `max`, `atan(y, x)` | `pi`, `ℯ`, `Inf`, `NaN` | `^` | `>`, `&&`, `\|\|`, `!`; `(c ? v : …)` |
+//! | Julia  | `sin`, `exp`, `sqrt`, `abs`, `floor`, `sign`, `min`, `max`, `atan(y, x)` | `pi`, `ℯ`, `Inf`, `NaN` | `^` | `>`, `&&`, `\|\|`, `!`; `(c ? v : …)` |
 //!
 //! Numbers are exact: integers print as integers, rationals as `(p/q)`
 //! (a float division in all three languages).  Sums are printed in display
 //! order with `-` for negated terms; `x^(-1)` factors become divisions.
-//! Rational powers with an odd denominator are *real* roots, as in the
-//! Rust and C back ends and `compile()`: `x^(1/3)` is `math.copysign(abs(x)**(1/3), x)`
-//! / `numpy.cbrt(x)` / `cbrt(x)`, and `x^(p/q)` is `copysign(abs(x)**(p/q), x)`
-//! for odd `p` or `abs(x)**(p/q)` for even `p` (a bare `x**(1/3)` is complex
-//! for negative `x` in Python).  An even denominator has no real value for
-//! a negative base: NaN, as in the other `f64` back ends —
+//! The emitted code computes the value `evalf` gives, or NaN where that
+//! value is not real, as `compile()` and the Rust and C back ends do.  A
+//! non-integer rational power of a negative base is not real — an odd
+//! denominator included (the principal `(-8)^(1/3)` is `1 + √3·i`): NaN —
 //! `(lambda b: b**(3/2) if b >= 0 else math.nan)(x)` /
 //! `numpy.power(x, (3/2))` / `(b -> b >= 0 ? b^(3/2) : NaN)(x)` (Python's
 //! bare `(-1.0)**(3/2)` is a complex number, Julia's a `DomainError`).
+//! Before 0.30 an odd denominator was the real root; that is `real_root`,
+//! `sign(x)·|x|^(1/q)`.  `loggamma(x)` is SymPy's (not real for a negative
+//! non-integer `x`): `(lambda b: math.lgamma(b) if b > 0 else math.inf if
+//! b % 1 == 0 else math.nan)(x)`; `ln(abs(gamma(x)))` is `math.lgamma(x)`.
 //! `min`/`max` propagate NaN like `compile()`: Python's builtins keep the
 //! first operand of a comparison with NaN (`min(2, nan)` is `2`), so they
 //! get the key `(v == v, v)` / `(v != v, v)` that ranks NaN first.
@@ -135,7 +137,7 @@ impl Target {
                 Target::Julia => "sign",
             },
             N::Gamma(_) if self == Target::Python => "math.gamma",
-            N::LogGamma(_) if self == Target::Python => "math.lgamma",
+
             N::Erf(_) if self == Target::Python => "math.erf",
             N::Erfc(_) if self == Target::Python => "math.erfc",
             // `Factorial` is rendered as `math.gamma(x + 1)` (real argument).
@@ -344,10 +346,11 @@ impl Emitter<'_> {
 
     /// `b ^ r` for an exact rational exponent.
     ///
-    /// `1/2` is `sqrt`; an odd denominator `q` is a *real* root, as in
-    /// `compile()` and the Rust/C back ends: `sign(b)·|b|^(p/q)` for odd
-    /// `p`, `|b|^(p/q)` for even `p` (`numpy.cbrt`/`cbrt` for `1/3`).  A
-    /// bare `b**(1/3)` would be complex for negative `b` in Python.
+    /// `1/2` is `sqrt`; any other non-integer exponent is NaN for a
+    /// negative (or NaN) base, whose principal power is not real — an odd
+    /// denominator too, as in `compile()` and the Rust/C back ends (before
+    /// 0.30 it was the real root, `copysign(abs(b)**(p/q), b)`; a bare
+    /// `b**(1/3)` would be complex for negative `b` in Python).
     fn pow_rational(&self, b: &Rendered, r: &Q) -> Rendered {
         let one = BigInt::one();
         let two = BigInt::from(2);
@@ -359,41 +362,13 @@ impl Emitter<'_> {
             };
             return self.call(sqrt, &[b]);
         }
-        if *r.numer() == one
-            && *r.denom() == BigInt::from(3)
-            && let Some(cbrt) = match self.target {
-                Target::Python => None,
-                Target::NumPy => Some("numpy.cbrt"),
-                Target::Julia => Some("cbrt"),
-            }
-        {
-            return self.call(cbrt, &[b]);
-        }
         if r.is_integer() {
             if *r.numer() == -one {
                 return Rendered::new(format!("1/{}", b.at(PREC_MUL + 1)), PREC_MUL);
             }
             return Rendered::new(self.pow_text(b, &self.number(r)), PREC_POW);
         }
-        if (r.denom() % &two) != BigInt::from(0) {
-            let (abs, copysign) = match self.target {
-                Target::Python => ("abs", "math.copysign"),
-                Target::NumPy => ("numpy.abs", "numpy.copysign"),
-                Target::Julia => ("abs", "copysign"),
-            };
-            let mag = Rendered::new(
-                self.pow_text(&self.call(abs, &[b]), &self.number(r)),
-                PREC_POW,
-            );
-            let odd_numer = (r.numer() % &two) != BigInt::from(0);
-            return if odd_numer {
-                self.call(copysign, &[&mag, b])
-            } else {
-                mag
-            };
-        }
-        // Even denominator: NaN for a negative (or NaN) base, the base
-        // evaluated once.
+        // NaN for a negative (or NaN) base, the base evaluated once.
         let param = Rendered::atom("b");
         let body = self.pow_text(&param, &self.number(r));
         match self.target {
@@ -685,6 +660,46 @@ impl Emitter<'_> {
                 ExprNode::Factorial(a) if self.target == Target::Python => {
                     let r = child(a)?;
                     Rendered::atom(format!("math.gamma({} + 1)", r.at(PREC_ADD)))
+                }
+                // SymPy's `loggamma`: `math.lgamma` (which is ln|Γ|) for
+                // b > 0, +∞ at the poles (`loggamma(-3) = oo`; `math.lgamma`
+                // raises there), NaN elsewhere left of 0, where the value
+                // ln|Γ(b)| − iπ⌈−b⌉ is not real.  NumPy and base Julia have no
+                // log-gamma: refused below.
+                ExprNode::LogGamma(a) if self.target == Target::Python => {
+                    let r = child(a)?;
+                    Rendered::atom(format!(
+                        "(lambda b: math.lgamma(b) if b > 0 else math.inf if b % 1 == 0 else math.nan)({})",
+                        r.at(0)
+                    ))
+                }
+                // Every value is real (NaN standing for one that is not): `re`
+                // is the value, `im` is 0, as in `compile()` (`real_root` of a
+                // symbol not known to be real is a `Piecewise` on `im(x) = 0`).
+                ExprNode::Re(a) => child(a)?,
+                ExprNode::Im(a) => {
+                    let r = child(a)?;
+                    match self.target {
+                        Target::Python => Rendered::atom(format!(
+                            "(0.0 if {a} == {a} else math.nan)",
+                            a = r.at(PREC_ADD)
+                        )),
+                        Target::NumPy => Rendered::atom(format!(
+                            "numpy.where(numpy.isnan({}), numpy.nan, 0.0)",
+                            r.at(0)
+                        )),
+                        Target::Julia => {
+                            Rendered::atom(format!("(isnan({}) ? NaN : 0.0)", r.at(0)))
+                        }
+                    }
+                }
+                // ln|Γ(u)| is `math.lgamma(u)`, which does not overflow.
+                ExprNode::Ln(a)
+                    if self.target == Target::Python
+                        && crate::output::codegen::abs_gamma_arg(arena, *a).is_some() =>
+                {
+                    let u = crate::output::codegen::abs_gamma_arg(arena, *a).unwrap_or(*a);
+                    self.call("math.lgamma", &[&child(&u)?])
                 }
                 ExprNode::Min(args) | ExprNode::Max(args) => {
                     let is_min = matches!(node, ExprNode::Min(_));
@@ -1051,7 +1066,8 @@ impl<S: Sort> Expr<S> {
 
     /// A Julia expression (SymPy: `julia_code`).
     ///
-    /// `sin`, `exp`, `sqrt`, `cbrt`, `abs`, `^` for powers, `pi`, `ℯ`,
+    /// `sin`, `exp`, `sqrt`, `abs`, `^` for powers (NaN for a negative base
+    /// and a non-integer exponent, where Julia's `^` throws), `pi`, `ℯ`,
     /// `Inf`, `NaN`, `&&`/`||`/`!`, `(c ? v : …)` for piecewise.  Base
     /// Julia only: `gamma`/`erf` (SpecialFunctions.jl) are refused.
     ///
@@ -1205,12 +1221,22 @@ mod tests {
     fn python_functions() {
         assert_eq!(py("sin(x)^2 + exp(x)"), "math.sin(x)**2 + math.exp(x)");
         assert_eq!(py("sqrt(x)"), "math.sqrt(x)");
-        // 0.11.1: real cube root (`x**(1/3)` is complex for negative `x`).
-        assert_eq!(py("cbrt(x)"), "math.copysign(abs(x)**(1/3), x)");
+        // 0.30: the principal cube root, NaN for negative `x` (0.11.1 to
+        // 0.29 emitted the real root, `math.copysign(abs(x)**(1/3), x)`).
+        assert_eq!(
+            py("cbrt(x)"),
+            "(lambda b: b**(1/3) if b >= 0 else math.nan)(x)"
+        );
         assert_eq!(py("abs(x)"), "abs(x)");
         assert_eq!(py("floor(x) + ceil(y)"), "math.floor(x) + math.ceil(y)");
         assert_eq!(py("gamma(x) + erf(x)"), "math.gamma(x) + math.erf(x)");
-        assert_eq!(py("loggamma(x)"), "math.lgamma(x)");
+        // 0.30: SymPy's `loggamma` is not real left of 0 (it was
+        // `math.lgamma(x)`, ln|Γ|); `ln(abs(gamma(x)))` is `math.lgamma`.
+        assert_eq!(
+            py("loggamma(x)"),
+            "(lambda b: math.lgamma(b) if b > 0 else math.inf if b % 1 == 0 else math.nan)(x)"
+        );
+        assert_eq!(py("ln(abs(gamma(x)))"), "math.lgamma(x)");
         assert_eq!(py("atan2(y, x)"), "math.atan2(y, x)");
         // NaN-propagating like `compile()` (`min(2, nan)` is 2 in Python).
         assert_eq!(py("min(x, y)"), "min(x, y, key=lambda v: (v == v, v))");
@@ -1270,7 +1296,7 @@ mod tests {
         assert_eq!(np("sin(x)"), "numpy.sin(x)");
         assert_eq!(np("x^2 + 1"), "x**2 + 1");
         assert_eq!(np("pi"), "numpy.pi");
-        assert_eq!(np("cbrt(x)"), "numpy.cbrt(x)");
+        assert_eq!(np("cbrt(x)"), "numpy.power(x, (1/3))");
         assert_eq!(np("min(x, y, z)"), "numpy.minimum(numpy.minimum(x, y), z)");
         assert_eq!(np("sign(x)"), "numpy.sign(x)");
         assert_eq!(np("asin(x)"), "numpy.arcsin(x)");
@@ -1303,13 +1329,18 @@ mod tests {
     }
 
     #[test]
-    fn real_roots_match_compile_semantics() {
-        // Odd denominators are real roots: sign(x)·|x|^(p/q) for odd p,
-        // |x|^(p/q) for even p — the same rule as `compile()`, Rust and C.
-        assert_eq!(py("x^(3/5)"), "math.copysign(abs(x)**(3/5), x)");
-        assert_eq!(py("x^(2/5)"), "abs(x)**(2/5)");
-        assert_eq!(py("x^(-1/3)"), "math.copysign(abs(x)**(-1/3), x)");
-        assert_eq!(py("y*x^(-1/3)"), "y/math.copysign(abs(x)**(1/3), x)");
+    fn rational_powers_match_compile_semantics() {
+        // 0.30: every non-integer rational power of a negative base is NaN,
+        // odd denominators included (the principal value is not real), the
+        // rule of `compile()`, Rust and C.  0.11.1 to 0.29 emitted the real
+        // root: `math.copysign(abs(x)**(3/5), x)`, `abs(x)**(2/5)`; that is
+        // `real_root`.
+        let nan_unless_nonneg =
+            |p: &str| format!("(lambda b: b**({p}) if b >= 0 else math.nan)(x)");
+        assert_eq!(py("x^(3/5)"), nan_unless_nonneg("3/5"));
+        assert_eq!(py("x^(2/5)"), nan_unless_nonneg("2/5"));
+        assert_eq!(py("x^(-1/3)"), nan_unless_nonneg("-1/3"));
+        assert_eq!(py("y*x^(-1/3)"), format!("y/{}", nan_unless_nonneg("1/3")));
         assert_eq!(py("y/sqrt(x)"), "y/math.sqrt(x)");
         // Even denominators: NaN for negative bases, as `compile()` (they
         // were left bare, complex in Python for a negative base).
@@ -1322,12 +1353,19 @@ mod tests {
             "(lambda b: b**(1/4) if b >= 0 else math.nan)(x)"
         );
         assert_eq!(np("x^(1/4)"), "numpy.power(x, (1/4))");
-        assert_eq!(np("cbrt(x)"), "numpy.cbrt(x)");
-        assert_eq!(np("x^(3/5)"), "numpy.copysign(numpy.abs(x)**(3/5), x)");
-        assert_eq!(np("x^(2/5)"), "numpy.abs(x)**(2/5)");
-        assert_eq!(jl("cbrt(x)"), "cbrt(x)");
-        assert_eq!(jl("x^(3/5)"), "copysign(abs(x)^(3/5), x)");
-        assert_eq!(jl("x^(2/5)"), "abs(x)^(2/5)");
+        assert_eq!(np("cbrt(x)"), "numpy.power(x, (1/3))");
+        assert_eq!(np("x^(3/5)"), "numpy.power(x, (3/5))");
+        assert_eq!(np("x^(2/5)"), "numpy.power(x, (2/5))");
+        assert_eq!(jl("cbrt(x)"), "(b -> b >= 0 ? b^(1/3) : NaN)(x)");
+        assert_eq!(jl("x^(3/5)"), "(b -> b >= 0 ? b^(3/5) : NaN)(x)");
+        assert_eq!(jl("x^(2/5)"), "(b -> b >= 0 ? b^(2/5) : NaN)(x)");
+        // The real root is `real_root`: sign(x)·|x|^(1/q), −2 at −8.
+        let ctx = Context::new();
+        let r = ctx
+            .symbol_with("r", &[crate::base::assumptions::Assumption::Real])
+            .unwrap();
+        let code = r.real_root(3).unwrap().to_python().unwrap();
+        assert!(code.contains("math.copysign(1, r)"), "{code}");
     }
 
     #[test]

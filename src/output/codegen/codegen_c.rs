@@ -163,11 +163,6 @@ enum Plan {
         n_rest: usize,
     },
     PowInt(i64),
-    /// Real root with rational exponent: `copysign(pow(fabs(b), e), b)` or `pow(fabs(b), e)`.
-    RealRoot {
-        odd_numer: bool,
-        exp: String,
-    },
     PowF,
     /// `symplex_min`/`symplex_max` fold over `n` children.
     MinMax(&'static str, usize),
@@ -359,10 +354,18 @@ impl<'a> CEmitter<'a> {
             ExprNode::NegInfinity => self.values.push("(-INFINITY)".to_string()),
             ExprNode::NaN | ExprNode::ComplexInfinity => self.values.push("NAN".to_string()),
             ExprNode::ImaginaryUnit => return Err(self.unsupported("ImaginaryUnit")),
-            // Complex-analysis nodes have no meaning in a real-valued backend,
-            // and the remaining special functions have no runtime helper yet.
-            ExprNode::Re(_) => return Err(self.unsupported("re")),
-            ExprNode::Im(_) => return Err(self.unsupported("im")),
+            // Every value is real (NaN standing for one that is not): `re` is
+            // the value, `im` is 0 — as in `compile()` (`real_root` of a
+            // symbol not known to be real is a `Piecewise` on `im(x) = 0`).
+            ExprNode::Re(x) => self.work.push(Frame {
+                id: x,
+                kind: v,
+                plan: None,
+            }),
+            ExprNode::Im(x) => self.schedule(id, Plan::RtUnary("im"), &[(x, v)]),
+            // The other complex-analysis nodes have no meaning in a
+            // real-valued backend, and the remaining special functions have
+            // no runtime helper yet.
             ExprNode::Conjugate(_) => return Err(self.unsupported("conjugate")),
             ExprNode::Arg(_) => return Err(self.unsupported("arg")),
             ExprNode::Si(_) => return Err(self.unsupported("Si")),
@@ -500,19 +503,17 @@ impl<'a> CEmitter<'a> {
                         self.schedule(id, Plan::Unary("sqrt"), &[(base, v)]);
                         return Ok(());
                     }
+                    // The principal cube root: NaN for a negative base, as
+                    // `compile()` (C's `cbrt` is the real root).
                     if *r.numer() == one && *r.denom() == num_bigint::BigInt::from(3) {
-                        self.schedule(id, Plan::Unary("cbrt"), &[(base, v)]);
-                        return Ok(());
-                    }
-                    if r.denom() % &two != num_bigint::BigInt::from(0) {
-                        let odd_numer = r.numer() % &two != num_bigint::BigInt::from(0);
-                        let e = r.numer().to_f64().unwrap_or(f64::NAN)
-                            / r.denom().to_f64().unwrap_or(f64::NAN);
-                        let exp = self.lit(e);
-                        self.schedule(id, Plan::RealRoot { odd_numer, exp }, &[(base, v)]);
+                        self.schedule(id, Plan::RtUnary("cbrt"), &[(base, v)]);
                         return Ok(());
                     }
                 }
+                // Any other exponent is `pow`, NaN for a negative base and a
+                // non-integer exponent: the principal power is not real.
+                // (Before 0.30 an odd denominator was the real root,
+                // `copysign(pow(fabs(b), e), b)`; that is `real_root`.)
                 self.schedule(id, Plan::PowF, &[(base, v), (exp, v)]);
             }
             ExprNode::Neg(x) => self.schedule(id, Plan::Neg, &[(x, v)]),
@@ -534,6 +535,11 @@ impl<'a> CEmitter<'a> {
                         self.schedule(id, Plan::Unary("log1p"), &[(ch[0], v)]);
                         return Ok(());
                     }
+                }
+                // ln|Γ(u)| is `lgamma(u)`, which does not overflow.
+                if let Some(u) = super::abs_gamma_arg(arena, x) {
+                    self.schedule(id, Plan::Unary("lgamma"), &[(u, v)]);
+                    return Ok(());
                 }
                 self.schedule(id, Plan::Unary("log"), &[(x, v)]);
             }
@@ -572,7 +578,9 @@ impl<'a> CEmitter<'a> {
                 self.schedule(id, Plan::MinMax("max", kids.len()), &kids);
             }
             ExprNode::Gamma(x) => self.schedule(id, Plan::Unary("tgamma"), &[(x, v)]),
-            ExprNode::LogGamma(x) => self.schedule(id, Plan::Unary("lgamma"), &[(x, v)]),
+            // SymPy's `loggamma`: NaN for a negative non-integer argument
+            // (C's `lgamma` is `ln|Γ|` there).
+            ExprNode::LogGamma(x) => self.schedule(id, Plan::RtUnary("loggamma"), &[(x, v)]),
             ExprNode::Erf(x) => self.schedule(id, Plan::Unary("erf"), &[(x, v)]),
             ExprNode::Erfc(x) => self.schedule(id, Plan::Unary("erfc"), &[(x, v)]),
             ExprNode::Digamma(x) => self.schedule(id, Plan::RtUnary("digamma"), &[(x, v)]),
@@ -854,15 +862,7 @@ impl<'a> CEmitter<'a> {
                     _ => format!("{}({b}, {})", self.mf("pow"), self.lit(n as f64)),
                 }
             }
-            Plan::RealRoot { odd_numer, exp } => {
-                let b = self.pop_n(1).remove(0);
-                let mag = format!("{}({}({b}), {exp})", self.mf("pow"), self.mf("fabs"));
-                if odd_numer {
-                    format!("{}({mag}, {b})", self.mf("copysign"))
-                } else {
-                    mag
-                }
-            }
+
             Plan::PowF => {
                 let be = self.pop_n(2);
                 format!("{}({}, {})", self.mf("pow"), be[0], be[1])
@@ -1164,6 +1164,31 @@ static inline double symplex_heaviside(double x) { return x > 0.0 ? 1.0 : (x < 0
         deps: &[],
         src: r#"
 static inline double symplex_factorial(double x) { return tgamma(x + 1.0); }
+"#,
+    },
+    CHelper {
+        name: "im",
+        deps: &[],
+        src: r#"
+/* The imaginary part of a real value: 0 (NaN for NaN). */
+static inline double symplex_im(double x) { return isnan(x) ? NAN : 0.0; }
+"#,
+    },
+    CHelper {
+        name: "cbrt",
+        deps: &[],
+        src: r#"
+/* The principal cube root x^(1/3): not real (NaN) for x < 0, where C's cbrt is the real root. */
+static inline double symplex_cbrt(double x) { return x < 0.0 ? NAN : cbrt(x); }
+"#,
+    },
+    CHelper {
+        name: "loggamma",
+        deps: &["util"],
+        src: r#"
+/* SymPy's loggamma on the real line: lgamma for x > 0, +inf at the poles, NaN for other x < 0
+   (the value ln|Gamma(x)| - i*pi*ceil(-x) is not real). */
+static inline double symplex_loggamma(double x) { return (x > 0.0 || symplex_is_gamma_pole(x)) ? lgamma(x) : NAN; }
 "#,
     },
     CHelper {
@@ -1746,6 +1771,21 @@ static inline double symplex_lucas(double n) {
         name: "harmonic",
         deps: &["digamma", "util"],
         src: r#"
+/* H(x) for |x| <= 1/2: x/(1 + x) + sum_k (-1)^(k+1) (zeta(k+1) - 1) x^k (psi(1 + x) + gamma cancels there). */
+static inline double symplex_harmonic_small(double x) {
+    static const double zm1[32] = {
+        0.6449340668482264, 0.2020569031595943, 0.08232323371113819, 0.03692775514336993,
+        0.01734306198444914, 0.008349277381922827, 0.00407735619794434, 0.0020083928260822143,
+        0.0009945751278180853, 0.0004941886041194645, 0.0002460865533080483, 0.00012271334757848915,
+        6.124813505870483e-05, 3.058823630702049e-05, 1.528225940865187e-05, 7.637197637899763e-06,
+        3.81729326499984e-06, 1.908212716553939e-06, 9.539620338727962e-07, 4.769329867878064e-07,
+        2.38450502727733e-07, 1.1921992596531106e-07, 5.960818905125948e-08, 2.980350351465228e-08,
+        1.4901554828365043e-08, 7.45071178983543e-09, 3.725334024788457e-09, 1.862659723513049e-09,
+        9.313274324196682e-10, 4.656629065033784e-10, 2.3283118336765053e-10, 1.164155017270052e-10};
+    double acc = 0.0;
+    for (int k = 31; k >= 0; k--) acc = zm1[k] - x * acc;
+    return x / (1.0 + x) + x * acc;
+}
 static inline double symplex_harmonic(double n) {
     if (isnan(n)) return NAN;
     if (n == INFINITY) return INFINITY;
@@ -1753,6 +1793,7 @@ static inline double symplex_harmonic(double n) {
         if (n < 0.0) return NAN;
         if (n <= 100.0) { double sum = 0.0; for (double k = n; k >= 1.0; k -= 1.0) sum += 1.0 / k; return sum; }
     }
+    if (fabs(n) <= 0.5) return symplex_harmonic_small(n);
     return symplex_digamma(n + 1.0) + 0.5772156649015329;
 }
 "#,
@@ -1772,29 +1813,51 @@ static inline double symplex_factorial2(double n) {
 "#,
     },
     CHelper {
+        name: "stirling_corr",
+        deps: &[],
+        src: r#"
+/* ln Gamma(x) - [(x - 1/2) ln x - x + ln sqrt(2 pi)] through x^-9 (x >= 20). */
+static inline double symplex_stirling_corr(double x) {
+    double inv = 1.0 / x, inv2 = inv * inv;
+    return inv * (1.0 / 12.0 - inv2 * (1.0 / 360.0 - inv2 * (1.0 / 1260.0 - inv2 * (1.0 / 1680.0 - inv2 * (1.0 / 1188.0)))));
+}
+"#,
+    },
+    CHelper {
         name: "rising_factorial",
-        deps: &["util"],
+        deps: &["util", "stirling_corr"],
         src: r#"
 static inline double symplex_rising_factorial(double x, double n) {
     if (isnan(x) || isnan(n)) return NAN;
     if (symplex_is_int(n) && fabs(n) <= 1000.0) {
         double acc = 1.0;
-        if (n >= 0.0) { for (double i = 0.0; i < n; i += 1.0) acc *= x + i; return acc; }
+        if (n >= 0.0) {
+            if (symplex_is_int(x) && x <= 0.0 && x + n - 1.0 >= 0.0) return 0.0;
+            for (double i = 0.0; i < n; i += 1.0) acc *= x + i;
+            return acc;
+        }
         for (double i = 1.0; i <= -n; i += 1.0) acc *= x - i;
         return 1.0 / acc;
     }
     double top = x + n;
     if (symplex_is_gamma_pole(x)) return symplex_is_gamma_pole(top) ? NAN : 0.0;
     if (symplex_is_gamma_pole(top)) return NAN;
+    if (x >= 20.0 && top >= 20.0 && isfinite(top))
+        return exp((x - 0.5) * log1p(n / x) + n * log(top) - n + symplex_stirling_corr(top) - symplex_stirling_corr(x));
     return symplex_gamma_sign(top) * symplex_gamma_sign(x) * exp(lgamma(top) - lgamma(x));
 }
 "#,
     },
     CHelper {
         name: "falling_factorial",
-        deps: &["rising_factorial"],
+        deps: &["rising_factorial", "stirling_corr"],
         src: r#"
-static inline double symplex_falling_factorial(double x, double n) { return symplex_rising_factorial(x - n + 1.0, n); }
+static inline double symplex_falling_factorial(double x, double n) {
+    double u = x + 1.0;
+    if (!(symplex_is_int(n) && fabs(n) <= 1000.0) && u >= 20.0 && u - n >= 20.0 && isfinite(u))
+        return exp(n * log(u) - (u - n - 0.5) * log1p(-n / u) - n + symplex_stirling_corr(u) - symplex_stirling_corr(u - n));
+    return symplex_rising_factorial(x - n + 1.0, n);
+}
 "#,
     },
 ];
@@ -1844,20 +1907,25 @@ mod tests {
         let sq = a.pow(x, half);
         let code = gen_c(&mut a, sq, &["x"]);
         assert!(code.contains("sqrt(x)"), "{code}");
+        // 0.30: an odd denominator is the principal power, NaN for x < 0
+        // (`pow` of a negative base and a non-integer exponent), as
+        // `compile()`: it was the real root, `copysign(pow(fabs(x), 0.6), x)`
+        // and `pow(fabs(x), 0.4)`, where `evalf` is not real.
         let two_fifths = a.rational(2, 5);
         let r = a.pow(x, two_fifths);
         let code = gen_c(&mut a, r, &["x"]);
-        assert!(
-            code.contains("pow(fabs(x), 0.4)"),
-            "even numerator → no sign:\n{code}"
-        );
+        assert!(!code.contains("fabs"), "{code}");
+        assert!(code.contains("pow(x, "), "{code}");
         let three_fifths = a.rational(3, 5);
         let r = a.pow(x, three_fifths);
         let code = gen_c(&mut a, r, &["x"]);
-        assert!(
-            code.contains("copysign(pow(fabs(x), 0.6), x)"),
-            "odd numerator → sign:\n{code}"
-        );
+        assert!(!code.contains("copysign"), "{code}");
+        assert!(code.contains("pow(x, "), "{code}");
+        let third = a.rational(1, 3);
+        let r = a.pow(x, third);
+        let code = gen_c(&mut a, r, &["x"]);
+        assert!(code.contains("symplex_cbrt(x)"), "{code}");
+        assert!(code.contains("x < 0.0 ? NAN : cbrt(x)"), "{code}");
     }
 
     #[test]

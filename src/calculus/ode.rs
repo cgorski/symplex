@@ -25,6 +25,11 @@
 //!   order via the characteristic polynomial (repeated roots → `x^k e^{rx}`,
 //!   complex pairs → `e^{ax}(cos bx, sin bx)`), with undetermined coefficients
 //!   for `poly × exp × {sin, cos}` forcing (resonance handled)
+//! - **Linear with symbolic constant coefficients:** `y″ + a·y = 0` →
+//!   `C1·e^{x√(−a)} + C2·e^{−x√(−a)}` (roots of the characteristic
+//!   polynomial in radicals, principal branches, no case split on the sign
+//!   of `a`, as SymPy; the generic solution), any order; a second-order
+//!   forcing term by variation of parameters
 //! - **Clairaut:** `y = x·y' + f(y')` → `y = C·x + f(C)`
 //! - **Riccati:** `y' = q₀ + q₁·y + q₂·y²` given a particular solution
 //!   ([`solve_riccati`])
@@ -153,6 +158,9 @@ pub fn dsolve(
     attempt!(try_nth_order_linear_const_coeff(
         arena, expr, func, var, func_sym
     ));
+
+    // Type 1e': linear with constant symbolic coefficients (`y″ + a·y = 0`).
+    attempt!(try_linear_cc_symbolic(arena, expr, func, var, func_sym));
 
     // Type 1d: Variation of parameters: y'' + p·y' + q·y = g(x) (fallback)
     attempt!(try_variation_of_parameters(
@@ -3530,6 +3538,286 @@ fn try_nth_order_linear_const_coeff(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Linear ODEs with constant symbolic coefficients
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `(k, c)` if `term` is `c·y⁽ᵏ⁾` with `c` free of `x` and `y`.
+fn symbolic_linear_term(
+    arena: &mut Arena,
+    term: ExprId,
+    chain: &[ExprId],
+    var: ExprId,
+    func_sym: SymbolId,
+) -> Option<(usize, ExprId)> {
+    if let Some(k) = chain.iter().position(|&d| d == term) {
+        return Some((k, arena.one));
+    }
+    let ExprNode::Mul(factors) = arena.node(term).clone() else {
+        return None;
+    };
+    let mut order = None;
+    let mut rest = Vec::with_capacity(factors.len());
+    for f in factors {
+        if let Some(k) = chain.iter().position(|&d| d == f) {
+            if order.replace(k).is_some() {
+                return None;
+            }
+        } else if crate::base::walk::contains(arena, f, var) || contains_sym(arena, f, func_sym) {
+            return None;
+        } else {
+            rest.push(f);
+        }
+    }
+    Some((order?, arena.mul(&rest)))
+}
+
+/// `e` with every `Piecewise` whose first condition is a parameter
+/// inequality (`a ≠ 0`, conjunctions of those; free of `var`) replaced by
+/// its first, generic branch; `None` if another `Piecewise` remains.
+fn generic_branches(arena: &mut Arena, e: ExprId, var: ExprId) -> Option<ExprId> {
+    fn is_generic(arena: &Arena, c: ExprId) -> bool {
+        match arena.node(c) {
+            ExprNode::Ne(..) => true,
+            ExprNode::And(cs) => cs
+                .iter()
+                .all(|&k| matches!(arena.node(k), ExprNode::Ne(..))),
+            _ => false,
+        }
+    }
+    let post = crate::base::walk::post_order_ids(arena, e);
+    let mut cache: rustc_hash::FxHashMap<ExprId, ExprId> = rustc_hash::FxHashMap::default();
+    for &id in &post {
+        let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        let new = match arena.node(rebuilt).clone() {
+            ExprNode::Piecewise(pairs) => {
+                let (v, c) = *pairs.first()?;
+                if crate::base::walk::contains(arena, c, var) || !is_generic(arena, c) {
+                    return None;
+                }
+                v
+            }
+            _ => rebuilt,
+        };
+        cache.insert(id, new);
+    }
+    let r = cache.get(&e).copied().unwrap_or(e);
+    Some(crate::transforms::eval::eval(arena, r))
+}
+
+/// Is `e` identically zero after expansion (structurally)?
+fn expands_to_zero(arena: &mut Arena, e: ExprId) -> bool {
+    let e = crate::transforms::eval::eval(arena, e);
+    let e = crate::transforms::expand::expand(arena, e);
+    let e = crate::transforms::eval::eval(arena, e);
+    arena.is_zero_structural(e)
+}
+
+/// Solve `Σ a_k·y⁽ᵏ⁾ = g(x)` whose constant coefficients are not all
+/// rational (`y″ + a·y = 0`, `y″ + a·y′ + y = 0`): the roots of the
+/// characteristic polynomial in radicals (principal branches), each checked
+/// by substitution and given its multiplicity by the vanishing derivatives,
+/// so the basis `xʲ·e^{r·x}`; SymPy's form, `C1·e^{−x√(−a)} +
+/// C2·e^{x√(−a)}` for `y″ + a·y = 0`, with no case split on the sign of
+/// `a` (the exponentials cover both signs: `e^{±x√(−a)}` are the real
+/// exponentials for `a < 0` and `e^{±ix√a}` for `a > 0`).  The solution is
+/// the generic one: it assumes the leading coefficient non-zero and roots
+/// that are distinct as expressions distinct as values (at `a = 0` the
+/// basis `e^{±x√(−a)}` degenerates, as in SymPy).  A second-order
+/// equation with a forcing term gets its particular solution by variation
+/// of parameters; higher orders with forcing are left to other methods.
+fn try_linear_cc_symbolic(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+    func_sym: SymbolId,
+) -> Option<OdeResult> {
+    let chain = derivative_chain(arena, func, var);
+    let children: Vec<ExprId> = match arena.node(expr).clone() {
+        ExprNode::Add(c) => c.to_vec(),
+        _ => vec![expr],
+    };
+    let mut coeffs: Vec<Vec<ExprId>> = vec![Vec::new(); MAX_ODE_ORDER + 1];
+    let mut forcing = Vec::new();
+    for child in children {
+        if let Some((k, c)) = symbolic_linear_term(arena, child, &chain, var, func_sym) {
+            coeffs[k].push(c);
+        } else if !contains_sym(arena, child, func_sym) {
+            forcing.push(child);
+        } else {
+            return None;
+        }
+    }
+    let mut a: Vec<ExprId> = Vec::with_capacity(coeffs.len());
+    for cs in &coeffs {
+        let s = match cs.len() {
+            0 => arena.zero,
+            1 => cs[0],
+            _ => arena.add(cs),
+        };
+        a.push(crate::transforms::eval::eval(arena, s));
+    }
+    while a.len() > 1 && a.last().is_some_and(|&c| arena.is_zero_structural(c)) {
+        a.pop();
+    }
+    let n = a.len() - 1;
+    // Order 1 is the first-order linear solver's; all-rational coefficients
+    // are `try_nth_order_linear_const_coeff`'s.
+    if n < 2 || a.iter().all(|&c| arena.as_num(c).is_some()) {
+        return None;
+    }
+    if !forcing.is_empty() && n != 2 {
+        return None;
+    }
+    let r = arena.symbol("__r_sym");
+    let mut terms = Vec::with_capacity(n + 1);
+    for (k, &c) in a.iter().enumerate() {
+        let rk = match k {
+            0 => arena.one,
+            1 => r,
+            _ => {
+                let ke = arena.int(k as i64);
+                arena.pow(r, ke)
+            }
+        };
+        terms.push(arena.mul(&[c, rk]));
+    }
+    let p = arena.add(&terms);
+    let p = crate::transforms::eval::eval(arena, p);
+    // Factor over ℤ[parameters] first (`r³ + a·r = r·(r² + a)`, `r² +
+    // (a + 1)r + a = (r + 1)(r + a)`: the solver alone finds neither the
+    // cubic's roots nor the rational roots of the quadratic, only
+    // `√((a − 1)²)`); a factor linear in `r` gives its root directly, the
+    // others go to the solver.  If `p` does not factor this way it is
+    // solved whole.
+    let (_, factors) = crate::simplify::factor::factor_list(arena, p, Some(r));
+    let mut basis = Vec::with_capacity(n);
+    let mut exps: Vec<(ExprId, usize)> = Vec::new();
+    for (f, m) in factors {
+        if !crate::base::walk::contains(arena, f, r) {
+            continue; // a (generically non-zero) constant factor
+        }
+        let coeffs = crate::poly::polybridge::poly_coefficients(arena, f, r);
+        let roots: Vec<ExprId> = match coeffs.as_deref() {
+            Some([c0, c1]) => {
+                let q = arena.div(*c0, *c1);
+                vec![arena.neg(q)]
+            }
+            _ => crate::transforms::solve::solve(arena, f, r)
+                .into_iter()
+                .map(|s| s.value)
+                .collect(),
+        };
+        if roots.is_empty() {
+            return None;
+        }
+        // Multiplicity of each root in `f`: the number of derivatives
+        // f, f′, … that vanish there (the first must, or the root is not
+        // verified); in `p` it is that times the factor's multiplicity.
+        for r0 in roots {
+            let r0 = crate::transforms::eval::eval(arena, r0);
+            if crate::base::walk::contains(arena, r0, var) || exps.iter().any(|&(e, _)| e == r0) {
+                return None;
+            }
+            let mut d = f;
+            let mut mult = 0usize;
+            while mult < n {
+                let at = crate::transforms::subs::subs(arena, d, r, r0);
+                if !expands_to_zero(arena, at) {
+                    break;
+                }
+                mult += 1;
+                d = crate::transforms::diff::diff(arena, d, r);
+            }
+            if mult == 0 {
+                return None;
+            }
+            let mult = mult * m as usize;
+            exps.push((r0, mult));
+            for j in 0..mult {
+                basis.push(mode_real(arena, r0, j, var));
+            }
+        }
+    }
+    if basis.len() != n {
+        return None;
+    }
+    let mut constants = Vec::with_capacity(n);
+    let mut sum = Vec::with_capacity(n + 1);
+    for (i, &b) in basis.iter().enumerate() {
+        let c = arena.symbol(&format!("C{}", i + 1));
+        constants.push(c);
+        sum.push(arena.mul(&[c, b]));
+    }
+    if !forcing.is_empty() {
+        // a₂y″ + a₁y′ + a₀y = −f:  y_p = −y₁∫y₂g/W + y₂∫y₁g/W, g = −f/a₂.
+        let (y1, y2) = (basis[0], basis[1]);
+        let f = arena.add(&forcing);
+        let nf = arena.neg(f);
+        let g = arena.div(nf, a[2]);
+        let g = crate::transforms::eval::eval(arena, g);
+        // W = y₁y₂′ − y₂y₁′: (r₂ − r₁)e^{(r₁+r₂)x}, or e^{2rx} for a double root.
+        let w = if exps.len() == 2 {
+            let d = arena.sub(exps[1].0, exps[0].0);
+            let s = arena.add(&[exps[0].0, exps[1].0]);
+            let sx = arena.mul(&[s, var]);
+            let e = arena.exp(sx);
+            arena.mul(&[d, e])
+        } else {
+            let two = arena.int(2);
+            let sx = arena.mul(&[two, exps[0].0, var]);
+            arena.exp(sx)
+        };
+        let w = crate::transforms::eval::eval(arena, w);
+        let i1 = {
+            let num = arena.mul(&[y2, g]);
+            let q = arena.div(num, w);
+            let q = crate::transforms::eval::eval(arena, q);
+            integrate_forms(arena, q, var)
+        };
+        if integral_failed(arena, i1) {
+            return None;
+        }
+        let i2 = {
+            let num = arena.mul(&[y1, g]);
+            let q = arena.div(num, w);
+            let q = crate::transforms::eval::eval(arena, q);
+            integrate_forms(arena, q, var)
+        };
+        if integral_failed(arena, i2) {
+            return None;
+        }
+        let t1 = arena.mul(&[y1, i1]);
+        let t1 = arena.neg(t1);
+        let t2 = arena.mul(&[y2, i2]);
+        let yp = arena.add(&[t1, t2]);
+        // The integrals of `e^{r·x}·g` come back as `Piecewise` on the
+        // parameters (`r ≠ 0`); the homogeneous part is already the generic
+        // solution, so the generic branch is taken throughout.
+        let yp = generic_branches(arena, yp, var)?;
+        let yp = expand_combine(arena, yp);
+        let yp = crate::poly::polybridge::together(arena, yp);
+        let yp = crate::transforms::eval::eval(arena, yp);
+        if crate::base::walk::has_unevaluated(arena, yp) {
+            return None;
+        }
+        sum.push(yp);
+    }
+    let solution = arena.add(&sum);
+    let solution = crate::transforms::eval::eval(arena, solution);
+    // The particular solution took the generic branch of its integrals:
+    // it is returned only if it verifies.
+    if !forcing.is_empty() && !checkodesol(arena, expr, solution, func, var) {
+        return None;
+    }
+    Some(OdeResult {
+        solution,
+        constants,
+        branches: Vec::new(),
+    })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Clairaut: y = x·y' + f(y')
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -4067,7 +4355,12 @@ fn contains_sym_outside_deriv(
 /// Check whether a solution satisfies an ODE.
 ///
 /// Substitutes the solution for `func`, differentiates as needed,
-/// and checks if the ODE expression evaluates to zero.
+/// and checks if the ODE expression evaluates to zero: by expansion, the
+/// full simplifier, and two normal forms (radical bases factored out at
+/// their lowest exponent; a rational function of `sin`, `cos` over a common
+/// denominator with `sin² = 1 − cos²`).  Every route is a chain of
+/// identities, so `true` is a proof; `false` means no route found zero (not
+/// necessarily a wrong solution).  There is no numerical fallback.
 ///
 /// The ODE is given as `ode_expr = 0`.
 pub fn checkodesol(
@@ -4113,13 +4406,209 @@ pub fn checkodesol(
         return true;
     }
 
-    // Last resort: the full simplifier.
+    // The full simplifier.
     let simplified = crate::simplify::simplify_engine::unified_simplify(
         arena,
         result,
         &crate::simplify::simplify_engine::SimplifyOpts::default(),
     );
-    arena.is_zero_structural(simplified.expr)
+    if arena.is_zero_structural(simplified.expr) {
+        return true;
+    }
+
+    // Two normal forms the simplifier misses; each step is an identity or a
+    // multiplication by a non-zero factor, so a zero here is a proof.
+    radical_normal_form_is_zero(arena, result) || trig_normal_form_is_zero(arena, result)
+}
+
+/// Most terms or radical bases [`radical_normal_form_is_zero`] handles.
+const MAX_RADICAL_TERMS: usize = 64;
+
+/// A term of an expanded residual: its other factors, and its radicals as
+/// (normalised base, exponent).
+type TermRadicals = (Vec<ExprId>, Vec<(ExprId, Q)>);
+
+/// `expand`, `eval`, then combine powers of equal bases (`e^{−2x}·e^{2x} =
+/// 1`, which canonical products keep apart).
+fn expand_combine(arena: &mut Arena, e: ExprId) -> ExprId {
+    let e = crate::transforms::expand::expand(arena, e);
+    let e = crate::transforms::eval::eval(arena, e);
+    let e = crate::simplify::powsimp::powsimp(arena, e);
+    crate::transforms::eval::eval(arena, e)
+}
+
+/// Is the residual `r` zero once every radical base `B` (a power `B^q`
+/// with a non-integer rational `q`) is factored out at its lowest exponent?
+///
+/// The expanded residual `Σ tᵢ·Π B_j^{q_ij}` is multiplied by
+/// `Π B_j^{−min_i q_ij}`: `B^a·B^b = B^{a+b}` holds for principal powers
+/// (`B^a = e^{a·Log B}`, `B ≠ 0`), the remaining exponents are non-negative
+/// integers, and the product with a non-zero factor is zero exactly when
+/// the residual is.  Before, the correct solution
+/// `((C1 + e^{−2x})·e^{2x})^{−1/2}` of the Bernoulli equation `y′ + y = y³`
+/// was rejected: the residual `−C1e^{2x}B^{−3/2} + B^{−1/2} − B^{−3/2}`
+/// is zero only through `B^{−1/2} = B·B^{−3/2}`.
+fn radical_normal_form_is_zero(arena: &mut Arena, r: ExprId) -> bool {
+    let r = expand_combine(arena, r);
+    let terms: Vec<ExprId> = match arena.node(r) {
+        ExprNode::Add(cs) => cs.to_vec(),
+        _ => vec![r],
+    };
+    if terms.len() > MAX_RADICAL_TERMS {
+        return false;
+    }
+    // Per term: the other factors and the radicals (normalised base, exponent).
+    let mut split: Vec<TermRadicals> = Vec::with_capacity(terms.len());
+    let mut bases: Vec<ExprId> = Vec::new();
+    for &t in &terms {
+        let factors: Vec<ExprId> = match arena.node(t) {
+            ExprNode::Mul(fs) => fs.to_vec(),
+            _ => vec![t],
+        };
+        let mut rest = Vec::new();
+        let mut rads = Vec::new();
+        for f in factors {
+            match arena.node(f).clone() {
+                ExprNode::Pow(b, e)
+                    if arena.as_num(e).is_some_and(|q| !q.is_integer())
+                        && !matches!(arena.node(b), ExprNode::Num(_)) =>
+                {
+                    let q = arena.as_num(e).cloned().unwrap_or_default();
+                    let nb = expand_combine(arena, b);
+                    if !bases.contains(&nb) {
+                        bases.push(nb);
+                    }
+                    rads.push((nb, q));
+                }
+                _ => rest.push(f),
+            }
+        }
+        split.push((rest, rads));
+    }
+    if bases.is_empty() || bases.len() > MAX_RADICAL_TERMS {
+        return false;
+    }
+    let exponent = |rads: &[(ExprId, Q)], b: ExprId| -> Q {
+        rads.iter()
+            .filter(|(nb, _)| *nb == b)
+            .map(|(_, q)| q.clone())
+            .sum()
+    };
+    let mut minima = Vec::with_capacity(bases.len());
+    for &b in &bases {
+        let mut m: Option<Q> = None;
+        for (_, rads) in &split {
+            let e = exponent(rads, b);
+            m = Some(match m {
+                Some(v) if v <= e => v,
+                _ => e,
+            });
+        }
+        minima.push(m.unwrap_or_default());
+    }
+    let mut new_terms = Vec::with_capacity(split.len());
+    for (rest, rads) in &split {
+        let mut fs = rest.clone();
+        for (&b, m) in bases.iter().zip(&minima) {
+            let k = exponent(rads, b) - m;
+            if !k.is_integer() {
+                return false;
+            }
+            if num_traits::Zero::is_zero(&k) {
+                continue;
+            }
+            let Some(ki) = num_traits::ToPrimitive::to_i64(&k.to_integer()) else {
+                return false;
+            };
+            if ki > 8 {
+                return false;
+            }
+            let ke = arena.int(ki);
+            fs.push(arena.pow(b, ke));
+        }
+        new_terms.push(arena.mul(&fs));
+    }
+    let s = arena.add(&new_terms);
+    let s = expand_combine(arena, s);
+    arena.is_zero_structural(s) || trig_normal_form_is_zero(arena, s)
+}
+
+/// Is the residual `r` zero as a rational function (of `sin` and `cos`,
+/// among other things)?
+///
+/// Over a common denominator the numerator must expand to zero — which also
+/// covers rational functions of the parameters that the simplifier leaves
+/// apart (`eˣ·(a + 1)/(a·(1/a + 1)) − eˣ`, the residual of the particular
+/// solution of `y″ + a·y = eˣ`).  For trigonometric residuals:
+/// `tan u → sin u/cos u`, the sum over a common denominator, and in the
+/// expanded numerator `sin²u → 1 − cos²u` until no square of a sine is
+/// left: a polynomial in `sin u`, `cos u` vanishes on the circle exactly
+/// when this reduction gives zero.  Before, the variation-of-parameters
+/// solution `−cos x·ln|sec x + tan x| + 2 sin x` of `y″ + y = tan x` was
+/// rejected: its residual is zero only through `sin² + cos² = 1` over the
+/// denominator `(sec x + tan x)²`.
+fn trig_normal_form_is_zero(arena: &mut Arena, r: ExprId) -> bool {
+    let post = crate::base::walk::post_order_ids(arena, r);
+    let mut cache: rustc_hash::FxHashMap<ExprId, ExprId> = rustc_hash::FxHashMap::default();
+    for &id in &post {
+        let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        let new = match arena.node(rebuilt).clone() {
+            ExprNode::Tan(u) => {
+                let s = arena.sin(u);
+                let c = arena.cos(u);
+                arena.div(s, c)
+            }
+            _ => rebuilt,
+        };
+        cache.insert(id, new);
+    }
+    let t = cache.get(&r).copied().unwrap_or(r);
+    let t = crate::transforms::eval::eval(arena, t);
+    let t = crate::poly::polybridge::together(arena, t);
+    let (num, _) = crate::poly::polybridge::as_numer_denom(arena, t);
+    let mut num = expand_combine(arena, num);
+    for _ in 0..6 {
+        if arena.is_zero_structural(num) {
+            return true;
+        }
+        let post = crate::base::walk::post_order_ids(arena, num);
+        let mut cache: rustc_hash::FxHashMap<ExprId, ExprId> = rustc_hash::FxHashMap::default();
+        let mut changed = false;
+        for &id in &post {
+            let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+            let new = match arena.node(rebuilt).clone() {
+                ExprNode::Pow(b, e) => {
+                    let k = arena.as_num(e).and_then(|q| {
+                        q.is_integer()
+                            .then(|| num_traits::ToPrimitive::to_i64(&q.to_integer()))
+                            .flatten()
+                    });
+                    match (arena.node(b).clone(), k) {
+                        (ExprNode::Sin(u), Some(k)) if (2..=64).contains(&k) => {
+                            changed = true;
+                            let c = arena.cos(u);
+                            let two = arena.int(2);
+                            let c2 = arena.pow(c, two);
+                            let one = arena.one;
+                            let one_minus = arena.sub(one, c2);
+                            let half = arena.int(k / 2);
+                            let p = arena.pow(one_minus, half);
+                            if k % 2 == 1 { arena.mul(&[b, p]) } else { p }
+                        }
+                        _ => rebuilt,
+                    }
+                }
+                _ => rebuilt,
+            };
+            cache.insert(id, new);
+        }
+        if !changed {
+            return false;
+        }
+        let n = cache.get(&num).copied().unwrap_or(num);
+        num = expand_combine(arena, n);
+    }
+    arena.is_zero_structural(num)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
