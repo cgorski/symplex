@@ -6,7 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
-## [Unreleased]
+## [0.31.0] - 2026-09-27
+
+Integration over ℂ and with parameters.  The integrator now treats a
+parameter as what its assumptions say, so an unassumed one may be
+complex: `ln|u|` only where `u` is provably real, the principal `ln u`
+otherwise, and a self-check at complex parameter values rejects
+real-only forms (a hunter at complex parameters found 500 wrong
+antiderivatives in 6,300 cases before; 0 now).  Rational functions with
+parameters integrate over ℚ(parameters), integrands that integrated in
+one form now integrate in every equivalent form, `∫ f(ln x)` works, and
+the integrator takes less than half its former time.  On the Rubi suite
+the verified antiderivatives went from 6,133 to 14,336, with 0 wrong.
+
+New differential hunters covered systems, sets, sums, transforms of
+piecewise functions, linear algebra with symbolic and algebraic entries,
+integrand normal forms and evalf's refusals; each class they found is
+fixed and pinned in `tests/v30/`.  Linear algebra decides its pivots
+exactly over ℚ(radicals, i)(parameters); `solve` works over ℂ and
+rejects any candidate with a certified nonzero residual; polynomial
+systems keep every exact solution; `polylog` evaluates over ℂ.
 
 ### Breaking (behaviour; no signature changed)
 
@@ -55,6 +74,17 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 - **Fourier transforms** collect impulses into one term and drop those
   whose coefficients cancel (windows cut from periodic functions no
   longer carry `(sin²1 + cos²1 − 1)·δ` terms).
+- **Forms of results.**  With unassumed parameters, `∫ dx/(x² + a)` and
+  `∫ dx/(x² + a²)` are principal logarithms (SymPy's form; `atan` needs
+  a quadratic provably real, e.g. a declared-positive `a`); a parametric
+  irreducible factor of degree ≥ 3 gives a `RootSum`; polynomial
+  products in antiderivatives are multiplied out.  `linsolve` with
+  algebraic numbers returns reduced forms whose denominators may contain
+  radicals; eigenvectors of rational matrices with irrational eigenvalues
+  are polynomials in the eigenvalue; eigenvalues of a block-triangular
+  matrix come block by block; `lu` may choose another row order when it
+  swaps past a hidden zero; `rref` writes hidden zeros as `0`;
+  `matrix_exp_t` expands products and collects exponents.
 
 ### Added
 
@@ -207,6 +237,30 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   parameters and took 1.2 s at degree 6; now 3.7 s and 0.2 s, release).
   `MultiPoly` arithmetic on integer coefficients skips `num_rational`'s
   gcd reduction (a binary gcd of an `n`-bit number and 1 costs `O(n²)`).
+
+### Measured
+
+- `tests/v30/`: 10 files, 87 tests.  nextest 13,486 tests (14 skipped),
+  doctests 1,311.
+- Rubi harness: 14,336 verified, 68 real_verified, 0 wrong, 0 undecided
+  (0.30: 6,133 verified, 72 real_verified); wall time 20 s with 12 jobs
+  (0.30: about 18 s).  Self-test: 55,475 verified, 0 wrong, 742 undecided
+  (0.30: 55,120 and 1,097).  `--negative-params`: 0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates: identical.
+- `cargo semver-checks` against 0.30.0: no semver update required.
+- Hunters (before → after the fixes): integration at complex parameter
+  values 500 wrong of 6,300 → 0; parametric rational functions 1,077
+  unevaluated that SymPy closes of 2,800 → 1; integrand normal forms
+  1,349 form gaps of 2,000 → 0; linear algebra 178 wrong of 1,650 → 0;
+  systems, sets, sums and transforms 9 wrong-answer classes → 0; evalf
+  self-consistency 368 refusals where a value exists per 20,000 → 13, 0
+  wrong digits; `polylog` 6,699 refusals where mpmath is stable of 18,000
+  evaluations → 0, 0 wrong.
+- Fuzzing: on the release code `fuzz_integrate` ran 15 minutes (131,076
+  inputs) and the other eleven targets 3 minutes each in fork mode (up
+  to 19 million inputs for `fuzz_numdist`): 0 crashes, 0 timeouts, 0
+  out-of-memory.  Campaigns on two earlier 0.31 commits found one timeout
+  (`ζ` at a huge negative argument), fixed.
 
 ## [0.30.0] - 2026-09-27
 
