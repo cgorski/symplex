@@ -132,7 +132,7 @@ fn solve_impl(
     match solve_raw(arena, expr, var, period) {
         SolveOutcome::Solutions(s) => {
             let had_candidates = !s.is_empty();
-            let s = drop_certain_non_roots(arena, expr, var, s);
+            let s = drop_certain_non_roots(arena, expr, var, s, period);
             if had_candidates && s.is_empty() {
                 return SolveOutcome::NoSolution(
                     "every candidate solution fails the equation (a principal branch does not reach the right-hand side)"
@@ -158,29 +158,61 @@ fn solve_impl(
 /// (`|x|/x = 0` at `x = 0`), is dropped.  Candidates with free parameters,
 /// and equations `evalf` cannot decide, are kept.  Polynomial equations
 /// over ℚ are solved exactly and are not re-checked.
+///
+/// A certified digit decides whatever the magnitude of the residual: the
+/// candidates are exact.  Before 0.31 a residual counted only above
+/// `10⁻¹⁰`, and `√x = −10⁻¹²` came back with `x = 10⁻²⁴` (where
+/// `√x + 10⁻¹² = 2·10⁻¹²`), `asin x = π/2 + 10⁻¹¹` with
+/// `sin(π/2 + 10⁻¹¹)`.
 fn drop_certain_non_roots(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
     solutions: Vec<Solution>,
+    period: Option<ExprId>,
 ) -> Vec<Solution> {
     if solutions.is_empty() || polybridge::expr_to_poly(arena, expr, var).is_some() {
         return solutions;
     }
     solutions
         .into_iter()
-        .filter(|s| !certainly_not_a_root(arena, expr, var, s.value))
+        .filter(|s| match period {
+            Some(n) if crate::base::walk::contains(arena, s.value, n) => {
+                !family_certainly_fails(arena, expr, var, s.value, n)
+            }
+            _ => !certainly_not_a_root(arena, expr, var, s.value),
+        })
         .collect()
 }
 
-/// Tolerance of [`certainly_not_a_root`]: a residual certified beyond it
-/// is not a rounding residue.
-const ROOT_CHECK_TOLERANCE: f64 = 1e-10;
+/// Does every sampled member of the family `candidate(n)` certainly fail
+/// `expr = 0`?  A family whose members are all spurious comes from a
+/// principal branch no value of `n` reaches: `exp(√x) = −1/2` gives
+/// `√x = ln(1/2) + (2n + 1)πi`, with a negative real part that no
+/// principal square root has.  The members `n = 0, ±1, ±2` are checked;
+/// a family with a member that is (or may be) a root is kept whole.
+fn family_certainly_fails(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    candidate: ExprId,
+    n: ExprId,
+) -> bool {
+    for k in [0i64, 1, -1, 2, -2] {
+        let kk = arena.int(k);
+        let member = crate::transforms::subs::subs(arena, candidate, n, kk);
+        let member = crate::transforms::eval::eval(arena, member);
+        if !certainly_not_a_root(arena, expr, var, member) {
+            return false;
+        }
+    }
+    true
+}
 
 /// Does `expr` at `var = candidate` certainly not vanish?  `true` when the
 /// substituted equation, free of symbols, is undefined (`zoo`, `NaN`, `±∞`)
-/// or evaluates to a number of magnitude above [`ROOT_CHECK_TOLERANCE`];
-/// `false` when it cannot be decided.
+/// or evaluates to a number with a certified nonzero digit; `false` when
+/// it is zero (to the precision of the zero search) or cannot be decided.
 fn certainly_not_a_root(arena: &mut Arena, expr: ExprId, var: ExprId, candidate: ExprId) -> bool {
     use crate::base::walk;
     if !walk::free_symbols(arena, candidate).is_empty() || walk::has_unevaluated(arena, candidate) {
@@ -200,9 +232,10 @@ fn certainly_not_a_root(arena: &mut Arena, expr: ExprId, var: ExprId, candidate:
     if undefined {
         return true;
     }
-    match crate::transforms::evalf::evalf_complex(arena, at, ROOT_CHECK_DIGITS) {
-        Ok(z) => crate::transforms::evalf::abs_to_f64(&z).is_some_and(|m| m > ROOT_CHECK_TOLERANCE),
-        Err(_) => false,
+    use crate::transforms::evalf::{Settled, ZeroSearch};
+    match crate::transforms::evalf::evalf_settled(arena, at, ROOT_CHECK_DIGITS, ZeroSearch::Cap) {
+        Ok((z, Settled::Certified)) => !(z.0.is_zero() && z.1.is_zero()),
+        Ok((_, Settled::ZeroToPrecision)) | Err(_) => false,
     }
 }
 
@@ -396,20 +429,29 @@ fn classify_constant(arena: &mut Arena, expr: ExprId, var: ExprId) -> SolveOutco
     {
         return SolveOutcome::NoSolution(format!("equation reduces to {r} = 0"));
     }
-    // Purely numeric constant (no free symbols): decide numerically.
-    if crate::base::walk::free_symbols(arena, expanded).is_empty()
-        && let Ok(s) = crate::transforms::evalf::evalf(arena, expanded, 20)
-    {
-        let mag = parse_evalf_magnitude(&s);
-        if let Some(m) = mag {
-            if m > 1e-9 {
+    // Purely numeric constant (no free symbols): the certified zero test
+    // (a certified digit, or the minimal polynomial of an algebraic
+    // number).  Before 0.31 `|evalf(c, 20)| < 10⁻¹⁵` was an identity:
+    // `solve(exp(−40), x)` reported every `x` as a solution.
+    if crate::base::walk::free_symbols(arena, expanded).is_empty() {
+        match crate::poly::algebraic::is_zero_checked(arena, expanded) {
+            Some(false) => {
                 let shown = arena.display(expr).to_string();
                 return SolveOutcome::NoSolution(format!(
                     "equation reduces to the nonzero constant {shown} = 0"
                 ));
             }
-            if m < 1e-15 {
-                return SolveOutcome::Identity;
+            Some(true) => return SolveOutcome::Identity,
+            // Zero to the precision of the deep zero search (1,024 bits
+            // beyond the working precision) but not provably so: an
+            // identity, the tolerance the old `10⁻¹⁵` stood for.
+            None => {
+                use crate::transforms::evalf::{Settled, ZeroSearch};
+                if let Ok((_, Settled::ZeroToPrecision)) =
+                    crate::transforms::evalf::evalf_settled(arena, expanded, 20, ZeroSearch::Deep)
+                {
+                    return SolveOutcome::Identity;
+                }
             }
         }
     }
@@ -417,42 +459,6 @@ fn classify_constant(arena: &mut Arena, expr: ExprId, var: ExprId) -> SolveOutco
     SolveOutcome::NoSolution(format!(
         "expression {shown} does not depend on {var_name} and is not identically zero"
     ))
-}
-
-/// Parse the magnitude of an `evalf` output string (real or `a + b*I`).
-pub(crate) fn parse_evalf_magnitude(s: &str) -> Option<f64> {
-    let s = s.trim();
-    if let Ok(v) = s.parse::<f64>() {
-        return Some(v.abs());
-    }
-    // Complex: split on the last '+' or '-' that separates the parts.
-    let body = s.replace('*', "");
-    let body = body.trim_end_matches(['I', 'i']).trim();
-    // Pure imaginary: "i", "-i", "2.5i".
-    match body {
-        "" | "+" => return Some(1.0),
-        "-" => return Some(1.0),
-        _ => {}
-    }
-    if let Ok(v) = body.parse::<f64>() {
-        return Some(v.abs());
-    }
-    let mut split_at = None;
-    for (i, ch) in body.char_indices().skip(1) {
-        if (ch == '+' || ch == '-') && !body[..i].ends_with('e') && !body[..i].ends_with('E') {
-            split_at = Some(i);
-        }
-    }
-    let idx = split_at?;
-    let re: f64 = body[..idx].trim().parse().ok()?;
-    // The imaginary part is printed as "- 1.5e-3" (space after the sign).
-    let im_text: String = body[idx..].chars().filter(|c| !c.is_whitespace()).collect();
-    let im: f64 = match im_text.as_str() {
-        "+" => 1.0,
-        "-" => -1.0,
-        t => t.parse().ok()?,
-    };
-    Some(re.hypot(im))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -712,6 +718,44 @@ fn try_solve_binomial_rational(arena: &mut Arena, poly: &Poly) -> Option<Vec<Sol
 // Transcendental solving via inversion peeling
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Is `e` real for every real value of `var` (and of the parameters
+/// without declared assumptions, which count as real, as in
+/// `realness::constant_realness`)?  Decided by the assumption system:
+/// `exp(x)`, `cos(2x + 1)`, `|x|` are real, `I·x`, `√x` and `ln x` are
+/// not known to be (`√x` is imaginary for `x < 0`).
+///
+/// The range restrictions of peeling (`exp f = −1`, `cos f = 2`,
+/// `cosh f = 1/2` have no real solution) hold only for a real `f`; before
+/// 0.31 they were applied to any argument, and `exp(i·x) = −1` (solved by
+/// `x = π`), `cos(i·x) = 2` (`x = ±acosh 2`), `exp(√x) = −1` (`x = −π²`)
+/// were reported to have no solution.
+fn real_for_real_var(arena: &mut Arena, e: ExprId, var: ExprId) -> bool {
+    use crate::base::assumptions::{AssumptionCache, Assumptions, Props};
+    let mut cache = AssumptionCache::new();
+    for s in crate::base::walk::free_symbols(arena, e) {
+        let ExprNode::Symbol(sid) = *arena.node(s) else {
+            continue;
+        };
+        let declared = arena.symbol_assumptions(sid);
+        if s == var || declared == Assumptions::default() {
+            let mut real = declared;
+            real.known_true |= Props::REAL;
+            if !real.is_contradictory() {
+                cache.set_symbol_assumptions(s, real);
+            }
+        }
+    }
+    cache.query(arena, e, Props::REAL) == Some(true)
+}
+
+/// `2π·i·n` for the integer parameter `n`: the period of `exp`.
+fn two_pi_i_n(arena: &mut Arena, n: ExprId) -> ExprId {
+    let two = arena.int(2);
+    let pi = arena.pi;
+    let i = arena.i_unit;
+    arena.mul(&[two, pi, i, n])
+}
+
 /// Try to solve `expr = 0` by algebraic inversion.
 /// Restructures as `f(x) = c` and inverts `f`.
 ///
@@ -799,23 +843,42 @@ fn solve_by_peeling(
                 return None;
             }
             let coeff = arena.mul(&indep);
-            let new_rhs = arena.div(rhs, coeff);
+            let mut new_rhs = arena.div(rhs, coeff);
+            // `i·x = 2πin + iπ` → `x = 2πn + π`, not `−(2πin + iπ)·i`.
+            if crate::base::walk::contains(arena, coeff, arena.i_unit) {
+                let e = crate::transforms::eval::eval(arena, new_rhs);
+                let e = crate::transforms::expand::expand(arena, e);
+                new_rhs = crate::transforms::eval::eval(arena, e);
+            }
             solve_by_peeling(arena, dep[0], new_rhs, var, period)
         }
-        // exp(f(x)) = rhs → f(x) = ln(rhs)
-        // Domain check: exp(x) > 0 for all real x, so rhs must be strictly positive.
+        // exp(f(x)) = rhs → f(x) = ln(rhs) (+ 2πin for a non-real f)
+        // Domain check: exp never vanishes; exp(f) > 0 for a real f, so
+        // then rhs must be strictly positive.
         ExprNode::Exp(inner) => {
             if rhs == arena.zero {
                 tracing::debug!("solve_by_peeling: exp domain error, rhs = 0");
                 return Some(vec![]);
             }
-            if let Some(c) = arena.as_num(rhs)
+            let real_inner = real_for_real_var(arena, inner, var);
+            if real_inner
+                && let Some(c) = arena.as_num(rhs)
                 && !c.is_positive()
             {
                 tracing::debug!("solve_by_peeling: exp domain error, rhs <= 0");
                 return Some(vec![]);
             }
-            let new_rhs = arena.ln(rhs);
+            let ln_rhs = arena.ln(rhs);
+            // A non-real argument (`exp(i·x) = c`) reaches every branch of
+            // the logarithm with real values of `var`: the general solution
+            // carries the period `2πi`.
+            let new_rhs = match period {
+                Some(n) if !real_inner => {
+                    let p = two_pi_i_n(arena, n);
+                    arena.add(&[ln_rhs, p])
+                }
+                _ => ln_rhs,
+            };
             solve_by_peeling(arena, inner, new_rhs, var, period)
         }
         // ln(f(x)) = rhs → f(x) = exp(rhs)
@@ -828,6 +891,7 @@ fn solve_by_peeling(
             // Domain check: sin(x) = c has no real solutions when |c| > 1
             if let Some(c) = arena.as_num(rhs)
                 && c.abs() > Ratio::one()
+                && real_for_real_var(arena, inner, var)
             {
                 tracing::debug!("solve_by_peeling: sin domain error, |c| > 1");
                 return Some(vec![]);
@@ -854,6 +918,7 @@ fn solve_by_peeling(
             // Domain check: cos(x) = c has no real solutions when |c| > 1
             if let Some(c) = arena.as_num(rhs)
                 && c.abs() > Ratio::one()
+                && real_for_real_var(arena, inner, var)
             {
                 tracing::debug!("solve_by_peeling: cos domain error, |c| > 1");
                 return Some(vec![]);
@@ -911,6 +976,27 @@ fn solve_by_peeling(
                 && expr_contains_var(arena, inner_exp, var)
             {
                 tracing::debug!("solve_by_peeling: constant-base exponential a^f(x) = rhs");
+
+                // a^f = exp(f·ln a) reaches every branch of the logarithm
+                // with real values of `var` unless `f·ln a` is real (a > 0
+                // and a real f): the general solution is then
+                // f = (ln rhs + 2πin)/ln a.  Before 0.31 `(−1)^x = 1` gave
+                // only `x = 0` from `solve_general` (the family is `2n`),
+                // `(−1)^x = −1` only `1`.
+                if let Some(n) = period {
+                    let ln_base = arena.ln(inner_base);
+                    let ln_base = crate::transforms::eval::eval(arena, ln_base);
+                    let prod = arena.mul(&[inner_exp, ln_base]);
+                    if !real_for_real_var(arena, prod, var) {
+                        let ln_rhs = arena.ln(rhs);
+                        let p = two_pi_i_n(arena, n);
+                        let num = arena.add(&[ln_rhs, p]);
+                        let new_rhs = arena.div(num, ln_base);
+                        let new_rhs = crate::transforms::expand::expand(arena, new_rhs);
+                        let new_rhs = crate::transforms::eval::eval(arena, new_rhs);
+                        return solve_by_peeling(arena, inner_exp, new_rhs, var, period);
+                    }
+                }
 
                 // Integer shortcut: try to find k such that base^k == rhs
                 if let (Some(b), Some(r)) = (
@@ -971,15 +1057,28 @@ fn solve_by_peeling(
             solve_by_peeling(arena, inner, new_rhs, var, period)
         }
         // ── Inverse hyperbolic peeling ────────────────────────────
-        // sinh(f(x)) = rhs → f(x) = asinh(rhs)
+        // sinh(f(x)) = rhs → f(x) = asinh(rhs); for a non-real f the
+        // general solution is asinh(rhs) + 2πin, iπ − asinh(rhs) + 2πin.
         ExprNode::Sinh(inner) => {
-            let new_rhs = arena.asinh(rhs);
-            solve_by_peeling(arena, inner, new_rhs, var, period)
+            let asinh_rhs = arena.asinh(rhs);
+            match period {
+                Some(n) if !real_for_real_var(arena, inner, var) => {
+                    let p = two_pi_i_n(arena, n);
+                    let i_pi = arena.mul(&[arena.i_unit, arena.pi]);
+                    let other = arena.sub(i_pi, asinh_rhs);
+                    let b1 = arena.add(&[asinh_rhs, p]);
+                    let b2 = arena.add(&[other, p]);
+                    peel_two_branches(arena, inner, b1, b2, var, period)
+                }
+                _ => solve_by_peeling(arena, inner, asinh_rhs, var, period),
+            }
         }
-        // cosh(f(x)) = rhs → f(x) = ±acosh(rhs)
-        // Domain check: cosh(x) >= 1 for all real x, so rhs must be >= 1.
+        // cosh(f(x)) = rhs → f(x) = ±acosh(rhs) (+ 2πin for a non-real f)
+        // Domain check: cosh(f) >= 1 for a real f, so rhs must be >= 1.
         ExprNode::Cosh(inner) => {
-            if let Some(c) = arena.as_num(rhs)
+            let real_inner = real_for_real_var(arena, inner, var);
+            if real_inner
+                && let Some(c) = arena.as_num(rhs)
                 && *c < Ratio::one()
             {
                 tracing::debug!("solve_by_peeling: cosh domain error, rhs < 1");
@@ -987,11 +1086,25 @@ fn solve_by_peeling(
             }
             let acosh_rhs = arena.acosh(rhs);
             let neg_acosh = arena.neg(acosh_rhs);
-            peel_two_branches(arena, inner, acosh_rhs, neg_acosh, var, period)
+            let (b1, b2) = match period {
+                Some(n) if !real_inner => {
+                    let p = two_pi_i_n(arena, n);
+                    (arena.add(&[acosh_rhs, p]), arena.add(&[neg_acosh, p]))
+                }
+                _ => (acosh_rhs, neg_acosh),
+            };
+            peel_two_branches(arena, inner, b1, b2, var, period)
         }
-        // tanh(f(x)) = rhs → f(x) = atanh(rhs)
+        // tanh(f(x)) = rhs → f(x) = atanh(rhs) (+ iπn for a non-real f)
         ExprNode::Tanh(inner) => {
-            let new_rhs = arena.atanh(rhs);
+            let atanh_rhs = arena.atanh(rhs);
+            let new_rhs = match period {
+                Some(n) if !real_for_real_var(arena, inner, var) => {
+                    let i_pi_n = arena.mul(&[arena.i_unit, arena.pi, n]);
+                    arena.add(&[atanh_rhs, i_pi_n])
+                }
+                _ => atanh_rhs,
+            };
             solve_by_peeling(arena, inner, new_rhs, var, period)
         }
         // asinh(f) = rhs → f = sinh(rhs), acosh(f) = rhs → f = cosh(rhs),
@@ -1013,6 +1126,7 @@ fn solve_by_peeling(
             solve_by_peeling(arena, inner, new_rhs, var, period)
         }
         // ── Abs peeling ───────────────────────────────────────────
+        // ── Abs peeling ───────────────────────────────────────────────────────────
         // |f(x)| = rhs → f(x) = rhs OR f(x) = -rhs (when rhs ≥ 0)
         ExprNode::Abs(inner) => {
             // |f(x)| = negative has no solutions
@@ -1020,6 +1134,12 @@ fn solve_by_peeling(
                 && r.is_negative()
             {
                 return Some(vec![]);
+            }
+            // `f = ±rhs` are all the solutions only for a real `f`: a
+            // complex `f` has modulus `rhs` on a whole circle.  Before 0.31
+            // `|i·x| = 2` gave `x = ±2i` and missed the real `x = ±2`.
+            if !real_for_real_var(arena, inner, var) {
+                return None;
             }
             let neg_rhs = arena.neg(rhs);
             peel_two_branches(arena, inner, rhs, neg_rhs, var, period)

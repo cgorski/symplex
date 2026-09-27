@@ -375,11 +375,17 @@ fn try_root_based_apart(
     // as a root whose sum and product with it are known real
     // ([`are_conjugates`]).  Any other root — real, or undecided — gets
     // its own residue term, which is exact over ℂ whatever its realness.
+    //
+    // The pairing needs a real denominator: `D` has rational coefficients
+    // here (`expr_to_poly` takes no parameters), so its roots are
+    // parameter-free and non-real ones come in conjugate pairs.  Realness
+    // is read under the declared assumptions (decision D4, 0.31), which for
+    // parameter-free roots is the same as the old reading.
     let mut reals = crate::base::assumptions::AssumptionCache::new();
     let realness: Vec<Option<bool>> = solutions
         .iter()
         .map(|s| {
-            crate::transforms::realness::constant_realness(
+            crate::transforms::realness::constant_realness_as_declared(
                 arena,
                 s.value,
                 REALNESS_DIGITS,
@@ -451,7 +457,7 @@ fn try_root_based_apart(
     }
 }
 
-/// Digits to which [`crate::transforms::realness::constant_realness`] decides
+/// Digits to which [`crate::transforms::realness::constant_realness_as_declared`] decides
 /// whether a root is real (as the integrator's self-check does).
 const REALNESS_DIGITS: u32 = 30;
 
@@ -491,7 +497,8 @@ fn conjugate_by_value(
 /// `r + s` and `r·s` are real: `r` and `s` are then the roots of
 /// `t² − (r + s)·t + r·s`, a real quadratic, whose non-real roots are
 /// conjugate.  Realness is established by
-/// [`crate::transforms::realness::constant_realness`]; undecided is not.
+/// [`crate::transforms::realness::constant_realness_as_declared`]; undecided
+/// is not.
 fn are_conjugates(
     arena: &mut Arena,
     r: ExprId,
@@ -500,15 +507,23 @@ fn are_conjugates(
 ) -> bool {
     let sum = arena.add(&[r, s]);
     let sum = crate::transforms::eval::eval(arena, sum);
-    if crate::transforms::realness::constant_realness(arena, sum, REALNESS_DIGITS, reals)
-        != Some(true)
+    if crate::transforms::realness::constant_realness_as_declared(
+        arena,
+        sum,
+        REALNESS_DIGITS,
+        reals,
+    ) != Some(true)
     {
         return false;
     }
     let product = arena.mul(&[r, s]);
     let product = crate::transforms::eval::eval(arena, product);
-    crate::transforms::realness::constant_realness(arena, product, REALNESS_DIGITS, reals)
-        == Some(true)
+    crate::transforms::realness::constant_realness_as_declared(
+        arena,
+        product,
+        REALNESS_DIGITS,
+        reals,
+    ) == Some(true)
 }
 
 /// Build a term `residue / (x - root)` where both residue and root

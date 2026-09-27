@@ -1513,6 +1513,20 @@ impl Expr<Numeric> {
     /// and constant factor extraction. For integrands that don't match
     /// any known rule, returns an unevaluated `Integral(body, var)` node.
     ///
+    /// # Variable and parameters
+    ///
+    /// The variable `var` is real; every other symbol is what its
+    /// assumptions say, and one without assumptions may be complex (see
+    /// the domain model in the book's *Key Concepts*).  The antiderivative
+    /// is valid on each real interval where the integrand is continuous,
+    /// for every value of the parameters allowed by their assumptions.  So
+    /// `ln|u|` appears only where `u` is real for every real `var` under
+    /// those assumptions (`∫ dx/(x − 2) = ln|x − 2|`); otherwise the
+    /// answer has the principal `ln u`, an antiderivative for complex
+    /// parameters too (`∫ dx/(x + a) = ln(a + x)`, as in SymPy).  Declare a
+    /// parameter real to get `ln|x + a|`.  Before 0.31 an unassumed
+    /// parameter was taken to be real, and `ln|x + a|` was returned for it.
+    ///
     /// # Examples
     ///
     /// ```
@@ -1523,6 +1537,16 @@ impl Expr<Numeric> {
     /// let expr = x.powi(2);
     /// let anti = expr.integrate(&x);
     /// assert_eq!(format!("{anti}"), "1/3*x^3");
+    ///
+    /// // `a` may be complex; `r` is declared real.
+    /// let f = ctx.parse("1/(x + a)")?;
+    /// assert_eq!(format!("{}", f.integrate(&x)), "ln(a + x)");
+    /// ctx.symbol_with("r", &[Assumption::Real])?;
+    /// let g = ctx.parse("1/(x + r)")?;
+    /// assert_eq!(format!("{}", g.integrate(&x)), "ln(abs(r + x))");
+    /// let h = ctx.parse("1/(x - 2)")?;
+    /// assert_eq!(format!("{}", h.integrate(&x)), "ln(abs(x - 2))");
+    /// # Ok::<(), SymplexError>(())
     /// ```
     #[must_use = "returns the antiderivative; does not modify in place"]
     pub fn integrate(&self, var: &Ex) -> Ex {

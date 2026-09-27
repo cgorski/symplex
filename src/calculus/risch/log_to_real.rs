@@ -19,6 +19,16 @@
 //! where `α = u + iv`, `h(α,x) = A(x) + iB(x)`, and `log_to_atan`
 //! converts the imaginary part to a sum of arctangents.
 //!
+//! The identity needs real coefficients: `q ∈ ℚ[t]` and `h ∈ ℚ(t)[x]`, so
+//! that the non-real roots of `q` come in conjugate pairs and
+//! `h(ᾱ, x) = conj(h(α, x))` for real `x`.  That holds for every caller:
+//! the rational integrator (`try_risch_rational`) takes `ℚ[x]` numerators
+//! and denominators only, so an integrand with a parameter never reaches
+//! this module, and its real forms (`ln|v(x)|` with `v ∈ ℚ[x]`, `ln(A² +
+//! B²)`, `atan`) are real for every real `x` — decision D4 (0.31), which
+//! allows the real forms only where the argument is real under the
+//! declared assumptions, asks nothing more here (audited in 0.31).
+//!
 //! # Algorithm
 //!
 //! 1. Solve `q(t) = 0` for complex roots (exact radicals via Cardano/Ferrari

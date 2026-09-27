@@ -350,7 +350,9 @@ fn sign_chart(
     }
     let mut point_in: Vec<bool> = Vec::with_capacity(n);
     for c in &points {
-        point_in.push(point_satisfies(arena, expr, var, c, rel)?);
+        let branch = branch_for(&branches, &kink_points, &c.approx);
+        let inside = point_in_domain(arena, branch, var, c)?;
+        point_in.push(inside && point_satisfies(arena, expr, var, c, rel)?);
     }
 
     // Phase 4: assemble.
@@ -1020,6 +1022,44 @@ fn sample_satisfies(
         ValueSign::Zero => Ok(rel.accepts(std::cmp::Ordering::Equal)),
         ValueSign::Pos => Ok(rel.accepts(std::cmp::Ordering::Greater)),
     }
+}
+
+/// Does the critical point `c` satisfy the natural-domain constraints of
+/// its branch?  A zero of the numerator outside the domain is not a
+/// solution even when the expression folds to `0` there: before 0.31
+/// `(x + 2)/(ln x + 2) ≥ 0` contained `x = −2`, where `ln(−2)` is not
+/// real and `0·(ln(−2) + 2)⁻¹` folded to `0` (sample points were checked,
+/// critical points were not).
+fn point_in_domain(
+    arena: &mut Arena,
+    branch: &Branch,
+    var: ExprId,
+    c: &Critical,
+) -> Result<bool, SymplexError> {
+    if c.undefined {
+        return Ok(false);
+    }
+    for k in &branch.constraints {
+        let at = crate::transforms::subs::subs(arena, k.expr, var, c.id);
+        let s = value_sign(arena, at);
+        let ok = match (k.kind, s) {
+            (_, ValueSign::NonReal | ValueSign::Undefined) => false,
+            (_, ValueSign::Unknown) => {
+                return Err(failed(format!(
+                    "cannot decide the domain constraint {} at {}",
+                    arena.display(k.expr),
+                    arena.display(c.id)
+                )));
+            }
+            (ConstraintKind::NonZero, s) => matches!(s, ValueSign::Pos | ValueSign::Neg),
+            (ConstraintKind::NonNegative, s) => matches!(s, ValueSign::Pos | ValueSign::Zero),
+            (ConstraintKind::Positive, s) => matches!(s, ValueSign::Pos),
+        };
+        if !ok {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Does `expr rel 0` hold at the critical point `c`?

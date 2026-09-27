@@ -255,13 +255,118 @@ pub(crate) fn mellin_transform(
             reason: "the variable and the transform variable must be distinct".into(),
         });
     }
-    let (f, strip) = forward(arena, expr, x, s, 0)?;
+    // `Piecewise` inputs with linear conditions become sums of steps (the
+    // Fourier transform's conversion), expanded so that each term is one
+    // step times powers; before 0.31 every `Piecewise` was refused.
+    let expr = if crate::base::walk::post_order_ids(arena, expr)
+        .into_iter()
+        .any(|id| matches!(arena.node(id), ExprNode::Piecewise(_)))
+    {
+        let e = crate::calculus::fourier_transform::eliminate_piecewise(arena, expr, x, OP)?;
+        crate::transforms::expand::expand(arena, e)
+    } else {
+        expr
+    };
+    let mut result = Err(fail(OP, "no transform rule applies"));
+    for candidate in steps_on_positive_axis(arena, expr, x) {
+        result = forward(arena, candidate, x, s, 0);
+        if result.is_ok() {
+            break;
+        }
+    }
+    let (f, strip) = result?;
     let f = crate::transforms::eval::eval(arena, f);
     if crate::base::walk::contains(arena, f, x) || crate::base::walk::has_unevaluated(arena, f) {
         return Err(fail(OP, "result still depends on the variable"));
     }
     let cond = strip.condition(arena, s);
     Ok((f, cond))
+}
+
+/// The forms of `expr` the forward rules are tried on, in order.  Heaviside
+/// steps are read on `x > 0`: a step with threshold `≤ 0` is `1`
+/// (rising) or `0` (falling).  When writing every rising step
+/// `H(x − c)` as `1 − H(c − x)` makes the step-free part cancel, the
+/// function has compact support and is returned in that falling-step form,
+/// whose terms `g(x)·H(c − x)` have overlapping strips `Re s > …`.  The
+/// window `H(x − 1) − H(x − 2)` as it stands is a difference of two
+/// transforms on `Re s < 0`, and the triangle `x·H(1 − x) + (2 − x)·H(x − 1)
+/// − (2 − x)·H(x − 2)` mixes `Re s > −1` with `Re s < −1` ("strips do not
+/// overlap"); in falling form both are integrals over bounded intervals.
+/// That form comes first, then `expr` with the thresholds read, then its
+/// expansion (a polynomial times a step, `(x − 2)²·H(x − 2)`, monomial by
+/// monomial).
+fn steps_on_positive_axis(arena: &mut Arena, expr: ExprId, x: ExprId) -> Vec<ExprId> {
+    let has_step = crate::base::walk::post_order_ids(arena, expr)
+        .into_iter()
+        .any(|id| matches!(arena.node(id), ExprNode::Heaviside(_)));
+    if !has_step {
+        return vec![expr];
+    }
+    // (threshold sign, rising) of a step, when decidable.
+    let classify = |arena: &mut Arena, arg: ExprId| -> Option<(i32, bool, ExprId)> {
+        let (a, b) = linear_in(arena, arg, x)?;
+        let sa = param_sign(arena, a).filter(|&v| v != 0)?;
+        let ratio = arena.div(b, a);
+        let ratio = arena.neg(ratio);
+        let ratio = crate::transforms::eval::eval(arena, ratio);
+        Some((param_sign(arena, ratio)?, sa > 0, ratio))
+    };
+    let rebuild = |arena: &mut Arena, falling_form: bool| -> ExprId {
+        let post = crate::base::walk::post_order_ids(arena, expr);
+        let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+        for id in post {
+            let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+            let new = match arena.node(rebuilt).clone() {
+                ExprNode::Heaviside(arg) => match classify(arena, arg) {
+                    Some((sg, rising, _)) if sg <= 0 => {
+                        if rising {
+                            arena.one()
+                        } else {
+                            arena.zero()
+                        }
+                    }
+                    Some((_, true, c)) if falling_form => {
+                        let cmx = arena.sub(c, x);
+                        let h = arena.heaviside(cmx);
+                        let one = arena.one();
+                        arena.sub(one, h)
+                    }
+                    _ => rebuilt,
+                },
+                _ => rebuilt,
+            };
+            cache.insert(id, new);
+        }
+        cache.get(&expr).copied().unwrap_or(expr)
+    };
+    let plain = rebuild(arena, false);
+    let mut out = Vec::with_capacity(3);
+    let falling = rebuild(arena, true);
+    if falling != plain {
+        let falling = crate::transforms::expand::expand(arena, falling);
+        let terms: Vec<ExprId> = match arena.node(falling) {
+            ExprNode::Add(ch) => ch.to_vec(),
+            _ => vec![falling],
+        };
+        let (stepped, free): (Vec<ExprId>, Vec<ExprId>) = terms.into_iter().partition(|&t| {
+            crate::base::walk::post_order_ids(arena, t)
+                .into_iter()
+                .any(|id| matches!(arena.node(id), ExprNode::Heaviside(_)))
+        });
+        let free_sum = arena.add(&free);
+        let free_sum = crate::transforms::expand::expand(arena, free_sum);
+        let free_sum = crate::transforms::eval::eval(arena, free_sum);
+        if !stepped.is_empty() && arena.is_zero_structural(free_sum) {
+            out.push(arena.add(&stepped));
+        }
+    }
+    out.push(plain);
+    let expanded = crate::transforms::expand::expand(arena, plain);
+    if expanded != plain {
+        out.push(expanded);
+    }
+    out
 }
 
 /// Inverse Mellin transform of `expr` (a function of `s`) as a function of `x`.
@@ -647,7 +752,8 @@ fn forward_table(
             let b = arena.beta(s, nu_minus_s);
             Ok(Some((b, Strip::between(zero, nu))))
         }
-        // H(1 − x) → 1/s (Re s > 0);  H(x − 1) → −1/s (Re s < 0)
+        // H(c − x) → c^s/s (Re s > 0);  H(x − c) → −c^s/s (Re s < 0), c > 0
+        // (before 0.31 only c = 1; `H(x − 5/2)` was refused).
         ExprNode::Heaviside(arg) => {
             let Some((a, b)) = linear_in(arena, arg, x) else {
                 return Ok(None);
@@ -655,13 +761,14 @@ fn forward_table(
             let ratio = arena.div(b, a);
             let ratio = arena.neg(ratio);
             let ratio = crate::transforms::eval::eval(arena, ratio);
-            if ratio != one {
-                return Ok(None); // H(c − x) with c ≠ 1: scaling rule
+            if param_sign(arena, ratio) != Some(1) {
+                return Ok(None);
             }
-            let inv_s = arena.div(one, s);
+            let cs = arena.pow(ratio, s);
+            let c_over_s = arena.div(cs, s);
             match param_sign(arena, a) {
-                Some(sg) if sg < 0 => Ok(Some((inv_s, Strip::above(zero)))),
-                Some(sg) if sg > 0 => Ok(Some((arena.neg(inv_s), Strip::below(zero)))),
+                Some(sg) if sg < 0 => Ok(Some((c_over_s, Strip::above(zero)))),
+                Some(sg) if sg > 0 => Ok(Some((arena.neg(c_over_s), Strip::below(zero)))),
                 _ => Ok(None),
             }
         }
@@ -710,20 +817,31 @@ fn forward_step_product(
     let one = arena.one();
     let zero = arena.zero();
     let one_minus_x = arena.sub(one, x);
-    let x_minus_one = arena.sub(x, one);
-    let mut step: Option<bool> = None; // Some(true) = H(1 − x), Some(false) = H(x − 1)
+    // Some((true, H)) = H(c − x), Some((false, H)) = H(x − c), for a
+    // threshold c > 0 (c = 1 only before 0.31).
+    let mut step: Option<(bool, ExprId)> = None;
     let mut rest: Vec<ExprId> = Vec::new();
     for &f in factors {
-        match arena.node(f).clone() {
-            ExprNode::Heaviside(arg) if arg == one_minus_x && step.is_none() => step = Some(true),
-            ExprNode::Heaviside(arg) if arg == x_minus_one && step.is_none() => step = Some(false),
-            _ => rest.push(f),
+        if step.is_none()
+            && let ExprNode::Heaviside(arg) = arena.node(f).clone()
+            && let Some((a, b)) = linear_in(arena, arg, x)
+            && let Some(sa) = param_sign(arena, a).filter(|&v| v != 0)
+        {
+            let ratio = arena.div(b, a);
+            let ratio = arena.neg(ratio);
+            let ratio = crate::transforms::eval::eval(arena, ratio);
+            if param_sign(arena, ratio) == Some(1) {
+                step = Some((sa < 0, f));
+                continue;
+            }
         }
+        rest.push(f);
     }
-    let Some(inside) = step else {
+    let Some((inside, step_expr)) = step else {
         return Ok(None);
     };
-    if rest.len() == 1 && inside {
+    let unit_step = arena.node(step_expr).clone() == ExprNode::Heaviside(one_minus_x);
+    if rest.len() == 1 && inside && unit_step {
         // (1 − x)^b → B(s, b + 1), Re s > 0, b > −1
         if let ExprNode::Pow(base, b) = arena.node(rest[0]).clone()
             && base == one_minus_x
@@ -754,11 +872,6 @@ fn forward_step_product(
         });
     }
     let a = a_total.unwrap_or(zero);
-    let step_expr = if inside {
-        arena.heaviside(one_minus_x)
-    } else {
-        arena.heaviside(x_minus_one)
-    };
     let (sf, st) = forward(arena, step_expr, x, s, depth + 1)?;
     let s_plus_a = arena.add(&[s, a]);
     let shifted = crate::transforms::subs::subs(arena, sf, s, s_plus_a);

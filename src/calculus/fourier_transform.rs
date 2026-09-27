@@ -155,7 +155,13 @@ pub(crate) fn fourier_transform_with(
     // an earlier condition is undecided (`Piecewise(1 if |t| < 1, 0 if true)`
     // evaluates to `0`).
     let expr = eliminate_piecewise(arena, expr, t, "fourier_transform")?;
-    let f = forward(arena, expr, t, omega, 0)?;
+    let f = match forward(arena, expr, t, omega, 0) {
+        Ok(f) => f,
+        Err(e) => match compact_support_via_laplace(arena, expr, t, omega) {
+            Some(f) => f,
+            None => return Err(e),
+        },
+    };
     let f = finish(arena, f, omega);
     let f = match convention {
         FourierConvention::NonUnitaryAngular => f,
@@ -258,7 +264,216 @@ fn finish(arena: &mut Arena, f: ExprId, var: ExprId) -> ExprId {
     let f = crate::transforms::eval::eval(arena, f);
     let f = crate::transforms::expand::expand(arena, f);
     let f = crate::simplify::powsimp::powsimp(arena, f);
-    crate::transforms::eval::eval(arena, f)
+    let f = crate::transforms::eval::eval(arena, f);
+    collect_delta_terms(arena, f, var)
+}
+
+/// `f` rewritten with every step of one direction flipped (`rising`:
+/// `H(t − c) → 1 − H(c − t)`; otherwise `H(c − t) → 1 − H(t − c)`) and
+/// expanded, when the step-free part then cancels: the terms that remain
+/// all carry steps of the other direction, with the numeric thresholds
+/// returned.  `None` when a step is not `H(±(t − c))` with a numeric `c`
+/// or the step-free part does not cancel.
+fn one_sided_steps(
+    arena: &mut Arena,
+    f: ExprId,
+    t: ExprId,
+    rising: bool,
+) -> Option<(ExprId, Vec<Q>)> {
+    let post = crate::base::walk::post_order_ids(arena, f);
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    for id in post {
+        let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        let new = match arena.node(rebuilt).clone() {
+            ExprNode::Heaviside(arg) => {
+                let (up, theta) = heaviside_kind(arena, arg, t)?;
+                if up == rising {
+                    let th = {
+                        let nid = arena.intern_num(theta);
+                        arena.intern(ExprNode::Num(nid))
+                    };
+                    let flipped = if rising {
+                        arena.sub(th, t)
+                    } else {
+                        arena.sub(t, th)
+                    };
+                    let h = arena.heaviside(flipped);
+                    let one = arena.one();
+                    arena.sub(one, h)
+                } else {
+                    rebuilt
+                }
+            }
+            _ => rebuilt,
+        };
+        cache.insert(id, new);
+    }
+    let g = cache.get(&f).copied().unwrap_or(f);
+    let g = crate::transforms::expand::expand(arena, g);
+    let g = crate::transforms::eval::eval(arena, g);
+    let terms: Vec<ExprId> = match arena.node(g) {
+        ExprNode::Add(ch) => ch.to_vec(),
+        _ => vec![g],
+    };
+    let mut stepped = Vec::new();
+    let mut free = Vec::new();
+    let mut thresholds = Vec::new();
+    for term in terms {
+        let steps: Vec<ExprId> = crate::base::walk::post_order_ids(arena, term)
+            .into_iter()
+            .filter_map(|id| match arena.node(id) {
+                ExprNode::Heaviside(a) => Some(*a),
+                _ => None,
+            })
+            .collect();
+        if steps.is_empty() {
+            free.push(term);
+            continue;
+        }
+        for a in steps {
+            let (_, theta) = heaviside_kind(arena, a, t)?;
+            thresholds.push(theta);
+        }
+        stepped.push(term);
+    }
+    let free_sum = arena.add(&free);
+    let free_sum = crate::transforms::expand::expand(arena, free_sum);
+    let free_sum = crate::transforms::eval::eval(arena, free_sum);
+    if stepped.is_empty() || !arena.is_zero_structural(free_sum) {
+        return None;
+    }
+    Some((arena.add(&stepped), thresholds))
+}
+
+/// The Fourier transform of a function with compact support `[m, M]`
+/// (numeric bounds, established by [`one_sided_steps`] in both
+/// directions): `F(ω) = e^{−iωm}·L{f(t + m)}(iω)` for `m < 0`, and
+/// `L{f}(iω)` otherwise — the Laplace transform of a compactly supported
+/// function is entire, and its formula continues to the imaginary axis.
+/// Before 0.31 the rules refused a window times anything but a constant or
+/// an exponential they could shift (`t·(H(t − 1) − H(t − 2))`, the
+/// triangle `Piecewise((0, t < 0), (t, t < 1), (2 − t, t < 2), (0, True))`,
+/// `e^{−t}·(H(t − 1) − H(t − 3))`; SymPy transforms all of them).
+fn compact_support_via_laplace(
+    arena: &mut Arena,
+    f: ExprId,
+    t: ExprId,
+    omega: ExprId,
+) -> Option<ExprId> {
+    let (right_form, lows) = one_sided_steps(arena, f, t, false)?;
+    one_sided_steps(arena, f, t, true)?;
+    let m = lows.iter().min()?.clone();
+    let shift = if m.is_negative() { m } else { Q::zero() };
+    let h = if shift.is_zero() {
+        right_form
+    } else {
+        let sh = {
+            let nid = arena.intern_num(shift.clone());
+            arena.intern(ExprNode::Num(nid))
+        };
+        let tp = arena.add(&[t, sh]);
+        let h = crate::transforms::subs::subs(arena, right_form, t, tp);
+        crate::transforms::eval::eval(arena, h)
+    };
+    let s = arena.symbol("__fourier_laplace_s");
+    let lt = crate::calculus::laplace::laplace_transform(arena, h, t, s).ok()?;
+    if crate::base::walk::has_unevaluated(arena, lt) {
+        return None;
+    }
+    let i = arena.i_unit();
+    let iw = arena.mul(&[i, omega]);
+    let fw = crate::transforms::subs::subs(arena, lt, s, iw);
+    let fw = if shift.is_zero() {
+        fw
+    } else {
+        // e^{−iωm}
+        let sh = {
+            let nid = arena.intern_num(-shift);
+            arena.intern(ExprNode::Num(nid))
+        };
+        let arg = arena.mul(&[sh, iw]);
+        let e = arena.exp(arg);
+        arena.mul(&[e, fw])
+    };
+    if crate::base::walk::contains(arena, fw, s) || crate::base::walk::contains(arena, fw, t) {
+        return None;
+    }
+    Some(crate::transforms::eval::eval(arena, fw))
+}
+
+/// Gather the terms `cᵢ·δ(ω − a)` of each impulse into one
+/// `(Σ cᵢ)·δ(ω − a)`, the sum of constants simplified, and drop an impulse
+/// whose total is zero.  A window cut from a periodic function transforms
+/// through the impulses of the periodic part, which cancel: before 0.31
+/// `sin 2t·(H(t − 1/2) − H(t − 5/2))` kept eight impulse terms with
+/// coefficients `±sin²1·πi/2`, `±cos²1·πi/2`, `±sin²5·πi/2`, … whose sum
+/// per impulse is 0.  Only impulses with two or more terms are touched.
+fn collect_delta_terms(arena: &mut Arena, f: ExprId, var: ExprId) -> ExprId {
+    let terms: Vec<ExprId> = match arena.node(f) {
+        ExprNode::Add(ch) => ch.to_vec(),
+        _ => return f,
+    };
+    // (delta factor, coefficients, original terms)
+    let mut groups: Vec<(ExprId, Vec<ExprId>, Vec<ExprId>)> = Vec::new();
+    let mut others: Vec<ExprId> = Vec::new();
+    for t in terms {
+        let factors: Vec<ExprId> = match arena.node(t) {
+            ExprNode::Mul(ch) => ch.to_vec(),
+            _ => vec![t],
+        };
+        let deltas: Vec<usize> = factors
+            .iter()
+            .enumerate()
+            .filter(|&(_, &c)| matches!(arena.node(c), ExprNode::DiracDelta(_)))
+            .map(|(i, _)| i)
+            .collect();
+        if deltas.len() != 1 {
+            others.push(t);
+            continue;
+        }
+        let d = factors[deltas[0]];
+        let rest: Vec<ExprId> = factors
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| i != deltas[0])
+            .map(|(_, &c)| c)
+            .collect();
+        let coeff = arena.mul(&rest);
+        if crate::base::walk::contains(arena, coeff, var) {
+            others.push(t);
+            continue;
+        }
+        match groups.iter_mut().find(|g| g.0 == d) {
+            Some(g) => {
+                g.1.push(coeff);
+                g.2.push(t);
+            }
+            None => groups.push((d, vec![coeff], vec![t])),
+        }
+    }
+    if groups.iter().all(|g| g.1.len() < 2) {
+        return f;
+    }
+    let mut out = others;
+    for (d, coeffs, originals) in groups {
+        if coeffs.len() < 2 {
+            out.extend(originals);
+            continue;
+        }
+        let total = arena.add(&coeffs);
+        let total = crate::simplify::simplify_engine::unified_simplify(
+            arena,
+            total,
+            &crate::simplify::simplify_engine::SimplifyOpts::default(),
+        )
+        .expr;
+        if arena.is_zero_structural(total) {
+            continue;
+        }
+        out.push(arena.mul(&[total, d]));
+    }
+    let r = arena.add(&out);
+    crate::transforms::eval::eval(arena, r)
 }
 
 /// `√(a²) → a` for a provably positive `a`, otherwise `√(e)`.
@@ -733,19 +948,36 @@ fn positive_indicator(arena: &mut Arena, expr: ExprId, v: ExprId) -> Option<Expr
         }
         _ => return None,
     };
-    if inner != v {
+    // |αv + β| = |α|·|v − m| with m = −β/α (numeric α ≠ 0); before 0.31
+    // only |v| itself was accepted and `Piecewise((1, |t − 2| < 1), (0, True))`
+    // was refused.
+    let (alpha, beta) = linear_in(arena, inner, v)?;
+    let alpha_q = arena.as_num(alpha).cloned()?;
+    if alpha_q.is_zero() {
         return None;
     }
+    let abs_alpha = {
+        let nid = arena.intern_num(alpha_q.abs());
+        arena.intern(ExprNode::Num(nid))
+    };
+    let k = arena.mul(&[k, abs_alpha]);
+    let neg_beta = arena.neg(beta);
+    let m = arena.div(neg_beta, alpha);
+    let m = crate::transforms::eval::eval(arena, m);
     let ks = param_sign(arena, k)?;
     if ks == 0 {
         return None;
     }
-    // k|v| + c > 0  ⇔  |v| < −c/k (k < 0)   or   |v| > −c/k (k > 0)
+    // k|v − m| + c > 0  ⇔  |v − m| < −c/k (k < 0)   or   |v − m| > −c/k (k > 0)
     let thr = arena.div(c, k);
     let thr = arena.neg(thr);
     let thr = crate::transforms::eval::eval(arena, thr);
-    let vpc = arena.add(&[v, thr]);
-    let cmv = arena.sub(thr, v);
+    let lo = arena.sub(m, thr);
+    let lo = crate::transforms::eval::eval(arena, lo);
+    let hi = arena.add(&[m, thr]);
+    let hi = crate::transforms::eval::eval(arena, hi);
+    let vpc = arena.sub(v, lo);
+    let cmv = arena.sub(hi, v);
     let h1 = arena.heaviside(vpc);
     let h2 = arena.heaviside(cmv);
     let inside = arena.mul(&[h1, h2]);
@@ -763,8 +995,9 @@ fn expr_or_lin(arena: &mut Arena, a: ExprId, b: ExprId, v: ExprId) -> ExprId {
 }
 
 /// Replace every `Piecewise` node whose conditions involve `v` by its
-/// Heaviside form (see [`piecewise_to_heaviside`]).
-fn eliminate_piecewise(
+/// Heaviside form (see [`piecewise_to_heaviside`]).  Shared with the
+/// Laplace transform.
+pub(crate) fn eliminate_piecewise(
     arena: &mut Arena,
     expr: ExprId,
     v: ExprId,
@@ -826,8 +1059,8 @@ fn piecewise_to_heaviside(
 
 /// `H(v − a)·H(v − b) → H(v − max(a,b))`, `H(v − a)·H(b − v) → 0` when
 /// `a ≥ b`, and `H(v − a)·H(b − v) → H(v − a) − H(v − b)` when `a < b`,
-/// for numeric `a`, `b`.
-fn simplify_heaviside_products(arena: &mut Arena, f: ExprId, v: ExprId) -> ExprId {
+/// for numeric `a`, `b`.  Shared with the Laplace transform.
+pub(crate) fn simplify_heaviside_products(arena: &mut Arena, f: ExprId, v: ExprId) -> ExprId {
     let terms: Vec<ExprId> = match arena.node(f) {
         ExprNode::Add(ch) => ch.iter().copied().collect(),
         _ => vec![f],

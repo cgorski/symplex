@@ -103,20 +103,24 @@ pub(crate) fn diff_with_deps(
     cache.get(&expr).copied().unwrap_or(arena.zero)
 }
 
-/// Is `f` real for real values of its symbols?  A symbol without declared
-/// assumptions counts as real (the variable of differentiation is real,
-/// and so are undeclared parameters, the convention of the integrator);
-/// a declared one keeps its declaration.
+/// Is `f` real for every real value of the variable of differentiation
+/// `var`, under the declared assumptions of its other symbols?  An
+/// undeclared `var` counts as real (differentiation is along a real
+/// variable); any other symbol keeps its declaration, so an undeclared
+/// parameter may be complex (the integrator's convention since 0.31).
 ///
-/// `d|f|/dx = sign(f)·f'` and `d sign(f)/dx = 0` hold only for a real `f`:
-/// for `f = sinh x − (−1)^(−1/3)` the old rule gave a complex derivative of
-/// the real function `|f|`, and for `f = 1/(2√x)` at `x < 0` (where `f` is
-/// imaginary) the wrong sign.
-fn real_for_real_symbols(arena: &Arena, f: ExprId) -> bool {
+/// `d|f|/dx = sign(f)·f'`, `d sign(f)/dx = 0` and `d ln|f|/dx = f'/f` hold
+/// only for a real `f`: for `f = sinh x − (−1)^(−1/3)` the rule gave a
+/// complex derivative of the real function `|f|`, for `f = 1/(2√x)` at
+/// `x < 0` (where `f` is imaginary) the wrong sign, and up to 0.30 an
+/// undeclared parameter counted as real, so `d ln|a·x + 1|/dx` was
+/// `a/(a·x + 1)` (at `a = i`, `x = 1`: `(1 + i)/2`, truly `1/2`).
+fn real_for_real_symbols(arena: &Arena, f: ExprId, var: SymbolId) -> bool {
     use crate::base::assumptions::{AssumptionCache, Assumptions, Props};
     let mut cache = AssumptionCache::new();
     for s in crate::base::walk::free_symbols(arena, f) {
         if let ExprNode::Symbol(sid) = *arena.node(s)
+            && sid == var
             && arena.symbol_assumptions(sid) == Assumptions::default()
         {
             let mut real = Assumptions::default();
@@ -357,7 +361,7 @@ fn diff_node(
             // `x·sign(x)/|x| − 1`, and `checkodesol` rejected every solution
             // with a `ln|x|`.
             if let ExprNode::Abs(g) = arena.node(inner).clone()
-                && real_for_real_symbols(arena, g)
+                && real_for_real_symbols(arena, g, var)
             {
                 let dg = get_deriv(cache, g, arena);
                 return arena.div(dg, g);
@@ -371,7 +375,7 @@ fn diff_node(
             if arena.is_zero_structural(inner_diff) {
                 return arena.zero;
             }
-            if real_for_real_symbols(arena, inner) {
+            if real_for_real_symbols(arena, inner, var) {
                 let sign_f = arena.sign(inner);
                 arena.mul(&[sign_f, inner_diff])
             } else {
@@ -384,7 +388,7 @@ fn diff_node(
         // d(f/|f|) = f'/|f| − f·(d|f|)/|f|².
         ExprNode::Sign(inner) => {
             let inner_diff = cache.get(&inner).copied().unwrap_or(arena.zero);
-            if arena.is_zero_structural(inner_diff) || real_for_real_symbols(arena, inner) {
+            if arena.is_zero_structural(inner_diff) || real_for_real_symbols(arena, inner, var) {
                 return arena.zero;
             }
             let abs_f = arena.abs(inner);

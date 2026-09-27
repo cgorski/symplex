@@ -80,7 +80,95 @@ pub(crate) fn laplace_transform(
         }
     };
 
+    // `Piecewise` inputs with linear conditions become sums of Heaviside
+    // steps (as for the Fourier transform), and steps are read on `t > 0`
+    // only.  Before 0.31 every `Piecewise` was refused (SymPy:
+    // `laplace_transform(Piecewise((t, t < 1), (2 - t, t < 2), (0, True)), t, s)`
+    // is `(1 - e^{-s})^2/s^2`), and so were `H(1 − t)` and `H(t − 1)·H(3 − t)`.
+    let expr = if crate::base::walk::post_order_ids(arena, expr)
+        .into_iter()
+        .any(|id| {
+            matches!(
+                arena.node(id),
+                ExprNode::Piecewise(_) | ExprNode::Heaviside(_)
+            )
+        }) {
+        let e = crate::calculus::fourier_transform::eliminate_piecewise(
+            arena,
+            expr,
+            t,
+            "laplace_transform",
+        )?;
+        causal_steps(arena, e, t)
+    } else {
+        expr
+    };
     do_forward(arena, expr, t, t_sym, s)
+}
+
+/// Heaviside steps of `f` read on `t > 0`, the only values the transform
+/// integrates: with `θ` the numeric threshold of `H(a·t + b)`, a rising
+/// step with `θ ≤ 0` is `1`, a falling one (`a < 0`) is `0` for `θ ≤ 0` and
+/// `1 − H(t − θ)` otherwise; the result is expanded and products of rising
+/// steps merged (`H(t − a)·H(t − b) = H(t − max(a, b))`), so that each term
+/// is a single delayed function.  Unchanged when no step was rewritten.
+fn causal_steps(arena: &mut Arena, expr: ExprId, t: ExprId) -> ExprId {
+    let post = crate::base::walk::post_order_ids(arena, expr);
+    let mut cache: rustc_hash::FxHashMap<ExprId, ExprId> = rustc_hash::FxHashMap::default();
+    let mut changed = false;
+    for &id in &post {
+        let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        let new = match arena.node(rebuilt).clone() {
+            ExprNode::Heaviside(arg) => match step_on_positive_axis(arena, arg, t) {
+                Some(r) => {
+                    changed = true;
+                    r
+                }
+                None => rebuilt,
+            },
+            _ => rebuilt,
+        };
+        if new != id {
+            changed = true;
+        }
+        cache.insert(id, new);
+    }
+    let out = cache.get(&expr).copied().unwrap_or(expr);
+    if !changed {
+        return expr;
+    }
+    let out = crate::transforms::expand::expand(arena, out);
+    crate::calculus::fourier_transform::simplify_heaviside_products(arena, out, t)
+}
+
+/// `H(a·t + b)` on `t > 0` for a numeric `a ≠ 0` and a threshold
+/// `θ = −b/a` of known sign (see [`causal_steps`]); `None` when it stays
+/// as it is (a rising step with a positive threshold) or is not of that
+/// form.
+fn step_on_positive_axis(arena: &mut Arena, arg: ExprId, t: ExprId) -> Option<ExprId> {
+    let (a, b) = linear_in(arena, arg, t)?;
+    let a_num = arena.as_num(a).cloned()?;
+    if a_num.is_zero() {
+        return None;
+    }
+    let neg_b = arena.neg(b);
+    let th = arena.div(neg_b, a);
+    let th = crate::transforms::eval::eval(arena, th);
+    let theta_positive = param_sign(arena, th)? > 0;
+    if a_num.is_positive() {
+        if theta_positive {
+            return None;
+        }
+        return Some(arena.one);
+    }
+    if !theta_positive {
+        return Some(arena.zero);
+    }
+    // 1 − H(t − θ)
+    let t_minus = arena.sub(t, th);
+    let h = arena.heaviside(t_minus);
+    let one = arena.one;
+    Some(arena.sub(one, h))
 }
 
 /// Internal recursive forward transform (s is always the original symbol):
@@ -1384,6 +1472,18 @@ fn do_inverse_rules(
         return Ok(result);
     }
 
+    // ── Products of sums of delays: (1 − e^{−s})²/s² is a sum of delayed
+    //    terms once expanded (refused before 0.31) ──
+    if crate::base::walk::post_order_ids(arena, expr)
+        .into_iter()
+        .any(|id| matches!(arena.node(id), ExprNode::Exp(a) if contains_var(arena, *a, s)))
+    {
+        let expanded = crate::transforms::expand::expand(arena, expr);
+        if expanded != expr && matches!(arena.node(expanded), ExprNode::Add(_)) {
+            return do_inverse(arena, expanded, s, t, depth + 1);
+        }
+    }
+
     // ── Special entries: s^{−ν}, 1/√(s²+a²), atan(a/s), 1/(s√(s+a²)), ln(s)/s,
     //    and rational forms with symbolic parameters ──
     if let Some(result) = try_special_inverse(arena, expr, s, t)? {
@@ -1431,17 +1531,33 @@ fn try_inverse_delay(
     let mut delay: Option<ExprId> = None;
     let mut rest: Vec<ExprId> = Vec::new();
     for &c in &children {
+        // `(e^{u})^m` (an expanded `(1 − e^{−s})²`) is `e^{m·u}`.
+        let exp_arg = match arena.node(c).clone() {
+            ExprNode::Exp(arg) => Some(arg),
+            ExprNode::Pow(base, m) if arena.as_num(m).is_some() => match arena.node(base).clone() {
+                ExprNode::Exp(arg) => {
+                    let ma = arena.mul(&[m, arg]);
+                    Some(crate::transforms::eval::eval(arena, ma))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
         if delay.is_none()
-            && let ExprNode::Exp(arg) = arena.node(c).clone()
+            && let Some(arg) = exp_arg
             && let Some((k, b)) = linear_in(arena, arg, s)
-            && arena.is_zero_structural(b)
         {
-            // arg = k·s = −a·s
+            // arg = k·s + b = −a·s + b: e^b is a constant factor (before
+            // 0.31 `e^{−2s − 1}/(s + 1)` was refused).
             let a = arena.neg(k);
             let a = crate::transforms::eval::eval(arena, a);
             match param_sign(arena, a) {
                 Some(sg) if sg > 0 => {
                     delay = Some(a);
+                    if !arena.is_zero_structural(b) {
+                        let eb = arena.exp(b);
+                        rest.push(eb);
+                    }
                     continue;
                 }
                 _ => {}

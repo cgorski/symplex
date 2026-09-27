@@ -1073,7 +1073,9 @@ fn integrate_piece(
 }
 
 /// `F(hi⁻) − F(lo⁺)` for a specific antiderivative `F`, after splitting
-/// at any discontinuity of `F` inside the piece.
+/// at any discontinuity of `F` inside the piece.  A discontinuity where
+/// the argument of a principal branch crosses its cut
+/// ([`check_branch_cuts`]) is not split but refused.
 fn evaluate_antiderivative(
     arena: &mut Arena,
     f: ExprId,
@@ -1082,6 +1084,8 @@ fn evaluate_antiderivative(
     p: &Piece,
     depth: usize,
 ) -> Result<ExprId, SymplexError> {
+    let anti = atan_of_complex_line_to_logs(arena, anti, x, p);
+    check_branch_cuts(arena, anti, x, p)?;
     // Discontinuities of F strictly inside (lo, hi).
     let range = numeric_range(arena, p.lo, p.hi);
     let scan = calculus_util::scan_breakpoints(arena, anti, x, finite_scan_range(range));
@@ -1159,6 +1163,422 @@ fn evaluate_antiderivative(
         Some(v) => Ok(v),
         None => fallback_without_antiderivative(arena, f, x, p),
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Branch cuts of the antiderivative along the real path
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Where the principal branch of a function of `u` is discontinuous.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Cut {
+    /// The real axis below a bound: `ln`, non-integer powers, `arg`,
+    /// `loggamma`, `Ei`, `Ci`, `li` (0), `W` (−1/e), `acosh` (1).
+    RealBelow(f64),
+    /// The real axis outside `[−1, 1]`: `asin`, `acos`, `atanh`.
+    RealOutside,
+    /// The imaginary axis outside `[−i, i]`: `atan`, `asinh`.
+    ImaginaryOutside,
+}
+
+/// The arguments `u` (depending on `x`) of the principal-branch functions
+/// in `anti`, with their cuts.
+fn cut_arguments(arena: &Arena, anti: ExprId, x: ExprId) -> Vec<(ExprId, Cut)> {
+    let mut out: Vec<(ExprId, Cut)> = Vec::new();
+    let mut stack = vec![anti];
+    let mut seen = rustc_hash::FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let node = arena.node(id);
+        let found = match *node {
+            ExprNode::Ln(u)
+            | ExprNode::Arg(u)
+            | ExprNode::LogGamma(u)
+            | ExprNode::Ei(u)
+            | ExprNode::Ci(u)
+            | ExprNode::Li(u) => Some((u, Cut::RealBelow(0.0))),
+            ExprNode::Pow(u, e) if !arena.as_num(e).is_some_and(|r| r.is_integer()) => {
+                Some((u, Cut::RealBelow(0.0)))
+            }
+            ExprNode::LambertW(u) => Some((u, Cut::RealBelow(-(-1.0f64).exp()))),
+            ExprNode::Acosh(u) => Some((u, Cut::RealBelow(1.0))),
+            ExprNode::Asin(u) | ExprNode::Acos(u) | ExprNode::Atanh(u) => {
+                Some((u, Cut::RealOutside))
+            }
+            ExprNode::Atan(u) | ExprNode::Asinh(u) => Some((u, Cut::ImaginaryOutside)),
+            _ => None,
+        };
+        if let Some((u, cut)) = found
+            && walk::contains(arena, u, x)
+            && !out.contains(&(u, cut))
+        {
+            out.push((u, cut));
+        }
+        node.for_each_child(|c| stack.push(c));
+    }
+    out
+}
+
+/// Is `e` real at every real `x` where it is defined, under the declared
+/// assumptions of the other symbols?  `x`, constants that
+/// [`constant_realness_as_declared`](crate::transforms::realness::constant_realness_as_declared)
+/// proves real, and sums, products, integer powers, `exp`, `sin`, `cos`,
+/// `tan`, `sinh`, `cosh`, `tanh`, `atan`, `|·|` of such.  Conservative.
+fn real_for_real_x(arena: &mut Arena, e: ExprId, x: ExprId, reals: &mut AssumptionCache) -> bool {
+    let mut stack = vec![e];
+    let mut seen = rustc_hash::FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if id == x {
+            continue;
+        }
+        if !walk::contains(arena, id, x) {
+            if crate::transforms::realness::constant_realness_as_declared(arena, id, 30, reals)
+                != Some(true)
+            {
+                return false;
+            }
+            continue;
+        }
+        match arena.node(id).clone() {
+            ExprNode::Add(children) | ExprNode::Mul(children) => stack.extend(children),
+            ExprNode::Pow(b, e) if arena.as_num(e).is_some_and(|r| r.is_integer()) => stack.push(b),
+            ExprNode::Neg(u)
+            | ExprNode::Exp(u)
+            | ExprNode::Sin(u)
+            | ExprNode::Cos(u)
+            | ExprNode::Tan(u)
+            | ExprNode::Sinh(u)
+            | ExprNode::Cosh(u)
+            | ExprNode::Tanh(u)
+            | ExprNode::Atan(u)
+            | ExprNode::Abs(u) => stack.push(u),
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Can the argument `u` of a function with cut `cut` provably not cross
+/// that cut as `x` runs along the real axis over the piece `p`, whatever
+/// the values of the parameters under their declared assumptions?
+///
+/// - A real `u` ([`real_for_real_x`]) moves along the real axis: it may run
+///   along a cut on it, where the principal value is the limit from one
+///   side and continuous, but never across one.
+/// - For a cut on the real axis it suffices that `im u` does not depend on
+///   `x`: `u = c + g(x)` with `g` real and `c` constant (`ln(x + a + i)`).
+/// - A linear `u = α·x + β` runs along a straight segment, which meets the
+///   axis of the cut (the real axis, or the imaginary one for `atan`) at
+///   most once unless it lies in it.  If it meets it at an endpoint of the
+///   piece, off the cut, it does not cross it inside: `∫₀¹ dx/(a·x + 1)` has
+///   `u(0) = 1`, and `∫₀¹ dx/(1 + a²x²) = atan(a)/a` has `u(0) = 0`, for
+///   every complex `a` (where the integral exists).
+/// - For a cut `(−∞, 0]` (`ln`, powers): `u = c·g(x)` with `c` constant and
+///   `g` real ([`constant_multiple_of_real`]) stays on the line through 0
+///   in the direction of `c`, which meets the real axis only at the branch
+///   point 0 (or lies in it).  Passing through 0 is a zero of `u`: a
+///   singular point of the integrand, which the breakpoint scan splits at,
+///   or a point where `F` is continuous (`u·ln u`, `u^{3/2}`).  So
+///   `∫₀¹ ln(a·x + a) dx` and `∫₁² √(a²·x + a²) dx` are differences for
+///   every complex `a`.
+fn cut_crossing_excluded(
+    arena: &mut Arena,
+    u: ExprId,
+    x: ExprId,
+    cut: Cut,
+    p: &Piece,
+    reals: &mut AssumptionCache,
+) -> bool {
+    if real_for_real_x(arena, u, x, reals) {
+        return true;
+    }
+    if cut != Cut::ImaginaryOutside && imaginary_part_constant_polynomial(arena, u, x, reals) {
+        return true;
+    }
+    if cut != Cut::ImaginaryOutside
+        && let ExprNode::Add(children) = arena.node(u).clone()
+    {
+        let dependent: Vec<ExprId> = children
+            .into_iter()
+            .filter(|&t| walk::contains(arena, t, x))
+            .collect();
+        if dependent
+            .into_iter()
+            .all(|t| real_for_real_x(arena, t, x, reals))
+        {
+            return true;
+        }
+    }
+    if cut == Cut::RealBelow(0.0) && constant_multiple_of_real(arena, u, x, reals) {
+        return true;
+    }
+    calculus_util::linear_coeffs_exact(arena, u, x).is_some()
+        && [p.lo, p.hi]
+            .into_iter()
+            .any(|e| meets_axis_off_the_cut(arena, u, x, e, cut, reals))
+}
+
+/// Is `u` a polynomial in `x` whose coefficients other than the constant
+/// term are real, so that `im u` does not depend on `x`?  (`(√3/3)·(x + a) +
+/// i` is not a sum with a real `x`-dependent part as written.)
+fn imaginary_part_constant_polynomial(
+    arena: &mut Arena,
+    u: ExprId,
+    x: ExprId,
+    reals: &mut AssumptionCache,
+) -> bool {
+    let Some(coeffs) = calculus_util::poly_coeffs_symbolic(arena, u, x) else {
+        return false;
+    };
+    coeffs.len() >= 2
+        && coeffs.into_iter().skip(1).all(|c| {
+            crate::transforms::realness::constant_realness_as_declared(arena, c, 30, reals)
+                == Some(true)
+        })
+}
+
+/// Is `u = c·g(x)` with `c` constant and `g` real for real `x`?  A product
+/// whose `x`-dependent factors are real ([`real_for_real_x`]), or a
+/// polynomial in `x` whose coefficients are real multiples of its leading
+/// one (`a·x + a`, `a²·x² + 2a²`).
+fn constant_multiple_of_real(
+    arena: &mut Arena,
+    u: ExprId,
+    x: ExprId,
+    reals: &mut AssumptionCache,
+) -> bool {
+    if let ExprNode::Mul(factors) = arena.node(u).clone() {
+        let dependent: Vec<ExprId> = factors
+            .into_iter()
+            .filter(|&t| walk::contains(arena, t, x))
+            .collect();
+        if dependent
+            .into_iter()
+            .all(|t| real_for_real_x(arena, t, x, reals))
+        {
+            return true;
+        }
+    }
+    let Some(coeffs) = calculus_util::poly_coeffs_symbolic(arena, u, x) else {
+        return false;
+    };
+    let Some(&lead) = coeffs.last() else {
+        return false;
+    };
+    if coeffs.len() < 2 || arena.is_zero_structural(lead) {
+        return false;
+    }
+    coeffs.into_iter().all(|c| {
+        let ratio = arena.div(c, lead);
+        let ratio = eval::eval(arena, ratio);
+        crate::transforms::realness::constant_realness_as_declared(arena, ratio, 30, reals)
+            == Some(true)
+    })
+}
+
+/// Is `u(e)` (at a finite endpoint `e`) a constant on the axis of `cut`
+/// but not on the cut itself (a branch point counts as off the cut)?
+fn meets_axis_off_the_cut(
+    arena: &mut Arena,
+    u: ExprId,
+    x: ExprId,
+    e: ExprId,
+    cut: Cut,
+    reals: &mut AssumptionCache,
+) -> bool {
+    if is_infinite(arena, e) {
+        return false;
+    }
+    let at = subs::subs(arena, u, x, e);
+    let at = eval::eval(arena, at);
+    if !walk::free_symbols(arena, at).is_empty() {
+        return false;
+    }
+    // On the real axis: `u(e)` real; on the imaginary one: `i·u(e)` real.
+    let on_axis = match cut {
+        Cut::ImaginaryOutside => {
+            let i = arena.i_unit();
+            let rotated = arena.mul(&[i, at]);
+            eval::eval(arena, rotated)
+        }
+        _ => at,
+    };
+    if crate::transforms::realness::constant_realness_as_declared(arena, on_axis, 30, reals)
+        != Some(true)
+    {
+        return false;
+    }
+    let Some(v) = evalf::eval_const_f64(arena, on_axis) else {
+        return false;
+    };
+    match cut {
+        Cut::RealBelow(bound) => v >= bound,
+        Cut::RealOutside | Cut::ImaginaryOutside => v.abs() <= 1.0,
+    }
+}
+
+/// The first sample point of `[lo, hi]` ([`guard_grid`]) where the
+/// parameter-free `u` crosses `cut`: its transversal coordinate (`im u`
+/// for a cut on the real axis, `re u` for one on the imaginary axis)
+/// changes sign between two samples, at a point (linear interpolation) of
+/// the cut.  Coordinates within `1e-12·max(1, |u|)` of 0 count as 0 (no
+/// sign), so a real `u` with a rounding residue does not cross.
+fn numeric_cut_crossing(
+    arena: &mut Arena,
+    u: ExprId,
+    x: ExprId,
+    cut: Cut,
+    lo: f64,
+    hi: f64,
+) -> Option<f64> {
+    let mut prev: Option<(f64, f64, f64)> = None;
+    for t in guard_grid(lo, hi) {
+        let Some(q) = crate::base::numeric::f64_to_ratio_exact(t) else {
+            prev = None;
+            continue;
+        };
+        let pt = arena.num_ratio(q);
+        let ut = subs::subs(arena, u, x, pt);
+        let ut = eval::eval(arena, ut);
+        let Ok(z) = evalf::evalf_complex64(arena, ut) else {
+            prev = None;
+            continue;
+        };
+        if !z.re.is_finite() || !z.im.is_finite() {
+            prev = None;
+            continue;
+        }
+        let tiny = 1e-12 * z.norm().max(1.0);
+        let (s, c) = match cut {
+            Cut::ImaginaryOutside => (z.re, z.im),
+            _ => (z.im, z.re),
+        };
+        let s = if s.abs() <= tiny { 0.0 } else { s };
+        if let Some((t0, s0, c0)) = prev
+            && s0 != 0.0
+            && s != 0.0
+            && (s0 < 0.0) != (s < 0.0)
+        {
+            let w = s0 / (s0 - s);
+            let along = c0 + w * (c - c0);
+            let on_cut = match cut {
+                Cut::RealBelow(bound) => along < bound,
+                Cut::RealOutside | Cut::ImaginaryOutside => along.abs() > 1.0,
+            };
+            if on_cut {
+                return Some(t0 + w * (t - t0));
+            }
+        }
+        prev = Some((t, s, c));
+    }
+    None
+}
+
+/// `F` with every `atan(u)` whose argument may cross the cut of `atan`
+/// ([`cut_crossing_excluded`]) but is a line `u = α·x + β` with a real
+/// slope `α` written as `(i/2)·(ln(u + i) − ln(u − i))`.  That has the same
+/// derivative `u′/(1 + u²)`, and its logarithms have the imaginary parts
+/// `im β ± 1`, independent of `x`, so they never cross their cuts: the
+/// Newton–Leibniz difference is right for every complex `β`.  (This is
+/// SymPy's form: `integrate(1/(x**2 + 2*a*x + a**2 + 1), (x, 0, 1))` →
+/// `I*log(a - I)/2 - I*log(a + I)/2 - I*log(a + 1 - I)/2 +
+/// I*log(a + 1 + I)/2`.)  For a real `u` nothing changes.
+fn atan_of_complex_line_to_logs(arena: &mut Arena, anti: ExprId, x: ExprId, p: &Piece) -> ExprId {
+    let mut reals = AssumptionCache::new();
+    let mut out = anti;
+    for (u, cut) in cut_arguments(arena, anti, x) {
+        if cut != Cut::ImaginaryOutside || cut_crossing_excluded(arena, u, x, cut, p, &mut reals) {
+            continue;
+        }
+        let atan_u = arena.atan(u);
+        if !walk::contains(arena, out, atan_u) {
+            continue;
+        }
+        let Some(LinearCoeffs { slope, .. }) = calculus_util::linear_coeffs_exact(arena, u, x)
+        else {
+            continue;
+        };
+        if crate::transforms::realness::constant_realness_as_declared(arena, slope, 30, &mut reals)
+            != Some(true)
+        {
+            continue;
+        }
+        let i = arena.i_unit();
+        let neg_i = arena.neg(i);
+        let up = arena.add(&[u, i]);
+        let um = arena.add(&[u, neg_i]);
+        let ln_up = arena.ln(up);
+        let ln_um = arena.ln(um);
+        let diff = arena.sub(ln_up, ln_um);
+        let half = arena.rational(1, 2);
+        let logs = arena.mul(&[half, i, diff]);
+        out = arena.subs_structural(out, atan_u, logs);
+    }
+    out
+}
+
+/// Refuse `F(hi) − F(lo)` when a principal branch in `F` may jump inside
+/// the piece because its argument crosses the branch cut.  The
+/// antiderivative is then discontinuous where the integrand is smooth, and
+/// the Newton–Leibniz difference is off by the jump (a multiple of `2πi`
+/// for `ln`, of `π` for `atan`).
+///
+/// This happens with complex constants: `∫₀¹ dx/(x² + 2a·x + a² + 1)` is
+/// `atan(a + 1) − atan(a)` for a real `a`, but for `a = −1/2 + 3i/2` the
+/// path `x + a` crosses the cut of `atan` at `x = 1/2` and the true value
+/// (mpmath `quad`) differs from that by `π`.  An unassumed parameter is a
+/// complex number in the crate's model (decision D4, 0.31), and up to 0.30
+/// the difference was returned for every `a`.  (That one is now rewritten
+/// first, [`atan_of_complex_line_to_logs`]; `∫₀¹ atan(x + a) dx`, whose
+/// antiderivative also has `ln((x + a)² + 1)`, is refused.)
+///
+/// Each argument is first tried for a proof that no crossing can occur
+/// ([`cut_crossing_excluded`]: real, with an imaginary part independent of
+/// `x`, as `ln(x + a + i)`, or a line meeting the cut's axis off the cut at
+/// an endpoint).  Otherwise an argument with parameters is refused (its
+/// crossing depends on their values), and a parameter-free one is sampled
+/// on the piece ([`numeric_cut_crossing`]), refused where it crosses and
+/// when the piece has symbolic bounds.
+fn check_branch_cuts(
+    arena: &mut Arena,
+    anti: ExprId,
+    x: ExprId,
+    p: &Piece,
+) -> Result<(), SymplexError> {
+    let arguments = cut_arguments(arena, anti, x);
+    if arguments.is_empty() {
+        return Ok(());
+    }
+    let mut reals = AssumptionCache::new();
+    let mut range: Option<Option<Interval<f64>>> = None;
+    for (u, cut) in arguments {
+        if cut_crossing_excluded(arena, u, x, cut, p, &mut reals) {
+            continue;
+        }
+        let shown = arena.display(u).to_string();
+        if walk::free_symbols(arena, u).iter().any(|&s| s != x) {
+            return Err(failed(format!(
+                "the antiderivative's branch cut at {shown} may be crossed along the path for complex values of the parameters"
+            )));
+        }
+        let r = *range.get_or_insert_with(|| numeric_range(arena, p.lo, p.hi));
+        let Some(r) = r else {
+            return Err(failed(format!(
+                "cannot tell whether {shown} crosses the antiderivative's branch cut between symbolic bounds"
+            )));
+        };
+        if let Some(t) = numeric_cut_crossing(arena, u, x, cut, r.lower, r.upper) {
+            return Err(failed(format!(
+                "the antiderivative is discontinuous near x = {t:.6}, where {shown} crosses a branch cut"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// `F(hi⁻) − F(lo⁺)`.  `Ok(None)` when an endpoint value is unknown.

@@ -908,24 +908,48 @@ fn pole_group_partial(arena: &mut Arena, group: &[PoleTerm], n_expr: ExprId) -> 
         }
     }
     if !csum.is_zero() {
-        if m != 1 {
-            return None;
-        }
         let x = add_rat(arena, n_expr, &b0);
-        let g = partial_sum_fn(arena, x, integer_offsets);
+        let g = if m == 1 {
+            partial_sum_fn(arena, x, integer_offsets)
+        } else {
+            polygamma_partial_sum(arena, x, m)
+        };
         let ce = rat_expr(arena, csum);
         terms.push(arena.mul(&[ce, g]));
     }
     for p in far {
-        if m != 1 {
-            return None;
-        }
         let x = add_rat(arena, n_expr, &p.beta);
-        let g = partial_sum_fn(arena, x, integer_offsets);
+        let g = if m == 1 {
+            partial_sum_fn(arena, x, integer_offsets)
+        } else {
+            polygamma_partial_sum(arena, x, m)
+        };
         let ce = rat_expr(arena, p.c.clone());
         terms.push(arena.mul(&[ce, g]));
     }
     Some(add_all(arena, &terms))
+}
+
+/// `G_m(y) = (−1)^{m−1}·ψ^{(m−1)}(y + 1)/(m − 1)!` for `m ≥ 2`, the partial
+/// sum function of `1/y^m`: `G_m(y) − G_m(y − 1) = 1/y^m` by the recurrence
+/// `ψ^{(k)}(y + 1) = ψ^{(k)}(y) + (−1)^k k!/y^{k+1}` (DLMF 5.15.5).  It is
+/// `ζ(m) − ζ(m, y + 1)`, i.e. SymPy's `harmonic(y, m) − ζ(m)`, and `eval`
+/// folds it exactly at integers.  Before 0.31 a group needing it was
+/// refused: `Σ_{k=1}^{n} 1/k²` had no closed form (SymPy:
+/// `summation(1/k**2, (k, 1, n))` → `harmonic(n, 2)`).
+fn polygamma_partial_sum(arena: &mut Arena, y: ExprId, m: u32) -> ExprId {
+    let one = arena.one;
+    let y1 = arena.add(&[y, one]);
+    let order = arena.int(i64::from(m) - 1);
+    let psi = arena.polygamma(order, y1);
+    let mut c = Q::one() / Q::from_integer(factorial(u64::from(m) - 1));
+    if m % 2 == 1 {
+        // (−1)^{m−1} = 1 for odd m
+    } else {
+        c = -c;
+    }
+    let ce = rat_expr(arena, c);
+    arena.mul(&[ce, psi])
 }
 
 fn rational_sum_finite(
@@ -3033,7 +3057,7 @@ fn finite_product(
             return SumOutcome::Closed(enumerate_product(arena, body, var, a, b));
         }
     }
-    match product_closed(arena, body, var, lo, hi) {
+    match product_closed(arena, body, var, lo, hi, true) {
         Some(id) => {
             let n = gamma_ratio_normalize(arena, id);
             let n = gamma_to_factorial(arena, n);
@@ -3109,12 +3133,17 @@ fn flatten_nested_pows(arena: &mut Arena, expr: ExprId) -> ExprId {
     }
 }
 
+/// `finite`: the product is the finite one up to a symbolic `hi` (not the
+/// partial product of an infinite one, whose limit needs the Gamma form);
+/// a linear factor that vanishes at an integer `k₀ ≥ lo` is then the
+/// rising factorial `(lo + β/α)_{count}` (see [`rational_product`]).
 fn product_closed(
     arena: &mut Arena,
     body: ExprId,
     var: ExprId,
     lo: ExprId,
     hi: ExprId,
+    finite: bool,
 ) -> Option<ExprId> {
     if !depends_on(arena, body, var) {
         let n = range_count(arena, lo, hi);
@@ -3125,7 +3154,7 @@ fn product_closed(
             let factors: Vec<ExprId> = factors.to_vec();
             let mut parts = Vec::new();
             for f in factors {
-                parts.push(product_closed(arena, f, var, lo, hi)?);
+                parts.push(product_closed(arena, f, var, lo, hi, finite)?);
             }
             Some(arena.mul(&parts))
         }
@@ -3133,11 +3162,11 @@ fn product_closed(
             let m1 = arena.neg_one;
             let n = range_count(arena, lo, hi);
             let s = arena.pow(m1, n);
-            let p = product_closed(arena, inner, var, lo, hi)?;
+            let p = product_closed(arena, inner, var, lo, hi, finite)?;
             Some(arena.mul(&[s, p]))
         }
         ExprNode::Pow(base, exp) if !depends_on(arena, exp, var) => {
-            let p = product_closed(arena, base, var, lo, hi)?;
+            let p = product_closed(arena, base, var, lo, hi, finite)?;
             Some(arena.pow(p, exp))
         }
         ExprNode::Pow(base, exp) if !depends_on(arena, base, var) => {
@@ -3154,9 +3183,44 @@ fn product_closed(
             };
             Some(arena.exp(s))
         }
-        _ => rational_product(arena, body, var, lo, hi)
-            .or_else(|| linear_symbolic_product(arena, body, var, lo, hi)),
+        _ => rational_product(arena, body, var, lo, hi, finite)
+            .or_else(|| linear_symbolic_product(arena, body, var, lo, hi, finite)),
     }
+}
+
+/// `Π_{k=lo}^{hi} (k + s)` as `Γ(hi + 1 + s)/Γ(lo + s)`, or — for a finite
+/// product whose first factor `lo + s` is an integer `≤ 0` — as the rising
+/// factorial `(lo + s)_{count}`.  The Gamma ratio has a pole in its
+/// denominator there and folded to `0` for every `hi`: before 0.31
+/// `Π_{k=0}^{n} (k − 2)` was `0`, where it is `−2` at `n = 0` and `2` at
+/// `n = 1` (SymPy: `RisingFactorial(-2, n + 1)`), and `Π_{k=1}^{n}(1 − 1/k²)`
+/// was `0` at the empty `n = 0`.  The rising factorial is `0` exactly when
+/// the range reaches the zero (a pole, `zoo`, for a denominator factor).
+fn shifted_factorial_ratio(
+    arena: &mut Arena,
+    lo: ExprId,
+    hi: ExprId,
+    shift: ExprId,
+    e: &Q,
+    finite: bool,
+) -> Vec<ExprId> {
+    let bot_arg = arena.add(&[lo, shift]);
+    let bot_arg = eval::eval(arena, bot_arg);
+    if finite
+        && let Some(b) = as_rat(arena, bot_arg)
+        && b.is_integer()
+        && !b.is_positive()
+    {
+        let count = range_count(arena, lo, hi);
+        let rf = arena.rising_factorial(bot_arg, count);
+        return vec![pow_rat(arena, rf, e)];
+    }
+    let one = arena.one;
+    let hi1 = arena.add(&[hi, one]);
+    let top_arg = arena.add(&[hi1, shift]);
+    let top = arena.gamma(top_arg);
+    let bot = arena.gamma(bot_arg);
+    vec![pow_rat(arena, top, e), pow_rat(arena, bot, &(-e.clone()))]
 }
 
 /// `Π_{k=lo}^{hi} (αk + β)` with rational `α ≠ 0` and a `k`-free (possibly
@@ -3167,6 +3231,7 @@ fn linear_symbolic_product(
     var: ExprId,
     lo: ExprId,
     hi: ExprId,
+    finite: bool,
 ) -> Option<ExprId> {
     let terms = sym_poly_in(arena, body, var)?;
     let alpha_e = terms.iter().find(|(p, _)| *p == 1).map(|(_, c)| *c)?;
@@ -3189,14 +3254,14 @@ fn linear_symbolic_product(
     }
     let inv_alpha = rat_expr(arena, Q::one() / &alpha);
     let shift = arena.mul(&[beta, inv_alpha]);
-    let one = arena.one;
-    let hi1 = arena.add(&[hi, one]);
-    let top_arg = arena.add(&[hi1, shift]);
-    let bot_arg = arena.add(&[lo, shift]);
-    let top = arena.gamma(top_arg);
-    let bot = arena.gamma(bot_arg);
-    factors.push(top);
-    factors.push(pow_rat(arena, bot, &(-Q::one())));
+    factors.extend(shifted_factorial_ratio(
+        arena,
+        lo,
+        hi,
+        shift,
+        &Q::one(),
+        finite,
+    ));
     Some(arena.mul(&factors))
 }
 
@@ -3208,6 +3273,7 @@ fn rational_product(
     var: ExprId,
     lo: ExprId,
     hi: ExprId,
+    finite: bool,
 ) -> Option<ExprId> {
     let body = combine_fractions(arena, body);
     let (n, d) = polybridge::as_numer_denom(arena, body);
@@ -3238,15 +3304,8 @@ fn rational_product(
                 let ap = pow_rat(arena, ae, &e);
                 factors.push(arena.pow(ap, count));
             }
-            let shift = &beta / &alpha;
-            let one = arena.one;
-            let hi1 = arena.add(&[hi, one]);
-            let top_arg = add_rat(arena, hi1, &shift);
-            let bot_arg = add_rat(arena, lo, &shift);
-            let top = arena.gamma(top_arg);
-            let bot = arena.gamma(bot_arg);
-            factors.push(pow_rat(arena, top, &e));
-            factors.push(pow_rat(arena, bot, &(-e)));
+            let shift = rat_expr(arena, &beta / &alpha);
+            factors.extend(shifted_factorial_ratio(arena, lo, hi, shift, &e, finite));
         }
     }
     Some(arena.mul(&factors))
@@ -3421,7 +3480,7 @@ fn infinite_product(arena: &mut Arena, body: ExprId, var: ExprId, lo: ExprId) ->
         return SumOutcome::Unevaluated;
     }
     let n = arena.symbol("_N");
-    let Some(pn) = product_closed(arena, body, var, lo, n) else {
+    let Some(pn) = product_closed(arena, body, var, lo, n, false) else {
         return SumOutcome::Unevaluated;
     };
     let pn = gamma_ratio_normalize(arena, pn);

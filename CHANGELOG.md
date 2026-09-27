@@ -6,6 +6,93 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [Unreleased]
+
+### Breaking (behaviour; no signature changed)
+
+- **In integration the variable is real; a parameter is what its
+  assumptions say.**  `ln|u|` is written only where `u` is real for every
+  real `x` under the declared assumptions of every symbol; otherwise the
+  principal `ln u`, an antiderivative for complex parameters too.
+  `∫ dx/(a·x + 1)` is `ln(a·x + 1)/a`, as in SymPy, Mathematica and
+  Maple (it was `ln|a·x + 1|/a`, whose derivative is not `1/(a·x + 1)`
+  for a non-real `a`); numeric coefficients keep `ln|x − 2|`, and a
+  declared-real `a` keeps `ln|x + a|`.  `∫√((x + a)²)` is no longer
+  rewritten to `∫|x + a|` for an unassumed `a`.  A hunter at complex
+  parameter values found 500 wrong antiderivatives in 6,300 cases; 0 now.
+- **The integrator's self-check samples parameters at complex values
+  too** (a second round, for parameters not declared real, at points
+  where the integrand is real for real parameters: both sides are
+  analytic in the parameters there, so a real-parameter form such as
+  `ln|a·x + 1|`, `|a|` or `sign(a)` is rejected), and samples declared
+  parameters at values that satisfy their declaration (they made a
+  candidate untestable).
+- **`integrate_definite` refuses a Newton–Leibniz difference across a
+  branch cut of the antiderivative**: `∫₀¹ atan(x + a) dx` stays
+  unevaluated for an unassumed `a` (it was `2.3128i` at `a = −1/2 +
+  3i/2`, truly `0.0096 + 0.7420i`), and `atan` of a line with a real slope
+  becomes logarithms: `∫₀¹ dx/(x² + 2ax + a² + 1)` is SymPy's log form (it
+  was `atan(a + 1) − atan(a)`, `2.5536` against `−0.5880`).
+- **`d ln|g|/dx = g′/g`, `d|g|/dx = sign(g)·g′` and `d sign(g)/dx = 0`
+  need a `g` real under the declared assumptions**: an undeclared
+  parameter counted as real, so `d ln|a·x + 1|/dx` was `a/(a·x + 1)`
+  (`(1 + i)/2` at `a = i`, `x = 1`; truly `1/2`).
+- **`solve` applies range restrictions only to real arguments**:
+  `exp(i·x) = −1` is `π`, `cos(i·x) = 2` is `±acosh 2`, `exp(√x) = −1` is
+  `−π²`, `sin(√x) = 2` is `asin(2)²` (all were "no solution");
+  `|f| = c` with a non-real `f` is refused (it returned `±2i` for
+  `|i·x| = 2`).  `solve_general` returns the families of complex
+  exponentials: `(−1)ˣ = 1` is `2n` (it was `0`), `exp(i·x) = 1` is
+  `2πn`, `2^(i·x) = 1` is `2πn/ln 2`, and a family none of whose sampled
+  members solves the equation is dropped.
+- **A candidate root with a certified nonzero residual is rejected**
+  (`√x = −10⁻¹²` returned `10⁻²⁴`, `asin x = π/2 + 10⁻¹¹` a spurious
+  root); `solve(exp(−40))` has no solution (it was an identity).
+- **Products through a zero factor are rising factorials**:
+  `∏_{k=0}^{n}(k − 2)` was `0` for every `n` (it is `−2` at `n = 0`).
+- **Fourier transforms** collect impulses into one term and drop those
+  whose coefficients cancel (windows cut from periodic functions no
+  longer carry `(sin²1 + cos²1 − 1)·δ` terms).
+
+### Added
+
+- **`Piecewise` inputs in every transform**: Laplace (with `H(c − t)` and
+  `|t − c| < r` conditions; the inverse handles `e^{−as+b}` delays and
+  `(1 − e^{−s})²/s²`), Fourier of compactly supported functions, Z of
+  piecewise sequences, of `aⁿ·H(n − k)` and inverse of finite windows,
+  Mellin with steps at any threshold, compact support and polynomial
+  times step.  Values checked against mpmath quadrature (1,197 points).
+- **`Σ 1/(k + β)ᵐ` with symbolic limits** by polygamma
+  (`Σ_{k=1}^{n} 1/k² = π²/6 − ψ′(n + 1)`).
+
+### Fixed
+
+- **Polynomial systems keep every exact solution**: a candidate whose
+  residual is exactly zero made evalf refuse (`PrecisionExhausted`), and
+  the check dropped it: `(y³ − 3)² = 0` with `x` linear in `y`, in shifted
+  variables, had 1 solution instead of 3.  Candidates are decided by
+  certified evalf with the deep zero search (a certified digit is
+  nonzero; zero after 1,024 extra bits is zero), falling back to the
+  minimal polynomial, instead of the tolerances `10⁻¹⁰` and
+  `10⁻⁸·(1 + max|v|)^deg`.  `solve_polynomial_system` finds rational
+  roots by factoring over ℤ (a constant term beyond `i64` was read as 0,
+  so `y² − 2⁷¹` had the root 0).
+- **Inequalities exclude points outside the domain**:
+  `(x + 2)/(ln x + 2) ≥ 0` contained `x = −2` (15 of 3,000 hunter
+  cases).
+- **Integration with a symbolic coefficient**: routes that continue from
+  an intermediate antiderivative (by parts) see it in the form the stage
+  returns (`ln(a²x² + 1)`, not `ln|a²x² + 1|`); Rubi verifies 35 more
+  antiderivatives.  Degenerate-parameter handling no longer solves for
+  parameter values that depend on the variable (a panic, and `Piecewise`
+  conditions in `x`).
+- **`discriminant_symbolic`** by the subresultant PRS: `res(f, f′)/lc(f)`
+  with one exact division in `ℚ[params]` (the Berkowitz determinant over
+  `Ex` returned `None` for a dense degree-8 polynomial in three
+  parameters and took 1.2 s at degree 6; now 3.7 s and 0.2 s, release).
+  `MultiPoly` arithmetic on integer coefficients skips `num_rational`'s
+  gcd reduction (a binary gcd of an `n`-bit number and 1 costs `O(n²)`).
+
 ## [0.30.0] - 2026-09-27
 
 The differential-hunt release.  In-house oracles ran over hundreds of

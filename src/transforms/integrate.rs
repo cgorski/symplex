@@ -273,6 +273,12 @@ fn accept_or_unevaluated(
 /// `RootOf(e^{8x} − …, 0)`, which is no polynomial).  Such pieces had never
 /// been integrated before [`contains_var`] learned that the polynomial's
 /// variable is bound.
+///
+/// The evidence rule judges `big_f` after
+/// [`analytic_log_of_complex_arguments`], the form in which the stage will
+/// return it: a route may build `ln|b·x + a|` for an unassumed `a`, `b`,
+/// which the stage exit turns into `ln(b·x + a)`; the complex round of
+/// [`check_antiderivative`] would reject the first (decision D4, 0.31).
 fn candidate_rejected(
     arena: &mut Arena,
     f: ExprId,
@@ -284,6 +290,7 @@ fn candidate_rejected(
         tracing::debug!("integrate: rejecting a closed form over implicit roots");
         return true;
     }
+    let big_f = analytic_log_of_complex_arguments(arena, big_f, var_sym);
     antiderivative_rejected(arena, f, big_f, var, var_sym)
 }
 
@@ -335,7 +342,14 @@ fn analytic_log_of_complex_arguments(arena: &mut Arena, e: ExprId, var_sym: Symb
 /// convention (`√(x − 5)` is real where the integrand is); what is decided
 /// here is each maximal variable-free subexpression, by
 /// [`constant_is_real`].  A constant that is not known to be real makes
-/// `u` not known to be real.
+/// `u` not known to be real — in particular every constant with a symbol
+/// that has no declared assumptions (decision D4, 0.31: the variable is
+/// real, a parameter is what its assumptions say, and an unassumed one
+/// may be complex).  So `ln|a·x + 1|` stays only for a declared-real `a`;
+/// up to 0.30 an unassumed `a` counted as real and `∫ dx/(a·x + 1)` was
+/// `ln|a·x + 1|/a`, whose derivative `re(conj(u)·a)/|u|²` is not
+/// `1/(a·x + 1)` for a non-real `a` (SymPy, Mathematica and Maple all
+/// return `log(a·x + 1)/a`).
 fn log_argument_is_real(
     arena: &mut Arena,
     u: ExprId,
@@ -357,17 +371,20 @@ fn log_argument_is_real(
     true
 }
 
-/// Is the variable-free `c` known to be real, for real values of its
-/// parameters?  [`crate::transforms::realness::constant_realness`] to
+/// Is the variable-free `c` known to be real under the declared
+/// assumptions of its parameters?
+/// [`crate::transforms::realness::constant_realness_as_declared`] to
 /// [`FTC_CHECK_DIGITS`] digits (`√(1/2 − √5/2)` is not, `√(3 − √5)` is,
-/// `√a` is undecided).  An undecided `c` is not known to be real: the
-/// answer then keeps `ln u`, which is still an antiderivative.
+/// `a + 1` is for a declared-real `a` and undecided for an unassumed one,
+/// `√a` is undecided either way).  An undecided `c` is not known to be
+/// real: the answer then keeps `ln u`, which is still an antiderivative.
 fn constant_is_real(
     arena: &mut Arena,
     c: ExprId,
     reals: &mut crate::base::assumptions::AssumptionCache,
 ) -> bool {
-    crate::transforms::realness::constant_realness(arena, c, FTC_CHECK_DIGITS, reals) == Some(true)
+    crate::transforms::realness::constant_realness_as_declared(arena, c, FTC_CHECK_DIGITS, reals)
+        == Some(true)
 }
 
 /// Check whether `expr` is a suitable candidate for the `u` factor in
@@ -1528,6 +1545,14 @@ fn integrate_node(
         _ => {}
     }
     let result = integrate_node_uncached(arena, expr, var, var_sym, depth);
+    // Every intermediate result in the form the stage exit gives it: a
+    // route that continues from one (by parts differentiates `u`, which
+    // may be an earlier `∫`) must not meet `ln|a²x² + 1|` for an
+    // unassumed `a`.  That leaves the stage as `ln(a²x² + 1)`, whose
+    // derivative is `2a²x/(a²x² + 1)`, while `diff` gives `ln|·|` its
+    // complex-safe derivative since 0.31 (`∫ x²(c + a²c·x²)·atan(a·x)`
+    // then stayed unevaluated).
+    let result = analytic_log_of_complex_arguments(arena, result, var_sym);
     let outcome = if matches!(arena.node(result), ExprNode::Integral(e, v) if *e == expr && *v == var)
     {
         Some(MemoOutcome::Failed { depth })
@@ -4348,7 +4373,7 @@ fn contains_non_finite(arena: &Arena, e: ExprId) -> bool {
 }
 
 /// Is `e` real *and continuous* for every real value of the integration
-/// variable (the other symbols are treated as real parameters)?  The
+/// variable, under the declared assumptions of the other symbols?  The
 /// `|g|`/`sign(g)` route needs both: `g` may change sign only at its real
 /// roots.  Conservative: sums, products, non-negative integer powers (a
 /// negative power only of a variable-free base), and `sin`/`cos`/`exp`/
@@ -4356,13 +4381,19 @@ fn contains_non_finite(arena: &Arena, e: ExprId) -> bool {
 /// reciprocals of the variable and `sign` are refused.  (`∫ |π/(4 cos x)| dx`
 /// came back as `(π/4)·ln|sec x + tan x|`, wrong wherever `cos x < 0` —
 /// `c/cos x` has no roots but changes sign at its poles; found by
-/// `fuzz_integrate`.)
+/// `fuzz_integrate`.)  A symbol other than the variable counts only when
+/// it is declared real (decision D4, 0.31): up to 0.30 every symbol did,
+/// and [`flatten_nested_pow`] rewrote `√((x + a)²)` to `|x + a|` for an
+/// unassumed `a` — `∫ √((x + a)²) dx` came back as the unevaluated
+/// `∫ |x + a| dx`, a different integral for a non-real `a`.
 fn real_on_reals(arena: &Arena, e: ExprId, var_sym: SymbolId) -> bool {
     crate::base::walk::post_order_ids(arena, e)
         .into_iter()
         .all(|id| match arena.node(id) {
+            ExprNode::Symbol(s) => {
+                *s == var_sym || crate::transforms::realness::symbol_declared_real(arena, *s)
+            }
             ExprNode::Num(_)
-            | ExprNode::Symbol(_)
             | ExprNode::Pi
             | ExprNode::E
             | ExprNode::EulerGamma
@@ -4593,6 +4624,15 @@ fn try_piecewise_wrap(
             let solutions = crate::transforms::solve::solve(arena, *denom, *sym_expr);
             for sol in &solutions {
                 let degen_val = sol.value;
+                // A degenerate value is a constant.  A denominator in both
+                // the parameter and the variable (`(a + 1)·x + a`, from a
+                // partial answer) has the "solution" `a = −x/(x + 1)`, and
+                // substituting it made a zero denominator in disguise that
+                // panicked the rational integrator (found by the
+                // complex-parameter hunter, 0.31).
+                if contains_var(arena, degen_val, var_sym) {
+                    continue;
+                }
 
                 // Avoid duplicate wrapping for the same (param, value) pair.
                 if handled
@@ -4613,6 +4653,10 @@ fn try_piecewise_wrap(
                 }
 
                 // Re-integrate the simplified integrand at the degenerate value.
+                tracing::debug!(
+                    integrand = %arena.display(integrand_at_degen),
+                    "try_piecewise_wrap: integrating a degenerate case"
+                );
                 let degen_result = integrate(arena, integrand_at_degen, var);
                 let degen_result = crate::transforms::eval::eval(arena, degen_result);
 
@@ -4932,13 +4976,18 @@ enum FtcVerdict {
 /// - [`FtcVerdict::Untestable`] — accepted.  When `f` itself evaluates at no
 ///   sample point, `F` contains an unevaluated `Integral` (a partial
 ///   answer, which says so), `F′` a derivative `diff` could not take, or a
-///   parameter carries declared assumptions generic values might violate,
-///   no candidate could ever be tested; the answer stands as the route
-///   derived it.
+///   parameter carries declared assumptions none of the generic values
+///   satisfies, no candidate could ever be tested; the answer stands as
+///   the route derived it.
 ///
 /// Free parameters are bound to generic positive rationals
 /// ([`FTC_PARAMETER_VALUES`]) before sampling; up to 0.28.0 a parameter
-/// skipped the check altogether.
+/// skipped the check altogether.  A verified candidate with parameters
+/// that are not declared real then faces a second round with those
+/// parameters at generic **complex** values (decision D4, 0.31; see
+/// [`check_antiderivative`]), which rejects the real-parameter forms
+/// (`ln|a·x + 1|`, `|a|`, `sign(a)`) that the first round cannot tell from
+/// the principal ones.
 ///
 /// Reached through [`candidate_rejected`], by the routes that check their own
 /// candidates and by every stage of `integrate_impl`, so that no closed form
@@ -5004,19 +5053,64 @@ const FTC_PARAMETER_VALUES: [(i64, i64); 8] = [
     (13, 37),
 ];
 
+/// Imaginary parts of the complex values of the second round of
+/// [`check_antiderivative`]: the k-th parameter that is not declared real
+/// takes `FTC_PARAMETER_VALUES[k] + i·FTC_PARAMETER_IMAG[k]`.
+/// Prime denominators unlike those of the real parts, so the values keep
+/// clear of accidental relations; moderate imaginary parts (0.3 to 0.5)
+/// and positive real parts, see [`complex_round_differs`].
+const FTC_PARAMETER_IMAG: [(i64, i64); 8] = [
+    (13, 41),
+    (19, 43),
+    (17, 47),
+    (23, 53),
+    (19, 59),
+    (29, 61),
+    (23, 67),
+    (31, 71),
+];
+
+/// Which values [`bind_parameters`] gives the parameters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ParameterValues {
+    /// The k-th parameter at the k-th value of [`FTC_PARAMETER_VALUES`]
+    /// or its negative, whichever satisfies its declaration.
+    Real,
+    /// A parameter that is not declared real at that value plus
+    /// `i·FTC_PARAMETER_IMAG[k]` where that satisfies its declaration (always,
+    /// for one without declared assumptions); the others as in `Real`.
+    Complex,
+}
+
+/// `f` and `big_f` with their parameters bound, and whether any of them
+/// may be complex (is not declared real), and so is bound to a complex
+/// value in the [`ParameterValues::Complex`] round.
+struct BoundCandidate {
+    f: ExprId,
+    big_f: ExprId,
+    may_be_complex: bool,
+}
+
 /// `f` and `big_f` with every free symbol other than `var` bound to a
-/// value of [`FTC_PARAMETER_VALUES`]; `None` when there are more
-/// parameters than values or a parameter carries declared assumptions (an
-/// `integer` or `negative` symbol must not be sampled at `17/13`).
-/// `subs` replaces free occurrences only, so a `RootOf(a⁵ − a + 1, 0)` or a
-/// sum over `a` keeps its bound `a` (0.28.0 renamed such binders here
-/// first, when `subs` did not respect them).
+/// value derived from [`FTC_PARAMETER_VALUES`] ([`ParameterValues`]): the
+/// k-th parameter in name order takes the k-th value, its negative, or (in
+/// the complex round, for a parameter not declared real) that value plus
+/// `i·FTC_PARAMETER_IMAG[k]` — the first of these that provably satisfies
+/// every declared property (a parameter without assumptions takes any; a
+/// `real` or `positive` one is sampled at `17/13`, a `negative` one at
+/// `−17/13`).  `None` when no candidate does (an `integer` symbol must not
+/// be sampled at `17/13`) or there are more parameters than values.  Up to
+/// 0.30 any declared parameter made the candidate untestable.  `subs`
+/// replaces free occurrences only, so a `RootOf(a⁵ − a + 1, 0)` or a sum
+/// over `a` keeps its bound `a` (0.28.0 renamed such binders here first,
+/// when `subs` did not respect them).
 fn bind_parameters(
     arena: &mut Arena,
     f: ExprId,
     big_f: ExprId,
     var: ExprId,
-) -> Option<(ExprId, ExprId)> {
+    mode: ParameterValues,
+) -> Option<BoundCandidate> {
     let mut params: Vec<(String, ExprId)> = Vec::new();
     for root in [f, big_f] {
         for s in crate::base::walk::free_symbols(arena, root) {
@@ -5026,9 +5120,6 @@ fn bind_parameters(
             let ExprNode::Symbol(sid) = *arena.node(s) else {
                 return None;
             };
-            if arena.symbol_assumptions(sid) != crate::base::assumptions::Assumptions::default() {
-                return None;
-            }
             params.push((arena.symbol_name(sid).to_owned(), s));
         }
     }
@@ -5037,12 +5128,57 @@ fn bind_parameters(
     }
     params.sort();
     let (mut f, mut big_f) = (f, big_f);
-    for (&(_, s), &(p, q)) in params.iter().zip(FTC_PARAMETER_VALUES.iter()) {
-        let value = arena.rational(p, q);
+    let mut may_be_complex = false;
+    let mut facts = crate::base::assumptions::AssumptionCache::new();
+    for (k, &(_, s)) in params.iter().enumerate() {
+        let ExprNode::Symbol(sid) = *arena.node(s) else {
+            return None;
+        };
+        let mut declared = arena.symbol_assumptions(sid);
+        declared.normalize_declared();
+        let complex = declared.query(crate::base::assumptions::Props::REAL) != Some(true);
+        may_be_complex |= complex;
+        let (p, q) = FTC_PARAMETER_VALUES[k];
+        let re = arena.rational(p, q);
+        let mut candidates: SmallVec<[ExprId; 3]> = SmallVec::new();
+        if mode == ParameterValues::Complex && complex {
+            let (r, t) = FTC_PARAMETER_IMAG[k];
+            let im = arena.rational(r, t);
+            let i = arena.i_unit();
+            let im = arena.mul(&[im, i]);
+            candidates.push(arena.add(&[re, im]));
+        }
+        candidates.push(re);
+        candidates.push(arena.rational(-p, q));
+        let value = candidates
+            .into_iter()
+            .find(|&v| value_satisfies(arena, v, declared, &mut facts))?;
         f = crate::transforms::subs::subs(arena, f, s, value);
         big_f = crate::transforms::subs::subs(arena, big_f, s, value);
     }
-    Some((f, big_f))
+    Some(BoundCandidate {
+        f,
+        big_f,
+        may_be_complex,
+    })
+}
+
+/// Does the constant `value` provably have every property `declared`
+/// asserts and provably lack every one it denies?
+fn value_satisfies(
+    arena: &mut Arena,
+    value: ExprId,
+    declared: crate::base::assumptions::Assumptions,
+    facts: &mut crate::base::assumptions::AssumptionCache,
+) -> bool {
+    declared
+        .known_true
+        .iter()
+        .all(|flag| facts.query(arena, value, flag) == Some(true))
+        && declared
+            .known_false
+            .iter()
+            .all(|flag| facts.query(arena, value, flag) == Some(false))
 }
 
 /// The numeric FTC check behind [`antiderivative_rejected`]: `F′` against
@@ -5058,6 +5194,13 @@ fn bind_parameters(
 /// complex (the real-variable convention: `ln|x|` for `∫ dx/x` differs
 /// from `1/x` for `x < 0` only in a complex continuation, and the
 /// continuation of `f` is what is compared there).
+///
+/// That first round binds every parameter to a real rational
+/// ([`ParameterValues::Real`]), where `ln|a·x + 1|/a` and `ln(a·x + 1)/a`
+/// both pass.  A verified candidate with parameters that are not declared
+/// real — complex numbers in the crate's model — faces a second round with
+/// them at complex values ([`complex_round_differs`]); a difference there
+/// makes it [`FtcVerdict::Wrong`] (decision D4, 0.31).
 fn check_antiderivative(
     arena: &mut Arena,
     f: ExprId,
@@ -5068,10 +5211,126 @@ fn check_antiderivative(
     if crate::base::walk::has_unevaluated(arena, big_f) {
         return FtcVerdict::Untestable;
     }
-    let Some((f, big_f)) = bind_parameters(arena, f, big_f, var) else {
+    let Some(bound) = bind_parameters(arena, f, big_f, var, ParameterValues::Real) else {
         return FtcVerdict::Untestable;
     };
+    let mut real_domain: Vec<ExprId> = Vec::new();
+    let verdict =
+        check_bound_antiderivative(arena, bound.f, bound.big_f, var, var_sym, &mut real_domain);
+    if verdict != FtcVerdict::Verified || !bound.may_be_complex {
+        return verdict;
+    }
+    let Some(complex) = bind_parameters(arena, f, big_f, var, ParameterValues::Complex) else {
+        return verdict;
+    };
+    if real_domain.is_empty() {
+        real_domain = real_domain_points(arena, bound.f, var);
+    }
+    if complex_round_differs(arena, complex.f, complex.big_f, var, var_sym, &real_domain) {
+        tracing::debug!(
+            "integrate: candidate antiderivative fails the FTC check at complex parameter values"
+        );
+        return FtcVerdict::Wrong;
+    }
+    verdict
+}
 
+/// The points of [`FTC_SAMPLE_POINTS`] and [`FTC_RETRY_POINTS`] where the
+/// integrand `f` (parameters bound to real values) evaluates to a real
+/// number.
+fn real_domain_points(arena: &mut Arena, f: ExprId, var: ExprId) -> Vec<ExprId> {
+    let mut out = Vec::new();
+    for &(p, q) in FTC_SAMPLE_POINTS.iter().chain(FTC_RETRY_POINTS.iter()) {
+        let point = arena.rational(p, q);
+        let f_at = crate::transforms::subs::subs(arena, f, var, point);
+        if numeric_value(arena, f_at)
+            .is_some_and(|v| crate::transforms::evalf::is_real_to_digits(&v, FTC_CHECK_DIGITS))
+        {
+            out.push(point);
+        }
+    }
+    out
+}
+
+/// Points of the complex round that must agree before it gives up
+/// looking for a difference.
+const FTC_COMPLEX_AGREEMENTS: usize = 3;
+
+/// The second round of [`check_antiderivative`]: `f` and `big_f` with the
+/// parameters that are not declared real at complex values
+/// ([`ParameterValues::Complex`]), compared at `real_domain` — the real
+/// sample points where the integrand is real for the real values of the
+/// first round.  `true` when `F′ ≠ f` at one of them.
+///
+/// Why the comparison is sound although `f` is complex at every point now,
+/// where the first round excuses a difference (the real-variable
+/// convention): `x` is real and only the parameters moved off the real
+/// axis.  At a point where the integrand is real for real parameters,
+/// `F′ = f` holds for the parameters on a real interval, and both sides
+/// are analytic in the parameters there, so the identity continues to
+/// complex parameter values near that interval — unless `F` is not
+/// analytic in them, which is exactly what a real-parameter form is:
+/// `d/dx ln|a·x + 1| = re(conj(u)·a)/|u|²` differs from `a/u` at every point
+/// where `u` is not real; so do `|a|` and `sign(a)`.  The allowance of the
+/// first round is kept where it belongs: a point where the integrand is
+/// complex for real parameters (`√(x − 5)` at `x = 1/3`) is not in
+/// `real_domain` and is not compared, so `ln|x + √(x² − 1)|`-type parts
+/// that depend on `x` alone keep their convention whatever their
+/// coefficients.  The complex values have positive real parts
+/// ([`FTC_PARAMETER_IMAG`]): a principal form such as `√a` has its cut on
+/// the negative axis, and values next to the positive reals continue the
+/// identity from there without crossing it.  An undecidable point (`F′`
+/// or `f` does not evaluate at the complex values) says nothing; the round
+/// stops after [`FTC_COMPLEX_AGREEMENTS`] agreeing points.
+fn complex_round_differs(
+    arena: &mut Arena,
+    f: ExprId,
+    big_f: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+    real_domain: &[ExprId],
+) -> bool {
+    let d_big_f = crate::transforms::diff::diff(arena, big_f, var);
+    if crate::base::walk::has_unevaluated(arena, d_big_f) {
+        return false;
+    }
+    let residual = arena.sub(d_big_f, f);
+    if !contains_var(arena, residual, var_sym) {
+        return residual_abs(arena, residual).is_some_and(|r| r > FTC_CHECK_REL_TOL);
+    }
+    let mut agreements = 0;
+    for &point in real_domain {
+        match ftc_point(arena, f, d_big_f, residual, var, point) {
+            FtcPoint::Differs { .. } => {
+                tracing::debug!(
+                    point = %arena.display(point),
+                    "integrate: F′ ≠ f at complex parameter values"
+                );
+                return true;
+            }
+            FtcPoint::Agrees { .. } => {
+                agreements += 1;
+                if agreements >= FTC_COMPLEX_AGREEMENTS {
+                    return false;
+                }
+            }
+            FtcPoint::IntegrandUnevaluable | FtcPoint::DerivativeUnevaluable => {}
+        }
+    }
+    false
+}
+
+/// The first round of [`check_antiderivative`], on `f` and `big_f` with
+/// their parameters bound.  Every sample point where `f` is real and
+/// `F′ = f` is appended to `real_domain`.
+fn check_bound_antiderivative(
+    arena: &mut Arena,
+    f: ExprId,
+    big_f: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+    real_domain: &mut Vec<ExprId>,
+) -> FtcVerdict {
     let d_big_f = crate::transforms::diff::diff(arena, big_f, var);
     if crate::base::walk::has_unevaluated(arena, d_big_f) {
         return FtcVerdict::Untestable;
@@ -5102,8 +5361,11 @@ fn check_antiderivative(
             let point = arena.rational(p, q);
             match ftc_point(arena, f, d_big_f, residual, var, point) {
                 FtcPoint::IntegrandUnevaluable => {}
-                FtcPoint::Agrees => {
+                FtcPoint::Agrees { f_real } => {
                     integrand_evaluates = true;
+                    if f_real {
+                        real_domain.push(point);
+                    }
                     // `F′ = f` proves nothing about an `F` that is undefined
                     // (`x·e^{kx}/k − e^{kx}/k²` with a `k` that is 0 without
                     // being so structurally has `F′ = x·e^{kx}` exactly).
@@ -5142,8 +5404,8 @@ enum FtcPoint {
     IntegrandUnevaluable,
     /// `f` evaluates, `F′` (and `F′ − f`) does not.
     DerivativeUnevaluable,
-    /// `|F′ − f| ≤ tol·max(1, |f|)`.
-    Agrees,
+    /// `|F′ − f| ≤ tol·max(1, |f|)`, with `f` real or complex here.
+    Agrees { f_real: bool },
     /// `|F′ − f| > tol·max(1, |f|)`, with `f` real or complex here.
     Differs { f_real: bool },
 }
@@ -5177,12 +5439,11 @@ fn ftc_point(
             }
         }
     };
+    let f_real = crate::transforms::evalf::is_real_to_digits(&f_val, FTC_CHECK_DIGITS);
     if gap <= FTC_CHECK_REL_TOL * f_abs.max(1.0) {
-        FtcPoint::Agrees
+        FtcPoint::Agrees { f_real }
     } else {
-        FtcPoint::Differs {
-            f_real: crate::transforms::evalf::is_real_to_digits(&f_val, FTC_CHECK_DIGITS),
-        }
+        FtcPoint::Differs { f_real }
     }
 }
 
@@ -6285,10 +6546,14 @@ mod tests {
 
     #[test]
     fn ftc_check_samples_parameters() {
-        // Up to 0.28.0 a free parameter skipped the check.
+        // Up to 0.28.0 a free parameter skipped the check.  Up to 0.30
+        // `ln|x + a|` was verified here too (the parameter took real values
+        // only); an unassumed `a` is complex (decision D4, 0.31), and the
+        // complex round rejects it.
+        assert_eq!(ftc_verdict("1/(x + a)", "ln(x + a)"), FtcVerdict::Verified);
         assert_eq!(
             ftc_verdict("1/(x + a)", "ln(abs(x + a))"),
-            FtcVerdict::Verified
+            FtcVerdict::Wrong
         );
         assert_eq!(
             ftc_verdict("1/(x + a)", "ln(abs(x + a))/a"),
@@ -6368,17 +6633,28 @@ mod tests {
     #[test]
     fn constant_realness_is_exact_or_certified() {
         let ctx = crate::api::context::Context::new();
+        // Decision D4 (0.31): `a`, `b` are unassumed, hence complex
+        // parameters (`a*b + 3` counted as real up to 0.30); `r`, `s` are
+        // declared real.
+        ctx.symbol_with("r", &[crate::base::assumptions::Assumption::Real])
+            .unwrap();
+        ctx.symbol_with("s", &[crate::base::assumptions::Assumption::Positive])
+            .unwrap();
         let cases = [
             ("sqrt(2)", true),
-            ("a*b + 3", true),
+            ("a*b + 3", false),
+            ("abs(a) + 3", true),
+            ("r*s + 3", true),
             ("ln(3)", true),
             ("sqrt(3 - sqrt(5))", true),
             ("sqrt(1/2 - sqrt(5)/2)", false),
             ("exp(pi*I/8)", false),
             ("RootOf(x^5 - x + 1, 1)", false),
             // A real parameter of unknown sign.
+            ("sqrt(r)", false),
+            ("sqrt(-r)", false),
+            ("sqrt(s)", true),
             ("sqrt(a)", false),
-            ("sqrt(-a)", false),
         ];
         for (src, expected) in cases {
             let e = ctx.parse(src).unwrap().id();
@@ -6387,6 +6663,57 @@ mod tests {
                 constant_is_real(a, e, &mut reals)
             });
             assert_eq!(got, expected, "constant_is_real({src})");
+        }
+    }
+
+    /// The verifier's complex round (decision D4, 0.31).  Up to 0.30 the
+    /// parameters were bound to positive rationals only, where
+    /// `ln|a·x + 1|/a` passes as an antiderivative of `1/(a·x + 1)`; and a
+    /// declared parameter made every candidate untestable.  `r` is declared
+    /// declared real, `n` an integer (no generic value satisfies that), `z`
+    /// declared complex (which does not make it real), `m` negative.
+    #[test]
+    fn ftc_check_binds_unassumed_parameters_to_complex_values() {
+        use crate::base::assumptions::Assumption;
+        let ctx = crate::api::context::Context::new();
+        ctx.symbol_with("r", &[Assumption::Real]).unwrap();
+        ctx.symbol_with("n", &[Assumption::Integer]).unwrap();
+        ctx.symbol_with("z", &[Assumption::Complex]).unwrap();
+        ctx.symbol_with("m", &[Assumption::Negative]).unwrap();
+        let cases = [
+            ("1/(z*x + 1)", "ln(abs(z*x + 1))/z", FtcVerdict::Wrong),
+            ("1/(z*x + 1)", "ln(z*x + 1)/z", FtcVerdict::Verified),
+            ("1/(x - m)", "ln(abs(x - m))", FtcVerdict::Verified),
+            // Wrong for a negative `m`, right for a positive one: up to 0.30
+            // untestable, now sampled at `m = −17/13`.
+            ("sqrt(m^2)", "m*x", FtcVerdict::Wrong),
+            ("1/(a*x + 1)", "ln(abs(a*x + 1))/a", FtcVerdict::Wrong),
+            ("1/(a*x + 1)", "ln(a*x + 1)/a", FtcVerdict::Verified),
+            ("1/(r*x + 1)", "ln(abs(r*x + 1))/r", FtcVerdict::Verified),
+            ("1/(x - 2)", "ln(abs(x - 2))", FtcVerdict::Verified),
+            ("a*tan(x)", "-a*ln(abs(cos(x)))", FtcVerdict::Verified),
+            // A part that depends on `x` alone keeps the real-variable
+            // convention whatever its coefficient.
+            (
+                "a/sqrt(x^2 - 1)",
+                "a*ln(abs(x + sqrt(x^2 - 1)))",
+                FtcVerdict::Verified,
+            ),
+            ("a", "abs(a)*x", FtcVerdict::Wrong),
+            ("exp(a*x)", "exp(a*x)/a", FtcVerdict::Verified),
+            ("x^n", "x^(n + 1)/(n + 1)", FtcVerdict::Untestable),
+        ];
+        for (f_src, big_f_src, expected) in cases {
+            let f = ctx.parse(f_src).unwrap().id();
+            let big_f = ctx.parse(big_f_src).unwrap().id();
+            let got = ctx.with_arena_mut(|a| {
+                let x = a.symbol("x");
+                let ExprNode::Symbol(x_sym) = *a.node(x) else {
+                    unreachable!()
+                };
+                check_antiderivative(a, f, big_f, x, x_sym)
+            });
+            assert_eq!(got, expected, "∫ {f_src} = {big_f_src}");
         }
     }
 }

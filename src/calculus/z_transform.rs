@@ -41,7 +41,7 @@
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::{One, Signed, Zero};
+use num_traits::{One, Signed, ToPrimitive, Zero};
 
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
@@ -128,10 +128,329 @@ fn do_forward(
         return Ok(result);
     }
 
+    // ── Piecewise sequences and delayed steps g(n)·u[n − k] ──
+    if let Some(result) = try_piecewise_sequence(arena, expr, n_var, n_sym, z_var)? {
+        return Ok(result);
+    }
+    if let Some(result) = try_step_shift(arena, expr, n_var, n_sym, z_var)? {
+        return Ok(result);
+    }
+
     Err(SymplexError::ComputationFailed {
         operation: "z_transform",
         reason: format!("cannot transform {}", arena.display(expr)),
     })
+}
+
+/// A set of integers `n ≥ 0`: disjoint ascending intervals `[a, b]`
+/// (`b = None` for `∞`).
+type IntSet = Vec<(i64, Option<i64>)>;
+
+/// Largest finite window summed term by term by [`try_piecewise_sequence`].
+const MAX_WINDOW_TERMS: i64 = 4096;
+
+fn set_normalize(mut s: IntSet) -> IntSet {
+    s.retain(|&(a, b)| b.is_none_or(|b| b >= a));
+    s.sort_by_key(|&(a, _)| a);
+    let mut out: IntSet = Vec::new();
+    for (a, b) in s {
+        if let Some(last) = out.last_mut() {
+            let reach = last.1;
+            if reach.is_none_or(|r| a <= r.saturating_add(1)) {
+                last.1 = match (reach, b) {
+                    (None, _) | (_, None) => None,
+                    (Some(r), Some(b)) => Some(r.max(b)),
+                };
+                continue;
+            }
+        }
+        out.push((a, b));
+    }
+    out
+}
+
+fn set_complement(s: &IntSet) -> IntSet {
+    let mut out = Vec::new();
+    let mut next = 0i64;
+    for &(a, b) in s {
+        if a > next {
+            out.push((next, Some(a - 1)));
+        }
+        match b {
+            Some(b) => next = b.saturating_add(1),
+            None => return set_normalize(out),
+        }
+    }
+    out.push((next, None));
+    set_normalize(out)
+}
+
+fn set_intersect(x: &IntSet, y: &IntSet) -> IntSet {
+    let mut out = Vec::new();
+    for &(a1, b1) in x {
+        for &(a2, b2) in y {
+            let a = a1.max(a2);
+            let b = match (b1, b2) {
+                (None, b) | (b, None) => b,
+                (Some(p), Some(q)) => Some(p.min(q)),
+            };
+            out.push((a, b));
+        }
+    }
+    set_normalize(out)
+}
+
+/// The integers `n ≥ 0` satisfying the condition `cond` (linear
+/// inequalities and equations in `n` with rational coefficients, `And`,
+/// `Or`, `Not`, `True`, `False`), or `None` when it is not of that form.
+/// Worklist-free: conditions are shallow, and each connective is handled
+/// by a loop over its operands' sets.
+fn condition_set(arena: &mut Arena, cond: ExprId, n_var: ExprId) -> Option<IntSet> {
+    // Post-order over the Boolean structure (no recursion).
+    let post = crate::base::walk::post_order_ids(arena, cond);
+    let mut sets: rustc_hash::FxHashMap<ExprId, IntSet> = rustc_hash::FxHashMap::default();
+    for id in post {
+        let s = match arena.node(id).clone() {
+            ExprNode::BoolTrue => vec![(0, None)],
+            ExprNode::BoolFalse => vec![],
+            ExprNode::Gt(a, b) | ExprNode::Ge(a, b) | ExprNode::Eq_(a, b) | ExprNode::Ne(a, b) => {
+                let kind = arena.node(id).clone();
+                let d = arena.sub(a, b);
+                let d = crate::transforms::eval::eval(arena, d);
+                let (al, be) = linear_in(arena, d, n_var)?;
+                let al = arena.as_num(al).cloned()?;
+                let be = arena.as_num(be).cloned()?;
+                if al.is_zero() {
+                    return None;
+                }
+                // al·n + be ⋚ 0 ⇔ n ⋚ θ (al > 0) or n ⋛ θ (al < 0)
+                let theta = -be / al.clone();
+                let fl = theta.floor().to_integer().to_i64()?;
+                let ce = theta.ceil().to_integer().to_i64()?;
+                let integral = theta.is_integer();
+                let above_strict = vec![(fl.saturating_add(1).max(0), None)]; // n > θ
+                let above = vec![(ce.max(0), None)]; // n ≥ θ
+                let below_strict = vec![(0, Some(ce - 1))]; // n < θ
+                let below = vec![(0, Some(fl))]; // n ≤ θ
+                let point = if integral && fl >= 0 {
+                    vec![(fl, Some(fl))]
+                } else {
+                    vec![]
+                };
+                let up = al.is_positive();
+                let raw = match kind {
+                    ExprNode::Gt(..) => {
+                        if up {
+                            above_strict
+                        } else {
+                            below_strict
+                        }
+                    }
+                    ExprNode::Ge(..) => {
+                        if up {
+                            above
+                        } else {
+                            below
+                        }
+                    }
+                    ExprNode::Eq_(..) => point,
+                    _ => set_complement(&set_normalize(point)),
+                };
+                set_normalize(raw)
+            }
+            ExprNode::And(ch) => {
+                let mut acc: IntSet = vec![(0, None)];
+                for c in ch.iter() {
+                    acc = set_intersect(&acc, sets.get(c)?);
+                }
+                acc
+            }
+            ExprNode::Or(ch) => {
+                let mut acc: IntSet = Vec::new();
+                for c in ch.iter() {
+                    acc.extend(sets.get(c)?.iter().copied());
+                }
+                set_normalize(acc)
+            }
+            ExprNode::Not(c) => set_complement(sets.get(&c)?),
+            // Operands of the relations (numbers, `n`, sums …) carry no set.
+            _ => continue,
+        };
+        sets.insert(id, s);
+    }
+    sets.remove(&cond)
+}
+
+/// `Z{g(n)·Piecewise((v₁, c₁), …)}` for conditions that are linear in `n`
+/// ([`condition_set`]): with the sequential semantics each branch holds on a
+/// union of integer intervals; a finite window `[a, b]` contributes
+/// `Σ_{n=a}^{b} g(n)v(n) z⁻ⁿ` term by term, an infinite tail `[a, ∞)` the
+/// delayed transform `z⁻ᵃ·Z{g(n + a)v(n + a)}`.  Before 0.31 every
+/// `Piecewise` sequence was refused.
+fn try_piecewise_sequence(
+    arena: &mut Arena,
+    expr: ExprId,
+    n_var: ExprId,
+    n_sym: SymbolId,
+    z_var: ExprId,
+) -> Result<Option<ExprId>, SymplexError> {
+    let factors: Vec<ExprId> = match arena.node(expr) {
+        ExprNode::Mul(ch) => ch.to_vec(),
+        _ => vec![expr],
+    };
+    let mut pw: Option<smallvec::SmallVec<[(ExprId, ExprId); 3]>> = None;
+    let mut others = Vec::new();
+    for f in factors {
+        match arena.node(f).clone() {
+            ExprNode::Piecewise(pairs) if pw.is_none() && contains_var(arena, f, n_var) => {
+                pw = Some(pairs);
+            }
+            _ => others.push(f),
+        }
+    }
+    let Some(pairs) = pw else {
+        return Ok(None);
+    };
+    let g = if others.is_empty() {
+        arena.one
+    } else {
+        arena.mul(&others)
+    };
+    let mut remaining: IntSet = vec![(0, None)];
+    let mut terms = Vec::new();
+    for (val, cond) in pairs {
+        let Some(cs) = condition_set(arena, cond, n_var) else {
+            return Ok(None);
+        };
+        let here = set_intersect(&remaining, &cs);
+        remaining = set_intersect(&remaining, &set_complement(&cs));
+        let gv = arena.mul(&[g, val]);
+        for (a, b) in here {
+            match b {
+                Some(b) => {
+                    if b - a >= MAX_WINDOW_TERMS {
+                        return Ok(None);
+                    }
+                    for j in a..=b {
+                        let jn = arena.int(j);
+                        let term = crate::transforms::subs::subs(arena, gv, n_var, jn);
+                        let term = crate::transforms::eval::eval(arena, term);
+                        let zj = arena.int(-j);
+                        let zp = arena.pow(z_var, zj);
+                        terms.push(arena.mul(&[term, zp]));
+                    }
+                }
+                None => {
+                    let h = substitute_shift(arena, gv, n_var, a);
+                    let hz = do_forward(arena, h, n_var, n_sym, z_var)?;
+                    let za = arena.int(-a);
+                    let zp = arena.pow(z_var, za);
+                    terms.push(arena.mul(&[zp, hz]));
+                }
+            }
+        }
+    }
+    let total = arena.add(&terms);
+    Ok(Some(crate::transforms::eval::eval(arena, total)))
+}
+
+/// `g(n + a)` for the delayed transforms: `b^(n + c)` with an integer `c`
+/// written `b^c·b^n` (valid on the principal branch for every `n`, since
+/// `e^{c·Log b} = b^c`), so that the table sees `b^n`.
+fn substitute_shift(arena: &mut Arena, g: ExprId, n_var: ExprId, a: i64) -> ExprId {
+    let an = arena.int(a);
+    let shifted_n = arena.add(&[n_var, an]);
+    let h = crate::transforms::subs::subs(arena, g, n_var, shifted_n);
+    let h = crate::transforms::eval::eval(arena, h);
+    let post = crate::base::walk::post_order_ids(arena, h);
+    let mut cache: rustc_hash::FxHashMap<ExprId, ExprId> = rustc_hash::FxHashMap::default();
+    for id in post {
+        let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        let new = match arena.node(rebuilt).clone() {
+            ExprNode::Pow(base, exp) if !contains_var(arena, base, n_var) => {
+                match arena.node(exp).clone() {
+                    ExprNode::Add(terms) => {
+                        let mut c = Q::zero();
+                        let mut rest = Vec::new();
+                        for t in terms.iter() {
+                            match arena.as_num(*t) {
+                                Some(q) if q.is_integer() => c += q.clone(),
+                                _ => rest.push(*t),
+                            }
+                        }
+                        if c.is_zero() || rest.is_empty() {
+                            rebuilt
+                        } else {
+                            let r = arena.add(&rest);
+                            let ce = arena.intern_num(c);
+                            let ce = arena.intern(ExprNode::Num(ce));
+                            let p1 = arena.pow(base, ce);
+                            let p2 = arena.pow(base, r);
+                            arena.mul(&[p1, p2])
+                        }
+                    }
+                    _ => rebuilt,
+                }
+            }
+            _ => rebuilt,
+        };
+        cache.insert(id, new);
+    }
+    let out = cache.get(&h).copied().unwrap_or(h);
+    crate::transforms::eval::eval(arena, out)
+}
+
+/// `Z{g(n)·H(n − k)} = z⁻ᵐ·Z{g(n + m)}` with `m = ⌈k⌉` (`H(0)` read as 1,
+/// as documented) for a numeric `k ≥ 0`, whatever `g` (the delay rule of
+/// the table needs `g` written as `x[n − k]`: before 0.31
+/// `H(n − 3)·(1/2)ⁿ` was refused).  A step with `k ≤ 0` is `1` on `n ≥ 0`.
+fn try_step_shift(
+    arena: &mut Arena,
+    expr: ExprId,
+    n_var: ExprId,
+    n_sym: SymbolId,
+    z_var: ExprId,
+) -> Result<Option<ExprId>, SymplexError> {
+    let ExprNode::Mul(ch) = arena.node(expr).clone() else {
+        return Ok(None);
+    };
+    let mut step: Option<(usize, i64)> = None;
+    for (i, &f) in ch.iter().enumerate() {
+        if let ExprNode::Heaviside(arg) = arena.node(f).clone()
+            && let Some((a, b)) = linear_in(arena, arg, n_var)
+            && arena.as_num(a).is_some_and(|q| q.is_one())
+            && let Some(bq) = arena.as_num(b).cloned()
+        {
+            // H(n + b): u[n − ⌈−b⌉]
+            let m = (-bq).ceil().to_integer().to_i64();
+            if let Some(m) = m {
+                step = Some((i, m.max(0)));
+                break;
+            }
+        }
+    }
+    let Some((idx, m)) = step else {
+        return Ok(None);
+    };
+    let rest: Vec<ExprId> = ch
+        .iter()
+        .enumerate()
+        .filter(|&(j, _)| j != idx)
+        .map(|(_, &f)| f)
+        .collect();
+    let g = if rest.is_empty() {
+        arena.one
+    } else {
+        arena.mul(&rest)
+    };
+    let h = substitute_shift(arena, g, n_var, m);
+    if h == expr {
+        return Ok(None);
+    }
+    let hz = do_forward(arena, h, n_var, n_sym, z_var)?;
+    let zm = arena.int(-m);
+    let zp = arena.pow(z_var, zm);
+    Ok(Some(arena.mul(&[zp, hz])))
 }
 
 /// `expr = a·n + b` with `a`, `b` free of `n`.
@@ -340,10 +659,9 @@ fn try_extended_forward(
                     } else {
                         arena.mul(&rest)
                     };
-                    let k_id = arena.int(k as i64);
-                    let n_plus_k = arena.add(&[n_var, k_id]);
-                    let g_shifted = crate::transforms::subs::subs(arena, g, n_var, n_plus_k);
-                    let g_shifted = crate::transforms::eval::eval(arena, g_shifted);
+                    // `aⁿ·H(n − k)` shifts to `aᵏ·aⁿ` (before 0.31 to
+                    // `a^(n + k)`, which the table refused).
+                    let g_shifted = substitute_shift(arena, g, n_var, k as i64);
                     let gz = do_forward(arena, g_shifted, n_var, n_sym, z_var)?;
                     let neg_k = arena.int(-(k as i64));
                     let zk = arena.pow(z_var, neg_k);
@@ -955,6 +1273,15 @@ fn do_inverse_rules(
     // ── Try table lookup ──
     if let Some(result) = try_table_inverse(arena, expr, z_var, n_var) {
         return Ok(result);
+    }
+
+    // ── A product that expands to a sum (the transform of a finite window,
+    //    `z·(z⁻² + 2z⁻³)`) is inverted term by term (refused before 0.31) ──
+    if matches!(arena.node(expr), ExprNode::Mul(_)) {
+        let expanded = crate::transforms::expand::expand(arena, expr);
+        if expanded != expr && matches!(arena.node(expanded), ExprNode::Add(_)) {
+            return do_inverse(arena, expanded, z_var, n_var, depth + 1);
+        }
     }
 
     // ── Try partial fraction decomposition ──

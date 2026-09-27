@@ -16,7 +16,7 @@ use crate::poly::groebner;
 use crate::poly::multipoly::*;
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::{One, ToPrimitive, Zero};
+use num_traits::Zero;
 
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
@@ -195,98 +195,34 @@ fn rational_roots_of_univariate(poly: &MultiPoly<Lex>, var_idx: usize) -> Vec<Ra
     rational_roots_of_poly(&uni)
 }
 
-/// Find all rational roots of a univariate polynomial using the rational root
-/// theorem.
+/// Find all rational roots of a univariate polynomial: the linear factors
+/// of its factorisation over ℤ.
 ///
-/// If p/q is a rational root of a polynomial with integer coefficients, then
-/// p divides the constant term and q divides the leading coefficient.
+/// Before 0.31 the candidates `p/q` of the rational root theorem were
+/// enumerated from the divisors of the constant term and the leading
+/// coefficient read as `i64` and capped at `MAX_DIVISOR_COEFFICIENT`: a
+/// root beyond the cap was missed, and a constant term beyond `i64` read as
+/// `0`, so the roots of `(p(y) − p(0))/y` were returned unchecked (`0` for
+/// `y² − 2⁷¹`).
 fn rational_roots_of_poly(poly: &crate::poly::Poly) -> Vec<Ratio<BigInt>> {
-    if poly.is_zero() {
+    if poly.is_zero() || poly.is_constant() {
         return vec![];
     }
-
-    // Degree 0 → constant, no roots (unless zero, handled above)
-    if poly.is_constant() {
-        return vec![];
-    }
-
+    let (_, factors) = poly.factor_over_z();
     let mut roots = Vec::new();
-
-    // Check if 0 is a root
-    if poly.eval(&Ratio::zero()).is_zero() {
-        roots.push(Ratio::zero());
-    }
-
-    // Work with the primitive part to get integer coefficients
-    let prim = poly.primitive_part();
-
-    let const_term = prim.eval(&Ratio::zero());
-    let lc = match prim.leading_coeff() {
-        Some(c) => c.clone(),
-        None => return roots,
-    };
-
-    // Extract integer values (they should be integers after primitive_part)
-    let const_abs = const_term.numer().to_i64().map(|n| n.abs()).unwrap_or(0);
-    let lc_abs = lc.numer().to_i64().map(|n| n.abs()).unwrap_or(1);
-
-    if const_abs == 0 {
-        // 0 is already handled above; p | 0 is anything, so we'd test all q-divisors.
-        // Just return what we have—0 is the root from the constant term being 0.
-        // But there could be other roots too, so fall through with const_abs = 0 handled.
-        // We need to factor out x and check the quotient.
-        let x_poly = crate::poly::Poly::from_coeffs(vec![Ratio::zero(), Ratio::one()]);
-        let (quotient, _) = poly.div_rem(&x_poly);
-        let mut other_roots = rational_roots_of_poly(&quotient);
-        // Merge, avoiding duplicates
-        for r in other_roots.drain(..) {
+    for (f, _) in factors {
+        if f.degree() == Some(1) {
+            let r = -f.coeff(0) / f.coeff(1);
             if !roots.contains(&r) {
                 roots.push(r);
             }
         }
-        return roots;
     }
-
-    // Cap divisor enumeration to avoid combinatorial explosion
-    let const_for_divs = if const_abs > super::MAX_DIVISOR_COEFFICIENT as i64 {
-        tracing::debug!(
-            "polysys: coefficient {} exceeds divisor cap {}; truncating for rational root search",
-            const_abs,
-            super::MAX_DIVISOR_COEFFICIENT
-        );
-        super::MAX_DIVISOR_COEFFICIENT as i64
-    } else {
-        const_abs
-    };
-    let lc_for_divs = if lc_abs > super::MAX_DIVISOR_COEFFICIENT as i64 {
-        tracing::debug!(
-            "polysys: leading coefficient {} exceeds divisor cap {}; truncating for rational root search",
-            lc_abs,
-            super::MAX_DIVISOR_COEFFICIENT
-        );
-        super::MAX_DIVISOR_COEFFICIENT as i64
-    } else {
-        lc_abs
-    };
-
-    let p_divs = divisors(const_for_divs);
-    let q_divs = divisors(lc_for_divs);
-
-    for &p in &p_divs {
-        for &q in &q_divs {
-            for &sign in &[1i64, -1] {
-                let candidate = Ratio::new(BigInt::from(sign * p), BigInt::from(q));
-                if !roots.contains(&candidate) && poly.eval(&candidate).is_zero() {
-                    roots.push(candidate);
-                }
-            }
-        }
-    }
-
     roots
 }
 
 /// Return all positive divisors of `n` (including 1 and n itself).
+#[cfg(test)]
 ///
 /// Returns `[1]` for n = 0.
 fn divisors(n: i64) -> Vec<i64> {
@@ -574,23 +510,14 @@ pub fn solve_system_ex(eqs: &[Ex], vars: &[Ex]) -> Result<Vec<Vec<Ex>>, SymplexE
             .collect();
         let candidates = solve_triangular_symbolic(arena, &basis_exprs, &var_ids);
         // Never return an unverified tuple: every candidate must satisfy
-        // every *original* equation numerically.  Back-substitution through
+        // every *original* equation exactly.  Back-substitution through
         // radicals can produce spurious combinations (a root of the
         // eliminant paired with the wrong branch of another variable).
-        let degrees: Vec<usize> = nonzero
-            .iter()
-            .map(|p| p.total_degree().unwrap_or(0) as usize)
-            .collect();
-        let nonzero_eq_ids: Vec<ExprId> = eq_ids
+        let checks: Vec<ExprId> = eq_ids
             .iter()
             .copied()
             .filter(|&id| !arena.is_zero_structural(id))
             .collect();
-        let checks: Vec<(ExprId, usize)> = if nonzero_eq_ids.len() == degrees.len() {
-            nonzero_eq_ids.into_iter().zip(degrees).collect()
-        } else {
-            eq_ids.iter().map(|&id| (id, 1)).collect()
-        };
         candidates
             .into_iter()
             .filter(|sol| tuple_satisfies_all(arena, &checks, &var_ids, sol) == Some(true))
@@ -609,71 +536,59 @@ pub fn solve_system_ex(eqs: &[Ex], vars: &[Ex]) -> Result<Vec<Vec<Ex>>, SymplexE
     Ok(result)
 }
 
-/// Relative tolerance for the numeric residual check of a candidate
-/// solution tuple (evaluated at 30 significant digits, so genuine
-/// solutions have residuals around 1e-25 relative).
-const RESIDUAL_REL_TOL: f64 = 1e-8;
-
-/// Numerically verify that `vals` (one value per entry of `vars`) satisfies
-/// every equation in `eqs`.
+/// Verify that `vals` (one value per entry of `vars`) satisfies every
+/// equation in `eqs`, exactly.
 ///
-/// Each equation is substituted, evaluated exactly, and — when that does
-/// not settle it — evaluated numerically as a complex number; the residual
-/// must be below [`RESIDUAL_REL_TOL`] relative to `(1 + max|vᵢ|)^deg`.
+/// Each equation is substituted and evaluated; a residual that does not
+/// fold to a number goes to [`constant_is_zero`] (certified digits, the
+/// minimal polynomial of an algebraic number, the deep zero search).
 ///
-/// Returns `Some(true)` when every residual is negligible, `Some(false)`
-/// when some residual is clearly nonzero, and `None` when a residual could
-/// not be evaluated (callers must treat `None` as *unverified*).
+/// Returns `Some(true)` when every residual is zero, `Some(false)` when
+/// some residual is certainly nonzero or undefined, and `None` when a
+/// residual could not be decided (callers treat `None` as *unverified*).
+///
+/// Before 0.31 the residual was an `evalf` string at 30 digits compared
+/// with `10⁻⁸·(1 + max|vᵢ|)^deg`: an exact zero that `evalf` cannot certify
+/// (`PrecisionExhausted`, the rule for a true zero with radicals that
+/// `eval` does not fold) made the tuple unverified, and the complex
+/// solutions of `(y³ − 3)² = 0, x = 7y/5 + 1/5` written in shifted
+/// variables were dropped; and a residual below the tolerance was accepted
+/// whatever its value.
 fn tuple_satisfies_all(
     arena: &mut Arena,
-    eqs: &[(ExprId, usize)],
+    eqs: &[ExprId],
     vars: &[ExprId],
     vals: &[ExprId],
 ) -> Option<bool> {
     if vars.len() != vals.len() {
         return None;
     }
-    // Magnitude scale of the solution point.
-    let mut max_abs = 0.0f64;
-    for &v in vals {
-        let ev = crate::transforms::eval::eval(arena, v);
-        if crate::base::walk::has_unevaluated(arena, ev) {
-            return None;
-        }
-        let s = crate::transforms::evalf::evalf(arena, ev, 30).ok()?;
-        let mag = crate::transforms::solve::parse_evalf_magnitude(&s)?;
-        if !mag.is_finite() {
-            return Some(false);
-        }
-        max_abs = max_abs.max(mag);
-    }
     let pairs: Vec<(ExprId, ExprId)> = vars.iter().copied().zip(vals.iter().copied()).collect();
-    for &(eq, deg) in eqs {
+    let mut undecided = false;
+    for &eq in eqs {
         let s = crate::transforms::subs::subs_map(arena, eq, &pairs);
         let s = crate::transforms::eval::eval(arena, s);
-        if arena.is_zero_structural(s) {
-            continue;
-        }
-        if let Some(r) = arena.as_num(s) {
-            if r.is_zero() {
-                continue;
-            }
+        if crate::base::walk::post_order_ids(arena, s)
+            .into_iter()
+            .any(|id| {
+                matches!(
+                    arena.node(id),
+                    ExprNode::Infinity
+                        | ExprNode::NegInfinity
+                        | ExprNode::ComplexInfinity
+                        | ExprNode::NaN
+                )
+            })
+        {
             return Some(false);
         }
-        if !crate::base::walk::free_symbols(arena, s).is_empty() {
-            return None;
-        }
-        let text = crate::transforms::evalf::evalf(arena, s, 30).ok()?;
-        let residual = crate::transforms::solve::parse_evalf_magnitude(&text)?;
-        if !residual.is_finite() {
-            return Some(false);
-        }
-        let scale = (1.0 + max_abs).powi(deg.min(64) as i32);
-        if residual > RESIDUAL_REL_TOL * scale {
-            return Some(false);
+        match constant_is_zero(arena, s) {
+            Some(true) => {}
+            Some(false) => return Some(false),
+            None => undecided = true,
         }
     }
-    Some(true)
+    if undecided { None } else { Some(true) }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -683,7 +598,27 @@ fn tuple_satisfies_all(
 /// Decide whether an expression (free of the solve variables) is zero.
 ///
 /// `Some(true)` — provably zero; `Some(false)` — provably nonzero;
-/// `None` — undecidable (symbolic parameters remain).
+/// `None` — undecidable (symbolic parameters remain, or the value is zero
+/// to the precision of the deep zero search but not provably so).
+///
+/// A constant that does not fold to a number is evaluated with certified
+/// digits and the deep zero search of `evalf` ([`RESIDUAL_DIGITS`],
+/// [`ZeroSearch::Deep`](crate::transforms::evalf::ZeroSearch)): a certified
+/// digit means nonzero; a value whose error ball still contains 0 after
+/// the search — at least [`ZERO_SEARCH_BITS`](crate::transforms::evalf::ZERO_SEARCH_BITS)
+/// (1,024) bits beyond the working precision, so `|e|` is below
+/// `2⁻¹¹⁰⁰` times the size of its terms — is taken as zero.  That is
+/// the documented tolerance of the check; the candidates it judges are
+/// exact algebraic numbers from the back-substitution, whose spurious
+/// combinations have residuals of the size of their terms.  Only when the
+/// evaluation fails is the minimal polynomial tried
+/// ([`exact_is_zero`](crate::poly::algebraic::exact_is_zero)), which is
+/// exact but can take seconds for nested complex radicals of degree 8.
+///
+/// Before 0.31 it was `|evalf(e, 20)| < 10⁻¹⁰`, an absolute tolerance: a
+/// nonzero constant below it was zero, a zero of terms of size `10¹²`
+/// that `evalf` rounded to more than it was nonzero, and a true zero that
+/// `evalf` refuses to certify (`PrecisionExhausted`) was undecided.
 fn constant_is_zero(arena: &mut Arena, e: ExprId) -> Option<bool> {
     let e1 = crate::transforms::eval::eval(arena, e);
     if arena.is_zero_structural(e1) {
@@ -692,22 +627,33 @@ fn constant_is_zero(arena: &mut Arena, e: ExprId) -> Option<bool> {
     if let Some(r) = arena.as_num(e1) {
         return Some(r.is_zero());
     }
-    let e2 = crate::transforms::expand::expand(arena, e1);
-    let e2 = crate::transforms::eval::eval(arena, e2);
-    if arena.is_zero_structural(e2) {
-        return Some(true);
+    if !crate::base::walk::free_symbols(arena, e1).is_empty() {
+        // Symbolic parameters: only an expansion to 0 decides.
+        let e2 = crate::transforms::expand::expand(arena, e1);
+        let e2 = crate::transforms::eval::eval(arena, e2);
+        return arena.is_zero_structural(e2).then_some(true);
     }
-    if let Some(r) = arena.as_num(e2) {
-        return Some(r.is_zero());
+    use crate::transforms::evalf::{Settled, ZeroSearch, evalf_settled};
+    match evalf_settled(arena, e1, RESIDUAL_DIGITS, ZeroSearch::Deep) {
+        Ok((z, Settled::Certified)) => Some(z.0.is_zero() && z.1.is_zero()),
+        Ok((_, Settled::ZeroToPrecision)) => Some(true),
+        Err(_) => {
+            let e2 = crate::transforms::expand::expand(arena, e1);
+            let e2 = crate::transforms::eval::eval(arena, e2);
+            if arena.is_zero_structural(e2) {
+                return Some(true);
+            }
+            if let Some(r) = arena.as_num(e2) {
+                return Some(r.is_zero());
+            }
+            crate::poly::algebraic::exact_is_zero(arena, e2)
+        }
     }
-    if crate::base::walk::free_symbols(arena, e2).is_empty()
-        && let Ok(s) = crate::transforms::evalf::evalf(arena, e2, 20)
-        && let Some(mag) = crate::transforms::solve::parse_evalf_magnitude(&s)
-    {
-        return Some(mag < 1e-10);
-    }
-    None
 }
+
+/// Digits certified by [`constant_is_zero`] before a value counts as
+/// nonzero.
+const RESIDUAL_DIGITS: u32 = 20;
 
 /// Does `p`, viewed as a polynomial in `var`, have coefficients that are
 /// all (exactly or numerically) zero?  Such a polynomial is the result of
@@ -941,6 +887,26 @@ mod tests {
 
     fn ratio(p: i64, q: i64) -> Ratio<BigInt> {
         Ratio::new(BigInt::from(p), BigInt::from(q))
+    }
+
+    /// Rational roots from the factorisation: a constant term beyond `i64`
+    /// (read as 0 by the divisor search, which then returned `0` for
+    /// `y² − 2⁷¹`) and a root beyond the divisor cap (`10¹²`).
+    #[test]
+    fn rational_roots_beyond_i64_and_the_divisor_cap() {
+        let two71 = Ratio::from_integer(BigInt::from(1u8) << 71usize);
+        let p = crate::poly::Poly::from_coeffs(vec![-two71, rat(0), rat(1)]);
+        assert!(rational_roots_of_poly(&p).is_empty());
+        let big = rat(1_000_000_000_000);
+        // (y − 10¹²)(y + 3) = y² + (3 − 10¹²) y − 3·10¹²
+        let p = crate::poly::Poly::from_coeffs(vec![
+            -(big.clone() * rat(3)),
+            rat(3) - big.clone(),
+            rat(1),
+        ]);
+        let mut roots = rational_roots_of_poly(&p);
+        roots.sort();
+        assert_eq!(roots, vec![rat(-3), big]);
     }
 
     #[test]
