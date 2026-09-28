@@ -6,7 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
-## [Unreleased]
+## [0.32.0] - 2026-09-28
+
+The nightly fuzz timeout fixed, and no more wrong-looking values.  The
+first nightly fuzz run on 0.31.0 found that a series at a branch point
+(`asin(x²)` at `x = 1`) took seconds to minutes before giving up; the
+branch points of the inverse trigonometric and hyperbolic functions now
+have closed-form rules taken from SymPy, refusals are immediate, and
+one-sided expansions there are Puiseux series as in SymPy.  A new hunter
+ran fourteen rewrite routes against each other: `simplify` no longer
+turns an expression that is undefined everywhere into `0`, and evalf no
+longer prints a nonzero number too small for its exponent range as `0`.
+Complex QR follows SymPy's Hermitian convention, eigenvalues of matrices
+with algebraic entries are found by Cardano's formulas, symbolic QR is
+hundreds of times faster, and integrals over the roots of `xⁿ + a` are
+compact.
 
 ### Breaking (behaviour; no signature changed)
 
@@ -84,6 +98,25 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   `zoo`; it is `1/4` at `x = −2`); `simplify` of an expression with an
   absorbed zero denominator was `nan` (`zoo` spread over a sum); a
   denominator `sin² + cos² − 1` gave `zoo` for `0/0`.
+
+### Measured
+
+- `tests/v31/`: 4 files, 28 tests.  nextest 13,514 tests (14 skipped),
+  doctests 1,311.
+- Rubi harness: 14,360 verified, 68 real_verified, 0 wrong, 0 undecided
+  (0.31: 14,336).  Self-test: 55,475 verified, 0 wrong, 742 undecided
+  (unchanged).  `--negative-params`: 0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates: identical.
+- `cargo semver-checks` against 0.31.0: no semver update required.
+- Hunters (before → after): rewrite routes 71 wrong of 1,500 → 12 (all in
+  `expand`, see the hand-off); underflow/overflow 788 wrong of 1,000 → 0;
+  QR 64 wrong and 4 hangs of 100 → 0 of 1,703; eigenvalues of algebraic
+  3×3 matrices 1,341 refused of 3,000 → 0.
+- Fuzzing: the nightly `fuzz_calculus` input runs in 2 ms (6.5 s before);
+  on the release code `fuzz_calculus` ran 10 minutes with a 10-second
+  limit (156,333 inputs) and `fuzz_integrate` 15 minutes (58,934 inputs):
+  0 crashes, 0 timeouts, 0 out-of-memory.  The other targets are left to
+  the nightly run.
 
 ## [0.31.0] - 2026-09-27
 
