@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [Unreleased]
+
+### Added
+
+- **One-sided series at a branch point are Puiseux series**, as in SymPy:
+  `series_dir(asin(x²), x, 1, 4, Right)` is `π/2 − 2i·√(x − 1) −
+  i(x − 1)^(3/2)/6 + 13i(x − 1)^(5/2)/80 − 37i(x − 1)^(7/2)/448`, from the
+  left `π/2 − 2√(1 − x) + …`; `√(x² − 1)`, `acosh(x²)` at 1 likewise (in
+  powers of `√` or `∛` of the distance to the point).  Before, every
+  such expansion was refused.
+
+### Fixed
+
+- **Series at the branch points of `asin`, `acos`, `atan`, `asinh`,
+  `acosh`, `atanh` took seconds to minutes before refusing** (found by
+  the nightly `fuzz_calculus`: `series(asin(x²), x, 1, 4)` 6.5 s, over
+  30 s on CI; `asin(x³)` 42 s): the differentiation fallback asked the
+  limit engine for the limits of ever larger derivatives, once more for
+  each pole-retry multiplier.  The branch points now have closed-form
+  rules (SymPy's `asin._eval_nseries` substitution `1 − u = t²`, in the
+  form `asin u = π/2 − √(2(1 − u))·₂F₁(½, ½; 3/2; (1 − u)/2)`; `atanh`
+  through its logarithms), so a refusal is immediate (2 ms), and an
+  argument that meets the point to even order expands two-sided
+  (`asin(1 − x⁴) = π/2 − √2·x² − √2·x⁶/12 + …`, refused before).  A
+  branch point written as another constant is recognised
+  (`asin(asin x)` at `x = sin 1`: 6 s → 0.03 s).
+
 ## [0.31.0] - 2026-09-27
 
 Integration over ℂ and with parameters.  The integrator now treats a

@@ -368,9 +368,12 @@ impl Expr<Numeric> {
     /// (`0` from the right, none from the left).  From the right, and at
     /// `±∞` (where the side is implied and `dir` is ignored), the expansion
     /// may contain logarithms: `Ei(x) = γ + ln x + x + …` for `x → 0⁺`,
-    /// Stirling's series for `ln Γ(x)` at `∞`.  Where no such expansion
-    /// exists or it cannot be established, a formal `Series` node is
-    /// returned.  For residues use [`residue`](Self::residue): at an
+    /// Stirling's series for `ln Γ(x)` at `∞`.  At a branch point a one-sided
+    /// expansion may be a Puiseux series, in powers of `√(var − point)` or
+    /// `∛(var − point)` (of `√(point − var)` from the left), as SymPy gives:
+    /// `asin(x²)` at `x → 1⁺` is `π/2 − 2i·√(x − 1) − …`.  Where no such
+    /// expansion exists or it cannot be established, a formal `Series` node
+    /// is returned.  For residues use [`residue`](Self::residue): at an
     /// essential singularity a series is not the Laurent expansion.
     ///
     /// # Examples
@@ -389,6 +392,12 @@ impl Expr<Numeric> {
     /// // Ei(x) = γ + ln x + x + x²/4 + … for x → 0⁺
     /// let ei = x.ei().series_dir(&x, &zero, 3, Direction::Right);
     /// assert!(ei.to_string().contains("ln(x)"), "{ei}");
+    /// // A branch point: asin(x²) for x → 1⁻ is π/2 − 2√(1 − x) + …
+    /// let one = ctx.int(1);
+    /// let a = x.powi(2).asin();
+    /// assert!(a.series(&x, &one, 2).has_unevaluated()); // no two-sided one
+    /// let left = a.series_dir(&x, &one, 1, Direction::Left);
+    /// assert_eq!(left.to_string(), "-2*sqrt(-x + 1) + 1/2*pi");
     /// ```
     #[must_use = "returns the expansion; does not modify in place"]
     pub fn series_dir(&self, var: &Ex, point: &Ex, order: u32, dir: Direction) -> Ex {
