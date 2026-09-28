@@ -38,6 +38,11 @@
 //!    a. Evaluate `h(u+iv, x)` and separate `A(x) + iB(x)`.
 //!    b. Emit `u · ln(A² + B²) + v · log_to_atan(A, B)`.
 //!
+//! When the roots of `q` are `ρ·ζ` with `ρ^L` rational and `ζ` roots of
+//! unity (`t^M ≡ c mod q`: the residues of `xᵏ/(xⁿ + a)`), steps 2–3 run
+//! exactly in `ℚ(ζ_N)[ρ]` instead (`cyclotomic_log_to_real`), with the
+//! coefficients over the cosines of the real subfield (de Moivre).
+//!
 //! # References
 //!
 //! - Lazard & Rioboo, "Integration of rational functions: rational computation
@@ -454,6 +459,17 @@ pub(crate) fn log_to_real(
         return None;
     }
 
+    // Roots `ρ·ζ` with `ρ` rational and `ζ` roots of unity (the residues
+    // of `xᵏ/(xⁿ ± 1)`): every coefficient exactly in `ℚ(ζ_N)`.  For a
+    // factor of degree ≤ 4 (radical roots, as SymPy's `roots`) first; for a
+    // higher degree only where the radical roots below give a real form —
+    // otherwise the answer stays a `RootSum`, as in SymPy (`∫ 1/(x⁷ + 1)`).
+    if q_deg <= 4
+        && let Some(terms) = cyclotomic_log_to_real(arena, var, q, h_prs)
+    {
+        return Some(terms);
+    }
+
     // ── Step 2: Decompose roots into (u, v) = (Re, Im) pairs ──────
     let i_unit = arena.i_unit;
     let mut pairs: Vec<(ExprId, ExprId)> = Vec::new();
@@ -710,8 +726,558 @@ pub(crate) fn log_to_real(
             n_terms = result_terms.len(),
             "log_to_real: conversion complete"
         );
+        // The same terms exactly in `ℚ(ζ_N)` when the roots allow (above).
+        if q_deg > 4
+            && let Some(terms) = cyclotomic_log_to_real(arena, var, q, h_prs)
+        {
+            return Some(terms);
+        }
         Some(result_terms)
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Roots of unity: log_to_real in ℚ(ζ_N)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Largest `M` tried for `t^M ≡ c (mod q)`.
+const MAX_CYCLOTOMIC_ORDER: usize = 96;
+
+/// The cyclotomic field `ℚ(ζ) = ℚ[z]/(Φ_N)`, `ζ = e^{2πi/N}`, `4 | N` (so
+/// that `i = ζ^{N/4}` is in it).  Elements are polynomials of degree
+/// `< φ(N)`, which is canonical (`Φ_N` is irreducible).
+struct Cyclotomic {
+    n: usize,
+    phi: Poly,
+}
+
+impl Cyclotomic {
+    /// `Φ_N = (x^N − 1)/∏_{d | N, d < N} Φ_d`, the divisors in increasing
+    /// order (each `Φ_d` from the smaller ones).
+    fn new(n: usize) -> Option<Cyclotomic> {
+        let divisors: Vec<usize> = (1..=n).filter(|d| n.is_multiple_of(*d)).collect();
+        let mut phis: Vec<(usize, Poly)> = Vec::with_capacity(divisors.len());
+        for &d in &divisors {
+            let mut p = monomial(d, Q::from_integer(BigInt::from(1)));
+            p = &p - &Poly::constant(Q::from_integer(BigInt::from(1)));
+            for (e, pe) in &phis {
+                if d % e == 0 {
+                    let (quot, rem) = p.div_rem(pe);
+                    if !rem.is_zero() {
+                        return None;
+                    }
+                    p = quot;
+                }
+            }
+            phis.push((d, p));
+        }
+        let (_, phi) = phis.pop()?;
+        Some(Cyclotomic { n, phi })
+    }
+
+    fn reduce(&self, p: &Poly) -> Poly {
+        p.rem(&self.phi)
+    }
+
+    fn mul(&self, a: &Poly, b: &Poly) -> Poly {
+        self.reduce(&(a * b))
+    }
+
+    /// Complex conjugation `ζ^k ↦ ζ^{N−k}`.
+    fn conj(&self, a: &Poly) -> Poly {
+        let mut c = vec![Q::from_integer(BigInt::from(0)); self.n];
+        for (k, v) in a.coeffs().iter().enumerate() {
+            c[(self.n - k) % self.n] += v;
+        }
+        self.reduce(&Poly::from_coeffs(c))
+    }
+
+    /// Real and imaginary parts, `(a + ā)/2` and `−i·(a − ā)/2`.
+    fn re_im(&self, a: &Poly) -> [Poly; 2] {
+        let half = Q::new(BigInt::from(1), BigInt::from(2));
+        let ab = self.conj(a);
+        let re = (a + &ab).scale(&half);
+        let neg_i = monomial(3 * self.n / 4, -half);
+        let im = self.mul(&(a - &ab), &neg_i);
+        [re, im]
+    }
+
+    /// The `f64` value of the real part of `a` (for a sign that only
+    /// chooses between two equal forms).
+    fn approx(&self, a: &Poly) -> f64 {
+        let mut s = 0.0;
+        for (k, v) in a.coeffs().iter().enumerate() {
+            let angle = 2.0 * std::f64::consts::PI * k as f64 / self.n as f64;
+            s += num_traits::ToPrimitive::to_f64(v).unwrap_or(0.0) * angle.cos();
+        }
+        s
+    }
+
+    /// A real element `r = Σ aₖ·cos(2πk/N)` over the basis
+    /// `k = 0 … φ(N)/2 − 1` of the real subfield (`2cos(2πk/N) = ζ^k + ζ^{−k}`
+    /// is a monic polynomial of degree `k` in `2cos(2π/N)`, of degree
+    /// `φ(N)/2`): the coefficients `aₖ`, by elimination over ℚ.
+    fn cos_coordinates(&self, r: &Poly) -> Option<Vec<Q>> {
+        let zero = Q::from_integer(BigInt::from(0));
+        let dim = self.phi.degree()?;
+        let d = dim / 2;
+        let half = Q::new(BigInt::from(1), BigInt::from(2));
+        // Columns: the basis vectors, then r.
+        let mut cols: Vec<Vec<Q>> = Vec::with_capacity(d + 1);
+        for k in 0..d {
+            let b = &monomial(k, half.clone()) + &monomial((self.n - k) % self.n, half.clone());
+            let b = self.reduce(&b);
+            cols.push((0..dim).map(|i| b.coeff(i)).collect());
+        }
+        cols.push((0..dim).map(|i| r.coeff(i)).collect());
+        // Row-reduce the dim × (d+1) system.
+        let mut rows: Vec<Vec<Q>> = (0..dim)
+            .map(|i| cols.iter().map(|c| c[i].clone()).collect())
+            .collect();
+        let mut piv_row = 0usize;
+        for col in 0..d {
+            let p = (piv_row..dim).find(|&i| rows[i][col] != zero)?;
+            rows.swap(piv_row, p);
+            let inv = rows[piv_row][col].recip();
+            for v in rows[piv_row].iter_mut() {
+                *v *= &inv;
+            }
+            let pivot = rows[piv_row].clone();
+            for (i, row) in rows.iter_mut().enumerate() {
+                if i != piv_row && row[col] != zero {
+                    let f = row[col].clone();
+                    for (x, pv) in row.iter_mut().zip(&pivot) {
+                        *x -= &f * pv;
+                    }
+                }
+            }
+            piv_row += 1;
+        }
+        // Consistent (r real): the rows below the rank are zero.
+        if rows[piv_row..].iter().any(|row| row[d] != zero) {
+            return None;
+        }
+        Some((0..d).map(|k| rows[k][d].clone()).collect())
+    }
+
+    /// `r` real as an expression: `Σ aₖ·cos(2πk/N)`, each `cos` of an
+    /// angle above `π/4` written as the `sin` of its complement, or the same
+    /// with the radical forms of `cos(π/5)`, `cos(π/8)`, `cos(π/10)`,
+    /// `cos(π/12)`, … — whichever is smaller after `eval` (which folds the
+    /// multiples of `π/4` and `π/6`).
+    fn real_expr(&self, arena: &mut Arena, r: &Poly) -> Option<ExprId> {
+        let coords = self.cos_coordinates(r)?;
+        let mut trig: Vec<ExprId> = Vec::new();
+        let mut radical: Vec<ExprId> = Vec::new();
+        let mut any_radical = false;
+        for (k, a) in coords.iter().enumerate() {
+            if a == &Q::from_integer(BigInt::from(0)) {
+                continue;
+            }
+            let a_id = arena.num_ratio(a.clone());
+            if k == 0 {
+                trig.push(a_id);
+                radical.push(a_id);
+                continue;
+            }
+            // cos(π·angle), angle = 2k/N ∈ (0, 1/2)
+            let angle = Q::new(BigInt::from(2 * k), BigInt::from(self.n));
+            let quarter = Q::new(BigInt::from(1), BigInt::from(4));
+            let atom = if angle > quarter {
+                let comp = Q::new(BigInt::from(1), BigInt::from(2)) - &angle;
+                let c = arena.num_ratio(comp);
+                let arg = arena.mul(&[c, arena.pi()]);
+                arena.sin(arg)
+            } else {
+                let c = arena.num_ratio(angle.clone());
+                let arg = arena.mul(&[c, arena.pi()]);
+                arena.cos(arg)
+            };
+            trig.push(arena.mul(&[a_id, atom]));
+            let rad = match cos_radical(arena, &angle) {
+                Some(v) => {
+                    any_radical = true;
+                    v
+                }
+                None => atom,
+            };
+            radical.push(arena.mul(&[a_id, rad]));
+        }
+        let build = |arena: &mut Arena, parts: &[ExprId]| -> ExprId {
+            let s = match parts.len() {
+                0 => arena.zero,
+                1 => parts[0],
+                _ => arena.add(parts),
+            };
+            crate::transforms::eval::eval(arena, s)
+        };
+        let t = build(arena, &trig);
+        if !any_radical {
+            return Some(t);
+        }
+        let rd = build(arena, &radical);
+        let cap = 10_000;
+        let size = |arena: &Arena, e| crate::transforms::pattern::tree_size_capped(arena, e, cap);
+        Some(if size(arena, rd) < size(arena, t) {
+            rd
+        } else {
+            t
+        })
+    }
+}
+
+/// `ℚ(ζ)[ρ]/(ρ^L − κ)` for the real `ρ = κ^{1/L} > 0` (`κ` rational, `L`
+/// the least power of `ρ` that is rational): an element is `Σ ρ^r·aᵣ`
+/// (`r < L`, `aᵣ ∈ ℚ(ζ)`).  A zero representation is the number 0; for
+/// `L > 1` the converse can fail (`ρ⁴ = √2 = ζ₈ + ζ₈⁻¹`), so
+/// [`is_zero`](Self::is_zero) confirms a nonzero one numerically.
+struct RadCyc {
+    cyc: Cyclotomic,
+    l: usize,
+    kappa: Q,
+}
+
+impl RadCyc {
+    fn zero_elem(&self) -> Vec<Poly> {
+        vec![Poly::from_coeffs(Vec::new()); self.l]
+    }
+
+    /// `p(ρ·ζ^e)`.
+    fn eval_at(&self, p: &Poly, e: usize) -> Vec<Poly> {
+        let n = self.cyc.n;
+        let zero = Q::from_integer(BigInt::from(0));
+        let mut comps = vec![vec![zero; n]; self.l];
+        let mut kpow = Q::from_integer(BigInt::from(1));
+        for (m, v) in p.coeffs().iter().enumerate() {
+            if m > 0 && m % self.l == 0 {
+                kpow *= &self.kappa;
+            }
+            comps[m % self.l][(e * m) % n] += v * &kpow;
+        }
+        comps
+            .into_iter()
+            .map(|c| self.cyc.reduce(&Poly::from_coeffs(c)))
+            .collect()
+    }
+
+    /// `ρ·ζ^e`
+    fn root(&self, e: usize) -> Vec<Poly> {
+        let mut out = self.zero_elem();
+        if self.l == 1 {
+            out[0] = self.cyc.reduce(&monomial(e, self.kappa.clone()));
+        } else {
+            out[1] = self
+                .cyc
+                .reduce(&monomial(e, Q::from_integer(BigInt::from(1))));
+        }
+        out
+    }
+
+    fn mul(&self, a: &[Poly], b: &[Poly]) -> Vec<Poly> {
+        let mut out = self.zero_elem();
+        for (i, x) in a.iter().enumerate() {
+            for (j, y) in b.iter().enumerate() {
+                if x.is_zero() || y.is_zero() {
+                    continue;
+                }
+                let mut t = self.cyc.mul(x, y);
+                if i + j >= self.l {
+                    t = t.scale(&self.kappa);
+                }
+                let k = (i + j) % self.l;
+                out[k] = &out[k] + &t;
+            }
+        }
+        out
+    }
+
+    fn conj(&self, a: &[Poly]) -> Vec<Poly> {
+        a.iter().map(|x| self.cyc.conj(x)).collect()
+    }
+
+    fn scale(a: &[Poly], c: &Q) -> Vec<Poly> {
+        a.iter().map(|x| x.scale(c)).collect()
+    }
+
+    fn re_im(&self, a: &[Poly]) -> [Vec<Poly>; 2] {
+        let parts: Vec<[Poly; 2]> = a.iter().map(|x| self.cyc.re_im(x)).collect();
+        [
+            parts.iter().map(|[re, _]| re.clone()).collect(),
+            parts.iter().map(|[_, im]| im.clone()).collect(),
+        ]
+    }
+
+    fn rho(&self) -> f64 {
+        num_traits::ToPrimitive::to_f64(&self.kappa)
+            .unwrap_or(f64::NAN)
+            .powf(1.0 / self.l as f64)
+    }
+
+    /// The value of a real element (numerically).
+    fn approx(&self, a: &[Poly]) -> f64 {
+        let rho = self.rho();
+        a.iter()
+            .enumerate()
+            .map(|(r, x)| rho.powi(r as i32) * self.cyc.approx(x))
+            .sum()
+    }
+
+    /// `Some(true)` for a zero representation; `Some(false)` when the value
+    /// is clearly nonzero; `None` when a nonzero representation (`L > 1`)
+    /// has a value too small to tell.
+    fn is_zero(&self, a: &[Poly]) -> Option<bool> {
+        if a.iter().all(Poly::is_zero) {
+            return Some(true);
+        }
+        if self.l == 1 {
+            return Some(false);
+        }
+        // The size of the terms ρ^r·c·ζ^k (a cancellation below 10⁻⁹ of it
+        // is left undecided).
+        let rho = self.rho();
+        let scale: f64 = a
+            .iter()
+            .enumerate()
+            .flat_map(|(r, x)| {
+                x.coeffs().iter().map(move |c| {
+                    rho.powi(r as i32)
+                        * num_traits::ToPrimitive::to_f64(c).unwrap_or(f64::NAN).abs()
+                })
+            })
+            .fold(0.0, f64::max);
+        (self.approx(a).abs() > 1e-9 * scale).then_some(false)
+    }
+
+    /// `Σ ρ^r·aᵣ` as an expression (`ρ^r = κ^{r/L}`).
+    fn real_expr(&self, arena: &mut Arena, a: &[Poly]) -> Option<ExprId> {
+        let mut parts = Vec::new();
+        for (r, x) in a.iter().enumerate() {
+            if x.is_zero() {
+                continue;
+            }
+            let v = self.cyc.real_expr(arena, x)?;
+            if r == 0 {
+                parts.push(v);
+            } else {
+                let k = arena.num_ratio(self.kappa.clone());
+                let ex = arena.rational(r as i64, self.l as i64);
+                let rho_r = arena.pow(k, ex);
+                parts.push(arena.mul(&[rho_r, v]));
+            }
+        }
+        let s = match parts.len() {
+            0 => arena.zero,
+            1 => parts[0],
+            _ => arena.add(&parts),
+        };
+        Some(crate::transforms::eval::eval(arena, s))
+    }
+}
+
+/// `h₀/h₁ mod q` over ℚ (`q` irreducible, so `ℚ[t]/(q)` is a field).
+fn ratfn_quotient_mod(h0: &RationalFn, h1: &RationalFn, q: &Poly) -> Option<Poly> {
+    let num = (h0.numer() * h1.denom()).rem(q);
+    let den = (h0.denom() * h1.numer()).rem(q);
+    if den.is_zero() {
+        return None;
+    }
+    let eg = Poly::extended_gcd(&den, q);
+    if eg.gcd.degree() != Some(0) {
+        return None;
+    }
+    let inv = eg.x.scale(&eg.gcd.coeff(0).recip());
+    Some((&num * &inv).rem(q))
+}
+
+/// `c·x^e` as a [`Poly`].
+fn monomial(e: usize, c: Q) -> Poly {
+    let mut v = vec![Q::from_integer(BigInt::from(0)); e + 1];
+    v[e] = c;
+    Poly::from_coeffs(v)
+}
+
+/// `cos(π·angle)` in radicals for the angles of denominator 5, 8, 10 and
+/// 12 in `(0, 1/2)`; `None` otherwise.
+fn cos_radical(arena: &mut Arena, angle: &Q) -> Option<ExprId> {
+    let (p, d) = (
+        num_traits::ToPrimitive::to_i64(angle.numer())?,
+        num_traits::ToPrimitive::to_i64(angle.denom())?,
+    );
+    let half = arena.rational(1, 2);
+    let sqrt = |arena: &mut Arena, e: ExprId| arena.pow(e, half);
+    // (a + b·√s)/c or √(a + b·√s)/c
+    let (a, b, s, c, nested) = match (p, d) {
+        (1, 5) => (1, 1, 5, 4, false),
+        (2, 5) => (-1, 1, 5, 4, false),
+        (1, 8) => (2, 1, 2, 2, true),
+        (3, 8) => (2, -1, 2, 2, true),
+        (1, 10) => (10, 2, 5, 4, true),
+        (3, 10) => (10, -2, 5, 4, true),
+        (1, 12) | (5, 12) => {
+            // (√6 ± √2)/4
+            let six = arena.int(6);
+            let two = arena.int(2);
+            let (r6, r2) = (sqrt(arena, six), sqrt(arena, two));
+            let r2 = if p == 1 { r2 } else { arena.neg(r2) };
+            let sum = arena.add(&[r6, r2]);
+            let quarter = arena.rational(1, 4);
+            return Some(arena.mul(&[quarter, sum]));
+        }
+        _ => return None,
+    };
+    let s_id = arena.int(s);
+    let rs = sqrt(arena, s_id);
+    let b_id = arena.int(b);
+    let a_id = arena.int(a);
+    let brs = arena.mul(&[b_id, rs]);
+    let mut inner = arena.add(&[a_id, brs]);
+    if nested {
+        inner = sqrt(arena, inner);
+    }
+    let inv_c = arena.rational(1, c);
+    Some(arena.mul(&[inv_c, inner]))
+}
+
+/// [`log_to_real`] exactly in a cyclotomic field when the roots of `q` are
+/// `ρ·ζ` with `ρ > 0` a radical and `ζ` roots of unity — `t^M ≡ c (mod q)`
+/// for a rational `c`, `ρ = |c|^{1/M}` — as for the Rothstein–Trager
+/// residues of `xᵏ/(xⁿ + a)`.  The roots are the `ρ·ζ^e`, `ζ = e^{2πi/N}`,
+/// at which `q` vanishes in `ℚ(ζ)[ρ]` ([`RadCyc`]); the log argument
+/// `x + g(α)`, `g = h₀/h₁ mod q` (a constant multiple of `h(α, x)`), its
+/// real and imaginary parts, `|g|²` and `α = u + iv` are all elements of
+/// `ℚ(ζ)[ρ]`, written as `Σ ρ^r·(…)` over the basis `cos(2πk/N)` of the
+/// real subfield (or in radicals, whichever is smaller).  Before 0.32 they were the
+/// expansions of powers of `cos(π/n) + i·sin(π/n)` from the solver's
+/// roots, de Moivre not applied (`∫ x⁶/(x⁸ + 1)` printed 18 KB).  The
+/// terms are those of [`log_to_real`]: `α·ln|x + g|` for a real root and
+/// `u·ln(x² + 2·Re(g)·x + |g|²) + 2v·atan((x + Re g)/Im g)` for each pair
+/// `α, ᾱ` with `v > 0`.  `None` when `q` is not of this form.
+fn cyclotomic_log_to_real(
+    arena: &mut Arena,
+    var: ExprId,
+    q: &Poly,
+    h_prs: &GenPoly<RationalFn>,
+) -> Option<Vec<ExprId>> {
+    use num_traits::Signed;
+    let deg = q.degree()?;
+    if deg < 3 || h_prs.degree() != Some(1) {
+        return None;
+    }
+    // t^M mod q for M = 1, 2, …: the first constant one.
+    let t = Poly::x();
+    let mut p = t.rem(q);
+    let mut found: Option<(usize, Q)> = None;
+    for m in 2..=MAX_CYCLOTOMIC_ORDER.min(8 * deg) {
+        p = (&p * &t).rem(q);
+        if p.degree() == Some(0) && m >= deg {
+            found = Some((m, p.coeff(0)));
+            break;
+        }
+    }
+    let (m, c) = found?;
+    // ρ = |c|^{1/M}; L = the least divisor of M with ρ^L rational.
+    let exact_root = |z: &BigInt, k: u32| -> Option<BigInt> {
+        let r = z.nth_root(k);
+        (num_traits::Pow::pow(&r, k) == *z).then_some(r)
+    };
+    let abs_c = c.abs();
+    let (l, kappa) = (1..=m).filter(|l| m.is_multiple_of(*l)).find_map(|l| {
+        let k = u32::try_from(m / l).ok()?;
+        Some((
+            l,
+            Q::new(exact_root(abs_c.numer(), k)?, exact_root(abs_c.denom(), k)?),
+        ))
+    })?;
+    let m_full = if c.is_positive() { m } else { 2 * m };
+    let n = num_integer::lcm(m_full, 4);
+    let rc = RadCyc {
+        cyc: Cyclotomic::new(n)?,
+        l,
+        kappa,
+    };
+    let step = n / m_full;
+    let candidates = (0..m_full)
+        .filter(|j| c.is_positive() || j % 2 == 1)
+        .map(|j| j * step);
+    // All the roots of t^M = c when q is that binomial; otherwise those at
+    // which q vanishes (exactly: a zero representation is a zero).
+    let exps: Vec<usize> = if deg == m {
+        candidates.collect()
+    } else {
+        candidates
+            .filter(|&e| rc.eval_at(q, e).iter().all(Poly::is_zero))
+            .collect()
+    };
+    if exps.len() != deg {
+        return None;
+    }
+    let g_t = ratfn_quotient_mod(&h_prs.coeff(0), &h_prs.coeff(1), q)?;
+    let mut terms: Vec<ExprId> = Vec::new();
+    let two = arena.int(2);
+    for &e in &exps {
+        // One root of each conjugate pair (v > 0 ⇔ 0 < e < N/2) and the real ones.
+        if e > n / 2 {
+            continue;
+        }
+        let g = rc.eval_at(&g_t, e);
+        let [re_g, im_g] = rc.re_im(&g);
+        let [u, v] = rc.re_im(&rc.root(e));
+        let re_g_id = rc.real_expr(arena, &re_g)?;
+        let x_plus = arena.add(&[var, re_g_id]);
+        let x_plus = crate::transforms::eval::eval(arena, x_plus);
+        let im_zero = rc.is_zero(&im_g)?;
+        if e == 0 || 2 * e == n {
+            // Real root α = ±ρ: α·ln|x + g| (g real).
+            if !im_zero {
+                return None;
+            }
+            let a_id = rc.real_expr(arena, &u)?;
+            let abs = arena.abs(x_plus);
+            let ln = arena.ln(abs);
+            terms.push(arena.mul(&[a_id, ln]));
+            continue;
+        }
+        let u_zero = rc.is_zero(&u)?;
+        if u_zero && im_zero {
+            return None;
+        }
+        if !u_zero {
+            // x² + 2·Re(g)·x + |g|²
+            let norm_g = rc.mul(&g, &rc.conj(&g));
+            let [norm_g, _] = rc.re_im(&norm_g);
+            let n_id = rc.real_expr(arena, &norm_g)?;
+            let lin_c = rc.real_expr(
+                arena,
+                &RadCyc::scale(&re_g, &Q::from_integer(BigInt::from(2))),
+            )?;
+            let x2 = arena.pow(var, two);
+            let lin = arena.mul(&[lin_c, var]);
+            let norm = arena.add(&[x2, lin, n_id]);
+            let norm = crate::transforms::eval::eval(arena, norm);
+            let u_id = rc.real_expr(arena, &u)?;
+            let ln = arena.ln(norm);
+            terms.push(arena.mul(&[u_id, ln]));
+        }
+        if !im_zero {
+            // atan is odd: a negative Im g goes to the coefficient.
+            let flip = rc.approx(&im_g) < 0.0;
+            let sgn = Q::from_integer(BigInt::from(if flip { -1 } else { 1 }));
+            let b_id = rc.real_expr(arena, &RadCyc::scale(&im_g, &sgn))?;
+            let ratio = arena.div(x_plus, b_id);
+            let ratio = crate::transforms::eval::eval(arena, ratio);
+            let atan = arena.atan(ratio);
+            let two_v = RadCyc::scale(&v, &(Q::from_integer(BigInt::from(2)) * &sgn));
+            let two_v = rc.real_expr(arena, &two_v)?;
+            terms.push(arena.mul(&[two_v, atan]));
+        }
+    }
+    tracing::debug!(
+        n,
+        deg,
+        n_terms = terms.len(),
+        "log_to_real: roots of unity, exact in Q(zeta_N)"
+    );
+    (!terms.is_empty()).then_some(terms)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

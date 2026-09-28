@@ -1283,6 +1283,14 @@ pub(crate) fn fu(arena: &mut Arena, expr: ExprId) -> ExprId {
         return expr;
     }
 
+    // A denominator that vanishes identically: the value in the arithmetic
+    // of `1/0 = zoo`, not the `0` of a numerator the identities cancel.
+    // Up to 0.31 `fu((tan x·cos x − sin x)/(x/(x + 5) + 5/(x + 5) − 1))`
+    // was `0`.
+    if let Some(value) = crate::simplify::simplify_engine::vanishing_denominator(arena, expr) {
+        return value;
+    }
+
     // Step 1: Apply TR1 (remove sec/csc — already normalized in this system)
     let mut result = tr1(arena, expr);
 

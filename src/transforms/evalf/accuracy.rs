@@ -1145,6 +1145,19 @@ pub(super) fn node_error(
             // (before 0.30 always the first order, `e^1000·10` for
             // `exp(1000 ± 10)`, whose values reach `e^1010`).
             let j = b.joint();
+            // `e^z` is never 0: a 0 underflowed, and so does every value in
+            // the ball, `|e^(z+δ)| ≤ |e^z|·e^|δ|`.  Up to 0.31 its bound was
+            // unknown (`lv` is `−∞`) and `exp(−10¹⁰ − √2)` was refused as
+            // lacking precision.
+            if lv == f64::NEG_INFINITY && j <= 9.0 {
+                let e = if is_exact(j) {
+                    UNDERFLOW
+                } else {
+                    up(UNDERFLOW + j.exp2() * std::f64::consts::LOG2_E)
+                };
+                let im = if exactly_real(z, b) { EXACT } else { e };
+                return Bound { re: e, im };
+            }
             let e = if is_exact(j) {
                 EXACT
             } else if j < -30.0 {
@@ -1548,6 +1561,168 @@ fn underflowed(arena: &Arena, id: ExprId, cache: &FxHashMap<ExprId, Complex>) ->
             ) && args.last().is_some_and(nonzero)
         }
         _ => false,
+    }
+}
+
+/// What is known of a value that came out 0 with an underflow bound
+/// ([`is_underflow`]) besides its size: that it is not 0, and its sign when
+/// it is real ([`underflow_nonzero`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Nonzero {
+    /// A positive real number.
+    Positive,
+    /// A negative real number.
+    Negative,
+    /// Not 0; its sign, or its argument, is not known.
+    Unsigned,
+}
+
+impl Nonzero {
+    fn negated(self) -> Nonzero {
+        match self {
+            Nonzero::Positive => Nonzero::Negative,
+            Nonzero::Negative => Nonzero::Positive,
+            Nonzero::Unsigned => Nonzero::Unsigned,
+        }
+    }
+
+    fn times(self, other: Nonzero) -> Nonzero {
+        match (self, other) {
+            (Nonzero::Unsigned, _) | (_, Nonzero::Unsigned) => Nonzero::Unsigned,
+            (a, b) if a == b => Nonzero::Positive,
+            _ => Nonzero::Negative,
+        }
+    }
+}
+
+/// Is the value of node `id`, which came out 0 with an underflow bound, a
+/// number that is certainly not 0 — below the exponent range, not a zero
+/// to the precision reached?  `nonzero` holds the nodes already known to
+/// be such numbers; any other child counts as nonzero when its ball
+/// excludes 0.
+///
+/// `exp` is never 0; a product, a power or a quotient of nonzero values is
+/// not; nor `erfc`, `Γ` and `x!` of a real argument, `Ei` of a negative
+/// one (there it is negative), the functions of [`underflowed`] at exact
+/// nonzero arguments (with their sign at a positive real variable), or
+/// `sin`, `tan`, `asin`, `atan`, their hyperbolic
+/// counterparts and `erf` of a nonzero number that underflowed (they
+/// vanish simply at 0, and keep its sign).  A sum is nonzero when its
+/// terms are and have one sign.  Anything else — `exp(−10¹⁰)·(sin²1 + cos²1)
+/// − exp(−10¹⁰)`, truly 0 — is not known to be nonzero, and prints as a
+/// zero to the precision reached.
+pub(super) fn underflow_nonzero(
+    arena: &Arena,
+    id: ExprId,
+    cache: &FxHashMap<ExprId, Complex>,
+    errs: &FxHashMap<ExprId, Bound>,
+    nonzero: &FxHashMap<ExprId, Nonzero>,
+) -> Option<Nonzero> {
+    let bound = |c: ExprId| errs.get(&c).copied().unwrap_or(Bound::UNKNOWN);
+    let real = |c: ExprId| cache.get(&c).is_some_and(|v| exactly_real(v, bound(c)));
+    let exact = |c: ExprId| bound(c).is_exact();
+    let finite = |c: ExprId| cache.get(&c).is_some_and(is_finite) && !bound(c).is_unknown();
+    let status = |c: ExprId| -> Option<Nonzero> {
+        if let Some(&s) = nonzero.get(&c) {
+            return Some(s);
+        }
+        let (v, b) = (cache.get(&c)?, bound(c));
+        if b.is_unknown() || !is_finite(v) || contains_zero(v, b.joint()) {
+            return None;
+        }
+        Some(match (exactly_real(v, b), sign_of(&v.0)) {
+            (true, 1) => Nonzero::Positive,
+            (true, _) => Nonzero::Negative,
+            (false, _) => Nonzero::Unsigned,
+        })
+    };
+    // `Positive` and `Negative` are real signs: a child's is its value's
+    // when that is exactly real, or what `nonzero` recorded.
+    let real_sign = |c: ExprId| status(c).filter(|s| *s != Nonzero::Unsigned);
+    match arena.node(id) {
+        ExprNode::Exp(c) => finite(*c).then(|| {
+            if real(*c) {
+                Nonzero::Positive
+            } else {
+                Nonzero::Unsigned
+            }
+        }),
+        ExprNode::Mul(children) => children
+            .iter()
+            .try_fold(Nonzero::Positive, |acc, &c| Some(acc.times(status(c)?))),
+        ExprNode::Pow(base, exp) => {
+            let s = status(*base)?;
+            if !finite(*exp) {
+                return None;
+            }
+            let odd = arena
+                .as_num(*exp)
+                .filter(|q| q.is_integer())
+                .map(|q| !(q.to_integer() % BigInt::from(2)).is_zero());
+            Some(match (s, odd) {
+                (Nonzero::Positive, _) if real(*exp) => Nonzero::Positive,
+                (s, Some(true)) => s,
+                (Nonzero::Positive | Nonzero::Negative, Some(false)) => Nonzero::Positive,
+                _ => Nonzero::Unsigned,
+            })
+        }
+        ExprNode::Neg(c) => status(*c).map(Nonzero::negated),
+        ExprNode::Conjugate(c) => status(*c),
+        ExprNode::Abs(c) => status(*c).map(|_| Nonzero::Positive),
+        ExprNode::Add(children) => {
+            let first = real_sign(*children.first()?)?;
+            (first != Nonzero::Unsigned && children.iter().all(|&c| real_sign(c) == Some(first)))
+                .then_some(first)
+        }
+        ExprNode::Sin(c)
+        | ExprNode::Tan(c)
+        | ExprNode::Sinh(c)
+        | ExprNode::Tanh(c)
+        | ExprNode::Asin(c)
+        | ExprNode::Atan(c)
+        | ExprNode::Asinh(c)
+        | ExprNode::Atanh(c)
+        | ExprNode::Erf(c) => nonzero.get(c).copied(),
+        ExprNode::Erfc(c) => {
+            if (real(*c) || real_sign(*c).is_some()) && finite(*c) {
+                Some(Nonzero::Positive)
+            } else {
+                (exact(*c) && status(*c).is_some()).then_some(Nonzero::Unsigned)
+            }
+        }
+        ExprNode::Gamma(c) | ExprNode::Factorial(c) => finite(*c).then_some(Nonzero::Unsigned),
+        ExprNode::Ei(c) => match real_sign(*c) {
+            Some(Nonzero::Negative) => Some(Nonzero::Negative),
+            _ => (exact(*c) && status(*c).is_some()).then_some(Nonzero::Unsigned),
+        },
+        ExprNode::Apply(sid, args) => {
+            if !underflowed(arena, id, cache) || !args.iter().all(|&c| exact(c)) {
+                return None;
+            }
+            // At a positive real variable and a real order or parameter:
+            // `Ai`, `K_ν`, `Γ(s, x)`, `E_ν(x)` are positive, `Ai′` is
+            // negative, `I_ν` (`ν ≥ 0`) is positive.
+            let positive_x = args
+                .last()
+                .is_some_and(|&c| real_sign(c) == Some(Nonzero::Positive));
+            let real_params = args.iter().all(|&c| real(c));
+            let nonnegative_order = args
+                .first()
+                .is_some_and(|&c| cache.get(&c).is_some_and(|v| sign_of(&v.0) >= 0) && real(c));
+            Some(match arena.lib_fn(*sid) {
+                Some(LibFn::AiryAi | LibFn::BesselK | LibFn::UpperGamma | LibFn::ExpInt)
+                    if positive_x && real_params =>
+                {
+                    Nonzero::Positive
+                }
+                Some(LibFn::AiryAiPrime) if positive_x => Nonzero::Negative,
+                Some(LibFn::BesselI) if positive_x && real_params && nonnegative_order => {
+                    Nonzero::Positive
+                }
+                _ => Nonzero::Unsigned,
+            })
+        }
+        _ => None,
     }
 }
 

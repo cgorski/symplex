@@ -239,6 +239,21 @@ fn try_rationalize(arena: &mut Arena, numer: ExprId, denom: ExprId) -> Option<Ex
         let new_denom = crate::transforms::expand::expand(arena, denom_product);
         let new_denom = crate::transforms::eval::eval(arena, new_denom);
 
+        // `a² − b²` can vanish identically though neither `a + b` nor `a −
+        // b` does: `(√(x²) − x)(√(x²) + x) = 0`, the factors vanishing on
+        // opposite half-planes.  The conjugate is then no multiplier (SymPy's
+        // `radsimp` likewise returns its input when the new denominator has
+        // a zero, `nan` or `zoo`).  Up to 0.31 `1/(√(x²) − x)` and `1/(√x·√(x
+        // + 1) − √(x·(x + 1)))` became `zoo`; both are finite for `x < −1`.
+        if arena.is_zero_structural(new_denom)
+            || matches!(
+                arena.node(new_denom),
+                ExprNode::NaN | ExprNode::ComplexInfinity
+            )
+        {
+            return None;
+        }
+
         // Check if the new denominator is sqrt-free
         if !contains_sqrt(arena, new_denom) {
             return Some(arena.div(new_numer_expanded, new_denom));

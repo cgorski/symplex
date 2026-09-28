@@ -2260,9 +2260,12 @@ impl Matrix {
     }
 
     /// Least-squares solution of `Ax ≈ b` via the normal equations
-    /// `AᵀA x = Aᵀb`.
+    /// `AᴴA x = Aᴴb` (`Aᴴ` the conjugate transpose, as SymPy's
+    /// `solve_least_squares`; `Aᵀ` when every entry of `A` is provably real).
+    /// Before 0.32 `Aᵀ` was used for complex `A` too, which does not
+    /// minimise `‖Ax − b‖` (the same inner product as [`qr`](Self::qr)).
     ///
-    /// Requires `A` to have full column rank (so that `AᵀA` is invertible).
+    /// Requires `A` to have full column rank (so that `AᴴA` is invertible).
     ///
     /// # Errors
     ///
@@ -2293,15 +2296,28 @@ impl Matrix {
                 ),
             ));
         }
-        let at = self.transpose();
+        let real = self.iter().all(|e| e.is_real() == Some(true));
+        let at = if real {
+            self.transpose()
+        } else {
+            self.adjoint()
+        };
         let ata = at.matmul(self)?;
         let atb = at.matmul(b)?;
-        ata.solve(&atb).map_err(|_| {
+        let x = ata.solve(&atb).map_err(|_| {
             failed(
                 "solve_least_squares",
                 "AᵀA is singular (A does not have full column rank)",
             )
-        })
+        })?;
+        if real {
+            return Ok(x);
+        }
+        // Constants of ℚ(√p…, i) in normal form (`3/2 − i/8`, not the
+        // quotients of the elimination).
+        Ok(x.map(|e| {
+            crate::domains::linalg::algebraic_constant_normal_form(e).unwrap_or_else(|| e.clone())
+        }))
     }
 
     // ── Characteristic polynomial & eigenvalues ────────────────────────
@@ -2389,7 +2405,13 @@ impl Matrix {
     /// (The general Cardano/Ferrari formulas produce nested complex cube
     /// roots that make eigenvectors and `P⁻¹` swell exponentially.)  For
     /// 1×1 and 2×2 matrices with symbolic entries the closed-form
-    /// (quadratic) formula is used.
+    /// (quadratic) formula is used.  A characteristic polynomial with
+    /// coefficients in `ℚ(√p₁, …, i)` (algebraic entries) is split into
+    /// square-free factors over that field and by the factors of their norms
+    /// over `ℚ`; the pieces of degree ≤ 3 are solved by the quadratic
+    /// formula and by Cardano's formulas as SymPy's `roots_cubic` (before
+    /// 0.32 such 3×3 matrices were refused unless the polynomial was
+    /// `λ³ − c`), and their eigenvectors are computed over `K[t]/(g)`.
     ///
     /// # Examples
     ///
@@ -2501,6 +2523,19 @@ impl Matrix {
             total = pairs.iter().map(|(_, m)| *m).sum();
         }
 
+        // Coefficients in ℚ(√p…, i): square-free factors and the factors
+        // of their norms over ℚ, then the quadratic formula and Cardano as
+        // SymPy's `roots` (`roots_cubic`).  Before 0.32 the solver took only
+        // binomials here, so every 3×3 matrix with algebraic entries whose
+        // characteristic polynomial was not `λ³ − c` was refused, even one
+        // with `det A = 0` (`λ·(λ² + bλ + c)`).
+        if total < n
+            && let Some(alg) = crate::domains::linalg::algebraic_poly_roots(&coeffs)
+        {
+            pairs = alg;
+            total = n;
+        }
+
         if pairs.is_empty() {
             return Err(failed(
                 "eigenvals",
@@ -2592,6 +2627,12 @@ impl Matrix {
         let eye = Matrix::identity(&self.ctx(), n)?;
 
         let mut result = Vec::new();
+        let mut charpoly: Option<Vec<Ex>> = None;
+        let over_tower = self.as_qmatrix().is_none()
+            && self.iter().all(Ex::is_constant)
+            && crate::domains::linalg::in_square_root_tower(
+                &self.iter().cloned().collect::<Vec<_>>(),
+            );
         for (eigenval, alg_mult) in &eigen_pairs {
             let a_minus_lambda_i = self.sub(&eye.scale(eigenval))?;
             let field = self
@@ -2599,7 +2640,31 @@ impl Matrix {
                 .and_then(|q| Some((q, eigenvalue_minimal_polynomial(eigenval)?)));
             let vecs = match field {
                 Some((q, g)) => a_minus_lambda_i.nullspace_in_field(q, &g, eigenval),
-                None => a_minus_lambda_i.nullspace_semantic(),
+                None => {
+                    // An eigenvalue outside the square-root tower (Cardano's
+                    // cube roots) of a matrix over ℚ(√p…, i): exactly over
+                    // K[t]/(g) (see `algebraic_eigenvectors`).
+                    let exact = if !over_tower
+                        || crate::domains::linalg::in_square_root_tower(std::slice::from_ref(
+                            eigenval,
+                        )) {
+                        None
+                    } else {
+                        if charpoly.is_none() {
+                            charpoly = self.char_poly_coeffs().ok();
+                        }
+                        charpoly.as_deref().and_then(|cp| {
+                            crate::domains::linalg::algebraic_eigenvectors(&self.rows, cp, eigenval)
+                        })
+                    };
+                    match exact {
+                        Some(vs) => vs
+                            .into_iter()
+                            .map(Matrix::col_vector)
+                            .collect::<Result<Vec<_>, _>>()?,
+                        None => a_minus_lambda_i.nullspace_semantic(),
+                    }
+                }
             };
             trace!(
                 alg_mult,
@@ -3304,7 +3369,15 @@ impl Matrix {
             let g = if m >= n { qt.matmul(q) } else { q.matmul(&qt) };
             g.map_err(|e| reop(e, "singular_values"))?.to_matrix(&ctx)
         } else {
-            let at = self.transpose();
+            // `AᴴA` (SymPy's `_singular_values`: `M.H.multiply(M)`); `AᵀA`
+            // only when every entry is provably real.  Before 0.32 `AᵀA` was
+            // used for complex `A` too: `[[i, 0], [0, 2]]` had the "singular
+            // value" `i`.
+            let at = if self.iter().all(|e| e.is_real() == Some(true)) {
+                self.transpose()
+            } else {
+                self.adjoint()
+            };
             if m >= n {
                 at.matmul(self)?
             } else {

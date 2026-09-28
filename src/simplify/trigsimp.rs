@@ -57,6 +57,14 @@ pub(crate) fn trigsimp(arena: &mut Arena, expr: ExprId) -> ExprId {
         return expr;
     }
 
+    // A denominator that vanishes identically: the value in the arithmetic
+    // of `1/0 = zoo`, not the `0` of a numerator the identities cancel.
+    // Up to 0.31 `trigsimp((sin 2x − 2 sin x cos x)/(x/(x − 1) − 1/(x − 1)
+    // − 1))` was `0`.
+    if let Some(value) = crate::simplify::simplify_engine::vanishing_denominator(arena, expr) {
+        return value;
+    }
+
     // Strategy 1: original expression (baseline)
     let s0 = expr;
 

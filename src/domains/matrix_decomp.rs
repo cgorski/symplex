@@ -40,13 +40,24 @@ fn failed(operation: &'static str, reason: impl Into<String>) -> SymplexError {
     SymplexError::computation_failed(operation, reason)
 }
 
-/// Dot product of two equal-length column vectors given as `Vec<Ex>`.
-fn dot_vec(a: &[Ex], b: &[Ex]) -> Ex {
-    let mut acc = &a[0] * &b[0];
-    for k in 1..a.len() {
-        acc += &a[k] * &b[k];
+/// Dot product of two equal-length column vectors given as `Vec<Ex>`:
+/// `Σ āₖ·bₖ` (Hermitian) or `Σ aₖ·bₖ`.
+fn dot_vec(a: &[Ex], b: &[Ex], hermitian: bool) -> Ex {
+    let left = |x: &Ex| if hermitian { x.conjugate() } else { x.clone() };
+    let mut acc = &left(&a[0]) * &b[0];
+    for (x, y) in a.iter().zip(b).skip(1) {
+        acc += &left(x) * y;
     }
     acc
+}
+
+fn dependent_error(op: &'static str, j: usize) -> SymplexError {
+    failed(
+        op,
+        format!(
+            "vectors are linearly dependent (vector {j} lies in the span of the previous ones)"
+        ),
+    )
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -56,7 +67,9 @@ fn dot_vec(a: &[Ex], b: &[Ex]) -> Ex {
 /// Gram–Schmidt orthogonalisation of a list of column vectors.
 ///
 /// Returns vectors spanning the same space, pairwise orthogonal (and of
-/// unit length if `normalize` is set).  Radicals are kept exact: a
+/// unit length if `normalize` is set) for the Hermitian inner product
+/// `⟨x, y⟩ = Σ x̄ₖ·yₖ`, as SymPy's `GramSchmidt` (before 0.32 the bilinear
+/// `Σ xₖ·yₖ`; the two agree for real vectors).  Radicals are kept exact: a
 /// normalised entry is `uᵢ · ‖u‖⁻¹` with the norm left as `√(‖u‖²)`, so
 /// that dot products of the results cancel structurally (`qᵢ·qⱼ` is
 /// `0`, `qᵢ·qᵢ` is `1` without further simplification).  Symbolic entries
@@ -119,12 +132,51 @@ pub fn gram_schmidt(vectors: &[Matrix], normalize: bool) -> Result<Vec<Matrix>, 
 /// Core Gram–Schmidt on raw columns.
 ///
 /// Returns `(orthogonal vectors, R)` where `R` is the `k×k` upper
-/// triangular coefficient matrix (`R[i][j] = q_i · a_j` for `i < j`,
+/// triangular coefficient matrix (`R[i][j] = ⟨q_i, a_j⟩` for `i < j`,
 /// `R[j][j] = ‖u_j‖`) when `normalize` is true.
+///
+/// The inner product is the Hermitian `⟨x, y⟩ = Σ x̄ₖ·yₖ`, as SymPy's
+/// `QRdecomposition`/`GramSchmidt` (`u.dot(v, hermitian=True)`).  Before
+/// 0.32 it was the bilinear `Σ xₖ·yₖ`, so `Q` satisfied `QᵀQ = I` rather
+/// than `QᴴQ = I` for complex entries, and a column such as `[1, i]` (with
+/// `1 + i² = 0`) was "linearly dependent".  When every entry is provably
+/// real the two agree and the real path ([`gram_schmidt_expr`]) runs
+/// unchanged, falling back to the exact path only where it fails (a 4×4
+/// matrix over `ℚ(√2, √3)` exceeded the expression budget); otherwise the
+/// columns are orthogonalised exactly over `ℚ(√p…, i)(params,
+/// conj(params))` ([`hermitian_gram_schmidt`](crate::domains::linalg::hermitian_gram_schmidt)),
+/// or, for entries outside that field, on expressions with conjugates.
 fn gram_schmidt_cols(
     cols: &[Vec<Ex>],
     normalize: bool,
     op: &'static str,
+) -> Result<GramSchmidtParts, SymplexError> {
+    use crate::domains::linalg::{HermitianGs, hermitian_gram_schmidt};
+    let exact = || match hermitian_gram_schmidt(cols, normalize) {
+        Some(HermitianGs::Factors(f)) => Some(Ok((f.q, f.r))),
+        Some(HermitianGs::Dependent(j)) => Some(Err(dependent_error(op, j))),
+        None => None,
+    };
+    let hermitian = !cols.iter().flatten().all(|e| e.is_real() == Some(true));
+    if hermitian {
+        if let Some(res) = exact() {
+            return res;
+        }
+        return gram_schmidt_expr(cols, normalize, op, true);
+    }
+    match gram_schmidt_expr(cols, normalize, op, false) {
+        Err(e) => exact().unwrap_or(Err(e)),
+        ok => ok,
+    }
+}
+
+/// Gram–Schmidt on expressions (see [`gram_schmidt_cols`]), with the
+/// Hermitian or the bilinear inner product.
+fn gram_schmidt_expr(
+    cols: &[Vec<Ex>],
+    normalize: bool,
+    op: &'static str,
+    hermitian: bool,
 ) -> Result<GramSchmidtParts, SymplexError> {
     let k = cols.len();
     let zero = cols[0][0].context().zero();
@@ -146,10 +198,10 @@ fn gram_schmidt_cols(
         for i in 0..j {
             // r_ij = q_i · a_j  (q_i normalised) or (q_i · a_j)/(q_i · q_i) otherwise
             let proj = if normalize {
-                tidy(dot_vec(&q[i], &cols[j]))
+                tidy(dot_vec(&q[i], &cols[j], hermitian))
             } else {
-                let qq = dot_vec(&q[i], &q[i]);
-                tidy(&dot_vec(&q[i], &cols[j]) / &qq)
+                let qq = dot_vec(&q[i], &q[i], hermitian);
+                tidy(&dot_vec(&q[i], &cols[j], hermitian) / &qq)
             };
             for (u_e, q_e) in u.iter_mut().zip(q[i].iter()) {
                 *u_e = &*u_e - &(&proj * q_e);
@@ -158,7 +210,7 @@ fn gram_schmidt_cols(
         }
         budget_check(u.iter(), op)?;
         let u: Vec<Ex> = u.into_iter().map(tidy).collect();
-        let norm_sq = tidy(dot_vec(&u, &u));
+        let norm_sq = tidy(dot_vec(&u, &u, hermitian));
         // The exact test of a rational function over ℚ(radicals, i) first:
         // `ex_is_zero` would `simplify` a norm that is not identically zero,
         // which swelled for 3×3 symbolic matrices with radicals (> 10 s).
@@ -167,12 +219,7 @@ fn gram_schmidt_cols(
             None => ex_is_zero(&norm_sq) == Some(true),
         };
         if dependent {
-            return Err(failed(
-                op,
-                format!(
-                    "vectors are linearly dependent (vector {j} lies in the span of the previous ones)"
-                ),
-            ));
+            return Err(dependent_error(op, j));
         }
         if normalize {
             let norm = norm_sq.sqrt();
@@ -202,7 +249,17 @@ fn gram_schmidt_cols(
 
 impl Matrix {
     /// QR decomposition via Gram–Schmidt: [`Qr`]`{ q, r }` with `A = Q·R`,
-    /// `Q` (m×n) having orthonormal columns and `R` (n×n) upper triangular.
+    /// `Q` (m×n) having orthonormal columns (`QᴴQ = I`) and `R` (n×n) upper
+    /// triangular with a real positive diagonal.
+    ///
+    /// As SymPy's `QRdecomposition`, the inner product is the Hermitian
+    /// `⟨x, y⟩ = Σ x̄ₖ·yₖ`, so `Q` is unitary for complex entries (a symbol
+    /// without a real assumption is complex: its entries carry
+    /// `conjugate(x)`).  Before 0.32 the bilinear `Σ xₖ·yₖ` gave `QᵀQ = I`
+    /// instead, and `[1, i]ᵀ` was refused as linearly dependent.  Real
+    /// matrices are unaffected.  Complex and symbolic entries that are
+    /// rational functions over square roots of rationals and `i` are
+    /// orthogonalised in exact field arithmetic, simplified once.
     ///
     /// Works exactly with radicals (entries like `1/√2`).  Requires the
     /// columns of `A` to be linearly independent (`rank == ncols`).
@@ -224,6 +281,14 @@ impl Matrix {
     /// assert_eq!((&q * &r).simplify(), a);
     /// assert_eq!((&q.transpose() * &q).simplify(), Matrix::identity(&ctx, 2).unwrap());
     /// assert!(r[(1, 0)].is_zero_structural());
+    ///
+    /// // Complex: SymPy's Matrix([1, I]).QRdecomposition() is
+    /// // Q = [sqrt(2)/2, sqrt(2)*I/2], R = [sqrt(2)].
+    /// let v = Matrix::col_vector(vec![ctx.int(1), ctx.i_unit()]).unwrap();
+    /// let Qr { q, r } = v.qr().unwrap();
+    /// assert_eq!(q[(1, 0)], (ctx.rational(1, 2).sqrt() * ctx.i_unit()).eval());
+    /// assert_eq!(r[(0, 0)], ctx.int(2).sqrt());
+    /// assert_eq!(q.adjoint().matmul(&q).unwrap().eval(), Matrix::identity(&ctx, 1).unwrap());
     /// ```
     pub fn qr(&self) -> Result<Qr<Matrix>, SymplexError> {
         budget_check(self.iter(), "qr")?;

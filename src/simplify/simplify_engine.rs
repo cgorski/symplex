@@ -278,6 +278,16 @@ pub(crate) fn smart_simplify_traced(
         return (expr, "none", Vec::new());
     }
 
+    // An expression with a denominator that vanishes identically takes its
+    // value in the arithmetic of `1/0 = zoo` (`nan` for `0/0`); the
+    // strategies below would multiply out a numerator that vanishes too and
+    // keep `0` (`vanishing_denominator`).
+    if flags.has_neg_pow
+        && let Some(value) = vanishing_denominator(arena, expr)
+    {
+        return (value, "vanishing-denominator", Vec::new());
+    }
+
     let original_ops = count_ops(arena, expr);
     let mut best = Best {
         expr,
@@ -544,7 +554,48 @@ pub(crate) fn smart_simplify_traced(
         return (expr, "none", Vec::new());
     }
 
+    // `zoo` is a denominator that vanished (`sin²x + cos²x − 1` under the
+    // trigonometric rules); over a numerator that vanishes as well the
+    // expression is `0/0`.  Up to 0.31 `(x·(x + 1) − x² − x)/(sin²x + cos²x
+    // − 1)` simplified to `zoo`.
+    if best.expr == arena.complex_infinity
+        && crate::simplify::ratsimp::numerator_expands_to_zero(arena, expr)
+    {
+        return (arena.nan, best.strategy, best.steps);
+    }
+
     (best.expr, best.strategy, best.steps)
+}
+
+/// The value of `expr` when a denominator in it (outside every function
+/// argument) vanishes identically as a rational function of its generators
+/// ([`polybridge::vanishes_identically`](crate::poly::polybridge::vanishes_identically)),
+/// in the arithmetic of `1/0 = zoo` that `ratsimp`, `together` and the
+/// canonical constructors follow: `nan` for `0/0`, `zoo` for `P/0`, and the
+/// zero absorbed by a further division (`x/(1 + 1/0) = 0`)
+/// ([`ratsimp_zero_denominator`](crate::simplify::ratsimp::ratsimp_zero_denominator)).
+/// `None` when no denominator vanishes.
+///
+/// The strategies must not see such an expression: `expand` multiplies out
+/// a numerator that vanishes as well and returns `0·(…) = 0` before the
+/// denominator is looked at, and distributes `zoo` over a sum (`zoo·x +
+/// zoo = nan`).  SymPy's `expand` gives `0` too; its `simplify` starts by
+/// writing every subexpression as one fraction (`normal`), which turns the
+/// denominator into `1/0 = zoo` and gives `nan`.  Up to 0.31
+/// `simplify((x·(x + 1) − x² − x)/(−x/(x + 1) + x·(−x/(x + 1) + 1)))` was
+/// `0` while `together` and `ratsimp` gave `nan`, and `simplify(|x − 3|/(cos
+/// x + 2 + (x + 3)/((x + y)² − x² − 2xy − y²)))` was `nan` (SymPy: `0`).
+///
+/// The residue test of `may_have_vanishing_denominator` (one pass, no
+/// expansion) rules out almost every input; only then is `ratsimp` asked.
+/// `trigsimp`, `fu` and `powsimp` start with the same test: they too turn
+/// a numerator into 0 (`sin 2x − 2 sin x cos x`, `e^x·e^(−x) − 1`) and
+/// return `0` over a denominator that vanishes.
+pub(crate) fn vanishing_denominator(arena: &mut Arena, expr: ExprId) -> Option<ExprId> {
+    if !crate::poly::polybridge::may_have_vanishing_denominator(arena, expr) {
+        return None;
+    }
+    crate::simplify::ratsimp::ratsimp_zero_denominator(arena, expr)
 }
 
 /// Unified simplification engine — iterates [`smart_simplify`] to a fixpoint.

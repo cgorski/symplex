@@ -542,6 +542,15 @@ impl Tower {
     /// a radical of a symbol, a root of a negative number of index > 2, a
     /// radicand that is not factored by trial division, `L > 12`).
     fn scan(arena: &Arena, roots: &[ExprId]) -> Option<Tower> {
+        Self::scan_opts(arena, roots, false)
+    }
+
+    /// [`scan`](Self::scan); with `conjugates` a node `conjugate(s)` of a
+    /// symbol `s` is a parameter of its own (the Hermitian products of
+    /// [`hermitian_gram_schmidt`]: `s` and `s̄` are algebraically
+    /// independent, so a rational function of both is zero iff it is zero
+    /// as a function of two independent variables).
+    fn scan_opts(arena: &Arena, roots: &[ExprId], conjugates: bool) -> Option<Tower> {
         let mut syms: Vec<ExprId> = Vec::new();
         // (node, radicand, s, t) for `radicand^(s/t)`
         let mut radicals: Vec<(ExprId, Q, i64, u32)> = Vec::new();
@@ -559,6 +568,11 @@ impl Tower {
             match arena.node(id) {
                 ExprNode::Num(_) => {}
                 ExprNode::Symbol(_) => syms.push(id),
+                ExprNode::Conjugate(b)
+                    if conjugates && matches!(arena.node(*b), ExprNode::Symbol(_)) =>
+                {
+                    syms.push(id);
+                }
                 ExprNode::ImaginaryUnit => has_i = true,
                 ExprNode::GoldenRatio => golden.push(id),
                 ExprNode::Add(ch) | ExprNode::Mul(ch) => stack.extend(ch.iter().copied()),
@@ -977,7 +991,9 @@ impl Tower {
             } else {
                 match node {
                     ExprNode::Num(_) => (Mp::constant(nv, arena.as_num(id)?.clone()), one.clone()),
-                    ExprNode::Symbol(_) => {
+                    // (`conjugate(s)` is in `syms` only for a tower built by
+                    // `scan_opts(…, true)`; elsewhere the lookup fails.)
+                    ExprNode::Symbol(_) | ExprNode::Conjugate(_) => {
                         let i = *sym_index.get(&id)?;
                         let v = match point {
                             Some(k) => Mp::constant(nv, rf_sample_point(i, k)),
@@ -1385,6 +1401,39 @@ impl Tower {
             &num / &den
         }
     }
+
+    /// The complex conjugate of a reduced polynomial of a square-root tower
+    /// without a nested root: the parameters permuted by `perm` (`s ↔ s̄`
+    /// for a parameter `s` that is not real, a real one fixed), the square
+    /// roots of the positive primes (and `φ`) fixed, `i ↦ −i`.
+    fn conj_poly(&self, p: &Mp, perm: &[usize]) -> Option<Mp> {
+        let ns = self.syms.len();
+        let iv = self.has_i.then(|| ns + self.primes.len());
+        let terms: Vec<(Vec<u32>, Q)> = p
+            .terms()
+            .map(|(e, c)| {
+                let mut f = e.to_vec();
+                for (k, &to) in perm.iter().enumerate() {
+                    f[to] = e[k];
+                }
+                let flip = iv.is_some_and(|v| e[v] % 2 == 1);
+                (f, if flip { -c.clone() } else { c.clone() })
+            })
+            .collect();
+        Mp::from_terms(p.num_vars(), terms)
+    }
+
+    /// `⟨x, y⟩ = Σ x̄ₖ·yₖ` of polynomial vectors, `xbar` the conjugates of `x`.
+    fn hdot(&self, xbar: &[Mp], y: &[Mp]) -> Option<Mp> {
+        let mut acc = Mp::zero(self.nvars());
+        for (a, b) in xbar.iter().zip(y) {
+            acc = acc.add(&self.mul_r(a, b));
+            if acc.num_terms() > KFRAC_TERM_BUDGET {
+                return None;
+            }
+        }
+        Some(acc)
+    }
 }
 
 /// An element `N/D` of `K(params)` (square-root towers only): in the normal
@@ -1473,6 +1522,738 @@ pub(crate) fn algebraic_function_is_zero(e: &Ex) -> Option<bool> {
         return None;
     }
     tower.is_zero(arena, root)
+}
+
+// ── Polynomials over the constants of a square-root tower ───────────────────
+
+/// A univariate polynomial over the field `K` of a [`Tower`] without
+/// parameters: reduced coefficients, ascending, no trailing zeros.
+type KPoly = Vec<Mp>;
+
+fn kp_trim(mut p: KPoly) -> KPoly {
+    while p.last().is_some_and(Mp::is_zero) {
+        p.pop();
+    }
+    p
+}
+
+fn kp_sub(a: &[Mp], b: &[Mp], nv: usize) -> KPoly {
+    let zero = Mp::zero(nv);
+    let terms = (0..a.len().max(b.len()))
+        .map(|k| a.get(k).unwrap_or(&zero).sub(b.get(k).unwrap_or(&zero)))
+        .collect();
+    kp_trim(terms)
+}
+
+fn kp_deriv(p: &[Mp]) -> KPoly {
+    let terms = p
+        .iter()
+        .enumerate()
+        .skip(1)
+        .map(|(k, c)| c.scale(&Q::from_integer(BigInt::from(k))))
+        .collect();
+    kp_trim(terms)
+}
+
+impl Tower {
+    fn kp_monic(&self, p: &[Mp]) -> Option<KPoly> {
+        let inv = self.inv_k(p.last()?)?;
+        Some(p.iter().map(|c| self.mul_r(c, &inv)).collect())
+    }
+
+    fn kp_mul(&self, a: &[Mp], b: &[Mp]) -> KPoly {
+        if a.is_empty() || b.is_empty() {
+            return Vec::new();
+        }
+        let nv = self.nvars();
+        let mut out = vec![Mp::zero(nv); a.len() + b.len() - 1];
+        for (i, x) in a.iter().enumerate() {
+            for (j, y) in b.iter().enumerate() {
+                out[i + j] = out[i + j].add(&self.mul_r(x, y));
+            }
+        }
+        kp_trim(out)
+    }
+
+    /// Quotient and remainder (`[quotient, remainder]`) of `a` by `b ≠ 0`.
+    fn kp_divrem(&self, a: &[Mp], b: &[Mp]) -> Option<[KPoly; 2]> {
+        let db = b.len().checked_sub(1)?;
+        let inv = self.inv_k(b.last()?)?;
+        let mut r: KPoly = a.to_vec();
+        let mut q = vec![Mp::zero(self.nvars()); a.len().saturating_sub(db).max(1)];
+        while r.len() > db && !r.is_empty() {
+            let k = r.len() - 1 - db;
+            let f = self.mul_r(r.last()?, &inv);
+            for (j, c) in b.iter().enumerate() {
+                r[k + j] = r[k + j].sub(&self.mul_r(&f, c));
+            }
+            q[k] = f;
+            r.pop();
+            r = kp_trim(r);
+        }
+        Some([kp_trim(q), r])
+    }
+
+    /// The monic gcd (`[]` for two zero polynomials).
+    fn kp_gcd(&self, a: &[Mp], b: &[Mp]) -> Option<KPoly> {
+        let (mut x, mut y) = (kp_trim(a.to_vec()), kp_trim(b.to_vec()));
+        while !y.is_empty() {
+            let [_, r] = self.kp_divrem(&x, &y)?;
+            x = y;
+            y = r;
+        }
+        if x.is_empty() {
+            return Some(x);
+        }
+        self.kp_monic(&x)
+    }
+
+    /// `b/a` for `a | b`.
+    fn kp_quo(&self, b: &[Mp], a: &[Mp]) -> Option<KPoly> {
+        let [q, r] = self.kp_divrem(b, a)?;
+        r.is_empty().then_some(q)
+    }
+
+    /// Yun's square-free decomposition of a monic `f`: `(factor, k)` with
+    /// `f = ∏ factorᵏ`, the factors monic, square-free and coprime.
+    fn kp_squarefree(&self, f: &[Mp]) -> Option<Vec<(KPoly, usize)>> {
+        let nv = self.nvars();
+        let df = kp_deriv(f);
+        let a0 = self.kp_gcd(f, &df)?;
+        let mut b = self.kp_quo(f, &a0)?;
+        let c = self.kp_quo(&df, &a0)?;
+        let mut d = kp_sub(&c, &kp_deriv(&b), nv);
+        let mut out = Vec::new();
+        let mut k = 1usize;
+        while b.len() > 1 {
+            let a = self.kp_gcd(&b, &d)?;
+            let nb = self.kp_quo(&b, &a)?;
+            let nc = self.kp_quo(&d, &a)?;
+            if a.len() > 1 {
+                out.push((a, k));
+            }
+            d = kp_sub(&nc, &kp_deriv(&nb), nv);
+            b = nb;
+            k += 1;
+            if k > f.len() {
+                return None;
+            }
+        }
+        Some(out)
+    }
+
+    /// The factors of a monic square-free `f` over `K` obtained from the
+    /// irreducible factors `h` of its norm `N(f) = ∏_σ σ(f) ∈ ℚ[λ]` (`σ`
+    /// over the sign changes of the generators): `f = ∏ gcd(f, h)`, since
+    /// every root of `f` is a root of exactly one `h`.  A factor may still
+    /// be reducible over `K` when `N(f)` is not square-free.  `[f]` when the
+    /// norm is too large (degree above 64) or not rational.
+    fn kp_split_by_norm(&self, f: &[Mp]) -> Option<Vec<KPoly>> {
+        let ns = self.syms.len();
+        let gens: Vec<usize> = (ns..self.nvars()).collect();
+        let deg = f.len() - 1;
+        if deg <= 1 || gens.len() > 6 || deg << gens.len() > 64 {
+            return Some(vec![f.to_vec()]);
+        }
+        let flip = |p: &Mp, mask: usize| -> Option<Mp> {
+            let terms: Vec<(Vec<u32>, Q)> = p
+                .terms()
+                .map(|(e, c)| {
+                    let odd = gens
+                        .iter()
+                        .enumerate()
+                        .filter(|(b, v)| mask >> b & 1 == 1 && e[**v] % 2 == 1)
+                        .count();
+                    (
+                        e.to_vec(),
+                        if odd % 2 == 1 { -c.clone() } else { c.clone() },
+                    )
+                })
+                .collect();
+            Mp::from_terms(p.num_vars(), terms)
+        };
+        let mut norm: KPoly = vec![Mp::from_int(self.nvars(), 1)];
+        for mask in 0..(1usize << gens.len()) {
+            let g: KPoly = f.iter().map(|c| flip(c, mask)).collect::<Option<_>>()?;
+            norm = self.kp_mul(&norm, &g);
+        }
+        let mut qc: Vec<Q> = Vec::with_capacity(norm.len());
+        for c in &norm {
+            match c.as_constant() {
+                Some(v) => qc.push(v),
+                None if c.is_zero() => qc.push(Q::zero()),
+                None => return Some(vec![f.to_vec()]),
+            }
+        }
+        let (_, factors) = crate::poly::dense::Poly::from_coeffs(qc).factor_over_z();
+        let mut out = Vec::new();
+        let nv = self.nvars();
+        for (h, _) in &factors {
+            if h.degree().unwrap_or(0) == 0 {
+                continue;
+            }
+            let hk: KPoly = h
+                .coeffs()
+                .iter()
+                .map(|c| Mp::constant(nv, c.clone()))
+                .collect();
+            let g = self.kp_gcd(f, &hk)?;
+            if g.len() > 1 {
+                out.push(g);
+            }
+        }
+        let total: usize = out.iter().map(|g| g.len() - 1).sum();
+        if total != deg {
+            return Some(vec![f.to_vec()]);
+        }
+        Some(out)
+    }
+
+    fn kp_rem(&self, a: &[Mp], g: &[Mp]) -> Option<KPoly> {
+        let [_, r] = self.kp_divrem(a, g)?;
+        Some(r)
+    }
+
+    /// The inverse of `a` modulo `g` (extended Euclid over `K`); `None` when
+    /// `gcd(a, g) ≠ 1` (a zero divisor of `K[t]/(g)`).
+    fn kp_inv_mod(&self, a: &[Mp], g: &[Mp]) -> Option<KPoly> {
+        let nv = self.nvars();
+        let (mut r0, mut r1) = (g.to_vec(), self.kp_rem(a, g)?);
+        let (mut s0, mut s1): (KPoly, KPoly) = (Vec::new(), vec![Mp::from_int(nv, 1)]);
+        while r1.len() > 1 {
+            let [q, r2] = self.kp_divrem(&r0, &r1)?;
+            let s2 = kp_sub(&s0, &self.kp_mul(&q, &s1), nv);
+            (r0, r1) = (r1, r2);
+            (s0, s1) = (s1, s2);
+        }
+        let c = self.inv_k(r1.first()?)?;
+        let s: KPoly = s1.iter().map(|x| self.mul_r(x, &c)).collect();
+        self.kp_rem(&s, g)
+    }
+
+    /// Is the constant `c` of `K` real and negative / positive?  `Some(sign)`
+    /// of a real `c`, `None` for a non-real one or an undecided sign.
+    fn real_constant_sign(&self, c: &Mp) -> Option<i8> {
+        let ns = self.syms.len();
+        if self.has_i {
+            let iv = ns + self.primes.len();
+            if c.terms().any(|(e, _)| e[iv] % 2 == 1) {
+                return None;
+            }
+        }
+        self.real_sign(c)
+    }
+}
+
+/// The roots, with multiplicities, of the polynomial `Σ coeffs[k]·λᵏ`
+/// whose coefficients are constants of `K = ℚ(√p₁, …, i)` (not all
+/// rational), in radicals: SymPy's `roots` for a polynomial over an
+/// algebraic field — the multiplicities from the square-free
+/// decomposition over `K`, the factors split by the norm to `ℚ[λ]` (roots
+/// in `K` exactly), then the quadratic formula `(−b ± √(b² − 4c))/2` and
+/// Cardano's formulas in the form of SymPy's `roots_cubic`.  Every
+/// coefficient computation is exact in `K`; the radicands are in its normal
+/// form.  `None` when a coefficient is not such a constant, a factor has
+/// degree above 3, or a sign is undecided.
+pub(crate) fn algebraic_poly_roots(coeffs: &[Ex]) -> Option<Vec<(Ex, usize)>> {
+    let handle = coeffs.first()?.clone();
+    let (tower, f) = {
+        let inner = handle.inner.read();
+        let arena = &inner.arena;
+        let ids: Vec<ExprId> = coeffs.iter().map(Ex::raw_id).collect();
+        let tower = Tower::scan(arena, &ids)?;
+        if !tower.syms.is_empty() || !tower.has_generators() || tower.l > 2 || tower.ext.is_some() {
+            return None;
+        }
+        let mut f: KPoly = Vec::with_capacity(ids.len());
+        for &id in &ids {
+            let (n, d) = tower.eval_frac(arena, id, None, RF_TERM_BUDGET)??;
+            f.push(tower.mul_r(&n, &tower.inv_k(&d)?));
+        }
+        (tower, kp_trim(f))
+    };
+    if f.len() < 2 {
+        return None;
+    }
+    let f = tower.kp_monic(&f)?;
+    let mut out: Vec<(Ex, usize)> = Vec::new();
+    for (sf, mult) in tower.kp_squarefree(&f)? {
+        for g in tower.kp_split_by_norm(&sf)? {
+            for root in kp_radical_roots(&tower, &g, &handle)? {
+                out.push((root, mult));
+            }
+        }
+    }
+    let total: usize = out.iter().map(|(_, m)| *m).sum();
+    (total == f.len() - 1).then_some(out)
+}
+
+/// Can the exact pivot test ([`algebraic_function_is_zero`]) decide the
+/// entries built from `es`: are they rational functions over a square-root
+/// tower (possibly with one nested square root)?
+pub(crate) fn in_square_root_tower(es: &[Ex]) -> bool {
+    let Some(first) = es.first() else {
+        return true;
+    };
+    let inner = first.inner.read();
+    let ids: Vec<ExprId> = es.iter().map(Ex::raw_id).collect();
+    Tower::scan(&inner.arena, &ids).is_some_and(|t| t.l <= 2)
+}
+
+/// A basis of the eigenspace of the eigenvalue `lam` of the matrix `rows`
+/// with constant entries in `K = ℚ(√p…, i)` and characteristic polynomial
+/// `charpoly` (ascending), exactly: `lam` is a root of one factor `g` of
+/// `charpoly` over `K` (square-free parts split by their norms, as in
+/// [`algebraic_poly_roots`]), found by a certified evaluation — every
+/// other factor has nonzero digits at `lam`, so `lam` is a root of the one
+/// that evaluates to zero — and `A − tI` is eliminated over `K[t]/(g)`.
+/// Each vector entry is the residue `c₀ + c₁·t + …` at `t = lam` (the form
+/// of the rational-matrix eigenvectors over `ℚ[t]/(g)`).  Before 0.32 the
+/// elimination ran on the expressions of `A − λI`, whose pivots in a
+/// Cardano `λ` no zero test decides (no eigenvector, or no answer).  `None`
+/// when an entry is not such a constant, the factor is not identified, or a
+/// pivot is a zero divisor of `K[t]/(g)` (`g` reducible over `K`).
+pub(crate) fn algebraic_eigenvectors(
+    rows: &[Vec<Ex>],
+    charpoly: &[Ex],
+    lam: &Ex,
+) -> Option<Vec<Vec<Ex>>> {
+    let n = rows.len();
+    let (tower, a, f) = {
+        let inner = lam.inner.read();
+        let arena = &inner.arena;
+        let mut ids: Vec<ExprId> = rows.iter().flatten().map(Ex::raw_id).collect();
+        ids.extend(charpoly.iter().map(Ex::raw_id));
+        let tower = Tower::scan(arena, &ids)?;
+        if !tower.syms.is_empty() || !tower.has_generators() || tower.l > 2 || tower.ext.is_some() {
+            return None;
+        }
+        let kval = |id: ExprId| -> Option<Mp> {
+            let (nm, d) = tower.eval_frac(arena, id, None, RF_TERM_BUDGET)??;
+            Some(tower.mul_r(&nm, &tower.inv_k(&d)?))
+        };
+        let a: Vec<Vec<Mp>> = rows
+            .iter()
+            .map(|r| r.iter().map(|e| kval(e.raw_id())).collect::<Option<_>>())
+            .collect::<Option<_>>()?;
+        let f: KPoly = charpoly
+            .iter()
+            .map(|e| kval(e.raw_id()))
+            .collect::<Option<_>>()?;
+        (tower, a, kp_trim(f))
+    };
+    let nv = tower.nvars();
+    let kx = |c: &Mp| -> Ex {
+        let fr = KFrac {
+            num: c.clone(),
+            den: Mp::from_int(nv, 1),
+        };
+        tower.frac_to_ex(&fr, lam)
+    };
+    let lam_pows: Vec<Ex> = (0..f.len()).map(|k| lam.powi(k as i64)).collect();
+    let at_lam = |p: &[Mp]| -> Ex {
+        let terms = p
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| !c.is_zero())
+            .map(|(k, c)| if k == 0 { kx(c) } else { &kx(c) * &lam_pows[k] });
+        Ex::sum_of(&lam.context(), terms)
+    };
+    let f = tower.kp_monic(&f)?;
+    let mut gs: Vec<KPoly> = Vec::new();
+    for (sf, _) in tower.kp_squarefree(&f)? {
+        gs.extend(tower.kp_split_by_norm(&sf)?);
+    }
+    let mut which: Option<usize> = None;
+    for (idx, g) in gs.iter().enumerate() {
+        match at_lam(g).eval_decimal(30) {
+            Ok(s) if s == "0" => {
+                if which.replace(idx).is_some() {
+                    return None;
+                }
+            }
+            Ok(_) => {}
+            Err(_) => return None,
+        }
+    }
+    let g = gs.swap_remove(which?);
+    // A − tI over K[t]/(g), Gauss–Jordan.
+    let t: KPoly = vec![Mp::zero(nv), Mp::from_int(nv, 1)];
+    let mut m: Vec<Vec<KPoly>> = Vec::with_capacity(n);
+    for (i, row) in a.iter().enumerate() {
+        let mut r = Vec::with_capacity(n);
+        for (j, e) in row.iter().enumerate() {
+            let c = kp_trim(vec![e.clone()]);
+            let x = if i == j { kp_sub(&c, &t, nv) } else { c };
+            r.push(tower.kp_rem(&x, &g)?);
+        }
+        m.push(r);
+    }
+    let mut pivots: Vec<usize> = Vec::new();
+    let mut pr = 0usize;
+    for col in 0..n {
+        if pr >= n {
+            break;
+        }
+        let Some(f) = (pr..n).find(|&i| !m[i][col].is_empty()) else {
+            continue;
+        };
+        m.swap(pr, f);
+        let inv = tower.kp_inv_mod(&m[pr][col], &g)?;
+        let pivot_row: Vec<KPoly> = m[pr]
+            .iter()
+            .map(|x| tower.kp_rem(&tower.kp_mul(x, &inv), &g))
+            .collect::<Option<_>>()?;
+        for (i, row) in m.iter_mut().enumerate() {
+            if i == pr || row[col].is_empty() {
+                continue;
+            }
+            let fac = row[col].clone();
+            for (x, p) in row.iter_mut().zip(&pivot_row) {
+                let y = kp_sub(x, &tower.kp_mul(&fac, p), nv);
+                *x = tower.kp_rem(&y, &g)?;
+            }
+        }
+        m[pr] = pivot_row;
+        pivots.push(col);
+        pr += 1;
+    }
+    let ctx = lam.context();
+    let mut out = Vec::new();
+    for free in (0..n).filter(|c| !pivots.contains(c)) {
+        let mut v = vec![ctx.zero(); n];
+        v[free] = ctx.one();
+        for (r, &pc) in pivots.iter().enumerate() {
+            if !m[r][free].is_empty() {
+                v[pc] = -at_lam(&m[r][free]);
+            }
+        }
+        out.push(v);
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// The roots of a monic square-free `g` over `K` of degree 1 to 3.
+fn kp_radical_roots(tower: &Tower, g: &[Mp], handle: &Ex) -> Option<Vec<Ex>> {
+    let ctx = handle.context();
+    let nv = tower.nvars();
+    let kx = |c: &Mp| -> Ex {
+        let f = KFrac {
+            num: c.clone(),
+            den: Mp::from_int(nv, 1),
+        };
+        tower.frac_to_ex(&f, handle)
+    };
+    let qn = |n: i64, d: i64| Q::new(BigInt::from(n), BigInt::from(d));
+    let sc = |c: &Mp, n: i64, d: i64| c.scale(&qn(n, d));
+    let mul = |a: &Mp, b: &Mp| tower.mul_r(a, b);
+    let tidy = |e: Ex| e.eval();
+    match g.len() - 1 {
+        1 => Some(vec![tidy(-kx(&g[0]))]),
+        2 => {
+            // (−b ± √(b² − 4c))/2
+            let (c, b) = (&g[0], &g[1]);
+            let disc = mul(b, b).sub(&sc(c, 4, 1));
+            let s = kx(&disc).sqrt();
+            let mb = -kx(b);
+            let two = ctx.int(2);
+            Some(vec![tidy(&(&mb + &s) / &two), tidy(&(&mb - &s) / &two)])
+        }
+        3 => {
+            // SymPy `roots_cubic` for x³ + a·x² + b·x + c.
+            let (c, b, a) = (&g[0], &g[1], &g[2]);
+            let aa = mul(a, a);
+            let p = b.sub(&sc(&aa, 1, 3));
+            let q = c.sub(&sc(&mul(a, b), 1, 3)).add(&sc(&mul(&aa, a), 2, 27));
+            let aon3 = sc(a, 1, 3);
+            let shift = kx(&aon3);
+            let coeff = &(&ctx.int(3).sqrt() * &ctx.i_unit()) / &ctx.int(2);
+            let half = ctx.rational(-1, 2);
+            let omega = [ctx.int(1), &half + &coeff, &half - &coeff];
+            if c.is_zero() {
+                // x·(x² + a·x + b)
+                let quad = [b.clone(), a.clone(), Mp::from_int(nv, 1)];
+                let mut r = kp_radical_roots(tower, &quad, handle)?;
+                r.insert(1, ctx.zero());
+                return Some(r);
+            }
+            if q.is_zero() {
+                // y³ + p·y: y = 0, ±√(−p)
+                let s = kx(&p.neg()).sqrt();
+                return Some(vec![tidy(&s - &shift), tidy(-&shift), tidy(-&s - &shift)]);
+            }
+            let u1 = if p.is_zero() {
+                if tower.real_constant_sign(&q) == Some(1) {
+                    Some(-kx(&q).cbrt())
+                } else {
+                    Some(kx(&q.neg()).cbrt())
+                }
+            } else if tower.real_constant_sign(&q) == Some(-1) {
+                // −∛(−q/2 + √(q²/4 + p³/27))
+                let r = sc(&mul(&q, &q), 1, 4).add(&sc(&mul(&mul(&p, &p), &p), 1, 27));
+                let inner = &kx(&sc(&q, -1, 2)) + &kx(&r).sqrt();
+                Some(-inner.cbrt())
+            } else {
+                None
+            };
+            let Some(u1) = u1 else {
+                // −(a + uₖ·C + D₀/(C·uₖ))/3, C = ∛((D₁ + √(D₁² − 4D₀³))/2)
+                let d0 = aa.sub(&sc(b, 3, 1));
+                let d1 = sc(&mul(&aa, a), 2, 1)
+                    .sub(&sc(&mul(a, b), 9, 1))
+                    .add(&sc(c, 27, 1));
+                let rad = mul(&d1, &d1).sub(&sc(&mul(&mul(&d0, &d0), &d0), 4, 1));
+                let cc = (&(&kx(&d1) + &kx(&rad).sqrt()) / &ctx.int(2)).cbrt();
+                let (ae, d0e) = (kx(a), kx(&d0));
+                let three = ctx.int(3);
+                return Some(
+                    omega
+                        .iter()
+                        .map(|uk| {
+                            let ukc = uk * &cc;
+                            tidy(-(&(&(&ae + &ukc) + &(&d0e / &ukc)) / &three))
+                        })
+                        .collect(),
+                );
+            };
+            let pon3 = kx(&sc(&p, 1, 3));
+            Some(
+                omega
+                    .iter()
+                    .map(|uk| {
+                        let u = uk * &u1;
+                        if p.is_zero() {
+                            tidy(&u - &shift)
+                        } else {
+                            tidy(&(&-&u + &(&pon3 / &u)) - &shift)
+                        }
+                    })
+                    .collect(),
+            )
+        }
+        _ => None,
+    }
+}
+
+/// The factors of a Gram–Schmidt orthogonalisation: the columns `q` and
+/// the `k×k` upper triangular coefficient matrix `r` (row-major).
+pub(crate) struct GramSchmidtFactors {
+    pub q: Vec<Vec<Ex>>,
+    pub r: Vec<Vec<Ex>>,
+}
+
+/// Outcome of [`hermitian_gram_schmidt`].
+pub(crate) enum HermitianGs {
+    /// The orthogonal (orthonormal when normalising) columns and `R`.
+    Factors(GramSchmidtFactors),
+    /// Column `j` lies in the span of the columns before it.
+    Dependent(usize),
+}
+
+/// Gram–Schmidt with the Hermitian inner product `⟨x, y⟩ = Σ x̄ₖ·yₖ` (SymPy's
+/// `QRdecomposition`, `u.dot(v, hermitian=True)`), exactly in the field
+/// `K(params, conj(params))` of a square-root [`Tower`]: each parameter `s`
+/// that is not provably real gets a companion parameter `conjugate(s)`, and
+/// conjugation permutes the two, fixes the real radicals and maps `i` to
+/// `−i`.  The columns are orthogonalised fraction-free (the integral
+/// Gram–Schmidt of de Weger, *Solving exponential Diophantine equations
+/// using lattice basis reduction algorithms*, J. Number Theory 26 (1987),
+/// §3, in the Hermitian form): with `aⱼ = a′ⱼ/cⱼ` over a common denominator
+/// `cⱼ ∈ ℚ[params]`, `Δ₀ = 1` and `Δₗ` the Gram determinant of `a′₀ … a′ₗ₋₁`,
+/// `wⱼ = Δⱼ·u′ⱼ` is a polynomial vector reached by
+/// `w ← (Δₗ₊₁·w − ⟨wₗ, a′ⱼ⟩·wₗ)/Δₗ` (`l < j`, exact divisions in `K[params]`),
+/// and `Δⱼ₊₁ = ⟨wⱼ, wⱼ⟩/Δⱼ`.  Only the outputs are brought to normal form
+/// (one gcd each; before 0.32 every projection was `simplify`d, 53 s in a
+/// debug build for a 4×4 matrix in one parameter): `uⱼ = wⱼ/(Δⱼ·cⱼ)`,
+/// `dⱼ = ‖uⱼ‖² = Δⱼ₊₁/(Δⱼ·cⱼ·c̄ⱼ)`, `⟨uᵢ, aⱼ⟩ = ⟨wᵢ, a′ⱼ⟩/(Δᵢ·c̄ᵢ·cⱼ)`,
+/// and `qⱼ = uⱼ/√dⱼ`, `rᵢⱼ = ⟨uᵢ, aⱼ⟩/√dᵢ` (`i < j`), `rⱼⱼ = √dⱼ` (real,
+/// positive).  Without `normalize`: `qⱼ = uⱼ`, `rᵢⱼ = ⟨uᵢ, aⱼ⟩/dᵢ`,
+/// `rⱼⱼ = 1`.
+///
+/// `dⱼ = 0` exactly as a rational function (column `j` is dependent,
+/// generically) is reported as such.  `None` when an entry is not a
+/// rational function over square roots of rationals and `i` (a function, a
+/// nested or higher root, a symbol whose conjugate is not `conjugate(s)`),
+/// on a division by zero, or when a polynomial exceeds the budget.
+pub(crate) fn hermitian_gram_schmidt(cols: &[Vec<Ex>], normalize: bool) -> Option<HermitianGs> {
+    let handle = cols.first()?.first()?.clone();
+    let ctx = handle.context();
+    let mut syms: Vec<Ex> = Vec::new();
+    for e in cols.iter().flatten() {
+        for s in e.free_symbols() {
+            if !syms.contains(&s) {
+                syms.push(s);
+            }
+        }
+    }
+    // (symbol, conjugate) for the symbols that are not provably real.
+    let mut complex: Vec<[Ex; 2]> = Vec::new();
+    let mut real: Vec<ExprId> = Vec::new();
+    for s in syms {
+        if s.is_real() == Some(true) {
+            real.push(s.raw_id());
+        } else {
+            let c = s.conjugate();
+            complex.push([s, c]);
+        }
+    }
+    let (tower, a, perm) = {
+        let inner = handle.inner.read();
+        let arena = &inner.arena;
+        for [s, c] in &complex {
+            if !matches!(arena.node(c.raw_id()), ExprNode::Conjugate(b) if *b == s.raw_id()) {
+                return None;
+            }
+        }
+        let mut ids: Vec<ExprId> = cols.iter().flatten().map(Ex::raw_id).collect();
+        ids.extend(complex.iter().map(|[_, c]| c.raw_id()));
+        let tower = Tower::scan_opts(arena, &ids, true)?;
+        if tower.l > 2 || tower.ext.is_some() {
+            return None;
+        }
+        let ns = tower.syms.len();
+        let pos = |id: ExprId| tower.syms.iter().position(|&x| x == id);
+        let mut perm: Vec<usize> = (0..ns).collect();
+        for [s, c] in &complex {
+            let (i, j) = (pos(s.raw_id())?, pos(c.raw_id())?);
+            perm[i] = j;
+            perm[j] = i;
+        }
+        // Every parameter fixed by the conjugation must be a real symbol.
+        if (0..ns).any(|k| perm[k] == k && !real.contains(&tower.syms[k])) {
+            return None;
+        }
+        let mut a: Vec<Vec<KFrac>> = Vec::with_capacity(cols.len());
+        for col in cols {
+            let mut fc = Vec::with_capacity(col.len());
+            for e in col {
+                let (n, d) = tower.eval_frac(arena, e.raw_id(), None, KFRAC_TERM_BUDGET)??;
+                fc.push(tower.normalize(n, d)?);
+            }
+            a.push(fc);
+        }
+        (tower, a, perm)
+    };
+    let k = a.len();
+    let m = a[0].len();
+    let nv = tower.nvars();
+    let one_p = Mp::from_int(nv, 1);
+    // aⱼ = a′ⱼ/cⱼ with cⱼ = |lⱼ|² real and positive, lⱼ the lcm of the
+    // (normalised: 1 or non-constant) denominators of the column.
+    let mut ap: Vec<Vec<Mp>> = Vec::with_capacity(k);
+    let mut c: Vec<Mp> = Vec::with_capacity(k);
+    for col in &a {
+        let mut l = one_p.clone();
+        for f in col {
+            if f.den != l && f.den.as_constant().is_none() {
+                l = Mp::lcm(&l, &f.den);
+            }
+        }
+        let lbar = tower.conj_poly(&l, &perm)?;
+        let mut out = Vec::with_capacity(m);
+        for f in col {
+            let cof = if f.den == l {
+                lbar.clone()
+            } else {
+                tower.mul_r(&l.div_exact(&f.den)?, &lbar)
+            };
+            out.push(tower.mul_r(&f.num, &cof));
+        }
+        ap.push(out);
+        c.push(tower.mul_r(&l, &lbar));
+    }
+    // Exact division by a nonzero Δ of K[params].
+    let div = |x: &Mp, b: &Mp| -> Option<Mp> {
+        if tower.in_k(b) {
+            Some(tower.mul_r(x, &tower.inv_k(b)?))
+        } else {
+            tower.div_exact_k(x, b)
+        }
+    };
+    let mut w: Vec<Vec<Mp>> = Vec::with_capacity(k);
+    let mut wbar: Vec<Vec<Mp>> = Vec::with_capacity(k);
+    let mut delta: Vec<Mp> = vec![one_p.clone()];
+    // lam[i][j] = ⟨wᵢ, a′ⱼ⟩
+    let mut lam: Vec<Vec<Mp>> = vec![vec![Mp::zero(nv); k]; k];
+    for j in 0..k {
+        let mut v = ap[j].clone();
+        for l in 0..j {
+            let lj = tower.hdot(&wbar[l], &ap[j])?;
+            for t in 0..m {
+                let x = tower
+                    .mul_r(&delta[l + 1], &v[t])
+                    .sub(&tower.mul_r(&lj, &w[l][t]));
+                v[t] = div(&x, &delta[l])?;
+            }
+            lam[l][j] = lj;
+        }
+        let vbar: Vec<Mp> = v
+            .iter()
+            .map(|x| tower.conj_poly(x, &perm))
+            .collect::<Option<_>>()?;
+        let next = div(&tower.hdot(&vbar, &v)?, &delta[j])?;
+        if next.is_zero() {
+            return Some(HermitianGs::Dependent(j));
+        }
+        w.push(v);
+        wbar.push(vbar);
+        delta.push(next);
+    }
+    let tidy = |e: Ex| if e.is_constant() { e.eval() } else { e };
+    let pe = |p: &Mp| {
+        let whole = KFrac {
+            num: p.clone(),
+            den: one_p.clone(),
+        };
+        tower.frac_to_ex(&whole, &handle)
+    };
+    let one = ctx.one();
+    let mut r: Vec<Vec<Ex>> = vec![vec![ctx.zero(); k]; k];
+    let mut q: Vec<Vec<Ex>> = Vec::with_capacity(k);
+    if normalize {
+        // uⱼ = wⱼ/(Δⱼ·cⱼ) and dⱼ = Δⱼ₊₁/(Δⱼ·cⱼ²) with Δ, c > 0, so
+        // qⱼ = wⱼ/(√Δⱼ·√Δⱼ₊₁), rⱼⱼ = √Δⱼ₊₁/(√Δⱼ·cⱼ) and
+        // rᵢⱼ = ⟨uᵢ, aⱼ⟩/√dᵢ = ⟨wᵢ, a′ⱼ⟩/(cⱼ·√Δᵢ·√Δᵢ₊₁): polynomials
+        // and square roots of polynomials, no gcd.  (`√(1/n)` of a positive
+        // rational folds to `c·√m` under `tidy`.)
+        let sq: Vec<Ex> = delta
+            .iter()
+            .map(|x| {
+                if x.as_constant().is_some_and(|v| v.is_one()) {
+                    one.clone()
+                } else {
+                    pe(x).sqrt()
+                }
+            })
+            .collect();
+        for j in 0..k {
+            let s = &sq[j] * &sq[j + 1];
+            q.push(w[j].iter().map(|x| tidy(&pe(x) / &s)).collect());
+            let cj = pe(&c[j]);
+            for i in 0..j {
+                let den = &(&cj * &sq[i]) * &sq[i + 1];
+                r[i][j] = tidy(&pe(&lam[i][j]) / &den);
+            }
+            r[j][j] = tidy(&sq[j + 1] / &(&sq[j] * &cj));
+        }
+    } else {
+        // uⱼ = wⱼ/(Δⱼ·cⱼ), rᵢⱼ = ⟨uᵢ, aⱼ⟩/dᵢ = ⟨wᵢ, a′ⱼ⟩·cᵢ/(cⱼ·Δᵢ₊₁).
+        for j in 0..k {
+            let den = tower.mul_r(&delta[j], &c[j]);
+            q.push(
+                w[j].iter()
+                    .map(|x| Some(tidy(tower.frac_to_ex(&tower.quotient(x, &den)?, &handle))))
+                    .collect::<Option<_>>()?,
+            );
+            for i in 0..j {
+                let num = tower.mul_r(&lam[i][j], &c[i]);
+                let f = tower.quotient(&num, &tower.mul_r(&c[j], &delta[i + 1]))?;
+                r[i][j] = tidy(tower.frac_to_ex(&f, &handle));
+            }
+            r[j][j] = one.clone();
+        }
+    }
+    Some(HermitianGs::Factors(GramSchmidtFactors { q, r }))
 }
 
 /// Exact path of [`rref_solve`] for an augmented matrix whose entries are

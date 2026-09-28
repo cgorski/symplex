@@ -1087,19 +1087,175 @@ pub(crate) fn fraction_parts(arena: &mut Arena, expr: ExprId) -> (ExprId, ExprId
 /// was not multiplied out) and `nan` from `ratsimp` (SymPy 1.14 gives
 /// `nan` from `together` but `0` from `ratsimp` and `cancel`, which return
 /// a zero numerator before they look at the denominator).
+///
+/// So does a denominator that is 0 only once multiplied out
+/// ([`vanishes_identically`]): up to 0.31 `(x·(x + 1) − x² − x)/(x·(x + 2)
+/// − x² − 2x)` was returned unchanged and `x + 1/(x·(x + 1) − x² − x)`
+/// became `(x·(x·(x + 1) − x² − x) + 1)/(x·(x + 1) − x² − x)`, while
+/// `ratsimp` gave `nan` and `zoo`.
 pub(crate) fn together_deep(arena: &mut Arena, expr: ExprId) -> ExprId {
     let (n, d) = fraction_parts(arena, expr);
     if d == arena.one {
         return n;
     }
-    if arena.is_zero_structural(d) && !arena.is_zero_structural(n) {
-        let expanded = crate::transforms::expand::expand(arena, n);
-        let expanded = crate::transforms::eval::eval(arena, expanded);
-        if arena.is_zero_structural(expanded) {
+    if arena.is_zero_structural(d) {
+        if !arena.is_zero_structural(n) && expands_to_zero(arena, n) {
             return arena.nan;
         }
+    } else if vanishes_identically(arena, d) {
+        if expands_to_zero(arena, n) {
+            return arena.nan;
+        }
+        let zero = arena.zero;
+        return arena.div(n, zero);
     }
     arena.div(n, d)
+}
+
+/// Is `expr` structurally 0 once multiplied out (`expand`, then `eval`)?
+fn expands_to_zero(arena: &mut Arena, expr: ExprId) -> bool {
+    let expanded = crate::transforms::expand::expand(arena, expr);
+    let expanded = crate::transforms::eval::eval(arena, expanded);
+    arena.is_zero_structural(expanded)
+}
+
+/// Does `expr` vanish identically as a rational function of its
+/// generators — the maximal subexpressions that are not numbers, sums,
+/// products, negations or integer powers (the free symbols, `sin x`, `√x`,
+/// `π`), taken as independent indeterminates as `ratsimp` takes them?
+/// `x·(x + 1) − x² − x` does, `sin²x + cos²x − 1` does not.
+///
+/// Decided by [`may_vanish_identically`] (a residue at a pseudo-random
+/// point, linear in the size of `expr`) and, only when that residue is 0,
+/// confirmed by multiplying out: `true` only for an `expr` that is
+/// structurally 0 after `expand` and `eval`.
+pub(crate) fn vanishes_identically(arena: &mut Arena, expr: ExprId) -> bool {
+    if arena.is_zero_structural(expr) {
+        return true;
+    }
+    may_vanish_identically(arena, expr) && expands_to_zero(arena, expr)
+}
+
+/// The Mersenne prime `2⁶¹ − 1`, the modulus of [`may_vanish_identically`].
+const RESIDUE_PRIME: u64 = (1 << 61) - 1;
+
+/// `false` when `expr` certainly does not vanish identically as a rational
+/// function of its generators (see [`vanishes_identically`]): its value
+/// modulo the prime `2⁶¹ − 1` at a point where every generator takes a
+/// pseudo-random residue (a hash of its `ExprId`) is not 0.  A rational
+/// function that vanishes identically is 0 at every point where its
+/// denominators are invertible; a nonzero one of degree `d` is 0 at a
+/// fraction of at most about `d/2⁶¹` of the points.  `true` (undecided)
+/// when the residue is 0, or when a denominator or an inverted
+/// subexpression is 0 modulo the prime there.
+pub(crate) fn may_vanish_identically(arena: &Arena, expr: ExprId) -> bool {
+    let values = residues_at_random_point(arena, expr);
+    !values.get(&expr).copied().flatten().is_some_and(|r| r != 0)
+}
+
+/// Is the base of some negative integer power in `expr`, outside every
+/// generator, possibly identically zero ([`may_vanish_identically`])?
+/// `false` certifies that no denominator of `expr` as a rational function
+/// of its generators vanishes identically.  One pass over `expr`.
+pub(crate) fn may_have_vanishing_denominator(arena: &Arena, expr: ExprId) -> bool {
+    let values = residues_at_random_point(arena, expr);
+    values.keys().any(|&id| match arena.node(id) {
+        ExprNode::Pow(base, e) => {
+            arena
+                .as_num(*e)
+                .is_some_and(|q| q.is_integer() && q.is_negative())
+                && !values.get(base).copied().flatten().is_some_and(|r| r != 0)
+        }
+        _ => false,
+    })
+}
+
+/// The residues modulo [`RESIDUE_PRIME`] of `expr` and of its structural
+/// subexpressions (numbers, sums, products, negations, integer powers) at
+/// the point where each generator (any other node) takes the residue of a
+/// hash of its `ExprId`; `None` for a node where a rational literal's
+/// denominator or an inverted value is 0 there.  An explicit post-order
+/// over the structural nodes; generators are leaves.
+fn residues_at_random_point(arena: &Arena, expr: ExprId) -> FxHashMap<ExprId, Option<u64>> {
+    let p = RESIDUE_PRIME;
+    let mul = |a: u64, b: u64| ((u128::from(a) * u128::from(b)) % u128::from(p)) as u64;
+    let pow = |mut b: u64, mut e: u64| {
+        let mut r = 1u64;
+        while e > 0 {
+            if e & 1 == 1 {
+                r = mul(r, b);
+            }
+            b = mul(b, b);
+            e >>= 1;
+        }
+        r
+    };
+    let inv = |a: u64| (a != 0).then(|| pow(a, p - 2));
+    let big_mod = |n: &BigInt, m: u64| -> u64 {
+        use num_traits::ToPrimitive;
+        n.mod_floor(&BigInt::from(m)).to_u64().unwrap_or(0)
+    };
+    let integer_exponent = |e: ExprId| arena.as_num(e).filter(|q| q.is_integer());
+    let structural = |id: ExprId| match arena.node(id) {
+        ExprNode::Num(_) | ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) => true,
+        ExprNode::Pow(_, e) => integer_exponent(*e).is_some(),
+        _ => false,
+    };
+    let mut values: FxHashMap<ExprId, Option<u64>> = FxHashMap::default();
+    let mut stack: Vec<(ExprId, bool)> = vec![(expr, false)];
+    while let Some((id, children_done)) = stack.pop() {
+        if values.contains_key(&id) {
+            continue;
+        }
+        if !structural(id) {
+            // splitmix64 of the id: the same residue for the same
+            // subexpression (hash-consing), unrelated ones for different ones.
+            let mut z = u64::from(id.0).wrapping_add(0x9E37_79B9_7F4A_7C15);
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            values.insert(id, Some((z ^ (z >> 31)) % p));
+            continue;
+        }
+        let node = arena.node(id);
+        if !children_done {
+            stack.push((id, true));
+            match node {
+                ExprNode::Pow(base, _) => stack.push((*base, false)),
+                n => stack.extend(n.children().into_iter().map(|c| (c, false))),
+            }
+            continue;
+        }
+        let get = |c: &ExprId| values.get(c).copied().flatten();
+        let value = match node {
+            ExprNode::Num(nid) => {
+                let q = arena.num(*nid);
+                inv(big_mod(q.denom(), p)).map(|d| mul(big_mod(q.numer(), p), d))
+            }
+            ExprNode::Add(children) => children
+                .iter()
+                .try_fold(0u64, |acc, c| get(c).map(|v| (acc + v) % p)),
+            ExprNode::Mul(children) => children
+                .iter()
+                .try_fold(1u64, |acc, c| get(c).map(|v| mul(acc, v))),
+            ExprNode::Neg(c) => get(c).map(|v| (p - v) % p),
+            ExprNode::Pow(base, e) => match (get(base), integer_exponent(*e)) {
+                (Some(b), Some(k)) => {
+                    let n = k.to_integer();
+                    let b = if n.is_negative() { inv(b) } else { Some(b) };
+                    // Fermat: b^(p−1) = 1 for b ≠ 0.
+                    b.map(|b| match (b, n.is_zero()) {
+                        (_, true) => 1,
+                        (0, false) => 0,
+                        _ => pow(b, big_mod(&n.abs(), p - 1)),
+                    })
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        values.insert(id, value);
+    }
+    values
 }
 
 fn product_or_one(arena: &mut Arena, factors: &[ExprId]) -> ExprId {

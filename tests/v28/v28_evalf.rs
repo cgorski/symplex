@@ -304,7 +304,15 @@ fn piecewise_decides_only_certified_conditions() {
 fn an_underflow_is_not_an_exact_zero() {
     let ctx = Context::new();
     let tiny = ctx.parse("exp(-4*10^9)").unwrap();
-    assert_eq!(tiny.eval_decimal(20).unwrap(), "0");
+    // Changed in 0.32: the value alone was `0` here; `exp` is never 0, and a
+    // nonzero number below the exponent range is now refused as such (0 is
+    // not one of its digits; mpmath: mp.dps=30; exp(-4*mpf(10)**9) =
+    // 2.437769782340158e-1737177928).  `eval_f64` still rounds it to 0.0.
+    assert!(matches!(
+        tiny.eval_decimal(20),
+        Err(SymplexError::Unevaluable { reason }) if reason.contains("underflows")
+    ));
+    assert_eq!(tiny.eval_f64().unwrap(), 0.0);
     let (zero, one, t) = (ctx.zero(), ctx.one(), ctx.bool_true());
     let pw = Ex::piecewise(&[(&one, &tiny.gt(&zero)), (&zero, &t)]);
     assert_eq!(pw.eval_decimal(20).unwrap(), "1");

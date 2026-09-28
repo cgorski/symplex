@@ -31,7 +31,17 @@ use smallvec::SmallVec;
 /// (extended to treat `exp(a)` as `E^a`), grouped by base, and
 /// exponents summed.  The result is rebuilt through the canonical
 /// constructors so all invariants are preserved.
+///
+/// A denominator that vanishes identically gives the value in the
+/// arithmetic of `1/0 = zoo`
+/// ([`vanishing_denominator`](crate::simplify::simplify_engine::vanishing_denominator)),
+/// not the `0` of a numerator the combined powers cancel: up to 0.31
+/// `powsimp((e^x·e^(−x) − 1)/((−x/(x + 1) + x·(−x/(x + 1) + 1))·x·(x + 1)))`
+/// was `0`.
 pub(crate) fn powsimp(arena: &mut Arena, expr: ExprId) -> ExprId {
+    if let Some(value) = crate::simplify::simplify_engine::vanishing_denominator(arena, expr) {
+        return value;
+    }
     let post_order = walk::post_order_ids(arena, expr);
     let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
 

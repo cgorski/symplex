@@ -3701,7 +3701,15 @@ impl Expr<Numeric> {
     ///
     /// Returns [`SymplexError::Unevaluable`] if the expression contains
     /// nodes that cannot be evaluated to a finite number (infinity, NaN,
-    /// imaginary unit, unevaluated derivatives/integrals, user functions).
+    /// imaginary unit, unevaluated derivatives/integrals, user functions),
+    /// or if its value lies beyond the exponent range of the
+    /// arbitrary-precision floats (about `2^(±2.1·10⁹)`): a value that
+    /// overflows it (`exp(10¹⁰)`), and since 0.32 a value that is certainly
+    /// not 0 but underflows it (`erfc(10⁵) ≈ 5.2·10^(−4342944825)`,
+    /// `exp(−10¹⁰)`, `2·besselk(0, 10¹⁰)`), which was printed `0` before.
+    /// A value that is only zero to the precision reached — a cancellation,
+    /// `exp(−10¹⁰)·(sin²1 + cos²1) − exp(−10¹⁰)`, or a sum of such tiny
+    /// numbers whose signs differ — still prints as `0`.
     ///
     /// Returns [`SymplexError::PrecisionExhausted`] if the requested
     /// precision exceeds `EvalConfig::max_evalf_precision`, if intermediate
@@ -3735,6 +3743,11 @@ impl Expr<Numeric> {
     /// real part (below the 16th digit of the real part), however small it
     /// is in absolute terms (`sqrt(−10⁻⁴⁰)` is refused).  Use
     /// [`eval_complex64`](Ex::eval_complex64) for complex values.
+    ///
+    /// A nonzero value below the exponent range of the arbitrary-precision
+    /// floats, which [`eval_decimal`](Ex::eval_decimal) refuses, is `0.0`
+    /// here: that is its correctly rounded `f64` (`erfc(10⁵)` is far below
+    /// the smallest subnormal).
     ///
     /// # Examples
     ///

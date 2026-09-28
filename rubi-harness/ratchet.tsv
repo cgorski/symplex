@@ -20,13 +20,13 @@ path	min_verified	max_wrong_panic
 1 Algebraic functions/1.1 Binomial products/1.1.1 Linear/1.1.1.5 P(x) (a+b x)^m (c+d x)^n.mac	6	0
 1 Algebraic functions/1.1 Binomial products/1.1.1 Linear/1.1.1.6 P(x) (a+b x)^m (c+d x)^n (e+f x)^p.mac	0	0
 1 Algebraic functions/1.1 Binomial products/1.1.1 Linear/1.1.1.7 P(x) (a+b x)^m (c+d x)^n (e+f x)^p (g+h x)^q.mac	0	0
-1 Algebraic functions/1.1 Binomial products/1.1.2 Quadratic/1.1.2.2 (c x)^m (a+b x^2)^p.mac	321	0
+1 Algebraic functions/1.1 Binomial products/1.1.2 Quadratic/1.1.2.2 (c x)^m (a+b x^2)^p.mac	322	0
 1 Algebraic functions/1.1 Binomial products/1.1.2 Quadratic/1.1.2.3 (a+b x^2)^p (c+d x^2)^q.mac	43	0
 1 Algebraic functions/1.1 Binomial products/1.1.2 Quadratic/1.1.2.4 (e x)^m (a+b x^2)^p (c+d x^2)^q.mac	386	0
 1 Algebraic functions/1.1 Binomial products/1.1.2 Quadratic/1.1.2.5 (a+b x^2)^p (c+d x^2)^q (e+f x^2)^r.mac	22	0
 1 Algebraic functions/1.1 Binomial products/1.1.2 Quadratic/1.1.2.6 (g x)^m (a+b x^2)^p (c+d x^2)^q (e+f x^2)^r.mac	0	0
 1 Algebraic functions/1.1 Binomial products/1.1.2 Quadratic/1.1.2.8 P(x) (c x)^m (a+b x^2)^p.mac	78	0
-1 Algebraic functions/1.1 Binomial products/1.1.3 General/1.1.3.2 (c x)^m (a+b x^n)^p.mac	1061	0
+1 Algebraic functions/1.1 Binomial products/1.1.3 General/1.1.3.2 (c x)^m (a+b x^n)^p.mac	1067	0
 1 Algebraic functions/1.1 Binomial products/1.1.3 General/1.1.3.3 (a+b x^n)^p (c+d x^n)^q.mac	54	0
 1 Algebraic functions/1.1 Binomial products/1.1.3 General/1.1.3.4 (e x)^m (a+b x^n)^p (c+d x^n)^q.mac	148	0
 1 Algebraic functions/1.1 Binomial products/1.1.3 General/1.1.3.6 (g x)^m (a+b x^n)^p (c+d x^n)^q (e+f x^n)^r.mac	0	0
@@ -47,8 +47,8 @@ path	min_verified	max_wrong_panic
 1 Algebraic functions/1.2 Trinomial products/1.2.2 Quartic/1.2.2.6 P(x) (d x)^m (a+b x^2+c x^4)^p.mac	103	0
 1 Algebraic functions/1.2 Trinomial products/1.2.2 Quartic/1.2.2.7 P(x) (d+e x^2)^q (a+b x^2+c x^4)^p.mac	0	0
 1 Algebraic functions/1.2 Trinomial products/1.2.2 Quartic/1.2.2.8 P(x) (d+e x)^q (a+b x^2+c x^4)^p.mac	0	0
-1 Algebraic functions/1.2 Trinomial products/1.2.3 General/1.2.3.2 (d x)^m (a+b x^n+c x^(2 n))^p.mac	219	0
-1 Algebraic functions/1.2 Trinomial products/1.2.3 General/1.2.3.3 (d+e x^n)^q (a+b x^n+c x^(2 n))^p.mac	39	0
+1 Algebraic functions/1.2 Trinomial products/1.2.3 General/1.2.3.2 (d x)^m (a+b x^n+c x^(2 n))^p.mac	227	0
+1 Algebraic functions/1.2 Trinomial products/1.2.3 General/1.2.3.3 (d+e x^n)^q (a+b x^n+c x^(2 n))^p.mac	41	0
 1 Algebraic functions/1.2 Trinomial products/1.2.3 General/1.2.3.4 (f x)^m (d+e x^n)^q (a+b x^n+c x^(2 n))^p.mac	69	0
 1 Algebraic functions/1.2 Trinomial products/1.2.3 General/1.2.3.5 P(x) (d x)^m (a+b x^n+c x^(2 n))^p.mac	1	0
 1 Algebraic functions/1.2 Trinomial products/1.2.4 Improper/1.2.4.2 (d x)^m (a x^q+b x^n+c x^(2 n-q))^p.mac	63	0
@@ -165,15 +165,15 @@ path	min_verified	max_wrong_panic
 6 Hyperbolic functions/6.1 Hyperbolic sine/6.1.3 (e x)^m (a+b sinh(c+d x^n))^p.mac	5	0
 6 Hyperbolic functions/6.1 Hyperbolic sine/6.1.4 (d+e x)^m sinh(a+b x+c x^2)^n.mac	0	0
 6 Hyperbolic functions/6.1 Hyperbolic sine/6.1.5 Hyperbolic sine functions.mac	32	0
-6 Hyperbolic functions/6.1 Hyperbolic sine/6.1.7 hyper^m (a+b sinh^n)^p.mac	26	0
+6 Hyperbolic functions/6.1 Hyperbolic sine/6.1.7 hyper^m (a+b sinh^n)^p.mac	29	0
 6 Hyperbolic functions/6.2 Hyperbolic cosine/6.2.1 (c+d x)^m (a+b cosh)^n.mac	7	0
 6 Hyperbolic functions/6.2 Hyperbolic cosine/6.2.2 (e x)^m (a+b x^n)^p cosh.mac	12	0
 6 Hyperbolic functions/6.2 Hyperbolic cosine/6.2.3 (e x)^m (a+b cosh(c+d x^n))^p.mac	5	0
 6 Hyperbolic functions/6.2 Hyperbolic cosine/6.2.4 (d+e x)^m cosh(a+b x+c x^2)^n.mac	0	0
-6 Hyperbolic functions/6.2 Hyperbolic cosine/6.2.5 Hyperbolic cosine functions.mac	38	0
-6 Hyperbolic functions/6.2 Hyperbolic cosine/6.2.7 hyper^m (a+b cosh^n)^p.mac	13	0
+6 Hyperbolic functions/6.2 Hyperbolic cosine/6.2.5 Hyperbolic cosine functions.mac	39	0
+6 Hyperbolic functions/6.2 Hyperbolic cosine/6.2.7 hyper^m (a+b cosh^n)^p.mac	14	0
 6 Hyperbolic functions/6.3 Hyperbolic tangent/6.3.1 (c+d x)^m (a+b tanh)^n.mac	1	0
-6 Hyperbolic functions/6.3 Hyperbolic tangent/6.3.2 Hyperbolic tangent functions.mac	54	0
+6 Hyperbolic functions/6.3 Hyperbolic tangent/6.3.2 Hyperbolic tangent functions.mac	56	0
 6 Hyperbolic functions/6.3 Hyperbolic tangent/6.3.7 (d hyper)^m (a+b (c tanh)^n)^p.mac	30	0
 6 Hyperbolic functions/6.4 Hyperbolic cotangent/6.4.1 (c+d x)^m (a+b coth)^n.mac	0	0
 6 Hyperbolic functions/6.4 Hyperbolic cotangent/6.4.2 Hyperbolic cotangent functions.mac	31	0

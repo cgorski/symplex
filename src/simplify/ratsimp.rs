@@ -48,6 +48,11 @@ const MAX_DEGREE: u32 = 1 << 20;
 /// and [`together`](crate::poly::polybridge::together) give.  Up to 0.31
 /// `ratsimp(1/(x·(−x/(x + 1) + x·(−x/(x + 1) + 1))))` returned its
 /// input while `together` gave `zoo`.
+///
+/// A generator is 0 when its argument is (`√(x·(x + 1) − x² − x)`): `P/0`
+/// is `nan` when the numerator is 0 once multiplied out with its function
+/// arguments ([`numerator_expands_to_zero`]), as `together` finds.  Up to
+/// 0.31 `ratsimp(√(x·(x + 1) − x² − x)/(x·(x + 2) − x² − 2x))` was `zoo`.
 pub(crate) fn ratsimp(arena: &mut Arena, expr: ExprId) -> ExprId {
     if !is_admissible(arena, expr) {
         return expr;
@@ -56,7 +61,21 @@ pub(crate) fn ratsimp(arena: &mut Arena, expr: ExprId) -> ExprId {
     let Some((p, q)) = to_rational_function(arena, expr, &gens) else {
         return expr;
     };
-    rebuild(arena, &p, &q, &gens).unwrap_or(expr)
+    let out = rebuild(arena, &p, &q, &gens).unwrap_or(expr);
+    if out == arena.complex_infinity && numerator_expands_to_zero(arena, expr) {
+        return arena.nan;
+    }
+    out
+}
+
+/// Is the numerator of `expr` (`as_numer_denom`) structurally 0 once
+/// multiplied out (`expand`, then `eval`, which reach into function
+/// arguments)?
+pub(crate) fn numerator_expands_to_zero(arena: &mut Arena, expr: ExprId) -> bool {
+    let (n, _) = crate::poly::polybridge::fraction_parts(arena, expr);
+    let expanded = crate::transforms::expand::expand(arena, n);
+    let expanded = crate::transforms::eval::eval(arena, expanded);
+    arena.is_zero_structural(expanded)
 }
 
 /// The rational normal form `P/Q` of `expr` over its generators (as for
@@ -268,6 +287,40 @@ fn to_rational_function(
     expr: ExprId,
     gens: &[ExprId],
 ) -> Option<(RatPoly, RatPoly)> {
+    to_rational_function_tracked(arena, expr, gens, &mut false)
+}
+
+/// The value of `expr` in the arithmetic of `1/0 = zoo` when a negative
+/// power in it (outside every generator) has a base that vanishes
+/// identically: `ratsimp`'s normal form, where that power is a fraction
+/// with denominator 0 — `nan` for `0/0`, `zoo` for `P/0`, and the zero
+/// absorbed by a further division (`x/(1 + 1/0) = x/zoo = 0`).  `None`
+/// when no such power is met (or `ratsimp` does not apply).
+pub(crate) fn ratsimp_zero_denominator(arena: &mut Arena, expr: ExprId) -> Option<ExprId> {
+    if !is_admissible(arena, expr) {
+        return None;
+    }
+    let gens = collect_generators(arena, expr);
+    let mut zero_denominator = false;
+    let (p, q) = to_rational_function_tracked(arena, expr, &gens, &mut zero_denominator)?;
+    if !zero_denominator {
+        return None;
+    }
+    let out = rebuild(arena, &p, &q, &gens)?;
+    if out == arena.complex_infinity && numerator_expands_to_zero(arena, expr) {
+        return Some(arena.nan);
+    }
+    Some(out)
+}
+
+/// [`to_rational_function`], setting `zero_denominator` when the base of
+/// a negative power is the zero polynomial.
+fn to_rational_function_tracked(
+    arena: &Arena,
+    expr: ExprId,
+    gens: &[ExprId],
+    zero_denominator: &mut bool,
+) -> Option<(RatPoly, RatPoly)> {
     let nv = gens.len();
     let gen_index: FxHashMap<ExprId, usize> =
         gens.iter().enumerate().map(|(i, &g)| (g, i)).collect();
@@ -341,6 +394,7 @@ fn to_rational_function(
                     (pow(p, n.unsigned_abs())?, pow(q, n.unsigned_abs())?)
                 } else {
                     // A zero `p` gives the denominator 0 (see `ratsimp`).
+                    *zero_denominator |= p.is_zero();
                     (pow(q, n.unsigned_abs())?, pow(p, n.unsigned_abs())?)
                 }
             }

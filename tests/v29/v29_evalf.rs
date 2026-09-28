@@ -185,14 +185,18 @@ fn a_value_hidden_by_cancellation_is_resolved() {
     check(&ctx, "polygamma(497, 7)", 16, "1.359204223358882e705");
     // mpmath (dps 60, 90): polygamma(1700, mpf(3)/2) = -8.8237082017136432916e+4455
     check(&ctx, "polygamma(1700, 3/2)", 16, "-8.823708201713643e4455");
-    // True zeros are still 0, and an underflow too.
+    // True zeros are still 0.
     for s in [
         "sin(1)^2 + cos(1)^2 - 1",
         "gamma(1/3)*gamma(2/3) - 2*pi/sqrt(3)",
-        "exp(-4*10^9)",
     ] {
         check(&ctx, s, 16, "0");
     }
+    // Changed in 0.32: an underflow was `0` too; `exp(−4·10⁹)` is not 0
+    // (mpmath: mp.dps=30; exp(-4*mpf(10)**9) =
+    // 2.437769782340158e-1737177928), and a nonzero number below the
+    // exponent range is now refused.
+    refused(&ctx, "exp(-4*10^9)", 16);
 }
 
 /// Before: `fresnels(erfi(335))` hung (the phase `πx²/2` of an `x ≈
@@ -349,7 +353,10 @@ fn an_underflowing_special_function_is_not_an_exact_zero() {
     ] {
         refused(&ctx, s, 16);
     }
-    check(&ctx, "erfc(10^5)", 16, "0");
+    // Changed in 0.32: the value itself was `0`, a digit it does not have
+    // (mpmath: mp.dps=30; erfc(mpf(10)**5) = 5.234880679754046e-4342944825);
+    // a nonzero number below the exponent range is now refused.
+    refused(&ctx, "erfc(10^5)", 16);
 }
 
 /// Before: `tan` of an argument rounded onto its pole had the first-order

@@ -98,17 +98,36 @@ pub(crate) const QUADRATURE_MAX_DIGITS: u32 = 16;
 ///
 /// Returns the decimal string representation of the result, or an error
 /// if the expression contains free symbols, infinities, or NaN.
+///
+/// A number that is certainly not 0 but lies below the exponent range
+/// (`erfc(10⁵)`, `exp(−10¹⁰)`, `2·besselk(0, 10¹⁰)`) is an
+/// [`SymplexError::Unevaluable`] error that says so ([`underflow_error`]);
+/// before 0.32 it was printed `0`.  A value that is only zero to the
+/// precision reached (a cancellation, or a sum of such numbers of both
+/// signs) is still `0`.
 pub(crate) fn evalf(arena: &Arena, expr: ExprId, digits: u32) -> Result<String, SymplexError> {
-    evalf_with(arena, expr, digits, ZeroSearch::Deep)
+    evalf_with(arena, expr, digits, ZeroSearch::Deep, Underflow::Refuse)
+}
+
+/// What a decimal result does with a nonzero number below the exponent
+/// range ([`Adaptive::Underflow`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Underflow {
+    /// Refuse it ([`underflow_error`]): 0 is not one of its digits.
+    Refuse,
+    /// Print `0`, for a caller that reads the result as an `f64`, whose
+    /// correctly rounded value it is.
+    Zero,
 }
 
 /// [`evalf`] with the [`ZeroSearch`] `search` for a value that is zero to
-/// the working precision.
+/// the working precision, and the [`Underflow`] policy `underflow`.
 fn evalf_with(
     arena: &Arena,
     expr: ExprId,
     digits: u32,
     search: ZeroSearch,
+    underflow: Underflow,
 ) -> Result<String, SymplexError> {
     // Convert decimal digits to binary precision with guard bits.
     // log2(10) ≈ 3.3219, so we use digits * 3.4 + 64 extra bits.
@@ -169,8 +188,11 @@ fn evalf_with(
         SymplexError::NotImplemented(format!("astro-float constants init failed: {e:?}"))
     })?;
 
-    let (result, _) = evaluate_adaptive(arena, expr, digits, search, rm, &mut cc)?;
-    format_complex(&result, digits, prec, rm, &mut cc)
+    match evaluate_adaptive(arena, expr, digits, search, rm, &mut cc)? {
+        Adaptive::Settled(result, _) => format_complex(&result, digits, prec, rm, &mut cc),
+        Adaptive::Underflow if underflow == Underflow::Zero => Ok("0".to_owned()),
+        Adaptive::Underflow => Err(underflow_error()),
+    }
 }
 
 /// The working precision behind `digits` decimal digits: `3.4` bits per
@@ -201,6 +223,9 @@ struct Evaluated {
     value: Complex,
     bound: accuracy::Bound,
     precision_limited: bool,
+    /// The value is 0 with an underflow bound, and certainly not 0
+    /// ([`accuracy::underflow_nonzero`]).
+    underflowed_nonzero: bool,
 }
 
 /// The error bounds of the evaluated nodes (see [`accuracy`]).
@@ -257,6 +282,8 @@ fn evaluate_tree_full(
     // for want of precision in its arguments ([`precision_limited`]).
     let mut tainted: rustc_hash::FxHashSet<ExprId> = rustc_hash::FxHashSet::default();
     let mut sigs = conjugate::Sigs::new();
+    // The nodes whose value underflowed to 0 but is certainly not 0.
+    let mut nonzero: FxHashMap<ExprId, accuracy::Nonzero> = FxHashMap::default();
     if let Some((id, value, err)) = seed {
         sigs.record_leaf(id, &value, err);
         cache.insert(id, value);
@@ -323,6 +350,12 @@ fn evaluate_tree_full(
                     e.im = accuracy::EXACT;
                 }
                 sigs.record(arena, id, &value, e, &cache, &errs);
+                if accuracy::mag(&value).is_none()
+                    && accuracy::is_underflow(e.joint())
+                    && let Some(s) = accuracy::underflow_nonzero(arena, id, &cache, &errs, &nonzero)
+                {
+                    nonzero.insert(id, s);
+                }
                 errs.insert(id, e);
                 cache.insert(id, value);
             }
@@ -343,6 +376,7 @@ fn evaluate_tree_full(
         value,
         bound: err,
         precision_limited: limited,
+        underflowed_nonzero: nonzero.contains_key(&root),
     })
 }
 
@@ -912,6 +946,31 @@ pub(crate) enum Settled {
     ZeroToPrecision,
 }
 
+/// How [`evaluate_adaptive`] ended.
+enum Adaptive {
+    /// A value, and how it was settled.
+    Settled(Complex, Settled),
+    /// A number that is certainly not 0 came out 0 below the exponent
+    /// range of `BigFloat` (`erfc(10⁵) ≈ 5.2·10^(−4342944825)`, `exp(−10¹⁰)`):
+    /// no digit of it is known ([`underflow_error`]).
+    Underflow,
+}
+
+/// The error of a decimal result that is a nonzero number below the
+/// exponent range ([`Adaptive::Underflow`]).  mpmath, with unbounded
+/// exponents, prints `erfc(10⁵)` as `5.2e-4342944825`; before 0.32 `evalf`
+/// printed `0`, a digit that is not correct.  (The `f64` routes return
+/// `0.0`, the correctly rounded `f64` of such a number.)
+fn underflow_error() -> SymplexError {
+    SymplexError::Unevaluable {
+        reason: format!(
+            "the value is not 0 but underflows the arbitrary-precision exponent range \
+             (its magnitude is below 2^{:e})",
+            f64::from(astro_float::EXPONENT_MIN)
+        ),
+    }
+}
+
 /// Evaluate `expr` to `digits` correct significant digits.
 ///
 /// The value is computed at [`working_precision`] with an error bound
@@ -973,7 +1032,7 @@ fn evaluate_adaptive(
     search: ZeroSearch,
     rm: RoundingMode,
     cc: &mut Consts,
-) -> Result<(Complex, Settled), SymplexError> {
+) -> Result<Adaptive, SymplexError> {
     let prec0 = working_precision(digits);
     let max_prec = arena.config.max_evalf_precision as usize;
     let cap = (2 * prec0).max(prec0 + 256).min(max_prec).max(prec0);
@@ -990,8 +1049,15 @@ fn evaluate_adaptive(
             value,
             bound,
             precision_limited,
+            underflowed_nonzero,
         } = evaluate_once(arena, expr, &post_order, prec, rm, cc)?;
         let err = bound.joint();
+        // A number that is not 0 but lies below the exponent range: no
+        // precision brings it back, and 0 is not one of its digits.
+        if underflowed_nonzero && accuracy::mag(&value).is_none() && accuracy::is_underflow(err) {
+            debug!(prec, err, "evalf: a nonzero value underflowed");
+            return Ok(Adaptive::Underflow);
+        }
         let nan = value.0.is_nan() || value.1.is_nan();
         let finite = !(nan || value.0.is_inf() || value.1.is_inf());
         // A value without a bound (or without a finite value) because some
@@ -1010,7 +1076,7 @@ fn evaluate_adaptive(
             });
         }
         if finite && let Some(v) = settle(&value, bound, digits, needed, prec) {
-            return Ok((v, Settled::Certified));
+            return Ok(Adaptive::Settled(v, Settled::Certified));
         }
         let acc = accuracy::accurate_bits(&value, err);
         // Only with a bound: `sign` of a value that cancelled to 0 is 0 at
@@ -1099,7 +1165,7 @@ fn evaluate_adaptive(
         if prec >= limit {
             if small_zero {
                 debug!(prec, err, "evalf: zero to the working precision");
-                return Ok((c_zero(prec0), Settled::ZeroToPrecision));
+                return Ok(Adaptive::Settled(c_zero(prec0), Settled::ZeroToPrecision));
             }
             debug!(prec, err, ?acc, "evalf: precision exhausted");
             return Err(SymplexError::PrecisionExhausted {
@@ -1273,7 +1339,14 @@ fn evalf_value(
     }
 
     let rm = RoundingMode::ToEven;
-    with_f64_consts(|cc| evaluate_adaptive(arena, expr, digits, search, rm, cc))
+    // A nonzero number below the exponent range is 0 within its bound, and
+    // not known to be 0 by that bound: zero to the precision, for the zero
+    // tests of the crate and for the `f64` routes, whose correctly rounded
+    // value it is.
+    with_f64_consts(|cc| evaluate_adaptive(arena, expr, digits, search, rm, cc)).map(|a| match a {
+        Adaptive::Settled(z, settled) => (z, settled),
+        Adaptive::Underflow => (c_zero(prec), Settled::ZeroToPrecision),
+    })
 }
 
 /// [`evalf_value`] for the zero and sign tests of the rest of the crate
@@ -1465,7 +1538,7 @@ pub(crate) fn eval_const_f64(arena: &mut Arena, expr: ExprId) -> Option<f64> {
     // then parse the resulting string.  The `evalf` call takes `&Arena`
     // (immutable), which Rust allows via automatic reborrowing of our
     // `&mut Arena`.
-    match evalf_with(arena, evaled, 16, ZeroSearch::Cap) {
+    match evalf_with(arena, evaled, 16, ZeroSearch::Cap, Underflow::Zero) {
         Ok(s) => {
             let result = s.parse::<f64>().ok();
             tracing::trace!(?result, decimal_str = %s, "eval_const_f64: evalf path");

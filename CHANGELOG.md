@@ -8,8 +8,42 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+### Breaking (behaviour; no signature changed)
+
+- **`qr` and `gram_schmidt` use the Hermitian inner product** for any
+  matrix not provably real, as SymPy's `QRdecomposition`/`GramSchmidt`:
+  `Q` is unitary and `R` has a real positive diagonal.  `[1, i]ᵀ` gives
+  `Q = [√2/2, √2·i/2]`, `R = [√2]` (it was refused as "linearly
+  dependent": `1 + i² = 0`).  A symbol without a real assumption may be
+  complex, so its QR carries `conjugate(x)` (`x/√(x·conj(x) + 1)`).
+  `solve_least_squares` and `singular_values` use `Aᴴ` for complex `A`
+  (`singular_values([[i, 0], [0, 2]])` was `[i, 2]`, now `[2, 1]`).  Real
+  matrices are unchanged.
+- **`eval_decimal` refuses a nonzero value below the exponent range**
+  (`Unevaluable`: "the value is not 0 but underflows the
+  arbitrary-precision exponent range") instead of printing `0`:
+  `erfc(10⁵)` (≈ 5.2·10^−4342944825), `exp(−10¹⁰)`,
+  `2·besselk(0, 10¹⁰)`.  A true zero still prints `0`
+  (`erfc(10⁵) − erfc(10⁵)`); `eval_f64` still returns `0.0`, the correctly
+  rounded value.
+- **An expression whose denominator vanishes identically is undefined in
+  every rewrite**: `simplify((x(x+1) − x² − x)/(−x/(x+1) + x(−x/(x+1) +
+  1)))` is `nan` (it was `0`: the `expand` strategy multiplied the
+  numerator out to 0 before looking at the denominator); `together` sees a
+  denominator that is 0 only once multiplied out (`(x(x+1) − x² − x)/(x(x+2)
+  − x² − 2x)` was returned unchanged, now `nan`); `trigsimp`, `fu`,
+  `powsimp` and `ratsimp` agree (`nan` for 0/0, `zoo` for P/0, and 0 for
+  a zero that is absorbed, as SymPy's `simplify`).  SymPy's own `cancel`
+  and `ratsimp` answer `0` here; symplex follows `together`.
+
 ### Added
 
+- **Eigenvalues and eigenvectors of matrices with algebraic entries**:
+  square-free factors over ℚ(√p…, i), split by their norms, then the
+  quadratic formula or Cardano's formulas (SymPy's `roots_cubic`).  3×3
+  matrices over ℚ(√2, √3, i) were refused unless the characteristic
+  polynomial was `λ³ − c`; a hunter over 3,000 such matrices: 1,341
+  refused → 0, eigenvalues within 1.1·10⁻¹⁴ of numpy's.
 - **One-sided series at a branch point are Puiseux series**, as in SymPy:
   `series_dir(asin(x²), x, 1, 4, Right)` is `π/2 − 2i·√(x − 1) −
   i(x − 1)^(3/2)/6 + 13i(x − 1)^(5/2)/80 − 37i(x − 1)^(7/2)/448`, from the
@@ -32,6 +66,24 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   (`asin(1 − x⁴) = π/2 − √2·x² − √2·x⁶/12 + …`, refused before).  A
   branch point written as another constant is recognised
   (`asin(asin x)` at `x = sin 1`: 6 s → 0.03 s).
+- **Symbolic QR took 53 s** (debug; a 307 KB `Q`) on a 4×4 matrix over
+  ℚ(√2, √3, i)(a): fraction-free exact Gram–Schmidt with Gram
+  determinants (de Weger 1987) takes 0.14 s (17 KB).  A QR hunter: 64
+  wrong (not unitary, or `R`'s diagonal not real positive) and 4 hangs in
+  100 cases → 0 in 1,703.
+- **Integrals over the roots of `xⁿ + a` were bloated**: `∫ x⁶/(x⁸ + 1)`
+  printed 18 KB (powers of `cos(π/8)`, `sin(π/8)` never reduced); the
+  coefficients are now exact in ℚ(ζ_N)[ρ], about 400 characters.
+  Over `xᵏ/(xⁿ + 1)`, `k < n ≤ 12`: 38,032 → 12,712 characters in all;
+  `∫ 1/(x⁶ + 1)`, `∫ x⁴/(x⁶ + 1)`, `∫ x/(x¹² + 1)`, `∫ x⁹/(x¹² + 1)` were
+  unevaluated.  Rubi: 14,336 → 14,360 verified, 0 wrong.
+- **Rewrites that changed the value** (a hunter running 14 rewrite routes
+  against each other and against evalf at real and complex points: 71
+  wrong results in 1,500 cases → 12, all in `expand`): `rationalize_denom`
+  used a conjugate that makes the denominator 0 (`1/(√(x²) − x)` became
+  `zoo`; it is `1/4` at `x = −2`); `simplify` of an expression with an
+  absorbed zero denominator was `nan` (`zoo` spread over a sum); a
+  denominator `sin² + cos² − 1` gave `zoo` for `0/0`.
 
 ## [0.31.0] - 2026-09-27
 
