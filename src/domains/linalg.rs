@@ -1753,8 +1753,9 @@ impl Tower {
 /// in `K` exactly), then the quadratic formula `(−b ± √(b² − 4c))/2` and
 /// Cardano's formulas in the form of SymPy's `roots_cubic`.  Every
 /// coefficient computation is exact in `K`; the radicands are in its normal
-/// form.  `None` when a coefficient is not such a constant, a factor has
-/// degree above 3, or a sign is undecided.
+/// form; a quartic factor by SymPy's `roots_quartic` ([`kp_quartic_roots`]).
+/// `None` when a coefficient is not such a constant, a factor has degree
+/// above 4, or a sign is undecided.
 pub(crate) fn algebraic_poly_roots(coeffs: &[Ex]) -> Option<Vec<(Ex, usize)>> {
     let handle = coeffs.first()?.clone();
     let (tower, f) = {
@@ -1933,7 +1934,7 @@ pub(crate) fn algebraic_eigenvectors(
     (!out.is_empty()).then_some(out)
 }
 
-/// The roots of a monic square-free `g` over `K` of degree 1 to 3.
+/// The roots of a monic square-free `g` over `K` of degree 1 to 4.
 fn kp_radical_roots(tower: &Tower, g: &[Mp], handle: &Ex) -> Option<Vec<Ex>> {
     let ctx = handle.context();
     let nv = tower.nvars();
@@ -2031,7 +2032,175 @@ fn kp_radical_roots(tower: &Tower, g: &[Mp], handle: &Ex) -> Option<Vec<Ex>> {
                     .collect(),
             )
         }
+        4 => kp_quartic_roots(tower, g, handle),
         _ => None,
+    }
+}
+
+/// The roots of a monic square-free quartic `x⁴ + a·x³ + b·x² + c·x + d`
+/// over `K` in radicals, as SymPy's `roots_quartic` (`polys/polyroots.py`)
+/// takes its cases, every coefficient computation and every case test exact
+/// in `K`:
+///
+/// * `d = 0`: `0` and the roots of the cubic `x³ + a·x² + b·x + c`;
+/// * `(c/a)² = d` (quasi-symmetric): `z = x + m/x`, `m = c/a`, solves
+///   `z² + a·z + b − 2m = 0`, then `x² − z·x + m = 0`;
+/// * otherwise the depressed `y⁴ + e·y² + f·y + g` (`x = y − a/4`): for
+///   `f = 0` the biquadratic `y = ±√((−e ± √(e² − 4g))/2)`; for `g = 0`,
+///   `0` and the roots of `y³ + e·y + f`; else Descartes–Euler when the
+///   resolvent `64R³ + 32e·R² + (4e² − 16g)·R − f²` has a nonzero rational
+///   root (the largest, SymPy's `_roots_quartic_euler`), and Ferrari
+///   otherwise: `y = −5e/6 − ∛q` for `p = 0`, else `−5e/6 + u − p/(3u)` with
+///   `u = ∛(−q/2 + √(q²/4 + p³/27))`, `p = −e²/12 − g`, `q = −e³/108 + e·g/3
+///   − f²/8` (decided exactly here, where SymPy may return a `Piecewise`),
+///   and the roots `(s·w − t·√(−(3e + 2y + 2s·f/w)))/2 − a/4`, `w = √(e +
+///   2y)`, `s, t = ±1`.
+///
+/// Each formula is an identity for every choice of the square and cube
+/// roots (the resolvent root `y` is a root whatever cube root `u` is, `w`
+/// enters `2f/w` with the same sign, and both signs of every other square
+/// root are taken), so a square root is taken as [`any_sqrt`] does: on the
+/// negative real axis as `i·√(−X)`.
+fn kp_quartic_roots(tower: &Tower, g: &[Mp], handle: &Ex) -> Option<Vec<Ex>> {
+    let ctx = handle.context();
+    let nv = tower.nvars();
+    let kx = |c: &Mp| -> Ex {
+        let f = KFrac {
+            num: c.clone(),
+            den: Mp::from_int(nv, 1),
+        };
+        tower.frac_to_ex(&f, handle)
+    };
+    let qn = |n: i64, d: i64| Q::new(BigInt::from(n), BigInt::from(d));
+    let sc = |c: &Mp, n: i64, d: i64| c.scale(&qn(n, d));
+    let mul = |a: &Mp, b: &Mp| tower.mul_r(a, b);
+    let tidy = |e: Ex| e.eval();
+    let (d, c, b, a) = (&g[0], &g[1], &g[2], &g[3]);
+    let one = Mp::from_int(nv, 1);
+    let two = ctx.int(2);
+    if d.is_zero() {
+        let cubic = [c.clone(), b.clone(), a.clone(), one];
+        let mut r = kp_radical_roots(tower, &cubic, handle)?;
+        r.insert(0, ctx.zero());
+        return Some(r);
+    }
+    if !a.is_zero() {
+        let m = mul(c, &tower.inv_k(a)?);
+        if mul(&m, &m).sub(d).is_zero() {
+            // z² + a·z + (b − 2m) = 0, then x² − z·x + m = 0.
+            let disc = mul(a, a).sub(&sc(&b.sub(&sc(&m, 2, 1)), 4, 1));
+            let s = kx(&disc).sqrt();
+            let ma = -kx(a);
+            let four_m = kx(&sc(&m, 4, 1));
+            let mut out = Vec::with_capacity(4);
+            for z in [&(&ma + &s) / &two, &(&ma - &s) / &two] {
+                let r = any_sqrt(&(&(&z * &z) - &four_m));
+                out.push(tidy(&(&z + &r) / &two));
+                out.push(tidy(&(&z - &r) / &two));
+            }
+            return Some(out);
+        }
+    }
+    let a2 = mul(a, a);
+    let e = b.sub(&sc(&a2, 3, 8));
+    let f = c.add(&mul(a, &sc(&a2, 1, 8).sub(&sc(b, 1, 2))));
+    let aon4 = sc(a, 1, 4);
+    let g0 = d.sub(&mul(
+        &aon4,
+        &mul(a, &sc(&a2, 3, 64).sub(&sc(b, 1, 4))).add(c),
+    ));
+    let shift = kx(&aon4);
+    if f.is_zero() {
+        let disc = mul(&e, &e).sub(&sc(&g0, 4, 1));
+        let s = kx(&disc).sqrt();
+        let me = -kx(&e);
+        let y1 = any_sqrt(&(&(&me + &s) / &two));
+        let y2 = any_sqrt(&(&(&me - &s) / &two));
+        let ys = [-&y1, -&y2, y1, y2];
+        return Some(ys.into_iter().map(|y| tidy(&y - &shift)).collect());
+    }
+    if g0.is_zero() {
+        let cubic = [f, e, Mp::zero(nv), one];
+        let mut r = kp_radical_roots(tower, &cubic, handle)?;
+        r.insert(0, ctx.zero());
+        return Some(r.into_iter().map(|y| tidy(&y - &shift)).collect());
+    }
+    // Descartes–Euler: R a nonzero rational root of the resolvent, then
+    // `±√R ∓ √(A ± B)` with `A = −R − e/2`, `B = −f·√R/(4R)`.
+    let resolvent = [
+        sc(&mul(&f, &f), -1, 64),
+        sc(&mul(&e, &e), 1, 16).sub(&sc(&g0, 1, 4)),
+        sc(&e, 1, 2),
+        Mp::from_int(nv, 1),
+    ];
+    let rational_root = tower
+        .kp_squarefree(&resolvent)?
+        .into_iter()
+        .filter_map(|(h, _)| tower.kp_split_by_norm(&h))
+        .flatten()
+        .filter(|h| h.len() == 2)
+        .filter_map(|h| h[0].neg().as_constant())
+        .filter(|r| !r.is_zero())
+        .max();
+    if let Some(r) = rational_root {
+        let rr = Mp::constant(nv, r);
+        let c1 = kx(&rr).sqrt();
+        let bb = &(&-kx(&f) * &c1) / &kx(&sc(&rr, 4, 1));
+        let aa = kx(&rr.neg().sub(&sc(&e, 1, 2)));
+        let c2 = any_sqrt(&(&aa + &bb));
+        let c3 = any_sqrt(&(&aa - &bb));
+        return Some(vec![
+            tidy(&(&c1 - &c2) - &shift),
+            tidy(&(&-&c1 - &c3) - &shift),
+            tidy(&(&-&c1 + &c3) - &shift),
+            tidy(&(&c1 + &c2) - &shift),
+        ]);
+    }
+    // Ferrari.
+    let ee = mul(&e, &e);
+    let p = sc(&ee, -1, 12).sub(&g0);
+    let q = sc(&mul(&ee, &e), -1, 108)
+        .add(&sc(&mul(&e, &g0), 1, 3))
+        .sub(&sc(&mul(&f, &f), 1, 8));
+    let five_e_6 = kx(&sc(&e, -5, 6));
+    let y = if p.is_zero() {
+        &five_e_6 - &kx(&q).cbrt()
+    } else {
+        let rad = sc(&mul(&q, &q), 1, 4).add(&sc(&mul(&mul(&p, &p), &p), 1, 27));
+        let u = (&kx(&sc(&q, -1, 2)) + &kx(&rad).sqrt()).cbrt();
+        &(&five_e_6 + &u) - &(&kx(&p) / &(&ctx.int(3) * &u))
+    };
+    let w = any_sqrt(&(&kx(&e) + &(&two * &y)));
+    let arg1 = &kx(&sc(&e, 3, 1)) + &(&two * &y);
+    let arg2 = &(&two * &kx(&f)) / &w;
+    let mut out = Vec::with_capacity(4);
+    for s in [-1i64, 1] {
+        let sw = &ctx.int(s) * &w;
+        let root = any_sqrt(&-(&arg1 + &(&ctx.int(s) * &arg2)));
+        for t in [-1i64, 1] {
+            let x = &(&(&sw - &(&ctx.int(t) * &root)) / &two) - &shift;
+            out.push(tidy(x));
+        }
+    }
+    Some(out)
+}
+
+/// A square root of `x` (either sign will do for the caller): `√x`, or
+/// `i·√(−x)` when `x` lies on the negative real axis numerically.  There
+/// a radicand built from complex cube roots (Cardano's in the casus
+/// irreducibilis: the resolvent root `y` of a real quartic is real, its
+/// imaginary part a rounding residue) is real only to within its error, the
+/// side of the cut of `√` undecidable, and `evalf` refuses the root — as it
+/// refused one root in a hundred of the quartics over `ℚ(√2, √3)` before
+/// this choice; `−x` lies on the positive axis, away from the cut.
+fn any_sqrt(x: &Ex) -> Ex {
+    let on_cut = x
+        .eval_complex64()
+        .is_ok_and(|z| z.re < 0.0 && z.im.abs() <= 1e-6 * z.re.abs());
+    if on_cut {
+        &x.context().i_unit() * &(-x).sqrt()
+    } else {
+        x.sqrt()
     }
 }
 

@@ -1286,8 +1286,11 @@ pub(crate) fn fu(arena: &mut Arena, expr: ExprId) -> ExprId {
     // A denominator that vanishes identically: the value in the arithmetic
     // of `1/0 = zoo`, not the `0` of a numerator the identities cancel.
     // Up to 0.31 `fu((tan x·cos x − sin x)/(x/(x + 5) + 5/(x + 5) − 1))`
-    // was `0`.
-    if let Some(value) = crate::simplify::simplify_engine::vanishing_denominator(arena, expr) {
+    // was `0`; up to 0.33 a denominator zero by an identity was not seen
+    // (`undefined_by_vanishing_denominator`, as `simplify`).
+    if let Some(value) =
+        crate::simplify::simplify_engine::undefined_by_vanishing_denominator(arena, expr)
+    {
         return value;
     }
 

@@ -53,12 +53,23 @@ const MAX_DEGREE: u32 = 1 << 20;
 /// is `nan` when the numerator is 0 once multiplied out with its function
 /// arguments ([`numerator_expands_to_zero`]), as `together` finds.  Up to
 /// 0.31 `ratsimp(√(x·(x + 1) − x² − x)/(x·(x + 2) − x² − 2x))` was `zoo`.
+///
+/// A denominator that vanishes only as a function of its generators —
+/// `exp(2) − exp(1)²`, `exp(2x) − exp(x)²` (the generators `exp(2x)` and
+/// `exp(x)` are not independent), a constant `sin² 1 + cos² 1 − 1` — is 0
+/// too ([`vanishing_bases`]).  Up to 0.33 `ratsimp(((x + 1)² − x² − 2x −
+/// 1)/(exp(2) − exp(1)²))` was `0`, and `ratsimp((xy − 2)²/((exp(x/2)² −
+/// exp(x))/(exp(2) − exp(1)²) + (y + 1)/(exp(2) − exp(1)²)))` multiplied
+/// the zero `exp(2) − exp(1)²` into the numerator (a value 0 at every
+/// point); both are `nan`.
 pub(crate) fn ratsimp(arena: &mut Arena, expr: ExprId) -> ExprId {
     if !is_admissible(arena, expr) {
         return expr;
     }
+    let vanishing = vanishing_bases(arena, expr);
     let gens = collect_generators(arena, expr);
-    let Some((p, q)) = to_rational_function(arena, expr, &gens) else {
+    let Some((p, q)) = to_rational_function_tracked(arena, expr, &gens, &mut false, &vanishing)
+    else {
         return expr;
     };
     let out = rebuild(arena, &p, &q, &gens).unwrap_or(expr);
@@ -66,6 +77,136 @@ pub(crate) fn ratsimp(arena: &mut Arena, expr: ExprId) -> ExprId {
         return arena.nan;
     }
     out
+}
+
+/// The bases of the negative powers in the rational skeleton of `expr`
+/// (outside every generator) that vanish identically
+/// ([`factor_vanishes`](crate::base::canon::factor_vanishes): as rational
+/// functions of their generators with exponentials and radicals related,
+/// `exp(2x) − exp(x)²`, or exactly for a constant), as [`Vanishing`] values
+/// for [`to_rational_function_tracked`]: the base `0`, its negative powers
+/// the fraction `1/0`, its positive ones `0`.  The polynomial arithmetic
+/// sees only the zeros of independent generators.  One residue pass per
+/// distinct base (and one numeric evaluation for a constant one); empty
+/// for almost every input.
+///
+/// So is the denominator of a `0/0` candidate that vanishes by an identity
+/// of its functions
+/// ([`identity_denominator_candidates`](crate::base::canon::identity_denominator_candidates),
+/// [`vanishes_by_identity`](crate::simplify::identically_zero::vanishes_by_identity)):
+/// `((x + 1)² − x² − 2x − 1)/(tan x·cos x − sin x)` is `nan`, not the `0` of
+/// the numerator multiplied out (SymPy 1.14's `ratsimp`: `0`).  Other
+/// identities stay unapplied, as in SymPy: `ratsimp(1/(x/s + 1/s))` with
+/// `s = sin 2x − 2·sin x·cos x` is `s/(x + 1)`.
+fn vanishing_bases(arena: &mut Arena, expr: ExprId) -> FxHashMap<ExprId, Vanishing> {
+    // (power, base, negative?) of the skeleton, its products and its sums;
+    // an explicit stack.
+    let mut powers: Vec<(ExprId, ExprId, bool)> = Vec::new();
+    let mut products: Vec<ExprId> = Vec::new();
+    let mut sums: Vec<ExprId> = Vec::new();
+    let mut seen: FxHashSet<ExprId> = FxHashSet::default();
+    let mut stack = vec![expr];
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        match arena.node(id) {
+            ExprNode::Mul(children) => {
+                products.push(id);
+                stack.extend(children.iter());
+            }
+            ExprNode::Add(children) => {
+                sums.push(id);
+                stack.extend(children.iter());
+            }
+            ExprNode::Neg(child) => stack.push(*child),
+            ExprNode::Pow(base, e) => {
+                if let Some(n) = integer_exponent(arena, *e) {
+                    stack.push(*base);
+                    if n != 0 && !arena.node(*base).is_atom() {
+                        powers.push((id, *base, n < 0));
+                    }
+                } else if let Some(q) = arena.as_num(*e)
+                    && !arena.node(*base).is_atom()
+                {
+                    // A generator `s^(p/q)`: `0` or `1/0` when `s` vanishes
+                    // (`√(exp(2x) − exp(x)²)`).
+                    powers.push((id, *base, q.is_negative()));
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut vanishing: FxHashMap<ExprId, Vanishing> = FxHashMap::default();
+    let mut decided: FxHashMap<ExprId, bool> = FxHashMap::default();
+    for &(_, base, negative) in &powers {
+        if negative && !decided.contains_key(&base) {
+            let zero = crate::base::canon::factor_vanishes(arena, base);
+            decided.insert(base, zero);
+        }
+    }
+    for d in crate::base::canon::identity_denominator_candidates(arena, &products) {
+        if decided.get(&d) != Some(&true)
+            && crate::simplify::identically_zero::vanishes_by_identity(arena, d)
+        {
+            decided.insert(d, true);
+        }
+    }
+    // A second term over a denominator zero by an identity: `zoo + zoo`.
+    if decided.values().any(|&zero| zero) {
+        let partners = crate::base::canon::sum_partner_denominators(arena, &sums, |d| {
+            decided.get(&d) == Some(&true)
+        });
+        for d in partners {
+            if decided.get(&d) != Some(&true)
+                && crate::simplify::identically_zero::vanishes_by_identity(arena, d)
+            {
+                decided.insert(d, true);
+            }
+        }
+    }
+    // A factor beside such a pole that vanishes too makes the product `0/0`
+    // (`((√x + √y)² − x − y − 2√x·√y)/(e³ − exp(1)³)`: the polynomial
+    // arithmetic does not reduce `(√x)²` to `x`).
+    for &prod in &products {
+        let ExprNode::Mul(children) = arena.node(prod).clone() else {
+            continue;
+        };
+        let pole = children.iter().any(|&c| match arena.node(c) {
+            ExprNode::Pow(b, e) => {
+                integer_exponent(arena, *e).is_some_and(|n| n < 0) && decided.get(b) == Some(&true)
+            }
+            _ => false,
+        });
+        if !pole {
+            continue;
+        }
+        for c in children {
+            let positive = match arena.node(c) {
+                ExprNode::Pow(_, e) => integer_exponent(arena, *e).is_none_or(|n| n > 0),
+                _ => true,
+            };
+            if positive
+                && !arena.node(c).is_atom()
+                && !vanishing.contains_key(&c)
+                && crate::base::canon::factor_vanishes(arena, c)
+            {
+                vanishing.insert(c, Vanishing::Zero);
+            }
+        }
+    }
+    for &(power, base, negative) in &powers {
+        if decided.get(&base) == Some(&true) {
+            vanishing.insert(base, Vanishing::Zero);
+            let v = if negative {
+                Vanishing::Pole
+            } else {
+                Vanishing::Zero
+            };
+            vanishing.insert(power, v);
+        }
+    }
+    vanishing
 }
 
 /// Is the numerator of `expr` (`as_numer_denom`) structurally 0 once
@@ -260,7 +401,19 @@ fn pow(base: &RatPoly, mut n: u64) -> Option<RatPoly> {
 
 /// `p1/q1 + p2/q2` over the least common multiple of the denominators (a
 /// zero denominator has none: the product is used).
+///
+/// Two zero denominators make `0/0`, `nan`: each fraction is `zoo` (`P/0`)
+/// or `nan` (`0/0`) at every point, and `zoo + zoo`, `nan + …` are `nan`.
+/// Up to 0.33 they were added as fractions over the common denominator 0,
+/// `(p1 + p2)/0 = zoo`, so `1/0 + 0/0` was `zoo` and `x·y/(1/(x·(x + 3) −
+/// x² − 3x) + ((x + y)² − x² − 2xy − y²)/(x·(y + 4) − xy − 4x))` became
+/// `x·y/zoo = 0` in `ratsimp` and `simplify` (SymPy 1.14's `simplify`:
+/// `nan`).
 fn add_fractions(p1: &RatPoly, q1: &RatPoly, p2: &RatPoly, q2: &RatPoly) -> (RatPoly, RatPoly) {
+    if q1.is_zero() && q2.is_zero() {
+        let nv = q1.num_vars();
+        return (RatPoly::zero(nv), RatPoly::zero(nv));
+    }
     if q1 == q2 {
         return (p1.add(p2), q1.clone());
     }
@@ -364,8 +517,12 @@ pub(crate) fn ratsimp_vanishing(
     if !is_admissible(arena, expr) {
         return None;
     }
+    let mut vanishing = vanishing.clone();
+    for (id, v) in vanishing_bases(arena, expr) {
+        vanishing.entry(id).or_insert(v);
+    }
     let gens = collect_generators(arena, expr);
-    let (p, q) = to_rational_function_tracked(arena, expr, &gens, &mut false, vanishing)?;
+    let (p, q) = to_rational_function_tracked(arena, expr, &gens, &mut false, &vanishing)?;
     let out = rebuild(arena, &p, &q, &gens)?;
     if out == arena.complex_infinity && numerator_expands_to_zero(arena, expr) {
         return Some(arena.nan);
@@ -383,15 +540,11 @@ pub(crate) fn ratsimp_zero_denominator(arena: &mut Arena, expr: ExprId) -> Optio
     if !is_admissible(arena, expr) {
         return None;
     }
+    let vanishing = vanishing_bases(arena, expr);
     let gens = collect_generators(arena, expr);
     let mut zero_denominator = false;
-    let (p, q) = to_rational_function_tracked(
-        arena,
-        expr,
-        &gens,
-        &mut zero_denominator,
-        &FxHashMap::default(),
-    )?;
+    let (p, q) =
+        to_rational_function_tracked(arena, expr, &gens, &mut zero_denominator, &vanishing)?;
     if !zero_denominator {
         return None;
     }

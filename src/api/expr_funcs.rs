@@ -3107,7 +3107,10 @@ impl Expr<Numeric> {
     /// Returns the values of `var` that make this expression zero.
     /// Supports polynomial equations (exact radicals through degree 4,
     /// `RootOf` placeholders beyond, all `n` roots of `a·xⁿ + b`),
-    /// symbolic-coefficient linear and quadratic equations, and
+    /// symbolic-coefficient linear and quadratic equations, polynomials
+    /// with coefficients in `ℚ(√p…, i)` in radicals through degree 4 over
+    /// that field (Cardano, and Ferrari or Descartes–Euler as SymPy's
+    /// `roots_quartic`: `x³ + √2·x + i` has three radical roots), and
     /// transcendental equations (`exp`, `ln`, trig, hyperbolic, `|·|`,
     /// change of variable, Lambert W).  For periodic functions only the
     /// principal branches are returned — use
@@ -3127,7 +3130,10 @@ impl Expr<Numeric> {
     ///   not depend on `var` at all, or violates a range restriction such
     ///   as `exp(x) = 0` or `sin(x) = 2` (no real solution).
     /// - [`SymplexError::ComputationFailed`] when the expression is not
-    ///   polynomial in `var` and no transcendental strategy applies.
+    ///   polynomial in `var` and no transcendental strategy applies, or is a
+    ///   polynomial whose roots are not found in closed form (a coefficient
+    ///   outside `ℚ(√p…, i)`, an irreducible factor of degree above 4 over
+    ///   that field) — the two reasons say which.
     ///
     /// `Ok(vec![])` is reserved for genuine equations whose roots could
     /// not be found in the searched domain.
@@ -3174,14 +3180,42 @@ impl Expr<Numeric> {
                 // For non-polynomial expressions, report an error.
                 let poly =
                     crate::poly::polybridge::expr_to_poly(&inner.arena, self.raw_id(), var_id);
+                if poly.is_some() {
+                    drop(inner);
+                    return Ok(vec![]);
+                }
+                // A polynomial whose coefficients are constants outside ℚ:
+                // in `K = ℚ(√p…, i)` its roots in radicals through degree 4
+                // (SymPy's `roots` over an algebraic field: the square-free
+                // factors, the factors of their norms over ℚ, then the
+                // quadratic formula, `roots_cubic` and `roots_quartic`).
+                // Before 0.34 `solve` took only degrees 1 and 2 and binomials
+                // here, and `x³ + √2·x + i` was refused as "not polynomial".
+                let coeffs = crate::transforms::solve::symbolic_poly_coeffs(
+                    &mut inner.arena,
+                    self.raw_id(),
+                    var_id,
+                );
                 drop(inner);
-                if poly.is_none() {
+                let Some(coeffs) = coeffs.filter(|cs| cs.len() >= 2) else {
                     return Err(SymplexError::ComputationFailed {
                         operation: "solve",
                         reason: "expression is not polynomial in the given variable and transcendental solver could not find solutions".into(),
                     });
+                };
+                let coeffs: Vec<Ex> = coeffs.into_iter().map(|c| self.wrap(c)).collect();
+                if let Some(roots) = crate::domains::linalg::algebraic_poly_roots(&coeffs) {
+                    return Ok(roots.into_iter().map(|(r, _)| r).collect());
                 }
-                Ok(vec![])
+                Err(SymplexError::ComputationFailed {
+                    operation: "solve",
+                    reason: format!(
+                        "polynomial of degree {} in {var} whose roots were not found in closed form: \
+                         its coefficients are not all in ℚ(√p…, i), or it has an irreducible factor \
+                         of degree above 4 over that field",
+                        coeffs.len() - 1
+                    ),
+                })
             }
             crate::transforms::solve::SolveOutcome::Identity => {
                 drop(inner);
@@ -3707,9 +3741,13 @@ impl Expr<Numeric> {
     /// overflows it (`exp(10¹⁰)`), and since 0.32 a value that is certainly
     /// not 0 but underflows it (`erfc(10⁵) ≈ 5.2·10^(−4342944825)`,
     /// `exp(−10¹⁰)`, `2·besselk(0, 10¹⁰)`), which was printed `0` before.
-    /// A value that is only zero to the precision reached — a cancellation,
-    /// `exp(−10¹⁰)·(sin²1 + cos²1) − exp(−10¹⁰)`, or a sum of such tiny
-    /// numbers whose signs differ — still prints as `0`.
+    /// A value that is only zero to the precision reached at the scale of
+    /// its terms — `exp(−10¹⁰)·(sin²1 + cos²1) − exp(−10¹⁰)` — still prints
+    /// as `0`.  Since 0.34 a sum of such tiny numbers of both signs is
+    /// decided like any sum (`exp(−10¹⁰) − exp(−2·10¹⁰)` is refused as a
+    /// nonzero value that underflows; `log` of it is `−10¹⁰`), or refused as
+    /// undecidable when its terms have no scaled form (`besselk(0, 10¹⁰) −
+    /// airyai(10⁷)`).
     ///
     /// Returns [`SymplexError::PrecisionExhausted`] if the requested
     /// precision exceeds `EvalConfig::max_evalf_precision`, if intermediate

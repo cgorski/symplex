@@ -160,7 +160,7 @@ pub(super) const UNKNOWN: ErrExp = f64::INFINITY;
 
 /// The bound of a value that underflowed to 0: below the smallest positive
 /// float.
-const UNDERFLOW: ErrExp = astro_float::EXPONENT_MIN as ErrExp;
+pub(super) const UNDERFLOW: ErrExp = astro_float::EXPONENT_MIN as ErrExp;
 
 /// Bounds beyond this are [`UNKNOWN`].  Only near the end of the `f64`
 /// range: a bound of `2^(10¹¹²)` (`(1 + 10⁻¹⁵⁰)^(10¹⁵⁰)` at 128 bits, whose
@@ -1608,9 +1608,12 @@ impl Nonzero {
 /// `sin`, `tan`, `asin`, `atan`, their hyperbolic
 /// counterparts and `erf` of a nonzero number that underflowed (they
 /// vanish simply at 0, and keep its sign).  A sum is nonzero when its
-/// terms are and have one sign.  Anything else — `exp(−10¹⁰)·(sin²1 + cos²1)
-/// − exp(−10¹⁰)`, truly 0 — is not known to be nonzero, and prints as a
-/// zero to the precision reached.
+/// terms are and have one sign.  Anything else — `K₀(10¹⁰) − Ai(10⁷)` — is
+/// not known to be nonzero, and is refused (`evalf::undecided_error`).  The
+/// values held scaled (`extended`: `exp`, `Ei`, `erfc` and what is built
+/// from them) have their own status, decided from the scaled value —
+/// `exp(−10¹⁰) − exp(−2·10¹⁰)` is positive, `exp(−10¹⁰)·(sin²1 +
+/// cos²1) − exp(−10¹⁰)` a zero to the precision reached.
 pub(super) fn underflow_nonzero(
     arena: &Arena,
     id: ExprId,
@@ -1736,7 +1739,7 @@ pub(super) fn underflow_nonzero(
 /// integer or the base is positive; `(−r)^(n/2) = ±i·r^(n/2)` (the half-
 /// integer power of an exactly real negative base, evaluated exactly so)
 /// has an exact real part.
-fn pow_bound(
+pub(super) fn pow_bound(
     x_literal: Option<&Q>,
     b: &Complex,
     eb: Bound,

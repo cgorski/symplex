@@ -1139,18 +1139,325 @@ pub(crate) fn vanishes_identically(arena: &mut Arena, expr: ExprId) -> bool {
 /// The Mersenne prime `2⁶¹ − 1`, the modulus of [`may_vanish_identically`].
 const RESIDUE_PRIME: u64 = (1 << 61) - 1;
 
+/// The exponent scale `D` of [`residues_at_random_point`]: a generator `g`
+/// takes the value `ρ_g^D` for a pseudo-random unit `ρ_g`, so that its
+/// rational powers `g^(a/b)` take `ρ_g^(a·D/b)`, and `exp(c·m)` takes
+/// `ρ_m^(c·D)` (see [`residue_exponent`]).  `720720 = lcm(1, …, 16)`; the
+/// values of the generators range over the `D`-th powers, a subgroup of
+/// `(2⁶¹ − 2)/90090 ≈ 2.6·10¹³` units.
+const RESIDUE_ROOT_SCALE: u64 = 720_720;
+
+/// Salts of the two kinds of keys of [`residues_at_random_point`]: the
+/// `ExprId` of a generator, and the monomial `m` of a term `c·m` of an
+/// exponent (so that `exp(x)` and `x` are unrelated).
+const RESIDUE_GENERATOR_SALT: u64 = 0x5851_F42D_4C95_7F2D;
+const RESIDUE_EXPONENT_SALT: u64 = 0x1405_7B7E_F767_814F;
+
+fn residue_mul(a: u64, b: u64) -> u64 {
+    ((u128::from(a) * u128::from(b)) % u128::from(RESIDUE_PRIME)) as u64
+}
+
+fn residue_pow(mut b: u64, mut e: u64) -> u64 {
+    let mut r = 1u64;
+    while e > 0 {
+        if e & 1 == 1 {
+            r = residue_mul(r, b);
+        }
+        b = residue_mul(b, b);
+        e >>= 1;
+    }
+    r
+}
+
+/// splitmix64.
+fn residue_hash(mut z: u64) -> u64 {
+    z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// A pseudo-random unit modulo the prime for the key `key`.
+fn residue_unit(key: u64) -> u64 {
+    residue_hash(key) % (RESIDUE_PRIME - 1) + 1
+}
+
+/// `q·D` ([`RESIDUE_ROOT_SCALE`]) as an exponent modulo the group order
+/// `N = 2⁶¹ − 2`: for `q = n/d` and `g = gcd(d, D)`, `n·(D/g)·(d/g)⁻¹ mod
+/// N`, when `d/g` is invertible modulo `N`.  The map is additive on those
+/// rationals (the ring map from the integers localised at the primes of
+/// `d/g`), so `ρ^(q₁·D)·ρ^(q₂·D) = ρ^((q₁ + q₂)·D)` and `(ρ^(D/d))^d = ρ^D`:
+/// `exp(−46/11)·exp(−13/7) = exp(−465/77)` holds among the residues.
+/// `None` otherwise (a denominator with a factor `16`, `31`, …).
+fn residue_exponent(q: &crate::base::numeric::Q) -> Option<u64> {
+    use num_traits::ToPrimitive;
+    let order = RESIDUE_PRIME - 1;
+    let order_big = BigInt::from(order);
+    let scale = BigInt::from(RESIDUE_ROOT_SCALE);
+    let g = q.denom().gcd(&scale);
+    let rest = (q.denom() / &g).mod_floor(&order_big).to_u64()?;
+    let inv = inverse_modulo(rest, order)?;
+    let k = (q.numer() * (scale / g)).mod_floor(&order_big).to_u64()?;
+    Some(((u128::from(k) * u128::from(inv)) % u128::from(order)) as u64)
+}
+
+/// `a⁻¹ mod m` by the extended Euclidean algorithm, `None` when `gcd(a, m)
+/// ≠ 1`.
+fn inverse_modulo(a: u64, m: u64) -> Option<u64> {
+    let (mut r0, mut r1) = (i128::from(m), i128::from(a));
+    let (mut t0, mut t1) = (0i128, 1i128);
+    while r1 != 0 {
+        let q = r0 / r1;
+        (r0, r1) = (r1, r0 - q * r1);
+        (t0, t1) = (t1, t0 - q * t1);
+    }
+    (r0 == 1).then(|| t0.rem_euclid(i128::from(m)) as u64)
+}
+
+/// `u^(q·D)` ([`residue_exponent`]) for a unit `u`.
+fn residue_scaled_power(u: u64, q: &crate::base::numeric::Q) -> Option<u64> {
+    residue_exponent(q).map(|k| residue_pow(u, k))
+}
+
+/// An element `a + b·i` of `F_p[i] = F_{p²}`, `p = 2⁶¹ − 1`: `−1` is not a
+/// square modulo `p ≡ 3 (mod 4)`, so `i² = −1` defines the field with `p²`
+/// elements, in which every rational has a square root.  The imaginary
+/// unit and the square roots of integers take their true values there.
+type Residue = (u64, u64);
+
+fn residue2_add(x: Residue, y: Residue) -> Residue {
+    ((x.0 + y.0) % RESIDUE_PRIME, (x.1 + y.1) % RESIDUE_PRIME)
+}
+
+fn residue2_neg(x: Residue) -> Residue {
+    (
+        (RESIDUE_PRIME - x.0) % RESIDUE_PRIME,
+        (RESIDUE_PRIME - x.1) % RESIDUE_PRIME,
+    )
+}
+
+fn residue2_mul(x: Residue, y: Residue) -> Residue {
+    let p = RESIDUE_PRIME;
+    let re = (residue_mul(x.0, y.0) + p - residue_mul(x.1, y.1)) % p;
+    let im = (residue_mul(x.0, y.1) + residue_mul(x.1, y.0)) % p;
+    (re, im)
+}
+
+/// `x⁻¹ = conj(x)/|x|²`; `None` for 0 (`a² + b² ≠ 0` otherwise, as `−1` is
+/// not a square).
+fn residue2_inv(x: Residue) -> Option<Residue> {
+    let p = RESIDUE_PRIME;
+    let norm = (residue_mul(x.0, x.0) + residue_mul(x.1, x.1)) % p;
+    if norm == 0 {
+        return None;
+    }
+    let n = residue_pow(norm, p - 2);
+    Some((residue_mul(x.0, n), residue_mul((p - x.1) % p, n)))
+}
+
+fn residue2_pow(mut b: Residue, mut e: u128) -> Residue {
+    let mut r: Residue = (1, 0);
+    while e > 0 {
+        if e & 1 == 1 {
+            r = residue2_mul(r, b);
+        }
+        b = residue2_mul(b, b);
+        e >>= 1;
+    }
+    r
+}
+
+/// A square root of the residue `s` of a positive integer in `F_{p²}`:
+/// `s^((p+1)/4)` when `s` is a square modulo `p`, else `i·(−s)^((p+1)/4)`.
+fn residue_sqrt(s: u64) -> Residue {
+    let p = RESIDUE_PRIME;
+    let t = residue_pow(s, (p + 1) / 4);
+    if residue_mul(t, t) == s {
+        (t, 0)
+    } else {
+        (0, residue_pow((p - s) % p, (p + 1) / 4))
+    }
+}
+
+/// The value of `√n` for an integer `n ≥ 1`, multiplicative in `n`:
+/// `√n = Π √qᵉ` over the primes `q < 1000` dividing `n` (with `e` reduced:
+/// `√(q²·m) = q·√m`) times the root of the cofactor, so that `√2·√3` and
+/// `√6` agree (`(√2 + √3)² − 5 − 2√6` has residue 0).  `√n² = n` always.
+fn residue_integer_sqrt(n: &BigInt) -> Residue {
+    use num_traits::ToPrimitive;
+    let p = RESIDUE_PRIME;
+    let Some(mut rest) = n.to_u64() else {
+        // Beyond 64 bits: the root of the residue (still `√n² = n`).
+        return residue_sqrt(n.mod_floor(&BigInt::from(p)).to_u64().unwrap_or(0));
+    };
+    let mut value: Residue = (1, 0);
+    let mut q: u64 = 2;
+    while q < 1000 && q.saturating_mul(q) <= rest {
+        let mut e = 0u32;
+        while rest.is_multiple_of(q) {
+            rest /= q;
+            e += 1;
+        }
+        if e > 0 {
+            value = residue2_mul(value, (residue_pow(q, u64::from(e / 2)), 0));
+            if e % 2 == 1 {
+                value = residue2_mul(value, residue_sqrt(q));
+            }
+        }
+        q += if q == 2 { 1 } else { 2 };
+    }
+    if rest > 1 {
+        value = residue2_mul(value, residue_sqrt(rest % p));
+    }
+    value
+}
+
+/// Is the value of the generator `g` the plain `ρ_g^D` (not an exponential,
+/// `e`, a rational power or a number, whose values are derived)?
+fn is_plain_generator(arena: &Arena, g: ExprId) -> bool {
+    !matches!(
+        arena.node(g),
+        ExprNode::Num(_)
+            | ExprNode::Add(_)
+            | ExprNode::Mul(_)
+            | ExprNode::Neg(_)
+            | ExprNode::Pow(_, _)
+            | ExprNode::Exp(_)
+            | ExprNode::E
+    )
+}
+
+/// The residue of the generator `id` (a node that is not a number, sum,
+/// product, negation or integer power):
+///
+/// * `exp(Σ cⱼ·mⱼ)` is `Π ρ_{mⱼ}^(cⱼ·D)`, one unit per monomial `mⱼ` of the
+///   exponent (its factors without the rational coefficient `cⱼ`; `m = 1`
+///   for a number), and `e` is `ρ_1^D`: the identities `exp(2x) = exp(x)²`,
+///   `exp(x + y) = exp(x)·exp(y)`, `exp(2) = e²` hold among the residues;
+/// * `g^q` for a rational non-integer `q` and a plain generator `g` is
+///   `ρ_g^(q·D)`: `(√x)² = x`, `√x·x^(3/2) = x²` hold (principal powers
+///   satisfy `g^a·g^b = g^(a+b)` and `(g^a)^n = g^(a·n)` for integer `n`);
+/// * `i` is `i` and `n^(m/2)` for a positive integer `n` is `(√n)^m` with
+///   the square root taken in `F_{p²}` ([`residue_integer_sqrt`]): `(√2 +
+///   √3)² − 5 − 2√6` and `(√2 + √3·i)² + 1 − 2√6·i` (what `subs` makes of
+///   `(√x + √y)² − x − y − 2√x·√y`) have residue 0;
+/// * any other generator, and the above when a coefficient times `D` has no
+///   value ([`residue_exponent`]), is `ρ_id^D` for its own key.
+///
+/// The residue map is so a ring homomorphism on the expressions built from
+/// the generators that respects those identities: an expression zero by
+/// them has residue 0; a nonzero one rarely does.
+fn generator_residue(arena: &Arena, id: ExprId) -> Residue {
+    let plain = |g: ExprId| {
+        residue_pow(
+            residue_unit(u64::from(g.0) ^ RESIDUE_GENERATOR_SALT),
+            RESIDUE_ROOT_SCALE,
+        )
+    };
+    let derived = match arena.node(id) {
+        ExprNode::ImaginaryUnit => return (0, 1),
+        ExprNode::E => Some(residue_pow(
+            residue_unit(RESIDUE_EXPONENT_SALT),
+            RESIDUE_ROOT_SCALE,
+        )),
+        ExprNode::Exp(u) => exp_residue(arena, *u),
+        ExprNode::Pow(g, q) if is_plain_generator(arena, *g) => arena.as_num(*q).and_then(|q| {
+            residue_scaled_power(residue_unit(u64::from(g.0) ^ RESIDUE_GENERATOR_SALT), q)
+        }),
+        ExprNode::Pow(n, q) => {
+            if let (Some(n), Some(q)) = (arena.as_num(*n), arena.as_num(*q))
+                && let Some(value) = numeric_radical_residue(n, q)
+            {
+                return value;
+            }
+            None
+        }
+        _ => None,
+    };
+    (derived.unwrap_or_else(|| plain(id)), 0)
+}
+
+/// The residue of `n^q` for a positive integer `n` and `q = m/2`: `(√n)^m`
+/// ([`residue_integer_sqrt`]); `None` for any other number or exponent.
+fn numeric_radical_residue(
+    n: &crate::base::numeric::Q,
+    q: &crate::base::numeric::Q,
+) -> Option<Residue> {
+    use num_traits::ToPrimitive;
+    if !n.is_integer() || !n.is_positive() || *q.denom() != BigInt::from(2) {
+        return None;
+    }
+    let root = residue_integer_sqrt(n.numer());
+    let m = q.numer().to_i64()?;
+    let base = if m < 0 { residue2_inv(root)? } else { root };
+    Some(residue2_pow(base, u128::from(m.unsigned_abs())))
+}
+
+/// The residue of `exp(u)` (see [`generator_residue`]), `None` when a
+/// coefficient of the exponent times `D` is not an integer.
+fn exp_residue(arena: &Arena, u: ExprId) -> Option<u64> {
+    let terms: &[ExprId] = match arena.node(u) {
+        ExprNode::Add(children) => children,
+        _ => std::slice::from_ref(&u),
+    };
+    let mut value = 1u64;
+    for &t in terms {
+        let (mut t, mut sign) = (t, crate::base::numeric::Q::one());
+        if let ExprNode::Neg(inner) = arena.node(t) {
+            t = *inner;
+            sign = -sign;
+        }
+        let (coeff, key) = match arena.node(t) {
+            ExprNode::Num(nid) => (arena.num(*nid).clone(), RESIDUE_EXPONENT_SALT),
+            ExprNode::Mul(children) => {
+                let (coeff, rest) = match children.first().and_then(|&c| arena.as_num(c)) {
+                    Some(q) => (q.clone(), &children[1..]),
+                    None => (crate::base::numeric::Q::one(), &children[..]),
+                };
+                let key = rest.iter().fold(RESIDUE_EXPONENT_SALT, |h, c| {
+                    residue_hash(h ^ u64::from(c.0))
+                });
+                (coeff, key)
+            }
+            _ => (
+                crate::base::numeric::Q::one(),
+                residue_hash(RESIDUE_EXPONENT_SALT ^ u64::from(t.0)),
+            ),
+        };
+        value = residue_mul(
+            value,
+            residue_scaled_power(residue_unit(key), &(coeff * sign))?,
+        );
+    }
+    Some(value)
+}
+
 /// `false` when `expr` certainly does not vanish identically as a rational
-/// function of its generators (see [`vanishes_identically`]): its value
-/// modulo the prime `2⁶¹ − 1` at a point where every generator takes a
-/// pseudo-random residue (a hash of its `ExprId`) is not 0.  A rational
+/// function of its generators (see [`vanishes_identically`]): its value in
+/// the field `F_{p²}` (`p = 2⁶¹ − 1`, [`Residue`]) at a point where every
+/// generator takes a pseudo-random residue ([`generator_residue`]: a hash
+/// of its `ExprId`, with exponentials, rational powers of a generator, `i`
+/// and square roots of integers related as they are) is not 0.  A rational
 /// function that vanishes identically is 0 at every point where its
 /// denominators are invertible; a nonzero one of degree `d` is 0 at a
-/// fraction of at most about `d/2⁶¹` of the points.  `true` (undecided)
-/// when the residue is 0, or when a denominator or an inverted
-/// subexpression is 0 modulo the prime there.
+/// fraction of at most about `d/(2.6·10¹³)` of the points.  `true`
+/// (undecided) when the residue is 0, or when a denominator or an inverted
+/// subexpression is 0 there.
+///
+/// The exponentials make `exp(2x) − exp(x)²` and `exp(2) − exp(1)²` (which
+/// the canonical form keeps: SymPy folds `exp(x)**2` to `exp(2*x)`, symplex
+/// only in `eval`) residue 0, as `x·(x + 1) − x² − x`; the confirmation by
+/// multiplying out and `eval` ([`vanishes_identically`]) then sees them.
+/// Up to 0.33 every generator was independent (and the residues were
+/// modulo `p`), so `(exp(2x) − exp(x)²)/(exp(2x) − exp(x)²)` was `1` and
+/// `(exp(2) − exp(1)²)/0` was `zoo` (both `nan`).
 pub(crate) fn may_vanish_identically(arena: &Arena, expr: ExprId) -> bool {
     let values = residues_at_random_point(arena, expr);
-    !values.get(&expr).copied().flatten().is_some_and(|r| r != 0)
+    !values
+        .get(&expr)
+        .copied()
+        .flatten()
+        .is_some_and(|r| r != (0, 0))
 }
 
 /// Is the base of some negative integer power in `expr`, outside every
@@ -1164,33 +1471,25 @@ pub(crate) fn may_have_vanishing_denominator(arena: &Arena, expr: ExprId) -> boo
             arena
                 .as_num(*e)
                 .is_some_and(|q| q.is_integer() && q.is_negative())
-                && !values.get(base).copied().flatten().is_some_and(|r| r != 0)
+                && !values
+                    .get(base)
+                    .copied()
+                    .flatten()
+                    .is_some_and(|r| r != (0, 0))
         }
         _ => false,
     })
 }
 
-/// The residues modulo [`RESIDUE_PRIME`] of `expr` and of its structural
-/// subexpressions (numbers, sums, products, negations, integer powers) at
-/// the point where each generator (any other node) takes the residue of a
-/// hash of its `ExprId`; `None` for a node where a rational literal's
-/// denominator or an inverted value is 0 there.  An explicit post-order
-/// over the structural nodes; generators are leaves.
-fn residues_at_random_point(arena: &Arena, expr: ExprId) -> FxHashMap<ExprId, Option<u64>> {
+/// The residues in `F_{p²}` ([`Residue`], `p` = [`RESIDUE_PRIME`]) of
+/// `expr` and of its structural subexpressions (numbers, sums, products,
+/// negations, integer powers) at the point where each generator (any other
+/// node) takes its residue ([`generator_residue`]); `None` for a node where
+/// a rational literal's denominator or an inverted value is 0 there.  An
+/// explicit post-order over the structural nodes; generators are leaves.
+fn residues_at_random_point(arena: &Arena, expr: ExprId) -> FxHashMap<ExprId, Option<Residue>> {
     let p = RESIDUE_PRIME;
-    let mul = |a: u64, b: u64| ((u128::from(a) * u128::from(b)) % u128::from(p)) as u64;
-    let pow = |mut b: u64, mut e: u64| {
-        let mut r = 1u64;
-        while e > 0 {
-            if e & 1 == 1 {
-                r = mul(r, b);
-            }
-            b = mul(b, b);
-            e >>= 1;
-        }
-        r
-    };
-    let inv = |a: u64| (a != 0).then(|| pow(a, p - 2));
+    let inv = |a: u64| (a != 0).then(|| residue_pow(a, p - 2));
     let big_mod = |n: &BigInt, m: u64| -> u64 {
         use num_traits::ToPrimitive;
         n.mod_floor(&BigInt::from(m)).to_u64().unwrap_or(0)
@@ -1201,19 +1500,16 @@ fn residues_at_random_point(arena: &Arena, expr: ExprId) -> FxHashMap<ExprId, Op
         ExprNode::Pow(_, e) => integer_exponent(*e).is_some(),
         _ => false,
     };
-    let mut values: FxHashMap<ExprId, Option<u64>> = FxHashMap::default();
+    let mut values: FxHashMap<ExprId, Option<Residue>> = FxHashMap::default();
     let mut stack: Vec<(ExprId, bool)> = vec![(expr, false)];
     while let Some((id, children_done)) = stack.pop() {
         if values.contains_key(&id) {
             continue;
         }
         if !structural(id) {
-            // splitmix64 of the id: the same residue for the same
-            // subexpression (hash-consing), unrelated ones for different ones.
-            let mut z = u64::from(id.0).wrapping_add(0x9E37_79B9_7F4A_7C15);
-            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-            values.insert(id, Some((z ^ (z >> 31)) % p));
+            // The same residue for the same subexpression (hash-consing),
+            // unrelated ones for different generators.
+            values.insert(id, Some(generator_residue(arena, id)));
             continue;
         }
         let node = arena.node(id);
@@ -1229,24 +1525,36 @@ fn residues_at_random_point(arena: &Arena, expr: ExprId) -> FxHashMap<ExprId, Op
         let value = match node {
             ExprNode::Num(nid) => {
                 let q = arena.num(*nid);
-                inv(big_mod(q.denom(), p)).map(|d| mul(big_mod(q.numer(), p), d))
+                inv(big_mod(q.denom(), p)).map(|d| (residue_mul(big_mod(q.numer(), p), d), 0))
             }
             ExprNode::Add(children) => children
                 .iter()
-                .try_fold(0u64, |acc, c| get(c).map(|v| (acc + v) % p)),
+                .try_fold((0u64, 0u64), |acc, c| get(c).map(|v| residue2_add(acc, v))),
             ExprNode::Mul(children) => children
                 .iter()
-                .try_fold(1u64, |acc, c| get(c).map(|v| mul(acc, v))),
-            ExprNode::Neg(c) => get(c).map(|v| (p - v) % p),
+                .try_fold((1u64, 0u64), |acc, c| get(c).map(|v| residue2_mul(acc, v))),
+            ExprNode::Neg(c) => get(c).map(residue2_neg),
             ExprNode::Pow(base, e) => match (get(base), integer_exponent(*e)) {
                 (Some(b), Some(k)) => {
                     let n = k.to_integer();
-                    let b = if n.is_negative() { inv(b) } else { Some(b) };
-                    // Fermat: b^(p−1) = 1 for b ≠ 0.
+                    let b = if n.is_negative() {
+                        residue2_inv(b)
+                    } else {
+                        Some(b)
+                    };
+                    // b^(p²−1) = 1 for b ≠ 0 in F_{p²}.
                     b.map(|b| match (b, n.is_zero()) {
-                        (_, true) => 1,
-                        (0, false) => 0,
-                        _ => pow(b, big_mod(&n.abs(), p - 1)),
+                        (_, true) => (1, 0),
+                        ((0, 0), false) => (0, 0),
+                        _ => {
+                            let e =
+                                num_traits::ToPrimitive::to_u128(&n.abs()).unwrap_or_else(|| {
+                                    let order = BigInt::from(p) * BigInt::from(p) - BigInt::one();
+                                    num_traits::ToPrimitive::to_u128(&n.abs().mod_floor(&order))
+                                        .unwrap_or(0)
+                                });
+                            residue2_pow(b, e)
+                        }
                     })
                 }
                 _ => None,

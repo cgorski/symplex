@@ -48,22 +48,22 @@ pub(super) struct Gauss {
 pub(super) type ExactMap = FxHashMap<ExprId, Gauss>;
 
 impl Gauss {
-    fn real(re: Q) -> Gauss {
+    pub(super) fn real(re: Q) -> Gauss {
         Gauss { re, im: Q::zero() }
     }
 
-    fn is_zero(&self) -> bool {
+    pub(super) fn is_zero(&self) -> bool {
         self.re.is_zero() && self.im.is_zero()
     }
 
-    fn add(&self, o: &Gauss) -> Gauss {
+    pub(super) fn add(&self, o: &Gauss) -> Gauss {
         Gauss {
             re: &self.re + &o.re,
             im: &self.im + &o.im,
         }
     }
 
-    fn mul(&self, o: &Gauss) -> Gauss {
+    pub(super) fn mul(&self, o: &Gauss) -> Gauss {
         if self.im.is_zero() && o.im.is_zero() {
             return Gauss::real(&self.re * &o.re);
         }
@@ -73,7 +73,7 @@ impl Gauss {
         }
     }
 
-    fn neg(&self) -> Gauss {
+    pub(super) fn neg(&self) -> Gauss {
         Gauss {
             re: -self.re.clone(),
             im: -self.im.clone(),
@@ -96,7 +96,7 @@ impl Gauss {
     }
 
     /// Within [`MAX_BITS`]?
-    fn small(&self) -> bool {
+    pub(super) fn small(&self) -> bool {
         let bits = |q: &Q| q.numer().bits() + q.denom().bits();
         bits(&self.re) <= MAX_BITS && bits(&self.im) <= MAX_BITS
     }
@@ -125,7 +125,7 @@ impl Gauss {
 }
 
 /// The exact value of a leaf (`Num`, `i`) or of an already recorded node.
-fn operand(arena: &Arena, id: ExprId, exact: &ExactMap) -> Option<Gauss> {
+pub(super) fn operand(arena: &Arena, id: ExprId, exact: &ExactMap) -> Option<Gauss> {
     match arena.node(id) {
         ExprNode::Num(nid) => Some(Gauss::real(arena.num(*nid).clone())),
         ExprNode::ImaginaryUnit => Some(Gauss {

@@ -597,9 +597,9 @@ fn tuple_satisfies_all(
 
 /// Decide whether an expression (free of the solve variables) is zero.
 ///
-/// `Some(true)` — provably zero; `Some(false)` — provably nonzero;
-/// `None` — undecidable (symbolic parameters remain, or the value is zero
-/// to the precision of the deep zero search but not provably so).
+/// `Some(true)` — zero (provably, or to the tolerance below); `Some(false)`
+/// — provably nonzero; `None` — undecidable (symbolic parameters remain,
+/// or `evalf` fails and the exact test cannot decide).
 ///
 /// A constant that does not fold to a number is evaluated with certified
 /// digits and the deep zero search of `evalf` ([`RESIDUAL_DIGITS`],
@@ -616,9 +616,17 @@ fn tuple_satisfies_all(
 /// exact but can take seconds for nested complex radicals of degree 8.
 ///
 /// Before 0.31 it was `|evalf(e, 20)| < 10⁻¹⁰`, an absolute tolerance: a
-/// nonzero constant below it was zero, a zero of terms of size `10¹²`
-/// that `evalf` rounded to more than it was nonzero, and a true zero that
+/// nonzero constant below it was zero, a zero of terms of size `10¹²` that
+/// `evalf` rounded to more than it was nonzero, and a true zero that
 /// `evalf` refuses to certify (`PrecisionExhausted`) was undecided.
+///
+/// The tolerance is relative to the terms, and only a zero ball the deep
+/// search could not shrink is taken as 0.  Before 0.34 `evalf_settled` also
+/// reported a nonzero number below the exponent range (`exp(−10¹⁰)`,
+/// `K₀(10¹⁰)`) as zero to the precision, which this test took as 0; it is
+/// now certified nonzero, or an error when its sign is not known.  (The
+/// systems solved here are over ℚ, so their residuals are algebraic and
+/// such a constant does not arise from them.)
 fn constant_is_zero(arena: &mut Arena, e: ExprId) -> Option<bool> {
     let e1 = crate::transforms::eval::eval(arena, e);
     if arena.is_zero_structural(e1) {

@@ -71,6 +71,7 @@ pub(crate) mod bernoulli;
 mod conjugate;
 mod emsum;
 mod exact;
+mod extended;
 mod factorials;
 mod hypsum;
 mod lambertw;
@@ -102,9 +103,13 @@ pub(crate) const QUADRATURE_MAX_DIGITS: u32 = 16;
 /// A number that is certainly not 0 but lies below the exponent range
 /// (`erfc(10⁵)`, `exp(−10¹⁰)`, `2·besselk(0, 10¹⁰)`) is an
 /// [`SymplexError::Unevaluable`] error that says so ([`underflow_error`]);
-/// before 0.32 it was printed `0`.  A value that is only zero to the
-/// precision reached (a cancellation, or a sum of such numbers of both
-/// signs) is still `0`.
+/// before 0.32 it was printed `0`.  Such numbers are held scaled where they
+/// can be (`extended`): a sum of them of both signs is decided as any sum
+/// (`exp(−10¹⁰) − exp(−2·10¹⁰)` is refused as nonzero, its logarithm is
+/// `−10¹⁰`), and one that cannot be decided is refused
+/// ([`undecided_error`]); before 0.34 both printed `0`.  A cancellation
+/// that is zero to the precision reached at the scale of its terms is still
+/// `0` (`exp(−10¹⁰)·(sin²1 + cos²1) − exp(−10¹⁰)`).
 pub(crate) fn evalf(arena: &Arena, expr: ExprId, digits: u32) -> Result<String, SymplexError> {
     evalf_with(arena, expr, digits, ZeroSearch::Deep, Underflow::Refuse)
 }
@@ -190,8 +195,13 @@ fn evalf_with(
 
     match evaluate_adaptive(arena, expr, digits, search, rm, &mut cc)? {
         Adaptive::Settled(result, _) => format_complex(&result, digits, prec, rm, &mut cc),
-        Adaptive::Underflow if underflow == Underflow::Zero => Ok("0".to_owned()),
-        Adaptive::Underflow => Err(underflow_error()),
+        Adaptive::Underflow(_) | Adaptive::Beyond(_) | Adaptive::Undecided
+            if underflow == Underflow::Zero =>
+        {
+            Ok("0".to_owned())
+        }
+        Adaptive::Underflow(_) | Adaptive::Beyond(_) => Err(underflow_error()),
+        Adaptive::Undecided => Err(undecided_error()),
     }
 }
 
@@ -224,8 +234,11 @@ struct Evaluated {
     bound: accuracy::Bound,
     precision_limited: bool,
     /// The value is 0 with an underflow bound, and certainly not 0
-    /// ([`accuracy::underflow_nonzero`]).
-    underflowed_nonzero: bool,
+    /// ([`accuracy::underflow_nonzero`]): what is known of it.
+    underflowed_nonzero: Option<accuracy::Nonzero>,
+    /// The value lies below the exponent range and is known scaled
+    /// (`extended`): `value` is its placeholder.
+    beyond: Option<extended::Scaled>,
 }
 
 /// The error bounds of the evaluated nodes (see [`accuracy`]).
@@ -284,6 +297,8 @@ fn evaluate_tree_full(
     let mut sigs = conjugate::Sigs::new();
     // The nodes whose value underflowed to 0 but is certainly not 0.
     let mut nonzero: FxHashMap<ExprId, accuracy::Nonzero> = FxHashMap::default();
+    // The nodes known below the exponent range (`extended`).
+    let mut exts = extended::ExtMap::default();
     if let Some((id, value, err)) = seed {
         sigs.record_leaf(id, &value, err);
         cache.insert(id, value);
@@ -294,13 +309,58 @@ fn evaluate_tree_full(
             continue;
         }
         let exact_z = exact::exact_value(arena, id, &exact_values);
-        let evaluated =
+        let mut evaluated =
             eval_node_with_error(arena, id, &cache, &errs, prec, rm, cc).and_then(|(value, e)| {
                 match exponent_range_error(arena, id, &value, &cache, &errs) {
                     Some(err) => Err(err),
                     None => Ok((value, e)),
                 }
             });
+        // A value below the exponent range, or a function of one, held
+        // scaled (`extended`).
+        if exact_z.is_none() {
+            let underflowed = matches!(&evaluated, Ok((v, b))
+                if accuracy::mag(v).is_none() && accuracy::is_underflow(b.joint()));
+            if extended::wanted(arena, id, underflowed, &exts)
+                && let Some(outcome) = extended::extend(
+                    arena,
+                    id,
+                    underflowed,
+                    &cache,
+                    &errs,
+                    &exts,
+                    &exact_values,
+                    prec,
+                    rm,
+                    cc,
+                )
+            {
+                evaluated = match outcome {
+                    extended::Outcome::InRange(v, b) => Ok((v, b)),
+                    extended::Outcome::Beyond(s) => {
+                        let placeholder = s.placeholder(prec);
+                        exts.insert(id, extended::Ext::Beyond(s));
+                        Ok(placeholder)
+                    }
+                    extended::Outcome::Near(p, d) => {
+                        let ordinary = match evaluated {
+                            Ok(ok) => ok,
+                            Err(_) => {
+                                let (v, b) = exact::to_value(&p, prec, rm);
+                                let u = accuracy::UNDERFLOW;
+                                let b = accuracy::Bound {
+                                    re: accuracy::lsum(b.re, u),
+                                    im: accuracy::lsum(b.im, u),
+                                };
+                                (v, b)
+                            }
+                        };
+                        exts.insert(id, extended::Ext::Near(p, d));
+                        Ok(ordinary)
+                    }
+                };
+            }
+        }
         let evaluated = match (exact_z, evaluated) {
             (Some(z), evaluated) => {
                 let refined = match evaluated {
@@ -350,11 +410,14 @@ fn evaluate_tree_full(
                     e.im = accuracy::EXACT;
                 }
                 sigs.record(arena, id, &value, e, &cache, &errs);
-                if accuracy::mag(&value).is_none()
-                    && accuracy::is_underflow(e.joint())
-                    && let Some(s) = accuracy::underflow_nonzero(arena, id, &cache, &errs, &nonzero)
-                {
-                    nonzero.insert(id, s);
+                if accuracy::mag(&value).is_none() && accuracy::is_underflow(e.joint()) {
+                    let status = match exts.get(&id) {
+                        Some(extended::Ext::Beyond(s)) => s.nonzero(),
+                        _ => accuracy::underflow_nonzero(arena, id, &cache, &errs, &nonzero),
+                    };
+                    if let Some(s) = status {
+                        nonzero.insert(id, s);
+                    }
                 }
                 errs.insert(id, e);
                 cache.insert(id, value);
@@ -372,11 +435,16 @@ fn evaluate_tree_full(
         SymplexError::NotImplemented("evalf: expression not found in cache".into())
     })?;
     let err = errs.get(&root).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+    let beyond = match exts.remove(&root) {
+        Some(extended::Ext::Beyond(s)) => Some(s),
+        _ => None,
+    };
     Ok(Evaluated {
         value,
         bound: err,
         precision_limited: limited,
-        underflowed_nonzero: nonzero.contains_key(&root),
+        underflowed_nonzero: nonzero.get(&root).copied(),
+        beyond,
     })
 }
 
@@ -951,9 +1019,32 @@ enum Adaptive {
     /// A value, and how it was settled.
     Settled(Complex, Settled),
     /// A number that is certainly not 0 came out 0 below the exponent
-    /// range of `BigFloat` (`erfc(10⁵) ≈ 5.2·10^(−4342944825)`, `exp(−10¹⁰)`):
-    /// no digit of it is known ([`underflow_error`]).
-    Underflow,
+    /// range of `BigFloat` (`besselk(0, 10¹⁰) ≈ 1.2·10^(−4342944824)`):
+    /// no digit of it is known ([`underflow_error`]), at most its sign.
+    Underflow(accuracy::Nonzero),
+    /// A number below the exponent range known to the requested digits
+    /// scaled (`extended`): `m·2^k` (`erfc(10⁵)`, `exp(−10¹⁰) −
+    /// exp(−2·10¹⁰)`).  Not printed ([`underflow_error`]), but its sign
+    /// and direction are known.
+    Beyond(extended::Scaled),
+    /// 0 within the underflow bound and not known to be nonzero: a sum of
+    /// such numbers of both signs without a scaled form (`besselk(0, 10¹⁰)
+    /// − airyai(10⁷)`) — no precision decides it ([`undecided_error`]).
+    Undecided,
+}
+
+/// The error of a decimal result that is 0 within the underflow bound and
+/// not known to be anything ([`Adaptive::Undecided`]).  Before 0.34 it was
+/// printed `0`, and so was a sum of scaled values of both signs:
+/// `exp(−10¹⁰) − exp(−2·10¹⁰)`.
+fn undecided_error() -> SymplexError {
+    SymplexError::Unevaluable {
+        reason: format!(
+            "the value underflows the arbitrary-precision exponent range (its magnitude is \
+             below 2^{:e}) and is not known to be 0 or not: a sum of such values of both signs",
+            f64::from(astro_float::EXPONENT_MIN)
+        ),
+    }
 }
 
 /// The error of a decimal result that is a nonzero number below the
@@ -1043,20 +1134,37 @@ fn evaluate_adaptive(
     let needed = i64::from(digits) * 3322 / 1000 + 4;
     let post_order = walk::post_order_ids(arena, expr);
     let mut prec = prec0;
-    let mut previous: Option<(Complex, usize, accuracy::ErrExp)> = None;
+    // The previous evaluation: the magnitude of its value and its error
+    // bound, both absolute (`log₂`), and its precision.
+    let mut previous: Option<(Option<i64>, usize, accuracy::ErrExp)> = None;
     loop {
         let Evaluated {
             value,
             bound,
             precision_limited,
             underflowed_nonzero,
+            beyond,
         } = evaluate_once(arena, expr, &post_order, prec, rm, cc)?;
+        // A value below the exponent range known scaled is settled as its
+        // mantissa, the absolute tests shifted by its scale.
+        let (value, bound, scale) = match &beyond {
+            Some(s) => (s.m.clone(), s.eb, s.k),
+            None => (value, bound, 0),
+        };
         let err = bound.joint();
+        let below =
+            beyond.is_none() && accuracy::mag(&value).is_none() && accuracy::is_underflow(err);
         // A number that is not 0 but lies below the exponent range: no
         // precision brings it back, and 0 is not one of its digits.
-        if underflowed_nonzero && accuracy::mag(&value).is_none() && accuracy::is_underflow(err) {
+        if below && let Some(s) = underflowed_nonzero {
             debug!(prec, err, "evalf: a nonzero value underflowed");
-            return Ok(Adaptive::Underflow);
+            return Ok(Adaptive::Underflow(s));
+        }
+        // 0 within the underflow bound, of unknown sign or zeroness: no
+        // precision decides it.  Before 0.34 it was a zero to the precision.
+        if below {
+            debug!(prec, err, "evalf: an underflow of unknown sign");
+            return Ok(Adaptive::Undecided);
         }
         let nan = value.0.is_nan() || value.1.is_nan();
         let finite = !(nan || value.0.is_inf() || value.1.is_inf());
@@ -1076,8 +1184,13 @@ fn evaluate_adaptive(
             });
         }
         if finite && let Some(v) = settle(&value, bound, digits, needed, prec) {
+            if let Some(s) = beyond {
+                debug!(prec, scale, "evalf: a value below the exponent range");
+                return Ok(Adaptive::Beyond(extended::Scaled { m: v, ..s }));
+            }
             return Ok(Adaptive::Settled(v, Settled::Certified));
         }
+        let lift = |e: accuracy::ErrExp| accuracy::shift(e, scale as f64);
         let acc = accuracy::accurate_bits(&value, err);
         // Only with a bound: `sign` of a value that cancelled to 0 is 0 at
         // every precision, but its true value may be ±1.  And only a ball
@@ -1096,15 +1209,15 @@ fn evaluate_adaptive(
         let known = finite && !accuracy::is_unknown(err);
         let (ball_shrinking, value_shrinking) = match &previous {
             None => (true, accuracy::mag(&value).is_none()),
-            Some((prev, prev_prec, prev_err)) => {
+            Some((prev_mag, prev_prec, prev_err)) => {
                 let gained = i64::try_from(prec - prev_prec).unwrap_or(0);
                 // (An underflow's ball is the bottom of the exponent range.)
                 let half = (gained / 2) as f64;
                 let ball = accuracy::is_exact(err)
                     || accuracy::is_underflow(err)
-                    || err <= *prev_err - half;
+                    || lift(err) <= *prev_err - half;
                 // Against the previous value, or its ball when it was 0.
-                let value = match (accuracy::mag(&value), accuracy::mag(prev)) {
+                let value = match (accuracy::mag(&value).map(|m| m + scale), prev_mag) {
                     (None, _) => true,
                     (Some(m), Some(pm)) => m <= pm - gained / 2,
                     (Some(m), None) => m as f64 <= *prev_err - half,
@@ -1127,7 +1240,7 @@ fn evaluate_adaptive(
         // `s = sin 2x` at `x = 1/3 + 4i` (the trigonometric form of
         // `exp(exp(2ix))`, truly `1.000263649 + 0.000207495i`) cancels about
         // 3,400 bits and was `0` with a ball of radius `2²²²⁷` at 1,152 bits.
-        let small_zero = zero_ball && err <= -(needed as f64);
+        let small_zero = zero_ball && lift(err) <= -(needed as f64);
         let wide_zero = zero_ball && !small_zero;
         // Past the cap only a value that is noise, or whose bound falls with
         // the precision (the precision it needs is then predictable), is
@@ -1181,7 +1294,7 @@ fn evaluate_adaptive(
             None if known && accuracy::mag(&value).is_none() && prec < cap => cap - prec,
             _ => prec,
         };
-        previous = Some((value, prec, err));
+        previous = Some((accuracy::mag(&value).map(|m| m + scale), prec, lift(err)));
         prec = (prec + step.max(64)).min(limit);
         // Within a quarter of the limit, the limit: the search for a zero
         // would otherwise end with two evaluations of nearly the same cost
@@ -1312,6 +1425,27 @@ fn evalf_value(
     search: ZeroSearch,
 ) -> Result<(Complex, Settled), SymplexError> {
     let prec = ((digits as usize) * 34 / 10 + 64).max(128);
+    // A number below the exponent range is 0 within its bound, and not
+    // known to be 0 by that bound: zero to the precision, for the tolerance
+    // checks of the crate and for the `f64` routes, whose correctly rounded
+    // value it is.
+    evalf_adaptive_value(arena, expr, digits, search).map(|a| match a {
+        Adaptive::Settled(z, settled) => (z, settled),
+        Adaptive::Underflow(_) | Adaptive::Beyond(_) | Adaptive::Undecided => {
+            (c_zero(prec), Settled::ZeroToPrecision)
+        }
+    })
+}
+
+/// [`evaluate_adaptive`] for the callers inside the crate, after the checks
+/// of [`evalf`] (the configured maximum precision, free symbols).
+fn evalf_adaptive_value(
+    arena: &Arena,
+    expr: ExprId,
+    digits: u32,
+    search: ZeroSearch,
+) -> Result<Adaptive, SymplexError> {
+    let prec = ((digits as usize) * 34 / 10 + 64).max(128);
     let max_prec = arena.config.max_evalf_precision as usize;
     if prec > max_prec {
         return Err(SymplexError::PrecisionExhausted {
@@ -1339,14 +1473,7 @@ fn evalf_value(
     }
 
     let rm = RoundingMode::ToEven;
-    // A nonzero number below the exponent range is 0 within its bound, and
-    // not known to be 0 by that bound: zero to the precision, for the zero
-    // tests of the crate and for the `f64` routes, whose correctly rounded
-    // value it is.
-    with_f64_consts(|cc| evaluate_adaptive(arena, expr, digits, search, rm, cc)).map(|a| match a {
-        Adaptive::Settled(z, settled) => (z, settled),
-        Adaptive::Underflow => (c_zero(prec), Settled::ZeroToPrecision),
-    })
+    with_f64_consts(|cc| evaluate_adaptive(arena, expr, digits, search, rm, cc))
 }
 
 /// [`evalf_value`] for the zero and sign tests of the rest of the crate
@@ -1354,6 +1481,16 @@ fn evalf_value(
 /// `expr` to `digits` digits with the [`ZeroSearch`] `search`, and whether
 /// it is certified or only zero to the precision reached — a distinction
 /// [`evalf_complex`] does not make.
+///
+/// A number below the exponent range that is certainly not 0 is
+/// [`Settled::Certified`] with a stand-in at the bottom of the range that
+/// has its sign (its direction, when it is known scaled): its digits are
+/// not the value's, its zeroness, sign and realness are.  One of unknown
+/// direction, or 0 within the underflow bound and not known to be nonzero,
+/// is an error: neither is 0 to a precision the search chose.  Before 0.34
+/// both were [`Settled::ZeroToPrecision`], which `solve` (and `polysys`)
+/// read as 0: `solve(exp(−10¹⁰), x)` was an identity, every `x` a
+/// solution.
 ///
 /// # Errors
 ///
@@ -1364,7 +1501,24 @@ pub(crate) fn evalf_settled(
     digits: u32,
     search: ZeroSearch,
 ) -> Result<(Complex, Settled), SymplexError> {
-    evalf_value(arena, expr, digits, search)
+    let prec = ((digits as usize) * 34 / 10 + 64).max(128);
+    match evalf_adaptive_value(arena, expr, digits, search)? {
+        Adaptive::Settled(z, settled) => Ok((z, settled)),
+        Adaptive::Beyond(s) => s
+            .representative(prec)
+            .map(|z| (z, Settled::Certified))
+            .ok_or_else(underflow_error),
+        Adaptive::Underflow(accuracy::Nonzero::Positive) => Ok((
+            (extended::tiny(false, prec), BigFloat::new(prec)),
+            Settled::Certified,
+        )),
+        Adaptive::Underflow(accuracy::Nonzero::Negative) => Ok((
+            (extended::tiny(true, prec), BigFloat::new(prec)),
+            Settled::Certified,
+        )),
+        Adaptive::Underflow(accuracy::Nonzero::Unsigned) => Err(underflow_error()),
+        Adaptive::Undecided => Err(undecided_error()),
+    }
 }
 
 /// `ln x` for a positive real constant `x`, from a 16-digit evaluation;
@@ -1373,8 +1527,16 @@ pub(crate) fn evalf_settled(
 /// is fine), for callers that need a magnitude estimate.
 pub(crate) fn ln_of_positive_constant(arena: &Arena, x: ExprId) -> Option<f64> {
     // A value that is only zero to the precision reached has no logarithm
-    // (astro-float's `is_positive` is the sign bit, true for `+0`).
-    let (z, _) = evalf_value(arena, x, F64_DIGITS, ZeroSearch::Cap).ok()?;
+    // (astro-float's `is_positive` is the sign bit, true for `+0`).  One
+    // below the exponent range has, when it is known scaled.
+    let z = match evalf_adaptive_value(arena, x, F64_DIGITS, ZeroSearch::Cap).ok()? {
+        Adaptive::Settled(z, _) => z,
+        Adaptive::Beyond(s) => {
+            let real_positive = s.m.1.is_zero() && bf_strictly_positive(&s.m.0);
+            return real_positive.then(|| s.ln_abs()).flatten();
+        }
+        Adaptive::Underflow(_) | Adaptive::Undecided => return None,
+    };
     if !bf_strictly_positive(&z.0) || !is_real_to_digits(&z, F64_DIGITS) {
         return None;
     }
@@ -4287,6 +4449,22 @@ fn arb_gamma_real(
 /// `erf = 1 − erfc` to `wp` bits (the absolute error is then `≈ e^{−2x²}`).
 fn erfc_asymptotic(ax: &BigFloat, wp: usize, rm: RoundingMode, cc: &mut Consts) -> BigFloat {
     let x_sq = ax.mul(ax, wp, rm);
+    let (sum, x_sqrt_pi) = erfc_asymptotic_series(ax, wp, rm, cc);
+    let exp_neg_x_sq = x_sq.neg().exp(wp, rm, cc);
+    exp_neg_x_sq.mul(&sum, wp, rm).div(&x_sqrt_pi, wp, rm)
+}
+
+/// The sum `Σ_{n≥0} (−1)^n (2n−1)!!/(2x²)^n` of [`erfc_asymptotic`] at `wp`
+/// bits, truncated at its smallest term, and `x·√π`: `erfc(x)` is
+/// `e^(−x²)·sum/(x√π)` (`extended` takes `e^(−x²)` at its own scale, below
+/// the exponent range).
+fn erfc_asymptotic_series(
+    ax: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> (BigFloat, BigFloat) {
+    let x_sq = ax.mul(ax, wp, rm);
     let two_x_sq = x_sq.mul(&BigFloat::from_i32(2, wp), wp, rm);
 
     let mut sum = BigFloat::from_i32(1, wp);
@@ -4312,10 +4490,9 @@ fn erfc_asymptotic(ax: &BigFloat, wp: usize, rm: RoundingMode, cc: &mut Consts) 
         prev_abs = Some(t_abs);
     }
 
-    let exp_neg_x_sq = x_sq.neg().exp(wp, rm, cc);
     let sqrt_pi = cc.pi(wp, rm).clone().sqrt(wp, rm);
     let x_sqrt_pi = ax.mul(&sqrt_pi, wp, rm);
-    exp_neg_x_sq.mul(&sum, wp, rm).div(&x_sqrt_pi, wp, rm)
+    (sum, x_sqrt_pi)
 }
 
 /// Compute erf(x) at arbitrary precision for real x.  The result carries
@@ -5297,31 +5474,7 @@ fn arb_ei(
     if x_abs > switch {
         // ── Asymptotic: Ei(x) ~ (e^x / x) Σ_{k≥0} k! / x^k ──
         let wp = base_wp;
-        let one = BigFloat::from_i32(1, wp);
-        let inv_x = one.div(x, wp, rm);
-        let mut term = one.clone();
-        let mut sum = BigFloat::new(wp);
-        let mut prev: Option<BigFloat> = None;
-        let max_terms = wp * 2 + 100;
-        for k in 0..max_terms {
-            if k > 0 {
-                term = term
-                    .mul(&BigFloat::from_i128(k as i128, wp), wp, rm)
-                    .mul(&inv_x, wp, rm);
-            }
-            if let Some(ref p) = prev
-                && term.abs().cmp(p).is_some_and(|c| c > 0)
-            {
-                break;
-            }
-            sum = sum.add(&term, wp, rm);
-            if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent())
-                && (s_exp as i64 - t_exp as i64) > wp as i64
-            {
-                break;
-            }
-            prev = Some(term.abs());
-        }
+        let (inv_x, sum) = ei_asymptotic_series(x, wp, rm);
         let ex = x.exp(wp, rm, cc);
         let r = ex.mul(&inv_x, wp, rm).mul(&sum, wp, rm);
         return Ok(round_to(r, prec, rm));
@@ -5376,6 +5529,38 @@ fn arb_ei(
         }
         extra = (lost + 64).min(cap).max(extra + 32);
     }
+}
+
+/// The asymptotic series of `Ei(x) ~ (e^x/x)·Σ_{k≥0} k!/x^k` at `wp` bits,
+/// truncated at its smallest term: `(1/x, Σ)`.  [`arb_ei`] multiplies them
+/// by `e^x`; `extended` by `e^x` at its own scale, below the exponent range.
+fn ei_asymptotic_series(x: &BigFloat, wp: usize, rm: RoundingMode) -> (BigFloat, BigFloat) {
+    let one = BigFloat::from_i32(1, wp);
+    let inv_x = one.div(x, wp, rm);
+    let mut term = one.clone();
+    let mut sum = BigFloat::new(wp);
+    let mut prev: Option<BigFloat> = None;
+    let max_terms = wp * 2 + 100;
+    for k in 0..max_terms {
+        if k > 0 {
+            term = term
+                .mul(&BigFloat::from_i128(k as i128, wp), wp, rm)
+                .mul(&inv_x, wp, rm);
+        }
+        if let Some(ref p) = prev
+            && term.abs().cmp(p).is_some_and(|c| c > 0)
+        {
+            break;
+        }
+        sum = sum.add(&term, wp, rm);
+        if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent())
+            && (s_exp as i64 - t_exp as i64) > wp as i64
+        {
+            break;
+        }
+        prev = Some(term.abs());
+    }
+    (inv_x, sum)
 }
 
 /// Round a `BigFloat` down to `prec` bits (no-op on failure).

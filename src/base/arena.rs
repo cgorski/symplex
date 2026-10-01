@@ -967,6 +967,14 @@ impl Arena {
         crate::poly::polybridge::vanishes_identically(self, expr)
     }
 
+    /// Does `expr` vanish identically by an identity `simplify` can prove
+    /// (zero at certified sample points, then exactly 0)?
+    ///
+    /// Delegates to [`simplify_engine::vanishes_by_identity`](crate::simplify::simplify_engine::vanishes_by_identity).
+    pub(crate) fn vanishes_by_identity(&mut self, expr: ExprId) -> bool {
+        crate::simplify::simplify_engine::vanishes_by_identity(self, expr)
+    }
+
     /// Partial fraction decomposition of `expr` with respect to `var`.
     ///
     /// Delegates to [`apart::apart`](crate::transforms::apart::apart).

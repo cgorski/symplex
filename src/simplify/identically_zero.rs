@@ -271,7 +271,11 @@ fn sample(arena: &mut Arena, e: ExprId) -> Sampled {
 }
 
 /// Largest `|k|` of a power `exp(m/L)^k` built by [`in_exponentials`].
-const MAX_EXP_POWER: i64 = 256;
+/// The conversion to a rational function has its own size budget; up to
+/// 0.33 this was 256, which refused the constants `subs` makes of
+/// `exp(x + y) − exp(x)·exp(y)` at rational points (`exp(−46/11)·exp(−13/7)
+/// − exp(−465/77)`: `k = −465`).
+const MAX_EXP_POWER: i64 = 4096;
 
 /// The terms `c·m` of the exponent `arg` multiplied out, each with its
 /// rational coefficient `c` split off (`m = 1` for a number).
@@ -422,11 +426,73 @@ pub(crate) fn vanishing_by_identity(arena: &mut Arena, expr: ExprId) -> Option<E
     if nested() {
         return None;
     }
+    vanishing_among(arena, expr, |_| true)
+}
+
+/// The products of the rational skeleton of `expr` (outside every
+/// generator).  An explicit stack.
+fn structural_products(arena: &Arena, expr: ExprId) -> Vec<ExprId> {
+    let mut out = Vec::new();
+    let mut seen: FxHashSet<ExprId> = FxHashSet::default();
+    let mut stack = vec![expr];
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        match arena.node(id) {
+            ExprNode::Mul(children) => {
+                out.push(id);
+                stack.extend(children.iter());
+            }
+            ExprNode::Add(children) => stack.extend(children.iter()),
+            ExprNode::Neg(child) => stack.push(*child),
+            ExprNode::Pow(base, e) if arena.as_num(*e).is_some_and(|q| q.is_integer()) => {
+                stack.push(*base);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// [`vanishing_by_identity`] for the denominators of the `0/0` candidates
+/// only ([`identity_denominator_candidates`](crate::base::canon::identity_denominator_candidates):
+/// a product with a factor that may vanish identically by the residue
+/// test), for `powsimp`, which must stay cheap on ordinary input (it runs
+/// inside Gruntz) and multiplies such a numerator out to 0: up to 0.33
+/// `simplify_powers((eˣ·e⁻ˣ − 1)/(tan x·cos x − sin x))` was `0`
+/// (`simplify`: `nan`).  Residue tests only, unless there is such a
+/// candidate; `expand` and `ratsimp` select their candidates the same way.
+pub(crate) fn vanishing_by_identity_of_candidates(
+    arena: &mut Arena,
+    expr: ExprId,
+) -> Option<ExprId> {
+    if nested() {
+        return None;
+    }
+    let products = structural_products(arena, expr);
+    let candidates = crate::base::canon::identity_denominator_candidates(arena, &products);
+    if candidates.is_empty() {
+        return None;
+    }
+    vanishing_among(arena, expr, |b| candidates.contains(&b))
+}
+
+/// [`vanishing_by_identity`] with the bases tested restricted to `wanted`.
+fn vanishing_among(
+    arena: &mut Arena,
+    expr: ExprId,
+    wanted: impl Fn(ExprId) -> bool,
+) -> Option<ExprId> {
     let powers = structural_powers(arena, expr);
     let mut decided: FxHashSet<ExprId> = FxHashSet::default();
     let mut zero_bases: FxHashSet<ExprId> = FxHashSet::default();
     for p in &powers {
-        if !p.negative || !decided.insert(p.base) || !may_vanish_by_identity(arena, p.base) {
+        if !p.negative
+            || !wanted(p.base)
+            || !decided.insert(p.base)
+            || !may_vanish_by_identity(arena, p.base)
+        {
             continue;
         }
         if vanishes_by_identity(arena, p.base) {

@@ -34,12 +34,15 @@ use smallvec::SmallVec;
 ///
 /// A denominator that vanishes identically gives the value in the
 /// arithmetic of `1/0 = zoo`
-/// ([`vanishing_denominator`](crate::simplify::simplify_engine::vanishing_denominator)),
+/// ([`vanishing_denominator_or_identity`](crate::simplify::simplify_engine::vanishing_denominator_or_identity)),
 /// not the `0` of a numerator the combined powers cancel: up to 0.31
 /// `powsimp((e^x·e^(−x) − 1)/((−x/(x + 1) + x·(−x/(x + 1) + 1))·x·(x + 1)))`
-/// was `0`.
+/// was `0`, and up to 0.33 `powsimp((e^x·e^(−x) − 1)/(tan x·cos x − sin x))`
+/// (a denominator zero by an identity).
 pub(crate) fn powsimp(arena: &mut Arena, expr: ExprId) -> ExprId {
-    if let Some(value) = crate::simplify::simplify_engine::vanishing_denominator(arena, expr) {
+    if let Some(value) =
+        crate::simplify::simplify_engine::vanishing_denominator_or_identity(arena, expr)
+    {
         return value;
     }
     let post_order = walk::post_order_ids(arena, expr);

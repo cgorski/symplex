@@ -48,6 +48,9 @@ their documentation:
 | `src/simplify/radsimp.rs` (`try_rationalize`: a conjugate that makes the denominator 0 is not used) | the `d.has(S.Zero, nan, zoo)` guard of `radsimp` in `sympy/simplify/radsimp.py` | — |
 | `src/domains/matrix.rs` (`norm_frobenius`: squared moduli of the entries, `Abs(a)**2` for entries not known to be real) | `MatrixBase.norm` in `sympy/matrices/matrixbase.py` | G. H. Golub, C. F. Van Loan, *Matrix Computations*, §2.3 (Frobenius norm) |
 | `src/simplify/identically_zero.rs` (`vanishes_by_identity`: a numeric test at sample points, then an exact proof) | `Expr.equals` in `sympy/core/expr.py` | J. T. Schwartz (1980), R. Zippel (1979): zero testing at random points |
+| `src/poly/polybridge.rs` (`generator_residue`: `exp(Σ cⱼ·mⱼ)` as `Π exp(mⱼ)^cⱼ`; rational powers of a generator) | `decompose_power` / `decompose_power_rat` in `sympy/core/exprtools.py` | J. T. Schwartz (1980), R. Zippel (1979): zero testing at random points |
+| `src/transforms/evalf/extended.rs` (`add_terms`/`part_sum`: sums of terms at unbounded binary scales, terms more than the working precision below the largest moved into the error) | `add_terms` in `sympy/core/evalf.py`; `mpf` with unbounded exponents in `mpmath/libmp/libmpf.py` | — |
+| `src/domains/linalg.rs` (`kp_quartic_roots`: the quartic in radicals and its case split) | `roots_quartic`, `_roots_quartic_euler` in `sympy/polys/polyroots.py` | Ferrari's method; the Descartes–Euler resolvent; quasi-symmetric quartics |
 | `src/calculus/series.rs` (`compose_at_constant`: `f(u₀ + w)` from the Taylor coefficients of `f` at the constant term of its argument, also when `w` carries `ln x`) | the generic and logarithmic-argument cases of `Function._eval_nseries` in `sympy/core/function.py` | Taylor's theorem |
 
 To the extent any of these is a derivative of SymPy, SymPy's licence

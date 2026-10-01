@@ -8,8 +8,57 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+### Breaking (behaviour; no signature changed)
+
+- **More expressions that are undefined at every point give `nan`** (or
+  an evaluation error) instead of a value: a constant `0/0` under `eval`
+  (`(exp(2) − exp(1)²)/(sin²1 + cos²1 − 1)` was `0`), zeros by identities
+  of exponentials and radicals in canonical products
+  (`(exp(2x) − exp(x)²)/(exp(2x) − exp(x)²)` was `1`,
+  `(exp(2) − exp(1)²)/(√2² − 2)` was `zoo`; SymPy: `nan`), like terms over
+  a denominator that is zero everywhere (`2/D + 3/D` was `5/D`).
+- **`eval_decimal` refuses a mixed-sign sum of values below the exponent
+  range** instead of printing `0` (see *Fixed*); one that is zero at the
+  scale of its terms (`exp(−10¹⁰)·(sin²1 + cos²1) − exp(−10¹⁰)`) is still
+  `0`.
+
+### Added
+
+- **`solve` gives the radical roots of cubics and quartics with
+  coefficients in ℚ(√p…, i)** (Cardano; Ferrari or Descartes–Euler,
+  following SymPy's `roots_quartic` case by case, exact in the field):
+  `x³ + √2·x + i` was refused as "not polynomial"; a polynomial it cannot
+  solve now says so.  `eigenvals` of algebraic matrices with an
+  irreducible quartic factor (`[[1, √2, 0, i], [0, 2, i, 1], [1, 0, √3, 0],
+  [i, 1, 0, 1]]` had none).  A hunter against mpmath `polyroots`/`eig`
+  (600 polynomials and 3×3/4×4 matrices over ℚ(√2, √3, i)): 493 refused
+  → 0, all roots verified.
+- **evalf keeps values below the exponent range scaled** (`m·2^k` with an
+  unbounded `k`, as mpmath's exponents) through `exp`, products, powers,
+  sums, `ln`, `Ei` and `erfc`, and an exact rational plus such a value:
+  `log(exp(−10¹⁰) − exp(−2·10¹⁰))` = `−10¹⁰`, `log(erfc(10⁵))` =
+  `−10000000012.0853…` (both refused before).
+
 ### Fixed
 
+- **Mixed-sign sums of values that underflow printed `0`**:
+  `exp(−10¹⁰) − exp(−2·10¹⁰)` (mpmath `9.2786e-4342944820`),
+  `Ei(−10¹⁰) + exp(−10¹⁰)`, `log(1 + exp(−10¹⁰))`, `cos(exp(−10¹⁰)) − 1`
+  — now refused as a nonzero value below the range; an undecidable one
+  (`besselk(0, 10¹⁰) − airyai(10⁷)`) is refused as such.  `solve(exp(−10¹⁰),
+  x)` said every `x` is a solution.  An underflow hunter (2,100 cases
+  against mpmath): 1,007 wrong `0` → 0.
+- **Undefined expressions in `ratsimp`, `expand` and the trigonometric
+  simplifiers**: `ratsimp`/`simplify` of `xy/(1/(x(x + 3) − x² − 3x) + ((x +
+  y)² − x² − 2xy − y²)/(x(y + 4) − xy − 4x))` was `0` (`1/0 + 0/0` is `nan`,
+  not `zoo`; SymPy `nan`); `simplify_trig`, `fu`, `simplify_powers`,
+  `expand` and `ratsimp` see a denominator that is zero by a
+  trigonometric identity when the numerator is zero too (`expand(((x + 1)²
+  − x² − 2x − 1)/(sin²x + cos²x − 1))` was `0`).  The canonical zero test
+  (a residue at a pseudo-random point) now computes modulo p² with `i`
+  exact and exponentials multiplicative, so it sees `exp(2x) = exp(x)²`.
+  An undefined-expression hunter (5,000 cases, routes canon/`expand`/
+  `ratsimp`/`simplify_trig`/constants): 4,668 wrong → 101.
 - **Radicals of integers with thousands of digits took seconds** (the
   nightly `fuzz_roundtrip` timeout of 2026-10-01: 33 s on CI, 4 s locally
   for a `√(p/q)` with 1,000-digit terms): splitting perfect powers out of

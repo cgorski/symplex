@@ -32,7 +32,8 @@ use smallvec::SmallVec;
 use crate::base::arena::Arena;
 use crate::base::assumptions::{AssumptionCache, Props};
 use crate::base::canon::{
-    may_vanish_identically_as_factor, vanishes_identically_as_factor, vanishing_check_active,
+    constant_vanishes, identity_denominator_candidates, may_vanish_identically_as_factor,
+    sum_partner_denominators, vanishes_identically_as_factor, vanishing_check_active,
 };
 use crate::base::combinatorics::multinomial_u64;
 use crate::base::node::{ExprId, ExprNode};
@@ -316,13 +317,33 @@ fn is_rational_node(arena: &Arena, id: ExprId) -> bool {
 /// and `nan` (now `nan` and `0`, as `simplify` gives; SymPy 1.14's
 /// `expand` gives `0` and `|x − 3|/(zoo·x + cos x + zoo)`).
 ///
+/// Two kinds of denominators are zero by more than rational arithmetic:
+///
+/// * a constant one (`sin² 1 + cos² 1 − 1`, decided numerically and then
+///   exactly, [`constant_vanishes`]);
+/// * one that vanishes by an identity of its functions (`tan x·cos x −
+///   sin x`), looked for only in a `0/0` candidate — a product with a
+///   factor the residue test cannot rule out as identically 0
+///   ([`identity_denominator_candidates`]) — or in a `zoo + zoo` candidate
+///   — a sum with a term over a denominator that vanishes
+///   ([`sum_partner_denominators`]) — and decided by the numeric identity
+///   test of `simplify` ([`Arena::vanishes_by_identity`]).
+///
+/// Up to 0.33 `expand(((x + 1)² − x² − 2x − 1)/(sin²x + cos²x − 1))` was
+/// `0` (now `nan`, as `simplify` gives; SymPy 1.14's `expand` gives `0`), and
+/// `expand((x − 5)/(√2 + e + (x − 3)²/(sin² 1 + cos² 1 − 1)))` distributed
+/// the division into terms `c/0` whose sum is `nan` at every point (the
+/// value is `(x − 5)/zoo = 0`).
+///
 /// Cost: one walk for a negative power.  A skeleton with a negative
 /// integer power of a rational node gets the residue test of
 /// `may_have_vanishing_denominator` (one pass, no expansion), any other
 /// negative power (`1/√s`, `1/sin s`) that of
 /// [`may_vanish_identically_as_factor`] on its base; only when one fails
-/// are the denominators confirmed by multiplying out.  Not run inside such
-/// a confirmation ([`vanishing_check_active`]).
+/// are the denominators confirmed by multiplying out.  A constant
+/// denominator costs one numeric evaluation (none when the assumptions know
+/// it nonzero), the denominator of a `0/0` candidate one or two.  Not run
+/// inside such a confirmation ([`vanishing_check_active`]).
 ///
 /// `simplify` evaluates such a skeleton as a whole in `ratsimp`'s
 /// arithmetic (`vanishing_denominator`), which returns its cancelled
@@ -387,15 +408,45 @@ fn resolve_vanishing_denominators(arena: &mut Arena, expr: ExprId, deep: bool) -
             None => false,
         }
     });
-    if !suspect {
+    // The bases (of the original nodes) that vanish: a `0/0` candidate's
+    // denominator that vanishes only by an identity of its functions, a
+    // constant one that is 0 (`sin² 1 + cos² 1 − 1`), and, when the residue
+    // test raised a suspicion, those that vanish once multiplied out.
+    let mut zero_bases: FxHashSet<ExprId> = identity_denominator_candidates(arena, &order)
+        .into_iter()
+        .filter(|&d| arena.vanishes_by_identity(d))
+        .collect();
+    let mut decided: FxHashSet<ExprId> = FxHashSet::default();
+    for &id in &order {
+        if let Some(base) = negative_power_base(arena, id)
+            && !zero_bases.contains(&base)
+            && decided.insert(base)
+            && (constant_vanishes(arena, base)
+                || (suspect && vanishes_identically_as_factor(arena, base)))
+        {
+            zero_bases.insert(base);
+        }
+    }
+    if zero_bases.is_empty() {
         return expr;
+    }
+    // A second term over a denominator zero by an identity makes the sum
+    // `zoo + zoo = nan`.
+    for d in sum_partner_denominators(arena, &order, |d| zero_bases.contains(&d)) {
+        if !zero_bases.contains(&d) && arena.vanishes_by_identity(d) {
+            zero_bases.insert(d);
+        }
     }
     let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
     for &id in &order {
         let rebuilt = walk::rebuild_with_cache(arena, id, &cache);
         let (_, exp) = arena.as_base_exp(rebuilt);
+        let original = negative_power_base(arena, id);
         let value = match negative_power_base(arena, rebuilt) {
-            Some(base) if vanishes_identically_as_factor(arena, base) => {
+            Some(base)
+                if original.is_some_and(|b| zero_bases.contains(&b))
+                    || (original != Some(base) && vanishes_identically_as_factor(arena, base)) =>
+            {
                 let zero = arena.zero;
                 arena.pow(zero, exp)
             }

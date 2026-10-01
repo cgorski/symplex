@@ -599,6 +599,38 @@ pub(crate) fn vanishing_denominator(arena: &mut Arena, expr: ExprId) -> Option<E
     crate::simplify::ratsimp::ratsimp_zero_denominator(arena, expr)
 }
 
+/// [`vanishing_denominator`] for `powsimp`, which also sees the
+/// denominator of a `0/0` candidate that vanishes only by an identity of
+/// its functions
+/// ([`vanishing_by_identity_of_candidates`](crate::simplify::identically_zero::vanishing_by_identity_of_candidates):
+/// a product with a factor the residue test cannot rule out as
+/// identically 0 — `eˣ·e⁻ˣ − 1`, `(x + 1)² − x² − 2x − 1` — over `tan x·cos
+/// x − sin x`), `nan` for `0/0`.  The numeric identity test runs only for
+/// such candidates: `powsimp` runs inside Gruntz, and it applies no
+/// identity of `sin` and `cos` that could make another numerator 0.
+pub(crate) fn vanishing_denominator_or_identity(arena: &mut Arena, expr: ExprId) -> Option<ExprId> {
+    if let Some(value) = vanishing_denominator(arena, expr) {
+        return Some(value);
+    }
+    let value =
+        crate::simplify::identically_zero::vanishing_by_identity_of_candidates(arena, expr)?;
+    if value == arena.complex_infinity
+        && crate::simplify::identically_zero::numerator_vanishes_identically(arena, expr)
+    {
+        return Some(arena.nan);
+    }
+    Some(value)
+}
+
+/// Does `e` vanish identically by an identity `simplify` can prove: zero at
+/// certified sample points, then exactly 0
+/// ([`identically_zero::vanishes_by_identity`](crate::simplify::identically_zero::vanishes_by_identity))?
+/// The test the canonical constructors use for a constant factor
+/// (`sin² 1 + cos² 1 − 1`) on their rare paths, through the `Arena`.
+pub(crate) fn vanishes_by_identity(arena: &mut Arena, e: ExprId) -> bool {
+    crate::simplify::identically_zero::vanishes_by_identity(arena, e)
+}
+
 /// [`vanishing_denominator`] for `simplify`, which also sees denominators
 /// that vanish only by an identity of their functions (`tan x·cos x − sin
 /// x`, `cosh²x − sinh²x − 1`;
@@ -612,10 +644,26 @@ pub(crate) fn vanishing_denominator(arena: &mut Arena, expr: ExprId) -> Option<E
 /// x)/(cosh²x − sinh²x − 1))` was `zoo`; both are `nan`, undefined for
 /// every `x`.  SymPy 1.14 gives `0` for both: its `simplify` finds the
 /// numerator 0 first.
-fn undefined_by_vanishing_denominator(arena: &mut Arena, expr: ExprId) -> Option<ExprId> {
-    let value = match vanishing_denominator(arena, expr) {
+///
+/// `trigsimp` and `fu` start with this test too: their identities make a
+/// numerator such as `sin 2x − 2·sin x·cos x` 0.  Up to 0.33 they had only
+/// the polynomial one ([`vanishing_denominator`]), and
+/// `simplify_trig(((x + 1)² − x² − 2x − 1)/(tan x·cos x − sin x))` was `0`.
+///
+/// The identity test runs also when a denominator vanishes as a rational
+/// function: its arithmetic includes those zeros, and a second term over a
+/// denominator zero by an identity makes `zoo + zoo = nan`.  Up to 0.33
+/// `simplify((eˣ⁺ʸ − eˣ·eʸ)/((x + 6)²/((x + y)² − x² − 2xy − y²) + (cos x +
+/// 2)/(sin 2x − 2·sin x·cos x)))` stopped at the first, `zoo + (cos x +
+/// 2)/(…) = zoo`, and was `0`.
+pub(crate) fn undefined_by_vanishing_denominator(
+    arena: &mut Arena,
+    expr: ExprId,
+) -> Option<ExprId> {
+    let rational = vanishing_denominator(arena, expr);
+    let value = match crate::simplify::identically_zero::vanishing_by_identity(arena, expr) {
         Some(value) => value,
-        None => crate::simplify::identically_zero::vanishing_by_identity(arena, expr)?,
+        None => rational?,
     };
     if value == arena.complex_infinity
         && crate::simplify::identically_zero::numerator_vanishes_identically(arena, expr)
