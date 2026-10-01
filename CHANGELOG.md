@@ -6,7 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
-## [Unreleased]
+## [0.33.0] - 2026-10-01
+
+The nightly fuzz run is green again, and four kinds of silent wrong
+answer are gone.  The 2026-09-30 nightly found a series that took seconds
+to give up (`sinh(x^x)` at 0, through `x^x = e^(x·ln x)`) and an oracle
+that called a correct "divergent" wrong; series through logarithms are
+now decided from the two one-sided expansions at once, in the way SymPy
+expands around a logarithmic argument, and the oracle no longer trusts a
+quadrature that cancels by symmetry.  Expressions that are undefined
+everywhere (a denominator that is zero only once multiplied out, or by an
+identity like `tan x·cos x − sin x`) stay undefined under `expand`,
+`simplify` and canonicalisation instead of becoming `0`, and the default
+matrix norm is right for complex entries.
 
 ### Breaking (behaviour; no signature changed)
 
@@ -101,6 +113,33 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   to `0 ± 0`.  The oracle now also requires the quadrature of `|f|` to
   converge before trusting a value, and a sum to converge absolutely
   before calling `Divergent` wrong.
+
+### Measured
+
+- `tests/v32/`: 4 files, 21 tests.  nextest 13,538 tests (14 skipped),
+  doctests 1,312.
+- Rubi harness: 14,360 verified, 68 real_verified, 0 wrong, 0 undecided,
+  wall 18 s with 12 jobs (all unchanged).  Self-test: 55,475 verified,
+  0 wrong, 742 undecided (unchanged).  `--negative-params`: 0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates: identical.
+- `cargo semver-checks` against 0.32.0: no semver update required.
+- Hunters (before → after): series through logarithms 800 cases, 2 wrong,
+  8 hangs, 70 more calls over 1 s → 0, 0, 0; `f(g)` over 7 × 8
+  compositions, 3 directions, 2 orders: 58.8 s → 0.3 s; the 0.30
+  limits/series hunter (880 cases): unchanged, 0 wrong; undefined
+  expressions 8,000 cases, `expand` 628 wrong → 0, canonical form and
+  `subs` 253 → 3; `simplify` over identities 2,000 cases, 430 wrong → 0;
+  matrix norms against numpy, 4,512 checks, 1,422 wrong → 0.
+- Fuzzing: the 2026-09-30 nightly inputs pass (the slow one in 3 ms; 0.7 s
+  before in the local build, 10 s on CI); after the series fix
+  `fuzz_calculus` ran 10 minutes with a 10-second limit (153,856
+  inputs): 0 findings.  On the release code (10-second limit):
+  `fuzz_simplify` 15 minutes (81,713 inputs), `fuzz_roundtrip` 10 minutes
+  (3,138,202), `fuzz_calculus` 10 minutes (160,348): 0 findings;
+  `fuzz_integrate` 15 minutes (60,451): 1 timeout, not new —
+  `∫ (√x + |x|)/(x + x⁻² + 1) dx` is refused after 51 s in 0.32.0 too
+  (74 s now: the new zero test in canonical products runs inside the
+  integrator's by-parts recursion); left for the next release.
 
 ## [0.32.0] - 2026-09-28
 
