@@ -252,6 +252,11 @@ fn integrate_stages(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: Symbo
     } else {
         result
     };
+    let result = if crate::base::walk::has_unevaluated(arena, result) {
+        integrate_terms_separately(arena, expr, var, var_sym).unwrap_or(result)
+    } else {
+        result
+    };
 
     // Piecewise wrapping for parametric degenerate cases
     stage!(
@@ -261,6 +266,65 @@ fn integrate_stages(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: Symbo
         try_piecewise_wrap(arena, result, expr, var, var_sym)
     )
 }
+
+/// `∫ (f₁ + … + fₖ) = Σ ∫ fᵢ` with every term through the whole pipeline,
+/// for a sum the stages left (partly) unevaluated.  Inside the stages the
+/// terms of a sum are integrated one by one too, but only by the rules of
+/// `integrate_node`: the substitutions, the Risch tower and heurisch run on
+/// the whole integrand, and fit one term but not the sum.  `∫ (x^(5/2) +
+/// x²·|x|)/(x³ + x² + 1) dx` kept `∫ x^(5/2)/(x³ + x² + 1)` unevaluated,
+/// which `x = s²` solves on its own (and the `|x|` makes that substitution
+/// refuse the sum).  A product with a sum factor is distributed first
+/// (`(√x + |x|)/(x + x⁻² + 1)`).  `None` unless every term has a closed
+/// form.
+fn integrate_terms_separately(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<ExprId> {
+    let sum = match arena.node(expr) {
+        ExprNode::Add(_) => expr,
+        ExprNode::Mul(children)
+            if children
+                .iter()
+                .any(|&c| matches!(arena.node(c), ExprNode::Add(_))) =>
+        {
+            crate::transforms::expand::expand(arena, expr)
+        }
+        _ => return None,
+    };
+    let ExprNode::Add(terms) = arena.node(sum).clone() else {
+        return None;
+    };
+    if terms.len() < 2 || terms.len() > MAX_SEPARATE_TERMS {
+        return None;
+    }
+    let mut parts = Vec::with_capacity(terms.len());
+    for &t in &terms {
+        if !contains_var(arena, t, var_sym) {
+            parts.push(arena.mul(&[t, var]));
+            continue;
+        }
+        let (constants, f) = match split_constant_factors(arena, t, var_sym) {
+            Some((c, f)) => (c, f),
+            None => (SmallVec::new(), t),
+        };
+        let big_f = integrate_stages(arena, f, var, var_sym);
+        if crate::base::walk::has_unevaluated(arena, big_f) {
+            return None;
+        }
+        parts.push(wrap_with_constants(arena, big_f, &constants));
+    }
+    tracing::debug!("integrate: the terms of a sum, each through every stage");
+    let sum = arena.add(&parts);
+    let r = accept_or_unevaluated(arena, expr, sum, var, var_sym);
+    (!crate::base::walk::has_unevaluated(arena, r)).then_some(r)
+}
+
+/// Sums with more terms are not retried term by term
+/// ([`integrate_terms_separately`]): every term re-runs every stage.
+const MAX_SEPARATE_TERMS: usize = 8;
 
 /// One pass of the stages of [`integrate_stages`].
 fn integrate_stages_once(
@@ -2022,6 +2086,17 @@ fn integrate_node_uncached(
                 }
             }
 
+            // ── P(x)·|g(x)|, P(x)·sign(g(x)), P(x)·H(g(x)) ─────────────────
+            // Before by parts: the factor's sign is constant on each side of
+            // the root, so the rest is a smooth integrand.  By parts first took
+            // `u = x²`, `dv = |x|/(x³ + x² + 1)` in `∫ x²·|x|/(x³ + x² + 1)`,
+            // and `∫ v·du` of the Cardano-root antiderivative (17,000-character
+            // integrands) ran into a 74 s refusal of `∫ (√x + |x|)/(x + x⁻² +
+            // 1) dx` (`fuzz_integrate`, 2026-10-01).
+            if let Some(result) = try_abs_sign_product(arena, &dependent, var, var_sym, depth) {
+                return wrap_with_constants(arena, result, &constants);
+            }
+
             // ── Integration by parts: ∫ u·dv = u·v - ∫ v·du ───────────
             // Try when there are exactly 2 dependent factors:
             // one that's a by-parts candidate (u), and one that's directly
@@ -2094,11 +2169,6 @@ fn integrate_node_uncached(
                 )
             {
                 return result;
-            }
-
-            // ── P(x)·|g(x)|, P(x)·sign(g(x)), P(x)·H(g(x)) ─────────────────
-            if let Some(result) = try_abs_sign_product(arena, &dependent, var, var_sym, depth) {
-                return wrap_with_constants(arena, result, &constants);
             }
 
             // ── Try partial fraction decomposition for rational integrands ──
@@ -4574,6 +4644,12 @@ fn try_by_parts_poly_times_pair(
     }
     let du = crate::transforms::diff::diff(arena, u, var);
     let v_du = arena.mul(&[v, du]);
+    let u_dv = arena.mul(&[u, dv]);
+    match by_parts_cycle(arena, u, v, u_dv, v_du, var_sym) {
+        Cycle::Solved(result) => return Some(result),
+        Cycle::Hopeless => return None,
+        Cycle::No => {}
+    }
     let v_du = crate::transforms::expand::expand(arena, v_du);
     let rest = integrate_node(arena, v_du, var, var_sym, depth - 1);
     if crate::base::walk::has_unevaluated(arena, rest) {
@@ -4581,6 +4657,53 @@ fn try_by_parts_poly_times_pair(
     }
     let uv = arena.mul(&[u, v]);
     Some(arena.sub(uv, rest))
+}
+
+/// What [`by_parts_cycle`] found.
+enum Cycle {
+    /// `∫ v·du` is not a constant multiple of the integrand.
+    No,
+    /// `∫ v·du = c·I`: `I = u·v/(1 + c)`.
+    Solved(ExprId),
+    /// `∫ v·du = −I`: by parts says `I = u·v + I`, nothing.
+    Hopeless,
+}
+
+/// Is the integral left by parts, `∫ v·du`, a constant multiple `c` of the
+/// integrand `u·dv` itself?  Then `I = u·v − c·I` gives `I = u·v/(1 + c)`
+/// at once (SymPy's `manualintegrate` solves such cyclic parts the same
+/// way), and for `c = −1` by parts proves nothing.  Before, the integrator
+/// integrated `v·du` — the same integral again — by parts again, one level
+/// deeper each time down to the depth limit, every other strategy running
+/// at every level: `∫ x²·sign(x)` (`v = x·sign(x)`, `v·du = 2x²·sign(x)`)
+/// is the core of `∫ (√x + |x|)/(x + x⁻² + 1) dx`, which took 74 s to be
+/// refused (`fuzz_integrate`, 2026-10-01).  The ratio is the canonical
+/// quotient, so only a structural multiple is recognised.
+fn by_parts_cycle(
+    arena: &mut Arena,
+    u: ExprId,
+    v: ExprId,
+    u_dv: ExprId,
+    v_du: ExprId,
+    var_sym: SymbolId,
+) -> Cycle {
+    let ratio = arena.div(v_du, u_dv);
+    let c = crate::transforms::eval::eval(arena, ratio);
+    if contains_var(arena, c, var_sym)
+        || contains_non_finite(arena, c)
+        || arena.is_zero_structural(c)
+    {
+        return Cycle::No;
+    }
+    let one = arena.one;
+    let one_plus_c = arena.add(&[one, c]);
+    let one_plus_c = crate::transforms::eval::eval(arena, one_plus_c);
+    if arena.is_zero_structural(one_plus_c) {
+        return Cycle::Hopeless;
+    }
+    tracing::debug!("by parts: the remaining integral is a multiple of the integrand");
+    let uv = arena.mul(&[u, v]);
+    Cycle::Solved(arena.div(uv, one_plus_c))
 }
 
 /// Integration by parts for a product of two dependent factors, one a
@@ -4628,6 +4751,12 @@ fn try_by_parts_pair(
 
         // Compute ∫ v·du dx
         let v_du = arena.mul(&[v, du]);
+        let u_dv = arena.mul(&[u, dv]);
+        match by_parts_cycle(arena, u, v, u_dv, v_du, var_sym) {
+            Cycle::Solved(result) => return Some(result),
+            Cycle::Hopeless => continue,
+            Cycle::No => {}
+        }
         let integral_v_du = integrate_node(arena, v_du, var, var_sym, depth - 1);
 
         // Check if the remaining integral was resolved (deep check:

@@ -1197,6 +1197,9 @@ fn perfect_power_big(n: &BigInt) -> Option<(BigInt, u32)> {
         if negative && q == 2 {
             continue;
         }
+        if !may_be_qth_power(&m, q) {
+            continue;
+        }
         let r = m.nth_root(q);
         if r.pow(q) == m {
             let base = if negative { -r } else { r };
@@ -1207,6 +1210,43 @@ fn perfect_power_big(n: &BigInt) -> Option<(BigInt, u32)> {
     }
     result
 }
+
+/// Residue filter for [`perfect_power_big`]: `false` when `m > 0` is
+/// certainly not a perfect `q`-th power (`q` prime), because modulo some
+/// prime `ℓ = 2kq + 1` it is not a `q`-th power residue — by Euler's
+/// criterion in the cyclic group `(ℤ/ℓ)ˣ`, `m^((ℓ−1)/q) ≢ 1`.  Up to
+/// [`QTH_POWER_FILTER_PRIMES`] such `ℓ` are tried; a non-power survives
+/// each with probability about `1/q`, and survivors get the exact root.
+/// (The exact `q`-th root of a 10,000-bit number for every prime `q` up to
+/// its bit length took 0.24 s; radicals of such numbers are split during
+/// canonicalisation, and `fuzz_roundtrip` timed out on them.)
+fn may_be_qth_power(m: &BigInt, q: u32) -> bool {
+    if m.bits() <= 64 {
+        return true; // the exact root is cheap
+    }
+    let q64 = u64::from(q);
+    let mut found = 0usize;
+    let mut k = 1u64;
+    while found < QTH_POWER_FILTER_PRIMES && k <= QTH_POWER_FILTER_MAX_K {
+        let ell = 2 * k * q64 + 1;
+        k += 1;
+        if !isprime_u64(ell) {
+            continue;
+        }
+        found += 1;
+        let r = (m % ell).to_u64().unwrap_or(0);
+        if r != 0 && mod_pow_u64(r, (ell - 1) / q64, ell) != 1 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Primes `ℓ ≡ 1 (mod q)` tried by [`may_be_qth_power`].
+const QTH_POWER_FILTER_PRIMES: usize = 4;
+
+/// Bound on `k` in `ℓ = 2kq + 1` searched by [`may_be_qth_power`].
+const QTH_POWER_FILTER_MAX_K: u64 = 64;
 
 /// Jacobi symbol `(a/n)` for odd positive `n`.
 fn jacobi_big(a: &BigInt, n: &BigInt) -> i8 {
@@ -1487,10 +1527,15 @@ fn strip_small_primes(mut n: BigInt) -> (Vec<(BigInt, u32)>, BigInt) {
 ///
 /// Returns `(parts, cofactor)` with `|n| = ∏ dᵢ^{eᵢ} · cofactor`, where the
 /// `dᵢ > 1` are squarefree, pairwise coprime and coprime to `cofactor`.
-/// Replacing every `dᵢ` by its prime factors gives exactly the factors of
-/// `factorint_bounded(n, max_bits)` (and the same `cofactor`), so the
-/// exponent of each such prime is the `eᵢ` of its piece: `n^{1/k}` loses
-/// the same `k`-th powers either way.
+/// Replacing every `dᵢ` by its prime factors gives the factors of
+/// `factorint_bounded(n, max_bits)` (and the same `cofactor`), except that
+/// a remainder over the bound that is not a perfect power is never tested
+/// for primality: it is the cofactor here, while `factorint_bounded`
+/// lists it as a prime factor when it is one.  Its exponent is 1 either
+/// way, so the exponent of each prime is the `eᵢ` of its piece and
+/// `n^{1/k}` loses the same `k`-th powers.  (A BPSW test of a 1,000-digit
+/// remainder costs ~0.1 s, and radicals are split at construction time:
+/// `fuzz_roundtrip` timed out on a few such radicals, 2026-10-01.)
 ///
 /// What is saved is the splitting of pieces that are provably squarefree:
 /// every prime left after trial division exceeds `2¹⁶`, so a composite
@@ -1519,11 +1564,15 @@ fn rough_squarefree_parts_bounded(r: BigInt, max_bits: u64) -> (Vec<(BigInt, u32
     if r < two_pow_32() || r.bits() <= max_bits {
         return (rough_squarefree_parts(r), BigInt::one());
     }
-    // Large remainder: only the cheap structural checks.
-    if isprime_big_internal(&r) {
-        return (vec![(r, 1)], BigInt::one());
-    }
+    // Large remainder: only the perfect-power check, which decides whether
+    // it has an exponent above 1.  No primality test: a remainder that is
+    // not a perfect power has exponent 1, prime or not.
     if let Some((base, e)) = perfect_power_big(&r) {
+        // The base of a perfect power is a piece when it is prime (as in
+        // `factorint_bounded`); rare, and the base has at most half the bits.
+        if base.bits() > max_bits && base >= two_pow_32() && isprime_big_internal(&base) {
+            return (vec![(base, e)], BigInt::one());
+        }
         let (inner, cof) = rough_squarefree_parts_bounded(base, max_bits);
         // An unfactored cofactor of the base contributes `cof^e`.
         return (
@@ -4886,7 +4935,13 @@ mod tests {
         ];
         for n in cases {
             let (parts, cofactor) = squarefree_parts_bounded(&n, 84);
-            let (factors, cofactor_ref) = factorint_bounded(&n, 84);
+            let (mut factors, mut cofactor_ref) = factorint_bounded(&n, 84);
+            // A remainder over the bound that is not a perfect power is not
+            // tested for primality: a prime one (2¹²⁷ − 1) is the cofactor
+            // here and a factor in `factorint_bounded`, exponent 1 either way.
+            if let Some(i) = factors.iter().position(|(p, k)| *k == 1 && p.bits() > 84) {
+                cofactor_ref = factors.remove(i).0;
+            }
             assert_eq!(cofactor, cofactor_ref, "{n}");
             let mut expanded: Vec<(BigInt, u32)> = Vec::new();
             for (i, (d, e)) in parts.iter().enumerate() {

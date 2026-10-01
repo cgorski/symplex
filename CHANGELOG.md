@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [Unreleased]
+
+### Fixed
+
+- **Radicals of integers with thousands of digits took seconds** (the
+  nightly `fuzz_roundtrip` timeout of 2026-10-01: 33 s on CI, 4 s locally
+  for a `√(p/q)` with 1,000-digit terms): splitting perfect powers out of
+  a remainder over the factoring bound ran a BPSW primality test on it
+  (0.1 s at 1,200 digits) and took its exact `q`-th root for every prime
+  `q` up to its bit length (0.24 s at 10,000 bits) — neither changes the
+  split of a remainder that is not a perfect power.  The primality test
+  is skipped there, and a residue filter (Euler's criterion modulo primes
+  `ℓ ≡ 1 (mod q)`) discards almost every exponent: `perfect_power` of a
+  10,000-bit number 244 ms → 3 ms, those radicals 0.1–0.55 s → 5–12 ms;
+  the nightly input 4 s → 44 ms.  Canonical forms are unchanged (byte
+  identity identical).
+- **`∫ (√x + |x|)/(x + x⁻² + 1) dx` was refused after 74 s** (51 s in
+  0.32; the local `fuzz_integrate` timeout of the 0.33 release): by parts
+  ran before the rule for `P·|g|`, took `u = x²` in `x²·|x|/(x³ + x² +
+  1)` and integrated `v·du` of the Cardano-root antiderivative.  The `|g|`
+  rule now runs first; by parts that leaves a multiple of the integrand
+  itself (`∫ x²·sign(x)`: `v·du = 2x²·sign(x)`) solves the cycle, as
+  SymPy's `manualintegrate` does, instead of recursing to the depth limit;
+  and the terms of a sum left unevaluated get every stage of the pipeline
+  separately (the substitution `x = s²` for the `√x` term refused the
+  whole sum).  The integral now has a closed form in 0.17 s (SymPy 1.14 did
+  not finish in 100 s).  Rubi: 14,360 → 14,522 verified, 68 → 69
+  real_verified, 0 wrong.
+
 ## [0.33.0] - 2026-10-01
 
 The nightly fuzz run is green again, and four kinds of silent wrong
