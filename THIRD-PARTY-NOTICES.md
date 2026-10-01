@@ -46,6 +46,7 @@ their documentation:
 | `src/domains/linalg.rs` (`kp_radical_roots`: Cardano's formulas over ℚ(√p…, i)) | the case analysis of `roots_cubic` in `sympy/polys/polyroots.py` | G. Cardano, *Ars Magna* (1545) |
 | `src/calculus/series.rs` (`inverse_at_branch_point`: the expansions of `asin`, `acos`, `acosh`, `atanh`, `asinh`, `atan` at their branch points) | the branch-point cases of `asin._eval_nseries`, `acos._eval_nseries` (`1 ∓ u = t²`) and `atanh`/`acosh._eval_nseries` (`rewrite(log)`) in `sympy/functions/elementary/trigonometric.py` and `hyperbolic.py` | `asin √z = √z·₂F₁(½, ½; 3/2; z)` (DLMF 15.4.4) |
 | `src/simplify/radsimp.rs` (`try_rationalize`: a conjugate that makes the denominator 0 is not used) | the `d.has(S.Zero, nan, zoo)` guard of `radsimp` in `sympy/simplify/radsimp.py` | — |
+| `src/calculus/series.rs` (`compose_at_constant`: `f(u₀ + w)` from the Taylor coefficients of `f` at the constant term of its argument, also when `w` carries `ln x`) | the generic and logarithmic-argument cases of `Function._eval_nseries` in `sympy/core/function.py` | Taylor's theorem |
 
 To the extent any of these is a derivative of SymPy, SymPy's licence
 applies to that part, and its notice is reproduced here as clause (a)

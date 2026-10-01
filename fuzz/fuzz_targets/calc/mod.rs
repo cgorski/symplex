@@ -658,6 +658,16 @@ pub fn check_defint(f: &E, a: &Bd, b: &Bd) -> V {
     let (Ok(ae), Ok(be)) = (ctx.parse(&a.s()), ctx.parse(&b.s())) else {
         return V::Skip("parse".into());
     };
+    // The quadrature of `f` alone can cancel exactly by a symmetry of the
+    // nodes, converging to `0 ± 0` on a divergent integral: the map
+    // `x = a + t/(1-t)` sends `x ↔ 1/x` to `t ↔ 1-t` at `a = 0`, and
+    // `ln(x)/x` is odd under it; `1/x` on `[-1, 1]` is odd about the
+    // midpoint.  A verdict that trusts `q` therefore also requires the
+    // quadrature of `|f|` (no cancellation possible) to converge.
+    let abs_converges = || {
+        let qa = numeric_integral(&E::Un(U::Abs, f.clone().b()), a, b, &gl);
+        qa.ok && qa.err < 1e-10 * (1.0 + qa.value.abs()) && qa.max_abs < 1e8
+    };
     match fe.try_integrate_definite(&x, &ae, &be) {
         Ok(res) => {
             if res.has_unevaluated() {
@@ -666,7 +676,7 @@ pub fn check_defint(f: &E, a: &Bd, b: &Bd) -> V {
             let v = match num(&res, 20) {
                 Ok(v) => v,
                 Err(e) => {
-                    if q.ok && q.err < 1e-8 {
+                    if q.ok && q.err < 1e-8 && abs_converges() {
                         return V::Bad(
                             "defint:closed-form-not-evaluable".into(),
                             format!("result {res}: {e}; quad {}", q.value),
@@ -681,6 +691,9 @@ pub fn check_defint(f: &E, a: &Bd, b: &Bd) -> V {
             let scale = q.value.abs().max(1e-3 * q.max_abs.min(1e6)).max(1e-12);
             let d = cdist(v, (q.value, 0.0));
             if d > 1e-8 * scale.max(1.0) + 100.0 * q.err {
+                if !abs_converges() {
+                    return V::Skip(format!("quad-conditional(result {res})"));
+                }
                 V::Bad(
                     "defint:wrong-value".into(),
                     format!("result {res} = {v:?}; quad {} ± {}", q.value, q.err),
@@ -690,7 +703,8 @@ pub fn check_defint(f: &E, a: &Bd, b: &Bd) -> V {
             }
         }
         Err(SymplexError::Divergent { .. }) => {
-            if q.ok && q.err < 1e-10 * (1.0 + q.value.abs()) && q.max_abs < 1e8 {
+            if q.ok && q.err < 1e-10 * (1.0 + q.value.abs()) && q.max_abs < 1e8 && abs_converges()
+            {
                 V::Bad(
                     "defint:false-divergent".into(),
                     format!("quad {} ± {}", q.value, q.err),
@@ -1385,9 +1399,14 @@ pub fn check_sum(t: &E, lo: i64, infinite: bool) -> V {
             Ok(s) => s,
             Err(SymplexError::Divergent { .. }) => {
                 if let Some(v) = numeric {
-                    // terms must not be summable to a stable value
-                    let tail = t.ev(1e6).abs() * 1e6;
-                    if tail < 1e-6 {
+                    // `Divergent` is wrong only if the sum provably converges:
+                    // require absolute convergence and small terms at both
+                    // parities (`Σ sin(πk/2)³` = 0 + 1 + 0 − 1 + … has stable
+                    // partial sums at the sampled N = lo + 64·2^j and a term
+                    // ≈ 0 at k = 10⁶, yet diverges).
+                    let tail = (t.ev(1e6).abs() * 1e6).max(t.ev(1e6 + 1.0).abs() * 1e6);
+                    let abs_t = E::Un(U::Abs, t.clone().b());
+                    if tail < 1e-6 && numeric_sum(&abs_t, lo).is_some() {
                         return V::Bad("sum:false-divergent".into(), format!("numeric {v}"));
                     }
                 }

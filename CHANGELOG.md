@@ -6,6 +6,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [Unreleased]
+
+### Breaking (behaviour; no signature changed)
+
+- **`series_dir` from the left is log-extended in `ln(−x)`**, as from the
+  right in `ln x` and as SymPy's `dir='-'`: `series_dir(x^x, x, 0, 3,
+  Left)` is `1 + x·(ln(−x) + πi) + x²·(ln(−x) + πi)²/2` (the same
+  values; it went through a Puiseux substitution and printed
+  `1 − x·(−ln(−x) − πi) + …`).
+
+### Added
+
+- **Series of a function without a series rule of an expanded argument**
+  (`acos`, `acosh`, `Γ`, `atan`/`asin`/`tan`/`erf` away from 0, …) use
+  the Taylor coefficients of the function at the argument's constant term,
+  as SymPy's `Function._eval_nseries`, also when the argument carries a
+  logarithm: from the right `atan(x^x) = π/4 + x·ln(x)/2 −
+  x³·ln(x)³/12 + …` and `atan(x^(x²)) = π/4 + x²·ln(x)/2 + …` (refused
+  after up to 2.8 s; SymPy raises `PoleError`).  `e^(m·ln|x| + …)` with
+  an integer `m` is `|x|^m·e^(…)`: `x^(x + 1) = x + x²·ln x + …` from the
+  right (refused; SymPy: `O(x**3)`, which is wrong).
+
+### Fixed
+
+- **Series with a logarithmic singularity took seconds to refuse** (the
+  nightly `fuzz_calculus` slow unit of 2026-09-30: `series(sinh(x^x), x,
+  0, 3)` 0.4 s, 10 s on CI): two-sided, `ln x` fell to the
+  differentiation fallback, which asked the limit engine for the limits
+  of ever larger derivatives, once more for each of five pole-retry
+  multipliers.  A two-sided expansion through a logarithm is now decided
+  from the two log-extended one-sided expansions: it exists when they
+  agree and neither has a logarithm up to the requested order
+  (`ln(sin x) − ln x = −x²/6 + …`, as before), otherwise the refusal is
+  immediate.  Pole retries are skipped when the function has no pole
+  there or its two sides differ (`atan(e^(−1/x))`: 0.14 s → under 10 ms).  Over
+  `f(g)` for `f ∈ {sinh, sin, exp, asin, atan, ln(1 + ·), id}`,
+  `g ∈ {x^x, x·ln x, |x|^(1/3), √x, e^(−1/x), x^x − 1, x^(x²), ln x}`,
+  three directions, orders 3 and 5: 58.8 s → 0.3 s in all, the slowest
+  2.8 s → 21 ms.  A hunter over random compositions with logarithms,
+  `x^x`, `|x|`, `e^(−1/x²)` (800 cases, residual at 90 digits): 2 wrong
+  (`series_dir(x^(x + 1), x, 0, 3, Left)` was `0`), 8 hangs over 8 s and
+  70 more calls over 1 s, 476 verified → 0 wrong, 0 hangs, slowest
+  0.44 s, 587 verified.
+- **The `fuzz_calculus` oracle called a correct `Divergent` wrong**
+  (nightly 2026-09-30, `∫₀^∞ ln(√x)/x dx`): its quadrature maps
+  `[0, ∞)` by `x = t/(1 − t)`, which sends `x ↔ 1/x` to `t ↔ 1 − t`, and
+  the integrand is odd under it, so the Gauss–Legendre nodes cancelled
+  to `0 ± 0`.  The oracle now also requires the quadrature of `|f|` to
+  converge before trusting a value, and a sum to converge absolutely
+  before calling `Divergent` wrong.
+
 ## [0.32.0] - 2026-09-28
 
 The nightly fuzz timeout fixed, and no more wrong-looking values.  The

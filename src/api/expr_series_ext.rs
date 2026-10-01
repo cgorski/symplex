@@ -365,10 +365,12 @@ impl Expr<Numeric> {
     /// `var` approaches `point` from the side(s) in question.  It is not a
     /// Laurent series over the complex plane: `exp(−1/x²)` expands to `0` at
     /// `0` (SymPy: `O(x**4)`), `exp(−1/x)` has no two-sided expansion there
-    /// (`0` from the right, none from the left).  From the right, and at
+    /// (`0` from the right, none from the left).  From either side, and at
     /// `±∞` (where the side is implied and `dir` is ignored), the expansion
-    /// may contain logarithms: `Ei(x) = γ + ln x + x + …` for `x → 0⁺`,
-    /// Stirling's series for `ln Γ(x)` at `∞`.  At a branch point a one-sided
+    /// may contain logarithms — `ln(var − point)` from the right,
+    /// `ln(point − var)` from the left: `Ei(x) = γ + ln x + x + …` for
+    /// `x → 0⁺`, `x^x = 1 + x·(ln(−x) + iπ) + …` for `x → 0⁻`, Stirling's
+    /// series for `ln Γ(x)` at `∞`.  At a branch point a one-sided
     /// expansion may be a Puiseux series, in powers of `√(var − point)` or
     /// `∛(var − point)` (of `√(point − var)` from the left), as SymPy gives:
     /// `asin(x²)` at `x → 1⁺` is `π/2 − 2i·√(x − 1) − …`.  Where no such

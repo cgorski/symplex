@@ -24,12 +24,16 @@
 //!   `O(x**4)`, `dir='-'` returns `exp(-1/x)` unexpanded);
 //! * a two-sided kink (`|x|`) is refused unless both sides agree
 //!   (`cos|x| = cos x`);
-//! * expansions from the right and at `±∞` are *log-extended*: a
-//!   coefficient may contain `ln(x − x0)` (`ln x` at `±∞`), as in
-//!   Stirling's series `ln Γ(x) = x ln x − x − ½ ln x + ½ ln 2π +
-//!   1/(12x) + …` or `Ei(x) = γ + ln x + x + …` for `x → 0⁺`; the
-//!   remainder is then `O((x − x0)ⁿ·|ln(x − x0)|ᵏ)`.  Two-sided
-//!   expansions refuse logarithmic singularities.
+//! * one-sided expansions and those at `±∞` are *log-extended*: a
+//!   coefficient may contain `ln(x − x0)` from the right, `ln(x0 − x)`
+//!   from the left (`ln x` at `±∞`), as in Stirling's series
+//!   `ln Γ(x) = x ln x − x − ½ ln x + ½ ln 2π + 1/(12x) + …` or
+//!   `Ei(x) = γ + ln x + x + …` for `x → 0⁺`; the remainder is then
+//!   `O((x − x0)ⁿ·|ln(x − x0)|ᵏ)`.  A two-sided expansion through a
+//!   logarithm exists only where the logarithms cancel: it is the common
+//!   expansion of the two sides when neither has a logarithm up to order
+//!   `n` (`ln(sin x) − ln x = −x²/6 + …`; `x^x` and `x³·ln x` at order 3
+//!   are refused).
 //!
 //! When no such expansion exists, or it cannot be established (a
 //! fractional power two-sided, an oscillation, an unknown function whose
@@ -63,16 +67,20 @@
 //!   zeros of their arguments — closed forms at the points where
 //!   differentiation has nothing to evaluate (see *Special functions at
 //!   their singular points* below).
+//! * A function without such a rule of an argument `u = u₀ + w` with a
+//!   known expansion: `Σ f⁽ᵏ⁾(u₀)/k!·wᵏ` when `f` is analytic at the
+//!   constant `u₀` (SymPy's `Function._eval_nseries`; `w` may contain
+//!   `ln x`).
 //! * Any other `var`-dependent sub-expression falls back to Taylor
 //!   coefficients by differentiation, evaluated at the expansion point.
 //!
 //! Fractional powers of a series with a zero constant term (Puiseux
-//! expansions such as `√x·sin x`) and logarithmic singularities are
-//! rejected — the caller then keeps an unevaluated `Series` node instead of
-//! producing a wrong polynomial.  Such rejections are *definite*: the
-//! differentiation fallback is never tried for them, because the low-order
-//! derivatives of `x^(5/2)` or `|x²|` all vanish at `0` and would silently
-//! yield the wrong polynomial `0`.
+//! expansions such as `√x·sin x`) and logarithmic singularities outside a
+//! log-extended expansion are rejected — the caller then keeps an
+//! unevaluated `Series` node instead of producing a wrong polynomial.
+//! Such rejections are *definite*: the differentiation fallback is never
+//! tried for them, because the low-order derivatives of `x^(5/2)` or `|x²|`
+//! all vanish at `0` and would silently yield the wrong polynomial `0`.
 //!
 //! `|g|` is expanded as `±g` when the sign of `g` near the point is known:
 //! always when the leading exponent of `g` is even (`|x²| = x²`,
@@ -158,10 +166,11 @@ pub(crate) fn series(
     series_with_pole_retry(arena, expr, var, point, order, mode)
 }
 
-/// [`series`] as `var → point` from one side: [`Direction::Right`]
-/// (`var > point`, log-extended: the result may contain `ln(var − point)`,
-/// `Ei(x) = γ + ln x + x + x²/4 + …`) or [`Direction::Left`];
-/// [`Direction::Both`] is [`series`].  At `±∞` the direction is implied.
+/// [`series`] as `var → point` from one side, log-extended:
+/// [`Direction::Right`] (`var > point`; the result may contain
+/// `ln(var − point)`, `Ei(x) = γ + ln x + x + x²/4 + …`) or
+/// [`Direction::Left`] (`ln(point − var)`); [`Direction::Both`] is
+/// [`series`].  At `±∞` the direction is implied.
 ///
 /// `exp(−1/x)` at `0` is `0` to every order from the right and has no
 /// expansion from the left (nor a two-sided one).
@@ -188,7 +197,7 @@ pub(crate) fn series_dir(
         },
         Direction::Left => Mode {
             side: Side::Below,
-            log_var: None,
+            log_var: Some(arena.symbol(LOG_PLACEHOLDER)),
             limits: true,
             partial: false,
         },
@@ -320,6 +329,7 @@ fn series_with_pole_retry(
         ExprNode::Infinity | ExprNode::NegInfinity
     ) || !matches!(arena.node(var), ExprNode::Symbol(_))
         || order == 0
+        || retry_cannot_help(arena, expr, var, point, mode.side)
     {
         return Err(err);
     }
@@ -341,6 +351,63 @@ fn series_with_pole_retry(
         }
     }
     Err(err)
+}
+
+/// Can the retries of [`series_with_pole_retry`] not succeed where the
+/// direct expansion of `expr` failed?  Decided from the limits of
+/// `g = (var − point)·expr` from the side(s) of `side`:
+///
+/// * `g → 0` from each side: `expr` has no pole.  From
+///   `xᵏ·f = S + O(xⁿ⁺ᵏ)`, a term `c·x⁻ʲ` (`j ≥ 1`) of `S/xᵏ` would make
+///   `g` tend to `c` or diverge, so `S/xᵏ` would be a power series, which
+///   the direct attempt would have found.
+/// * two-sided, `g` tends to different finite limits from the two sides:
+///   every `xᵏ·f = xᵏ⁻¹·g` has different coefficients of `xᵏ⁻¹` from the
+///   two sides, so none has a two-sided expansion.
+///
+/// Each retry asks the limit engine for the limits of ever larger
+/// derivatives: `series(atan(exp(−1/x)), x, 0, 3)` (limits 0 and π/2)
+/// took 0.14 s to refuse, `acos(ln x)` from the left (unbounded, but only
+/// logarithmically) 0.14 s, `ln(1 + exp(−1/x))` (`≈ −1/x` from the left,
+/// `0` from the right) 60 ms.  A limit that cannot be determined answers
+/// `false`.
+fn retry_cannot_help(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    side: Side,
+) -> bool {
+    use crate::calculus::limit::Direction;
+    let dirs: &[Direction] = match side {
+        Side::Above => &[Direction::Right],
+        Side::Below => &[Direction::Left],
+        Side::Both => &[Direction::Right, Direction::Left],
+    };
+    let x_minus_a = if arena.is_zero_structural(point) {
+        var
+    } else {
+        arena.sub(var, point)
+    };
+    let scaled = arena.mul(&[x_minus_a, expr]);
+    let mut limits = Vec::with_capacity(dirs.len());
+    for &dir in dirs {
+        match crate::calculus::limit::limit_dir_generic(arena, scaled, var, point, dir) {
+            Ok(v) if is_finite_constant(arena, v, var) => limits.push(v),
+            _ => return false,
+        }
+    }
+    if limits.iter().all(|&v| arena.is_zero_structural(v)) {
+        return true;
+    }
+    match limits[..] {
+        [right, left] => {
+            let d = arena.sub(right, left);
+            let d = eval::eval(arena, d);
+            crate::calculus::limit::const_sign(arena, d).is_some_and(|s| s != 0)
+        }
+        _ => false,
+    }
 }
 
 /// The expansion at a finite `point` (or `±∞`) in the given [`Mode`].
@@ -377,7 +444,14 @@ fn series_in_mode(
     let ts = expand_with_mode(arena, shifted, var, order as i64, mode)?;
     let mut poly = ts.to_expr(arena, var, order as i64);
     if let Some(l) = mode.log_var {
-        let ln_t = arena.ln(var);
+        // `l` is `ln|t|`: `ln t` from above, `ln(−t)` from below.
+        let abs_t = if mode.side == Side::Below {
+            let n = arena.neg(var);
+            eval::eval(arena, n)
+        } else {
+            var
+        };
+        let ln_t = arena.ln(abs_t);
         poly = subs::subs(arena, poly, l, ln_t);
         poly = eval::eval(arena, poly);
     }
@@ -599,14 +673,6 @@ impl TSeries {
             self.shift += lead as i64;
         }
         self
-    }
-
-    /// Do `a` and `b` agree on every coefficient of exponent `< order`?
-    /// (Structural comparison of the evaluated coefficients.)
-    fn same(arena: &Arena, a: &TSeries, b: &TSeries, order: i64) -> bool {
-        let lo = a.shift.min(b.shift);
-        let hi = a.known.min(b.known).min(order);
-        (lo..hi).all(|e| a.coeff_at(arena, e) == b.coeff_at(arena, e))
     }
 
     /// Restrict to exponents `< n`.
@@ -1072,8 +1138,8 @@ enum Side {
     Both,
     /// From above only (`x → 0⁺`; used for `x → ±∞` via `t = 1/x`).
     Above,
-    /// From below only (`x → 0⁻`; used to cross-check `|g|` with odd
-    /// valuation, see [`expand_with_mode`]).
+    /// From below only (`x → 0⁻`; `series_dir` from the left, and the
+    /// cross-check of a two-sided expansion, see [`expand_with_mode`]).
     Below,
 }
 
@@ -1081,15 +1147,18 @@ enum Side {
 #[derive(Clone, Copy, Debug)]
 struct Mode {
     side: Side,
-    /// With `Some(l)` (only for [`Side::Above`]) the expansion is
-    /// *log-extended*: `l` is a `var`-free stand-in for `ln(var)`, and `ln`
-    /// of a series with a non-zero valuation `v` is `v·l + ln c + ln(1 + …)`
-    /// instead of a refusal.  Coefficients may then be polynomials in `l`;
-    /// a term `c(l)·varᵏ` is still "of order `k`" (it is `o(var^(k−ε))`), as
-    /// in Gruntz's algorithm, where `l = ln ω` belongs to a lower
-    /// comparability class.  `exp`, `sinh`, `cosh` of an argument whose
-    /// constant term contains `l` (`exp(2 ln t) = t²`) are refused: that
-    /// coefficient would not be of lower order.
+    /// With `Some(l)` (one-sided only) the expansion is *log-extended*: `l`
+    /// is a `var`-free stand-in for `ln|var|` (`ln(var)` from above,
+    /// `ln(−var)` from below), and `ln` of a series with a non-zero
+    /// valuation `v` is `v·l + ln c + ln(1 + …)` instead of a refusal (from
+    /// below `var^v = (−1)^v·|var|^v`, so `ln c` is `ln((−1)^v·c)`).
+    /// Coefficients may then be polynomials in `l`; a term `c(l)·varᵏ` is
+    /// still "of order `k`" (it is `o(var^(k−ε))`), as in Gruntz's
+    /// algorithm, where `l = ln ω` belongs to a lower comparability class.
+    /// `exp`, `sinh`, `cosh` of an argument whose constant term is `m·l`
+    /// plus a constant, `m` an integer, shift the series by `|var|^m`
+    /// (`exp(2 ln t) = t²`); any other dependence on `l` there is refused:
+    /// that coefficient would not be of lower order.
     log_var: Option<ExprId>,
     /// May the differentiation fallback take limits of derivatives that
     /// cannot be substituted?  Off inside Gruntz (the limit engine calling
@@ -1123,6 +1192,12 @@ enum Obstruction {
     /// one-sided expansions of `|g|` differ, but the enclosing expression may
     /// still have a two-sided expansion (`cos|x|`).
     Kink,
+    /// `ln` of a series with a non-zero valuation outside a log-extended
+    /// expansion.  Two-sided, the enclosing expression may still have an
+    /// expansion (`ln(sin x) − ln x = −x²/6 + …`): it is decided from the
+    /// two log-extended one-sided expansions (see [`expand_with_mode`]).
+    /// Without limits (a Laurent series) it is definite.
+    Logarithmic,
 }
 
 /// [`expand_with_mode`] for a function that must be *meromorphic* at `0`
@@ -1211,9 +1286,8 @@ pub(crate) fn expand_leading(
 /// two-sided (`√(x²) = |x|`).
 ///
 /// A two-sided expansion that fails only because of `|g|` with odd
-/// valuation (`|x|`, `|sin x|`) is retried from each side separately and
-/// accepted when both sides agree (`cos|x| = cos x`); otherwise there is
-/// no two-sided expansion and the error is returned.
+/// valuation (`|x|`, `|sin x|`) or a logarithmic singularity (`ln x`) is
+/// decided from the two one-sided expansions, see [`expand_from_both_sides`].
 fn expand_with_mode(
     arena: &mut Arena,
     expr: ExprId,
@@ -1221,51 +1295,98 @@ fn expand_with_mode(
     order: i64,
     mode: Mode,
 ) -> Result<TSeries, SymplexError> {
-    let mut kink = false;
-    match expand_from_side(arena, expr, var, order, mode, &mut kink) {
-        Err(_) if kink => {
-            let above = expand_from_side(
-                arena,
-                expr,
-                var,
-                order,
-                mode.with_side(Side::Above),
-                &mut false,
-            )?;
-            let below = expand_from_side(
-                arena,
-                expr,
-                var,
-                order,
-                mode.with_side(Side::Below),
-                &mut false,
-            )?;
-            if TSeries::same(arena, &above, &below, order) {
-                Ok(above)
-            } else {
-                Err(SymplexError::ComputationFailed {
-                    operation: "series",
-                    reason: format!(
-                        "no two-sided expansion: the expansions of {} from the left and from the right differ (|·| with odd valuation)",
-                        arena.display(expr)
-                    ),
-                })
-            }
-        }
+    let mut split = false;
+    match expand_from_side(arena, expr, var, order, mode, &mut split) {
+        Err(_) if split => expand_from_both_sides(arena, expr, var, order, mode),
         r => r,
     }
 }
 
+/// The two-sided expansion of `expr` from its one-sided expansions, after
+/// the direct one stopped at an odd-valuation `|g|` ([`Obstruction::Kink`])
+/// or a logarithmic singularity ([`Obstruction::Logarithmic`]).
+///
+/// With limits (the real asymptotic expansion) both sides are
+/// log-extended and taken to one order more: an expansion exists when no
+/// coefficient of exponent `≤ order` contains `ln|x|` (so the remainder is
+/// `O(x^order)` on each side) and the two agree below `order` —
+/// `cos|x| = cos x`, `ln(sin x) − ln x = −x²/6 + …`.  Otherwise the refusal
+/// is definite: `|sin x|`, `x^x = 1 + x·ln x + …`, `x³·ln x` at order 3.
+/// (Before, a logarithmic singularity fell to the differentiation fallback,
+/// which asked the limit engine for the limits of ever larger derivatives,
+/// once more for each pole-retry multiplier: `series(sinh(x^x), x, 0, 3)`
+/// took 0.4 s before refusing, 10 s in the nightly `fuzz_calculus` run.)
+/// Without limits (a Laurent series) only a kink is retried, as before.
+fn expand_from_both_sides(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    order: i64,
+    mode: Mode,
+) -> Result<TSeries, SymplexError> {
+    let log_var = mode.limits.then(|| arena.symbol(LOG_PLACEHOLDER));
+    let depth = order + i64::from(log_var.is_some());
+    let mut expansions = Vec::with_capacity(2);
+    for side in [Side::Above, Side::Below] {
+        let side_mode = Mode {
+            log_var,
+            ..mode.with_side(side)
+        };
+        expansions.push(expand_from_side(
+            arena, expr, var, depth, side_mode, &mut false,
+        )?);
+    }
+    let no_expansion = |arena: &Arena, why: &str| SymplexError::ComputationFailed {
+        operation: "series",
+        reason: format!("no two-sided expansion of {}: {why}", arena.display(expr)),
+    };
+    if let Some(l) = log_var {
+        for s in &mut expansions {
+            for e in s.shift..s.known.min(order + 1) {
+                let idx = (e - s.shift) as usize;
+                let c = s.coeffs[idx];
+                if !walk::contains(arena, c, l) {
+                    continue;
+                }
+                // A polynomial in `l` whose terms cancel only once expanded.
+                let x = crate::transforms::expand::expand(arena, c);
+                let x = eval::eval(arena, x);
+                if walk::contains(arena, x, l) {
+                    return Err(no_expansion(
+                        arena,
+                        "a logarithmic singularity (a coefficient contains ln|x|)",
+                    ));
+                }
+                s.coeffs[idx] = x;
+            }
+        }
+    }
+    let (above, below) = (&expansions[0], &expansions[1]);
+    for e in above.shift.min(below.shift)..order {
+        let (a, b) = (above.coeff_at(arena, e), below.coeff_at(arena, e));
+        if a != b {
+            let d = arena.sub(a, b);
+            if !is_zero_const(arena, d) {
+                return Err(no_expansion(
+                    arena,
+                    "the expansions from the left and from the right differ",
+                ));
+            }
+        }
+    }
+    Ok(expansions.swap_remove(0).truncate_known(order))
+}
+
 /// [`expand_with_mode`] for one [`Side`], with the precision-escalation loop.
-/// Sets `kink` when the failure was an odd-valuation `|g|` in a two-sided
-/// expansion.
+/// Sets `split` when a two-sided expansion failed in a way the one-sided
+/// expansions may resolve (see [`expand_from_both_sides`]).
 fn expand_from_side(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
     order: i64,
     mode: Mode,
-    kink: &mut bool,
+    split: &mut bool,
 ) -> Result<TSeries, SymplexError> {
     // Work with at least a few terms so that the valuation of every
     // sub-expression is visible (at precision 1 the variable itself would
@@ -1275,7 +1396,15 @@ fn expand_from_side(
     let mut best: Option<TSeries> = None;
     for _attempt in 0..MAX_PRECISION_ATTEMPTS {
         let mut hidden_valuation = false;
-        match expand_with_precision(arena, expr, var, working, mode, &mut hidden_valuation, kink) {
+        match expand_with_precision(
+            arena,
+            expr,
+            var,
+            working,
+            mode,
+            &mut hidden_valuation,
+            split,
+        ) {
             Ok(ts) if ts.known >= order => return Ok(ts.truncate_known(order)),
             Ok(ts) => {
                 // Precision was lost through poles; increase and retry.
@@ -1284,7 +1413,7 @@ fn expand_from_side(
                     best = Some(ts);
                 }
             }
-            Err(e) if hidden_valuation && !*kink => {
+            Err(e) if hidden_valuation && !*split => {
                 // A sub-expression's leading term lay beyond the working
                 // window (e.g. `1/(x⁵ + x⁶)` at low order): widen and retry.
                 last_err = Some(e);
@@ -1305,7 +1434,8 @@ fn expand_from_side(
 /// One pass of the engine at working precision `n`.  Sets `hidden_valuation`
 /// when some `var`-dependent sub-expression had *no* visible term at this
 /// precision, so a failure may be curable by widening the window; sets
-/// `kink` when the failure was [`Obstruction::Kink`].
+/// `split` when the failure was [`Obstruction::Kink`], or
+/// [`Obstruction::Logarithmic`] in a two-sided real expansion.
 fn expand_with_precision(
     arena: &mut Arena,
     expr: ExprId,
@@ -1313,7 +1443,7 @@ fn expand_with_precision(
     n: i64,
     mode: Mode,
     hidden_valuation: &mut bool,
-    kink: &mut bool,
+    split: &mut bool,
 ) -> Result<TSeries, SymplexError> {
     let order_ids = walk::post_order_ids(arena, expr);
     let mut cache: FxHashMap<ExprId, Option<TSeries>> = FxHashMap::default();
@@ -1330,15 +1460,21 @@ fn expand_with_precision(
             match structural_series(arena, id, var, mode, &cache) {
                 Ok(s) => Some(s),
                 Err(Obstruction::Unknown) => {
-                    if id == expr || fallbacks_used < MAX_FALLBACK_NODES {
-                        fallbacks_used += 1;
-                        taylor_by_differentiation(arena, id, var, n, mode)
-                    } else {
-                        None
+                    match compose_at_constant(arena, id, var, mode, &cache) {
+                        Some(composed) => composed,
+                        None if id == expr || fallbacks_used < MAX_FALLBACK_NODES => {
+                            fallbacks_used += 1;
+                            taylor_by_differentiation(arena, id, var, n, mode)
+                        }
+                        None => None,
                     }
                 }
                 Err(Obstruction::Kink) => {
-                    *kink = true;
+                    *split = true;
+                    return Err(no_expansion_error(arena, id));
+                }
+                Err(Obstruction::Logarithmic) => {
+                    *split |= mode.side == Side::Both && mode.limits;
                     return Err(no_expansion_error(arena, id));
                 }
                 Err(Obstruction::NoExpansion) => return Err(no_expansion_error(arena, id)),
@@ -1360,6 +1496,117 @@ fn expand_with_precision(
                 .into(),
         }),
     }
+}
+
+/// Stand-in for the argument of `f` in [`compose_at_constant`].
+const COMPOSE_PLACEHOLDER: &str = "__series_u";
+
+/// `f(u)` for a node with no structural rule and one `var`-dependent
+/// argument whose expansion `u = u₀ + w` (`w → 0`) is known:
+/// `Σ f⁽ᵏ⁾(u₀)/k!·wᵏ`, with the Taylor coefficients of `f` at the constant
+/// `u₀` from the derivatives of `f(t)` — SymPy's `Function._eval_nseries`,
+/// which also expands around an argument with a logarithm
+/// (`f(1 + x + log x) → f(1 + logx) + x·f'(1 + logx)`).
+///
+/// Before, such a node fell to the differentiation fallback, which
+/// differentiates the whole composite `f(u(x))` and asks the limit engine
+/// for each derivative at the point: `series(acos(cosh(e^(−1/x²))/2), x,
+/// 0, 3)` took seconds.  Where `w` contains `ln|x|` (a log-extended
+/// expansion) the fallback cannot succeed at all — the derivatives of
+/// `f(u(x))` contain `ln x` and diverge — and `series(atan(x^x), x, 0, 3)`
+/// from the right took 1.9 s to refuse; it is `π/4 + x·ln(x)/2 + …`.
+///
+/// `None` when the rule does not apply (no such argument, `u₀` containing
+/// `ln|x|`, a discontinuous `f`) or `f` is not visibly analytic at `u₀` (a
+/// derivative singular there, `u₀` on a branch cut) and `w` has no
+/// logarithm: the fallback is tried as before.  `Some(None)` when `f` is
+/// not analytic at `u₀` and `w` contains `ln|x|`: no expansion of this form.
+fn compose_at_constant(
+    arena: &mut Arena,
+    id: ExprId,
+    var: ExprId,
+    mode: Mode,
+    cache: &FxHashMap<ExprId, Option<TSeries>>,
+) -> Option<Option<TSeries>> {
+    if matches!(
+        arena.node(id),
+        ExprNode::Add(_)
+            | ExprNode::Mul(_)
+            | ExprNode::Neg(_)
+            | ExprNode::Abs(_)
+            | ExprNode::Sign(_)
+            | ExprNode::Heaviside(_)
+            | ExprNode::DiracDelta(_)
+            | ExprNode::Floor(_)
+            | ExprNode::Ceiling(_)
+            | ExprNode::Piecewise(_)
+            | ExprNode::Min(_)
+            | ExprNode::Max(_)
+    ) || walk::has_unevaluated(arena, id)
+    {
+        return None;
+    }
+    let mut arg = None;
+    for c in arena.children(id) {
+        if walk::contains(arena, c, var) {
+            if arg.is_some_and(|a| a != c) {
+                return None;
+            }
+            arg = Some(c);
+        }
+    }
+    let arg = arg?;
+    let u = cache.get(&arg)?.as_ref()?.clone().normalized(arena);
+    if u.shift < 0 {
+        return None; // the argument tends to infinity
+    }
+    let (u0, w) = u.split_constant(arena);
+    let has_log =
+        |arena: &Arena, c: ExprId| mode.log_var.is_some_and(|l| walk::contains(arena, c, l));
+    if has_log(arena, u0) {
+        return None;
+    }
+    let definite = w.coeffs.iter().any(|&c| has_log(arena, c));
+    let refuse = if definite { Some(None) } else { None };
+    // `wᵏ` has valuation `≥ k·v_w`: terms up to `k·v_w < known` count.
+    let terms = match w.leading_exponent(arena) {
+        Some(v_w) => usize::try_from((w.known - 1) / v_w.max(1)).ok()?,
+        None => 0,
+    };
+    let t = arena.symbol(COMPOSE_PLACEHOLDER);
+    let mut f = subs::subs(arena, id, arg, t);
+    if walk::contains(arena, f, var) {
+        return None;
+    }
+    let mut coeffs = Vec::with_capacity(terms + 1);
+    let mut factorial = Q::one();
+    for k in 0..=terms {
+        if k > 0 {
+            f = crate::transforms::diff::diff(arena, f, t);
+            factorial *= rat_i(k as i64);
+        }
+        if walk::has_unevaluated(arena, f)
+            || crate::transforms::pattern::tree_size_capped(arena, f, MAX_FALLBACK_SIZE + 1)
+                > MAX_FALLBACK_SIZE
+        {
+            return refuse;
+        }
+        let Some(value) = crate::calculus::limit::safe_substitute(arena, f, t, u0) else {
+            return refuse;
+        };
+        if !is_finite_constant(arena, value, var) || walk::contains(arena, value, t) {
+            return refuse;
+        }
+        let inv = rat_expr(arena, Q::one() / &factorial);
+        let c = arena.mul(&[value, inv]);
+        coeffs.push(eval::eval(arena, c));
+    }
+    let composed = TSeries::compose(
+        arena,
+        &|ar: &mut Arena, k: usize| coeffs.get(k).copied().unwrap_or(ar.zero),
+        &w,
+    );
+    Some(Some(composed))
 }
 
 fn no_expansion_error(arena: &Arena, id: ExprId) -> SymplexError {
@@ -1524,17 +1771,59 @@ fn structural_series(
     analytic.ok_or(Obstruction::Unknown)
 }
 
-/// `exp`, `sinh`, `cosh` of `a`, refused in a log-extended expansion when
-/// the constant term of `a` contains the stand-in for `ln(var)` (see
-/// [`Mode::log_var`]).
+/// `exp`, `sinh`, `cosh` of `a`.  In a log-extended expansion (see
+/// [`Mode::log_var`]) a constant term `m·l + r` with an integer `m` gives
+/// `e^(m·l) = |var|^m` (`x^(x + 2) = x²·e^(x·ln x)`, `sinh(ln x) =
+/// (x − 1/x)/2`); any other dependence on `l` (`e^(l/2)`, `e^(l²)`) is
+/// refused: that coefficient would not be of lower order.
 fn apply_exp_like(arena: &mut Arena, kind: FnKind, a: &TSeries, mode: Mode) -> Option<TSeries> {
-    if let Some(l) = mode.log_var {
-        let u0 = a.coeff_at(arena, 0);
-        if walk::contains(arena, u0, l) {
-            return None;
-        }
+    let Some(l) = mode.log_var else {
+        return apply_fn(arena, kind, a);
+    };
+    let u0 = a.coeff_at(arena, 0);
+    if !walk::contains(arena, u0, l) {
+        return apply_fn(arena, kind, a);
     }
-    apply_fn(arena, kind, a)
+    let m = crate::transforms::diff::diff(arena, u0, l);
+    let m = eval::eval(arena, m);
+    let m = arena
+        .as_num(m)
+        .filter(|q| q.is_integer())?
+        .to_integer()
+        .to_i64()?;
+    let zero = arena.zero;
+    let r = subs::subs(arena, u0, l, zero);
+    let r = eval::eval(arena, r);
+    if walk::contains(arena, r, l) || m.abs() > MAX_INT_POWER {
+        return None;
+    }
+    let mut b = a.clone();
+    b.set_constant(r);
+    // e^(±(m·l + b)) = (±|var|)^(±m)·e^(±b), with |var|^m = (−1)^m·var^m below.
+    let sign_flip = mode.side == Side::Below && m % 2 != 0;
+    let shifted_exp = |arena: &mut Arena, b: &TSeries, m: i64| -> Option<TSeries> {
+        let mut s = apply_fn(arena, FnKind::Exp, b)?;
+        if sign_flip {
+            s = TSeries::neg(arena, &s);
+        }
+        s.shift += m;
+        s.known += m;
+        Some(s)
+    };
+    let plus = shifted_exp(arena, &b, m)?;
+    if kind == FnKind::Exp {
+        return Some(plus);
+    }
+    let neg_b = TSeries::neg(arena, &b);
+    let minus = shifted_exp(arena, &neg_b, -m)?;
+    let minus = if kind == FnKind::Sinh {
+        TSeries::neg(arena, &minus)
+    } else {
+        minus
+    };
+    let sum = TSeries::add(arena, &plus, &minus);
+    let half = arena.rational(1, 2);
+    Some(TSeries::scale(arena, &sum, half))
 }
 
 fn is_bessel(arena: &Arena, f: crate::base::node::SymbolId) -> bool {
@@ -2046,11 +2335,13 @@ fn sqrt2s_times_f(
     Ok(TSeries::mul(arena, &root, &f))
 }
 
-/// `ln(a)` — requires a non-zero constant term, except in a log-extended
-/// expansion ([`Mode::log_var`]), where `a = c·var^v·(1 + …)` with `c` real
-/// of known sign and real visible coefficients gives
-/// `ln c + v·ln(var) + ln(1 + …)` (for `var > 0` the argument of `var^v`
-/// is 0, so no multiple of `2πi` is lost).
+/// `ln(a)` — requires a non-zero constant term ([`Obstruction::Logarithmic`]
+/// otherwise), except in a log-extended expansion ([`Mode::log_var`]),
+/// where `a = c·var^v·(1 + …)` with `c` real of known sign and real visible
+/// coefficients gives `ln c + v·ln(var) + ln(1 + …)` (for `var > 0` the
+/// argument of `var^v` is 0, so no multiple of `2πi` is lost; for
+/// `var < 0` it is `ln((−1)^v·c) + v·ln(−var) + …`, the sign moved into
+/// the real constant).
 ///
 /// A constant term on the cut (negative real) with a non-real correction is
 /// a definite [`Obstruction::NoExpansion`]: `ln(−1 + i·x)` tends to `iπ`
@@ -2062,18 +2353,22 @@ fn apply_ln(arena: &mut Arena, a: &TSeries, mode: Mode) -> Result<TSeries, Obstr
     let mut log_shift = None;
     if v != 0 {
         // logarithmic singularity
-        let l = mode.log_var.ok_or(Obstruction::Unknown)?;
-        if mode.side != Side::Above {
-            return Err(Obstruction::Unknown);
+        let l = match mode.log_var {
+            Some(l) if mode.side != Side::Both => l,
+            _ => return Err(Obstruction::Logarithmic),
+        };
+        a.shift -= v;
+        a.known -= v;
+        // From below `var^v = (−1)^v·|var|^v` and `l = ln|var|`.
+        if mode.side == Side::Below && v % 2 != 0 {
+            a = TSeries::neg(arena, &a);
         }
-        let c = a.coeff_at(arena, v);
+        let c = a.coeff_at(arena, 0);
         match constant_sign(arena, c) {
             Some(true) => {}
             Some(false) if a.coeffs.iter().all(|&co| is_known_real(arena, co)) => {}
             _ => return Err(Obstruction::Unknown),
         }
-        a.shift -= v;
-        a.known -= v;
         let vl = {
             let ve = arena.int(v);
             let p = arena.mul(&[ve, l]);
@@ -2927,6 +3222,7 @@ fn taylor_by_differentiation(
 ) -> Option<TSeries> {
     let side = mode.side;
     let zero = arena.zero;
+
     let mut coeffs = Vec::with_capacity(n.max(0) as usize);
     let mut current = expr;
     let mut factorial = Q::one();
