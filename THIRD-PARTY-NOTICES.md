@@ -46,6 +46,8 @@ their documentation:
 | `src/domains/linalg.rs` (`kp_radical_roots`: Cardano's formulas over ℚ(√p…, i)) | the case analysis of `roots_cubic` in `sympy/polys/polyroots.py` | G. Cardano, *Ars Magna* (1545) |
 | `src/calculus/series.rs` (`inverse_at_branch_point`: the expansions of `asin`, `acos`, `acosh`, `atanh`, `asinh`, `atan` at their branch points) | the branch-point cases of `asin._eval_nseries`, `acos._eval_nseries` (`1 ∓ u = t²`) and `atanh`/`acosh._eval_nseries` (`rewrite(log)`) in `sympy/functions/elementary/trigonometric.py` and `hyperbolic.py` | `asin √z = √z·₂F₁(½, ½; 3/2; z)` (DLMF 15.4.4) |
 | `src/simplify/radsimp.rs` (`try_rationalize`: a conjugate that makes the denominator 0 is not used) | the `d.has(S.Zero, nan, zoo)` guard of `radsimp` in `sympy/simplify/radsimp.py` | — |
+| `src/domains/matrix.rs` (`norm_frobenius`: squared moduli of the entries, `Abs(a)**2` for entries not known to be real) | `MatrixBase.norm` in `sympy/matrices/matrixbase.py` | G. H. Golub, C. F. Van Loan, *Matrix Computations*, §2.3 (Frobenius norm) |
+| `src/simplify/identically_zero.rs` (`vanishes_by_identity`: a numeric test at sample points, then an exact proof) | `Expr.equals` in `sympy/core/expr.py` | J. T. Schwartz (1980), R. Zippel (1979): zero testing at random points |
 | `src/calculus/series.rs` (`compose_at_constant`: `f(u₀ + w)` from the Taylor coefficients of `f` at the constant term of its argument, also when `w` carries `ln x`) | the generic and logarithmic-argument cases of `Function._eval_nseries` in `sympy/core/function.py` | Taylor's theorem |
 
 To the extent any of these is a derivative of SymPy, SymPy's licence

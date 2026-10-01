@@ -15,6 +15,24 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   Left)` is `1 + x·(ln(−x) + πi) + x²·(ln(−x) + πi)²/2` (the same
   values; it went through a Puiseux substitution and printed
   `1 − x·(−ln(−x) − πi) + …`).
+- **`Matrix::norm()` / `norm_frobenius()` sum `|aᵢⱼ|²`**, as SymPy's
+  `Matrix.norm()`; they summed `aᵢⱼ²` ("entries treated as real"), so
+  every complex matrix had a wrong norm: `[[i, 0], [0, 2]]` is `√5` (was
+  `√3`).  An entry not provably real gives `abs(a)^2` (`[[a, b]]`:
+  `sqrt(abs(a)^2 + abs(b)^2)`, was `sqrt(a^2 + b^2)`), one with known
+  real and imaginary parts `re² + im²`; provably real entries are
+  unchanged.  `norm_1`, `norm_inf`, `norm_p` and `condition_number` were
+  already right (a norm hunter against numpy: 1,422 wrong of 4,512 → 0,
+  all in `norm`/`norm_frobenius`).
+- **A sum that is zero everywhere is a zero in canonical products**:
+  `(x·(x + 1) − x² − x)/0` and `zoo·(x·(x + 1) − x² − x)` are `nan`
+  (were `zoo`), `P/P` and `0/P` are `nan` for such a `P` (were `1` and
+  `0`; SymPy 1.14 gives `zoo*P`, `1`, `0`), `zoo + 2/P` is `nan` (was
+  `zoo`), so `subs` of numbers into such expressions no longer gives `0`.
+  The test (a residue at a pseudo-random point, then an exact
+  confirmation) runs only on the rare paths — a product with `zoo` or a
+  zero coefficient, a base met with exponents of both signs, a sum with an
+  infinity; byte identity of the certificate generators unchanged.
 
 ### Added
 
@@ -49,6 +67,33 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   (`series_dir(x^(x + 1), x, 0, 3, Left)` was `0`), 8 hangs over 8 s and
   70 more calls over 1 s, 476 verified → 0 wrong, 0 hangs, slowest
   0.44 s, 587 verified.
+- **`expand` turned undefined expressions into a value**: a denominator
+  zero everywhere once its fractions are combined (`−x/(x + 1) + x·(−x/(x
+  + 1) + 1)`) or once multiplied out (`(x + y)² − x² − 2xy − y²`), also
+  under `√`, `sin`, `|·|`, is decided before multiplying out:
+  `expand((x·(x + 1) − x² − x)/(−x/(x + 1) + x·(−x/(x + 1) + 1)))` is
+  `nan` (was `0`), `expand(|x − 3|/(cos x + 2 + (x + 3)/((x + y)² − x² −
+  2xy − y²)))` is `0` (was `nan`).  An infinite factor is no longer
+  distributed over a sum: `expand((x + 1)·∞)` stays `(x + 1)·∞` (was
+  `x·∞ + ∞`, `nan` at `x = −1/2`).  An undefined-expression hunter
+  (8,000 cases, evaluation at random points): `expand` wrong 628 → 0,
+  canonical form and `subs` 253 → 3.
+- **`simplify` with a denominator that is zero only by an identity of
+  its functions** (`tan x·cos x − sin x`, `sin²x + cos²x − 1`,
+  `cosh²x − sinh²x − 1`, `tanh x·cosh x − sinh x`) gave `0`:
+  `simplify(((x + 1)² − x² − 2x − 1)/(tan x·cos x − sin x))` is `nan`
+  (SymPy 1.14: `0`), and a numerator that vanishes by an identity over a
+  zero denominator is `nan`, not `zoo`: `simplify((x + 1)·(sin 2x −
+  2·sin x·cos x)/(cosh²x − sinh²x − 1))` (was `zoo`).  Each denominator
+  with a function in it is evaluated (certified) at a sample point — a
+  nonzero value settles it at once — and a zero at two points is
+  confirmed exactly (as a rational function of exponentials once the
+  trigonometric and hyperbolic functions are written with `exp`).
+  `ln(x²) − 2·ln x`, nonzero over ℂ, is not taken for zero.  A hunter
+  (2,000 cases): 430 wrong and 48 left unchanged → 0 and 0; Rubi wall
+  time unchanged.
+- The docs of `dot` say it is bilinear (no conjugation, as SymPy's `dot`):
+  `dot([1, i], [1, i]) = 0`; `singular_values` uses `AᴴA`.
 - **The `fuzz_calculus` oracle called a correct `Divergent` wrong**
   (nightly 2026-09-30, `∫₀^∞ ln(√x)/x dx`): its quadrature maps
   `[0, ∞)` by `x = t/(1 − t)`, which sends `x ↔ 1/x` to `t ↔ 1 − t`, and

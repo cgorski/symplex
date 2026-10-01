@@ -2,6 +2,7 @@ pub(crate) mod combsimp;
 pub(crate) mod factor;
 pub(crate) mod factor_terms;
 pub(crate) mod fu;
+pub(crate) mod identically_zero;
 pub(crate) mod log_combine;
 pub(crate) mod log_expand;
 pub(crate) mod nsimplify;

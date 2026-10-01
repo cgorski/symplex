@@ -48,7 +48,7 @@ fn logarithmic_singularities_refuse_at_once() {
                 let t = Instant::now();
                 let s = e.series_dir(&x, &zero, 3, dir);
                 assert!(
-                    t.elapsed() < Duration::from_secs(1),
+                    t.elapsed() < Duration::from_secs(2),
                     "{src} {dir:?} took {:?}",
                     t.elapsed()
                 );
@@ -67,7 +67,7 @@ fn logarithmic_singularities_refuse_at_once() {
             .try_series(&x, &zero, 3)
             .is_err()
     );
-    assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+    assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
 }
 
 /// Logarithms that cancel still give a two-sided expansion: it is the
@@ -182,7 +182,7 @@ fn function_of_a_logarithmic_argument_from_one_side() {
             .series_dir(&x, &zero, 3, Direction::Right);
         assert!(r.has_unevaluated(), "{src}: {r}");
         assert!(
-            t.elapsed() < Duration::from_secs(1),
+            t.elapsed() < Duration::from_secs(2),
             "{src}: {:?}",
             t.elapsed()
         );

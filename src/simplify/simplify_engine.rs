@@ -281,9 +281,9 @@ pub(crate) fn smart_simplify_traced(
     // An expression with a denominator that vanishes identically takes its
     // value in the arithmetic of `1/0 = zoo` (`nan` for `0/0`); the
     // strategies below would multiply out a numerator that vanishes too and
-    // keep `0` (`vanishing_denominator`).
+    // keep `0` (`undefined_by_vanishing_denominator`).
     if flags.has_neg_pow
-        && let Some(value) = vanishing_denominator(arena, expr)
+        && let Some(value) = undefined_by_vanishing_denominator(arena, expr)
     {
         return (value, "vanishing-denominator", Vec::new());
     }
@@ -557,9 +557,10 @@ pub(crate) fn smart_simplify_traced(
     // `zoo` is a denominator that vanished (`sin²x + cos²x − 1` under the
     // trigonometric rules); over a numerator that vanishes as well the
     // expression is `0/0`.  Up to 0.31 `(x·(x + 1) − x² − x)/(sin²x + cos²x
-    // − 1)` simplified to `zoo`.
+    // − 1)` simplified to `zoo`; up to 0.32 so did a numerator that
+    // vanishes by an identity, `(sin 2x − 2·sin x·cos x)/(sin²x + cos²x − 1)`.
     if best.expr == arena.complex_infinity
-        && crate::simplify::ratsimp::numerator_expands_to_zero(arena, expr)
+        && crate::simplify::identically_zero::numerator_vanishes_identically(arena, expr)
     {
         return (arena.nan, best.strategy, best.steps);
     }
@@ -596,6 +597,32 @@ pub(crate) fn vanishing_denominator(arena: &mut Arena, expr: ExprId) -> Option<E
         return None;
     }
     crate::simplify::ratsimp::ratsimp_zero_denominator(arena, expr)
+}
+
+/// [`vanishing_denominator`] for `simplify`, which also sees denominators
+/// that vanish only by an identity of their functions (`tan x·cos x − sin
+/// x`, `cosh²x − sinh²x − 1`;
+/// [`vanishing_by_identity`](crate::simplify::identically_zero::vanishing_by_identity)),
+/// and numerators that do (`zoo` becomes the `nan` of `0/0`;
+/// [`numerator_vanishes_identically`](crate::simplify::identically_zero::numerator_vanishes_identically)).
+///
+/// Up to 0.32 `simplify(((x + 1)² − x² − 2x − 1)/(tan x·cos x − sin x))`
+/// was `0` (the strategies multiply the numerator out to 0 and never look
+/// at the denominator) and `simplify((x + 1)·(sin 2x − 2·sin x·cos
+/// x)/(cosh²x − sinh²x − 1))` was `zoo`; both are `nan`, undefined for
+/// every `x`.  SymPy 1.14 gives `0` for both: its `simplify` finds the
+/// numerator 0 first.
+fn undefined_by_vanishing_denominator(arena: &mut Arena, expr: ExprId) -> Option<ExprId> {
+    let value = match vanishing_denominator(arena, expr) {
+        Some(value) => value,
+        None => crate::simplify::identically_zero::vanishing_by_identity(arena, expr)?,
+    };
+    if value == arena.complex_infinity
+        && crate::simplify::identically_zero::numerator_vanishes_identically(arena, expr)
+    {
+        return Some(arena.nan);
+    }
+    Some(value)
 }
 
 /// Unified simplification engine — iterates [`smart_simplify`] to a fixpoint.

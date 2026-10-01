@@ -26,11 +26,14 @@
 use num_bigint::BigInt;
 use num_rational::Ratio;
 use num_traits::{One, Signed};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
 use crate::base::arena::Arena;
 use crate::base::assumptions::{AssumptionCache, Props};
+use crate::base::canon::{
+    may_vanish_identically_as_factor, vanishes_identically_as_factor, vanishing_check_active,
+};
 use crate::base::combinatorics::multinomial_u64;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
@@ -246,7 +249,13 @@ const MAX_EXTRA_EXPAND_PASSES: usize = 4;
 /// [`expand`] promises.  Further passes run while such a node remains and
 /// the last pass changed something (a product left alone for its size stays
 /// as it is).
+///
+/// A denominator that vanishes identically is decided first
+/// ([`resolve_vanishing_denominators`]): multiplying out would turn a
+/// numerator that vanishes too into `0` before the denominator is looked
+/// at.
 pub(crate) fn expand_with(arena: &mut Arena, expr: ExprId, opts: &ExpandOpts) -> ExprId {
+    let expr = resolve_vanishing_denominators(arena, expr, opts.deep);
     let mut cur = expand_pass(arena, expr, opts);
     for _ in 0..MAX_EXTRA_EXPAND_PASSES {
         if !has_unexpanded_node(arena, cur, opts) {
@@ -259,6 +268,144 @@ pub(crate) fn expand_with(arena: &mut Arena, expr: ExprId, opts: &ExpandOpts) ->
         cur = next;
     }
     cur
+}
+
+/// The base of `id` when it is a power with a negative rational exponent
+/// (a denominator: `s⁻ᵏ`, `1/√s`, `1/sin s`).
+fn negative_power_base(arena: &Arena, id: ExprId) -> Option<ExprId> {
+    match arena.node(id) {
+        ExprNode::Pow(base, e) if arena.as_num(*e).is_some_and(Signed::is_negative) => Some(*base),
+        _ => None,
+    }
+}
+
+/// Is `id` a power with a negative integer exponent (a denominator)?
+fn is_negative_integer_power(arena: &Arena, id: ExprId) -> bool {
+    matches!(arena.node(id), ExprNode::Pow(_, e)
+        if arena.as_num(*e).is_some_and(|q| q.is_integer() && q.is_negative()))
+}
+
+/// Is `id` a node of a rational skeleton (a number, sum, product, negation
+/// or integer power), rather than one of its generators (a symbol, a
+/// function application, a non-integer power)?
+fn is_rational_node(arena: &Arena, id: ExprId) -> bool {
+    match arena.node(id) {
+        ExprNode::Num(_) | ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) => true,
+        ExprNode::Pow(_, e) => arena.as_num(*e).is_some_and(|q| q.is_integer()),
+        _ => false,
+    }
+}
+
+/// `expr` with every negative power of a base that vanishes identically
+/// ([`vanishes_identically_as_factor`]: a sum such as `−x/(x + 1) +
+/// x·(−x/(x + 1) + 1)` or `(x + y)² − x² − 2xy − y²`, `sin` or `|·|` of
+/// one, a product with one) replaced by `0⁻ᵏ = zoo`, bottom-up, so
+/// that the canonical arithmetic gives the value at every point (with a
+/// generic value of each symbol): `nan` for `0·zoo` (a numerator that
+/// vanishes identically too, see `canon_mul`), `zoo` for `P·zoo`, `0` for
+/// `x/(1 + zoo)`, `nan` for `zoo + zoo`.  With `deep = false` only the
+/// nodes [`expand_pass`] rebuilds then are looked at (the
+/// [`algebraic_skeleton`]), not function arguments.
+///
+/// `expand` multiplies out before it divides: in
+/// `(x·(x + 1) − x² − x)/(−x/(x + 1) + x·(−x/(x + 1) + 1))` the numerator
+/// became 0 and `0·(…)⁻¹ = 0` while the denominator, 0 only once its
+/// fractions are combined, was never looked at; and in `|x − 3|/(cos x +
+/// 2 + (x + 3)/((x + y)² − x² − 2xy − y²))` the inner `(x + 3)/0 = zoo`
+/// was distributed (`x·zoo + 3·zoo = nan`).  Up to 0.32 they expanded to `0`
+/// and `nan` (now `nan` and `0`, as `simplify` gives; SymPy 1.14's
+/// `expand` gives `0` and `|x − 3|/(zoo·x + cos x + zoo)`).
+///
+/// Cost: one walk for a negative power.  A skeleton with a negative
+/// integer power of a rational node gets the residue test of
+/// `may_have_vanishing_denominator` (one pass, no expansion), any other
+/// negative power (`1/√s`, `1/sin s`) that of
+/// [`may_vanish_identically_as_factor`] on its base; only when one fails
+/// are the denominators confirmed by multiplying out.  Not run inside such
+/// a confirmation ([`vanishing_check_active`]).
+///
+/// `simplify` evaluates such a skeleton as a whole in `ratsimp`'s
+/// arithmetic (`vanishing_denominator`), which returns its cancelled
+/// normal form; here only the vanishing denominators are replaced, so the
+/// rest keeps `expand`'s form, and a sum of two terms over the same zero
+/// denominator is `zoo + zoo = nan`, its value at every point (`ratsimp`:
+/// `(x + 1)/0 = zoo`).
+fn resolve_vanishing_denominators(arena: &mut Arena, expr: ExprId, deep: bool) -> ExprId {
+    if vanishing_check_active() {
+        return expr;
+    }
+    let mut order = walk::post_order_ids(arena, expr);
+    if !deep {
+        let skeleton = algebraic_skeleton(arena, expr);
+        order.retain(|id| skeleton.contains(id));
+    }
+    if !order
+        .iter()
+        .any(|&id| matches!(arena.node(id), ExprNode::Pow(_, e) if arena.as_num(*e).is_some_and(Signed::is_negative)))
+    {
+        return expr;
+    }
+    // The rational nodes whose skeleton below them holds a negative integer
+    // power, and the roots of the skeletons.
+    let mut with_denominator: FxHashSet<ExprId> = FxHashSet::default();
+    let mut roots: FxHashSet<ExprId> = FxHashSet::default();
+    roots.insert(expr);
+    for &id in &order {
+        if is_rational_node(arena, id) {
+            let has = match arena.node(id) {
+                ExprNode::Pow(base, _) => {
+                    is_negative_integer_power(arena, id) || with_denominator.contains(base)
+                }
+                ExprNode::Add(ch) | ExprNode::Mul(ch) => {
+                    ch.iter().any(|c| with_denominator.contains(c))
+                }
+                ExprNode::Neg(inner) => with_denominator.contains(inner),
+                _ => false,
+            };
+            if has {
+                with_denominator.insert(id);
+            }
+        } else {
+            arena.node(id).for_each_child(|c| {
+                roots.insert(c);
+            });
+        }
+    }
+    let suspect = order.iter().any(|&id| {
+        if roots.contains(&id)
+            && with_denominator.contains(&id)
+            && crate::poly::polybridge::may_have_vanishing_denominator(arena, id)
+        {
+            return true;
+        }
+        match negative_power_base(arena, id) {
+            // Within a skeleton: decided by its residue test above.
+            Some(base) if is_negative_integer_power(arena, id) && is_rational_node(arena, base) => {
+                false
+            }
+            Some(base) => may_vanish_identically_as_factor(arena, base),
+            None => false,
+        }
+    });
+    if !suspect {
+        return expr;
+    }
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    for &id in &order {
+        let rebuilt = walk::rebuild_with_cache(arena, id, &cache);
+        let (_, exp) = arena.as_base_exp(rebuilt);
+        let value = match negative_power_base(arena, rebuilt) {
+            Some(base) if vanishes_identically_as_factor(arena, base) => {
+                let zero = arena.zero;
+                arena.pow(zero, exp)
+            }
+            _ => rebuilt,
+        };
+        if value != id {
+            cache.insert(id, value);
+        }
+    }
+    cache.get(&expr).copied().unwrap_or(expr)
 }
 
 /// Does `root` still contain, where [`expand_pass`] would act, a product
@@ -276,6 +423,7 @@ fn has_unexpanded_node(arena: &Arena, root: ExprId, opts: &ExpandOpts) -> bool {
                 && ch
                     .iter()
                     .any(|&c| matches!(arena.node(c), ExprNode::Add(_)))
+                && !ch.iter().any(|&c| is_infinite_atom(arena, c))
         }
         ExprNode::Pow(b, e) => {
             opts.multinomial
@@ -671,7 +819,14 @@ fn expand_mul(arena: &mut Arena, factors: &[ExprId]) -> ExprId {
         .iter()
         .any(|&f| matches!(arena.node(f), ExprNode::Add(_)));
 
-    if !has_add {
+    // An infinite factor is not distributed over a sum: `(x + 3)·zoo` is
+    // `zoo` (canonical products take a generic `x`), `x·zoo + 3·zoo` is
+    // `zoo + zoo = nan`; `(x + 1)·∞` is `∞` at `x = −1/2`, `x·∞ + ∞` is
+    // `−∞ + ∞ = nan` there.  Up to 0.32 both were distributed (SymPy 1.14
+    // distributes too: `zoo*x + zoo`, `oo*x + oo`).
+    let has_infinity = symbolic_factors.iter().any(|&f| is_infinite_atom(arena, f));
+
+    if !has_add || has_infinity {
         // No Add factors — nothing to distribute.  Just rebuild.
         let mut all: SmallVec<[ExprId; 6]> = SmallVec::new();
         all.extend_from_slice(&coeff_factors);
@@ -730,6 +885,15 @@ fn expand_mul(arena: &mut Arena, factors: &[ExprId]) -> ExprId {
     } else {
         arena.add(&sum_terms)
     }
+}
+
+/// Is `id` one of `∞`, `−∞`, `zoo`, `nan` (the factor of a directed or
+/// complex infinity)?
+fn is_infinite_atom(arena: &Arena, id: ExprId) -> bool {
+    matches!(
+        arena.node(id),
+        ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity | ExprNode::NaN
+    )
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

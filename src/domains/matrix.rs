@@ -3337,7 +3337,8 @@ impl Matrix {
     /// (radicals when its factors have degree ≤ 2 or a compact radical
     /// form, `RootOf` otherwise), and for symbolic matrices whose Gram
     /// matrix is at most 2×2 or has a factorable characteristic
-    /// polynomial.  Entries are treated as real (`Aᵀ`, not `Aᴴ`).
+    /// polynomial.  The Gram matrix is `AᴴA` (`AᵀA` when every entry is
+    /// provably real), as SymPy's.
     ///
     /// # Errors
     ///
@@ -4274,20 +4275,80 @@ impl Matrix {
 // Utilities
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// `|e|²` as a term of the Frobenius norm: `e·e` for an `e` that is
+/// provably real (the form real matrices always had), `re² + im²` when
+/// [`decompose`](crate::base::complex::decompose) determines both parts in
+/// real terms (`|1 + 2i|² = 5`), and `abs(e)²` otherwise (SymPy's
+/// `Abs(a)**2` for a symbol `a` that may be complex).
+fn abs_squared_entry(e: &Ex) -> Ex {
+    if e.is_real() == Some(true) {
+        return e * e;
+    }
+    let id = {
+        let mut inner = e.inner.write();
+        let arena = &mut inner.arena;
+        let parts = crate::base::complex::decompose(arena, e.raw_id());
+        if arena.is_zero_structural(parts.im) {
+            None
+        } else {
+            let two = arena.int(2);
+            Some(if parts.exact {
+                let re2 = arena.pow(parts.re, two);
+                let im2 = arena.pow(parts.im, two);
+                arena.add(&[re2, im2])
+            } else {
+                let abs = arena.abs(e.raw_id());
+                arena.pow(abs, two)
+            })
+        }
+    };
+    id.map_or_else(|| e * e, |id| e.wrap(id))
+}
+
 impl Matrix {
-    /// Frobenius norm `‖A‖_F = √(Σ |a_ij|²)`.
+    /// Frobenius norm `‖A‖_F = √(Σ |a_ij|²)` (for a row or column vector,
+    /// its Euclidean 2-norm).  SymPy: `Matrix.norm()`, `sqrt(Add(*(abs(i)
+    /// ** 2 for i in vals)))`.
     ///
-    /// Entries are treated as real (squared, not `|·|²`); for complex
-    /// entries apply [`adjoint`](Self::adjoint) manually.
+    /// Each `|a|²` is `a²` for an entry that is provably real, `re² + im²`
+    /// when the real and imaginary parts of `a` are known (`|1 + 2i|² = 5`,
+    /// `|x + i·y|² = x² + y²` for real `x`, `y`), and `abs(a)²` otherwise —
+    /// SymPy's form for a symbol that may be complex, `[[a, b]]` ↦
+    /// `sqrt(Abs(a)**2 + Abs(b)**2)`.  Before 0.33 every entry was squared:
+    /// `[[i, 0], [0, 2]]` had the norm `√3` (it is `√5`) and `[[a, b]]` the
+    /// norm `√(a² + b²)`, which is not a norm for complex `a`, `b`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let i = ctx.i_unit();
+    /// // SymPy: Matrix([[I, 0], [0, 2]]).norm() == sqrt(5)
+    /// let m = Matrix::new(vec![vec![i.clone(), ctx.int(0)], vec![ctx.int(0), ctx.int(2)]]).unwrap();
+    /// assert_eq!(m.norm(), ctx.int(5).sqrt());
+    /// assert_eq!(matrix![ctx, [3, 4]].norm(), ctx.int(5));
+    /// // SymPy: Matrix([[a, b]]).norm() == sqrt(Abs(a)**2 + Abs(b)**2)
+    /// let (a, b) = (ctx.symbol("a"), ctx.symbol("b"));
+    /// let v = Matrix::new(vec![vec![a.clone(), b.clone()]]).unwrap();
+    /// assert_eq!(v.norm(), (&a.abs().powi(2) + &b.abs().powi(2)).sqrt());
+    /// // ... and sqrt(a**2 + b**2) for real a, b
+    /// let x = ctx.symbol_with("x", &[Assumption::Real]).unwrap();
+    /// let y = ctx.symbol_with("y", &[Assumption::Real]).unwrap();
+    /// let v = Matrix::new(vec![vec![x.clone(), y.clone()]]).unwrap();
+    /// assert_eq!(v.norm(), (&x.powi(2) + &y.powi(2)).sqrt());
+    /// ```
     pub fn norm_frobenius(&self) -> Ex {
         let mut sum = self.ctx_zero();
         for elem in self.iter() {
-            sum += &(elem * elem);
+            sum += &abs_squared_entry(elem);
         }
         sum.sqrt()
     }
 
-    /// Default norm — the Frobenius norm ([`norm_frobenius`](Self::norm_frobenius)).
+    /// Default norm — the Frobenius norm ([`norm_frobenius`](Self::norm_frobenius)),
+    /// as SymPy's `Matrix.norm()` (`ord=None`).
     pub fn norm(&self) -> Ex {
         self.norm_frobenius()
     }
@@ -5616,7 +5677,13 @@ pub fn cross(a: &Matrix, b: &Matrix) -> Result<Matrix, SymplexError> {
     ])
 }
 
-/// Dot product of two column vectors (n×1 matrices).
+/// Dot product `Σ aᵢ·bᵢ` of two column vectors (n×1 matrices).
+///
+/// The product is bilinear, as SymPy's `Matrix.dot` by default
+/// (`hermitian=False`): nothing is conjugated, so for complex vectors
+/// `dot(v, v)` is not `‖v‖²` (`dot([1, i], [1, i]) = 0`).  Use
+/// [`Matrix::norm`] for the length, or `dot(&v.map(Ex::conjugate), &w)`
+/// for the Hermitian product `⟨v, w⟩`.
 ///
 /// # Errors
 ///
@@ -5633,6 +5700,10 @@ pub fn cross(a: &Matrix, b: &Matrix) -> Result<Matrix, SymplexError> {
 /// assert_eq!(dot(&matrix![ctx, [1], [2]], &matrix![ctx, [3], [4]]).unwrap(), ctx.int(11));
 /// assert!(dot(&matrix![ctx, [1], [2]], &matrix![ctx, [3]]).is_err());
 /// assert!(dot(&matrix![ctx, [1, 2]], &matrix![ctx, [3, 4]]).is_err());
+/// // Bilinear (SymPy: Matrix([1, I]).dot(Matrix([1, I])) == 0)
+/// let v = Matrix::col_vector(vec![ctx.int(1), ctx.i_unit()]).unwrap();
+/// assert_eq!(dot(&v, &v).unwrap(), ctx.int(0));
+/// assert_eq!(dot(&v.map(Ex::conjugate), &v).unwrap(), ctx.int(2));
 /// ```
 pub fn dot(a: &Matrix, b: &Matrix) -> Result<Ex, SymplexError> {
     if a.ncols() != 1 || b.ncols() != 1 || a.nrows() != b.nrows() {

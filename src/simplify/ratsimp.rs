@@ -287,7 +287,90 @@ fn to_rational_function(
     expr: ExprId,
     gens: &[ExprId],
 ) -> Option<(RatPoly, RatPoly)> {
-    to_rational_function_tracked(arena, expr, gens, &mut false)
+    to_rational_function_tracked(arena, expr, gens, &mut false, &FxHashMap::default())
+}
+
+/// The value a node of `expr` is given in [`ratsimp_vanishing`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Vanishing {
+    /// A subexpression that vanishes identically (`tan x·cos x − sin x`),
+    /// or a positive power of one: `0`.
+    Zero,
+    /// A negative power of such a subexpression: the fraction `1/0`.
+    Pole,
+}
+
+/// Is `expr` zero as a rational function `P/Q` of its generators, with
+/// the imaginary unit among them taken modulo `i² + 1` (`P` reduces to 0
+/// and `Q` does not)?  The exact zero test behind
+/// [`identically_zero`](crate::simplify::identically_zero) once the
+/// trigonometric and hyperbolic functions are written as exponentials,
+/// where `i` is everywhere (`sin x = (e^{ix} − e^{−ix})/(2i)`).  `false`
+/// when undecided: an infinity or an unevaluated node in `expr`, or the
+/// size budget.
+pub(crate) fn vanishes_as_rational_function(arena: &mut Arena, expr: ExprId) -> bool {
+    if !is_admissible(arena, expr) {
+        return false;
+    }
+    let gens = collect_generators(arena, expr);
+    let Some((p, q)) = to_rational_function(arena, expr, &gens) else {
+        return false;
+    };
+    let i = arena.i_unit();
+    let Some(t) = gens.iter().position(|&g| g == i) else {
+        return p.is_zero() && !q.is_zero();
+    };
+    // i^k = (−1)^(k div 2)·i^(k mod 2)
+    let modulo_i = |f: &RatPoly| -> Option<RatPoly> {
+        let terms: Vec<(Vec<u32>, Q)> = f
+            .terms()
+            .map(|(exp, c)| {
+                let mut e = exp.to_vec();
+                let k = e.get(t).copied().unwrap_or(0);
+                if let Some(slot) = e.get_mut(t) {
+                    *slot = k % 2;
+                }
+                let c = if (k / 2) % 2 == 1 {
+                    -c.clone()
+                } else {
+                    c.clone()
+                };
+                (e, c)
+            })
+            .collect();
+        RatPoly::from_terms(f.num_vars(), terms)
+    };
+    match (modulo_i(&p), modulo_i(&q)) {
+        (Some(p), Some(q)) => p.is_zero() && !q.is_zero(),
+        _ => false,
+    }
+}
+
+/// [`ratsimp_zero_denominator`] for an `expr` in which the nodes of
+/// `vanishing` are known to vanish identically by an identity the
+/// polynomial arithmetic cannot see (`sin²x + cos²x − 1`): each takes its
+/// [`Vanishing`] value and the rest is carried through the arithmetic of
+/// `1/0 = zoo` — `nan` for `0/0`, `zoo` for `P/0`, and the zero absorbed
+/// by a further division (`x/(1 + 1/0) = 0`).  `nan` too for `P/0` with a
+/// numerator `P` that is 0 once multiplied out ([`numerator_expands_to_zero`]);
+/// a numerator that vanishes only by an identity is the caller's to test.
+/// `None` when `ratsimp` does not apply (an infinity or an unevaluated node
+/// in `expr`, or the size budget).
+pub(crate) fn ratsimp_vanishing(
+    arena: &mut Arena,
+    expr: ExprId,
+    vanishing: &FxHashMap<ExprId, Vanishing>,
+) -> Option<ExprId> {
+    if !is_admissible(arena, expr) {
+        return None;
+    }
+    let gens = collect_generators(arena, expr);
+    let (p, q) = to_rational_function_tracked(arena, expr, &gens, &mut false, vanishing)?;
+    let out = rebuild(arena, &p, &q, &gens)?;
+    if out == arena.complex_infinity && numerator_expands_to_zero(arena, expr) {
+        return Some(arena.nan);
+    }
+    Some(out)
 }
 
 /// The value of `expr` in the arithmetic of `1/0 = zoo` when a negative
@@ -302,7 +385,13 @@ pub(crate) fn ratsimp_zero_denominator(arena: &mut Arena, expr: ExprId) -> Optio
     }
     let gens = collect_generators(arena, expr);
     let mut zero_denominator = false;
-    let (p, q) = to_rational_function_tracked(arena, expr, &gens, &mut zero_denominator)?;
+    let (p, q) = to_rational_function_tracked(
+        arena,
+        expr,
+        &gens,
+        &mut zero_denominator,
+        &FxHashMap::default(),
+    )?;
     if !zero_denominator {
         return None;
     }
@@ -314,12 +403,14 @@ pub(crate) fn ratsimp_zero_denominator(arena: &mut Arena, expr: ExprId) -> Optio
 }
 
 /// [`to_rational_function`], setting `zero_denominator` when the base of
-/// a negative power is the zero polynomial.
+/// a negative power is the zero polynomial, with the nodes of `vanishing`
+/// taking their [`Vanishing`] values (`0`, or the fraction `1/0`).
 fn to_rational_function_tracked(
     arena: &Arena,
     expr: ExprId,
     gens: &[ExprId],
     zero_denominator: &mut bool,
+    vanishing: &FxHashMap<ExprId, Vanishing>,
 ) -> Option<(RatPoly, RatPoly)> {
     let nv = gens.len();
     let gen_index: FxHashMap<ExprId, usize> =
@@ -331,6 +422,18 @@ fn to_rational_function_tracked(
 
     while let Some(&(id, expanded)) = stack.last() {
         if cache.contains_key(&id) {
+            stack.pop();
+            continue;
+        }
+        if let Some(v) = vanishing.get(&id) {
+            let value = match v {
+                Vanishing::Zero => (RatPoly::zero(nv), one.clone()),
+                Vanishing::Pole => {
+                    *zero_denominator = true;
+                    (one.clone(), RatPoly::zero(nv))
+                }
+            };
+            cache.insert(id, value);
             stack.pop();
             continue;
         }

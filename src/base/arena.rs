@@ -942,6 +942,31 @@ impl Arena {
         crate::poly::polybridge::fraction_parts(self, expr)
     }
 
+    /// `false` when `expr` certainly does not vanish identically as a
+    /// rational function of its generators (one residue at a pseudo-random
+    /// point, no expansion).
+    ///
+    /// Delegates to [`polybridge::may_vanish_identically`](crate::poly::polybridge::may_vanish_identically).
+    pub(crate) fn may_vanish_identically(&self, expr: ExprId) -> bool {
+        crate::poly::polybridge::may_vanish_identically(self, expr)
+    }
+
+    /// `false` when no denominator of `expr` (outside every generator)
+    /// vanishes identically (one residue pass, no expansion).
+    ///
+    /// Delegates to [`polybridge::may_have_vanishing_denominator`](crate::poly::polybridge::may_have_vanishing_denominator).
+    pub(crate) fn may_have_vanishing_denominator(&self, expr: ExprId) -> bool {
+        crate::poly::polybridge::may_have_vanishing_denominator(self, expr)
+    }
+
+    /// Is `expr` structurally 0, or 0 once multiplied out, after the
+    /// residue test said it may vanish identically?
+    ///
+    /// Delegates to [`polybridge::vanishes_identically`](crate::poly::polybridge::vanishes_identically).
+    pub(crate) fn vanishes_identically(&mut self, expr: ExprId) -> bool {
+        crate::poly::polybridge::vanishes_identically(self, expr)
+    }
+
     /// Partial fraction decomposition of `expr` with respect to `var`.
     ///
     /// Delegates to [`apart::apart`](crate::transforms::apart::apart).
