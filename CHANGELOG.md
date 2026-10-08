@@ -46,7 +46,10 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   polynomial over ℚ(√p…, i) with fewer roots found than distinct roots
   (its square-free degree over the field) is now solved whole.  Hunter
   (1,500 factored polynomials against mpmath `polyroots`): 16 partial root
-  lists → 0.
+  lists → 0.  The same for any product: a factor the solver returns no
+  roots for (roots unknown, not absent) no longer drops out of the union:
+  `solve(√x·(x³ + √2·x + 1))` and `solve(x²·(x − cos x))` were `[0]`,
+  now refused (SymPy 1.14 raises `NotImplementedError` for the second).
 - `cholesky([[2, i], [−i, 2]])` is `[[√2, 0], [−i·√2/2, √6/2]]` (SymPy 1.14
   the same); a pivot is also decided over one denominator (`2 − x²/(x² +
   1)` for a real `x`).

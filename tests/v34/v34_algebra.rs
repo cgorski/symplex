@@ -91,9 +91,11 @@ fn solve_of_a_product_over_an_algebraic_field_has_every_root() {
         matches!(err, SymplexError::ComputationFailed { .. }),
         "{err:?}"
     );
+    // The quintic factor is not solved, so the product is solved as a
+    // whole, which fails: no partial list of the two roots of `x² + i`.
     assert!(
         err.to_string()
-            .contains("7 distinct roots, of which 2 were found"),
+            .contains("roots were not found in closed form"),
         "{err}"
     );
 }

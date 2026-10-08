@@ -260,9 +260,17 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
 
     // Pre-check: if expr is a Mul, solve each var-dependent factor
     // independently.  x*(x-1)*(x+2) = 0 → union of factor solutions.
+    // The union is the answer only when every factor was solved or shown
+    // to have no solution: an empty list from a factor means its roots are
+    // unknown, not absent.  Before 0.36 such a factor was dropped and the
+    // roots of the others came back alone — `solve(√x·(x³ + √2·x + 1))`
+    // and `solve(x²·(x − cos x))` were `[0]`; now the product is treated
+    // as a whole (and refused when that fails too, as SymPy raises
+    // `NotImplementedError` for the second).
     if let ExprNode::Mul(ref children) = arena.node(expr).clone() {
         let mut solutions: Vec<Solution> = Vec::new();
         let mut any_identity = false;
+        let mut unsolved = false;
         for &child in children {
             if !expr_contains_var(arena, child, var) {
                 // Constant factor: the canonicalizer already folds literal
@@ -271,6 +279,7 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
             }
             match solve_raw(arena, child, var, period) {
                 SolveOutcome::Solutions(child_solutions) => {
+                    unsolved |= child_solutions.is_empty();
                     for sol in child_solutions {
                         if !solutions.iter().any(|s| s.value == sol.value) {
                             solutions.push(sol);
@@ -284,7 +293,7 @@ fn solve_raw(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId
         if any_identity {
             return SolveOutcome::Identity;
         }
-        if !solutions.is_empty() {
+        if !solutions.is_empty() && !unsolved {
             return SolveOutcome::Solutions(solutions);
         }
         // Otherwise fall through and treat the product as a whole.
