@@ -71,7 +71,7 @@ use crate::base::bigcomplex::{Complex, c_div, c_one, c_powi, c_zero};
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 
-use super::accuracy::{self, Bound, ErrExp, Nonzero};
+use super::accuracy::{self, Absorbed, Bound, ErrExp, Nonzero};
 use super::exact::{self, ExactMap, Gauss};
 
 /// The bottom of the exponent range.
@@ -146,6 +146,11 @@ impl Scaled {
     /// (`−∞` for an exact 0).
     fn lg_upper(&self) -> f64 {
         accuracy::lsum(accuracy::lg_abs(&self.m), self.eb.joint()) + self.k as f64
+    }
+
+    /// `log₂ abs(value)` (absolute, rounded up; `−∞` for 0).
+    pub(super) fn lg_value(&self) -> f64 {
+        accuracy::lg_abs(&self.m) + self.k as f64
     }
 
     /// `log₂` of an upper bound on `abs(value)`'s exponent: `mag(m) + k`.
@@ -428,7 +433,8 @@ pub(super) fn wanted(arena: &Arena, id: ExprId, underflowed: bool, exts: &ExtMap
 /// The extended evaluation of node `id` (see the module documentation), or
 /// `None` when the ordinary value stands.  `ordinary` is the node's
 /// ordinary value, when it has one; `underflowed`: it is 0 with an
-/// underflow bound.
+/// underflow bound.  A nonzero term a sum loses below its error bound is
+/// recorded in `ab` ([`Absorbed`]).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn extend(
     arena: &Arena,
@@ -441,6 +447,7 @@ pub(super) fn extend(
     prec: usize,
     rm: RoundingMode,
     cc: &mut Consts,
+    ab: &mut Option<Absorbed>,
 ) -> Option<Outcome> {
     let cx = Ctx {
         arena,
@@ -479,14 +486,14 @@ pub(super) fn extend(
                 Some(Outcome::InRange(v, b))
             }
             View::Near(p, d) if p == one() => match series(&poly_of(*c, &d), &LOG1P, prec, rm) {
-                Some(l) => settle_poly(l, prec, rm),
+                Some(l) => settle_poly(l, prec, rm, ab),
                 None => finish_node(first_order(d, 1), id, prec),
             },
             _ => None,
         },
         ExprNode::Mul(children) => {
             if let Some(full) = poly_product(&cx, children, prec, rm) {
-                return settle_poly(full, prec, rm);
+                return settle_poly(full, prec, rm, ab);
             }
             let mut factors = Vec::with_capacity(children.len());
             let mut beyond = false;
@@ -511,7 +518,7 @@ pub(super) fn extend(
                     if let Some(q) = q
                         && let Some(full) = poly_power(&poly_of(*b, &s), q, x, ex, prec, rm, cc)
                     {
-                        return settle_poly(full, prec, rm);
+                        return settle_poly(full, prec, rm, ab);
                     }
                     finish_node(power(&s, q, x, ex, prec, rm, cc)?, id, prec)
                 }
@@ -532,7 +539,7 @@ pub(super) fn extend(
                 _ => None,
             }
         }
-        ExprNode::Add(children) => sum_node(&cx, id, children, prec, rm),
+        ExprNode::Add(children) => sum_node(&cx, id, children, prec, rm, ab),
         ExprNode::Neg(c) => match cx.view(*c)? {
             View::Plain(s, true) => finish(negated(with_poly(s, *c)), prec),
             View::Near(p, d) => Some(Outcome::Near(p.neg(), negated(with_poly(d, *c)))),
@@ -605,7 +612,7 @@ pub(super) fn extend(
                 _ => &ATANH,
             };
             match series(&poly_of(*c, &s), table, prec, rm) {
-                Some(f) => settle_poly(f, prec, rm),
+                Some(f) => settle_poly(f, prec, rm, ab),
                 None => finish_node(first_order(s, 2), id, prec),
             }
         }
@@ -885,6 +892,7 @@ fn sum_node(
     children: &[ExprId],
     prec: usize,
     rm: RoundingMode,
+    ab: &mut Option<Absorbed>,
 ) -> Option<Outcome> {
     let mut beyond_terms = Vec::with_capacity(children.len());
     let mut ordinary_terms = Vec::new();
@@ -929,7 +937,7 @@ fn sum_node(
     }
     if ordinary_terms.is_empty() && lost.is_exact() {
         if let Some(f) = full.and_then(|f| f.plus(Poly::constant(p.clone()))) {
-            return settle_poly(f, prec, rm);
+            return settle_poly(f, prec, rm, ab);
         }
         let d = add_terms(&beyond_terms, Bound::EXACT, prec, rm)?;
         return if p.is_zero() {
@@ -938,13 +946,30 @@ fn sum_node(
             Some(near_node(p, d, id))
         };
     }
+    // The terms by shape (see `note_lost`): a number in range is a term of
+    // its own, a value below the range has the shapes of its polynomial.
+    let mut shaped: Vec<(Option<Mono>, Scaled)> = Vec::new();
+    for s in &ordinary_terms {
+        shaped.push((None, s.bare()));
+    }
+    for s in &beyond_terms {
+        match s.poly.as_ref().and_then(|p| shaped_terms(p, prec, rm)) {
+            Some(terms) => shaped.extend(terms),
+            None => shaped.push((None, s.bare())),
+        }
+    }
     let mut terms = ordinary_terms;
     terms.append(&mut beyond_terms);
     if !p.is_zero() {
         let (v, b) = exact::to_value(&p, prec, rm);
-        terms.push(normalized(&v, b)?);
+        let v = normalized(&v, b)?;
+        shaped.push((None, v.clone()));
+        terms.push(v);
     }
     let s = add_terms(&terms, lost, prec, rm)?;
+    // The value is a number alone from here: what lies below its error is
+    // lost.
+    note_lost(shaped, s.eb.joint() + s.k as f64, prec, rm, ab);
     // A ball that holds 0 only because of a term without a scaled form says
     // nothing the placeholder does not.
     if !lost.is_exact() {
@@ -1141,14 +1166,48 @@ const MAX_TERMS: usize = 48;
 /// Largest integer power of a polynomial of several terms.
 const MAX_POLY_POWER: i64 = 8;
 
-/// A monomial of a [`Poly`]: `e^g·Π vᵢ^nᵢ` — `g` exact (`exp` of an exact
-/// argument below the range), `vᵢ` the value of node `i` (below the range,
-/// known as a number: `Ei(−10¹⁰)`, a product with an inexact factor).
+/// A monomial of a [`Poly`]: `e^g·Π vᵢ^nᵢ·Π fⱼ^mⱼ` — `g` exact (`exp` of an
+/// exact argument below the range), `vᵢ` the value of node `i` below the
+/// range known as a number (`Ei(−10¹⁰)`), `fⱼ` an inexact factor in range
+/// of a product (`sin²1 + cos²1`).  Without its factors it is the
+/// monomial's [`shape`](Mono::shape): the size of its value up to a number in
+/// range.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Mono {
     exp: Gauss,
-    /// `(node, n)`, sorted by node.
+    /// `(node, n)`, sorted by node: values below the range.
     nodes: Vec<(ExprId, u32)>,
+    /// `(node, n)`, sorted by node: factors in range.
+    factors: Vec<(ExprId, u32)>,
+}
+
+/// `Π xᵢ^nᵢ · Π yⱼ^mⱼ` of two sorted lists of `(node, power)`.
+fn merge_powers(a: &[(ExprId, u32)], b: &[(ExprId, u32)]) -> Option<Vec<(ExprId, u32)>> {
+    let mut out = Vec::with_capacity(a.len() + b.len());
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() || j < b.len() {
+        match (a.get(i), b.get(j)) {
+            (Some(&(x, n)), Some(&(y, m))) if x == y => {
+                out.push((x, n.checked_add(m)?));
+                i += 1;
+                j += 1;
+            }
+            (Some(&(x, n)), Some(&(y, _))) if x < y => {
+                out.push((x, n));
+                i += 1;
+            }
+            (_, Some(&t)) => {
+                out.push(t);
+                j += 1;
+            }
+            (Some(&t), None) => {
+                out.push(t);
+                i += 1;
+            }
+            (None, None) => break,
+        }
+    }
+    Some(out)
 }
 
 impl Mono {
@@ -1156,25 +1215,47 @@ impl Mono {
         Mono {
             exp: zero(),
             nodes: Vec::new(),
+            factors: Vec::new(),
         }
     }
 
     fn exp(g: Gauss) -> Mono {
         Mono {
             exp: g,
-            nodes: Vec::new(),
+            ..Mono::one()
         }
     }
 
     fn node(id: ExprId) -> Mono {
         Mono {
-            exp: zero(),
             nodes: vec![(id, 1)],
+            ..Mono::one()
+        }
+    }
+
+    fn factor(id: ExprId) -> Mono {
+        Mono {
+            factors: vec![(id, 1)],
+            ..Mono::one()
         }
     }
 
     fn is_one(&self) -> bool {
-        self.exp.is_zero() && self.nodes.is_empty()
+        self.exp.is_zero() && self.nodes.is_empty() && self.factors.is_empty()
+    }
+
+    /// Only `exp` of exact arguments (or 1)?
+    fn is_exp(&self) -> bool {
+        self.nodes.is_empty() && self.factors.is_empty()
+    }
+
+    /// The monomial without its factors in range.
+    fn shape(&self) -> Mono {
+        Mono {
+            exp: self.exp.clone(),
+            nodes: self.nodes.clone(),
+            factors: Vec::new(),
+        }
     }
 
     fn times(&self, o: &Mono) -> Option<Mono> {
@@ -1182,31 +1263,11 @@ impl Mono {
         if !exp.small() {
             return None;
         }
-        let mut nodes = Vec::with_capacity(self.nodes.len() + o.nodes.len());
-        let (mut i, mut j) = (0, 0);
-        while i < self.nodes.len() || j < o.nodes.len() {
-            match (self.nodes.get(i), o.nodes.get(j)) {
-                (Some(&(x, n)), Some(&(y, m))) if x == y => {
-                    nodes.push((x, n.checked_add(m)?));
-                    i += 1;
-                    j += 1;
-                }
-                (Some(&(x, n)), Some(&(y, _))) if x < y => {
-                    nodes.push((x, n));
-                    i += 1;
-                }
-                (_, Some(&t)) => {
-                    nodes.push(t);
-                    j += 1;
-                }
-                (Some(&t), None) => {
-                    nodes.push(t);
-                    i += 1;
-                }
-                (None, None) => break,
-            }
-        }
-        Some(Mono { exp, nodes })
+        Some(Mono {
+            exp,
+            nodes: merge_powers(&self.nodes, &o.nodes)?,
+            factors: merge_powers(&self.factors, &o.factors)?,
+        })
     }
 
     fn pow(&self, n: u32) -> Option<Mono> {
@@ -1214,12 +1275,16 @@ impl Mono {
         if !exp.small() {
             return None;
         }
-        let nodes = self
-            .nodes
-            .iter()
-            .map(|&(x, m)| Some((x, m.checked_mul(n)?)))
-            .collect::<Option<Vec<_>>>()?;
-        Some(Mono { exp, nodes })
+        let raise = |xs: &[(ExprId, u32)]| {
+            xs.iter()
+                .map(|&(x, m)| Some((x, m.checked_mul(n)?)))
+                .collect::<Option<Vec<_>>>()
+        };
+        Some(Mono {
+            exp,
+            nodes: raise(&self.nodes)?,
+            factors: raise(&self.factors)?,
+        })
     }
 }
 
@@ -1403,7 +1468,7 @@ impl Poly {
     /// The conjugate, when every monomial is an `exp` (or 1).
     fn conjugated(mut self) -> Option<Poly> {
         for t in &mut self.terms {
-            if !t.mono.nodes.is_empty() {
+            if !t.mono.is_exp() {
                 return None;
             }
             t.c.im = -t.c.im.clone();
@@ -1479,19 +1544,93 @@ fn poly_mul(a: &Poly, b: &Poly, floor: ErrExp, prec: usize, rm: RoundingMode) ->
     Some(out)
 }
 
+/// The value of the term `c·μ` as a number.
+fn term_value(t: &Term, prec: usize, rm: RoundingMode) -> Option<Scaled> {
+    Some(if t.c == one() {
+        t.v.clone()
+    } else if t.c == one().neg() {
+        negated(t.v.clone())
+    } else {
+        let (cv, cb) = exact::to_value(&t.c, prec, rm);
+        product(&[normalized(&cv, cb)?, t.v.clone()], prec, rm)?
+    })
+}
+
+/// The terms of `p` as numbers, with their shapes ([`Mono::shape`]).
+fn shaped_terms(p: &Poly, prec: usize, rm: RoundingMode) -> Option<Vec<(Option<Mono>, Scaled)>> {
+    p.terms
+        .iter()
+        .map(|t| Some((Some(t.mono.shape()), term_value(t, prec, rm)?)))
+        .collect()
+}
+
+/// Record in `ab` what a value that becomes a number alone, with the error
+/// bound `2^radius` (absolute), loses of its terms (`shaped`) ([`Absorbed`]):
+/// the sum of the terms of each shape (`None`: a shape of its own) that is
+/// certainly not 0 and smaller than that bound, and each term certainly not
+/// 0 and smaller than the error of the sum of its shape.  Terms of one
+/// shape differ by factors in range, so they may cancel numerically — a zero
+/// ball, not a loss: `e^(−10¹⁰)·(sin²1 + cos²1) − e^(−10¹⁰)` is 0 to the
+/// precision, while `sin(e^(−10¹⁰))·(sin²1 + cos²1) − e^(−10¹⁰)` loses
+/// `−(sin²1 + cos²1)·e^(−3·10¹⁰)/6`, of another shape, and
+/// `e^(−10¹⁰)·(sin²1 + cos²1) − e^(−10¹⁰) + 10⁻⁷⁰⁰·e^(−10¹⁰)` the
+/// last term, of the same shape but below the error of the first two.
+fn note_lost(
+    shaped: Vec<(Option<Mono>, Scaled)>,
+    radius: ErrExp,
+    prec: usize,
+    rm: RoundingMode,
+    ab: &mut Option<Absorbed>,
+) {
+    if !radius.is_finite() {
+        return;
+    }
+    let mut groups: Vec<(Option<Mono>, Vec<Scaled>)> = Vec::new();
+    for (shape, v) in shaped {
+        let at = shape
+            .as_ref()
+            .and_then(|m| groups.iter().position(|(g, _)| g.as_ref() == Some(m)));
+        match at {
+            Some(i) => groups[i].1.push(v),
+            None => groups.push((shape, vec![v])),
+        }
+    }
+    for (_, vs) in groups {
+        let Some(g) = add_terms(&vs, Bound::EXACT, prec, rm) else {
+            continue;
+        };
+        if g.nonzero().is_some() {
+            Absorbed::note(ab, g.lg_value(), radius);
+        }
+        if vs.len() > 1 {
+            let within = g.eb.joint() + g.k as f64;
+            for v in &vs {
+                if v.nonzero().is_some() {
+                    Absorbed::note(ab, v.lg_value(), within);
+                }
+            }
+        }
+    }
+}
+
+/// Record in `ab` what the value `s` below the range — the value of the
+/// root, read as the number `m·2^k` — hides of its polynomial below its error
+/// ([`note_lost`]): `e^(−10¹⁰)·(sin²1 + cos²1) − e^(−10¹⁰) + e^(−2·10¹⁰)`
+/// is a zero ball at the scale of `e^(−10¹⁰)` with the term `e^(−2·10¹⁰)`.
+pub(super) fn note_hidden(s: &Scaled, prec: usize, rm: RoundingMode, ab: &mut Option<Absorbed>) {
+    if let Some(poly) = &s.poly
+        && let Some(shaped) = shaped_terms(poly, prec, rm)
+    {
+        note_lost(shaped, s.eb.joint() + s.k as f64, prec, rm, ab);
+    }
+}
+
 /// The value of the polynomial `p` as a number (SymPy's `add_terms` over
 /// its terms, [`add_terms`]), `p` attached.
 fn numeric(p: Poly, prec: usize, rm: RoundingMode) -> Option<Scaled> {
     let mut values = Vec::with_capacity(p.terms.len());
     for t in &p.terms {
-        values.push(if t.c == one() {
-            t.v.clone()
-        } else if t.c == one().neg() {
-            negated(t.v.clone())
-        } else {
-            let (cv, cb) = exact::to_value(&t.c, prec, rm);
-            product(&[normalized(&cv, cb)?, t.v.clone()], prec, rm)?
-        });
+        values.push(term_value(t, prec, rm)?);
     }
     let s = add_terms(&values, p.rem, prec, rm)?;
     Some(Scaled {
@@ -1506,7 +1645,12 @@ fn numeric(p: Poly, prec: usize, rm: RoundingMode) -> Option<Scaled> {
 /// refused as "not known to be 0" — when the terms cancel to within the
 /// remainder of the series: `sin(e^(−10¹⁰)) − e^(−10¹⁰) + e^(−3·10¹⁰)/6 −
 /// e^(−5·10¹⁰)/120` is `−e^(−7·10¹⁰)/5040 + …`, beyond the fifth order.
-fn settle_poly(full: Poly, prec: usize, rm: RoundingMode) -> Option<Outcome> {
+fn settle_poly(
+    full: Poly,
+    prec: usize,
+    rm: RoundingMode,
+    ab: &mut Option<Absorbed>,
+) -> Option<Outcome> {
     let (p, rest) = full.split_constant();
     if !p.is_zero() {
         return near(p, rest, prec, rm);
@@ -1529,11 +1673,25 @@ fn settle_poly(full: Poly, prec: usize, rm: RoundingMode) -> Option<Outcome> {
             return None;
         }
     }
-    finish(d, prec)
+    let poly = d.poly.clone();
+    let out = finish(d, prec)?;
+    // Back in range, the value is a number alone: the terms below its error
+    // are lost (`sin(e^(−10¹⁰))·F/e^(−10¹⁰) = F − F·e^(−2·10¹⁰)/6 + …`).
+    if let (Outcome::InRange(_, b), Some(poly)) = (&out, poly)
+        && let Some(shaped) = shaped_terms(&poly, prec, rm)
+    {
+        note_lost(shaped, b.joint(), prec, rm, ab);
+    }
+    Some(out)
 }
 
-/// The product of the children of a `Mul` when each is exact or has a
-/// polynomial (at least one), `None` otherwise.
+/// The product of the children of a `Mul` when one has a polynomial at
+/// least, `None` otherwise.  An exact factor scales the coefficients; any
+/// other factor with an ordinary value is a monomial of its own (`F` in
+/// `F·sin(e^(−10¹⁰)) = F·e^(−10¹⁰) − F/6·e^(−3·10¹⁰) + …`), so that the
+/// terms of the other factors stay apart.  Before 0.35 such a product was a
+/// number alone: `sin(e^(−10¹⁰))·(sin²1 + cos²1) − e^(−10¹⁰)` (truly
+/// `−e^(−3·10¹⁰)/6`) cancelled to a zero ball and printed `0`.
 fn poly_product(cx: &Ctx<'_>, children: &[ExprId], prec: usize, rm: RoundingMode) -> Option<Poly> {
     let mut acc = Poly::constant(one());
     let mut any = false;
@@ -1542,7 +1700,20 @@ fn poly_product(cx: &Ctx<'_>, children: &[ExprId], prec: usize, rm: RoundingMode
             Some(Ext::Beyond(s)) => poly_of(c, s),
             Some(Ext::Near(p, d)) => Poly::constant(p.clone()).plus(poly_of(c, d))?,
             None => {
-                acc = acc.scaled(&cx.exact_of(c)?)?;
+                if let Some(q) = cx.exact_of(c) {
+                    acc = acc.scaled(&q)?;
+                    continue;
+                }
+                let View::Plain(s, false) = cx.view(c)? else {
+                    return None;
+                };
+                acc = poly_mul(
+                    &acc,
+                    &Poly::atom(Mono::factor(c), &s),
+                    accuracy::EXACT,
+                    prec,
+                    rm,
+                )?;
                 continue;
             }
         };
@@ -1572,7 +1743,7 @@ fn poly_power(
     };
     if !q.is_integer() {
         let t = single?;
-        if t.c != one() || !t.mono.nodes.is_empty() || !t.mono.exp.im.is_zero() {
+        if t.c != one() || !t.mono.is_exp() || !t.mono.exp.im.is_zero() {
             return None;
         }
         let g = t.mono.exp.mul(&Gauss::real(q.clone()));

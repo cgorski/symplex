@@ -110,9 +110,14 @@ pub(crate) const QUADRATURE_MAX_DIGITS: u32 = 16;
 /// `−10¹⁰`), and one that cannot be decided is refused
 /// ([`undecided_error`]); before 0.34 both printed `0`.  A cancellation
 /// that is zero to the precision reached at the scale of its terms is still
-/// `0` (`exp(−10¹⁰)·(sin²1 + cos²1) − exp(−10¹⁰)`).
+/// `0` (`exp(−10¹⁰)·(sin²1 + cos²1) − exp(−10¹⁰)`) — unless a term
+/// certainly not 0 was lost below its error, or an exact input is not held
+/// in full at that precision: then it is pursued to the precision that
+/// shows what was lost, and refused beyond the configured maximum or below
+/// the exponent range ([`Adaptive::Hidden`]; before 0.35 such values printed
+/// `0`: `sin²1 + cos²1 − 1 + exp(−10¹⁰)`).
 pub(crate) fn evalf(arena: &Arena, expr: ExprId, digits: u32) -> Result<String, SymplexError> {
-    evalf_with(arena, expr, digits, ZeroSearch::Deep, Underflow::Refuse)
+    evalf_with(arena, expr, digits, ZeroSearch::Number, Underflow::Refuse)
 }
 
 /// What a decimal result does with a nonzero number below the exponent
@@ -196,13 +201,18 @@ fn evalf_with(
 
     match evaluate_adaptive(arena, expr, digits, search, rm, &mut cc)? {
         Adaptive::Settled(result, _) => format_complex(&result, digits, prec, rm, &mut cc),
-        Adaptive::Underflow(_) | Adaptive::Beyond(_) | Adaptive::Undecided
+        Adaptive::Underflow(_)
+        | Adaptive::Beyond(_)
+        | Adaptive::Undecided
+        | Adaptive::Hidden { .. }
             if underflow == Underflow::Zero =>
         {
             Ok("0".to_owned())
         }
         Adaptive::Underflow(_) | Adaptive::Beyond(_) => Err(underflow_error()),
         Adaptive::Undecided => Err(undecided_error()),
+        Adaptive::Hidden { below_range: true } => Err(hidden_error()),
+        Adaptive::Hidden { below_range: false } => Err(hidden_deep_error(digits)),
     }
 }
 
@@ -240,6 +250,12 @@ struct Evaluated {
     /// The value lies below the exponent range and is known scaled
     /// (`extended`): `value` is its placeholder.
     beyond: Option<extended::Scaled>,
+    /// The nonzero terms some sum lost below its error bound
+    /// ([`accuracy::Absorbed`]).
+    absorbed: Option<accuracy::Absorbed>,
+    /// The bits that hold every exact value of the expression in full
+    /// ([`input_bits`]).
+    exact_bits: u64,
 }
 
 /// The error bounds of the evaluated nodes (see [`accuracy`]).
@@ -300,6 +316,10 @@ fn evaluate_tree_full(
     let mut nonzero: FxHashMap<ExprId, accuracy::Nonzero> = FxHashMap::default();
     // The nodes known below the exponent range (`extended`).
     let mut exts = extended::ExtMap::default();
+    // The nonzero terms the sums lost below their error bounds.
+    let mut absorbed: Option<accuracy::Absorbed> = None;
+    // The bits that hold every exact value in full (`input_bits`).
+    let mut exact_bits = 0u64;
     if let Some((id, value, err)) = seed {
         sigs.record_leaf(id, &value, err);
         cache.insert(id, value);
@@ -310,6 +330,11 @@ fn evaluate_tree_full(
             continue;
         }
         let exact_z = exact::exact_value(arena, id, &exact_values);
+        match (&exact_z, arena.node(id)) {
+            (Some(z), _) => exact_bits = exact_bits.max(input_bits(&z.re)).max(input_bits(&z.im)),
+            (None, ExprNode::Num(n)) => exact_bits = exact_bits.max(input_bits(arena.num(*n))),
+            _ => {}
+        }
         let mut evaluated =
             eval_node_with_error(arena, id, &cache, &errs, prec, rm, cc).and_then(|(value, e)| {
                 match exponent_range_error(arena, id, &value, &cache, &errs) {
@@ -334,6 +359,7 @@ fn evaluate_tree_full(
                     prec,
                     rm,
                     cc,
+                    &mut absorbed,
                 )
             {
                 evaluated = match outcome {
@@ -411,6 +437,26 @@ fn evaluate_tree_full(
                     e.im = accuracy::EXACT;
                 }
                 sigs.record(arena, id, &value, e, &cache, &errs);
+                // A sum known scaled recorded its lost terms itself
+                // (`extended`); an exact one lost nothing.
+                if let ExprNode::Add(children) = arena.node(id)
+                    && !exact_values.contains_key(&id)
+                    && !matches!(exts.get(&id), Some(extended::Ext::Beyond(_)))
+                {
+                    note_absorbed(
+                        children,
+                        e.joint(),
+                        &cache,
+                        &errs,
+                        &exts,
+                        &nonzero,
+                        &mut absorbed,
+                    );
+                }
+                if !exts.contains_key(&id) {
+                    note_series_tail(arena.node(id), e.joint(), &cache, &errs, &mut absorbed);
+                    note_cross_terms(arena, id, &value, e.joint(), &cache, &errs, &mut absorbed);
+                }
                 if accuracy::mag(&value).is_none() && accuracy::is_underflow(e.joint()) {
                     let status = match exts.get(&id) {
                         Some(extended::Ext::Beyond(s)) => s.nonzero(),
@@ -440,13 +486,197 @@ fn evaluate_tree_full(
         Some(extended::Ext::Beyond(s)) => Some(s),
         _ => None,
     };
+    if let Some(s) = &beyond {
+        extended::note_hidden(s, prec, rm, &mut absorbed);
+    }
     Ok(Evaluated {
         value,
         bound: err,
         precision_limited: limited,
         underflowed_nonzero: nonzero.get(&root).copied(),
         beyond,
+        absorbed,
+        exact_bits,
     })
+}
+
+/// Record in `slot` the terms of a sum (`children`, with the error bound
+/// `2^radius`) that are certainly not 0 and smaller than that bound
+/// ([`accuracy::Absorbed`]): a value in range whose ball excludes 0, one
+/// known below the exponent range (`extended`), or one that underflowed but
+/// is certainly not 0 (its magnitude below the underflow bound).
+fn note_absorbed(
+    children: &[ExprId],
+    radius: accuracy::ErrExp,
+    cache: &FxHashMap<ExprId, Complex>,
+    errs: &ErrMap,
+    exts: &extended::ExtMap,
+    nonzero: &FxHashMap<ExprId, accuracy::Nonzero>,
+    slot: &mut Option<accuracy::Absorbed>,
+) {
+    if !radius.is_finite() {
+        return;
+    }
+    for c in children {
+        let term = match exts.get(c) {
+            Some(extended::Ext::Beyond(s)) => {
+                if s.nonzero().is_none() {
+                    continue;
+                }
+                s.lg_value()
+            }
+            _ => {
+                let (Some(v), Some(b)) = (cache.get(c), errs.get(c)) else {
+                    continue;
+                };
+                if !b.is_unknown() && !accuracy::contains_zero(v, b.joint()) {
+                    accuracy::lg_abs(v)
+                } else if nonzero.contains_key(c) {
+                    accuracy::UNDERFLOW
+                } else {
+                    continue;
+                }
+            }
+        };
+        accuracy::Absorbed::note(slot, term, radius);
+    }
+}
+
+/// Record in `slot` the first term of the Taylor series at 0 of an
+/// elementary function at a small argument that its value (with the error
+/// bound `2^radius`) cannot show ([`accuracy::Absorbed`]): `x³/3` of
+/// `atan x`, `x²/2` of `cos x`, `x` or `x²/2` of `exp x`.  The value is
+/// right within its bound, but a cancellation against the leading terms
+/// leaves that term: `atan(10⁻⁴⁰⁰)·(sin²1 + cos²1) − 10⁻⁴⁰⁰` is
+/// `−10⁻¹²⁰⁰/3` (before 0.35 it printed `0`).  Only for an argument certainly
+/// not 0 below `2⁻⁸`, where the series is dominated by its first terms.
+fn note_series_tail(
+    node: &ExprNode,
+    radius: accuracy::ErrExp,
+    cache: &FxHashMap<ExprId, Complex>,
+    errs: &ErrMap,
+    slot: &mut Option<accuracy::Absorbed>,
+) {
+    // `log₂` of the coefficient of the third power of the odd functions.
+    const THIRD: f64 = -1.584_962_500_721_156; // log₂(1/3)
+    const SIXTH: f64 = -2.584_962_500_721_156; // log₂(1/6)
+    let (c, terms): (ExprId, &[(f64, f64)]) = match *node {
+        ExprNode::Sin(c) | ExprNode::Sinh(c) | ExprNode::Asin(c) | ExprNode::Asinh(c) => {
+            (c, &[(SIXTH, 3.0)])
+        }
+        ExprNode::Tan(c) | ExprNode::Tanh(c) | ExprNode::Atan(c) | ExprNode::Atanh(c) => {
+            (c, &[(THIRD, 3.0)])
+        }
+        // `2/(3√π)`.
+        ExprNode::Erf(c) => (c, &[(-1.410_710_565_457_315_5, 3.0)]),
+        ExprNode::Cos(c) | ExprNode::Cosh(c) => (c, &[(-1.0, 2.0)]),
+        ExprNode::Exp(c) => (c, &[(0.0, 1.0), (-1.0, 2.0)]),
+        _ => return,
+    };
+    if !radius.is_finite() {
+        return;
+    }
+    let (Some(x), Some(b)) = (cache.get(&c), errs.get(&c)) else {
+        return;
+    };
+    if b.is_unknown() || accuracy::contains_zero(x, b.joint()) {
+        return;
+    }
+    let lx = accuracy::lg_abs(x);
+    if lx.is_nan() || lx >= -8.0 {
+        return;
+    }
+    // The largest term below the bound (the series decreases).
+    if let Some(t) = terms
+        .iter()
+        .map(|&(lc, n)| lc + n * lx)
+        .find(|&t| t < radius)
+    {
+        accuracy::Absorbed::note(slot, t, radius);
+    }
+}
+
+/// `log₂` of the ratio of the smallest term of the sum `id` that is
+/// certainly not 0 to the sum's value, when the sum is certainly not 0.
+fn small_part(
+    arena: &Arena,
+    id: ExprId,
+    cache: &FxHashMap<ExprId, Complex>,
+    errs: &ErrMap,
+) -> Option<f64> {
+    let ExprNode::Add(children) = arena.node(id) else {
+        return None;
+    };
+    let total = cache.get(&id)?;
+    let tb = errs.get(&id)?;
+    if tb.is_unknown() || accuracy::contains_zero(total, tb.joint()) {
+        return None;
+    }
+    let smallest = children
+        .iter()
+        .filter_map(|c| {
+            let (v, b) = (cache.get(c)?, errs.get(c)?);
+            (!b.is_unknown() && !accuracy::contains_zero(v, b.joint())).then(|| accuracy::lg_abs(v))
+        })
+        .fold(f64::INFINITY, f64::min);
+    let ratio = smallest - accuracy::lg_abs_low(total);
+    ratio.is_finite().then_some(ratio)
+}
+
+/// Record in `slot` the second-order term that a power `(a + h)^q` or a
+/// product `(a + h)·(b + k)` of sums with small parts loses below its error
+/// bound `2^radius` ([`accuracy::Absorbed`]): `q(q − 1)/2·a^q·(h/a)²`, and
+/// `ab·(h/a)·(k/b)`.  A cancellation of the leading and first-order terms
+/// leaves it: `(√2 + 10⁻⁴⁰⁰)²·(sin²1 + cos²1) − 2 − 2√2·10⁻⁴⁰⁰` is
+/// `10⁻⁸⁰⁰` (before 0.35 it printed `0`).
+fn note_cross_terms(
+    arena: &Arena,
+    id: ExprId,
+    value: &Complex,
+    radius: accuracy::ErrExp,
+    cache: &FxHashMap<ExprId, Complex>,
+    errs: &ErrMap,
+    slot: &mut Option<accuracy::Absorbed>,
+) {
+    if !radius.is_finite() {
+        return;
+    }
+    let lv = accuracy::lg_abs(value);
+    if !lv.is_finite() {
+        return;
+    }
+    let lost = match arena.node(id) {
+        ExprNode::Pow(b, e) => {
+            let Some(q) = arena
+                .as_num(*e)
+                .and_then(crate::base::numeric::ratio_to_f64)
+            else {
+                return;
+            };
+            let Some(r) = small_part(arena, *b, cache, errs) else {
+                return;
+            };
+            let c = (q * (q - 1.0) / 2.0).abs();
+            if c == 0.0 || r > -8.0 {
+                return;
+            }
+            lv + c.log2() + 2.0 * r
+        }
+        ExprNode::Mul(children) => {
+            let mut parts: Vec<f64> = children
+                .iter()
+                .filter_map(|&c| small_part(arena, c, cache, errs))
+                .filter(|&r| r <= -8.0)
+                .collect();
+            if parts.len() < 2 {
+                return;
+            }
+            parts.sort_by(f64::total_cmp);
+            lv + parts[parts.len() - 1] + parts[parts.len() - 2]
+        }
+        _ => return,
+    };
+    accuracy::Absorbed::note(slot, lost, radius);
 }
 
 /// Is the node `node`, evaluated to `value ± e`, without a value or a bound
@@ -982,10 +1212,31 @@ pub(crate) enum ZeroSearch {
     /// [`eval_const_f64`], which compare the value against a tolerance (the
     /// integrator's `F′ − f` check) and meet true zeros all the time.
     Cap,
-    /// [`ZERO_SEARCH_BITS`] beyond the working precision: results read as
-    /// numbers ([`evalf`], `Ex::eval_f64`, `Ex::eval_complex64`), where a 0
-    /// that is really `2.5·10⁻¹⁴⁹` is a wrong answer.
+    /// [`ZERO_SEARCH_BITS`] beyond the working precision: the zero and sign
+    /// tests of the crate that go beyond the cap (`solve`, `polysys`,
+    /// `poly::algebraic`), whose candidates are exact algebraic numbers.
     Deep,
+    /// As [`Deep`](ZeroSearch::Deep), and at least to the precision that
+    /// holds every exact rational of the expression in full (see
+    /// [`input_bits`]): results read as numbers ([`evalf`], `Ex::eval_f64`,
+    /// `Ex::eval_complex64`), where a 0 that is really `2.5·10⁻¹⁴⁹` is a
+    /// wrong answer.
+    Number,
+}
+
+/// The bits that hold the rational `p/q` in full: `max(bits(p), bits(q))`,
+/// or the bits of the odd part of `p` over a power of two (a float of that
+/// many bits holds it exactly).  A zero to a precision below the largest of
+/// these over the exact values of an expression may be the rounding of an
+/// input: `sin(2/3 + 10⁻²⁰⁰⁰) − sin(2/3)` is the difference of two equal
+/// floats below 6,646 bits (before 0.35 it printed `0`).
+fn input_bits(q: &crate::base::numeric::Q) -> u64 {
+    let (p, d) = (q.numer(), q.denom());
+    if d.bits() == d.trailing_zeros().unwrap_or(0) + 1 {
+        p.bits() - p.trailing_zeros().unwrap_or(0)
+    } else {
+        p.bits().max(d.bits())
+    }
 }
 
 /// Bits beyond the working precision to which [`ZeroSearch::Deep`] pursues
@@ -1032,6 +1283,39 @@ enum Adaptive {
     /// such numbers of both signs without a scaled form (`besselk(0, 10¹⁰)
     /// − airyai(10⁷)`) — no precision decides it ([`undecided_error`]).
     Undecided,
+    /// Zero to the precision reached, but a sum lost a term that is
+    /// certainly not 0 below its error bound ([`accuracy::Absorbed`]) and no
+    /// precision within the limit keeps it: `below_range` — the term lies
+    /// below the exponent range (`sin²1 + cos²1 − 1 + e^(−10¹⁰)`,
+    /// [`hidden_error`]); otherwise it needs more than the configured maximum
+    /// precision.  Not known to be 0: if the rest cancels exactly, the value is
+    /// the lost term.
+    Hidden { below_range: bool },
+}
+
+/// The error of a decimal result that is zero to the precision reached
+/// while a nonzero term below the exponent range was lost in it
+/// ([`Adaptive::Hidden`]).  Before 0.35 it printed `0`:
+/// `sin²1 + cos²1 − 1 + e^(−10¹⁰)` (truly `e^(−10¹⁰)`).
+fn hidden_error() -> SymplexError {
+    SymplexError::Unevaluable {
+        reason: format!(
+            "the value is 0 to the precision reached, but a term that is not 0 and lies below the \
+             arbitrary-precision exponent range (2^{:e}) was lost in a cancellation: not known \
+             to be 0",
+            f64::from(astro_float::EXPONENT_MIN)
+        ),
+    }
+}
+
+/// The error of a decimal result that is zero to the precision reached
+/// while a nonzero term was lost below its error bound deeper than the
+/// configured maximum precision reaches ([`Adaptive::Hidden`]).
+fn hidden_deep_error(digits: u32) -> SymplexError {
+    SymplexError::PrecisionExhausted {
+        requested: digits,
+        achieved: 0,
+    }
 }
 
 /// The error of a decimal result that is 0 within the underflow bound and
@@ -1130,7 +1414,7 @@ fn evaluate_adaptive(
     let cap = (2 * prec0).max(prec0 + 256).min(max_prec).max(prec0);
     let deep = match search {
         ZeroSearch::Cap => cap,
-        ZeroSearch::Deep => (prec0 + ZERO_SEARCH_BITS).min(max_prec).max(cap),
+        ZeroSearch::Deep | ZeroSearch::Number => (prec0 + ZERO_SEARCH_BITS).min(max_prec).max(cap),
     };
     let needed = i64::from(digits) * 3322 / 1000 + 4;
     let post_order = walk::post_order_ids(arena, expr);
@@ -1138,6 +1422,9 @@ fn evaluate_adaptive(
     // The previous evaluation: the magnitude of its value and its error
     // bound, both absolute (`log₂`), and its precision.
     let mut previous: Option<(Option<i64>, usize, accuracy::ErrExp)> = None;
+    // Pursuits of a zero ball that lost a term (each to a higher precision,
+    // within the configured maximum; the count is only a safeguard).
+    let mut hidden_pursuits = 0u32;
     loop {
         let Evaluated {
             value,
@@ -1145,7 +1432,15 @@ fn evaluate_adaptive(
             precision_limited,
             underflowed_nonzero,
             beyond,
+            absorbed,
+            exact_bits,
         } = evaluate_once(arena, expr, &post_order, prec, rm, cc)?;
+        // The precision that holds every exact value in full, for a result
+        // read as a number.
+        let inputs = match search {
+            ZeroSearch::Number => usize::try_from(exact_bits).unwrap_or(usize::MAX),
+            ZeroSearch::Cap | ZeroSearch::Deep => 0,
+        };
         // A value below the exponent range known scaled is settled as its
         // mantissa, the absolute tests shifted by its scale.
         let (value, bound, scale) = match &beyond {
@@ -1233,8 +1528,9 @@ fn evaluate_adaptive(
         // loses the radius, and only then is it right to those digits
         // whatever the true value.  A wider ball says nothing (it holds
         // numbers of every size up to its radius): the cancellation is
-        // deeper than the search so far.  A result read as a number
-        // ([`ZeroSearch::Deep`]) pursues it to the configured maximum
+        // deeper than the search so far.  A result read as a number, and
+        // the deep tests of the crate ([`ZeroSearch::Number`],
+        // [`ZeroSearch::Deep`]), pursue it to the configured maximum
         // precision; the internal tolerance checks ([`ZeroSearch::Cap`]) stop
         // at their cap.  Then it is refused.  Before 0.30 any zero ball at
         // the end of the search was 0: `(i·sin s + cos s)·e^(cos 2x)` with
@@ -1250,7 +1546,7 @@ fn evaluate_adaptive(
         // needs about 560 bits at 16 digits, past the cap of 384.)
         let converging = known && ball_shrinking && previous.is_some();
         let pursue = (noise || converging || limited) && !accuracy::is_underflow(err);
-        let limit = if wide_zero && search == ZeroSearch::Deep {
+        let limit = if wide_zero && search != ZeroSearch::Cap {
             max_prec.max(deep)
         } else if pursue || prec > cap {
             deep
@@ -1276,10 +1572,60 @@ fn evaluate_adaptive(
                 achieved: achieved_digits(Some(a), digits),
             });
         }
+        // A zero ball that lost a nonzero term below its error is not taken
+        // for 0 by a result read as a number: if the rest cancels exactly,
+        // the value is that term.  It is pursued to the precision that keeps
+        // the nearest such term (its `depth` bits more, and a margin) — and
+        // from there, as long as some term is lost — and refused when that
+        // is beyond the configured maximum or the term lies below the
+        // exponent range.  Before 0.35 it was 0: `sin²1 + cos²1 − 1 +
+        // e^(−10¹⁰)`, `sin²1 + cos²1 − 1 + sin(10⁻²⁰⁰⁰)` (`10⁻²⁰⁰⁰`, 6,644
+        // bits below the terms, beyond the 1,024-bit search).
+        //
+        // A zero below the precision that holds the exact inputs in full
+        // (`input_bits`) may be the rounding of an input, and a result read
+        // as a number pursues it there too: before 0.35 `sin(2/3 + 10⁻⁴⁰⁰)
+        // − sin(2/3)` printed `0` (truly `7.86·10⁻⁴⁰¹`).
+        let margin = usize::try_from(needed).unwrap_or(0) + 32;
+        let lost_target = absorbed.and_then(|a| a.nearest).map(|nearest| {
+            prec.saturating_add(nearest.ceil() as usize)
+                .saturating_add(margin)
+        });
+        let input_target = (inputs > prec).then(|| inputs.saturating_add(margin));
+        let lost_below_range = absorbed.is_some_and(|a| a.below_range);
+        let hidden = if !small_zero || search == ZeroSearch::Cap {
+            None
+        } else if lost_below_range {
+            Some(None)
+        } else {
+            lost_target
+                .into_iter()
+                .chain(input_target)
+                .min()
+                .map(|target| (target <= max_prec && hidden_pursuits < 16).then_some(target))
+        };
+
         if prec >= limit {
             if small_zero {
-                debug!(prec, err, "evalf: zero to the working precision");
-                return Ok(Adaptive::Settled(c_zero(prec0), Settled::ZeroToPrecision));
+                match hidden {
+                    None => {
+                        debug!(prec, err, "evalf: zero to the working precision");
+                        return Ok(Adaptive::Settled(c_zero(prec0), Settled::ZeroToPrecision));
+                    }
+                    Some(Some(target)) => {
+                        debug!(prec, target, "evalf: a zero ball lost a term; pursued");
+                        previous = Some((None, prec, lift(err)));
+                        prec = target;
+                        hidden_pursuits += 1;
+                        continue;
+                    }
+                    Some(None) => {
+                        debug!(prec, err, ?absorbed, "evalf: a zero ball lost a term");
+                        return Ok(Adaptive::Hidden {
+                            below_range: lost_below_range,
+                        });
+                    }
+                }
             }
             debug!(prec, err, ?acc, "evalf: precision exhausted");
             return Err(SymplexError::PrecisionExhausted {
@@ -1432,9 +1778,10 @@ fn evalf_value(
     // value it is.
     evalf_adaptive_value(arena, expr, digits, search).map(|a| match a {
         Adaptive::Settled(z, settled) => (z, settled),
-        Adaptive::Underflow(_) | Adaptive::Beyond(_) | Adaptive::Undecided => {
-            (c_zero(prec), Settled::ZeroToPrecision)
-        }
+        Adaptive::Underflow(_)
+        | Adaptive::Beyond(_)
+        | Adaptive::Undecided
+        | Adaptive::Hidden { .. } => (c_zero(prec), Settled::ZeroToPrecision),
     })
 }
 
@@ -1519,6 +1866,8 @@ pub(crate) fn evalf_settled(
         )),
         Adaptive::Underflow(accuracy::Nonzero::Unsigned) => Err(underflow_error()),
         Adaptive::Undecided => Err(undecided_error()),
+        Adaptive::Hidden { below_range: true } => Err(hidden_error()),
+        Adaptive::Hidden { below_range: false } => Err(hidden_deep_error(digits)),
     }
 }
 
@@ -1536,7 +1885,7 @@ pub(crate) fn ln_of_positive_constant(arena: &Arena, x: ExprId) -> Option<f64> {
             let real_positive = s.m.1.is_zero() && bf_strictly_positive(&s.m.0);
             return real_positive.then(|| s.ln_abs()).flatten();
         }
-        Adaptive::Underflow(_) | Adaptive::Undecided => return None,
+        Adaptive::Underflow(_) | Adaptive::Undecided | Adaptive::Hidden { .. } => return None,
     };
     if !bf_strictly_positive(&z.0) || !is_real_to_digits(&z, F64_DIGITS) {
         return None;
@@ -1640,7 +1989,7 @@ pub(crate) fn evalf_complex64(arena: &Arena, expr: ExprId) -> Result<Complex64, 
     } else {
         F64_DIGITS
     };
-    let (z, _) = evalf_value(arena, expr, digits, ZeroSearch::Deep)?;
+    let (z, _) = evalf_value(arena, expr, digits, ZeroSearch::Number)?;
     let re = finite_part_to_f64(&z.0, &z.1, digits)?;
     let im = finite_part_to_f64(&z.1, &z.0, digits)?;
     Ok(Complex64::new(re, im))
@@ -1664,7 +2013,7 @@ pub(crate) fn evalf_f64(arena: &Arena, expr: ExprId) -> Result<f64, SymplexError
     } else {
         F64_DIGITS
     };
-    let (z, _) = evalf_value(arena, expr, digits, ZeroSearch::Deep)?;
+    let (z, _) = evalf_value(arena, expr, digits, ZeroSearch::Number)?;
     if !is_negligible_part(&z.1, &z.0, digits) {
         let im = bigfloat_to_f64_rounded(&z.1, RoundingMode::ToEven).unwrap_or(f64::NAN);
         return Err(SymplexError::ComputationFailed {

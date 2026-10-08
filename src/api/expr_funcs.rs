@@ -3747,14 +3747,30 @@ impl Expr<Numeric> {
     /// decided like any sum (`exp(−10¹⁰) − exp(−2·10¹⁰)` is refused as a
     /// nonzero value that underflows; `log` of it is `−10¹⁰`), or refused as
     /// undecidable when its terms have no scaled form (`besselk(0, 10¹⁰) −
-    /// airyai(10⁷)`).
+    /// airyai(10⁷)`).  Since 0.35 a value that is zero to the precision
+    /// reached while a term certainly not 0 was lost below its error is
+    /// refused when that term lies below the exponent range
+    /// (`sin²1 + cos²1 − 1 + exp(−10¹⁰)`, which printed `0`; the reason says
+    /// "not known to be 0").
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// let ctx = Context::new();
+    /// let hidden = ctx.parse("sin(1)^2 + cos(1)^2 - 1 + exp(-10^10)").unwrap();
+    /// assert!(matches!(hidden.eval_decimal(16), Err(SymplexError::Unevaluable { .. })));
+    /// // A lost term in range is found by evaluating at the precision it needs.
+    /// let deep = ctx.parse("sin(1)^2 + cos(1)^2 - 1 + sin(10^(-2000))").unwrap();
+    /// assert_eq!(deep.eval_decimal(16).unwrap(), "1e-2000");
+    /// ```
     ///
     /// Returns [`SymplexError::PrecisionExhausted`] if the requested
     /// precision exceeds `EvalConfig::max_evalf_precision`, if intermediate
-    /// computation produces NaN, or if the requested digits cannot be
+    /// computation produces NaN, if the requested digits cannot be
     /// certified within twice the initial working precision plus 256 bits
     /// (a division by a quantity that cancels to 0, `sign` of such a
-    /// quantity).
+    /// quantity), or if a value that is zero to the precision reached lost a
+    /// term certainly not 0 that only a precision beyond the configured
+    /// maximum shows (`sin²1 + cos²1 − 1 + sin(10⁻⁵⁰⁰⁰)`).
     #[must_use = "returns the numerical value as a string"]
     pub fn eval_decimal(&self, digits: u32) -> Result<String, SymplexError> {
         let _span = debug_span!("eval_decimal", expr = ?self.raw_id(), digits = digits).entered();

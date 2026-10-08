@@ -625,6 +625,45 @@ pub(super) fn add_with_bound(
     (sum, bound)
 }
 
+/// A term certainly not 0 that a sum lost below its error bound: the sum's
+/// error ball is wider than the term, so the term changed nothing the
+/// evaluation can see (SymPy's `add_terms` drops it the same way).  Harmless
+/// for a value with certified digits — the bound covers the term — but not
+/// for a value that is zero to the precision reached: if the rest of the sum
+/// cancels exactly, the value is the lost term, not 0.
+/// `sin²1 + cos²1 − 1 + e^(−10¹⁰)` is `e^(−10¹⁰)`, and `e^(−10¹⁰)·(sin²1 +
+/// cos²1) − e^(−10¹⁰) + e^(−2·10¹⁰)` is `e^(−2·10¹⁰)`; before 0.35 both
+/// printed `0` (see `evaluate_adaptive` in `evalf.rs`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Absorbed {
+    /// The fewest bits by which an error bound exceeded a term in range it
+    /// lost (the precision that keeps the nearest one), when one was lost.
+    pub(super) nearest: Option<f64>,
+    /// A term below the exponent range was lost: no precision keeps it.
+    pub(super) below_range: bool,
+}
+
+impl Absorbed {
+    /// Record the term of magnitude `2^term` (absolute `log₂`) of a value
+    /// with the error bound `2^radius`, when it is lost below that bound.
+    pub(super) fn note(slot: &mut Option<Absorbed>, term: f64, radius: ErrExp) {
+        if !term.is_finite() || !radius.is_finite() || is_unknown(radius) || term >= radius {
+            return;
+        }
+        let mut a = slot.unwrap_or(Absorbed {
+            nearest: None,
+            below_range: false,
+        });
+        if term < UNDERFLOW / 2.0 {
+            a.below_range = true;
+        } else {
+            let d = radius - term;
+            a.nearest = Some(a.nearest.map_or(d, |n| n.min(d)));
+        }
+        *slot = Some(a);
+    }
+}
+
 /// `log₂` of an error bound (`−∞` for an exact one).
 fn lg(e: ErrExp) -> f64 {
     e

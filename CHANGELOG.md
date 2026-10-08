@@ -6,6 +6,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [Unreleased]
+
+### Breaking (behaviour; no signature changed)
+
+- **A value that is zero to the precision reached is no longer printed
+  as `0` when the evaluation lost something certainly not 0 below its
+  error**, or does not hold an exact input in full at that precision: it
+  is evaluated at the precision that shows what was lost, and refused
+  beyond the configured maximum (`PrecisionExhausted`) or when the lost
+  term lies below the exponent range (`Unevaluable`, "not known to be
+  0").  True zeros still print `0` (`sin²1 + cos²1 − 1`,
+  `exp(−10¹⁰)·(sin²1 + cos²1) − exp(−10¹⁰)`); `eval_f64` still returns
+  `0.0` for a lost term below the exponent range, its correctly rounded
+  value.  See *Fixed*.
+
+### Fixed
+
+- **`eval_decimal` printed `0` for nonzero values whose smallest terms a
+  cancellation hid** — the one known class where evaluation printed a
+  wrong number without warning.  The zero search (1,024 bits beyond the
+  working precision) takes a ball around 0 that shrinks with the
+  precision for a 0; when the larger terms cancel exactly, the value is
+  what the evaluation lost below that ball: a term below the exponent
+  range (`sin²1 + cos²1 − 1 + exp(−10¹⁰)`, truly `exp(−10¹⁰)`), the next
+  term of a series (`sin(exp(−10¹⁰))·(sin²1 + cos²1) − exp(−10¹⁰)`,
+  truly `−exp(−3·10¹⁰)/6`; `atan(10⁻⁴⁰⁰)·(sin²1 + cos²1) − 10⁻⁴⁰⁰`,
+  truly `−10⁻¹²⁰⁰/3`), the square of the small part of a sum
+  (`(√2 + 10⁻⁴⁰⁰)²·(sin²1 + cos²1) − 2 − 2√2·10⁻⁴⁰⁰`, truly `10⁻⁸⁰⁰`),
+  or the digits of an exact input beyond the precision (`sin(2/3 +
+  10⁻⁴⁰⁰) − sin(2/3)`, truly `7.86·10⁻⁴⁰¹`: both arguments round to the
+  same float).  The evaluator now records every term certainly not 0
+  that a sum, a series of `sin`/`tan`/`atan`/`cos`/`exp`/… at a small
+  argument, or a power or product of sums with small parts loses below
+  its error, and the bits that hold every exact input; a zero ball is
+  pursued to the precision that keeps them.  Below the exponent range
+  an inexact factor in range of a product is a factor of the monomials
+  rather than part of a number, so `F·sin(t) − t` keeps its `t³` term
+  apart.  A differential hunter (5,000 expressions built from identities
+  that are exactly 1 or 0, such as `sin²a + cos²a`, with a hidden term
+  that is 0, in range down to `10⁻⁴⁰⁰⁰`, or below the range; values
+  against mpmath at two precisions): 0.34.0 printed 3,159 wrong `0`s
+  (2,005 of them below the range); now 0 wrong — 1,399 values, all 1,020
+  true zeros still `0`, 2,581 refused (2,117 below the range, 464 beyond
+  the configured precision).
+
 ## [0.34.0] - 2026-10-08
 
 Every problem the nightly fuzz runs found since 0.33 is fixed: radicals
