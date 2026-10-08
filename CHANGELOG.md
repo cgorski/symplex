@@ -41,6 +41,23 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ### Fixed
 
+- **Limits where a complex argument meets a branch cut gave wrong values**
+  (the nightly `fuzz_calculus` failure of 2026-10-03:
+  `limit(x/(acosh(acosh(x)) − acosh(acosh(0))), x, 0, '+')` was `0`; it
+  is ≈ −1.862, SymPy `I*sqrt(-2 + I*pi)*sqrt(2 + I*pi)/2`).  Three
+  causes: Gruntz rewrote `acosh u` as `ln(u + √(u² − 1))`, which is
+  `acosh u` only for `Re u > 0`, now SymPy's `ln(u + √(u + 1)·√(u − 1))`
+  (`limit(acosh(x) − ln(−x), x, −∞)` was `−∞`, it is `ln 2 + iπ`); the
+  L'Hôpital fallback assumed analyticity where a non-real argument
+  crosses a cut (`x/(ln(−2 + ix) − ln(−2))` was `2i` from both sides; it
+  is `0` from the left); and the series of `f(u₀ + w)` with `u₀` on a cut
+  of `f` used the coefficients along the cut for a `w` leaving it
+  (`x/(asin(2 + ix) − asin 2)` was `√3` from both sides; `0` from the
+  right).  Each side is now right or refused.  A hunter over difference
+  quotients of `ln`, `√`, `∛`, the inverse trigonometric and hyperbolic
+  functions at points on and off their cuts (1,188 one-sided limits
+  against certified evaluation at `±10⁻²⁵`): 0.32.0 had 131 wrong, now
+  0 wrong (1,002 right, 186 refused).
 - **Mixed-sign sums of values that underflow printed `0`**:
   `exp(−10¹⁰) − exp(−2·10¹⁰)` (mpmath `9.2786e-4342944820`),
   `Ei(−10¹⁰) + exp(−10¹⁰)`, `log(1 + exp(−10¹⁰))`, `cos(exp(−10¹⁰)) − 1`
@@ -83,6 +100,7 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   whole sum).  The integral now has a closed form in 0.17 s (SymPy 1.14 did
   not finish in 100 s).  Rubi: 14,360 → 14,522 verified, 68 → 69
   real_verified, 0 wrong.
+- The `eval_decimal` docs describe the underflow behaviour above.
 
 ## [0.33.0] - 2026-10-01
 

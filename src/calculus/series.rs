@@ -1568,6 +1568,23 @@ fn compose_at_constant(
     }
     let definite = w.coeffs.iter().any(|&c| has_log(arena, c));
     let refuse = if definite { Some(None) } else { None };
+    // On a branch cut of `f` the Taylor coefficients below are those along
+    // the cut (the placeholder `t` counts as real), valid only for an
+    // argument that stays real; one that leaves the cut (`asin(2 + i·x)`,
+    // `i·x` crosses the cut `(1, ∞)`) has different expansions on the two
+    // sides of it, and none here.  Up to 0.33 `limit(x/(asin(2 + i·x) −
+    // asin 2), x, 0)` was `√3` from both sides (it is `0` from the right,
+    // `√3` from the left; SymPy agrees).  Coefficients count as real when
+    // they are for real values of their symbols (`ln|x|`, parameters).
+    if let Some((_, cut)) = crate::calculus::limit::branch_cut_of(arena, id)
+        && crate::calculus::limit::on_branch_cut(arena, cut, u0)
+        && !w
+            .coeffs
+            .iter()
+            .all(|&c| crate::calculus::limit::inner_known_real(arena, c))
+    {
+        return Some(None);
+    }
     // `wᵏ` has valuation `≥ k·v_w`: terms up to `k·v_w < known` count.
     let terms = match w.leading_exponent(arena) {
         Some(v_w) => usize::try_from((w.known - 1) / v_w.max(1)).ok()?,

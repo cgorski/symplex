@@ -2795,12 +2795,22 @@ fn rewrite_tractable(
                 let sum = arena.add(&[u, root]);
                 arena.ln(sum)
             }
+            // `acosh u = ln(u + √(u + 1)·√(u − 1))` on all of ℂ (SymPy's
+            // `acosh._eval_rewrite_as_log`).  Up to 0.33 this was
+            // `ln(u + √(u² − 1))`, which is `acosh u` only for `Re u > 0`: for
+            // `u → −∞` it is `−acosh(−u)`, and `limit(acosh(x) − ln(−x), x,
+            // −∞)` came out `−∞` (it is `ln 2 + iπ`); at `u = acosh 0 = iπ/2`
+            // the radicand `u² − 1` is a negative real the evaluator cannot
+            // place on a side of the cut, and the nightly `fuzz_calculus`
+            // limit `x/(acosh(acosh x) − acosh(acosh 0))` at `0⁺` came out `0`
+            // (it is `−i·√(iπ/2 − 1)·√(iπ/2 + 1) ≈ −1.862`, 2026-10-03).
             ExprNode::Acosh(u) => {
-                let two = arena.int(2);
-                let u2 = arena.pow(u, two);
                 let one = arena.one();
-                let inner = arena.sub(u2, one);
-                let root = arena.sqrt(inner);
+                let up = arena.add(&[u, one]);
+                let um = arena.sub(u, one);
+                let rp = arena.sqrt(up);
+                let rm = arena.sqrt(um);
+                let root = arena.mul(&[rp, rm]);
                 let sum = arena.add(&[u, root]);
                 arena.ln(sum)
             }

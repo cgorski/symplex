@@ -1569,6 +1569,22 @@ pub(crate) fn on_branch_cut(arena: &mut Arena, cut: BranchCut, l: ExprId) -> boo
     }
 }
 
+/// The argument of node `id` and the branch cut of its function, for the
+/// functions with one (`ln`, `ln Γ`, a fractional power, the inverse
+/// trigonometric and hyperbolic functions).
+pub(crate) fn branch_cut_of(arena: &Arena, id: ExprId) -> Option<(ExprId, BranchCut)> {
+    Some(match *arena.node(id) {
+        ExprNode::Ln(a) | ExprNode::LogGamma(a) => (a, BranchCut::NegativeReals),
+        ExprNode::Pow(b, e) if arena.as_num(e).is_some_and(|r| !r.is_integer()) => {
+            (b, BranchCut::NegativeReals)
+        }
+        ExprNode::Asin(a) | ExprNode::Acos(a) | ExprNode::Atanh(a) => (a, BranchCut::BeyondOne),
+        ExprNode::Acosh(a) => (a, BranchCut::BelowOne),
+        ExprNode::Asinh(a) | ExprNode::Atan(a) => (a, BranchCut::ImaginaryAxis),
+        _ => return None,
+    })
+}
+
 /// Where a function composed in [`unary_with_asymptotes`] has its branch
 /// cut (see [`limit_on_branch_cut`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1662,6 +1678,11 @@ fn analytic_fallback(
     var: ExprId,
     point: ExprId,
 ) -> Result<ExprId, SymplexError> {
+    if meets_branch_cut_off_axis(arena, expr, var, point) {
+        return Err(fail(
+            "a non-real argument meets a branch cut at the point: the one-sided limits may differ",
+        ));
+    }
     let (numer, denom) = crate::poly::polybridge::as_numer_denom(arena, expr);
     if denom != arena.one()
         && let Some(r) = try_lhopital(arena, numer, denom, var, point, 0)
@@ -1673,6 +1694,33 @@ fn analytic_fallback(
     Err(fail(
         "could not determine the limit via substitution, the Gruntz algorithm, or L'Hôpital's rule",
     ))
+}
+
+/// Does a function of `expr` with a branch cut (`ln`, a fractional power,
+/// the inverse trigonometric and hyperbolic functions) have an argument
+/// that lies on its cut at `var = point` without being real for real
+/// `var`?  Then the function is not analytic at the point along the
+/// approach, and [`analytic_fallback`]'s premise — that a one-sided limit
+/// equals the two-sided one — fails: `x/(ln(−2 + i·x) − ln(−2))` is `2i`
+/// from the right and `0` from the left (`ln` jumps by `2πi` across the
+/// cut; SymPy: `limit(…, x, 0, '-')` → `0`), and L'Hôpital's rule gave
+/// `2i` from both sides.  An argument that is real for real `var` stays
+/// on one side of the cut (`ln(x − 3)` at `x = 1`).
+fn meets_branch_cut_off_axis(arena: &mut Arena, expr: ExprId, var: ExprId, point: ExprId) -> bool {
+    for id in crate::base::walk::post_order_ids(arena, expr) {
+        let Some((arg, cut)) = branch_cut_of(arena, id) else {
+            continue;
+        };
+        if !crate::base::walk::contains(arena, arg, var) || inner_known_real(arena, arg) {
+            continue;
+        }
+        let at = crate::transforms::subs::subs(arena, arg, var, point);
+        let at = crate::transforms::eval::eval(arena, at);
+        if on_branch_cut(arena, cut, at) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Try L'Hôpital's rule: lim f/g = lim f'/g' when f(a)=g(a)=0 or both →∞.

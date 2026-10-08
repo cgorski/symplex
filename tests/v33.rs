@@ -7,6 +7,8 @@
 mod v33_evalf;
 #[path = "v33/v33_integrate.rs"]
 mod v33_integrate;
+#[path = "v33/v33_limits.rs"]
+mod v33_limits;
 #[path = "v33/v33_radicals.rs"]
 mod v33_radicals;
 #[path = "v33/v33_solve.rs"]
