@@ -20,7 +20,17 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 - **`eval_decimal` refuses a mixed-sign sum of values below the exponent
   range** instead of printing `0` (see *Fixed*); one that is zero at the
   scale of its terms (`exp(−10¹⁰)·(sin²1 + cos²1) − exp(−10¹⁰)`) is still
-  `0`.
+  `0`.  Below-range values now carry their series to the fifth order with
+  exact coefficients, so second-order cancellations are decided too
+  (`log(1 + exp(−10¹⁰)) − exp(−10¹⁰)` printed `0`; it is refused as a
+  nonzero value, and `log` of its negative is `−20000000000.693…`).
+- **New refusals where evaluation hung or took tens of seconds**:
+  `polylog(−n, z)` below order −1000, `jacobi` above degree 2000,
+  `bessely`/`besselk` of a large integer order with `x² > 2(n − 1)`, and a
+  `besseli` series that would need more than 50,000 terms.  The canonical
+  zero test skips a constant holding a special function at a parameter of
+  magnitude 10⁵ or more, or an orthogonal polynomial of degree 200 or more
+  (as before 0.34): such a constant is not taken for 0.
 
 ### Added
 
@@ -41,6 +51,32 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ### Fixed
 
+- **Bessel functions of huge order froze construction and evaluation**
+  (a local `fuzz_roundtrip` run before this release: four inputs over 60 s
+  each).  Building `cos(besselj(8345185991999992, 61/10²⁷))/sin(…)` never
+  finished: the canonical zero test evaluated the Bessel function, and
+  `(x/2)^n` was taken by `n` multiplications.  From order 10⁴ the
+  evaluator now takes `(x/2)^ν/Γ(ν + 1)` in log space, as mpmath's
+  `besselj`, and refuses a value certainly below the exponent range at
+  once; orders beyond 2⁶³ (`besselj(−10²⁰, 258)`) aborted with a stack
+  overflow.  `bessely(5000, 1)` 17 s → 22 ms, `bessely(10⁵, 1)` never
+  finished → 1 ms; the four inputs 0–2 ms.  Wrong values on the way:
+  `besselj(10⁸, 137)` printed `0` (it is `8.72e-573001500`, now computed).
+- **High-order `polygamma` took seconds** (the nightly `fuzz_evalf`
+  failure of 2026-10-05: `polygamma(1755, 1/10)` 4.7 s locally, over 30 s
+  on CI): `n!` and the asymptotic coefficients were built from
+  gcd-reduced rationals; exact integers give the same digits.
+  `polygamma(1755, 1/10)` 4 ms, `polygamma(9000, 1/3)` never finished →
+  22 ms.
+- **`polylog` of a large negative order was wrong and slow**:
+  `polylog(−200, −1/2)` was `2.03e296` (it is `−5.15e272`; mpmath),
+  `polylog(−1000, −1/2)` `−1.84e2376` after 32 s (it is `−4.80e2059`);
+  the cancellation of `Li₋ₙ` at negative `z` is now measured, and the
+  Stirling numbers are built one row at a time (`polylog(−601, 4/13)`
+  18 s → 26 ms).  `jacobi` of large degree is summed term by term
+  (`jacobi(1100, …)` 6 s → 0.05 s).  A hunter over special functions at
+  extreme parameters (3,000 cases, values against mpmath): 113 hangs, 11
+  crashes, 17 calls over 1 s and 1 wrong value → 0, slowest 0.48 s.
 - **Limits where a complex argument meets a branch cut gave wrong values**
   (the nightly `fuzz_calculus` failure of 2026-10-03:
   `limit(x/(acosh(acosh(x)) − acosh(acosh(0))), x, 0, '+')` was `0`; it
@@ -75,7 +111,18 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   (a residue at a pseudo-random point) now computes modulo p² with `i`
   exact and exponentials multiplicative, so it sees `exp(2x) = exp(x)²`.
   An undefined-expression hunter (5,000 cases, routes canon/`expand`/
-  `ratsimp`/`simplify_trig`/constants): 4,668 wrong → 101.
+  `ratsimp`/`simplify_trig`/constants): 4,668 wrong → 101, then → 40:
+  an identity-zero factor beside a vanishing denominator is tested too
+  (`simplify(((exp(2x) − exp(x)²)/(…))/((x − 2)² + (…)/(exp(x + y) −
+  exp(x)·exp(y))))` was `0`), and a function argument undefined everywhere
+  makes the function undefined (`cos((y + 4)/(y − 3 + (sin 2x − 2 sin x
+  cos x)/(e² − e¹²)))` simplified to `1`).  Of the 40, 34 are cases where
+  SymPy gives the same value (`T/T = 1` for a `T` zero by an identity).
+- **Second-order cancellations below the exponent range printed `0`**:
+  `log(1 + exp(−10¹⁰)) − exp(−10¹⁰)` (it is `−t²/2`, `t = e^(−10¹⁰)`)
+  and `sin(exp(−10¹⁰)) − exp(−10¹⁰)` (`−t³/6`).  A hunter (1,000 cases,
+  SymPy series and mpmath): 681 wrong `0` → 0 (977 right, 5 refused as
+  undecided).
 - **Radicals of integers with thousands of digits took seconds** (the
   nightly `fuzz_roundtrip` timeout of 2026-10-01: 33 s on CI, 4 s locally
   for a `√(p/q)` with 1,000-digit terms): splitting perfect powers out of

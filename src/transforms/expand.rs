@@ -412,8 +412,11 @@ fn resolve_vanishing_denominators(arena: &mut Arena, expr: ExprId, deep: bool) -
     // denominator that vanishes only by an identity of its functions, a
     // constant one that is 0 (`sin² 1 + cos² 1 − 1`), and, when the residue
     // test raised a suspicion, those that vanish once multiplied out.
-    let mut zero_bases: FxHashSet<ExprId> = identity_denominator_candidates(arena, &order)
-        .into_iter()
+    let candidates = identity_denominator_candidates(arena, &order);
+    let mut by_identity: FxHashSet<ExprId> = candidates.iter().copied().collect();
+    let mut zero_bases: FxHashSet<ExprId> = candidates
+        .iter()
+        .copied()
         .filter(|&d| arena.vanishes_by_identity(d))
         .collect();
     let mut decided: FxHashSet<ExprId> = FxHashSet::default();
@@ -427,6 +430,16 @@ fn resolve_vanishing_denominators(arena: &mut Arena, expr: ExprId, deep: bool) -
             zero_bases.insert(base);
         }
     }
+    // Once something vanishes, every denominator that may vanish by an
+    // identity: up to 0.33 `expand((exp(x)³·eʸ − e^(3x+y))/(e^(2x) + exp(x)² +
+    // (xy + 4)/(tan x·cos x − sin x)))` distributed `(xy + 4)/0` into `zoo +
+    // zoo`, `nan` at every point (the value is `0/zoo = 0`).
+    let something_vanishes = !zero_bases.is_empty() || !candidates.is_empty();
+    for d in identity_bases(arena, &order, something_vanishes) {
+        if !zero_bases.contains(&d) && by_identity.insert(d) && arena.vanishes_by_identity(d) {
+            zero_bases.insert(d);
+        }
+    }
     if zero_bases.is_empty() {
         return expr;
     }
@@ -437,8 +450,18 @@ fn resolve_vanishing_denominators(arena: &mut Arena, expr: ExprId, deep: bool) -
             zero_bases.insert(d);
         }
     }
+    // A factor beside such a pole that vanishes only by an identity of its
+    // functions is 0 too, so that the product is `0·zoo = nan`: up to 0.33
+    // `(sin²x + cos²x − sin²1 − cos²1)/(e^(x+y) − eˣ·eʸ)` was `zoo` here
+    // (`canon_mul` sees zeros by the residue test only), and `x/((x − 2)² +
+    // …)` expanded to `0`.
+    let zero_factors = factors_beside_poles(arena, &order, &zero_bases);
     let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
     for &id in &order {
+        if zero_factors.contains(&id) {
+            cache.insert(id, arena.zero);
+            continue;
+        }
         let rebuilt = walk::rebuild_with_cache(arena, id, &cache);
         let (_, exp) = arena.as_base_exp(rebuilt);
         let original = negative_power_base(arena, id);
@@ -457,6 +480,97 @@ fn resolve_vanishing_denominators(arena: &mut Arena, expr: ExprId, deep: bool) -
         }
     }
     cache.get(&expr).copied().unwrap_or(expr)
+}
+
+/// The bases of the negative powers among `order` that may vanish by an
+/// identity of their functions (a non-atom with a function in it outside
+/// the integer powers, sums and products, and no infinity), when something
+/// in the expression vanishes: `something_vanishes`, or a factor of a
+/// product that may vanish identically by the residue test
+/// ([`may_vanish_identically_as_factor`]).  Empty otherwise: the numeric
+/// identity test is not run on ordinary input.
+fn identity_bases(arena: &Arena, order: &[ExprId], something_vanishes: bool) -> Vec<ExprId> {
+    let transcendental = |d: ExprId| {
+        if arena.node(d).is_atom() || walk::has_unevaluated(arena, d) {
+            return false;
+        }
+        let mut function = false;
+        for id in walk::post_order_ids(arena, d) {
+            match arena.node(id) {
+                ExprNode::Infinity
+                | ExprNode::NegInfinity
+                | ExprNode::ComplexInfinity
+                | ExprNode::NaN => return false,
+                ExprNode::Num(_)
+                | ExprNode::Symbol(_)
+                | ExprNode::Add(_)
+                | ExprNode::Mul(_)
+                | ExprNode::Neg(_) => {}
+                ExprNode::Pow(_, e) if arena.as_num(*e).is_some_and(|q| q.is_integer()) => {}
+                _ => function = true,
+            }
+        }
+        function
+    };
+    let mut bases: Vec<ExprId> = Vec::new();
+    for &id in order {
+        if let Some(b) = negative_power_base(arena, id)
+            && !bases.contains(&b)
+            && transcendental(b)
+        {
+            bases.push(b);
+        }
+    }
+    if bases.is_empty() || something_vanishes {
+        return bases;
+    }
+    let zero_factor = order.iter().any(|&p| {
+        let ExprNode::Mul(children) = arena.node(p) else {
+            return false;
+        };
+        children.iter().any(|&c| {
+            negative_power_base(arena, c).is_none()
+                && !arena.node(c).is_atom()
+                && may_vanish_identically_as_factor(arena, c)
+        })
+    });
+    if zero_factor { bases } else { Vec::new() }
+}
+
+/// The factors of the products in `order` beside a negative power of a
+/// base in `zero_bases` that vanish by an identity of their functions
+/// ([`Arena::vanishes_by_identity`]), and are not 0 already for the residue
+/// test of `canon_mul` ([`vanishes_identically_as_factor`]).
+fn factors_beside_poles(
+    arena: &mut Arena,
+    order: &[ExprId],
+    zero_bases: &FxHashSet<ExprId>,
+) -> FxHashSet<ExprId> {
+    let mut out: FxHashSet<ExprId> = FxHashSet::default();
+    let mut decided: FxHashSet<ExprId> = FxHashSet::default();
+    for &id in order {
+        let ExprNode::Mul(children) = arena.node(id).clone() else {
+            continue;
+        };
+        let pole =
+            |c: &ExprId| negative_power_base(arena, *c).is_some_and(|b| zero_bases.contains(&b));
+        if !children.iter().any(pole) {
+            continue;
+        }
+        for c in children {
+            if negative_power_base(arena, c).is_some()
+                || arena.node(c).is_atom()
+                || !decided.insert(c)
+                || vanishes_identically_as_factor(arena, c)
+            {
+                continue;
+            }
+            if arena.vanishes_by_identity(c) {
+                out.insert(c);
+            }
+        }
+    }
+    out
 }
 
 /// Does `root` still contain, where [`expand_pass`] would act, a product

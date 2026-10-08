@@ -19,15 +19,32 @@
 //!
 //! | node | from a value below the range (`s = m·2^k`) | from ordinary arguments whose value underflowed |
 //! |---|---|---|
-//! | `exp z` | `1 + s` ([`Ext::Near`]) | `e^r·2^k`, `k = round(re z/ln 2)`, `r = z − k·ln 2` |
+//! | `exp z` | `1 + s + s²/2 + …` ([`Ext::Near`]) | `e^r·2^k`, `k = round(re z/ln 2)`, `r = z − k·ln 2` |
 //! | `x·y·…` | the mantissas multiplied, the scales added | the same |
-//! | `b^q` | `mⁿ·2^(nk)` for an integer `abs(n) ≤ 1024`, else `exp(q·(Log m + k·ln 2))` | `exp(q·Log b)` |
+//! | `b^q` | `mⁿ·2^(nk)` for an integer `abs(n) ≤ 1024`, else `exp(q·(Log m + k·ln 2))`; `(1 + s)^q` by the binomial series | `exp(q·Log b)` |
 //! | `a + b + …` | SymPy's `add_terms`: the largest terms at a common scale, the terms more than `prec + 64` bits below them in the error, an exact cancellation of the largest moving on to the next | — |
-//! | `ln z` | `Log m + k·ln 2`, in range; `ln(1 + s) = s·(1 + O(s))` | — |
-//! | `sin`, `tan`, `asin`, `atan` (and hyperbolic), `erf` | `s`, `2s/√π` (they vanish simply at 0) | — |
-//! | `cos`, `cosh` | `1 ∓ s²/2` | — |
+//! | `ln z` | `Log m + k·ln 2`, in range; `ln(1 + s) = s − s²/2 + …` | — |
+//! | `sin`, `tan`, `asin`, `atan` (and hyperbolic) | their series, `s ∓ s³/6 …` | — |
+//! | `erf` | `2s/√π·(1 + O(s²))` | — |
+//! | `cos`, `cosh` | `1 ∓ s²/2 + s⁴/24` | — |
 //! | `−z`, `conj`, `re`, `im`, `abs` | of the mantissa | — |
 //! | `Ei(x)`, `erfc(x)` | — | the asymptotic series times `exp` at its scale |
+//!
+//! Beside its mantissa and scale, a value below the range is held as a
+//! polynomial in such values with exact rational coefficients, plus a
+//! remainder ([`Poly`]): the series above to the fifth order, `exp(g)` of
+//! an exact `g` as a monomial whose products add the exponents
+//! (`exp(−10¹⁰)²` and `exp(−2·10¹⁰)` are one monomial), any other value
+//! (`Ei(−10¹⁰)`, a product with an inexact factor) as a monomial of its
+//! own.  Sums and products of them are exact on the coefficients, so a
+//! cancellation of the largest terms leaves the next ones: before 0.34
+//! only the first order was kept, `ln(1 + e^(−10¹⁰)) − e^(−10¹⁰)` (truly
+//! `−e^(−2·10¹⁰)/2`) and `sin(e^(−10¹⁰)) − e^(−10¹⁰)` (`−e^(−3·10¹⁰)/6`)
+//! were a zero ball the zero search shrank, and printed `0`.  A sum whose
+//! terms all cancel within the remainder of a series is undecided, and
+//! refused ("not known to be 0"); a cancellation of different monomials
+//! (`e^(−10¹⁰)·(sin²1 + cos²1) − e^(−10¹⁰)`) is numeric, a zero ball of the
+//! working precision for the zero search, as before.
 //!
 //! A result back in range replaces the ordinary value: `(exp(−10¹⁰) −
 //! exp(−2·10¹⁰))·…`, `ln(exp(−10¹⁰) − exp(−2·10¹⁰)) = −10¹⁰` (refused before:
@@ -46,11 +63,13 @@
 //! term of the size of the underflow bound.
 
 use astro_float::{BigFloat, Consts, RoundingMode};
+use num_traits::{One, Signed, ToPrimitive, Zero};
 use rustc_hash::FxHashMap;
 
 use crate::base::arena::Arena;
 use crate::base::bigcomplex::{Complex, c_div, c_one, c_powi, c_zero};
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::Q;
 
 use super::accuracy::{self, Bound, ErrExp, Nonzero};
 use super::exact::{self, ExactMap, Gauss};
@@ -77,6 +96,9 @@ pub(super) struct Scaled {
     pub(super) m: Complex,
     pub(super) k: i64,
     pub(super) eb: Bound,
+    /// The value as a polynomial in values below the range, when this is
+    /// the value of a node (`None` for a number alone).
+    pub(super) poly: Option<Box<Poly>>,
 }
 
 /// What is known of a node beyond its ordinary value.
@@ -105,6 +127,27 @@ pub(super) enum Outcome {
 }
 
 impl Scaled {
+    /// `m·2^k ± eb·2^k`, a number alone.
+    fn plain(m: Complex, k: i64, eb: Bound) -> Scaled {
+        Scaled {
+            m,
+            k,
+            eb,
+            poly: None,
+        }
+    }
+
+    /// The number alone, without its polynomial.
+    fn bare(&self) -> Scaled {
+        Scaled::plain(self.m.clone(), self.k, self.eb)
+    }
+
+    /// `log₂` of an upper bound on the absolute value, its error included
+    /// (`−∞` for an exact 0).
+    fn lg_upper(&self) -> f64 {
+        accuracy::lsum(accuracy::lg_abs(&self.m), self.eb.joint()) + self.k as f64
+    }
+
     /// `log₂` of an upper bound on `abs(value)`'s exponent: `mag(m) + k`.
     fn top(&self) -> Option<i64> {
         accuracy::mag(&self.m).map(|t| t.saturating_add(self.k))
@@ -210,14 +253,10 @@ fn scale_with_loss(z: &Complex, eb: Bound, j: i64) -> (Complex, Bound) {
 /// `v ± b` as `m·2^k` with `abs(m) ∈ [½, 1)`.
 fn normalized(v: &Complex, b: Bound) -> Option<Scaled> {
     match accuracy::mag(v) {
-        None => Some(Scaled {
-            m: v.clone(),
-            k: 0,
-            eb: b,
-        }),
+        None => Some(Scaled::plain(v.clone(), 0, b)),
         Some(t) => {
             let (m, eb) = scale_with_loss(v, b, -t);
-            Some(Scaled { m, k: t, eb })
+            Some(Scaled::plain(m, t, eb))
         }
     }
 }
@@ -259,8 +298,57 @@ fn finish(s: Scaled, prec: usize) -> Option<Outcome> {
                 return Some(Outcome::InRange(v, eb));
             }
             let (m, eb) = scale_with_loss(&s.m, s.eb, -t);
-            Some(Outcome::Beyond(Scaled { m, k: total, eb }))
+            Some(Outcome::Beyond(Scaled {
+                m,
+                k: total,
+                eb,
+                poly: s.poly,
+            }))
         }
+    }
+}
+
+/// [`finish`] for the value of node `id` computed as a number: below the
+/// range it is a monomial of its own.
+fn finish_node(s: Scaled, id: ExprId, prec: usize) -> Option<Outcome> {
+    finish_atom(s, Mono::node(id), prec)
+}
+
+/// [`finish`] for a value that is the monomial `mono` (a number without a
+/// polynomial of its own).
+fn finish_atom(s: Scaled, mono: Mono, prec: usize) -> Option<Outcome> {
+    Some(match finish(s, prec)? {
+        Outcome::Beyond(s) if s.poly.is_none() => {
+            let poly = Poly::atom(mono, &s);
+            Outcome::Beyond(Scaled {
+                poly: Some(Box::new(poly)),
+                ..s
+            })
+        }
+        other => other,
+    })
+}
+
+/// `p + d` for the value of node `id`, `d` computed as a number (a
+/// monomial of its own when it has no polynomial).
+fn near_node(p: Gauss, d: Scaled, id: ExprId) -> Outcome {
+    Outcome::Near(p, with_poly(d, id))
+}
+
+/// `s`, the value of node `c` (or its part beyond an exact `p`), with a
+/// polynomial: its own, or itself as a monomial.
+fn with_poly(mut s: Scaled, c: ExprId) -> Scaled {
+    if s.poly.is_none() {
+        s.poly = Some(Box::new(Poly::atom(Mono::node(c), &s)));
+    }
+    s
+}
+
+/// The polynomial of `s`, the value of node `c` (see [`with_poly`]).
+fn poly_of(c: ExprId, s: &Scaled) -> Poly {
+    match &s.poly {
+        Some(p) => (**p).clone(),
+        None => Poly::atom(Mono::node(c), s),
     }
 }
 
@@ -363,13 +451,25 @@ pub(super) fn extend(
     };
     match arena.node(id) {
         ExprNode::Exp(c) => match cx.view(*c)? {
-            View::Plain(s, true) => Some(one_plus(first_order(s, 1))),
+            View::Plain(s, true) => {
+                let fallback = s.bare();
+                match series(&poly_of(*c, &s), &EXPM1, prec, rm) {
+                    Some(d) => near(one(), d, prec, rm),
+                    None => Some(near_node(one(), first_order(fallback, 1), id)),
+                }
+            }
             View::Plain(..) if underflowed => {
                 let (z, b) = cx.ordinary(*c)?;
                 if !z.1.is_zero() {
                     super::check_trig_arg(&z.1, 0, prec, arena).ok()?;
                 }
-                finish(exp_scaled(z, b, prec, rm, cc)?, prec)
+                let s = exp_scaled(z, b, prec, rm, cc)?;
+                // `exp` of an exact argument: the monomial `e^g`.
+                let mono = match cx.exact_of(*c) {
+                    Some(g) => Mono::exp(g),
+                    None => Mono::node(id),
+                };
+                finish_atom(s, mono, prec)
             }
             _ => None,
         },
@@ -378,10 +478,16 @@ pub(super) fn extend(
                 let (v, b) = ln_scaled(&s, prec, rm, cc)?;
                 Some(Outcome::InRange(v, b))
             }
-            View::Near(p, d) if p == one() => finish(first_order(d, 1), prec),
+            View::Near(p, d) if p == one() => match series(&poly_of(*c, &d), &LOG1P, prec, rm) {
+                Some(l) => settle_poly(l, prec, rm),
+                None => finish_node(first_order(d, 1), id, prec),
+            },
             _ => None,
         },
         ExprNode::Mul(children) => {
+            if let Some(full) = poly_product(&cx, children, prec, rm) {
+                return settle_poly(full, prec, rm);
+            }
             let mut factors = Vec::with_capacity(children.len());
             let mut beyond = false;
             for &c in children.iter() {
@@ -390,41 +496,57 @@ pub(super) fn extend(
                 factors.push(s);
             }
             if !beyond && !underflowed {
-                return scaled_near(&cx, children, prec, rm);
+                return None;
             }
-            finish(product(&factors, prec, rm)?, prec)
+            finish_node(product(&factors, prec, rm)?, id, prec)
         }
         ExprNode::Pow(b, e) => {
             if exts.contains_key(e) {
                 return None;
             }
             let (x, ex) = cx.ordinary(*e)?;
+            let q = arena.as_num(*e);
             match cx.view(*b)? {
-                View::Plain(s, beyond) if beyond || underflowed => {
-                    finish(power(&s, arena.as_num(*e), x, ex, prec, rm, cc)?, prec)
+                View::Plain(s, true) => {
+                    if let Some(q) = q
+                        && let Some(full) = poly_power(&poly_of(*b, &s), q, x, ex, prec, rm, cc)
+                    {
+                        return settle_poly(full, prec, rm);
+                    }
+                    finish_node(power(&s, q, x, ex, prec, rm, cc)?, id, prec)
                 }
-                // `(1 + d)^x = 1 + x·d·(1 + O(d))`.
+                View::Plain(s, false) if underflowed => {
+                    finish_node(power(&s, q, x, ex, prec, rm, cc)?, id, prec)
+                }
                 View::Near(p, d) if p == one() => {
-                    let xd = product(&[d, normalized(x, ex)?], prec, rm)?;
-                    Some(one_plus(first_order(xd, 1)))
+                    // `(1 + d)^q` by the binomial series for an exact `q`.
+                    if let Some(q) = q
+                        && let Some(dq) = binomial(&poly_of(*b, &d), q, prec, rm)
+                    {
+                        return near(one(), dq, prec, rm);
+                    }
+                    // `(1 + d)^x = 1 + x·d·(1 + O(d))`.
+                    let xd = product(&[d.bare(), normalized(x, ex)?], prec, rm)?;
+                    Some(near_node(one(), first_order(xd, 1), id))
                 }
                 _ => None,
             }
         }
-        ExprNode::Add(children) => sum_node(&cx, children, prec, rm),
+        ExprNode::Add(children) => sum_node(&cx, id, children, prec, rm),
         ExprNode::Neg(c) => match cx.view(*c)? {
-            View::Plain(s, true) => finish(negated(s), prec),
-            View::Near(p, d) => Some(Outcome::Near(p.neg(), negated(d))),
+            View::Plain(s, true) => finish(negated(with_poly(s, *c)), prec),
+            View::Near(p, d) => Some(Outcome::Near(p.neg(), negated(with_poly(d, *c)))),
             _ => None,
         },
         ExprNode::Conjugate(c) => match cx.view(*c)? {
-            View::Plain(s, true) => finish(conjugated(s), prec),
-            View::Near(p, d) => Some(Outcome::Near(
+            View::Plain(s, true) => finish_node(conjugated(with_poly(s, *c)), id, prec),
+            View::Near(p, d) => Some(near_node(
                 Gauss {
                     re: p.re,
                     im: -p.im,
                 },
-                conjugated(d),
+                conjugated(with_poly(d, *c)),
+                id,
             )),
             _ => None,
         },
@@ -443,16 +565,24 @@ pub(super) fn extend(
                 }
             };
             let z = (m, BigFloat::new(prec));
-            finish(
-                Scaled {
-                    m: z,
-                    k: s.k,
-                    eb: Bound::real(eb),
-                },
-                prec,
-            )
+            finish_node(Scaled::plain(z, s.k, Bound::real(eb)), id, prec)
         }
-        // Odd functions with `f′(0) = 1` (`2/√π` for `erf`): `f(s) = c·s·(1 + O(s²))`.
+        // `erf s = 2/√π·s·(1 + O(s²))`.
+        ExprNode::Erf(c) => {
+            let View::Plain(s, true) = cx.view(*c)? else {
+                return None;
+            };
+            let s = first_order(s, 2);
+            let wp = prec + 16;
+            let pi = cc.pi(wp, rm).clone();
+            let two_over_sqrt_pi = BigFloat::from_i32(2, wp).div(&pi.sqrt(wp, rm), wp, rm);
+            let f = normalized(
+                &(two_over_sqrt_pi, BigFloat::new(wp)),
+                Bound::real(-(prec as f64) - 8.0),
+            )?;
+            finish_node(product(&[s, f], prec, rm)?, id, prec)
+        }
+        // Odd functions with `f′(0) = 1`: their series, `f(s) = s + c₃s³ + c₅s⁵ + O(s⁷)`.
         ExprNode::Sin(c)
         | ExprNode::Tan(c)
         | ExprNode::Sinh(c)
@@ -460,101 +590,87 @@ pub(super) fn extend(
         | ExprNode::Asin(c)
         | ExprNode::Atan(c)
         | ExprNode::Asinh(c)
-        | ExprNode::Atanh(c)
-        | ExprNode::Erf(c) => {
+        | ExprNode::Atanh(c) => {
             let View::Plain(s, true) = cx.view(*c)? else {
                 return None;
             };
-            let s = first_order(s, 2);
-            if matches!(arena.node(id), ExprNode::Erf(_)) {
-                let wp = prec + 16;
-                let pi = cc.pi(wp, rm).clone();
-                let two_over_sqrt_pi = BigFloat::from_i32(2, wp).div(&pi.sqrt(wp, rm), wp, rm);
-                let f = normalized(
-                    &(two_over_sqrt_pi, BigFloat::new(wp)),
-                    Bound::real(-(prec as f64) - 8.0),
-                )?;
-                return finish(product(&[s, f], prec, rm)?, prec);
+            let table = match arena.node(id) {
+                ExprNode::Sin(_) => &SIN,
+                ExprNode::Tan(_) => &TAN,
+                ExprNode::Sinh(_) => &SINH,
+                ExprNode::Tanh(_) => &TANH,
+                ExprNode::Asin(_) => &ASIN,
+                ExprNode::Atan(_) => &ATAN,
+                ExprNode::Asinh(_) => &ASINH,
+                _ => &ATANH,
+            };
+            match series(&poly_of(*c, &s), table, prec, rm) {
+                Some(f) => settle_poly(f, prec, rm),
+                None => finish_node(first_order(s, 2), id, prec),
             }
-            finish(s, prec)
         }
-        // `cos s = 1 − s²/2·(1 + O(s²))`, `cosh s = 1 + s²/2·(…)`.
+        // `cos s = 1 − s²/2 + s⁴/24 + O(s⁶)`, `cosh s = 1 + s²/2 + …`.
         ExprNode::Cos(c) | ExprNode::Cosh(c) => {
             let View::Plain(s, true) = cx.view(*c)? else {
                 return None;
             };
+            let is_cos = matches!(arena.node(id), ExprNode::Cos(_));
+            let table = if is_cos { &COSM1 } else { &COSHM1 };
+            if let Some(d) = series(&poly_of(*c, &s), table, prec, rm) {
+                return near(one(), d, prec, rm);
+            }
+            let s = s.bare();
             let mut sq = product(&[s.clone(), s], prec, rm)?;
             sq.k = sq.k.checked_sub(1)?;
-            if matches!(arena.node(id), ExprNode::Cos(_)) {
+            if is_cos {
                 sq = negated(sq);
             }
-            Some(one_plus(first_order(sq, 1)))
+            Some(near_node(one(), first_order(sq, 1), id))
         }
         ExprNode::Ei(c) if underflowed => {
             let (x, b) = cx.ordinary(*c)?;
             if !accuracy::exactly_real(x, b) || !x.0.is_negative() {
                 return None;
             }
-            finish(ei_scaled(&x.0, b.re, prec, rm, cc)?, prec)
+            finish_node(ei_scaled(&x.0, b.re, prec, rm, cc)?, id, prec)
         }
         ExprNode::Erfc(c) if underflowed => {
             let (x, b) = cx.ordinary(*c)?;
             if !accuracy::exactly_real(x, b) || !super::bf_strictly_positive(&x.0) {
                 return None;
             }
-            finish(erfc_scaled(&x.0, b.re, prec, rm, cc)?, prec)
+            finish_node(erfc_scaled(&x.0, b.re, prec, rm, cc)?, id, prec)
         }
         _ => None,
     }
 }
 
-/// `c·(p + d) = c·p + c·d` for one [`Ext::Near`] factor and exact
-/// rational ones (`−cos(e^(−10¹⁰))`, the canonical form of a
-/// subtraction, `5/3·cos(…)`), so that the sum it enters still sees `c·d`.
-fn scaled_near(
-    cx: &Ctx<'_>,
-    children: &[ExprId],
-    prec: usize,
-    rm: RoundingMode,
-) -> Option<Outcome> {
-    let mut near: Option<(Gauss, Scaled)> = None;
-    let mut c = one();
-    for &ch in children {
-        match cx.exts.get(&ch) {
-            Some(Ext::Near(p, d)) if near.is_none() => near = Some((p.clone(), d.clone())),
-            Some(_) => return None,
-            None => {
-                c = c.mul(&cx.exact_of(ch)?);
-                if !c.small() {
-                    return None;
-                }
-            }
-        }
-    }
-    let (p, d) = near?;
-    let cp = c.mul(&p);
-    if c.is_zero() || !cp.small() {
-        return None;
-    }
-    let (cv, cb) = exact::to_value(&c, prec, rm);
-    let cd = product(&[d, normalized(&cv, cb)?], prec, rm)?;
-    Some(Outcome::Near(cp, cd))
+/// The exact 0.
+fn zero() -> Gauss {
+    Gauss::real(Q::zero())
 }
 
 /// The exact 1.
 fn one() -> Gauss {
-    Gauss::real(crate::base::numeric::Q::from_integer(1.into()))
+    Gauss::real(Q::one())
 }
 
-/// `1 + d` ([`Outcome::Near`]).
-fn one_plus(d: Scaled) -> Outcome {
-    Outcome::Near(one(), d)
+/// The exact `n/d`.
+fn ratio(n: i64, d: i64) -> Gauss {
+    Gauss::real(Q::new(n.into(), d.into()))
+}
+
+/// `p + d` ([`Outcome::Near`]) for the polynomial `d` (without a constant
+/// term).
+fn near(p: Gauss, d: Poly, prec: usize, rm: RoundingMode) -> Option<Outcome> {
+    Some(Outcome::Near(p, numeric(d, prec, rm)?))
 }
 
 /// `s·(1 + O(s^n))`: `s` with the relative error `abs(s)^n` added (the
 /// next term of a series in a value below the range, negligible but
-/// counted).
+/// counted).  A number alone: it no longer has `s`'s polynomial.
 fn first_order(mut s: Scaled, n: i64) -> Scaled {
+    s.poly = None;
     if let Some(t) = s.top() {
         let rel = accuracy::lg_abs(&s.m) + (n as f64) * (t as f64);
         s.eb = Bound {
@@ -572,13 +688,17 @@ fn first_order(mut s: Scaled, n: i64) -> Scaled {
 fn negated(s: Scaled) -> Scaled {
     Scaled {
         m: (s.m.0.neg(), s.m.1.neg()),
+        poly: s.poly.map(|p| Box::new(p.negated())),
         ..s
     }
 }
 
+/// The conjugate; its polynomial when every monomial is an `exp` (the
+/// conjugate of another value is not one of the monomials).
 fn conjugated(s: Scaled) -> Scaled {
     Scaled {
         m: (s.m.0, s.m.1.neg()),
+        poly: s.poly.and_then(|p| p.conjugated().map(Box::new)),
         ..s
     }
 }
@@ -588,7 +708,7 @@ fn product(factors: &[Scaled], prec: usize, rm: RoundingMode) -> Option<Scaled> 
     let parts: Vec<(&Complex, Bound)> = factors.iter().map(|s| (&s.m, s.eb)).collect();
     let (m, eb) = accuracy::mul_with_bound(&parts, prec, rm);
     let k = factors.iter().try_fold(0i64, |a, s| a.checked_add(s.k))?;
-    Some(Scaled { m, k, eb })
+    Some(Scaled::plain(m, k, eb))
 }
 
 /// Bits of `abs(k)`.
@@ -653,11 +773,7 @@ fn exp_scaled(
     };
     let t = accuracy::mag(&m)?;
     let (m, eb) = scale_with_loss(&m, eb, -t);
-    Some(Scaled {
-        m,
-        k: k.checked_add(t)?,
-        eb,
-    })
+    Some(Scaled::plain(m, k.checked_add(t)?, eb))
 }
 
 /// `Log(m·2^k) = Log m + k·ln 2` (`2^k` is positive: the argument is
@@ -749,11 +865,7 @@ fn power(
             re: part(prop.re, &v.0),
             im: part(prop.im, &v.1),
         };
-        return Some(Scaled {
-            m: v,
-            k: s.k.checked_mul(n)?,
-            eb,
-        });
+        return Some(Scaled::plain(v, s.k.checked_mul(n)?, eb));
     }
     let p = prec + bits(s.k) + 64;
     let (l, lb) = ln_scaled(s, p, rm, cc)?;
@@ -765,12 +877,21 @@ fn power(
 /// scale): see the module documentation.  The exact rational terms (and the
 /// exact parts of [`Ext::Near`] terms) are added exactly: when they and the
 /// terms below the range are all there is, the sum is `p + d` (or `d` when
-/// `p` is 0 — `1 − cos(e^(−10¹⁰))`).
-fn sum_node(cx: &Ctx<'_>, children: &[ExprId], prec: usize, rm: RoundingMode) -> Option<Outcome> {
+/// `p` is 0 — `1 − cos(e^(−10¹⁰))`), their polynomials added
+/// ([`settle_poly`]).
+fn sum_node(
+    cx: &Ctx<'_>,
+    id: ExprId,
+    children: &[ExprId],
+    prec: usize,
+    rm: RoundingMode,
+) -> Option<Outcome> {
     let mut beyond_terms = Vec::with_capacity(children.len());
     let mut ordinary_terms = Vec::new();
-    let mut p = Gauss::real(crate::base::numeric::Q::from_integer(0.into()));
+    let mut p = zero();
     let mut lost = Bound::EXACT;
+    // The sum of the polynomials, while it stays within its limits.
+    let mut full = Some(Poly::zero());
     for &c in children {
         if !cx.exts.contains_key(&c)
             && let Some(q) = cx.exact_of(c)
@@ -782,13 +903,17 @@ fn sum_node(cx: &Ctx<'_>, children: &[ExprId], prec: usize, rm: RoundingMode) ->
             continue;
         }
         match cx.view(c)? {
-            View::Plain(s, true) => beyond_terms.push(s),
+            View::Plain(s, true) => {
+                full = full.and_then(|f| f.plus(poly_of(c, &s)));
+                beyond_terms.push(s);
+            }
             View::Plain(s, false) => ordinary_terms.push(s),
             View::Near(q, d) => {
                 p = p.add(&q);
                 if !p.small() {
                     return None;
                 }
+                full = full.and_then(|f| f.plus(poly_of(c, &d)));
                 beyond_terms.push(d);
             }
             View::Lost(b) => {
@@ -803,11 +928,14 @@ fn sum_node(cx: &Ctx<'_>, children: &[ExprId], prec: usize, rm: RoundingMode) ->
         return None;
     }
     if ordinary_terms.is_empty() && lost.is_exact() {
+        if let Some(f) = full.and_then(|f| f.plus(Poly::constant(p.clone()))) {
+            return settle_poly(f, prec, rm);
+        }
         let d = add_terms(&beyond_terms, Bound::EXACT, prec, rm)?;
         return if p.is_zero() {
-            finish(d, prec)
+            finish_node(d, id, prec)
         } else {
-            Some(Outcome::Near(p, d))
+            Some(near_node(p, d, id))
         };
     }
     let mut terms = ordinary_terms;
@@ -822,7 +950,7 @@ fn sum_node(cx: &Ctx<'_>, children: &[ExprId], prec: usize, rm: RoundingMode) ->
     if !lost.is_exact() {
         s.nonzero()?;
     }
-    finish(s, prec)
+    finish_node(s.bare(), id, prec)
 }
 
 /// `Σ terms ± lost` (`lost`: error-only terms, in absolute `log₂`), each
@@ -855,11 +983,7 @@ fn add_terms(terms: &[Scaled], lost: Bound, prec: usize, rm: RoundingMode) -> Op
     };
     let (re, ebr) = part(sr, kr, er);
     let (im, ebi) = part(si, ki, ei);
-    Some(Scaled {
-        m: (re, im),
-        k,
-        eb: Bound { re: ebr, im: ebi },
-    })
+    Some(Scaled::plain((re, im), k, Bound { re: ebr, im: ebi }))
 }
 
 /// `Σ xᵢ·2^(kᵢ) ± lost` for one part (`xᵢ ± eᵢ` at the scale `kᵢ`): SymPy's
@@ -1006,11 +1130,614 @@ fn scaled_by(e: Scaled, m: Complex, rel: ErrExp, wp: usize, prec: usize) -> Opti
     let eb = accuracy::lsum(lm + accuracy::lsum(accuracy::lsum(e_rel, rel), work), round);
     let t = accuracy::mag(&m)?;
     let (m, eb) = scale_with_loss(&m, Bound::real(eb), -t);
+    Some(Scaled::plain(m, e.k.checked_add(t)?, eb))
+}
+
+// ─── Polynomials in values below the range ──────────────────────────────
+
+/// Most terms of a [`Poly`]; beyond, the value is a number alone.
+const MAX_TERMS: usize = 48;
+
+/// Largest integer power of a polynomial of several terms.
+const MAX_POLY_POWER: i64 = 8;
+
+/// A monomial of a [`Poly`]: `e^g·Π vᵢ^nᵢ` — `g` exact (`exp` of an exact
+/// argument below the range), `vᵢ` the value of node `i` (below the range,
+/// known as a number: `Ei(−10¹⁰)`, a product with an inexact factor).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Mono {
+    exp: Gauss,
+    /// `(node, n)`, sorted by node.
+    nodes: Vec<(ExprId, u32)>,
+}
+
+impl Mono {
+    fn one() -> Mono {
+        Mono {
+            exp: zero(),
+            nodes: Vec::new(),
+        }
+    }
+
+    fn exp(g: Gauss) -> Mono {
+        Mono {
+            exp: g,
+            nodes: Vec::new(),
+        }
+    }
+
+    fn node(id: ExprId) -> Mono {
+        Mono {
+            exp: zero(),
+            nodes: vec![(id, 1)],
+        }
+    }
+
+    fn is_one(&self) -> bool {
+        self.exp.is_zero() && self.nodes.is_empty()
+    }
+
+    fn times(&self, o: &Mono) -> Option<Mono> {
+        let exp = self.exp.add(&o.exp);
+        if !exp.small() {
+            return None;
+        }
+        let mut nodes = Vec::with_capacity(self.nodes.len() + o.nodes.len());
+        let (mut i, mut j) = (0, 0);
+        while i < self.nodes.len() || j < o.nodes.len() {
+            match (self.nodes.get(i), o.nodes.get(j)) {
+                (Some(&(x, n)), Some(&(y, m))) if x == y => {
+                    nodes.push((x, n.checked_add(m)?));
+                    i += 1;
+                    j += 1;
+                }
+                (Some(&(x, n)), Some(&(y, _))) if x < y => {
+                    nodes.push((x, n));
+                    i += 1;
+                }
+                (_, Some(&t)) => {
+                    nodes.push(t);
+                    j += 1;
+                }
+                (Some(&t), None) => {
+                    nodes.push(t);
+                    i += 1;
+                }
+                (None, None) => break,
+            }
+        }
+        Some(Mono { exp, nodes })
+    }
+
+    fn pow(&self, n: u32) -> Option<Mono> {
+        let exp = self.exp.mul(&Gauss::real(Q::from_integer(n.into())));
+        if !exp.small() {
+            return None;
+        }
+        let nodes = self
+            .nodes
+            .iter()
+            .map(|&(x, m)| Some((x, m.checked_mul(n)?)))
+            .collect::<Option<Vec<_>>>()?;
+        Some(Mono { exp, nodes })
+    }
+}
+
+/// `c·μ` with the value of `μ` (a number alone).
+#[derive(Clone, Debug)]
+struct Term {
+    c: Gauss,
+    mono: Mono,
+    v: Scaled,
+}
+
+impl Term {
+    /// `log₂` of an upper bound on `abs(c·μ)`.
+    fn lg(&self) -> f64 {
+        lg_gauss(&self.c) + self.v.lg_upper()
+    }
+}
+
+/// A value as a polynomial in values below the range with exact complex
+/// rational coefficients, `Σ cⱼ·μⱼ + r` with `abs(re r) ≤ 2^rem.re` and
+/// `abs(im r) ≤ 2^rem.im` (the remainders of the series, absolute
+/// `log₂`).  Sums and products are exact on the coefficients: the terms
+/// that cancel are gone, with their errors, and the next ones are the
+/// value.
+#[derive(Clone, Debug)]
+pub(super) struct Poly {
+    terms: Vec<Term>,
+    rem: Bound,
+}
+
+/// `log₂` of an upper bound on `abs(c)` (`−∞` for 0).
+fn lg_gauss(c: &Gauss) -> f64 {
+    // `abs(n/d) < 2^(bits(n) − bits(d) + 1)`.
+    let lq = |q: &Q| {
+        if q.is_zero() {
+            f64::NEG_INFINITY
+        } else {
+            q.numer().bits() as f64 - q.denom().bits() as f64 + 1.0
+        }
+    };
+    accuracy::lsum(lq(&c.re), lq(&c.im))
+}
+
+/// `cⁿ` exactly, `None` past the size limit.
+fn gauss_pow(c: &Gauss, mut n: u32) -> Option<Gauss> {
+    let mut out = one();
+    let mut base = c.clone();
+    while n > 0 {
+        if n & 1 == 1 {
+            out = out.mul(&base);
+            if !out.small() {
+                return None;
+            }
+        }
+        n >>= 1;
+        if n > 0 {
+            base = base.mul(&base);
+            if !base.small() {
+                return None;
+            }
+        }
+    }
+    Some(out)
+}
+
+/// The value 1.
+fn unit(prec: usize) -> Scaled {
+    let half = BigFloat::from_f64(0.5, prec.max(64));
+    Scaled::plain((half, BigFloat::new(prec)), 1, Bound::EXACT)
+}
+
+impl Poly {
+    fn zero() -> Poly {
+        Poly {
+            terms: Vec::new(),
+            rem: Bound::EXACT,
+        }
+    }
+
+    fn constant(c: Gauss) -> Poly {
+        let mut p = Poly::zero();
+        if !c.is_zero() {
+            p.terms.push(Term {
+                c,
+                mono: Mono::one(),
+                v: unit(64),
+            });
+        }
+        p
+    }
+
+    /// The monomial `mono` of value `v`.
+    fn atom(mono: Mono, v: &Scaled) -> Poly {
+        Poly {
+            terms: vec![Term {
+                c: one(),
+                mono,
+                v: v.bare(),
+            }],
+            rem: Bound::EXACT,
+        }
+    }
+
+    /// Is the value exactly real?
+    fn is_real(&self) -> bool {
+        accuracy::is_exact(self.rem.im)
+            && self
+                .terms
+                .iter()
+                .all(|t| t.c.im.is_zero() && accuracy::exactly_real(&t.v.m, t.v.eb))
+    }
+
+    /// `log₂` of an upper bound on the absolute value.
+    fn lg(&self) -> f64 {
+        self.terms
+            .iter()
+            .fold(self.rem.joint(), |l, t| accuracy::lsum(l, t.lg()))
+    }
+
+    /// Add the term `t` (`None` past the limits).
+    fn push(&mut self, t: Term) -> Option<()> {
+        if let Some(i) = self.terms.iter().position(|u| u.mono == t.mono) {
+            let c = self.terms[i].c.add(&t.c);
+            if !c.small() {
+                return None;
+            }
+            if c.is_zero() {
+                self.terms.remove(i);
+            } else {
+                self.terms[i].c = c;
+            }
+        } else if !t.c.is_zero() {
+            if self.terms.len() >= MAX_TERMS {
+                return None;
+            }
+            self.terms.push(t);
+        }
+        Some(())
+    }
+
+    fn plus(mut self, o: Poly) -> Option<Poly> {
+        for t in o.terms {
+            self.push(t)?;
+        }
+        self.rem = Bound {
+            re: accuracy::lsum(self.rem.re, o.rem.re),
+            im: accuracy::lsum(self.rem.im, o.rem.im),
+        };
+        Some(self)
+    }
+
+    fn scaled(mut self, c: &Gauss) -> Option<Poly> {
+        if c.is_zero() {
+            return Some(Poly::zero());
+        }
+        for t in &mut self.terms {
+            t.c = t.c.mul(c);
+            if !t.c.small() {
+                return None;
+            }
+        }
+        let lc = lg_gauss(c);
+        self.rem = if c.im.is_zero() {
+            Bound {
+                re: accuracy::shift(self.rem.re, lc),
+                im: accuracy::shift(self.rem.im, lc),
+            }
+        } else {
+            Bound::both(accuracy::shift(self.rem.joint(), lc))
+        };
+        Some(self)
+    }
+
+    fn negated(mut self) -> Poly {
+        for t in &mut self.terms {
+            t.c = t.c.neg();
+        }
+        self
+    }
+
+    /// The conjugate, when every monomial is an `exp` (or 1).
+    fn conjugated(mut self) -> Option<Poly> {
+        for t in &mut self.terms {
+            if !t.mono.nodes.is_empty() {
+                return None;
+            }
+            t.c.im = -t.c.im.clone();
+            t.mono.exp.im = -t.mono.exp.im.clone();
+            t.v = conjugated(t.v.bare());
+        }
+        Some(self)
+    }
+
+    /// The constant term and the rest.
+    fn split_constant(mut self) -> (Gauss, Poly) {
+        match self.terms.iter().position(|t| t.mono.is_one()) {
+            Some(i) => {
+                let t = self.terms.remove(i);
+                (t.c, self)
+            }
+            None => (zero(), self),
+        }
+    }
+
+    /// The terms alone.
+    fn without_rem(&self) -> Poly {
+        Poly {
+            terms: self.terms.clone(),
+            rem: Bound::EXACT,
+        }
+    }
+}
+
+/// `a·b`; a product of terms below `floor`, or below the remainder the
+/// product has anyway, goes into the remainder.
+fn poly_mul(a: &Poly, b: &Poly, floor: ErrExp, prec: usize, rm: RoundingMode) -> Option<Poly> {
+    let real = a.is_real() && b.is_real();
+    // `(A + ra)(B + rb) − AB` is bounded by `abs(a)·rb + abs(b)·ra`.
+    let rem = accuracy::lsum(
+        accuracy::shift(b.rem.joint(), a.lg()),
+        accuracy::shift(a.rem.joint(), b.lg()),
+    );
+    let cut = floor.max(rem);
+    let mut out = Poly::zero();
+    let mut dropped = accuracy::EXACT;
+    for ta in &a.terms {
+        for tb in &b.terms {
+            let l = ta.lg() + tb.lg();
+            if l < cut {
+                dropped = accuracy::lsum(dropped, l);
+                continue;
+            }
+            let c = ta.c.mul(&tb.c);
+            if !c.small() {
+                return None;
+            }
+            let v = if ta.mono.is_one() {
+                tb.v.clone()
+            } else if tb.mono.is_one() {
+                ta.v.clone()
+            } else {
+                product(&[ta.v.clone(), tb.v.clone()], prec, rm)?
+            };
+            out.push(Term {
+                c,
+                mono: ta.mono.times(&tb.mono)?,
+                v,
+            })?;
+        }
+    }
+    let total = accuracy::lsum(rem, dropped);
+    out.rem = if real {
+        Bound::real(total)
+    } else {
+        Bound::both(total)
+    };
+    Some(out)
+}
+
+/// The value of the polynomial `p` as a number (SymPy's `add_terms` over
+/// its terms, [`add_terms`]), `p` attached.
+fn numeric(p: Poly, prec: usize, rm: RoundingMode) -> Option<Scaled> {
+    let mut values = Vec::with_capacity(p.terms.len());
+    for t in &p.terms {
+        values.push(if t.c == one() {
+            t.v.clone()
+        } else if t.c == one().neg() {
+            negated(t.v.clone())
+        } else {
+            let (cv, cb) = exact::to_value(&t.c, prec, rm);
+            product(&[normalized(&cv, cb)?, t.v.clone()], prec, rm)?
+        });
+    }
+    let s = add_terms(&values, p.rem, prec, rm)?;
     Some(Scaled {
-        m,
-        k: e.k.checked_add(t)?,
-        eb,
+        poly: Some(Box::new(p)),
+        ..s
     })
+}
+
+/// The outcome of a node whose value is the polynomial `full`: `p + d` for
+/// a constant term `p ≠ 0` ([`Outcome::Near`]), otherwise `d` in range or
+/// below it ([`finish`]).  `None` — the ordinary placeholder stands, and is
+/// refused as "not known to be 0" — when the terms cancel to within the
+/// remainder of the series: `sin(e^(−10¹⁰)) − e^(−10¹⁰) + e^(−3·10¹⁰)/6 −
+/// e^(−5·10¹⁰)/120` is `−e^(−7·10¹⁰)/5040 + …`, beyond the fifth order.
+fn settle_poly(full: Poly, prec: usize, rm: RoundingMode) -> Option<Outcome> {
+    let (p, rest) = full.split_constant();
+    if !p.is_zero() {
+        return near(p, rest, prec, rm);
+    }
+    let undecided_rem = !rest.rem.is_exact();
+    let bare = undecided_rem.then(|| rest.without_rem());
+    let d = numeric(rest, prec, rm)?;
+    if let Some(bare) = bare
+        && d.nonzero().is_none()
+    {
+        if bare.terms.is_empty() {
+            return None;
+        }
+        // The terms alone: a value that the remainder hides, or a zero
+        // ball no wider than the remainder (the zero search cannot shrink
+        // it).
+        let rem = d.poly.as_ref().map_or(accuracy::UNKNOWN, |p| p.rem.joint());
+        let d0 = numeric(bare, prec, rm)?;
+        if d0.nonzero().is_some() || d0.lg_upper() <= rem + 1.0 {
+            return None;
+        }
+    }
+    finish(d, prec)
+}
+
+/// The product of the children of a `Mul` when each is exact or has a
+/// polynomial (at least one), `None` otherwise.
+fn poly_product(cx: &Ctx<'_>, children: &[ExprId], prec: usize, rm: RoundingMode) -> Option<Poly> {
+    let mut acc = Poly::constant(one());
+    let mut any = false;
+    for &c in children {
+        let f = match cx.exts.get(&c) {
+            Some(Ext::Beyond(s)) => poly_of(c, s),
+            Some(Ext::Near(p, d)) => Poly::constant(p.clone()).plus(poly_of(c, d))?,
+            None => {
+                acc = acc.scaled(&cx.exact_of(c)?)?;
+                continue;
+            }
+        };
+        any = true;
+        acc = poly_mul(&acc, &f, accuracy::EXACT, prec, rm)?;
+    }
+    any.then_some(acc)
+}
+
+/// `v^q` for an exact `q` (`x ± ex` its value): a monomial's power — any
+/// integer `1 ≤ n ≤ 1024`, or `(e^g)^q = e^(qg)` for a real `g` (the
+/// principal power) — or a polynomial's integer power up to
+/// [`MAX_POLY_POWER`].  `None` otherwise (the number alone).
+#[allow(clippy::too_many_arguments)]
+fn poly_power(
+    v: &Poly,
+    q: &Q,
+    x: &Complex,
+    ex: Bound,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Option<Poly> {
+    let single = match v.terms.as_slice() {
+        [t] if v.rem.is_exact() => Some(t),
+        _ => None,
+    };
+    if !q.is_integer() {
+        let t = single?;
+        if t.c != one() || !t.mono.nodes.is_empty() || !t.mono.exp.im.is_zero() {
+            return None;
+        }
+        let g = t.mono.exp.mul(&Gauss::real(q.clone()));
+        if !g.small() {
+            return None;
+        }
+        let value = power(&t.v, Some(q), x, ex, prec, rm, cc)?;
+        return Some(Poly::atom(Mono::exp(g), &value));
+    }
+    let n = q.to_integer().to_i64()?;
+    if n < 1 {
+        return None;
+    }
+    if let Some(t) = single
+        && n <= 1024
+    {
+        let n32 = u32::try_from(n).ok()?;
+        let value = power(&t.v, Some(q), x, ex, prec, rm, cc)?;
+        return Some(Poly {
+            terms: vec![Term {
+                c: gauss_pow(&t.c, n32)?,
+                mono: t.mono.pow(n32)?,
+                v: value,
+            }],
+            rem: Bound::EXACT,
+        });
+    }
+    if n > MAX_POLY_POWER {
+        return None;
+    }
+    let mut acc = v.clone();
+    for _ in 1..n {
+        acc = poly_mul(&acc, v, accuracy::EXACT, prec, rm)?;
+    }
+    Some(acc)
+}
+
+/// A power series `f(V) − f(0) = Σ cₙ·Vⁿ` at 0, to the order below `next`;
+/// every coefficient beyond is at most 1 in absolute value.
+struct Series {
+    coeffs: &'static [(u32, i64, i64)],
+    next: u32,
+}
+
+const EXPM1: Series = Series {
+    coeffs: &[(1, 1, 1), (2, 1, 2), (3, 1, 6), (4, 1, 24), (5, 1, 120)],
+    next: 6,
+};
+const LOG1P: Series = Series {
+    coeffs: &[(1, 1, 1), (2, -1, 2), (3, 1, 3), (4, -1, 4), (5, 1, 5)],
+    next: 6,
+};
+const COSM1: Series = Series {
+    coeffs: &[(2, -1, 2), (4, 1, 24)],
+    next: 6,
+};
+const COSHM1: Series = Series {
+    coeffs: &[(2, 1, 2), (4, 1, 24)],
+    next: 6,
+};
+const SIN: Series = Series {
+    coeffs: &[(1, 1, 1), (3, -1, 6), (5, 1, 120)],
+    next: 7,
+};
+const SINH: Series = Series {
+    coeffs: &[(1, 1, 1), (3, 1, 6), (5, 1, 120)],
+    next: 7,
+};
+const TAN: Series = Series {
+    coeffs: &[(1, 1, 1), (3, 1, 3), (5, 2, 15)],
+    next: 7,
+};
+const TANH: Series = Series {
+    coeffs: &[(1, 1, 1), (3, -1, 3), (5, 2, 15)],
+    next: 7,
+};
+const ASIN: Series = Series {
+    coeffs: &[(1, 1, 1), (3, 1, 6), (5, 3, 40)],
+    next: 7,
+};
+const ASINH: Series = Series {
+    coeffs: &[(1, 1, 1), (3, -1, 6), (5, 3, 40)],
+    next: 7,
+};
+const ATAN: Series = Series {
+    coeffs: &[(1, 1, 1), (3, -1, 3), (5, 1, 5)],
+    next: 7,
+};
+const ATANH: Series = Series {
+    coeffs: &[(1, 1, 1), (3, 1, 3), (5, 1, 5)],
+    next: 7,
+};
+
+/// `f(V) − f(0)` for `V = v` (no constant term) by the series `s`.
+fn series(v: &Poly, s: &Series, prec: usize, rm: RoundingMode) -> Option<Poly> {
+    let coeffs: Vec<(u32, Gauss)> = s.coeffs.iter().map(|&(n, a, b)| (n, ratio(a, b))).collect();
+    series_with(v, &coeffs, Some((s.next, 0.0)), 1.0, prec, rm)
+}
+
+/// `Σ cₙ·Vⁿ` for `V = v` (no constant term, `abs(V) < 2⁻⁶⁴`), with the
+/// remainder: for `tail = Some((N, λ))` the terms from `Vᴺ` on, at most
+/// `2·2^λ·abs(V)ᴺ` (their coefficients at most `2^λ`, decreasing geometric
+/// against `abs(V)`; `None`: the series ends), and `v`'s own remainder
+/// through `abs(f′) ≤ 2^lf1` near 0.
+fn series_with(
+    v: &Poly,
+    coeffs: &[(u32, Gauss)],
+    tail: Option<(u32, f64)>,
+    lf1: f64,
+    prec: usize,
+    rm: RoundingMode,
+) -> Option<Poly> {
+    let l = v.lg();
+    // (A NaN bound is not small either.)
+    let small = l < -64.0;
+    if !small || v.terms.iter().any(|t| t.mono.is_one()) {
+        return None;
+    }
+    let cut = match tail {
+        Some((n, lc)) => 1.0 + lc + f64::from(n) * l,
+        None => accuracy::EXACT,
+    };
+    let real = v.is_real() && coeffs.iter().all(|(_, c)| c.im.is_zero());
+    let bare = v.without_rem();
+    let mut out = Poly::zero();
+    let mut pow = bare.clone();
+    let mut n = 1;
+    for (order, c) in coeffs {
+        while n < *order {
+            pow = poly_mul(&pow, &bare, cut, prec, rm)?;
+            n += 1;
+        }
+        out = out.plus(pow.clone().scaled(c)?)?;
+    }
+    let r = accuracy::lsum(cut, accuracy::shift(v.rem.joint(), lf1));
+    let r = if real { Bound::real(r) } else { Bound::both(r) };
+    out.rem = Bound {
+        re: accuracy::lsum(out.rem.re, r.re),
+        im: accuracy::lsum(out.rem.im, r.im),
+    };
+    Some(out)
+}
+
+/// `(1 + V)^q − 1` for `V = v` and an exact `q`: the binomial series to the
+/// fifth order (the principal power: `Log(1 + V)` is analytic at `V = 0`).
+fn binomial(v: &Poly, q: &Q, prec: usize, rm: RoundingMode) -> Option<Poly> {
+    let mut coeffs = Vec::new();
+    let mut c = Q::one();
+    for n in 1..=6u32 {
+        c = c * (q - Q::from_integer((n - 1).into())) / Q::from_integer(n.into());
+        if n <= 5 && !c.is_zero() {
+            coeffs.push((n, Gauss::real(c.clone())));
+        }
+    }
+    // `C(q, n + 1)/C(q, n) = (q − n)/(n + 1)`: beyond the sixth term the
+    // coefficients grow at most by `abs(q) + 1` per order, so the tail is
+    // geometric while `(abs(q) + 1)·abs(V) ≤ ½`.
+    let lq = lg_gauss(&Gauss::real(q.abs() + Q::one()));
+    let small = v.lg() + lq < -64.0;
+    if !small {
+        return None;
+    }
+    let tail = (!c.is_zero()).then(|| (6, lg_gauss(&Gauss::real(c))));
+    // `abs(f′) = abs(q)·abs(1 + ξ)^(q − 1) ≤ 2·abs(q)` near 0.
+    series_with(v, &coeffs, tail, 1.0 + lq, prec, rm)
 }
 
 #[cfg(test)]

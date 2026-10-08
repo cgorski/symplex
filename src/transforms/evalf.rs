@@ -68,6 +68,7 @@ use tracing::debug;
 
 mod accuracy;
 pub(crate) mod bernoulli;
+mod bessel_order;
 mod conjugate;
 mod emsum;
 mod exact;
@@ -4914,12 +4915,18 @@ fn arb_bessel_j(
     // `besselj(2 + 10⁻¹⁴, 1)` was wrong from its 15th digit.
     let order_int = order_f64.round() as i64;
     let is_int_order = order.is_int();
+    let large = order_f64.abs() >= bessel_order::LARGE_ORDER;
 
-    // Negative integer order: J_{-n}(x) = (-1)^n J_n(x).
-    if is_int_order && order_int < 0 {
-        let pos_order = BigFloat::from_i128((-order_int) as i128, wp);
-        let j = arb_bessel_j(&pos_order, x, prec, rm, cc)?;
-        return Ok(if order_int % 2 == 0 { j } else { j.neg() });
+    // Negative integer order: J_{-n}(x) = (-1)^n J_n(x) — the order negated
+    // and its parity taken exactly (before 0.34 through an `i64`, which
+    // saturates beyond 9.2·10¹⁸: `besselj(−10²⁰, x)` recursed without end).
+    if is_int_order && order.is_negative() {
+        let j = arb_bessel_j(&order.neg(), x, prec, rm, cc)?;
+        return Ok(if bessel_order::is_odd(order) {
+            j.neg()
+        } else {
+            j
+        });
     }
 
     // Large |x|: Hankel asymptotic expansion (J is even/odd in x for
@@ -4932,7 +4939,11 @@ fn arb_bessel_j(
                 });
             }
             let j = arb_bessel_j(order, &x.abs(), prec, rm, cc)?;
-            return Ok(if order_int % 2 == 0 { j } else { j.neg() });
+            return Ok(if bessel_order::is_odd(order) {
+                j.neg()
+            } else {
+                j
+            });
         }
         if let Some(j) = bessel_jy_hankel(order, x, true, wp, rm, cc) {
             return Ok(round_to(j, prec, rm));
@@ -4953,28 +4964,57 @@ fn arb_bessel_j(
         let x_half_sq = x_half.mul(&x_half, wp, rm);
         let neg_x_half_sq = x_half_sq.neg();
 
-        // Compute (x/2)^ν.  For integer order, use repeated multiplication.
-        let prefix = if is_int_order && order_int >= 0 {
-            let mut p = BigFloat::from_i32(1, wp);
-            for _ in 0..order_int {
-                p = p.mul(&x_half, wp, rm);
-            }
-            p
-        } else {
-            // General: (x/2)^ν = exp(ν · ln(x/2))
-            let ln_xh = x_half.abs().ln(wp, rm, cc);
-            let nu_ln = order.mul(&ln_xh, wp, rm);
-            nu_ln.exp(wp, rm, cc)
-        };
-
         // Series: sum = Σ (-1)^k · (x/2)^{2k} / (k! · Γ(ν+k+1))
         // We track term = (-x²/4)^k / (k! · Γ(ν+k+1)) incrementally.
         // term_{k+1} = term_k · (-x²/4) / ((k+1) · (ν+k+1))
         let mut sum = BigFloat::new(wp); // will add 1/Γ(ν+1) as first term
 
-        // First term (k=0): 1 / Γ(ν+1)
-        let gamma_nu1 = arb_gamma_real(&order.add(&BigFloat::from_i32(1, wp), wp, rm), wp, rm, cc)?;
-        let mut term = BigFloat::from_i32(1, wp).div(&gamma_nu1, wp, rm);
+        // A large order: the factor (x/2)^ν/Γ(ν+1) at once, its exponent
+        // to an absolute 2^(−wp) (`bessel_order`), and the series from 1.
+        // Before 0.34 an integer order took a multiplication per unit:
+        // `besselj(8345185991999992, 61/10²⁷)` never finished.
+        let (prefix, mut term) = if large {
+            let bounds = bessel_order::series_bounds(order_f64, x_f64.abs(), true);
+            // Below the range: a nonzero number (`J_ν` has no zero in
+            // `0 < x < ν`), refused as such — not a 0, which the accuracy
+            // layer would take for exact (before 0.34 `besselj(10⁸ + 1/2, 1)`
+            // printed `0`).
+            let p = bessel_order::power_over_gamma(
+                order,
+                &x_half.abs(),
+                bounds,
+                "besselj",
+                wp,
+                rm,
+                cc,
+            )?
+            .ok_or_else(underflow_error)?;
+            // J_n(−x) = (−1)ⁿ J_n(x) (a negative x has an integer order here).
+            let p = if x.is_negative() && bessel_order::is_odd(order) {
+                p.neg()
+            } else {
+                p
+            };
+            (p, BigFloat::from_i32(1, wp))
+        } else {
+            // Compute (x/2)^ν.  For integer order, use repeated multiplication.
+            let prefix = if is_int_order && order_int >= 0 {
+                let mut p = BigFloat::from_i32(1, wp);
+                for _ in 0..order_int {
+                    p = p.mul(&x_half, wp, rm);
+                }
+                p
+            } else {
+                // General: (x/2)^ν = exp(ν · ln(x/2))
+                let ln_xh = x_half.abs().ln(wp, rm, cc);
+                let nu_ln = order.mul(&ln_xh, wp, rm);
+                nu_ln.exp(wp, rm, cc)
+            };
+            // First term (k=0): 1 / Γ(ν+1)
+            let gamma_nu1 =
+                arb_gamma_real(&order.add(&BigFloat::from_i32(1, wp), wp, rm), wp, rm, cc)?;
+            (prefix, BigFloat::from_i32(1, wp).div(&gamma_nu1, wp, rm))
+        };
         sum = sum.add(&term, wp, rm);
 
         // The terms peak near k ≈ |x|/2 and then decay super-exponentially;
@@ -5000,7 +5040,15 @@ fn arb_bessel_j(
             sum = sum.add(&term, wp, rm);
         }
 
-        Ok(round_to(prefix.mul(&sum, wp, rm), prec, rm))
+        let r = prefix.mul(&sum, wp, rm);
+        if large && (r.is_zero() || r.is_inf()) {
+            return Err(SymplexError::Unevaluable {
+                reason: "besselj of large order: the value leaves the arbitrary-precision \
+                         exponent range"
+                    .into(),
+            });
+        }
+        Ok(round_to(r, prec, rm))
     }
 }
 
@@ -5035,11 +5083,15 @@ fn arb_bessel_y(
     // refused below the Hankel range rather than taken for the integer.
     let is_int_order = order.is_int();
 
-    // Negative integer order: Y_{-n}(x) = (-1)^n Y_n(x).
-    if is_int_order && order_int < 0 {
-        let pos_order = BigFloat::from_i128((-order_int) as i128, wp);
-        let y = arb_bessel_y(&pos_order, x, prec, rm, cc)?;
-        return Ok(if order_int % 2 == 0 { y } else { y.neg() });
+    // Negative integer order: Y_{-n}(x) = (-1)^n Y_n(x) (exactly, see
+    // `arb_bessel_j`).
+    if is_int_order && order.is_negative() {
+        let y = arb_bessel_y(&order.neg(), x, prec, rm, cc)?;
+        return Ok(if bessel_order::is_odd(order) {
+            y.neg()
+        } else {
+            y
+        });
     }
 
     if x_f64 >= hankel_threshold(wp, order_f64.abs())
@@ -5067,6 +5119,14 @@ fn arb_bessel_y(
             ),
         });
     }
+    // A large order: the finite part of the series alone where the rest is
+    // negligible (`bessel_order::neumann_leading`).  Before 0.34 the series
+    // took `n` steps in exact rationals: `bessely(5000, 1)` 17 s,
+    // `bessely(10⁵, 1)` never finished.
+    if order_f64 >= bessel_order::LARGE_ORDER {
+        return bessel_order::neumann_leading(bessel_order::Second::Y, order, x, prec, rm, cc)
+            .unwrap_or_else(|| Err(large_order_refused("bessely", order_f64, x_f64)));
+    }
     let n = order_int as usize;
     let wp = wp + series_guard_bits(x_f64, prec)?;
     let mut xw = x.clone();
@@ -5086,17 +5146,13 @@ fn arb_bessel_y(
     // Finite sum: −(1/π)(x/2)^{−n} Σ_{k<n} (n−k−1)!/k! (x²/4)^k
     let mut finite = BigFloat::new(wp);
     if n > 0 {
-        let mut f = Ratio::<BigInt>::from_integer(BigInt::from(1)); // (n−1)!
-        for i in 2..n {
-            f *= Ratio::from_integer(BigInt::from(i as u64));
-        }
+        let mut f = NeumannCoefficients::new(n);
         let mut pow = one.clone();
         for k in 0..n {
             if k > 0 {
-                f /= Ratio::from_integer(BigInt::from(((n - k) * k) as u64));
                 pow = pow.mul(&x_half_sq, wp, rm);
             }
-            let coeff = ratio_to_bigfloat(&f, wp, rm);
+            let coeff = f.next(wp, rm);
             finite = finite.add(&coeff.mul(&pow, wp, rm), wp, rm);
         }
         let x_half_pow_neg_n = one.div(&x_half.powi(n, wp, rm), wp, rm);
@@ -5122,10 +5178,7 @@ fn arb_bessel_y(
             rm,
         );
     }
-    let mut n_fact = Ratio::<BigInt>::from_integer(BigInt::from(1));
-    for i in 2..=n {
-        n_fact *= Ratio::from_integer(BigInt::from(i as u64));
-    }
+    let n_fact = factorial_exact(n);
     let mut inv_fact = one.div(&ratio_to_bigfloat(&n_fact, wp, rm), wp, rm);
     let neg_x_half_sq = x_half_sq.neg();
     let mut pow = one.clone();
@@ -5159,6 +5212,68 @@ fn arb_bessel_y(
 
     let y = finite.add(&log_term, wp, rm).add(&series_term, wp, rm);
     Ok(round_to(y, prec, rm))
+}
+
+/// `n!` as an exact rational (an integer): a product of integers.  Not
+/// `Ratio` arithmetic, whose every product is reduced by a gcd with the
+/// denominator 1 — a binary gcd that takes a step per bit of the numerator,
+/// `O(n²)` words for `n!`: before 0.34 `polygamma(1755, 1/10)` spent 5 s
+/// in it in the fuzz build, `bessely(5000, 1)` 17 s.  The same value.
+fn factorial_exact(n: usize) -> Ratio<BigInt> {
+    Ratio::from_integer(crate::base::combinatorics::factorial(n as u64))
+}
+
+/// The coefficients `f_k = (n−k−1)!/k!`, `k = 0 … n−1`, of the finite sums of
+/// `Y_n` and `K_n` (A&S 9.1.11, 9.6.11), as BigFloats: exactly the rounding of
+/// the reduced fraction `ratio_to_bigfloat` made of the `Ratio` recurrence
+/// `f_k = f_{k−1}/((n−k)·k)` before 0.34, without its gcds.  The reduced
+/// fraction is an integer `(k+1)⋯(n−k−1)` while `k ≤ n−k−1` (`k!` divides
+/// `(n−k−1)!`) and the unit fraction `1/((n−k)⋯k)` after: integer
+/// recurrences with exact divisions and products.
+struct NeumannCoefficients {
+    n: usize,
+    k: usize,
+    /// `(n−k−1)!/k!` in the integer phase, the denominator in the other.
+    value: BigInt,
+}
+
+impl NeumannCoefficients {
+    fn new(n: usize) -> Self {
+        let value = crate::base::combinatorics::factorial(n.saturating_sub(1) as u64);
+        NeumannCoefficients { n, k: 0, value }
+    }
+
+    /// `f_k` at `wp` bits, then `k + 1`.
+    fn next(&mut self, wp: usize, rm: RoundingMode) -> BigFloat {
+        let (n, k) = (self.n, self.k);
+        self.k += 1;
+        if k > 0 {
+            let (a, b) = (BigInt::from((n - k) as u64), BigInt::from(k as u64));
+            if 2 * k < n {
+                // (n−k)!/(k−1)! ÷ ((n−k)·k): exact.
+                self.value = &self.value / (a * b);
+            } else if 2 * k < n + 2 {
+                // The first unit fraction: 1/k (n = 2k), 1/((k−1)·k) (n = 2k−1).
+                self.value = (n - k..=k).map(|j| BigInt::from(j as u64)).product();
+            } else {
+                self.value = &self.value * a * b;
+            }
+        }
+        if 2 * k < n {
+            ratio_to_bigfloat(&Ratio::from_integer(self.value.clone()), wp, rm)
+        } else {
+            ratio_to_bigfloat(&Ratio::new_raw(BigInt::from(1), self.value.clone()), wp, rm)
+        }
+    }
+}
+
+/// `Y_n` or `K_n` of a large order where [`bessel_order::neumann_leading`]
+/// does not apply (`x² > 2(n − 1)`): the full series would take `n` steps.
+fn large_order_refused(what: &str, order: f64, x: f64) -> SymplexError {
+    SymplexError::NotImplemented(format!(
+        "{what} of integer order {order:e} at {x:e} (above sqrt(2n)): the Neumann series would \
+         take n terms (no uniform asymptotic expansion)"
+    ))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -5875,6 +5990,26 @@ fn arb_polygamma(
     }
 }
 
+/// `q·r` for a reduced fraction `q` and an integer `r`: the reduced fraction
+/// `Ratio`'s product gives, with gcds against the denominator of `q` only
+/// (of `r` modulo it) — not a binary gcd of `r` with 1, which takes a step
+/// per bit of `r` (see [`factorial_exact`]).
+fn times_integer(q: &Ratio<BigInt>, r: &BigInt) -> Ratio<BigInt> {
+    use num_integer::Integer;
+    use num_traits::One;
+    let mut num = r.clone();
+    let mut den = q.denom().clone();
+    loop {
+        let g = den.gcd(&(&num % &den));
+        if g.is_one() || g.is_zero() {
+            break;
+        }
+        num /= &g;
+        den /= &g;
+    }
+    Ratio::new_raw(q.numer() * num, den)
+}
+
 /// `ψ⁽ⁿ⁾(x)` at working precision `wp` (see [`arb_polygamma`]) and the
 /// magnitude of the largest term summed.
 fn polygamma_wp(
@@ -5887,12 +6022,9 @@ fn polygamma_wp(
     let n_us = n as usize;
     let one = BigFloat::from_i32(1, wp);
 
-    // n! and (n−1)! as BigFloats.
-    let mut n_fact = Ratio::<BigInt>::from_integer(BigInt::from(1));
-    for i in 2..=n_us {
-        n_fact *= Ratio::from_integer(BigInt::from(i as u64));
-    }
-    let nm1_fact = &n_fact / Ratio::from_integer(BigInt::from(n_us as u64));
+    // n! and (n−1)! as BigFloats (exact integers first: see `factorial_exact`).
+    let nm1_fact = factorial_exact(n_us.saturating_sub(1));
+    let n_fact = Ratio::from_integer(nm1_fact.numer() * BigInt::from(n_us as u64));
     let n_fact_bf = ratio_to_bigfloat(&n_fact, wp, rm);
     let nm1_fact_bf = ratio_to_bigfloat(&nm1_fact, wp, rm);
     // (−1)^{n+1}
@@ -5949,9 +6081,10 @@ fn polygamma_wp(
 
     let x2 = xw.mul(&xw, wp, rm);
     let mut x_pow = x_pow_n.mul(&x2, wp, rm); // x^{n+2} for k = 1
-    // (2k+n−1)!/(2k)! as a running rational: start k=1 → (n+1)!/2!
-    let mut ratio_fact = &n_fact * Ratio::from_integer(BigInt::from(n_us as u64 + 1))
-        / Ratio::from_integer(BigInt::from(2));
+    // (2k+n−1)!/(2k)! = (2k+1)⋯(2k+n−1), an integer: start k=1 → (n+1)!/2!
+    // (exact integer steps, the same values as the `Ratio` steps before
+    // 0.34 without their gcds).
+    let mut ratio_fact = n_fact.numer() * BigInt::from(n_us as u64 + 1) / BigInt::from(2);
     let mut prev_term_exp: Option<i32> = None;
     let max_terms = wp / 2 + 20;
     for k in 1..=max_terms {
@@ -5960,11 +6093,11 @@ fn polygamma_wp(
             let a =
                 BigInt::from((2 * k + n_us - 2) as u64) * BigInt::from((2 * k + n_us - 1) as u64);
             let b = BigInt::from((2 * k - 1) as u64) * BigInt::from((2 * k) as u64);
-            ratio_fact *= Ratio::new(a, b);
+            ratio_fact = ratio_fact * a / b;
             x_pow = x_pow.mul(&x2, wp, rm);
         }
         let b2k = bernoulli::even(k);
-        let coeff = ratio_to_bigfloat(&(&b2k * &ratio_fact), wp, rm);
+        let coeff = ratio_to_bigfloat(&times_integer(&b2k, &ratio_fact), wp, rm);
         let term = coeff.div(&x_pow, wp, rm);
         if let Some(t_exp) = term.exponent() {
             if let Some(prev) = prev_term_exp
@@ -6030,33 +6163,72 @@ fn bessel_i_series(
         };
     }
 
-    // (x/2)^ν
-    let prefix = if is_int_order && order_int >= 0 {
-        x_half.powi(order_int as usize, wp, rm)
-    } else if is_int_order {
-        // Negative integer order: I_{-n} = I_n.
-        x_half.powi((-order_int) as usize, wp, rm)
+    if !is_int_order && x.is_negative() {
+        return Err(SymplexError::Unevaluable {
+            reason: "BesselI of negative argument with non-integer order is complex".into(),
+        });
+    }
+    let one = BigFloat::from_i32(1, wp);
+    let x_f64 = bigfloat_to_f64(x, rm, cc)?.abs();
+    // A large order (I₋ₙ = Iₙ): the factor (x/2)^ν/Γ(ν+1) at once, its
+    // exponent to an absolute 2^(−wp) (`bessel_order`), the series from 1 —
+    // refused when it would be long.  Before 0.34 an order beyond 2⁶³
+    // saturated an `i64`, and `besseli(10¹², 10¹¹)` summed for ever.
+    let large = order_f64.abs() >= bessel_order::LARGE_ORDER;
+    let (prefix, eff_order, mut term) = if large {
+        let eff_order = if is_int_order {
+            order.abs()
+        } else {
+            order.clone()
+        };
+        let eff_f64 = bigfloat_to_f64_rounded(&eff_order, rm)?;
+        let bounds = bessel_order::series_bounds(eff_f64, x_f64, false);
+        // Below the range: 0, which the accuracy layer holds as the
+        // underflow of a nonzero `I_ν` (`underflowed`), as before 0.34.
+        let Some(p) = bessel_order::power_over_gamma(
+            &eff_order,
+            &x_half.abs(),
+            bounds,
+            "besseli",
+            wp,
+            rm,
+            cc,
+        )?
+        else {
+            return Ok(BigFloat::new(wp));
+        };
+        bessel_order::refuse_long_i_series(eff_f64, x_f64)?;
+        // I_n(−x) = (−1)ⁿ I_n(x).
+        let p = if x.is_negative() && bessel_order::is_odd(order) {
+            p.neg()
+        } else {
+            p
+        };
+        (p, eff_order, one.clone())
     } else {
-        if x.is_negative() {
-            return Err(SymplexError::Unevaluable {
-                reason: "BesselI of negative argument with non-integer order is complex".into(),
-            });
-        }
-        let ln_xh = x_half.ln(wp, rm, cc);
-        order.mul(&ln_xh, wp, rm).exp(wp, rm, cc)
-    };
-    let eff_order = if is_int_order && order_int < 0 {
-        BigFloat::from_i128((-order_int) as i128, wp)
-    } else {
-        order.clone()
+        // (x/2)^ν
+        let prefix = if is_int_order && order_int >= 0 {
+            x_half.powi(order_int as usize, wp, rm)
+        } else if is_int_order {
+            // Negative integer order: I_{-n} = I_n.
+            x_half.powi((-order_int) as usize, wp, rm)
+        } else {
+            let ln_xh = x_half.ln(wp, rm, cc);
+            order.mul(&ln_xh, wp, rm).exp(wp, rm, cc)
+        };
+        let eff_order = if is_int_order && order_int < 0 {
+            BigFloat::from_i128((-order_int) as i128, wp)
+        } else {
+            order.clone()
+        };
+        // term_0 = 1/Γ(ν+1)
+        let gamma_nu1 = arb_gamma_real(&eff_order.add(&one, wp, rm), wp, rm, cc)?;
+        let term = one.div(&gamma_nu1, wp, rm);
+        (prefix, eff_order, term)
     };
 
-    // term_0 = 1/Γ(ν+1); term_{k+1} = term_k · (x²/4) / ((k+1)(ν+k+1))
-    let one = BigFloat::from_i32(1, wp);
-    let gamma_nu1 = arb_gamma_real(&eff_order.add(&one, wp, rm), wp, rm, cc)?;
-    let mut term = one.div(&gamma_nu1, wp, rm);
+    // term_{k+1} = term_k · (x²/4) / ((k+1)(ν+k+1))
     let mut sum = term.clone();
-    let x_f64 = bigfloat_to_f64(x, rm, cc)?.abs();
     let max_terms = (x_f64 * 2.0) as usize + wp + 40;
     for k in 1..=max_terms {
         let k_bf = BigFloat::from_i128(k as i128, wp);
@@ -6070,7 +6242,15 @@ fn bessel_i_series(
             break;
         }
     }
-    Ok(prefix.mul(&sum, wp, rm))
+    let r = prefix.mul(&sum, wp, rm);
+    if large && (r.is_zero() || r.is_inf()) {
+        return Err(SymplexError::Unevaluable {
+            reason: "besseli of large order: the value leaves the arbitrary-precision exponent \
+                     range"
+                .into(),
+        });
+    }
+    Ok(r)
 }
 
 /// Asymptotic expansion of `I_ν(x)` for large `x > 0` (DLMF 10.40.1):
@@ -6174,10 +6354,10 @@ fn arb_bessel_i(
                 });
             }
             let v = arb_bessel_i(order, &x.abs(), prec, rm, cc)?;
-            return Ok(if (order_f64.round() as i64) % 2 == 0 {
-                v
-            } else {
+            return Ok(if bessel_order::is_odd(order) {
                 v.neg()
+            } else {
+                v
             });
         }
         if let Some(v) = bessel_i_asymptotic(order, x, wp, rm, cc) {
@@ -6290,7 +6470,8 @@ fn arb_bessel_k(
     // Exactly (see `arb_bessel_j`); a non-integer order near an integer is
     // paid for with precision below.
     let is_int_order = order.is_int();
-    let order_abs = if is_int_order {
+    // |n| exactly (before 0.34 through a saturating `i64`).
+    let order_abs = if is_int_order && order_f64.abs() < bessel_order::LARGE_ORDER {
         BigFloat::from_i128(order_int.unsigned_abs() as i128, base_wp)
     } else {
         order.abs()
@@ -6364,6 +6545,14 @@ fn arb_bessel_k(
         }
     }
 
+    // A large order (K₋ₙ = Kₙ): the finite part of the series alone where
+    // the rest is negligible (`bessel_order::neumann_leading`).  Before 0.34
+    // the series took `n` steps in exact rationals (`besselk(5000, 1)` never
+    // finished) and an order beyond 2⁶³ saturated.
+    if order_f64.abs() >= bessel_order::LARGE_ORDER {
+        return bessel_order::neumann_leading(bessel_order::Second::K, &order_abs, x, prec, rm, cc)
+            .unwrap_or_else(|| Err(large_order_refused("besselk", order_f64, x_f64)));
+    }
     let n = order_int.unsigned_abs() as usize;
     let one = BigFloat::from_i32(1, wp);
     let two = BigFloat::from_i32(2, wp);
@@ -6379,19 +6568,14 @@ fn arb_bessel_k(
     let mut finite = BigFloat::new(wp);
     if n > 0 {
         // f_k = (n−k−1)!/k! ; f_0 = (n−1)!
-        let mut f = Ratio::<BigInt>::from_integer(BigInt::from(1));
-        for i in 2..n {
-            f *= Ratio::from_integer(BigInt::from(i as u64));
-        }
+        let mut f = NeumannCoefficients::new(n);
         let mut pow = one.clone(); // (−x²/4)^k
         let neg_x_half_sq = x_half_sq.neg();
         for k in 0..n {
             if k > 0 {
-                // f_k = f_{k−1} / ((n−k) · k)
-                f /= Ratio::from_integer(BigInt::from(((n - k) * k) as u64));
                 pow = pow.mul(&neg_x_half_sq, wp, rm);
             }
-            let coeff = ratio_to_bigfloat(&f, wp, rm);
+            let coeff = f.next(wp, rm);
             finite = finite.add(&coeff.mul(&pow, wp, rm), wp, rm);
         }
         let x_half_pow_neg_n = one.div(&x_half.powi(n, wp, rm), wp, rm);
@@ -6418,10 +6602,7 @@ fn arb_bessel_k(
         );
     }
     // 1/(k!(n+k)!) start: 1/n!
-    let mut n_fact = Ratio::<BigInt>::from_integer(BigInt::from(1));
-    for i in 2..=n {
-        n_fact *= Ratio::from_integer(BigInt::from(i as u64));
-    }
+    let n_fact = factorial_exact(n);
     let mut inv_fact = one.div(&ratio_to_bigfloat(&n_fact, wp, rm), wp, rm);
     let mut pow = one.clone();
     let mut series = BigFloat::new(wp);
@@ -8532,40 +8713,121 @@ fn polylog_series_raw(
     Ok((sum, lost))
 }
 
-/// The Stirling number of the second kind `S(n, k)` (`None` on overflow);
-/// for `polylog.rs`, through this module's existing dependency.
-fn stirling2(n: u64, k: u64) -> Option<BigInt> {
-    crate::domains::combinatorics::stirling2(n, k)
+/// The largest `n` of `Li₋ₙ(z)` by its finite sum ([`polylog_nonpositive`],
+/// `polylog::nonpositive`): the row of `n + 1` Stirling numbers takes
+/// `O(n²)` operations on integers of up to `n·log₂ n` bits (0.1 s at 1000).
+const MAX_NONPOSITIVE_ORDER: u64 = 1000;
+
+thread_local! {
+    /// The last row of [`stirling2_row`]: the precision loops of `Li₋ₙ` ask
+    /// for the same row at every pass.
+    static STIRLING_ROW: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<BigInt>>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The Stirling numbers of the second kind `S(m, j)`, `j = 0 … m`: one row
+/// of the triangle `S(i, j) = j·S(i−1, j) + S(i−1, j−1)`, the integers
+/// `crate::domains::combinatorics::stirling2` gives one at a time by the
+/// same triangle (`O(m·j)` each).  Before 0.34 the row of `Li₋ₙ` took them
+/// one at a time, `O(n³)`: `polylog(−601, 4/13)` 18 s, `polylog(−1401,
+/// 4/13)` minutes.  Refused beyond [`MAX_NONPOSITIVE_ORDER`]` + 1`.
+fn stirling2_row(m: u64) -> Result<std::rc::Rc<Vec<BigInt>>, SymplexError> {
+    if m > MAX_NONPOSITIVE_ORDER + 1 {
+        return Err(SymplexError::NotImplemented(format!(
+            "polylog of an order below -{MAX_NONPOSITIVE_ORDER} (a finite sum of {m} terms with \
+             Stirling numbers)"
+        )));
+    }
+    if let Some(row) = STIRLING_ROW.with(|c| {
+        c.borrow()
+            .as_ref()
+            .filter(|(k, _)| *k == m)
+            .map(|(_, r)| std::rc::Rc::clone(r))
+    }) {
+        return Ok(row);
+    }
+    let mu = m as usize;
+    let mut row = vec![BigInt::zero(); mu + 1];
+    row[0] = BigInt::from(1);
+    for i in 1..=mu {
+        for j in (1..=i).rev() {
+            let (lower, upper) = row.split_at_mut(j);
+            upper[0] *= j as u64;
+            upper[0] += &lower[j - 1];
+        }
+        row[0] = BigInt::zero();
+    }
+    let row = std::rc::Rc::new(row);
+    STIRLING_ROW.with(|c| *c.borrow_mut() = Some((m, std::rc::Rc::clone(&row))));
+    Ok(row)
 }
 
 /// `Li_{−n}(z)` for integer `n ≥ 0` and any real `z ≠ 1`:
-/// `Σ_{k=0}^{n} k! S(n+1, k+1) (z/(1−z))^{k+1}`.
+/// `Σ_{k=0}^{n} k! S(n+1, k+1) (z/(1−z))^{k+1}`, at `wp` bits, and `log₂` of
+/// its largest term.  For `z < 0` the terms alternate and cancel (see
+/// [`polylog_nonpositive_measured`]).
 fn polylog_nonpositive(
     n: usize,
     z: &BigFloat,
     wp: usize,
     rm: RoundingMode,
-) -> Result<BigFloat, SymplexError> {
+) -> Result<(BigFloat, f64), SymplexError> {
     let one = BigFloat::from_i32(1, wp);
     let one_minus_z = one.sub(z, wp, rm);
     if one_minus_z.is_zero() {
         return Err(unevaluable("polylog(s, 1) diverges for s ≤ 1"));
     }
     let w = z.div(&one_minus_z, wp, rm);
+    let row = stirling2_row(n as u64 + 1)?;
     let mut k_fact = BigInt::from(1);
     let mut w_pow = w.clone();
     let mut sum = BigFloat::new(wp);
+    let mut largest = f64::NEG_INFINITY;
     for k in 0..=n {
         if k > 0 {
             k_fact *= BigInt::from(k as u64);
             w_pow = w_pow.mul(&w, wp, rm);
         }
-        let s2 = crate::domains::combinatorics::stirling2(n as u64 + 1, k as u64 + 1)
-            .ok_or_else(|| unevaluable("polylog: Stirling number overflow"))?;
-        let c = ratio_to_bigfloat(&Ratio::from_integer(&k_fact * s2), wp, rm);
-        sum = sum.add(&c.mul(&w_pow, wp, rm), wp, rm);
+        let c = ratio_to_bigfloat(&Ratio::from_integer(&k_fact * &row[k + 1]), wp, rm);
+        let term = c.mul(&w_pow, wp, rm);
+        if let Some(e) = term.exponent().filter(|_| !term.is_zero()) {
+            largest = largest.max(f64::from(e));
+        }
+        sum = sum.add(&term, wp, rm);
     }
-    Ok(sum)
+    Ok((sum, largest))
+}
+
+/// [`polylog_nonpositive`] to `prec` bits: the loss of the alternating sum
+/// of a negative `z` (the largest term over the value) measured and made up
+/// with more bits, up to [`cancellation_cap`]; the first pass, at `prec +
+/// 32` bits, as before 0.34.  Before 0.34 it went unmeasured:
+/// `polylog(−200, −1/2)` was `2.03·10²⁹⁶`, truly `−5.15·10²⁷²`.
+fn polylog_nonpositive_measured(
+    n: usize,
+    z: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+) -> Result<BigFloat, SymplexError> {
+    let cap = cancellation_cap(prec);
+    let mut extra = 32;
+    loop {
+        let (value, largest) = polylog_nonpositive(n, z, prec + extra, rm)?;
+        let lost = match value.exponent() {
+            Some(e) if !value.is_zero() && largest.is_finite() => {
+                (largest - f64::from(e)).max(0.0).ceil() as usize
+            }
+            _ if largest.is_finite() => prec + extra,
+            _ => 0,
+        };
+        if lost + 16 <= extra {
+            return Ok(round_to(value, prec, rm));
+        }
+        if extra >= cap || lost + 16 > cap {
+            return Err(special_exhausted(prec));
+        }
+        extra = (lost + 32).max(2 * extra).min(cap);
+    }
 }
 
 /// `Li_s(z)` for `1/2 < z < 1` via the expansion in `μ = ln z` (`|μ| < 2π`):
@@ -8981,8 +9243,7 @@ fn arb_polylog(
     if let Some(n) = s_int
         && n <= 0
     {
-        let r = polylog_nonpositive((-n) as usize, z, wp, rm)?;
-        return Ok(round_to(r, prec, rm));
+        return polylog_nonpositive_measured(n.unsigned_abs() as usize, z, prec, rm);
     }
     let az = z.abs();
     if bf_gt(&az, &one) {
@@ -9718,8 +9979,23 @@ fn arb_gegenbauer(
     Ok(round_to(curr, prec, rm))
 }
 
+/// The largest degree of [`arb_jacobi`]: its sum takes `O(n)` operations at
+/// `2n` bits (0.2 s at 2000, with the evaluations of the error bound).
+const MAX_JACOBI_DEGREE: usize = 2000;
+
 /// Jacobi `P_n^{(a,b)}(x)` via the explicit sum
-/// `Σ_s C(n+a, n−s) C(n+b, s) ((x−1)/2)^s ((x+1)/2)^{n−s}`.
+/// `Σ_s C(n+a, n−s) C(n+b, s) ((x−1)/2)^s ((x+1)/2)^{n−s}`, at `2n` guard
+/// bits for the cancellation of its terms (their absolute sum is at most
+/// about `4^n` times the value's scale on `[−1, 1]`).
+///
+/// The coefficients are updated term by term: `∏_{j>s}(a + j)` divided by
+/// `a + s` (from the first `s` at which it is nonzero: a negative integer
+/// `a = −m` makes the terms below `m` zero), `∏_{j>n−s}(b + j)` multiplied by
+/// `b + n − s + 1`, `1/((n−s)!·s!)` by `(n − s + 1)/s`, the powers by
+/// `(x−1)/2` and divided by `(x+1)/2`.  Before 0.34 each term recomputed its
+/// products and factorials (`O(n²)` operations and exact factorials):
+/// `jacobi(1000, 1/3, 1/5, 1/3)` 1.3 s, `jacobi(2000, …)` and up never
+/// finished.  Refused beyond [`MAX_JACOBI_DEGREE`].
 fn arb_jacobi(
     n: &BigFloat,
     a: &BigFloat,
@@ -9730,8 +10006,10 @@ fn arb_jacobi(
     cc: &mut Consts,
 ) -> Result<BigFloat, SymplexError> {
     let deg = poly_degree(n, "jacobi", rm, cc)? as usize;
-    if deg > 100_000 {
-        return Err(unevaluable("jacobi: degree too large for evalf"));
+    if deg > MAX_JACOBI_DEGREE {
+        return Err(SymplexError::NotImplemented(format!(
+            "jacobi of degree {deg} (at most {MAX_JACOBI_DEGREE} in evalf)"
+        )));
     }
     let wp = prec + 32 + 2 * deg;
     let one = BigFloat::from_i32(1, wp);
@@ -9741,24 +10019,64 @@ fn arb_jacobi(
     }
     let lo = x.sub(&one, wp, rm).div(&two, wp, rm);
     let hi = x.add(&one, wp, rm).div(&two, wp, rm);
-    // binomial-like coefficients ∏_{j=lo}^{hi}(p + j) / len!
-    let shifted = |p: &BigFloat, lo_j: usize, hi_j: usize| -> BigFloat {
+    let int = |j: usize| BigFloat::from_u64(j as u64, 64);
+    // ∏_{j=from}^{deg} (p + j).
+    let shifted = |p: &BigFloat, from: usize| -> BigFloat {
         let mut acc = one.clone();
-        for j in lo_j..=hi_j {
-            acc = acc.mul(&p.add(&BigFloat::from_i128(j as i128, wp), wp, rm), wp, rm);
+        for j in from..=deg {
+            acc = acc.mul(&p.add(&int(j), wp, rm), wp, rm);
         }
         acc
     };
+    // `a + j` vanishes at `j = −a` for a negative integer `a`: the terms
+    // `s < −a` (whose product holds that factor) are 0.
+    let first = match bf_as_int(a, rm, cc)? {
+        Some(m) if a.is_int() && m < 0 && m.unsigned_abs() as usize <= deg => {
+            m.unsigned_abs() as usize
+        }
+        _ => 0,
+    };
+    // The sum over `s ≥ first`: (x+1)/2 = 0 leaves the term `s = n` alone.
+    let hi_zero = hi.is_zero();
+    let ratio = if hi_zero {
+        BigFloat::new(wp)
+    } else {
+        lo.div(&hi, wp, rm)
+    };
+    let mut pa = shifted(a, first + 1);
+    let mut pb = one.clone();
+    for s in 1..=first {
+        pb = pb.mul(&b.add(&int(deg - s + 1), wp, rm), wp, rm);
+    }
+    // 1/((n − first)!·first!).
+    let f0 = factorial_bigint(deg - first) * factorial_bigint(first);
+    let mut inv_fact = one.div(&ratio_to_bigfloat(&f0, wp, rm), wp, rm);
+    // lo^first·hi^(n − first).
+    let direct_pow = |s: usize| lo.powi(s, wp, rm).mul(&hi.powi(deg - s, wp, rm), wp, rm);
+    let mut pow = if hi_zero {
+        BigFloat::new(wp)
+    } else {
+        direct_pow(first)
+    };
+    // A first power beyond the exponent range (`x` within `2^(−wp/n)`-ish of
+    // −1): every power directly, as before 0.34.
+    let direct = !hi_zero && !lo.is_zero() && (pow.is_zero() || pow.is_inf());
     let mut sum = BigFloat::new(wp);
-    for s in 0..=deg {
-        let pa = shifted(a, s + 1, deg);
-        let pb = shifted(b, deg - s + 1, deg);
-        let denom = ratio_to_bigfloat(&(factorial_bigint(deg - s) * factorial_bigint(s)), wp, rm);
-        let term = pa
-            .mul(&pb, wp, rm)
-            .div(&denom, wp, rm)
-            .mul(&lo.powi(s, wp, rm), wp, rm)
-            .mul(&hi.powi(deg - s, wp, rm), wp, rm);
+    for s in first..=deg {
+        if s > first {
+            pa = pa.div(&a.add(&int(s), wp, rm), wp, rm);
+            pb = pb.mul(&b.add(&int(deg - s + 1), wp, rm), wp, rm);
+            inv_fact = inv_fact.mul(&int(deg - s + 1), wp, rm).div(&int(s), wp, rm);
+            pow = if direct {
+                direct_pow(s)
+            } else {
+                pow.mul(&ratio, wp, rm)
+            };
+        }
+        if hi_zero && s == deg {
+            pow = lo.powi(deg, wp, rm);
+        }
+        let term = pa.mul(&pb, wp, rm).mul(&inv_fact, wp, rm).mul(&pow, wp, rm);
         sum = sum.add(&term, wp, rm);
     }
     Ok(round_to(sum, prec, rm))
@@ -10592,6 +10910,100 @@ mod tests {
     }
 
     // ── Bessel function evaluation ─────────────────────────────────
+
+    /// The exact-integer coefficients of `Y_n`, `K_n` and `ψ⁽ⁿ⁾` (0.34) round
+    /// to the same BigFloats as the reduced `Ratio` recurrences before them:
+    /// the same digits, without the gcds.
+    /// The term-by-term Jacobi sum (0.34) agrees with the sum that recomputed
+    /// every coefficient (before 0.34, kept here as the reference), also for
+    /// a negative integer `a` (leading terms 0) and at `x = ±1`.
+    #[test]
+    fn jacobi_term_by_term_matches_the_explicit_sum() {
+        let rm = RoundingMode::ToEven;
+        let mut cc = Consts::new().unwrap();
+        let prec = 128;
+        let reference = |deg: usize, a: &BigFloat, b: &BigFloat, x: &BigFloat| -> BigFloat {
+            let wp = prec + 32 + 2 * deg;
+            let one = BigFloat::from_i32(1, wp);
+            let two = BigFloat::from_i32(2, wp);
+            let lo = x.sub(&one, wp, rm).div(&two, wp, rm);
+            let hi = x.add(&one, wp, rm).div(&two, wp, rm);
+            let shifted = |p: &BigFloat, lo_j: usize, hi_j: usize| -> BigFloat {
+                let mut acc = one.clone();
+                for j in lo_j..=hi_j {
+                    acc = acc.mul(&p.add(&BigFloat::from_i128(j as i128, wp), wp, rm), wp, rm);
+                }
+                acc
+            };
+            let mut sum = BigFloat::new(wp);
+            for s in 0..=deg {
+                let pa = shifted(a, s + 1, deg);
+                let pb = shifted(b, deg - s + 1, deg);
+                let d =
+                    ratio_to_bigfloat(&(factorial_bigint(deg - s) * factorial_bigint(s)), wp, rm);
+                let term = pa
+                    .mul(&pb, wp, rm)
+                    .div(&d, wp, rm)
+                    .mul(&lo.powi(s, wp, rm), wp, rm)
+                    .mul(&hi.powi(deg - s, wp, rm), wp, rm);
+                sum = sum.add(&term, wp, rm);
+            }
+            round_to(sum, prec, rm)
+        };
+        let q =
+            |n: i32, d: i32| BigFloat::from_i32(n, 256).div(&BigFloat::from_i32(d, 256), 256, rm);
+        for deg in [1usize, 2, 5, 17, 60] {
+            for (a, b) in [
+                (q(1, 3), q(1, 5)),
+                (q(-3, 1), q(2, 7)),
+                (q(-1, 1), q(-2, 1)),
+                (q(5, 2), q(-7, 3)),
+            ] {
+                for x in [q(1, 3), q(-9, 10), q(1, 1), q(-1, 1), q(3, 1), q(-5, 2)] {
+                    let n = BigFloat::from_u64(deg as u64, 64);
+                    let got = arb_jacobi(&n, &a, &b, &x, prec, rm, &mut cc).unwrap();
+                    let want = reference(deg, &a, &b, &x);
+                    let diff = got.sub(&want, prec, rm).abs();
+                    let ok = diff.is_zero()
+                        || match (diff.exponent(), want.exponent()) {
+                            (Some(d), Some(w)) => i64::from(d) < i64::from(w) - (prec as i64 - 4),
+                            _ => false,
+                        };
+                    assert!(ok, "deg={deg} a={a} b={b} x={x}: {got} vs {want}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn exact_coefficients_match_the_ratio_recurrences() {
+        let rm = RoundingMode::ToEven;
+        for (n, wp) in (1..60usize).flat_map(|n| [(n, 64), (n, 160)]) {
+            let mut f = Ratio::<BigInt>::from_integer(BigInt::from(1));
+            for i in 2..n {
+                f *= Ratio::from_integer(BigInt::from(i as u64));
+            }
+            let mut g = NeumannCoefficients::new(n);
+            for k in 0..n {
+                if k > 0 {
+                    f /= Ratio::from_integer(BigInt::from(((n - k) * k) as u64));
+                }
+                assert_eq!(g.next(wp, rm), ratio_to_bigfloat(&f, wp, rm), "n={n} k={k}");
+            }
+            let mut fact = Ratio::<BigInt>::from_integer(BigInt::from(1));
+            for i in 2..=n {
+                fact *= Ratio::from_integer(BigInt::from(i as u64));
+            }
+            assert_eq!(factorial_exact(n), fact);
+        }
+        for k in 1..40 {
+            let b = bernoulli::even(k);
+            for r in [1u64, 2, 6, 30, 42, 1155, 1_000_003, 510_510] {
+                let r = BigInt::from(r) * BigInt::from(k as u64 * 7 + 1);
+                assert_eq!(times_integer(&b, &r), &b * Ratio::from_integer(r.clone()));
+            }
+        }
+    }
 
     #[test]
     fn bessel_j0_at_zero() {

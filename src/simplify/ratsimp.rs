@@ -66,7 +66,7 @@ pub(crate) fn ratsimp(arena: &mut Arena, expr: ExprId) -> ExprId {
     if !is_admissible(arena, expr) {
         return expr;
     }
-    let vanishing = vanishing_bases(arena, expr);
+    let vanishing = vanishing_bases(arena, expr, &FxHashMap::default());
     let gens = collect_generators(arena, expr);
     let Some((p, q)) = to_rational_function_tracked(arena, expr, &gens, &mut false, &vanishing)
     else {
@@ -98,7 +98,20 @@ pub(crate) fn ratsimp(arena: &mut Arena, expr: ExprId) -> ExprId {
 /// the numerator multiplied out (SymPy 1.14's `ratsimp`: `0`).  Other
 /// identities stay unapplied, as in SymPy: `ratsimp(1/(x/s + 1/s))` with
 /// `s = sin 2x − 2·sin x·cos x` is `s/(x + 1)`.
-fn vanishing_bases(arena: &mut Arena, expr: ExprId) -> FxHashMap<ExprId, Vanishing> {
+///
+/// Once something in `expr` vanishes — a denominator above, or a factor
+/// of a product by the residue test — every denominator that may vanish
+/// by an identity of its functions is tested as well ([`identity_bases`]):
+/// with a zero in the expression, a pole anywhere makes `0·zoo` or `zoo +
+/// zoo`.  Up to 0.33 `ratsimp((cosh²x − sinh²x − 1)⁻¹·(xy − 1)/(y +
+/// 1/(x·(x + 4) − x² − 4x)))` was `0` (`zoo·0`, `nan`).  `known`: bases
+/// already known to vanish (`Vanishing::Zero`), as [`ratsimp_vanishing`]
+/// is given them; a factor beside one of their poles is tested too.
+fn vanishing_bases(
+    arena: &mut Arena,
+    expr: ExprId,
+    known: &FxHashMap<ExprId, Vanishing>,
+) -> FxHashMap<ExprId, Vanishing> {
     // (power, base, negative?) of the skeleton, its products and its sums;
     // an explicit stack.
     let mut powers: Vec<(ExprId, ExprId, bool)> = Vec::new();
@@ -139,14 +152,31 @@ fn vanishing_bases(arena: &mut Arena, expr: ExprId) -> FxHashMap<ExprId, Vanishi
     }
     let mut vanishing: FxHashMap<ExprId, Vanishing> = FxHashMap::default();
     let mut decided: FxHashMap<ExprId, bool> = FxHashMap::default();
+    for &(_, base, _) in &powers {
+        if known.get(&base) == Some(&Vanishing::Zero) {
+            decided.insert(base, true);
+        }
+    }
     for &(_, base, negative) in &powers {
         if negative && !decided.contains_key(&base) {
             let zero = crate::base::canon::factor_vanishes(arena, base);
             decided.insert(base, zero);
         }
     }
-    for d in crate::base::canon::identity_denominator_candidates(arena, &products) {
+    let candidates = crate::base::canon::identity_denominator_candidates(arena, &products);
+    let mut by_identity: FxHashSet<ExprId> = FxHashSet::default();
+    for &d in &candidates {
         if decided.get(&d) != Some(&true)
+            && by_identity.insert(d)
+            && crate::simplify::identically_zero::vanishes_by_identity(arena, d)
+        {
+            decided.insert(d, true);
+        }
+    }
+    let something_vanishes = !candidates.is_empty() || decided.values().any(|&zero| zero);
+    for d in identity_bases(arena, &powers, &products, something_vanishes) {
+        if decided.get(&d) != Some(&true)
+            && by_identity.insert(d)
             && crate::simplify::identically_zero::vanishes_by_identity(arena, d)
         {
             decided.insert(d, true);
@@ -167,7 +197,10 @@ fn vanishing_bases(arena: &mut Arena, expr: ExprId) -> FxHashMap<ExprId, Vanishi
     }
     // A factor beside such a pole that vanishes too makes the product `0/0`
     // (`((√x + √y)² − x − y − 2√x·√y)/(e³ − exp(1)³)`: the polynomial
-    // arithmetic does not reduce `(√x)²` to `x`).
+    // arithmetic does not reduce `(√x)²` to `x`), also by an identity of
+    // its functions: up to 0.33 `(sin²x + cos²x − sin²1 − cos²1)/(e^(x+y)
+    // − eˣ·eʸ)` was `P/0 = zoo` there, and `1/((x − 2)² + …)` became `0`
+    // (it is `nan`).
     for &prod in &products {
         let ExprNode::Mul(children) = arena.node(prod).clone() else {
             continue;
@@ -189,7 +222,8 @@ fn vanishing_bases(arena: &mut Arena, expr: ExprId) -> FxHashMap<ExprId, Vanishi
             if positive
                 && !arena.node(c).is_atom()
                 && !vanishing.contains_key(&c)
-                && crate::base::canon::factor_vanishes(arena, c)
+                && (crate::base::canon::factor_vanishes(arena, c)
+                    || crate::simplify::identically_zero::vanishes_by_identity(arena, c))
             {
                 vanishing.insert(c, Vanishing::Zero);
             }
@@ -207,6 +241,73 @@ fn vanishing_bases(arena: &mut Arena, expr: ExprId) -> FxHashMap<ExprId, Vanishi
         }
     }
     vanishing
+}
+
+/// The bases of the negative powers among `powers` that may vanish by an
+/// identity of their functions ([`may_vanish_by_identity`]), when
+/// something in the expression vanishes: `something_vanishes` (a
+/// denominator, or a `0/0` candidate), or a factor of one of the
+/// `products` that may vanish identically by the residue test
+/// ([`may_vanish_identically_as_factor`](crate::base::canon::may_vanish_identically_as_factor):
+/// `(x·(x − 3) − x² + 3x)·(x + (x + 2)²/(cosh²x − sinh²x − 1))`).  Empty
+/// otherwise: the numeric identity test is not run on ordinary input.
+fn identity_bases(
+    arena: &Arena,
+    powers: &[(ExprId, ExprId, bool)],
+    products: &[ExprId],
+    something_vanishes: bool,
+) -> Vec<ExprId> {
+    let mut bases: Vec<ExprId> = Vec::new();
+    for &(_, base, negative) in powers {
+        if negative && !bases.contains(&base) && may_vanish_by_identity(arena, base) {
+            bases.push(base);
+        }
+    }
+    if bases.is_empty() || something_vanishes {
+        return bases;
+    }
+    let zero_factor = products.iter().any(|&p| {
+        let ExprNode::Mul(children) = arena.node(p) else {
+            return false;
+        };
+        children.iter().any(|&c| {
+            let positive = match arena.node(c) {
+                ExprNode::Pow(_, e) => arena.as_num(*e).is_none_or(|q| q.is_positive()),
+                _ => true,
+            };
+            positive
+                && !arena.node(c).is_atom()
+                && crate::base::canon::may_vanish_identically_as_factor(arena, c)
+        })
+    });
+    if zero_factor { bases } else { Vec::new() }
+}
+
+/// Could `d` vanish identically other than as a rational function of its
+/// generators: a non-atom with a function in it (outside the integer
+/// powers, sums and products), without an infinity, `nan` or an
+/// unevaluated node?
+fn may_vanish_by_identity(arena: &Arena, d: ExprId) -> bool {
+    if arena.node(d).is_atom() || walk::has_unevaluated(arena, d) {
+        return false;
+    }
+    let mut transcendental = false;
+    for id in walk::post_order_ids(arena, d) {
+        match arena.node(id) {
+            ExprNode::Infinity
+            | ExprNode::NegInfinity
+            | ExprNode::ComplexInfinity
+            | ExprNode::NaN => return false,
+            ExprNode::Num(_)
+            | ExprNode::Symbol(_)
+            | ExprNode::Add(_)
+            | ExprNode::Mul(_)
+            | ExprNode::Neg(_) => {}
+            ExprNode::Pow(_, e) if arena.as_num(*e).is_some_and(|q| q.is_integer()) => {}
+            _ => transcendental = true,
+        }
+    }
+    transcendental
 }
 
 /// Is the numerator of `expr` (`as_numer_denom`) structurally 0 once
@@ -518,7 +619,7 @@ pub(crate) fn ratsimp_vanishing(
         return None;
     }
     let mut vanishing = vanishing.clone();
-    for (id, v) in vanishing_bases(arena, expr) {
+    for (id, v) in vanishing_bases(arena, expr, &vanishing) {
         vanishing.entry(id).or_insert(v);
     }
     let gens = collect_generators(arena, expr);
@@ -540,7 +641,7 @@ pub(crate) fn ratsimp_zero_denominator(arena: &mut Arena, expr: ExprId) -> Optio
     if !is_admissible(arena, expr) {
         return None;
     }
-    let vanishing = vanishing_bases(arena, expr);
+    let vanishing = vanishing_bases(arena, expr, &FxHashMap::default());
     let gens = collect_generators(arena, expr);
     let mut zero_denominator = false;
     let (p, q) =

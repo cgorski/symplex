@@ -1343,7 +1343,97 @@ pub(crate) fn constant_vanishes(arena: &mut Arena, f: ExprId) -> bool {
     if AssumptionCache::new().query(arena, f, Props::NONZERO) == Some(true) {
         return false;
     }
+    if costly_to_evaluate(arena, f) {
+        return false;
+    }
     arena.vanishes_by_identity(f)
+}
+
+/// The magnitude of a numeric parameter from which [`costly_to_evaluate`]
+/// declines the numeric zero test (`besselj(10⁸, x)` took 5 s before 0.34).
+const COSTLY_PARAMETER: i64 = 100_000;
+
+/// The degree of an orthogonal polynomial from which [`costly_to_evaluate`]
+/// declines the zero test: the exact test of its confirmation computes the
+/// polynomial's rational value (`gegenbauer(999, 1/3, 1/3)` 0.75 s,
+/// `jacobi(999, 1/3, 1/5, 1/7)` 2.8 s; at degree 199 at most 0.16 s).
+const COSTLY_DEGREE: i64 = 200;
+
+/// Is the numeric zero test of the constant `f` ([`constant_vanishes`])
+/// beyond the budget of a canonical constructor, which runs on every node
+/// built: does `f` apply a special function (`Γ`, `ψ⁽ⁿ⁾`, `ζ`, Bessel, the
+/// incomplete `Γ`, … — anything but arithmetic, powers and the elementary
+/// functions) to a number of magnitude [`COSTLY_PARAMETER`] or more, or an
+/// orthogonal polynomial of degree [`COSTLY_DEGREE`] or more?  The cost of
+/// evaluating some of those grows with their orders; such a constant is not
+/// tested (not taken for 0, as before 0.34).  Up to 0.34-dev building
+/// `cos(besselj(8345185991999992, 61/10²⁷))/sin(…)` never finished: the
+/// test evaluated the Bessel function, a multiplication per unit of its
+/// order (`evalf` takes it at once now; this bounds the next such kernel).
+/// An explicit walk.
+fn costly_to_evaluate(arena: &Arena, f: ExprId) -> bool {
+    use crate::base::libfn::LibFn;
+    let bound = Q::from_integer(BigInt::from(COSTLY_PARAMETER));
+    let huge = |c: ExprId| arena.as_num(c).is_some_and(|q| q.abs() >= bound);
+    let degree_bound = Q::from_integer(BigInt::from(COSTLY_DEGREE));
+    let mut visited: FxHashSet<ExprId> = FxHashSet::default();
+    let mut stack: SmallVec<[ExprId; 16]> = smallvec![f];
+    while let Some(id) = stack.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        let node = arena.node(id);
+        if let ExprNode::Apply(sid, args) = node
+            && matches!(
+                arena.lib_fn(*sid),
+                Some(
+                    LibFn::Legendre
+                        | LibFn::ChebyshevT
+                        | LibFn::ChebyshevU
+                        | LibFn::Hermite
+                        | LibFn::Laguerre
+                        | LibFn::Gegenbauer
+                        | LibFn::Jacobi
+                        | LibFn::AssocLegendre
+                        | LibFn::AssocLaguerre
+                )
+            )
+            && args
+                .first()
+                .and_then(|&n| arena.as_num(n))
+                .is_some_and(|q| q.abs() >= degree_bound)
+        {
+            return true;
+        }
+        let special = matches!(
+            node,
+            ExprNode::Gamma(_)
+                | ExprNode::LogGamma(_)
+                | ExprNode::Digamma(_)
+                | ExprNode::Polygamma(..)
+                | ExprNode::Zeta(_)
+                | ExprNode::Beta(..)
+                | ExprNode::Factorial(_)
+                | ExprNode::Binomial(..)
+                | ExprNode::Erf(_)
+                | ExprNode::Erfc(_)
+                | ExprNode::Ei(_)
+                | ExprNode::Li(_)
+                | ExprNode::Si(_)
+                | ExprNode::Ci(_)
+                | ExprNode::LambertW(_)
+                | ExprNode::Apply(..)
+        );
+        let mut costly = false;
+        node.for_each_child(|c| {
+            costly |= special && huge(c);
+            stack.push(c);
+        });
+        if costly {
+            return true;
+        }
+    }
+    false
 }
 
 thread_local! {

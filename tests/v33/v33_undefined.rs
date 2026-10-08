@@ -292,6 +292,133 @@ fn zero_constants_at_substituted_points() {
     );
 }
 
+/// Before: `0` from `simplify`, `ratsimp`, `expand` and `simplify_trig`.
+/// The inner denominator `exp(x/2)² − exp(x)` vanishes by the residue
+/// test (the numerator over it is `zoo`), the outer `(x − 2)² + (sin²x +
+/// cos²x − sin²1 − cos²1)/(e^(x+y) − eˣ·eʸ)` is `0/0` — but its numerator
+/// vanishes only by an identity of `sin` and `cos`, which the factor test
+/// beside the pole `(e^(x+y) − eˣ·eʸ)⁻¹` did not run, so it was `P/0 = zoo`
+/// and the whole `(…)/zoo = 0`.
+///
+/// Oracle: SymPy 1.14 `(exp(x/2)**2 - exp(x)).equals(0)`, `(exp(x + y) -
+/// exp(x)*exp(y)).equals(0)` and `(sin(x)**2 + cos(x)**2 - sin(1)**2 -
+/// cos(1)**2).equals(0)` → `True`; at every point `S(0)/S(0)` → `nan`,
+/// `(x - 2)**2 + nan` → `nan`.  (SymPy's own `simplify`, `ratsimp` and
+/// `expand` give `0`: deliberately different, as in the tests above.)
+#[test]
+fn an_identity_zero_beside_a_vanishing_denominator_is_nan() {
+    let ctx = Context::new();
+    let e = ctx
+        .parse(
+            "((exp(2*x)-exp(x)^2)/((cos(x)+2)+(exp(2*x)+exp(x)^2)/(exp(x/2)^2-exp(x))))\
+             /((x-2)^2+((sin(x)^2+cos(x)^2-1)-(sin(1)^2+cos(1)^2-1))/(exp(x+y)-exp(x)*exp(y)))",
+        )
+        .unwrap();
+    assert_eq!(show(&e.simplify()), "nan");
+    assert_eq!(show(&e.ratsimp()), "nan");
+    assert_eq!(show(&e.expand()), "nan");
+    assert_eq!(show(&e.simplify_trig()), "nan");
+    let d = "(x-2)^2+((sin(x)^2+cos(x)^2-1)-(sin(1)^2+cos(1)^2-1))/(exp(x+y)-exp(x)*exp(y))";
+    let r = ctx.parse(&format!("x/({d})")).unwrap();
+    assert_eq!(show(&r.simplify()), "nan");
+    assert_eq!(show(&r.ratsimp()), "nan");
+    assert_eq!(show(&r.expand()), "nan");
+}
+
+/// Before: `0`.  Once something in the expression vanishes — a
+/// denominator by the residue test, or a factor — `ratsimp` and `expand`
+/// test every denominator that may vanish by an identity of its functions,
+/// not only those of a `0/0` candidate product: here `cosh²x − sinh²x − 1`
+/// sits in a factor `x − 1 + (x + 2)²/(cosh²x − sinh²x − 1)` that is
+/// `zoo`, beside a numerator that is 0: `0·zoo`.  In the third,
+/// `tan x·cos x − sin x` was distributed over by `expand`, `xy/0 + 4/0 =
+/// nan`, where the value is `0/zoo = 0`.
+///
+/// Oracle: SymPy 1.14 `(cosh(x)**2 - sinh(x)**2 - 1).equals(0)`, `(exp(3*x)
+/// - exp(x)**3).equals(0)`, `(tan(x)*cos(x) - sin(x)).equals(0)` → `True`;
+/// `0*zoo` → `nan`, `S(3)/zoo` → `0`.  (SymPy's `ratsimp` gives `0` for the
+/// first, its `expand` `0` for the third.)
+#[test]
+fn identity_denominators_are_tested_once_something_vanishes() {
+    let ctx = Context::new();
+    let e = ctx
+        .parse(
+            "((x*(x-3)-x^2+3*x)/(y+(x*y-6)/(exp(3*x)-exp(x)^3)))\
+             /((x+5)^2/((x-1)+(x+2)^2/(cosh(x)^2-sinh(x)^2-1)))",
+        )
+        .unwrap();
+    assert_eq!(show(&e.ratsimp()), "nan");
+    assert_eq!(show(&e.expand()), "nan");
+    let f = ctx
+        .parse(
+            "(2*x*y-2)/(y+((x+3)^2/(exp(2*x)+exp(x)^2))/(x*(x+4)-x^2-4*x))\
+             /((cosh(x)^2-sinh(x)^2-1)/(x+2))",
+        )
+        .unwrap();
+    assert_eq!(show(&f.ratsimp()), "nan");
+    assert_eq!(show(&f.expand()), "nan");
+    let g = ctx
+        .parse(
+            "(sqrt(x+7)/((exp(2*x)+exp(x)^2)+(x*y+4)/(tan(x)*cos(x)-sin(x))))\
+             /(sqrt(x+7)/(exp(x)^3*exp(y)-exp(3*x+y)))",
+        )
+        .unwrap();
+    assert_eq!(show(&g.expand()), "0");
+}
+
+/// Before: `0` from `simplify` and `simplify_trig`.  The denominator
+/// `cosh²x − sinh²x − 1` was found to vanish by the identity test, but the
+/// factor over it, the constant `sin²1 + cos²1 − 1`, was not tested beside
+/// that pole (only beside one the polynomial test had found): `P/0 = zoo`,
+/// and `4(y + 2)(x + 5)/(x² + 4 + zoo) = 0`.  It is `0/0`.
+///
+/// Oracle: SymPy 1.14 `(sin(1)**2 + cos(1)**2 - 1).equals(0)` → `True`,
+/// `(cosh(x)**2 - sinh(x)**2 - 1).equals(0)` → `True`; `simplify(…)` →
+/// `nan` (its `trigsimp` → `(x + 5)*(4*y + 8)/(x**2 + 4)`).
+#[test]
+fn a_constant_zero_over_an_identity_pole_is_nan() {
+    let ctx = Context::new();
+    let e = ctx
+        .parse("(y+2)*4*(x+5)/((x^2+4)+(sin(1)^2+cos(1)^2-1)/(cosh(x)^2-sinh(x)^2-1))")
+        .unwrap();
+    assert_eq!(show(&e.simplify()), "nan");
+    assert_eq!(show(&e.simplify_trig()), "nan");
+}
+
+/// Before: `cos 0 = 1` and `exp(0) + 0 = 1`.  The argument is `0/0` at
+/// every point (`(sin 2x − 2·sin x·cos x)/(e² − exp(1)²)`; `(cosh²x −
+/// sinh²x − 1)/(y + 5 + 0/(tan x·cos x − sin x))`), but the test of
+/// `simplify` and `simplify_trig` looked only outside the function
+/// arguments, and the identities rewrote inside them.
+///
+/// Oracle: SymPy 1.14 `simplify(cos((y + 4)/(y - 3 + (sin(2*x) -
+/// 2*sin(x)*cos(x))/(exp(2) - exp(1)**2))))` → `nan`; `exp(nan)` → `nan`,
+/// `(tan(x)*cos(x) - sin(x)).equals(0)` → `True`.
+#[test]
+fn function_arguments_undefined_everywhere_are_nan() {
+    let ctx = Context::new();
+    let e = ctx
+        .parse("cos((y+4)/((y-3)+(sin(2*x)-2*sin(x)*cos(x))/(exp(2)-exp(1)^2)))")
+        .unwrap();
+    assert_eq!(show(&e.simplify()), "nan");
+    assert_eq!(show(&e.simplify_trig()), "nan");
+    let f = ctx
+        .parse(
+            "exp((cosh(x)^2-sinh(x)^2-1)/((y+5)+(y/(x+1)-y*x/(x^2+x))/(tan(x)*cos(x)-sin(x))))\
+             +sqrt((exp(x)^2*exp(y)-exp(2*x+y))^2)",
+        )
+        .unwrap();
+    assert_eq!(show(&f.simplify()), "nan");
+    assert_eq!(show(&f.simplify_trig()), "nan");
+    // Defined arguments are untouched.
+    let p = |s: &str| ctx.parse(s).unwrap();
+    assert_eq!(show(&p("cos((sin(x)^2+cos(x)^2-1)/(x+1))").simplify()), "1");
+    assert_eq!(
+        show(&p("exp(x)*cos(1/x)+sin(1/(x+1))").simplify()),
+        "cos(1/x)*exp(x) + sin(1/(x + 1))"
+    );
+}
+
 /// The forms of correct expressions do not change (the task's list and
 /// more): only expressions undefined at every point are affected.
 ///

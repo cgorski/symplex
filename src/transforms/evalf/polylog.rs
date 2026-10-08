@@ -384,11 +384,9 @@ fn smallest_prime_factors(n: usize) -> Vec<u32> {
 
 /// `Li_{−n}(z) = Σ_{k=0}^{n} k! S(n+1, k+1) w^{k+1}`, `w = z/(1 − z)`.
 fn nonpositive(n: u64, z: &Complex, wp: usize, rm: RoundingMode) -> Result<Sum, SymplexError> {
-    if n > 5000 {
-        return Err(super::unevaluable(
-            "polylog of an order below -5000 off [-1, 1] not supported in evalf",
-        ));
-    }
+    // The row of Stirling numbers at once (`O(n²)`; before 0.34 one number
+    // at a time, `O(n³)`, up to an order of −5000).
+    let row = super::stirling2_row(n + 1)?;
     let one = BigFloat::from_i32(1, 64);
     let omz = (one.sub(&z.0, super::exact_bits(&z.0, wp), rm), z.1.neg());
     if omz.0.is_zero() && omz.1.is_zero() {
@@ -403,9 +401,8 @@ fn nonpositive(n: u64, z: &Complex, wp: usize, rm: RoundingMode) -> Result<Sum, 
             k_fact *= BigInt::from(k);
             w_pow = c_mul(&w_pow, &w, wp, rm);
         }
-        let s2 = super::stirling2(n + 1, k + 1)
-            .ok_or_else(|| super::unevaluable("polylog: Stirling number overflow"))?;
-        let c = super::ratio_to_bigfloat(&Ratio::from_integer(&k_fact * s2), wp, rm);
+        let c =
+            super::ratio_to_bigfloat(&Ratio::from_integer(&k_fact * &row[k as usize + 1]), wp, rm);
         sum.add(&scale(&w_pow, &c, wp, rm), wp, rm);
     }
     Ok(sum)

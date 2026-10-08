@@ -11,7 +11,7 @@ use crate::base::walk;
 use crate::transforms::pattern::RawStep;
 use num_bigint::BigInt;
 use num_traits::Signed;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 // ── Public configuration types ─────────────────────────────────────────
 
@@ -660,6 +660,15 @@ pub(crate) fn undefined_by_vanishing_denominator(
     arena: &mut Arena,
     expr: ExprId,
 ) -> Option<ExprId> {
+    if let Some(value) = undefined_skeleton(arena, expr) {
+        return Some(value);
+    }
+    undefined_argument(arena, expr)
+}
+
+/// [`undefined_by_vanishing_denominator`] for the rational skeleton of
+/// `expr` (outside every function argument).
+fn undefined_skeleton(arena: &mut Arena, expr: ExprId) -> Option<ExprId> {
     let rational = vanishing_denominator(arena, expr);
     let value = match crate::simplify::identically_zero::vanishing_by_identity(arena, expr) {
         Some(value) => value,
@@ -671,6 +680,66 @@ pub(crate) fn undefined_by_vanishing_denominator(
         return Some(arena.nan);
     }
     Some(value)
+}
+
+/// `expr` with every function argument that is `0/0` at every point
+/// ([`vanishing_denominator_or_identity`] is `nan`: the polynomial test,
+/// then the identity test of the `0/0` candidates) replaced by `nan`, and
+/// rebuilt canonically (`f(nan) = nan`).  `None` when there is none.  The
+/// strategies rewrite inside the arguments: up to 0.33 `simplify(cos((y +
+/// 4)/(y − 3 + (sin 2x − 2·sin x·cos x)/(e² − exp(1)²))))` was `cos 0 = 1`
+/// and `simplify(exp((cosh²x − sinh²x − 1)/(y + 5 + (y/(x + 1) −
+/// xy/(x² + x))/(tan x·cos x − sin x))))` was `1`; both are `nan`.  One
+/// pass bottom-up over the tree; an argument is tested only when it holds a
+/// negative power.
+fn undefined_argument(arena: &mut Arena, expr: ExprId) -> Option<ExprId> {
+    let order = walk::post_order_ids(arena, expr);
+    let mut with_denominator: FxHashSet<ExprId> = FxHashSet::default();
+    for &id in &order {
+        let node = arena.node(id);
+        let own = matches!(node, ExprNode::Pow(_, e) if arena.as_num(*e).is_some_and(Signed::is_negative));
+        if own || node.children().iter().any(|c| with_denominator.contains(c)) {
+            with_denominator.insert(id);
+        }
+    }
+    let structural = |arena: &Arena, id: ExprId| match arena.node(id) {
+        ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) => true,
+        ExprNode::Pow(_, e) => arena.as_num(*e).is_some_and(|q| q.is_integer()),
+        _ => false,
+    };
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    let mut tested: FxHashSet<ExprId> = FxHashSet::default();
+    for &id in &order {
+        if !with_denominator.contains(&id) || structural(arena, id) {
+            continue;
+        }
+        for c in arena.node(id).children() {
+            if with_denominator.contains(&c)
+                && !arena.node(c).is_atom()
+                && tested.insert(c)
+                && vanishing_denominator_or_identity(arena, c) == Some(arena.nan)
+            {
+                cache.insert(c, arena.nan);
+            }
+        }
+    }
+    if cache.is_empty() {
+        return None;
+    }
+    tracing::debug!(
+        arguments = cache.len(),
+        "simplify: a function argument is 0/0 at every point"
+    );
+    for &id in &order {
+        if cache.contains_key(&id) {
+            continue;
+        }
+        let rebuilt = walk::rebuild_with_cache(arena, id, &cache);
+        if rebuilt != id {
+            cache.insert(id, rebuilt);
+        }
+    }
+    cache.get(&expr).copied()
 }
 
 /// Unified simplification engine — iterates [`smart_simplify`] to a fixpoint.
