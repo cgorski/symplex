@@ -294,11 +294,10 @@ fn polylog_of_large_negative_order() {
         dec(&ctx, "polylog(-1401, 4/13)").unwrap(),
         "3.99427248066378e3701"
     );
-    for s in ["polylog(-10^12, 1/3)"] {
-        match dec(&ctx, s) {
-            Err(SymplexError::NotImplemented(_)) => {}
-            other => panic!("{s}: want a refusal, got {other:?}"),
-        }
+    let s = "polylog(-10^12, 1/3)";
+    match dec(&ctx, s) {
+        Err(SymplexError::NotImplemented(_)) => {}
+        other => panic!("{s}: want a refusal, got {other:?}"),
     }
 }
 

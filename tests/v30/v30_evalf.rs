@@ -198,13 +198,12 @@ fn huge_well_conditioned_quotients() {
         dec(&ctx, "erfc(10^8)*10^8*exp(10^16)", 16).unwrap(),
         "0.5641895835477563"
     );
-    for src in ["gamma(10^8+1)/gamma(10^8)/10^8"] {
-        match dec(&ctx, src, 16) {
-            Err(SymplexError::Unevaluable { reason }) => {
-                assert!(reason.contains("overflows"), "{src}: {reason}");
-            }
-            other => panic!("{src}: {other:?}"),
+    let src = "gamma(10^8+1)/gamma(10^8)/10^8";
+    match dec(&ctx, src, 16) {
+        Err(SymplexError::Unevaluable { reason }) => {
+            assert!(reason.contains("overflows"), "{src}: {reason}");
         }
+        other => panic!("{src}: {other:?}"),
     }
     assert_eq!(
         dec(&ctx, "gamma(10^7+1)/gamma(10^7)/10^7", 16).unwrap(),
