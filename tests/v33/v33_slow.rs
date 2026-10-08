@@ -292,3 +292,20 @@ fn polylog_of_large_negative_order() {
         }
     }
 }
+
+/// A local `fuzz_roundtrip` run before 0.34 (a 9.5 s "slow unit"):
+/// building `−sin((−10)^10321809999995599999)·∞` took 0.8 s in a release
+/// build.  Orienting `x·∞` asks whether the 20-digit exponent is prime, and
+/// the assumption system tested it by trial division up to `√n` (half a
+/// billion divisions); it now uses the deterministic Miller–Rabin test for
+/// `u64`.  SymPy: `isprime(10321809999995599999)` → `False`.
+#[test]
+fn orienting_an_infinity_with_a_huge_exponent_is_quick() {
+    let ctx = Context::new();
+    for s in [
+        "-sin((-10)^10321809999995599999)*oo",
+        "sin(10^18446744073709551557)*oo",
+    ] {
+        timed(s, || ctx.parse(s).unwrap());
+    }
+}

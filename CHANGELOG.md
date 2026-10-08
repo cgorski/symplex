@@ -6,7 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
-## [Unreleased]
+## [0.34.0] - 2026-10-08
+
+Every problem the nightly fuzz runs found since 0.33 is fixed: radicals
+of 1,000-digit numbers that took seconds, a limit that came out `0`
+instead of −1.862 (complex arguments meeting a branch cut — a hunter
+found 131 such wrong one-sided limits in 0.32, none now), Bessel
+functions of huge order that froze, and high-order `polygamma` that took
+seconds.  A 74-second refusal in the integrator became a closed form in
+0.17 s, and the Rubi suite gained 162 verified integrals.  Numbers too
+small for the exponent range are no longer printed as `0` when they are
+differences of such numbers, `solve` and `eigenvals` handle cubics and
+quartics with coefficients in ℚ(√p…, i), and more expressions that are
+undefined everywhere stay undefined.  Hunters on the way found and fixed
+wrong values in `polylog` of large negative order and in Bessel
+functions of huge order.
 
 ### Breaking (behaviour; no signature changed)
 
@@ -62,6 +76,11 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   overflow.  `bessely(5000, 1)` 17 s → 22 ms, `bessely(10⁵, 1)` never
   finished → 1 ms; the four inputs 0–2 ms.  Wrong values on the way:
   `besselj(10⁸, 137)` printed `0` (it is `8.72e-573001500`, now computed).
+- **Building `sin(10^10321809999995599999)·∞` took 0.8 s** (9.5 s in the
+  release fuzz run): orienting `x·∞` asks whether the 20-digit exponent
+  is prime, and the assumption system answered by trial division up to
+  `√n`.  It now uses the deterministic Miller–Rabin test for `u64`
+  (1 ms).
 - **High-order `polygamma` took seconds** (the nightly `fuzz_evalf`
   failure of 2026-10-05: `polygamma(1755, 1/10)` 4.7 s locally, over 30 s
   on CI): `n!` and the asymptotic coefficients were built from
@@ -148,6 +167,39 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   not finish in 100 s).  Rubi: 14,360 → 14,522 verified, 68 → 69
   real_verified, 0 wrong.
 - The `eval_decimal` docs describe the underflow behaviour above.
+
+### Measured
+
+- `tests/v33/`: 8 files, 41 tests.  nextest 13,584 tests (14 skipped),
+  doctests 1,312.
+- Rubi harness: 14,522 verified, 69 real_verified, 0 wrong, 0 undecided
+  (0.33: 14,360 / 68).  Self-test: 55,475 verified, 0 wrong, 742
+  undecided (unchanged).  `--negative-params`: 0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates: identical
+  (against outputs regenerated from `faea25d`, whose outputs had matched
+  the long-standing references; those references, kept in `/tmp`, were
+  lost).
+- `cargo semver-checks` against 0.33.0: no semver update required.
+- Hunters (before → after): branch-cut limits (1,188 one-sided limits)
+  131 wrong → 0; special functions at extreme parameters (3,000) 113
+  hangs, 11 crashes, 1 wrong → 0; values below the exponent range 1,007
+  (2,100 cases) and 681 (1,000) wrong `0` → 0; undefined expressions
+  (5,000 × 5 routes) 4,668 wrong → 40; algebraic roots and eigenvalues
+  (600) 493 refused → 0.
+- Fuzzing: every input the nightly runs saved since 0.33 replays in
+  0–85 ms (`fuzz_roundtrip` 2026-10-01, `fuzz_calculus` 2026-10-03,
+  `fuzz_evalf` 2026-10-05), as do the local timeouts of the 0.33 release
+  (`fuzz_integrate`, 0.27 s) and of this one (`fuzz_roundtrip`, 0–3 ms).
+  On the release code all 12 targets ran together with a 10-second limit
+  (`fuzz_simplify` and `fuzz_integrate` 15 minutes, the others 10):
+  `fuzz_numdist` 17,740,811 inputs, `fuzz_refine` 12,196,148,
+  `fuzz_lambertw` 2,535,462, `fuzz_roundtrip` 785,636, `fuzz_parser`
+  420,152, `fuzz_exact_matrix` 195,699, `fuzz_eigenvects` 192,644,
+  `fuzz_evalf` 94,412, `fuzz_calculus` 43,294, `fuzz_poly` 30,411,
+  `fuzz_simplify` 19,864, `fuzz_integrate` 3,226 (most of its time went
+  to replaying its corpus on the loaded machine): 0 crashes, 0 timeouts,
+  0 out-of-memory.  One slow unit (9.5 s, the `sin(10^…)·∞` above) is
+  fixed.
 
 ## [0.33.0] - 2026-10-01
 

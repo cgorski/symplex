@@ -2328,24 +2328,53 @@ fn compute_nan() -> Assumptions {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Simple primality test for small numbers.
+/// Is the `u64` `n` prime?  Trial division by the primes below 40, then the
+/// Miller–Rabin test with the first twelve primes as witnesses, which is
+/// deterministic for every `n < 3.3·10²⁴` (Sorenson–Webster 2015), so for
+/// all of `u64`.  Up to 0.33 this was trial division up to `√n`: half a
+/// billion divisions for a 20-digit exponent, which the sign of
+/// `sin(10^10321809999995599999)·∞` asks about (0.8 s to build it, 9.5 s
+/// in a local `fuzz_roundtrip` run before 0.34).
 fn is_small_prime(n: u64) -> bool {
+    const WITNESSES: [u64; 12] = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37];
     if n < 2 {
         return false;
     }
-    if n < 4 {
-        return true;
-    }
-    if n.is_multiple_of(2) || n.is_multiple_of(3) {
-        return false;
-    }
-    let mut i = 5u64;
-    while i * i <= n {
-        if n.is_multiple_of(i) || n.is_multiple_of(i + 2) {
+    for p in WITNESSES {
+        if n == p {
+            return true;
+        }
+        if n.is_multiple_of(p) {
             return false;
         }
-        i += 6;
     }
-    true
+    let mul = |a: u64, b: u64| ((u128::from(a) * u128::from(b)) % u128::from(n)) as u64;
+    let pow = |mut b: u64, mut e: u64| {
+        let mut r = 1u64;
+        while e > 0 {
+            if e & 1 == 1 {
+                r = mul(r, b);
+            }
+            b = mul(b, b);
+            e >>= 1;
+        }
+        r
+    };
+    let s = (n - 1).trailing_zeros();
+    let d = (n - 1) >> s;
+    WITNESSES.iter().all(|&a| {
+        let mut x = pow(a, d);
+        if x == 1 || x == n - 1 {
+            return true;
+        }
+        for _ in 1..s {
+            x = mul(x, x);
+            if x == n - 1 {
+                return true;
+            }
+        }
+        false
+    })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3156,6 +3185,20 @@ mod tests {
         assert!(is_small_prime(11));
         assert!(is_small_prime(97));
         assert!(!is_small_prime(100));
+        // Against trial division below 20,000, and at the top of u64.
+        let trial = |n: u64| {
+            n >= 2
+                && (2..)
+                    .take_while(|d| d * d <= n)
+                    .all(|d| !n.is_multiple_of(d))
+        };
+        for n in 0..20_000u64 {
+            assert_eq!(is_small_prime(n), trial(n), "{n}");
+        }
+        assert!(is_small_prime(18_446_744_073_709_551_557)); // largest u64 prime
+        assert!(!is_small_prime(18_446_744_073_709_551_559)); // 41·163·269·8807·1165112831
+        assert!(!is_small_prime(3_215_031_751)); // strong pseudoprime to 2, 3, 5, 7
+        assert!(!is_small_prime(4_294_967_297)); // 641·6700417
     }
 
     // ── Hyperbolic / inverse trig propagation ───────────────────────
