@@ -1758,6 +1758,24 @@ impl Tower {
 /// above 4, or a sign is undecided.
 pub(crate) fn algebraic_poly_roots(coeffs: &[Ex]) -> Option<Vec<(Ex, usize)>> {
     let handle = coeffs.first()?.clone();
+    let (tower, f) = algebraic_k_poly(coeffs)?;
+    let mut out: Vec<(Ex, usize)> = Vec::new();
+    for (sf, mult) in tower.kp_squarefree(&f)? {
+        for g in tower.kp_split_by_norm(&sf)? {
+            for root in kp_radical_roots(&tower, &g, &handle)? {
+                out.push((root, mult));
+            }
+        }
+    }
+    let total: usize = out.iter().map(|(_, m)| *m).sum();
+    (total == f.len() - 1).then_some(out)
+}
+
+/// The polynomial `Σ coeffs[k]·λᵏ` over `K = ℚ(√p₁, …, i)`, made monic,
+/// with its tower: `None` when a coefficient is not a constant of such a
+/// `K` (or all are rational), or the polynomial is constant.
+fn algebraic_k_poly(coeffs: &[Ex]) -> Option<(Tower, KPoly)> {
+    let handle = coeffs.first()?;
     let (tower, f) = {
         let inner = handle.inner.read();
         let arena = &inner.arena;
@@ -1777,16 +1795,18 @@ pub(crate) fn algebraic_poly_roots(coeffs: &[Ex]) -> Option<Vec<(Ex, usize)>> {
         return None;
     }
     let f = tower.kp_monic(&f)?;
-    let mut out: Vec<(Ex, usize)> = Vec::new();
-    for (sf, mult) in tower.kp_squarefree(&f)? {
-        for g in tower.kp_split_by_norm(&sf)? {
-            for root in kp_radical_roots(&tower, &g, &handle)? {
-                out.push((root, mult));
-            }
-        }
-    }
-    let total: usize = out.iter().map(|(_, m)| *m).sum();
-    (total == f.len() - 1).then_some(out)
+    Some((tower, f))
+}
+
+/// The number of distinct roots of the polynomial `Σ coeffs[k]·λᵏ` whose
+/// coefficients are constants of `K = ℚ(√p₁, …, i)`, not all rational:
+/// the degree of its square-free part over `K` (exact, from the same
+/// square-free decomposition as [`algebraic_poly_roots`]).  `None` when a
+/// coefficient is not such a constant.
+pub(crate) fn algebraic_poly_distinct_root_count(coeffs: &[Ex]) -> Option<usize> {
+    let (tower, f) = algebraic_k_poly(coeffs)?;
+    let factors = tower.kp_squarefree(&f)?;
+    Some(factors.iter().map(|(g, _)| g.len() - 1).sum())
 }
 
 /// Can the exact pivot test ([`algebraic_function_is_zero`]) decide the
@@ -2133,15 +2153,28 @@ fn kp_quartic_roots(tower: &Tower, g: &[Mp], handle: &Ex) -> Option<Vec<Ex>> {
         sc(&e, 1, 2),
         Mp::from_int(nv, 1),
     ];
-    let rational_root = tower
-        .kp_squarefree(&resolvent)?
-        .into_iter()
-        .filter_map(|(h, _)| tower.kp_split_by_norm(&h))
-        .flatten()
-        .filter(|h| h.len() == 2)
-        .filter_map(|h| h[0].neg().as_constant())
-        .filter(|r| !r.is_zero())
-        .max();
+    // Its rational roots are the common roots of its components over ℚ
+    // ([`kp_rational_roots`]); the norm of the resolvent to ℚ[λ] (degree
+    // 48 over four generators, factored by Zassenhaus) found the same ones
+    // in up to seconds.  Beyond the size at which the norm was not formed
+    // only roots of linear square-free factors were seen, and still are.
+    let gens = tower.nvars();
+    let rational_root = if gens <= 6 && 3usize << gens <= 64 {
+        kp_rational_roots(&resolvent)
+            .into_iter()
+            .filter(|r| !r.is_zero())
+            .max()
+    } else {
+        tower
+            .kp_squarefree(&resolvent)?
+            .into_iter()
+            .filter_map(|(h, _)| tower.kp_split_by_norm(&h))
+            .flatten()
+            .filter(|h| h.len() == 2)
+            .filter_map(|h| h[0].neg().as_constant())
+            .filter(|r| !r.is_zero())
+            .max()
+    };
     if let Some(r) = rational_root {
         let rr = Mp::constant(nv, r);
         let c1 = kx(&rr).sqrt();
@@ -2183,6 +2216,42 @@ fn kp_quartic_roots(tower: &Tower, g: &[Mp], handle: &Ex) -> Option<Vec<Ex>> {
         }
     }
     Some(out)
+}
+
+/// The rational roots of `p ∈ K[λ]` (a square-root tower without
+/// parameters or nested root): with `p = Σₘ pₘ·m` over the reduced monomials
+/// `m` of the generators, a basis of `K` over `ℚ`, `p(r) = 0` for a rational
+/// `r` exactly when `pₘ(r) = 0` for every `m` — the rational roots of
+/// `gcdₘ pₘ ∈ ℚ[λ]`, from its linear factors over `ℤ`.
+fn kp_rational_roots(p: &[Mp]) -> Vec<Q> {
+    let mut comps: std::collections::BTreeMap<Vec<u32>, Vec<Q>> = std::collections::BTreeMap::new();
+    for (k, c) in p.iter().enumerate() {
+        for (e, q) in c.terms() {
+            let v = comps
+                .entry(e.to_vec())
+                .or_insert_with(|| vec![Q::zero(); p.len()]);
+            v[k] = q.clone();
+        }
+    }
+    let mut g: Option<crate::poly::dense::Poly> = None;
+    for cs in comps.into_values() {
+        let pm = crate::poly::dense::Poly::from_coeffs(cs);
+        g = Some(match g {
+            None => pm,
+            Some(g0) => crate::poly::dense::Poly::gcd(&g0, &pm),
+        });
+    }
+    let Some(g) = g.filter(|g| g.degree().unwrap_or(0) > 0) else {
+        return Vec::new();
+    };
+    let (_, factors) = g.factor_over_z();
+    factors
+        .iter()
+        .filter_map(|(h, _)| match h.coeffs() {
+            [c0, c1] if !c1.is_zero() => Some(-(c0 / c1)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// A square root of `x` (either sign will do for the caller): `√x`, or

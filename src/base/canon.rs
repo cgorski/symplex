@@ -64,7 +64,7 @@ use smallvec::{SmallVec, smallvec};
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
-use crate::base::numeric::Q;
+use crate::base::numeric::{Q, q_add, q_mul};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Add
@@ -87,7 +87,9 @@ pub(crate) fn canon_add(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     if args.len() == 2 {
         let (a, b) = (args[0], args[1]);
         if let (Some(na), Some(nb)) = (arena.as_num(a), arena.as_num(b)) {
-            let sum = na.clone() + nb.clone();
+            // `q_add`, not `Ratio`'s `+`: its gcd is quadratic in the size
+            // of a huge integer even against 1 (see `numeric::q_add`).
+            let sum = q_add(na, nb);
             if sum.is_zero() {
                 tracing::debug!("canon_add fast path: two numerics sum to zero");
                 return arena.zero;
@@ -112,7 +114,8 @@ pub(crate) fn canon_add(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     let mut merged: SmallVec<[ExprId; 4]> = SmallVec::new();
     let mut collect = |terms: &mut FxHashMap<ExprId, Q>, key: ExprId, c: Q| match terms.entry(key) {
         std::collections::hash_map::Entry::Occupied(mut slot) => {
-            *slot.get_mut() += c;
+            let sum = q_add(slot.get(), &c);
+            *slot.get_mut() = sum;
             merged.push(key);
         }
         std::collections::hash_map::Entry::Vacant(slot) => {
@@ -156,16 +159,15 @@ pub(crate) fn canon_add(arena: &mut Arena, args: &[ExprId]) -> ExprId {
             }
 
             ExprNode::Num(nid) => {
-                constant += arena.num(nid).clone();
+                constant = q_add(&constant, arena.num(nid));
             }
 
             ExprNode::Neg(inner) => {
                 // −x has coefficient −1, term x.
-                let neg_one: Q = -Ratio::one();
                 let (c, key) = arena.as_coeff_term(inner);
-                let combined = neg_one * c;
+                let combined = -c;
                 if key == arena.one {
-                    constant += combined;
+                    constant = q_add(&constant, &combined);
                 } else {
                     collect(&mut terms, key, combined);
                 }
@@ -174,7 +176,7 @@ pub(crate) fn canon_add(arena: &mut Arena, args: &[ExprId]) -> ExprId {
             _ => {
                 let (c, key) = arena.as_coeff_term(id);
                 if key == arena.one {
-                    constant += c;
+                    constant = q_add(&constant, &c);
                 } else {
                     collect(&mut terms, key, c);
                 }
@@ -808,7 +810,7 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     if args.len() == 2 {
         let (a, b) = (args[0], args[1]);
         if let (Some(na), Some(nb)) = (arena.as_num(a), arena.as_num(b)) {
-            let product = na.clone() * nb.clone();
+            let product = q_mul(na, nb);
             if product.is_zero() {
                 tracing::debug!("canon_mul fast path: two numerics multiply to zero");
                 return arena.zero;
@@ -860,8 +862,7 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
             }
 
             ExprNode::Num(nid) => {
-                let val = arena.num(nid).clone();
-                coeff *= val;
+                coeff = q_mul(&coeff, arena.num(nid));
                 if coeff.is_zero() {
                     // 0 × rest: `nan` if any infinity/NaN is involved
                     // (already seen, still on the stack, or hidden in a
@@ -926,7 +927,9 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     // for `powsimp_base` with assumption checking.
     {
         let mut combined_factors: SmallVec<[(ExprId, ExprId); 8]> = SmallVec::new();
-        // Map: exponent ExprId → (product of bases as Ratio, indices consumed)
+        // Map: exponent ExprId → (product of bases as Ratio, indices consumed).
+        // The product is formed only once a second base joins a group
+        // (`q_mul` is linear for integers; a lone radical pays nothing).
         let mut exp_groups: FxHashMap<ExprId, (Q, usize)> = FxHashMap::default();
         let mut factor_used: SmallVec<[bool; 8]> = smallvec::smallvec![false; factors.len()];
 
@@ -944,11 +947,16 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
                 };
                 let _ = exp_r; // used only for the is_integer check
 
-                let entry = exp_groups
-                    .entry(exp_id)
-                    .or_insert_with(|| (Ratio::one(), 0));
-                entry.0 *= &base_r;
-                entry.1 += 1;
+                match exp_groups.entry(exp_id) {
+                    std::collections::hash_map::Entry::Occupied(mut slot) => {
+                        let entry = slot.get_mut();
+                        entry.0 = q_mul(&entry.0, &base_r);
+                        entry.1 += 1;
+                    }
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        slot.insert((base_r, 1));
+                    }
+                }
                 factor_used[i] = true;
                 true
             };
@@ -1028,7 +1036,7 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
             // If the base is itself a numeric literal, absorb it into the
             // running coefficient instead of adding a second Num child.
             if let Some(val) = arena.as_num(base) {
-                coeff *= val.clone();
+                coeff = q_mul(&coeff, val);
                 continue;
             }
             if singular(arena, base) {
@@ -1051,7 +1059,7 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
             // canon_pow may have fully evaluated to a number
             // (e.g. 2^3 → 8).  Absorb it into the coefficient.
             if let Some(val) = arena.as_num(pow_id) {
-                coeff *= val.clone();
+                coeff = q_mul(&coeff, val);
                 continue;
             }
             if matches!(arena.node(pow_id), ExprNode::Mul(_)) || singular(arena, pow_id) {
@@ -1950,7 +1958,7 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
         && c.is_integer()
     {
         tracing::trace!("canon_pow: flattening Pow(Pow(a,b),c) → Pow(a,b*c)");
-        let product = b * c;
+        let product = q_mul(b, c);
         let prod_id = arena.intern_num(product);
         let prod_expr = arena.intern(ExprNode::Num(prod_id));
         return canon_pow(arena, inner_base, prod_expr);
@@ -2333,15 +2341,22 @@ fn eval_numeric_pow(arena: &mut Arena, b: &Q, e: &Q) -> Option<ExprId> {
     let pow_n: BigInt = NumPow::pow(numer, exp_u32);
     let pow_d: BigInt = NumPow::pow(denom, exp_u32);
 
+    // `numerⁿ/denomⁿ` is in lowest terms already (`b` is): no gcd, which
+    // `Ratio::new` computes in time quadratic in the digits even when
+    // `denomⁿ = 1` (see `numeric::q_add`).
     let result = if exp_int.is_negative() {
         // b^(-n) = (denom^n) / (numer^n)
         if pow_n.is_zero() {
             // Would be division by zero → leave unevaluated.
             return None;
         }
-        Ratio::new(pow_d, pow_n)
+        if pow_n.is_negative() {
+            Ratio::new_raw(-pow_d, -pow_n)
+        } else {
+            Ratio::new_raw(pow_d, pow_n)
+        }
     } else {
-        Ratio::new(pow_n, pow_d)
+        Ratio::new_raw(pow_n, pow_d)
     };
 
     // Check the digit count doesn't exceed the guard.
@@ -2529,7 +2544,16 @@ thread_local! {
     /// computation returns and canonical forms do not depend on the memo.
     static RADICAL_PARTS: std::cell::RefCell<FxHashMap<BigInt, std::rc::Rc<RadicalParts>>> =
         std::cell::RefCell::new(FxHashMap::default());
+
+    /// [`split_perfect_power`]`(n, k) = (outside, inside)` of the integers
+    /// above [`RADICAL_MEMO_MIN_BITS`] split on this thread, keyed by
+    /// `(n, k)`.
+    static RADICAL_SPLITS: std::cell::RefCell<RadicalSplits> =
+        std::cell::RefCell::new(FxHashMap::default());
 }
+
+/// The memo behind [`split_perfect_power`]: `(n, k) → (outside, inside)`.
+type RadicalSplits = FxHashMap<(BigInt, u32), std::rc::Rc<(BigInt, BigInt)>>;
 
 /// [`crate::domains::ntheory::squarefree_parts_bounded`] of `n > 1` at
 /// [`RADICAL_FACTOR_MAX_BITS`], through the thread's memo.
@@ -2570,10 +2594,14 @@ fn radical_parts(n: &BigInt) -> std::rc::Rc<RadicalParts> {
 /// The factorisation itself is not needed, only the exponents: this reads
 /// them from the squarefree decomposition
 /// ([`crate::domains::ntheory::squarefree_parts_bounded`]), which carries
-/// the same exponents for the same primes, memoised per thread.
+/// the same exponents for the same primes, memoised per thread.  (Over
+/// 2,048 bits the base `b` of a perfect-power remainder `bᵉ` counts with
+/// its exponent whether it is prime or not, as SymPy's `factorint` with a
+/// limit lists it: `√(3·(p·q)⁴) = (p·q)²·√3`.)
 ///
 /// Exact `k`-th powers are recognised first via an integer root, so
-/// `√(p²)` folds even for huge primes `p`.
+/// `√(p²)` folds even for huge primes `p`; residues rule most non-powers
+/// out before the root is taken.  The split is memoised per thread too.
 ///
 /// # Examples
 ///
@@ -2584,9 +2612,42 @@ pub(crate) fn split_perfect_power(n: &BigInt, k: u32) -> (BigInt, BigInt) {
     if k < 2 || *n <= BigInt::one() {
         return (BigInt::one(), n.clone());
     }
-    let root = n.nth_root(k);
-    if NumPow::pow(root.clone(), k) == *n {
-        return (root, BigInt::one());
+    if n.bits() <= RADICAL_MEMO_MIN_BITS {
+        return split_perfect_power_uncached(n, k);
+    }
+    // A radical is split again whenever a product holding it is rebuilt
+    // (`canon_mul` re-canonicalises every power): memoised per thread like
+    // its decomposition, a pure function of `(n, k)`.
+    let key = (n.clone(), k);
+    let cached = RADICAL_SPLITS
+        .try_with(|memo| memo.try_borrow().ok().and_then(|m| m.get(&key).cloned()))
+        .ok()
+        .flatten();
+    if let Some(split) = cached {
+        return (*split).clone();
+    }
+    let split = std::rc::Rc::new(split_perfect_power_uncached(n, k));
+    let _ = RADICAL_SPLITS.try_with(|memo| {
+        if let Ok(mut memo) = memo.try_borrow_mut() {
+            if memo.len() >= RADICAL_MEMO_CAPACITY {
+                memo.clear();
+            }
+            memo.insert(key, std::rc::Rc::clone(&split));
+        }
+    });
+    (*split).clone()
+}
+
+/// [`split_perfect_power`] without the memo.
+fn split_perfect_power_uncached(n: &BigInt, k: u32) -> (BigInt, BigInt) {
+    // The exact root is a Newton iteration of full-size divisions
+    // (quadratic in the digits): skipped when residues rule a `k`-th power
+    // out, as they do for all but a few non-powers.
+    if crate::domains::ntheory::may_be_kth_power(n, k) {
+        let root = n.nth_root(k);
+        if NumPow::pow(root.clone(), k) == *n {
+            return (root, BigInt::one());
+        }
     }
     let parts = radical_parts(n);
     let (pieces, cofactor) = &*parts;
@@ -2750,9 +2811,10 @@ fn classify_arg(arena: &Arena, id: ExprId) -> Arg {
             let (pi, i) = (arena.pi, arena.i_unit);
             match *rest {
                 [a] if a == pi => Arg::PiMultiple(q),
-                [a] if inverse_trig_pi_multiple(arena, a).is_some() => {
-                    Arg::PiMultiple(q * inverse_trig_pi_multiple(arena, a).unwrap_or_default())
-                }
+                [a] if inverse_trig_pi_multiple(arena, a).is_some() => Arg::PiMultiple(q_mul(
+                    &q,
+                    &inverse_trig_pi_multiple(arena, a).unwrap_or_default(),
+                )),
                 [a] if matches!(arena.node(a), ExprNode::Ln(w) if *w == arena.neg_one) => {
                     Arg::ImaginaryPiMultiple(q)
                 }
@@ -2802,20 +2864,32 @@ fn inverse_trig_pi_multiple(arena: &Arena, id: ExprId) -> Option<Q> {
     })
 }
 
-/// `q mod m` in `[0, m)`.
+/// `q mod m` in `[0, m)` for `m > 0`: `(a mod b·m)/b` for `q = a/b`, in
+/// lowest terms as `q` is (`gcd(a mod b·m, b) = gcd(a, b)`).  Integer
+/// arithmetic, linear in the size of `a`: the `Ratio` operators reduce
+/// with a gcd that is quadratic in it even against a one-word operand
+/// (building `exp(q·π·i)` for `q = a/6` with a 5,000-digit `a` took
+/// 1.5 ms, now 0.2 ms; the folding tables are consulted at every node).
 fn mod_rational(q: &Q, m: i64) -> Q {
-    let m = Q::from_integer(BigInt::from(m));
-    q - (q / &m).floor() * &m
+    use num_integer::Integer;
+    let r = q.numer().mod_floor(&(q.denom() * BigInt::from(m)));
+    if r.is_zero() {
+        Q::zero()
+    } else {
+        Ratio::new_raw(r, q.denom().clone())
+    }
 }
 
-/// `q` as a multiple of `1/n` (`q·n` when that is an integer).
+/// `q` as a multiple of `1/n` (`q·n` when that is an integer), for
+/// `n > 0`.
 fn in_units(q: &Q, n: i64) -> Option<i64> {
-    let t = q * Q::from_integer(BigInt::from(n));
-    if t.is_integer() {
-        t.to_integer().to_i64()
-    } else {
-        None
+    // `q·n = a·(n/b)` is an integer exactly when `b | n` (`q = a/b` in
+    // lowest terms).
+    let b = q.denom().to_i64()?;
+    if b <= 0 || n % b != 0 {
+        return None;
     }
+    (q.numer() * BigInt::from(n / b)).to_i64()
 }
 
 /// `sin(q·π)` when it is rational.
@@ -3301,7 +3375,7 @@ fn is_minus_inverse_e(arena: &Arena, id: ExprId) -> bool {
 /// Is `B(a, b) = Γ(a)Γ(b)/Γ(a+b)` at rationals a pole: exactly one of
 /// `Γ(a)`, `Γ(b)` has one and `Γ(a+b)` does not?
 fn beta_has_pole(a: &Q, b: &Q) -> bool {
-    is_nonpositive_int(a) != is_nonpositive_int(b) && !is_nonpositive_int(&(a + b))
+    is_nonpositive_int(a) != is_nonpositive_int(b) && !is_nonpositive_int(&q_add(a, b))
 }
 
 /// The zeros, poles and `nan`s of the library functions at exact numbers

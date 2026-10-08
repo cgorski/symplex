@@ -53,6 +53,8 @@ their documentation:
 | `src/transforms/evalf/bessel_order.rs` (Bessel functions of large order: `(z/2)^ν/Γ(ν + 1)·₀F₁(; ν + 1; ∓z²/4)` in log space, with unbounded exponents) | `besselj` / `besseli` in `mpmath/functions/bessel.py` | DLMF 10.2.2, 10.14.4, 10.25.2 |
 | `src/domains/linalg.rs` (`kp_quartic_roots`: the quartic in radicals and its case split) | `roots_quartic`, `_roots_quartic_euler` in `sympy/polys/polyroots.py` | Ferrari's method; the Descartes–Euler resolvent; quasi-symmetric quartics |
 | `src/calculus/series.rs` (`compose_at_constant`: `f(u₀ + w)` from the Taylor coefficients of `f` at the constant term of its argument, also when `w` carries `ln x`) | the generic and logarithmic-argument cases of `Function._eval_nseries` in `sympy/core/function.py` | Taylor's theorem |
+| `src/domains/matrix_decomp.rs` (`cholesky`, `ldl` of a Hermitian matrix: `A = L·Lᴴ`, `A = L·D·Lᴴ`) | `_cholesky`, `_LDLdecomposition` with `hermitian=True` in `sympy/matrices/decompositions.py` | the Cholesky and LDLᴴ factorisations (G. H. Golub, C. F. Van Loan, *Matrix Computations*, 4th ed., §4.2) |
+| `src/base/numeric.rs` (`q_add`, `q_mul`: no gcd for an integer operand in a sum, cross-cancellation in a product) | `Rational.__add__` / `Rational.__mul__` in `sympy/core/numbers.py` | D. E. Knuth, *The Art of Computer Programming*, vol. 2, §4.5.1 (Henrici's sum) |
 
 To the extent any of these is a derivative of SymPy, SymPy's licence
 applies to that part, and its notice is reproduced here as clause (a)

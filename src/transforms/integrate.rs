@@ -4917,25 +4917,64 @@ fn try_trig_product_to_sum(
 // |g|, sign(g), Heaviside(g), Piecewise
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Real roots of `g` (as expressions) when they can all be determined;
-/// `None` if the solver could not decide.
+/// The real roots of `g` (as expressions) when all of them are known;
+/// `None` otherwise.  [`try_abs_sign_product`] takes the sign of `g`
+/// constant between the roots it is given, so a root missing here makes
+/// an antiderivative that jumps there:
+///
+/// * `g` with a `sin` or `cos` of the variable is refused.  Such a `g` has
+///   as a rule infinitely many real roots, and the solver returns the
+///   principal branches only: `sin(eˣ) = 0` gave `x = ln π` alone, and
+///   `∫ sign(sin eˣ) dx` was `(x − ln π)·sign(sin eˣ)` — its derivative is
+///   the integrand, but it jumps at `x = ln(kπ)` for every `k ≥ 2`, so
+///   `F(b) − F(a)` was wrong across any of them (also `cos(eˣ)`,
+///   `eˣ·|sin(eˣ)|`, `sin(e⁻ˣ)`).
+/// * For a polynomial over `ℚ` the roots found must be as many as its
+///   distinct real roots (Sturm).
+/// * A root that does not evaluate is not taken for a complex one: it is
+///   refused unless it evaluates to a value off the real axis.
 fn real_roots(arena: &mut Arena, g: ExprId, var: ExprId) -> Option<Vec<ExprId>> {
+    let var_sym = match arena.node(var) {
+        ExprNode::Symbol(s) => *s,
+        _ => return None,
+    };
     let poly = crate::poly::polybridge::expr_to_poly(arena, g, var);
+    if poly.is_none()
+        && crate::base::walk::post_order_ids(arena, g)
+            .into_iter()
+            .any(|id| match arena.node(id) {
+                ExprNode::Sin(a) | ExprNode::Cos(a) => contains_var(arena, *a, var_sym),
+                _ => false,
+            })
+    {
+        return None;
+    }
     let sols = crate::transforms::solve::solve(arena, g, var);
     if sols.is_empty() && poly.is_none() {
         return None;
     }
     let mut roots = Vec::new();
     for s in sols {
-        if crate::base::walk::free_symbols(arena, s.value).is_empty() {
-            match crate::transforms::evalf::eval_const_f64(arena, s.value) {
-                Some(v) if v.is_finite() => roots.push(s.value),
-                Some(_) => return None,
-                None => {} // complex root
-            }
-        } else {
+        if !crate::base::walk::free_symbols(arena, s.value).is_empty() {
             return None; // parametric root: cannot decide
         }
+        match crate::transforms::evalf::eval_const_f64(arena, s.value) {
+            Some(v) if v.is_finite() => roots.push(s.value),
+            Some(_) => return None,
+            None => {
+                let value = crate::transforms::eval::eval(arena, s.value);
+                match crate::transforms::evalf::evalf_complex64(arena, value) {
+                    Ok(z) if z.im != 0.0 && z.re.is_finite() && z.im.is_finite() => {} // complex root
+                    _ => return None,
+                }
+            }
+        }
+    }
+    if let Some(p) = &poly
+        && p.degree().unwrap_or(0) > 0
+        && crate::poly::sturm::SturmChain::new(p).count_real_roots() != roots.len()
+    {
+        return None;
     }
     Some(roots)
 }

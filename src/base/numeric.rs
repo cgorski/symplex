@@ -300,6 +300,129 @@ pub(crate) fn ratio_to_bigfloat(r: &Ratio<BigInt>, prec: usize, rm: RoundingMode
     n.div(&d, prec, rm)
 }
 
+// ── Rational arithmetic without quadratic gcds ──────────────────────────
+//
+// The operators of `Ratio<BigInt>` reduce every result with
+// `BigUint::gcd`, which in num-bigint 0.4 is Stein's binary algorithm: a
+// subtraction and a shift of the whole number per step, and a step per bit
+// or two *even when the other operand is 1 or a single limb*.  So `n + 1`,
+// `1·n` or `3·n` for an integer `n` of `b` bits cost `O(b²/64)` word
+// operations where the arithmetic itself is linear (`gcd(n, 1)`: 0.14 ms
+// at 5,000 digits, 35 ms at 100,000, 0.2 s at 200,000, release build), at
+// every canonical sum or product that holds `n`; the product of twenty
+// square roots of 5,000-digit integers spent most of its 3.3 s there.  The
+// helpers below return the same values in the same (unique: lowest terms,
+// positive denominator) representation, computed the way SymPy's
+// `Rational.__add__`/`__mul__` do (an integer operand needs no gcd in a
+// sum and only the one against the other denominator in a product) and,
+// for two fractions, with Henrici's sum (Knuth, TAOCP vol. 2, 4.5.1);
+// every gcd starts with Euclidean steps that bring the larger operand down
+// to the size of the smaller ([`gcd_big`]).
+
+/// `gcd(a, b)` on machine words.
+fn gcd_u64(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        let t = a % b;
+        a = b;
+        b = t;
+    }
+    a
+}
+
+/// `gcd(|a|, |b|)` (`gcd(0, 0) = 0`).
+///
+/// Euclidean steps while the operands differ in size by more than a limb
+/// (each a division linear in the larger), a word gcd once the smaller
+/// fits in 64 bits, and num-bigint's binary gcd only for two operands of
+/// about the same size, where its cost is that of the gcd itself.
+pub(crate) fn gcd_big(a: &BigInt, b: &BigInt) -> BigInt {
+    let (x, y) = (a.magnitude(), b.magnitude());
+    let (mut big, mut small) = if x >= y {
+        (x.clone(), y.clone())
+    } else {
+        (y.clone(), x.clone())
+    };
+    loop {
+        if small.is_zero() {
+            return BigInt::from(big);
+        }
+        if let Some(s) = small.to_u64() {
+            let t = (&big % s).to_u64().unwrap_or(0);
+            return BigInt::from(gcd_u64(s, t));
+        }
+        if big.bits() <= small.bits() + 64 {
+            return BigInt::from(num_integer::Integer::gcd(&big, &small));
+        }
+        let r = &big % &small;
+        big = small;
+        small = r;
+    }
+}
+
+/// `x / g` for a divisor `g` of `x` (skipped when `g = 1`).
+fn div_by(x: &BigInt, g: &BigInt) -> BigInt {
+    if g.is_one() { x.clone() } else { x / g }
+}
+
+/// `a + b`, equal to `a.clone() + b.clone()` (see the note above), for
+/// operands in lowest terms with positive denominators, as `Ratio::new`
+/// and the `Ratio` operators leave them and as every arena number is.
+pub(crate) fn q_add(a: &Q, b: &Q) -> Q {
+    if a.is_zero() {
+        return b.clone();
+    }
+    if b.is_zero() {
+        return a.clone();
+    }
+    match (a.is_integer(), b.is_integer()) {
+        (true, true) => Ratio::from_integer(a.numer() + b.numer()),
+        // p/q + k = (p + k·q)/q is in lowest terms: gcd(p + k·q, q) = gcd(p, q).
+        (false, true) => Ratio::new_raw(a.numer() + b.numer() * a.denom(), a.denom().clone()),
+        (true, false) => Ratio::new_raw(b.numer() + a.numer() * b.denom(), b.denom().clone()),
+        (false, false) => {
+            let (u, u1, v, v1) = (a.numer(), a.denom(), b.numer(), b.denom());
+            let d1 = gcd_big(u1, v1);
+            if d1.is_one() {
+                return Ratio::new_raw(u * v1 + v * u1, u1 * v1);
+            }
+            let t = u * div_by(v1, &d1) + v * div_by(u1, &d1);
+            if t.is_zero() {
+                return Ratio::zero();
+            }
+            let d2 = gcd_big(&t, &d1);
+            Ratio::new_raw(div_by(&t, &d2), div_by(u1, &d1) * div_by(v1, &d2))
+        }
+    }
+}
+
+/// `a · b`, equal to `a.clone() * b.clone()` (see the note above), for
+/// operands in lowest terms with positive denominators (as for
+/// [`q_add`]).
+pub(crate) fn q_mul(a: &Q, b: &Q) -> Q {
+    if a.is_zero() || b.is_zero() {
+        return Ratio::zero();
+    }
+    if a.is_one() {
+        return b.clone();
+    }
+    if b.is_one() {
+        return a.clone();
+    }
+    if a.is_integer() && b.is_integer() {
+        return Ratio::from_integer(a.numer() * b.numer());
+    }
+    // Cross-cancellation leaves the product in lowest terms.
+    let g1 = gcd_big(a.numer(), b.denom());
+    let g2 = gcd_big(b.numer(), a.denom());
+    let n = div_by(a.numer(), &g1) * div_by(b.numer(), &g2);
+    let d = div_by(a.denom(), &g2) * div_by(b.denom(), &g1);
+    if d.is_negative() {
+        Ratio::new_raw(-n, -d)
+    } else {
+        Ratio::new_raw(n, d)
+    }
+}
+
 /// Integer square root helper for tests and callers that need exactness.
 #[must_use]
 pub fn is_perfect_square(n: &BigInt) -> bool {
@@ -430,5 +553,71 @@ mod tests {
         assert!(is_perfect_square(&BigInt::from(144)));
         assert!(!is_perfect_square(&BigInt::from(145)));
         assert!(!is_perfect_square(&BigInt::from(-4)));
+    }
+
+    /// `q_add`, `q_mul` and `gcd_big` against the `Ratio` operators and
+    /// num-integer's gcd: same values, same (reduced) representation, on
+    /// small, huge and mixed operands of both signs.
+    #[test]
+    fn fast_rational_arithmetic_matches_ratio() {
+        use num_traits::Pow;
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let big = |k: u32, c: i64| Pow::pow(BigInt::from(10), k) + BigInt::from(c);
+        let mut ints: Vec<BigInt> = vec![
+            BigInt::from(0),
+            BigInt::from(1),
+            BigInt::from(-1),
+            BigInt::from(2),
+            BigInt::from(6),
+            BigInt::from(-12),
+            BigInt::from(u64::MAX),
+            big(40, 7),
+            big(40, 7) * 6,
+            big(300, -3),
+            Pow::pow(BigInt::from(2), 200u32) * 3,
+            -big(25, 1),
+        ];
+        for _ in 0..12 {
+            let v = BigInt::from(next()) * BigInt::from(next()) - BigInt::from(next());
+            ints.push(if next() % 2 == 0 { v } else { -v });
+        }
+        let mut qs: Vec<Q> = Vec::new();
+        for (i, n) in ints.iter().enumerate() {
+            qs.push(Ratio::from_integer(n.clone()));
+            let d = &ints[(i * 7 + 3) % ints.len()];
+            if !d.is_zero() {
+                qs.push(Ratio::new(n.clone(), d.clone()));
+            }
+        }
+        for a in &qs {
+            for b in &qs {
+                let (sum, prod) = (q_add(a, b), q_mul(a, b));
+                assert_eq!(sum, a.clone() + b.clone(), "{a} + {b}");
+                assert_eq!(prod, a.clone() * b.clone(), "{a} * {b}");
+                // The representation itself is the reduced one.
+                for q in [&sum, &prod] {
+                    assert!(q.denom().is_positive(), "{q}");
+                    assert!(
+                        num_integer::Integer::gcd(q.numer(), q.denom()).is_one(),
+                        "{q}"
+                    );
+                }
+            }
+        }
+        for a in &ints {
+            for b in &ints {
+                assert_eq!(
+                    gcd_big(a, b),
+                    num_integer::Integer::gcd(a, b),
+                    "gcd({a}, {b})"
+                );
+            }
+        }
     }
 }

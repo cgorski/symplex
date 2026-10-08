@@ -3133,7 +3133,10 @@ impl Expr<Numeric> {
     ///   polynomial in `var` and no transcendental strategy applies, or is a
     ///   polynomial whose roots are not found in closed form (a coefficient
     ///   outside `ℚ(√p…, i)`, an irreducible factor of degree above 4 over
-    ///   that field) — the two reasons say which.
+    ///   that field) — the two reasons say which.  A polynomial over that
+    ///   field is not answered with the roots of some of its factors only:
+    ///   `(x² + i)·(x⁵ − √2·x − 1)` is refused ("7 distinct roots, of which
+    ///   2 were found"; SymPy returns the two).
     ///
     /// `Ok(vec![])` is reserved for genuine equations whose roots could
     /// not be found in the searched domain.
@@ -3169,11 +3172,54 @@ impl Expr<Numeric> {
         match outcome {
             crate::transforms::solve::SolveOutcome::Solutions(solutions) => {
                 if !solutions.is_empty() {
+                    // A polynomial with coefficients in `K = ℚ(√p…, i)` that the
+                    // solver took factor by factor: a factor it could not
+                    // solve (`x⁴ + √3·x + 1` in `x·(x⁴ + √3·x + 1)`) was
+                    // dropped from the union, and the roots of the other
+                    // factors came back alone (`[0]`) — before 0.36 also when
+                    // the expanded polynomial has all five in radicals.
+                    let coeffs = if crate::poly::polybridge::expr_to_poly(
+                        &inner.arena,
+                        self.raw_id(),
+                        var_id,
+                    )
+                    .is_none()
+                    {
+                        crate::transforms::solve::symbolic_poly_coeffs(
+                            &mut inner.arena,
+                            self.raw_id(),
+                            var_id,
+                        )
+                    } else {
+                        None
+                    };
                     drop(inner);
-                    return Ok(solutions
+                    let found: Vec<Ex> = solutions
                         .into_iter()
                         .map(|sol| self.wrap(sol.value))
-                        .collect());
+                        .collect();
+                    if let Some(coeffs) = coeffs.filter(|cs| cs.len() >= 2) {
+                        let coeffs: Vec<Ex> = coeffs.into_iter().map(|c| self.wrap(c)).collect();
+                        if let Some(n) =
+                            crate::domains::linalg::algebraic_poly_distinct_root_count(&coeffs)
+                            && found.len() < n
+                        {
+                            return match crate::domains::linalg::algebraic_poly_roots(&coeffs) {
+                                Some(roots) => Ok(roots.into_iter().map(|(r, _)| r).collect()),
+                                None => Err(SymplexError::ComputationFailed {
+                                    operation: "solve",
+                                    reason: format!(
+                                        "polynomial of degree {} in {var} with {n} distinct roots, of which \
+                                         {} were found in closed form: it has a factor of degree above 4 \
+                                         over ℚ(√p…, i) that is irreducible or was not split",
+                                        coeffs.len() - 1,
+                                        found.len()
+                                    ),
+                                }),
+                            };
+                        }
+                    }
+                    return Ok(found);
                 }
                 // No solutions found — check if the expression is polynomial.
                 // For polynomial expressions, an empty result is valid (no roots).

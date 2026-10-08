@@ -32,6 +32,14 @@ use crate::domains::matrix::{
 /// produced by [`gram_schmidt_cols`], both as raw row-major `Vec`s.
 type GramSchmidtParts = (Vec<Vec<Ex>>, Vec<Vec<Ex>>);
 
+/// The product a Cholesky-type factorisation uses ([`Matrix::cholesky`],
+/// [`Matrix::ldl`]): `A = L·Lᵀ` or `A = L·Lᴴ`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Symmetry {
+    Symmetric,
+    Hermitian,
+}
+
 fn invalid(operation: &'static str, reason: impl Into<String>) -> SymplexError {
     SymplexError::invalid_argument(operation, reason)
 }
@@ -317,7 +325,15 @@ impl Matrix {
     // ── Cholesky / LDLᵀ ────────────────────────────────────────────────
 
     /// Cholesky decomposition `A = L·Lᵀ` for a symmetric positive-definite
-    /// matrix (`L` lower triangular with positive diagonal).
+    /// matrix, and `A = L·Lᴴ` (conjugate transpose) for a Hermitian one
+    /// that is not symmetric (`L` lower triangular with positive diagonal).
+    ///
+    /// As SymPy's `cholesky` (`hermitian=True`, its default), a Hermitian
+    /// matrix takes `lᵢⱼ = (aᵢⱼ − Σₖ lᵢₖ·l̄ⱼₖ)/lⱼⱼ` and the pivots `aⱼⱼ − Σₖ |lⱼₖ|²`:
+    /// `[[2, i], [−i, 2]]` gives `L = [[√2, 0], [−i·√2/2, √6/2]]` (refused as
+    /// "not symmetric" before 0.36).  A matrix provably symmetric — every
+    /// real one, and a complex symmetric one such as `[[2, i], [i, 2]]`,
+    /// which SymPy takes only with `hermitian=False` — keeps `A = L·Lᵀ`.
     ///
     /// Positive-definiteness is decided pivot by pivot: each diagonal
     /// pivot must be provably positive (assumption system, or numeric
@@ -325,8 +341,8 @@ impl Matrix {
     ///
     /// # Errors
     ///
-    /// - [`SymplexError::InvalidArgument`] if the matrix is not square or
-    ///   provably not symmetric.
+    /// - [`SymplexError::InvalidArgument`] if the matrix is not square, or
+    ///   provably not symmetric and not provably Hermitian.
     /// - [`SymplexError::ComputationFailed`] if a pivot is provably
     ///   non-positive (not positive definite) **or** its sign cannot be
     ///   decided symbolically.
@@ -341,6 +357,14 @@ impl Matrix {
     /// let l = a.cholesky().unwrap();
     /// assert_eq!((&l * &l.transpose()).simplify(), a);
     /// assert!(matrix![ctx, [1, 2], [2, 1]].cholesky().is_err()); // indefinite
+    ///
+    /// // Hermitian: SymPy's Matrix([[9, 3*I], [-3*I, 5]]).cholesky() is
+    /// // [[3, 0], [-I, 2]].
+    /// let i = ctx.i_unit();
+    /// let h = Matrix::new(vec![vec![ctx.int(9), &i * 3], vec![&i * -3, ctx.int(5)]]).unwrap();
+    /// let l = h.cholesky().unwrap();
+    /// assert_eq!(l, Matrix::new(vec![vec![ctx.int(3), ctx.int(0)], vec![-&i, ctx.int(2)]]).unwrap());
+    /// assert_eq!(l.matmul(&l.adjoint()).unwrap().eval(), h);
     /// ```
     pub fn cholesky(&self) -> Result<Matrix, SymplexError> {
         if !self.is_square() {
@@ -353,20 +377,26 @@ impl Matrix {
                 ),
             ));
         }
-        if self.is_symmetric() == Some(false) {
-            return Err(invalid("cholesky", "matrix is not symmetric"));
-        }
+        let hermitian = self.symmetry_kind("cholesky")? == Symmetry::Hermitian;
         let n = self.nrows();
         let zero = self.context().zero();
         let mut l: Vec<Vec<Ex>> = vec![vec![zero.clone(); n]; n];
+        // `x̄` in the Hermitian mode, `x` otherwise.
+        let conj = |x: &Ex| if hermitian { x.conjugate() } else { x.clone() };
 
         for j in 0..n {
             let mut sum_sq = zero.clone();
             for item in l[j].iter().take(j) {
-                sum_sq += item.powi(2);
+                if hermitian {
+                    sum_sq += item * &item.conjugate();
+                } else {
+                    sum_sq += item.powi(2);
+                }
             }
             let diag = (self.get(j, j) - &sum_sq).simplify();
-            match ex_is_positive(&diag) {
+            // Over one denominator a pivot such as `2 − x²/(x² + 1)` (real `x`)
+            // is `(x² + 2)/(x² + 1)`, whose sign the assumptions decide.
+            match ex_is_positive(&diag).or_else(|| ex_is_positive(&diag.together())) {
                 Some(true) => {}
                 Some(false) => {
                     return Err(failed(
@@ -387,7 +417,7 @@ impl Matrix {
             for i in (j + 1)..n {
                 let mut sum_prod = zero.clone();
                 for (l_ik, l_jk) in l[i].iter().zip(l[j].iter()).take(j) {
-                    sum_prod += &(l_ik * l_jk);
+                    sum_prod += &(l_ik * &conj(l_jk));
                 }
                 let num = self.get(i, j) - &sum_prod;
                 l[i][j] = (&num / &l[j][j]).simplify();
@@ -396,17 +426,41 @@ impl Matrix {
         Matrix::new(l)
     }
 
+    /// Which product [`cholesky`](Self::cholesky) and [`ldl`](Self::ldl)
+    /// factor `A` with: `Lᵀ` unless `A` is provably Hermitian and not
+    /// provably symmetric (a matrix that is both is real), `Lᴴ` then.
+    /// `InvalidArgument` when `A` is provably not symmetric and not
+    /// provably Hermitian.
+    fn symmetry_kind(&self, op: &'static str) -> Result<Symmetry, SymplexError> {
+        let symmetric = self.is_symmetric();
+        if symmetric == Some(true) {
+            return Ok(Symmetry::Symmetric);
+        }
+        if self.is_hermitian() == Some(true) {
+            return Ok(Symmetry::Hermitian);
+        }
+        if symmetric == Some(false) {
+            return Err(invalid(op, "matrix is neither symmetric nor Hermitian"));
+        }
+        Ok(Symmetry::Symmetric)
+    }
+
     /// LDLᵀ decomposition [`Ldl`]`{ l, d }` with `A = L·D·Lᵀ` for a
-    /// symmetric matrix (`L` unit lower triangular, `D` diagonal).
+    /// symmetric matrix, and `A = L·D·Lᴴ` for a Hermitian one that is not
+    /// symmetric (`L` unit lower triangular, `D` diagonal) — SymPy's
+    /// `LDLdecomposition` with `hermitian=True`, its default:
+    /// `[[9, 3i], [−3i, 5]]` gives `L = [[1, 0], [−i/3, 1]]`, `D = diag(9, 4)`
+    /// (refused as "not symmetric" before 0.36).  See
+    /// [`cholesky`](Self::cholesky) for which matrices take which form.
     ///
     /// Unlike [`cholesky`](Self::cholesky) this needs no square roots and
     /// no sign information, so it works for symbolic symmetric matrices
-    /// and for indefinite ones.
+    /// and for indefinite ones (SymPy refuses an indefinite Hermitian one).
     ///
     /// # Errors
     ///
-    /// - [`SymplexError::InvalidArgument`] if the matrix is not square or
-    ///   provably not symmetric.
+    /// - [`SymplexError::InvalidArgument`] if the matrix is not square, or
+    ///   provably not symmetric and not provably Hermitian.
     /// - [`SymplexError::ComputationFailed`] if a zero pivot is
     ///   encountered with a nonzero entry below it (no pivoting is
     ///   performed).  A zero pivot whose column is zero below it needs no
@@ -435,30 +489,34 @@ impl Matrix {
                 ),
             ));
         }
-        if self.is_symmetric() == Some(false) {
-            return Err(invalid("ldl", "matrix is not symmetric"));
-        }
+        let hermitian = self.symmetry_kind("ldl")? == Symmetry::Hermitian;
         let n = self.nrows();
         let ctx = self.context();
         let zero = ctx.zero();
         let one = ctx.one();
         let mut l: Vec<Vec<Ex>> = vec![vec![zero.clone(); n]; n];
         let mut d: Vec<Ex> = vec![zero.clone(); n];
+        // `x̄` in the Hermitian mode, `x` otherwise.
+        let conj = |x: &Ex| if hermitian { x.conjugate() } else { x.clone() };
 
         for j in 0..n {
             l[j][j] = one.clone();
-            // d_j = a_jj − Σ_{k<j} l_jk² d_k
+            // d_j = a_jj − Σ_{k<j} l_jk² d_k  (l_jk·l̄_jk Hermitian)
             let mut acc = zero.clone();
             for k in 0..j {
-                acc += &l[j][k].powi(2) * &d[k];
+                if hermitian {
+                    acc += &(&l[j][k] * &l[j][k].conjugate()) * &d[k];
+                } else {
+                    acc += &l[j][k].powi(2) * &d[k];
+                }
             }
             let dj = (self.get(j, j) - &acc).simplify();
-            // l_ij = (a_ij − Σ_{k<j} l_ik l_jk d_k) / d_j
+            // l_ij = (a_ij − Σ_{k<j} l_ik l_jk d_k) / d_j  (l̄_jk Hermitian)
             let numerators: Vec<Ex> = ((j + 1)..n)
                 .map(|i| {
                     let mut acc = zero.clone();
                     for k in 0..j {
-                        acc += &(&l[i][k] * &l[j][k]) * &d[k];
+                        acc += &(&l[i][k] * &conj(&l[j][k])) * &d[k];
                     }
                     self.get(i, j) - &acc
                 })

@@ -2308,6 +2308,11 @@ fn eval_sin(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     }
 
     let coeff = as_pi_multiple(arena, inner)?;
+    // Every value below is at a denominator dividing 12, which the
+    // reductions keep (see `denominator_divides`).
+    if !denominator_divides(&coeff, 12) {
+        return None;
+    }
 
     // Reduce modulo 2 (sin has period 2π).
     let two: Q = Ratio::from_integer(2.into());
@@ -2416,6 +2421,9 @@ fn eval_cos(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     }
 
     let coeff = as_pi_multiple(arena, inner)?;
+    if !denominator_divides(&coeff, 12) {
+        return None;
+    }
 
     let two: Q = Ratio::from_integer(2.into());
     let coeff = mod_positive(&coeff, &two);
@@ -2518,6 +2526,9 @@ fn eval_tan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     }
 
     let coeff = as_pi_multiple(arena, inner)?;
+    if !denominator_divides(&coeff, 12) {
+        return None;
+    }
 
     let one_ratio: Q = Ratio::one();
     let coeff = mod_positive(&coeff, &one_ratio);
@@ -2630,7 +2641,7 @@ fn eval_exp(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     if let ExprNode::Add(terms) = arena.node(inner).clone() {
         for (k, &t) in terms.iter().enumerate() {
             if let Some(pi_coeff) = as_imaginary_pi_multiple(arena, t)
-                && (&pi_coeff * Q::from_integer(BigInt::from(2))).is_integer()
+                && denominator_divides(&pi_coeff, 2)
                 && let Some(unit) = eval_exp(arena, t)
             {
                 let rest: smallvec::SmallVec<[ExprId; 6]> = terms
@@ -3462,12 +3473,39 @@ fn as_negated(arena: &mut Arena, id: ExprId) -> Option<ExprId> {
 }
 
 /// Compute `a mod m` in the range `[0, m)` for positive `m`.
+///
+/// For an integer `m` (every caller): `(p mod q·m)/q` for `a = p/q`, in
+/// lowest terms as `a` is, by integer arithmetic linear in the size of
+/// `p`; `Ratio`'s `%` reduces with a gcd quadratic in it even against a
+/// one-word operand.
 fn mod_positive(a: &Q, m: &Q) -> Q {
+    use num_integer::Integer;
+    if m.is_integer() && m.is_positive() {
+        let r = a.numer().mod_floor(&(a.denom() * m.numer()));
+        return if r.is_zero() {
+            Q::zero()
+        } else {
+            Ratio::new_raw(r, a.denom().clone())
+        };
+    }
     let mut result = a % m;
     if result.is_negative() {
         result += m;
     }
     result
+}
+
+/// Does the denominator of `q` (in lowest terms) divide `n`?  The special
+/// values of `sin`, `cos` and `tan` at `q·π` are all at denominators
+/// dividing 12, and the period and quadrant reductions (`q mod 2`, `1 − q`,
+/// `q − 1`, `2 − q`) keep the denominator, so any other `q` has none:
+/// returning early spares the reductions, each a few gcds and an interned
+/// number at the full size of `q` (`simplify(sin(qπ)² + cos(qπ)²)` for a
+/// 5,000-digit `q` took 4 s, through hundreds of such evaluations).
+fn denominator_divides(q: &Q, n: u32) -> bool {
+    q.denom()
+        .to_u32()
+        .is_some_and(|d| d != 0 && n.is_multiple_of(d))
 }
 
 // ── Explicit coefficients of the classical orthogonal polynomials ─────────

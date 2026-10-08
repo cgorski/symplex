@@ -6,6 +6,71 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [Unreleased]
+
+### Breaking (behaviour; no signature changed)
+
+- **`cholesky` and `ldl` take Hermitian matrices**: a matrix provably
+  Hermitian and not symmetric is factored as `L·Lᴴ` / `L·D·Lᴴ` (SymPy's
+  default `hermitian=True`); before, it was refused as "not symmetric".
+  Provably symmetric matrices (every real one, and complex symmetric ones
+  such as `[[2, i], [i, 2]]`) keep `L·Lᵀ`.  A matrix that is neither is
+  refused with "matrix is neither symmetric nor Hermitian".
+- **`solve` no longer returns part of the roots of a polynomial over
+  ℚ(√p…, i)**: `(x² + i)·(x⁵ − √2·x − 1)` is refused ("7 distinct roots,
+  of which 2 were found"); SymPy 1.14 returns the two.
+- **`∫ P·|g|`, `P·sign(g)`, `P·H(g)` with a `g` holding `sin`/`cos` of the
+  variable are refused** (see *Fixed*), also where the answer was right
+  (`∫ |cos x − 1| dx`; SymPy gives `x − sin x`).
+- A radical of `bᵉ·r` whose `b` is a composite of more than 2,048 bits
+  found by the perfect-power test now leaves the radical, as SymPy writes
+  it: `√(3·(p·q)⁴) = (p·q)²·√3` for `p = 2¹²⁷⁹ − 1`, `q = 2²²⁰³ − 1`
+  (it stayed inside before).
+
+### Fixed
+
+- **`∫ sign(sin eˣ) dx` was `(x − ln π)·sign(sin eˣ)`**, an antiderivative
+  that jumps at every `x = ln(kπ)`, `k ≥ 2` (`F(2.93) − F(−2.31)` = 1.6695;
+  mpmath `quad` 2.9267); its derivative is the integrand, so the
+  differentiation check could not see it.  The `|g|`/`sign(g)`/`H(g)` rule
+  took the principal roots the solver returns for a periodic `g` as all of
+  its roots (also `eˣ·|sin eˣ|`, `cos x·sign(sin eˣ)`, `sign(cos eˣ)`,
+  `sign(sin e⁻ˣ)`).  A `g` with a `sin`/`cos` of the variable is now
+  refused (as SymPy leaves it); for `g ∈ ℚ[x]` the roots found must number
+  the Sturm count; a root that does not evaluate is not taken for a
+  complex one.  Integration hunter (2,420 integrands, `F′ = f` and
+  `F(b) − F(a)` against mpmath `quad`): 6 wrong → 0.
+- **`solve(x·(x⁴ + √3·x + 1))` was `[0]`**: the solver solves a product
+  factor by factor and dropped a factor it could not solve; `(x² + 1)·(x³
+  + √2·x + i)` gave `±i`, `(x − 1)²·(x³ + √2·x + 1)` gave `[1]`.  A
+  polynomial over ℚ(√p…, i) with fewer roots found than distinct roots
+  (its square-free degree over the field) is now solved whole.  Hunter
+  (1,500 factored polynomials against mpmath `polyroots`): 16 partial root
+  lists → 0.
+- `cholesky([[2, i], [−i, 2]])` is `[[√2, 0], [−i·√2/2, √6/2]]` (SymPy 1.14
+  the same); a pivot is also decided over one denominator (`2 − x²/(x² +
+  1)` for a real `x`).
+- **Building radicals and products from huge integers no longer hangs or
+  takes seconds.**  `(v²)^(3/5)` for a 13,400-digit `v` took 28 s (a BPSW
+  test of the base of the perfect square, which cannot change the result);
+  bases over 2,048 bits are no longer tested (0.04 s).  Rational arithmetic
+  in canonical sums and products no longer reduces with num-bigint's binary
+  gcd, quadratic in the digits even against 1 (SymPy's `Rational.__add__`/
+  `__mul__`, Henrici's sum): the product of twenty square roots of
+  5,000-digit integers 2.7 → 0.7 s, `√` of a 200,000-digit integer 2.7 →
+  1.4 s, `together` of ten `1/(x + n)` with 5,000-digit `n` 3.9 → 1.5 s.
+  Radical splits are memoised, residues rule out most exponents before an
+  exact root, and trial division takes one pass per word of primes.
+- **Trigonometric special values at huge rational multiples of π** are
+  decided by the denominator first: `simplify(sin(qπ)² + cos(qπ)²)` for
+  `q = 3⁸⁰⁰⁰/7⁴⁰⁰⁰` 1.9 s → 0.06 s (5,000-digit random `q`: 4.5 → 0.14 s).
+
+### Changed
+
+- The Descartes–Euler resolvent of a quartic over ℚ(√p…, i) finds its
+  rational roots from its components over ℚ instead of its degree-48 norm
+  (same roots, same output): quartics over four square roots 3× faster.
+
 ## [0.35.0] - 2026-10-08
 
 The last known class of silent wrong numbers in numerical evaluation is
