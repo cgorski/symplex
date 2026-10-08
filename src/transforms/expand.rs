@@ -33,7 +33,8 @@ use crate::base::arena::Arena;
 use crate::base::assumptions::{AssumptionCache, Props};
 use crate::base::canon::{
     constant_vanishes, identity_denominator_candidates, may_vanish_identically_as_factor,
-    sum_partner_denominators, vanishes_identically_as_factor, vanishing_check_active,
+    nodes_over_vanishing_bases, sum_partner_denominators, vanishes_identically_as_factor,
+    vanishing_check_active, zero_candidate_sums,
 };
 use crate::base::combinatorics::multinomial_u64;
 use crate::base::node::{ExprId, ExprNode};
@@ -326,8 +327,15 @@ fn is_rational_node(arena: &Arena, id: ExprId) -> bool {
 ///   factor the residue test cannot rule out as identically 0
 ///   ([`identity_denominator_candidates`]) — or in a `zoo + zoo` candidate
 ///   — a sum with a term over a denominator that vanishes
-///   ([`sum_partner_denominators`]) — and decided by the numeric identity
-///   test of `simplify` ([`Arena::vanishes_by_identity`]).
+///   ([`sum_partner_denominators`]) — or when its residue is 0 (the
+///   residues relate `sin`, `cos`, `tan` and their hyperbolic
+///   counterparts through `e^{iu}` and `eᵘ`) but multiplying out does not
+///   give 0, and decided by the numeric identity test of `simplify`
+///   ([`Arena::vanishes_by_identity`]).  Up to 0.34 `expand(y·(y + 3)/(sin
+///   2x − 2·sin x·cos x))` was `y²/s + 3y/s`, `zoo + zoo = nan` at every
+///   point where the value is `zoo` (SymPy 1.14's `expand` gives the same
+///   sum; deliberately different), and the `0` of `−s/((…)·(y·(y + 3)/s +
+///   |x − 3|))` became `nan`.
 ///
 /// Up to 0.33 `expand(((x + 1)² − x² − 2x − 1)/(sin²x + cos²x − 1))` was
 /// `0` (now `nan`, as `simplify` gives; SymPy 1.14's `expand` gives `0`), and
@@ -421,12 +429,24 @@ fn resolve_vanishing_denominators(arena: &mut Arena, expr: ExprId, deep: bool) -
         .collect();
     let mut decided: FxHashSet<ExprId> = FxHashSet::default();
     for &id in &order {
-        if let Some(base) = negative_power_base(arena, id)
-            && !zero_bases.contains(&base)
-            && decided.insert(base)
-            && (constant_vanishes(arena, base)
-                || (suspect && vanishes_identically_as_factor(arena, base)))
+        let Some(base) = negative_power_base(arena, id) else {
+            continue;
+        };
+        if zero_bases.contains(&base) || !decided.insert(base) {
+            continue;
+        }
+        if constant_vanishes(arena, base)
+            || (suspect && vanishes_identically_as_factor(arena, base))
         {
+            zero_bases.insert(base);
+        } else if suspect
+            && may_vanish_identically_as_factor(arena, base)
+            && by_identity.insert(base)
+            && arena.vanishes_by_identity(base)
+        {
+            // Residue 0 (`sin 2x − 2·sin x·cos x`, whose `sin` and `cos` the
+            // residues relate) but not 0 once multiplied out: an identity of
+            // its functions.
             zero_bases.insert(base);
         }
     }
@@ -538,34 +558,45 @@ fn identity_bases(arena: &Arena, order: &[ExprId], something_vanishes: bool) -> 
 }
 
 /// The factors of the products in `order` beside a negative power of a
-/// base in `zero_bases` that vanish by an identity of their functions
-/// ([`Arena::vanishes_by_identity`]), and are not 0 already for the residue
-/// test of `canon_mul` ([`vanishes_identically_as_factor`]).
+/// base in `zero_bases`, or beside a factor that is `zoo` by one
+/// ([`nodes_over_vanishing_bases`]: `y/s − 2`), that vanish by an identity
+/// of their functions ([`Arena::vanishes_by_identity`]), and are not 0
+/// already for the residue test of `canon_mul`
+/// ([`vanishes_identically_as_factor`]); a factor vanishes too when one of
+/// the sums that make it vanish does ([`zero_candidate_sums`]: `√(tan x·cos
+/// x − sin x)`).  Up to 0.34 `(cosh²x − sinh²x − 1)·(y/(sin 2x − 2·sin
+/// x·cos x) − 2)/√(x + 7)` expanded to `zoo`, and `(18 − 3y)/(exp(x) + √(tan
+/// x·cos x − sin x)/(x·(x − 2) − x² + 2x))` to `0` (both are `0·zoo`,
+/// `nan`).
 fn factors_beside_poles(
     arena: &mut Arena,
     order: &[ExprId],
     zero_bases: &FxHashSet<ExprId>,
 ) -> FxHashSet<ExprId> {
+    let infinite = nodes_over_vanishing_bases(arena, order, |b| zero_bases.contains(&b));
     let mut out: FxHashSet<ExprId> = FxHashSet::default();
     let mut decided: FxHashSet<ExprId> = FxHashSet::default();
     for &id in order {
         let ExprNode::Mul(children) = arena.node(id).clone() else {
             continue;
         };
-        let pole =
-            |c: &ExprId| negative_power_base(arena, *c).is_some_and(|b| zero_bases.contains(&b));
-        if !children.iter().any(pole) {
+        if !children.iter().any(|c| infinite.contains(c)) {
             continue;
         }
         for c in children {
             if negative_power_base(arena, c).is_some()
+                || infinite.contains(&c)
                 || arena.node(c).is_atom()
                 || !decided.insert(c)
                 || vanishes_identically_as_factor(arena, c)
             {
                 continue;
             }
-            if arena.vanishes_by_identity(c) {
+            if arena.vanishes_by_identity(c)
+                || zero_candidate_sums(arena, c)
+                    .into_iter()
+                    .any(|s| s != c && arena.vanishes_by_identity(s))
+            {
                 out.insert(c);
             }
         }

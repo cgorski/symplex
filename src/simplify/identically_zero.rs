@@ -390,6 +390,16 @@ fn confirmed_zero(arena: &mut Arena, e: ExprId) -> bool {
 /// allowed by their assumptions — by any identity `simplify` knows?
 /// `true` only when `e` is zero at the sample points **and** reduces
 /// exactly to 0 (see the module docs); `false` when undecided.
+///
+/// A costly part of `e` — a special function at a parameter of magnitude
+/// 10⁵ or more, an orthogonal polynomial of degree 200 or more
+/// ([`with_costly_parts_as_symbols`](crate::base::canon::with_costly_parts_as_symbols))
+/// — is never evaluated: it is taken for a symbol, so `e` vanishes when it
+/// does for every value of that part (`sin²u + cos²u − 1` for `u =
+/// jacobi(999, 1/3, 1/5, 1/7)`).  Up to 0.34 the sample and the exact
+/// confirmation computed `u`: `ratsimp` and `expand` of `((x + 1)² − x² −
+/// 2x − 1)/(sin²u + cos²u − 1)` took 119 s and 113 s in a debug build
+/// (now milliseconds, the same `nan`).
 pub(crate) fn vanishes_by_identity(arena: &mut Arena, e: ExprId) -> bool {
     if arena.is_zero_structural(e) {
         return true;
@@ -397,6 +407,14 @@ pub(crate) fn vanishes_by_identity(arena: &mut Arena, e: ExprId) -> bool {
     if nested() || walk::has_unevaluated(arena, e) {
         return false;
     }
+    let e = if crate::base::canon::costly_to_evaluate(arena, e) {
+        match crate::base::canon::with_costly_parts_as_symbols(arena, e) {
+            Some(general) => general,
+            None => return false,
+        }
+    } else {
+        e
+    };
     sample(arena, e) == Sampled::Zero && confirmed_zero(arena, e)
 }
 

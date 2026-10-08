@@ -21,6 +21,7 @@ use num_traits::{One, Signed, Zero};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::base::arena::Arena;
+use crate::base::canon::Everywhere;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 use crate::base::walk;
@@ -107,6 +108,18 @@ pub(crate) fn ratsimp(arena: &mut Arena, expr: ExprId) -> ExprId {
 /// 1/(x·(x + 4) − x² − 4x)))` was `0` (`zoo·0`, `nan`).  `known`: bases
 /// already known to vanish (`Vanishing::Zero`), as [`ratsimp_vanishing`]
 /// is given them; a factor beside one of their poles is tested too.
+///
+/// A generator that is `nan` at every point — a function at an argument
+/// that is `nan` or `zoo` where the function has no value
+/// ([`everywhere_values`](crate::base::canon::everywhere_values): `sin(c/d)`
+/// for a constant `d` that is 0, `sin(zoo) = nan`) — takes the value `0/0`
+/// ([`Vanishing::Undefined`]), which every operation keeps.  Up to 0.34
+/// `ratsimp(sin((√2 + e)/(sin²1 + cos²1 − 1))·y²·((√y + √x)² − x − y −
+/// 2√x·√y))` was `0` (`nan·0`; SymPy 1.14 gives `0`, deliberately
+/// different).  The arguments are walked once; only the bases of their
+/// negative powers get a zero test.  A generator found `zoo` is left
+/// alone: those tests do not see a zero by an identity of `sin` and `cos`
+/// (`√(x/(sin²x + cos²x − 1) + y/0)` is `√(zoo + zoo) = nan`).
 fn vanishing_bases(
     arena: &mut Arena,
     expr: ExprId,
@@ -117,6 +130,7 @@ fn vanishing_bases(
     let mut powers: Vec<(ExprId, ExprId, bool)> = Vec::new();
     let mut products: Vec<ExprId> = Vec::new();
     let mut sums: Vec<ExprId> = Vec::new();
+    let mut generators: Vec<ExprId> = Vec::new();
     let mut seen: FxHashSet<ExprId> = FxHashSet::default();
     let mut stack = vec![expr];
     while let Some(id) = stack.pop() {
@@ -145,8 +159,12 @@ fn vanishing_bases(
                     // A generator `s^(p/q)`: `0` or `1/0` when `s` vanishes
                     // (`√(exp(2x) − exp(x)²)`).
                     powers.push((id, *base, q.is_negative()));
+                    generators.push(id);
+                } else {
+                    generators.push(id);
                 }
             }
+            node if !node.is_atom() => generators.push(id),
             _ => {}
         }
     }
@@ -200,18 +218,27 @@ fn vanishing_bases(
     // arithmetic does not reduce `(√x)²` to `x`), also by an identity of
     // its functions: up to 0.33 `(sin²x + cos²x − sin²1 − cos²1)/(e^(x+y)
     // − eˣ·eʸ)` was `P/0 = zoo` there, and `1/((x − 2)² + …)` became `0`
-    // (it is `nan`).
+    // (it is `nan`).  A pole is any negative power of such a base, or a
+    // factor that is `zoo` by one
+    // ([`nodes_over_vanishing_bases`](crate::base::canon::nodes_over_vanishing_bases)):
+    // up to 0.34 `(sin²x + cos²x − 1)²/√(cosh²x − sinh²x − 1)` and
+    // `(cosh²x − sinh²x − 1)·(y/(sin 2x − 2·sin x·cos x) − 2)` were `zoo`
+    // (`0·zoo = nan`).  A factor vanishes too when one of the sums that
+    // make it vanish does (`√(tan x·cos x − sin x)`,
+    // [`zero_candidate_sums`](crate::base::canon::zero_candidate_sums)).
+    let infinite = if decided.values().any(|&zero| zero) {
+        let order = walk::post_order_ids(arena, expr);
+        crate::base::canon::nodes_over_vanishing_bases(arena, &order, |b| {
+            decided.get(&b) == Some(&true)
+        })
+    } else {
+        FxHashSet::default()
+    };
     for &prod in &products {
         let ExprNode::Mul(children) = arena.node(prod).clone() else {
             continue;
         };
-        let pole = children.iter().any(|&c| match arena.node(c) {
-            ExprNode::Pow(b, e) => {
-                integer_exponent(arena, *e).is_some_and(|n| n < 0) && decided.get(b) == Some(&true)
-            }
-            _ => false,
-        });
-        if !pole {
+        if !children.iter().any(|c| infinite.contains(c)) {
             continue;
         }
         for c in children {
@@ -220,10 +247,17 @@ fn vanishing_bases(
                 _ => true,
             };
             if positive
+                && !infinite.contains(&c)
                 && !arena.node(c).is_atom()
                 && !vanishing.contains_key(&c)
                 && (crate::base::canon::factor_vanishes(arena, c)
-                    || crate::simplify::identically_zero::vanishes_by_identity(arena, c))
+                    || crate::simplify::identically_zero::vanishes_by_identity(arena, c)
+                    || crate::base::canon::zero_candidate_sums(arena, c)
+                        .into_iter()
+                        .any(|s| {
+                            s != c
+                                && crate::simplify::identically_zero::vanishes_by_identity(arena, s)
+                        }))
             {
                 vanishing.insert(c, Vanishing::Zero);
             }
@@ -238,6 +272,12 @@ fn vanishing_bases(
                 Vanishing::Zero
             };
             vanishing.insert(power, v);
+        }
+    }
+    let values = crate::base::canon::everywhere_values(arena, &generators);
+    for (&g, value) in generators.iter().zip(values) {
+        if value == Everywhere::Undefined {
+            vanishing.insert(g, Vanishing::Undefined);
         }
     }
     vanishing
@@ -552,6 +592,9 @@ pub(crate) enum Vanishing {
     Zero,
     /// A negative power of such a subexpression: the fraction `1/0`.
     Pole,
+    /// A generator that is `nan` at every point (`sin(c/0)`): the fraction
+    /// `0/0`, which every operation keeps.
+    Undefined,
 }
 
 /// Is `expr` zero as a rational function `P/Q` of its generators, with
@@ -685,6 +728,10 @@ fn to_rational_function_tracked(
                 Vanishing::Pole => {
                     *zero_denominator = true;
                     (one.clone(), RatPoly::zero(nv))
+                }
+                Vanishing::Undefined => {
+                    *zero_denominator = true;
+                    (RatPoly::zero(nv), RatPoly::zero(nv))
                 }
             };
             cache.insert(id, value);

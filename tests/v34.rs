@@ -5,3 +5,7 @@
 
 #[path = "v34/v34_evalf.rs"]
 mod v34_evalf;
+#[path = "v34/v34_undefined.rs"]
+mod v34_undefined;
+#[path = "v34/v34_values.rs"]
+mod v34_values;

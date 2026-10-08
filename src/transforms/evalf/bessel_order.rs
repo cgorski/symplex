@@ -17,9 +17,10 @@
 //!
 //! * the factor in front is `±exp(ν·ln(x/2) − ln|Γ(ν + 1)|)`
 //!   ([`power_over_gamma`]), its exponent to an absolute `2^(−wp−16)`; a
-//!   value beyond the exponent range of `BigFloat` (about `2^(±2.1·10⁹)`)
-//!   is refused — as a nonzero underflow where the series bounds it below the
-//!   range (`J_ν(x)` has no zero in `0 < x < ν`, `I_ν(x) > 0`);
+//!   value the series bounds below the exponent range of `BigFloat` (about
+//!   `2^(−2.1·10⁹)`) is 0, the underflow of a nonzero number (`J_ν(x)` has
+//!   no zero in `0 < x < ν`, `I_ν(x) > 0`), which `extended` scales by
+//!   [`log_power_over_gamma`]; one above it is refused;
 //! * `Y_n(x)` and `K_n(x)` for `x² ≤ 2(n − 1)` ([`neumann_leading`]) are the
 //!   finite sum of the Neumann series alone: its terms fall by at least ½,
 //!   and the logarithmic part, below `(x/2)^{2n}/(n!·(n − 1)!)` times it
@@ -191,20 +192,7 @@ pub(super) fn power_over_gamma(
     if nu_f > 0.0 && l2_est - slack > max {
         return Err(out_of_range(what, l2_est));
     }
-    // `L` to an absolute 2^(−wp−16): as many more bits as `|ν·ln(x/2)|` and
-    // `|ln Γ(ν + 1)|` have before the point (and, left of 0, the bits
-    // `ln|sin π(ν + 1)|` may add: those of the mantissa of ν).
-    let sin_bits = if nu_f > 0.0 {
-        0.0
-    } else {
-        nu.mantissa_max_bit_len().unwrap_or(wp) as f64
-    };
-    let size = t.abs() + lg_size + sin_bits + 2.0;
-    let lp = wp + 16 + size.log2().ceil().max(0.0) as usize;
-    let one = BigFloat::from_i32(1, 64);
-    let nu1 = nu.add(&one, super::exact_bits(nu, lp), rm);
-    let lg = super::arb_log_gamma(&nu1, lp, rm, cc)?;
-    let l = nu.mul(&x_half.ln(lp, rm, cc), lp, rm).sub(&lg.0, lp, rm);
+    let l = log_power_over_gamma(nu, x_half, wp, rm, cc)?;
     let l2 = super::bigfloat_to_f64_rounded(&l, rm)? * std::f64::consts::LOG2_E;
     if let Some(r) = decide(l2) {
         return r;
@@ -214,8 +202,46 @@ pub(super) fn power_over_gamma(
         return Err(out_of_range(what, l2));
     }
     // Γ(ν + 1) < 0 between the poles −2m − 1 and −2m: ⌊ν + 1⌋ odd.
+    let nu1 = nu.add(&BigFloat::from_i32(1, 64), super::exact_bits(nu, wp), rm);
     let negative = nu1.is_negative() && is_odd(&nu1.floor());
     Ok(Some(if negative { v.neg() } else { v }))
+}
+
+/// `L = ν·ln(x/2) − ln|Γ(ν + 1)|` (the logarithm of the magnitude of the
+/// factor of [`power_over_gamma`]) for `x/2 = x_half > 0` and a real `ν` off
+/// the negative integers, to an absolute `2^(−wp−16)`: at as many more bits
+/// as `abs(ν·ln(x/2))` and `abs(ln Γ(ν + 1))` have before the point (and,
+/// left of 0, the bits `ln abs(sin π(ν + 1))` may add: those of the
+/// mantissa of ν).  At any magnitude: `extended` scales a factor below the
+/// exponent range by it.
+pub(super) fn log_power_over_gamma(
+    nu: &BigFloat,
+    x_half: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let nu_f = super::bigfloat_to_f64_rounded(nu, rm)?;
+    let t = nu_f * ln_abs_f64(x_half, rm);
+    let lg_size = if nu_f > 0.0 {
+        ln_gamma_f64(nu_f + 1.0).abs()
+    } else {
+        ((std::f64::consts::PI).ln() - ln_gamma_f64(-nu_f)).abs()
+    };
+    let sin_bits = if nu_f > 0.0 {
+        0.0
+    } else {
+        nu.mantissa_max_bit_len().unwrap_or(wp) as f64
+    };
+    let size = t.abs() + lg_size + sin_bits + 2.0;
+    if !size.is_finite() {
+        return Err(out_of_range("a Bessel function", f64::INFINITY));
+    }
+    let lp = wp + 16 + size.log2().ceil().max(0.0) as usize;
+    let one = BigFloat::from_i32(1, 64);
+    let nu1 = nu.add(&one, super::exact_bits(nu, lp), rm);
+    let lg = super::arb_log_gamma(&nu1, lp, rm, cc)?;
+    Ok(nu.mul(&x_half.ln(lp, rm, cc), lp, rm).sub(&lg.0, lp, rm))
 }
 
 /// The ascending series of `I_ν(x)` would take more than [`MAX_TERMS`]
@@ -230,6 +256,43 @@ pub(super) fn refuse_long_i_series(nu: f64, x: f64) -> Result<(), SymplexError> 
         )));
     }
     Ok(())
+}
+
+/// The most terms of the sum of [`neumann_leading`] when they rise first.
+const MAX_RISING_STEPS: u64 = 400_000;
+
+/// The neglected part of `Y_n(x)`'s series relative to the finite sum, as
+/// [`neumann_leading`] bounds it, when `y = x²/4 > (n − 1)/2`: the terms
+/// `c_k = (n−k−1)!/k!·y^k` of the finite sum (all positive) then rise
+/// while `k(n − k) < y` and fall after.  Their ratios `y/(k(n − k))`
+/// decrease up to `k = n/2` and increase after, so the sum stops at a term
+/// `c_K` falling by a ratio `r < 1` (`K < n/2`) and below
+/// `2^(−wp−9)·(1 − r)/n` of the sum: the terms up to `n/2` are below
+/// `c_K·r/(1 − r)` in total, and the ones after (log-convex) below
+/// `n/2·max(c_{n/2}, c_{n−1})`,
+/// with `c_{n−1}/c_0 = y^(n−1)/((n − 1)!)²`.  The log and ψ parts of A&S
+/// 9.1.11 over `c_0`: `|J_n| ≤ (x/2)ⁿ/n!` and `Σ_k |ψ(k+1) +
+/// ψ(n+k+1)|·y^k/(k!(n+k)!) ≤ (2 ln(n + 1) + 2 + 2y/(n + 1)²)·e^(y/(n+1))/n!`,
+/// so the part is below
+/// `(x/2)^(2n)/(n!(n−1)!)·(2·abs(ln(x/2)) + (2 ln(n+1) + 2 + 2y/(n+1)²)·e^(y/(n+1)))`.
+/// `log₂` of that part and of
+/// `n/2·c_{n−1}`, both over `c_0`, which the caller checks below
+/// `2^(−wp−16)` of the sum.  Before 0.35 `x² > 2(n − 1)` was refused:
+/// `bessely(20000, 300)`.
+fn neumann_rising(nf: f64, xf: f64, ln_x2: f64) -> Option<(f64, f64)> {
+    let y = xf * xf / 4.0;
+    let last = (nf / 2.0).ln() + (nf - 1.0) * y.ln() - 2.0 * ln_gamma_f64(nf);
+    if !last.is_finite() {
+        return None;
+    }
+    let psi = 2.0 * (nf + 1.0).ln() + 2.0 + 2.0 * y / ((nf + 1.0) * (nf + 1.0));
+    let ln_psi = psi.ln() + y / (nf + 1.0);
+    let ln_log = (2.0 * ln_x2.abs()).max(f64::MIN_POSITIVE).ln();
+    let hi = ln_psi.max(ln_log);
+    let both = hi + ((ln_psi - hi).exp() + (ln_log - hi).exp()).ln();
+    let rest = 2.0 * nf * ln_x2 - ln_gamma_f64(nf + 1.0) - ln_gamma_f64(nf) + both;
+    let l2 = std::f64::consts::LOG2_E;
+    (rest.is_finite()).then_some((rest * l2, last * l2))
 }
 
 /// The function of [`neumann_leading`].
@@ -254,7 +317,9 @@ pub(super) enum Second {
 /// `7·(x/2)^{2n}/(n!·(n − 1)!)·(|ln(x/2)| + 2·ln(n + 1) + 2)` times the
 /// part summed (`|J_n(x)| ≤ (x/2)ⁿ/n!`, `I_n(x) ≤ e^{x²/(4(n+1))}·(x/2)ⁿ/n!`,
 /// `|ψ(m)| ≤ ln m + 1`); `None` unless that is below `2^(−wp−16)` (or
-/// unless `x² ≤ 2(n − 1)`): the caller's series serves.
+/// unless `x² ≤ 2(n − 1)`): the caller's series serves.  `Y_n` with
+/// `x² > 2(n − 1)`, whose terms rise first, as [`neumann_rising`] bounds
+/// it (to about `x = 0.73·n`).
 pub(super) fn neumann_leading(
     kind: Second,
     n: &BigFloat,
@@ -269,18 +334,41 @@ pub(super) fn neumann_leading(
     };
     let nf = super::bigfloat_to_f64_rounded(n, rm).ok()?;
     let xf = super::bigfloat_to_f64_rounded(x, rm).ok()?;
-    let applies = nf >= LARGE_ORDER && xf * xf <= 2.0 * (nf - 1.0);
+    // `x² > 2(n − 1)`: the terms of `Y_n`'s sum (all positive) rise
+    // first, see [`neumann_rising`]; `K_n`'s alternate and would cancel.
+    let rising = xf * xf > 2.0 * (nf - 1.0);
+    // (Callers ask from `LARGE_ORDER` on, and for `Y_n` from 16 where its
+    // full series would cancel beyond the cap; `ln_gamma_f64` needs 10.)
+    let applies = nf >= 16.0 && (!rising || kind == Second::Y);
     if !applies {
         return None;
     }
     let wp = prec + 40;
     let ln_x2 = ln_abs_f64(x, rm) - std::f64::consts::LN_2;
-    let rest = 7f64.ln() + 2.0 * nf * ln_x2 - ln_gamma_f64(nf + 1.0) - ln_gamma_f64(nf)
-        + (ln_x2.abs() + 2.0 * (nf + 1.0).ln() + 2.0).ln();
-    let negligible = rest * std::f64::consts::LOG2_E < -((wp + 16) as f64);
-    if !negligible {
+    // The neglected parts over the first term `c_0 = 1`, in `log₂`: checked
+    // here against it, or (rising terms) against the sum below.
+    let (rest, last) = if rising {
+        neumann_rising(nf, xf, ln_x2)?
+    } else {
+        let rest = 7f64.ln() + 2.0 * nf * ln_x2 - ln_gamma_f64(nf + 1.0) - ln_gamma_f64(nf)
+            + (ln_x2.abs() + 2.0 * (nf + 1.0).ln() + 2.0).ln();
+        (rest * std::f64::consts::LOG2_E, f64::NEG_INFINITY)
+    };
+    let negligible = |lg_sum: f64| rest.max(last) - lg_sum < -((wp + 16) as f64);
+    if !rising && !negligible(0.0) {
         return None;
     }
+    // The relative size below which the sum stops (see `neumann_rising`).
+    let stop_bits = if rising {
+        (wp + 9) as i64 + nf.log2().ceil() as i64
+    } else {
+        (wp + 8) as i64
+    };
+    let max_steps: u64 = if rising {
+        MAX_RISING_STEPS
+    } else {
+        (4 * wp) as u64
+    };
     let two = BigFloat::from_i32(2, 64);
     let x_half = x.div(&two, wp, rm);
     // Γ(n)·(x/2)^(−n) = 1/((x/2)^(n−1)/Γ(n)) / (x/2): through
@@ -306,12 +394,28 @@ pub(super) fn neumann_leading(
         let kb = BigFloat::from_u64(k, 64);
         let nk = n.sub(&kb, super::exact_bits(n, wp), rm);
         c = c.mul(&xh2, wp, rm).div(&kb.mul(&nk, wp, rm), wp, rm);
+        // Rising terms: past their peak, falling by the ratio `r < 1` (and
+        // by less after, up to the middle of the sum), the rest of them
+        // below `c·r/(1 − r)` (`neumann_rising`).
+        let kf = k as f64;
+        let r = xf * xf / 4.0 / (kf * (nf - kf));
+        let geometric = if !rising {
+            0
+        } else if r < 0.99 && kf < nf / 2.0 {
+            (1.0 / (1.0 - r)).log2().ceil() as i64
+        } else {
+            i64::MAX / 4
+        };
         let small = match (c.exponent(), sum.exponent()) {
-            (Some(ce), Some(se)) => i64::from(se) - i64::from(ce) > (wp + 8) as i64,
+            (Some(ce), Some(se)) => i64::from(se) - i64::from(ce) > stop_bits + geometric,
             _ => c.is_zero(),
         };
         if small {
             break;
+        }
+        if rising && kf >= nf / 2.0 {
+            // Not reached: the terms fall well before the middle.
+            return None;
         }
         sum = if kind == Second::K && k % 2 == 1 {
             sum.sub(&c, wp, rm)
@@ -322,8 +426,18 @@ pub(super) fn neumann_leading(
             break;
         }
         k += 1;
-        if k > (4 * wp) as u64 {
-            // Not reached: the terms fall by ½ or more.
+        if k > max_steps {
+            // Not reached without rising terms: they fall by ½ or more.
+            return None;
+        }
+    }
+    // The neglected parts against the sum (`neumann_rising`).
+    if rising {
+        let lg_sum = match sum.exponent() {
+            Some(e) if !sum.is_zero() => f64::from(e) - 1.0,
+            _ => return None,
+        };
+        if !negligible(lg_sum) {
             return None;
         }
     }

@@ -97,6 +97,9 @@ DAMAGE.
 | `src/transforms/evalf/factorials.rs` (`gamma_ratio`: a quotient of Γ values with poles cancelled in the limit) | `gammaprod` in `mpmath/functions/factorials.py` | — |
 | `src/transforms/evalf/polylog.rs` (`polylog` of a real order off `[−1, 1]`: the series, the `ln z` expansion, the inversion formula with the Hurwitz argument `½ + ln(−z)/(2πi)`) | `polylog`, `polylog_series`, `polylog_general` in `mpmath/functions/zeta.py` | DLMF 25.12.12, 25.12.13; the Euler–Maclaurin remainder as in F. Johansson, "Rigorous high-precision computation of the Hurwitz zeta function and its derivatives", *Numer. Algorithms* 69 (2015) |
 | `src/transforms/evalf/loggamma.rs` (complex `loggamma`: reflection left of `Re z = ½`, the shifted Stirling series, the branch of the shifted product fixed by an `f64` estimate of its imaginary part) | `mpc_loggamma` / `mpc_gamma` in `mpmath/libmp/gammazeta.py` | DLMF 5.11(ii) (Stirling remainder bound) |
+| `src/transforms/evalf/polylog.rs` (`nonpositive_poles`: `Li_{−n}(z) = n!·Σ_k (2πik − Log z)^(−n−1)` for `n > 1000`, the two-Hurwitz form summed term by term) | `polylog_general` in `mpmath/functions/zeta.py` | DLMF 25.12.13 (Jonquière's formula) |
+| `src/transforms/evalf/extended.rs` (`bessel_scaled`: `J_ν`, `I_ν` below the exponent range as `e^L·₀F₁(; ν + 1; ∓x²/4)`, `L = ν·ln(x/2) − ln Γ(ν + 1)`) | `besselj` / `besseli` (`hypercomb` with unbounded exponents) in `mpmath/functions/bessel.py` | DLMF 10.2.2, 10.25.2 |
+| `src/transforms/evalf.rs` (`arb_jacobi`: the cancellation of the explicit sum measured, the largest term over the value, and made up with more bits) | the cancellation check of `hypsum` in `mpmath/ctx_mp.py` (for the `₂F₁` of `jacobi` in `mpmath/functions/orthogonal.py`) | DLMF 18.5.8 |
 
 To the extent these are derivatives of mpmath, mpmath's licence applies
 to those parts, and its notice is reproduced here:

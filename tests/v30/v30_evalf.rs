@@ -176,21 +176,29 @@ fn overflow_of_the_exponent_range_is_reported() {
 
 /// Huge but well-conditioned quotients.  `Γ(10⁸) ≈ 2^(2.5·10⁹)` and
 /// `exp(10¹⁶)` are beyond the exponent range (about `2^(±2.1·10⁹)`), so
-/// `Γ(10⁸ + 1)/Γ(10⁸)/10⁸` and `erfc(10⁸)·10⁸·e^(10¹⁶)` are refused with
-/// that reason (before 0.31: `PrecisionExhausted`, achieved 0 digits); in
-/// range they evaluate.
+/// `Γ(10⁸ + 1)/Γ(10⁸)/10⁸` is refused with that reason (before 0.31:
+/// `PrecisionExhausted`, achieved 0 digits); in range they evaluate.
+///
+/// Since 0.35 `erfc(10⁸)·10⁸·e^(10¹⁶)` evaluates: `erfc(10⁸)` is held
+/// below the range scaled (`extended`), and a factor `exp(g)` above it is
+/// scaled the same way in a product with such a factor, which brings the
+/// product back (the refusal pinned here before was the absence of that
+/// mirror, not a property of the value).  `Γ(10⁸)` above the range has no
+/// scaled form: still refused.
 ///
 /// mpmath: `mp.dps=60; erfc(mpf(10)**4)*mpf(10)**4*exp(mpf(10)**8)` →
 /// `0.564189580726808411523515725046664722042862738751771196042314`
 /// (the same at `mp.dps=120`); `gamma(mpf(10)**7+1)/gamma(mpf(10)**7)/mpf(10)**7`
-/// → `1.0`.
+/// → `1.0`; `mp.dps=40` (and 60): `erfc(mpf(10)**8)*mpf(10)**8*exp(mpf(10)**16)`
+/// → `0.564189583547756258738600274173`.
 #[test]
 fn huge_well_conditioned_quotients() {
     let ctx = Context::new();
-    for src in [
-        "gamma(10^8+1)/gamma(10^8)/10^8",
-        "erfc(10^8)*10^8*exp(10^16)",
-    ] {
+    assert_eq!(
+        dec(&ctx, "erfc(10^8)*10^8*exp(10^16)", 16).unwrap(),
+        "0.5641895835477563"
+    );
+    for src in ["gamma(10^8+1)/gamma(10^8)/10^8"] {
         match dec(&ctx, src, 16) {
             Err(SymplexError::Unevaluable { reason }) => {
                 assert!(reason.contains("overflows"), "{src}: {reason}");

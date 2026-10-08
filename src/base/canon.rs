@@ -252,9 +252,9 @@ pub(crate) fn canon_add(arena: &mut Arena, args: &[ExprId]) -> ExprId {
 /// Then each term is `zoo` (or `nan`) everywhere and their sum `zoo + zoo =
 /// nan`, not the collected `(c₁ + c₂)·k = zoo` (nor `0` when the
 /// coefficients cancel).  A key is so when it has a factor `d⁻ᵏ` whose
-/// non-atomic base vanishes ([`factor_vanishes`]), or a sum factor that is
-/// `zoo` at every point by a term over such a denominator
-/// ([`sum_over_vanishing_denominator`]).  Up to 0.33 `x/d + (x + 3)²/d` with
+/// non-atomic base vanishes ([`factor_vanishes`]) or is undefined, or a sum
+/// factor that is `zoo` or `nan` at every point by a term over such a
+/// denominator ([`everywhere`]).  Up to 0.33 `x/d + (x + 3)²/d` with
 /// `d = (x + y)² − x² − 2xy − y²`, substituted `x = 3/19`, collected
 /// `(3657/361)/d = zoo`, and a later division made the expression `0`
 /// instead of `nan`.  Only keys that merged, only their negative powers of
@@ -265,65 +265,65 @@ fn merges_undefined_terms(arena: &mut Arena, keys: &[ExprId]) -> bool {
         return false;
     }
     let mut seen: SmallVec<[ExprId; 4]> = SmallVec::new();
+    let mut memo = EverywhereMemo::default();
     for &key in keys {
         if seen.contains(&key) {
             continue;
         }
         seen.push(key);
-        let factors: SmallVec<[ExprId; 6]> = match arena.node(key) {
-            ExprNode::Mul(children) => children.clone(),
-            _ => smallvec![key],
-        };
-        for f in factors {
-            let undefined = match *arena.node(f) {
-                ExprNode::Pow(base, e)
-                    if !arena.node(base).is_atom()
-                        && arena.as_num(e).is_some_and(Signed::is_negative) =>
-                {
-                    factor_vanishes(arena, base)
-                }
-                ExprNode::Pow(base, e)
-                    if matches!(arena.node(base), ExprNode::Add(_))
-                        && arena.as_num(e).is_some_and(Signed::is_positive) =>
-                {
-                    sum_over_vanishing_denominator(arena, base).is_some()
-                }
-                ExprNode::Add(_) => sum_over_vanishing_denominator(arena, f).is_some(),
-                _ => false,
-            };
-            if undefined {
-                return true;
-            }
+        if term_infinite_or_undefined(arena, &mut memo, key) {
+            return true;
         }
     }
     false
 }
 
-/// Is one of the `terms` of a sum that also holds `±∞` or `zoo` infinite
-/// (or undefined) at every point: a product with a factor `d⁻ᵏ` whose
-/// base vanishes identically ([`factor_vanishes`])?  Then
-/// the sum is `zoo + zoo` or `∞ + zoo`, `nan`, not the infinity: `zoo +
-/// 2/((x + y)² − x² − 2xy − y²)` (up to 0.32 `zoo`, which `subs` of a
-/// number into `x/(x² + 2x − (x + 1)² + 1) + 2/((x + y)² − x² − 2xy −
-/// y²)` gave while the expression is `nan` at every point).  Only on this
-/// path (a sum with an infinity), and only for a term with a negative
-/// power.
-fn has_identically_infinite_term(arena: &mut Arena, terms: &FxHashMap<ExprId, Q>) -> bool {
-    let mut denominators: SmallVec<[ExprId; 4]> = SmallVec::new();
-    for &t in terms.keys() {
-        let factors: &[ExprId] = match arena.node(t) {
-            ExprNode::Mul(children) => children,
-            _ => std::slice::from_ref(&t),
-        };
-        for &f in factors {
-            if let ExprNode::Pow(base, e) = arena.node(f)
-                && arena.as_num(*e).is_some_and(Signed::is_negative)
-            {
-                denominators.push(*base);
-            }
+/// Is the term `t` of a sum (a product, or a single factor) `zoo` or `nan`
+/// at every point by one of its factors: a negative power `d⁻ᵏ` of a
+/// non-atom `d` that is `0` or `nan` there, or a sum (or a positive power
+/// of one) that is `zoo` or `nan` there ([`everywhere`])?  The factors
+/// themselves only: a function factor is not looked into.
+fn term_infinite_or_undefined(arena: &mut Arena, memo: &mut EverywhereMemo, t: ExprId) -> bool {
+    let factors: SmallVec<[ExprId; 6]> = match arena.node(t) {
+        ExprNode::Mul(children) => children.clone(),
+        _ => smallvec![t],
+    };
+    factors.into_iter().any(|f| match *arena.node(f) {
+        ExprNode::Pow(base, e)
+            if !arena.node(base).is_atom() && arena.as_num(e).is_some_and(Signed::is_negative) =>
+        {
+            memo.zero_or_undefined(arena, base)
         }
-    }
-    denominators.into_iter().any(|d| factor_vanishes(arena, d))
+        ExprNode::Pow(base, e)
+            if matches!(arena.node(base), ExprNode::Add(_))
+                && arena.as_num(e).is_some_and(Signed::is_positive) =>
+        {
+            memo.infinite_or_undefined(arena, base)
+        }
+        ExprNode::Add(_) => memo.infinite_or_undefined(arena, f),
+        _ => false,
+    })
+}
+
+/// Is one of the `terms` of a sum that also holds `±∞` or `zoo` infinite
+/// (or undefined) at every point ([`term_infinite_or_undefined`]): a
+/// product with a factor `d⁻ᵏ` whose base vanishes identically
+/// ([`factor_vanishes`]) or is undefined, or a sum factor that is `zoo` or
+/// `nan`?  Then the sum is `zoo + zoo` or `∞ + zoo`, `nan`, not the
+/// infinity: `zoo + 2/((x + y)² − x² − 2xy − y²)` (up to 0.32 `zoo`, which
+/// `subs` of a number into `x/(x² + 2x − (x + 1)² + 1) + 2/((x + y)² − x²
+/// − 2xy − y²)` gave while the expression is `nan` at every point).  Only
+/// on this path (a sum with an infinity); the directed infinities `x·∞`
+/// are [`add_directed_infinities`]'s.
+fn has_identically_infinite_term(arena: &mut Arena, terms: &FxHashMap<ExprId, Q>) -> bool {
+    let keys: SmallVec<[ExprId; 6]> = terms
+        .keys()
+        .copied()
+        .filter(|&t| !is_directed_infinity(arena, t))
+        .collect();
+    let mut memo = EverywhereMemo::default();
+    keys.into_iter()
+        .any(|t| term_infinite_or_undefined(arena, &mut memo, t))
 }
 
 /// The sum of collected `terms` (coefficient per key) of which at least one
@@ -399,13 +399,17 @@ fn add_directed_infinities(
 /// * `0 × d⁻ᵏ → nan` for a denominator `d` (among the factors, or in a
 ///   product or sum among them) that vanishes identically
 ///   ([`factor_vanishes`]: also a constant that is 0, `sin² 1 + cos² 1 −
-///   1`) or is undefined at every point
-///   ([`sum_over_vanishing_denominator`]): `0/((x + y)² − x² − 2xy − y²)`
-///   is `0/0`.  Up to 0.32 it was `0` (SymPy 1.14 too), and `subs` of
-///   `x = 11/7` into `(x·(y + 3) − xy − 3x)·(c/((x + y)² − x² − 2xy −
-///   y²) + 2)/x`, whose first factor becomes `0` while the denominator
-///   stays a sum in `y`, gave `0` instead of `nan`.  Only a denominator
-///   met on this path gets the residue test.
+///   1`) or is undefined at every point ([`everywhere`]): `0/((x + y)² −
+///   x² − 2xy − y²)` is `0/0`.  Up to 0.32 it was `0` (SymPy 1.14 too), and
+///   `subs` of `x = 11/7` into `(x·(y + 3) − xy − 3x)·(c/((x + y)² − x² −
+///   2xy − y²) + 2)/x`, whose first factor becomes `0` while the
+///   denominator stays a sum in `y`, gave `0` instead of `nan`.  Only a
+///   denominator met on this path gets the residue test;
+/// * `0 × f → nan` for a factor `f` that is infinite or undefined at every
+///   point: a positive power of a sum with a term over such a denominator,
+///   `(1/d + 2)²`, or a function at such an argument, `sin(c/d)` with `c/d
+///   = zoo` ([`everywhere`]).  Up to 0.34 `0·sin((√2 + e)/(sin² 1 + cos² 1 −
+///   1))` was `0` (`0·nan`; SymPy 1.14 gives `0`, deliberately different).
 ///
 /// `saw_infinity` reports whether an infinity was already consumed from the
 /// factor list before the coefficient became zero; `remaining` are the
@@ -421,6 +425,7 @@ fn zero_times_rest<'a>(
         return arena.nan;
     }
     let mut denominators: SmallVec<[ExprId; 4]> = denominators.into_iter().collect();
+    let mut applications: SmallVec<[ExprId; 4]> = SmallVec::new();
     // (node, outside every negative power?): only there is a negative
     // power a denominator of the product (`(1/d + 2)⁻¹` is finite).
     let mut stack: SmallVec<[(ExprId, bool); 16]> =
@@ -444,56 +449,325 @@ fn zero_times_rest<'a>(
             {
                 denominators.push(*base);
             }
+            ExprNode::Pow(base, e) if outside && arena.as_num(*e).is_some() => {
+                stack.push((*base, outside));
+            }
+            node if outside && application_arguments(arena, node).is_some() => {
+                applications.push(id);
+            }
             _ => {}
         }
     }
+    let mut memo = EverywhereMemo::default();
     for d in denominators {
-        if factor_vanishes(arena, d) || sum_over_vanishing_denominator(arena, d) == Some(true) {
+        if memo.zero_or_undefined(arena, d) {
             tracing::debug!("canon_mul: 0 over an identically zero or undefined denominator → nan");
+            return arena.nan;
+        }
+    }
+    for f in applications {
+        if memo.infinite_or_undefined(arena, f) {
+            tracing::debug!("canon_mul: 0 times a function undefined at every point → nan");
             return arena.nan;
         }
     }
     arena.zero
 }
 
-/// What the terms of the sum `s` over a denominator that vanishes
-/// identically ([`factor_vanishes`]) make of it: `None`
-/// when there is none (or `s` is not a sum), `Some(false)` for one such
-/// term (`1/d + 2 = zoo` at every point, absorbed by a zero numerator or
-/// a further division), `Some(true)` when `s` is undefined at every point:
-/// two of them (`a/d + b/d′ = zoo + zoo`), or one with a factor vanishing
-/// identically too (`n/d = 0/0`).  No residue test runs for a sum without
-/// a negative power among the factors of its terms.
-fn sum_over_vanishing_denominator(arena: &mut Arena, s: ExprId) -> Option<bool> {
-    let ExprNode::Add(terms) = arena.node(s).clone() else {
-        return None;
-    };
-    let mut infinite_terms = 0usize;
-    for t in terms {
-        let factors: SmallVec<[ExprId; 6]> = match arena.node(t) {
-            ExprNode::Mul(children) => children.clone(),
-            _ => smallvec![t],
-        };
-        let mut infinite = false;
-        let mut numerators: SmallVec<[ExprId; 4]> = SmallVec::new();
-        for &f in &factors {
-            match arena.node(f) {
-                ExprNode::Pow(base, e) if arena.as_num(*e).is_some_and(Signed::is_negative) => {
-                    let base = *base;
-                    infinite = infinite || factor_vanishes(arena, base);
-                }
-                ExprNode::Num(_) => {}
-                _ => numerators.push(f),
-            }
+/// What a subexpression is at every point, as far as the rare paths of the
+/// canonical constructors can tell ([`everywhere`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Everywhere {
+    /// `0` at every point.
+    Zero,
+    /// `zoo` at every point: a negative power of a base that vanishes
+    /// identically, not multiplied by a zero.  Undirected only: `±∞` and
+    /// `|zoo| = ∞` are [`Everywhere::Unknown`] (`∞ + ∞` is not `nan`).
+    Infinite,
+    /// `nan` at every point: `0·zoo`, `zoo + zoo`, a function at an
+    /// undefined argument or at `zoo` where it has no value (`sin(zoo)`).
+    Undefined,
+    /// None of these known (almost every expression).
+    Unknown,
+}
+
+/// The [`Everywhere`] values and the zero tests ([`factor_vanishes`]) of
+/// one rare path, shared by its calls of [`everywhere`].
+#[derive(Default)]
+struct EverywhereMemo {
+    value: FxHashMap<ExprId, Everywhere>,
+    vanishes: FxHashMap<ExprId, bool>,
+}
+
+impl EverywhereMemo {
+    /// [`factor_vanishes`], once per node (`false` for an atom).
+    fn vanishes(&mut self, arena: &mut Arena, f: ExprId) -> bool {
+        if let Some(&known) = self.vanishes.get(&f) {
+            return known;
         }
-        if infinite {
-            infinite_terms += 1;
-            if infinite_terms > 1 || numerators.into_iter().any(|n| factor_vanishes(arena, n)) {
-                return Some(true);
-            }
+        let zero = !arena.node(f).is_atom() && factor_vanishes(arena, f);
+        self.vanishes.insert(f, zero);
+        zero
+    }
+
+    /// Is `d` (a denominator) `0` or `nan` at every point: [`everywhere`],
+    /// then the zero test of `d` itself.
+    fn zero_or_undefined(&mut self, arena: &mut Arena, d: ExprId) -> bool {
+        match everywhere(arena, d, self) {
+            Everywhere::Zero | Everywhere::Undefined => true,
+            Everywhere::Infinite => false,
+            Everywhere::Unknown => self.vanishes(arena, d),
         }
     }
-    (infinite_terms > 0).then_some(false)
+
+    /// Is `f` `zoo` or `nan` at every point ([`everywhere`])?
+    fn infinite_or_undefined(&mut self, arena: &mut Arena, f: ExprId) -> bool {
+        matches!(
+            everywhere(arena, f, self),
+            Everywhere::Infinite | Everywhere::Undefined
+        )
+    }
+}
+
+/// The arguments of `node` when it is a function application into which
+/// [`everywhere`] looks: the elementary and special functions, library and
+/// user functions (`Apply`), and a power with a symbolic exponent.
+fn application_arguments(arena: &Arena, node: &ExprNode) -> Option<SmallVec<[ExprId; 2]>> {
+    match node {
+        ExprNode::Floor(a)
+        | ExprNode::Ceiling(a)
+        | ExprNode::Sin(a)
+        | ExprNode::Cos(a)
+        | ExprNode::Tan(a)
+        | ExprNode::Exp(a)
+        | ExprNode::Ln(a)
+        | ExprNode::Abs(a)
+        | ExprNode::Asin(a)
+        | ExprNode::Acos(a)
+        | ExprNode::Atan(a)
+        | ExprNode::Sinh(a)
+        | ExprNode::Cosh(a)
+        | ExprNode::Tanh(a)
+        | ExprNode::Asinh(a)
+        | ExprNode::Acosh(a)
+        | ExprNode::Atanh(a)
+        | ExprNode::Sign(a)
+        | ExprNode::Gamma(a)
+        | ExprNode::LogGamma(a)
+        | ExprNode::Digamma(a)
+        | ExprNode::Erf(a)
+        | ExprNode::Erfc(a)
+        | ExprNode::LambertW(a)
+        | ExprNode::Si(a)
+        | ExprNode::Ci(a)
+        | ExprNode::Ei(a)
+        | ExprNode::Li(a)
+        | ExprNode::Zeta(a)
+        | ExprNode::Factorial(a) => Some(smallvec![*a]),
+        ExprNode::Atan2(a, b)
+        | ExprNode::Beta(a, b)
+        | ExprNode::Polygamma(a, b)
+        | ExprNode::Binomial(a, b) => Some(smallvec![*a, *b]),
+        ExprNode::Pow(b, e) if arena.as_num(*e).is_none() => Some(smallvec![*b, *e]),
+        ExprNode::Apply(_, args) => Some(args.iter().copied().collect()),
+        _ => None,
+    }
+}
+
+/// What `root` is at every point ([`Everywhere`]), bottom-up over its sums,
+/// products, negations, numeric powers and function arguments (an explicit
+/// post-order): a negative power is `zoo` when its base vanishes
+/// identically ([`factor_vanishes`]) and `0` when its base is `zoo`; a
+/// product is `nan` with a `nan` factor or with a `zoo` beside a factor
+/// that vanishes (`0·zoo`), else `zoo` with a `zoo`, `0` with a `0`; a sum is
+/// `nan` with a `nan` term or two `zoo` terms, `zoo` with one; a function
+/// is `nan` at a `nan` argument and otherwise takes the canonical value at
+/// `zoo` or `0` (`sin(zoo) = nan`, `ln(zoo) = zoo`, `sin 0 = 0`).  Up to
+/// 0.34 only the terms of a sum were looked at, one level deep: in `0/(c +
+/// (1/(x·d₁) + 1/d₂)/d₃)` with `d₁`, `d₂`, `d₃` zero the denominator was
+/// taken for `zoo` (a term over `d₃`) and the quotient for `0`, while the
+/// numerator `zoo + zoo` of that term makes it `nan`.  `root` itself is
+/// not tested for `0` (the caller does that where a zero matters); the
+/// zero tests run only for the bases of negative powers and beside a `zoo`
+/// factor, so a tree without a negative power costs one walk.
+fn everywhere(arena: &mut Arena, root: ExprId, memo: &mut EverywhereMemo) -> Everywhere {
+    if let Some(&known) = memo.value.get(&root) {
+        return known;
+    }
+    // (node, children pushed?)
+    let mut stack: SmallVec<[(ExprId, bool); 16]> = smallvec![(root, false)];
+    while let Some(&(id, expanded)) = stack.last() {
+        if memo.value.contains_key(&id) {
+            stack.pop();
+            continue;
+        }
+        let node = arena.node(id).clone();
+        if !expanded {
+            if let Some(top) = stack.last_mut() {
+                top.1 = true;
+            }
+            let children: SmallVec<[ExprId; 6]> = match &node {
+                ExprNode::Add(ch) | ExprNode::Mul(ch) => ch.clone(),
+                ExprNode::Neg(c) => smallvec![*c],
+                ExprNode::Pow(b, e) if arena.as_num(*e).is_some() => smallvec![*b],
+                n => application_arguments(arena, n)
+                    .map(|a| a.into_iter().collect())
+                    .unwrap_or_default(),
+            };
+            stack.extend(
+                children
+                    .into_iter()
+                    .filter(|c| !memo.value.contains_key(c))
+                    .map(|c| (c, false)),
+            );
+            continue;
+        }
+        stack.pop();
+        let get = |memo: &EverywhereMemo, c: ExprId| {
+            memo.value.get(&c).copied().unwrap_or(Everywhere::Unknown)
+        };
+        let value = match &node {
+            ExprNode::NaN => Everywhere::Undefined,
+            ExprNode::ComplexInfinity => Everywhere::Infinite,
+            ExprNode::Num(nid) if arena.num(*nid).is_zero() => Everywhere::Zero,
+            ExprNode::Neg(c) => get(memo, *c),
+            ExprNode::Pow(b, e) if arena.as_num(*e).is_some() => {
+                let negative = arena.as_num(*e).is_some_and(Signed::is_negative);
+                match (get(memo, *b), negative) {
+                    (Everywhere::Undefined, _) => Everywhere::Undefined,
+                    (Everywhere::Zero, false) | (Everywhere::Infinite, true) => Everywhere::Zero,
+                    (Everywhere::Zero, true) | (Everywhere::Infinite, false) => {
+                        Everywhere::Infinite
+                    }
+                    (Everywhere::Unknown, true) if memo.vanishes(arena, *b) => Everywhere::Infinite,
+                    (Everywhere::Unknown, _) => Everywhere::Unknown,
+                }
+            }
+            ExprNode::Mul(children) => {
+                let values: SmallVec<[Everywhere; 6]> =
+                    children.iter().map(|&c| get(memo, c)).collect();
+                let infinite = values.contains(&Everywhere::Infinite);
+                if values.contains(&Everywhere::Undefined)
+                    || (infinite && values.contains(&Everywhere::Zero))
+                {
+                    Everywhere::Undefined
+                } else if infinite {
+                    // `0·zoo` for a factor that vanishes identically.
+                    let mut undefined = false;
+                    for (&c, &v) in children.iter().zip(&values) {
+                        let positive = match arena.node(c) {
+                            ExprNode::Pow(_, e) => arena.as_num(*e).is_none_or(Signed::is_positive),
+                            _ => true,
+                        };
+                        if v == Everywhere::Unknown && positive && memo.vanishes(arena, c) {
+                            undefined = true;
+                            break;
+                        }
+                    }
+                    if undefined {
+                        Everywhere::Undefined
+                    } else {
+                        Everywhere::Infinite
+                    }
+                } else if values.contains(&Everywhere::Zero) {
+                    Everywhere::Zero
+                } else {
+                    Everywhere::Unknown
+                }
+            }
+            ExprNode::Add(children) => {
+                let values: SmallVec<[Everywhere; 6]> =
+                    children.iter().map(|&c| get(memo, c)).collect();
+                let infinite = values
+                    .iter()
+                    .filter(|&&v| v == Everywhere::Infinite)
+                    .count();
+                if values.contains(&Everywhere::Undefined) || infinite > 1 {
+                    Everywhere::Undefined
+                } else if infinite == 1 {
+                    Everywhere::Infinite
+                } else if values.iter().all(|&v| v == Everywhere::Zero) {
+                    Everywhere::Zero
+                } else {
+                    Everywhere::Unknown
+                }
+            }
+            n => match application_arguments(arena, n) {
+                Some(args) => {
+                    let values: SmallVec<[Everywhere; 2]> =
+                        args.iter().map(|&c| get(memo, c)).collect();
+                    if values.contains(&Everywhere::Undefined) {
+                        Everywhere::Undefined
+                    } else if values
+                        .iter()
+                        .any(|v| matches!(v, Everywhere::Infinite | Everywhere::Zero))
+                    {
+                        application_at_special_values(arena, id, &args, &values)
+                    } else {
+                        Everywhere::Unknown
+                    }
+                }
+                None => Everywhere::Unknown,
+            },
+        };
+        memo.value.insert(id, value);
+    }
+    memo.value
+        .get(&root)
+        .copied()
+        .unwrap_or(Everywhere::Unknown)
+}
+
+/// [`everywhere`] for each of `ids` (one memo for all): `ratsimp` asks it
+/// of its generators, which are `nan` at every point when they are
+/// functions at such arguments (`sin(c/d)` with `d` a constant that is 0).
+/// The zero tests are those of the canonical constructors
+/// ([`factor_vanishes`]); a tree without a negative power costs one walk.
+/// [`Everywhere::Undefined`] is final (`nan` absorbs whatever else is
+/// undetected); `Zero` and `Infinite` may be `nan` where a zero the tests
+/// do not see (`sin²x + cos²x − 1`) meets them.
+pub(crate) fn everywhere_values(arena: &mut Arena, ids: &[ExprId]) -> SmallVec<[Everywhere; 4]> {
+    let mut memo = EverywhereMemo::default();
+    ids.iter()
+        .map(|&id| everywhere(arena, id, &mut memo))
+        .collect()
+}
+
+/// The function application `id` with each argument that is `zoo` or `0`
+/// at every point (`values`, parallel to `args`) replaced by that value,
+/// classified by its canonical form: `sin(zoo) = nan` is
+/// [`Everywhere::Undefined`], `ln(zoo) = zoo` and `ln 0 = zoo`
+/// [`Everywhere::Infinite`], `sin 0 = 0` [`Everywhere::Zero`], anything
+/// else — left unevaluated (`atan(zoo)`, `f(zoo)`) or a directed infinity
+/// (`|zoo| = ∞`) — [`Everywhere::Unknown`].
+fn application_at_special_values(
+    arena: &mut Arena,
+    id: ExprId,
+    args: &[ExprId],
+    values: &[Everywhere],
+) -> Everywhere {
+    let (zoo, zero) = (arena.complex_infinity, arena.zero);
+    let replacement: SmallVec<[(ExprId, ExprId); 2]> = args
+        .iter()
+        .zip(values)
+        .filter_map(|(&a, v)| match v {
+            Everywhere::Infinite => Some((a, zoo)),
+            Everywhere::Zero => Some((a, zero)),
+            _ => None,
+        })
+        .collect();
+    let at = crate::base::walk::rebuild_with(arena, id, &|c| {
+        replacement
+            .iter()
+            .find(|(a, _)| *a == c)
+            .map_or(c, |&(_, v)| v)
+    });
+    match arena.node(at) {
+        ExprNode::NaN => Everywhere::Undefined,
+        ExprNode::ComplexInfinity => Everywhere::Infinite,
+        ExprNode::Num(nid) if arena.num(*nid).is_zero() => Everywhere::Zero,
+        _ => Everywhere::Unknown,
+    }
 }
 
 /// The bases collected in `canon_mul`: those without and those with a
@@ -988,9 +1262,9 @@ fn known_sign(arena: &Arena, f: ExprId) -> Option<Ordering> {
 /// `x·zoo = zoo` applied to a factor that is 0 for every value of `x`
 /// (SymPy keeps `zoo*(-x**2 + x*(x + 1) - x)`, which is `nan` at every
 /// point).  So is a negative power of a sum that is `zoo` (or undefined)
-/// at every point by a term over such a denominator
-/// ([`sum_over_vanishing_denominator`]): `zoo/(y/((x + y)² − x² − 2xy −
-/// y²) + 2)` is `zoo·0`.  Only on this path (a product with a literal
+/// at every point by a term over such a denominator ([`everywhere`]):
+/// `zoo/(y/((x + y)² − x² − 2xy − y²) + 2)` is `zoo·0`, and a factor
+/// undefined at every point.  Only on this path (a product with a literal
 /// `zoo`), so ordinary products pay nothing.
 fn handle_mul_with_zoo(
     arena: &mut Arena,
@@ -1030,20 +1304,17 @@ fn handle_mul_with_zoo(
             _ => factors.push(id),
         }
     }
+    let mut memo = EverywhereMemo::default();
     for f in factors {
         // A sum undefined at every point (`0/d + 1/d` with `d` vanishing)
         // makes `zoo·nan = nan` too.
-        let sum = match *arena.node(f) {
-            ExprNode::Pow(base, e) if arena.as_num(e).is_some_and(Signed::is_positive) => base,
-            _ => f,
-        };
-        if factor_vanishes(arena, f) || sum_over_vanishing_denominator(arena, sum) == Some(true) {
+        if memo.zero_or_undefined(arena, f) {
             tracing::debug!("canon_mul: zoo times an identically zero or undefined factor → nan");
             return arena.nan;
         }
     }
     for d in denominators {
-        if sum_over_vanishing_denominator(arena, d).is_some() {
+        if memo.infinite_or_undefined(arena, d) {
             tracing::debug!("canon_mul: zoo over an identically infinite sum → nan");
             return arena.nan;
         }
@@ -1056,7 +1327,11 @@ fn handle_mul_with_zoo(
 /// base of a positive power, and of the argument `a` of `g(a)` for a `g`
 /// with `g(0) = 0` (`sin`, `tan`, `sinh`, `tanh`, their inverses, `|·|`,
 /// `sign`, `W`, `floor`, `ceiling`).  An explicit walk down those nodes.
-fn zero_candidate_sums(arena: &Arena, f: ExprId) -> SmallVec<[ExprId; 4]> {
+/// `expand` and `ratsimp` test them by an identity beside a pole
+/// (`√(tan x·cos x − sin x)` is 0 because `tan x·cos x − sin x` is): there
+/// a factor that is undefined rather than 0 (a product with an infinite
+/// factor inside) makes the product `nan` all the same.
+pub(crate) fn zero_candidate_sums(arena: &Arena, f: ExprId) -> SmallVec<[ExprId; 4]> {
     let mut sums: SmallVec<[ExprId; 4]> = SmallVec::new();
     match arena.node(f) {
         ExprNode::Add(_) => {
@@ -1236,6 +1511,39 @@ pub(crate) fn identity_denominator_candidates(
     out
 }
 
+/// The nodes among `order` (a post-order of an expression) that are `zoo`
+/// (or `nan`) at every point because a negative power of a base that
+/// vanishes (`zero`, decided by the caller) is in them outside every other
+/// negative power: that power, and the sums, products, negations and
+/// positive numeric powers above it (`y/s − 2` and its square for `s`
+/// zero; not `1/(y/s − 2)`).  A factor beside one of them that vanishes
+/// makes its product `0·zoo = nan`; `ratsimp` and `expand` test the
+/// factors beside these, not only beside the powers themselves.
+/// Structural; one pass over `order`.
+pub(crate) fn nodes_over_vanishing_bases(
+    arena: &Arena,
+    order: &[ExprId],
+    zero: impl Fn(ExprId) -> bool,
+) -> FxHashSet<ExprId> {
+    let mut infinite: FxHashSet<ExprId> = FxHashSet::default();
+    for &id in order {
+        let is_infinite = match arena.node(id) {
+            ExprNode::Add(ch) | ExprNode::Mul(ch) => ch.iter().any(|c| infinite.contains(c)),
+            ExprNode::Neg(c) => infinite.contains(c),
+            ExprNode::Pow(b, e) => match arena.as_num(*e) {
+                Some(q) if q.is_negative() => zero(*b),
+                Some(_) => infinite.contains(b),
+                None => false,
+            },
+            _ => false,
+        };
+        if is_infinite {
+            infinite.insert(id);
+        }
+    }
+    infinite
+}
+
 /// The `zoo + zoo` candidates among the sums `nodes`: in a sum with exactly
 /// one term over a denominator that vanishes (`vanishes`, decided by the
 /// caller), the denominators of the other terms that could vanish by an
@@ -1295,10 +1603,46 @@ pub(crate) fn sum_partner_denominators(
 /// Does the factor `f` vanish identically: by one of its sums as a
 /// rational function of its generators ([`vanishes_identically_as_factor`],
 /// which relates `exp(2x)` and `exp(x)²`), or, for a constant, exactly
-/// ([`constant_vanishes`])?  The test of the rare paths of the canonical
-/// constructors (`0·d⁻¹`, `zoo·f`, `s·s⁻¹`, like terms over `d`).
+/// ([`constant_vanishes`]), itself or by the constant sum under its
+/// positive powers and functions with `g(0) = 0` ([`sum_under_zero_chain`]:
+/// `√(tan 2·cos 2 − sin 2)`, which the numeric test does not confirm as a
+/// whole)?  The test of the rare paths of the canonical constructors
+/// (`0·d⁻¹`, `zoo·f`, `s·s⁻¹`, like terms over `d`).
 pub(crate) fn factor_vanishes(arena: &mut Arena, f: ExprId) -> bool {
-    vanishes_identically_as_factor(arena, f) || constant_vanishes(arena, f)
+    vanishes_identically_as_factor(arena, f)
+        || constant_vanishes(arena, f)
+        || sum_under_zero_chain(arena, f).is_some_and(|s| s != f && constant_vanishes(arena, s))
+}
+
+/// The sum `s` that `f` is a positive power of, or a function with `g(0) =
+/// 0` of (`sin`, `|·|`, … as in [`zero_candidate_sums`]), possibly nested:
+/// `f` vanishes with `s`.  Not through a product, whose other factors may
+/// be infinite where `s` is 0 (`sin(s·w)` with `w = 1/(s/s′ + 2)` is
+/// `sin(0·zoo)`, `nan`).  `None` when there is no such sum.
+fn sum_under_zero_chain(arena: &Arena, f: ExprId) -> Option<ExprId> {
+    let mut id = f;
+    // A chain, not a tree: one step per node of `f`.
+    loop {
+        id = match arena.node(id) {
+            ExprNode::Add(_) => return Some(id),
+            ExprNode::Neg(inner) => *inner,
+            ExprNode::Pow(base, e) if arena.as_num(*e).is_some_and(Signed::is_positive) => *base,
+            ExprNode::Sin(a)
+            | ExprNode::Tan(a)
+            | ExprNode::Sinh(a)
+            | ExprNode::Tanh(a)
+            | ExprNode::Asin(a)
+            | ExprNode::Atan(a)
+            | ExprNode::Asinh(a)
+            | ExprNode::Atanh(a)
+            | ExprNode::Abs(a)
+            | ExprNode::Sign(a)
+            | ExprNode::LambertW(a)
+            | ExprNode::Floor(a)
+            | ExprNode::Ceiling(a) => *a,
+            _ => return None,
+        };
+    }
 }
 
 /// Is `f` a constant: no free symbol, no infinity or `nan`, no unevaluated
@@ -1335,6 +1679,17 @@ fn is_numeric_constant(arena: &Arena, f: ExprId) -> bool {
 /// `subs` of a point into `((x + 1)² − x² − 2x − 1)/(sin² x + cos² x −
 /// 1)`; both are `nan`.  Only on the rare paths of [`factor_vanishes`], not
 /// for an atom, and not inside a confirmation ([`vanishing_check_active`]).
+///
+/// A constant too costly to evaluate ([`costly_to_evaluate`]) is 0 only
+/// by an identity that holds whatever the values of its costly parts,
+/// which are never evaluated: the identity test takes them for symbols
+/// ([`with_costly_parts_as_symbols`]), so `sin²u + cos²u − 1` is 0 for
+/// `u = besselj(10⁵, 1)`.  Up to 0.34 such a constant was never taken for
+/// 0, and `(sin²u + cos²u − 1)·zoo` was `zoo` (it is `0·zoo = nan`).  It
+/// is tested only when the residue test does not rule it out
+/// ([`Arena::may_vanish_identically`], which relates `sin u`, `cos u`, `tan
+/// u` whatever `u` is), so a costly constant that is not 0 costs no more
+/// than before.
 pub(crate) fn constant_vanishes(arena: &mut Arena, f: ExprId) -> bool {
     use crate::base::assumptions::{AssumptionCache, Props};
     if arena.node(f).is_atom() || vanishing_check_active() || !is_numeric_constant(arena, f) {
@@ -1343,10 +1698,55 @@ pub(crate) fn constant_vanishes(arena: &mut Arena, f: ExprId) -> bool {
     if AssumptionCache::new().query(arena, f, Props::NONZERO) == Some(true) {
         return false;
     }
-    if costly_to_evaluate(arena, f) {
+    if costly_to_evaluate(arena, f) && !arena.may_vanish_identically(f) {
         return false;
     }
     arena.vanishes_by_identity(f)
+}
+
+/// `f` with each of its costly parts — the outermost subexpressions that
+/// [`is_costly_node`] (`besselj(10⁵, 1)`, `jacobi(999, …)`) — replaced by a
+/// symbol of its own (`__costly_constant_k`), so that a zero test of the
+/// result never evaluates them: an identity of the result holds for every
+/// value of those parts, so at theirs — unless their value is a
+/// singularity of a term (`tan u·cos u − sin u` at `cos u = 0`), where `f`
+/// is undefined and the rare paths that ask give `nan` either way.  The
+/// zero tests of `simplify` ([`Arena::vanishes_by_identity`]) and of the
+/// canonical constructors ([`sum_vanishes_identically`]) use it.  `None`
+/// when `f` has no costly part (or one is left).  One walk.
+pub(crate) fn with_costly_parts_as_symbols(arena: &mut Arena, f: ExprId) -> Option<ExprId> {
+    let mut costly: SmallVec<[ExprId; 2]> = SmallVec::new();
+    let mut visited: FxHashSet<ExprId> = FxHashSet::default();
+    let mut stack: SmallVec<[ExprId; 16]> = smallvec![f];
+    while let Some(id) = stack.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        if is_costly_node(arena, id) {
+            costly.push(id);
+        } else {
+            arena.node(id).for_each_child(|c| stack.push(c));
+        }
+    }
+    if costly.is_empty() {
+        return None;
+    }
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    for (k, &c) in costly.iter().enumerate() {
+        let symbol = arena.symbol(&format!("__costly_constant_{k}"));
+        cache.insert(c, symbol);
+    }
+    for id in crate::base::walk::post_order_ids(arena, f) {
+        if cache.contains_key(&id) || arena.node(id).is_atom() {
+            continue;
+        }
+        let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        if rebuilt != id {
+            cache.insert(id, rebuilt);
+        }
+    }
+    let general = cache.get(&f).copied().unwrap_or(f);
+    (general != f && !costly_to_evaluate(arena, general)).then_some(general)
 }
 
 /// The magnitude of a numeric parameter from which [`costly_to_evaluate`]
@@ -1371,69 +1771,79 @@ const COSTLY_DEGREE: i64 = 200;
 /// test evaluated the Bessel function, a multiplication per unit of its
 /// order (`evalf` takes it at once now; this bounds the next such kernel).
 /// An explicit walk.
-fn costly_to_evaluate(arena: &Arena, f: ExprId) -> bool {
-    use crate::base::libfn::LibFn;
-    let bound = Q::from_integer(BigInt::from(COSTLY_PARAMETER));
-    let huge = |c: ExprId| arena.as_num(c).is_some_and(|q| q.abs() >= bound);
-    let degree_bound = Q::from_integer(BigInt::from(COSTLY_DEGREE));
+pub(crate) fn costly_to_evaluate(arena: &Arena, f: ExprId) -> bool {
     let mut visited: FxHashSet<ExprId> = FxHashSet::default();
     let mut stack: SmallVec<[ExprId; 16]> = smallvec![f];
     while let Some(id) = stack.pop() {
         if !visited.insert(id) {
             continue;
         }
-        let node = arena.node(id);
-        if let ExprNode::Apply(sid, args) = node
-            && matches!(
-                arena.lib_fn(*sid),
-                Some(
-                    LibFn::Legendre
-                        | LibFn::ChebyshevT
-                        | LibFn::ChebyshevU
-                        | LibFn::Hermite
-                        | LibFn::Laguerre
-                        | LibFn::Gegenbauer
-                        | LibFn::Jacobi
-                        | LibFn::AssocLegendre
-                        | LibFn::AssocLaguerre
-                )
+        if is_costly_node(arena, id) {
+            return true;
+        }
+        arena.node(id).for_each_child(|c| stack.push(c));
+    }
+    false
+}
+
+/// Is the node `id` itself what makes [`costly_to_evaluate`] true: a
+/// special function with a numeric argument of magnitude
+/// [`COSTLY_PARAMETER`] or more, or an orthogonal polynomial of degree
+/// [`COSTLY_DEGREE`] or more?
+fn is_costly_node(arena: &Arena, id: ExprId) -> bool {
+    use crate::base::libfn::LibFn;
+    let node = arena.node(id);
+    let special = matches!(
+        node,
+        ExprNode::Gamma(_)
+            | ExprNode::LogGamma(_)
+            | ExprNode::Digamma(_)
+            | ExprNode::Polygamma(..)
+            | ExprNode::Zeta(_)
+            | ExprNode::Beta(..)
+            | ExprNode::Factorial(_)
+            | ExprNode::Binomial(..)
+            | ExprNode::Erf(_)
+            | ExprNode::Erfc(_)
+            | ExprNode::Ei(_)
+            | ExprNode::Li(_)
+            | ExprNode::Si(_)
+            | ExprNode::Ci(_)
+            | ExprNode::LambertW(_)
+            | ExprNode::Apply(..)
+    );
+    if !special {
+        return false;
+    }
+    if let ExprNode::Apply(sid, args) = node
+        && matches!(
+            arena.lib_fn(*sid),
+            Some(
+                LibFn::Legendre
+                    | LibFn::ChebyshevT
+                    | LibFn::ChebyshevU
+                    | LibFn::Hermite
+                    | LibFn::Laguerre
+                    | LibFn::Gegenbauer
+                    | LibFn::Jacobi
+                    | LibFn::AssocLegendre
+                    | LibFn::AssocLaguerre
             )
-            && args
-                .first()
-                .and_then(|&n| arena.as_num(n))
-                .is_some_and(|q| q.abs() >= degree_bound)
+        )
+    {
+        let degree_bound = Q::from_integer(BigInt::from(COSTLY_DEGREE));
+        if args
+            .first()
+            .and_then(|&n| arena.as_num(n))
+            .is_some_and(|q| q.abs() >= degree_bound)
         {
             return true;
         }
-        let special = matches!(
-            node,
-            ExprNode::Gamma(_)
-                | ExprNode::LogGamma(_)
-                | ExprNode::Digamma(_)
-                | ExprNode::Polygamma(..)
-                | ExprNode::Zeta(_)
-                | ExprNode::Beta(..)
-                | ExprNode::Factorial(_)
-                | ExprNode::Binomial(..)
-                | ExprNode::Erf(_)
-                | ExprNode::Erfc(_)
-                | ExprNode::Ei(_)
-                | ExprNode::Li(_)
-                | ExprNode::Si(_)
-                | ExprNode::Ci(_)
-                | ExprNode::LambertW(_)
-                | ExprNode::Apply(..)
-        );
-        let mut costly = false;
-        node.for_each_child(|c| {
-            costly |= special && huge(c);
-            stack.push(c);
-        });
-        if costly {
-            return true;
-        }
     }
-    false
+    let bound = Q::from_integer(BigInt::from(COSTLY_PARAMETER));
+    let mut costly = false;
+    node.for_each_child(|c| costly |= arena.as_num(c).is_some_and(|q| q.abs() >= bound));
+    costly
 }
 
 thread_local! {
@@ -1479,6 +1889,15 @@ impl Drop for VanishingCheckGuard {
 /// inside another such confirmation, and for a sum with a denominator that
 /// may vanish identically itself ([`Arena::may_have_vanishing_denominator`]):
 /// `1/((x + y)² − x² − 2xy − y²) + 2` is `zoo + 2 = zoo`, not 0.
+///
+/// The confirmation evaluates (`eval` of the numerator multiplied out),
+/// which computes an orthogonal polynomial of high degree exactly: a sum
+/// with a costly part ([`costly_to_evaluate`]) is confirmed with its
+/// costly parts as symbols ([`with_costly_parts_as_symbols`]).  Up to
+/// 0.34 the residue test rejected `sin²u + cos²u − 1` before any
+/// confirmation; it relates `sin` and `cos` now, and building `(sin²u +
+/// cos²u − 1)·zoo` for `u = jacobi(999, 1/3, 1/5, 1/7)` would have computed
+/// `u` (seconds).
 pub(crate) fn sum_vanishes_identically(arena: &mut Arena, s: ExprId) -> bool {
     if !matches!(arena.node(s), ExprNode::Add(_))
         || !arena.may_vanish_identically(s)
@@ -1488,6 +1907,14 @@ pub(crate) fn sum_vanishes_identically(arena: &mut Arena, s: ExprId) -> bool {
     }
     let Some(_guard) = VanishingCheckGuard::enter() else {
         return false;
+    };
+    let s = if costly_to_evaluate(arena, s) {
+        match with_costly_parts_as_symbols(arena, s) {
+            Some(general) => general,
+            None => return false,
+        }
+    } else {
+        s
     };
     let (numerator, _) = arena.as_numer_denom_expr(s);
     arena.vanishes_identically(numerator)

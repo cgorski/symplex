@@ -68,6 +68,7 @@ use tracing::debug;
 
 mod accuracy;
 pub(crate) mod bernoulli;
+mod bessel_debye;
 mod bessel_order;
 mod conjugate;
 mod emsum;
@@ -5228,6 +5229,57 @@ fn arb_bessel_j(
     rm: RoundingMode,
     cc: &mut Consts,
 ) -> Result<BigFloat, SymplexError> {
+    let classic = arb_bessel_j_classic(order, x, prec, rm, cc);
+    debye_fallback(bessel_debye::Kind::J, order, x, prec, rm, cc, classic)
+}
+
+/// Where the series and the Hankel expansion of the Bessel functions give
+/// up (`classic` is an error), the uniform expansions of large order
+/// (`bessel_debye`), at `abs(ν)` for `K_ν` and for the integer orders of
+/// `I_ν` (`I_{−n} = I_n`) and at `abs(x)` for an integer order of `J_ν` and
+/// `I_ν` (`f_n(−x) = (−1)ⁿ f_n(x)`); the error stands where they do not
+/// apply.  Before 0.35 `bessely(20000, 300)`, `besselk(20000, 300)`,
+/// `bessely(20000, 30000)`, `besseli(1000, 120000)` and `besselj(20000,
+/// 19000)` were refused.
+fn debye_fallback(
+    kind: bessel_debye::Kind,
+    order: &BigFloat,
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+    classic: Result<BigFloat, SymplexError>,
+) -> Result<BigFloat, SymplexError> {
+    use bessel_debye::Kind;
+    let Err(err) = classic else {
+        return classic;
+    };
+    let integer = order.is_int();
+    let nu = match kind {
+        Kind::K => order.abs(),
+        Kind::I if integer => order.abs(),
+        _ if order.is_negative() => return Err(err),
+        _ => order.clone(),
+    };
+    let negative_x = x.is_negative();
+    if negative_x && !(integer && matches!(kind, Kind::J | Kind::I)) {
+        return Err(err);
+    }
+    match bessel_debye::debye(kind, &nu, &x.abs(), prec, rm, cc) {
+        Some(Ok(v)) if negative_x && bessel_order::is_odd(order) => Ok(v.neg()),
+        Some(r) => r,
+        None => Err(err),
+    }
+}
+
+/// [`arb_bessel_j`] by the ascending series and the Hankel expansion.
+fn arb_bessel_j_classic(
+    order: &BigFloat,
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
     let guard = 32;
     let wp = prec + guard;
 
@@ -5324,11 +5376,13 @@ fn arb_bessel_j(
         // `besselj(8345185991999992, 61/10²⁷)` never finished.
         let (prefix, mut term) = if large {
             let bounds = bessel_order::series_bounds(order_f64, x_f64.abs(), true);
-            // Below the range: a nonzero number (`J_ν` has no zero in
-            // `0 < x < ν`), refused as such — not a 0, which the accuracy
-            // layer would take for exact (before 0.34 `besselj(10⁸ + 1/2, 1)`
-            // printed `0`).
-            let p = bessel_order::power_over_gamma(
+            // Below the range (only for `0 < abs(x) < ν`): 0, which the
+            // accuracy layer holds as the underflow of a nonzero `J_ν`
+            // (`J_ν` has no zero there, `accuracy::underflowed`) and
+            // `extended` scales.  Before 0.34 `besselj(10⁸ + 1/2, 1)`
+            // printed `0`; in 0.34 it was refused where it arose, and so was
+            // `1 + besselj(10⁹, 1)`.
+            let Some(p) = bessel_order::power_over_gamma(
                 order,
                 &x_half.abs(),
                 bounds,
@@ -5337,7 +5391,9 @@ fn arb_bessel_j(
                 rm,
                 cc,
             )?
-            .ok_or_else(underflow_error)?;
+            else {
+                return Ok(BigFloat::new(prec));
+            };
             // J_n(−x) = (−1)ⁿ J_n(x) (a negative x has an integer order here).
             let p = if x.is_negative() && bessel_order::is_odd(order) {
                 p.neg()
@@ -5415,6 +5471,18 @@ fn arb_bessel_y(
     rm: RoundingMode,
     cc: &mut Consts,
 ) -> Result<BigFloat, SymplexError> {
+    let classic = arb_bessel_y_classic(order, x, prec, rm, cc);
+    debye_fallback(bessel_debye::Kind::Y, order, x, prec, rm, cc, classic)
+}
+
+/// [`arb_bessel_y`] by the Hankel expansion and the Neumann series.
+fn arb_bessel_y_classic(
+    order: &BigFloat,
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
     let guard = 32;
     let wp = prec + guard;
 
@@ -5477,7 +5545,17 @@ fn arb_bessel_y(
             .unwrap_or_else(|| Err(large_order_refused("bessely", order_f64, x_f64)));
     }
     let n = order_int as usize;
-    let wp = wp + series_guard_bits(x_f64, prec)?;
+    // Beyond the cap of the cancellation, the finite part of the series alone
+    // where the rest is negligible (`bessel_order::neumann_leading`): before
+    // 0.35 `bessely(3909, 3909/2)` was refused.
+    let guard = match series_guard_bits(x_f64, prec) {
+        Ok(g) => g,
+        Err(e) => {
+            return bessel_order::neumann_leading(bessel_order::Second::Y, order, x, prec, rm, cc)
+                .unwrap_or(Err(e));
+        }
+    };
+    let wp = wp + guard;
     let mut xw = x.clone();
     let _ = xw.set_precision(wp, rm);
 
@@ -6689,6 +6767,18 @@ fn arb_bessel_i(
     rm: RoundingMode,
     cc: &mut Consts,
 ) -> Result<BigFloat, SymplexError> {
+    let classic = arb_bessel_i_classic(order, x, prec, rm, cc);
+    debye_fallback(bessel_debye::Kind::I, order, x, prec, rm, cc, classic)
+}
+
+/// [`arb_bessel_i`] by the asymptotic expansion and the ascending series.
+fn arb_bessel_i_classic(
+    order: &BigFloat,
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
     let wp = prec + 32;
     if x.is_inf() {
         return Err(special_exhausted(prec));
@@ -6801,6 +6891,18 @@ fn bessel_k_asymptotic(
 /// Both series formulas suffer `e^{x}`-scale cancellation (the result is
 /// `~e^{−x}`), which is absorbed by extra guard bits.
 fn arb_bessel_k(
+    order: &BigFloat,
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let classic = arb_bessel_k_classic(order, x, prec, rm, cc);
+    debye_fallback(bessel_debye::Kind::K, order, x, prec, rm, cc, classic)
+}
+
+/// [`arb_bessel_k`] by the asymptotic expansion and the series.
+fn arb_bessel_k_classic(
     order: &BigFloat,
     x: &BigFloat,
     prec: usize,
@@ -9592,6 +9694,13 @@ fn arb_polylog(
     if let Some(n) = s_int
         && n <= 0
     {
+        // Beyond the Stirling sum: the poles of `polylog::nonpositive_poles`,
+        // their cancellation measured by `polylog_general` (up to its
+        // largest order; beyond, the Stirling sum refuses).
+        if n.unsigned_abs() > MAX_NONPOSITIVE_ORDER && n.unsigned_abs() <= 1_000_000 {
+            let v = polylog::polylog_general(s, &(z.clone(), BigFloat::new(prec)), prec, rm, cc)?;
+            return Ok(round_to(v.0, prec, rm));
+        }
         return polylog_nonpositive_measured(n.unsigned_abs() as usize, z, prec, rm);
     }
     let az = z.abs();
@@ -10329,13 +10438,19 @@ fn arb_gegenbauer(
 }
 
 /// The largest degree of [`arb_jacobi`]: its sum takes `O(n)` operations at
-/// `2n` bits (0.2 s at 2000, with the evaluations of the error bound).
-const MAX_JACOBI_DEGREE: usize = 2000;
+/// about `n·log₂(1 + √(1 − x²))` bits: 0.12 s at 2500, 0.6 s at 5000
+/// (release), and `O(n²)` with the precision beyond.
+const MAX_JACOBI_DEGREE: usize = 5000;
 
 /// Jacobi `P_n^{(a,b)}(x)` via the explicit sum
-/// `Σ_s C(n+a, n−s) C(n+b, s) ((x−1)/2)^s ((x+1)/2)^{n−s}`, at `2n` guard
-/// bits for the cancellation of its terms (their absolute sum is at most
-/// about `4^n` times the value's scale on `[−1, 1]`).
+/// `Σ_s C(n+a, n−s) C(n+b, s) ((x−1)/2)^s ((x+1)/2)^{n−s}`, its
+/// cancellation measured: the largest term over the value, made up with as
+/// many more bits (mpmath's `hypsum` does the same for the `₂F₁` of its
+/// `jacobi`).  The first pass takes `2n` guard bits up to degree 2000 (the
+/// same digits as before 0.35, which took them unmeasured — a value next to
+/// a zero of `P_n` could lose more), `n·log₂(1 + √(1 − x²))` beyond (the
+/// terms' sum over the value's scale for `abs(x) < 1`).  Before 0.35 a degree
+/// beyond 2000 was refused: `jacobi(2500, 1/3, 1/5, 1/7)`.
 ///
 /// The coefficients are updated term by term: `∏_{j>s}(a + j)` divided by
 /// `a + s` (from the first `s` at which it is nonzero: a negative integer
@@ -10360,12 +10475,68 @@ fn arb_jacobi(
             "jacobi of degree {deg} (at most {MAX_JACOBI_DEGREE} in evalf)"
         )));
     }
-    let wp = prec + 32 + 2 * deg;
-    let one = BigFloat::from_i32(1, wp);
-    let two = BigFloat::from_i32(2, wp);
     if deg == 0 {
         return Ok(BigFloat::from_i32(1, prec));
     }
+    // `P_n^(a,b)(−x) = (−1)ⁿ P_n^(b,a)(x)`: 0 at `x = 0` for `a = b` and an
+    // odd `n` (whose terms cancel exactly, which no measure of the loss
+    // certifies).
+    if x.is_zero() && deg % 2 == 1 && a.cmp(b) == Some(0) {
+        return Ok(BigFloat::new(prec));
+    }
+    // The rounding of the sum: each term carries at most `12(n + 2)` roundings
+    // relative (running products, powers), the additions `n` of the largest
+    // partial sum: below `2^(4 + 2·log₂(n + 2) − wp)` of the largest term.
+    let rounding = 4 + 2 * (usize::BITS - (deg + 2).leading_zeros()) as usize;
+    // The first pass: `2n` guard bits up to the old maximum (the same digits
+    // as before 0.35), beyond the cancellation of `abs(x) < 1` estimated as
+    // `n·log₂(1 + √(1 − x²))` (the terms' sum over the value's scale).
+    let first_extra = if deg <= 2000 {
+        32 + 2 * deg
+    } else {
+        let xf = bigfloat_to_f64_rounded(x, rm)?.abs();
+        let est = if xf < 1.0 {
+            deg as f64 * (1.0 + (1.0 - xf * xf).sqrt()).log2()
+        } else {
+            0.0
+        };
+        40 + rounding + est.ceil() as usize
+    };
+    // At most the `2n` guard bits of before 0.35 beyond `cancellation_cap`.
+    let cap = cancellation_cap(prec) + 2 * deg + 64;
+    let mut extra = first_extra;
+    loop {
+        let wp = prec + extra;
+        let (sum, largest) = jacobi_sum(deg, a, b, x, wp, rm, cc)?;
+        // The loss: the largest term over the value.
+        let lost = match (sum.exponent(), largest) {
+            (Some(e), Some(l)) if !sum.is_zero() => (i64::from(l) - i64::from(e)).max(0) as usize,
+            (_, None) => 0,
+            _ => wp,
+        };
+        if lost + rounding + 8 <= extra {
+            return Ok(round_to(sum, prec, rm));
+        }
+        if extra >= cap {
+            return Err(special_exhausted(prec));
+        }
+        extra = (lost + rounding + 40).max(extra + 64).min(cap);
+    }
+}
+
+/// The sum of [`arb_jacobi`] at `wp` bits, and the exponent of its largest
+/// term (`None` when all are 0).
+fn jacobi_sum(
+    deg: usize,
+    a: &BigFloat,
+    b: &BigFloat,
+    x: &BigFloat,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<(BigFloat, Option<i32>), SymplexError> {
+    let one = BigFloat::from_i32(1, wp);
+    let two = BigFloat::from_i32(2, wp);
     let lo = x.sub(&one, wp, rm).div(&two, wp, rm);
     let hi = x.add(&one, wp, rm).div(&two, wp, rm);
     let int = |j: usize| BigFloat::from_u64(j as u64, 64);
@@ -10411,6 +10582,7 @@ fn arb_jacobi(
     // −1): every power directly, as before 0.34.
     let direct = !hi_zero && !lo.is_zero() && (pow.is_zero() || pow.is_inf());
     let mut sum = BigFloat::new(wp);
+    let mut largest: Option<i32> = None;
     for s in first..=deg {
         if s > first {
             pa = pa.div(&a.add(&int(s), wp, rm), wp, rm);
@@ -10426,9 +10598,12 @@ fn arb_jacobi(
             pow = lo.powi(deg, wp, rm);
         }
         let term = pa.mul(&pb, wp, rm).mul(&inv_fact, wp, rm).mul(&pow, wp, rm);
+        if let Some(e) = term.exponent().filter(|_| !term.is_zero()) {
+            largest = Some(largest.map_or(e, |l| l.max(e)));
+        }
         sum = sum.add(&term, wp, rm);
     }
-    Ok(round_to(sum, prec, rm))
+    Ok((sum, largest))
 }
 
 /// `n!` as a rational.

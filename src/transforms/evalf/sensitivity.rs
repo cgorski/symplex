@@ -701,6 +701,9 @@ fn polylog_sens(i: usize, a: &Args<'_>) -> Sens {
     }
     let u = one_minus(z);
     let exact_int = s.is_int() && a.e[0] == f64::NEG_INFINITY;
+    if exact_int && sf <= -1.0 && sf.is_finite() {
+        return negative_order_poles(-sf, z, e).map_or(Sens::Numeric, Sens::Deriv);
+    }
     if exact_int && sf == 1.0 {
         return deriv_if(inside(lg(&u), e), -lg(&u) + BALL);
     }
@@ -721,6 +724,52 @@ fn polylog_sens(i: usize, a: &Args<'_>) -> Sens {
     }
     let m = (1.0 - sf).ceil().max(0.0);
     Sens::Deriv(log2_factorial(m) - (m + 1.0) * (lg(&w) - shrink(e - lg(&w))))
+}
+
+/// `log₂ abs(∂Li_{−n}/∂z) = log₂ abs(Li_{−n−1}(z)/z)` for an integer
+/// order `−n ≤ −1` and a real `z ≠ 0` (error radius `2^e`), from the poles
+/// of `polylog::nonpositive_poles`: `abs(Li_{−n−1}(z)) ≤ (n + 1)!·Σ_k
+/// abs(2πik − μ)^(−n−2)`, `μ = Log z = a + ib`, `b ∈ {0, π}`, the distances
+/// shrunk by the radius `ρ = 2·2^e/abs(z)` of `μ` over the ball (`2^e ≤
+/// abs(z)/4`), the terms `abs(k) ≤ K` summed and the rest bounded by
+/// `2(π(2K + 1) − ρ)^(−p)·(1 + (2K + 1)/(2(p − 1)))`, `p = n + 2`.  The bound of the
+/// series (`m!/(1 − abs(z))^(m+1)`) exceeds the value by `(abs(ln z)/(1 −
+/// abs(z)))^n`: before 0.35 `polylog(−20000, 1/3)` needed 14,000 more bits
+/// and was refused.  `None` next to `z = 1`.
+fn negative_order_poles(n: f64, z: &BigFloat, e: f64) -> Option<f64> {
+    let lz = lg(z);
+    if !lz.is_finite() || (e != f64::NEG_INFINITY && (e.is_nan() || e - lz > -2.0)) {
+        return None;
+    }
+    let rho = if e == f64::NEG_INFINITY {
+        0.0
+    } else {
+        2.0 * (e - lz).exp2()
+    };
+    let pi = std::f64::consts::PI;
+    let a = ((lz * LN2).abs() - rho).max(0.0);
+    let b = if neg(z) { pi } else { 0.0 };
+    let p = n + 2.0;
+    let kmax = ((a + 16.0) / pi).ceil().min(1.0e5) + 2.0;
+    // log₂ of Σ_{|k|≤K} (a² + (|2πk − b| − ρ)₊²)^(−p/2), by its largest term.
+    let mut terms = Vec::new();
+    let mut k = -kmax;
+    while k <= kmax {
+        let d = ((2.0 * pi * k - b).abs() - rho).max(0.0).hypot(a);
+        if d <= 0.0 {
+            return None;
+        }
+        terms.push(-p * d.log2());
+        k += 1.0;
+    }
+    let tail_d = pi * (2.0 * kmax + 1.0) - rho;
+    terms.push(1.0 - p * tail_d.log2() + (1.0 + (2.0 * kmax + 1.0) / (2.0 * (p - 1.0))).log2());
+    let top = terms.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let lse = top + terms.iter().map(|t| (t - top).exp2()).sum::<f64>().log2();
+    // 1/abs(z) over the ball: at most 4/3 of its value.
+    let ball = if rho > 0.0 { 0.415 } else { 0.0 };
+    let v = log2_factorial(n + 1.0) + lse - lz + ball + 1e-6;
+    v.is_finite().then_some(v)
 }
 
 /// `η(s) = (1 − 2^{1−s})ζ(s)` for `s ≥ 0`: `|η′| ≤ 2^{1−s} ln 2·|ζ| + |1 −
@@ -874,6 +923,23 @@ fn bessel_x(fun: LibFn, a: &Args<'_>, cc: &mut Consts) -> Sens {
     let lx = lg(x);
     let nf = f(nu);
     let usable = !neg(nu) || int_order || fun == LibFn::BesselK;
+    // `0 < J′_ν(x) ≤ (ν/x)·J_ν(x)` for `0 < x < ν`: `J_ν` increases up to its
+    // first stationary point `j′_{ν,1} > ν`, and `J′_ν = (ν/x)J_ν − J_{ν+1}`
+    // with `J_{ν+1} > 0` below `j_{ν+1,1} > ν + 1` (DLMF 10.6.2, 10.21.3);
+    // over the ball `J_ν` grows by at most `(1 + r/x)^ν`.  The bound of
+    // `J_{ν+1}` below can exceed `J_ν` by its factor `₀F₁(; ν + 2; −x²/4)`:
+    // before 0.35 `besselj(44907, 2335164/97)` needed 5,000 more bits.
+    if fun == LibFn::BesselJ && pos(nu) && !a.v.is_zero() {
+        let an = f(nu);
+        let r = a.e[1].exp2();
+        let xa = f(x).abs();
+        if xa - r > 0.0 && xa + r < an {
+            let growth = an * (r / (xa - r)).ln_1p() * LOG2E;
+            if growth < 1.0 {
+                return Sens::Deriv(an.log2() - (xa - r).log2() + lv + growth + 0.2);
+            }
+        }
+    }
     if usable && fun != LibFn::BesselY {
         let an = nf.abs();
         // log₂(ν/|x|), and the ball: |x| may shrink by an eighth.

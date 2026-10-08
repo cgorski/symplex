@@ -35,7 +35,7 @@
 //! | `tan`, `tanh` | `r·(1 + w²)`, `w = (T + t)/(1 − T·t)`, `T = abs(f(z))`, `t = tan r`; no bound when `r·T > 1/8` (the ball reaches an eighth of the distance to a pole); `r` for a real `tanh` |
 //! | `atan`, `asin`, `acos`, `asinh`, `acosh`, `atanh` | `r·Π(dᵢ − r)^(−k)` with the distances `dᵢ` to the two branch points (`abs(f′) = Π abs(z − pᵢ)^(−k)`); within a few error radii of a square-root branch point `p` the Hölder bound `2.06·√(2·(abs(z − p) + r))`, and no bound near a logarithmic one |
 //! | `sign`, `floor`, `ceiling`, `heaviside`, `KroneckerDelta` | exact, or unknown when the argument (difference) is within its error of the threshold |
-//! | special functions `f(x₁, …, xₙ)` | `2·Σᵢ abs(∂f/∂xᵢ)·err(xᵢ)` over the distinct inexact arguments, `abs(∂f/∂xᵢ)` bounded over the argument's error ball (next table, `sensitivity.rs`); no bound when the ball reaches a pole or branch point (its radius above an eighth of the distance); exact arguments cost nothing; a 0 from exact nonzero arguments is an underflow for the functions that vanish at no rational point (`erfc`, `Γ`, `Ei`, `Ai`, `Bi`, `I_ν`, `K_ν`, `Γ(s, x)`, `E_ν`), exact otherwise |
+//! | special functions `f(x₁, …, xₙ)` | `2·Σᵢ abs(∂f/∂xᵢ)·err(xᵢ)` over the distinct inexact arguments, `abs(∂f/∂xᵢ)` bounded over the argument's error ball (next table, `sensitivity.rs`); no bound when the ball reaches a pole or branch point (its radius above an eighth of the distance); exact arguments cost nothing; a 0 from exact nonzero arguments is an underflow for the functions that vanish at no rational point (`erfc`, `Γ`, `Ei`, `Ai`, `Bi`, `I_ν`, `K_ν`, `Γ(s, x)`, `E_ν`) and for `J_ν` with `ν > abs(x)`, exact otherwise |
 //!
 //! The sensitivity `abs(∂f/∂x)` of a special function — its condition number
 //! `abs(∂ ln f/∂ ln x)` times `abs(f/x)`, which can be huge: `I_x(a, b)` near
@@ -1574,9 +1574,17 @@ fn finish(
 /// arguments (their zeros, where they have any, are irrational).  Before
 /// 0.30 their underflow was an exact 0 as well: `sign(airyai(10¹⁰))`,
 /// `sign(erfc(10⁵))` and `sign(besselk(0, 10¹⁰))` were `0`, truly `1`.
+///
+/// Nor is `J_ν(x)` of a real order `ν > abs(x) > 0`: it has no zero there
+/// (the first positive zero `j_{ν,1}` exceeds `ν`, DLMF 10.21.3, and
+/// `J_n(−x) = (−1)ⁿ J_n(x)`).  Before 0.35 a `J_ν` below the range was
+/// refused where it arose: `1 + besselj(10⁹, 1)` was refused, truly `1`.
 fn underflowed(arena: &Arena, id: ExprId, cache: &FxHashMap<ExprId, Complex>) -> bool {
     let nonzero = |c: &ExprId| cache.get(c).is_some_and(|v| mag(v).is_some());
     match arena.node(id) {
+        ExprNode::Apply(sid, args) if arena.lib_fn(*sid) == Some(LibFn::BesselJ) => {
+            bessel_j_zero_free(args, cache)
+        }
         ExprNode::Exp(_) => true,
         ExprNode::Mul(children) => children.iter().all(nonzero),
         ExprNode::Pow(base, _) => nonzero(base),
@@ -1601,6 +1609,27 @@ fn underflowed(arena: &Arena, id: ExprId, cache: &FxHashMap<ExprId, Complex>) ->
         }
         _ => false,
     }
+}
+
+/// Do the values of `(ν, x)` lie where `J_ν(x)` has no zero: a real
+/// order `ν > abs(x) > 0` with a real `x`, or a negative integer order
+/// `−n` with `n > abs(x) > 0` (`J_{−n} = (−1)ⁿ J_n`; see [`underflowed`])?
+fn bessel_j_zero_free(args: &[ExprId], cache: &FxHashMap<ExprId, Complex>) -> bool {
+    let (Some(nu), Some(x)) = (
+        args.first().and_then(|c| cache.get(c)),
+        args.get(1).and_then(|c| cache.get(c)),
+    ) else {
+        return false;
+    };
+    let order_ok = super::bf_strictly_positive(&nu.0) || (nu.0.is_negative() && nu.0.is_int());
+    args.len() == 2
+        && nu.1.is_zero()
+        && x.1.is_zero()
+        && is_finite(nu)
+        && is_finite(x)
+        && order_ok
+        && mag(x).is_some()
+        && x.0.abs().cmp(&nu.0.abs()).is_some_and(|c| c < 0)
 }
 
 /// What is known of a value that came out 0 with an underflow bound
@@ -1756,6 +1785,26 @@ pub(super) fn underflow_nonzero(
                     if positive_x && real_params =>
                 {
                     Nonzero::Positive
+                }
+                // `J_ν(x) > 0` for `0 < x < ν` (no zero there, and
+                // `(x/2)^ν/Γ(ν + 1) > 0` near 0); `J_n(−x) = (−1)ⁿ J_n(x)`
+                // and `J_{−n}(x) = (−1)ⁿ J_n(x)`: for an integer order the
+                // sign `(−1)ⁿ` once for a negative `x`, once for a negative
+                // order.
+                Some(LibFn::BesselJ) if real_params => {
+                    let order = args.first().and_then(|c| cache.get(c));
+                    match order {
+                        Some(n) if n.0.is_int() => {
+                            let flips = usize::from(!positive_x) + usize::from(n.0.is_negative());
+                            if flips % 2 == 1 && super::bessel_order::is_odd(&n.0) {
+                                Nonzero::Negative
+                            } else {
+                                Nonzero::Positive
+                            }
+                        }
+                        Some(_) if positive_x => Nonzero::Positive,
+                        _ => Nonzero::Unsigned,
+                    }
                 }
                 Some(LibFn::AiryAiPrime) if positive_x => Nonzero::Negative,
                 Some(LibFn::BesselI) if positive_x && real_params && nonnegative_order => {

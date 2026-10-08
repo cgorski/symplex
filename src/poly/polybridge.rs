@@ -1153,8 +1153,23 @@ const RESIDUE_ROOT_SCALE: u64 = 720_720;
 const RESIDUE_GENERATOR_SALT: u64 = 0x5851_F42D_4C95_7F2D;
 const RESIDUE_EXPONENT_SALT: u64 = 0x1405_7B7E_F767_814F;
 
+/// Salt of the angle units `e^{iu}` behind `sin u`, `cos u`, `tan u` (see
+/// [`generator_residue`]): unrelated to the units of the exponentials.
+const RESIDUE_ANGLE_SALT: u64 = 0x2F3B_9D07_A6C1_E485;
+
+/// `a·b mod p` for the Mersenne prime `p = 2⁶¹ − 1`: `2⁶¹ ≡ 1`, so the
+/// high bits fold onto the low ones (twice, for any `u64` operands), and
+/// one subtraction finishes — the value of `(a·b) % p` without a 128-bit
+/// division.
 fn residue_mul(a: u64, b: u64) -> u64 {
-    ((u128::from(a) * u128::from(b)) % u128::from(RESIDUE_PRIME)) as u64
+    let p = RESIDUE_PRIME;
+    let x = u128::from(a) * u128::from(b);
+    let folded = (x & u128::from(p)) + (x >> 61);
+    let mut r = ((folded & u128::from(p)) + (folded >> 61)) as u64;
+    while r >= p {
+        r -= p;
+    }
+    r
 }
 
 fn residue_pow(mut b: u64, mut e: u64) -> u64 {
@@ -1192,6 +1207,14 @@ fn residue_unit(key: u64) -> u64 {
 fn residue_exponent(q: &crate::base::numeric::Q) -> Option<u64> {
     use num_traits::ToPrimitive;
     let order = RESIDUE_PRIME - 1;
+    // An integer `n` (the common coefficient): `n·D mod N`, the value of
+    // the general formula with `d = 1`, without big integers.
+    if q.is_integer()
+        && let Some(n) = q.numer().to_i128()
+    {
+        let n = n.rem_euclid(i128::from(order)) as u128;
+        return Some(((n * u128::from(RESIDUE_ROOT_SCALE)) % u128::from(order)) as u64);
+    }
     let order_big = BigInt::from(order);
     let scale = BigInt::from(RESIDUE_ROOT_SCALE);
     let g = q.denom().gcd(&scale);
@@ -1324,6 +1347,12 @@ fn is_plain_generator(arena: &Arena, g: ExprId) -> bool {
             | ExprNode::Pow(_, _)
             | ExprNode::Exp(_)
             | ExprNode::E
+            | ExprNode::Sin(_)
+            | ExprNode::Cos(_)
+            | ExprNode::Tan(_)
+            | ExprNode::Sinh(_)
+            | ExprNode::Cosh(_)
+            | ExprNode::Tanh(_)
     )
 }
 
@@ -1341,6 +1370,17 @@ fn is_plain_generator(arena: &Arena, g: ExprId) -> bool {
 ///   the square root taken in `F_{p²}` ([`residue_integer_sqrt`]): `(√2 +
 ///   √3)² − 5 − 2√6` and `(√2 + √3·i)² + 1 − 2√6·i` (what `subs` makes of
 ///   `(√x + √y)² − x − y − 2√x·√y`) have residue 0;
+/// * `sin u`, `cos u`, `tan u` are `(t − t⁻¹)/(2i)`, `(t + t⁻¹)/2` and their
+///   quotient for the angle unit `t = Π σ_{mⱼ}^(cⱼ·D)` of `u = Σ cⱼ·mⱼ`
+///   (the value of `e^{iu}`, multiplicative in `u` as the exponentials,
+///   with units `σ` of their own), and `sinh u`, `cosh u`, `tanh u` the same
+///   in the unit `h` of `exp(u)` with `(h ∓ h⁻¹)/2`: `sin²u + cos²u − 1`,
+///   `tan u·cos u − sin u`, `sin 2u − 2·sin u·cos u`, `cosh²u − sinh²u −
+///   1` and `2·cosh u − eᵘ − e⁻ᵘ` have residue 0 whatever `u` is (also a
+///   constant such as `besselj(10⁵, 1)`, which is never evaluated).
+///   `t² ≠ −1` in `F_p` (`p ≡ 3 mod 4`), so `cos` and `cosh` are never 0
+///   and `tan`, `tanh` always have a value.  Their non-integer powers are
+///   generators of their own (as those of `exp`);
 /// * any other generator, and the above when a coefficient times `D` has no
 ///   value ([`residue_exponent`]), is `ρ_id^D` for its own key.
 ///
@@ -1361,6 +1401,18 @@ fn generator_residue(arena: &Arena, id: ExprId) -> Residue {
             RESIDUE_ROOT_SCALE,
         )),
         ExprNode::Exp(u) => exp_residue(arena, *u),
+        ExprNode::Sin(u) | ExprNode::Cos(u) | ExprNode::Tan(u) => {
+            if let Some(t) = exponent_unit(arena, *u, RESIDUE_ANGLE_SALT) {
+                return circular_residue(arena.node(id), t);
+            }
+            None
+        }
+        ExprNode::Sinh(u) | ExprNode::Cosh(u) | ExprNode::Tanh(u) => {
+            if let Some(h) = exp_residue(arena, *u) {
+                return circular_residue(arena.node(id), h);
+            }
+            None
+        }
         ExprNode::Pow(g, q) if is_plain_generator(arena, *g) => arena.as_num(*q).and_then(|q| {
             residue_scaled_power(residue_unit(u64::from(g.0) ^ RESIDUE_GENERATOR_SALT), q)
         }),
@@ -1393,9 +1445,40 @@ fn numeric_radical_residue(
     Some(residue2_pow(base, u128::from(m.unsigned_abs())))
 }
 
+/// The residue of `sin u`, `cos u`, `tan u` from the angle unit `t` of `u`,
+/// or of `sinh u`, `cosh u`, `tanh u` from the unit `t` of `exp(u)` (see
+/// [`generator_residue`]); `t` is a unit of `F_p`, so `t + t⁻¹ ≠ 0`.
+fn circular_residue(node: &ExprNode, t: u64) -> Residue {
+    let p = RESIDUE_PRIME;
+    // 2⁻¹ = (p + 1)/2
+    let half = p.div_ceil(2);
+    let inv = residue_pow(t, p - 2);
+    let difference = (t + p - inv) % p;
+    let sum = (t + inv) % p;
+    let quotient = || residue_mul(difference, residue_pow(sum, p - 2));
+    match node {
+        // (t − t⁻¹)/(2i) = −i·(t − t⁻¹)/2
+        ExprNode::Sin(_) => (0, residue_mul((p - difference) % p, half)),
+        ExprNode::Cos(_) | ExprNode::Cosh(_) => (residue_mul(sum, half), 0),
+        // sin/cos = −i·(t − t⁻¹)/(t + t⁻¹)
+        ExprNode::Tan(_) => (0, (p - quotient()) % p),
+        ExprNode::Sinh(_) => (residue_mul(difference, half), 0),
+        _ => (quotient(), 0),
+    }
+}
+
 /// The residue of `exp(u)` (see [`generator_residue`]), `None` when a
 /// coefficient of the exponent times `D` is not an integer.
 fn exp_residue(arena: &Arena, u: ExprId) -> Option<u64> {
+    exponent_unit(arena, u, RESIDUE_EXPONENT_SALT)
+}
+
+/// `Π ρ_{mⱼ}^(cⱼ·D)` for the terms `cⱼ·mⱼ` of `u`, the units `ρ` keyed by
+/// the monomials `mⱼ` with `salt` (`ρ_1` for a number): the residue of
+/// `exp(u)` for [`RESIDUE_EXPONENT_SALT`], the angle unit of `sin u` for
+/// [`RESIDUE_ANGLE_SALT`].  `None` when a coefficient times `D` has no
+/// value ([`residue_exponent`]).
+fn exponent_unit(arena: &Arena, u: ExprId, salt: u64) -> Option<u64> {
     let terms: &[ExprId] = match arena.node(u) {
         ExprNode::Add(children) => children,
         _ => std::slice::from_ref(&u),
@@ -1408,20 +1491,20 @@ fn exp_residue(arena: &Arena, u: ExprId) -> Option<u64> {
             sign = -sign;
         }
         let (coeff, key) = match arena.node(t) {
-            ExprNode::Num(nid) => (arena.num(*nid).clone(), RESIDUE_EXPONENT_SALT),
+            ExprNode::Num(nid) => (arena.num(*nid).clone(), salt),
             ExprNode::Mul(children) => {
                 let (coeff, rest) = match children.first().and_then(|&c| arena.as_num(c)) {
                     Some(q) => (q.clone(), &children[1..]),
                     None => (crate::base::numeric::Q::one(), &children[..]),
                 };
-                let key = rest.iter().fold(RESIDUE_EXPONENT_SALT, |h, c| {
-                    residue_hash(h ^ u64::from(c.0))
-                });
+                let key = rest
+                    .iter()
+                    .fold(salt, |h, c| residue_hash(h ^ u64::from(c.0)));
                 (coeff, key)
             }
             _ => (
                 crate::base::numeric::Q::one(),
-                residue_hash(RESIDUE_EXPONENT_SALT ^ u64::from(t.0)),
+                residue_hash(salt ^ u64::from(t.0)),
             ),
         };
         value = residue_mul(

@@ -49,6 +49,11 @@
 //!   formula holds for an integer order too, where `ζ(1 − n, a) = −B_n(a)/n`
 //!   and the Euler–Maclaurin sum ends by itself.
 //!
+//! A non-positive integer order is the finite Stirling sum ([`nonpositive`])
+//! down to −1000, and beyond the sum over the poles `n!·Σ_k (2πik − Log
+//! z)^(−n−1)` ([`nonpositive_poles`]), here and for `z ∈ [−1, 1]` (whose
+//! `arb_polylog` comes here for those orders).
+//!
 //! Every truncation is below `2^−wp` of the largest term summed; the loss —
 //! the largest term over the result — is measured and the evaluation
 //! repeated with that many more bits, up to `cancellation_cap` (the poles
@@ -224,6 +229,9 @@ fn value_at(
     if let Some(n) = s_int
         && n <= 0
     {
+        if n.unsigned_abs() > super::MAX_NONPOSITIVE_ORDER {
+            return nonpositive_poles(n.unsigned_abs(), z, wp, rm, cc);
+        }
         return nonpositive(n.unsigned_abs(), z, wp, rm);
     }
     let r2 = z.0.mul(&z.0, wp, rm).add(&z.1.mul(&z.1, wp, rm), wp, rm);
@@ -404,6 +412,84 @@ fn nonpositive(n: u64, z: &Complex, wp: usize, rm: RoundingMode) -> Result<Sum, 
         let c =
             super::ratio_to_bigfloat(&Ratio::from_integer(&k_fact * &row[k as usize + 1]), wp, rm);
         sum.add(&scale(&w_pow, &c, wp, rm), wp, rm);
+    }
+    Ok(sum)
+}
+
+/// `Li_{−n}(z)` for an order below `−MAX_NONPOSITIVE_ORDER` by its poles:
+///
+/// ```text
+/// Li_{−n}(e^μ) = n!·Σ_{k∈ℤ} (2πik − μ)^(−n−1),   μ = Log z,  n ≥ 1,
+/// ```
+///
+/// Jonquière's formula (DLMF 25.12.13 with `ζ(n + 1, a)` as its sum; the
+/// two-Hurwitz form of mpmath's `polylog_general`): both sides are
+/// `2πi`-periodic in `μ` with the poles `n!·(2πik − μ)^(−n−1)` and vanish
+/// as `Re μ → ±∞`, so they agree for every `z ∉ {0, 1}`.  For a large `n`
+/// the terms nearest `μ` dominate: `abs(2πik − μ) ≥ π(2abs(k) − 1)`
+/// (`abs(Im μ) ≤ π`), so the terms beyond `abs(k) ≤ K` add at most
+/// `2·n!·(π(2K + 1))^(−n−1)·(1 + (2K + 1)/(2n))` (the first plus the
+/// integral), taken below `2^(−wp−12)` of the term at `k = 0`.  Each term is
+/// `exp(ln n! − (n + 1)·Log(2πik − μ))` with the bits of its exponent as
+/// guard.  A real `z < 0` has two dominant conjugate terms (`k = 0, 1`),
+/// whose cancellation the caller measures.  Before 0.35 the Stirling sum of
+/// [`nonpositive`] was refused beyond `n = 1000`: `polylog(−1500, 1/2)`.
+fn nonpositive_poles(
+    n: u64,
+    z: &Complex,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<Sum, SymplexError> {
+    if z.0.is_zero() && z.1.is_zero() {
+        return Ok(Sum::new(wp));
+    }
+    let nf = n as f64;
+    // ln n! is about n·ln n, and (n + 1)·Log(…) as large.
+    let p = wp + 24 + super::magnitude_bits(nf * (nf.ln() + 64.0));
+    let mu = super::c_ln(z, p, rm, cc);
+    let mu_abs = accuracy::lg_abs(&mu).exp2();
+    if !mu_abs.is_finite() || mu_abs == 0.0 {
+        return Err(super::unevaluable("polylog(s, 1) diverges for s ≤ 1"));
+    }
+    // The fewest K ≥ 1 whose tail is below 2^(−wp−12) of n!/abs(μ)^(n+1).
+    let mut kmax: u64 = 1;
+    loop {
+        let width = (2 * kmax + 1) as f64;
+        let margin = (nf + 1.0) * (std::f64::consts::PI * width / mu_abs).log2()
+            - 1.0
+            - (1.0 + width / (2.0 * nf)).log2();
+        if margin >= (wp + 12) as f64 {
+            break;
+        }
+        kmax += 1;
+        if kmax > 100_000 {
+            return Err(super::special_exhausted(wp));
+        }
+    }
+    let n1 = BigFloat::from_u64(n + 1, 64);
+    let ln_fact = super::arb_log_gamma(&n1, p, rm, cc)?.0;
+    let two_pi = cc.pi(p, rm).clone().mul(&BigFloat::from_i32(2, 64), p, rm);
+    let neg_re = mu.0.neg();
+    let mut sum = Sum::new(wp);
+    let kmax = i64::try_from(kmax).unwrap_or(i64::MAX);
+    for k in -kmax..=kmax {
+        let im = two_pi
+            .mul(&BigFloat::from_i64(k, 64), p, rm)
+            .sub(&mu.1, p, rm);
+        let l = super::c_ln(&(neg_re.clone(), im), p, rm, cc);
+        let e = (
+            ln_fact.sub(&l.0.mul(&n1, p, rm), p, rm),
+            l.1.mul(&n1, p, rm).neg(),
+        );
+        let t = super::c_exp(&e, wp, rm, cc);
+        if [&t.0, &t.1].iter().any(|v| v.is_inf() || v.is_nan()) {
+            return Err(super::unevaluable(
+                "polylog of a large negative order: the value overflows the arbitrary-precision \
+                 exponent range",
+            ));
+        }
+        sum.add(&t, wp, rm);
     }
     Ok(sum)
 }

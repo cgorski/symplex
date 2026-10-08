@@ -29,6 +29,7 @@
 //! | `cos`, `cosh` | `1 ∓ s²/2 + s⁴/24` | — |
 //! | `−z`, `conj`, `re`, `im`, `abs` | of the mantissa | — |
 //! | `Ei(x)`, `erfc(x)` | — | the asymptotic series times `exp` at its scale |
+//! | `J_ν(x)`, `I_ν(x)` (`ν > 0`, `x² ≤ ν + 1`) | — | `e^L·₀F₁(; ν + 1; ∓x²/4)`, `L = ν·ln(abs(x)/2) − ln Γ(ν + 1)` |
 //!
 //! Beside its mantissa and scale, a value below the range is held as a
 //! polynomial in such values with exact rational coefficients, plus a
@@ -55,7 +56,11 @@
 //!
 //! Only the bottom of the range: a value above it (`exp(10¹⁰)`) is refused
 //! where it arises, as before ("overflows the exponent range"), and so is
-//! anything that would come back from a scaled value above the range.  Any
+//! anything that would come back from a scaled value above the range —
+//! except a factor of a product with a factor below the range: a negative
+//! power of a value below the range, or an `exp` above it, is scaled for
+//! the product ([`beyond_power`]; `besselj(10⁹, 1)/besselj(10⁹, 2)`,
+//! `exp(−10¹⁰)/exp(−10¹⁰ + 1)`, refused before 0.35).  Any
 //! other node sees the placeholder: an underflow its own rules handle
 //! (`accuracy::underflow_nonzero`), or an argument whose value is unknown.
 //! A function of a value that underflowed without a scaled form (`K₀(10¹⁰)`,
@@ -68,6 +73,7 @@ use rustc_hash::FxHashMap;
 
 use crate::base::arena::Arena;
 use crate::base::bigcomplex::{Complex, c_div, c_one, c_powi, c_zero};
+use crate::base::libfn::LibFn;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::numeric::Q;
 
@@ -419,15 +425,15 @@ impl Ctx<'_> {
 }
 
 /// Does node `id` call for the extended evaluation: a child has an
-/// extended value, or its ordinary value underflowed (`underflowed`)?
+/// extended value (or is a power of one, [`beyond_power`]), or its
+/// ordinary value underflowed (`underflowed`)?
 pub(super) fn wanted(arena: &Arena, id: ExprId, underflowed: bool, exts: &ExtMap) -> bool {
     underflowed
         || (!exts.is_empty()
-            && arena
-                .node(id)
-                .children()
-                .iter()
-                .any(|c| exts.contains_key(c)))
+            && arena.node(id).children().iter().any(|c| {
+                exts.contains_key(c)
+                    || matches!(arena.node(*c), ExprNode::Pow(b, _) if exts.contains_key(b))
+            }))
 }
 
 /// The extended evaluation of node `id` (see the module documentation), or
@@ -498,7 +504,10 @@ pub(super) fn extend(
             let mut factors = Vec::with_capacity(children.len());
             let mut beyond = false;
             for &c in children.iter() {
-                let (s, b) = cx.plain_or_near(c)?;
+                let (s, b) = match cx.plain_or_near(c) {
+                    Some(f) => f,
+                    None => (beyond_power(&cx, c, prec, rm, cc)?, true),
+                };
                 beyond |= b;
                 factors.push(s);
             }
@@ -647,6 +656,24 @@ pub(super) fn extend(
                 return None;
             }
             finish_node(erfc_scaled(&x.0, b.re, prec, rm, cc)?, id, prec)
+        }
+        ExprNode::Apply(sid, args) if underflowed && args.len() == 2 => {
+            let alternating = match arena.lib_fn(*sid) {
+                Some(LibFn::BesselJ) => true,
+                Some(LibFn::BesselI) => false,
+                _ => return None,
+            };
+            let (nu, nb) = cx.ordinary(args[0])?;
+            let (x, xb) = cx.ordinary(args[1])?;
+            if !accuracy::exactly_real(nu, nb) || !accuracy::exactly_real(x, xb) {
+                return None;
+            }
+            // `J_{−n} = (−1)ⁿ J_n`, `I_{−n} = I_n` for an exact integer order.
+            let reflected = nu.0.is_negative() && nu.0.is_int() && nb.is_exact();
+            let order = if reflected { nu.0.abs() } else { nu.0.clone() };
+            let s = bessel_scaled(&order, nb.re, &x.0, xb.re, alternating, prec, rm, cc)?;
+            let flip = reflected && alternating && super::bessel_order::is_odd(&nu.0);
+            finish_node(if flip { negated(s) } else { s }, id, prec)
         }
         _ => None,
     }
@@ -878,6 +905,49 @@ fn power(
     let (l, lb) = ln_scaled(s, p, rm, cc)?;
     let (w, wb) = accuracy::mul_with_bound(&[(&l, lb), (x, ex)], p, rm);
     exp_scaled(&w, wb, prec, rm, cc)
+}
+
+/// A factor `c` of a product that has no value of its own because it lies
+/// above the exponent range (`exponent_range_error`): a power `b^e` of a
+/// base `b` below the range (a negative power), or `exp(g)` of an argument
+/// in range.  Its scaled value, `k` unbounded, for the product with a
+/// factor below the range to bring back: `besselj(10⁹, 1)/besselj(10⁹, 2)
+/// = 2.17·10^(−301029996)`, `erfc(10⁵)/erfc(10⁵ + 1)`,
+/// `exp(−10¹⁰)/exp(−10¹⁰ + 1) = e⁻¹` (all refused before 0.35).  A product above the range is
+/// still refused ([`finish`]).
+fn beyond_power(
+    cx: &Ctx<'_>,
+    c: ExprId,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Option<Scaled> {
+    match cx.arena.node(c) {
+        ExprNode::Pow(b, e) => {
+            let Some(Ext::Beyond(s)) = cx.exts.get(b) else {
+                return None;
+            };
+            if cx.exts.contains_key(e) {
+                return None;
+            }
+            let (x, ex) = cx.ordinary(*e)?;
+            power(s, cx.arena.as_num(*e), x, ex, prec, rm, cc)
+        }
+        ExprNode::Exp(g) => {
+            if cx.exts.contains_key(g) {
+                return None;
+            }
+            let (z, b) = cx.ordinary(*g)?;
+            if !super::bf_strictly_positive(&z.0) {
+                return None;
+            }
+            if !z.1.is_zero() {
+                super::check_trig_arg(&z.1, 0, prec, cx.arena).ok()?;
+            }
+            exp_scaled(z, b, prec, rm, cc)
+        }
+        _ => None,
+    }
 }
 
 /// A sum with a term below the range (SymPy's `add_terms`, at a common
@@ -1136,6 +1206,122 @@ fn erfc_scaled(
         e,
         (m, BigFloat::new(prec)),
         accuracy::shift(xe, -(t as f64) + 2.0),
+        wp,
+        prec,
+    )
+}
+
+/// `J_ν(x)` (`alternating`) or `I_ν(x)` below the range as `m·2^k`, for a
+/// real order `ν > 0` and a real `x ≠ 0` (an integer order for `x < 0`)
+/// with `y = x²/(4(ν + 1)) ≤ 1/4` — where they underflow:
+///
+/// ```text
+/// J_ν(x), I_ν(x) = ±e^L·S,  L = ν·ln(abs(x)/2) − ln Γ(ν + 1),
+/// S = Σ_k (∓x²/4)^k/(k!·(ν + 1)_k)
+/// ```
+///
+/// (mpmath's `besselj`, `(z/2)^ν/Γ(ν + 1)·₀F₁(; ν + 1; ∓z²/4)`, with
+/// unbounded exponents; `L` from `bessel_order::log_power_over_gamma`,
+/// `e^L` at its scale by [`exp_scaled`]).  The terms of `S` fall by `y` or
+/// more, so `S ∈ [3/4, e^(1/4)]`; it is summed until a term is below
+/// `2^(−wp−8)`, and its error is at most `(K + 8)·2^(2−wp)` relative for `K`
+/// terms (running products of `k` roundings each, `Σ k·y^k ≤ 1/2`).  An
+/// inexact argument adds `2·(abs(∂ln f/∂x)·err(x) + abs(∂ln f/∂ν)·err(ν))`
+/// relative, with `abs(∂ln f/∂x) ≤ (ν + 1)/abs(x) + abs(x)` (`ν/x` and
+/// `S′/S`) and `abs(∂ln f/∂ν) ≤ abs(ln(abs(x)/2)) + ln(ν + 1) + 2`
+/// (`abs(ψ(ν + 1)) ≤ ln(ν + 1) + 1`), over balls of relative radius
+/// below `1/16`.  Before 0.35 `log(besselj(8345185991999992, 61/10²⁷))`
+/// was refused.
+#[allow(clippy::too_many_arguments)]
+fn bessel_scaled(
+    nu: &BigFloat,
+    nu_err: ErrExp,
+    x: &BigFloat,
+    x_err: ErrExp,
+    alternating: bool,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Option<Scaled> {
+    if !super::bf_strictly_positive(nu) || x.is_zero() || x.is_nan() || x.is_inf() {
+        return None;
+    }
+    let integer = nu.is_int();
+    if x.is_negative() && !(integer && accuracy::is_exact(nu_err)) {
+        return None;
+    }
+    let nu_f = super::bigfloat_to_f64_rounded(nu, rm).ok()?;
+    let x_abs = x.abs();
+    let lg_x = accuracy::part_lg(&x_abs);
+    let xf = super::bigfloat_to_f64_rounded(&x_abs, rm).ok()?;
+    if !nu_f.is_finite() || !xf.is_finite() || xf * xf > nu_f + 1.0 {
+        return None;
+    }
+    // The arguments' errors, relative to the value.
+    let times = |a: f64, e: ErrExp| {
+        if accuracy::is_exact(e) {
+            accuracy::EXACT
+        } else {
+            a.max(f64::MIN_POSITIVE).log2() + e
+        }
+    };
+    // In `log₂`, for an `x` beyond the `f64` range (`2^(−10⁶)`).
+    let dx = if accuracy::is_exact(x_err) {
+        accuracy::EXACT
+    } else {
+        accuracy::lsum((nu_f + 1.0).log2() - lg_x, lg_x) + x_err
+    };
+    let ln_half_x = ((lg_x - 1.0) * std::f64::consts::LN_2).abs();
+    let dnu = times(ln_half_x + (nu_f + 1.0).ln() + 2.0, nu_err);
+    let args_rel = accuracy::lsum(dx, dnu) + 1.0;
+    if !accuracy::is_exact(x_err) && x_err - lg_x > -4.0 {
+        return None;
+    }
+    if !accuracy::is_exact(args_rel) && args_rel > -4.0 {
+        return None;
+    }
+    let wp = prec + 32;
+    let two = BigFloat::from_i32(2, 64);
+    let x_half = x_abs.div(&two, wp + 8, rm);
+    let l = super::bessel_order::log_power_over_gamma(nu, &x_half, wp, rm, cc).ok()?;
+    let e = exp_scaled(
+        &(l, BigFloat::new(prec)),
+        Bound::real(-((wp + 12) as f64)),
+        wp,
+        rm,
+        cc,
+    )?;
+    // S, its terms by running products.
+    let q = x_half.mul(&x_half, wp, rm);
+    let q = if alternating { q.neg() } else { q };
+    let mut term = BigFloat::from_i32(1, wp);
+    let mut sum = term.clone();
+    let mut k: u64 = 0;
+    loop {
+        k += 1;
+        if k > (2 * wp) as u64 {
+            return None;
+        }
+        let kb = BigFloat::from_u64(k, 64);
+        let nk = nu.add(&kb, super::exact_bits(nu, wp), rm);
+        term = term.mul(&q, wp, rm).div(&kb.mul(&nk, wp, rm), wp, rm);
+        if term.is_zero()
+            || term
+                .exponent()
+                .is_some_and(|t| i64::from(t) < -(wp as i64) - 8)
+        {
+            break;
+        }
+        sum = sum.add(&term, wp, rm);
+    }
+    let s_rel = ((k + 8) as f64).log2() + 2.0 - wp as f64;
+    let negative = x.is_negative() && super::bessel_order::is_odd(nu);
+    let m = e.m.0.mul(&sum, wp, rm);
+    let m = super::round_to(if negative { m.neg() } else { m }, prec, rm);
+    scaled_by(
+        e,
+        (m, BigFloat::new(prec)),
+        accuracy::lsum(s_rel, args_rel),
         wp,
         prec,
     )

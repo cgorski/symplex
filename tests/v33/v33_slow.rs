@@ -267,7 +267,8 @@ fn jacobi_of_large_degree() {
 /// `polylog(-601, mpf(4)/13)` = `8.06059538480115e1367` (dps 600, 900),
 /// `polylog(-1000, mpf(4)/13)` = `1.401380266870968e+2496`,
 /// `polylog(-1000, 3+1j)` = `8.856958502112417e+2489 + 5.187343015233016e+2489j`.
-/// Beyond an order of −1000 the finite sum is refused.
+/// Beyond an order of −1000 the finite sum is refused (since 0.35 the poles
+/// serve there, to −10⁶; beyond, still refused).
 #[test]
 fn polylog_of_large_negative_order() {
     let ctx = Context::new();
@@ -285,7 +286,15 @@ fn polylog_of_large_negative_order() {
     ] {
         assert_eq!(dec(&ctx, s).unwrap(), want, "{s}");
     }
-    for s in ["polylog(-1401, 4/13)", "polylog(-10^12, 1/3)"] {
+    // Since 0.35 an order below −1000 (up to −10⁶) takes the poles of
+    // `Li_{−n}` (Jonquière's formula) instead of the Stirling sum: a value,
+    // not a refusal.  Reference: the exact rational `z·A_n(z)/(1 − z)^(n+1)`
+    // (Eulerian numbers, Python fractions) = `3.9942724806637844986e+3701`.
+    assert_eq!(
+        dec(&ctx, "polylog(-1401, 4/13)").unwrap(),
+        "3.99427248066378e3701"
+    );
+    for s in ["polylog(-10^12, 1/3)"] {
         match dec(&ctx, s) {
             Err(SymplexError::NotImplemented(_)) => {}
             other => panic!("{s}: want a refusal, got {other:?}"),

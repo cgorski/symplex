@@ -20,9 +20,73 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   `exp(−10¹⁰)·(sin²1 + cos²1) − exp(−10¹⁰)`); `eval_f64` still returns
   `0.0` for a lost term below the exponent range, its correctly rounded
   value.  See *Fixed*.
+- **More expressions that are undefined at every point give `nan`**, and
+  `expand` no longer distributes over a denominator that is zero by a
+  trigonometric or hyperbolic identity: `expand(y·(y + 3)/(sin 2x −
+  2·sin x·cos x))` is `zoo` (was `y²/s + 3y/s`), `expand(1/(x/s + 1/s))`
+  is `nan` (was unevaluated).  SymPy 1.14 gives `0` or the distributed sum
+  for these; symplex deliberately differs.  See *Fixed*.
+- **Refusals that are now values**: `erfc(10⁸)·10⁸·e^(10¹⁶)` is
+  `0.5641895835477563` (pinned as refused in `tests/v30` since 0.31: an
+  `exp` above the exponent range is now scaled in a product with a factor
+  below it); `polylog(−n, z)` for `1000 < n ≤ 10⁶` and `jacobi` up to
+  degree 5000 evaluate (refused in 0.34); see *Added*.
+
+### Added
+
+- **Bessel functions of large order away from the turning point** take
+  the uniform (Debye) expansions with Olver's error bounds (DLMF 10.41,
+  10.19; new `evalf/bessel_debye.rs`): `bessely(20000, 300)`,
+  `besselk(20000, 300)`, `bessely(20000, 30000)` and `besseli(10⁶, 10⁶)`
+  were refused in 0.34 ("the Neumann series would take n terms", "more
+  than 50,000 terms") and take 1–13 ms (mpmath: `bessely(20000, 300)` =
+  `−1.333952734774281e+33811`, `besselk(20000, 300)` =
+  `2.208253217266176e+33810`).  At the turning point (`x ≈ ν`) they are
+  still refused.
+- **Bessel functions below the exponent range are held scaled**: `J_ν`
+  and `I_ν` of huge order as `e^L·₀F₁(; ν + 1; ∓x²/4)` with `L = ν·ln(x/2)
+  − ln Γ(ν + 1)` (as mpmath's `besselj`), so their logarithms and quotients
+  evaluate: `log(besselj(8345185991999992, 61/10²⁷))` =
+  `−7.87890140073435·10¹⁷`, `besselj(10⁹, 1)/besselj(10⁹, 2)` =
+  `2.168·10^(−301029996)`.  Quotients of other values below the range, and
+  products with an `exp` above it, evaluate too: `erfc(10⁵)/erfc(10⁵ + 1)`,
+  `exp(−10¹⁰)/exp(−10¹⁰ + 1)` = `e⁻¹` (both refused in 0.34).
+- **`polylog` of order −1001 to −10⁶** sums the poles of `Li₋ₙ`
+  (Jonquière's formula, as mpmath's `polylog_general`): `polylog(−1500,
+  1/2)` 1 ms (refused in 0.34; mpmath `4.011514728419479e+4353`).
+- **`jacobi` up to degree 5000**, the cancellation of the explicit sum
+  measured (as mpmath's `hypsum`) instead of assumed: `jacobi(2500, 1/3,
+  1/5, 1/7)` 0.12 s (refused in 0.34).
 
 ### Fixed
 
+- **`1 + besselj(10⁹, 1)` was refused** ("not 0 but underflows"; 0.33
+  printed `1` only by accident).  `J_ν(x)` with `ν > |x| > 0` has no zero
+  (DLMF 10.21.3: `ν ≤ j′_ν,₁ < j_ν,₁`), so its underflow is a nonzero
+  number of known sign, as `I_ν`'s already was: `1 ± besselj(10⁹, 1)` is
+  `1`; `besselj(10⁹, 1) − besselj(10⁹, 1)` is still `0`.
+- **Undefined expressions that still got a value**: `ratsimp(sin((√2 +
+  e)/(sin²1 + cos²1 − 1))·y²·((√y + √x)² − x − y − 2√x·√y))` was `0` (a
+  function at `c/0 = zoo` is `nan`; `0·sin(c/0)` was `0` too); the
+  canonical `0·D⁻¹`, `zoo·f`, `∞ + t` looked only one level into `D`:
+  `0/(x + y·(1/d₁ + 1/d₂))` with `d₁`, `d₂` zero was `0`, now `nan`.
+  `expand(y·(y + 3)/(sin 2x − 2·sin x·cos x))` (see *Breaking*): the
+  residue test of the canonical form relates `sin`, `cos`, `tan` through
+  `e^(iu)` and `sinh`, `cosh`, `tanh` through `eᵘ` (Euler's formulas), so
+  such a denominator is suspected without multiplying anything out, then
+  confirmed by the identity test.  `(sin²x + cos²x − 1)²/√(cosh²x −
+  sinh²x − 1)` was `zoo` from `simplify`, now `nan`.  The
+  undefined-expression hunter (5,000 × 5 routes): 40 → 30 wrong, all
+  remaining as SymPy (`T/T = 1` for an identity zero `T`, like terms over
+  an identity zero); all six routes on 2,000 more: 30 → 23; with more
+  identities (4,000): 178 → 82.
+- **`(sin²u + cos²u − 1)·zoo` was `zoo` for `u = besselj(10⁵, 1)`**, a
+  constant the 0.34 cost guard does not evaluate: the identity is now
+  decided with `u` taken for a symbol, `nan`.  The identity tests of
+  `ratsimp`, `expand` and `simplify` never evaluate such a part either:
+  `((x + 1)² − x² − 2x − 1)/(sin²u + cos²u − 1)` with `u = jacobi(999,
+  1/3, 1/5, 1/7)` took 107–119 s (debug), now milliseconds, the same
+  `nan`.
 - **`eval_decimal` printed `0` for nonzero values whose smallest terms a
   cancellation hid** — the one known class where evaluation printed a
   wrong number without warning.  The zero search (1,024 bits beyond the
