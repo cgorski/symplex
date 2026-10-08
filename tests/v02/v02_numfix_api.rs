@@ -111,8 +111,10 @@ fn abs_fold_leaves_symbolic_and_real_arguments_alone() {
     // A positive constant's modulus is itself (folded when built since
     // 0.30), never rewritten as √(π²).
     assert_eq!(format!("{}", ctx.pi().abs().eval()), "pi");
-    // Transcendental parts are not expanded into √(sin² + cos²).
-    assert_eq!(format!("{}", i.exp().abs().eval()), "abs(exp(I))");
+    // Transcendental parts are not expanded into √(sin² + cos²).  Since
+    // 0.35 `|e^z| = e^(Re z)` folds `|exp(I)|` to `1` (SymPy: `Abs(exp(I))`
+    // → `1`); before it stayed `abs(exp(I))`.
+    assert_eq!(format!("{}", i.exp().abs().eval()), "1");
 }
 
 // ── Context::rational with zero denominator ────────────────────────────

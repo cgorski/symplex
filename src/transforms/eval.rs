@@ -2855,6 +2855,21 @@ fn eval_abs(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         }
     }
 
+    // `|e^z| = e^(Re z)` on all of ℂ (SymPy's `Abs.eval` takes
+    // `exp(re(arg))`): `|exp(i)| = 1`.  Before 0.35 it stayed `abs(exp(i))`,
+    // and the norm of the matrix `[[exp(i)]]` printed `√(sin²1 + cos²1)`.
+    // For a constant exponent whose real part is exact.
+    if let ExprNode::Exp(z) = *arena.node(inner)
+        && crate::base::walk::free_symbols(arena, z).is_empty()
+    {
+        let parts = crate::base::complex::decompose(arena, z);
+        if parts.exact {
+            let re = eval(arena, parts.re);
+            let e = arena.exp(re);
+            return Some(eval(arena, e));
+        }
+    }
+
     // Complex modulus of a numeric constant: |a + b·i| = √(a² + b²) whenever
     // the real/imaginary decomposition is exact, both parts are arithmetic
     // constants (numbers, π, e, … combined with + − × ^, so radicals are

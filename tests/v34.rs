@@ -3,6 +3,8 @@
 //! 0.34 hand-off.  Every reference value cites the oracle call that
 //! produced it.
 
+#[path = "v34/v34_eval.rs"]
+mod v34_eval;
 #[path = "v34/v34_evalf.rs"]
 mod v34_evalf;
 #[path = "v34/v34_undefined.rs"]

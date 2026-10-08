@@ -4279,10 +4279,16 @@ impl Matrix {
 /// provably real (the form real matrices always had), `re² + im²` when
 /// [`decompose`](crate::base::complex::decompose) determines both parts in
 /// real terms (`|1 + 2i|² = 5`), and `abs(e)²` otherwise (SymPy's
-/// `Abs(a)**2` for a symbol `a` that may be complex).
+/// `Abs(a)**2` for a symbol `a` that may be complex).  A factor `e^z`
+/// contributes `e^(2·Re z)` (`|e^z| = e^(Re z)`) rather than its cosine and
+/// sine: before 0.35 the norm of `[[exp(i)]]` was `√(sin²1 + cos²1)`
+/// (SymPy: `1`).
 fn abs_squared_entry(e: &Ex) -> Ex {
     if e.is_real() == Some(true) {
         return e * e;
+    }
+    if let Some(sq) = abs_squared_through_exp(e) {
+        return sq;
     }
     let id = {
         let mut inner = e.inner.write();
@@ -4303,6 +4309,51 @@ fn abs_squared_entry(e: &Ex) -> Ex {
         }
     };
     id.map_or_else(|| e * e, |id| e.wrap(id))
+}
+
+/// `|e|²` for an entry `c·e^z` (`e^z` alone, or a product with such
+/// factors) whose exponents have an exact real part: `|c|²·e^(2·Re z)`,
+/// with `|c|²` by [`abs_squared_entry`].  `None` when there is no such
+/// factor.
+fn abs_squared_through_exp(e: &Ex) -> Option<Ex> {
+    use crate::base::node::{ExprId, ExprNode};
+    let (exp_re, rest, rest_is_one) = {
+        let mut inner = e.inner.write();
+        let arena = &mut inner.arena;
+        let factors: Vec<ExprId> = match arena.node(e.raw_id()) {
+            ExprNode::Mul(children) => children.to_vec(),
+            _ => vec![e.raw_id()],
+        };
+        let mut res = Vec::new();
+        let mut others = Vec::new();
+        for f in factors {
+            match *arena.node(f) {
+                ExprNode::Exp(z) => {
+                    let parts = crate::base::complex::decompose(arena, z);
+                    if parts.exact {
+                        res.push(parts.re);
+                    } else {
+                        others.push(f);
+                    }
+                }
+                _ => others.push(f),
+            }
+        }
+        if res.is_empty() {
+            return None;
+        }
+        let re = arena.add(&res);
+        let two = arena.int(2);
+        let twice = arena.mul(&[two, re]);
+        let exp = arena.exp(twice);
+        let rest = arena.mul(&others);
+        (exp, rest, rest == arena.one)
+    };
+    let exp_re = e.wrap(exp_re);
+    if rest_is_one {
+        return Some(exp_re);
+    }
+    Some(&abs_squared_entry(&e.wrap(rest)) * &exp_re)
 }
 
 impl Matrix {

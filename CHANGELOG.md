@@ -6,7 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
-## [Unreleased]
+## [0.35.0] - 2026-10-08
+
+The last known class of silent wrong numbers in numerical evaluation is
+gone: a value that cancelled to zero at the working precision was
+printed `0` even when a term that is not zero had been lost in the
+cancellation (`sin²1 + cos²1 − 1 + e^(−10¹⁰)` is `e^(−10¹⁰)`, not `0`);
+a hunter found 3,159 such zeros in 5,000 cases on 0.34, none now.  More
+expressions that are undefined everywhere stay undefined, and several
+refusals of 0.34 are values now: Bessel functions of large order by
+their uniform expansions, Bessel functions and quotients below the
+exponent range, `polylog` of very negative order, `jacobi` to degree
+5000.
 
 ### Breaking (behaviour; no signature changed)
 
@@ -60,6 +71,12 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ### Fixed
 
+- **`abs(exp(I))` stayed unevaluated** and the norm of the matrix
+  `[[exp(I)]]` was `√(sin²1 + cos²1)`: `|e^z| = e^(Re z)` on all of ℂ
+  (SymPy's `Abs.eval`), for a constant `z` with an exact real part
+  (`abs(exp(2 + 3i))` = `e²`, `abs(exp(i·e^i))` = `e^(−sin 1)`), and the
+  Frobenius norm takes `|c·e^z|² = |c|²·e^(2·Re z)`; both are `1` now
+  (SymPy 1.14 the same).
 - **`1 + besselj(10⁹, 1)` was refused** ("not 0 but underflows"; 0.33
   printed `1` only by accident).  `J_ν(x)` with `ν > |x| > 0` has no zero
   (DLMF 10.21.3: `ν ≤ j′_ν,₁ < j_ν,₁`), so its underflow is a nonzero
@@ -114,6 +131,32 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   (2,005 of them below the range); now 0 wrong — 1,399 values, all 1,020
   true zeros still `0`, 2,581 refused (2,117 below the range, 464 beyond
   the configured precision).
+
+### Measured
+
+- `tests/v34/`: 4 files, 21 tests.  nextest 13,606 tests (14 skipped),
+  doctests 1,313.
+- Rubi harness: 14,522 verified, 69 real_verified, 0 wrong, 0 undecided
+  (unchanged; wall 20–22 s with 12 jobs).  Self-test: 55,475 verified, 0
+  wrong, 742 undecided (unchanged).  `--negative-params`: 0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates:
+  identical.
+- `cargo semver-checks` against 0.34.0: no semver update required.
+- Hunters (before → after): hidden terms (5,000) 3,159 wrong `0` → 0;
+  undefined expressions (5,000 × 5 routes) 40 → 30 wrong, all as SymPy;
+  special functions at extreme parameters (1,500) 460 → 1,110 evaluated,
+  0 wrong, slowest 0.38 s.
+- Fuzzing: every input the nightly runs and the local campaigns saved
+  since 0.33 replays in 0–0.9 s.  `fuzz_integrate` alone for 15 minutes
+  on 0.34.0 (it was starved in the 0.34 campaign): 12,831 inputs, 0
+  crashes, 0 timeouts.  On the release code all 12 targets ran together
+  with a 10-second limit (`fuzz_simplify` and `fuzz_integrate` 15
+  minutes, the others 10): `fuzz_numdist` 18,507,653 inputs,
+  `fuzz_refine` 12,647,782, `fuzz_lambertw` 2,626,048, `fuzz_roundtrip`
+  858,584, `fuzz_parser` 497,866, `fuzz_eigenvects` 197,162,
+  `fuzz_exact_matrix` 195,490, `fuzz_evalf` 91,682, `fuzz_calculus`
+  44,193, `fuzz_poly` 29,644, `fuzz_simplify` 22,249, `fuzz_integrate`
+  3,090: 0 crashes, 0 timeouts, 0 out-of-memory.
 
 ## [0.34.0] - 2026-10-08
 
