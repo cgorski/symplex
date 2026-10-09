@@ -25,9 +25,9 @@
 //! | `a + b + …` | SymPy's `add_terms`: the largest terms at a common scale, the terms more than `prec + 64` bits below them in the error, an exact cancellation of the largest moving on to the next | — |
 //! | `ln z` | `Log m + k·ln 2`, in range; `ln(1 + s) = s − s²/2 + …` | — |
 //! | `sin`, `tan`, `asin`, `atan` (and hyperbolic) | their series, `s ∓ s³/6 …` | — |
-//! | `erf` | `2s/√π·(1 + O(s²))` | — |
+//! | `erf` | `2/√π·(s − s³/3 + s⁵/10 − …)` | — |
 //! | `cos`, `cosh` | `1 ∓ s²/2 + s⁴/24` | — |
-//! | `−z`, `conj`, `re`, `im`, `abs` | of the mantissa | — |
+//! | `−z`, `conj`, `re`, `im`, `abs` | of the mantissa; of the polynomial when its monomials are real (`abs`: of known sign) | — |
 //! | `Ei(x)`, `erfc(x)` | — | the asymptotic series times `exp` at its scale |
 //! | `J_ν(x)`, `I_ν(x)` (`ν > 0`, `x² ≤ ν + 1`) | — | `e^L·₀F₁(; ν + 1; ∓x²/4)`, `L = ν·ln(abs(x)/2) − ln Γ(ν + 1)` |
 //!
@@ -66,6 +66,14 @@
 //! A function of a value that underflowed without a scaled form (`K₀(10¹⁰)`,
 //! `Ai(10¹⁰)`) has none either ([`View::Lost`]): in a sum it is an error
 //! term of the size of the underflow bound.
+//!
+//! What a value loses when it becomes a number alone — the terms of its
+//! polynomial below the number's error ([`note_dropped`]), the next term of a
+//! series cut short ([`note_series_cut`]), the part below the range of an
+//! argument a node without a rule here takes as its placeholder
+//! (`evalf::note_flattened`) — is recorded as a lost term
+//! (`accuracy::Absorbed`), so that a zero ball the evaluation ends with is
+//! refused rather than printed `0`.
 
 use astro_float::{BigFloat, Consts, RoundingMode};
 use num_traits::{One, Signed, ToPrimitive, Zero};
@@ -464,13 +472,14 @@ pub(super) fn extend(
     };
     match arena.node(id) {
         ExprNode::Exp(c) => match cx.view(*c)? {
-            View::Plain(s, true) => {
-                let fallback = s.bare();
-                match series(&poly_of(*c, &s), &EXPM1, prec, rm) {
-                    Some(d) => near(one(), d, prec, rm),
-                    None => Some(near_node(one(), first_order(fallback, 1), id)),
+            View::Plain(s, true) => match series(&poly_of(*c, &s), &EXPM1, prec, rm) {
+                Some(d) => near(one(), d, prec, rm),
+                None => {
+                    let d = first_order(s.bare(), 1);
+                    note_series_cut(&s, 2, -1.0, &d, prec, rm, ab);
+                    Some(near_node(one(), d, id))
                 }
-            }
+            },
             View::Plain(..) if underflowed => {
                 let (z, b) = cx.ordinary(*c)?;
                 if !z.1.is_zero() {
@@ -489,11 +498,17 @@ pub(super) fn extend(
         ExprNode::Ln(c) => match cx.view(*c)? {
             View::Plain(s, true) => {
                 let (v, b) = ln_scaled(&s, prec, rm, cc)?;
+                // The absolute error of `Log s` is the relative error of `s`.
+                note_dropped(&s, b.joint(), prec, rm, ab);
                 Some(Outcome::InRange(v, b))
             }
             View::Near(p, d) if p == one() => match series(&poly_of(*c, &d), &LOG1P, prec, rm) {
                 Some(l) => settle_poly(l, prec, rm, ab),
-                None => finish_node(first_order(d, 1), id, prec),
+                None => {
+                    let out = first_order(d.bare(), 1);
+                    note_series_cut(&d, 2, -1.0, &out, prec, rm, ab);
+                    finish_node(out, id, prec)
+                }
             },
             _ => None,
         },
@@ -506,7 +521,7 @@ pub(super) fn extend(
             for &c in children.iter() {
                 let (s, b) = match cx.plain_or_near(c) {
                     Some(f) => f,
-                    None => (beyond_power(&cx, c, prec, rm, cc)?, true),
+                    None => (beyond_power(&cx, c, prec, rm, cc, ab)?, true),
                 };
                 beyond |= b;
                 factors.push(s);
@@ -514,7 +529,22 @@ pub(super) fn extend(
             if !beyond && !underflowed {
                 return None;
             }
-            finish_node(product(&factors, prec, rm)?, id, prec)
+            let out = product(&factors, prec, rm)?;
+            // The factors' polynomials, and the parts `d` of the factors
+            // `p + d` (taken as `p`), are lost in the number.
+            let rel = rel_error(&out);
+            for (&c, f) in children.iter().zip(&factors) {
+                match cx.exts.get(&c) {
+                    Some(Ext::Beyond(_)) => note_dropped(f, rel, prec, rm, ab),
+                    Some(Ext::Near(_, d)) if d.nonzero().is_some() => {
+                        let radius = out.eb.joint() + out.k as f64;
+                        let term = d.lg_value() - f.lg_value() + out.lg_value();
+                        Absorbed::note(ab, term, radius);
+                    }
+                    _ => {}
+                }
+            }
+            finish_node(out, id, prec)
         }
         ExprNode::Pow(b, e) => {
             if exts.contains_key(e) {
@@ -529,7 +559,9 @@ pub(super) fn extend(
                     {
                         return settle_poly(full, prec, rm, ab);
                     }
-                    finish_node(power(&s, q, x, ex, prec, rm, cc)?, id, prec)
+                    let out = power(&s, q, x, ex, prec, rm, cc)?;
+                    note_dropped(&s, rel_error(&out), prec, rm, ab);
+                    finish_node(out, id, prec)
                 }
                 View::Plain(s, false) if underflowed => {
                     finish_node(power(&s, q, x, ex, prec, rm, cc)?, id, prec)
@@ -542,8 +574,9 @@ pub(super) fn extend(
                         return near(one(), dq, prec, rm);
                     }
                     // `(1 + d)^x = 1 + x·d·(1 + O(d))`.
-                    let xd = product(&[d.bare(), normalized(x, ex)?], prec, rm)?;
-                    Some(near_node(one(), first_order(xd, 1), id))
+                    let xd = first_order(product(&[d.bare(), normalized(x, ex)?], prec, rm)?, 1);
+                    note_series_cut(&d, 2, 0.0, &xd, prec, rm, ab);
+                    Some(near_node(one(), xd, id))
                 }
                 _ => None,
             }
@@ -554,22 +587,50 @@ pub(super) fn extend(
             View::Near(p, d) => Some(Outcome::Near(p.neg(), negated(with_poly(d, *c)))),
             _ => None,
         },
-        ExprNode::Conjugate(c) => match cx.view(*c)? {
-            View::Plain(s, true) => finish_node(conjugated(with_poly(s, *c)), id, prec),
-            View::Near(p, d) => Some(near_node(
-                Gauss {
-                    re: p.re,
-                    im: -p.im,
-                },
-                conjugated(with_poly(d, *c)),
-                id,
-            )),
-            _ => None,
-        },
+        ExprNode::Conjugate(c) => {
+            // A conjugate without a polynomial is a number alone.
+            let conj = |s: Scaled, ab: &mut Option<Absorbed>| {
+                let s = with_poly(s, *c);
+                let out = conjugated(s.clone());
+                if out.poly.is_none() {
+                    note_dropped(&s, accuracy::EXACT, prec, rm, ab);
+                }
+                out
+            };
+            match cx.view(*c)? {
+                View::Plain(s, true) => finish_node(conj(s, ab), id, prec),
+                View::Near(p, d) => Some(near_node(
+                    Gauss {
+                        re: p.re,
+                        im: -p.im,
+                    },
+                    conj(d, ab),
+                    id,
+                )),
+                _ => None,
+            }
+        }
         ExprNode::Re(c) | ExprNode::Im(c) | ExprNode::Abs(c) => {
             let View::Plain(s, true) = cx.view(*c)? else {
                 return None;
             };
+            // On the polynomial when every monomial is real: `re(Σ cⱼ·μⱼ) =
+            // Σ re(cⱼ)·μⱼ`, and `abs` of a real value of known sign is `±v`.
+            let poly = poly_of(*c, &s);
+            let exact = match arena.node(id) {
+                ExprNode::Re(_) => poly.part(false),
+                ExprNode::Im(_) => poly.part(true),
+                _ if poly.is_real() => match s.nonzero() {
+                    Some(Nonzero::Positive) => Some(poly),
+                    Some(Nonzero::Negative) => Some(poly.negated()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(p) = exact {
+                return settle_poly(p, prec, rm, ab);
+            }
+            note_dropped(&with_poly(s.clone(), *c), accuracy::EXACT, prec, rm, ab);
             let (m, eb) = match arena.node(id) {
                 ExprNode::Re(_) => (s.m.0.clone(), s.eb.re),
                 ExprNode::Im(_) => (s.m.1.clone(), s.eb.im),
@@ -583,12 +644,15 @@ pub(super) fn extend(
             let z = (m, BigFloat::new(prec));
             finish_node(Scaled::plain(z, s.k, Bound::real(eb)), id, prec)
         }
-        // `erf s = 2/√π·s·(1 + O(s²))`.
+        // `erf s = 2/√π·(s − s³/3 + s⁵/10 + O(s⁷))`: the series with `2/√π`
+        // a factor of the monomials, keyed by this node (below the range, it
+        // is no factor in range of a product).  Before 0.36 it was
+        // `2/√π·s·(1 + O(s²))`, a number alone, and `erf(e^(−10¹⁰)) −
+        // 2·e^(−10¹⁰)/√π` (truly `−2·e^(−3·10¹⁰)/(3√π)`) printed `0`.
         ExprNode::Erf(c) => {
             let View::Plain(s, true) = cx.view(*c)? else {
                 return None;
             };
-            let s = first_order(s, 2);
             let wp = prec + 16;
             let pi = cc.pi(wp, rm).clone();
             let two_over_sqrt_pi = BigFloat::from_i32(2, wp).div(&pi.sqrt(wp, rm), wp, rm);
@@ -596,7 +660,29 @@ pub(super) fn extend(
                 &(two_over_sqrt_pi, BigFloat::new(wp)),
                 Bound::real(-(prec as f64) - 8.0),
             )?;
-            finish_node(product(&[s, f], prec, rm)?, id, prec)
+            // The coefficients beyond the fifth order, `1/(n!·(2n + 1))`, are
+            // below 1; `abs(erf′)·√π/2 ≤ 1`.
+            let coeffs = [(1, ratio(1, 1)), (3, ratio(-1, 3)), (5, ratio(1, 10))];
+            if let Some(p) = series_with(
+                &poly_of(*c, &s),
+                &coeffs,
+                Some((7, 0.0)),
+                1.0,
+                Some(1),
+                prec,
+                rm,
+            ) && let Some(full) = poly_mul(
+                &p,
+                &Poly::atom(Mono::factor(id), &f),
+                accuracy::EXACT,
+                prec,
+                rm,
+            ) {
+                return settle_poly(full, prec, rm, ab);
+            }
+            let out = product(&[first_order(s.bare(), 2), f], prec, rm)?;
+            note_series_cut(&s, 3, -2.0, &out, prec, rm, ab);
+            finish_node(out, id, prec)
         }
         // Odd functions with `f′(0) = 1`: their series, `f(s) = s + c₃s³ + c₅s⁵ + O(s⁷)`.
         ExprNode::Sin(c)
@@ -622,7 +708,11 @@ pub(super) fn extend(
             };
             match series(&poly_of(*c, &s), table, prec, rm) {
                 Some(f) => settle_poly(f, prec, rm, ab),
-                None => finish_node(first_order(s, 2), id, prec),
+                None => {
+                    let out = first_order(s.bare(), 2);
+                    note_series_cut(&s, 3, -3.0, &out, prec, rm, ab);
+                    finish_node(out, id, prec)
+                }
             }
         }
         // `cos s = 1 − s²/2 + s⁴/24 + O(s⁶)`, `cosh s = 1 + s²/2 + …`.
@@ -635,13 +725,15 @@ pub(super) fn extend(
             if let Some(d) = series(&poly_of(*c, &s), table, prec, rm) {
                 return near(one(), d, prec, rm);
             }
-            let s = s.bare();
-            let mut sq = product(&[s.clone(), s], prec, rm)?;
+            let sb = s.bare();
+            let mut sq = product(&[sb.clone(), sb], prec, rm)?;
             sq.k = sq.k.checked_sub(1)?;
             if is_cos {
                 sq = negated(sq);
             }
-            Some(near_node(one(), first_order(sq, 1), id))
+            let d = first_order(sq, 1);
+            note_series_cut(&s, 4, -5.0, &d, prec, rm, ab);
+            Some(near_node(one(), d, id))
         }
         ExprNode::Ei(c) if underflowed => {
             let (x, b) = cx.ordinary(*c)?;
@@ -921,6 +1013,7 @@ fn beyond_power(
     prec: usize,
     rm: RoundingMode,
     cc: &mut Consts,
+    ab: &mut Option<Absorbed>,
 ) -> Option<Scaled> {
     match cx.arena.node(c) {
         ExprNode::Pow(b, e) => {
@@ -931,7 +1024,9 @@ fn beyond_power(
                 return None;
             }
             let (x, ex) = cx.ordinary(*e)?;
-            power(s, cx.arena.as_num(*e), x, ex, prec, rm, cc)
+            let out = power(s, cx.arena.as_num(*e), x, ex, prec, rm, cc)?;
+            note_dropped(s, rel_error(&out), prec, rm, ab);
+            Some(out)
         }
         ExprNode::Exp(g) => {
             if cx.exts.contains_key(g) {
@@ -1651,17 +1746,39 @@ impl Poly {
         self
     }
 
-    /// The conjugate, when every monomial is an `exp` (or 1).
+    /// The conjugate, when every monomial is real or an `exp` (or 1).
     fn conjugated(mut self) -> Option<Poly> {
         for t in &mut self.terms {
+            t.c.im = -t.c.im.clone();
+            if accuracy::exactly_real(&t.v.m, t.v.eb) {
+                continue;
+            }
             if !t.mono.is_exp() {
                 return None;
             }
-            t.c.im = -t.c.im.clone();
             t.mono.exp.im = -t.mono.exp.im.clone();
             t.v = conjugated(t.v.bare());
         }
         Some(self)
+    }
+
+    /// The real part (`imag` false) or the imaginary part, when every
+    /// monomial is real.
+    fn part(&self, imag: bool) -> Option<Poly> {
+        let mut out = Poly::zero();
+        for t in &self.terms {
+            if !accuracy::exactly_real(&t.v.m, t.v.eb) {
+                return None;
+            }
+            let c = if imag { &t.c.im } else { &t.c.re };
+            out.push(Term {
+                c: Gauss::real(c.clone()),
+                mono: t.mono.clone(),
+                v: t.v.clone(),
+            })?;
+        }
+        out.rem = Bound::real(if imag { self.rem.im } else { self.rem.re });
+        Some(out)
     }
 
     /// The constant term and the rest.
@@ -1796,6 +1913,60 @@ fn note_lost(
                 }
             }
         }
+    }
+}
+
+/// Record in `ab` what the value `s` (with its polynomial) loses when a
+/// node makes a number alone of it whose relative error is `2^rel`
+/// (`accuracy::EXACT`: `s`'s own error): the terms of its polynomial below
+/// that error relative to `s`, or below `s`'s absolute error ([`note_lost`]).
+/// A cancellation of the number against its leading terms leaves them: before
+/// 0.36 `log(e^(−10¹⁰) + e^(−2·10¹⁰)) + 10¹⁰` (truly `e^(−10¹⁰)`),
+/// `log(sin e^(−10¹⁰)) + 10¹⁰` (`−e^(−2·10¹⁰)/6`) and `abs(sin((1 +
+/// i)·e^(−10¹⁰))) − √2·e^(−10¹⁰)` printed `0`.
+fn note_dropped(s: &Scaled, rel: ErrExp, prec: usize, rm: RoundingMode, ab: &mut Option<Absorbed>) {
+    if let Some(poly) = &s.poly
+        && let Some(shaped) = shaped_terms(poly, prec, rm)
+    {
+        let own = s.eb.joint() + s.k as f64;
+        let radius = if accuracy::is_exact(rel) || accuracy::is_unknown(rel) {
+            own
+        } else {
+            accuracy::lsum(s.lg_value() + rel, own)
+        };
+        note_lost(shaped, radius, prec, rm, ab);
+    }
+}
+
+/// The relative error of `s` (`log₂`; unknown for a zero ball).
+fn rel_error(s: &Scaled) -> ErrExp {
+    let lm = accuracy::lg_abs_low(&s.m);
+    if lm.is_finite() {
+        s.eb.joint() - lm
+    } else {
+        accuracy::UNKNOWN
+    }
+}
+
+/// Record in `ab` that a series in the value `s` below the range, cut to a
+/// number alone (`out`), lost its term of order `n` (coefficient at least
+/// `2^lc`), certainly not 0 when `s` is not — and `s`'s own polynomial
+/// ([`note_dropped`]).
+fn note_series_cut(
+    s: &Scaled,
+    n: u32,
+    lc: f64,
+    out: &Scaled,
+    prec: usize,
+    rm: RoundingMode,
+    ab: &mut Option<Absorbed>,
+) {
+    note_dropped(s, rel_error(out), prec, rm, ab);
+    if s.nonzero().is_some() {
+        // The term lies within `out`'s error by construction (`first_order`).
+        let radius = out.eb.joint() + out.k as f64;
+        let term = (lc + f64::from(n) * s.lg_value()).min(radius - 1.0);
+        Absorbed::note(ab, term, radius);
     }
 }
 
@@ -1968,77 +2139,97 @@ fn poly_power(
 }
 
 /// A power series `f(V) − f(0) = Σ cₙ·Vⁿ` at 0, to the order below `next`;
-/// every coefficient beyond is at most 1 in absolute value.
+/// every coefficient beyond is at most 1 in absolute value.  `parity`:
+/// `Some(1)` for an odd function, `Some(0)` for an even one (every power,
+/// beyond too, of that parity).
 struct Series {
     coeffs: &'static [(u32, i64, i64)],
     next: u32,
+    parity: Option<u32>,
 }
 
 const EXPM1: Series = Series {
     coeffs: &[(1, 1, 1), (2, 1, 2), (3, 1, 6), (4, 1, 24), (5, 1, 120)],
     next: 6,
+    parity: None,
 };
 const LOG1P: Series = Series {
     coeffs: &[(1, 1, 1), (2, -1, 2), (3, 1, 3), (4, -1, 4), (5, 1, 5)],
     next: 6,
+    parity: None,
 };
 const COSM1: Series = Series {
     coeffs: &[(2, -1, 2), (4, 1, 24)],
     next: 6,
+    parity: Some(0),
 };
 const COSHM1: Series = Series {
     coeffs: &[(2, 1, 2), (4, 1, 24)],
     next: 6,
+    parity: Some(0),
 };
 const SIN: Series = Series {
     coeffs: &[(1, 1, 1), (3, -1, 6), (5, 1, 120)],
     next: 7,
+    parity: Some(1),
 };
 const SINH: Series = Series {
     coeffs: &[(1, 1, 1), (3, 1, 6), (5, 1, 120)],
     next: 7,
+    parity: Some(1),
 };
 const TAN: Series = Series {
     coeffs: &[(1, 1, 1), (3, 1, 3), (5, 2, 15)],
     next: 7,
+    parity: Some(1),
 };
 const TANH: Series = Series {
     coeffs: &[(1, 1, 1), (3, -1, 3), (5, 2, 15)],
     next: 7,
+    parity: Some(1),
 };
 const ASIN: Series = Series {
     coeffs: &[(1, 1, 1), (3, 1, 6), (5, 3, 40)],
     next: 7,
+    parity: Some(1),
 };
 const ASINH: Series = Series {
     coeffs: &[(1, 1, 1), (3, -1, 6), (5, 3, 40)],
     next: 7,
+    parity: Some(1),
 };
 const ATAN: Series = Series {
     coeffs: &[(1, 1, 1), (3, -1, 3), (5, 1, 5)],
     next: 7,
+    parity: Some(1),
 };
 const ATANH: Series = Series {
     coeffs: &[(1, 1, 1), (3, 1, 3), (5, 1, 5)],
     next: 7,
+    parity: Some(1),
 };
 
 /// `f(V) − f(0)` for `V = v` (no constant term) by the series `s`.
 fn series(v: &Poly, s: &Series, prec: usize, rm: RoundingMode) -> Option<Poly> {
     let coeffs: Vec<(u32, Gauss)> = s.coeffs.iter().map(|&(n, a, b)| (n, ratio(a, b))).collect();
-    series_with(v, &coeffs, Some((s.next, 0.0)), 1.0, prec, rm)
+    series_with(v, &coeffs, Some((s.next, 0.0)), 1.0, s.parity, prec, rm)
 }
 
 /// `Σ cₙ·Vⁿ` for `V = v` (no constant term, `abs(V) < 2⁻⁶⁴`), with the
 /// remainder: for `tail = Some((N, λ))` the terms from `Vᴺ` on, at most
 /// `2·2^λ·abs(V)ᴺ` (their coefficients at most `2^λ`, decreasing geometric
 /// against `abs(V)`; `None`: the series ends), and `v`'s own remainder
-/// through `abs(f′) ≤ 2^lf1` near 0.
+/// through `abs(f′) ≤ 2^lf1` near 0.  For real coefficients of one
+/// `parity` (see [`Series`]) and an exactly imaginary `V`, every power is
+/// imaginary (odd) or real (even), and so is the remainder: `re(atanh(i·t))`
+/// is exactly 0.
+#[allow(clippy::too_many_arguments)]
 fn series_with(
     v: &Poly,
     coeffs: &[(u32, Gauss)],
     tail: Option<(u32, f64)>,
     lf1: f64,
+    parity: Option<u32>,
     prec: usize,
     rm: RoundingMode,
 ) -> Option<Poly> {
@@ -2070,6 +2261,17 @@ fn series_with(
         re: accuracy::lsum(out.rem.re, r.re),
         im: accuracy::lsum(out.rem.im, r.im),
     };
+    let imaginary = accuracy::is_exact(v.rem.re)
+        && v.terms
+            .iter()
+            .all(|t| t.c.re.is_zero() && accuracy::exactly_real(&t.v.m, t.v.eb));
+    if imaginary && coeffs.iter().all(|(_, c)| c.im.is_zero()) {
+        match parity {
+            Some(1) => out.rem.re = accuracy::EXACT,
+            Some(0) => out.rem.im = accuracy::EXACT,
+            _ => {}
+        }
+    }
     Some(out)
 }
 
@@ -2094,7 +2296,7 @@ fn binomial(v: &Poly, q: &Q, prec: usize, rm: RoundingMode) -> Option<Poly> {
     }
     let tail = (!c.is_zero()).then(|| (6, lg_gauss(&Gauss::real(c))));
     // `abs(f′) = abs(q)·abs(1 + ξ)^(q − 1) ≤ 2·abs(q)` near 0.
-    series_with(v, &coeffs, tail, 1.0 + lq, prec, rm)
+    series_with(v, &coeffs, tail, 1.0 + lq, None, prec, rm)
 }
 
 #[cfg(test)]

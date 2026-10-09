@@ -257,6 +257,9 @@ struct Evaluated {
     /// The bits that hold every exact value of the expression in full
     /// ([`input_bits`]).
     exact_bits: u64,
+    /// The bits that hold the second-order parts of the exact values with a
+    /// small part ([`second_order_bits`]).
+    second_bits: u64,
 }
 
 /// The error bounds of the evaluated nodes (see [`accuracy`]).
@@ -319,8 +322,10 @@ fn evaluate_tree_full(
     let mut exts = extended::ExtMap::default();
     // The nonzero terms the sums lost below their error bounds.
     let mut absorbed: Option<accuracy::Absorbed> = None;
-    // The bits that hold every exact value in full (`input_bits`).
+    // The bits that hold every exact value in full (`input_bits`), and its
+    // second-order part (`second_order_bits`).
     let mut exact_bits = 0u64;
+    let mut second_bits = 0u64;
     if let Some((id, value, err)) = seed {
         sigs.record_leaf(id, &value, err);
         cache.insert(id, value);
@@ -332,8 +337,17 @@ fn evaluate_tree_full(
         }
         let exact_z = exact::exact_value(arena, id, &exact_values);
         match (&exact_z, arena.node(id)) {
-            (Some(z), _) => exact_bits = exact_bits.max(input_bits(&z.re)).max(input_bits(&z.im)),
-            (None, ExprNode::Num(n)) => exact_bits = exact_bits.max(input_bits(arena.num(*n))),
+            (Some(z), _) => {
+                exact_bits = exact_bits.max(input_bits(&z.re)).max(input_bits(&z.im));
+                second_bits = second_bits
+                    .max(second_order_bits(&z.re, arena))
+                    .max(second_order_bits(&z.im, arena));
+            }
+            (None, ExprNode::Num(n)) => {
+                let q = arena.num(*n);
+                exact_bits = exact_bits.max(input_bits(q));
+                second_bits = second_bits.max(second_order_bits(q, arena));
+            }
             _ => {}
         }
         let mut evaluated =
@@ -345,6 +359,7 @@ fn evaluate_tree_full(
             });
         // A value below the exponent range, or a function of one, held
         // scaled (`extended`).
+        let mut extended_value = false;
         if exact_z.is_none() {
             let underflowed = matches!(&evaluated, Ok((v, b))
                 if accuracy::mag(v).is_none() && accuracy::is_underflow(b.joint()));
@@ -363,6 +378,7 @@ fn evaluate_tree_full(
                     &mut absorbed,
                 )
             {
+                extended_value = true;
                 evaluated = match outcome {
                     extended::Outcome::InRange(v, b) => Ok((v, b)),
                     extended::Outcome::Beyond(s) => {
@@ -456,7 +472,19 @@ fn evaluate_tree_full(
                 }
                 if !exts.contains_key(&id) {
                     note_series_tail(arena.node(id), e.joint(), &cache, &errs, &mut absorbed);
-                    note_cross_terms(arena, id, &value, e.joint(), &cache, &errs, &mut absorbed);
+                    note_cross_terms(
+                        arena,
+                        id,
+                        &value,
+                        e.joint(),
+                        &cache,
+                        &errs,
+                        &exact_values,
+                        &mut absorbed,
+                    );
+                }
+                if !extended_value && !exact_values.contains_key(&id) {
+                    note_flattened(arena.node(id), e.joint(), &exts, &nonzero, &mut absorbed);
                 }
                 if accuracy::mag(&value).is_none() && accuracy::is_underflow(e.joint()) {
                     let status = match exts.get(&id) {
@@ -498,6 +526,7 @@ fn evaluate_tree_full(
         beyond,
         absorbed,
         exact_bits,
+        second_bits,
     })
 }
 
@@ -543,14 +572,60 @@ fn note_absorbed(
     }
 }
 
+/// Record in `slot` the part below the exponent range, certainly not 0, of
+/// an argument of `node` that the node's ordinary value (with the error
+/// bound `2^radius`) does not hold ([`accuracy::Absorbed`]): an argument
+/// known scaled below the range (`extended`), the part `d` of one that is
+/// `p + d`, or one that underflowed but is certainly not 0, taken by a node
+/// without a rule of its own for it — its argument is the placeholder `0 ±
+/// underflow` or `p ± underflow`, so its value is `f(0)` or `f(p)`.  A
+/// cancellation against `f(p)` leaves the lost part: before 0.36
+/// `sin(exp(e^(−10¹⁰))) − sin 1` (truly `cos 1·e^(−10¹⁰)`), `besselj(0,
+/// e^(−10¹⁰)) − 1`, `erfc(e^(−10¹⁰)) − 1`, `2^(e^(−10¹⁰)) − 1` and
+/// `cos(besselk(0, 10¹⁰)) − 1` printed `0` (`besselj(0, T) − 1 = −T²/4 +
+/// O(T⁴)` by SymPy's series, for `T = e^(−10¹⁰)` mpmath
+/// `-exp(-mpf(10)**10)**2/4` = `-2.15e-8685889639`).
+fn note_flattened(
+    node: &ExprNode,
+    radius: accuracy::ErrExp,
+    exts: &extended::ExtMap,
+    nonzero: &FxHashMap<ExprId, accuracy::Nonzero>,
+    slot: &mut Option<accuracy::Absorbed>,
+) {
+    if !radius.is_finite() {
+        return;
+    }
+    for c in node.children().iter() {
+        let term = match exts.get(c) {
+            Some(extended::Ext::Beyond(s)) => {
+                if s.nonzero().is_none() {
+                    continue;
+                }
+                s.lg_value()
+            }
+            Some(extended::Ext::Near(_, d)) => {
+                if d.nonzero().is_none() {
+                    continue;
+                }
+                d.lg_value()
+            }
+            None if nonzero.contains_key(c) => accuracy::UNDERFLOW,
+            None => continue,
+        };
+        accuracy::Absorbed::note(slot, term, radius);
+    }
+}
+
 /// Record in `slot` the first term of the Taylor series at 0 of an
 /// elementary function at a small argument that its value (with the error
-/// bound `2^radius`) cannot show ([`accuracy::Absorbed`]): `x³/3` of
-/// `atan x`, `x²/2` of `cos x`, `x` or `x²/2` of `exp x`.  The value is
-/// right within its bound, but a cancellation against the leading terms
-/// leaves that term: `atan(10⁻⁴⁰⁰)·(sin²1 + cos²1) − 10⁻⁴⁰⁰` is
-/// `−10⁻¹²⁰⁰/3` (before 0.35 it printed `0`).  Only for an argument certainly
-/// not 0 below `2⁻⁸`, where the series is dominated by its first terms.
+/// bound `2^radius`) cannot show ([`accuracy::Absorbed`]): `x³/3` or `x⁵/5`
+/// of `atan x`, `x²/2` or `x⁴/24` of `cos x`, `x`, `x²/2` or `x³/6` of
+/// `exp x`.  The value is right within its bound, but a cancellation against
+/// the leading terms leaves that term: `atan(10⁻⁴⁰⁰)·(sin²1 + cos²1) −
+/// 10⁻⁴⁰⁰` is `−10⁻¹²⁰⁰/3` (before 0.35 it printed `0`), and the same
+/// `+ 10⁻¹²⁰⁰/3` is `2·10⁻²⁰⁰¹` (before 0.36 it printed `0`: only the
+/// first term was recorded).  Only for an argument certainly not 0 below
+/// `2⁻⁸`, where the series is dominated by its first terms.
 fn note_series_tail(
     node: &ExprNode,
     radius: accuracy::ErrExp,
@@ -558,20 +633,31 @@ fn note_series_tail(
     errs: &ErrMap,
     slot: &mut Option<accuracy::Absorbed>,
 ) {
-    // `log₂` of the coefficient of the third power of the odd functions.
+    // `log₂` of the coefficients of the third and fifth powers of the odd
+    // functions (the smallest of each group: a term taken smaller only sends
+    // the search deeper).
     const THIRD: f64 = -1.584_962_500_721_156; // log₂(1/3)
     const SIXTH: f64 = -2.584_962_500_721_156; // log₂(1/6)
+    const TWO_FIFTEENTHS: f64 = -2.906_890_595_608_519; // log₂(2/15)
+    const ONE_120TH: f64 = -6.906_890_595_608_519; // log₂(1/120)
     let (c, terms): (ExprId, &[(f64, f64)]) = match *node {
         ExprNode::Sin(c) | ExprNode::Sinh(c) | ExprNode::Asin(c) | ExprNode::Asinh(c) => {
-            (c, &[(SIXTH, 3.0)])
+            (c, &[(SIXTH, 3.0), (ONE_120TH, 5.0)])
         }
         ExprNode::Tan(c) | ExprNode::Tanh(c) | ExprNode::Atan(c) | ExprNode::Atanh(c) => {
-            (c, &[(THIRD, 3.0)])
+            (c, &[(THIRD, 3.0), (TWO_FIFTEENTHS, 5.0)])
         }
-        // `2/(3√π)`.
-        ExprNode::Erf(c) => (c, &[(-1.410_710_565_457_315_5, 3.0)]),
-        ExprNode::Cos(c) | ExprNode::Cosh(c) => (c, &[(-1.0, 2.0)]),
-        ExprNode::Exp(c) => (c, &[(0.0, 1.0), (-1.0, 2.0)]),
+        // `2/(3√π)`, `2/(10√π)`.
+        ExprNode::Erf(c) => (
+            c,
+            &[
+                (-1.410_710_565_457_315_5, 3.0),
+                (-3.147_675_390_659_634, 5.0),
+            ],
+        ),
+        // `1/2`, `1/24`.
+        ExprNode::Cos(c) | ExprNode::Cosh(c) => (c, &[(-1.0, 2.0), (-4.584_962_500_721_156, 4.0)]),
+        ExprNode::Exp(c) => (c, &[(0.0, 1.0), (-1.0, 2.0), (SIXTH, 3.0)]),
         _ => return,
     };
     if !radius.is_finite() {
@@ -598,15 +684,23 @@ fn note_series_tail(
 }
 
 /// `log₂` of the ratio of the smallest term of the sum `id` that is
-/// certainly not 0 to the sum's value, when the sum is certainly not 0.
+/// certainly not 0 to the sum's value, when the sum is certainly not 0 —
+/// or, for an exact real rational `x` that is not a sum (the canonical form
+/// folds `1 + 10⁻³⁰⁰` into one rational), the size of its small part
+/// ([`rational_small_part`]).
 fn small_part(
     arena: &Arena,
     id: ExprId,
     cache: &FxHashMap<ExprId, Complex>,
     errs: &ErrMap,
+    exact: &exact::ExactMap,
 ) -> Option<f64> {
     let ExprNode::Add(children) = arena.node(id) else {
-        return None;
+        // (A small part within 64 bits shows at any working precision.)
+        return match exact::operand(arena, id, exact) {
+            Some(z) if z.im.is_zero() && input_bits(&z.re) >= 64 => rational_small_part(&z.re),
+            _ => None,
+        };
     };
     let total = cache.get(&id)?;
     let tb = errs.get(&id)?;
@@ -624,12 +718,115 @@ fn small_part(
     ratio.is_finite().then_some(ratio)
 }
 
+/// `log₂` of `abs(n)` (within `2⁻⁵²` relative, or a bit beyond `f64`).
+fn lg_int(n: &BigInt) -> f64 {
+    use num_traits::{Signed, ToPrimitive};
+    match n.abs().to_f64() {
+        Some(f) if f.is_finite() && f > 0.0 => f.log2(),
+        _ => n.bits() as f64,
+    }
+}
+
+/// `log₂ abs(h/u)` for an integer `n = u + h` whose leading `k` binary
+/// (`k ≤ 64`) or decimal (`k ≤ 8`) digits are `u` and whose rest `h ≠ 0` lies
+/// at least 64 bits below the unit of the `k`-th digit: `10⁴⁰⁰ + 1` is `u =
+/// 10⁴⁰⁰`, `h = 1`.  Integers below 128 bits have no such part.
+fn integer_small_part(n: &BigInt) -> Option<f64> {
+    use num_integer::Integer;
+    use num_traits::Signed;
+    let a = n.abs();
+    let bits = a.bits();
+    if bits < 128 {
+        return None;
+    }
+    // `u = round(a/g)·g` for the unit `g` of the k-th digit.
+    let split = |g: &BigInt| -> Option<Option<f64>> {
+        let (quot, rem) = a.div_mod_floor(g);
+        let up = &rem + &rem >= *g;
+        let u = if up { (quot + 1u32) * g } else { quot * g };
+        let h = &a - &u;
+        if h.is_zero() {
+            // `n` is short: no small part.
+            return Some(None);
+        }
+        (lg_int(&h) < lg_int(g) - 64.0).then(|| Some(lg_int(&h) - lg_int(&u)))
+    };
+    for k in 1..=64u64 {
+        let g = BigInt::from(1u32) << (bits - k);
+        if let Some(found) = split(&g) {
+            return found;
+        }
+    }
+    let digits = (bits as f64 * std::f64::consts::LOG10_2).floor() as u32 + 1;
+    for k in 1..=8u32 {
+        let Some(e) = digits.checked_sub(k).filter(|&e| e > 0) else {
+            break;
+        };
+        if let Some(found) = split(&BigInt::from(10u32).pow(e)) {
+            return found;
+        }
+    }
+    None
+}
+
+/// `log₂ abs(h/u)` for an exact rational `x = u + h` with a small part `h`
+/// (the largest found): a small part of its numerator or denominator
+/// ([`integer_small_part`]: `(10³⁰⁰ + 1)/10³⁰⁰`), or `u ≠ 0` the last
+/// convergent of its continued fraction before a partial quotient `a ≥ 2¹⁶`
+/// (among the first 64), so `abs(h) ≈ 1/(b²·a)` for `u = p/b` (within a
+/// bit).  `1 + 10⁻³⁰⁰` is `1 + h`, `log₂ abs(h) = −996.6`; `10⁻³⁰⁰` itself
+/// (`u = 0`) and `1234567/7654321` have none.
+fn rational_small_part(x: &crate::base::numeric::Q) -> Option<f64> {
+    use num_integer::Integer;
+    if x.is_zero() {
+        return None;
+    }
+    let digits = [x.numer(), x.denom()]
+        .into_iter()
+        .filter_map(integer_small_part)
+        .fold(None, |acc: Option<f64>, r| {
+            Some(acc.map_or(r, |a| a.max(r)))
+        });
+    let lg = lg_int;
+    let (mut n, mut d) = (x.numer().clone(), x.denom().clone());
+    // The convergents `pₖ/qₖ` and the ones before.
+    let (mut p, mut q) = (BigInt::from(1), BigInt::from(0));
+    let (mut p_prev, mut q_prev) = (BigInt::from(0), BigInt::from(1));
+    for step in 0..64 {
+        if d.is_zero() {
+            return digits;
+        }
+        let (a, r) = n.div_mod_floor(&d);
+        if step > 0 && a.bits() >= 16 && !p.is_zero() {
+            let lg_u = lg(&p) - lg(&q);
+            let lg_h = -(2.0 * lg(&q) + lg(&a));
+            let cf = lg_h - lg_u;
+            return Some(digits.map_or(cf, |d| d.max(cf)));
+        }
+        let next_p = &a * &p + &p_prev;
+        let next_q = &a * &q + &q_prev;
+        p_prev = std::mem::replace(&mut p, next_p);
+        q_prev = std::mem::replace(&mut q, next_q);
+        n = std::mem::replace(&mut d, r);
+    }
+    digits
+}
+
 /// Record in `slot` the second-order term that a power `(a + h)^q` or a
 /// product `(a + h)·(b + k)` of sums with small parts loses below its error
 /// bound `2^radius` ([`accuracy::Absorbed`]): `q(q − 1)/2·a^q·(h/a)²`, and
 /// `ab·(h/a)·(k/b)`.  A cancellation of the leading and first-order terms
 /// leaves it: `(√2 + 10⁻⁴⁰⁰)²·(sin²1 + cos²1) − 2 − 2√2·10⁻⁴⁰⁰` is
-/// `10⁻⁸⁰⁰` (before 0.35 it printed `0`).
+/// `10⁻⁸⁰⁰` (before 0.35 it printed `0`).  The same for an analytic
+/// function at an argument with a small part, `f″(a)·h²/2` (taken as
+/// `max(abs(f(a + h)), 1)·(h/a)²`), and for an exact rational `a + h` the
+/// canonical form folded into one number ([`rational_small_part`]): before
+/// 0.36 `sin(1 + 10⁻³⁰⁰) + sin(1 − 10⁻³⁰⁰) − 2·sin 1` (truly `−sin 1·10⁻⁶⁰⁰`),
+/// `log(1 + 10⁻³⁰⁰) + log(1 − 10⁻³⁰⁰)` (`−10⁻⁶⁰⁰`) and `(1 + 10⁻⁴⁰⁰)^(1/2) − 1 −
+/// 10⁻⁴⁰⁰/2` (`−10⁻⁸⁰⁰/8`) printed `0`: the inputs are held in full at
+/// about 1,000 or 1,330 bits ([`input_bits`]), and the value needs twice as
+/// many.
+#[allow(clippy::too_many_arguments)]
 fn note_cross_terms(
     arena: &Arena,
     id: ExprId,
@@ -637,6 +834,7 @@ fn note_cross_terms(
     radius: accuracy::ErrExp,
     cache: &FxHashMap<ExprId, Complex>,
     errs: &ErrMap,
+    exact: &exact::ExactMap,
     slot: &mut Option<accuracy::Absorbed>,
 ) {
     if !radius.is_finite() {
@@ -654,7 +852,7 @@ fn note_cross_terms(
             else {
                 return;
             };
-            let Some(r) = small_part(arena, *b, cache, errs) else {
+            let Some(r) = small_part(arena, *b, cache, errs, exact) else {
                 return;
             };
             let c = (q * (q - 1.0) / 2.0).abs();
@@ -666,7 +864,7 @@ fn note_cross_terms(
         ExprNode::Mul(children) => {
             let mut parts: Vec<f64> = children
                 .iter()
-                .filter_map(|&c| small_part(arena, c, cache, errs))
+                .filter_map(|&c| small_part(arena, c, cache, errs, exact))
                 .filter(|&r| r <= -8.0)
                 .collect();
             if parts.len() < 2 {
@@ -674,6 +872,40 @@ fn note_cross_terms(
             }
             parts.sort_by(f64::total_cmp);
             lv + parts[parts.len() - 1] + parts[parts.len() - 2]
+        }
+        ExprNode::Sin(c)
+        | ExprNode::Cos(c)
+        | ExprNode::Tan(c)
+        | ExprNode::Exp(c)
+        | ExprNode::Ln(c)
+        | ExprNode::Asin(c)
+        | ExprNode::Acos(c)
+        | ExprNode::Atan(c)
+        | ExprNode::Sinh(c)
+        | ExprNode::Cosh(c)
+        | ExprNode::Tanh(c)
+        | ExprNode::Asinh(c)
+        | ExprNode::Acosh(c)
+        | ExprNode::Atanh(c)
+        | ExprNode::Gamma(c)
+        | ExprNode::LogGamma(c)
+        | ExprNode::Digamma(c)
+        | ExprNode::Erf(c)
+        | ExprNode::Erfc(c)
+        | ExprNode::LambertW(c)
+        | ExprNode::Si(c)
+        | ExprNode::Ci(c)
+        | ExprNode::Ei(c)
+        | ExprNode::Li(c)
+        | ExprNode::Zeta(c)
+        | ExprNode::Factorial(c) => {
+            let Some(r) = small_part(arena, *c, cache, errs, exact) else {
+                return;
+            };
+            if r > -8.0 {
+                return;
+            }
+            lv.max(0.0) + 2.0 * r
         }
         _ => return,
     };
@@ -1240,6 +1472,25 @@ fn input_bits(q: &crate::base::numeric::Q) -> u64 {
     }
 }
 
+/// The bits that hold the second-order part of an exact rational `u + h`
+/// with a small part ([`rational_small_part`]): `2·log₂ abs(u/h)`.  Held to
+/// [`input_bits`] only, `u·(1 + h/u + O((h/u)²))` loses its `(h/u)²` term,
+/// which a cancellation of the first two leaves: before 0.36 `(1 +
+/// 10⁻⁷⁰⁰)⁻¹·((√2 + √3)² − 2√6)/5 − 1 + 10⁻⁷⁰⁰` (truly `10⁻¹⁴⁰⁰`; the
+/// canonical form holds `10⁷⁰⁰/(5·(10⁷⁰⁰ + 1))` and `1 − 10⁻⁷⁰⁰`, in full
+/// at 2,328 bits, agreeing to 4,651) printed `0`.  0 for a rational without
+/// one, below 256 bits, or beyond the configured maximum precision (refused
+/// as it is).
+fn second_order_bits(q: &crate::base::numeric::Q, arena: &Arena) -> u64 {
+    // Below 256 bits the second-order part lies within the zero search of
+    // every evaluation ([`ZERO_SEARCH_BITS`]).
+    let bits = input_bits(q);
+    if !(256..=u64::from(arena.config.max_evalf_precision)).contains(&bits) {
+        return 0;
+    }
+    rational_small_part(q).map_or(0, |r| (-2.0 * r).ceil().max(0.0) as u64)
+}
+
 /// Bits beyond the working precision to which [`ZeroSearch::Deep`] pursues
 /// a value that is zero to the precision reached (≈ 308 decimal digits of
 /// cancellation).  A tiny value hidden by the cancellation of larger terms
@@ -1435,12 +1686,16 @@ fn evaluate_adaptive(
             beyond,
             absorbed,
             exact_bits,
+            second_bits,
         } = evaluate_once(arena, expr, &post_order, prec, rm, cc)?;
-        // The precision that holds every exact value in full, for a result
-        // read as a number.
-        let inputs = match search {
-            ZeroSearch::Number => usize::try_from(exact_bits).unwrap_or(usize::MAX),
-            ZeroSearch::Cap | ZeroSearch::Deep => 0,
+        // The precision that holds every exact value in full, then their
+        // second-order parts, for a result read as a number.
+        let (inputs, second) = match search {
+            ZeroSearch::Number => (
+                usize::try_from(exact_bits).unwrap_or(usize::MAX),
+                usize::try_from(second_bits).unwrap_or(usize::MAX),
+            ),
+            ZeroSearch::Cap | ZeroSearch::Deep => (0, 0),
         };
         // A value below the exponent range known scaled is settled as its
         // mantissa, the absolute tests shifted by its scale.
@@ -1586,13 +1841,19 @@ fn evaluate_adaptive(
         // A zero below the precision that holds the exact inputs in full
         // (`input_bits`) may be the rounding of an input, and a result read
         // as a number pursues it there too: before 0.35 `sin(2/3 + 10⁻⁴⁰⁰)
-        // − sin(2/3)` printed `0` (truly `7.86·10⁻⁴⁰¹`).
+        // − sin(2/3)` printed `0` (truly `7.86·10⁻⁴⁰¹`).  And from there to
+        // the precision of the second-order part of an input with a small
+        // part (`second_order_bits`; refused beyond the maximum).
         let margin = usize::try_from(needed).unwrap_or(0) + 32;
         let lost_target = absorbed.and_then(|a| a.nearest).map(|nearest| {
             prec.saturating_add(nearest.ceil() as usize)
                 .saturating_add(margin)
         });
-        let input_target = (inputs > prec).then(|| inputs.saturating_add(margin));
+        let input_target = if inputs > prec {
+            Some(inputs.saturating_add(margin))
+        } else {
+            (second > prec).then(|| second.saturating_add(margin))
+        };
         let lost_below_range = absorbed.is_some_and(|a| a.below_range);
         let hidden = if !small_zero || search == ZeroSearch::Cap {
             None

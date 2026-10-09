@@ -935,14 +935,219 @@ fn subset_sums(degs: &[usize], n: usize) -> Vec<bool> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Hensel lifting (linear, multifactor)
+// Hensel lifting (quadratic, multifactor)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Lift `f ≡ lc(f) · ∏ gᵢ (mod p)` (with `gᵢ` monic and pairwise coprime
 /// mod `p`) to a factorization modulo `p^k`.
 ///
-/// Returns the lifted monic factors with coefficients in `[0, p^k)`.
+/// Returns the lifted monic factors with coefficients in `[0, p^k)` — the
+/// unique monic factors modulo `p^k` lifting the `gᵢ` (Hensel's lemma).
+///
+/// Quadratic multifactor lifting, SymPy's `dup_zz_hensel_lift`
+/// (`sympy/polys/factortools.py`, BSD-3; von zur Gathen & Gerhard, *Modern
+/// Computer Algebra*, Algorithms 15.10 and 15.17): the factors are split
+/// into two halves, the two products are lifted together with their Bézout
+/// cofactors from `m` to `m²` until `p^{2^d} ≥ p^k`, and each half is
+/// lifted recursively (depth `⌈log₂ r⌉`).  Until 0.35 this was linear
+/// lifting, one step per power of `p`: the Mignotte bound of a quartic with
+/// 5,000-digit coefficients needs `3^{21000}`, and the 21,000 steps (each
+/// a product of all factors at full size) took 3.8 s.
 fn hensel_lift(f: &ZPoly, p: u64, factors: &[FpPoly], k: u32) -> Vec<ZPoly> {
+    let pk = BigInt::from(p).pow(k);
+    lift_tree(&f.coeffs, p, factors, k)
+        .into_iter()
+        .map(|g| GenPoly::from_coeffs(g.iter().map(|c| c.mod_floor(&pk)).collect()))
+        .collect()
+}
+
+/// The multifactor lift of [`hensel_lift`] on coefficient vectors: monic
+/// factors modulo `p^k` (any representatives) of `f`, which is congruent
+/// to `lc(f)·∏ factors` modulo `p^j` for some `j ≥ k`.
+fn lift_tree(f: &[BigInt], p: u64, factors: &[FpPoly], k: u32) -> Vec<Vec<BigInt>> {
+    let pk = BigInt::from(p).pow(k);
+    let Some(lc) = f.last() else {
+        return Vec::new();
+    };
+    if factors.len() <= 1 {
+        // The single monic factor: f · lc⁻¹ mod p^k.
+        let inv = inverse_mod_prime_power(lc, p, k);
+        return vec![f.iter().map(|c| (c * &inv).mod_floor(&pk)).collect()];
+    }
+    let ring = Fp64::new(p);
+    let half = factors.len() / 2;
+    let lc_p = residue(lc, p);
+    let mut g = FpPoly::constant(ring, lc_p);
+    for fi in &factors[..half] {
+        g = g.mul(fi);
+    }
+    let mut h = factors[half].clone();
+    for fi in &factors[half + 1..] {
+        h = h.mul(fi);
+    }
+    let eg = g.extended_gcd(&h);
+    let to_z =
+        |a: &FpPoly| -> Vec<BigInt> { a.coeffs().iter().map(|&c| BigInt::from(c)).collect() };
+    let mut lift = HenselPair {
+        g: to_z(&g),
+        h: to_z(&h),
+        s: to_z(&eg.u),
+        t: to_z(&eg.v),
+    };
+    let mut m = BigInt::from(p);
+    let mut reached = 1u32;
+    while reached < k {
+        lift = hensel_step(&m, f, &lift);
+        m = &m * &m;
+        reached = reached.saturating_mul(2);
+    }
+    let mut out = lift_tree(&lift.g, p, &factors[..half], k);
+    out.extend(lift_tree(&lift.h, p, &factors[half..], k));
+    out
+}
+
+/// `f ≡ g·h` and `s·g + t·h ≡ 1` modulo the current modulus, `h` monic,
+/// `deg s < deg h`, `deg t < deg g` (coefficient vectors).
+struct HenselPair {
+    g: Vec<BigInt>,
+    h: Vec<BigInt>,
+    s: Vec<BigInt>,
+    t: Vec<BigInt>,
+}
+
+/// One quadratic Hensel step (SymPy's `dup_zz_hensel_step`, von zur Gathen
+/// & Gerhard Algorithm 15.10): the [`HenselPair`] relations modulo `m`
+/// lifted to `m²` (symmetric representatives).
+fn hensel_step(m: &BigInt, f: &[BigInt], lift: &HenselPair) -> HenselPair {
+    let HenselPair { g, h, s, t } = lift;
+    let mm = m * m;
+    let tr = |a: Vec<BigInt>| trunc_symmetric(a, &mm);
+    let e = tr(vz_sub(f, &vz_mul(g, h)));
+    let (q, r) = vz_div_rem_monic(&vz_mul(s, &e), h);
+    let (q, r) = (tr(q), tr(r));
+    let u = vz_add(&vz_mul(t, &e), &vz_mul(&q, g));
+    let gg = tr(vz_add(g, &u));
+    let hh = tr(vz_add(h, &r));
+    let u = vz_add(&vz_mul(s, &gg), &vz_mul(t, &hh));
+    let b = tr(vz_sub(&u, &[BigInt::one()]));
+    let (c, d) = vz_div_rem_monic(&vz_mul(s, &b), &hh);
+    let (c, d) = (tr(c), tr(d));
+    let u = vz_add(&vz_mul(t, &b), &vz_mul(&c, &gg));
+    HenselPair {
+        s: tr(vz_sub(s, &d)),
+        t: tr(vz_sub(t, &u)),
+        g: gg,
+        h: hh,
+    }
+}
+
+/// `c mod p` in `[0, p)`.
+fn residue(c: &BigInt, p: u64) -> u64 {
+    c.mod_floor(&BigInt::from(p)).to_u64().unwrap_or(0)
+}
+
+/// `a⁻¹ mod p^k` for `p ∤ a` (Newton's iteration `x ← x(2 − a·x)` from
+/// the inverse modulo `p`, doubling the precision each step).
+fn inverse_mod_prime_power(a: &BigInt, p: u64, k: u32) -> BigInt {
+    let ring = Fp64::new(p);
+    let mut x = BigInt::from(ring.inv(&residue(a, p)).unwrap_or(0));
+    let pb = BigInt::from(p);
+    let mut e = 1u32;
+    while e < k {
+        e = e.saturating_mul(2).min(k);
+        let m = pb.pow(e);
+        let two = BigInt::from(2);
+        x = (&x * (two - (a * &x).mod_floor(&m))).mod_floor(&m);
+    }
+    x
+}
+
+/// Coefficients reduced into `(−m/2, m/2]`, trailing zeros dropped.
+fn trunc_symmetric(mut a: Vec<BigInt>, m: &BigInt) -> Vec<BigInt> {
+    for c in &mut a {
+        let r = c.mod_floor(m);
+        *c = symmetric(r, m);
+    }
+    vz_trim(a)
+}
+
+fn vz_trim(mut a: Vec<BigInt>) -> Vec<BigInt> {
+    while a.last().is_some_and(Zero::is_zero) {
+        a.pop();
+    }
+    a
+}
+
+fn vz_add(a: &[BigInt], b: &[BigInt]) -> Vec<BigInt> {
+    vz_trim(
+        (0..a.len().max(b.len()))
+            .map(|i| match (a.get(i), b.get(i)) {
+                (Some(x), Some(y)) => x + y,
+                (Some(x), None) | (None, Some(x)) => x.clone(),
+                (None, None) => BigInt::zero(),
+            })
+            .collect(),
+    )
+}
+
+fn vz_sub(a: &[BigInt], b: &[BigInt]) -> Vec<BigInt> {
+    vz_trim(
+        (0..a.len().max(b.len()))
+            .map(|i| match (a.get(i), b.get(i)) {
+                (Some(x), Some(y)) => x - y,
+                (Some(x), None) => x.clone(),
+                (None, Some(y)) => -y,
+                (None, None) => BigInt::zero(),
+            })
+            .collect(),
+    )
+}
+
+fn vz_mul(a: &[BigInt], b: &[BigInt]) -> Vec<BigInt> {
+    if a.is_empty() || b.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![BigInt::zero(); a.len() + b.len() - 1];
+    for (i, x) in a.iter().enumerate() {
+        if x.is_zero() {
+            continue;
+        }
+        for (j, y) in b.iter().enumerate() {
+            out[i + j] += x * y;
+        }
+    }
+    vz_trim(out)
+}
+
+/// `(q, r)` with `a = q·h + r`, `deg r < deg h`, for a monic `h` (exact in
+/// `ℤ[x]`).
+fn vz_div_rem_monic(a: &[BigInt], h: &[BigInt]) -> (Vec<BigInt>, Vec<BigInt>) {
+    let mut r = vz_trim(a.to_vec());
+    if h.is_empty() || r.len() < h.len() {
+        return (Vec::new(), r);
+    }
+    let m = h.len() - 1;
+    let mut q = vec![BigInt::zero(); r.len() - m];
+    while r.len() > m {
+        let k = r.len() - 1;
+        let Some(qk) = r.pop() else {
+            break;
+        };
+        let s = k - m;
+        if !qk.is_zero() {
+            for (rj, hj) in r[s..].iter_mut().zip(&h[..m]) {
+                *rj -= &qk * hj;
+            }
+        }
+        q[s] = qk;
+    }
+    (vz_trim(q), vz_trim(r))
+}
+
+/// The linear multifactor lift of 0.35 and before: the reference that
+/// [`hensel_lift`] is checked against.
+#[cfg(test)]
+fn hensel_lift_linear(f: &ZPoly, p: u64, factors: &[FpPoly], k: u32) -> Vec<ZPoly> {
     let ring = Fp64::new(p);
     let n = f.degree().unwrap_or(0);
     let lc_p = f.coeffs[n]
@@ -1555,6 +1760,43 @@ mod tests {
         }
         let f_mod = GenPoly::from_coeffs(f.coeffs().iter().map(|c| c.mod_floor(&pk)).collect());
         assert_eq!(prod, f_mod);
+        assert_eq!(lifted, hensel_lift_linear(&f, p, &factors, k));
+    }
+
+    #[test]
+    fn quadratic_hensel_lift_matches_linear() {
+        // Products of 2..6 factors with mixed degrees and a non-trivial
+        // leading coefficient, lifted to various powers (odd k included):
+        // the monic lifts are unique, so both methods agree exactly.
+        let pool = [
+            zp(&[-1, 1]),
+            zp(&[2, 1]),
+            zp(&[3, 2]),
+            zp(&[1, 0, 1]),
+            zp(&[-5, 3, 0, 7]),
+            zp(&[11, -4, 1]),
+        ];
+        for r in 2..=pool.len() {
+            let f = product(&pool[..r]);
+            let n = f.degree().unwrap();
+            for p in [5u64, 13, 101, 65_537] {
+                if (&f.coeffs()[n] % p).is_zero() {
+                    continue;
+                }
+                let fp = z_to_fp(&f, p);
+                if fp.degree() != Some(n) || !fp.is_squarefree() {
+                    continue;
+                }
+                let factors = fp_factor_squarefree_monic(&fp.monic());
+                for k in [1u32, 2, 3, 5, 8, 13, 40] {
+                    assert_eq!(
+                        hensel_lift(&f, p, &factors, k),
+                        hensel_lift_linear(&f, p, &factors, k),
+                        "r = {r}, p = {p}, k = {k}"
+                    );
+                }
+            }
+        }
     }
 
     // ── Full factorization ──────────────────────────────────────────

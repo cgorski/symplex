@@ -51,25 +51,21 @@ use super::multipoly::{MonoKey, MonomialOrd, MultiPoly};
 /// when there are none).
 pub(crate) fn denominator_lcm<'a>(coeffs: impl IntoIterator<Item = &'a Ratio<BigInt>>) -> BigInt {
     coeffs.into_iter().fold(BigInt::one(), |acc, c| {
-        if c.denom().is_one() {
+        if c.denom().is_one() || (&acc % c.denom()).is_zero() {
             acc
         } else {
-            acc.lcm(c.denom())
+            super::modgcd::int_lcm(&acc, c.denom())
         }
     })
 }
 
 /// Non-negative gcd of `xs` (`0` when there are none or all are zero).
-/// Stops early once the gcd reaches `1`.
+/// Stops early once the gcd reaches `1`.  Lehmer's gcd
+/// ([`modgcd::content`](super::modgcd::content)); `num-integer`'s binary
+/// gcd is quadratic with a large constant (two 5,000-digit coefficients:
+/// milliseconds each).
 pub(crate) fn integer_content<'a>(xs: impl IntoIterator<Item = &'a BigInt>) -> BigInt {
-    let mut g = BigInt::zero();
-    for x in xs {
-        g = g.gcd(x);
-        if g.is_one() {
-            break;
-        }
-    }
-    g
+    super::modgcd::content(xs)
 }
 
 /// The numerator of `c` over the common denominator `den` (a multiple of
@@ -170,6 +166,12 @@ pub(crate) fn pseudo_rem_pos(a: &[BigInt], b: &[BigInt]) -> Vec<BigInt> {
     r
 }
 
+/// [`z_gcd`] takes the modular algorithm when `(len a + len b)·(largest
+/// coefficient bits)` exceeds this: the subresultants then have more than
+/// about 32 words, and below it the sequence costs a few microseconds,
+/// less than the reductions modulo a prime.
+const MODULAR_GCD_MIN_BITS: u64 = 2048;
+
 /// `gcd(a, b)` in `ℤ\[x\]`, primitive with positive leading coefficient
 /// (`[1]` when coprime; empty when both are zero): the primitive part of
 /// the last member of the subresultant PRS ([`z_subresultant_prs`]).
@@ -180,11 +182,29 @@ pub(crate) fn pseudo_rem_pos(a: &[BigInt], b: &[BigInt]) -> Vec<BigInt> {
 /// took 98% of the time, 2 s for `gcd(p, p′)` of a degree-40 polynomial
 /// with 100-digit coefficients.  The subresultant PRS divides by a known
 /// exact factor instead, and only the last member is made primitive.
+///
+/// Since 0.36 two non-zero inputs go through Brown's modular algorithm
+/// ([`modgcd::zx_gcd`](super::modgcd::zx_gcd)) first, the PRS being the
+/// fallback: the subresultants of degree-10 inputs with 45,000-digit
+/// coefficients (`together` of ten fractions `1/(x + n)` with 5,000-digit
+/// `n`) have about a million digits, while one image modulo a word prime
+/// proves such inputs coprime.  Small inputs (degrees times coefficient
+/// sizes below [`MODULAR_GCD_MIN_BITS`]) keep the remainder sequence, which
+/// is cheaper there.  The gcd is the same polynomial.
 pub(crate) fn z_gcd(a: &[BigInt], b: &[BigInt]) -> Vec<BigInt> {
     let mut a = a.to_vec();
     let mut b = b.to_vec();
     z_normalize(&mut a);
     z_normalize(&mut b);
+    let max_bits = a.iter().chain(&b).map(BigInt::bits).max().unwrap_or(0);
+    let size = (a.len() + b.len()) as u64 * max_bits;
+    if !a.is_empty()
+        && !b.is_empty()
+        && size > MODULAR_GCD_MIN_BITS
+        && let Some(g) = super::modgcd::zx_gcd(&a, &b)
+    {
+        return g;
+    }
     if a.len() < b.len() {
         std::mem::swap(&mut a, &mut b);
     }
@@ -417,7 +437,7 @@ pub(crate) fn gcd_via_z(a: &[Ratio<BigInt>], b: &[Ratio<BigInt>]) -> Vec<Ratio<B
         g.into_iter().map(Ratio::from_integer).collect()
     } else {
         g.iter()
-            .map(|c| Ratio::new(c.clone(), lc.clone()))
+            .map(|c| super::modgcd::ratio_reduced(c.clone(), lc.clone()))
             .collect()
     }
 }
@@ -530,7 +550,11 @@ pub(crate) fn extended_gcd_via_z(
     if side_a.0.is_empty() {
         // gcd(0, b) = monic(b) = (1/lc(b))·b: x = 0, y = 1/lc(b).
         let lc = b.iter().rev().find(|c| !c.is_zero())?;
-        let gcd = b.iter().take(side_b.0.len()).map(|c| c / lc).collect();
+        let gcd = b
+            .iter()
+            .take(side_b.0.len())
+            .map(|c| crate::poly::traits::Field::div(c, lc))
+            .collect();
         return Some(num_integer::ExtendedGcd {
             gcd,
             x: Vec::new(),
@@ -591,13 +615,13 @@ pub(crate) fn extended_gcd_via_z(
     let den = &curr.d * &lc;
     let over = |v: &[BigInt], scale: &BigInt| -> Vec<Ratio<BigInt>> {
         v.iter()
-            .map(|c| Ratio::new(c * scale, den.clone()))
+            .map(|c| super::modgcd::ratio_reduced(c * scale, den.clone()))
             .collect()
     };
     let gcd: Vec<Ratio<BigInt>> = curr
         .r
         .iter()
-        .map(|c| Ratio::new(c.clone(), lc.clone()))
+        .map(|c| super::modgcd::ratio_reduced(c.clone(), lc.clone()))
         .collect();
     let cof_a = over(&curr.s, &scale_a);
     let cof_b = over(&curr.t, &scale_b);

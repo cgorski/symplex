@@ -368,14 +368,34 @@ impl Arena {
         hasher.finish()
     }
 
-    /// Computes a `u64` hash for a [`Ratio<BigInt>`] using the `FxHasher`.
+    /// Computes a `u64` hash for a [`Ratio<BigInt>`]: equal values hash
+    /// alike whatever their representation (reduced or not), as `Ratio`'s
+    /// own `Hash` guarantees, in time linear in the digits.
+    ///
+    /// The hash is the value modulo the prime `P = 2⁶¹ − 1`,
+    /// `numer·denom⁻¹ mod P`, tagged by which of two primes it was taken
+    /// modulo.  A factor `P` common to numerator and denominator (an
+    /// unreduced representation) is divided out first, so the choice depends
+    /// on the value only; a value whose reduced denominator is a multiple of
+    /// `P` is hashed modulo `2⁶¹ − 1`'s neighbour prime `2⁶² − 57`, and one
+    /// whose reduced denominator is a multiple of both falls back to the
+    /// continued fraction.  Until 0.35 the hash was always the sequence of
+    /// partial quotients of numer/denom (`Ratio`'s scheme, in a loop):
+    /// Euclid's algorithm on the digits, quadratic — the 1,000-digit
+    /// fractions of an extended gcd's cofactors took seconds to intern.  The
+    /// map keyed by this hash is only looked up, never iterated, so the
+    /// interned ids (and every output) are unchanged.
     fn hash_num(value: &Q) -> u64 {
-        // `Ratio`'s own `Hash` walks the continued fraction of numer/denom
-        // *recursively* — one stack frame per partial quotient — so that
-        // unreduced equal values hash alike.  A rational with a very long
-        // expansion (a ratio of consecutive huge Fibonacci numbers has one
-        // partial quotient per term) would need that many frames.  Same
-        // sequence of partial quotients, in a loop.
+        for (tag, p) in [(1u64, (1u64 << 61) - 1), (2, (1u64 << 62) - 57)] {
+            match Self::residue_of_value(value.numer(), value.denom(), p) {
+                Some(Some(r)) => return r.wrapping_mul(4).wrapping_add(tag),
+                // The reduced denominator is a multiple of `p`.
+                Some(None) => continue,
+                None => break,
+            }
+        }
+        // Same sequence of partial quotients as `Ratio`'s `Hash`, in a loop
+        // (`Ratio`'s recursion takes one stack frame per partial quotient).
         use num_integer::Integer;
         let mut hasher = rustc_hash::FxHasher::default();
         let (mut numer, mut denom) = (value.numer().clone(), value.denom().clone());
@@ -389,7 +409,56 @@ impl Arena {
             numer = denom;
             denom = rem;
         }
-        hasher.finish()
+        hasher.finish() & !3
+    }
+
+    /// `numer/denom mod p` for the prime `p < 2⁶²`: `Some(Some(r))`,
+    /// `Some(None)` when `p` divides the reduced denominator, `None` for a
+    /// zero denominator (not a rational).
+    fn residue_of_value(numer: &BigInt, denom: &BigInt, p: u64) -> Option<Option<u64>> {
+        use num_traits::{Signed, ToPrimitive};
+        let res = |x: &BigInt| -> u64 {
+            let m = x.magnitude();
+            let r = match m.to_u64() {
+                Some(v) => v % p,
+                None => (m % p).to_u64().unwrap_or(0),
+            };
+            if r != 0 && x.is_negative() { p - r } else { r }
+        };
+        let mul = |a: u64, b: u64| ((u128::from(a) * u128::from(b)) % u128::from(p)) as u64;
+        let (mut n, mut d) = (res(numer), res(denom));
+        if denom.is_zero() {
+            return None;
+        }
+        let mut owned: Option<(BigInt, BigInt)> = None;
+        while d == 0 {
+            if n != 0 {
+                return Some(None);
+            }
+            // `p` divides both (an unreduced representation): strip it and
+            // look again; each round divides the non-zero denominator by p.
+            let pb = BigInt::from(p);
+            let (a, b) = owned
+                .take()
+                .unwrap_or_else(|| (numer.clone(), denom.clone()));
+            let (a, b) = (a / &pb, b / &pb);
+            (n, d) = (res(&a), res(&b));
+            owned = Some((a, b));
+        }
+        if d == 1 {
+            return Some(Some(n));
+        }
+        // d⁻¹ mod p by the extended Euclidean algorithm (p is prime, d ≠ 0).
+        // Every cofactor is below p < 2⁶² in magnitude: machine words.
+        let (mut r0, mut r1) = (p, d);
+        let (mut t0, mut t1) = (0i64, 1i64);
+        while r1 != 0 {
+            let q = r0 / r1;
+            (r0, r1) = (r1, r0 - q * r1);
+            (t0, t1) = (t1, t0.wrapping_sub((q as i64).wrapping_mul(t1)));
+        }
+        let inv = t0.rem_euclid(p as i64) as u64;
+        Some(Some(mul(n, inv)))
     }
 
     /// Interns an [`ExprNode`], returning its canonical [`ExprId`].
@@ -2227,6 +2296,52 @@ mod tests {
         let n1 = a.intern_num(Ratio::from_integer(BigInt::from(42)));
         let n2 = a.intern_num(Ratio::from_integer(BigInt::from(42)));
         assert_eq!(n1, n2);
+    }
+
+    /// Equal values hash alike in any representation, also when a hashing
+    /// prime divides the denominator, and huge fractions hash in linear
+    /// time (the continued-fraction hash of 0.35 was quadratic).
+    #[test]
+    fn hash_num_is_representation_invariant() {
+        let p1 = BigInt::from((1u64 << 61) - 1);
+        let p2 = BigInt::from((1u64 << 62) - 57);
+        let big: BigInt = BigInt::from(3).pow(4000u32) + 1;
+        let raw = |n: BigInt, d: BigInt| Ratio::new_raw(n, d);
+        let cases: Vec<(BigInt, BigInt)> = vec![
+            (BigInt::from(0), BigInt::from(1)),
+            (BigInt::from(-7), BigInt::from(3)),
+            (BigInt::from(5), p1.clone()),
+            (BigInt::from(-5), &p1 * &p2),
+            (big.clone(), BigInt::from(7).pow(3000u32)),
+            (-big.clone(), &p1 * BigInt::from(11)),
+        ];
+        for (n, d) in cases {
+            let reduced = Ratio::new(n.clone(), d.clone());
+            let h = Arena::hash_num(&reduced);
+            for k in [BigInt::from(2), p1.clone(), &p1 * &p1, &p1 * &p2 * 3] {
+                let unreduced = raw(&n * &k, &d * &k);
+                assert!(Arena::hash_num(&unreduced) == h, "× {k}");
+                // (`Ratio`'s `==` on an unreduced huge value recurses along
+                // the continued fraction: small values only.)
+                if n.bits() < 256 {
+                    let mut a = Arena::new();
+                    let i = a.intern_num(reduced.clone());
+                    assert_eq!(a.intern_num(unreduced), i);
+                }
+            }
+        }
+        assert_ne!(
+            Arena::hash_num(&Ratio::new(BigInt::from(1), BigInt::from(3))),
+            Arena::hash_num(&Ratio::new(BigInt::from(2), BigInt::from(3)))
+        );
+        // Two coprime 6,000-digit terms: milliseconds.
+        let start = std::time::Instant::now();
+        let q = Ratio::new(
+            BigInt::from(7).pow(7000u32) + 2,
+            BigInt::from(5).pow(8500u32) + 3,
+        );
+        let _ = Arena::hash_num(&q);
+        assert!(start.elapsed().as_secs() < 2, "took {:?}", start.elapsed());
     }
 
     #[test]

@@ -78,7 +78,7 @@ impl GenPoly<Ratio<BigInt>> {
         if c.is_one() || c.is_zero() {
             return self.clone();
         }
-        self.scale(&(Ratio::one() / c))
+        self.scale(&crate::poly::traits::Field::inv(&c))
     }
 
     /// Is this polynomial square-free over ℚ (no repeated roots)?
@@ -163,11 +163,14 @@ pub(crate) fn lagrange_interpolate_points(
 // Private helpers: rational GCD
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// GCD of two positive rationals: gcd(a/b, c/d) = gcd(a,c) / lcm(b,d).
+/// GCD of two positive rationals: gcd(a/b, c/d) = gcd(a,c) / lcm(b,d),
+/// reduced, with Lehmer's gcd (`num-integer`'s binary gcd took most of a
+/// sign query on a quartic with 5,000-digit coefficients).
 fn rational_gcd(a: &Ratio<BigInt>, b: &Ratio<BigInt>) -> Ratio<BigInt> {
-    let numer_gcd = a.numer().gcd(b.numer());
-    let denom_lcm = a.denom().lcm(b.denom());
-    Ratio::new(numer_gcd, denom_lcm)
+    use super::modgcd::{int_gcd, int_lcm, ratio_reduced};
+    let numer_gcd = int_gcd(a.numer(), b.numer());
+    let denom_lcm = int_lcm(a.denom(), b.denom());
+    ratio_reduced(numer_gcd, denom_lcm)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

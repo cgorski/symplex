@@ -4,6 +4,7 @@ pub mod factor_zassenhaus;
 pub mod generic;
 pub mod groebner;
 pub(crate) mod interp;
+pub(crate) mod modgcd;
 pub mod modpoly;
 pub mod multipoly;
 pub(crate) mod polybridge;

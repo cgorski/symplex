@@ -26,8 +26,40 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   found by the perfect-power test now leaves the radical, as SymPy writes
   it: `√(3·(p·q)⁴) = (p·q)²·√3` for `p = 2¹²⁷⁹ − 1`, `q = 2²²⁰³ − 1`
   (it stayed inside before).
+- **A few true zeros are refused instead of printed `0`** by
+  `eval_decimal`, where the evaluation loses a nonzero part of a value it
+  cannot keep (see *Fixed*): `(sin²1 + cos²1 − 1)·besselj(0, e^(−10¹⁰))`,
+  `abs(e^(i·asin(e^(−10¹⁰)/3))) − 1`, `f(x)·(sin²1 + cos²1) − f(x)` for
+  `10⁻¹⁵⁰⁰ < x < 10⁻⁷⁵⁰` and a series function `f`, and zero balls with
+  an exact input `u + h` whose second-order part needs more than the
+  configured maximum precision.
 
 ### Fixed
+
+- **`eval_decimal` printed `0` for nonzero values below the exponent
+  range that a function without a rule for them flattened**:
+  `besselj(0, e^(−10¹⁰)) − 1` (truly `−e^(−2·10¹⁰)/4`), `erfc(e^(−10¹⁰))
+  − 1`, `sin(exp(e^(−10¹⁰))) − sin 1`, `2^(e^(−10¹⁰)) − 1`,
+  `cos(besselk(0, 10¹⁰)) − 1`.  The same happened where a value below the
+  range became a number alone and its smaller terms were lost:
+  `log(e^(−10¹⁰) + e^(−2·10¹⁰)) + 10¹⁰`, `log(sin e^(−10¹⁰)) + 10¹⁰`,
+  `√(t + t²)/√t − 1`, `abs(sin((1 + i)t)) − √2·t`, and in `erf`, which had no
+  series (`erf(t) − 2t/√π`, truly `−2t³/(3√π)`).  Every such loss is now
+  recorded, so these are refused ("not known to be 0"); `erf` is now its
+  series, and `re`, `im` and `abs` work on the polynomial when its
+  monomials are real.  Below-range hunter (2,743 cases, SymPy series and
+  mpmath): 485 wrong `0` → 0.
+- **Second-order hidden terms in range printed `0`**: `sin(1 + 10⁻³⁰⁰) +
+  sin(1 − 10⁻³⁰⁰) − 2·sin 1` is `−8.414709848078965·10⁻⁶⁰¹`, `log(1 +
+  10⁻³⁰⁰) + log(1 − 10⁻³⁰⁰)` is `−10⁻⁶⁰⁰`, `(1 + 10⁻⁴⁰⁰)^(1/2) − 1 −
+  10⁻⁴⁰⁰/2` is `−1.25·10⁻⁸⁰¹`, `atan(10⁻⁴⁰⁰)·(sin²1 + cos²1) − 10⁻⁴⁰⁰
+  + 10⁻¹²⁰⁰/3` is `2·10⁻²⁰⁰¹` (mpmath at two precisions).  The canonical
+  form folds `1 + 10⁻³⁰⁰` into one rational, which the zero search held
+  only to its own bits; the small part of an exact rational is now found
+  (continued fraction, leading digits), the second-order term of a
+  function at such an argument is recorded, and the search continues to
+  the second-order bits.  Zero-search hunter (1,500 cases): 155 wrong `0`
+  → 0, all 561 true zeros still `0`.
 
 - **`∫ sign(sin eˣ) dx` was `(x − ln π)·sign(sin eˣ)`**, an antiderivative
   that jumps at every `x = ln(kπ)`, `k ≥ 2` (`F(2.93) − F(−2.31)` = 1.6695;
@@ -68,11 +100,34 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   decided by the denominator first: `simplify(sin(qπ)² + cos(qπ)²)` for
   `q = 3⁸⁰⁰⁰/7⁴⁰⁰⁰` 1.9 s → 0.06 s (5,000-digit random `q`: 4.5 → 0.14 s).
 
-### Changed
+### Changed (performance; results unchanged)
 
 - The Descartes–Euler resolvent of a quartic over ℚ(√p…, i) finds its
   rational roots from its components over ℚ instead of its degree-48 norm
   (same roots, same output): quartics over four square roots 3× faster.
+- **Polynomial gcds with large coefficients use modular images and
+  Lehmer's integer gcd** (new `poly/modgcd.rs`): one image modulo a word
+  prime proves two polynomials coprime (one variable at a time in several
+  variables), two polynomials in one variable get Brown's modular gcd,
+  and the heuristic gcd (SymPy's `dmp_zz_heu_gcd`) runs on integer
+  coefficients.  `ratsimp(Σ₁₀ 1/(x + nₖ))` with 5,000-digit `nₖ` 43.7 s →
+  0.05 s, `together` 1.5 → 0.13 s, `simplify` 2.8 → 0.14 s, four-variable
+  gcds with 30-digit coefficients 4.0 → 0.12 s (release).
+- **Factorisation lifts quadratically** (multifactor Hensel lifting,
+  SymPy's `dup_zz_hensel_lift`): `factor((x + a)(x + b)(x² + c))` with
+  5,000-digit `a`, `b`, `c` 3.9 s → 0.03 s.
+- **Real-root isolation cuts the half-line around the root magnitudes**
+  (Newton polygon) before bisecting: sign queries on a quartic with
+  5,000-digit coefficients 1.3 s → 4 ms.
+- **Fraction arithmetic in the polynomial layer** no longer pays
+  num-bigint's binary gcd: Hermite reduction of `(c + dx)¹⁰/(a + bx)²¹`
+  with 30-digit parameters 3.8 s → 0.16 s.
+- **Interning a rational hashes in linear time** (its value modulo a
+  prime, the same for every representation): `poly_gcdex` with 30-digit
+  rational coefficients 4.5 s → 0.15 s.
+- Construction hunter (10,000 seeds): 43 slow / 1 hang → 1 / 0; a new
+  polynomial hunter (3,000 seeds): 256 slow / 21 hangs → 11 / 0, results
+  identical.  Rubi `--check` CPU 209 → 182 s.
 
 ## [0.35.0] - 2026-10-08
 

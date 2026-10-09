@@ -296,14 +296,21 @@ impl Ring for Ratio<BigInt> {
     // Integer operands skip the reduction of `num-rational`, which calls
     // `num-integer`'s binary gcd — O(bits × words) even against the
     // denominator 1 (three times per product): composing two degree-25
-    // polynomials with 30-digit integer coefficients took 6.4 s.  The
-    // results are the same reduced fractions.
+    // polynomials with 30-digit integer coefficients took 6.4 s.  Since
+    // 0.36 mixed operands go through `modgcd::rat_add` / `rat_mul`
+    // (`numeric::q_add` / `q_mul`, SymPy's `Rational` forms: an integer plus
+    // a fraction needs no gcd, a product cross-cancels; the gcds are
+    // Lehmer's); dividing a polynomial with 5,000-digit coefficients by
+    // `x + n` spent a second in gcds against `1`, Hermite reduction of
+    // `(c + dx)¹⁰/(a + bx)²¹` with 30-digit parameters three seconds in
+    // binary gcds of 600-digit operands.  The results are the same reduced
+    // fractions.
     #[inline]
     fn add(&self, rhs: &Self) -> Self {
         if One::is_one(self.denom()) && One::is_one(rhs.denom()) {
             return Ratio::from_integer(self.numer() + rhs.numer());
         }
-        self + rhs
+        super::modgcd::rat_add(self, rhs)
     }
 
     #[inline]
@@ -311,7 +318,7 @@ impl Ring for Ratio<BigInt> {
         if One::is_one(self.denom()) && One::is_one(rhs.denom()) {
             return Ratio::from_integer(self.numer() - rhs.numer());
         }
-        self - rhs
+        super::modgcd::rat_add(self, &-rhs)
     }
 
     #[inline]
@@ -319,7 +326,7 @@ impl Ring for Ratio<BigInt> {
         if One::is_one(self.denom()) && One::is_one(rhs.denom()) {
             return Ratio::from_integer(self.numer() * rhs.numer());
         }
-        self * rhs
+        super::modgcd::rat_mul(self, rhs)
     }
 
     #[inline]
@@ -398,7 +405,7 @@ fn gcd_unbalanced(a: &BigInt, b: &BigInt) -> BigInt {
     if Zero::is_zero(&r) {
         return short.abs();
     }
-    short.gcd(&r)
+    super::modgcd::int_gcd(short, &r)
 }
 
 /// `c/den` as a reduced fraction, for `den > 0`.
@@ -458,14 +465,28 @@ impl EuclideanDomain for Ratio<BigInt> {
 }
 
 impl Field for Ratio<BigInt> {
+    /// `self · other⁻¹` through `modgcd::rat_mul` (the same reduced fraction
+    /// as `self / other`; an integer divided by `±1` costs no gcd).
     #[inline]
     fn div(&self, other: &Self) -> Self {
-        self / other
+        if Zero::is_zero(other.numer()) {
+            return self / other;
+        }
+        super::modgcd::rat_mul(self, &Field::inv(other))
     }
 
+    /// The reciprocal of a reduced fraction is reduced: no gcd.
     #[inline]
     fn inv(&self) -> Self {
-        Ratio::new(self.denom().clone(), self.numer().clone())
+        use num_traits::Signed;
+        if Zero::is_zero(self.numer()) {
+            return Ratio::new(self.denom().clone(), self.numer().clone());
+        }
+        if self.numer().is_negative() {
+            Ratio::new_raw(-self.denom(), -self.numer())
+        } else {
+            Ratio::new_raw(self.denom().clone(), self.numer().clone())
+        }
     }
 
     fn poly_gcd(a: &[Self], b: &[Self]) -> Option<Vec<Self>> {

@@ -512,6 +512,15 @@ struct Cell {
 /// All positive roots lie in `(0, 2^e)` ([`root_bound_exp`]); a cell is
 /// `(c, c + 1)·2^{e−k}`, carried as the integer polynomial whose roots in
 /// `(0, 1)` correspond to those of `q` in the cell.
+///
+/// When the root magnitudes are spread over a wide range, `(0, 2^e)` is
+/// first cut at powers of two around each cluster of magnitudes
+/// ([`magnitude_pieces`]), and every piece is bisected on its own: a root
+/// near `1` under a root bound of `2^{16600}` (a quartic with 5,000-digit
+/// coefficients) is otherwise reached only after 16,600 halvings, each a
+/// Taylor shift of 16,600-bit coefficients (0.3 s per isolation, called
+/// four times by one sign query).  The roots found, hence every count and
+/// every interval the queries return, are the same.
 fn positive_roots(q: &[BigInt], exact: &mut Vec<RootLoc>, reflect: bool) -> Vec<(Q, Q)> {
     let mut cells: Vec<(Q, Q)> = Vec::new();
     let n = q.len().saturating_sub(1);
@@ -519,44 +528,131 @@ fn positive_roots(q: &[BigInt], exact: &mut Vec<RootLoc>, reflect: bool) -> Vec<
         return cells;
     }
     let e = root_bound_exp(q);
+    // Descartes' rule on `q` itself bounds the positive roots.
+    match sign_variations_at_most_2(q.iter()) {
+        0 => return cells,
+        1 => {
+            let hi = dyadic(&BigInt::one(), e, 0);
+            cells.push(if reflect {
+                (-hi, Q::zero())
+            } else {
+                (Q::zero(), hi)
+            });
+            return cells;
+        }
+        _ => {}
+    }
+    for (lo_exp, hi_exp) in magnitude_pieces(q, e) {
+        let piece = piece_polynomial(q, lo_exp, hi_exp);
+        if piece.root_at_lo {
+            exact.push(RootLoc::Exact(if reflect {
+                -piece.lo.clone()
+            } else {
+                piece.lo.clone()
+            }));
+        }
+        bisect_piece(&piece, exact, reflect, &mut cells);
+    }
+    cells
+}
+
+/// One piece `(lo, lo + width)` of the positive half-line with the integer
+/// polynomial `s` whose roots in `(0, 1)` are those of `q` in the piece
+/// (`s(x)` a positive multiple of `q(lo + width·x)`, with any root at an
+/// end of the piece divided out).
+struct Piece {
+    s: Vec<BigInt>,
+    lo: Q,
+    width: Q,
+    /// `Some(b)` for the dyadic piece `(0, 2^b)`.
+    dyadic_exp: Option<i64>,
+    /// `q(lo) = 0` (recorded by the piece that starts there).
+    root_at_lo: bool,
+}
+
+/// The [`Piece`] `(2^a, 2^b)`, or `(0, 2^b)` for `lo_exp = None`.
+fn piece_polynomial(q: &[BigInt], lo_exp: Option<i64>, hi_exp: i64) -> Piece {
+    let n = q.len() - 1;
+    // `q(2^t x)` with integer coefficients.
+    let scaled = |t: i64| -> Vec<BigInt> {
+        if t >= 0 {
+            let t = t.unsigned_abs();
+            q.iter()
+                .enumerate()
+                .map(|(i, c)| c << (t * i as u64))
+                .collect()
+        } else {
+            let t = t.unsigned_abs();
+            q.iter()
+                .enumerate()
+                .map(|(i, c)| c << (t * (n - i) as u64))
+                .collect()
+        }
+    };
+    let pow2 = |t: i64| dyadic(&BigInt::one(), t, 0);
+    let (mut s, lo, width) = match lo_exp {
+        None => (scaled(hi_exp), Q::zero(), pow2(hi_exp)),
+        Some(a) => {
+            // q(2^a(1 + D·x)), D = 2^{b−a} − 1.
+            let mut s = scaled(a);
+            taylor_shift_1(&mut s);
+            let d = (BigInt::one() << (hi_exp - a).unsigned_abs()) - 1;
+            let mut dp = BigInt::one();
+            for c in s.iter_mut().skip(1) {
+                dp *= &d;
+                *c *= &dp;
+            }
+            let width = crate::poly::modgcd::rat_add(&pow2(hi_exp), &-pow2(a));
+            (s, pow2(a), width)
+        }
+    };
+    let mut root_at_lo = false;
+    if lo_exp.is_some() && s.first().is_some_and(Zero::is_zero) {
+        s.remove(0);
+        root_at_lo = true;
+    }
+    if s.iter().sum::<BigInt>().is_zero() {
+        s = div_by_x_minus_1(&s);
+    }
+    strip_power_of_two(&mut s);
+    Piece {
+        s,
+        lo,
+        width,
+        dyadic_exp: lo_exp.is_none().then_some(hi_exp),
+        root_at_lo,
+    }
+}
+
+/// The Descartes bisection of one [`Piece`]: isolating cells pushed onto
+/// `cells`, roots hit by a bisection point onto `exact` (both negated when
+/// `reflect` is set).
+fn bisect_piece(piece: &Piece, exact: &mut Vec<RootLoc>, reflect: bool, cells: &mut Vec<(Q, Q)>) {
+    // The point `lo + width·c/2^k`.
+    let point = |c: &BigInt, k: u64| -> Q {
+        use crate::poly::modgcd::{rat_add, rat_mul};
+        match piece.dyadic_exp {
+            Some(b) => dyadic(c, b, k),
+            None => rat_add(&piece.lo, &rat_mul(&piece.width, &dyadic(c, 0, k))),
+        }
+    };
     let emit = |c: &BigInt, k: u64, cells: &mut Vec<(Q, Q)>| {
-        let lo = dyadic(c, e, k);
-        let hi = dyadic(&(c + 1), e, k);
+        let lo = point(c, k);
+        let hi = point(&(c + 1), k);
         if reflect {
             cells.push((-hi, -lo));
         } else {
             cells.push((lo, hi));
         }
     };
-    // Descartes' rule on `q` itself bounds the positive roots.
-    match sign_variations_at_most_2(q.iter()) {
-        0 => return cells,
-        1 => {
-            emit(&BigInt::zero(), 0, &mut cells);
-            return cells;
-        }
-        _ => {}
+    if piece.s.len() < 2 {
+        return;
     }
-    // `q(2^e x)`, with integer coefficients.
-    let mut s: Vec<BigInt> = if e >= 0 {
-        let e = e.unsigned_abs();
-        q.iter()
-            .enumerate()
-            .map(|(i, c)| c << (e * i as u64))
-            .collect()
-    } else {
-        let f = e.unsigned_abs();
-        q.iter()
-            .enumerate()
-            .map(|(i, c)| c << (f * (n - i) as u64))
-            .collect()
-    };
-    strip_power_of_two(&mut s);
-    let mut stack: Vec<(Vec<BigInt>, BigInt, u64)> = vec![(s, BigInt::zero(), 0)];
+    let mut stack: Vec<(Vec<BigInt>, BigInt, u64)> = vec![(piece.s.clone(), BigInt::zero(), 0)];
     while let Some((s, c, k)) = stack.pop() {
         match descartes_bound(&s) {
             0 => {}
-            1 => emit(&c, k, &mut cells),
+            1 => emit(&c, k, cells),
             _ => {
                 // Left half: `2^m s(x/2)`; right half: its Taylor shift.
                 let m = s.len() - 1;
@@ -565,7 +661,7 @@ fn positive_roots(q: &[BigInt], exact: &mut Vec<RootLoc>, reflect: bool) -> Vec<
                 let c2: BigInt = &c << 1u32;
                 let at_mid: BigInt = left.iter().sum();
                 if at_mid.is_zero() {
-                    let r = dyadic(&(&c2 + 1), e, k + 1);
+                    let r = point(&(&c2 + 1), k + 1);
                     exact.push(RootLoc::Exact(if reflect { -r } else { r }));
                     left = div_by_x_minus_1(&left);
                 }
@@ -578,7 +674,71 @@ fn positive_roots(q: &[BigInt], exact: &mut Vec<RootLoc>, reflect: bool) -> Vec<
             }
         }
     }
-    cells
+}
+
+/// The pieces `(2^a, 2^b)` (`a = None` for `0`) that [`positive_roots`]
+/// bisects separately: `(0, 2^e)` itself unless the root magnitudes of `q`
+/// are spread over more than `4δ + 64` bits, `δ = 2n + 4`; otherwise
+/// `(2^{m−δ}, 2^{m+δ})` around each estimated magnitude `2^m` and the gaps
+/// between them.  The magnitudes are the slopes of the upper convex hull of
+/// the points `(i, bits(qᵢ))` (the Newton polygon: the roots of a hull
+/// segment have moduli within a factor polynomial in `n` of `2^m`).  Only
+/// the cost depends on these estimates: every piece is searched exactly.
+fn magnitude_pieces(q: &[BigInt], e: i64) -> Vec<(Option<i64>, i64)> {
+    let whole = vec![(None, e)];
+    let n = q.len().saturating_sub(1);
+    let delta = 2 * n as i64 + 4;
+    let mut hull: Vec<(i64, i64)> = Vec::new();
+    for (i, c) in q.iter().enumerate() {
+        if c.is_zero() {
+            continue;
+        }
+        let pt = (i as i64, i64::try_from(c.bits()).unwrap_or(i64::MAX / 4));
+        while let [.., a, b] = hull[..] {
+            let cross = (b.0 - a.0) as i128 * (pt.1 - a.1) as i128
+                - (b.1 - a.1) as i128 * (pt.0 - a.0) as i128;
+            if cross >= 0 {
+                hull.pop();
+            } else {
+                break;
+            }
+        }
+        hull.push(pt);
+    }
+    // Magnitude ranges [floor(m) − δ, ceil(m) + δ] of the hull segments,
+    // ascending (the slopes of an upper hull decrease).
+    let mut ranges: Vec<(i64, i64)> = Vec::new();
+    for w in hull.windows(2) {
+        let (dx, dy) = (w[1].0 - w[0].0, w[0].1 - w[1].1);
+        let lo = dy.div_euclid(dx) - delta;
+        let hi = dy.div_euclid(dx) + i64::from(dy.rem_euclid(dx) != 0) + delta;
+        match ranges.last_mut() {
+            Some(last) if lo <= last.1 + 8 => last.1 = last.1.max(hi),
+            _ => ranges.push((lo, hi)),
+        }
+    }
+    let (Some(first), Some(last)) = (ranges.first(), ranges.last()) else {
+        return whole;
+    };
+    if last.1 - first.0 <= 4 * delta + 64 {
+        return whole;
+    }
+    let mut cuts: Vec<i64> = Vec::new();
+    for (lo, hi) in ranges {
+        for t in [lo, hi] {
+            if t < e && cuts.last().is_none_or(|&l| t > l) {
+                cuts.push(t);
+            }
+        }
+    }
+    let mut pieces = Vec::with_capacity(cuts.len() + 1);
+    let mut prev = None;
+    for t in cuts {
+        pieces.push((prev, t));
+        prev = Some(t);
+    }
+    pieces.push((prev, e));
+    pieces
 }
 
 /// `e` with every root of `q` (ascending, `q(0) ≠ 0`, degree `n ≥ 1`) of
@@ -885,15 +1045,18 @@ pub(crate) fn cauchy_bound(p: &Poly) -> Ratio<BigInt> {
     if n == 0 {
         return one;
     }
-    let lc = p.coeff(n);
+    // max |aᵢ/aₙ| = (max |aᵢ|)/|aₙ|: one division (with Lehmer's gcd)
+    // instead of one reduced fraction per coefficient (binary gcds).
+    let lc = p.coeff(n).abs();
     let mut max = Ratio::from_integer(BigInt::from(0));
     for i in 0..n {
-        let r = (p.coeff(i) / &lc).abs();
-        if r > max {
-            max = r;
+        let a = p.coeff(i).abs();
+        if a > max {
+            max = a;
         }
     }
-    max + one
+    let ratio = crate::poly::traits::Field::div(&max, &lc);
+    crate::poly::modgcd::rat_add(&ratio, &one)
 }
 
 /// Sign of the leading coefficient: +1, −1, or 0 (for zero poly).
@@ -1457,6 +1620,58 @@ mod tests {
             "[{lo}, {hi}]"
         );
         assert!(assert_same_as_sturm(&f, "tail") > 0);
+    }
+
+    /// Root magnitudes spread over hundreds of bits: the positive half-line
+    /// is cut into pieces around each magnitude (`magnitude_pieces`), with
+    /// the same roots, counts and intervals as the Sturm reference.
+    #[test]
+    fn spread_root_magnitudes_match_sturm() {
+        let ten = |k: u32| Ratio::from_integer(BigInt::from(10).pow(k));
+        let two = |k: u32| Ratio::from_integer(BigInt::from(2).pow(k));
+        let lin = |a: Q, b: Q| Poly::from_coeffs(vec![-a, b]);
+        let factors = [
+            lin(-ten(90), r(1)),
+            lin(r(3), r(1)),
+            Poly::from_coeffs(vec![r(-2), r(0), r(1)]),
+            lin(r(1), ten(60)),
+            lin(two(200), r(1)),
+            lin(-(r(1) / two(150)), r(1)),
+            lin(r(7), r(1)),
+        ];
+        let p = factors.iter().fold(Poly::from_int(1), |acc, f| &acc * f);
+        let q = z_primitive(&integer_scaled(p.coeffs()));
+        assert!(magnitude_pieces(&q, root_bound_exp(&q)).len() > 1);
+        assert!(assert_same_as_sturm(&p, "spread") > 0);
+        // SymPy 1.14: Poly(f).count_roots() = 8.
+        assert_eq!(SturmChain::new(&p).count_real_roots(), 8);
+    }
+
+    /// A quartic with 5,000-digit coefficients (SymPy 1.14
+    /// `Poly(f).count_roots()` = 2): its roots near 1 sit 16,600 bits below
+    /// the root bound; the isolation took 0.3 s per call before the
+    /// magnitude pieces.
+    #[test]
+    fn huge_coefficient_quartic_isolates_quickly() {
+        let big = |k: u32, c: i64| Ratio::from_integer(BigInt::from(7).pow(k) + BigInt::from(c));
+        // x⁴ − a x³ + b x² − c x + d with a, b, c, d ≈ 7^5900 (5,000 digits).
+        let p = Poly::from_coeffs(vec![
+            big(5900, 5),
+            -big(5900, 3),
+            big(5900, 1),
+            -big(5901, 0),
+            r(1),
+        ]);
+        let start = std::time::Instant::now();
+        let chain = SturmChain::new(&p);
+        let n = chain.count_real_roots();
+        assert!(start.elapsed().as_secs() < 5, "took {:?}", start.elapsed());
+        // SymPy: count_roots() = 2, count_roots(0, None) = 2,
+        // count_roots(-1, 10**6) = 1 (a root in (0, 1), one near 7^5901).
+        assert_eq!(n, 2);
+        assert_eq!(chain.count_roots_in(&r(-1), &r(1_000_000)), 1);
+        assert_eq!(chain.count_roots_in(&r(0), &r(1)), 1);
+        assert_eq!((chain.sign_at(&r(0)), chain.sign_at(&r(1))), (1, -1));
     }
 
     /// Roots hit exactly by a bisection point: the filter defers to the

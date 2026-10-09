@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::ops;
 
+use super::modgcd;
 use super::zpoly::{self, ZPoly, pow_ratio};
 use crate::base::errors::SymplexError;
 
@@ -1079,28 +1080,6 @@ impl<O: MonomialOrd> MultiPoly<O> {
 // Integer content, denominators, heuristic GCD
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Maximum number of evaluation points tried by the heuristic GCD before
-/// giving up.
-const HEUGCD_MAX_TRIES: usize = 6;
-
-/// Symmetric remainder of `c` modulo `m`: the representative of `c mod m`
-/// in `(-m/2, m/2]`.
-/// Outcome of one evaluation point of the heuristic GCD.
-enum Attempt<P> {
-    /// `(h, cff, cfg)`, verified.
-    Found(P, P, P),
-    /// This point did not work; try the next one.
-    Retry,
-    /// The recursion below failed: give up the heuristic.
-    Failed,
-}
-
-fn symmetric_mod(c: &BigInt, m: &BigInt) -> BigInt {
-    use num_integer::Integer;
-    let r = c.mod_floor(m);
-    if &r + &r > *m { r - m } else { r }
-}
-
 impl<O: MonomialOrd> MultiPoly<O> {
     /// GCD of the numerators of all coefficients (non-negative).
     ///
@@ -1150,19 +1129,6 @@ impl<O: MonomialOrd> MultiPoly<O> {
         (d, scaled)
     }
 
-    /// Largest absolute value of a coefficient numerator (the max-norm for
-    /// integer polynomials).  Zero for the zero polynomial.
-    fn max_norm(&self) -> BigInt {
-        let mut m = BigInt::zero();
-        for (_, c) in self.terms() {
-            let a = num_traits::Signed::abs(c.numer());
-            if a > m {
-                m = a;
-            }
-        }
-        m
-    }
-
     /// `true` if the leading coefficient (under `O`) is negative.
     fn leading_is_negative(&self) -> bool {
         self.leading_coeff()
@@ -1198,6 +1164,19 @@ impl<O: MonomialOrd> MultiPoly<O> {
     /// products sharing the factor `7z + 34` in four variables with
     /// six-digit coefficients was `1`.
     ///
+    /// Since 0.36 a modular certificate comes first: images modulo a word
+    /// prime, univariate in each variable the inputs share, whose gcds have
+    /// degree 0 prove the GCD constant (`modgcd::coprime_certified`) —
+    /// coprime inputs are the common case, and the heuristic's integer GCD
+    /// at the bottom has millions of digits for large inputs.  Two
+    /// polynomials in the same single variable go to the dense GCD in `ℤ[x]`
+    /// (`zpoly::z_gcd`: Brown's modular algorithm for large inputs), and the
+    /// heuristic runs on integer coefficients
+    /// with Lehmer's integer GCD (before, every evaluation multiplied
+    /// reduced fractions, each paying a binary gcd against the denominator
+    /// `1`: `ratsimp` of ten fractions `1/(x + n)` with 5,000-digit `n` took
+    /// 43 s).  The GCD is the same polynomial whichever route finds it.
+    ///
     /// # Examples
     ///
     /// ```
@@ -1223,11 +1202,69 @@ impl<O: MonomialOrd> MultiPoly<O> {
         }
         let (_, az) = a.clear_denominators();
         let (_, bz) = b.clear_denominators();
-        let h = match Self::heugcd_z(&az, &bz) {
-            Some((h, _, _)) => h,
+        let h = match Self::gcd_z_fast(&az, &bz) {
+            Some(h) => h,
             None => Self::gcd_prs(&az, &bz),
         };
         if h.leading_is_negative() { h.neg() } else { h }
+    }
+
+    /// The GCD of two non-zero integer polynomials by the modular
+    /// certificate, the univariate modular GCD or the integer heuristic (see
+    /// [`gcd`](Self::gcd)), sign not normalised; `None` if the heuristic
+    /// fails.
+    fn gcd_z_fast(f: &Self, g: &Self) -> Option<Self> {
+        let nv = f.num_vars;
+        let ft: Vec<(&[u32], &BigInt)> = f.terms().map(|(e, c)| (e, c.numer())).collect();
+        let gt: Vec<(&[u32], &BigInt)> = g.terms().map(|(e, c)| (e, c.numer())).collect();
+        let c = modgcd::int_gcd(
+            &modgcd::content(ft.iter().map(|t| t.1)),
+            &modgcd::content(gt.iter().map(|t| t.1)),
+        );
+        if c.is_zero() {
+            return None;
+        }
+        if modgcd::coprime_certified(nv, &ft, &gt) {
+            return Some(Self::constant(nv, Ratio::from_integer(c)));
+        }
+        // Both in the same single variable: dense, `z_gcd` (Brown's modular
+        // algorithm for large inputs).
+        let (vf, vg) = (f.variables_present(), g.variables_present());
+        if let ([v], [w]) = (vf.as_slice(), vg.as_slice())
+            && v == w
+        {
+            let dense = |t: &[(&[u32], &BigInt)]| -> Vec<BigInt> {
+                let n = t.iter().map(|(e, _)| e[*v] as usize).max().unwrap_or(0);
+                let mut out = vec![BigInt::zero(); n + 1];
+                for (e, x) in t {
+                    out[e[*v] as usize] = (*x).clone();
+                }
+                out
+            };
+            let h = zpoly::z_gcd(&dense(&ft), &dense(&gt));
+            if !h.is_empty() {
+                let terms = h
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(_, x)| !x.is_zero())
+                    .map(|(k, x)| {
+                        let mut e = vec![0u32; nv];
+                        e[*v] = k as u32;
+                        (e, Ratio::from_integer(x * &c))
+                    })
+                    .collect();
+                return Self::from_distinct_terms(nv, terms);
+            }
+        }
+        let to_zmap = |t: &[(&[u32], &BigInt)]| -> modgcd::ZMap {
+            t.iter().map(|(e, x)| (e.to_vec(), (*x).clone())).collect()
+        };
+        let h = modgcd::heu_gcd(nv, &to_zmap(&ft), &to_zmap(&gt))?.h;
+        let terms = h
+            .into_iter()
+            .map(|(e, x)| (e, Ratio::from_integer(x)))
+            .collect();
+        Self::from_distinct_terms(nv, terms)
     }
 
     /// GCD in ℤ[x₁, …, xₙ] of two integer polynomials by the recursive
@@ -1355,188 +1392,6 @@ impl<O: MonomialOrd> MultiPoly<O> {
             Some(l) => l,
             None => prod,
         }
-    }
-
-    /// Heuristic GCD over ℤ for nonzero integer-coefficient inputs with the
-    /// same number of variables: `(h, cff, cfg)` with `f = h·cff`,
-    /// `g = h·cfg` and `h` the full GCD (including the integer content), or
-    /// `None` if the heuristic fails (then [`gcd_prs`](Self::gcd_prs)
-    /// decides).
-    ///
-    /// Follows SymPy's `dmp_zz_heu_gcd` (`sympy/polys/euclidtools.py`,
-    /// BSD-3; Char, Geddes & Gonnet, "GCDHEU", *J. Symbolic Comput.* 7
-    /// (1989)): only the content common to both inputs is extracted, the
-    /// evaluation point is `max(min(B, 99√B), 2·min(‖f‖/|lc f|, ‖g‖/|lc g|)
-    /// + 4)` with `B = 2·min(‖f‖, ‖g‖) + 29`, and every point tries three
-    /// candidates — the interpolated GCD and the quotients by the two
-    /// interpolated cofactors; a failure of the recursion below fails the
-    /// whole attempt (no nested retries).  Before 0.30 only the GCD
-    /// candidate was tried and every level retried its own points, which
-    /// failed on modest four-variable inputs (the GCD then came out `1`)
-    /// and cost `6^variables` attempts doing so.
-    fn heugcd_z(f: &Self, g: &Self) -> Option<(Self, Self, Self)> {
-        let nv = f.num_vars;
-        // Content common to both inputs.
-        let cf = f.integer_content();
-        let cg = g.integer_content();
-        if cf.is_zero() || cg.is_zero() {
-            return None;
-        }
-        let c = num_integer::gcd(cf, cg);
-        let c_rat = Ratio::from_integer(c.clone());
-        let inv_c = Ratio::new(BigInt::one(), c);
-        let f = f.scale(&inv_c);
-        let g = g.scale(&inv_c);
-        let one = Self::from_int(nv, 1);
-
-        if nv == 0 {
-            let a = f.as_constant()?.to_integer();
-            let b = g.as_constant()?.to_integer();
-            let h = num_integer::gcd(a.clone(), b.clone());
-            if h.is_zero() {
-                return None;
-            }
-            return Some((
-                Self::constant(0, Ratio::from_integer(&h * c_rat.to_integer())),
-                Self::constant(0, Ratio::from_integer(a / &h)),
-                Self::constant(0, Ratio::from_integer(b / &h)),
-            ));
-        }
-        // A constant: the GCD is an integer (the GCD of the contents).
-        if f.total_degree() == Some(0) || g.total_degree() == Some(0) {
-            let k = num_integer::gcd(f.integer_content(), g.integer_content());
-            let inv_k = Ratio::new(BigInt::one(), k.clone());
-            return Some((
-                Self::constant(nv, Ratio::from_integer(k) * &c_rat),
-                f.scale(&inv_k),
-                g.scale(&inv_k),
-            ));
-        }
-        // Cheap exact-division shortcuts.
-        if let Some(q) = g.div_exact_z(&f) {
-            return Some((f.scale(&c_rat), one, q));
-        }
-        if let Some(q) = f.div_exact_z(&g) {
-            return Some((g.scale(&c_rat), q, one));
-        }
-        // Every level evaluates one variable away, so the recursion depth is
-        // the number of variables.  (Before 0.30 a guard `depth > nv + 1`,
-        // with `nv` the variables left, failed every attempt at the
-        // univariate level of a four-variable input: `depth + nv` is the
-        // original number of variables.)
-        let var = nv - 1;
-        let f_norm = f.max_norm();
-        let g_norm = g.max_norm();
-        let two = BigInt::from(2);
-        let b = &two * f_norm.clone().min(g_norm.clone()) + BigInt::from(29);
-        let lc_ratio = |norm: &BigInt, p: &Self| -> BigInt {
-            let lc = p
-                .leading_coeff()
-                .map(|c| num_traits::Signed::abs(c.numer()))
-                .filter(|c| !c.is_zero())
-                .unwrap_or_else(BigInt::one);
-            norm / lc
-        };
-        let mut xi = (b.clone().min(BigInt::from(99) * b.sqrt()))
-            .max(&two * lc_ratio(&f_norm, &f).min(lc_ratio(&g_norm, &g)) + BigInt::from(4));
-
-        for _ in 0..HEUGCD_MAX_TRIES {
-            match Self::heugcd_attempt(&f, &g, var, &xi) {
-                Attempt::Found(h, cff, cfg) => return Some((h.scale(&c_rat), cff, cfg)),
-                Attempt::Retry => {}
-                Attempt::Failed => return None,
-            }
-            xi = Self::next_xi(&xi);
-        }
-        None
-    }
-
-    /// Next evaluation point: `73794 · ξ · ξ^(1/4) / 27011` (grows like
-    /// `ξ^1.25`, the schedule used by the classical implementations).
-    fn next_xi(xi: &BigInt) -> BigInt {
-        let root4 = xi.sqrt().sqrt().max(BigInt::from(2));
-        (BigInt::from(73794) * xi * root4) / BigInt::from(27011)
-    }
-
-    /// One evaluation/interpolation round of the heuristic GCD for inputs
-    /// `f`, `g` without common integer content, in variable `var` at the
-    /// point `xi`: the GCD and cofactors of the values are computed
-    /// recursively and interpolated, and each of the three candidates is
-    /// verified by exact division.
-    fn heugcd_attempt(f: &Self, g: &Self, var: usize, xi: &BigInt) -> Attempt<Self> {
-        let xi_rat = Ratio::from_integer(xi.clone());
-        let ff = f.substitute(var, &xi_rat);
-        let gg = g.substitute(var, &xi_rat);
-        if ff.is_zero() || gg.is_zero() {
-            return Attempt::Retry;
-        }
-        let Some((h, cff, cfg)) = Self::heugcd_z(&ff, &gg) else {
-            return Attempt::Failed;
-        };
-        // Candidate 1: the interpolated GCD, made primitive.
-        let h = Self::interpolate_xi(&h, xi, var);
-        let content = h.integer_content();
-        if !h.is_zero() && !content.is_zero() {
-            let h = h.scale(&Ratio::new(BigInt::one(), content));
-            if let (Some(cf), Some(cg)) = (f.div_exact_z(&h), g.div_exact_z(&h)) {
-                return Attempt::Found(h, cf, cg);
-            }
-        }
-        // Candidate 2: f divided by the interpolated cofactor of f.
-        let cff = Self::interpolate_xi(&cff, xi, var);
-        if !cff.is_zero()
-            && let Some(h) = f.div_exact_z(&cff)
-            && let Some(cg) = g.div_exact_z(&h)
-        {
-            return Attempt::Found(h, cff, cg);
-        }
-        // Candidate 3: g divided by the interpolated cofactor of g.
-        let cfg = Self::interpolate_xi(&cfg, xi, var);
-        if !cfg.is_zero()
-            && let Some(h) = g.div_exact_z(&cfg)
-            && let Some(cf) = f.div_exact_z(&h)
-        {
-            return Attempt::Found(h, cf, cfg);
-        }
-        Attempt::Retry
-    }
-
-    /// Exact division in ℤ[x₁, …, xₙ]: the quotient of
-    /// [`div_exact`](Self::div_exact) when it has integer coefficients.
-    fn div_exact_z(&self, divisor: &Self) -> Option<Self> {
-        self.div_exact(divisor)
-            .filter(|q| q.terms().all(|(_, c)| c.is_integer()))
-    }
-
-    /// Reconstruct a polynomial in variable `var` from its value `h` at
-    /// `xi` by symmetric ξ-adic expansion: `h = Σᵢ gᵢ · ξⁱ` with the
-    /// coefficients of each `gᵢ` in `(-ξ/2, ξ/2]`.
-    fn interpolate_xi(h: &Self, xi: &BigInt, var: usize) -> Self {
-        let nv = h.num_vars + 1;
-        let mut result = Self::zero(nv);
-        let mut rest = h.clone();
-        let mut i: u32 = 0;
-        let xi_rat = Ratio::from_integer(xi.clone());
-        while !rest.is_zero() {
-            // With exact integer arithmetic every digit step divides the
-            // remaining magnitude by ξ, so this terminates; the cap only
-            // guards against a non-integer `h` slipping through.
-            if i > 4096 || rest.terms().any(|(_, c)| !c.is_integer()) {
-                return Self::zero(nv);
-            }
-            let digit = rest.map_coeffs(|c| Ratio::from_integer(symmetric_mod(c.numer(), xi)));
-            for (exp, c) in digit.terms() {
-                let mut e = Vec::with_capacity(nv);
-                e.extend_from_slice(&exp[..var]);
-                e.push(i);
-                e.extend_from_slice(&exp[var..]);
-                result.insert_term(e, c.clone());
-            }
-            rest = rest.sub(&digit).map_coeffs(|c| c / &xi_rat);
-            i += 1;
-        }
-        result.prune();
-        result
     }
 }
 
@@ -2112,34 +1967,14 @@ mod tests {
 
     #[test]
     fn gcd_first_evaluation_point_fails_then_retry_succeeds() {
-        // gcd = (x + 1)⁸ has a coefficient 70, but the inputs have max-norms
-        // 28 and 112, so at the evaluation point ξ = 2·28 + 29 = 85 the GCD
-        // cannot be recovered from its value (70 is not a symmetric digit
-        // mod 85), nor can the cofactors (gcd(f(85), g(85)) carries the
-        // spurious factor gcd(84, 7226) = 2): the attempt must fail and the
-        // next ξ must recover the answer.
+        // gcd = (x + 1)⁸; the heuristic's first evaluation point fails on
+        // these inputs (`modgcd::tests::heuristic_retry`), and the GCD is now
+        // found by the modular algorithm (one variable).
         let x: MultiPoly<GrevLex> = MultiPoly::var(1, 0);
         let one = MultiPoly::from_int(1, 1);
         let h = pow(&x.add(&one), 8);
         let f = h.mul(&x.sub(&one)); // norm 28
         let g = h.mul(&x.mul(&x).add(&one)); // norm 112
-        assert_eq!(f.max_norm(), BigInt::from(28));
-        assert_eq!(g.max_norm(), BigInt::from(112));
-        let xi0 = BigInt::from(85);
-        assert!(matches!(
-            MultiPoly::heugcd_attempt(&f, &g, 0, &xi0),
-            Attempt::Retry
-        ));
-        let xi1 = MultiPoly::<GrevLex>::next_xi(&xi0);
-        assert!(xi1 > BigInt::from(140), "next ξ = {xi1}");
-        match MultiPoly::heugcd_attempt(&f, &g, 0, &xi1) {
-            Attempt::Found(hh, cff, cfg) => {
-                assert_eq!(hh, h);
-                assert_eq!(cff, x.sub(&one));
-                assert_eq!(cfg, x.mul(&x).add(&one));
-            }
-            _ => panic!("ξ = {xi1} should recover the GCD"),
-        }
         assert_eq!(MultiPoly::gcd(&f, &g), h);
     }
 
