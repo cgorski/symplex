@@ -23,6 +23,8 @@ mod v34_evalf;
 mod v34_integrate;
 #[path = "v34/v34_limits.rs"]
 mod v34_limits;
+#[path = "v34/v34_matrices.rs"]
+mod v34_matrices;
 #[path = "v34/v34_ode_sums.rs"]
 mod v34_ode_sums;
 #[path = "v34/v34_poly_speed.rs"]
@@ -31,6 +33,8 @@ mod v34_poly_speed;
 mod v34_rewrites;
 #[path = "v34/v34_rubi.rs"]
 mod v34_rubi;
+#[path = "v34/v34_rubi_trig.rs"]
+mod v34_rubi_trig;
 #[path = "v34/v34_slow.rs"]
 mod v34_slow;
 #[path = "v34/v34_undefined.rs"]

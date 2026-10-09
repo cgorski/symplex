@@ -735,6 +735,50 @@ fn has_root_of(e: &Ex) -> bool {
     false
 }
 
+/// Does `e` contain a root of index ≥ 3 of a non-rational radicand (the
+/// cube roots of Cardano's formulas over `ℚ(√p…, i)`)?
+pub(crate) fn has_nested_higher_root(e: &Ex) -> bool {
+    use crate::base::node::ExprNode;
+    let inner = e.inner.read();
+    let arena = &inner.arena;
+    let mut stack = vec![e.raw_id()];
+    let mut seen = rustc_hash::FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if let ExprNode::Pow(base, exp) = arena.node(id)
+            && let Some(r) = arena.as_num(*exp)
+            && *r.denom() > BigInt::from(2)
+            && arena.as_num(*base).is_none()
+        {
+            return true;
+        }
+        stack.extend(arena.node(id).children());
+    }
+    false
+}
+
+/// Did an operation fail on [`EXPRESSION_BUDGET`]?
+pub(crate) fn is_swell(e: &SymplexError) -> bool {
+    matches!(e, SymplexError::ComputationFailed { reason, .. }
+        if reason.starts_with("expression swell"))
+}
+
+/// The final clean-up of an entry of `P·f(J)·P⁻¹` (`matrix_exp`,
+/// `matrix_sqrt`, `matrix_log`, `matrix_pow_symbolic`): `simplify`, except
+/// for entries with `RootOf` values or Cardano cube roots, where it can do
+/// nothing (a casus-irreducibilis radical does not denest) and takes
+/// about a second per entry on a 3×3 matrix over `ℚ(√2, √3, i)` — constant
+/// folding is all they get.
+pub(crate) fn simplify_function_entry(e: &Ex) -> Ex {
+    if has_root_of(e) || has_nested_higher_root(e) {
+        e.eval()
+    } else {
+        e.simplify()
+    }
+}
+
 /// Three-valued "is strictly positive" test for a scalar expression.
 pub(crate) fn ex_is_positive(e: &Ex) -> Option<bool> {
     if let Some(b) = e.is_positive() {
@@ -2296,6 +2340,16 @@ impl Matrix {
                 ),
             ));
         }
+        // The rank of `A` is decided exactly for rational functions over
+        // `ℚ(radicals, i)`; that of `AᴴA` is not (`conjugate(x)` entries),
+        // and before 0.38 a symbolic rank-deficient `A` (`[[x − 2, 2], [0, 0]]`)
+        // had `AᴴA` "solved" by dividing by an unrecognised zero.
+        if self.as_qmatrix().is_none() && self.rank() < self.ncols {
+            return Err(failed(
+                "solve_least_squares",
+                "AᵀA is singular (A does not have full column rank)",
+            ));
+        }
         let real = self.iter().all(|e| e.is_real() == Some(true));
         let at = if real {
             self.transpose()
@@ -2512,6 +2566,8 @@ impl Matrix {
         let symbolic = coeffs.iter().any(|c| c.expr_type() != ExprType::Number);
         let mut pairs = if n <= 2 && symbolic {
             low_degree_roots(&coeffs)
+        } else if let Some(split) = symbolic.then(|| symbolic_factor_roots(&cp, lam)).flatten() {
+            split
         } else {
             eigvals_with_multiplicity(&cp, lam)
         };
@@ -2662,7 +2718,17 @@ impl Matrix {
                             .into_iter()
                             .map(Matrix::col_vector)
                             .collect::<Result<Vec<_>, _>>()?,
-                        None => a_minus_lambda_i.nullspace_semantic(),
+                        None => {
+                            let vs = a_minus_lambda_i.nullspace_semantic();
+                            // A simple eigenvalue has exactly one eigenvector;
+                            // none means a zero pivot went undecided.
+                            match (*alg_mult, vs.len()) {
+                                (1, 0) => {
+                                    simple_eigenvector(&a_minus_lambda_i).map_or(vs, |v| vec![v])
+                                }
+                                _ => vs,
+                            }
+                        }
                     }
                 }
             };
@@ -2675,7 +2741,7 @@ impl Matrix {
             );
             let vecs = vecs
                 .into_iter()
-                .map(|v| v.map(|e| self.hide_dummy(e, &lam)))
+                .map(|v| v.map(|e| tidy_symbolic_entry(&self.hide_dummy(e, &lam))))
                 .collect();
             result.push((self.hide_dummy(eigenval, &lam), *alg_mult, vecs));
         }
@@ -2687,7 +2753,10 @@ impl Matrix {
     /// - `Some(true)` — every eigenvalue's geometric multiplicity equals
     ///   its algebraic multiplicity.
     /// - `Some(false)` — non-square, or some eigenvalue is defective
-    ///   (decided only for matrices without free symbols).
+    ///   (decided for matrices without free symbols, and — generically, as
+    ///   SymPy's `is_diagonalizable` — for rational functions of the
+    ///   symbols over `ℚ(radicals, i)` at an eigenvalue of that kind, whose
+    ///   zero tests are exact: `[[x, 1], [0, x]]` was `None` before 0.38).
     /// - `None` — the eigenvalue solver could not find all eigenvalues, or
     ///   the entries are symbolic and an eigenspace dimension could not be
     ///   established.
@@ -2713,13 +2782,18 @@ impl Matrix {
         if eigvs.iter().all(|(_, m, v)| v.len() == *m) {
             return Some(true);
         }
-        // A missing eigenvector is conclusive only when zero-tests were
-        // decidable, i.e. for constant matrices.
-        if self.iter().all(Ex::is_constant) {
-            Some(false)
-        } else {
-            None
-        }
+        // A missing eigenvector is conclusive only when the zero tests were
+        // decidable: for constant matrices, and for rational functions of
+        // the symbols at an eigenvalue that is one too (`rref` then finds the
+        // generic rank of `A − λI` exactly).
+        let exact = |e: &Ex| e.is_constant() || rational_function_is_zero(e).is_some();
+        let decided = self.iter().all(Ex::is_constant)
+            || (self.iter().all(exact)
+                && eigvs
+                    .iter()
+                    .filter(|(_, m, v)| v.len() != *m)
+                    .all(|(l, _, _)| exact(l)));
+        decided.then_some(false)
     }
 
     /// Diagonalize: find invertible `P` and diagonal `D` with `A = P D P⁻¹`.
@@ -3027,6 +3101,11 @@ impl Matrix {
     ///                    [ …                        ]
     /// ```
     ///
+    /// When `P·e^J·P⁻¹` exceeds [`EXPRESSION_BUDGET`] (typically `RootOf`
+    /// eigenvalues) and the eigenvalues are distinct, Sylvester's formula
+    /// `eᴬ = Σᵢ e^λᵢ·adj(λᵢI − A)/p′(λᵢ)` is used instead, which inverts
+    /// nothing.
+    ///
     /// Unlike a numerical library this never falls back to a series
     /// approximation; use [`exp_series`](Self::exp_series) explicitly if
     /// an approximation is acceptable.
@@ -3083,6 +3162,86 @@ impl Matrix {
 
     fn matrix_exp_impl(&self, t: Option<&Ex>) -> Result<Matrix, SymplexError> {
         self.require_square("matrix_exp")?;
+        match self.matrix_exp_jordan(t) {
+            Err(e) if is_swell(&e) => {
+                let f = |l: &Ex| match t {
+                    Some(t) => (l * t).exp(),
+                    None => l.exp(),
+                };
+                self.sylvester_function("matrix_exp", &f)?.ok_or(e)
+            }
+            r => r,
+        }
+    }
+
+    /// `f(A)` by Sylvester's formula for a matrix with `n` distinct
+    /// eigenvalues: `f(A) = Σᵢ f(λᵢ)·adj(λᵢI − A)/p′(λᵢ)` with
+    /// `p(t) = det(tI − A)` and `adj(tI − A) = Σⱼ Nⱼ·t^(n−1−j)`,
+    /// `N₀ = I`, `Nⱼ = A·Nⱼ₋₁ + cₙ₋ⱼ·I` (Faddeev–LeVerrier; Higham,
+    /// *Functions of Matrices*, §1.2).  No eigenvector matrix is inverted,
+    /// which is where `P·f(J)·P⁻¹` swells when the eigenvalues are
+    /// `RootOf` values: before 0.38 `matrix_exp` of a 4×4 integer matrix
+    /// with an irreducible quartic characteristic polynomial was refused
+    /// ("expression swell").  `Ok(None)` when the eigenvalues are not
+    /// distinct (or not all found).
+    pub(crate) fn sylvester_function(
+        &self,
+        op: &'static str,
+        f: &dyn Fn(&Ex) -> Ex,
+    ) -> Result<Option<Matrix>, SymplexError> {
+        let n = self.nrows;
+        let pairs = self.eigenvals_with_multiplicity()?;
+        if pairs.len() != n || pairs.iter().any(|(_, m)| *m != 1) {
+            return Ok(None);
+        }
+        let ctx = self.ctx();
+        let tidy = |e: Ex| {
+            if self.as_qmatrix().is_some() {
+                e.eval()
+            } else {
+                crate::domains::linalg::algebraic_constant_normal_form(&e)
+                    .unwrap_or_else(|| e.expand())
+            }
+        };
+        // Monic `p(t) = (−1)ⁿ·det(A − tI)`, ascending.
+        let sign = ctx.int(if n.is_multiple_of(2) { 1 } else { -1 });
+        let c: Vec<Ex> = self
+            .char_poly_coeffs()?
+            .iter()
+            .map(|x| tidy(x * &sign))
+            .collect();
+        let eye = Matrix::identity(&ctx, n)?;
+        let mut ns: Vec<Matrix> = vec![eye.clone()];
+        for j in 1..n {
+            let prev = &ns[j - 1];
+            let next = self.matmul(prev)?.add(&eye.scale(&c[n - j]))?;
+            ns.push(next.map(|e| tidy(e.clone())));
+        }
+        let mut out: Vec<Vec<Ex>> = vec![vec![ctx.zero(); n]; n];
+        for (l, _) in &pairs {
+            // Horner: p′(λ) = Σ k·c_k·λ^(k−1), and Σⱼ Nⱼ[r][s]·λ^(n−1−j).
+            let mut dp = &c[n] * &ctx.int(n as i64);
+            for k in (1..n).rev() {
+                dp = &(&dp * l) + &(&c[k] * &ctx.int(k as i64));
+            }
+            let w = (&f(l) / &dp).eval();
+            for (r, row) in out.iter_mut().enumerate() {
+                for (s, cell) in row.iter_mut().enumerate() {
+                    let mut q = ns[0].rows[r][s].clone();
+                    for nj in &ns[1..] {
+                        q = &(&q * l) + &nj.rows[r][s];
+                    }
+                    *cell = &*cell + &(&w * &q);
+                }
+            }
+        }
+        let result = Matrix::from_rows_unchecked(out);
+        result.check_budget(op)?;
+        Ok(Some(result.map(simplify_function_entry)))
+    }
+
+    /// [`matrix_exp_impl`](Self::matrix_exp_impl) through the Jordan form.
+    fn matrix_exp_jordan(&self, t: Option<&Ex>) -> Result<Matrix, SymplexError> {
         debug!(
             "matrix_exp: computing for {}×{} matrix",
             self.nrows, self.ncols
@@ -3157,20 +3316,26 @@ impl Matrix {
         result.check_budget("matrix_exp")?;
         let i_unit = ctx.i_unit();
         Ok(result.map(|e| {
-            // `simplify` cannot do anything useful with `RootOf` values but
-            // is very slow on them; constant folding is all they need.
-            if has_root_of(e) {
+            // `simplify` cannot do anything useful with `RootOf` values or
+            // Cardano cube roots but is very slow on them; constant folding
+            // is all they need.
+            if has_root_of(e) || has_nested_higher_root(e) {
                 return e.eval();
             }
             let s = e.simplify();
             // Complex-conjugate eigenvalue pairs: Euler's formula turns
             // `½e^{iωt} + ½e^{−iωt}` into `cos(ωt)` (valid for any complex
-            // argument, so no realness assumption is needed).
+            // argument, so no realness assumption is needed).  Only when
+            // there is an exponential to rewrite: before 0.38 the `expand`
+            // ran on every entry with an `i`, and a 3×3 Hermitian matrix over
+            // `ℚ(√2, √3, i)` took 15 s for a 179 MB result.
             let s = if s.contains(&i_unit) {
-                fix_trig_parity(&s.rewrite_as_trig())
-                    .expand()
-                    .eval()
-                    .simplify()
+                let w = s.rewrite_as_trig();
+                if w == s {
+                    s
+                } else {
+                    fix_trig_parity(&w).expand().eval().simplify()
+                }
             } else {
                 s
             };
@@ -3203,9 +3368,11 @@ impl Matrix {
     ///   `n × m` matrix.
     ///
     /// Rational matrices are computed exactly on [`QMatrix`].  For symbolic
-    /// matrices the rank is the *structural* rank of [`rref`](Self::rref)
-    /// (symbolic pivots are treated as non-zero) and entries are treated
-    /// as real (`Aᵀ`, not `Aᴴ`).
+    /// matrices the rank is the rank of [`rref`](Self::rref) (generic
+    /// rank for symbolic pivots).  The adjoints are conjugate transposes
+    /// (`Aᴴ`, as SymPy's), plain transposes when every entry is provably
+    /// real; before 0.38 `Aᵀ` was used for complex entries too, which is
+    /// not the Moore–Penrose inverse.
     ///
     /// # Errors
     ///
@@ -3258,16 +3425,23 @@ impl Matrix {
         if pivots.is_empty() {
             return Matrix::zeros(&ctx, self.ncols, self.nrows);
         }
-        let at = self.transpose();
+        // `Aᴴ` (SymPy's `pinv` uses `.H`); `Aᵀ` only when every entry is
+        // provably real.  Before 0.38 `Aᵀ` was used for complex `A` too, so
+        // `(A·A⁺)ᴴ ≠ A·A⁺` for `[[0, 1, √2·i], [0, −√2, √3], [0, 0, 2]]`.
+        let real = self.iter().all(|e| e.is_real() == Some(true));
+        let adj = |m: &Matrix| if real { m.transpose() } else { m.adjoint() };
+        let at = adj(self);
         if pivots.len() == self.ncols {
             let ata = at.matmul(self)?;
-            let ata_inv = ata.inv().map_err(inv_err("AᵀA"))?;
+            let ata_inv = ata
+                .inv()
+                .map_err(inv_err(if real { "AᵀA" } else { "AᴴA" }))?;
             return ata_inv.matmul(&at);
         }
         let c = self.select_cols(&pivots)?;
         let f = r.select_rows(&(0..pivots.len()).collect::<Vec<_>>())?;
-        let ft = f.transpose();
-        let ct = c.transpose();
+        let ft = adj(&f);
+        let ct = adj(&c);
         let fft_inv = f.matmul(&ft)?.inv().map_err(inv_err("FFᵀ"))?;
         let ctc_inv = ct.matmul(&c)?.inv().map_err(inv_err("CᵀC"))?;
         let result = ft.matmul(&fft_inv)?.matmul(&ctc_inv)?.matmul(&ct)?;
@@ -3436,6 +3610,16 @@ impl Matrix {
     /// assert!(matrix![ctx, [1, 2], [2, 4]].condition_number().is_err());
     /// ```
     pub fn condition_number(&self) -> Result<Ex, SymplexError> {
+        // Rank first, decided exactly: a zero singular value of a symbolic
+        // matrix is often not recognisable as such (`√(a − √(a²))`), and
+        // before 0.38 `[[x − 2, 2], [0, 0]]` had `Max(…)/Min(…)` with an
+        // identically zero `Min` (SymPy: `zoo`).
+        if self.as_qmatrix().is_none() && self.rank() < self.nrows.min(self.ncols) {
+            return Err(failed(
+                "condition_number",
+                "matrix is singular (smallest singular value is 0), condition number is infinite",
+            ));
+        }
         let sv = self
             .singular_values()
             .map_err(|e| reop(e, "condition_number"))?;
@@ -3753,7 +3937,40 @@ fn quadratic_sqrt(disc: &Ex) -> Ex {
             return (&factor * &root).eval();
         }
     }
-    disc.sqrt()
+    square_root_by_factoring(disc).unwrap_or_else(|| disc.sqrt())
+}
+
+/// `r` with `r² = disc` for a polynomial `disc` in the symbols that is
+/// `±q²·∏ fᵢ^(2kᵢ)` over `ℚ` (factored by `factor_list_all`), checked
+/// exactly.  Forced denesting misses such squares when they are expanded:
+/// before 0.38 the eigenvalues of `[[2y − x, x − y], [2y − 2x, 2x − y]]`
+/// were `(x + y ± √(x² − 2xy + y²))/2` — `x` and `y` region by region —
+/// so a 4×4 matrix with the eigenvalue `x` three times had it twice plus
+/// once in disguise.
+fn square_root_by_factoring(disc: &Ex) -> Option<Ex> {
+    use num_traits::Signed;
+    if disc.free_symbols().is_empty() || has_radical(disc) {
+        return None;
+    }
+    let ctx = disc.context();
+    let (content, factors) = disc.factor_list_all();
+    let c = content.as_rational()?;
+    if factors.is_empty() || factors.iter().any(|(_, m)| m % 2 != 0) {
+        return None;
+    }
+    let mut root = if c.is_negative() {
+        &ctx.from_ratio(rational_sqrt_q(&-c)?) * &ctx.i_unit()
+    } else {
+        ctx.from_ratio(rational_sqrt_q(&c)?)
+    };
+    for (f, m) in &factors {
+        root = &root * &f.powi(i64::from(m / 2));
+    }
+    let root = root.expand();
+    (&root.powi(2) - disc)
+        .expand()
+        .is_zero_structural()
+        .then_some(root)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -5358,6 +5575,38 @@ fn eigvals_via_poly_factor(char_poly: &Ex, var: &Ex) -> Option<Vec<(Ex, usize)>>
     Some(eigen_pairs)
 }
 
+/// Eigenvalues of a characteristic polynomial with symbolic coefficients
+/// that factors over `ℚ[symbols]`: each factor is solved on its own (the
+/// linear and quadratic formulas of [`low_degree_roots`], the generic path
+/// above that) and its roots inherit its multiplicity, as SymPy's `roots`
+/// does with `factor_list`.  `None` when the polynomial does not split.
+///
+/// Before 0.38 the whole polynomial went to the generic solver: the
+/// rank-one 4×4 matrix `u·vᵀ` with `u = (x, y, x, 2)`, `v = (3, y, 3, 3)`,
+/// whose characteristic polynomial is `λ³·(λ − y² − 6x − 6)`, was refused
+/// ("could not solve the characteristic polynomial"; SymPy: `{0: 3,
+/// y² + 6x + 6: 1}`), and a reducible quadratic factor could come back
+/// from the quadratic formula with its roots in disguise.
+fn symbolic_factor_roots(cp: &Ex, lam: &Ex) -> Option<Vec<(Ex, usize)>> {
+    let (_, factors) = cp.factor_list_all();
+    if factors.len() < 2 && factors.iter().all(|(_, m)| *m < 2) {
+        return None;
+    }
+    let mut out: Vec<(Ex, usize)> = Vec::new();
+    for (f, m) in &factors {
+        let coeffs = f.coeffs(lam)?;
+        let roots = match coeffs.len() {
+            0 | 1 => continue,
+            2 | 3 => low_degree_roots(&coeffs),
+            _ => eigvals_with_multiplicity(&f.expand(), lam),
+        };
+        for (r, k) in roots {
+            out.push((r, k * *m as usize));
+        }
+    }
+    Some(out)
+}
+
 /// `RootOf(poly, var, index)` — the `index`-th root (Aberth ordering: by
 /// real part, then imaginary part) of the polynomial `poly` in `var`.
 fn root_of(poly: &Ex, var: &Ex, index: usize) -> Ex {
@@ -5632,6 +5881,117 @@ fn eigen_zero_test(e: &Ex) -> bool {
         return b;
     }
     ex_is_zero(e) == Some(true)
+}
+
+/// An eigenvector entry of a symbolic matrix that is a rational function
+/// of its symbols, in `ratsimp` normal form (SymPy's `eigenvects`
+/// simplifies too).  The elimination leaves nested quotients: before 0.38
+/// the eigenvector of `y² + 6x + 6` of the rank-1 4×4 matrix `u·vᵀ` with
+/// `u = (x, y, x, 2)`, `v = (3, y, 3, 3)` was 2 KB instead of
+/// `(x/2, y/2, x/2, 1)`, and inverting the eigenvector matrix for
+/// `matrix_exp` took 14 s.  Other entries are returned as they are.
+fn tidy_symbolic_entry(e: &Ex) -> Ex {
+    if e.expr_type() == ExprType::Number
+        || e.free_symbols().is_empty()
+        || has_radical(e)
+        || has_root_of(e)
+    {
+        return e.clone();
+    }
+    e.ratsimp()
+}
+
+/// Is `e` provably not the zero function?  Exactly for rational functions
+/// over `ℚ(radicals, i)` and certified for constants; otherwise `e` is
+/// evaluated (certified) at a few rational points of its free symbols: a
+/// nonzero value there proves `e ≢ 0`.  `false` means "not proven", never
+/// "zero".
+fn provably_nonzero(e: &Ex) -> bool {
+    if e.is_zero_structural() {
+        return false;
+    }
+    if e.expr_type() == ExprType::Number {
+        return true;
+    }
+    if let Some(b) = rational_function_is_zero(e) {
+        return !b;
+    }
+    let syms = e.free_symbols();
+    if syms.is_empty() {
+        return constant_is_zero(e) == Some(false);
+    }
+    // A `RootOf` binds a variable that `free_symbols` may report.
+    if has_root_of(e) {
+        return false;
+    }
+    let ctx = e.context();
+    (0..3i64).any(|k| {
+        let vals: Vec<Ex> = (0..syms.len() as i64)
+            .map(|i| ctx.rational(31 + 17 * i + 7 * k, 11 + 4 * k + 3 * i))
+            .collect();
+        let subs: Vec<(&Ex, &Ex)> = syms.iter().zip(vals.iter()).collect();
+        constant_is_zero(&e.subs_map(&subs)) == Some(false)
+    })
+}
+
+/// The eigenvector of a simple eigenvalue `λ` from `m = A − λI`.
+///
+/// An eigenvalue of algebraic multiplicity 1 has a one-dimensional
+/// eigenspace, so `rank(A − λI) = n − 1` is known in advance: Gaussian
+/// elimination needs only `n − 1` pivots that are *provably* nonzero
+/// ([`provably_nonzero`]; the smallest such entry of a column is taken),
+/// and the remaining row is then zero without a zero test.  This is what
+/// a symbolic eigenvalue such as `x²/2 + √(x⁴ + 8x² + 8xy)/2` needs: no
+/// zero test decides the last pivot `−λ − 2x(x + y)/(x² − λ)`, and
+/// before 0.38 `eigenvects` returned no eigenvector for it (SymPy:
+/// `[λ/(2x), 1]`).  `None` when fewer than `n − 1` pivots are proven.
+fn simple_eigenvector(m: &Matrix) -> Option<Matrix> {
+    let n = m.ncols;
+    let nr = m.nrows;
+    if n == 0 || nr + 1 < n {
+        return None;
+    }
+    let mut rows = m.rows.clone();
+    let mut pivots: Vec<usize> = Vec::new();
+    let mut pr = 0usize;
+    for col in 0..n {
+        if pr + 1 == n {
+            break;
+        }
+        let Some(best) = (pr..nr)
+            .filter(|&i| provably_nonzero(&rows[i][col]))
+            .min_by_key(|&i| rows[i][col].count_ops())
+        else {
+            continue;
+        };
+        rows.swap(pr, best);
+        let piv = rows[pr][col].clone();
+        for e in rows[pr].iter_mut() {
+            *e = (&*e / &piv).eval();
+        }
+        let pivot_row = rows[pr].clone();
+        for (i, row) in rows.iter_mut().enumerate() {
+            if i == pr || row[col].is_zero_structural() {
+                continue;
+            }
+            let factor = row[col].clone();
+            for (e, p) in row.iter_mut().zip(&pivot_row) {
+                *e = (&*e - &(&factor * p)).eval();
+            }
+        }
+        pivots.push(col);
+        pr += 1;
+    }
+    if pr + 1 != n {
+        return None;
+    }
+    let free = (0..n).find(|c| !pivots.contains(c))?;
+    let mut v = vec![m.ctx_zero(); n];
+    v[free] = m.ctx_one();
+    for (k, &pc) in pivots.iter().enumerate() {
+        v[pc] = (-&rows[k][free]).eval();
+    }
+    Some(Matrix::col_vector_unchecked(v))
 }
 
 /// Compute nullspace of `(a_minus_lambda)^power`.

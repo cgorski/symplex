@@ -499,7 +499,8 @@ fn math_failures_are_computation_failed() {
     assert_eq!(pinv, matrix![ctx, [1 / 25, 2 / 25], [2 / 25, 4 / 25]]);
     assert!(is_cf(matrix![ctx, [1, 1], [0, 1]].diagonalize()));
     assert!(is_cf(matrix![ctx, [1, 2], [2, 1]].cholesky()));
-    assert!(is_cf(matrix![ctx, [1, 2], [2, 4]].qr()));
+    // 0.38: a rank-deficient QR is SymPy's reduced one; the zero matrix fails.
+    assert!(is_cf(matrix![ctx, [0, 0], [0, 0]].qr()));
 }
 
 #[test]

@@ -10,6 +10,30 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ### Added
 
+- **Trigonometric integrals of linear arguments, `tan`, radicals and
+  polynomial factors integrate** (Rubi: 23,915 → 28,713 verified, 70 → 73
+  real_verified, 0 wrong; chapters 4.1–4.7: 3,992 → 8,350).  A rational
+  function of `sin`, `cos`, `tan` of `c + d·x` (commensurable rates,
+  multiple angles by Chebyshev polynomials) goes through `u = c + d·x` and
+  Bioche's choice of `t = cos u`, `sin u`, `tan u` or `tan(u/2)`, with the
+  continuity corrections below: `∫ dx/(5 + 3·sin(2x + 1))` and `∫ dx/(2 +
+  3·tan x)` stayed unevaluated.  Also: rational functions with Gaussian
+  coefficients (`∫ (1 + i·t)⁵/(1 + t²)⁶ dt`), algebraic functions of `tan u`
+  (`√(b·tan(c + d·x))`), radicals of `sin u` times odd powers of `cos u`,
+  `(a + a·sin u)^(k/2)` through the half angle (`∫ √(1 + sin x) dx =
+  −2·cos x/√(1 + sin x) + 4√2·⌊(x/2 + π/4)/π⌋`, continuous; Rubi's own
+  answer jumps by `4√2`, SymPy 1.14 leaves it unevaluated), and
+  polynomials times trigonometric functions of `a + b·x`.  Continuity
+  hunter (8,000 integrands): 118 jumps → 0, 1,410 unevaluated → 414, 0
+  wrong; 300 newly verified Rubi trig entries checked against quadrature:
+  0 jumps.  The Rubi harness takes 48–77 s (was 37–48 s).
+- **Linear algebra refusals SymPy answers**: `qr` of a rank-deficient
+  matrix (SymPy's reduced factorisation), `matrix_sqrt` and
+  `matrix_pow_symbolic` of defective matrices through their Jordan blocks
+  (`[[2, 1], [0, 2]]ⁿ = [[2ⁿ, n·2ⁿ⁻¹], [0, 2ⁿ]]`), `matrix_exp`/`sqrt`/`log`/
+  `pow` with `RootOf` eigenvalues by Sylvester's formula when `P·f(J)·P⁻¹`
+  exceeds the budget, eigenvalues of symbolic matrices whose
+  characteristic polynomial factors over ℚ[symbols].
 - **Sums**: binomial sums from any integer lower limit (`Σ_{k=1}^{n} C(n, k)
   = 2ⁿ − 1`, refused in 0.37), `Σ C(n, k)·xᵏ/(k + 1)`, geometric `exp(k·x)`,
   even rational series by residues (`Σ_{k≥0} 1/(k² + 1) = 1/2 + π·coth(π)/2`,
@@ -22,6 +46,19 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ### Breaking (behaviour; no signature changed)
 
+- **Answers through `tan(x/2)` or `tan x` with parameters not declared
+  real carry a `floor` term** that is exact for real values (`∫ dx/(a +
+  b·cos x)` dropped by `2π/√(a² − b²)` at `x = π`); for complex values the
+  term is locally constant, so the answer is still an antiderivative.
+- **`ldl` and `cholesky` refuse a matrix whose symmetry cannot be
+  decided** (`ComputationFailed`) instead of factoring its lower triangle;
+  `qr` of a rank-deficient matrix returns SymPy's reduced factorisation
+  (`Q` m×r, `R` r×n) instead of failing; `pinv` uses conjugate transposes
+  for entries not provably real (`conjugate(x)` appears, as in SymPy);
+  `is_diagonalizable` answers `Some(false)` for defective symbolic
+  rational matrices (was `None`); symbolic eigenvector entries are in
+  `ratsimp` normal form; `solve_least_squares` and `condition_number`
+  refuse symbolic rank-deficient input.
 - **Antiderivatives through `tan(x/2)` and `tan(a·x + b)` carry a `floor`
   term** that makes them continuous (see *Fixed*), and `c·atan(tan w)`
   becomes `c·w`: `∫ dx/(2 + cos x)` is `2/√3·atan(tan(x/2)/√3) +
@@ -35,6 +72,25 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ### Fixed
 
+- **Linear algebra hunted** (2,000 random integer, rational, ℚ(√2, √3, i),
+  symbolic and structured matrices, 49 operations, every result checked
+  by its identity with mpmath): 157 wrong results → 0, 3,789 refusals →
+  1,007.  `ldl` of `[[x², x + y], [2x, 0]]` gave `L·D·Lᵀ ≠ A` (SymPy:
+  "Matrix must be Hermitian."); symbolic eigenvalues with a square root had
+  no eigenvector (`[[x², x + y], [2x, 0]]`; `diagonalize` claimed "not
+  diagonalizable"), now from an elimination of known rank (SymPy:
+  `[λ/(2x), 1]`); a 4×4 `P·diag(x, x, x, y)·P⁻¹` had the eigenvalue `x`
+  twice plus once in disguise (`(x + y ± √(x² − 2xy + y²))/2`):
+  characteristic polynomials are factored over ℚ[symbols] (SymPy: `{x: 3,
+  y: 1}`); `pinv` of complex matrices used `Aᵀ` (`(A·A⁺)ᴴ ≠ A·A⁺`; `[[1,
+  i]]` refused, SymPy `[[1/2], [−i/2]]`); `solve_least_squares` and
+  `condition_number` of `[[x − 2, 2], [0, 0]]` divided by an unrecognised
+  zero.  `matrix_exp` of a 3×3 Hermitian matrix over ℚ(√2, √3, i) took
+  15.6 s for 179 MB (0.31 s); `matrix_sqrt` with Cardano eigenvalues 10 s →
+  0.8 s; `√A`, `log A` of Hermitian matrices with negative eigenvalues
+  evaluate.
+- **`∫ √(b·x⁴)/(1 + x²) dx` stepped by `π·√b` at `x = 0`** (`F(1) − F(−1)` =
+  3.0924 for 0.3717).
 - **Antiderivatives through `tan(x/2)` and `tan(a·x + b)` jumped where the
   integrand is continuous**, so `F(b) − F(a)` across a pole of the
   substitution was wrong; the integrator's own check (`F′ = f` at sample

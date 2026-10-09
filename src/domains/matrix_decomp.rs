@@ -22,10 +22,13 @@
 //! * **Calculus:** [`hessian`], [`wronskian`], [`Matrix::casoratian`].
 
 use crate::api::expr::Ex;
+use crate::base::combinatorics::factorial;
 use crate::base::errors::SymplexError;
+use crate::base::numeric::Q;
 use crate::domains::decompositions::{Diagonalization, JordanForm, Ldl, Qr};
 use crate::domains::matrix::{
-    Matrix, all3, budget_check, ex_is_nonnegative, ex_is_positive, ex_is_zero, reop,
+    Matrix, all3, budget_check, ex_is_nonnegative, ex_is_positive, ex_is_zero, is_swell, reop,
+    simplify_function_entry,
 };
 
 /// Orthogonal basis vectors and the upper-triangular coefficient matrix
@@ -57,6 +60,93 @@ fn dot_vec(a: &[Ex], b: &[Ex], hermitian: bool) -> Ex {
         acc += &left(x) * y;
     }
     acc
+}
+
+/// `√λ` on the principal branch, as `i·√(−λ)` for a negative eigenvalue
+/// of a Hermitian matrix (see [`negative_real_eigenvalue`]).
+fn principal_sqrt(lam: &Ex, real_spectrum: bool) -> Ex {
+    match negative_real_eigenvalue(lam, real_spectrum) {
+        Some(minus) => &lam.context().i_unit() * &minus.sqrt(),
+        None => lam.sqrt(),
+    }
+}
+
+/// `ln λ` on the principal branch, as `ln(−λ) + iπ` for a negative
+/// eigenvalue of a Hermitian matrix (see [`negative_real_eigenvalue`]).
+fn principal_ln(lam: &Ex, real_spectrum: bool) -> Ex {
+    match negative_real_eigenvalue(lam, real_spectrum) {
+        Some(minus) => {
+            let ctx = lam.context();
+            minus.ln() + &ctx.i_unit() * &ctx.pi()
+        }
+        None => lam.ln(),
+    }
+}
+
+/// Did `diagonalize` fail because the matrix is defective (as opposed to
+/// eigenvalues not found or expression swell)?
+fn not_diagonalizable(e: &SymplexError) -> bool {
+    matches!(e, SymplexError::ComputationFailed { reason, .. }
+        if reason.starts_with("matrix is not diagonalizable"))
+}
+
+impl Matrix {
+    /// `f(A)` through the Jordan form `A = P·J·P⁻¹`: a block `Jₖ(λ)` maps
+    /// to the upper triangular Toeplitz matrix with `f⁽ᵈ⁾(λ)/d!`
+    /// (`taylor(λ, d)`) on its `d`-th superdiagonal — SymPy's
+    /// `_matrix_pow_by_jordan_blocks`.  Used by `matrix_sqrt` and
+    /// `matrix_pow_symbolic` for defective matrices, which before 0.38 were
+    /// refused ("requires a diagonalizable matrix").
+    fn jordan_function(
+        &self,
+        op: &'static str,
+        taylor: &dyn Fn(&Ex, usize) -> Result<Ex, SymplexError>,
+    ) -> Result<Matrix, SymplexError> {
+        let n = self.nrows();
+        let JordanForm { p, j } = self
+            .jordan_form()
+            .map_err(|e| failed(op, format!("Jordan form unavailable ({e})")))?;
+        let zero = self.context().zero();
+        let mut fj: Vec<Vec<Ex>> = vec![vec![zero; n]; n];
+        let mut col = 0;
+        while col < n {
+            let lambda = j[(col, col)].clone();
+            let mut block = 1;
+            while col + block < n
+                && j[(col + block - 1, col + block)].is_one_structural()
+                && j[(col + block, col + block)] == lambda
+            {
+                block += 1;
+            }
+            for d in 0..block {
+                let v = taylor(&lambda, d)?;
+                for i in 0..(block - d) {
+                    fj[col + i][col + i + d] = v.clone();
+                }
+            }
+            col += block;
+        }
+        let p_inv = p.inv()?;
+        let result = p.matmul(&Matrix::new(fj)?)?.matmul(&p_inv)?;
+        budget_check(result.iter(), op)?;
+        Ok(result.map(simplify_function_entry))
+    }
+}
+
+/// `−λ` for an eigenvalue `λ` known to be real (`real_spectrum`: the
+/// matrix is Hermitian) that is negative and in Cardano form, so that
+/// `matrix_sqrt` / `matrix_log` can take the principal values
+/// `√λ = i·√(−λ)` and `ln λ = ln(−λ) + iπ`.  Written `√λ`, such a
+/// radicand is exactly real but its imaginary part cancels only
+/// numerically, so it sits on the branch cut with the sign of rounding
+/// noise and does not evaluate: before 0.38 every entry of `√A` of such a
+/// 3×3 Hermitian matrix over `ℚ(√2, √3, i)` was unevaluable.
+fn negative_real_eigenvalue(lam: &Ex, real_spectrum: bool) -> Option<Ex> {
+    if !real_spectrum || !crate::domains::matrix::has_nested_higher_root(lam) {
+        return None;
+    }
+    let z = lam.eval_complex64().ok()?;
+    (z.re < 0.0 && z.im.abs() <= 1e-9 * z.re.abs()).then(|| (-lam).eval())
 }
 
 fn dependent_error(op: &'static str, j: usize) -> SymplexError {
@@ -269,13 +359,18 @@ impl Matrix {
     /// rational functions over square roots of rationals and `i` are
     /// orthogonalised in exact field arithmetic, simplified once.
     ///
-    /// Works exactly with radicals (entries like `1/√2`).  Requires the
-    /// columns of `A` to be linearly independent (`rank == ncols`).
+    /// Works exactly with radicals (entries like `1/√2`).
+    ///
+    /// A rank-deficient `A` (rank `r < n`, decided by [`rref`](Matrix::rref))
+    /// gets SymPy's reduced form: `Q` (m×r) is orthonormalised from the
+    /// pivot columns, the linearly independent columns from the left, and
+    /// `R = QᴴA` (r×n) is upper trapezoidal in echelon form (row `k` is
+    /// zero left of the `k`-th pivot column).  Before 0.38 it was refused.
     ///
     /// # Errors
     ///
-    /// Returns [`SymplexError::ComputationFailed`] if the columns are
-    /// linearly dependent or symbolic entries swell beyond
+    /// Returns [`SymplexError::ComputationFailed`] for the zero matrix (`Q`
+    /// and `R` would be empty) or if symbolic entries swell beyond
     /// [`EXPRESSION_BUDGET`](crate::domains::matrix::EXPRESSION_BUDGET).
     ///
     /// # Examples
@@ -300,18 +395,19 @@ impl Matrix {
     /// ```
     pub fn qr(&self) -> Result<Qr<Matrix>, SymplexError> {
         budget_check(self.iter(), "qr")?;
-        if self.rank() < self.ncols() {
+        let (_, pivots) = self.rref();
+        if pivots.is_empty() {
             return Err(failed(
                 "qr",
-                format!(
-                    "columns are linearly dependent (rank {} < {} columns)",
-                    self.rank(),
-                    self.ncols()
-                ),
+                "matrix is zero (rank 0): Q (m×0) and R (0×n) would be empty",
             ));
         }
-        let cols: Vec<Vec<Ex>> = (0..self.ncols()).map(|j| self.col(j)).collect();
-        let (q_cols, r_rows) = gram_schmidt_cols(&cols, true, "qr")?;
+        let n = self.ncols();
+        let cols: Vec<Vec<Ex>> = pivots.iter().map(|&j| self.col(j)).collect();
+        let (q_cols, mut r_rows) = gram_schmidt_cols(&cols, true, "qr")?;
+        if pivots.len() < n {
+            r_rows = self.qr_spread_r(&pivots, &q_cols, &r_rows);
+        }
         let q_mats: Vec<Matrix> = q_cols
             .into_iter()
             .map(Matrix::col_vector)
@@ -320,6 +416,36 @@ impl Matrix {
         let q = Matrix::hstack(&q_refs)?;
         let r = Matrix::new(r_rows)?;
         Ok(Qr { q, r })
+    }
+
+    /// The `r×n` factor `R = QᴴA` of a rank-deficient [`qr`](Self::qr) from
+    /// the `r×r` factor `r_piv` of the pivot columns: column `pivots[c]` is
+    /// column `c` of `r_piv`, and a non-pivot column `j` has `⟨q_k, a_j⟩`
+    /// in the rows `k` with `pivots[k] < j` — the others are zero, since
+    /// `a_j` lies in the span of the pivot columns left of it, which is
+    /// that of `q_0, …, q_{k−1}`.
+    fn qr_spread_r(&self, pivots: &[usize], q_cols: &[Vec<Ex>], r_piv: &[Vec<Ex>]) -> Vec<Vec<Ex>> {
+        let n = self.ncols();
+        let zero = self.context().zero();
+        let hermitian = !q_cols.iter().flatten().all(|e| e.is_real() == Some(true));
+        let tidy = |e: Ex| {
+            if e.is_constant() {
+                crate::domains::linalg::algebraic_constant_normal_form(&e)
+                    .unwrap_or_else(|| e.eval())
+            } else {
+                e.simplify()
+            }
+        };
+        let mut full = vec![vec![zero; n]; pivots.len()];
+        for (k, row) in full.iter_mut().enumerate() {
+            for (c, &pj) in pivots.iter().enumerate() {
+                row[pj] = r_piv[k][c].clone();
+            }
+            for j in (pivots[k] + 1..n).filter(|j| !pivots.contains(j)) {
+                row[j] = tidy(dot_vec(&q_cols[k], &self.col(j), hermitian));
+            }
+        }
+        full
     }
 
     // ── Cholesky / LDLᵀ ────────────────────────────────────────────────
@@ -430,7 +556,12 @@ impl Matrix {
     /// factor `A` with: `Lᵀ` unless `A` is provably Hermitian and not
     /// provably symmetric (a matrix that is both is real), `Lᴴ` then.
     /// `InvalidArgument` when `A` is provably not symmetric and not
-    /// provably Hermitian.
+    /// provably Hermitian; `ComputationFailed` when neither can be decided.
+    ///
+    /// Before 0.38 an undecided symmetry was taken as symmetric: the
+    /// factors were computed from the lower triangle alone, so
+    /// `[[x², x + y], [2x, 0]]` came back with `L·D·Lᵀ = [[x², 2x], [2x, 0]]`
+    /// (SymPy: "Matrix must be Hermitian.").
     fn symmetry_kind(&self, op: &'static str) -> Result<Symmetry, SymplexError> {
         let symmetric = self.is_symmetric();
         if symmetric == Some(true) {
@@ -442,7 +573,11 @@ impl Matrix {
         if symmetric == Some(false) {
             return Err(invalid(op, "matrix is neither symmetric nor Hermitian"));
         }
-        Ok(Symmetry::Symmetric)
+        Err(failed(
+            op,
+            "cannot decide whether the matrix is symmetric or Hermitian \
+             (an entry differs from its transposed entry by an expression not provably 0)",
+        ))
     }
 
     /// LDLᵀ decomposition [`Ldl`]`{ l, d }` with `A = L·D·Lᵀ` for a
@@ -796,11 +931,17 @@ impl Matrix {
     /// Symbolic power `Aⁿ` for a diagonalizable matrix via `P·Dⁿ·P⁻¹`.
     ///
     /// `n` may be any expression (a symbol, a rational, …); each diagonal
-    /// entry becomes `λᵢⁿ`.  Entries are simplified.
+    /// entry becomes `λᵢⁿ`.  Entries are simplified.  A defective matrix
+    /// goes through its Jordan form, a block `Jₖ(λ)` taking
+    /// `binomial(n, d)·λⁿ⁻ᵈ` on its `d`-th superdiagonal (SymPy's
+    /// `_matrix_pow_by_jordan_blocks`; refused before 0.38).  When the
+    /// eigenvector matrix is too large to invert and the eigenvalues are
+    /// distinct, Sylvester's formula is used instead.
     ///
     /// # Errors
     ///
-    /// Same conditions as [`diagonalize`](Matrix::diagonalize).
+    /// Same conditions as [`jordan_form`](Matrix::jordan_form); also a
+    /// nilpotent Jordan block of size > 1 (SymPy leaves `A**n` unevaluated).
     ///
     /// # Examples
     ///
@@ -815,23 +956,66 @@ impl Matrix {
     /// assert_eq!(an[(1, 1)], ctx.int(3).pow(&n));
     /// ```
     pub fn matrix_pow_symbolic(&self, n: &Ex) -> Result<Matrix, SymplexError> {
-        let Diagonalization { p, d } = self.diagonalize().map_err(|e| {
-            failed(
-                "matrix_pow_symbolic",
-                format!("requires a diagonalizable matrix: {e}"),
-            )
-        })?;
+        let op = "matrix_pow_symbolic";
+        let Diagonalization { p, d } = match self.diagonalize() {
+            Ok(dg) => dg,
+            Err(e) if not_diagonalizable(&e) => {
+                let ctx = self.context();
+                return self.jordan_function(op, &|lam, k| {
+                    if k == 0 {
+                        return Ok(lam.pow(n));
+                    }
+                    if ex_is_zero(lam) == Some(true) {
+                        return Err(failed(
+                            op,
+                            "a nilpotent Jordan block (eigenvalue 0, size > 1) has no closed-form power for a symbolic exponent",
+                        ));
+                    }
+                    // binomial(n, k)·λ^(n−k), as SymPy's `jordan_cell_power`
+                    let mut binom = ctx.one();
+                    for i in 0..k {
+                        binom = &binom * &(n - &ctx.int(i as i64));
+                    }
+                    let fact = ctx.from_bigint(factorial(k as u64));
+                    Ok(&(&binom / &fact) * &lam.pow(&(n - &ctx.int(k as i64))))
+                });
+            }
+            Err(e) if is_swell(&e) => return self.sylvester_or(op, e, &|l| l.pow(n)),
+            Err(e) => return Err(failed(op, format!("requires a diagonalizable matrix: {e}"))),
+        };
         let dn = d.map_indexed(|i, j, e| if i == j { e.pow(n) } else { e.clone() });
-        let p_inv = p.inv()?;
-        Ok(p.matmul(&dn)?.matmul(&p_inv)?.simplify())
+        let p_inv = match p.inv() {
+            Ok(pi) => pi,
+            Err(e) if is_swell(&e) => return self.sylvester_or(op, e, &|l| l.pow(n)),
+            Err(e) => return Err(e),
+        };
+        Ok(p.matmul(&dn)?.matmul(&p_inv)?.map(simplify_function_entry))
+    }
+
+    /// `f(A)` by [`Matrix::sylvester_function`] after the eigenvector route
+    /// failed with `e` on the expression budget; `e` again when the
+    /// eigenvalues are not distinct.
+    fn sylvester_or(
+        &self,
+        op: &'static str,
+        e: SymplexError,
+        f: &dyn Fn(&Ex) -> Ex,
+    ) -> Result<Matrix, SymplexError> {
+        self.sylvester_function(op, f)?.ok_or(e)
     }
 
     /// Principal square root `√A` of a diagonalizable matrix via
-    /// `P·√D·P⁻¹` (principal branch on each eigenvalue).
+    /// `P·√D·P⁻¹` (principal branch on each eigenvalue).  A defective
+    /// matrix goes through its Jordan form, a block `Jₖ(λ)` taking
+    /// `binomial(1/2, d)·√λ/λᵈ` on its `d`-th superdiagonal (refused
+    /// before 0.38).  When the eigenvector matrix is too large to invert and
+    /// the eigenvalues are distinct, Sylvester's formula is used instead.
     ///
     /// # Errors
     ///
-    /// Same conditions as [`diagonalize`](Matrix::diagonalize).
+    /// Same conditions as [`jordan_form`](Matrix::jordan_form); also a
+    /// nilpotent Jordan block of size > 1, which has no square root of this
+    /// form.
     ///
     /// # Examples
     ///
@@ -844,15 +1028,51 @@ impl Matrix {
     /// assert_eq!((&s * &s).simplify(), a);
     /// ```
     pub fn matrix_sqrt(&self) -> Result<Matrix, SymplexError> {
-        let Diagonalization { p, d } = self.diagonalize().map_err(|e| {
-            failed(
-                "matrix_sqrt",
-                format!("requires a diagonalizable matrix: {e}"),
-            )
-        })?;
-        let sd = d.map_indexed(|i, j, e| if i == j { e.sqrt() } else { e.clone() });
-        let p_inv = p.inv()?;
-        Ok(p.matmul(&sd)?.matmul(&p_inv)?.simplify())
+        let op = "matrix_sqrt";
+        let real_spectrum = self.is_hermitian() == Some(true);
+        let Diagonalization { p, d } = match self.diagonalize() {
+            Ok(dg) => dg,
+            Err(e) if not_diagonalizable(&e) => {
+                let ctx = self.context();
+                return self.jordan_function(op, &|lam, k| {
+                    if k == 0 {
+                        return Ok(lam.sqrt());
+                    }
+                    if ex_is_zero(lam) == Some(true) {
+                        return Err(failed(
+                            op,
+                            "a nilpotent Jordan block (eigenvalue 0, size > 1) has no square root of this form",
+                        ));
+                    }
+                    // binomial(1/2, k)·√λ/λᵏ
+                    let mut binom = Q::from_integer(1.into());
+                    for i in 0..k {
+                        binom = binom * (Q::new(1.into(), 2.into()) - Q::from_integer(i.into()))
+                            / Q::from_integer((i + 1).into());
+                    }
+                    Ok(&(&ctx.from_ratio(binom) * &lam.sqrt()) / &lam.powi(k as i64))
+                });
+            }
+            Err(e) if is_swell(&e) => {
+                return self.sylvester_or(op, e, &|l| principal_sqrt(l, real_spectrum));
+            }
+            Err(e) => return Err(failed(op, format!("requires a diagonalizable matrix: {e}"))),
+        };
+        let sd = d.map_indexed(|i, j, e| {
+            if i == j {
+                principal_sqrt(e, real_spectrum)
+            } else {
+                e.clone()
+            }
+        });
+        let p_inv = match p.inv() {
+            Ok(pi) => pi,
+            Err(e) if is_swell(&e) => {
+                return self.sylvester_or(op, e, &|l| principal_sqrt(l, real_spectrum));
+            }
+            Err(e) => return Err(e),
+        };
+        Ok(p.matmul(&sd)?.matmul(&p_inv)?.map(simplify_function_entry))
     }
 
     /// Principal matrix logarithm `log A` via the Jordan decomposition
@@ -900,6 +1120,23 @@ impl Matrix {
                 ),
             ));
         }
+        let real_spectrum = self.is_hermitian() == Some(true);
+        match self.matrix_log_jordan(real_spectrum) {
+            Err(e) if is_swell(&e) => {
+                if ex_is_zero(&self.det()?) == Some(true) {
+                    return Err(failed(
+                        "matrix_log",
+                        "matrix is singular (eigenvalue 0); the logarithm does not exist",
+                    ));
+                }
+                self.sylvester_or("matrix_log", e, &|l| principal_ln(l, real_spectrum))
+            }
+            r => r,
+        }
+    }
+
+    /// [`matrix_log`](Self::matrix_log) through the Jordan form.
+    fn matrix_log_jordan(&self, real_spectrum: bool) -> Result<Matrix, SymplexError> {
         let n = self.nrows();
         let ctx = self.context();
         let JordanForm { p, j } = self.jordan_form().map_err(|e| match e {
@@ -929,7 +1166,7 @@ impl Matrix {
                     "matrix is singular (eigenvalue 0); the logarithm does not exist",
                 ));
             }
-            let ln_lambda = lambda.ln();
+            let ln_lambda = principal_ln(&lambda, real_spectrum);
             for i in 0..block_size {
                 log_j[col + i][col + i] = ln_lambda.clone();
                 for d in 1..(block_size - i) {
@@ -955,7 +1192,7 @@ impl Matrix {
         })?;
         let result = p.matmul(&log_j)?.matmul(&p_inv)?;
         budget_check(result.iter(), "matrix_log")?;
-        Ok(result.simplify())
+        Ok(result.map(simplify_function_entry))
     }
 
     /// Casoratian (discrete Wronskian) of the sequences `f₁(n), …, fₖ(n)`:
@@ -1130,10 +1367,15 @@ mod tests {
     }
 
     #[test]
-    fn qr_rejects_dependent_columns() {
+    fn qr_of_dependent_columns_is_reduced() {
+        // SymPy: Matrix([[1, 2], [2, 4]]).QRdecomposition() has a 2×1 Q and
+        // R = [[sqrt(5), 2*sqrt(5)]]; only the zero matrix is refused.
         let ctx = Context::new();
         let a = ctxi(&ctx, &[&[1, 2], &[2, 4]]);
-        assert!(a.qr().is_err());
+        let Qr { q, r } = a.qr().unwrap();
+        assert_eq!((q.shape(), r.shape()), ((2, 1), (1, 2)));
+        assert_eq!((&q * &r).simplify(), a);
+        assert!(ctxi(&ctx, &[&[0, 0], &[0, 0]]).qr().is_err());
     }
 
     #[test]
@@ -1319,7 +1561,16 @@ mod tests {
         let spd = ctxi(&ctx, &[&[2, 1], &[1, 2]]);
         let r = spd.matrix_sqrt().unwrap();
         assert_eq!((&r * &r).simplify(), spd);
-        assert!(ctxi(&ctx, &[&[1, 1], &[0, 1]]).matrix_sqrt().is_err());
+        // Defective: through the Jordan blocks (SymPy:
+        // Matrix([[1, 1], [0, 1]])**(1/2) == [[1, 1/2], [0, 1]]); a nilpotent
+        // block has no square root.
+        let half = ctx.rational(1, 2);
+        let s = ctxi(&ctx, &[&[1, 1], &[0, 1]]).matrix_sqrt().unwrap();
+        assert_eq!(
+            s,
+            Matrix::new(vec![vec![ctx.one(), half], vec![ctx.zero(), ctx.one()]]).unwrap()
+        );
+        assert!(ctxi(&ctx, &[&[0, 1], &[0, 0]]).matrix_sqrt().is_err());
     }
 
     #[test]

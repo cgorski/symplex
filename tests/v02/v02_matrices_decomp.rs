@@ -97,10 +97,16 @@ fn qr_symbolic_entries() {
 
 #[test]
 fn qr_dependent_columns_err() {
+    // 0.38: dependent columns give SymPy's reduced QR (Q is 2×1); only the
+    // zero matrix, whose Q would be empty, is refused.
     let ctx = Context::new();
-    let err = mi(&ctx, &[&[1, 2], &[2, 4]]).qr().unwrap_err();
+    assert_eq!(
+        mi(&ctx, &[&[1, 2], &[2, 4]]).qr().unwrap().q.shape(),
+        (2, 1)
+    );
+    let err = mi(&ctx, &[&[0, 0], &[0, 0]]).qr().unwrap_err();
     assert!(matches!(err, SymplexError::ComputationFailed { .. }));
-    assert!(err.to_string().contains("dependent"));
+    assert!(err.to_string().contains("zero"));
 }
 
 #[test]
@@ -368,8 +374,22 @@ fn symbolic_power_matches_integer_powers() {
         let via = an.subs(&n, &ctx.int(k as i64)).eval().simplify();
         assert_eq!(via, direct, "A^{k}");
     }
+    // 0.38: defective matrices go through their Jordan blocks (SymPy:
+    // Matrix([[1, 1], [0, 1]])**n == [[1, n], [0, 1]]); a nilpotent block
+    // stays refused (SymPy leaves the power unevaluated).
+    let jn = mi(&ctx, &[&[1, 1], &[0, 1]])
+        .matrix_pow_symbolic(&n)
+        .unwrap();
+    assert_eq!(
+        jn.eval(),
+        Matrix::new(vec![
+            vec![ctx.int(1), n.clone()],
+            vec![ctx.int(0), ctx.int(1)]
+        ])
+        .unwrap()
+    );
     assert!(
-        mi(&ctx, &[&[1, 1], &[0, 1]])
+        mi(&ctx, &[&[0, 1], &[0, 0]])
             .matrix_pow_symbolic(&n)
             .is_err()
     );

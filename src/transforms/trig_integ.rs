@@ -981,9 +981,28 @@ fn log_end(
     positive: bool,
 ) -> Option<ExprId> {
     let principal = arena.ln(lead);
-    match placement(arena, lead)? {
-        Placement::Negative => {}
-        _ => return Some(principal),
+    match placement(arena, lead) {
+        Some(Placement::Negative) => {}
+        Some(_) => return Some(principal),
+        // A real leading coefficient of undecided sign (real parameters
+        // assumed): with every coefficient of `p` real, `p(t)` is real at
+        // the end, on the cut exactly when `lead < 0`, where the principal
+        // `ln` gives `ln|p(t)| + iπ` as it gives `ln|lead| + iπ`; so the
+        // end value is `ln(lead)` for either sign.
+        None if ASSUME_REAL_PARAMETERS.with(std::cell::Cell::get)
+            && rational_in_parameters(arena, lead) =>
+        {
+            let (num, den) = arena.as_numer_denom_expr(p);
+            if contains_var_id(arena, den, t) || !rational_in_parameters(arena, den) {
+                return None;
+            }
+            let coeffs = crate::transforms::solve::symbolic_poly_coeffs(arena, num, t)?;
+            return coeffs
+                .iter()
+                .all(|&k| rational_in_parameters(arena, k))
+                .then_some(principal);
+        }
+        None => return None,
     }
     let (num, den) = arena.as_numer_denom_expr(p);
     if contains_var_id(arena, den, t) {
@@ -997,6 +1016,11 @@ fn log_end(
         let c = crate::transforms::eval::eval(arena, c);
         match crate::transforms::realness::constant_realness_as_declared(arena, c, 30, &mut reals) {
             Some(true) => continue,
+            None if ASSUME_REAL_PARAMETERS.with(std::cell::Cell::get)
+                && rational_in_parameters(arena, c) =>
+            {
+                continue;
+            }
             None if undecided.is_none() && only_real_parameters(arena, c) => {
                 undecided = Some((k, c));
                 continue;
@@ -1045,14 +1069,277 @@ fn log_end(
 }
 
 /// Is `c` a constant with free parameters, all of them declared real (so
-/// that `Im c` is a real number for every value of them)?
+/// that `Im c` is a real number for every value of them)?  While
+/// [`infinity_jump_real_parameters`] runs, every parameter counts as real.
 fn only_real_parameters(arena: &Arena, c: ExprId) -> bool {
     let symbols = crate::base::walk::free_symbols(arena, c);
+    let assumed = ASSUME_REAL_PARAMETERS.with(std::cell::Cell::get);
     !symbols.is_empty()
         && symbols.into_iter().all(|s| match *arena.node(s) {
-            ExprNode::Symbol(sid) => crate::transforms::realness::symbol_declared_real(arena, sid),
+            ExprNode::Symbol(sid) => {
+                assumed || crate::transforms::realness::symbol_declared_real(arena, sid)
+            }
             _ => false,
         })
+}
+
+/// Is `e`, a rational function of its symbols (sums, products, integer
+/// powers), identically zero: is the numerator of its normal form zero?
+/// The rates of the logarithms of a parametric answer cancel only so
+/// (`b⁵/(a⁴(a² + b²)) + (a²b − b³)/a⁴ − b/(a² + b²)` in `∫ cot⁴u/(a + b·tan u)
+/// du`), which the numerical zero test cannot decide.
+fn rational_function_is_zero(arena: &mut Arena, e: ExprId) -> bool {
+    let e = polynomial_root_sums(arena, e);
+    if !rational_in_parameters(arena, e) {
+        return false;
+    }
+    let combined = crate::poly::polybridge::together(arena, e);
+    let (num, _) = crate::poly::polybridge::as_numer_denom(arena, combined);
+    let num = crate::transforms::expand::expand(arena, num);
+    if arena.is_zero_structural(num) {
+        return true;
+    }
+    // Nested denominators `together` leaves: exact values at generic
+    // rational points (a nonzero rational function of degree `D` vanishes
+    // at a random point of a large grid with probability `≤ D/N`; and a
+    // wrong "zero" only gives a locally constant term a wrong coefficient
+    // where the integrand is not integrable at the poles of `tan w`).
+    let symbols = crate::base::walk::free_symbols(arena, e);
+    for point in 0..GENERIC_POINTS.len() {
+        let mut v = e;
+        for (k, &s) in symbols.iter().enumerate() {
+            let (p, q) = GENERIC_POINTS[(point + k) % GENERIC_POINTS.len()];
+            let value = arena.rational(p + i64::try_from(k).unwrap_or(0), q);
+            v = crate::transforms::subs::subs(arena, v, s, value);
+        }
+        let v = crate::transforms::eval::eval(arena, v);
+        if !arena.is_zero_structural(v) {
+            return false;
+        }
+    }
+    true
+}
+
+/// The points of [`rational_function_is_zero`] (coordinates `p/q` shifted
+/// by the parameter's index).
+const GENERIC_POINTS: [(i64, i64); 3] = [(7_919, 1_031), (-6_421, 2_053), (4_259, 3_967)];
+
+/// Most roots a polynomial of [`polynomial_root_sums`] may have.
+const MAX_NEWTON_DEGREE: usize = 64;
+
+/// `e` with every `RootSum(p, b(s), s)` whose body is a polynomial in `s`
+/// replaced by `Σ bₖ·Sₖ`, `Sₖ` the power sums of the roots of `p` (Newton's
+/// identities: `aₙ·Sₖ + aₙ₋₁·Sₖ₋₁ + … + k·aₙ₋ₖ = 0`), a rational function of
+/// the coefficients.  The rate `Σ c(ρ)` of the logarithms of a `RootSum`
+/// over a polynomial with parameters is so decided to be 0.
+fn polynomial_root_sums(arena: &mut Arena, e: ExprId) -> ExprId {
+    let mut out = e;
+    for id in crate::base::walk::post_order_ids(arena, e) {
+        let ExprNode::RootSum(p, body, s) = *arena.node(id) else {
+            continue;
+        };
+        let (Some(a), Some(b)) = (
+            crate::transforms::solve::symbolic_poly_coeffs(arena, p, s),
+            crate::transforms::solve::symbolic_poly_coeffs(arena, body, s),
+        ) else {
+            continue;
+        };
+        let n = a.len().saturating_sub(1);
+        if n == 0 || n > MAX_NEWTON_DEGREE || b.len() > MAX_NEWTON_DEGREE {
+            continue;
+        }
+        // `rⱼ = aₙ₋ⱼ/aₙ`, then `Sₖ = −(k·rₖ + Σ_{j<k} rⱼ·Sₖ₋ⱼ)` (`rⱼ = 0`, `j > n`).
+        let lead = a[n];
+        let minus_one = arena.int(-1);
+        let inv_lead = arena.pow(lead, minus_one);
+        let r: Vec<ExprId> = (0..=n)
+            .map(|j| {
+                if j == 0 {
+                    arena.one
+                } else {
+                    arena.mul(&[a[n - j], inv_lead])
+                }
+            })
+            .collect();
+        let n_id = arena.int(i64::try_from(n).unwrap_or(0));
+        let mut sums: Vec<ExprId> = vec![n_id];
+        for k in 1..b.len() {
+            let mut terms: Vec<ExprId> = Vec::new();
+            if k <= n {
+                let k_id = arena.int(i64::try_from(k).unwrap_or(0));
+                terms.push(arena.mul(&[k_id, r[k]]));
+            }
+            for j in 1..k.min(n + 1) {
+                terms.push(arena.mul(&[r[j], sums[k - j]]));
+            }
+            let total = arena.add(&terms);
+            let s_k = arena.mul(&[minus_one, total]);
+            sums.push(crate::transforms::eval::eval(arena, s_k));
+        }
+        let terms: Vec<ExprId> = b
+            .iter()
+            .zip(&sums)
+            .map(|(&bk, &sk)| arena.mul(&[bk, sk]))
+            .collect();
+        let total = arena.add(&terms);
+        out = arena.subs_structural(out, id, total);
+    }
+    out
+}
+
+/// Is the constant `c` real for every real value of its parameters, as
+/// far as its form shows: sums, products and integer powers of rational
+/// numbers and symbols.
+fn rational_in_parameters(arena: &Arena, c: ExprId) -> bool {
+    crate::base::walk::post_order_ids(arena, c)
+        .iter()
+        .all(|&id| match arena.node(id) {
+            ExprNode::Num(_) | ExprNode::Symbol(_) | ExprNode::Add(_) | ExprNode::Mul(_) => true,
+            ExprNode::Neg(_) => true,
+            ExprNode::Pow(_, e) => arena.as_num(*e).is_some_and(|r| r.is_integer()),
+            _ => false,
+        })
+}
+
+thread_local! {
+    /// Set while [`infinity_jump_real_parameters`] runs: every parameter
+    /// counts as real in [`only_real_parameters`].
+    static ASSUME_REAL_PARAMETERS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set by [`RealParameterJumps`]: [`continuous_through_tan`] then falls
+    /// back to [`infinity_jump_real_parameters`].
+    static REAL_PARAMETER_JUMPS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set by [`RealParameterJumps`]: [`continuous_through_tan`] writes every
+    /// `ln|p(t)|` as `ln p(t)` before it takes the jump.
+    static PLAIN_LOGS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// While alive, [`continuous_through_tan`] decides the jump of an answer
+/// with parameters not declared real as for real ones
+/// ([`infinity_jump_real_parameters`]).  For the routes whose answers were
+/// never returned before (the trigonometric substitutions of 0.38), so that
+/// no earlier answer changes.
+///
+/// The answer is `G` with `ln|p(t)|` written `ln p(t)` where the
+/// integrator's stage exit would write `ln|p(tan w)|` so (decision D4: `p`
+/// has a constant not declared real, or `w` has one, which `plain_logs`
+/// says), and the jump is that of this `G`: `ln(tan w + b)` with a real `b`
+/// steps by `i·π` where `tan w` passes from `+∞` to `−∞`, which the jump of
+/// the `ln|·|` form missed (`∫ cot⁴(c + d·x)/(a + b·tan(c + d·x)) dx`
+/// stepped by `−i·π·b/(d·(a² + b²))`).
+pub(crate) struct RealParameterJumps(bool, bool);
+
+impl RealParameterJumps {
+    /// `plain_logs` adds to the setting of an enclosing guard.
+    pub(crate) fn enable(plain_logs: bool) -> Self {
+        let active = REAL_PARAMETER_JUMPS.with(|f| f.replace(true));
+        let plain = PLAIN_LOGS.with(std::cell::Cell::get);
+        PLAIN_LOGS.with(|f| f.set(plain_logs || (active && plain)));
+        Self(active, plain)
+    }
+}
+
+impl Drop for RealParameterJumps {
+    fn drop(&mut self) {
+        let _ = REAL_PARAMETER_JUMPS.try_with(|f| f.set(self.0));
+        let _ = PLAIN_LOGS.try_with(|f| f.set(self.1));
+    }
+}
+
+/// Is a [`StrictJumps`] alive?  Its routes then keep an answer whose jump
+/// at the poles of `tan w` is still not decided only where the integrand
+/// is not continuous across them.
+pub(crate) fn strict_jumps_active() -> bool {
+    STRICT_JUMPS.with(std::cell::Cell::get)
+}
+
+thread_local! {
+    /// Set by [`StrictJumps`].
+    static STRICT_JUMPS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// While alive, [`strict_jumps_active`] is set: for the routes whose
+/// answers were never returned before (the trigonometric substitutions of
+/// 0.38), which return no answer that jumps where the integrand is
+/// continuous.
+pub(crate) struct StrictJumps(bool);
+
+impl StrictJumps {
+    pub(crate) fn enable() -> Self {
+        Self(STRICT_JUMPS.with(|f| f.replace(true)))
+    }
+}
+
+impl Drop for StrictJumps {
+    fn drop(&mut self) {
+        let _ = STRICT_JUMPS.try_with(|f| f.set(self.0));
+    }
+}
+
+/// `g` with `ln|p|` (`p` depending on `t`) written `ln p` where `all` is
+/// set or `p` has a symbol not declared real: the logarithms the
+/// integrator's stage exit writes `ln p` (decision D4), for a jump taken
+/// before it.
+pub(crate) fn plain_logs(arena: &mut Arena, g: ExprId, t_sym: SymbolId, all: bool) -> ExprId {
+    let mut out = g;
+    for id in crate::base::walk::post_order_ids(arena, g) {
+        if let ExprNode::Ln(inner) = *arena.node(id)
+            && let ExprNode::Abs(p) = *arena.node(inner)
+            && contains_var(arena, p, t_sym)
+            && (all
+                || crate::base::walk::free_symbols(arena, p)
+                    .into_iter()
+                    .any(|s| match *arena.node(s) {
+                        ExprNode::Symbol(sid) => {
+                            sid != t_sym
+                                && !crate::transforms::realness::symbol_declared_real(arena, sid)
+                        }
+                        _ => true,
+                    }))
+        {
+            let plain = arena.ln(p);
+            out = arena.subs_structural(out, id, plain);
+        }
+    }
+    out
+}
+
+/// [`infinity_jump`] with every parameter taken for real: `J` as a function
+/// of the parameters (with `sign(·)`, `sign(im(·))` where the end values
+/// depend on them) that is exact for real values of them.  For other values
+/// `J·⌊w/π + 1/2⌋` is still locally constant, so the answer stays an
+/// antiderivative; without it the answer jumps for every value (the Rubi
+/// suite's `∫ dx/(a + b·sin(c + d·x))` at `a = 6/5`, `b = 3/4` dropped by
+/// `2π/(d·√(a² − b²))` at every pole of `tan(u/2)`).  An `atan` end with a
+/// leading coefficient of undecided sign is followed only when that
+/// coefficient is a rational function of the parameters (real for real
+/// ones).
+pub(crate) fn infinity_jump_real_parameters(
+    arena: &mut Arena,
+    g: ExprId,
+    t: ExprId,
+    t_sym: SymbolId,
+) -> Option<ExprId> {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = ASSUME_REAL_PARAMETERS.try_with(|f| f.set(self.0));
+        }
+    }
+    let restore = Restore(ASSUME_REAL_PARAMETERS.with(|f| f.replace(true)));
+    let plus = end_value(arena, g, t, t_sym, true);
+    let minus = plus
+        .is_some()
+        .then(|| end_value(arena, g, t, t_sym, false))
+        .flatten();
+    drop(restore);
+    match (plus?, minus?) {
+        (EndValue::Finite(p), EndValue::Finite(m)) => {
+            let j = arena.sub(p, m);
+            let j = crate::transforms::eval::eval(arena, j);
+            Some(combined_signs(arena, j))
+        }
+        _ => Some(arena.zero),
+    }
 }
 
 /// Does `e` contain the symbol `t` (free)?
@@ -1147,12 +1434,14 @@ pub(crate) fn end_value(
                             // parameters (where it is 0 the term is not
                             // defined: it divides by that coefficient).
                             None if only_real_parameters(arena, lead)
-                                && crate::transforms::realness::constant_realness_as_declared(
+                                && (crate::transforms::realness::constant_realness_as_declared(
                                     arena,
                                     lead,
                                     30,
                                     &mut crate::base::assumptions::AssumptionCache::new(),
-                                ) == Some(true) =>
+                                ) == Some(true)
+                                    || (ASSUME_REAL_PARAMETERS.with(std::cell::Cell::get)
+                                        && rational_in_parameters(arena, lead))) =>
                             {
                                 let half = arena.rational(1, 2);
                                 let sign = sign_of_real(arena, lead);
@@ -1162,12 +1451,19 @@ pub(crate) fn end_value(
                         }
                     }
                     // A limit on the cut (`iy`, `|y| ≥ 1`) is not followed.
-                    std::cmp::Ordering::Equal => match placement(arena, lead)? {
-                        Placement::Complex {
+                    std::cmp::Ordering::Equal => match placement(arena, lead) {
+                        Some(Placement::Complex {
                             re_sign: 0,
                             im_at_least_one: true,
-                        } => return None,
-                        _ => arena.atan(lead),
+                        }) => return None,
+                        Some(_) => arena.atan(lead),
+                        // Real for real parameters: off the cut.
+                        None if ASSUME_REAL_PARAMETERS.with(std::cell::Cell::get)
+                            && rational_in_parameters(arena, lead) =>
+                        {
+                            arena.atan(lead)
+                        }
+                        None => return None,
                     },
                     std::cmp::Ordering::Less => arena.zero,
                 };
@@ -1214,6 +1510,7 @@ pub(crate) fn end_value(
         match crate::poly::algebraic::is_zero_checked(arena, rate) {
             Some(true) => {}
             Some(false) => return Some(EndValue::Infinite),
+            None if rational_function_is_zero(arena, rate) => {}
             None => return None,
         }
     }
@@ -1300,11 +1597,25 @@ fn root_sum_end(
     t_sym: SymbolId,
     positive: bool,
 ) -> Option<(ExprId, ExprId)> {
-    let p_poly = crate::poly::polybridge::expr_to_poly(arena, p, s)?;
-    if p_poly.degree().is_none_or(|d| d == 0) {
-        return None;
-    }
-    let real_roots = crate::poly::sturm::SturmChain::new(&p_poly).count_real_roots() != 0;
+    // Real roots or not, `iπ·(Σ c + RootSum(c·sg·(1 − sg)))` is the value
+    // (where `sg = ±1` it is `iπ·Σ c·sg`); with real parameters assumed
+    // a polynomial with parameters takes it.
+    let real_roots = match crate::poly::polybridge::expr_to_poly(arena, p, s) {
+        Some(p_poly) => {
+            if p_poly.degree().is_none_or(|d| d == 0) {
+                return None;
+            }
+            crate::poly::sturm::SturmChain::new(&p_poly).count_real_roots() != 0
+        }
+        None if ASSUME_REAL_PARAMETERS.with(std::cell::Cell::get) => {
+            let coeffs = crate::transforms::solve::symbolic_poly_coeffs(arena, p, s)?;
+            if coeffs.len() < 2 || !coeffs.iter().all(|&k| rational_in_parameters(arena, k)) {
+                return None;
+            }
+            true
+        }
+        None => return None,
+    };
     let ExprNode::Mul(children) = arena.node(body).clone() else {
         return None;
     };
@@ -1485,7 +1796,19 @@ pub(crate) fn continuous_through_tan(
     t_sym: SymbolId,
     w: ExprId,
 ) -> Option<ExprId> {
-    let jump = infinity_jump(arena, g, t, t_sym)?;
+    let g = if REAL_PARAMETER_JUMPS.with(std::cell::Cell::get) {
+        let all = PLAIN_LOGS.with(std::cell::Cell::get);
+        plain_logs(arena, g, t_sym, all)
+    } else {
+        g
+    };
+    let jump = match infinity_jump(arena, g, t, t_sym) {
+        Some(j) => j,
+        None if REAL_PARAMETER_JUMPS.with(std::cell::Cell::get) => {
+            infinity_jump_real_parameters(arena, g, t, t_sym)?
+        }
+        None => return None,
+    };
     let tan_w = arena.tan(w);
     let back = arena.subs_structural(g, t, tan_w);
     Some(add_tan_floor(arena, back, w, jump))
@@ -1494,8 +1817,22 @@ pub(crate) fn continuous_through_tan(
 /// `big_f + jump·⌊w/π + 1/2⌋`, with every term `c·atan(tan w)` of `big_f`
 /// written `c·w − c·π·⌊w/π + 1/2⌋` (so that the floors combine).
 pub(crate) fn add_tan_floor(arena: &mut Arena, big_f: ExprId, w: ExprId, jump: ExprId) -> ExprId {
+    add_tan_floor_in(arena, big_f, w, jump, None)
+}
+
+/// [`add_tan_floor`] for a `w` with parameters: a coefficient `c` of
+/// `atan(tan w)` must be free of the variable `var` only (with `None`, of
+/// every symbol of `w`).  `∫ (c + d·tan(f·x))/(1 + i·tan(f·x)) dx` kept
+/// `c·atan(tan(f·x))/(2f)`, whose coefficient has the `f` of `w`.
+pub(crate) fn add_tan_floor_in(
+    arena: &mut Arena,
+    big_f: ExprId,
+    w: ExprId,
+    jump: ExprId,
+    var: Option<SymbolId>,
+) -> ExprId {
     let pi = arena.pi();
-    let (mut kept, atan_coeffs) = split_atan_tan_terms(arena, big_f, w);
+    let (mut kept, atan_coeffs) = split_atan_tan_terms(arena, big_f, w, var);
     let mut floor_coeff: Vec<ExprId> = vec![jump];
     for c in atan_coeffs {
         let minus_one = arena.int(-1);
@@ -1520,7 +1857,18 @@ pub(crate) fn add_tan_floor(arena: &mut Arena, big_f: ExprId, w: ExprId, jump: E
 /// jumps (`atan(tan w) = w − π·⌊w/π + 1/2⌋` for real `w`).  For the
 /// answers whose jump at those poles is not decided otherwise.
 pub(crate) fn atan_tan_terms_to_argument(arena: &mut Arena, big_f: ExprId, w: ExprId) -> ExprId {
-    let (kept, atan_coeffs) = split_atan_tan_terms(arena, big_f, w);
+    atan_tan_terms_to_argument_in(arena, big_f, w, None)
+}
+
+/// [`atan_tan_terms_to_argument`] for a `w` with parameters (see
+/// [`add_tan_floor_in`]).
+pub(crate) fn atan_tan_terms_to_argument_in(
+    arena: &mut Arena,
+    big_f: ExprId,
+    w: ExprId,
+    var: Option<SymbolId>,
+) -> ExprId {
+    let (kept, atan_coeffs) = split_atan_tan_terms(arena, big_f, w, var);
     if atan_coeffs.is_empty() {
         return big_f;
     }
@@ -1528,14 +1876,24 @@ pub(crate) fn atan_tan_terms_to_argument(arena: &mut Arena, big_f: ExprId, w: Ex
 }
 
 /// The terms of `big_f`, each `c·atan(tan w)` (with `c` free of the
-/// symbols of `w`) replaced by `c·w`, and the coefficients `c` of those.
-fn split_atan_tan_terms(arena: &mut Arena, big_f: ExprId, w: ExprId) -> (Vec<ExprId>, Vec<ExprId>) {
+/// variable `var`, or with `None` of every symbol of `w`) replaced by
+/// `c·w`, and the coefficients `c` of those.
+fn split_atan_tan_terms(
+    arena: &mut Arena,
+    big_f: ExprId,
+    w: ExprId,
+    var: Option<SymbolId>,
+) -> (Vec<ExprId>, Vec<ExprId>) {
     let tan_w = arena.tan(w);
     let atan_tan_w = arena.atan(tan_w);
-    let terms: Vec<ExprId> = match arena.node(big_f) {
-        ExprNode::Add(children) => children.to_vec(),
-        _ => vec![big_f],
-    };
+    if !crate::base::walk::contains(arena, big_f, atan_tan_w) {
+        let terms = match arena.node(big_f) {
+            ExprNode::Add(children) => children.to_vec(),
+            _ => vec![big_f],
+        };
+        return (terms, Vec::new());
+    }
+    let terms = terms_distributed(arena, big_f, w, var);
     let mut kept: Vec<ExprId> = Vec::with_capacity(terms.len() + 1);
     let mut coeffs: Vec<ExprId> = Vec::new();
     for term in terms {
@@ -1554,7 +1912,7 @@ fn split_atan_tan_terms(arena: &mut Arena, big_f: ExprId, w: ExprId) -> (Vec<Exp
             None
         };
         match c {
-            Some(c) if !free_symbols_meet(arena, c, w) => {
+            Some(c) if !depends_on_variable(arena, c, w, var) => {
                 kept.push(arena.mul(&[c, w]));
                 coeffs.push(c);
             }
@@ -1562,6 +1920,67 @@ fn split_atan_tan_terms(arena: &mut Arena, big_f: ExprId, w: ExprId) -> (Vec<Exp
         }
     }
     (kept, coeffs)
+}
+
+/// The terms of `big_f` as a sum, every product `c·(u₁ + … + uₖ)` whose
+/// only factor with a symbol of `w` is a sum distributed (at most
+/// [`MAX_DISTRIBUTED_TERMS`] terms): a constant factor of an answer (`1/a`
+/// in `(c·atan(tan w) + …)/a`, split off by linearity) hid its terms
+/// `c·atan(tan w)` from [`split_atan_tan_terms`], and the answer kept the
+/// jumps of `atan(tan w)`.
+fn terms_distributed(
+    arena: &mut Arena,
+    big_f: ExprId,
+    w: ExprId,
+    var: Option<SymbolId>,
+) -> Vec<ExprId> {
+    let mut out: Vec<ExprId> = Vec::new();
+    let mut work: Vec<ExprId> = vec![big_f];
+    while let Some(e) = work.pop() {
+        match arena.node(e).clone() {
+            ExprNode::Add(children)
+                if out.len() + work.len() + children.len() <= MAX_DISTRIBUTED_TERMS =>
+            {
+                work.extend(children.iter().copied());
+            }
+            ExprNode::Mul(children) => {
+                let dependent: Vec<usize> = (0..children.len())
+                    .filter(|&k| depends_on_variable(arena, children[k], w, var))
+                    .collect();
+                let sum = match dependent.as_slice() {
+                    [k] => match arena.node(children[*k]) {
+                        ExprNode::Add(parts) => Some((*k, parts.to_vec())),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                match sum {
+                    Some((k, parts))
+                        if out.len() + work.len() + parts.len() <= MAX_DISTRIBUTED_TERMS =>
+                    {
+                        let mut rest: Vec<ExprId> = children.to_vec();
+                        rest.remove(k);
+                        let c = arena.mul(&rest);
+                        for part in parts {
+                            work.push(arena.mul(&[c, part]));
+                        }
+                    }
+                    _ => out.push(e),
+                }
+            }
+            _ => out.push(e),
+        }
+    }
+    out
+}
+
+/// Does `c` depend on the variable `var` (with `None`: on a free symbol of
+/// `w`)?
+fn depends_on_variable(arena: &Arena, c: ExprId, w: ExprId, var: Option<SymbolId>) -> bool {
+    match var {
+        Some(v) => contains_var(arena, c, v),
+        None => free_symbols_meet(arena, c, w),
+    }
 }
 
 /// Does `c` contain a free symbol of `w` (so that it is not constant in
