@@ -6,7 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
-## [Unreleased]
+## [0.37.0] - 2026-10-09
+
+The integrator finds 65% more antiderivatives of the Rubi test suite
+(14,522 → 23,915 verified, still 0 wrong), through general substitutions
+for radicals, binomials and functions of `c + d·x`.  The code emitters
+(Rust, C, Python, NumPy, `compile()`, symplex-build) were hunted for the
+first time: hundreds of wrong values per target → a handful of
+explained edge cases.  One-sided limits at branch cuts and limits at
+`∞` of special functions are computed instead of refused (one was wrong:
+`asin(2 + ix)` at `0⁺`).  Numerical evaluation holds values above the
+exponent range scaled, evaluates Bessel functions at their turning
+point, and no longer prints `0` for values next to a function's limit.
 
 ### Breaking (behaviour; no signature changed)
 
@@ -145,6 +156,36 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   is refused by name by the emitters instead of "free symbol `__rs_t`"; a
   `RootOf` of a numeric polynomial is a constant (folded; it was refused).
   `fuzz_roundtrip` covers the printers of `RootSum`.
+
+### Measured
+
+- `tests/v34/` (0.35–0.37): 13 files, 88 tests.  nextest 13,685 tests
+  (14 skipped), doctests 1,314.
+- Rubi harness: 23,915 verified, 70 real_verified, 0 wrong, 0 undecided,
+  0 timeouts (0.36: 14,522 / 69); wall 39–46 s with 12 jobs (was 15–22 s).
+  Self-test: 55,475 verified, 0 wrong, 742 undecided (unchanged).
+  `--negative-params`: 70 real_verified, 0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates:
+  identical.
+- `cargo semver-checks` against 0.36.0: no semver update required.
+- Hunters (before → after): code emitters (6,000 expressions × 3 points)
+  Rust 398 wrong → 4, C 406 → 4, Python 375 → 5, NumPy 360 → 3, VM 41 →
+  4, hangs 6 → 0; special-function runtime against mpmath 2,000+ wrong
+  points → 0; branch-cut limits (1,188) 186 refused → 0, 0 wrong;
+  one-sided series at cuts (864) 30 wrong → 0; asymptotic limits (600)
+  583 refused → 5, 0 wrong; values above the range (2,000) 30 wrong, 937
+  refused → 0, 53; Bessel at the turning point (400) 171 refused → 30;
+  `polylog` (500) 4 wrong → 0; integration with `F(b) − F(a)` against
+  quadrature (4,020) 0 wrong.
+- Fuzzing: the `fuzz_integrate` and `fuzz_simplify` corpora (8,557 and
+  8,641 inputs) replay with no input over 10 s.  On the release code all
+  12 targets ran together with a 10-second limit (`fuzz_simplify` and
+  `fuzz_integrate` 15 minutes, the others 10): `fuzz_numdist` 19,713,948
+  inputs, `fuzz_refine` 14,196,495, `fuzz_lambertw` 2,962,899,
+  `fuzz_parser` 1,982,858, `fuzz_eigenvects` 278,577, `fuzz_exact_matrix`
+  229,886, `fuzz_roundtrip` 149,604, `fuzz_evalf` 116,752, `fuzz_calculus`
+  52,697, `fuzz_poly` 39,870, `fuzz_simplify` 25,516, `fuzz_integrate`
+  9,555: 0 crashes, 0 timeouts, 0 out-of-memory.
 
 ## [0.36.0] - 2026-10-09
 
