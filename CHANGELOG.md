@@ -10,6 +10,16 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ### Breaking (behaviour; no signature changed)
 
+- **`binomial`, `rising_factorial`, `falling_factorial` and `factorial2`
+  fold at negative and rational arguments** as SymPy 1.14 does:
+  `binomial(−1, 3)` = `−1` (it stayed `C(−1, 3)`, and `eval_decimal` of it
+  failed), `binomial(7/2, 2)` = `35/8`, `binomial(5, −1)` = `0`,
+  `rising_factorial(3, −1)` = `1/2`, `rising_factorial(3, −3)` = `zoo`,
+  `falling_factorial(3, −1)` = `1/4`, `factorial2(−17)` = `1/2027025`.
+  Both binomial indices negative stays unevaluated (SymPy `binomial(−7,
+  −9)` = `0`, mpmath's limit `28`, which `evalf` gives).  `(±1)^n` folds
+  for any integer `n`: `(−∞)·(−1)^430587161543285117552609` is `∞` (it
+  stayed a product: the exponent was over the power guard).
 - **Limits at a branch cut of a function without a continuation formula
   are refused** where they took the value on the cut whatever the side:
   Lambert `W`, `polylog`, `Kν`/`Yν`, `Jν`/`Iν` of non-integer order, `Eₙ`,

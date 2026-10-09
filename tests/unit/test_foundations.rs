@@ -372,14 +372,22 @@ fn binomial_k_greater_than_n_is_zero() {
 
 #[test]
 fn binomial_negative_stays_unevaluated() {
+    // Since 0.37 a negative upper index with a non-negative lower one folds
+    // to the generalised binomial (SymPy: `binomial(-1, 2)` → `1`); both
+    // negative stays unevaluated (SymPy 0, mpmath 28 for `C(-7, -9)`).
     let ctx = Context::new();
     ctx.with_arena_mut(|arena| {
         let neg = arena.int(-1);
         let two = arena.int(2);
         let expr = arena.binomial(neg, two);
         let result = arena.eval_expr(expr);
+        assert_eq!(arena.display(result).to_string(), "1");
+        let neg7 = arena.int(-7);
+        let neg9 = arena.int(-9);
+        let expr = arena.binomial(neg7, neg9);
+        let result = arena.eval_expr(expr);
         let s = arena.display(result).to_string();
-        assert!(s.contains("C("), "C(-1,2) should stay unevaluated: {s}");
+        assert!(s.contains("C("), "C(-7,-9) should stay unevaluated: {s}");
     });
 }
 

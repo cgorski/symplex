@@ -1482,10 +1482,38 @@ fn eval_beta(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<ExprId> {
 /// unevaluated on purpose: the generalised `C(−3, 2) = 6` of
 /// `combinatorics::binomial` is not what the symbolic node promises.
 fn eval_binomial(arena: &mut Arena, n: ExprId, k: ExprId) -> Option<ExprId> {
-    let nr = arena.as_num(n)?;
-    let kr = arena.as_num(k)?;
-    if !nr.is_integer() || !kr.is_integer() || nr.is_negative() || kr.is_negative() {
+    let nr = arena.as_num(n)?.clone();
+    let kr = arena.as_num(k)?.clone();
+    if !kr.is_integer() {
         return None;
+    }
+    // `n(n − 1)⋯(n − k + 1)/k!` for a rational `n` and an integer `k ≥ 0`, and
+    // `0` for a negative integer `k` unless `n` is a negative integer too
+    // (SymPy and mpmath agree: `binomial(−1, 3) = −1`, `binomial(7/2, 2) =
+    // 35/8`, `binomial(5, −1) = 0`).  Both negative integers is where the
+    // conventions part — SymPy `binomial(−7, −9) = 0`, mpmath's limit (and
+    // Kronenburg's extension) `28`, which `evalf` follows — so that is left
+    // as it is.  Before 0.37 only `0 ≤ k`, `0 ≤ n` integers folded, and
+    // `binomial(−1, 3)` was not even evaluable numerically.
+    if kr.is_negative() {
+        if nr.is_integer() && nr.is_negative() {
+            return None;
+        }
+        return Some(arena.zero);
+    }
+    if !nr.is_integer() || nr.is_negative() {
+        let k_u64: u64 = kr.to_integer().try_into().ok()?;
+        let falling = exact_factorial_power(arena, &nr, k_u64, -1)?;
+        let falling = arena.as_num(falling)?.clone();
+        let k_digits = log10_factorial_lower(k_u64 as f64);
+        if beyond_digit_guard(arena, k_digits) {
+            return None;
+        }
+        let mut fact = BigInt::one();
+        for i in 2..=k_u64 {
+            fact *= BigInt::from(i);
+        }
+        return guarded_num(arena, falling / Ratio::from_integer(fact));
     }
     let n_u64: u64 = nr.to_integer().try_into().ok()?;
     let k_u64: u64 = kr.to_integer().try_into().ok()?;
@@ -1886,6 +1914,31 @@ fn eval_factorial2(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         return None;
     }
     let n: i64 = r.to_integer().try_into().ok()?;
+    // A negative odd `n = −(2m + 1)`: `n!! = (n + 2)!!/(n + 2)`, so
+    // `(−1)^m/(2m − 1)!!` (SymPy: `factorial2(−3) = −1`, `factorial2(−17) =
+    // 1/2027025`).  A negative even `n` is a pole of the extension: left
+    // alone.  Before 0.37 every `n < −1` stayed unevaluated.
+    if n < -1 && n % 2 != 0 {
+        let m = (-n - 1) / 2;
+        if beyond_digit_guard(
+            arena,
+            (m as f64) * std::f64::consts::LOG10_2 + log10_factorial_lower(m as f64),
+        ) {
+            return None;
+        }
+        let mut odd = BigInt::one();
+        let mut k = 2 * m - 1;
+        while k > 1 {
+            odd *= BigInt::from(k);
+            k -= 2;
+        }
+        let sign = if m % 2 == 0 {
+            BigInt::one()
+        } else {
+            -BigInt::one()
+        };
+        return guarded_num(arena, Ratio::new(sign, odd));
+    }
     if n < -1 {
         return None;
     }
@@ -1934,11 +1987,29 @@ fn eval_subfactorial(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 fn eval_rising_factorial(arena: &mut Arena, x_id: ExprId, n_id: ExprId) -> Option<ExprId> {
     let xr = arena.as_num(x_id)?.clone();
     let nr = arena.as_num(n_id)?;
-    if !nr.is_integer() || nr.is_negative() {
+    if !nr.is_integer() {
         return None;
+    }
+    // A negative order: `(x)₋ₘ = 1/((x − 1)(x − 2)⋯(x − m))`, `zoo` at a zero
+    // factor (SymPy's `rf(3, −1) = 1/2`, `rf(3, −3) = zoo`).
+    if nr.is_negative() {
+        let m: u64 = (-nr.to_integer()).try_into().ok()?;
+        let below = xr - Ratio::one();
+        return reciprocal_factorial_power(arena, &below, m, -1);
     }
     let n: u64 = nr.to_integer().try_into().ok()?;
     exact_factorial_power(arena, &xr, n, 1)
+}
+
+/// `1/((x)(x + s)⋯(x + (m − 1)s))` for `s = step = ±1`: `zoo` when a factor
+/// is 0 (a negative-order rising or falling factorial).
+fn reciprocal_factorial_power(arena: &mut Arena, x: &Q, m: u64, step: i32) -> Option<ExprId> {
+    let p = exact_factorial_power(arena, x, m, step)?;
+    let v = arena.as_num(p)?.clone();
+    if v.is_zero() {
+        return Some(arena.complex_infinity);
+    }
+    guarded_num(arena, v.recip())
 }
 
 /// Falling factorial: x^(n) = x * (x-1) * ... * (x-n+1).
@@ -1947,8 +2018,15 @@ fn eval_rising_factorial(arena: &mut Arena, x_id: ExprId, n_id: ExprId) -> Optio
 fn eval_falling_factorial(arena: &mut Arena, x_id: ExprId, n_id: ExprId) -> Option<ExprId> {
     let xr = arena.as_num(x_id)?.clone();
     let nr = arena.as_num(n_id)?;
-    if !nr.is_integer() || nr.is_negative() {
+    if !nr.is_integer() {
         return None;
+    }
+    // A negative order: `x^(−m) = 1/((x + 1)(x + 2)⋯(x + m))`, `zoo` at a zero
+    // factor (SymPy's `ff(3, −1) = 1/4`, `ff(−1, −1) = zoo`).
+    if nr.is_negative() {
+        let m: u64 = (-nr.to_integer()).try_into().ok()?;
+        let above = xr + Ratio::one();
+        return reciprocal_factorial_power(arena, &above, m, 1);
     }
     let n: u64 = nr.to_integer().try_into().ok()?;
     exact_factorial_power(arena, &xr, n, -1)

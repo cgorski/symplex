@@ -2297,6 +2297,18 @@ fn eval_numeric_pow(arena: &mut Arena, b: &Q, e: &Q) -> Option<ExprId> {
 
     let exp_int: BigInt = e.to_integer();
 
+    // `(±1)^n` costs nothing whatever `n`: `1` or `(−1)^(n mod 2)` (SymPy
+    // folds `(−1)**430587161543285117552609` to `−1`).  Before 0.37 an
+    // exponent over the guard below left it a power, and
+    // `(−∞)·(−1)^430587161543285117552609` stayed a product instead of `∞`.
+    if b.is_one() {
+        return Some(arena.one);
+    }
+    if *b == -Q::one() {
+        let odd = num_integer::Integer::is_odd(&exp_int);
+        return Some(if odd { arena.neg_one } else { arena.one });
+    }
+
     // Guard: don't evaluate if exponent is too large.
     let max_exp = arena.config.max_pow_exponent as u64;
     let abs_exp: BigInt = exp_int.abs();

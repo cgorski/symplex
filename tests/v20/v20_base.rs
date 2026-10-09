@@ -426,7 +426,10 @@ fn factorial_and_binomial_match_python_math() {
 }
 
 /// The symbolic `binomial` node keeps SymPy's semantics through the shared
-/// kernel: `C(1, 2) = 0`, a negative upper index stays unevaluated.
+/// kernel: `C(1, 2) = 0`; since 0.37 a negative upper index with a
+/// non-negative lower one is the generalised binomial (SymPy:
+/// `binomial(-3, 2)` → `6`), and both negative stays unevaluated (the
+/// conventions differ there).
 #[test]
 fn eval_binomial_keeps_the_negative_n_guard() {
     let ctx = Context::new();
@@ -434,7 +437,8 @@ fn eval_binomial_keeps_the_negative_n_guard() {
     assert_eq!(b(10, 3), "120");
     assert_eq!(b(1, 2), "0");
     assert_eq!(b(70, 35), "112186277816662845432");
-    assert_eq!(b(-3, 2), "C(-3, 2)");
+    assert_eq!(b(-3, 2), "6");
+    assert_eq!(b(-3, -5), "C(-3, -5)");
     assert_eq!(
         ctx.int(20).factorial().eval().to_string(),
         "2432902008176640000"
