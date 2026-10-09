@@ -49,6 +49,18 @@
 //!   formula holds for an integer order too, where `ζ(1 − n, a) = −B_n(a)/n`
 //!   and the Euler–Maclaurin sum ends by itself.
 //!
+//! A large order (`s ≥ 24`) takes the expansion in `μ` wherever `abs(μ) ≤
+//! 0.85·2π`, `abs(z) > 1` included: its terms do not cancel (they are about
+//! `μ^k/k!`), and the sum stops at the first `k` where a bound on all the
+//! rest ([`mu_tail`]) is below the precision, long before `k = s`; the
+//! `ζ(s − k)` of large arguments are direct sums ([`zeta_direct`]).  Before
+//! 0.37 the inversion took `abs(z) ≥ 2`, whose Hurwitz sum cancels about
+//! `1.77·s` bits (`polylog(300, 3)` 0.36 s, `polylog(1000, 3)` refused), and
+//! the expansion summed every `ζ(s − k)`, `k < s`.  On the cut the imaginary
+//! part is its closed form `−π·(ln x)^(s−1)/Γ(s)` ([`cut_imaginary`]),
+//! correct relative to itself, with a bound of its own.  A complex order
+//! inside the unit disc is the defining series ([`polylog_complex_order`]).
+//!
 //! A non-positive integer order is the finite Stirling sum ([`nonpositive`])
 //! down to −1000, and beyond the sum over the poles `n!·Σ_k (2πik − Log
 //! z)^(−n−1)` ([`nonpositive_poles`]), here and for `z ∈ [−1, 1]` (whose
@@ -181,6 +193,8 @@ pub(super) fn polylog_general(
             let re = super::round_to(sum.value.0, prec + 16, rm);
             let im = if real {
                 BigFloat::new(prec + 16)
+            } else if let Some(im) = cut_imaginary(s, z, prec + 16, rm, cc) {
+                im
             } else {
                 super::round_to(sum.value.1, prec + 16, rm)
             };
@@ -194,6 +208,45 @@ pub(super) fn polylog_general(
         }
         extra = (lost + 40).max(2 * extra).min(cap);
     }
+}
+
+/// Is `z` real and above 1 (on the cut, the value below it), with `s > 0`?
+fn on_cut(s: &BigFloat, z: &Complex) -> bool {
+    z.1.is_zero()
+        && super::bf_gt(&z.0, &BigFloat::from_i32(1, 64))
+        && super::bf_strictly_positive(s)
+}
+
+/// The imaginary part of `Li_s(x − i0)` for a real `x > 1` and a real `s > 0`,
+/// `−π·(ln x)^(s−1)/Γ(s)` (the jump across the cut is `2πi·(ln x)^(s−1)/Γ(s)`,
+/// the imaginary parts of `Γ(1 − s)(−μ)^(s−1)` and of `−μ^(n−1)/(n−1)!·ln(−μ)` in
+/// the expansion in `μ = ln x`), to `prec` bits relative.  The expansions
+/// give it only to `2^−wp` of the real part: before 0.37 `im(polylog(300,
+/// 3))` (`−5.02·10⁻⁶⁰⁰`, mpmath at 200 digits) printed `0`.  `None` off the cut.
+fn cut_imaginary(
+    s: &BigFloat,
+    z: &Complex,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Option<BigFloat> {
+    if !on_cut(s, z) {
+        return None;
+    }
+    let sf = to_f64(s)?;
+    let wp = prec + 16;
+    // ln x relative to 2^(−wp−32) (next to 1 from x² − 1 formed exactly).
+    let (lnx, _) = ln_near_one(z, wp + 32, rm, cc);
+    let lnln = lnx.ln(wp + 32, rm, cc);
+    let size = (sf * (sf.ln().abs() + 2.0) + to_f64(&lnln)?.abs() * sf).max(1.0);
+    let lp = wp + 32 + super::magnitude_bits(size) + super::magnitude_bits(sf.max(1.0));
+    let lnln = lnx.ln(lp, rm, cc);
+    let s1 = minus_int(s, 1, lp, rm);
+    let lgs = super::arb_log_gamma(s, lp, rm, cc).ok()?.0;
+    let e = s1.mul(&lnln, lp, rm).sub(&lgs, lp, rm);
+    let pi = cc.pi(wp, rm).clone();
+    let v = e.exp(wp, rm, cc).mul(&pi, wp, rm).neg();
+    (!v.is_zero() && !v.is_inf() && !v.is_nan()).then(|| super::round_to(v, prec, rm))
 }
 
 /// `log₂(1/|s − n|)` for a non-integer `s` within `2⁻⁸` of an integer `n`
@@ -247,11 +300,31 @@ fn value_at(
             mu_expansion(s, s_int, s_f, z, wp, rm, cc)
         };
     }
+    // A large order: the expansion in `ln z` wherever it converges well (its
+    // terms do not cancel, and they stop early, see `mu_tail`), rather than
+    // the inversion, whose Hurwitz sum cancels about `1.77·s` bits.
+    if s_f >= LARGE_ORDER && mu_ratio(z).is_some_and(|r| r <= MU_RATIO) {
+        return mu_expansion(s, s_int, s_f, z, wp, rm, cc);
+    }
     if lz >= 1.0 || cheap((-lz).exp2()) {
         inversion(s, s_int, s_f, z, wp, rm, cc)
     } else {
         mu_expansion(s, s_int, s_f, z, wp, rm, cc)
     }
+}
+
+/// The order from which `abs(ln z) ≤ MU_RATIO·2π` takes the expansion in
+/// `ln z` for `abs(z) > 1`.
+const LARGE_ORDER: f64 = 24.0;
+
+/// The largest `abs(ln z)/2π` the expansion in `ln z` takes for a large order.
+const MU_RATIO: f64 = 0.85;
+
+/// `abs(ln z)/2π` (principal logarithm) in `f64`, `None` beyond its range.
+fn mu_ratio(z: &Complex) -> Option<f64> {
+    let (x, y) = (to_f64(&z.0)?, to_f64(&z.1)?);
+    let r = x.hypot(y);
+    (r.is_finite() && r > 0.0).then(|| r.ln().hypot(y.atan2(x)) / (2.0 * std::f64::consts::PI))
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -575,6 +648,229 @@ fn series(
     Err(super::series_did_not_converge("polylog", max_terms))
 }
 
+/// Is `node` a `polylog(s, z)` with a non-real order and `abs(z) < 1`, both
+/// values in `cache` ([`polylog_complex_order`])?
+pub(super) fn is_complex_order(
+    arena: &crate::base::arena::Arena,
+    node: &crate::base::node::ExprNode,
+    cache: &rustc_hash::FxHashMap<crate::base::node::ExprId, Complex>,
+) -> bool {
+    let crate::base::node::ExprNode::Apply(sid, args) = node else {
+        return false;
+    };
+    arena.lib_fn(*sid) == Some(crate::base::libfn::LibFn::PolyLog)
+        && args.len() == 2
+        && cache.get(&args[0]).is_some_and(|s| !s.1.is_zero())
+        && cache.get(&args[1]).is_some()
+}
+
+/// `Li_s(z)` for a non-real order `s = σ + iτ` and `abs(z) < 1` by the defining
+/// series `Σ_{k≥1} z^k·k^(−s)`, `k^(−s) = e^(−s·ln k)` for a prime `k` and a
+/// product of two earlier ones otherwise, stopped by the bound on its tail
+/// of the real order `σ` (`abs(k^(−s)) = k^(−σ)`; see [`series`]); the loss to
+/// cancellation measured and made up as in [`polylog_general`].  Rounded to
+/// `prec + 16` bits, its absolute error below `2^−(prec+12)·abs(Li_s(z))`.
+/// `abs(z) ≥ 1` is refused (the continuation needs `ζ` and the Hurwitz function
+/// of a complex order).  Before 0.37 every complex order was refused:
+/// `polylog(3/2 + i/2, 1/2)`.
+pub(super) fn polylog_complex_order(
+    s: &Complex,
+    z: &Complex,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<Complex, SymplexError> {
+    if [&s.0, &s.1, &z.0, &z.1]
+        .iter()
+        .any(|x| x.is_nan() || x.is_inf())
+    {
+        return Err(super::unevaluable("polylog of special float value"));
+    }
+    if z.0.is_zero() && z.1.is_zero() {
+        return Ok(c_zero(prec));
+    }
+    let sigma = to_f64(&s.0).ok_or_else(|| super::unevaluable("polylog order beyond f64"))?;
+    let lr = accuracy::lg_abs(z);
+    let r = lr.exp2();
+    if r.is_nan() || r >= 1.0 || series_terms(r, sigma, prec + 64).is_none_or(|k| k > 200_000) {
+        return Err(super::unevaluable(
+            "polylog of complex order at abs(z) >= 1 (or too close to 1) not yet supported in evalf",
+        ));
+    }
+    let cap = super::cancellation_cap(prec);
+    let mut extra = 32 + accuracy::ceil_log2(prec) as usize;
+    loop {
+        let wp = prec + extra;
+        let sum = complex_series(s, sigma, z, wp, rm, cc).map_err(super::requested_at(prec))?;
+        let lv = accuracy::lg_abs(&sum.value);
+        let lost = if lv.is_finite() && sum.largest.is_finite() {
+            ((sum.largest - lv).max(0.0).ceil() as usize).min(cap + 1)
+        } else {
+            wp
+        };
+
+        if lost + 24 <= extra {
+            return Ok((
+                super::round_to(sum.value.0, prec + 16, rm),
+                super::round_to(sum.value.1, prec + 16, rm),
+            ));
+        }
+        if extra >= cap || lost + 24 > cap {
+            return Err(super::special_exhausted(prec));
+        }
+        extra = (lost + 40).max(2 * extra).min(cap);
+    }
+}
+
+/// The series of [`polylog_complex_order`] at `wp` bits.
+fn complex_series(
+    s: &Complex,
+    sigma: f64,
+    z: &Complex,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<Sum, SymplexError> {
+    let lr = accuracy::lg_abs(z);
+    let r = lr.exp2().min(1.0);
+    let max_terms = series_terms(r, sigma, wp)
+        .map(|k| (2 * k + 64).min(1 << 21))
+        .ok_or_else(|| super::series_did_not_converge("polylog", 0))?;
+    let spf = smallest_prime_factors(max_terms);
+    let neg_s = c_neg(s);
+    let mut powers: Vec<Complex> = Vec::with_capacity(max_terms.min(4096));
+    let mut zk = z.clone();
+    let mut sum = Sum::new(wp);
+    for k in 1..=max_terms {
+        if k > 1 {
+            zk = c_mul(&zk, z, wp, rm);
+        }
+        let p = if k == 1 {
+            c_one(wp)
+        } else {
+            let q = spf[k] as usize;
+            if q == k {
+                pow_complex(k as u64, &neg_s, wp, rm, cc)
+            } else {
+                c_mul(&powers[q - 1], &powers[k / q - 1], wp, rm)
+            }
+        };
+        sum.add(&c_mul(&zk, &p, wp, rm), wp, rm);
+        powers.push(p);
+        // The tail Σ_{j>k} |z|^j j^{−σ}, as in `series`.
+        let kf = k as f64;
+        let next = (kf + 1.0) * lr.min(0.0) - sigma * (kf + 1.0).log2();
+        let q = r * ((kf + 2.0) / (kf + 1.0)).powf(-sigma).max(1.0);
+        if q < 1.0 && next - (1.0 - q).log2() < sum.largest - wp as f64 - 4.0 {
+            return Ok(sum);
+        }
+    }
+    Err(super::series_did_not_converge("polylog", max_terms))
+}
+
+/// `k^w = e^(w·ln k)` for a positive integer `k` and a complex `w`, to `wp` bits
+/// relative: the exponent with the bits of its magnitude as guard.
+fn pow_complex(k: u64, w: &Complex, wp: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+    let size = (to_f64(&w.0).unwrap_or(f64::INFINITY).abs()
+        + to_f64(&w.1).unwrap_or(f64::INFINITY).abs())
+        * ((k as f64).ln() + 1.0);
+    let p = wp + super::magnitude_bits(size) + 8;
+    let lk = BigFloat::from_u64(k, 64).ln(p, rm, cc);
+    let v = super::c_exp(&scale(w, &lk, p, rm), p, rm, cc);
+    (super::round_to(v.0, wp, rm), super::round_to(v.1, wp, rm))
+}
+
+/// The error bound of `Li_s(z)` (value `v`) for a complex order (see
+/// [`polylog_complex_order`]): its own error, and twice the first-order
+/// changes over the balls of `z` and `s`, `abs(∂Li/∂z) ≤ Σ k^(1−σ′) r′^(k−1)` and
+/// `abs(∂Li/∂s) ≤ Σ ln k·r′^k k^(−σ′)` with `r′ = abs(z) + 2^rz < 1`, `σ′ = σ −
+/// 2^rs` (summed in `f64` with a geometric bound on their tails, times 2).
+pub(super) fn complex_order_bound(
+    s: &Complex,
+    bs: Bound,
+    z: &Complex,
+    bz: Bound,
+    v: &Complex,
+    prec: usize,
+) -> Bound {
+    if bs.is_unknown() || bz.is_unknown() {
+        return Bound::UNKNOWN;
+    }
+    let lv = accuracy::lg_abs(v);
+    if !lv.is_finite() {
+        return Bound::UNKNOWN;
+    }
+    let mut total = lv - prec as f64 - 12.0;
+    if !bz.is_exact() || !bs.is_exact() {
+        let (Some(sigma), Some(r)) = (to_f64(&s.0), Some(accuracy::lg_abs(z).exp2())) else {
+            return Bound::UNKNOWN;
+        };
+        let rz = if bz.is_exact() {
+            0.0
+        } else {
+            bz.joint().exp2()
+        };
+        let rs = if bs.is_exact() {
+            0.0
+        } else {
+            bs.joint().exp2()
+        };
+        let (rp, sp) = (r + rz, sigma - rs);
+        if rp.is_nan() || rp >= 1.0 || !sp.is_finite() {
+            return Bound::UNKNOWN;
+        }
+        let (Some(dz), Some(ds)) = (
+            magnitude_sum(rp, 1.0 - sp, true),
+            magnitude_sum(rp, -sp, false),
+        ) else {
+            return Bound::UNKNOWN;
+        };
+        if rz > 0.0 {
+            total = accuracy::lsum(total, (dz * rz).log2() + 1.0);
+        }
+        if rs > 0.0 {
+            total = accuracy::lsum(total, (ds * rs).log2() + 1.0);
+        }
+    }
+
+    Bound::both(total)
+}
+
+/// `Σ_{k≥1} k^e·r^(k−1)` (`derivative`) or `Σ_{k≥2} ln k·k^e·r^k` in `f64`,
+/// rounded up generously: the terms until the rest, bounded by a geometric
+/// series, is below `10⁻¹⁸` of the sum, then that bound.
+fn magnitude_sum(r: f64, e: f64, derivative: bool) -> Option<f64> {
+    let mut sum = 0.0f64;
+    for k in 1..2_000_000u64 {
+        let kf = k as f64;
+        let t = if derivative {
+            kf.powf(e) * r.powf(kf - 1.0)
+        } else {
+            kf.ln() * kf.powf(e) * r.powf(kf)
+        };
+        sum += t;
+        // The ratio of consecutive terms from here on is at most
+        // r·(1 + 1/k)^max(e, 0) (and ln(k + 2)/ln(k + 1) for the logarithms),
+        // decreasing in k.
+        let lnq = if derivative {
+            1.0
+        } else {
+            (kf + 2.0).ln() / (kf + 1.0).ln()
+        };
+        let q = r * (1.0 + 1.0 / kf).powf(e.max(0.0)) * lnq;
+        if k > 2 && q < 1.0 {
+            let rest = t * q / (1.0 - q);
+            if rest < sum * 1e-18 {
+                return Some((sum + rest) * 1.001);
+            }
+        }
+        if !sum.is_finite() {
+            return None;
+        }
+    }
+    None
+}
+
 /// `ln z` accurate next to `z = 1`: `ln|z| = ½ ln(1 + d)` with `d = |z|² −
 /// 1 = (x − 1)(x + 1) + y²` formed with `x − 1` exact, and `ln(1 + d) =
 /// 2 atanh(t)`, `t = d/(2 + d)`, summed for `|d| < 1/4`.
@@ -626,9 +922,9 @@ fn mu_expansion(
     let mu = ln_near_one(z, wp, rm, cc);
     let neg_mu = c_neg(&mu);
     let lmu = accuracy::lg_abs(&mu);
-    // |μ|/2π, below 0.6 for 3/4 < |z| < 2.
+    // |μ|/2π: below 0.6 for 3/4 < |z| < 2, below 0.85 for a large order (`value_at`).
     let rho = (lmu - LOG2_TWO_PI).exp2();
-    if rho.is_nan() || rho >= 0.7 {
+    if rho.is_nan() || rho >= 0.9 {
         return Err(super::unevaluable(
             "polylog: ln z outside the expansion's disc",
         ));
@@ -646,7 +942,19 @@ fn mu_expansion(
     let minus_one = BigFloat::from_i32(-1, 64);
     let mut left: Option<super::ZetaLeft> = None;
     let mut mk = c_one(wp); // μ^k/k!
+    let mu_abs = lmu.exp2();
     for k in 0..max_terms {
+        // Before the terms of order `s − k ≤ 2`: stop where the rest of the
+        // sum, bounded term by term ([`mu_tail`]), is below the precision.
+        // Before 0.37 every `ζ(s − k)`, `k < s`, was summed: `polylog(300,
+        // 19/10)` took 0.7 s, `polylog(1000, 19/10)` was refused.
+        if k >= 1
+            && (k as f64) < s_f - 2.0
+            && (k as f64) > 2.0 * mu_abs + 1.0
+            && mu_tail(k, s_f, s_int, lmu, rho) < sum.largest - wp as f64 - 4.0
+        {
+            return Ok(sum);
+        }
         if k > 0 {
             mk = div_int(&c_mul(&mk, &mu, wp, rm), k as u64, wp, rm);
         }
@@ -666,13 +974,24 @@ fn mu_expansion(
                 let zeta = if m <= 0 {
                     super::zeta_nonpositive_int(m, wp, rm)
                 } else {
-                    super::arb_zeta(&BigFloat::from_i64(m, 64), wp, rm, cc)?
+                    let mb = BigFloat::from_i64(m, 64);
+                    match zeta_direct(&mb, m as f64, wp, rm, cc) {
+                        Some(z) => z,
+                        None => super::arb_zeta(&mb, wp, rm, cc)?,
+                    }
                 };
                 scale(&mk, &zeta, wp, rm)
             }
             None => {
                 let arg = minus_int(s, k as i64, wp, rm);
-                let zeta = if left.is_some() || super::bf_lt(&arg, &minus_one) {
+                let direct = if left.is_none() {
+                    zeta_direct(&arg, s_f - k as f64, wp, rm, cc)
+                } else {
+                    None
+                };
+                let zeta = if let Some(z) = direct {
+                    z
+                } else if left.is_some() || super::bf_lt(&arg, &minus_one) {
                     if left.is_none() {
                         left = Some(super::ZetaLeft::new(&arg, wp, rm, cc)?);
                     }
@@ -702,6 +1021,133 @@ fn mu_expansion(
         }
     }
     Err(super::series_did_not_converge("polylog", max_terms))
+}
+
+/// `ζ(m) = Σ_{j≤J} j^{−m} + r`, `0 < r ≤ J^{1−m}/(m − 1) < 2^(−wp−8)`, for a
+/// real `m ≥ max(8, wp/4)` (`mf` its value), where `J ≤ 64` terms do: the
+/// terms of the expansion in `ln z` at a large order (Borwein's sum takes
+/// `0.39·wp` powers whatever `m`).  `None` otherwise.
+fn zeta_direct(
+    m: &BigFloat,
+    mf: f64,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Option<BigFloat> {
+    if mf.is_nan() || mf < 8.0 || mf < wp as f64 / 4.0 {
+        return None;
+    }
+    let j_max = ((wp as f64 + 8.0) / (mf - 1.0)).exp2().ceil() + 1.0;
+    if j_max.is_nan() || j_max > 64.0 {
+        return None;
+    }
+    let neg = m.neg();
+    let mut sum = BigFloat::from_i32(1, wp + 8);
+    for j in 2..=(j_max as u64) {
+        let t = super::bf_pow(&BigFloat::from_u64(j, 64), &neg, wp + 8, rm, cc);
+        sum = sum.add(&t, wp + 8, rm);
+    }
+    Some(super::round_to(sum, wp, rm))
+}
+
+/// `log₂` of a bound on `Σ_{j≥k} abs(ζ(s − j)·μ^j/j!)` (the log term at `j = n − 1`
+/// for an integer order `n`) for `2·abs(μ) + 1 < k < s − 2`, `log₂ abs(μ) = lmu`,
+/// `abs(μ)/2π = rho < 1`: the terms with `σ = s − j ≥ 2` by `ζ(σ) ≤ ζ(2) < 1.65`
+/// and a geometric series of ratio `abs(μ)/(k + 1) < ½`; the at most three with
+/// `−1 < σ < 2` by `abs(ζ(σ)) ≤ 1 + 1/abs(σ − 1)` (`ζ(σ) − 1/(σ − 1)` lies in
+/// `[0.42, 0.65]` there), the log term by `H_{n−1} + abs(ln(−μ)) ≤ ln n + 1 +
+/// abs(log abs(μ)) + π`; and those with `σ ≤ −1` as in [`mu_expansion`].
+fn mu_tail(k: usize, s_f: f64, s_int: Option<i64>, lmu: f64, rho: f64) -> f64 {
+    let mu_abs = lmu.exp2();
+    let kf = k as f64;
+    let term = |j: f64| j * lmu - ln_gamma(j + 1.0) * LOG2E;
+    let mut total = 0.73 + term(kf) - (1.0 - mu_abs / (kf + 1.0)).log2();
+    // The integers j with −1 < s − j < 2.
+    let first = (s_f - 2.0).floor() + 1.0;
+    let mut j = first.max(kf);
+    while s_f - j > -1.0 {
+        let sigma = s_f - j;
+        let z = match s_int {
+            Some(n) if j as i64 == n - 1 => {
+                (n as f64).ln() + 1.0 + (lmu * LN2).abs() + std::f64::consts::PI
+            }
+            _ if sigma == 1.0 => f64::INFINITY,
+            _ => 1.0 + 1.0 / (sigma - 1.0).abs(),
+        };
+        total = lsum2(total, term(j) + z.log2());
+        j += 1.0;
+    }
+    // σ ≤ −1: b_j = 3.3·(2π)^{s−j−1}Γ(j+1−s)|μ|^j/j! and a geometric tail.
+    let jc = j;
+    let q = rho * ((jc + 1.0 - s_f) / (jc + 1.0)).max(1.0);
+    if q >= 1.0 {
+        return f64::INFINITY;
+    }
+    let lb = 1.73 + (s_f - jc - 1.0) * LOG2_TWO_PI + ln_gamma(jc + 1.0 - s_f) * LOG2E + term(jc);
+    lsum2(total, lb - (1.0 - q).log2())
+}
+
+/// `log₂` of a lower bound on `abs(Li_s(z) − z)` for a real order `s ≥ 4` (`s_f`;
+/// `s_int`: an integer; `near_int`: a non-integer within `2⁻⁸` of one) and
+/// `z = x + iy` (in `f64`): the distance of `Li_s` from its limit `z` as `s →
+/// ∞`, which a cancellation against `z` leaves (`evalf::note_limit_tail`).
+/// `−∞`-like (`−10³⁰⁰`, below the exponent range: such a cancellation is
+/// refused) where no bound is proved.
+///
+/// * `abs(z) ≤ 1`: `abs(Σ_{k≥2} z^k/k^s) ≥ abs(z)²/2^s·(1 − Σ_{k≥3} (2/k)^s) ≥
+///   abs(z)²·2^(−s−1)` (`Σ_{k≥3} (2/k)⁴ < 0.32`).
+/// * `abs(z) > 1`, `m = abs(ln z) < 0.85·2π`, `s ≥ 8m + 40`, `0.585·s ≥ 7.22·m + 5`
+///   and `s` an integer or at least `2⁻⁸` from one: in the expansion in `μ =
+///   ln z`, `Li_s(z) − z = Σ_{k<s−1} (ζ(s − k) − 1)μ^k/k! + R` with `R` the terms
+///   from `k = s − 1` on (with the `Γ(1 − s)` or logarithmic term, less the
+///   tail of `e^μ`), and the sum is `Σ_{j≥2} j^(−s)·Σ_{k<s−1} (jμ)^k/k!`:
+///   `2^(−s)·(z² − T)` (`T` the tail of `e^(2μ)` from `s − 1`, at most
+///   `2·(2m)^(s−1)/(s − 1)!`) and the rest at most `4·3^(−s)·e^(3m)`.  When
+///   `T`, the rest and `R` (bounded as in [`mu_tail`]) are each below
+///   `2^(−s)·abs(z)²/8` (the conditions make the first two so), `abs(Li_s(z) − z) ≥
+///   abs(z)²·2^(−s−1)`.
+pub(super) fn tail_lower_bound(s_f: f64, s_int: bool, near_int: bool, x: f64, y: f64) -> f64 {
+    const UNKNOWN_TAIL: f64 = -1e300;
+    let r = x.hypot(y);
+    if s_f.is_nan() || s_f < 4.0 || !r.is_finite() || r == 0.0 {
+        return UNKNOWN_TAIL;
+    }
+    let lz = r.log2();
+    let main = 2.0 * lz - s_f - 1.0;
+    if r <= 1.0 {
+        return main;
+    }
+    let m = r.ln().hypot(y.atan2(x));
+    if m >= 0.85 * 2.0 * std::f64::consts::PI
+        || s_f < 8.0 * m + 40.0
+        || 0.585 * s_f < 7.22 * m + 5.0
+        || (!s_int && near_int)
+    {
+        return UNKNOWN_TAIL;
+    }
+    // R: the terms from k0 = ⌊s⌋ − 3 on (an over-estimate), the tail of e^μ
+    // from there, and |Γ(1 − s)|·m^(s−1) ≤ π·2⁷/Γ(s)·m^(s−1) off the integers.
+    let k0 = s_f.floor() - 3.0;
+    let lm = m.log2();
+    let n = s_int.then_some(s_f as i64);
+    let mut rb = mu_tail(k0 as usize, s_f, n, lm, m / (2.0 * std::f64::consts::PI));
+    rb = lsum2(rb, 1.0 + k0 * lm - ln_gamma(k0 + 1.0) * LOG2E);
+    // The last term of the main sum, `1 < s − k < 2`, has `Σ_{j≥3} j^(k−s) ≤
+    // 769`, not 4.
+    rb = lsum2(rb, 9.6 + (s_f - 2.0) * lm - ln_gamma(s_f - 1.0) * LOG2E);
+    if !s_int {
+        rb = lsum2(rb, 8.66 + (s_f - 1.0) * lm - ln_gamma(s_f) * LOG2E);
+    }
+    if rb.is_finite() && rb <= main - 3.0 {
+        main
+    } else {
+        UNKNOWN_TAIL
+    }
+}
+
+/// `log₂(2^a + 2^b)`, rounded up.
+fn lsum2(a: f64, b: f64) -> f64 {
+    accuracy::lsum(a, b)
 }
 
 /// The inversion formula for `|z| > 1` (see the module documentation).
@@ -919,9 +1365,71 @@ pub(super) fn error_bound(
     }
     if real {
         Bound::real(total)
+    } else if let Some(im) = cut_imaginary_bound(s, bs, z, bz, v, prec) {
+        Bound { re: total, im }
     } else {
         Bound::both(total)
     }
+}
+
+/// The bound of the imaginary part `−π(ln x)^(s−1)/Γ(s)` on the cut (see
+/// [`cut_imaginary`]) relative to itself: its rounding, and twice the
+/// first-order change over the balls of `x` (`abs(∂ ln Im/∂x) = (s − 1)/(x·ln x)`,
+/// at the lower end of the ball, which must stay within a quarter of `x − 1`)
+/// and of `s` (`abs(∂ ln Im/∂s) = abs(ln ln x − ψ(s)) ≤ abs(ln ln x) + abs(ln s) + 1/s +
+/// 1` at the lower end of its ball, which must stay above `s/2`).  `None` off
+/// the cut, or for a zero imaginary part.
+fn cut_imaginary_bound(
+    s: &BigFloat,
+    bs: Bound,
+    z: &Complex,
+    bz: Bound,
+    v: &Complex,
+    prec: usize,
+) -> Option<f64> {
+    if !on_cut(s, z)
+        || !accuracy::exactly_real(z, bz)
+        || !accuracy::is_exact(bs.im)
+        || v.1.is_zero()
+    {
+        return None;
+    }
+    let li = accuracy::part_lg(&v.1);
+    let mut total = li - prec as f64 - 12.0;
+    let sf = to_f64(s)?;
+    let xf = to_f64(&z.0)?;
+    let lnx = (xf - 1.0).ln_1p();
+    if lnx.is_nan() || lnx <= 0.0 {
+        return None;
+    }
+    if !bz.is_exact() {
+        let r = bz.re.exp2();
+        if r.is_nan() || r > (xf - 1.0) / 4.0 {
+            return None;
+        }
+        let lo = xf - r;
+        let d = (sf + 1.0) / (lo * (lo - 1.0).ln_1p());
+        // A change of at most a quarter: twice the first order covers it.
+        if (d * r).is_nan() || d * r > 0.25 {
+            return None;
+        }
+        let rel = d.log2() + bz.re + 1.0;
+        total = accuracy::lsum(total, li + rel);
+    }
+    if !bs.is_exact() {
+        let r = bs.re.exp2();
+        if r.is_nan() || r > sf / 2.0 {
+            return None;
+        }
+        let lo = sf - r;
+        let d = lnx.ln().abs() + lo.ln().abs().max((sf + r).ln().abs()) + 1.0 / lo + 1.0;
+        if (d * r).is_nan() || d * r > 0.25 {
+            return None;
+        }
+        let rel = d.log2() + bs.re + 1.0;
+        total = accuracy::lsum(total, li + rel);
+    }
+    total.is_finite().then_some(total)
 }
 
 /// Twice the change of `Li_s` over the ball of `z` (see [`error_bound`]).

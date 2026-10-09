@@ -70,12 +70,30 @@ fn a_function_of_a_value_below_the_range_keeps_the_lost_part() {
 /// √2·T`), `T³/6` (`abs(sin(iT)) − abs(iT)`), `−2T³/(3√π)` (`erf(T) −
 /// 2T/√π`, mpmath `2*exp(-mpf(10)**10)**3/(3*sqrt(pi))` =
 /// `3.00454681328413e-13028834458` in absolute value).
+///
+/// Since 0.37 the logarithm of a value whose polynomial is `e^g + R`
+/// (`e^g` the largest term) is `g + ln(1 + R·e^(−g))` with the series of
+/// `ln(1 + ·)` below the range, so the first two are known to be nonzero and
+/// are refused as values below the range ("not 0 but underflows") rather than
+/// as "not known to be 0"; their quotients by `T` are values
+/// (`tests/v34/v34_beyond.rs`).
 #[test]
 fn a_value_below_the_range_made_a_number_keeps_its_smaller_terms() {
     let ctx = Context::new();
     for s in [
         "log(exp(-10^10) + exp(-2*10^10)) + 10^10",
         "log(sin(exp(-10^10))) + 10^10",
+    ] {
+        for digits in [16, 30] {
+            match parse(&ctx, s).eval_decimal(digits) {
+                Err(SymplexError::Unevaluable { reason })
+                    if reason.contains("not 0 but underflows") => {}
+                other => panic!("{s} at {digits} digits: {other:?}"),
+            }
+        }
+        assert_eq!(parse(&ctx, s).eval_f64().unwrap(), 0.0, "{s}");
+    }
+    for s in [
         "sqrt(exp(-10^10)+exp(-2*10^10)) - exp(-5*10^9)",
         "sqrt(exp(-10^10)+exp(-2*10^10))/exp(-5*10^9) - 1",
         "abs(sin(exp(-10^10)*(1+I))) - sqrt(2)*exp(-10^10)",

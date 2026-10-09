@@ -182,14 +182,23 @@ fn bessel_functions_of_large_order() {
     );
 }
 
-/// At the turning point the expansions do not apply (DLMF 10.20 would):
-/// still refused, not guessed.
+/// At the turning point the expansions do not apply (DLMF 10.20 would).
+/// Pinned as refused in 0.35 and 0.36; since 0.37 they are values, by the
+/// recurrence in the order from where the expansions apply, with a rigorous
+/// bound (`evalf/bessel_recur.rs`; more in `tests/v34/v34_beyond.rs`).
+/// mpmath `mp.dps=45` (and 30) with `maxprec=100000, maxterms=10**6`:
+/// `besselj(20000,20000)` = `0.0164789421069740836052225183309627939092364176`,
+/// `bessely(20000,20000)` = `-0.0285423663639909349942827546485257845939641093`.
 #[test]
-fn bessel_functions_at_the_turning_point_are_refused() {
+fn bessel_functions_at_the_turning_point() {
     let ctx = Context::new();
-    for src in ["bessely(20000, 20000)", "besselj(20000, 20000)"] {
-        assert!(dec(&ctx, src).is_err(), "{src}");
-    }
+    check(
+        &ctx,
+        &[
+            ("besselj(20000, 20000)", "0.01647894210697408"),
+            ("bessely(20000, 20000)", "-0.02854236636399093"),
+        ],
+    );
 }
 
 /// `Li_{−n}(z) = n!·Σ_k (2πik − Log z)^(−n−1)` beyond `n = 1000`, where

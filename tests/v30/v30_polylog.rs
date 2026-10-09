@@ -167,12 +167,21 @@ fn next_to_an_integer_order_and_next_to_one() {
     );
 }
 
-/// A complex order is refused (an error, not a panic or a wrong value).
-/// mpmath: `polylog(mpc(1.5, 0.5), 0.5)` exists; this is a refusal.
+/// A complex order was refused here (an error, not a panic or a wrong
+/// value) until 0.36.  Since 0.37 a complex order inside the unit disc is the
+/// defining series with a bound on its tail (`evalf/polylog.rs`,
+/// `polylog_complex_order`): mpmath `mp.dps=30` (and 60)
+/// `polylog(mpc(1.5, 0.5), 0.5)` = `(0.612640388900115358817932002617 -
+/// 0.0510321042589037241448767526801j)`.  Outside the disc it is still
+/// refused.
 #[test]
 fn complex_order_is_refused() {
     let ctx = Context::new();
-    assert!(dec(&ctx, "polylog(3/2 + I/2, 1/2)", 16).is_err());
+    assert_eq!(
+        dec(&ctx, "polylog(3/2 + I/2, 1/2)", 16).unwrap(),
+        "0.6126403889001154 - 0.05103210425890372*i"
+    );
+    assert!(dec(&ctx, "polylog(3/2 + I/2, 2)", 16).is_err());
 }
 
 // ── Matrix pivots at hidden algebraic zeros ─────────────────────────────────

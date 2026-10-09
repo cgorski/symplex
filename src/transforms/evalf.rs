@@ -70,6 +70,7 @@ mod accuracy;
 pub(crate) mod bernoulli;
 mod bessel_debye;
 mod bessel_order;
+mod bessel_recur;
 mod conjugate;
 mod emsum;
 mod exact;
@@ -350,24 +351,33 @@ fn evaluate_tree_full(
             }
             _ => {}
         }
+        // Whether the value overflowed the exponent range.
+        let mut overflowed = false;
         let mut evaluated =
             eval_node_with_error(arena, id, &cache, &errs, prec, rm, cc).and_then(|(value, e)| {
                 match exponent_range_error(arena, id, &value, &cache, &errs) {
-                    Some(err) => Err(err),
+                    Some(err) => {
+                        overflowed = true;
+                        Err(err)
+                    }
                     None => Ok((value, e)),
                 }
             });
-        // A value below the exponent range, or a function of one, held
+        // A value outside the exponent range, or a function of one, held
         // scaled (`extended`).
         let mut extended_value = false;
         if exact_z.is_none() {
             let underflowed = matches!(&evaluated, Ok((v, b))
                 if accuracy::mag(v).is_none() && accuracy::is_underflow(b.joint()));
-            if extended::wanted(arena, id, underflowed, &exts)
+            let edge = extended::Edge {
+                underflowed,
+                overflowed,
+            };
+            if extended::wanted(arena, id, edge, &cache, &exts)
                 && let Some(outcome) = extended::extend(
                     arena,
                     id,
-                    underflowed,
+                    edge,
                     &cache,
                     &errs,
                     &exts,
@@ -386,19 +396,19 @@ fn evaluate_tree_full(
                         exts.insert(id, extended::Ext::Beyond(s));
                         Ok(placeholder)
                     }
-                    extended::Outcome::Near(p, d) => {
-                        let ordinary = match evaluated {
-                            Ok(ok) => ok,
-                            Err(_) => {
-                                let (v, b) = exact::to_value(&p, prec, rm);
-                                let u = accuracy::UNDERFLOW;
-                                let b = accuracy::Bound {
-                                    re: accuracy::lsum(b.re, u),
-                                    im: accuracy::lsum(b.im, u),
-                                };
-                                (v, b)
-                            }
+                    // No ordinary value: the node fails as before (with its
+                    // own overflow, or the overflow of the argument it
+                    // lacks), and only the nodes with a rule for it see it.
+                    extended::Outcome::Above(s) => {
+                        let err = match evaluated {
+                            Err(e) => e,
+                            Ok(_) => extended::overflow_error(&s),
                         };
+                        exts.insert(id, extended::Ext::Above(s));
+                        Err(err)
+                    }
+                    extended::Outcome::Near(p, d) => {
+                        let ordinary = near_ordinary(evaluated, &p, &d, prec, rm);
                         exts.insert(id, extended::Ext::Near(p, d));
                         Ok(ordinary)
                     }
@@ -472,6 +482,14 @@ fn evaluate_tree_full(
                 }
                 if !exts.contains_key(&id) {
                     note_series_tail(arena.node(id), e.joint(), &cache, &errs, &mut absorbed);
+                    note_limit_tail(
+                        arena,
+                        arena.node(id),
+                        e.joint(),
+                        &cache,
+                        &errs,
+                        &mut absorbed,
+                    );
                     note_cross_terms(
                         arena,
                         id,
@@ -500,7 +518,10 @@ fn evaluate_tree_full(
             }
             Err(e) => {
                 let e = root_cause(arena.node(id), e, &failed);
-                if strict || id == root {
+                // A value above the exponent range held scaled is refused at
+                // the root only: its parent may bring it back.
+                let above = matches!(exts.get(&id), Some(extended::Ext::Above(_)));
+                if (strict && !above) || id == root {
                     return Err(e);
                 }
                 failed.insert(id, e);
@@ -528,6 +549,45 @@ fn evaluate_tree_full(
         exact_bits,
         second_bits,
     })
+}
+
+/// The ordinary value of a node known as `p + d` (`extended::Ext::Near`,
+/// `d` below the exponent range): its own when it is `p` within its bound
+/// (`exp`, `cos` or a power of `1 + d` at the placeholder of `d`), otherwise
+/// `p` within the underflow bound — a node without an ordinary value, or `ln`
+/// of a value outside the range, `ln(e^(−10¹⁰) + e^(−2·10¹⁰)) = −10¹⁰ +
+/// e^(−10¹⁰) + …`, whose ordinary value is that of `ln(0 ± underflow)`.
+fn near_ordinary(
+    evaluated: Result<(Complex, accuracy::Bound), SymplexError>,
+    p: &exact::Gauss,
+    d: &extended::Scaled,
+    prec: usize,
+    rm: RoundingMode,
+) -> (Complex, accuracy::Bound) {
+    let (pv, pb) = exact::to_value(p, prec, rm);
+    if let Ok((v, b)) = evaluated
+        && !b.is_unknown()
+        && accuracy::mag(&v).is_some()
+    {
+        let diff = c_sub(&v, &pv, prec + 8, rm);
+        let within = |x: &BigFloat, e: accuracy::ErrExp, f: accuracy::ErrExp| {
+            accuracy::part_contains_zero(x, accuracy::shift(accuracy::lsum(e, f), 1.0))
+        };
+        if within(&diff.0, b.re, pb.re) && within(&diff.1, b.im, pb.im) {
+            return (v, b);
+        }
+    }
+    let u = accuracy::UNDERFLOW;
+    let real = accuracy::exactly_real(&d.m, d.eb);
+    let b = accuracy::Bound {
+        re: accuracy::lsum(pb.re, u),
+        im: if real {
+            pb.im
+        } else {
+            accuracy::lsum(pb.im, u)
+        },
+    };
+    (pv, b)
 }
 
 /// Record in `slot` the terms of a sum (`children`, with the error bound
@@ -610,7 +670,8 @@ fn note_flattened(
                 d.lg_value()
             }
             None if nonzero.contains_key(c) => accuracy::UNDERFLOW,
-            None => continue,
+            // (A node with a value above the range has none of its own.)
+            Some(extended::Ext::Above(_)) | None => continue,
         };
         accuracy::Absorbed::note(slot, term, radius);
     }
@@ -681,6 +742,193 @@ fn note_series_tail(
     {
         accuracy::Absorbed::note(slot, t, radius);
     }
+}
+
+/// Record in `slot` the distance of a function from the value it tends to
+/// — its limit at infinity, or the leading term of its asymptotic expansion
+/// — when its value (with the error bound `2^radius`) cannot show it
+/// ([`accuracy::Absorbed`]): `1 − tanh x ≥ e^(−2x)`, `π/2 − atan x ≥
+/// 1/(2x)`, `1 − erf x = erfc(−(−x)) ≥ e^(−x²)/(2x√π)` (`x ≥ 1`), `ζ(s) − 1 ≥
+/// 2^(−s)`, `1 − η(s) ≥ 2^(−s−1)` (`s ≥ 2`), `Li_s(z) − z ≥
+/// abs(z)²·2^(−s−1)` (`s ≥ 4`, `0 < abs(z) ≤ 1`), `abs(asinh x − sign(x)·ln(2·abs(x)))`
+/// and `abs(acosh x − ln 2x) ≥ 1/(8x²)` (`abs(x) ≥ 2`) — lower bounds, at the end
+/// of the argument's ball nearer to the limit.  The value is right within
+/// its bound, but a cancellation against the limit leaves that distance:
+/// before 0.37 `tanh(400) − 1` (truly `−7.34·10⁻³⁴⁸`), `erf(30) − 1`,
+/// `atan(10⁴⁰⁰) − π/2`, `zeta(2000) − 1` and `polylog(2000, 1/2) − 1/2`
+/// printed `0` (mpmath at 30 digits does too; SymPy's `N(…, maxn=2000)` finds
+/// them).
+fn note_limit_tail(
+    arena: &Arena,
+    node: &ExprNode,
+    radius: accuracy::ErrExp,
+    cache: &FxHashMap<ExprId, Complex>,
+    errs: &ErrMap,
+    slot: &mut Option<accuracy::Absorbed>,
+) {
+    if !radius.is_finite() {
+        return;
+    }
+    // `log₂ abs(x)` of a real argument, and of the end of its ball nearer to
+    // infinity (the tails fall with `abs(x)`).
+    let real = |c: ExprId| -> Option<(f64, f64, bool)> {
+        let (v, b) = (cache.get(&c)?, errs.get(&c)?);
+        if b.is_unknown() || !accuracy::exactly_real(v, *b) || v.0.is_zero() {
+            return None;
+        }
+        let lx = accuracy::lg_abs(v);
+        let far = accuracy::lsum(lx, b.re + 1.0);
+        (lx.is_finite() && far.is_finite()).then_some((lx, far, v.0.is_negative()))
+    };
+    let e2 = |l: f64| l.exp2();
+    const LOG2_E: f64 = std::f64::consts::LOG2_E;
+    let tail = || -> Option<f64> {
+        Some(match *node {
+            ExprNode::Tanh(c) => {
+                let (lx, far, _) = real(c)?;
+                (lx >= 0.0).then_some(())?;
+                -2.0 * e2(far) * LOG2_E
+            }
+            ExprNode::Atan(c) => {
+                let (lx, far, _) = real(c)?;
+                (lx >= 0.0).then_some(())?;
+                -1.0 - far
+            }
+            ExprNode::Erf(c) | ExprNode::Erfc(c) => {
+                let (lx, far, negative) = real(c)?;
+                (lx >= 0.0 && (negative || matches!(node, ExprNode::Erf(_)))).then_some(())?;
+                // `log₂(2√π) = 1.8257…`.
+                -e2(2.0 * far) * LOG2_E - 1.83 - far
+            }
+            ExprNode::Asinh(c) | ExprNode::Acosh(c) => {
+                let (lx, far, negative) = real(c)?;
+                (lx >= 1.0 && !(negative && matches!(node, ExprNode::Acosh(_)))).then_some(())?;
+                -3.0 - 2.0 * far
+            }
+            ExprNode::Zeta(c) => {
+                let (lx, far, negative) = real(c)?;
+                (!negative && lx >= 1.0).then_some(())?;
+                -e2(far)
+            }
+            ExprNode::Apply(sid, ref args) => match (arena.lib_fn(sid), args.as_slice()) {
+                (Some(LibFn::DirichletEta), &[s]) => {
+                    let (ls, far, negative) = real(s)?;
+                    (!negative && ls >= 1.0).then_some(())?;
+                    -e2(far) - 1.0
+                }
+                (Some(LibFn::PolyLog), &[s, z]) => {
+                    let (ls, _, negative) = real(s)?;
+                    (!negative && ls >= 2.0).then_some(())?;
+                    polylog_tail(
+                        cache.get(&s)?,
+                        *errs.get(&s)?,
+                        cache.get(&z)?,
+                        *errs.get(&z)?,
+                        radius,
+                    )
+                }
+                _ => return None,
+            },
+            _ => return None,
+        })
+    };
+    // A tail beyond `f64` lies below the exponent range.
+    if let Some(t) = tail()
+        && !t.is_nan()
+    {
+        accuracy::Absorbed::note(slot, t.max(-1e300), radius);
+    }
+}
+
+/// `log₂` of a lower bound on `abs(Li_s(z) − z)` over the balls of a real `s ≥
+/// 4` and of `z` (`polylog::tail_lower_bound` at their ends nearer to the
+/// limit: `s` raised, `abs(z)` lowered, `abs(ln z)` raised by the ball's relative
+/// radius, at most `10⁻⁶`), or a size below the exponent range — a
+/// cancellation against `z` refused — where none is proved and the leading
+/// term `abs(z)²·2^(−s)` is not 64 bits above the value's error `2^radius` (where
+/// it is, the value shows the distance and nothing is lost).  Before 0.37 the
+/// bound was for a real `abs(z) ≤ 1` only; `polylog(1270, −3) + 3` (truly
+/// `9·2⁻¹²⁷⁰`) and `polylog(3598, (3 + 4i)/5) − (3 + 4i)/5`, which the faster
+/// large-order expansion of 0.37 evaluates, printed `0` in development.
+fn polylog_tail(
+    s: &Complex,
+    bs: accuracy::Bound,
+    z: &Complex,
+    bz: accuracy::Bound,
+    radius: accuracy::ErrExp,
+) -> f64 {
+    let (Ok(sf), Ok(x), Ok(y)) = (
+        bigfloat_to_f64_rounded(&s.0, RoundingMode::ToEven),
+        bigfloat_to_f64_rounded(&z.0, RoundingMode::ToEven),
+        bigfloat_to_f64_rounded(&z.1, RoundingMode::ToEven),
+    ) else {
+        return -1e300;
+    };
+    let estimate = 2.0 * x.hypot(y).log2() - sf - 1.0;
+    match polylog_tail_proved(sf, s, bs, x, y, bz) {
+        Some(t) => t,
+        None if estimate - 64.0 >= radius => estimate - 64.0,
+        None => -1e300,
+    }
+}
+
+/// [`polylog_tail`]'s bound where it is proved.
+fn polylog_tail_proved(
+    sf: f64,
+    s: &Complex,
+    bs: accuracy::Bound,
+    x: f64,
+    y: f64,
+    bz: accuracy::Bound,
+) -> Option<f64> {
+    const UNKNOWN_TAIL: f64 = -1e300;
+    let rz = x.hypot(y);
+    // Relative radii, at most 2^−20.
+    let rel_s = if bs.is_exact() {
+        0.0
+    } else {
+        bs.joint().exp2() / sf.max(1.0)
+    };
+    let rel_z = if bz.is_exact() {
+        0.0
+    } else {
+        bz.joint().exp2() / rz
+    };
+    if rel_s.is_nan() || rel_z.is_nan() || rel_s > 1e-6 || rel_z > 1e-6 {
+        return None;
+    }
+    let s_up = sf * (1.0 + rel_s) + rel_s;
+    let s_int = s.0.is_int() && bs.is_exact();
+    let near_int = {
+        let d = (sf - sf.round()).abs();
+        d < 1.0 / 256.0 + rel_s * sf.max(1.0)
+    };
+    // `abs(z)` lowered by its ball (twice); the side of the unit circle must
+    // be the center's.
+    let shrink = 1.0 - 2.0 * rel_z;
+    let grow = 2.0 * rel_z;
+    let outside = rz > 1.0;
+    if (outside && rz * shrink <= 1.0) || (!outside && rz * (1.0 + grow) > 1.0) {
+        return None;
+    }
+    let near = near_int && !s_int;
+    let t = polylog::tail_lower_bound(s_up, s_int, near, x * shrink, y * shrink);
+    if t <= UNKNOWN_TAIL {
+        return None;
+    }
+    if !outside {
+        return Some(t);
+    }
+    // `abs(ln z)` grows with the argument's change: the conditions again at the
+    // far end.
+    let t2 = polylog::tail_lower_bound(
+        s_up,
+        s_int,
+        near,
+        x * (1.0 + grow),
+        y * (1.0 + grow) + grow * rz,
+    );
+    (t2 > UNKNOWN_TAIL).then_some(t)
 }
 
 /// `log₂` of the ratio of the smallest term of the sum `id` that is
@@ -1231,6 +1479,20 @@ fn eval_node_with_error(
                 prec,
                 rm,
                 cc,
+            );
+            (value, err)
+        }
+        // `polylog` of a complex order reports its own bound.
+        node @ ExprNode::Apply(_, args) if polylog::is_complex_order(arena, node, cache) => {
+            let value = eval_node(arena, id, cache, prec, rm, cc)?;
+            let bound = |c: ExprId| errs.get(&c).copied().unwrap_or(accuracy::Bound::UNKNOWN);
+            let err = polylog::complex_order_bound(
+                get_cached(cache, args[0])?,
+                bound(args[0]),
+                get_cached(cache, args[1])?,
+                bound(args[1]),
+                &value,
+                prec,
             );
             (value, err)
         }
@@ -5516,20 +5778,113 @@ fn debye_fallback(
         return classic;
     };
     let integer = order.is_int();
+    let negative_x = x.is_negative();
+    // `J_{−ν}`, `Y_{−ν}` of a non-integer order from `J_ν` and `Y_ν`.
+    if order.is_negative()
+        && !integer
+        && matches!(kind, Kind::J | Kind::Y)
+        && !negative_x
+        && let Some(v) = bessel_reflected(kind, &order.abs(), x, prec, rm, cc)
+    {
+        return v;
+    }
     let nu = match kind {
         Kind::K => order.abs(),
         Kind::I if integer => order.abs(),
         _ if order.is_negative() => return Err(err),
         _ => order.clone(),
     };
-    let negative_x = x.is_negative();
     if negative_x && !(integer && matches!(kind, Kind::J | Kind::I)) {
         return Err(err);
     }
-    match bessel_debye::debye(kind, &nu, &x.abs(), prec, rm, cc) {
+    match bessel_jy_large(kind, &nu, &x.abs(), prec, rm, cc) {
         Some(Ok(v)) if negative_x && bessel_order::is_odd(order) => Ok(v.neg()),
         Some(r) => r,
         None => Err(err),
+    }
+}
+
+/// A Bessel function of large positive order `nu` at `x > 0` by the uniform
+/// expansions (`bessel_debye`), and for `J`, `Y` where they stop short — the
+/// turning point `x ≈ ν`, `Y_ν(x)` for `x < ν` — by the recurrence in the
+/// order from where they do not (`bessel_recur`).  Before 0.37
+/// `besselj(20000, 20000)`, `bessely(20000, 20100)` and `bessely(20000,
+/// 14800)` were refused.
+fn bessel_jy_large(
+    kind: bessel_debye::Kind,
+    nu: &BigFloat,
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Option<Result<BigFloat, SymplexError>> {
+    use bessel_debye::Kind;
+    match bessel_debye::debye(kind, nu, x, prec, rm, cc) {
+        Some(r) => Some(r),
+        None if matches!(kind, Kind::J | Kind::Y) => bessel_recur::recur(kind, nu, x, prec, rm, cc),
+        None => None,
+    }
+}
+
+/// `J_{−ν}(x) = cos(νπ)·J_ν(x) − sin(νπ)·Y_ν(x)` and
+/// `Y_{−ν}(x) = sin(νπ)·J_ν(x) + cos(νπ)·Y_ν(x)` (DLMF 10.4.7, 10.4.8)
+/// for a non-integer `ν > 0` and `x > 0`, `J_ν` and `Y_ν` by
+/// [`bessel_jy_large`] (`None` where they are not available).  `νπ` is reduced exactly: `ν = n + f` with an integer `n`, the
+/// signs `(−1)ⁿ`.  The cancellation of the two terms is measured and made up
+/// with more bits.  Before 0.37 `besselj(−(1000 + 1/3), 2000)` was refused.
+fn bessel_reflected(
+    kind: bessel_debye::Kind,
+    nu: &BigFloat,
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Option<Result<BigFloat, SymplexError>> {
+    use bessel_debye::Kind;
+    let mut wp = prec + 32;
+    let cap = 4 * prec + 1024;
+    loop {
+        let j = match bessel_jy_large(Kind::J, nu, x, wp, rm, cc)? {
+            Ok(v) => v,
+            Err(e) => return Some(Err(e)),
+        };
+        let y = match bessel_jy_large(Kind::Y, nu, x, wp, rm, cc)? {
+            Ok(v) => v,
+            Err(e) => return Some(Err(e)),
+        };
+        // ν = n + f, 0 < f < 1: cos(νπ) = (−1)ⁿ cos(fπ), sin(νπ) = (−1)ⁿ sin(fπ).
+        let n = nu.floor();
+        let f = nu.sub(&n, exact_bits(nu, wp), rm);
+        let pi = cc.pi(wp + 16, rm).clone();
+        let angle = f.mul(&pi, wp + 16, rm);
+        let odd = bessel_order::is_odd(&n);
+        let sign = |v: BigFloat| if odd { v.neg() } else { v };
+        let (c, s) = (sign(angle.cos(wp, rm, cc)), sign(angle.sin(wp, rm, cc)));
+        let (a, b) = match kind {
+            Kind::J => (c.mul(&j, wp, rm), s.mul(&y, wp, rm).neg()),
+            _ => (s.mul(&j, wp, rm), c.mul(&y, wp, rm)),
+        };
+        let v = a.add(&b, wp, rm);
+        // The error is at most `2^(2 − wp)·(abs(J) + abs(Y))` (`J`, `Y` to
+        // `2^(−wp)` relative, the sine and cosine to `2^(1 − wp)` absolute, the
+        // products) and `2^(−wp)·abs(v)`: the bits lost against the larger
+        // of `J`, `Y`.
+        let big = j
+            .exponent()
+            .unwrap_or(i32::MIN / 2)
+            .max(y.exponent().unwrap_or(i32::MIN / 2));
+        let lost = if v.is_zero() {
+            wp as i64
+        } else {
+            i64::from(big) - i64::from(v.exponent().unwrap_or(i32::MIN / 2)) + 1
+        };
+        if lost + 6 + (prec as i64) <= wp as i64 {
+            return Some(Ok(round_to(v, prec, rm)));
+        }
+        if wp >= cap {
+            return None;
+        }
+        wp = (wp + lost.max(32) as usize).min(cap);
     }
 }
 
@@ -7595,9 +7950,7 @@ fn eval_polylog(
     let s = get_cached(cache, args[0])?;
     let z = get_cached(cache, args[1])?;
     if !s.1.is_zero() {
-        return Err(unevaluable(
-            "polylog of complex order not yet supported in evalf",
-        ));
+        return polylog::polylog_complex_order(s, z, prec, rm, cc);
     }
     if polylog::off_unit_interval(z) {
         return polylog::polylog_general(&s.0, z, prec, rm, cc);
@@ -9895,7 +10248,12 @@ fn polylog_unit_interval(
 ) -> Result<BigFloat, SymplexError> {
     let limit = polylog_series_limit(s_int, wp);
     let az = z.abs();
-    if !bf_gt(&az, &limit) {
+    // A large order: `k^(−s) < 2^(−wp)` from `k = 16` on, the direct series
+    // ends after a few terms wherever `abs(z) < 1`.  Before 0.37 the expansion
+    // in `ln z` took over beyond `abs(z) = ½` and summed `ζ(s − k)` for every
+    // `k < s`: `polylog(1038, −9/10)` was refused ("did not converge").
+    let large = bigfloat_to_f64_rounded(s, rm).is_ok_and(|v| v >= wp as f64 / 4.0 + 8.0);
+    if large || !bf_gt(&az, &limit) {
         return polylog_series(s, s_int, z, wp, rm, cc);
     }
     if z.is_negative() {

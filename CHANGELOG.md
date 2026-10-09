@@ -29,9 +29,51 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   1`/`ln(1 + u)` (also NumPy and Julia), keeps temporaries inside their
   `Piecewise` branch, and prints big integers as floats; Rust output
   changes only where it was wrong, did not compile or blew up.
+- **Many more integrals have closed forms** (Rubi: 14,522 → 23,915
+  verified; see *Added*), in substitution-shaped forms that are not yet
+  simplified (`∫ √(1 + x)/√(1 − x)` is `−2√(x + 1)/(√(1 − x)·((x + 1)/(1 −
+  x) + 1)) + 2·atan(√(x + 1)/√(1 − x))`).  The Rubi harness takes 39–46 s
+  instead of 15–22 s (12 jobs), most of it spent finding and checking the
+  new answers.
+- `(sin²1 + cos²1 − 1)·tanh(10⁵)` is refused instead of printed `0` (a
+  nonzero part of `tanh` is lost below the working precision; see *Fixed*).
 
 ### Added
 
+- **Radicals, binomials and hyperbolic functions of `c + d·x` integrate**
+  (Rubi: 14,522 → 23,915 verified, 69 → 70 real_verified, 0 wrong, 0
+  timeouts).  Radicals of a linear or fractional-linear function go
+  through `t = B^(1/q)` (SymPy's `sqrt_fractional_linear_rule`); pairs
+  whose exponents sum to an integer through `t = B₁^(1/q)·B₂^(−1/q)`, so
+  `∫ √(1 + x)/√(1 − x)` stays an antiderivative where the integrand is
+  imaginary.  The binomial `xᵐ·(a + b·xⁿ)ᵖ` goes through `w = xⁿ`
+  (Chebyshev's cases), continuous across `x = 0`.  `e^(k·atanh u)` is
+  rewritten as `(1 + u)^(k/2)·(1 − u)^(−k/2)` (DLMF 4.37.24): Rubi 7.3.6
+  goes from 1 to 838 verified, 7.4.2 from 0 to 485.  A quadratic radical
+  whose discriminant is a perfect square is split into linear factors
+  times a locally constant coefficient (`√(d² − e²x²)`, `√(b·x + c·x²)`);
+  at a double root the answer is made continuous.  Exponentials and
+  hyperbolic functions of `c + d·x` with symbolic `c`, `d` go through `u =
+  e^(c + d·x)`.  The rational integrator over ℚ(parameters) takes
+  denominators up to degree 40 when their factors as written give the
+  square-free decomposition (`(t² − a)⁸`; the limit was 10), within a
+  gcd-cost budget.  Hunters (`F′ = f` and `F(b) − F(a)` against mpmath
+  `quad`): 2,420 + 1,600 integrands, 0 wrong.
+- **Values above the exponent range are held scaled** (`Ext::Above` in
+  `evalf/extended.rs`, the mirror of 0.34's values below it): sums,
+  products, powers, `ln`, `abs`, `re`/`im` of them come back into range.
+  `(e^(10¹⁰) − e^(10¹⁰ − 1))/e^(10¹⁰)` = `0.632120558828558`, `ln(e^(10¹⁰)
+  + e^(10¹⁰ − 1))` = `10000000000.3133`, `Γ(10⁸)/Γ(10⁸ − 1)` =
+  `99999999`, `ln Γ(10⁸)` = `1742068066.10383`, `cosh(10¹⁰)/sinh(10¹⁰)` =
+  `1`, `Γ(10⁸ + 1)/Γ(10⁸)/10⁸` = `1` (all refused in 0.36; mpmath agrees).
+  A root above the range is still refused.
+- **Bessel functions at the turning point** (`x ≈ ν`, refused in 0.36):
+  a recurrence in the order from the uniform expansions, with a rigorous
+  bound (the cross product DLMF 10.5.4, Landau's bound 10.14.2, Nicholson's
+  formula 10.9.30): `besselj(20000, 20000)` = `0.0164789421069740836` (40
+  ms), `bessely(20000, 14800)`, `J`/`Y` of negative non-integer order.
+- `polylog` of a complex order inside the unit disc (`polylog(3/2 + i/2,
+  1/2)`, refused in 0.36), by the defining series with a bound.
 - `CodegenOptions::cfg_gated_math_module()`.
 - **Limits at `∞` of `Chi`, `Shi`, `erfi`, `Iν`, `Kν`, `Eₙ`, `Γ(s, x)`,
   `γ(s, x)` and `ζ`** (refused as "unknown growth"): their exponential
@@ -46,6 +88,20 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ### Fixed
 
+- **`eval_decimal` printed `0` for nonzero values next to a function's
+  limit**: `tanh(400) − 1`, `erf(30) − 1`, `atan(10⁴⁰⁰) − π/2`, `ζ(2000) −
+  1`, `polylog(2000, 1/2) − 1/2`, `asinh(10⁴⁰⁰) − ln(2·10⁴⁰⁰)` (now values,
+  mpmath at 1,300 and 2,600 digits), `erfc(−10⁵) − 2` (below the range: now
+  refused), and `im(polylog(300, 3))` (now `−5.02·10⁻⁶⁰⁰` from the closed
+  form on the cut).  A proven lower bound on each function's distance
+  from its limit now drives the zero search.  Hunters: 34 wrong → 0.
+- **`polylog` of large order** was slow or refused: `polylog(300, 3)`
+  0.36 s → 1 ms, `polylog(1000, 3)`, `polylog(10000, 3)`, `polylog(1038,
+  −9/10)` refused → 1 ms (the `ln z` expansion with a rigorous tail bound
+  while `|ln z|` is small, as mpmath's `polylog_general`).
+- **`Eq`/`Ne` of two exact complex numbers are decided**: `Ne(1/2, I)` is
+  `True` (it stayed a condition, and a `Piecewise` the integrator attaches
+  for `a ≠ ±i` stayed unevaluated after `a = 1/2` was substituted).
 - **Limits and series at a branch cut approached from one side** were
   refused (`limit(x/(ln(−2 + ix) − ln(−2)), x, 0, '+')` is `2i`, `0` from
   the left; `x·(acosh(−1 − 1/x) − acosh(−1 − 2/x))` at `∞` is `−∞`) or

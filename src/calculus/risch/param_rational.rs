@@ -76,10 +76,10 @@ const MAX_PARAMS: usize = 4;
 /// with more keeps the piecewise route, whose pieces it can test).
 const MAX_ALL_PARAMS: usize = 8;
 /// Largest integer exponent accepted in the integrand: that of the
-/// numerator's degree (up to 0.31 it was 16, and `x²³/(a + b·x³)³`,
-/// `x¹⁹/(a + b·x⁵)` were refused although their degrees are within the
-/// limits below).
-const MAX_EXPONENT: i64 = 24;
+/// numerator's degree over a factored denominator (up to 0.31 it was 16,
+/// and `x²³/(a + b·x³)³`, `x¹⁹/(a + b·x⁵)` were refused although their
+/// degrees are within the limits below; up to 0.36 it was 24).
+const MAX_EXPONENT: i64 = 48;
 /// Largest degree in `x` of the denominator after cancellation.
 const MAX_DENOM_DEGREE: usize = 10;
 /// Largest degree in `x` of the numerator.
@@ -95,11 +95,17 @@ const MAX_COEFF_TERMS: usize = 400;
 thread_local! {
     static OPS: Cell<u64> = const { Cell::new(0) };
     static TOO_BIG: Cell<bool> = const { Cell::new(false) };
+    /// The summed [`gcd_affordable`] costs of the gcds of this attempt.
+    static GCD_SPENT: Cell<u64> = const { Cell::new(0) };
+    /// The bound on [`GCD_SPENT`] of this attempt (`u64::MAX`: none).
+    static GCD_TOTAL_LIMIT: Cell<u64> = const { Cell::new(u64::MAX) };
 }
 
 fn reset_budget() {
     OPS.with(|c| c.set(0));
     TOO_BIG.with(|c| c.set(false));
+    GCD_SPENT.with(|c| c.set(0));
+    GCD_TOTAL_LIMIT.with(|c| c.set(u64::MAX));
 }
 
 fn budget_exceeded() -> bool {
@@ -145,6 +151,15 @@ fn gcd_mp(a: &MP, b: &MP) -> MP {
         TOO_BIG.with(|c| c.set(true));
         return one;
     }
+    let spent = GCD_SPENT.with(|c| {
+        let s = c.get().saturating_add(gcd_cost(a, b));
+        c.set(s);
+        s
+    });
+    if spent > GCD_TOTAL_LIMIT.with(Cell::get) {
+        TOO_BIG.with(|c| c.set(true));
+        return one;
+    }
     let t = std::time::Instant::now();
     let g = MP::gcd(a, b);
     let ms = t.elapsed().as_millis();
@@ -162,12 +177,32 @@ fn gcd_mp(a: &MP, b: &MP) -> MP {
 /// Is `gcd(a, b)` within [`GCD_COST_LIMIT`]: `∏ (min(degᵥ a, degᵥ b) + 1)`
 /// over the variables?
 fn gcd_affordable(a: &MP, b: &MP) -> bool {
+    gcd_cost(a, b) <= GCD_COST_LIMIT
+}
+
+/// The largest bit length of a numerator or denominator of the rational
+/// coefficients of `p`.
+fn max_coeff_bits(p: &MP) -> u64 {
+    p.terms()
+        .map(|(_, c)| c.numer().bits().max(c.denom().bits()))
+        .max()
+        .unwrap_or(0)
+}
+
+/// The bound on [`max_coeff_bits`] of the coefficients of a factored
+/// attempt ([`integrate_factored`]): `1/((d + e·x)²·(a + c·x⁴)³)` grew
+/// them past it and then spent minutes on rational arithmetic in the
+/// logarithmic part.
+const MAX_FACTORED_COEFF_BITS: u64 = 2048;
+
+/// `∏ (min(degᵥ a, degᵥ b) + 1)` over the variables.
+fn gcd_cost(a: &MP, b: &MP) -> u64 {
     let mut cost: u64 = 1;
     for v in 0..a.num_vars() {
         let m = u64::from(a.degree_in(v).min(b.degree_in(v)));
         cost = cost.saturating_mul(m + 1);
     }
-    cost <= GCD_COST_LIMIT
+    cost
 }
 
 /// `a/g` for a divisor `g` of `a` (`None` if it does not divide).
@@ -194,11 +229,24 @@ impl PFrac {
     /// `num/den` for coprime `num`, `den` (`den ≠ 0`): the denominator's
     /// rational content and sign moved into the numerator.
     fn finish(num: MP, den: MP) -> Self {
-        OPS.with(|c| c.set(c.get() + 1));
+        let ops = OPS.with(|c| {
+            c.set(c.get() + 1);
+            c.get()
+        });
+        if ops > OP_BUDGET && GCD_TOTAL_LIMIT.with(Cell::get) != u64::MAX {
+            // A factored attempt past its budget: zero ends the loop of
+            // the caller (an extended gcd) at once.
+            TOO_BIG.with(|c| c.set(true));
+        }
         if num.is_zero() || den.is_zero() {
             return PFrac::Const(Q::zero());
         }
-        if TOO_BIG.with(Cell::get) || num.num_terms() + den.num_terms() > MAX_COEFF_TERMS {
+        if TOO_BIG.with(Cell::get)
+            || num.num_terms() + den.num_terms() > MAX_COEFF_TERMS
+            || (GCD_TOTAL_LIMIT.with(Cell::get) != u64::MAX
+                && (max_coeff_bits(&num) > MAX_FACTORED_COEFF_BITS
+                    || max_coeff_bits(&den) > MAX_FACTORED_COEFF_BITS))
+        {
             // The attempt is abandoned at the next budget check; until then
             // everything is zero, which ends every loop quickly.
             TOO_BIG.with(|c| c.set(true));
@@ -322,8 +370,15 @@ impl Ring for PFrac {
         PFrac::Const(Q::one())
     }
 
+    /// Once an attempt is abandoned (`TOO_BIG`) every element counts as
+    /// zero: the operations return zero then, and a division whose
+    /// quotient coefficient came out zero would otherwise never remove the
+    /// leading term of its remainder (`GenPoly::try_div_rem` looped for
+    /// minutes inside the extended gcd of `1/((d + e·x)²·(a + c·x⁴)³)`);
+    /// with every coefficient zero each polynomial normalises to zero and
+    /// every loop ends.  The result is discarded at the next budget check.
     fn is_zero(&self) -> bool {
-        matches!(self, PFrac::Const(q) if q.is_zero())
+        TOO_BIG.with(Cell::get) || matches!(self, PFrac::Const(q) if q.is_zero())
     }
 
     fn add(&self, rhs: &Self) -> Self {
@@ -449,6 +504,28 @@ fn mp_sqrt(p: &MP) -> Option<MP> {
         }
     }
     None
+}
+
+/// `s` with `s² = e` for an expression `e` that is a polynomial over `ℚ` in
+/// its symbols and the square of one (`4·c²·d²·e²`, `b²`, `9/4`), or `None`.
+/// The sign of `s` is the one [`mp_sqrt`] gives (positive leading
+/// coefficient); `e = 0` gives `0`.
+pub(crate) fn polynomial_sqrt(arena: &mut Arena, e: ExprId) -> Option<ExprId> {
+    if arena.is_zero_structural(e) {
+        return Some(arena.zero());
+    }
+    let mut vars: Vec<ExprId> = crate::base::walk::free_symbols(arena, e)
+        .into_iter()
+        .collect();
+    vars.sort_by_key(|id| id.0);
+    if vars.is_empty() {
+        let q = arena.as_num(e)?.clone();
+        let r = q_sqrt(&q)?;
+        return Some(arena.num_ratio(r));
+    }
+    let p = crate::poly::polybridge::expr_to_multipoly(arena, e, &vars)?;
+    let s = mp_sqrt(&p)?;
+    Some(crate::poly::polybridge::multipoly_to_expr(arena, &s, &vars))
 }
 
 /// A partial factorisation `p = ∏ sᵢ^kᵢ` of a denominator with integer
@@ -873,6 +950,12 @@ pub(crate) fn integrate_param_rational(
     if d.degree().is_none_or(|k| k == 0) || a.is_zero() {
         return None;
     }
+    if (a.degree().is_some_and(|k| k > MAX_NUMER_DEGREE)
+        || d.degree().is_some_and(|k| k > MAX_DENOM_DEGREE))
+        && let Some(result) = integrate_factored(arena, &ctx, &a, &d, d_id, expr)
+    {
+        return Some(result);
+    }
     if a.degree().is_some_and(|k| k > MAX_NUMER_DEGREE)
         || d.degree().is_some_and(|k| k > 2 * MAX_DENOM_DEGREE)
     {
@@ -918,6 +1001,181 @@ pub(crate) fn integrate_param_rational(
     }
     let result = integrate_gp(arena, &ctx, &a, &d, &cands, expr)?;
     Some(crate::transforms::eval::eval(arena, result))
+}
+
+/// Largest degree in `x` of a denominator whose factors are known
+/// ([`factored_denominator`]); their square-free product stays within
+/// [`MAX_DENOM_DEGREE`].
+const MAX_FACTORED_DENOM_DEGREE: usize = 40;
+/// Largest degree in `x` of the numerator over such a denominator.
+const MAX_FACTORED_NUMER_DEGREE: usize = 48;
+/// At most this many parameters in the factors of such a denominator.
+const MAX_FACTORED_PARAMS: usize = 4;
+/// Bound on the summed gcd costs ([`gcd_cost`]) of a factored attempt: the
+/// reductions on the Rubi suite that succeed stay below 160,000 (`1/((d +
+/// e·x)·(a + c·x⁴)³)`: 152,000 in 0.06 s); `1/((d + e·x)³·(a + c·x⁴)³)`
+/// passed 650,000 in 25 ms and then spent minutes in the logarithmic part
+/// on the coefficients it had grown.
+const FACTORED_GCD_BUDGET: u64 = 300_000;
+
+/// `d = c·∏ fᵢ^{kᵢ}` over the syntactic factors of the denominator
+/// (`(t² − a)⁸·t³` as written), the `fᵢ` monic, square-free and
+/// pairwise coprime; `None` when the factors as written do not account
+/// for all of `d` or are not such a basis.
+fn factored_denominator(ctx: &Ctx, d: &GP, cands: &[GP]) -> Option<Vec<(GP, u32)>> {
+    let mut rest = d.make_monic();
+    let mut out: Vec<(GP, u32)> = Vec::new();
+    for c in cands {
+        if out.iter().any(|(f, _)| f == c) {
+            continue;
+        }
+        let mut k = 0u32;
+        while rest.degree() >= c.degree()
+            && let Some(q) = div_exact(&rest, c)
+        {
+            rest = q;
+            k += 1;
+        }
+        if k > 0 {
+            out.push((c.clone(), k));
+        }
+    }
+    if rest.degree() != Some(0) || out.is_empty() {
+        return None;
+    }
+    for (i, (f, _)) in out.iter().enumerate() {
+        if ctx.gcd(f, &deriv(f))?.degree()? > 0 {
+            return None;
+        }
+        for (g, _) in &out[i + 1..] {
+            if ctx.gcd(f, g)?.degree()? > 0 {
+                return None;
+            }
+        }
+    }
+    Some(out)
+}
+
+/// `∏ fᵢ^{max(kᵢ − shift, 0)}`.
+fn factored_product(fz: &[(GP, u32)], shift: u32) -> GP {
+    let mut p = GP::one();
+    for (f, k) in fz {
+        for _ in shift..*k {
+            p = p.mul(f);
+        }
+    }
+    p
+}
+
+/// `∫ a/d` for a denominator of high degree whose factors are known as
+/// written ([`factored_denominator`]; the rational substitutions of the
+/// integrator produce `(a − c·t^q)^k` to high powers): common factors
+/// cancelled by exact division, Hermite reduction with the square-free
+/// decomposition read off the factorisation instead of computed by gcds
+/// of the whole denominator ([`hermite_factored`]), then the logarithmic
+/// part over the square-free product as in [`integrate_gp`].  Up to 0.36
+/// a denominator of degree above [`MAX_DENOM_DEGREE`] was refused,
+/// whatever its square-free degree (`∫ x⁻⁸·(a + b·x)^{5/2}·(A + B·x) dx`
+/// becomes `∫ t⁶·P(t)/(t² − a)⁸ dt`).
+fn integrate_factored(
+    arena: &mut Arena,
+    ctx: &Ctx,
+    a: &GP,
+    d: &GP,
+    d_id: ExprId,
+    label: ExprId,
+) -> Option<ExprId> {
+    if a.degree().is_some_and(|k| k > MAX_FACTORED_NUMER_DEGREE)
+        || d.degree().is_some_and(|k| k > MAX_FACTORED_DENOM_DEGREE)
+    {
+        return None;
+    }
+    let cands = syntactic_factors(arena, d_id, ctx);
+    let mut fz = factored_denominator(ctx, d, &cands)?;
+    // The coefficients of the reduction grow with the parameters of the
+    // denominator: with four, `1/((d + e·x)³·(a + c·x⁴)³)` ran past a
+    // minute within the operation budget.
+    let mut denominator_params: Vec<usize> = Vec::new();
+    for (f, _) in &fz {
+        for v in ctx.to_mp(f)?.variables_present() {
+            if v > 0 && !denominator_params.contains(&v) {
+                denominator_params.push(v);
+            }
+        }
+    }
+    // With four, a factor of degree 3 or more grew the rational arithmetic of
+    // the logarithmic part beyond any budget check
+    // (`1/((d + e·x)²·(a + c·x⁴)³)` ran for minutes inside one extended
+    // gcd).
+    if denominator_params.len() > MAX_FACTORED_PARAMS {
+        return None;
+    }
+    GCD_TOTAL_LIMIT.with(|c| c.set(FACTORED_GCD_BUDGET));
+    let lc = d.leading_coeff()?.clone();
+    let mut a = a.scale(&lc.inv());
+    for (f, k) in &mut fz {
+        while *k > 0
+            && let Some(q) = div_exact(&a, f)
+        {
+            a = q;
+            *k -= 1;
+        }
+    }
+    fz.retain(|(_, k)| *k > 0);
+    if fz.is_empty() {
+        let big_q = integrate_poly(&a);
+        return Some(ctx.poly_expr(arena, &big_q));
+    }
+    let sqf_degree: usize = fz.iter().map(|(f, _)| f.degree().unwrap_or(0)).sum();
+    if sqf_degree > MAX_DENOM_DEGREE {
+        return None;
+    }
+    let d = factored_product(&fz, 0);
+    if budget_exceeded() {
+        return None;
+    }
+    let result = integrate_gp_with(arena, ctx, &a, &d, &cands, Some(&fz), label);
+    tracing::debug!(
+        ops = OPS.with(Cell::get),
+        gcd_spent = GCD_SPENT.with(Cell::get),
+        ok = result.is_some(),
+        "param_rational: factored attempt"
+    );
+    let result = result?;
+    Some(crate::transforms::eval::eval(arena, result))
+}
+
+/// Hermite reduction as [`hermite`], for `d = ∏ fᵢ^{kᵢ}` with the
+/// `fᵢ` monic, square-free and pairwise coprime: the `D⁻` of Mack's
+/// algorithm at step `m` is `∏ fᵢ^{max(kᵢ − m, 0)}`, so no gcd of the
+/// whole denominator is needed.
+fn hermite_factored(a: &GP, fz: &[(GP, u32)]) -> Option<HermiteParts> {
+    let mut d_star = GP::one();
+    for (f, _) in fz {
+        d_star = d_star.mul(f);
+    }
+    let mut a = a.clone();
+    let mut out = Vec::new();
+    let mut m = 1u32;
+    let mut d_minus = factored_product(fz, m);
+    while d_minus.degree()? > 0 {
+        if budget_exceeded() {
+            return None;
+        }
+        let dm_p = deriv(&d_minus);
+        let d_minus2 = factored_product(fz, m + 1);
+        let d_minus_star = div_exact(&d_minus, &d_minus2)?;
+        let t = div_exact(&d_star.mul(&dm_p), &d_minus)?.neg();
+        let (b, c) = solve_bezout(&t, &d_minus_star, &a)?;
+        let bp = deriv(&b);
+        a = c.sub(&div_exact(&bp.mul(&d_star), &d_minus_star)?);
+        if !b.is_zero() {
+            out.push((b, d_minus.clone()));
+        }
+        d_minus = d_minus2;
+        m += 1;
+    }
+    Some((out, a, d_star))
 }
 
 /// Does `e` have a sum with a negative power inside it (`(a + 1)/x + 1`)?
@@ -1011,6 +1269,20 @@ fn integrate_gp(
     cands: &[GP],
     label: ExprId,
 ) -> Option<ExprId> {
+    integrate_gp_with(arena, ctx, a, d, cands, None, label)
+}
+
+/// [`integrate_gp`], with the factorisation of `d` when it is known
+/// ([`integrate_factored`]).
+fn integrate_gp_with(
+    arena: &mut Arena,
+    ctx: &Ctx,
+    a: &GP,
+    d: &GP,
+    cands: &[GP],
+    factored: Option<&[(GP, u32)]>,
+    label: ExprId,
+) -> Option<ExprId> {
     let (q, r) = a.try_div_rem(d)?;
     let mut terms: Vec<ExprId> = Vec::new();
     if !q.is_zero() {
@@ -1018,7 +1290,25 @@ fn integrate_gp(
         terms.push(ctx.poly_expr(arena, &big_q));
     }
     if !r.is_zero() {
-        let (rational, h, d_star) = hermite(ctx, &r, d)?;
+        let (rational, h, d_star) = match factored {
+            Some(fz) => {
+                let parts = hermite_factored(&r, fz)?;
+                // The logarithmic part divides by `h`'s coefficients; grown
+                // past the bound, its rational arithmetic ran for minutes
+                // (`1/((d + e·x)²·(a + c·x⁴)³)`).
+                let nv = ctx.nv();
+                let too_big = parts.1.coeffs().iter().any(|c| {
+                    let (n, d) = c.parts(nv);
+                    n.num_terms() + d.num_terms() > MAX_COEFF_TERMS / 4
+                        || max_coeff_bits(&n).max(max_coeff_bits(&d)) > MAX_FACTORED_COEFF_BITS / 8
+                });
+                if too_big {
+                    return None;
+                }
+                parts
+            }
+            None => hermite(ctx, &r, d)?,
+        };
         if budget_exceeded() {
             return None;
         }
@@ -1242,6 +1532,7 @@ fn log_part(
         }
         // Partial-fraction numerator: h·(d/e)⁻¹ mod e.
         let cof = div_exact(d, e)?;
+
         let eg = GP::extended_gcd(&cof, e);
         if eg.gcd.degree()? != 0 {
             return None;

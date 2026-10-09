@@ -72,3 +72,24 @@ fn powers_of_minus_one_fold_for_huge_exponents() {
         parse(&ctx, "oo")
     );
 }
+
+/// `Eq`/`Ne` of two exact complex rationals are decided.  Before: only two
+/// real rationals were, so `Ne(1/2, I)` stayed a condition — the one the
+/// integrator attaches to `∫ e^(a·x)·cos x dx` for `a ≠ ±i` — and a
+/// `Piecewise` on it stayed unevaluated after `a = 1/2` was substituted.
+/// SymPy 1.14: `Ne(Rational(1, 2), I)` → `True`, `Eq(2*I, 2*I)` → `True`.
+#[test]
+fn equality_of_complex_rationals_is_decided() {
+    let ctx = Context::new();
+    let a = ctx.symbol("a");
+    let cond = |l: &Ex, r: &Ex| l.ne_expr(r).eval().to_string();
+    let half = ctx.rational(1, 2);
+    let i = ctx.i_unit();
+    let two_i = &i * 2;
+    assert_eq!(cond(&half, &i), "True");
+    assert_eq!(cond(&two_i, &(&i * 2)), "False");
+    assert_eq!(cond(&(&half + &i), &(&ctx.rational(1, 2) + &i)), "False");
+    assert_eq!(cond(&(&half + &i), &(&half - &i)), "True");
+    // Not decided for a symbol.
+    assert_ne!(cond(&a, &i), "True");
+}

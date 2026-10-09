@@ -23,6 +23,7 @@ pub mod hermite;
 pub mod integrate;
 pub mod log_to_real;
 mod param_rational;
+pub(crate) use param_rational::polynomial_sqrt;
 pub mod rde;
 pub mod rothstein_trager;
 pub mod tower;

@@ -1,4 +1,5 @@
-//! Values below the exponent range of `BigFloat`.
+//! Values outside the exponent range of `BigFloat`: below it, and (since
+//! 0.37) above it.
 //!
 //! astro-float's exponent is an `i32`: a number below about `2^(−2.1·10⁹)`
 //! comes out 0 — `exp(−10¹⁰) ≈ 2^(−1.44·10¹⁰)`, `erfc(10⁵)`, `Ei(−10¹⁰)`.
@@ -30,6 +31,7 @@
 //! | `−z`, `conj`, `re`, `im`, `abs` | of the mantissa; of the polynomial when its monomials are real (`abs`: of known sign) | — |
 //! | `Ei(x)`, `erfc(x)` | — | the asymptotic series times `exp` at its scale |
 //! | `J_ν(x)`, `I_ν(x)` (`ν > 0`, `x² ≤ ν + 1`) | — | `e^L·₀F₁(; ν + 1; ∓x²/4)`, `L = ν·ln(abs(x)/2) − ln Γ(ν + 1)` |
+//! | `erf(±x)`, `erfc(−x)` (`abs(x) > 38000`) | — | `±1 ∓ erfc(abs(x))`, `2 − erfc(abs(x))` ([`Ext::Near`]) |
 //!
 //! Beside its mantissa and scale, a value below the range is held as a
 //! polynomial in such values with exact rational coefficients, plus a
@@ -54,18 +56,30 @@
 //! ([`Ext::Near`]), so `ln(1 + exp(−10¹⁰))` is `exp(−10¹⁰)·(1 + O(e^(−10¹⁰)))`
 //! rather than `ln 1 = 0`.
 //!
-//! Only the bottom of the range: a value above it (`exp(10¹⁰)`) is refused
-//! where it arises, as before ("overflows the exponent range"), and so is
-//! anything that would come back from a scaled value above the range —
-//! except a factor of a product with a factor below the range: a negative
-//! power of a value below the range, or an `exp` above it, is scaled for
-//! the product ([`beyond_power`]; `besselj(10⁹, 1)/besselj(10⁹, 2)`,
-//! `exp(−10¹⁰)/exp(−10¹⁰ + 1)`, refused before 0.35).  Any
-//! other node sees the placeholder: an underflow its own rules handle
+//! The top of the range mirrors the bottom ([`Ext::Above`], since 0.37).  A
+//! node whose ordinary value overflows — `exp`, a power, a product, `Γ` and
+//! `x!` (`e^(ln Γ(x))`, [`gamma_scaled`]), `cosh` and `sinh` (`½·e^g ±
+//! ½·e^(−g)`, [`hyperbolic_above`]) — is held scaled the same way, with its
+//! polynomial: `e^g` of an exact `g` is the monomial whose reciprocal is
+//! `e^(−g)`, so `(e^(10¹⁰) − e^(10¹⁰ − 1))/e^(10¹⁰) = 1 − e⁻¹` cancels
+//! exactly, and beside a term above the range a term in range is a monomial
+//! of its own (`e^(10¹⁰) + √2`).  Such a node keeps no ordinary value: it
+//! fails with its overflow as before, at the root ("overflows the exponent
+//! range") and in every node without a rule for it; sums, products, powers,
+//! `ln` (`ln(e^g·(1 + r)) = g + ln(1 + r)`, [`ln_dominant`]), `abs`, `re`,
+//! `im`, `conj` and `−` take it, and their value comes back into the range
+//! or goes below it (`Γ(10⁸)/Γ(10⁸ − 1)`, `ln Γ(10⁸)`, `cosh(10¹⁰)/sinh(10¹⁰)`,
+//! refused before 0.37).  A factor of a product without a scaled value of its
+//! own — a negative power of a value below the range, an `exp` above it — is
+//! still scaled for the product ([`beyond_power`]; `besselj(10⁹,
+//! 1)/besselj(10⁹, 2)`, refused before 0.35).  Any other node sees the
+//! placeholder: an underflow its own rules handle
 //! (`accuracy::underflow_nonzero`), or an argument whose value is unknown.
 //! A function of a value that underflowed without a scaled form (`K₀(10¹⁰)`,
 //! `Ai(10¹⁰)`) has none either ([`View::Lost`]): in a sum it is an error
-//! term of the size of the underflow bound.
+//! term of the size of the underflow bound.  `erf(±x)` and `erfc(−x)` whose
+//! distance from their limit `erfc(abs(x))` lies below the range are `±1 ∓ d`,
+//! `2 − d` ([`Ext::Near`]): `erfc(−10⁵) − 2` printed `0` before 0.37.
 //!
 //! What a value loses when it becomes a number alone — the terms of its
 //! polynomial below the number's error ([`note_dropped`]), the next term of a
@@ -121,6 +135,9 @@ pub(super) enum Ext {
     /// The value lies below the exponent range; the ordinary value is the
     /// placeholder `0 ± underflow`.
     Beyond(Scaled),
+    /// The value lies above the exponent range; the node has no ordinary
+    /// value (it failed with its overflow, as before).
+    Above(Scaled),
     /// The value is `p + d` with `p` an exact complex rational (the
     /// ordinary value, up to `d`) and `d` below the range: `1 + exp(−10¹⁰)`,
     /// `exp(exp(−10¹⁰))`, `8/3 − 5/3·cos(exp(−10¹⁰))`.
@@ -136,8 +153,31 @@ pub(super) enum Outcome {
     InRange(Complex, Bound),
     /// The value lies below the range.
     Beyond(Scaled),
+    /// The value lies above the range: refused at the root, and by every
+    /// node without a rule for it ([`Ext::Above`]).
+    Above(Scaled),
     /// The ordinary value stands, and the node is `p + d` ([`Ext::Near`]).
     Near(Gauss, Scaled),
+}
+
+/// How the ordinary value of a node left the exponent range, if it did.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Edge {
+    /// It is 0 with an underflow bound.
+    pub(super) underflowed: bool,
+    /// It overflowed (`exponent_range_error`).
+    pub(super) overflowed: bool,
+}
+
+/// The error of a node whose value lies above the exponent range (an
+/// [`Ext::Above`]) although its ordinary evaluation did not fail.
+pub(super) fn overflow_error(s: &Scaled) -> crate::base::errors::SymplexError {
+    crate::base::errors::SymplexError::Unevaluable {
+        reason: format!(
+            "the value (about 2^{:.3e}) overflows the arbitrary-precision exponent range",
+            s.lg_value()
+        ),
+    }
 }
 
 impl Scaled {
@@ -280,9 +320,8 @@ fn normalized(v: &Complex, b: Bound) -> Option<Scaled> {
     }
 }
 
-/// `s` as the outcome of a node: in range again, below it, or `None` when
-/// its bound is unknown or it would lie at the top of the range (refused by
-/// the ordinary evaluation).
+/// `s` as the outcome of a node: in range again, below it, above it, or
+/// `None` when its bound is unknown.
 fn finish(s: Scaled, prec: usize) -> Option<Outcome> {
     if s.eb.is_unknown() {
         return None;
@@ -296,7 +335,7 @@ fn finish(s: Scaled, prec: usize) -> Option<Outcome> {
             let radius = s.eb.joint() + s.k as f64;
             if radius > (MIN_EXP + margin) as f64 {
                 if radius >= (MAX_EXP - margin) as f64 {
-                    return None;
+                    return Some(Outcome::Above(s));
                 }
                 let k = s.k as f64;
                 let eb = Bound {
@@ -309,22 +348,38 @@ fn finish(s: Scaled, prec: usize) -> Option<Outcome> {
         }
         Some(t) => {
             let total = t.checked_add(s.k)?;
-            if total >= MAX_EXP - margin {
-                return None;
-            }
-            if total > MIN_EXP + margin {
+            if total > MIN_EXP + margin && total < MAX_EXP - margin {
                 let (v, eb) = scale_with_loss(&s.m, s.eb, s.k);
                 return Some(Outcome::InRange(v, eb));
             }
             let (m, eb) = scale_with_loss(&s.m, s.eb, -t);
-            Some(Outcome::Beyond(Scaled {
+            let out = Scaled {
                 m,
                 k: total,
                 eb,
                 poly: s.poly,
-            }))
+            };
+            Some(if total > 0 {
+                Outcome::Above(out)
+            } else {
+                Outcome::Beyond(out)
+            })
         }
     }
+}
+
+/// Does `s` lie below the exponent range ([`finish`] would hold it as an
+/// [`Outcome::Beyond`])?
+fn lies_below(s: &Scaled, prec: usize) -> bool {
+    if s.eb.is_unknown() {
+        return false;
+    }
+    let top = match accuracy::mag(&s.m) {
+        None if s.eb.is_exact() => return false,
+        None => s.eb.joint() + s.k as f64,
+        Some(t) => t.saturating_add(s.k) as f64,
+    };
+    top <= (MIN_EXP + margin(prec)) as f64
 }
 
 /// [`finish`] for the value of node `id` computed as a number: below the
@@ -336,14 +391,16 @@ fn finish_node(s: Scaled, id: ExprId, prec: usize) -> Option<Outcome> {
 /// [`finish`] for a value that is the monomial `mono` (a number without a
 /// polynomial of its own).
 fn finish_atom(s: Scaled, mono: Mono, prec: usize) -> Option<Outcome> {
-    Some(match finish(s, prec)? {
-        Outcome::Beyond(s) if s.poly.is_none() => {
-            let poly = Poly::atom(mono, &s);
-            Outcome::Beyond(Scaled {
-                poly: Some(Box::new(poly)),
-                ..s
-            })
+    let attach = |s: Scaled| {
+        let poly = Poly::atom(mono, &s);
+        Scaled {
+            poly: Some(Box::new(poly)),
+            ..s
         }
+    };
+    Some(match finish(s, prec)? {
+        Outcome::Beyond(s) if s.poly.is_none() => Outcome::Beyond(attach(s)),
+        Outcome::Above(s) if s.poly.is_none() => Outcome::Above(attach(s)),
         other => other,
     })
 }
@@ -376,6 +433,8 @@ enum View {
     /// `m·2^k`; `true` when it lies below the range (an [`Ext::Beyond`]),
     /// `false` for an ordinary value normalised.
     Plain(Scaled, bool),
+    /// `m·2^k` above the range ([`Ext::Above`]).
+    Above(Scaled),
     /// `p + d` ([`Ext::Near`]).
     Near(Gauss, Scaled),
     /// A value that underflowed without a scaled form: `0 ± b`.
@@ -395,6 +454,7 @@ impl Ctx<'_> {
     fn view(&self, c: ExprId) -> Option<View> {
         match self.exts.get(&c) {
             Some(Ext::Beyond(s)) => return Some(View::Plain(s.clone(), true)),
+            Some(Ext::Above(s)) => return Some(View::Above(s.clone())),
             Some(Ext::Near(p, d)) => return Some(View::Near(p.clone(), d.clone())),
             None => {}
         }
@@ -419,10 +479,12 @@ impl Ctx<'_> {
     }
 
     /// `c` as an ordinary value normalised, its [`Ext::Near`] record
-    /// ignored (the ordinary value is `p` within the underflow bound).
+    /// ignored (the ordinary value is `p` within the underflow bound);
+    /// `true` for a value outside the range.
     fn plain_or_near(&self, c: ExprId) -> Option<(Scaled, bool)> {
         match self.view(c)? {
             View::Plain(s, beyond) => Some((s, beyond)),
+            View::Above(s) => Some((s, true)),
             View::Near(..) => {
                 let (v, b) = self.ordinary(c)?;
                 Some((normalized(v, b)?, false))
@@ -434,9 +496,17 @@ impl Ctx<'_> {
 
 /// Does node `id` call for the extended evaluation: a child has an
 /// extended value (or is a power of one, [`beyond_power`]), or its
-/// ordinary value underflowed (`underflowed`)?
-pub(super) fn wanted(arena: &Arena, id: ExprId, underflowed: bool, exts: &ExtMap) -> bool {
-    underflowed
+/// ordinary value left the range (`edge`)?
+pub(super) fn wanted(
+    arena: &Arena,
+    id: ExprId,
+    edge: Edge,
+    cache: &FxHashMap<ExprId, Complex>,
+    exts: &ExtMap,
+) -> bool {
+    edge.underflowed
+        || edge.overflowed
+        || erf_tail_below(arena, id, cache, exts)
         || (!exts.is_empty()
             && arena.node(id).children().iter().any(|c| {
                 exts.contains_key(c)
@@ -444,16 +514,47 @@ pub(super) fn wanted(arena: &Arena, id: ExprId, underflowed: bool, exts: &ExtMap
             }))
 }
 
+/// `abs(x)` beyond which `erfc(abs(x)) < e^(−x²)` lies below the range
+/// (`x²·log₂ e > 2³¹`, with room for the margin).
+const ERFC_UNDERFLOW: f64 = 38_000.0;
+
+/// Is node `id` `erf(x)` or `erfc(x)` at an ordinary real `x` far enough
+/// from 0 that its distance from its limit (`erfc(abs(x))`) lies below the
+/// range, with an ordinary value that is that limit: `erf(±x)` (`±1`) or
+/// `erfc(−x)` (`2`)?
+fn erf_tail_below(
+    arena: &Arena,
+    id: ExprId,
+    cache: &FxHashMap<ExprId, Complex>,
+    exts: &ExtMap,
+) -> bool {
+    let (ExprNode::Erf(c) | ExprNode::Erfc(c)) = arena.node(id) else {
+        return false;
+    };
+    if exts.contains_key(c) {
+        return false;
+    }
+    let Some(x) = cache.get(c) else {
+        return false;
+    };
+    if !x.1.is_zero() {
+        return false;
+    }
+    let erfc_right = matches!(arena.node(id), ExprNode::Erfc(_)) && !x.0.is_negative();
+    !erfc_right
+        && super::bigfloat_to_f64_rounded(&x.0, RoundingMode::ToEven)
+            .is_ok_and(|v| v.abs() > ERFC_UNDERFLOW)
+}
+
 /// The extended evaluation of node `id` (see the module documentation), or
-/// `None` when the ordinary value stands.  `ordinary` is the node's
-/// ordinary value, when it has one; `underflowed`: it is 0 with an
-/// underflow bound.  A nonzero term a sum loses below its error bound is
-/// recorded in `ab` ([`Absorbed`]).
+/// `None` when the ordinary value stands.  `edge`: how the node's ordinary
+/// value left the range, if it did.  A nonzero term a sum loses below its
+/// error bound is recorded in `ab` ([`Absorbed`]).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn extend(
     arena: &Arena,
     id: ExprId,
-    underflowed: bool,
+    edge: Edge,
     cache: &FxHashMap<ExprId, Complex>,
     errs: &FxHashMap<ExprId, Bound>,
     exts: &ExtMap,
@@ -470,6 +571,8 @@ pub(super) fn extend(
         exts,
         exact,
     };
+    let underflowed = edge.underflowed;
+    let left_range = edge.underflowed || edge.overflowed;
     match arena.node(id) {
         ExprNode::Exp(c) => match cx.view(*c)? {
             View::Plain(s, true) => match series(&poly_of(*c, &s), &EXPM1, prec, rm) {
@@ -480,7 +583,7 @@ pub(super) fn extend(
                     Some(near_node(one(), d, id))
                 }
             },
-            View::Plain(..) if underflowed => {
+            View::Plain(..) if left_range => {
                 let (z, b) = cx.ordinary(*c)?;
                 if !z.1.is_zero() {
                     super::check_trig_arg(&z.1, 0, prec, arena).ok()?;
@@ -496,7 +599,10 @@ pub(super) fn extend(
             _ => None,
         },
         ExprNode::Ln(c) => match cx.view(*c)? {
-            View::Plain(s, true) => {
+            View::Plain(s, true) | View::Above(s) => {
+                if let Some(out) = ln_dominant(&s, prec, rm, cc) {
+                    return Some(out);
+                }
                 let (v, b) = ln_scaled(&s, prec, rm, cc)?;
                 // The absolute error of `Log s` is the relative error of `s`.
                 note_dropped(&s, b.joint(), prec, rm, ab);
@@ -526,7 +632,7 @@ pub(super) fn extend(
                 beyond |= b;
                 factors.push(s);
             }
-            if !beyond && !underflowed {
+            if !beyond && !left_range {
                 return None;
             }
             let out = product(&factors, prec, rm)?;
@@ -535,7 +641,7 @@ pub(super) fn extend(
             let rel = rel_error(&out);
             for (&c, f) in children.iter().zip(&factors) {
                 match cx.exts.get(&c) {
-                    Some(Ext::Beyond(_)) => note_dropped(f, rel, prec, rm, ab),
+                    Some(Ext::Beyond(_) | Ext::Above(_)) => note_dropped(f, rel, prec, rm, ab),
                     Some(Ext::Near(_, d)) if d.nonzero().is_some() => {
                         let radius = out.eb.joint() + out.k as f64;
                         let term = d.lg_value() - f.lg_value() + out.lg_value();
@@ -553,7 +659,7 @@ pub(super) fn extend(
             let (x, ex) = cx.ordinary(*e)?;
             let q = arena.as_num(*e);
             match cx.view(*b)? {
-                View::Plain(s, true) => {
+                View::Plain(s, true) | View::Above(s) => {
                     if let Some(q) = q
                         && let Some(full) = poly_power(&poly_of(*b, &s), q, x, ex, prec, rm, cc)
                     {
@@ -563,7 +669,7 @@ pub(super) fn extend(
                     note_dropped(&s, rel_error(&out), prec, rm, ab);
                     finish_node(out, id, prec)
                 }
-                View::Plain(s, false) if underflowed => {
+                View::Plain(s, false) if left_range => {
                     finish_node(power(&s, q, x, ex, prec, rm, cc)?, id, prec)
                 }
                 View::Near(p, d) if p == one() => {
@@ -583,7 +689,7 @@ pub(super) fn extend(
         }
         ExprNode::Add(children) => sum_node(&cx, id, children, prec, rm, ab),
         ExprNode::Neg(c) => match cx.view(*c)? {
-            View::Plain(s, true) => finish(negated(with_poly(s, *c)), prec),
+            View::Plain(s, true) | View::Above(s) => finish(negated(with_poly(s, *c)), prec),
             View::Near(p, d) => Some(Outcome::Near(p.neg(), negated(with_poly(d, *c)))),
             _ => None,
         },
@@ -598,7 +704,7 @@ pub(super) fn extend(
                 out
             };
             match cx.view(*c)? {
-                View::Plain(s, true) => finish_node(conj(s, ab), id, prec),
+                View::Plain(s, true) | View::Above(s) => finish_node(conj(s, ab), id, prec),
                 View::Near(p, d) => Some(near_node(
                     Gauss {
                         re: p.re,
@@ -611,7 +717,7 @@ pub(super) fn extend(
             }
         }
         ExprNode::Re(c) | ExprNode::Im(c) | ExprNode::Abs(c) => {
-            let View::Plain(s, true) = cx.view(*c)? else {
+            let (View::Plain(s, true) | View::Above(s)) = cx.view(*c)? else {
                 return None;
             };
             // On the polynomial when every monomial is real: `re(Σ cⱼ·μⱼ) =
@@ -643,6 +749,41 @@ pub(super) fn extend(
             };
             let z = (m, BigFloat::new(prec));
             finish_node(Scaled::plain(z, s.k, Bound::real(eb)), id, prec)
+        }
+        // `erf(±x) = ±(1 − erfc x)`, `erfc(−x) = 2 − erfc x` with `erfc x` below
+        // the range: the ordinary value is the limit, and the part below the
+        // range is kept ([`Ext::Near`]).  Before 0.37 `erfc(−10⁵) − 2` printed
+        // `0` (truly `−erfc(10⁵)`, `−5.2·10^(−4342944825)`).
+        ExprNode::Erf(c) | ExprNode::Erfc(c)
+            if !underflowed && erf_tail_below(arena, id, cache, exts) =>
+        {
+            let (x, b) = cx.ordinary(*c)?;
+            if !accuracy::exactly_real(x, b) {
+                return None;
+            }
+            let negative = x.0.is_negative();
+            let tail = erfc_scaled(&x.0.abs(), b.re, prec, rm, cc)?;
+            if !lies_below(&tail, prec) {
+                return None;
+            }
+            let (p, d) = match (matches!(arena.node(id), ExprNode::Erfc(_)), negative) {
+                (true, _) => (2, negated(tail)),
+                (false, false) => (1, negated(tail)),
+                (false, true) => (-1, tail),
+            };
+            Some(near_node(ratio(p, 1), d, id))
+        }
+        ExprNode::Gamma(c) | ExprNode::Factorial(c) if edge.overflowed => {
+            let (z, b) = cx.ordinary(*c)?;
+            if !accuracy::exactly_real(z, b) {
+                return None;
+            }
+            let factorial = matches!(arena.node(id), ExprNode::Factorial(_));
+            finish_node(gamma_scaled(&z.0, b.re, factorial, prec, rm, cc)?, id, prec)
+        }
+        ExprNode::Cosh(c) | ExprNode::Sinh(c) if edge.overflowed => {
+            let sinh = matches!(arena.node(id), ExprNode::Sinh(_));
+            hyperbolic_above(&cx, id, *c, sinh, prec, rm, cc, ab)
         }
         // `erf s = 2/√π·(s − s³/3 + s⁵/10 + O(s⁷))`: the series with `2/√π`
         // a factor of the monomials, keyed by this node (below the range, it
@@ -946,6 +1087,42 @@ fn ln_scaled(
     Some(((re, im), eb))
 }
 
+/// `ln(e^g·(1 + r)) = g + ln(1 + r)` for a value `s` outside the range whose
+/// polynomial is `e^g + R` with a real exact `g` and `r = R·e^(−g)` below the
+/// range: `g + d` ([`Outcome::Near`]), `d` the series of `ln(1 + r)`.  The
+/// mirror of `ln(1 + s)`: `ln(e^(10¹⁰) + 1) − 10¹⁰` is `e^(−10¹⁰)·(1 +
+/// O(e^(−10¹⁰)))`, not a number alone whose lost term only refuses it.
+fn ln_dominant(s: &Scaled, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Option<Outcome> {
+    let poly = s.poly.as_deref()?;
+    let (i, lead) = poly
+        .terms
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.lg().total_cmp(&b.1.lg()))?;
+    if lead.c != one() || !lead.mono.is_exp() || !lead.mono.exp.im.is_zero() {
+        return None;
+    }
+    let g = lead.mono.exp.clone();
+    let mut rest = poly.clone();
+    rest.terms.remove(i);
+    if rest.terms.is_empty() {
+        return None;
+    }
+    let minus_one = (BigFloat::from_i32(-1, 64), BigFloat::new(64));
+    let q = Q::from_integer((-1).into());
+    let inv = power(&lead.v, Some(&q), &minus_one, Bound::EXACT, prec, rm, cc)?;
+    let r = poly_mul(
+        &rest,
+        &Poly::atom(Mono::exp(g.neg()), &inv),
+        accuracy::EXACT,
+        prec,
+        rm,
+    )?;
+    let l = series(&r, &LOG1P, prec, rm)?;
+    let d = numeric(l, prec, rm)?;
+    lies_below(&d, prec).then_some(Outcome::Near(g, d))
+}
+
 /// `b^x` for `b = s` (`q`: the exponent's literal value, `x ± ex` its
 /// value): an integer power up to 1024 by multiplication (`mⁿ·2^(nk)`, the
 /// bound as for any power, `accuracy::pow_bound`); otherwise `exp(x·Log b)`
@@ -1045,6 +1222,116 @@ fn beyond_power(
     }
 }
 
+/// `Γ(x)` (or `x! = Γ(x + 1)`, `factorial`) above the range as `m·2^k`:
+/// `e^(ln Γ(x))` by [`exp_scaled`], `ln Γ(x)` by Stirling's series
+/// (`evalf::arb_log_gamma`) at the bits that hold its integer part and
+/// `prec + 64` more, correct to its rounding there (counted twice).  An
+/// inexact `x` (`xe`: its error, absolute `log₂`) adds `ψ(ξ)·err(x)`,
+/// `0 < ψ(ξ) < ln ξ` for `ξ ≥ 2` (doubled), to the argument of the
+/// exponential.  `Γ` overflows only far right on the real axis (`x > 8·10⁷`),
+/// where it is positive.  Before 0.37 `Γ(10⁸)/Γ(10⁸ − 1)` and `ln Γ(10⁸)`
+/// were refused ("overflows the exponent range").
+fn gamma_scaled(
+    x: &BigFloat,
+    xe: ErrExp,
+    factorial: bool,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Option<Scaled> {
+    let x = if factorial {
+        let one = BigFloat::from_i32(1, 64);
+        x.add(&one, super::exact_bits(x, prec + 64), rm)
+    } else {
+        x.clone()
+    };
+    let xf = super::bigfloat_to_f64_rounded(&x, rm).ok()?;
+    if !xf.is_finite() || xf <= 16.0 || accuracy::is_unknown(xe) {
+        return None;
+    }
+    // A ball of relative radius below 1/16, where `ln ξ < ln(1.0625·x)`.
+    if !accuracy::is_exact(xe) && xe > xf.log2() - 4.0 {
+        return None;
+    }
+    let int_bits = (xf * xf.ln()).log2().ceil().max(1.0) as usize;
+    let wp = prec + int_bits + 64;
+    let (l, _) = super::arb_log_gamma(&x, wp, rm, cc).ok()?;
+    let round = accuracy::rounding(&(l.clone(), BigFloat::new(wp)), wp) + 1.0;
+    let arg = if accuracy::is_exact(xe) {
+        accuracy::EXACT
+    } else {
+        (xf * 1.0625).ln().log2() + xe + 1.0
+    };
+    exp_scaled(
+        &(l, BigFloat::new(wp)),
+        Bound::real(accuracy::lsum(round, arg)),
+        prec,
+        rm,
+        cc,
+    )
+}
+
+/// `cosh x` or `sinh x` (`sinh`) of a real `x` whose value overflowed
+/// (`abs(x) > 2³¹·ln 2`): `(e^x ± e^(−x))/2`.  For an exact `x = g` the
+/// polynomial `½·e^g ± ½·e^(−g)` in the monomials `e^(±g)` (the second
+/// far below the range), so that `cosh g − sinh g = e^(−g)` and
+/// `cosh g/e^g = ½ + ½·e^(−2g)` keep their small terms; otherwise the number
+/// `sign·e^(abs x)/2` with the relative error `e^(−2·abs(x))` of the other
+/// term, recorded as lost below the range ([`Absorbed`]).  Before 0.37
+/// `cosh(10¹⁰)/sinh(10¹⁰)` was refused.
+#[allow(clippy::too_many_arguments)]
+fn hyperbolic_above(
+    cx: &Ctx<'_>,
+    id: ExprId,
+    c: ExprId,
+    sinh: bool,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+    ab: &mut Option<Absorbed>,
+) -> Option<Outcome> {
+    let (z, b) = cx.ordinary(c)?;
+    if !accuracy::exactly_real(z, b) || z.0.is_zero() {
+        return None;
+    }
+    let x = &z.0;
+    let xf = super::bigfloat_to_f64_rounded(x, rm).ok()?.abs();
+    if !xf.is_finite() || xf < 1e9 {
+        return None;
+    }
+    let zb = Bound::real(b.re);
+    if let Some(g) = cx.exact_of(c)
+        && g.im.is_zero()
+    {
+        let up = exp_scaled(&(x.clone(), BigFloat::new(prec)), zb, prec, rm, cc)?;
+        let down = exp_scaled(&(x.neg(), BigFloat::new(prec)), zb, prec, rm, cc)?;
+        let half = ratio(1, 2);
+        let mut poly = Poly::zero();
+        poly.push(Term {
+            c: half.clone(),
+            mono: Mono::exp(g.clone()),
+            v: up,
+        })?;
+        poly.push(Term {
+            c: if sinh { half.neg() } else { half },
+            mono: Mono::exp(g.neg()),
+            v: down,
+        })?;
+        return settle_poly(poly, prec, rm, ab);
+    }
+    let mut e = exp_scaled(&(x.abs(), BigFloat::new(prec)), zb, prec, rm, cc)?;
+    e.k = e.k.checked_sub(1)?;
+    // `e^(−2·abs(x))` relative, in `log₂`.
+    let other = -2.0 * xf * std::f64::consts::LOG2_E;
+    let lm = accuracy::lg_abs(&e.m);
+    e.eb.re = accuracy::lsum(e.eb.re, lm + other);
+    if sinh && x.is_negative() {
+        e = negated(e);
+    }
+    Absorbed::note(ab, e.lg_value() + other, e.eb.joint() + e.k as f64);
+    finish_node(e, id, prec)
+}
+
 /// A sum with a term below the range (SymPy's `add_terms`, at a common
 /// scale): see the module documentation.  The exact rational terms (and the
 /// exact parts of [`Ext::Near`] terms) are added exactly: when they and the
@@ -1061,6 +1348,9 @@ fn sum_node(
 ) -> Option<Outcome> {
     let mut beyond_terms = Vec::with_capacity(children.len());
     let mut ordinary_terms = Vec::new();
+    // The ordinary terms as monomials of their own (`Mono::factor`).
+    let mut ordinary_monos = Some(Poly::zero());
+    let mut above = false;
     let mut p = zero();
     let mut lost = Bound::EXACT;
     // The sum of the polynomials, while it stays within its limits.
@@ -1080,7 +1370,16 @@ fn sum_node(
                 full = full.and_then(|f| f.plus(poly_of(c, &s)));
                 beyond_terms.push(s);
             }
-            View::Plain(s, false) => ordinary_terms.push(s),
+            View::Above(s) => {
+                above = true;
+                full = full.and_then(|f| f.plus(poly_of(c, &s)));
+                beyond_terms.push(s);
+            }
+            View::Plain(s, false) => {
+                ordinary_monos =
+                    ordinary_monos.and_then(|f| f.plus(Poly::atom(Mono::factor(c), &s)));
+                ordinary_terms.push(s);
+            }
             View::Near(q, d) => {
                 p = p.add(&q);
                 if !p.small() {
@@ -1100,16 +1399,33 @@ fn sum_node(
     if beyond_terms.is_empty() {
         return None;
     }
-    if ordinary_terms.is_empty() && lost.is_exact() {
-        if let Some(f) = full.and_then(|f| f.plus(Poly::constant(p.clone()))) {
+    // Beside a term above the range, a term in range is a monomial of its
+    // own, so that the polynomial stays whole: `e^(10¹⁰) + √2`, whose
+    // logarithm is `10¹⁰ + √2·e^(−10¹⁰) + …` ([`ln_dominant`]).
+    if (ordinary_terms.is_empty() || above) && lost.is_exact() {
+        let whole = full
+            .clone()
+            .and_then(|f| f.plus(Poly::constant(p.clone())))
+            .and_then(|f| {
+                if ordinary_terms.is_empty() {
+                    Some(f)
+                } else {
+                    f.plus(ordinary_monos?)
+                }
+            });
+        if let Some(f) = whole {
             return settle_poly(f, prec, rm, ab);
         }
+    }
+    if ordinary_terms.is_empty() && lost.is_exact() {
         let d = add_terms(&beyond_terms, Bound::EXACT, prec, rm)?;
-        return if p.is_zero() {
-            finish_node(d, id, prec)
-        } else {
-            Some(near_node(p, d, id))
-        };
+        if p.is_zero() {
+            return finish_node(d, id, prec);
+        }
+        if lies_below(&d, prec) {
+            return Some(near_node(p, d, id));
+        }
+        // Terms above the range: `p` is one term of the sum below.
     }
     // The terms by shape (see `note_lost`): a number in range is a term of
     // its own, a value below the range has the shapes of its polynomial.
@@ -2009,9 +2325,24 @@ fn settle_poly(
     ab: &mut Option<Absorbed>,
 ) -> Option<Outcome> {
     let (p, rest) = full.split_constant();
-    if !p.is_zero() {
-        return near(p, rest, prec, rm);
-    }
+    let rest = if p.is_zero() {
+        rest
+    } else {
+        let d = numeric(rest.clone(), prec, rm)?;
+        if (accuracy::mag(&d.m).is_none() && d.eb.is_exact()) || lies_below(&d, prec) {
+            return Some(Outcome::Near(p, d));
+        }
+        // Other terms in range or above it (monomials `e^g` above the
+        // range, `e^(10¹⁰)·(1 − e^(−10¹⁰))`): the value is the whole
+        // polynomial.
+        let mut whole = rest;
+        whole.push(Term {
+            c: p,
+            mono: Mono::one(),
+            v: unit(64),
+        })?;
+        whole
+    };
     let undecided_rem = !rest.rem.is_exact();
     let bare = undecided_rem.then(|| rest.without_rem());
     let d = numeric(rest, prec, rm)?;
@@ -2054,7 +2385,7 @@ fn poly_product(cx: &Ctx<'_>, children: &[ExprId], prec: usize, rm: RoundingMode
     let mut any = false;
     for &c in children {
         let f = match cx.exts.get(&c) {
-            Some(Ext::Beyond(s)) => poly_of(c, s),
+            Some(Ext::Beyond(s) | Ext::Above(s)) => poly_of(c, s),
             Some(Ext::Near(p, d)) => Poly::constant(p.clone()).plus(poly_of(c, d))?,
             None => {
                 if let Some(q) = cx.exact_of(c) {
@@ -2112,7 +2443,19 @@ fn poly_power(
     }
     let n = q.to_integer().to_i64()?;
     if n < 1 {
-        return None;
+        // `(e^g)^n = e^(ng)` for an integer `n`: the reciprocal of an `exp`
+        // monomial above the range is one below it, and cancels exactly
+        // against it (`(e^(10¹⁰) − e^(10¹⁰ − 1))/e^(10¹⁰) = 1 − e⁻¹`).
+        let t = single?;
+        if n == 0 || t.c != one() || !t.mono.is_exp() {
+            return None;
+        }
+        let g = t.mono.exp.mul(&Gauss::real(q.clone()));
+        if !g.small() {
+            return None;
+        }
+        let value = power(&t.v, Some(q), x, ex, prec, rm, cc)?;
+        return Some(Poly::atom(Mono::exp(g), &value));
     }
     if let Some(t) = single
         && n <= 1024

@@ -444,8 +444,8 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
             ExprNode::Eq_(a, b) => {
                 let na = cache.get(&a).copied().unwrap_or(a);
                 let nb = cache.get(&b).copied().unwrap_or(b);
-                if let (Some(ra), Some(rb)) = (arena.as_num(na), arena.as_num(nb)) {
-                    if ra == rb {
+                if let Some(equal) = gaussian_equal(arena, na, nb) {
+                    if equal {
                         arena.bool_true
                     } else {
                         arena.bool_false
@@ -459,11 +459,11 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
             ExprNode::Ne(a, b) => {
                 let na = cache.get(&a).copied().unwrap_or(a);
                 let nb = cache.get(&b).copied().unwrap_or(b);
-                if let (Some(ra), Some(rb)) = (arena.as_num(na), arena.as_num(nb)) {
-                    if ra != rb {
-                        arena.bool_true
-                    } else {
+                if let Some(equal) = gaussian_equal(arena, na, nb) {
+                    if equal {
                         arena.bool_false
+                    } else {
+                        arena.bool_true
                     }
                 } else if na == a && nb == b {
                     id
@@ -1481,6 +1481,55 @@ fn eval_beta(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<ExprId> {
 /// `C(n, k)` for non-negative integer literals.  A negative `n` is left
 /// unevaluated on purpose: the generalised `C(−3, 2) = 6` of
 /// `combinatorics::binomial` is not what the symbolic node promises.
+/// The value `p + q·i` of `id` when it is a rational, `i`, or a rational
+/// multiple of `i` plus a rational (the canonical forms of an exact
+/// Gaussian rational: `1/2`, `I`, `3*I`, `1/2 + 2*I`).
+fn gaussian_rational(arena: &Arena, id: ExprId) -> Option<(Q, Q)> {
+    let imag = |t: ExprId| -> Option<Q> {
+        if t == arena.i_unit {
+            return Some(Q::one());
+        }
+        match arena.node(t) {
+            ExprNode::Mul(cs) if cs.len() == 2 => {
+                let (c, u) = (cs[0], cs[1]);
+                match (arena.as_num(c), arena.as_num(u)) {
+                    (Some(q), None) if u == arena.i_unit => Some(q.clone()),
+                    (None, Some(q)) if c == arena.i_unit => Some(q.clone()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    };
+    if let Some(q) = arena.as_num(id) {
+        return Some((q.clone(), Q::zero()));
+    }
+    if let Some(q) = imag(id) {
+        return Some((Q::zero(), q));
+    }
+    if let ExprNode::Add(cs) = arena.node(id)
+        && cs.len() == 2
+    {
+        for (r, i) in [(cs[0], cs[1]), (cs[1], cs[0])] {
+            if let (Some(re), Some(im)) = (arena.as_num(r), imag(i)) {
+                return Some((re.clone(), im));
+            }
+        }
+    }
+    None
+}
+
+/// Are `a` and `b` equal, when both are exact Gaussian rationals
+/// ([`gaussian_rational`])?  `Eq`/`Ne` of two numbers fold; before 0.37 only
+/// two real rationals did, so `Ne(1/2, I)` — the condition the integrator
+/// attaches to `∫ e^(a·x)·cos x` for `a ≠ ±i` — stayed undecided after
+/// `a = 1/2` was substituted, and a `Piecewise` on it with it.
+fn gaussian_equal(arena: &Arena, a: ExprId, b: ExprId) -> Option<bool> {
+    let x = gaussian_rational(arena, a)?;
+    let y = gaussian_rational(arena, b)?;
+    Some(x == y)
+}
+
 fn eval_binomial(arena: &mut Arena, n: ExprId, k: ExprId) -> Option<ExprId> {
     let nr = arena.as_num(n)?.clone();
     let kr = arena.as_num(k)?.clone();
