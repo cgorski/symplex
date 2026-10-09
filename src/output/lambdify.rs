@@ -395,10 +395,49 @@ fn fold_constants_before_cse(
     exprs: &[ExprId],
     var_names: &[&str],
 ) -> Result<(Vec<ExprId>, FxHashMap<SymbolId, f64>), SymplexError> {
-    // Symbol-freeness of every node, and the names in use, bottom-up.
+    // Symbol-freeness of every node, and the names in use, bottom-up.  A
+    // `RootOf` counts its free symbols only (one of a numeric polynomial is
+    // a constant); a node with a bound variable that depends on the
+    // arguments is refused by name.
     let mut has_symbol: FxHashMap<ExprId, bool> = FxHashMap::default();
     let mut names: rustc_hash::FxHashSet<String> =
         var_names.iter().map(|s| (*s).to_string()).collect();
+    for &root in exprs {
+        crate::output::codegen::refuse_bound_variable_nodes(arena, root, "compile")?;
+        for id in crate::base::walk::post_order_ids(arena, root) {
+            if let ExprNode::Symbol(sid) = arena.node(id) {
+                names.insert(arena.symbol_name(*sid).to_string());
+            }
+        }
+    }
+    // The constant part of a flattened sum or product, when its parts lose
+    // it (`x·2⁻²⁰⁰⁰·C(2000, 1000)` was 0·∞ = NaN), is one constant.
+    let mut values: FxHashMap<SymbolId, f64> = FxHashMap::default();
+    let mut next_index = 0usize;
+    let exprs: Vec<ExprId> = exprs
+        .iter()
+        .map(|&root| {
+            crate::output::codegen::group_constant_parts(
+                arena,
+                root,
+                &mut |arena: &mut Arena, v| {
+                    let name = loop {
+                        let candidate = format!("__compile_const_{next_index}");
+                        next_index += 1;
+                        if !names.contains(&candidate) {
+                            break candidate;
+                        }
+                    };
+                    let sym = arena.symbol(&name);
+                    if let ExprNode::Symbol(sid) = arena.node(sym) {
+                        values.insert(*sid, v);
+                    }
+                    sym
+                },
+            )
+        })
+        .collect();
+    let exprs = &exprs[..];
     for &root in exprs {
         for id in crate::base::walk::post_order_ids(arena, root) {
             if has_symbol.contains_key(&id) {
@@ -408,16 +447,19 @@ fn fold_constants_before_cse(
             if let ExprNode::Symbol(sid) = node {
                 names.insert(arena.symbol_name(*sid).to_string());
             }
-            let mut any = matches!(node, ExprNode::Symbol(_));
-            node.for_each_child(|c| any |= has_symbol.get(&c).copied().unwrap_or(true));
+            let any = if matches!(node, ExprNode::RootOf(..)) {
+                !crate::base::walk::free_symbols(arena, id).is_empty()
+            } else {
+                let mut any = matches!(node, ExprNode::Symbol(_));
+                node.for_each_child(|c| any |= has_symbol.get(&c).copied().unwrap_or(true));
+                any
+            };
             has_symbol.insert(id, any);
         }
     }
     let mut replacements: Vec<(ExprId, ExprId)> = Vec::new();
-    let mut values: FxHashMap<SymbolId, f64> = FxHashMap::default();
     let mut seen = rustc_hash::FxHashSet::default();
     let mut stack: Vec<ExprId> = exprs.to_vec();
-    let mut next_index = 0usize;
     while let Some(id) = stack.pop() {
         if !seen.insert(id) {
             continue;
@@ -567,6 +609,7 @@ impl Program {
                 Instruction::Neg => un!(|a: f64| -a),
                 Instruction::Pow => bin!(|a: f64, b: f64| a.powf(b)),
                 Instruction::Powi(n) => un!(|a: f64| a.powi(n)),
+                Instruction::PowOdd(e) => un!(|a: f64| a.abs().powf(e).copysign(a)),
                 Instruction::Sqrt => un!(|a: f64| a.sqrt()),
                 // The principal cube root: not real for a negative argument.
                 Instruction::Cbrt => un!(|a: f64| if a < 0.0 { f64::NAN } else { a.cbrt() }),
@@ -702,6 +745,9 @@ enum Instruction {
     /// `second ^ top`.
     Pow,
     Powi(i32),
+    /// `|a|^e` with the sign of `a`: an odd integer power whose exponent is
+    /// beyond 2⁵³ (its nearest `f64` `e` is even).
+    PowOdd(f64),
     Sqrt,
     /// The principal cube root: NaN for a negative argument.
     Cbrt,
@@ -1118,6 +1164,11 @@ impl<'a> Emitter<'a> {
                         && let Some(n) = r.to_integer().to_i32()
                     {
                         self.unary(base, Instruction::Powi(n));
+                        return Ok(());
+                    }
+                    // `(−1)^(2⁵³ + 1)` was 1: the exponent rounded to even.
+                    if let Some(e) = crate::output::codegen::odd_integer_beyond_f64(r) {
+                        self.unary(base, Instruction::PowOdd(e));
                         return Ok(());
                     }
                     let one: num_bigint::BigInt = One::one();

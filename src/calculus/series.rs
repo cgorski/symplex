@@ -1569,21 +1569,37 @@ fn compose_at_constant(
     let definite = w.coeffs.iter().any(|&c| has_log(arena, c));
     let refuse = if definite { Some(None) } else { None };
     // On a branch cut of `f` the Taylor coefficients below are those along
-    // the cut (the placeholder `t` counts as real), valid only for an
-    // argument that stays real; one that leaves the cut (`asin(2 + i·x)`,
-    // `i·x` crosses the cut `(1, ∞)`) has different expansions on the two
-    // sides of it, and none here.  Up to 0.33 `limit(x/(asin(2 + i·x) −
-    // asin 2), x, 0)` was `√3` from both sides (it is `0` from the right,
-    // `√3` from the left; SymPy agrees).  Coefficients count as real when
-    // they are for real values of their symbols (`ln|x|`, parameters).
+    // the cut (the placeholder `t` counts as real): the expansion of the
+    // side the principal value is continuous with.  An argument that leaves
+    // the cut (`asin(2 + i·x)`, `i·x` crosses the cut `(1, ∞)`) has a
+    // different expansion on the other side, the continuous one mapped by
+    // the jump across the cut ([`cut_jump`]); the side is that of the first
+    // coefficient of `w` off the line of the cut.  Up to 0.33 `limit(x/(asin(2
+    // + i·x) − asin 2), x, 0)` was `√3` from both sides (it is `0` from the
+    // right, `√3` from the left; SymPy agrees), from 0.34 to 0.36 such an
+    // expansion was refused.  Coefficients count as real when they are for
+    // real values of their symbols (`ln|x|`, parameters).
+    // A real `w` crosses a cut on the imaginary axis (`atan(2i + x)`).
+    let mut jump = None;
     if let Some((_, cut)) = crate::calculus::limit::branch_cut_of(arena, id)
         && crate::calculus::limit::on_branch_cut(arena, cut, u0)
-        && !w
-            .coeffs
-            .iter()
-            .all(|&c| crate::calculus::limit::inner_known_real(arena, c))
+        && (cut == crate::calculus::limit::BranchCut::ImaginaryAxis
+            || !w
+                .coeffs
+                .iter()
+                .all(|&c| crate::calculus::limit::inner_known_real(arena, c)))
     {
-        return Some(None);
+        let imaginary_axis = cut == crate::calculus::limit::BranchCut::ImaginaryAxis;
+        let mut side = series_cut_side(arena, &w, imaginary_axis, mode);
+        // Every visible coefficient along the cut: the argument must be
+        // shown to stay on it (a term beyond the precision could leave it).
+        if side == Some(0) && !stays_on_line(arena, arg, u0, var, imaginary_axis, mode) {
+            side = None;
+        }
+        match side.and_then(|s| cut_jump(arena, id, u0, s)) {
+            Some(j) => jump = Some(j),
+            None => return Some(None),
+        }
     }
     // `wᵏ` has valuation `≥ k·v_w`: terms up to `k·v_w < known` count.
     let terms = match w.leading_exponent(arena) {
@@ -1623,7 +1639,233 @@ fn compose_at_constant(
         &|ar: &mut Arena, k: usize| coeffs.get(k).copied().unwrap_or(ar.zero),
         &w,
     );
-    Some(Some(composed))
+
+    Some(Some(match jump {
+        Some((a, b)) => {
+            let scaled = TSeries::scale(arena, &composed, b);
+            let c = constant_like(arena, a, &scaled);
+            TSeries::add(arena, &c, &scaled)
+        }
+        None => composed,
+    }))
+}
+
+/// Is `u − u₀` exactly real (`imaginary_axis`: exactly imaginary) for real
+/// values of `var` on the side of the expansion?  (`2i + ix` stays on the
+/// line `iℝ` of the cuts of `asinh`, `atan`.)
+fn stays_on_line(
+    arena: &mut Arena,
+    u: ExprId,
+    u0: ExprId,
+    var: ExprId,
+    imaginary_axis: bool,
+    mode: Mode,
+) -> bool {
+    let t = arena.positive_symbol(SIDE_PLACEHOLDER);
+    let signs: &[bool] = match mode.side {
+        Side::Above => &[false],
+        Side::Below => &[true],
+        Side::Both => &[false, true],
+    };
+    let d = arena.sub(u, u0);
+    signs.iter().all(|&negative| {
+        let v = if negative { arena.neg(t) } else { t };
+        let d = subs::subs(arena, d, var, v);
+        let d = eval::eval(arena, d);
+        let parts = crate::base::complex::decompose(arena, d);
+        if !parts.exact {
+            return false;
+        }
+        let p = if imaginary_axis { parts.re } else { parts.im };
+        let p = eval::eval(arena, p);
+        if arena.is_zero_structural(p) {
+            return true;
+        }
+        // `ln(t²)/2 − ln|t|` (`|var| = t > 0`) is zero once `|t| = t` and
+        // the logarithms are expanded.
+        let mut assumptions = crate::base::assumptions::AssumptionCache::new();
+        let p = crate::simplify::refine::refine_full(arena, &mut assumptions, p);
+        let p = crate::simplify::log_expand::expand_log(arena, p);
+        let p = crate::transforms::expand::expand(arena, p);
+        let p = eval::eval(arena, p);
+        arena.is_zero_structural(p)
+    })
+}
+
+/// A positive stand-in for `|var|` in [`stays_on_line`].
+const SIDE_PLACEHOLDER: &str = "__series_side";
+
+/// The side of a branch cut from which `u₀ + w` leaves the point `u₀` of
+/// the cut: the sign of the component perpendicular to the cut (`Im`, or
+/// `Re` for the cuts on the imaginary axis) of the first coefficient of `w`
+/// that has one, times the sign of `varᵏ` on the expansion's side.  `0`
+/// when every visible coefficient lies along the cut.  `None` when that
+/// sign is not known: a symbolic or logarithmic coefficient, or an odd
+/// power in a two-sided expansion (the two sides differ).
+fn series_cut_side(
+    arena: &mut Arena,
+    w: &TSeries,
+    imaginary_axis: bool,
+    mode: Mode,
+) -> Option<i32> {
+    for (i, &c) in w.coeffs.iter().enumerate() {
+        let k = w.shift + i as i64;
+        if k >= w.known {
+            break;
+        }
+        if arena.is_zero_structural(c) {
+            continue;
+        }
+        let parts = crate::base::complex::decompose(arena, c);
+        let p = if imaginary_axis { parts.re } else { parts.im };
+        let p = eval::eval(arena, p);
+        if parts.exact && arena.is_zero_structural(p) {
+            continue;
+        }
+        if !parts.exact || !walk::free_symbols(arena, p).is_empty() {
+            return None;
+        }
+        let s = crate::calculus::limit::const_sign(arena, p)?;
+        if s == 0 {
+            continue;
+        }
+        let odd = k % 2 != 0;
+        return match mode.side {
+            Side::Above => Some(s),
+            Side::Below => Some(if odd { -s } else { s }),
+            Side::Both if !odd => Some(s),
+            Side::Both => None,
+        };
+    }
+    Some(0)
+}
+
+/// The jump of a branch function `id` across its cut at `u₀` for an
+/// argument on the side `side` of the cut ([`series_cut_side`]): `(a, b)`
+/// with `f = a + b·F` near `u₀`, `F` the continuation of `f` from the side
+/// its principal value is continuous with — the expansion from the Taylor
+/// coefficients at `u₀`.  These are the closed forms of
+/// [`continuation_across_cut`](crate::calculus::limit::continuation_across_cut)
+/// related to each other (SymPy's `asin._eval_nseries`: `π − asin` above
+/// `(1, ∞)`, `−π − asin` below `(−∞, −1)`; `log._eval_nseries`: `−2πi`
+/// below): `ln`: `F − 2πi` below; `u^α`: `e^{−2πiα}·F` below; `acos`: `−F`
+/// above `(1, ∞)`, `2π − F` below `(−∞, −1)`; `atanh`: `F ± iπ`; `acosh`:
+/// `−F` below `(−1, 1)`, `F − 2πi` below `(−∞, −1)`; `asinh`: `±iπ − F`;
+/// `atan`: `F ∓ π`; `Ei`: `F ± iπ` on either side (its value on the axis is
+/// the mean); `Ci`, `Chi`: `F − 2πi` below; `ln Γ`: `F + 2πi(n + 1)` below
+/// `(−n − 1, −n)`.  `None` where no form is known (`W`, `polylog`, …) or
+/// at a branch point.
+fn cut_jump(arena: &mut Arena, id: ExprId, u0: ExprId, side: i32) -> Option<(ExprId, ExprId)> {
+    use crate::base::libfn::LibFn;
+    use crate::calculus::limit::const_sign;
+    let zero = arena.zero;
+    let one = arena.one;
+    let m_one = arena.neg_one;
+    let identity = Some((zero, one));
+    if side == 0 {
+        return identity;
+    }
+    let pi = arena.pi;
+    let i = arena.i_unit;
+    let two = arena.int(2);
+    let i_pi = arena.mul(&[i, pi]);
+    let two_pi_i = arena.mul(&[two, i_pi]);
+    let two_pi = arena.mul(&[two, pi]);
+    let neg = |arena: &mut Arena, v: ExprId| arena.neg(v);
+    let re = arena.re(u0);
+    let re = eval::eval(arena, re);
+    let im = arena.im(u0);
+    let im = eval::eval(arena, im);
+    let above = side > 0;
+    let r = match arena.node(id).clone() {
+        ExprNode::Ln(_) => {
+            if above {
+                return identity;
+            }
+            (neg(arena, two_pi_i), one)
+        }
+        ExprNode::Pow(_, alpha) => {
+            if above {
+                return identity;
+            }
+            let p = arena.mul(&[two_pi_i, alpha]);
+            let p = neg(arena, p);
+            let e = arena.exp(p);
+            (zero, eval::eval(arena, e))
+        }
+        ExprNode::Asin(_) | ExprNode::Acos(_) => {
+            let positive = const_sign(arena, re)? > 0;
+            // continuous: below `(1, ∞)`, above `(−∞, −1)`
+            if above != positive {
+                return identity;
+            }
+            match (matches!(arena.node(id), ExprNode::Asin(_)), positive) {
+                (true, true) => (pi, m_one),
+                (true, false) => (neg(arena, pi), m_one),
+                (false, true) => (zero, m_one),
+                (false, false) => (two_pi, m_one),
+            }
+        }
+        ExprNode::Atanh(_) => {
+            let positive = const_sign(arena, re)? > 0;
+            if above != positive {
+                return identity;
+            }
+            (if above { i_pi } else { neg(arena, i_pi) }, one)
+        }
+        ExprNode::Acosh(_) => {
+            if above {
+                return identity;
+            }
+            let rp1 = arena.add(&[re, one]);
+            match const_sign(arena, rp1)? {
+                s if s > 0 => (zero, m_one),
+                s if s < 0 => (neg(arena, two_pi_i), one),
+                _ => return None,
+            }
+        }
+        ExprNode::Asinh(_) | ExprNode::Atan(_) => {
+            let upper = const_sign(arena, im)? > 0;
+            let abs_y = if upper { im } else { neg(arena, im) };
+            let d = arena.sub(abs_y, one);
+            if const_sign(arena, d)? <= 0 {
+                return None;
+            }
+            // continuous: `Re > 0` for the upper cut, `Re < 0` for the lower
+            if above == upper {
+                return identity;
+            }
+            if matches!(arena.node(id), ExprNode::Atan(_)) {
+                (if upper { neg(arena, pi) } else { pi }, one)
+            } else {
+                (if upper { i_pi } else { neg(arena, i_pi) }, m_one)
+            }
+        }
+        ExprNode::Ei(_) => (if above { i_pi } else { neg(arena, i_pi) }, one),
+        ExprNode::Ci(_) => {
+            if above {
+                return identity;
+            }
+            (neg(arena, two_pi_i), one)
+        }
+        ExprNode::Apply(f, _) if arena.lib_fn(f) == Some(LibFn::Chi) => {
+            if above {
+                return identity;
+            }
+            (neg(arena, two_pi_i), one)
+        }
+        ExprNode::LogGamma(_) => {
+            if above {
+                return identity;
+            }
+            let n = crate::calculus::limit::floor_of_negated(arena, u0)?;
+            let k = arena.int(n + 1);
+            (arena.mul(&[k, two_pi_i]), one)
+        }
+        _ => return None,
+    };
+    let a = eval::eval(arena, r.0);
+    Some((a, r.1))
 }
 
 fn no_expansion_error(arena: &Arena, id: ExprId) -> SymplexError {
@@ -1725,11 +1967,12 @@ fn structural_series(
         | ExprNode::Li(_)
         | ExprNode::Erfc(_) => return special_series(arena, &node, mode, cache),
         ExprNode::Apply(f, ref args)
-            if args.len() == 1
+            if (args.len() == 1
                 && (matches!(
                     arena.lib_fn(f),
                     Some(crate::base::libfn::LibFn::Shi | crate::base::libfn::LibFn::Chi)
-                ) || matches!(arena.symbol_name(f), ERFCX_ASYMPTOTIC | EI_ASYMPTOTIC)) =>
+                ) || matches!(arena.symbol_name(f), ERFCX_ASYMPTOTIC | EI_ASYMPTOTIC)))
+                || PowerAsymptotic::from_name(arena.symbol_name(f)).is_some() =>
         {
             return special_series(arena, &node, mode, cache);
         }
@@ -2394,9 +2637,18 @@ fn apply_ln(arena: &mut Arena, a: &TSeries, mode: Mode) -> Result<TSeries, Obstr
         log_shift = Some(vl);
     }
     let (u0, w) = a.split_constant(arena);
-    if approaches_cut(arena, u0, &w) {
-        return Err(Obstruction::NoExpansion);
-    }
+    // On the cut from below `ln` is `2πi` less than its principal value
+    // there, which is the limit from above (SymPy's `log._eval_nseries`).
+    // (A non-real `w` whose visible terms are all real may leave the cut
+    // beyond the precision: undecided.)
+    let below = if approaches_cut(arena, u0, &w) {
+        match series_cut_side(arena, &w, false, mode) {
+            Some(s) if s != 0 => s < 0,
+            _ => return Err(Obstruction::NoExpansion),
+        }
+    } else {
+        false
+    };
     // ln(u0 + w) = ln u0 + ln(1 + w/u0)
     let inv_u0 = {
         let m1 = arena.neg_one;
@@ -2412,6 +2664,12 @@ fn apply_ln(arena: &mut Arena, a: &TSeries, mode: Mode) -> Result<TSeries, Obstr
     let mut ln_u0 = ln_of_constant(arena, u0);
     if let Some(vl) = log_shift {
         let sum = arena.add(&[ln_u0, vl]);
+        ln_u0 = eval::eval(arena, sum);
+    }
+    if below {
+        let two = arena.int(2);
+        let m = arena.mul(&[two, arena.pi, arena.i_unit]);
+        let sum = arena.sub(ln_u0, m);
         ln_u0 = eval::eval(arena, sum);
     }
     if !arena.is_zero_structural(ln_u0) && !s.coeffs.is_empty() && s.shift <= 0 {
@@ -2484,9 +2742,22 @@ fn pow_rational(
         a.known -= v;
     }
     let (u0, w) = a.split_constant(arena);
-    if arena.as_num(alpha).is_none_or(|r| !r.is_integer()) && approaches_cut(arena, u0, &w) {
-        return Err(Obstruction::NoExpansion);
-    }
+    // From below the cut `u^α = e^{−2πiα}` times its principal value there.
+    let below =
+        if arena.as_num(alpha).is_none_or(|r| !r.is_integer()) && approaches_cut(arena, u0, &w) {
+            let mode = Mode {
+                side,
+                log_var: None,
+                limits: false,
+                partial: false,
+            };
+            match series_cut_side(arena, &w, false, mode) {
+                Some(s) if s != 0 => s < 0,
+                _ => return Err(Obstruction::NoExpansion),
+            }
+        } else {
+            false
+        };
     let inv_u0 = {
         let m1 = arena.neg_one;
         let p = arena.pow(u0, m1);
@@ -2499,6 +2770,15 @@ fn pow_rational(
         &w_over,
     );
     let u0a = arena.pow(u0, alpha);
+    let u0a = if below {
+        let two = arena.int(2);
+        let p = arena.mul(&[two, arena.pi, arena.i_unit, alpha]);
+        let p = arena.neg(p);
+        let rot = arena.exp(p);
+        arena.mul(&[u0a, rot])
+    } else {
+        u0a
+    };
     let u0a = eval::eval(arena, u0a);
     let mut r = TSeries::scale(arena, &s, u0a);
     r.shift += outer_shift;
@@ -2957,6 +3237,14 @@ fn special_series(
             integral_at_zero(arena, kind, &a, mode)
         }
         ExprNode::Apply(f, ref args)
+            if PowerAsymptotic::from_name(arena.symbol_name(f)).is_some() =>
+        {
+            let Some(kind) = PowerAsymptotic::from_name(arena.symbol_name(f)) else {
+                return unknown;
+            };
+            power_asymptotic_series(arena, f, kind, args, mode, cache)
+        }
+        ExprNode::Apply(f, ref args)
             if args.len() == 1
                 && matches!(arena.symbol_name(f), ERFCX_ASYMPTOTIC | EI_ASYMPTOTIC) =>
         {
@@ -3062,6 +3350,209 @@ fn special_series(
         }
         _ => unknown,
     }
+}
+
+/// The internal functions of Gruntz's asymptotic rewrite whose expansion at
+/// `z → +∞` is a power series in `1/z` with a factor of `e^{±z}`, `e^{z²}`
+/// or `2^{−z}` taken out (see `gruntz::asymptotic_rewrite`).  Each exists
+/// only inside a limit computation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PowerAsymptotic {
+    /// `√v·e^{−v} erfi(√v) ~ (1/√π) Σ (2k−1)!!/(2v)ᵏ` (DLMF 7.12.1 at `iz`;
+    /// SymPy's `erfi._eval_aseries`), a function of `v = z²` so that
+    /// `erfi(√x)` has a series in `1/x`.
+    Erfi,
+    /// `√v·e^{v} erfc(√v) ~ (1/√π) Σ (−1)ᵏ (2k−1)!!/(2v)ᵏ` (DLMF 7.12.1):
+    /// [`ERFCX_ASYMPTOTIC`] of `z = √v` times `z`, whose series has no
+    /// half-integer powers when `z²` has none (`erfc(√x)`, and `Γ(1/2, x) =
+    /// √π·erfc(√x)`).
+    Erfc,
+    /// `√(2πz) e^{−z} Iν(z) ~ Σ (−1)ᵏ aₖ(ν)/zᵏ`,
+    /// `aₖ(ν) = ∏_{j≤k} (4ν² − (2j−1)²)/(8j)` (DLMF 10.40.1).
+    BesselI,
+    /// `√(2z/π) e^{z} Kν(z) ~ Σ aₖ(ν)/zᵏ` (DLMF 10.40.2).
+    BesselK,
+    /// `z^{1−s} e^{z} Γ(s, z) ~ Σ (s−1)(s−2)⋯(s−k)/zᵏ` (DLMF 8.11.2; with
+    /// `Eₙ(z) = z^{n−1}Γ(1 − n, z)`, 8.19.1).
+    UpperGamma,
+    /// `2^z (ζ(z) − 1) = 1 + Σ_{n≥3} (2/n)^z`, which is `1` to every order in
+    /// `1/z` (DLMF 25.2.1).
+    Zeta,
+}
+
+/// Head of [`PowerAsymptotic::Erfi`].
+pub(crate) const ERFIX_ASYMPTOTIC: &str = "__erfix2_asym";
+/// Head of [`PowerAsymptotic::Erfc`].
+pub(crate) const ERFCX2_ASYMPTOTIC: &str = "__erfcx2_asym";
+/// Head of [`PowerAsymptotic::BesselI`] (arguments `ν, z`).
+pub(crate) const BESSELI_ASYMPTOTIC: &str = "__besseli_asym";
+/// Head of [`PowerAsymptotic::BesselK`] (arguments `ν, z`).
+pub(crate) const BESSELK_ASYMPTOTIC: &str = "__besselk_asym";
+/// Head of [`PowerAsymptotic::UpperGamma`] (arguments `s, z`).
+pub(crate) const UPPERGAMMA_ASYMPTOTIC: &str = "__uppergamma_asym";
+/// Head of [`PowerAsymptotic::Zeta`].
+pub(crate) const ZETA_ASYMPTOTIC: &str = "__zeta_asym";
+
+impl PowerAsymptotic {
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            ERFIX_ASYMPTOTIC => Self::Erfi,
+            ERFCX2_ASYMPTOTIC => Self::Erfc,
+            BESSELI_ASYMPTOTIC => Self::BesselI,
+            BESSELK_ASYMPTOTIC => Self::BesselK,
+            UPPERGAMMA_ASYMPTOTIC => Self::UpperGamma,
+            ZETA_ASYMPTOTIC => Self::Zeta,
+            _ => return None,
+        })
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Erfi => ERFIX_ASYMPTOTIC,
+            Self::Erfc => ERFCX2_ASYMPTOTIC,
+            Self::BesselI => BESSELI_ASYMPTOTIC,
+            Self::BesselK => BESSELK_ASYMPTOTIC,
+            Self::UpperGamma => UPPERGAMMA_ASYMPTOTIC,
+            Self::Zeta => ZETA_ASYMPTOTIC,
+        }
+    }
+
+    /// Does the head take a parameter (`ν`, `s`) before the argument?
+    pub(crate) fn has_parameter(self) -> bool {
+        matches!(self, Self::BesselI | Self::BesselK | Self::UpperGamma)
+    }
+}
+
+/// The expansion of a [`PowerAsymptotic`] function of `a → +∞` (a pole with
+/// a positive leading coefficient, from above): `Σ_{k≤K} cₖ·a^{−(step·k +
+/// offset)}`, exact below its first omitted term; of a constant argument
+/// `c + O(ωᴷ)`, the constant `f(c)`.  The parameter must be constant.
+fn power_asymptotic_series(
+    arena: &mut Arena,
+    f: crate::base::node::SymbolId,
+    kind: PowerAsymptotic,
+    args: &[ExprId],
+    mode: Mode,
+    cache: &FxHashMap<ExprId, Option<TSeries>>,
+) -> Result<TSeries, Obstruction> {
+    let unknown = Err(Obstruction::Unknown);
+    let (param, z) = match (kind.has_parameter(), args) {
+        (false, &[z]) => (None, z),
+        (true, &[p, z]) => (Some(p), z),
+        _ => return unknown,
+    };
+    let is_constant = |arena: &Arena, s: &TSeries| {
+        s.coeffs
+            .iter()
+            .skip(1)
+            .all(|&c| arena.is_zero_structural(c))
+    };
+    // Only a constant parameter (a series `c + 0·ω + …`, or a literal 0).
+    let param = match param {
+        Some(p) if arena.is_zero_structural(p) => Some(arena.zero),
+        Some(p) => {
+            let ps = child(cache, p)?.normalized(arena);
+            if ps.coeffs.is_empty() || ps.shift != 0 || !is_constant(arena, &ps) {
+                return unknown;
+            }
+            Some(ps.coeffs[0])
+        }
+        None => None,
+    };
+    let a = child(cache, z)?.normalized(arena);
+    let v = a.leading_exponent(arena).ok_or(Obstruction::NoExpansion)?;
+    if v == 0 && is_constant(arena, &a) {
+        let mut new_args: smallvec::SmallVec<[ExprId; 2]> = smallvec::SmallVec::new();
+        new_args.extend(param);
+        new_args.push(a.coeffs[0]);
+        let c = arena.intern(ExprNode::Apply(f, new_args));
+        return Ok(TSeries::constant(arena, c, a.known));
+    }
+    if v >= 0
+        || mode.side != Side::Above
+        || constant_sign(arena, a.coeff_at(arena, v)) != Some(true)
+    {
+        return unknown;
+    }
+    let inv = TSeries::inverse(arena, &a).ok_or(Obstruction::NoExpansion)?;
+    let p = -v;
+    let target = (a.known - a.shift).max(1);
+    let k_max = (target / p + 2).min(MAX_ASYMPTOTIC_TERMS);
+    let one = arena.one;
+    if kind == PowerAsymptotic::Zeta {
+        // 1 to every order: the corrections `(2/n)^z` are exponentially small.
+        return Ok(TSeries::constant(arena, one, p * (k_max + 1)));
+    }
+    let nu2 = param.map(|nu| {
+        let four = arena.int(4);
+        let two = arena.int(2);
+        let sq = arena.pow(nu, two);
+        let t = arena.mul(&[four, sq]);
+        eval::eval(arena, t)
+    });
+    // `Σ cₖ·a⁻ᵏ`, `c₀ = 1`, `cₖ = cₖ₋₁·(ratio of consecutive terms)`.
+    let mut coeff = one;
+    let mut power = TSeries::constant(arena, one, inv.known);
+    let mut acc: Option<TSeries> = None;
+    for k in 0..=k_max {
+        if k > 0 {
+            let factor = match kind {
+                PowerAsymptotic::Erfi => {
+                    rat_expr(arena, Q::new(BigInt::from(2 * k - 1), BigInt::from(2)))
+                }
+                PowerAsymptotic::Erfc => {
+                    rat_expr(arena, Q::new(BigInt::from(1 - 2 * k), BigInt::from(2)))
+                }
+                PowerAsymptotic::BesselI | PowerAsymptotic::BesselK => {
+                    let odd = (2 * k - 1) * (2 * k - 1);
+                    let odd = arena.int(odd);
+                    let nu2 = nu2.unwrap_or(arena.zero);
+                    let d = arena.sub(nu2, odd);
+                    let s = if kind == PowerAsymptotic::BesselI {
+                        -1
+                    } else {
+                        1
+                    };
+                    let q = rat_expr(arena, Q::new(BigInt::from(s), BigInt::from(8 * k)));
+                    arena.mul(&[q, d])
+                }
+                PowerAsymptotic::UpperGamma => {
+                    let s = param.unwrap_or(arena.zero);
+                    let ke = arena.int(k);
+                    arena.sub(s, ke)
+                }
+                PowerAsymptotic::Zeta => arena.zero,
+            };
+            let c = arena.mul(&[coeff, factor]);
+            let c = crate::transforms::expand::expand(arena, c);
+            coeff = eval::eval(arena, c);
+            power = TSeries::mul(arena, &power, &inv);
+        }
+        if arena.is_zero_structural(coeff) {
+            // A terminating series (`K_{1/2}`, `Γ(n, z)`): exact.
+            break;
+        }
+        let term = TSeries::scale(arena, &power, coeff);
+        acc = Some(match acc {
+            None => term,
+            Some(s) => TSeries::add(arena, &s, &term),
+        });
+    }
+    let mut s = acc.unwrap_or_else(|| TSeries::zero(arena, a.known));
+    if !arena.is_zero_structural(coeff) {
+        // The first omitted term is of order `a^{−(K+1)}`.
+        s = s.truncate_known(p * (k_max + 1));
+    }
+    if matches!(kind, PowerAsymptotic::Erfi | PowerAsymptotic::Erfc) {
+        let rsp = {
+            let pi = arena.pi;
+            let sp = arena.sqrt(pi);
+            let q = arena.div(one, sp);
+            eval::eval(arena, q)
+        };
+        s = TSeries::scale(arena, &s, rsp);
+    }
+    Ok(s)
 }
 
 /// The integral functions expanded at a zero of their argument.

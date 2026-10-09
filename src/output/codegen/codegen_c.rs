@@ -163,6 +163,9 @@ enum Plan {
         n_rest: usize,
     },
     PowInt(i64),
+    /// `copysign(pow(fabs(b), e), b)`: an odd integer power whose exponent
+    /// is not a double (|n| > 2⁵³).
+    PowOdd(f64),
     PowF,
     /// `symplex_min`/`symplex_max` fold over `n` children.
     MinMax(&'static str, usize),
@@ -302,10 +305,9 @@ impl<'a> CEmitter<'a> {
         let v = Kind::Value;
         match node {
             ExprNode::Num(nid) => {
-                let r = arena.num(nid);
-                let n = r.numer().to_f64().unwrap_or(f64::NAN);
-                let d = r.denom().to_f64().unwrap_or(f64::NAN);
-                let s = self.lit(n / d);
+                // Correctly rounded (`n / d` was ∞/∞ = NaN for parts past
+                // the range, and rounded twice past 2⁵³).
+                let s = self.lit(super::rational_to_f64(arena.num(nid)));
                 self.values.push(s);
             }
             ExprNode::Symbol(sid) => {
@@ -491,6 +493,12 @@ impl<'a> CEmitter<'a> {
             }
             ExprNode::Pow(base, exp) => {
                 if let Some(r) = arena.as_num(exp) {
+                    if let Some(e) = super::odd_integer_beyond_f64(r) {
+                        // The exponent rounds to an even double: keep the
+                        // sign of the odd power.
+                        self.schedule(id, Plan::PowOdd(e), &[(base, v)]);
+                        return Ok(());
+                    }
                     if r.is_integer()
                         && let Some(n) = r.numer().to_i64()
                     {
@@ -863,6 +871,18 @@ impl<'a> CEmitter<'a> {
                 }
             }
 
+            Plan::PowOdd(e) => {
+                // |b|^e with the sign of b (the operand is named twice; a
+                // nested huge odd power is the only way to repeat it).
+                let b = self.pop_n(1).remove(0);
+                let e = self.lit(e);
+                format!(
+                    "{}({}({}({b}), {e}), {b})",
+                    self.mf("copysign"),
+                    self.mf("pow"),
+                    self.mf("fabs")
+                )
+            }
             Plan::PowF => {
                 let be = self.pop_n(2);
                 format!("{}({}, {})", self.mf("pow"), be[0], be[1])
@@ -974,11 +994,12 @@ fn is_neg_one_mul(arena: &Arena, id: ExprId) -> bool {
     false
 }
 
+/// `id` is exactly the integer `value` (±1): a rational that only rounds
+/// to it (`−1 − 10⁻²⁰`) is not, or `exp(x) − 1 − 10⁻²⁰` would become
+/// `expm1(x)` and `x^(−1 − 10⁻²⁰)` the real `1/x` of a negative `x`.
 fn is_const(arena: &Arena, id: ExprId, value: f64) -> bool {
     if let Some(r) = arena.as_num(id) {
-        let n = r.numer().to_f64().unwrap_or(f64::NAN);
-        let d = r.denom().to_f64().unwrap_or(f64::NAN);
-        return n / d == value;
+        return r.is_integer() && r.numer().to_f64() == Some(value);
     }
     if value < 0.0
         && let ExprNode::Neg(inner) = arena.node(id)
@@ -1371,15 +1392,65 @@ static inline double symplex_erfcinv(double y) {
 "#,
     },
     CHelper {
-        name: "beta",
-        deps: &["util"],
+        name: "stirling_corr",
+        deps: &[],
         src: r#"
+/* ln Gamma(x) - [(x - 1/2) ln x - x + ln sqrt(2 pi)] through x^-9 (x >= 20). */
+static inline double symplex_stirling_corr(double x) {
+    double inv = 1.0 / x, inv2 = inv * inv;
+    return inv * (1.0 / 12.0 - inv2 * (1.0 / 360.0 - inv2 * (1.0 / 1260.0 - inv2 * (1.0 / 1680.0 - inv2 * (1.0 / 1188.0)))));
+}
+"#,
+    },
+    CHelper {
+        name: "rising_factorial",
+        deps: &["util", "stirling_corr"],
+        src: r#"
+static inline double symplex_rising_factorial(double x, double n) {
+    if (isnan(x) || isnan(n)) return NAN;
+    if (symplex_is_int(n) && fabs(n) <= 1000.0) {
+        double acc = 1.0;
+        if (n >= 0.0) {
+            if (symplex_is_int(x) && x <= 0.0 && x + n - 1.0 >= 0.0) return 0.0;
+            for (double i = 0.0; i < n; i += 1.0) acc *= x + i;
+            return acc;
+        }
+        for (double i = 1.0; i <= -n; i += 1.0) acc *= x - i;
+        return 1.0 / acc;
+    }
+    double top = x + n;
+    if (symplex_is_gamma_pole(x)) return (symplex_is_int(n) && symplex_is_gamma_pole(top)) ? NAN : 0.0;
+    if (symplex_is_gamma_pole(top)) return NAN;
+    if (x >= 20.0 && top >= 20.0 && isfinite(top))
+        return exp((x - 0.5) * log1p(n / x) + n * log(top) - n + symplex_stirling_corr(top) - symplex_stirling_corr(x));
+    if (fabs(x) < 170.0 && fabs(top) < 170.0) {
+        double gt = tgamma(top), gx = tgamma(x);
+        if (isfinite(gt) && isfinite(gx) && gx != 0.0) return gt / gx;
+    }
+    return symplex_gamma_sign(top) * symplex_gamma_sign(x) * exp(lgamma(top) - lgamma(x));
+}
+"#,
+    },
+    CHelper {
+        name: "beta",
+        deps: &["util", "stirling_corr"],
+        src: r#"
+/* B(a, b) for a <= b, b >= 20, a + b >= 20, a > -20: Stirling's series for
+   ln G(b) - ln G(a + b) without the cancellation of the ln G difference. */
+static inline double symplex_beta_stirling(double a, double b) {
+    double s = a + b;
+    double tail = -(b - 0.5) * log1p(a / b) + symplex_stirling_corr(b) - symplex_stirling_corr(s);
+    if (a < 20.0) return tgamma(a) * exp(tail + a) * pow(s, -a);
+    return exp(-a * log1p(b / a) - 0.5 * log(a) + tail + 0.9189385332046727 + symplex_stirling_corr(a));
+}
 /* Beta function B(a,b) = G(a)G(b)/G(a+b). */
 static inline double symplex_beta(double a, double b) {
     if (isnan(a) || isnan(b)) return NAN;
     double s = a + b;
     if (symplex_is_gamma_pole(a) || symplex_is_gamma_pole(b)) return NAN;
     if (symplex_is_gamma_pole(s)) return 0.0;
+    double lo = a <= b ? a : b, hi = a <= b ? b : a;
+    if (hi >= 20.0 && s >= 20.0 && lo > -20.0) return symplex_beta_stirling(lo, hi);
     if (a > 0.0 && b > 0.0 && s < 171.0) return tgamma(a) * tgamma(b) / tgamma(s);
     double sign = symplex_gamma_sign(a) * symplex_gamma_sign(b) * symplex_gamma_sign(s);
     return sign * exp(lgamma(a) + lgamma(b) - lgamma(s));
@@ -1388,7 +1459,7 @@ static inline double symplex_beta(double a, double b) {
     },
     CHelper {
         name: "binomial",
-        deps: &["util"],
+        deps: &["util", "beta", "rising_factorial"],
         src: r#"
 /* Generalised binomial coefficient. */
 static inline double symplex_binomial(double n, double k) {
@@ -1399,15 +1470,29 @@ static inline double symplex_binomial(double n, double k) {
         if (symplex_is_int(n) && n >= 0.0) { if (k > n) return 0.0; if (n - k < k) kk = n - k; }
         if (kk <= 2000.0) {
             double acc = 1.0;
-            for (double i = 1.0; i <= kk; i += 1.0) acc = acc * (n - kk + i) / i;
+            for (double i = 1.0; i <= kk; i += 1.0) acc = acc * (n - (kk - i)) / i;
             return acc;
         }
+    }
+    double sign = 1.0;
+    if (symplex_is_int(k) && n < 0.0) {
+        /* C(n, k) = (-1)^k C(k - n - 1, k): every Gamma argument positive below. */
+        sign = symplex_is_even(k) ? 1.0 : -1.0;
+        n = k - n - 1.0;
     }
     double a = n + 1.0, b = k + 1.0, c = n - k + 1.0;
     if (symplex_is_gamma_pole(b) || symplex_is_gamma_pole(c)) return symplex_is_gamma_pole(a) ? NAN : 0.0;
     if (symplex_is_gamma_pole(a)) return NAN;
-    if (a > 0.0 && b > 0.0 && c > 0.0 && a < 171.0) return tgamma(a) / (tgamma(b) * tgamma(c));
-    double sign = symplex_gamma_sign(a) * symplex_gamma_sign(b) * symplex_gamma_sign(c);
+    if (a > 0.0 && b > 0.0 && c > 0.0 && a < 20.0) return sign * tgamma(a) / (tgamma(b) * tgamma(c));
+    if (a > 0.0 && a < 171.0 && b >= 20.0 && c < 0.0)
+        return sign * tgamma(a) * (symplex_sin_pi(c) / 3.141592653589793) * symplex_rising_factorial(b, -a);
+    double lo = b <= c ? b : c, hi = b <= c ? c : b;
+    if (hi >= 20.0 && b + c >= 20.0 && lo > -20.0) {
+        double bb = symplex_beta(b, c);
+        if (fabs(bb) >= 2.2250738585072014e-308 && isfinite(bb)) return sign / (a * bb);
+    }
+    if (a > 0.0 && b > 0.0 && c > 0.0 && a < 171.0) return sign * tgamma(a) / (tgamma(b) * tgamma(c));
+    sign *= symplex_gamma_sign(a) * symplex_gamma_sign(b) * symplex_gamma_sign(c);
     return sign * exp(lgamma(a) - lgamma(b) - lgamma(c));
 }
 "#,
@@ -1622,6 +1707,23 @@ static inline double symplex_bessel_k_trapezoid(double nf, double x, double h) {
     }
     return h * sum;
 }
+/* K_0 and K_1 for 0 < x <= 1 from their power series (DLMF 10.31.2, 10.31.1). */
+static inline void symplex_bessel_k01_series(double x, double *k0, double *k1) {
+    double half = 0.5 * x, q = half * half, l = log(half) + 0.5772156649015329;
+    double t0 = 1.0, t1 = 1.0, h = 0.0, i0 = 1.0, s0 = 0.0, c1 = 1.0, s1 = 1.0;
+    for (double k = 1.0; k < 60.0; k += 1.0) {
+        t0 *= q / (k * k);
+        t1 *= q / (k * (k + 1.0));
+        h += 1.0 / k;
+        i0 += t0;
+        s0 += h * t0;
+        c1 += t1;
+        s1 += (2.0 * h + 1.0 / (k + 1.0)) * t1;
+        if (t0 <= 1e-17 * i0 && t1 <= 1e-17 * c1) break;
+    }
+    *k0 = s0 - l * i0;
+    *k1 = 1.0 / x + half * (l * c1 - 0.5 * s1);
+}
 /* Modified Bessel function of the second kind, integer order, x > 0. */
 static inline double symplex_bessel_k(int n, double x) {
     if (isnan(x) || x < 0.0) return NAN;
@@ -1629,6 +1731,13 @@ static inline double symplex_bessel_k(int n, double x) {
     if (isinf(x)) return 0.0;
     if (n < 0) n = -n;
     double nf = (double)n;
+    if (x <= 1.0) {
+        double km, k;
+        symplex_bessel_k01_series(x, &km, &k);
+        if (n == 0) return km;
+        for (int j = 1; j < n; j++) { double kp = km + (2.0 * (double)j / x) * k; km = k; k = kp; }
+        return k;
+    }
     if (x >= 20.0) {
         double mu = 4.0 * nf * nf, sum = 1.0, term = 1.0, prev = INFINITY;
         int ok = 0;
@@ -1813,46 +1922,21 @@ static inline double symplex_factorial2(double n) {
 "#,
     },
     CHelper {
-        name: "stirling_corr",
-        deps: &[],
-        src: r#"
-/* ln Gamma(x) - [(x - 1/2) ln x - x + ln sqrt(2 pi)] through x^-9 (x >= 20). */
-static inline double symplex_stirling_corr(double x) {
-    double inv = 1.0 / x, inv2 = inv * inv;
-    return inv * (1.0 / 12.0 - inv2 * (1.0 / 360.0 - inv2 * (1.0 / 1260.0 - inv2 * (1.0 / 1680.0 - inv2 * (1.0 / 1188.0)))));
-}
-"#,
-    },
-    CHelper {
-        name: "rising_factorial",
-        deps: &["util", "stirling_corr"],
-        src: r#"
-static inline double symplex_rising_factorial(double x, double n) {
-    if (isnan(x) || isnan(n)) return NAN;
-    if (symplex_is_int(n) && fabs(n) <= 1000.0) {
-        double acc = 1.0;
-        if (n >= 0.0) {
-            if (symplex_is_int(x) && x <= 0.0 && x + n - 1.0 >= 0.0) return 0.0;
-            for (double i = 0.0; i < n; i += 1.0) acc *= x + i;
-            return acc;
-        }
-        for (double i = 1.0; i <= -n; i += 1.0) acc *= x - i;
-        return 1.0 / acc;
-    }
-    double top = x + n;
-    if (symplex_is_gamma_pole(x)) return symplex_is_gamma_pole(top) ? NAN : 0.0;
-    if (symplex_is_gamma_pole(top)) return NAN;
-    if (x >= 20.0 && top >= 20.0 && isfinite(top))
-        return exp((x - 0.5) * log1p(n / x) + n * log(top) - n + symplex_stirling_corr(top) - symplex_stirling_corr(x));
-    return symplex_gamma_sign(top) * symplex_gamma_sign(x) * exp(lgamma(top) - lgamma(x));
-}
-"#,
-    },
-    CHelper {
         name: "falling_factorial",
         deps: &["rising_factorial", "stirling_corr"],
         src: r#"
 static inline double symplex_falling_factorial(double x, double n) {
+    if (isnan(x) || isnan(n)) return NAN;
+    if (!symplex_is_int(n) && symplex_is_gamma_pole(x + 1.0)) return NAN;
+    if (symplex_is_int(n)) {
+        if (symplex_is_int(x) && x >= 0.0 && n > x) return 0.0;
+        if (fabs(n) <= 1000.0) {
+            double acc = 1.0, i = 0.0;
+            if (n >= 0.0) { for (; i < n; i += 1.0) acc *= x - i; return acc; }
+            while (i < -n) { i += 1.0; acc *= x + i; }
+            return 1.0 / acc;
+        }
+    }
     double u = x + 1.0;
     if (!(symplex_is_int(n) && fabs(n) <= 1000.0) && u >= 20.0 && u - n >= 20.0 && isfinite(u))
         return exp(n * log(u) - (u - n - 0.5) * log1p(-n / u) - n + symplex_stirling_corr(u) - symplex_stirling_corr(u - n));

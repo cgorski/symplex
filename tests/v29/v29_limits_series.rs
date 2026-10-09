@@ -240,15 +240,16 @@ fn functions_of_exponential_growth_are_not_taken_for_powers() {
     // Were 0; the true values are 1/2, 1/2, 1/√(2π), 1/√π (mpmath at
     // x = 10⁶, 40 digits: chi(X)*X*exp(-X) = 0.5000005, shi likewise,
     // besseli(0,X)*exp(-X)*sqrt(X) = 0.39894233, erfi(X)*X*exp(-X**2) =
-    // 0.56418958; SymPy 1.14 also answers 0 for the first, wrongly).  Their
-    // growth is not known to the engine: refused, not wrong.
-    for f in [
-        "Chi(x)*x*exp(-x)",
-        "Shi(x)*x*exp(-x)",
-        "besseli(0, x)*exp(-x)*sqrt(x)",
-        "erfi(x)*x*exp(-x^2)",
+    // 0.56418958; SymPy 1.14 also answers 0 for the first, wrongly).  From
+    // 0.29 to 0.36 their growth was not known to the engine and they were
+    // refused; since 0.37 their asymptotic series are (`tests/v34/v34_limits.rs`).
+    for (f, want) in [
+        ("Chi(x)*x*exp(-x)", "1/2"),
+        ("Shi(x)*x*exp(-x)", "1/2"),
+        ("besseli(0, x)*exp(-x)*sqrt(x)", "sqrt(2)/(2*sqrt(pi))"),
+        ("erfi(x)*x*exp(-x^2)", "1/sqrt(pi)"),
     ] {
-        assert!(limit(&ctx, f, oo, b).starts_with("Err"), "{f}");
+        assert_eq!(limit(&ctx, f, oo, b), want, "{f}");
     }
 }
 

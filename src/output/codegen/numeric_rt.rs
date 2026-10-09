@@ -457,6 +457,14 @@ fn calerf(x: f64, complement: bool) -> f64 {
             let ysq = p_floor(y * 16.0) / 16.0;
             let del = (y - ysq) * (y + ysq);
             result *= p_exp(-ysq * ysq) * p_exp(-del);
+        } else if y < 27.3 {
+            // erfc is subnormal here (it was flushed to 0): scale e^{−y²} by
+            // e^{512} (the exponent −ysq² + 512 is exact) so only the last
+            // product rounds into the subnormal range.
+            let ysq = p_floor(y * 16.0) / 16.0;
+            let del = (y - ysq) * (y + ysq);
+            let scaled = erfcx_large(y) * p_exp(-del) * p_exp(512.0 - ysq * ysq);
+            result = scaled * p_exp(-512.0);
         }
     }
     // `result` now holds erfc(|x|).
@@ -803,10 +811,12 @@ pub fn binomial(n: f64, k: f64) -> f64 {
             }
         }
         if kk <= 2000.0 {
+            // Factor n − (kk − i): the integer kk − i is exact, so each factor
+            // rounds once (`n − kk + i` lost n near 0: C(1.7e-16, 3) was 0).
             let mut acc = 1.0;
             let mut i = 1.0;
             while i <= kk {
-                acc = acc * (n - kk + i) / i;
+                acc = acc * (n - (kk - i)) / i;
                 i += 1.0;
             }
             return acc;
@@ -829,6 +839,13 @@ pub fn binomial(n: f64, k: f64) -> f64 {
     }
     if a > 0.0 && b > 0.0 && c > 0.0 && a < 20.0 {
         return sign * gamma(a) / (gamma(b) * gamma(c));
+    }
+    if a > 0.0 && a < 171.0 && b >= 20.0 && c < 0.0 {
+        // A large k past a small positive n (series coefficients
+        // C(1/2, k)): reflect Γ(c), 1/Γ(c) = Γ(1 − c)·sin(πc)/π, and take
+        // Γ(k − n)/Γ(k + 1) = (k + 1)_{−(n+1)} by Stirling's difference
+        // (ln Γ cancelled 5e-8 of C(1/2, 3.3·10⁷)).
+        return sign * gamma(a) * (sin_pi(c) / PI) * rising_factorial(b, -a);
     }
     // C(n, k) = 1/((n + 1)·B(k + 1, n − k + 1)) wherever B takes its
     // Stirling form, without the ln Γ cancellation (see `beta`); a
@@ -1222,9 +1239,12 @@ pub fn bessel_i(n: i32, x: f64) -> f64 {
 // @@begin bessel_k
 /// Modified Bessel function of the second kind K_n(x) for integer order n (x > 0).
 ///
-/// Uses the asymptotic expansion for x ≥ 20 (when it converges) and the
+/// Uses the power series of K₀ and K₁ with the upward recurrence for
+/// x ≤ 1, the asymptotic expansion for x ≥ 20 (when it converges) and the
 /// trapezoidal rule on K_n(x) = ∫₀^∞ e^{−x cosh t} cosh(nt) dt otherwise,
-/// which is spectrally accurate for this integrand.
+/// which is spectrally accurate for this integrand.  (For small x the
+/// integrand stays near its peak up to t ≈ ln(2n/x), beyond the rule's
+/// step budget: K₀(1.7·10⁻²¹⁰) was 85.7, truly 483.1.)
 pub fn bessel_k(n: i32, x: f64) -> f64 {
     if x.is_nan() || x < 0.0 {
         return f64::NAN;
@@ -1237,6 +1257,23 @@ pub fn bessel_k(n: i32, x: f64) -> f64 {
     }
     let n = if n < 0 { -n } else { n };
     let nf = n as f64;
+    if x <= 1.0 {
+        let (k0, k1) = bessel_k01_series(x);
+        if n == 0 {
+            return k0;
+        }
+        // K_{k+1} = K_{k−1} + (2k/x)·K_k (DLMF 10.29.1): all terms positive,
+        // stable upwards; an overflow is the value's own.
+        let (mut km, mut k) = (k0, k1);
+        let mut j = 1;
+        while j < n {
+            let kp = km + (2.0 * j as f64 / x) * k;
+            km = k;
+            k = kp;
+            j += 1;
+        }
+        return k;
+    }
     if x >= 20.0 {
         let mu = 4.0 * nf * nf;
         let mut sum = 1.0;
@@ -1281,6 +1318,42 @@ pub fn bessel_k(n: i32, x: f64) -> f64 {
         refinements += 1;
     }
     prev
+}
+/// K₀(x) and K₁(x) for 0 < x ≤ 1 from their power series (DLMF 10.31.2 and
+/// 10.31.1 with n = 1), q = x²/4, H_k the harmonic numbers:
+///
+/// K₀ = −(ln(x/2) + γ)·Σ q^k/k!² + Σ H_k·q^k/k!²,
+/// K₁ = 1/x + (x/2)·[(ln(x/2) + γ)·Σ c_k − ½·Σ (H_k + H_{k+1})·c_k],
+/// c_k = q^k/(k!·(k+1)!).  No cancellation worth a bit for 0 < x ≤ 1.
+fn bessel_k01_series(x: f64) -> (f64, f64) {
+    let half = 0.5 * x;
+    let q = half * half;
+    let l = p_ln(half) + EULER_GAMMA;
+    // k = 0 terms: H_0 = 0, H_1 = 1.
+    let mut t0 = 1.0; // q^k/k!²
+    let mut t1 = 1.0; // q^k/(k!(k+1)!)
+    let mut h = 0.0; // H_k
+    let mut i0 = 1.0;
+    let mut s0 = 0.0;
+    let mut c1 = 1.0;
+    let mut s1 = 1.0; // Σ (H_k + H_{k+1}) c_k
+    let mut k = 1.0;
+    while k < 60.0 {
+        t0 *= q / (k * k);
+        t1 *= q / (k * (k + 1.0));
+        h += 1.0 / k;
+        i0 += t0;
+        s0 += h * t0;
+        c1 += t1;
+        s1 += (2.0 * h + 1.0 / (k + 1.0)) * t1;
+        if t0 <= 1e-17 * i0 && t1 <= 1e-17 * c1 {
+            break;
+        }
+        k += 1.0;
+    }
+    let k0 = s0 - l * i0;
+    let k1 = 1.0 / x + half * (l * c1 - 0.5 * s1);
+    (k0, k1)
 }
 /// One trapezoidal-rule evaluation of ∫₀^∞ e^{−x cosh t} cosh(nt) dt with step `h`.
 fn bessel_k_trapezoid(nf: f64, x: f64, h: f64) -> f64 {
@@ -1632,7 +1705,13 @@ pub fn rising_factorial(x: f64, n: f64) -> f64 {
     }
     let top = x + n;
     if is_gamma_pole(x) {
-        return if is_gamma_pole(top) { f64::NAN } else { 0.0 };
+        // A non-integer n keeps x + n off the poles (rounding may land the
+        // computed `top` on an integer: (−6.1·10¹⁵)_{1/2} was NaN, truly 0).
+        return if is_int(n) && is_gamma_pole(top) {
+            f64::NAN
+        } else {
+            0.0
+        };
     }
     if is_gamma_pole(top) {
         return f64::NAN;
@@ -1645,6 +1724,15 @@ pub fn rising_factorial(x: f64, n: f64) -> f64 {
             (x - 0.5) * p_ln1p(n / x) + n * p_ln(top) - n + stirling_corr(top) - stirling_corr(x),
         );
     }
+    if p_abs(x) < 170.0 && p_abs(top) < 170.0 {
+        // Both Γ values in range: their quotient keeps the relative accuracy
+        // that exp(ln Γ − ln Γ) loses to |ln Γ|·ε (450 ulps at
+        // (6.1·10⁻²⁸⁰)_{1/2}).
+        let (gt, gx) = (gamma(top), gamma(x));
+        if gt.is_finite() && gx.is_finite() && gx != 0.0 {
+            return gt / gx;
+        }
+    }
     let sign = gamma_sign(top) * gamma_sign(x);
     sign * p_exp(lgamma(top) - lgamma(x))
 }
@@ -1656,6 +1744,40 @@ pub fn rising_factorial(x: f64, n: f64) -> f64 {
 /// first rounded it away for `x ≫ n` (`falling_factorial(2.7·10¹⁷, 11.7)`
 /// was 1, truly 2.2·10²⁰⁴).
 pub fn falling_factorial(x: f64, n: f64) -> f64 {
+    if x.is_nan() || n.is_nan() {
+        return f64::NAN;
+    }
+    if !is_int(n) && is_gamma_pole(x + 1.0) {
+        // Γ(x + 1) has a pole and Γ(x − n + 1) does not.
+        return f64::NAN;
+    }
+    if is_int(n) {
+        // The product passes through the factor 0 (Γ(x+1)/Γ(x−n+1) with a
+        // pole below): forming x − n + 1 first could round it away
+        // (falling_factorial(3, 6.1·10¹⁶) was NaN).
+        if is_int(x) && x >= 0.0 && n > x {
+            return 0.0;
+        }
+        if p_abs(n) <= 1000.0 {
+            // Direct product of the factors x − i (n ≥ 0) or 1/(x + i)
+            // (n < 0), each rounded once: going through x − n + 1 lost x
+            // near 0 (falling_factorial(1.7e-16, 3) was 0, truly 3.4e-16).
+            let mut acc = 1.0;
+            let mut i = 0.0;
+            if n >= 0.0 {
+                while i < n {
+                    acc *= x - i;
+                    i += 1.0;
+                }
+                return acc;
+            }
+            while i < -n {
+                i += 1.0;
+                acc *= x + i;
+            }
+            return 1.0 / acc;
+        }
+    }
     let u = x + 1.0;
     if !(is_int(n) && p_abs(n) <= 1000.0) && u >= 20.0 && u - n >= 20.0 && u.is_finite() {
         return p_exp(

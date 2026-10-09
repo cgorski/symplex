@@ -240,6 +240,7 @@ fn leadterm_by_tseries(
     w: ExprId,
     logw: ExprId,
 ) -> Result<(ExprId, ExprId), crate::base::errors::SymplexError> {
+    let f = combine_exponentials(arena, f, w);
     for order in [4i64, 10] {
         budget.tick(SERIES_COST)?;
         budget.charge_size(arena, f)?;
@@ -264,6 +265,51 @@ fn leadterm_by_tseries(
         operation: "gruntz::leadterm",
         reason: "the series expansion has no non-zero term within its precision".into(),
     })
+}
+
+/// `e^a·e^b → e^{a+b}` in every product of `f` with two or more
+/// `ω`-dependent exponential factors (an identity on all of ℂ).  The
+/// rewrite of Gruntz's `Γ(z) = e^{ln Γ(z)}` leaves `Γ(x + 1)/Γ(x)` as
+/// `e^{−ln Γ(1/ω)}·e^{ln Γ(1/ω + 1)}`, two essential singularities whose
+/// product is `1/ω`: only the combined exponent has a series (Stirling's
+/// terms cancel in it).  `limit(Γ(x + 1)/Γ(x) − x, x, ∞)` and
+/// `limit(x·(Γ(x + 1/2)/(Γ(x)·√x) − 1), x, ∞)` were refused (SymPy: `0`,
+/// `−1/8`).
+fn combine_exponentials(arena: &mut Arena, f: ExprId, w: ExprId) -> ExprId {
+    let post = crate::base::walk::post_order_ids(arena, f);
+    let w_exp = |arena: &Arena, c: ExprId| matches!(arena.node(c), ExprNode::Exp(a) if crate::base::walk::contains(arena, *a, w));
+    let several = |arena: &Arena, id: ExprId| match arena.node(id) {
+        ExprNode::Mul(cs) => cs.iter().filter(|&&c| w_exp(arena, c)).count() >= 2,
+        _ => false,
+    };
+    if !post.iter().any(|&id| several(arena, id)) {
+        return f;
+    }
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    for &id in &post {
+        let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        let new = if several(arena, rebuilt) {
+            let ExprNode::Mul(cs) = arena.node(rebuilt).clone() else {
+                continue;
+            };
+            let mut args: SmallVec<[ExprId; 4]> = SmallVec::new();
+            let mut rest: SmallVec<[ExprId; 6]> = SmallVec::new();
+            for c in cs {
+                match arena.node(c) {
+                    ExprNode::Exp(a) if crate::base::walk::contains(arena, *a, w) => args.push(*a),
+                    _ => rest.push(c),
+                }
+            }
+            let sum = arena.add(&args);
+            let sum = crate::transforms::eval::eval(arena, sum);
+            rest.push(arena.exp(sum));
+            arena.mul(&rest)
+        } else {
+            rebuilt
+        };
+        cache.insert(id, new);
+    }
+    cache.get(&f).copied().unwrap_or(f)
 }
 
 /// Is the coefficient `c` — a rational function of `ln ω` (and `x`) — zero
@@ -297,6 +343,7 @@ fn vanishes_to_positive_order(
     logw: ExprId,
 ) -> Option<i64> {
     budget.tick(SERIES_COST).ok()?;
+    let f = combine_exponentials(arena, f, w);
     budget.charge_size(arena, f).ok()?;
     let ts = crate::calculus::series::expand_leading(arena, f, w, 10, logw).ok()?;
     if ts.known() <= 0 {
@@ -883,6 +930,18 @@ fn mrv(
         ExprNode::Apply(f, ref args) if args.len() == 1 && is_internal_asymptotic(arena, f) => {
             let (s, r) = mrv(arena, args[0], x, depth + 1, budget)?;
             Ok((s, arena.intern(ExprNode::Apply(f, smallvec::smallvec![r]))))
+        }
+        // `Iν`, `Kν`, `Γ(s, ·)` of the asymptotic rewrite: a constant parameter.
+        ExprNode::Apply(f, ref args)
+            if args.len() == 2
+                && is_internal_asymptotic(arena, f)
+                && !crate::base::walk::contains(arena, args[0], x) =>
+        {
+            let (s, r) = mrv(arena, args[1], x, depth + 1, budget)?;
+            Ok((
+                s,
+                arena.intern(ExprNode::Apply(f, smallvec::smallvec![args[0], r])),
+            ))
         }
 
         // ── Fallback: treat as containing x somewhere ──
@@ -2018,6 +2077,22 @@ fn unary_leadterm(
                 reason: "function has a pole at the limit of its argument".into(),
             });
         }
+        // On a branch cut the value there is the limit only along the cut
+        // (a real argument) or from the side the principal value is
+        // continuous with: `asin(2 + iω)` tends to `π − asin 2`, not
+        // `asin 2` (a branch function whose argument tends to its cut is
+        // continued across the cut by `rewrite_tractable`; this is the
+        // guard for one it did not see).
+        if let Some((_, cut)) = crate::calculus::limit::branch_cut_of(arena, f)
+            && crate::calculus::limit::on_branch_cut(arena, cut, c_in)
+            && (cut == crate::calculus::limit::BranchCut::ImaginaryAxis
+                || !crate::calculus::limit::inner_known_real(arena, inner))
+        {
+            return Err(crate::base::errors::SymplexError::ComputationFailed {
+                operation: "gruntz::leadterm",
+                reason: "a non-real argument approaches the branch cut of a function".into(),
+            });
+        }
         let v = apply_unary(arena, template, c_in);
         let v = crate::transforms::eval::eval(arena, v);
         if is_infinite(arena, v) || v == arena.nan() {
@@ -2637,15 +2712,28 @@ pub(crate) fn limitinf(
 // Tractable rewriting
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// `true` if `e` contains a node that [`rewrite_tractable`] would touch.
-fn needs_tractable_rewrite(arena: &Arena, e: ExprId) -> bool {
+/// `true` if `e` contains a node that [`rewrite_tractable`] would touch
+/// (including a branch function of an argument that may leave the reals,
+/// which [`resolve_branch_cut`] continues across its cut).
+fn needs_tractable_rewrite(arena: &Arena, e: ExprId, x: ExprId) -> bool {
     let mut stack = vec![e];
     let mut visited = rustc_hash::FxHashSet::default();
     while let Some(id) = stack.pop() {
         if !visited.insert(id) {
             continue;
         }
+        if let Some((arg, _)) = crate::calculus::limit::branch_cut_of(arena, id)
+            && crate::base::walk::contains(arena, arg, x)
+            && may_leave_reals(arena, arg)
+        {
+            return true;
+        }
         let node = arena.node(id);
+        if special_asymptotic_arg(arena, node, x)
+            .is_some_and(|u| crate::base::walk::contains(arena, u, x))
+        {
+            return true;
+        }
         if matches!(
             node,
             ExprNode::Tan(_)
@@ -2693,6 +2781,60 @@ fn needs_tractable_rewrite(arena: &Arena, e: ExprId) -> bool {
     false
 }
 
+/// Can `e` take non-real values for real values of its symbols?  `false`
+/// when it is built only from numbers, real constants, symbols, sums,
+/// products, integer powers and functions that are real on the reals
+/// (`exp`, the trigonometric and hyperbolic functions, `atan`, `asinh`,
+/// `|·|`, `erf`, …) — a cheap structural screen before the branch-cut
+/// analysis of [`resolve_branch_cut`].
+fn may_leave_reals(arena: &Arena, e: ExprId) -> bool {
+    let mut stack = vec![e];
+    let mut visited = rustc_hash::FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        let node = arena.node(id);
+        let real_preserving = match node {
+            ExprNode::Pow(_, g) => arena.as_num(*g).is_some_and(|r| r.is_integer()),
+            _ => matches!(
+                node,
+                ExprNode::Num(_)
+                    | ExprNode::Pi
+                    | ExprNode::E
+                    | ExprNode::EulerGamma
+                    | ExprNode::Catalan
+                    | ExprNode::GoldenRatio
+                    | ExprNode::Symbol(_)
+                    | ExprNode::Add(_)
+                    | ExprNode::Mul(_)
+                    | ExprNode::Neg(_)
+                    | ExprNode::Exp(_)
+                    | ExprNode::Sin(_)
+                    | ExprNode::Cos(_)
+                    | ExprNode::Tan(_)
+                    | ExprNode::Sinh(_)
+                    | ExprNode::Cosh(_)
+                    | ExprNode::Tanh(_)
+                    | ExprNode::Atan(_)
+                    | ExprNode::Asinh(_)
+                    | ExprNode::Abs(_)
+                    | ExprNode::Sign(_)
+                    | ExprNode::Heaviside(_)
+                    | ExprNode::Floor(_)
+                    | ExprNode::Ceiling(_)
+                    | ExprNode::Erf(_)
+                    | ExprNode::Erfc(_)
+            ),
+        };
+        if !real_preserving {
+            return true;
+        }
+        node.for_each_child(|c| stack.push(c));
+    }
+    false
+}
+
 /// The terms `k·ln u` (`k` a rational number) of the exponent `a`, as
 /// `(u, k)`, and the remaining terms.
 fn exp_log_terms(arena: &Arena, a: ExprId) -> (Vec<(ExprId, ExprId)>, Vec<ExprId>) {
@@ -2731,6 +2873,10 @@ fn exp_log_terms(arena: &Arena, a: ExprId) -> (Vec<(ExprId, ExprId)>, Vec<ExprId
 /// * `⌊u⌋, ⌈u⌉ → n` when `u` converges to a finite value
 /// * `min/max → ` the eventually smallest/largest argument
 /// * `Piecewise → ` the branch whose condition eventually holds
+/// * a branch function whose argument tends to a point of its cut → its
+///   continuation across the cut from the side the argument approaches
+///   from ([`resolve_branch_cut`]); the continuation's own functions are
+///   rewritten by a further pass
 ///
 /// Nodes whose eventual sign cannot be determined are left untouched.
 fn rewrite_tractable(
@@ -2740,12 +2886,38 @@ fn rewrite_tractable(
     depth: usize,
     budget: &mut Budget,
 ) -> Result<ExprId, crate::base::errors::SymplexError> {
-    if !needs_tractable_rewrite(arena, e) {
-        return Ok(e);
+    let mut e = e;
+    for _ in 0..MAX_TRACTABLE_PASSES {
+        let (r, continued) = rewrite_tractable_pass(arena, e, x, depth, budget)?;
+        e = r;
+        if !continued {
+            break;
+        }
+    }
+    Ok(e)
+}
+
+/// Most passes of [`rewrite_tractable`]: one more after each pass that
+/// continued a function across its cut (whose continuation has functions
+/// of its own to rewrite, `acosh(−u) + iπ`).
+const MAX_TRACTABLE_PASSES: usize = 3;
+
+/// One pass of [`rewrite_tractable`]; `true` when a function was continued
+/// across its branch cut.
+fn rewrite_tractable_pass(
+    arena: &mut Arena,
+    e: ExprId,
+    x: ExprId,
+    depth: usize,
+    budget: &mut Budget,
+) -> Result<(ExprId, bool), crate::base::errors::SymplexError> {
+    if !needs_tractable_rewrite(arena, e, x) {
+        return Ok((e, false));
     }
 
     let post = crate::base::walk::post_order_ids(arena, e);
     let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    let mut continued = false;
 
     for &id in &post {
         if !crate::base::walk::contains(arena, id, x) {
@@ -2754,7 +2926,11 @@ fn rewrite_tractable(
         }
         let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
         let node = arena.node(rebuilt).clone();
-        check_branch_cut_approach(arena, &node, x, depth, budget)?;
+        if let Some(g) = resolve_branch_cut(arena, &node, rebuilt, x, depth, budget)? {
+            continued = true;
+            cache.insert(id, g);
+            continue;
+        }
         let new = match node {
             ExprNode::Tan(u) => {
                 let s = arena.sin(u);
@@ -2847,10 +3023,64 @@ fn rewrite_tractable(
                     _ => rebuilt,
                 }
             }
-            ExprNode::Erf(u) | ExprNode::Erfc(u) | ExprNode::Ei(u) | ExprNode::Li(u) => {
+            // `Ei` of a non-real argument whose real part tends to `−∞`: its
+            // value tends to `±iπ` (the side of the cut), which the
+            // asymptotic series of `e^{−z} Ei(z)` does not carry; before,
+            // `limit(Ei(−x + i), x, ∞)` was `0` (it is `iπ`; mpmath
+            // `ei(−10 + i) = −1.9·10⁻⁶ + 3.14159i`).
+            ExprNode::Ei(u) | ExprNode::Li(u) => match limitinf(arena, u, x, depth + 1, budget) {
+                Ok(l) if l == arena.infinity() => {
+                    asymptotic_rewrite(arena, &node, u, true).unwrap_or(rebuilt)
+                }
+                Ok(l) if l == arena.neg_infinity() => {
+                    if eventually_real(arena, u, x, depth + 1, budget) {
+                        asymptotic_rewrite(arena, &node, u, false).unwrap_or(rebuilt)
+                    } else if let (ExprNode::Ei(_), Some(side)) = (
+                        &node,
+                        cut_side(
+                            arena,
+                            u,
+                            arena.zero(),
+                            crate::calculus::limit::BranchCut::NegativeReals,
+                            x,
+                            depth,
+                            budget,
+                        ),
+                    ) && side != 0
+                    {
+                        let r = asymptotic_rewrite(arena, &node, u, false).unwrap_or(rebuilt);
+                        let i_pi = arena.mul(&[arena.i_unit(), arena.pi()]);
+                        let shift = if side > 0 { i_pi } else { arena.neg(i_pi) };
+                        arena.add(&[r, shift])
+                    } else {
+                        rebuilt
+                    }
+                }
+                Err(e) if is_budget_error(&e) => return Err(e),
+                _ => rebuilt,
+            },
+            ExprNode::Erf(u) | ExprNode::Erfc(u) => {
                 match limitinf(arena, u, x, depth + 1, budget) {
                     Ok(l) if l == arena.infinity() || l == arena.neg_infinity() => {
                         asymptotic_rewrite(arena, &node, u, l == arena.infinity())
+                            .unwrap_or(rebuilt)
+                    }
+                    Err(e) if is_budget_error(&e) => return Err(e),
+                    _ => rebuilt,
+                }
+            }
+            ExprNode::Zeta(_) | ExprNode::Apply(..)
+                if special_asymptotic_arg(arena, &node, x).is_some() =>
+            {
+                let Some(u) = special_asymptotic_arg(arena, &node, x) else {
+                    continue;
+                };
+                match limitinf(arena, u, x, depth + 1, budget) {
+                    Ok(l)
+                        if (l == arena.infinity() || l == arena.neg_infinity())
+                            && eventually_real(arena, u, x, depth + 1, budget) =>
+                    {
+                        special_asymptotic_rewrite(arena, &node, u, l == arena.infinity(), e)
                             .unwrap_or(rebuilt)
                     }
                     Err(e) if is_budget_error(&e) => return Err(e),
@@ -2968,7 +3198,7 @@ fn rewrite_tractable(
         let r_display = arena.display(result).to_string();
         tracing::debug!(rewritten = %r_display, "gruntz::rewrite_tractable");
     }
-    Ok(result)
+    Ok((result, continued))
 }
 
 /// `f(z)` of an error function, `Ei` or `li` with `z → +∞` (`positive`) or
@@ -3005,7 +3235,20 @@ fn asymptotic_rewrite(
             let u2 = arena.pow(u, two);
             let nu2 = arena.neg(u2);
             let damp = arena.exp(nu2);
-            let e = internal(arena, ERFCX_ASYMPTOTIC, z);
+            // `erfc(√x)` (and `Γ(1/2, x) = √π·erfc(√x)`): `E(z)` would have a
+            // series in `x^{−1/2}`; `E₂(z²)/z` has one in `1/x`.
+            let u2e = crate::transforms::eval::eval(arena, u2);
+            let e = if has_fractional_power(arena, u) && !has_fractional_power(arena, u2e) {
+                let e2 = arena.symbol(crate::calculus::series::ERFCX2_ASYMPTOTIC);
+                let ExprNode::Symbol(sid) = *arena.node(e2) else {
+                    return None;
+                };
+                let e2 = arena.intern(ExprNode::Apply(sid, smallvec::smallvec![u2e]));
+                let inv = arena.pow(z, arena.neg_one());
+                arena.mul(&[e2, inv])
+            } else {
+                internal(arena, ERFCX_ASYMPTOTIC, z)
+            };
             // t = erfc(z), z → +∞
             let t = arena.mul(&[damp, e]);
             let one = arena.one();
@@ -3031,11 +3274,182 @@ fn asymptotic_rewrite(
     }
 }
 
+/// The argument of a special function that [`special_asymptotic_rewrite`]
+/// expands at `±∞` (`Chi`, `Shi`, `erfi`, `Iν`, `Kν`, `Eₙ`, `Γ(s, ·)`,
+/// `γ(s, ·)` with a parameter free of the limit variable, `ζ`), if `node` is
+/// one.
+fn special_asymptotic_arg(arena: &Arena, node: &ExprNode, x: ExprId) -> Option<ExprId> {
+    use crate::base::libfn::LibFn;
+    match *node {
+        ExprNode::Zeta(u) => Some(u),
+        ExprNode::Apply(f, ref args) => match (arena.lib_fn(f)?, args.as_slice()) {
+            (LibFn::Chi | LibFn::Shi | LibFn::Erfi, &[u]) => Some(u),
+            (_, &[p, _]) if crate::base::walk::contains(arena, p, x) => None,
+            (
+                LibFn::BesselI
+                | LibFn::BesselK
+                | LibFn::ExpInt
+                | LibFn::UpperGamma
+                | LibFn::LowerGamma,
+                &[_, u],
+            ) => Some(u),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// `f(u)` for `u → +∞` (`positive`) or `−∞`, `u` real, of a function of
+/// [`special_asymptotic_arg`], with its exponential factor taken out and an
+/// internal function whose expansion in `1/u` the series engine knows
+/// ([`EI_ASYMPTOTIC`](crate::calculus::series::EI_ASYMPTOTIC), `F`, and the
+/// [`PowerAsymptotic`](crate::calculus::series::PowerAsymptotic) heads):
+///
+/// * `Chi u = (e^u F(u) + e^{−u} F(−u))/2` (`+ iπ` for `u < 0`), `Shi u =
+///   (e^u F(u) − e^{−u} F(−u))/2` — `Chi`, `Shi` are `(Ei(u) ± Ei(−u))/2`
+///   exactly (DLMF 6.2.15–16),
+/// * `erfi u = e^{u²} E(u²)/u` (odd on both sides; `E` of `u²` keeps the series
+///   of `erfi(√x)` in integer powers of `1/x`),
+/// * `Iν(u) = e^u (2πu)^{−1/2} I(ν, u)`, `Kν(u) = e^{−u} (π/(2u))^{1/2} K(ν, u)`
+///   (`u → +∞`),
+/// * `Γ(s, u) = u^{s−1} e^{−u} G(s, u)`, `Eₙ(u) = e^{−u} u^{−1} G(1 − n, u)`,
+///   `γ(s, u) = Γ(s) − Γ(s, u)` (`u → +∞`),
+/// * `ζ(u) = 1 + 2^{−u} Z(u)` (`u → +∞`).
+///
+/// SymPy's `_eval_aseries` of `erfi`, `besseli`, `besselk`, `expint` and
+/// `Chi`/`Shi` via `Ei` (SymPy expands `uppergamma`, `ζ` by other means);
+/// the series are DLMF 7.12.1, 10.40.1–2, 8.11.2, 8.20.2, 25.2.1.  `Iν` is
+/// not rewritten beside an `I₋ν` (anywhere in `whole`): the two have the
+/// same expansion to every order in `1/u` and differ by the exponentially
+/// smaller `(2/π) sin(νπ) Kν(u)`, which the expansion cannot see.  Before,
+/// all of these were refused ("a function of unknown growth"):
+/// `limit(Chi(x)·x·e^{−x}, x, ∞)` is `1/2`.
+fn special_asymptotic_rewrite(
+    arena: &mut Arena,
+    node: &ExprNode,
+    u: ExprId,
+    positive: bool,
+    whole: ExprId,
+) -> Option<ExprId> {
+    use crate::base::libfn::LibFn;
+    use crate::calculus::series::{EI_ASYMPTOTIC, PowerAsymptotic};
+    let internal = |arena: &mut Arena, name: &str, args: &[ExprId]| -> ExprId {
+        let head = arena.symbol(name);
+        let ExprNode::Symbol(sid) = *arena.node(head) else {
+            return head;
+        };
+        arena.intern(ExprNode::Apply(sid, args.iter().copied().collect()))
+    };
+    let one = arena.one();
+    let two = arena.int(2);
+    let half = arena.rational(1, 2);
+    let neg_u = arena.neg(u);
+    let e_u = arena.exp(u);
+    let e_neg_u = arena.exp(neg_u);
+    match *node {
+        ExprNode::Zeta(_) if positive => {
+            let z = internal(arena, PowerAsymptotic::Zeta.name(), &[u]);
+            let p = arena.pow(two, neg_u);
+            let t = arena.mul(&[p, z]);
+            Some(arena.add(&[one, t]))
+        }
+        ExprNode::Apply(f, ref args) => match (arena.lib_fn(f)?, args.as_slice()) {
+            (LibFn::Chi | LibFn::Shi, _) => {
+                let fp = internal(arena, EI_ASYMPTOTIC, &[u]);
+                let fm = internal(arena, EI_ASYMPTOTIC, &[neg_u]);
+                let ei_p = arena.mul(&[e_u, fp]);
+                let ei_m = arena.mul(&[e_neg_u, fm]);
+                let chi = arena.lib_fn(f) == Some(LibFn::Chi);
+                let ei_m = if chi { ei_m } else { arena.neg(ei_m) };
+                let s = arena.add(&[ei_p, ei_m]);
+                let r = arena.mul(&[half, s]);
+                Some(if chi && !positive {
+                    let i_pi = arena.mul(&[arena.i_unit(), arena.pi()]);
+                    arena.add(&[r, i_pi])
+                } else {
+                    r
+                })
+            }
+            // erfi u = e^{u²}·E(u²)/u for u → ±∞ (both sides odd).
+            (LibFn::Erfi, _) => {
+                let u2 = arena.pow(u, two);
+                let u2 = crate::transforms::eval::eval(arena, u2);
+                let g = arena.exp(u2);
+                let e = internal(arena, PowerAsymptotic::Erfi.name(), &[u2]);
+                let inv = arena.pow(u, arena.neg_one());
+                Some(arena.mul(&[g, e, inv]))
+            }
+            (LibFn::BesselI, &[nu, _]) if positive => {
+                // Not beside an `I₋ν` (see above).
+                for id in crate::base::walk::post_order_ids(arena, whole) {
+                    if let ExprNode::Apply(g, gargs) = arena.node(id).clone()
+                        && arena.lib_fn(g) == Some(LibFn::BesselI)
+                        && gargs.len() == 2
+                        && gargs[0] != nu
+                    {
+                        let s = arena.add(&[gargs[0], nu]);
+                        let s = crate::transforms::eval::eval(arena, s);
+                        if arena.is_zero_structural(s) {
+                            return None;
+                        }
+                    }
+                }
+                let i = internal(arena, PowerAsymptotic::BesselI.name(), &[nu, u]);
+                let two_pi_u = arena.mul(&[two, arena.pi(), u]);
+                let m_half = arena.rational(-1, 2);
+                let pre = arena.pow(two_pi_u, m_half);
+                Some(arena.mul(&[e_u, pre, i]))
+            }
+            (LibFn::BesselK, &[nu, _]) if positive => {
+                let k = internal(arena, PowerAsymptotic::BesselK.name(), &[nu, u]);
+                let two_u = arena.mul(&[two, u]);
+                let q = arena.div(arena.pi(), two_u);
+                let pre = arena.pow(q, half);
+                Some(arena.mul(&[e_neg_u, pre, k]))
+            }
+            (LibFn::UpperGamma | LibFn::LowerGamma, &[s, _]) if positive => {
+                let g = internal(arena, PowerAsymptotic::UpperGamma.name(), &[s, u]);
+                let sm1 = arena.sub(s, one);
+                let p = arena.pow(u, sm1);
+                let upper = arena.mul(&[p, e_neg_u, g]);
+                if arena.lib_fn(f) == Some(LibFn::UpperGamma) {
+                    return Some(upper);
+                }
+                // γ(s, u) = Γ(s) − Γ(s, u), for Γ(s) finite.
+                if arena
+                    .as_num(s)
+                    .is_some_and(|r| r.is_integer() && !r.is_positive())
+                {
+                    return None;
+                }
+                let gs = arena.gamma(s);
+                Some(arena.sub(gs, upper))
+            }
+            (LibFn::ExpInt, &[n, _]) if positive => {
+                let s = arena.sub(one, n);
+                let g = internal(arena, PowerAsymptotic::UpperGamma.name(), &[s, u]);
+                let inv = arena.pow(u, arena.neg_one());
+                Some(arena.mul(&[e_neg_u, inv, g]))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Does `e` contain a power with a non-integer exponent?
+fn has_fractional_power(arena: &Arena, e: ExprId) -> bool {
+    crate::base::walk::post_order_ids(arena, e).into_iter().any(|id| {
+        matches!(arena.node(id), ExprNode::Pow(_, g) if arena.as_num(*g).is_none_or(|r| !r.is_integer()))
+    })
+}
+
 /// Is `f` the head of one of the internal asymptotic functions of
 /// [`asymptotic_rewrite`]?
 fn is_internal_asymptotic(arena: &Arena, f: crate::base::node::SymbolId) -> bool {
-    use crate::calculus::series::{EI_ASYMPTOTIC, ERFCX_ASYMPTOTIC};
-    matches!(arena.symbol_name(f), ERFCX_ASYMPTOTIC | EI_ASYMPTOTIC)
+    use crate::calculus::series::{EI_ASYMPTOTIC, ERFCX_ASYMPTOTIC, PowerAsymptotic};
+    let name = arena.symbol_name(f);
+    matches!(name, ERFCX_ASYMPTOTIC | EI_ASYMPTOTIC) || PowerAsymptotic::from_name(name).is_some()
 }
 
 /// Does `e` contain one of the internal asymptotic functions?
@@ -3128,48 +3542,160 @@ fn simplify_exp_log(arena: &mut Arena, e: ExprId) -> ExprId {
     crate::transforms::eval::eval(arena, r)
 }
 
-/// Refuse a branch function (`ln`, a fractional power, `asin`, `acos`,
-/// `atanh`, `acosh`, `asinh`, `atan`) whose argument is not eventually
-/// real and tends to a point of the function's cut: the limit then
-/// depends on the side from which the argument approaches, which the
-/// leading terms of Gruntz's expansion do not keep (`asinh(atanh(1 − x))`
-/// gave `asinh(iπ/2)`, the value on the cut, as its limit at `∞`;
-/// the argument approaches from `Re < 0`, where the limit is
-/// `−acosh(π/2) + iπ/2`).  A real argument moves along the cut, where
-/// the principal values are continuous.
-fn check_branch_cut_approach(
+/// A branch function `f(u)` (`ln`, a fractional power, `asin`, `acos`,
+/// `atanh`, `acosh`, `asinh`, `atan`, `Ei`, `Ci`, `Chi`, `ln Γ`) whose
+/// argument tends to a point `l` of the function's cut, continued across
+/// the cut from the side `u` approaches from ([`continuation_across_cut`]):
+/// the leading terms of Gruntz's expansion do not keep that side.  (The
+/// other functions with a cut, `W`, `polylog`, `Kν`, …, are refused there.)  The side is the eventual sign
+/// of `Im(u − l)` (`Re(u − l)` for the cuts on the imaginary axis), from
+/// its exact imaginary part ([`cut_side`]) — as SymPy decides it from the
+/// first non-real term of the argument's series (`log._eval_nseries`) or
+/// its direction (`asin._eval_nseries`); a real `u` moves along the cut.
+/// `Ok(None)` when `f(u)` needs no continuation (its argument does not
+/// tend to the cut, or is real and stays on it: there the principal values
+/// are continuous — except for `acosh`, whose logarithmic form would put
+/// `ln` on its own cut, `acosh(−1 − 1/x) = acosh(1 + 1/x) + iπ`), `Err`
+/// when the side is undecided.
+///
+/// Up to 0.36 such a function was refused (`limit(x/(ln(−2 + ix) −
+/// ln(−2)), x, 0, '+')` is `2i`, SymPy agrees; from the left `0`), and one
+/// whose argument the rewrite did not visit took the value on the cut as
+/// its leading term: `limit(asin(2 + ix), x, 0, '+')` was `asin 2`; it is
+/// `π − asin 2` (SymPy).
+///
+/// [`continuation_across_cut`]: crate::calculus::limit::continuation_across_cut
+fn resolve_branch_cut(
     arena: &mut Arena,
     node: &ExprNode,
+    id: ExprId,
     x: ExprId,
     depth: usize,
     budget: &mut Budget,
-) -> Result<(), crate::base::errors::SymplexError> {
+) -> Result<Option<ExprId>, crate::base::errors::SymplexError> {
     use crate::calculus::limit::BranchCut;
-    let (arg, cut) = match *node {
-        ExprNode::Ln(a) => (a, BranchCut::NegativeReals),
-        ExprNode::Pow(b, e) if arena.as_num(e).is_some_and(|r| !r.is_integer()) => {
-            (b, BranchCut::NegativeReals)
-        }
-        ExprNode::Asin(a) | ExprNode::Acos(a) | ExprNode::Atanh(a) => (a, BranchCut::BeyondOne),
-        ExprNode::Acosh(a) => (a, BranchCut::BelowOne),
-        ExprNode::Asinh(a) | ExprNode::Atan(a) => (a, BranchCut::ImaginaryAxis),
-        _ => return Ok(()),
+    let Some((arg, cut)) = crate::calculus::limit::branch_cut_of(arena, id) else {
+        return Ok(None);
     };
-    if !crate::base::walk::contains(arena, arg, x)
-        || eventually_real(arena, arg, x, depth + 1, budget)
-    {
-        return Ok(());
+    if !crate::base::walk::contains(arena, arg, x) {
+        return Ok(None);
+    }
+    let acosh = matches!(node, ExprNode::Acosh(_));
+    let real = eventually_real(arena, arg, x, depth + 1, budget);
+    if real && !acosh {
+        return Ok(None);
     }
     let Ok(l) = limitinf(arena, arg, x, depth + 1, budget) else {
-        return Ok(());
+        return Ok(None);
     };
-    if !is_infinite(arena, l) && crate::calculus::limit::on_branch_cut(arena, cut, l) {
-        return Err(crate::base::errors::SymplexError::ComputationFailed {
-            operation: "gruntz",
-            reason: "a non-real argument approaches the branch cut of a function".into(),
-        });
+    if is_infinite(arena, l) || !crate::calculus::limit::on_branch_cut(arena, cut, l) {
+        return Ok(None);
     }
-    Ok(())
+    let undecided = || crate::base::errors::SymplexError::ComputationFailed {
+        operation: "gruntz",
+        reason:
+            "a non-real argument approaches the branch cut of a function from an undecided side"
+                .into(),
+    };
+    let side = if real && cut != BranchCut::ImaginaryAxis {
+        0
+    } else {
+        cut_side(arena, arg, l, cut, x, depth, budget).ok_or_else(undecided)?
+    };
+    // Along the cut of `acosh` to its branch point `−1`: from which end.
+    let along = if acosh && side == 0 {
+        let d = arena.sub(arg, l);
+        sign_at_inf(arena, d, x, depth + 1, budget).unwrap_or(0)
+    } else {
+        0
+    };
+    match crate::calculus::limit::continuation_across_cut(arena, id, l, side, along) {
+        Some(g) => {
+            tracing::debug!(
+                side,
+                continued = %arena.display(g).to_string(),
+                "gruntz: a branch function continued across its cut"
+            );
+            Ok(Some(g))
+        }
+        None => Err(undecided()),
+    }
+}
+
+/// The side of the cut `cut` from which `u → l` (a point of the cut)
+/// approaches as `x → ∞`: the eventual sign of the component of `u − l`
+/// perpendicular to the cut (`Im` for the cuts on the real axis, `Re` for
+/// those on the imaginary axis), `0` when that component is identically
+/// zero.  `None` when the component is not known exactly (an opaque
+/// `Re`/`Im` of a sub-expression) or its sign is undecided.
+fn cut_side(
+    arena: &mut Arena,
+    u: ExprId,
+    l: ExprId,
+    cut: crate::calculus::limit::BranchCut,
+    x: ExprId,
+    depth: usize,
+    budget: &mut Budget,
+) -> Option<i32> {
+    let d = arena.sub(u, l);
+    let d = crate::transforms::eval::eval(arena, d);
+    let imaginary_axis = cut == crate::calculus::limit::BranchCut::ImaginaryAxis;
+    let parts = crate::base::complex::decompose(arena, d);
+    if !parts.exact {
+        // `Re ln(2 − x)` is opaque to the decomposition: the leading term
+        // `c·ωᵉ` of `u − l` decides when `c` is a constant off the line
+        // of the cut (`(ln(2 − x) − ln x − iπ)/2 ~ −1/x`).
+        let (c, _) = mrv_leadterm(arena, d, x, depth + 1, budget, false).ok()?;
+        let c = if crate::base::walk::contains(arena, c, x) {
+            c
+        } else {
+            settle_constant(arena, c)
+        };
+        if arena.is_zero_structural(c) {
+            // `u ≡ l` (as in `limitinf`): on the cut.
+            return Some(0);
+        }
+        if !crate::base::walk::free_symbols(arena, c).is_empty() {
+            return None;
+        }
+        // The certified sign of the component itself: a component of an
+        // evaluated `c` that is exactly 0 can be rounding noise there
+        // (`Im(−2i·acos 2) = −2·Re(acos 2) = 0` came out negative, and
+        // `sqrt(1 + (acos 2 − ix)²)` was continued from below the cut).
+        let p = if imaginary_axis {
+            arena.re(c)
+        } else {
+            arena.im(c)
+        };
+        let p = crate::transforms::eval::eval(arena, p);
+        return match crate::calculus::limit::const_sign(arena, p) {
+            Some(s) if s != 0 => Some(s),
+            _ => None,
+        };
+    }
+    let p = if imaginary_axis { parts.re } else { parts.im };
+    let p = crate::transforms::eval::eval(arena, p);
+    if arena.is_zero_structural(p) {
+        return Some(0);
+    }
+    let expanded = crate::transforms::expand::expand(arena, p);
+    let expanded = crate::transforms::eval::eval(arena, expanded);
+    if arena.is_zero_structural(expanded) {
+        return Some(0);
+    }
+    // The decomposition writes `|v|` for a modulus (`−ln|1/x| + ln(x⁻²)/2`,
+    // from `ln(x²)/2 − ln x` at `0⁻`): resolved by the eventual sign of `v`
+    // first; logarithms of positive quantities that cancel only once
+    // expanded are zero, which the leading-term search cannot see.  A zero
+    // leading coefficient from `sign_at_inf` is an identically vanishing
+    // component, as in `limitinf`.
+    let p = rewrite_tractable(arena, p, x, depth + 1, budget).ok()?;
+    let expanded = crate::simplify::log_expand::expand_log(arena, p);
+    let expanded = crate::transforms::eval::eval(arena, expanded);
+    if arena.is_zero_structural(p) || arena.is_zero_structural(expanded) {
+        return Some(0);
+    }
+    sign_at_inf(arena, p, x, depth + 1, budget).ok()
 }
 
 /// Is `e` real for all sufficiently large `x` (`x` itself is real and

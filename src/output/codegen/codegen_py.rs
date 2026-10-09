@@ -45,7 +45,7 @@
 //! The printer is an iterative post-order walk (no recursion).
 
 use num_bigint::BigInt;
-use num_traits::{One, Signed};
+use num_traits::{One, Signed, ToPrimitive};
 use rustc_hash::FxHashMap;
 
 use crate::api::expr::{Expr, Sort};
@@ -254,8 +254,81 @@ impl Emitter<'_> {
             .ok_or_else(|| self.unsupported("an unrendered sub-expression"))
     }
 
+    /// A literal standing for `r` in a float context: its correctly rounded
+    /// `f64`, the target's infinity beyond the range.
+    fn float_value(&self, r: &Q) -> Rendered {
+        let v = super::rational_to_f64(r);
+        let text = if v.is_infinite() {
+            let inf = self
+                .target
+                .constant(&ExprNode::Infinity)
+                .unwrap_or("math.inf");
+            if v < 0.0 {
+                format!("(-{inf})")
+            } else {
+                inf.to_string()
+            }
+        } else {
+            float_literal(v)
+        };
+        if v < 0.0 {
+            Rendered::new(text, PREC_NEG)
+        } else {
+            Rendered::atom(text)
+        }
+    }
+
+    /// Whether the exact form of `r` cannot be used: an integer part past
+    /// the `f64` range in Python and Julia (`x + 10**400` raises
+    /// `OverflowError`), past 2⁵³ in NumPy (`numpy.sqrt(10**20 + 1)`, an
+    /// integer beyond `int64`, raises `TypeError`); a quotient `(p/q)`
+    /// that overflows.
+    fn needs_float(&self, r: &Q) -> bool {
+        let limit = match self.target {
+            Target::NumPy => 53,
+            _ => 1023,
+        };
+        if r.is_integer() {
+            return r.numer().magnitude().bits() > limit;
+        }
+        super::rational_to_f64(r).is_infinite()
+    }
+
+    /// `b^e` (an exact rational) for a rational base and a negative integer
+    /// exponent whose power `b^(−e)` is an integer the target cannot
+    /// convert (see [`needs_float`](Self::needs_float)); `None` otherwise.
+    /// A power beyond 2¹⁰⁰⁰⁰ bits is the value 0 or ∞ it rounds to.
+    fn huge_constant_power(&self, base: ExprId, e: &Q) -> Option<Q> {
+        let b = self.arena.as_num(base)?;
+        if !e.is_integer()
+            || b.is_negative()
+            || !b.is_integer()
+            || b.is_one()
+            || b.numer().bits() == 0
+        {
+            return None;
+        }
+        let n = (-e.numer().clone()).to_u32().filter(|n| *n > 0)?;
+        let bits = u64::from(n).saturating_mul(b.numer().bits());
+        let limit = match self.target {
+            Target::NumPy => 53,
+            _ => 1023,
+        };
+        if bits <= limit + 1 {
+            return None;
+        }
+        if bits > 10_000 {
+            return Some(Q::from_integer(BigInt::from(0)));
+        }
+        let p = num_traits::pow::pow(b.numer().clone(), n as usize);
+        Some(Q::new(BigInt::one(), p))
+    }
+
     /// An exact literal: integers bare, rationals as `(p/q)`.
     fn number(&self, r: &Q) -> Rendered {
+        if self.needs_float(r) {
+            return self.float_value(r);
+        }
         if r.is_integer() {
             if r.is_negative() {
                 Rendered::new(r.numer().to_string(), PREC_NEG)
@@ -285,11 +358,21 @@ impl Emitter<'_> {
         // returned as rendered, keeping its own precedence.
         let mut single: Option<Rendered> = None;
         if let Some(c) = coeff {
-            if !c.numer().is_one() {
-                numer.push(c.numer().to_string());
-            }
-            if !c.denom().is_one() {
-                denom.push(c.denom().to_string());
+            let limit = match self.target {
+                Target::NumPy => 53,
+                _ => 1023,
+            };
+            if c.numer().magnitude().bits() > limit || c.denom().magnitude().bits() > limit {
+                // `x/2**1074` raised OverflowError (the integer is not a
+                // float): the coefficient's value instead.
+                numer.push(self.float_value(c).at(PREC_MUL + 1));
+            } else {
+                if !c.numer().is_one() {
+                    numer.push(c.numer().to_string());
+                }
+                if !c.denom().is_one() {
+                    denom.push(c.denom().to_string());
+                }
             }
         }
         for &f in factors {
@@ -297,6 +380,13 @@ impl Emitter<'_> {
                 && let Some(r) = self.arena.as_num(*exp)
                 && r.is_negative()
             {
+                if let Some(v) = self.huge_constant_power(*base, r) {
+                    // `x/2**1074` raised OverflowError: the denominator is
+                    // an integer past the float range.  Its value instead.
+                    numer.push(self.float_value(&v).at(PREC_MUL + 1));
+                    single = None;
+                    continue;
+                }
                 let base_r = self.cached(cache, *base)?;
                 let pos = -r.clone();
                 if pos.is_one() {
@@ -366,6 +456,21 @@ impl Emitter<'_> {
             if *r.numer() == -one {
                 return Rendered::new(format!("1/{}", b.at(PREC_MUL + 1)), PREC_MUL);
             }
+            if let Some(e) = super::odd_integer_beyond_f64(r) {
+                // The exponent converts to an even float: keep the sign of
+                // the odd power (`(-1.0)**(2**53 + 1)` was 1.0).
+                let e = float_literal(e);
+                return Rendered::atom(match self.target {
+                    Target::Python => {
+                        format!("(lambda b: math.copysign(abs(b)**{e}, b))({})", b.at(0))
+                    }
+                    Target::NumPy => format!(
+                        "(lambda b: numpy.copysign(numpy.abs(b)**{e}, b))({})",
+                        b.at(0)
+                    ),
+                    Target::Julia => format!("(b -> copysign(abs(b)^{e}, b))({})", b.at(0)),
+                });
+            }
             return Rendered::new(self.pow_text(b, &self.number(r)), PREC_POW);
         }
         // NaN for a negative (or NaN) base, the base evaluated once.
@@ -392,7 +497,83 @@ impl Emitter<'_> {
             return Ok(self.pow_rational(&b, r));
         }
         let e = self.cached(cache, exp)?;
+        if self.target == Target::Python && !self.surely_nonnegative(base) {
+            // Python's `(-2.0)**0.5` is a complex number; the power of a
+            // negative base is real only for an integer exponent.
+            return Ok(Rendered::atom(format!(
+                "(lambda b, e: b**e if b >= 0 or e % 1 == 0 else math.nan)({}, {})",
+                b.at(0),
+                e.at(0)
+            )));
+        }
         Ok(Rendered::new(self.pow_text(&b, &e), PREC_POW))
+    }
+
+    /// `id` is non-negative by its form (a non-negative constant, `|u|`,
+    /// `e^u`, `√u`, an even power, powers and products of such); NaN aside.
+    fn surely_nonnegative(&self, id: ExprId) -> bool {
+        let mut stack = vec![id];
+        while let Some(cur) = stack.pop() {
+            let ok = match self.arena.node(cur) {
+                ExprNode::Num(n) => !self.arena.num(*n).is_negative(),
+                ExprNode::Pi
+                | ExprNode::E
+                | ExprNode::GoldenRatio
+                | ExprNode::Catalan
+                | ExprNode::Infinity
+                | ExprNode::Abs(_)
+                | ExprNode::Exp(_)
+                | ExprNode::Cosh(_) => true,
+                ExprNode::Symbol(_) => self.folds.get(&cur).is_some_and(|v| *v >= 0.0),
+                ExprNode::Pow(b, e) => {
+                    // An even power or a square root; any power of a
+                    // non-negative base.
+                    let even_or_half = self.arena.as_num(*e).is_some_and(|r| {
+                        (r.is_integer() && num_integer::Integer::is_even(r.numer()))
+                            || (*r.numer() == BigInt::one() && *r.denom() == BigInt::from(2))
+                    });
+                    if !even_or_half {
+                        stack.push(*b);
+                    }
+                    true
+                }
+                ExprNode::Mul(ch) => {
+                    stack.extend(ch.iter().copied());
+                    true
+                }
+                _ => false,
+            };
+            if !ok {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Whether the rendering of `id` repeats the rendering of a
+    /// subexpression (`sign`, `Heaviside` and `im` test their argument
+    /// several times): a node that repeats its own operand binds it with a
+    /// `lambda` when this holds, so nesting stays linear (nested `sign`
+    /// grew as 4ⁿ, 1.6 MB at depth 8).
+    fn repeats_operand(&self, id: ExprId) -> bool {
+        let mut stack = vec![id];
+        let mut seen = rustc_hash::FxHashSet::default();
+        while let Some(cur) = stack.pop() {
+            if !seen.insert(cur) {
+                continue;
+            }
+            let node = self.arena.node(cur);
+            let dup = match node {
+                ExprNode::Sign(_) | ExprNode::Im(_) => self.target == Target::Python,
+                ExprNode::Heaviside(_) => self.target != Target::NumPy,
+                _ => false,
+            };
+            if dup {
+                return true;
+            }
+            node.for_each_child(|c| stack.push(c));
+        }
+        false
     }
 
     /// `(negative, |term|)` for a summand.
@@ -417,6 +598,24 @@ impl Emitter<'_> {
         }
     }
 
+    /// The target's name for `expm1` / `log1p`.
+    fn m1_name(&self, log: bool) -> &'static str {
+        match (self.target, log) {
+            (Target::Python, false) => "math.expm1",
+            (Target::Python, true) => "math.log1p",
+            (Target::NumPy, false) => "numpy.expm1",
+            (Target::NumPy, true) => "numpy.log1p",
+            (Target::Julia, false) => "expm1",
+            (Target::Julia, true) => "log1p",
+        }
+    }
+
+    fn is_exact_int(&self, id: ExprId, v: i64) -> bool {
+        self.arena
+            .as_num(id)
+            .is_some_and(|r| r.is_integer() && *r.numer() == BigInt::from(v))
+    }
+
     fn render_add(&self, children: &[ExprId], cache: &Cache) -> Result<Rendered, SymplexError> {
         if children.is_empty() {
             return Ok(Rendered::atom("0"));
@@ -424,6 +623,32 @@ impl Emitter<'_> {
         let mut ordered: Vec<ExprId> = children.to_vec();
         ordered.sort_by_key(|a| display_sort_key(self.arena, *a));
         let mut text = String::new();
+        // e^u − 1 [+ rest] is `expm1(u)`, as in the Rust and C back ends and
+        // `compile()` (`math.exp(1e-20) - 1` is 0, its value 1e-20).
+        let exp_at = ordered
+            .iter()
+            .position(|&c| matches!(self.arena.node(c), ExprNode::Exp(_)));
+        let one_at = ordered.iter().position(|&c| self.is_exact_int(c, -1));
+        if let (Some(ei), Some(oi)) = (exp_at, one_at)
+            && let ExprNode::Exp(u) = self.arena.node(ordered[ei])
+        {
+            let m1 = self.call(self.m1_name(false), &[&self.cached(cache, *u)?]);
+            text.push_str(&m1.text);
+            for (i, &c) in ordered.iter().enumerate() {
+                if i == ei || i == oi {
+                    continue;
+                }
+                let (negative, body) = self.signed_term(c, cache)?;
+                text.push_str(if negative { " - " } else { " + " });
+                text.push_str(&body.at(PREC_ADD + 1));
+            }
+            let prec = if ordered.len() == 2 {
+                PREC_ATOM
+            } else {
+                PREC_ADD
+            };
+            return Ok(Rendered::new(text, prec));
+        }
         for (i, &c) in ordered.iter().enumerate() {
             let (negative, body) = self.signed_term(c, cache)?;
             if i == 0 {
@@ -624,15 +849,27 @@ impl Emitter<'_> {
                 // Heaviside chains ended in 1.0), as in `compile()`.
                 ExprNode::Sign(a) if self.target == Target::Python => {
                     let r = child(a)?;
-                    Rendered::atom(format!(
-                        "(0.0 if {a} == 0 else math.copysign(1, {b}) if {a} == {a} else math.nan)",
-                        a = r.at(PREC_ADD),
-                        b = r.at(0)
-                    ))
+                    if self.repeats_operand(*a) {
+                        Rendered::atom(format!(
+                            "(lambda a: 0.0 if a == 0 else math.copysign(1, a) if a == a else math.nan)({})",
+                            r.at(0)
+                        ))
+                    } else {
+                        Rendered::atom(format!(
+                            "(0.0 if {a} == 0 else math.copysign(1, {b}) if {a} == {a} else math.nan)",
+                            a = r.at(PREC_ADD),
+                            b = r.at(0)
+                        ))
+                    }
                 }
                 ExprNode::Heaviside(a) => {
                     let r = child(a)?;
+                    let bind = self.repeats_operand(*a);
                     match self.target {
+                        Target::Python if bind => Rendered::atom(format!(
+                            "(lambda a: 0.0 if a < 0 else (0.5 if a == 0 else (1.0 if a > 0 else math.nan)))({})",
+                            r.at(0)
+                        )),
                         Target::Python => Rendered::atom(format!(
                             "(0.0 if {a} < 0 else (0.5 if {a} == 0 else (1.0 if {a} > 0 else math.nan)))",
                             a = r.at(PREC_ADD)
@@ -640,6 +877,10 @@ impl Emitter<'_> {
                         Target::NumPy => {
                             self.call("numpy.heaviside", &[&r, &Rendered::atom("0.5")])
                         }
+                        Target::Julia if bind => Rendered::atom(format!(
+                            "(a -> a < 0 ? 0.0 : (a == 0 ? 0.5 : (a > 0 ? 1.0 : NaN)))({})",
+                            r.at(0)
+                        )),
                         Target::Julia => Rendered::atom(format!(
                             "({a} < 0 ? 0.0 : ({a} == 0 ? 0.5 : ({a} > 0 ? 1.0 : NaN)))",
                             a = r.at(PREC_ADD)
@@ -680,6 +921,10 @@ impl Emitter<'_> {
                 ExprNode::Im(a) => {
                     let r = child(a)?;
                     match self.target {
+                        Target::Python if self.repeats_operand(*a) => Rendered::atom(format!(
+                            "(lambda a: 0.0 if a == a else math.nan)({})",
+                            r.at(0)
+                        )),
                         Target::Python => Rendered::atom(format!(
                             "(0.0 if {a} == {a} else math.nan)",
                             a = r.at(PREC_ADD)
@@ -692,6 +937,21 @@ impl Emitter<'_> {
                             Rendered::atom(format!("(isnan({}) ? NaN : 0.0)", r.at(0)))
                         }
                     }
+                }
+                // ln(1 + u) is `log1p(u)` (see `render_add`).
+                ExprNode::Ln(a)
+                    if matches!(self.arena.node(*a), ExprNode::Add(ch)
+                        if ch.len() == 2 && ch.iter().any(|&c| self.is_exact_int(c, 1))) =>
+                {
+                    let ExprNode::Add(ch) = self.arena.node(*a) else {
+                        return Err(self.unsupported("log1p"));
+                    };
+                    let u = if self.is_exact_int(ch[0], 1) {
+                        ch[1]
+                    } else {
+                        ch[0]
+                    };
+                    self.call(self.m1_name(true), &[&child(&u)?])
                 }
                 // ln|Γ(u)| is `math.lgamma(u)`, which does not overflow.
                 ExprNode::Ln(a)
@@ -950,7 +1210,15 @@ pub(crate) fn to_fn_code(
         Target::Julia => "to_julia_fn",
     };
     let folds = super::fold_constants_for_emission(arena, expr, fn_name)?;
-    let cse = crate::output::cse::cse(arena, folds.expr);
+    // Python and Julia raise on a domain error (`math.sqrt(-1)`): a
+    // temporary is only hoisted out of a subexpression evaluated on every
+    // path, not out of a piecewise branch (`t0 = math.sqrt(x)` before
+    // `(t0*y + t0 if x > 0 else y)` raised for x < 0).  NumPy evaluates
+    // every branch anyway.
+    let cse = match target {
+        Target::NumPy => crate::output::cse::cse(arena, folds.expr),
+        Target::Python | Target::Julia => crate::output::cse::cse_unconditional(arena, folds.expr),
+    };
     let mut cse_slots: FxHashMap<ExprId, usize> = FxHashMap::default();
     for (i, (name_id, _)) in cse.bindings.iter().enumerate() {
         cse_slots.insert(*name_id, i);
@@ -1196,7 +1464,13 @@ mod tests {
         assert_eq!(py("x/(y+1)"), "x/(y + 1)");
         assert_eq!(py("-x"), "-x");
         assert_eq!(py("-x^2"), "-x**2");
-        assert_eq!(py("(-x)^y"), "(-x)**y");
+        // A base that may be negative: Python's `(-2.0)**0.5` is complex,
+        // so a non-integer exponent gives NaN (it was `(-x)**y`).
+        assert_eq!(
+            py("(-x)^y"),
+            "(lambda b, e: b**e if b >= 0 or e % 1 == 0 else math.nan)(-x, y)"
+        );
+        assert_eq!(py("(x^2)^y"), "(x**2)**y");
         assert_eq!(py("x - y"), "x - y");
         assert_eq!(py("1 - x/2"), "-x/2 + 1");
         assert_eq!(py("x^(-2)"), "x**(-2)");
@@ -1206,12 +1480,18 @@ mod tests {
             py("x^(3/2)"),
             "(lambda b: b**(3/2) if b >= 0 else math.nan)(x)"
         );
-        assert_eq!(py("x^y"), "x**y");
+        // A general power is NaN for a negative base and a non-integer
+        // exponent (Python's `(-2.0)**0.5` is complex; it was `x**y`); a
+        // base of known sign keeps the operator.
+        assert_eq!(
+            py("x^y"),
+            "(lambda b, e: b**e if b >= 0 or e % 1 == 0 else math.nan)(x, y)"
+        );
         assert_eq!(py("(x+1)^2"), "(x + 1)**2");
         assert_eq!(py("2^x"), "2**x");
-        assert_eq!(py("x^y^z"), "x**y**z");
-        assert_eq!(py("(x^y)^z"), "(x**y)**z");
-        assert_eq!(py("x^(y+1)"), "x**(y + 1)");
+        assert_eq!(py("abs(x)^abs(y)^z"), "abs(x)**abs(y)**z");
+        assert_eq!(py("(abs(x)^y)^z"), "(abs(x)**y)**z");
+        assert_eq!(py("abs(x)^(y+1)"), "abs(x)**(y + 1)");
         assert_eq!(py("e^x"), "math.exp(x)");
         assert_eq!(py("pi*e"), "math.pi*math.e");
         assert_eq!(py("inf"), "math.inf");

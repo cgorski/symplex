@@ -585,6 +585,30 @@ pub(crate) fn safe_substitute(
             }
         };
 
+        // A special function with a branch cut (`Ei`, `W`, `polylog`, `Kν`,
+        // …) at a point of its cut is continuous there only along the cut;
+        // `Ei(−2 + ix) → Ei(−2) + iπ` from `x > 0`.  (`ln`, powers and
+        // the inverse functions are checked below.)
+        if !matches!(
+            node,
+            ExprNode::Ln(_)
+                | ExprNode::LogGamma(_)
+                | ExprNode::Pow(..)
+                | ExprNode::Asin(_)
+                | ExprNode::Acos(_)
+                | ExprNode::Acosh(_)
+                | ExprNode::Atanh(_)
+                | ExprNode::Asinh(_)
+                | ExprNode::Atan(_)
+        ) && let Some((a, cut)) = branch_cut_of(arena, id)
+            && crate::base::walk::contains(arena, a, var)
+        {
+            let av = val_of(arena, &values, a);
+            if on_branch_cut(arena, cut, av) && !inner_known_real(arena, a) {
+                return None;
+            }
+        }
+
         // Node-specific continuity checks on the *argument* values.
         match node {
             ExprNode::Piecewise(_) => return None,
@@ -1405,6 +1429,13 @@ fn try_compose(
                     {
                         return None;
                     }
+                    // On the cut of `ln Γ` or `W` (see `limit_on_branch_cut`):
+                    // `ln Γ(−5/2 − ix) → ln Γ(−5/2) + 6πi` from `x > 0`.
+                    if let Some((_, cut)) = branch_cut_of(arena, expr)
+                        && limit_on_branch_cut(arena, cut, l, a)
+                    {
+                        return None;
+                    }
                     let v = match node {
                         ExprNode::LogGamma(_) => arena.log_gamma(l),
                         ExprNode::Digamma(_) => arena.digamma(l),
@@ -1566,23 +1597,287 @@ pub(crate) fn on_branch_cut(arena: &mut Arena, cut: BranchCut, l: ExprId) -> boo
         BranchCut::NegativeReals => is_zero(&im) && re.0.is_negative(),
         BranchCut::BelowOne => is_zero(&im) && (re.0.is_negative() || magnitude(&re) < 1.0),
         BranchCut::BeyondOne => is_zero(&im) && magnitude(&re) > 1.0,
+        BranchCut::AboveOne => is_zero(&im) && re.0.is_positive() && magnitude(&re) > 1.0,
+        BranchCut::BelowMinusInvE => {
+            if !is_zero(&im) || !re.0.is_negative() {
+                return false;
+            }
+            let inv_e = (-1.0f64).exp();
+            let m = magnitude(&re);
+            if (m - inv_e).abs() > 1e-9 {
+                return m > inv_e;
+            }
+            // Next to the branch point `−1/e`: decide `l + 1/e < 0`
+            // exactly; an undecided sign counts as on the cut.
+            let re_l = arena.re(l);
+            let m1 = arena.neg_one();
+            let e_inv = arena.exp(m1);
+            let d = arena.add(&[re_l, e_inv]);
+            const_sign(arena, d).is_none_or(|s| s < 0)
+        }
     }
 }
 
 /// The argument of node `id` and the branch cut of its function, for the
-/// functions with one (`ln`, `ln Γ`, a fractional power, the inverse
-/// trigonometric and hyperbolic functions).
+/// functions with one: `ln`, `ln Γ`, a fractional power, the inverse
+/// trigonometric and hyperbolic functions, and (since 0.37) the special
+/// functions with a cut — `Ei`, `Ci`, `Chi`, `Eₙ`, `Kν`, `Yν`, `Jν`/`Iν`
+/// of a non-integer order and `Γ(s, ·)`, `γ(s, ·)` of an `s` other than a
+/// positive integer on the negative reals, `li` and `acosh` on `(−∞, 1)`,
+/// `polylog(s, ·)` and the complete elliptic integrals on `(1, ∞)`, and
+/// `W` on `(−∞, −1/e)`.  Before, a limit there took the value on the cut
+/// from both sides: `limit(Ei(−2 + ix), x, 0, '+')` was `Ei(−2)` (it is
+/// `Ei(−2) + iπ`, mpmath), `limit(Ci(−2 + ix), x, 0, '-')` was
+/// `Ci(−2) = Ci(2) + iπ` (it is `Ci(2) − iπ`).
 pub(crate) fn branch_cut_of(arena: &Arena, id: ExprId) -> Option<(ExprId, BranchCut)> {
+    use crate::base::libfn::LibFn;
+    let not_positive_integer = |e: ExprId| {
+        arena
+            .as_num(e)
+            .is_none_or(|r| !(r.is_integer() && r.is_positive()))
+    };
+    let not_integer = |e: ExprId| arena.as_num(e).is_none_or(|r| !r.is_integer());
+    // `E₀`, `E₋ₙ` and `Li₋ₙ` are rational in `e^{−z}`, `z`: no cut.
+    let not_nonpositive_integer = |e: ExprId| {
+        arena
+            .as_num(e)
+            .is_none_or(|r| !(r.is_integer() && !r.is_positive()))
+    };
     Some(match *arena.node(id) {
-        ExprNode::Ln(a) | ExprNode::LogGamma(a) => (a, BranchCut::NegativeReals),
+        ExprNode::Ln(a) | ExprNode::LogGamma(a) | ExprNode::Ei(a) | ExprNode::Ci(a) => {
+            (a, BranchCut::NegativeReals)
+        }
         ExprNode::Pow(b, e) if arena.as_num(e).is_some_and(|r| !r.is_integer()) => {
             (b, BranchCut::NegativeReals)
         }
         ExprNode::Asin(a) | ExprNode::Acos(a) | ExprNode::Atanh(a) => (a, BranchCut::BeyondOne),
-        ExprNode::Acosh(a) => (a, BranchCut::BelowOne),
+        ExprNode::Acosh(a) | ExprNode::Li(a) => (a, BranchCut::BelowOne),
         ExprNode::Asinh(a) | ExprNode::Atan(a) => (a, BranchCut::ImaginaryAxis),
+        ExprNode::LambertW(a) => (a, BranchCut::BelowMinusInvE),
+        ExprNode::Apply(f, ref args) => match (arena.lib_fn(f)?, args.as_slice()) {
+            (LibFn::Chi, &[a]) => (a, BranchCut::NegativeReals),
+            (LibFn::ExpInt, &[n, z]) if not_nonpositive_integer(n) => (z, BranchCut::NegativeReals),
+            (LibFn::BesselK | LibFn::BesselY, &[_, z]) => (z, BranchCut::NegativeReals),
+            (LibFn::BesselJ | LibFn::BesselI, &[nu, z]) if not_integer(nu) => {
+                (z, BranchCut::NegativeReals)
+            }
+            (LibFn::UpperGamma | LibFn::LowerGamma, &[s, z]) if not_positive_integer(s) => {
+                (z, BranchCut::NegativeReals)
+            }
+            (LibFn::PolyLog, &[s, z]) if not_nonpositive_integer(s) => (z, BranchCut::AboveOne),
+            (LibFn::EllipticK | LibFn::EllipticE, &[m]) => (m, BranchCut::AboveOne),
+            _ => return None,
+        },
         _ => return None,
     })
+}
+
+/// `f(u)` for a node `id` with a branch cut ([`branch_cut_of`]) whose
+/// argument `u` tends to the point `l` of the cut, as an expression in `u`
+/// that is the principal `f(u)` on the side of the cut `u` approaches from
+/// and is analytic at `l` (the continuation of `f` across the cut from that
+/// side), so that the limit and series machinery may expand it there.
+/// `side` is the eventual sign of `Im u` (of `Re u` for the cuts on the
+/// imaginary axis), `0` when `u` moves along the cut, where the principal
+/// value is the limit from one side.  `along` is the eventual sign of
+/// `u − l` along the cut, needed only where `u` moves along the cut to the
+/// branch point `−1` of `acosh` (`0`: unknown).
+///
+/// * `ln u = ln(−u) ± iπ`, `u^r = (−u)^r·e^{±iπr}` (`+` above or on the cut),
+/// * `asin u = π/2 ± i·acosh u` (`l > 1`; `−` below or on the cut),
+///   `−π/2 ± i·acosh(−u)` (`l < −1`; `+` above or on it), `acos u = π/2 − asin u`,
+/// * `atanh u = atanh(1/u) ± iπ/2` (`+` above, `−` below; on the cut `−` for
+///   `l > 1`, `+` for `l < −1`),
+/// * `acosh u = ±i·acos u` (`−1 < l < 1`), `acosh(−u) ± iπ` (`l ≤ −1`; `+` above
+///   or on the cut),
+/// * `asinh u = iπ/2 ± acosh(−iu)` (`l = iy`, `y ≥ 1`; `+` for `Re u ≥ 0`),
+///   `−iπ/2 ± acosh(iu)` (`y ≤ −1`; `+` for `Re u > 0`),
+/// * `atan u = ±π/2 − atan(1/u)` (`+` for `Re u > 0`, and on the cut for `y > 1`).
+///
+/// These are SymPy's one-sided expansions at a branch cut in closed form
+/// (`log._eval_nseries` adds `−2πi` below the negative axis,
+/// `asin._eval_nseries` gives `π − asin` above `(1, ∞)` and `−π − asin`
+/// below `(−∞, −1)`, `atanh`, `acosh`, `asinh`, `atan` likewise); each form
+/// is the principal value on its whole open half-plane and on the part of
+/// the cut the principal value is continuous with (checked against mpmath
+/// at 3,960 points).  `None` for `ln Γ`, and at a branch point (`±i` for
+/// `asinh`, `atan`; `−1` for `acosh`) reached along the cut.
+pub(crate) fn continuation_across_cut(
+    arena: &mut Arena,
+    id: ExprId,
+    l: ExprId,
+    side: i32,
+    along: i32,
+) -> Option<ExprId> {
+    let (u, _) = branch_cut_of(arena, id)?;
+    let node = arena.node(id).clone();
+    let i = arena.i_unit();
+    let pi = arena.pi();
+    let half = arena.rational(1, 2);
+    let half_pi = arena.mul(&[half, pi]);
+    let i_pi = arena.mul(&[i, pi]);
+    let i_half_pi = arena.mul(&[i, half_pi]);
+    let neg_u = arena.neg(u);
+    let signed = |arena: &mut Arena, s: i32, v: ExprId| if s >= 0 { v } else { arena.neg(v) };
+    // `+1` above (or right of) the cut, `−1` below; on the cut `on_cut`.
+    let pick = |on_cut: i32| match side {
+        s if s > 0 => 1,
+        s if s < 0 => -1,
+        _ => on_cut,
+    };
+    let re_l = arena.re(l);
+    let re_l = crate::transforms::eval::eval(arena, re_l);
+    let im_l = arena.im(l);
+    let im_l = crate::transforms::eval::eval(arena, im_l);
+    let g = match node {
+        ExprNode::Ln(_) => {
+            let ln = arena.ln(neg_u);
+            let shift = signed(arena, pick(1), i_pi);
+            arena.add(&[ln, shift])
+        }
+        ExprNode::Pow(_, r) => {
+            let p = arena.pow(neg_u, r);
+            let phase = arena.mul(&[i_pi, r]);
+            let phase = signed(arena, pick(1), phase);
+            let rot = arena.exp(phase);
+            arena.mul(&[p, rot])
+        }
+        ExprNode::Asin(_) | ExprNode::Acos(_) => {
+            let beyond = const_sign(arena, re_l)?;
+            let (c, v, t) = if beyond > 0 {
+                (half_pi, u, pick(-1))
+            } else {
+                (arena.neg(half_pi), neg_u, pick(1))
+            };
+            let ach = arena.acosh(v);
+            let term = arena.mul(&[i, ach]);
+            let term = signed(arena, t, term);
+            let asin = arena.add(&[c, term]);
+            if matches!(node, ExprNode::Asin(_)) {
+                asin
+            } else {
+                arena.sub(half_pi, asin)
+            }
+        }
+        ExprNode::Atanh(_) => {
+            let below_minus_one = const_sign(arena, re_l)? < 0;
+            let t = pick(if below_minus_one { 1 } else { -1 });
+            let inv = arena.pow(u, arena.neg_one());
+            let at = arena.atanh(inv);
+            let shift = signed(arena, t, i_half_pi);
+            arena.add(&[at, shift])
+        }
+        ExprNode::Acosh(_) => {
+            let one = arena.one();
+            let lp1 = arena.add(&[re_l, one]);
+            let inside = const_sign(arena, lp1)?;
+            let inside = if inside == 0 && side == 0 {
+                along
+            } else {
+                inside
+            };
+            match inside {
+                // −1 < l < 1 (or l = −1 reached from the right along the cut)
+                s if s > 0 => {
+                    let ac = arena.acos(u);
+                    let iac = arena.mul(&[i, ac]);
+                    signed(arena, pick(1), iac)
+                }
+                0 if side == 0 => return None,
+                _ => {
+                    let ach = arena.acosh(neg_u);
+                    let shift = signed(arena, pick(1), i_pi);
+                    arena.add(&[ach, shift])
+                }
+            }
+        }
+        ExprNode::Asinh(_) | ExprNode::Atan(_) => {
+            let upper = const_sign(arena, im_l)?;
+            let one = arena.one();
+            let abs_y = if upper > 0 { im_l } else { arena.neg(im_l) };
+            let beyond = arena.sub(abs_y, one);
+            let beyond = const_sign(arena, beyond)?;
+            if beyond < 0 || (beyond == 0 && side == 0) {
+                return None;
+            }
+            if matches!(node, ExprNode::Atan(_)) {
+                let t = pick(upper);
+                let inv = arena.pow(u, arena.neg_one());
+                let at = arena.atan(inv);
+                let c = signed(arena, t, half_pi);
+                arena.sub(c, at)
+            } else if upper > 0 {
+                let v = arena.mul(&[i, u]);
+                let v = arena.neg(v);
+                let ach = arena.acosh(v);
+                let term = signed(arena, pick(1), ach);
+                arena.add(&[i_half_pi, term])
+            } else {
+                let v = arena.mul(&[i, u]);
+                let ach = arena.acosh(v);
+                let term = signed(arena, pick(-1), ach);
+                let c = arena.neg(i_half_pi);
+                arena.add(&[c, term])
+            }
+        }
+        // `Ei u = −E₁(−u) ± iπ` off the axis, `−E₁(−u)` on it (the principal
+        // `Ei` of a negative real is real: the mean of its two sides).
+        ExprNode::Ei(_) => {
+            let one = arena.one();
+            let e1 = arena.lib_apply(crate::base::libfn::LibFn::ExpInt, &[one, neg_u]);
+            let ne1 = arena.neg(e1);
+            match side.signum() {
+                0 => ne1,
+                s => {
+                    let shift = signed(arena, s, i_pi);
+                    arena.add(&[ne1, shift])
+                }
+            }
+        }
+        // `Ci u = Ci(−u) ± iπ`, `Chi u = Chi(−u) ± iπ` (`+` above or on the cut).
+        ExprNode::Ci(_) => {
+            let c = arena.ci(neg_u);
+            let shift = signed(arena, pick(1), i_pi);
+            arena.add(&[c, shift])
+        }
+        ExprNode::Apply(f, _) if arena.lib_fn(f) == Some(crate::base::libfn::LibFn::Chi) => {
+            let c = arena.lib_apply(crate::base::libfn::LibFn::Chi, &[neg_u]);
+            let shift = signed(arena, pick(1), i_pi);
+            arena.add(&[c, shift])
+        }
+        // `ln Γ(u) = ln((−1)ⁿ⁺¹Γ(u)) ∓ (n + 1)iπ` for `−n − 1 < l < −n`
+        // (`−` above or on the cut): `(−1)ⁿ⁺¹Γ(l) > 0` there.
+        ExprNode::LogGamma(_) => {
+            let n = floor_of_negated(arena, l)?;
+            let g = arena.gamma(u);
+            let g = if n % 2 == 0 { arena.neg(g) } else { g };
+            let ln = arena.ln(g);
+            let k = arena.int(n + 1);
+            let shift = arena.mul(&[k, i_pi]);
+            let shift = signed(arena, -pick(1), shift);
+            arena.add(&[ln, shift])
+        }
+        _ => return None,
+    };
+    Some(g)
+}
+
+/// `⌊−l⌋` for a negative real constant `l` that is not an integer (`None`
+/// for an integer, or a value too close to one to tell).
+pub(crate) fn floor_of_negated(arena: &mut Arena, l: ExprId) -> Option<i64> {
+    use num_traits::ToPrimitive;
+    if let Some(r) = arena.as_num(l) {
+        if r.is_integer() {
+            return None;
+        }
+        return (-r).floor().to_integer().to_i64();
+    }
+    let v = crate::transforms::evalf::evalf_f64(arena, l).ok()?;
+    let m = -v;
+    if !m.is_finite() || m > 1e15 || (m - m.round()).abs() < 1e-9 {
+        return None;
+    }
+    Some(m.floor() as i64)
 }
 
 /// Where a function composed in [`unary_with_asymptotes`] has its branch
@@ -1599,6 +1894,10 @@ pub(crate) enum BranchCut {
     BelowOne,
     /// Reals beyond ±1 (`asin`, `acos`).
     BeyondOne,
+    /// Reals above 1 (`polylog`, the complete elliptic integrals).
+    AboveOne,
+    /// Reals below `−1/e` (Lambert `W`).
+    BelowMinusInvE,
 }
 
 /// Is `g` real for real values of its symbols (undeclared ones count as

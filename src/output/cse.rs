@@ -35,11 +35,54 @@ pub(crate) struct CseMultiResult {
 /// Nodes that appear 2+ times in the expression tree are extracted
 /// into named temporaries `__cse_0`, `__cse_1`, etc.
 pub(crate) fn cse(arena: &mut Arena, expr: ExprId) -> CseResult {
-    let multi = cse_multi(arena, &[expr]);
+    let multi = cse_multi_impl(arena, &[expr], false);
     CseResult {
         bindings: multi.bindings,
         expr: multi.exprs[0],
     }
+}
+
+/// [`cse`] for targets whose evaluation can raise (Python's `math`,
+/// Julia): only a node with an occurrence evaluated on every path is
+/// extracted.  A temporary is computed before the expression, so a
+/// subexpression that only occurs in a `Piecewise` branch (or after the
+/// first operand of `and`/`or`, which short-circuit) would be evaluated
+/// where the branch is not taken — `t0 = math.sqrt(x)` for
+/// `Piecewise((√x + y√x, x > 0), (y, True))` raised `ValueError` at x < 0.
+/// Without such constructs the result is the one of [`cse`].
+pub(crate) fn cse_unconditional(arena: &mut Arena, expr: ExprId) -> CseResult {
+    let multi = cse_multi_impl(arena, &[expr], true);
+    CseResult {
+        bindings: multi.bindings,
+        expr: multi.exprs[0],
+    }
+}
+
+/// The nodes evaluated on every path through `roots`: everything except
+/// what lies only under a `Piecewise` value or a condition after the first,
+/// or an operand of `And`/`Or` after the first.
+fn unconditional_nodes(arena: &Arena, roots: &[ExprId]) -> FxHashSet<ExprId> {
+    let mut out: FxHashSet<ExprId> = FxHashSet::default();
+    let mut stack: Vec<ExprId> = roots.to_vec();
+    while let Some(id) = stack.pop() {
+        if !out.insert(id) {
+            continue;
+        }
+        match arena.node(id) {
+            ExprNode::Piecewise(branches) => {
+                if let Some(&(_, cond)) = branches.first() {
+                    stack.push(cond);
+                }
+            }
+            ExprNode::And(ch) | ExprNode::Or(ch) => {
+                if let Some(&first) = ch.first() {
+                    stack.push(first);
+                }
+            }
+            node => node.for_each_child(|c| stack.push(c)),
+        }
+    }
+    out
 }
 
 /// Perform common subexpression elimination across multiple root expressions.
@@ -48,6 +91,12 @@ pub(crate) fn cse(arena: &mut Arena, expr: ExprId) -> CseResult {
 /// named temporaries. Additionally, Add/Mul nodes that share ≥2 children
 /// have the shared subset factored into a new sub-expression.
 pub(crate) fn cse_multi(arena: &mut Arena, exprs: &[ExprId]) -> CseMultiResult {
+    cse_multi_impl(arena, exprs, false)
+}
+
+/// [`cse_multi`]; `guarded`: extract only nodes evaluated on every path
+/// (see [`cse_unconditional`]).
+fn cse_multi_impl(arena: &mut Arena, exprs: &[ExprId], guarded: bool) -> CseMultiResult {
     if exprs.is_empty() {
         return CseMultiResult {
             bindings: Vec::new(),
@@ -115,12 +164,15 @@ pub(crate) fn cse_multi(arena: &mut Arena, exprs: &[ExprId]) -> CseMultiResult {
         })
         .flatten()
         .collect();
+    let unconditional = guarded.then(|| unconditional_nodes(arena, &current_exprs));
     let extract: Vec<ExprId> = combined_post_order
         .iter()
         .copied()
         .filter(|&id| {
             let count = ref_count.get(&id).copied().unwrap_or(0);
-            count >= min_uses(arena, id) && !protected.contains(&id)
+            count >= min_uses(arena, id)
+                && !protected.contains(&id)
+                && unconditional.as_ref().is_none_or(|u| u.contains(&id))
         })
         .collect();
 

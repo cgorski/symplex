@@ -13,6 +13,11 @@
 //! and `H(x)`, and `(-12/7)!`, `(-oo)^r`, `(-16/7)^(-1/2)` printed without
 //! the parentheses (or with a shorthand) their re-parse needs.
 //!
+//! `RootSum` (from `∫ 1/(x⁵ + a·x + b) dx`, Rothstein–Trager over an
+//! irreducible quintic) is built too; its display `RootSum(p, t -> body)`
+//! has no parser yet ("expected expression, got Gt"), so for a display
+//! holding one only the printers are exercised, not the re-parse.
+//!
 //! Inputs decode through [`choose::Src`]; set `FUZZ_SHOW=1` to print each
 //! expression.
 #![no_main]
@@ -392,7 +397,22 @@ impl G<'_, '_> {
                 let pt = self.e(d.min(2));
                 df.subs(&self.x, &pt)
             }
-            90..=93 => {
+            93 => {
+                // A RootSum: ∫ 1/(x⁵ + a·x + b) dx (a ≠ 0) or ∫ x/(…) dx.
+                let a = [-3, -2, -1, 1, 2, 3][self.r.below(6) as usize];
+                let b = self.r.range(1, 7);
+                let num = if self.r.chance(0.5) { "1" } else { "x" };
+                let fallback = self.leaf();
+                let f = self.parsed(&format!("{num}/(x^5 + ({a})*x + {b})"), &fallback);
+                let i = f.integrate(&self.x);
+                if self.r.chance(0.5) {
+                    let other = self.e(d.min(1));
+                    i + other
+                } else {
+                    i
+                }
+            }
+            90..=92 => {
                 let deg = self.r.range(2, 5);
                 let mut s = format!("x^{deg}");
                 for pw in (0..deg).rev() {
@@ -439,6 +459,11 @@ fuzz_target!(|data: &[u8]| {
         if show {
             eprintln!("fuzz_roundtrip (relation): {s}\n  tree: {:?}", b.to_tree());
         }
+        if s.contains("RootSum(") {
+            // `RootSum(p, t -> body)` does not parse yet (see the header).
+            let _ = b.to_latex();
+            return;
+        }
         match ctx.parse_bool(&s) {
             Ok(back) => assert!(
                 back == b,
@@ -455,6 +480,15 @@ fuzz_target!(|data: &[u8]| {
     let s = e.to_string();
     if show {
         eprintln!("fuzz_roundtrip: {s}");
+    }
+    if s.contains("RootSum(") {
+        // `RootSum(p, t -> body)` does not parse yet (see the header).
+        let _ = e.to_latex();
+        let _ = e.pretty();
+        let _ = e.pretty_ascii();
+        let _ = e.to_mathml();
+        let _ = e.to_srepr();
+        return;
     }
     match ctx.parse(&s) {
         Ok(back) => assert!(

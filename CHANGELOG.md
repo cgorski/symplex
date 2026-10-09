@@ -6,6 +6,80 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [Unreleased]
+
+### Breaking (behaviour; no signature changed)
+
+- **Limits at a branch cut of a function without a continuation formula
+  are refused** where they took the value on the cut whatever the side:
+  Lambert `W`, `polylog`, `Kν`/`Yν`, `Jν`/`Iν` of non-integer order, `Eₙ`,
+  `Γ(s, ·)`, `li` (see *Fixed*).
+- **Generated Python** guards general powers with a possibly negative base
+  (`nan` instead of a complex number), uses `expm1`/`log1p` for `exp(u) −
+  1`/`ln(1 + u)` (also NumPy and Julia), keeps temporaries inside their
+  `Piecewise` branch, and prints big integers as floats; Rust output
+  changes only where it was wrong, did not compile or blew up.
+
+### Added
+
+- `CodegenOptions::cfg_gated_math_module()`.
+- **Limits at `∞` of `Chi`, `Shi`, `erfi`, `Iν`, `Kν`, `Eₙ`, `Γ(s, x)`,
+  `γ(s, x)` and `ζ`** (refused as "unknown growth"): their exponential
+  factor is split off and the rest expanded in `1/z` (DLMF 6.12, 7.12, 8.11,
+  8.20, 10.40, 25.2): `Chi(x)·x·e⁻ˣ` → `1/2` (SymPy 1.14: `0`),
+  `E₂(x)·x·eˣ` → `1` (SymPy: `−∞·i`), `zeta(kx) − 1` → `0`,
+  `besseli(0, x)·√x·e⁻ˣ` → `1/√(2π)`; and `Γ(x + 1)/Γ(x) − x` → `0`,
+  `x·(Γ(x + 1/2)/(Γ(x)·√x) − 1)` → `−1/8` (two exponentials combined
+  before the series).  `I_ν` next to `I_{−ν}` is refused on purpose (equal
+  expansions, an exponentially small difference).  Asymptotic hunter (600
+  cases, mpmath at 700 digits): 583 refused → 5, 0 wrong.
+
+### Fixed
+
+- **Limits and series at a branch cut approached from one side** were
+  refused (`limit(x/(ln(−2 + ix) − ln(−2)), x, 0, '+')` is `2i`, `0` from
+  the left; `x·(acosh(−1 − 1/x) − acosh(−1 − 2/x))` at `∞` is `−∞`) or
+  wrong: `limit(asin(2 + ix), x, 0, '+')` was `asin 2` (it is `π/2 +
+  i·ln(2 + √3)`), `Ei(−2 + ix)` was `Ei(−2)` from both sides (`± iπ`),
+  `limit(Ei(−x + i), x, ∞)` was `0` (`iπ`), and `series_dir(atan(2i + x),
+  x, 0, 3, Left)` had the constant of the other side.  The side is the
+  eventual sign of the argument's component across the cut (SymPy's
+  `log._eval_nseries`), and the function is continued from it in closed
+  form (`ln u = ln(−u) ± iπ`, `asin u = π/2 ± i·acosh u`, …; each form
+  checked against mpmath at 5,940 points).  Hunters: branch-cut limits
+  (1,188) 186 refused → 0, 0 wrong; one-sided series at cuts (864) 30
+  wrong, 194 refused → 0, 12.
+- **Generated code and `compile()` disagreed with `evalf`** (a hunter over
+  6,000 random expressions against `eval_f64`, every target).  A constant
+  whose formula cancels was printed as that formula (`x·(√(10²⁰ + 1) −
+  10¹⁰)` was 0 in Rust, C, Python, NumPy; it is 5·10⁻¹¹); constant factors
+  the canonical form flattens into a product overflowed apart
+  (`x·C(2000, 1000)/2²⁰⁰⁰` and `x·e⁻⁸⁰⁰·e⁸⁰⁰` were NaN everywhere); a
+  shared `e^(10⁻²⁰) − 1` became the Rust literal 0; `x^(2⁵³ + 1)` at −1
+  was 1.  Rust: `(y/x)^(−5)` and literals past `f64::MAX` did not compile,
+  nested `sign`/`Heaviside`/cubes grew as 3ⁿ (466 MB, hangs).  Python:
+  `x**y` returned complex numbers, a temporary hoisted out of a
+  `Piecewise` branch raised `ValueError`, `x/2**1074` raised
+  `OverflowError`; NumPy raised `TypeError` on integers past `int64`.
+  Hunter: Rust 398 wrong → 4, C 406 → 4, Python 375 → 5, NumPy 360 → 3,
+  10 Rust compile failures → 0, 6 hangs → 0 (the rest explained: f64
+  limits of the targets).
+- **The f64 special-function runtime** (`compile()`, `to_rust_fn`, the C
+  helpers): `besselk(n, x)` for small `x` was off by orders of magnitude
+  (`K₀(1.7·10⁻²¹⁰)` was 85.7, truly 483.1; now its series, DLMF 10.31);
+  `binomial(x, k)` and `falling_factorial(x, k)` near small integers lost
+  `x` (`binomial(1.7·10⁻¹⁶, 3)` was 0); `binomial(1/2, k)` for large `k`
+  had relative errors to 5·10⁻⁸; `erfc` flushed its subnormal tail; the C
+  helpers lacked the Stirling forms of `beta`/`binomial` (errors to
+  5·10⁻¹⁰).  Against mpmath: 2,000+ wrong points → 0.
+- **symplex-build `no_std` `min`/`max` dropped NaN** (its own copy of the
+  `mod math` wrapper); it now uses symplex's.  `no_std` back ends print
+  `core::f64::consts`.
+- A `RootSum` (or other bound-variable node) depending on the arguments
+  is refused by name by the emitters instead of "free symbol `__rs_t`"; a
+  `RootOf` of a numeric polynomial is a constant (folded; it was refused).
+  `fuzz_roundtrip` covers the printers of `RootSum`.
+
 ## [0.36.0] - 2026-10-09
 
 An audit of the code new in 0.34 and 0.35 found more silent wrong

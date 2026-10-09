@@ -7,12 +7,16 @@
 mod v34_algebra;
 #[path = "v34/v34_audit.rs"]
 mod v34_audit;
+#[path = "v34/v34_codegen.rs"]
+mod v34_codegen;
 #[path = "v34/v34_eval.rs"]
 mod v34_eval;
 #[path = "v34/v34_evalf.rs"]
 mod v34_evalf;
 #[path = "v34/v34_integrate.rs"]
 mod v34_integrate;
+#[path = "v34/v34_limits.rs"]
+mod v34_limits;
 #[path = "v34/v34_poly_speed.rs"]
 mod v34_poly_speed;
 #[path = "v34/v34_slow.rs"]

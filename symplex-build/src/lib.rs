@@ -368,124 +368,19 @@ impl Default for CodeGen {
 
 /// Emit the cfg-gated math wrapper module into the given string buffer.
 ///
-/// The module must provide every `math::*` function the symplex Rust backend
-/// can emit with [`MathBackend::CfgGated`]: the elementary functions,
-/// `atan2`, `powf`/`powi`, `min`/`max`, the numerically-optimised forms
-/// `expm1`, `log1p`, `log2`, `exp2`, the fused multiply-add `fma`, and
-/// `sin_cos` (used when both `sin(x)` and `cos(x)` appear).  The `std`
-/// variant delegates to inherent `f64`/`f32` methods; the `no_std` variant
-/// delegates to the `libm` crate.
+/// The module is symplex's own ([`CodegenOptions::cfg_gated_math_module`]),
+/// the one every function generated with [`MathBackend::CfgGated`] embeds
+/// and calls (`math::sin`, `math::min`, …).  This crate kept a copy of it
+/// that drifted: its `min`/`max` were `f64::min` / `libm::fmin`, which return
+/// the other operand of a NaN, so `Min(x, √y)` at y < 0 was `x` here and NaN
+/// in `compile()` and in the per-function output.
 fn append_cfg_gated_module(out: &mut String, precision: Precision) {
-    let ft = match precision {
-        Precision::F64 => "f64",
-        Precision::F32 => "f32",
+    let options = CodegenOptions {
+        precision,
+        ..CodegenOptions::default()
     };
-
-    let funcs = [
-        "sin", "cos", "tan", "exp", "ln", "abs", "sqrt", "cbrt", "asin", "acos", "atan", "sinh",
-        "cosh", "tanh", "asinh", "acosh", "atanh", "floor", "ceil", "signum",
-    ];
-
-    // std version
-    out.push_str("#[cfg(feature = \"std\")]\n");
-    out.push_str("mod math {\n");
-    for func in &funcs {
-        out.push_str(&format!(
-            "    #[inline] pub fn {func}(x: {ft}) -> {ft} {{ x.{func}() }}\n"
-        ));
-    }
-    out.push_str(&format!(
-        "    #[inline] pub fn atan2(y: {ft}, x: {ft}) -> {ft} {{ y.atan2(x) }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn powf(base: {ft}, exp: {ft}) -> {ft} {{ base.powf(exp) }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn powi(base: {ft}, exp: i32) -> {ft} {{ base.powi(exp) }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn min(a: {ft}, b: {ft}) -> {ft} {{ a.min(b) }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn max(a: {ft}, b: {ft}) -> {ft} {{ a.max(b) }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn expm1(x: {ft}) -> {ft} {{ x.exp_m1() }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn log1p(x: {ft}) -> {ft} {{ x.ln_1p() }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn log2(x: {ft}) -> {ft} {{ x.log2() }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn exp2(x: {ft}) -> {ft} {{ x.exp2() }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn fma(a: {ft}, b: {ft}, c: {ft}) -> {ft} {{ a.mul_add(b, c) }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn sin_cos(x: {ft}) -> ({ft}, {ft}) {{ x.sin_cos() }}\n"
-    ));
-    out.push_str("}\n\n");
-
-    // no_std (libm) version.  `libm` names differ from the inherent methods
-    // for `abs` (`fabs`) and `ln` (`log`); `signum` and `sin_cos` have no
-    // direct counterpart and are composed.
-    out.push_str("#[cfg(not(feature = \"std\"))]\n");
-    out.push_str("mod math {\n");
-    let libm_funcs = [
-        "sin", "cos", "tan", "exp", "sqrt", "cbrt", "asin", "acos", "atan", "sinh", "cosh", "tanh",
-        "asinh", "acosh", "atanh", "floor", "ceil",
-    ];
-    for func in &libm_funcs {
-        out.push_str(&format!(
-            "    #[inline] pub fn {func}(x: {ft}) -> {ft} {{ libm::{func}(x as f64) as {ft} }}\n"
-        ));
-    }
-    out.push_str(&format!(
-        "    #[inline] pub fn abs(x: {ft}) -> {ft} {{ libm::fabs(x as f64) as {ft} }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn ln(x: {ft}) -> {ft} {{ libm::log(x as f64) as {ft} }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn signum(x: {ft}) -> {ft} {{ if x > 0.0 {{ 1.0 }} else if x < 0.0 {{ -1.0 }} else {{ 0.0 }} }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn atan2(y: {ft}, x: {ft}) -> {ft} {{ libm::atan2(y as f64, x as f64) as {ft} }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn powf(base: {ft}, exp: {ft}) -> {ft} {{ libm::pow(base as f64, exp as f64) as {ft} }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn powi(base: {ft}, exp: i32) -> {ft} {{ libm::pow(base as f64, exp as f64) as {ft} }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn min(a: {ft}, b: {ft}) -> {ft} {{ libm::fmin(a as f64, b as f64) as {ft} }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn max(a: {ft}, b: {ft}) -> {ft} {{ libm::fmax(a as f64, b as f64) as {ft} }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn expm1(x: {ft}) -> {ft} {{ libm::expm1(x as f64) as {ft} }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn log1p(x: {ft}) -> {ft} {{ libm::log1p(x as f64) as {ft} }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn log2(x: {ft}) -> {ft} {{ libm::log2(x as f64) as {ft} }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn exp2(x: {ft}) -> {ft} {{ libm::exp2(x as f64) as {ft} }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn fma(a: {ft}, b: {ft}, c: {ft}) -> {ft} {{ libm::fma(a as f64, b as f64, c as f64) as {ft} }}\n"
-    ));
-    out.push_str(&format!(
-        "    #[inline] pub fn sin_cos(x: {ft}) -> ({ft}, {ft}) {{ (libm::sin(x as f64) as {ft}, libm::cos(x as f64) as {ft}) }}\n"
-    ));
-    out.push_str("}\n");
+    out.push_str(&options.cfg_gated_math_module());
+    out.push('\n');
 }
 
 /// Strip the cfg-gated module block from per-function generated code.
@@ -1122,6 +1017,37 @@ functions = ["fk_matrix"]
             .unwrap();
         // The cfg-gated math module must be emitted exactly once (std + libm variants).
         assert_eq!(code.matches("mod math {").count(), 2, "{code}");
+    }
+
+    /// The file-level `mod math` is symplex's own: its `min`/`max`
+    /// propagate NaN like `compile()`.  This crate's copy used `f64::min`
+    /// and `libm::fmin`, which return the other operand of a NaN, so
+    /// `min(x, √y)` at y < 0 was `x` (`compile()`: NaN).
+    #[test]
+    fn no_std_min_max_propagate_nan() {
+        let ctx = Context::new();
+        let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+        let e = x.min_with(&y.sqrt());
+        assert!(e.compile(&["x", "y"]).unwrap().call(&[1.0, -1.0]).is_nan());
+        let code = CodeGen::new()
+            .no_std(true)
+            .add_scalar_fn("m", &e, &["x", "y"])
+            .generate()
+            .unwrap();
+        assert_eq!(code.matches("mod math {").count(), 2, "{code}");
+        assert!(
+            !code.contains("a.min(b)") && !code.contains("libm::fmin"),
+            "{code}"
+        );
+        assert_eq!(
+            code.matches(
+                "pub fn min(a: f64, b: f64) -> f64 { if a <= b || a.is_nan() { a } else { b } }"
+            )
+            .count(),
+            2,
+            "{code}"
+        );
+        assert!(code.contains("math::min("), "{code}");
     }
 
     /// Two functions that each need the special-function runtime.

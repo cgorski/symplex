@@ -47,12 +47,14 @@ pub(crate) struct EmissionFolds {
 ///
 /// A maximal symbol-free compound subexpression is lowered operation by
 /// operation by the real `f64` VM ([`compile_raw`], the semantics shared by
-/// the back ends); when that gives a finite value its formula is kept
-/// (`math.sqrt(2)`, `math.pi/2`), otherwise the evaluator decides: a real
-/// value is folded to a literal (also where no back end has the function:
-/// `zeta(3)`), a non-real one (`atanh(9)`, `asin(2)`, `ln(−1)`, the
-/// principal `(−8)^(1/3)`) is an error, anything else keeps its formula and
-/// its parts are examined.  Iterative (explicit stack).
+/// the back ends); when that gives a finite value within a few ulps of the
+/// certified one its formula is kept (`math.sqrt(2)`, `math.pi/2`),
+/// otherwise the evaluator decides: a real value is folded to a literal
+/// (also where no back end has the function: `zeta(3)`, and where the
+/// formula cancels: `√(10²⁰ + 1) − 10¹⁰` is 5·10⁻¹¹, its formula gave 0),
+/// a non-real one (`atanh(9)`, `asin(2)`, `ln(−1)`, the principal
+/// `(−8)^(1/3)`) is an error, anything else keeps its formula and its parts
+/// are examined.  Iterative (explicit stack).
 ///
 /// The back ends follow one rule: the emitted code computes the value
 /// `evalf` gives, or NaN where that value is not real — `x^(p/q)` of a
@@ -67,17 +69,21 @@ pub(crate) fn fold_constants_for_emission(
     root: ExprId,
     operation: &str,
 ) -> Result<EmissionFolds, SymplexError> {
-    // Symbol-freeness of every node, bottom-up.
-    let mut has_symbol: FxHashMap<ExprId, bool> = FxHashMap::default();
-    for id in crate::base::walk::post_order_ids(arena, root) {
-        let node = arena.node(id);
-        let mut any = matches!(node, ExprNode::Symbol(_));
-        node.for_each_child(|c| any |= has_symbol.get(&c).copied().unwrap_or(true));
-        has_symbol.insert(id, any);
-    }
-    let mut replacements: Vec<(ExprId, ExprId)> = Vec::new();
+    refuse_bound_variable_nodes(arena, root, operation)?;
     let mut values: FxHashMap<ExprId, f64> = FxHashMap::default();
     let mut by_index: FxHashMap<usize, f64> = FxHashMap::default();
+    let mut next_k = FOLD_INDEX_BASE;
+    let root = group_constant_parts(arena, root, &mut |arena: &mut Arena, v: f64| {
+        let sym = arena.symbol(&format!("__cse_{next_k}"));
+        values.insert(sym, v);
+        by_index.insert(next_k, v);
+        next_k += 1;
+        sym
+    });
+    // Symbol-freeness of every node, bottom-up (a `RootOf` of a numeric
+    // polynomial is a constant: its own variable is not free).
+    let has_symbol = symbol_dependence(arena, root);
+    let mut replacements: Vec<(ExprId, ExprId)> = Vec::new();
     let mut stack = vec![root];
     let mut seen = rustc_hash::FxHashSet::default();
     while let Some(id) = stack.pop() {
@@ -118,13 +124,21 @@ pub(crate) fn fold_constants_for_emission(
         }
         let naive = crate::output::lambdify::compile_raw(arena, id, &[])
             .ok()
-            .map(|f| f.call(&[]));
-        if naive.is_some_and(f64::is_finite) {
-            continue;
+            .map(|f| f.call(&[]))
+            .filter(|v| v.is_finite());
+        let certified = crate::transforms::evalf::evalf_f64(arena, id);
+        if let Some(n) = naive {
+            // The formula is kept when it evaluates to the value; one that
+            // loses it to cancellation or underflow is folded below.
+            match certified {
+                Ok(v) if v.is_finite() && !f64_close(n, v) => {}
+                _ => continue,
+            }
         }
-        match crate::transforms::evalf::evalf_f64(arena, id) {
+        match certified {
             Ok(v) if v.is_finite() => {
-                let k = FOLD_INDEX_BASE + replacements.len();
+                let k = next_k;
+                next_k += 1;
                 let sym = arena.symbol(&format!("__cse_{k}"));
                 replacements.push((id, sym));
                 values.insert(sym, v);
@@ -151,6 +165,181 @@ pub(crate) fn fold_constants_for_emission(
         expr,
         values,
         by_index,
+    })
+}
+
+/// Symbol-freeness of every node of `root`.  A `RootOf` counts its free
+/// symbols only (its own variable is bound): one of a numeric polynomial
+/// is a constant, decided like any other (it was refused).  Other nodes
+/// with a bound variable (integrals, sums, …) keep counting it, so they
+/// are never folded and stay refused by the back ends.
+pub(crate) fn symbol_dependence(arena: &Arena, root: ExprId) -> FxHashMap<ExprId, bool> {
+    let mut has_symbol: FxHashMap<ExprId, bool> = FxHashMap::default();
+    for id in crate::base::walk::post_order_ids(arena, root) {
+        let node = arena.node(id);
+        let any = if matches!(node, ExprNode::RootOf(..)) {
+            !crate::base::walk::free_symbols(arena, id).is_empty()
+        } else {
+            let mut any = matches!(node, ExprNode::Symbol(_));
+            node.for_each_child(|c| any |= has_symbol.get(&c).copied().unwrap_or(true));
+            any
+        };
+        has_symbol.insert(id, any);
+    }
+    has_symbol
+}
+
+/// Fold the constant part of sums and products whose formula loses it.
+///
+/// The canonical form flattens constant factors and terms into the
+/// enclosing `Mul`/`Add` (`x·2⁻²⁰⁰⁰·C(2000, 1000)`,
+/// `x·e⁻⁸⁰⁰·e⁸⁰⁰`, `x + √(10²⁰ + 1) − 10¹⁰`), where no symbol-free
+/// subtree holds their combined value: each part alone overflows,
+/// underflows or cancels (0·∞ = NaN, `x + 0`).  When the `f64`
+/// combination of the parts is not within a few ulps of the certified
+/// value of their sum or product, the node is rebuilt with that value as
+/// one constant, a symbol made by `fresh` (which records it).  A node whose
+/// constant part is right is left alone, so is everything else.
+/// Iterative (post-order).
+pub(crate) fn group_constant_parts(
+    arena: &mut Arena,
+    root: ExprId,
+    fresh: &mut dyn FnMut(&mut Arena, f64) -> ExprId,
+) -> ExprId {
+    let has_symbol = symbol_dependence(arena, root);
+    let dep = |c: &ExprId| has_symbol.get(c).copied().unwrap_or(true);
+    let mut map: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    for id in crate::base::walk::post_order_ids(arena, root) {
+        let node = arena.node(id).clone();
+        let (children, is_mul) = match &node {
+            ExprNode::Add(ch) => (ch, false),
+            ExprNode::Mul(ch) => (ch, true),
+            _ => {
+                let new = crate::base::walk::rebuild_with(arena, id, &|c| {
+                    map.get(&c).copied().unwrap_or(c)
+                });
+                if new != id {
+                    map.insert(id, new);
+                }
+                continue;
+            }
+        };
+        let consts: Vec<ExprId> = children.iter().copied().filter(|c| !dep(c)).collect();
+        if dep(&id) && consts.len() >= 2 {
+            let mut naive = if is_mul { 1.0 } else { 0.0 };
+            for &c in &consts {
+                let v = crate::output::lambdify::compile_raw(arena, c, &[])
+                    .map(|f| f.call(&[]))
+                    .unwrap_or(f64::NAN);
+                naive = if is_mul { naive * v } else { naive + v };
+            }
+            let group = if is_mul {
+                arena.intern(ExprNode::Mul(consts.iter().copied().collect()))
+            } else {
+                arena.intern(ExprNode::Add(consts.iter().copied().collect()))
+            };
+            if let Ok(v) = crate::transforms::evalf::evalf_f64(arena, group)
+                && v.is_finite()
+                && !(naive.is_finite() && f64_close(naive, v))
+            {
+                let sym = fresh(arena, v);
+                let mut parts = vec![sym];
+                parts.extend(
+                    children
+                        .iter()
+                        .copied()
+                        .filter(dep)
+                        .map(|c| map.get(&c).copied().unwrap_or(c)),
+                );
+                let new = if is_mul {
+                    arena.mul(&parts)
+                } else {
+                    arena.add(&parts)
+                };
+                map.insert(id, new);
+                continue;
+            }
+        }
+        let new =
+            crate::base::walk::rebuild_with(arena, id, &|c| map.get(&c).copied().unwrap_or(c));
+        if new != id {
+            map.insert(id, new);
+        }
+    }
+    map.get(&root).copied().unwrap_or(root)
+}
+
+/// Nodes with a bound variable (`RootOf`, `RootSum`, sums, integrals, …).
+pub(crate) fn binds_variable(node: &ExprNode) -> bool {
+    matches!(
+        node,
+        ExprNode::RootOf(..)
+            | ExprNode::RootSum(..)
+            | ExprNode::Sum(..)
+            | ExprNode::Product_(..)
+            | ExprNode::Integral(..)
+            | ExprNode::DefiniteIntegral(..)
+            | ExprNode::Derivative(..)
+            | ExprNode::Limit(..)
+            | ExprNode::Series(..)
+            | ExprNode::Subs(..)
+            | ExprNode::ConditionSet(..)
+            | ExprNode::LaplaceTransform(..)
+            | ExprNode::InverseLaplaceTransform(..)
+            | ExprNode::Residue(..)
+            | ExprNode::DSolve(..)
+    )
+}
+
+/// No back end evaluates a node with a bound variable that depends on the
+/// arguments (`RootSum(…, λ t: ln(x − t))`, `Integral(f(x, t), t)`): refuse it
+/// by name.  Before, common-subexpression elimination lifted parts of its
+/// body out of their scope first, and the error named the bound variable
+/// ("free symbol `__rs_t`").  One without free symbols is left alone: a
+/// `RootOf` of a numeric polynomial is a constant (see
+/// [`symbol_dependence`]), the others are refused by the back end.
+pub(crate) fn refuse_bound_variable_nodes(
+    arena: &Arena,
+    root: ExprId,
+    operation: &str,
+) -> Result<(), SymplexError> {
+    let mut stack = vec![root];
+    let mut seen = rustc_hash::FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let node = arena.node(id);
+        if binds_variable(node) {
+            if !crate::base::walk::free_symbols(arena, id).is_empty() {
+                return Err(SymplexError::NotImplemented(format!(
+                    "{operation}: cannot generate code for `{}` (a {} depending on the arguments)",
+                    arena.display(id),
+                    crate::output::common::describe(node)
+                )));
+            }
+            continue;
+        }
+        node.for_each_child(|c| stack.push(c));
+    }
+    Ok(())
+}
+
+/// `a` is within a few ulps of the certified value `v` (both finite).
+fn f64_close(a: f64, v: f64) -> bool {
+    (a - v).abs() <= 4.0 * f64::EPSILON * v.abs().max(f64::MIN_POSITIVE)
+}
+
+/// The `f64` nearest an exact rational (correctly rounded, as `compile()`
+/// lowers it), ±∞ beyond the range: `numer as f64 / denom as f64` was
+/// ∞/∞ = NaN for 10⁴⁰⁰/(10⁴⁰⁰ + 1) and rounded twice for parts
+/// beyond 2⁵³.
+pub(crate) fn rational_to_f64(r: &num_rational::Ratio<num_bigint::BigInt>) -> f64 {
+    use num_traits::Signed;
+    crate::base::numeric::ratio_to_f64(r).unwrap_or(if r.is_negative() {
+        f64::NEG_INFINITY
+    } else {
+        f64::INFINITY
     })
 }
 
@@ -322,6 +511,30 @@ impl CodegenOptions {
     #[must_use]
     pub fn c_runtime(&self) -> String {
         codegen_c::c_runtime_source()
+    }
+
+    /// The cfg-gated `mod math { … }` wrapper that code generated with
+    /// [`MathBackend::CfgGated`] calls (`math::sin`, `math::min`, …): a
+    /// `std` variant over the inherent float methods and a `no_std` one
+    /// over the `libm` crate, for this configuration's precision.
+    ///
+    /// Each generated function embeds it; a file assembled from several
+    /// functions (as `symplex-build` does) keeps one copy.  `min`/`max`
+    /// propagate NaN like `compile()`.
+    ///
+    /// ```
+    /// use symplex::matrix::{CodegenOptions, MathBackend};
+    ///
+    /// let m = CodegenOptions::no_std().cfg_gated_math_module();
+    /// assert!(m.starts_with("#[cfg(feature = \"std\")]\nmod math {"));
+    /// assert!(m.contains("pub fn min(a: f64, b: f64) -> f64 { if a <= b || a.is_nan() { a } else { b } }"));
+    /// assert!(m.contains("#[cfg(not(feature = \"std\"))]\nmod math {"));
+    /// ```
+    #[must_use]
+    pub fn cfg_gated_math_module(&self) -> String {
+        let mut lines = Vec::new();
+        append_cfg_gated_module(&mut lines, self.precision);
+        lines.join("\n")
     }
     /// Configuration for no_std embedded targets.
     /// Uses cfg-gated math backend and adds `#[inline]`.
@@ -583,7 +796,7 @@ pub(crate) fn to_rust_fn_with_options(
     let mut kept_bindings: Vec<(usize, ExprId)> = Vec::new();
     for (i, (_, binding_expr)) in bindings_list.iter().enumerate() {
         if is_pure_constant(arena, *binding_expr, &cse_constants)
-            && let Some(val) = eval_constant_f64(arena, *binding_expr, &cse_constants)
+            && let Some(val) = constant_binding_value(arena, *binding_expr, &cse_constants)
         {
             cse_constants.insert(i, val);
             continue;
@@ -664,7 +877,15 @@ pub(crate) fn to_rust_fn_with_options(
 
     // Final expression (strip unnecessary outer parens)
     let result_code = expr_to_rust_cse(arena, final_expr, args, options, &cse_constants)?;
-    let result_code = strip_outer_parens(&result_code);
+    // A tail expression starting with a block that does not span it parses
+    // as a statement (`{ let _p2 = x * x; _p2 * _p2 * x } * y.powi(-5)` did
+    // not compile): it keeps its parentheses.
+    let stripped = strip_outer_parens(&result_code);
+    let result_code = if starts_with_partial_block(stripped) {
+        result_code.as_str()
+    } else {
+        stripped
+    };
     if options.unit_annotation == UnitAnnotation::Uom {
         if let Some(ref ret_type) = options.return_unit {
             let unit = uom_default_unit(ret_type);
@@ -754,7 +975,7 @@ pub(crate) fn matrix_to_rust_fn(
     let mut kept_bindings: Vec<(usize, ExprId)> = Vec::new();
     for (i, (_, binding_expr)) in bindings_list.iter().enumerate() {
         if is_pure_constant(arena, *binding_expr, &cse_constants)
-            && let Some(val) = eval_constant_f64(arena, *binding_expr, &cse_constants)
+            && let Some(val) = constant_binding_value(arena, *binding_expr, &cse_constants)
         {
             cse_constants.insert(i, val);
             continue;
@@ -1001,14 +1222,14 @@ fn expr_to_rust_cse(
     match arena.node(id).clone() {
         ExprNode::Num(nid) => {
             let r = arena.num(nid);
-            if r.is_integer() {
+            let val = rational_to_f64(r);
+            if r.is_integer() && in_precision_range(val, prec) {
                 let n = r.numer();
                 Ok(format!("{n}{suffix}"))
             } else {
-                let n = r.numer().to_f64().unwrap_or(0.0);
-                let d = r.denom().to_f64().unwrap_or(1.0);
-                let val = n / d;
-                Ok(format!("{}{suffix}", format_float(val)))
+                // Correctly rounded; beyond the range ±∞ (an integer literal
+                // past f64::MAX does not compile: `overflowing_literals`).
+                Ok(float_lit(val, prec))
             }
         }
         ExprNode::Symbol(sid) => {
@@ -1021,7 +1242,7 @@ fn expr_to_rust_cse(
                 })?;
                 // Check if this CSE variable was resolved to a constant
                 if let Some(&val) = cse_constants.get(&idx) {
-                    Ok(format!("{}{suffix}", format_float(val)))
+                    Ok(float_lit(val, prec))
                 } else {
                     Ok(format!("t{idx}"))
                 }
@@ -1031,8 +1252,8 @@ fn expr_to_rust_cse(
                 })
             }
         }
-        ExprNode::Pi => Ok(format!("{}::PI", prec.consts_mod())),
-        ExprNode::E => Ok(format!("{}::E", prec.consts_mod())),
+        ExprNode::Pi => Ok(format!("{}::PI", consts_mod(options))),
+        ExprNode::E => Ok(format!("{}::E", consts_mod(options))),
         // Named constants without a `std::f64::consts` entry: emit the
         // runtime's literals (`Display` of an `f64` is its shortest exact
         // round-trip form, so the text is unchanged).
@@ -1177,7 +1398,18 @@ fn expr_to_rust_cse(
                     && let Some(n) = r.numer().to_i64()
                     && (-10..=10).contains(&n)
                 {
-                    return emit_powi(&b, n, options);
+                    let bind = has_duplicating_emission(arena, base, options);
+                    return emit_powi(&b, n, bind, options);
+                }
+                if let Some(e) = odd_integer_beyond_f64(r) {
+                    // The exponent rounds to an even `f64`: keep the sign of
+                    // the odd power, |b|^e with the sign of b.
+                    let ab = emit_unary_call("__b", "abs", options)?;
+                    let p = emit_powf(&ab, &float_lit(e, prec), options)?;
+                    let s = options.precision.suffix();
+                    return Ok(format!(
+                        "({{ let __b = {b}; let __m = {p}; if __b < 0.0{s} {{ -__m }} else {{ __m }} }})"
+                    ));
                 }
                 // sqrt: exponent == 1/2
                 if *r.numer() == 1.into() && *r.denom() == 2.into() {
@@ -1229,21 +1461,27 @@ fn expr_to_rust_cse(
         ExprNode::Acosh(x) => emit_unary(arena, x, "acosh", var_names, options, cse_constants),
         ExprNode::Atanh(x) => emit_unary(arena, x, "atanh", var_names, options, cse_constants),
         // A NaN argument gives NaN (it gave 0 and 0.5), as in `compile()`.
-        ExprNode::Sign(x) => {
+        // The argument is bound once when its own code repeats a
+        // subexpression: nested `sign(sign(…))` grew as 3ⁿ.
+        ExprNode::Sign(x) | ExprNode::Heaviside(x) => {
             let code = expr_to_rust_cse(arena, x, var_names, options, cse_constants)?;
             let s = options.precision.suffix();
             let nan = options.precision.nan();
-            Ok(format!(
-                "(if {code} > 0.0{s} {{ 1.0{s} }} else if {code} < 0.0{s} {{ -1.0{s} }} else if {code} == 0.0{s} {{ 0.0{s} }} else {{ {nan} }})"
-            ))
-        }
-        ExprNode::Heaviside(x) => {
-            let code = expr_to_rust_cse(arena, x, var_names, options, cse_constants)?;
-            let s = options.precision.suffix();
-            let nan = options.precision.nan();
-            Ok(format!(
-                "(if {code} > 0.0{s} {{ 1.0{s} }} else if {code} < 0.0{s} {{ 0.0{s} }} else if {code} == 0.0{s} {{ 0.5{s} }} else {{ {nan} }})"
-            ))
+            let (neg, zero) = if matches!(arena.node(id), ExprNode::Sign(_)) {
+                ("-1.0", "0.0")
+            } else {
+                ("0.0", "0.5")
+            };
+            let chain = |v: &str| {
+                format!(
+                    "if {v} > 0.0{s} {{ 1.0{s} }} else if {v} < 0.0{s} {{ {neg}{s} }} else if {v} == 0.0{s} {{ {zero}{s} }} else {{ {nan} }}"
+                )
+            };
+            if has_duplicating_emission(arena, x, options) {
+                Ok(format!("({{ let __s = {code}; {} }})", chain("__s")))
+            } else {
+                Ok(format!("({})", chain(&code)))
+            }
         }
         ExprNode::DiracDelta(_x) => {
             let s = options.precision.suffix();
@@ -1575,12 +1813,20 @@ fn try_log2(
 }
 
 /// Check if an expression resolves to a specific constant value.
+///
+/// An exact rational must equal it exactly: `−1 − 10⁻²⁰` rounds to −1.0,
+/// and `exp(x) − 1 − 10⁻²⁰` became `x.exp_m1()`.
 fn numopt_resolves_to(
     arena: &Arena,
     id: ExprId,
     cse_constants: &FxHashMap<usize, f64>,
     expected: f64,
 ) -> bool {
+    if let Some(r) = arena.as_num(id) {
+        return rational_to_f64(r) == expected
+            && r.is_integer()
+            && r.numer().to_f64() == Some(expected);
+    }
     if let Some(val) = try_resolve_constant(arena, id, cse_constants) {
         return val == expected;
     }
@@ -1673,12 +1919,7 @@ fn emit_numopt_call(
 
 fn try_const_eval_f64(arena: &Arena, id: ExprId) -> Option<f64> {
     match arena.node(id) {
-        ExprNode::Num(nid) => {
-            let r = arena.num(*nid);
-            let n = r.numer().to_f64()?;
-            let d = r.denom().to_f64()?;
-            Some(n / d)
-        }
+        ExprNode::Num(nid) => Some(rational_to_f64(arena.num(*nid))),
         ExprNode::Pi => Some(std::f64::consts::PI),
         ExprNode::E => Some(std::f64::consts::E),
         _ => None,
@@ -1720,6 +1961,94 @@ fn eval_unary_f64(func: &str, val: f64) -> Option<f64> {
         "cbrt" => val.cbrt(),
         _ => return None,
     })
+}
+
+/// An `f64` as a Rust expression of the configured precision: a suffixed
+/// literal, or the type's `INFINITY`/`NEG_INFINITY`/`NAN` constant
+/// (`format_float` printed `inf.0_f64` and `NaN.0_f64`, which do not
+/// compile).
+fn float_lit(v: f64, prec: Precision) -> String {
+    if v.is_nan() {
+        prec.nan().to_string()
+    } else if !in_precision_range(v, prec) {
+        if v > 0.0 {
+            prec.infinity().to_string()
+        } else {
+            prec.neg_infinity().to_string()
+        }
+    } else {
+        format!("{}{}", format_float(v), prec.suffix())
+    }
+}
+
+/// `v` is finite in the configured float type (a literal past `f32::MAX`
+/// does not compile either).
+fn in_precision_range(v: f64, prec: Precision) -> bool {
+    match prec {
+        Precision::F64 => v.is_finite(),
+        Precision::F32 => v.abs() <= f64::from(f32::MAX),
+    }
+}
+
+/// The path of the float constants (`PI`, `E`): `core::` for the `no_std`
+/// back ends (`std::f64::consts` does not resolve without `std`), `std::`
+/// otherwise.
+fn consts_mod(options: &CodegenOptions) -> &'static str {
+    match (options.math_backend, options.precision) {
+        (MathBackend::Std, p) => p.consts_mod(),
+        (_, Precision::F64) => "core::f64::consts",
+        (_, Precision::F32) => "core::f32::consts",
+    }
+}
+
+/// `e` as an `f64` when `r` is an odd integer of magnitude beyond 2⁵³: its
+/// nearest `f64` is even, so `b^e` would lose the sign of a negative base
+/// (`(−1)^(2⁵³ + 1)` evaluated to 1).
+pub(crate) fn odd_integer_beyond_f64(r: &num_rational::Ratio<num_bigint::BigInt>) -> Option<f64> {
+    use num_integer::Integer;
+    if !r.is_integer() || r.numer().is_even() || r.numer().magnitude().bits() <= 53 {
+        return None;
+    }
+    Some(rational_to_f64(r))
+}
+
+/// Whether the Rust code of `id` repeats the code of a subexpression
+/// (`sign`/`Heaviside` test their argument three times, `x³`…`x⁶` expand
+/// to repeated products, a checked domain names the argument twice more):
+/// a node that repeats its operand binds it to a local when this holds, so
+/// nested repetition stays linear instead of growing as 3ⁿ.
+fn has_duplicating_emission(arena: &Arena, id: ExprId, options: &CodegenOptions) -> bool {
+    let mut stack = vec![id];
+    let mut seen = rustc_hash::FxHashSet::default();
+    while let Some(cur) = stack.pop() {
+        if !seen.insert(cur) {
+            continue;
+        }
+        let node = arena.node(cur);
+        let dup = match node {
+            ExprNode::Sign(_) | ExprNode::Heaviside(_) => true,
+            ExprNode::Pow(_, e) => arena.as_num(*e).is_some_and(|r| {
+                r.is_integer() && r.numer().to_i64().is_some_and(|n| (3..=6).contains(&n))
+            }),
+            ExprNode::Ln(_)
+            | ExprNode::Asin(_)
+            | ExprNode::Acos(_)
+            | ExprNode::Acosh(_)
+            | ExprNode::Atanh(_)
+            | ExprNode::Gamma(_)
+            | ExprNode::LogGamma(_)
+            | ExprNode::Digamma(_)
+            | ExprNode::Factorial(_)
+            | ExprNode::LambertW(_)
+            | ExprNode::Apply(_, _) => options.checked_domain,
+            _ => false,
+        };
+        if dup {
+            return true;
+        }
+        node.for_each_child(|c| stack.push(c));
+    }
+    false
 }
 
 /// Format an `f64` as a Rust literal (always includes a decimal point).
@@ -1774,6 +2103,39 @@ fn is_pure_constant(arena: &Arena, id: ExprId, resolved: &FxHashMap<usize, f64>)
     true
 }
 
+/// The value of a pure-constant CSE binding: its `f64` evaluation by
+/// [`eval_constant_f64`] when that is within a few ulps of the certified
+/// value (so the literal of an accurate formula is unchanged), the
+/// certified value otherwise.  The naive evaluation alone lost what the
+/// emitted formula keeps: a shared `exp(10⁻²⁰) − 1` (`exp_m1` in the
+/// formula) became the literal 0, and `cot` of it NaN.
+fn constant_binding_value(
+    arena: &mut Arena,
+    binding: ExprId,
+    resolved: &FxHashMap<usize, f64>,
+) -> Option<f64> {
+    let naive = eval_constant_f64(arena, binding, resolved)?;
+    // Earlier bindings and folded constants by their exact values.
+    let mut reps: Vec<(ExprId, ExprId)> = Vec::new();
+    for id in crate::base::walk::post_order_ids(arena, binding) {
+        if let ExprNode::Symbol(sid) = arena.node(id)
+            && let Some(idx) = arena.symbols.name(*sid).strip_prefix("__cse_")
+            && let Ok(idx) = idx.parse::<usize>()
+            && let Some(&v) = resolved.get(&idx)
+            && let Some(r) = crate::base::numeric::f64_to_ratio_exact(v)
+        {
+            let nid = arena.intern_num(r);
+            let num = arena.intern(ExprNode::Num(nid));
+            reps.push((id, num));
+        }
+    }
+    let exact = crate::transforms::subs::subs_map(arena, binding, &reps);
+    match crate::transforms::evalf::evalf_f64(arena, exact) {
+        Ok(v) if v.is_finite() && !(naive.is_finite() && f64_close(naive, v)) => Some(v),
+        _ => Some(naive),
+    }
+}
+
 /// Recursively evaluate a pure-constant expression to `f64`.
 fn eval_constant_f64(
     arena: &Arena,
@@ -1781,12 +2143,7 @@ fn eval_constant_f64(
     cse_constants: &FxHashMap<usize, f64>,
 ) -> Option<f64> {
     match arena.node(id).clone() {
-        ExprNode::Num(nid) => {
-            let r = arena.num(nid);
-            let n = r.numer().to_f64()?;
-            let d = r.denom().to_f64()?;
-            Some(n / d)
-        }
+        ExprNode::Num(nid) => Some(rational_to_f64(arena.num(nid))),
         ExprNode::Pi => Some(std::f64::consts::PI),
         ExprNode::E => Some(std::f64::consts::E),
         ExprNode::PhysicalConstant(_, value_id) => {
@@ -2062,6 +2419,27 @@ fn emit_sin_cos_binding(
     ))
 }
 
+/// `s` starts with a `{ … }` block that does not span all of `s`.
+fn starts_with_partial_block(s: &str) -> bool {
+    if !s.starts_with('{') {
+        return false;
+    }
+    let mut depth = 0i32;
+    for (i, c) in s.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i + 1 != s.len();
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 fn strip_outer_parens(s: &str) -> &str {
     let bytes = s.as_bytes();
     if bytes.first() != Some(&b'(') || bytes.last() != Some(&b')') {
@@ -2188,6 +2566,15 @@ fn wrap_domain_check(call: &str, arg_code: &str, func: &str, options: &CodegenOp
     }
     let suffix = options.precision.suffix();
     match domain_condition(func, arg_code, suffix) {
+        // A checked argument holding checks of its own is bound once:
+        // naming it three times grew as 3ⁿ (`ln(ln(ln(…)))`).
+        Some(_) if arg_code.contains("debug_assert!") => {
+            let cond = domain_condition(func, "__d", suffix).unwrap_or_default();
+            let call = call.replacen(arg_code, "__d", 1);
+            format!(
+                "{{ let __d = {arg_code}; debug_assert!({cond}, \"{func}: argument {{}} outside domain\", __d); {call} }}"
+            )
+        }
         Some(cond) => format!(
             "{{ debug_assert!({cond}, \"{func}: argument {{}} outside domain\", {arg_code}); {call} }}"
         ),
@@ -2465,8 +2852,18 @@ fn emit_rt_apply(
     }
 }
 
-/// Emit a powi call.
-fn emit_powi(base_code: &str, exp: i64, options: &CodegenOptions) -> Result<String, SymplexError> {
+/// Emit a powi call; `bind`: the base code repeats subexpressions itself,
+/// so an expansion binds it once (see [`has_duplicating_emission`]).
+fn emit_powi(
+    base_code: &str,
+    exp: i64,
+    bind: bool,
+    options: &CodegenOptions,
+) -> Result<String, SymplexError> {
+    if bind && (3..=6).contains(&exp) {
+        let inner = expand_powi("_p1", exp).unwrap_or_default();
+        return Ok(format!("({{ let _p1 = {base_code}; {inner} }})"));
+    }
     // Horner-style expansion for small positive exponents (3..=6)
     if let Some(expanded) = expand_powi(base_code, exp) {
         return Ok(expanded);
