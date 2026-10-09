@@ -6,7 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
-## [Unreleased]
+## [0.36.0] - 2026-10-09
+
+An audit of the code new in 0.34 and 0.35 found more silent wrong
+results, all fixed: numerical zeros printed for nonzero values (in-range
+second-order cancellations, and values below the exponent range that a
+function or a conversion flattened — 640 such zeros in two hunters, none
+now), an antiderivative that jumped at infinitely many points
+(`∫ sign(sin eˣ) dx`), and `solve` returning part of the roots of a
+product.  Building expressions from huge integers no longer hangs, and
+polynomial gcds, factoring and root isolation with large coefficients
+are up to 800× faster.  `cholesky` and `ldl` accept Hermitian matrices.
 
 ### Breaking (behaviour; no signature changed)
 
@@ -128,6 +138,34 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 - Construction hunter (10,000 seeds): 43 slow / 1 hang → 1 / 0; a new
   polynomial hunter (3,000 seeds): 256 slow / 21 hangs → 11 / 0, results
   identical.  Rubi `--check` CPU 209 → 182 s.
+
+### Measured
+
+- `tests/v34/` (0.35 and 0.36): 9 files, 43 tests.  nextest 13,640 tests
+  (14 skipped), doctests 1,313.
+- Rubi harness: 14,522 verified, 69 real_verified, 0 wrong, 0 undecided
+  (unchanged; wall 16–22 s with 12 jobs).  Self-test: 55,475 verified, 0
+  wrong, 742 undecided (unchanged).  `--negative-params`: 0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates:
+  identical.
+- `cargo semver-checks` against 0.35.0: no semver update required.
+- Hunters (before → after): below-range values (2,743) 485 wrong `0` → 0;
+  zero search with identities and hidden terms (1,500) 155 → 0; the 0.35
+  hidden-term hunter (5,000) still 0; integration with `F(b) − F(a)`
+  against quadrature (2,420) 6 wrong → 0; factored polynomials over
+  ℚ(√p…, i) (1,500) 16 partial root lists → 0; construction paths with
+  huge integers (10,000) 118 slow / 12 hangs → 1 / 0; polynomial
+  operations with large coefficients (3,000) 256 slow / 21 hangs → 11 / 0.
+- Fuzzing: every saved input replays in 0–0.7 s.  On the release code
+  all 12 targets ran together with a 10-second limit (`fuzz_simplify` and
+  `fuzz_integrate` 15 minutes, the others 10): `fuzz_numdist` 20,942,340
+  inputs, `fuzz_refine` 14,544,199, `fuzz_lambertw` 3,052,448,
+  `fuzz_parser` 2,171,239, `fuzz_roundtrip` 1,255,115, `fuzz_eigenvects`
+  289,015, `fuzz_exact_matrix` 253,644, `fuzz_evalf` 122,165,
+  `fuzz_calculus` 50,323, `fuzz_poly` 41,271, `fuzz_simplify` 26,466,
+  `fuzz_integrate` 11,814: 0 crashes, 0 timeouts, 0 out-of-memory (the
+  polynomial speed-ups raised every target's throughput over the 0.35
+  campaign).
 
 ## [0.35.0] - 2026-10-08
 
