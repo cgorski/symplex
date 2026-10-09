@@ -251,6 +251,29 @@ fn linear_in_sym(arena: &mut Arena, e: ExprId, var: ExprId) -> Option<(Q, ExprId
     Some((a, intercept))
 }
 
+/// Extract `(a, b)` with `e = a·var + b`, both `var`-free and possibly
+/// symbolic (`k·x + 1` → `(x, 1)`); `a` must not be zero.
+fn linear_in_any(arena: &mut Arena, e: ExprId, var: ExprId) -> Option<(ExprId, ExprId)> {
+    if let Some((a, b)) = linear_in_sym(arena, e, var) {
+        return Some((rat_expr(arena, a), b));
+    }
+    let monomials = sym_poly_in(arena, e, var)?;
+    let mut slope: Option<ExprId> = None;
+    let mut intercept = arena.zero;
+    for (deg, coeff) in monomials {
+        match deg {
+            0 => intercept = coeff,
+            1 => slope = Some(coeff),
+            _ => return None,
+        }
+    }
+    let a = slope?;
+    if arena.is_zero_structural(a) {
+        return None;
+    }
+    Some((a, intercept))
+}
+
 /// `base^b` for a `var`-free exponent (`1` when `b` is zero).
 fn pow_const(arena: &mut Arena, base: ExprId, b: ExprId) -> ExprId {
     if let Some(r) = as_rat(arena, b) {
@@ -439,7 +462,11 @@ fn pole_in_range(
     if hi.is_some_and(|h| h < lo) {
         return None;
     }
-    let reduced = crate::poly::polybridge::cancel(arena, body, var);
+    // Over a common denominator first: the numerator/denominator split of a
+    // sum of fractions is `(body, 1)`, which hid the poles of
+    // `Σ_{k=−1}^{n} (1/k − 1/(k+1))` (it came out `−1/(n+1) − 1`).
+    let combined = combine_fractions(arena, body);
+    let reduced = crate::poly::polybridge::cancel(arena, combined, var);
     let (_, den) = crate::poly::polybridge::as_numer_denom(arena, reduced);
     if !crate::base::walk::contains(arena, den, var) {
         return None;
@@ -1895,7 +1922,94 @@ fn binomial_poly_sum(
     Some(eval::eval(arena, result))
 }
 
+/// Most terms [`binomial_sum`] adds or removes to move an integer lower
+/// limit to `0`.
+const MAX_BINOMIAL_LOWER_SHIFT: i64 = 32;
+
+/// `Σ_{k=lo}^{n}` of a term with a factor `C(n, k)`: the identities are for
+/// `lo = 0`; an integer `lo ≠ 0` is moved there with its first terms,
+/// `Σ_{k=lo}^{n} = Σ_{k=0}^{n} − Σ_{k=0}^{lo−1}` (`lo > 0`) or
+/// `+ Σ_{k=lo}^{−1}` (`lo < 0`, terms with `C(n, k<0) = 0`).  Both hold for
+/// every `n ≥ 0` (`C(n, k) = 0` for `k > n`).  `Σ_{k=1}^{n} C(n,k)` was
+/// refused; SymPy gives `2ⁿ − 1`.
 fn binomial_sum(
+    arena: &mut Arena,
+    body: ExprId,
+    var: ExprId,
+    lo: ExprId,
+    hi: ExprId,
+) -> Option<ExprId> {
+    let start = as_i64(arena, lo)?;
+    if start == 0 {
+        return binomial_sum_from_zero(arena, body, var, lo, hi);
+    }
+    if start.abs() > MAX_BINOMIAL_LOWER_SHIFT {
+        return None;
+    }
+    // Only terms whose binomial is C(hi, k): the correction terms vanish
+    // beyond the top.
+    let top_binomial = mul_factors(arena, body).into_iter().find_map(|f| {
+        let (b, _) = arena.as_base_exp(f);
+        matches!(arena.node(b), ExprNode::Binomial(t, kk) if *kk == var && *t == hi).then_some(b)
+    })?;
+    let zero = arena.zero;
+    let full = binomial_sum_from_zero(arena, body, var, zero, hi)?;
+    let (from, to, sign) = if start > 0 {
+        (0, start - 1, -1)
+    } else {
+        (start, -1, 1)
+    };
+    let mut parts = vec![full];
+    for j in from..=to {
+        // C(n, j) as the polynomial n(n−1)⋯(n−j+1)/j! (0 for j < 0):
+        // `eval` keeps C(n, 0), C(n, −1) of a symbolic n as they are.
+        let value = if j < 0 {
+            arena.zero
+        } else {
+            let mut fs = vec![rat_expr(
+                arena,
+                Q::one() / Q::from_integer(factorial(j as u64)),
+            )];
+            for i in 0..j {
+                fs.push(add_rat(arena, hi, &rat_i(-i)));
+            }
+            arena.mul(&fs)
+        };
+        let t = subs::subs(arena, body, top_binomial, value);
+        let kk = arena.int(j);
+        let t = subs::subs(arena, t, var, kk);
+        let t = eval::eval(arena, t);
+        if !is_finite_value(arena, t) {
+            return None;
+        }
+        let s = arena.int(sign);
+        parts.push(arena.mul(&[s, t]));
+    }
+    let total = add_all(arena, &parts);
+    Some(eval::eval(arena, total))
+}
+
+/// Is `e` free of `zoo`, `nan` and infinities (a usable term value)?
+fn is_finite_value(arena: &Arena, e: ExprId) -> bool {
+    let mut stack = vec![e];
+    let mut seen = rustc_hash::FxHashSet::default();
+    while let Some(n) = stack.pop() {
+        if !seen.insert(n) {
+            continue;
+        }
+        let node = arena.node(n);
+        if matches!(
+            node,
+            ExprNode::ComplexInfinity | ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::NaN
+        ) {
+            return false;
+        }
+        node.for_each_child(|c| stack.push(c));
+    }
+    true
+}
+
+fn binomial_sum_from_zero(
     arena: &mut Arena,
     body: ExprId,
     var: ExprId,
@@ -1951,6 +2065,18 @@ fn binomial_sum(
             let num = arena.sub(t, one);
             arena.div(num, n_p1)
         }
+        // Σ C(n,k) x^k/(k+1) = ((1+x)^(n+1) − 1)/((n+1)·x)   (x = −1: 1/(n+1))
+        (1, [(b, p)], Some(x)) if b.is_one() && *p == -Q::one() => {
+            if as_rat(arena, x) == Some(-Q::one()) {
+                arena.div(one, n_p1)
+            } else {
+                let s = arena.add(&[one, x]);
+                let t = arena.pow(s, n_p1);
+                let num = arena.sub(t, one);
+                let den = arena.mul(&[n_p1, x]);
+                arena.div(num, den)
+            }
+        }
         // Σ C(n,k)² = C(2n, n)
         (2, [], None) => {
             let two_n = arena.mul(&[two, n]);
@@ -1977,8 +2103,17 @@ fn binomial_sum(
             let s = arena.add(&[one, x]);
             let base = scale_and_tidy(arena, s, q);
             let xq = scale_and_tidy(arena, x, q);
-            let t = arena.pow(base, n_m1);
-            arena.mul(&[n, xq, t])
+            if as_rat(arena, base).is_some_and(|r| r.is_zero()) {
+                // x = −1: n·x·0^(n−1) is 0·zoo = nan at n = 0, where the
+                // sum is 0 (Σ_{k=0}^{n} k·C(n,k)·(−1)^k = −[n = 1]).
+                let zero = arena.zero;
+                let cond = arena.eq_(n, one);
+                let ncond = arena.ne_(n, one);
+                arena.piecewise(&[(xq, cond), (zero, ncond)])
+            } else {
+                let t = arena.pow(base, n_m1);
+                arena.mul(&[n, xq, t])
+            }
         }
         _ => return None,
     };
@@ -2014,16 +2149,20 @@ fn geometric_split(arena: &mut Arena, body: ExprId, var: ExprId) -> Option<Geome
             ExprNode::Pow(base, exp)
                 if depends_on(arena, exp, var) && !depends_on(arena, base, var) =>
             {
-                let (a, b) = linear_in_sym(arena, exp, var)?;
-                y_parts.push(pow_rat(arena, base, &a));
+                // b^(a·k + c) = (b^a)^k·b^c for integer k, also for a
+                // symbolic slope a (principal powers: (e^{a·Log b})^k).
+                let (a, b) = linear_in_any(arena, exp, var)?;
+                y_parts.push(pow_const(arena, base, a));
                 if !arena.is_zero_structural(b) {
                     c_parts.push(pow_const(arena, base, b));
                 }
             }
             ExprNode::Exp(arg) => {
-                let (a, b) = linear_in_sym(arena, arg, var)?;
+                // exp(x·k) is the geometric term (e^x)^k (it was refused).
+                let (a, b) = linear_in_any(arena, arg, var)?;
                 let e = arena.e_const;
-                y_parts.push(pow_rat(arena, e, &a));
+                let ya = pow_const(arena, e, a);
+                y_parts.push(eval::eval(arena, ya));
                 if !arena.is_zero_structural(b) {
                     c_parts.push(pow_const(arena, e, b));
                 }
@@ -2104,6 +2243,13 @@ fn geometric_poly_finite(
     if as_rat(arena, y).is_some() || const_value(arena, y).is_some() {
         return Some(formula);
     }
+    // A real constant ratio away from 1 (`e²`, `e⁻¹`) needs no case split.
+    if walk::free_symbols(arena, y).is_empty()
+        && crate::transforms::evalf::eval_const_f64(arena, y)
+            .is_some_and(|f| (f - 1.0).abs() > 1e-9)
+    {
+        return Some(formula);
+    }
     // Symbolic ratio: Piecewise on y = 1.  Both conditions are explicit so
     // that `eval` only selects a branch once `y` is known.
     let poly_sum = faulhaber_sym(arena, &poly, lo, hi);
@@ -2166,6 +2312,11 @@ fn infinite_sum(arena: &mut Arena, body: ExprId, var: ExprId, lo: ExprId) -> Sum
 
     // 1. Rational functions (handles cancellation between divergent pieces).
     if let Some(r) = rational_sum_infinite(arena, body, var, lo) {
+        return r;
+    }
+    // 1b. Even rational functions with non-rational poles (and their
+    //     alternating versions) by the residue theorem.
+    if let Some(r) = residue_sum_infinite(arena, body, var, lo) {
         return r;
     }
 
@@ -2254,6 +2405,14 @@ fn infinite_sum(arena: &mut Arena, body: ExprId, var: ExprId, lo: ExprId) -> Sum
     {
         return r;
     }
+    // 4b. Factorials (αk + β)! with β/α a common non-zero integer offset
+    //     s: the table's (αk)! after k = j − s (Σ_{k≥0} 1/(k + 2)! = e − 2
+    //     was refused).
+    if let Some(shape) = &shape
+        && let Some(r) = shifted_power_series(arena, shape, body, var, lo)
+    {
+        return r;
+    }
 
     // 5. Negative-binomial series Σ P(k)·C(k+c, k)·xᵏ.
     if let Some(r) = negative_binomial_series(arena, body, var, lo) {
@@ -2272,6 +2431,224 @@ fn infinite_sum(arena: &mut Arena, body: ExprId, var: ExprId, lo: ExprId) -> Sum
     }
 
     SumOutcome::Unevaluated
+}
+
+/// [`power_series_infinite`] after the index shift `k = j − s` that turns
+/// the factorials `(αk + β)!` (all with `β/α` an integer, `s` the
+/// smallest) into `(αj + β − αs)!`.
+fn shifted_power_series(
+    arena: &mut Arena,
+    shape: &TermShape,
+    body: ExprId,
+    var: ExprId,
+    lo: ExprId,
+) -> Option<SumOutcome> {
+    let lo_i = as_i64(arena, lo)?;
+    let mut shift: Option<Q> = None;
+    for (al, be, _) in &shape.facts {
+        if al.is_zero() {
+            return None;
+        }
+        let s = be / al;
+        if !s.is_integer() {
+            return None;
+        }
+        shift = Some(match shift {
+            Some(t) if t <= s => t,
+            _ => s,
+        });
+    }
+    let s = shift?.to_integer().to_i64()?;
+    if s == 0 || s.abs() > MAX_TELESCOPE_SHIFT {
+        return None;
+    }
+    let ms = arena.int(-s);
+    let j = arena.add(&[var, ms]);
+    let shifted = subs::subs(arena, body, var, j);
+    let shifted = eval::eval(arena, shifted);
+    let shape2 = term_shape(arena, shifted, var)?;
+    let lo2 = arena.int(lo_i.checked_add(s)?);
+    power_series_infinite(arena, &shape2, var, lo2)
+}
+
+/// Largest denominator degree [`residue_sum_infinite`] handles.
+const MAX_RESIDUE_DEGREE: usize = 8;
+
+/// Is `N/D` an even function of its variable (all monomials of `N` and `D`
+/// of one parity, the same for both, or opposite parities for an odd
+/// over odd quotient)?
+fn is_even_rational(n: &Poly, d: &Poly) -> bool {
+    let parity = |p: &Poly| -> Option<usize> {
+        let mut par: Option<usize> = None;
+        for (i, c) in p.coeffs().iter().enumerate() {
+            if c.is_zero() {
+                continue;
+            }
+            match par {
+                None => par = Some(i % 2),
+                Some(q) if q != i % 2 => return None,
+                _ => {}
+            }
+        }
+        par
+    };
+    matches!((parity(n), parity(d)), (Some(a), Some(b)) if a == b)
+}
+
+/// `Σ_{k=lo}^{∞} (±1)^k·N(k)/D(k)` for an even rational function (after an
+/// integer shift of `k`) with `deg D − deg N ≥ 2`, a square-free `D`
+/// without integer roots and all roots `α` in closed form, by the residue
+/// theorem (SymPy's `eval_sum_residue`, BSD):
+///
+/// `Σ_{k∈ℤ} f(k) = −π·Σ_α cot(πα)·N(α)/D′(α)` (`csc` for `(−1)^k f(k)`),
+/// `Σ_{k≥0} f(k) = (Σ_{k∈ℤ} f(k) + f(0))/2` for even `f`, and the first
+/// terms added or removed for another `lo`.  `Σ_{k≥0} 1/(k² + 1) =
+/// 1/2 + π·coth(π)/2` was refused.
+fn residue_sum_infinite(
+    arena: &mut Arena,
+    body: ExprId,
+    var: ExprId,
+    lo: ExprId,
+) -> Option<SumOutcome> {
+    let lo_i = as_i64(arena, lo)?;
+    // (−1)^(±k + c) factors.
+    let mut alternating = false;
+    let mut negate = false;
+    let mut rest = Vec::new();
+    for f in mul_factors(arena, body) {
+        if let ExprNode::Pow(b, e) = arena.node(f).clone()
+            && as_rat(arena, b) == Some(-Q::one())
+            && depends_on(arena, e, var)
+        {
+            let (a, c) = linear_in(arena, e, var)?;
+            if !(a.is_one() || a == -Q::one()) || !c.is_integer() {
+                return None;
+            }
+            alternating = !alternating;
+            if num_integer::Integer::is_odd(&c.to_integer()) {
+                negate = !negate;
+            }
+            continue;
+        }
+        rest.push(f);
+    }
+    let r = mul_all(arena, &rest);
+    let r = combine_fractions(arena, r);
+    let (n_e, d_e) = polybridge::as_numer_denom(arena, r);
+    let mut np = polybridge::expr_to_poly(arena, n_e, var)?;
+    let mut dp = polybridge::expr_to_poly(arena, d_e, var)?;
+    let (dn, dd) = (np.degree()?, dp.degree()?);
+    if np.is_zero() || dd < dn + 2 || dd > MAX_RESIDUE_DEGREE {
+        return None;
+    }
+    let mut start = lo_i;
+    if !is_even_rational(&np, &dp) {
+        // k = j + s centres the poles: s = −b/(a·deg) for D = a·k^deg + b·k^(deg−1) + …
+        let s = -dp.coeff(dd - 1) / (dp.coeff(dd) * rat_i(dd as i64));
+        if !s.is_integer() {
+            return None;
+        }
+        let s = s.to_integer().to_i64()?;
+        np = gosper::poly_shift(&np, s);
+        dp = gosper::poly_shift(&dp, s);
+        if !is_even_rational(&np, &dp) {
+            return None;
+        }
+        start = start.checked_sub(s)?;
+        if alternating && s % 2 != 0 {
+            negate = !negate;
+        }
+    }
+    if !Poly::gcd(&dp, &dp.derivative()).is_constant() || start.abs() > MAX_TELESCOPE_SHIFT {
+        return None;
+    }
+    let d_expr = poly_expr(arena, &dp, var);
+    let roots = crate::transforms::solve::solve(arena, d_expr, var);
+    if roots.len() != dd {
+        return None;
+    }
+    let n_expr = poly_expr(arena, &np, var);
+    let dd_expr = poly_expr(arena, &dp.derivative(), var);
+    let pi = arena.pi;
+    // f even: the residues at α and −α are equal (cot and N/D′ are both
+    // odd), so each pair counts twice through one representative, the one
+    // with a positive leading coefficient (`2i`, not `−2i`: eval keeps
+    // `cosh(−2π)`).
+    let all: Vec<ExprId> = roots.iter().map(|r| eval::eval(arena, r.value)).collect();
+    let mut chosen: Vec<(ExprId, i64)> = Vec::with_capacity(dd);
+    let mut used = vec![false; all.len()];
+    for i in 0..all.len() {
+        if used[i] {
+            continue;
+        }
+        used[i] = true;
+        let neg = arena.neg(all[i]);
+        let neg = eval::eval(arena, neg);
+        let partner = (0..all.len()).find(|&j| !used[j] && all[j] == neg);
+        match partner {
+            Some(j) => {
+                used[j] = true;
+                let (ci, _) = arena.as_coeff_term(all[i]);
+                let rep = if ci.is_negative() { all[j] } else { all[i] };
+                chosen.push((rep, 2));
+            }
+            None => chosen.push((all[i], 1)),
+        }
+    }
+    let mut residues = Vec::with_capacity(dd);
+    for (alpha, mult) in chosen {
+        if as_rat(arena, alpha).is_some_and(|q| q.is_integer())
+            || walk::post_order_ids(arena, alpha)
+                .into_iter()
+                .any(|id| matches!(arena.node(id), ExprNode::RootOf(..)))
+        {
+            return None;
+        }
+        let pa = arena.mul(&[pi, alpha]);
+        let pa = eval::eval(arena, pa);
+        let s = arena.sin(pa);
+        let weight = if alternating {
+            let m1 = arena.int(-1);
+            arena.pow(s, m1)
+        } else {
+            let c = arena.cos(pa);
+            arena.div(c, s)
+        };
+        let nv = subs::subs(arena, n_expr, var, alpha);
+        let dv = subs::subs(arena, dd_expr, var, alpha);
+        let q = arena.div(nv, dv);
+        let m = arena.int(mult);
+        residues.push(arena.mul(&[m, weight, q]));
+    }
+    let res_sum = add_all(arena, &residues);
+    let m_pi = arena.neg(pi);
+    let full = arena.mul(&[m_pi, res_sum]);
+    // h(j) = (±1)^j·N(j)/D(j) at an integer j.
+    let h = |arena: &mut Arena, j: i64| -> ExprId {
+        let jq = rat_i(j);
+        let v = np.eval(&jq) / dp.eval(&jq);
+        let v = if alternating && j % 2 != 0 { -v } else { v };
+        rat_expr(arena, v)
+    };
+    let h0 = h(arena, 0);
+    let half = rat_expr(arena, Q::new(BigInt::one(), BigInt::from(2)));
+    let from_zero = arena.add(&[full, h0]);
+    let mut parts = vec![arena.mul(&[half, from_zero])];
+    if start > 0 {
+        for j in 0..start {
+            let v = h(arena, j);
+            parts.push(arena.neg(v));
+        }
+    } else {
+        for j in start..0 {
+            parts.push(h(arena, j));
+        }
+    }
+    let mut total = add_all(arena, &parts);
+    if negate {
+        total = arena.neg(total);
+    }
+    Some(SumOutcome::Closed(eval::eval(arena, total)))
 }
 
 /// Eventual sign of `body(k)` for large `k`, when structurally obvious:
@@ -3206,9 +3583,12 @@ fn shifted_factorial_ratio(
 ) -> Vec<ExprId> {
     let bot_arg = arena.add(&[lo, shift]);
     let bot_arg = eval::eval(arena, bot_arg);
+    // A non-positive bottom argument: the rising factorial (SymPy's form).
+    // For an integer one Γ has a pole there; for a non-integer one
+    // Γ(hi + 1 + shift) became factorials with removable poles in range
+    // (`Π_{k=−1}^{n} (k − 1/2)` was `nan` at `n = −1`, where it is `−3/2`).
     if finite
         && let Some(b) = as_rat(arena, bot_arg)
-        && b.is_integer()
         && !b.is_positive()
     {
         let count = range_count(arena, lo, hi);

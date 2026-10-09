@@ -8,6 +8,18 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+### Added
+
+- **Sums**: binomial sums from any integer lower limit (`Σ_{k=1}^{n} C(n, k)
+  = 2ⁿ − 1`, refused in 0.37), `Σ C(n, k)·xᵏ/(k + 1)`, geometric `exp(k·x)`,
+  even rational series by residues (`Σ_{k≥0} 1/(k² + 1) = 1/2 + π·coth(π)/2`,
+  SymPy's `eval_sum_residue`), shifted-factorial power series (`Σ 1/(k +
+  2)! = e − 2`).
+- **`solve_ode`** solves equations multiplied or divided by factors free
+  of `y`, or expanded (229 → 45 unsolved of 300 such forms), Cauchy–Euler
+  equations of any order (`x = eᵗ`), and `y′ = e^(x + y)`.
+  `rsolve_first_order` gives closed products for a rational `p(n)`.
+
 ### Breaking (behaviour; no signature changed)
 
 - **Antiderivatives through `tan(x/2)` and `tan(a·x + b)` carry a `floor`
@@ -42,6 +54,29 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
   parameters (`∫ dx/(a + b·cos x)`, whose jump depends on whether `a > |b|`;
   SymPy 1.14's answers jump there too) or a `RootSum` with real roots
   (`∫ dx/(2·sin⁵x + 1)`).  Rubi unchanged: 23,915 verified, 0 wrong.
+- **The remaining jumps of those antiderivatives**: with a `RootSum` over
+  a polynomial with real roots (`∫ dx/(2·sin⁵x + 1)` gave `F(4) − F(2)` =
+  −1.5391 for 1.9271) and with real or positive parameters (`∫ dx/(a +
+  b·cos x)` with `a`, `b` positive, at `a = 2`, `b = 1`, gave −2.7125 for
+  0.9151 on [3, 4]; `∫ dx/(a + b·sin²x)` was four logarithms over a quartic
+  that jumped at every odd multiple of π).  The jump is 2πi times the sum of
+  the residues in the upper half-plane (a `RootSum` that vanishes at the
+  real roots); logarithms whose side of the cut depends on real parameters
+  use `sign(im(·))`; π-periodic integrands with real parameters go through
+  `t = tan x` (Bioche's rule).  Continuity hunter (8,000 integrands): 990
+  jumps → 118, all with parameters not declared real (which may be
+  complex; SymPy 1.14's answers jump there too).
+- **Sums with a pole hidden in a sum of fractions** were summed:
+  `Σ_{k=−1}^{n} (1/k − 1/(k + 1))` was `−1/(n + 1) − 1`; the terms at `k = 0`,
+  `−1` are `zoo`, so it is refused (as SymPy).  Gosper sums with factorial
+  ratios were `nan` (`Σ_{k=0}^{n} (−2)^k·(k + 1)!/(k − 1)!`: `(k + 1)!/(k − 1)!`
+  is now the polynomial `k(k + 1)`); `Σ k·C(n, k)·(−1)^k` was `nan` at `n =
+  0` (now `−[n = 1]`; SymPy's `0` is wrong at `n = 1`); `Π_{k=−1}^{n} (k −
+  1/2)` was `nan` at `n = −1`.  Sum hunter (2,110 cases): 8 wrong → 0.
+- **ODE initial conditions at `x₀ ≠ 0`** of order-4 constant-coefficient
+  equations took minutes; the general solution is translated to `x₀`
+  first (0.6 s).  ODE hunter (2,300 + 300): 0 wrong before and after,
+  hangs 10 → 0.
 - **`together`, `expand_trig` and `trig_combine` gave a value for `0/0`
   at every point**: a numerator the route's identities make 0 over a
   denominator zero by an identity of its functions dropped the denominator

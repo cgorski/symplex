@@ -1435,6 +1435,8 @@ fn is_rational_trig(arena: &Arena, expr: ExprId, var: ExprId, var_sym: SymbolId)
 ///   - `dx        = 2/(1+t²) dt`
 ///
 /// After substitution the integrand becomes a rational function of `t`.
+/// With parameters, all declared real, an integrand with `f(x + π) = f(x)`
+/// first goes through `t = tan x` ([`try_bioche_tan_substitution`]).
 fn try_weierstrass_substitution(
     arena: &mut Arena,
     expr: ExprId,
@@ -1447,6 +1449,11 @@ fn try_weierstrass_substitution(
     }
     if !is_rational_trig(arena, expr, var, var_sym) {
         return None;
+    }
+    if has_only_real_parameters(arena, expr, var_sym)
+        && let Some(result) = try_bioche_tan_substitution(arena, expr, var, var_sym, depth)
+    {
+        return Some(result);
     }
 
     tracing::debug!("trying Weierstrass substitution");
@@ -1532,15 +1539,128 @@ fn try_weierstrass_substitution(
     }
 }
 
+/// Does `expr` have parameters (free symbols other than the variable), all
+/// of them declared real?
+fn has_only_real_parameters(arena: &Arena, expr: ExprId, var_sym: SymbolId) -> bool {
+    let params: Vec<SymbolId> = crate::base::walk::free_symbols(arena, expr)
+        .into_iter()
+        .filter_map(|s| match *arena.node(s) {
+            ExprNode::Symbol(sid) if sid != var_sym => Some(sid),
+            _ => None,
+        })
+        .collect();
+    !params.is_empty()
+        && params
+            .iter()
+            .all(|&sid| crate::transforms::realness::symbol_declared_real(arena, sid))
+}
+
+/// Bioche's rule for a rational function `f` of `sin x`, `cos x` with
+/// `f(x + π) = f(x)`: the substitution `t = tan x` (`sin x = t·c`, `cos x =
+/// c`, `c² = 1/(1 + t²)`, `dx = dt/(1 + t²)`) gives a rational function of
+/// `t` of half the degree the half-angle substitution gives.  For real
+/// parameters that decides the jump of `G(tan x)` at the poles of `tan x`
+/// where the half-angle route's cannot be: `∫ dx/(a + b·sin²x)` (`a`, `b > 0`)
+/// is `∫ dt/(a + (a + b)·t²)`, an `atan` with a positive coefficient, where
+/// `tan(x/2)` gives a quartic whose roots' half-planes depend on the
+/// parameters (up to 0.37 the answer was a sum of four logarithms that
+/// jumped at every odd multiple of `π`).  Rubi integrates these integrands
+/// so (`atan(√(a + b)·tan x/√a)/√(a(a + b))`); the floor term is the
+/// continuity correction of [`crate::transforms::trig_integ::continuous_through_tan`].
+///
+/// `f(tc, c)` is even in `c` exactly when `f(x + π) = f(x)`; its numerator
+/// and denominator (cancelled) are then both even or both odd in `c`.
+/// `None` when `f` is not so invariant, the integral in `t` is not found or
+/// fails the check, or its jump at `t = ±∞` is not decided (the caller
+/// then takes the half-angle route).
+fn try_bioche_tan_substitution(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+    depth: usize,
+) -> Option<ExprId> {
+    let t = arena.symbol("__bt");
+    let c = arena.symbol("__bc");
+    let ExprNode::Symbol(t_sym) = *arena.node(t) else {
+        return None;
+    };
+    let sin_var = arena.sin(var);
+    let cos_var = arena.cos(var);
+    let t_c = arena.mul(&[t, c]);
+    let substituted = arena.subs_structural(expr, sin_var, t_c);
+    let substituted = arena.subs_structural(substituted, cos_var, c);
+    if contains_var(arena, substituted, var_sym) {
+        return None;
+    }
+    let in_c = clear_nested_fractions(arena, substituted, c);
+    let (num, den) = crate::poly::polybridge::as_numer_denom(arena, in_c);
+    let num_c = crate::transforms::solve::symbolic_poly_coeffs(arena, num, c)?;
+    let den_c = crate::transforms::solve::symbolic_poly_coeffs(arena, den, c)?;
+    let vanishes = |arena: &mut Arena, cs: &[ExprId], parity: usize| {
+        cs.iter()
+            .skip(parity)
+            .step_by(2)
+            .all(|&k| crate::poly::algebraic::is_zero_checked(arena, k) == Some(true))
+    };
+    // `shift` 0: both even; 1: both odd (divided by `c`).
+    let shift = if vanishes(arena, &num_c, 1) && vanishes(arena, &den_c, 1) {
+        0
+    } else if vanishes(arena, &num_c, 0) && vanishes(arena, &den_c, 0) {
+        1
+    } else {
+        return None;
+    };
+    let one = arena.one;
+    let two = arena.int(2);
+    let t_sq = arena.pow(t, two);
+    let one_plus_t_sq = arena.add(&[one, t_sq]);
+    let in_t = |arena: &mut Arena, cs: &[ExprId]| -> ExprId {
+        let mut terms: Vec<ExprId> = Vec::new();
+        for (j, &k) in cs.iter().enumerate().skip(shift).step_by(2) {
+            let half_degree = i64::try_from((j - shift) / 2).unwrap_or(0);
+            let e = arena.int(-half_degree);
+            let c_pow = arena.pow(one_plus_t_sq, e);
+            terms.push(arena.mul(&[k, c_pow]));
+        }
+        arena.add(&terms)
+    };
+    let num_t = in_t(arena, &num_c);
+    let den_t = in_t(arena, &den_c);
+    let dt = arena.mul(&[den_t, one_plus_t_sq]);
+    let integrand_t = arena.div(num_t, dt);
+    let integrand_t = crate::transforms::eval::eval(arena, integrand_t);
+    let integrand_t = clear_nested_fractions(arena, integrand_t, t);
+    if contains_var(arena, integrand_t, var_sym)
+        || crate::base::walk::contains(arena, integrand_t, c)
+    {
+        return None;
+    }
+    tracing::debug!(integrand_t = %arena.display(integrand_t), "bioche: integrand in tan x");
+    let integral_t = integrate_node(arena, integrand_t, t, t_sym, depth.saturating_sub(2));
+    if crate::base::walk::has_unevaluated(arena, integral_t)
+        || candidate_rejected(arena, integrand_t, integral_t, t, t_sym)
+    {
+        return None;
+    }
+    let result =
+        crate::transforms::trig_integ::continuous_through_tan(arena, integral_t, t, t_sym, var)?;
+    if candidate_rejected(arena, expr, result, var, var_sym) {
+        tracing::debug!("bioche: the antiderivative in x failed verification");
+        return None;
+    }
+    Some(result)
+}
+
 /// May an antiderivative `G(tan w)` (`g` = `G(t)`, `t` the substitution's
 /// symbol) whose jump `G(+∞) − G(−∞)` at the poles of `tan w` is not
 /// decided be returned uncorrected, continuous only between those poles?
-/// Yes when `G` has parameters — the jump depends on their values and on
-/// the sides of the cuts their logarithms approach (`∫ dx/(a + b·cos x)`;
-/// SymPy and Rubi answer such integrands so too, and refusing them lost
-/// 435 answers of the Rubi suite) — or a `RootSum`, whose jump needs the
-/// half-plane of every root (`∫ dx/(1 + sin⁵x)`).  Any other undecided
-/// jump makes the substitution refuse.
+/// Yes when `G` has parameters — the jump depends on their values and, for
+/// parameters not declared real, on the sides of the cuts their logarithms
+/// approach (`∫ dx/(a + b·cos x)`; SymPy and Rubi answer such integrands so
+/// too, and refusing them lost 435 answers of the Rubi suite) — or a
+/// `RootSum` whose end values are not found (a logarithm of degree ≥ 2 in
+/// `t`).  Any other undecided jump makes the substitution refuse.
 fn jump_kept_undecided(arena: &Arena, g: ExprId, t_sym: SymbolId) -> bool {
     crate::base::walk::free_symbols(arena, g)
         .iter()
@@ -6358,6 +6478,13 @@ fn try_piecewise_wrap(
                 if excluded_by_enclosing_case(arena, *sym_expr, degen_val) {
                     continue;
                 }
+                // Nor for a non-real constant value of a parameter declared
+                // real: `a = ±i√2` in `∫ dx/(a² + 1 + cos x)` (an unreachable
+                // branch, and one `piecewise_simplify` cannot drop: `i√2 ≠ −3`
+                // after substituting `a = −3` stayed undecided).
+                if nonreal_value_of_real_symbol(arena, *sym_expr, degen_val) {
+                    continue;
+                }
 
                 // Filter: skip if substituting this value makes the original
                 // integrand singular (these are poles of the problem, not
@@ -6505,6 +6632,17 @@ fn excluded_by_enclosing_case(arena: &mut Arena, sym: ExprId, val: ExprId) -> bo
             arena.is_zero_structural(at)
         }
     })
+}
+
+/// Is `sym` declared real and `val` a constant that is not real?
+fn nonreal_value_of_real_symbol(arena: &mut Arena, sym: ExprId, val: ExprId) -> bool {
+    let ExprNode::Symbol(sid) = *arena.node(sym) else {
+        return false;
+    };
+    crate::transforms::realness::symbol_declared_real(arena, sid)
+        && crate::base::walk::free_symbols(arena, val).is_empty()
+        && crate::transforms::evalf::evalf_complex64(arena, val)
+            .is_ok_and(|z| z.im.is_finite() && z.im.abs() > 1e-9 * z.norm().max(1.0))
 }
 
 /// Is every point with `sym = val` already a handled degenerate case of

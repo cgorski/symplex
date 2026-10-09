@@ -710,7 +710,11 @@ impl Ex {
     /// several families ([`solve_ode_all`](Ex::solve_ode_all)) the first on
     /// which the conditions can be met is used (`y′ = y³`, `y(0) = −1` is on
     /// `−(C1 − 2x)^(−1/2)`).  Constants not pinned down by the conditions
-    /// remain in the result.
+    /// remain in the result.  With every condition at one point `x₀ ≠ 0`,
+    /// a family `yₚ + Σ Cᵢ·φᵢ(x)` whose translate `yₚ + Σ Cᵢ·φᵢ(x − x₀)`
+    /// still solves the equation (constant coefficients) is fitted in that
+    /// form: `y″ + y = 0`, `y(1) = 1`, `y′(1) = 2` gives
+    /// `cos(x − 1) + 2·sin(x − 1)`.
     ///
     /// # Errors
     ///
@@ -754,6 +758,18 @@ impl Ex {
         let accept = |candidate: &Ex| ode_holds_at(self, candidate, func, var, ics);
         let mut last_error: Option<SymplexError> = None;
         for general in &families {
+            if let Some(shifted) = translated_family(self, general, &constants, func, var, ics)
+                && let Ok(sol) = apply_initial_conditions(
+                    &shifted,
+                    &constants,
+                    var,
+                    ics,
+                    "solve_ode_ivp",
+                    &accept,
+                )
+            {
+                return Ok(sol);
+            }
             if general.has_unevaluated() {
                 last_error = Some(SymplexError::ComputationFailed {
                     operation: "solve_ode_ivp",
@@ -851,6 +867,65 @@ impl Ex {
 
 /// Highest derivative order [`ode_holds_at`] looks for.
 const MAX_ODE_ORDER: usize = 12;
+
+/// The general solution `yₚ + Σ Cᵢ·φᵢ(x)` rewritten as
+/// `yₚ + Σ Cᵢ·φᵢ(x − x₀)` when every condition is at the same point
+/// `x₀ ≠ 0` and some `φᵢ(x₀)` is not rational, provided the rewritten
+/// family still solves the equation (constant-coefficient homogeneous
+/// parts are translation invariant; `check_ode_solution` decides, and the
+/// translates of independent `φᵢ` are independent).  The conditions
+/// then meet the matrix `φᵢ⁽ᵏ⁾(0)` of algebraic numbers instead of
+/// `cos(1/3)`, `e^{−1/6}·sin(√3/6)`, …, whose symbolic elimination took
+/// minutes at order 4 (`y⁴ + y‴ + 2y″ + y′ + y = e^{2x}` with conditions
+/// at `1/3`).  `None` when the shape does not apply.
+fn translated_family(
+    ode: &Ex,
+    general: &Ex,
+    constants: &[Ex],
+    func: &Ex,
+    var: &Ex,
+    ics: &[InitialCondition],
+) -> Option<Ex> {
+    let x0 = &ics.first()?.x;
+    if ics.iter().any(|ic| ic.x != *x0) || x0.eval().is_zero_structural() || general.contains(func)
+    {
+        return None;
+    }
+    let present: Vec<&Ex> = constants.iter().filter(|c| general.contains(c)).collect();
+    if present.is_empty() {
+        return None;
+    }
+    let ctx = general.context();
+    let mut particular = general.clone();
+    for c in &present {
+        particular = particular.subs(c, &ctx.zero());
+    }
+    let particular = particular.eval();
+    let mut modes: Vec<Ex> = Vec::with_capacity(present.len());
+    let mut all_rational = true;
+    for c in &present {
+        // Affine in the constants: each ∂/∂Cᵢ is free of all of them.
+        let phi = general.diff(c).eval();
+        if present.iter().any(|d| phi.contains(d)) {
+            return None;
+        }
+        if all_rational {
+            let at = phi.subs(var, x0).eval();
+            all_rational = at.as_rational().is_some();
+        }
+        modes.push(phi);
+    }
+    if all_rational {
+        return None;
+    }
+    let shift = var - x0;
+    let mut shifted = particular;
+    for (c, phi) in present.iter().zip(&modes) {
+        shifted = &shifted + &(*c * &phi.subs(var, &shift));
+    }
+    ode.check_ode_solution(&shifted, func, var)
+        .then_some(shifted)
+}
 
 /// Does `candidate` satisfy the ODE `ode = 0` (in `func(var)`) at the points
 /// of the initial conditions?  Decided numerically; a candidate that cannot

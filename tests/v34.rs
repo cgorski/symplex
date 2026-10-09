@@ -13,6 +13,8 @@ mod v34_beyond;
 mod v34_codegen;
 #[path = "v34/v34_continuity.rs"]
 mod v34_continuity;
+#[path = "v34/v34_continuity2.rs"]
+mod v34_continuity2;
 #[path = "v34/v34_eval.rs"]
 mod v34_eval;
 #[path = "v34/v34_evalf.rs"]
@@ -21,6 +23,8 @@ mod v34_evalf;
 mod v34_integrate;
 #[path = "v34/v34_limits.rs"]
 mod v34_limits;
+#[path = "v34/v34_ode_sums.rs"]
+mod v34_ode_sums;
 #[path = "v34/v34_poly_speed.rs"]
 mod v34_poly_speed;
 #[path = "v34/v34_rewrites.rs"]

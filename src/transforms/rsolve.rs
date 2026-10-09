@@ -1501,6 +1501,8 @@ fn first_index_singularity(p: &Ex, n: &Ex) -> Option<(i64, bool)> {
 /// - constant `c` → `cⁿ`
 /// - `α·k + β` → `αⁿ · Γ(n + β/α) / Γ(β/α)` (as `(n + β/α − 1)!/(β/α − 1)!`
 ///   when `β/α` is a positive integer; `n!` for `k + 1`)
+/// - other rational `p` through [`Ex::product_over`] when it finds a
+///   closed form
 ///
 /// Other shapes return an unevaluated `Product` node.
 fn product_closed_form(p: &Ex, k: &Ex, n: &Ex) -> Ex {
@@ -1538,6 +1540,13 @@ fn product_closed_form(p: &Ex, k: &Ex, n: &Ex) -> Ex {
         return (&alpha_pow * &(&g_num / &g_den)).eval();
     }
     let upper = n - 1;
+    // Rational p whose factors are linear over ℚ (`(k + 1)/(k + 2)`,
+    // `(k + 1)²`): the product machinery's Gamma/factorial ratios (the
+    // caller has excluded zeros and poles of p at k ≥ 0).
+    let closed = p.product_over(k, &ctx.int(0), &upper);
+    if !closed.has_unevaluated() {
+        return closed;
+    }
     Ex::symbolic_product(p, k, &ctx.int(0), &upper)
 }
 

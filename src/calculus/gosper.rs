@@ -722,6 +722,7 @@ fn split_polynomial_factor(arena: &mut Arena, f: ExprId, k: ExprId) -> (Poly, Ex
     };
     let mut poly = Poly::from_int(1);
     let mut rest = Vec::new();
+    let factors = take_factorial_ratios(arena, factors, k, &mut poly);
     for fac in factors {
         if !crate::base::walk::contains(arena, fac, k) {
             rest.push(fac);
@@ -756,6 +757,90 @@ fn split_polynomial_factor(arena: &mut Arena, f: ExprId, k: ExprId) -> (Poly, Ex
         _ => arena.mul(&rest),
     };
     (poly, rest)
+}
+
+/// The argument of a `Factorial(u)` / `Gamma(u)` factor (with `Gamma(u)`
+/// as `(u − 1)!`) raised to `+1` or `−1`: `(argument of the factorial,
+/// exponent)`.
+fn factorial_power(arena: &mut Arena, fac: ExprId) -> Option<(ExprId, i64)> {
+    let (base, exp) = match arena.node(fac).clone() {
+        ExprNode::Pow(b, e) => (b, arena.as_num(e).cloned()?),
+        _ => (fac, Ratio::from_integer(BigInt::from(1))),
+    };
+    let sign = if exp == Ratio::from_integer(BigInt::from(1)) {
+        1
+    } else if exp == Ratio::from_integer(BigInt::from(-1)) {
+        -1
+    } else {
+        return None;
+    };
+    match arena.node(base).clone() {
+        ExprNode::Factorial(u) => Some((u, sign)),
+        ExprNode::Gamma(u) => {
+            let m1 = arena.int(-1);
+            let um1 = arena.add(&[u, m1]);
+            Some((eval::eval(arena, um1), sign))
+        }
+        _ => None,
+    }
+}
+
+/// Pull ratios `u!/v!` (or `Γ`) with `u − v` a positive integer out of
+/// `factors` as the polynomial `(v + 1)(v + 2)⋯(u)` they are, multiplied
+/// into `poly`; the remaining factors are returned.  `(k+1)!/(k−1)!` is
+/// `k(k + 1)`: kept as factorials, the antidifference of
+/// `(−2)^k·(k+1)!/(k−1)!` divided by `c(k) = k(k + 1)` and was
+/// `0·zoo = nan` at `k = 0` (`Σ_{k=0}^{n}` came out `nan`).
+fn take_factorial_ratios(
+    arena: &mut Arena,
+    factors: Vec<ExprId>,
+    k: ExprId,
+    poly: &mut Poly,
+) -> Vec<ExprId> {
+    let mut slots: Vec<Option<ExprId>> = factors.into_iter().map(Some).collect();
+    let n = slots.len();
+    for i in 0..n {
+        let Some(fi) = slots[i] else { continue };
+        let Some((u, 1)) = factorial_power(arena, fi) else {
+            continue;
+        };
+        if !crate::base::walk::contains(arena, u, k) {
+            continue;
+        }
+        for j in 0..n {
+            let Some(fj) = slots[j] else { continue };
+            if j == i {
+                continue;
+            }
+            let Some((v, -1)) = factorial_power(arena, fj) else {
+                continue;
+            };
+            let diff = arena.sub(u, v);
+            let diff = eval::eval(arena, diff);
+            let Some(d) = arena.as_num(diff).cloned() else {
+                continue;
+            };
+            if !d.is_integer() {
+                continue;
+            }
+            let Some(di) = num_traits::ToPrimitive::to_i64(&d.to_integer()) else {
+                continue;
+            };
+            if !(1..=MAX_BINOMIAL_POLY_DEGREE).contains(&di) {
+                continue;
+            }
+            let Some(vp) = polybridge::expr_to_poly(arena, v, k) else {
+                continue;
+            };
+            for s in 1..=di {
+                *poly = &*poly * &(&vp + &Poly::from_int(s));
+            }
+            slots[i] = None;
+            slots[j] = None;
+            break;
+        }
+    }
+    slots.into_iter().flatten().collect()
 }
 
 /// Attempt to find a closed form for `Σ_{k=lower}^{upper} f(k)`.

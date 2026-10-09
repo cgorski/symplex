@@ -364,9 +364,11 @@ fn rootof_separates_a_tight_cluster() {
 
 fn infinite_sum(ctx: &Context, body: &str, lo: i64) -> Ex {
     let k = ctx.symbol("k");
-    ctx.parse(body)
-        .unwrap()
-        .summation(&k, &ctx.int(lo), &ctx.infinity())
+    // The formal sum: `summation` now closes the even rational series
+    // (`Σ 1/(k² + 1) = 1/2 + π·coth(π)/2`, residue theorem), and this
+    // test is about evaluating an unevaluated `Sum` numerically.
+    let b = ctx.parse(body).unwrap();
+    Ex::symbolic_sum(&b, &k, &ctx.int(lo), &ctx.infinity())
 }
 
 /// Before: `Unevaluable` ("converges only polynomially … not implemented")

@@ -16,7 +16,8 @@
 //! - **Second-order linear constant-coefficient:** `y'' + b*y' + c*y = 0`
 //!   → characteristic equation `r² + b*r + c = 0`, solution based on roots
 //! - **Cauchy–Euler:** `a·x²y'' + b·x·y' + c·y = g(x)` (for `x > 0`; a
-//!   forcing term through `x = eᵗ` and the constant-coefficient solvers)
+//!   forcing term through `x = eᵗ` and the constant-coefficient solvers),
+//!   and of any order `Σ aₖ·xᵏ·y⁽ᵏ⁾ = g(x)` the same way
 //! - **Variation of parameters** for `y'' + b·y' + c·y = g(x)`
 //! - **Homogeneous coefficient:** `y' = f(y/x)` — substitution `v = y/x`
 //! - **nth-order reducible:** `F(y, y', y'') = 0` (no `x`) — substitution
@@ -38,6 +39,12 @@
 //!   exponential of the Jordan form, with initial values via
 //!   [`solve_ode_system_ivp`]
 //! - **Non-homogeneous systems:** `ẋ = A·x + b(t)` → variation of parameters
+//!
+//! An equation is also recognised in an equivalent form: multiplied or
+//! divided by factors free of `y` (`eˣ·(y″ + y − tan x)`), by factors in
+//! `y` alone (`y·(y′ − cos x·(1 + y²))`, whose solution `y = 0` is then
+//! not reported), or expanded after such a product, with the coefficient of
+//! the highest derivative divided out (see [`dsolve`]).
 //!
 //! # Implicit solutions
 //!
@@ -106,7 +113,231 @@ pub struct OdeResult {
 /// - `Derivative(Derivative(func, var), var)` (second derivative `y''`)
 ///
 /// Returns `None` if the ODE type is not recognized.
+///
+/// The equation is tried as given and then in normal forms (a product
+/// reduced to its one factor with a derivative of `func`, the equation
+/// expanded with the highest derivative's coefficient divided out): `(x + 3)·(y‴ − 3y″ + 4y′ − 12y)`
+/// expanded, `eˣ·(y″ + y − tan x)` or `(y′ − y)/(−1)` were not
+/// recognised before (SymPy's `dsolve` solves them).
 pub fn dsolve(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId, // y
+    var: ExprId,  // x
+) -> Option<OdeResult> {
+    let ExprNode::Symbol(func_sym) = *arena.node(func) else {
+        return None;
+    };
+    let first = dsolve_as_given(arena, expr, func, var);
+    if first
+        .as_ref()
+        .is_some_and(|r| !contains_sym(arena, r.solution, func_sym))
+    {
+        return first;
+    }
+    let mut best = first;
+    for form in normalized_forms(arena, expr, func, var, func_sym) {
+        let Some(result) = dsolve_as_given(arena, form, func, var) else {
+            continue;
+        };
+        if !contains_sym(arena, result.solution, func_sym) {
+            return Some(result);
+        }
+        if best.is_none() {
+            best = Some(result);
+        }
+    }
+    best
+}
+
+/// Equivalent forms of the ODE `expr = 0` for [`dsolve`], each different
+/// from `expr` and from the previous ones:
+///
+/// 1. a product with exactly one factor containing a derivative of `func`
+///    reduced to that factor (a positive power of it to its base): factors
+///    free of `func` are non-zero where the equation is defined, and
+///    factors in `func` alone (`y`, `1 + y²`) only add algebraic solutions
+///    such as `y = 0` (lost, as when dividing by `y`);
+/// 2. that form expanded and divided by the coefficient of its highest
+///    derivative, when the equation is linear in that derivative with a
+///    coefficient free of `func` that is not a number: each coefficient
+///    of a power product of `func` and its derivatives is reduced as a
+///    rational function (`(x + 3)·y‴ − (3x + 9)·y″ → y‴ − 3y″`).
+fn normalized_forms(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+    func_sym: SymbolId,
+) -> Vec<ExprId> {
+    let mut forms: Vec<ExprId> = Vec::new();
+    let mut current = expr;
+    // Nested products/powers: a few rounds at most.
+    for _ in 0..4 {
+        match strip_nonderivative_factors(arena, current, func_sym) {
+            Some(next) if next != current => current = next,
+            _ => break,
+        }
+    }
+    if current != expr {
+        forms.push(current);
+    }
+    if let Some(lead) = divide_leading_coefficient(arena, current, func, var, func_sym)
+        && lead != expr
+        && !forms.contains(&lead)
+    {
+        forms.push(lead);
+    }
+    forms
+}
+
+/// Does `e` contain a `Derivative` node (of anything)?
+fn has_derivative(arena: &Arena, e: ExprId) -> bool {
+    let mut stack = vec![e];
+    let mut seen = rustc_hash::FxHashSet::default();
+    while let Some(n) = stack.pop() {
+        if !seen.insert(n) {
+            continue;
+        }
+        let node = arena.node(n);
+        if matches!(node, ExprNode::Derivative(..)) {
+            return true;
+        }
+        node.for_each_child(|c| stack.push(c));
+    }
+    false
+}
+
+/// Form 1 of [`normalized_forms`] (one step): `None` when `e` is not a
+/// product or power of that shape.
+fn strip_nonderivative_factors(arena: &mut Arena, e: ExprId, func_sym: SymbolId) -> Option<ExprId> {
+    let positive_power_base = |arena: &Arena, f: ExprId| -> ExprId {
+        match arena.node(f) {
+            ExprNode::Pow(b, p) if arena.as_num(*p).is_some_and(|r| r.is_positive()) => *b,
+            _ => f,
+        }
+    };
+    match arena.node(e).clone() {
+        ExprNode::Mul(factors) => {
+            let carriers: Vec<ExprId> = factors
+                .iter()
+                .copied()
+                .filter(|&f| contains_sym(arena, f, func_sym) && has_derivative(arena, f))
+                .collect();
+            let [carrier] = carriers.as_slice() else {
+                return None;
+            };
+            // A derivative only in a denominator is not an equation in it.
+            let base = positive_power_base(arena, *carrier);
+            if base == *carrier && matches!(arena.node(*carrier), ExprNode::Pow(..)) {
+                return None;
+            }
+            Some(base)
+        }
+        ExprNode::Neg(inner) => Some(inner),
+        ExprNode::Pow(..) => {
+            let base = positive_power_base(arena, e);
+            (base != e && has_derivative(arena, base)).then_some(base)
+        }
+        _ => None,
+    }
+}
+
+/// Form 2 of [`normalized_forms`].
+fn divide_leading_coefficient(
+    arena: &mut Arena,
+    e: ExprId,
+    func: ExprId,
+    var: ExprId,
+    func_sym: SymbolId,
+) -> Option<ExprId> {
+    const MAX_TERMS: usize = 64;
+    let chain = derivative_chain(arena, func, var);
+    let order = (1..chain.len())
+        .rev()
+        .find(|&k| expr_contains(arena, e, chain[k]))?;
+    let lead = chain[order];
+    let expanded = crate::transforms::expand::expand(arena, e);
+    let expanded = crate::transforms::eval::eval(arena, expanded);
+    let terms: Vec<ExprId> = match arena.node(expanded) {
+        ExprNode::Add(c) => c.to_vec(),
+        _ => return None,
+    };
+    if terms.len() > MAX_TERMS {
+        return None;
+    }
+    // (product of the factors in `func`, sum of their coefficients)
+    let mut groups: Vec<(ExprId, Vec<ExprId>)> = Vec::new();
+    for t in terms {
+        let (sign, inner) = match arena.node(t) {
+            ExprNode::Neg(i) => (true, *i),
+            _ => (false, t),
+        };
+        let factors: Vec<ExprId> = match arena.node(inner) {
+            ExprNode::Mul(fs) => fs.to_vec(),
+            _ => vec![inner],
+        };
+        let (in_func, coeff): (Vec<ExprId>, Vec<ExprId>) = factors
+            .into_iter()
+            .partition(|&f| contains_sym(arena, f, func_sym));
+        let key = match in_func.len() {
+            0 => arena.one,
+            1 => in_func[0],
+            _ => arena.mul(&in_func),
+        };
+        let mut c = match coeff.len() {
+            0 => arena.one,
+            1 => coeff[0],
+            _ => arena.mul(&coeff),
+        };
+        if sign {
+            c = arena.neg(c);
+        }
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some(g) => g.1.push(c),
+            None => groups.push((key, vec![c])),
+        }
+    }
+    // Linear in the highest derivative, alone in its group.
+    let carriers: Vec<usize> = (0..groups.len())
+        .filter(|&i| expr_contains(arena, groups[i].0, lead))
+        .collect();
+    let [lead_group] = carriers.as_slice() else {
+        return None;
+    };
+    if groups[*lead_group].0 != lead {
+        return None;
+    }
+    let c = {
+        let parts = groups[*lead_group].1.clone();
+        let s = arena.add(&parts);
+        crate::transforms::eval::eval(arena, s)
+    };
+    if arena.as_num(c).is_some() || contains_sym(arena, c, func_sym) {
+        return None;
+    }
+    let inv = {
+        let m1 = arena.int(-1);
+        arena.pow(c, m1)
+    };
+    let mut out = Vec::with_capacity(groups.len());
+    for (key, parts) in groups {
+        let s = arena.add(&parts);
+        let q = arena.mul(&[s, inv]);
+        let q = crate::transforms::eval::eval(arena, q);
+        let q = crate::simplify::ratsimp::ratsimp(arena, q);
+        let q = crate::transforms::eval::eval(arena, q);
+        if arena.is_zero_structural(q) {
+            continue;
+        }
+        out.push(arena.mul(&[q, key]));
+    }
+    let sum = arena.add(&out);
+    Some(crate::transforms::eval::eval(arena, sum))
+}
+
+/// [`dsolve`] on the equation exactly as given.
+fn dsolve_as_given(
     arena: &mut Arena,
     expr: ExprId,
     func: ExprId, // y
@@ -152,6 +383,10 @@ pub fn dsolve(
 
     // Type 1c: Euler-Cauchy: a·x²·y'' + b·x·y' + c·y = 0
     attempt!(try_euler_cauchy(arena, expr, func, var, func_sym, var_sym));
+    // … and of order ≥ 3: Σ aₖ·xᵏ·y⁽ᵏ⁾ = g(x)
+    attempt!(try_euler_cauchy_n(
+        arena, expr, func, var, func_sym, var_sym
+    ));
 
     // Type 1e: nth-order linear constant-coefficient (any order ≥ 2),
     // forcing = poly × exp × {sin, cos} via undetermined coefficients.
@@ -907,8 +1142,23 @@ fn try_full_separable(
         return None; // Let simple separable handle it
     }
 
-    // Try to factor rhs into x-only and y-only parts
-    let factors = collect_mul_factors(arena, rhs);
+    // Try to factor rhs into x-only and y-only parts; `exp(a + b)` is
+    // `exp(a)·exp(b)` (`y′ = e^{x+y}` was refused; SymPy gives
+    // `−ln(C1 − eˣ)`).
+    let mut factors = Vec::new();
+    for f in collect_mul_factors(arena, rhs) {
+        match arena.node(f).clone() {
+            ExprNode::Exp(arg) if matches!(arena.node(arg), ExprNode::Add(_)) => {
+                let ExprNode::Add(terms) = arena.node(arg).clone() else {
+                    continue;
+                };
+                for &t in terms.iter() {
+                    factors.push(arena.exp(t));
+                }
+            }
+            _ => factors.push(f),
+        }
+    }
 
     let mut x_factors: Vec<ExprId> = Vec::new();
     let mut y_factors: Vec<ExprId> = Vec::new();
@@ -2816,23 +3066,122 @@ fn euler_cauchy_forced(
     var: ExprId,
     var_sym: SymbolId,
 ) -> Option<OdeResult> {
+    euler_cauchy_by_exp(arena, &[c.clone(), b - a, a.clone()], forcing, var, var_sym)
+}
+
+/// Cauchy–Euler of any order ≥ 3, `Σₖ aₖ·xᵏ·y⁽ᵏ⁾ + g(x) = 0` with rational
+/// `aₖ`, by `x = eᵗ`: `xᵏ·y⁽ᵏ⁾ = D(D − 1)⋯(D − k + 1)·Y` with `D = d/dt`,
+/// a constant-coefficient equation in `t` (solutions for `x > 0`, as for
+/// order 2).  SymPy's `nth_linear_euler_eq_*`; order 3 was refused.
+fn try_euler_cauchy_n(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+    func_sym: SymbolId,
+    var_sym: SymbolId,
+) -> Option<OdeResult> {
+    let chain = derivative_chain(arena, func, var);
+    let order = (1..chain.len())
+        .rev()
+        .find(|&k| expr_contains(arena, expr, chain[k]))?;
+    if order < 3 {
+        return None;
+    }
+    let ExprNode::Add(children) = arena.node(expr).clone() else {
+        return None;
+    };
+    let mut a = vec![Q::from_integer(0.into()); order + 1];
+    let mut forcing = Vec::new();
+    for &child in children.iter() {
+        if !contains_sym(arena, child, func_sym) {
+            forcing.push(child);
+            continue;
+        }
+        let (coeff, term) = arena.as_coeff_term(child);
+        let factors: Vec<ExprId> = match arena.node(term) {
+            ExprNode::Mul(fs) => fs.to_vec(),
+            _ => vec![term],
+        };
+        let mut k_deriv: Option<usize> = None;
+        let mut x_power: i64 = 0;
+        for f in factors {
+            if let Some(k) = chain.iter().position(|&d| d == f) {
+                if k_deriv.replace(k).is_some() {
+                    return None;
+                }
+            } else if f == var {
+                x_power += 1;
+            } else if let ExprNode::Pow(b, e) = *arena.node(f)
+                && b == var
+                && let Some(p) = arena.as_num(e).filter(|p| p.is_integer())
+            {
+                x_power += num_traits::ToPrimitive::to_i64(&p.to_integer())?;
+            } else {
+                return None;
+            }
+        }
+        let k = k_deriv?;
+        if x_power != i64::try_from(k).ok()? {
+            return None;
+        }
+        a[k] += coeff;
+    }
+    if num_traits::Zero::is_zero(&a[order]) {
+        return None;
+    }
+    // Σₖ aₖ·D(D − 1)⋯(D − k + 1) as coefficients of Dʲ.
+    let mut cd = vec![Q::from_integer(0.into()); order + 1];
+    let mut falling = vec![Q::from_integer(1.into())];
+    for (k, ak) in a.iter().enumerate() {
+        if k > 0 {
+            // falling ← falling·(D − (k − 1))
+            let shift = Q::from_integer(((k - 1) as i64).into());
+            let mut next = vec![Q::from_integer(0.into()); falling.len() + 1];
+            for (j, v) in falling.iter().enumerate() {
+                next[j + 1] += v;
+                next[j] -= v * &shift;
+            }
+            falling = next;
+        }
+        for (j, v) in falling.iter().enumerate() {
+            cd[j] += ak * v;
+        }
+    }
+    euler_cauchy_by_exp(arena, &cd, &forcing, var, var_sym)
+}
+
+/// `Σⱼ cdⱼ·Y⁽ʲ⁾(t) + Σ forcing(x = eᵗ) = 0` solved and mapped back to `x`
+/// (`e^{k·t + m} → xᵏ·eᵐ`, `t → ln x`): the Cauchy–Euler equation whose
+/// operator in `D = d/dt` has the coefficients `cd`.
+fn euler_cauchy_by_exp(
+    arena: &mut Arena,
+    cd: &[Q],
+    forcing: &[ExprId],
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<OdeResult> {
+    let order = cd.len().checked_sub(1)?;
     let t = arena.symbol("__t");
     let big_y = arena.symbol("__Y");
     let (t_sym, y_sym) = match (arena.node(t), arena.node(big_y)) {
         (ExprNode::Symbol(ts), ExprNode::Symbol(ys)) => (*ts, *ys),
         _ => return None,
     };
-    let d1 = arena.intern(ExprNode::Derivative(big_y, t));
-    let d2 = arena.intern(ExprNode::Derivative(d1, t));
     let exp_t = arena.exp(t);
     let ln_x = arena.ln(var);
-    let mut parts = Vec::with_capacity(3 + forcing.len());
-    let a_id = ode_ratio_to_expr(arena, a);
-    parts.push(arena.mul(&[a_id, d2]));
-    let bma = ode_ratio_to_expr(arena, &(b - a));
-    parts.push(arena.mul(&[bma, d1]));
-    let c_id = ode_ratio_to_expr(arena, c);
-    parts.push(arena.mul(&[c_id, big_y]));
+    let mut parts = Vec::with_capacity(cd.len() + forcing.len());
+    let mut d = big_y;
+    for (j, c) in cd.iter().enumerate() {
+        if j > 0 {
+            d = arena.intern(ExprNode::Derivative(d, t));
+        }
+        if num_traits::Zero::is_zero(c) {
+            continue;
+        }
+        let c_id = ode_ratio_to_expr(arena, c);
+        parts.push(arena.mul(&[c_id, d]));
+    }
     for &f in forcing {
         // ln x = t first (x > 0), then x = eᵗ.
         let g = crate::transforms::subs::subs(arena, f, ln_x, t);
@@ -2846,7 +3195,7 @@ fn euler_cauchy_forced(
     }
     let res = dsolve(arena, ode_t, big_y, t)?;
     if contains_sym(arena, res.solution, y_sym)
-        || res.constants.len() != 2
+        || res.constants.len() != order
         || crate::base::walk::has_unevaluated(arena, res.solution)
     {
         return None;
@@ -2857,6 +3206,8 @@ fn euler_cauchy_forced(
         let ExprNode::Exp(arg) = arena.node(id).clone() else {
             continue;
         };
+        let arg = crate::transforms::expand::expand(arena, arg);
+        let arg = crate::transforms::eval::eval(arena, arg);
         let Some(coeffs) = arena.coefficients_of(arg, t) else {
             continue;
         };

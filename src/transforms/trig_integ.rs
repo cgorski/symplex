@@ -964,7 +964,15 @@ fn rational_end(arena: &mut Arena, r: ExprId, t: ExprId, positive: bool) -> Opti
 /// coefficient `cₖ` of `p` (times `(±1)ᵏ`) — `ln(lead) = ln|lead| + iπ` from
 /// above or when `p(t)` is real there, `ln(lead) − 2πi` from below
 /// (`ln(t + i√3) → ln|t| + iπ` and `ln(t − i√3) → ln|t| − iπ` as `t → −∞`).
-/// `None` when that is not decided or `p` has a non-constant denominator.
+///
+/// With real parameters a coefficient may be real for some of their values
+/// and not for others (`√(b² − a²)/(a − b)` in `∫ dx/(a + b·cos x)` through
+/// `tan(x/2)`).  When it is the only coefficient not proved real, `Im p(t)`
+/// is `Im cₖ·tᵏ` and the side is that of `sg = sign((±1)ᵏ·Im cₖ)` for every
+/// value of the parameters, `p(t)` real (on the cut, `+iπ`) where `sg = 0`:
+/// the limit is `ln(lead) + iπ·(sg − sg²)` (`ln(lead) − 2πi` exactly where
+/// `sg = −1`).  `None` when that is not decided or `p` has a non-constant
+/// denominator.
 fn log_end(
     arena: &mut Arena,
     p: ExprId,
@@ -983,13 +991,21 @@ fn log_end(
     }
     let coeffs = crate::transforms::solve::symbolic_poly_coeffs(arena, num, t)?;
     let mut reals = crate::base::assumptions::AssumptionCache::new();
+    let mut undecided: Option<(usize, ExprId)> = None;
     for (k, &c) in coeffs.iter().enumerate().rev() {
         let c = arena.div(c, den);
         let c = crate::transforms::eval::eval(arena, c);
-        if crate::transforms::realness::constant_realness_as_declared(arena, c, 30, &mut reals)
-            == Some(true)
-        {
-            continue;
+        match crate::transforms::realness::constant_realness_as_declared(arena, c, 30, &mut reals) {
+            Some(true) => continue,
+            None if undecided.is_none() && only_real_parameters(arena, c) => {
+                undecided = Some((k, c));
+                continue;
+            }
+            None if undecided.is_some() => return None,
+            _ => {}
+        }
+        if undecided.is_some() {
+            return None;
         }
         let z = crate::transforms::evalf::evalf_complex64(arena, c).ok()?;
         let im = z.im.abs();
@@ -1008,7 +1024,35 @@ fn log_end(
         };
         return Some(arena.sub(principal, two_pi_i));
     }
+    if let Some((k, c)) = undecided {
+        let im = arena.im(c);
+        let im = if positive || k % 2 == 0 {
+            im
+        } else {
+            arena.neg(im)
+        };
+        let sg = arena.sign(im);
+        let two = arena.int(2);
+        let sg_sq = arena.pow(sg, two);
+        let minus_sq = arena.neg(sg_sq);
+        let shift = arena.add(&[sg, minus_sq]);
+        let i = arena.i_unit();
+        let pi = arena.pi();
+        let correction = arena.mul(&[i, pi, shift]);
+        return Some(arena.add(&[principal, correction]));
+    }
     Some(principal)
+}
+
+/// Is `c` a constant with free parameters, all of them declared real (so
+/// that `Im c` is a real number for every value of them)?
+fn only_real_parameters(arena: &Arena, c: ExprId) -> bool {
+    let symbols = crate::base::walk::free_symbols(arena, c);
+    !symbols.is_empty()
+        && symbols.into_iter().all(|s| match *arena.node(s) {
+            ExprNode::Symbol(sid) => crate::transforms::realness::symbol_declared_real(arena, sid),
+            _ => false,
+        })
 }
 
 /// Does `e` contain the symbol `t` (free)?
@@ -1085,15 +1129,37 @@ pub(crate) fn end_value(
                 let value = match d.cmp(&0) {
                     // `atan(z) → ±π/2` as `|z| → ∞` with `Re z ≷ 0`.
                     std::cmp::Ordering::Greater => {
-                        let sign = match placement(arena, lead)? {
-                            Placement::Positive => 1,
-                            Placement::Negative => -1,
-                            Placement::Complex { re_sign: 0, .. } => return None,
-                            Placement::Complex { re_sign, .. } => i64::from(re_sign),
-                        };
-                        let half = arena.rational(sign, 2);
                         let pi = arena.pi();
-                        arena.mul(&[half, pi])
+                        match placement(arena, lead) {
+                            Some(Placement::Complex { re_sign: 0, .. }) => return None,
+                            Some(found) => {
+                                let sign = match found {
+                                    Placement::Positive => 1,
+                                    Placement::Negative => -1,
+                                    Placement::Complex { re_sign, .. } => i64::from(re_sign),
+                                };
+                                let half = arena.rational(sign, 2);
+                                arena.mul(&[half, pi])
+                            }
+                            // A real leading coefficient of undecided sign
+                            // (`atan(a·t/√(a² + 2))` for a real `a`):
+                            // `±π/2` by its sign for every value of the
+                            // parameters (where it is 0 the term is not
+                            // defined: it divides by that coefficient).
+                            None if only_real_parameters(arena, lead)
+                                && crate::transforms::realness::constant_realness_as_declared(
+                                    arena,
+                                    lead,
+                                    30,
+                                    &mut crate::base::assumptions::AssumptionCache::new(),
+                                ) == Some(true) =>
+                            {
+                                let half = arena.rational(1, 2);
+                                let sign = sign_of_real(arena, lead);
+                                arena.mul(&[half, pi, sign])
+                            }
+                            None => return None,
+                        }
                     }
                     // A limit on the cut (`iy`, `|y| ≥ 1`) is not followed.
                     std::cmp::Ordering::Equal => match placement(arena, lead)? {
@@ -1204,15 +1270,27 @@ fn additive_terms(arena: &mut Arena, g: ExprId, t_sym: SymbolId) -> Vec<ExprId> 
 /// Most terms [`additive_terms`] writes out.
 const MAX_DISTRIBUTED_TERMS: usize = 256;
 
-/// `Σ_{p(ρ)=0} c(ρ)·ln(t + β(ρ))` (`body` = `c(s)·ln(t + β(s))`, `p ∈ ℚ[s]`
-/// without real roots) near `t = ±∞`: `(Σ c(ρ), value)` with the sum
-/// `≈ Σ c(ρ)·ln|t| + value`.  `ln(t + β) → ln t` at `+∞`; at `−∞`,
-/// `t + β` approaches the cut from above where `Im β > 0`, so
-/// `ln(t + β) − ln|t| → iπ·sign(Im β)`: value `iπ·Σ c(ρ)·sign(Im β(ρ))`,
-/// written as a `RootSum` (the sum over the roots in one half-plane has no
-/// simpler exact form in general).  The `RootSum`s of the rational
-/// integrator have `c(ρ)` the residue at the pole `−β(ρ)` of a real
-/// rational function, so `β(ρ)` is not real where `ρ` is not.
+/// `Σ_{p(ρ)=0} c(ρ)·ln(t + β(ρ))` (`body` = `c(s)·ln(t + β(s))`, `p ∈ ℚ[s]`)
+/// near `t = ±∞`: `(Σ c(ρ), value)` with the sum `≈ Σ c(ρ)·ln|t| + value`.
+/// `ln(t + β) → ln t` at `+∞`; at `−∞`, `t + β` approaches the cut from
+/// above where `Im β > 0` and lies on it where `β` is real (principal
+/// `ln`: `+iπ`), so `ln(t + β) − ln|t| → iπ·σ(β)` with `σ = −1` where
+/// `Im β < 0` and `σ = 1` otherwise.  Without real roots of `p` the value is
+/// `iπ·Σ c(ρ)·sign(Im β(ρ))`, written as a `RootSum` (the sum over the roots
+/// in one half-plane has no simpler exact form in general).  The
+/// `RootSum`s of the rational integrator have `c(ρ)` the residue at the
+/// pole `−β(ρ)` of a real rational function, so `β(ρ)` is not real where
+/// `ρ` is not.
+///
+/// With real roots (`∫ dx/(2·sin⁵x + 1)` through `tan(x/2)`: the real
+/// roots are the residues at the real poles) `sign(Im β)` is 0 there where
+/// `σ` is 1: the value is `iπ·Σ c·σ = iπ·Σ c + iπ·Σ c(ρ)·sg·(1 − sg)` with
+/// `sg = sign(Im β(ρ))`, the second sum `−2πi·Σ_{Im β < 0} c(ρ)`; where
+/// the whole antiderivative's rate is 0 that makes the jump `J` `2πi` times
+/// the sum of the residues at the poles in the upper half-plane, whatever
+/// the real poles.  The real roots' terms of the second sum vanish exactly
+/// (a certified real root has an exactly zero imaginary part in the
+/// numerical `RootSum`), so no real root has to be told from a complex one.
 fn root_sum_end(
     arena: &mut Arena,
     p: ExprId,
@@ -1223,11 +1301,10 @@ fn root_sum_end(
     positive: bool,
 ) -> Option<(ExprId, ExprId)> {
     let p_poly = crate::poly::polybridge::expr_to_poly(arena, p, s)?;
-    if p_poly.degree().is_none_or(|d| d == 0)
-        || crate::poly::sturm::SturmChain::new(&p_poly).count_real_roots() != 0
-    {
+    if p_poly.degree().is_none_or(|d| d == 0) {
         return None;
     }
+    let real_roots = crate::poly::sturm::SturmChain::new(&p_poly).count_real_roots() != 0;
     let ExprNode::Mul(children) = arena.node(body).clone() else {
         return None;
     };
@@ -1257,8 +1334,18 @@ fn root_sum_end(
     }
     let im_beta = arena.im(beta);
     let sign_im = arena.sign(im_beta);
-    let signed = arena.mul(&[c, sign_im]);
-    let sum = arena.intern(ExprNode::RootSum(p, signed, s));
+    let sum = if real_roots {
+        let one = arena.one;
+        let minus = arena.neg(sign_im);
+        let lower = arena.add(&[one, minus]);
+        let signed = arena.mul(&[c, sign_im, lower]);
+        let below = arena.intern(ExprNode::RootSum(p, signed, s));
+        let sum = arena.add(&[rate, below]);
+        crate::transforms::eval::eval(arena, sum)
+    } else {
+        let signed = arena.mul(&[c, sign_im]);
+        arena.intern(ExprNode::RootSum(p, signed, s))
+    };
     let i = arena.i_unit();
     let pi = arena.pi();
     Some((rate, arena.mul(&[i, pi, sum])))
@@ -1296,10 +1383,75 @@ pub(crate) fn infinity_jump(
     match (plus, minus) {
         (EndValue::Finite(p), EndValue::Finite(m)) => {
             let j = arena.sub(p, m);
-            Some(crate::transforms::eval::eval(arena, j))
+            let j = crate::transforms::eval::eval(arena, j);
+            Some(combined_signs(arena, j))
         }
         _ => Some(arena.zero),
     }
+}
+
+/// `j` expanded when that is smaller: the end values with parameters of
+/// [`log_end`] are `iπ·(1 + sg − sg²)` per logarithm, and the pair
+/// `ln(t + β) − ln(t − β)` leaves `2πi·sg` only after expansion.
+fn combined_signs(arena: &mut Arena, j: ExprId) -> ExprId {
+    let has_sign = crate::base::walk::post_order_ids(arena, j)
+        .iter()
+        .any(|&id| matches!(arena.node(id), ExprNode::Sign(_)));
+    if !has_sign {
+        return j;
+    }
+    let expanded = crate::transforms::expand::expand(arena, j);
+    let expanded = crate::transforms::eval::eval(arena, expanded);
+    if printed_size(arena, expanded) < printed_size(arena, j) {
+        expanded
+    } else {
+        j
+    }
+}
+
+/// The number of nodes of `e` written out as a tree (shared subexpressions
+/// counted at every occurrence, as printed), saturating.
+fn printed_size(arena: &Arena, e: ExprId) -> usize {
+    let mut size: rustc_hash::FxHashMap<ExprId, usize> = rustc_hash::FxHashMap::default();
+    for id in crate::base::walk::post_order_ids(arena, e) {
+        let mut s: usize = 1;
+        arena
+            .node(id)
+            .for_each_child(|c| s = s.saturating_add(size.get(&c).copied().unwrap_or(1)));
+        size.insert(id, s);
+    }
+    size.get(&e).copied().unwrap_or(1)
+}
+
+/// `sign(z)` for a real `z ≠ 0`, with the factors of `z` the assumptions
+/// prove positive dropped and those they prove negative turned into a
+/// factor `−1` (`sign(a/√(a² + 2)) = sign(a)`).
+fn sign_of_real(arena: &mut Arena, z: ExprId) -> ExprId {
+    use crate::base::assumptions::{AssumptionCache, Props};
+    let factors: Vec<ExprId> = match arena.node(z) {
+        ExprNode::Mul(children) => children.to_vec(),
+        _ => vec![z],
+    };
+    let mut facts = AssumptionCache::new();
+    let mut kept: Vec<ExprId> = Vec::new();
+    let mut negative = false;
+    for f in factors {
+        if facts.query(arena, f, Props::POSITIVE) == Some(true) {
+            continue;
+        }
+        if facts.query(arena, f, Props::NEGATIVE) == Some(true) {
+            negative = !negative;
+            continue;
+        }
+        kept.push(f);
+    }
+    let s = if kept.is_empty() {
+        arena.one
+    } else {
+        let core = arena.mul(&kept);
+        arena.sign(core)
+    };
+    if negative { arena.neg(s) } else { s }
 }
 
 /// `G(tan w)` made continuous across the poles of `tan w`, for an
@@ -1503,6 +1655,119 @@ mod tests {
             "{} = {v}",
             a.display(j)
         );
+    }
+
+    /// `J` of a `RootSum` in `t` over `p` (in `s`) with body `ln(t − s)/q(s)`,
+    /// evaluated.
+    fn root_sum_jump(p: &str, q: &str) -> num_complex::Complex64 {
+        let ctx = crate::api::context::Context::new();
+        let p = ctx.parse(p).unwrap().id();
+        let q = ctx.parse(q).unwrap().id();
+        ctx.with_arena_mut(|a| {
+            let t = a.symbol("t");
+            let s = a.symbol("s");
+            let ExprNode::Symbol(t_sym) = *a.node(t) else {
+                unreachable!()
+            };
+            let t_minus_s = a.sub(t, s);
+            let ln = a.ln(t_minus_s);
+            let body = a.div(ln, q);
+            let g = a.intern(ExprNode::RootSum(p, body, s));
+            let j = infinity_jump(a, g, t, t_sym).unwrap();
+            crate::transforms::evalf::evalf_complex64(a, j).unwrap()
+        })
+    }
+
+    #[test]
+    fn jump_of_a_root_sum_with_real_roots() {
+        // ∫ dt/((t² − 2)(t² + 1)) = Σ ln(t − ρ)/D′(ρ): the real poles ±√2
+        // have opposite residues; J = 2πi·Res(t = i) = −π/3 (the real form
+        // (1/3)·(ln|(t − √2)/(t + √2)|/(2√2) − atan t) drops by π/3).
+        let j = root_sum_jump("s^4 - s^2 - 2", "4*s^3 - 2*s");
+        let want = -std::f64::consts::PI / 3.0;
+        assert!((j.re - want).abs() < 1e-14 && j.im.abs() < 1e-14, "{j}");
+        // ∫ dt/((t − 1)(t² + 1)) with the principal ln(t − 1), which is
+        // iπ/2 higher at t → −∞: J = 2πi·Res(t = i) = −π/2 − iπ/2.
+        let j = root_sum_jump("s^3 - s^2 + s - 1", "3*s^2 - 2*s + 1");
+        let want = -std::f64::consts::FRAC_PI_2;
+        assert!(
+            (j.re - want).abs() < 1e-14 && (j.im - want).abs() < 1e-14,
+            "{j}"
+        );
+    }
+
+    #[test]
+    fn jump_of_a_root_sum_whose_own_rate_is_not_zero() {
+        // ∫ dt/((t³ − 2)(t² + 1)) as two RootSums: over s³ − 2 (one real
+        // root; its residues sum to −1/5) and over s² + 1 (+1/5).  mpmath:
+        // 2πi·(Res(t = i) + Res(t = ∛2·e^(2πi/3))) =
+        // −0.909316057595450453 − 0.254963612453376551i, and the principal
+        // logarithms' G(10¹²) − G(−10¹²) agree to 30 digits.
+        let ctx = crate::api::context::Context::new();
+        let j = ctx.with_arena_mut(|a| {
+            let t = a.symbol("t");
+            let s = a.symbol("s");
+            let ExprNode::Symbol(t_sym) = *a.node(t) else {
+                unreachable!()
+            };
+            let t_minus_s = a.sub(t, s);
+            let ln = a.ln(t_minus_s);
+            let two = a.int(2);
+            let three = a.int(3);
+            let s2 = a.pow(s, two);
+            let s3 = a.pow(s, three);
+            let minus_two = a.int(-2);
+            let one = a.one;
+            let cubic = a.add(&[s3, minus_two]);
+            let quad = a.add(&[s2, one]);
+            let q1 = a.mul(&[three, s2, quad]);
+            let body1 = a.div(ln, q1);
+            let g1 = a.intern(ExprNode::RootSum(cubic, body1, s));
+            let q2 = a.mul(&[two, s, cubic]);
+            let body2 = a.div(ln, q2);
+            let g2 = a.intern(ExprNode::RootSum(quad, body2, s));
+            let g = a.add(&[g1, g2]);
+            let j = infinity_jump(a, g, t, t_sym).unwrap();
+            crate::transforms::evalf::evalf_complex64(a, j).unwrap()
+        });
+        assert!(
+            (j.re + 0.909_316_057_595_450_5).abs() < 1e-13
+                && (j.im + 0.254_963_612_453_376_55).abs() < 1e-13,
+            "{j}"
+        );
+    }
+
+    #[test]
+    fn jumps_with_real_parameters_of_undecided_sign() {
+        let ctx = crate::api::context::Context::new();
+        let a = ctx
+            .symbol_with("a", &[crate::base::assumptions::Assumption::Real])
+            .unwrap();
+        let jump = |src: &str| -> crate::api::expr::Ex {
+            let g = ctx.parse(src).unwrap();
+            let j = ctx.with_arena_mut(|ar| {
+                let t = ar.symbol("t");
+                let ExprNode::Symbol(t_sym) = *ar.node(t) else {
+                    unreachable!()
+                };
+                infinity_jump(ar, g.id(), t, t_sym)
+            });
+            g.wrap(j.unwrap())
+        };
+        // atan(a·t/√(a² + 2)) → ±π/2·sign(a): J = π·sign(a).
+        let j = jump("atan(a*t/sqrt(a^2 + 2))");
+        assert_eq!(j.to_string(), "sign(a)*pi");
+        // ln(t + √a) − ln(t − √a): no jump for a > 0 (real arguments, the
+        // ln|t| parts cancel), −2πi for a < 0 (t ± i√|a| approach the cut
+        // from opposite sides).
+        let j = jump("ln(t + sqrt(a)) - ln(t - sqrt(a))");
+        for (v, want) in [(4, 0.0), (-4, -2.0 * std::f64::consts::PI)] {
+            let z = j.subs(&a, &ctx.int(v)).eval_complex64().unwrap();
+            assert!(
+                z.re.abs() < 1e-14 && (z.im - want).abs() < 1e-14,
+                "{j} at a = {v}: {z}"
+            );
+        }
     }
 
     #[test]

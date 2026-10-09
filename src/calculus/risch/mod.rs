@@ -836,9 +836,15 @@ const MAX_LINEAR_ROOT_SUM_DEGREE: usize = 24;
 /// which drops by twice the integral's value at `x = 0` (`∫₀¹` came out
 /// −0.53 for 0.53).  `ln(x − ρ)` with a non-real `ρ` does not reach the cut
 /// for real `x` (Bronstein, *Symbolic Integration I*, §2.8 on the real
-/// forms of the logarithmic part).  `None` when `d_q` has a real root (a
-/// pole of the integrand, where `ln(x − ρ)` would be complex on one side)
-/// or is too large.
+/// forms of the logarithmic part).  A real root `ρ` of `d_q` is a pole of
+/// the integrand, and `ln(x − ρ)` is `ln|x − ρ| + iπ` on its left: a constant
+/// on each interval between poles, as the `ln(S(α, x))` of a real `α` is.
+/// Up to 0.37 such a `d_q` kept the jumping form: `∫ dx/(5·sin³x·cos x + 1)`
+/// through `tan(x/2)` (residues `α` of `419t⁴ − 32t² − 5t − 1`, two of them
+/// non-real) gave `F(−4.62) − F(−6.89)` = 0.0733 for 1.9941.  `None` when
+/// `d_q` has real roots and every `α` is real (then every `S(α, x)` is a
+/// real polynomial, which changes sign only at its roots, poles of the
+/// integrand: no jump), or `d_q` is too large.
 fn linear_root_sum_term(
     arena: &mut Arena,
     var: ExprId,
@@ -860,7 +866,10 @@ fn linear_root_sum_term(
     if !(2..=MAX_LINEAR_ROOT_SUM_DEGREE).contains(&deg) {
         return None;
     }
-    if crate::poly::sturm::SturmChain::new(&d_q).count_real_roots() != 0 {
+    if crate::poly::sturm::SturmChain::new(&d_q).count_real_roots() != 0
+        && q.degree()
+            .is_some_and(|n| crate::poly::sturm::SturmChain::new(q).count_real_roots() >= n)
+    {
         return None;
     }
     let r_q = r.rem(&d_q);
