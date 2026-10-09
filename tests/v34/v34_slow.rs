@@ -104,3 +104,30 @@ fn special_values_at_huge_rational_multiples_of_pi_are_quick() {
         assert_eq!(v.to_string(), want, "{src}");
     }
 }
+
+/// Before: 22 s (release; a timeout of the local `fuzz_evalf` run before
+/// 0.38).  `erfc` at an argument beyond the `f64` range (`Shi(5040) ≈
+/// 6.9·10²¹⁸⁴`, known to its relative precision): the bound on `erfc′` over
+/// the argument's ball was computed in `f64`, where `|x| − r` was `∞ − ∞`,
+/// so the ball reached 0 and the bound was `2/√π` instead of
+/// `e^(−10⁴³⁶⁹)`; the evaluation searched to the maximum precision.  The
+/// value is below the exponent range (mpmath: `erfc(shi(5040))` underflows
+/// to `0.0` at every precision, `log` of it ≈ `−4.8·10⁴³⁶⁹`): refused as such.
+#[test]
+fn erfc_of_an_argument_beyond_the_f64_range_is_quick() {
+    let ctx = symplex::prelude::Context::new();
+    let t = std::time::Instant::now();
+    let r = ctx.parse("erfc(Shi(5040))").unwrap().eval_decimal(16);
+    assert!(
+        matches!(r, Err(symplex::prelude::SymplexError::Unevaluable { ref reason }) if reason.contains("underflows")),
+        "{r:?}"
+    );
+    assert_eq!(
+        ctx.parse("erf(Shi(5040))")
+            .unwrap()
+            .eval_decimal(16)
+            .unwrap(),
+        "1"
+    );
+    assert!(t.elapsed().as_secs_f64() < 5.0, "{:?}", t.elapsed());
+}

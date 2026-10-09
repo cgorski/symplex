@@ -6,7 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
-## [Unreleased]
+## [0.38.0] - 2026-10-09
+
+Antiderivatives are now continuous where the integrand is: answers
+through `tan(x/2)` and `tan x` jumped at every pole of the substitution
+(`∫ dx/(2 + cos x)` dropped by `2π/√3` at every odd multiple of π), a
+silent error the differentiation check cannot see — a hunter over
+8,000 integrands found 1,441 such jumps, none now.  With that fixed, the
+trigonometric chapters of the Rubi suite open up: 23,915 → 28,713
+verified, still 0 wrong.  A linear-algebra hunter fixed 157 wrong
+results (LDL of non-symmetric input, missing symbolic eigenvectors and
+multiplicities, `pinv` of complex matrices); sums, ODEs and recurrences
+were hunted for the first time (sums: 8 wrong → 0); more rewrite routes
+keep `0/0` undefined.
 
 ### Added
 
@@ -150,6 +162,46 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 - `GenPoly::try_div_rem` could loop forever over a coefficient domain
   whose arithmetic gave up (a step that does not cancel the leading
   term); it now fails.
+- **`erfc(Shi(5040))` took 22 s** (a timeout of the local fuzz run before
+  this release): the bound on `erf′`/`erfc′` over an argument's error ball
+  was computed in `f64`, where an argument of `10²¹⁸⁵` and its radius both
+  overflowed, `∞ − ∞` put 0 in the ball, and the bound was `2/√π` instead
+  of `e^(−10⁴³⁶⁹)`; the evaluation searched to the maximum precision.
+  Beyond the `f64` range the ball is now compared in `log₂` (as `zeta`
+  already did): 2 ms, the same refusal (the value underflows).
+
+### Measured
+
+- `tests/v34/` (0.35–0.38): 19 files, 144 tests.  nextest 13,749 tests
+  (14 skipped), doctests 1,314.
+- Rubi harness: 28,713 verified, 73 real_verified, 0 wrong, 0 undecided, 1
+  timeout (0.37: 23,915 / 70); wall 77–81 s with 12 jobs (0.37: 39–46 s),
+  most of it spent finding and checking the new answers (mean 26 ms per
+  verified entry, 4 ms per unevaluated one).  Self-test: 55,475 verified,
+  0 wrong, 742 undecided (unchanged).  `--negative-params`: 73
+  real_verified, 0 wrong.
+- Byte identity of the LP paths and the s42 Lean certificates:
+  identical.
+- `cargo semver-checks` against 0.37.0: no semver update required.
+- Hunters (before → after): antiderivative continuity (8,000 integrands,
+  `F(b) − F(a)` against quadrature) 1,441 jumps → 0, unevaluated 1,410 →
+  414, 0 wrong; linear algebra (2,000 matrices × 49 operations) 157 wrong
+  → 0, refusals 3,789 → 1,007; sums/products (2,110) 8 wrong → 0; ODEs
+  (2,600) 0 wrong, hangs 10 → 0; recurrences (700) 0 wrong; rewrite routes
+  (70,000 cases × 30 routes) 0 wrong values, 127 route disagreements → 0.
+- Fuzzing: the nightly run of 2026-10-09 (on the first half of this
+  release) was green on all 12 targets; the `fuzz_integrate` corpus (8,642
+  inputs) replays with no input over 5 s (slowest 2 s: `∫ (√x + 27/64)·
+  atan(x²)`, unchanged from 0.37).  On the release code all 12 targets
+  ran together with a 10-second limit (`fuzz_simplify` and `fuzz_integrate`
+  15 minutes, the others 10): `fuzz_numdist` 20,558,251 inputs,
+  `fuzz_refine` 14,395,906, `fuzz_lambertw` 3,063,334, `fuzz_parser`
+  2,029,547, `fuzz_eigenvects` 292,155, `fuzz_exact_matrix` 242,919,
+  `fuzz_evalf` 123,640, `fuzz_roundtrip` 83,263, `fuzz_calculus` 53,226,
+  `fuzz_poly` 41,549, `fuzz_simplify` 25,621, `fuzz_integrate` 10,217: 0
+  crashes, 0 out-of-memory, one timeout (`erfc(Shi(5040))`, 22 s, fixed
+  above); `fuzz_evalf` again alone for 10 minutes after the fix: 408,393
+  inputs, 0 crashes, 0 timeouts.
 
 ## [0.37.0] - 2026-10-09
 

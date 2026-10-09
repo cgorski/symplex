@@ -416,9 +416,21 @@ fn analytic(arena: &Arena, node: &ExprNode, i: usize, a: &Args<'_>, cc: &mut Con
             };
             d.map_or(Sens::Unbounded, |d| Sens::Deriv(lv + d))
         }
-        // erf′ = −erfc′ = (2/√π)·e^{−x²}.
+        // erf′ = −erfc′ = (2/√π)·e^{−x²}, bounded over the ball by its
+        // value at the smallest |x| there.  Beyond the f64 range `|x|` and the
+        // radius are compared in log₂: before 0.38 both overflowed, `∞ − ∞`
+        // made the smallest |x| 0, the bound was `2/√π` instead of
+        // `e^(−10⁴³⁷⁰)`, and `erfc(Shi(5040))` (an argument of `10²¹⁸⁵`
+        // known to its relative precision) searched to the maximum precision
+        // for 22 s (a nightly-fuzz timeout).
         ExprNode::Erf(_) | ExprNode::Erfc(_) => {
-            let lo = (f(x).abs() - e.exp2()).max(0.0);
+            let (ax, r) = (f(x).abs(), e.exp2());
+            if !(ax.is_finite() && r.is_finite()) && lg(x) > e + 1.0 {
+                // `|x| − 2^e ≥ |x|/2`.
+                let half = (lg(x) - 1.0).exp2();
+                return Sens::Deriv(LOG2_TWO_OVER_SQRT_PI - half * half * LOG2E);
+            }
+            let lo = (ax - r).max(0.0);
             Sens::Deriv(LOG2_TWO_OVER_SQRT_PI - lo * lo * LOG2E)
         }
         ExprNode::Si(_) => Sens::Deriv((-lg(x)).min(0.0)),
